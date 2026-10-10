@@ -91,11 +91,16 @@ export type AdminActionType =
   | 'SCHEDULED_TASK_RUN'
   // Lot 33D : consultation de la sortie d'un modèle IA (données issues des
   // documents des utilisateurs) depuis « Exécutions & logs ».
-  | 'AI_MODEL_OUTPUT_READ';
+  | 'AI_MODEL_OUTPUT_READ'
+  // Lot 35C (CDC lookup_key V4) : opérations d'exploitation du catalogue
+  // Stripe depuis le BO (synchronisation, reprise, publication de la grille du
+  // code, reprise / abandon / retour arrière, information préalable des
+  // abonnés). Aucune ne modifie un montant.
+  | 'STRIPE_CATALOG_OPERATION';
 
 export type AdminTargetType = 'ACCOUNT' | 'USER' | 'EXPORT_TEMPLATE' | 'COMMUNICATION_CHANNEL' | 'ANOMALY' | 'GDPR_REQUEST'
   | 'ASSISTANT_SETTING' | 'ASSISTANT_REQUEST' | 'NOTIFICATION' | 'AI_CACHE' | 'AI_METRICS'
-  | 'OPS_BACKFILL' | 'SCHEDULED_TASK' | 'AI_EXECUTION';
+  | 'OPS_BACKFILL' | 'SCHEDULED_TASK' | 'AI_EXECUTION' | 'STRIPE_CATALOG';
 
 type Executor = Pick<typeof db, 'insert' | 'select'>;
 

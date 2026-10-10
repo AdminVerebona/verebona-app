@@ -96,18 +96,17 @@ describe('modèles', () => {
     expect(issues[0].message).toContain('catalogue fournisseur');
   });
 
-  it('refuse un modèle sans tarif connu', () => {
-    // `assertPricingReady` refuserait le démarrage en production. Mieux vaut
-    // bloquer la promotion que découvrir la panne après l'import.
+  it('CAT-06 — lot 35B : un modèle sans tarif connu n’est PAS bloqué (signalement non bloquant)', () => {
     const cat = catalogues({ pricedModels: new Set(['m-repli']) });
-    const issues = bloquants(valide(), cat);
-    expect(issues.some((i) => i.message.includes('tarif'))).toBe(true);
+    expect(bloquants(valide(), cat)).toEqual([]);
+    const tous = validateTreatment(valide(), cat);
+    expect(tous.some((i) => !i.blocking && /Tarif inconnu.*coûts marqués non calculables/.test(i.message))).toBe(true);
   });
 
-  it('distingue les deux causes, qui appellent deux gestes différents', () => {
+  it('modèle absent du catalogue : seul motif bloquant restant (le tarif n’en est plus un)', () => {
     const cat = catalogues({ availableModels: new Set(['m-principal']), pricedModels: new Set() });
     const messages = bloquants(valide(), cat).map((i) => i.message);
-    expect(messages.some((m) => m.includes('tarif'))).toBe(true);
+    expect(messages.some((m) => m.includes('tarif'))).toBe(false);
     expect(messages.some((m) => m.includes('catalogue fournisseur'))).toBe(false);
   });
 

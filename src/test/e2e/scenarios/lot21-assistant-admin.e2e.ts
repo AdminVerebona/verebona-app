@@ -56,21 +56,28 @@ scenario('LOT21-ADMIN', 'Assistant : réglages administrés, limiteur partagé, 
   it('D-J1 : double validation — même administrateur refusé, second administrateur accordé', async () => {
     const S = await import('@/services/verebona-assistant/config/assistant-settings');
     S.setAssistantSettingsStoreForTests(S.dbAssistantSettingsStore);
+    // Lot 35B : « Modèles preview en production » supprimé — le mécanisme de
+    // double validation est exercé sur un réglage de test.
+    const retirer = S.registerAssistantSettingForTests({
+      key: 'reglage_sensible_e2e', env: 'VEREBONA_E2E_REGLAGE_SENSIBLE', group: 'interrupteurs', label: 'e2e',
+      description: 'e2e', type: 'bool', default: false, doubleValidation: (v) => v === true,
+    });
     const a = await make.user({ role: 'ADMIN' });
     const b = await make.user({ role: 'ADMIN' });
-    const r = await S.updateAssistantSetting({ key: 'preview_models_allowed', value: true, adminId: a.id }) as { status: string; requestId: number };
+    const r = await S.updateAssistantSetting({ key: 'reglage_sensible_e2e', value: true, adminId: a.id }) as { status: string; requestId: number };
     expect(r.status).toBe('PENDING_APPROVAL');
-    await expect(S.updateAssistantSetting({ key: 'preview_models_allowed', value: true, adminId: b.id })).rejects.toMatchObject({ code: 'REQUEST_PENDING' });
+    await expect(S.updateAssistantSetting({ key: 'reglage_sensible_e2e', value: true, adminId: b.id })).rejects.toMatchObject({ code: 'REQUEST_PENDING' });
     await expect(S.decideAssistantSettingRequest({ requestId: r.requestId, adminId: a.id, decision: 'approve' })).rejects.toMatchObject({ code: 'SAME_ADMIN' });
     await S.decideAssistantSettingRequest({ requestId: r.requestId, adminId: b.id, decision: 'approve' });
-    expect(S.effectiveSetting('preview_models_allowed')).toBe(true);
+    expect(S.effectiveSetting('reglage_sensible_e2e')).toBe(true);
     const actions = await sql<{ action_type: string; result: string }[]>`
       SELECT action_type, result FROM admin_audit_log WHERE admin_user_id IN (${a.id}, ${b.id}) ORDER BY id`;
     expect(actions.map((x) => `${x.action_type}:${x.result}`)).toEqual([
       'ASSISTANT_SETTING_REQUEST:SUCCESS', 'ASSISTANT_SETTING_APPROVE:DENIED', 'ASSISTANT_SETTING_APPROVE:SUCCESS',
     ]);
     // Remise à l'état initial (désactiver : immédiat).
-    await S.updateAssistantSetting({ key: 'preview_models_allowed', value: false, adminId: a.id });
+    await S.updateAssistantSetting({ key: 'reglage_sensible_e2e', value: false, adminId: a.id });
+    retirer();
   });
 
   it('D-J2 : deux instances partagent le compteur (10 / min au total), une requête par appel', async () => {

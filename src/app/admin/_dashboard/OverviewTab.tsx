@@ -46,7 +46,13 @@ export function OverviewTab({ query }: { query: string }) {
             </p>
           )}
         </KpiCard>
-        <KpiCard label="MRR" hint="Abonnements actifs, annuel ramené au mois" kpi={kpis.mrr} prevLabel={prev} />
+        <KpiCard label="MRR" hint="Abonnements actifs au prix contractuel de chacun (TTC, hors remises), annuel ramené au mois" kpi={kpis.mrr} prevLabel={prev}>
+          {data.mrrUnknownSubscriptions > 0 && (
+            <p className="text-xs text-amber-500">
+              {int(data.mrrUnknownSubscriptions)} abonnement(s) au prix contractuel inconnu, non valorisé(s).
+            </p>
+          )}
+        </KpiCard>
         <KpiCard label="ARR" hint="MRR × 12" kpi={kpis.arr} prevLabel={prev} />
         <KpiCard label="Anomalies en cours" hint="Anomalies ouvertes (Supervision)" kpi={kpis.openAnomalies} prevLabel={prev} />
       </div>

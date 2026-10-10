@@ -251,9 +251,9 @@ export function assertConfigAtStartup(
     // §15.13 : jamais d'alias fournisseur « latest ».
     for (const m of modeles) if (/latest/i.test(m)) errors.push(`${code} : alias « latest » interdit (${m}) (§15.13)`);
     // Lot 32B : plus d'interdit sur le NOM du modèle (ancien « aucun Pro »,
-    // CDC Assistant V1 §15.6 / §31.2). Statut, compatibilité t2_master_v1,
-    // capacités, tarif et preview sont contrôlés par le registre
-    // (`model-startup-check`, `usableModelsForTreatment`).
+    // CDC Assistant V1 §15.6 / §31.2). Lot 35B : disponibilité, qualification
+    // automatique et exceptions sont contrôlées par `usableModelsForTreatment`
+    // et `model-startup-check` ; tarif et preview ne bloquent plus.
     // §15.14 : escalade identique au modèle par défaut sans décision explicite.
     if (op.fallbackModels.includes(op.primaryModel) && process.env.VEREBONA_ASSISTANT_ALLOW_SAME_MODEL !== 'true') {
       errors.push(`${code} : modèle d'escalade identique au modèle par défaut (§15.14)`);

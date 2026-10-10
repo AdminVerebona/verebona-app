@@ -208,13 +208,13 @@ export async function seedSystemEmailTemplates() {
                     <td style="padding:20px;">
                       <p style="margin:0 0 12px 0; font-weight:600; color:#1F2937;">Détails de votre abonnement</p>
                       <p style="margin:0 0 8px 0; font-size:14px; color:#4B5563;">
-                        <strong>Offre :</strong> Verebona Premium
+                        <strong>Offre :</strong> Verebona {{planLabel}}
                       </p>
                       <p style="margin:0 0 8px 0; font-size:14px; color:#4B5563;">
-                        <strong>Montant :</strong> 59 € / an, TTC, TVA incluse
+                        <strong>Montant :</strong> {{amountLabel}}
                       </p>
                       <p style="margin:0 0 8px 0; font-size:14px; color:#4B5563;">
-                        <strong>Périodicité :</strong> Abonnement annuel à reconduction tacite
+                        <strong>Périodicité :</strong> {{periodLabel}}
                       </p>
                       <p style="margin:0; font-size:14px; color:#4B5563;">
                         <strong>Prochaine échéance :</strong> {{nextBillingDate}}

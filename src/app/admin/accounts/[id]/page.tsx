@@ -39,6 +39,8 @@ import {
 } from '@/components/ui/alert-dialog';
 import { toast } from 'sonner';
 import { apiClient } from '@/lib/api-client';
+import { useBillingCatalog } from '@/hooks/useBillingCatalog';
+import { findOffer, offerAmount, periodSuffix, priceConfirmationFromError } from '@/lib/billing/catalog-client';
 import { getPlanTheme } from '@/lib/plan-theme';
 import { formatBytes, formatDate, formatDateTime, formatMoney } from '@/lib/admin/format';
 import { EcranEnErreur } from '@/components/admin/EcranEnErreur';
@@ -234,13 +236,28 @@ export default function AccountDetailPage() {
   useEffect(() => { load(); }, [load]);
 
   /** ACC-A06 : changement exceptionnel ; ERR-005 : un échec Stripe est affiché tel quel. */
+  // CDC lookup_key V4 (LK-34, LK-61) : le prix appliqué à la prochaine
+  // échéance est celui de la révision active à la périodicité EXISTANTE ;
+  // il est affiché dans la confirmation et sa révision est transmise.
+  const { catalog, reload: reloadCatalog } = useBillingCatalog();
   const handleChangePlan = async () => {
     setChangingPlan(true);
     try {
-      const res = await apiClient.patch<{ message: string }>(`/api/admin/accounts/${params.id}`, { planType: newPlan });
+      const period = data?.subscription?.billingPeriod ?? null;
+      const revision = period ? findOffer(catalog, newPlan, period)?.price_revision ?? null : null;
+      const res = await apiClient.patch<{ message: string }>(`/api/admin/accounts/${params.id}`, {
+        planType: newPlan,
+        ...(revision ? { displayedPriceRevision: revision } : {}),
+      });
       toast.success(res.message || 'Offre modifiée');
     } catch (e) {
-      toast.error((e as Error).message || "Le changement d'offre a échoué");
+      const confirmation = priceConfirmationFromError(e);
+      if (confirmation) {
+        void reloadCatalog();
+        toast.error(`${confirmation.message} Nouveau tarif : ${offerAmount(confirmation.offer)} ${periodSuffix(confirmation.offer.billing_period)}. Relancez le changement pour le confirmer.`);
+      } else {
+        toast.error((e as Error).message || "Le changement d'offre a échoué");
+      }
     } finally {
       setChangingPlan(false);
       // ERR-003 : état relu depuis la source de vérité, succès comme échec.
@@ -581,7 +598,12 @@ export default function AccountDetailPage() {
                     <AlertDialogTitle>Changer l’offre de « {account.name} » ?</AlertDialogTitle>
                     <AlertDialogDescription>
                       {PLAN_LABEL[account.planType] ?? account.planType} → {PLAN_LABEL[newPlan] ?? newPlan}.
-                      Action exceptionnelle et journalisée. En cas de refus de Stripe, rien n’est modifié.
+                      {(() => {
+                        const period = data.subscription?.billingPeriod ?? null;
+                        const offer = period ? findOffer(catalog, newPlan, period) : null;
+                        return offer ? ` Prix appliqué à la prochaine échéance : ${offerAmount(offer)} ${periodSuffix(period!)}.` : '';
+                      })()}
+                      {' '}Action exceptionnelle et journalisée. En cas de refus de Stripe, rien n’est modifié.
                     </AlertDialogDescription>
                   </AlertDialogHeader>
                   <AlertDialogFooter>

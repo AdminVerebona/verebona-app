@@ -49,6 +49,7 @@ import { AssistantSettings } from './_components/AssistantSettings';
 import { ModelRegistry } from './_components/ModelRegistry';
 import { Supervision, type Metric, type MetricTable } from './_components/Supervision';
 import { AiEnvBanner } from '../ai-dashboard/_components/AiEnvBanner';
+import { CatalogBanners } from './_components/CatalogBanners';
 import { useUnsavedNavigationGuard } from './_components/useUnsavedNavigationGuard';
 import { TriggersEditor } from './_components/TriggersEditor';
 import { createEditTracker } from './_components/edit-tracker';
@@ -87,7 +88,7 @@ interface Catalogs {
    * Lot 32B : modèles utilisables par traitement (`usableModelsForTreatment`,
    * serveur) — SEULE source des sélecteurs principal / repli 1 / repli 2.
    */
-  modelsByTreatment?: Partial<Record<Treatment, Array<{ model: string; priced: boolean; verified: boolean; providerVerified?: boolean; operational?: boolean | null }>>>;
+  modelsByTreatment?: Partial<Record<Treatment, Array<{ model: string; status?: string; priced: boolean; verified: boolean; providerVerified?: boolean; operational?: boolean | null }>>>;
   /** Modèles connus non utilisables et leur motif : nomme une valeur enregistrée, jamais un choix. */
   excludedByTreatment?: Partial<Record<Treatment, Array<{ model: string; reasonText: string }>>>;
   reasoningLevels: string[];
@@ -512,12 +513,18 @@ function TreatmentEditor({
   const usableNames = usable.map((m) => m.model);
   const motif = (model: string) => catalogs.excludedByTreatment?.[entry.treatment]?.find((x) => x.model === model)?.reasonText
     ?? 'non utilisable pour ce traitement';
+  // Lot 35B : statut Preview et tarif inconnu VISIBLES (informatifs, jamais bloquants).
+  const suffixe = (model: string) => {
+    const m = usable.find((x) => x.model === model);
+    if (!m) return '';
+    return [m.status === 'preview' ? 'preview' : null, m.priced ? null : 'tarif inconnu'].filter(Boolean).map((x) => ` · ${x}`).join('');
+  };
   const modelOptions = (rank: ChainRank) => (
     <>
       <option value="">—</option>
       {chainOptions(usableNames, entry, rank, { readOnly, reasonOf: motif }).map((o) => (
         <option key={o.model} value={o.model} disabled={o.unusable}>
-          {o.label}
+          {o.label}{o.unusable ? '' : suffixe(o.model)}
         </option>
       ))}
     </>
@@ -620,7 +627,7 @@ function TreatmentEditor({
       {usable.length === 0 ? (
         <p role="status" className="text-xs text-amber-500">
           Aucun modèle n’est actuellement utilisable pour {entry.treatment}. Actualisez le catalogue dans « Fournisseur IA »
-          et vérifiez les tarifs.
+          (qualification automatique des modèles disponibles avec la clé active).
         </p>
       ) : null}
 
@@ -1089,6 +1096,8 @@ export default function AiConfigPage() {
     <div className="space-y-6 max-w-5xl">
       {/* VER-026 / GST-01 : environnement et état global, sur chaque page IA */}
       <AiEnvBanner />
+      {/* Lot 35B : nouveaux modèles Gemini (bandeau acquitté en base) et modèles actifs devenus indisponibles. */}
+      <CatalogBanners />
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div>
           <h1 className="text-2xl font-bold text-[color:var(--text-primary)]">Configuration IA</h1>

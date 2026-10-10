@@ -212,6 +212,7 @@ export async function middleware(request: NextRequest) {
       '/api/health/ready', // disponibilité critique (APP-PERF-37)
       '/api/users', // Public pour signup
       '/api/billing/stripe-webhook', // Stripe signe ses propres requêtes — pas de JWT
+      '/api/billing/catalog', // Catalogue public des offres (lecture, sans cookie) — app et vitrine
       '/api/referral/validate', // Validation publique du code parrainage
       '/api/contact', // Formulaire de contact du site vitrine (visiteur non connecte)
       '/api/manifest', // Manifeste PWA : chargé par le navigateur SANS cookie

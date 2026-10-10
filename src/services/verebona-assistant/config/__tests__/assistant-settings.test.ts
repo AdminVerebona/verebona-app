@@ -103,29 +103,41 @@ describe('journal (CA-30)', () => {
 });
 
 describe('double validation (§32.7)', () => {
-  it('activer les modèles preview : demande, puis accord d’un SECOND administrateur', async () => {
-    const r = await S.updateAssistantSetting({ key: 'preview_models_allowed', value: true, adminId: 1 });
+  // Lot 35B : « Modèles preview en production » est supprimé ; le mécanisme
+  // de double validation reste, exercé ici sur un réglage de test.
+  let retirer: () => void = () => {};
+  beforeEach(() => {
+    retirer = S.registerAssistantSettingForTests({
+      key: 'reglage_sensible_test', env: 'VEREBONA_TEST_REGLAGE_SENSIBLE', group: 'interrupteurs', label: 'Réglage sensible (test)',
+      description: 'test', type: 'bool', default: false, doubleValidation: (v) => v === true,
+    });
+  });
+  afterEach(() => retirer());
+
+  it('réglage sensible : demande, puis accord d’un SECOND administrateur', async () => {
+    const r = await S.updateAssistantSetting({ key: 'reglage_sensible_test', value: true, adminId: 1 });
     expect(r).toMatchObject({ status: 'PENDING_APPROVAL' });
-    expect(S.effectiveSetting('preview_models_allowed')).toBe(false);
+    expect(S.effectiveSetting('reglage_sensible_test')).toBe(false);
     const id = (r as { requestId: number }).requestId;
     await expect(S.decideAssistantSettingRequest({ requestId: id, adminId: 1, decision: 'approve' })).rejects.toMatchObject({ code: 'SAME_ADMIN' });
     expect(audit).toHaveBeenCalledWith(expect.objectContaining({ action: 'ASSISTANT_SETTING_APPROVE', result: 'DENIED' }));
     await S.decideAssistantSettingRequest({ requestId: id, adminId: 2, decision: 'approve' });
-    expect(S.effectiveSetting('preview_models_allowed')).toBe(true);
+    expect(S.effectiveSetting('reglage_sensible_test')).toBe(true);
     await expect(S.decideAssistantSettingRequest({ requestId: id, adminId: 3, decision: 'approve' })).rejects.toMatchObject({ code: 'REQUEST_CLOSED' });
   });
 
   it('une seule demande en attente ; annulation par le demandeur seulement ; désactiver : immédiat', async () => {
-    const r = await S.updateAssistantSetting({ key: 'preview_models_allowed', value: true, adminId: 1 }) as { requestId: number };
-    await expect(S.updateAssistantSetting({ key: 'preview_models_allowed', value: true, adminId: 2 })).rejects.toMatchObject({ code: 'REQUEST_PENDING' });
+    const r = await S.updateAssistantSetting({ key: 'reglage_sensible_test', value: true, adminId: 1 }) as { requestId: number };
+    await expect(S.updateAssistantSetting({ key: 'reglage_sensible_test', value: true, adminId: 2 })).rejects.toMatchObject({ code: 'REQUEST_PENDING' });
     await expect(S.decideAssistantSettingRequest({ requestId: r.requestId, adminId: 2, decision: 'cancel' })).rejects.toMatchObject({ code: 'NOT_REQUESTER' });
     await S.decideAssistantSettingRequest({ requestId: r.requestId, adminId: 1, decision: 'cancel' });
-    expect((await S.updateAssistantSetting({ key: 'preview_models_allowed', value: false, adminId: 1 })).status).toBe('APPLIED');
+    expect((await S.updateAssistantSetting({ key: 'reglage_sensible_test', value: false, adminId: 1 })).status).toBe('APPLIED');
   });
 
-  it('modèle preview reconnu', () => {
+  it('lot 35B — « Modèles preview en production » supprimé ; statut preview informatif, expérimental distinct', async () => {
+    await expect(S.updateAssistantSetting({ key: 'preview_models_allowed', value: true, adminId: 1 })).rejects.toMatchObject({ code: 'UNKNOWN_SETTING' });
     expect(S.isPreviewModel('gemini-3.5-flash-preview-09-2026')).toBe(true);
-    expect(S.isPreviewModel('gemini-2.0-flash-exp')).toBe(true);
+    expect(S.isPreviewModel('gemini-2.0-flash-exp')).toBe(false); // expérimental, pas preview
     expect(S.isPreviewModel('gemini-3.5-flash-lite')).toBe(false);
   });
 });

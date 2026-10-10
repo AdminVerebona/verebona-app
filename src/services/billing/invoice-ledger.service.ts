@@ -32,6 +32,20 @@
  * 0 € (aucune somme due ni encaissée) ne sont pas des paiements : ignorées.
  * Un remboursement n'altère pas `amount` (somme encaissée à la date
  * d'encaissement) : il est porté par `amount_refunded`.
+ *
+ * OFFRE ATTRIBUÉE (CDC lookup_key V4, LK-74, LK-75, TC-55) : les prix de
+ * TOUTES les lignes (pagination comprise) sont prérésolus de façon
+ * asynchrone par le registre historique, puis fournis à la fonction PURE
+ * `buildInvoiceRecord` (aucun appel réseau caché). Le détail ligne par
+ * ligne est conservé (`line_items_json`). Convention documentée pour le
+ * champ unique `plan_code` (`plan_resolution`) :
+ *   - `single`      toutes les lignes reconnues portent la même offre ;
+ *   - `charge_line` facture de changement d'offre : crédit sur l'ancien prix
+ *                   et UNE charge positive sur le nouveau → offre de la charge ;
+ *   - `multiple`    plusieurs offres facturées positivement → offre NULL ;
+ *   - `unknown`     aucune ligne reconnue → offre NULL.
+ * Jamais la première ligne comme preuve arbitraire. Les montants encaissés,
+ * dus et remboursés restent ceux de Stripe (LK-76).
  * ══════════════════════════════════════════════════════════════════════════
  */
 import type Stripe from 'stripe';
@@ -39,8 +53,8 @@ import { eq, sql } from 'drizzle-orm';
 import { db } from '@/db';
 import { accounts, accountSubscriptions, duoAccounts, invoices } from '@/db/schema';
 import { getStripeServer } from '@/lib/stripe';
-import { resolvePlanFromPriceId } from '@/lib/stripe-prices';
-import { getInvoicePriceId, getInvoiceSubscriptionId } from '@/services/billing/subscription-sync.service';
+import { getInvoiceLinePriceId, getInvoiceSubscriptionId } from '@/services/billing/subscription-sync.service';
+import { resolveHistoricalPrices, type HistoricalPriceResult } from '@/services/billing/price-history.service';
 
 // ─── Règles pures ────────────────────────────────────────────────────────────
 
@@ -108,6 +122,33 @@ export interface InvoiceRecord {
   lastPaymentFailedAt: Date | null;
   invoicePdf: string | null;
   hostedInvoiceUrl: string | null;
+  lineItemsJson: InvoiceLineDetail[];
+  planResolution: 'single' | 'charge_line' | 'multiple' | 'unknown';
+}
+
+export type InvoiceLineDetail = {
+  priceId: string | null;
+  planCode: string | null;
+  billingPeriod: string | null;
+  amount: number;
+  proration: boolean;
+  periodStart: string | null;
+  periodEnd: string | null;
+};
+
+/** Correspondances de prix prérésolues (prix → offre, périodicité). */
+export type PriceResolutionMap = Map<string, Pick<Extract<HistoricalPriceResult, { status: 'recognized' }>, 'planCode' | 'billingPeriod'> | { status: string }>;
+
+/** Attribution de l'offre d'une facture multiligne (pure, LK-75). */
+export function attributeInvoicePlan(lines: InvoiceLineDetail[]): { line: InvoiceLineDetail | null; resolution: InvoiceRecord['planResolution'] } {
+  const recognized = lines.filter((l) => l.planCode);
+  if (recognized.length === 0) return { line: null, resolution: 'unknown' };
+  const keys = new Set(recognized.map((l) => `${l.planCode}:${l.billingPeriod}`));
+  if (keys.size === 1) return { line: recognized.find((l) => l.amount > 0) ?? recognized[0], resolution: 'single' };
+  const charges = recognized.filter((l) => l.amount > 0);
+  const chargeKeys = new Set(charges.map((l) => `${l.planCode}:${l.billingPeriod}`));
+  if (chargeKeys.size === 1) return { line: charges.sort((a, b) => b.amount - a.amount)[0], resolution: 'charge_line' };
+  return { line: null, resolution: 'multiple' };
 }
 
 /**
@@ -116,7 +157,7 @@ export interface InvoiceRecord {
  */
 export function buildInvoiceRecord(
   invoice: Stripe.Invoice,
-  opts: { eventType?: string; now?: Date } = {},
+  opts: { eventType?: string; now?: Date; prices?: PriceResolutionMap; lines?: Stripe.InvoiceLineItem[] } = {},
 ): InvoiceRecord | null {
   const customerId = idOf(invoice.customer as string | { id: string } | null);
   if (!invoice.id || !customerId) return null;
@@ -125,33 +166,65 @@ export function buildInvoiceRecord(
   }
 
   const status = localInvoiceStatus(invoice, opts.eventType);
-  const priceId = getInvoicePriceId(invoice);
-  const plan = resolvePlanFromPriceId(priceId);
-  const line = invoice.lines?.data?.[0];
-  const interval = (line as unknown as { price?: { recurring?: { interval?: string } } } | undefined)
-    ?.price?.recurring?.interval;
-  const billingPeriod = plan?.period ?? (interval === 'month' ? 'monthly' : interval === 'year' ? 'yearly' : null);
+  const rawLines = opts.lines ?? invoice.lines?.data ?? [];
+  const details: InvoiceLineDetail[] = rawLines.map((line) => {
+    const priceId = getInvoiceLinePriceId(line);
+    const resolved = priceId ? opts.prices?.get(priceId) : undefined;
+    const ok = resolved && 'planCode' in resolved ? resolved : null;
+    return {
+      priceId,
+      planCode: ok?.planCode ?? null,
+      billingPeriod: ok?.billingPeriod ?? null,
+      amount: line.amount ?? 0,
+      proration: Boolean((line as unknown as { parent?: { subscription_item_details?: { proration?: boolean } } }).parent?.subscription_item_details?.proration
+        ?? (line as unknown as { proration?: boolean }).proration),
+      periodStart: toDate(line.period?.start)?.toISOString() ?? null,
+      periodEnd: toDate(line.period?.end)?.toISOString() ?? null,
+    };
+  });
+  const { line: attributed, resolution } = attributeInvoicePlan(details);
+  const periodLine = attributed ?? details[0] ?? null;
+  // Périodicité d'une facture à UNE ligne non rapprochée : cadence de sa ligne
+  // (information de période, jamais une attribution d'offre).
+  const singleInterval = rawLines.length === 1
+    ? (rawLines[0] as unknown as { price?: { recurring?: { interval?: string } } }).price?.recurring?.interval
+    : undefined;
 
   return {
     stripeInvoiceId: invoice.id,
     stripeCustomerId: customerId,
     stripeSubscriptionId: getInvoiceSubscriptionId(invoice),
-    stripePriceId: priceId,
-    planCode: plan?.planCode ?? null,
-    billingPeriod,
+    stripePriceId: attributed?.priceId ?? (details.length === 1 ? details[0].priceId : null),
+    planCode: attributed?.planCode ?? null,
+    billingPeriod: attributed?.billingPeriod ?? (singleInterval === 'month' ? 'monthly' : singleInterval === 'year' ? 'yearly' : null),
     billingReason: invoice.billing_reason ?? null,
     amount: status === 'paid' ? (invoice.amount_paid ?? 0) : (invoice.amount_due ?? 0),
     currency: (invoice.currency ?? 'eur').toLowerCase(),
     status,
     paidAt: status === 'paid' ? (toDate(invoice.status_transitions?.paid_at) ?? opts.now ?? new Date()) : null,
-    periodStartAt: toDate(line?.period?.start),
-    periodEndAt: toDate(line?.period?.end),
+    periodStartAt: periodLine?.periodStart ? new Date(periodLine.periodStart) : null,
+    periodEndAt: periodLine?.periodEnd ? new Date(periodLine.periodEnd) : null,
     // Seul l'événement d'échec date un échec (un `invoice.updated` ultérieur
     // ne doit pas déplacer cette date).
     lastPaymentFailedAt: opts.eventType === 'invoice.payment_failed' ? (opts.now ?? new Date()) : null,
     invoicePdf: invoice.invoice_pdf ?? null,
     hostedInvoiceUrl: invoice.hosted_invoice_url ?? null,
+    lineItemsJson: details,
+    planResolution: resolution,
   };
+}
+
+/** Toutes les lignes d'une facture, pagination comprise (LK-75). */
+export async function collectInvoiceLines(
+  invoice: Stripe.Invoice,
+  stripe?: Pick<Stripe, 'invoices'>,
+): Promise<Stripe.InvoiceLineItem[]> {
+  const first = invoice.lines?.data ?? [];
+  if (!invoice.lines?.has_more || !invoice.id) return first;
+  const client = stripe ?? getStripeServer();
+  const all: Stripe.InvoiceLineItem[] = [];
+  for await (const line of client.invoices.listLineItems(invoice.id, { limit: 100 })) all.push(line);
+  return all;
 }
 
 // ─── Rattachement au compte ──────────────────────────────────────────────────
@@ -245,10 +318,13 @@ export type InvoiceLedgerOutcome =
  */
 export async function recordStripeInvoice(
   invoice: Stripe.Invoice,
-  opts: { eventType?: string; now?: Date } = {},
+  opts: { eventType?: string; now?: Date; stripe?: Pick<Stripe, 'invoices'> } = {},
 ): Promise<InvoiceLedgerOutcome> {
   const now = opts.now ?? new Date();
-  const record = buildInvoiceRecord(invoice, { ...opts, now });
+  // Prérésolution asynchrone des prix de toutes les lignes (LK-74).
+  const lines = await collectInvoiceLines(invoice, opts.stripe);
+  const prices = await resolveHistoricalPrices(lines.map((l) => getInvoiceLinePriceId(l)), { source: 'invoice' });
+  const record = buildInvoiceRecord(invoice, { eventType: opts.eventType, now, prices, lines });
   if (!record) return { recorded: false, reason: 'NOT_APPLICABLE' };
 
   const owner = await resolveInvoiceAccount(record.stripeCustomerId, record.stripeSubscriptionId);
@@ -283,6 +359,8 @@ export async function recordStripeInvoice(
         periodEndAt: sql`COALESCE(excluded.period_end_at, invoices.period_end_at)`,
         invoicePdf: sql`COALESCE(excluded.invoice_pdf, invoices.invoice_pdf)`,
         hostedInvoiceUrl: sql`COALESCE(excluded.hosted_invoice_url, invoices.hosted_invoice_url)`,
+        lineItemsJson: sql`COALESCE(excluded.line_items_json, invoices.line_items_json)`,
+        planResolution: sql`COALESCE(excluded.plan_resolution, invoices.plan_resolution)`,
         updatedAt: now,
       },
     });

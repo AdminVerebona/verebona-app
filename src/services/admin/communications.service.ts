@@ -99,6 +99,9 @@ export const TRANSACTIONAL_EMAILS: ReadonlyArray<{ templateCode: string; label: 
   { templateCode: 'WITHDRAWAL_RECEIPT', label: 'Rétractation — accusé de réception' },
   // Lot 34I (migration 0301) : désactivable — le parrain peut toujours copier son lien.
   { templateCode: 'REFERRAL_INVITATION', label: 'Invitation de parrainage (envoyée par un abonné)' },
+  // Lot 35C (migration 0308) : information préalable d'une revalorisation —
+  // envoyée seulement depuis Exploitation › Catalogue Stripe, texte à valider.
+  { templateCode: 'PRICE_CHANGE_NOTICE', label: 'Évolution du tarif de l’abonnement (information préalable)' },
 ];
 
 export const CHANNEL_LABELS: Record<CommunicationChannel, string> = {

@@ -1,5 +1,7 @@
 /**
- * GET   /api/assets/[id]/additional-infos — Informations complémentaires du bien
+ * GET   /api/assets/[id]/additional-infos — Informations de « Préparation des
+ *       dossiers » du bien (ex-« Informations complémentaires » ; seul le
+ *       libellé UI a changé au lot 34, la route et les clés restent)
  * PATCH /api/assets/[id]/additional-infos — Correctif fusionné champ par champ
  *
  * CDC Exports V12 §4.3, §17, §26 ; DEC-007, IC-GEN-001..010, EXP-002.
@@ -12,6 +14,13 @@
  * archivé ou verrouillé refusé, compte restreint (essai terminé, impayé,
  * résiliation) ou au-dessus de son quota refusé via `entitlements.service`
  * (corps lu par `parseWriteBlocked` côté client).
+ * Lot 34, point 6 : l'écriture exige en plus le droit FONCTIONNEL de créer des
+ * dossiers (`canCreateDossiers`, jamais le nom de l'offre) — un compte
+ * Standard reçoit 403 `PREMIUM_REQUIRED` AVANT toute lecture du corps : rien
+ * n'est modifié, quel que soit le client (appel direct, ancien front). La
+ * lecture (GET) reste ouverte : les données sont conservées après un
+ * downgrade et l'écriture revient dès que le droit revient (droits relus à
+ * chaque requête).
  *
  * Corps du PATCH : `{ commercial?: {...}, rental?: {...}, insurance?: {...},
  * claim?: {...}, finance?: {...}, version?: n }`. Une valeur `null` ou vide
@@ -40,6 +49,8 @@ import { findInvalidReferences, loadAdditionalInfoReferences } from '@/services/
 import { validateAdditionalInfosPatch, sectionsForCategory } from '@/lib/assets/additional-infos';
 import { toExportFamily } from '@/services/exports/catalog';
 import { emitBusinessEvent } from '@/services/verebona-assistant/events/business-events';
+import { canCreateDossiers } from '@/services/entitlements.service';
+import { DOSSIER_PREPARATION_PREMIUM_MESSAGE } from '@/lib/entitlements/dossier-rights';
 
 type Ctx = { params: Promise<{ id: string }> };
 
@@ -58,7 +69,7 @@ function internalError(context: string, error: unknown): NextResponse {
   if (res.status < 500) return res;
   console.error(`[additional-infos ${context}]`, error);
   return NextResponse.json(
-    { error: 'INTERNAL_ERROR', code: 'INTERNAL_ERROR', message: 'Les informations complémentaires sont momentanément indisponibles.' },
+    { error: 'INTERNAL_ERROR', code: 'INTERNAL_ERROR', message: 'Les informations de préparation des dossiers sont momentanément indisponibles.' },
     { status: 500 },
   );
 }
@@ -116,6 +127,15 @@ export async function PATCH(request: NextRequest, { params }: Ctx) {
         );
       }
       throw e;
+    }
+
+    // Lot 34, point 6 : droit de créer des dossiers (DOSS-08). Même corps de
+    // refus que les autres fonctions Premium (lu par `parseWriteBlocked`).
+    const droit = await canCreateDossiers(accountId);
+    if (!droit.allowed) {
+      const code = droit.reason ?? 'PREMIUM_REQUIRED';
+      const message = code === 'PREMIUM_REQUIRED' ? DOSSIER_PREPARATION_PREMIUM_MESSAGE : droit.message;
+      return NextResponse.json({ error: code, code, message }, { status: 403 });
     }
 
     let body: unknown;

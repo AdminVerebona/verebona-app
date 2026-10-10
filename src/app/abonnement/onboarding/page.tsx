@@ -7,6 +7,8 @@ import { LogoWithBaseline } from '@/components/Logo';
 import { Loader2, ShieldCheck, Gift, Calendar, ArrowRight, AlertCircle } from 'lucide-react';
 import { apiClient } from '@/lib/api-client';
 import { runAuthStorageMigration } from '@/lib/auth-migration';
+import { useBillingCatalog } from '@/hooks/useBillingCatalog';
+import { billingMention, findOffer, offerAmount, periodSuffix, priceConfirmationFromError, type CatalogOffer } from '@/lib/billing/catalog-client';
 
 function OnboardingContent() {
   const searchParams = useSearchParams();
@@ -16,6 +18,14 @@ function OnboardingContent() {
   const planFromUrl = rawPlanParam === 'duo' ? 'premium_duo' : rawPlanParam || null;
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // CDC lookup_key V4 (LK-34, LK-35) : le montant est affiché depuis le
+  // catalogue serveur et sa révision accompagne la demande ; un tarif changé
+  // est présenté et exige un nouveau clic (aucun renvoi automatique).
+  const periodChoice: 'monthly' | 'yearly' = searchParams.get('billing_period') === 'monthly' ? 'monthly' : 'yearly';
+  const { catalog } = useBillingCatalog();
+  const [confirmedOffer, setConfirmedOffer] = useState<CatalogOffer | null>(null);
+  const [priceChanged, setPriceChanged] = useState(false);
+  const shownOffer = confirmedOffer ?? (planFromUrl ? findOffer(catalog, planFromUrl, periodChoice) : null);
 
   // CDC §5.1 / §16.4 : plus aucun jeton n'est transporte par l'URL ni ecrit
   // dans le navigateur. La session est deja etablie par les cookies HttpOnly
@@ -26,6 +36,12 @@ function OnboardingContent() {
   }, []);
 
   const handleStartTrial = async () => {
+    // Sans offre choisie : la page Offres présente les tarifs (plus aucune
+    // offre par défaut côté serveur, LK-37).
+    if (!planFromUrl) {
+      router.push('/mon-compte/offres');
+      return;
+    }
     setLoading(true);
     setError(null);
     try {
@@ -36,7 +52,8 @@ function OnboardingContent() {
       const payload: any = { entry_point: 'onboarding_page' };
       if (planFromUrl) payload.plan = planFromUrl;
       // CDC §4.1 : periodicite choisie (defaut annuel).
-      payload.billing_period = searchParams.get('billing_period') === 'monthly' ? 'monthly' : 'yearly';
+      payload.billing_period = periodChoice;
+      payload.displayed_price_revision = shownOffer?.price_revision ?? null;
 
       const data = await apiClient.post<{ checkout_url?: string; message?: string }>('/api/billing/create-checkout-session', payload);
       if (data.checkout_url) {
@@ -46,7 +63,13 @@ function OnboardingContent() {
         setLoading(false);
       }
     } catch (err: any) {
-      setError(err?.message || 'Une erreur est survenue lors de la création de la session de paiement.');
+      const confirmation = priceConfirmationFromError(err);
+      if (confirmation) {
+        setConfirmedOffer(confirmation.offer);
+        setPriceChanged(true);
+      } else {
+        setError(err?.message || 'Une erreur est survenue lors de la création de la session de paiement.');
+      }
       setLoading(false);
     }
   };
@@ -154,6 +177,20 @@ function OnboardingContent() {
                   </>
                 )}
               </button>
+
+              {shownOffer && (
+                <div className="text-center" data-testid="onboarding-amount">
+                  <p className="text-sm text-[color:var(--text-primary)]">
+                    Tarif : <span className="font-semibold">{offerAmount(shownOffer)}</span> {periodSuffix(shownOffer.billing_period)}
+                    {billingMention(shownOffer) ? ` (${billingMention(shownOffer)})` : ''}
+                  </p>
+                  {priceChanged && (
+                    <p className="text-xs text-amber-500 mt-1">
+                      Le tarif a changé depuis l&apos;affichage de cette page. Vérifiez le nouveau montant avant de continuer.
+                    </p>
+                  )}
+                </div>
+              )}
 
               <div className="text-center">
                 <p className="text-xs text-[color:var(--text-muted)]">

@@ -30,6 +30,7 @@
  * invalide du jour au lendemain.
  */
 import { pgClient } from '@/db';
+import { providerLifecycle, type ProviderLifecycle } from '../registry/model-lifecycle';
 
 type Row = Record<string, unknown>;
 
@@ -42,6 +43,14 @@ export interface ListedModel {
   supportsThinking: boolean | null;
   inputTokenLimit: number | null;
   outputTokenLimit: number | null;
+  /** Lot 35B — informations rendues par Google, conservées telles quelles. */
+  version?: string | null;
+  description?: string | null;
+  supportedMethods?: string[];
+  details?: Record<string, unknown>;
+  /** Statut fournisseur (règle isolée `model-lifecycle.ts`) et sa base. */
+  lifecycle?: ProviderLifecycle;
+  lifecycleBasis?: 'structured' | 'name_rule';
 }
 
 /**
@@ -61,13 +70,27 @@ export function parseModelsListing(body: unknown): ListedModel[] {
     if (!name || !name.startsWith('gemini-')) continue;
     const methods = Array.isArray(m.supportedGenerationMethods) ? (m.supportedGenerationMethods as string[]) : [];
     if (!methods.includes('generateContent')) continue;
+    const displayName = typeof m.displayName === 'string' ? m.displayName : null;
+    const description = typeof m.description === 'string' ? m.description.slice(0, 1000) : null;
+    const stage = [m.launchStage, m.stage, m.lifecycle].find((v) => typeof v === 'string') as string | undefined;
+    const cycle = providerLifecycle({ model: name, displayName, description, launchStage: stage ?? null });
+    const details: Record<string, unknown> = {};
+    for (const k of ['baseModelId', 'temperature', 'maxTemperature', 'topP', 'topK', 'thinking', 'launchStage', 'stage', 'lifecycle']) {
+      if (m[k] !== undefined) details[k] = m[k];
+    }
     out.push({
       model: name,
-      displayName: typeof m.displayName === 'string' ? m.displayName : null,
+      displayName,
       supportsGeneration: true,
       supportsThinking: typeof m.thinking === 'boolean' ? m.thinking : null,
       inputTokenLimit: typeof m.inputTokenLimit === 'number' ? m.inputTokenLimit : null,
       outputTokenLimit: typeof m.outputTokenLimit === 'number' ? m.outputTokenLimit : null,
+      version: typeof m.version === 'string' ? m.version : null,
+      description,
+      supportedMethods: methods.filter((x) => typeof x === 'string'),
+      details,
+      lifecycle: cycle.status,
+      lifecycleBasis: cycle.basis,
     });
   }
   return out;
@@ -77,6 +100,10 @@ export interface RefreshResult {
   ok: boolean;
   modelsSeen: number;
   disappeared: string[];
+  /** Lot 35B : modèles vus pour la première fois à ce passage. */
+  discovered?: string[];
+  /** Lot 35B : modèles listés (avec leurs informations fournisseur). */
+  listed?: ListedModel[];
   error?: string;
   /**
    * Lot 32B (§1.H) : génération minimale sur les modèles DÉCLARÉS que le
@@ -132,19 +159,50 @@ export async function refreshModelCatalog(
   }
   if (listed.length === 0) return fail('Le fournisseur n\'a listé aucun modèle de génération.');
 
+  // Lot 35B (0303) : statut fournisseur, version, description, méthodes,
+  // détails, dernier contrôle ; un modèle réapparu perd sa date de
+  // disparition. Colonnes absentes (migration non appliquée) : écriture
+  // historique, rien n'est perdu de ce qui existait.
+  const nouveaux: string[] = [];
   for (const m of listed) {
-    await pgClient.unsafe(
-      `INSERT INTO ai_model_catalog
-         (provider, model, display_name, available, supports_generation, supports_thinking,
-          input_token_limit, output_token_limit, first_seen_at, last_seen_at)
-       VALUES ('gemini', $1, $2, TRUE, TRUE, $3, $4, $5, NOW(), NOW())
-       ON CONFLICT (provider, model) DO UPDATE SET
-         display_name = EXCLUDED.display_name, available = TRUE,
-         supports_thinking = EXCLUDED.supports_thinking,
-         input_token_limit = EXCLUDED.input_token_limit,
-         output_token_limit = EXCLUDED.output_token_limit, last_seen_at = NOW()`,
-      [m.model, m.displayName, m.supportsThinking, m.inputTokenLimit, m.outputTokenLimit] as never[],
-    );
+    try {
+      const [r] = (await pgClient.unsafe(
+        `INSERT INTO ai_model_catalog
+           (provider, model, display_name, available, supports_generation, supports_thinking,
+            input_token_limit, output_token_limit, first_seen_at, last_seen_at,
+            lifecycle, lifecycle_basis, version, description, supported_methods, provider_details,
+            last_checked_at, disappeared_at)
+         VALUES ('gemini', $1, $2, TRUE, TRUE, $3, $4, $5, NOW(), NOW(), $6, $7, $8, $9, $10::jsonb, $11::jsonb, NOW(), NULL)
+         ON CONFLICT (provider, model) DO UPDATE SET
+           display_name = EXCLUDED.display_name, available = TRUE,
+           supports_thinking = EXCLUDED.supports_thinking,
+           input_token_limit = EXCLUDED.input_token_limit,
+           output_token_limit = EXCLUDED.output_token_limit, last_seen_at = NOW(),
+           lifecycle = EXCLUDED.lifecycle, lifecycle_basis = EXCLUDED.lifecycle_basis,
+           version = EXCLUDED.version, description = EXCLUDED.description,
+           supported_methods = EXCLUDED.supported_methods, provider_details = EXCLUDED.provider_details,
+           last_checked_at = NOW(), disappeared_at = NULL
+         RETURNING (xmax = 0) AS inserted`,
+        [m.model, m.displayName, m.supportsThinking, m.inputTokenLimit, m.outputTokenLimit,
+          m.lifecycle ?? null, m.lifecycleBasis ?? null, m.version ?? null, m.description ?? null,
+          JSON.stringify(m.supportedMethods ?? []), JSON.stringify(m.details ?? {})] as never[],
+      )) as unknown as Row[];
+      if (r?.inserted) nouveaux.push(m.model);
+    } catch (e) {
+      if ((e as { code?: string }).code !== '42703') throw e;
+      await pgClient.unsafe(
+        `INSERT INTO ai_model_catalog
+           (provider, model, display_name, available, supports_generation, supports_thinking,
+            input_token_limit, output_token_limit, first_seen_at, last_seen_at)
+         VALUES ('gemini', $1, $2, TRUE, TRUE, $3, $4, $5, NOW(), NOW())
+         ON CONFLICT (provider, model) DO UPDATE SET
+           display_name = EXCLUDED.display_name, available = TRUE,
+           supports_thinking = EXCLUDED.supports_thinking,
+           input_token_limit = EXCLUDED.input_token_limit,
+           output_token_limit = EXCLUDED.output_token_limit, last_seen_at = NOW()`,
+        [m.model, m.displayName, m.supportsThinking, m.inputTokenLimit, m.outputTokenLimit] as never[],
+      );
+    }
   }
   const gone = (await pgClient.unsafe(
     `UPDATE ai_model_catalog SET available = FALSE
@@ -152,6 +210,13 @@ export async function refreshModelCatalog(
       RETURNING model`,
     [listed.map((m) => m.model)] as never[],
   )) as unknown as Row[];
+  if (gone.length > 0) {
+    await pgClient.unsafe(
+      `UPDATE ai_model_catalog SET disappeared_at = COALESCE(disappeared_at, NOW())
+        WHERE provider = 'gemini' AND model = ANY($1::text[])`,
+      [gone.map((r) => String(r.model))] as never[],
+    ).catch(() => undefined);
+  }
   await pgClient.unsafe(
     `INSERT INTO ai_model_catalog_refresh (provider, refreshed_at, attempted_at, ok, error, models_seen, refreshed_by)
      VALUES ('gemini', NOW(), NOW(), TRUE, NULL, $1, $2)
@@ -160,15 +225,15 @@ export async function refreshModelCatalog(
     [listed.length, userId] as never[],
   );
   const disappeared = gone.map((r) => String(r.model));
-  console.info(`[model-catalog] ${listed.length} modèle(s) listé(s)${disappeared.length ? `, disparus : ${disappeared.join(', ')}` : ''}.`);
-  if (!options.probe) return { ok: true, modelsSeen: listed.length, disappeared };
+  console.info(`[model-catalog] ${listed.length} modèle(s) listé(s)${nouveaux.length ? `, nouveaux : ${nouveaux.join(', ')}` : ''}${disappeared.length ? `, disparus : ${disappeared.join(', ')}` : ''}.`);
+  if (!options.probe) return { ok: true, modelsSeen: listed.length, disappeared, discovered: nouveaux, listed };
   const [{ DECLARED_MODELS }, { probeModels }] = await Promise.all([
     import('../registry/models'), import('./model-operational.service'),
   ]);
   const listes = new Set(listed.map((m) => m.model));
   const aSonder = DECLARED_MODELS.map((m) => m.model).filter((m) => listes.has(m));
   const probed = await probeModels(aSonder, key, options.probeCall ? { call: options.probeCall } : {});
-  return { ok: true, modelsSeen: listed.length, disappeared, probed };
+  return { ok: true, modelsSeen: listed.length, disappeared, discovered: nouveaux, listed, probed };
 }
 
 export interface CatalogState {
@@ -178,21 +243,47 @@ export interface CatalogState {
   lastError: string | null;
   /** Dernière tentative en échec : le catalogue affiché est celui d'avant. */
   stale: boolean;
-  models: Array<ListedModel & { available: boolean; lastSeenAt: string }>;
+  models: Array<ListedModel & {
+    available: boolean; lastSeenAt: string;
+    /** Lot 35B (0303). */
+    firstSeenAt?: string | null; lastCheckedAt?: string | null; disappearedAt?: string | null;
+    acknowledgedAt?: string | null; baseline?: boolean;
+  }>;
+  /** Lot 35B : baseline du bandeau faite (première synchronisation après mise en service). */
+  baselineDoneAt?: string | null;
+  lastSyncAt?: string | null;
+  lastSyncSummary?: Record<string, unknown> | null;
 }
 
 export async function getCatalogState(): Promise<CatalogState> {
+  // Lot 35B : colonnes de la 0303 lues si présentes, lecture historique sinon.
   const [ref] = (await pgClient.unsafe(
+    `SELECT refreshed_at, attempted_at, ok, error, baseline_done_at, last_sync_at, last_sync_summary
+       FROM ai_model_catalog_refresh WHERE provider = 'gemini'`,
+    [] as never[],
+  ).catch(() => pgClient.unsafe(
     `SELECT refreshed_at, attempted_at, ok, error FROM ai_model_catalog_refresh WHERE provider = 'gemini'`,
     [] as never[],
-  ).catch(() => [])) as unknown as Row[];
+  )).catch(() => [])) as unknown as Row[];
   const models = (await pgClient.unsafe(
+    `SELECT model, display_name, available, supports_generation, supports_thinking,
+            input_token_limit, output_token_limit, last_seen_at,
+            first_seen_at, lifecycle, lifecycle_basis, version, description, last_checked_at,
+            disappeared_at, acknowledged_at, baseline
+       FROM ai_model_catalog WHERE provider = 'gemini' ORDER BY available DESC, model`,
+    [] as never[],
+  ).catch(() => pgClient.unsafe(
     `SELECT model, display_name, available, supports_generation, supports_thinking,
             input_token_limit, output_token_limit, last_seen_at
        FROM ai_model_catalog WHERE provider = 'gemini' ORDER BY available DESC, model`,
     [] as never[],
-  ).catch(() => [])) as unknown as Row[];
+  )).catch(() => [])) as unknown as Row[];
+  const iso = (v: unknown) => (v == null ? null : new Date(String(v)).toISOString());
+  const LIFECYCLES = new Set(['stable', 'preview', 'experimental', 'deprecated']);
   return {
+    baselineDoneAt: iso(ref?.baseline_done_at),
+    lastSyncAt: iso(ref?.last_sync_at),
+    lastSyncSummary: (ref?.last_sync_summary && typeof ref.last_sync_summary === 'object' ? ref.last_sync_summary : null) as Record<string, unknown> | null,
     refreshedAt: ref?.refreshed_at ? new Date(String(ref.refreshed_at)).toISOString() : null,
     lastAttemptAt: ref?.attempted_at ? new Date(String(ref.attempted_at)).toISOString() : null,
     lastError: ref?.error == null ? null : String(ref.error),
@@ -206,6 +297,19 @@ export async function getCatalogState(): Promise<CatalogState> {
       inputTokenLimit: m.input_token_limit == null ? null : Number(m.input_token_limit),
       outputTokenLimit: m.output_token_limit == null ? null : Number(m.output_token_limit),
       lastSeenAt: new Date(String(m.last_seen_at)).toISOString(),
+      // Statut fournisseur : enregistré à la synchronisation, sinon règle
+      // isolée appliquée à la lecture (ligne antérieure à la 0303).
+      lifecycle: LIFECYCLES.has(String(m.lifecycle))
+        ? m.lifecycle as ProviderLifecycle
+        : providerLifecycle({ model: String(m.model), displayName: m.display_name == null ? null : String(m.display_name) }).status,
+      lifecycleBasis: m.lifecycle_basis === 'structured' ? 'structured' : 'name_rule',
+      version: m.version == null ? null : String(m.version),
+      description: m.description == null ? null : String(m.description),
+      firstSeenAt: iso(m.first_seen_at),
+      lastCheckedAt: iso(m.last_checked_at),
+      disappearedAt: iso(m.disappeared_at),
+      acknowledgedAt: iso(m.acknowledged_at),
+      baseline: Boolean(m.baseline),
     })),
   };
 }

@@ -9,7 +9,8 @@
  *
  * La règle testée ici : le blocage porte sur le périmètre RÉELLEMENT actif,
  * jamais sur le référentiel complet. Lot 16b : plus aucun drapeau — tous les
- * usages tournent, leur périmètre est le référentiel entier.
+ * usages tournent, leur périmètre est le référentiel entier. Lot 35B : plus
+ * aucun blocage du tout (ticket « Catalogue IA dynamique Google »).
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { listLlmOperations } from '../../registry/operations';
@@ -66,17 +67,15 @@ describe('périmètre du contrôle tarifaire (lot 16b : tous les usages)', () =>
     await expect(assertPricingReady()).resolves.toBeUndefined();
   });
 
-  it('bloque en production dès qu’un modèle d’un usage manque de tarif — y compris la réconciliation (T3)', async () => {
+  it('CAT-16 — lot 35B : un modèle sans tarif ne bloque JAMAIS le démarrage, même en production (signalé, coût non calculable)', async () => {
     vi.stubEnv('NODE_ENV', 'production');
-    // Le modèle principal de T3 (partagé avec T1 et T4) sans tarif.
     const t3 = listLlmOperations().find((o) => o.operationCode === 't3_value_conflict')!.primaryModel;
     primePricingCache(tous().filter((p) => p.model !== t3));
-    expect(getPricingReadiness().blocking).toBe(true);
-    await expect(assertPricingReady()).rejects.toThrow(/sans tarif sur un usage actif/);
-    // Un drapeau retiré encore posé ne retire rien du périmètre.
-    process.env.AI_RECONCILIATION_ENGINE = 'legacy';
-    expect(getPricingReadiness().blocking).toBe(true);
-    delete process.env.AI_RECONCILIATION_ENGINE;
+    const state = getPricingReadiness();
+    expect(state.missingForRunning).toContain(`gemini/${t3}`);
+    expect(state.blocking).toBe(false);
+    await expect(assertPricingReady()).resolves.toBeUndefined();
+    expect(vi.mocked(console.warn).mock.calls.flat().join(' ')).toMatch(/coûts marqués non calculables/);
   });
 
   it('ne bloque jamais hors production', async () => {

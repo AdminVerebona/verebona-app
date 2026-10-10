@@ -300,7 +300,7 @@ export async function PATCH(
   }
 
   const body = (await request.json().catch(() => null)) as Record<string, unknown> | null;
-  const extraFields = body ? Object.keys(body).filter((k) => k !== 'planType') : [];
+  const extraFields = body ? Object.keys(body).filter((k) => k !== 'planType' && k !== 'displayedPriceRevision') : [];
   if (!body || extraFields.length > 0 || !isAdminAssignablePlan(body.planType)) {
     return NextResponse.json(
       {
@@ -314,22 +314,24 @@ export async function PATCH(
     );
   }
   const newPlan = body.planType;
+  // Révision du prix affiché dans la confirmation BO (CDC lookup_key LK-34).
+  const displayedPriceRevision = typeof body.displayedPriceRevision === 'string' ? body.displayedPriceRevision : null;
 
   try {
-    const result = await changePlanAsAdmin({ accountId, newPlan });
+    const result = await changePlanAsAdmin({ accountId, newPlan, displayedPriceRevision, adminId });
     if (!result.ok) {
       await logAdminAction({
         adminId,
         action: 'ACCOUNT_PLAN_CHANGE',
         targetType: 'ACCOUNT',
         targetId: accountId,
-        result: result.code === 'SAME_PLAN' || result.code === 'SCHEDULED_CHANGE_PENDING' ? 'DENIED' : 'FAILURE',
+        result: ['SAME_PLAN', 'SCHEDULED_CHANGE_PENDING', 'PRICE_CHANGED', 'PRICE_CONFIRMATION_REQUIRED'].includes(result.code) ? 'DENIED' : 'FAILURE',
         before: result.oldPlan ? { planType: result.oldPlan } : null,
         after: { planType: newPlan },
-        details: { code: result.code, message: result.message },
+        details: { code: result.code, message: result.message, displayedPriceRevision },
       });
       return NextResponse.json(
-        { error: result.code, code: result.code, message: result.message },
+        { error: result.code, code: result.code, message: result.message, ...(result.offer ? { offer: result.offer, details: { offer: result.offer } } : {}) },
         { status: ADMIN_PLAN_CHANGE_HTTP_STATUS[result.code] },
       );
     }
@@ -339,9 +341,11 @@ export async function PATCH(
       targetType: 'ACCOUNT',
       targetId: accountId,
       result: 'SUCCESS',
-      before: { planType: result.oldPlan },
-      after: { planType: result.newPlan },
-      details: { stripeUpdated: result.stripeUpdated, billingPeriod: result.billingPeriod },
+      // LK-63 : offre, cadence, ancien et nouveau prix, montants, devise,
+      // initiateur (adminId) et identifiant d'opération.
+      before: { planType: result.oldPlan, priceId: result.price?.previousPriceId ?? null, unitAmountCents: result.price?.previousAmountCents ?? null },
+      after: { planType: result.newPlan, priceId: result.price?.priceId ?? null, unitAmountCents: result.price?.unitAmountCents ?? null, currency: result.price?.currency ?? null },
+      details: { stripeUpdated: result.stripeUpdated, billingPeriod: result.billingPeriod, priceRevision: result.price?.priceRevision ?? null, operationId: result.price?.operationId ?? null },
     });
     return NextResponse.json({
       success: true,

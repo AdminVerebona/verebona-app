@@ -96,6 +96,8 @@ export interface ProbeOutcome {
   model: string;
   ok: boolean;
   error: string | null;
+  /** Échec transitoire (non enregistré) — lot 35B. */
+  transient?: boolean;
 }
 
 /**
@@ -125,15 +127,30 @@ export async function probeModels(
       ok = r.rawText.trim().length > 0;
       if (!ok) error = 'réponse vide';
     } catch (e) {
-      error = ((e as Error).message ?? 'erreur inconnue').split(secret).join('***').slice(0, 500);
+      const brut = (e as Error).message ?? 'erreur inconnue';
+      error = brut.split(secret).join('***').slice(0, 500);
+      // Lot 35B : quota, délai, 5xx, réseau — résultat NON CONCLUANT, l'état
+      // connu est conservé (une panne passagère pendant la synchronisation
+      // périodique ne retire pas un modèle des sélecteurs).
+      const { isTransientError } = await import('./model-qualification.service');
+      if (isTransientError(brut)) {
+        if (!deps.call) await traceTechnicalCall('model_operational_probe', model, false, Date.now() - started, tokens, error);
+        return { model, ok: false, error, transient: true };
+      }
     }
     await recordOperationalStatus({ model, secret, ok, error, source: 'catalog_refresh' });
-    if (!deps.call) await traceProbe(model, ok, Date.now() - started, tokens, error);
+    if (!deps.call) await traceTechnicalCall('model_operational_probe', model, ok, Date.now() - started, tokens, error);
     return { model, ok, error };
   }));
 }
 
-async function traceProbe(
+/**
+ * Trace d'un appel TECHNIQUE (sonde opérationnelle, qualification — lot
+ * 35B) : sans compte, non facturable, coût au tarif connu (sinon non
+ * calculable). Ne lève jamais.
+ */
+export async function traceTechnicalCall(
+  operationCode: 'model_operational_probe' | 'model_qualification_probe',
   model: string, ok: boolean, durationMs: number,
   tokens: { inputTokens: number; outputTokens: number }, error: string | null,
 ): Promise<void> {
@@ -144,11 +161,11 @@ async function traceProbe(
     await recordCallTrace({
       traceId: crypto.randomUUID(),
       useCaseCode: 'AI_GOVERNANCE',
-      operationCode: 'model_operational_probe',
+      operationCode,
       accountId: null,
       provider: 'gemini',
       model,
-      promptVersion: 'probe-v1',
+      promptVersion: operationCode === 'model_qualification_probe' ? 'qualif-v1' : 'probe-v1',
       usedFallback: false,
       inputTokens: tokens.inputTokens,
       outputTokens: tokens.outputTokens,

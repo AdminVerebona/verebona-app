@@ -162,14 +162,31 @@ export async function GET(
             planCode: sub.scheduledPlanCode,
             billingPeriod: sub.scheduledBillingPeriod,
             effectiveAt: sub.scheduledChangeAt,
+            // Cible EXACTE acceptée (CDC lookup_key LK-20).
+            stripePriceId: sub.scheduledStripePriceId,
+            unitAmountCents: sub.scheduledUnitAmountCents,
+            currency: sub.scheduledCurrency,
+            scheduleId: sub.scheduledScheduleId,
+            state: sub.scheduledChangeState,
           }
         : null,
 
       stripe: {
         customerId: sub.stripeCustomerId,
         subscriptionId: sub.stripeSubscriptionId,
-        priceIdMonthly: plan?.stripePriceIdMonthly ?? null,
-        priceIdYearly: plan?.stripePriceIdYearly ?? null,
+        // Prix CONTRACTUEL de l'abonnement (LK-19, LK-64) — et non le prix
+        // de vente courant, qui peut différer sans que l'abonnement soit
+        // défectueux.
+        priceId: sub.stripePriceId,
+        productId: sub.stripeProductId,
+        unitAmountCents: sub.contractUnitAmountCents,
+        currency: sub.contractCurrency,
+        quantity: sub.contractQuantity,
+        interval: sub.contractInterval,
+        verifiedAt: sub.contractVerifiedAt,
+        // Miroirs transitoires du catalogue de vente (diagnostic seulement).
+        catalogPriceIdMonthly: plan?.stripePriceIdMonthly ?? null,
+        catalogPriceIdYearly: plan?.stripePriceIdYearly ?? null,
       },
 
       quotas: {

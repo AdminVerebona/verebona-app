@@ -7,8 +7,11 @@
  *   · les alias de l'assistant (§15.11) résolus par la chaîne EFFECTIVE, avec
  *     les champs du §15.12 (statut, dates, capacités, prix, limites,
  *     prompts et schémas compatibles, rollback) ;
- *   · les modèles déclarés, leur usage effectif par opération et les modèles
- *     en usage ABSENTS du registre (traités comme preview) ;
+ *   · lot 35B : TOUS les modèles connus — exceptions du registre, catalogue
+ *     découvert chez Google, modèles en usage — avec statut fournisseur
+ *     (Preview visible, informatif), qualification technique, tarif
+ *     (KNOWN avec montants, ou UNKNOWN et sa raison — jamais inventé),
+ *     disponibilité et usage effectif ;
  *   · le contrôle de cohérence de la configuration effective et le verdict
  *     du dernier contrôle de démarrage (avec le dernier registre valide).
  * Les prix viennent du catalogue central (§15.9), les limites manquantes de
@@ -16,23 +19,48 @@
  */
 import { AI_OPERATIONS } from './operations';
 import {
-  checkModelUses, DECLARED_MODELS, DECLARED_MODELS_VERSION, declaredModelStatus, MODEL_STATUS_LABELS,
+  checkModelUses, DECLARED_MODELS, DECLARED_MODELS_VERSION, MODEL_STATUS_LABELS,
   type CoherenceIssue, type DeclaredModel, type ModelLifecycleStatus,
 } from './models';
+import { providerLifecycle } from './model-lifecycle';
+import type { RegistryQualification } from '@/services/verebona-assistant/registries/model-registry';
 
 type Row = Record<string, unknown>;
 
-export interface RegistryViewModel extends Omit<DeclaredModel, 'status' | 'provider'> {
+export interface RegistryViewModel {
   provider: string;
+  model: string;
   status: ModelLifecycleStatus | 'unknown';
   statusLabel: string;
+  activatedOn: string | null;
+  retiresOn: string | null;
+  capabilities: DeclaredModel['capabilities'];
+  contextWindowTokens: number | null;
+  maxOutputTokens: number | null;
+  rateLimits: DeclaredModel['rateLimits'];
+  rollbackModel: string | null;
+  note?: string;
   price: { inputPerMillion: number; outputPerMillion: number; source: string | null } | null;
+  /** Lot 35B : KNOWN | UNKNOWN (raison) — catalogue tarifaire synchronisé. */
+  pricing: { status: 'KNOWN' | 'UNKNOWN'; reason: string | null; fetchedAt: string | null; lastChangedAt: string | null };
+  /** Lot 35B : qualification technique (automatique, sinon historique). */
+  qualification: RegistryQualification | null;
+  /** Lot 35B : exception Verebona (registre). */
+  declared: boolean;
+  exclusion: string | null;
+  /** Lot 35B : disponibilité chez le fournisseur (`null` : jamais listé). */
+  available: boolean | null;
+  firstSeenAt: string | null;
+  displayName: string | null;
   /** Opérations qui l'utilisent dans la configuration effective (rang). */
   usedBy: string[];
 }
 
 export interface ModelRegistryViewDeps {
   query?: (sql: string, params?: unknown[]) => Promise<Row[]>;
+  /** Lot 35B — injectables en test. */
+  qualifications?: Map<string, { generate: boolean; structured: boolean | null; multimodal: boolean | null; thinking: boolean | null; qualifiedAt: string }>;
+  priceStatuses?: Map<string, { status: 'KNOWN' | 'UNKNOWN'; reason: string | null; fetchedAt: string; lastChangedAt: string | null }>;
   resolve?: (op: string) => Promise<{ primaryModel: string; fallbackModels: string[]; maxOutputTokens: number | null }>;
 }
 
@@ -51,22 +79,55 @@ export async function buildModelRegistryView(deps: ModelRegistryViewDeps = {}) {
     return p ? { inputMicros: p.inputMicros, outputMicros: p.outputMicros, sourceReference: p.sourceReference ?? null } : null;
   };
 
-  const fournisseur = new Map<string, { inputTokenLimit: number | null; outputTokenLimit: number | null; deprecationDate: string | null }>();
+  const fournisseur = new Map<string, {
+    inputTokenLimit: number | null; outputTokenLimit: number | null; deprecationDate: string | null;
+    available: boolean; lifecycle: ModelLifecycleStatus | null; firstSeenAt: string | null; displayName: string | null;
+  }>();
   try {
     const rows = await query(
-      `SELECT model, input_token_limit, output_token_limit, to_char(deprecation_date, 'YYYY-MM-DD') AS d
+      `SELECT model, input_token_limit, output_token_limit, to_char(deprecation_date, 'YYYY-MM-DD') AS d,
+              available, lifecycle, first_seen_at, display_name
          FROM ai_model_catalog WHERE provider = 'gemini'`,
-    );
+    ).catch(() => query(
+      `SELECT model, input_token_limit, output_token_limit, to_char(deprecation_date, 'YYYY-MM-DD') AS d,
+              available, first_seen_at, display_name
+         FROM ai_model_catalog WHERE provider = 'gemini'`,
+    ));
     for (const r of rows) {
+      const lc = ['stable', 'preview', 'experimental', 'deprecated'].includes(String(r.lifecycle)) ? r.lifecycle as ModelLifecycleStatus : null;
       fournisseur.set(String(r.model), {
         inputTokenLimit: r.input_token_limit == null ? null : Number(r.input_token_limit),
         outputTokenLimit: r.output_token_limit == null ? null : Number(r.output_token_limit),
         deprecationDate: r.d == null ? null : String(r.d),
+        available: r.available == null ? true : Boolean(r.available),
+        lifecycle: lc,
+        firstSeenAt: r.first_seen_at == null ? null : new Date(String(r.first_seen_at)).toISOString(),
+        displayName: r.display_name == null ? null : String(r.display_name),
       });
     }
   } catch (e) {
     notes.push(`Liste du fournisseur illisible (${(e as Error).message.slice(0, 120)}) : limites non complétées.`);
   }
+
+  // Lot 35B : qualification (clé active) et catalogue tarifaire.
+  const qualifs = deps.qualifications ?? await (await import('../provider/model-qualification.service')).loadQualifications().catch(() => new Map());
+  const statutsPrix = deps.priceStatuses ?? await (await import('../gateway/pricing/pricing-sync.service')).loadPriceStatuses().catch(() => new Map());
+  const statutDe = (model: string): ModelLifecycleStatus | 'unknown' => {
+    const d = DECLARED_MODELS.find((x) => x.model === model);
+    if (d) return d.status;
+    const f = fournisseur.get(model);
+    return f?.lifecycle ?? providerLifecycle({ model, displayName: f?.displayName ?? null }).status;
+  };
+  const qualifDe = (model: string): RegistryQualification | null => {
+    const q = qualifs.get(model);
+    if (q) {
+      return { source: 'auto', generate: q.generate, structured: q.structured, multimodal: q.multimodal, thinking: q.thinking, qualifiedAt: q.qualifiedAt };
+    }
+    const d = DECLARED_MODELS.find((x) => x.model === model);
+    return d
+      ? { source: 'historical', generate: true, structured: d.capabilities.includes('structured_output'), multimodal: d.capabilities.includes('multimodal'), thinking: d.capabilities.includes('thinking'), qualifiedAt: null }
+      : null;
+  };
 
   // Usage effectif, opération par opération (configuration versionnée, sinon code).
   const { treatmentForUseCase } = await import('../config/treatments');
@@ -93,7 +154,8 @@ export async function buildModelRegistryView(deps: ModelRegistryViewDeps = {}) {
     const d = 'status' in m ? m : null;
     const f = fournisseur.get(m.model);
     const p = prix(m.provider, m.model);
-    const status = declaredModelStatus(m.model);
+    const status = statutDe(m.model);
+    const sp = statutsPrix.get(m.model);
     return {
       provider: m.provider, model: m.model, status, statusLabel: MODEL_STATUS_LABELS[status],
       activatedOn: d?.activatedOn ?? null,
@@ -102,15 +164,28 @@ export async function buildModelRegistryView(deps: ModelRegistryViewDeps = {}) {
       contextWindowTokens: d?.contextWindowTokens ?? f?.inputTokenLimit ?? null,
       maxOutputTokens: d?.maxOutputTokens ?? f?.outputTokenLimit ?? null,
       rateLimits: d?.rateLimits ?? { requestsPerMinute: null, tokensPerMinute: null },
-      compatiblePrompts: d?.compatiblePrompts ?? [],
       rollbackModel: d?.rollbackModel ?? null,
-      note: d?.note,
+      note: [d?.anomaly, d?.note].filter(Boolean).join(' ') || undefined,
       price: p ? { inputPerMillion: p.inputMicros, outputPerMillion: p.outputMicros, source: p.sourceReference } : null,
+      // Tarif servi au calcul : KNOWN ; sinon UNKNOWN, avec la raison relevée
+      // par la synchronisation (jamais un montant de remplacement).
+      pricing: p
+        ? { status: 'KNOWN', reason: null, fetchedAt: sp?.fetchedAt ?? null, lastChangedAt: sp?.lastChangedAt ?? null }
+        : { status: 'UNKNOWN', reason: sp?.reason ?? (sp ? null : 'jamais relevé'), fetchedAt: sp?.fetchedAt ?? null, lastChangedAt: sp?.lastChangedAt ?? null },
+      qualification: qualifDe(m.model),
+      declared: Boolean(d),
+      exclusion: d?.excludedPrompts ? `${d.excludedPrompts.prompts.join(', ')} : ${d.excludedPrompts.reason}` : d?.forbidden ? `interdit : ${d.forbidden.reason}` : null,
+      available: f ? f.available : null,
+      firstSeenAt: f?.firstSeenAt ?? null,
+      displayName: f?.displayName ?? null,
       usedBy: usagePar.get(m.model) ?? [],
     };
   };
   const declares = new Set(DECLARED_MODELS.map((m) => m.model));
-  const inconnus = [...usagePar.keys()].filter((m) => !declares.has(m)).map((model) => vue({ provider: 'gemini', model }));
+  const autres = [...new Set([...fournisseur.keys(), ...usagePar.keys()])]
+    .filter((m) => !declares.has(m))
+    .sort()
+    .map((model) => vue({ provider: 'gemini', model }));
 
   // Alias de l'assistant (§15.11) : lignes du registre.
   const reg = await import('@/services/verebona-assistant/registries/model-registry');
@@ -121,6 +196,8 @@ export async function buildModelRegistryView(deps: ModelRegistryViewDeps = {}) {
     ? { operationCode: 't2_answer', default: t2.primaryModel || null, escalation: t2.fallbackModels[0] ?? null }
     : await reg.resolveAliases('t2_answer');
   const aliases = reg.modelRegistryRows(chaine, {
+    qualification: qualifDe,
+    providerStatus: (model) => { const s = statutDe(model); return s === 'unknown' ? null : s; },
     price: prix,
     providerCatalog: fournisseur,
     limits: {
@@ -136,7 +213,7 @@ export async function buildModelRegistryView(deps: ModelRegistryViewDeps = {}) {
     registryVersion: reg.MODEL_REGISTRY_VERSION,
     declaredModelsVersion: DECLARED_MODELS_VERSION,
     aliases,
-    models: [...DECLARED_MODELS.map(vue), ...inconnus],
+    models: [...DECLARED_MODELS.map(vue), ...autres],
     coherence: issues,
     startup: { verdict: currentStartupVerdict(), lastValid: lastValidRegistry() },
     notes,

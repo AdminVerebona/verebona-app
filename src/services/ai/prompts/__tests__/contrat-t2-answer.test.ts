@@ -237,17 +237,15 @@ describe("les modèles de l'assistant sont tarifables", () => {
     for (const f of op.fallbackModels) modeles.add(f);
   }
 
-  it('figurent au catalogue public, sans quoi le démarrage bloque en production', () => {
-    // Depuis le lot 16b-2, l'assistant tourne toujours : un modèle sans tarif
-    // bloque le démarrage en production (`assertPricingReady`).
+  it('figurent au catalogue public (amorçage tarifaire ; lot 35B : un tarif manquant ne bloque plus rien)', () => {
     const connus = new Set(GEMINI_PUBLIC_CATALOG.map((p) => p.model));
     for (const m of modeles) expect(connus.has(m), `${m} absent du catalogue tarifaire public`).toBe(true);
   });
 
-  it('PRO-07 — modèles déclarés compatibles t2_master_v1, stables (l’éligibilité ne dépend plus du suffixe « -pro »)', async () => {
-    const { findDeclaredModel } = await import('../../registry/models');
+  it('PRO-07 — modèles non exclus de t2_master_v1, stables (l’éligibilité ne dépend plus du suffixe « -pro »)', async () => {
+    const { findDeclaredModel, documentedExclusion } = await import('../../registry/models');
     for (const m of modeles) {
-      expect(findDeclaredModel(m)?.compatiblePrompts, m).toContain('t2_master_v1');
+      expect(documentedExclusion(m, 't2_master_v1'), m).toBeNull();
       expect(findDeclaredModel(m)?.status, m).toBe('stable');
     }
   });

@@ -19,7 +19,8 @@ import {
 } from '@/db/schema';
 import { eq, and, sql } from 'drizzle-orm';
 import { sendDowngradeToStandardEmail } from '@/lib/email/billing-emails';
-import { getStripeServer } from '@/lib/stripe';
+import { getStripeServer, getStripeKeyMode } from '@/lib/stripe';
+import { claimWebhookEvent, claimInvoiceEffect, handleCatalogEvent, isCatalogEvent } from '@/services/billing/webhook-catalog.service';
 import {
   getInvoiceSubscriptionId,
   syncSubscriptionById,
@@ -59,6 +60,22 @@ const getStripe = () => getStripeServer();
  *   invoice.payment_succeeded, invoice.payment_failed
  *                                   → registre `invoices` (CDC BO DOV-002, SUB-009)
  *   charge.refunded                 → montant remboursé sur la facture
+ *   price.created / updated / deleted, product.updated / deleted
+ *                                   → invalidation + relecture du catalogue
+ *                                     (CDC lookup_key LK-25, LK-69) ; aucun
+ *                                     abonnement, droit ni facture modifié
+ *
+ * ROBUSTESSE (CDC lookup_key LK-66, LK-69, LK-70) :
+ *   - prise en charge ATOMIQUE de l'événement (INSERT … ON CONFLICT … WHERE,
+ *     une instruction) : deux livraisons simultanées ne s'exécutent jamais
+ *     ensemble — la seconde reçoit 409 et Stripe la relivre ;
+ *   - mode de l'événement contrôlé (test/live) avant tout traitement ;
+ *   - un prix non rapproché ou une indisponibilité Stripe LÈVE : réponse 500,
+ *     Stripe relivre ; jamais un événement acquitté sur une erreur conservée
+ *     nulle part ;
+ *   - idempotence MÉTIER des effets d'un paiement (`invoice.paid` et
+ *     `invoice.payment_succeeded` pour la même facture) : une seule
+ *     récompense, une seule confirmation, un seul suivi analytique.
  */
 export async function POST(request: NextRequest) {
   const startTime = Date.now();
@@ -88,31 +105,26 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Invalid signature' }, { status: 400 });
     }
 
-    // Idempotency check with processed status
-    const [existingLog] = await db
-      .select()
-      .from(stripeWebhookLogs)
-      .where(eq(stripeWebhookLogs.eventId, event.id))
-      .limit(1);
-
-    if (existingLog) {
-      if (existingLog.processed) {
-        return NextResponse.json({ received: true, alreadyProcessed: true });
-      } else {
-        // If it was failed, delete it so we can re-process
-        await db.delete(stripeWebhookLogs).where(eq(stripeWebhookLogs.eventId, event.id));
-      }
+    // Cloisonnement test/live (LK-69, TC-80) : un événement de l'autre mode
+    // n'est jamais traité ici.
+    const keyMode = getStripeKeyMode(process.env.STRIPE_SECRET_KEY);
+    if (keyMode && typeof event.livemode === 'boolean' && event.livemode !== (keyMode === 'live')) {
+      console.error(`[Stripe Webhook] événement ${event.id} livemode=${event.livemode} refusé (clé ${keyMode})`);
+      return NextResponse.json({ error: 'Mode mismatch' }, { status: 400 });
     }
 
-    // Insert log as PROCESSING (processed = false)
-    await db.insert(stripeWebhookLogs).values({
-      eventType: event.type,
-      eventId: event.id,
-      payload: JSON.stringify(event.data.object),
-      processed: false,
-      processingTimeMs: 0,
-      createdAt: new Date(),
-    });
+    // Prise en charge atomique (LK-70) : une seule exécution à la fois.
+    const claim = await claimWebhookEvent(event, JSON.stringify(event.data.object));
+    if (claim === 'ALREADY_PROCESSED') {
+      return NextResponse.json({ received: true, alreadyProcessed: true });
+    }
+    if (claim === 'IN_PROGRESS') {
+      return NextResponse.json({ received: false, inProgress: true }, { status: 409 });
+    }
+
+    if (isCatalogEvent(event.type)) {
+      await handleCatalogEvent(event);
+    }
 
     switch (event.type) {
       case 'checkout.session.completed':
@@ -481,14 +493,19 @@ async function handlePaymentSucceeded(invoice: Stripe.Invoice) {
     }
   }
 
-  if (invoice.id) {
+  // Idempotence MÉTIER (LK-70, TC-24) : `invoice.paid` et
+  // `invoice.payment_succeeded` concernent le même paiement — la récompense
+  // de parrainage et le suivi analytique ne sont produits qu'une fois.
+  const firstForInvoice = invoice.id ? await claimInvoiceEffect(invoice.id, 'payment_succeeded') : true;
+
+  if (invoice.id && firstForInvoice) {
     await grantReferralRewardForFirstBilling(accountId, invoice.id).catch((err: Error) => {
       console.error('[Webhook] referral reward grant failed:', err.message);
     });
   }
 
   // CDC §17 : paiement abouti, et denouement de l'essai.
-  void (async () => {
+  if (firstForInvoice) void (async () => {
     const [subRow] = await db
       .select({
         planCode: accountSubscriptions.planCode,

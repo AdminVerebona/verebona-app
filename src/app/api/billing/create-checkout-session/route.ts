@@ -7,21 +7,59 @@ import {
 import { SessionService } from '@/lib/session-service';
 import { db } from '@/db';
 import { users, accounts, accountMemberships, referralEvents, accountSubscriptions } from '@/db/schema';
-import { eq } from 'drizzle-orm';
-import { getStripeServer, STRIPE_PRODUCTS, StripeConfigError } from '@/lib/stripe';
-import { ensureStripeCustomer, isStripeResourceMissing } from '@/lib/stripe-customer';
-import { resolvePriceId, isBillingPeriod, type BillingPeriod } from '@/lib/stripe-prices';
+import { and, eq } from 'drizzle-orm';
+import { getStripeServer, StripeConfigError } from '@/lib/stripe';
+import { ensureStripeCustomer } from '@/lib/stripe-customer';
 import Stripe from 'stripe';
 import { getAppBaseUrl } from '@/lib/app-url';
 import { trackFunnelEvent } from '@/services/funnel-analytics.service';
 import { blocksNewCheckout, isUnpaidAccountStatus } from '@/lib/billing/subscription-status';
 import { PENDING_CHECKOUT_FIRST_CHECK_DELAY_MS } from '@/services/billing/pending-checkout.service';
+import { parseBillingPeriodInput, parseDisplayedRevision, parsePlanInput } from '@/lib/billing/plan-catalog';
+import { BillingCatalogError, toPublicOffer, type ResolvedPrice } from '@/services/billing/catalog-types';
+import { assertDisplayedRevision, resolveCurrentPrice } from '@/services/billing/price-catalog.service';
+import { markOperation, reserveCheckout, type PriceOperation } from '@/services/billing/price-operations.service';
 
 /**
- * POST /api/billing/create-checkout-session
- * Crée une session Stripe Checkout pour souscrire à un plan (Premium, Premium Duo, Pro)
+ * POST /api/billing/create-checkout-session — NOUVELLE souscription.
  *
- * Body: { plan?: 'standard' | 'premium' | 'premium_duo' | 'duo', referralCode?: string }
+ * Body : { plan: 'standard' | 'premium' | 'premium_duo' | 'duo',
+ *          billing_period: 'monthly' | 'yearly',
+ *          displayed_price_revision: 'pr_…',     // révision du prix affiché
+ *          referralCode?, entry_point? }
+ *
+ * ══════════════════════════════════════════════════════════════════════════
+ * CDC « Migration Stripe vers lookup_key » V4 — §10, LK-37 à LK-46
+ *
+ *   1. Validation stricte AVANT toute conversion (LK-37, TC-09) : une valeur
+ *      inconnue, un objet au lieu d'une chaîne, une périodicité absente → 400
+ *      INVALID_PLAN / INVALID_BILLING_PERIOD. Plus aucun repli sur Premium ou
+ *      sur l'annuel ; l'alias historique `duo` est normalisé explicitement.
+ *   2. Compte résolu depuis la session ; seul le TITULAIRE souscrit (LK-38,
+ *      TC-11) — un membre Duo non payeur reçoit 403 FORBIDDEN_BILLING_ACTION.
+ *      Un abonnement en cours renvoie vers le parcours de changement.
+ *   3. Prix courant de la révision active, RELU chez Stripe (LK-23, LK-39) ;
+ *      révision affichée comparée à celle du prix choisi (LK-34, LK-35) :
+ *      absente → 409 PRICE_CONFIRMATION_REQUIRED, différente → 409
+ *      PRICE_CHANGED avec le nouveau tarif ; aucune session n'est créée.
+ *   4. Une seule tentative ouverte par compte, clé d'idempotence stable
+ *      (LK-44, LK-45) ; une session ouverte n'est réutilisée que si son PRIX
+ *      RÉEL, sa révision, son client et son compte correspondent (LK-42) —
+ *      sinon elle est expirée de façon contrôlée.
+ *   5. `line_items: [{ price: resolved.priceId, quantity: 1 }]` — jamais de
+ *      `price_data`, de montant de formulaire ou d'ancien identifiant
+ *      d'environnement ; Premium Duo : quantité 1 (§1.2). Aucun essai Stripe
+ *      (`subscription_data` sans `trial_*`, LK-41).
+ *
+ * ROUTAGE (LK-46) : nouvelle souscription ici ; montée en gamme immédiate
+ * → POST /api/billing/upgrade ; baisse ou changement de périodicité →
+ * POST /api/billing/schedule-change. L'ancienne branche « passage direct à
+ * Duo » (mise à jour d'abonnement avec prorata DANS cette route) est retirée :
+ * un seul moteur de changement de prix.
+ *
+ * Aucun état d'abonnement n'est écrit avant le paiement : seule la
+ * synchronisation Stripe (webhook, retour de paiement) accorde des droits.
+ * ══════════════════════════════════════════════════════════════════════════
  */
 export async function POST(request: NextRequest) {
     try {
@@ -29,44 +67,42 @@ export async function POST(request: NextRequest) {
         // URL publique de l'app : derrière le proxy, `request.url` pointe sur
         // le port interne du conteneur (localhost:xxxxx).
         const appUrl = getAppBaseUrl(request);
-    
-        // Récupérer l'utilisateur
+
+        // ── 1. Entrées ────────────────────────────────────────────────────
+        const raw = await request.json().catch(() => null);
+        const body: Record<string, unknown> = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw as Record<string, unknown> : {};
+        const plan = parsePlanInput(body.plan);
+        if (!plan.ok) return catalogError(new BillingCatalogError('INVALID_PLAN'));
+        const period = parseBillingPeriodInput(body.billing_period);
+        if (!period.ok) return catalogError(new BillingCatalogError('INVALID_BILLING_PERIOD'));
+        const displayedRevision = parseDisplayedRevision(body.displayed_price_revision);
+        const referralCodeFromBody = normalizeReferralCode(body.referralCode);
+        const entryPoint = typeof body.entry_point === 'string' ? body.entry_point.slice(0, 60) : 'app_subscription_page';
+        const planCode = plan.plan;
+        const billingPeriod = period.period;
+
+        // ── 2. Utilisateur, compte (depuis la session), droit de souscrire ──
         const [user] = await db
-            .select({
-                id: users.id,
-                email: users.email,
-                firstName: users.firstName,
-                lastName: users.lastName,
-            })
+            .select({ id: users.id, email: users.email, firstName: users.firstName, lastName: users.lastName })
             .from(users)
             .where(eq(users.id, session.userId))
             .limit(1);
-    
         if (!user) {
-            return NextResponse.json(
-                { code: 'USER_NOT_FOUND', message: 'User not found' },
-                { status: 404 }
-            );
+            return NextResponse.json({ code: 'USER_NOT_FOUND', message: 'User not found' }, { status: 404 });
         }
 
-        // Récupérer le compte actif de l'utilisateur
-        const [membership] = await db
-            .select({
-                accountId: accountMemberships.accountId,
-                role: accountMemberships.role,
-            })
+        const memberships = await db
+            .select({ accountId: accountMemberships.accountId, role: accountMemberships.role })
             .from(accountMemberships)
-            .where(eq(accountMemberships.userId, user.id))
-            .limit(1);
-
+            .where(eq(accountMemberships.userId, user.id));
+        const membership = memberships.find((m) => m.accountId === session.currentAccountId) ?? memberships[0];
         if (!membership) {
-            return NextResponse.json(
-                { code: 'NO_ACCOUNT', message: 'User has no account' },
-                { status: 404 }
-            );
+            return NextResponse.json({ code: 'NO_ACCOUNT', message: 'User has no account' }, { status: 404 });
+        }
+        if (membership.role !== 'owner') {
+            return catalogError(new BillingCatalogError('FORBIDDEN_BILLING_ACTION'));
         }
 
-        // Récupérer le compte
         const [account] = await db
             .select({
                 id: accounts.id,
@@ -74,79 +110,17 @@ export async function POST(request: NextRequest) {
                 stripeCustomerId: accounts.stripeCustomerId,
                 stripeSubscriptionId: accounts.stripeSubscriptionId,
                 subscriptionStatus: accounts.subscriptionStatus,
-                checkoutSessionId: accounts.checkoutSessionId,
-                checkoutSessionCreatedAt: accounts.checkoutSessionCreatedAt,
             })
             .from(accounts)
             .where(eq(accounts.id, membership.accountId))
             .limit(1);
-
         if (!account) {
-            return NextResponse.json(
-                { code: 'ACCOUNT_NOT_FOUND', message: 'Account not found' },
-                { status: 404 }
-            );
+            return NextResponse.json({ code: 'ACCOUNT_NOT_FOUND', message: 'Account not found' }, { status: 404 });
         }
 
-        // Récupérer le plan demandé
-        const body = await request.json().catch(() => ({}));
-        let requestedPlan = body.plan ? body.plan.toUpperCase() : null;
-
-        // Normalisation alias legacy 'DUO' -> 'PREMIUM_DUO'
-        if (requestedPlan === 'DUO') {
-            requestedPlan = 'PREMIUM_DUO';
-        }
-
-        // Si requestedPlan est absent, utiliser account.planType
-        if (!requestedPlan) {
-            requestedPlan = account.planType ? account.planType.toUpperCase() : 'PREMIUM';
-        }
-
-        const normalizedRequestedPlan = requestedPlan;
-        const referralCodeFromBody = normalizeReferralCode(body.referralCode);
-        const entryPoint = body.entry_point || 'app_subscription_page';
-        const product = STRIPE_PRODUCTS[normalizedRequestedPlan as keyof typeof STRIPE_PRODUCTS] || STRIPE_PRODUCTS.PREMIUM;
-
-        // ── Tarification V2 (CDC) : le client choisit une offre ET une periodicite.
-        // Le Price ID n'est JAMAIS transmis par le frontend : il est resolu ici
-        // depuis une table serveur (CDC §5.6 / §16).
-        const billingPeriod: BillingPeriod = isBillingPeriod(body.billing_period)
-            ? body.billing_period
-            : 'yearly'; // defaut retrocompatible avec l'ancien modele annuel
-
-        let resolvedPriceId: string;
-        try {
-            resolvedPriceId = resolvePriceId(product.tier, billingPeriod);
-        } catch (priceError) {
-            console.error('[checkout] resolution du prix impossible:', priceError);
-            return NextResponse.json(
-                { error: 'Offre indisponible', code: 'PRICE_NOT_CONFIGURED', message: 'Cette offre est momentanément indisponible.' },
-                { status: 400 },
-            );
-        }
-
-        // ══════════════════════════════════════════════════════════════════
-        // CONTRÔLE « PLAN_MISMATCH » RETIRÉ
-        //
-        // Il refusait toute offre différente de `accounts.planType`, sauf pour
-        // un compte STANDARD. Or `planType` est l'offre choisie À
-        // L'INSCRIPTION : un compte ouvert en essai Premium ne pouvait plus
-        // choisir Standard, ni un compte Standard en essai prendre Premium Duo
-        // — « Le plan demandé ne correspond pas au plan configuré pour votre
-        // compte ».
-        //
-        // Sans abonnement payant en cours, l'utilisateur choisit librement son
-        // offre. Avec un abonnement actif, le contrôle ci-dessous renvoie déjà
-        // vers la modification d'abonnement (`SUBSCRIPTION_CHANGE_REQUIRED`).
-        // ══════════════════════════════════════════════════════════════════
-
-        // Règle d'éligibilité : un abonnement en cours (ACTIVE, TRIALING) ou un
-        // impayé (PAST_DUE, à régulariser depuis le portail de facturation)
-        // interdit d'ouvrir une seconde souscription. Un impayé n'est pas un
-        // abonnement actif (APP-FUNC-31) mais ne doit pas être doublé.
-        const normalizedAccountPlan = account.planType?.toUpperCase();
+        // Un impayé se régularise ; un abonnement en cours se modifie
+        // (montée en gamme / changement programmé), jamais doublé.
         const currentStatus = account.subscriptionStatus?.toUpperCase() || 'NONE';
-
         if (isUnpaidAccountStatus(currentStatus)) {
             return NextResponse.json(
                 {
@@ -156,47 +130,19 @@ export async function POST(request: NextRequest) {
                 { status: 400 }
             );
         }
-
         if (blocksNewCheckout(currentStatus)) {
-            if (normalizedAccountPlan === normalizedRequestedPlan) {
-                return NextResponse.json(
-                    {
-                        code: 'SUBSCRIPTION_ALREADY_ACTIVE',
-                        message: 'Vous disposez déjà d\'un abonnement actif pour ce plan.',
-                    },
-                    { status: 400 }
-                );
-            } else {
-                return NextResponse.json(
-                    {
-                        code: 'SUBSCRIPTION_CHANGE_REQUIRED',
-                        message: 'Un abonnement actif existe déjà pour un plan différent. Veuillez d\'abord modifier ou résilier votre abonnement actuel.',
-                    },
-                    { status: 400 }
-                );
-            }
+            const same = account.planType?.toUpperCase() === planCode.toUpperCase();
+            return NextResponse.json(
+                same
+                    ? { code: 'SUBSCRIPTION_ALREADY_ACTIVE', message: 'Vous disposez déjà d\'un abonnement actif pour ce plan.' }
+                    : { code: 'SUBSCRIPTION_CHANGE_REQUIRED', message: 'Un abonnement actif existe déjà pour un plan différent. Veuillez d\'abord modifier ou résilier votre abonnement actuel.' },
+                { status: 400 }
+            );
         }
 
-        // ══════════════════════════════════════════════════════════════════
-        // CONTRÔLE MORT RETIRÉ
-        //
-        // Ce bloc testait `product.priceId`, qui lit `STRIPE_PRICE_STANDARD` —
-        // l'ancienne variable du modèle à périodicité unique. La tarification
-        // V2 résout le prix vingt lignes plus haut, par couple offre/période :
-        //
-        //     resolvedPriceId = resolvePriceId(product.tier, billingPeriod);
-        //
-        // C'est `resolvedPriceId` qui alimente la session Stripe (l. 361, 405).
-        // `product.priceId` n'était plus lu nulle part dans ce fichier.
-        //
-        // Le contrôle rejetait donc une requête dont le prix était correctement
-        // résolu — « Stripe Price ID not configured for plan STANDARD » alors
-        // que STRIPE_PRICE_STANDARD_YEARLY était bien renseignée.
-        //
-        // Le 500 était trompeur par-dessus le marché : rien n'avait planté.
-        // `resolvePriceId` lève déjà si le prix manque, et cet échec est traité
-        // en 400 `PRICE_NOT_CONFIGURED` juste au-dessus.
-        // ══════════════════════════════════════════════════════════════════
+        // ── 3. Prix courant relu chez Stripe + révision affichée ──────────
+        const resolved = await resolveCurrentPrice(planCode, billingPeriod, { forPayment: true });
+        assertDisplayedRevision(resolved, displayedRevision);
 
         const stripe = getStripeServer();
 
@@ -211,221 +157,95 @@ export async function POST(request: NextRequest) {
             storedCustomerId: account.stripeCustomerId,
         });
         const customerId = ensured.customerId;
-        // Si le client a été remplacé, l'abonnement et la session stockés
-        // appartiennent à l'ancien mode : on ne doit plus s'y référer.
-        const customerReplaced = ensured.replacedCustomerId !== null;
-        const currentSubscriptionId = customerReplaced ? null : account.stripeSubscriptionId;
-        const currentCheckoutSessionId = customerReplaced ? null : account.checkoutSessionId;
 
-        // Vérification de session Stripe existante
-        if (currentCheckoutSessionId && account.checkoutSessionCreatedAt) {
-            const now = new Date();
-            const sessionAgeMinutes = (now.getTime() - new Date(account.checkoutSessionCreatedAt).getTime()) / (1000 * 60);
+        // ── Parrainage : code explicite prioritaire, sinon code retenu à
+        //    l'inscription (CDC parrainage §4.5). Règles inchangées.
+        const referralCode = referralCodeFromBody ?? (await getStoredReferralCode(user.id));
+        const resolvedReferral = referralCode ? await resolveReferralCode(referralCode, account.id) : null;
+        const promoContext = process.env.STRIPE_CHECKOUT_ALLOW_PROMOTION_CODES === 'true' ? 'promo-codes' : 'none';
 
-            if (sessionAgeMinutes < 15) {
-                try {
-                    const existingStripeSession = await stripe.checkout.sessions.retrieve(currentCheckoutSessionId);
-                    if (
-                        existingStripeSession &&
-                        existingStripeSession.status === 'open' &&
-                        existingStripeSession.customer === customerId &&
-                        existingStripeSession.metadata?.accountId === account.id.toString() &&
-                        existingStripeSession.metadata?.planTier === product.tier &&
-                        // La session réutilisée doit porter la périodicité demandée
-                        existingStripeSession.metadata?.billing_period === billingPeriod
-                    ) {
-                        return NextResponse.json({
-                            checkout_url: existingStripeSession.url,
-                        });
-                    }
-                } catch (e) {
-                    console.warn('[Checkout] Failed to retrieve existing session:', e);
-                }
-            }
-        }
-
-        // ── Parrainage ────────────────────────────────────────────────────
-        //
-        // Le code presente ici est rarement dans la requete : le filleul
-        // souscrit plusieurs jours apres son inscription, apres une
-        // verification d'email et un essai de sept jours. Le code retenu a
-        // l'inscription (CDC parrainage §4.5) prend donc le relais.
-        //
-        // Un code explicitement transmis reste prioritaire : il traduit une
-        // action volontaire au moment de souscrire.
-        const referralCode =
-            referralCodeFromBody ?? (await getStoredReferralCode(user.id));
-
-        const resolvedReferral = referralCode
-            ? await resolveReferralCode(referralCode, account.id)
-            : null;
-
-        // Préparer le duo_account si nécessaire
-        let duoId: number | null = null;
-        if (normalizedRequestedPlan === 'PREMIUM_DUO') {
-            const { duoAccounts, duoMemberships } = await import('@/db/schema');
-            const [existingDuo] = await db
-                .select()
-                .from(duoAccounts)
-                .where(eq(duoAccounts.billingOwnerUserId, user.id))
-                .limit(1);
-
-            if (existingDuo) {
-                duoId = existingDuo.id;
-            } else {
-                const [newDuo] = await db.insert(duoAccounts).values({
-                    billingOwnerUserId: user.id,
-                    subscriptionStatus: 'CANCELED', // activé par le webhook
-                    stripeCustomerId: customerId,
-                    createdAt: new Date(),
-                    updatedAt: new Date(),
-                }).returning();
-
-                duoId = newDuo.id;
-
-                await db.insert(duoMemberships).values({
-                    duoId: newDuo.id,
-                    userId: user.id,
-                    status: 'ACTIVE',
-                    slot: 0,
-                    invitedAt: new Date(),
-                    joinedAt: new Date(),
-                    createdAt: new Date(),
-                    updatedAt: new Date(),
-                });
-            }
-
-            await db
-                .update(accounts)
-                .set({ duoAccountId: duoId, updatedAt: new Date() })
-                .where(eq(accounts.id, account.id));
-        }
-
-        // ── Upgrade PREMIUM → PREMIUM_DUO : mettre à jour la subscription existante avec prorata ──
-        if (
-            normalizedRequestedPlan === 'PREMIUM_DUO' &&
-            (account.planType?.toUpperCase() === 'PREMIUM' || account.planType?.toUpperCase() === 'STANDARD') &&
-            currentSubscriptionId
-        ) {
-            const existingSub = await stripe.subscriptions.retrieve(currentSubscriptionId);
-            const existingItem = existingSub.items.data[0];
-
-            if (!existingItem) {
-                return NextResponse.json(
-                    { code: 'SUBSCRIPTION_ITEM_NOT_FOUND', message: 'Impossible de trouver l\'abonnement existant.' },
-                    { status: 500 }
-                );
-            }
-
-            const alreadyOnDuoPrice = existingItem.price.id === resolvedPriceId;
-
-            if (alreadyOnDuoPrice) {
-                // Stripe est déjà sur PREMIUM_DUO — synchroniser la DB et rediriger vers succès
-                await db.update(accounts).set({
-                    planType: 'PREMIUM_DUO',
-                    subscriptionTier: 'pro',
-                    subscriptionStatus: 'ACTIVE',
-                    maxMembers: 2,
-                    updatedAt: new Date(),
-                }).where(eq(accounts.id, account.id));
-                await db.update(users).set({ planType: 'PREMIUM_DUO', updatedAt: new Date() }).where(eq(users.id, user.id));
-                const { duoAccounts: da } = await import('@/db/schema');
-                if (duoId) {
-                    await db.update(da).set({ stripeSubscriptionId: currentSubscriptionId, subscriptionStatus: 'ACTIVE', updatedAt: new Date() }).where(eq(da.id, duoId));
-                }
-                return NextResponse.json({ checkout_url: `${appUrl}/accueil` });
-            }
-
-            // Mettre à jour la subscription avec le nouveau price DUO
-            await stripe.subscriptions.update(currentSubscriptionId, {
-                items: [{ id: existingItem.id, price: resolvedPriceId }],
-                proration_behavior: 'create_prorations',
-                metadata: {
-                    userId: user.id.toString(),
-                    accountId: account.id.toString(),
-                    duoId: duoId?.toString() || '',
-                    planTier: 'premium_duo',
-                    entry_point: entryPoint,
-                },
-            });
-
-            // Récupérer la facture draft de prorata
-            const pendingInvoices = await stripe.invoices.list({
-                customer: customerId,
-                status: 'draft',
-                limit: 1,
-            });
-
-            const pendingInvoice = pendingInvoices.data[0];
-
-            if (pendingInvoice && (pendingInvoice.amount_due ?? 0) > 0) {
-                const finalized = await (stripe.invoices as any).finalizeInvoice(pendingInvoice.id);
-                if (finalized.hosted_invoice_url) {
-                    return NextResponse.json({ checkout_url: finalized.hosted_invoice_url });
-                }
-            }
-
-            // Prorata nul → succès direct
-            return NextResponse.json({ checkout_url: `${appUrl}/accueil` });
-        }
-
-        // ── Nouvelle subscription ──
-        void trackFunnelEvent({
-            event: 'checkout_opened',
+        // ── 4. Tentative unique, partagée entre instances ─────────────────
+        const reserve = () => reserveCheckout({
             accountId: account.id,
-            planCode: product.tier,
-            billingPeriod,
+            userId: user.id,
+            price: resolved,
+            promoContext,
+            referralCode: resolvedReferral ? referralCode : null,
+            customerId,
         });
+        let reservation = await reserve();
+        if (reservation.kind === 'new' && reservation.superseded?.stripeReference) {
+            // Tentative précédente à d'autres paramètres (autre offre, ancien
+            // tarif…) : sa session est expirée ; payée entre-temps, on relit
+            // l'abonnement au lieu d'en créer un second (LK-44, TC-34).
+            if ((await expireReplacedSession(stripe, reservation.superseded.stripeReference)) === 'completed') {
+                await markOperation(reservation.op.id, 'superseded');
+                return verificationInProgress();
+            }
+        }
+        if (reservation.kind === 'same' && reservation.op.stripeReference) {
+            const reusable = await reusableSession(stripe, reservation.op.stripeReference, { customerId, accountId: account.id, price: resolved });
+            if (reusable.url) return NextResponse.json({ checkout_url: reusable.url, offer: toPublicOffer(resolved) });
+            if (reusable.completed) {
+                await markOperation(reservation.op.id, 'completed');
+                return verificationInProgress();
+            }
+            // Session expirée ou divergente : tentative close, nouvelle clé.
+            await markOperation(reservation.op.id, 'expired');
+            reservation = await reserve();
+        }
+        const op: PriceOperation = reservation.op;
 
-        const checkoutSession = await stripe.checkout.sessions.create({
-            mode: 'subscription',
-            customer: customerId,
-            line_items: [
-                {
-                    price: resolvedPriceId,
-                    quantity: 1,
-                },
-            ],
-            // Page de retour dédiée : elle applique le paiement, affiche la
-            // confirmation puis recharge l'application avec les nouveaux droits.
-            success_url: `${appUrl}/abonnement/success?session_id={CHECKOUT_SESSION_ID}`,
-            cancel_url: `${appUrl}/abonnement/cancel?plan=${normalizedRequestedPlan.toLowerCase()}`,
-            metadata: {
-                userId: user.id.toString(),
-                accountId: account.id.toString(),
-                duoId: duoId?.toString() || '',
-                planTier: product.tier,
-                billing_period: billingPeriod,
-                environment: process.env.NEXT_PUBLIC_APP_ENV || 'unknown',
-                entry_point: entryPoint,
-                referralCode: resolvedReferral ? (referralCode ?? '') : '',
-            },
-            billing_address_collection: 'auto',
-            // CDC BO PRO-001/PRO-002 : les codes promotionnels sont créés dans
-            // Stripe ; sans ce champ, Checkout n'offre aucune saisie et aucun
-            // usage ne peut exister. Activation soumise à décision produit :
-            // STRIPE_CHECKOUT_ALLOW_PROMOTION_CODES=true.
-            ...(process.env.STRIPE_CHECKOUT_ALLOW_PROMOTION_CODES === 'true'
-                ? { allow_promotion_codes: true }
-                : {}),
-            payment_method_collection: 'always',
-            locale: 'fr',
-            customer_update: {
-                address: 'auto',
-            },
-            subscription_data: {
-                // CDC §4.2 : AUCUNE periode d'essai Stripe. L'essai de 7 jours est
-                // gere entierement dans Verebona, avant toute souscription.
-                metadata: {
-                    userId: user.id.toString(),
-                    accountId: account.id.toString(),
-                    duoId: duoId?.toString() || '',
-                    planTier: product.tier,
-                    billing_period: billingPeriod,
-                    environment: process.env.NEXT_PUBLIC_APP_ENV || 'unknown',
-                },
-            },
-        });
+        // Duo : le compte Duo doit exister avant le paiement ; il reste
+        // inactif (CANCELED) jusqu'à la synchronisation du paiement.
+        let duoId: number | null = null;
+        if (planCode === 'premium_duo') duoId = await ensureInactiveDuo(user.id, account.id, customerId);
+
+        void trackFunnelEvent({ event: 'checkout_opened', accountId: account.id, planCode, billingPeriod });
+
+        const metadata = {
+            userId: user.id.toString(),
+            accountId: account.id.toString(),
+            duoId: duoId?.toString() || '',
+            planTier: planCode,
+            billing_period: billingPeriod,
+            environment: process.env.NEXT_PUBLIC_APP_ENV || 'unknown',
+            // Références de diagnostic (LK-40) — jamais une source de droits.
+            price_id: resolved.priceId,
+            price_revision: resolved.priceRevision,
+            price_operation_id: String(op.id),
+        };
+
+        let checkoutSession: Stripe.Checkout.Session;
+        try {
+            checkoutSession = await stripe.checkout.sessions.create({
+                mode: 'subscription',
+                customer: customerId,
+                line_items: [{ price: resolved.priceId, quantity: 1 }],
+                // Page de retour dédiée : elle applique le paiement, affiche la
+                // confirmation puis recharge l'application avec les nouveaux droits.
+                success_url: `${appUrl}/abonnement/success?session_id={CHECKOUT_SESSION_ID}`,
+                cancel_url: `${appUrl}/abonnement/cancel?plan=${planCode}`,
+                metadata: { ...metadata, entry_point: entryPoint, referralCode: resolvedReferral ? (referralCode ?? '') : '' },
+                billing_address_collection: 'auto',
+                // CDC BO PRO-001/PRO-002 : codes promotionnels soumis à décision
+                // produit (STRIPE_CHECKOUT_ALLOW_PROMOTION_CODES=true).
+                ...(promoContext === 'promo-codes' ? { allow_promotion_codes: true } : {}),
+                payment_method_collection: 'always',
+                locale: 'fr',
+                customer_update: { address: 'auto' },
+                // CDC §4.2 / LK-41 : AUCUNE période d'essai Stripe. L'essai de
+                // 7 jours est géré entièrement dans Verebona, avant toute
+                // souscription.
+                subscription_data: { metadata },
+            }, { idempotencyKey: op.idempotencyKey });
+        } catch (error) {
+            // Résultat incertain (réponse perdue) : la tentative garde sa clé ;
+            // la prochaine demande rejoue la même et retrouve la session (TC-31).
+            await markOperation(op.id, isUncertain(error) ? 'uncertain' : 'failed', { error: (error as Error).message?.slice(0, 300) });
+            throw error;
+        }
+        await markOperation(op.id, 'created', { stripeReference: checkoutSession.id });
 
         if (resolvedReferral) {
             await db.insert(referralEvents).values({
@@ -455,64 +275,118 @@ export async function POST(request: NextRequest) {
             })
             .where(eq(accounts.id, account.id));
 
-        // ══════════════════════════════════════════════════════════════════
-        // ⚠️ AUCUN ÉTAT D'ABONNEMENT N'EST ÉCRIT AVANT LE PAIEMENT
-        //
-        // Ce bloc passait `account_subscriptions` en `active` (ou `trialing`)
-        // avec l'offre choisie, dès le clic. `entitlements.service` lisant
-        // cette ligne, abandonner le formulaire Stripe suffisait à obtenir
-        // l'offre — et un client réellement abonné pouvait voir son état
-        // écrasé par un simple clic sur une autre carte.
-        //
-        // L'état est désormais écrit uniquement par la synchronisation
-        // Stripe (webhook ou retour de paiement). On ne rattache ici que le
-        // client Stripe, sur la ligne existante.
-        // ══════════════════════════════════════════════════════════════════
+        // Seul le client Stripe est rattaché ; aucun état d'abonnement avant paiement.
         await db
             .update(accountSubscriptions)
             .set({ stripeCustomerId: customerId, updatedAt: new Date() })
             .where(eq(accountSubscriptions.accountId, account.id));
 
-        return NextResponse.json({
-            checkout_url: checkoutSession.url,
-        });
+        return NextResponse.json({ checkout_url: checkoutSession.url, offer: toPublicOffer(resolved) });
 
     } catch (error) {
+        if (error instanceof BillingCatalogError) return catalogError(error);
         console.error('[Checkout Session Error]', error);
 
-        if (error instanceof Error && error.message.includes('AUTH_REQUIRED')) {
+        if (error instanceof Error && ['AUTH_REQUIRED', 'INVALID_TOKEN', 'ACCOUNT_SUSPENDED'].includes(error.message)) {
             return SessionService.handleSessionError(error);
         }
 
         // Le message brut de Stripe (identifiants, mode test/live…) reste dans
         // les logs : il n'a pas à s'afficher dans le toast de l'utilisateur.
         if (error instanceof StripeConfigError) {
+            return catalogError(new BillingCatalogError('STRIPE_UNAVAILABLE'));
+        }
+        if (isUncertain(error)) {
             return NextResponse.json(
-                {
-                    code: 'PAYMENT_UNAVAILABLE',
-                    message: 'Le paiement est momentanément indisponible. Merci de réessayer plus tard.',
-                },
+                { code: 'PAYMENT_VERIFICATION_IN_PROGRESS', message: 'Vérification en cours. Merci de réessayer dans quelques instants : aucune double souscription ne sera créée.' },
                 { status: 503 }
             );
         }
-
-        const stripeError = error as Stripe.errors.StripeError;
-        if (isStripeResourceMissing(stripeError) && stripeError.param?.includes('price')) {
-            return NextResponse.json(
-                {
-                    code: 'PRICE_UNAVAILABLE',
-                    message: 'Cette offre est momentanément indisponible. Merci de réessayer plus tard.',
-                },
-                { status: 503 }
-            );
-        }
-
         return NextResponse.json(
-            {
-                code: 'CHECKOUT_SESSION_FAILED',
-                message: 'Impossible de démarrer le paiement. Merci de réessayer dans quelques instants.',
-            },
+            { code: 'CHECKOUT_SESSION_FAILED', message: 'Impossible de démarrer le paiement. Merci de réessayer dans quelques instants.' },
             { status: 500 }
         );
     }
+}
+
+function catalogError(error: BillingCatalogError): NextResponse {
+    return NextResponse.json(error.toBody(), { status: error.httpStatus });
+}
+
+function isUncertain(error: unknown): boolean {
+    const e = error as { type?: string; statusCode?: number };
+    return e?.type === 'StripeConnectionError' || (typeof e?.statusCode === 'number' && e.statusCode >= 500);
+}
+
+/**
+ * Session ouverte réutilisable ? (LK-42) — le PRIX RÉEL est relu dans les
+ * lignes de la session : l'offre et la périodicité ne suffisent pas. Une
+ * session à un autre prix (ancienne révision, TC-32) est expirée.
+ */
+async function reusableSession(
+    stripe: Stripe,
+    sessionId: string,
+    expect: { customerId: string; accountId: number; price: ResolvedPrice },
+): Promise<{ url: string | null; completed: boolean }> {
+    try {
+        const s = await stripe.checkout.sessions.retrieve(sessionId);
+        if (s.status === 'complete') return { url: null, completed: true };
+        if (s.status !== 'open') return { url: null, completed: false };
+        const lines = await stripe.checkout.sessions.listLineItems(sessionId, { limit: 5 });
+        const priceIds = lines.data.map((l) => l.price?.id);
+        const ok = s.customer === expect.customerId
+            && s.metadata?.accountId === String(expect.accountId)
+            && s.metadata?.price_revision === expect.price.priceRevision
+            && priceIds.length === 1 && priceIds[0] === expect.price.priceId
+            && (lines.data[0]?.quantity ?? 1) === 1;
+        if (ok) return { url: s.url, completed: false };
+        await stripe.checkout.sessions.expire(sessionId).catch(() => undefined);
+        return { url: null, completed: false };
+    } catch (e) {
+        console.warn('[Checkout] session existante illisible :', (e as Error).message);
+        return { url: null, completed: false };
+    }
+}
+
+/** Expire une session ouverte remplacée (LK-44). Rend son état final. */
+async function expireReplacedSession(stripe: Stripe, sessionId: string): Promise<'expired' | 'completed' | 'unknown'> {
+    try {
+        const s = await stripe.checkout.sessions.retrieve(sessionId);
+        if (s.status === 'complete') return 'completed';
+        if (s.status === 'open') await stripe.checkout.sessions.expire(sessionId);
+        return 'expired';
+    } catch (e) {
+        console.warn('[Checkout] expiration de la session remplacée :', (e as Error).message);
+        return 'unknown';
+    }
+}
+
+function verificationInProgress(): NextResponse {
+    return NextResponse.json(
+        { code: 'PAYMENT_VERIFICATION_IN_PROGRESS', message: 'Votre paiement est en cours de vérification. Votre offre sera mise à jour dans quelques instants.' },
+        { status: 409 },
+    );
+}
+
+/** Compte Duo inactif rattaché au titulaire (activé par la synchronisation du paiement). */
+async function ensureInactiveDuo(userId: number, accountId: number, customerId: string): Promise<number> {
+    const { duoAccounts, duoMemberships } = await import('@/db/schema');
+    const [existingDuo] = await db.select({ id: duoAccounts.id }).from(duoAccounts).where(eq(duoAccounts.billingOwnerUserId, userId)).limit(1);
+    let duoId = existingDuo?.id ?? null;
+    if (!duoId) {
+        const now = new Date();
+        const [newDuo] = await db.insert(duoAccounts).values({
+            billingOwnerUserId: userId,
+            subscriptionStatus: 'CANCELED', // activé par le webhook
+            stripeCustomerId: customerId,
+            createdAt: now,
+            updatedAt: now,
+        }).returning();
+        duoId = newDuo.id;
+        await db.insert(duoMemberships).values({
+            duoId, userId, status: 'ACTIVE', slot: 0, invitedAt: now, joinedAt: now, createdAt: now, updatedAt: now,
+        });
+    }
+    await db.update(accounts).set({ duoAccountId: duoId, updatedAt: new Date() }).where(and(eq(accounts.id, accountId)));
+    return duoId;
 }

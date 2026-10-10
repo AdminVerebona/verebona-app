@@ -68,11 +68,12 @@ describe('catalogue des opérations', () => {
     for (const m of assistant) expect(documentaire.has(m)).toBe(false);
   });
 
-  it("PRO-06 — modèles de l'assistant : déclarés compatibles t2_master_v1 au registre (éligibilité réelle, pas le nom)", () => {
-    // Lot 32B : l'ancien test « aucun -pro » est remplacé par la vraie règle.
+  it("PRO-06 — modèles de l'assistant : aucune exception ne les exclut de t2_master_v1 (éligibilité réelle, pas le nom)", () => {
+    // Lot 35B : plus de compatibilité déclarée à la main — seule une exception
+    // documentée pourrait exclure un modèle ; aucune ne vise T2.
     for (const op of listOperationsByUseCase('INTELLIGENT_ASSISTANT').filter((o) => o.provider !== 'none')) {
       for (const m of [op.primaryModel, ...op.fallbackModels]) {
-        expect(findDeclaredModel(m)?.compatiblePrompts, `${op.operationCode} : ${m}`).toContain('t2_master_v1');
+        expect(findDeclaredModel(m)?.excludedPrompts?.prompts ?? [], `${op.operationCode} : ${m}`).not.toContain('t2_master_v1');
       }
     }
   });

@@ -55,8 +55,8 @@ export class ConfigOperationRefused extends Error {
  * ceux sans tarif connu.
  */
 async function buildCatalogs(): Promise<ConfigCatalogs> {
-  // Lot 32B : un seul contexte (catalogue fournisseur, tarifs, politique
-  // preview, état opérationnel) — celui de `usableModelsForTreatment`.
+  // Lot 32B/35B : un seul contexte (catalogue fournisseur, tarifs informatifs,
+  // qualification, état opérationnel) — celui de `usableModelsForTreatment`.
   const { loadUsableModelsContext, evaluateModelForTreatment } = await import('../registry/usable-models');
   const { selectableModels } = await import('../provider/model-catalog.service');
   const ctx = await loadUsableModelsContext();
@@ -355,68 +355,40 @@ export async function validate(
   return { visibleNumber, warnings: avertissements.map((i) => i.message) };
 }
 
-// ── §15.13, §32.7 — modèle preview en production (D-J1, lot 21) ────────────
+// ── §15.13, §32.7 — modèle preview en production : garde supprimée (lot 35B) ──
 
-/**
- * En PRODUCTION, une version qui utilise un modèle preview (primaire ou
- * repli) n'est activée que si le réglage « Modèles preview en production »
- * est accordé — réglage soumis à la double validation de deux
- * administrateurs distincts (Configuration IA › Assistant). Hors production :
- * aucun contrôle (la recette doit pouvoir les essayer).
- *
- * Portée : `activate` (WF-05) SEULEMENT. Le rollback (WF-06) n'y est PAS
- * soumis, délibérément : il restaure une version qui a déjà été Active en
- * production, souvent pendant un incident, et le bloquer sur un réglage
- * retiré entre-temps empêcherait le retour arrière au pire moment. Le
- * rollback reste journalisé (bascule).
+/*
+ * Lot 35B (ticket « Catalogue IA dynamique Google ») : la garde « modèle
+ * preview en production » (`assertPreviewModelsApproved`, réglage
+ * « preview_models_allowed » à double validation, refus
+ * PREVIEW_MODEL_NOT_APPROVED) est SUPPRIMÉE. Un modèle preview est
+ * sélectionnable et activable dans les mêmes conditions techniques qu'un
+ * stable (disponible avec la clé active + qualification réussie) ; son statut
+ * reste visible au registre des modèles. Un modèle EXPÉRIMENTAL reste exclu
+ * (`usableModelsForTreatment`, motif EXPERIMENTAL).
  */
-export async function assertPreviewModelsApproved(
-  version: Pick<ConfigVersionWithEntries, 'entries'>, environment: string = getAiEnvironment(),
-): Promise<void> {
-  if (environment !== 'production') return;
-  const { isPreviewModel, refreshAssistantSettings, effectiveSetting } = await import('@/services/verebona-assistant/config/assistant-settings');
-  const previews = version.entries.flatMap((e) => [e.primaryModel, e.fallback1, e.fallback2]
-    .filter((m): m is string => isPreviewModel(m)).map((model) => ({ treatment: e.treatment, model })));
-  if (previews.length === 0) return;
-  await refreshAssistantSettings(true);
-  if (effectiveSetting('preview_models_allowed') === true) return;
-  throw new ConfigOperationRefused(
-    'PREVIEW_MODEL_NOT_APPROVED',
-    `Modèle preview en production (${previews.map((p) => `${p.treatment} : ${p.model}`).join(', ')}) : `
-    + 'activation soumise au réglage « Modèles preview en production », accordé par deux administrateurs (Configuration IA › Assistant).',
-    previews,
-  );
-}
 
 // ── §15.12, §15.14 — cohérence avec le registre des modèles (lot 23) ────────
 
 /**
- * Contrôle de cohérence d'une version avec le registre déclaratif des modèles
- * (`registry/models.ts`), à la validation (qui rend la version Active en
- * préproduction) et à l'activation :
- *   · chaque modèle (principal, repli 1, repli 2) doit être déclaré
- *     compatible avec le prompt maître du traitement (compatibilité déclarée
- *     modèle par modèle au registre, jamais déduite du nom — lot 32B) ;
- *   · son modèle de rollback doit exister au registre et être stable.
- *   · T2 (assistant) : un modèle preview OU INCONNU du registre n'est admis
- *     que si le flag `VEREBONA_ASSISTANT_ALLOW_PREVIEW_MODELS` ou le réglage
- *     « Modèles preview en production » l'autorise — MÊME règle que le
- *     contrôle de démarrage de l'assistant (revue I-1) : une version acceptée
- *     ici ne peut plus rendre l'assistant indisponible (503) au contrôle
- *     suivant.
- * Bloquant (`MODEL_REGISTRY_INCOHERENT`, message clair, détail par
- * traitement), dans tous les environnements. Un modèle INCONNU du registre
- * n'est pas une incohérence : il est traité comme preview, et c'est la garde
- * preview (`assertPreviewModelsApproved`, production) qui décide. Les
- * avertissements (modèle déprécié, inconnu) sont rendus à l'appelant.
+ * Contrôle de cohérence d'une version avec les EXCEPTIONS du registre des
+ * modèles (`registry/models.ts`), à la validation et à l'activation :
+ *   · modèle interdit, ou exclu pour le prompt maître du traitement
+ *     (exception documentée) → erreur ;
+ *   · modèle de rollback déclaré absent ou non stable → erreur ;
+ *   · déprécié, anomalie connue → avertissement rendu à l'appelant.
+ * Lot 35B : un modèle ABSENT du registre n'est plus une incohérence ni un
+ * « preview » — sa disponibilité et ses capacités sont établies par le
+ * catalogue et la qualification automatique (`assertVersionModelsUsable`).
+ * Plus aucune condition preview (PREVIEW_NOT_ALLOWED supprimé).
  *
- * Pas appliqué au rollback (WF-06), pour la même raison que la garde preview.
+ * Bloquant (`MODEL_REGISTRY_INCOHERENT`) dans tous les environnements. Pas
+ * appliqué au rollback (WF-06).
  */
 export async function assertModelRegistryCoherence(
   version: Pick<ConfigVersionWithEntries, 'entries'>,
-  deps: { previewAllowed?: () => boolean | Promise<boolean> } = {},
 ): Promise<import('../registry/models').CoherenceIssue[]> {
-  const [{ checkModelUses, isPreviewModel, declaredModelStatus }, { AI_OPERATIONS }, { treatmentForUseCase }] = await Promise.all([
+  const [{ checkModelUses }, { AI_OPERATIONS }, { treatmentForUseCase }] = await Promise.all([
     import('../registry/models'), import('../registry/operations'), import('./treatments'),
   ]);
   const masterDe = new Map<string, string>();
@@ -431,22 +403,6 @@ export async function assertModelRegistryCoherence(
     .filter((m): m is string => typeof m === 'string' && m.trim() !== '')
     .map((model) => ({ where: e.treatment, model, promptCode: masterDe.get(e.treatment) ?? null })));
   const issues = checkModelUses(uses);
-  // T2 : même règle preview que le contrôle de démarrage de l'assistant.
-  const previewsT2 = uses.filter((u) => u.where === 'T2' && isPreviewModel(u.model));
-  if (previewsT2.length > 0) {
-    const permis = await (deps.previewAllowed ?? (async () =>
-      (await import('@/services/verebona-assistant/core/model-startup-check')).assistantPreviewModelsAllowed()))();
-    if (!permis) {
-      for (const u of previewsT2) {
-        issues.push({
-          level: 'error', code: 'PREVIEW_NOT_ALLOWED', where: u.where, model: u.model,
-          message: declaredModelStatus(u.model) === 'unknown'
-            ? `T2 : le modèle « ${u.model} » est absent du registre des modèles (traité comme preview) : non autorisé pour l’assistant sans le réglage « Modèles preview en production » ou le flag VEREBONA_ASSISTANT_ALLOW_PREVIEW_MODELS — l’assistant serait indisponible.`
-            : `T2 : le modèle preview « ${u.model} » n’est pas autorisé pour l’assistant sans le réglage « Modèles preview en production » ou le flag VEREBONA_ASSISTANT_ALLOW_PREVIEW_MODELS — l’assistant serait indisponible.`,
-        });
-      }
-    }
-  }
   const erreurs = issues.filter((i) => i.level === 'error');
   if (erreurs.length > 0) {
     throw new ConfigOperationRefused(
@@ -510,7 +466,6 @@ export async function activate(versionId: number, userId: number): Promise<Switc
   await assertVersionModelsUsable(version);
   // BO-IA-PROMPTS-01 : aucun corpus exigé. Contrôles techniques seulement.
   const avertissements = await assertModelRegistryCoherence(version);
-  await assertPreviewModelsApproved(version);
   const r = await switchActive(versionId, userId, 'activate');
   await invalidateCaches(`activate:${versionId}`);
   // WF-27 : les Brouillons dérivés de l'Active remplacée deviennent obsolètes
@@ -528,9 +483,6 @@ export async function activate(versionId: number, userId: number): Promise<Switc
  * exige d'arrêter immédiatement les exécutions concernées et de remettre les
  * jobs batch en tête de file, pour qu'ils reprennent depuis le début avec la
  * version restaurée.
- *
- * Pas de garde « modèle preview » (`assertPreviewModelsApproved`) : voir sa
- * documentation — une version déjà Active doit pouvoir être restaurée.
  *
  * L'ordre compte. La bascule d'abord, la remise en file ensuite : un job remis
  * en tête avant la bascule pourrait être repris par une autre instance sous

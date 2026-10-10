@@ -26,6 +26,7 @@
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { RETIRED_AI_VARIABLES } from '@/services/ai/config/retired-variables';
+import { LEGACY_PRICE_VARS } from '@/services/billing/legacy-price-env';
 import { S3_LEGACY_ENV } from '@/lib/s3-config';
 
 export type EnvLevel = 'obligatoire' | 'recommandee' | 'facultative';
@@ -165,6 +166,13 @@ export function retiredEnvVariables(): RetiredEnvDoc[] {
     ...Object.entries(S3_LEGACY_ENV).map(([name, canonique]) => ({ name, origin: 'APP-PERF-26', now: `remplacée par ${canonique}` })),
     // Lot 24b (`src/db/migration-config.ts`, `obsolete`).
     { name: 'MIGRATIONS_REPAIR_ON_BOOT', origin: 'lot 24b', now: 'réparation des index par le postdeploy puis en arrière-plan' },
+    // Lot 35C (CDC lookup_key V4, LK-89, D10) : plus aucune dépendance de
+    // fonctionnement ; lues seulement comme preuve par la reprise historique.
+    ...LEGACY_PRICE_VARS.map((v) => ({
+      name: v.name,
+      origin: 'lot 35C',
+      now: 'prix résolus par lookup_key (catalogue Stripe) ; à supprimer dès « Reprise historique : terminée » (Exploitation › Catalogue Stripe)',
+    })),
   ];
 }
 

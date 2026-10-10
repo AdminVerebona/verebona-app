@@ -47,7 +47,7 @@ describe('mode du balayage d’impayés', () => {
 describe('tâches planifiées', () => {
   it('impayé, purge RGPD et ancienneté des sauvegardes, chacune avec son bail', () => {
     const locks = dailyTasks({} as NodeJS.ProcessEnv).map((t) => t.lock);
-    expect(locks).toEqual(['daily-billing-unpaid', 'daily-account-deletion', 'daily-gdpr-exports-purge', 'daily-ai-log-archive', 'daily-assistant-purge', 'daily-ai-pricing-refresh', 'daily-backup-freshness', 'daily-supervision-sweep', 'daily-exports-expiry', 'daily-blob-purge', 'frequent-pending-checkout', 'hourly-coherence-maintenance', 'hourly-thumbnails-backfill']);
+    expect(locks).toEqual(['daily-billing-unpaid', 'daily-account-deletion', 'daily-gdpr-exports-purge', 'daily-ai-log-archive', 'daily-assistant-purge', 'daily-backup-freshness', 'daily-supervision-sweep', 'daily-exports-expiry', 'daily-blob-purge', 'frequent-pending-checkout', 'hourly-coherence-maintenance', 'hourly-thumbnails-backfill']);
   });
 
   it('lot 16b-3 : maintenance déterministe de la file de cohérence, horaire (bail de 55 min)', async () => {
@@ -70,7 +70,7 @@ describe('tâches planifiées', () => {
   it('BILLING_UNPAID_SWEEP=off retire l’impayé ; BACKUP_DISABLED retire le contrôle de sauvegarde', () => {
     const locks = dailyTasks({ BILLING_UNPAID_SWEEP: 'off', BACKUP_DISABLED: 'true' } as unknown as NodeJS.ProcessEnv)
       .map((t) => t.lock);
-    expect(locks).toEqual(['daily-account-deletion', 'daily-gdpr-exports-purge', 'daily-ai-log-archive', 'daily-assistant-purge', 'daily-ai-pricing-refresh', 'daily-supervision-sweep', 'daily-exports-expiry', 'daily-blob-purge', 'frequent-pending-checkout', 'hourly-coherence-maintenance', 'hourly-thumbnails-backfill']);
+    expect(locks).toEqual(['daily-account-deletion', 'daily-gdpr-exports-purge', 'daily-ai-log-archive', 'daily-assistant-purge', 'daily-supervision-sweep', 'daily-exports-expiry', 'daily-blob-purge', 'frequent-pending-checkout', 'hourly-coherence-maintenance', 'hourly-thumbnails-backfill']);
   });
 
   it('suppressions de compte à échéance : ACCOUNT_DELETION_SWEEP (live | dry | off), en matinée', () => {
@@ -96,12 +96,14 @@ describe('tâches planifiées', () => {
     expect(off).not.toContain('daily-assistant-purge');
   });
 
-  it('archivage des logs IA avant la purge de l’assistant ; tarifs planifiés ; désactivables', () => {
+  it('archivage des logs IA avant la purge de l’assistant ; désactivable — lot 35B : tarifs déplacés dans la tâche `ai-catalog-sync`', async () => {
     const locks = dailyTasks({} as NodeJS.ProcessEnv).map((x) => x.lock);
     expect(locks.indexOf('daily-ai-log-archive')).toBeLessThan(locks.indexOf('daily-assistant-purge'));
-    const off = dailyTasks({ AI_LOG_ARCHIVE: 'off', AI_PRICING_REFRESH: 'off' } as unknown as NodeJS.ProcessEnv).map((x) => x.lock);
+    expect(locks).not.toContain('daily-ai-pricing-refresh');
+    const off = dailyTasks({ AI_LOG_ARCHIVE: 'off' } as unknown as NodeJS.ProcessEnv).map((x) => x.lock);
     expect(off).not.toContain('daily-ai-log-archive');
-    expect(off).not.toContain('daily-ai-pricing-refresh');
+    const { findTask } = await import('../scheduled-tasks.catalog');
+    expect(findTask('ai-catalog-sync')?.schedule).toEqual({ kind: 'interval', everyMs: 6 * 3600_000 });
   });
 
   it('fenêtres hors de la sauvegarde de nuit (1 h – 5 h)', () => {

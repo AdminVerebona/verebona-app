@@ -6,9 +6,8 @@
  * l'instantané figé à la confirmation dépendrait du chemin emprunté.
  */
 import { db } from '@/db';
-import { accountSubscriptions, users } from '@/db/schema';
-import { eq } from 'drizzle-orm';
-import { PRICE_CATALOG } from '@/lib/stripe-prices';
+import { accountSubscriptions, invoices, users } from '@/db/schema';
+import { and, desc, eq } from 'drizzle-orm';
 import type { EligibilityResult } from './eligibility.service';
 
 export interface WithdrawalSummary {
@@ -55,18 +54,17 @@ function formatAmount(cents: number | null, currency = 'eur'): string {
  *
  * ⚠️ ESTIMATION, ET LE MOT COMPTE. Le §7.2 précise que « le système doit
  * éviter d'afficher un montant supérieur aux sommes réellement encaissées ».
- * Le montant définitif ne sera connu qu'après interrogation des paiements
- * Stripe réussis et non déjà remboursés — c'est le travail du lot suivant.
+ * Le montant définitif est calculé au traitement, depuis les paiements
+ * Stripe réussis et non remboursés (`refund-calculator.ts`, lot 32).
  *
- * En attendant, la valeur retenue est le tarif catalogue de l'offre et de la
- * périodicité souscrites : c'est ce qui a été facturé au premier paiement,
- * hors changement d'offre en cours de délai. Prendre une valeur plus élevée
- * exposerait à annoncer un remboursement qu'on ne pourrait pas honorer.
+ * CDC lookup_key V4 (LK-21, LK-76, TC-56) : l'estimation part du PRIX
+ * CONTRACTUEL de l'abonnement (écrit depuis l'objet Stripe), jamais du
+ * catalogue de vente courant — après une hausse, un ancien abonné ne doit
+ * pas se voir annoncer le nouveau tarif. Prix contractuel inconnu → aucune
+ * estimation affichée (jamais une valeur devinée).
  */
-function estimateRefund(planCode: string | null, billingPeriod: string | null): number | null {
-  if (!planCode || !billingPeriod) return null;
-  const plan = (PRICE_CATALOG as Record<string, Record<string, { amountCents: number }>>)[planCode];
-  return plan?.[billingPeriod]?.amountCents ?? null;
+export function estimateRefund(contractUnitAmountCents: number | null | undefined): number | null {
+  return typeof contractUnitAmountCents === 'number' && contractUnitAmountCents > 0 ? contractUnitAmountCents : null;
 }
 
 export async function buildSummary(
@@ -94,18 +92,37 @@ export async function buildSummary(
 
   let planCode = contract?.planCode ?? null;
   let billingPeriod = contract?.billingPeriod ?? null;
+  let contractAmount: number | null = null;
 
-  if (!planCode && contract?.subscriptionIdInternal) {
+  if (contract?.subscriptionIdInternal) {
     const [sub] = await db
-      .select({ planCode: accountSubscriptions.planCode, billingPeriod: accountSubscriptions.billingPeriod })
+      .select({
+        planCode: accountSubscriptions.planCode,
+        billingPeriod: accountSubscriptions.billingPeriod,
+        contractUnitAmountCents: accountSubscriptions.contractUnitAmountCents,
+      })
       .from(accountSubscriptions)
       .where(eq(accountSubscriptions.id, contract.subscriptionIdInternal))
       .limit(1);
-    planCode = sub?.planCode ?? null;
-    billingPeriod = sub?.billingPeriod ?? null;
+    planCode = planCode ?? sub?.planCode ?? null;
+    billingPeriod = billingPeriod ?? sub?.billingPeriod ?? null;
+    contractAmount = sub?.contractUnitAmountCents ?? null;
   }
 
-  const amountExpected = estimateRefund(planCode, billingPeriod);
+  // À défaut de prix contractuel connu : dernier paiement réellement encaissé
+  // sur cet abonnement (fondé sur les paiements concernés, LK-76).
+  if (contractAmount === null && contract?.stripeSubscriptionId) {
+    const [inv] = await db
+      .select({ amount: invoices.amount })
+      .from(invoices)
+      .where(and(eq(invoices.stripeSubscriptionId, contract.stripeSubscriptionId), eq(invoices.status, 'paid')))
+      .orderBy(desc(invoices.paidAt))
+      .limit(1)
+      .catch(() => []);
+    contractAmount = inv?.amount ?? null;
+  }
+
+  const amountExpected = estimateRefund(contractAmount);
 
   return {
     firstName,

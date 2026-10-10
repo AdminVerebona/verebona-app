@@ -9,6 +9,11 @@
  * page). Un modèle disparu devient indisponible : il n'est plus sélectionnable
  * et bloque la validation d'une version qui l'emploie. En échec, le catalogue
  * précédent reste en place et l'écran le dit.
+ *
+ * Lot 35B : le bouton déclenche IMMÉDIATEMENT la même synchronisation que la
+ * tâche planifiée (toutes les 6 h) — modèles, qualification automatique,
+ * statut opérationnel, tarifs. Statut fournisseur affiché (Preview,
+ * Expérimental). Lignes en `flex-wrap` : même rendu desktop et mobile.
  */
 import { useCallback, useEffect, useState } from 'react';
 import { Button } from '@/components/ui/button';
@@ -24,8 +29,16 @@ interface CatalogState {
   models: Array<{
     model: string; displayName: string | null; available: boolean;
     inputTokenLimit: number | null; outputTokenLimit: number | null; lastSeenAt: string;
+    lifecycle?: string; firstSeenAt?: string | null;
   }>;
+  lastSyncAt?: string | null;
 }
+
+const CYCLE: Record<string, { label: string; className: string }> = {
+  preview: { label: 'preview', className: 'text-amber-500' },
+  experimental: { label: 'expérimental — non sélectionnable', className: 'text-red-400' },
+  deprecated: { label: 'déprécié', className: 'text-red-400' },
+};
 
 export function ModelCatalog() {
   const [state, setState] = useState<CatalogState | null>(null);
@@ -44,11 +57,12 @@ export function ModelCatalog() {
   const refresh = async () => {
     setBusy(true);
     try {
-      const r = await apiClient.post<{ modelsSeen: number; disappeared: string[]; state: CatalogState }>(
+      const r = await apiClient.post<{ modelsSeen: number; disappeared: string[]; discovered?: string[]; state: CatalogState }>(
         '/api/admin/ai/provider/catalog', {},
       );
       setState(r.state);
-      toast.success(`${r.modelsSeen} modèle(s) listé(s)${r.disappeared.length ? ` — indisponibles : ${r.disappeared.join(', ')}` : ''}.`);
+      const nouveaux = r.discovered?.length ? ` — nouveaux : ${r.discovered.join(', ')}` : '';
+      toast.success(`${r.modelsSeen} modèle(s) listé(s)${nouveaux}${r.disappeared.length ? ` — indisponibles : ${r.disappeared.join(', ')}` : ''}.`);
     } catch (e) {
       toast.error((e as Error).message || 'Rafraîchissement impossible : le catalogue précédent est conservé.');
       await load();
@@ -64,8 +78,8 @@ export function ModelCatalog() {
           <h2 className="text-sm font-semibold text-[color:var(--text-primary)]">Catalogue des modèles</h2>
           <p className="text-xs text-[color:var(--text-muted)]">
             {state?.refreshedAt
-              ? `Dernier rafraîchissement : ${new Date(state.refreshedAt).toLocaleString('fr-FR')}.`
-              : 'Jamais rafraîchi : la liste de référence du code s’applique.'}
+              ? `Dernier rafraîchissement : ${new Date(state.refreshedAt).toLocaleString('fr-FR')}. Synchronisation automatique toutes les 6 h.`
+              : 'Jamais rafraîchi : la liste de référence du code s’applique jusqu’à la première synchronisation automatique.'}
           </p>
         </div>
         <Button size="sm" variant="outline" onClick={refresh} disabled={busy}>
@@ -85,8 +99,9 @@ export function ModelCatalog() {
         <div className="divide-y divide-[color:var(--border-subtle)]">
           {state.models.map((m) => (
             <div key={m.model} className="py-1.5 flex flex-wrap items-center gap-2 text-sm">
-              <span className={m.available ? 'text-[color:var(--text-primary)]' : 'text-[color:var(--text-muted)] line-through'}>{m.model}</span>
+              <span className={`min-w-0 break-all ${m.available ? 'text-[color:var(--text-primary)]' : 'text-[color:var(--text-muted)] line-through'}`}>{m.model}</span>
               {!m.available && <span className="text-xs text-red-400">indisponible</span>}
+              {m.lifecycle && CYCLE[m.lifecycle] && <span className={`text-xs ${CYCLE[m.lifecycle].className}`}>{CYCLE[m.lifecycle].label}</span>}
               <span className="flex-1" />
               <span className="text-xs text-[color:var(--text-muted)]">
                 {m.inputTokenLimit ? `${m.inputTokenLimit.toLocaleString('fr-FR')} in` : ''}

@@ -7,9 +7,10 @@
  * Section repliée de Configuration IA, avec les composants existants
  * (Switch, Input, Button) : débits, plafond mensuel, seuils d'alerte,
  * interrupteurs §39, historique. Chaque réglage montre sa valeur effective
- * et sa provenance (BO, environnement, défaut). Un réglage sensible (modèle
- * preview en production) passe par une demande, accordée par un second
- * administrateur. Historique des modifications et journal des consultations
+ * et sa provenance (BO, environnement, défaut). Un réglage marqué « double
+ * validation » passe par une demande, accordée par un second administrateur
+ * (lot 35B : le réglage « Modèles preview en production » est supprimé —
+ * un modèle preview n'a plus besoin d'autorisation). Historique des modifications et journal des consultations
  * sensibles en bas de section.
  *
  * Lot 22 : le groupe « Plafond IA mensuel par compte » (un montant par offre,

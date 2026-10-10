@@ -49,13 +49,21 @@ export function calcCostMicros(
     if (!warnedModels.has(key)) {
       warnedModels.add(key);
       console.warn(
-        `[ai-cost] Aucun tarif connu pour ${key} — coût non mesuré. ` +
-        'Exécutez /api/cron/ai/refresh-model-pricing ou saisissez le tarif en administration.',
+        `[ai-cost] Aucun tarif connu pour ${key} — coût non calculable (jamais estimé). ` +
+        'La synchronisation du catalogue IA (tâche planifiée, ou « Actualiser le catalogue ») le relèvera dès que la page officielle le publie.',
       );
     }
     return null;
   }
-  return Math.round(inputTokens * price.inputMicros + outputTokens * price.outputMicros);
+  // Lot 35B : palier de taille d'invite (ex. au-delà de 200 000 jetons) — le
+  // fournisseur facture alors TOUTE la requête au tarif du palier.
+  const palier = (price.tiers ?? [])
+    .filter((t): t is Extract<NonNullable<typeof price.tiers>[number], { kind: 'prompt_tokens_above' }> => t.kind === 'prompt_tokens_above')
+    .filter((t) => inputTokens > t.thresholdTokens)
+    .sort((a, b) => b.thresholdTokens - a.thresholdTokens)[0];
+  const inMicros = palier ? palier.inputPerMillion : price.inputMicros;
+  const outMicros = palier ? palier.outputPerMillion : price.outputMicros;
+  return Math.round(inputTokens * inMicros + outputTokens * outMicros);
 }
 
 /**
@@ -96,7 +104,11 @@ export interface PricingReadiness {
   missingOverall: string[];
   unverified: string[];
   cacheDegraded: boolean;
-  /** Le démarrage doit-il être refusé en production ? */
+  /**
+   * Toujours `false` depuis le lot 35B : un modèle sans tarif connu reste
+   * utilisable (coût « non calculable »), et le démarrage n'est jamais
+   * refusé pour un tarif. Conservé pour les écrans qui le lisent.
+   */
   blocking: boolean;
 }
 
@@ -113,7 +125,7 @@ export function getPricingReadiness(): PricingReadiness {
     missingOverall: missingForRunning,
     unverified: listUnverifiedPricing(),
     cacheDegraded: getCacheState().degraded,
-    blocking: actifs.length > 0 && missingForRunning.length > 0,
+    blocking: false,
   };
 }
 
@@ -150,8 +162,15 @@ export function getPricingReadiness(): PricingReadiness {
  * porte ce modèle depuis le 30/07/2026.
  *
  * Le contrôle essaie donc d'abord de combler les manques depuis ce catalogue,
- * puis relit. Ce qui reste manquant après cela est un modèle que personne ne
- * sait tarifer — et là, le blocage garde tout son sens.
+ * puis relit.
+ *
+ * ══════════════════════════════════════════════════════════════════════════
+ * LOT 35B — PLUS JAMAIS BLOQUANT
+ *
+ * Ticket « Catalogue IA dynamique Google » : un modèle sans tarif connu
+ * (`pricingStatus = UNKNOWN`) reste utilisable ; ses appels fonctionnent, ses
+ * jetons sont comptés, son coût est marqué non calculable. Ce contrôle ne
+ * lève donc plus, dans aucun environnement : il signale.
  */
 export async function assertPricingReady(): Promise<void> {
   // `loadedAt` et non `size` : un catalogue vide mais chargé est un état connu,
@@ -160,8 +179,9 @@ export async function assertPricingReady(): Promise<void> {
 
   let state = getPricingReadiness();
 
-  // Auto-amorçage depuis le catalogue public avant de bloquer.
-  if (state.blocking) state = await seedFromPublicCatalog(state);
+  // Amorçage depuis le relevé public embarqué des seuls modèles que la
+  // synchronisation tarifaire n'a JAMAIS évalués (lot 35B).
+  if (state.missingForRunning.length > 0) state = await seedFromPublicCatalog(state);
 
   if (state.runningUseCases.length === 0) {
     console.info(
@@ -173,11 +193,13 @@ export async function assertPricingReady(): Promise<void> {
   }
 
   if (state.missingForRunning.length > 0) {
-    const message =
-      `[ai-cost] Modèles sans tarif sur un usage actif (${state.runningUseCases.join(', ')}) : ` +
-      `${state.missingForRunning.join(', ')}.`;
-    if (process.env.NODE_ENV === 'production') throw new Error(message);
-    console.warn(`${message} — coûts non calculables hors production.`);
+    // Lot 35B : JAMAIS bloquant, dans aucun environnement. Les appels
+    // fonctionnent, les jetons sont comptés, le coût est « non calculable »
+    // (jamais estimé) et les agrégats le distinguent des coûts connus.
+    console.warn(
+      `[ai-cost] Modèles sans tarif connu (${state.missingForRunning.join(', ')}) : `
+      + 'appels autorisés, coûts marqués non calculables jusqu’à la prochaine synchronisation tarifaire.',
+    );
   }
 
   if (state.unverified.length > 0) {
@@ -203,12 +225,23 @@ async function seedFromPublicCatalog(state: PricingReadiness): Promise<PricingRe
   const { findCatalogEntry, toModelPrice } = await import('./pricing/gemini-public-catalog');
   const { upsertPrice } = await import('./pricing/pricing.repository');
 
+  // Lot 35B : un modèle déjà évalué par la synchronisation (KNOWN ou UNKNOWN
+  // dans `ai_model_price_status`) n'est JAMAIS réamorcé depuis le relevé
+  // embarqué — un tarif retiré pour ambiguïté ne doit pas revenir au
+  // redémarrage.
+  const evalues = new Set<string>();
+  try {
+    const { pgClient } = await import('@/db');
+    const rows = await pgClient.unsafe(`SELECT model FROM ai_model_price_status WHERE provider = 'gemini'`);
+    for (const r of rows as unknown as Array<{ model: string }>) evalues.add(String(r.model));
+  } catch { /* table absente (0304) : aucun modèle évalué */ }
+
   let comblés = 0;
   for (const manquant of state.missingForRunning) {
     // `missingForRunning` rend « provider/model ».
     const [provider, ...reste] = manquant.split('/');
     const model = reste.join('/');
-    if (provider !== 'gemini') continue;
+    if (provider !== 'gemini' || evalues.has(model)) continue;
     const entry = findCatalogEntry(model);
     if (!entry) continue;
 
@@ -224,7 +257,7 @@ async function seedFromPublicCatalog(state: PricingReadiness): Promise<PricingRe
 
   console.warn(
     `[ai-cost] ${comblés} tarif(s) amorcé(s) depuis le catalogue public embarqué. ` +
-    'Lancez /api/cron/ai/refresh-model-pricing pour obtenir la grille du compte.',
+    'La synchronisation du catalogue IA les remplacera par les tarifs de la page officielle.',
   );
   await loadPricingCache();
   return getPricingReadiness();

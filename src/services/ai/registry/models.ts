@@ -1,54 +1,57 @@
 /**
- * Registre déclaratif des modèles — CDC Assistant §15.12, §15.13, §15.14,
- * §32.6 (« visualiser les dates de dépréciation des modèles ») ; lot 23.
+ * Registre Verebona des modèles — EXCEPTIONS seulement (lot 35B, ticket
+ * « Catalogue IA dynamique Google ») ; historique : CDC Assistant §15.12,
+ * §15.13, §15.14, §32.6, lots 23 et 32B.
  *
  * ══════════════════════════════════════════════════════════════════════════
- * CE QUI MANQUAIT
+ * CE N'EST PLUS UNE ALLOWLIST
  *
- * Le registre de l'assistant ne portait que l'alias et le modèle attendu ;
- * le statut « preview » était DEVINÉ par une expression régulière sur le nom
- * (`preview`, `-exp`). Un modèle nouvellement listé par le fournisseur, au
- * nom anodin, passait pour stable ; et rien ne disait vers quel modèle
- * revenir, ni avec quels prompts maîtres un modèle avait été validé.
+ * Jusqu'au lot 34, un modèle absent de ce fichier était refusé (UNKNOWN_MODEL),
+ * assimilé à un preview, et sa compatibilité T1–T6 devait être déclarée ici à
+ * la main : un nouveau modèle Google exigeait un commit et une mise en
+ * production. Désormais :
  *
- * Ce fichier DÉCLARE chaque modèle connu de Verebona :
- *   · statut stable / preview / déprécié (déclaré, plus déduit) ;
- *   · date d'activation dans Verebona (`null` : jamais activé) et date de fin
- *     annoncée par le fournisseur ;
- *   · capacités (sorties structurées, multimodal, raisonnement) ;
- *   · limites de contexte et de sortie, limites de débit (`null` : non
- *     déclarées ici — palier du projet fournisseur ; la liste du fournisseur,
- *     `ai_model_catalog`, complète à l'affichage) ;
- *   · prompts maîtres compatibles (les schémas suivent : ceux des opérations
- *     de ces masters) ;
- *   · modèle de rollback (stable, déclaré ici — vérifié par les tests et au
- *     démarrage).
- * Les PRIX ne sont pas ici : catalogue central versionné (§15.9,
- * `pricing/gemini-public-catalog.ts`, `ai_model_pricing`).
+ *   modèle listé par Google avec la clé active
+ *   + qualification technique automatique réussie (`model-qualification`)
+ *   + aucune exclusion explicite ci-dessous
+ *   = modèle utilisable (`usable-models.ts`).
  *
- * ══════════════════════════════════════════════════════════════════════════
- * REPLI PRUDENT : MODÈLE INCONNU = PREVIEW
+ * Ce fichier ne porte plus que des EXCEPTIONS Verebona documentées :
+ *   · modèle explicitement interdit (`forbidden`) ;
+ *   · anomalie connue (`anomaly`, signalée) ou dépréciation constatée
+ *     (`status: 'deprecated'`, `retiresOn`) ;
+ *   · modèle de rollback recommandé (`rollbackModel`) ;
+ *   · exception de compatibilité documentée (`excludedPrompts` : raison
+ *     technique, ex. latence incompatible avec le délai de la mascotte T6).
  *
- * Un modèle absent de ce registre n'a été ni qualifié ni évalué : il est
- * traité comme un modèle preview (§15.12 : pas en production sans feature
- * flag et double validation, lot 21). Le recetter hors production reste
- * possible ; le déclarer ici est la seule façon d'en faire un modèle stable.
+ * `capabilities` est la QUALIFICATION HISTORIQUE (manuelle) des modèles déjà
+ * exploités : elle ne sert que tant qu'aucune qualification automatique
+ * n'existe pour ce modèle avec la clé active (transition au déploiement —
+ * aucun sélecteur ne se vide le temps de la première synchronisation). Un
+ * résultat automatique la remplace toujours, y compris en échec.
  *
- * Module PUR (aucun accès base) : lu par le BO, la passerelle, les contrôles
- * de démarrage et d'activation.
+ * Le statut preview n'est plus deviné « inconnu = preview » : il vient du
+ * fournisseur (`model-lifecycle.ts`) et n'est qu'INFORMATIF.
+ *
+ * Les PRIX ne sont pas ici : catalogue tarifaire synchronisé (§15.9,
+ * `pricing/pricing-sync.service.ts`, `ai_model_price_status`).
+ *
+ * Module PUR (aucun accès base).
  * ══════════════════════════════════════════════════════════════════════════
  */
 
-/** Version du registre déclaratif (tracée avec les contrôles de démarrage). */
-export const DECLARED_MODELS_VERSION = 'declared-models-v1.0' as const;
+/** Version du registre (tracée avec les contrôles de démarrage). */
+export const DECLARED_MODELS_VERSION = 'declared-models-v2.0-exceptions' as const;
 
-export type ModelLifecycleStatus = 'stable' | 'preview' | 'deprecated';
+/** Statut d'un modèle : déclaré ici (exception) ou statut fournisseur. */
+export type ModelLifecycleStatus = 'stable' | 'preview' | 'experimental' | 'deprecated';
 
 export const MODEL_STATUS_LABELS: Readonly<Record<ModelLifecycleStatus | 'unknown', string>> = {
   stable: 'Stable',
   preview: 'Preview',
+  experimental: 'Expérimental (non sélectionnable)',
   deprecated: 'Déprécié',
-  unknown: 'Inconnu (traité comme preview)',
+  unknown: 'Statut non communiqué',
 };
 
 export type ModelCapability = 'structured_output' | 'multimodal' | 'thinking';
@@ -56,11 +59,15 @@ export type ModelCapability = 'structured_output' | 'multimodal' | 'thinking';
 export interface DeclaredModel {
   provider: 'gemini';
   model: string;
-  status: ModelLifecycleStatus;
+  status: 'stable' | 'preview' | 'deprecated';
   /** Date d'activation dans Verebona (AAAA-MM-JJ) ; `null` : jamais activé. */
   activatedOn: string | null;
   /** Date de fin annoncée par le fournisseur (AAAA-MM-JJ). */
   retiresOn: string | null;
+  /**
+   * Qualification HISTORIQUE (manuelle, lots 23 à 32B) : utilisée seulement en
+   * l'absence de qualification automatique avec la clé active.
+   */
   capabilities: readonly ModelCapability[];
   /** Fenêtre de contexte (tokens d'entrée) ; `null` : liste du fournisseur. */
   contextWindowTokens: number | null;
@@ -68,36 +75,30 @@ export interface DeclaredModel {
   maxOutputTokens: number | null;
   /** Limites de débit du palier contractuel ; `null` : non déclarées. */
   rateLimits: { requestsPerMinute: number | null; tokensPerMinute: number | null };
-  /** Prompts maîtres validés avec ce modèle (§15.12 « prompts et schémas compatibles »). */
-  compatiblePrompts: readonly string[];
-  /** Modèle de retour arrière (stable, déclaré ici). */
+  /** Exception de compatibilité documentée : prompts maîtres exclus et raison. */
+  excludedPrompts?: { prompts: readonly string[]; reason: string };
+  /** Modèle explicitement interdit par Verebona. */
+  forbidden?: { reason: string };
+  /** Anomalie connue (signalée, non bloquante). */
+  anomaly?: string;
+  /** Modèle de retour arrière recommandé (stable, déclaré ici). */
   rollbackModel: string | null;
   note?: string;
 }
 
-// Prompts maîtres (CDC 15 §22). Lot 32B : la compatibilité est DÉCLARÉE
-// MODÈLE PAR MODÈLE, jamais déduite de la catégorie commerciale (« Flash »,
-// « Pro ») — l'ancienne exclusion générale des Pro sur l'assistant (CDC
-// Assistant V1, §15.6 / §31.2) n'est plus une règle active. Un modèle n'est
-// sélectionnable pour un traitement que s'il déclare le prompt maître de ce
-// traitement ET satisfait les autres règles (`usable-models.ts`).
-const T1 = 't1_master_v1';
-const T2 = 't2_master_v1';
-const T3 = 't3_master_v1';
-const T4 = 't4_master_v1';
-const T5 = 't5_master_v1';
 const T6 = 't6_master_v1';
-const TOUS = [T1, T2, T3, T4, T5, T6] as const;
-/**
- * Modèles à latence de raisonnement longue : non validés pour la mascotte
- * (T6, délai de 8 s, `t6_formulate`) — raison technique propre à ces
- * modèles, pas à leur nom.
- */
-const SANS_MASCOTTE = [T1, T2, T3, T4, T5] as const;
-
 const NON_DECLARE = { requestsPerMinute: null, tokensPerMinute: null } as const;
 const STRUCT_MULTI = ['structured_output', 'multimodal'] as const;
 const STRUCT_MULTI_THINK = ['structured_output', 'multimodal', 'thinking'] as const;
+/**
+ * Modèles à latence de raisonnement longue : non validés pour la mascotte
+ * (T6, délai de 8 s, `t6_formulate`) — raison technique propre à ces
+ * modèles, pas à leur nom. Seule exception de compatibilité conservée.
+ */
+const LATENCE_T6 = {
+  prompts: [T6],
+  reason: 'latence de raisonnement incompatible avec le délai de 8 s de la mascotte (T6)',
+} as const;
 
 export const DECLARED_MODELS: readonly DeclaredModel[] = [
   {
@@ -105,70 +106,62 @@ export const DECLARED_MODELS: readonly DeclaredModel[] = [
     // Alias assistant-default depuis le constat de préproduction du 18/09/2026.
     activatedOn: '2026-09-18', retiresOn: null, capabilities: STRUCT_MULTI,
     contextWindowTokens: null, maxOutputTokens: null, rateLimits: NON_DECLARE,
-    compatiblePrompts: TOUS, rollbackModel: 'gemini-3.1-flash-lite',
+    rollbackModel: 'gemini-3.1-flash-lite',
   },
   {
     provider: 'gemini', model: 'gemini-3.1-flash-lite', status: 'stable',
     // Alias assistant-escalation (CDC Assistant du 16/07/2026) et principal T1/T3/T4.
     activatedOn: '2026-07-16', retiresOn: null, capabilities: STRUCT_MULTI,
     contextWindowTokens: null, maxOutputTokens: null, rateLimits: NON_DECLARE,
-    compatiblePrompts: TOUS, rollbackModel: 'gemini-3.5-flash-lite',
+    rollbackModel: 'gemini-3.5-flash-lite',
   },
   {
     provider: 'gemini', model: 'gemini-3.5-flash', status: 'stable',
     // Premier repli de l'analyse documentaire (référentiel des opérations).
-    // Date d'activation non documentée : à renseigner (point ouvert lot 23).
     activatedOn: null, retiresOn: null, capabilities: STRUCT_MULTI_THINK,
     contextWindowTokens: null, maxOutputTokens: null, rateLimits: NON_DECLARE,
-    compatiblePrompts: TOUS, rollbackModel: 'gemini-3.1-flash-lite',
+    rollbackModel: 'gemini-3.1-flash-lite',
     note: 'Remplacé par gemini-3.6-flash au catalogue tarifaire.',
   },
   {
     provider: 'gemini', model: 'gemini-3.6-flash', status: 'stable',
     activatedOn: null, retiresOn: null, capabilities: STRUCT_MULTI_THINK,
     contextWindowTokens: null, maxOutputTokens: null, rateLimits: NON_DECLARE,
-    compatiblePrompts: TOUS, rollbackModel: 'gemini-3.5-flash',
+    rollbackModel: 'gemini-3.5-flash',
   },
   {
     provider: 'gemini', model: 'gemini-2.5-flash', status: 'stable',
     activatedOn: null, retiresOn: null, capabilities: STRUCT_MULTI_THINK,
     contextWindowTokens: 1_048_576, maxOutputTokens: 65_536, rateLimits: NON_DECLARE,
-    compatiblePrompts: TOUS, rollbackModel: 'gemini-3.1-flash-lite',
+    rollbackModel: 'gemini-3.1-flash-lite',
   },
   {
     provider: 'gemini', model: 'gemini-2.5-pro', status: 'deprecated',
-    // Principal du code de la gouvernance (T5) et second repli documentaire. Date
-    // d'activation non documentée : à renseigner (point ouvert lot 23).
+    // Principal du code de la gouvernance (T5) et second repli documentaire.
     activatedOn: null, retiresOn: null, capabilities: STRUCT_MULTI_THINK,
     contextWindowTokens: 1_048_576, maxOutputTokens: 65_536, rateLimits: NON_DECLARE,
-    // Lot 32B : compatible T2 (sorties structurées, multimodal) — mais
-    // DÉPRÉCIÉ, donc jamais proposé pour une nouvelle configuration, sur
-    // aucun traitement : refusé parce qu'il est déprécié, pas parce que Pro.
-    compatiblePrompts: SANS_MASCOTTE, rollbackModel: 'gemini-3.5-flash',
-    note: 'Déprécié : non sélectionnable pour une nouvelle configuration. Accès limité aux comptes existants (à vérifier sur la clé) ; '
-      + 'aucune date d’arrêt annoncée par la page officielle des dépréciations.',
+    excludedPrompts: LATENCE_T6, rollbackModel: 'gemini-3.5-flash',
+    anomaly: 'Accès limité aux comptes existants (404 « no longer available to new users » sur les clés récentes).',
+    note: 'Déprécié : non sélectionnable pour une nouvelle configuration. Aucune date d’arrêt annoncée par la page officielle des dépréciations.',
   },
   {
     provider: 'gemini', model: 'gemini-2.5-flash-lite', status: 'deprecated',
     activatedOn: '2026-07-16', retiresOn: '2026-10-16', capabilities: STRUCT_MULTI,
     contextWindowTokens: 1_048_576, maxOutputTokens: 65_536, rateLimits: NON_DECLARE,
-    compatiblePrompts: TOUS, rollbackModel: 'gemini-3.5-flash-lite',
-    note: 'Indisponible aux comptes récents depuis le 18/09/2026.',
+    rollbackModel: 'gemini-3.5-flash-lite',
+    anomaly: 'Indisponible aux comptes récents depuis le 18/09/2026.',
   },
   {
     provider: 'gemini', model: 'gemini-3-flash-preview', status: 'preview',
     activatedOn: null, retiresOn: null, capabilities: STRUCT_MULTI_THINK,
     contextWindowTokens: null, maxOutputTokens: null, rateLimits: NON_DECLARE,
-    compatiblePrompts: TOUS, rollbackModel: 'gemini-3.5-flash',
+    rollbackModel: 'gemini-3.5-flash',
   },
   {
     provider: 'gemini', model: 'gemini-3.1-pro-preview', status: 'preview',
     activatedOn: null, retiresOn: null, capabilities: STRUCT_MULTI_THINK,
     contextWindowTokens: null, maxOutputTokens: null, rateLimits: NON_DECLARE,
-    // Lot 32B : compatible T2 ; preview, donc admis seulement si la
-    // politique preview effective l'autorise.
-    compatiblePrompts: SANS_MASCOTTE, rollbackModel: 'gemini-3.6-flash',
-    note: 'Preview : sélectionnable seulement si la politique preview l’autorise.',
+    excludedPrompts: LATENCE_T6, rollbackModel: 'gemini-3.6-flash',
   },
 ];
 
@@ -178,19 +171,28 @@ export function findDeclaredModel(model: string | null | undefined): DeclaredMod
   return typeof model === 'string' ? PAR_MODELE.get(model) : undefined;
 }
 
-/** Statut déclaré ; `unknown` pour un modèle absent du registre. */
-export function declaredModelStatus(model: string | null | undefined): ModelLifecycleStatus | 'unknown' {
+/** Statut DÉCLARÉ (exception) ; `unknown` pour un modèle sans exception. */
+export function declaredModelStatus(model: string | null | undefined): DeclaredModel['status'] | 'unknown' {
   return findDeclaredModel(model)?.status ?? 'unknown';
 }
 
 /**
- * Modèle à traiter comme preview (§15.12) : déclaré preview, ou INCONNU du
- * registre (repli prudent). `null`/vide : aucun modèle, donc rien à garder.
+ * Modèle preview — INFORMATIF (lot 35B : plus aucune condition d'usage n'en
+ * dépend). Statut déclaré, sinon statut fournisseur (`model-lifecycle.ts`).
+ * Un modèle sans exception déclarée n'est plus « traité comme preview ».
  */
-export function isPreviewModel(model: string | null | undefined): boolean {
+export function isPreviewModel(model: string | null | undefined, providerStatus?: ModelLifecycleStatus | null): boolean {
   if (typeof model !== 'string' || model.trim() === '') return false;
-  const s = declaredModelStatus(model);
-  return s === 'preview' || s === 'unknown';
+  const d = findDeclaredModel(model);
+  if (d) return d.status === 'preview';
+  return providerStatus === 'preview';
+}
+
+/** Raison d'exclusion documentée d'un modèle pour un prompt maître, sinon `null`. */
+export function documentedExclusion(model: string, promptCode: string | null | undefined): string | null {
+  const d = findDeclaredModel(model);
+  if (!d?.excludedPrompts || !promptCode) return null;
+  return d.excludedPrompts.prompts.includes(promptCode) ? d.excludedPrompts.reason : null;
 }
 
 // ── Cohérence (§15.14) ──────────────────────────────────────────────────────
@@ -199,27 +201,28 @@ export interface ModelUse {
   /** Traitement ou opération (libellé des messages). */
   where: string;
   model: string;
-  /** Prompt maître de l'usage (absent : pas de contrôle de compatibilité). */
+  /** Prompt maître de l'usage (absent : pas de contrôle d'exclusion). */
   promptCode?: string | null;
 }
 
 export interface CoherenceIssue {
   /** `error` : bloquant ; `warning` : signalé. */
   level: 'error' | 'warning';
-  code: 'UNKNOWN_MODEL' | 'PREVIEW_NOT_ALLOWED' | 'PROMPT_INCOMPATIBLE' | 'ROLLBACK_MISSING' | 'ROLLBACK_UNKNOWN' | 'ROLLBACK_NOT_STABLE' | 'MODEL_DEPRECATED';
+  code: 'MODEL_FORBIDDEN' | 'MODEL_EXCLUDED' | 'MODEL_ANOMALY' | 'ROLLBACK_MISSING' | 'ROLLBACK_UNKNOWN' | 'ROLLBACK_NOT_STABLE' | 'MODEL_DEPRECATED';
   where: string;
   model: string;
   message: string;
 }
 
 /**
- * Contrôle de cohérence d'un ensemble d'usages (pur) :
- *   · modèle inconnu du registre → avertissement (traité comme preview :
- *     la garde preview décide) ;
- *   · prompt maître non déclaré compatible → erreur ;
- *   · modèle de rollback absent, inconnu, ou non stable (preview, déprécié)
- *     → erreur ;
- *   · modèle déprécié → avertissement (date de fin dans le message).
+ * Contrôle de cohérence d'un ensemble d'usages avec les EXCEPTIONS Verebona
+ * (pur). Un modèle sans exception déclarée n'est JAMAIS une incohérence
+ * (lot 35B) : sa disponibilité et ses capacités sont établies par le
+ * catalogue et la qualification automatique (`usable-models.ts`).
+ *   · modèle interdit → erreur ;
+ *   · exclusion documentée pour le prompt maître de l'usage → erreur ;
+ *   · rollback déclaré absent du registre ou non stable → erreur ;
+ *   · déprécié, anomalie connue → avertissement.
  */
 export function checkModelUses(uses: readonly ModelUse[], today: string = new Date().toISOString().slice(0, 10)): CoherenceIssue[] {
   const out: CoherenceIssue[] = [];
@@ -229,15 +232,15 @@ export function checkModelUses(uses: readonly ModelUse[], today: string = new Da
     if (vus.has(cle)) continue;
     vus.add(cle);
     const d = findDeclaredModel(u.model);
-    if (!d) {
-      out.push({ level: 'warning', code: 'UNKNOWN_MODEL', where: u.where, model: u.model,
-        message: `${u.where} : modèle « ${u.model} » absent du registre des modèles — traité comme preview (§15.12).` });
-      continue;
+    if (!d) continue;
+    if (d.forbidden) {
+      out.push({ level: 'error', code: 'MODEL_FORBIDDEN', where: u.where, model: u.model,
+        message: `${u.where} : le modèle « ${u.model} » est interdit par Verebona (${d.forbidden.reason}).` });
     }
-    if (u.promptCode && !d.compatiblePrompts.includes(u.promptCode)) {
-      out.push({ level: 'error', code: 'PROMPT_INCOMPATIBLE', where: u.where, model: u.model,
-        message: `${u.where} : le modèle « ${u.model} » n’est pas déclaré compatible avec le prompt « ${u.promptCode} » `
-          + `(prompts compatibles : ${d.compatiblePrompts.join(', ') || 'aucun'}).` });
+    const exclusion = documentedExclusion(u.model, u.promptCode);
+    if (exclusion) {
+      out.push({ level: 'error', code: 'MODEL_EXCLUDED', where: u.where, model: u.model,
+        message: `${u.where} : le modèle « ${u.model} » est exclu pour le prompt « ${u.promptCode} » (${exclusion}).` });
     }
     if (!d.rollbackModel) {
       out.push({ level: 'error', code: 'ROLLBACK_MISSING', where: u.where, model: u.model,
@@ -256,6 +259,10 @@ export function checkModelUses(uses: readonly ModelUse[], today: string = new Da
       const passe = d.retiresOn != null && d.retiresOn <= today;
       out.push({ level: 'warning', code: 'MODEL_DEPRECATED', where: u.where, model: u.model,
         message: `${u.where} : modèle « ${u.model} » déprécié${d.retiresOn ? ` (fin ${passe ? 'atteinte le' : 'prévue le'} ${d.retiresOn})` : ''} — remplacement à tester (§15.13).` });
+    }
+    if (d.anomaly) {
+      out.push({ level: 'warning', code: 'MODEL_ANOMALY', where: u.where, model: u.model,
+        message: `${u.where} : anomalie connue sur « ${u.model} » — ${d.anomaly}` });
     }
   }
   return out;

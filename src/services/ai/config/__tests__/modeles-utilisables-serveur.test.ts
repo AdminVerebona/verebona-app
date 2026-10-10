@@ -24,7 +24,7 @@ vi.mock('../../telemetry/execution-context', () => ({ invalidateConfigVersionCac
 vi.mock('../../queue/job-queue.repository', () => ({ requeueRunning: async () => 0 }));
 vi.mock('../config-cache-version', () => ({ bumpConfigVersionCounter: async () => true }));
 vi.mock('@/services/verebona-assistant/core/model-startup-check', () => ({
-  runAssistantStartupCheck: async () => ({ ok: true }), assistantPreviewModelsAllowed: async () => false,
+  runAssistantStartupCheck: async () => ({ ok: true }),
 }));
 
 let disponible = new Set(['gemini-3.5-flash-lite', 'gemini-3.1-flash-lite', 'gemini-3.6-flash', 'gemini-3.5-flash', 'gemini-2.5-flash', 'gemini-2.5-pro']);
@@ -33,7 +33,6 @@ const contexte = (): UsableModelsContext => ({
   catalog: { refreshedAt: '2026-10-07T08:00:00Z', models: [...disponible].map((model) => ({ model, available: true, supportsGeneration: true })) },
   codeCatalog: [],
   price: () => ({ verified: true }),
-  previewAllowed: () => false,
   operational: new Map(),
   today: '2026-10-07',
 });
@@ -70,7 +69,7 @@ describe('§5 — enregistrement d’un brouillon (contournement de l’interfac
     await expect(svc.saveTreatmentConfig(7, entree('T2', { fallback1: 'gemini-2.5-pro' }), 1))
       .rejects.toMatchObject({ code: 'MODEL_NOT_USABLE', message: expect.stringMatching(/gemini-2\.5-pro.*T2 : déprécié/) });
     await expect(svc.saveTreatmentConfig(7, entree('T3', { fallback2: 'gemini-9-inconnu' }), 1))
-      .rejects.toMatchObject({ code: 'MODEL_NOT_USABLE', message: expect.stringMatching(/modèle inconnu du registre/) });
+      .rejects.toMatchObject({ code: 'MODEL_NOT_USABLE', message: expect.stringMatching(/absent du catalogue du fournisseur/) });
     // Doublon nouvellement introduit : refusé aussi.
     await expect(svc.saveTreatmentConfig(7, entree('T1', { fallback1: 'gemini-3.1-flash-lite' }), 1))
       .rejects.toMatchObject({ code: 'MODEL_NOT_USABLE', message: expect.stringMatching(/déjà choisi à un autre rang/) });

@@ -57,7 +57,9 @@ interface Credential {
 
 interface CatalogEntry {
   model: string; priced: boolean; verified: boolean;
-  inputPerMillion: number; outputPerMillion: number;
+  inputPerMillion: number | null; outputPerMillion: number | null;
+  /** Lot 35B : tarif synchronisé KNOWN, ou UNKNOWN (jamais inventé) et sa raison. */
+  pricingStatus?: 'KNOWN' | 'UNKNOWN'; reason?: string | null;
 }
 
 interface ProviderData {
@@ -322,15 +324,18 @@ export default function AiProviderPage() {
 
         <div className="space-y-1.5">
           {data.catalog.map((m) => (
-            <div key={m.model} className="flex items-center gap-3 text-sm">
-              <span className="text-[color:var(--text-primary)] font-mono flex-1 truncate">
+            <div key={m.model} className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-sm">
+              <span className="text-[color:var(--text-primary)] font-mono flex-1 min-w-[12rem] truncate">
                 {m.model}
               </span>
-              <span className="text-xs text-[color:var(--text-muted)]">
-                {m.inputPerMillion} / {m.outputPerMillion} $ par million
-              </span>
-              {!m.priced && (
-                <span className="text-xs text-amber-500">sans tarif en base</span>
+              {m.priced ? (
+                <span className="text-xs text-[color:var(--text-muted)]">
+                  {m.inputPerMillion} / {m.outputPerMillion} $ par million
+                </span>
+              ) : (
+                <span className="text-xs text-amber-500 max-w-full truncate" title={m.reason ?? undefined}>
+                  tarif UNKNOWN{m.reason ? ` — ${m.reason}` : ''}
+                </span>
               )}
               {m.priced && !m.verified && (
                 <span className="text-xs text-[color:var(--text-muted)]">tarif public</span>
@@ -340,8 +345,9 @@ export default function AiProviderPage() {
         </div>
 
         <p className="text-xs text-[color:var(--text-muted)]">
-          Le catalogue n&apos;est pas actualisé automatiquement. Un modèle sans tarif
-          empêche de valider une version qui l&apos;utilise.
+          Tarifs synchronisés automatiquement depuis la page officielle Google (toutes les 6 h, ou
+          « Actualiser le catalogue »). Un modèle au tarif UNKNOWN reste utilisable : ses coûts sont
+          marqués non calculables, jamais estimés.
         </p>
       </div>
     </div>

@@ -6,25 +6,33 @@
  *
  * Section repliée de Configuration IA, mêmes composants et mêmes tables que
  * les réglages de l'assistant : alias de l'assistant résolus (statut, dates,
- * prix, limites, prompts compatibles, rollback), modèles déclarés et leur
- * usage effectif, contrôle de cohérence, verdict du contrôle de démarrage.
- * Rien ne s'édite ici : les alias changent par une version de configuration,
- * l'usage d'un modèle preview en production par le réglage à double
- * validation (section « Assistant »).
+ * prix, limites, qualification, rollback), modèles connus — exceptions
+ * Verebona, catalogue découvert chez Google, modèles en usage — avec statut
+ * fournisseur (Preview visible), qualification technique automatique, tarif
+ * KNOWN / UNKNOWN (jamais inventé), contrôle de cohérence, verdict du
+ * contrôle de démarrage. Rien ne s'édite ici (lot 35B : plus de réglage
+ * preview). Tables en défilement horizontal : même rendu desktop et mobile.
  */
 import { useCallback, useState } from 'react';
 import { toast } from 'sonner';
 import { apiClient } from '@/lib/api-client';
 import { formatDateTime } from '@/lib/admin/format';
 
+interface Qualification {
+  source: 'auto' | 'historical'; generate: boolean | null; structured: boolean | null;
+  multimodal: boolean | null; thinking: boolean | null; qualifiedAt: string | null;
+}
 interface Model {
   provider: string; model: string | null; status: string; statusLabel?: string;
   activatedOn: string | null; retiresOn: string | null; capabilities: string[];
   price: { inputPerMillion: number; outputPerMillion: number; source: string | null } | null;
   contextWindowTokens: number | null; maxOutputTokens: number | null;
   rateLimits: { requestsPerMinute: number | null; tokensPerMinute: number | null };
-  compatiblePrompts: string[]; rollbackModel: string | null; note?: string | null;
+  qualification: Qualification | null; exclusion?: string | null;
+  rollbackModel: string | null; note?: string | null;
   usedBy?: string[];
+  pricing?: { status: 'KNOWN' | 'UNKNOWN'; reason: string | null; fetchedAt: string | null; lastChangedAt: string | null };
+  available?: boolean | null; declared?: boolean; firstSeenAt?: string | null; displayName?: string | null;
 }
 interface AliasRow extends Model {
   role: 'default' | 'escalation'; alias: string; compatibleSchemas: string[];
@@ -39,10 +47,21 @@ interface Data {
 }
 
 const STATUT: Record<string, string> = {
-  stable: 'text-emerald-500', preview: 'text-amber-500', deprecated: 'text-red-400', unknown: 'text-amber-500',
+  stable: 'text-emerald-500', preview: 'text-amber-500', experimental: 'text-red-400', deprecated: 'text-red-400', unknown: 'text-[color:var(--text-muted)]',
 };
-const LIBELLE: Record<string, string> = { stable: 'Stable', preview: 'Preview', deprecated: 'Déprécié', unknown: 'Inconnu (preview)' };
+const LIBELLE: Record<string, string> = {
+  stable: 'Stable', preview: 'Preview', experimental: 'Expérimental (exclu)', deprecated: 'Déprécié', unknown: 'Non communiqué',
+};
 const CAP: Record<string, string> = { structured_output: 'sorties structurées', multimodal: 'multimodal', thinking: 'raisonnement' };
+const QCAP: Array<[keyof Qualification, string]> = [['generate', 'génération'], ['structured', 'schéma JSON'], ['multimodal', 'multimodal'], ['thinking', 'raisonnement']];
+const qualif = (q: Qualification | null) => {
+  if (!q) return 'en attente';
+  const parts = QCAP.map(([k, l]) => `${q[k] === true ? '✓' : q[k] === false ? '✗' : '?'} ${l}`).join(' · ');
+  return `${q.source === 'auto' ? 'auto' : 'historique'} — ${parts}`;
+};
+const tarif = (m: Model) => (m.pricing?.status === 'UNKNOWN'
+  ? `UNKNOWN${m.pricing.reason ? ` (${m.pricing.reason})` : ''}`
+  : prix(m.price));
 
 const nb = (v: number | null | undefined) => (v == null ? '—' : v.toLocaleString('fr-FR'));
 const date = (v: string | null) => (v ? new Date(`${v}T00:00:00`).toLocaleDateString('fr-FR') : '—');
@@ -84,9 +103,10 @@ export function ModelRegistry() {
       ) : (
         <div className="px-4 pb-4 space-y-5">
           <p className="text-xs text-[color:var(--text-muted)]">
-            Lecture seule ({data.registryVersion} · {data.declaredModelsVersion}). Les alias changent par une version de configuration ;
-            un modèle preview (ou absent du registre) n’est activé en production qu’avec le réglage « Modèles preview en production »,
-            accordé par deux administrateurs. Prix : catalogue central (USD par million de jetons).
+            Lecture seule ({data.registryVersion} · {data.declaredModelsVersion}). Les alias changent par une version de configuration.
+            Un modèle est utilisable s’il est servi par la clé active et a réussi sa qualification technique (preview compris, statut
+            affiché ; expérimental exclu). Prix : page officielle Google synchronisée (USD par million de jetons) ; UNKNOWN = coût non
+            calculable, jamais estimé.
           </p>
 
           {verdict && (
@@ -117,7 +137,7 @@ export function ModelRegistry() {
                     <th className={TH}>Alias</th><th className={TH}>Modèle</th><th className={TH}>Statut</th>
                     <th className={TH}>Activé le</th><th className={TH}>Fin prévue</th><th className={TH}>Prix entrée / sortie</th>
                     <th className={TH}>Contexte · sortie max</th><th className={TH}>Limites Verebona</th><th className={TH}>Débit</th>
-                    <th className={TH}>Prompts · schémas compatibles</th><th className={TH}>Rollback</th>
+                    <th className={TH}>Qualification · schémas</th><th className={TH}>Rollback</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -128,13 +148,13 @@ export function ModelRegistry() {
                       <td className={`${TD} ${STATUT[a.status] ?? ''}`}>{LIBELLE[a.status] ?? a.status}</td>
                       <td className={TD}>{date(a.activatedOn)}</td>
                       <td className={TD}>{date(a.retiresOn)}</td>
-                      <td className={TD}>{prix(a.price)}</td>
+                      <td className={TD}>{tarif(a)}</td>
                       <td className={TD}>{nb(a.contextWindowTokens)} · {nb(a.maxOutputTokens)}</td>
                       <td className={TD}>
                         entrée {nb(a.limits.maxInputTokens)} · sortie {nb(a.limits.maxOutputTokens)} · {a.limits.timeoutMs / 1000} s · {a.limits.maxCallsPerMessage} appels/message
                       </td>
                       <td className={TD}>{debit(a.rateLimits)}</td>
-                      <td className={`${TD} font-mono`}>{a.compatiblePrompts.join(', ') || '—'}{a.compatibleSchemas.length ? ` · ${a.compatibleSchemas.join(', ')}` : ''}</td>
+                      <td className={TD}>{qualif(a.qualification)}{a.compatibleSchemas.length ? <span className="font-mono"> · {a.compatibleSchemas.join(', ')}</span> : null}</td>
                       <td className={`${TD} font-mono`}>{a.rollbackModel ?? '—'}</td>
                     </tr>
                   ))}
@@ -144,28 +164,31 @@ export function ModelRegistry() {
           </section>
 
           <section className="space-y-1.5">
-            <h3 className="text-xs font-semibold uppercase tracking-wide text-[color:var(--text-muted)]">Modèles déclarés et usage effectif</h3>
+            <h3 className="text-xs font-semibold uppercase tracking-wide text-[color:var(--text-muted)]">Modèles connus : exceptions Verebona, catalogue Google, usage effectif</h3>
             <div className="overflow-x-auto">
               <table className="w-full text-xs">
                 <thead>
                   <tr className="text-left text-[color:var(--text-muted)]">
-                    <th className={TH}>Modèle</th><th className={TH}>Statut</th><th className={TH}>Activé le</th>
-                    <th className={TH}>Fin prévue</th><th className={TH}>Capacités</th><th className={TH}>Prix entrée / sortie</th>
-                    <th className={TH}>Contexte · sortie max</th><th className={TH}>Prompts compatibles</th><th className={TH}>Rollback</th>
+                    <th className={TH}>Modèle</th><th className={TH}>Statut</th><th className={TH}>Disponibilité</th>
+                    <th className={TH}>Fin prévue</th><th className={TH}>Qualification</th><th className={TH}>Tarif entrée / sortie</th>
+                    <th className={TH}>Contexte · sortie max</th><th className={TH}>Exception Verebona</th><th className={TH}>Rollback</th>
                     <th className={TH}>Utilisé par</th>
                   </tr>
                 </thead>
                 <tbody>
                   {data.models.map((m) => (
                     <tr key={m.model ?? ''} className="border-t border-[color:var(--border-subtle)] text-[color:var(--text-primary)]">
-                      <td className={`${TD} font-mono`} title={m.note ?? undefined}>{m.model}</td>
+                      <td className={`${TD} font-mono`} title={[m.displayName, m.note].filter(Boolean).join(' — ') || undefined}>{m.model}</td>
                       <td className={`${TD} ${STATUT[m.status] ?? ''}`}>{LIBELLE[m.status] ?? m.status}</td>
-                      <td className={TD}>{date(m.activatedOn)}</td>
+                      <td className={TD}>
+                        {m.available == null ? 'jamais listé' : m.available ? 'listé' : <span className="text-red-400">retiré</span>}
+                        {m.firstSeenAt ? <span className="text-[color:var(--text-muted)]"> · vu le {formatDateTime(m.firstSeenAt)}</span> : null}
+                      </td>
                       <td className={TD}>{date(m.retiresOn)}</td>
-                      <td className={TD}>{m.capabilities.map((c) => CAP[c] ?? c).join(', ') || '—'}</td>
-                      <td className={TD}>{prix(m.price)}</td>
+                      <td className={TD}>{qualif(m.qualification)}</td>
+                      <td className={m.pricing?.status === 'UNKNOWN' ? `${TD} text-amber-500` : TD}>{tarif(m)}</td>
                       <td className={TD}>{nb(m.contextWindowTokens)} · {nb(m.maxOutputTokens)}</td>
-                      <td className={`${TD} font-mono`}>{m.compatiblePrompts.join(', ') || '—'}</td>
+                      <td className={TD}>{m.exclusion ?? (m.declared ? (m.capabilities.map((c) => CAP[c] ?? c).join(', ') || '—') : '—')}</td>
                       <td className={`${TD} font-mono`}>{m.rollbackModel ?? '—'}</td>
                       <td className={TD}>{m.usedBy?.length ? m.usedBy.join(' ; ') : '—'}</td>
                     </tr>

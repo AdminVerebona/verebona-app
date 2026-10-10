@@ -74,11 +74,10 @@ describe('§15.14 — contrôle du registre au démarrage et au changement de co
     t2_revalidate: { operationCode: 't2_revalidate', useCaseCode: 'INTELLIGENT_ASSISTANT', label: '', provider: 'gemini', primaryModel: primary, fallbackModels: fallback, timeoutMs: 1, outputSchema: 'X' },
     t2_answer: { operationCode: 't2_answer', useCaseCode: 'INTELLIGENT_ASSISTANT', label: '', provider: 'gemini', primaryModel: primary, fallbackModels: fallback, timeoutMs: 1, outputSchema: 'X' },
   }) as never;
-  const deps = (primary: string, fallback: string[], prix = true, bloquant = true) => ({
+  const deps = (primary: string, fallback: string[], prix = true) => ({
     operations: ops(primary, fallback),
     resolve: async () => ({ primaryModel: primary, fallbackModels: fallback }),
     hasPrice: () => prix,
-    pricingBlocking: () => bloquant,
   });
 
   it('registre valide : alias résolus, prix présents, sorties structurées', async () => {
@@ -87,10 +86,11 @@ describe('§15.14 — contrôle du registre au démarrage et au changement de co
     expect(r.snapshot.aliases).toEqual({ 'assistant-default': 'gemini-3.5-flash-lite', 'assistant-escalation': 'gemini-3.1-flash-lite' });
   });
 
-  it('refuse : prix absent (bloquant), preview sans flag, « latest », défaut = escalade, modèle sans sortie structurée', async () => {
-    expect((await checkModelRegistry(deps('gemini-3.5-flash-lite', ['gemini-3.1-flash-lite'], false))).errors.join()).toMatch(/aucun prix/);
-    expect((await checkModelRegistry(deps('gemini-3.5-flash-lite', ['gemini-3.1-flash-lite'], false, false))).ok).toBe(true);
-    expect((await checkModelRegistry(deps('gemini-4-flash-preview', ['gemini-3.1-flash-lite']))).errors.join()).toMatch(/preview/);
+  it('refuse : « latest », défaut = escalade, modèle sans sortie structurée — lot 35B : prix absent et preview ne bloquent plus', async () => {
+    const sansPrix = await checkModelRegistry(deps('gemini-3.5-flash-lite', ['gemini-3.1-flash-lite'], false));
+    expect(sansPrix.ok).toBe(true);
+    expect(sansPrix.warnings.join()).toMatch(/aucun prix/);
+    expect((await checkModelRegistry(deps('gemini-4-flash-preview', ['gemini-3.1-flash-lite']))).ok).toBe(true);
     expect((await checkModelRegistry(deps('gemini-flash-latest', ['gemini-3.1-flash-lite']))).errors.join()).toMatch(/latest/);
     expect((await checkModelRegistry(deps('gemini-3.5-flash-lite', ['gemini-3.5-flash-lite']))).errors.join()).toMatch(/identique/);
     expect((await checkModelRegistry(deps('claude-x', ['gemini-3.1-flash-lite']))).errors.join()).toMatch(/sortie structurée/);

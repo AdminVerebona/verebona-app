@@ -21,6 +21,11 @@
  * (« gemini-X — indisponible (déprécié) ») ; ce n'est jamais un choix. La
  * liste globale `models` est conservée pour les écrans qui la lisent.
  * Aucun appel fournisseur : catalogue, tarifs et état opérationnel sont lus.
+ *
+ * ── LOT 35B : CATALOGUE DYNAMIQUE ───────────────────────────────────────────
+ * Les modèles découverts chez Google et qualifiés automatiquement y figurent
+ * sans modification du code ; chaque entrée porte son statut (Preview
+ * visible) et `priced` (tarif inconnu : proposé quand même).
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { GEMINI_PUBLIC_CATALOG } from '@/services/ai/gateway/pricing/gemini-public-catalog';

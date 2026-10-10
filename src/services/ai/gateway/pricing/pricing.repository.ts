@@ -7,6 +7,7 @@
  */
 import { pgClient } from '@/db';
 import type { ModelPrice } from './pricing-source.port';
+import type { PriceTier } from './google-pricing-page.adapter';
 
 export type PriceSource = 'billing_api' | 'public_catalog' | 'manual';
 
@@ -14,6 +15,8 @@ export interface CachedPrice extends ModelPrice {
   verified: boolean;
   fetchedAt: Date;
   source: PriceSource;
+  /** Paliers (lot 35B, migration 0304) — ex. au-delà de 200 000 jetons d'invite. */
+  tiers?: PriceTier[] | null;
 }
 
 const cache = new Map<string, CachedPrice>();
@@ -46,14 +49,30 @@ function key(provider: string, model: string): string {
 export async function loadPricingCache(): Promise<number> {
   let rows: unknown;
   try {
-    rows = await pgClient.unsafe(
-      `SELECT DISTINCT ON (provider, model)
-              provider, model, input_micros, output_micros, currency,
-              source, source_reference, verified, fetched_at
-         FROM ai_model_pricing
-        WHERE effective_from <= NOW()
-        ORDER BY provider, model, effective_from DESC`,
-    );
+    try {
+      // Lot 35B (0304) : un tarif INVALIDÉ (correspondance avec le modèle
+      // devenue incertaine) n'est plus servi — le coût devient « non
+      // calculable », jamais estimé. Les paliers sont chargés.
+      rows = await pgClient.unsafe(
+        `SELECT DISTINCT ON (provider, model)
+                provider, model, input_micros, output_micros, currency,
+                source, source_reference, verified, fetched_at, tiers
+           FROM ai_model_pricing
+          WHERE effective_from <= NOW() AND invalidated_at IS NULL
+          ORDER BY provider, model, effective_from DESC`,
+      );
+    } catch (e) {
+      // 42703 : colonnes de la 0304 pas encore appliquées — lecture historique.
+      if ((e as { code?: string }).code !== '42703') throw e;
+      rows = await pgClient.unsafe(
+        `SELECT DISTINCT ON (provider, model)
+                provider, model, input_micros, output_micros, currency,
+                source, source_reference, verified, fetched_at
+           FROM ai_model_pricing
+          WHERE effective_from <= NOW()
+          ORDER BY provider, model, effective_from DESC`,
+      );
+    }
   } catch (e) {
     const err = e as { code?: string; message?: string };
     cache.clear();
@@ -84,6 +103,7 @@ export async function loadPricingCache(): Promise<number> {
       sourceReference: r.source_reference ? String(r.source_reference) : undefined,
       verified: Boolean(r.verified),
       fetchedAt: new Date(String(r.fetched_at)),
+      tiers: Array.isArray(r.tiers) ? (r.tiers as PriceTier[]) : null,
     };
     cache.set(key(p.provider, p.model), p);
   }
@@ -135,11 +155,32 @@ export function getCacheState(): PricingCacheState {
  * passé doit rester explicable avec le tarif en vigueur au moment de l'appel.
  */
 export async function upsertPrice(
-  price: ModelPrice,
+  price: ModelPrice & { tiers?: PriceTier[] | null },
   source: PriceSource,
   verified: boolean,
   verifiedBy?: number,
 ): Promise<void> {
+  const params = [
+    price.provider, price.model, price.inputMicros, price.outputMicros,
+    price.currency, source, price.sourceReference ?? null, verified,
+    verifiedBy ?? null,
+  ];
+  if (price.tiers && price.tiers.length > 0) {
+    // Lot 35B (0304) : paliers enregistrés avec le tarif.
+    await pgClient.unsafe(
+      `INSERT INTO ai_model_pricing (
+         provider, model, input_micros, output_micros, currency,
+         source, source_reference, verified, verified_by, effective_from, fetched_at, tiers
+       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,NOW(),NOW(),$10::jsonb)
+       ON CONFLICT (provider, model, effective_from) DO UPDATE SET
+         input_micros = EXCLUDED.input_micros,
+         output_micros = EXCLUDED.output_micros,
+         tiers = EXCLUDED.tiers,
+         fetched_at = NOW()`,
+      [...params, JSON.stringify(price.tiers)] as never[],
+    );
+    return;
+  }
   await pgClient.unsafe(
     `INSERT INTO ai_model_pricing (
        provider, model, input_micros, output_micros, currency,
@@ -149,10 +190,22 @@ export async function upsertPrice(
        input_micros = EXCLUDED.input_micros,
        output_micros = EXCLUDED.output_micros,
        fetched_at = NOW()`,
-    [
-      price.provider, price.model, price.inputMicros, price.outputMicros,
-      price.currency, source, price.sourceReference ?? null, verified,
-      verifiedBy ?? null,
-    ] as never[],
+    params as never[],
   );
+}
+
+/**
+ * Retire les tarifs PUBLICS d'un modèle (lot 35B) : leur correspondance avec
+ * le modèle n'est plus certaine (page officielle ambiguë, modèle absent). Le
+ * coût des appels suivants devient « non calculable ». Les lignes restent
+ * (historique) ; les coûts déjà tracés ne sont pas touchés.
+ */
+export async function invalidatePublicPrices(provider: string, model: string): Promise<number> {
+  const rows = await pgClient.unsafe(
+    `UPDATE ai_model_pricing SET invalidated_at = NOW()
+      WHERE provider = $1 AND model = $2 AND source = 'public_catalog' AND invalidated_at IS NULL
+      RETURNING id`,
+    [provider, model] as never[],
+  );
+  return (rows as unknown as unknown[]).length;
 }

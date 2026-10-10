@@ -3,8 +3,9 @@
  * attente hors du chemin de lecture) — base PostgreSQL réelle.
  *
  * Stripe n'est jamais appelé : les abonnements sont des objets synthétiques
- * passés aux services (prix reconnus par les variables STRIPE_PRICE_*
- * posées ici), et les lectures Stripe des services sont injectées.
+ * passés aux services (prix reconnus par la DOUBLE LECTURE DE TRANSITION des
+ * variables STRIPE_PRICE_* posées ici — CDC lookup_key V4, legacy-price-env),
+ * et les lectures Stripe des services sont injectées.
  *
  * RECETTE FUNC-31 couverte : abonnement actif ; premier échec ; événement
  * rejoué ; impayé pendant le délai ; consultation / export (lecture) ;
@@ -23,17 +24,19 @@ import type Stripe from 'stripe';
 import { beforeAll, expect, it } from 'vitest';
 import { scenario } from '../scenario';
 import { uid } from '../factories';
-import { PRICE_CATALOG, type PlanCode } from '@/lib/stripe-prices';
+import type { PlanCode } from '@/lib/stripe-prices';
+import { LEGACY_PRICE_VARS } from '@/services/billing/legacy-price-env';
+
+/** Montants d'ancienne grille, propres au scénario (aucune grille de vente lue). */
+const MONTHLY_CENTS: Record<PlanCode, number> = { standard: 290, premium: 590, premium_duo: 890 };
 
 const DAY = 24 * 60 * 60 * 1000;
 /** Horodatage d'une valeur rendue par le pilote (Date ou texte selon le type). */
 const ms = (v: unknown) => new Date(v as string | Date).getTime();
 
 beforeAll(() => {
-  for (const plan of Object.keys(PRICE_CATALOG) as PlanCode[]) {
-    for (const period of ['monthly', 'yearly'] as const) {
-      process.env[PRICE_CATALOG[plan][period].envVar] = `price_e2e_${plan}_${period}`;
-    }
+  for (const v of LEGACY_PRICE_VARS) {
+    if (v.billingPeriod) process.env[v.name] = `price_e2e_${v.planCode}_${v.billingPeriod}`;
   }
 });
 
@@ -55,7 +58,7 @@ function fakeSub(o: {
       data: [{
         price: {
           id: `price_e2e_${o.plan}_monthly`,
-          unit_amount: PRICE_CATALOG[o.plan].monthly.amountCents,
+          unit_amount: MONTHLY_CENTS[o.plan],
           recurring: { interval: 'month' },
         },
         current_period_start: now - 10 * 86400,

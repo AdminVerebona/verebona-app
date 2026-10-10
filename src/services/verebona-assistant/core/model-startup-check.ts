@@ -13,20 +13,18 @@
  * et vérifie, pour chaque opération modèle de l'assistant, sur la chaîne
  * EFFECTIVE (configuration versionnée, sinon code) :
  *   1. alias résolus (défaut, et escalade si le repli est actif) ;
- *   2. modèles autorisés : ni « latest », ni preview sans flag (lot 32B :
- *      plus d'interdit par catégorie « Pro » — la compatibilité avec
- *      t2_master_v1 est déclarée modèle par modèle au registre, point 6) ;
- *   3. prix présents (bloquant en production — l'assistant tourne toujours
- *      depuis le lot 16b-2 —, sinon signalé) ;
+ *   2. modèles autorisés : pas d'alias « latest » (lot 35B : plus aucune
+ *      condition preview — ni flag VEREBONA_ASSISTANT_ALLOW_PREVIEW_MODELS,
+ *      ni réglage « preview_models_allowed » ; un modèle absent du registre
+ *      n'est plus « traité comme preview ») ;
+ *   3. prix présents : SIGNALÉ seulement (lot 35B — un modèle sans tarif
+ *      connu reste utilisable, coût non calculable ; jamais bloquant) ;
  *   4. compatibilité avec les sorties structurées (schéma JSON déclaré,
  *      modèle Gemini) ;
  *   5. défaut ≠ escalade sans décision explicite ;
- *   6. (lot 23, §15.12) cohérence avec le registre déclaratif des modèles :
- *      statut DÉCLARÉ (inconnu = preview), prompt maître déclaré compatible,
- *      modèle de rollback existant et stable ; un modèle déprécié est
- *      signalé. Un modèle preview est admis si le flag d'environnement
- *      `VEREBONA_ASSISTANT_ALLOW_PREVIEW_MODELS` OU le réglage BO « Modèles
- *      preview en production » (double validation, lot 21) l'autorise.
+ *   6. (lot 23, §15.12 ; lot 35B) cohérence avec les EXCEPTIONS du
+ *      registre des modèles : interdit, exclusion documentée pour le prompt,
+ *      rollback existant et stable ; déprécié et anomalie connue signalés.
  *
  * Le DERNIER REGISTRE VALIDE est conservé (alias → modèles, date) : en cas
  * d'échec, il est journalisé et joint à l'alerte, pour un rollback direct.
@@ -35,8 +33,8 @@
 import { AI_OPERATIONS, type AiOperationDefinition } from '@/services/ai/registry/operations';
 import { ASSISTANT_OPERATIONS, assertConfigAtStartup } from '../config/assistant-config';
 import { isAssistantFlagOn } from '../config/assistant-flags.server';
-import { configuredAliases, isPreviewModel, MODEL_REGISTRY_VERSION, resolveAliases, type ResolvedAliases } from '../registries/model-registry';
-import { checkModelUses, declaredModelStatus } from '@/services/ai/registry/models';
+import { configuredAliases, MODEL_REGISTRY_VERSION, resolveAliases, type ResolvedAliases } from '../registries/model-registry';
+import { checkModelUses } from '@/services/ai/registry/models';
 
 export interface RegistrySnapshot {
   checkedAt: string;
@@ -56,26 +54,6 @@ export interface RegistryCheckDeps {
   operations?: Record<string, AiOperationDefinition | undefined>;
   resolve?: (op: string) => Promise<{ primaryModel: string; fallbackModels: string[] }>;
   hasPrice?: (provider: string, model: string) => boolean;
-  /** Un prix manquant bloque-t-il ? (production) */
-  pricingBlocking?: () => boolean;
-  /** Modèles preview autorisés (flag d'environnement ou réglage BO accordé). */
-  previewAllowed?: () => boolean | Promise<boolean>;
-}
-
-/**
- * Modèles preview autorisés pour l'assistant : flag d'environnement, sinon
- * réglage BO accordé par double validation (lot 21). Même règle au démarrage
- * et à la validation / activation d'une version (lot 23, revue I-1).
- */
-export async function assistantPreviewModelsAllowed(): Promise<boolean> {
-  if (/^(on|true|1)$/i.test(process.env.VEREBONA_ASSISTANT_ALLOW_PREVIEW_MODELS ?? '')) return true;
-  try {
-    const { refreshAssistantSettings, effectiveSetting } = await import('../config/assistant-settings');
-    await refreshAssistantSettings();
-    return effectiveSetting('preview_models_allowed') === true;
-  } catch {
-    return false;
-  }
 }
 
 async function defaultHasPrice(): Promise<(provider: string, model: string) => boolean> {
@@ -83,22 +61,14 @@ async function defaultHasPrice(): Promise<(provider: string, model: string) => b
   return (provider, model) => Boolean(getCachedPrice(provider, model));
 }
 
-async function defaultPricingBlocking(): Promise<() => boolean> {
-  // Lot 16b-2 : `AI_INTELLIGENT_ASSISTANT` retiré, l'assistant tourne
-  // toujours — un prix manquant bloque dès la production.
-  return () => process.env.NODE_ENV === 'production';
-}
-
 /** Contrôle complet du registre (pur si les dépendances sont injectées). */
 export async function checkModelRegistry(deps: RegistryCheckDeps = {}): Promise<RegistryCheck> {
   const operations = deps.operations ?? AI_OPERATIONS;
   const hasPrice = deps.hasPrice ?? await defaultHasPrice();
-  const pricingBlocking = (deps.pricingBlocking ?? await defaultPricingBlocking())();
   const errors: string[] = [];
   const warnings: string[] = [];
   const resolved: ResolvedAliases[] = [];
   const escaladeActive = isAssistantFlagOn('fallback_model');
-  const previewPermis = await (deps.previewAllowed ?? assistantPreviewModelsAllowed)();
 
   for (const code of ASSISTANT_OPERATIONS) {
     const op = operations[code];
@@ -114,14 +84,9 @@ export async function checkModelRegistry(deps: RegistryCheckDeps = {}): Promise<
     for (const m of modeles) {
       // 2. Modèles autorisés.
       if (/latest/i.test(m)) errors.push(`${code} : alias fournisseur « latest » interdit (${m}) (§15.13)`);
-      if (isPreviewModel(m) && !previewPermis) {
-        errors.push(declaredModelStatus(m) === 'unknown'
-          ? `${code} : modèle ${m} absent du registre des modèles, traité comme preview — non autorisé sans flag (§15.12)`
-          : `${code} : modèle preview sans flag (${m}) (§15.12)`);
-      }
-      // 3. Prix.
+      // 3. Prix : signalé, jamais bloquant (lot 35B — coût non calculable).
       if (!hasPrice(op.provider, m)) {
-        (pricingBlocking ? errors : warnings).push(`${code} : aucun prix connu pour ${op.provider}/${m} (§15.14)`);
+        warnings.push(`${code} : aucun prix connu pour ${op.provider}/${m} — coûts non calculables (§15.14)`);
       }
       // 4. Sorties structurées.
       if (!/^gemini-/i.test(m)) errors.push(`${code} : modèle ${m} sans sortie structurée connue (§15.14)`);
@@ -129,9 +94,8 @@ export async function checkModelRegistry(deps: RegistryCheckDeps = {}): Promise<
     if (!op.outputSchema || op.outputSchema === 'none' || op.outputFormat === 'text') {
       errors.push(`${code} : aucun schéma de sortie structurée déclaré (§18.1)`);
     }
-    // 6. Registre déclaratif : prompt compatible, rollback existant et stable.
+    // 6. Exceptions du registre : interdit, exclusion documentée, rollback.
     for (const issue of checkModelUses(modeles.map((m) => ({ where: code, model: m, promptCode: op.masterPromptCode ?? op.promptCode ?? null })))) {
-      if (issue.code === 'UNKNOWN_MODEL') continue; // couvert par le contrôle preview ci-dessus
       (issue.level === 'error' ? errors : warnings).push(`${issue.message} (§15.12)`);
     }
     // 5. Défaut et escalade identiques.

@@ -15,6 +15,18 @@ import { fr } from 'date-fns/locale';
 import { getPlanTheme } from '@/lib/plan-theme';
 import { isTrialOver, isUnpaid, type UnpaidCyclePayload } from '@/lib/trial-status';
 import { UnpaidPaymentNotice } from '@/components/subscription/UnpaidPaymentNotice';
+import { PriceChangedDialog } from '@/components/billing/PriceChangedDialog';
+import { useBillingCatalog } from '@/hooks/useBillingCatalog';
+import { formatEuroCents } from '@/lib/billing/plan-catalog';
+import {
+  billingMention,
+  findOffer,
+  offerAmount,
+  periodSuffix,
+  asPriceConfirmation,
+  priceConfirmationFromError,
+  type PriceConfirmationPayload,
+} from '@/lib/billing/catalog-client';
 
 interface BillingInfo {
   plan_type: string;
@@ -23,11 +35,19 @@ interface BillingInfo {
   role: string;
 }
 
+// ══════════════════════════════════════════════════════════════════════════
+// PLUS AUCUN MONTANT DANS CETTE PAGE (CDC lookup_key V4, EC-04, LK-31)
+//
+// Les montants viennent du catalogue serveur (`GET /api/billing/catalog`,
+// révision active — la même que Checkout). Chaque action transmet la
+// RÉVISION du prix affiché ; si le tarif a changé entre l'affichage et le
+// clic, le serveur répond 409 et le nouveau montant est présenté pour une
+// confirmation explicite (aucun renvoi automatique). Quotas et fonctions :
+// référentiel d'offres, inchangés.
+// ══════════════════════════════════════════════════════════════════════════
 const offers = [
   {
     id: 'STANDARD',
-    monthlyPrice: '2,90 €',
-    yearlyPrice: '29 €',
     features: [
       "Jusqu'à 2 biens",
       "Jusqu'à 30 documents",
@@ -39,8 +59,6 @@ const offers = [
   },
   {
     id: 'PREMIUM',
-    monthlyPrice: '5,90 €',
-    yearlyPrice: '59 €',
     features: [
       'Tout Standard +',
       "Jusqu'à 10 biens",
@@ -54,8 +72,6 @@ const offers = [
   },
   {
     id: 'PREMIUM_DUO',
-    monthlyPrice: '8,90 €',
-    yearlyPrice: '89 €',
     features: [
       'Tout Premium +',
       "Jusqu'à 15 biens",
@@ -66,8 +82,6 @@ const offers = [
   },
   {
     id: 'PREMIUM_PRO',
-    monthlyPrice: '',
-    yearlyPrice: '',
     features: [
       'Tout Premium inclus',
       'Gestion matériel professionnel',
@@ -90,6 +104,23 @@ export default function OffresPage() {
   useEffect(() => {
     setBreadcrumbs([{ label: 'Mon compte', href: '/mon-compte' }, { label: 'Offres' }]);
   }, [setBreadcrumbs]);
+
+  const { catalog, loading: catalogLoading, unavailable: catalogUnavailable, reload: reloadCatalog } = useBillingCatalog();
+  // Tarif à reconfirmer (409 PRICE_CHANGED / PRICE_CONFIRMATION_REQUIRED) et
+  // action à relancer — UNIQUEMENT sur clic explicite.
+  const [priceConfirmation, setPriceConfirmation] = useState<{ payload: PriceConfirmationPayload; retry: (revision: string) => void } | null>(null);
+  const [contrat, setContrat] = useState<{
+    current: { unitAmountCents: number } | null;
+    next: { unitAmountCents: number; effectiveAt: string | null } | null;
+    scheduled: { planCode: string; billingPeriod: 'monthly' | 'yearly'; unitAmountCents: number | null; effectiveAt: string | null } | null;
+  }>({ current: null, next: null, scheduled: null });
+  const revisionFor = (planId: string, period: 'monthly' | 'yearly') => findOffer(catalog, planId, period)?.price_revision ?? null;
+  const demanderConfirmation = (payload: PriceConfirmationPayload | null, retry: (revision: string) => void): boolean => {
+    if (!payload) return false;
+    void reloadCatalog();
+    setPriceConfirmation({ payload, retry });
+    return true;
+  };
 
   const [billingInfo, setBillingInfo] = useState<BillingInfo | null>(null);
   const [billingLoaded, setBillingLoaded] = useState(false);
@@ -130,9 +161,22 @@ export default function OffresPage() {
   const { entitlements, refresh: relireDroits } = useEntitlements();
   useEffect(() => {
     const data = entitlements as (typeof entitlements & {
-      subscription?: { hasStripeSubscription?: boolean; billingPeriod?: 'monthly' | 'yearly' | null };
+      subscription?: {
+        hasStripeSubscription?: boolean;
+        billingPeriod?: 'monthly' | 'yearly' | null;
+        currentPrice?: { unitAmountCents: number } | null;
+        nextRenewalPrice?: { unitAmountCents: number; effectiveAt: string | null } | null;
+        scheduledChange?: { planCode: string; billingPeriod: 'monthly' | 'yearly'; unitAmountCents?: number | null; effectiveAt: string | null } | null;
+      };
     }) | null;
     if (!data) return;
+    setContrat({
+      current: data.subscription?.currentPrice ?? null,
+      next: data.subscription?.nextRenewalPrice ?? null,
+      scheduled: data.subscription?.scheduledChange
+        ? { ...data.subscription.scheduledChange, unitAmountCents: data.subscription.scheduledChange.unitAmountCents ?? null }
+        : null,
+    });
     setHasSubscription(Boolean(data.subscription?.hasStripeSubscription));
     setActivePeriod(data.subscription?.billingPeriod ?? null);
     // `data.plan` vient des droits effectifs : 'trial' | 'standard' |
@@ -165,6 +209,14 @@ export default function OffresPage() {
   const retourStripeTraite = useRef(false);
   const monte = useRef(true);
   useEffect(() => { monte.current = true; return () => { monte.current = false; }; }, []);
+  // Montée en gamme abandonnée APRÈS libération d'une baisse programmée :
+  // on ne prétend pas qu'aucun état n'a changé (CDC lookup_key LK-53).
+  useEffect(() => {
+    if (searchParams?.get('programmation') !== 'annulee') return;
+    toast.info('Votre changement programmé a été annulé lors de la montée en gamme. Vous pouvez le reprogrammer depuis cette page.');
+    router.replace('/mon-compte/offres');
+  }, [searchParams, router]);
+
   useEffect(() => {
     if (searchParams?.get('changement') !== 'confirme' || retourStripeTraite.current) return;
     retourStripeTraite.current = true;
@@ -198,18 +250,22 @@ export default function OffresPage() {
    * Montée en gamme d'un compte abonné : prise d'effet immédiate.
    * Stripe affiche et encaisse le prorata, la date d'échéance est conservée.
    */
-  const handleImmediateUpgrade = async (planId: string) => {
+  const handleImmediateUpgrade = async (planId: string, revision: string | null = revisionFor(planId, billingPeriod)) => {
     setCheckoutLoading(planId);
     try {
       const res = await fetch('/api/billing/upgrade', {
         credentials: 'include',
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ plan_code: planId.toLowerCase(), billing_period: billingPeriod }),
+        body: JSON.stringify({ plan_code: planId.toLowerCase(), billing_period: billingPeriod, displayed_price_revision: revision }),
       });
       const data = await res.json().catch(() => ({}));
       if (res.ok && data.url) {
         window.location.href = data.url;
+        return;
+      }
+      if (res.status === 409 && demanderConfirmation(asPriceConfirmation(data), (rev) => handleImmediateUpgrade(planId, rev))) {
+        setCheckoutLoading(null);
         return;
       }
       toast.error(data.message || 'Impossible d’ouvrir la page de paiement.');
@@ -220,17 +276,21 @@ export default function OffresPage() {
   };
 
   /** Programme un changement d'offre ou de periodicite (CDC §10). */
-  const handleScheduleChange = async (planId: string) => {
+  const handleScheduleChange = async (planId: string, revision: string | null = revisionFor(planId, billingPeriod)) => {
     setCheckoutLoading(planId);
     try {
       const res = await fetch('/api/billing/schedule-change', {
       credentials: 'include',
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ plan_code: planId.toLowerCase(), billing_period: billingPeriod }),
+        body: JSON.stringify({ plan_code: planId.toLowerCase(), billing_period: billingPeriod, displayed_price_revision: revision }),
       });
-      const data = await res.json();
+      const data = await res.json().catch(() => ({}));
+      if (res.status === 409 && demanderConfirmation(asPriceConfirmation(data), (rev) => handleScheduleChange(planId, rev))) {
+        return;
+      }
       if (res.ok) {
+        void relireDroits();
         toast.success(
           data.effectiveAt
             ? `Changement programmé pour le ${new Date(data.effectiveAt).toLocaleDateString('fr-FR')}.`
@@ -305,12 +365,13 @@ export default function OffresPage() {
     ? format(new Date(Number(billingInfo.premium_until) * 1000), 'PPP', { locale: fr })
     : null;
 
-  const handleUpgrade = async (planId: string) => {
+  const handleUpgrade = async (planId: string, revision: string | null = revisionFor(planId, billingPeriod)) => {
     setCheckoutLoading(planId);
     try {
       const data = await apiClient.post<any>('/api/billing/create-checkout-session', {
         plan: planId.toLowerCase(),
         billing_period: billingPeriod,
+        displayed_price_revision: revision,
         entry_point: 'app_offer_comparison',
         ...(referralValid && referralCode ? { referralCode } : {}),
       });
@@ -320,6 +381,7 @@ export default function OffresPage() {
         toast.error(data.message || 'Impossible de démarrer le paiement.');
       }
     } catch (error: any) {
+      if (demanderConfirmation(priceConfirmationFromError(error), (rev) => handleUpgrade(planId, rev))) return;
       toast.error(error.message || 'Une erreur est survenue.');
     } finally {
       setCheckoutLoading(null);
@@ -333,6 +395,14 @@ export default function OffresPage() {
   const getButtonState = (offerId: string): { label: string; action: (() => void) | null; variant: 'default' | 'outline' | 'ghost'; disabled: boolean; hint?: string } => {
     if (offerId === 'PREMIUM_PRO') {
       return { label: 'Bientôt disponible', action: null, variant: 'outline', disabled: true };
+    }
+    // Tarif non chargé ou indisponible : aucune action tarifaire (LK-28, TC-61).
+    const tarifIndisponible = !catalogLoading && !findOffer(catalog, offerId, billingPeriod);
+    if (offerId !== currentPlan || (activePeriod && activePeriod !== billingPeriod)) {
+      if (catalogLoading) return { label: 'Chargement du tarif…', action: null, variant: 'outline', disabled: true };
+      if (tarifIndisponible || catalogUnavailable) {
+        return { label: 'Momentanément indisponible', action: null, variant: 'outline', disabled: true, hint: 'Cette offre est momentanément indisponible. Aucun paiement ne peut être lancé.' };
+      }
     }
     // Offre ET periodicite identiques : rien a proposer.
     if (offerId === currentPlan && (!activePeriod || activePeriod === billingPeriod)) {
@@ -541,16 +611,46 @@ export default function OffresPage() {
                   {offer.comingSoon ? (
                     <p className="text-sm text-[color:var(--text-muted)] italic">Bientôt disponible</p>
                   ) : (
-                    <>
-                      <span className="text-2xl font-bold text-[color:var(--text-primary)]">
-                        {billingPeriod === 'yearly' ? offer.yearlyPrice : offer.monthlyPrice}
-                      </span>
-                      <span className="text-sm text-[color:var(--text-muted)] ml-1">
-                        {billingPeriod === 'yearly' ? 'par an' : 'par mois'}
-                      </span>
-                    </>
+                    (() => {
+                      const tarif = findOffer(catalog, offer.id, billingPeriod);
+                      if (catalogLoading) {
+                        return <span className="inline-block h-7 w-24 animate-pulse rounded bg-[color:var(--bg-subtle)]" aria-label="Chargement du tarif" />;
+                      }
+                      if (!tarif) {
+                        return <p className="text-sm text-[color:var(--text-muted)]" data-testid="tarif-indisponible">Tarif momentanément indisponible</p>;
+                      }
+                      return (
+                        <>
+                          <span className="text-2xl font-bold text-[color:var(--text-primary)]" data-testid={`tarif-${offer.id.toLowerCase()}`}>
+                            {offerAmount(tarif)}
+                          </span>
+                          <span className="text-sm text-[color:var(--text-muted)] ml-1">
+                            {periodSuffix(billingPeriod)}
+                          </span>
+                          {billingMention(tarif) && (
+                            <p className="text-xs text-[color:var(--text-muted)]">{billingMention(tarif)}</p>
+                          )}
+                        </>
+                      );
+                    })()
                   )}
                 </div>
+
+                {/* Trois informations distinctes (LK-36, TC-58) : prix des
+                    nouvelles souscriptions (ci-dessus), tarif de l'abonnement
+                    en cours, prix d'un changement déjà programmé. */}
+                {isCurrentPlan && contrat.current && (
+                  <p className="-mt-2 mb-3 text-xs text-[color:var(--text-muted)]" data-testid="tarif-en-cours">
+                    Votre tarif en cours : {formatEuroCents(contrat.current.unitAmountCents)} {periodSuffix(activePeriod ?? billingPeriod)}
+                    {contrat.next ? ` — ${formatEuroCents(contrat.next.unitAmountCents)} à partir du ${contrat.next.effectiveAt ? new Date(contrat.next.effectiveAt).toLocaleDateString('fr-FR') : 'prochain renouvellement'}` : ''}
+                  </p>
+                )}
+                {contrat.scheduled && contrat.scheduled.planCode.toUpperCase() === offer.id && contrat.scheduled.unitAmountCents !== null && (
+                  <p className="-mt-2 mb-3 text-xs text-[color:var(--text-muted)]" data-testid="tarif-programme">
+                    Changement programmé : {formatEuroCents(contrat.scheduled.unitAmountCents)} {periodSuffix(contrat.scheduled.billingPeriod)}
+                    {contrat.scheduled.effectiveAt ? ` à partir du ${new Date(contrat.scheduled.effectiveAt).toLocaleDateString('fr-FR')}` : ''}
+                  </p>
+                )}
 
                 <ul className="space-y-1.5 mb-5 flex-1">
                   {offer.features.map((feature) => (
@@ -581,6 +681,17 @@ export default function OffresPage() {
             );
           })}
         </div>
+
+        <PriceChangedDialog
+          pending={priceConfirmation?.payload ?? null}
+          busy={checkoutLoading !== null}
+          onCancel={() => setPriceConfirmation(null)}
+          onConfirm={(revision) => {
+            const retry = priceConfirmation?.retry;
+            setPriceConfirmation(null);
+            retry?.(revision);
+          }}
+        />
 
         <DowngradeConfirmDialog
           open={downgradeDialog.open}

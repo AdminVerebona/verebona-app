@@ -20,7 +20,7 @@ import { useEffect, useState } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
 import { Search, X, ExternalLink, PlayCircle, BookOpen } from 'lucide-react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog';
-import { fetchHelpCatalog, resolveShortcuts, type ResolvedShortcut } from '@/lib/help-center/catalog';
+import { loadHelpShortcuts, type ResolvedShortcut } from '@/lib/help-center/catalog';
 import { helpPageUrl, integratedHelpHref, prefersIntegratedHelp } from '@/lib/help-center/open';
 
 interface HelpModalProps {
@@ -37,9 +37,11 @@ export function HelpModal({ open, onOpenChange }: HelpModalProps) {
   useEffect(() => {
     if (!open) { setQuery(''); return; }
     let cancelled = false;
-    fetchHelpCatalog().then((c) => { if (!cancelled) setShortcuts(resolveShortcuts(c)); });
+    // Lot 35 (L35-1) : lus par la route de l'application, dans l'ordre de la
+    // page — mêmes exemples sur ordinateur et sur mobile (même composant).
+    loadHelpShortcuts(pathname).then((s) => { if (!cancelled) setShortcuts(s); });
     return () => { cancelled = true; };
-  }, [open]);
+  }, [open, pathname]);
 
   /** Mobile : Centre d'aide intégré ; ordinateur : nouvel onglet isolé. */
   function openHelp(path: string) {

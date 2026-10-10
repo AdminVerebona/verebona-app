@@ -1,0 +1,150 @@
+# Gemini Developer API pricing
+
+The Gemini API "free tier" is offered through the API service with lower rate limits for testing purposes. Google AI Studio usage is completely free in all available countries.
+
+## Gemini 3.8 Flash
+
+*[`gemini-3.8-flash`](https://ai.google.dev/gemini-api/docs/models/gemini-3.8-flash)*
+
+Our most intelligent model built for speed, combining frontier intelligence with superior search and grounding.
+
+### Standard
+
+|  | Free Tier | Paid Tier, per 1M tokens in USD |
+|---|---|---|
+| Input price | Free of charge | $0.75 through Dec 31, 2026; $1.50 from Jan 1, 2027 |
+| Output price (including thinking tokens) | Free of charge | $3.75 through Dec 31, 2026; $7.50 from Jan 1, 2027 |
+| Context caching price | Free of charge | $0.075 through Dec 31, 2026; $0.15 from Jan 1, 2027 |
+| Grounding with Google Search | Not available | 5,000 prompts per month (free, shared across Gemini 3+), then $14 / 1,000 search queries |
+| Used to improve our products | Yes | No |
+
+### Batch
+
+|  | Free Tier | Paid Tier, per 1M tokens in USD |
+|---|---|---|
+| Input price | Not available | $0.375 through Dec 31, 2026; $0.75 from Jan 1, 2027 |
+| Output price (including thinking tokens) | Not available | $1.875 through Dec 31, 2026; $3.75 from Jan 1, 2027 |
+
+### Flex
+
+|  | Free Tier | Paid Tier, per 1M tokens in USD |
+|---|---|---|
+| Input price | Not available | $0.375 through Dec 31, 2026 |
+| Output price (including thinking tokens) | Not available | $1.875 through Dec 31, 2026 |
+
+## Gemini 3.6 Flash
+
+*[`gemini-3.6-flash`](https://ai.google.dev/gemini-api/docs/models/gemini-3.6-flash)*
+
+### Standard
+
+|  | Free Tier | Paid Tier, per 1M tokens in USD |
+|---|---|---|
+| Input price | Free of charge | $1.50 |
+| Output price (including thinking tokens) | Free of charge | $7.50 |
+| Context caching price | Free of charge | $0.15 |
+| Used to improve our products | Yes | No |
+
+### Batch
+
+|  | Free Tier | Paid Tier, per 1M tokens in USD |
+|---|---|---|
+| Input price | Not available | $0.75 |
+| Output price (including thinking tokens) | Not available | $3.75 |
+
+## Gemini 3.8 Live, Gemini 3.8 Live Extended Thinking and Gemini 3.1 Flash Live Preview
+
+*[`gemini-3.8-live`](https://ai.google.dev/gemini-api/docs/models/gemini-3.8-live), [`gemini-3.8-live-extended-thinking`](https://ai.google.dev/gemini-api/docs/models/gemini-3.8-live-extended-thinking) and [`gemini-3.1-flash-live-preview`](https://ai.google.dev/gemini-api/docs/models/gemini-3.1-flash-live-preview)*
+
+### Standard
+
+|  | Free Tier | Paid Tier, per 1M tokens in USD |
+|---|---|---|
+| Input price | Free of charge | $0.75 (text); $3.00 or $0.005/min (audio); $1.00 or $0.002/min (image/video) |
+| Output price (including thinking tokens) | Free of charge | $4.50 (text); $12.00 or $0.018/min (audio) |
+| Used to improve our products | Yes | No |
+
+## Gemini 3.5 Flash-Lite
+
+*[`gemini-3.5-flash-lite`](https://ai.google.dev/gemini-api/docs/models/gemini-3.5-flash-lite)*
+
+### Standard
+
+|  | Free Tier | Paid Tier, per 1M tokens in USD |
+|---|---|---|
+| Input price | Free of charge | $0.30 (text / image / video) $1.00 (audio) |
+| Output price (including thinking tokens) | Free of charge | $2.50 |
+| Used to improve our products | Yes | No |
+
+## Gemini 3.1 Flash-Lite
+
+*[`gemini-3.1-flash-lite`](https://ai.google.dev/gemini-api/docs/models/gemini-3.1-flash-lite)*
+
+### Standard
+
+|  | Free Tier | Paid Tier, per 1M tokens in USD |
+|---|---|---|
+| Input price | Free of charge | $0.25 (text / image / video)<br>$0.50 (audio) |
+| Output price (including thinking tokens) | Free of charge | $1.50 |
+| Used to improve our products | Yes | No |
+
+## Gemini 3.1 Pro Preview
+
+*[`gemini-3.1-pro-preview`](https://ai.google.dev/gemini-api/docs/models/gemini-3.1-pro-preview)*
+
+### Standard
+
+|  | Free Tier | Paid Tier, per 1M tokens in USD |
+|---|---|---|
+| Input price | Not available | $2.00, prompts \<= 200k tokens $4.00, prompts \> 200k tokens |
+| Output price (including thinking tokens) | Not available | $12.00, prompts \<= 200k tokens $18.00, prompts \> 200k |
+| Used to improve our products | Yes | No |
+
+## Gemini 3.1 Flash Image
+
+*[`gemini-3.1-flash-image`](https://ai.google.dev/gemini-api/docs/models/gemini-3.1-flash-image)*
+
+### Standard
+
+|  | Free Tier | Paid Tier, per 1M tokens in USD |
+|---|---|---|
+| Input price | Not available | $0.30 (text / image) |
+| Output price | Not available | $0.039 per image |
+
+## Gemini 2.5 Pro
+
+*[`gemini-2.5-pro`](https://ai.google.dev/gemini-api/docs/models/gemini-2.5-pro)*
+
+### Standard
+
+|  | Free Tier | Paid Tier, per 1M tokens in USD |
+|---|---|---|
+| Input price | Free of charge | $1.25, prompts \<= 200k tokens $2.50, prompts \> 200k tokens |
+| Output price (including thinking tokens) | Free of charge | $10.00, prompts \<= 200k tokens $15.00, prompts \> 200k |
+| Context caching price | Free of charge | $0.125, prompts \<= 200k tokens $0.25, prompts \> 200k |
+| Used to improve our products | Yes | No |
+
+## Gemini 2.5 Flash
+
+*[`gemini-2.5-flash`](https://ai.google.dev/gemini-api/docs/models/gemini-2.5-flash)*
+
+### Standard
+
+|  | Free Tier | Paid Tier, per 1M tokens in USD |
+|---|---|---|
+| Input price | Free of charge | $0.30 (text / image / video) $1.00 (audio) |
+| Output price (including thinking tokens) | Free of charge | $2.50 |
+| Used to improve our products | Yes | No |
+
+## Gemini Embedding 2
+
+*[`gemini-embedding-2`](https://ai.google.dev/gemini-api/docs/models/gemini-embedding-2)*
+
+|  | Free Tier | Paid Tier, per 1M tokens in USD |
+|---|---|---|
+| Input price | Free of charge | $0.15 |
+| Used to improve our products | Yes | No |
+
+## Gemma 4
+
+Gemma models are free of charge.

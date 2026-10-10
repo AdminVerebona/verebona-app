@@ -4,9 +4,11 @@
 import { describe, it, expect } from 'vitest';
 import type Stripe from 'stripe';
 import {
+  attributeInvoicePlan,
   buildInvoiceRecord,
   localInvoiceStatus,
   mergeInvoiceStatus,
+  type PriceResolutionMap,
 } from '@/services/billing/invoice-ledger.service';
 
 function invoice(over: Partial<Stripe.Invoice> & Record<string, unknown> = {}): Stripe.Invoice {
@@ -79,11 +81,59 @@ describe('buildInvoiceRecord', () => {
     expect(buildInvoiceRecord(invoice({ customer: null }))).toBeNull();
   });
 
-  it('offre associée résolue depuis le prix du catalogue', () => {
-    process.env.STRIPE_PRICE_PREMIUM_MONTHLY = 'price_premium_m_test';
+  it('offre associée résolue depuis le registre historique (prérésolution, aucune variable d’environnement)', () => {
+    const prices: PriceResolutionMap = new Map([['price_premium_m_test', { planCode: 'premium', billingPeriod: 'monthly' }]]);
     const r = buildInvoiceRecord(invoice({
-      lines: { data: [{ period: { start: 1, end: 2 }, pricing: { price_details: { price: 'price_premium_m_test' } } }] } as unknown as Stripe.ApiList<Stripe.InvoiceLineItem>,
-    }));
-    expect(r).toMatchObject({ planCode: 'premium', billingPeriod: 'monthly', stripePriceId: 'price_premium_m_test' });
+      lines: { data: [{ amount: 590, period: { start: 1, end: 2 }, pricing: { price_details: { price: 'price_premium_m_test' } } }] } as unknown as Stripe.ApiList<Stripe.InvoiceLineItem>,
+    }), { prices });
+    expect(r).toMatchObject({ planCode: 'premium', billingPeriod: 'monthly', stripePriceId: 'price_premium_m_test', planResolution: 'single' });
+  });
+
+  it('TC-16 — un ancien prix 19/59/79 reconnu par le registre reste attribué (montant sans effet)', () => {
+    const prices: PriceResolutionMap = new Map([['price_legacy_59', { planCode: 'premium', billingPeriod: 'yearly' }]]);
+    const r = buildInvoiceRecord(invoice({ status: 'paid', amount_paid: 5900, lines: { data: [{ amount: 5900, period: { start: 1, end: 2 }, pricing: { price_details: { price: 'price_legacy_59' } } }] } as never }), { prices });
+    expect(r).toMatchObject({ planCode: 'premium', billingPeriod: 'yearly', amount: 5900 });
+  });
+});
+
+describe('TC-55 / LK-75 — facture à plusieurs lignes (changement d’offre)', () => {
+  const prices: PriceResolutionMap = new Map([
+    ['price_std_old', { planCode: 'standard', billingPeriod: 'yearly' }],
+    ['price_pre_new', { planCode: 'premium', billingPeriod: 'yearly' }],
+    ['price_duo_new', { planCode: 'premium_duo', billingPeriod: 'yearly' }],
+  ]);
+  const lines = (...l: Array<[string | null, number]>) => ({ data: l.map(([price, amount]) => ({ amount, period: { start: 1, end: 2 }, pricing: { price_details: { price } } })) }) as never;
+
+  it('crédit sur l’ancien prix + charge sur le nouveau : offre de la CHARGE, détail conservé, montant encaissé inchangé', () => {
+    const r = buildInvoiceRecord(invoice({ status: 'paid', amount_paid: 3100, lines: lines(['price_std_old', -2500], ['price_pre_new', 5600]) }), { prices })!;
+    expect(r).toMatchObject({ planCode: 'premium', stripePriceId: 'price_pre_new', planResolution: 'charge_line', amount: 3100 });
+    expect(r.lineItemsJson).toHaveLength(2);
+    expect(r.lineItemsJson[0]).toMatchObject({ priceId: 'price_std_old', planCode: 'standard', amount: -2500 });
+  });
+
+  it('jamais la première ligne comme preuve : deux offres facturées positivement → offre NULL (multiple)', () => {
+    const r = buildInvoiceRecord(invoice({ lines: lines(['price_pre_new', 100], ['price_duo_new', 200]) }), { prices })!;
+    expect(r).toMatchObject({ planCode: null, planResolution: 'multiple' });
+  });
+
+  it('aucune ligne reconnue : offre inconnue (pas Standard par défaut)', () => {
+    const r = buildInvoiceRecord(invoice({ lines: lines(['price_etranger', 100]) }), { prices })!;
+    expect(r).toMatchObject({ planCode: null, planResolution: 'unknown' });
+  });
+
+  it('pagination : les lignes fournies (toutes pages) priment sur la première page de l’objet', () => {
+    const r = buildInvoiceRecord(invoice({ lines: lines(['price_std_old', -2500]) }), {
+      prices,
+      lines: [
+        { amount: -2500, period: { start: 1, end: 2 }, pricing: { price_details: { price: 'price_std_old' } } },
+        { amount: 5600, period: { start: 1, end: 2 }, pricing: { price_details: { price: 'price_pre_new' } } },
+      ] as never,
+    })!;
+    expect(r.planCode).toBe('premium');
+    expect(r.lineItemsJson).toHaveLength(2);
+  });
+
+  it('attribution pure', () => {
+    expect(attributeInvoicePlan([]).resolution).toBe('unknown');
   });
 });

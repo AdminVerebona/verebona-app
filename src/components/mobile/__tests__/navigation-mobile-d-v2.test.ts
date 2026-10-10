@@ -43,7 +43,7 @@ describe('panneau du compte', () => {
 
   it('compte seulement, sans navigation', () => {
     const html = renderToStaticMarkup(h(MobileAccountPanel, props));
-    for (const t of ['Notifications', 'Besoin d&#x27;aide ?', 'Thème clair', 'Se déconnecter']) expect(html).toContain(t);
+    for (const t of ['Mon compte', 'Besoin d’aide ?', 'Thème clair', 'Se déconnecter']) expect(html).toContain(t);
     expect(html).not.toContain('/agenda');
     expect(html).not.toContain('Administration');
   });
@@ -60,13 +60,13 @@ describe('panneau du compte', () => {
     expect(rangee.indexOf('aria-label="Fermer"')).toBeLessThan(rangee.indexOf('</div>'));
   });
 
-  it('lot 26 — AC6 : un seul accès à Mon compte, la carte d’identité (nom + offre)', () => {
+  it('lot 26 — AC6, révisé lot 35 (L35-4) : un seul accès à Mon compte, l’entrée explicite ; la carte reste l’identité (nom + offre)', () => {
     const html = renderToStaticMarkup(h(MobileAccountPanel, props));
     expect(html.match(/href="\/mon-compte"/g)).toHaveLength(1);
-    expect(html).toContain('aria-label="Mon compte — Fabien M., Premium"');
+    expect(html).toContain('>Mon compte<');
     expect(html).toContain('Fabien M.');
     expect(html).toContain('>Premium<');
-    expect(html).toContain('href="/mon-compte/notifications"');
+    expect(html).not.toContain('href="/mon-compte/notifications"');
     const surMonCompte = renderToStaticMarkup(h(MobileAccountPanel, { ...props, pathname: '/mon-compte' }));
     expect(surMonCompte).toMatch(/href="\/mon-compte"[^>]*aria-current="page"|aria-current="page"[^>]*href="\/mon-compte"/);
   });

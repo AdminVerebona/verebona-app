@@ -28,6 +28,9 @@ describe('lecture du listing', () => {
     expect(parseModelsListing(listing)).toEqual([{
       model: 'gemini-3.6-flash', displayName: 'Gemini 3.6 Flash', supportsGeneration: true,
       supportsThinking: true, inputTokenLimit: 1_000_000, outputTokenLimit: 65_536,
+      // Lot 35B : informations fournisseur conservées, statut fournisseur.
+      version: null, description: null, supportedMethods: ['generateContent'], details: { thinking: true },
+      lifecycle: 'stable', lifecycleBasis: 'name_rule',
     }]);
     expect(parseModelsListing(null)).toEqual([]);
   });
@@ -38,7 +41,10 @@ describe('rafraîchissement', () => {
     respond = (sql) => (sql.includes('SET available = FALSE') ? [{ model: 'gemini-2.5-flash-lite' }] : []);
     const fetcher = vi.fn(async () => new Response(JSON.stringify(listing), { status: 200 }));
     const r = await refreshModelCatalog(1, fetcher as never);
-    expect(r).toEqual({ ok: true, modelsSeen: 1, disappeared: ['gemini-2.5-flash-lite'] });
+    expect(r).toMatchObject({ ok: true, modelsSeen: 1, disappeared: ['gemini-2.5-flash-lite'] });
+    expect(r.listed?.map((m) => m.model)).toEqual(['gemini-3.6-flash']);
+    // Lot 35B : date de disparition posée sur les modèles retirés.
+    expect(calls.some((c) => c.sql.includes('disappeared_at = COALESCE'))).toBe(true);
     // Clé en en-tête, jamais dans l'URL (journaux).
     const [url, init] = fetcher.mock.calls[0] as unknown as [string, RequestInit];
     expect(url).not.toContain('cle');

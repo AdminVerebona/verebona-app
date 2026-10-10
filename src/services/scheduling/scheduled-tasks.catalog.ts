@@ -40,6 +40,15 @@
  *                                   qu'il reste des documents     document (idempotent) — 0295
  *   t1-completeness-retry           toutes les 15 min             tentatives comptées par document,
  *                                                                 `next_retry_at` (0295)
+ *   ai-catalog-sync                 toutes les 6 h                bail `ai-catalog-sync` (même
+ *                                                                 fonction que « Actualiser le
+ *                                                                 catalogue »), upserts idempotents
+ *   stripe-catalog-sync             toutes les 5 min              bail `stripe-catalog-sync:<contexte>`
+ *                                                                 (lot 35C, catalogue lookup_key)
+ *   stripe-catalog-publish          toutes les 5 min              bail `stripe-catalog-publication:<ctx>`
+ *                                                                 + état partagé (aucun dégel sur échec)
+ *   stripe-price-revaluation        toutes les heures             index unique campagne × item,
+ *                                                                 clés d'idempotence Stripe
  *
  * Créneaux fixes hors de la fenêtre de sauvegarde de nuit (1 h – 5 h) et de
  * la plage ambiguë des changements d'heure (2 h – 3 h).
@@ -397,6 +406,66 @@ export const SCHEDULED_TASKS: readonly ScheduledTaskDef[] = [
       const r = await runCompletenessRetry({ deadline: Math.min(deadline, Date.now() + 8 * MIN) });
       if (r.disabled) return { note: 'migrations 0295-0297 absentes : rien à faire' };
       if (r.examined > 0) return { note: JSON.stringify(r) };
+    },
+  },
+  {
+    // Lot 35B (ticket « Catalogue IA dynamique Google ») : catalogue modèles
+    // (`GET /v1beta/models`), qualification automatique, statut opérationnel,
+    // tarifs de la page officielle, alertes sur modèle actif disparu — la
+    // MÊME fonction métier que le bouton « Actualiser le catalogue » du BO.
+    code: 'ai-catalog-sync',
+    label: 'IA : synchronisation du catalogue (modèles, qualification, tarifs)',
+    schedule: { kind: 'interval', everyMs: 6 * HOUR },
+    timeoutMs: 15 * MIN,
+    startupDelayMs: 10 * MIN,
+    run: async ({ trigger }) => {
+      const { syncAiCatalog, summaryOf } = await import('@/services/ai/provider/ai-catalog-sync.service');
+      const r = await syncAiCatalog({ trigger: trigger === 'manual' ? 'manual' : trigger === 'startup' ? 'startup' : 'schedule' });
+      if (r.skipped) return { note: 'ignoré : synchronisation déjà en cours (bouton du BO)', skipped: true };
+      const note = JSON.stringify(summaryOf(r)).slice(0, 1500);
+      // Sans clé active (poste local), rien à synchroniser : pas une panne.
+      if (!r.catalog.ok && /Aucune clé fournisseur/i.test(r.catalog.error ?? '')) return { note };
+      if (!r.catalog.ok) return { note, error: `catalogue fournisseur : ${r.catalog.error ?? 'échec'}` };
+      return { note };
+    },
+  },
+  {
+    // Lot 35C (CDC lookup_key V4) : projections du catalogue Stripe et
+    // reprise historique automatique — aucune commande d'exploitation.
+    code: 'stripe-catalog-sync',
+    label: 'Stripe : catalogue des prix (clés stables) et reprise historique',
+    schedule: { kind: 'interval', everyMs: 5 * MIN },
+    timeoutMs: 10 * MIN,
+    startupDelayMs: 3 * MIN,
+    run: async (ctx) => {
+      const { runCatalogSyncTask } = await import('@/services/billing/catalog-tasks');
+      return runCatalogSyncTask(ctx);
+    },
+  },
+  {
+    // Publication de la grille du code (LK-102) : jamais au démarrage d'une
+    // instance (EX-006) — bail partagé, état FAILED bloquant (LK-27).
+    code: 'stripe-catalog-publish',
+    label: 'Stripe : publication de la grille tarifaire du code',
+    schedule: { kind: 'interval', everyMs: 5 * MIN },
+    timeoutMs: 15 * MIN,
+    startupDelayMs: 12 * MIN,
+    run: async () => {
+      const { runCatalogPublishTask } = await import('@/services/billing/catalog-tasks');
+      return runCatalogPublishTask();
+    },
+  },
+  {
+    // Revalorisation des abonnés existants à leur prochain renouvellement
+    // (§24.2, §25.3) : seulement les lignes à information préalable PROUVÉE.
+    code: 'stripe-price-revaluation',
+    label: 'Stripe : revalorisation des abonnements au renouvellement',
+    schedule: { kind: 'interval', everyMs: HOUR },
+    timeoutMs: 10 * MIN,
+    startupDelayMs: 15 * MIN,
+    run: async (ctx) => {
+      const { runRevaluationTask } = await import('@/services/billing/catalog-tasks');
+      return runRevaluationTask(ctx);
     },
   },
 ];

@@ -51,7 +51,8 @@ describe('L33-2 — même identité sur mobile et sur ordinateur', () => {
       planLabel: 'Premium', accountName: null, isAdmin: false, theme: 'blue',
       onToggleTheme: () => {}, onOpenHelp: () => {}, onLogout: () => {}, showBell: false,
     }));
-    expect(html).toContain('aria-label="Mon compte — Geoffroy, Premium"');
+    // Lot 35 (L35-4) : la carte n'est plus un lien (en-tête d'identité comme sur ordinateur).
+    expect(html).toContain('data-testid="account-identity"');
     expect(html).not.toContain('Geoffroy M.');
     expect(html).toContain('>g@example.fr<');
     expect(html.indexOf('>Geoffroy<')).toBeLessThan(html.indexOf('>g@example.fr<'));

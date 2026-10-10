@@ -37,8 +37,8 @@
  *   · assistant-purge     — historique de l'assistant (90 j, GAP-16) et
  *                           journaux (§29.7) ; même traitement que
  *                           GET /api/cron/ai/purge-assistant-logs ;
- *   · ai-pricing-refresh  — tarifs des modèles, le lundi ; même traitement
- *                           que GET /api/cron/ai/refresh-model-pricing ;
+ *   · (ai-pricing-refresh — retiré au lot 35B : tarifs synchronisés par la
+ *                           tâche planifiée `ai-catalog-sync`) ;
  *   · supervision-sweep   — domaines Exports / IA de la Supervision (SUP-004) ;
  *   · admin-audit-purge   — rétention du journal admin (AUD-004,
  *                           ADMIN_AUDIT_RETENTION_DAYS, désactivée sans valeur) ;
@@ -206,21 +206,9 @@ export function dailyTasks(env: NodeJS.ProcessEnv = process.env): DailyTask[] {
     });
   }
 
-  // Tarifs des modèles — même traitement que GET /api/cron/ai/refresh-model-pricing,
-  // hebdomadaire (lundi). Désactivable par AI_PRICING_REFRESH=off.
-  if (!['off', 'false', '0'].includes((env.AI_PRICING_REFRESH ?? '').trim().toLowerCase())) {
-    tasks.push({
-      lock: 'daily-ai-pricing-refresh',
-      window: [6, 9],
-      run: async () => {
-        if (new Date().getUTCDay() !== 1) return;
-        const { refreshModelPricing } = await import('@/services/ai/gateway/pricing/refresh-pricing.job');
-        const r = await refreshModelPricing();
-        console.info(`[daily-jobs] ai-pricing-refresh : ${r.status}`);
-        if (r.status === 'failed') throw new Error('rafraîchissement des tarifs en échec');
-      },
-    });
-  }
+  // Tarifs des modèles : lot 35B, désormais dans la tâche planifiée
+  // `ai-catalog-sync` (scheduled-tasks.catalog.ts), même fonction que le
+  // bouton « Actualiser le catalogue » — plus de passage hebdomadaire ici.
 
   if (env.BACKUP_DISABLED !== 'true') {
     tasks.push({

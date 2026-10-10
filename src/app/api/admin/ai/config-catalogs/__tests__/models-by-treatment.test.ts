@@ -29,6 +29,8 @@ vi.mock('@/services/ai/gateway/pricing/pricing.repository', () => ({
 vi.mock('@/services/verebona-assistant/config/assistant-settings', () => ({
   refreshAssistantSettings: async () => undefined, effectiveSetting: () => false,
 }));
+vi.mock('@/services/ai/provider/provider-secret', () => ({ getProviderSecret: async () => 'cle' }));
+vi.mock('@/services/ai/provider/model-qualification.service', () => ({ loadQualifications: async () => new Map() }));
 const appelFournisseur = vi.fn();
 vi.mock('@/services/ai/gateway/providers', () => ({ getAiProvider: () => ({ call: appelFournisseur }) }));
 
@@ -47,14 +49,17 @@ describe('MOD — API du catalogue', () => {
       excludedByTreatment: Record<string, Array<{ model: string; reasonText: string }>>;
     };
     expect(Object.keys(body.modelsByTreatment)).toEqual(['T1', 'T2', 'T3', 'T4', 'T5', 'T6']);
-    expect(body.modelsByTreatment.T2.map((m) => m.model)).toEqual(['gemini-3.5-flash-lite', 'gemini-3.1-flash-lite']);
+    // Lot 35B : le preview est proposé (statut visible), y compris pour T2.
+    expect(body.modelsByTreatment.T2.map((m) => m.model)).toEqual(['gemini-3.5-flash-lite', 'gemini-3.1-flash-lite', 'gemini-3.1-pro-preview']);
     expect(body.modelsByTreatment.T2[0]).toMatchObject({ priced: true, verified: false });
-    // Déprécié, preview non autorisé (T2), non opérationnel : absents, motif nommé.
+    expect(body.modelsByTreatment.T2[2]).toMatchObject({ status: 'preview' });
+    // Déprécié, non opérationnel : absents, motif nommé.
     const exclus = Object.fromEntries(body.excludedByTreatment.T2.map((x) => [x.model, x.reasonText]));
     expect(exclus['gemini-2.5-pro']).toBe('déprécié');
-    expect(exclus['gemini-3.1-pro-preview']).toBe('preview non autorisé');
+    expect(exclus['gemini-3.1-pro-preview']).toBeUndefined();
     expect(exclus['gemini-3.6-flash']).toBe('non opérationnel avec la clé active');
-    // T5 (PO 26) : même source, mêmes règles.
+    // T5 (PO 26) : même source, mêmes règles. T6 : exception documentée (latence) pour les Pro.
+    expect(body.modelsByTreatment.T6.map((m) => m.model)).not.toContain('gemini-3.1-pro-preview');
     expect(body.modelsByTreatment.T5.map((m) => m.model)).toEqual(['gemini-3.5-flash-lite', 'gemini-3.1-flash-lite', 'gemini-3.1-pro-preview']);
     expect(Array.isArray(body.models)).toBe(true);
     expect(fetchSpy).not.toHaveBeenCalled();

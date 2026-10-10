@@ -8,6 +8,7 @@
  */
 import { describe, it, expect, vi } from 'vitest';
 import type Stripe from 'stripe';
+import type { ResolvedPrice } from '@/services/billing/catalog-types';
 import {
   buildStripeUpdateParams,
   billingPeriodOfPrice,
@@ -18,11 +19,22 @@ import {
 
 type Snapshot = Awaited<ReturnType<AdminPlanChangeDeps['loadAccount']>>;
 
+const REV = 'pr_aaaaaaaaaaaaaaaa';
+function fakePrice(plan: string, period: string): ResolvedPrice {
+  return {
+    planCode: plan as ResolvedPrice['planCode'], billingPeriod: period as ResolvedPrice['billingPeriod'],
+    lookupKey: `verebona_${plan}_${period}`, priceId: `price_${plan}_${period}`, productId: `prod_${plan}`,
+    unitAmountCents: period === 'yearly' ? 6900 : 690, currency: 'eur', interval: period === 'yearly' ? 'year' : 'month',
+    intervalCount: 1, taxBehavior: 'inclusive', livemode: false, priceRevision: REV, verifiedAt: new Date().toISOString(),
+  };
+}
+
 function makeDeps(opts: {
   snapshot?: Partial<NonNullable<Snapshot>> | null;
   subscription?: Partial<Stripe.Subscription>;
   updateError?: Error;
   interval?: 'month' | 'year';
+  supersede?: (subscriptionId: string) => Promise<unknown>;
 }) {
   const calls: string[] = [];
   const snapshot: Snapshot = opts.snapshot === null ? null : {
@@ -51,7 +63,9 @@ function makeDeps(opts: {
       },
     }) as unknown as Pick<Stripe, 'subscriptions'>,
     applyLocal: vi.fn(async () => { calls.push('local'); }),
-    resolvePrice: (plan, period) => `price_${plan}_${period}`,
+    resolvePrice: async (plan, period) => fakePrice(plan, period),
+    supersedeRevaluation: opts.supersede,
+    recordOperation: async () => 42,
   };
   return { deps, calls, update };
 }
@@ -74,7 +88,7 @@ describe('paramètres Stripe (ACC-A09 / ACC-A10)', () => {
 describe('changePlanAsAdmin', () => {
   it('met Stripe à jour AVANT l’application locale, en conservant la périodicité', async () => {
     const { deps, calls, update } = makeDeps({ interval: 'month', snapshot: { billingPeriod: 'yearly' } });
-    const res = await changePlanAsAdmin({ accountId: 1, newPlan: 'PREMIUM' }, deps);
+    const res = await changePlanAsAdmin({ accountId: 1, newPlan: 'PREMIUM', displayedPriceRevision: REV }, deps);
     expect(res).toMatchObject({ ok: true, stripeUpdated: true, billingPeriod: 'monthly', oldPlan: 'STANDARD' });
     expect(calls).toEqual(['stripe.update', 'local']);
     expect(update).toHaveBeenCalledWith('sub_1', expect.objectContaining({
@@ -86,7 +100,7 @@ describe('changePlanAsAdmin', () => {
 
   it('refus Stripe : 502 STRIPE_UPDATE_FAILED et AUCUN changement local (ERR-005)', async () => {
     const { deps, calls } = makeDeps({ updateError: new Error('card_declined') });
-    const res = await changePlanAsAdmin({ accountId: 1, newPlan: 'PREMIUM_DUO' }, deps);
+    const res = await changePlanAsAdmin({ accountId: 1, newPlan: 'PREMIUM_DUO', displayedPriceRevision: REV }, deps);
     expect(res.ok).toBe(false);
     if (!res.ok) {
       expect(res.code).toBe('STRIPE_UPDATE_FAILED');
@@ -98,35 +112,74 @@ describe('changePlanAsAdmin', () => {
 
   it('sans abonnement Stripe : changement local uniquement', async () => {
     const { deps, calls } = makeDeps({ snapshot: { stripeSubscriptionId: null } });
-    const res = await changePlanAsAdmin({ accountId: 1, newPlan: 'PREMIUM' }, deps);
+    const res = await changePlanAsAdmin({ accountId: 1, newPlan: 'PREMIUM', displayedPriceRevision: REV }, deps);
     expect(res).toMatchObject({ ok: true, stripeUpdated: false });
     expect(calls).toEqual(['local']);
   });
 
   it('abonnement Stripe terminé : changement local uniquement', async () => {
     const { deps, calls } = makeDeps({ subscription: { status: 'canceled' } });
-    const res = await changePlanAsAdmin({ accountId: 1, newPlan: 'PREMIUM' }, deps);
+    const res = await changePlanAsAdmin({ accountId: 1, newPlan: 'PREMIUM', displayedPriceRevision: REV }, deps);
     expect(res).toMatchObject({ ok: true, stripeUpdated: false });
     expect(calls).toEqual(['local']);
   });
 
   it('changement programmé en attente : refus explicite, rien n’est modifié', async () => {
     const { deps, calls } = makeDeps({ subscription: { schedule: 'sub_sched_1' as unknown as Stripe.SubscriptionSchedule } });
-    const res = await changePlanAsAdmin({ accountId: 1, newPlan: 'PREMIUM' }, deps);
+    const res = await changePlanAsAdmin({ accountId: 1, newPlan: 'PREMIUM', displayedPriceRevision: REV }, deps);
     expect(res).toMatchObject({ ok: false, code: 'SCHEDULED_CHANGE_PENDING' });
     expect(calls).toEqual([]);
   });
 
   it('même offre : refus sans appel Stripe', async () => {
     const { deps, calls } = makeDeps({ snapshot: { planType: 'PREMIUM' } });
-    const res = await changePlanAsAdmin({ accountId: 1, newPlan: 'PREMIUM' }, deps);
+    const res = await changePlanAsAdmin({ accountId: 1, newPlan: 'PREMIUM', displayedPriceRevision: REV }, deps);
     expect(res).toMatchObject({ ok: false, code: 'SAME_PLAN' });
+    expect(calls).toEqual([]);
+  });
+
+  it('TC-45 — révision affichée absente : 409 PRICE_CONFIRMATION_REQUIRED, aucune écriture Stripe ni locale', async () => {
+    const { deps, calls } = makeDeps({ interval: 'month' });
+    const res = await changePlanAsAdmin({ accountId: 1, newPlan: 'PREMIUM' }, deps);
+    expect(res).toMatchObject({ ok: false, code: 'PRICE_CONFIRMATION_REQUIRED' });
+    if (!res.ok) expect(res.offer).toMatchObject({ unit_amount_cents: 690, billing_period: 'monthly' });
+    expect(calls).toEqual([]);
+  });
+
+  it('TC-45 — tarif changé depuis l’affichage BO : 409 PRICE_CHANGED, aucune écriture', async () => {
+    const { deps, calls } = makeDeps({ interval: 'year' });
+    const res = await changePlanAsAdmin({ accountId: 1, newPlan: 'PREMIUM', displayedPriceRevision: 'pr_bbbbbbbbbbbbbbbb' }, deps);
+    expect(res).toMatchObject({ ok: false, code: 'PRICE_CHANGED' });
+    expect(ADMIN_PLAN_CHANGE_HTTP_STATUS.PRICE_CHANGED).toBe(409);
+    expect(calls).toEqual([]);
+  });
+
+  it('LK-63 — audit : ancien et nouveau prix, montants, devise, identifiant d’opération', async () => {
+    const { deps } = makeDeps({ interval: 'year', subscription: { items: { data: [{ id: 'si_1', price: { id: 'price_old_y', unit_amount: 5900, recurring: { interval: 'year' } } }] } as unknown as Stripe.Subscription['items'] } });
+    const res = await changePlanAsAdmin({ accountId: 1, newPlan: 'PREMIUM', displayedPriceRevision: REV, adminId: 7 }, deps);
+    expect(res).toMatchObject({ ok: true, price: { priceId: 'price_premium_yearly', unitAmountCents: 6900, currency: 'eur', previousPriceId: 'price_old_y', previousAmountCents: 5900, operationId: 42 } });
+  });
+
+  it('TC-46 / EX-024 — revalorisation planifiée (pas un changement utilisateur) : remplacée, changement admin appliqué', async () => {
+    const supersede = vi.fn(async () => 1);
+    const { deps, calls } = makeDeps({ subscription: { schedule: 'sub_sched_reval' as unknown as Stripe.SubscriptionSchedule }, supersede });
+    const res = await changePlanAsAdmin({ accountId: 1, newPlan: 'PREMIUM', displayedPriceRevision: REV }, deps);
+    expect(supersede).toHaveBeenCalledWith('sub_1');
+    expect(res).toMatchObject({ ok: true, stripeUpdated: true });
+    expect(calls).toEqual(['stripe.update', 'local']);
+  });
+
+  it('TC-46 — changement UTILISATEUR programmé : toujours refusé (aucune revalorisation libérée)', async () => {
+    const supersede = vi.fn(async () => 0);
+    const { deps, calls } = makeDeps({ subscription: { schedule: 'sub_sched_user' as unknown as Stripe.SubscriptionSchedule }, supersede });
+    const res = await changePlanAsAdmin({ accountId: 1, newPlan: 'PREMIUM', displayedPriceRevision: REV }, deps);
+    expect(res).toMatchObject({ ok: false, code: 'SCHEDULED_CHANGE_PENDING' });
     expect(calls).toEqual([]);
   });
 
   it('compte introuvable', async () => {
     const { deps } = makeDeps({ snapshot: null });
-    expect(await changePlanAsAdmin({ accountId: 1, newPlan: 'PREMIUM' }, deps)).toMatchObject({ ok: false, code: 'ACCOUNT_NOT_FOUND' });
+    expect(await changePlanAsAdmin({ accountId: 1, newPlan: 'PREMIUM', displayedPriceRevision: REV }, deps)).toMatchObject({ ok: false, code: 'ACCOUNT_NOT_FOUND' });
   });
 });
 
@@ -143,7 +196,7 @@ describe('marqueur admin posé sur l’abonnement Stripe', () => {
 
   it('changePlanAsAdmin transmet l’offre cible au marqueur', async () => {
     const { deps, update } = makeDeps({});
-    await changePlanAsAdmin({ accountId: 1, newPlan: 'PREMIUM_DUO' }, deps);
+    await changePlanAsAdmin({ accountId: 1, newPlan: 'PREMIUM_DUO', displayedPriceRevision: REV }, deps);
     expect(update).toHaveBeenCalledWith('sub_1', expect.objectContaining({
       metadata: expect.objectContaining({ admin_plan_change_to: 'premium_duo' }),
     }));

@@ -9,7 +9,10 @@
  *   2. le mode réellement renvoyé par l'API ;
  *   3. l'URL publique de l'app, le secret de webhook, et l'endpoint déclaré
  *      chez Stripe (URL, activation, événements) ;
- *   4. les 6 prix V2 : existence, actifs, bon mode, bon montant, bon intervalle ;
+ *   4. les six clés stables (lookup_key) : un prix chacune, actif, bon mode,
+ *      bon produit, bonne cadence, EUR, TTC — sans aucune variable de prix ni
+ *      montant constant (CDC lookup_key V4, LK-93, EC-12) ; montants comparés
+ *      au manifeste du code pour information seulement ;
  *   5. les comptes dont le `stripe_customer_id` est introuvable dans ce mode.
  *
  * Sort en code 1 si un problème est détecté.
@@ -36,8 +39,19 @@ const REQUIRED_WEBHOOK_EVENTS = [
   'customer.subscription.deleted',
   'invoice.paid',
   'invoice.payment_failed',
+  // Catalogue (CDC lookup_key LK-25) : invalidation immédiate ; sinon la
+  // tâche planifiée resynchronise sous 5 minutes.
+  'price.created',
+  'price.updated',
+  'price.deleted',
+  'product.updated',
+  'product.deleted',
 ];
-import { PRICE_CATALOG, type BillingPeriod, type PlanCode } from '@/lib/stripe-prices';
+import { CATALOG_COUPLES } from '@/lib/billing/plan-catalog';
+import { groupByLookupKey, validateSalePrice, productIdOf } from '@/services/billing/catalog-types';
+import { listKeyedPrices } from '@/services/billing/price-catalog.service';
+import { PRICING_MANIFEST } from '@/services/billing/pricing-manifest';
+import { LEGACY_PRICE_VARS } from '@/services/billing/legacy-price-env';
 
 const FIX = process.argv.includes('--fix');
 let problems = 0;
@@ -101,28 +115,24 @@ async function main() {
     info('le secret whsec_ de cet endpoint doit être celui de STRIPE_WEBHOOK_SECRET (non vérifiable par l\'API)');
   }
 
-  console.log('\n[stripe:check] 4. Prix V2');
-  for (const [plan, periods] of Object.entries(PRICE_CATALOG) as [PlanCode, typeof PRICE_CATALOG[PlanCode]][]) {
-    for (const [period, def] of Object.entries(periods) as [BillingPeriod, typeof periods[BillingPeriod]][]) {
-      const priceId = process.env[def.envVar];
-      const label = `${def.envVar}`.padEnd(34);
-      if (!priceId) { ko(`${label} non définie`); continue; }
-      try {
-        const price = await stripe.prices.retrieve(priceId);
-        const issues: string[] = [];
-        if (!price.active) issues.push('inactif');
-        if (price.livemode !== (apiMode === 'live')) issues.push(`mode ${price.livemode ? 'live' : 'test'}`);
-        if (price.unit_amount !== def.amountCents) issues.push(`montant ${price.unit_amount} ≠ ${def.amountCents}`);
-        if (price.recurring?.interval !== def.interval) issues.push(`intervalle ${price.recurring?.interval ?? 'aucun'} ≠ ${def.interval}`);
-        if (price.currency !== 'eur') issues.push(`devise ${price.currency}`);
-        if (issues.length === 0) ok(`${label} ${priceId} (${plan}/${period})`);
-        else ko(`${label} ${priceId} : ${issues.join(', ')}`);
-      } catch (e) {
-        if (isStripeResourceMissing(e)) ko(`${label} ${priceId} introuvable en mode ${apiMode}`);
-        else throw e;
-      }
-    }
+  console.log('\n[stripe:check] 4. Clés stables (lookup_key)');
+  const keyed = groupByLookupKey(await listKeyedPrices(stripe));
+  for (const c of CATALOG_COUPLES) {
+    const label = c.lookupKey.padEnd(30);
+    const found = keyed.get(c.lookupKey) ?? [];
+    if (found.length === 0) { ko(`${label} aucune clé active (la tâche stripe-catalog-sync l'initialise depuis l'ancien prix configuré, ou la publication la pose)`); continue; }
+    if (found.length > 1) { ko(`${label} ${found.length} prix contradictoires`); continue; }
+    const price = found[0];
+    const check = validateSalePrice(price, c, { livemode: apiMode === 'live', saleProductId: productIdOf(price), verifiedAt: new Date().toISOString() });
+    const manifest = PRICING_MANIFEST[c.planCode][c.billingPeriod];
+    if (!check.ok) { ko(`${label} ${price.id} : ${check.code} ${check.detail}`); continue; }
+    const note = price.unit_amount === manifest.unitAmountCents ? 'conforme au code' : `code : ${manifest.unitAmountCents} (publication à venir ou dérive)`;
+    ok(`${label} ${price.id} ${price.unit_amount} ${price.currency} ${price.tax_behavior ?? 'unspecified'} — ${note}`);
   }
+  const legacy = LEGACY_PRICE_VARS.filter((v) => process.env[v.name]);
+  info(legacy.length
+    ? `variables de prix historiques encore posées (à retirer après la reprise historique) : ${legacy.map((v) => v.name).join(', ')}`
+    : 'aucune variable de prix historique posée (attendu après la bascule)');
 
   console.log('\n[stripe:check] 5. Clients Stripe des comptes');
   const rows = await db

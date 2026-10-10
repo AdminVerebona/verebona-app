@@ -34,9 +34,21 @@
  *           d'une ligne `canceled`/`readonly` ; NULL si toujours active ;
  *   et fin IS NULL OU fin >= t.
  * L'offre et la périodicité retenues sont les ACTUELLES : un upgrade réécrit
- * donc la ventilation par offre des périodes passées. Les prix sont ceux du
- * catalogue actuel (`subscription_plans`). Limites connues, documentées dans
- * le rendu du lot.
+ * donc la ventilation par offre des périodes passées. Limites connues,
+ * documentées dans le rendu du lot.
+ *
+ * MRR / ARR (CDC lookup_key V4, LK-77, EX-034, TC-57) : chaque abonnement
+ * est valorisé à son PRIX CONTRACTUEL (`account_subscriptions.
+ * contract_unit_amount_cents`, écrit depuis l'objet Stripe) — jamais au
+ * catalogue courant : la publication d'une hausse ne crée aucun MRR sur les
+ * anciens contrats. Un changement de prix (revalorisation, changement
+ * d'offre) ne compte qu'à sa date effective (`contract_price_since`, montant
+ * antérieur `previous_unit_amount_cents`). Convention nommée : montant
+ * unitaire Stripe TTC, HORS remises et crédits (MRR « catalogue
+ * contractuel ») ; essais exclus (`billing_period` NULL / `trialing`) ;
+ * impayés inclus tant que l'abonnement n'est pas terminé. Un prix
+ * contractuel inconnu n'est ni deviné ni mis à zéro en silence : il est
+ * compté à part (`mrrUnknownSubscriptions`).
  * ══════════════════════════════════════════════════════════════════════════
  */
 import { pgClient } from '@/db';
@@ -148,18 +160,32 @@ export interface ActiveSubscriptionGroup {
   planCode: string;
   billingPeriod: string | null;
   count: number;
+  /**
+   * Prix contractuel unitaire (centimes) en vigueur à l'instant considéré.
+   * `null` : inconnu (signalé, jamais valorisé). Absent : ancien appelant,
+   * valorisation au catalogue (compatibilité des fonctions pures).
+   */
+  unitAmountCents?: number | null;
 }
 
 /**
  * Revenu mensuel d'UN abonnement, en centimes : prix mensuel pour un
  * abonnement mensuel, prix annuel / 12 pour un annuel (règle de
- * normalisation standard du MRR). Offre ou prix inconnus → 0.
+ * normalisation standard du MRR). Avec un prix contractuel connu, c'est lui
+ * qui est normalisé (LK-77) ; prix contractuel inconnu → 0 (compté à part).
  */
 export function monthlyRevenueCents(
   planCode: string,
   billingPeriod: string | null,
   plans: Map<string, PlanPrice>,
+  unitAmountCents?: number | null,
 ): number {
+  if (unitAmountCents !== undefined) {
+    if (unitAmountCents === null) return 0;
+    if (billingPeriod === 'yearly') return unitAmountCents / 12;
+    if (billingPeriod === 'monthly') return unitAmountCents;
+    return 0;
+  }
   const plan = plans.get(planCode);
   if (!plan) return 0;
   if (billingPeriod === 'yearly') return (plan.yearlyPriceCents ?? 0) / 12;
@@ -169,8 +195,13 @@ export function monthlyRevenueCents(
 
 /** MRR (centimes, arrondi) des abonnements actifs — MRR global (§4.4). */
 export function computeMrrCents(groups: ActiveSubscriptionGroup[], plans: Map<string, PlanPrice>): number {
-  const total = groups.reduce((s, g) => s + g.count * monthlyRevenueCents(g.planCode, g.billingPeriod, plans), 0);
+  const total = groups.reduce((s, g) => s + g.count * monthlyRevenueCents(g.planCode, g.billingPeriod, plans, g.unitAmountCents), 0);
   return Math.round(total);
+}
+
+/** Abonnements actifs dont le prix contractuel est inconnu (non valorisés, LK-77). */
+export function countUnknownContractPrices(groups: ActiveSubscriptionGroup[]): number {
+  return groups.filter((g) => g.unitAmountCents === null).reduce((s, g) => s + g.count, 0);
 }
 
 /** ARR = annualisation du MRR. */
@@ -261,7 +292,8 @@ const SUB_END = `CASE WHEN s.status IN ('canceled', 'readonly') THEN COALESCE(
  */
 const PAID_CTE = `paid AS (
   SELECT s.account_id, s.plan_code, s.billing_period,
-         ${SUB_START} AS started_at, ${SUB_END} AS ended_at
+         ${SUB_START} AS started_at, ${SUB_END} AS ended_at,
+         s.contract_unit_amount_cents, s.contract_price_since, s.previous_unit_amount_cents
     FROM account_subscriptions s
    WHERE s.billing_period IS NOT NULL AND s.status <> 'trialing'
 )`;
@@ -305,17 +337,25 @@ export async function loadPlans(): Promise<Map<string, PlanPrice>> {
 
 /** Abonnements payants actifs à chaque instant, par offre × périodicité. */
 async function activeSubscriptionsAt(points: Point[]): Promise<ByIndex<ActiveSubscriptionGroup[]>> {
-  const rows = await q<{ i: number; plan_code: string; billing_period: string | null; n: number }>(
+  // Prix contractuel EN VIGUEUR à l'instant : montant antérieur avant la date
+  // effective d'un changement de prix (LK-77).
+  const rows = await q<{ i: number; plan_code: string; billing_period: string | null; amount: number | null; n: number }>(
     `WITH ${PAID_CTE}
-     SELECT p.i, paid.plan_code, paid.billing_period, count(*)::int AS n
+     SELECT p.i, paid.plan_code, paid.billing_period,
+            CASE WHEN paid.contract_price_since IS NOT NULL AND p.e < paid.contract_price_since AND paid.previous_unit_amount_cents IS NOT NULL
+                 THEN paid.previous_unit_amount_cents ELSE paid.contract_unit_amount_cents END AS amount,
+            count(*)::int AS n
        FROM ${P}
        JOIN paid ON paid.started_at < p.e AND (paid.ended_at IS NULL OR paid.ended_at >= p.e)
-      GROUP BY p.i, paid.plan_code, paid.billing_period`,
+      GROUP BY p.i, paid.plan_code, paid.billing_period, 4`,
     [JSON.stringify(points)],
   );
   const out: ByIndex<ActiveSubscriptionGroup[]> = new Map(points.map((p) => [p.i, []]));
   for (const r of rows) {
-    out.get(Number(r.i))?.push({ planCode: r.plan_code, billingPeriod: r.billing_period, count: Number(r.n) });
+    out.get(Number(r.i))?.push({
+      planCode: r.plan_code, billingPeriod: r.billing_period, count: Number(r.n),
+      unitAmountCents: r.amount === null || r.amount === undefined ? null : Number(r.amount),
+    });
   }
   return out;
 }
@@ -425,6 +465,8 @@ export interface OverviewData {
   };
   /** Ventilation des abonnements actifs par offre (fin de période). */
   activeByPlan: PlanBreakdownRow[];
+  /** Abonnements actifs à prix contractuel inconnu, non valorisés dans le MRR (LK-77). */
+  mrrUnknownSubscriptions: number;
   /** CA encaissé dans d'autres devises que l'euro (UX-007), non additionné. */
   otherCurrencies: Record<string, number>;
   series: Array<{ label: string; revenueCents: number; mrrCents: number; signups: number; activeSubscriptions: number }>;
@@ -465,6 +507,7 @@ export async function getOverview(p: ResolvedPeriod): Promise<OverviewData> {
       openAnomalies: buildKpi(n0(anomalies, CUR), n0(anomalies, PREV), { polarity: 'up_bad', nature: 'stock' }),
     },
     activeByPlan: breakdownByPlan(subs.get(CUR) ?? [], plans),
+    mrrUnknownSubscriptions: countUnknownContractPrices(subs.get(CUR) ?? []),
     otherCurrencies,
     series: buckets.map((b, k) => ({
       label: b.label,

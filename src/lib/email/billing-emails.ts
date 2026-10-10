@@ -17,7 +17,12 @@ import { eq } from 'drizzle-orm';
  */
 export async function sendPremiumConfirmationEmail(
   userId: number,
-  nextBillingDate: Date
+  nextBillingDate: Date,
+  /**
+   * Montant et périodicité de l'OPÉRATION concernée (prix contractuel lu sur
+   * l'abonnement Stripe, CDC lookup_key LK-78) — jamais la grille courante.
+   */
+  details?: { planLabel?: string; unitAmountCents?: number | null; billingPeriod?: 'monthly' | 'yearly' | null },
 ): Promise<void> {
   try {
     const [user] = await db
@@ -40,6 +45,7 @@ export async function sendPremiumConfirmationEmail(
         nextBillingDate: formattedDate,
         // Ancien nom, conservé pour un gabarit personnalisé qui l'utiliserait.
         premiumUntil: formattedDate,
+        ...confirmationDetails(details),
       },
       userId: user.id,
     });
@@ -48,6 +54,21 @@ export async function sendPremiumConfirmationEmail(
     console.error('Error sending premium confirmation email:', error);
     throw error;
   }
+}
+
+/** Variables d'offre, de montant et de périodicité (pures, LK-78). */
+export function confirmationDetails(details?: { planLabel?: string; unitAmountCents?: number | null; billingPeriod?: 'monthly' | 'yearly' | null }): Record<string, string> {
+  const eur = (c: number) => new Intl.NumberFormat('fr-FR', { style: 'currency', currency: 'EUR' }).format(c / 100);
+  const per = details?.billingPeriod === 'monthly' ? 'mois' : details?.billingPeriod === 'yearly' ? 'an' : null;
+  return {
+    planLabel: details?.planLabel ?? 'Premium',
+    amountLabel: typeof details?.unitAmountCents === 'number' && per
+      ? `${eur(details.unitAmountCents)} / ${per}, TTC, TVA incluse`
+      : 'selon votre offre, TTC (voir votre facture)',
+    periodLabel: details?.billingPeriod === 'monthly'
+      ? 'Abonnement mensuel à reconduction tacite'
+      : details?.billingPeriod === 'yearly' ? 'Abonnement annuel à reconduction tacite' : 'Abonnement à reconduction tacite',
+  };
 }
 
 /** « 7 avril 2027 », fuseau de Paris (une échéance à 00:30 UTC reste le bon jour). */

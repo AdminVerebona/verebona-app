@@ -30,6 +30,7 @@ import {
   DECLARED_MODELS_VERSION, declaredModelStatus, findDeclaredModel, isPreviewModel as statutPreviewDeclare,
   type ModelCapability, type ModelLifecycleStatus,
 } from '@/services/ai/registry/models';
+import { providerLifecycle } from '@/services/ai/registry/model-lifecycle';
 
 export type ModelAliasRole = 'default' | 'escalation';
 
@@ -121,12 +122,12 @@ export async function resolveAliases(
 }
 
 /**
- * Statut preview d'un modèle (§15.12) — lot 23 : STATUT DÉCLARÉ au registre
- * (`services/ai/registry/models.ts`), plus déduit du nom. Repli prudent : un
- * modèle absent du registre est traité comme preview.
+ * Statut preview d'un modèle (§15.12) — INFORMATIF depuis le lot 35B :
+ * statut déclaré au registre d'exceptions, sinon statut fournisseur (règle
+ * isolée `model-lifecycle.ts`). Plus aucune condition d'usage n'en dépend.
  */
 export function isPreviewModel(model: string): boolean {
-  return statutPreviewDeclare(model);
+  return statutPreviewDeclare(model, providerLifecycle({ model }).status);
 }
 
 /**
@@ -163,8 +164,15 @@ export interface ModelRegistryRow {
   contextWindowTokens: number | null;
   maxOutputTokens: number | null;
   rateLimits: { requestsPerMinute: number | null; tokensPerMinute: number | null };
-  compatiblePrompts: readonly string[];
-  /** Schémas de sortie des opérations de l'assistant dont le prompt est compatible. */
+  /**
+   * Lot 35B : qualification technique (automatique avec la clé active, sinon
+   * historique du registre) — remplace les « prompts compatibles » déclarés
+   * à la main.
+   */
+  qualification: RegistryQualification | null;
+  /** Exception de compatibilité documentée (prompts exclus et raison). */
+  exclusion: string | null;
+  /** Schémas de sortie des opérations de l'assistant (contrat à respecter). */
   compatibleSchemas: string[];
   rollbackModel: string | null;
   /** Limites appliquées par Verebona avant appel (§31.1, §31.2). */
@@ -172,7 +180,20 @@ export interface ModelRegistryRow {
   note: string | null;
 }
 
+export interface RegistryQualification {
+  source: 'auto' | 'historical';
+  generate: boolean | null;
+  structured: boolean | null;
+  multimodal: boolean | null;
+  thinking: boolean | null;
+  qualifiedAt: string | null;
+}
+
 export interface RegistryViewDeps {
+  /** Qualification connue (lot 35B) ; absent : qualification historique du registre. */
+  qualification?: (model: string) => RegistryQualification | null;
+  /** Statut fournisseur (lot 35B) pour un modèle hors registre. */
+  providerStatus?: (model: string) => ModelLifecycleStatus | null;
   /** Prix connu (micros/token ≡ $/million) ou `null`. */
   price: (provider: string, model: string) => { inputMicros: number; outputMicros: number; sourceReference?: string | null } | null;
   /** Limites et date de fin listées par le fournisseur (`ai_model_catalog`). */
@@ -191,13 +212,22 @@ export function modelRegistryRows(chaine: ResolvedAliases, deps: RegistryViewDep
     const d = findDeclaredModel(model);
     const fournisseur = model ? deps.providerCatalog.get(model) : undefined;
     const prix = model ? deps.price(op?.provider ?? 'gemini', model) : null;
-    const compatibles = d?.compatiblePrompts ?? [];
+    const declare = model ? declaredModelStatus(model) : 'unknown';
+    const statut: ModelLifecycleStatus | 'unknown' = declare !== 'unknown' ? declare
+      : model ? (deps.providerStatus?.(model) ?? providerLifecycle({ model }).status) : 'unknown';
+    const historique: RegistryQualification | null = d
+      ? {
+        source: 'historical', generate: true,
+        structured: d.capabilities.includes('structured_output'), multimodal: d.capabilities.includes('multimodal'),
+        thinking: d.capabilities.includes('thinking'), qualifiedAt: null,
+      }
+      : null;
     return {
       role,
       alias: aliases[role],
       provider: d?.provider ?? op?.provider ?? 'gemini',
       model,
-      status: model ? declaredModelStatus(model) : 'unknown',
+      status: statut,
       activatedOn: d?.activatedOn ?? null,
       retiresOn: d?.retiresOn ?? (model ? saisies.get(model) ?? fournisseur?.deprecationDate ?? null : null),
       capabilities: d?.capabilities ?? [],
@@ -205,8 +235,9 @@ export function modelRegistryRows(chaine: ResolvedAliases, deps: RegistryViewDep
       contextWindowTokens: d?.contextWindowTokens ?? fournisseur?.inputTokenLimit ?? null,
       maxOutputTokens: d?.maxOutputTokens ?? fournisseur?.outputTokenLimit ?? null,
       rateLimits: d?.rateLimits ?? { requestsPerMinute: null, tokensPerMinute: null },
-      compatiblePrompts: compatibles,
-      compatibleSchemas: [...new Set(ops.filter((o) => o.masterPromptCode && compatibles.includes(o.masterPromptCode)).map((o) => o.outputSchema))],
+      qualification: (model ? deps.qualification?.(model) : null) ?? historique,
+      exclusion: d?.excludedPrompts ? `${d.excludedPrompts.prompts.join(', ')} : ${d.excludedPrompts.reason}` : null,
+      compatibleSchemas: [...new Set(ops.filter((o) => o.masterPromptCode && o.outputSchema && o.outputSchema !== 'none').map((o) => o.outputSchema))],
       rollbackModel: d?.rollbackModel ?? null,
       limits: deps.limits,
       note: d?.note ?? null,

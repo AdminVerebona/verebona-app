@@ -167,9 +167,9 @@ L'équipe Verebona`,
                 <table width="100%" cellpadding="0" cellspacing="0" style="background-color:#F3F4F6; border-radius:8px; margin:24px 0;">
                   <tr><td style="padding:20px;">
                     <p style="margin:0 0 12px 0; font-weight:600; color:#1F2937;">Détails de votre abonnement</p>
-                    <p style="margin:0 0 8px 0; font-size:14px; color:#4B5563;"><strong>Offre :</strong> Verebona Premium</p>
-                    <p style="margin:0 0 8px 0; font-size:14px; color:#4B5563;"><strong>Montant :</strong> 59 € / an, TTC, TVA incluse</p>
-                    <p style="margin:0 0 8px 0; font-size:14px; color:#4B5563;"><strong>Périodicité :</strong> Abonnement annuel à reconduction tacite</p>
+                    <p style="margin:0 0 8px 0; font-size:14px; color:#4B5563;"><strong>Offre :</strong> Verebona {{planLabel}}</p>
+                    <p style="margin:0 0 8px 0; font-size:14px; color:#4B5563;"><strong>Montant :</strong> {{amountLabel}}</p>
+                    <p style="margin:0 0 8px 0; font-size:14px; color:#4B5563;"><strong>Périodicité :</strong> {{periodLabel}}</p>
                     <p style="margin:0; font-size:14px; color:#4B5563;"><strong>Prochaine échéance :</strong> {{nextBillingDate}}</p>
                   </td></tr>
                 </table>
@@ -190,7 +190,7 @@ L'équipe Verebona`,
     </table>
   </body>
 </html>`,
-    placeholders: JSON.stringify(['firstName', 'logoUrl', 'nextBillingDate', 'year'])
+    placeholders: JSON.stringify(['firstName', 'logoUrl', 'nextBillingDate', 'planLabel', 'amountLabel', 'periodLabel', 'year'])
   },
 
   SUBSCRIPTION_EXPIRING: {

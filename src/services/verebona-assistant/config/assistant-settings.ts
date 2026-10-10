@@ -26,12 +26,18 @@
  * JOURNAL ET DOUBLE VALIDATION
  *
  * Toute modification est journalisée (`admin_audit_log` : auteur, date,
- * avant / après — CA-30). Un réglage marqué `doubleValidation` (autoriser un
- * modèle preview en production, §32.7) n'est appliqué qu'après l'accord d'un
- * SECOND administrateur, distinct du demandeur.
+ * avant / après — CA-30). Un réglage marqué `doubleValidation` n'est
+ * appliqué qu'après l'accord d'un SECOND administrateur, distinct du
+ * demandeur. Lot 35B : le seul réglage qui l'employait, « Modèles preview en
+ * production » (`preview_models_allowed`), est SUPPRIMÉ (ticket « Catalogue
+ * IA dynamique Google » : un preview est sélectionnable comme un stable). Une
+ * valeur encore enregistrée en base est ignorée (clé inconnue). Le mécanisme
+ * reste disponible pour un futur réglage sensible.
  * ══════════════════════════════════════════════════════════════════════════
  */
 import type { AdminActionEntry } from '@/lib/admin-audit';
+import { isPreviewModel as isPreviewDeclare } from '@/services/ai/registry/models';
+import { providerLifecycle } from '@/services/ai/registry/model-lifecycle';
 
 /** Journal admin, chargé à la demande (module lu par tout l'assistant). */
 async function logAdminAction(e: AdminActionEntry): Promise<void> {
@@ -102,10 +108,6 @@ export const ASSISTANT_SETTINGS: readonly AssistantSettingDef[] = [
   sw('write_commands', 'VEREBONA_ASSISTANT_WRITE_COMMANDS', 'Commandes d’écriture', 'Modifications depuis le chat (écart acté au §4.8).', true),
   int('history_days', 'VEREBONA_ASSISTANT_HISTORY_DAYS', 'historique', 'Conservation de l’historique (jours)',
     'Durée de conservation des conversations (cadrage produit : 90 jours).', 90, 7, 365),
-  { key: 'preview_models_allowed', env: 'VEREBONA_ASSISTANT_PREVIEW_MODELS_ALLOWED', group: 'modeles', label: 'Modèles preview en production',
-    description: 'Autorise l’activation, en production, d’une version de configuration utilisant un modèle preview (§15.13, §32.7). '
-      + 'Activation soumise à la validation d’un second administrateur.',
-    type: 'bool', default: false, doubleValidation: (v) => v === true },
   // Lot 22 — plafond mensuel de coût IA par compte, TOUS traitements (hors
   // administration T5), appliqué par la passerelle (`account-cost-cap`). Un
   // réglage par offre ; 0 = sans plafond (défaut : comportement inchangé tant
@@ -127,6 +129,17 @@ export const ASSISTANT_SETTINGS: readonly AssistantSettingDef[] = [
 
 const PAR_CLE = new Map(ASSISTANT_SETTINGS.map((d) => [d.key, d]));
 const PAR_ENV = new Map(ASSISTANT_SETTINGS.map((d) => [d.env, d]));
+
+/**
+ * Réservé aux tests : déclare un réglage supplémentaire (ex. pour exercer la
+ * double validation, sans réglage de production qui l'emploie depuis le lot
+ * 35B). Rend une fonction qui le retire.
+ */
+export function registerAssistantSettingForTests(def: AssistantSettingDef): () => void {
+  PAR_CLE.set(def.key, def);
+  PAR_ENV.set(def.env, def);
+  return () => { PAR_CLE.delete(def.key); PAR_ENV.delete(def.env); };
+}
 
 export function assistantSettingDef(key: string): AssistantSettingDef | undefined {
   return PAR_CLE.get(key);
@@ -500,8 +513,10 @@ export async function listAssistantSettingRequests(limit = 20): Promise<StoredRe
 }
 
 /**
- * Modèle preview (§15.12, §15.13) — lot 23 : statut DÉCLARÉ au registre des
- * modèles (`services/ai/registry/models.ts`) ; un modèle inconnu du registre
- * est traité comme preview (repli prudent).
+ * Modèle preview (§15.12) — INFORMATIF depuis le lot 35B (registre
+ * d'exceptions, sinon statut fournisseur) : plus aucune condition d'usage.
  */
-export { isPreviewModel } from '@/services/ai/registry/models';
+export function isPreviewModel(model: string | null | undefined): boolean {
+  if (typeof model !== 'string' || model.trim() === '') return false;
+  return isPreviewDeclare(model, providerLifecycle({ model }).status);
+}

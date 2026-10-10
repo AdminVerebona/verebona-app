@@ -630,6 +630,8 @@ export const stripeWebhookLogs = pgTable('stripe_webhook_logs', {
   errorMessage: text('error_message'),
   processingTimeMs: integer('processing_time_ms'),
   createdAt: tstz('created_at'),
+  /** Prise en charge atomique (migration 0306, LK-70). */
+  claimedAt: tstzOptional('claimed_at'),
 }, (table) => ({
   eventTypeIdx: index('stripe_webhook_logs_event_type_idx').on(table.eventType),
   processedIdx: index('stripe_webhook_logs_processed_idx').on(table.processed),
@@ -660,6 +662,10 @@ export const invoices = pgTable('invoices', {
   periodEndAt: tstzOptional('period_end_at'),
   lastPaymentFailedAt: tstzOptional('last_payment_failed_at'),
   amountRefunded: integer('amount_refunded').notNull().default(0),
+  // Migration 0306 — détail des lignes (prix, offre, montant) et convention
+  // d'attribution de l'offre (CDC lookup_key LK-75).
+  lineItemsJson: jsonb('line_items_json').$type<Array<Record<string, unknown>>>(),
+  planResolution: text('plan_resolution'),
   createdAt: tstz('created_at'),
   updatedAt: tstz('updated_at'),
 }, (table) => ({
@@ -699,6 +705,194 @@ export const subscriptionPlans = pgTable('subscription_plans', {
 }, (table) => ({
   codeIdx: index('subscription_plans_code_idx').on(table.code),
   displayOrderIdx: index('subscription_plans_display_order_idx').on(table.displayOrder),
+}));
+
+// ─── Catalogue Stripe par lookup_key (migration 0306, CDC lookup_key V4) ────
+
+/** Produits Stripe approuvés par offre (vente / reconnaissance historique, LK-03). */
+export const stripeCatalogProducts = pgTable('stripe_catalog_products', {
+  id: bigserial('id', { mode: 'number' }).primaryKey(),
+  catalogContext: text('catalog_context').notNull(),
+  stripeAccountId: text('stripe_account_id'),
+  livemode: boolean('livemode'),
+  planCode: text('plan_code').notNull(),
+  stripeProductId: text('stripe_product_id').notNull(),
+  role: text('role').notNull().default('historical'),
+  source: text('source').notNull(),
+  approvedAt: tstz('approved_at'),
+  updatedAt: tstz('updated_at'),
+}, (table) => ({
+  uniq: unique('stripe_catalog_products_uniq').on(table.catalogContext, table.stripeProductId),
+  saleUidx: uniqueIndex('stripe_catalog_products_sale_uidx').on(table.catalogContext, table.planCode).where(sql`role = 'sale'`),
+  planChk: check('stripe_catalog_products_plan_chk', sql`${table.planCode} IN ('standard', 'premium', 'premium_duo')`),
+  roleChk: check('stripe_catalog_products_role_chk', sql`${table.role} IN ('sale', 'historical')`),
+}));
+
+/** Registre durable des versions de prix (LK-17). */
+export const stripePriceVersions = pgTable('stripe_price_versions', {
+  id: bigserial('id', { mode: 'number' }).primaryKey(),
+  catalogContext: text('catalog_context').notNull(),
+  stripeAccountId: text('stripe_account_id'),
+  livemode: boolean('livemode'),
+  stripePriceId: text('stripe_price_id').notNull(),
+  stripeProductId: text('stripe_product_id').notNull(),
+  planCode: text('plan_code').notNull(),
+  billingPeriod: text('billing_period').notNull(),
+  logicalLookupKey: text('logical_lookup_key').notNull(),
+  observedLookupKey: text('observed_lookup_key'),
+  unitAmountCents: integer('unit_amount_cents').notNull(),
+  currency: text('currency').notNull(),
+  interval: text('interval').notNull(),
+  intervalCount: integer('interval_count').notNull().default(1),
+  taxBehavior: text('tax_behavior').notNull().default('unspecified'),
+  priceRevision: text('price_revision').notNull(),
+  stripeActive: boolean('stripe_active').notNull().default(true),
+  source: text('source').notNull(),
+  firstSeenAt: tstz('first_seen_at'),
+  lastVerifiedAt: tstz('last_verified_at'),
+}, (table) => ({
+  uniq: unique('stripe_price_versions_uniq').on(table.catalogContext, table.stripePriceId),
+  planChk: check('stripe_price_versions_plan_chk', sql`${table.planCode} IN ('standard', 'premium', 'premium_duo')`),
+  periodChk: check('stripe_price_versions_period_chk', sql`${table.billingPeriod} IN ('monthly', 'yearly')`),
+  amountChk: check('stripe_price_versions_amount_chk', sql`${table.unitAmountCents} > 0`),
+}));
+
+/** État partagé du catalogue par contexte (LK-18, EX-001). */
+export const stripeCatalogState = pgTable('stripe_catalog_state', {
+  catalogContext: text('catalog_context').primaryKey(),
+  stripeAccountId: text('stripe_account_id'),
+  livemode: boolean('livemode'),
+  activeRevision: text('active_revision'),
+  activeSnapshot: jsonb('active_snapshot').$type<Record<string, unknown>>(),
+  previousRevision: text('previous_revision'),
+  previousSnapshot: jsonb('previous_snapshot').$type<Record<string, unknown>>(),
+  verifiedAt: tstzOptional('verified_at'),
+  generation: integer('generation').notNull().default(0),
+  invalidatedAt: tstzOptional('invalidated_at'),
+  publicationState: text('publication_state').notNull().default('ACTIVE'),
+  publicationRunId: bigint('publication_run_id', { mode: 'number' }),
+  publicationError: text('publication_error'),
+  activatingUntil: tstzOptional('activating_until'),
+  publishedManifestRevision: text('published_manifest_revision'),
+  candidateManifestRevision: text('candidate_manifest_revision'),
+  candidateFirstSeenAt: tstzOptional('candidate_first_seen_at'),
+  portalConfigurationId: text('portal_configuration_id'),
+  portalFingerprint: text('portal_fingerprint'),
+  portalVerifiedAt: tstzOptional('portal_verified_at'),
+  backfillCompletedAt: tstzOptional('backfill_completed_at'),
+  lastSyncError: text('last_sync_error'),
+  updatedAt: tstz('updated_at'),
+}, (table) => ({
+  publicationChk: check('stripe_catalog_state_publication_chk', sql`${table.publicationState} IN ('PREPARED', 'VALIDATING', 'PUBLISHING', 'READY', 'ACTIVE', 'FAILED', 'RECOVERING', 'SUPERSEDED')`),
+}));
+
+/** Journal des opérations de catalogue (EX-002). */
+export const stripeCatalogRuns = pgTable('stripe_catalog_runs', {
+  id: bigserial('id', { mode: 'number' }).primaryKey(),
+  catalogContext: text('catalog_context').notNull(),
+  kind: text('kind').notNull(),
+  state: text('state').notNull(),
+  trigger: text('trigger').notNull(),
+  actor: text('actor'),
+  codeVersion: text('code_version'),
+  manifestRevision: text('manifest_revision'),
+  fromRevision: text('from_revision'),
+  toRevision: text('to_revision'),
+  dryRun: boolean('dry_run').notNull().default(false),
+  steps: jsonb('steps').$type<Array<Record<string, unknown>>>().notNull().default(sql`'[]'::jsonb`),
+  createdPrices: jsonb('created_prices').$type<Record<string, unknown>>().notNull().default(sql`'{}'::jsonb`),
+  transfers: jsonb('transfers').$type<Array<Record<string, unknown>>>().notNull().default(sql`'[]'::jsonb`),
+  report: jsonb('report').$type<Record<string, unknown>>(),
+  error: text('error'),
+  startedAt: tstz('started_at'),
+  finishedAt: tstzOptional('finished_at'),
+}, (table) => ({
+  contextIdx: index('stripe_catalog_runs_context_idx').on(table.catalogContext, table.startedAt),
+  kindChk: check('stripe_catalog_runs_kind_chk', sql`${table.kind} IN ('sync', 'backfill', 'publish', 'rollback', 'revaluation')`),
+  stateChk: check('stripe_catalog_runs_state_chk', sql`${table.state} IN ('PREPARED', 'VALIDATING', 'PUBLISHING', 'READY', 'ACTIVE', 'FAILED', 'RECOVERING', 'SUPERSEDED', 'DONE', 'NOOP')`),
+}));
+
+/** Opérations engageant un prix : prix et révision acceptés, idempotence (LK-40, LK-44, LK-45). */
+export const billingPriceOperations = pgTable('billing_price_operations', {
+  id: bigserial('id', { mode: 'number' }).primaryKey(),
+  catalogContext: text('catalog_context').notNull(),
+  kind: text('kind').notNull(),
+  accountId: integer('account_id').references(() => accounts.id, { onDelete: 'set null' }),
+  userId: integer('user_id').references(() => users.id, { onDelete: 'set null' }),
+  planCode: text('plan_code').notNull(),
+  billingPeriod: text('billing_period').notNull(),
+  stripePriceId: text('stripe_price_id').notNull(),
+  priceRevision: text('price_revision').notNull(),
+  unitAmountCents: integer('unit_amount_cents').notNull(),
+  currency: text('currency').notNull().default('eur'),
+  previousPriceId: text('previous_price_id'),
+  previousAmountCents: integer('previous_amount_cents'),
+  idempotencyKey: text('idempotency_key').notNull(),
+  promoContext: text('promo_context'),
+  referralCode: text('referral_code'),
+  status: text('status').notNull().default('reserved'),
+  stripeReference: text('stripe_reference'),
+  error: text('error'),
+  initiator: text('initiator'),
+  createdAt: tstz('created_at'),
+  updatedAt: tstz('updated_at'),
+}, (table) => ({
+  idemUniq: unique('billing_price_operations_idem_uniq').on(table.idempotencyKey),
+  openCheckoutUidx: uniqueIndex('billing_price_operations_open_checkout_uidx').on(table.accountId).where(sql`kind = 'checkout' AND status IN ('reserved', 'created', 'uncertain')`),
+  accountIdx: index('billing_price_operations_account_idx').on(table.accountId, table.createdAt),
+  kindChk: check('billing_price_operations_kind_chk', sql`${table.kind} IN ('checkout', 'upgrade', 'schedule', 'admin')`),
+  statusChk: check('billing_price_operations_status_chk', sql`${table.status} IN ('reserved', 'created', 'completed', 'expired', 'superseded', 'failed', 'uncertain')`),
+}));
+
+/** Campagne de revalorisation des abonnés existants (EX-016 à EX-018). */
+export const stripePriceMigrations = pgTable('stripe_price_migrations', {
+  id: bigserial('id', { mode: 'number' }).primaryKey(),
+  catalogContext: text('catalog_context').notNull(),
+  revisionId: text('revision_id').notNull(),
+  accountId: integer('account_id').references(() => accounts.id, { onDelete: 'set null' }),
+  stripeCustomerId: text('stripe_customer_id'),
+  stripeSubscriptionId: text('stripe_subscription_id').notNull(),
+  stripeSubscriptionItemId: text('stripe_subscription_item_id').notNull(),
+  planCode: text('plan_code').notNull(),
+  billingPeriod: text('billing_period').notNull(),
+  subscriptionStatus: text('subscription_status'),
+  oldPriceId: text('old_price_id').notNull(),
+  oldAmountCents: integer('old_amount_cents'),
+  targetPriceId: text('target_price_id').notNull(),
+  targetAmountCents: integer('target_amount_cents').notNull(),
+  renewalAt: tstzOptional('renewal_at'),
+  hasDiscount: boolean('has_discount').notNull().default(false),
+  hasSchedule: boolean('has_schedule').notNull().default(false),
+  eligibilityStatus: text('eligibility_status').notNull().default('pending'),
+  eligibilityReason: text('eligibility_reason'),
+  notificationStatus: text('notification_status').notNull().default('pending'),
+  notificationProof: jsonb('notification_proof').$type<Record<string, unknown>>(),
+  notifiedAt: tstzOptional('notified_at'),
+  noticeDeadline: tstzOptional('notice_deadline'),
+  migrationStatus: text('migration_status').notNull().default('planned'),
+  scheduleId: text('schedule_id'),
+  attempts: integer('attempts').notNull().default(0),
+  lastError: text('last_error'),
+  evidence: jsonb('evidence').$type<Record<string, unknown>>().notNull().default(sql`'{}'::jsonb`),
+  createdAt: tstz('created_at'),
+  updatedAt: tstz('updated_at'),
+}, (table) => ({
+  itemUniq: unique('stripe_price_migrations_item_uniq').on(table.revisionId, table.stripeSubscriptionItemId),
+  statusIdx: index('stripe_price_migrations_status_idx').on(table.catalogContext, table.migrationStatus),
+  subscriptionIdx: index('stripe_price_migrations_subscription_idx').on(table.stripeSubscriptionId),
+  eligibilityChk: check('stripe_price_migrations_eligibility_chk', sql`${table.eligibilityStatus} IN ('pending', 'eligible', 'deferred', 'excluded')`),
+  notificationChk: check('stripe_price_migrations_notification_chk', sql`${table.notificationStatus} IN ('pending', 'sent', 'proven', 'failed')`),
+  statusChk: check('stripe_price_migrations_status_chk', sql`${table.migrationStatus} IN ('planned', 'scheduled', 'completed', 'deferred', 'failed', 'canceled', 'retryable', 'blocked')`),
+}));
+
+/** Idempotence métier des effets d'un paiement (LK-70, TC-24). */
+export const stripeInvoiceEffects = pgTable('stripe_invoice_effects', {
+  stripeInvoiceId: text('stripe_invoice_id').notNull(),
+  effect: text('effect').notNull(),
+  eventId: text('event_id'),
+  createdAt: tstz('created_at'),
+}, (table) => ({
+  pk: primaryKey({ columns: [table.stripeInvoiceId, table.effect] }),
 }));
 
 export const planLimits = pgTable('plan_limits', {
@@ -1084,6 +1278,29 @@ export const accountSubscriptions = pgTable('account_subscriptions', {
    */
   contractConcludedAt: tstzOptional('contract_concluded_at'),
   cancelAtPeriodEnd: boolean('cancel_at_period_end').notNull().default(false),
+  // ── Prix contractuel (migration 0306, CDC lookup_key LK-19) ──
+  // Écrit depuis l'objet d'abonnement Stripe uniquement, jamais depuis la
+  // carte commerciale affichée.
+  stripeSubscriptionItemId: text('stripe_subscription_item_id'),
+  stripePriceId: text('stripe_price_id'),
+  stripeProductId: text('stripe_product_id'),
+  contractUnitAmountCents: integer('contract_unit_amount_cents'),
+  contractCurrency: text('contract_currency'),
+  contractQuantity: integer('contract_quantity'),
+  contractInterval: text('contract_interval'),
+  contractTaxBehavior: text('contract_tax_behavior'),
+  contractVerifiedAt: tstzOptional('contract_verified_at'),
+  /** Date de prise d'effet du prix contractuel courant (MRR à la date réelle, LK-77). */
+  contractPriceSince: tstzOptional('contract_price_since'),
+  previousUnitAmountCents: integer('previous_unit_amount_cents'),
+  // ── Cible exacte d'un changement programmé (LK-20) ──
+  scheduledStripePriceId: text('scheduled_stripe_price_id'),
+  scheduledPriceRevision: text('scheduled_price_revision'),
+  scheduledUnitAmountCents: integer('scheduled_unit_amount_cents'),
+  scheduledCurrency: text('scheduled_currency'),
+  scheduledScheduleId: text('scheduled_schedule_id'),
+  /** NULL | 'release_failed' | 'blocked' (LK-58, LK-59). */
+  scheduledChangeState: text('scheduled_change_state'),
   updatedAt: tstz('updated_at'),
   createdAt: tstz('created_at'),
 }, (table) => ({
@@ -1092,6 +1309,8 @@ export const accountSubscriptions = pgTable('account_subscriptions', {
   statusIdx: index('account_subscriptions_status_idx').on(table.status),
   stripeCustomerIdIdx: index('account_subscriptions_stripe_customer_id_idx').on(table.stripeCustomerId),
   stripeSubscriptionIdIdx: index('account_subscriptions_stripe_subscription_id_idx').on(table.stripeSubscriptionId),
+  // Migration 0306 (index optionnel, CONCURRENTLY) : inventaire des prix contractuels.
+  stripePriceIdx: index('account_subscriptions_stripe_price_idx').on(table.stripePriceId),
 }));
 
 /**

@@ -53,93 +53,161 @@
  *
  * L'utilisateur peut annuler un changement programme tant qu'il n'a pas
  * pris effet (§10.3) : l'echeancier est alors libere.
+ *
+ * ══════════════════════════════════════════════════════════════════════════
+ * CDC LOOKUP_KEY V4 (§12, LK-55 à LK-59, TC-47 à TC-54)
+ *
+ *   - le prix cible est résolu AU MOMENT DE LA CONFIRMATION (révision active,
+ *     relue chez Stripe, révision affichée vérifiée) puis inscrit tel quel
+ *     dans la phase future ET dans `scheduled_stripe_price_id` avec montant,
+ *     devise, révision et échéancier : une hausse publiée ensuite ne change
+ *     pas le prix accepté (TC-49) ;
+ *   - la phase courante est recopiée à l'identique — prix réel même
+ *     historique, quantité, remises PAR IDENTIFIANT (durée d'un coupon non
+ *     relancée), taux de taxe (LK-56, TC-53) ; un échéancier étranger avec
+ *     des phases futures non reconnues est refusé, jamais écrasé ;
+ *   - `applyScheduledChange` compare l'item au prix cible ENREGISTRÉ, pas au
+ *     prix courant du catalogue (EC-07, TC-50) ;
+ *   - l'annulation n'efface l'intention locale qu'après libération confirmée
+ *     de l'échéancier (ou absence vérifiée) ; sinon l'intention reste, en
+ *     état `release_failed` visible (LK-59, TC-52) ;
+ *   - une revalorisation planifiée est remplacée par le changement volontaire
+ *     (une seule transition, RX-12).
+ * ══════════════════════════════════════════════════════════════════════════
  */
+import type Stripe from 'stripe';
 import { db } from '@/db';
 import { accountSubscriptions } from '@/db/schema';
 import { eq } from 'drizzle-orm';
 import { getStripeServer } from '@/lib/stripe';
 import {
-  resolvePriceId,
   isPlanCode,
   isBillingPeriod,
   isUpgrade,
   type PlanCode,
   type BillingPeriod,
 } from '@/lib/stripe-prices';
+import { parseDisplayedRevision } from '@/lib/billing/plan-catalog';
+import { BillingCatalogError, type PublicOffer, type ResolvedPrice } from '@/services/billing/catalog-types';
+import { assertDisplayedRevision, resolveCurrentPrice } from '@/services/billing/price-catalog.service';
+import { resolveHistoricalPrice } from '@/services/billing/price-history.service';
+import { recordPriceOperation } from '@/services/billing/price-operations.service';
+import { isRevaluationSchedule, supersedeRevaluation } from '@/services/billing/price-revaluation.service';
 
 export interface ScheduledChange {
   planCode: string;
   billingPeriod: BillingPeriod;
   effectiveAt: Date | null;
+  /** Montant accepté à la programmation (centimes), `null` pour une programmation antérieure non rapprochée. */
+  unitAmountCents: number | null;
+  currency: string | null;
+  /** `release_failed` | `blocked` : état anormal visible (LK-58, LK-59). */
+  state: string | null;
 }
 
 export type ScheduleResult =
-  | { ok: true; effectiveAt: Date | null }
+  | { ok: true; effectiveAt: Date | null; unitAmountCents?: number }
   | {
       ok: false;
-      reason: 'NO_SUBSCRIPTION' | 'NO_ACTIVE_PLAN' | 'INVALID_TARGET' | 'SAME_AS_CURRENT' | 'UPGRADE_IS_IMMEDIATE' | 'STRIPE_SCHEDULE_FAILED';
+      reason: 'NO_SUBSCRIPTION' | 'NO_ACTIVE_PLAN' | 'INVALID_TARGET' | 'SAME_AS_CURRENT' | 'UPGRADE_IS_IMMEDIATE' | 'STRIPE_SCHEDULE_FAILED' | 'FOREIGN_SCHEDULE'
+        | BillingCatalogError['code'];
+      offer?: PublicOffer;
     };
+
+const idOf = (v: string | { id: string } | null | undefined): string | null => (!v ? null : typeof v === 'string' ? v : v.id);
+
+/**
+ * Phases « courante à l'identique, puis nouveau prix » (pur). Remises
+ * reportées par identifiant de remise ; taux de taxe conservés (TC-53).
+ */
+export function buildChangePhases(
+  current: Stripe.SubscriptionSchedule.Phase,
+  newPriceId: string,
+  period: BillingPeriod,
+  quantity: number,
+): Stripe.SubscriptionScheduleUpdateParams.Phase[] {
+  const discounts = (current.discounts ?? []).map((d) => {
+    const discount = idOf(d.discount as string | { id: string } | null);
+    if (discount) return { discount };
+    const coupon = idOf(d.coupon as string | { id: string } | null);
+    const promotion = idOf(d.promotion_code as string | { id: string } | null);
+    return coupon ? { coupon } : promotion ? { promotion_code: promotion } : null;
+  }).filter((x): x is NonNullable<typeof x> => x !== null);
+  const defaultTaxRates = (current.default_tax_rates ?? []).map((t) => idOf(t as string | { id: string })!).filter(Boolean);
+  return [
+    {
+      items: current.items.map((it) => ({
+        price: idOf(it.price as string | { id: string })!,
+        quantity: it.quantity ?? 1,
+        ...(it.tax_rates?.length ? { tax_rates: it.tax_rates.map((t) => idOf(t as string | { id: string })!) } : {}),
+      })),
+      start_date: current.start_date,
+      end_date: current.end_date,
+      ...(discounts.length ? { discounts } : {}),
+      ...(defaultTaxRates.length ? { default_tax_rates: defaultTaxRates } : {}),
+      metadata: current.metadata ?? undefined,
+    },
+    {
+      items: [{ price: newPriceId, quantity }],
+      duration: { interval: period === 'yearly' ? 'year' : 'month', interval_count: 1 },
+      ...(defaultTaxRates.length ? { default_tax_rates: defaultTaxRates } : {}),
+      proration_behavior: 'none',
+    },
+  ];
+}
 
 /**
  * Inscrit le changement chez Stripe pour la fin de la periode en cours.
- *
- * Phase 1 : l'offre actuelle, a l'identique (prix, quantite, remises),
- * jusqu'a la fin de periode. Phase 2 : le nouveau prix, une periode, puis
- * l'echeancier est libere (`end_behavior: 'release'`) et l'abonnement
- * continue normalement au nouveau prix.
+ * Rend la date de bascule et l'identifiant de l'échéancier.
  */
-async function scheduleOnStripe(subscriptionId: string, newPriceId: string, period: BillingPeriod): Promise<Date | null> {
+async function scheduleOnStripe(
+  subscriptionId: string,
+  newPriceId: string,
+  period: BillingPeriod,
+  opts: { userChangeAlreadyScheduled: boolean },
+): Promise<{ effectiveAt: Date | null; scheduleId: string } | { foreign: true }> {
   const stripe = getStripeServer();
   const subscription = await stripe.subscriptions.retrieve(subscriptionId);
-  const existing = subscription.schedule;
-  const scheduleId = existing
-    ? (typeof existing === 'string' ? existing : existing.id)
-    : (await stripe.subscriptionSchedules.create({ from_subscription: subscriptionId })).id;
+  const existing = idOf(subscription.schedule as string | { id: string } | null);
+  const scheduleId = existing ?? (await stripe.subscriptionSchedules.create({ from_subscription: subscriptionId })).id;
 
   const schedule = await stripe.subscriptionSchedules.retrieve(scheduleId);
   const current = schedule.phases.find(
     (ph) => ph.start_date === schedule.current_phase?.start_date,
   ) ?? schedule.phases[0];
   if (!current) throw new Error(`Echeancier ${scheduleId} sans phase courante`);
+  // Échéancier étranger avec des phases futures non reconnues : on refuse
+  // plutôt que d'écraser (LK-56). Le nôtre (changement déjà programmé par
+  // l'utilisateur) peut être remplacé.
+  if (existing && schedule.phases.length > 1 && !opts.userChangeAlreadyScheduled && !isRevaluationSchedule(schedule)) {
+    return { foreign: true };
+  }
 
-  const item = subscription.items.data[0];
+  const item = subscription.items.data.find((i) => idOf(i.price as unknown as string | { id: string }) === idOf(current.items[0]?.price as string | { id: string })) ?? subscription.items.data[0];
   await stripe.subscriptionSchedules.update(scheduleId, {
     end_behavior: 'release',
     proration_behavior: 'none',
-    phases: [
-      {
-        items: current.items.map((it) => ({
-          price: typeof it.price === 'string' ? it.price : it.price.id,
-          quantity: it.quantity ?? 1,
-        })),
-        start_date: current.start_date,
-        end_date: current.end_date,
-        discounts: (current.discounts ?? []).map((d) => ({
-          coupon: typeof d.coupon === 'string' ? d.coupon : d.coupon?.id,
-          promotion_code: typeof d.promotion_code === 'string' ? d.promotion_code : d.promotion_code?.id,
-        })).filter((d) => d.coupon || d.promotion_code),
-        metadata: current.metadata ?? undefined,
-      },
-      {
-        items: [{ price: newPriceId, quantity: item?.quantity ?? 1 }],
-        duration: { interval: period === 'yearly' ? 'year' : 'month', interval_count: 1 },
-        proration_behavior: 'none',
-      },
-    ],
+    phases: buildChangePhases(current, newPriceId, period, item?.quantity ?? 1),
   });
 
   // Date de bascule = fin de la phase courante, telle que Stripe l'applique.
-  return current.end_date ? new Date(current.end_date * 1000) : null;
+  return { effectiveAt: current.end_date ? new Date(current.end_date * 1000) : null, scheduleId };
 }
 
-/** Libere l'echeancier Stripe eventuel : l'abonnement reste sur son prix actuel. */
-async function releaseStripeSchedule(subscriptionId: string): Promise<void> {
+/**
+ * Libère l'échéancier Stripe éventuel : l'abonnement reste sur son prix
+ * actuel. Rend `released` / `absent` (absence vérifiée) ; lève sinon.
+ */
+async function releaseStripeSchedule(subscriptionId: string): Promise<'released' | 'absent'> {
   const stripe = getStripeServer();
   const subscription = await stripe.subscriptions.retrieve(subscriptionId);
-  const schedule = subscription.schedule;
-  if (!schedule) return;
-  const scheduleId = typeof schedule === 'string' ? schedule : schedule.id;
-  await stripe.subscriptionSchedules.release(scheduleId);
+  const scheduleId = idOf(subscription.schedule as string | { id: string } | null);
+  if (!scheduleId) return 'absent';
+  const released = await stripe.subscriptionSchedules.release(scheduleId);
+  if (released && released.status && !['released', 'canceled', 'completed'].includes(released.status)) {
+    throw new Error(`Échéancier ${scheduleId} non libéré (${released.status})`);
+  }
+  return 'released';
 }
 
 /**
@@ -150,6 +218,9 @@ export async function scheduleChange(params: {
   accountId: number;
   planCode: string;
   billingPeriod: string;
+  /** Révision du prix affiché (LK-34). */
+  displayedPriceRevision?: unknown;
+  userId?: number | null;
   now?: Date;
 }): Promise<ScheduleResult> {
   const now = params.now ?? new Date();
@@ -164,6 +235,9 @@ export async function scheduleChange(params: {
       billingPeriod: accountSubscriptions.billingPeriod,
       currentPeriodEndAt: accountSubscriptions.currentPeriodEndAt,
       stripeSubscriptionId: accountSubscriptions.stripeSubscriptionId,
+      scheduledPlanCode: accountSubscriptions.scheduledPlanCode,
+      stripePriceId: accountSubscriptions.stripePriceId,
+      contractUnitAmountCents: accountSubscriptions.contractUnitAmountCents,
     })
     .from(accountSubscriptions)
     .where(eq(accountSubscriptions.accountId, params.accountId))
@@ -181,13 +255,26 @@ export async function scheduleChange(params: {
     return { ok: false, reason: 'UPGRADE_IS_IMMEDIATE' };
   }
 
-  let effectiveAt: Date | null;
+  // ── Prix cible résolu à la confirmation (LK-55) ──
+  let target: ResolvedPrice;
   try {
-    effectiveAt = await scheduleOnStripe(
-      sub.stripeSubscriptionId,
-      resolvePriceId(params.planCode, params.billingPeriod),
-      params.billingPeriod,
-    );
+    target = await resolveCurrentPrice(params.planCode, params.billingPeriod, { forPayment: true });
+    assertDisplayedRevision(target, parseDisplayedRevision(params.displayedPriceRevision));
+  } catch (error) {
+    if (error instanceof BillingCatalogError) return { ok: false, reason: error.code, offer: error.offer };
+    throw error;
+  }
+
+  let placed: { effectiveAt: Date | null; scheduleId: string };
+  try {
+    // Une revalorisation planifiée devient obsolète : libérée d'abord, pour
+    // qu'il n'y ait jamais deux transitions concurrentes (RX-12).
+    await supersedeRevaluation(sub.stripeSubscriptionId, 'SUPERSEDED_BY_USER_CHANGE');
+    const r = await scheduleOnStripe(sub.stripeSubscriptionId, target.priceId, params.billingPeriod, {
+      userChangeAlreadyScheduled: Boolean(sub.scheduledPlanCode),
+    });
+    if ('foreign' in r) return { ok: false, reason: 'FOREIGN_SCHEDULE' };
+    placed = r;
   } catch (error) {
     // Pas de repli local : une bascule declenchee par « la prochaine facture
     // payee » peut tomber sur une facture intermediaire. On refuse, sans
@@ -195,7 +282,7 @@ export async function scheduleChange(params: {
     console.error('[scheduled-change] echeancier Stripe non cree :', error);
     return { ok: false, reason: 'STRIPE_SCHEDULE_FAILED' };
   }
-  effectiveAt = effectiveAt ?? sub.currentPeriodEndAt ?? null;
+  const effectiveAt = placed.effectiveAt ?? sub.currentPeriodEndAt ?? null;
 
   await db
     .update(accountSubscriptions)
@@ -203,24 +290,48 @@ export async function scheduleChange(params: {
       scheduledPlanCode: params.planCode,
       scheduledBillingPeriod: params.billingPeriod,
       scheduledChangeAt: effectiveAt,
+      scheduledStripePriceId: target.priceId,
+      scheduledPriceRevision: target.priceRevision,
+      scheduledUnitAmountCents: target.unitAmountCents,
+      scheduledCurrency: target.currency,
+      scheduledScheduleId: placed.scheduleId,
+      scheduledChangeState: null,
       updatedAt: now,
     })
     .where(eq(accountSubscriptions.accountId, params.accountId));
 
-  return { ok: true, effectiveAt };
+  await recordPriceOperation({
+    kind: 'schedule', accountId: params.accountId, userId: params.userId ?? null, price: target,
+    previousPriceId: sub.stripePriceId ?? null, previousAmountCents: sub.contractUnitAmountCents ?? null,
+    initiator: params.userId ? `user:${params.userId}` : 'user', stripeReference: placed.scheduleId,
+  });
+
+  return { ok: true, effectiveAt, unitAmountCents: target.unitAmountCents };
 }
 
-/** Annule un changement programme avant sa prise d'effet (CDC §10.3). */
-export async function cancelScheduledChange(accountId: number, now: Date = new Date()): Promise<void> {
+export type CancelScheduledResult = { ok: true; released: 'released' | 'absent' | 'none' } | { ok: false; reason: 'RELEASE_FAILED' };
+
+/** Annule un changement programme avant sa prise d'effet (CDC §10.3, LK-59). */
+export async function cancelScheduledChange(accountId: number, now: Date = new Date()): Promise<CancelScheduledResult> {
   const [sub] = await db
     .select({ stripeSubscriptionId: accountSubscriptions.stripeSubscriptionId })
     .from(accountSubscriptions)
     .where(eq(accountSubscriptions.accountId, accountId))
     .limit(1);
+  let released: 'released' | 'absent' | 'none' = 'none';
   if (sub?.stripeSubscriptionId) {
-    await releaseStripeSchedule(sub.stripeSubscriptionId).catch((error) =>
-      console.error('[scheduled-change] liberation de l\'echeancier Stripe :', error),
-    );
+    try {
+      released = await releaseStripeSchedule(sub.stripeSubscriptionId);
+    } catch (error) {
+      // L'intention est CONSERVÉE : l'utilisateur ne doit pas croire son
+      // changement annulé alors qu'il serait facturé (LK-59).
+      console.error('[scheduled-change] liberation de l\'echeancier Stripe :', error);
+      await db
+        .update(accountSubscriptions)
+        .set({ scheduledChangeState: 'release_failed', updatedAt: now })
+        .where(eq(accountSubscriptions.accountId, accountId));
+      return { ok: false, reason: 'RELEASE_FAILED' };
+    }
   }
   await db
     .update(accountSubscriptions)
@@ -228,18 +339,28 @@ export async function cancelScheduledChange(accountId: number, now: Date = new D
       scheduledPlanCode: null,
       scheduledBillingPeriod: null,
       scheduledChangeAt: null,
+      scheduledStripePriceId: null,
+      scheduledPriceRevision: null,
+      scheduledUnitAmountCents: null,
+      scheduledCurrency: null,
+      scheduledScheduleId: null,
+      scheduledChangeState: null,
       updatedAt: now,
     })
     .where(eq(accountSubscriptions.accountId, accountId));
+  return { ok: true, released };
 }
 
-/** Changement programme en attente, pour affichage (CDC §9.1). */
+/** Changement programme en attente, pour affichage (CDC §9.1, LK-36). */
 export async function getScheduledChange(accountId: number): Promise<ScheduledChange | null> {
   const [row] = await db
     .select({
       planCode: accountSubscriptions.scheduledPlanCode,
       billingPeriod: accountSubscriptions.scheduledBillingPeriod,
       effectiveAt: accountSubscriptions.scheduledChangeAt,
+      unitAmountCents: accountSubscriptions.scheduledUnitAmountCents,
+      currency: accountSubscriptions.scheduledCurrency,
+      state: accountSubscriptions.scheduledChangeState,
     })
     .from(accountSubscriptions)
     .where(eq(accountSubscriptions.accountId, accountId))
@@ -250,6 +371,9 @@ export async function getScheduledChange(accountId: number): Promise<ScheduledCh
     planCode: row.planCode,
     billingPeriod: row.billingPeriod as BillingPeriod,
     effectiveAt: row.effectiveAt ?? null,
+    unitAmountCents: row.unitAmountCents ?? null,
+    currency: row.currency ?? null,
+    state: row.state ?? null,
   };
 }
 
@@ -263,12 +387,12 @@ export interface ScheduledChangeTrigger {
  * Synchronise un changement programme apres sa prise d'effet chez Stripe.
  *
  * Ne modifie JAMAIS l'abonnement Stripe : l'echeancier a deja bascule le
- * prix avant la facture de renouvellement. On constate la bascule et on
- * efface l'intention locale.
+ * prix avant la facture de renouvellement. On constate la bascule — item
+ * portant le prix cible ENREGISTRÉ (EC-07) — et on efface l'intention.
  *
  * Une facture qui n'est pas un renouvellement (`subscription_cycle`) —
  * prorata, regularisation, facture manuelle — ne consomme jamais le
- * changement, meme si elle est payee apres la date prevue.
+ * changement, meme si elle est payee apres la date prevue (TC-54).
  */
 export async function applyScheduledChange(
   accountId: number,
@@ -284,6 +408,7 @@ export async function applyScheduledChange(
       scheduledPlanCode: accountSubscriptions.scheduledPlanCode,
       scheduledBillingPeriod: accountSubscriptions.scheduledBillingPeriod,
       scheduledChangeAt: accountSubscriptions.scheduledChangeAt,
+      scheduledStripePriceId: accountSubscriptions.scheduledStripePriceId,
       stripeSubscriptionId: accountSubscriptions.stripeSubscriptionId,
     })
     .from(accountSubscriptions)
@@ -299,11 +424,9 @@ export async function applyScheduledChange(
   try {
     const stripe = getStripeServer();
     const subscription = await stripe.subscriptions.retrieve(sub.stripeSubscriptionId);
-    const item = subscription.items.data[0];
-    if (!item) return { applied: false };
-    const targetPrice = resolvePriceId(planCode, period);
+    const switched = await isOnScheduledTarget(subscription, { priceId: sub.scheduledStripePriceId ?? null, planCode, period });
 
-    if (item.price.id !== targetPrice) {
+    if (!switched) {
       // Stripe n'a pas (encore) bascule. Tant que la date n'est pas passee,
       // rien d'anormal. Au-dela, sans echeancier, la programmation a ete
       // perdue cote Stripe (echeancier libere ailleurs) : on le signale, on
@@ -331,9 +454,34 @@ export async function applyScheduledChange(
       scheduledPlanCode: null,
       scheduledBillingPeriod: null,
       scheduledChangeAt: null,
+      scheduledStripePriceId: null,
+      scheduledPriceRevision: null,
+      scheduledUnitAmountCents: null,
+      scheduledCurrency: null,
+      scheduledScheduleId: null,
+      scheduledChangeState: null,
       updatedAt: now,
     })
     .where(eq(accountSubscriptions.accountId, accountId));
 
   return { applied: true, planCode, billingPeriod: period };
+}
+
+/**
+ * L'abonnement porte-t-il la cible programmée ? Prix ENREGISTRÉ s'il est
+ * connu (cas nominal) ; pour une programmation antérieure pas encore
+ * rapprochée par la reprise : offre et périodicité RECONNUES de l'item —
+ * jamais l'égalité avec le prix public du jour (TC-50).
+ */
+export async function isOnScheduledTarget(
+  subscription: Pick<Stripe.Subscription, 'items'>,
+  target: { priceId: string | null; planCode: PlanCode; period: BillingPeriod },
+): Promise<boolean> {
+  const priceIds = subscription.items.data.map((i) => i.price?.id).filter(Boolean) as string[];
+  if (target.priceId) return priceIds.includes(target.priceId);
+  for (const id of priceIds) {
+    const r = await resolveHistoricalPrice(id, { source: 'scheduled-change' });
+    if (r.status === 'recognized' && r.planCode === target.planCode && r.billingPeriod === target.period) return true;
+  }
+  return false;
 }

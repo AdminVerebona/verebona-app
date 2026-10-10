@@ -1,7 +1,7 @@
 /**
- * Modèles réellement utilisables par traitement — lot 32B, ticket « BO IA :
- * ne proposer que les modèles réellement utilisables par traitement » et
- * ticket « T2 — supprimer l'interdiction générale des modèles Pro ».
+ * Modèles réellement utilisables par traitement — lot 32B, refondu au lot 35B
+ * (ticket « Catalogue IA dynamique Google : modèles, tarifs, Preview et
+ * alertes BO »).
  *
  * ══════════════════════════════════════════════════════════════════════════
  * UNE SEULE DÉFINITION D'UN MODÈLE UTILISABLE
@@ -9,37 +9,43 @@
  * `usableModelsForTreatment(treatment, ctx)` est la source de vérité des
  * modèles sélectionnables (principal, repli 1, repli 2 — même base pour les
  * trois rangs). Elle est lue par :
- *   · `GET /api/admin/ai/config-catalogs` (`modelsByTreatment`, sélecteurs du
- *     BO — aucune règle recodée dans l'interface) ;
- *   · `config-validation.service` (contrôle bloquant à la mise à l'essai et à
- *     la validation), `config-version.service` (enregistrement d'un modèle
- *     nouvellement choisi, activation).
- * Le contrôle de démarrage de l'assistant garde ses contrôles d'exploitation
- * propres (alias, prix bloquant en production, rollback).
+ *   · `GET /api/admin/ai/config-catalogs` (sélecteurs du BO) ;
+ *   · `config-validation.service`, `config-version.service` (enregistrement
+ *     d'un modèle nouvellement choisi, mise à l'essai, validation,
+ *     activation) ;
+ *   · le bandeau « Nouveau modèle Gemini disponible ».
  *
- * Un modèle est utilisable pour un traitement si TOUTES les conditions
- * applicables sont satisfaites :
- *   A. servi par le fournisseur avec la clé active : présent au catalogue
- *      rafraîchi, `available`, `generateContent` (§7 : catalogue jamais
- *      vérifié → politique prudente, voir `providerAvailability`) ;
- *   B. déclaré au registre Verebona (`DECLARED_MODELS`) ;
- *   C. compatible : prompt maître du traitement déclaré dans
- *      `compatiblePrompts`, capacités requises par les opérations du
- *      traitement (sortie structurée, multimodal…) déclarées ;
- *   D. règles Verebona portées par le registre (compatibilité modèle par
- *      modèle) — AUCUNE règle sur le nom (« -pro », « flash ») ;
- *   E. preview : seulement si la politique preview effective l'autorise ;
- *   F. ni déprécié, ni arrivé à sa date de retrait ;
- *   G. tarif exploitable ;
- *   H. pas explicitement non opérationnel avec la clé active (dernière
- *      génération minimale connue — jamais d'appel fournisseur ici).
+ * Hiérarchie (lot 35B) :
+ *   DISPONIBILITÉ
+ *     A. catalogue Google obtenu avec la clé active (`available`,
+ *        `generateContent`) — un modèle retiré n'est plus proposé ;
+ *     B. qualification technique Verebona, PAR CAPACITÉ requise par les
+ *        opérations du traitement (génération, sortie structurée/schéma
+ *        JSON, multimodal, raisonnement) — plus de compatibilité T1–T6
+ *        déclarée à la main ;
+ *     C. exclusion explicite Verebona (registre d'exceptions `models.ts` :
+ *        interdit, exception documentée, déprécié / date de retrait) ;
+ *     D. statut fournisseur EXPERIMENTAL → exclu (V1) ; PREVIEW → informatif ;
+ *     E. pas explicitement non opérationnel avec la clé active.
+ *   TARIFICATION : informative seulement (`priced`). Un modèle sans tarif
+ *   connu (UNKNOWN) reste utilisable — NOT_PRICED n'existe plus.
+ *   Plus de politique preview (réglage « preview_models_allowed », flag
+ *   VEREBONA_ASSISTANT_ALLOW_PREVIEW_MODELS, PREVIEW_NOT_ALLOWED : supprimés).
+ *
+ * TRANSITION : une capacité jamais qualifiée automatiquement avec la clé
+ * active est admise pour un modèle du registre qui la déclare (qualification
+ * historique des lots 23–32B) — les sélecteurs ne se vident pas le temps de
+ * la première synchronisation. Un modèle hors registre attend sa
+ * qualification (`QUALIFICATION_PENDING`). Un résultat automatique prévaut
+ * toujours.
  *
  * Module PUR pour l'évaluation (contexte injecté, testable sans base) ;
  * `loadUsableModelsContext` assemble le contexte réel (lectures en base et
  * en mémoire, aucun appel fournisseur).
  * ══════════════════════════════════════════════════════════════════════════
  */
-import { DECLARED_MODELS, type DeclaredModel, type ModelCapability } from './models';
+import { DECLARED_MODELS, type DeclaredModel, type ModelCapability, type ModelLifecycleStatus } from './models';
+import { providerLifecycle } from './model-lifecycle';
 import { AI_OPERATIONS, type AiOperationDefinition } from './operations';
 import { TREATMENTS, TREATMENT_DEFINITIONS, type Treatment } from '../config/treatments';
 
@@ -48,28 +54,30 @@ export type UnusableReason =
   | 'PROVIDER_UNAVAILABLE'
   | 'NO_GENERATE_CONTENT'
   | 'NOT_VERIFIED'
-  | 'UNKNOWN_MODEL'
-  | 'PROMPT_INCOMPATIBLE'
+  | 'EXPERIMENTAL'
+  | 'FORBIDDEN'
+  | 'EXCLUDED'
+  | 'NOT_QUALIFIED'
+  | 'QUALIFICATION_PENDING'
   | 'CAPABILITY_MISSING'
-  | 'PREVIEW_NOT_ALLOWED'
   | 'DEPRECATED'
   | 'RETIRED'
-  | 'NOT_PRICED'
   | 'NOT_OPERATIONAL';
 
 /** Libellés courts, en français (sélecteurs et messages du BO). */
 export const UNUSABLE_REASON_LABELS: Readonly<Record<UnusableReason, string>> = {
   NOT_LISTED: 'absent du catalogue du fournisseur',
-  PROVIDER_UNAVAILABLE: 'non servi par la clé active',
+  PROVIDER_UNAVAILABLE: 'non servi par la clé active (retiré)',
   NO_GENERATE_CONTENT: 'génération non prise en charge',
   NOT_VERIFIED: 'disponibilité jamais vérifiée (actualisez le catalogue fournisseur)',
-  UNKNOWN_MODEL: 'modèle inconnu du registre Verebona',
-  PROMPT_INCOMPATIBLE: 'incompatible avec le prompt maître du traitement',
-  CAPABILITY_MISSING: 'capacité requise absente',
-  PREVIEW_NOT_ALLOWED: 'preview non autorisé',
+  EXPERIMENTAL: 'modèle expérimental (non sélectionnable)',
+  FORBIDDEN: 'interdit par Verebona',
+  EXCLUDED: 'exclu pour ce traitement (exception documentée)',
+  NOT_QUALIFIED: 'qualification technique en échec',
+  QUALIFICATION_PENDING: 'qualification technique en attente',
+  CAPABILITY_MISSING: 'capacité requise non qualifiée',
   DEPRECATED: 'déprécié',
   RETIRED: 'retiré',
-  NOT_PRICED: 'sans tarif',
   NOT_OPERATIONAL: 'non opérationnel avec la clé active',
 };
 
@@ -77,20 +85,31 @@ export interface ProviderModelState {
   model: string;
   available: boolean;
   supportsGeneration: boolean;
+  /** Statut fournisseur (0303) ; absent : règle isolée appliquée au nom. */
+  lifecycle?: ModelLifecycleStatus | null;
+  displayName?: string | null;
+}
+
+/** Qualification automatique connue (clé active) — `model-qualification.service`. */
+export interface QualificationState {
+  generate: boolean;
+  structured: boolean | null;
+  multimodal: boolean | null;
+  thinking: boolean | null;
 }
 
 export interface UsableModelsContext {
   environment: 'local' | 'preprod' | 'production';
   /** Catalogue du fournisseur ; `refreshedAt` nul : jamais vérifié. */
   catalog: { refreshedAt: string | null; models: readonly ProviderModelState[] };
-  /** Catalogue du code (`gemini-public-catalog`) : repli hors production tant que jamais vérifié. */
+  /** Catalogue du code (relevé embarqué) : repli hors production tant que jamais vérifié. */
   codeCatalog: readonly string[];
-  /** Tarif exploitable connu, et s'il est vérifié (grille du compte). */
+  /** Tarif connu (informatif), et s'il est vérifié (grille du compte). */
   price: (model: string) => { verified: boolean } | null;
-  /** Politique preview effective, par traitement. */
-  previewAllowed: (treatment: Treatment) => boolean;
   /** Dernière génération minimale connue AVEC LA CLÉ ACTIVE, par modèle. */
   operational: ReadonlyMap<string, { ok: boolean; checkedAt?: string | null; error?: string | null }>;
+  /** Qualification automatique AVEC LA CLÉ ACTIVE, par modèle (vide : aucune). */
+  qualifications?: ReadonlyMap<string, QualificationState>;
   /** AAAA-MM-JJ (dates de retrait). */
   today: string;
   /** Injection de test ; par défaut le registre. */
@@ -103,9 +122,11 @@ export interface ModelEligibility {
   model: string;
   usable: boolean;
   reasons: UnusableReason[];
-  /** Phrase lisible (« déprécié, sans tarif »), vide si utilisable. */
+  /** Phrase lisible (« déprécié, qualification en attente »), vide si utilisable. */
   reasonText: string;
-  status: DeclaredModel['status'] | 'unknown';
+  /** Statut (exception déclarée, sinon statut fournisseur). */
+  status: ModelLifecycleStatus;
+  /** Tarif connu (informatif : jamais un motif de refus). */
   priced: boolean;
   /** Tarif de la grille du compte (opposable à la facture). */
   verifiedPrice: boolean;
@@ -113,17 +134,20 @@ export interface ModelEligibility {
   providerVerified: boolean;
   /** Dernière génération connue avec la clé active (`null` : inconnue). */
   operational: boolean | null;
+  /** `auto` : qualification automatique ; `historical` : registre (transition). */
+  qualification: 'auto' | 'historical' | 'none';
 }
 
 /** Entrée d'un sélecteur (`modelsByTreatment`). */
 export interface UsableModel {
   model: string;
-  status: DeclaredModel['status'];
+  status: ModelLifecycleStatus;
   priced: boolean;
   /** Tarif vérifié (grille du compte). Nom repris de l'ancienne liste globale. */
   verified: boolean;
   providerVerified: boolean;
   operational: boolean | null;
+  qualification: 'auto' | 'historical' | 'none';
 }
 
 export interface TreatmentRequirements {
@@ -157,10 +181,9 @@ export function treatmentRequirements(
  *   · catalogue rafraîchi : il fait foi, un modèle absent n'est JAMAIS
  *     réintroduit par le catalogue du code ;
  *   · jamais rafraîchi, en production : seul un modèle dont une génération a
- *     réussi avec la clé active est admis — sinon absent (politique prudente :
- *     sa disponibilité réelle n'a jamais été établie) ;
- *   · jamais rafraîchi, hors production : catalogue du code (comportement
- *     antérieur), signalé « non vérifié » (`providerVerified: false`).
+ *     réussi avec la clé active est admis ;
+ *   · jamais rafraîchi, hors production : catalogue du code, signalé « non
+ *     vérifié » (`providerVerified: false`).
  */
 function providerAvailability(model: string, ctx: UsableModelsContext): { reasons: UnusableReason[]; verified: boolean } {
   if (ctx.catalog.refreshedAt) {
@@ -177,45 +200,85 @@ function providerAvailability(model: string, ctx: UsableModelsContext): { reason
   return { reasons: ctx.codeCatalog.includes(model) ? [] : ['NOT_LISTED'], verified: false };
 }
 
+/** Statut d'un modèle : exception déclarée, sinon statut fournisseur, sinon règle isolée. */
+export function modelStatus(model: string, ctx: Pick<UsableModelsContext, 'catalog' | 'declared'>): ModelLifecycleStatus {
+  const declared = (ctx.declared ?? DECLARED_MODELS).find((m) => m.model === model);
+  if (declared) return declared.status;
+  const row = ctx.catalog.models.find((m) => m.model === model);
+  if (row?.lifecycle) return row.lifecycle;
+  return providerLifecycle({ model, displayName: row?.displayName ?? null }).status;
+}
+
+const CAP_KEY: Record<ModelCapability, keyof QualificationState> = {
+  structured_output: 'structured', multimodal: 'multimodal', thinking: 'thinking',
+};
+
+/**
+ * B — qualification par capacité requise. Résultat automatique (clé active)
+ * s'il existe ; sinon qualification historique du registre ; sinon attente.
+ */
+function qualificationReasons(
+  model: string, req: TreatmentRequirements, declared: DeclaredModel | undefined, ctx: UsableModelsContext,
+): { reasons: UnusableReason[]; source: ModelEligibility['qualification'] } {
+  const q = ctx.qualifications?.get(model);
+  if (q && !q.generate) return { reasons: ['NOT_QUALIFIED'], source: 'auto' };
+  const reasons = new Set<UnusableReason>();
+  let historique = false;
+  if (!q && !declared) reasons.add('QUALIFICATION_PENDING');
+  if (!q && declared) historique = true;
+  for (const cap of req.capabilities) {
+    const v = q ? q[CAP_KEY[cap]] : null;
+    if (v === true) continue;
+    if (v === false) { reasons.add('CAPABILITY_MISSING'); continue; }
+    // Non concluant ou jamais qualifié : qualification historique du registre.
+    if (declared?.capabilities.includes(cap)) { historique = true; continue; }
+    // Registre sans la capacité et aucun résultat automatique : absente ;
+    // épreuve non concluante ou jamais jouée : en attente.
+    reasons.add(declared && !q ? 'CAPABILITY_MISSING' : 'QUALIFICATION_PENDING');
+  }
+  return { reasons: [...reasons], source: q ? (historique ? 'historical' : 'auto') : declared ? 'historical' : 'none' };
+}
+
 /** Éligibilité d'UN modèle pour UN traitement, avec tous ses motifs de refus. */
 export function evaluateModelForTreatment(treatment: Treatment, model: string, ctx: UsableModelsContext): ModelEligibility {
   const declared = (ctx.declared ?? DECLARED_MODELS).find((m) => m.model === model);
   const req = treatmentRequirements(treatment, ctx.operations ?? AI_OPERATIONS);
+  const status = modelStatus(model, ctx);
   const reasons: UnusableReason[] = [];
 
   const dispo = providerAvailability(model, ctx);
   reasons.push(...dispo.reasons);
 
-  if (!declared) {
-    reasons.push('UNKNOWN_MODEL');
-  } else {
-    if (req.masterPromptCode && !declared.compatiblePrompts.includes(req.masterPromptCode)) reasons.push('PROMPT_INCOMPATIBLE');
-    if (req.capabilities.some((c) => !declared.capabilities.includes(c))) reasons.push('CAPABILITY_MISSING');
-    if (declared.status === 'preview' && !ctx.previewAllowed(treatment)) reasons.push('PREVIEW_NOT_ALLOWED');
-    if (declared.status === 'deprecated') reasons.push('DEPRECATED');
-    if (declared.retiresOn && declared.retiresOn <= ctx.today) reasons.push('RETIRED');
-  }
+  // D — expérimental exclu en V1 (statut fournisseur) ; preview : informatif.
+  if (status === 'experimental') reasons.push('EXPERIMENTAL');
+  // C — exceptions Verebona.
+  if (declared?.forbidden) reasons.push('FORBIDDEN');
+  if (declared?.excludedPrompts && req.masterPromptCode && declared.excludedPrompts.prompts.includes(req.masterPromptCode)) reasons.push('EXCLUDED');
+  if (status === 'deprecated') reasons.push('DEPRECATED');
+  if (declared?.retiresOn && declared.retiresOn <= ctx.today) reasons.push('RETIRED');
 
-  const price = ctx.price(model);
-  if (!price) reasons.push('NOT_PRICED');
+  const qualif = qualificationReasons(model, req, declared, ctx);
+  reasons.push(...qualif.reasons);
 
   const op = ctx.operational.get(model);
   if (op && !op.ok) reasons.push('NOT_OPERATIONAL');
 
+  const price = ctx.price(model);
   return {
     treatment, model,
     usable: reasons.length === 0,
     reasons,
     reasonText: reasons.map((r) => UNUSABLE_REASON_LABELS[r]).join(', '),
-    status: declared?.status ?? 'unknown',
+    status,
     priced: price !== null,
     verifiedPrice: price?.verified ?? false,
     providerVerified: dispo.verified,
     operational: op ? op.ok : null,
+    qualification: qualif.source,
   };
 }
 
-/** Modèles candidats : déclarés, listés par le fournisseur, catalogue du code. */
+/** Modèles candidats : registre, listés par le fournisseur, catalogue du code. */
 export function candidateModels(ctx: UsableModelsContext): string[] {
   const out: string[] = [];
   const add = (m: string) => { if (!out.includes(m)) out.push(m); };
@@ -226,16 +289,16 @@ export function candidateModels(ctx: UsableModelsContext): string[] {
 }
 
 /**
- * SOURCE DE VÉRITÉ des modèles sélectionnables pour un traitement (ordre du
- * registre déclaratif). Un modèle non utilisable est ABSENT — jamais grisé.
+ * SOURCE DE VÉRITÉ des modèles sélectionnables pour un traitement. Un modèle
+ * non utilisable est ABSENT — jamais grisé.
  */
 export function usableModelsForTreatment(treatment: Treatment, ctx: UsableModelsContext): UsableModel[] {
   return candidateModels(ctx)
     .map((m) => evaluateModelForTreatment(treatment, m, ctx))
     .filter((e) => e.usable)
     .map((e) => ({
-      model: e.model, status: e.status as DeclaredModel['status'], priced: e.priced, verified: e.verifiedPrice,
-      providerVerified: e.providerVerified, operational: e.operational,
+      model: e.model, status: e.status, priced: e.priced, verified: e.verifiedPrice,
+      providerVerified: e.providerVerified, operational: e.operational, qualification: e.qualification,
     }));
 }
 
@@ -243,10 +306,15 @@ export function usableModelsByTreatment(ctx: UsableModelsContext): Record<Treatm
   return Object.fromEntries(TREATMENTS.map((t) => [t, usableModelsForTreatment(t, ctx)])) as Record<Treatment, UsableModel[]>;
 }
 
+/** Utilisable pour AU MOINS un traitement (bandeau « nouveau modèle »). */
+export function usableForAnyTreatment(model: string, ctx: UsableModelsContext): boolean {
+  return TREATMENTS.some((t) => evaluateModelForTreatment(t, model, ctx).usable);
+}
+
 /**
  * Modèles connus NON utilisables, avec leur motif, par traitement : sert au
- * BO à nommer une valeur enregistrée qui n'est plus proposée (« gemini-X —
- * indisponible (déprécié) »). Ne sert JAMAIS de liste de choix.
+ * BO à nommer une valeur enregistrée qui n'est plus proposée. Ne sert JAMAIS
+ * de liste de choix.
  */
 export function excludedModelsByTreatment(ctx: UsableModelsContext): Record<Treatment, Array<{ model: string; reasons: UnusableReason[]; reasonText: string }>> {
   const candidats = candidateModels(ctx);
@@ -257,63 +325,43 @@ export function excludedModelsByTreatment(ctx: UsableModelsContext): Record<Trea
 }
 
 /**
- * Politique preview effective (E), mêmes règles que les gardes existantes :
- *   · réglage « Modèles preview en production » accordé (double validation,
- *     lot 21) → autorisé partout ;
- *   · T2 : flag `VEREBONA_ASSISTANT_ALLOW_PREVIEW_MODELS` (contrôle de
- *     démarrage de l'assistant), sinon refusé dans TOUS les environnements ;
- *   · autres traitements : autorisés hors production (recette), refusés en
- *     production (`assertPreviewModelsApproved`).
- */
-export function previewPolicy(p: {
-  environment: UsableModelsContext['environment'];
-  settingAllowed: boolean;
-  assistantFlag: boolean;
-}): (treatment: Treatment) => boolean {
-  return (t) => {
-    if (p.settingAllowed) return true;
-    if (t === 'T2') return p.assistantFlag;
-    return p.environment !== 'production';
-  };
-}
-
-/**
  * Contexte réel : catalogue fournisseur (dernier rafraîchissement), grille
- * tarifaire en mémoire, politique preview, état opérationnel avec la clé
+ * tarifaire en mémoire, état opérationnel et qualification avec la clé
  * active. Lectures seulement — AUCUN appel fournisseur.
  */
 export async function loadUsableModelsContext(): Promise<UsableModelsContext> {
-  const [{ GEMINI_PUBLIC_CATALOG }, pricing, { getCatalogState }, { loadOperationalStatuses }, { getAiEnvironment }] = await Promise.all([
+  const [{ GEMINI_PUBLIC_CATALOG }, pricing, { getCatalogState }, { loadOperationalStatuses }, { loadQualifications }, { getAiEnvironment }, secrets] = await Promise.all([
     import('../gateway/pricing/gemini-public-catalog'),
     import('../gateway/pricing/pricing.repository'),
     import('../provider/model-catalog.service'),
     import('../provider/model-operational.service'),
+    import('../provider/model-qualification.service'),
     import('../config/environment'),
+    import('../provider/provider-secret'),
   ]);
   if (pricing.getCacheState().loadedAt === null) await pricing.loadPricingCache().catch(() => undefined);
   const state = await getCatalogState().catch(() => ({ refreshedAt: null, models: [] as ProviderModelState[] }));
-  let settingAllowed = false;
-  try {
-    const { refreshAssistantSettings, effectiveSetting } = await import('@/services/verebona-assistant/config/assistant-settings');
-    await refreshAssistantSettings();
-    settingAllowed = effectiveSetting('preview_models_allowed') === true;
-  } catch { /* réglage illisible : non accordé */ }
   // Environnement illisible : politique la plus prudente (production).
   let environment: UsableModelsContext['environment'] = 'production';
   try { environment = getAiEnvironment(); } catch { /* prudence */ }
+  const secret = await secrets.getProviderSecret('gemini').catch(() => null);
   return {
     environment,
-    catalog: { refreshedAt: state.refreshedAt, models: state.models },
+    catalog: {
+      refreshedAt: state.refreshedAt,
+      models: state.models.map((m) => ({
+        model: m.model, available: m.available, supportsGeneration: m.supportsGeneration,
+        lifecycle: (m as { lifecycle?: ModelLifecycleStatus }).lifecycle ?? null,
+        displayName: (m as { displayName?: string | null }).displayName ?? null,
+      })),
+    },
     codeCatalog: GEMINI_PUBLIC_CATALOG.map((e) => e.model),
     price: (model) => {
       const p = pricing.getCachedPrice('gemini', model);
       return p ? { verified: Boolean(p.verified) } : null;
     },
-    previewAllowed: previewPolicy({
-      environment, settingAllowed,
-      assistantFlag: /^(on|true|1)$/i.test(process.env.VEREBONA_ASSISTANT_ALLOW_PREVIEW_MODELS ?? ''),
-    }),
-    operational: await loadOperationalStatuses(),
+    operational: await loadOperationalStatuses(secret),
+    qualifications: await loadQualifications(secret),
     today: new Date().toISOString().slice(0, 10),
   };
 }

@@ -4,13 +4,16 @@
  * modèles réellement utilisables par traitement », tests MOD-xx) et
  * suppression de l'interdiction générale des Pro sur T2 (ticket « T2 —
  * supprimer l'interdiction générale des modèles Pro », tests PRO-xx).
+ * Lot 35B (ticket « Catalogue IA dynamique Google ») : registre d'exceptions,
+ * qualification automatique, preview autorisé, tarif informatif — les tests
+ * MOD-04, 05, 08 à 10, 12, 21, 23, PRO-09, 11, 12 sont réécrits en conséquence.
  *
  * Contexte injecté : aucun accès base, aucun appel fournisseur.
  */
 import { describe, it, expect } from 'vitest';
 import {
   evaluateModelForTreatment, usableModelsForTreatment, usableModelsByTreatment, excludedModelsByTreatment,
-  treatmentRequirements, previewPolicy, type UsableModelsContext,
+  treatmentRequirements, type UsableModelsContext,
 } from '../usable-models';
 import { chainOptions, unusableRanks } from '../model-chain';
 import { DECLARED_MODELS, type DeclaredModel } from '../models';
@@ -18,11 +21,11 @@ import { validateTreatment, validateVersion, type ConfigCatalogs } from '../../c
 import { emptyTreatmentConfig, type TreatmentConfig } from '../../config/config-types';
 import { TREATMENTS, type Treatment } from '../../config/treatments';
 
-const TOUS = ['t1_master_v1', 't2_master_v1', 't3_master_v1', 't4_master_v1', 't5_master_v1', 't6_master_v1'];
+const SANS_T2 = { prompts: ['t2_master_v1'], reason: 'exception de test' } as const;
 const decl = (model: string, over: Partial<DeclaredModel> = {}): DeclaredModel => ({
   provider: 'gemini', model, status: 'stable', activatedOn: null, retiresOn: null,
   capabilities: ['structured_output', 'multimodal'], contextWindowTokens: null, maxOutputTokens: null,
-  rateLimits: { requestsPerMinute: null, tokensPerMinute: null }, compatiblePrompts: TOUS, rollbackModel: 'gemini-a', ...over,
+  rateLimits: { requestsPerMinute: null, tokensPerMinute: null }, rollbackModel: 'gemini-a', ...over,
 });
 
 /** Registre de test : chaque modèle illustre une règle. */
@@ -30,7 +33,7 @@ const REGISTRE: DeclaredModel[] = [
   decl('gemini-a'),
   decl('gemini-b'),
   decl('gemini-c'),
-  decl('gemini-sans-t2', { compatiblePrompts: TOUS.filter((p) => p !== 't2_master_v1') }),
+  decl('gemini-sans-t2', { excludedPrompts: SANS_T2 }),
   decl('gemini-texte-seul', { capabilities: ['structured_output'] }),
   decl('gemini-preview', { status: 'preview' }),
   decl('gemini-deprecie', { status: 'deprecated' }),
@@ -42,10 +45,10 @@ const REGISTRE: DeclaredModel[] = [
   decl('gemini-sans-generation'),
   // Ticket Pro : catégories commerciales sans effet.
   decl('gemini-9-pro'),
-  decl('gemini-9-pro-incompatible', { compatiblePrompts: TOUS.filter((p) => p !== 't2_master_v1') }),
+  decl('gemini-9-pro-incompatible', { excludedPrompts: SANS_T2 }),
   decl('gemini-9-pro-old', { status: 'deprecated' }),
   decl('gemini-9-pro-preview', { status: 'preview' }),
-  decl('gemini-9-flash-incompatible', { compatiblePrompts: TOUS.filter((p) => p !== 't2_master_v1') }),
+  decl('gemini-9-flash-incompatible', { excludedPrompts: SANS_T2 }),
 ];
 const LISTES = REGISTRE.map((m) => m.model).filter((m) => m !== 'gemini-absent').concat('gemini-inconnu-du-registre');
 
@@ -62,7 +65,6 @@ function ctx(over: Partial<UsableModelsContext> = {}): UsableModelsContext {
     },
     codeCatalog: ['gemini-a', 'gemini-b', 'gemini-absent'],
     price: (m) => (m === 'gemini-sans-tarif' ? null : { verified: m === 'gemini-a' }),
-    previewAllowed: () => false,
     operational: new Map([['gemini-en-panne', { ok: false, error: '404 no longer available' }], ['gemini-a', { ok: true }]]),
     today: '2026-10-07',
     declared: REGISTRE,
@@ -85,17 +87,19 @@ describe('MOD — disponibilité fournisseur (§1.A)', () => {
     expect(noms('T3')).not.toContain('gemini-sans-generation');
     expect(motifs('T3', 'gemini-sans-generation')).toEqual(['NO_GENERATE_CONTENT']);
   });
-  it('MOD-04 — modèle inconnu du registre Verebona : jamais sélectionnable, même listé', () => {
+  it('MOD-04 (lot 35B) — modèle hors registre : en attente de qualification tant qu’elle n’a pas réussi, puis sélectionnable', () => {
     for (const t of TREATMENTS) expect(noms(t)).not.toContain('gemini-inconnu-du-registre');
-    expect(motifs('T1', 'gemini-inconnu-du-registre')).toEqual(['UNKNOWN_MODEL']);
+    expect(motifs('T1', 'gemini-inconnu-du-registre')).toEqual(['QUALIFICATION_PENDING']);
+    const q = ctx({ qualifications: new Map([['gemini-inconnu-du-registre', { generate: true, structured: true, multimodal: true, thinking: null }]]) });
+    for (const t of TREATMENTS) expect(noms(t, q)).toContain('gemini-inconnu-du-registre');
   });
 });
 
-describe('MOD — compatibilité prompt maître et capacités (§1.C)', () => {
-  it('MOD-05 — compatible T1 mais pas T2 : présent pour T1, absent pour T2', () => {
+describe('MOD — exceptions documentées et capacités (§1.C)', () => {
+  it('MOD-05 (lot 35B) — exception documentée pour T2 : présent pour T1, absent pour T2', () => {
     expect(noms('T1')).toContain('gemini-sans-t2');
     expect(noms('T2')).not.toContain('gemini-sans-t2');
-    expect(motifs('T2', 'gemini-sans-t2')).toEqual(['PROMPT_INCOMPATIBLE']);
+    expect(motifs('T2', 'gemini-sans-t2')).toEqual(['EXCLUDED']);
   });
   it('MOD-06 — capacité requise absente (multimodal pour T1 et T2, pas pour T3/T4) : absent là où elle est requise', () => {
     expect(treatmentRequirements('T1').capabilities).toEqual(['multimodal', 'structured_output']);
@@ -115,21 +119,20 @@ describe('MOD — compatibilité prompt maître et capacités (§1.C)', () => {
 });
 
 describe('MOD — règles Verebona, preview, dépréciation, tarif, état opérationnel (§1.D à §1.H)', () => {
-  it('MOD-08 — preview non autorisé : absent', () => {
-    for (const t of TREATMENTS) expect(noms(t)).not.toContain('gemini-preview');
-    expect(motifs('T4', 'gemini-preview')).toEqual(['PREVIEW_NOT_ALLOWED']);
+  it('MOD-08 (lot 35B) — preview : proposé dans les mêmes conditions qu’un stable, statut visible', () => {
+    for (const t of TREATMENTS) expect(noms(t)).toContain('gemini-preview');
+    expect(motifs('T4', 'gemini-preview')).toEqual([]);
+    expect(usableModelsForTreatment('T4', ctx()).find((m) => m.model === 'gemini-preview')?.status).toBe('preview');
   });
-  it('MOD-09 — preview autorisé : proposé seulement s’il satisfait les autres règles', () => {
-    const c = ctx({ previewAllowed: () => true, declared: [...REGISTRE, decl('gemini-preview-sans-t2', { status: 'preview', compatiblePrompts: ['t1_master_v1'] })] });
-    expect(noms('T4', c)).toContain('gemini-preview');
-    expect(motifs('T2', 'gemini-preview-sans-t2', c)).toEqual(['NOT_LISTED', 'PROMPT_INCOMPATIBLE']);
+  it('MOD-09 (lot 35B) — preview : écarté seulement par les autres règles (exception documentée, catalogue)', () => {
+    const c = ctx({ declared: [...REGISTRE, decl('gemini-preview-sans-t2', { status: 'preview', excludedPrompts: SANS_T2 })] });
+    expect(motifs('T2', 'gemini-preview-sans-t2', c)).toEqual(['NOT_LISTED', 'EXCLUDED']);
   });
-  it('MOD-10 — politique preview effective : T2 seulement avec flag ou réglage ; autres traitements hors production ; réglage accordé partout', () => {
-    const p = previewPolicy({ environment: 'preprod', settingAllowed: false, assistantFlag: false });
-    expect([p('T1'), p('T2'), p('T5')]).toEqual([true, false, true]);
-    const prod = previewPolicy({ environment: 'production', settingAllowed: false, assistantFlag: true });
-    expect([prod('T1'), prod('T2')]).toEqual([false, true]);
-    expect(previewPolicy({ environment: 'production', settingAllowed: true, assistantFlag: false })('T3')).toBe(true);
+  it('MOD-10 (lot 35B) — plus aucune politique preview : même verdict en production, en préproduction, pour T2 comme pour T1', () => {
+    for (const environment of ['production', 'preprod', 'local'] as const) {
+      expect(noms('T2', ctx({ environment }))).toContain('gemini-preview');
+      expect(noms('T1', ctx({ environment }))).toContain('gemini-preview');
+    }
   });
   it('MOD-11 — déprécié ou arrivé à sa date de retrait : absent pour une nouvelle sélection', () => {
     expect(noms('T1')).not.toContain('gemini-deprecie');
@@ -138,11 +141,12 @@ describe('MOD — règles Verebona, preview, dépréciation, tarif, état opéra
     // Avant la date : sélectionnable.
     expect(noms('T1', ctx({ today: '2026-09-30' }))).toContain('gemini-retire');
   });
-  it('MOD-12 — sans tarif : absent, et la validation serveur le bloque', () => {
-    expect(noms('T1')).not.toContain('gemini-sans-tarif');
-    const c = ctx();
-    const issues = validateTreatment(config('T1', { primaryModel: 'gemini-sans-tarif' }), catalogues(c)).filter((i) => i.blocking);
-    expect(issues.find((i) => i.field === 'primaryModel')?.message).toMatch(/« gemini-sans-tarif » n’est pas utilisable pour T1 : sans tarif/);
+  it('MOD-12 (lot 35B) — sans tarif : PROPOSÉ (priced: false), la validation le signale sans bloquer', () => {
+    expect(noms('T1')).toContain('gemini-sans-tarif');
+    expect(usableModelsForTreatment('T1', ctx()).find((m) => m.model === 'gemini-sans-tarif')).toMatchObject({ priced: false });
+    const issues = validateTreatment(config('T1', { primaryModel: 'gemini-sans-tarif' }), catalogues(ctx())).filter((i) => i.field === 'primaryModel');
+    expect(issues.filter((i) => i.blocking)).toEqual([]);
+    expect(issues.find((i) => !i.blocking)?.message).toMatch(/Tarif inconnu pour « gemini-sans-tarif » : appels autorisés, coûts marqués non calculables/);
   });
   it('MOD-13 — explicitement non opérationnel avec la clé active : absent ; opérationnel connu : signalé', () => {
     expect(noms('T1')).not.toContain('gemini-en-panne');
@@ -207,10 +211,10 @@ describe('MOD — anciennes versions (§4)', () => {
 });
 
 describe('MOD — validation serveur (§5, §6)', () => {
-  it('MOD-21 — modèle utilisable pour T1 envoyé sur T2 alors qu’il n’est pas compatible T2 : rejet', () => {
+  it('MOD-21 — modèle utilisable pour T1 envoyé sur T2 alors qu’il en est exclu : rejet', () => {
     expect(noms('T1')).toContain('gemini-sans-t2');
     const issues = validateTreatment(config('T2', { primaryModel: 'gemini-sans-t2' }), catalogues(ctx())).filter((i) => i.blocking);
-    expect(issues.map((i) => i.message)).toContain('Le modèle « gemini-sans-t2 » n’est pas utilisable pour T2 : incompatible avec le prompt maître du traitement.');
+    expect(issues.map((i) => i.message)).toContain('Le modèle « gemini-sans-t2 » n’est pas utilisable pour T2 : exclu pour ce traitement (exception documentée).');
   });
   it('MOD-22 — changement de disponibilité fournisseur entre l’édition et la promotion : promotion refusée', () => {
     const version = TREATMENTS.map((t) => config(t, { primaryModel: 'gemini-b' }));
@@ -221,7 +225,7 @@ describe('MOD — validation serveur (§5, §6)', () => {
     expect(r.issues.filter((i) => i.blocking).every((i) => /gemini-b.*non servi par la clé active/.test(i.message))).toBe(true);
   });
   it('MOD-23 — une seule définition : les listes du BO et la validation serveur rendent le même verdict pour chaque modèle et traitement', () => {
-    const c = ctx({ previewAllowed: previewPolicy({ environment: 'preprod', settingAllowed: false, assistantFlag: false }) });
+    const c = ctx();
     for (const t of TREATMENTS) {
       const liste = new Set(noms(t, c));
       for (const m of [...REGISTRE.map((x) => x.model), 'gemini-inconnu-du-registre']) {
@@ -237,8 +241,8 @@ describe('PRO — T2 : éligibilité par les caractéristiques réelles, jamais 
     expect(noms('T2')).toContain('gemini-9-pro');
     expect(validateTreatment(config('T2', { primaryModel: 'gemini-9-pro' }), catalogues(ctx())).filter((i) => i.blocking)).toEqual([]);
   });
-  it('PRO-09 — Pro incompatible (t2_master_v1 absent de compatiblePrompts) : refusé', () => {
-    expect(motifs('T2', 'gemini-9-pro-incompatible')).toEqual(['PROMPT_INCOMPATIBLE']);
+  it('PRO-09 (lot 35B) — Pro exclu de T2 par une exception documentée : refusé', () => {
+    expect(motifs('T2', 'gemini-9-pro-incompatible')).toEqual(['EXCLUDED']);
   });
   it('PRO-10 — Pro déprécié : refusé pour une nouvelle configuration T2 parce que déprécié ; gemini-2.5-pro du registre réel : refusé pour DÉPRÉCIÉ seulement', () => {
     expect(motifs('T2', 'gemini-9-pro-old')).toEqual(['DEPRECATED']);
@@ -246,9 +250,9 @@ describe('PRO — T2 : éligibilité par les caractéristiques réelles, jamais 
     expect(motifs('T2', 'gemini-2.5-pro', reel)).toEqual(['DEPRECATED']);
     expect(motifs('T5', 'gemini-2.5-pro', reel)).toEqual(['DEPRECATED']);
   });
-  it('PRO-11 — Pro preview : refusé sans autorisation preview, éligible avec si tout le reste est satisfait', () => {
-    expect(motifs('T2', 'gemini-9-pro-preview')).toEqual(['PREVIEW_NOT_ALLOWED']);
-    expect(noms('T2', ctx({ previewAllowed: (t) => t === 'T2' }))).toContain('gemini-9-pro-preview');
+  it('PRO-11 (lot 35B) — Pro preview : éligible dès que le reste est satisfait (plus d’autorisation preview)', () => {
+    expect(motifs('T2', 'gemini-9-pro-preview')).toEqual([]);
+    expect(noms('T2')).toContain('gemini-9-pro-preview');
   });
   it('PRO-12 — Flash incompatible : refusé au même titre qu’un Pro incompatible', () => {
     expect(motifs('T2', 'gemini-9-flash-incompatible')).toEqual(motifs('T2', 'gemini-9-pro-incompatible'));

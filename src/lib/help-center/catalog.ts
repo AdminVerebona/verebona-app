@@ -95,6 +95,30 @@ export function resolveShortcuts(
   });
 }
 
+/**
+ * Accès rapides selon la page — lot 35 (L35-1).
+ *
+ * Les mêmes six IDs (`HELP_SHORTCUT_IDS`, contrôlés par la CI), mais
+ * l'article de la page ouverte passe en tête : sur l'agenda, « Synchroniser
+ * mon agenda » ; sur les notifications, « Gérer mes notifications »… Aucun ID
+ * nouveau, aucun titre : seul l'ordre dépend de la page. Ordinateur et
+ * mobile appellent la même fonction (via `/api/help/shortcuts`).
+ */
+const ROUTE_SHORTCUTS: ReadonlyArray<{ pattern: RegExp; ids: readonly (typeof HELP_SHORTCUT_IDS)[number][] }> = [
+  { pattern: /^\/accueil\/a-traiter(\/|$)/, ids: ['AID-TODO-001'] },
+  { pattern: /^\/assets(\/|$)/, ids: ['AID-ASSET-001', 'AID-DOC-001'] },
+  { pattern: /^\/documents(\/|$)/, ids: ['AID-DOC-001'] },
+  { pattern: /^\/agenda(\/|$)/, ids: ['AID-AGENDA-006'] },
+  { pattern: /^\/(mon-compte\/)?notifications(\/|$)/, ids: ['AID-NOTIF-003'] },
+  { pattern: /^\/(abonnement|mon-compte\/offres)(\/|$)/, ids: ['AID-BILL-001'] },
+];
+
+export function shortcutIdsForRoute(route: string | null | undefined): string[] {
+  const r = (route ?? '').split(/[?#]/)[0];
+  const first = ROUTE_SHORTCUTS.find((s) => s.pattern.test(r))?.ids ?? [];
+  return [...first, ...HELP_SHORTCUT_IDS.filter((id) => !(first as readonly string[]).includes(id))];
+}
+
 /** Écarts entre les IDs de l'application et le catalogue — pour la CI. */
 export function unresolvedShortcuts(
   catalog: HelpCatalog,
@@ -173,4 +197,26 @@ export async function fetchHelpCatalog(): Promise<HelpCatalog | null> {
 export function resetHelpCatalogCache(): void {
   cache = null;
   pending = null;
+}
+
+/**
+ * Accès rapides pour la page ouverte, côté navigateur — lot 35 (L35-1).
+ *
+ * D'abord la route de l'application (`/api/help/shortcuts`, même origine :
+ * ni CORS ni dépendance à l'origine de la vue web mobile) ; si elle ne répond
+ * pas, l'ancienne lecture directe du catalogue (double lecture, aucune
+ * régression là où elle fonctionnait). Ne lève jamais : `[]` au pire.
+ */
+export async function loadHelpShortcuts(
+  route: string | null | undefined,
+  fetchImpl: typeof fetch = fetch,
+): Promise<ResolvedShortcut[]> {
+  try {
+    const res = await fetchImpl(`/api/help/shortcuts?route=${encodeURIComponent(route ?? '')}`, { credentials: 'same-origin' });
+    if (res.ok) {
+      const data = await res.json() as { available?: boolean; shortcuts?: ResolvedShortcut[] };
+      if (data.available && Array.isArray(data.shortcuts)) return data.shortcuts;
+    }
+  } catch { /* lecture directe ci-dessous */ }
+  return resolveShortcuts(await fetchHelpCatalog(), shortcutIdsForRoute(route));
 }

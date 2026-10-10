@@ -15,6 +15,8 @@ import { z } from 'zod';
 import { listCredentials, addCandidate } from '@/services/ai/provider/credential.repository';
 import { GEMINI_PUBLIC_CATALOG } from '@/services/ai/gateway/pricing/gemini-public-catalog';
 import { getCachedPrice, getCacheState, loadPricingCache } from '@/services/ai/gateway/pricing/pricing.repository';
+import { loadPriceStatuses } from '@/services/ai/gateway/pricing/pricing-sync.service';
+import { getCatalogState } from '@/services/ai/provider/model-catalog.service';
 import { requireAdminContext, toErrorResponse } from '../config-versions/_shared';
 
 export async function GET(req: NextRequest) {
@@ -23,19 +25,32 @@ export async function GET(req: NextRequest) {
 
   try {
     if (getCacheState().loadedAt === null) await loadPricingCache();
+    // Lot 35B : tarifs du catalogue SYNCHRONISÉ (page officielle Google) pour
+    // les modèles servis par la clé active ; sans tarif connu : UNKNOWN, sans
+    // montant — jamais le relevé embarqué présenté comme tarif courant.
+    const [state, statuts] = await Promise.all([
+      getCatalogState().catch(() => ({ models: [] as Array<{ model: string; available: boolean }> })),
+      loadPriceStatuses(),
+    ]);
+    const noms = [...new Set([
+      ...state.models.filter((m) => m.available).map((m) => m.model),
+      ...GEMINI_PUBLIC_CATALOG.map((e) => e.model),
+    ])].sort();
 
     return NextResponse.json({
       credentials: await listCredentials(),
-      // Le catalogue n'est pas rafraîchi automatiquement (SCR-10, critère
-      // d'acceptation). Il reflète la dernière vision connue, et sa date le dit.
-      catalog: GEMINI_PUBLIC_CATALOG.map((e) => {
-        const price = getCachedPrice('gemini', e.model);
+      catalog: noms.map((model) => {
+        const price = getCachedPrice('gemini', model);
+        const st = statuts.get(model);
         return {
-          model: e.model,
+          model,
           priced: price !== null,
           verified: price?.verified ?? false,
-          inputPerMillion: e.inputPerMillion,
-          outputPerMillion: e.outputPerMillion,
+          inputPerMillion: price ? price.inputMicros : null,
+          outputPerMillion: price ? price.outputMicros : null,
+          pricingStatus: price ? 'KNOWN' : 'UNKNOWN',
+          reason: price ? null : st?.reason ?? null,
+          lastChangedAt: st?.lastChangedAt ?? null,
         };
       }),
       catalogLoadedAt: getCacheState().loadedAt,

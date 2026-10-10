@@ -11,9 +11,8 @@
  * restent toujours visibles. « Bonjour, … » seulement dans la bulle de la
  * mascotte, sur l'accueil (§2).
  */
-import { useState } from 'react'
+import { Fragment, useState } from 'react'
 import Link from 'next/link'
-import { User, LogOut, Shield, Sun, Moon, HelpCircle } from 'lucide-react'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -28,6 +27,7 @@ import { ConfirmLogoutDialog } from './ConfirmLogoutDialog'
 import { getPlanLabel } from '@/lib/plan-label'
 import { formatUserDisplayName, formatUserInitials } from '@/lib/user-display-name'
 import { VerebonaHeaderField } from './verebona/space/VerebonaField'
+import { accountMenuEntries } from '@/lib/shell/account-menu'
 
 interface TopBarUser {
   firstName: string
@@ -103,36 +103,31 @@ export function TopBar({ user, theme, onToggleTheme, onLogout, isAdmin, onOpenHe
                 </p>
               </div>
             </div>
-            <DropdownMenuSeparator />
-            <DropdownMenuItem asChild>
-              <Link href="/mon-compte" className="flex cursor-pointer items-center">
-                <User className="mr-2 h-4 w-4" /><span>Mon compte</span>
-              </Link>
-            </DropdownMenuItem>
-            {onOpenHelp && (
-              <DropdownMenuItem onClick={onOpenHelp} className="cursor-pointer">
-                <HelpCircle className="mr-2 h-4 w-4" /><span>Besoin d’aide ?</span>
-              </DropdownMenuItem>
-            )}
-            {isAdmin && (
-              <>
-                <DropdownMenuSeparator />
+            {/* Entrées : source unique partagée avec le panneau mobile (L35-4). */}
+            {accountMenuEntries({ isAdmin, theme, withHelp: !!onOpenHelp }).map((e, i, all) => {
+              const Icon = e.icon
+              const sep = i === 0 || all[i - 1].group !== e.group
+              const item = e.href ? (
                 <DropdownMenuItem asChild>
-                  <Link href="/admin" className="flex cursor-pointer items-center">
-                    <Shield className="mr-2 h-4 w-4" /><span>Administration</span>
+                  <Link href={e.href} className="flex cursor-pointer items-center">
+                    <Icon className="mr-2 h-4 w-4" /><span>{e.label}</span>
                   </Link>
                 </DropdownMenuItem>
-              </>
-            )}
-            <DropdownMenuSeparator />
-            <DropdownMenuItem onClick={onToggleTheme} className="cursor-pointer">
-              {theme === 'blue' ? <Sun className="mr-2 h-4 w-4" /> : <Moon className="mr-2 h-4 w-4" />}
-              <span>Thème {theme === 'blue' ? 'clair' : 'sombre'}</span>
-            </DropdownMenuItem>
-            <DropdownMenuSeparator />
-            <DropdownMenuItem onClick={() => setLogoutConfirm(true)} className="cursor-pointer text-red-500 focus:text-red-500">
-              <LogOut className="mr-2 h-4 w-4" /><span>Se déconnecter</span>
-            </DropdownMenuItem>
+              ) : (
+                <DropdownMenuItem
+                  onClick={e.id === 'help' ? onOpenHelp : e.id === 'theme' ? onToggleTheme : () => setLogoutConfirm(true)}
+                  className={e.id === 'logout' ? 'cursor-pointer text-red-500 focus:text-red-500' : 'cursor-pointer'}
+                >
+                  <Icon className="mr-2 h-4 w-4" /><span>{e.label}</span>
+                </DropdownMenuItem>
+              )
+              return (
+                <Fragment key={e.id}>
+                  {sep && <DropdownMenuSeparator />}
+                  {item}
+                </Fragment>
+              )
+            })}
           </DropdownMenuContent>
         </DropdownMenu>
       </div>

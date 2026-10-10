@@ -403,9 +403,9 @@ export function DashboardLayout({ children, user: userProp }: DashboardLayoutPro
         Direction D v2, maquette mobile : la barre haute porte le champ
         Verebona et l'avatar ; la barre basse porte les CINQ onglets (Agenda
         compris, répartition 2b) et le « + ». Ce panneau ne contient donc que
-        le compte : identité, notifications, Mon compte, aide, administration
-        (si admin), thème, déconnexion confirmée. La mascotte accueille,
-        comme sur l'accueil.
+        le compte : identité, cloche, puis les entrées du menu de l'avatar
+        desktop (même source, `accountMenuEntries`, lot 35 L35-4) : Mon
+        compte, aide, administration (si admin), thème, déconnexion confirmée.
         ══════════════════════════════════════════════════════════════ */}
     <MobileAccountPanel
       open={isMobileMenuOpen}

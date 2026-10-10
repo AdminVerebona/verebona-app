@@ -16,6 +16,7 @@ import { libelleEssai } from './trial-label';
 import { openBillingPortal } from '@/lib/billing/open-billing-portal';
 import { isUnpaid, type UnpaidCyclePayload } from '@/lib/trial-status';
 import { UnpaidPaymentNotice } from './UnpaidPaymentNotice';
+import { formatEuroCents } from '@/lib/billing/plan-catalog';
 
 /**
  * Ecran « Mon abonnement » (CDC tarification §9.1 et §9.4).
@@ -80,7 +81,15 @@ interface StatusResponse {
       planCode: string;
       billingPeriod: 'monthly' | 'yearly';
       effectiveAt: string | null;
+      /** Prix accepté à la programmation (CDC lookup_key LK-36). */
+      unitAmountCents?: number | null;
+      /** `release_failed` : annulation non confirmée par Stripe (LK-59). */
+      state?: string | null;
     } | null;
+    /** Montant facturé pour la période en cours (prix contractuel, LK-113). */
+    currentPrice?: { unitAmountCents: number; currency: string } | null;
+    /** Nouveau montant au prochain renouvellement, s'il est confirmé (LK-113). */
+    nextRenewalPrice?: { unitAmountCents: number; effectiveAt: string | null } | null;
   };
   quotas: {
     assets: QuotaUsage;
@@ -195,8 +204,9 @@ export function SubscriptionSummary() {
       void refresh();
     } catch (err) {
       if (isRequestAborted(err)) return;
+      // LK-59 : en cas d'échec, le changement reste programmé et c'est dit.
       toast.error(err instanceof ApiClientError && err.status > 0
-        ? 'Impossible d\'annuler le changement.'
+        ? (err.serverMessage || 'Impossible d\'annuler le changement.')
         : 'Une erreur est survenue.');
     } finally {
       setCancelLoading(false);
@@ -312,6 +322,31 @@ export function SubscriptionSummary() {
         </div>
       </div>
 
+      {/* Tarif de la période en cours et, si confirmé, du prochain
+          renouvellement — distincts du prix des nouvelles souscriptions
+          (CDC lookup_key LK-36, LK-113). Factures passées inchangées. */}
+      {subscription.currentPrice && (
+        <div className="mb-5 grid gap-4 sm:grid-cols-2" data-testid="tarif-contractuel">
+          <div>
+            <p className="text-xs uppercase tracking-wide text-[color:var(--text-muted)]">Tarif de la période en cours</p>
+            <p className="text-sm font-medium text-[color:var(--text-primary)]">
+              {formatEuroCents(subscription.currentPrice.unitAmountCents)}
+              {subscription.billingPeriod === 'yearly' ? ' par an' : subscription.billingPeriod === 'monthly' ? ' par mois' : ''}
+            </p>
+          </div>
+          {subscription.nextRenewalPrice && (
+            <div>
+              <p className="text-xs uppercase tracking-wide text-[color:var(--text-muted)]">Au prochain renouvellement</p>
+              <p className="text-sm font-medium text-[color:var(--text-primary)]">
+                {formatEuroCents(subscription.nextRenewalPrice.unitAmountCents)}
+                {subscription.billingPeriod === 'yearly' ? ' par an' : subscription.billingPeriod === 'monthly' ? ' par mois' : ''}
+                {subscription.nextRenewalPrice.effectiveAt ? ` à partir du ${formatDate(subscription.nextRenewalPrice.effectiveAt)}` : ''}
+              </p>
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Essai en cours */}
       {trial.status === 'active' && (
         <div className="mb-5 flex items-center gap-2 rounded-lg border border-[color:var(--border)] bg-[color:var(--bg-page)] px-3 py-2">
@@ -351,7 +386,15 @@ export function SubscriptionSummary() {
             {subscription.scheduledChange.effectiveAt
               ? ` le ${formatDate(subscription.scheduledChange.effectiveAt)}`
               : ' à la prochaine échéance'}
+            {typeof subscription.scheduledChange.unitAmountCents === 'number'
+              ? ` (${formatEuroCents(subscription.scheduledChange.unitAmountCents)} ${subscription.scheduledChange.billingPeriod === 'monthly' ? 'par mois' : 'par an'})`
+              : ''}
             .
+            {subscription.scheduledChange.state === 'release_failed' && (
+              <span className="mt-1 block text-xs text-amber-600">
+                La dernière demande d&apos;annulation n&apos;a pas pu être confirmée : ce changement reste programmé.
+              </span>
+            )}
           </p>
           <Button variant="ghost" size="sm" onClick={cancelChange} disabled={cancelLoading}>
             Annuler

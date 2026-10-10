@@ -35,14 +35,10 @@ import {
   users,
   withdrawalRequests,
 } from '@/db/schema';
-import { getStripeServer, getTierFromPriceId, type PlanTier } from '@/lib/stripe';
-import {
-  expectedAmountCents,
-  isBillingPeriod,
-  isPlanCode,
-  resolvePlanFromPriceId,
-  type BillingPeriod,
-} from '@/lib/stripe-prices';
+import { getStripeServer, type PlanTier } from '@/lib/stripe';
+import { isPlanCode, type BillingPeriod } from '@/lib/stripe-prices';
+import { periodOfInterval } from '@/lib/billing/plan-catalog';
+import { PriceRecognitionError, primaryItem } from '@/services/billing/price-history.service';
 import { invalidateAccountReadCache, invalidateUserReadCache } from '@/lib/server-cache';
 import { markTrialConverted } from '@/services/trial.service';
 import { sendDowngradeToStandardEmail, sendPremiumConfirmationEmail } from '@/lib/email/billing-emails';
@@ -62,13 +58,21 @@ export function getInvoiceSubscriptionId(invoice: Stripe.Invoice): string | null
   return idOf((invoice as unknown as { subscription?: string | { id: string } }).subscription);
 }
 
-/** Price ID de la première ligne d'une facture. */
-export function getInvoicePriceId(invoice: Stripe.Invoice): string | null {
-  const line = invoice.lines?.data?.[0];
+/** Price ID d'une ligne de facture (API basil : `pricing.price_details.price`). */
+export function getInvoiceLinePriceId(line: Stripe.InvoiceLineItem | undefined | null): string | null {
   if (!line) return null;
   const fromPricing = line.pricing?.price_details?.price;
   if (fromPricing) return fromPricing;
   return idOf((line as unknown as { price?: string | { id: string } }).price);
+}
+
+/**
+ * Price ID de la PREMIÈRE ligne d'une facture — conservé pour compatibilité
+ * de lecture ; le registre des factures n'attribue plus une offre sur la
+ * seule première ligne (CDC lookup_key LK-75, voir invoice-ledger.service).
+ */
+export function getInvoicePriceId(invoice: Stripe.Invoice): string | null {
+  return getInvoiceLinePriceId(invoice.lines?.data?.[0]);
 }
 
 // ─── Correspondances d'état ───────────────────────────────────────────────────
@@ -95,45 +99,17 @@ const TERMINAL_STATUSES: Stripe.Subscription.Status[] = ['canceled', 'unpaid', '
 const toDate = (unix: number | null | undefined): Date | null =>
   typeof unix === 'number' && unix > 0 ? new Date(unix * 1000) : null;
 
-function billingPeriodOf(price: Stripe.Price | undefined): BillingPeriod | null {
-  // Catalogue, puis intervalle Stripe : la périodicité est toujours connue
-  // d'un prix récurrent.
-  if (!price) return null;
-  const fromCatalog = resolvePlanFromPriceId(price.id);
-  if (fromCatalog) return fromCatalog.period;
-  if (price.recurring?.interval === 'month') return 'monthly';
-  if (price.recurring?.interval === 'year') return 'yearly';
-  return null;
-}
-
-// ─── Synchronisation ──────────────────────────────────────────────────────────
-
-/**
- * Offre lue dans les métadonnées, MAIS seulement si le montant du prix
- * correspond au tarif de cette offre et de cette périodicité.
- *
- * Le Price ID reste la source de vérité. Ce repli couvre le cas où la
- * variable d'environnement du prix diffère entre le processus qui a créé la
- * session et celui qui la synchronise (déploiement en cours, variable
- * renommée) : le paiement était encaissé et le compte restait en essai.
- * Des métadonnées seules ne suffisent jamais : le montant payé doit concorder.
- */
-function tierFromVerifiedMetadata(
-  subscription: Stripe.Subscription,
-  price: Stripe.Price | undefined,
-): PlanTier | null {
-  const tier = subscription.metadata?.planTier;
-  const period = subscription.metadata?.billing_period;
-  if (!price || !isPlanCode(tier) || !isBillingPeriod(period)) return null;
-  const interval = period === 'monthly' ? 'month' : 'year';
-  if (price.recurring?.interval !== interval) return null;
-  if (price.unit_amount !== expectedAmountCents(tier, period)) return null;
-  console.warn(
-    `[subscription-sync] prix ${price.id} absent du catalogue : offre ${tier}/${period} ` +
-    'retenue d\'après les métadonnées, montant vérifié. Contrôler les variables STRIPE_PRICE_*.',
-  );
-  return tier;
-}
+// ══════════════════════════════════════════════════════════════════════════
+// RECONNAISSANCE DU PRIX : REGISTRE HISTORIQUE, PLUS AUCUN REPLI PAR MONTANT
+//
+// L'offre était déduite des six variables STRIPE_PRICE_*, puis, à défaut,
+// des métadonnées de l'abonnement SI le montant égalait le tarif du jour
+// (`expectedAmountCents`). Après une hausse, tout abonné historique serait
+// devenu « inconnu » ; et une égalité de montant n'a jamais prouvé une offre
+// (EC-05). Désormais : item principal RECONNU par le registre historique
+// (`primaryItem`, LK-65, LK-73). Inconnu ou ambigu → erreur typée levée
+// (webhook rejoué, anomalie), sauf fin d'accès vérifiée (LK-67).
+// ══════════════════════════════════════════════════════════════════════════
 
 /** Fenêtre pendant laquelle un webhook est l'écho d'un changement admin. */
 export const ADMIN_PLAN_CHANGE_ECHO_MS = 15 * 60 * 1000;
@@ -202,6 +178,8 @@ export interface SubscriptionSyncResult {
   activated: boolean;
   /** Aucune écriture : état intermédiaire ou abonnement périmé. */
   skipped?: 'INCOMPLETE' | 'STALE_SUBSCRIPTION';
+  /** Prix contractuel de l'item principal (centimes), pour les courriels (LK-78). */
+  unitAmountCents?: number | null;
 }
 
 type AccountRow = typeof accounts.$inferSelect;
@@ -263,22 +241,11 @@ async function synchroniserAbonnement(
 ): Promise<SubscriptionSyncResult | null> {
   const { subscription, source } = input;
   const customerId = idOf(subscription.customer);
-  const item = subscription.items.data[0];
-  const price = item?.price;
-  const planTier = getTierFromPriceId(price?.id) ?? tierFromVerifiedMetadata(subscription, price);
 
   if (!customerId) {
     console.warn(`[subscription-sync] ${source} : abonnement ${subscription.id} sans client`);
     return null;
   }
-  if (!planTier) {
-    console.warn(`[subscription-sync] ${source} : prix inconnu ${price?.id} (abonnement ${subscription.id})`);
-    return null;
-  }
-
-  const adminEcho = isAdminPlanChangeEcho(subscription.metadata, planTier);
-  const effectiveSource = adminEcho ? 'admin:override' : source;
-  const effectiveNotify = adminEcho ? false : (input.notify ?? true);
 
   const metadataAccountId = Number(subscription.metadata?.accountId);
   const account = await findAccount(customerId, [input.accountIdHint, metadataAccountId]);
@@ -287,7 +254,42 @@ async function synchroniserAbonnement(
     return null;
   }
 
-  const billingPeriod = billingPeriodOf(price);
+  // ── Item principal reconnu (LK-65, LK-73) ──
+  const primary = await primaryItem(subscription, `sync:${source}`);
+  const terminalNow = TERMINAL_STATUSES.includes(subscription.status);
+  let planTier: PlanTier;
+  let item: Stripe.SubscriptionItem | undefined;
+  let billingPeriodFromPrice: BillingPeriod | null = null;
+  if ('error' in primary) {
+    const detail = { subscriptionId: subscription.id, accountId: account.id, prices: subscription.items.data.map((i) => i.price?.id), reason: primary.error };
+    if (primary.error === 'UNAVAILABLE') {
+      throw new PriceRecognitionError('STRIPE_UNAVAILABLE', `Prix de ${subscription.id} non vérifiable (Stripe indisponible)`);
+    }
+    await reportUnknownPrice(account.id, subscription.id, detail);
+    // LK-67 : un échec de rapprochement n'empêche JAMAIS une fin d'accès
+    // vérifiée de l'abonnement courant ; il n'accorde ni ne détruit rien sinon.
+    const localTier = (account.planType ?? '').toLowerCase();
+    const paidNow = PAID_STATUSES.includes(subscription.status);
+    const isCurrent = !account.stripeSubscriptionId || account.stripeSubscriptionId === subscription.id;
+    // Seul un état qui OUVRIRAIT des droits exige le rapprochement : on lève
+    // (rejeu). Paiement en attente ou ancien abonnement : rien n'est écrit.
+    if (paidNow || (terminalNow && isCurrent && !isPlanCode(localTier))) {
+      throw new PriceRecognitionError('UNKNOWN_HISTORICAL_PRICE', `Prix non rapproché pour ${subscription.id} (${primary.error})`);
+    }
+    planTier = isPlanCode(localTier) ? localTier : 'standard';
+    item = subscription.items.data[0];
+  } else {
+    planTier = primary.result.planCode;
+    item = primary.item;
+    billingPeriodFromPrice = primary.result.billingPeriod;
+  }
+  const price = item?.price;
+
+  const adminEcho = isAdminPlanChangeEcho(subscription.metadata, planTier);
+  const effectiveSource = adminEcho ? 'admin:override' : source;
+  const effectiveNotify = adminEcho ? false : (input.notify ?? true);
+
+  const billingPeriod = billingPeriodFromPrice ?? periodOfInterval(price?.recurring?.interval, price?.recurring?.interval_count);
   const status = subscription.status;
   const isPaid = PAID_STATUSES.includes(status);
   const isTerminal = TERMINAL_STATUSES.includes(status);
@@ -330,6 +332,8 @@ async function synchroniserAbonnement(
       stripeSubscriptionId: accountSubscriptions.stripeSubscriptionId,
       firstBilledAt: accountSubscriptions.firstBilledAt,
       contractConcludedAt: accountSubscriptions.contractConcludedAt,
+      stripePriceId: accountSubscriptions.stripePriceId,
+      contractUnitAmountCents: accountSubscriptions.contractUnitAmountCents,
     })
     .from(accountSubscriptions)
     .where(eq(accountSubscriptions.accountId, account.id))
@@ -428,6 +432,8 @@ async function synchroniserAbonnement(
       cancelAtPeriodEnd: Boolean(subscription.cancel_at_period_end),
       firstBilledAt,
       contractConcludedAt,
+      // ── Prix contractuel (LK-19) : écrit depuis l'objet Stripe ──
+      ...(item && price && !('error' in primary) ? contractColumns(item, price, existingRow, sameRowSubscription, now) : {}),
       updatedAt: now,
     };
     await tx
@@ -473,7 +479,21 @@ async function synchroniserAbonnement(
 
   await invalidateSessions(account.id).catch(() => undefined);
 
-  const result: SubscriptionSyncResult = { ...base, newPlanType, newStatus, activated };
+  // Tentative de souscription close (LK-44) et revalorisation constatée
+  // (EX-022) — effets non bloquants, idempotents.
+  if (isPaid) {
+    void import('@/services/billing/price-operations.service')
+      .then(async (m) => {
+        await m.completeOpenCheckout(account.id);
+        if (price?.id) await m.completeMutationsForPrice(account.id, price.id);
+      })
+      .catch(() => undefined);
+  }
+  void import('@/services/billing/price-revaluation.service')
+    .then((m) => m.reconcileRevaluationFromSubscription(subscription))
+    .catch(() => undefined);
+
+  const result: SubscriptionSyncResult = { ...base, newPlanType, newStatus, activated, unitAmountCents: price?.unit_amount ?? null };
   await applyTransitionEffects(result, {
     source: effectiveSource,
     notify: effectiveNotify,
@@ -543,7 +563,11 @@ async function applyTransitionEffects(
 
   if (becomesPremium) {
     if (confirmationEmail && opts.premiumUntil) {
-      sendPremiumConfirmationEmail(ownerUserId, new Date(opts.premiumUntil * 1000)).catch(console.error);
+      sendPremiumConfirmationEmail(ownerUserId, new Date(opts.premiumUntil * 1000), {
+        planLabel: LIBELLE_OFFRE[newPlanType] ?? newPlanType,
+        unitAmountCents: result.unitAmountCents ?? null,
+        billingPeriod: result.billingPeriod,
+      }).catch(console.error);
     }
     // V4 — Analyse rétroactive via service dédié (batch de 5, throttle 2s)
     import('@/services/document-ai/retroactive-analysis.service')
@@ -785,6 +809,49 @@ export async function syncAccountFromStripeCustomer(params: {
     notify: false,
   });
   return { result, subscriptionCount: list.data.length };
+}
+
+/**
+ * Colonnes du prix contractuel. Le changement de prix (revalorisation,
+ * changement d'offre) date `contract_price_since` et conserve le montant
+ * précédent : le MRR suit la date RÉELLE du changement (LK-77).
+ */
+function contractColumns(
+  item: Stripe.SubscriptionItem,
+  price: Stripe.Price,
+  existing: { stripePriceId: string | null; contractUnitAmountCents: number | null } | undefined,
+  sameSubscription: boolean,
+  now: Date,
+) {
+  const changed = sameSubscription && existing?.stripePriceId && existing.stripePriceId !== price.id;
+  return {
+    stripeSubscriptionItemId: item.id,
+    stripePriceId: price.id,
+    stripeProductId: idOf(price.product as string | { id: string } | null),
+    contractUnitAmountCents: price.unit_amount ?? null,
+    contractCurrency: (price.currency ?? 'eur').toLowerCase(),
+    contractQuantity: item.quantity ?? 1,
+    contractInterval: price.recurring?.interval ?? null,
+    contractTaxBehavior: price.tax_behavior ?? 'unspecified',
+    contractVerifiedAt: now,
+    ...(changed
+      ? { contractPriceSince: toDate(item.current_period_start) ?? now, previousUnitAmountCents: existing?.contractUnitAmountCents ?? null }
+      : !sameSubscription ? { contractPriceSince: null, previousUnitAmountCents: null } : {}),
+  };
+}
+
+async function reportUnknownPrice(accountId: number, subscriptionId: string, detail: Record<string, unknown>): Promise<void> {
+  console.error(JSON.stringify({ evt: 'billing.sync.unknown_price', code: 'UNKNOWN_HISTORICAL_PRICE', ...detail }));
+  try {
+    const { reportAnomaly } = await import('@/services/admin/anomaly.service');
+    await reportAnomaly({
+      domain: 'stripe',
+      fingerprint: `stripe:unknown-price:${subscriptionId}`,
+      title: 'Abonnement à un prix non rapproché (UNKNOWN_HISTORICAL_PRICE)',
+      accountId,
+      detail,
+    });
+  } catch { /* la levée de l'erreur suffit à faire rejouer */ }
 }
 
 /** Une rétractation (non rejetée) a-t-elle été exercée sur cet abonnement ? */

@@ -22,14 +22,12 @@
  * ouverte la définition du catalogue de garde-fous, qui n'est pas arrêtée.
  *
  * ══════════════════════════════════════════════════════════════════════════
- * DEUX CONTRÔLES QUE LE CDC NE DEMANDE PAS
+ * UN CONTRÔLE QUE LE CDC NE DEMANDE PAS
  *
- * « Modèle tarifé » et « modèle présent au catalogue » ne figurent pas au
- * WF-02. Ils y sont ajoutés parce qu'ils évitent deux pannes déjà rencontrées :
- * `assertPricingReady` refuse le démarrage en production lorsqu'un modèle actif
- * n'a pas de tarif, et `gemini-2.5-flash-lite` a cessé d'être servi du jour au
- * lendemain. Sans eux, une version peut être validée, packagée, importée — et
- * faire échouer le démarrage de la production.
+ * « Modèle présent au catalogue » ne figure pas au WF-02. Il y est ajouté
+ * parce que `gemini-2.5-flash-lite` a cessé d'être servi du jour au
+ * lendemain. Lot 35B : « modèle tarifé » n'est plus bloquant — un modèle sans
+ * tarif connu reste utilisable (coût non calculable), simple signalement.
  */
 import { TREATMENTS, getTreatment, isPromptAdministrable, type Treatment } from './treatments';
 import { TRIGGER_CATALOG, activeUnlessDeclaredCodes } from './catalogs';
@@ -125,16 +123,19 @@ function validateModels(c: TreatmentConfig, cat: ConfigCatalogs): ValidationIssu
       const e = cat.modelEligibility(t, model);
       if (!e.usable) {
         out.push(issue(t, field, `Le modèle « ${model} » n’est pas utilisable pour ${t} : ${e.reasonText}.`));
+      } else if (!e.priced) {
+        // Lot 35B : jamais bloquant — signalé pour que le coût « non
+        // calculable » ne surprenne personne.
+        out.push(issue(t, field, `Tarif inconnu pour « ${model} » : appels autorisés, coûts marqués non calculables.`, false));
       }
       continue;
     }
     if (!cat.availableModels.has(model)) {
       out.push(issue(t, field, `Le modèle « ${model} » ne figure pas au catalogue fournisseur.`));
     } else if (!cat.pricedModels.has(model)) {
-      // Séparé du précédent : un modèle absent du catalogue et un modèle non
-      // tarifé appellent deux gestes différents — changer de modèle, ou
-      // rafraîchir la grille.
-      out.push(issue(t, field, `Aucun tarif connu pour « ${model} » : le démarrage en production échouerait.`));
+      // Lot 35B : un modèle sans tarif connu reste utilisable (UNKNOWN) —
+      // signalé, jamais bloquant.
+      out.push(issue(t, field, `Tarif inconnu pour « ${model} » : appels autorisés, coûts marqués non calculables.`, false));
     }
   }
 
@@ -152,9 +153,9 @@ function validateModels(c: TreatmentConfig, cat: ConfigCatalogs): ValidationIssu
   if (utilises.length === 0) return out;
 
   // Lot 32B : plus aucune règle sur le NOM du modèle (ancien « aucun Pro sur
-  // T2 », CDC Assistant V1 §31.2). L'éligibilité T2 est celle de
-  // `usableModelsForTreatment('T2')` : compatibilité t2_master_v1 déclarée
-  // modèle par modèle, statut, capacités, tarif, preview, disponibilité.
+  // T2 », CDC Assistant V1 §31.2). Lot 35B : l'éligibilité T2 est celle de
+  // `usableModelsForTreatment('T2')` — disponibilité, qualification
+  // automatique des capacités, exceptions Verebona ; ni tarif ni preview.
   return out;
 }
 

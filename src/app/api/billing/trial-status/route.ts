@@ -67,6 +67,10 @@ export async function GET(request: NextRequest) {
           currentPeriodEndAt: accountSubscriptions.currentPeriodEndAt,
           cancelAtPeriodEnd: accountSubscriptions.cancelAtPeriodEnd,
           stripeSubscriptionId: accountSubscriptions.stripeSubscriptionId,
+          // Prix contractuel (CDC lookup_key LK-36, LK-113) : montant de la
+          // période en cours, lu depuis l'abonnement Stripe synchronisé.
+          contractUnitAmountCents: accountSubscriptions.contractUnitAmountCents,
+          contractCurrency: accountSubscriptions.contractCurrency,
         })
         .from(accountSubscriptions)
         .where(eq(accountSubscriptions.accountId, accountId))
@@ -112,6 +116,14 @@ export async function GET(request: NextRequest) {
         )),
     ]);
 
+    // Revalorisation CONFIRMÉE (échéancier posé) : nouveau montant au
+    // prochain renouvellement (LK-113). Jamais annoncée avant.
+    const revaluation = sub?.stripeSubscriptionId
+      ? await import('@/services/billing/price-revaluation.service')
+        .then((m) => m.confirmedRevaluationFor(sub.stripeSubscriptionId))
+        .catch(() => null)
+      : null;
+
     const unpaidCycle = accountRow?.unpaidStartedAt
       ? computeUnpaidCycle(accountRow.unpaidStartedAt, now, accountRow.unpaidRecoveryEndsAt)
       : null;
@@ -156,7 +168,18 @@ export async function GET(request: NextRequest) {
               planCode: scheduled.planCode,
               billingPeriod: scheduled.billingPeriod,
               effectiveAt: scheduled.effectiveAt?.toISOString() ?? null,
+              // Prix accepté à la programmation (LK-36) ; null si non rapproché.
+              unitAmountCents: scheduled.unitAmountCents,
+              state: scheduled.state,
             }
+          : null,
+        // Montant facturé pour la période en cours (prix contractuel).
+        currentPrice: sub?.contractUnitAmountCents
+          ? { unitAmountCents: sub.contractUnitAmountCents, currency: sub.contractCurrency ?? 'eur' }
+          : null,
+        // Nouveau montant au prochain renouvellement, s'il est confirmé.
+        nextRenewalPrice: revaluation
+          ? { unitAmountCents: revaluation.amountCents, effectiveAt: revaluation.effectiveAt }
           : null,
         hasStripeSubscription: Boolean(sub?.stripeSubscriptionId),
       },

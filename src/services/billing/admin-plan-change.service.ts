@@ -34,6 +34,16 @@
  * `SCHEDULED_CHANGE_PENDING`. L'échéancier écraserait le prix à la prochaine
  * échéance ; l'annuler d'office modifierait une décision de l'utilisateur.
  * À trancher par le produit (voir rapport).
+ *
+ * CDC LOOKUP_KEY V4 (§13, LK-61 à LK-63, TC-45, TC-46) : le prix de la
+ * nouvelle offre est celui de la RÉVISION ACTIVE, à la cadence existante,
+ * relu chez Stripe (résultat asynchrone vérifié) ; la révision affichée au
+ * BO est contrôlée (409 PRICE_CHANGED / PRICE_CONFIRMATION_REQUIRED) dès que
+ * Stripe sera modifié ; l'audit porte offre, cadence, ancien et nouveau prix,
+ * montants, devise, initiateur et identifiant d'opération. Une
+ * revalorisation planifiée (échéancier `verebona_revaluation`) n'est PAS un
+ * changement utilisateur : elle est remplacée par le changement admin
+ * (EX-024) ; un changement utilisateur programmé reste un refus.
  * ══════════════════════════════════════════════════════════════════════════
  */
 import type Stripe from 'stripe';
@@ -41,8 +51,12 @@ import { db } from '@/db';
 import { accounts, accountSubscriptions } from '@/db/schema';
 import { eq } from 'drizzle-orm';
 import { getStripeServer } from '@/lib/stripe';
-import { resolvePriceId, type BillingPeriod, type PlanCode } from '@/lib/stripe-prices';
+import type { BillingPeriod, PlanCode } from '@/lib/stripe-prices';
 import { applyPlanChange, type KnownPlan } from '@/lib/plan-enforcement';
+import { BillingCatalogError, type PublicOffer, type ResolvedPrice } from './catalog-types';
+import { assertDisplayedRevision, resolveCurrentPrice } from './price-catalog.service';
+import { recordPriceOperation } from './price-operations.service';
+import { isRevaluationSchedule, supersedeRevaluation } from './price-revaluation.service';
 
 /** Offres qu'un admin peut attribuer : les offres commercialisées. */
 export const ADMIN_ASSIGNABLE_PLANS = ['STANDARD', 'PREMIUM', 'PREMIUM_DUO'] as const;
@@ -67,7 +81,10 @@ export type AdminPlanChangeErrorCode =
   | 'SCHEDULED_CHANGE_PENDING'
   | 'BILLING_PERIOD_UNKNOWN'
   | 'STRIPE_UPDATE_FAILED'
-  | 'LOCAL_APPLY_FAILED';
+  | 'LOCAL_APPLY_FAILED'
+  | 'PRICE_CONFIRMATION_REQUIRED'
+  | 'PRICE_CHANGED'
+  | 'PRICE_UNAVAILABLE';
 
 export type AdminPlanChangeResult =
   | {
@@ -77,8 +94,10 @@ export type AdminPlanChangeResult =
       /** `false` : aucun abonnement Stripe actif, changement purement local. */
       stripeUpdated: boolean;
       billingPeriod: BillingPeriod | null;
+      /** Prix appliqué à la prochaine échéance et prix remplacé (audit, LK-63). */
+      price?: { priceId: string; unitAmountCents: number; currency: string; priceRevision: string; previousPriceId: string | null; previousAmountCents: number | null; operationId: number | null };
     }
-  | { ok: false; code: AdminPlanChangeErrorCode; message: string; oldPlan?: string };
+  | { ok: false; code: AdminPlanChangeErrorCode; message: string; oldPlan?: string; offer?: PublicOffer };
 
 /** Statut HTTP associé à chaque refus. */
 export const ADMIN_PLAN_CHANGE_HTTP_STATUS: Record<AdminPlanChangeErrorCode, number> = {
@@ -88,6 +107,9 @@ export const ADMIN_PLAN_CHANGE_HTTP_STATUS: Record<AdminPlanChangeErrorCode, num
   BILLING_PERIOD_UNKNOWN: 409,
   STRIPE_UPDATE_FAILED: 502,
   LOCAL_APPLY_FAILED: 500,
+  PRICE_CONFIRMATION_REQUIRED: 409,
+  PRICE_CHANGED: 409,
+  PRICE_UNAVAILABLE: 503,
 };
 
 /** Périodicité d'un prix Stripe récurrent. */
@@ -160,7 +182,12 @@ export interface AdminPlanChangeDeps {
   loadAccount(accountId: number): Promise<AccountSnapshot | null>;
   stripe(): Pick<Stripe, 'subscriptions'>;
   applyLocal(snapshot: AccountSnapshot, newPlan: AdminAssignablePlan): Promise<void>;
-  resolvePrice(planCode: PlanCode, period: BillingPeriod): string;
+  /** Prix courant vérifié (relu chez Stripe) — asynchrone (LK-61). */
+  resolvePrice(planCode: PlanCode, period: BillingPeriod): Promise<ResolvedPrice>;
+  /** Abonnés : remplace une revalorisation planifiée (EX-024). */
+  supersedeRevaluation?(subscriptionId: string): Promise<unknown>;
+  /** Trace de l'opération (LK-63). */
+  recordOperation?(input: Parameters<typeof recordPriceOperation>[0]): Promise<number | null>;
 }
 
 async function loadAccountSnapshot(accountId: number): Promise<AccountSnapshot | null> {
@@ -245,7 +272,9 @@ const defaultDeps: AdminPlanChangeDeps = {
   loadAccount: loadAccountSnapshot,
   stripe: getStripeServer,
   applyLocal: applyLocalPlanChange,
-  resolvePrice: resolvePriceId,
+  resolvePrice: (plan, period) => resolveCurrentPrice(plan, period, { forPayment: true }),
+  supersedeRevaluation: (subscriptionId) => supersedeRevaluation(subscriptionId, 'SUPERSEDED_BY_ADMIN_CHANGE'),
+  recordOperation: recordPriceOperation,
 };
 
 /**
@@ -253,7 +282,7 @@ const defaultDeps: AdminPlanChangeDeps = {
  * Ne lève pas : chaque issue est un résultat typé.
  */
 export async function changePlanAsAdmin(
-  input: { accountId: number; newPlan: AdminAssignablePlan },
+  input: { accountId: number; newPlan: AdminAssignablePlan; displayedPriceRevision?: string | null; adminId?: number | null },
   deps: AdminPlanChangeDeps = defaultDeps,
 ): Promise<AdminPlanChangeResult> {
   const snapshot = await deps.loadAccount(input.accountId);
@@ -267,6 +296,7 @@ export async function changePlanAsAdmin(
 
   // ── 1. Stripe ─────────────────────────────────────────────────────────
   let stripeUpdated = false;
+  let applied: NonNullable<Extract<AdminPlanChangeResult, { ok: true }>['price']> | undefined;
   let billingPeriod: BillingPeriod | null =
     snapshot.billingPeriod === 'monthly' || snapshot.billingPeriod === 'yearly' ? snapshot.billingPeriod : null;
 
@@ -284,7 +314,18 @@ export async function changePlanAsAdmin(
     }
 
     if (!ENDED_STRIPE_STATUSES.has(subscription.status)) {
-      if (subscription.schedule || snapshot.scheduledPlanCode) {
+      // Revalorisation planifiée (pas une décision de l'utilisateur) :
+      // remplacée par le changement admin. Un changement UTILISATEUR
+      // programmé reste un refus (LK-62).
+      let schedule = subscription.schedule;
+      if (schedule && !snapshot.scheduledPlanCode && typeof schedule === 'object' && isRevaluationSchedule(schedule as Stripe.SubscriptionSchedule)) {
+        await deps.supersedeRevaluation?.(subscription.id);
+        schedule = null;
+      } else if (schedule && !snapshot.scheduledPlanCode && typeof schedule === 'string' && deps.supersedeRevaluation) {
+        const released = await deps.supersedeRevaluation(subscription.id).catch(() => 0);
+        if (Number(released) > 0) schedule = null;
+      }
+      if (schedule || snapshot.scheduledPlanCode) {
         return {
           ok: false,
           code: 'SCHEDULED_CHANGE_PENDING',
@@ -308,13 +349,31 @@ export async function changePlanAsAdmin(
         };
       }
 
+      let price: ResolvedPrice;
       try {
-        const priceId = deps.resolvePrice(PLAN_CODE_OF[input.newPlan], billingPeriod);
+        price = await deps.resolvePrice(PLAN_CODE_OF[input.newPlan], billingPeriod);
+        assertDisplayedRevision(price, input.displayedPriceRevision ?? null);
+      } catch (error) {
+        if (error instanceof BillingCatalogError) {
+          const code: AdminPlanChangeErrorCode = error.code === 'PRICE_CHANGED' || error.code === 'PRICE_CONFIRMATION_REQUIRED' ? error.code : 'PRICE_UNAVAILABLE';
+          return { ok: false, code, message: `${error.message} Aucun changement appliqué.`, oldPlan, offer: error.offer };
+        }
+        return { ok: false, code: 'PRICE_UNAVAILABLE', message: `Prix indisponible : ${(error as Error).message}. Aucun changement appliqué.`, oldPlan };
+      }
+
+      try {
         await deps.stripe().subscriptions.update(
           subscription.id,
-          buildStripeUpdateParams(item.id, priceId, PLAN_CODE_OF[input.newPlan]),
+          buildStripeUpdateParams(item.id, price.priceId, PLAN_CODE_OF[input.newPlan]),
         );
         stripeUpdated = true;
+        const previousPriceId = (item.price as { id?: string })?.id ?? null;
+        const previousAmountCents = (item.price as { unit_amount?: number | null })?.unit_amount ?? null;
+        const operationId = await deps.recordOperation?.({
+          kind: 'admin', accountId: snapshot.id, price, previousPriceId, previousAmountCents,
+          initiator: input.adminId ? `admin:${input.adminId}` : 'admin', stripeReference: subscription.id, status: 'completed',
+        }) ?? null;
+        applied = { priceId: price.priceId, unitAmountCents: price.unitAmountCents, currency: price.currency, priceRevision: price.priceRevision, previousPriceId, previousAmountCents, operationId };
       } catch (error) {
         return {
           ok: false,
@@ -341,5 +400,5 @@ export async function changePlanAsAdmin(
     };
   }
 
-  return { ok: true, oldPlan, newPlan: input.newPlan, stripeUpdated, billingPeriod };
+  return { ok: true, oldPlan, newPlan: input.newPlan, stripeUpdated, billingPeriod, ...(applied ? { price: applied } : {}) };
 }

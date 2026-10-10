@@ -70,13 +70,28 @@ describe('routes des réglages de l’assistant', () => {
     expect((await route.PUT(put({ key: 'history_days', value: 2 }))).status).toBe(400);
   });
 
-  it('modèle preview : demande, refus du même administrateur (403), accord d’un second', async () => {
-    const r = await (await route.PUT(put({ key: 'preview_models_allowed', value: true }))).json();
-    expect(r).toMatchObject({ status: 'PENDING_APPROVAL' });
-    expect((await postDecision(r.requestId, 'approve')).status).toBe(403);
-    h.admin = 2;
-    expect(await (await postDecision(r.requestId, 'approve')).json()).toEqual({ status: 'APPROVED', key: 'preview_models_allowed' });
-    expect(S.effectiveSetting('preview_models_allowed')).toBe(true);
-    expect((await postDecision(r.requestId, 'nimporte')).status).toBe(400);
+  it('réglage à double validation : demande, refus du même administrateur (403), accord d’un second', async () => {
+    // Lot 35B : « Modèles preview en production » supprimé — mécanisme exercé sur un réglage de test.
+    const retirer = S.registerAssistantSettingForTests({
+      key: 'reglage_sensible_test', env: 'VEREBONA_TEST_REGLAGE_SENSIBLE', group: 'interrupteurs', label: 'test',
+      description: 'test', type: 'bool', default: false, doubleValidation: (v) => v === true,
+    });
+    try {
+      const r = await (await route.PUT(put({ key: 'reglage_sensible_test', value: true }))).json();
+      expect(r).toMatchObject({ status: 'PENDING_APPROVAL' });
+      expect((await postDecision(r.requestId, 'approve')).status).toBe(403);
+      h.admin = 2;
+      expect(await (await postDecision(r.requestId, 'approve')).json()).toEqual({ status: 'APPROVED', key: 'reglage_sensible_test' });
+      expect(S.effectiveSetting('reglage_sensible_test')).toBe(true);
+      expect((await postDecision(r.requestId, 'nimporte')).status).toBe(400);
+    } finally {
+      retirer();
+    }
+  });
+
+  it('lot 35B — « preview_models_allowed » n’est plus un réglage (400, absent de la liste)', async () => {
+    expect((await route.PUT(put({ key: 'preview_models_allowed', value: true }))).status).toBe(400);
+    const body = await (await route.GET(new NextRequest('http://x'))).json();
+    expect(body.settings.some((s: { key: string }) => s.key === 'preview_models_allowed')).toBe(false);
   });
 });
