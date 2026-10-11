@@ -39,7 +39,16 @@ const IGNORED_MUTATION_URLS = ['/api/analytics/', '/api/auth/'];
 let lastMutationAt = 0;
 
 export function markAccountDataMutated(at: number = Date.now()): void {
-  if (at > lastMutationAt) lastMutationAt = at;
+  // +0,5 ms : une réponse horodatée dans la MÊME milliseconde que l'écriture
+  // (lecture partie avant, écriture terminée aussitôt) doit être périmée.
+  // Sans ce décalage, `mutatedSince(t)` comparait t > t et servait le cache.
+  const t = at + 0.5;
+  if (t > lastMutationAt) lastMutationAt = t;
+}
+
+/** Instant (ms epoch, demi-milliseconde) de la dernière modification connue. */
+export function lastAccountMutationAt(): number {
+  return lastMutationAt;
 }
 
 /** Vrai si une modification a eu lieu depuis `since` (ms epoch). */

@@ -1,6 +1,6 @@
 import { parseWriteBlocked, notifyWriteBlocked } from '@/lib/write-blocked';
 import { clearLegacyAuthStorage } from '@/lib/auth-migration';
-import { FRESH_HEADER, isDataMutation, markAccountDataMutated, mutatedSince, resetDataFreshness } from './data-freshness';
+import { FRESH_HEADER, isDataMutation, lastAccountMutationAt, markAccountDataMutated, mutatedSince, resetDataFreshness } from './data-freshness';
 import {
   beginSessionTransition,
   getSessionEpoch,
@@ -603,6 +603,9 @@ export const apiClient = {
     };
 
     const startedAt = Date.now();
+    // Une lecture partie APRÈS une écriture reflète cette écriture : son
+    // horodatage logique est le plus tardif des deux (voir data-freshness).
+    const seenAt = Math.max(startedAt, lastAccountMutationAt());
     const deadline = startedAt + policy.totalBudgetMs;
     // Une réponse arrivée après une transition de session n'alimente pas le cache.
     const epochAtStart = getSessionEpoch();
@@ -720,10 +723,10 @@ export const apiClient = {
 
           if (method === 'GET') {
             const path = serverCachedPath(url);
-            if (path) lastServerCachedRead.set(path, Math.max(lastServerCachedRead.get(path) ?? 0, startedAt));
+            if (path) lastServerCachedRead.set(path, Math.max(lastServerCachedRead.get(path) ?? 0, seenAt));
           }
           if (useCache && method === 'GET' && getSessionEpoch() === epochAtStart) {
-            setCachedData(responseCacheKey(url, method, epochAtStart), url, data, startedAt);
+            setCachedData(responseCacheKey(url, method, epochAtStart), url, data, seenAt);
           }
 
           report('ok');

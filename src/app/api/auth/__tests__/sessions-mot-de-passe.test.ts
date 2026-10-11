@@ -17,6 +17,7 @@ vi.mock('@/db', async () => {
     ...actual,
     db: chain,
     isTokenRevoked: async (h: string) => revoked.has(h),
+    getRevokedTokenInfo: async (h: string) => (revoked.has(h) ? { revokedAt: new Date(), reason: 'logout' } : null),
     revokeToken: async (h: string) => { revoked.add(h); },
     revokeTokenOnce: async (h: string) => { if (revoked.has(h)) return false; revoked.add(h); return true; },
     getUserSessionCutoff: async () => cutoff,

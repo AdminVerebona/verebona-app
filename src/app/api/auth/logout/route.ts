@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { verifyToken } from '@/lib/jwt';
+import { verifyRefreshToken } from '@/lib/jwt';
 import { revokeToken, hashToken } from '@/db';
 import { logUserActivity } from '@/lib/audit-logger';
 
@@ -20,13 +20,15 @@ export async function POST(request: NextRequest) {
   let revocation: 'revoked' | 'none' | 'failed' = 'none';
   if (refreshToken) {
     try {
-      const payload = await verifyToken(refreshToken);
+      // Jeton de RENOUVELLEMENT (lot 37, C1) : un jeton d'accès glissé dans
+      // ce cookie n'est pas révoqué à sa place.
+      const payload = await verifyRefreshToken(refreshToken);
       if (payload) {
         const tokenHash = await hashToken(refreshToken);
         const expiresAt = payload.exp
           ? new Date(payload.exp * 1000)
           : new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
-        await revokeToken(tokenHash, payload.userId, expiresAt);
+        await revokeToken(tokenHash, payload.userId, expiresAt, 'logout');
         revocation = 'revoked';
       }
     } catch {

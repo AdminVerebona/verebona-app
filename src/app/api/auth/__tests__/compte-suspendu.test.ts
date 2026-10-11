@@ -30,7 +30,7 @@ vi.mock('@/db', async () => {
   const chain = { select: () => chain, from: () => chain, where: () => chain, limit: async () => [{ ...user, role: userRole }] };
   const loginRow = () => ({
     id: 1, email: 'a@b.fr', first_name: 'A', last_name: 'B', username: null, company: null,
-    password_hash: 'hash', status: 'ACTIVE', is_active: true, role: userRole, plan_type: 'STANDARD', locale: 'fr-FR',
+    password_hash: '$2b$10$e2eFakeHashForUnitTestsOnly000000000000000000000000000', status: 'ACTIVE', is_active: true, role: userRole, plan_type: 'STANDARD', locale: 'fr-FR',
   });
   // `db.$client` : SQL brut du login (tag de gabarit).
   const $client = (strings: TemplateStringsArray) => {
@@ -44,6 +44,7 @@ vi.mock('@/db', async () => {
     ...actual,
     db,
     isTokenRevoked: async () => false,
+    getRevokedTokenInfo: async () => null,
     revokeTokenOnce: async () => true,
     getUserSessionCutoff: async () => null,
   };
@@ -56,13 +57,11 @@ vi.mock('@/services/account-service', () => ({
   },
 }));
 vi.mock('@/lib/audit-logger', () => ({ logUserActivity: () => Promise.resolve() }));
-vi.mock('@/lib/rate-limiter', () => ({
-  checkAuthRateLimit: () => ({ allowed: true, limit: 5, retryAfterSeconds: 0 }),
-  resetAuthRateLimit: () => {},
-  getClientIp: () => '127.0.0.1',
-}));
 vi.mock('bcrypt', () => ({ default: { compare: async () => true, hash: async () => 'hash' } }));
 
+// Limiteur d'authentification (lot 37) : magasin mémoire, aucune base.
+const { AuthRateLimiter, MemoryAuthLimitStore, setAuthRateLimiterForTests } = await import('@/lib/auth/auth-rate-limit');
+setAuthRateLimiterForTests(new AuthRateLimiter(new MemoryAuthLimitStore()));
 const { POST: login } = await import('../login/route');
 const { POST: refresh } = await import('../refresh/route');
 const { generateRefreshToken } = await import('@/lib/jwt');

@@ -1,50 +1,79 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { hasActiveSubscriptionStatus } from '@/lib/billing/subscription-status';
 import { db } from '@/db';
-import bcrypt from 'bcrypt';
-import { generateAccessToken, generateRefreshToken } from '@/lib/jwt';
+import { generateSessionTokens } from '@/lib/jwt';
 import { ApiErrors } from '@/lib/api-errors';
 import type { UserRole, PlanType, UserStatus } from '@/types/domain';
 import { logUserActivity } from '@/lib/audit-logger';
 import { AccountService } from '@/services/account-service';
-import { checkAuthRateLimit, resetAuthRateLimit, getClientIp } from '@/lib/rate-limiter';
+import { getClientIp } from '@/lib/auth/client-ip';
+import {
+  AUTH_LIMITS, authRateLimitEnabled, getAuthRateLimiter, limitKey, normalizeEmail, rateLimitBody,
+} from '@/lib/auth/auth-rate-limit';
+import { comparePasswordConstantTime } from '@/lib/auth/anti-enumeration';
+import { EMAIL_NOT_VERIFIED_MESSAGE, INVALID_CREDENTIALS_MESSAGE } from '@/lib/auth/auth-messages';
 import { userGuideProgress } from '@/db/schema';
 import { eq, and } from 'drizzle-orm';
 import { resolveSessionAccount, accountSuspendedResponse } from '@/lib/auth/account-suspension';
 
+
+function invalidCredentials() {
+  return NextResponse.json(
+    { error: INVALID_CREDENTIALS_MESSAGE, code: 'INVALID_CREDENTIALS', message: INVALID_CREDENTIALS_MESSAGE },
+    { status: 401 },
+  );
+}
+
+function tooManyAttempts(retryAfterSeconds: number) {
+  return NextResponse.json(rateLimitBody(retryAfterSeconds), {
+    status: 429,
+    headers: { 'Retry-After': String(retryAfterSeconds) },
+  });
+}
+
+/**
+ * Connexion e-mail + mot de passe.
+ *
+ * ══════════════════════════════════════════════════════════════════════════
+ * LOT 37 — C3 (énumération) et C4 (limiteur)
+ *
+ * Avant : adresse inconnue → 401 immédiat (sans bcrypt, donc ~60 ms plus
+ * rapide) ; compte non vérifié, suspendu ou supprimé → 403 AVANT le contrôle
+ * du mot de passe. Les deux révélaient l'existence d'un compte.
+ * Désormais :
+ *   1. limiteur partagé (IP réelle ET adresse saisie) : 429 identique pour
+ *      toute adresse, inscrite ou non ;
+ *   2. bcrypt TOUJOURS exécuté (empreinte factice pour une adresse inconnue) ;
+ *   3. adresse inconnue ou mot de passe faux → MÊME réponse (401
+ *      INVALID_CREDENTIALS, même corps), échec compté sur les deux clés ;
+ *   4. mot de passe prouvé → seule la clé de CE compte est remise à zéro ;
+ *      les états du compte (suspendu, supprimé, e-mail non vérifié) ne sont
+ *      dits qu'à ce moment-là (CDC 18 §30 EMAIL_NOT_VERIFIED).
+ * ══════════════════════════════════════════════════════════════════════════
+ */
 export async function POST(request: NextRequest) {
-  // ── Rate limiting : 5 tentatives / IP / 15 minutes (désactivé en dev) ───
-  const ip = getClientIp(request.headers);
-  if (process.env.NODE_ENV !== 'development') {
-    const rl = checkAuthRateLimit(ip);
-    if (!rl.allowed) {
-      return NextResponse.json(
-        {
-          error: 'Too Many Requests',
-          code: 'RATE_LIMIT_EXCEEDED',
-          message: `Trop de tentatives. Réessayez dans ${rl.retryAfterSeconds} secondes.`,
-        },
-        {
-          status: 429,
-          headers: {
-            'Retry-After': String(rl.retryAfterSeconds),
-            'X-RateLimit-Limit': String(rl.limit),
-            'X-RateLimit-Remaining': '0',
-          },
-        }
-      );
-    }
-  }
-  // ─────────────────────────────────────────────────────────────────────────
   let body: { email?: string; password?: string } = {};
   try {
     body = await request.json();
     const { email, password } = body;
 
-    if (!email || !password) {
+    if (!email || !password || typeof email !== 'string' || typeof password !== 'string') {
       return ApiErrors.missingField('email or password');
     }
 
+    const normalized = normalizeEmail(email);
+    const limiter = getAuthRateLimiter();
+    const limitEnabled = authRateLimitEnabled();
+    const ipEntry = { key: limitKey('login', 'ip', getClientIp(request.headers)), policy: AUTH_LIMITS.loginIp };
+    const accountEntry = { key: limitKey('login', 'acct', normalized), policy: AUTH_LIMITS.loginAccount };
+
+    if (limitEnabled) {
+      const decision = await limiter.check([ipEntry, accountEntry]);
+      if (!decision.allowed) return tooManyAttempts(decision.retryAfterSeconds);
+    }
+
+    // Adresse saisie telle quelle (comptes historiques) ou normalisée
+    // (inscription : trim + minuscules) ; l'exacte est préférée.
     const userRows = await db.$client<{
       id: number;
       email: string;
@@ -61,22 +90,33 @@ export async function POST(request: NextRequest) {
     }[]>`
       SELECT id, email, first_name, last_name, username, company, password_hash, status, is_active, role, plan_type, locale
       FROM users
-      WHERE email = ${email}
+      WHERE email IN (${email}, ${normalized})
+      ORDER BY (email = ${email}) DESC
       LIMIT 1
     `;
 
-    if (userRows.length === 0) {
+    const row = userRows[0] ?? null;
+    // Toujours exécuté, même sans compte : temps de réponse indépendant de l'existence.
+    const passwordMatch = await comparePasswordConstantTime(password, row?.password_hash);
+
+    if (!row || !passwordMatch) {
       void logUserActivity({
         activityType: 'LOGIN_FAILED',
-        userId: null,
-        userEmail: email,
-        details: { reason: 'user_not_found', attemptCount: 1, accountStatus: 'not_found' },
+        userId: row?.id ?? null,
+        userEmail: row?.email ?? normalized,
+        details: row
+          ? { reason: 'invalid_password', attemptCount: 1, accountStatus: String(row.status).toLowerCase() }
+          : { reason: 'user_not_found', attemptCount: 1, accountStatus: 'not_found' },
         request,
       });
-      return ApiErrors.invalidCredentials();
+      if (limitEnabled) await limiter.recordFailure([ipEntry, accountEntry]);
+      return invalidCredentials();
     }
 
-    const row = userRows[0];
+    // Mot de passe prouvé : seule la clé de CE compte repart à zéro (jamais
+    // la clé IP, jamais celle d'un autre compte).
+    if (limitEnabled) await limiter.reset(accountEntry.key);
+
     const user = {
       id: row.id,
       email: row.email,
@@ -103,23 +143,6 @@ export async function POST(request: NextRequest) {
       return ApiErrors.accountSuspended('Contactez l\'administration');
     }
 
-    if (!user.isActive) {
-      void logUserActivity({
-        activityType: 'LOGIN_FAILED',
-        userId: user.id,
-        userEmail: user.email,
-        details: { reason: 'email_not_verified', accountStatus: 'pending_verification' },
-        request,
-      });
-      return NextResponse.json(
-        {
-          error: 'Veuillez vérifier votre email avant de vous connecter. Consultez votre boîte de réception.',
-          code: 'EMAIL_NOT_VERIFIED',
-        },
-        { status: 403 }
-      );
-    }
-
     if (user.status === 'DELETED') {
       void logUserActivity({
         activityType: 'LOGIN_FAILED',
@@ -131,17 +154,23 @@ export async function POST(request: NextRequest) {
       return ApiErrors.accountInactive();
     }
 
-    const passwordMatch = await bcrypt.compare(password, user.passwordHash);
-
-    if (!passwordMatch) {
+    if (!user.isActive) {
       void logUserActivity({
         activityType: 'LOGIN_FAILED',
         userId: user.id,
         userEmail: user.email,
-        details: { reason: 'invalid_password', attemptCount: 1, accountStatus: 'active' },
+        details: { reason: 'email_not_verified', accountStatus: 'pending_verification' },
         request,
       });
-      return ApiErrors.invalidCredentials();
+      return NextResponse.json(
+        {
+          error: EMAIL_NOT_VERIFIED_MESSAGE,
+          code: 'EMAIL_NOT_VERIFIED',
+          message: EMAIL_NOT_VERIFIED_MESSAGE,
+          canResendVerification: true,
+        },
+        { status: 403 }
+      );
     }
 
     // CDC BO ACC-A02 : un compte suspendu par l'administration n'ouvre plus de
@@ -191,9 +220,6 @@ export async function POST(request: NextRequest) {
       request,
     });
 
-    // Login réussi → réinitialiser le compteur pour cette IP
-    resetAuthRateLimit(ip);
-
     // Lot 32 (décision PO 6) : la situation du compte a pu changer depuis la
     // dernière visite (échéances passées) — sa prise de parole est préparée
     // tout de suite, durablement. Jamais attendu, jamais bloquant.
@@ -208,26 +234,16 @@ export async function POST(request: NextRequest) {
     // impayé reste connectable sans « abonnement actif » (APP-FUNC-31).
     const isSubscribedOrTrialing = !!defaultAccount && hasActiveSubscriptionStatus(defaultAccount.subscriptionStatus);
 
-    const [accessToken, refreshToken] = await Promise.all([
-      generateAccessToken({
-        id: user.id,
-        email: user.email,
-        role: user.role as UserRole,
-        planType: user.planType as PlanType,
-        status: user.status as UserStatus,
-        currentAccountId: defaultAccount?.id,
-        hasActiveAccount: isSubscribedOrTrialing,
-      }),
-      generateRefreshToken({
-        id: user.id,
-        email: user.email,
-        role: user.role as UserRole,
-        planType: user.planType as PlanType,
-        status: user.status as UserStatus,
-        currentAccountId: defaultAccount?.id,
-        hasActiveAccount: isSubscribedOrTrialing,
-      }),
-    ]);
+    // Nouvelle session : nouvelle famille (`sid`), conservée par les rotations.
+    const { accessToken, refreshToken } = await generateSessionTokens({
+      id: user.id,
+      email: user.email,
+      role: user.role as UserRole,
+      planType: user.planType as PlanType,
+      status: user.status as UserStatus,
+      currentAccountId: defaultAccount?.id,
+      hasActiveAccount: isSubscribedOrTrialing,
+    });
 
     const response = NextResponse.json({
       success: true,

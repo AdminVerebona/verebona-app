@@ -46,6 +46,9 @@ vi.mock('@/db', async () => {
 vi.mock('@/lib/notifications', () => ({ emit: async () => {} }));
 vi.mock('bcrypt', () => ({ default: { hash: async (p: string) => `$hash$${p}` } }));
 
+// Limiteur d'authentification (lot 37) : magasin mémoire, aucune base.
+const { AuthRateLimiter, MemoryAuthLimitStore, setAuthRateLimiterForTests } = await import('@/lib/auth/auth-rate-limit');
+setAuthRateLimiterForTests(new AuthRateLimiter(new MemoryAuthLimitStore()));
 const { POST } = await import('../reset-password/route');
 const { createPasswordResetToken, resetSecret } = await import('@/services/auth/password-reset.service');
 

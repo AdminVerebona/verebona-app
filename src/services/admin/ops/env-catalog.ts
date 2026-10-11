@@ -47,7 +47,7 @@ export interface EnvSectionDoc {
 /** Indispensables en environnement hébergé (absentes : service rendu impossible). */
 export const OBLIGATOIRES: Readonly<Record<string, string>> = {
   DATABASE_URL: 'Connexion PostgreSQL (posée par l’add-on Scalingo). Jamais journalisée.',
-  JWT_SECRET: 'Signature des sessions. Sans elle, le serveur refuse de démarrer en production.',
+  JWT_SECRET: 'Signature des sessions (32 caractères minimum, valeur aléatoire). Absente, trop courte ou égale à une valeur d’exemple : le serveur refuse de démarrer en production.',
   OVH_S3_ENDPOINT: 'Stockage objet : point d’accès.',
   OVH_S3_BUCKET: 'Stockage objet : nom du bucket.',
   OVH_S3_ACCESS_KEY_ID: 'Stockage objet : identifiant d’accès.',

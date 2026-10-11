@@ -4,7 +4,7 @@ import { db } from '@/db';
 import { users } from '@/db/schema';
 import { eq } from 'drizzle-orm';
 import { emailService } from '@/lib/email/email-service';
-import { generateAccessToken, generateRefreshToken } from '@/lib/jwt';
+import { generateSessionTokens } from '@/lib/jwt';
 import { AccountService } from '@/services/account-service';
 import {
   checkEmailVerificationToken,
@@ -122,10 +122,7 @@ export async function GET(request: NextRequest) {
         hasActiveAccount: isSubscribedOrTrialing,
       };
 
-      const [accessToken, refreshToken] = await Promise.all([
-        generateAccessToken(tokenPayload),
-        generateRefreshToken(tokenPayload),
-      ]);
+      const { accessToken, refreshToken } = await generateSessionTokens(tokenPayload);
 
       // ══════════════════════════════════════════════════════════════════
       // AUCUN JETON DANS L'URL — CDC cookies §5.1 et §13

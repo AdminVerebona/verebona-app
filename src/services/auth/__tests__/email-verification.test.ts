@@ -109,7 +109,8 @@ describe('secret de signature', () => {
 
 describe('producteurs et consommateur du lien', () => {
   it('inscription et renvoi n’émettent plus de base64(email:horodatage)', () => {
-    for (const p of ['src/app/api/users/route.ts', 'src/app/api/auth/resend-verification/route.ts']) {
+    // Lot 37 : l'envoi du renvoi vit dans un service exécuté après la réponse neutre.
+    for (const p of ['src/app/api/users/route.ts', 'src/services/auth/resend-verification.service.ts']) {
       const src = read(p);
       expect(src).toMatch(/buildEmailVerificationUrl\(/);
       expect(src).not.toMatch(/Buffer\.from\(tokenData\)/);
@@ -123,7 +124,7 @@ describe('producteurs et consommateur du lien', () => {
     expect(src).toMatch(/consumeEmailVerification\(user\.id\)/);
     expect(src).toMatch(/error=link_outdated/);
     // La session n'est posée qu'après l'activation conditionnelle.
-    expect(src.indexOf('consumeEmailVerification(user.id)')).toBeLessThan(src.indexOf('generateAccessToken('));
+    expect(src.indexOf('consumeEmailVerification(user.id)')).toBeLessThan(src.indexOf('generateSessionTokens('));
   });
 
   it('l’activation n’écrit que sur un compte encore non vérifié (usage unique)', () => {

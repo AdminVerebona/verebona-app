@@ -33,8 +33,11 @@ function LoginForm() {
       ? 'Votre session a expiré. Merci de vous reconnecter.'
       : '',
   );
-  // Code d'erreur conservé pour le diagnostic (non affiché).
-  const [, setErrorCode] = useState('');
+  // Code d'erreur : diagnostic, et proposition de renvoi du lien de
+  // vérification quand le serveur répond EMAIL_NOT_VERIFIED — ce qu'il ne
+  // fait qu'APRÈS la preuve du mot de passe (lot 37, CDC 18 §9.4).
+  const [errorCode, setErrorCode] = useState('');
+  const [resendState, setResendState] = useState<'idle' | 'sending' | 'sent' | 'failed'>('idle');
   const [isLoading, setIsLoading] = useState(false);
 
   // Si une session valide existe deja (cookie HttpOnly), ne pas afficher le
@@ -59,6 +62,7 @@ function LoginForm() {
     e.preventDefault();
     setError('');
     setErrorCode('');
+    setResendState('idle');
     setIsLoading(true);
 
     try {
@@ -109,6 +113,22 @@ function LoginForm() {
       setError('Connexion au serveur impossible. Vérifiez votre réseau puis réessayez.');
       setErrorCode('NETWORK_ERROR');
       setIsLoading(false);
+    }
+  };
+
+  const handleResendVerification = async () => {
+    if (!email) return;
+    setResendState('sending');
+    try {
+      const response = await fetch('/api/auth/resend-verification', {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email }),
+      });
+      setResendState(response.ok ? 'sent' : 'failed');
+    } catch {
+      setResendState('failed');
     }
   };
 
@@ -165,6 +185,29 @@ function LoginForm() {
                 <div className="flex items-start gap-2 text-sm bg-red-500/15 border border-red-500/30 text-red-400 p-3 rounded-md">
                   <span className="shrink-0 mt-0.5">⚠</span>
                   <p>{error}</p>
+                </div>
+              )}
+
+              {errorCode === 'EMAIL_NOT_VERIFIED' && (
+                <div className="space-y-2 text-sm">
+                  {resendState === 'sent' ? (
+                    <p className="text-[color:var(--text-muted)]">
+                      Si un compte non vérifié correspond à cette adresse, un nouveau lien de vérification vient d’être envoyé.
+                    </p>
+                  ) : (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className="w-full"
+                      onClick={handleResendVerification}
+                      disabled={resendState === 'sending'}
+                    >
+                      {resendState === 'sending' ? 'Envoi…' : 'Renvoyer l’e-mail de vérification'}
+                    </Button>
+                  )}
+                  {resendState === 'failed' && (
+                    <p className="text-red-400">L’envoi n’a pas pu être demandé. Réessayez dans quelques minutes.</p>
+                  )}
                 </div>
               )}
 

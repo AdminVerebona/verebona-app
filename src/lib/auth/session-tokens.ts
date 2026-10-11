@@ -5,7 +5,7 @@
  * de passe (session courante conservée sur demande explicite).
  */
 import type { NextResponse } from 'next/server';
-import { generateAccessToken, generateRefreshToken } from '@/lib/jwt';
+import { generateSessionTokens } from '@/lib/jwt';
 import { AccountService } from '@/services/account-service';
 import { hasActiveSubscriptionStatus } from '@/lib/billing/subscription-status';
 import type { UserRole, PlanType, UserStatus } from '@/types/domain';
@@ -32,10 +32,8 @@ export async function issueSessionTokens(user: SessionUser): Promise<{ accessTok
     currentAccountId: defaultAccount?.id,
     hasActiveAccount,
   };
-  const [accessToken, refreshToken] = await Promise.all([
-    generateAccessToken(claims),
-    generateRefreshToken(claims),
-  ]);
+  // Nouvelle famille de session (`sid`) : paire d'une même session (lot 37).
+  const { accessToken, refreshToken } = await generateSessionTokens(claims);
   return { accessToken, refreshToken };
 }
 

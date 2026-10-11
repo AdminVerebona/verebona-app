@@ -6,11 +6,20 @@ import { revokeAllUserSessions } from '@/db';
 import { serverCacheDelete } from '@/lib/server-cache';
 import { sessionCutoffCacheKey } from '@/lib/auth/session-cutoff';
 import { verifyPasswordResetToken, consumePasswordResetToken } from '@/services/auth/password-reset.service';
+import { getClientIp } from '@/lib/auth/client-ip';
+import { AUTH_LIMITS, authRateLimitEnabled, getAuthRateLimiter, limitKey, rateLimitBody } from '@/lib/auth/auth-rate-limit';
 
 /**
  * Route pour réinitialiser le mot de passe avec un token
  * 
  * Body: { token: string, newPassword: string }
+ *
+ * Lot 37 (C4, CDC 18 §33) : limiteur partagé — demandes par IP réelle (429).
+ * Pas de verrou « par compte » ici : le compte n'est désigné que par le
+ * lien lui-même, non authentifié — n'importe qui pourrait fabriquer des
+ * liens faux au nom d'un utilisateur et l'empêcher de réinitialiser son mot
+ * de passe. La signature HMAC-SHA256 du lien rend la force brute vaine ; le
+ * plafond par IP borne le bruit.
  */
 export async function POST(request: NextRequest) {
   try {
@@ -38,6 +47,18 @@ export async function POST(request: NextRequest) {
     if (typeof token !== 'string') {
       return NextResponse.json({ error: 'Token invalide', code: 'INVALID_TOKEN' }, { status: 400 });
     }
+
+    if (authRateLimitEnabled()) {
+      const ip = await getAuthRateLimiter().consume([
+        { key: limitKey('reset', 'ip', getClientIp(request.headers)), policy: AUTH_LIMITS.resetIp },
+      ]);
+      if (!ip.allowed) {
+        return NextResponse.json(rateLimitBody(ip.retryAfterSeconds), {
+          status: 429, headers: { 'Retry-After': String(ip.retryAfterSeconds) },
+        });
+      }
+    }
+
     const check = await verifyPasswordResetToken(token);
     if (!check.ok) {
       return NextResponse.json(

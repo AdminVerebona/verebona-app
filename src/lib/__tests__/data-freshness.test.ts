@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import { describe, expect, it, beforeEach } from 'vitest';
 import {
   isDataMutation,
+  lastAccountMutationAt,
   markAccountDataMutated,
   mutatedSince,
   resetDataFreshness,
@@ -21,7 +22,18 @@ describe('fraîcheur des données', () => {
     expect(mutatedSince(1_000)).toBe(false);
     markAccountDataMutated(2_000);
     expect(mutatedSince(1_000)).toBe(true);
-    expect(mutatedSince(2_000)).toBe(false);
+    // Lot 37 : une lecture horodatée dans la même milliseconde que
+    // l'écriture est considérée périmée (elle a pu partir avant) ; une
+    // lecture de la milliseconde suivante ne l'est pas.
+    expect(mutatedSince(2_000)).toBe(true);
+    expect(mutatedSince(2_001)).toBe(false);
+  });
+
+  it('même milliseconde : lecture puis écriture → cache périmé (flaky CA-01 corrigé)', () => {
+    const lecture = 5_000;
+    markAccountDataMutated(5_000);
+    expect(mutatedSince(lecture)).toBe(true);
+    expect(mutatedSince(Math.max(5_000, lastAccountMutationAt()))).toBe(false);
   });
 
   it('seules les écritures comptent, hors suivi et session', () => {

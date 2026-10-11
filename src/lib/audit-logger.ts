@@ -1,6 +1,7 @@
 import { db } from '@/db';
 import { userActivityLog } from '@/db/schema';
 import { NextRequest } from 'next/server';
+import { getClientIp } from '@/lib/auth/client-ip';
 
 type ActivityType = 'LOGIN_SUCCESS' | 'LOGIN_FAILED' | 'EMAIL_CHANGE' | 'PROFILE_UPDATE' | 'PASSWORD_CHANGE' | 'SERVER_ERROR' |
   // Evenements d'authentification (CDC cookies §13)
@@ -37,11 +38,9 @@ export async function logUserActivity(params: LogActivityParams): Promise<void> 
     let userAgent = customUserAgent;
 
     if (request) {
-      // Try to get real IP from various headers
-      ipAddress = ipAddress || 
-        request.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ||
-        request.headers.get('x-real-ip') ||
-        'unknown';
+      // IP réelle derrière le routeur (lot 37) : la valeur la plus à gauche
+      // de x-forwarded-for est fournie par le client — voir `client-ip.ts`.
+      ipAddress = ipAddress || getClientIp(request.headers);
       
       userAgent = userAgent || request.headers.get('user-agent') || 'unknown';
     }

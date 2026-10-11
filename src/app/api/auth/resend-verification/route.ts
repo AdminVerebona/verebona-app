@@ -1,117 +1,72 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { db } from '@/db';
-import { users } from '@/db/schema';
-import { eq } from 'drizzle-orm';
-import { emailService } from '@/lib/email/email-service';
-import { buildEmailVerificationUrl } from '@/services/auth/email-verification.service';
+import { getClientIp } from '@/lib/auth/client-ip';
+import {
+  AUTH_LIMITS, authRateLimitEnabled, getAuthRateLimiter, limitKey, normalizeEmail, rateLimitBody,
+} from '@/lib/auth/auth-rate-limit';
+import { runDetached } from '@/lib/auth/anti-enumeration';
+import { RESEND_VERIFICATION_NEUTRAL_MESSAGE } from '@/lib/auth/auth-messages';
+import { resendVerification } from '@/services/auth/resend-verification.service';
 
 /**
  * Route pour renvoyer l'email de vérification
- * 
+ *
  * Body: { email: string }
- * 
- * Rate limiting: Max 3 par heure par email (à implémenter si nécessaire)
+ *
+ * ══════════════════════════════════════════════════════════════════════════
+ * LOT 37 — C3 / C4 (CDC 18 §11.2 « renvoi possible avec réponse neutre », §33)
+ *
+ * Avant, trois réponses distinctes : adresse inconnue (« Si cet email
+ * existe… »), compte déjà vérifié (« Ce compte est déjà vérifié »,
+ * `alreadyVerified: true`), compte en attente (« Un nouveau lien… », ou 500
+ * avec la cause de l'échec d'envoi) — et un temps de réponse plus long quand
+ * un e-mail partait. Chacune révélait l'existence et l'état d'un compte.
+ *
+ * Désormais : réponse unique (200, même corps), indépendante du compte ; la
+ * recherche et l'envoi s'exécutent après la réponse. Les causes d'échec
+ * d'envoi (gabarit absent, e-mails désactivés, clé du fournisseur) vont au
+ * journal du serveur — avec le remède — et non plus au client.
+ * Limiteur partagé : 429 par IP ; au-delà du plafond par adresse, réponse
+ * neutre identique sans envoi.
+ * ══════════════════════════════════════════════════════════════════════════
  */
 export async function POST(request: NextRequest) {
+  let email: unknown;
   try {
     const body = await request.json();
-    const { email } = body;
-    
-    if (!email) {
-      return NextResponse.json(
-        { error: 'Email requis' },
-        { status: 400 }
-      );
-    }
-    
-    // Trouver l'utilisateur
-    const userResult = await db
-      .select()
-      .from(users)
-      .where(eq(users.email, email.trim().toLowerCase()))
-      .limit(1);
-    
-    // Ne pas révéler si l'email existe ou non (sécurité)
-    if (userResult.length === 0) {
-      return NextResponse.json({
-        success: true,
-        message: 'Si cet email existe, un nouveau lien de vérification a été envoyé.'
-      });
-    }
-    
-    const user = userResult[0];
-    
-    // Si déjà actif, ne rien faire
-    if (user.isActive) {
-      return NextResponse.json({
-        success: true,
-        message: 'Ce compte est déjà vérifié.',
-        alreadyVerified: true
-      });
-    }
-    
-    // Nouveau lien SIGNÉ (voir `email-verification.service`). C'est aussi
-    // la sortie proposée aux titulaires d'un lien émis avant ce format.
-    const baseUrl = process.env.NEXT_PUBLIC_APP_URL || process.env.APP_URL || 'http://localhost:3000';
-    const verificationUrl = buildEmailVerificationUrl(baseUrl, { id: user.id, email: user.email });
-    
-    // Envoyer email de vérification
-    const result = await emailService.send({
-      templateCode: 'EMAIL_VERIFICATION',
-      to: user.email,
-      variables: {
-        firstName: user.firstName,
-        verificationUrl,
-      },
-      userId: user.id,
-    });
-    
-    if (!result.success) {
-      // ══════════════════════════════════════════════════════════════════
-      // TRANSMETTRE LA CAUSE, PAS SEULEMENT L'ÉCHEC
-      //
-      // Le service la connaît — « Template EMAIL_VERIFICATION not found »,
-      // « Emails disabled » — et la route la jetait. Diagnostiquer imposait
-      // alors d'accéder aux journaux du serveur.
-      //
-      // `cause` est un libellé technique, jamais affiché à l'utilisateur :
-      // l'écran montre `error`. Il est lisible dans l'onglet Réseau, ce qui
-      // suffit à trancher en quelques secondes.
-      // ══════════════════════════════════════════════════════════════════
-      console.error('Failed to send verification email:', result.error);
+    email = body?.email;
+  } catch {
+    email = undefined;
+  }
 
-      const cause = result.error ?? 'cause inconnue';
-      const remede =
-        /not found/i.test(cause)
-          ? "Le gabarit d'email n'existe pas en base. Exécuter l'amorçage : GET /api/cron/seed?only=email-system"
-          : /disabled/i.test(cause)
-            ? "Les emails sont désactivés globalement dans email_settings."
-            : /api key|unauthorized|401/i.test(cause)
-              ? "Clé d'API du fournisseur absente ou refusée. Vérifier RESEND_API_KEY."
-              : undefined;
-
-      return NextResponse.json(
-        {
-          error: 'Erreur lors de l\'envoi de l\'email',
-          code: 'EMAIL_SEND_FAILED',
-          cause,
-          ...(remede ? { remede } : {}),
-        },
-        { status: 500 }
-      );
-    }
-    
-    
-    return NextResponse.json({
-      success: true,
-      message: 'Un nouveau lien de vérification a été envoyé.'
-    });
-    
-  } catch (error) {
-    console.error('Resend verification error:', error);
+  if (!email || typeof email !== 'string') {
     return NextResponse.json(
-      { error: 'Erreur interne du serveur' },
-      { status: 500 }
+      { error: 'Email requis' },
+      { status: 400 }
     );
   }
+
+  try {
+    const normalized = normalizeEmail(email);
+    if (authRateLimitEnabled()) {
+      const limiter = getAuthRateLimiter();
+      const ip = await limiter.consume([{ key: limitKey('resend', 'ip', getClientIp(request.headers)), policy: AUTH_LIMITS.resendIp }]);
+      if (!ip.allowed) {
+        return NextResponse.json(rateLimitBody(ip.retryAfterSeconds), {
+          status: 429, headers: { 'Retry-After': String(ip.retryAfterSeconds) },
+        });
+      }
+      const account = await limiter.consume([{ key: limitKey('resend', 'acct', normalized), policy: AUTH_LIMITS.resendAccount }]);
+      if (!account.allowed) return neutral();
+    }
+
+    runDetached('renvoi de vérification', () => resendVerification(normalized));
+    return neutral();
+  } catch (error) {
+    console.error('Resend verification error:', (error as Error)?.message ?? error);
+    return neutral();
+  }
+}
+
+function neutral() {
+  return NextResponse.json({ success: true, message: RESEND_VERIFICATION_NEUTRAL_MESSAGE });
 }

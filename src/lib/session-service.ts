@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { verifyToken } from './jwt';
+import { verifyAccessToken } from './jwt';
 import { sessionErrorToResponse } from './auth/session-errors';
 import type { PlanType, UserRole, UserStatus } from '@/types/domain';
 import { db } from '@/db';
@@ -66,7 +66,9 @@ export class SessionService {
       throw new Error('AUTH_REQUIRED');
     }
 
-    const payload = await verifyToken(token);
+    // Jeton d'ACCÈS uniquement (lot 37, C1) : un jeton de renouvellement —
+    // en-tête Bearer ou cookie `access_token` — est refusé (INVALID_TOKEN).
+    const payload = await verifyAccessToken(token);
 
     if (!payload) {
       throw new Error('INVALID_TOKEN');

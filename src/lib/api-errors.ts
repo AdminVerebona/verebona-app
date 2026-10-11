@@ -13,6 +13,7 @@ export type ErrorCode =
   | 'INVALID_CREDENTIALS'
   | 'ACCOUNT_SUSPENDED'
   | 'ACCOUNT_INACTIVE'
+  | 'SESSION_REVOKED'
   
   // Authorization errors
   | 'ACCESS_DENIED'

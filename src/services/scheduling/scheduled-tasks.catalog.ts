@@ -49,6 +49,8 @@
  *                                                                 + état partagé (aucun dégel sur échec)
  *   stripe-price-revaluation        toutes les heures             index unique campagne × item,
  *                                                                 clés d'idempotence Stripe
+ *   auth-rate-limits-purge          chaque jour à 5 h 30          suppressions idempotentes
+ *                                                                 (lot 37, limiteur d'authentification)
  *
  * Créneaux fixes hors de la fenêtre de sauvegarde de nuit (1 h – 5 h) et de
  * la plage ambiguë des changements d'heure (2 h – 3 h).
@@ -466,6 +468,20 @@ export const SCHEDULED_TASKS: readonly ScheduledTaskDef[] = [
     run: async (ctx) => {
       const { runRevaluationTask } = await import('@/services/billing/catalog-tasks');
       return runRevaluationTask(ctx);
+    },
+  },
+  {
+    // Lot 37 (C4) : compteurs du limiteur d'authentification partagé
+    // (`auth_rate_limits`, migration 0313) — lignes inactives depuis 48 h et
+    // sans verrou en cours. Suppressions idempotentes.
+    code: 'auth-rate-limits-purge',
+    label: 'Sécurité : purge des compteurs de tentatives de connexion',
+    schedule: { kind: 'daily', at: [5, 30], graceMs: 6 * HOUR },
+    timeoutMs: 5 * MIN,
+    run: async () => {
+      const { purgeAuthRateLimits } = await import('@/lib/auth/auth-rate-limit');
+      const n = await purgeAuthRateLimits();
+      return { note: `${n} compteur(s) de tentatives supprimé(s)` };
     },
   },
 ];

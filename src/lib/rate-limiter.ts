@@ -98,7 +98,10 @@ export const exportGenerationRateLimiter = new RateLimiter({
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Auth rate limiter — sliding window, 5 tentatives / 15 minutes par IP
+// Limiteur en mémoire, 5 tentatives / 15 minutes par clé — conservé pour la
+// clôture de compte (CDC 18 §33 : « conserver le rate limiting existant »).
+// La CONNEXION et les parcours publics d'authentification utilisent depuis le
+// lot 37 le limiteur PARTAGÉ en base (`lib/auth/auth-rate-limit.ts`).
 // ─────────────────────────────────────────────────────────────────────────────
 
 interface SlidingWindowEntry {
@@ -167,12 +170,8 @@ export function resetAuthRateLimit(ip: string): void {
 }
 
 /**
- * Extrait l'IP cliente réelle depuis les headers Next.js (supporte reverse-proxies)
+ * IP cliente réelle derrière le routeur Scalingo (lot 37, C4) : lecture de
+ * droite à gauche de `x-forwarded-for` — voir `lib/auth/client-ip.ts`.
+ * L'ancienne version lisait la valeur la plus à gauche, fournie par le client.
  */
-export function getClientIp(headers: Headers): string {
-  return (
-    headers.get('x-real-ip') ??
-    headers.get('x-forwarded-for')?.split(',')[0].trim() ??
-    'unknown'
-  );
-}
+export { getClientIp } from './auth/client-ip';

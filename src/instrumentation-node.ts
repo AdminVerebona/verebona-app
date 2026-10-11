@@ -34,6 +34,15 @@ export async function registerNode(): Promise<void> {
   //    le lien de vérification ouvre une session. Mieux vaut une mise en
   //    production bloquée qu'une faille silencieuse. Contrôle placé AVANT
   //    toute autre étape : rien ne doit tourner sans lui.
+  //
+  //    Lot 37 (C5) : même règle pour le secret des SESSIONS (JWT_SECRET),
+  //    qui n'était contrôlé nulle part — `lib/jwt.ts` signait silencieusement
+  //    avec la valeur de repli publique. En production (préproduction
+  //    comprise, NODE_ENV=production) : absent, trop court (< 32 caractères)
+  //    ou valeur connue → le démarrage échoue avec un message explicite.
+  //    Le BUILD n'est pas concerné (secret lu à l'appel, jamais à l'import).
+  const { assertJwtSecretConfigured } = await import('@/lib/jwt');
+  assertJwtSecretConfigured();
   const { emailVerificationSecret } = await import('@/services/auth/email-verification.service');
   const { resetSecret } = await import('@/services/auth/password-reset.service');
   emailVerificationSecret();

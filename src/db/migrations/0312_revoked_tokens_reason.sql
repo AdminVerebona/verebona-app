@@ -1,0 +1,16 @@
+-- ──────────────────────────────────────────────────────────────────────────────
+-- Migration 0312 : motif de révocation des jetons de renouvellement (lot 37,
+-- CDC 18 §19.3, faille C2).
+--
+--   rotated : jeton consommé par une rotation — un successeur existe ; sa
+--             réutilisation au-delà de la fenêtre de grâce (30 s) est un
+--             incident de session : toutes les sessions de l'utilisateur
+--             sont révoquées ;
+--   logout  : session terminée par son titulaire — aucun successeur.
+--   NULL    : lignes antérieures au lot 37 (motif inconnu) : refus simple,
+--             comme avant.
+--
+-- Expand seulement (colonne nullable, aucune réécriture de la table) : la
+-- version précédente continue de fonctionner. Idempotente.
+-- ──────────────────────────────────────────────────────────────────────────────
+ALTER TABLE revoked_tokens ADD COLUMN IF NOT EXISTS reason TEXT;

@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
-import { verifyToken, extractToken } from '@/lib/jwt';
+import { verifyAccessToken, extractToken } from '@/lib/jwt';
 import { verifyRequestOrigin, CSRF_REJECTED_MESSAGE } from '@/lib/csrf';
 import {
   ACCOUNT_PENDING_DELETION_CODE,
@@ -11,37 +11,12 @@ import {
   isPendingDeletion,
 } from '@/lib/auth/account-closure';
 
-// ─── Rate limiting in-memory pour le middleware Edge ────────────────────────
-// Sliding window : 5 tentatives / 15 minutes / IP
-// Note : le store est réinitialisé à chaque cold-start Edge ; acceptable pour
-// un déploiement single-region. Pour multi-instance, utiliser Upstash Redis.
-const AUTH_MAX = 5;
-const AUTH_WINDOW_MS = 15 * 60 * 1000;
-const authStore = new Map<string, number[]>();
-
-function checkEdgeRateLimit(key: string): { allowed: boolean; retryAfterSeconds: number; remaining: number; limit: number } {
-  const now = Date.now();
-  const timestamps = (authStore.get(key) ?? []).filter((ts) => now - ts < AUTH_WINDOW_MS);
-
-  if (timestamps.length >= AUTH_MAX) {
-    const retryAfterSeconds = Math.ceil((AUTH_WINDOW_MS - (now - timestamps[0])) / 1000);
-    authStore.set(key, timestamps);
-    return { allowed: false, retryAfterSeconds, remaining: 0, limit: AUTH_MAX };
-  }
-
-  timestamps.push(now);
-  authStore.set(key, timestamps);
-  return { allowed: true, retryAfterSeconds: 0, remaining: AUTH_MAX - timestamps.length, limit: AUTH_MAX };
-}
-
-function getClientIp(headers: Headers): string {
-  return (
-    headers.get('x-real-ip') ??
-    headers.get('x-forwarded-for')?.split(',')[0].trim() ??
-    'unknown'
-  );
-}
-// ────────────────────────────────────────────────────────────────────────────
+// Lot 37 (C4) : plus aucun limiteur en mémoire ici. Le limiteur des parcours
+// d'authentification (connexion, mot de passe oublié, réinitialisation,
+// renvoi de vérification) est PARTAGÉ en base et appliqué par les routes
+// elles-mêmes (`lib/auth/auth-rate-limit.ts`) : le middleware Edge n'a pas
+// accès à PostgreSQL, et un `Map` par processus multipliait le plafond par le
+// nombre d'instances.
 
 /**
  * Middleware pour protéger les routes API (/api/*) avec vérification JWT
@@ -104,7 +79,8 @@ export async function middleware(request: NextRequest) {
     const authHeader = request.headers.get('authorization');
     const cookieHeader = request.headers.get('cookie');
     const token = extractToken(authHeader, cookieHeader);
-    const payload = token ? await verifyToken(token) : null;
+    // Jeton d'ACCÈS uniquement (lot 37, C1).
+    const payload = token ? await verifyAccessToken(token) : null;
 
     if (!payload) {
       // Jeton d'accès absent ou expiré, mais session renouvelable : la page
@@ -255,49 +231,6 @@ export async function middleware(request: NextRequest) {
       pathname.startsWith('/api/transmission/');
 
     if (publicRoutes.includes(pathname) || isPublicPrefix || isCronRoute) {
-      // Rate limiting sur les endpoints d'authentification (anti brute-force)
-      // `/api/auth/login` n'est PAS limité ici : sa route applique déjà la
-      // même limite (5 / 15 min / IP) et la remet à zéro après une connexion
-      // réussie. Compter aussi ici — sans remise à zéro — bloquerait des
-      // utilisateurs légitimes partageant une IP (foyer, bureau) après
-      // quelques connexions réussies.
-      const authRateLimitedRoutes = [
-        '/api/auth/forgot-password',
-        '/api/auth/reset-password',
-        '/api/auth/resend-verification',
-      ];
-
-      if (authRateLimitedRoutes.includes(pathname) && request.method === 'POST' && process.env.NODE_ENV !== 'development') {
-        const ip = getClientIp(request.headers);
-        // Compteur par route : les trois parcours ne partagent pas un même
-        // quota (une inscription suivie d'un renvoi d'e-mail ne doit pas
-        // épuiser la réinitialisation du mot de passe).
-        const rl = checkEdgeRateLimit(`${pathname}:${ip}`);
-
-        if (!rl.allowed) {
-          return NextResponse.json(
-            {
-              error: 'Too Many Requests',
-              code: 'RATE_LIMIT_EXCEEDED',
-              message: `Trop de tentatives. Réessayez dans ${rl.retryAfterSeconds} secondes.`,
-            },
-            {
-              status: 429,
-              headers: {
-                'Retry-After': String(rl.retryAfterSeconds),
-                'X-RateLimit-Limit': String(rl.limit),
-                'X-RateLimit-Remaining': '0',
-              },
-            }
-          );
-        }
-
-        const response = NextResponse.next();
-        response.headers.set('X-RateLimit-Limit', String(rl.limit));
-        response.headers.set('X-RateLimit-Remaining', String(rl.remaining));
-        return response;
-      }
-
       return NextResponse.next();
     }
 
@@ -318,8 +251,9 @@ export async function middleware(request: NextRequest) {
       );
     }
 
-    // Verify token
-    const payload = await verifyToken(token);
+    // Verify token — jeton d'ACCÈS uniquement (lot 37, C1) : un jeton de
+    // renouvellement présenté en Bearer ou en cookie `access_token` est refusé.
+    const payload = await verifyAccessToken(token);
     if (!payload) {
       return NextResponse.json(
         {

@@ -427,6 +427,8 @@ export async function ensureRevokedTokensTable(): Promise<void> {
         expires_at TIMESTAMPTZ NOT NULL
       )
     `;
+    // Lot 37 (migration 0312) : motif de révocation (`rotated` | `logout`).
+    await client`ALTER TABLE revoked_tokens ADD COLUMN IF NOT EXISTS reason TEXT`;
     await client`
       CREATE INDEX IF NOT EXISTS revoked_tokens_token_hash_idx ON revoked_tokens (token_hash)
     `;
@@ -450,11 +452,20 @@ export async function ensureRevokedTokensTable(): Promise<void> {
   }
 }
 
-export async function revokeToken(tokenHash: string, userId: number, expiresAt: Date): Promise<void> {
+/**
+ * Motif d'une révocation de jeton de renouvellement (lot 37, C2) :
+ *   · `rotated` : consommé par une rotation — un successeur existe ; sa
+ *     réutilisation hors fenêtre de grâce est un incident de session ;
+ *   · `logout`  : session terminée par son titulaire — aucun successeur.
+ * `null` : révocation antérieure au lot 37 (motif inconnu).
+ */
+export type TokenRevocationReason = 'rotated' | 'logout';
+
+export async function revokeToken(tokenHash: string, userId: number, expiresAt: Date, reason: TokenRevocationReason = 'logout'): Promise<void> {
   await ensureRevokedTokensTable();
   await client`
-    INSERT INTO revoked_tokens (token_hash, user_id, expires_at)
-    VALUES (${tokenHash}, ${userId}, ${expiresAt.toISOString()})
+    INSERT INTO revoked_tokens (token_hash, user_id, expires_at, reason)
+    VALUES (${tokenHash}, ${userId}, ${expiresAt.toISOString()}, ${reason})
     ON CONFLICT (token_hash) DO NOTHING
   `;
   // Purge expired tokens opportunistically (keep table lean)
@@ -469,11 +480,13 @@ export async function revokeToken(tokenHash: string, userId: number, expiresAt: 
  * produire une seconde session. Lève si la base ne répond pas (la rotation
  * ne doit alors pas être annoncée comme réussie).
  */
-export async function revokeTokenOnce(tokenHash: string, userId: number, expiresAt: Date): Promise<boolean> {
+export async function revokeTokenOnce(tokenHash: string, userId: number, expiresAt: Date, reason: TokenRevocationReason = 'rotated'): Promise<boolean> {
   await ensureRevokedTokensTable();
+  // `revoked_at` à l'horloge de l'APPLICATION : la fenêtre de grâce des
+  // renouvellements concurrents (lot 37) est mesurée avec la même horloge.
   const rows = await client<{ id: number }[]>`
-    INSERT INTO revoked_tokens (token_hash, user_id, expires_at)
-    VALUES (${tokenHash}, ${userId}, ${expiresAt.toISOString()})
+    INSERT INTO revoked_tokens (token_hash, user_id, expires_at, reason, revoked_at)
+    VALUES (${tokenHash}, ${userId}, ${expiresAt.toISOString()}, ${reason}, ${new Date().toISOString()})
     ON CONFLICT (token_hash) DO NOTHING
     RETURNING id
   `;
@@ -481,11 +494,18 @@ export async function revokeTokenOnce(tokenHash: string, userId: number, expires
 }
 
 export async function isTokenRevoked(tokenHash: string): Promise<boolean> {
+  return (await getRevokedTokenInfo(tokenHash)) !== null;
+}
+
+/** Révocation d'un jeton : instant et motif, ou `null` s'il n'est pas révoqué. */
+export async function getRevokedTokenInfo(tokenHash: string): Promise<{ revokedAt: Date; reason: TokenRevocationReason | null } | null> {
   await ensureRevokedTokensTable();
-  const rows = await client<{ id: number }[]>`
-    SELECT id FROM revoked_tokens WHERE token_hash = ${tokenHash} LIMIT 1
+  const rows = await client<{ revoked_at: Date; reason: string | null }[]>`
+    SELECT revoked_at, reason FROM revoked_tokens WHERE token_hash = ${tokenHash} LIMIT 1
   `;
-  return rows.length > 0;
+  if (!rows[0]) return null;
+  const r = rows[0].reason;
+  return { revokedAt: new Date(rows[0].revoked_at), reason: r === 'rotated' || r === 'logout' ? r : null };
 }
 
 /**

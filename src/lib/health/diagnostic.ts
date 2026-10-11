@@ -99,6 +99,19 @@ export interface HealthCheckResult {
      * indisponible → repli sur la mémoire de l'instance (`warning`, statut
      * global inchangé : l'assistant reste servi). État en mémoire seulement.
      */
+    /**
+     * Lot 37 (C5) : secret des sessions (`JWT_SECRET`). `error` : absent, trop
+     * court ou valeur connue — en production le serveur ne démarre pas ; ce
+     * contrôle le rend visible partout ailleurs (et confirme la conformité
+     * en production). Jamais la valeur, seulement le code du problème.
+     */
+    jwtSecret?: { status: 'ok' | 'error'; problem?: 'missing' | 'too_short' | 'known_default'; production: boolean };
+    /**
+     * Lot 37 (C4) : limiteur de tentatives d'authentification partagé.
+     * `memory-fallback` : base indisponible, repli sur la mémoire de
+     * l'instance (avertissement, statut global inchangé).
+     */
+    authRateLimiter?: { status: 'ok' | 'warning'; mode: string; degradedSince: string | null; lastError: string | null };
     /** Diagnostic autorisé : pool PostgreSQL du processus (lot 24, APP-PERF-01). */
     dbPool?: { status: 'ok'; role: string; max: number; maxSource: string } & import('@/db/pool-metrics').PoolMetricsSnapshot;
     assistantRateLimiter?: { status: 'ok' | 'warning'; mode: string; degradedSince: string | null; lastError: string | null };
@@ -227,6 +240,30 @@ export async function buildHealthReport(opts: { detailed: boolean }): Promise<{ 
     /* contrôle indicatif */
   }
 
+  // Check 8 (lot 37, C5) : secret des sessions. Code seul, jamais la valeur.
+  try {
+    const { jwtSecretProblem } = await import('@/lib/jwt');
+    const problem = jwtSecretProblem();
+    // Nature du problème réservée au diagnostic autorisé (sonde publique : statut seul).
+    result.checks.jwtSecret = problem
+      ? { status: 'error', ...(detailed ? { problem } : {}), production: process.env.NODE_ENV === 'production' }
+      : { status: 'ok', production: process.env.NODE_ENV === 'production' };
+  } catch {
+    /* contrôle indicatif */
+  }
+
+  // Check 9 (lot 37, C4) : limiteur d'authentification partagé, état mémoire.
+  try {
+    const { authRateLimiterHealth } = await import('@/lib/auth/auth-rate-limit');
+    const h = authRateLimiterHealth();
+    result.checks.authRateLimiter = {
+      status: h.mode === 'memory-fallback' ? 'warning' : 'ok', mode: h.mode, degradedSince: h.degradedSince,
+      lastError: detailed ? h.lastError : null,
+    };
+  } catch {
+    /* contrôle indicatif */
+  }
+
   // Statut global
   if (result.checks.database.status === 'error') {
     result.status = 'down';
@@ -235,6 +272,10 @@ export async function buildHealthReport(opts: { detailed: boolean }): Promise<{ 
     result.status = 'degraded';
   } else if (result.checks.s3.status === 'error' && (s3.configured || s3.misconfigured)) {
     // Stockage configuré (même partiellement) mais en échec : dégradé.
+    result.status = 'degraded';
+  } else if (result.checks.jwtSecret?.status === 'error' && result.checks.jwtSecret.production) {
+    // Secret de session non conforme en production (normalement impossible :
+    // le démarrage est refusé) : jamais `ok`.
     result.status = 'degraded';
   } else if (migrationFailures.length > 0 || schema.phase === 'degraded') {
     // Index optionnels manquants : signalé, service rendu.
