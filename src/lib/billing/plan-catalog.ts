@@ -138,9 +138,13 @@ export function parseDisplayedRevision(value: unknown): string | null {
  */
 export function planFromMetadataValue(value: string | null | undefined): PlanCode | null {
   if (!value) return null;
-  const v = value.trim().toLowerCase();
+  // Lot 36B : variantes d'écriture rencontrées dans des comptes réels
+  // (`Verebona-Premium-Duo`, `premium duo`, `duo`) — reconnues pour ne pas
+  // conclure à tort à une contradiction de métadonnées.
+  const v = value.trim().toLowerCase().replace(/[\s-]+/g, '_');
   const stripped = v.startsWith('verebona_') ? v.slice('verebona_'.length) : v;
-  return isPlanCode(stripped) ? stripped : null;
+  const plan = stripped === 'duo' || stripped === 'premiumduo' ? 'premium_duo' : stripped;
+  return isPlanCode(plan) ? plan : null;
 }
 
 // ─── Affichage (LK-32) ───────────────────────────────────────────────────────

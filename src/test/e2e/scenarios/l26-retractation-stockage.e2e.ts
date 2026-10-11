@@ -52,7 +52,10 @@ scenario('L26-RS', 'Rétractation (fenêtre de 15 jours) et espace de stockage',
   });
 
   it('lot 26 — AC3 : 15 jours après la souscription → bloc retiré, confirmation refusée (409), rien d’enregistré', async () => {
-    const acc = await abonne(15);
+    // J+20 et non J+15 : un délai de 14 jours qui finit un samedi, un
+    // dimanche ou un jour férié est prorogé au jour ouvrable suivant (la
+    // fenêtre peut donc rester ouverte à J+15 selon le jour de la semaine).
+    const acc = await abonne(20);
     const body = await eligibilite();
     expect(body.offerWithdrawal).toBe(false);
     expect(body.reason).toBe('DEADLINE_PASSED');

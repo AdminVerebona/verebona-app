@@ -32,7 +32,10 @@ const asset = (id: number, name: string, extra: Partial<HomeAsset> = {}): HomeAs
 const noop = () => {};
 
 describe('Mes biens', () => {
-  it('bento (lot 8) : 1 grande carte, 3 tuiles, « Tous les biens » ; L32-10 — plus de pastille d’action', () => {
+  // Lot 36 : le bento du lot 8 (1 grande carte + 3 tuiles + « Tous les
+  // biens ») est remplacé par le carrousel de la maquette 2a, dans l'ordre
+  // « récemment consultés » reçu (plus de promotion du premier bien avec photo).
+  it('lot 36 — carrousel dans l’ordre reçu, carte bordée, lien « Tous les biens » / « Tous » ; L32-10 — plus de pastille d’action', () => {
     const html = renderToStaticMarkup(h(HomeAssets, {
       onAddAsset: noop,
       assets: [
@@ -41,16 +44,16 @@ describe('Mes biens', () => {
         asset(3, 'Vélo Cargo'), asset(4, 'Planche de surf'), asset(5, 'Cinquième'),
       ],
     }));
-    expect(html).toContain('Récemment consultés');
-    expect(html).toContain('row-span-2');
-    expect(html).toContain('grid-cols-3');
-    expect(html.indexOf('Appartement Lyon')).toBeLessThan(html.indexOf('Ferrari Testarossa'));
-    expect(html).toContain('Tous les biens');
+    expect(html).not.toContain('row-span-2');
+    expect(html).toContain('aria-label="Mes biens"');
+    expect(html.indexOf('Ferrari Testarossa')).toBeLessThan(html.indexOf('Appartement Lyon'));
+    expect(html).toContain('Cinquième');
+    expect(html).toMatch(/href="\/assets"[^>]*><span class="md:hidden">Tous<\/span><span class="hidden md:inline">Tous les biens<\/span>/);
     // L32-10 : la pastille « N action(s) à faire » ne menait nulle part.
     expect(html).not.toContain('action à faire');
     expect(html).not.toContain('actions à faire');
-    expect(html).not.toContain('Cinquième');
     expect(html).toContain('https://s3/lyon.jpg');
+    expect(html).toContain('aria-label="Ferrari Testarossa, 4 documents"');
   });
 
   it('compte vide : amorce et trois tuiles en pointillés', () => {
@@ -107,14 +110,16 @@ describe('Prochaines échéances', () => {
 });
 
 describe('Documents récents', () => {
-  it('tuiles : statut, titre, bien, type · date', () => {
+  // Lot 36 : vignettes du carrousel (nom, bien · date) ; le type reste en infobulle.
+  it('vignettes : statut, titre, bien · date ; lien « Tous »', () => {
     const html = renderToStaticMarkup(h(RecentDocuments, {
       onUpload: noop,
       docs: [{ id: 1, title: 'Carte grise', assetId: 3, assetName: 'Ferrari Testarossa', typeLabel: 'Administratif', date: '2026-09-02', status: 'En analyse', tone: 'slate' }],
     }));
-    expect(html).toContain('Tous les documents');
+    expect(html).toMatch(/href="\/documents"[^>]*>Tous</);
     expect(html).toContain('En analyse');
-    expect(html).toContain('Administratif · 02/09/2026');
+    expect(html).toContain('Ferrari Testarossa · 02/09/2026');
+    expect(html).toContain('title="Carte grise · Administratif"');
   });
 
   it('compte vide : zone de dépôt', () => {

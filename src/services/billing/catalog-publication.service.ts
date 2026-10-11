@@ -39,12 +39,14 @@ import type Stripe from 'stripe';
 import {
   CATALOG_COUPLES,
   coupleKey,
+  planFromMetadataValue,
   type CatalogCouple,
   type PlanCode,
 } from '@/lib/billing/plan-catalog';
 import {
   catalogVersionOf,
   groupByLookupKey,
+  productIdOf,
   validateSalePrice,
   type CatalogSnapshot,
   type ResolvedPrice,
@@ -63,6 +65,7 @@ import { versionRowFrom } from './price-history.service';
 import { PLAN_PRODUCT_DEFINITIONS, PRICING_MANIFEST, manifestRevision, validateManifest } from './pricing-manifest';
 import { syncUpgradePortal } from './portal-configuration.service';
 import { getExpectedStripeMode } from '@/lib/stripe-client';
+import { legacyPriceRefs } from './legacy-price-env';
 
 /** Écritures Stripe : mode attendu explicite exigé (LK-88). */
 function expectedModeIssue(d: CatalogDeps): string | null {
@@ -106,16 +109,73 @@ export function diffManifest(manifest: Manifest, snapshot: CatalogSnapshot | nul
 
 /** Délai laissé à toutes les instances pour exécuter le nouveau code avant une publication automatique (LK-97). */
 export const AUTO_PUBLISH_DELAY_MS = 20 * 60_000;
+/** Amorçage en échec alors que rien n'est vendu : reprise automatique au plus toutes les 15 min. */
+export const BOOTSTRAP_RETRY_MS = 15 * 60_000;
+
+export interface AutoPublishDecision {
+  publish: boolean;
+  reason: string;
+  /** Amorçage seulement : `resume` reprend une exécution en échec / interrompue. */
+  trigger?: 'auto' | 'resume';
+}
+
+/** Nombre de couples vendables de la révision active. */
+export function sellableCount(state: CatalogStateRow | null): number {
+  return Object.values(state?.activeSnapshot?.entries ?? {}).filter(Boolean).length;
+}
+
+/**
+ * PREMIÈRE PUBLICATION (amorçage, lot 36B) — pure.
+ *
+ * Constat préprod : prix historiques créés à la main (sans clé), variables
+ * STRIPE_PRICE_* absentes ou sous d'autres noms → aucune clé initialisable →
+ * révision active VIDE → « Tarif indisponible » partout ; et la publication
+ * automatique attendait une reprise historique qui ne pouvait pas aboutir
+ * (abonnés de test à des prix non rapprochables) : blocage définitif.
+ *
+ * Quand le manifeste n'a JAMAIS été publié dans ce contexte et que la
+ * révision active n'est pas une grille complète vendable, la grille du code
+ * est publiée sans attendre la reprise historique :
+ *   - rien de vendu (0/6) : immédiatement — il n'y a ni ancienne grille à
+ *     protéger, ni abonné dont le prix changerait (aucune campagne de
+ *     revalorisation : elle ne vise que les couples dont un montant
+ *     PRÉCÉDENT existe) ; un échec est repris automatiquement (≤ 15 min) ;
+ *   - grille partielle (1 à 5/6) : après le délai d'homogénéité des
+ *     instances (20 min) ; un échec reste une décision BO (LK-27).
+ * Les prix historiques et les abonnements existants ne sont jamais modifiés ;
+ * seuls des prix NEUFS sont créés et les clés leur sont transférées.
+ * `null` : la règle normale s'applique.
+ */
+export function bootstrapDecision(state: CatalogStateRow | null, candidate: string, now: Date, lastRunFinishedAt: Date | null = null): AutoPublishDecision | null {
+  if (state?.publishedManifestRevision) return null;
+  const n = sellableCount(state);
+  if (n >= CATALOG_COUPLES.length) return null;
+  if (state?.publicationError === `ABANDONED:${candidate}`) return { publish: false, reason: 'ABANDONED' };
+  const st = state?.publicationState ?? 'ACTIVE';
+  if (st !== 'ACTIVE') {
+    if (n > 0) return null;
+    if (lastRunFinishedAt && now.getTime() - lastRunFinishedAt.getTime() < BOOTSTRAP_RETRY_MS) return { publish: false, reason: 'BOOTSTRAP_RETRY_WAIT' };
+    return { publish: true, reason: 'BOOTSTRAP_RESUME', trigger: 'resume' };
+  }
+  if (n > 0) {
+    if (state?.candidateManifestRevision !== candidate || !state.candidateFirstSeenAt) return { publish: false, reason: 'CANDIDATE_NOT_SEEN' };
+    if (now.getTime() - state.candidateFirstSeenAt.getTime() < AUTO_PUBLISH_DELAY_MS) return { publish: false, reason: 'WAITING_INSTANCES' };
+  }
+  return { publish: true, reason: 'BOOTSTRAP', trigger: 'auto' };
+}
 
 /**
  * Publication AUTOMATIQUE permise ? (LK-102, LK-97, D3 avant D7, LK-27). Pure.
+ * Amorçage d'abord (voir `bootstrapDecision`), sinon :
  *   - manifeste du code différent du dernier publié ;
  *   - code en service depuis au moins 20 min (instances homogènes) ;
  *   - reprise historique terminée ;
  *   - révision active présente ;
  *   - aucun échec de publication non traité.
  */
-export function shouldAutoPublish(state: CatalogStateRow | null, candidate: string, now: Date): { publish: boolean; reason: string } {
+export function shouldAutoPublish(state: CatalogStateRow | null, candidate: string, now: Date, lastRunFinishedAt: Date | null = null): AutoPublishDecision {
+  const boot = bootstrapDecision(state, candidate, now, lastRunFinishedAt);
+  if (boot) return boot;
   if (!state?.activeSnapshot) return { publish: false, reason: 'NO_ACTIVE_REVISION' };
   if (state.publishedManifestRevision === candidate) return { publish: false, reason: 'ALREADY_PUBLISHED' };
   if (state.publicationState === 'FAILED') return { publish: false, reason: 'PREVIOUS_FAILURE' };
@@ -125,6 +185,31 @@ export function shouldAutoPublish(state: CatalogStateRow | null, candidate: stri
   if (state.candidateManifestRevision !== candidate || !state.candidateFirstSeenAt) return { publish: false, reason: 'CANDIDATE_NOT_SEEN' };
   if (now.getTime() - state.candidateFirstSeenAt.getTime() < AUTO_PUBLISH_DELAY_MS) return { publish: false, reason: 'WAITING_INSTANCES' };
   return { publish: true, reason: 'OK' };
+}
+
+/**
+ * Exécution automatique (tâches `stripe-catalog-sync` et
+ * `stripe-catalog-publish`) : décision, puis publication sous bail partagé.
+ * Ne lève pas.
+ */
+export async function runAutoPublication(
+  d: CatalogDeps = catalogDeps(),
+  opts: { actor?: string; onlyBootstrap?: boolean } = {},
+): Promise<{ decision: AutoPublishDecision; result?: PublishResult }> {
+  const actor = opts.actor ?? 'task:stripe-catalog-publish';
+  const context = d.context();
+  if (!context.mode) return { decision: { publish: false, reason: 'NO_STRIPE_KEY' } };
+  const state = await d.store.getState(context.catalogContext);
+  const lastRun = state?.publicationRunId ? await d.store.getRun(state.publicationRunId).catch(() => null) : null;
+  const decision = opts.onlyBootstrap
+    ? bootstrapDecision(state, manifestRevision(), d.now(), lastRun?.finishedAt ?? null) ?? { publish: false, reason: 'NOT_BOOTSTRAP' }
+    : shouldAutoPublish(state, manifestRevision(), d.now(), lastRun?.finishedAt ?? null);
+  if (!decision.publish) return { decision };
+  const result = await publishCodeCatalog({ trigger: decision.trigger ?? 'auto', actor }, d);
+  if (decision.reason.startsWith('BOOTSTRAP')) {
+    console.info(JSON.stringify({ evt: 'billing.catalog.bootstrap_publication', context: context.catalogContext, decision: decision.reason, status: result.status, reason: 'reason' in result ? result.reason : null }));
+  }
+  return { decision, result };
 }
 
 export interface PublishOptions {
@@ -143,25 +228,59 @@ export type PublishResult =
   | { status: 'published'; runId: number; version: string; created: Record<string, string>; plan: DiffEntry[] }
   | { status: 'failed'; runId: number; reason: string; step: string };
 
-/** Produit de vente de l'offre ; provisionné seulement s'il n'existe vraiment aucun produit (LK-03, LK-80). */
+/**
+ * Produit de vente de l'offre (LK-03, LK-80) : produit déjà approuvé ; à
+ * défaut (lot 36B), produit des prix configurés par l'exploitant
+ * (STRIPE_PRICE_*, V2 puis legacy) — preuve d'identité, jamais le nom ; puis
+ * produit portant la métadonnée du seed (`verebona_<offre>`) ; sinon créé.
+ * Plusieurs candidats sans preuve départageante : anomalie, jamais le premier.
+ */
 async function ensureSaleProduct(d: CatalogDeps, ctx: string, plan: PlanCode, livemode: boolean): Promise<{ ok: true; productId: string } | { ok: false; reason: string }> {
   const approved = await d.store.listApprovedProducts(ctx);
   const sale = approved.find((a) => a.planCode === plan && a.role === 'sale');
   if (sale) return { ok: true, productId: sale.stripeProductId };
   const stripe = d.stripe();
-  const found = await stripe.products.search({ query: `metadata['verebona_plan']:'verebona_${plan}' AND active:'true'`, limit: 10 });
-  if (found.data.length > 1) return { ok: false, reason: `PRODUCT_AMBIGUOUS:${plan}` };
-  let productId = found.data[0]?.id ?? null;
-  if (!productId) {
-    const created = await stripe.products.create({
-      name: PLAN_PRODUCT_DEFINITIONS[plan].name,
-      description: PLAN_PRODUCT_DEFINITIONS[plan].description,
-      metadata: { verebona_plan: `verebona_${plan}` },
-    }, { idempotencyKey: `vb-product:${ctx}:${plan}` });
-    productId = created.id;
+  // `null` : produit déjà approuvé pour une AUTRE offre (produit partagé) → option suivante.
+  const approve = async (productId: string, source: string) => {
+    const r = await d.store.approveProduct(ctx, { planCode: plan, stripeProductId: productId, role: 'sale', source, livemode });
+    return r === 'conflict' ? null : { ok: true as const, productId };
+  };
+
+  // Preuve configurée : produits des prix STRIPE_PRICE_* de cette offre.
+  const configured: Record<'v2' | 'legacy', Set<string>> = { v2: new Set(), legacy: new Set() };
+  for (const ref of legacyPriceRefs(d.env).filter((r) => r.planCode === plan)) {
+    try {
+      const p = await stripe.prices.retrieve(ref.priceId, { expand: ['product'] });
+      const product = typeof p.product === 'object' && p.product ? (p.product as Stripe.Product) : null;
+      const productId = productIdOf(p);
+      if (!productId || p.livemode !== livemode || (product && (product.active === false || ('deleted' in product && product.deleted)))) continue;
+      const other = planFromMetadataValue(product?.metadata?.verebona_plan);
+      if (other && other !== plan) continue;
+      configured[ref.generation].add(productId);
+    } catch { /* identifiant obsolète : sans effet */ }
   }
-  const r = await d.store.approveProduct(ctx, { planCode: plan, stripeProductId: productId, role: 'sale', source: 'publication:provision', livemode });
-  return r === 'conflict' ? { ok: false, reason: `PRODUCT_CONFLICT:${plan}` } : { ok: true, productId };
+  for (const gen of ['v2', 'legacy'] as const) {
+    if (configured[gen].size !== 1) continue;
+    const r = await approve([...configured[gen]][0], `publication:legacy-env:${gen}`);
+    if (r) return r;
+  }
+
+  const found = await stripe.products.search({ query: `metadata['verebona_plan']:'verebona_${plan}' AND active:'true'`, limit: 10 });
+  if (found.data.length > 1) {
+    const proven = found.data.filter((p) => configured.v2.has(p.id) || configured.legacy.has(p.id));
+    const r = proven.length === 1 ? await approve(proven[0].id, 'publication:search+legacy-env') : null;
+    return r ?? { ok: false, reason: `PRODUCT_AMBIGUOUS:${plan}` };
+  }
+  if (found.data[0]) {
+    const r = await approve(found.data[0].id, 'publication:product-metadata');
+    if (r) return r;
+  }
+  const created = await stripe.products.create({
+    name: PLAN_PRODUCT_DEFINITIONS[plan].name,
+    description: PLAN_PRODUCT_DEFINITIONS[plan].description,
+    metadata: { verebona_plan: `verebona_${plan}` },
+  }, { idempotencyKey: `vb-product:${ctx}:${plan}` });
+  return (await approve(created.id, 'publication:provision')) ?? { ok: false, reason: `PRODUCT_CONFLICT:${plan}` };
 }
 
 /** Candidat déjà créé pour cette révision et ce couple (reprise sans doublon). */
@@ -315,13 +434,24 @@ async function doPublish(opts: PublishOptions, manifest: Manifest, d: CatalogDep
 
     // Portail : union ancienne + nouvelle révision, validée AVANT activation.
     const oldEntries = Object.values(state.activeSnapshot.entries).filter(Boolean) as ResolvedPrice[];
-    await syncUpgradePortal({ reason: `publication:${runId}`, snapshot, persist: false, extraPrices: oldEntries.map((e) => ({ productId: e.productId, priceId: e.priceId })) }, d);
-    await step('portal-union');
+    try {
+      await syncUpgradePortal({ reason: `publication:${runId}`, snapshot, persist: false, extraPrices: oldEntries.map((e) => ({ productId: e.productId, priceId: e.priceId })) }, d);
+      await step('portal-union');
+    } catch (e) {
+      // Amorçage (lot 36B) : aucune ancienne révision vendue, donc aucune
+      // bascule de portail à sécuriser — le portail (montée en gamme) est
+      // réaligné plus tard (au clic, à la synchronisation) et signalé ; il ne
+      // bloque pas l'affichage des offres ni Checkout. Sinon : bloquant (EX-012).
+      if (oldEntries.length > 0) throw e;
+      await step('portal-union', { deferred: true, error: (e as Error).message });
+      await d.anomalies.report({ fingerprint: catalogFingerprint(context, 'portal'), title: 'Catalogue Stripe : portail de montée en gamme non configuré (première publication)', detail: { runId, error: (e as Error).message } }).catch(() => undefined);
+    }
 
     // ── Activation (courte fenêtre BILLING_CATALOG_UPDATING) ──
     await d.store.setPublication(context, { state: 'READY', runId, error: null, activatingUntil: new Date(d.now().getTime() + 60_000) });
     await d.store.activateSnapshot({
-      context, stripeAccountId: state.stripeAccountId, livemode, snapshot, keepPrevious: true,
+      // Une révision précédente VIDE (amorçage) n'est pas un point de retour arrière.
+      context, stripeAccountId: state.stripeAccountId, livemode, snapshot, keepPrevious: sellableCount(state) > 0,
       publishedManifestRevision: rev, versions, publicationState: 'ACTIVE', publicationRunId: runId,
     });
     forgetCatalogMemory();

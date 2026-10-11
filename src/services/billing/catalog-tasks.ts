@@ -7,7 +7,12 @@
  *                                      projections (≤ 5 min de fraîcheur,
  *                                      filet de sécurité des webhooks), et
  *                                      exécute la reprise historique tant
- *                                      qu'elle n'a pas abouti ;
+ *                                      qu'elle n'a pas abouti ; AMORÇAGE
+ *                                      (lot 36B) : si aucune grille complète
+ *                                      n'est vendable et que le manifeste n'a
+ *                                      jamais été publié, première
+ *                                      publication immédiate (sans attendre
+ *                                      la reprise) ;
  *   stripe-catalog-publish     /5 min  publie la grille du CODE quand elle
  *                                      diffère de la dernière publiée, après
  *                                      reprise terminée et 20 min de code
@@ -29,6 +34,15 @@ export async function runCatalogSyncTask(ctx: TaskRunContext): Promise<TaskRunRe
   await d.store.ensureState(context.catalogContext);
   await d.store.setCandidate(context.catalogContext, manifestRevision(), d.now());
   const r = await refreshCatalog({ source: `task:${ctx.trigger}` }, d);
+  // Lot 36B — amorçage : aucune grille complète vendable et manifeste jamais
+  // publié → première publication de la grille du code SANS attendre la
+  // reprise historique (voir `bootstrapDecision`). Bail partagé.
+  const { runAutoPublication } = await import('./catalog-publication.service');
+  const boot = await runAutoPublication(d, { actor: 'task:stripe-catalog-sync', onlyBootstrap: true })
+    .catch((e: Error) => ({ decision: { publish: false, reason: `ERROR:${e.message}` }, result: undefined }));
+  const bootNote = boot.decision.publish
+    ? ` ; première publication : ${boot.result?.status ?? '?'}${boot.result && 'reason' in boot.result ? ` (${boot.result.reason})` : ''}`
+    : '';
   const state = await d.store.getState(context.catalogContext);
   let backfill = 'terminée';
   if (!state?.backfillCompletedAt) {
@@ -36,21 +50,18 @@ export async function runCatalogSyncTask(ctx: TaskRunContext): Promise<TaskRunRe
     const b = await runPriceBackfill({ trigger: `task:${ctx.trigger}`, deadline: Math.min(ctx.deadline, Date.now() + 8 * 60_000) }, d);
     backfill = 'skipped' in b ? b.skipped : b.completed ? 'terminée' : `${b.blocking} référence(s) bloquante(s)`;
   }
-  const note = `catalogue : ${r.status}${r.reason ? ` (${r.reason})` : ''} ; reprise historique : ${backfill}`;
+  const note = `catalogue : ${r.status}${r.reason ? ` (${r.reason})` : ''}${bootNote} ; reprise historique : ${backfill}`;
   return r.status === 'failed' ? { error: r.reason ?? 'échec', note } : { note };
 }
 
 export async function runCatalogPublishTask(): Promise<TaskRunResult> {
   const { catalogDeps } = await import('./price-catalog.service');
-  const { manifestRevision } = await import('./pricing-manifest');
-  const { publishCodeCatalog, shouldAutoPublish } = await import('./catalog-publication.service');
+  const { runAutoPublication } = await import('./catalog-publication.service');
   const d = catalogDeps();
   const context = d.context();
   if (!context.mode) return { note: 'STRIPE_SECRET_KEY absente : rien à faire' };
-  const state = await d.store.getState(context.catalogContext);
-  const decision = shouldAutoPublish(state, manifestRevision(), d.now());
-  if (!decision.publish) return { note: `aucune publication (${decision.reason})` };
-  const r = await publishCodeCatalog({ trigger: 'auto', actor: 'task:stripe-catalog-publish' }, d);
+  const { decision, result: r } = await runAutoPublication(d, { actor: 'task:stripe-catalog-publish' });
+  if (!decision.publish || !r) return { note: `aucune publication (${decision.reason})` };
   if (r.status === 'failed') return { error: `publication en échec (${r.step}) : ancienne grille conservée`, note: r.reason };
   return { note: `publication : ${r.status}${'reason' in r ? ` (${r.reason})` : ''}` };
 }

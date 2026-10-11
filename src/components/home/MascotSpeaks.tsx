@@ -2,6 +2,12 @@
 /**
  * La mascotte parle — Direction D v2 §3.2 (desktop), §4.2 (mobile), §12ter.
  *
+ * Lot 36 (maquette 2a/2b « Fil encadré ») : seule la MISE EN PAGE change —
+ * mascotte à gauche, date + « Bonjour, … » + bulle (texte et actions) à
+ * droite, pastilles de suggestions sous la bulle ; mobile : en-tête compact,
+ * bulle pleine largeur. Moteur, actions, choix, DO_FIRST et télémétrie
+ * inchangés.
+ *
  * ══════════════════════════════════════════════════════════════════════════
  * LE MOTEUR DE LA MASCOTTE RESTE LA SOURCE
  *
@@ -40,7 +46,7 @@ import { ArrowRight, CalendarDays, CircleAlert, Clock, Download, FileText, Plus 
 import { apiClient } from '@/lib/api-client';
 import { openDrawer } from '@/lib/drawers';
 import { openToProcessTarget } from '@/lib/to-process-target';
-import { greetingDateLong, greetingDateShort, greetingWord } from '@/lib/mascot-greeting';
+import { greetingDateLong, greetingWord } from '@/lib/mascot-greeting';
 import { useWriteGuard } from '@/contexts/WriteGuardContext';
 import type { MascotAction, MascotParagraph, MascotPresentation, MascotTile, MascotTodoItem } from '@/services/home/mascot/types';
 import {
@@ -87,6 +93,10 @@ const TILE_TONES: Record<MascotTile['tone'], { bg: string; fg: string }> = {
   blue: { bg: 'var(--wash-blue)', fg: 'var(--on-blue)' },
   green: { bg: 'var(--wash-green)', fg: 'var(--on-green)' },
 };
+
+/** Fond et bord de la bulle (maquette 2a/2b) : lavis d'accent sur le fond de page, dans les deux thèmes. */
+const BUBBLE_BG = 'color-mix(in srgb, var(--accent) 9%, var(--bg-page))';
+const BUBBLE_EDGE = 'color-mix(in srgb, var(--accent) 30%, transparent)';
 
 /** Nature de la réponse locale, pour la pose de la mascotte du champ. */
 function kindOf(p: MascotParagraph): AnswerKind {
@@ -249,46 +259,50 @@ export function MascotSpeaks({ greetingName, empty, onCreateAsset, onUploadDocum
   const items = homeItems(presentation, empty);
   const suggestions = homeSuggestions(presentation, empty, pageSuggestions);
 
+  // Lot 36 (maquette 2a/2b « Fil encadré ») : mascotte à gauche ; à droite
+  // la date, « Bonjour, … », la bulle (texte et actions), puis les
+  // suggestions en pastilles, hors de la bulle. Mobile : mascotte plus
+  // petite avec la date et la salutation à côté, bulle et pastilles en
+  // pleine largeur dessous. Une seule grille pour les deux.
   return (
-    <section aria-label="Message de Verebona" className="flex flex-col md:flex-row md:items-end md:gap-1.5">
-      {/* Mascotte : halo bleu, ombre au sol, immobile (§12bis) */}
-      <div className="relative ml-1 flex h-[88px] w-[96px] flex-shrink-0 items-end justify-center md:ml-0 md:h-[156px] md:w-[156px]">
-        <span className="absolute -inset-1.5 rounded-full md:-inset-2.5" style={{ background: 'radial-gradient(closest-side, rgba(59,130,246,.32), rgba(59,130,246,0))' }} aria-hidden />
-        <span className="absolute bottom-0.5 left-[38px] right-[38px] hidden h-3 rounded-full bg-black/50 blur-[6px] md:block" aria-hidden />
-        <MascotPose pose={pose} size={136} alt={homePoseLabel(pose)} priority className="relative hidden md:block" style={{ filter: 'drop-shadow(0 24px 34px rgba(4,10,26,.6))' }} />
-        <MascotPose pose={pose} size={86} alt={homePoseLabel(pose)} priority className="relative md:hidden" style={{ filter: 'drop-shadow(0 14px 20px rgba(4,10,26,.6))' }} />
+    <section aria-label="Message de Verebona" className="grid grid-cols-[72px_minmax(0,1fr)] items-center gap-x-3.5 gap-y-3 md:grid-cols-[112px_minmax(0,1fr)] md:items-start md:gap-x-7 md:gap-y-3.5">
+      {/* Mascotte immobile (§12bis), ombre portée de la maquette */}
+      <div className="flex-shrink-0 self-start md:row-span-3">
+        <MascotPose pose={pose} size={112} alt={homePoseLabel(pose)} priority className="hidden md:block" style={{ filter: 'drop-shadow(0 20px 36px rgba(4,10,26,.45))' }} />
+        <MascotPose pose={pose} size={72} alt={homePoseLabel(pose)} priority className="md:hidden" style={{ filter: 'drop-shadow(0 14px 24px rgba(4,10,26,.45))' }} />
       </div>
 
-      {/* Bulle : coin resserré vers la mascotte (inférieur gauche desktop, supérieur gauche mobile) */}
+      <div className="flex min-w-0 flex-col gap-1 md:gap-3.5 md:pt-1.5">
+        <span className="text-[12px] text-[color:var(--text-muted)] md:text-[13px]">{greetingDateLong(now)}</span>
+        <h1 className="m-0 text-[22px] font-semibold leading-tight tracking-[-.02em] text-[color:var(--text-primary)] md:text-[26px]">
+          {greetingWord(now)}, {greetingName}
+        </h1>
+      </div>
+
+      {/* Bulle : coin resserré et pointe vers la mascotte (gauche desktop, haut mobile) */}
       <div
-        className="mt-1.5 flex min-w-0 flex-1 flex-col gap-3.5 rounded-[8px_26px_26px_26px] border px-[18px] pb-4 pt-[18px] shadow-relief-lg md:mt-0 md:gap-[18px] md:rounded-[28px_28px_28px_8px] md:px-[30px] md:pb-6 md:pt-[26px]"
-        style={{
-          background: 'linear-gradient(135deg, var(--bg-card), color-mix(in srgb, var(--accent) 7%, var(--bg-card)))',
-          borderColor: 'rgba(59,130,246,.28)',
-        }}
+        data-mascot-bubble
+        className="relative col-span-2 mt-1 flex min-w-0 flex-col gap-3 rounded-[20px] rounded-tl-[6px] border px-4 py-3.5 md:col-span-1 md:col-start-2 md:mt-0 md:px-[22px] md:py-[18px]"
+        style={{ background: BUBBLE_BG, borderColor: BUBBLE_EDGE }}
       >
-        <div className="flex flex-col gap-2 md:gap-2.5">
-          <div className="flex items-baseline justify-between gap-2.5 md:justify-start md:gap-3.5">
-            <h1 className="m-0 font-display text-[28px] font-semibold leading-[1.05] tracking-[-.03em] text-[color:var(--text-primary)] md:text-[36px]">
-              {greetingWord(now)}, {greetingName}
-            </h1>
-            <span className="text-[12px] text-[color:var(--text-muted)] md:hidden">{greetingDateShort(now)}</span>
-            <span className="hidden text-[13px] text-[color:var(--text-muted)] md:inline">{greetingDateLong(now)}</span>
-          </div>
-          <div aria-live="polite" aria-busy={loading}>
-            {loading ? (
-              <div className="space-y-2 py-1" role="status" aria-label="Chargement du message">
-                <div className="h-3.5 w-11/12 animate-pulse rounded bg-[color:var(--border-subtle)]" />
-                <div className="h-3.5 w-8/12 animate-pulse rounded bg-[color:var(--border-subtle)]" />
-              </div>
-            ) : (
-              <p className="m-0 max-w-[760px] text-[15px] leading-normal text-[color:var(--text-primary)] [text-wrap:pretty] md:text-[17px]">
-                {splitHighlights(speech.text, speech.highlights).map((part, i) => (part.strong
-                  ? <strong key={i} className="font-semibold">{part.text}</strong>
-                  : <span key={i}>{part.text}</span>))}
-              </p>
-            )}
-          </div>
+        <span
+          aria-hidden
+          className="absolute left-7 top-[-7px] h-3 w-3 rotate-45 border-l border-t md:left-[-7px] md:top-[26px] md:border-b md:border-t-0"
+          style={{ background: BUBBLE_BG, borderColor: BUBBLE_EDGE }}
+        />
+        <div aria-live="polite" aria-busy={loading}>
+          {loading ? (
+            <div className="space-y-2 py-1" role="status" aria-label="Chargement du message">
+              <div className="h-3.5 w-11/12 animate-pulse rounded bg-[color:var(--border-subtle)]" />
+              <div className="h-3.5 w-8/12 animate-pulse rounded bg-[color:var(--border-subtle)]" />
+            </div>
+          ) : (
+            <p className="m-0 text-[15px] leading-[1.55] text-[color:var(--text-primary)] [text-wrap:pretty] md:text-[16px] md:leading-[1.6]">
+              {splitHighlights(speech.text, speech.highlights).map((part, i) => (part.strong
+                ? <strong key={i} className="font-semibold">{part.text}</strong>
+                : <span key={i}>{part.text}</span>))}
+            </p>
+          )}
         </div>
 
         {/* Niveau 2 : un seul composant pour toutes les actions (MASC2). */}
@@ -315,27 +329,27 @@ export function MascotSpeaks({ greetingName, empty, onCreateAsset, onUploadDocum
             ))}
           </div>
         )}
-
-        {suggestions.length > 0 && (
-          <div className="-mx-[18px] flex items-center gap-2 overflow-x-auto border-t border-[color:var(--border-subtle)] px-[18px] pt-3 vb-no-scrollbar md:mx-0 md:flex-wrap md:overflow-visible md:px-0" aria-label="Ou demandez-moi">
-            <span className="mr-0.5 hidden text-[12.5px] text-[color:var(--text-muted)] md:inline">Ou demandez-moi :</span>
-            {suggestions.map((s) => (
-              <button
-                key={s.label}
-                type="button"
-                onClick={() => {
-                  // Question du moteur : même parcours (et même télémétrie) qu'avant.
-                  if (s.secondary) { void run(s.secondary.action, s.secondary, 'secondary'); return; }
-                  void space?.ask(s.label);
-                }}
-                className="h-9 flex-shrink-0 whitespace-nowrap rounded-full border border-[color:var(--border-subtle)] px-3.5 text-[13px] text-[color:var(--text-muted)] transition-colors duration-150 hover:border-[color:var(--border)] hover:text-[color:var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--accent)] md:h-8"
-              >
-                {s.label}
-              </button>
-            ))}
-          </div>
-        )}
       </div>
+
+      {/* « Ou demandez-moi » : pastilles sous la bulle ; défilement horizontal sur mobile. */}
+      {suggestions.length > 0 && (
+        <div className="col-span-2 -mx-4 flex items-center gap-2 overflow-x-auto px-4 vb-no-scrollbar md:col-span-1 md:col-start-2 md:mx-0 md:mt-1 md:flex-wrap md:overflow-visible md:px-0" aria-label="Ou demandez-moi">
+          {suggestions.map((s) => (
+            <button
+              key={s.label}
+              type="button"
+              onClick={() => {
+                // Question du moteur : même parcours (et même télémétrie) qu'avant.
+                if (s.secondary) { void run(s.secondary.action, s.secondary, 'secondary'); return; }
+                void space?.ask(s.label);
+              }}
+              className="h-8 flex-shrink-0 whitespace-nowrap rounded-full border border-[color:var(--border)] px-3.5 text-[13px] text-[color:var(--text-primary)] transition-colors duration-150 hover:border-[color:var(--accent)] hover:text-[color:var(--accent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--accent)]"
+            >
+              {s.label}
+            </button>
+          ))}
+        </div>
+      )}
 
       <TodoChoicesDialog
         item={choices}

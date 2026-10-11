@@ -44,6 +44,10 @@ async function q<T = Row>(text: string, params: unknown[] = []): Promise<T[]> {
 const idOf = (v: string | { id: string } | null | undefined): string | null => (!v ? null : typeof v === 'string' ? v : v.id);
 const toIso = (unix: number | null | undefined) => (typeof unix === 'number' && unix > 0 ? new Date(unix * 1000).toISOString() : null);
 
+/** Statuts d'un abonnement « en cours » (référence bloquante si non rapprochée). */
+export const CURRENT_STRIPE_STATUSES: ReadonlySet<string> = new Set(['active', 'trialing', 'past_due', 'unpaid', 'incomplete', 'paused']);
+const CURRENT_STATUSES_SQL = [...CURRENT_STRIPE_STATUSES].map((s) => `'${s}'`).join(',');
+
 export interface BackfillReport {
   references: number;
   recognized: number;
@@ -85,7 +89,13 @@ export async function runPriceBackfill(
     for (const r of await q<{ a: string | null; b: string | null; c: string | null }>(
       `SELECT stripe_price_id AS a, stripe_price_id_monthly AS b, stripe_price_id_yearly AS c FROM subscription_plans`,
     ).catch(() => [])) { add(r.a); add(r.b); add(r.c); }
-    for (const r of await q<{ id: string }>(`SELECT DISTINCT stripe_price_id AS id FROM account_subscriptions WHERE stripe_price_id IS NOT NULL`).catch(() => [])) add(r.id, true);
+    // Lot 36B : seuls les abonnements EN COURS bloquent la reprise (LK-83 :
+    // « abonnement ou changement en cours ») ; un abonnement terminé à un
+    // prix inconnu reste inventorié (bilan) sans bloquer la publication.
+    for (const r of await q<{ id: string; current: boolean }>(
+      `SELECT stripe_price_id AS id, bool_or(status IN (${CURRENT_STATUSES_SQL})) AS current
+         FROM account_subscriptions WHERE stripe_price_id IS NOT NULL GROUP BY stripe_price_id`,
+    ).catch(() => [])) add(r.id, Boolean(r.current));
     for (const r of await q<{ id: string }>(`SELECT DISTINCT stripe_price_id AS id FROM invoices WHERE stripe_price_id IS NOT NULL`).catch(() => [])) add(r.id);
 
     const localSubs = new Map<string, { accountId: number; scheduledPlan: string | null; scheduledPeriod: string | null; scheduledPrice: string | null }>();
@@ -100,7 +110,7 @@ export async function runPriceBackfill(
     for await (const s of stripe.subscriptions.list({ status: 'all', limit: 100 })) {
       if (opts.deadline && Date.now() > opts.deadline) break;
       subs.push(s);
-      for (const it of s.items.data) add(it.price?.id, localSubs.has(s.id));
+      for (const it of s.items.data) add(it.price?.id, localSubs.has(s.id) && CURRENT_STRIPE_STATUSES.has(s.status));
     }
 
     // ── Reconnaissance ──

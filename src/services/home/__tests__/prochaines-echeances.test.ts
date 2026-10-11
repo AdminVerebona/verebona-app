@@ -58,12 +58,16 @@ describe('dérivation', () => {
     expect(svc).toMatch(/eq\(agendaItems\.accountId, accountId\),\s*or\(isNull\(agendaItems\.manualStatus\)/);
   });
 
-  it('accueil : Mes biens, puis la paire côte à côte selon la place disponible (empilée sinon, échéances d’abord)', () => {
+  // Lot 36 (maquette 2a/2b « Fil encadré ») : plus de paire côte à côte ni
+  // d'ordre CSS qui diffère selon la largeur — une seule colonne, le même
+  // ordre partout (remplace l'assertion du lot 8c sur `@container`).
+  it('accueil (lot 36) : Mes biens, Prochaines échéances, Ce que j’ai fait, Documents récents — une colonne, même ordre desktop et mobile', () => {
     const page = readFileSync(join(process.cwd(), 'src/app/(dashboard)/accueil/page.tsx'), 'utf8');
-    expect(page.indexOf('<HomeAssets')).toBeLessThan(page.indexOf('<VerebonaWork'));
-    expect(page.indexOf('<VerebonaWork')).toBeLessThan(page.indexOf('<RecentDocuments'));
-    expect(page).toMatch(/@container/);
-    expect(page).toMatch(/@min-\[1040px\]:grid-cols-2/);
-    expect(page).toMatch(/<UpcomingEvents className="order-1 @min-\[1040px\]:order-none"/);
+    const i = (s: string) => page.indexOf(s);
+    expect(i('<HomeAssets')).toBeGreaterThan(-1);
+    expect(i('<HomeAssets')).toBeLessThan(i('<UpcomingEvents'));
+    expect(i('<UpcomingEvents')).toBeLessThan(i('<VerebonaWork'));
+    expect(i('<VerebonaWork')).toBeLessThan(i('<RecentDocuments'));
+    expect(page).not.toMatch(/@container|@min-\[1040px\]|order-1|order-2/);
   });
 });

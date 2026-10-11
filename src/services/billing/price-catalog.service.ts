@@ -56,6 +56,7 @@ import {
 } from './catalog-types';
 import { pgCatalogStore, type CatalogStateRow, type CatalogStore, type PriceVersionRow } from './catalog-store';
 import { legacyPriceRefs, legacyV2PriceFor } from './legacy-price-env';
+import type { PublicCatalogReason } from '@/lib/billing/catalog-reasons';
 import { versionRowFrom, isStripeTransient } from './price-history.service';
 
 // ─── Dépendances (injectables pour les tests) ────────────────────────────────
@@ -263,6 +264,13 @@ export interface PublicBillingCatalog {
   purchasable: boolean;
   offers: PublicOffer[];
   plans: PlanQuota[];
+  /**
+   * Lot 36B : pourquoi la grille n'est pas complète (code non sensible,
+   * `null` si les six offres sont disponibles). Jamais un identifiant Stripe.
+   */
+  reason: PublicCatalogReason | null;
+  /** Offres indisponibles et raison stable par offre (ex. `KEY_MISSING`). */
+  unavailable: Array<{ plan_code: PlanCode; billing_period: BillingPeriod; reason: string }>;
 }
 
 async function planQuotas(): Promise<PlanQuota[]> {
@@ -281,10 +289,32 @@ async function planQuotas(): Promise<PlanQuota[]> {
   }
 }
 
+const IN_PROGRESS_STATES = new Set(['PREPARED', 'VALIDATING', 'PUBLISHING', 'READY', 'RECOVERING']);
+
+/** Raison (catalogue) d'une grille incomplète — pure (lot 36B). */
+export function publicCatalogReason(state: CatalogStateRow | null, offers: number, now: Date, stripeConfigured = true): PublicCatalogReason | null {
+  if (!stripeConfigured) return 'STRIPE_NOT_CONFIGURED';
+  if (offers >= CATALOG_COUPLES.length && !isActivating(state, now)) return null;
+  if (isActivating(state, now) || (state && IN_PROGRESS_STATES.has(state.publicationState))) return 'PUBLICATION_IN_PROGRESS';
+  if (!state?.activeSnapshot) return state?.lastSyncError ? 'SYNC_FAILED' : 'NOT_INITIALIZED';
+  if (state.publicationState === 'FAILED') return 'PUBLICATION_FAILED';
+  if (!state.publishedManifestRevision) return 'PUBLICATION_PENDING';
+  return 'PRICES_UNAVAILABLE';
+}
+
 /** Construction pure de la réponse publique (aucun identifiant de compte, aucun secret). */
-export function buildPublicCatalog(state: CatalogStateRow | null, now: Date, plans: PlanQuota[] = []): PublicBillingCatalog {
+export function buildPublicCatalog(state: CatalogStateRow | null, now: Date, plans: PlanQuota[] = [], opts: { stripeConfigured?: boolean } = {}): PublicBillingCatalog {
   const snap = state?.activeSnapshot ?? null;
-  if (!snap) return { catalog_version: null, verified_at: null, status: 'unavailable', purchasable: false, offers: [], plans };
+  const unavailable = CATALOG_COUPLES.flatMap((c) => {
+    const key = coupleKey(c.planCode, c.billingPeriod);
+    return snap?.entries[key] ? [] : [{ plan_code: c.planCode, billing_period: c.billingPeriod, reason: snap?.unavailable?.[key] ?? 'NO_ACTIVE_REVISION' }];
+  });
+  if (!snap) {
+    return {
+      catalog_version: null, verified_at: null, status: 'unavailable', purchasable: false, offers: [], plans,
+      reason: publicCatalogReason(state, 0, now, opts.stripeConfigured ?? true), unavailable,
+    };
+  }
   const offers: PublicOffer[] = CATALOG_COUPLES.flatMap((c) => {
     const e = snap.entries[coupleKey(c.planCode, c.billingPeriod)];
     return e ? [toPublicOffer(e, true)] : [];
@@ -299,13 +329,15 @@ export function buildPublicCatalog(state: CatalogStateRow | null, now: Date, pla
     purchasable: !updating && !(stale && state?.lastSyncError) && offers.length > 0,
     offers,
     plans,
+    reason: publicCatalogReason(state, offers.length, now, opts.stripeConfigured ?? true),
+    unavailable,
   };
 }
 
 /** Catalogue public, mutualisé (lecture d'état partagé ; aucun appel Stripe par visiteur). */
 export async function getPublicCatalog(d: CatalogDeps = catalogDeps()): Promise<PublicBillingCatalog> {
   const state = await activeState(d, false);
-  return buildPublicCatalog(state, d.now(), await planQuotas());
+  return buildPublicCatalog(state, d.now(), await planQuotas(), { stripeConfigured: Boolean(d.context().mode) });
 }
 
 // ─── Synchronisation (refreshCatalog) ────────────────────────────────────────
@@ -438,18 +470,23 @@ async function doRefresh(opts: { source: string }, d: CatalogDeps, ctx: StripeCa
     const entries: CatalogSnapshot['entries'] = {};
     const unavailable: CatalogSnapshot['unavailable'] = {};
     const versions: PriceVersionRow[] = [];
+    // Clés absentes de la liste « vendable » : sont-elles portées par un prix
+    // archivé / non vendable ? (une requête, lot 36B — raison précise au BO)
+    const missingKeys = CATALOG_COUPLES.filter((c) => !(groups.get(c.lookupKey)?.length)).map((c) => c.lookupKey);
+    const holders = missingKeys.length ? await listKeyHolders(stripe, missingKeys) : new Map<string, Stripe.Price>();
 
     for (const couple of CATALOG_COUPLES) {
       const key = coupleKey(couple.planCode, couple.billingPeriod);
       let candidates = groups.get(couple.lookupKey) ?? [];
 
       // Amorçage (LK-83) : clé absente → initialisée sur le prix V2 configuré,
-      // après vérification. Ne vole jamais une clé portée par un autre prix.
+      // après vérification. Ne vole jamais la clé d'un prix ACTIF ; une clé
+      // restée sur un prix ARCHIVÉ (non vendu) lui est transférée.
       if (candidates.length === 0) {
-        const initialized = await initializeKeyFromLegacy(d, stripe, couple, legacyProducts);
-        if (initialized) candidates = [initialized];
+        const init = await initializeKeyFromLegacy(d, stripe, couple, legacyProducts, holders.get(couple.lookupKey) ?? null);
+        if ('price' in init) candidates = [init.price];
+        else { unavailable[key] = init.reason; continue; }
       }
-      if (candidates.length === 0) { unavailable[key] = 'KEY_MISSING'; continue; }
       if (candidates.length > 1) { unavailable[key] = 'KEY_CONFLICT'; continue; }
       const price = candidates[0];
       const saleProduct = await saleProductFor(d, ctx.catalogContext, couple.planCode, price, approved, legacyProducts, accountId);
@@ -515,39 +552,79 @@ async function doRefresh(opts: { source: string }, d: CatalogDeps, ctx: StripeCa
   }
 }
 
+/** Porteurs ACTUELS de clés (actifs ou archivés, toute devise / type) — une requête. */
+async function listKeyHolders(stripe: Stripe, keys: string[]): Promise<Map<string, Stripe.Price>> {
+  const out = new Map<string, Stripe.Price>();
+  try {
+    const res = await stripe.prices.list({ lookup_keys: keys, limit: 100 });
+    for (const p of res.data) if (p.lookup_key && !out.has(p.lookup_key)) out.set(p.lookup_key, p);
+  } catch { /* diagnostic seulement */ }
+  return out;
+}
+
+export function isStripePermissionError(error: unknown): boolean {
+  const e = error as { type?: string; statusCode?: number; rawType?: string };
+  return e?.type === 'StripePermissionError' || e?.statusCode === 403 || e?.rawType === 'permission_error';
+}
+
+export type KeyInitResult = { price: Stripe.Price } | { reason: string };
+
 /**
  * Clé stable absente : l'initialiser sur le prix V2 configuré par
  * l'exploitant (STRIPE_PRICE_<OFFRE>_<PÉRIODE>) — double lecture de
  * transition, avant suppression des variables. Vérifie le prix (actif,
- * cadence, devise) ; refuse si le prix porte déjà une autre clé.
+ * cadence, devise, mode) ; refuse si le prix porte déjà une autre clé ou si
+ * la clé est portée par un autre prix ACTIF. Renvoie la raison stable en cas
+ * d'impossibilité (affichée au BO, lot 36B).
  */
 async function initializeKeyFromLegacy(
   d: CatalogDeps,
   stripe: Stripe,
   couple: CatalogCouple,
   legacyProducts: Map<string, PlanCode>,
-): Promise<Stripe.Price | null> {
+  holder: Stripe.Price | null,
+): Promise<KeyInitResult> {
   const priceId = legacyV2PriceFor(couple.planCode, couple.billingPeriod, d.env);
-  if (!priceId) return null;
+  const holderReason = holder ? (holder.active ? 'KEY_ON_INVALID_PRICE' : 'KEY_ON_ARCHIVED_PRICE') : 'KEY_MISSING';
+  if (!priceId) return { reason: holderReason };
+  let price: Stripe.Price;
   try {
-    const price = await stripe.prices.retrieve(priceId, { expand: ['product'] });
-    if (!price.active || price.recurring?.interval !== couple.interval || (price.currency ?? '').toLowerCase() !== 'eur') return null;
-    if (price.lookup_key && price.lookup_key !== couple.lookupKey) {
-      await d.anomalies.report({
-        fingerprint: catalogFingerprint(d.context().catalogContext, 'key-init', couple.lookupKey),
-        title: `Catalogue Stripe : ${priceId} porte déjà la clé ${price.lookup_key}`,
-        detail: { lookupKey: couple.lookupKey, priceId, existing: price.lookup_key },
-      });
-      return null;
-    }
-    legacyProducts.set(productIdOf(price) ?? '', couple.planCode);
-    if (price.lookup_key === couple.lookupKey) return price;
-    const updated = await stripe.prices.update(priceId, { lookup_key: couple.lookupKey, expand: ['product'] });
-    console.info(JSON.stringify({ evt: 'billing.catalog.key_initialized', lookupKey: couple.lookupKey, priceId }));
-    return updated;
+    price = await stripe.prices.retrieve(priceId, { expand: ['product'] });
+  } catch (e) {
+    if (isStripePermissionError(e)) return { reason: 'STRIPE_PERMISSION' };
+    if (isStripeTransient(e)) throw e;
+    return { reason: 'LEGACY_PRICE_NOT_FOUND' };
+  }
+  const livemode = d.context().mode === 'live';
+  if (!price.active || price.recurring?.interval !== couple.interval || (price.recurring?.interval_count ?? 1) !== 1
+    || (price.currency ?? '').toLowerCase() !== 'eur' || price.livemode !== livemode) {
+    return { reason: 'LEGACY_PRICE_INVALID' };
+  }
+  if (price.lookup_key && price.lookup_key !== couple.lookupKey) {
+    await d.anomalies.report({
+      fingerprint: catalogFingerprint(d.context().catalogContext, 'key-init', couple.lookupKey),
+      title: `Catalogue Stripe : ${priceId} porte déjà la clé ${price.lookup_key}`,
+      detail: { lookupKey: couple.lookupKey, priceId, existing: price.lookup_key },
+    }).catch(() => undefined);
+    return { reason: 'LEGACY_PRICE_OTHER_KEY' };
+  }
+  legacyProducts.set(productIdOf(price) ?? '', couple.planCode);
+  if (price.lookup_key === couple.lookupKey) return { price };
+  // Ne vole jamais la clé d'un prix encore actif (il peut être vendu ailleurs).
+  if (holder && holder.active && holder.id !== price.id) return { reason: 'KEY_ON_INVALID_PRICE' };
+  try {
+    const transfer = Boolean(holder && !holder.active && holder.id !== price.id);
+    const updated = await stripe.prices.update(priceId, {
+      lookup_key: couple.lookupKey,
+      ...(transfer ? { transfer_lookup_key: true } : {}),
+      expand: ['product'],
+    });
+    console.info(JSON.stringify({ evt: 'billing.catalog.key_initialized', lookupKey: couple.lookupKey, priceId, fromArchived: transfer ? holder?.id : null }));
+    return { price: updated };
   } catch (e) {
     console.error(`[price-catalog] initialisation de ${couple.lookupKey} impossible :`, (e as Error).message);
-    return null;
+    if (isStripePermissionError(e)) return { reason: 'STRIPE_PERMISSION' };
+    return { reason: 'KEY_INIT_FAILED' };
   }
 }
 

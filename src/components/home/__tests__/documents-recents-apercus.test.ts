@@ -42,8 +42,9 @@ const doc = (id: number, extra: Record<string, unknown> = {}) => ({
 describe('rendu des cartes (AC16-1, AC16-2)', () => {
   it('AC16-1 — aperçu : miniature paresseuse, page posée comme dans Mes documents', () => {
     const html = renderToStaticMarkup(h(RecentDocuments, { onUpload: noop, docs: [doc(1, { previewUrl: 'https://s3/derivatives/thumbnails/a_1/f_1/list-x.webp?X-Amz-Signature=s' }), doc(2)] }));
-    // Bureau (tuile) et mobile (ligne) : la même URL, jamais l'original.
-    expect(html.match(/src="https:\/\/s3\/derivatives\/thumbnails\/a_1\/f_1\/list-x\.webp/g)).toHaveLength(2);
+    // Lot 36 : une seule vignette par document (desktop et mobile partagent
+    // le carrousel) — la miniature serveur, jamais l'original.
+    expect(html.match(/src="https:\/\/s3\/derivatives\/thumbnails\/a_1\/f_1\/list-x\.webp/g)).toHaveLength(1);
     expect(html).toContain('loading="lazy"');
     expect(html).toContain('decoding="async"');
     expect(html).not.toContain('/proxy');

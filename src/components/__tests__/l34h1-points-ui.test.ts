@@ -39,31 +39,35 @@ const doc = (id: number, extra: Record<string, unknown> = {}) => ({
   id, title: `Document ${id}`, assetId: null, assetName: 'Polo', typeLabel: 'Facture', date: '2026-07-31', status: null, tone: 'slate' as const, ...extra,
 });
 
-/** Partie mobile du bloc (après le marqueur du carrousel). */
+/**
+ * Lot 36 : desktop et mobile partagent le même carrousel (maquette 2a) ;
+ * la « partie mobile » est désormais ce carrousel unique.
+ */
 const mobilePart = (html: string) => html.slice(html.lastIndexOf('<ul', html.indexOf('aria-label="Documents récents"')));
 
 describe('point 1 — Documents récents mobile en vignettes', () => {
-  it('AC1-1 — carrousel horizontal de grandes vignettes arrondies, calé au défilement, mobile seulement', () => {
+  // Lot 36 : les vignettes restent un carrousel horizontal calé au
+  // défilement sur mobile (3 visibles, la 4e au défilement) ; la tuile
+  // « Tous les documents » est remplacée par le lien « Tous » de l'en-tête
+  // de la carte (maquette 2a).
+  it('AC1-1 — carrousel horizontal de vignettes arrondies, calé au défilement (lot 36 : 3 visibles sur mobile)', () => {
     const html = renderToStaticMarkup(h(RecentDocuments, { onUpload: noop, docs: [doc(1), doc(2), doc(3), doc(4)] }));
     const mobile = mobilePart(html);
-    expect(mobile).toMatch(/<ul class="[^"]*overflow-x-auto[^"]*snap-x|<ul class="[^"]*snap-x[^"]*overflow-x-auto/);
-    expect(mobile).toContain('md:hidden');
+    expect(mobile).toMatch(/<ul [^>]*class="[^"]*snap-x[^"]*overflow-x-auto|<ul [^>]*class="[^"]*overflow-x-auto[^"]*snap-x/);
     expect(mobile).toContain('vb-no-scrollbar');
-    // Cartes à largeur fixe (la suivante dépasse à droite), vignette carrée arrondie.
-    expect(mobile.match(/w-\[148px\] flex-shrink-0 snap-start/g)?.length).toBe(5); // 4 documents + « Tous les documents »
-    expect(mobile).toContain('aspect-square');
-    expect(mobile).toContain('rounded-[18px]');
-    expect(mobile).toContain('Tous les documents');
+    expect(mobile.match(/w-\[calc\(\(100%-20px\)\/3\)\] flex-shrink-0 snap-start/g)?.length).toBe(4);
+    expect(mobile).toContain('rounded-xl');
+    expect(html).toMatch(/href="\/documents"[^>]*>Tous</);
     expect(mobile).toContain('Polo · 31/07/2026');
     // Plus de lignes-cartes.
     expect(html).not.toContain('min-h-[60px] items-center gap-3 rounded-2xl');
   });
 
-  it('AC1-2 — performance : même URL signée que le bureau, chargement paresseux, aucun original ni rendu PDF', () => {
+  it('AC1-2 — performance : une seule miniature serveur par document, chargement paresseux, aucun original ni rendu PDF', () => {
     const url = 'https://s3/derivatives/thumbnails/a_1/f_1/list-x.webp?X-Amz-Signature=s';
     const html = renderToStaticMarkup(h(RecentDocuments, { onUpload: noop, docs: [doc(1, { previewUrl: url }), doc(2)] }));
     const imgs = html.match(/<img [^>]*>/g) ?? [];
-    expect(imgs).toHaveLength(2); // tuile bureau + vignette mobile, la même miniature serveur
+    expect(imgs).toHaveLength(1); // lot 36 : une vignette unique, desktop et mobile
     for (const img of imgs) {
       expect(img).toContain('src="https://s3/derivatives/thumbnails/a_1/f_1/list-x.webp');
       expect(img).toContain('loading="lazy"');
@@ -81,9 +85,9 @@ describe('point 1 — Documents récents mobile en vignettes', () => {
     expect(mobile).toContain('En analyse');
   });
 
-  it('AC1-4 — bureau inchangé : 4 tuiles en grille', () => {
+  it('AC1-4 — bureau (lot 36) : même carrousel, 4 vignettes sur la largeur de la carte, 4 au plus', () => {
     const html = renderToStaticMarkup(h(RecentDocuments, { onUpload: noop, docs: [doc(1), doc(2), doc(3), doc(4), doc(5)] }));
-    expect(html).toContain('hidden grid-cols-4 gap-3 md:grid');
+    expect(html).toContain('md:w-[calc((100%-36px)/4)]');
     expect(html).not.toContain('Document 5');
   });
 });

@@ -13,9 +13,11 @@
 import { pgClient } from '@/db';
 import { CATALOG_COUPLES, coupleKey } from '@/lib/billing/plan-catalog';
 import { getStripeKeyMode, getExpectedStripeMode } from '@/lib/stripe-client';
-import { catalogDeps, STALE_AFTER_MS } from './price-catalog.service';
+import { buildPublicCatalog, catalogDeps, STALE_AFTER_MS } from './price-catalog.service';
 import { PRICING_MANIFEST, manifestRevision } from './pricing-manifest';
 import { shouldAutoPublish } from './catalog-publication.service';
+import { explainCatalogReason, explainCoupleReason } from '@/lib/billing/catalog-reasons';
+import { allowedCatalogOrigins, refusedOrigins } from '@/lib/billing/catalog-cors';
 import { LEGACY_PRICE_VARS } from './legacy-price-env';
 import { listCampaign } from './price-revaluation.service';
 
@@ -51,7 +53,9 @@ export async function getCatalogDiagnostic() {
       taxBehavior: e?.taxBehavior ?? null,
       priceRevision: e?.priceRevision ?? null,
       verifiedAt: e?.verifiedAt ?? null,
-      unavailableReason: active?.unavailable?.[key] ?? null,
+      unavailableReason: e ? null : active?.unavailable?.[key] ?? 'NO_ACTIVE_REVISION',
+      /** Lot 36B : raison lisible, correction automatique prévue, bouton BO qui corrige. */
+      explanation: e ? null : explainCoupleReason(active?.unavailable?.[key] ?? 'NO_ACTIVE_REVISION'),
       manifestAmountCents: target.unitAmountCents,
       status,
     };
@@ -82,6 +86,15 @@ export async function getCatalogDiagnostic() {
       ORDER BY last_seen_at DESC LIMIT 50`,
   );
 
+  // Ce que voient la vitrine et l'application (mêmes règles que l'API publique).
+  const publicView = buildPublicCatalog(state, now, [], { stripeConfigured: Boolean(ctx.mode) });
+  const lastRun = state?.publicationRunId ? await d.store.getRun(state.publicationRunId).catch(() => null) : null;
+  const autoPublish = shouldAutoPublish(state, candidate, now, lastRun?.finishedAt ?? null);
+  const expectedMode = getExpectedStripeMode();
+  const writeBlocker = !ctx.mode ? null : !expectedMode ? 'EXPECTED_MODE_MISSING' : expectedMode !== ctx.mode ? 'MODE_MISMATCH' : null;
+  const publicationReason = writeBlocker
+    ?? (autoPublish.reason === 'BACKFILL_PENDING' || autoPublish.reason === 'WAITING_INSTANCES' ? autoPublish.reason : null);
+
   const legacyVars = LEGACY_PRICE_VARS.map((v) => ({ name: v.name, present: Boolean(process.env[v.name]?.trim()) }));
   const campaign = ctx.mode ? await listCampaign(null, 200).catch(() => ({ revisionId: null, counts: {}, rows: [] })) : { revisionId: null, counts: {}, rows: [] };
 
@@ -89,7 +102,7 @@ export async function getCatalogDiagnostic() {
     context: {
       catalogContext: ctx.catalogContext,
       keyMode: getStripeKeyMode(process.env.STRIPE_SECRET_KEY),
-      expectedMode: getExpectedStripeMode(),
+      expectedMode,
       appEnv: ctx.appEnv,
       stripeAccountId: state?.stripeAccountId ?? null,
     },
@@ -106,7 +119,24 @@ export async function getCatalogDiagnostic() {
       backfillCompletedAt: state.backfillCompletedAt?.toISOString() ?? null,
       lastSyncError: state.lastSyncError,
     } : null,
-    manifest: { revision: candidate, autoPublish: shouldAutoPublish(state, candidate, now) },
+    manifest: { revision: candidate, autoPublish },
+    /**
+     * Lot 36B — résumé « pourquoi la vitrine affiche Tarif indisponible » :
+     * statut et raison du catalogue public, explication, action BO, et
+     * blocage éventuel des écritures Stripe / de la publication.
+     */
+    publicCatalog: {
+      status: publicView.status,
+      offers: publicView.offers.length,
+      reason: publicView.reason,
+      explanation: explainCatalogReason(publicView.reason),
+      publicationBlocker: publicationReason,
+      publicationBlockerExplanation: explainCatalogReason(publicationReason),
+    },
+    cors: {
+      allowedOrigins: allowedCatalogOrigins(process.env.NEXT_PUBLIC_PUBLIC_SITE_URL),
+      refusedOrigins: refusedOrigins(),
+    },
     couples,
     previous: state?.previousSnapshot
       ? CATALOG_COUPLES.map((c) => {

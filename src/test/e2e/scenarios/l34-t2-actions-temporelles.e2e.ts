@@ -225,7 +225,14 @@ scenario('L34-TEMP', 'Lot 34 — T2 : demandes d’actions temporelles → donn�
     const d = await demande(c, 'Que dois-je faire demain ?');
     expect(d.cascade?.actionable).toMatchObject({ requestedTimeScope: 'TOMORROW', resolvedStartDate: decale(1), resolvedEndDate: decale(1) });
     // Même date (samedi : la fin de semaine est demain) → ordre stable par identifiant, comparé sans ordre.
-    expect([...ids(d)].sort()).toEqual([`agenda_${demainId}`, ...(semaine.to === decale(1) ? [`agenda_${finSemaine}`] : [])].sort());
+    // Le dimanche, « Semaine suivante » tombe aussi demain : toutes les
+    // échéances datées de demain sont attendues.
+    const dateApres = decale(Math.round((Date.parse(semaine.to!) - Date.parse(J)) / 86_400_000) + 1);
+    expect([...ids(d)].sort()).toEqual([
+      `agenda_${demainId}`,
+      ...(semaine.to === decale(1) ? [`agenda_${finSemaine}`] : []),
+      ...(dateApres === decale(1) ? [`agenda_${apres}`] : []),
+    ].sort());
   });
 
   it('TEMP-12 — nombreux documents sans action : résultat identique', async () => {

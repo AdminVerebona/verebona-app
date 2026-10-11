@@ -1,11 +1,13 @@
 "use client"
 
 /**
- * Accueil — Direction D v2 « La mascotte » (§2 à §4, §12ter).
+ * Accueil — la mascotte parle, puis les sections de l'accueil (§2 à §4, §12ter).
  *
- * Ordre (décision produit) : la mascotte parle, Mes biens, puis
- * [Ce que j'ai fait | Prochaines échéances] côte à côte si la place le
- * permet (empilés sinon, échéances d'abord), et Documents récents. Plus de cartes
+ * Lot 36 (maquette « Accueil - Propositions », direction 2a sombre / 2b
+ * clair « Fil encadré ») : UNE seule colonne centrée (960 px au plus), même
+ * ordre sur desktop et mobile — mascotte, Mes biens, Prochaines échéances,
+ * Ce que j'ai fait, Documents récents —, chaque section dans une carte
+ * bordée. Plus de bento ni de paire côte à côte. Plus de cartes
  * statistiques : le seul chiffre conservé est la pastille « À traiter » de
  * la navigation. Le champ Verebona est dans le header (coquille).
  */
@@ -32,6 +34,50 @@ import { suggestionsForRoute } from '@/services/verebona-assistant/registries/ca
 
 // Fenêtre affichée seulement après un retour de paiement interrompu : son
 // code n'a rien à faire dans le chargement initial de l'accueil.
+/**
+ * Colonne de l'accueil (maquette 2a) : centrée, 960 px au plus ; mobile :
+ * gouttière 16 px et place pour la barre de navigation du bas et le « + ».
+ */
+const HOME_COLUMN = 'mx-auto flex w-full max-w-[960px] flex-col gap-3.5 px-4 pb-36 pt-2.5 md:gap-9 md:px-8 md:pb-[60px] md:pt-9';
+
+/** Squelette de l'en-tête mascotte (même grille que `MascotSpeaks`). */
+function HomeHeaderSkeleton() {
+  return (
+    <div className="grid grid-cols-[72px_minmax(0,1fr)] items-center gap-x-3.5 gap-y-3 md:grid-cols-[112px_minmax(0,1fr)] md:items-start md:gap-x-7">
+      <Skeleton className="h-[72px] w-[72px] rounded-full md:row-span-2 md:h-[112px] md:w-[112px]" />
+      <div className="flex flex-col gap-2 md:pt-1.5">
+        <Skeleton className="h-3 w-32 rounded" />
+        <Skeleton className="h-7 w-48 rounded-lg" />
+      </div>
+      <Skeleton className="col-span-2 h-24 rounded-[20px] md:col-span-1 md:col-start-2" />
+    </div>
+  );
+}
+
+/** Squelette des quatre cartes de section, dans l'ordre de la page. */
+function HomeSectionsSkeleton() {
+  return (
+    <div className="flex flex-col gap-3.5 md:gap-9" aria-busy="true" data-home-skeleton>
+      {[0, 1, 2, 3].map((i) => (
+        <div key={i} className="flex flex-col gap-3 rounded-[14px] border border-[color:var(--border)] bg-[color:var(--bg-card)] p-4 md:px-6 md:pb-6 md:pt-5">
+          <Skeleton className="h-3 w-28 rounded" />
+          {i === 0 ? (
+            <div className="flex gap-2.5 overflow-hidden md:gap-3">
+              {[0, 1, 2, 3].map((j) => <Skeleton key={j} className="h-[104px] w-[150px] flex-shrink-0 rounded-xl md:h-[140px] md:w-[204px]" />)}
+            </div>
+          ) : i === 3 ? (
+            <div className="flex gap-2.5 overflow-hidden md:gap-3">
+              {[0, 1, 2].map((j) => <Skeleton key={j} className="h-[104px] flex-1 rounded-xl md:h-[120px]" />)}
+            </div>
+          ) : (
+            <div className="space-y-2">{[0, 1].map((j) => <Skeleton key={j} className="h-12 rounded-xl" />)}</div>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 const PendingCheckoutModal = dynamic(
   () => import('@/components/subscription/PendingCheckoutModal').then(mod => ({ default: mod.PendingCheckoutModal })),
   { ssr: false }
@@ -187,11 +233,8 @@ export default function DashboardPage() {
   if (!hydrated || isSessionLoading || !user) {
     if (hydrated && !isSessionLoading && !user) return null;
     return (
-      <div className="flex flex-col gap-6 px-4 pt-2.5 md:gap-9 md:px-10 md:pt-8">
-        <div className="flex items-end gap-4">
-          <Skeleton className="h-[88px] w-[96px] rounded-full md:h-[136px] md:w-[136px]" />
-          <Skeleton className="h-40 flex-1 rounded-[28px]" />
-        </div>
+      <div className={HOME_COLUMN} aria-busy="true">
+        <HomeHeaderSkeleton />
       </div>
     );
   }
@@ -204,7 +247,8 @@ export default function DashboardPage() {
 
   return (
     <>
-      <div className="vb-home-halo flex min-h-full flex-col gap-[26px] px-4 pb-36 pt-2.5 md:gap-9 md:px-10 md:pb-10 md:pt-8">
+      <div className="vb-home-halo min-h-full">
+      <div className={HOME_COLUMN}>
         {/* 1. La mascotte parle — sa prise de parole a son propre chargement
             (GET /api/home/mascot) et ne retarde pas le reste de la page. */}
         <MascotSpeaks
@@ -219,7 +263,7 @@ export default function DashboardPage() {
           /* Erreur sans données : état explicite et reprise, jamais un
              squelette permanent (APP-PERF-39). La mascotte, au-dessus, a son
              propre chargement et reste affichée. */
-          <div role="alert" className="flex flex-col items-start gap-3 rounded-[18px] border border-[color:var(--border-subtle)] bg-[color:var(--bg-card)] p-5">
+          <div role="alert" className="flex flex-col items-start gap-3 rounded-[14px] border border-[color:var(--border)] bg-[color:var(--bg-card)] p-5">
             <p className="text-sm text-[color:var(--text-primary)]">
               Impossible de charger vos biens et documents pour le moment.
             </p>
@@ -232,25 +276,14 @@ export default function DashboardPage() {
             </button>
           </div>
         ) : !summary ? (
-          <div className="flex flex-col gap-6 md:gap-8" aria-busy="true">
-            <div className="grid grid-cols-3 gap-3" style={{ gridAutoRows: '132px' }}>
-              <Skeleton className="row-span-2 rounded-[18px]" />
-              {[0, 1, 2, 3].map((i) => <Skeleton key={i} className="rounded-[18px]" />)}
-            </div>
-            <div className="space-y-2">{[0, 1, 2].map((i) => <Skeleton key={i} className="h-14 rounded-2xl" />)}</div>
-          </div>
+          <HomeSectionsSkeleton />
         ) : (
           /* ══════════════════════════════════════════════════════════════
-             ORDRE (décision produit, lot 8c)
-             Mascotte → Mes biens (bento du lot 8) → [Ce que j'ai fait |
-             Prochaines échéances] → Documents récents.
-             La paire se place côte à côte selon la largeur DISPONIBLE du
-             contenu (requête de conteneur, ≥ 1040 px), et non selon l'écran :
-             menu déplié ou replié, la décision suit la place réelle. En
-             dessous (tablette, bureau étroit, mobile), elle s'empile, les
-             échéances d'abord, comme sur mobile.
+             ORDRE (lot 36, maquette 2a/2b) — identique desktop et mobile :
+             Mascotte → Mes biens → Prochaines échéances → Ce que j'ai fait
+             → Documents récents, chacun dans sa carte bordée.
              ══════════════════════════════════════════════════════════════ */
-          <div className="@container flex flex-col gap-[26px] md:gap-9" aria-busy={refreshing || undefined}>
+          <div className="flex flex-col gap-3.5 md:gap-9" data-home-sections aria-busy={refreshing || undefined}>
             {/* Revalidation en échec : les données affichées restent, un
                 message discret le signale (APP-PERF-39). */}
             {refreshError && (
@@ -262,16 +295,15 @@ export default function DashboardPage() {
               </p>
             )}
             <HomeAssets assets={orderedAssets} onAddAsset={() => setShowAssetDialog(true)} />
-            <div className="flex flex-col gap-[26px] md:gap-9 @min-[1040px]:grid @min-[1040px]:grid-cols-2 @min-[1040px]:items-start @min-[1040px]:gap-8">
-              <VerebonaWork className="order-2 @min-[1040px]:order-none" items={summary.blocks.verebonaWork?.items ?? []} onNavigate={(href) => router.push(href)} />
-              <UpcomingEvents className="order-1 @min-[1040px]:order-none" items={summary.blocks.upcoming?.items ?? []} />
-            </div>
+            <UpcomingEvents items={summary.blocks.upcoming?.items ?? []} />
+            <VerebonaWork items={summary.blocks.verebonaWork?.items ?? []} onNavigate={(href) => router.push(href)} />
             <RecentDocuments
               docs={summary.blocks.recentDocuments?.items ?? []}
               onUpload={() => { setUploadAssetId(null); setShowUploadDialog(true); }}
             />
           </div>
         )}
+      </div>
       </div>
 
       {/* ── Parcours existants ─────────────────────────────────────────────── */}
