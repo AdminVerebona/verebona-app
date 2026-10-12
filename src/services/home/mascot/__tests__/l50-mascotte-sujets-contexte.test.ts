@@ -14,8 +14,8 @@
  * MASC50-AC08 : T6 reçoit exactement les sujets sélectionnés par le serveur.
  */
 import { describe, it, expect } from 'vitest';
-import { readFileSync, readdirSync, statSync } from 'node:fs';
-import { join, relative } from 'node:path';
+import { readFileSync, readdirSync } from 'node:fs';
+import { join } from 'node:path';
 import { buildCandidates, type MascotAgendaRow, type MascotRawData } from '../signals';
 import { selectSubjects } from '../selector';
 import { buildPresentation } from '../presentation';
@@ -63,44 +63,57 @@ describe('MASC50-AC01 — aucun « urgent » dans les textes de la mascotte', ()
 });
 
 describe('MASC50-AC04 — visibilité du traitement, générique', () => {
-  /** Appels de production de l'analyse : chaque appelant DÉCLARE sa visibilité. */
-  it('chaque appelant de production déclare processingVisibility (aucune déduction par origine)', () => {
-    const racines = ['src/app', 'src/services'].map((r) => join(process.cwd(), r));
-    const fichiers: string[] = [];
-    const parcourir = (d: string) => {
-      for (const n of readdirSync(d)) {
-        const p = join(d, n);
-        if (statSync(p).isDirectory()) { if (n !== '__tests__' && n !== '__fixtures__') parcourir(p); continue; }
-        if (/\.(ts|tsx)$/.test(n) && !/\.test\.tsx?$/.test(n)) fichiers.push(p);
+  /**
+   * Appelants de production CONNUS et visibilité attendue. Un appelant hors
+   * de cette liste (code local d'un dépôt) n'est pas bloquant : sans
+   * déclaration, son analyse est USER — affichée, comportement antérieur.
+   */
+  const ATTENDUS: Readonly<Record<string, 'USER' | 'TECHNICAL'>> = {
+    'src/app/api/files/confirm/route.ts': 'USER',
+    'src/app/api/documents/[id]/analyze/route.ts': 'USER',
+    'src/app/api/documents/analyze-batch/route.ts': 'USER',
+    'src/app/api/billing/stripe-webhook/route.ts': 'USER',
+    'src/services/document-ai/retroactive-analysis.service.ts': 'USER',
+    'src/app/api/documents/[id]/route.ts': 'TECHNICAL',
+    'src/app/api/documents/bulk-move/route.ts': 'TECHNICAL',
+    'src/app/api/cron/documents/referential-upgrade/route.ts': 'TECHNICAL',
+    'src/services/document-ai/analysis-recovery.service.ts': 'TECHNICAL',
+    'src/services/ai/source-analysis/invalid-output-replay.job.ts': 'TECHNICAL',
+    'src/services/ai/source-analysis/source-units/jobs.ts': 'TECHNICAL',
+    'src/services/ai/governance/corpus/pipeline-runner.ts': 'TECHNICAL',
+  };
+
+  /** Appels réels (commentaires retirés) de l'analyse dans un fichier, texte complet de chaque appel. */
+  const appelsDe = (rel: string): string[] => {
+    const brut = readFileSync(join(process.cwd(), rel), 'utf8');
+    const s = brut.replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' ')).replace(/(^|[^:'"`])\/\/.*$/gm, '$1');
+    const out: string[] = [];
+    for (const m of s.matchAll(/\b(analyzeFileSources|enqueueFileAnalyses)\(/g)) {
+      if (/function\s+$/.test(s.slice(Math.max(0, m.index! - 20), m.index!))) continue;
+      let prof = 0, fin = m.index! + m[0].length - 1;
+      for (let i = fin; i < s.length; i++) {
+        if (s[i] === '(') prof++;
+        else if (s[i] === ')' && --prof === 0) { fin = i; break; }
       }
-    };
-    racines.forEach(parcourir);
-    const appels: string[] = [];
-    for (const f of fichiers) {
-      const s = readFileSync(f, 'utf8');
-      for (const m of s.matchAll(/\b(analyzeFileSources|enqueueFileAnalyses)\(/g)) {
-        const avant = s.slice(Math.max(0, m.index! - 30), m.index!);
-        if (/function\s+$|import\s*\(|\{\s*$/.test(avant) && /function/.test(avant)) continue;
-        // Texte de l'appel jusqu'à sa parenthèse fermante (profondeur).
-        let prof = 0, fin = m.index! + m[0].length - 1;
-        for (let i = fin; i < s.length; i++) {
-          if (s[i] === '(') prof++;
-          else if (s[i] === ')' && --prof === 0) { fin = i; break; }
-        }
-        const appel = s.slice(m.index!, fin + 1);
-        const rel = relative(process.cwd(), f);
-        // Relais internes : héritent de la visibilité reçue (remise en file, report, exécution de la file).
-        if (/entrypoint\.ts$|t1-handler\.ts$/.test(rel)) continue;
-        appels.push(rel);
-        expect(/processingVisibility/.test(appel), `${rel} : visibilité non déclarée`).toBe(true);
+      out.push(s.slice(m.index!, fin + 1));
+    }
+    return out;
+  };
+
+  it('chaque appelant connu déclare la bonne visibilité (aucune déduction par origine)', () => {
+    for (const [rel, attendu] of Object.entries(ATTENDUS)) {
+      const appels = appelsDe(rel);
+      expect(appels.length, `${rel} : aucun appel trouvé`).toBeGreaterThan(0);
+      for (const a of appels) {
+        expect(a.includes(`processingVisibility: '${attendu}'`), `${rel} : ${attendu} attendu`).toBe(true);
       }
     }
-    expect(appels.length).toBeGreaterThanOrEqual(12);
-    // Les deux appelants du ticket sont TECHNICAL.
-    const put = readFileSync(join(process.cwd(), 'src/app/api/documents/[id]/route.ts'), 'utf8');
-    expect(put).toMatch(/origin: 'documents\/PUT',[\s\S]{0,200}processingVisibility: 'TECHNICAL'/);
-    const depot = readFileSync(join(process.cwd(), 'src/app/api/files/confirm/route.ts'), 'utf8');
-    expect(depot).toMatch(/processingVisibility: 'USER'/);
+  });
+
+  it('un appelant non déclaré reste USER (affiché, comportement antérieur), jamais masqué par défaut', () => {
+    expect(normalizeProcessingVisibility(undefined)).toBe('USER');
+    const ep = readFileSync(join(process.cwd(), 'src/services/ai/source-analysis/entrypoint.ts'), 'utf8');
+    expect(ep).toMatch(/markAnalysisVisibility\(fileIds, accountId, normalizeProcessingVisibility\(options\.processingVisibility\)\)/);
   });
 
   it('la mascotte ne lit aucune origine : seule la visibilité filtre', () => {
