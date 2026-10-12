@@ -14,7 +14,7 @@
     "postbuild": "node scripts/prune-image.mjs",
     "scalingo-cleanup": "node scripts/prune-image.mjs",
     "start": "next start",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "typecheck": "node --max-old-space-size=6144 node_modules/typescript/bin/tsc -p tsconfig.json --noEmit",
     "lint": "eslint .",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",

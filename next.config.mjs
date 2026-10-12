@@ -76,6 +76,21 @@ const nextConfig = {
       },
     ];
   },
+  // ══════════════════════════════════════════════════════════════════════
+  // BUILD SCALINGO : PAS DE LINT NI DE VÉRIFICATION DES TYPES DANS `next build`
+  // (12/10/2026). La vérification complète des types du projet demande
+  // désormais ~2,8 Go de tas, au-delà du plafond du conteneur de build
+  // (~2,5 Go) → « JavaScript heap out of memory » dès que le cache
+  // incrémental de `.next/cache` est invalidé. Les deux contrôles restent
+  // BLOQUANTS en CI (`npm run typecheck`, `npm run lint`, workflow CI) ;
+  // le build ne fait plus que compiler.
+  // ══════════════════════════════════════════════════════════════════════
+  eslint: { ignoreDuringBuilds: true },
+  typescript: { ignoreBuildErrors: true },
+  experimental: {
+    // Réduit le pic mémoire de la compilation webpack (Next 15).
+    webpackMemoryOptimizations: true,
+  },
   compress: true,
   images: {
     // Stockage OVH (Scalingo/PostgreSQL/OVH). Domaines Supabase et Orchids
