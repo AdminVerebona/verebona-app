@@ -35,6 +35,21 @@ export interface FieldDef {
    * vente réalisée d'un bien vendu (lot 43, décision PO Q5). Absent : toujours.
    */
   visibleWhen?: (data: Record<string, unknown>) => boolean;
+  /**
+   * Provenance affichée à côté du libellé (ex. « Calculée (début + durée) »,
+   * lot 49A) ; masquée en édition dès que la valeur est modifiée.
+   */
+  badge?: (data: Record<string, unknown>) => string | null;
+}
+
+/** Pastille de provenance (jetons et style des pastilles existantes de la fiche). */
+function FieldBadge({ text }: { text: string | null }) {
+  if (!text) return null;
+  return (
+    <span data-field-badge className="inline-flex items-center ml-1 text-[9px] font-semibold text-sky-400 bg-sky-500/10 rounded px-1.5 py-0.5">
+      {text}
+    </span>
+  );
 }
 
 /** Champs visibles pour ces données (`visibleWhen`). */
@@ -234,7 +249,8 @@ export function AssetDetailSection({
                       {/* Label row */}
                       <div className="flex items-center gap-1.5 flex-wrap">
                         <Label className="text-xs text-muted-foreground">{field.label}</Label>
-                                              </div>
+                        {field.badge && String(form[field.key] ?? '') === String(data[field.key] ?? '') && <FieldBadge text={field.badge(data)} />}
+                      </div>
 
                       {/* Input */}
                       {field.type === 'textarea' ? (
@@ -332,6 +348,7 @@ export function AssetDetailSection({
                     >
                       <div className="flex items-center gap-0.5 flex-wrap">
                         <p className="text-xs text-muted-foreground">{field.label}</p>
+                        {field.badge && <FieldBadge text={field.badge(displayData)} />}
                         {alert && (
                           <>
                             <TooltipProvider>

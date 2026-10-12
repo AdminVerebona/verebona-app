@@ -4,9 +4,9 @@
  * Admin — Configuration IA (BO IA) — CDC BO IA SCR-01 à SCR-06.
  *
  * ══════════════════════════════════════════════════════════════════════════
- * UNE VERSION, CINQ ONGLETS
+ * UNE VERSION, CINQ ONGLETS (T1, T2, T3, T4, T6 — T5 retiré au lot 49)
  *
- * Le GEN-002 veut un instantané cohérent de T1 à T5. Les cinq onglets pointent
+ * Le GEN-002 veut un instantané cohérent des traitements. Les onglets pointent
  * donc vers la MÊME version : on n'édite pas cinq configurations mais une
  * seule, vue par traitement. C'est ce que le WF-01 décrit — « tous les onglets
  * pointent vers le même Brouillon global » — et c'est pourquoi le sélecteur de
@@ -31,7 +31,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Textarea } from '@/components/ui/textarea';
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription,
 } from '@/components/ui/dialog';
@@ -54,13 +53,12 @@ import { useUnsavedNavigationGuard } from './_components/useUnsavedNavigationGua
 import { TriggersEditor } from './_components/TriggersEditor';
 import { createEditTracker } from './_components/edit-tracker';
 import type { CatalogTrigger } from './_components/triggers-model';
-import { T5_REPOSITORY_PROMPT_MESSAGE, T5_LEGACY_TEXT_MESSAGE, hasLegacyPromptText } from '@/services/ai/config/t5-messages';
 import { chainOptions, unusableRanks, type ChainRank } from '@/services/ai/registry/model-chain';
 import { useRouter } from 'next/navigation';
 
 // ─── Types de l'écran ─────────────────────────────────────────────────────────
 
-type Treatment = 'T1' | 'T2' | 'T3' | 'T4' | 'T5' | 'T6';
+type Treatment = 'T1' | 'T2' | 'T3' | 'T4' | 'T6';
 type Status = 'DRAFT' | 'TO_TEST' | 'ACTIVE' | 'VALIDATED' | 'ARCHIVED';
 
 interface GuardrailDef { code: string; label: string; description: string; unit: string }
@@ -149,37 +147,8 @@ interface VersionDetail extends Version {
   executing: boolean;
   /** Modèles que le fournisseur ne sert plus. N'empêche rien : informe. */
   unavailableModels: Array<{ treatment: string; model: string; rank: string }>;
-}
-
-interface DiffLine { kind: 'added' | 'removed' | 'unchanged'; text: string }
-
-interface T5Change {
-  treatment: Treatment;
-  label: string;
-  reason: string;
-  diff: { lines: DiffLine[]; added: number; removed: number; identical: boolean } | null;
-  applied: boolean;
-  rejected?: string;
-}
-
-interface T5Result {
-  mode: 'analyze' | 'modify';
-  verdict: 'prompt' | 'code' | 'donnees' | 'configuration';
-  analysis: string;
-  changes: T5Change[];
-  risks: string[];
-  recommendations: string[];
-  applied: boolean;
-  draftId: number | null;
-  draftCreated: boolean;
-  /** BO-IA-PROMPTS-01 : brouillons de prompts maîtres écrits par Prompt Control. */
-  promptDrafts?: Array<{ treatment: Treatment; versionId: number; versionNumber: number }>;
-  traceId: string;
-  comparison?: {
-    versionId: number; label: string; status: string;
-    diff: { identical: boolean; changeCount: number; treatments: Array<{ treatment: Treatment; changes: Array<{ label: string; before: string | null; after: string | null }> }> };
-  } | null;
-  logsDigest?: string | null;
+  /** Lot 49 : traitements retirés (T5) encore présents dans une version historique. */
+  retiredTreatments?: string[];
 }
 
 interface Issue {
@@ -216,15 +185,6 @@ const STATUS_STYLE: Record<Status, string> = {
   ARCHIVED: 'bg-[color:var(--bg-page)] text-[color:var(--text-muted)] border-[color:var(--border-subtle)]',
 };
 
-/**
- * Miroir de `isPromptAdministrable` (services/ai/config/treatments) : le texte
- * de T5 n'est pas porté par la version de configuration (il s'administre dans
- * « Prompts maîtres » depuis le lot 32B).
- */
-function isPromptAdministrable(t: Treatment): boolean {
-  return t !== 'T5';
-}
-
 function versionName(v: Version): string {
   if (v.visibleNumber) return `v${v.visibleNumber}${v.label ? ` — ${v.label}` : ''}`;
   return v.label ?? `Brouillon ${v.id}`;
@@ -250,240 +210,6 @@ function Field({ label, hint, children }: { label: string; hint?: string; childr
   );
 }
 
-/**
- * Prompt Control (T5) — CDC BO IA SCR-06, WF-20, T5-UI-01 à T5-UI-09.
- *
- * ══════════════════════════════════════════════════════════════════════════
- * UN SEUL CHAMP, ET T5 CHOISIT LES PROMPTS
- *
- * L'administrateur décrit en français ce qu'il constate ou attend, sans
- * désigner de traitement. T5 détermine lui-même le ou les prompts concernés
- * (T1, socle T2, T3, T4) — parfois aucun, parfois plusieurs.
- *
- * · « Analyser » : diagnostic seul, sur toute version ; rien n'est écrit.
- * · « Modifier » : chaque prompt réécrit est écrit directement dans le
- *   brouillon de ce prompt maître (section « Prompts maîtres »), puis résumés
- *   et diffs s'affichent. L'administrateur l'active lui-même (Brouillon →
- *   Actif, BO-IA-PROMPTS-01), pas une confirmation de plus.
- * ══════════════════════════════════════════════════════════════════════════
- */
-function PromptControl({
-  versionId, hasUnsaved, onModified, versions = [],
-}: {
-  /** T5-010 : versions proposées à la comparaison. */
-  versions?: Version[];
-  versionId: number;
-  /** Des réglages non enregistrés existent : une écriture de T5 les écraserait à l'écran. */
-  hasUnsaved: boolean;
-  /** Brouillons de prompts maîtres écrits (BO-IA-PROMPTS-01). */
-  onModified: (treatments: Treatment[]) => void | Promise<void>;
-}) {
-  const [instruction, setInstruction] = useState('');
-  const [resultat, setResultat] = useState<T5Result | null>(null);
-  const [encours, setEncours] = useState<null | 'analyze' | 'modify'>(null);
-  const [refus, setRefus] = useState<string | null>(null);
-  // T5-010 / T5-009 : contexte complémentaire, sur demande uniquement.
-  const [comparerAvec, setComparerAvec] = useState<string>('');
-  const [avecJournaux, setAvecJournaux] = useState(false);
-
-  const VERDICT_LABEL: Record<T5Result['verdict'], string> = {
-    prompt: 'Un ou plusieurs prompts sont en cause',
-    code: 'Le comportement vient du code',
-    donnees: 'Les données du compte sont en cause',
-    configuration: 'Un réglage est en cause',
-  };
-
-  const demandeValide = instruction.trim().length >= 5;
-
-  const envoyer = async (action: 'analyze' | 'modify') => {
-    setEncours(action);
-    setResultat(null);
-    setRefus(null);
-    try {
-      const r = await apiClient.post<T5Result>('/api/admin/ai/prompt-control', {
-        action, versionId, instruction: instruction.trim(),
-        ...(comparerAvec ? { compareWithVersionId: Number(comparerAvec) } : {}),
-        ...(avecJournaux ? { includeLogs: true, logsDays: 7 } : {}),
-      });
-      setResultat(r);
-      const ecrits = r.changes.filter((c) => c.applied).map((c) => c.treatment);
-      if (r.applied) {
-        toast.success(`${ecrits.length} prompt(s) modifié(s) dans leur brouillon : à activer dans « Prompts maîtres »`);
-        await onModified(ecrits);
-      }
-    } catch (e) {
-      // Le motif réel, rendu par le serveur — jamais un message générique.
-      setRefus((e as { message?: string }).message ?? 'La demande n’a pas abouti.');
-    } finally { setEncours(null); }
-  };
-
-  return (
-    <div className="space-y-4">
-      <div>
-        <h2 className="text-base font-semibold text-[color:var(--text-primary)]">Demander une modification</h2>
-        <p className="text-xs text-[color:var(--text-muted)]">
-          Décrivez en français le comportement constaté ou attendu — pas le prompt lui-même.
-          Prompt Control détermine quel(s) traitement(s) sont concernés, dit d&apos;abord si un
-          prompt est en cause, puis le(s) réécrit dans le brouillon du prompt maître si vous le demandez.
-        </p>
-      </div>
-
-      <Textarea
-        aria-label="Votre demande"
-        value={instruction}
-        disabled={encours !== null}
-        onChange={(e) => setInstruction(e.target.value)}
-        placeholder={'Ex. : « Les titres des factures sont tous “Facture N° …” : on ne les distingue plus. '
-          + 'Je veux “Facture Béquille draisienne”. »'}
-        className="min-h-[110px] bg-[color:var(--bg-input)]"
-      />
-
-      <div className="flex flex-wrap items-center gap-3 text-xs text-[color:var(--text-secondary)]">
-        <label className="flex items-center gap-1.5">
-          Comparer avec
-          <select value={comparerAvec} onChange={(e) => setComparerAvec(e.target.value)} disabled={encours !== null}
-            className="h-8 rounded-md border border-[color:var(--border-subtle)] bg-transparent px-2 text-xs">
-            <option value="">— aucune version —</option>
-            {versions.filter((v) => v.id !== versionId).map((v) => (
-              <option key={v.id} value={v.id}>{versionName(v)} ({STATUS_LABEL[v.status]})</option>
-            ))}
-          </select>
-        </label>
-        <label className="flex items-center gap-1.5">
-          <input type="checkbox" checked={avecJournaux} onChange={(e) => setAvecJournaux(e.target.checked)} disabled={encours !== null} />
-          Inclure une synthèse des journaux (7 j)
-        </label>
-      </div>
-
-      <div className="flex flex-wrap items-center gap-2">
-        <Button size="sm" variant="outline" onClick={() => envoyer('analyze')} disabled={encours !== null || !demandeValide}>
-          {encours === 'analyze' && <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" />}
-          Analyser
-        </Button>
-        <Button size="sm" onClick={() => envoyer('modify')} disabled={encours !== null || !demandeValide || hasUnsaved}>
-          {encours === 'modify' && <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" />}
-          Modifier
-        </Button>
-        {encours && (
-          <span className="text-xs text-[color:var(--text-muted)]">
-            Prompt Control lit les prompts administrables — cela peut prendre une à deux minutes.
-          </span>
-        )}
-      </div>
-
-      <p className="text-xs text-[color:var(--text-muted)]">
-        « Analyser » ne modifie rien. « Modifier » écrit dans le brouillon de chaque prompt concerné (créé depuis
-        la version active s’il n’en existe pas) ; rien ne change en production avant que vous l’activiez.
-        Modèles, replis et garde-fous ne sont jamais modifiés.
-      </p>
-
-      {hasUnsaved && (
-        <p className="text-xs text-amber-500">
-          Des réglages ne sont pas enregistrés : enregistrez-les ou annulez-les avant de demander une modification.
-        </p>
-      )}
-
-      {refus && <p role="alert" className="text-sm text-amber-500 whitespace-pre-wrap">{refus}</p>}
-
-      {resultat && (
-        <div className="rounded-lg border border-[color:var(--border-subtle)] p-3 space-y-3">
-          <div className="flex flex-wrap items-center gap-2">
-            <p className={`text-sm font-medium ${resultat.verdict === 'prompt' ? 'text-[color:var(--text-primary)]' : 'text-amber-500'}`}>
-              {VERDICT_LABEL[resultat.verdict]}
-            </p>
-            <span className={`text-xs px-2 py-0.5 rounded-full border ${resultat.applied
-              ? 'bg-emerald-500/10 text-emerald-500 border-emerald-500/20'
-              : 'border-[color:var(--border-subtle)] text-[color:var(--text-muted)]'}`}>
-              {resultat.applied
-                ? `Écrit dans le brouillon : ${(resultat.promptDrafts ?? []).map((d) => `${d.treatment} v${d.versionNumber}`).join(', ')}`
-                : resultat.mode === 'analyze' ? 'Analyse seule — rien n’a été modifié' : 'Aucune modification écrite'}
-            </span>
-          </div>
-
-          <p className="text-sm text-[color:var(--text-secondary)] whitespace-pre-wrap">{resultat.analysis}</p>
-
-          {resultat.comparison && (
-            <details>
-              <summary className="text-xs text-[color:var(--accent)] cursor-pointer">
-                Comparaison avec {resultat.comparison.label} ({STATUS_LABEL[resultat.comparison.status as Status] ?? resultat.comparison.status})
-                {' — '}{resultat.comparison.diff.identical ? 'aucune différence' : `${resultat.comparison.diff.changeCount} différence(s)`}
-              </summary>
-              <div className="mt-2 space-y-1">
-                {resultat.comparison.diff.treatments.map((t) => t.changes.map((c, i) => (
-                  <p key={`${t.treatment}-${i}`} className="text-xs text-[color:var(--text-secondary)]">
-                    <span className="font-medium">{t.treatment} · {c.label}</span> :{' '}
-                    <span className="text-red-400">{(c.before ?? '—').slice(0, 160)}</span> →{' '}
-                    <span className="text-emerald-500">{(c.after ?? '—').slice(0, 160)}</span>
-                  </p>
-                )))}
-              </div>
-            </details>
-          )}
-
-          {resultat.logsDigest && (
-            <details>
-              <summary className="text-xs text-[color:var(--accent)] cursor-pointer">Synthèse des journaux transmise à Prompt Control</summary>
-              <pre className="mt-2 text-xs whitespace-pre-wrap text-[color:var(--text-muted)]">{resultat.logsDigest}</pre>
-            </details>
-          )}
-
-          {resultat.changes.length > 0 && (
-            <div className="space-y-3">
-              <p className="text-xs font-medium text-[color:var(--text-primary)]">
-                Prompt(s) concerné(s) : {resultat.changes.map((c) => c.treatment).join(', ')}
-              </p>
-              {resultat.changes.map((c) => (
-                <div key={c.treatment} className="rounded-md border border-[color:var(--border-subtle)] p-3 space-y-2">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <span className="text-sm font-medium text-[color:var(--text-primary)]">{c.label}</span>
-                    {c.applied && <span className="text-xs text-emerald-500">modifié</span>}
-                  </div>
-                  {c.reason && <p className="text-xs text-[color:var(--text-muted)]">{c.reason}</p>}
-                  {c.rejected && <p className="text-xs text-amber-500">{c.rejected}</p>}
-                  {c.applied && c.diff && !c.diff.identical && (
-                    <details>
-                      <summary className="text-xs text-[color:var(--accent)] cursor-pointer">
-                        Voir le diff — {c.diff.added} ligne(s) ajoutée(s), {c.diff.removed} retirée(s)
-                      </summary>
-                      <pre className="mt-2 text-xs font-mono max-h-64 overflow-auto rounded bg-[color:var(--bg-page)] p-2">
-                        {c.diff.lines.map((l, i) => (
-                          <div key={i} className={l.kind === 'added' ? 'text-emerald-500'
-                            : l.kind === 'removed' ? 'text-red-400' : 'text-[color:var(--text-muted)]'}>
-                            {l.kind === 'added' ? '+' : l.kind === 'removed' ? '-' : ' '} {l.text}
-                          </div>
-                        ))}
-                      </pre>
-                    </details>
-                  )}
-                </div>
-              ))}
-            </div>
-          )}
-
-          {resultat.risks.length > 0 && (
-            <div>
-              <p className="text-xs font-medium text-[color:var(--text-primary)]">Risques signalés</p>
-              <ul className="text-xs text-[color:var(--text-muted)] list-disc pl-4">
-                {resultat.risks.map((r, i) => <li key={i}>{r}</li>)}
-              </ul>
-            </div>
-          )}
-          {resultat.recommendations.length > 0 && (
-            <div>
-              <p className="text-xs font-medium text-[color:var(--text-primary)]">
-                Recommandations — non appliquées, à faire vous-même dans les réglages ci-dessous
-              </p>
-              <ul className="text-xs text-[color:var(--text-muted)] list-disc pl-4">
-                {resultat.recommendations.map((r, i) => <li key={i}>{r}</li>)}
-              </ul>
-            </div>
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
-
 const selectClass =
   'w-full rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--bg-input)] '
   + 'px-3 py-2 text-sm text-[color:var(--text-primary)] disabled:opacity-50';
@@ -491,11 +217,9 @@ const selectClass =
 // ─── Éditeur d'un traitement ──────────────────────────────────────────────────
 
 function TreatmentEditor({
-  entry, saved, catalog, catalogs, readOnly, onChange, onRetryCatalogs,
+  entry, catalog, catalogs, readOnly, onChange, onRetryCatalogs,
 }: {
   entry: Entry;
-  /** Ligne enregistrée (relue du serveur) : un texte hérité T5 s'y lit. */
-  saved: Entry | undefined;
   catalog: TreatmentCatalog;
   catalogs: Catalogs;
   readOnly: boolean;
@@ -554,67 +278,21 @@ function TreatmentEditor({
   return (
     <div className="space-y-6">
       {/*
-        ══════════════════════════════════════════════════════════════════
-        L'ÉDITEUR DIRECT EST REPLIÉ, ET C'EST DÉLIBÉRÉ
-        ══════════════════════════════════════════════════════════════════
-        Le geste normal est de décrire ce qu'on veut en français, dans la zone
-        Prompt Control : l'administrateur n'a pas à rédiger un prompt pour
-        obtenir un changement de comportement.
-
-        ⚠️ Mais pour T1 à T4 et T6 l'éditeur du texte master RESTE ACCESSIBLE.
-        Prompt Control dépend d'un modèle : fournisseur en panne ou arrêt
-        d'urgence, et un administrateur privé d'édition directe n'aurait plus
-        aucun moyen de corriger un prompt. Le SCR-02 le prévoit : « Éditeur du
-        prompt T1 unique, versionné, sans limite artificielle imposée par le
-        BO ». Lot 16b : c'est la seule zone prompt (plus de préambule).
-
-        Pour T5, aucun texte dans la version de configuration (T5-003) : son
-        prompt maître s'administre dans « Prompts maîtres » (lot 32B, décision
-        PO n° 15). Le serveur vide ce champ à l'écriture et l'ignore à
-        l'exécution ; ses modèles (principal, replis) se règlent ici, comme
-        pour les autres traitements (décision PO n° 26).
-      */}
-      {/*
         Lot 16b : tous les traitements n'ont plus que leur prompt maître —
-        aucun choix d'architecture proposé (migrations 0231 à 0234).
-        CDC 15 D-03 : texte COMPLET du prompt maître. Vide : fichier du dépôt
-        (valeur initiale).
+        aucun choix d'architecture proposé (migrations 0231 à 0234). Lot 49 :
+        l'administration des prompts maîtres est MANUELLE (section « Prompts
+        maîtres »), Prompt Control (T5) est supprimé.
       */}
-      {!isPromptAdministrable(entry.treatment) ? (
-        <p className="text-xs text-[color:var(--text-muted)]">
-          {T5_REPOSITORY_PROMPT_MESSAGE}
-          {catalog.master ? ` (${catalog.master.masterPromptCode})` : ''}
-        </p>
-      ) : null}
-      {/*
-        Ticket T5 : un ancien texte stocké (préambule, ancien master) est
-        ignoré à l'exécution. Information NON bloquante, lue sur la ligne
-        ENREGISTRÉE : elle disparaît une fois le brouillon enregistré (le
-        serveur vide ces champs) et relu.
-      */}
-      {!isPromptAdministrable(entry.treatment) && saved && hasLegacyPromptText(saved) ? (
-        <p role="status" className="text-xs text-amber-500">{T5_LEGACY_TEXT_MESSAGE}</p>
-      ) : null}
-      {catalog.master && isPromptAdministrable(entry.treatment) ? (
+      {catalog.master ? (
         <p className="text-xs text-[color:var(--text-muted)] rounded-lg border border-[color:var(--border-subtle)] p-3">
           Le texte du prompt maître de {entry.treatment} s’administre dans la section « Prompts maîtres » (brouillon,
           test facultatif, activation, historique), indépendamment de cette version de configuration.
         </p>
       ) : null}
 
-      {/*
-        CDC 15 §22.3, §32 : « une seule zone prompt par traitement » — le texte
-        master ci-dessus. Lot 16b : le préambule des étapes n'existe plus.
-      */}
-      {isPromptAdministrable(entry.treatment) ? (
-        <p className="text-xs text-[color:var(--text-muted)]">
-          Les réglages ci-dessous (modèles, replis, garde-fous, déclencheurs) suivent le cycle des versions de configuration.
-        </p>
-      ) : (
-        <p className="text-xs text-[color:var(--text-muted)]">
-          Ses réglages de modèle (principal, repli 1, repli 2) se configurent ici, comme pour les autres traitements.
-        </p>
-      )}
+      <p className="text-xs text-[color:var(--text-muted)]">
+        Les réglages ci-dessous (modèles, replis, garde-fous, déclencheurs) suivent le cycle des versions de configuration.
+      </p>
 
       {invalides.length > 0 ? (
         <p role="status" className="text-xs text-amber-500">
@@ -930,10 +608,6 @@ export default function AiConfigPage() {
     void openVersion(versionDemandee);
   }, [versionDemandee, versions, openVersion]);
 
-  // BO-IA-PROMPTS-01 : Prompt Control écrit dans les brouillons des prompts
-  // maîtres ; la section « Prompts maîtres » est relue.
-  const [promptsKey, setPromptsKey] = useState(0);
-  const afterT5Modification = () => { setPromptsKey((k) => k + 1); };
 
   // VER-007, WF-26 : quitter la page (fermeture, rechargement, lien externe)
   // avec des saisies non enregistrées demande confirmation au navigateur.
@@ -982,9 +656,8 @@ export default function AiConfigPage() {
       toast.error(`${t} n'a pas pu être enregistré.`);
       return false;
     }
-    // Relecture de ce qui est RÉELLEMENT enregistré (tickets T4 / T5) : la
-    // liste de déclencheurs telle que persistée, et un texte T5 hérité retiré
-    // par le serveur — l'information correspondante disparaît.
+    // Relecture de ce qui est RÉELLEMENT enregistré (ticket T4) : la liste
+    // de déclencheurs telle que persistée.
     try {
       const v = await apiClient.get<VersionDetail>(`/api/admin/ai/config-versions/${current.id}`);
       const relue = v.entries.find((e) => e.treatment === t);
@@ -1084,12 +757,7 @@ export default function AiConfigPage() {
   }
 
   const readOnly = current ? current.status !== 'DRAFT' : true;
-  /** T5 : ancien texte encore enregistré (retiré au prochain enregistrement). */
-  const legacyT5 = (t: Treatment) => {
-    if (isPromptAdministrable(t)) return false;
-    const e = current?.entries.find((x) => x.treatment === t);
-    return Boolean(e && hasLegacyPromptText(e));
-  };
+
   const issuesFor = (t: Treatment) => diff?.validation.issues.filter((i) => i.treatment === t) ?? [];
 
   return (
@@ -1115,7 +783,7 @@ export default function AiConfigPage() {
         test du corpus facultatif, historique et réactivation. Indépendant de
         la version de configuration affichée.
       */}
-      <MasterPrompts refreshKey={promptsKey} />
+      <MasterPrompts />
 
       {/* WF-04 — préparer (préproduction) ou importer (production) un package */}
       <MepPackages
@@ -1169,6 +837,11 @@ export default function AiConfigPage() {
             {readOnly && (
               <span className="text-xs text-[color:var(--text-muted)] flex items-center gap-1">
                 <Lock className="w-3 h-3" /> lecture seule — créez un brouillon pour modifier
+              </span>
+            )}
+            {(current.retiredTreatments?.length ?? 0) > 0 && (
+              <span data-testid="retired-treatments-note" className="text-xs text-[color:var(--text-muted)] break-words">
+                Version historique : contient {current.retiredTreatments!.join(', ')} (traitement supprimé), conservé pour l’audit et jamais appliqué.
               </span>
             )}
             <span className="flex-1" />
@@ -1225,25 +898,8 @@ export default function AiConfigPage() {
           </div>
 
           {/*
-            Champ unique « Demander une modification » (SCR-06) : T5 choisit
-            lui-même le ou les prompts à faire évoluer. Plus d'onglet par
-            traitement pour cela.
-          */}
-          {/* Ancre `#prompt-control` : point d'entrée de Prompt Control (T5),
-              successeur de l'ancienne « Gestion IA » (routes supprimées). */}
-          <div id="prompt-control" className="scroll-mt-4 rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--bg-card)] p-4">
-            <PromptControl
-              versionId={current.id}
-              hasUnsaved={dirty.size > 0}
-              onModified={afterT5Modification}
-              versions={versions}
-            />
-          </div>
-
-          {/*
-            Réglages techniques par traitement — repliés, sans onglets. Le geste
-            courant est la demande ci-dessus ; ces réglages (modèles, replis,
-            garde-fous, déclencheurs, prompt en secours) restent accessibles.
+            Réglages techniques par traitement — repliés, sans onglets :
+            modèles, replis, garde-fous, déclencheurs (T1, T2, T3, T4, T6).
           */}
           <section className="space-y-2">
             <h2 className="text-sm font-semibold text-[color:var(--text-primary)]">Réglages techniques par traitement</h2>
@@ -1283,7 +939,6 @@ export default function AiConfigPage() {
                   {drafts[t.code] && (
                     <TreatmentEditor
                       entry={drafts[t.code]}
-                      saved={current.entries.find((e) => e.treatment === t.code)}
                       catalog={t}
                       catalogs={catalogs}
                       readOnly={readOnly}
@@ -1301,13 +956,8 @@ export default function AiConfigPage() {
                       <Button size="sm" variant="ghost" onClick={() => resetTreatment(t.code)} disabled={!dirty.has(t.code) || busy}>
                         <Undo2 className="w-3.5 h-3.5 mr-1.5" /> Réinitialiser
                       </Button>
-                      {/*
-                        T5 : un texte hérité se retire en ENREGISTRANT le
-                        brouillon — le bouton reste disponible sans autre
-                        modification (aucune manipulation SQL ni JSON).
-                      */}
                       <Button size="sm" onClick={() => saveTreatment(t.code)}
-                        disabled={(!dirty.has(t.code) && !legacyT5(t.code)) || busy}>
+                        disabled={!dirty.has(t.code) || busy}>
                         <Save className="w-3.5 h-3.5 mr-1.5" /> Enregistrer {t.code}
                       </Button>
                     </div>

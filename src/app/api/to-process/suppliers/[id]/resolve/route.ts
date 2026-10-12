@@ -1,12 +1,18 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { emitBusinessEvent } from '@/services/verebona-assistant/events/business-events';
 import { db } from '@/db';
-import { supplierReviewItems, suppliers, documentSuppliers } from '@/db/schema';
+import { supplierReviewItems, suppliers, documentSuppliers, assetFiles } from '@/db/schema';
 import { eq, and, sql } from 'drizzle-orm';
 import { SessionService } from '@/lib/session-service';
 import { apiError } from '@/lib/api-errors';
+import { refsInAccount } from '@/services/security/account-ownership';
 
 // POST /api/to-process/suppliers/[id]/resolve
+// Lot 49 (SEC-03, « autres relations fournisseurs ») : la fiche cible d'une
+// fusion et la fiche de l'élément sont du compte actif, vérifiées avant toute
+// écriture ; chaque écriture porte la condition de compte (un document d'un
+// autre compte n'est jamais rattaché, une fiche d'un autre compte jamais
+// modifiée ni archivée).
 export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -40,6 +46,12 @@ export async function POST(
 
     if (!resolution) return apiError(400, 'INVALID_INPUT', 'resolution is required');
 
+    const fiches = [item.supplierId, resolution === 'merged' ? targetSupplierId : null]
+      .filter((x): x is number => x !== null && x !== undefined).map(Number);
+    if (fiches.some((x) => !Number.isInteger(x)) || !(await refsInAccount(accountId, { supplier: fiches }))) {
+      return apiError(404, 'NOT_FOUND', 'Supplier not found');
+    }
+
     // Conflit de coordonnées : l'utilisateur choisit la valeur à garder
     if (resolution === 'use_detected' && item.conflictingField && item.detectedValue && item.supplierId) {
       const SUPPLIER_FIELD_MAP: Record<string, string> = {
@@ -54,15 +66,18 @@ export async function POST(
         return apiError(400, 'INVALID_INPUT', 'Champ de conflit non autorisé');
       }
       await db.execute(
-        sql`UPDATE suppliers SET ${sql.raw(colName)} = ${item.detectedValue}, updated_at = NOW() WHERE id = ${item.supplierId}`
+        sql`UPDATE suppliers SET ${sql.raw(colName)} = ${item.detectedValue}, updated_at = NOW() WHERE id = ${item.supplierId} AND account_id = ${accountId}`
       );
     }
 
     if (resolution === 'merged' && targetSupplierId && item.supplierId && item.supplierId !== targetSupplierId) {
       // Migrate document links from item.supplierId to targetSupplierId
+      // Documents DU COMPTE seulement (une relation incorrecte en base n'est
+      // jamais reportée sur la fiche cible).
       const docLinks = await db
         .select({ documentId: documentSuppliers.documentId })
         .from(documentSuppliers)
+        .innerJoin(assetFiles, and(eq(assetFiles.id, documentSuppliers.documentId), eq(assetFiles.accountId, accountId)))
         .where(eq(documentSuppliers.supplierId, item.supplierId));
 
       for (const { documentId } of docLinks) {
@@ -91,7 +106,7 @@ export async function POST(
       // Archive old supplier
       await db.update(suppliers)
         .set({ status: 'archived', updatedAt: new Date() })
-        .where(eq(suppliers.id, item.supplierId));
+        .where(and(eq(suppliers.id, item.supplierId), eq(suppliers.accountId, accountId)));
     }
 
     await db.update(supplierReviewItems)
@@ -102,7 +117,7 @@ export async function POST(
         resolvedAt: new Date(),
         updatedAt: new Date(),
       })
-      .where(eq(supplierReviewItems.id, reviewItemId));
+      .where(and(eq(supplierReviewItems.id, reviewItemId), eq(supplierReviewItems.accountId, accountId)));
 
     // CDC Assistant §25.7, §31.7 : élément « À traiter » résolu.
     await emitBusinessEvent({ type: 'TO_PROCESS_ITEM_UPDATED', accountId, entityId: reviewItemId });

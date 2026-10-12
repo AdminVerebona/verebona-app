@@ -170,7 +170,8 @@ export async function listUpcomingAgenda(accountId: number, opts: {
             coalesce(array_remove(array_agg(DISTINCT a.name), NULL), '{}') AS "assetNames"
        FROM agenda_items i
        LEFT JOIN agenda_asset_links l ON l.agenda_item_id = i.id
-       LEFT JOIN assets a ON a.id = l.asset_id AND a.deleted_at IS NULL
+       -- Lot 49 (SEC-08, T2) : bien du compte seulement.
+       LEFT JOIN assets a ON a.id = l.asset_id AND a.account_id = i.account_id AND a.deleted_at IS NULL
       WHERE i.account_id = $1 AND (i.manual_status IS NULL OR i.manual_status = '')
         AND i.start_date >= $2::date
         AND ($3::int IS NULL OR i.start_date <= $2::date + $3::int)

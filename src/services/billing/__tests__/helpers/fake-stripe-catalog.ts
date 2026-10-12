@@ -5,11 +5,12 @@
  */
 import type Stripe from 'stripe';
 import type {
-  ApprovedProduct, CatalogRunRow, CatalogStateRow, CatalogStore, PriceVersionRow,
+  ApprovedProduct, CatalogRecoveryRow, CatalogRunRow, CatalogStateRow, CatalogStore, PriceVersionRow,
 } from '../../catalog-store';
 import type { CatalogDeps } from '../../price-catalog.service';
 
-export function memoryStore(): CatalogStore & { states: Map<string, CatalogStateRow>; products: Map<string, ApprovedProduct[]>; versions: Map<string, PriceVersionRow>; runs: CatalogRunRow[] } {
+export function memoryStore(): CatalogStore & { states: Map<string, CatalogStateRow>; products: Map<string, ApprovedProduct[]>; versions: Map<string, PriceVersionRow>; runs: CatalogRunRow[]; recoveries: Map<string, CatalogRecoveryRow> } {
+  const recoveries = new Map<string, CatalogRecoveryRow>();
   const states = new Map<string, CatalogStateRow>();
   const products = new Map<string, ApprovedProduct[]>();
   const versions = new Map<string, PriceVersionRow>();
@@ -22,7 +23,7 @@ export function memoryStore(): CatalogStore & { states: Map<string, CatalogState
   });
   const ensure = (ctx: string) => { if (!states.has(ctx)) states.set(ctx, blank(ctx)); return states.get(ctx)!; };
   return {
-    states, products, versions, runs,
+    states, products, versions, runs, recoveries,
     async getState(ctx) { return states.get(ctx) ? { ...states.get(ctx)! } : null; },
     async ensureState(ctx) { return { ...ensure(ctx) }; },
     async activateSnapshot(i) {
@@ -92,6 +93,9 @@ export function memoryStore(): CatalogStore & { states: Map<string, CatalogState
     },
     async getRun(id) { return runs[id - 1] ?? null; },
     async listRuns(ctx, limit) { return runs.filter((r) => r.catalogContext === ctx).slice(-limit).reverse(); },
+    async getRecovery(ctx, key) { const r = recoveries.get(`${ctx}|${key}`); return r ? { ...r } : null; },
+    async saveRecovery(row) { recoveries.set(`${row.catalogContext}|${row.recoveryKey}`, { ...row, updatedAt: new Date() }); },
+    async listRecoveries(ctx) { return [...recoveries.values()].filter((r) => r.catalogContext === ctx).map((r) => ({ ...r })); },
   };
 }
 
@@ -136,6 +140,21 @@ export function fakeStripe(initial: Stripe.Price[], products: Array<{ id: string
   let updates = 0;
   const idem = new Map<string, Stripe.Price>();
   const withProduct = (p: Stripe.Price) => ({ ...p, product: prods.get(p.product as string) ?? p.product }) as Stripe.Price;
+  // Lot 49A : règle Stripe du portail (erreur réelle de la préprod).
+  const uniqueIntervals = (features: Stripe.BillingPortal.ConfigurationCreateParams.Features | undefined) => {
+    const list = (features?.subscription_update as { products?: Array<{ product: string; prices: string[] }> } | undefined)?.products ?? [];
+    for (const p of list) {
+      const seen = new Set<string>();
+      for (const id of p.prices) {
+        const iv = prices.get(id)?.recurring?.interval ?? `?${id}`;
+        if (seen.has(iv)) {
+          calls.push('portal.rejected');
+          throw Object.assign(new Error('For each product, its price must have unique billing intervals.'), { type: 'StripeInvalidRequestError', statusCode: 400 });
+        }
+        seen.add(iv);
+      }
+    }
+  };
   const client = {
     accounts: { retrieve: async () => ({ id: 'acct_test' }) },
     prices: {
@@ -199,12 +218,14 @@ export function fakeStripe(initial: Stripe.Price[], products: Array<{ id: string
         list: () => ({ [Symbol.asyncIterator]: async function* () { for (const c of portal.values()) yield c; } }),
         retrieve: async (id: string) => portal.get(id) ?? Promise.reject(new Error('missing')),
         create: async (params: Stripe.BillingPortal.ConfigurationCreateParams) => {
+          uniqueIntervals(params.features);
           const c = { id: `bpc_${portal.size + 1}`, active: true, metadata: params.metadata, features: params.features } as unknown as Stripe.BillingPortal.Configuration;
           portal.set(c.id, c);
           calls.push('portal.create');
           return c;
         },
         update: async (id: string, params: Stripe.BillingPortal.ConfigurationUpdateParams) => {
+          uniqueIntervals(params.features as Stripe.BillingPortal.ConfigurationCreateParams.Features);
           const c = portal.get(id)!;
           const next = { ...c, features: { ...c.features, ...params.features } } as unknown as Stripe.BillingPortal.Configuration;
           portal.set(id, next);

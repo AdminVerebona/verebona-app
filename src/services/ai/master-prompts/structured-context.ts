@@ -27,7 +27,7 @@
  *
  * Seuls les prompts maîtres qui DÉCLARENT un contrat d'exécution
  * (`STRUCTURED_CONTEXT_SPECS`) connaissent ce mode — T4 au lot 34D. T1, T2,
- * T3, T5 et T6 restent LEGACY_TEMPLATE, sans aucun changement.
+ * T3 et T6 restent LEGACY_TEMPLATE, sans aucun changement.
  * ══════════════════════════════════════════════════════════════════════════
  */
 import { createHash } from 'crypto';

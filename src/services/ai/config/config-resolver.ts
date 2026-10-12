@@ -42,7 +42,7 @@
  * sans borne, elle attend la base sur le chemin d'appel.
  */
 import { getOperation, type AiOperationDefinition } from '../registry/operations';
-import { isMasterPromptAdministrable, isPromptAdministrable, treatmentForUseCase, type Treatment } from './treatments';
+import { isMasterPromptAdministrable, treatmentOfUseCase, type Treatment } from './treatments';
 import {
   DEFAULT_PROMPT_ARCHITECTURE, promptArchitectureOf, masterPromptOf,
   type PromptArchitecture, type ReasoningLevel, type TreatmentConfig,
@@ -322,19 +322,20 @@ export async function resolveOperationConfig(
 
   const effective = await entriesForCurrentExecution();
 
-  let treatment: Treatment;
+  let treatment: Treatment | null;
   try {
-    treatment = treatmentForUseCase(op.useCaseCode);
+    treatment = treatmentOfUseCase(op.useCaseCode);
   } catch {
-    // Usage hors correspondance : le code fait foi, sans bruit.
-    return duCode;
+    treatment = null;
   }
+  // Usage technique (`AI_GOVERNANCE`, lot 49 : indépendant des traitements)
+  // ou hors correspondance : le référentiel du code fait foi, sans bruit —
+  // aucune ligne de configuration, aucun prompt maître ne s'y applique.
+  if (treatment === null) return duCode;
 
   // BO-IA-PROMPTS-01 (AC15) : la version ACTIVE du prompt maître administrée
   // au BO prime sur le texte de la version de configuration — avec ou sans
-  // version de configuration. T5 compris depuis le lot 32B (décision PO
-  // n° 15) ; pour T5, le texte d'une version de configuration reste ignoré
-  // (`promptOf`) : version active du BO, sinon fichier du dépôt.
+  // version de configuration.
   const actif = isMasterPromptAdministrable(treatment) ? (await activeMasterPrompts()).get(treatment) ?? null : null;
   const avecPrompt = <T extends ResolvedOperationConfig>(c: T): T => (actif && c.promptArchitecture === 'master'
     ? { ...c, masterPromptText: actif.content, masterPromptVersionId: actif.id, masterPromptVersionNumber: actif.versionNumber, masterExecution: actif.execution ?? null }
@@ -388,23 +389,17 @@ function promptOf(entry: TreatmentConfig): Pick<ResolvedOperationConfig, 'prompt
   return {
     promptArchitecture,
     promptPreamble: preambleFor(entry.treatment, entry.prompt),
-    masterPromptText: promptArchitecture === 'master' && isPromptAdministrable(entry.treatment)
-      ? masterPromptOf(entry)
-      : null,
+    masterPromptText: promptArchitecture === 'master' ? masterPromptOf(entry) : null,
   };
 }
 
 
 /**
- * Préambule administrable d'un traitement, ou `null`.
- *
- * T5 n'en a jamais (T5-003, écart E-02) : son comportement est entièrement dans
- * le code. Une Active antérieure à cette règle peut encore porter un texte
- * dans sa ligne T5 ; il est ignoré ici, sans attendre qu'une nouvelle version
- * soit activée.
+ * Préambule administrable d'un traitement, ou `null`. Lot 49 : seuls les
+ * traitements opérationnels ont une ligne de configuration (une ligne T5
+ * historique n'est jamais lue — `config-version.repository`).
  */
-export function preambleFor(treatment: Treatment, prompt: string): string | null {
-  if (!isPromptAdministrable(treatment)) return null;
+export function preambleFor(_treatment: Treatment, prompt: string): string | null {
   return prompt.trim() === '' ? null : prompt;
 }
 

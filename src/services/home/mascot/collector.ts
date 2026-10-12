@@ -107,7 +107,7 @@ async function readProcessing(accountId: number): Promise<MascotRawData['process
       `SELECT e.id, e.export_type AS "exportType", e.asset_id AS "assetId", a.name AS "assetName",
               e.created_at AS at
          FROM export_generation e
-         JOIN assets a ON a.id = e.asset_id
+         JOIN assets a ON a.id = e.asset_id AND a.account_id = e.account_id
         WHERE e.account_id = $1 AND e.status IN ('pending', 'queued', 'generating')
           AND e.created_at > NOW() - $2::interval AND a.deleted_at IS NULL
         ORDER BY e.created_at DESC LIMIT 5`,
@@ -168,10 +168,15 @@ async function readAgenda(accountId: number, today: string): Promise<MascotAgend
             l.asset_id AS "assetId", a.name AS "assetName",
             a.category AS "assetCategory", a.subtype AS "assetSubtype"
        FROM agenda_items i
+       -- Lot 49 (SEC-08, T6) : bien lié DU COMPTE seulement — une
+       -- association incorrecte en base n'apporte jamais à la mascotte le
+       -- nom ou la catégorie d'un bien d'un autre compte.
        LEFT JOIN LATERAL (
-         SELECT asset_id FROM agenda_asset_links WHERE agenda_item_id = i.id ORDER BY asset_id LIMIT 1
+         SELECT x.asset_id FROM agenda_asset_links x
+           JOIN assets b ON b.id = x.asset_id AND b.account_id = i.account_id
+          WHERE x.agenda_item_id = i.id ORDER BY x.asset_id LIMIT 1
        ) l ON TRUE
-       LEFT JOIN assets a ON a.id = l.asset_id AND a.deleted_at IS NULL
+       LEFT JOIN assets a ON a.id = l.asset_id AND a.account_id = i.account_id AND a.deleted_at IS NULL
       WHERE i.account_id = $1
         AND (i.manual_status IS NULL OR trim(i.manual_status) = '')
         ${t4 ? filtreT4 : "AND (i.is_automatic = FALSE OR i.occurrence_nature = 'FORECAST')"}

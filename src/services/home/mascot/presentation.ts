@@ -7,7 +7,7 @@
 import { canonicalJson, sha256 } from './hash';
 import type { T6Message } from './t6-contract';
 import type {
-  MascotParagraph, MascotPresentation, MascotSecondary, MascotSubject, MascotTodoBlock,
+  MascotDuoInvite, MascotParagraph, MascotPresentation, MascotSecondary, MascotSubject, MascotTodoBlock,
 } from './types';
 import { CLEAR_TEXT, DEGRADED_NOTICE } from './types';
 import { parisDay, tileFor, type TileOptions } from './bubble';
@@ -20,6 +20,8 @@ import { parisDay, tileFor, type TileOptions } from './bubble';
  */
 export function contextHashOf(
   subjects: MascotSubject[], secondaries: MascotSecondary[], degraded: boolean, todo?: MascotTodoBlock | null,
+  /** Lot 49A (ticket 13) : l'invitation envoyée fait disparaître l'action. */
+  duoInvite?: MascotDuoInvite | null,
 ): string {
   return sha256(canonicalJson({
     subjects: subjects.map((s) => ({ id: s.subjectId, facts: s.facts, actions: s.actions, text: s.fallbackText })),
@@ -28,6 +30,7 @@ export function contextHashOf(
     ...(todo !== undefined
       ? { todo: todo ? { total: todo.total, items: todo.items.map((i) => ({ id: i.todoId, t: i.actionType, c: i.availableChoices ?? null, q: i.card.question })) } : null }
       : {}),
+    ...(duoInvite ? { duoInvite: duoInvite.href } : {}),
   })).slice(0, 32);
 }
 
@@ -43,8 +46,10 @@ export function buildPresentation(p: {
   tiles?: TileOptions;
   /** « À traiter » de la bulle (lot 32, MASC2) ; absent : non transmis. */
   todo?: MascotTodoBlock | null;
+  /** « Inviter quelqu'un » (lot 49A, ticket 13) — première action. */
+  duoInvite?: MascotDuoInvite | null;
 }): MascotPresentation {
-  const contextHash = contextHashOf(p.subjects, p.secondaries, p.degraded, p.todo);
+  const contextHash = contextHashOf(p.subjects, p.secondaries, p.degraded, p.todo, p.duoInvite);
   const computedAt = (p.now ?? new Date()).toISOString();
   const base = {
     schemaVersion: 'mascot-presentation-v1' as const,
@@ -53,6 +58,7 @@ export function buildPresentation(p: {
     degradedNotice: p.degraded ? DEGRADED_NOTICE : null,
     computedAt,
     ...(p.todo !== undefined ? { todo: p.todo } : {}),
+    ...(p.duoInvite ? { duoInvite: p.duoInvite } : {}),
   };
 
   if (p.subjects.length === 0) {
@@ -62,6 +68,8 @@ export function buildPresentation(p: {
     // Lot 32 (MASC2) : des actions « À traiter » sont présentes — le niveau 1
     // les compte (client) ; jamais « Tout est à jour ».
     if (p.todo && p.todo.total > 0) return { ...base, status: 'ok', source: 'deterministic', paragraphs: [] };
+    // Lot 49A (ticket 13) : « Inviter quelqu'un » proposé — jamais « Tout est à jour ».
+    if (p.duoInvite) return { ...base, status: 'ok', source: 'deterministic', paragraphs: [] };
     return {
       ...base,
       status: 'clear',

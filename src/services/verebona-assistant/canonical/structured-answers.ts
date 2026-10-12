@@ -31,8 +31,9 @@ import {
   claimSourceId, costLineSource, formatEur, formatMinorAmount, specificCostTerms,
   type AssetHistoryEntry, type ClaimOverview, type ContractOverview, type OperationCostRead, type PaymentsRead,
 } from './operations';
-import type { ExpenseTheme } from './expense-classes';
+import { expenseThemeWords, type ExpenseTheme } from './expense-classes';
 import { findReadableFields, purchaseMention } from './field-vocabulary';
+import { semanticResidue, textMatchesTerms } from '../core/semantic-scope';
 
 export interface ScopeLike { assets: AssetRow[]; ambiguous: boolean; unresolved: boolean; label: string | null }
 
@@ -45,7 +46,18 @@ export type CanonicalStrategy =
 export type CanonicalLevel1 =
   | { strategy: CanonicalStrategy; answer: string; sources: RetrievedSource[]; claims: Claim[]; kind: 'exact' | 'list' | 'calc' | 'no_result' | 'conflict' }
   | { ambiguous: AssetRow[]; reason: string }
+  | ScopeUnresolved
   | null;
+
+/**
+ * Lot 49 (STRONG / WEAK) : une stratégie structurée était CANDIDATE, mais un
+ * sujet significatif de la question (`terms`, « internet ») n'est consommé
+ * par rien — elle n'est PAS exécutée (jamais d'élargissement silencieux à
+ * une catégorie générique) ; T2 (UNDERSTAND) reprend la main.
+ */
+export interface ScopeUnresolved {
+  scopeUnresolved: { strategyCandidate: CanonicalStrategy; terms: string[]; assetIds: number[] };
+}
 
 /** Réponse structurée prête (sans ambiguïté). */
 export type CanonicalAnswer = Extract<NonNullable<CanonicalLevel1>, { strategy: CanonicalStrategy }>;
@@ -139,6 +151,12 @@ export const CONTRACT_Q = /\b(contrats?|polices? d'assurance)\b|\b(assurances?|a
 const CONTRACT_ASK = /\b(quel|quelle|quels|quelles|mes|ai-je|en cours|souscrit\w*|liste|qui|aupres de qui|chez qui)\b/;
 const CONTRACT_NOT = /\b(expire\w*|expiration|echeance\w*|renouvel\w*|fin de|combien|retrouve\w*|montre|affiche|ouvre|cherche\w*|resilie\w*|comment)\b/;
 const CONTRACT_STRIP = /contrats?|polices?|assurances?|abonnements?|en cours|souscrits?|aupr[eè]s de qui|chez qui|quel(le)?s?/gi;
+
+/**
+ * Lot 49 : noms GÉNÉRIQUES d'une dépense (pièce, frais, intervention) — ils
+ * désignent la dépense elle-même, jamais un sujet précis.
+ */
+const MOTS_DEPENSE = ['facture', 'factures', 'document', 'documents', 'frais', 'intervention', 'interventions', 'operation', 'operations', 'achats'];
 
 const SOURCES_MAX = 6;
 const uniques = (xs: Array<RetrievedSource | null | undefined>): RetrievedSource[] => {
@@ -322,6 +340,11 @@ export async function tryCanonicalStructured(p: {
   const { port, accountId, message } = p;
   const m = plain(message);
   const today = port.today();
+  /** Résidu sémantique d'une stratégie candidate (lot 49) : ce qu'elle ne consomme pas. */
+  const residu = (scope: ScopeLike, consumed: readonly string[] = []) =>
+    semanticResidue(message, { assetNames: scope.assets.map((a) => a.name), consumed: [...expenseThemeWords(message), ...MOTS_DEPENSE, ...consumed] });
+  const nonResolu = (strategyCandidate: CanonicalStrategy, terms: string[], scope: ScopeLike): ScopeUnresolved =>
+    ({ scopeUnresolved: { strategyCandidate, terms, assetIds: scope.assets.map((a) => a.id) } });
 
   // ── Informations manquantes (T2-04) ────────────────────────────────────
   if (MISSING.test(m) && port.listMissingInformation) {
@@ -363,7 +386,12 @@ export async function tryCanonicalStructured(p: {
     const reste = message.replace(CLAIM_STRIP, ' ');
     const scope = await p.resolveScope(reste);
     if (!scope.unresolved) {
-      const claims = await port.readClaims(accountId, scope.assets.map((a) => a.id));
+      const tous = await port.readClaims(accountId, scope.assets.map((a) => a.id));
+      // Lot 49 : un sinistre PRÉCIS (« le dégât des eaux ») est cherché dans
+      // le texte des sinistres réels ; rien ne répond → T2, jamais la liste.
+      const termes = tous.length ? residu(scope, message.match(CLAIM_STRIP) ?? []) : [];
+      const claims = termes.length ? tous.filter((c) => textMatchesTerms(c.label, termes)) : tous;
+      if (termes.length && !claims.length) return nonResolu('structured.claim_status', termes, scope);
       if (claims.length) return claimAnswer(claims, scope, scope.assets.length ? scope.assets : await port.listAssets(accountId).catch(() => []));
     }
   }
@@ -377,7 +405,12 @@ export async function tryCanonicalStructured(p: {
       const a = scope.assets[0];
       const h = await port.readAssetHistory(accountId, a.id, { assetName: a.name });
       const theme = expenseThemeOf(message);
-      const entries = (h?.entries ?? []).filter((e) => !theme || e.theme === theme);
+      // Lot 49 : un objet précis (« la chaudière ») filtre l'historique sur le
+      // texte réel des entrées ; rien ne répond → T2, jamais tout l'historique.
+      const termes = h ? residu(scope, (message.match(HISTORY_STRIP) ?? [])) : [];
+      const entries = (h?.entries ?? []).filter((e) => (!theme || e.theme === theme)
+        && (!termes.length || textMatchesTerms(`${e.label} ${e.provider ?? ''}`, termes)));
+      if (h && termes.length && !entries.length) return nonResolu('structured.operation_history', termes, scope);
       if (h && entries.length) return historyAnswer(a, entries, theme);
     }
   }
@@ -393,7 +426,12 @@ export async function tryCanonicalStructured(p: {
       const a = scope.assets.length === 1 ? scope.assets[0] : null;
       const contrats = await port.readContracts(accountId, scope.assets.map((x) => x.id), { assetName: a?.name ?? null });
       const theme = expenseThemeOf(message);
-      const retenus = theme === 'insurance' ? contrats.filter((c) => /assur/i.test(`${c.label} ${c.provider ?? ''}`)) : contrats;
+      // Lot 49 : un contrat PRÉCIS (« mon contrat internet ») est cherché dans
+      // le texte des contrats réels ; rien ne répond → T2, jamais la liste.
+      const termes = contrats.length ? residu(scope, message.match(CONTRACT_STRIP) ?? []) : [];
+      const retenus = (theme === 'insurance' ? contrats.filter((c) => /assur/i.test(`${c.label} ${c.provider ?? ''}`)) : contrats)
+        .filter((c) => !termes.length || textMatchesTerms(`${c.label} ${c.provider ?? ''} ${c.reference ?? ''}`, termes));
+      if (termes.length && !retenus.length) return nonResolu('structured.contracts', termes, scope);
       if (retenus.length) return contractsAnswer(retenus, scope);
     }
   }
@@ -407,6 +445,13 @@ export async function tryCanonicalStructured(p: {
     const scope = await p.resolveScope(reste);
     if (scope.unresolved) return null;
     if (scope.ambiguous) return { ambiguous: scope.assets, reason: 'PAID_MULTIPLE_ASSETS' };
+    // Lot 49 : « Je paye combien pour INTERNET à la maison ? » — « payé » +
+    // « combien » disent qu'un montant est cherché, pas lequel. Un sujet non
+    // consommé n'autorise ni le prix d'achat, ni un total des paiements.
+    const termesPaye = residu(scope);
+    if (termesPaye.length) {
+      return nonResolu(!theme && !year && scope.assets.length === 1 ? 'structured.acquisition_price' : 'structured.payments', termesPaye, scope);
+    }
     const assetIds = scope.assets.map((a) => a.id);
     const pour = `${scope.label ? ` pour ${scope.label}` : ''}${theme ? ` (${EXPENSE_THEME_LABELS[theme]})` : ''}${year ? ` en ${year}` : ''}`;
     // C15.2 : « J'ai payé combien pour la Polo ? » — prix d'achat d'abord,
@@ -438,6 +483,11 @@ export async function tryCanonicalStructured(p: {
       if (couts.length) return operationCostAnswer(couts, scope);
     }
     if (scope.unresolved) return null;
+    // Lot 49 : intervention non désignée par les données ET sujet non
+    // consommé (« combien me coûte internet à la maison ? ») : jamais l'agrégat
+    // de la catégorie ou du bien — T2 reprend la main.
+    const termesCout = scope.ambiguous ? [] : residu(scope);
+    if (termesCout.length) return nonResolu('structured.sum_qualified', termesCout, scope);
     const year = Number(m.match(/\b(20\d{2})\b/)?.[1]) || undefined;
     const q = await port.sumQualifiedExpenses(accountId, { assetIds: scope.assets.map((a) => a.id), year, theme });
     const pour = `${scope.label ? ` pour ${scope.label}` : ''}${year ? ` en ${year}` : ''}`;

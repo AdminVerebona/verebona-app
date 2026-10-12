@@ -18,7 +18,7 @@
  * tels quels) ; le reste côté client, à partir de `MascotPresentation`.
  * ══════════════════════════════════════════════════════════════════════════
  */
-import type { MascotParagraph, MascotPresentation, MascotSecondary, MascotSubject, MascotTile, MascotTodoItem } from './types';
+import type { MascotDuoInvite, MascotParagraph, MascotPresentation, MascotSecondary, MascotSubject, MascotTile, MascotTodoItem } from './types';
 import { emptyAccountSuggestions } from '@/services/verebona-assistant/registries/capability-registry';
 
 // ── Tuiles (serveur) ────────────────────────────────────────────────────────
@@ -196,7 +196,8 @@ export function composeSpeech({ presentation, empty, failed }: SpeechInput): Spe
   // Lot 32 (MASC2) / lot 34 (MASC3) — niveau 1 : une phrase qui COMPTE les
   // « À traiter » AFFICHÉS (DO_FIRST, au plus deux), sans les répéter ; les
   // autres sujets (échéances, analyses, recommandations) gardent leur phrase.
-  const todoShown = presentation.todo?.items.length ?? 0;
+  // Lot 49A (ticket 13) : « Inviter quelqu'un » est une action affichée.
+  const todoShown = (presentation.todo?.items.length ?? 0) + (presentation.duoInvite ? 1 : 0);
   if (todoShown > 0) {
     const autres = paras.map((p) => p.text.trim()).filter(Boolean);
     return { text: [todoSummary(todoShown), ...autres].join(' '), highlights };
@@ -310,6 +311,7 @@ interface HomeItemBase {
  *                   3e niveau, supprimées comme liste indépendante).
  */
 export type HomeItem =
+  | (HomeItemBase & { kind: 'duo-invite'; invite: MascotDuoInvite })
   | (HomeItemBase & { kind: 'todo'; todo: MascotTodoItem })
   | (HomeItemBase & { kind: 'subject'; tile: ActionTile })
   | (HomeItemBase & { kind: 'secondary'; secondary: MascotSecondary });
@@ -331,14 +333,25 @@ export function todoHomeItem(t: MascotTodoItem): HomeItem {
 }
 
 /**
- * Niveau 2 de la bulle : « À traiter » d'abord (ordre de la file), puis les
+ * Lot 49A (ticket 13) — « Inviter quelqu'un » (Premium Duo, personne
+ * invitée) : PREMIER élément, y compris sur un compte encore vide (pure).
+ */
+export function duoInviteHomeItem(p: MascotPresentation | null): HomeItem | null {
+  const d = p?.duoInvite;
+  if (!d) return null;
+  return { kind: 'duo-invite', key: 'duo-invite', invite: d, title: d.title, sub: d.subtitle, cta: d.cta, tone: 'blue', icon: 'plus' };
+}
+
+/**
+ * Niveau 2 de la bulle : « Inviter quelqu'un » (lot 49A) puis « À traiter » d'abord (ordre de la file), puis les
  * sujets portant une action, puis les recommandations et l'étape d'accueil —
  * même composant, au plus `MAX_HOME_ITEMS`. Compte vide : rien (tuiles
  * d'amorce côté écran).
  */
 export function homeItems(p: MascotPresentation | null, empty: boolean): HomeItem[] {
   if (empty || !p) return [];
-  const out: HomeItem[] = (p.todo?.items ?? []).map(todoHomeItem);
+  const invite = duoInviteHomeItem(p);
+  const out: HomeItem[] = [...(invite ? [invite] : []), ...(p.todo?.items ?? []).map(todoHomeItem)];
   for (const t of actionTiles(p)) {
     out.push({
       kind: 'subject', key: `subject:${t.key}`, tile: t, title: t.label,
@@ -396,6 +409,7 @@ export function homePose(p: MascotPresentation | null, empty: boolean, failed = 
   // nature compte toujours pour la pose (arbitrage → vérifier, sinon action).
   // Lot 34 (MASC3) : seuls les « À traiter » affichés (DO_FIRST) comptent.
   for (const t of p.todo?.items ?? []) kinds.push(t.actionKind === 'ARBITRATE' ? 'verify' : 'action');
+  if (p.duoInvite) kinds.push('action');
   if (kinds.includes('overdue')) return 'alert-folder';
   if (kinds.includes('verify')) return 'questioning';
   if (kinds.includes('action')) return 'reminder-bell';

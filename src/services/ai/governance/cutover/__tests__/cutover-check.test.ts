@@ -95,7 +95,8 @@ describe('le dépôt respecte l’architecture cible (lot 16b)', () => {
       storedSteps: null, retiredVariables: [], usage: null, days: 30,
     });
     expect(fichiers.map((f) => f.promptCode).sort()).toEqual(
-      ['t1_master_v1', 't2_master_v1', 't3_master_v1', 't4_master_v1', 't5_master_v1', 't6_master_v1'],
+      // Lot 49 (ticket 12) : t5_master_v1 supprimé.
+      ['t1_master_v1', 't2_master_v1', 't3_master_v1', 't4_master_v1', 't6_master_v1'],
     );
     expect(r.ready).toBe(true);
   });

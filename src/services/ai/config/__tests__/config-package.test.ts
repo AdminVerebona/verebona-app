@@ -40,11 +40,11 @@ vi.mock('../environment', async (orig) => ({
   getAiEnvironment: () => env,
 }));
 
-const { preparePackage, importPackage, buildPayload } = await import('../config-package.service');
+const { preparePackage, importPackage, buildPayload, compatiblePackagePayload } = await import('../config-package.service');
 const { emptyTreatmentConfig } = await import('../config-types');
 
 const CASCADE = { database: 0.8, text: 0.6, semantic: 0.5, semanticEnabled: false };
-const entries = (['T1', 'T2', 'T3', 'T4', 'T5', 'T6'] as const).map((t) => ({
+const entries = (['T1', 'T2', 'T3', 'T4', 'T6'] as const).map((t) => ({
   ...emptyTreatmentConfig(t),
   prompt: `prompt ${t}`,
   primaryModel: 'gemini-3.1-flash-lite',
@@ -111,7 +111,7 @@ describe('importPackage', () => {
     expect(r).toMatchObject({ outcome: 'created', versionId: 42, visibleNumber: 4, divergence: null });
 
     const lignes = txQueries.filter((q) => /INSERT INTO ai_config_entries/.test(q.sql));
-    expect(lignes).toHaveLength(6);
+    expect(lignes).toHaveLength(5);
     for (const l of lignes) expect(l.sql).toMatch(/cascade/);
     const t2 = lignes.find((l) => l.params[1] === 'T2')!;
     expect(JSON.parse(String(t2.params[12]))).toEqual(CASCADE);
@@ -180,5 +180,50 @@ describe('importPackage', () => {
     txAnswers = [[], [{ id: 3, uid: 'autre' }]];
     await expect(importPackage(payload, PKG_ROW.uid, 1)).rejects.toMatchObject({ code: 'VERSION_NUMBER_COLLISION' });
     expect(txQueries.some((q) => /INSERT/.test(q.sql))).toBe(false);
+  });
+});
+
+// ── Lot 49 (ticket 12) — compatibilité des anciens packages contenant T5 ─────
+describe('T5-DEL-05 — packages historiques', () => {
+  const ligneT5 = { ...emptyTreatmentConfig('T1'), treatment: 'T5', prompt: 'ancien T5', primaryModel: 'gemini-2.5-pro' };
+  const ancien = () => ({ ...buildPayload('preprod', 3, 'Ancien', entries), entries: [...buildPayload('preprod', 3, 'Ancien', entries).entries, ligneT5] });
+
+  it('T12-AC08 — un NOUVEAU package ne contient jamais T5 (cinq traitements)', () => {
+    const p = buildPayload('preprod', 4, 'x', [...entries, ligneT5 as never]);
+    expect(p.entries.map((e) => e.treatment)).toEqual(['T1', 'T2', 'T3', 'T4', 'T6']);
+  });
+
+  it('T12-AC09 / T12-AC11 — import d’un ancien package à six lignes : T5 écarté, jamais recréé ; intégrité vérifiée AVANT, original intact', () => {
+    const original = ancien();
+    const avant = JSON.stringify(original);
+    const { payload, ignoredTreatments } = compatiblePackagePayload(original as never);
+    expect(ignoredTreatments).toEqual(['T5']);
+    expect(payload.entries.map((e) => e.treatment)).toEqual(['T1', 'T2', 'T3', 'T4', 'T6']);
+    // Le package original (son empreinte) n'est jamais modifié.
+    expect(JSON.stringify(original)).toBe(avant);
+  });
+
+  it('T12-AC09 — package antérieur à T6 (T1–T5) : T5 écarté, T6 par défaut ajouté', () => {
+    const sansT6 = { ...ancien(), entries: ancien().entries.filter((e) => e.treatment !== 'T6') };
+    const { payload } = compatiblePackagePayload(sansT6 as never);
+    expect(payload.entries.map((e) => e.treatment)).toEqual(['T1', 'T2', 'T3', 'T4', 'T6']);
+  });
+
+  it('T12-AC09 — intégrité : doublon, traitement inconnu ou incomplet refusés avant toute transformation', () => {
+    const doublon = { ...ancien(), entries: [...ancien().entries, ligneT5] };
+    expect(() => compatiblePackagePayload(doublon as never)).toThrow(/deux fois/);
+    const inconnu = { ...ancien(), entries: [...entries, { ...ligneT5, treatment: 'T9' }] };
+    expect(() => compatiblePackagePayload(inconnu as never)).toThrow(/inconnu/);
+    const incomplet = { ...ancien(), entries: ancien().entries.filter((e) => e.treatment !== 'T3') };
+    expect(() => compatiblePackagePayload(incomplet as never)).toThrow(/T3/);
+  });
+
+  it('T12-AC11 — importPackage d’un ancien package : cinq lignes écrites, aucune ligne T5', async () => {
+    env = 'production';
+    txAnswers = [[], [], [{ id: 46 }]];
+    const r = await importPackage(ancien() as never, PKG_ROW.uid, 1);
+    expect(r.ignoredTreatments).toEqual(['T5']);
+    const lignes = txQueries.filter((q) => /INSERT INTO ai_config_entries/.test(q.sql));
+    expect(lignes.map((l) => l.params[1])).toEqual(['T1', 'T2', 'T3', 'T4', 'T6']);
   });
 });

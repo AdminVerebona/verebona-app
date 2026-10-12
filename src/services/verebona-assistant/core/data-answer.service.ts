@@ -45,7 +45,7 @@ import {
   ACTIONABLE_SOURCE_TYPES, actionableReadWindow, analyserDemandeActionnable, compterActionnables, formatActionnables, selectionnerActionnables,
   type ActionableRequest, type ActionableResult,
 } from './actionable-request';
-import { tryCanonicalStructured, fieldAnswer } from '../canonical/structured-answers';
+import { tryCanonicalStructured, fieldAnswer, type ScopeUnresolved } from '../canonical/structured-answers';
 import { assetFieldSource } from '../canonical/field-reader';
 import { exportCodeLabel } from '@/services/exports/catalog';
 import {
@@ -292,6 +292,13 @@ export interface DataAnswerOutcome {
    * résultat (`ActionableTrace`). Présente dès que la demande est reconnue.
    */
   actionable?: import('../types/contracts').ActionableTrace;
+  /**
+   * Lot 49 (STRONG / WEAK) : une stratégie structurée était candidate mais
+   * le périmètre sémantique n'est pas résolu (`terms` : sujet non consommé,
+   * « internet ») — elle n'a PAS été exécutée, aucun total plus large n'est
+   * rendu ; l'orchestrateur confie la compréhension à T2 (UNDERSTAND).
+   */
+  semanticScope?: { resolved: false; strategyCandidate: string; terms: string[]; assetIds: number[] };
 }
 
 // ── Analyse de la question ─────────────────────────────────────────────────
@@ -510,7 +517,7 @@ async function tryStructured(
   pageAssetId: number | null,
   resolvedAssetId: number | null = null,
   pageDocumentId: number | null = null,
-): Promise<Level1 | Ambiguous> {
+): Promise<Level1 | Ambiguous | ScopeUnresolved> {
   const m = plain(message);
   const today = port.today();
   const scopeOf = () => resolveAssetScope(port, accountId, message, pageAssetId, resolvedAssetId);
@@ -895,6 +902,14 @@ export async function answerFromData(p: {
     const decision: SufficiencyDecision = { status: 'INSUFFICIENT', level: 1, score: 0, threshold: p.thresholds.database, reason: 'AMBIGUOUS_TARGET', detail: `${l1r.ambiguous.length} biens` };
     attempts.push({ level: 1, strategy: 'none', status: decision.status, score: 0, threshold: decision.threshold, reason: decision.reason });
     return { ...noAnswer(decision), ambiguity: { kind: 'asset', reason: l1r.reason, candidates: l1r.ambiguous } };
+  }
+  if (l1r && 'scopeUnresolved' in l1r) {
+    // Lot 49 : aucun repli plus large (ni somme brute, ni recherche de faits
+    // sur le bien entier) — le sens de la demande reste à comprendre.
+    const u = l1r.scopeUnresolved;
+    const decision: SufficiencyDecision = { status: 'INSUFFICIENT', level: 1, score: 0, threshold: p.thresholds.database, reason: 'SEMANTIC_SCOPE_UNRESOLVED', detail: u.terms.join(', ') };
+    attempts.push({ level: 1, strategy: u.strategyCandidate as DataAnswerStrategy, status: decision.status, score: 0, threshold: decision.threshold, reason: decision.reason });
+    return { ...noAnswer(decision), semanticScope: { resolved: false, strategyCandidate: u.strategyCandidate, terms: u.terms, assetIds: u.assetIds } };
   }
   const l1 = l1r;
   if (l1) {

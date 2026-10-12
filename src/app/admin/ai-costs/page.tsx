@@ -94,7 +94,8 @@ const PERIODS: Array<{ key: CostPeriod; api: string; label: string }> = [
 
 const USE_CASE_TO_T: Record<string, string> = {
   SOURCE_ANALYSIS: 'T1', INTELLIGENT_ASSISTANT: 'T2', DATA_RECONCILIATION: 'T3',
-  AGENDA_INTELLIGENCE: 'T4', AI_GOVERNANCE: 'T5', HOME_MASCOT: 'T6',
+  // Lot 49 : AI_GOVERNANCE (technique) n'a pas de traitement — pas de lien filtré.
+  AGENDA_INTELLIGENCE: 'T4', HOME_MASCOT: 'T6',
 };
 
 function usd(micros: number): string {
@@ -267,7 +268,7 @@ function AiCostsScreen() {
         <select value={treatment} onChange={(e) => setTreatment(e.target.value)}
           className="rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--bg-input)] px-3 py-2 text-sm text-[color:var(--text-primary)]">
           <option value="">Tous les traitements</option>
-          {['T1', 'T2', 'T3', 'T4', 'T5', 'T6'].map((t) => <option key={t} value={t}>{t}</option>)}
+          {['T1', 'T2', 'T3', 'T4', 'T6'].map((t) => <option key={t} value={t}>{t}</option>)}
         </select>
         <select value={t6Mode} onChange={(e) => setT6Mode(e.target.value)} aria-label="Mode de génération T6"
           className="rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--bg-input)] px-3 py-2 text-sm text-[color:var(--text-primary)]">

@@ -12,19 +12,20 @@
  */
 import { buildSourceUnits } from './build-units';
 import {
-  buildCompletenessReport, computeCoverage, DROP_REASONS, selectRepairUnits, SourceUnitLinker,
+  buildCompletenessReport, computeCoverage, DROP_REASONS, selectRepairUnits, SourceUnitLinker, withRepairStates,
   type EvidenceRef, type FactLink,
 } from './coverage';
-import { mergeFacts } from './merge';
+import { factFingerprint, mergeFacts } from './merge';
 import { plat } from './text';
-import { repairSettings, runRepairPass, type RepairCall } from './repair';
+import { repairAttemptCap, repairSettings, runRepairPass, type RepairCall } from './repair';
 import {
   SOURCE_LAYER_VERSION, UNRESOLVED_REASONS,
   type PageGap, type SourceLayer, type SourceUnit, type SourceUnitOrigin, type TextSegment, type UnresolvedFactRecord, type UnresolvedReason,
 } from './types';
 import { factLabel } from '../master/fact-evidence';
 import type { ProjectedFact, T1Fact } from '../master/t1-contract';
-import type { T1DroppedItem } from '../master/tolerant-output';
+import type { T1DroppedItem, T1PreservedOriginal } from '../master/tolerant-output';
+import type { SourceVerification } from './source-verification';
 import type { ProjectionWarning } from '../projection/document-projection';
 import type { AnalysisContext, AnalysisWarning, SourceInput } from '../types';
 import type { AnalyzeDocumentResult } from '../steps/analyze-document.step';
@@ -44,6 +45,12 @@ export interface T1ExtractionExtras {
   truncatedSections: number;
   chunkCount: number;
   pageCount: number | null;
+  /** Lot 49B (DEV-01) : couverture réelle de la source. Absente : non contrôlée (analyse simulée). */
+  verification?: SourceVerification;
+  /** Lot 49B (DEV-03) : originaux des valeurs réduites ou retirées par la lecture tolérante. */
+  originals?: Array<T1PreservedOriginal & { pass: SourceUnitOrigin }>;
+  /** Lot 49B (DEV-03) : réductions comptées par la lecture tolérante (contrôle de cohérence). */
+  truncatedStrings?: number;
   capabilities: AccountCapabilities;
   v2Families: V2AssetFamily[];
 }
@@ -59,6 +66,14 @@ export interface SourceLayerDraft {
   repairPassCount: number;
   repairCalls: number;
   extras: T1ExtractionExtras;
+  /** Lot 49B (DEV-04) : unités sélectionnées mais non soumises faute de budget (reprise programmée). */
+  pending: Set<string>;
+  /** Lot 49B : unités soumises à une réparation pendant l'analyse. */
+  attempted: Set<string>;
+  /** Lot 49B (DEV-02) : faits issus de la réparation ciblée (vérification des lignes de tableau). */
+  repairFacts: Set<T1Fact>;
+  /** Lot 49B (DEV-02) : faits conflictuels CONFIRMÉS par une relecture ciblée certaine (preuve suffisante). */
+  confirmed: Set<T1Fact>;
 }
 
 type Obj = Record<string, unknown>;
@@ -159,11 +174,14 @@ export async function completeT1Extraction(p: {
       reason: 'FIELD_PRUNED', status: 'UNRESOLVED', sourceUnitIds: [], rawKey: null, canonicalKey: null, rawValue: null,
       originalPayload: { path }, pass: 'PASS_1', detail: path,
     })),
+    // Lot 49B (DEV-03) : original intégral de chaque valeur réduite ou retirée par la lecture tolérante.
+    ...(x.originals ?? []).map((o) => originalRecord(o, linker)),
   ];
 
   const draft: SourceLayerDraft = {
     units, linker, metadataUnitIds: meta, entityUnitIds: entites, failed: new Map(), attempts: new Map(),
     unresolved, repairPassCount: 0, repairCalls: 0, extras: x,
+    pending: new Set(), attempted: new Set(), repairFacts: new Set(), confirmed: new Set(),
   };
 
   // ── Réparation ciblée, bornée ──────────────────────────────────────────
@@ -180,10 +198,22 @@ export async function completeT1Extraction(p: {
     draft.repairCalls += r.calls;
     for (const id of r.attempted) {
       draft.attempts.set(id, (draft.attempts.get(id) ?? 0) + 1);
+      draft.attempted.add(id);
+      draft.pending.delete(id);
       const f = r.failed.get(id);
       if (f) draft.failed.set(id, f); else draft.failed.delete(id);
     }
+    // Lot 49B (DEV-04) : unités hors budget de la passe — jamais « non interprétables » : reprise programmée.
+    for (const id of r.notAttempted) if (!draft.attempted.has(id)) draft.pending.add(id);
     const ajoutes = mergeFacts(a.facts, r.facts);
+    for (const f of ajoutes) draft.repairFacts.add(f);
+    // Relecture CERTAINE d'un fait déjà lu (même valeur, même preuve) : confirmation — l'incertitude d'un
+    // fait conflictuel ou d'une cellule de tableau incertain est levée pour la couverture (jamais le fait).
+    const parEmpreinte = new Map(a.facts.filter((f) => !ajoutes.includes(f)).map((f) => [factFingerprint(f), f]));
+    for (const f of r.facts) {
+      const existant = f.confidence === 'certain' && !ajoutes.includes(f) ? parEmpreinte.get(factFingerprint(f)) : undefined;
+      if (existant) draft.confirmed.add(existant);
+    }
     if (ajoutes.length > 0 && p.verifyTargets) {
       const v = await p.verifyTargets(ajoutes);
       for (const k of Object.keys(v.verifiedIds) as Array<keyof typeof v.verifiedIds>) {
@@ -198,8 +228,43 @@ export async function completeT1Extraction(p: {
 }
 
 function factLinks(draft: SourceLayerDraft, facts: readonly T1Fact[]): FactLink[] {
-  return facts.map((f) => ({ unitIds: draft.linker.link(evidenceOf(f)), confidence: f.confidence }));
+  return facts.map((f) => ({
+    unitIds: draft.linker.link(evidenceOf(f)),
+    confidence: draft.confirmed.has(f) ? 'certain' as const : f.confidence,
+    ...(draft.repairFacts.has(f) || draft.confirmed.has(f) ? { repair: true } : {}),
+  }));
 }
+
+/** Original d'une valeur réduite (RETAINED : la valeur réduite reste) ou retirée (UNRESOLVED) — lot 49B. */
+function originalRecord(o: T1PreservedOriginal & { pass: SourceUnitOrigin }, linker: SourceUnitLinker): UnresolvedFactRecord {
+  const texte = typeof o.original === 'string' ? o.original : null;
+  const ids = o.hint?.excerpt ? linker.link({ excerpt: o.hint.excerpt, page: o.hint.page ?? null })
+    : texte && texte.length >= 4 && texte.length <= 2_000 ? linker.link({ excerpt: texte }) : [];
+  return {
+    reason: o.kind === 'TRUNCATED' ? 'VALUE_TRUNCATED' : 'VALUE_NOT_NORMALIZABLE',
+    status: o.kind === 'TRUNCATED' ? 'RETAINED' : 'UNRESOLVED',
+    sourceUnitIds: ids,
+    rawKey: o.path,
+    canonicalKey: null,
+    rawValue: texte ?? (o.original === null || o.original === undefined ? null : JSON.stringify(o.original)),
+    originalPayload: { path: o.path, original: o.original, kept: o.kept ?? null },
+    pass: o.pass,
+    detail: o.kind === 'TRUNCATED' ? `valeur réduite par le contrat (${o.path})` : `valeur retirée par la normalisation (${o.path})`,
+  };
+}
+
+/**
+ * Cohérence des réductions (DEV-03) : chaque réduction comptée doit avoir son
+ * original conservé ; un champ retiré par la validation (chemin seul) est une
+ * perte non compensée.
+ */
+export function normalisationBalance(draft: Pick<SourceLayerDraft, 'unresolved' | 'extras'>): { truncations: number; originalsPreserved: number; losses: number } {
+  const truncations = draft.extras.truncatedStrings ?? 0;
+  const originalsPreserved = draft.unresolved.filter((u) => u.reason === 'VALUE_TRUNCATED').length;
+  const pruned = draft.unresolved.filter((u) => u.reason === 'FIELD_PRUNED').length;
+  return { truncations, originalsPreserved, losses: Math.max(0, truncations - originalsPreserved) + pruned };
+}
+
 
 function coverageOf(draft: SourceLayerDraft, facts: readonly T1Fact[]) {
   return computeCoverage(draft.units, {
@@ -242,7 +307,9 @@ export function finalizeSourceLayer(draft: SourceLayerDraft, p: {
       visualPage: f.visualEvidence?.page ?? null, values: [f.rawValue, f.value], labels: [f.rawKey, f.label, f.attribute],
     });
   }
-  const cov = coverageOf(draft, p.analysisFacts);
+  const cov = withRepairStates(coverageOf(draft, p.analysisFacts), {
+    attempted: draft.attempted, pending: draft.pending, cap: repairAttemptCap(),
+  });
   const couvertes = new Set(cov.filter((u) => u.status === 'COVERED' && u.reason === 'fact').map((u) => u.sourceUnitId));
   const records = draft.unresolved.map((r) => (
     r.status === 'UNRESOLVED' && DROP_REASONS.has(r.reason) && r.sourceUnitIds.length > 0
@@ -277,6 +344,8 @@ export function finalizeSourceLayer(draft: SourceLayerDraft, p: {
     chunkCount: draft.extras.chunkCount,
     warningCodes: p.warningCodes,
     retryAllowed: p.retryAllowed ?? true,
+    verification: draft.extras.verification ?? null,
+    normalisation: normalisationBalance(draft),
   });
   const warnings: AnalysisWarning[] = [];
   if (report.failedUnits > 0) {

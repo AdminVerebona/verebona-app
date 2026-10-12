@@ -41,9 +41,9 @@ import { resolvePrompt, resolveMasterPrompt, masterPromptVersionOf, loadMasterTe
 import { resolveOperationConfig, composePrompt } from '../config/config-resolver';
 import { recordCallTrace } from '../telemetry/ai-trace.service';
 import { buildIdempotencyKey, withIdempotency } from '../idempotency/idempotency.service';
-import { treatmentForUseCase, isPromptAdministrable } from '../config/treatments';
+import { treatmentOfUseCase, type Treatment } from '../config/treatments';
 import { assertTreatmentRunnable } from '../queue/runnable-guard';
-import { noteGatewayOutcome, type ModelAttempt } from '../queue/circuit-breaker.repository';
+import { noteGatewayOutcome as noteTreatmentOutcome, type GatewayOutcome, type ModelAttempt } from '../queue/circuit-breaker.repository';
 import { currentJobContext } from '../queue/job-context';
 import { assertAccountCostCap } from './account-cost-cap';
 import type { ModelRank } from '../telemetry/execution-context';
@@ -95,12 +95,13 @@ export class AiGateway {
     // ── Arrêt d'urgence et état du traitement (CDC BO IA OPS-011, OPS-008,
     //    OPS-024, WF-07, WF-08, MOD-012) ──────────────────────────────────────
     // Point de passage de TOUS les appels modèle : T2, T3, T4, T1 en file
-    // mémoire, T5 et T6 sont couverts sans que chaque appelant y pense. Lève
+    // mémoire et T6 sont couverts sans que chaque appelant y pense ; l'usage
+    // technique AI_GOVERNANCE (lot 49) n'est soumis qu'à l'arrêt d'urgence. Lève
     // `AI_BLOCKED`, non récupérable ; chaque appelant retombe sur son chemin
     // sans IA. Placée avant l'idempotence : pendant un arrêt, aucun appel ne
     // part, et l'on ne sert pas non plus de résultat mis en cache comme si
     // l'IA tournait. Cache de 5 s (runnable-guard).
-    await assertTreatmentRunnable(treatmentForUseCase(op.useCaseCode), op.operationCode);
+    await assertTreatmentRunnable(treatmentOfUseCase(op.useCaseCode), op.operationCode);
 
     // ── Idempotence (CDC §5.7) ─────────────────────────────────────────────
     // Opération master : la version résolue du master entre dans la clé
@@ -150,7 +151,7 @@ export class AiGateway {
     // ── Plafond mensuel de coût IA du compte (lot 22) ──────────────────────
     // Point unique : tout appel modèle d'un compte passe ici. Après le cache
     // d'idempotence (un résultat déjà payé reste servi), avant tout contact
-    // fournisseur. Exemptés : appels sans compte, T5 (administration),
+    // fournisseur. Exemptés : appels sans compte, usage technique AI_GOVERNANCE,
     // campagnes de mesure (`costCapExempt`). Refus `COST_CAP_REACHED`, non
     // récupérable : la file reporte au mois suivant, les usages synchrones
     // prennent leur repli sans IA. Voir `account-cost-cap.ts`.
@@ -214,7 +215,7 @@ export class AiGateway {
     // jamais déduit du texte. En STRUCTURED_CONTEXT : contrat d'entrée validé
     // AVANT tout appel (0 appel fournisseur si violé), texte maître envoyé
     // tel quel + bloc EXECUTION_CONTEXT unique. Aucun repli vers la
-    // substitution d'emplacements. LEGACY_TEMPLATE (T1, T2, T3, T5, T6, et T4
+    // substitution d'emplacements. LEGACY_TEMPLATE (T1, T2, T3, T6, et T4
     // tant que sa version active l'est) : comportement historique inchangé.
     // ══════════════════════════════════════════════════════════════════════
     let structured: { built: BuiltExecutionContext; execution: MasterExecutionConfig } | null = null;
@@ -322,7 +323,12 @@ export class AiGateway {
     // un échec COMPLET (tous les modèles configurés n'ont pas été essayés) :
     // elle ne fait pas progresser le disjoncteur, seulement les compteurs des
     // modèles réellement sollicités.
-    const treatment = treatmentForUseCase(op.useCaseCode);
+    // Lot 49 : un usage technique (AI_GOVERNANCE) n'a pas de traitement, donc
+    // pas de disjoncteur T1–T6 — ses échecs restent tracés (ai_usage_event).
+    const treatment: Treatment | null = treatmentOfUseCase(op.useCaseCode);
+    const noteGatewayOutcome = (o: Omit<GatewayOutcome, 'treatment'>): void => {
+      if (treatment) noteTreatmentOutcome({ ...o, treatment });
+    };
     const attempts: ModelAttempt[] = [];
     const chaineComplete = premierRang === 0 && models.length === 1 + configuration.fallbackModels.length;
 
@@ -556,7 +562,7 @@ export class AiGateway {
           // Une erreur non récupérable arrête immédiatement la chaîne de repli.
           // Elle compte pour le modèle, pas comme échec complet de la chaîne.
           if (isAiGatewayError(e) && !e.recoverable) {
-            noteGatewayOutcome({ treatment, attempts, chainSucceeded: null });
+            noteGatewayOutcome({ attempts, chainSucceeded: null });
             throw e;
           }
           continue;
@@ -687,7 +693,7 @@ export class AiGateway {
 
         if (final.ok) {
           attempts.push({ model, succeeded: true });
-          noteGatewayOutcome({ treatment, attempts, chainSucceeded: true });
+          noteGatewayOutcome({ attempts, chainSucceeded: true });
           const totalIn = out.inputTokens + (repairRun?.inputTokens ?? 0);
           const totalOut = out.outputTokens + (repairRun?.outputTokens ?? 0);
           const totalCost = (costMicros ?? 0) + (repairRun ? calcCostMicros(model, repairRun.inputTokens, repairRun.outputTokens, op.provider) ?? 0 : 0);
@@ -702,7 +708,7 @@ export class AiGateway {
         // ── Contrat runtime incohérent : défaut interne, aucun repli ───────
         if (!first.ok && first.contractMismatch) {
           attempts.push({ model, succeeded: false });
-          noteGatewayOutcome({ treatment, attempts, chainSucceeded: null });
+          noteGatewayOutcome({ attempts, chainSucceeded: null });
           throw new AiGatewayError('RUNTIME_CONTRACT_MISMATCH', operationCode, first.message, {
             recoverable: false, contractDetail: mismatchDetail(first.contractMismatch),
           });
@@ -717,7 +723,7 @@ export class AiGateway {
       }
 
       noteGatewayOutcome({
-        treatment, attempts, chainSucceeded: chaineComplete ? false : null,
+        attempts, chainSucceeded: chaineComplete ? false : null,
         // Revue L16b-3 : un même document ne fait progresser le disjoncteur
         // qu'une fois par fenêtre (`recordChainOutcome`).
         target: req.sourceIds && req.sourceIds.length > 0 ? `sources:${[...req.sourceIds].sort((x, y) => x - y).join(',')}` : null,
@@ -854,17 +860,13 @@ function sansSortieBrute(useCaseCode: string): boolean {
 
 /**
  * Texte master administré : version active « Prompts maîtres » du BO, sinon
- * texte porté par la version de configuration (D-03). Pour T5 (lot 32B,
- * décision PO n° 15) : SEULEMENT la version active du BO — un texte T5
- * porté par une version de configuration n'est jamais appliqué (T5-003) ;
- * sans version BO, le fichier du dépôt.
+ * texte porté par la version de configuration (D-03).
  */
 function configuredMasterText(
-  useCaseCode: Parameters<typeof treatmentForUseCase>[0],
+  _useCaseCode: Parameters<typeof treatmentOfUseCase>[0],
   cfg: { promptArchitecture?: string; masterPromptText?: string | null; masterPromptVersionId?: number | null },
 ): string | null {
   if (cfg.promptArchitecture !== 'master') return null;
-  if (!isPromptAdministrable(treatmentForUseCase(useCaseCode)) && cfg.masterPromptVersionId == null) return null;
   return cfg.masterPromptText ?? null;
 }
 
@@ -987,7 +989,7 @@ function redactMessage(message: string, keepRawOutput: boolean): string {
  */
 function masterExecutionOf(
   masterPromptCode: string,
-  useCaseCode: Parameters<typeof treatmentForUseCase>[0],
+  useCaseCode: Parameters<typeof treatmentOfUseCase>[0],
   cfg: { promptArchitecture?: string; masterPromptText?: string | null; masterPromptVersionId?: number | null; masterExecution?: Partial<MasterExecutionConfig> | null },
 ): MasterExecutionConfig {
   const text = configuredMasterText(useCaseCode, cfg);

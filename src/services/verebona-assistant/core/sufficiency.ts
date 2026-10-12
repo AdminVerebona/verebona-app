@@ -44,7 +44,10 @@ export type EscalationReason =
   | 'THRESHOLD_FORCES_ESCALATION'
   // Document pertinent sans réponse lisible (§12.4, §23) : pas d'escalade.
   | 'DOCUMENT_IN_ANALYSIS'
-  | 'DOCUMENT_ANALYSIS_FAILED';
+  | 'DOCUMENT_ANALYSIS_FAILED'
+  // Lot 49 : stratégie structurée candidate, périmètre sémantique non résolu
+  // (« internet ») — jamais un total plus large ; T2 (UNDERSTAND) reprend.
+  | 'SEMANTIC_SCOPE_UNRESOLVED';
 
 export interface SufficiencyDecision {
   status: SufficiencyStatus;

@@ -5,7 +5,7 @@
  *   · plafond effectif : dérogation prioritaire, puis offre ; 0 / absent = aucun ;
  *   · aucune valeur posée : aucun plafond, cumul jamais lu ;
  *   · 80 % : une alerte par compte et par période ; 100 % : refus daté + alerte ;
- *   · exemptions : T5, appels sans compte, campagnes de mesure ;
+ *   · exemptions : usage technique AI_GOVERNANCE (ex-« T5 », lot 49), appels sans compte, campagnes de mesure ;
  *   · base illisible : échec ouvert ;
  *   · passerelle : refus AVANT tout appel fournisseur, résultat en cache servi.
  */
@@ -80,7 +80,7 @@ describe('résolution (pur)', () => {
     expect(costCapLevel(80, 100)).toBe('threshold');
     expect(costCapLevel(100, 100)).toBe('reached');
   });
-  it('exemptions : T5, sans compte, campagne de mesure', () => {
+  it('T12-AC10 — exemptions : usage technique AI_GOVERNANCE (coûts techniques isolés des coûts métier), sans compte, campagne de mesure', () => {
     expect(isCostCapped({ accountId: 3, useCaseCode: 'SOURCE_ANALYSIS' })).toBe(true);
     expect(isCostCapped({ accountId: 3, useCaseCode: 'HOME_MASCOT' })).toBe(true);
     expect(isCostCapped({ accountId: 3, useCaseCode: 'AI_GOVERNANCE' })).toBe(false);
@@ -102,7 +102,7 @@ describe('contrôle de la passerelle', () => {
     expect(f.alerts).toHaveLength(0);
   });
 
-  it('cumul lu sur le mois Europe/Paris, hors T5 côté requête', async () => {
+  it('cumul lu sur le mois Europe/Paris, hors AI_GOVERNANCE côté requête', async () => {
     const f = fakeStore({ offer: { premium: 10_000_000 }, spent: 1 });
     setCostCapStoreForTests(f.store);
     await appel();
@@ -149,9 +149,9 @@ describe('contrôle de la passerelle', () => {
     await expect(appel()).resolves.toBeUndefined();
   });
 
-  it('T5 et appels sans compte jamais plafonnés', async () => {
+  it('usage technique AI_GOVERNANCE et appels sans compte jamais plafonnés', async () => {
     setCostCapStoreForTests(fakeStore({ offer: { premium: 1 }, spent: 10 }).store);
-    await expect(assertAccountCostCap({ accountId: 7, useCaseCode: 'AI_GOVERNANCE', operationCode: 't5', now: NOW })).resolves.toBeUndefined();
+    await expect(assertAccountCostCap({ accountId: 7, useCaseCode: 'AI_GOVERNANCE', operationCode: 'evaluate_prompt', now: NOW })).resolves.toBeUndefined();
     await expect(assertAccountCostCap({ accountId: null, useCaseCode: 'SOURCE_ANALYSIS', operationCode: 'x', now: NOW })).resolves.toBeUndefined();
   });
 

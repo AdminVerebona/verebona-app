@@ -438,6 +438,13 @@ export async function analyzeDocument(
       truncatedSections: suite.truncatedSections + (debordementPerdu > 0 ? 1 : 0),
       chunkCount: suite.chunkCount,
       pageCount: suite.pageCount,
+      // Lot 49B (DEV-01, DEV-03) : couverture réelle de la source ; originaux des valeurs réduites ou retirées.
+      ...(suite.verification ? { verification: suite.verification } : {}),
+      originals: [
+        ...(first.report?.originals ?? []).map((o) => ({ ...o, pass: 'PASS_1' as const })),
+        ...suite.reports.flatMap((r) => (r.originals ?? []).map((o) => ({ ...o, pass: 'CHUNK' as const }))),
+      ],
+      truncatedStrings: report?.truncatedStrings ?? 0,
       capabilities,
       v2Families,
     },

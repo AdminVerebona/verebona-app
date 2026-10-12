@@ -13,6 +13,11 @@
  *  - les données legacy restantes sont migrées ou neutralisées
  *
  * Voir : docs/CDC_V3_Structure_Donnees.md — Agenda unifié cible
+ *
+ * Lot 49 (SEC-02) : mêmes exigences que les routes récentes — compte actif,
+ * biens / pièces / équipements référencés vérifiés (appartenance et
+ * cohérence), mises à jour et suppressions avec la condition de compte dans
+ * le SQL, bien joint borné au compte.
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/db';
@@ -21,6 +26,25 @@ import { eq, like, and, gt, desc } from 'drizzle-orm';
 import { parsePaginationParams, buildPaginationResponse, getCursorId } from '@/lib/pagination';
 import { apiError } from '@/lib/api-errors';
 import { SessionService } from '@/lib/session-service';
+import {
+  assertTargetInAccount, isCrossAccountReferenceError, logCrossAccountRefusal, TargetCoherenceError,
+} from '@/services/security/account-ownership';
+
+/** Refus d'une cible (bien, pièce, équipement) — réponse, ou null si l'erreur est autre. */
+function targetRefusal(e: unknown, context: string) {
+  if (isCrossAccountReferenceError(e)) {
+    logCrossAccountRefusal(context, e);
+    return apiError(404, 'NOT_FOUND', 'Asset, room or equipment not found');
+  }
+  if (e instanceof TargetCoherenceError) return apiError(400, 'INVALID_INPUT', e.message);
+  return null;
+}
+
+const toId = (v: unknown): number | null => {
+  if (v === null || v === undefined || v === '' || v === 0) return null;
+  const n = parseInt(String(v));
+  return isNaN(n) ? null : n;
+};
 
 const VALID_CATEGORIES = ['achat', 'vente', 'entretien', 'reparation', 'sinistre', 'controle', 'garantie', 'autre'] as const;
 const VALID_STATUTS = ['planifie', 'realise', 'annule'] as const;
@@ -45,7 +69,7 @@ export async function GET(request: NextRequest) {
       return SessionService.handleSessionError(authError);
     }
 
-    if (!session) {
+    if (!session || !session.currentAccountId) {
       return apiError(401, 'UNAUTHORIZED', 'Authentication required');
     }
 
@@ -167,7 +191,7 @@ export async function GET(request: NextRequest) {
           },
         })
       .from(events)
-      .leftJoin(assets, eq(events.assetId, assets.id))
+      .leftJoin(assets, and(eq(events.assetId, assets.id), eq(assets.accountId, session.currentAccountId)))
       .where(and(...conditions))
       .orderBy(desc(events.date))
       .limit(limit + 1);
@@ -177,7 +201,7 @@ export async function GET(request: NextRequest) {
     return NextResponse.json(paginatedResponse, { status: 200 });
   } catch (error) {
     console.error('GET error:', error);
-    return apiError(500, 'INTERNAL_SERVER_ERROR', 'Internal server error: ' + (error as Error).message);
+    return apiError(500, 'INTERNAL_SERVER_ERROR', 'Internal server error');
   }
 }
 
@@ -223,13 +247,13 @@ export async function POST(request: NextRequest) {
       return apiError(400, 'INVALID_INPUT', `statut must be one of: ${VALID_STATUTS.join(', ')}`);
     }
 
-    if (assetId) {
-      const assetExists = await db.select().from(assets)
-        .where(and(eq(assets.id, parseInt(assetId)), eq(assets.accountId, accountId)))
-        .limit(1);
-      if (assetExists.length === 0) {
-        return apiError(404, 'NOT_FOUND', 'Asset not found or does not belong to you');
-      }
+    // Bien, pièce et équipement : du compte, et cohérents entre eux.
+    try {
+      await assertTargetInAccount(accountId, { assetId: toId(assetId), substructureId: toId(substructureId), equipmentId: toId(equipmentId) });
+    } catch (e) {
+      const refus = targetRefusal(e, 'POST /api/events');
+      if (refus) return refus;
+      throw e;
     }
 
     if (costCents !== undefined && costCents !== null && costCents !== '') {
@@ -262,7 +286,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json(newEvent, { status: 201 });
   } catch (error) {
     console.error('POST error:', error);
-    return apiError(500, 'INTERNAL_ERROR', 'Internal server error: ' + (error as Error).message);
+    return apiError(500, 'INTERNAL_ERROR', 'Internal server error');
   }
 }
 
@@ -379,6 +403,21 @@ export async function PUT(request: NextRequest) {
       updates.description = description || null;
     }
 
+    // Pièce / équipement modifiés : du compte, et portés par le bien de l'événement.
+    if (substructureId !== undefined || equipmentId !== undefined) {
+      try {
+        await assertTargetInAccount(session.currentAccountId, {
+          assetId: existingEvent[0].assetId ?? null,
+          substructureId: substructureId !== undefined ? toId(substructureId) : existingEvent[0].substructureId,
+          equipmentId: equipmentId !== undefined ? toId(equipmentId) : existingEvent[0].equipmentId,
+        });
+      } catch (e) {
+        const refus = targetRefusal(e, 'PUT /api/events');
+        if (refus) return refus;
+        throw e;
+      }
+    }
+
     // Build SET clause dynamically using raw SQL to avoid schema mismatch
     const setClauses: string[] = ['updated_at = NOW()'];
     const values: any[] = [];
@@ -406,7 +445,8 @@ export async function PUT(request: NextRequest) {
     }
 
     values.push(parseInt(id));
-    const sql = `UPDATE events SET ${setClauses.join(', ')} WHERE id = $${paramIdx} RETURNING *`;
+    values.push(session.currentAccountId);
+    const sql = `UPDATE events SET ${setClauses.join(', ')} WHERE id = $${paramIdx} AND account_id = $${paramIdx + 1} RETURNING *`;
     const result = await db.$client.unsafe(sql, values);
 
     if (result.length === 0) {
@@ -416,7 +456,7 @@ export async function PUT(request: NextRequest) {
     return NextResponse.json(result[0], { status: 200 });
   } catch (error) {
     console.error('PUT error:', error);
-    return apiError(500, 'INTERNAL_ERROR', 'Internal server error: ' + (error as Error).message);
+    return apiError(500, 'INTERNAL_ERROR', 'Internal server error');
   }
 }
 
@@ -463,7 +503,7 @@ export async function DELETE(request: NextRequest) {
 
     const deleted = await db
       .delete(events)
-      .where(eq(events.id, parseInt(id)))
+      .where(and(eq(events.id, parseInt(id)), eq(events.accountId, session.currentAccountId)))
       .returning();
 
     return NextResponse.json(
@@ -475,6 +515,6 @@ export async function DELETE(request: NextRequest) {
     );
   } catch (error) {
     console.error('DELETE error:', error);
-    return apiError(500, 'INTERNAL_ERROR', 'Internal server error: ' + (error as Error).message);
+    return apiError(500, 'INTERNAL_ERROR', 'Internal server error');
   }
 }

@@ -51,8 +51,7 @@ describe('opérations T1 master (seules depuis le lot 16b-3)', () => {
       { masterPromptCode: 't2_master_v1', useCaseCode: 'INTELLIGENT_ASSISTANT', tasks: ['UNDERSTAND', 'ANSWER', 'REVALIDATE'] },
       // TEMPORAL_AMBIGUITY : active depuis le lot 18 (R5).
       { masterPromptCode: 't4_master_v1', useCaseCode: 'AGENDA_INTELLIGENCE', tasks: ['CLASSIFY_EVENT', 'VERIFY_COMPLETION', 'TEMPORAL_AMBIGUITY'] },
-      // Lot 16 : T5 (§27), MODE ANALYZE / MODIFY.
-      { masterPromptCode: 't5_master_v1', useCaseCode: 'AI_GOVERNANCE', tasks: ['ANALYZE', 'MODIFY'] },
+      // Lot 49 (ticket 12) : t5_master_v1 (T5 Prompt Control) supprimé.
       // Lot 16 (C) : T6 (§28), MODE FORMULATE, sortie sans discriminant.
       { masterPromptCode: 't6_master_v1', useCaseCode: 'HOME_MASCOT', tasks: ['FORMULATE'] },
     ]);

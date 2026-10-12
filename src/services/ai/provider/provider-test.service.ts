@@ -28,9 +28,22 @@
 import { recordCallTrace } from '../telemetry/ai-trace.service';
 import type { TestDetail } from './credential.repository';
 import { calcCostMicros } from '../gateway/cost-catalog';
+import { buildGenerationConfig } from '../gateway/providers/gemini-generation-config';
+import {
+  PROBE_MAX_OUTPUT_TOKENS, PROBE_PROMPT, PROBE_REASONING, PROBE_TIMEOUT_MS,
+  classifyProbeFailure, classifyProbeResponse, sanitizeProviderError, type ProbeOutcome,
+} from './probe-classification';
 
-/** Aucune donnée utilisateur, et une réponse assez courte pour coûter presque rien. */
-const PROBE_PROMPT = 'Réponds exactement : OK';
+/**
+ * Corps de la génération minimale du test (lot 49, ticket 11) : mêmes
+ * paramètres que la sonde — raisonnement `minimal` explicite, plafond 512.
+ */
+export function providerTestGenerationBody(model: string): Record<string, unknown> {
+  const { temperature: _t, ...generationConfig } = buildGenerationConfig({
+    model, maxOutputTokens: PROBE_MAX_OUTPUT_TOKENS, reasoning: PROBE_REASONING,
+  });
+  return { contents: [{ parts: [{ text: PROBE_PROMPT }] }], generationConfig };
+}
 
 const MODELS_ENDPOINT = 'https://generativelanguage.googleapis.com/v1beta/models';
 
@@ -128,8 +141,8 @@ export async function testProviderKey(
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ contents: [{ parts: [{ text: PROBE_PROMPT }] }] }),
-        signal: AbortSignal.timeout(20_000),
+        body: JSON.stringify(providerTestGenerationBody(model)),
+        signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
       },
     );
 
@@ -140,18 +153,27 @@ export async function testProviderKey(
       detail.error = `Génération refusée (${generation.status}) : ${nettoyer(texte, secret)}`;
       await trace(accountId, userId, model, false, Date.now() - started, detail.error);
       // Lot 32B (§1.H) : état opérationnel du modèle POUR CETTE CLÉ (empreinte,
-      // jamais la clé) — ignoré tant que la clé n'est pas l'active.
-      await recordOperational(model, secret, false, detail.error);
+      // jamais la clé) — ignoré tant que la clé n'est pas l'active. Lot 49 :
+      // CLASSÉ — une erreur de clé, de quota ou de serveur n'est pas une
+      // panne du modèle (non concluant, état conservé).
+      await recordOperational(model, secret, classifyProbeFailure(texte || `HTTP ${generation.status}`, {
+        model, secret, httpStatus: generation.status,
+      }));
       return { ok: false, detail };
     }
 
     detail.generationOk = true;
-    await recordOperational(model, secret, true, null);
     // PROV-UI-03 : jetons réels de la génération de test, tracés (coût
     // technique, jamais métier) plutôt qu'un zéro.
-    const usage = ((await generation.json().catch(() => ({}))) as {
+    const reponse = (await generation.json().catch(() => ({}))) as {
       usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number };
-    }).usageMetadata;
+      candidates?: Array<{ content?: { parts?: Array<{ text?: string; thought?: boolean }> } }>;
+    };
+    const texteGenere = (reponse.candidates?.[0]?.content?.parts ?? [])
+      .filter((x) => typeof x.text === 'string' && x.thought !== true).map((x) => x.text).join('');
+    // Réponse vide : non concluant (lot 49), jamais une indisponibilité.
+    await recordOperational(model, secret, classifyProbeResponse(texteGenere));
+    const usage = reponse.usageMetadata;
     await trace(accountId, userId, model, true, Date.now() - started, undefined, {
       inputTokens: Number(usage?.promptTokenCount ?? 0),
       outputTokens: Number(usage?.candidatesTokenCount ?? 0),
@@ -164,9 +186,9 @@ export async function testProviderKey(
   }
 }
 
-async function recordOperational(model: string, secret: string, ok: boolean, error: string | null): Promise<void> {
-  const { recordOperationalStatus } = await import('./model-operational.service');
-  await recordOperationalStatus({ model, secret, ok, error, source: 'provider_test' });
+async function recordOperational(model: string, secret: string, outcome: ProbeOutcome): Promise<void> {
+  const { recordOperationalCheck } = await import('./model-operational.service');
+  await recordOperationalCheck({ model, secret, outcome, source: 'provider_test' });
 }
 
 /**
@@ -177,7 +199,7 @@ async function recordOperational(model: string, secret: string, ok: boolean, err
  * la table de traces et dans les journaux.
  */
 function nettoyer(message: string, secret: string): string {
-  return message.split(secret).join('***').slice(0, 500);
+  return sanitizeProviderError(message, secret);
 }
 
 async function trace(

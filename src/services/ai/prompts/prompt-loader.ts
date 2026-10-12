@@ -43,11 +43,11 @@ export async function resolvePrompt(
  * CDC BO IA GEN-015, E-05, WF-41 (lot IA 2) — fin de la gouvernance
  * parallèle. `ai_prompt_versions` (routes `prompt-changes`, retirées) primait
  * sur le fichier : une version ancienne restée ACTIVE en base a déjà fait
- * échouer T5 (format « verdict » refusé) et obligé à renommer
+ * échouer l'ancien T5 (format « verdict » refusé) et obligé à renommer
  * `extract_source_v5` pour contourner une v4 active en base. Le partage est
  * désormais celui du CDC : le prompt TECHNIQUE (contrat de sortie) vient du
  * dépôt, versionné avec le code ; le PRÉAMBULE administrable vient de la
- * version de configuration du BO (config-resolver), modifiable par T5.
+ * version de configuration du BO (config-resolver).
  * La table est conservée (historique), elle n'est plus lue.
  */
 async function loadActiveVersion(
@@ -233,8 +233,9 @@ export interface MasterTemplateInfo {
 }
 
 /**
- * Branches déclarées sans section dédiée (T5, §27) : la ligne
- * « Valeurs autorisées : ANALYZE | MODIFY » qui suit `MODE = {{MODE}}`. Les
+ * Branches déclarées sans section dédiée (format hérité de l'ancien T5,
+ * §27 — retiré au lot 49, conservé comme syntaxe générique) : la ligne
+ * « Valeurs autorisées : A | B » qui suit `MODE = {{MODE}}`. Les
  * règles de chaque mode sont alors dans le corps commun (R3/R4) — le texte
  * du CDC est transcrit tel quel, sans section « BRANCHE » ajoutée.
  */
@@ -417,7 +418,7 @@ export function masterPromptVersionOf(input: {
 
 /**
  * Texte BRUT d'un master (fichier du dépôt, sa valeur initiale D-03) — sans
- * rendu. Sert à T5 (lecture et diff d'un master complet, §29.1), au corpus
+ * rendu. Sert à l'administration des prompts maîtres (§29.1), au corpus
  * (empreinte, §30) et au contrôle de retrait. Lève `MasterPromptError`.
  */
 export async function loadMasterTemplate(masterPromptCode: string, useCaseCode?: AiUseCaseCode): Promise<string> {

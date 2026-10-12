@@ -34,7 +34,7 @@ const { DOCUMENT_ASSET_RESOLUTION_VERSION } = await import('../version');
 const { identifiersFingerprint } = await import('../identifiers');
 const { SWEEP_SQL, requestStaleResolutions } = await import('../queue');
 
-const deps = { enqueue: m.enqueue as never, isTriggerActive: async () => true };
+const deps = { enqueue: m.enqueue as never, isTriggerActive: async () => true, openAssetLinkAction: async () => null };
 const maison = { assetId: 42, family: 'IMMOBILIER' as const, values: { address1: '12 rue Exemple', postalCode: '69003' } };
 
 describe('T3RV-AC2 — version métier du moteur DOCUMENT_ASSET', () => {
@@ -110,7 +110,7 @@ describe('T3RV-AC7 / 34E — évolution de la connaissance : contexte comparé a
 
   it('T3C-07 — décision ouverte, connaissance modifiée mais contexte identique → CONFIRMED_NO_CHANGE, AUCUN travail', async () => {
     const r = await requestStaleResolutions([row({ fileId: 1 }), row({ fileId: 2 })], { triggerCode: 'schedule_hourly', deps });
-    expect(r).toEqual({ enqueued: [], confirmed: 2 });
+    expect(r).toEqual({ enqueued: [], confirmed: 2, delegated: 0 });
     expect(m.enqueue).not.toHaveBeenCalled();
     expect(m.confirmContext).toHaveBeenCalledWith(expect.objectContaining({ fileId: 1, contextFingerprint: 'fp-a', knowledgeRevision: 7 }));
   });
@@ -122,13 +122,22 @@ describe('T3RV-AC7 / 34E — évolution de la connaissance : contexte comparé a
       row({ fileId: 2, contextCheck: false, contextFingerprint: null, reprocessReason: 'ENGINE_VERSION' }),
       row({ fileId: 3, userId: null, contextCheck: false, reprocessReason: 'NEW_ANALYSIS' }),
     ], { triggerCode: 'schedule_hourly', deps });
-    expect(r).toEqual({ enqueued: [1, 2, 3], confirmed: 0 });
+    expect(r).toEqual({ enqueued: [1, 2, 3], confirmed: 0, delegated: 0 });
     expect(m.markPending).toHaveBeenCalledTimes(3);
     // Rattrapage : aucun candidat T1 fourni (données T1 persistées conservées, T1 jamais relancé).
     expect(m.markPending).toHaveBeenCalledWith(expect.objectContaining({ fileId: 1, t1Candidates: undefined, triggerCode: 'schedule_hourly' }));
     expect(m.enqueue).toHaveBeenCalledWith(expect.objectContaining({ payload: expect.objectContaining({ reprocessReason: 'CONTEXT_CHANGED' }) }));
     expect(m.enqueue).toHaveBeenCalledWith(expect.objectContaining({ payload: expect.objectContaining({ reprocessReason: 'ENGINE_VERSION' }) }));
     expect(m.confirmContext).not.toHaveBeenCalled();
+  });
+
+  it('lot 49B — carte « À traiter » LINK-ASSET OUVERTE, contexte identique : jamais confirmée ici, ni remise en file — voie canonique « open actions »', async () => {
+    const r = await requestStaleResolutions([row({ fileId: 1 })], {
+      triggerCode: 'schedule_hourly', deps: { ...deps, openAssetLinkAction: async () => 77 },
+    });
+    expect(r).toEqual({ enqueued: [], confirmed: 0, delegated: 1 });
+    expect(m.confirmContext).not.toHaveBeenCalled();
+    expect(m.enqueue).not.toHaveBeenCalled();
   });
 
   it('garde d’exécution vérifiée avant chaque écriture', async () => {

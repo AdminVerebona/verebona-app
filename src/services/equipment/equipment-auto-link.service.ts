@@ -10,6 +10,11 @@
  *
  * L'analyse documentaire principale (gemini-client.ts) doit produire
  * des `equipment_candidates` pour éviter les appels IA redondants.
+ *
+ * Lot 49 (SEC-04) : l'équipement est chargé PAR SON COMPTE (bien porteur),
+ * les candidats (documents, agenda, fournisseurs) sont lus dans le compte,
+ * et chaque écriture porte la condition de compte dans son SQL — aucune
+ * liaison intercomptes, même si une relation incorrecte existe en base.
  */
 
 // CDC §12 critère n°4 : plus aucun accès direct au SDK. Les deux départages
@@ -21,10 +26,11 @@ import type { LinkAmbiguity } from '@/services/ai/reconciliation/master/link-amb
 import { proposeDocumentEquipmentLink } from '@/services/to-process/document-equipment-link';
 import { db } from '@/db';
 import {
-  equipments, assetFiles, agendaItems, agendaAssetLinks, agendaEquipmentLinks,
+  equipments, assets, assetFiles, agendaItems, agendaAssetLinks, agendaEquipmentLinks,
   suppliers, assetSuppliers, equipmentSuppliers, documentSuppliers,
 } from '@/db/schema';
-import { eq, and, isNull, inArray } from 'drizzle-orm';
+import { eq, and, isNull, inArray, sql } from 'drizzle-orm';
+import { ownedSql } from '@/services/security/account-ownership';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -313,9 +319,11 @@ export async function runEquipmentAutoLink(
       substructureId: equipments.substructureId,
     })
     .from(equipments)
+    .innerJoin(assets, and(eq(assets.id, equipments.assetId), eq(assets.accountId, accountId)))
     .where(eq(equipments.id, equipmentId))
     .limit(1);
 
+  // Équipement d'un autre compte : traité comme introuvable (aucune lecture).
   if (!equip) throw new Error('Equipment not found');
 
   const assetId = equip.assetId;
@@ -324,7 +332,7 @@ export async function runEquipmentAutoLink(
   const alreadyLinkedDocs = await db
     .select({ id: assetFiles.id })
     .from(assetFiles)
-    .where(and(eq(assetFiles.equipmentId, equipmentId), isNull(assetFiles.deletedAt)));
+    .where(and(eq(assetFiles.equipmentId, equipmentId), eq(assetFiles.accountId, accountId), isNull(assetFiles.deletedAt)));
   const linkedDocIds = alreadyLinkedDocs.map(d => d.id);
 
   // 3. Get candidate documents (NOT yet linked)
@@ -398,7 +406,7 @@ export async function runEquipmentAutoLink(
       phone: suppliers.phone,
     })
     .from(assetSuppliers)
-    .innerJoin(suppliers, eq(suppliers.id, assetSuppliers.supplierId))
+    .innerJoin(suppliers, and(eq(suppliers.id, assetSuppliers.supplierId), eq(suppliers.accountId, accountId)))
     .where(eq(assetSuppliers.assetId, assetId));
 
   const candidateSuppliers = linkedSupplierIds.length > 0
@@ -415,7 +423,7 @@ export async function runEquipmentAutoLink(
     })
     .from(documentSuppliers)
     .innerJoin(assetFiles, eq(documentSuppliers.documentId, assetFiles.id))
-    .innerJoin(suppliers, eq(suppliers.id, documentSuppliers.supplierId))
+    .innerJoin(suppliers, and(eq(suppliers.id, documentSuppliers.supplierId), eq(suppliers.accountId, accountId)))
     .where(and(
       eq(assetFiles.assetId, assetId),
       eq(assetFiles.accountId, accountId),
@@ -513,11 +521,13 @@ export async function runEquipmentAutoLink(
   for (const doc of clear.documents) {
     const docExists = candidateDocs.find(d => d.id === doc.id);
     if (!docExists) continue;
-    await db
+    // Revalidation à l'écriture : document ET équipement du compte.
+    const ecrits = await db
       .update(assetFiles)
       .set({ equipmentId })
-      .where(eq(assetFiles.id, doc.id));
-    documentsLinked++;
+      .where(and(eq(assetFiles.id, doc.id), eq(assetFiles.accountId, accountId), ownedSql('equipment', equipmentId, accountId)))
+      .returning({ id: assetFiles.id });
+    if (ecrits.length) documentsLinked++;
   }
 
   if (clear.agendaItems.length > 0) {
@@ -526,27 +536,26 @@ export async function runEquipmentAutoLink(
       .filter(id => candidateAgendaItems.some(i => i.id === id));
 
     for (const agendaId of validAgendaIds) {
-      await db
-        .insert(agendaEquipmentLinks)
-        .values({ agendaItemId: agendaId, equipmentId })
-        .onConflictDoNothing();
-      agendaLinked++;
+      // Insertion bornée au compte (élément d'agenda ET équipement).
+      const r = (await db.execute(sql`
+        INSERT INTO agenda_equipment_links (agenda_item_id, equipment_id)
+        SELECT ${agendaId}, ${equipmentId}
+         WHERE ${ownedSql('agenda_item', agendaId, accountId)} AND ${ownedSql('equipment', equipmentId, accountId)}
+        ON CONFLICT DO NOTHING RETURNING id`)) as unknown as unknown[];
+      if (r.length) agendaLinked++;
     }
   }
 
   for (const sup of clear.suppliers) {
     const supExists = candidateSuppliers.find(s => s.id === sup.id);
     if (!supExists) continue;
-    await db
-      .insert(equipmentSuppliers)
-      .values({
-        equipmentId,
-        supplierId: sup.id,
-        sourceType: 'manual',
-        isPrimary: false,
-      })
-      .onConflictDoNothing();
-    suppliersLinked++;
+    // Insertion bornée au compte (équipement ET fournisseur).
+    const r = (await db.execute(sql`
+      INSERT INTO equipment_suppliers (equipment_id, supplier_id, source_type, is_primary)
+      SELECT ${equipmentId}, ${sup.id}, 'manual', false
+       WHERE ${ownedSql('equipment', equipmentId, accountId)} AND ${ownedSql('supplier', sup.id, accountId)}
+      ON CONFLICT DO NOTHING RETURNING equipment_id`)) as unknown as unknown[];
+    if (r.length) suppliersLinked++;
   }
 
   return {
@@ -636,9 +645,12 @@ export async function linkDocumentToEquipments(
   if (doc.equipmentId) return;
 
   // Load all non-archived equipments on this asset
+  // Équipements du bien DU COMPTE : un document rattaché à tort au bien
+  // d'un autre compte ne voit aucun équipement (aucune liaison intercomptes).
   const assetEquipments = await db
     .select({ id: equipments.id, name: equipments.name, type: equipments.type })
     .from(equipments)
+    .innerJoin(assets, and(eq(assets.id, equipments.assetId), eq(assets.accountId, accountId)))
     .where(and(eq(equipments.assetId, doc.assetId), isNull(equipments.archivedAt)));
 
   if (assetEquipments.length === 0) return;
@@ -663,7 +675,7 @@ export async function linkDocumentToEquipments(
         await db
           .update(assetFiles)
           .set({ equipmentId: match.id })
-          .where(eq(assetFiles.id, assetFileId));
+          .where(and(eq(assetFiles.id, assetFileId), eq(assetFiles.accountId, accountId), ownedSql('equipment', match.id, accountId)));
         return; // linked from analysis candidate — no AI needed
       }
     }
@@ -698,7 +710,7 @@ export async function linkDocumentToEquipments(
     await db
       .update(assetFiles)
       .set({ equipmentId: deterministicMatches[0].id })
-      .where(eq(assetFiles.id, assetFileId));
+      .where(and(eq(assetFiles.id, assetFileId), eq(assetFiles.accountId, accountId), ownedSql('equipment', deterministicMatches[0].id, accountId)));
     return;
   }
 
@@ -746,7 +758,7 @@ export async function linkDocumentToEquipments(
     await db
       .update(assetFiles)
       .set({ equipmentId: best.id })
-      .where(eq(assetFiles.id, assetFileId));
+      .where(and(eq(assetFiles.id, assetFileId), eq(assetFiles.accountId, accountId), ownedSql('equipment', best.id, accountId)));
   } catch (err) {
     console.error('[equipment-auto-link] AI match failed (non-blocking):', err);
   }

@@ -1,17 +1,17 @@
 /**
- * BO IA — tickets T4 (déclencheurs) et T5 (ancien prompt ignoré).
+ * BO IA — ticket T4 (déclencheurs) ; contrôles des textes hérités.
  *
  * T4 : un déclencheur enregistré mais inapplicable (`schedule_hourly`) reste
  * bloquant, actif ou non, et le motif dit comment le corriger ; `source_analyzed`
  * est valide ; la nature doit correspondre au catalogue.
- * T5 : un texte hérité (préambule, master avec {{TASK}}/branches MODE, ancien
- * master incomplet) ne bloque plus ; les vrais contrôles restent bloquants.
+ * Lot 49 : le volet T5 (ancien prompt ignoré) est retiré avec T5 lui-même ;
+ * les contrôles des traitements restants sont conservés.
  */
 import { describe, expect, it } from 'vitest';
 import {
-  validateTreatment, T5_LEGACY_TEXT_MESSAGE, type ConfigCatalogs,
+  validateTreatment, type ConfigCatalogs,
 } from '../config-validation.service';
-import { emptyTreatmentConfig, normalizeTreatmentConfig, type TreatmentConfig } from '../config-types';
+import { emptyTreatmentConfig, type TreatmentConfig } from '../config-types';
 import { triggerCodes, triggerIncompatibility, listTriggers } from '../catalogs';
 import { changedConfigFields } from '../config-entry.audit';
 import { activeTriggerCodes } from '../../queue/triggers';
@@ -79,38 +79,7 @@ describe('T4 — déclencheurs', () => {
   });
 });
 
-describe('T5 — ancien prompt ignoré', () => {
-  const t5 = (over: Partial<TreatmentConfig>) => conf({ treatment: 'T5', prompt: '', triggers: [], ...over });
-
-  it('un ancien texte ordinaire ne bloque pas : information seulement', () => {
-    const issues = validateTreatment(t5({ prompt: 'ancien préambule' }), cat);
-    expect(issues.filter((i) => i.blocking)).toEqual([]);
-    expect(issues.find((i) => i.field === 'prompt')?.message).toBe(T5_LEGACY_TEXT_MESSAGE);
-  });
-
-  it('un master collé dans le préambule ({{TASK}}, BRANCHE MODE =) ne bloque plus', () => {
-    const issues = validateTreatment(t5({ prompt: 'BRANCHE MODE = A\n{{TASK}}\n{{MODE}}' }), cat);
-    expect(issues.filter((i) => i.blocking)).toEqual([]);
-    expect(issues.some((i) => /zone dédiée/.test(i.message))).toBe(false);
-  });
-
-  it('un ancien masterPrompt incomplet est ignoré', () => {
-    const issues = validateTreatment(t5({ masterPrompt: 'master incomplet {{TASK}}' }), cat);
-    expect(issues.filter((i) => i.blocking)).toEqual([]);
-    expect(issues.some((i) => i.message === T5_LEGACY_TEXT_MESSAGE)).toBe(true);
-  });
-
-  it('une autre erreur réelle reste bloquante (modèle inconnu)', () => {
-    expect(bloquants(t5({ prompt: 'ancien', primaryModel: 'inconnu' })).some((i) => i.field === 'primaryModel')).toBe(true);
-  });
-
-  it('normalisation à l’enregistrement : prompt "" et masterPrompt null, idempotente', () => {
-    const n = normalizeTreatmentConfig(t5({ prompt: 'x', masterPrompt: 'y', maxOutputTokens: 777 }));
-    expect(n).toMatchObject({ prompt: '', masterPrompt: null, maxOutputTokens: 777 });
-    expect(normalizeTreatmentConfig(n)).toEqual(n);
-    expect(validateTreatment(n, cat).some((i) => i.message === T5_LEGACY_TEXT_MESSAGE)).toBe(false);
-  });
-
+describe('Textes hérités des traitements (T1, T2, T3, T4, T6)', () => {
   it('traitement administrable : un ancien préambule (plus éditable ni appliqué) est signalé sans bloquer', () => {
     const issues = validateTreatment(conf({ treatment: 'T1', prompt: 'BRANCHE TASK = X {{TASK}}', triggers: [{ kind: 'event', code: 'source_uploaded', active: true }] }), cat);
     const p = issues.find((i) => /zone dédiée/.test(i.message));

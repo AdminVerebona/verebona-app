@@ -265,6 +265,8 @@ export const documentSourceUnits = pgTable('document_source_units', {
   layerVersion: smallint('layer_version').notNull().default(1),
   createdAt: tstz('created_at'),
   updatedAt: tstz('updated_at'),
+  /** Lot 49B (0329) — état de réparation (PENDING, ATTEMPTED_FAILED, SUCCEEDED, EXHAUSTED, NEEDS_SOURCE). */
+  repairState: text('repair_state'),
 }, (t) => ({
   fileUnitUidx: uniqueIndex('document_source_units_file_unit_uidx').on(t.fileId, t.sourceUnitId),
   kindChk: check('document_source_units_kind_chk', sql`${t.kind} IN ('DOCUMENT_METADATA', 'TEXT_BLOCK', 'LABEL_VALUE', 'FORM_FIELD', 'TABLE', 'TABLE_ROW', 'VISUAL_OBSERVATION', 'VISUAL_SUMMARY', 'PAGE_GAP')`),
@@ -301,6 +303,11 @@ export const documentExtractionCoverage = pgTable('document_extraction_coverage'
   lastError: text('last_error'),
   createdAt: tstz('created_at'),
   updatedAt: tstz('updated_at'),
+  /** Lot 49B (0329) — vérification de la source (attribut distinct de l'état de qualité) et diagnostics. */
+  sourceVerification: text('source_verification'),
+  verification: jsonb('verification'),
+  lastRetryAt: pgTimestamp('last_retry_at', { withTimezone: true }),
+  lastRetryResult: text('last_retry_result'),
 }, (t) => ({
   qualityIdx: index('document_extraction_coverage_quality_idx').on(t.qualityState, t.nextRetryAt)
     .where(sql`quality_state <> 'COMPLETE'`),

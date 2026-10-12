@@ -8,19 +8,32 @@ import { db } from '@/db';
 import { events, assets } from '@/db/schema';
 import { eq, and, gte, lte } from 'drizzle-orm';
 import { apiError } from '@/lib/api-errors';
+import { SessionService } from '@/lib/session-service';
 
 /**
  * GET /api/events/prochaines-echeances
  * 
  * Returns upcoming events (planned events with future dates).
  * 
+ * Lot 49 (SEC-02) : TOUJOURS bornée au compte actif de la session. Le
+ * `userId` de l'URL n'est qu'un filtre À L'INTÉRIEUR du compte, jamais une
+ * preuve d'autorisation ; le bien joint est celui du compte.
+ *
  * Query params:
- * - userId (optional): filter by user
+ * - userId (optional): filter by user (within the active account)
  * - limit (optional): max number of results (default: 10, max: 50)
  * - daysAhead (optional): only events in the next X days (default: no limit)
  */
 export async function GET(request: NextRequest) {
   try {
+    let session;
+    try {
+      session = await SessionService.getSession(request);
+    } catch (e) {
+      return SessionService.handleSessionError(e);
+    }
+    if (!session?.currentAccountId) return apiError(401, 'UNAUTHORIZED', 'Authentication required');
+    const accountId = session.currentAccountId;
     const { searchParams } = new URL(request.url);
     const userId = searchParams.get('userId');
     const limitParam = searchParams.get('limit');
@@ -42,11 +55,12 @@ export async function GET(request: NextRequest) {
 
     // Build conditions
     const conditions = [
+      eq(events.accountId, accountId),
       eq(events.statut, 'planifie'),
       gte(events.date, todayStr),
     ];
 
-    if (userId) {
+    if (userId && !isNaN(parseInt(userId))) {
       conditions.push(eq(events.userId, parseInt(userId)));
     }
 
@@ -72,7 +86,7 @@ export async function GET(request: NextRequest) {
         },
       })
       .from(events)
-        .leftJoin(assets, eq(events.assetId as any, assets.id))
+        .leftJoin(assets, and(eq(events.assetId, assets.id), eq(assets.accountId, accountId)))
       .where(and(...conditions))
       .orderBy(events.date)
       .limit(limit);
@@ -107,6 +121,6 @@ export async function GET(request: NextRequest) {
 
   } catch (error) {
     console.error('GET /api/events/prochaines-echeances error:', error);
-    return apiError(500, 'INTERNAL_ERROR', 'Internal server error: ' + (error as Error).message);
+    return apiError(500, 'INTERNAL_ERROR', 'Internal server error');
   }
 }

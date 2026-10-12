@@ -20,6 +20,7 @@ import type {
   CoverageStatus, CoveredSourceUnit, SourceUnit, T1CompletenessReport, T1QualityState, UnitCoverage, UnresolvedFactRecord,
 } from './types';
 import { T1_COMPLETENESS_ANOMALIES } from './types';
+import type { SourceVerification } from './source-verification';
 
 /** Preuve d'un fait, telle que la portent `T1Fact`, `ProjectedFact` ou un fait persisté. */
 export interface EvidenceRef {
@@ -144,6 +145,8 @@ export class SourceUnitLinker {
 export interface FactLink {
   unitIds: string[];
   confidence: 'certain' | 'probable' | 'conflictual';
+  /** Lot 49B : fait d'une réparation ciblée (vérification d'une ligne de tableau incertaine). */
+  repair?: boolean;
 }
 
 export interface CoverageInput {
@@ -162,11 +165,20 @@ export interface CoverageInput {
 /** États de couverture de chaque unité. */
 export function computeCoverage(units: readonly SourceUnit[], c: CoverageInput): CoveredSourceUnit[] {
   const parUnite = new Map<string, Array<FactLink['confidence']>>();
+  // Lot 49B (DEV-02) : cellules d'une ligne incertaine confirmées par un fait CERTAIN de réparation.
+  const cellulesVerifiees = new Map<string, Set<string>>();
   for (const f of c.facts) {
     for (const id of new Set(f.unitIds.map(unitOfCell))) {
       const l = parUnite.get(id) ?? [];
       l.push(f.confidence);
       parUnite.set(id, l);
+    }
+    if (f.repair && f.confidence === 'certain') {
+      for (const id of f.unitIds) {
+        const s = cellulesVerifiees.get(unitOfCell(id)) ?? new Set<string>();
+        s.add(id === unitOfCell(id) ? `row:${s.size}` : id);
+        cellulesVerifiees.set(unitOfCell(id), s);
+      }
     }
   }
   const meta = new Set(c.metadataUnitIds ?? []);
@@ -187,8 +199,15 @@ export function computeCoverage(units: readonly SourceUnit[], c: CoverageInput):
       r = u.payload.uncertain === true ? cov('UNCERTAIN', 'table_uncertain')
         : Number(u.payload.rowCount ?? 0) === 0 && !u.text ? cov('NON_INFORMATIONAL', 'empty_table') : cov('COVERED', 'table');
     } else if (u.kind === 'TABLE_ROW') {
+      // Ligne d'un tableau incertain : COUVERTE seulement si chaque cellule
+      // renseignée est confirmée par un fait certain de la réparation ciblée
+      // (vérification de structure) — jamais promue sans preuve.
+      const cellules = Array.isArray(u.payload.cells) ? (u.payload.cells as Array<{ value?: unknown }>).filter((x) => x.value !== null && x.value !== undefined).length : 0;
+      const verifiees = cellulesVerifiees.get(u.sourceUnitId)?.size ?? 0;
       r = !u.salient ? cov('NON_INFORMATIONAL', 'empty_row')
-        : tableIncertaine.get(u.parentUnitId ?? '') ? cov('UNCERTAIN', 'table_uncertain') : cov('COVERED', 'table');
+        : tableIncertaine.get(u.parentUnitId ?? '')
+          ? (cellules > 0 && verifiees >= cellules ? cov('COVERED', 'table_verified') : cov('UNCERTAIN', 'table_uncertain'))
+          : cov('COVERED', 'table');
     } else if (u.kind === 'VISUAL_OBSERVATION') {
       r = u.payload.confidence === 'conflictual' ? cov('UNCERTAIN', 'observation_conflictual') : cov('COVERED', 'observation');
     } else if (u.kind === 'VISUAL_SUMMARY') r = cov('COVERED', 'observation');
@@ -207,16 +226,55 @@ export function computeCoverage(units: readonly SourceUnit[], c: CoverageInput):
 const REPARABLES = new Set(['TEXT_BLOCK', 'LABEL_VALUE', 'FORM_FIELD']);
 
 /**
- * Unités à soumettre à la réparation ciblée : non couvertes ET porteuses
- * d'une valeur structurable (ou liées à un fait écarté), ou en échec avec du
- * texte. Jamais une unité déjà réparée `maxAttempts` fois ; jamais le
- * document entier.
+ * Unités à soumettre à la réparation ciblée TEXTUELLE (lot 49B, DEV-02) :
+ *   · texte (bloc, libellé : valeur, formulaire) non couvert porteur d'une
+ *     valeur (ou lié à un fait écarté), ou INCERTAIN (fait conflictuel) :
+ *     réinterprétation / vérification des preuves ;
+ *   · ligne d'un tableau INCERTAIN : vérification des cellules (la ligne
+ *     n'est promue que si chaque cellule est confirmée, `computeCoverage`) ;
+ *   · échec de réparation TRANSITOIRE (un échec définitif n'est pas rejoué).
+ * Les observations visuelles incertaines n'en font pas partie : une relecture
+ * textuelle ne lève pas une incertitude visuelle (`needsSourceUnits`).
+ * Jamais une unité déjà réparée `maxAttempts` fois ; jamais le document
+ * entier. Les unités en attente (budget) passent en tête.
  */
 export function selectRepairUnits(units: readonly CoveredSourceUnit[], maxAttempts: number): CoveredSourceUnit[] {
-  return units.filter((u) => REPARABLES.has(u.kind) && u.text && u.repairAttempts < maxAttempts && (
-    (u.status === 'UNRESOLVED' && (u.salient || u.reason === 'fact_dropped'))
-    || (u.status === 'FAILED' && u.reason?.startsWith('repair_failed'))
-  ));
+  return units.filter((u) => u.text && u.repairAttempts < maxAttempts && (
+    (REPARABLES.has(u.kind) && (
+      (u.status === 'UNRESOLVED' && (u.salient || u.reason === 'fact_dropped'))
+      || (u.status === 'UNCERTAIN' && u.reason === 'fact_conflictual')
+      || (u.status === 'FAILED' && u.reason === 'repair_failed:retryable')))
+    || (u.kind === 'TABLE_ROW' && u.salient && (u.status === 'UNCERTAIN' || (u.status === 'FAILED' && u.reason === 'repair_failed:retryable')))
+  )).sort((a, b) => Number(b.repairState === 'PENDING') - Number(a.repairState === 'PENDING') || a.ordinal - b.ordinal);
+}
+
+/** Observations visuelles incertaines : seule une relecture du fichier pourrait les lever (lot 49B). */
+export function needsSourceUnits(units: readonly CoveredSourceUnit[]): CoveredSourceUnit[] {
+  return units.filter((u) => u.kind === 'VISUAL_OBSERVATION' && u.status === 'UNCERTAIN');
+}
+
+/**
+ * État de réparation des unités après une passe (lot 49B, DEV-04) — pure.
+ *   attempted   unités soumises à la passe ; notAttempted  sélectionnées mais
+ *   hors budget (reprise programmée) ; cap  tentatives au plus par unité.
+ */
+export function withRepairStates(units: readonly CoveredSourceUnit[], p: {
+  attempted?: ReadonlySet<string>; pending?: ReadonlySet<string>; cap: number;
+}): CoveredSourceUnit[] {
+  return units.map((u) => {
+    const before = u.repairState ?? null;
+    const tentee = p.attempted?.has(u.sourceUnitId) === true;
+    let state: CoveredSourceUnit['repairState'] = before;
+    if (u.kind === 'VISUAL_OBSERVATION' && u.status === 'UNCERTAIN') state = 'NEEDS_SOURCE';
+    else if (u.status === 'COVERED' || u.status === 'NON_INFORMATIONAL') state = u.repairAttempts > 0 && (tentee || before !== null) ? 'SUCCEEDED' : null;
+    else if (p.pending?.has(u.sourceUnitId)) state = 'PENDING';
+    else if (before === 'PENDING' && !tentee) state = 'PENDING';
+    else if (tentee || before === 'ATTEMPTED_FAILED' || before === 'EXHAUSTED' || before === 'SUCCEEDED') {
+      state = u.repairAttempts >= p.cap || (u.status === 'FAILED' && u.reason === 'repair_failed:final') ? 'EXHAUSTED'
+        : u.repairAttempts > 0 ? 'ATTEMPTED_FAILED' : before;
+    } else if (before === 'NEEDS_SOURCE') state = null;
+    return state === (u.repairState ?? null) ? u : { ...u, repairState: state };
+  });
 }
 
 export interface ReportInput {
@@ -230,6 +288,13 @@ export interface ReportInput {
   warningCodes: readonly string[];
   /** Une nouvelle tentative automatique reste-t-elle permise (plafond de reprises) ? */
   retryAllowed: boolean;
+  /**
+   * Lot 49B (DEV-01) : vérification de la source. Absente : non contrôlée
+   * (appel direct) — l'état n'est pas dégradé.
+   */
+  verification?: Pick<SourceVerification, 'status' | 'reason' | 'pagesExpected' | 'verified' | 'missing' | 'unverified' | 'scanned'> & { reread?: number[] } | null;
+  /** Lot 49B (DEV-03) : réductions comptées, originaux conservés, pertes non compensées. */
+  normalisation?: { truncations: number; originalsPreserved: number; losses: number };
 }
 
 /** Faits écartés à la 1re passe et non retrouvés (motifs de rejet d'un fait du modèle). */
@@ -251,10 +316,24 @@ export function buildCompletenessReport(units: readonly CoveredSourceUnit[], p: 
   const retryableFailures = units.filter((u) => u.status === 'FAILED').every((u) =>
     (u.kind === 'PAGE_GAP' ? u.payload.retryable === true : u.reason?.endsWith(':retryable') === true));
 
+  // Lot 49B : réparations en attente (budget) / épuisées, relecture du fichier nécessaire.
+  const etat = (x: string) => units.filter((u) => u.repairState === x).length;
+  const pending = etat('PENDING');
+  const exhausted = etat('EXHAUSTED');
+  const v = p.verification ?? null;
+  const missing = v?.missing.length ?? 0;
+  // Couverture de la source non établie : jamais COMPLETE (information comprise ≠ document lu).
+  const nonVerifiee = v !== null && (v.status === 'UNVERIFIABLE' || v.status === 'RECONSTRUCTED' || (v.status === 'PARTIAL' && missing === 0));
+  const pertes = p.normalisation?.losses ?? 0;
+  const nonInterpretes = p.unresolvedFacts.filter((f) => f.status === 'UNRESOLVED' && f.reason === 'VALUE_NOT_NORMALIZABLE').length;
+
   let quality: T1QualityState;
   if (failed > 0 || p.truncatedSectionsCount > 0) {
     quality = p.truncatedSectionsCount === 0 && retryableFailures && p.retryAllowed ? 'INCOMPLETE_RETRYABLE' : 'INCOMPLETE_FINAL';
-  } else if (unresolved > 0 || uncertain > 0 || dropped > 0) {
+  } else if (pending > 0 || missing > 0) {
+    // Lecture ou réparation encore nécessaire et réalisable (reprise programmée).
+    quality = 'INCOMPLETE_RETRYABLE';
+  } else if (unresolved > 0 || uncertain > 0 || dropped > 0 || nonVerifiee || pertes > 0 || nonInterpretes > 0) {
     quality = 'COMPLETE_WITH_UNRESOLVED';
   } else {
     quality = 'COMPLETE';
@@ -266,6 +345,12 @@ export function buildCompletenessReport(units: readonly CoveredSourceUnit[], p: 
   if (dropped > 0) anomalies.add('FACT_INVALID_DROPPED');
   if (failed > 0) anomalies.add('SOURCE_UNIT_FAILED');
   if (quality === 'INCOMPLETE_RETRYABLE' || quality === 'INCOMPLETE_FINAL') anomalies.add('COVERAGE_INCOMPLETE');
+  if (v && (v.reason === 'source_unreadable' || v.reason === 'pdf_unreadable')) anomalies.add('SOURCE_UNREADABLE');
+  else if (v && (v.unverified.length > 0 || v.status === 'UNVERIFIABLE')) anomalies.add('PAGE_UNVERIFIED');
+  if (missing > 0) anomalies.add('PAGE_MISSING');
+  if (pending > 0) anomalies.add('REPAIR_PENDING');
+  if (exhausted > 0) anomalies.add('REPAIR_EXHAUSTED');
+  if (pertes > 0) anomalies.add('NORMALISATION_LOSS');
 
   return {
     totalSourceUnits: total,
@@ -283,5 +368,23 @@ export function buildCompletenessReport(units: readonly CoveredSourceUnit[], p: 
     chunkCount: p.chunkCount,
     qualityState: quality,
     anomalies: T1_COMPLETENESS_ANOMALIES.filter((a) => anomalies.has(a)),
+    diagnostics: {
+      sourceVerification: v?.status ?? null,
+      verificationReason: v?.reason ?? null,
+      pagesExpected: v?.pagesExpected ?? null,
+      pagesVerified: v?.verified.length ?? 0,
+      pagesMissing: v?.missing ?? [],
+      pagesUnverified: v?.unverified ?? [],
+      pagesScanned: v?.scanned ?? [],
+      pagesReread: v?.reread ?? [],
+      uncertainUnits: uncertain,
+      pendingRepairUnits: pending,
+      exhaustedRepairUnits: exhausted,
+      failedRepairUnits: etat('ATTEMPTED_FAILED'),
+      needsSourceUnits: etat('NEEDS_SOURCE'),
+      truncations: p.normalisation?.truncations ?? 0,
+      originalsPreserved: p.normalisation?.originalsPreserved ?? 0,
+      normalisationLosses: pertes,
+    },
   };
 }

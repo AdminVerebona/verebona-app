@@ -95,6 +95,23 @@ export interface CatalogRunRow {
   finishedAt: Date | null;
 }
 
+/** Rattrapage ciblé (lot 49A, migration 0326). */
+export type RecoveryStatus = 'WAITING' | 'RUNNING' | 'RETRY_WAIT' | 'DONE' | 'FAILED' | 'CHECK_FAILED';
+
+export interface CatalogRecoveryRow {
+  catalogContext: string;
+  recoveryKey: string;
+  status: RecoveryStatus;
+  runId: number | null;
+  attempts: number;
+  lastError: string | null;
+  lastAttemptAt: Date | null;
+  nextAttemptAt: Date | null;
+  completedAt: Date | null;
+  report: Record<string, unknown> | null;
+  updatedAt?: Date | null;
+}
+
 export interface ActivationInput {
   context: string;
   stripeAccountId: string | null;
@@ -129,6 +146,10 @@ export interface CatalogStore {
   updateRun(id: number, patch: Partial<Pick<CatalogRunRow, 'state' | 'toRevision' | 'createdPrices' | 'transfers' | 'report' | 'error'>> & { finished?: boolean; step?: Record<string, unknown> }): Promise<void>;
   getRun(id: number): Promise<CatalogRunRow | null>;
   listRuns(context: string, limit: number): Promise<CatalogRunRow[]>;
+  /** Rattrapages ciblés (lot 49A). `null` si absent ou table non migrée. */
+  getRecovery(context: string, key: string): Promise<CatalogRecoveryRow | null>;
+  saveRecovery(row: CatalogRecoveryRow): Promise<void>;
+  listRecoveries(context: string): Promise<CatalogRecoveryRow[]>;
 }
 
 // ─── Implémentation PostgreSQL ───────────────────────────────────────────────
@@ -217,6 +238,25 @@ function mapRun(r: Row): CatalogRunRow {
     finishedAt: d(r.finished_at),
   };
 }
+
+function mapRecovery(r: Row): CatalogRecoveryRow {
+  return {
+    catalogContext: String(r.catalog_context),
+    recoveryKey: String(r.recovery_key),
+    status: r.status as RecoveryStatus,
+    runId: r.run_id == null ? null : Number(r.run_id),
+    attempts: Number(r.attempts ?? 0),
+    lastError: (r.last_error as string) ?? null,
+    lastAttemptAt: d(r.last_attempt_at),
+    nextAttemptAt: d(r.next_attempt_at),
+    completedAt: d(r.completed_at),
+    report: j<Record<string, unknown>>(r.report),
+    updatedAt: d(r.updated_at),
+  };
+}
+
+/** Table 0326 absente (déploiement avant migration) : lecture vide, jamais une panne. */
+const isMissingTable = (e: unknown) => (e as { code?: string })?.code === '42P01';
 
 const UPSERT_VERSION = `
   INSERT INTO stripe_price_versions
@@ -425,6 +465,38 @@ export const pgCatalogStore: CatalogStore = {
   async listRuns(context, limit) {
     const rows = await q(`SELECT * FROM stripe_catalog_runs WHERE catalog_context = $1 ORDER BY started_at DESC, id DESC LIMIT $2`, [context, limit]);
     return rows.map(mapRun);
+  },
+  async getRecovery(context, key) {
+    try {
+      const [r] = await q(`SELECT * FROM stripe_catalog_recoveries WHERE catalog_context = $1 AND recovery_key = $2`, [context, key]);
+      return r ? mapRecovery(r) : null;
+    } catch (e) {
+      if (isMissingTable(e)) return null;
+      throw e;
+    }
+  },
+  async saveRecovery(row) {
+    await q(
+      `INSERT INTO stripe_catalog_recoveries
+         (catalog_context, recovery_key, status, run_id, attempts, last_error, last_attempt_at, next_attempt_at, completed_at, report)
+       VALUES ($1,$2,$3,$4,$5,$6,$7::timestamptz,$8::timestamptz,$9::timestamptz,$10::jsonb)
+       ON CONFLICT (catalog_context, recovery_key) DO UPDATE SET
+         status = EXCLUDED.status, run_id = EXCLUDED.run_id, attempts = EXCLUDED.attempts, last_error = EXCLUDED.last_error,
+         last_attempt_at = EXCLUDED.last_attempt_at, next_attempt_at = EXCLUDED.next_attempt_at,
+         completed_at = EXCLUDED.completed_at, report = EXCLUDED.report, updated_at = now()`,
+      [row.catalogContext, row.recoveryKey, row.status, row.runId, row.attempts, row.lastError,
+        row.lastAttemptAt?.toISOString() ?? null, row.nextAttemptAt?.toISOString() ?? null, row.completedAt?.toISOString() ?? null,
+        row.report ? JSON.stringify(row.report) : null],
+    );
+  },
+  async listRecoveries(context) {
+    try {
+      const rows = await q(`SELECT * FROM stripe_catalog_recoveries WHERE catalog_context = $1 ORDER BY updated_at DESC`, [context]);
+      return rows.map(mapRecovery);
+    } catch (e) {
+      if (isMissingTable(e)) return [];
+      throw e;
+    }
   },
 };
 

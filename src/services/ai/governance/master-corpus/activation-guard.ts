@@ -16,7 +16,7 @@
  */
 import { promptArchitectureOf, masterPromptOf, type ConfigVersionWithEntries, type TreatmentConfig } from '../../config/config-types';
 import { masterPromptForTreatment } from '../../config/prompt-architecture';
-import { isPromptAdministrable, type Treatment } from '../../config/treatments';
+import type { Treatment } from '../../config/treatments';
 import { masterTextFingerprint } from '../../prompts/prompt-loader';
 import type { CorpusRunMode, CorpusRunRow, CorpusRunSource } from './repository';
 
@@ -64,7 +64,7 @@ export function effectiveMasterText(
 ): { masterPromptCode: string; text: string; source: 'config' | 'file'; branches: string[] } | null {
   const master = masterPromptForTreatment(entry.treatment);
   if (!master || promptArchitectureOf(entry) !== 'master') return null;
-  const configured = isPromptAdministrable(entry.treatment) ? masterPromptOf(entry) : null;
+  const configured = masterPromptOf(entry);
   // Texte de version identique au fichier : traité comme le fichier.
   const fichier = configured === null ? readMasterFile(master.masterPromptCode) : null;
   return {

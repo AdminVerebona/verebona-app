@@ -278,6 +278,20 @@ export async function candidatToujoursValide(
   // Période ou action (§20.1) : aucun objet du compte à revérifier ; le
   // choix est valable s'il porte bien la reprise construite par le serveur.
   if (candidateType === 'period' || candidateType === 'action') return Boolean(candidate.resumeMessage);
+  // Lot 49 : interprétation métier — bien toujours DISPONIBLE (règle unique)
+  // et source réelle toujours lisible dans le compte.
+  if (candidateType === 'business_source') {
+    if (!candidate.sourceRef) return false;
+    if (candidate.assetId) {
+      const ok = await pgClient.unsafe(
+        `SELECT 1 FROM assets a WHERE a.id = $1 AND a.account_id = $2 AND ${assistantAssetAvailability.sql('a')} LIMIT 1`,
+        [candidate.assetId, accountId] as never[],
+      );
+      if ((ok as unknown as unknown[]).length === 0) return false;
+    }
+    const { readBusinessSource } = await import('../canonical/business-sources');
+    return (await readBusinessSource(accountId, candidate.sourceRef, { assetIds: candidate.assetId ? [candidate.assetId] : [] }).catch(() => null)) !== null;
+  }
   if (!candidate.entityId) return false;
   // Équipement / pièce (lot 29, ticket 13) : mêmes règles que leur fiche,
   // bien parent du compte et DISPONIBLE (ticket 14).
@@ -422,9 +436,15 @@ export function inputDeReprise(
     ? { type: etat.candidateType, id: candidate.entityId, assetId: candidate.assetId ?? null } : null;
   // Équipement / pièce : le bien PARENT devient le contexte (filtre, actions),
   // l'entité choisie reste la cible (ticket 13 §G).
-  const assetId = etat.candidateType === 'asset' ? candidate.entityId ?? null : entite?.assetId ?? null;
+  const assetId = etat.candidateType === 'asset' ? candidate.entityId ?? null : entite?.assetId ?? (etat.candidateType === 'business_source' ? candidate.assetId ?? null : null);
   const documentId = etat.candidateType === 'document' ? candidate.entityId ?? null : null;
   const requestedFacts = etat.resolvedContext?.requestedFacts?.length ? [...etat.resolvedContext.requestedFacts] : undefined;
+  // Lot 49 : choix d'une interprétation métier → contexte STRUCTURÉ (référence
+  // de la source, besoin, bien) ; besoin sémantique conservé après une
+  // clarification de cible. Jamais une reformulation reclassée.
+  const semantique = etat.candidateType === 'business_source' && candidate.sourceRef
+    ? { semanticSource: { ref: candidate.sourceRef, need: etat.resolvedContext?.semantic?.need ?? null, assetId: candidate.assetId ?? null } }
+    : etat.resolvedContext?.semantic ? { semantic: etat.resolvedContext.semantic } : {};
   return {
     ...base,
     // Période ou action choisie (§20.1) : la demande rejouée est celle que le
@@ -442,6 +462,7 @@ export function inputDeReprise(
       documentId,
       ...(entite ? { entity: entite } : {}),
       ...(requestedFacts ? { requestedFacts } : {}),
+      ...semantique,
       chainDepth: etat.chainDepth ?? 1,
       choiceLabel: candidate.secondaryLabel ? `${candidate.label} — ${candidate.secondaryLabel}` : candidate.label,
     },

@@ -1,17 +1,16 @@
 /**
- * Écran BO IA (page.tsx) — branchement des correctifs T4 et T5 (lot 24).
+ * Écran BO IA (page.tsx) — branchement des correctifs T4 (lot 24) ; lot 49
+ * (ticket 12) : T5 « Prompt Control » supprimé de l'écran.
  *
  * Contrôle de source (l'environnement de test est Node, sans DOM) : le bloc
  * Déclencheurs passe par `TriggersEditor` (entrées incompatibles visibles et
  * supprimables), un catalogue indisponible affiche une erreur + Réessayer,
- * l'écran relit la ligne enregistrée après sauvegarde ; T5 affiche le
- * message permanent et l'information non bloquante d'un texte hérité.
+ * l'écran relit la ligne enregistrée après sauvegarde.
  */
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { createEditTracker } from '../edit-tracker';
-import { T5_LEGACY_TEXT_MESSAGE, T5_REPOSITORY_PROMPT_MESSAGE, hasLegacyPromptText } from '@/services/ai/config/t5-messages';
 
 const page = readFileSync(join(process.cwd(), 'src/app/admin/ai-config/page.tsx'), 'utf8');
 
@@ -53,23 +52,33 @@ describe('T4 — déclencheurs', () => {
   });
 });
 
-describe('T5 — messages', () => {
-  it('message permanent du dépôt ; information non bloquante sur la ligne ENREGISTRÉE ; enregistrement possible pour nettoyer', () => {
-    expect(page).toContain('{T5_REPOSITORY_PROMPT_MESSAGE}');
-    expect(page).toContain('saved && hasLegacyPromptText(saved)');
-    expect(page).toContain('{T5_LEGACY_TEXT_MESSAGE}');
-    expect(page).toContain('disabled={(!dirty.has(t.code) && !legacyT5(t.code)) || busy}');
-    // Plus de consigne inapplicable pour T5.
-    expect(page).not.toMatch(/zone dédiée/);
+describe('Lot 49 — T5 supprimé de l’écran (ticket 12)', () => {
+  it('T12-AC01 / T5-DEL-01 — plus de Prompt Control : composant, formulaires, appels, ancre et types retirés', () => {
+    expect(page).not.toMatch(/PromptControl|prompt-control|Prompt Control \(T5\) —|T5Result|T5Change/);
+    expect(page).not.toContain("'/api/admin/ai/prompt-control'");
+    expect(page).not.toContain('id="prompt-control"');
+    expect(page).toContain("type Treatment = 'T1' | 'T2' | 'T3' | 'T4' | 'T6';");
+    // Plus de message ni de bouton propres à T5 ; l'enregistrement ne dépend que des modifications.
+    expect(page).not.toMatch(/legacyT5|T5_REPOSITORY_PROMPT_MESSAGE|T5_LEGACY_TEXT_MESSAGE|hasLegacyPromptText/);
+    expect(page).toContain('disabled={!dirty.has(t.code) || busy}');
   });
 
-  it('textes du ticket et détection', () => {
-    // Lot 32B (décision PO n° 15) : le texte de T5 s'administre dans « Prompts maîtres ».
-    expect(T5_REPOSITORY_PROMPT_MESSAGE).toMatch(/s’administre dans la section « Prompts maîtres »/);
-    expect(T5_LEGACY_TEXT_MESSAGE).toBe('Un ancien texte de configuration est présent mais n’est pas utilisé par T5. Il sera retiré lors de l’enregistrement du brouillon.');
-    expect(hasLegacyPromptText({ prompt: '', masterPrompt: null })).toBe(false);
-    expect(hasLegacyPromptText({ prompt: ' x ', masterPrompt: null })).toBe(true);
-    expect(hasLegacyPromptText({ prompt: '', masterPrompt: 'm' })).toBe(true);
+  it('T12-AC01 — autres écrans d’administration courante : aucune option T5 (supervision, coûts, file, tableau de bord)', () => {
+    for (const f of ['src/app/admin/ai-executions/page.tsx', 'src/app/admin/ai-costs/page.tsx', 'src/app/admin/ai-queue/page.tsx', 'src/app/admin/ai-dashboard/page.tsx']) {
+      const src = readFileSync(join(process.cwd(), f), 'utf8');
+      expect(src, f).not.toMatch(/'T5'|AI_GOVERNANCE: 'T5'/);
+    }
+  });
+
+  it('T12-AC09 — une version historique contenant T5 reste lisible : note « traitement supprimé, jamais appliqué » (desktop et mobile, même composant)', () => {
+    expect(page).toContain('data-testid="retired-treatments-note"');
+    expect(page).toContain('current.retiredTreatments');
+    expect(page).toMatch(/break-words/);
+  });
+
+  it('T12-AC03 — la section « Prompts maîtres » reste branchée (administration manuelle)', () => {
+    expect(page).toContain('<MasterPrompts />');
+    expect(page).toContain('s’administre dans la section « Prompts maîtres »');
   });
 });
 
@@ -92,9 +101,9 @@ describe('MOD — TreatmentEditor', () => {
 });
 
 describe('PO15 — section « Prompts maîtres »', () => {
-  it('PO15-09 — T5 n’est plus annoncé comme non modifiable', () => {
+  it('T12-AC04 — aucun prompt maître T5 proposé en édition ; plus de mention d’administration de T5', () => {
     const mp = readFileSync(join(process.cwd(), 'src/app/admin/ai-config/_components/MasterPrompts.tsx'), 'utf8');
     expect(mp).not.toContain('il n’est pas modifiable ici');
-    expect(mp).toContain('T5 (Prompt Control) s’administre ici comme les autres prompts');
+    expect(mp).not.toContain('T5 (Prompt Control) s’administre ici comme les autres prompts');
   });
 });

@@ -7,7 +7,6 @@
  * Plus de bloc « DIAGNOSTIC » (code, chemin, heure, environnement) visible
  * par l'utilisateur : ces éléments partent en console pour le support.
  */
-import Link from 'next/link';
 import { useEffect } from 'react';
 import { usePathname } from 'next/navigation';
 import { MascotPose } from '@/components/verebona/space/MascotPose';
@@ -37,20 +36,15 @@ export default function NotFound() {
             J’ai cherché partout : cette page n’existe pas ou a été déplacée.
           </p>
         </div>
-        <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:gap-2.5">
-          <a
-            href="/accueil"
-            className="inline-flex h-10 items-center justify-center rounded-full bg-[color:var(--accent)] px-5 text-[13.5px] font-semibold text-white transition-colors hover:bg-[#2563EB] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--accent)] focus-visible:ring-offset-2 focus-visible:ring-offset-[color:var(--bg-card)]"
-          >
-            Tableau de bord
-          </a>
-          <Link
-            href="/"
-            className="inline-flex h-10 items-center justify-center rounded-full border border-[color:var(--border)] px-5 text-[13.5px] font-medium text-[color:var(--text-primary)] transition-colors hover:border-[color:var(--accent)] hover:bg-[color:var(--accent-soft)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--accent)]"
-          >
-            Accueil
-          </Link>
-        </div>
+        {/* Lot 49A (ticket 5) : un SEUL bouton « Accueil » (les deux boutons
+            précédents menaient au même endroit). Pleine largeur en mobile. */}
+        <a
+          href="/accueil"
+          data-testid="not-found-home"
+          className="inline-flex h-10 w-full items-center justify-center rounded-full bg-[color:var(--accent)] px-6 text-[13.5px] font-semibold text-white transition-colors hover:bg-[#2563EB] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--accent)] focus-visible:ring-offset-2 focus-visible:ring-offset-[color:var(--bg-card)] sm:w-auto"
+        >
+          Accueil
+        </a>
       </div>
     </main>
   );

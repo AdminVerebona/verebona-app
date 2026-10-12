@@ -27,7 +27,7 @@ export interface AiOperationDefinition {
    * Le prompt est fourni à l'appel, pas déclaré ici.
    *
    * Un seul cas légitime : l'évaluation d'une version candidate de prompt
-   * (usage 5). L'opération n'a pas de prompt propre — elle exécute celui qui
+   * (usage technique `AI_GOVERNANCE`). L'opération n'a pas de prompt propre — elle exécute celui qui
    * est en cours de validation. Toute autre opération DOIT déclarer un
    * `promptCode`, faute de quoi son comportement échapperait à la gouvernance.
    */
@@ -36,8 +36,8 @@ export interface AiOperationDefinition {
    * Plancher de tokens de sortie, appliqué par la gateway au-dessus du plafond
    * de la configuration versionnée.
    *
-   * Pour une opération dont la sortie est intrinsèquement longue — réécrire des
-   * prompts complets —, un plafond réglé pour des réponses courtes tronque le
+   * Pour une opération dont la sortie est intrinsèquement longue — analyse
+   * documentaire complète (T1) —, un plafond réglé pour des réponses courtes tronque le
    * JSON : la sortie devient invalide et l'appel échoue sur tous les modèles.
    */
   minOutputTokens?: number;
@@ -216,19 +216,8 @@ const ASSISTANT_FALLBACKS = ['gemini-3.1-flash-lite']; // alias assistant-escala
 export const ASSISTANT_MAX_OUTPUT_TOKENS = 500;
 
 /** Famille 3 — gouvernance : raisonnement sur des prompts, hors chemin utilisateur. */
-const GOV_PRIMARY = 'gemini-2.5-pro';
-const GOV_FALLBACKS = ['gemini-3.1-flash-lite'];
-
-/**
- * Prompt maître T5 (CDC 15 §27). Lot 32B (décision PO n° 15) : administrable
- * depuis le BO (« Prompts maîtres », brouillon → actif) comme T1–T4 et T6 ;
- * le fichier du dépôt en est la version initiale. T5 ne se modifie jamais
- * lui-même : Prompt Control n'a pas T5 pour cible (règle tenue par le serveur).
- */
-const T5_MASTER = 't5_master_v1';
 /** Prompt maître T6 (CDC 15 §28) — même valeur que `T6_MASTER_PROMPT_CODE`. */
 const T6_MASTER = 't6_master_v1';
-export const T5_MASTER_VARIABLES = ['CURRENT_MASTER_PROMPTS', 'INSTRUCTION'] as const;
 
 export const AI_OPERATIONS: Record<string, AiOperationDefinition> = {
   // ── Usage 1 — Analyse unifiée des sources (CDC §4.1.4) ────────────────────
@@ -261,8 +250,7 @@ export const AI_OPERATIONS: Record<string, AiOperationDefinition> = {
     // (`defaultMaxOutputTokens`) : le plafond de la version est PAR
     // TRAITEMENT, réglé pour les étapes courtes de T1 ; un JSON tronqué est
     // invalide sur toute la chaîne de modèles (coût ×3, aucun résultat).
-    // Même mécanisme que `t5_modify`. 32 768 < limite de sortie des
-    // modèles DOC (65 536).
+    // 32 768 < limite de sortie des modèles DOC (65 536).
     minOutputTokens: 32_768,
     outputSchema: 'T1AnalyzeDocumentOutput', active: true, billable: true,
   },
@@ -420,29 +408,14 @@ export const AI_OPERATIONS: Record<string, AiOperationDefinition> = {
     outputSchema: 'T4TemporalAmbiguityOutput', active: true, billable: false,
   },
 
-  // ── Usage 5 — Gouvernance (CDC §4.5.3) ────────────────────────────────────
-  // ── T5 — prompt maître (CDC 15 §27, §29 étape 16, MP-16) ──────────────────
-  // Seul moteur de T5 depuis le lot 16b : `analyze_instruction`,
-  // `control_prompts` et `propose_change` sont retirés, et T5 n'a plus
-  // d'architecture `steps`. Texte = version active « Prompts maîtres » du BO
-  // (lot 32B), sinon fichier du dépôt — jamais le texte d'une version de
-  // configuration.
-  t5_analyze: {
-    operationCode: 't5_analyze', useCaseCode: 'AI_GOVERNANCE',
-    label: 'T5 master — diagnostic (MODE=ANALYZE)',
-    provider: GEMINI, primaryModel: GOV_PRIMARY, fallbackModels: GOV_FALLBACKS,
-    promptCode: T5_MASTER, masterPromptCode: T5_MASTER, task: 'ANALYZE', taskField: 'mode', promptVariables: T5_MASTER_VARIABLES,
-    timeoutMs: 120_000, jsonResponse: true,
-    outputSchema: 'T5AnalyzeOutput', active: true, billable: false,
-  },
-  t5_modify: {
-    operationCode: 't5_modify', useCaseCode: 'AI_GOVERNANCE',
-    label: 'T5 master — réécriture des prompts maîtres (MODE=MODIFY)',
-    provider: GEMINI, primaryModel: GOV_PRIMARY, fallbackModels: GOV_FALLBACKS,
-    promptCode: T5_MASTER, masterPromptCode: T5_MASTER, task: 'MODIFY', taskField: 'mode', promptVariables: T5_MASTER_VARIABLES,
-    timeoutMs: 120_000, minOutputTokens: 32_768, jsonResponse: true,
-    outputSchema: 'T5ModifyOutput', active: true, billable: false,
-  },
+  // ── Usage technique — Gouvernance IA (CDC §4.5.3) ────────────────────────
+  // Lot 49 (ticket 12) : T5 « Prompt Control » est SUPPRIMÉ — les opérations
+  // `t5_analyze` et `t5_modify` et le prompt maître `t5_master_v1` n'existent
+  // plus (leurs anciennes traces restent consultables en lecture seule).
+  // `AI_GOVERNANCE` reste un usage TECHNIQUE, indépendant des traitements :
+  // évaluation d'un prompt candidat (ci-dessous), sondes de modèles
+  // (`model_operational_probe`, `model_qualification_probe`) et test
+  // fournisseur (`provider_test`), tracés hors registre en coût technique.
   evaluate_prompt: {
     operationCode: 'evaluate_prompt', useCaseCode: 'AI_GOVERNANCE',
     label: 'Exécution du corpus de test sur une version candidate',

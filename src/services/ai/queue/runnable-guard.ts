@@ -1,12 +1,12 @@
 /**
  * Garde d'exécution IA — CDC BO IA OPS-011, OPS-008, OPS-024, WF-07, WF-08,
- * MOD-012, T5-015.
+ * MOD-012.
  *
  * ══════════════════════════════════════════════════════════════════════════
  * UN SEUL POINT DE CONTRÔLE, SUR LE CHEMIN DE TOUS LES APPELS
  *
  * Jusqu'ici, l'arrêt d'urgence et l'état d'un traitement n'étaient lus que par
- * `claimNext()` (file durable), T5 et T6. T2, T3, T4 et T1 en file mémoire
+ * `claimNext()` (file durable) et T6. T2, T3, T4 et T1 en file mémoire
  * appelaient la gateway sans rien vérifier : le bouton « Désactiver T3 » était
  * sans effet. La garde est donc placée en tête d'`AiGateway.execute` — le
  * passage obligé de tout appel modèle (§5.2) — et non chez chaque appelant,
@@ -157,10 +157,13 @@ export async function getRuntimeSnapshot(): Promise<RuntimeSnapshot> {
  */
 export function blockReason(
   snapshot: RuntimeSnapshot,
-  treatment: Treatment,
+  treatment: Treatment | null,
   executionStartedAt?: number | null,
 ): string | null {
   if (snapshot.emergencyStop) return 'arrêt d\'urgence engagé';
+  // Usage technique (`AI_GOVERNANCE`, lot 49) : aucun état de traitement —
+  // seul l'arrêt d'urgence s'applique.
+  if (treatment === null) return null;
   const state = snapshot.states[treatment];
   if (state === 'DISABLED') return `traitement ${treatment} désactivé`;
   if (state === 'SUSPENDED') {
@@ -178,7 +181,8 @@ export function blockReason(
  * Un contexte d'un AUTRE traitement (T1 qui émet vers T3 dans la même pile)
  * n'exempte pas : l'exécution de T3, elle, n'a pas démarré.
  */
-function currentExecutionStart(treatment: Treatment): number | null {
+function currentExecutionStart(treatment: Treatment | null): number | null {
+  if (treatment === null) return null;
   const ctx = currentJobContext();
   if (!ctx || ctx.treatment !== treatment || ctx.startedAt == null) return null;
   return ctx.startedAt;
@@ -193,7 +197,7 @@ function currentExecutionStart(treatment: Treatment): number | null {
  * l'exécution, reprise plus tard).
  */
 export async function assertTreatmentRunnable(
-  treatment: Treatment,
+  treatment: Treatment | null,
   operationCode = 'n/a',
 ): Promise<void> {
   const reason = blockReason(await getRuntimeSnapshot(), treatment, currentExecutionStart(treatment));

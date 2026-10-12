@@ -1,13 +1,14 @@
 /**
  * Lot 32B sur PostgreSQL réel — modèles réellement utilisables par
- * traitement (migration 0273) et chaîne de secours T5 au BO (PO 26) :
+ * traitement (migration 0273) et chaîne de secours au BO (PO 26 ; T5 retiré
+ * au lot 49, la chaîne à trois rangs est vérifiée sur T6) :
  *   · `GET /api/admin/ai/config-catalogs` lit catalogue fournisseur, tarifs
  *     et état opérationnel (empreinte de la clé active) — aucun appel
  *     fournisseur — et rend `modelsByTreatment` ;
  *   · `PUT …/entries/T2` : un modèle non utilisable choisi par l'API est
  *     refusé (409 MODEL_NOT_USABLE), rien n'est écrit ;
- *   · T5 : principal / repli 1 / repli 2 enregistrés dans un brouillon,
- *     depuis la même liste.
+ *   · T6 : principal / repli 1 / repli 2 enregistrés dans un brouillon,
+ *     depuis la même liste ; T5 absent des listes et refusé (410).
  */
 import { afterAll, beforeAll, expect, it, vi } from 'vitest';
 import { scenario } from '../scenario';
@@ -23,7 +24,7 @@ vi.mock('@/lib/session-service', () => ({
 
 const LISTES = ['gemini-3.5-flash-lite', 'gemini-3.1-flash-lite', 'gemini-3.6-flash', 'gemini-3.5-flash', 'gemini-2.5-pro'];
 
-scenario('L32B', 'Modèles utilisables par traitement, état opérationnel, chaîne T5 au BO', ({ sql, make }) => {
+scenario('L32B', 'Modèles utilisables par traitement, état opérationnel, chaîne de secours au BO', ({ sql, make }) => {
   let versionId = 0;
 
   beforeAll(async () => {
@@ -101,17 +102,24 @@ scenario('L32B', 'Modèles utilisables par traitement, état opérationnel, cha�
     expect(e?.fallback_1 ?? null).not.toBe('gemini-2.5-pro');
   });
 
-  it('PO26-03 — T5 : principal, repli 1 et repli 2 enregistrés au BO depuis la même liste utilisable', async () => {
+  it('PO26-03 — chaîne à trois rangs (T6) enregistrée depuis la liste utilisable ; T12-AC01 : T5 absent et refusé (410), rien d’écrit', async () => {
     const r = await catalogue();
-    const t5 = (r.body.modelsByTreatment.T5 as Array<{ model: string }>).map((m) => m.model);
-    expect(t5).toEqual(['gemini-3.5-flash-lite', 'gemini-3.1-flash-lite', 'gemini-3.6-flash']);
-    const ok = await put('T5', {
+    expect(Object.keys(r.body.modelsByTreatment).sort()).toEqual(['T1', 'T2', 'T3', 'T4', 'T6']);
+    const t6 = (r.body.modelsByTreatment.T6 as Array<{ model: string }>).map((m) => m.model);
+    for (const m of ['gemini-3.6-flash', 'gemini-3.1-flash-lite', 'gemini-3.5-flash-lite']) expect(t6).toContain(m);
+    const ok = await put('T6', {
       primaryModel: 'gemini-3.6-flash', fallback1: 'gemini-3.1-flash-lite', fallback2: 'gemini-3.5-flash-lite',
       reasoningPrimary: 'standard', reasoningFallback1: 'standard', reasoningFallback2: 'standard', maxOutputTokens: 8000,
     });
     expect(ok.status).toBe(200);
     const { getVersion } = await import('@/services/ai/config/config-version.repository');
-    const t5Entry = (await getVersion(versionId))!.entries.find((e) => e.treatment === 'T5')!;
-    expect([t5Entry.primaryModel, t5Entry.fallback1, t5Entry.fallback2]).toEqual(['gemini-3.6-flash', 'gemini-3.1-flash-lite', 'gemini-3.5-flash-lite']);
+    const t6Entry = (await getVersion(versionId))!.entries.find((e) => e.treatment === 'T6')!;
+    expect([t6Entry.primaryModel, t6Entry.fallback1, t6Entry.fallback2]).toEqual(['gemini-3.6-flash', 'gemini-3.1-flash-lite', 'gemini-3.5-flash-lite']);
+
+    const refus = await put('T5', { primaryModel: 'gemini-3.6-flash', reasoningPrimary: 'standard', maxOutputTokens: 8000 });
+    expect(refus.status).toBe(410);
+    expect(refus.body).toMatchObject({ error: 'TREATMENT_RETIRED' });
+    const [{ n }] = await sql<{ n: number }[]>`SELECT count(*)::int AS n FROM ai_config_entries WHERE version_id = ${versionId} AND treatment = 'T5'`;
+    expect(n).toBe(0);
   });
 });

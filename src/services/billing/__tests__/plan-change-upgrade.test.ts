@@ -178,6 +178,16 @@ describe('montée en gamme immédiate', () => {
     expect(updates).toContainEqual(expect.objectContaining({ scheduledPlanCode: null, scheduledBillingPeriod: null, scheduledChangeAt: null }));
   });
 
+  it('AC-L49A-4 — portail en cours d’alignement (publication) : PORTAL_UPDATING, aucun parcours ouvert ni changement', async () => {
+    selectResults = [[{ planCode: 'standard', status: 'active', stripeSubscriptionId: 'sub_1', stripeCustomerId: 'cus_1', ownerUserId: 5 }]];
+    stripe.subscriptions.retrieve.mockResolvedValue({ id: 'sub_1', status: 'active', schedule: null, items: { data: [{ id: 'si_1', price: { id: 'price_std_m' } }] } });
+    portal.ensure.mockRejectedValueOnce(Object.assign(new Error('PORTAL_UPDATING: portail différent de la révision active'), { code: 'PORTAL_UPDATING' }));
+    const r = await startImmediateUpgrade({ accountId: 1, planCode: 'premium', billingPeriod: 'monthly', appBaseUrl: 'x', displayedPriceRevision: REV });
+    expect(r).toEqual({ ok: false, reason: 'PORTAL_UPDATING' });
+    expect(stripe.billingPortal.sessions.create).not.toHaveBeenCalled();
+    expect(stripe.subscriptions.update).not.toHaveBeenCalled();
+  });
+
   it('refuse une baisse de gamme', async () => {
     selectResults = [[{ planCode: 'premium_duo', status: 'active', stripeSubscriptionId: 'sub_1', stripeCustomerId: 'cus_1', ownerUserId: 5 }]];
     const r = await startImmediateUpgrade({ accountId: 1, planCode: 'standard', billingPeriod: 'monthly', appBaseUrl: 'x', displayedPriceRevision: REV });

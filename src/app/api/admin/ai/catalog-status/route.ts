@@ -5,6 +5,10 @@
  * GET  : en-tête de Configuration IA — modèles Gemini nouvellement
  *        disponibles (bandeau, non acquittés) et modèles ACTIFS devenus
  *        inutilisables (anomalie, jamais remplacés automatiquement).
+ *        Lot 49 (ticket 11) : REGROUPÉS par modèle (`unavailableModels`,
+ *        `unavailableTitle` « 1 modèle actif indisponible — 5 usages
+ *        impactés »), avec le diagnostic du dernier contrôle (message
+ *        fournisseur nettoyé, date, source, statut). Aucun secret.
  *        Lecture seule, aucun appel fournisseur.
  * POST : `{ acknowledge: string[] }` — ferme le bandeau : acquitte EN BASE,
  *        en une action, les modèles qu'il affichait (persistant, survit à
@@ -16,7 +20,10 @@ import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import { requireAdminContext, toErrorResponse } from '../config-versions/_shared';
 import { acknowledgeAnnouncedModels, bannerText, listAnnouncedModels } from '@/services/ai/provider/new-models.service';
-import { anomalyMessage, detectActiveModelAnomalies, loadActiveChains } from '@/services/ai/provider/active-model-anomalies';
+import {
+  anomalyMessage, detectActiveModelAnomalies, groupAnomaliesByModel, loadActiveChains, unavailableBannerTitle,
+} from '@/services/ai/provider/active-model-anomalies';
+import { loadOperationalDiagnostics } from '@/services/ai/provider/model-operational.service';
 import { loadUsableModelsContext } from '@/services/ai/registry/usable-models';
 import { getCatalogState } from '@/services/ai/provider/model-catalog.service';
 
@@ -32,11 +39,16 @@ export async function GET(req: NextRequest) {
       loadActiveChains().catch(() => []),
       getCatalogState().catch(() => null),
     ]);
-    const anomalies = detectActiveModelAnomalies(chains, ctx).map((a) => ({ ...a, message: anomalyMessage(a) }));
+    const brutes = detectActiveModelAnomalies(chains, ctx);
+    const anomalies = brutes.map((a) => ({ ...a, message: anomalyMessage(a) }));
+    const diagnostics = brutes.length ? await loadOperationalDiagnostics().catch(() => new Map()) : new Map();
+    const unavailableModels = groupAnomaliesByModel(brutes, diagnostics);
     return NextResponse.json({
       newModels,
       banner: bannerText(newModels),
       anomalies,
+      unavailableModels,
+      unavailableTitle: unavailableBannerTitle(unavailableModels),
       catalogRefreshedAt: state?.refreshedAt ?? null,
       lastSyncAt: state?.lastSyncAt ?? null,
     });

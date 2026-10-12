@@ -54,10 +54,10 @@ describe('CAT-01 à CAT-04 — nouveau modèle découvert, qualifié, proposé s
     for (const t of TREATMENTS) expect(noms(t), t).toContain('gemini-9-flash');
     expect(usableModelsForTreatment('T1', ctx()).find((m) => m.model === 'gemini-9-flash')).toMatchObject({ qualification: 'auto', status: 'stable' });
   });
-  it('CAT-04 — éligibilité PAR CAPACITÉ : sans multimodal, absent de T1/T2 (images), présent pour T3/T4/T5', () => {
+  it('CAT-04 — éligibilité PAR CAPACITÉ : sans multimodal, absent de T1/T2 (images), présent pour T3/T4', () => {
     expect(noms('T1')).not.toContain('gemini-9-texte');
     expect(noms('T2')).not.toContain('gemini-9-texte');
-    for (const t of ['T3', 'T4', 'T5'] as const) expect(noms(t), t).toContain('gemini-9-texte');
+    for (const t of ['T3', 'T4'] as const) expect(noms(t), t).toContain('gemini-9-texte');
     expect(evaluateModelForTreatment('T1', 'gemini-9-texte', ctx()).reasons).toEqual(['CAPABILITY_MISSING']);
   });
   it('CAT-03 — qualification en échec : absent partout', () => {
@@ -108,19 +108,19 @@ describe('CAT-12 à CAT-14 — expérimental, retrait, aucun remplacement automa
     const retire = ctx();
     retire.catalog = { ...retire.catalog, models: retire.catalog.models.map((m) => (m.model === 'gemini-3.6-flash' ? { ...m, available: false } : m)) };
     for (const t of TREATMENTS) expect(noms(t, retire)).not.toContain('gemini-3.6-flash');
-    expect(evaluateModelForTreatment('T5', 'gemini-3.6-flash', retire).reasons).toContain('PROVIDER_UNAVAILABLE');
+    expect(evaluateModelForTreatment('T4', 'gemini-3.6-flash', retire).reasons).toContain('PROVIDER_UNAVAILABLE');
   });
   it('CAT-13/CAT-14 — modèle ACTIF retiré : anomalie (repli signalé), chaîne inchangée, aucun nouveau modèle substitué', () => {
     const chains: ActiveChainEntry[] = [
-      { treatment: 'T5', rank: 'primaryModel', model: 'gemini-3.6-flash', source: 'version' },
-      { treatment: 'T5', rank: 'fallback1', model: 'gemini-3.1-flash-lite', source: 'version' },
+      { treatment: 'T4', rank: 'primaryModel', model: 'gemini-3.6-flash', source: 'version' },
+      { treatment: 'T4', rank: 'fallback1', model: 'gemini-3.1-flash-lite', source: 'version' },
     ];
     const copie = JSON.parse(JSON.stringify(chains));
     const c = ctx();
     c.catalog = { ...c.catalog, models: c.catalog.models.map((m) => (m.model === 'gemini-3.6-flash' ? { ...m, available: false } : m)) };
     const a = detectActiveModelAnomalies(chains, c);
     expect(a).toHaveLength(1);
-    expect(a[0]).toMatchObject({ treatment: 'T5', rank: 'primaryModel', model: 'gemini-3.6-flash', fallbackAvailable: true });
+    expect(a[0]).toMatchObject({ treatment: 'T4', rank: 'primaryModel', model: 'gemini-3.6-flash', fallbackAvailable: true });
     expect(anomalyMessage(a[0])).toMatch(/La chaîne de repli prend le relais\. Aucun remplacement automatique/);
     expect(chains).toEqual(copie);
     // Un nouveau modèle utilisable n'est jamais proposé comme remplaçant.

@@ -14,6 +14,7 @@ import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { s3Client } from '@/lib/s3-client';
 import type { SourceAdapter, AdapterPrepareInput } from './source-adapter.port';
 import type { SourceInput } from '../types';
+import { knownAssetOfAccount } from '@/services/security/account-ownership';
 
 const SIGNED_URL_TTL_SECONDS = 3600;
 
@@ -67,6 +68,13 @@ export class FileSourceAdapter implements SourceAdapter {
       throw new Error("[file-adapter] Aucun fichier ne dispose d'un objet S3 exploitable");
     }
 
+    // Lot 49 (SEC-08, T1) : bien déjà renseigné (appelant, puis colonnes du
+    // document) — KNOWN_TARGET seulement s'il appartient AU MÊME COMPTE. Un
+    // rattachement persisté vers un autre compte est ignoré : aucune donnée
+    // extraite n'est projetée sur le bien d'un autre compte.
+    const candidat = input.linkedAssetId ?? rows[0].assetId ?? rows[0].linkedAssetId ?? null;
+    const linkedAssetId = await knownAssetOfAccount(input.accountId, candidat, 't1.known_target');
+
     return {
       sourceType: 'file',
       sourceIds,
@@ -75,7 +83,7 @@ export class FileSourceAdapter implements SourceAdapter {
       mimeTypes,
       displayNames,
       contentUrls,
-      linkedAssetId: input.linkedAssetId ?? rows[0].assetId ?? rows[0].linkedAssetId ?? null,
+      linkedAssetId,
     };
   }
 }

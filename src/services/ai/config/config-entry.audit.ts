@@ -1,12 +1,11 @@
 /**
- * Trace d'un enregistrement de configuration d'un traitement (BO IA, tickets
- * T4 et T5) : qui, quelle version, quels champs, valeurs avant / après.
+ * Trace d'un enregistrement de configuration d'un traitement (BO IA, ticket
+ * T4) : qui, quelle version, quels champs, valeurs avant / après.
  *
  * Écrit dans `ai_admin_audit_log`, le journal des gestes d'administration IA
- * (même table que la restauration d'urgence et Prompt Control). Seuls les
- * champs MODIFIÉS sont journalisés : un retrait de déclencheur incompatible
- * ou le nettoyage d'un ancien texte T5 se lit directement, sans comparer deux
- * instantanés complets.
+ * (même table que la restauration d'urgence). Seuls les champs MODIFIÉS sont
+ * journalisés : un retrait de déclencheur incompatible se lit directement,
+ * sans comparer deux instantanés complets.
  *
  * Module séparé pour que le service reste testable sans base. Ne lève jamais :
  * l'enregistrement a déjà eu lieu, une trace manquante est journalisée.
@@ -43,7 +42,6 @@ export async function recordConfigEntrySave(t: {
   treatment: string;
   before: Partial<TreatmentConfig> | null | undefined;
   after: Partial<TreatmentConfig>;
-  legacyPromptCleared: boolean;
 }): Promise<void> {
   const diff = changedConfigFields(t.before, t.after);
   if (Object.keys(diff.after).length === 0) return; // seconde sauvegarde : rien à tracer
@@ -58,7 +56,7 @@ export async function recordConfigEntrySave(t: {
       actionType: 'ai_config_entry_save',
       beforeValue: { versionId: t.versionId, treatment: t.treatment, ...diff.before },
       afterValue: { versionId: t.versionId, treatment: t.treatment, ...diff.after },
-      reason: t.legacyPromptCleared ? 'Ancien texte non utilisé retiré (prompt non administrable).' : null,
+      reason: null,
       createdAt: new Date(),
     });
   } catch (e) {

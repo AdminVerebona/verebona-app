@@ -16,7 +16,7 @@
  *   · cumul : dépenses MÉTIER enregistrées par la passerelle pour le compte
  *     (`ai_usage_event.cost_micros` des lignes `is_billable`, appels réussis
  *     ET échoués facturés — même périmètre que les budgets de
- *     `cost-evaluator`), hors T5 (administration). ⚠️ Lu dans
+ *     `cost-evaluator`), hors usage technique AI_GOVERNANCE. ⚠️ Lu dans
  *     `ai_usage_event` seul : si l'archivage (`AI_LOG_ARCHIVE_AFTER_DAYS`)
  *     passait sous 32 jours, le cumul serait sous-estimé ;
  *   · plafond effectif : dérogation du compte (`ai_account_cost_caps`, posée
@@ -32,7 +32,7 @@
  *
  * `assertAccountCostCap` est appelée par `AiGateway` après le cache
  * d'idempotence (un résultat déjà payé reste servi) et avant tout contact
- * fournisseur. Exemptés : appels sans compte (sonde, système), T5 (BO admin),
+ * fournisseur. Exemptés : appels sans compte (sonde, système), usage technique AI_GOVERNANCE,
  * le compte technique des campagnes (`CORPUS_ACCOUNT_ID`, opérations comme
  * pipeline) et les appels marqués `costCapExempt`. Chaque appelant traduit
  * le refus `COST_CAP_REACHED` :
@@ -60,7 +60,7 @@
  * ══════════════════════════════════════════════════════════════════════════
  */
 import { AiCostCapReachedError } from './errors';
-import { treatmentForUseCase } from '../config/treatments';
+import { isTechnicalUseCase } from '../config/treatments';
 import type { AiUseCaseCode } from '../registry/use-cases';
 
 export type CostCapPlan = 'standard' | 'premium' | 'premium_duo' | 'premium_pro';
@@ -185,7 +185,9 @@ export function isCostCapped(p: { accountId: number | null | undefined; useCaseC
   if (p.exempt) return false;
   if (!p.accountId || p.accountId <= 0) return false;
   if (isTechnicalAccount(p.accountId)) return false;
-  return treatmentForUseCase(p.useCaseCode) !== 'T5';
+  // Usage technique (AI_GOVERNANCE : sondes, tests, évaluation) : jamais
+  // plafonné, ni compté (`spent`). Lot 49 : n'est plus « T5 ».
+  return !isTechnicalUseCase(p.useCaseCode);
 }
 
 // ── Accès aux données (remplaçable en test) ─────────────────────────────────
@@ -197,7 +199,7 @@ export interface CostCapStore {
   overrideOf(accountId: number): Promise<number | null>;
   /** Plafond de l'offre (réglage administré), `null` / 0 = sans plafond. */
   offerCap(plan: CostCapPlan): Promise<number | null>;
-  /** Coût cumulé du compte sur [start, end[, hors T5. */
+  /** Coût cumulé du compte sur [start, end[, hors usage technique AI_GOVERNANCE. */
   spent(accountId: number, start: Date, end: Date): Promise<number>;
   /** Alerte `ai_alerts` (idempotente par clé). */
   raise(a: import('../alerts/alerts.repository').AlertInput): Promise<boolean>;

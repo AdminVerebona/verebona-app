@@ -22,15 +22,24 @@
  * une immatriculation : un candidat apparaît (ou change de preuve) → empreinte
  * différente → réévaluation (déterministe d'abord). Jamais un hachage de la
  * base du compte.
+ *
+ * Lot 49B (couche exhaustive T1) : les unités source et faits non résolus
+ * EFFECTIVEMENT CONSIDÉRÉS — ceux qui désignent un candidat
+ * (`matchedSourceUnits`) — entrent dans l'empreinte (`su`, absent quand il n'y
+ * en a pas : l'empreinte des documents sans unité pertinente est inchangée).
  * ══════════════════════════════════════════════════════════════════════════
  */
 import { createHash } from 'node:crypto';
 import type { AttachmentState } from './attachment-state';
-import { buildDocumentAssetCandidates, CANDIDATE_BUILDER_VERSION, type CandidateBuildResult } from './candidate-builder';
+import { buildDocumentAssetCandidates, CANDIDATE_BUILDER_VERSION, isDistinctiveName, type CandidateBuildResult } from './candidate-builder';
 import type { DocumentAssetCandidate } from './decision';
-import { loadDocumentKnowledgeSources, type DocumentKnowledgeSources } from './document-sources';
-import { identifiersFingerprint, promptIdentifiers, type IdentifierResolution } from './identifiers';
+import { EXHAUSTIVE_SOURCE_KINDS, loadDocumentKnowledgeSources, type DocumentKnowledgeSources } from './document-sources';
+import {
+  identifiersFingerprint, normalizeText, promptIdentifiers, resolveAssetByIdentifiers,
+  type IdentifierResolution,
+} from './identifiers';
 import { loadAccountMatchingIndex, type AccountMatchingIndex } from './matching-index';
+import { registerSourceUnitProviders } from './source-unit-provider';
 import type { DocumentAssetResolution } from './resolution.repository';
 import { DOCUMENT_ASSET_RESOLUTION_VERSION } from './version';
 
@@ -40,6 +49,17 @@ import { DOCUMENT_ASSET_RESOLUTION_VERSION } from './version';
  *   · 1 — lot 34E.
  */
 export const DOCUMENT_ASSET_RULES_VERSION = 1;
+
+// Lot 49B : couche exhaustive T1 branchée dès le chargement du contexte T3.
+registerSourceUnitProviders();
+
+/** Unité source (ou fait non résolu) considérée : elle désigne au moins un candidat. */
+export interface MatchedSourceUnit {
+  unitId: string;
+  origin: string;
+  uncertain: boolean;
+  assetIds: number[];
+}
 
 export interface DocumentAssetContext {
   accountId: number;
@@ -58,6 +78,8 @@ export interface DocumentAssetContext {
   /** Index utilisé (réutilisable pour une seconde évaluation du même compte). */
   index: AccountMatchingIndex;
   t1Candidates: DocumentAssetResolution['t1Candidates'];
+  /** Unités de la couche exhaustive T1 qui désignent un candidat (lot 49B). */
+  matchedSourceUnits: MatchedSourceUnit[];
 }
 
 /** Empreinte du contexte (pure). */
@@ -68,6 +90,8 @@ export function documentAssetContextFingerprint(p: {
   candidateIdentifiers: Record<number, Record<string, string>>;
   matches: readonly string[];
   versions?: { resolution: number; builder: number; rules: number };
+  /** Unités source considérées (lot 49B) — absentes ou vides : empreinte inchangée. */
+  sourceUnits?: ReadonlyArray<Pick<MatchedSourceUnit, 'unitId' | 'uncertain' | 'assetIds'>>;
 }): string {
   const v = p.versions ?? {
     resolution: DOCUMENT_ASSET_RESOLUTION_VERSION, builder: CANDIDATE_BUILDER_VERSION, rules: DOCUMENT_ASSET_RULES_VERSION,
@@ -83,6 +107,9 @@ export function documentAssetContextFingerprint(p: {
       c.t1 ? [c.t1.confidence, c.t1.score] : null, c.currentRole, c.distinctiveNameMatch === true,
     ]),
     m: [...p.matches].sort(),
+    ...(p.sourceUnits && p.sourceUnits.length > 0
+      ? { su: [...p.sourceUnits].map((u) => [u.unitId, u.uncertain, [...u.assetIds].sort((a, b) => a - b)]).sort((a, b) => String(a[0]).localeCompare(String(b[0]))) }
+      : {}),
   });
   return createHash('sha256').update(payload).digest('hex');
 }
@@ -133,8 +160,10 @@ export async function computeDocumentAssetContext(p: {
     };
   });
 
+  const matchedSourceUnits = matchSourceUnits(sources, index, candidates.map((c) => c.assetId));
   const fingerprint = documentAssetContextFingerprint({
     documentDigest: sources?.digest ?? null, candidates, candidateIdentifiers, matches: build.deterministicMatches,
+    sourceUnits: matchedSourceUnits,
   });
   return {
     accountId: p.accountId,
@@ -150,7 +179,50 @@ export async function computeDocumentAssetContext(p: {
     fingerprint,
     index,
     t1Candidates,
+    matchedSourceUnits,
   };
+}
+
+/** Unités considérées au plus (empreinte, monitoring). */
+const MATCHED_UNITS_MAX = 200;
+
+/**
+ * Unités de la couche exhaustive T1 qui désignent un candidat (pure) :
+ * identifiant fort exact du bien (ou d'un équipement du bien), nom / alias
+ * distinctif, marque et modèle. Même contrôle serveur exact que le Candidate
+ * Builder, unité par unité, restreint aux candidats retenus.
+ */
+export function matchSourceUnits(
+  sources: Pick<DocumentKnowledgeSources, 'texts'> | null, index: AccountMatchingIndex, candidateIds: readonly number[],
+): MatchedSourceUnit[] {
+  if (!sources || candidateIds.length === 0) return [];
+  const ids = new Set(candidateIds);
+  const records = [
+    ...index.records.filter((r) => ids.has(r.assetId)),
+    ...index.entities.filter((e) => e.type === 'EQUIPMENT' && e.serial && ids.has(e.assetId))
+      .map((e) => ({ assetId: e.assetId, family: 'OBJECT' as const, values: { serialNumber: e.serial! } })),
+  ];
+  const noms = index.assets.filter((a) => ids.has(a.assetId))
+    .map((a) => ({ assetId: a.assetId, formes: [a.normalizedName, ...a.aliases].filter((f) => f.length >= 3 && isDistinctiveName(f)), bm: a.brandModel }));
+  const out = new Map<string, MatchedSourceUnit>();
+  for (const t of sources.texts) {
+    if (!EXHAUSTIVE_SOURCE_KINDS.includes(String(t.origin)) || !t.unitIds?.length) continue;
+    const r = resolveAssetByIdentifiers(records, { facts: [], texts: [t.text] });
+    const hay = ` ${normalizeText(t.text)} `;
+    const parNom = noms.filter((n) => n.formes.some((f) => hay.includes(` ${f} `)) || (n.bm && hay.includes(` ${n.bm} `))).map((n) => n.assetId);
+    const assetIds = [...new Set([...r.assetIds, ...parNom])].sort((a, b) => a - b);
+    if (assetIds.length === 0) continue;
+    for (const unitId of t.unitIds) {
+      const prev = out.get(unitId);
+      out.set(unitId, {
+        unitId, origin: String(t.origin), uncertain: (prev?.uncertain ?? true) && t.uncertain === true,
+        assetIds: [...new Set([...(prev?.assetIds ?? []), ...assetIds])].sort((a, b) => a - b),
+      });
+      if (out.size >= MATCHED_UNITS_MAX) break;
+    }
+    if (out.size >= MATCHED_UNITS_MAX) break;
+  }
+  return [...out.values()].sort((a, b) => a.unitId.localeCompare(b.unitId));
 }
 
 /** Provenance des candidats, pour le monitoring (`assetId` → sources). */

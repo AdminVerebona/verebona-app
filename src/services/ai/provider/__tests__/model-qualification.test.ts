@@ -26,7 +26,8 @@ describe('CAT-03 — épreuves de qualification', () => {
   it('modèle compatible : génération, schéma JSON, multimodal et raisonnement qualifiés', async () => {
     const f = fournisseur();
     const r = await Q.qualifyModel('gemini-9-flash', f.call, { supportsThinking: true, thinkingConfigured: () => true });
-    expect(r).toEqual({ generate: true, structured: true, multimodal: true, thinking: true, errors: {} });
+    // Lot 49 : l'issue classée de la génération accompagne le résultat (état opérationnel).
+    expect(r).toEqual({ generate: true, structured: true, multimodal: true, thinking: true, errors: {}, generateOutcome: { status: 'ok' } });
     // Schéma JSON imposé (structured output) et image synthétique en entrée.
     expect(f.appels.find((a) => a.responseSchema)?.responseSchema).toEqual(Q.QUALIFICATION_SCHEMA);
     expect(f.appels.find((a) => a.attachments.length)?.attachments[0]).toMatchObject({ mimeType: 'image/png', data: Q.QUALIFICATION_IMAGE_PNG });

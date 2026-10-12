@@ -813,6 +813,26 @@ export const stripeCatalogRuns = pgTable('stripe_catalog_runs', {
   stateChk: check('stripe_catalog_runs_state_chk', sql`${table.state} IN ('PREPARED', 'VALIDATING', 'PUBLISHING', 'READY', 'ACTIVE', 'FAILED', 'RECOVERING', 'SUPERSEDED', 'DONE', 'NOOP')`),
 }));
 
+/** Rattrapages ciblés du catalogue (lot 49A, migration 0326) — tâche interne, affichés au BO. */
+export const stripeCatalogRecoveries = pgTable('stripe_catalog_recoveries', {
+  id: bigserial('id', { mode: 'number' }).primaryKey(),
+  catalogContext: text('catalog_context').notNull(),
+  recoveryKey: text('recovery_key').notNull(),
+  status: text('status').notNull(),
+  runId: bigint('run_id', { mode: 'number' }),
+  attempts: integer('attempts').notNull().default(0),
+  lastError: text('last_error'),
+  lastAttemptAt: tstzOptional('last_attempt_at'),
+  nextAttemptAt: tstzOptional('next_attempt_at'),
+  completedAt: tstzOptional('completed_at'),
+  report: jsonb('report').$type<Record<string, unknown>>(),
+  createdAt: tstz('created_at'),
+  updatedAt: tstz('updated_at'),
+}, (table) => ({
+  uniq: unique('stripe_catalog_recoveries_uniq').on(table.catalogContext, table.recoveryKey),
+  statusChk: check('stripe_catalog_recoveries_status_chk', sql`${table.status} IN ('WAITING', 'RUNNING', 'RETRY_WAIT', 'DONE', 'FAILED', 'CHECK_FAILED')`),
+}));
+
 /** Opérations engageant un prix : prix et révision acceptés, idempotence (LK-40, LK-44, LK-45). */
 export const billingPriceOperations = pgTable('billing_price_operations', {
   id: bigserial('id', { mode: 'number' }).primaryKey(),
@@ -3449,6 +3469,9 @@ export const aiMasterPromptVersions = pgTable('ai_master_prompt_versions', {
   firstActivatedAt: pgTimestamp('first_activated_at', { withTimezone: true }),
 }, (t) => ({
   statusCheck: check('ai_master_prompt_versions_status_ck', sql`${t.status} IN ('DRAFT', 'ACTIVE', 'PREVIOUS')`),
+  // Lot 49 : T5 reste ACCEPTÉ par la contrainte (versions historiques
+  // conservées) ; toute NOUVELLE ligne T5 est refusée par le déclencheur
+  // `ai_retired_treatment_guard` (migration 0336).
   treatmentCheck: check('ai_master_prompt_versions_treatment_ck', sql`${t.treatment} IN ('T1', 'T2', 'T3', 'T4', 'T5', 'T6')`),
   originCheck: check('ai_master_prompt_versions_origin_ck', sql`${t.origin} IN ('initial_file', 'initial_config', 'admin', 'prompt_control')`),
   numberUq: unique('ai_master_prompt_versions_number_uq').on(t.environment, t.treatment, t.versionNumber),

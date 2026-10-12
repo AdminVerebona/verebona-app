@@ -567,7 +567,8 @@ describe('portail de montée en gamme et webhooks', () => {
       'standard:monthly': { productId: 'prod_s', priceId: 'p2' }, 'standard:yearly': { productId: 'prod_s', priceId: 'p1' }, 'premium:monthly': { productId: 'prod_p', priceId: 'p3' },
     } as never };
     expect(portalProductsFor(snapshot)).toEqual([{ product: 'prod_p', prices: ['p3'] }, { product: 'prod_s', prices: ['p1', 'p2'] }]);
-    expect(portalProductsFor(snapshot, [{ productId: 'prod_s', priceId: 'p_old' }])[1].prices).toContain('p_old');
+    // Lot 49A : plus de prix « supplémentaires » (union refusée par Stripe).
+    expect(portalProductsFor(snapshot).flatMap((p) => p.prices)).not.toContain('p_old');
     expect(portalFingerprint('c', 'bpc', portalProductsFor(snapshot))).toBe(portalFingerprint('c', 'bpc', portalProductsFor(snapshot)));
     expect(acceptedPrices({ features: { subscription_update: { products: [{ product: 'x', prices: ['b', 'a'] }] } } } as never)).toEqual(['a', 'b']);
   });

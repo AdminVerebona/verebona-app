@@ -33,12 +33,15 @@
  */
 import { buildSourceUnits } from './build-units';
 import {
-  buildCompletenessReport, computeCoverage, selectRepairUnits, SourceUnitLinker, type EvidenceRef,
+  buildCompletenessReport, computeCoverage, selectRepairUnits, SourceUnitLinker, withRepairStates, type EvidenceRef,
 } from './coverage';
 import {
-  loadDocumentSourceUnits, loadUnresolvedDocumentFacts, maxCompletenessRetries, sourceLayerReady, writeSourceLayer, type StoredSourceUnit,
+  loadDocumentCoverage, loadDocumentSourceUnits, loadUnresolvedDocumentFacts, maxCompletenessRetries, sourceLayerReady, writeSourceLayer,
+  type StoredSourceUnit,
 } from './repository';
-import { SOURCE_LAYER_VERSION, type CoveredSourceUnit, type SourceLayer, type UnresolvedFactRecord } from './types';
+import {
+  SOURCE_LAYER_VERSION, type CoveredSourceUnit, type SourceLayer, type T1CoverageDiagnostics, type UnresolvedFactRecord,
+} from './types';
 import type { ExtractedTable, VisualObservation } from '../types';
 import type { T1AnalyzeDocumentOutput, T1Fact } from '../master/t1-contract';
 
@@ -138,6 +141,9 @@ export function backfillLayer(p: {
     factsCount: p.facts.filter((f) => !f.fact_key.startsWith('visual.')).length,
     unresolvedFacts: [], truncatedSectionsCount: 0, batchedSectionsCount: 0, repairPassCount: 0, chunkCount: 0,
     warningCodes: [], retryAllowed: false,
+    // Lot 49B (TC12) : couverture RECONSTRUITE depuis les données persistées, jamais vérifiée
+    // sur le document original — jamais COMPLETE (aucune relecture, aucune réanalyse).
+    verification: { status: 'RECONSTRUCTED', reason: 'backfill', pagesExpected: null, verified: [], missing: [], unverified: [], scanned: [] },
   });
   return {
     layer: { layerVersion: SOURCE_LAYER_VERSION, units: cov, unresolvedFacts: [], report, retryable: false },
@@ -218,38 +224,67 @@ const toCovered = (u: StoredSourceUnit): CoveredSourceUnit => ({
   text: u.text, label: u.label, value: u.value, payload: u.payload ?? {}, location: u.location ?? {},
   origin: u.origin as CoveredSourceUnit['origin'], salient: u.salient, status: u.coverageStatus, reason: u.coverageReason,
   factCount: u.factCount, repairAttempts: u.repairAttempts,
+  repairState: (u.repairState ?? null) as CoveredSourceUnit['repairState'],
 });
 
 export interface RetryResult { examined: number; repaired: number; requeued: number; final: number; failed: number; more: boolean; disabled?: boolean }
+
+/** Bail d'une reprise en cours (protection contre les exécutions concurrentes ; worker arrêté → reprise après le bail). */
+export const RETRY_LEASE_MINUTES = 30;
+/** Passages de CONTINUATION (unités jamais examinées faute de budget) au plus par document. */
+export function continuationMaxRuns(env: Record<string, string | undefined> = process.env): number {
+  return Math.min(200, Math.max(1, Math.trunc(num(env.T1_REPAIR_CONTINUATION_MAX_RUNS, 20))));
+}
 
 export async function runCompletenessRetry(opts: { deadline?: number; env?: Record<string, string | undefined> } = {}): Promise<RetryResult> {
   const res: RetryResult = { examined: 0, repaired: 0, requeued: 0, final: 0, failed: 0, more: false };
   if (!(await sourceLayerReady())) return { ...res, disabled: true };
   const s = jobSettings(opts.env);
   const { pgClient } = await import('@/db');
-  const rows = (await pgClient.unsafe(
+  // Lot 49B (DEV-04) : documents RÉSERVÉS par un bail (SKIP LOCKED) — deux
+  // exécutions concurrentes ne traitent jamais le même document ; un worker
+  // interrompu libère le document à l'échéance du bail (reprise sans perte).
+  const pris = (await pgClient.unsafe(
+    `WITH pris AS (
+       SELECT c.file_id FROM document_extraction_coverage c
+         JOIN asset_files af ON af.id = c.file_id AND af.deleted_at IS NULL
+        WHERE c.next_retry_at IS NOT NULL AND c.next_retry_at <= NOW()
+        ORDER BY c.next_retry_at
+        LIMIT $1
+        FOR UPDATE OF c SKIP LOCKED
+     )
+     UPDATE document_extraction_coverage c SET next_retry_at = NOW() + make_interval(mins => $2)
+       FROM pris WHERE c.file_id = pris.file_id
+     RETURNING c.file_id`,
+    [s.retryBatch, RETRY_LEASE_MINUTES] as never[],
+  )) as unknown as Array<{ file_id: number }>;
+  const rows = pris.length === 0 ? [] : (await pgClient.unsafe(
     `SELECT c.file_id, c.account_id, c.extraction_id, c.retry_attempts, c.quality_state,
             af.asset_id, af.linked_asset_id, coalesce(af.retained_title, af.original_filename) AS title, a.owner_user_id
        FROM document_extraction_coverage c
        JOIN asset_files af ON af.id = c.file_id AND af.deleted_at IS NULL
        JOIN accounts a ON a.id = c.account_id
-      WHERE c.next_retry_at IS NOT NULL AND c.next_retry_at <= NOW()
-      ORDER BY c.next_retry_at
-      LIMIT $1`,
-    [s.retryBatch + 1] as never[],
+      WHERE c.file_id = ANY($1::int[])
+      ORDER BY c.file_id`,
+    [pris.map((x) => Number(x.file_id))] as never[],
   )) as unknown as Row[];
-  res.more = rows.length > s.retryBatch;
-  for (const r of rows.slice(0, s.retryBatch)) {
-    if (opts.deadline && Date.now() > opts.deadline) { res.more = true; break; }
-    res.examined++;
+  res.more = pris.length >= s.retryBatch;
+  for (const r of rows) {
     const fileId = Number(r.file_id);
+    if (opts.deadline && Date.now() > opts.deadline) {
+      res.more = true;
+      // Échéance du passage : le document réservé est rendu tout de suite.
+      await pgClient.unsafe(`UPDATE document_extraction_coverage SET next_retry_at = NOW() WHERE file_id = $1`, [fileId] as never[]).catch(() => undefined);
+      continue;
+    }
+    res.examined++;
     const accountId = Number(r.account_id);
     const attempt = Number(r.retry_attempts ?? 0) + 1;
     try {
       const out = await retryDocument({
         fileId, accountId, extractionId: r.extraction_id == null ? null : Number(r.extraction_id), attempt,
         maxRetries: s.maxRetries, assetId: Number(r.asset_id ?? r.linked_asset_id ?? 0) || null,
-        userId: Number(r.owner_user_id), title: r.title == null ? null : String(r.title),
+        userId: Number(r.owner_user_id), title: r.title == null ? null : String(r.title), env: opts.env,
       });
       if (out === 'requeued') res.requeued++;
       else if (out === 'final') res.final++;
@@ -266,14 +301,35 @@ export async function runCompletenessRetry(opts: { deadline?: number; env?: Reco
           WHERE file_id = $1`,
         [fileId, msg, s.maxRetries, retryDelayMs(attempt + 1) / 1000] as never[],
       ).catch(() => undefined);
+      await pgClient.unsafe(
+        `UPDATE document_extraction_coverage SET last_retry_at = NOW(), last_retry_result = 'ERROR' WHERE file_id = $1`, [fileId] as never[],
+      ).catch(() => undefined);
     }
   }
   return res;
 }
 
+/** Diagnostics conservés d'une couverture (vérification de la source, pertes de normalisation). */
+function storedDiagnostics(v: Record<string, unknown> | null | undefined) {
+  const d = (v ?? {}) as Partial<T1CoverageDiagnostics> & { continuationRuns?: number };
+  const nums = (x: unknown) => (Array.isArray(x) ? x.map(Number).filter((n) => Number.isInteger(n)) : []);
+  const verification = d.sourceVerification
+    ? {
+      status: d.sourceVerification, reason: d.verificationReason ?? null, pagesExpected: d.pagesExpected ?? null,
+      verified: [], missing: nums(d.pagesMissing), unverified: nums(d.pagesUnverified), scanned: nums(d.pagesScanned), reread: nums(d.pagesReread),
+    }
+    : null;
+  return {
+    verification,
+    normalisation: { truncations: Number(d.truncations ?? 0), originalsPreserved: Number(d.originalsPreserved ?? 0), losses: Number(d.normalisationLosses ?? 0) },
+    pagesVerified: Number(d.pagesVerified ?? 0),
+    continuationRuns: Number(d.continuationRuns ?? 0),
+  };
+}
+
 async function retryDocument(p: {
   fileId: number; accountId: number; extractionId: number | null; attempt: number; maxRetries: number;
-  assetId: number | null; userId: number; title: string | null;
+  assetId: number | null; userId: number; title: string | null; env?: Record<string, string | undefined>;
 }): Promise<'repaired' | 'requeued' | 'final'> {
   const { pgClient } = await import('@/db');
   const stored = await loadDocumentSourceUnits(p.fileId, { accountId: p.accountId, limit: 50_000 });
@@ -289,16 +345,25 @@ async function retryDocument(p: {
               last_error = $3 WHERE file_id = $1`,
       [p.fileId, p.attempt, acceptes.includes(p.fileId) ? null : 'mise en file T1 refusée'] as never[],
     );
+    await pgClient.unsafe(
+      `UPDATE document_extraction_coverage SET last_retry_at = NOW(), last_retry_result = 'REQUEUED_T1' WHERE file_id = $1`, [p.fileId] as never[],
+    ).catch(() => undefined);
     return 'requeued';
   }
 
-  const { repairSettings, runRepairPass } = await import('./repair');
-  const maxAttempts = repairSettings().maxPasses + p.maxRetries;
-  const cibles = selectRepairUnits(units, Math.max(1, maxAttempts));
+  const { repairAttemptCap, repairSettings, runRepairPass } = await import('./repair');
+  const cap = repairAttemptCap(p.env);
+  const cibles = selectRepairUnits(units, cap);
+  const couverture = await loadDocumentCoverage(p.fileId, p.accountId);
+  const diag = storedDiagnostics(couverture?.verification);
+  // Lot 49B (DEV-04) : unités jamais examinées faute de budget — une CONTINUATION ne consomme pas de tentative.
+  const enAttente = units.filter((u) => u.repairState === 'PENDING').length;
+  const continuation = enAttente > 0 && diag.continuationRuns < continuationMaxRuns(p.env);
   const facts: T1Fact[] = [];
   let failed = new Map<string, { reason: string; retryable: boolean }>();
   let attempted: string[] = [];
-  if (cibles.length > 0 && p.attempt <= p.maxRetries) {
+  let notAttempted: string[] = [];
+  if (cibles.length > 0 && (p.attempt <= p.maxRetries || continuation)) {
     const [{ loadAnalysisContext }, { getAccountCapabilities }, { loadAssetFamilies }, step] = await Promise.all([
       import('../pipeline'),
       import('@/services/account-capabilities.service'),
@@ -314,26 +379,54 @@ async function retryDocument(p: {
       },
       groupIndices: [0], ctx: { ...ctx, capabilities }, capabilities,
       v2Families: await loadAssetFamilies(p.assetId ? [p.assetId] : []),
-      units: cibles, maxCalls: repairSettings().maxCalls, pass: 1 + p.attempt, call: (c) => step.callAnalyzeDocument(c),
+      units: cibles, maxCalls: repairSettings(p.env).maxCalls, pass: 1 + p.attempt, call: (c) => step.callAnalyzeDocument(c),
     });
     facts.push(...r.facts);
     failed = r.failed;
     attempted = r.attempted;
+    notAttempted = r.notAttempted;
   }
 
   // Faits ajoutés : projection (registre, cibles vérifiées), provenance, écriture.
   const linker = new SourceUnitLinker(units);
-  const nouveaux = facts.length > 0 ? await appendRepairedFacts({ ...p, facts, linker }) : [];
-  const couvertes = new Set(nouveaux.flatMap((f) => f.sourceUnitIds ?? []).map((id) => id.replace(/:cell:\d+$/, '')));
+  const ajout = facts.length > 0 ? await appendRepairedFacts({ ...p, facts, linker }) : { inserted: [], all: [] };
+  const nouveaux = ajout.inserted;
+  // Couverture : faits de la réparation, y compris ceux déjà écrits par une reprise interrompue (TC11).
+  const couvertes = new Set(ajout.all.flatMap((f) => f.sourceUnitIds ?? []).map((id) => id.replace(/:cell:\d+$/, '')));
+  // Lignes de tableau incertaines : promues seulement si chaque cellule renseignée est confirmée (DEV-02).
+  const confirmations = new Map<string, number>();
+  for (const f of ajout.all) {
+    if (f.confidence !== 'certain') continue;
+    for (const id of new Set((f.sourceUnitIds ?? []).map((x) => x.replace(/:cell:\d+$/, '')))) confirmations.set(id, (confirmations.get(id) ?? 0) + 1);
+  }
   const tentees = new Set(attempted);
-  const majs: CoveredSourceUnit[] = units.map((u) => {
+  let majs: CoveredSourceUnit[] = units.map((u) => {
     if (!tentees.has(u.sourceUnitId)) return u;
     const base = { ...u, repairAttempts: u.repairAttempts + 1 };
-    if (couvertes.has(u.sourceUnitId)) return { ...base, status: 'COVERED', reason: 'fact', factCount: u.factCount + 1 };
     const f = failed.get(u.sourceUnitId);
     if (f) return { ...base, status: 'FAILED', reason: f.reason };
+    if (u.kind === 'TABLE_ROW') {
+      const cellules = Array.isArray(u.payload.cells) ? (u.payload.cells as Array<{ value?: unknown }>).filter((x) => x.value !== null && x.value !== undefined).length : 0;
+      return cellules > 0 && (confirmations.get(u.sourceUnitId) ?? 0) >= cellules
+        ? { ...base, status: 'COVERED', reason: 'table_verified', factCount: u.factCount + (confirmations.get(u.sourceUnitId) ?? 0) }
+        : { ...base, status: 'UNCERTAIN', reason: 'table_uncertain' };
+    }
+    if (couvertes.has(u.sourceUnitId) && (u.status !== 'UNCERTAIN' || (confirmations.get(u.sourceUnitId) ?? 0) > 0)) {
+      return { ...base, status: 'COVERED', reason: 'fact', factCount: u.factCount + 1 };
+    }
+    // Sans preuve suffisante : l'incertitude est MAINTENUE (jamais promue artificiellement).
+    if (u.status === 'UNCERTAIN') return base;
     return { ...base, status: 'UNRESOLVED', reason: u.salient ? 'not_extracted' : 'not_structured' };
   });
+  const progression = attempted.some((id) => units.find((u) => u.sourceUnitId === id)?.repairState === 'PENDING') && failed.size === 0;
+  const consomme = !(continuation && progression);
+  const tentativesStockees = consomme ? p.attempt : p.attempt - 1;
+  const runs = diag.continuationRuns + (continuation && attempted.length > 0 ? 1 : 0);
+  majs = withRepairStates(majs, { attempted: tentees, pending: new Set(notAttempted), cap });
+  if (runs >= continuationMaxRuns(p.env)) {
+    // Plafond de continuation atteint : les unités restantes sont « plafond atteint », explicitement.
+    majs = majs.map((u) => (u.repairState === 'PENDING' ? { ...u, repairState: 'EXHAUSTED' } : u));
+  }
   const anciens = await loadUnresolvedDocumentFacts(p.fileId, { accountId: p.accountId });
   const unresolved: UnresolvedFactRecord[] = anciens.map(({ id: _i, fileId: _f, createdAt: _c, ...x }) => {
     void _i; void _f; void _c;
@@ -346,7 +439,7 @@ async function retryDocument(p: {
     [p.fileId] as never[],
   )) as unknown as Row[];
   const pr = prev[0] ?? {};
-  const retryAllowed = p.attempt < p.maxRetries;
+  const retryAllowed = tentativesStockees < p.maxRetries;
   const report = buildCompletenessReport(majs, {
     factsCount: Number(pr.facts_count ?? 0) + nouveaux.length,
     unresolvedFacts: unresolved,
@@ -356,13 +449,22 @@ async function retryDocument(p: {
     chunkCount: Number(pr.chunk_count ?? 0),
     warningCodes: Array.isArray(pr.anomalies) && (pr.anomalies as string[]).includes('PARTIAL_EXTRACTION') ? ['PARTIAL_EXTRACTION'] : [],
     retryAllowed,
+    verification: diag.verification ? { ...diag.verification, verified: Array.from({ length: diag.pagesVerified }, (_, i) => i + 1) } : null,
+    normalisation: diag.normalisation,
   });
+  if (report.diagnostics) (report.diagnostics as T1CoverageDiagnostics & { continuationRuns?: number }).continuationRuns = runs;
+  // Unités en attente avec progression : continuation rapprochée ; sinon délai croissant.
+  const prochaine = report.qualityState !== 'INCOMPLETE_RETRYABLE' ? null
+    : new Date(Date.now() + (progression && report.diagnostics!.pendingRepairUnits > 0 ? 5 * 60_000 : retryDelayMs(tentativesStockees + 1)));
+  const resultat = attempted.length === 0 ? 'NOTHING_TO_REPAIR'
+    : failed.size > 0 ? 'REPAIR_FAILED' : nouveaux.length > 0 ? `REPAIRED_${nouveaux.length}` : 'NO_NEW_FACT';
   await pgClient.begin(async (tx) => {
     await writeSourceLayer(tx as never, {
       accountId: p.accountId, fileId: p.fileId, extractionId: p.extractionId, origin: 'RETRY',
       layer: { layerVersion: SOURCE_LAYER_VERSION, units: majs, unresolvedFacts: unresolved, report, retryable: report.qualityState === 'INCOMPLETE_RETRYABLE' },
-      retryAttempts: p.attempt,
-      nextRetryAt: report.qualityState === 'INCOMPLETE_RETRYABLE' ? new Date(Date.now() + retryDelayMs(p.attempt + 1)) : null,
+      retryAttempts: tentativesStockees,
+      nextRetryAt: prochaine,
+      retryResult: resultat,
     });
   });
   const { recordT1Completeness } = await import('./monitoring');
@@ -395,7 +497,7 @@ async function appendRepairedFacts(p: {
        FROM document_extractions WHERE file_id = $1`,
     [p.fileId] as never[],
   )) as unknown as Row[])[0];
-  if (!ext) return [];
+  if (!ext) return { inserted: [], all: [] };
   const verif = await step.verifyAll({ entities: { assets: [], rooms: [], equipments: [], suppliers: [], multiAsset: false } } as never, p.facts, p.accountId);
   if (p.assetId) verif.verifiedIds.ASSET.add(p.assetId);
   const famille = p.assetId
@@ -419,7 +521,16 @@ async function appendRepairedFacts(p: {
       values: [f.rawValue, f.value], labels: [f.rawKey, f.label, f.attribute],
     });
   }
-  const records = projection.facts.map((f) => toFact(projectedFactToExtractedField(f)));
+  // Lot 49B (TC11) : reprise IDEMPOTENTE — un fait déjà écrit (worker interrompu
+  // entre l'écriture des faits et celle de la couche A) n'est jamais dupliqué.
+  const existants = new Set(((await pgClient.unsafe(
+    `SELECT coalesce(canonical_key, fact_key) AS k, coalesce(value_text, '') AS v, coalesce(excerpt, '') AS e
+       FROM document_facts WHERE file_id = $1 AND status = 'active'`,
+    [p.fileId] as never[],
+  )) as unknown as Array<{ k: string; v: string; e: string }>).map((x) => `${x.v}\u0001${x.e}`));
+  const neufs = projection.facts.filter((f) => !existants.has(`${f.value === null ? '' : String(f.value)}\u0001${f.evidence?.excerpt ?? ''}`));
+  if (neufs.length === 0) return { inserted: [], all: projection.facts };
+  const records = neufs.map((f) => toFact(projectedFactToExtractedField(f)));
   const canonical = await documentFactsCanonicalReady();
   await pgClient.begin(async (tx) => {
     await insertFactRows(tx as never, {
@@ -430,5 +541,5 @@ async function appendRepairedFacts(p: {
     await tx.unsafe(`UPDATE document_extractions SET fact_count = fact_count + $2, updated_at = NOW() WHERE id = $1`,
       [Number(ext.id), records.length] as never[]);
   });
-  return projection.facts;
+  return { inserted: neufs, all: projection.facts };
 }

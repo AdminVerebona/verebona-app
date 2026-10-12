@@ -40,6 +40,11 @@
  * EXACT_NAME : seule la catégorie est retenue, sans valeur de preuve —
  * « Maison » ne rattache jamais automatiquement un document quand plusieurs
  * maisons existent (le modèle, puis l'utilisateur, tranchent).
+ *
+ * Lot 49B : un texte INCERTAIN (unité UNCERTAIN de T1, fait mal formé) ne
+ * produit jamais de preuve : un identifiant ou un nom qu'il cite ajoute le
+ * bien en CONTEXTUAL_MATCH (indice de contexte, sans valeur de preuve) — jamais
+ * un rattachement déterministe, jamais seul la base d'un choix du modèle.
  * ══════════════════════════════════════════════════════════════════════════
  */
 import { assetDesignationsIn, subtypeMatchesCategory, withoutAssetDesignations } from '@/lib/asset-taxonomy';
@@ -56,6 +61,11 @@ import type { StoredT1Candidate } from './resolution.repository';
  * Version du Candidate Builder (entre dans l'empreinte du contexte). À
  * incrémenter à chaque changement des sources ou des règles de découverte.
  *   · 1 — lot 34E : première version.
+ *   Lot 49B : textes INCERTAINS (couche exhaustive T1) réduits à un indice de
+ *   contexte. Version INCHANGÉE à dessein : pour toute entrée sans texte
+ *   incertain (tous les documents existants), la sortie est identique — une
+ *   nouvelle version rouvrirait inutilement (coût IA) toutes les décisions
+ *   ouvertes ; l'arrivée de ces textes change d'elle-même l'empreinte.
  */
 export const CANDIDATE_BUILDER_VERSION = 1;
 
@@ -102,6 +112,14 @@ export interface CandidateBuildResult {
   /** `assetId:NATURE` des correspondances fortes. */
   deterministicMatches: string[];
 }
+
+/**
+ * Texte examiné pour les identifiants forts : transcription (200 000) + couche
+ * exhaustive T1 (bornée à 400 000 par `source-unit-provider.ts`) + titres,
+ * signaux. Lot 49B (AC8) : une information au-delà du 200 000e caractère de la
+ * transcription, persistée en unité source, reste rapprochable.
+ */
+export const IDENTIFIER_TEXT_MAX = 700_000;
 
 const STOPWORDS = new Set([
   'de', 'du', 'des', 'la', 'le', 'les', 'l', 'd', 'a', 'au', 'aux', 'en', 'et', 'mon', 'ma', 'mes', 'notre', 'nos', 'un', 'une', 'the', 'of',
@@ -155,7 +173,9 @@ export function buildDocumentAssetCandidates(input: CandidateBuildInput): Candid
     byAsset.set(assetId, c);
   };
 
-  const texts = sources?.texts ?? [];
+  // Lot 49B : les lectures incertaines sont tenues à part (indice de contexte seulement).
+  const texts = (sources?.texts ?? []).filter((t) => !t.uncertain);
+  const uncertainTexts = (sources?.texts ?? []).filter((t) => t.uncertain);
   const facts = sources?.facts ?? [];
   const zoneText = (zones: DocumentTextZone[]) => texts.filter((t) => zones.includes(t.zone)).map((t) => t.text);
   const factTexts = facts.flatMap((f) => [f.value, f.subject, f.label]).filter((x): x is string => !!x);
@@ -169,7 +189,7 @@ export function buildDocumentAssetCandidates(input: CandidateBuildInput): Candid
   const identification = resolveAssetByIdentifiers([...index.records, ...equipmentRecords(index)], {
     facts: facts.map((f) => ({ canonicalKey: f.canonicalKey, value: f.value })),
     texts: texts.map((t) => t.text),
-  });
+  }, IDENTIFIER_TEXT_MAX);
   for (const id of identification.assetIds) {
     for (const s of matchSignals(identification, id)) add(id, 'STRONG_IDENTIFIER', { evidence: s });
   }
@@ -258,6 +278,25 @@ export function buildDocumentAssetCandidates(input: CandidateBuildInput): Candid
     for (const [assetId, docs] of parBien) {
       if ([...docs].some((d) => d !== input.fileId)) {
         add(assetId, 'SHARED_REFERENCE', { evidence: 'référence de contrat identique à celle d’un document déjà rattaché à ce bien' });
+      }
+    }
+  }
+
+  // ── Lectures incertaines (lot 49B) : indice de contexte, jamais une preuve ─
+  if (uncertainTexts.length > 0) {
+    tested.add('CONTEXTUAL_MATCH');
+    const incertaine = resolveAssetByIdentifiers([...index.records, ...equipmentRecords(index)], {
+      facts: [], texts: uncertainTexts.map((t) => t.text),
+    });
+    for (const id of incertaine.assetIds) {
+      if (!identification.assetIds.includes(id)) {
+        add(id, 'CONTEXTUAL_MATCH', { context: 'identifiant lu dans une zone incertaine du document (à confirmer)' });
+      }
+    }
+    const zone = pad(normalizeText(uncertainTexts.map((t) => t.text).join(' \n ')));
+    for (const a of index.assets) {
+      if ([a.normalizedName, ...a.aliases].some((forme) => forme.length >= 3 && isDistinctiveName(forme) && phraseIn(zone, forme))) {
+        add(a.assetId, 'CONTEXTUAL_MATCH', { context: 'nom du bien lu dans une zone incertaine du document (à confirmer)' });
       }
     }
   }

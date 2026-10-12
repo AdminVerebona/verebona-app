@@ -28,7 +28,7 @@ export async function DELETE(
     const [asset] = await db
       .select({ id: assets.id })
       .from(assets)
-      .where(and(eq(assets.id, assetId), eq(assets.userId, session.userId)))
+      .where(and(eq(assets.id, assetId), eq(assets.userId, session.userId), eq(assets.accountId, session.currentAccountId ?? -1))) // lot 49 : compte actif
       .limit(1);
     if (!asset) return NextResponse.json({ error: 'ASSET_NOT_FOUND' }, { status: 404 });
 

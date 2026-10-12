@@ -21,20 +21,34 @@ export const EXPENSE_THEME_LABELS: Readonly<Record<ExpenseTheme, string>> = {
   other: 'autres dépenses',
 };
 
+const THEME_TABLE: ReadonlyArray<[RegExp, ExpenseTheme]> = [
+  [/\b(entretien|entretenir|revision|maintenance|vidange)\b/, 'maintenance'],
+  [/\b(reparation|reparations|depannage|panne)\b/, 'repair'],
+  [/\b(travaux|renovation|chantier)\b/, 'works'],
+  [/\b(assurance|assurances|assureur|cotisation)\b/, 'insurance'],
+  [/\b(controle technique|controles?|diagnostics?)\b/, 'inspection'],
+  [/\b(abonnements?)\b/, 'subscription'],
+  [/\b(charges|copropriete|syndic)\b/, 'charges'],
+  [/\b(achat|acquisition)\b/, 'purchase'],
+];
+
 /** Thème désigné par une question (sans accents, minuscules) ; null : aucun. */
 export function expenseThemeOf(message: string): ExpenseTheme | null {
   const m = message.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
-  const table: Array<[RegExp, ExpenseTheme]> = [
-    [/\b(entretien|entretenir|revision|maintenance|vidange)\b/, 'maintenance'],
-    [/\b(reparation|reparations|depannage|panne)\b/, 'repair'],
-    [/\b(travaux|renovation|chantier)\b/, 'works'],
-    [/\b(assurance|assurances|assureur|cotisation)\b/, 'insurance'],
-    [/\b(controle technique|controles?|diagnostics?)\b/, 'inspection'],
-    [/\b(abonnements?)\b/, 'subscription'],
-    [/\b(charges|copropriete|syndic)\b/, 'charges'],
-    [/\b(achat|acquisition)\b/, 'purchase'],
-  ];
-  return table.find(([re]) => re.test(m))?.[1] ?? null;
+  return THEME_TABLE.find(([re]) => re.test(m))?.[1] ?? null;
+}
+
+/**
+ * Lot 49 : mots de la question qui désignent EXPLICITEMENT une catégorie de
+ * dépense (« abonnements », « entretien »…) — consommés par l'agrégat
+ * qualifié, ils ne laissent pas de résidu sémantique (pure).
+ */
+export function expenseThemeWords(message: string): string[] {
+  const m = message.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
+  return THEME_TABLE.flatMap(([re]) => {
+    const x = new RegExp(re.source, 'g');
+    return [...m.matchAll(x)].map((r) => r[0]);
+  });
 }
 
 /** Thème par type du référentiel V2 (le plus précis). */

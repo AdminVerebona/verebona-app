@@ -5,8 +5,11 @@ import { eq, and, isNull, or } from 'drizzle-orm';
 import { SessionService } from '@/lib/session-service';
 import { apiError } from '@/lib/api-errors';
 import { displayDocumentTitle } from '@/lib/documents/document-title-rules';
+import { equipmentInAccount } from '@/services/security/account-ownership';
 
 // GET /api/equipments/[id]/documents — documents linked to an equipment
+// Lot 49 (SEC-06) : équipement du compte vérifié AVANT la lecture ; documents
+// et bien joint bornés au compte.
 export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -21,6 +24,7 @@ export async function GET(
     const { id } = await params;
     const equipmentId = parseInt(id);
     if (isNaN(equipmentId)) return apiError(400, 'INVALID_INPUT', 'Invalid equipment id');
+    if (!(await equipmentInAccount(accountId, equipmentId))) return apiError(404, 'NOT_FOUND', 'Equipment not found');
 
     // Load document type labels
     const allDocTypes = await db.select({ code: documentTypes.code, label: documentTypes.label }).from(documentTypes);
@@ -44,7 +48,7 @@ export async function GET(
         createdAt: assetFiles.createdAt,
       })
       .from(assetFiles)
-      .leftJoin(assets, eq(assetFiles.assetId, assets.id))
+      .leftJoin(assets, and(eq(assetFiles.assetId, assets.id), eq(assets.accountId, accountId)))
       .where(
         and(
           eq(assetFiles.accountId, accountId),

@@ -15,9 +15,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import { saveTreatmentConfig } from '@/services/ai/config/config-version.service';
-import { isPromptAdministrable, isTreatment, type Treatment } from '@/services/ai/config/treatments';
+import { isRetiredTreatment, isTreatment, type Treatment } from '@/services/ai/config/treatments';
 import { recordConfigEntrySave } from '@/services/ai/config/config-entry.audit';
-import { hasLegacyPromptText } from '@/services/ai/config/t5-messages';
 import { REASONING_LEVELS, GUARDRAIL_REACTIONS, PROMPT_ARCHITECTURES } from '@/services/ai/config/config-types';
 import { requireAdminContext, parseVersionId, invalidId, toErrorResponse } from '../../../_shared';
 
@@ -74,6 +73,13 @@ export async function PUT(
   const versionId = parseVersionId(id);
   if (versionId === null) return invalidId(id);
 
+  // Lot 49 (ticket 12) : T5 est retiré — refus explicite, aucune ligne créée.
+  if (isRetiredTreatment(treatment)) {
+    return NextResponse.json(
+      { error: 'TREATMENT_RETIRED', message: `Le traitement ${treatment} a été supprimé : il n'a plus de configuration.` },
+      { status: 410 },
+    );
+  }
   if (!isTreatment(treatment)) {
     return NextResponse.json(
       { error: 'UNKNOWN_TREATMENT', message: `Traitement inconnu : « ${treatment} ».` },
@@ -101,16 +107,15 @@ export async function PUT(
       { treatment: treatment as Treatment, ...parsed.data },
       guard.ctx.adminUserId,
     );
-    // Traçabilité (tickets T4 / T5) : utilisateur, version, champs modifiés
-    // avant / après — retrait d'un déclencheur incompatible, nettoyage d'un
-    // ancien texte T5. Rien à tracer si rien n'a changé (seconde sauvegarde).
+    // Traçabilité (ticket T4) : utilisateur, version, champs modifiés
+    // avant / après — retrait d'un déclencheur incompatible. Rien à tracer si
+    // rien n'a changé (seconde sauvegarde).
     await recordConfigEntrySave({
       adminUserId: guard.ctx.adminUserId,
       versionId,
       treatment,
       before,
       after,
-      legacyPromptCleared: !isPromptAdministrable(treatment as Treatment) && Boolean(before && hasLegacyPromptText(before)),
     });
     return NextResponse.json({ saved: true, treatment });
   } catch (e) {

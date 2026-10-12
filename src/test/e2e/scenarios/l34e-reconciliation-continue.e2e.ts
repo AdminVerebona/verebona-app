@@ -164,7 +164,11 @@ scenario('L34E', 'Réconciliation T3 continue : révision de connaissance, Candi
     expect(await resolution(a.id)).toMatchObject({ status: 'RESOLVED', method: 'DETERMINISTIC', reason_code: 'SHARED_REFERENCE' });
   });
 
-  it('T3C-04 / T3D-06 — nouveau document SANS rapport : la révision change, le contexte de A non → CONFIRMED_NO_CHANGE, sans IA, aucune nouvelle carte', async () => {
+  // Lot 49B (ticket « À traiter ouverts réexaminés à chaque passage », §6) : un document dont la carte
+  // LINK-ASSET est OUVERTE n'est plus « confirmé sans changement » par le balayage — il est délégué à la
+  // phase « open actions » (voie canonique, réexamen à chaque passage) ; le balayage, lui, n'appelle
+  // toujours aucune IA et ne crée aucun travail ni carte.
+  it('T3C-04 / T3D-06 — nouveau document SANS rapport : la révision change, le contexte de A non → balayage sans IA ni travail, aucune nouvelle carte (carte ouverte : déléguée à « open actions »)', async () => {
     const compte = await make.account();
     await maison(compte, 'Maison de Valence');
     const a = await make.assetFile(compte, { assetId: null });
@@ -180,8 +184,12 @@ scenario('L34E', 'Réconciliation T3 continue : révision de connaissance, Candi
     expect(appels(replay, 't3_link_ambiguity')).toBe(0);
     const apres = await resolution(a.id);
     expect(apres).toMatchObject({ status: 'NO_CANDIDATE', runs: avant.runs, context_fingerprint: avant.context_fingerprint });
-    expect(Number(apres.knowledge_revision)).toBeGreaterThan(Number(avant.knowledge_revision));
-    expect(apres.e).toMatchObject({ result: 'CONFIRMED_NO_CHANGE', aiCalled: false, fingerprintChanged: false, candidateCount: 0 });
+    expect(await cartes(a.id)).toHaveLength(1);
+    // Phase « open actions » : réexamen réel, empreinte identique, toujours sans IA (aucun candidat).
+    const { reconcileOpenToProcessActions } = await import('@/services/ai/reconciliation/continuous/open-actions.service');
+    await reconcileOpenToProcessActions(compte.id);
+    expect((await resolution(a.id)).e).toMatchObject({ result: 'NO_CANDIDATE', reevaluated: true, aiCalled: false, fingerprintChanged: false, candidateCount: 0 });
+    expect(appels(replay, 't3_link_ambiguity')).toBe(0);
     expect(await cartes(a.id)).toHaveLength(1);
   });
 
@@ -241,7 +249,9 @@ scenario('L34E', 'Réconciliation T3 continue : révision de connaissance, Candi
     expect(await sql`SELECT 1 FROM to_process_actions WHERE target_id = ${doc.id} AND rule_code = 'LINK-ASSET-CONFLICT'`).toHaveLength(1);
   });
 
-  it('T3C-07 — deux balayages sans changement : aucun appel IA, aucune nouvelle écriture ; relance du travail : NO_CHANGE, aucun doublon', async () => {
+  // Lot 49B : carte ARBITRATE ouverte → le balayage la délègue (aucune écriture, aucune IA) ; une relance
+  // explicite RÉEXAMINE (nouvel arbitrage, plafond de coût) — l'ancienne abstention n'est qu'un historique.
+  it('T3C-07 — deux balayages sans changement : aucun appel IA, aucune nouvelle écriture ; relance du travail (carte ouverte) : réexamen réel, toujours ambigu, aucun doublon', async () => {
     const compte = await make.account();
     const a = await maison(compte, 'Maison A');
     const b = await maison(compte, 'Maison B');
@@ -253,18 +263,20 @@ scenario('L34E', 'Réconciliation T3 continue : révision de connaissance, Candi
     // Connaissance du compte modifiée sans rapport : balayage 1 → confirmation.
     await make.asset(compte, { category: 'VEHICULE', name: 'Clio' });
     const replay = await rejouer([T3_ABSTENTION]);
+    const s0 = await resolution(doc.id);
     expect(await balayer(compte)).toBe(0);
     const s1 = await resolution(doc.id);
-    expect(s1.e).toMatchObject({ result: 'CONFIRMED_NO_CHANGE' });
+    expect(s1.e).toEqual(s0.e);
     // Balayage 2 : aucune évolution → rien (pas même une date).
     expect(await balayer(compte)).toBe(0);
     const s2 = await resolution(doc.id);
     expect(s2.updated_at).toEqual(s1.updated_at);
     expect(s2.evaluated_at).toEqual(s1.evaluated_at);
-    // Relance explicite du travail : même contexte → NO_CHANGE, aucun appel, aucun doublon.
-    const { resolveDocumentAsset } = await import('@/services/ai/reconciliation/document-asset/resolve-document-asset.service');
-    expect(await resolveDocumentAsset({ accountId: compte.id, fileId: doc.id })).toMatchObject({ outcome: 'NO_CHANGE', aiCalled: false });
     expect(appels(replay, 't3_link_ambiguity')).toBe(0);
+    // Relance explicite du travail : carte ouverte → réexamen réel (arbitrage), toujours ambigu, aucun doublon.
+    const { resolveDocumentAsset } = await import('@/services/ai/reconciliation/document-asset/resolve-document-asset.service');
+    expect(await resolveDocumentAsset({ accountId: compte.id, fileId: doc.id })).toMatchObject({ outcome: 'ABSTAIN', aiCalled: true });
+    expect(appels(replay, 't3_link_ambiguity')).toBe(1);
     expect(await cartes(doc.id)).toHaveLength(1);
     expect(await liens(doc.id)).toEqual(expect.not.arrayContaining([expect.objectContaining({ link_role: 'PRIMARY' })]));
   });

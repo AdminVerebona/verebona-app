@@ -442,10 +442,12 @@ export function RecentDocuments({ docs, onUpload, className = '' }: { docs: Home
         </button>
       ) : (
         <HomeCarousel label="Documents récents">
-          {docs.slice(0, 4).map((d) => {
+          {/* Lot 49A : jusqu'à six documents — 3 visibles en mobile, 4 en
+              desktop, 6 sur très grand écran (largeur de l'accueil élargie). */}
+          {docs.slice(0, 6).map((d) => {
             const meta = [d.assetName, formatDay(d.date)].filter(Boolean).join(' · ') || d.typeLabel;
             return (
-              <li key={d.id} className="w-[calc((100%-20px)/3)] flex-shrink-0 snap-start md:w-[calc((100%-36px)/4)]">
+              <li key={d.id} className="w-[calc((100%-20px)/3)] flex-shrink-0 snap-start md:w-[calc((100%-36px)/4)] 2xl:w-[calc((100%-60px)/6)]">
                 <button
                   type="button"
                   onClick={() => open(d)}

@@ -429,7 +429,8 @@ export function SubscriptionSummary() {
 
       {/* 2e utilisateur — Offre Duo (repris de l'ancien bloc « Abonnement ») */}
       {!isDuoMember && data.plan === 'premium_duo' && user?.duoRole === 'BILLING_OWNER' && (
-        <div className="mt-5 border-t border-[color:var(--border)] pt-4">
+        // Lot 49A (ticket 13) : ancre de « Inviter quelqu'un » (mascotte d'accueil).
+        <div id="duo-invitation" className="mt-5 scroll-mt-24 border-t border-[color:var(--border)] pt-4">
           <div className="mb-3 flex items-center gap-2">
             <Users className="h-4 w-4 text-emerald-400" />
             <span className="text-sm font-medium text-[color:var(--text-primary)]">2e utilisateur Duo</span>

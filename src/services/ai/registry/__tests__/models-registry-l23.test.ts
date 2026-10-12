@@ -158,7 +158,7 @@ describe('§15.14 — cohérence à l’activation d’une version', () => {
   it('admet la configuration du code ; rend les avertissements (déprécié, anomalie) — un modèle inconnu n’en produit plus', async () => {
     const w = await assertModelRegistryCoherence(version([
       ['T1', 'gemini-3.1-flash-lite', 'gemini-2.5-pro'], ['T2', 'gemini-3.5-flash-lite', 'gemini-3.1-flash-lite'],
-      ['T5', 'gemini-2.5-pro', 'gemini-3.1-flash-lite'], ['T4', 'gemini-7-flash', null],
+      ['T3', 'gemini-2.5-pro', 'gemini-3.1-flash-lite'], ['T4', 'gemini-7-flash', null],
     ]));
     expect(w.map((i) => i.code).sort()).toEqual(['MODEL_ANOMALY', 'MODEL_ANOMALY', 'MODEL_DEPRECATED', 'MODEL_DEPRECATED']);
   });
@@ -194,7 +194,7 @@ describe('§15.13 — veille de dépréciation étendue aux modèles actifs du r
     const { measureAssistantAlertMetrics, evaluateAssistantAlertRules } = await import('@/services/verebona-assistant/observability/assistant-alerts');
     const m = await measureAssistantAlertMetrics({
       query: async () => [],
-      resolveActiveModels: async () => [{ model: 'gemini-2.5-flash-lite', alias: 'T1, T4' }, { model: 'gemini-2.5-pro', alias: 'T5' }],
+      resolveActiveModels: async () => [{ model: 'gemini-2.5-flash-lite', alias: 'T1, T4' }, { model: 'gemini-2.5-pro', alias: 'T3' }],
     });
     expect(m.deprecations).toEqual([{ model: 'gemini-2.5-flash-lite', alias: 'T1, T4', date: '2026-10-16' }]);
     const v = evaluateAssistantAlertRules(m, new Date('2026-10-05T10:00:00Z'));

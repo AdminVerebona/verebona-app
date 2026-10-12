@@ -18,11 +18,17 @@
  *  5. transferts de clé (`transfer_lookup_key`), un par un, chacun journalisé
  *     avant / après (LK-86). Pendant ce temps la VENTE continue sur les
  *     identifiants de la révision active en base (EX-010, EX-011) ;
- *  6. relecture des six clés, portail validé avec l'union ancienne+nouvelle
- *     révision, puis activation atomique en base (photographie, registre,
- *     miroirs) et portail réduit à la nouvelle révision (EX-012) ;
+ *  6. relecture des six clés ; configuration du portail SAUVEGARDÉE, puis
+ *     portail aligné sur EXACTEMENT les six prix candidats (un mensuel et un
+ *     annuel par produit — lot 49A : l'union ancienne + nouvelle révision
+ *     était refusée par Stripe, « For each product, its price must have
+ *     unique billing intervals. »), relu et comparé à l'égalité stricte ;
+ *     activation atomique en base (photographie, registre, miroirs) SEULEMENT
+ *     après cette validation ; un échec avant activation RESTAURE (et
+ *     vérifie) le portail de l'ancienne révision (EX-012) ;
  *  7. campagne de revalorisation créée (opération DISTINCTE, EX-016, EX-028)
- *     et sondes de cohérence (EX-013).
+ *     — sauf rattrapage ciblé (aucune revalorisation) — puis contrôles après
+ *     activation (`verifyPublishedCatalog`, EX-013).
  *
  * Un échec à n'importe quelle étape laisse l'ANCIENNE révision active et
  * vendue sur toutes les surfaces (LK-104, LK-105, TC-84) ; l'état passe
@@ -53,6 +59,7 @@ import {
 } from './catalog-types';
 import type { CatalogStateRow, PriceVersionRow } from './catalog-store';
 import {
+  buildPublicCatalog,
   catalogDeps,
   catalogFingerprint,
   forgetCatalogMemory,
@@ -61,11 +68,29 @@ import {
   resolveCurrentPrice,
   type CatalogDeps,
 } from './price-catalog.service';
-import { versionRowFrom } from './price-history.service';
+import { isStripeTransient, versionRowFrom } from './price-history.service';
 import { PLAN_PRODUCT_DEFINITIONS, PRICING_MANIFEST, manifestRevision, validateManifest } from './pricing-manifest';
-import { syncUpgradePortal } from './portal-configuration.service';
+import {
+  capturePortalConfiguration,
+  portalProductsFor,
+  restorePortalConfiguration,
+  syncUpgradePortal,
+  type PortalBackup,
+} from './portal-configuration.service';
 import { getExpectedStripeMode } from '@/lib/stripe-client';
 import { legacyPriceRefs } from './legacy-price-env';
+
+/**
+ * Arrêt de publication (lot 49A) : `SCHEDULED_TASK_STRIPE_CATALOG_PUBLISH=off`
+ * ou arrêt global des tâches. Respecté sur TOUS les chemins automatiques :
+ * tâche de publication, amorçage depuis `stripe-catalog-sync` (aucun
+ * contournement) et rattrapage ciblé.
+ */
+export function publicationStopped(env: NodeJS.ProcessEnv | Record<string, string | undefined>): boolean {
+  const off = new Set(['off', 'false', '0', 'disabled', 'no']);
+  if (['true', '1', 'yes', 'on'].includes((env.SCHEDULED_TASKS_DISABLED ?? '').trim().toLowerCase())) return true;
+  return off.has((env.SCHEDULED_TASK_STRIPE_CATALOG_PUBLISH ?? '').trim().toLowerCase());
+}
 
 /** Écritures Stripe : mode attendu explicite exigé (LK-88). */
 function expectedModeIssue(d: CatalogDeps): string | null {
@@ -199,6 +224,7 @@ export async function runAutoPublication(
   const actor = opts.actor ?? 'task:stripe-catalog-publish';
   const context = d.context();
   if (!context.mode) return { decision: { publish: false, reason: 'NO_STRIPE_KEY' } };
+  if (publicationStopped(d.env)) return { decision: { publish: false, reason: 'PUBLICATION_STOPPED' } };
   const state = await d.store.getState(context.catalogContext);
   const lastRun = state?.publicationRunId ? await d.store.getRun(state.publicationRunId).catch(() => null) : null;
   const decision = opts.onlyBootstrap
@@ -219,14 +245,21 @@ export interface PublishOptions {
   manifest?: Manifest;
   /** Tests : simule un incident juste avant le transfert n° N (1-based). */
   failBeforeTransfer?: number;
+  /**
+   * Lot 49A — reprise d'une publication EXISTANTE (même exécution, mêmes
+   * prix candidats, mêmes clés d'idempotence) : aucune nouvelle exécution.
+   */
+  resumeRunId?: number;
+  /** Lot 49A — rattrapage ciblé : aucun Price créé, aucune campagne de revalorisation. */
+  recovery?: boolean;
 }
 
 export type PublishResult =
   | { status: 'noop'; reason: string; version: string | null }
   | { status: 'simulated'; plan: DiffEntry[]; manifestRevision: string }
   | { status: 'refused'; reason: string }
-  | { status: 'published'; runId: number; version: string; created: Record<string, string>; plan: DiffEntry[] }
-  | { status: 'failed'; runId: number; reason: string; step: string };
+  | { status: 'published'; runId: number; version: string; created: Record<string, string>; plan: DiffEntry[]; checks?: PublishedCatalogChecks }
+  | { status: 'failed'; runId: number; reason: string; step: string; /** Panne Stripe passagère (reprise espacée possible). */ transient?: boolean };
 
 /**
  * Produit de vente de l'offre (LK-03, LK-80) : produit déjà approuvé ; à
@@ -308,6 +341,22 @@ export async function publishCodeCatalog(opts: PublishOptions, d: CatalogDeps = 
   return locked ?? { status: 'refused', reason: 'LOCKED' };
 }
 
+/**
+ * Publication par un appelant qui DÉTIENT déjà le bail partagé
+ * `stripe-catalog-publication:<contexte>` (rattrapage ciblé, lot 49A) : même
+ * séquence, mêmes contrôles de clé, de mode et de manifeste.
+ */
+export async function publishWithHeldLock(opts: PublishOptions, d: CatalogDeps): Promise<PublishResult> {
+  const ctx = d.context();
+  if (!ctx.mode) return { status: 'refused', reason: 'NO_STRIPE_KEY' };
+  const modeIssue = expectedModeIssue(d);
+  if (modeIssue) return { status: 'refused', reason: modeIssue };
+  const manifest = opts.manifest ?? PRICING_MANIFEST;
+  const issues = validateManifest(manifest);
+  if (issues.length) return { status: 'refused', reason: `MANIFEST_INVALID: ${issues.join('; ')}` };
+  return doPublish(opts, manifest, d);
+}
+
 async function doPublish(opts: PublishOptions, manifest: Manifest, d: CatalogDeps): Promise<PublishResult> {
   const ctx = d.context();
   const context = ctx.catalogContext;
@@ -336,19 +385,54 @@ async function doPublish(opts: PublishOptions, manifest: Manifest, d: CatalogDep
   }
   if (opts.dryRun) return { status: 'simulated', plan, manifestRevision: rev };
 
-  const runId = await d.store.createRun({ context, kind: 'publish', state: 'PREPARED', trigger: opts.trigger, actor: opts.actor ?? null, manifestRevision: rev, fromRevision: state.activeRevision });
+  // Lot 49A : reprise de l'exécution EXISTANTE (rattrapage) — mêmes prix
+  // candidats (journal `created_prices`), mêmes clés d'idempotence.
+  let runId: number;
+  const created: Record<string, string> = {};
+  if (opts.resumeRunId) {
+    const previous = await d.store.getRun(opts.resumeRunId);
+    if (!previous || previous.kind !== 'publish') return { status: 'refused', reason: 'RESUME_RUN_NOT_FOUND' };
+    if (previous.manifestRevision !== rev) return { status: 'refused', reason: 'RESUME_MANIFEST_CHANGED' };
+    runId = previous.id;
+    for (const [k, v] of Object.entries(previous.createdPrices ?? {})) if (typeof v === 'string') created[k] = v;
+    await d.store.updateRun(runId, { state: 'RECOVERING', step: { step: 'resume', trigger: opts.trigger, actor: opts.actor ?? null, recovery: Boolean(opts.recovery), knownCandidates: Object.keys(created).length } });
+  } else {
+    runId = await d.store.createRun({ context, kind: 'publish', state: 'PREPARED', trigger: opts.trigger, actor: opts.actor ?? null, manifestRevision: rev, fromRevision: state.activeRevision });
+  }
   const step = (name: string, detail: Record<string, unknown> = {}) => d.store.updateRun(runId, { step: { step: name, ...detail } });
-  const fail = async (stepName: string, reason: string): Promise<PublishResult> => {
-    await d.store.setPublication(context, { state: 'FAILED', runId, error: `${stepName}: ${reason}`.slice(0, 500), activatingUntil: null });
-    await d.store.updateRun(runId, { state: 'FAILED', error: `${stepName}: ${reason}`.slice(0, 1000), finished: true, step: { step: stepName, failed: true, reason } });
+
+  // Portail : sauvegarde AVANT modification, restauration si échec AVANT activation.
+  const oldSnapshot = state.activeSnapshot;
+  let portalBackup: PortalBackup | null = null;
+  let portalTouched = false;
+  let activated = false;
+
+  const fail = async (stepName: string, reason: string, error?: unknown): Promise<PublishResult> => {
+    let fullReason = reason;
+    if (portalTouched && !activated && sellableCount(state) > 0) {
+      try {
+        const restored = await restorePortalConfiguration(portalBackup, oldSnapshot, `publication:${runId}`, d);
+        await step('portal-restored', restored);
+      } catch (e) {
+        fullReason = `${reason} ; portail NON restauré (${(e as Error).message}) : montées en gamme bloquées`;
+        await step('portal-restore-failed', { error: (e as Error).message }).catch(() => undefined);
+        await d.anomalies.report({
+          fingerprint: catalogFingerprint(context, 'portal-restore'),
+          title: 'Catalogue Stripe : portail de l’ancienne révision NON restauré — montées en gamme bloquées',
+          detail: { runId, error: (e as Error).message },
+        }).catch(() => undefined);
+      }
+    }
+    await d.store.setPublication(context, { state: 'FAILED', runId, error: `${stepName}: ${fullReason}`.slice(0, 500), activatingUntil: null });
+    await d.store.updateRun(runId, { state: 'FAILED', error: `${stepName}: ${fullReason}`.slice(0, 1000), finished: true, step: { step: stepName, failed: true, reason: fullReason } });
     forgetCatalogMemory();
     await d.anomalies.report({
       fingerprint: catalogFingerprint(context, 'publication'),
       title: `Catalogue Stripe : publication en échec (${stepName}) — ancienne grille conservée`,
-      detail: { runId, step: stepName, reason },
+      detail: { runId, step: stepName, reason: fullReason },
     }).catch(() => undefined);
-    console.error(JSON.stringify({ evt: 'billing.catalog.publication_failed', context, runId, step: stepName, reason }));
-    return { status: 'failed', runId, reason, step: stepName };
+    console.error(JSON.stringify({ evt: 'billing.catalog.publication_failed', context, runId, step: stepName, reason: fullReason }));
+    return { status: 'failed', runId, reason: fullReason, step: stepName, transient: error ? isStripeTransient(error) : false };
   };
 
   try {
@@ -357,14 +441,32 @@ async function doPublish(opts: PublishOptions, manifest: Manifest, d: CatalogDep
     const stripe = d.stripe();
 
     // ── 3. Candidats ──
-    const created: Record<string, string> = {};
     const candidates = new Map<string, ResolvedPrice>();
     for (const p of toCreate) {
       const couple = CATALOG_COUPLES.find((c) => c.lookupKey === p.lookupKey)!;
       const product = await ensureSaleProduct(d, context, couple.planCode, livemode);
       if (!product.ok) return await fail('products', product.reason);
-      let price = await findExistingCandidate(stripe, product.productId, couple, rev);
+      let price: Stripe.Price | null = null;
+      // Candidat journalisé par l'exécution reprise : relu chez Stripe (état RÉEL).
+      const known = created[couple.lookupKey];
+      if (known) {
+        try {
+          price = await stripe.prices.retrieve(known, { expand: ['product'] });
+        } catch (e) {
+          if (isStripeTransient(e)) throw e;
+          price = null;
+        }
+        const sameCandidate = price && price.active && productIdOf(price) === product.productId
+          && price.metadata?.verebona_manifest_revision === rev && price.metadata?.verebona_lookup_key === couple.lookupKey;
+        if (!sameCandidate) {
+          if (opts.recovery) return await fail('candidate', `${couple.lookupKey}: candidat journalisé ${known} introuvable ou non conforme (aucun Price recréé)`);
+          price = null;
+        }
+      }
+      if (!price) price = await findExistingCandidate(stripe, product.productId, couple, rev);
       if (!price) {
+        // Rattrapage : jamais de nouveau Price (la grille candidate existe déjà).
+        if (opts.recovery) return await fail('candidate', `${couple.lookupKey}: CANDIDATE_MISSING (rattrapage : aucun Price créé)`);
         price = await stripe.prices.create({
           product: product.productId,
           currency: 'eur',
@@ -386,12 +488,15 @@ async function doPublish(opts: PublishOptions, manifest: Manifest, d: CatalogDep
       await d.store.updateRun(runId, { createdPrices: { ...created }, step: { step: 'candidate', lookupKey: couple.lookupKey, priceId: price.id } });
       const check = validateSalePrice(price, couple, { livemode, saleProductId: product.productId, checkLookupKey: false, verifiedAt: d.now().toISOString() });
       if (!check.ok) return await fail('validate-candidate', `${couple.lookupKey}: ${check.code} ${check.detail}`);
+      if (check.resolved.unitAmountCents !== p.targetAmountCents) return await fail('validate-candidate', `${couple.lookupKey}: montant ${check.resolved.unitAmountCents} ≠ ${p.targetAmountCents}`);
       candidates.set(couple.lookupKey, check.resolved);
     }
 
     // ── 5. Transferts de clés (fenêtre verrouillée, vente sur la révision active) ──
     await d.store.setPublication(context, { state: 'PUBLISHING', runId, error: null });
     await d.store.updateRun(runId, { state: 'PUBLISHING' });
+    // État RÉEL des clés (reprise après transferts partiels : rien n'est refait).
+    const holders = groupByLookupKey(await listKeyedPrices(stripe));
     const transfers: Array<Record<string, unknown>> = [];
     let n = 0;
     for (const p of toCreate) {
@@ -399,6 +504,12 @@ async function doPublish(opts: PublishOptions, manifest: Manifest, d: CatalogDep
       const candidate = candidates.get(p.lookupKey)!;
       if (opts.failBeforeTransfer === n) return await fail('transfer', `incident simulé avant le transfert ${n}`);
       const record: Record<string, unknown> = { lookupKey: p.lookupKey, from: p.currentPriceId, to: candidate.priceId, at: d.now().toISOString() };
+      const current = holders.get(p.lookupKey) ?? [];
+      if (current.length === 1 && current[0].id === candidate.priceId) {
+        transfers.push({ ...record, ok: true, already: true });
+        await d.store.updateRun(runId, { transfers: [...transfers] });
+        continue;
+      }
       try {
         await stripe.prices.update(candidate.priceId, { lookup_key: p.lookupKey, transfer_lookup_key: true });
         transfers.push({ ...record, ok: true });
@@ -406,7 +517,7 @@ async function doPublish(opts: PublishOptions, manifest: Manifest, d: CatalogDep
       } catch (e) {
         transfers.push({ ...record, ok: false, error: (e as Error).message });
         await d.store.updateRun(runId, { transfers: [...transfers] });
-        return await fail('transfer', `${p.lookupKey}: ${(e as Error).message}`);
+        return await fail('transfer', `${p.lookupKey}: ${(e as Error).message}`, e);
       }
     }
 
@@ -432,19 +543,36 @@ async function doPublish(opts: PublishOptions, manifest: Manifest, d: CatalogDep
     const snapshot: CatalogSnapshot = { version: catalogVersionOf(entries), verifiedAt: nowIso, entries, unavailable: {}, source: 'publish' };
     await step('reread', { version: snapshot.version });
 
-    // Portail : union ancienne + nouvelle révision, validée AVANT activation.
+    // ── Portail : EXACTEMENT les six prix candidats, validé AVANT activation ──
     const oldEntries = Object.values(state.activeSnapshot.entries).filter(Boolean) as ResolvedPrice[];
-    try {
-      await syncUpgradePortal({ reason: `publication:${runId}`, snapshot, persist: false, extraPrices: oldEntries.map((e) => ({ productId: e.productId, priceId: e.priceId })) }, d);
-      await step('portal-union');
-    } catch (e) {
+    if (oldEntries.length > 0) {
+      try {
+        portalBackup = await capturePortalConfiguration(d);
+        await step('portal-backup', { configurationId: portalBackup?.configurationId ?? null, products: portalBackup?.products ?? null });
+      } catch (e) {
+        return await fail('portal-backup', (e as Error).message, e);
+      }
+      try {
+        portalTouched = true;
+        const r = await syncUpgradePortal({ reason: `publication:${runId}`, snapshot, persist: false, requireComplete: true }, d);
+        await step('portal-candidate', { configurationId: r.configurationId, prices: portalProductsFor(snapshot) });
+      } catch (e) {
+        // Le contrôle des doublons lève AVANT tout appel : portail intact.
+        if ((e as { code?: string })?.code === 'PORTAL_DUPLICATE_INTERVAL') portalTouched = false;
+        return await fail('portal', (e as Error).message, e);
+      }
+    } else {
       // Amorçage (lot 36B) : aucune ancienne révision vendue, donc aucune
       // bascule de portail à sécuriser — le portail (montée en gamme) est
       // réaligné plus tard (au clic, à la synchronisation) et signalé ; il ne
-      // bloque pas l'affichage des offres ni Checkout. Sinon : bloquant (EX-012).
-      if (oldEntries.length > 0) throw e;
-      await step('portal-union', { deferred: true, error: (e as Error).message });
-      await d.anomalies.report({ fingerprint: catalogFingerprint(context, 'portal'), title: 'Catalogue Stripe : portail de montée en gamme non configuré (première publication)', detail: { runId, error: (e as Error).message } }).catch(() => undefined);
+      // bloque pas l'affichage des offres ni Checkout.
+      try {
+        await syncUpgradePortal({ reason: `publication:${runId}`, snapshot, persist: false }, d);
+        await step('portal-candidate');
+      } catch (e) {
+        await step('portal-candidate', { deferred: true, error: (e as Error).message });
+        await d.anomalies.report({ fingerprint: catalogFingerprint(context, 'portal'), title: 'Catalogue Stripe : portail de montée en gamme non configuré (première publication)', detail: { runId, error: (e as Error).message } }).catch(() => undefined);
+      }
     }
 
     // ── Activation (courte fenêtre BILLING_CATALOG_UPDATING) ──
@@ -454,29 +582,37 @@ async function doPublish(opts: PublishOptions, manifest: Manifest, d: CatalogDep
       context, stripeAccountId: state.stripeAccountId, livemode, snapshot, keepPrevious: sellableCount(state) > 0,
       publishedManifestRevision: rev, versions, publicationState: 'ACTIVE', publicationRunId: runId,
     });
+    activated = true;
     forgetCatalogMemory();
     await d.store.updateRun(runId, { state: 'ACTIVE', toRevision: snapshot.version, step: { step: 'activated', version: snapshot.version } });
     await d.anomalies.resolve(catalogFingerprint(context, 'publication')).catch(() => undefined);
-    console.info(JSON.stringify({ evt: 'billing.catalog.published', context, runId, from: state.activeRevision, to: snapshot.version, created }));
+    await d.anomalies.resolve(catalogFingerprint(context, 'portal-restore')).catch(() => undefined);
+    console.info(JSON.stringify({ evt: 'billing.catalog.published', context, runId, from: state.activeRevision, to: snapshot.version, created, recovery: Boolean(opts.recovery) }));
 
-    // Portail réduit à la nouvelle révision (les anciens prix ne sont plus des cibles, LK-50).
+    // Portail de la révision active, vérifié (exclusivement ses six prix, LK-50) et mémorisé.
     try {
       await syncUpgradePortal({ reason: `publication:${runId}:final`, force: true }, d);
+      await step('portal-final');
     } catch (e) {
       await step('portal-final', { error: (e as Error).message });
     }
 
     // ── 7. Campagne de revalorisation (opération distincte) ──
-    try {
-      const { createRevaluationCampaign } = await import('./price-revaluation.service');
-      const campaign = await createRevaluationCampaign({ revisionId: snapshot.version, previous: state.activeSnapshot, next: snapshot });
-      await step('revaluation-campaign', campaign as unknown as Record<string, unknown>);
-    } catch (e) {
-      await step('revaluation-campaign', { error: (e as Error).message });
-      await d.anomalies.report({ fingerprint: catalogFingerprint(context, 'revaluation-campaign'), title: 'Revalorisation : campagne non créée', detail: { runId, error: (e as Error).message } }).catch(() => undefined);
+    if (opts.recovery) {
+      // Rattrapage ciblé : aucune revalorisation, aucun envoi (lot 49A).
+      await step('revaluation-campaign', { skipped: 'rattrapage ciblé : aucune revalorisation ni information des abonnés' });
+    } else {
+      try {
+        const { createRevaluationCampaign } = await import('./price-revaluation.service');
+        const campaign = await createRevaluationCampaign({ revisionId: snapshot.version, previous: state.activeSnapshot, next: snapshot });
+        await step('revaluation-campaign', campaign as unknown as Record<string, unknown>);
+      } catch (e) {
+        await step('revaluation-campaign', { error: (e as Error).message });
+        await d.anomalies.report({ fingerprint: catalogFingerprint(context, 'revaluation-campaign'), title: 'Revalorisation : campagne non créée', detail: { runId, error: (e as Error).message } }).catch(() => undefined);
+      }
     }
 
-    // ── Sondes (EX-013) ──
+    // ── Sondes (EX-013) et contrôles après activation (lot 49A) ──
     const probes: Record<string, string> = {};
     for (const p of toCreate) {
       try {
@@ -490,11 +626,104 @@ async function doPublish(opts: PublishOptions, manifest: Manifest, d: CatalogDep
     if (divergent.length) {
       await d.anomalies.report({ fingerprint: catalogFingerprint(context, 'probe'), title: 'Catalogue Stripe : sonde de cohérence divergente après publication', detail: { runId, probes } }).catch(() => undefined);
     }
-    await d.store.updateRun(runId, { report: { plan, created, transfers, probes }, finished: true, step: { step: 'probes', probes } });
-    return { status: 'published', runId, version: snapshot.version, created, plan };
+    const checks = await verifyPublishedCatalog(d, { manifest }).catch((e: Error) => ({ ok: false, issues: [`contrôle impossible : ${e.message}`], couples: [], portal: null } as PublishedCatalogChecks));
+    const fpChecks = catalogFingerprint(context, 'post-check');
+    if (checks.ok) await d.anomalies.resolve(fpChecks).catch(() => undefined);
+    else await d.anomalies.report({ fingerprint: fpChecks, title: 'Catalogue Stripe : contrôles après publication en écart', detail: { runId, issues: checks.issues } }).catch(() => undefined);
+    await d.store.updateRun(runId, { report: { plan, created, transfers, probes, checks }, finished: true, step: { step: 'probes', probes, checksOk: checks.ok } });
+    return { status: 'published', runId, version: snapshot.version, created, plan, checks };
   } catch (error) {
-    return fail('unexpected', (error as Error)?.message ?? String(error));
+    if (activated) {
+      // Révision déjà active : jamais d'état FAILED a posteriori.
+      await step('post-activation-error', { error: (error as Error)?.message ?? String(error) }).catch(() => undefined);
+      return { status: 'published', runId, version: (await d.store.getState(context))?.activeRevision ?? '', created, plan };
+    }
+    return fail('unexpected', (error as Error)?.message ?? String(error), error);
   }
+}
+
+// ─── Contrôles après activation (lot 49A) ───────────────────────────────────
+
+export interface PublishedCatalogChecks {
+  ok: boolean;
+  issues: string[];
+  couples: Array<{ lookupKey: string; priceId: string | null; unitAmountCents: number | null; taxBehavior: string | null; ok: boolean }>;
+  portal: { configurationId: string | null; exclusive: boolean } | null;
+}
+
+/**
+ * Contrôle automatique du résultat d'une publication (lecture seule) :
+ *   - six lookup_key portées chacune par UN Price actif, égal à la révision
+ *     active, sous le produit de vente approuvé, EUR, bonne périodicité,
+ *     `tax_behavior = inclusive`, montant du manifeste (et de `expectedGrid`) ;
+ *   - concordance révision active ↔ catalogue public (vitrine, page Offres)
+ *     ↔ prix engagé par Checkout (relecture `forPayment`) ;
+ *   - portail : exclusivement les six prix actifs ;
+ *   - état ACTIVE, manifeste publié.
+ */
+export async function verifyPublishedCatalog(
+  d: CatalogDeps,
+  opts: { manifest?: Manifest; expectedGrid?: Record<PlanCode, Record<'monthly' | 'yearly', number>> } = {},
+): Promise<PublishedCatalogChecks> {
+  const manifest = opts.manifest ?? PRICING_MANIFEST;
+  const ctx = d.context();
+  const context = ctx.catalogContext;
+  const issues: string[] = [];
+  forgetCatalogMemory();
+  const state = await d.store.getState(context);
+  const snap = state?.activeSnapshot ?? null;
+  if (!state || !snap) return { ok: false, issues: ['aucune révision active'], couples: [], portal: null };
+  if (state.publicationState !== 'ACTIVE') issues.push(`état de publication ${state.publicationState}`);
+  if (state.publishedManifestRevision !== manifestRevision(manifest)) issues.push('manifeste du code non publié');
+  const stripe = d.stripe();
+  const keyed = groupByLookupKey(await listKeyedPrices(stripe));
+  const approved = await d.store.listApprovedProducts(context);
+  const publicView = buildPublicCatalog(state, d.now());
+  const couples: PublishedCatalogChecks['couples'] = [];
+  for (const c of CATALOG_COUPLES) {
+    const key = coupleKey(c.planCode, c.billingPeriod);
+    const e = snap.entries[key];
+    const before = issues.length;
+    const target = manifest[c.planCode][c.billingPeriod].unitAmountCents;
+    const expected = opts.expectedGrid?.[c.planCode]?.[c.billingPeriod];
+    if (!e) {
+      issues.push(`${c.lookupKey} : absent de la révision active`);
+      couples.push({ lookupKey: c.lookupKey, priceId: null, unitAmountCents: null, taxBehavior: null, ok: false });
+      continue;
+    }
+    const found = keyed.get(c.lookupKey) ?? [];
+    const p = found[0];
+    if (found.length !== 1 || p.id !== e.priceId) issues.push(`${c.lookupKey} : clé portée par ${found.map((f) => f.id).join(',') || '∅'} ≠ ${e.priceId}`);
+    if (p) {
+      if (!p.active) issues.push(`${c.lookupKey} : Price inactif`);
+      if ((p.currency ?? '').toLowerCase() !== 'eur') issues.push(`${c.lookupKey} : devise ${p.currency}`);
+      if (p.recurring?.interval !== c.interval || (p.recurring?.interval_count ?? 1) !== 1) issues.push(`${c.lookupKey} : périodicité ${p.recurring?.interval}`);
+      if (p.tax_behavior !== 'inclusive') issues.push(`${c.lookupKey} : tax_behavior ${p.tax_behavior}`);
+      if (p.unit_amount !== target) issues.push(`${c.lookupKey} : montant ${p.unit_amount} ≠ manifeste ${target}`);
+      if (expected != null && p.unit_amount !== expected) issues.push(`${c.lookupKey} : montant ${p.unit_amount} ≠ attendu ${expected}`);
+      const sale = approved.find((a) => a.planCode === c.planCode && a.role === 'sale')?.stripeProductId;
+      if (!sale || productIdOf(p) !== sale) issues.push(`${c.lookupKey} : produit ${productIdOf(p)} non approuvé pour la vente`);
+    }
+    const offer = publicView.offers.find((o) => o.plan_code === c.planCode && o.billing_period === c.billingPeriod);
+    if (!offer || offer.unit_amount_cents !== e.unitAmountCents || offer.price_revision !== e.priceRevision) issues.push(`${c.lookupKey} : catalogue public divergent`);
+    try {
+      const r = await resolveCurrentPrice(c.planCode, c.billingPeriod, { forPayment: true }, d);
+      if (r.priceId !== e.priceId) issues.push(`${c.lookupKey} : Checkout engagerait ${r.priceId}`);
+    } catch (err) {
+      issues.push(`${c.lookupKey} : Checkout indisponible (${(err as Error).message})`);
+    }
+    couples.push({ lookupKey: c.lookupKey, priceId: e.priceId, unitAmountCents: e.unitAmountCents, taxBehavior: e.taxBehavior, ok: issues.length === before });
+  }
+  let portal: PublishedCatalogChecks['portal'] = null;
+  try {
+    const backup = await capturePortalConfiguration(d);
+    const exclusive = Boolean(backup) && JSON.stringify(backup!.products) === JSON.stringify(portalProductsFor(snap)) && backup!.settingsOk;
+    portal = { configurationId: backup?.configurationId ?? null, exclusive };
+    if (!exclusive) issues.push('portail : ne correspond pas exclusivement aux six prix actifs');
+  } catch (e) {
+    issues.push(`portail illisible : ${(e as Error).message}`);
+  }
+  return { ok: issues.length === 0, issues, couples, portal };
 }
 
 export type RollbackResult =

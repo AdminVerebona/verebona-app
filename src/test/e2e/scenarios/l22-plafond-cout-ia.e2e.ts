@@ -153,7 +153,7 @@ scenario('L22-A', 'Plafond mensuel de coût IA par compte (offre, dérogation, r
     const C = await import('@/services/ai/gateway/account-cost-cap');
     const compte = await compteDuo();
     await depenser(compte.id, 8_500_000);
-    await depenser(compte.id, 50_000_000, 'AI_GOVERNANCE'); // T5 : hors cumul
+    await depenser(compte.id, 50_000_000, 'AI_GOVERNANCE'); // usage technique (ex-T5, lot 49) : hors cumul
     const appel = () => C.assertAccountCostCap({ accountId: compte.id, useCaseCode: 'INTELLIGENT_ASSISTANT', operationCode: 't2_answer' });
     await expect(appel()).resolves.toBeUndefined();
     await appel();

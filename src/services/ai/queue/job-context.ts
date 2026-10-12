@@ -77,7 +77,7 @@ export function runInJobContext<T>(ctx: AiJobContext, fn: () => Promise<T>): Pro
   return storage.run(ctx, fn);
 }
 
-/** Contexte courant, ou `null` hors exécution (appel synchrone T2, T5, T6). */
+/** Contexte courant, ou `null` hors exécution (appel synchrone T2, T6, usage technique). */
 export function currentJobContext(): AiJobContext | null {
   return storage.getStore() ?? null;
 }

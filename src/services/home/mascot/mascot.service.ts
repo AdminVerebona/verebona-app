@@ -14,7 +14,8 @@ import { buildT6Input } from './t6-contract';
 import { formulateWithT6, logT6, type T6Mode } from './t6-runner';
 import type { MascotPresentation } from './types';
 import { parisDay, tileFor } from './bubble';
-import { buildTodoBlock } from './todo-items';
+import { MAX_TODO_ITEMS, buildTodoBlock } from './todo-items';
+import { readDuoInvite } from './duo-invite';
 import type { CatalogQuestion } from './selector';
 
 /**
@@ -42,6 +43,12 @@ export async function getMascotPresentation(
   mode: T6Mode = 'display',
 ): Promise<MascotPresentation> {
   let raw;
+  // Lot 49A (ticket 13) : « Inviter quelqu'un » (Premium Duo, personne
+  // invitée), lu à côté du collecteur ; en échec : rien à proposer.
+  const duoInviteP = readDuoInvite(accountId).catch((e) => {
+    console.error('[mascotte] source « invitation Duo » indisponible :', (e as Error).message);
+    return null;
+  });
   try {
     raw = await collectMascotData(accountId);
   } catch (e) {
@@ -57,13 +64,16 @@ export async function getMascotPresentation(
   const subjects = selectSubjects(candidates.candidates);
   const secondaries = buildSecondaries(candidates, subjects, await homeCatalogQuestions(accountId));
   // Lot 32 (MASC2) : « À traiter » = niveau 2 de la bulle, depuis la file.
-  const todo = buildTodoBlock(raw.toProcess, raw.toProcessTotal);
+  // Lot 49A (ticket 13) : « Inviter quelqu'un » passe EN PREMIER et compte
+  // dans les deux actions « À faire en premier » (MASC3).
+  const duoInvite = await duoInviteP;
+  const todo = buildTodoBlock(raw.toProcess, raw.toProcessTotal, duoInvite ? MAX_TODO_ITEMS - 1 : MAX_TODO_ITEMS);
   // Empreinte T6 : sujets et secondaires seulement — un « À traiter » résolu
   // ne relance pas la formulation des autres sujets.
   const contextHash = contextHashOf(subjects, secondaries, candidates.degraded);
 
   if (subjects.length === 0) {
-    return buildPresentation({ subjects, secondaries, degraded: candidates.degraded, messages: null, today: raw.today, tiles, todo });
+    return buildPresentation({ subjects, secondaries, degraded: candidates.degraded, messages: null, today: raw.today, tiles, todo, duoInvite });
   }
 
   const input = buildT6Input(subjects);
@@ -72,7 +82,7 @@ export async function getMascotPresentation(
   const outcome = await formulateWithT6({ accountId, input, contextHash, mode, kinds });
   void logT6({ accountId, contextHash, mode, outcome, input });
   return buildPresentation({
-    subjects, secondaries, degraded: candidates.degraded, messages: outcome.messages, today: raw.today, tiles, todo,
+    subjects, secondaries, degraded: candidates.degraded, messages: outcome.messages, today: raw.today, tiles, todo, duoInvite,
   });
 }
 

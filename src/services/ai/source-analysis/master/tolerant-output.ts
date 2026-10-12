@@ -63,6 +63,26 @@ export interface T1DroppedItem {
   payload: unknown;
 }
 
+/**
+ * Lot 49B (ticket « T1 — couverture réelle et pertes résiduelles », DEV-03) :
+ * valeur ORIGINALE d'un champ réduit (`TRUNCATED` : libellé, extrait, résumé,
+ * liste de signaux au-delà de sa borne) ou retiré par la normalisation
+ * (`REMOVED` : date non ISO, montant non entier, SIRET ou code illisible).
+ * Réintégrée par l'étape dans `document_unresolved_facts` : une réduction
+ * imposée par le contrat ne supprime jamais définitivement la valeur.
+ */
+export interface T1PreservedOriginal {
+  kind: 'TRUNCATED' | 'REMOVED';
+  /** `facts[3].label`, `document.title.value`, `entities.assets[0].evidenceSignals`. */
+  path: string;
+  /** Valeur intégrale lue (chaîne, liste, objet). */
+  original: unknown;
+  /** Valeur conservée dans la sortie (réduite), null si retirée. */
+  kept: unknown;
+  /** Preuve du fait porteur (rattachement aux unités de la source). */
+  hint?: { excerpt?: string | null; page?: number | null } | null;
+}
+
 /** Éléments au-delà des bornes du lot : réintégrés par l'étape (jamais perdus). */
 export interface T1Overflow {
   facts: T1Fact[];
@@ -101,6 +121,13 @@ export interface T1NormalisationReport {
   /** Lot 34F — éléments écartés, conservés tels quels. */
   dropped?: T1DroppedItem[];
   /**
+   * Lot 49B — originaux des valeurs réduites ou retirées (un par
+   * transformation : `truncatedStrings` = nombre d'originaux `TRUNCATED`).
+   */
+  originals?: T1PreservedOriginal[];
+  /** Lot 49B — valeurs retirées par la normalisation (conservées dans `originals`). */
+  removedValues?: number;
+  /**
    * Lot 40 — candidats Opération mal formés écartés SEULS (le document et
    * ses faits restent) ; ce ne sont pas des faits : jamais dans `dropped`.
    */
@@ -133,18 +160,42 @@ function prepare(brut: unknown): unknown {
     entities: { assets: [], rooms: [], equipments: [], suppliers: [] }, transcriptionTail: '',
   };
   const dropped: T1DroppedItem[] = [];
+  // Lot 49B (DEV-03) : original de CHAQUE réduction ou retrait (jamais seulement compté).
+  const originals: T1PreservedOriginal[] = [];
+  let hint: T1PreservedOriginal['hint'] = null;
+  const garder = (kind: T1PreservedOriginal['kind'], path: string, original: unknown, kept: unknown) => {
+    originals.push({ kind, path, original, kept, ...(hint ? { hint } : {}) });
+    if (kind === 'REMOVED') report.removedValues = (report.removedValues ?? 0) + 1;
+  };
 
-  const cut = (o: Obj | undefined, key: string, max: number) => {
+  const cut = (o: Obj | undefined, key: string, max: number, path: string) => {
     if (!o) return;
     const v = o[key];
-    if (typeof v === 'string' && v.length > max) { o[key] = v.slice(0, max); report.truncatedStrings++; }
+    if (typeof v === 'string' && v.length > max) {
+      o[key] = v.slice(0, max);
+      report.truncatedStrings++;
+      garder('TRUNCATED', `${path}.${key}`, v, o[key]);
+    }
   };
-  const strings = (items: unknown[], max: number) =>
-    items.map((s) => (typeof s === 'string' && s.length > max ? (report.truncatedStrings++, s.slice(0, max)) : s));
+  /** Liste bornée (`maxItems` éléments de `max` caractères) ; l'original intégral est conservé s'il change. */
+  const strings = (items: unknown[], maxItems: number, max: number, path: string) => {
+    const out = items.slice(0, maxItems).map((s, i) => {
+      if (typeof s !== 'string' || s.length <= max) return s;
+      report.truncatedStrings++;
+      garder('TRUNCATED', `${path}[${i}]`, s, s.slice(0, max));
+      return s.slice(0, max);
+    });
+    if (items.length > maxItems) {
+      // Éléments au-delà de la borne de la liste : conservés ensemble (un original).
+      report.truncatedStrings++;
+      garder('TRUNCATED', `${path}[${maxItems}:]`, items.slice(maxItems), null);
+    }
+    return out;
+  };
 
   // ── Parcours générique : preuves, pages, scores ──────────────────────────
-  const walk = (node: unknown): void => {
-    if (Array.isArray(node)) { node.forEach(walk); return; }
+  const walk = (node: unknown, path: string): void => {
+    if (Array.isArray(node)) { node.forEach((x, i) => walk(x, `${path}[${i}]`)); return; }
     if (!isObj(node)) return;
     for (const k of ['page', 'pageStart', 'pageEnd']) {
       if (k in node && (node[k] === null || (typeof node[k] === 'number' && (node[k] as number) <= 0))) delete node[k];
@@ -153,38 +204,48 @@ function prepare(brut: unknown): unknown {
     const e = node.evidence;
     if (isObj(e)) {
       if (vide(e.excerpt)) delete e.excerpt;
-      cut(e, 'excerpt', 2000);
-      cut(e, 'section', 200);
+      cut(e, 'excerpt', 2000, `${path}.evidence`);
+      cut(e, 'section', 200, `${path}.evidence`);
     }
-    for (const v of Object.values(node)) walk(v);
+    for (const [k, v] of Object.entries(node)) walk(v, path ? `${path}.${k}` : k);
   };
-  walk(out);
+  walk(out, '');
 
   // ── Document ─────────────────────────────────────────────────────────────
   const doc = isObj(out.document) ? out.document : undefined;
   if (doc) {
     if (isObj(doc.title) && vide(doc.title.value)) delete doc.title;
-    for (const [k, max] of [['title', 300], ['description', 2000]] as const) if (isObj(doc[k])) cut(doc[k] as Obj, 'value', max);
+    for (const [k, max] of [['title', 300], ['description', 2000]] as const) if (isObj(doc[k])) cut(doc[k] as Obj, 'value', max, `document.${k}`);
     const d = doc.documentDate;
     if (isObj(d)) {
       const iso = normalizeDateValue(d.value);
-      if (iso) d.value = iso; else delete doc.documentDate;
+      if (iso) d.value = iso;
+      else { garder('REMOVED', 'document.documentDate', structuredClone(d), null); delete doc.documentDate; }
     }
-    if (isObj(doc.amountCents) && !Number.isInteger(doc.amountCents.value)) delete doc.amountCents;
+    if (isObj(doc.amountCents) && !Number.isInteger(doc.amountCents.value)) {
+      garder('REMOVED', 'document.amountCents', structuredClone(doc.amountCents), null);
+      delete doc.amountCents;
+    }
     const s = doc.supplier;
     if (isObj(s)) {
       if (vide(s.name)) delete doc.supplier;
       else {
-        cut(s, 'name', 200);
+        cut(s, 'name', 200, 'document.supplier');
         const siret = typeof s.siret === 'string' ? s.siret.replace(/\s/g, '') : s.siret;
-        s.siret = typeof siret === 'string' && !/^\d{14}$/.test(siret) ? null : siret;
+        if (typeof siret === 'string' && !/^\d{14}$/.test(siret)) {
+          if (siret) garder('REMOVED', 'document.supplier.siret', s.siret, null);
+          s.siret = null;
+        } else s.siret = siret;
       }
     }
     const c = doc.classification;
     if (isObj(c)) {
       c.confidence = proportion(c.confidence);
       for (const k of ['canonicalType', 'rubricCode', 'documentTypeCode']) {
-        if (typeof c[k] === 'string' && (c[k] as string).length > MAX_CODE) c[k] = null;
+        if (typeof c[k] === 'string' && (c[k] as string).length > MAX_CODE) {
+          garder('REMOVED', `document.classification.${k}`, c[k], null);
+          c[k] = null;
+        }
       }
     }
   }
@@ -194,20 +255,23 @@ function prepare(brut: unknown): unknown {
     const ent = out.entities;
     for (const k of ['assets', 'rooms', 'equipments', 'suppliers'] as const) {
       if (!Array.isArray(ent[k])) continue;
-      for (const c of ent[k] as unknown[]) {
-        if (!isObj(c)) continue;
-        cut(c, 'rawLabel', 200); cut(c, 'reason', 400);
-        if (Array.isArray(c.evidenceSignals)) c.evidenceSignals = strings(c.evidenceSignals.slice(0, 10), 200);
-      }
+      (ent[k] as unknown[]).forEach((c, i) => {
+        if (!isObj(c)) return;
+        const at = `entities.${k}[${i}]`;
+        cut(c, 'rawLabel', 200, at); cut(c, 'reason', 400, at);
+        if (Array.isArray(c.evidenceSignals)) c.evidenceSignals = strings(c.evidenceSignals, 10, 200, `${at}.evidenceSignals`);
+      });
       // Au-delà de la borne : lot suivant (validé à l'unité), jamais coupé.
       const max = T1_MAX_ENTITIES[k];
       const liste = ent[k] as unknown[];
       if (liste.length > max) {
         const schema = T1AnalyzeDocumentOutput.shape.entities.unwrap().shape[k].unwrap().element;
-        for (const c of liste.slice(max)) {
+        liste.slice(max).forEach((c, j) => {
           const r = schema.safeParse(c);
           if (r.success) { (overflow.entities[k] as unknown[]).push(r.data); report.overflowEntities!++; }
-        }
+          // Lot 49B (DEV-03) : entité invalide au-delà de la borne — conservée, jamais perdue.
+          else dropped.push({ reason: 'INVALID_SCHEMA', path: `entities.${k}[${max + j}]`, payload: c });
+        });
         ent[k] = liste.slice(0, max);
       }
     }
@@ -225,7 +289,7 @@ function prepare(brut: unknown): unknown {
     report.transcriptionTailChars = overflow.transcriptionTail.length;
   }
   if (isObj(out.visual)) {
-    cut(out.visual, 'summary', 2000);
+    cut(out.visual, 'summary', 2000, 'visual');
     if (Array.isArray(out.visual.observations)) {
       const obs = (out.visual.observations as unknown[]).filter((o, i) => {
         const ok = isObj(o) && !vide(o.description);
@@ -237,7 +301,7 @@ function prepare(brut: unknown): unknown {
       }) as Obj[];
       const schema = T1AnalyzeDocumentOutput.shape.visual.unwrap().shape.observations.unwrap().element;
       obs.forEach((o, i) => {
-        cut(o, 'subject', 120);
+        cut(o, 'subject', 120, `visual.observations[${i}]`);
         if (typeof o.description === 'string' && o.description.length > MAX_OBSERVATION_DESCRIPTION) {
           if (i < T1_MAX_OBSERVATIONS) {
             overflow.fullDescriptions[i] = o.description;
@@ -328,13 +392,16 @@ function prepare(brut: unknown): unknown {
           const idx = indexTables.get(e.table.index);
           if (idx === undefined) delete e.table; else e.table.index = idx;
         }
-        for (const [k, max] of [['rawKey', 200], ['label', 200], ['subject', 200], ['attribute', 200], ['canonicalKey', 120]] as const) cut(f, k, max);
+        // Lot 49B : preuve du fait jointe aux originaux (rattachement aux unités).
+        hint = isObj(e) ? { excerpt: typeof e.excerpt === 'string' ? e.excerpt : null, page: typeof e.page === 'number' ? e.page : null } : null;
+        for (const [k, max] of [['rawKey', 200], ['label', 200], ['subject', 200], ['attribute', 200], ['canonicalKey', 120]] as const) cut(f, k, max, `facts[${i}]`);
         if (isObj(f.target)) {
-          cut(f.target, 'rawLabel', 200);
-          if (Array.isArray(f.target.evidenceSignals)) f.target.evidenceSignals = strings(f.target.evidenceSignals.slice(0, 10), 200);
+          cut(f.target, 'rawLabel', 200, `facts[${i}].target`);
+          if (Array.isArray(f.target.evidenceSignals)) f.target.evidenceSignals = strings(f.target.evidenceSignals, 10, 200, `facts[${i}].target.evidenceSignals`);
         }
-        if (isObj(f.visualEvidence)) cut(f.visualEvidence, 'description', 500);
-        if (isObj(f.recurrence)) cut(f.recurrence, 'excerpt', 500);
+        if (isObj(f.visualEvidence)) cut(f.visualEvidence, 'description', 500, `facts[${i}].visualEvidence`);
+        if (isObj(f.recurrence)) cut(f.recurrence, 'excerpt', 500, `facts[${i}].recurrence`);
+        hint = null;
       }
       const r = t1Fact.safeParse(f);
       if (!r.success) {
@@ -365,6 +432,7 @@ function prepare(brut: unknown): unknown {
     report.overflow = overflow;
   }
   if (dropped.length) report.dropped = dropped;
+  if (originals.length) report.originals = originals;
   out._normalisation = report;
   return out;
 }
@@ -470,6 +538,8 @@ export const T1AnalyzeDocumentTolerantOutput = z.preprocess(
       // Lot 40 (additif) : candidats Opération écartés / au-delà de 20 / preuves recalées.
       droppedCandidates: z.number().optional(), truncatedCandidates: z.number().optional(),
       unresolvedCandidateEvidence: z.number().optional(),
+      // Lot 49B (additif) : originaux des valeurs réduites ou retirées.
+      originals: z.array(z.any()).optional(), removedValues: z.number().optional(),
     }).optional(),
   }),
 );

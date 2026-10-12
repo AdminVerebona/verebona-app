@@ -34,7 +34,7 @@ const { validate, activate, rollback } = await import('../config-version.service
 
 const version = (over: Record<string, unknown> = {}) => ({
   id: 9, status: 'TO_TEST', environment: 'local', isStale: false, label: 'm', activatedAt: new Date(),
-  entries: (['T1', 'T2', 'T3', 'T4', 'T5', 'T6'] as const).map((t) => ({ ...emptyTreatmentConfig(t), promptArchitecture: 'master' })),
+  entries: (['T1', 'T2', 'T3', 'T4', 'T6'] as const).map((t) => ({ ...emptyTreatmentConfig(t), promptArchitecture: 'master' })),
   ...over,
 });
 

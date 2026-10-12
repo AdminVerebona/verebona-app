@@ -1,8 +1,9 @@
 /**
  * GET /api/admin/ai/config-versions/[id] — CDC BO IA SCR-02 à SCR-06.
  *
- * Rend la version et ses cinq traitements. C'est ce que chargent les onglets
- * T1 à T5, qui pointent tous vers la même version globale (WF-01, GEN-002).
+ * Rend la version et ses cinq traitements (T1, T2, T3, T4, T6), qui pointent
+ * tous vers la même version globale (WF-01, GEN-002). Lot 49 : une version
+ * historique contenant T5 reste lisible (`retiredTreatments`, ligne ignorée).
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { getVersion } from '@/services/ai/config/config-version.repository';

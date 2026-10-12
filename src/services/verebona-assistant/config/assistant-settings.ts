@@ -109,7 +109,7 @@ export const ASSISTANT_SETTINGS: readonly AssistantSettingDef[] = [
   int('history_days', 'VEREBONA_ASSISTANT_HISTORY_DAYS', 'historique', 'Conservation de l’historique (jours)',
     'Durée de conservation des conversations (cadrage produit : 90 jours).', 90, 7, 365),
   // Lot 22 — plafond mensuel de coût IA par compte, TOUS traitements (hors
-  // administration T5), appliqué par la passerelle (`account-cost-cap`). Un
+  // usage technique AI_GOVERNANCE), appliqué par la passerelle (`account-cost-cap`). Un
   // réglage par offre ; 0 = sans plafond (défaut : comportement inchangé tant
   // que le PO n'a pas fixé les montants). Dérogation par compte : Suivi IA >
   // compte. Les clés sont aussi celles de `COST_CAP_SETTING_KEYS`.

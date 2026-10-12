@@ -4,7 +4,7 @@
  *
  * Le sous-ensemble critique = les cas dont le contexte permet de construire
  * les variables RÉELLES du master, avec les MÊMES constructeurs que la
- * production (variables T1, T2, T3, T4, T5, T6). Le modèle est appelé par la
+ * production (variables T1, T2, T3, T4, T6). Le modèle est appelé par la
  * passerelle réelle (texte master de la version EFFECTIVE, modèles,
  * validation discriminée, trace, coût imputé au compte technique fourni),
  * puis la sortie passe les contrôles serveur de la branche (`evaluators.ts`).
@@ -139,30 +139,11 @@ const BUILDERS: Record<string, Builder> = {
     const ev = { ...x.evidence, documentDate: x.evidence.documentDate ? new Date(String(x.evidence.documentDate)) : null } as never;
     return verifyCompletionVariables(x.item, ev, decideCompletion(x.item, ev));
   },
-  async t5_analyze(c) { return t5Variables(c); },
-  async t5_modify(c) { return t5Variables(c); },
   async t6_formulate(c) {
     const input = ctx<{ input?: unknown }>(c).input;
     return input ? { INPUT_JSON: JSON.stringify(input) } : null;
   },
 };
-
-async function t5Variables(c: MasterCorpusCase): Promise<Vars | null> {
-  const x = ctx<{ instruction?: string; masterTargets?: string[] }>(c);
-  if (!x.instruction) return null;
-  const { targetTexts, formatCurrentPrompts } = await import('../prompt-control.service');
-  const { emptyTreatmentConfig } = await import('../../config/config-types');
-  const { T5_TARGETS } = await import('../../config/treatments');
-  const version = {
-    entries: T5_TARGETS.map((t) => ({
-      ...emptyTreatmentConfig(t), prompt: `Préambule ${t} (corpus).`,
-      // Lot 16b : tous les traitements en master ; `masterTargets` du cas ne
-      // distingue plus que les lignes dont le texte master est exposé.
-      promptArchitecture: 'master' as const,
-    })),
-  } as never;
-  return { CURRENT_MASTER_PROMPTS: formatCurrentPrompts(version, await targetTexts(version)), INSTRUCTION: x.instruction };
-}
 
 /** Variables réelles d'un cas, ou null s'il n'appartient pas au sous-ensemble critique. */
 export async function liveVariablesFor(c: MasterCorpusCase): Promise<Vars | null> {

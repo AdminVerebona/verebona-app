@@ -63,6 +63,9 @@
  *                                                                  (lot 44, C14.3)
  *   operations-quality-check        chaque jour à 6 h 50          lecture seule (READ ONLY) ; alerte de
  *                                                                 Supervision par empreinte (lot 47A, C26.2)
+ *   cross-account-relations-check   chaque jour à 7 h 05          lecture seule (READ ONLY) ; alerte de
+ *                                                                 Supervision par type (lot 49, SEC-P0) ;
+ *                                                                 jamais de correction
  *
  * Créneaux fixes hors de la fenêtre de sauvegarde de nuit (1 h – 5 h) et de
  * la plage ambiguë des changements d'heure (2 h – 3 h).
@@ -575,6 +578,26 @@ export const SCHEDULED_TASKS: readonly ScheduledTaskDef[] = [
       const r = await runOperationsQualityCheck();
       const total = Object.values(r.counts).reduce((a, b) => a + b, 0);
       return { note: `${total} anomalie(s) dure(s) — ${JSON.stringify(r.counts)} ; ${r.reported} signalée(s), ${r.resolved} résolue(s)`.slice(0, 1500) };
+    },
+  },
+  {
+    // Lot 49 (ticket SEC-P0 §5, AC08) : relations intercomptes déjà présentes
+    // en base (documents, fournisseurs, événements, agenda, preuves, jobs IA
+    // en attente). Lecture seule ; chaque type non nul ouvre ou consolide une
+    // anomalie de Supervision (nombre, comptes, identifiants), résolue d'elle-
+    // même à 0. JAMAIS de correction ni de suppression automatique : rapport
+    // complet dans BO › Exploitation › Relations intercomptes.
+    code: 'cross-account-relations-check',
+    label: 'Sécurité : contrôle des relations intercomptes (alerte de Supervision)',
+    schedule: { kind: 'daily', at: [7, 5], graceMs: 6 * HOUR },
+    timeoutMs: 15 * MIN,
+    run: async () => {
+      const { runCrossAccountCheck } = await import('@/services/security/cross-account/alerts');
+      const r = await runCrossAccountCheck();
+      const erreurs = Object.keys(r.errors);
+      const note = `${r.total} relation(s) intercomptes — ${JSON.stringify(Object.fromEntries(Object.entries(r.counts).filter(([, n]) => n > 0)))} ; `
+        + `${r.reported} signalée(s), ${r.resolved} résolue(s)${erreurs.length ? ` ; contrôles non exécutés : ${erreurs.join(', ')}` : ''}`;
+      return { note: note.slice(0, 1500), ...(erreurs.length === Object.keys(r.counts).length && erreurs.length > 0 ? { error: note.slice(0, 500) } : {}) };
     },
   },
 ];

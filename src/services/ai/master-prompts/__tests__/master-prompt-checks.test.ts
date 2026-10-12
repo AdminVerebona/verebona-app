@@ -70,10 +70,8 @@ describe('AC09 — contrôles techniques à l’activation', () => {
     expect(codes('T6', `${fichier('T6')}${' '.repeat(MASTER_PROMPT_MAX_CHARS)}`)).toEqual(['TOO_LONG']);
   });
 
-  it('T5 n’est jamais vérifié comme prompt administrable (pas de master déclaré côté BO)', () => {
-    // T5 a un master au registre, mais le BO ne l'administre pas (service) ;
-    // le contrôle lui-même reste neutre : il ne dépend d'aucun autre prompt.
-    expect(checkMasterPromptContent('T5', 'x').ok).toBe(false);
+  it('T12-AC04 — T5 (supprimé au lot 49) n’est jamais vérifié comme prompt administrable : aucun master déclaré', () => {
+    expect(checkMasterPromptContent('T5' as never, 'x').ok).toBe(false);
   });
 
   it('AC04 / AC05 — aucun contrôle ne porte sur le corpus : un texte valide passe sans aucune exécution', () => {

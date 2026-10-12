@@ -68,9 +68,11 @@ describe('AC36A-1 — ordre unique, desktop et mobile', () => {
     expect([...order].sort((a, b) => a - b)).toEqual(order);
   });
 
-  it('AC36A-1 — plus de paire côte à côte ni d’ordre qui change selon la largeur ; colonne centrée de 960 px', () => {
+  it('AC36A-1 / L49A-T4 — plus de paire côte à côte ni d’ordre qui change selon la largeur ; colonne centrée, largeur des autres pages', () => {
     expect(page).not.toMatch(/@container|@min-\[1040px\]|order-1|order-2|grid-cols-2/);
-    expect(page).toContain('max-w-[960px]');
+    // Lot 49A : plus de limite à 960 px ; gouttières du <main> des autres pages (p-4 md:p-6 lg:p-8).
+    expect(page).not.toContain('max-w-[960px]');
+    expect(page).toMatch(/const HOME_COLUMN = '[^']*max-w-\[1440px\][^']*px-4[^']*md:px-6[^']*lg:px-8/);
     expect(page).toContain('mx-auto');
     // Place pour la barre de navigation du bas et le « + » (mobile).
     expect(page).toContain('pb-36');
@@ -157,10 +159,10 @@ describe('AC36A-3 — carrousels', () => {
     expect(src).toContain("prefers-reduced-motion: reduce");
   });
 
-  it('AC36A-3 — Documents récents : 3 visibles sur mobile, 4 sur desktop, nom puis bien · date', () => {
-    const s = renderToStaticMarkup(h(RecentDocuments, { docs: [doc(1), doc(2), doc(3), doc(4)], onUpload: noop }));
+  it('AC36A-3 / L49A-T4 — Documents récents : 3 visibles sur mobile, 4 sur desktop, 6 sur très grand écran, nom puis bien · date', () => {
+    const s = renderToStaticMarkup(h(RecentDocuments, { docs: [doc(1), doc(2), doc(3), doc(4), doc(5), doc(6), doc(7)], onUpload: noop }));
     expect(s).toMatch(/<ul aria-label="Documents récents" tabindex="0"/);
-    expect(s.match(/w-\[calc\(\(100%-20px\)\/3\)\] flex-shrink-0 snap-start md:w-\[calc\(\(100%-36px\)\/4\)\]/g)).toHaveLength(4);
+    expect(s.match(/w-\[calc\(\(100%-20px\)\/3\)\] flex-shrink-0 snap-start md:w-\[calc\(\(100%-36px\)\/4\)\] 2xl:w-\[calc\(\(100%-60px\)\/6\)\]/g)).toHaveLength(6);
     expect(s.indexOf('Document 1')).toBeLessThan(s.indexOf('Polo · 31/07/2026'));
   });
 });

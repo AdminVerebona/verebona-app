@@ -62,6 +62,33 @@ export async function sourceLayerReady(): Promise<boolean> {
 export function __resetSourceLayerReadyForTests(ready: boolean | null = null): void {
   etat = ready === null ? null : { ready, checkedAt: Date.now() };
   signale = false;
+  diag = null;
+}
+
+let diag: { ready: boolean; checkedAt: number } | null = null;
+
+/**
+ * Lot 49B — colonnes 0329 (état de réparation, vérification de la source)
+ * présentes ? Absentes : la couche A est écrite comme avant, sans
+ * diagnostics (jamais d'échec d'écriture). Ne lève jamais.
+ */
+export async function layerDiagnosticsReady(): Promise<boolean> {
+  if (diag && (diag.ready || Date.now() - diag.checkedAt < RECONTROLE_MS)) return diag.ready;
+  let ready = false;
+  try {
+    const { pgClient } = await import('@/db');
+    const r = (await pgClient.unsafe(
+      `SELECT count(*)::int AS n FROM information_schema.columns
+        WHERE table_schema = current_schema()
+          AND ((table_name = 'document_source_units' AND column_name = 'repair_state')
+            OR (table_name = 'document_extraction_coverage' AND column_name IN ('source_verification', 'verification', 'last_retry_at', 'last_retry_result')))`,
+    )) as unknown as Array<{ n: number }>;
+    ready = Number(r[0]?.n ?? 0) === 5;
+  } catch {
+    ready = false;
+  }
+  diag = { ready, checkedAt: Date.now() };
+  return ready;
 }
 
 /** Reprises automatiques d'un document INCOMPLETE_RETRYABLE (`T1_COMPLETENESS_MAX_RETRIES`, 2 par défaut, 0 à 5). */
@@ -85,6 +112,8 @@ export async function writeSourceLayer(tx: Tx, p: {
   retryAttempts?: number;
   nextRetryAt?: Date | null;
   lastError?: string | null;
+  /** Lot 49B : résultat de la reprise automatique en cours (BO « dernière reprise »). */
+  retryResult?: string | null;
 }): Promise<void> {
   const { layer } = p;
   let retryAttempts = p.retryAttempts ?? 0;
@@ -100,24 +129,29 @@ export async function writeSourceLayer(tx: Tx, p: {
       layer.retryable = false;
     }
   }
+  // Lot 49B : état de réparation et diagnostics (colonnes 0329) si présents.
+  const diagnostics = await layerDiagnosticsReady();
   await tx.unsafe(`DELETE FROM document_source_units WHERE file_id = $1`, [p.fileId] as never[]);
   for (let i = 0; i < layer.units.length; i += PAQUET) {
     const lot = layer.units.slice(i, i + PAQUET).map((u) => ({
       id: u.sourceUnitId, kind: u.kind, page: u.page, ordinal: u.ordinal, parent: u.parentUnitId,
       content: u.text, label: u.label ?? null, val: u.value ?? null, payload: u.payload ?? {}, location: u.location ?? {},
       origin: u.origin, salient: u.salient, status: u.status, reason: u.reason, facts: u.factCount, attempts: u.repairAttempts,
+      repair: u.repairState ?? null,
     }));
     await tx.unsafe(
       `INSERT INTO document_source_units (
          account_id, file_id, extraction_id, source_unit_id, kind, page, ordinal, parent_unit_id, content_text, label, value_text,
          payload, location, origin, salient, coverage_status, coverage_reason, fact_count, repair_attempts, layer_version
+         ${diagnostics ? ', repair_state' : ''}
        )
        SELECT $1, $2, $3, u.id, u.kind, u.page, u.ordinal, u.parent, u.content, u.label, u.val,
               coalesce(u.payload, '{}'::jsonb), coalesce(u.location, '{}'::jsonb), u.origin, coalesce(u.salient, false),
               u.status, u.reason, coalesce(u.facts, 0), coalesce(u.attempts, 0), $5
+              ${diagnostics ? ', u.repair' : ''}
          FROM jsonb_to_recordset($4::jsonb) AS u(
            id text, kind text, page int, ordinal int, parent text, content text, label text, val text,
-           payload jsonb, location jsonb, origin text, salient boolean, status text, reason text, facts int, attempts int
+           payload jsonb, location jsonb, origin text, salient boolean, status text, reason text, facts int, attempts int, repair text
          )
        ON CONFLICT (file_id, source_unit_id) DO NOTHING`,
       [p.accountId, p.fileId, p.extractionId, json(lot), layer.layerVersion] as never[],
@@ -144,6 +178,7 @@ export async function writeSourceLayer(tx: Tx, p: {
     );
   }
   const r = layer.report;
+  const verif = r.diagnostics ?? null;
   await tx.unsafe(
     `INSERT INTO document_extraction_coverage (
        file_id, account_id, extraction_id, total_units, covered_units, non_informational_units, unresolved_units,
@@ -171,6 +206,17 @@ export async function writeSourceLayer(tx: Tx, p: {
       p.lastError ?? null,
     ] as never[],
   );
+  if (diagnostics) {
+    // Lot 49B : vérification de la source et diagnostics (compteurs, numéros de page — jamais de contenu).
+    await tx.unsafe(
+      `UPDATE document_extraction_coverage
+          SET source_verification = $2, verification = $3::jsonb,
+              last_retry_at = CASE WHEN $4::text IS NULL THEN last_retry_at ELSE NOW() END,
+              last_retry_result = coalesce($4, last_retry_result)
+        WHERE file_id = $1`,
+      [p.fileId, verif?.sourceVerification ?? null, json(verif), p.retryResult ?? null] as never[],
+    );
+  }
 }
 
 // ── Lecture ────────────────────────────────────────────────────────────────
@@ -194,6 +240,8 @@ export interface StoredSourceUnit {
   coverageReason: string | null;
   factCount: number;
   repairAttempts: number;
+  /** Lot 49B : état de réparation (null : aucune, ou colonne 0329 absente). */
+  repairState?: string | null;
   /** Faits actifs rattachés à l'unité (provenance inverse), si demandés. */
   facts?: Array<{ id: number; factKey: string; canonicalKey: string | null; valueText: string | null; confidence: string }>;
 }
@@ -203,6 +251,8 @@ const UNIT_COLUMNS = `
   u.parent_unit_id AS "parentUnitId", u.content_text AS text, u.label, u.value_text AS value, u.payload, u.location,
   u.origin, u.salient, u.coverage_status AS "coverageStatus", u.coverage_reason AS "coverageReason",
   u.fact_count AS "factCount", u.repair_attempts AS "repairAttempts"`;
+/** Lot 49B : colonne 0329 lue si présente (`to_jsonb` : jamais d'erreur si absente). */
+const REPAIR_STATE_COLUMN = `, to_jsonb(u) ->> 'repair_state' AS "repairState"`;
 
 export interface LoadSourceUnitsOptions {
   /** Contrôle d'appartenance (recommandé hors traitement interne). */
@@ -225,7 +275,7 @@ export async function loadDocumentSourceUnits(fileId: number, opts: LoadSourceUn
   if (!(await sourceLayerReady())) return [];
   const { pgClient } = await import('@/db');
   const rows = (await pgClient.unsafe(
-    `SELECT ${UNIT_COLUMNS}
+    `SELECT ${UNIT_COLUMNS}${REPAIR_STATE_COLUMN}
        FROM document_source_units u
       WHERE u.file_id = $1
         AND ($2::int IS NULL OR u.account_id = $2)
@@ -267,6 +317,11 @@ export interface StoredCoverage extends T1CompletenessReport {
   nextRetryAt: string | null;
   lastError: string | null;
   updatedAt: string;
+  /** Lot 49B (0329) : vérification de la source, diagnostics, dernière reprise. */
+  sourceVerification?: string | null;
+  verification?: Record<string, unknown> | null;
+  lastRetryAt?: string | null;
+  lastRetryResult?: string | null;
 }
 
 const COVERAGE_COLUMNS = `
@@ -277,7 +332,9 @@ const COVERAGE_COLUMNS = `
   c.batched_sections_count AS "batchedSectionsCount", c.chunk_count AS "chunkCount", c.repair_pass_count AS "repairPassCount",
   c.coverage_ratio::float8 AS "coverageRatio", c.quality_state AS "qualityState", c.anomalies, c.origin,
   c.layer_version AS "layerVersion", c.retry_attempts AS "retryAttempts", c.next_retry_at AS "nextRetryAt",
-  c.last_error AS "lastError", c.updated_at AS "updatedAt"`;
+  c.last_error AS "lastError", c.updated_at AS "updatedAt",
+  to_jsonb(c) ->> 'source_verification' AS "sourceVerification", to_jsonb(c) -> 'verification' AS verification,
+  to_jsonb(c) ->> 'last_retry_at' AS "lastRetryAt", to_jsonb(c) ->> 'last_retry_result' AS "lastRetryResult"`;
 
 /** Rapport de complétude courant d'un document (null : aucune couche A). */
 export async function loadDocumentCoverage(fileId: number, accountId?: number): Promise<StoredCoverage | null> {

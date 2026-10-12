@@ -46,6 +46,9 @@ const valide = (s: AgendaSourceRef) => Number.isInteger(s.fileId) && s.fileId > 
 /**
  * Inscrit les documents d'un élément (voir l'en-tête). `client` : la
  * transaction de l'écriture de l'élément. Idempotent.
+ *
+ * Lot 49 (SEC-07) : chaque document doit exister et appartenir au compte de
+ * l'élément — sinon refus entier (`AgendaOwnershipError`), rien n'est écrit.
  */
 export async function recordAgendaItemSources(
   client: any,
@@ -55,6 +58,15 @@ export async function recordAgendaItemSources(
   const liste = sources.filter(valide);
   if (liste.length === 0) return;
   const fichiers = [...new Set(liste.map((s) => s.fileId))];
+  const hors = (await client.execute(sql`
+    SELECT x.id FROM unnest(${`{${fichiers.join(',')}}`}::int[]) AS x(id)
+      LEFT JOIN agenda_items i ON i.id = ${agendaItemId}
+      LEFT JOIN asset_files f ON f.id = x.id
+     WHERE i.id IS NULL OR f.id IS NULL OR f.account_id IS DISTINCT FROM i.account_id`)) as unknown as unknown[];
+  if (hors.length > 0) {
+    const { AgendaOwnershipError } = await import('./write-agenda-item');
+    throw new AgendaOwnershipError();
+  }
   await client.insert(agendaFileLinks)
     .values(fichiers.map((assetFileId) => ({ agendaItemId, assetFileId })))
     .onConflictDoNothing();

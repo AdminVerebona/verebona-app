@@ -37,7 +37,9 @@ import { getAiEnvironment, type AiEnvironment } from './environment';
 import { ConfigOperationRefused } from './config-version.service';
 import { diffVersions, type ConfigDiff } from './config-diff.service';
 import { getVersion, getActiveVersion, promptArchitectureInsert } from './config-version.repository';
-import { normalizeTreatmentConfig, promptArchitectureOf, masterPromptOf, type TreatmentConfig } from './config-types';
+import { promptArchitectureOf, masterPromptOf, type TreatmentConfig } from './config-types';
+import { TREATMENTS, isRetiredTreatment, isTreatment, type Treatment } from './treatments';
+import { defaultT6Config } from './t6-defaults';
 
 type Row = Record<string, unknown>;
 
@@ -48,6 +50,57 @@ export interface PackagePayload {
   visibleNumber: number;
   label: string | null;
   entries: TreatmentConfig[];
+}
+
+/**
+ * Package TEL QUE REÇU : un package historique peut porter une ligne d'un
+ * traitement retiré (T5, lot 49) — d'où un code de traitement élargi.
+ */
+export type IncomingPackagePayload = Omit<PackagePayload, 'entries'> & {
+  entries: Array<Omit<TreatmentConfig, 'treatment'> & { treatment: string }>;
+};
+
+/**
+ * Compatibilité des packages — lot 49 (ticket 12, T5-DEL-05).
+ *
+ * 1. INTÉGRITÉ du package ORIGINAL, avant toute transformation : format,
+ *    traitements connus (courants ou retirés), aucun doublon, aucun
+ *    traitement courant manquant hors T6 (packages antérieurs à T6).
+ * 2. Transformation de compatibilité : les lignes des traitements RETIRÉS
+ *    (T5) sont écartées — elles ne recréent jamais le traitement ; T6
+ *    absent (package antérieur à T6) reçoit sa configuration par défaut.
+ *
+ * Le package stocké n'est jamais réécrit : son contenu (et donc son
+ * empreinte) reste celui qui a été validé ; seule la version créée à
+ * l'import est à cinq traitements. Pure.
+ */
+export function compatiblePackagePayload(incoming: IncomingPackagePayload): { payload: PackagePayload; ignoredTreatments: string[] } {
+  if (incoming.schemaVersion !== 'ai-config-package-v1') {
+    throw new ConfigOperationRefused('UNKNOWN_SCHEMA', `Format de package inconnu : « ${String(incoming.schemaVersion)} ».`);
+  }
+  const vus = new Set<string>();
+  for (const e of incoming.entries) {
+    const t = String(e.treatment);
+    if (!isTreatment(t) && !isRetiredTreatment(t)) {
+      throw new ConfigOperationRefused('INVALID_PACKAGE', `Traitement inconnu dans le package : « ${t} ».`);
+    }
+    if (vus.has(t)) {
+      throw new ConfigOperationRefused('INVALID_PACKAGE', `Traitement ${t} présent deux fois dans le package.`);
+    }
+    vus.add(t);
+  }
+  const manquants = TREATMENTS.filter((t) => t !== 'T6' && !vus.has(t));
+  if (manquants.length > 0) {
+    throw new ConfigOperationRefused('INVALID_PACKAGE', `Package incomplet : ${manquants.join(', ')} absent(s).`);
+  }
+  const ignoredTreatments = incoming.entries.map((e) => String(e.treatment)).filter((t) => isRetiredTreatment(t));
+  const entries = incoming.entries
+    .filter((e): e is TreatmentConfig => isTreatment(String(e.treatment)))
+    .map((e) => ({ ...e, treatment: e.treatment as Treatment }));
+  if (!entries.some((e) => e.treatment === 'T6')) entries.push(defaultT6Config());
+  // Ordre canonique du référentiel : diff et lecture stables.
+  entries.sort((a, b) => TREATMENTS.indexOf(a.treatment) - TREATMENTS.indexOf(b.treatment));
+  return { payload: { ...incoming, entries }, ignoredTreatments };
 }
 
 export interface ConfigPackage {
@@ -95,11 +148,10 @@ export function buildPayload(
     sourceEnvironment,
     visibleNumber,
     label,
-    entries: entries.map((e) => ({
+    // Lot 49 : jamais de ligne d'un traitement retiré dans un NOUVEAU package.
+    entries: entries.filter((e) => isTreatment(String(e.treatment))).map((e) => ({
       treatment: e.treatment,
-      // Vide pour T5 : un prompt T5 hérité d'une version antérieure ne voyage
-      // pas vers la production (T5-003, E-02).
-      prompt: normalizeTreatmentConfig(e).prompt,
+      prompt: e.prompt,
       primaryModel: e.primaryModel,
       fallback1: e.fallback1,
       fallback2: e.fallback2,
@@ -117,8 +169,8 @@ export function buildPayload(
       // la version — une version validée en préproduction en `master` doit
       // l'être aussi à l'import en production.
       promptArchitecture: promptArchitectureOf(e),
-      // D-03 : texte master distinct du préambule ; vide pour T5.
-      masterPrompt: masterPromptOf(normalizeTreatmentConfig(e)),
+      // D-03 : texte master distinct du préambule.
+      masterPrompt: masterPromptOf(e),
     })),
   };
 }
@@ -236,6 +288,8 @@ export interface ImportResult {
    * sauf conflit réel ». On le rend donc, sans en faire un refus.
    */
   divergence: ConfigDiff | null;
+  /** Lot 49 : traitements retirés écartés du package à l'import (ex. `['T5']`). */
+  ignoredTreatments: string[];
 }
 
 /**
@@ -246,18 +300,14 @@ export interface ImportResult {
  * ferait de la mise en production un effet de bord du déploiement.
  */
 export async function importPackage(
-  payload: PackagePayload,
+  incoming: IncomingPackagePayload,
   uid: string,
   userId: number,
 ): Promise<ImportResult> {
   const environment = getAiEnvironment();
 
-  if (payload.schemaVersion !== 'ai-config-package-v1') {
-    throw new ConfigOperationRefused(
-      'UNKNOWN_SCHEMA',
-      `Format de package inconnu : « ${payload.schemaVersion} ».`,
-    );
-  }
+  // Intégrité du package ORIGINAL puis compatibilité (T5 écarté, T6 par défaut).
+  const { payload, ignoredTreatments } = compatiblePackagePayload(incoming);
 
   // Transaction (VER-021, NFR-005) : la version et ses N lignes arrivent
   // ensemble, ou pas du tout. Sans elle, un échec au milieu laissait une
@@ -309,7 +359,7 @@ export async function importPackage(
       // ramené à `master`). Colonne absente : `master` est la valeur par
       // défaut relue, rien n'est perdu.
       const architecture = promptArchitectureOf(e);
-      const masterPrompt = masterPromptOf(normalizeTreatmentConfig(e));
+      const masterPrompt = masterPromptOf(e);
       const { column } = await promptArchitectureInsert(architecture, masterPrompt, t, e.treatment);
       await t.unsafe(
         `INSERT INTO ai_config_entries (
@@ -318,7 +368,7 @@ export async function importPackage(
            max_output_tokens, guardrails, triggers, cascade, updated_by${column ? ', prompt_architecture, master_prompt' : ''})
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12::jsonb,$13::jsonb,$14${column ? ',$15,$16' : ''})`,
         [
-          versionId, e.treatment, normalizeTreatmentConfig(e).prompt, e.primaryModel, e.fallback1, e.fallback2,
+          versionId, e.treatment, e.prompt, e.primaryModel, e.fallback1, e.fallback2,
           e.reasoningPrimary, e.reasoningFallback1, e.reasoningFallback2,
           e.maxOutputTokens, JSON.stringify(e.guardrails), JSON.stringify(e.triggers),
           e.cascade == null ? null : JSON.stringify(e.cascade), userId,
@@ -338,7 +388,7 @@ export async function importPackage(
   });
 
   // Hors transaction : lecture seule, elle n'a pas à prolonger les verrous.
-  return { ...r, divergence: await divergenceAgainstActive(payload, environment) };
+  return { ...r, divergence: await divergenceAgainstActive(payload, environment), ignoredTreatments };
 }
 
 async function divergenceAgainstActive(

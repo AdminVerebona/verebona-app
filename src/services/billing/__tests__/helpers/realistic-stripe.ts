@@ -9,7 +9,12 @@
  *   - produits avec ou sans métadonnées, recherche par métadonnée
  *     (`metadata['verebona_plan']:'…' AND active:'true'`), création permise ;
  *   - clé RESTREINTE simulée (écriture refusée : StripePermissionError 403) ;
- *   - pannes ponctuelles injectables.
+ *   - pannes ponctuelles injectables ;
+ *   - lot 49A : PORTAIL réaliste — Stripe refuse deux prix de même
+ *     périodicité sous un même produit (« For each product, its price must
+ *     have unique billing intervals. », erreur réelle de la préprod), ainsi
+ *     qu'un prix inconnu ou d'un autre produit ; chaque écriture est
+ *     journalisée (`portalWrites`) ; pannes injectables (`portalFail`).
  *
  * Comptes types : `seedAccount` (ancien seed : clés `verebona_<offre>_<période>`,
  * métadonnée produit `verebona_<offre>`, prix `<offre>`, taxes `unspecified`),
@@ -27,7 +32,17 @@ export interface RealisticOptions {
   denyWrites?: { prices?: boolean; products?: boolean };
   /** Pannes ponctuelles (renvoyer vrai pour échouer). */
   failOnce?: { productsCreate?: boolean; portal?: boolean };
+  /**
+   * Lot 49A : panne des écritures de portail (n = numéro d'écriture, 1-based).
+   * `transient` : StripeConnectionError ; sinon StripeInvalidRequestError.
+   */
+  portalFail?: (n: number, products: Array<{ product: string; prices: string[] }>) => 'transient' | 'invalid' | 'intervals' | null;
+  /** Identifiant du compte renvoyé par `accounts.retrieve` (défaut `acct_preprod_test`). */
+  accountId?: string;
 }
+
+/** Message EXACT renvoyé par Stripe lors de l'incident préprod (lot 49A). */
+export const STRIPE_UNIQUE_INTERVALS_ERROR = 'For each product, its price must have unique billing intervals.';
 
 export interface RealisticStripe {
   prices: Map<string, Stripe.Price>;
@@ -35,6 +50,9 @@ export interface RealisticStripe {
   calls: string[];
   opts: RealisticOptions;
   client: Stripe;
+  portal: Map<string, Stripe.BillingPortal.Configuration>;
+  /** Écritures de portail demandées (acceptées ou refusées). */
+  portalWrites: Array<{ op: 'create' | 'update'; id: string | null; products: Array<{ product: string; prices: string[] }>; accepted: boolean; error?: string }>;
 }
 
 const permission = () => Object.assign(new Error('The provided key does not have the required permissions'), { type: 'StripePermissionError', statusCode: 403, rawType: 'permission_error' });
@@ -64,12 +82,38 @@ export function realisticStripe(initialPrices: Stripe.Price[], initialProducts: 
   const calls: string[] = [];
   const idem = new Map<string, unknown>();
   const portal = new Map<string, Stripe.BillingPortal.Configuration>();
+  const portalWrites: RealisticStripe['portalWrites'] = [];
   let n = 0;
+  /** Règles Stripe du portail : prix existants, du bon produit, une périodicité par produit. */
+  const checkPortal = (op: 'create' | 'update', id: string | null, features: Stripe.BillingPortal.ConfigurationCreateParams.Features | undefined) => {
+    const products = ((features?.subscription_update as { products?: Array<{ product: string; prices: string[] }> } | undefined)?.products ?? [])
+      .map((p) => ({ product: p.product, prices: [...p.prices] }));
+    const injected = opts.portalFail?.(portalWrites.length + 1, products) ?? null;
+    let error: Error | null = null;
+    if (injected === 'transient') error = Object.assign(new Error('Stripe down'), { type: 'StripeConnectionError' });
+    else if (injected === 'invalid') error = invalid('Invalid portal configuration');
+    else if (injected === 'intervals') error = invalid(STRIPE_UNIQUE_INTERVALS_ERROR);
+    for (const p of error ? [] : products) {
+      const intervals = new Set<string>();
+      for (const priceId of p.prices) {
+        const pr = prices.get(priceId);
+        if (!pr) { error = invalid(`No such price: '${priceId}'`); break; }
+        if (pr.product !== p.product) { error = invalid(`The price ${priceId} does not belong to product ${p.product}.`); break; }
+        const iv = `${pr.recurring?.interval}:${pr.recurring?.interval_count ?? 1}`;
+        if (intervals.has(iv)) { error = invalid(STRIPE_UNIQUE_INTERVALS_ERROR); break; }
+        intervals.add(iv);
+      }
+      if (error) break;
+    }
+    portalWrites.push({ op, id, products, accepted: !error, ...(error ? { error: error.message } : {}) });
+    calls.push(`portal.${op}`);
+    if (error) throw error;
+  };
   const expand = (p: Stripe.Price, on: boolean) => (on ? ({ ...p, product: products.get(p.product as string) ?? p.product }) as Stripe.Price : { ...p });
   const holderOf = (key: string, except?: string) => [...prices.values()].find((x) => x.lookup_key === key && x.id !== except);
 
   const client = {
-    accounts: { retrieve: async () => ({ id: 'acct_preprod_test' }) },
+    accounts: { retrieve: async () => ({ id: opts.accountId ?? 'acct_preprod_test' }) },
     prices: {
       list: (params: Stripe.PriceListParams & { expand?: string[] }) => {
         calls.push('prices.list');
@@ -149,20 +193,23 @@ export function realisticStripe(initialPrices: Stripe.Price[], initialProducts: 
         retrieve: async (id: string) => portal.get(id) ?? Promise.reject(new Error('missing')),
         create: async (params: Stripe.BillingPortal.ConfigurationCreateParams) => {
           if (opts.failOnce?.portal) { opts.failOnce.portal = false; throw invalid('business_profile requis'); }
-          const c = { id: `bpc_${portal.size + 1}`, active: true, metadata: params.metadata, features: params.features } as unknown as Stripe.BillingPortal.Configuration;
+          checkPortal('create', null, params.features);
+          const c = { id: `bpc_${portal.size + 1}`, active: true, metadata: params.metadata, features: JSON.parse(JSON.stringify(params.features)) } as unknown as Stripe.BillingPortal.Configuration;
           portal.set(c.id, c);
           return c;
         },
         update: async (id: string, params: Stripe.BillingPortal.ConfigurationUpdateParams) => {
-          const c = portal.get(id)!;
-          const next = { ...c, features: { ...c.features, ...params.features } } as unknown as Stripe.BillingPortal.Configuration;
+          const c = portal.get(id);
+          if (!c) throw invalid(`No such configuration: '${id}'`);
+          checkPortal('update', id, params.features as Stripe.BillingPortal.ConfigurationCreateParams.Features);
+          const next = { ...c, features: { ...c.features, ...JSON.parse(JSON.stringify(params.features ?? {})) } } as unknown as Stripe.BillingPortal.Configuration;
           portal.set(id, next);
           return next;
         },
       },
     },
   } as unknown as Stripe;
-  return { prices, products, calls, opts, client };
+  return { prices, products, calls, opts, client, portal, portalWrites };
 }
 
 // ─── Comptes types ───────────────────────────────────────────────────────────

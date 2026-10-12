@@ -24,7 +24,8 @@ function chaine(): unknown {
   });
   return proxy;
 }
-vi.mock('@/db', () => ({ db: { select: () => chaine(), insert: () => chaine(), update: () => chaine() } }));
+// Lot 49 : `execute` — contrôle d'appartenance du bien connu (12, compte 1).
+vi.mock('@/db', () => ({ db: { select: () => chaine(), insert: () => chaine(), update: () => chaine(), execute: async () => [{ kind: 'asset', id: 12, account_id: 1 }] } }));
 
 const input: SourceInput = {
   sourceType: 'file', sourceIds: [1000], accountId: 1, userId: 2,

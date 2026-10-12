@@ -23,7 +23,7 @@ const catalogues = (over: Partial<ConfigCatalogs> = {}): ConfigCatalogs => ({
 
 function valide(over: Partial<TreatmentConfig> = {}): TreatmentConfig {
   return {
-    // Architecture par défaut DU traitement : `master` pour T5/T6 (lot 16b).
+    // Architecture par défaut DU traitement : `master` pour tous (lot 16b).
     ...emptyTreatmentConfig(over.treatment ?? 'T1'),
     prompt: 'un prompt',
     primaryModel: 'm-principal',
@@ -61,29 +61,17 @@ describe('champs obligatoires', () => {
   });
 });
 
-describe('T5 — pas de prompt administrable (T5-003, E-02)', () => {
-  it("n'exige pas de prompt pour T5", () => {
-    expect(bloquants(valide({ treatment: 'T5', prompt: '', triggers: [] }))).toEqual([]);
-  });
-
-  it('signale sans bloquer un prompt T5 hérité d’une ancienne version', () => {
-    const issues = validateTreatment(valide({ treatment: 'T5', prompt: 'ancien texte', triggers: [] }), catalogues());
-    const prompt = issues.find((i) => i.field === 'prompt');
-    expect(prompt?.blocking).toBe(false);
-    expect(prompt?.message).toMatch(/n’est pas utilisé par T5. Il sera retiré lors de l’enregistrement du brouillon/);
-  });
-
+describe('Lot 49 — référentiel à cinq traitements (T5 retiré)', () => {
   it('lot 16b : plus de préambule exigé de T1 à T4 (masters seuls)', () => {
     for (const t of ['T1', 'T2', 'T3', 'T4'] as const) {
       expect(bloquants(valide({ treatment: t, prompt: '', triggers: [] })).some((i) => i.field === 'prompt'), t).toBe(false);
     }
   });
 
-  it('accepte une version complète dont T5 n’a pas de prompt', () => {
+  it('T12-AC05 — une version complète compte exactement T1, T2, T3, T4, T6 (T5 n’est jamais obligatoire)', () => {
+    expect([...TREATMENTS]).toEqual(['T1', 'T2', 'T3', 'T4', 'T6']);
     const entries = TREATMENTS.map((t) => valide({
-      treatment: t,
-      prompt: t === 'T5' ? '' : 'un prompt',
-      triggers: t === 'T2' || t === 'T5' || t === 'T6' ? [] : valide().triggers,
+      treatment: t, prompt: 'un prompt', triggers: t === 'T2' || t === 'T6' ? [] : valide().triggers,
     }));
     expect(validateVersion(entries, catalogues()).valid).toBe(true);
   });
@@ -177,7 +165,7 @@ describe('garde-fous', () => {
 
 describe('déclencheurs', () => {
   it("refuse un déclencheur sur un traitement synchrone", () => {
-    // T2 et T5 sont hors file globale : un déclencheur y serait sans effet, et
+    // T2 et T6 sont hors file globale : un déclencheur y serait sans effet, et
     // le laisser donnerait à croire qu'il agit.
     const issues = bloquants(valide({
       treatment: 'T2', triggers: [{ kind: 'event', code: 'depot', active: true }],
@@ -206,7 +194,7 @@ describe('déclencheurs', () => {
 });
 
 describe('version entière', () => {
-  const cinq = () => TREATMENTS.map((t) => valide({ treatment: t, triggers: t === 'T2' || t === 'T5' || t === 'T6' ? [] : valide().triggers }));
+  const cinq = () => TREATMENTS.map((t) => valide({ treatment: t, triggers: t === 'T2' || t === 'T6' ? [] : valide().triggers }));
 
   it('accepte une version complète et cohérente', () => {
     expect(validateVersion(cinq(), catalogues()).valid).toBe(true);
@@ -299,9 +287,9 @@ describe('modèles retirés du catalogue (SCR-10)', () => {
     expect(unavailableModels([valide()], dispo)).toEqual([]);
   });
 
-  it('parcourt tous les traitements d’une version (T1 à T6)', () => {
+  it('parcourt tous les traitements d’une version (T1, T2, T3, T4, T6 — T5 retiré au lot 49)', () => {
     const entries = TREATMENTS.map((t) => valide({ treatment: t, primaryModel: 'disparu', triggers: [] }));
-    expect(unavailableModels(entries, dispo)).toHaveLength(6);
+    expect(unavailableModels(entries, dispo)).toHaveLength(5);
   });
 
   it('ignore les replis non configurés', () => {
@@ -310,19 +298,15 @@ describe('modèles retirés du catalogue (SCR-10)', () => {
   });
 });
 
-describe('lot 16b — T5 et T6 : master seul', () => {
-  it('une ligne T5 ou T6 en « steps » (valeur brute : ligne ancienne, package) est bloquante', () => {
-    for (const t of ['T5', 'T6'] as const) {
-      const issues = bloquants(valide({ treatment: t, prompt: t === 'T5' ? '' : 'charte', triggers: [], promptArchitecture: 'steps' }));
-      expect(issues.some((i) => i.field === 'promptArchitecture'), t).toBe(true);
-    }
+describe('lot 16b — T6 : master seul', () => {
+  it('une ligne T6 en « steps » (valeur brute : ligne ancienne, package) est bloquante', () => {
+    const issues = bloquants(valide({ treatment: 'T6', prompt: 'charte', triggers: [], promptArchitecture: 'steps' }));
+    expect(issues.some((i) => i.field === 'promptArchitecture')).toBe(true);
   });
 
-  it('leur ligne par défaut est en « master », sans issue bloquante', () => {
-    for (const t of ['T5', 'T6'] as const) {
-      expect(emptyTreatmentConfig(t).promptArchitecture, t).toBe('master');
-      expect(bloquants(valide({ treatment: t, prompt: t === 'T5' ? '' : 'charte', triggers: [] })), t).toEqual([]);
-    }
+  it('sa ligne par défaut est en « master », sans issue bloquante', () => {
+    expect(emptyTreatmentConfig('T6').promptArchitecture).toBe('master');
+    expect(bloquants(valide({ treatment: 'T6', prompt: 'charte', triggers: [] }))).toEqual([]);
     // Lot 16b-3 : T1 puis T3 aussi en master seul — plus aucun `steps`.
     expect(emptyTreatmentConfig('T1').promptArchitecture).toBe('master');
     expect(emptyTreatmentConfig('T3').promptArchitecture).toBe('master');

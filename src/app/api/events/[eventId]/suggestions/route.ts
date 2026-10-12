@@ -3,6 +3,7 @@ import { db } from '@/db';
 import { events, assetFiles, eventDocuments } from '@/db/schema';
 import { eq, and, gt, isNull, notInArray, or } from 'drizzle-orm';
 import { apiError } from '@/lib/api-errors';
+import { SessionService } from '@/lib/session-service';
 
 // Time window for recent documents (in minutes)
 const RECENT_DOCUMENTS_WINDOW_MINUTES = 10;
@@ -17,6 +18,10 @@ const RECENT_DOCUMENTS_WINDOW_MINUTES = 10;
  * 2. That belong to the same asset as the event
  * 3. That are NOT already associated with any event (or at least not this event)
  * 4. Return them as suggestions
+ *
+ * Lot 49 (SEC-02) : compte actif de la session ; l'événement et les
+ * documents suggérés sont ceux du compte (plus de filtre par utilisateur
+ * pris dans l'événement).
  */
 export async function GET(
   request: NextRequest,
@@ -24,6 +29,14 @@ export async function GET(
 ) {
   const params = await context.params;
   try {
+    let session;
+    try {
+      session = await SessionService.getSession(request);
+    } catch (e) {
+      return SessionService.handleSessionError(e);
+    }
+    if (!session?.currentAccountId) return apiError(401, 'UNAUTHORIZED', 'Authentication required');
+    const accountId = session.currentAccountId;
     const eventId = parseInt(params.eventId);
 
     if (isNaN(eventId)) {
@@ -34,15 +47,19 @@ export async function GET(
     const event = await db
       .select()
       .from(events)
-      .where(eq(events.id, eventId))
+      .where(and(eq(events.id, eventId), eq(events.accountId, accountId)))
       .limit(1);
 
     if (event.length === 0) {
       return apiError(404, 'NOT_FOUND', 'Event not found');
     }
 
-      const eventAssetId = event[0].assetId as number;
-      const eventUserId = event[0].userId as number;
+    const eventAssetId = event[0].assetId as number | null;
+    if (!eventAssetId) {
+      return NextResponse.json({
+        eventId, windowMinutes: RECENT_DOCUMENTS_WINDOW_MINUTES, thresholdDate: null, suggestions: [], count: 0,
+      }, { status: 200 });
+    }
 
     // Calculate the time threshold (X minutes ago)
     const windowMs = RECENT_DOCUMENTS_WINDOW_MINUTES * 60 * 1000;
@@ -72,7 +89,7 @@ export async function GET(
       .where(
         and(
           eq(assetFiles.assetId, eventAssetId),
-          eq(assetFiles.userId, eventUserId),
+          eq(assetFiles.accountId, accountId),
           or(eq(assetFiles.uploadStatus, 'COMPLETED'), isNull(assetFiles.uploadStatus)),
           isNull(assetFiles.deletedAt),
           gt(assetFiles.uploadedAt, thresholdDate)
@@ -84,7 +101,7 @@ export async function GET(
       query = query.where(
         and(
           eq(assetFiles.assetId, eventAssetId),
-          eq(assetFiles.userId, eventUserId),
+          eq(assetFiles.accountId, accountId),
           or(eq(assetFiles.uploadStatus, 'COMPLETED'), isNull(assetFiles.uploadStatus)),
           isNull(assetFiles.deletedAt),
           gt(assetFiles.uploadedAt, thresholdDate),
@@ -117,6 +134,6 @@ export async function GET(
 
   } catch (error) {
     console.error('GET /api/events/[eventId]/suggestions error:', error);
-    return apiError(500, 'INTERNAL_ERROR', 'Internal server error: ' + (error as Error).message);
+    return apiError(500, 'INTERNAL_ERROR', 'Internal server error');
   }
 }

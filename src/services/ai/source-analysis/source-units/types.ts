@@ -87,15 +87,28 @@ export interface UnitCoverage {
   factCount: number;
 }
 
+/**
+ * Lot 49B (DEV-02, DEV-04) — état de RÉPARATION d'une unité, distinct de sa
+ * couverture : réussie, tentée sans succès, jamais exécutée faute de budget
+ * (reprise programmée), plafond de tentatives atteint, relecture du fichier
+ * nécessaire (incertitude visuelle : une relecture TEXTUELLE ne la lève pas).
+ */
+export const REPAIR_STATES = ['PENDING', 'ATTEMPTED_FAILED', 'SUCCEEDED', 'EXHAUSTED', 'NEEDS_SOURCE'] as const;
+export type RepairState = (typeof REPAIR_STATES)[number];
+
 export interface CoveredSourceUnit extends SourceUnit, UnitCoverage {
   /** Tentatives de réparation ciblée sur cette unité. */
   repairAttempts: number;
+  /** Lot 49B : état de réparation (null : aucune réparation requise). */
+  repairState?: RepairState | null;
 }
 
 /** Motifs de conservation d'un fait non intégré tel quel (`document_unresolved_facts`). */
 export const UNRESOLVED_REASONS = [
   'INVALID_SCHEMA', 'VALUE_TOO_LONG', 'NO_EVIDENCE', 'UNKNOWN_TARGET', 'UNKNOWN_CANONICAL_KEY',
   'VALUE_NOT_NORMALIZABLE', 'KEY_NOT_APPLICABLE', 'FIELD_PRUNED', 'OBSERVATION_WITHOUT_DESCRIPTION', 'EMPTY_TABLE',
+  // Lot 49B (DEV-03) : original intégral d'une valeur réduite par le contrat (la valeur réduite reste dans la sortie).
+  'VALUE_TRUNCATED',
 ] as const;
 export type UnresolvedReason = (typeof UNRESOLVED_REASONS)[number];
 
@@ -143,10 +156,37 @@ export interface T1CompletenessReport {
   qualityState: T1QualityState;
   /** Anomalies fonctionnelles (FACTS_TRUNCATED, PARTIAL_EXTRACTION, FACT_INVALID_DROPPED, SOURCE_UNIT_FAILED, COVERAGE_INCOMPLETE). */
   anomalies: string[];
+  /** Lot 49B : vérification de la source, réparations, pertes de normalisation (compteurs, jamais de contenu). */
+  diagnostics?: T1CoverageDiagnostics;
+}
+
+/** Lot 49B — diagnostics de couverture réelle (monitoring, BO). */
+export interface T1CoverageDiagnostics {
+  /** Vérification de la source (null : non contrôlée — analyse antérieure ou simulée). */
+  sourceVerification: 'VERIFIED' | 'PARTIAL' | 'UNVERIFIABLE' | 'NOT_APPLICABLE' | 'RECONSTRUCTED' | null;
+  verificationReason: string | null;
+  pagesExpected: number | null;
+  pagesVerified: number;
+  pagesMissing: number[];
+  pagesUnverified: number[];
+  pagesScanned: number[];
+  pagesReread: number[];
+  uncertainUnits: number;
+  pendingRepairUnits: number;
+  exhaustedRepairUnits: number;
+  failedRepairUnits: number;
+  needsSourceUnits: number;
+  /** Réductions comptées par la lecture tolérante / originaux réellement conservés. */
+  truncations: number;
+  originalsPreserved: number;
+  /** Pertes NON compensées (valeur non conservée) — 0 attendu. */
+  normalisationLosses: number;
 }
 
 export const T1_COMPLETENESS_ANOMALIES = [
   'FACTS_TRUNCATED', 'PARTIAL_EXTRACTION', 'FACT_INVALID_DROPPED', 'SOURCE_UNIT_FAILED', 'COVERAGE_INCOMPLETE',
+  // Lot 49B : page ou zone non vérifiée, page manquante, réparation en attente / épuisée, perte de normalisation, source illisible.
+  'PAGE_UNVERIFIED', 'PAGE_MISSING', 'REPAIR_PENDING', 'REPAIR_EXHAUSTED', 'NORMALISATION_LOSS', 'SOURCE_UNREADABLE',
 ] as const;
 
 /** Segment de texte lu : passe principale ou lot de pages (décalage de page). */

@@ -215,7 +215,7 @@ export async function GET(
 
     if (!account) return NextResponse.json({ error: 'Compte introuvable' }, { status: 404 });
 
-    // Lot 22 : plafond IA du mois — cumul (Europe/Paris, hors T5), plafond
+    // Lot 22 : plafond IA du mois — cumul (Europe/Paris, hors usage technique AI_GOVERNANCE), plafond
     // effectif (dérogation du compte, sinon offre) et date de reprise.
     let costCap: unknown = null;
     try {

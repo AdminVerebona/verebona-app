@@ -105,7 +105,7 @@ describe('MOD — exceptions documentées et capacités (§1.C)', () => {
     expect(treatmentRequirements('T1').capabilities).toEqual(['multimodal', 'structured_output']);
     expect(treatmentRequirements('T2').capabilities).toEqual(['multimodal', 'structured_output']);
     expect(treatmentRequirements('T3').capabilities).toEqual(['structured_output']);
-    expect(treatmentRequirements('T5')).toEqual({ masterPromptCode: 't5_master_v1', capabilities: ['structured_output'] });
+    expect(treatmentRequirements('T4')).toEqual({ masterPromptCode: 't4_master_v1', capabilities: ['structured_output'] });
     expect(noms('T1')).not.toContain('gemini-texte-seul');
     expect(motifs('T1', 'gemini-texte-seul')).toEqual(['CAPABILITY_MISSING']);
     expect(noms('T3')).toContain('gemini-texte-seul');
@@ -248,7 +248,7 @@ describe('PRO — T2 : éligibilité par les caractéristiques réelles, jamais 
     expect(motifs('T2', 'gemini-9-pro-old')).toEqual(['DEPRECATED']);
     const reel = ctx({ declared: DECLARED_MODELS, catalog: { refreshedAt: '2026-10-07', models: [{ model: 'gemini-2.5-pro', available: true, supportsGeneration: true }] }, operational: new Map() });
     expect(motifs('T2', 'gemini-2.5-pro', reel)).toEqual(['DEPRECATED']);
-    expect(motifs('T5', 'gemini-2.5-pro', reel)).toEqual(['DEPRECATED']);
+    expect(motifs('T4', 'gemini-2.5-pro', reel)).toEqual(['DEPRECATED']);
   });
   it('PRO-11 (lot 35B) — Pro preview : éligible dès que le reste est satisfait (plus d’autorisation preview)', () => {
     expect(motifs('T2', 'gemini-9-pro-preview')).toEqual([]);

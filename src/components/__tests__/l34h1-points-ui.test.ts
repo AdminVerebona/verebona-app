@@ -85,10 +85,12 @@ describe('point 1 — Documents récents mobile en vignettes', () => {
     expect(mobile).toContain('En analyse');
   });
 
-  it('AC1-4 — bureau (lot 36) : même carrousel, 4 vignettes sur la largeur de la carte, 4 au plus', () => {
-    const html = renderToStaticMarkup(h(RecentDocuments, { onUpload: noop, docs: [doc(1), doc(2), doc(3), doc(4), doc(5)] }));
+  it('AC1-4 — bureau (lot 36) : même carrousel, 4 vignettes sur la largeur de la carte (lot 49A : 6 au plus, 6 visibles sur très grand écran)', () => {
+    const html = renderToStaticMarkup(h(RecentDocuments, { onUpload: noop, docs: [doc(1), doc(2), doc(3), doc(4), doc(5), doc(6), doc(7)] }));
     expect(html).toContain('md:w-[calc((100%-36px)/4)]');
-    expect(html).not.toContain('Document 5');
+    expect(html).toContain('2xl:w-[calc((100%-60px)/6)]');
+    expect(html).toContain('Document 6');
+    expect(html).not.toContain('Document 7');
   });
 });
 
@@ -143,13 +145,16 @@ describe('point 2 — champ Verebona mobile en haut, comme desktop', () => {
 });
 
 describe('point 9 — page 404 avec la mascotte', () => {
-  it('AC9-1 — mascotte, titre, boutons Tableau de bord / Accueil', () => {
+  it('AC9-1 / L49A-T5 — mascotte, titre, UN SEUL bouton « Accueil » (desktop et mobile : même composant)', () => {
     const html = renderToStaticMarkup(h(NotFound));
     expect(html).toContain('/mascot/questioning.webp');
     expect(html).toContain('404');
     expect(html).toContain('Page introuvable');
-    expect(html).toMatch(/href="\/accueil"[^>]*>Tableau de bord/);
-    expect(html).toMatch(/href="\/"[^>]*>Accueil/);
+    expect(html.match(/<a /g)).toHaveLength(1);
+    expect(html).toMatch(/href="\/accueil"[^>]*>Accueil<\/a>/);
+    expect(html).not.toContain('Tableau de bord');
+    // Pleine largeur en mobile, largeur du contenu à partir de `sm`.
+    expect(html).toMatch(/class="[^"]*w-full[^"]*sm:w-auto/);
   });
 
   it('AC9-2 — plus de bloc de diagnostic visible (journalisé en console)', () => {

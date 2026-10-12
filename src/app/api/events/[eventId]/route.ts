@@ -1,4 +1,10 @@
-/** @deprecated LEGACY — GEL ACTIF. Voir /api/events/route.ts pour contexte de migration. */
+/**
+ * @deprecated LEGACY — GEL ACTIF. Voir /api/events/route.ts pour contexte de migration.
+ *
+ * Lot 49 (SEC-02) : lecture, mise à jour et suppression bornées au compte
+ * actif DANS le SQL ; le bien joint est celui du compte (une association
+ * incorrecte en base n'affiche jamais le nom d'un bien d'un autre compte).
+ */
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/db';
 import { events, assets } from '@/db/schema';
@@ -53,17 +59,13 @@ export async function GET(
         assetName: assets.name,
       })
       .from(events)
-      .leftJoin(assets, eq(events.assetId, assets.id))
-      .where(eq(events.id, eventId))
+      .leftJoin(assets, and(eq(events.assetId, assets.id), eq(assets.accountId, session.currentAccountId)))
+      .where(and(eq(events.id, eventId), eq(events.accountId, session.currentAccountId)))
       .limit(1);
 
+    // Événement d'un autre compte ou inexistant : même réponse.
     if (event.length === 0) {
       return apiError(404, 'EVENT_NOT_FOUND', 'Event not found');
-    }
-
-    // Check ownership by accountId
-    if (event[0].accountId !== session.currentAccountId) {
-      return apiError(403, 'FORBIDDEN', 'Access denied');
     }
 
     const { assetName, assetId, ...rest } = event[0];
@@ -73,13 +75,13 @@ export async function GET(
       ...rest,
       assetId,
       important: !!rest.important,
-      asset: assetId != null ? { id: assetId, name: assetName ?? '' } : null,
+      asset: assetId != null && assetName != null ? { id: assetId, name: assetName } : null,
     };
 
     return NextResponse.json(eventData, { status: 200 });
   } catch (error) {
     console.error('GET event error:', error);
-    return apiError(500, 'INTERNAL_SERVER_ERROR', 'Internal server error: ' + (error as Error).message);
+    return apiError(500, 'INTERNAL_SERVER_ERROR', 'Internal server error');
   }
 }
 
@@ -112,16 +114,13 @@ export async function PATCH(
     const existingEvent = await db
       .select()
       .from(events)
-      .where(eq(events.id, eventId))
+      // Lot 49 : lu DANS le compte actif — un événement d'un autre compte
+      // reçoit la même réponse qu'un événement inexistant (rien n'est révélé).
+      .where(and(eq(events.id, eventId), eq(events.accountId, session.currentAccountId)))
       .limit(1);
 
     if (existingEvent.length === 0) {
       return apiError(404, 'EVENT_NOT_FOUND', 'Event not found');
-    }
-
-    // Check ownership by accountId
-    if (existingEvent[0].accountId !== session.currentAccountId) {
-      return apiError(403, 'FORBIDDEN', 'Access denied');
     }
 
     const body = await request.json();
@@ -226,8 +225,11 @@ export async function PATCH(
     const updatedEvent = await db
       .update(events)
       .set(updates)
-      .where(eq(events.id, eventId))
+      .where(and(eq(events.id, eventId), eq(events.accountId, session.currentAccountId)))
       .returning();
+    if (updatedEvent.length === 0) {
+      return apiError(404, 'EVENT_NOT_FOUND', 'Event not found');
+    }
 
     // Transform important from number to boolean for frontend
     const eventData = {
@@ -238,7 +240,7 @@ export async function PATCH(
     return NextResponse.json(eventData, { status: 200 });
   } catch (error) {
     console.error('PATCH event error:', error);
-    return apiError(500, 'INTERNAL_SERVER_ERROR', 'Internal server error: ' + (error as Error).message);
+    return apiError(500, 'INTERNAL_SERVER_ERROR', 'Internal server error');
   }
 }
 
@@ -271,21 +273,18 @@ export async function DELETE(
     const existingEvent = await db
       .select()
       .from(events)
-      .where(eq(events.id, eventId))
+      // Lot 49 : lu DANS le compte actif — un événement d'un autre compte
+      // reçoit la même réponse qu'un événement inexistant (rien n'est révélé).
+      .where(and(eq(events.id, eventId), eq(events.accountId, session.currentAccountId)))
       .limit(1);
 
     if (existingEvent.length === 0) {
       return apiError(404, 'EVENT_NOT_FOUND', 'Event not found');
     }
 
-    // Check ownership by accountId
-    if (existingEvent[0].accountId !== session.currentAccountId) {
-      return apiError(403, 'FORBIDDEN', 'Access denied');
-    }
-
     await db
       .delete(events)
-      .where(eq(events.id, eventId));
+      .where(and(eq(events.id, eventId), eq(events.accountId, session.currentAccountId)));
 
     return NextResponse.json(
       { 
@@ -296,6 +295,6 @@ export async function DELETE(
     );
   } catch (error) {
     console.error('DELETE event error:', error);
-    return apiError(500, 'INTERNAL_SERVER_ERROR', 'Internal server error: ' + (error as Error).message);
+    return apiError(500, 'INTERNAL_SERVER_ERROR', 'Internal server error');
   }
 }

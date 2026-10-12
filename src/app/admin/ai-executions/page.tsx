@@ -50,7 +50,7 @@ import { toast } from 'sonner';
 import { EcranEnErreur } from '@/components/admin/EcranEnErreur';
 import { apiClient } from '@/lib/api-client';
 import {
-  readExecutionFilters, executionFiltersToParams, T6_MODES, T6_MODE_LABELS, type ExecutionScreenFilters,
+  readExecutionFilters, executionFiltersToParams, executionScopeLabel, T6_MODES, T6_MODE_LABELS, type ExecutionScreenFilters,
 } from '@/services/ai/telemetry/execution-filters';
 import { AiEnvBanner } from '../ai-dashboard/_components/AiEnvBanner';
 import { UnansweredHelpQuestions } from './_components/UnansweredHelpQuestions';
@@ -64,6 +64,8 @@ interface Execution {
   id: number;
   createdAt: string;
   treatment: string | null;
+  /** Usage du référentiel : AI_GOVERNANCE = appel technique (lot 49). */
+  useCaseCode?: string | null;
   operationCode: string | null;
   accountId: number | null;
   userId: number | null;
@@ -325,7 +327,7 @@ function AiExecutionsScreen() {
           <>
             <select value={filters.treatment} onChange={(e) => set('treatment', e.target.value)} className={SELECT}>
               <option value="">Tous les traitements</option>
-              {['T1', 'T2', 'T3', 'T4', 'T5', 'T6'].map((t) => <option key={t} value={t}>{t}</option>)}
+              {['T1', 'T2', 'T3', 'T4', 'T6'].map((t) => <option key={t} value={t}>{t}</option>)}
             </select>
             {/* CDC Mascotte BO-009 : génération affichée / pré-génération / texte de secours. */}
             <select value={filters.t6Mode} onChange={(e) => set('t6Mode', e.target.value)} className={SELECT}
@@ -451,7 +453,7 @@ function AiExecutionsScreen() {
                     : 'bg-emerald-500/10 text-emerald-500 border-emerald-500/20'}`}>
                   {r.status === 'error' ? 'Échec' : 'Succès'}
                 </span>
-                <span className="text-sm font-medium text-[color:var(--text-primary)]">{r.treatment ?? '—'}</span>
+                <span className="text-sm font-medium text-[color:var(--text-primary)]">{executionScopeLabel(r)}</span>
                 {r.callerMode && (
                   <span className="text-xs text-[color:var(--text-muted)]">
                     {r.callerMode === 'pregeneration' ? 'pré-génération' : 'affichée'}

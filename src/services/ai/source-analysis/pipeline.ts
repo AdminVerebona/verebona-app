@@ -199,6 +199,13 @@ export async function runSourceAnalysis(
       input.linkedAssetId = await userChosenAssetOf(req.accountId, lead).catch(() => null);
     }
   }
+  // Lot 49 (SEC-08, T1) : revalidation SERVEUR du périmètre, indépendante de
+  // l'adaptateur et de l'appelant (job ancien ou relancé, `linkedAssetId`
+  // transmis) — KNOWN_TARGET d'un autre compte : ignoré, jamais projeté.
+  if (input.linkedAssetId) {
+    const { knownAssetOfAccount } = await import('@/services/security/account-ownership');
+    input.linkedAssetId = await knownAssetOfAccount(req.accountId, input.linkedAssetId, 't1.known_target');
+  }
 
   // ══════════════════════════════════════════════════════════════════════
   // PROMPT MAÎTRE T1 SEUL — lot 16b-3 (CDC 15 §29, D-04)

@@ -1055,7 +1055,7 @@ async function domainConfig(s: Scope, errors: string[]): Promise<DomainResult> {
         trigger: String(r.trigger), count: n(r.n),
       })),
     }] : [],
-    notes: ['Le déclencheur n’est tracé que pour les appels issus de la file (T1, T3, T4) ; T2, T5 et T6 sont synchrones.'],
+    notes: ['Le déclencheur n’est tracé que pour les appels issus de la file (T1, T3, T4) ; T2 et T6 sont synchrones ; l’usage technique AI_GOVERNANCE n’a pas de traitement.'],
   };
 }
 

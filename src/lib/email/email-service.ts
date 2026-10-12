@@ -29,6 +29,11 @@ type LogoResult = {
   type: 'url' | 'html' | 'none';
 };
 
+/** Emplacements `{{nom}}` encore présents après remplacement. */
+export function unresolvedPlaceholders(text: string): string[] {
+  return [...new Set([...text.matchAll(/\{\{\s*([A-Za-z0-9_]+)\s*\}\}/g)].map((m) => m[1]))];
+}
+
 class EmailService {
   private resend: Resend;
   
@@ -218,10 +223,16 @@ class EmailService {
       const trimmed = line.trim();
       if (!trimmed) return '';
       
-      if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
+      // « Libellé : https://… » (convention des gabarits texte : « Accepter :
+      // {{actionUrl}} », « Accéder à Verebona : {{actionUrl}} ») → bouton
+      // portant le libellé ; une URL seule → bouton « Cliquez ici ».
+      const labelled = /^(.{1,60}?)\s*:\s*(https?:\/\/\S+)$/.exec(trimmed);
+      const url = labelled ? labelled[2] : (trimmed.startsWith('http://') || trimmed.startsWith('https://')) ? trimmed : null;
+      if (url) {
+        const label = labelled ? labelled[1].trim() : 'Cliquez ici';
         return `<p style="margin: 0 0 16px 0; text-align: center;">
-          <a href="${trimmed}" style="display: inline-block; background-color: ${VEREBONA_PRIMARY_COLOR}; color: #ffffff; padding: 12px 24px; text-decoration: none; border-radius: 6px; font-weight: 600;">
-            Cliquez ici
+          <a href="${url}" style="display: inline-block; background-color: ${VEREBONA_PRIMARY_COLOR}; color: #ffffff; padding: 12px 24px; text-decoration: none; border-radius: 6px; font-weight: 600;">
+            ${label}
           </a>
         </p>`;
       }
@@ -423,6 +434,16 @@ class EmailService {
       
       const subject = this.replaceVariables(template.subject, variablesForReplacement, settings, computedLogo);
       let bodyProcessed = this.replaceVariables(template.body, variablesForReplacement, settings, computedLogo);
+
+      // Variable attendue par le gabarit mais non fournie par l'appelant (ex.
+      // bouton d'invitation Duo inopérant, 12/10/2026) : signalé dans les
+      // journaux et dans le journal des e-mails (BO), sans bloquer l'envoi —
+      // un e-mail critique (mot de passe, sécurité) ne doit jamais être retenu.
+      const unresolved = unresolvedPlaceholders(`${subject}\n${bodyProcessed}`);
+      if (unresolved.length > 0) {
+        console.error(`[EmailService] ${options.templateCode} : variables non fournies ${unresolved.join(', ')}`);
+        logEntry.errorMessage = `Variables non fournies : ${unresolved.join(', ')}`;
+      }
 
       logEntry.subject = subject;
 

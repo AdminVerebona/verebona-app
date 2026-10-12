@@ -553,26 +553,6 @@ async function metricsT4(days: number): Promise<Metric[]> {
   ];
 }
 
-/** T5 — gouvernance des prompts (SCR-06). */
-async function metricsT5(days: number): Promise<Metric[]> {
-  const r = await one(
-    `SELECT COUNT(*)::int                                          AS total,
-            COUNT(*) FILTER (WHERE status = 'PROPOSED')::int       AS proposees,
-            COUNT(*) FILTER (WHERE status = 'ACTIVE')::int         AS activees,
-            COUNT(*) FILTER (WHERE status = 'REJECTED')::int       AS rejetees
-       FROM ai_prompt_changes
-      WHERE created_at >= NOW() - ($1 || ' days')::interval`,
-    [String(days)],
-  ).catch((): Row => ({}));
-
-  return [
-    M('requests', 'Demandes de modification', Number(r.total ?? 0)),
-    M('proposed', 'En attente de validation', Number(r.proposees ?? 0)),
-    M('activated', 'Activées', Number(r.activees ?? 0)),
-    M('rejected', 'Rejetées', Number(r.rejetees ?? 0)),
-  ];
-}
-
 /**
  * T6 — mascotte d'accueil (CDC Mascotte BO-009) : formulations affichées,
  * pré-générations non affichées et textes de secours, distingués ; coûts et
@@ -647,7 +627,7 @@ async function tablesT6(days: number): Promise<MetricTable[]> {
 }
 
 const PAR_TRAITEMENT: Record<Treatment, (days: number) => Promise<Metric[]>> = {
-  T1: metricsT1, T2: metricsT2, T3: metricsT3, T4: metricsT4, T5: metricsT5, T6: metricsT6,
+  T1: metricsT1, T2: metricsT2, T3: metricsT3, T4: metricsT4, T6: metricsT6,
 };
 
 const TABLES: Partial<Record<Treatment, (days: number) => Promise<MetricTable[]>>> = {

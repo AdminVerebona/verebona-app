@@ -1,5 +1,7 @@
 /**
- * CDC BO IA §1.3 — correspondance traitements T1-T5 ↔ usages du référentiel.
+ * CDC BO IA §1.3 — correspondance traitements ↔ usages du référentiel.
+ * Lot 49 (ticket 12) : T5 supprimé ; AI_GOVERNANCE devient un usage
+ * TECHNIQUE, indépendant des traitements.
  *
  * Deux documents écrits à deux mois d'intervalle nomment les mêmes cinq
  * traitements différemment. Si la correspondance se déséquilibre, une version
@@ -10,15 +12,16 @@ import { describe, it, expect } from 'vitest';
 import {
   TREATMENTS, TREATMENT_DEFINITIONS, treatmentForUseCase,
   listBatchTreatments, assertTreatmentMapping, isTreatment,
-  isPromptAdministrable, T5_TARGETS,
+  RETIRED_TREATMENTS, TECHNICAL_USE_CASES, isRetiredTreatment, isTechnicalUseCase, treatmentOfUseCase,
+  isMasterPromptAdministrable,
 } from '../treatments';
-import { emptyTreatmentConfig, normalizeTreatmentConfig } from '../config-types';
 import { AI_USE_CASE_CODES } from '../../registry/use-cases';
 
 describe('la correspondance est bijective', () => {
-  it('couvre les cinq usages du référentiel, sans doublon', () => {
+  it('T12-AC05 — couvre les usages MÉTIER du référentiel, sans doublon : exactement T1, T2, T3, T4, T6', () => {
     expect(() => assertTreatmentMapping()).not.toThrow();
-    expect(TREATMENTS).toHaveLength(AI_USE_CASE_CODES.length);
+    expect([...TREATMENTS]).toEqual(['T1', 'T2', 'T3', 'T4', 'T6']);
+    expect(TREATMENTS).toHaveLength(AI_USE_CASE_CODES.length - TECHNICAL_USE_CASES.length);
   });
 
   it('se parcourt dans les deux sens', () => {
@@ -32,13 +35,14 @@ describe('la correspondance est bijective', () => {
     expect(TREATMENT_DEFINITIONS.T2.useCaseCode).toBe('INTELLIGENT_ASSISTANT');
     expect(TREATMENT_DEFINITIONS.T3.useCaseCode).toBe('DATA_RECONCILIATION');
     expect(TREATMENT_DEFINITIONS.T4.useCaseCode).toBe('AGENDA_INTELLIGENCE');
-    expect(TREATMENT_DEFINITIONS.T5.useCaseCode).toBe('AI_GOVERNANCE');
+    expect(TREATMENT_DEFINITIONS.T6.useCaseCode).toBe('HOME_MASCOT');
+    expect(Object.keys(TREATMENT_DEFINITIONS)).not.toContain('T5');
   });
 });
 
 describe('file globale (GEN-004)', () => {
   it('ne retient que T1, T3 et T4', () => {
-    // T2 et T5 sont synchrones : ils n'ont ni file ni déclencheurs, et l'écran
+    // T2 et T6 sont synchrones : ils n'ont ni file ni déclencheurs, et l'écran
     // ne doit pas leur en proposer.
     expect(listBatchTreatments()).toEqual(['T1', 'T3', 'T4']);
   });
@@ -58,17 +62,21 @@ describe('garde-fous', () => {
   });
 });
 
-describe('prompt administrable (T5-001, T5-003, écart E-02)', () => {
-  it('T1 à T4 et T6 ont un prompt administrable, T5 non', () => {
-    expect(TREATMENTS.filter(isPromptAdministrable)).toEqual(['T1', 'T2', 'T3', 'T4', 'T6']);
-    // CDC Mascotte BO-008 : T5 peut faire évoluer la charte de voix de T6.
-    expect(T5_TARGETS).toEqual(['T1', 'T2', 'T3', 'T4', 'T6']);
+describe('Lot 49 — T5 retiré, AI_GOVERNANCE technique (ticket 12)', () => {
+  it('T12-AC05 / T12-AC11 — T5 n’est plus un traitement : inconnu du référentiel, connu seulement comme retiré (historique)', () => {
+    expect(isTreatment('T5')).toBe(false);
+    expect([...RETIRED_TREATMENTS]).toEqual(['T5']);
+    expect(isRetiredTreatment('T5')).toBe(true);
+    expect(isRetiredTreatment('T1')).toBe(false);
+    expect(isMasterPromptAdministrable('T5')).toBe(false);
+    expect(TREATMENTS.every(isMasterPromptAdministrable)).toBe(true);
   });
 
-  it('la normalisation vide le prompt de T5 et laisse les autres intacts', () => {
-    const t5 = { ...emptyTreatmentConfig('T5'), prompt: 'texte hérité', primaryModel: 'm' };
-    expect(normalizeTreatmentConfig(t5)).toEqual({ ...t5, prompt: '' });
-    const t1 = { ...emptyTreatmentConfig('T1'), prompt: 'prompt T1' };
-    expect(normalizeTreatmentConfig(t1)).toBe(t1);
+  it('T12-AC06 — AI_GOVERNANCE est un usage TECHNIQUE sans traitement (ne requiert plus T5)', () => {
+    expect(isTechnicalUseCase('AI_GOVERNANCE')).toBe(true);
+    expect(treatmentOfUseCase('AI_GOVERNANCE')).toBeNull();
+    expect(() => treatmentForUseCase('AI_GOVERNANCE')).toThrow();
+    expect(treatmentOfUseCase('HOME_MASCOT')).toBe('T6');
+    expect(AI_USE_CASE_CODES).toContain('AI_GOVERNANCE');
   });
 });

@@ -20,7 +20,6 @@ import {
 import {
   T2AnswerOutput, T2MasterOutput, T2RevalidateOutput, T2UnderstandOutput,
 } from '../assistant/master/t2-contract';
-import { T5AnalyzeOutput, T5MasterOutput, T5ModifyOutput } from '../governance/master/t5-contract';
 import { T6FormulateOutput } from '@/services/home/mascot/t6-contract';
 
 export const MASTER_OUTPUT_SCHEMAS: Readonly<Record<string, ZodType>> = {
@@ -39,9 +38,6 @@ export const MASTER_OUTPUT_SCHEMAS: Readonly<Record<string, ZodType>> = {
   T2AnswerOutput,
   T2RevalidateOutput,
   T2MasterOutput,
-  T5AnalyzeOutput,
-  T5ModifyOutput,
-  T5MasterOutput,
   // T6 (§28) : pas de discriminant de sortie, `schemaVersion` strict (t6-output-v2).
   T6FormulateOutput,
 };

@@ -253,7 +253,14 @@ export async function runOne(treatment: Treatment, onClaimed?: () => void): Prom
         // métier des modules qui ne la reçoivent pas en paramètre.
         guard,
       },
-      () => handler(job, guard),
+      // Lot 49 (SEC-08) : périmètre du travail revalidé à CHAQUE exécution
+      // (jobs anciens, différés, relancés compris) — référence d'un autre
+      // compte : échec définitif, aucune écriture.
+      async () => {
+        const { checkJobScope } = await import('./job-scope');
+        await checkJobScope(job);
+        return handler(job, guard);
+      },
     );
     const rendu = await (deadline ? Promise.race([execution, deadline]) : execution);
     const result = isBusinessResult(rendu) ? rendu : null;

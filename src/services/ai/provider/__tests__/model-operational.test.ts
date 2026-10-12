@@ -47,10 +47,12 @@ describe('MOD — état opérationnel par clé', () => {
   it('MOD-33 — sonde : génération minimale par modèle, état enregistré avec l’empreinte, secret jamais conservé', async () => {
     const r = await probeModels(['gemini-a', 'gemini-b'], 'cle-active', {
       call: async (m) => { if (m === 'gemini-b') throw new Error('404 cle-active no longer available'); return { rawText: 'OK' }; },
+      confirmDelayMs: 0,
     });
+    // Lot 49 : retrait explicite (404 « no longer available ») → indisponibilité confirmée d'emblée.
     expect(r).toEqual([
-      { model: 'gemini-a', ok: true, error: null },
-      { model: 'gemini-b', ok: false, error: '404 *** no longer available' },
+      { model: 'gemini-a', ok: true, error: null, checkStatus: 'ok' },
+      { model: 'gemini-b', ok: false, error: '404 *** no longer available', checkStatus: 'failed_confirmed' },
     ]);
     const inserts = ecrits.filter((e) => e.sql.includes('INSERT INTO ai_model_operational_status'));
     expect(inserts.map((e) => e.params.slice(0, 3))).toEqual([

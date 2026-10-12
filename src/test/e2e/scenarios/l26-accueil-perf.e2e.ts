@@ -150,7 +150,8 @@ scenario('L26-ACCUEIL', 'Accueil : vignettes des documents récents, mascotte im
     }
     const docs = resume.blocks.recentDocuments.items;
     console.info(`[l26-mesure] résumé d'accueil (ms) : ${durees.join(', ')} ; signatures : ${JSON.stringify(thumbnailUrlStats())}`);
-    expect(docs).toHaveLength(4);
+    // Lot 49A (ticket 4) : six documents récents au plus (accueil élargi), au lieu de quatre.
+    expect(docs).toHaveLength(Math.min(fichiers.length, 6));
     const avec = docs.find((d) => d.id === recent.id)!;
     expect(avec.previewUrl).toMatch(/derivatives\/thumbnails\/.*X-Amz-Signature=/);
     expect(docs.filter((d) => d.id !== recent.id).every((d) => d.previewUrl == null)).toBe(true);

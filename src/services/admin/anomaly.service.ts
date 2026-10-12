@@ -507,6 +507,11 @@ export interface AnomalyDetail extends AnomalyListItem {
 
 /** AI-001 : lien vers l'écran IA pertinent, sans dupliquer la gestion IA. */
 export function diagnosticLinkFor(domain: string, detail: Record<string, unknown> | null): AnomalyDetail['diagnosticLink'] {
+  // Lot 49 : contrôle d'exploitation « Relations intercomptes » — lien vers
+  // son rapport complet dans le BO (chemin interne seulement).
+  if (domain === 'other' && typeof detail?.boLink === 'string' && detail.boLink.startsWith('/admin/exploitation?tab=intercomptes')) {
+    return { href: detail.boLink, label: 'Ouvrir le rapport « Relations intercomptes »' };
+  }
   if (domain !== 'ai') return null;
   const operationId = detail?.operationId;
   if (typeof operationId === 'string' || typeof operationId === 'number') {

@@ -29,14 +29,13 @@
  * lendemain. Lot 35B : « modèle tarifé » n'est plus bloquant — un modèle sans
  * tarif connu reste utilisable (coût non calculable), simple signalement.
  */
-import { TREATMENTS, getTreatment, isPromptAdministrable, type Treatment } from './treatments';
+import { TREATMENTS, getTreatment, type Treatment } from './treatments';
 import { TRIGGER_CATALOG, activeUnlessDeclaredCodes } from './catalogs';
 import {
-  REASONING_LEVELS, GUARDRAIL_REACTIONS, FIELD_LABELS, normalizeTreatmentConfig,
+  REASONING_LEVELS, GUARDRAIL_REACTIONS, FIELD_LABELS,
   type TreatmentConfig, type ConfigFieldKey,
 } from './config-types';
 import { masterConfigIssues } from './prompt-architecture';
-import { T5_LEGACY_TEXT_MESSAGE, hasLegacyPromptText } from './t5-messages';
 
 export interface ValidationIssue {
   treatment: Treatment;
@@ -238,7 +237,7 @@ function validateTriggers(c: TreatmentConfig, cat: ConfigCatalogs): ValidationIs
   const t = c.treatment;
   const batch = getTreatment(t).batch;
 
-  // T2 et T5 sont synchrones et hors file (GEN-004). Un déclencheur y serait
+  // T2 et T6 sont synchrones et hors file (GEN-004). Un déclencheur y serait
   // sans effet : mieux vaut le refuser que le laisser croire actif.
   if (!batch) {
     if (c.triggers.length > 0) {
@@ -396,21 +395,8 @@ export function unavailableModels(
   return out;
 }
 
-// Messages T5 et détection d'un texte hérité : module PUR partagé avec l'écran
-// du BO (aucune dépendance serveur), même texte des deux côtés.
-export { T5_REPOSITORY_PROMPT_MESSAGE, T5_LEGACY_TEXT_MESSAGE, hasLegacyPromptText } from './t5-messages';
-
 export function validateTreatment(c: TreatmentConfig, cat: ConfigCatalogs): ValidationIssue[] {
   const out: ValidationIssue[] = [];
-  if (!isPromptAdministrable(c.treatment)) {
-    // T5-003, E-02 : le comportement de T5 est dans le code (prompt maître du
-    // dépôt). Un texte hérité — préambule ou ancien master — est ignoré à
-    // l'exécution : information NON bloquante, et le prochain enregistrement
-    // du brouillon le retire (`normalizeTreatmentConfig`).
-    if (hasLegacyPromptText(c)) {
-      out.push(issue(c.treatment, 'prompt', T5_LEGACY_TEXT_MESSAGE, false));
-    }
-  }
   // Lot 16b : le préambule des étapes (`prompt`) n'est plus OBLIGATOIRE — il
   // n'existe plus d'opération par étapes pour l'appliquer, et le BO ne le
   // propose plus (une seule zone : le texte master). Un préambule hérité est
@@ -418,14 +404,7 @@ export function validateTreatment(c: TreatmentConfig, cat: ConfigCatalogs): Vali
   // CDC 15 D-03, D-04, §29.1 : préambule sans master, texte master complet,
   // architecture master cohérente — `steps` refusé pour TOUS les traitements
   // (lot 16b, migrations 0231 à 0234).
-  //
-  // Contrôle porté sur ce qui S'EXÉCUTE : pour T5, la configuration normalisée
-  // (préambule vide, aucun master stocké), même règle que l'écriture en base
-  // et que la résolution à l'exécution. Un ancien texte ignoré ne peut plus
-  // bloquer par son contenu (« le texte master va dans sa zone dédiée », zone
-  // qui n'existe pas pour T5) ; l'architecture et le master du dépôt restent
-  // contrôlés.
-  for (const m of masterConfigIssues(normalizeTreatmentConfig(c))) out.push(issue(c.treatment, m.field, m.message, m.blocking));
+  for (const m of masterConfigIssues(c)) out.push(issue(c.treatment, m.field, m.message, m.blocking));
   out.push(...validateModels(c, cat));
   out.push(...validateReasoning(c));
   out.push(...validateTokens(c, cat));

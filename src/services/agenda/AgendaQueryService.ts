@@ -7,6 +7,7 @@ import {
   agendaDataConflicts, assets, assetFiles, substructures, equipments, agendaItemSources,
 } from '@/db/schema';
 import { eq, and, or, isNull, isNotNull, inArray, sql } from 'drizzle-orm';
+import { alias } from 'drizzle-orm/pg-core';
 import { computeEffectiveStatus, computeAttentionFlags, type EffectiveStatus, type AttentionFlag } from './AgendaDomainService';
 import { agendaFunctionalColumnsReady } from './agenda-columns';
 import { listAgendaItemIdsForSource, SOURCE_LINK_EFFECTS } from './agenda-source-links';
@@ -81,8 +82,14 @@ export interface AgendaSearchResult {
   contextLabel: string;
 }
 
+/**
+ * Liens des éléments. Lot 49 (SEC-07) : seul un objet du COMPTE DE
+ * L'ÉLÉMENT est rendu — une association incorrecte déjà en base (bien,
+ * document, pièce ou équipement d'un autre compte) n'est jamais exposée.
+ */
 async function loadLinks(itemIds: number[]) {
   if (itemIds.length === 0) return { assetLinks: [], fileLinks: [], roomLinks: [], equipLinks: [] };
+  const bienPorteur = alias(assets, 'bien_porteur');
 
   const [assetLinksRows, fileLinksRows, aiFileLinksRows, roomLinksRows, equipLinksRows] = await Promise.all([
     db.select({
@@ -92,7 +99,8 @@ async function loadLinks(itemIds: number[]) {
       assetName: assets.name,
     })
     .from(agendaAssetLinks)
-    .leftJoin(assets, eq(agendaAssetLinks.assetId, assets.id))
+    .innerJoin(agendaItems, eq(agendaItems.id, agendaAssetLinks.agendaItemId))
+    .innerJoin(assets, and(eq(agendaAssetLinks.assetId, assets.id), eq(assets.accountId, agendaItems.accountId)))
     .where(inArray(agendaAssetLinks.agendaItemId, itemIds)),
 
     db.select({
@@ -105,7 +113,8 @@ async function loadLinks(itemIds: number[]) {
       resolvedAssetId: assetFiles.assetId,
     })
     .from(agendaFileLinks)
-    .leftJoin(assetFiles, eq(agendaFileLinks.assetFileId, assetFiles.id))
+    .innerJoin(agendaItems, eq(agendaItems.id, agendaFileLinks.agendaItemId))
+    .innerJoin(assetFiles, and(eq(agendaFileLinks.assetFileId, assetFiles.id), eq(assetFiles.accountId, agendaItems.accountId)))
     .where(inArray(agendaFileLinks.agendaItemId, itemIds)),
 
     // AI-sourced links from document analysis (created or resolved_existing)
@@ -119,7 +128,8 @@ async function loadLinks(itemIds: number[]) {
       resolvedAssetId: assetFiles.assetId,
     })
     .from(agendaItemSources)
-    .leftJoin(assetFiles, eq(agendaItemSources.assetFileId, assetFiles.id))
+    .innerJoin(agendaItems, eq(agendaItems.id, agendaItemSources.agendaItemId))
+    .innerJoin(assetFiles, and(eq(agendaItemSources.assetFileId, assetFiles.id), eq(assetFiles.accountId, agendaItems.accountId)))
     .where(and(
       isNotNull(agendaItemSources.agendaItemId),
       inArray(agendaItemSources.agendaItemId, itemIds),
@@ -135,7 +145,9 @@ async function loadLinks(itemIds: number[]) {
       resolvedAssetId: substructures.assetId,
     })
     .from(agendaRoomLinks)
-    .leftJoin(substructures, eq(agendaRoomLinks.substructureId, substructures.id))
+    .innerJoin(agendaItems, eq(agendaItems.id, agendaRoomLinks.agendaItemId))
+    .innerJoin(substructures, eq(agendaRoomLinks.substructureId, substructures.id))
+    .innerJoin(bienPorteur, and(eq(bienPorteur.id, substructures.assetId), eq(bienPorteur.accountId, agendaItems.accountId)))
     .where(inArray(agendaRoomLinks.agendaItemId, itemIds)),
 
     db.select({
@@ -146,7 +158,9 @@ async function loadLinks(itemIds: number[]) {
       resolvedAssetId: equipments.assetId,
     })
     .from(agendaEquipmentLinks)
-    .leftJoin(equipments, eq(agendaEquipmentLinks.equipmentId, equipments.id))
+    .innerJoin(agendaItems, eq(agendaItems.id, agendaEquipmentLinks.agendaItemId))
+    .innerJoin(equipments, eq(agendaEquipmentLinks.equipmentId, equipments.id))
+    .innerJoin(bienPorteur, and(eq(bienPorteur.id, equipments.assetId), eq(bienPorteur.accountId, agendaItems.accountId)))
     .where(inArray(agendaEquipmentLinks.agendaItemId, itemIds)),
   ]);
 
@@ -395,8 +409,10 @@ export async function getAgendaItems(params: AgendaQueryParams): Promise<AgendaI
     );
   } else if (assetIds && assetIds.length > 0) {
     // Get item ids that have links to the requested assets
+    // Lot 49 : biens du compte seulement.
     const linkedIds = await db.selectDistinct({ id: agendaAssetLinks.agendaItemId })
       .from(agendaAssetLinks)
+      .innerJoin(assets, and(eq(assets.id, agendaAssetLinks.assetId), eq(assets.accountId, accountId)))
       .where(inArray(agendaAssetLinks.assetId, assetIds));
     const ids = linkedIds.map(r => r.id);
     if (ids.length === 0) return [];
@@ -489,7 +505,9 @@ export async function searchAgendaItems(query: string, accountId: number): Promi
   })
   .from(agendaItems)
   .innerJoin(agendaAssetLinks, eq(agendaAssetLinks.agendaItemId, agendaItems.id))
-  .innerJoin(assets, eq(agendaAssetLinks.assetId, assets.id))
+  // Lot 49 : bien du compte seulement (un lien incorrect ne fait pas
+  // correspondre le nom d'un bien d'un autre compte).
+  .innerJoin(assets, and(eq(agendaAssetLinks.assetId, assets.id), eq(assets.accountId, accountId)))
   .where(
     and(
       eq(agendaItems.accountId, accountId),

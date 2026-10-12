@@ -460,9 +460,13 @@ async function runAccount(job: QueuedJob, p: T3AccountPayload, guard: ExecutionG
     runId: result.runId, scope, status: result.status, objectsExamined: result.objectsExamined,
     decisionsApplied: result.decisionsApplied, conflictsCreated: result.conflictsCreated, errors: result.errors,
     ...(result.openKnowledge ? { openKnowledge: result.openKnowledge } : {}),
+    // Lot 49B : rapport des lignes « À traiter » ouvertes examinées (borné).
+    ...(result.openActions ? { openActions: result.openActions } : {}),
   };
   const ok = result.openKnowledge;
-  if (ok && ((ok.facts?.retargeted ?? 0) > 0 || ok.documents.enqueued > 0 || ok.titles.updated > 0)) return { result: 'APPLIED', detail };
+  if (ok && ((ok.facts?.retargeted ?? 0) > 0 || ok.documents.enqueued > 0 || ok.titles.updated > 0 || (ok.targeted?.enqueued ?? 0) > 0)) return { result: 'APPLIED', detail };
+  const oa = result.openActions;
+  if (oa && (oa.byEffect.CLOSED > 0 || oa.byEffect.UPDATED > 0 || oa.byEffect.SUPERSEDED > 0)) return { result: 'APPLIED', detail };
   if (result.decisionsApplied > 0) return { result: 'APPLIED', detail };
   if (result.conflictsCreated > 0) return { result: 'ABSTAIN', detail };
   return { result: 'NO_CHANGE', detail };
@@ -592,7 +596,9 @@ async function listSweepAccountsFromDb(q: SweepAccountsQuery): Promise<number[]>
   const rows = (await sql.unsafe(
     `SELECT a.id FROM accounts a
       WHERE a.id > $2
-        AND EXISTS (SELECT 1 FROM assets s WHERE s.account_id = a.id AND s.deleted_at IS NULL)
+        AND (EXISTS (SELECT 1 FROM assets s WHERE s.account_id = a.id AND s.deleted_at IS NULL)
+             -- Lot 49B : une ligne « À traiter » ouverte est un problème actif, réexaminé à chaque cycle.
+             OR EXISTS (SELECT 1 FROM to_process_actions t WHERE t.account_id = a.id AND t.resolved_at IS NULL))
         AND NOT EXISTS (
           SELECT 1 FROM account_reconciliation_runs r
            WHERE r.account_id = a.id AND r.status IN ('completed', 'partial', 'running')

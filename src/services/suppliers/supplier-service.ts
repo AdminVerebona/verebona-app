@@ -10,13 +10,8 @@
  */
 
 import { db } from '@/db';
-import {
-  suppliers,
-  documentSuppliers,
-  equipmentSuppliers,
-  assetFiles,
-} from '@/db/schema';
-import { eq, and } from 'drizzle-orm';
+import { suppliers } from '@/db/schema';
+import { eq, and, sql } from 'drizzle-orm';
 
 /** Exécutant drizzle : `db`, ou la transaction en cours. */
 export type SupplierQueryRunner = Pick<typeof db, 'select' | 'insert' | 'update'>;
@@ -346,38 +341,21 @@ export async function propagateScopeIfNeeded(supplierId: number, sourceScope: st
 // ─── Recalculate equipment suppliers ─────────────────────────────────────────
 
 export async function recalculateEquipmentSuppliers(documentId: number): Promise<void> {
-  const [doc] = await db
-    .select({ equipmentId: assetFiles.equipmentId, id: assetFiles.id })
-    .from(assetFiles)
-    .where(eq(assetFiles.id, documentId))
-    .limit(1);
-
-  if (!doc?.equipmentId) return;
-
-  const docSupplierRows = await db
-    .select({ supplierId: documentSuppliers.supplierId })
-    .from(documentSuppliers)
-    .where(eq(documentSuppliers.documentId, documentId));
-
-  for (const { supplierId } of docSupplierRows) {
-    const existing = await db
-      .select()
-      .from(equipmentSuppliers)
-      .where(and(
-        eq(equipmentSuppliers.equipmentId, doc.equipmentId),
-        eq(equipmentSuppliers.supplierId, supplierId),
-      ))
-      .limit(1);
-
-    if (existing.length === 0) {
-      await db.insert(equipmentSuppliers).values({
-        equipmentId: doc.equipmentId,
-        supplierId,
-        sourceDocumentId: documentId,
-        sourceType: 'document_derived',
-        isPrimary: false,
-      });
-    }
-  }
+  // Lot 49 (SEC-03) : un fournisseur du document n'est reporté sur
+  // l'équipement que si le document, l'équipement (par son bien) et le
+  // fournisseur sont du MÊME compte — condition portée par l'INSERT
+  // lui-même : une relation document → équipement incorrecte en base ne
+  // propage jamais de fournisseur vers un autre compte.
+  await db.execute(sql`
+    INSERT INTO equipment_suppliers (equipment_id, supplier_id, source_document_id, source_type, is_primary)
+    SELECT f.equipment_id, ds.supplier_id, f.id, 'document_derived', false
+      FROM asset_files f
+      JOIN equipments e ON e.id = f.equipment_id
+      JOIN assets a ON a.id = e.asset_id AND a.account_id = f.account_id
+      JOIN document_suppliers ds ON ds.document_id = f.id
+      JOIN suppliers s ON s.id = ds.supplier_id AND s.account_id = f.account_id
+     WHERE f.id = ${documentId} AND f.equipment_id IS NOT NULL
+       AND NOT EXISTS (SELECT 1 FROM equipment_suppliers x WHERE x.equipment_id = f.equipment_id AND x.supplier_id = ds.supplier_id)
+    ON CONFLICT DO NOTHING`);
 }
 

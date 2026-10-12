@@ -34,8 +34,23 @@ export function completenessLogLine(fileId: number, r: T1CompletenessReport): st
     chunkCount: r.chunkCount,
     qualityState: r.qualityState,
     anomalies: r.anomalies,
+    // Lot 49B : couverture réelle, réparations, pertes de normalisation (compteurs seulement).
+    ...(r.diagnostics ? {
+      sourceVerification: r.diagnostics.sourceVerification,
+      pagesExpected: r.diagnostics.pagesExpected,
+      pagesVerified: r.diagnostics.pagesVerified,
+      pagesMissing: r.diagnostics.pagesMissing.length,
+      pagesUnverified: r.diagnostics.pagesUnverified.length,
+      pendingRepairs: r.diagnostics.pendingRepairUnits,
+      exhaustedRepairs: r.diagnostics.exhaustedRepairUnits,
+      truncations: r.diagnostics.truncations,
+      originalsPreserved: r.diagnostics.originalsPreserved,
+      normalisationLosses: r.diagnostics.normalisationLosses,
+    } : {}),
   })}`;
 }
+
+export const normalisationLossFingerprint = (fileId: number) => `ai:t1-normalisation-loss:${fileId}`;
 
 export async function recordT1Completeness(p: {
   accountId: number; fileId: number; report: T1CompletenessReport; persisted: boolean;
@@ -58,6 +73,19 @@ export async function recordT1Completeness(p: {
     });
   } else if (r.qualityState === 'COMPLETE' || r.qualityState === 'COMPLETE_WITH_UNRESOLVED') {
     await autoResolveAnomaly(completenessFingerprint(p.fileId), { origin: 't1_completeness', cause: `analyse ${r.qualityState}` });
+  }
+  // Lot 49B (DEV-03) : perte de normalisation NON compensée (valeur non conservée) — Supervision.
+  const pertes = r.diagnostics?.normalisationLosses ?? 0;
+  if (pertes > 0) {
+    await reportAnomaly({
+      domain: 'ai',
+      fingerprint: normalisationLossFingerprint(p.fileId),
+      title: `Analyse T1 : ${pertes} valeur(s) réduite(s) ou retirée(s) sans original conservé (document ${p.fileId})`,
+      accountId: p.accountId,
+      detail: { fileId: p.fileId, losses: pertes, truncations: r.diagnostics?.truncations ?? 0, originalsPreserved: r.diagnostics?.originalsPreserved ?? 0 },
+    });
+  } else if (r.diagnostics) {
+    await autoResolveAnomaly(normalisationLossFingerprint(p.fileId), { origin: 't1_completeness', cause: 'aucune perte de normalisation' });
   }
 }
 
@@ -82,6 +110,11 @@ export interface CompletenessDocumentRow {
   retryAttempts: number;
   origin: string;
   updatedAt: string;
+  /** Lot 49B : vérification de la source, diagnostics (compteurs, numéros de page), dernière reprise. */
+  sourceVerification: string | null;
+  verification: Record<string, unknown> | null;
+  lastRetryAt: string | null;
+  lastRetryResult: string | null;
 }
 
 export interface CompletenessOverview {
@@ -93,6 +126,8 @@ export interface CompletenessOverview {
   /** Moyennes de la période (null sans document). */
   averageCoverage: number | null;
   repairPasses: number;
+  /** Lot 49B : documents par vérification de la source (null : antérieurs au lot 49B). */
+  bySourceVerification: Record<string, number>;
   rows: CompletenessDocumentRow[];
   /** Couche A absente (migrations 0295-0297 non appliquées). */
   unavailable?: boolean;
@@ -102,13 +137,13 @@ export async function getT1CompletenessOverview(opts: { days?: number; limit?: n
   const days = Math.min(Math.max(opts.days ?? 7, 1), 90);
   const empty: CompletenessOverview = {
     days, byQuality: { COMPLETE: 0, COMPLETE_WITH_UNRESOLVED: 0, INCOMPLETE_RETRYABLE: 0, INCOMPLETE_FINAL: 0 },
-    byAnomaly: {}, averageCoverage: null, repairPasses: 0, rows: [],
+    byAnomaly: {}, averageCoverage: null, repairPasses: 0, bySourceVerification: {}, rows: [],
   };
   const { sourceLayerReady } = await import('./repository');
   if (!(await sourceLayerReady())) return { ...empty, unavailable: true };
   const { pgClient } = await import('@/db');
   const since = new Date(Date.now() - days * 86_400_000).toISOString();
-  const [agg, anomalies, rows] = await Promise.all([
+  const [agg, anomalies, rows, verifs] = await Promise.all([
     pgClient.unsafe(
       `SELECT quality_state AS q, COUNT(*)::int AS n, AVG(coverage_ratio)::float8 AS avg, SUM(repair_pass_count)::int AS repairs
          FROM document_extraction_coverage WHERE updated_at >= $1 GROUP BY quality_state`,
@@ -125,7 +160,9 @@ export async function getT1CompletenessOverview(opts: { days?: number; limit?: n
               c.total_units AS "totalUnits", c.unresolved_units AS "unresolvedUnits", c.uncertain_units AS "uncertainUnits",
               c.failed_units AS "failedUnits", c.facts_count AS "factsCount", c.dropped_facts_count AS "droppedFactsCount",
               c.truncated_sections_count AS "truncatedSectionsCount", c.repair_pass_count AS "repairPassCount",
-              c.chunk_count AS "chunkCount", c.retry_attempts AS "retryAttempts", c.origin, c.updated_at AS "updatedAt"
+              c.chunk_count AS "chunkCount", c.retry_attempts AS "retryAttempts", c.origin, c.updated_at AS "updatedAt",
+              to_jsonb(c) ->> 'source_verification' AS "sourceVerification", to_jsonb(c) -> 'verification' AS verification,
+              to_jsonb(c) ->> 'last_retry_at' AS "lastRetryAt", to_jsonb(c) ->> 'last_retry_result' AS "lastRetryResult"
          FROM document_extraction_coverage c
          LEFT JOIN asset_files af ON af.id = c.file_id
         WHERE c.updated_at >= $1 AND cardinality(c.anomalies) > 0
@@ -134,6 +171,11 @@ export async function getT1CompletenessOverview(opts: { days?: number; limit?: n
         LIMIT $3`,
       [since, opts.anomaly ?? null, Math.min(Math.max(opts.limit ?? 50, 1), 200)] as never[],
     ) as unknown as Promise<CompletenessDocumentRow[]>,
+    pgClient.unsafe(
+      `SELECT coalesce(to_jsonb(c) ->> 'source_verification', 'NOT_CHECKED') AS v, COUNT(*)::int AS n
+         FROM document_extraction_coverage c WHERE c.updated_at >= $1 GROUP BY 1`,
+      [since] as never[],
+    ) as unknown as Promise<Array<{ v: string; n: number }>>,
   ]);
   const out = { ...empty, byQuality: { ...empty.byQuality } };
   let total = 0;
@@ -146,6 +188,7 @@ export async function getT1CompletenessOverview(opts: { days?: number; limit?: n
   }
   out.averageCoverage = total > 0 ? Math.round((somme / total) * 10_000) / 10_000 : null;
   for (const a of anomalies) out.byAnomaly[a.code] = Number(a.n);
+  for (const v of verifs) out.bySourceVerification[v.v] = Number(v.n);
   out.rows = rows.map((r) => ({ ...r, coverageRatio: Number(r.coverageRatio) }));
   return out;
 }

@@ -18,8 +18,8 @@
  *   4. catalogue tarifaire : page officielle Google (`syncPricingCatalog`) —
  *      indépendant : une panne de la source tarifaire n'empêche rien ;
  *   5. baseline du bandeau à la première synchronisation réussie ;
- *   6. modèles actifs devenus inutilisables : alerte d'exploitation, sans
- *      jamais modifier la configuration.
+ *   6. modèles actifs devenus inutilisables : UNE alerte d'exploitation par
+ *      modèle et fenêtre (lot 49), sans jamais modifier la configuration.
  *
  * Un passage à la fois (bail `ai-catalog-sync`, partagé entre instances) ;
  * un second déclenchement pendant un passage rend `skipped`. Ne lève pas.
@@ -58,6 +58,10 @@ export interface AiCatalogSyncDeps {
   maxQualifications?: number;
   /** Budget de la phase de qualification, en ms (défaut : 8 min planifié, 20 s bouton). */
   qualificationBudgetMs?: number;
+  /** Pause avant le second contrôle d'un modèle suspect (ms) ; injecté en test. */
+  confirmDelayMs?: number;
+  /** Alerte d'exploitation ; injectée en test. */
+  raiseAlert?: (a: import('../alerts/alerts.repository').AlertInput) => Promise<boolean>;
   /** Bail inter-instances ; injecté en test. `null` : passage déjà en cours. */
   lock?: () => Promise<{ release: () => Promise<void> } | null>;
   now?: () => Date;
@@ -128,7 +132,7 @@ export async function syncAiCatalog(
 
     if (cat.ok && secret && cat.listed?.length) {
       // 2. Qualification automatique.
-      const [Q, { DECLARED_MODELS }, { loadActiveChains }, { recordOperationalStatus, probeModels }, { thinkingConfigFor }] = await Promise.all([
+      const [Q, { DECLARED_MODELS }, { loadActiveChains }, { recordOperationalCheck, probeModels }, { thinkingConfigFor }] = await Promise.all([
         import('./model-qualification.service'), import('../registry/models'), import('./active-model-anomalies'),
         import('./model-operational.service'), import('../gateway/providers/gemini-generation-config'),
       ]);
@@ -140,9 +144,12 @@ export async function syncAiCatalog(
       const manuel = opts.trigger === 'manual';
       const max = deps.maxQualifications ?? (manuel ? 4 : 12);
       const finBudget = Date.now() + (deps.qualificationBudgetMs ?? (manuel ? 20_000 : 8 * 60_000));
-      const call = deps.qualificationCall ?? Q.defaultQualificationCall();
+      const call = deps.qualificationCall ?? Q.defaultQualificationCall(secret);
       const parModele = new Map(cat.listed.map((m) => [m.model, m]));
       const qualifiesIci = new Set<string>();
+      // Lot 49 : échec PRÉSUMÉ de la génération pendant la qualification —
+      // modèle suspect, recontrôlé par la sonde ci-dessous (confirmation).
+      const aConfirmer = new Set<string>();
       const lot = aQualifier.slice(0, max);
       let traites = 0;
       // Par paquets de 4 modèles en parallèle (épreuves d'un modèle en série) ;
@@ -158,9 +165,19 @@ export async function syncAiCatalog(
           }),
         })));
         for (const { model, r } of resultats) {
-          if (r.generate === null) { result.qualification.inconclusive.push(model); continue; }
+          const issue = r.generateOutcome ?? (r.generate === true ? { status: 'ok' as const } : null);
+          if (r.generate === null) {
+            result.qualification.inconclusive.push(model);
+            // Non concluant : état retenu inchangé (diagnostic mis à jour).
+            // Échec présumé : suspect, puis second contrôle par la sonde.
+            if (issue) {
+              const etat = await recordOperationalCheck({ model, secret, outcome: issue, source: 'qualification' });
+              if (etat.checkStatus === 'suspect') aConfirmer.add(model);
+            }
+            continue;
+          }
           await Q.recordQualification(model, secret, r);
-          await recordOperationalStatus({ model, secret, ok: r.generate, error: r.errors.generate ?? null, source: 'catalog_refresh' });
+          if (issue) await recordOperationalCheck({ model, secret, outcome: issue, source: 'qualification' });
           qualifiesIci.add(model);
           (r.generate && r.structured !== false ? result.qualification.qualified : result.qualification.failed).push(model);
         }
@@ -170,11 +187,14 @@ export async function syncAiCatalog(
       // 3. Statut opérationnel des modèles déjà utilisables.
       const apres = await Q.loadQualifications(secret);
       const aSonder = cat.listed.map((m) => m.model)
-        .filter((m) => !qualifiesIci.has(m) && (declares.has(m) || apres.get(m)?.generate))
-        .sort((a, b) => Number(actifs.has(b)) - Number(actifs.has(a)))
+        .filter((m) => !qualifiesIci.has(m) && (aConfirmer.has(m) || declares.has(m) || apres.get(m)?.generate))
+        .sort((a, b) => Number(aConfirmer.has(b) || actifs.has(b)) - Number(aConfirmer.has(a) || actifs.has(a)))
         .slice(0, MAX_PROBES);
       if (aSonder.length > 0) {
-        const probes = await probeModels(aSonder, secret, deps.probeCall ? { call: deps.probeCall } : {});
+        const probes = await probeModels(aSonder, secret, {
+          ...(deps.probeCall ? { call: deps.probeCall } : {}),
+          ...(deps.confirmDelayMs !== undefined ? { confirmDelayMs: deps.confirmDelayMs } : {}),
+        });
         result.operational = { probed: probes.length, failed: probes.filter((p) => !p.ok && !p.transient).map((p) => p.model) };
       }
     }
@@ -198,12 +218,13 @@ export async function syncAiCatalog(
 
     // 6. Modèles actifs devenus inutilisables : alerte, jamais de remplacement.
     try {
-      const [{ loadUsableModelsContext }, A] = await Promise.all([
-        import('../registry/usable-models'), import('./active-model-anomalies'),
+      const [{ loadUsableModelsContext }, A, { loadOperationalDiagnostics }] = await Promise.all([
+        import('../registry/usable-models'), import('./active-model-anomalies'), import('./model-operational.service'),
       ]);
       const ctx = await loadUsableModelsContext();
       result.anomalies = A.detectActiveModelAnomalies(await A.loadActiveChains(), ctx);
-      await A.raiseActiveModelAlerts(result.anomalies, now);
+      const diagnostics = result.anomalies.length ? await loadOperationalDiagnostics(secret ?? null) : new Map();
+      await A.raiseActiveModelAlerts(result.anomalies, now, deps.raiseAlert, diagnostics);
     } catch (e) {
       console.warn('[ai-catalog-sync] contrôle des modèles actifs impossible :', (e as Error).message);
     }
@@ -232,5 +253,6 @@ export function summaryOf(r: AiCatalogSyncResult): Record<string, unknown> {
     pricing: { status: r.pricing.status, known: r.pricing.known, unknown: r.pricing.unknown, changed: r.pricing.changed, ...(r.pricing.error ? { error: r.pricing.error } : {}) },
     ...(r.baseline ? { baseline: true } : {}),
     anomalies: r.anomalies.map((a) => `${a.treatment}/${a.rank}/${a.model}`),
+    ...(r.anomalies.length ? { unavailableModels: [...new Set(r.anomalies.map((a) => a.model))] } : {}),
   };
 }

@@ -164,11 +164,13 @@ scenario('L32C', 'Rattachement document ↔ bien : rattrapage versionné T3, inc
     const apres = await resolution(doc.id);
     expect(apres.status).toBe('ABSTAINED');
     expect(apres.runs).toBe(avant.runs);
-    expect(new Date(apres.evaluated_at!).getTime()).toBeGreaterThan(new Date(avant.evaluated_at!).getTime() - 3_600_000);
-    // … mais le contexte pertinent est identique : CONFIRMED_NO_CHANGE, révision avancée ; l'heure suivante, plus rien.
+    // … contexte pertinent identique ; lot 49B : la carte « À traiter » LINK-ASSET est OUVERTE —
+    // le balayage ne la confirme plus (aucune écriture, aucun travail, aucune IA) : il la délègue à la
+    // phase « open actions » du passage compte (réexamen à chaque passage, plafond de coût).
     expect((await sql<{ e: { result: string; aiCalled: boolean } }[]>`SELECT last_evaluation AS e FROM document_asset_resolutions WHERE file_id = ${doc.id}`)[0].e)
-      .toMatchObject({ result: 'CONFIRMED_NO_CHANGE', aiCalled: false });
+      .not.toMatchObject({ result: 'CONFIRMED_NO_CHANGE' });
     expect(await balayer(compte)).toBe(0);
+    expect(await jobsDoc(doc.id)).toHaveLength(1);
   });
 
   it('T3RV-04 — même version, NOUVELLE extraction : réévaluation autorisée', async () => {

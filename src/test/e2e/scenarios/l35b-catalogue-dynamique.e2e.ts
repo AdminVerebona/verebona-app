@@ -160,7 +160,9 @@ scenario('L35B', 'Catalogue IA dynamique : découverte, qualification, preview, 
 
     // CAT-04/05/06 — proposés aux traitements compatibles, preview compris, sans tarif compris.
     const cat = await catalogues();
-    for (const t of ['T1', 'T2', 'T3', 'T4', 'T5'] as const) {
+    // Lot 49 : T5 retiré — plus de liste pour lui.
+    expect(cat.body.modelsByTreatment.T5).toBeUndefined();
+    for (const t of ['T1', 'T2', 'T3', 'T4'] as const) {
       const liste = (cat.body.modelsByTreatment[t] as Array<{ model: string }>).map((m) => m.model);
       expect(liste, t).toEqual(expect.arrayContaining(['gemini-9-flash', 'gemini-9-pro-preview']));
       // CAT-12 / CAT-13.
@@ -184,13 +186,20 @@ scenario('L35B', 'Catalogue IA dynamique : découverte, qualification, preview, 
   });
 
   it('CAT-13/CAT-14 — modèle ACTIF retiré : alerte d’exploitation, anomalie visible au BO, configuration jamais modifiée', async () => {
-    const alertes = await sql<{ treatment: string; message: string; details: { model: string; rank: string } }[]>`
-      SELECT treatment, message, details FROM ai_alerts WHERE code = 'ai_active_model_unavailable' ORDER BY treatment`;
-    expect(alertes.length).toBeGreaterThan(0);
-    expect(alertes.every((a) => a.details.model === 'gemini-3.5-flash' && a.details.rank === 'fallback1')).toBe(true);
+    // Lot 49 (ticket 11) : UNE alerte par modèle et fenêtre, tous les usages dans `details.usages`.
+    const alertes = await sql<{ treatment: string | null; message: string; details: { model: string; usages: Array<{ treatment: string; rank: string; source: string; fallbackAvailable: boolean }> } }[]>`
+      SELECT treatment, message, details FROM ai_alerts WHERE code = 'ai_active_model_unavailable' ORDER BY id`;
+    expect(alertes).toHaveLength(1);
+    expect(alertes[0].treatment).toBeNull();
+    expect(alertes[0].details.model).toBe('gemini-3.5-flash');
+    expect(alertes[0].details.usages.length).toBeGreaterThan(0);
+    expect(alertes[0].details.usages.every((u) => u.rank === 'fallback1' && typeof u.fallbackAvailable === 'boolean' && u.source)).toBe(true);
     expect(alertes[0].message).toMatch(/Aucun remplacement automatique/);
     const s = await statut();
     expect((s.body.anomalies as Array<{ model: string }>).map((a) => a.model)).toContain('gemini-3.5-flash');
+    const groupes = s.body.unavailableModels as Array<{ model: string; usages: unknown[] }>;
+    expect(groupes.map((g) => g.model)).toEqual(['gemini-3.5-flash']);
+    expect(s.body.unavailableTitle).toBe(`1 modèle actif indisponible — ${groupes[0].usages.length} usage${groupes[0].usages.length > 1 ? 's impactés' : ' impacté'}`);
     // Aucune version de configuration créée ni modifiée ; la chaîne du code reste celle d'origine.
     expect(JSON.stringify(await sql`SELECT id, status, updated_at FROM ai_config_versions ORDER BY id`)).toBe(versionsAvant);
     const { AI_OPERATIONS } = await import('@/services/ai/registry/operations');

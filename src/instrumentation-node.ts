@@ -89,7 +89,7 @@ export async function registerNode(): Promise<void> {
   //    Contrôle purement statique — il ne lit que le code, jamais la base.
   assertAiRegistryStartup();
 
-  //    Correspondance T1-T5 (CDC BO IA §1.3). Contrôle statique : une bijection
+  //    Correspondance T1–T4, T6 (CDC BO IA §1.3 ; T5 retiré au lot 49, AI_GOVERNANCE technique). Contrôle statique : une bijection
   //    rompue ferait appliquer une configuration au mauvais traitement.
   const { assertTreatmentMapping } = await import('@/services/ai/config/treatments');
   assertTreatmentMapping();

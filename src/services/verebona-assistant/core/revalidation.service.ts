@@ -226,7 +226,7 @@ export async function loadFactToCheck(
             coalesce(f.evidence_origin, 'TEXT_EXTRACTION') AS "evidenceOrigin", f.visual_evidence AS "visualEvidence"
        FROM document_facts f
        JOIN document_extractions e ON e.id = f.extraction_id
-       JOIN asset_files af ON af.id = f.file_id AND af.deleted_at IS NULL
+       JOIN asset_files af ON af.id = f.file_id AND af.account_id = f.account_id AND af.deleted_at IS NULL -- lot 49
       WHERE f.id = $1 AND f.account_id = $2 AND f.status = 'active'
         -- La revalidation confronte un extrait au texte : une observation
         -- visuelle (sans extrait, 0161) n'en relève que par VISUAL_RECHECK.

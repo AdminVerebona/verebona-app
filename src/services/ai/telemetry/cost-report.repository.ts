@@ -234,6 +234,10 @@ export async function getCostReport(f: CostFilters = {}): Promise<CostReport> {
 
   const treatmentLabel = (code: string): string => {
     const d = Object.values(TREATMENT_DEFINITIONS).find((x) => x.useCaseCode === code);
+    // Lot 49 : AI_GOVERNANCE n'est plus « T5 » — usage technique (sondes,
+    // tests fournisseur, évaluations ; anciens appels T5 compris). Mêmes
+    // lignes, même somme : aucun double comptage.
+    if (!d && code === 'AI_GOVERNANCE') return 'Technique · Gouvernance IA (sondes, tests, historique T5)';
     return d ? `${d.code} · ${d.label}` : code;
   };
 

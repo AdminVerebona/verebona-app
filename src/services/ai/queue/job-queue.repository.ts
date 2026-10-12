@@ -19,7 +19,7 @@
  * doit pas bloquer les autres sur un job qu'elle ne prendra pas.
  */
 import { pgClient } from '@/db';
-import type { Treatment } from '../config/treatments';
+import { isTreatment, type Treatment } from '../config/treatments';
 import {
   dedupeKey, decideQueueing, afterFailure, afterDeferral, MAX_ATTEMPTS,
   type JobOrigin, type JobScope, type JobStatus, type QueueDecision, type JobBusinessResult,
@@ -156,6 +156,14 @@ export interface EnqueueResult {
 export async function enqueue(input: EnqueueInput): Promise<EnqueueResult> {
   const origin = input.origin ?? 'automatic';
   const key = dedupeKey(input.treatment, input.scope ?? {});
+
+  // Lot 49 (SEC-08) : une demande dont une référence (cible, bien, document
+  // source…) appartient à un autre compte que celui du travail n'est pas
+  // mise en file. Rien n'est écrit ; `jobId` nul.
+  {
+    const { enqueueScopeAllowed } = await import('./job-scope');
+    if (!(await enqueueScopeAllowed(input))) return { decision: 'skip', jobId: null };
+  }
 
   if (input.onlyIfNeverQueued) return enqueueOnce(input, key, origin);
 
@@ -970,7 +978,9 @@ export async function getTreatmentStates(): Promise<Array<{
        FROM ai_treatment_state ORDER BY treatment`,
     [] as never[],
   );
-  return (rows as unknown as Row[]).map((r) => ({
+  // Lot 49 : une ligne d'un traitement retiré (T5, neutralisée par la
+  // migration 0336) n'est jamais rendue comme un traitement courant.
+  return (rows as unknown as Row[]).filter((r) => isTreatment(String(r.treatment))).map((r) => ({
     treatment: String(r.treatment) as Treatment,
     state: String(r.state) as TreatmentState,
     suspendedReason: r.suspended_reason == null ? null : String(r.suspended_reason),

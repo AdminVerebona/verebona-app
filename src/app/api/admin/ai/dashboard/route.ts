@@ -5,7 +5,7 @@
  * « EN MOINS D'UN ÉCRAN »
  *
  * Le premier critère d'acceptation : « l'administrateur identifie en moins d'un
- * écran la version réellement active et l'état T1–T5 ». Une seule route donc,
+ * écran la version réellement active et l'état des traitements » (T1, T2, T3, T4, T6). Une seule route donc,
  * qui rassemble ce que cinq écrans montrent en détail.
  *
  * Les rassembler côté serveur plutôt que côté client n'est pas qu'une question

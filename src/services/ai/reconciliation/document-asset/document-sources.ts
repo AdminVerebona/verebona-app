@@ -15,12 +15,13 @@
  *     (`document_extractions`, `document_facts` actifs) — fournisseur par
  *     défaut, toujours présent ;
  *   · T1_CANDIDATES : preuves de T1 (signaux lus par T1 pour ses candidats) ;
- *   · demain SOURCE_UNITS (`document_source_units`, ticket T1 « extraction
- *     exhaustive ») : il suffira d'appeler `registerDocumentSourceProvider`
- *     depuis le module qui crée ces unités — aucune refonte du moteur. Ses
- *     textes et faits entreront dans la découverte ET dans l'empreinte du
- *     contexte (`digest`), donc une nouvelle unité rendra les anciennes
- *     décisions réévaluables.
+ *   · SOURCE_UNITS / UNRESOLVED_FACTS (lot 49B, `source-unit-provider.ts`) :
+ *     couche exhaustive T1 (`document_source_units`, `document_unresolved_facts`),
+ *     enregistrée par `registerSourceUnitProviders` — sélection ciblée,
+ *     textes INCERTAINS réduits à un indice de contexte. Ces textes entrent
+ *     dans la découverte ; dans l'empreinte du contexte, seules les unités
+ *     effectivement CONSIDÉRÉES (qui désignent un candidat) comptent
+ *     (`context.ts`) — le digest ci-dessous ne les hache pas en bloc.
  *
  * Jamais le fichier, jamais d'OCR, jamais T1 : seulement ce qui est persisté.
  * ══════════════════════════════════════════════════════════════════════════
@@ -30,7 +31,10 @@ import { getDocumentKnowledge } from '../../knowledge/document-knowledge.service
 import type { StoredT1Candidate } from './resolution.repository';
 
 /** Origine d'un élément de connaissance documentaire. */
-export type DocumentSourceKind = 'EXTRACTION' | 'TRANSCRIPTION' | 'FACTS' | 'T1_CANDIDATES' | 'SOURCE_UNITS' | (string & {});
+export type DocumentSourceKind = 'EXTRACTION' | 'TRANSCRIPTION' | 'FACTS' | 'T1_CANDIDATES' | 'SOURCE_UNITS' | 'UNRESOLVED_FACTS' | (string & {});
+
+/** Origines de la couche exhaustive T1 (lot 49B) : hors digest documentaire, comptées par unité considérée. */
+export const EXHAUSTIVE_SOURCE_KINDS: readonly string[] = ['SOURCE_UNITS', 'UNRESOLVED_FACTS'];
 
 /**
  * Zone du texte : un nom cité dans le TITRE, la DESCRIPTION ou un FAIT
@@ -43,6 +47,13 @@ export interface DocumentSourceText {
   origin: DocumentSourceKind;
   zone: DocumentTextZone;
   text: string;
+  /** Unités source T1 dont le texte provient (lot 49B, monitoring « matchedSourceUnitIds »). */
+  unitIds?: string[];
+  /**
+   * Lecture INCERTAINE (unité UNCERTAIN, fait mal formé) : jamais une preuve,
+   * jamais un rattachement déterministe — indice de contexte seulement.
+   */
+  uncertain?: boolean;
 }
 
 export interface DocumentSourceFact {
@@ -167,11 +178,17 @@ export function documentSourceProviders(): DocumentSourceProvider[] {
   return [...providers.values()];
 }
 
-/** Empreinte de la connaissance documentaire (pure) : textes hachés, faits triés. */
+/**
+ * Empreinte de la connaissance documentaire (pure) : textes hachés, faits
+ * triés. Les textes de la couche exhaustive (SOURCE_UNITS, UNRESOLVED_FACTS)
+ * n'y entrent pas en bloc : seules les unités CONSIDÉRÉES entrent dans
+ * l'empreinte du contexte (`documentAssetContextFingerprint`, lot 49B) — une
+ * empreinte stable, qui ne change que pour une connaissance pertinente.
+ */
 export function documentKnowledgeDigest(s: Pick<DocumentKnowledgeSources, 'extraction' | 'texts' | 'facts'>): string {
   const h = createHash('sha256');
   h.update(JSON.stringify(s.extraction ?? null));
-  for (const t of [...s.texts].sort((a, b) => `${a.origin}|${a.zone}`.localeCompare(`${b.origin}|${b.zone}`) || a.text.localeCompare(b.text))) {
+  for (const t of s.texts.filter((x) => !EXHAUSTIVE_SOURCE_KINDS.includes(x.origin)).sort((a, b) => `${a.origin}|${a.zone}`.localeCompare(`${b.origin}|${b.zone}`) || a.text.localeCompare(b.text))) {
     h.update(`\u0001${t.origin}|${t.zone}|${t.text}`);
   }
   const facts = s.facts
@@ -209,4 +226,17 @@ export async function loadDocumentKnowledgeSources(p: {
   }
   if (!out.extraction) return null;
   return { ...out, digest: documentKnowledgeDigest(out) };
+}
+
+/**
+ * Sources documentaires RÉELLEMENT utilisées (monitoring, lot 49B) :
+ * EXTRACTION, TRANSCRIPTION, FACTS, T1_CANDIDATES, SOURCE_UNITS,
+ * UNRESOLVED_FACTS — selon les textes et faits effectivement chargés. Pure.
+ */
+export function usedDocumentSources(s: Pick<DocumentKnowledgeSources, 'texts' | 'facts'> | null): string[] {
+  if (!s) return [];
+  const out = new Set<string>(s.texts.map((t) => String(t.origin)));
+  if (s.facts.length > 0) out.add('FACTS');
+  const ordre = ['EXTRACTION', 'TRANSCRIPTION', 'FACTS', 'T1_CANDIDATES', 'SOURCE_UNITS', 'UNRESOLVED_FACTS'];
+  return [...out].sort((a, b) => (ordre.indexOf(a) + 1 || 99) - (ordre.indexOf(b) + 1 || 99) || a.localeCompare(b));
 }

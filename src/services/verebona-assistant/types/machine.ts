@@ -68,6 +68,20 @@ export interface ClarificationCandidate {
   resumeIntent?: import('./intents').VerebonaIntent;
   /** Équipement / pièce : bien PARENT du candidat (lot 29, ticket 13 §G). */
   assetId?: number | null;
+  /**
+   * Lot 49 : interprétation MÉTIER (clarification sémantique) — référence de
+   * la source réelle (`operation:12`, `field:5:leaseEndDate`…), relue et
+   * revalidée par le serveur à la reprise, jamais crue sur parole.
+   */
+  sourceRef?: string;
+}
+
+/** Lot 49 : besoin sémantique conservé pour la reprise (aucune reformulation). */
+export interface SemanticResumeContext {
+  terms: string[];
+  facts: string[];
+  need: 'end_date' | 'date' | 'amount' | null;
+  strategyCandidate?: string | null;
 }
 
 export type ClarificationStatus = 'PENDING' | 'RESOLVED' | 'EXPIRED' | 'EXHAUSTED' | 'ABANDONED';
@@ -93,7 +107,7 @@ export interface ClarificationState {
    * Paramètres déjà identifiés (bien de la page, année…). `requestedFacts` :
    * champs de la demande initiale, relus tous à la reprise (lot 29, ticket 12).
    */
-  resolvedContext?: { pageAssetId?: number | null; assetId?: number | null; requestedFacts?: string[] };
+  resolvedContext?: { pageAssetId?: number | null; assetId?: number | null; requestedFacts?: string[]; semantic?: SemanticResumeContext };
   /** Ce qui est ambigu : le champ que le choix viendra fixer. */
   ambiguity?:
     | { kind: 'asset'; field: 'assetId'; reason: string }
@@ -102,8 +116,10 @@ export interface ClarificationState {
     /** Action ambiguë (§20.1). */
     | { kind: 'action'; field: 'intent'; reason: string }
     /** Équipement / pièce homonymes (lot 29, ticket 13 §G, §H). */
-    | { kind: 'equipment' | 'room'; field: 'entityId'; reason: string };
-  candidateType: 'asset' | 'document' | 'agenda' | 'supplier' | 'period' | 'action' | 'equipment' | 'room';
+    | { kind: 'equipment' | 'room'; field: 'entityId'; reason: string }
+    /** Lot 49 : plusieurs interprétations MÉTIER plausibles (« quel contrat ? »). */
+    | { kind: 'semantic'; field: 'source'; reason: string };
+  candidateType: 'asset' | 'document' | 'agenda' | 'supplier' | 'period' | 'action' | 'equipment' | 'room' | 'business_source';
   candidates: ClarificationCandidate[];
   question: string;
   createdAt?: string;

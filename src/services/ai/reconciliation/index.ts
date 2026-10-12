@@ -31,6 +31,7 @@ import {
   onDocumentAnalyzedForOperations, registerBusinessOperationsT3, startOperationsSweep,
 } from '@/services/business-operations/consolidation/queue';
 import { registerOperationAgendaProjection, startAgendaProjectionSweep } from '@/services/business-operations/agenda-projection/queue';
+import { registerSourceUnitProviders } from './document-asset/source-unit-provider';
 
 export { resolveDocumentAsset } from './document-asset/resolve-document-asset.service';
 export { requestDocumentAssetResolution, T3_TARGET_DOCUMENT } from './document-asset/queue';
@@ -53,6 +54,9 @@ export function registerReconciliationHandlers(): void {
   // exécutées par `runT3Job`) et rattrapage des documents sans bien
   // principal ouvert par la racine du balayage planifié (pages bornées).
   registerDocumentAssetT3();
+  // Lot 49B — couche exhaustive T1 (unités source, faits non résolus) comme
+  // sources documentaires de T3 DOCUMENT_ASSET (base seulement, jamais le fichier).
+  registerSourceUnitProviders();
   registerT3SweepStarter('document_asset', ({ cycleId, triggerCode, guard }) => startDocumentSweep({ cycleId, triggerCode, guard }));
   // Lot 33C — rattrapage des titres non conformes (« <uuid>.pdf ») des
   // documents analysés : contrôle indépendant des autres traitements, pages

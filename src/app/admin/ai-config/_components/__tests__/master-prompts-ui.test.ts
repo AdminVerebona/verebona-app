@@ -75,7 +75,9 @@ describe('BO-IA-PROMPTS-01 — écran des prompts maîtres', () => {
   });
 
   it('page : section « Prompts maîtres » branchée ; la configuration ne porte plus l’éditeur du texte master', () => {
-    expect(page).toContain('<MasterPrompts refreshKey={promptsKey} />');
+    // Lot 49 : plus de rafraîchissement après une écriture de Prompt Control (T5 supprimé).
+    expect(page).toContain('<MasterPrompts />');
+    expect(page).not.toMatch(/promptsKey|PromptControl/);
     expect(page).toContain('s’administre dans la section « Prompts maîtres »');
     expect(page).not.toContain("set('masterPrompt'");
   });

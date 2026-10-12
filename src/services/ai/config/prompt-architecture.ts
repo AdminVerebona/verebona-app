@@ -28,7 +28,7 @@
  */
 import { listMasterPrompts, AI_OPERATIONS } from '../registry/operations';
 import { checkMasterTemplate, inspectMasterTemplate, isOptionalMasterTask, isOptionalMasterVariable } from '../prompts/prompt-loader';
-import { treatmentForUseCase, isMasterOnlyTreatment, isPromptAdministrable, type Treatment } from './treatments';
+import { treatmentOfUseCase, isMasterOnlyTreatment, type Treatment } from './treatments';
 import { retiredVariablesSet } from './retired-variables';
 import {
   promptArchitectureOf, masterPromptOf, type PromptArchitecture, type TreatmentConfig,
@@ -44,7 +44,7 @@ export interface TreatmentMaster {
 /** Master déclaré pour un traitement, ou `null` (bascule `master` impossible). */
 export function masterPromptForTreatment(treatment: Treatment): TreatmentMaster | null {
   for (const m of listMasterPrompts()) {
-    if (treatmentForUseCase(m.useCaseCode) === treatment) {
+    if (treatmentOfUseCase(m.useCaseCode) === treatment) {
       return { masterPromptCode: m.masterPromptCode, tasks: [...m.tasks] };
     }
   }
@@ -53,7 +53,9 @@ export function masterPromptForTreatment(treatment: Treatment): TreatmentMaster 
 
 /** Traitements pour lesquels un master existe (lot 12 : T1). */
 export function masterCapableTreatments(): Treatment[] {
-  return listMasterPrompts().map((m) => treatmentForUseCase(m.useCaseCode));
+  return listMasterPrompts()
+    .map((m) => treatmentOfUseCase(m.useCaseCode))
+    .filter((t): t is Treatment => t !== null);
 }
 
 export type PromptArchitectureDecision =
@@ -124,7 +126,7 @@ export function declaredMasterVariables(masterPromptCode: string): string[] {
 }
 
 /**
- * Contrôle COMPLET d'un texte master proposé pour un traitement (T5 MODIFY,
+ * Contrôle COMPLET d'un texte master proposé pour un traitement (édition manuelle,
  * enregistrement d'une version) : structure (`checkMasterTemplate` :
  * discriminant + une section par branche) ET emplacements identiques à ceux
  * que le code fournit (registre) — un emplacement supprimé ou inventé ferait
@@ -198,11 +200,6 @@ export function masterConfigIssues(
   c: TreatmentConfig,
 ): Array<{ field: 'prompt' | 'promptArchitecture' | 'masterPrompt'; message: string; blocking: boolean }> {
   const out: Array<{ field: 'prompt' | 'promptArchitecture' | 'masterPrompt'; message: string; blocking: boolean }> = [];
-  // Prompt non administrable (T5) : ses textes stockés sont ignorés à
-  // l'exécution — ils ne sont pas inspectés comme des textes actifs. Seuls
-  // l'architecture et le master du DÉPÔT sont contrôlés.
-  const administrable = isPromptAdministrable(c.treatment);
-  if (!administrable) c = { ...c, prompt: '', masterPrompt: null };
   const pre = inspectMasterTemplate(c.prompt ?? '');
   if (pre.hasTaskPlaceholder || /BRANCHE\s+(?:TASK|MODE)\s*=/.test(c.prompt ?? '')) {
     // Lot 16b : le préambule n'est plus appliqué (aucune opération par étapes)
@@ -257,8 +254,7 @@ export function masterConfigIssues(
 
   if (!master) {
     out.push({ field: 'promptArchitecture', message: `Architecture « master » sans prompt maître déclaré pour ${c.treatment}.`, blocking: true });
-  } else if (!texte && isPromptAdministrable(c.treatment)) {
-    // T5 : fichier du dépôt par construction (non administrable), rien à signaler.
+  } else if (!texte) {
     out.push({
       field: 'masterPrompt',
       message: `Texte master vide : le fichier ${master.masterPromptCode} du dépôt s'appliquera (valeur initiale, D-03).`,

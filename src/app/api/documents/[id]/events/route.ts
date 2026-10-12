@@ -1,51 +1,50 @@
+/**
+ * Événements (domaine historique « events ») liés à un document — lot 49,
+ * SEC-02 : autorisation par le COMPTE ACTIF (et non plus par l'utilisateur
+ * seul) ; document, événements et associations bornés au compte dans le SQL.
+ * Un identifiant étranger fait refuser la demande entière ; une association
+ * incorrecte déjà en base n'expose jamais un événement d'un autre compte.
+ */
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/db';
 import { eventDocuments, events, assetFiles } from '@/db/schema';
-import { eq, and, isNull } from 'drizzle-orm';
-import { getSession } from '@/lib/auth-guards';
+import { eq, and, isNull, inArray, sql } from 'drizzle-orm';
+import { SessionService } from '@/lib/session-service';
+import { cleanIds, findRejectedRefs, logCrossAccountRefusal } from '@/services/security/account-ownership';
+
+type Ctx = { params: Promise<{ id: string }> };
+
+const err = (status: number, error: string, message: string) => NextResponse.json({ error, message }, { status });
+
+/** Compte actif et document du compte (non supprimé), ou réponse d'erreur. */
+async function documentOfAccount(request: NextRequest, ctx: Ctx) {
+  let session;
+  try {
+    session = await SessionService.getSession(request);
+  } catch (e) {
+    return SessionService.handleSessionError(e);
+  }
+  if (!session?.currentAccountId) return err(401, 'UNAUTHORIZED', 'Authentification requise');
+  const { id } = await ctx.params;
+  const documentId = parseInt(id);
+  if (isNaN(documentId)) return err(400, 'INVALID_INPUT', 'ID de document invalide');
+  const [document] = await db
+    .select({ id: assetFiles.id, assetId: assetFiles.assetId })
+    .from(assetFiles)
+    .where(and(eq(assetFiles.id, documentId), eq(assetFiles.accountId, session.currentAccountId), isNull(assetFiles.deletedAt)))
+    .limit(1);
+  if (!document) return err(404, 'NOT_FOUND', 'Document non trouvé');
+  return { accountId: session.currentAccountId, documentId, documentAssetId: document.assetId };
+}
 
 /**
- * GET /api/documents/[id]/events
- * 
- * List all events linked to a specific document
+ * GET /api/documents/[id]/events — événements liés au document (du compte).
  */
-export async function GET(
-  request: NextRequest,
-  { params }: { params: Promise<{ id: string }> }
-) {
+export async function GET(request: NextRequest, ctx: Ctx) {
   try {
-    const { userId } = await getSession(request);
-    const { id } = await params;
-    const documentId = parseInt(id);
+    const d = await documentOfAccount(request, ctx);
+    if (d instanceof NextResponse) return d;
 
-    if (isNaN(documentId)) {
-      return NextResponse.json(
-        { error: 'INVALID_INPUT', message: 'ID de document invalide' },
-        { status: 400 }
-      );
-    }
-
-    // Verify document exists and belongs to user
-    const document = await db
-      .select()
-      .from(assetFiles)
-      .where(
-        and(
-          eq(assetFiles.id, documentId),
-          eq(assetFiles.userId, userId),
-          isNull(assetFiles.deletedAt)
-        )
-      )
-      .limit(1);
-
-    if (document.length === 0) {
-      return NextResponse.json(
-        { error: 'NOT_FOUND', message: 'Document non trouvé' },
-        { status: 404 }
-      );
-    }
-
-    // Get all events linked to this document
     const linkedEvents = await db
       .select({
         id: events.id,
@@ -60,226 +59,118 @@ export async function GET(
         associationDate: eventDocuments.createdAt,
       })
       .from(eventDocuments)
-      .innerJoin(events, eq(eventDocuments.eventId, events.id))
-      .where(eq(eventDocuments.fileId, documentId))
+      .innerJoin(events, and(eq(eventDocuments.eventId, events.id), eq(events.accountId, d.accountId)))
+      .where(eq(eventDocuments.fileId, d.documentId))
       .orderBy(events.date);
 
     return NextResponse.json({
-      documentId,
+      documentId: d.documentId,
       events: linkedEvents,
       total: linkedEvents.length,
     }, { status: 200 });
-
   } catch (error) {
-    if (error instanceof Response) {
-      return error;
-    }
     console.error('GET /api/documents/[id]/events error:', error);
-    return NextResponse.json(
-      { error: 'INTERNAL_ERROR', message: 'Erreur serveur interne' },
-      { status: 500 }
-    );
+    return err(500, 'INTERNAL_ERROR', 'Erreur serveur interne');
   }
 }
 
 /**
- * POST /api/documents/[id]/events
- * 
- * Associate this document with one or more events
+ * POST /api/documents/[id]/events — associe le document à des événements
+ * du compte, portés par le même bien que le document.
  */
-export async function POST(
-  request: NextRequest,
-  { params }: { params: Promise<{ id: string }> }
-) {
+export async function POST(request: NextRequest, ctx: Ctx) {
   try {
-    const { userId } = await getSession(request);
-    const { id } = await params;
-    const documentId = parseInt(id);
+    const d = await documentOfAccount(request, ctx);
+    if (d instanceof NextResponse) return d;
 
-    if (isNaN(documentId)) {
-      return NextResponse.json(
-        { error: 'INVALID_INPUT', message: 'ID de document invalide' },
-        { status: 400 }
-      );
-    }
-
-    const body = await request.json();
-    const { eventIds } = body;
-
+    const body = await request.json().catch(() => ({}));
+    const { eventIds } = body as { eventIds?: unknown };
     if (!Array.isArray(eventIds) || eventIds.length === 0) {
-      return NextResponse.json(
-        { error: 'INVALID_INPUT', message: 'eventIds doit être un tableau non vide' },
-        { status: 400 }
-      );
+      return err(400, 'INVALID_INPUT', 'eventIds doit être un tableau non vide');
+    }
+    const ids = cleanIds(eventIds as number[]);
+    if (ids.length !== new Set(eventIds).size) return err(400, 'INVALID_INPUT', 'eventIds invalides');
+
+    // Appartenance au compte : refus ENTIER au premier identifiant étranger.
+    const rejected = await findRejectedRefs(d.accountId, { event: ids });
+    if (rejected.length) {
+      logCrossAccountRefusal('POST /api/documents/[id]/events', { accountId: d.accountId, rejected });
+      return err(404, 'NOT_FOUND', 'Événement non trouvé');
     }
 
-    // Verify document exists and belongs to user
-    const document = await db
-      .select()
-      .from(assetFiles)
-      .where(
-        and(
-          eq(assetFiles.id, documentId),
-          eq(assetFiles.userId, userId),
-          isNull(assetFiles.deletedAt)
-        )
-      )
-      .limit(1);
-
-    if (document.length === 0) {
-      return NextResponse.json(
-        { error: 'NOT_FOUND', message: 'Document non trouvé' },
-        { status: 404 }
-      );
-    }
-
-    const documentAssetId = document[0].assetId;
-
-    // Verify all events exist, belong to user, and belong to the same asset
+    // Même bien que le document (règle historique), lu dans le compte.
     const eventsToLink = await db
-      .select()
+      .select({ id: events.id, assetId: events.assetId })
       .from(events)
-      .where(eq(events.userId, userId));
-
-    const validEventIds = eventsToLink
-      .filter(e => eventIds.includes(e.id))
-      .filter(e => e.assetId === documentAssetId);
-
-    if (validEventIds.length !== eventIds.length) {
-      return NextResponse.json(
-        {
-          error: 'INVALID_INPUT',
-          message: `Les événements doivent appartenir au même bien que le document (bien #${documentAssetId})`,
-        },
-        { status: 400 }
-      );
+      .where(and(eq(events.accountId, d.accountId), inArray(events.id, ids)));
+    if (eventsToLink.length !== ids.length || eventsToLink.some((e) => e.assetId !== d.documentAssetId)) {
+      return err(400, 'INVALID_INPUT', `Les événements doivent appartenir au même bien que le document (bien #${d.documentAssetId})`);
     }
 
-    // Check which events are already linked
     const existingLinks = await db
-      .select()
+      .select({ eventId: eventDocuments.eventId })
       .from(eventDocuments)
-      .where(eq(eventDocuments.fileId, documentId));
+      .where(eq(eventDocuments.fileId, d.documentId));
+    const existingEventIds = new Set(existingLinks.map((link) => link.eventId));
+    const newEventIds = ids.filter((id) => !existingEventIds.has(id));
 
-    const existingEventIds = new Set(existingLinks.map(link => link.eventId));
-    const newEventIds = eventIds.filter((id: number) => !existingEventIds.has(id));
-
-    // Create new associations
-    const now = new Date();
-    const newAssociations = newEventIds.map((eventId: number) => ({
-      eventId,
-      fileId: documentId,
-      createdAt: now,
-    }));
-
+    // Insertion bornée au compte dans son propre SQL (événement ET document).
     let createdCount = 0;
-    if (newAssociations.length > 0) {
-      await db.insert(eventDocuments).values(newAssociations);
-      createdCount = newAssociations.length;
+    if (newEventIds.length > 0) {
+      const rows = (await db.execute(sql`
+        INSERT INTO event_documents (event_id, file_id, created_at)
+        SELECT e.id, f.id, now()
+          FROM events e JOIN asset_files f ON f.id = ${d.documentId} AND f.account_id = ${d.accountId}
+         WHERE e.id = ANY(${`{${newEventIds.join(',')}}`}::int[]) AND e.account_id = ${d.accountId}
+        ON CONFLICT DO NOTHING
+        RETURNING id`)) as unknown as unknown[];
+      createdCount = rows.length;
     }
 
     return NextResponse.json({
       message: 'Événements associés avec succès',
       created: createdCount,
       alreadyLinked: existingEventIds.size,
-      total: eventIds.length,
+      total: ids.length,
     }, { status: 201 });
-
   } catch (error) {
-    if (error instanceof Response) {
-      return error;
-    }
     console.error('POST /api/documents/[id]/events error:', error);
-    return NextResponse.json(
-      { error: 'INTERNAL_ERROR', message: 'Erreur serveur interne' },
-      { status: 500 }
-    );
+    return err(500, 'INTERNAL_ERROR', 'Erreur serveur interne');
   }
 }
 
 /**
- * DELETE /api/documents/[id]/events
- * 
- * Remove event association from document
+ * DELETE /api/documents/[id]/events?eventId= — retire l'association
+ * (document ET événement du compte ; une relation d'un autre compte n'est
+ * jamais supprimée).
  */
-export async function DELETE(
-  request: NextRequest,
-  { params }: { params: Promise<{ id: string }> }
-) {
+export async function DELETE(request: NextRequest, ctx: Ctx) {
   try {
-    const { userId } = await getSession(request);
-    const { id } = await params;
-    const documentId = parseInt(id);
-
-    if (isNaN(documentId)) {
-      return NextResponse.json(
-        { error: 'INVALID_INPUT', message: 'ID de document invalide' },
-        { status: 400 }
-      );
-    }
+    const d = await documentOfAccount(request, ctx);
+    if (d instanceof NextResponse) return d;
 
     const { searchParams } = new URL(request.url);
-    const eventId = searchParams.get('eventId');
+    const eventId = parseInt(searchParams.get('eventId') ?? '');
+    if (isNaN(eventId)) return err(400, 'INVALID_INPUT', 'eventId requis');
 
-    if (!eventId || isNaN(parseInt(eventId))) {
-      return NextResponse.json(
-        { error: 'INVALID_INPUT', message: 'eventId requis' },
-        { status: 400 }
-      );
-    }
-
-    // Verify document exists and belongs to user
-    const document = await db
-      .select()
-      .from(assetFiles)
-      .where(
-        and(
-          eq(assetFiles.id, documentId),
-          eq(assetFiles.userId, userId),
-          isNull(assetFiles.deletedAt)
-        )
-      )
-      .limit(1);
-
-    if (document.length === 0) {
-      return NextResponse.json(
-        { error: 'NOT_FOUND', message: 'Document non trouvé' },
-        { status: 404 }
-      );
-    }
-
-    // Delete the association
     const deleted = await db
       .delete(eventDocuments)
-      .where(
-        and(
-          eq(eventDocuments.fileId, documentId),
-          eq(eventDocuments.eventId, parseInt(eventId))
-        )
-      )
+      .where(and(
+        eq(eventDocuments.fileId, d.documentId),
+        eq(eventDocuments.eventId, eventId),
+        inArray(eventDocuments.eventId, db.select({ id: events.id }).from(events).where(and(eq(events.id, eventId), eq(events.accountId, d.accountId)))),
+      ))
       .returning();
 
-    if (deleted.length === 0) {
-      return NextResponse.json(
-        { error: 'NOT_FOUND', message: 'Association non trouvée' },
-        { status: 404 }
-      );
-    }
+    if (deleted.length === 0) return err(404, 'NOT_FOUND', 'Association non trouvée');
 
     return NextResponse.json({
       message: 'Association supprimée avec succès',
-      documentId,
-      eventId: parseInt(eventId),
+      documentId: d.documentId,
+      eventId,
     }, { status: 200 });
-
   } catch (error) {
-    if (error instanceof Response) {
-      return error;
-    }
     console.error('DELETE /api/documents/[id]/events error:', error);
-    return NextResponse.json(
-      { error: 'INTERNAL_ERROR', message: 'Erreur serveur interne' },
-      { status: 500 }
-    );
+    return err(500, 'INTERNAL_ERROR', 'Erreur serveur interne');
   }
 }

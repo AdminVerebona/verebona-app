@@ -2,9 +2,16 @@ import { NextRequest, NextResponse } from 'next/server';
 import { emitBusinessEvent } from '@/services/verebona-assistant/events/business-events';
 import { db } from '@/db';
 import { equipmentSuppliers, suppliers, accounts } from '@/db/schema';
-import { eq, and } from 'drizzle-orm';
+import { eq, and, sql } from 'drizzle-orm';
 import { SessionService } from '@/lib/session-service';
 import { apiError } from '@/lib/api-errors';
+import { equipmentInAccount, ownedSql } from '@/services/security/account-ownership';
+
+// Lot 49 (SEC-03) : l'équipement (par son bien) ET le fournisseur doivent
+// appartenir au compte actif, vérifiés AVANT toute lecture ou insertion ;
+// l'insertion porte en plus la condition de compte dans son SQL. Un
+// équipement d'un autre compte rend 404 (rien n'est révélé) ; une relation
+// incorrecte en base n'expose jamais la fiche d'un autre compte.
 
 async function getAccountPlanType(accountId: number): Promise<string> {
   const [account] = await db
@@ -35,6 +42,7 @@ export async function GET(
     const { id } = await params;
     const equipmentId = parseInt(id);
     if (isNaN(equipmentId)) return apiError(400, 'INVALID_INPUT', 'Invalid equipment id');
+    if (!(await equipmentInAccount(accountId, equipmentId))) return apiError(404, 'NOT_FOUND', 'Equipment not found');
 
     const rows = await db
       .select({
@@ -50,7 +58,7 @@ export async function GET(
         // iban excluded
       })
       .from(equipmentSuppliers)
-      .innerJoin(suppliers, eq(suppliers.id, equipmentSuppliers.supplierId))
+      .innerJoin(suppliers, and(eq(suppliers.id, equipmentSuppliers.supplierId), eq(suppliers.accountId, accountId)))
       .where(eq(equipmentSuppliers.equipmentId, equipmentId));
 
     return NextResponse.json({ suppliers: rows });
@@ -79,10 +87,12 @@ export async function POST(
     const { id } = await params;
     const equipmentId = parseInt(id);
     if (isNaN(equipmentId)) return apiError(400, 'INVALID_INPUT', 'Invalid equipment id');
+    if (!(await equipmentInAccount(accountId, equipmentId))) return apiError(404, 'NOT_FOUND', 'Equipment not found');
 
     const body = await request.json();
-    const { supplierId, relationshipType, isPrimary } = body;
-    if (!supplierId) return apiError(400, 'INVALID_INPUT', 'supplierId is required');
+    const { relationshipType, isPrimary } = body;
+    const supplierId = Number(body.supplierId);
+    if (!Number.isInteger(supplierId) || supplierId <= 0) return apiError(400, 'INVALID_INPUT', 'supplierId is required');
 
     const [supplier] = await db
       .select({ id: suppliers.id })
@@ -105,13 +115,14 @@ export async function POST(
       return NextResponse.json({ success: true, alreadyLinked: true });
     }
 
-    await db.insert(equipmentSuppliers).values({
-      equipmentId,
-      supplierId,
-      relationshipType: relationshipType ?? null,
-      sourceType: 'manual',
-      isPrimary: isPrimary ?? false,
-    });
+    // Insertion bornée au compte (équipement ET fournisseur) dans son SQL.
+    const inserted = (await db.execute(sql`
+      INSERT INTO equipment_suppliers (equipment_id, supplier_id, relationship_type, source_type, is_primary)
+      SELECT ${equipmentId}, ${supplierId}, ${relationshipType ?? null}, 'manual', ${isPrimary === true}
+       WHERE ${ownedSql('equipment', equipmentId, accountId)} AND ${ownedSql('supplier', supplierId, accountId)}
+      ON CONFLICT DO NOTHING
+      RETURNING equipment_id`)) as unknown as unknown[];
+    if (inserted.length === 0) return NextResponse.json({ success: true, alreadyLinked: true });
 
     // CDC Assistant §31.7 : fournisseur rattaché à un équipement.
     await emitBusinessEvent({ type: 'SUPPLIER_CHANGED', accountId, entityId: null });

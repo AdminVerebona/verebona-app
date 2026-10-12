@@ -85,6 +85,8 @@ export type UpgradeResult =
         | 'UNRECOGNIZED_SUBSCRIPTION_ITEM'
         | 'MUTATION_IN_PROGRESS'
         | 'PORTAL_UNAVAILABLE'
+        /** Lot 49A : portail en cours d'alignement (publication) — réessayer. */
+        | 'PORTAL_UPDATING'
         | BillingCatalogError['code'];
       offer?: PublicOffer;
     };
@@ -205,6 +207,7 @@ export async function startImmediateUpgrade(params: {
     configuration = await ensureUpgradePortalConfiguration();
   } catch (error) {
     console.error('[upgrade] portail indisponible :', (error as Error).message);
+    if ((error as { code?: string })?.code === 'PORTAL_UPDATING') return { ok: false, reason: 'PORTAL_UPDATING' };
     return { ok: false, reason: 'PORTAL_UNAVAILABLE' };
   }
 

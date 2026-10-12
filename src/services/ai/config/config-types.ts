@@ -5,7 +5,7 @@
  * arrêtés dans « BO IA — champs administrables par traitement » ; tout ce qui
  * n'y figure pas reste dans le code, et le §2.1 dit pourquoi pour chacun.
  */
-import { isPromptAdministrable, type Treatment } from './treatments';
+import type { Treatment } from './treatments';
 import type { AiEnvironment } from './environment';
 import type { ConfigVersionStatus } from './version-state-machine';
 
@@ -110,7 +110,6 @@ export interface TreatmentConfig {
   treatment: Treatment;
   /**
    * Prompt administrable unique (T1-013, T3-007, T4-010).
-   * Toujours vide pour T5, dont le comportement est dans le code (T5-003).
    */
   prompt: string;
   primaryModel: string | null;
@@ -122,7 +121,7 @@ export interface TreatmentConfig {
   /** §2.1 — modèle principal uniquement ; les fallbacks héritent. */
   maxOutputTokens: number | null;
   guardrails: GuardrailSetting[];
-  /** Vide pour T2 et T5, hors file globale (GEN-004). */
+  /** Vide pour T2 et T6, hors file globale (GEN-004). */
   triggers: TriggerSetting[];
   /** T2 uniquement. `null` = non configuré, le code décide (§11.2). */
   cascade: CascadeThresholds | null;
@@ -135,7 +134,7 @@ export interface TreatmentConfig {
    * CDC 15 D-03 : texte COMPLET du prompt maître du traitement (colonne
    * `master_prompt`, 0220). `null`/vide : fichier du dépôt. Lu par les
    * opérations master. Toujours `null`
-   * pour T5 (non administrable) et pour un traitement sans master.
+   * pour un traitement sans master.
    */
   masterPrompt?: string | null;
 }
@@ -166,7 +165,14 @@ export interface ConfigVersion {
 }
 
 export interface ConfigVersionWithEntries extends ConfigVersion {
+  /** Lignes des traitements OPÉRATIONNELS (T1, T2, T3, T4, T6). */
   entries: TreatmentConfig[];
+  /**
+   * Lot 49 (ticket 12) : traitements RETIRÉS encore présents dans cette
+   * version historique (ex. `['T5']`). Conservés en base pour l'audit,
+   * jamais appliqués, jamais recopiés, jamais restaurés.
+   */
+  retiredTreatments?: string[];
 }
 
 /** Champ de configuration, pour le diff et les erreurs de validation. */
@@ -203,19 +209,6 @@ export const FIELD_LABELS: Readonly<Record<ConfigFieldKey, string>> = {
 };
 
 /** Configuration vide d'un traitement — base d'un premier Brouillon. */
-/**
- * Retire d'une configuration ce que le BO n'a pas le droit de porter.
- *
- * Aujourd'hui : le prompt de T5, qui n'est pas administrable (T5-003, E-02).
- * Appliquée à toute écriture en base et à la préparation d'un package, pour
- * qu'un prompt T5 hérité d'une ancienne version ne se propage pas.
- */
-export function normalizeTreatmentConfig<C extends Pick<TreatmentConfig, 'treatment' | 'prompt'>>(c: C): C {
-  if (isPromptAdministrable(c.treatment)) return c;
-  // T5 : ni préambule, ni texte master (CDC 15 §22.2 : T5 ne se modifie pas).
-  return 'masterPrompt' in c ? { ...c, prompt: '', masterPrompt: null } : { ...c, prompt: '' };
-}
-
 export function emptyTreatmentConfig(treatment: Treatment): TreatmentConfig {
   return {
     treatment,

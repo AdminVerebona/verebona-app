@@ -49,8 +49,7 @@ export type OutputFormat = 'json' | 'text';
 export interface ValidateOutputOptions {
   expectedTask?: string;
   /**
-   * Champ discriminant de la sortie : `task` (défaut), `mode` (T2 §24, T5
-   * §27) ou `none` (T6 §28 : la sortie ne porte pas de discriminant — le
+   * Champ discriminant de la sortie : `task` (défaut), `mode` (T2 §24) ou `none` (T6 §28 : la sortie ne porte pas de discriminant — le
    * contrôle de branche est sauté, le `schemaVersion` strict du contrat joue
    * ce rôle ; la branche reste imposée en entrée par `{{MODE}}`).
    */

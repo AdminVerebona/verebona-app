@@ -20,6 +20,7 @@ import { explainCatalogReason, explainCoupleReason } from '@/lib/billing/catalog
 import { allowedCatalogOrigins, refusedOrigins } from '@/lib/billing/catalog-cors';
 import { LEGACY_PRICE_VARS } from './legacy-price-env';
 import { listCampaign } from './price-revaluation.service';
+import { PORTAL_INTERVAL_RECOVERY, RECOVERY_MAX_ATTEMPTS, recoveryTargets } from './catalog-recovery.service';
 
 type Row = Record<string, unknown>;
 async function q<T = Row>(text: string, params: unknown[] = []): Promise<T[]> {
@@ -96,6 +97,23 @@ export async function getCatalogDiagnostic() {
     ?? (autoPublish.reason === 'BACKFILL_PENDING' || autoPublish.reason === 'WAITING_INSTANCES' ? autoPublish.reason : null);
 
   const legacyVars = LEGACY_PRICE_VARS.map((v) => ({ name: v.name, present: Boolean(process.env[v.name]?.trim()) }));
+  // Lot 49A — rattrapage ciblé : en attente, en cours, résultat, erreur exploitable.
+  const recoveryRow = ctx.mode ? await d.store.getRecovery(ctx.catalogContext, PORTAL_INTERVAL_RECOVERY.key).catch(() => null) : null;
+  const recoveryTarget = recoveryTargets({
+    catalogContext: ctx.catalogContext, mode: ctx.mode, publicationState: state?.publicationState ?? null,
+    publicationError: state?.publicationError ?? null, publicationRunId: state?.publicationRunId ?? null,
+  }, recoveryRow);
+  const recovery = {
+    key: PORTAL_INTERVAL_RECOVERY.key,
+    maxAttempts: RECOVERY_MAX_ATTEMPTS,
+    /** Incident ciblé détecté, rattrapage pas encore commencé : prochain passage de `stripe-catalog-publish`. */
+    pending: !recoveryRow && recoveryTarget.targeted,
+    row: recoveryRow ? {
+      status: recoveryRow.status, runId: recoveryRow.runId, attempts: recoveryRow.attempts, lastError: recoveryRow.lastError,
+      lastAttemptAt: recoveryRow.lastAttemptAt?.toISOString() ?? null, nextAttemptAt: recoveryRow.nextAttemptAt?.toISOString() ?? null,
+      completedAt: recoveryRow.completedAt?.toISOString() ?? null, report: recoveryRow.report,
+    } : null,
+  };
   const campaign = ctx.mode ? await listCampaign(null, 200).catch(() => ({ revisionId: null, counts: {}, rows: [] })) : { revisionId: null, counts: {}, rows: [] };
 
   return {
@@ -162,5 +180,6 @@ export async function getCatalogDiagnostic() {
     /** D10 : variables retirables quand la reprise est terminée et aucun abonné n'est inconnu. */
     legacyVarsRemovable: Boolean(state?.backfillCompletedAt) && subscriptions.unknown === 0,
     campaign,
+    recovery,
   };
 }

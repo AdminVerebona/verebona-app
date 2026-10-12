@@ -9,7 +9,7 @@
  *
  * Le WF-07 commence par « Cliquer Désactiver dans l'onglet traitement ». Le
  * toggle n'existait que sur `/admin/ai-queue`, et seulement pour T1/T3/T4 :
- * aucun moyen de couper T2, T5 ou T6. Il est ici pour les six traitements.
+ * aucun moyen de couper T2 ou T6. Il est ici pour les cinq traitements (T1, T2, T3, T4, T6).
  *
  * L'état n'est PAS versionné (GEN-001) : il ne dépend pas de la version
  * affichée, et un changement de version ne le modifie pas. C'est pourquoi il

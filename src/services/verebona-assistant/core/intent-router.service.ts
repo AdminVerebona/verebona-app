@@ -198,6 +198,24 @@ const FACT = new RegExp(
   'u',
 );
 const DEADLINE = word('echeances?|expire|expirent|expiration|a renouveler|renouvellement|quand|bientot');
+/**
+ * Lot 49 (STRONG / WEAK) : seuls « quand » et « bientôt » disent qu'une DATE
+ * est cherchée, jamais QUELLE donnée la porte — signal FAIBLE. Les autres
+ * mots de l'agenda (échéance, expiration, renouvellement, rendez-vous…)
+ * désignent l'agenda lui-même : signal FORT.
+ */
+const DEADLINE_STRONG = word('echeances?|expire|expirent|expiration|a renouveler|renouvellement');
+/** Faits FORTS : une date nommée (achat, mise en service…) ; montant et prix seuls restent faibles. */
+const FACT_STRONG = new RegExp(
+  "(?<![\\p{L}])(?:quand (?:ai-je|j'ai|avons-nous|a-t-on|ai je) (?:achete|acquis|installe|commande|recu|signe|mis en service|fait)"
+  + "|(?:quelle est la |la )?date (?:d'|de |du |des )(?:achat|acquisition|mise en service|installation|signature|la facture|facture|livraison|debut|document|souscription|l'achat)"
+  + "|quelle est la date|date (?:indiquee|inscrite|figurant))(?![\\p{L}])",
+  'u',
+);
+/** Documents FORTS : un type de pièce précis ; « contrat » seul reste un signal faible. */
+const DOC_STRONG = word('documents?|factures?|garanties?|manuels?|notices?|certificats?|devis|justificatifs?|fichiers?|pieces?');
+/** Besoin de valeur (montant, date) : signal faible, jamais un périmètre. */
+const VALUE_NEED = word("combien|montant|prix|tarif|cout|coute|paye|payer|quand|date|fin|finit|termine");
 const AGENDA = word('agenda|rendez-vous|planning|calendrier|rappels?');
 const EXPORT = word('export|exporter|dossier|pdf|transmettre');
 const SUPPLIER = word('fournisseurs?|prestataires?|artisans?|reparateurs?');
@@ -345,12 +363,21 @@ export function routeDeterministic(ctx: RouteContext): RouteOutcome {
   const t = normalizeForRouting(ctx.message);
   const hints = entityHintsFor(ctx.message, ctx.pageContext);
   const today = ctx.today;
-  const R = (i: VerebonaIntent, c: Confidence, reason: string, rr?: boolean): RouteOutcome => ({
-    kind: 'route',
-    // §9.5 : indices d'entités et besoin de clarification renseignés sur
-    // TOUTES les routes déterministes (ils valaient `[]` et `false`).
-    route: buildRoute(i, c, ctx.planType, reason, rr, hints, routeClarificationReason(ctx.message, i, today) != null),
-  });
+  const R = (i: VerebonaIntent, c: Confidence, reason: string, rr?: boolean, weak?: RegExp[]): RouteOutcome => {
+    // Lot 49 : une règle décidée par des signaux FAIBLES est marquée WEAK
+    // (avec les signaux), jamais promue en périmètre métier.
+    const signaux = (weak ?? []).flatMap((re) => t.match(new RegExp(re.source, `${re.flags.replace('g', '')}g`)) ?? []);
+    return {
+      kind: 'route',
+      // §9.5 : indices d'entités et besoin de clarification renseignés sur
+      // TOUTES les routes déterministes (ils valaient `[]` et `false`).
+      route: {
+        ...buildRoute(i, c, ctx.planType, reason, rr, hints, routeClarificationReason(ctx.message, i, today) != null),
+        deterministicConfidence: weak ? 'WEAK' : 'STRONG',
+        ...(weak ? { weakSignals: [...new Set(signaux.map((x) => x.trim()))] } : {}),
+      },
+    };
+  };
   const route = ctx.pageRoute ?? ctx.pageContext?.route ?? '';
   const pageDocument = Boolean(ctx.pageContext?.documentId) || PAGE_DOCUMENT.test(route);
   const pageAsset = Boolean(ctx.pageContext?.assetId) || PAGE_ASSET.test(route);
@@ -452,9 +479,16 @@ export function routeDeterministic(ctx: RouteContext): RouteOutcome {
   // Sur la page d'un document, « quel est le montant ? » porte sur CE
   // document (§9.4 étape 5, contexte de page).
   if (FACT.test(t) && !SUMMARY.test(t) && !TIMELINE.test(t)) {
+    // Lot 49 : « montant », « prix », « combien… payé / coûté » disent qu'un
+    // montant est cherché, pas lequel — WEAK ; une date nommée reste STRONG.
+    // Une pièce DÉSIGNÉE (type de document explicite, ou document de la page)
+    // fixe le périmètre : la recherche documentaire consomme les autres
+    // termes (fournisseur, objet) sans élargir — STRONG.
+    const faible = FACT_STRONG.test(t) ? undefined : [FACT];
+    const pieceDesignee = DOC_STRONG.test(t) || (pageDocument && !ASSET.test(t));
     return DOC.test(t) || (pageDocument && !ASSET.test(t))
-      ? R('ACCOUNT_FACT_DOCUMENT', 'probable', DOC.test(t) ? 'donnée d’un document' : 'donnée du document de la page', true)
-      : R('ACCOUNT_FACT_ASSET', 'probable', 'donnée d’un bien', true);
+      ? R('ACCOUNT_FACT_DOCUMENT', 'probable', DOC.test(t) ? 'donnée d’un document' : 'donnée du document de la page', true, pieceDesignee ? undefined : faible)
+      : R('ACCOUNT_FACT_ASSET', 'probable', 'donnée d’un bien', true, faible);
   }
 
   // Étape 8 — Synthèse / chronologie (candidats IA — §9.4.7)
@@ -463,11 +497,18 @@ export function routeDeterministic(ctx: RouteContext): RouteOutcome {
 
   // Étape 9 — Recherche compte par type d'objet (§9.4.8)
   if (SUPPLIER.test(t)) return R('ACCOUNT_SEARCH_SUPPLIER', 'probable', 'recherche fournisseur', true);
-  if (AGENDA.test(t) || DEADLINE.test(t)) return R('ACCOUNT_SEARCH_AGENDA', 'probable', 'recherche agenda', true);
-  if (DOC.test(t)) return R('ACCOUNT_SEARCH_DOCUMENT', 'probable', 'recherche document', true);
+  // Lot 49 : « quand » / « bientôt » seuls → WEAK (une date est cherchée,
+  // pas forcément une échéance de l'agenda) ; l'orchestrateur ne s'y fie que
+  // si rien d'autre de significatif ne reste à comprendre.
+  if (AGENDA.test(t) || DEADLINE.test(t)) {
+    return R('ACCOUNT_SEARCH_AGENDA', 'probable', 'recherche agenda', true, AGENDA.test(t) || DEADLINE_STRONG.test(t) ? undefined : [DEADLINE]);
+  }
+  if (DOC.test(t)) return R('ACCOUNT_SEARCH_DOCUMENT', 'probable', 'recherche document', true, DOC_STRONG.test(t) ? undefined : [DOC]);
   // En dernier des motifs par type : un message qui cite un document ET un bien
   // porte le plus souvent sur le document (« la facture de la maison »).
-  if (ASSET.test(t)) return R('ACCOUNT_SEARCH_ASSET', 'probable', 'recherche bien', true);
+  // Lot 49 : un bien + un besoin de valeur (« je paye combien… à la maison »)
+  // n'est qu'une cible et un signal : WEAK.
+  if (ASSET.test(t)) return R('ACCOUNT_SEARCH_ASSET', 'probable', 'recherche bien', true, VALUE_NEED.test(t) ? [VALUE_NEED] : undefined);
 
   // Étape 9 bis — Contexte de page (§9.4 étape 5) : une question qui
   // désigne l'objet affiché (« et sa date ? », « qu'y a-t-il ici ? ») porte

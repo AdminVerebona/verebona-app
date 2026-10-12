@@ -545,7 +545,7 @@ async function confirmForecast(decision: AgendaDecision, accountId: number): Pro
     originRefType: decision.sourceFileId ? 'asset_file' : cur.originRefType,
     originRefId: decision.sourceFileId ?? cur.originRefId,
     updatedAt: now,
-  }).where(eq(agendaItems.id, cur.id));
+  }).where(and(eq(agendaItems.id, cur.id), eq(agendaItems.accountId, accountId))); // lot 49 : compte dans le SQL
   await recordOccurrenceEvent(cur.id, accountId, 'CONFIRMED', {
     forecastDate: cur.startDate, confirmedDate: nouvelleDate, sourceFileId: decision.sourceFileId ?? null, mode: 'SOURCE',
     rule: (cur.recurrenceJson as { rule?: string } | null)?.rule ?? null,

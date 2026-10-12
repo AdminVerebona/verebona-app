@@ -7,6 +7,11 @@ import { SessionService } from '@/lib/session-service';
 import { apiError } from '@/lib/api-errors';
 import { normalizeName } from '@/services/suppliers/supplier-service';
 
+// Lot 49 (SEC-06) : fournisseur du compte actif ; documents liés et
+// éléments de revue re-filtrés sur le compte (une relation incorrecte en
+// base n'expose rien d'un autre compte) ; mise à jour bornée au compte dans
+// son SQL.
+
 // GET /api/suppliers/[id] — full detail including iban (for drawer)
 export async function GET(
   request: NextRequest,
@@ -44,8 +49,8 @@ export async function GET(
         assetName: assets.name,
       })
       .from(documentSuppliers)
-      .innerJoin(assetFiles, eq(assetFiles.id, documentSuppliers.documentId))
-      .leftJoin(assets, eq(assets.id, assetFiles.assetId))
+      .innerJoin(assetFiles, and(eq(assetFiles.id, documentSuppliers.documentId), eq(assetFiles.accountId, accountId)))
+      .leftJoin(assets, and(eq(assets.id, assetFiles.assetId), eq(assets.accountId, accountId)))
       .where(eq(documentSuppliers.supplierId, supplierId))
       .limit(50);
 
@@ -65,6 +70,7 @@ export async function GET(
       .from(supplierReviewItems)
       .where(and(
         eq(supplierReviewItems.supplierId, supplierId),
+        eq(supplierReviewItems.accountId, accountId),
         eq(supplierReviewItems.status, 'open'),
       ))
       .limit(20);
@@ -117,7 +123,7 @@ export async function PATCH(
 
     const [updated] = await db.update(suppliers)
       .set(updates as Partial<typeof suppliers.$inferInsert>)
-      .where(eq(suppliers.id, supplierId))
+      .where(and(eq(suppliers.id, supplierId), eq(suppliers.accountId, accountId)))
       .returning();
 
     // CDC Assistant §31.7 : modification d'un fournisseur.

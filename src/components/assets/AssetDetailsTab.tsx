@@ -22,6 +22,7 @@ import type { AssetDetail } from '@/types/asset-detail';
 import { ChevronDown, ChevronUp, TrendingUp } from 'lucide-react';
 import { toast } from 'sonner';
 import { displayDocumentTitle } from '@/lib/documents/document-title-rules';
+import { TENURE_END_LABEL, TENURE_META_KEY, tenureEndKey, tenureSourceLabel, type TenureEndMeta } from '@/lib/assets/tenure-end';
 
 interface Props {
   asset: AssetDetail;
@@ -78,6 +79,27 @@ const vehicleContractNa = (statuts: string[]) => (d: Record<string, unknown>) =>
   return statut !== '' && !statuts.includes(statut);
 };
 
+/**
+ * Lot 49A (ticket 9) — « Date de fin du contrat / de la détention » dans la
+ * section usage, visible seulement pour une détention à durée limitée. Deux
+ * clés canoniques EXISTANTES (aucun doublon) : `leaseEndDate` (LLD / LOA,
+ * locataire) ou `contractEndDate` (prêt, occupant gratuit, objet loué ou
+ * prêté) — celle que produit l'analyse d'un document pour cette situation.
+ * Desktop et mobile : même composant (grille responsive).
+ */
+function tenureEndDefs(family: 'IMMOBILIER' | 'VEHICULE' | 'OBJET'): FieldDef[] {
+  const badge = (key: string) => (d: Record<string, unknown>) => {
+    const meta = d[TENURE_META_KEY] as TenureEndMeta | undefined;
+    return meta?.key === key ? tenureSourceLabel(meta.source) : null;
+  };
+  const keys: Array<'leaseEndDate' | 'contractEndDate'> = family === 'OBJET' ? ['contractEndDate'] : ['leaseEndDate', 'contractEndDate'];
+  return keys.map((key) => ({
+    key, label: TENURE_END_LABEL, type: 'date' as const,
+    visibleWhen: (d: Record<string, unknown>) => tenureEndKey(family, d) === key,
+    badge: badge(key),
+  }));
+}
+
 // Section field definitions per section key (common section uses getCommonFields() instead)
 const SECTION_FIELDS: Record<string, FieldDef[]> = {
   location_identification: [
@@ -119,6 +141,7 @@ const SECTION_FIELDS: Record<string, FieldDef[]> = {
       { value: 'OCCUPANT_GRATUIT', label: 'Occupant à titre gratuit' },
       { value: 'USUFRUITIER',      label: 'Usufruitier' },
     ]},
+    ...tenureEndDefs('IMMOBILIER'),
     { key: 'monthlyRent', label: 'Loyer mensuel (€)', type: 'number',
       notApplicableWhen: (d: Record<string, unknown>) => ['PROPRIETAIRE', 'OCCUPANT_GRATUIT'].includes(String(d.occupancyStatus ?? '')) },
     { key: 'charges', label: 'Charges (€)', type: 'number',
@@ -190,6 +213,7 @@ const SECTION_FIELDS: Record<string, FieldDef[]> = {
       notApplicableWhen: vehicleContractNa(['LLD', 'LOA', 'CREDIT']) },
     { key: 'leaseDurationMonths', label: 'Durée du contrat (mois)', type: 'number',
       notApplicableWhen: vehicleContractNa(['LLD', 'LOA', 'CREDIT']) },
+    ...tenureEndDefs('VEHICULE'),
     { key: 'leaseMonthlyPayment', label: 'Loyer mensuel LLD / LOA (€)', type: 'number',
       notApplicableWhen: vehicleContractNa(['LLD', 'LOA']) },
     { key: 'leaseResidualValue', label: 'Valeur de rachat (€)', type: 'number',
@@ -242,8 +266,14 @@ const SECTION_FIELDS: Record<string, FieldDef[]> = {
     { key: 'lastRevision', label: 'Dernière révision', type: 'date' },
     { key: 'maintenanceDueDate', label: 'Prochain entretien', type: 'date' },
     { key: 'isInsured', label: 'Assuré', type: 'select', options: [{ value: 'true', label: 'Oui' }, { value: 'false', label: 'Non' }] },
+    ...tenureEndDefs('OBJET'),
   ],
 };
+
+/** Définitions des champs d'une section (hors « common ») — tests et outillage. */
+export function sectionFieldDefs(section: string): FieldDef[] {
+  return SECTION_FIELDS[section] ?? [];
+}
 
 const SECTION_LABELS: Record<string, string> = {
   common: 'Informations générales',

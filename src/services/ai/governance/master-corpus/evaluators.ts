@@ -233,35 +233,6 @@ export const MASTER_CORPUS_EVALUATORS: Readonly<Record<string, Evaluator>> = {
       ...ecart(!exp(c, 'visualEvidence') || Boolean(r.visualEvidence?.description), 'preuve visuelle absente'),
     ];
   },
-  // ── T5 ─────────────────────────────────────────────────────────────────────
-  async t5_analyze(c, output) {
-    const { interpret } = await import('../prompt-control.service');
-    const o = output as { verdict: never; analysis: string; targets: never[]; risks: string[]; configurationRecommendations: string[]; requiredCodeChanges: string[] };
-    const r = interpret('analyze', { ...o, recommendations: o.configurationRecommendations } as never, () => '');
-    return [
-      ...ecart((exp<string[]>(c, 'verdicts') ?? [r.verdict]).includes(r.verdict), `verdict ${r.verdict}`),
-      ...ecart(!exp(c, 'noProposedContent') || r.changes.every((x) => x.proposedContent === null), 'proposition écrite en analyse'),
-      ...ecart(!exp(c, 'requiredCodeChanges') || o.requiredCodeChanges.length > 0, 'changement de code non signalé'),
-    ];
-  },
-  async t5_modify(c, output, ctx) {
-    const { interpret } = await import('../prompt-control.service');
-    const o = output as { verdict: never; analysis: string; targets: never[]; risks: string[]; configurationRecommendations: string[] };
-    const masters = new Set(((c.context as { masterTargets?: string[] }).masterTargets) ?? []);
-    const { masterPromptForTreatment } = await import('../../config/prompt-architecture');
-    const current = (t: string) => {
-      const m = masters.has(t) ? masterPromptForTreatment(t as never) : null;
-      return m ? ctx.masterText(m.masterPromptCode) : `Prompt actuel ${t}, texte de référence suffisamment long pour le seuil.`;
-    };
-    const r = interpret('modify', { ...o, recommendations: o.configurationRecommendations } as never, current as never,
-      (t) => (masters.has(t) ? 'masterPrompt' : 'prompt'));
-    const ecrits = r.changes.filter((x) => x.proposedContent).map((x) => x.treatment);
-    return [
-      ...ecart(JSON.stringify(ecrits) === JSON.stringify(exp(c, 'writable') ?? []), `cibles écrites ${ecrits.join(',') || '(aucune)'}`),
-      ...ecart(!exp(c, 'field') || r.changes.filter((x) => x.proposedContent).every((x) => x.field === exp(c, 'field')), 'zone écrite incorrecte'),
-      ...ecart(!r.changes.some((x) => (x.treatment as string) === 'T5'), 'T5 modifié par lui-même'),
-    ];
-  },
   // ── T6 ─────────────────────────────────────────────────────────────────────
   // Règles serveur du §28 (mêmes sujets, même ordre, aucun fait ajouté,
   // nuances) : `evaluateT6CorpusCase` du contrat T6 (C).

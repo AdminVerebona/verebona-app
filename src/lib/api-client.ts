@@ -111,7 +111,7 @@ export interface HttpPolicy {
 
 /**
  * Budgets par classe d'opération. Les valeurs reprennent les délais
- * existants (15 s lecture, 20 s écriture, 250 s Prompt Control) : les 6-8 s
+ * existants (15 s lecture, 20 s écriture, 250 s opérations longues) : les 6-8 s
  * évoquées dans les audits ne sont pas des objectifs validés et ne seront
  * fixées qu'après mesure. Les appels d'API du dépôt (presign / confirm,
  * `upload-http.ts`) appliquent la politique `write` (lot 24) ; le PUT vers
@@ -125,11 +125,9 @@ export const HTTP_POLICIES: Record<HttpPolicyName, HttpPolicy> = {
   // Écriture : 20 s, jamais relancée ; le budget couvre un renouvellement
   // (10 s) suivi du rejeu.
   write: { attemptTimeoutMs: 20_000, totalBudgetMs: 45_000, maxNetworkRetries: 0, retryDelayMs: 0 },
-  // Opération longue : Prompt Control (T5) peut réécrire plusieurs prompts
-  // complets, 120 s par modèle côté serveur, repli compris (`t5_modify`). Un
-  // délai plus court abandonnait alors que l'écriture dans le brouillon
-  // pouvait encore aboutir — l'administrateur voyait une erreur pour une
-  // modification pourtant faite.
+  // Opération longue (demandée explicitement : test de corpus d'un prompt
+  // maître, exécution manuelle d'une tâche planifiée). Un délai plus court
+  // abandonnait alors que l'opération pouvait encore aboutir côté serveur.
   long: { attemptTimeoutMs: 250_000, totalBudgetMs: 270_000, maxNetworkRetries: 0, retryDelayMs: 0 },
 };
 
@@ -144,7 +142,6 @@ export const MAX_JSON_RESPONSE_BYTES = 25 * 1024 * 1024;
 
 export function httpPolicyFor(url: string, method: string, explicit?: HttpPolicyName): HttpPolicy {
   if (explicit) return HTTP_POLICIES[explicit];
-  if (url.includes('/api/admin/ai/prompt-control')) return HTTP_POLICIES.long;
   return method === 'GET' ? HTTP_POLICIES.read : HTTP_POLICIES.write;
 }
 

@@ -4,7 +4,8 @@
  * Accueil — la mascotte parle, puis les sections de l'accueil (§2 à §4, §12ter).
  *
  * Lot 36 (maquette « Accueil - Propositions », direction 2a sombre / 2b
- * clair « Fil encadré ») : UNE seule colonne centrée (960 px au plus), même
+ * clair « Fil encadré ») : UNE seule colonne centrée (lot 49A : largeur des
+ * autres pages principales, 1 440 px au plus), même
  * ordre sur desktop et mobile — mascotte, Mes biens, Prochaines échéances,
  * Ce que j'ai fait, Documents récents —, chaque section dans une carte
  * bordée. Plus de bento ni de paire côte à côte. Plus de cartes
@@ -35,10 +36,17 @@ import { suggestionsForRoute } from '@/services/verebona-assistant/registries/ca
 // Fenêtre affichée seulement après un retour de paiement interrompu : son
 // code n'a rien à faire dans le chargement initial de l'accueil.
 /**
- * Colonne de l'accueil (maquette 2a) : centrée, 960 px au plus ; mobile :
+ * Colonne de l'accueil (maquette 2a), UNE colonne à toutes les largeurs.
+ *
+ * Lot 49A (ticket 4) : l'ancienne limite de 960 px laissait de grands vides
+ * sur grand écran. Les autres pages principales (/assets, /documents,
+ * /agenda) occupent toute la zone de contenu avec la marge du `<main>`
+ * (`p-4 md:p-6 lg:p-8`) : l'accueil reprend EXACTEMENT ces gouttières — il a
+ * donc la même largeur utile qu'elles — et ne s'arrête qu'à 1 440 px sur les
+ * très grands écrans (jamais plus large que les autres pages). Mobile :
  * gouttière 16 px et place pour la barre de navigation du bas et le « + ».
  */
-const HOME_COLUMN = 'mx-auto flex w-full max-w-[960px] flex-col gap-3.5 px-4 pb-36 pt-2.5 md:gap-9 md:px-8 md:pb-[60px] md:pt-9';
+const HOME_COLUMN = 'mx-auto flex w-full max-w-[1440px] flex-col gap-3.5 px-4 pb-36 pt-2.5 md:gap-9 md:px-6 md:pb-[60px] md:pt-9 lg:px-8';
 
 /** Squelette de l'en-tête mascotte (même grille que `MascotSpeaks`). */
 function HomeHeaderSkeleton() {

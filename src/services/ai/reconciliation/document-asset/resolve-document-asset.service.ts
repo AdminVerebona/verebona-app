@@ -53,6 +53,20 @@
  *     propositions actualisées quand le jeu de candidats change ;
  *   · monitoring : `last_evaluation` et détail du travail (révisions, motif,
  *     empreintes, sources testées, candidats, IA, décision, action).
+ *
+ * Lot 49B (tickets « T3 — Réexaminer systématiquement les À traiter
+ * ouverts » et « T3 : exploiter la couche exhaustive T1 ») :
+ *   · une carte « À traiter » LINK-ASSET OUVERTE est un problème actif : le
+ *     court-circuit « contexte inchangé → restaurer l'issue précédente » ne
+ *     s'applique plus — le document est RÉEXAMINÉ (données persistées,
+ *     Candidate Builder, état actuel de TOUS les biens, déterministe, puis IA
+ *     si des candidats demandent un arbitrage). L'issue précédente n'est
+ *     qu'un historique (monitoring), jamais une donnée de décision ;
+ *   · sans carte ouverte, contexte identique → CONFIRMED_NO_CHANGE (AC6) ;
+ *   · le réarbitrage à contexte INCHANGÉ est plafonné
+ *     (`rearbitration-budget.ts`) : au-delà, AI_DEFERRED (carte maintenue) ;
+ *   · sources documentaires réellement utilisées (`documentSources`) et
+ *     unités source considérées (`matchedSourceUnitIds`) tracées.
  * ══════════════════════════════════════════════════════════════════════════
  */
 import { pgClient } from '@/db';
@@ -67,6 +81,8 @@ import {
   type DocumentAssetDecision, type DocumentSubject,
 } from './decision';
 import { candidateSourcesOf, computeDocumentAssetContext, type DocumentAssetContext } from './context';
+import { usedDocumentSources } from './document-sources';
+import { dailyRearbitrationAllowed, type RearbitrationDeferral } from './rearbitration-budget';
 import type { AccountMatchingIndex } from './matching-index';
 import { DOCUMENT_ASSET_RESOLUTION_VERSION } from './version';
 import {
@@ -84,7 +100,9 @@ export type DocumentAssetOutcome = 'APPLIED' | 'NO_CHANGE' | 'ABSTAIN' | 'SUPERS
  */
 export type DocumentAssetEvaluationResult =
   | 'CONFIRMED_NO_CHANGE' | 'RESOLVED_DETERMINISTICALLY' | 'RESOLVED_BY_AI' | 'MULTI_ASSET'
-  | 'ABSTAINED' | 'NO_CANDIDATE' | 'USER_DECIDED' | 'ALREADY_LINKED' | 'TARGET_GONE';
+  | 'ABSTAINED' | 'NO_CANDIDATE' | 'USER_DECIDED' | 'ALREADY_LINKED' | 'TARGET_GONE'
+  /** Lot 49B : réexamen d'une carte ouverte à contexte inchangé, arbitrage IA reporté (plafond). */
+  | 'AI_DEFERRED';
 
 /** Action « À traiter » consécutive à l'évaluation. */
 export type ToProcessEffect = 'NONE' | 'CREATED' | 'UPDATED' | 'UNCHANGED' | 'CLOSED' | 'SKIPPED';
@@ -117,6 +135,26 @@ export interface DocumentAssetEvaluation {
   linkedAssetId: number | null;
   toProcessAction: ToProcessEffect;
   result: DocumentAssetEvaluationResult;
+  /** Lot 49B : sources documentaires réellement utilisées (EXTRACTION, TRANSCRIPTION, FACTS, T1_CANDIDATES, SOURCE_UNITS, UNRESOLVED_FACTS). */
+  documentSources?: string[];
+  /** Lot 49B : unités source T1 (ou faits non résolus) qui désignent un candidat. */
+  matchedSourceUnitIds?: string[];
+  /** Lot 49B : nouvelle tentative réelle (faux seulement pour CONFIRMED_NO_CHANGE). */
+  reevaluated?: boolean;
+  /** Lot 49B : carte « À traiter » LINK-ASSET ouverte à l'origine du réexamen. */
+  openActionId?: number | null;
+  /** Lot 49B : réarbitrage IA reporté (plafond de coût). */
+  aiDeferred?: RearbitrationDeferral | null;
+  /** Lot 49B : dernier appel modèle pour ce document (priorité des réarbitrages reportés). */
+  lastAiAt?: string | null;
+}
+
+/** Dernier appel modèle connu d'une résolution (monitoring précédent). Pure. */
+export function previousAiAt(r: Pick<DocumentAssetResolution, 'lastEvaluation'> | null): string | null {
+  const e = r?.lastEvaluation as { lastAiAt?: unknown; aiCalled?: unknown; at?: unknown } | null | undefined;
+  if (!e) return null;
+  if (typeof e.lastAiAt === 'string') return e.lastAiAt;
+  return e.aiCalled === true && typeof e.at === 'string' ? e.at : null;
 }
 
 export interface ResolveDocumentAssetInput {
@@ -137,6 +175,14 @@ export interface ResolveDocumentAssetInput {
   /** Déclencheur et motif de la reprise (monitoring). */
   triggerCode?: string | null;
   reprocessReason?: string | null;
+  /**
+   * Lot 49B — réarbitrage IA d'une carte ouverte à contexte INCHANGÉ :
+   * `allow` (budget accordé par la phase « open actions »), `defer` (budget du
+   * passage épuisé). Absent : plafond journalier vérifié ici.
+   */
+  rearbitration?: 'allow' | { defer: RearbitrationDeferral };
+  /** Lot 49B : carte LINK-ASSET ouverte déjà connue (phase « open actions ») ; à défaut, relue. */
+  openActionId?: number | null;
 }
 
 export interface ResolveDocumentAssetResult {
@@ -146,11 +192,28 @@ export interface ResolveDocumentAssetResult {
   /** Appel modèle effectué. */
   aiCalled: boolean;
   evaluation?: DocumentAssetEvaluation;
+  /** Lot 49B : réarbitrage IA reporté (plafond) — la carte reste ouverte. */
+  aiDeferred?: RearbitrationDeferral;
 }
 
 /** Points d'injection (tests unitaires). */
 export interface ResolveDocumentAssetDeps {
   callModel?: (p: { accountId: number; userId: number | null; fileId: number; variables: Record<string, unknown> }) => Promise<T3LinkAmbiguityOutput>;
+  /** Carte LINK-ASSET ouverte du document (défaut : base). */
+  openAssetLinkAction?: (accountId: number, fileId: number) => Promise<number | null>;
+  /** Plafond journalier des réarbitrages (défaut : `ai_usage_event`). */
+  dailyRearbitrationAllowed?: (accountId: number) => Promise<boolean>;
+}
+
+/** Carte « À traiter » LINK-ASSET ouverte d'un document (identifiant), ou null. */
+export async function openAssetLinkActionOf(accountId: number, fileId: number): Promise<number | null> {
+  const rows = (await pgClient.unsafe(
+    `SELECT id FROM to_process_actions
+      WHERE account_id = $1 AND target_type = 'DOCUMENT' AND target_id = $2 AND rule_code = 'LINK-ASSET' AND resolved_at IS NULL
+      ORDER BY id LIMIT 1`,
+    [accountId, fileId] as never[],
+  )) as unknown as Array<{ id: number }>;
+  return rows[0] ? Number(rows[0].id) : null;
 }
 
 async function defaultCallModel(p: { accountId: number; userId: number | null; fileId: number; variables: Record<string, unknown> }) {
@@ -197,6 +260,9 @@ export function evaluationBase(p: {
     candidateSources: candidateSourcesOf(p.ctx),
     testedSources: p.ctx.build.testedSources,
     deterministicMatches: p.ctx.build.deterministicMatches,
+    documentSources: usedDocumentSources(p.ctx.sources),
+    matchedSourceUnitIds: (p.ctx.matchedSourceUnits ?? []).map((u) => u.unitId).slice(0, 50),
+    lastAiAt: previousAiAt(p.resolution),
   };
 }
 
@@ -224,17 +290,25 @@ export async function resolveDocumentAsset(
   const changed = resolution?.knowledgeRevision != null ? await knowledgeChangedSince(accountId, resolution.knowledgeRevision) : [];
   const base = evaluationBase({ fileId, ctx, resolution, revision, changed, triggerCode: input.triggerCode, reprocessReason: input.reprocessReason });
 
-  // Contexte pertinent inchangé : la décision ouverte reste valable, sans IA.
-  if (isUnchangedOpenContext(resolution, ctx.fingerprint)) {
+  // Contexte pertinent inchangé : sans carte « À traiter » ouverte, la
+  // décision ouverte reste valable, sans IA (AC6). Avec une carte ouverte
+  // (lot 49B) : problème ACTIF, réexamen complet — l'issue précédente n'est
+  // qu'un historique.
+  const inchange = isUnchangedOpenContext(resolution, ctx.fingerprint);
+  const openActionId = inchange
+    ? (input.openActionId ?? await (deps.openAssetLinkAction ?? openAssetLinkActionOf)(accountId, fileId))
+    : (input.openActionId ?? null);
+  if (inchange && openActionId === null) {
     const evaluation: DocumentAssetEvaluation = {
       ...base, newResolution: resolution!.lastOutcome, aiCalled: false, decision: null, linkedAssetId: null,
-      toProcessAction: 'UNCHANGED', result: 'CONFIRMED_NO_CHANGE', promptCandidateCount: 0,
+      toProcessAction: 'UNCHANGED', result: 'CONFIRMED_NO_CHANGE', promptCandidateCount: 0, reevaluated: false,
     };
     await g('état de résolution');
     await restoreLastOutcome(fileId, { identifiersFingerprint: ctx.idsFingerprint, knowledgeRevision: revision, lastEvaluation: { ...evaluation } });
     logEvaluation(evaluation);
     return { outcome: 'NO_CHANGE', status: resolution!.lastOutcome, aiCalled: false, evaluation };
   }
+  const reexamen = { ...base, reevaluated: true, openActionId };
 
   // ── 3. Déterministe : identifiants forts, puis référence partagée / nom distinctif ──
   let decision = decideDeterministic(ctx.identification, { multiAssetDeclared: ctx.multiAssetDeclared })
@@ -248,6 +322,19 @@ export async function resolveDocumentAsset(
       decision = { kind: 'ABSTAIN', reasonCode: 'NO_CANDIDATE', ranked: [] };
     } else if (input.skipAi) {
       decision = { kind: 'ABSTAIN', reasonCode: 'AI_UNAVAILABLE', ranked: rankCandidates(ctx.candidates) };
+    } else if (inchange && (typeof input.rearbitration === 'object'
+      || (input.rearbitration === undefined && !(await (deps.dailyRearbitrationAllowed ?? dailyRearbitrationAllowed)(accountId))))) {
+      // Lot 49B : réarbitrage à contexte INCHANGÉ au-delà du plafond de coût —
+      // reporté au passage suivant, carte maintenue telle quelle (mêmes candidats).
+      const motif: RearbitrationDeferral = typeof input.rearbitration === 'object' ? input.rearbitration.defer : 'DAY_CAP';
+      const evaluation: DocumentAssetEvaluation = {
+        ...reexamen, newResolution: resolution!.lastOutcome, aiCalled: false, decision: null, linkedAssetId: null,
+        toProcessAction: 'UNCHANGED', result: 'AI_DEFERRED', promptCandidateCount: 0, aiDeferred: motif,
+      };
+      await g('état de résolution');
+      await restoreLastOutcome(fileId, { identifiersFingerprint: ctx.idsFingerprint, knowledgeRevision: revision, lastEvaluation: { ...evaluation } });
+      logEvaluation(evaluation);
+      return { outcome: 'NO_CHANGE', status: resolution!.lastOutcome, aiCalled: false, evaluation, aiDeferred: motif };
     } else {
       await input.guard?.assertActive('T3 DOCUMENT_ASSET — appel du modèle');
       const ext = ctx.sources?.extraction;
@@ -287,7 +374,7 @@ export async function resolveDocumentAsset(
   await input.guard?.assertActive('T3 DOCUMENT_ASSET — écriture');
   const result = await applyDecision({
     accountId, fileId, userId: input.userId ?? state.userId, decision, ctx, revision, g,
-    evaluation: { ...base, aiCalled, promptCandidateCount: aiCalled ? pourModele.length : 0 },
+    evaluation: { ...reexamen, aiCalled, promptCandidateCount: aiCalled ? pourModele.length : 0, ...(aiCalled ? { lastAiAt: new Date().toISOString() } : {}) },
   });
   console.info(`[t3-document-asset] document ${fileId} : ${decision.kind}${decision.kind === 'ABSTAIN' ? ` (${decision.reasonCode})` : ` [${decision.method}]`} → ${result.outcome}`);
   if (result.evaluation) logEvaluation(result.evaluation);
@@ -299,7 +386,10 @@ function logEvaluation(e: DocumentAssetEvaluation): void {
   console.info(`[t3-document-asset] document ${e.documentId} — révision ${e.previousKnowledgeRevision ?? '∅'} → ${e.currentKnowledgeRevision}`
     + ` · motif ${e.reprocessReason ?? '∅'}${e.knowledgeChanged.length ? ` (${e.knowledgeChanged.join(', ')})` : ''}`
     + ` · contexte modifié : ${e.fingerprintChanged ? 'OUI' : 'NON'} · candidats ${e.candidateCount}`
-    + ` · IA : ${e.aiCalled ? 'OUI' : 'NON'} · résultat ${e.result} · À traiter ${e.toProcessAction}`);
+    + ` · IA : ${e.aiCalled ? 'OUI' : 'NON'}${e.aiDeferred ? ` (reportée : ${e.aiDeferred})` : ''} · résultat ${e.result} · À traiter ${e.toProcessAction}`
+    + `${e.openActionId ? ` · carte ${e.openActionId} réexaminée` : ''}`
+    + `${e.documentSources?.length ? ` · sources ${e.documentSources.join('+')}` : ''}`
+    + `${e.matchedSourceUnitIds?.length ? ` · unités ${e.matchedSourceUnitIds.length}` : ''}`);
 }
 
 /** Arrêt avant tout travail (pure vis-à-vis du modèle). */

@@ -7,7 +7,7 @@
  * QUATRE CRITÈRES D'ACCEPTATION, ET CE QU'ILS IMPOSENT
  *
  * « L'administrateur identifie en moins d'un écran la version réellement active
- * et l'état T1–T5. » Bandeau et cartes de santé sont donc au-dessus de tout le
+ * et l'état des traitements » (T1, T2, T3, T4, T6 — T5 retiré au lot 49). Bandeau et cartes de santé sont donc au-dessus de tout le
  * reste, et tiennent sans défilement.
  *
  * « Emergency Stop accessible sans navigation secondaire. » Il est dans
@@ -62,7 +62,7 @@ import { EmergencyStopControl } from './_components/AiEnvBanner';
 import { ObservabilityPanel } from './_components/ObservabilityPanel';
 import { CachesPanel } from './_components/CachesPanel';
 
-type Treatment = 'T1' | 'T2' | 'T3' | 'T4' | 'T5' | 'T6';
+type Treatment = 'T1' | 'T2' | 'T3' | 'T4' | 'T6';
 type State = 'ENABLED' | 'DISABLED' | 'SUSPENDED';
 
 interface Health {

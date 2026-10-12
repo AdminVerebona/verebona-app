@@ -130,10 +130,10 @@ export function checkMasterPromptContent(
     blocking.push(bloquant('BRANCH_PLACEHOLDER_MISSING',
       'L’emplacement de branche {{TASK}} (ou {{MODE}}) est absent : le serveur ne pourrait pas indiquer la branche à exécuter.'));
   }
-  // T5 (§27, lot 32B) : ses modes ne sont pas des sections « BRANCHE MODE =
-  // X » mais la ligne « Valeurs autorisées : ANALYZE | MODIFY » qui suit
-  // « MODE = {{MODE}} » — le message nomme ce que l'administrateur doit
-  // rétablir dans CE texte.
+  // Un master peut déclarer ses branches par la ligne « Valeurs autorisées :
+  // A | B » qui suit « MODE = {{MODE}} » plutôt que par des sections
+  // « BRANCHE MODE = X » (format hérité de l'ancien T5, retiré au lot 49) —
+  // le message nomme ce que l'administrateur doit rétablir dans CE texte.
   const sections = /BRANCHE\s+(?:TASK|MODE)\s*=/.test(content);
   for (const t of master.tasks) {
     if (!info.branches.includes(t) && isOptionalMasterTask(master.masterPromptCode, t)) {

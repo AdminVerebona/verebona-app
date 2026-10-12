@@ -55,7 +55,7 @@ import { apiClient } from '@/lib/api-client';
 import { AiEnvBanner } from '../ai-dashboard/_components/AiEnvBanner';
 import { ManualLaunch } from './_components/ManualLaunch';
 
-type Treatment = 'T1' | 'T2' | 'T3' | 'T4' | 'T5' | 'T6';
+type Treatment = 'T1' | 'T2' | 'T3' | 'T4' | 'T6';
 type JobStatus = 'PENDING' | 'RUNNING' | 'DONE' | 'FAILED' | 'CANCELLED';
 type TreatmentState = 'ENABLED' | 'DISABLED' | 'SUSPENDED';
 

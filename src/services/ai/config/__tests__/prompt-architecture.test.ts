@@ -58,9 +58,8 @@ describe('valeur par défaut', () => {
     expect(masterPromptForTreatment('T2')).toEqual({
       masterPromptCode: 't2_master_v1', tasks: ['UNDERSTAND', 'ANSWER', 'REVALIDATE'],
     });
-    // Lot 16 : T5 (§27), discriminant MODE, branches déclarées « Valeurs autorisées ».
-    expect(masterPromptForTreatment('T5')).toEqual({ masterPromptCode: 't5_master_v1', tasks: ['ANALYZE', 'MODIFY'] });
-    expect([...masterCapableTreatments()].sort()).toEqual(expect.arrayContaining(['T1', 'T2', 'T3', 'T4', 'T5']));
+    // Lot 49 (ticket 12) : T5 supprimé — plus de master T5, cinq traitements master.
+    expect([...masterCapableTreatments()].sort()).toEqual(['T1', 'T2', 'T3', 'T4', 'T6']);
   });
 });
 
@@ -238,9 +237,9 @@ describe('T2-43 : variable retirée VEREBONA_ASSISTANT_MAX_OUTPUT_TOKENS', () =>
   });
 });
 
-describe('lot 16b — T5 et T6 : master seul', () => {
+describe('lot 16b — T6 (et T3) : master seul', () => {
   it('lus `master` quelle que soit la valeur stockée (T3 aussi depuis le lot 16b-3)', () => {
-    for (const t of ['T5', 'T6', 'T3'] as const) {
+    for (const t of ['T6', 'T3'] as const) {
       expect(promptArchitectureOf({ treatment: t, promptArchitecture: 'steps' }), t).toBe('master');
       expect(promptArchitectureOf({ treatment: t }), t).toBe('master');
       expect(emptyTreatmentConfig(t).promptArchitecture, t).toBe('master');
@@ -253,8 +252,8 @@ describe('lot 16b — T5 et T6 : master seul', () => {
     expect(await resolveOperationConfig('t6_formulate')).toMatchObject({ promptArchitecture: 'master', masterPromptText: texte });
   });
 
-  it('refus explicite de `steps` pour T5/T6, quel que soit le statut', () => {
-    for (const t of ['T5', 'T6'] as const) {
+  it('refus explicite de `steps` pour T6, quel que soit le statut', () => {
+    for (const t of ['T6'] as const) {
       expect(checkPromptArchitectureChange({ status: 'DRAFT', treatment: t, from: 'master', to: 'steps' }))
         .toMatchObject({ allowed: false, code: 'MASTER_ONLY_TREATMENT' });
       expect(checkPromptArchitectureChange({ status: 'DRAFT', treatment: t, from: 'steps', to: 'master' }))
@@ -262,13 +261,9 @@ describe('lot 16b — T5 et T6 : master seul', () => {
     }
   });
 
-  it('promotion : une ligne T5/T6 encore en `steps` (valeur brute) est bloquante', () => {
-    for (const t of ['T5', 'T6'] as const) {
-      const issues = masterConfigIssues({ ...emptyTreatmentConfig(t), promptArchitecture: 'steps' });
-      expect(issues.some((i) => i.field === 'promptArchitecture' && i.blocking), t).toBe(true);
-    }
-    // T5 en master, texte vide (fichier du dépôt par construction) : rien à signaler.
-    expect(masterConfigIssues(emptyTreatmentConfig('T5'))).toEqual([]);
+  it('promotion : une ligne T6 encore en `steps` (valeur brute) est bloquante', () => {
+    const issues = masterConfigIssues({ ...emptyTreatmentConfig('T6'), promptArchitecture: 'steps' });
+    expect(issues.some((i) => i.field === 'promptArchitecture' && i.blocking)).toBe(true);
   });
 
   it('migration 0231 : aligne la donnée stockée, idempotente', async () => {

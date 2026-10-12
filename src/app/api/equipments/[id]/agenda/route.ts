@@ -6,8 +6,11 @@ import { SessionService } from '@/lib/session-service';
 import { apiError } from '@/lib/api-errors';
 import { computeEffectiveStatus } from '@/services/agenda/AgendaDomainService';
 import { loadEventNatures } from '@/services/agenda/AgendaQueryService';
+import { equipmentInAccount } from '@/services/security/account-ownership';
 
 // GET /api/equipments/[id]/agenda — agenda items linked to an equipment
+// Lot 49 (SEC-06) : équipement du compte vérifié AVANT la lecture ; éléments
+// d'agenda du compte seulement.
 export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -22,6 +25,7 @@ export async function GET(
     const { id } = await params;
     const equipmentId = parseInt(id);
     if (isNaN(equipmentId)) return apiError(400, 'INVALID_INPUT', 'Invalid equipment id');
+    if (!(await equipmentInAccount(accountId, equipmentId))) return apiError(404, 'NOT_FOUND', 'Equipment not found');
 
     // Get agenda item IDs linked to this equipment
     const linkedIds = await db

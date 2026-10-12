@@ -12,7 +12,7 @@ import {
  * Deux groupes : les déclencheurs disponibles (sélectionner, activer,
  * désactiver, retirer) et les déclencheurs enregistrés incompatibles
  * (consulter le motif, supprimer). Le caractère « master » d'un traitement ne
- * masque jamais ce bloc : seul son caractère synchrone (T2, T5, T6) le fait,
+ * masque jamais ce bloc : seul son caractère synchrone (T2, T6) le fait,
  * et même alors une entrée enregistrée reste visible et supprimable.
  */
 export function TriggersEditor({

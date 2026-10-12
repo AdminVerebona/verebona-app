@@ -297,14 +297,20 @@ scenario('L31B', 'Rattachement document → bien : identifiants canoniques (T1) 
     expect((await actionsLink(doc.id)).filter((a) => a.active)).toHaveLength(1);
     expect(await resolution(doc.id)).toMatchObject({ status: 'ABSTAINED', reason_code: 'AMBIGUOUS' });
 
-    // Relances : le même travail rejoué, puis une demande planifiée.
+    expect(appelsT3(replay)).toBe(1);
+
+    // Relances : le même travail rejoué, puis une demande planifiée. Lot 49B (ticket « À traiter
+    // ouverts réexaminés à chaque passage ») : la carte LINK-ASSET est OUVERTE — chaque relance
+    // RÉEXAMINE (nouvel arbitrage, l'abstention précédente n'est qu'un historique) ; toujours
+    // ambigu : aucune association, aucun doublon d'action.
+    const relance = await rejouer([{ ...t3Sortie([{ candidateId: maison.id, score: 0.86, confidence: 'certain' }, { candidateId: studio.id, score: 0.84, confidence: 'certain' }]), repeat: true }]);
     const { resolveDocumentAsset } = await import('@/services/ai/reconciliation');
     const r = await resolveDocumentAsset({ accountId: compte.id, fileId: doc.id, userId: compte.ownerUserId });
-    expect(r).toMatchObject({ outcome: 'NO_CHANGE', aiCalled: false });
+    expect(r).toMatchObject({ outcome: 'ABSTAIN', aiCalled: true });
     const { requestDocumentAssetResolution } = await import('@/services/ai/reconciliation');
     await requestDocumentAssetResolution({ accountId: compte.id, userId: compte.ownerUserId, fileId: doc.id, triggerCode: 'schedule_hourly' });
     await drainQueues();
-    expect(appelsT3(replay)).toBe(1);
+    expect(appelsT3(relance)).toBe(2);
     expect(await actionsLink(doc.id)).toHaveLength(1);
     expect((await liens(doc.id)).filter((l) => l[1] !== 'MENTIONED')).toEqual([]);
   });

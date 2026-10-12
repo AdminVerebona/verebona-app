@@ -219,8 +219,6 @@ const CONTRACTS: readonly OutputContract[] = [
   { name: 'T2UnderstandOutput', label: 't2_understand', version: 1, adapters: [] },
   { name: 'T2AnswerOutput', label: 't2_answer', version: 1, adapters: [] },
   { name: 'T2RevalidateOutput', label: 't2_revalidate', version: 1, adapters: [] },
-  { name: 'T5AnalyzeOutput', label: 't5_analyze', version: 1, adapters: [] },
-  { name: 'T5ModifyOutput', label: 't5_modify', version: 1, adapters: [] },
   // T6 : `schemaVersion: "t6-output-v2"` dans la sortie même.
   { name: 'T6FormulateOutput', label: 't6_formulate', version: 2, adapters: [] },
 ];

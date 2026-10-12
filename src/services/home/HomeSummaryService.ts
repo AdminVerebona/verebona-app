@@ -270,7 +270,8 @@ export async function buildHomeSummary(accountId: number): Promise<HomeSummaryPa
         isNull(assetFiles.deletedAt),
       ))
       .orderBy(desc(assetFiles.uploadedAt), desc(assetFiles.id))
-      .limit(4),
+      // Lot 49A : six au plus (accueil élargi : 6 visibles sur très grand écran).
+      .limit(6),
 
     // « Ce que j'ai fait » (§3.4) — champs complétés par l'analyse (30 jours),
     // ceux du bien et ceux de ses équipements / pièces (lot 22).

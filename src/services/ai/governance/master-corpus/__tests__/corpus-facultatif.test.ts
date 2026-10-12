@@ -24,6 +24,6 @@ describe('corpus facultatif', () => {
   it('AC12 — corpus chargeable aussi depuis le serveur Next (répertoires résolus sur le dépôt)', () => {
     for (const d of MASTER_CORPUS_DIRS.slice(0, 4)) expect(existsSync(d), d).toBe(true);
     const cas = loadMasterCorpusCases(readMasterFileFromRepo);
-    expect(new Set(cas.map((c) => c.masterPromptCode))).toEqual(new Set(['t1_master_v1', 't2_master_v1', 't3_master_v1', 't4_master_v1', 't5_master_v1', 't6_master_v1']));
+    expect(new Set(cas.map((c) => c.masterPromptCode))).toEqual(new Set(['t1_master_v1', 't2_master_v1', 't3_master_v1', 't4_master_v1', 't6_master_v1']));
   });
 });

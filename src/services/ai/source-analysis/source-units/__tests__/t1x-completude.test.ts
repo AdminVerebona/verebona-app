@@ -40,7 +40,9 @@ const { emptyTreatmentConfig } = await import('@/services/ai/config/config-types
 const { analyseGroupWithMaster } = await import('../../master/analyse-group-master');
 const { emptyTrace } = await import('../../trace');
 const { buildSourceUnits, fullTextOf, cellUnitId } = await import('../build-units');
-const { buildCompletenessReport, computeCoverage, selectRepairUnits, SourceUnitLinker } = await import('../coverage');
+const { buildCompletenessReport, computeCoverage, selectRepairUnits, SourceUnitLinker, withRepairStates, needsSourceUnits } = await import('../coverage');
+const sv = await import('../source-verification');
+const { backfillLayer } = await import('../jobs');
 const { mergeFacts, factFingerprint } = await import('../merge');
 const { planChunks, isSaturated } = await import('../page-chunks');
 const { completenessLogLine } = await import('../monitoring');
@@ -93,6 +95,7 @@ beforeEach(() => {
   vi.spyOn(console, 'warn').mockImplementation(() => {});
   vi.spyOn(console, 'info').mockImplementation(() => {});
   delete process.env.T1_MAX_REPAIR_PASSES;
+  delete process.env.T1_REPAIR_MAX_CALLS;
 });
 afterEach(() => { __setConfigForTests(null); vi.restoreAllMocks(); });
 
@@ -190,8 +193,9 @@ describe('T1X-03 — document très long', () => {
     repondre(() => ({ output: sortie({ transcription: texte }) }));
     const m = await analyser({ contentUrls: ['https://s3.example/doc.pdf?sig=1'] });
     expect(m.result.document.transcription).toBe(texte);
-    // Texte rendu en entier par le modèle : pas une saturation, aucun découpage.
-    expect(pdf.fetched).toBe(0);
+    // Texte rendu en entier par le modèle : pas une saturation, aucun découpage
+    // (lot 49B : le PDF est lu une fois pour VÉRIFIER la couverture, sans appel IA).
+    expect(pdf.fetched).toBe(1);
     expect(fake.calls).toHaveLength(1);
     const blocs = m.sourceLayer!.units.filter((u) => u.kind === 'TEXT_BLOCK');
     // Aucun caractère perdu : la concaténation des blocs redonne le texte.
@@ -490,5 +494,305 @@ describe('surveillance', () => {
       expect(o).toHaveProperty(k);
     }
     expect(o).toMatchObject({ documentId: 42, sourceUnitsCount: 10, factsDroppedCount: 1 });
+  });
+});
+
+// ══════════════════════════════════════════════════════════════════════════
+// Lot 49B — ticket « T1 — Garantir la couverture réelle des documents et
+// corriger les pertes résiduelles d'extraction » : TC01 à TC12 (unitaires ;
+// TC08, TC09, TC11, TC12 aussi sur base réelle :
+// `src/test/e2e/scenarios/l49b-t1-couverture-reelle.e2e.ts`).
+// ══════════════════════════════════════════════════════════════════════════
+
+/** PNG 1×1 (page « scannée » : image seule, aucun texte). */
+const PNG_1PX = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==';
+const SUFFIXES = ['alpha', 'bravo', 'charlie', 'delta', 'echo', 'foxtrot', 'golf', 'hotel', 'india', 'juliett'];
+const THEMES = ['', 'chaudiere', 'radiateur', 'thermostat', 'ventilation', 'plomberie', 'electricite', 'toiture', 'isolation', 'fenetre', 'charpente'];
+/** Texte d'une page : dix mots distinctifs propres à la page. */
+const textePage = (n: number) => SUFFIXES.map((x) => `${THEMES[n]}${x}`).join(' ');
+/** PDF réel : texte par page (police simple) ; pages listées dans `scannees` : image seule. */
+const pdfReel = async (pages: Array<string | null>, scannees: number[] = []) => {
+  const { PDFDocument, StandardFonts } = await import('pdf-lib');
+  const doc = await PDFDocument.create();
+  const font = await doc.embedFont(StandardFonts.Helvetica);
+  const png = scannees.length ? await doc.embedPng(Buffer.from(PNG_1PX, 'base64')) : null;
+  pages.forEach((t, i) => {
+    const page = doc.addPage([600, 800]);
+    if (scannees.includes(i + 1)) page.drawImage(png!, { x: 0, y: 0, width: 600, height: 800 });
+    else if (t) page.drawText(t, { x: 30, y: 760, size: 9, font });
+  });
+  return doc.save();
+};
+const URL_PDF = { contentUrls: ['https://s3.example/doc.pdf?sig=1'] };
+/** Appel d'un lot de pages (pièce jointe en ligne) : « pages A à B ». */
+const lotDePages = (i: ProviderCallInput) => {
+  const nom = i.attachments[0]?.data ? i.attachments[0].displayName ?? '' : '';
+  const m = /pages (\d+) à (\d+)/.exec(nom);
+  return m ? { start: Number(m[1]), end: Number(m[2]) } : null;
+};
+const reparationCiblee = (i: ProviderCallInput) => /\[page:\d+:/.test(i.prompt);
+
+describe('TC01 — omission silencieuse (DEV-01)', () => {
+  it('PDF de 10 pages, réponse T1 limitée aux pages 1 à 7 sans saturation : pages 8 à 10 détectées puis reprises (lot ciblé), jamais COMPLETE prématurément', async () => {
+    pdf.bytes = await pdfReel(Array.from({ length: 10 }, (_, k) => textePage(k + 1)));
+    repondre((i) => {
+      const lot = lotDePages(i);
+      if (lot) {
+        const pages = Array.from({ length: lot.end - lot.start + 1 }, (_, k) => lot.start + k);
+        return { output: sortie({ transcription: pages.map((p) => textePage(p)).join('\n\n') }) };
+      }
+      return { output: sortie({ transcription: [1, 2, 3, 4, 5, 6, 7].map((p) => textePage(p)).join('\n\n') }) };
+    });
+    const m = await analyser(URL_PDF);
+    expect(pdf.fetched).toBe(1);
+    const lots = fake.calls.map(lotDePages).filter(Boolean);
+    // Reprise CIBLÉE des seules pages omises (aucune relecture des pages 1 à 7).
+    expect(lots).toEqual([{ start: 8, end: 10 }]);
+    const d = m.sourceLayer!.report.diagnostics!;
+    expect(d).toMatchObject({ sourceVerification: 'VERIFIED', pagesExpected: 10, pagesVerified: 10, pagesMissing: [], pagesReread: [8, 9, 10] });
+    expect(m.result.document.transcription).toContain(textePage(10));
+  });
+
+  it('reprise des pages omises en échec : lacune FAILED « page:8:gap:10 », PAGE_MISSING, INCOMPLETE_RETRYABLE (jamais COMPLETE)', async () => {
+    pdf.bytes = await pdfReel(Array.from({ length: 10 }, (_, k) => textePage(k + 1)));
+    repondre((i) => (lotDePages(i)
+      ? Object.assign(new Error('fournisseur indisponible'), { status: 503 })
+      : { output: sortie({ transcription: [1, 2, 3, 4, 5, 6, 7].map((p) => textePage(p)).join('\n\n') }) }));
+    const m = await analyser(URL_PDF);
+    const r = m.sourceLayer!.report;
+    expect(m.sourceLayer!.units.find((u) => u.kind === 'PAGE_GAP')).toMatchObject({ sourceUnitId: 'page:8:gap:10', status: 'FAILED' });
+    expect(r.qualityState).toBe('INCOMPLETE_RETRYABLE');
+    expect(r.anomalies).toEqual(expect.arrayContaining(['PAGE_MISSING', 'COVERAGE_INCOMPLETE']));
+    expect(r.diagnostics).toMatchObject({ sourceVerification: 'PARTIAL', pagesMissing: [8, 9, 10] });
+  });
+
+  it('lecture paginée (marques « --- page N --- ») d’un PDF scanné de 10 pages, marques 1 à 7 : pages 8 à 10 manquantes (pur)', () => {
+    const probe = { pageCount: 10, pages: Array.from({ length: 10 }, (_, k) => ({ page: k + 1, kind: 'UNKNOWN' as const, sample: null })) };
+    const transcription = [1, 2, 3, 4, 5, 6, 7].map((p) => `--- page ${p} ---\nContenu`).join('\n');
+    const v = sv.verifyPdfCoverage({ probe, cited: sv.citedPages({ facts: [], tables: [], transcription }), transcription, hasContent: true });
+    expect(v).toMatchObject({ status: 'PARTIAL', missing: [8, 9, 10], verified: [1, 2, 3, 4, 5, 6, 7] });
+    expect(sv.pageRanges(v.missing)).toEqual([{ start: 8, end: 10 }]);
+  });
+});
+
+describe('TC02 — page 1 non vérifiée (DEV-01)', () => {
+  it('sortie saturée sans aucune page citée : la reprise commence à la page 1 (jamais réputée lue)', async () => {
+    pdf.bytes = await pdfReel([null, null, null]);
+    repondre((i) => (lotDePages(i)
+      ? { output: sortie({ transcription: 'Suite du document' }) }
+      : { outputTokens: 31_000, output: sortie({ transcription: 'Début : A-0001', facts: [fait('Début : A-0001', 'A-0001', { evidence: { excerpt: 'Début : A-0001' } })] }) }));
+    await analyser(URL_PDF);
+    expect(fake.calls.map(lotDePages).filter(Boolean)[0]).toMatchObject({ start: 1 });
+  });
+
+  it('PDF scanné de 3 pages, numérotation absente, sortie non saturée : pages non vérifiées (dont la page 1), PAGE_UNVERIFIED, jamais COMPLETE, aucun appel IA de plus', async () => {
+    pdf.bytes = await pdfReel([null, null, null], [1, 2, 3]);
+    repondre(() => ({ output: sortie({ transcription: 'Relevé de test\nRéférence : REF-1', facts: [fait('Référence : REF-1', 'REF-1', { evidence: { excerpt: 'Référence : REF-1' } })] }) }));
+    const m = await analyser(URL_PDF);
+    expect(fake.calls).toHaveLength(1);
+    const r = m.sourceLayer!.report;
+    expect(r.diagnostics).toMatchObject({ sourceVerification: 'PARTIAL', pagesUnverified: [1, 2, 3], pagesScanned: [1, 2, 3], pagesVerified: 0 });
+    expect(r.qualityState).not.toBe('COMPLETE');
+    expect(r.anomalies).toContain('PAGE_UNVERIFIED');
+  });
+
+  it('source illisible (téléchargement impossible) : NON VÉRIFIABLE, SOURCE_UNREADABLE, jamais COMPLETE', async () => {
+    pdf.bytes = null;
+    repondre(() => ({ output: sortie({ transcription: 'Relevé de test\nRéférence : REF-1', facts: [fait('Référence : REF-1', 'REF-1')] }) }));
+    const m = await analyser(URL_PDF);
+    expect(m.sourceLayer!.report).toMatchObject({ qualityState: 'COMPLETE_WITH_UNRESOLVED', diagnostics: { sourceVerification: 'UNVERIFIABLE' } });
+    expect(m.sourceLayer!.report.anomalies).toContain('SOURCE_UNREADABLE');
+  });
+
+  it('image seule : couverture non vérifiable, incertitude conservée (pur)', () => {
+    expect(sv.verifyNonPdf({ mimeTypes: ['image/jpeg'], textSource: false, hasContent: true })).toMatchObject({ status: 'UNVERIFIABLE', scanned: [1], unverified: [1] });
+    expect(sv.verifyNonPdf({ mimeTypes: ['text/html'], textSource: true, hasContent: true }).status).toBe('NOT_APPLICABLE');
+  });
+
+  it('sonde : texte d’un flux (chaînes littérales et hexadécimales), page scannée, police illisible écartée (pur)', () => {
+    expect(sv.readContentStream('BT /F1 9 Tf (Bonjour le monde) Tj ET').text).toBe('Bonjour le monde');
+    expect(sv.readContentStream('BT <48656C6C6F> Tj ET')).toMatchObject({ textOps: 1, text: 'Hello' });
+    expect(sv.readContentStream('q /Im1 Do Q')).toMatchObject({ textOps: 0, doOps: 1 });
+    expect(sv.readableSample('\u0000\u0012\u0003'.repeat(30))).toBeNull();
+  });
+});
+
+describe('TC03 — texte incertain (DEV-02)', () => {
+  const premier = () => sortie({
+    transcription: 'Relevé de test\nN° de série : SN-12345',
+    facts: [fait('N° de série : SN-12345', 'SN-12345', { confidence: 'conflictual' })],
+  });
+
+  it('UNCERTAIN déclenche une vérification ciblée ; relecture certaine (preuve) → COVERED, réparation réussie', async () => {
+    repondre((i) => (reparationCiblee(i) ? { output: sortie({ facts: [fait('N° de série : SN-12345', 'SN-12345')] }) } : { output: premier() }));
+    const m = await analyser();
+    expect(fake.calls).toHaveLength(2);
+    expect(fake.calls[1].prompt).toContain('[page:1:field:1]');
+    expect(m.sourceLayer!.units.find((u) => u.sourceUnitId === 'page:1:field:1')).toMatchObject({ status: 'COVERED', repairState: 'SUCCEEDED' });
+  });
+
+  it('sans preuve suffisante : UNCERTAIN maintenu (jamais promu), réparation tentée sans succès', async () => {
+    repondre((i) => (reparationCiblee(i) ? { output: sortie({ facts: [] }) } : { output: premier() }));
+    const m = await analyser();
+    expect(m.sourceLayer!.units.find((u) => u.sourceUnitId === 'page:1:field:1')).toMatchObject({ status: 'UNCERTAIN', repairAttempts: 1, repairState: 'ATTEMPTED_FAILED' });
+    expect(m.sourceLayer!.report.qualityState).toBe('COMPLETE_WITH_UNRESOLVED');
+  });
+});
+
+describe('TC04 — tableau incertain (DEV-02)', () => {
+  const tableau = {
+    title: 'Pièces', pageStart: 1, uncertain: true, uncertaintyNote: 'colonnes ambiguës',
+    columns: [{ header: 'Réf' }, { header: 'Prix' }],
+    rows: [{ cells: [{ column: 0, value: 'KIT-778' }, { column: 1, value: '24,90 €' }] }, { cells: [{ column: 0, value: 'JOINT-12' }, { column: 1, value: '3,50 €' }] }],
+  };
+
+  it('contrôle ciblé des cellules : ligne confirmée cellule par cellule → COVERED ; ligne partiellement confirmée → UNCERTAIN ; aucune ligne perdue', async () => {
+    repondre((i) => (reparationCiblee(i)
+      ? { output: sortie({ facts: [fait('KIT-778', 'KIT-778'), fait('24,90 €', '24,90 €'), fait('JOINT-12', 'JOINT-12')] }) }
+      : { output: sortie({ transcription: 'Relevé de test', tables: [tableau] }) }));
+    const m = await analyser();
+    const rep = fake.calls.find(reparationCiblee)!;
+    expect(rep.prompt).toContain('[page:1:table:1:row:1]');
+    const lignes = m.sourceLayer!.units.filter((u) => u.kind === 'TABLE_ROW');
+    expect(lignes).toHaveLength(2);
+    expect(lignes[0]).toMatchObject({ status: 'COVERED', reason: 'table_verified' });
+    expect(lignes[1]).toMatchObject({ status: 'UNCERTAIN', reason: 'table_uncertain' });
+  });
+
+  it('sélection : ligne de tableau incertaine éligible ; observation visuelle incertaine NON (relecture du fichier nécessaire) (pur)', () => {
+    const u = buildSourceUnits({
+      segments: [],
+      tables: [{ index: 0, title: 'T', pageStart: 1, pageEnd: 1, columns: [{ header: 'A', path: ['A'] }], rowCount: 1, columnCount: 1,
+        cells: [{ row: 0, column: 0, rowHeader: null, columnHeader: 'A', columnPath: ['A'], value: 'X-1', normalized: null, valueType: null, colspan: 1, rowspan: 1, page: 1, confidence: 'probable' }],
+        confidence: 'probable', uncertain: true, issues: [] }],
+      visual: { observations: [{ description: 'Fissure', confidence: 'conflictual', page: 1 }] },
+    });
+    const cov = computeCoverage(u, { facts: [] });
+    expect(selectRepairUnits(cov, 1).map((x) => x.kind)).toEqual(['TABLE_ROW']);
+    expect(needsSourceUnits(cov).map((x) => x.kind)).toEqual(['VISUAL_OBSERVATION']);
+  });
+});
+
+describe('TC05 — observation visuelle incertaine (DEV-02)', () => {
+  it('aucune relecture textuelle ; UNCERTAIN maintenu, état « relecture du fichier nécessaire »', async () => {
+    repondre(() => ({ output: sortie({
+      transcription: 'Relevé de test\nRéférence : REF-1', facts: [fait('Référence : REF-1', 'REF-1')],
+      observations: [{ description: 'Trace d’humidité au plafond', confidence: 'conflictual', page: 1 }],
+    }) }));
+    const m = await analyser();
+    expect(fake.calls).toHaveLength(1);
+    expect(m.sourceLayer!.units.find((u) => u.kind === 'VISUAL_OBSERVATION')).toMatchObject({ status: 'UNCERTAIN', repairState: 'NEEDS_SOURCE' });
+    expect(m.sourceLayer!.report.diagnostics).toMatchObject({ needsSourceUnits: 1 });
+    expect(m.sourceLayer!.report.qualityState).toBe('COMPLETE_WITH_UNRESOLVED');
+  });
+});
+
+describe('TC06 / TC07 — pertes de normalisation (DEV-03)', () => {
+  it('TC06 — chaîne longue : valeur réduite dans le contrat, original INTÉGRAL conservé (VALUE_TRUNCATED) ; troncatures = originaux', async () => {
+    const long = `Libellé ${'très '.repeat(80)}long`;
+    expect(long.length).toBeGreaterThan(200);
+    repondre(() => ({ output: sortie({
+      transcription: 'Relevé de test\nRéférence : REF-1',
+      facts: [fait('Référence : REF-1', 'REF-1', { label: long })],
+    }) }));
+    const m = await analyser();
+    expect(String(m.facts[0].label).length).toBe(200);
+    const rec = m.sourceLayer!.unresolvedFacts.find((f) => f.reason === 'VALUE_TRUNCATED');
+    expect(rec).toMatchObject({ status: 'RETAINED', rawKey: 'facts[0].label', rawValue: long, sourceUnitIds: ['page:1:field:1'] });
+    expect((rec!.originalPayload as { original: string }).original).toBe(long);
+    expect(m.sourceLayer!.report.diagnostics).toMatchObject({ truncations: 1, originalsPreserved: 1, normalisationLosses: 0 });
+    expect(m.sourceLayer!.report.anomalies).not.toContain('NORMALISATION_LOSS');
+  });
+
+  it('TC07 — champ invalide (date non ISO, code trop long) : valeur originale conservée avec le motif du retrait', async () => {
+    repondre(() => ({ output: {
+      ...sortie({ transcription: 'Relevé de test\nRéférence : REF-1', facts: [fait('Référence : REF-1', 'REF-1')] }),
+      document: {
+        title: { value: 'Relevé de test', confidence: 'certain', evidence: { excerpt: 'Relevé de test', page: 1 } },
+        documentDate: { value: 'courant du trimestre prochain', confidence: 'probable', evidence: {} },
+        classification: { canonicalType: 'X'.repeat(70), rubricCode: null, documentTypeCode: null, confidence: 0.9, evidence: {} },
+      },
+    } }));
+    const m = await analyser();
+    const retraits = m.sourceLayer!.unresolvedFacts.filter((f) => f.reason === 'VALUE_NOT_NORMALIZABLE' && f.status === 'UNRESOLVED');
+    expect(retraits.map((r) => r.rawKey).sort()).toEqual(['document.classification.canonicalType', 'document.documentDate']);
+    expect(retraits.find((r) => r.rawKey === 'document.documentDate')).toMatchObject({ detail: expect.stringContaining('retirée par la normalisation') });
+    expect(JSON.stringify(retraits.find((r) => r.rawKey === 'document.documentDate')!.originalPayload)).toContain('courant du trimestre prochain');
+    expect(m.sourceLayer!.report.qualityState).toBe('COMPLETE_WITH_UNRESOLVED');
+  });
+
+  it('perte non compensée (champ retiré par la validation : chemin seul) : NORMALISATION_LOSS (pur)', () => {
+    const units = buildSourceUnits({ segments: [{ text: 'Réf : A-1', pageOffset: 0, origin: 'PASS_1' }] });
+    const cov = computeCoverage(units, { facts: [{ unitIds: ['page:1:field:1'], confidence: 'certain' }] });
+    const r = buildCompletenessReport(cov, {
+      factsCount: 1, unresolvedFacts: [], truncatedSectionsCount: 0, batchedSectionsCount: 0, repairPassCount: 0, chunkCount: 0, warningCodes: [], retryAllowed: true,
+      normalisation: { truncations: 2, originalsPreserved: 1, losses: 1 },
+    });
+    expect(r).toMatchObject({ qualityState: 'COMPLETE_WITH_UNRESOLVED', diagnostics: { normalisationLosses: 1 } });
+    expect(r.anomalies).toContain('NORMALISATION_LOSS');
+  });
+});
+
+describe('TC08 / TC09 — budget et plafond de réparation (DEV-04)', () => {
+  it('TC08 — budget épuisé : unités hors budget PENDING (jamais « non interprétables »), REPAIR_PENDING, reprise programmée (INCOMPLETE_RETRYABLE)', async () => {
+    process.env.T1_REPAIR_MAX_CALLS = '1';
+    const lignes = Array.from({ length: 130 }, (_, i) => `Compteur ${i + 1} : CPT-${10_000 + i}`);
+    repondre((i) => (reparationCiblee(i) ? { output: sortie({ facts: [] }) } : { output: sortie({ transcription: ['Relevé de test', ...lignes].join('\n') }) }));
+    const m = await analyser();
+    expect(fake.calls.filter(reparationCiblee)).toHaveLength(1);
+    const l = m.sourceLayer!;
+    const etats = l.units.filter((u) => u.kind === 'LABEL_VALUE').map((u) => u.repairState);
+    expect(etats.filter((x) => x === 'ATTEMPTED_FAILED')).toHaveLength(120);
+    expect(etats.filter((x) => x === 'PENDING')).toHaveLength(10);
+    expect(l.report).toMatchObject({ qualityState: 'INCOMPLETE_RETRYABLE', diagnostics: { pendingRepairUnits: 10 } });
+    expect(l.report.anomalies).toContain('REPAIR_PENDING');
+    expect(l.retryable).toBe(true);
+  });
+
+  it('TC09 — plafond de tentatives : EXHAUSTED, plus jamais sélectionnée (aucune boucle) ; échec définitif non rejoué (pur)', () => {
+    const units = buildSourceUnits({ segments: [{ text: 'Réf : A-123456\nCode : B-654321', pageOffset: 0, origin: 'PASS_1' }] });
+    const cov = computeCoverage(units, {
+      facts: [], repairAttempts: new Map([['page:1:field:1', 3], ['page:1:field:2', 1]]),
+      failed: new Map([['page:1:field:2', { reason: 'repair_failed:final', retryable: false }]]),
+    });
+    const etats = withRepairStates(cov, { attempted: new Set(['page:1:field:1', 'page:1:field:2']), cap: 3 });
+    expect(etats.map((u) => u.repairState)).toEqual(['EXHAUSTED', 'EXHAUSTED']);
+    expect(selectRepairUnits(etats, 3)).toEqual([]);
+    const r = buildCompletenessReport(etats, {
+      factsCount: 0, unresolvedFacts: [], truncatedSectionsCount: 0, batchedSectionsCount: 0, repairPassCount: 1, chunkCount: 0, warningCodes: [], retryAllowed: true,
+    });
+    expect(r.anomalies).toContain('REPAIR_EXHAUSTED');
+  });
+
+  it('les unités en attente passent en tête de la sélection suivante (pur)', () => {
+    const units = buildSourceUnits({ segments: [{ text: 'Réf : A-123456\nCode : B-654321', pageOffset: 0, origin: 'PASS_1' }] });
+    const cov = computeCoverage(units, { facts: [] }).map((u) => (u.sourceUnitId === 'page:1:field:2' ? { ...u, repairState: 'PENDING' as const } : u));
+    expect(selectRepairUnits(cov, 3).map((u) => u.sourceUnitId)).toEqual(['page:1:field:2', 'page:1:field:1']);
+  });
+});
+
+describe('TC10 — document complet', () => {
+  it('PDF d’une page vérifié, toutes les unités couvertes : COMPLETE, aucun appel IA supplémentaire', async () => {
+    const lignes = ['Reference : REF-1001', 'Compteur : CPT-2002'];
+    pdf.bytes = await pdfReel([`${lignes[0]} ${lignes[1]} maintenancealpha maintenancebravo`]);
+    repondre(() => ({ output: sortie({ transcription: ['Relevé de test', ...lignes, 'maintenancealpha maintenancebravo Page 1/1'].join('\n'), facts: [fait(lignes[0], 'REF-1001'), fait(lignes[1], 'CPT-2002')] }) }));
+    const m = await analyser(URL_PDF);
+    expect(fake.calls).toHaveLength(1);
+    expect(m.sourceLayer!.report).toMatchObject({ diagnostics: { sourceVerification: 'VERIFIED', pagesExpected: 1, pagesVerified: 1 } });
+  });
+});
+
+describe('TC12 — document historique (reprise sans réanalyse)', () => {
+  it('couverture RECONSTRUITE (jamais vérifiée sur l’original) : jamais COMPLETE, aucun appel', () => {
+    const b = backfillLayer({
+      extraction: {
+        id: 1, account_id: 1, file_id: 1, full_text: 'Référence : REF-1', title: null, description: null, document_date: null, supplier_name: null,
+        supplier_siret: null, amount_cents: null, document_type_code: null, rubric_code: null, visual_summary: null, visual_observations: null, structural_evidence: null,
+      },
+      tables: [],
+      facts: [{ id: 1, confidence: 'certain', excerpt: 'Référence : REF-1', location: { page: 1 }, evidence_origin: 'TEXT_EXTRACTION', visual_evidence: null, value_text: 'REF-1', normalized_value: 'REF-1', label: null, attribute: null, fact_key: 'info.ref' }],
+    });
+    expect(b.layer.report).toMatchObject({ qualityState: 'COMPLETE_WITH_UNRESOLVED', diagnostics: { sourceVerification: 'RECONSTRUCTED' } });
+    expect(fake.calls).toHaveLength(0);
   });
 });

@@ -152,13 +152,17 @@ scenario('L31C', 'Contrat de la file durable T3 (worker réel)', ({ sql, make })
   it('T3Q-01/02/03 : déclencheur réel écrit sur le job ; document_linked indépendant de source_analyzed', async () => {
     const compte = await make.account();
     const bien = await make.asset(compte);
+    // Lot 49 (SEC-08) : document source DU COMPTE (une référence d'un autre
+    // compte n'est plus mise en file ; un identifiant fictif peut désigner le
+    // document d'un autre scénario dans la base partagée).
+    const source = await make.assetFile(compte, { assetId: bien.id });
     const config = (actifs: string[]) => triggers.__setTriggerConfigLoader(async () => ({
       triggers: ['source_analyzed', 'document_linked', 'asset_updated', 'arbitration_resolved'].map((code) => ({ kind: 'event' as const, code, active: actifs.includes(code) })),
     }));
     try {
       // T3Q-01 : source_analyzed actif → travail d'analyse.
       config(['source_analyzed']);
-      expect(await t3.enqueueT3ForAnalyzedAsset({ accountId: compte.id, assetId: bien.id, userId: compte.ownerUserId, leadSourceId: 1 })).not.toBeNull();
+      expect(await t3.enqueueT3ForAnalyzedAsset({ accountId: compte.id, assetId: bien.id, userId: compte.ownerUserId, leadSourceId: source.id })).not.toBeNull();
       const [a] = await vivants(compte.id, 'asset', String(bien.id));
       expect(a).toMatchObject({ trigger_code: 'source_analyzed', payload: expect.objectContaining({ payloadVersion: 1, kind: 'asset' }) });
       await sql`UPDATE ai_job_queue SET status = 'CANCELLED' WHERE id = ${a.id}`;
@@ -185,17 +189,20 @@ scenario('L31C', 'Contrat de la file durable T3 (worker réel)', ({ sql, make })
     const compte = await make.account();
     const bien = await make.asset(compte);
     const cle = [compte.id, 'asset', String(bien.id)] as const;
-    await t3.enqueueT3ForAnalyzedAsset({ accountId: compte.id, assetId: bien.id, userId: compte.ownerUserId, leadSourceId: 11 });
-    await t3.enqueueT3ForAnalyzedAsset({ accountId: compte.id, assetId: bien.id, userId: compte.ownerUserId, leadSourceId: 12 });
+    // Lot 49 (SEC-08) : documents sources DU COMPTE (voir T3Q-01).
+    const sources: number[] = [];
+    for (let i = 0; i < 12; i++) sources.push((await make.assetFile(compte, { assetId: bien.id })).id);
+    await t3.enqueueT3ForAnalyzedAsset({ accountId: compte.id, assetId: bien.id, userId: compte.ownerUserId, leadSourceId: sources[0] });
+    await t3.enqueueT3ForAnalyzedAsset({ accountId: compte.id, assetId: bien.id, userId: compte.ownerUserId, leadSourceId: sources[1] });
     const pending = await vivants(...cle);
     expect(pending).toHaveLength(1); // T3Q-05
-    expect(pending[0].payload).toMatchObject({ sourceFileId: 12 }); // replace : le plus récent l'emporte
+    expect(pending[0].payload).toMatchObject({ sourceFileId: sources[1] }); // replace : le plus récent l'emporte
 
     await seul(pending[0].id);
     const pris = await repo.claimNext('T3', 'e2e-31c', 60);
     expect(pris?.id).toBe(pending[0].id);
     for (let i = 0; i < 10; i++) {
-      await t3.enqueueT3ForAnalyzedAsset({ accountId: compte.id, assetId: bien.id, userId: compte.ownerUserId, leadSourceId: 100 + i });
+      await t3.enqueueT3ForAnalyzedAsset({ accountId: compte.id, assetId: bien.id, userId: compte.ownerUserId, leadSourceId: sources[2 + i] });
     }
     const pendant = await vivants(...cle);
     expect(pendant).toHaveLength(1); // T3Q-06 : jamais une seconde ligne
@@ -204,7 +211,7 @@ scenario('L31C', 'Contrat de la file durable T3 (worker réel)', ({ sql, make })
     expect(await repo.completeJob(pris!.id, pris!.executionId, { result: 'NO_CHANGE' })).toEqual({ requeued: true });
     const apres = await vivants(...cle);
     expect(apres).toHaveLength(1); // T3Q-07 : un seul passage supplémentaire
-    expect(apres[0]).toMatchObject({ status: 'PENDING', trigger_code: 'coalesced', payload: expect.objectContaining({ sourceFileId: 109 }) });
+    expect(apres[0]).toMatchObject({ status: 'PENDING', trigger_code: 'coalesced', payload: expect.objectContaining({ sourceFileId: sources[11] }) });
     await sql`UPDATE ai_job_queue SET status = 'CANCELLED' WHERE id = ${apres[0].id}`;
 
     // Compte : événements fusionnés, bornés à MAX_MERGED_EVENTS.

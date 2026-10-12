@@ -125,7 +125,7 @@ const baseAccountDataRepository: BaseAccountDataPort = {
               to_char(f.document_date, 'YYYY-MM-DD') AS date, a.name AS "assetName", 1 AS "matchedTerms",
               ${effectiveAnalysisStateSql('f')} AS "analysisState"
          FROM asset_files f
-         LEFT JOIN assets a ON a.id = coalesce(f.asset_id, f.linked_asset_id)
+         LEFT JOIN assets a ON a.id = coalesce(f.asset_id, f.linked_asset_id) AND a.account_id = f.account_id -- lot 49 : bien du compte
         WHERE f.id = $1 AND f.account_id = $2 AND f.deleted_at IS NULL
         LIMIT 1`,
       [fileId, accountId] as never[],
@@ -164,7 +164,7 @@ const baseAccountDataRepository: BaseAccountDataPort = {
                 to_char(f.document_date, 'YYYY-MM-DD') AS date, a.name AS "assetName", (${score}) AS "matchedTerms",
                 ${effectiveAnalysisStateSql('f')} AS "analysisState"
            FROM asset_files f
-           LEFT JOIN assets a ON a.id = coalesce(f.asset_id, f.linked_asset_id)
+           LEFT JOIN assets a ON a.id = coalesce(f.asset_id, f.linked_asset_id) AND a.account_id = f.account_id -- lot 49 : bien du compte
           WHERE f.account_id = $1 AND f.deleted_at IS NULL
             AND ($2::int IS NULL OR f.asset_id = $2 OR f.linked_asset_id = $2)
        ) s WHERE s."matchedTerms" > 0 ORDER BY s."matchedTerms" DESC LIMIT 10`,

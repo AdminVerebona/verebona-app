@@ -32,7 +32,7 @@ import {
   promoteToTest, demoteToDraft, validateVersion as commitValidation,
   switchActive, archiveVersion, listVersions, markStaleDrafts,
 } from './config-version.repository';
-import { normalizeTreatmentConfig, promptArchitectureOf, type ConfigVersionWithEntries, type TreatmentConfig } from './config-types';
+import { promptArchitectureOf, type ConfigVersionWithEntries, type TreatmentConfig } from './config-types';
 import { checkPromptArchitectureChange } from './prompt-architecture';
 
 /** Refus fonctionnel — distinct d'une erreur technique. */
@@ -164,9 +164,9 @@ export async function saveTreatmentConfig(
   // dépend plus de ce que la machine à états autorise aujourd'hui.
   const { bumpConfigVersionCounter } = await import('./config-cache-version');
   await bumpConfigVersionCounter(`edit:${versionId}:${config.treatment}`);
-  // Valeurs avant / après (après = ce que `upsertEntry` écrit réellement,
-  // normalisation T5 comprise) : la route les journalise (tickets T4 / T5).
-  return { before: current ?? null, after: normalizeTreatmentConfig(enregistree) };
+  // Valeurs avant / après (après = ce que `upsertEntry` écrit réellement) :
+  // la route les journalise (ticket T4).
+  return { before: current ?? null, after: enregistree };
 }
 
 // ── Diff et contrôles, sans transition ──────────────────────────────────────

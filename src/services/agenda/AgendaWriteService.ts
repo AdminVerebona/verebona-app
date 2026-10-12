@@ -53,9 +53,10 @@ export async function updateAgendaLinks(
   assetIds: number[],
   fileIds: number[],
   substructureIds: number[],
-  equipmentIds: number[]
+  equipmentIds: number[],
+  accountId: number,
 ): Promise<void> {
-  await writeAgendaLinks(tx, agendaItemId, { assetIds, fileIds, substructureIds, equipmentIds }, 'replace');
+  await writeAgendaLinks(tx, agendaItemId, { assetIds, fileIds, substructureIds, equipmentIds }, 'replace', accountId);
 }
 
 export async function createAgendaItem(
@@ -69,9 +70,12 @@ export async function createAgendaItem(
   const fileIds = input.fileIds ?? [];
   const substructureIds = input.substructureIds ?? [];
   const equipmentIds = input.equipmentIds ?? [];
+  // Lot 49 (SEC-07) : appartenance au compte contrôlée d'abord (la
+  // primitive la recontrôle dans sa transaction).
   await validateAgendaWrite(
     { startDate: input.startDate, startTime: input.startTime, endDate: input.endDate, endTime: input.endTime },
     { assetIds, fileIds, substructureIds, equipmentIds },
+    accountId,
   );
 
   // 3. Catégorie de l'accueil (action / information) : mêmes règles
@@ -170,7 +174,7 @@ export async function updateAgendaItem(
     startTime: input.startTime ?? existing.startTime,
     endDate: input.endDate ?? existing.endDate,
     endTime: input.endTime ?? existing.endTime,
-  }, { assetIds, fileIds, substructureIds, equipmentIds });
+  }, { assetIds, fileIds, substructureIds, equipmentIds }, accountId);
 
   // Detect if automatic item has been manually modified
   const isAutomaticModified = existing.isAutomatic &&

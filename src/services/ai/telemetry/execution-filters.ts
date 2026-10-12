@@ -11,7 +11,10 @@
  * Tolérantes : un paramètre illisible est ignoré, jamais bloquant (un lien
  * ancien montre moins de filtres, il ne casse pas l'écran).
  */
-const TREATMENTS = ['T1', 'T2', 'T3', 'T4', 'T5', 'T6'];
+// Lot 49 : T5 retiré du filtre courant (un ancien lien `?treatment=T5` est
+// ignoré). Les anciens appels T5 restent consultables par opération
+// (`t5_analyze`, `t5_modify`) ou usage (AI_GOVERNANCE), en lecture seule.
+const TREATMENTS = ['T1', 'T2', 'T3', 'T4', 'T6'];
 const RANKS = ['primary', 'fallback_1', 'fallback_2', 'fallback'];
 /**
  * CDC Mascotte BO-009 : génération T6 affichée, pré-génération non affichée,
@@ -111,4 +114,19 @@ export function periodBounds(period: CostPeriod, now: Date = new Date(), custom?
       to: custom?.to && DAY.test(custom.to) ? custom.to : day(now),
     };
   }
+}
+
+/**
+ * Lot 49 (ticket 12, T5-DEL-08) : libellé de la colonne « traitement » d'un
+ * appel. L'usage technique AI_GOVERNANCE n'est rattaché à aucun traitement :
+ *   · sondes de modèles, qualification, test fournisseur, évaluation de
+ *     prompt → « Technique » (jamais « T5 ») ;
+ *   · anciens appels `t5_analyze` / `t5_modify` → « T5 (historique) »,
+ *     consultables en lecture seule, jamais confondus avec les sondes.
+ */
+export function executionScopeLabel(row: { treatment: string | null; useCaseCode?: string | null; operationCode?: string | null }): string {
+  if (row.treatment) return row.treatment;
+  if (row.operationCode && /^t5_(analyze|modify)$/.test(row.operationCode)) return 'T5 (historique)';
+  if (row.useCaseCode === 'AI_GOVERNANCE') return 'Technique';
+  return '—';
 }

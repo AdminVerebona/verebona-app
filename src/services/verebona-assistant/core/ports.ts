@@ -52,7 +52,7 @@ import { extractSearchTerms } from './query-terms';
 import { openHelpSearch } from './help-search.port';
 
 /** Vérificateurs d'accès câblés sur les tables réelles du repo (§22.7). */
-function buildAccessChecker(): AccessChecker {
+export function buildAccessChecker(): AccessChecker {
   const exists = async (sql: string, params: unknown[]): Promise<boolean> => {
     const rows = await pgClient.unsafe(sql, params as never[]);
     return (rows as unknown[]).length > 0;
@@ -61,8 +61,11 @@ function buildAccessChecker(): AccessChecker {
     // Les identifiants sont des entiers : le préfixe (« asset_42 ») est retiré
     // en amont par `parseEntityRef`. Le passer tel quel faisait échouer la
     // requête sur une colonne entière, donc refuser toutes les actions.
+    // Lot 49 (ticket 7) : MÊME règle de disponibilité que la résolution T2
+    // (`assistantAssetAvailability`) — un bien archivé, transmis, vendu ou
+    // supprimé, indisponible pour répondre, l'est aussi pour agir.
     assetInAccount: (a, id) =>
-      exists(`SELECT 1 FROM assets WHERE id = $1 AND account_id = $2 AND deleted_at IS NULL LIMIT 1`, [id, a]),
+      exists(`SELECT 1 FROM assets a WHERE a.id = $1 AND a.account_id = $2 AND ${assistantAssetAvailability.sql('a')} LIMIT 1`, [id, a]),
     documentInAccount: (a, id) =>
       exists(`SELECT 1 FROM asset_files WHERE id = $1 AND account_id = $2 AND deleted_at IS NULL LIMIT 1`, [id, a]),
     agendaItemInAccount: (a, id) =>
@@ -76,7 +79,9 @@ function buildAccessChecker(): AccessChecker {
     // Lot 33 : libellés « Ouvrir « <nom> » » (plusieurs biens dans la réponse).
     assetNames: async (a, ids) => {
       const rows = (await pgClient.unsafe(
-        `SELECT id, name FROM assets WHERE account_id = $1 AND id = ANY($2::int[]) AND deleted_at IS NULL`,
+        // Lot 49 (ticket 7) : même règle que `assetInAccount` — aucun bien
+        // indisponible ne revient par le libellé « Ouvrir « … » ».
+        `SELECT a.id, a.name FROM assets a WHERE a.account_id = $1 AND a.id = ANY($2::int[]) AND ${assistantAssetAvailability.sql('a')}`,
         [a, ids] as never[],
       )) as unknown as Array<{ id: number; name: string | null }>;
       return new Map(rows.filter((r) => r.name).map((r) => [Number(r.id), String(r.name)]));
@@ -236,6 +241,39 @@ export function construireActionIntents(
 }
 
 /**
+ * Lot 49 (ticket 7) — revalide les biens « déjà résolus » (page ouverte,
+ * reprise de clarification, référence du fil) AVANT la construction des
+ * actions : un identifiant présent ne vaut pas cible valide. Un bien
+ * indisponible selon `assistantAssetAvailability` (via `assetInAccount`, la
+ * même règle que la résolution T2 — aucune copie locale) est retiré de la
+ * copie de la demande : aucune action ciblée (Ajouter un document, Créer une
+ * échéance, Préparer un export, Ouvrir le bien) ne peut le viser. Une aide
+ * produit (« Ajouter un document ») reste proposée SANS cible.
+ */
+export async function revalidateActionTargets(
+  input: AssistantRequestInput,
+  access: Pick<AccessChecker, 'assetInAccount'>,
+): Promise<AssistantRequestInput> {
+  const ok = async (v: unknown): Promise<boolean> => {
+    const n = Number(v);
+    if (!Number.isSafeInteger(n) || n <= 0) return false;
+    return access.assetInAccount(input.accountId, n).catch(() => false);
+  };
+  let out = input;
+  if (input.pageContext?.assetId != null && !(await ok(input.pageContext.assetId))) {
+    const { assetId: _retire, ...reste } = input.pageContext;
+    out = { ...out, pageContext: reste };
+  }
+  if (input.resume?.assetId != null && !(await ok(input.resume.assetId))) {
+    out = { ...out, resume: { ...input.resume, assetId: undefined } };
+  }
+  if (input.reference?.type === 'asset' && !(await ok(input.reference.id))) {
+    out = { ...out, reference: undefined };
+  }
+  return out;
+}
+
+/**
  * Bien déjà résolu pour la demande (pure) : page ouverte, puis bien fixé par
  * une clarification, puis référence du fil (« cette maison »).
  */
@@ -295,11 +333,13 @@ export function buildOrchestratorPorts(): OrchestratorPorts {
     // Étape « base d'aide » du routage (§9.4.7) — corpus en cache (§43 HELP_CACHE_TTL_SECONDS).
     loadHelpCorpus: () => loadHelpCorpus(),
 
-    resolveActions: (route, input, sources) =>
+    // Lot 49 (ticket 7) : le bien de la page (ou de la reprise, ou du fil)
+    // est REVALIDÉ avant de devenir la cible d'une action.
+    resolveActions: async (route, input, sources) =>
       resolveActions({
         accountId: input.accountId,
         intent: route.intent,
-        actionIntents: construireActionIntents(route, input, sources),
+        actionIntents: construireActionIntents(route, await revalidateActionTargets(input, access), sources),
         access,
         // Offre vérifiée pour chaque action (§22.7 étape 3).
         planType: input.planType,
@@ -376,6 +416,18 @@ export function buildOrchestratorPorts(): OrchestratorPorts {
     // CDC 15 T2-10, T2-33, T2-34 (lecture canonique) : planificateurs dédiés.
     // Lot 33 : cascade du Centre d'aide (corpus, contexte et rôles lus une fois).
     openHelpSearch: (input: AssistantRequestInput) => openHelpSearch(input),
+
+    // Lot 49 : sources MÉTIER réelles exposées à l'étape sémantique (opérations
+    // d'abord, champs du registre, agenda, documents) et relecture d'une
+    // source choisie lors d'une clarification — bornées au compte.
+    listBusinessSources: async (accountId, req) => {
+      const { listBusinessSources } = await import('../canonical/business-sources');
+      return listBusinessSources(accountId, req);
+    },
+    readBusinessSource: async (accountId, ref, ctx) => {
+      const { readBusinessSource } = await import('../canonical/business-sources');
+      return readBusinessSource(accountId, ref, ctx);
+    },
 
     buildSynthesisContext: async (route, input) => {
       const { buildSynthesisContext } = await import('./synthesis-planner');

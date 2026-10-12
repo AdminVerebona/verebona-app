@@ -137,7 +137,7 @@ export const DECLARED_MODELS: readonly DeclaredModel[] = [
   },
   {
     provider: 'gemini', model: 'gemini-2.5-pro', status: 'deprecated',
-    // Principal du code de la gouvernance (T5) et second repli documentaire.
+    // Ancien principal de la gouvernance (T5, retiré au lot 49) ; second repli documentaire.
     activatedOn: null, retiresOn: null, capabilities: STRUCT_MULTI_THINK,
     contextWindowTokens: 1_048_576, maxOutputTokens: 65_536, rateLimits: NON_DECLARE,
     excludedPrompts: LATENCE_T6, rollbackModel: 'gemini-3.5-flash',

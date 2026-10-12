@@ -398,6 +398,8 @@ export async function resendInvitation(userId: number, appUrl: string, now = new
       ownerLastName: owner?.last_name ?? '',
       ownerFullName: owner ? `${owner.first_name} ${owner.last_name}` : '',
       inviteUrl: `${appUrl.replace(/\/$/, '')}/duo/join/${duo.pending_invite_token}`,
+      // Gabarit en base (0125) : {{actionUrl}} ; gabarit du code : {{inviteUrl}}.
+      actionUrl: `${appUrl.replace(/\/$/, '')}/duo/join/${duo.pending_invite_token}`,
       expiresIn: `${DUO_INVITE_TTL_DAYS} jours`,
     },
     userId: duo.billing_owner_user_id,

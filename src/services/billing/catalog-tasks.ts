@@ -18,10 +18,16 @@
  *                                      reprise terminée et 20 min de code
  *                                      homogène (bail partagé, une seule
  *                                      exécution, aucun dégel sur échec) ;
+ *                                      Lot 49A : exécute d'abord le RATTRAPAGE
+ *                                      CIBLÉ de la publication préprod en
+ *                                      échec (doublons de périodicité du
+ *                                      portail) — `catalog-recovery.service` ;
  *   stripe-price-revaluation   /1 h    applique la campagne de revalorisation
  *                                      (lignes prouvées, préavis échu) et
  *                                      constate les bascules.
- * Arrêt d'urgence : SCHEDULED_TASK_STRIPE_CATALOG_PUBLISH=off, etc.
+ * Arrêt d'urgence : SCHEDULED_TASK_STRIPE_CATALOG_PUBLISH=off, etc. — l'arrêt
+ * de publication vaut aussi pour l'amorçage lancé par `stripe-catalog-sync`
+ * et pour le rattrapage (lot 49A : aucun contournement).
  */
 import type { TaskRunContext, TaskRunResult } from '@/services/scheduling/scheduled-tasks.catalog';
 
@@ -60,8 +66,13 @@ export async function runCatalogPublishTask(): Promise<TaskRunResult> {
   const d = catalogDeps();
   const context = d.context();
   if (!context.mode) return { note: 'STRIPE_SECRET_KEY absente : rien à faire' };
+  // Lot 49A — rattrapage ciblé (préprod uniquement, voir le service).
+  const { runPortalIntervalRecovery } = await import('./catalog-recovery.service');
+  const rec = await runPortalIntervalRecovery(d);
+  const recNote = rec.status === 'skipped' ? '' : `rattrapage : ${rec.status}${'reason' in rec ? ` (${rec.reason})` : ''} ; `;
+  if (rec.status === 'failed') return { error: `rattrapage de la publication en échec : ${rec.reason}`.slice(0, 500), note: recNote };
   const { decision, result: r } = await runAutoPublication(d, { actor: 'task:stripe-catalog-publish' });
-  if (!decision.publish || !r) return { note: `aucune publication (${decision.reason})` };
+  if (!decision.publish || !r) return { note: `${recNote}aucune publication (${decision.reason})` };
   if (r.status === 'failed') return { error: `publication en échec (${r.step}) : ancienne grille conservée`, note: r.reason };
   return { note: `publication : ${r.status}${'reason' in r ? ` (${r.reason})` : ''}` };
 }

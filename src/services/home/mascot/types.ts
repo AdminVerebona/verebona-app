@@ -205,6 +205,24 @@ export interface MascotTodoBlock {
   items: MascotTodoItem[];
 }
 
+// ── Premium Duo : « Inviter quelqu'un » (lot 49A, ticket 13) ────────────────
+
+/**
+ * Première action proposée au titulaire d'un abonnement Premium Duo qui n'a
+ * encore invité personne. Elle compte comme une action « À faire en
+ * premier » : avec elle, au plus UNE action DO_FIRST de la file est
+ * affichée (MASC3 : deux au plus). Le clic ouvre le parcours d'invitation
+ * existant (« Mon compte » › « 2e utilisateur Duo »).
+ */
+export interface MascotDuoInvite {
+  /** Parcours existant (page « Mon compte », panneau d'invitation). */
+  href: string;
+  /** « Inviter quelqu’un » */
+  title: string;
+  subtitle: string;
+  cta: string;
+}
+
 /** Payload servi au front — remplace `situation.message` (MIG-002). */
 export interface MascotPresentation {
   schemaVersion: 'mascot-presentation-v1';
@@ -224,6 +242,11 @@ export interface MascotPresentation {
    * illisible) : aucun élément.
    */
   todo?: MascotTodoBlock | null;
+  /**
+   * Lot 49A (ticket 13) : « Inviter quelqu'un », PREMIÈRE action proposée
+   * (Premium Duo, personne invitée). Absent ou `null` : rien.
+   */
+  duoInvite?: MascotDuoInvite | null;
 }
 
 /** Plafonds UX (UX-007, SEC-001). */

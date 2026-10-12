@@ -5,6 +5,7 @@ import { users, duoAccounts, duoMemberships } from '@/db/schema';
 import { eq, and } from 'drizzle-orm';
 import { emailService } from '@/lib/email/email-service';
 import crypto from 'crypto';
+import { getAppBaseUrl } from '@/lib/app-url';
 
 const TOKEN_TTL_DAYS = 7;
 
@@ -59,8 +60,7 @@ export async function GET(request: NextRequest) {
       sentAt: duo.pendingInviteSentAt,
       inviteLink: duo.pendingInviteToken
         ? (() => {
-            const origin = request.headers.get('origin') || request.headers.get('referer')?.split('/').slice(0,3).join('/') || process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000';
-            return `${origin.replace(/\/$/, '')}/duo/join/${duo.pendingInviteToken}`;
+            return `${getAppBaseUrl(request).replace(/\/$/, '')}/duo/join/${duo.pendingInviteToken}`;
           })()
         : null,
     });
@@ -133,9 +133,11 @@ export async function POST(request: NextRequest) {
       .where(eq(users.id, session.userId))
       .limit(1);
 
-    // Derive base URL from the incoming request so it works in all environments (dev, staging, prod)
-    const requestOrigin = request.headers.get('origin') || request.headers.get('referer')?.replace(/\/$/, '').split('/').slice(0, 3).join('/') || process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000';
-    const baseUrl = requestOrigin.replace(/\/$/, '');
+    // Adresse publique de l'application (APP_URL / NEXT_PUBLIC_APP_URL, sinon
+    // l'hôte de la requête) : jamais l'en-tête Origin, qui vaut
+    // « capacitor://localhost » depuis l'app mobile et rendait le lien
+    // d'invitation inutilisable hors de l'app.
+    const baseUrl = getAppBaseUrl(request).replace(/\/$/, '');
     const inviteUrl = `${baseUrl}/duo/join/${token}`;
 
     // Send invitation email (fire-and-forget)
@@ -147,6 +149,9 @@ export async function POST(request: NextRequest) {
         ownerLastName: owner?.lastName || '',
         ownerFullName: owner ? `${owner.firstName} ${owner.lastName}` : '',
         inviteUrl,
+        // Le gabarit en base (migration 0125) attend {{actionUrl}} ; le
+        // gabarit par défaut du code attend {{inviteUrl}} : on fournit les deux.
+        actionUrl: inviteUrl,
         expiresIn: `${TOKEN_TTL_DAYS} jours`,
       },
       userId: session.userId,

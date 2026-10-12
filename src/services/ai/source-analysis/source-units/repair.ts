@@ -17,7 +17,10 @@
  *   · `T1_REPAIR_MIN_UNITS` (1) unités ciblées au moins pour appeler ;
  *   · par passe, au plus `T1_REPAIR_MAX_CALLS` (3) appels de
  *     `REPAIR_MAX_UNITS` (120) unités / `REPAIR_MAX_CHARS` (24 000)
- *     caractères ; le surplus reste UNRESOLVED (contenu conservé).
+ *     caractères ; le surplus reste UNRESOLVED (contenu conservé) et, lot
+ *     49B (DEV-04), est rendu (`notAttempted`) : état PENDING, reprise
+ *     programmée par `t1-completeness-retry` — jamais tenu pour non
+ *     interprétable.
  *
  * Un fait de la réparation n'est retenu que s'il est PROUVÉ par une unité
  * ciblée (extrait retrouvé) : la réparation ne peut ni inventer ni dupliquer
@@ -33,6 +36,7 @@ import type { AnalysisContext, SourceInput } from '../types';
 import type { AccountCapabilities } from '@/services/account-capabilities.service';
 import type { AssetFamily as V2AssetFamily } from '@/lib/referential/v2';
 import { SourceUnitLinker } from './coverage';
+import { maxCompletenessRetries } from './repository';
 import type { CoveredSourceUnit, SourceUnit } from './types';
 
 export const REPAIR_MAX_UNITS = 120;
@@ -51,6 +55,11 @@ export function repairSettings(env: Record<string, string | undefined> = process
     /** Nombre minimal d'unités à réparer pour déclencher un appel (réglage de coût ; 1 = toute lacune). */
     minUnits: n(env.T1_REPAIR_MIN_UNITS, 1, 1, 1_000),
   };
+}
+
+/** Lot 49B : plafond de tentatives de réparation d'une unité (passes de l'analyse + reprises automatiques). */
+export function repairAttemptCap(env: Record<string, string | undefined> = process.env): number {
+  return Math.max(1, repairSettings(env).maxPasses + maxCompletenessRetries(env));
 }
 
 /** Lots d'unités pour la réparation (ordre de lecture). Le surplus au-delà de `maxCalls` lots est rendu à part. */
@@ -96,6 +105,8 @@ export interface RepairPassResult {
   calls: number;
   /** Faits rendus mais sans preuve dans la zone ciblée (écartés). */
   outOfScope: number;
+  /** Lot 49B (DEV-04) : unités sélectionnées au-delà du budget d'appels de la passe — à reprendre. */
+  notAttempted: string[];
 }
 
 export async function runRepairPass(p: {
@@ -109,8 +120,9 @@ export async function runRepairPass(p: {
   pass: number;
   call: RepairCall;
 }): Promise<RepairPassResult> {
-  const res: RepairPassResult = { facts: [], attempted: [], failed: new Map(), calls: 0, outOfScope: 0 };
-  const { batches } = batchRepairUnits(p.units, p.maxCalls);
+  const res: RepairPassResult = { facts: [], attempted: [], failed: new Map(), calls: 0, outOfScope: 0, notAttempted: [] };
+  const { batches, left } = batchRepairUnits(p.units, p.maxCalls);
+  res.notAttempted = left.map((u) => u.sourceUnitId);
   const name = p.input.displayNames[p.groupIndices[0]] ?? 'document';
   for (const lot of batches) {
     res.attempted.push(...lot.map((u) => u.sourceUnitId));

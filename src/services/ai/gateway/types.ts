@@ -123,8 +123,8 @@ export interface AiGatewayRequest<T> {
   engine?: AiEngine;
   /**
    * Lot 22 : appel d'ADMINISTRATION non soumis au plafond mensuel de coût du
-   * compte (`account-cost-cap`) — campagnes de mesure du BO (corpus). T5 et
-   * les appels sans compte en sont exemptés d'office ; ne jamais le poser
+   * compte (`account-cost-cap`) — campagnes de mesure du BO (corpus). L'usage
+   * technique AI_GOVERNANCE et les appels sans compte en sont exemptés d'office ; ne jamais le poser
    * pour un usage déclenché par l'utilisateur.
    */
   costCapExempt?: boolean;

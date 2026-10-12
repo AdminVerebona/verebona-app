@@ -84,7 +84,7 @@ export async function GET(req: NextRequest) {
       treatments: TREATMENTS.map((t) => ({
         ...TREATMENT_DEFINITIONS[t],
         guardrails: listGuardrails(t),
-        // Vide pour T2 et T5 : synchrones, hors file globale (GEN-004).
+        // Vide pour T2 et T6 : synchrones, hors file globale (GEN-004).
         // Texte d'aide propre au traitement (`help`), sans exposer la table entière.
         triggers: TREATMENT_DEFINITIONS[t].batch
           ? listTriggers(t).map(({ code, label, kind, help }) => ({ code, label, kind, help: help?.[t] ?? null }))

@@ -1,33 +1,47 @@
+/**
+ * Documents liés à un événement (domaine historique « events ») — lot 49,
+ * SEC-01 : compte actif de la session, événement ET documents du compte,
+ * conditions de compte dans le SQL de chaque lecture et écriture. Un
+ * identifiant étranger fait refuser la demande ENTIÈRE (rien n'est écrit) ;
+ * une association incorrecte déjà en base n'expose jamais le document d'un
+ * autre compte. Endpoint conservé (encore appelé par l'interface).
+ */
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/db';
 import { eventDocuments, events, assetFiles } from '@/db/schema';
-import { eq, and, inArray } from 'drizzle-orm';
+import { eq, and, inArray, sql } from 'drizzle-orm';
 import { apiError } from '@/lib/api-errors';
+import { SessionService } from '@/lib/session-service';
+import { findRejectedRefs, logCrossAccountRefusal, cleanIds } from '@/services/security/account-ownership';
 
-export async function GET(
-  request: NextRequest,
-  context: { params: Promise<{ eventId: string }> }
-) {
-  const params = await context.params;
+type Ctx = { params: Promise<{ eventId: string }> };
+
+/** Compte actif et événement du compte, ou réponse d'erreur. */
+async function eventOfAccount(request: NextRequest, context: Ctx): Promise<{ accountId: number; eventId: number } | NextResponse> {
+  let session;
   try {
-    const eventId = parseInt(params.eventId);
+    session = await SessionService.getSession(request);
+  } catch (e) {
+    return SessionService.handleSessionError(e);
+  }
+  if (!session?.currentAccountId) return apiError(401, 'UNAUTHORIZED', 'Authentication required');
+  const { eventId: raw } = await context.params;
+  const eventId = parseInt(raw);
+  if (isNaN(eventId)) return apiError(400, 'INVALID_ID', 'Valid event ID is required');
+  const [ev] = await db.select({ id: events.id }).from(events)
+    .where(and(eq(events.id, eventId), eq(events.accountId, session.currentAccountId))).limit(1);
+  // Événement d'un autre compte ou inexistant : même réponse (rien n'est révélé).
+  if (!ev) return apiError(404, 'NOT_FOUND', 'Event not found');
+  return { accountId: session.currentAccountId, eventId };
+}
 
-    if (isNaN(eventId)) {
-      return apiError(400, 'INVALID_ID', 'Valid event ID is required');
-    }
+export async function GET(request: NextRequest, context: Ctx) {
+  try {
+    const r = await eventOfAccount(request, context);
+    if (r instanceof NextResponse) return r;
 
-    // Check if event exists
-    const eventExists = await db
-      .select()
-      .from(events)
-      .where(eq(events.id, eventId))
-      .limit(1);
-
-    if (eventExists.length === 0) {
-      return apiError(404, 'NOT_FOUND', 'Event not found');
-    }
-
-    // Get linked documents with file details
+    // Documents DU COMPTE seulement : une association incorrecte en base
+    // (document d'un autre compte) n'est jamais rendue.
     const linkedDocs = await db
       .select({
         id: eventDocuments.id,
@@ -37,8 +51,8 @@ export async function GET(
         file: assetFiles,
       })
       .from(eventDocuments)
-      .innerJoin(assetFiles, eq(eventDocuments.fileId, assetFiles.id))
-      .where(eq(eventDocuments.eventId, eventId));
+      .innerJoin(assetFiles, and(eq(eventDocuments.fileId, assetFiles.id), eq(assetFiles.accountId, r.accountId)))
+      .where(eq(eventDocuments.eventId, r.eventId));
 
     // Lot 34C : jamais de motif technique d'analyse vers l'application.
     const { toUserFile } = await import('@/services/ai/processing-status/user-file');
@@ -48,79 +62,46 @@ export async function GET(
     }, { status: 200 });
   } catch (error) {
     console.error('GET /api/events/[eventId]/documents error:', error);
-    return apiError(500, 'INTERNAL_ERROR', 'Internal server error: ' + (error as Error).message);
+    return apiError(500, 'INTERNAL_ERROR', 'Internal server error');
   }
 }
 
-export async function POST(
-  request: NextRequest,
-  context: { params: Promise<{ eventId: string }> }
-) {
-  const params = await context.params;
+export async function POST(request: NextRequest, context: Ctx) {
   try {
-    const eventId = parseInt(params.eventId);
+    const r = await eventOfAccount(request, context);
+    if (r instanceof NextResponse) return r;
 
-    if (isNaN(eventId)) {
-      return apiError(400, 'INVALID_ID', 'Valid event ID is required');
-    }
-
-    // Check if event exists
-    const eventExists = await db
-      .select()
-      .from(events)
-      .where(eq(events.id, eventId))
-      .limit(1);
-
-    if (eventExists.length === 0) {
-      return apiError(404, 'NOT_FOUND', 'Event not found');
-    }
-
-    const body = await request.json();
-    const { fileIds } = body;
-
+    const body = await request.json().catch(() => ({}));
+    const { fileIds } = body as { fileIds?: unknown };
     if (!fileIds || !Array.isArray(fileIds) || fileIds.length === 0) {
       return apiError(400, 'INVALID_INPUT', 'fileIds array is required');
     }
+    const ids = cleanIds(fileIds as number[]);
+    if (ids.length !== new Set(fileIds).size) return apiError(400, 'INVALID_INPUT', 'fileIds must be valid ids');
 
-    // Validate all file IDs exist
-    const filesExist = await db
-      .select({ id: assetFiles.id })
-      .from(assetFiles)
-      .where(inArray(assetFiles.id, fileIds));
-
-    if (filesExist.length !== fileIds.length) {
+    // Tous les documents doivent appartenir au compte : sinon refus ENTIER.
+    const rejected = await findRejectedRefs(r.accountId, { file: ids });
+    if (rejected.length) {
+      logCrossAccountRefusal('POST /api/events/[eventId]/documents', { accountId: r.accountId, rejected });
       return apiError(404, 'NOT_FOUND', 'One or more files not found');
     }
 
-    // Insert links (ignore duplicates)
-    const insertPromises = fileIds.map(async (fileId) => {
-      // Check if link already exists
-      const existing = await db
-        .select()
-        .from(eventDocuments)
-        .where(
-          and(
-            eq(eventDocuments.eventId, eventId),
-            eq(eventDocuments.fileId, fileId)
-          )
-        )
-        .limit(1);
-
-      if (existing.length === 0) {
-        return db
-          .insert(eventDocuments)
-          .values({
-            eventId,
-            fileId,
-            createdAt: new Date(),
-          })
-          .returning();
+    // Une seule transaction ; chaque insertion porte la condition de compte
+    // (événement ET document) dans son propre SQL.
+    const created = await db.transaction(async (tx) => {
+      const out: Array<typeof eventDocuments.$inferSelect> = [];
+      for (const fileId of ids) {
+        const rows = (await tx.execute(sqlInsertLink(r.eventId, fileId, r.accountId))) as unknown as Array<typeof eventDocuments.$inferSelect>;
+        if (rows.length) out.push(...rows);
+        else {
+          const existing = await tx.select().from(eventDocuments)
+            .where(and(eq(eventDocuments.eventId, r.eventId), eq(eventDocuments.fileId, fileId))).limit(1);
+          if (!existing.length) throw new Error('LINK_REFUSED');
+          out.push(existing[0]);
+        }
       }
-      return existing;
+      return out;
     });
-
-    const results = await Promise.all(insertPromises);
-    const created = results.flat();
 
     return NextResponse.json({
       message: 'Documents linked successfully',
@@ -128,62 +109,46 @@ export async function POST(
       count: created.length,
     }, { status: 201 });
   } catch (error) {
+    if ((error as Error)?.message === 'LINK_REFUSED') return apiError(404, 'NOT_FOUND', 'One or more files not found');
     console.error('POST /api/events/[eventId]/documents error:', error);
-    return apiError(500, 'INTERNAL_ERROR', 'Internal server error: ' + (error as Error).message);
+    return apiError(500, 'INTERNAL_ERROR', 'Internal server error');
   }
 }
 
-export async function DELETE(
-  request: NextRequest,
-  context: { params: Promise<{ eventId: string }> }
-) {
-  const params = await context.params;
+/** INSERT borné au compte : rien n'est écrit si l'événement ou le document n'est pas du compte. */
+function sqlInsertLink(eventId: number, fileId: number, accountId: number) {
+  return sql`
+    INSERT INTO event_documents (event_id, file_id, created_at)
+    SELECT e.id, f.id, now()
+      FROM events e, asset_files f
+     WHERE e.id = ${eventId} AND e.account_id = ${accountId}
+       AND f.id = ${fileId} AND f.account_id = ${accountId}
+    ON CONFLICT DO NOTHING
+    RETURNING id, event_id AS "eventId", file_id AS "fileId", created_at AS "createdAt"`;
+}
+
+export async function DELETE(request: NextRequest, context: Ctx) {
   try {
-    const eventId = parseInt(params.eventId);
+    const r = await eventOfAccount(request, context);
+    if (r instanceof NextResponse) return r;
     const { searchParams } = new URL(request.url);
-    const fileId = searchParams.get('fileId');
+    const fileId = parseInt(searchParams.get('fileId') ?? '');
+    if (isNaN(fileId)) return apiError(400, 'INVALID_ID', 'Valid file ID is required');
 
-    if (isNaN(eventId)) {
-      return apiError(400, 'INVALID_ID', 'Valid event ID is required');
-    }
+    // Suppression bornée au compte : l'événement (vérifié) ET le document
+    // doivent être du compte ; une relation d'un autre compte n'est jamais
+    // supprimée.
+    const deleted = await db.delete(eventDocuments).where(and(
+      eq(eventDocuments.eventId, r.eventId),
+      eq(eventDocuments.fileId, fileId),
+      inArray(eventDocuments.eventId, db.select({ id: events.id }).from(events).where(and(eq(events.id, r.eventId), eq(events.accountId, r.accountId)))),
+      inArray(eventDocuments.fileId, db.select({ id: assetFiles.id }).from(assetFiles).where(and(eq(assetFiles.id, fileId), eq(assetFiles.accountId, r.accountId)))),
+    )).returning({ id: eventDocuments.id });
 
-    if (!fileId || isNaN(parseInt(fileId))) {
-      return apiError(400, 'INVALID_ID', 'Valid file ID is required');
-    }
-
-    const fileIdInt = parseInt(fileId);
-
-    // Check if link exists
-    const existing = await db
-      .select()
-      .from(eventDocuments)
-      .where(
-        and(
-          eq(eventDocuments.eventId, eventId),
-          eq(eventDocuments.fileId, fileIdInt)
-        )
-      )
-      .limit(1);
-
-    if (existing.length === 0) {
-      return apiError(404, 'NOT_FOUND', 'Link not found');
-    }
-
-    // Delete link
-    await db
-      .delete(eventDocuments)
-      .where(
-        and(
-          eq(eventDocuments.eventId, eventId),
-          eq(eventDocuments.fileId, fileIdInt)
-        )
-      );
-
-    return NextResponse.json({
-      message: 'Document unlinked successfully',
-    }, { status: 200 });
+    if (deleted.length === 0) return apiError(404, 'NOT_FOUND', 'Link not found');
+    return NextResponse.json({ message: 'Document unlinked successfully' }, { status: 200 });
   } catch (error) {
     console.error('DELETE /api/events/[eventId]/documents error:', error);
-    return apiError(500, 'INTERNAL_ERROR', 'Internal server error: ' + (error as Error).message);
+    return apiError(500, 'INTERNAL_ERROR', 'Internal server error');
   }
 }

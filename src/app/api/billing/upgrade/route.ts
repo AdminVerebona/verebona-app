@@ -30,6 +30,7 @@ const MESSAGES: Record<string, string> = {
   UNRECOGNIZED_SUBSCRIPTION_ITEM: "Votre abonnement n'a pas pu être vérifié. Aucun changement n'a été fait. Contactez le support si le problème persiste.",
   MUTATION_IN_PROGRESS: "Une modification de votre abonnement est déjà en cours. Patientez quelques minutes avant de réessayer.",
   PORTAL_UNAVAILABLE: "La page de paiement est momentanément indisponible. Aucun changement n'a été fait.",
+  PORTAL_UPDATING: "Les offres sont en cours de mise à jour. Aucun changement n'a été fait : réessayez dans quelques minutes.",
 };
 
 export async function POST(request: NextRequest) {
@@ -68,7 +69,7 @@ export async function POST(request: NextRequest) {
           message: catalogCode ? CATALOG_ERROR_MESSAGES[catalogCode] : MESSAGES[result.reason],
           ...(result.offer ? { offer: result.offer, details: { offer: result.offer } } : {}),
         },
-        { status: catalogCode ? CATALOG_ERROR_HTTP[catalogCode] : result.reason === 'MUTATION_IN_PROGRESS' ? 409 : result.reason === 'PORTAL_UNAVAILABLE' ? 503 : 400 },
+        { status: catalogCode ? CATALOG_ERROR_HTTP[catalogCode] : result.reason === 'MUTATION_IN_PROGRESS' ? 409 : result.reason === 'PORTAL_UNAVAILABLE' || result.reason === 'PORTAL_UPDATING' ? 503 : 400 },
       );
     }
     return NextResponse.json({ url: result.url, offer: result.offer, scheduled_change_released: result.scheduledChangeReleased });

@@ -13,7 +13,7 @@ import { agendaItemRemovals, aiMasterCorpusRuns, documentFieldValues, cdc15Migra
   businessOperationProjectionSuppressions, businessOperationReferences, documentOperationCandidates, businessOperationMatchDecisions,
   businessOperationContractDetails, businessOperationFinancingDetails, businessOperationClaimDetails, businessOperationClaimDamages,
   businessOperationClaimDamageDocuments, businessOperationClaimDamagePhotos, businessOperationClaimActions, businessOperationClaimExchanges,
-  businessOperationAssetDataMarks, businessOperationClaimMigrationMarks,
+  businessOperationAssetDataMarks, businessOperationClaimMigrationMarks, stripeCatalogRecoveries,
 } from '../schema';
 
 const MIG = join(process.cwd(), 'src/db/migrations');
@@ -42,6 +42,9 @@ function sqlTable(file: string, table: string) {
 
 /** Lot 40 : migrations postérieures à la création d'une table, lues avec elle. */
 const SUITES: Readonly<Record<string, readonly string[]>> = {
+  // Lot 49B : couverture réelle de la source, état de réparation (0329).
+  document_source_units: ['0329_t1_source_verification.sql'],
+  document_extraction_coverage: ['0329_t1_source_verification.sql'],
   // Lot 41 : issue T3 des candidats (0321).
   // Lot 47A (O9) : index de lecture du BO diagnostic (0325).
   document_operation_candidates: ['0320_document_operation_candidates_t3.sql', '0321_document_operation_candidates_t3_outcome.sql', '0325_operation_diagnostics.sql'],
@@ -92,6 +95,8 @@ const CAS: Array<[PgTable, string, string]> = [
   [businessOperationAssetDataMarks, '0322_asset_sale_fields_operations_data.sql', 'business_operation_asset_data_marks'],
   // Lot 44 (O5) : repères de la migration C14.3 de l'ancien formulaire Sinistre.
   [businessOperationClaimMigrationMarks, '0323_claim_operations.sql', 'business_operation_claim_migration_marks'],
+  // Lot 49A : rattrapages ciblés du catalogue Stripe.
+  [stripeCatalogRecoveries, '0326_stripe_catalog_recoveries.sql', 'stripe_catalog_recoveries'],
 ];
 
 describe('tables neuves : Drizzle = SQL', () => {

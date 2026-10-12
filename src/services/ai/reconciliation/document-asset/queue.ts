@@ -32,6 +32,18 @@
  * compte et par page) et compare l'empreinte : identique → CONFIRMED_NO_CHANGE
  * sur place (aucun travail, aucune IA) ; différente → travail T3 (déterministe
  * d'abord, IA seulement si nécessaire).
+ *
+ * Lot 49B (ticket « T3 — Réexaminer systématiquement les À traiter
+ * ouverts », §5, §6, §13) : un document dont la carte « À traiter » LINK-ASSET
+ * est OUVERTE n'est plus jamais « confirmé sans changement » ici. Sa voie
+ * CANONIQUE est la phase « open actions » de la réconciliation du compte
+ * (`open-actions.service.ts`), qui le réexamine à CHAQUE passage, même à
+ * empreinte identique. Le balayage ne le met en file que si son contexte a
+ * RÉELLEMENT changé (ou nouvelle analyse, version du moteur, demande perdue)
+ * — et la phase « open actions » s'efface devant un travail vivant : jamais
+ * deux évaluations du même document dans un cycle. Document SANS carte :
+ * empreinte identique → CONFIRMED_NO_CHANGE, aucun appel (ticket « couche
+ * exhaustive T1 », §8, AC6).
  */
 import type { QueuedJob } from '../../queue/job-queue.repository';
 import type { ExecutionGuard } from '../../queue/execution-control';
@@ -40,7 +52,7 @@ import type { SourceAnalysisResult } from '../../source-analysis/types';
 import { envNumber } from '@/lib/env-number';
 import { buildT3Payload, parseTargetId, registerT3JobKind } from '../t3-job-contract';
 import { confirmContext, getResolution, markPending, type StoredT1Candidate } from './resolution.repository';
-import { evaluationBase, resolveDocumentAsset, type DocumentAssetEvaluation } from './resolve-document-asset.service';
+import { evaluationBase, openAssetLinkActionOf, resolveDocumentAsset, type DocumentAssetEvaluation } from './resolve-document-asset.service';
 import { compactKnowledgeChanges, getAccountKnowledgeRevision, knowledgeChangedSince, knowledgeChangedSql } from '../continuous/knowledge-revision';
 import { MatchingIndexCache } from './matching-index';
 import { T1_SETTLED_STATES } from './question-gate';
@@ -69,6 +81,8 @@ export const LOST_REQUEST_MINUTES = 60;
 export interface DocumentAssetQueueDeps {
   enqueue: typeof import('../../queue/job-queue.repository').enqueue;
   isTriggerActive: (treatment: 'T3', code: string) => Promise<boolean>;
+  /** Lot 49B : carte « À traiter » LINK-ASSET ouverte du document (défaut : base). */
+  openAssetLinkAction?: (accountId: number, fileId: number) => Promise<number | null>;
 }
 
 async function defaultDeps(): Promise<DocumentAssetQueueDeps> {
@@ -205,12 +219,14 @@ export async function runDocumentSweepPage(
   let suivant = p.afterFileId;
   let fin = false;
   let confirmed = 0;
+  let delegated = 0;
   if (backlog < size) {
     const rows = await listDocumentsWithoutPrimary({ afterFileId: p.afterFileId, limit: size });
     // Un index de rapprochement par compte pour toute la page.
     const done = await requestStaleResolutions(rows, { guard, triggerCode, deps: d, label: 'rattrapage planifié', indexes: new MatchingIndexCache() });
     fileIds = done.enqueued;
     confirmed = done.confirmed;
+    delegated = done.delegated;
     if (rows.length > 0) suivant = rows[rows.length - 1].fileId;
     fin = rows.length < size;
   }
@@ -228,7 +244,7 @@ export async function runDocumentSweepPage(
   if (fileIds.length > 0) console.info(`[t3-document-asset] rattrapage ${p.cycleId}:${p.page} : ${fileIds.length} document(s) remis en file.`);
   return {
     result: fileIds.length > 0 ? 'APPLIED' : 'NO_CHANGE',
-    detail: { cycleId: p.cycleId, page: p.page, afterFileId: p.afterFileId, enqueued: fileIds.length, confirmed, backlog, last: fin },
+    detail: { cycleId: p.cycleId, page: p.page, afterFileId: p.afterFileId, enqueued: fileIds.length, confirmed, delegatedToOpenActions: delegated, backlog, last: fin },
   };
 }
 
@@ -333,6 +349,7 @@ export const SWEEP_SQL = `
     LEFT JOIN document_asset_resolutions r ON r.file_id = f.id
    WHERE ($3::int IS NULL OR f.account_id = $3::int)
      AND f.id > $4::int
+     AND ($6::int[] IS NULL OR f.id = ANY($6::int[]))
      AND f.deleted_at IS NULL AND f.grouped_into_file_id IS NULL
      AND COALESCE(f.is_draft, false) = false AND COALESCE(f.is_ignored, false) = false
      AND f.asset_id IS NULL AND f.linked_asset_id IS NULL
@@ -371,10 +388,15 @@ export interface SweepCandidate {
   reprocessReason: 'FIRST_EVALUATION' | 'ENGINE_VERSION' | 'NEW_ANALYSIS' | 'KNOWLEDGE_CHANGED' | 'LOST_REQUEST';
 }
 
-export async function listDocumentsWithoutPrimary(q: { afterFileId?: number; limit: number; accountId?: number | null }): Promise<SweepCandidate[]> {
+export async function listDocumentsWithoutPrimary(q: {
+  afterFileId?: number; limit: number; accountId?: number | null;
+  /** Lot 49B : restriction à des documents désignés (recherche ciblée dans la couche exhaustive T1). */
+  fileIds?: readonly number[] | null;
+}): Promise<SweepCandidate[]> {
   const { pgClient } = await import('@/db');
   const rows = (await pgClient.unsafe(SWEEP_SQL, [
     String(LOST_REQUEST_MINUTES), q.limit, q.accountId ?? null, q.afterFileId ?? 0, DOCUMENT_ASSET_RESOLUTION_VERSION,
+    q.fileIds ? [...q.fileIds] : null,
   ] as never[])) as unknown as Array<{
     id: number; account_id: number; user_id: number | null; context_check: boolean | null; context_fingerprint: string | null;
     knowledge_revision: string | number | null; engine_changed: boolean | null; analysis_changed: boolean | null;
@@ -406,15 +428,19 @@ export async function requestStaleResolutions(
     /** Cache d'index partagé (réconciliation compte, page de balayage). */
     indexes?: MatchingIndexCache;
   },
-): Promise<{ enqueued: number[]; confirmed: number }> {
+): Promise<{ enqueued: number[]; confirmed: number; delegated: number }> {
   const label = `T3 DOCUMENT_ASSET — ${opts.label ?? 'rattrapage'}`;
   const indexes = opts.indexes ?? new MatchingIndexCache();
   const enqueued: number[] = [];
   let confirmed = 0;
+  let delegated = 0;
   for (const r of rows) {
     let reason: string = r.reprocessReason;
     if (r.contextCheck && r.contextFingerprint) {
-      if (await confirmIfUnchanged(r, indexes, opts.triggerCode, opts.guard, label)) { confirmed += 1; continue; }
+      const verdict = await confirmIfUnchanged(r, indexes, opts.triggerCode, opts.guard, label, opts.deps?.openAssetLinkAction ?? openAssetLinkActionOf);
+      if (verdict === 'CONFIRMED') { confirmed += 1; continue; }
+      // Lot 49B : carte ouverte, contexte identique → voie canonique « open actions ».
+      if (verdict === 'OPEN_ACTION') { delegated += 1; continue; }
       reason = 'CONTEXT_CHANGED';
     }
     await opts.guard?.assertActive(label);
@@ -423,13 +449,20 @@ export async function requestStaleResolutions(
     }, opts.deps);
     enqueued.push(r.fileId);
   }
-  return { enqueued, confirmed };
+  return { enqueued, confirmed, delegated };
 }
 
-/** Réévaluation sans IA d'une décision ouverte : `true` si le contexte pertinent est inchangé (décision confirmée). */
+/**
+ * Réévaluation sans IA d'une décision ouverte (document SANS carte « À
+ * traiter » ouverte) : `CONFIRMED` si le contexte pertinent est inchangé
+ * (décision confirmée) ; `OPEN_ACTION` si une carte LINK-ASSET est ouverte —
+ * jamais confirmée ici (lot 49B, §6), réexaminée par la phase « open actions »
+ * ; `CHANGED` sinon (travail T3).
+ */
 async function confirmIfUnchanged(
   r: SweepCandidate, indexes: MatchingIndexCache, triggerCode: string, guard: ExecutionGuard | undefined, label: string,
-): Promise<boolean> {
+  carteOuverte: (accountId: number, fileId: number) => Promise<number | null>,
+): Promise<'CONFIRMED' | 'OPEN_ACTION' | 'CHANGED'> {
   const [{ readAttachmentState }, { computeDocumentAssetContext }] = await Promise.all([
     import('./attachment-state'), import('./context'),
   ]);
@@ -437,9 +470,10 @@ async function confirmIfUnchanged(
   const [state, resolution, index] = await Promise.all([
     readAttachmentState(r.accountId, r.fileId), getResolution(r.fileId), indexes.get(r.accountId),
   ]);
-  if (!resolution || !state.exists) return false;
+  if (!resolution || !state.exists) return 'CHANGED';
   const ctx = await computeDocumentAssetContext({ accountId: r.accountId, fileId: r.fileId, state, resolution, index });
-  if (ctx.fingerprint !== r.contextFingerprint) return false;
+  if (ctx.fingerprint !== r.contextFingerprint) return 'CHANGED';
+  if ((await carteOuverte(r.accountId, r.fileId)) !== null) return 'OPEN_ACTION';
   const changed = await knowledgeChangedSince(r.accountId, r.knowledgeRevision);
   const evaluation: DocumentAssetEvaluation = {
     ...evaluationBase({ fileId: r.fileId, ctx, resolution, revision, changed, triggerCode, reprocessReason: 'KNOWLEDGE_CHANGED' }),
@@ -447,7 +481,8 @@ async function confirmIfUnchanged(
     toProcessAction: 'UNCHANGED', result: 'CONFIRMED_NO_CHANGE', promptCandidateCount: 0,
   };
   await guard?.assertActive(`${label} (évaluation confirmée)`);
-  return confirmContext({ fileId: r.fileId, contextFingerprint: ctx.fingerprint, knowledgeRevision: revision, lastEvaluation: { ...evaluation } });
+  return (await confirmContext({ fileId: r.fileId, contextFingerprint: ctx.fingerprint, knowledgeRevision: revision, lastEvaluation: { ...evaluation, reevaluated: false } }))
+    ? 'CONFIRMED' : 'CHANGED';
 }
 
 /**
@@ -472,8 +507,10 @@ export async function sweepDocumentsWithoutPrimary(opts: {
 export async function sweepAccountDocuments(opts: {
   accountId: number; guard?: ExecutionGuard; triggerCode?: string | null; limit?: number; deps?: DocumentAssetQueueDeps;
   indexes?: MatchingIndexCache;
-}): Promise<{ enqueued: number[]; confirmed: number; examined: number }> {
-  const rows = await listDocumentsWithoutPrimary({ limit: opts.limit ?? documentSweepPageSize(), accountId: opts.accountId });
+  /** Lot 49B : documents désignés par la recherche ciblée (couche exhaustive T1). */
+  fileIds?: readonly number[] | null;
+}): Promise<{ enqueued: number[]; confirmed: number; delegated: number; examined: number }> {
+  const rows = await listDocumentsWithoutPrimary({ limit: opts.limit ?? documentSweepPageSize(), accountId: opts.accountId, fileIds: opts.fileIds ?? null });
   const r = await requestStaleResolutions(rows, {
     guard: opts.guard, triggerCode: opts.triggerCode ?? 'schedule_hourly', deps: opts.deps, indexes: opts.indexes, label: 'réconciliation du compte',
   });

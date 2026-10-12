@@ -57,6 +57,14 @@ export function DuoInvitationPanel() {
     fetchStatus();
   }, []);
 
+  // Lot 49A (ticket 13) : arrivée depuis « Inviter quelqu'un » (mascotte,
+  // `/mon-compte#duo-invitation`) — panneau amené à l'écran, champ e-mail prêt.
+  useEffect(() => {
+    if (loading || typeof window === 'undefined' || window.location.hash !== '#duo-invitation') return;
+    document.getElementById('duo-invitation')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    if (data.status === 'NONE') document.getElementById('invite-email')?.focus({ preventScroll: true });
+  }, [loading, data.status]);
+
   const handleSend = async () => {
     if (!emailInput.trim()) return;
     setSending(true);

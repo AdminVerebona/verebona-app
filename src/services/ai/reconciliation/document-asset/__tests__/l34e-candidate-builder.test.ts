@@ -209,15 +209,25 @@ describe('T3D-03 / T3D-06 / T3C-04 — empreinte du CONTEXTE pertinent', () => {
   });
 });
 
-describe('interface de sources documentaires extensible (futures document_source_units)', () => {
-  it('un fournisseur SOURCE_UNITS s’enregistre sans refonte ; il entre dans la découverte et l’empreinte', async () => {
+describe('interface de sources documentaires extensible (document_source_units, lot 49B)', () => {
+  it('fournisseur extensible sans refonte : un nouveau nom s’ajoute, un nom existant est remplacé ; un texte ordinaire entre dans l’empreinte', async () => {
     const avant = documentSourceProviders().length;
-    registerDocumentSourceProvider({ name: 'SOURCE_UNITS', load: async () => ({ texts: [{ origin: 'SOURCE_UNITS', zone: 'TITLE', text: 'x' }] }) });
-    expect(documentSourceProviders().map((p) => p.name)).toContain('SOURCE_UNITS');
+    registerDocumentSourceProvider({ name: 'E2E_SOURCE', load: async () => ({ texts: [{ origin: 'E2E_SOURCE', zone: 'TITLE', text: 'x' }] }) });
+    expect(documentSourceProviders().map((p) => p.name)).toContain('E2E_SOURCE');
+    expect(documentSourceProviders().length).toBe(avant + 1);
+    registerDocumentSourceProvider({ name: 'E2E_SOURCE', load: async () => null });
     expect(documentSourceProviders().length).toBe(avant + 1);
     const base = doc({ title: 'Facture' });
-    expect(documentKnowledgeDigest({ ...base, texts: [...base.texts, { origin: 'SOURCE_UNITS', zone: 'BODY', text: 'Maison de Valence' }] }))
+    expect(documentKnowledgeDigest({ ...base, texts: [...base.texts, { origin: 'E2E_SOURCE', zone: 'BODY', text: 'Maison de Valence' }] }))
       .not.toBe(base.digest);
+  });
+  it('lot 49B — SOURCE_UNITS et UNRESOLVED_FACTS enregistrés en production ; leurs textes n’entrent pas EN BLOC dans le digest (seules les unités considérées comptent, `context.ts`)', async () => {
+    const { registerSourceUnitProviders } = await import('../source-unit-provider');
+    registerSourceUnitProviders();
+    expect(documentSourceProviders().map((p) => p.name)).toEqual(expect.arrayContaining(['SOURCE_UNITS', 'UNRESOLVED_FACTS']));
+    const base = doc({ title: 'Facture' });
+    expect(documentKnowledgeDigest({ ...base, texts: [...base.texts, { origin: 'SOURCE_UNITS', zone: 'BODY', text: 'Maison de Valence' }] }))
+      .toBe(base.digest);
   });
 });
 

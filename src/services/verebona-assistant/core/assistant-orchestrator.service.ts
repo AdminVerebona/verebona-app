@@ -91,6 +91,12 @@ import {
   type UnderstandingReason, type UnderstandingResolver, type UnderstandingStatus,
 } from './understanding-status';
 import type { AssetCandidate } from './target-lookup.repository';
+import {
+  detectValueNeed, emptySemanticTrace, semanticResidue,
+  type BusinessSource, type SemanticNeed, type SemanticTrace,
+} from './semantic-scope';
+import { runSemanticStage, resumeSemanticChoice, type SemanticOutcome } from './semantic-stage';
+import { expenseThemeWords } from '../canonical/expense-classes';
 
 /** Ports injectés (implémentés par les autres services / le repo). */
 export interface OrchestratorPorts {
@@ -216,6 +222,15 @@ export interface OrchestratorPorts {
    * Absent : la cascade interroge `retrieve` requête par requête.
    */
   openHelpSearch?(input: AssistantRequestInput): Promise<{ search: HelpSearcher; article(id: string): HelpCorpusArticle | null; corpus?: HelpCorpusLoadInfo }>;
+  /**
+   * Lot 49 : sources MÉTIER réelles d'un périmètre déjà résolu par le serveur
+   * (opérations d'abord, champs du registre, agenda, documents) — exposées à
+   * l'étape sémantique, jamais choisies par le modèle. Absent : l'étape est
+   * sautée (la cascade suit son cours, sans élargissement).
+   */
+  listBusinessSources?(accountId: number, req: { assetIds: number[]; assetNames?: Record<number, string>; need: SemanticNeed }): Promise<{ sources: BusinessSource[]; domains: string[] }>;
+  /** Lot 49 : relecture d'UNE source métier (reprise après clarification), revalidée. */
+  readBusinessSource?(accountId: number, ref: string, ctx: { assetIds: number[]; assetNames?: Record<number, string> }): Promise<BusinessSource | null>;
 }
 
 export async function runAssistant(
@@ -442,6 +457,48 @@ export async function runAssistant(
       return r;
     };
 
+    /**
+     * Lot 49 — sert l'issue de l'étape sémantique : réponse canonique d'UNE
+     * interprétation, clarification métier (choix issus des données), ou
+     * information insuffisante — jamais un total plus large. `null` : la
+     * cascade continue (étape non applicable ou nouvelle route).
+     */
+    const servirSemantique = async (o: SemanticOutcome, r: IntentRoute): Promise<AssistantRunResult | null> => {
+      if (o.kind === 'continue' || o.kind === 'reroute') return null;
+      const routeSem: IntentRoute = { ...routeForIntent(o.intent, input.planType, 'périmètre sémantique'), entityHints: r.entityHints, understanding: r.understanding };
+      base.route = routeSem;
+      trace.intent = routeSem.intent;
+      if (o.kind === 'answer') {
+        const actions = await ports.resolveActions(routeSem, input, o.sources);
+        done('structured', o.strategy, 'SUFFICIENT_STRUCTURED', o.sources.length);
+        trace.fallbackUsed = false;
+        const resolvedSem = o.sources.length ? await ports.resolveSources(o.sources, input.accountId) : [];
+        return finalize(base, machine, 'deterministic', o.text, o.claims, resolvedSem, actions, ports, input, 'supported');
+      }
+      if (o.kind === 'clarify') {
+        trace.escalationReasons.push(`CLARIFICATION:${o.state.ambiguity?.reason ?? 'SEMANTIC'}`);
+        if ((o.state.chainDepth ?? 1) > MAX_CLARIFICATION_CHAIN) {
+          const actions = await ports.resolveActions(routeSem, input, []);
+          done('template', 'clarification.chain_exhausted', 'AMBIGUOUS_TARGET', 0);
+          return finalize(base, machine, 'deterministic', FALLBACK_ASSET_MESSAGE, [], [], actions, ports, input);
+        }
+        if (ports.saveClarification && await ports.saveClarification(o.state).catch(() => false)) {
+          done('template', 'clarification.semantic', 'AMBIGUOUS_TARGET', o.state.candidates.length);
+          return finalizeClarification(base, machine, o.state, ports, input);
+        }
+        // Sans fil où enregistrer la question : la poser, candidats compris.
+        const texte = `${o.state.question} ${o.state.candidates.map((c) => (c.secondaryLabel ? `${c.label} (${c.secondaryLabel})` : c.label)).join(', ')}.`;
+        done('template', 'clarification.semantic_unsaved', 'AMBIGUOUS_TARGET', 0);
+        return finalize(base, machine, 'deterministic', texte, [], [], [], ports, input, 'insufficient');
+      }
+      // Information insuffisante : compréhension aboutie, aucune donnée
+      // correspondante — ou ambiguïté non levable. Jamais « rien trouvé »
+      // d'un périmètre plus large.
+      const actions = await ports.resolveActions(routeSem, input, []);
+      done('template', o.strategy, 'INSUFFICIENT', 0);
+      return finalize(base, machine, 'deterministic', o.text, [], [], actions, ports, input, 'insufficient');
+    };
+
     // ══════════════════════════════════════════════════════════════════════
     // MÉMOIRE DU FIL — AVANT LE ROUTAGE (§16.4)
     //
@@ -513,6 +570,21 @@ export async function runAssistant(
       }
     }
 
+    // ══════════════════════════════════════════════════════════════════════
+    // LOT 49 — REPRISE D'UNE CLARIFICATION MÉTIER
+    //
+    // « Contrat de LLD » choisi : la source RÉELLE est relue (compte, bien
+    // disponible) puis servie par lecture canonique — contexte STRUCTURÉ, ni
+    // reformulation ni reclassement, aucun appel modèle.
+    // ══════════════════════════════════════════════════════════════════════
+    if (input.resume?.semanticSource && ports.readBusinessSource) {
+      const sem = emptySemanticTrace({ trigger: 'resume_choice', deterministicMatch: 'reprise après clarification', deterministicConfidence: 'STRONG' });
+      trace.semantic = sem;
+      const o = await resumeSemanticChoice({ input, ports, trace: sem, withDeadline: (x) => withDeadline(x, retrievalDeadline()) });
+      const servi = await servirSemantique(o, routeForIntent(input.resume.intent, input.planType, 'reprise sémantique'));
+      if (servi) return servi;
+    }
+
     // Reprise après clarification : la demande initiale garde son intention —
     // elle n'est ni re-routée ni re-classée par le modèle.
     let outcome: ReturnType<typeof routeDeterministic> = input.resume
@@ -556,6 +628,12 @@ export async function runAssistant(
     const needsClassification = outcome.kind === 'needs_classification';
     base.route = route;
     trace.intent = route.intent;
+    // Lot 49 : force de la décision déterministe tracée pour TOUTE demande.
+    const semTrace: SemanticTrace = trace.semantic ?? emptySemanticTrace({
+      trigger: 'none', deterministicMatch: needsClassification ? null : route.routeReason,
+      deterministicConfidence: route.deterministicConfidence ?? 'STRONG',
+    });
+    trace.semantic = semTrace;
 
     // ══════════════════════════════════════════════════════════════════════
     // CLARIFICATION EXIGÉE PAR LE ROUTAGE — §20.1
@@ -841,6 +919,87 @@ export async function runAssistant(
     }
 
     // ══════════════════════════════════════════════════════════════════════
+    // LOT 49 — PÉRIMÈTRE SÉMANTIQUE (DETERMINISTIC_STRONG / DETERMINISTIC_WEAK)
+    //
+    // Une règle décidée par des signaux FAIBLES (« quand », « combien »,
+    // « paye », « contrat »…) n'est exécutée telle quelle que si la question
+    // ne contient RIEN d'autre de significatif. Sinon (« Quand finit le
+    // CONTRAT de la Cupra ? », « Je paye combien pour INTERNET à la
+    // maison ? ») : T2 UNDERSTAND (une fois au plus), cible résolue par le
+    // serveur, sources métier réelles (opérations d'abord) → réponse
+    // canonique, clarification métier, ou information insuffisante.
+    // Une décision FORTE (« Quelles sont mes échéances ? », « Combien ai-je
+    // dépensé en abonnements pour la Maison ? ») reste servie sans IA.
+    // ══════════════════════════════════════════════════════════════════════
+    /** UNDERSTAND borné (une fois par demande, budget, annulation, offre) ; `null` : pas d'appel. */
+    const comprendrePourSemantique = async (): Promise<IntentRoute | null> => {
+      if (comprisParModele || !aiActif || !ports.classifyWithAI || !isPlanAiEligible(input.planType) || !budget.canCall()) {
+        if (!aiActif && ports.classifyWithAI) trace.escalationReasons.push('ROUTING:AI_DISABLED');
+        return null;
+      }
+      trace.escalationReasons.push('UNDERSTANDING:SEMANTIC_SCOPE');
+      const avantCl = budget.used;
+      const compris = await ports.classifyWithAI(input.message, input).catch(() => null);
+      reconcilierBudget(budget, avantCl, 1);
+      trace.aiCalls = budget.used;
+      comprisParModele = true;
+      semTrace.understandCalled = true;
+      if (!compris) { comprehensionEchouee = true; trace.escalationReasons.push('ROUTING:UNDERSTANDING_FAILED'); }
+      return compris;
+    };
+    /** Exécute l'étape sémantique ; `null` : la cascade continue (route éventuellement remplacée). */
+    const etapeSemantique = async (
+      declencheur: SemanticTrace['trigger'], residu: string[],
+      o: { preset?: { terms: string[]; facts: string[]; need: SemanticNeed['need'] } | null } = {},
+    ): Promise<AssistantRunResult | null> => {
+      semTrace.trigger = declencheur;
+      semTrace.semanticResidue = [...residu];
+      if (!o.preset && aiActif && ports.classifyWithAI && !comprisParModele && isPlanAiEligible(input.planType) && budget.canCall()) {
+        if (await avantAppelModele() === 'cancelled') return annuler();
+      }
+      const issue = await runSemanticStage({
+        input, route, ports, trace: semTrace, messageId, residue: residu,
+        understood: comprisParModele && !o.preset ? route : null,
+        understand: o.preset ? null : comprendrePourSemantique,
+        preset: o.preset ?? null,
+        withDeadline: (x) => withDeadline(x, retrievalDeadline()),
+      });
+      if (issue.kind === 'reroute') {
+        route = affinerRoute(issue.route, input);
+        base.route = route;
+        trace.intent = route.intent;
+        marquer('COMPLETE', [], 'understand');
+        return null;
+      }
+      if (issue.kind !== 'continue') {
+        if (issue.kind === 'answer') marquer('COMPLETE', [], semTrace.understandCalled ? 'understand' : 'deterministic');
+        else if (issue.kind === 'clarify') marquer('PARTIAL', ['UNCONSUMED_MEANING'], 'clarification');
+        else marquer('PARTIAL', ['UNCONSUMED_MEANING'], semTrace.understandCalled ? 'understand' : null);
+      }
+      return servirSemantique(issue, route);
+    };
+
+    if (ports.listBusinessSources && !isHelpIntent(route.intent)) {
+      if (input.resume?.semantic && !input.resume.semanticSource) {
+        // Reprise après une clarification de CIBLE : besoin déjà compris.
+        const r = input.resume.semantic;
+        const servi = await etapeSemantique('resume_scope', r.terms, { preset: { terms: r.terms, facts: r.facts, need: r.need } });
+        if (servi) return servi;
+      } else if (!input.resume && route.deterministicConfidence === 'WEAK' && route.intent.startsWith('ACCOUNT_')) {
+        const besoin = detectValueNeed(input.message);
+        if (besoin) {
+          const cibles = ports.resolveTargets ? await withDeadline(ports.resolveTargets(input, route), retrievalDeadline()).catch(() => null) : null;
+          const noms = [...(cibles?.catalog ?? []).map((a) => a.name), ...(cibles?.asset?.label ? [cibles.asset.label] : [])];
+          const residu = semanticResidue(input.message, { assetNames: noms, consumed: expenseThemeWords(input.message) });
+          if (residu.length) {
+            const servi = await etapeSemantique('weak_route', residu);
+            if (servi) return servi;
+          }
+        }
+      }
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
     // NAVIGATION EXPLICITE — §22.9, §22.10, CA-14, 37.11
     //
     // « Ouvre mon agenda » répondait « Je n'ai pas trouvé d'élément
@@ -977,7 +1136,27 @@ export async function runAssistant(
           }
         }
 
+        // ════════════════════════════════════════════════════════════════
+        // LOT 49 — STRATÉGIE STRUCTURÉE CANDIDATE, PÉRIMÈTRE NON RÉSOLU
+        //
+        // `tryCanonicalStructured` n'a PAS exécuté sa stratégie : un sujet de
+        // la question (« internet ») n'est consommé par rien. Aucun total
+        // plus large n'est rendu ; T2 comprend, le serveur expose les
+        // sources réelles, valide et calcule.
+        // ════════════════════════════════════════════════════════════════
+        if (data.semanticScope && !data.handled) {
+          semTrace.structuredStrategyCandidate = data.semanticScope.strategyCandidate;
+          semTrace.structuredStrategyExecuted = false;
+          semTrace.structuredScopeFallbackPrevented = true;
+          trace.escalationReasons.push(`SEMANTIC:SCOPE_UNRESOLVED:${data.semanticScope.strategyCandidate}`);
+          if (ports.listBusinessSources && !input.resume?.semanticSource) {
+            const servi = await etapeSemantique('structured_scope', data.semanticScope.terms);
+            if (servi) return servi;
+          }
+        }
+
         if (data.handled && data.answer) {
+          if (data.strategy.startsWith('structured.')) semTrace.structuredStrategyExecuted = true;
           const resolvedData = await ports.resolveSources(data.sources, input.accountId);
           const actions = await ports.resolveActions(route, input, data.sources);
           done(data.decision.level === 1 ? 'structured' : 'retrieval', data.strategy, data.decision.status, data.sources.length);

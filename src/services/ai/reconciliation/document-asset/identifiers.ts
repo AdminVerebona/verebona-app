@@ -224,9 +224,14 @@ function addressIn(haystack: string, addr: string, postalCode: string): boolean 
 export function resolveAssetByIdentifiers(
   records: readonly AssetIdentifierRecord[],
   evidence: DocumentIdentifierEvidence,
+  /**
+   * Borne du texte examiné (défaut 200 000 caractères). Lot 49B : T3 y ajoute
+   * la couche exhaustive T1 (bornée de son côté) après la transcription.
+   */
+  maxText = MAX_TEXT,
 ): IdentifierResolution {
   const raw = evidence.texts.filter((t): t is string => typeof t === 'string' && t.trim().length > 0)
-    .join('\n').slice(0, MAX_TEXT);
+    .join('\n').slice(0, maxText);
   const textAddr = normalizeAddress(raw);
   const windows = codeWindows(raw);
   const vehicles = vehicleIdentifiersIn(raw);

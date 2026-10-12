@@ -18,7 +18,7 @@
  *  · T4C-13 versions prompt / input / output tracées séparément ;
  *  · T4C-14 éditeur BO : contexte disponible, informatif ;
  *  · T4C-15 aperçu / test : chaque étape inspectable ;
- *  · T4C-16 T1, T2, T3, T5, T6 inchangés ;
+ *  · T4C-16 T1, T2, T3, T6 inchangés ;
  *  · T4C-NR facture internet 08/08/2026 → 07/09/2026 : FACT_ONLY / IGNORE, jamais CONTRACT_END.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
@@ -329,7 +329,7 @@ describe('T4C-12 — validateur d’activation (lot 27)', () => {
   it('mode structuré : aucun contrôle d’emplacement ni de titre ; prompt vide bloquant', () => {
     expect(checkMasterPromptContent('T4', 'Tu es T4. Règles métier libres.', STRUCTURE)).toMatchObject({ ok: true, blocking: [] });
     expect(checkMasterPromptContent('T4', '  ', STRUCTURE).blocking.map((i) => i.code)).toEqual(['PROMPT_EMPTY']);
-    // Proposition T5 : même règle.
+    // Proposition de texte (édition manuelle) : même règle.
     expect(checkMasterProposal('T4', 'Texte libre', { mode: 'STRUCTURED_CONTEXT' })).toEqual([]);
     expect(checkMasterProposal('T4', 'Texte libre')).not.toEqual([]);
   });
@@ -395,7 +395,7 @@ describe('T4C-15 — aperçu / test : chaque étape inspectable', () => {
 });
 
 describe('T4C-16 — périmètre strictement T4', () => {
-  it.each(['t1_master_v1', 't2_master_v1', 't3_master_v1', 't5_master_v1', 't6_master_v1'])('%s : aucun contrat d’exécution, LEGACY_TEMPLATE', (code) => {
+  it.each(['t1_master_v1', 't2_master_v1', 't3_master_v1', 't6_master_v1'])('%s : aucun contrat d’exécution, LEGACY_TEMPLATE', (code) => {
     expect(sc.structuredSpecFor(code)).toBeNull();
     expect(sc.executionConfigFor({ masterPromptCode: code, source: 'file' })).toEqual(sc.LEGACY_EXECUTION);
     expect(sc.executionConfigFor({ masterPromptCode: code, source: 'version', stored: { mode: 'STRUCTURED_CONTEXT' } })).toEqual(sc.LEGACY_EXECUTION);

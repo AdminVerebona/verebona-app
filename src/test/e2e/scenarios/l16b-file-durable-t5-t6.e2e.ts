@@ -117,6 +117,7 @@ scenario('L16B-1', 'File T1 durable seule ; T5/T6 en master (migration 0231)', (
   it('migration 0231 : T5/T6 en master, idempotente, T1–T4 intactes ; lecture et brouillon en master', async () => {
     const [v] = await sql<{ id: number }[]>`
       INSERT INTO ai_config_versions (environment, status, label) VALUES ('local', 'DRAFT', 'e2e 0231') RETURNING id`;
+    // Lot 49 : la ligne T5 représente une version HISTORIQUE (antérieure au retrait).
     for (const t of ['T1', 'T5', 'T6']) {
       await sql`INSERT INTO ai_config_entries (version_id, treatment, prompt, prompt_architecture)
                 VALUES (${v.id}, ${t}, '', 'steps')`;
@@ -139,11 +140,11 @@ scenario('L16B-1', 'File T1 durable seule ; T5/T6 en master (migration 0231)', (
     const lue = await repo.getVersion(v.id);
     expect(lue?.entries.find((e) => e.treatment === 'T6')?.promptArchitecture).toBe('master');
 
-    // Nouveau brouillon : T5/T6 écrits en `master`.
+    // Nouveau brouillon : T6 écrit en `master` ; plus aucune ligne T5 (lot 49).
     const user = await make.user();
     const draft = await repo.createDraft(user.id, 'e2e 0231 brouillon', 'local');
     const stockees = await sql<{ treatment: string; prompt_architecture: string }[]>`
       SELECT treatment, prompt_architecture FROM ai_config_entries WHERE version_id = ${draft.id} AND treatment IN ('T5', 'T6')`;
-    expect(stockees.map((l) => l.prompt_architecture)).toEqual(['master', 'master']);
+    expect(stockees.map((l) => [l.treatment, l.prompt_architecture])).toEqual([['T6', 'master']]);
   });
 });

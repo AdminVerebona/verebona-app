@@ -30,12 +30,14 @@ describe('corpus rejoué des masters du dépôt (garde CI, D-17)', () => {
     }
   });
 
-  it('les cas P-T* du §30 sont présents (P-T1-01…03, P-T2-01…04, P-T3-01/02, P-T4-01…03, P-T5-01/02, P-T6-01)', () => {
+  it('les cas P-T* du §30 sont présents (P-T1-01…03, P-T2-01…04, P-T3-01/02, P-T4-01…03, P-T6-01) ; lot 49 : plus aucun cas P-T5', () => {
     const ids = loadMasterCorpusCases(read).map((c) => c.id);
     for (const id of ['P-T1-01', 'P-T1-02', 'P-T1-03', 'P-T2-01', 'P-T2-02', 'P-T2-03', 'P-T2-04',
-      'P-T3-01', 'P-T3-02', 'P-T4-01', 'P-T4-02', 'P-T4-03', 'P-T5-01', 'P-T5-02', 'P-T6-01']) {
+      'P-T3-01', 'P-T3-02', 'P-T4-01', 'P-T4-02', 'P-T4-03', 'P-T6-01']) {
       expect(ids, id).toContain(id);
     }
+    // T12-AC05 — corpus des cinq traitements restants seulement.
+    expect(ids.filter((id) => /^P-T5-/.test(id))).toEqual([]);
   });
 });
 
@@ -64,10 +66,10 @@ describe('le corpus détecte les régressions', () => {
   });
 
   it('sortie d’une autre branche : rejetée comme par la passerelle', async () => {
-    const cases = loadMasterCorpusCases(read).map((c) => (c.id === 'P-T5-01'
-      ? { ...c, output: { ...(c.output as object), mode: 'MODIFY' } } : c));
-    const [t5] = await runMasterCorpus({ readMasterFile: read, treatments: ['T5'], cases });
-    expect(t5.failures.join()).toMatch(/P-T5-01.*MODE=ANALYZE/);
+    const cases = loadMasterCorpusCases(read).map((c) => (c.id === 'P-T4-01'
+      ? { ...c, output: { ...(c.output as object), task: 'VERIFY_COMPLETION' } } : c));
+    const [t4] = await runMasterCorpus({ readMasterFile: read, treatments: ['T4'], cases });
+    expect(t4.failures.join()).toMatch(/P-T4-01.*CLASSIFY_EVENT/);
   });
 
   it('branche sans cas : rouge, jamais « non testée donc acceptée »', async () => {
@@ -189,14 +191,6 @@ describe('garde d’activation (dépendances injectées)', () => {
     const r = await checkMasterActivation({ entries: [emptyTreatmentConfig('T2'), emptyTreatmentConfig('T4')] }, deps([]));
     expect(r.allowed).toBe(false);
     expect(r.entries.map((e) => [e.treatment, e.status])).toEqual([['T2', 'NO_RUN'], ['T4', 'NO_RUN']]);
-  });
-
-  it('T5 : toujours le fichier du dépôt (non administrable), même si un texte traîne dans la ligne', async () => {
-    const seen: string[] = [];
-    await checkMasterActivation({ entries: [{ ...emptyTreatmentConfig('T5'), promptArchitecture: 'master', masterPrompt: 'texte pirate' }] }, {
-      ...deps([]), latestRun: async (code: string, sha: string) => { seen.push(`${code}:${sha}`); return null; },
-    });
-    expect(seen).toEqual([`t5_master_v1:${masterTextFingerprint(read('t5_master_v1'))}`]);
   });
 });
 

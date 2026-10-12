@@ -29,6 +29,13 @@
  * NO_CANDIDATE / ABSTAINED / MULTI_ASSET dont le contexte pertinent a changé
  * depuis la révision de connaissance évaluée. Déterministe d'abord ; un
  * contexte inchangé est confirmé sans IA.
+ *
+ * Lot 49B (ticket « T3 — Réexaminer systématiquement les À traiter ouverts ») :
+ * phase « OPEN ACTIONS » en fin d'exécution (`continuous/open-actions.service.ts`)
+ * — TOUTES les lignes « À traiter » ouvertes du compte sont parcourues et
+ * routées vers leur résolveur (LINK-ASSET réexaminé à chaque passage, même à
+ * empreinte identique) ; le périmètre des biens comprend ceux qui portent une
+ * carte DATA-* ouverte (réconciliation T3 du bien à chaque passage).
  * ══════════════════════════════════════════════════════════════════════════
  */
 import { OUT_OF_PORTFOLIO_ASSET_STATUSES } from '@/lib/asset-status';
@@ -83,6 +90,8 @@ export interface AccountRunResult {
   details: ObjectResult[];
   /** Connaissance ouverte reprise (lot 34E) ; absente si la phase n'a pas tourné. */
   openKnowledge?: import('./continuous/open-knowledge.service').OpenKnowledgeResult;
+  /** Lot 49B : lignes « À traiter » ouvertes examinées ; absente si la phase n'a pas tourné. */
+  openActions?: import('./continuous/open-actions.service').OpenActionsResult;
 }
 
 /** Au-delà, un run « en cours » est réputé abandonné (processus arrêté). */
@@ -99,6 +108,8 @@ export interface AccountReconciliationDeps {
   reconcile(input: ReconcileInput): Promise<ReconciliationRun>;
   /** Connaissance ouverte (lot 34E). Absente : phase omise (tests de l'orchestrateur). */
   reconcileOpenKnowledge?: typeof import('./continuous/open-knowledge.service').reconcileOpenKnowledge;
+  /** Lot 49B : phase « open actions ». Absente : phase omise (tests de l'orchestrateur). */
+  reconcileOpenActions?: typeof import('./continuous/open-actions.service').reconcileOpenToProcessActions;
 }
 
 const defaultDeps: AccountReconciliationDeps = {
@@ -110,7 +121,17 @@ const defaultDeps: AccountReconciliationDeps = {
     const { reconcileOpenKnowledge } = await import('./continuous/open-knowledge.service');
     return reconcileOpenKnowledge(accountId, opts);
   },
+  async reconcileOpenActions(accountId, opts) {
+    const { reconcileOpenToProcessActions } = await import('./continuous/open-actions.service');
+    return reconcileOpenToProcessActions(accountId, opts);
+  },
 };
+
+/** Règles « À traiter » d'une donnée de BIEN décidée par T3 (producteur RECONCILIATION_BRIDGE). */
+async function assetDataRuleCodes(): Promise<string[]> {
+  const { PROCESSING_RULES } = await import('@/services/to-process/rules-catalog');
+  return PROCESSING_RULES.filter((r) => r.producer === 'RECONCILIATION_BRIDGE' && r.targetType === 'ASSET').map((r) => r.code);
+}
 
 /** Consolidation — pure, testée sans base. */
 export function consolidate(details: ObjectResult[]): Pick<AccountRunResult,
@@ -166,6 +187,14 @@ async function selectScope(accountId: number, scope: 'full' | 'incremental', tri
       ).catch(() => all.map((a) => ({ id: a.id })))) as unknown as Array<{ id: number }>;
       retenus = new Set(touches.map((t) => t.id));
       if (trigger.objectType === 'asset' && trigger.objectId) retenus.add(trigger.objectId);
+      // Lot 49B : un bien qui porte une carte DATA-* ouverte (problème actif)
+      // est réconcilié à CHAQUE passage, même sans modification.
+      const ouverts = (await pgClient.unsafe(
+        `SELECT DISTINCT target_id AS id FROM to_process_actions
+          WHERE account_id = $1 AND target_type = 'ASSET' AND resolved_at IS NULL AND rule_code = ANY($2::text[])`,
+        [accountId, await assetDataRuleCodes()] as never[],
+      ).catch(() => [])) as unknown as Array<{ id: number }>;
+      for (const o of ouverts) retenus.add(Number(o.id));
     }
   }
 
@@ -265,6 +294,8 @@ export async function reconcileAccount(
 
   const details: ObjectResult[] = [];
   let openKnowledge: AccountRunResult['openKnowledge'];
+  let openActions: AccountRunResult['openActions'];
+  const debutPassage = new Date();
   // Lot 31C : une exécution INTERROMPUE (jeton révoqué, garde) ou arrêtée par
   // une erreur n'est jamais journalisée « completed » — sinon le travail remis
   // en file la croirait achevée (SUPERSEDED) alors qu'une partie des biens
@@ -310,6 +341,19 @@ export async function reconcileAccount(
         console.error(`[t3] connaissance ouverte du compte ${accountId} non reprise :`, (e as Error).message);
       }
     }
+    // Lot 49B : toutes les lignes « À traiter » ouvertes, à chaque passage.
+    if (deps.reconcileOpenActions) {
+      if (options.guard) await options.guard.assertActive('« À traiter » ouverts du compte');
+      try {
+        openActions = await deps.reconcileOpenActions(accountId, {
+          guard: options.guard, triggerCode: options.triggerCode ?? null, runStartedAt: debutPassage,
+          reconciledAssetIds: new Set(details.filter((d) => d.status !== 'SKIPPED').map((d) => d.objectId)),
+        });
+      } catch (e) {
+        if (isExecutionCancelled(e)) throw e;
+        console.error(`[t3] « À traiter » ouverts du compte ${accountId} non réexaminés :`, (e as Error).message);
+      }
+    }
   } catch (e) {
     interrompue = true;
     throw e;
@@ -332,6 +376,7 @@ export async function reconcileAccount(
     runId, accountId, triggerType: trigger.type, scope, startedAt, finishedAt: new Date().toISOString(),
     details, ...totals, status: details.length === 0 ? 'completed' : totals.status,
     ...(openKnowledge ? { openKnowledge } : {}),
+    ...(openActions ? { openActions } : {}),
   };
 }
 

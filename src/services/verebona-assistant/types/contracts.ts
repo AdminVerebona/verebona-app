@@ -38,6 +38,16 @@ export interface IntentRoute {
    * bornés au compte côté serveur (`assistant-targets`, `retrieval`).
    */
   understanding?: RouteUnderstanding;
+  /**
+   * Lot 49 (T2 — STRONG / WEAK) : force de la décision déterministe.
+   * `WEAK` : la règle ne repose que sur des signaux faibles (« quand »,
+   * « combien », « paye », « contrat »…) — un indice, jamais un périmètre ;
+   * l'orchestrateur ne l'exécute directement que si le périmètre sémantique
+   * est entièrement consommé. Absent : `STRONG` (routes historiques, reprise).
+   */
+  deterministicConfidence?: 'STRONG' | 'WEAK';
+  /** Signaux faibles qui ont décidé de la route (trace). */
+  weakSignals?: string[];
 }
 
 /** Filtres et faits demandés, lus par le master T2 (UNDERSTAND). */
@@ -251,6 +261,14 @@ export interface AssistantRequestInput {
      * reprise lit TOUS les champs, sans re-comprendre la question.
      */
     requestedFacts?: string[];
+    /**
+     * Lot 49 : interprétation MÉTIER choisie (clarification sémantique) —
+     * référence de la source réelle, relue et revalidée par le serveur ;
+     * aucun reclassement de la question.
+     */
+    semanticSource?: { ref: string; need: 'end_date' | 'date' | 'amount' | null; assetId: number | null } | null;
+    /** Lot 49 : besoin sémantique compris avant une clarification de CIBLE. */
+    semantic?: import('./machine').SemanticResumeContext | null;
   };
 }
 
@@ -303,6 +321,8 @@ export interface ActionableTrace {
  * `verebona_request_runs.retrieval_methods_json`.
  */
 export interface CascadeTrace {
+  /** Lot 49 : périmètre sémantique (STRONG / WEAK, UNDERSTAND, sources, choix). */
+  semantic?: import('../core/semantic-scope').SemanticTrace;
   /**
    * Mémoire du fil : contexte chargé et référence conversationnelle
    * (« le deuxième »…) — détectée, méthode, entité finale.

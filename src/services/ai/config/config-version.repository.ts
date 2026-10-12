@@ -26,9 +26,9 @@
 import { pgClient } from '@/db';
 import { transition, type ConfigVersionEvent, type ConfigVersionStatus } from './version-state-machine';
 import { getAiEnvironment, type AiEnvironment } from './environment';
-import { TREATMENTS, type Treatment } from './treatments';
+import { TREATMENTS, isTreatment, isRetiredTreatment, type Treatment } from './treatments';
 import {
-  emptyTreatmentConfig, normalizeTreatmentConfig, promptArchitectureOf, isPromptArchitecture, masterPromptOf,
+  emptyTreatmentConfig, promptArchitectureOf, isPromptArchitecture, masterPromptOf,
   DEFAULT_PROMPT_ARCHITECTURE, defaultPromptArchitectureFor,
   type ConfigVersion, type ConfigVersionWithEntries, type PromptArchitecture, type TreatmentConfig,
 } from './config-types';
@@ -71,7 +71,7 @@ function toEntry(r: Row): TreatmentConfig {
     // personne n'a rendu.
     cascade: (r.cascade ?? null) as TreatmentConfig['cascade'],
     // CDC 15 D-04 : colonne absente (migration non passée) ou valeur
-    // inconnue ⇒ `steps`, le comportement historique ; T1, T2, T4, T5 et T6 : toujours
+    // inconnue ⇒ `steps`, le comportement historique ; T1, T2, T3, T4 et T6 : toujours
     // `master` (lot 16b, `promptArchitectureOf`).
     promptArchitecture: promptArchitectureOf({
       treatment: r.treatment as Treatment,
@@ -94,10 +94,26 @@ export async function getVersion(id: number): Promise<ConfigVersionWithEntries |
   );
   const r = (rows as unknown as Row[])[0];
   if (!r) return null;
-  return { ...toVersion(r), entries: await getEntries(id) };
+  return withEntries(r, id);
 }
 
+/**
+ * Version + lignes opérationnelles + traitements retirés présents (lot 49).
+ * Une ancienne version contenant T5 reste LISIBLE : sa ligne T5 est écartée
+ * des `entries` (jamais appliquée, recopiée ni restaurée) et signalée dans
+ * `retiredTreatments`.
+ */
+async function withEntries(r: Row, id: number): Promise<ConfigVersionWithEntries> {
+  const { entries, retired } = await readEntries(id);
+  return { ...toVersion(r), entries, ...(retired.length ? { retiredTreatments: retired } : {}) };
+}
+
+/** Lignes des traitements opérationnels d'une version (T5 historique écarté). */
 export async function getEntries(versionId: number): Promise<TreatmentConfig[]> {
+  return (await readEntries(versionId)).entries;
+}
+
+async function readEntries(versionId: number): Promise<{ entries: TreatmentConfig[]; retired: string[] }> {
   // Colonnes 0220 lues seulement si elles existent (migration en échec :
   // `steps` sans master, la lecture de la configuration ne doit jamais
   // échouer pour autant).
@@ -111,7 +127,11 @@ export async function getEntries(versionId: number): Promise<TreatmentConfig[]> 
        FROM ai_config_entries WHERE version_id = $1 ORDER BY treatment`,
     [versionId] as never[],
   );
-  return (rows as unknown as Row[]).map(toEntry);
+  const all = rows as unknown as Row[];
+  return {
+    entries: all.filter((r) => isTreatment(String(r.treatment))).map(toEntry),
+    retired: all.map((r) => String(r.treatment)).filter((t) => isRetiredTreatment(t)),
+  };
 }
 
 /** Version Active de l'environnement, s'il y en a une. */
@@ -125,7 +145,7 @@ export async function getActiveVersion(
   );
   const r = (rows as unknown as Row[])[0];
   if (!r) return null;
-  return { ...toVersion(r), entries: await getEntries(Number(r.id)) };
+  return withEntries(r, Number(r.id));
 }
 
 /**
@@ -144,7 +164,7 @@ export async function getEffectiveVersion(
       [environment] as never[],
     );
     const r = (rows as unknown as Row[])[0];
-    if (r) return { ...toVersion(r), entries: await getEntries(Number(r.id)) };
+    if (r) return withEntries(r, Number(r.id));
   }
   return getActiveVersion(environment);
 }
@@ -284,7 +304,7 @@ export async function promptArchitectureInsert(
   treatment?: Treatment,
 ): Promise<{ column: boolean }> {
   const column = await hasPromptArchitectureColumn(sql);
-  // T1, T2, T4, T5, T6 (lot 16b) : `master` est leur architecture par défaut, relue telle
+  // T1, T2, T3, T4, T6 (lot 16b) : `master` est leur architecture par défaut, relue telle
   // quelle sans colonne — rien n'est perdu à ne pas l'écrire.
   const parDefaut = treatment ? defaultPromptArchitectureFor(treatment) : DEFAULT_PROMPT_ARCHITECTURE;
   if (!column && (arch !== parDefaut || masterPrompt !== null)) {
@@ -297,9 +317,14 @@ export async function promptArchitectureInsert(
 }
 
 async function upsertEntry(versionId: number, config: TreatmentConfig, userId: number): Promise<void> {
-  // Point de passage unique de createDraft et saveEntry : un prompt T5 hérité
-  // de l'Active, ou envoyé par un client, n'entre jamais en base (E-02).
-  const c = normalizeTreatmentConfig(config);
+  // Point de passage unique de createDraft et saveEntry. Lot 49 (ticket 12) :
+  // un traitement retiré (T5) ou inconnu n'entre jamais dans une version —
+  // seule garde (aucun déclencheur SQL sur cette table : l’ancien code doit
+  // rester redéployable — migration 0336).
+  if (!isTreatment(String(config.treatment))) {
+    throw new Error(`[config] Traitement « ${String(config.treatment)} » inconnu ou retiré : aucune ligne de configuration n'est créée.`);
+  }
+  const c = config;
   const architecture = promptArchitectureOf(c);
   // Avant l'écriture : une bascule refusée ne laisse pas une ligne à moitié écrite.
   const masterPrompt = masterPromptOf(c);

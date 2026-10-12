@@ -20,17 +20,30 @@
  * Lot 16b-2 : commutateur AI_T4_EFFECTS retiré, comportement = ancien
  * `enabled` (les écritures historiques legacy / shadow n'existent plus) ;
  * lot 16b-3 : CANONICAL_WRITE_MODE retiré de même.
+ *
+ * Lot 49 (SEC-07) — CONTRÔLE D'APPARTENANCE TOUJOURS ACTIF : biens,
+ * documents (liens et sources), pièces et équipements référencés doivent
+ * exister et appartenir au compte de l'élément. Le contrôle est fait DANS la
+ * transaction de l'écriture, AVANT elle, que l'appelant demande ou non les
+ * validations métier (`validate: false` désactive les règles de dates et de
+ * cohérence, JAMAIS la sécurité) : une seule référence invalide fait refuser
+ * l'opération entière (`AgendaOwnershipError`, rien n'est écrit). Les liens
+ * remplacés (`replace`) ne suppriment que des liens vers des objets du
+ * compte : une relation incorrecte historique n'est jamais effacée
+ * automatiquement (elle reste visible du contrôle d'exploitation, et n'est
+ * jamais lue — voir `AgendaQueryService`).
  */
 import { db } from '@/db';
 import {
   agendaItems, agendaAssetLinks, agendaFileLinks, agendaRoomLinks, agendaEquipmentLinks,
-  assetFiles, substructures, equipments,
+  assets, assetFiles, substructures, equipments,
 } from '@/db/schema';
 import { and, eq, inArray, isNull, or, sql } from 'drizzle-orm';
 import { validateTemporalConstraints, validateLinkCoherence, type ResolvedLink } from './AgendaDomainService';
 import { agendaFunctionalColumnsReady } from './agenda-columns';
 import { recordAgendaItemSources, type AgendaSourceRef } from './agenda-source-links';
 import { resolveEventSemantics, type AgendaEventNature } from './agenda-functional-key';
+import { findRejectedRefs, logCrossAccountRefusal, type SqlExecutor } from '@/services/security/account-ownership';
 
 type ItemInsert = typeof agendaItems.$inferInsert;
 
@@ -115,6 +128,42 @@ export class AgendaValidationError extends Error {
   }
 }
 
+/**
+ * Lot 49 (SEC-07) : une référence de l'élément (bien, document, pièce,
+ * équipement) n'existe pas dans le compte. Sous-classe de
+ * `AgendaValidationError` (même traitement par les appelants : refus 400,
+ * rien n'est écrit) ; le message ne révèle rien d'un autre compte.
+ */
+export class AgendaOwnershipError extends AgendaValidationError {
+  readonly code = 'CROSS_ACCOUNT_REFERENCE';
+  constructor() {
+    super('Cohérence des liens : référence introuvable dans le compte');
+    this.name = 'AgendaOwnershipError';
+  }
+}
+
+/**
+ * Contrôle de SÉCURITÉ de l'élément : toutes les références (liens et
+ * documents sources) appartiennent au compte. Indépendant de `validate`.
+ */
+export async function assertAgendaRefsInAccount(
+  accountId: number,
+  links: AgendaItemLinks | undefined,
+  sources: ReadonlyArray<{ fileId: number }> | undefined,
+  exec?: SqlExecutor,
+): Promise<void> {
+  const rejected = await findRejectedRefs(accountId, {
+    asset: links?.assetIds ?? [],
+    file: [...(links?.fileIds ?? []), ...(sources ?? []).map((s) => s.fileId)],
+    substructure: links?.substructureIds ?? [],
+    equipment: links?.equipmentIds ?? [],
+  }, exec);
+  if (rejected.length) {
+    logCrossAccountRefusal('agenda.write', { accountId, rejected });
+    throw new AgendaOwnershipError();
+  }
+}
+
 /** Liens indirects (document, pièce, équipement) → bien porteur, pour la cohérence. */
 export async function resolveIndirectLinks(
   fileIds: number[],
@@ -139,11 +188,16 @@ export async function resolveIndirectLinks(
   };
 }
 
-/** Contrôles de l'agenda manuel — mêmes messages qu'avant la primitive. */
+/**
+ * Contrôles de l'agenda manuel — mêmes messages qu'avant la primitive.
+ * `accountId` (lot 49) : appartenance des références vérifiée d'abord.
+ */
 export async function validateAgendaWrite(
   dates: { startDate?: string | null; startTime?: string | null; endDate?: string | null; endTime?: string | null },
   links: Required<AgendaItemLinks>,
+  accountId?: number,
 ): Promise<void> {
+  if (accountId !== undefined) await assertAgendaRefsInAccount(accountId, links, undefined);
   const temporalErrors = validateTemporalConstraints(dates);
   if (temporalErrors.length > 0) {
     throw new AgendaValidationError(`Validation temporelle : ${temporalErrors.map((e) => e.message).join(', ')}`);
@@ -155,23 +209,33 @@ export async function validateAgendaWrite(
   }
 }
 
-/** Liaisons de l'élément : remplacées (état complet) ou ajoutées. */
+/**
+ * Liaisons de l'élément : remplacées (état complet) ou ajoutées.
+ * Lot 49 : références contrôlées (compte) dans la transaction AVANT toute
+ * écriture ; `replace` ne retire que les liens vers des objets du compte.
+ */
 export async function writeAgendaLinks(
   tx: any,
   agendaItemId: number,
   links: AgendaItemLinks,
   mode: 'replace' | 'add',
+  accountId: number,
 ): Promise<void> {
   const assetIds = links.assetIds ?? [];
   const fileIds = links.fileIds ?? [];
   const substructureIds = links.substructureIds ?? [];
   const equipmentIds = links.equipmentIds ?? [];
+  await assertAgendaRefsInAccount(accountId, links, undefined, tx);
   if (mode === 'replace') {
+    const biensDuCompte = tx.select({ id: assets.id }).from(assets).where(eq(assets.accountId, accountId));
     await Promise.all([
-      tx.delete(agendaAssetLinks).where(eq(agendaAssetLinks.agendaItemId, agendaItemId)),
-      tx.delete(agendaFileLinks).where(eq(agendaFileLinks.agendaItemId, agendaItemId)),
-      tx.delete(agendaRoomLinks).where(eq(agendaRoomLinks.agendaItemId, agendaItemId)),
-      tx.delete(agendaEquipmentLinks).where(eq(agendaEquipmentLinks.agendaItemId, agendaItemId)),
+      tx.delete(agendaAssetLinks).where(and(eq(agendaAssetLinks.agendaItemId, agendaItemId), inArray(agendaAssetLinks.assetId, biensDuCompte))),
+      tx.delete(agendaFileLinks).where(and(eq(agendaFileLinks.agendaItemId, agendaItemId),
+        inArray(agendaFileLinks.assetFileId, tx.select({ id: assetFiles.id }).from(assetFiles).where(eq(assetFiles.accountId, accountId))))),
+      tx.delete(agendaRoomLinks).where(and(eq(agendaRoomLinks.agendaItemId, agendaItemId),
+        inArray(agendaRoomLinks.substructureId, tx.select({ id: substructures.id }).from(substructures).where(inArray(substructures.assetId, biensDuCompte))))),
+      tx.delete(agendaEquipmentLinks).where(and(eq(agendaEquipmentLinks.agendaItemId, agendaItemId),
+        inArray(agendaEquipmentLinks.equipmentId, tx.select({ id: equipments.id }).from(equipments).where(inArray(equipments.assetId, biensDuCompte))))),
     ]);
   }
   if (assetIds.length > 0) {
@@ -211,11 +275,17 @@ export async function writeAgendaItem(
         assetIds: input.links?.assetIds ?? [], fileIds: input.links?.fileIds ?? [],
         substructureIds: input.links?.substructureIds ?? [], equipmentIds: input.links?.equipmentIds ?? [],
       },
+      // Lot 49 : appartenance d'abord (aucune règle métier évaluée sur un
+      // objet d'un autre compte) ; recontrôlée dans la transaction.
+      opts.accountId,
     );
   }
 
   const creation = input.itemId === undefined;
   const id = await (opts.client ?? db).transaction(async (tx): Promise<number | null> => {
+    // SÉCURITÉ (lot 49, SEC-07) : toujours, même avec `validate: false`, dans
+    // la transaction et AVANT toute écriture — refus entier sinon.
+    await assertAgendaRefsInAccount(opts.accountId, input.links, input.sources, tx as unknown as SqlExecutor);
     let itemId: number;
     if (creation) {
       const [inserted] = await tx.insert(agendaItems)
@@ -235,8 +305,10 @@ export async function writeAgendaItem(
         .returning({ id: agendaItems.id });
       // Élément modifié par l'utilisateur entre le plan et l'écriture : protégé.
       if (opts.onlyIfUntouched && touchees.length === 0) return null;
+      // Élément d'un autre compte (ou disparu) : aucun lien n'est écrit.
+      if (touchees.length === 0) throw new AgendaValidationError('Validation : élément introuvable dans le compte');
     }
-    if (input.links) await writeAgendaLinks(tx, itemId, input.links, opts.linkMode ?? 'replace');
+    if (input.links) await writeAgendaLinks(tx, itemId, input.links, opts.linkMode ?? 'replace', opts.accountId);
 
     if (effets) {
       // Colonnes 0223 (non déclarées dans Drizzle) : SQL direct, même transaction.

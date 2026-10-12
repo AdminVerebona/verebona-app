@@ -1,20 +1,15 @@
 /**
- * Administration des prompts maîtres T1 à T6 depuis le BO — ticket
- * BO-IA-PROMPTS-01 (lot 27) ; T5 depuis le lot 32B (décision PO n° 15).
+ * Administration des prompts maîtres T1, T2, T3, T4 et T6 depuis le BO —
+ * ticket BO-IA-PROMPTS-01 (lot 27).
  *
  * ══════════════════════════════════════════════════════════════════════════
- * T5 (PROMPT CONTROL) : MÊME CYCLE, MÊMES CONTRÔLES, SES INTERDITS RESTENT
- * DANS LE CODE
+ * LOT 49 (ticket 12) : T5 « PROMPT CONTROL » EST SUPPRIMÉ
  *
- * Le texte de `t5_master_v1` s'administre comme les autres (brouillon →
- * actif, test du corpus facultatif, historique, réactivation, contrôles
- * techniques : branches MODE=ANALYZE / MODIFY, emplacements
- * {{CURRENT_MASTER_PROMPTS}} et {{INSTRUCTION}}). Ce que le serveur garantit
- * indépendamment du texte est conservé : T5 ne se modifie jamais lui-même
- * (Prompt Control ne lit ni n'écrit le brouillon T5 — `workingTexts`,
- * `writeDraftFromPromptControl`), cibles filtrées, écriture en brouillon
- * seulement, verdict « prompt » requis. Un texte T5 porté par une version de
- * configuration reste ignoré : la v1 de T5 est le fichier du dépôt.
+ * Plus aucun prompt maître T5 n'est proposé en édition, et plus aucun
+ * brouillon n'est écrit par une IA : l'administration des prompts maîtres
+ * est MANUELLE. Les anciennes versions T5 et les versions d'origine
+ * « Proposée par Prompt Control » restent en base (audit) ; elles ne sont
+ * ni affichées comme administrables, ni activables.
  *
  * ══════════════════════════════════════════════════════════════════════════
  * CYCLE DE VIE : BROUILLON → ACTIF, ET RIEN D'AUTRE
@@ -56,7 +51,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { getAiEnvironment, type AiEnvironment } from '../config/environment';
 import {
-  T5_TARGETS, TREATMENTS, TREATMENT_DEFINITIONS, isMasterPromptAdministrable, isPromptAdministrable, isTreatment, type Treatment,
+  TREATMENTS, TREATMENT_DEFINITIONS, isMasterPromptAdministrable, isTreatment, type Treatment,
 } from '../config/treatments';
 import { masterPromptForTreatment } from '../config/prompt-architecture';
 import { masterPromptVersionOf } from '../prompts/prompt-loader';
@@ -81,11 +76,8 @@ export class MasterPromptRefused extends Error {
   }
 }
 
-/** Prompts administrables au BO : T1 à T6 (T5 depuis le lot 32B, décision PO n° 15). */
+/** Prompts administrables au BO : T1, T2, T3, T4, T6 (T5 retiré au lot 49). */
 export const ADMIN_MASTER_TREATMENTS: readonly Treatment[] = TREATMENTS.filter(isMasterPromptAdministrable);
-
-/** Prompts que Prompt Control lit et réécrit (T5-001, T5-002) : jamais T5 lui-même. */
-export const PROMPT_CONTROL_TREATMENTS: readonly Treatment[] = T5_TARGETS;
 
 export function assertAdministrable(raw: string): Treatment {
   if (!isTreatment(raw) || !ADMIN_MASTER_TREATMENTS.includes(raw) || !masterPromptForTreatment(raw)) {
@@ -205,7 +197,8 @@ const ORIGIN_LABEL: Record<repo.MasterPromptOrigin, string> = {
   initial_file: 'Version initiale (texte livré avec l’application)',
   initial_config: 'Version initiale (texte de la configuration IA)',
   admin: 'Modifiée depuis le BO',
-  prompt_control: 'Proposée par Prompt Control',
+  // Historique : origine des brouillons écrits par T5, supprimé au lot 49.
+  prompt_control: 'Proposée par Prompt Control (T5, retiré — historique)',
 };
 
 const iso = (x: Date | null) => (x ? x.toISOString() : null);
@@ -299,19 +292,15 @@ function versionView(
  */
 export async function runtimeBaseline(treatment: Treatment, environment: AiEnvironment = getAiEnvironment()): Promise<{ content: string; source: 'config' | 'file' }> {
   const master = masterPromptForTreatment(treatment)!;
-  // T5 : un texte porté par une version de configuration n'a jamais été
-  // exécuté (ignoré, T5-003) — le texte en service est le fichier du dépôt.
-  if (isPromptAdministrable(treatment)) {
-    try {
-      const [{ getEffectiveVersion }, { masterPromptOf, promptArchitectureOf }] = await Promise.all([
-        import('../config/config-version.repository'), import('../config/config-types'),
-      ]);
-      const version = await getEffectiveVersion(environment);
-      const entry = version?.entries.find((e) => e.treatment === treatment);
-      const texte = entry && promptArchitectureOf(entry) === 'master' ? masterPromptOf(entry) : null;
-      if (texte) return { content: texte, source: 'config' };
-    } catch { /* configuration illisible : fichier du dépôt */ }
-  }
+  try {
+    const [{ getEffectiveVersion }, { masterPromptOf, promptArchitectureOf }] = await Promise.all([
+      import('../config/config-version.repository'), import('../config/config-types'),
+    ]);
+    const version = await getEffectiveVersion(environment);
+    const entry = version?.entries.find((e) => e.treatment === treatment);
+    const texte = entry && promptArchitectureOf(entry) === 'master' ? masterPromptOf(entry) : null;
+    if (texte) return { content: texte, source: 'config' };
+  } catch { /* configuration illisible : fichier du dépôt */ }
   const { readMasterFileFromRepo } = await import('../governance/master-corpus/cases');
   return { content: readMasterFileFromRepo(master.masterPromptCode), source: 'file' };
 }
@@ -754,71 +743,6 @@ export async function getPromptTestRun(treatment: Treatment, runId: number): Pro
   const v = await repo.getPromptVersion(r.promptVersionId);
   const emails = await repo.userEmails(r.requestedBy == null ? [] : [r.requestedBy]);
   return runView(r, v?.contentSha256 ?? '', emails);
-}
-
-// ── Prompt Control (T5) : lecture et écriture des textes de travail ─────────
-
-export interface WorkingText {
-  treatment: Treatment;
-  text: string;
-  /** Lot 34D — configuration d'exécution de la version lue (T4). */
-  execution?: MasterExecutionConfig | null;
-  /** Brouillon lu (écriture conditionnelle), sinon `null`. */
-  draftId: number | null;
-  activeId: number | null;
-}
-
-/**
- * Textes des prompts administrés au BO, pour Prompt Control. `analyze` lit
- * l'ACTIF (ce qui tourne) ; `modify` lit le brouillon s'il existe, sinon
- * l'Actif (le brouillon en sera la suite). Seuls les prompts qui ont déjà
- * une version au BO sont rendus ; les autres restent lus dans la version de
- * configuration ou le dépôt, comme avant. Tables absentes : vide.
- */
-export async function workingTexts(mode: 'analyze' | 'modify', environment: AiEnvironment = getAiEnvironment()): Promise<Map<Treatment, WorkingText>> {
-  const out = new Map<Treatment, WorkingText>();
-  if (!(await repo.masterPromptTablesReady().catch(() => false))) return out;
-  // T5-002 : Prompt Control ne lit jamais son propre prompt comme cible.
-  for (const t of PROMPT_CONTROL_TREATMENTS) {
-    const active = await repo.getActive(environment, t);
-    const draft = mode === 'modify' ? await repo.getDraft(environment, t) : null;
-    const lu = draft ?? active;
-    if (lu) out.set(t, { treatment: t, text: lu.content, draftId: draft?.id ?? null, activeId: active?.id ?? null, execution: lu.execution ?? null });
-  }
-  return out;
-}
-
-/**
- * Écrit une proposition de Prompt Control dans le BROUILLON du prompt —
- * jamais dans l'Actif. Écriture conditionnelle : le brouillon lu doit avoir
- * encore le texte lu (`expected`) ; sans brouillon lu, aucun ne doit avoir
- * été créé entre-temps. `null` : conflit, rien n'est écrasé.
- */
-export async function writeDraftFromPromptControl(p: {
-  treatment: Treatment; expected: string; readDraftId: number | null; readActiveId: number | null; next: string; userId: number;
-}): Promise<MasterPromptVersionRow | null> {
-  // T5-002 : T5 ne modifie jamais son propre prompt — refus du serveur,
-  // quel que soit le texte du prompt maître T5 en service.
-  if (!PROMPT_CONTROL_TREATMENTS.includes(p.treatment)) {
-    throw new MasterPromptRefused('NOT_A_PROMPT_CONTROL_TARGET',
-      `Prompt Control ne peut pas modifier le prompt de ${p.treatment}.`, null, 409);
-  }
-  await assertTables();
-  const environment = getAiEnvironment();
-  if (p.readDraftId !== null) {
-    return repo.updateDraftContent({ id: p.readDraftId, content: p.next, userId: p.userId, expectedContent: p.expected });
-  }
-  if (await repo.getDraft(environment, p.treatment)) return null;
-  // Actif lu par T5 remplacé entre-temps (activation, réactivation) : la
-  // proposition porte sur un texte qui ne tourne plus — conflit.
-  const enService = await repo.getActive(environment, p.treatment);
-  if (p.readActiveId !== null && enService?.id !== p.readActiveId) return null;
-  const active = enService ?? await ensureActive(p.treatment, environment);
-  return repo.insertDraft({
-    environment, treatment: p.treatment, masterPromptCode: active.masterPromptCode, content: p.next,
-    origin: 'prompt_control', basedOnId: active.id, userId: p.userId,
-    execution: draftExecutionConfig(active.masterPromptCode, executionOfVersion(active)),
-  });
 }
 
 // ── Lot 34D : aperçu / test d'une version en contexte structuré (T4) ────────

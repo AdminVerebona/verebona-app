@@ -54,9 +54,9 @@ export interface MasterCorpusCase {
 
 /**
  * `@@MASTER_FILE:<code>@@` dans une chaîne de la sortie enregistrée : texte du
- * master du dépôt (un `proposedContent` T5 MODIFY doit être un master
- * COMPLET — le recopier dans la fixture la rendrait obsolète à la moindre
- * évolution du master).
+ * master du dépôt (une sortie qui doit contenir un master COMPLET — le
+ * recopier dans la fixture la rendrait obsolète à la moindre évolution du
+ * master).
  */
 export type MasterFileReader = (masterPromptCode: string) => string;
 

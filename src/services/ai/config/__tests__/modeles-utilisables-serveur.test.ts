@@ -77,21 +77,21 @@ describe('§5 — enregistrement d’un brouillon (contournement de l’interfac
   });
 
   it('MOD-25 — valeur héritée devenue inutilisable : l’enregistrement d’autres champs reste possible (signalée, bloque la promotion)', async () => {
-    repo.getVersion.mockResolvedValue(brouillon({ T5: { primaryModel: 'gemini-2.5-pro' } }));
-    await svc.saveTreatmentConfig(7, entree('T5', { primaryModel: 'gemini-2.5-pro', maxOutputTokens: 900 }), 1);
+    repo.getVersion.mockResolvedValue(brouillon({ T4: { primaryModel: 'gemini-2.5-pro' } }));
+    await svc.saveTreatmentConfig(7, entree('T4', { primaryModel: 'gemini-2.5-pro', maxOutputTokens: 900 }), 1);
     expect(repo.saveEntry).toHaveBeenCalledTimes(1);
-    // Remplacement par un modèle utilisable (PO 26 : principal / replis T5 au BO).
-    await svc.saveTreatmentConfig(7, entree('T5', { primaryModel: 'gemini-3.6-flash', fallback1: 'gemini-3.1-flash-lite', fallback2: 'gemini-3.5-flash', reasoningFallback1: 'standard', reasoningFallback2: 'standard' }), 1);
+    // Remplacement par un modèle utilisable.
+    await svc.saveTreatmentConfig(7, entree('T4', { primaryModel: 'gemini-3.6-flash', fallback1: 'gemini-3.1-flash-lite', fallback2: 'gemini-3.5-flash', reasoningFallback1: 'standard', reasoningFallback2: 'standard' }), 1);
     expect(repo.saveEntry).toHaveBeenCalledTimes(2);
   });
 });
 
 describe('§5 — mise à l’essai, activation', () => {
   it('MOD-26 — brouillon référençant un modèle non utilisable : promotion refusée, motif par traitement et champ', async () => {
-    repo.getVersion.mockResolvedValue(brouillon({ T5: { primaryModel: 'gemini-2.5-pro' } }));
+    repo.getVersion.mockResolvedValue(brouillon({ T4: { primaryModel: 'gemini-2.5-pro' } }));
     const r = await svc.promote(7);
     expect(r.promoted).toBe(false);
-    expect(r.validation.issues.filter((i) => i.blocking).map((i) => `${i.treatment}:${i.field}`)).toEqual(['T5:primaryModel']);
+    expect(r.validation.issues.filter((i) => i.blocking).map((i) => `${i.treatment}:${i.field}`)).toEqual(['T4:primaryModel']);
     expect(repo.promoteToTest).not.toHaveBeenCalled();
   });
 

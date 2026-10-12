@@ -19,10 +19,19 @@ interface Row {
   coverageRatio: number; totalUnits: number; unresolvedUnits: number; uncertainUnits: number; failedUnits: number;
   factsCount: number; droppedFactsCount: number; truncatedSectionsCount: number; repairPassCount: number;
   chunkCount: number; retryAttempts: number; updatedAt: string;
+  /** Lot 49B : vérification de la source et diagnostics (compteurs, numéros de page). */
+  sourceVerification?: string | null; verification?: Diagnostics | null;
+  lastRetryAt?: string | null; lastRetryResult?: string | null;
+}
+interface Diagnostics {
+  pagesExpected?: number | null; pagesVerified?: number; pagesMissing?: number[]; pagesUnverified?: number[]; pagesScanned?: number[];
+  pendingRepairUnits?: number; exhaustedRepairUnits?: number; needsSourceUnits?: number;
+  truncations?: number; originalsPreserved?: number; normalisationLosses?: number;
 }
 interface Overview {
   days: number; byQuality: Record<Quality, number>; byAnomaly: Record<string, number>;
   averageCoverage: number | null; repairPasses: number; rows: Row[]; unavailable?: boolean;
+  bySourceVerification?: Record<string, number>;
 }
 
 export const QUALITY_LABEL: Record<Quality, string> = {
@@ -38,7 +47,39 @@ export const ANOMALY_LABEL: Record<string, string> = {
   FACT_INVALID_DROPPED: 'Faits écartés (conservés)',
   SOURCE_UNIT_FAILED: 'Unités source en échec',
   COVERAGE_INCOMPLETE: 'Couverture incomplète',
+  // Lot 49B : couverture réelle de la source, réparations, pertes de normalisation.
+  PAGE_UNVERIFIED: 'Page ou zone non vérifiée',
+  PAGE_MISSING: 'Page non restituée',
+  REPAIR_PENDING: 'Réparation en attente',
+  REPAIR_EXHAUSTED: 'Réparation épuisée',
+  NORMALISATION_LOSS: 'Perte de normalisation',
+  SOURCE_UNREADABLE: 'Source impossible à relire',
 };
+
+export const VERIFICATION_LABEL: Record<string, string> = {
+  VERIFIED: 'source vérifiée',
+  PARTIAL: 'source partiellement vérifiée',
+  UNVERIFIABLE: 'source non vérifiable',
+  NOT_APPLICABLE: 'texte préextrait',
+  RECONSTRUCTED: 'couverture reconstruite (historique)',
+};
+
+/** Diagnostics d'une ligne (compteurs seulement, jamais de contenu). */
+export function diagnosticsText(r: Pick<Row, 'sourceVerification' | 'verification' | 'lastRetryAt' | 'lastRetryResult'>): string {
+  const d = r.verification ?? {};
+  const parts: string[] = [];
+  if (r.sourceVerification) parts.push(VERIFICATION_LABEL[r.sourceVerification] ?? r.sourceVerification);
+  if (d.pagesExpected) parts.push(`pages ${d.pagesVerified ?? 0}/${d.pagesExpected} vérifiées`);
+  if (d.pagesMissing?.length) parts.push(`manquantes : ${d.pagesMissing.slice(0, 10).join(', ')}`);
+  if (d.pagesUnverified?.length) parts.push(`${d.pagesUnverified.length} non vérifiée(s)`);
+  if (d.pendingRepairUnits) parts.push(`${d.pendingRepairUnits} réparation(s) en attente`);
+  if (d.exhaustedRepairUnits) parts.push(`${d.exhaustedRepairUnits} épuisée(s)`);
+  if (d.needsSourceUnits) parts.push(`${d.needsSourceUnits} à relire dans le fichier`);
+  if (d.truncations) parts.push(`${d.originalsPreserved ?? 0}/${d.truncations} original(aux) conservé(s)`);
+  if (d.normalisationLosses) parts.push(`${d.normalisationLosses} perte(s) non compensée(s)`);
+  if (r.lastRetryAt) parts.push(`dernière reprise ${new Date(r.lastRetryAt).toLocaleString('fr-FR')}${r.lastRetryResult ? ` (${r.lastRetryResult})` : ''}`);
+  return parts.join(' · ');
+}
 
 export function T1CompletenessPanel({ days = 7 }: { days?: number }) {
   const [data, setData] = useState<Overview | null>(null);
@@ -96,6 +137,7 @@ export function T1CompletenessPanel({ days = 7 }: { days?: number }) {
               {r.chunkCount > 0 && ` · ${r.chunkCount} lot(s) de pages`}
               {r.retryAttempts > 0 && ` · ${r.retryAttempts} reprise(s)`}
               <span className="text-[color:var(--text-muted)]"> — {r.anomalies.map((a) => ANOMALY_LABEL[a] ?? a).join(', ')}</span>
+              {diagnosticsText(r) && <span className="block break-words text-[color:var(--text-muted)]">{diagnosticsText(r)}</span>}
             </li>
           ))}
         </ul>

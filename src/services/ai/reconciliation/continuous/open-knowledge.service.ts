@@ -14,6 +14,9 @@
  *   1 bis. documents rattachés PAR L'UTILISATEUR dont un identifiant désigne
  *      désormais un autre bien : jamais déplacés — carte d'incohérence
  *      LINK-ASSET-CONFLICT (`user-decision-conflicts.ts`) ;
+ *   1 ter. (lot 49B) recherche CIBLÉE dans la couche exhaustive T1
+ *      (`source-unit-targeting.ts`) : les documents qui citent un bien,
+ *      équipement ou pièce modifié sont repris EN PRIORITÉ ;
  *   2. documents sans bien principal en NO_CANDIDATE / ABSTAINED / MULTI_ASSET
  *      (y compris ceux présents dans « À traiter ») : contexte reconstruit,
  *      empreinte comparée — inchangée → CONFIRMED_NO_CHANGE sans IA ;
@@ -34,6 +37,7 @@ import type { ExecutionGuard } from '../../queue/execution-control';
 import { isExecutionCancelled } from '../../queue/execution-control';
 import { getAccountKnowledgeRevision } from './knowledge-revision';
 import type { FactTargetResult } from './fact-target-reconciler';
+import type { TargetingResult } from './source-unit-targeting';
 
 /** Documents ouverts examinés au plus par passage compte (le balayage reprend la suite). */
 export const OPEN_KNOWLEDGE_DOCUMENT_LIMIT = 200;
@@ -44,7 +48,10 @@ export interface OpenKnowledgeResult {
   knowledgeRevision: number;
   facts: FactTargetResult | null;
   userConflicts: { examined: number; proposed: number } | null;
-  documents: { examined: number; confirmed: number; enqueued: number };
+  /** Lot 49B : reprise ciblée par la couche exhaustive T1. */
+  targeted: Omit<TargetingResult, 'documents'> & { documents: number } | null;
+  /** `delegated` (lot 49B) : cartes LINK-ASSET ouvertes laissées à la phase « open actions ». */
+  documents: { examined: number; confirmed: number; enqueued: number; delegated?: number };
   titles: { updated: number; examined: number };
   errors: string[];
 }
@@ -61,7 +68,7 @@ export async function reconcileOpenKnowledge(
   const revision = await getAccountKnowledgeRevision(accountId);
   const indexes = new MatchingIndexCache();
   const out: OpenKnowledgeResult = {
-    knowledgeRevision: revision, facts: null, userConflicts: null, documents: { examined: 0, confirmed: 0, enqueued: 0 }, titles: { updated: 0, examined: 0 }, errors: [],
+    knowledgeRevision: revision, facts: null, userConflicts: null, targeted: null, documents: { examined: 0, confirmed: 0, enqueued: 0 }, titles: { updated: 0, examined: 0 }, errors: [],
   };
 
   try {
@@ -79,10 +86,18 @@ export async function reconcileOpenKnowledge(
     out.errors.push(`USER_LINK_CONFLICT: ${(e as Error).message}`.slice(0, 300));
   }
   try {
+    const { reconcileTargetedSourceUnits } = await import('./source-unit-targeting');
+    const t = await reconcileTargetedSourceUnits({ accountId, revision, indexes, guard: opts.guard, triggerCode: opts.triggerCode ?? null });
+    out.targeted = { ...t, documents: t.documents.length };
+  } catch (e) {
+    if (isExecutionCancelled(e)) throw e;
+    out.errors.push(`SOURCE_UNITS: ${(e as Error).message}`.slice(0, 300));
+  }
+  try {
     const d = await sweepAccountDocuments({
       accountId, guard: opts.guard, triggerCode: opts.triggerCode ?? 'schedule_hourly', limit: OPEN_KNOWLEDGE_DOCUMENT_LIMIT, indexes,
     });
-    out.documents = { examined: d.examined, confirmed: d.confirmed, enqueued: d.enqueued.length };
+    out.documents = { examined: d.examined, confirmed: d.confirmed, enqueued: d.enqueued.length, delegated: d.delegated };
   } catch (e) {
     if (isExecutionCancelled(e)) throw e;
     out.errors.push(`DOCUMENT_ASSET: ${(e as Error).message}`.slice(0, 300));

@@ -271,7 +271,7 @@ export async function getActive(environment: string, treatment: string): Promise
  */
 export async function insertDraft(p: {
   environment: string; treatment: string; masterPromptCode: string; content: string;
-  origin: 'admin' | 'prompt_control'; basedOnId: number | null; userId: number;
+  origin: 'admin'; basedOnId: number | null; userId: number;
   /** Lot 34D : configuration d'exécution du brouillon (T4) ; absente : aucune colonne écrite. */
   execution?: MasterExecutionConfig | null;
 }): Promise<MasterPromptVersionRow | null> {
@@ -298,7 +298,7 @@ export async function insertDraft(p: {
 
 /**
  * Remplace le texte d'un BROUILLON. `expectedContent` (facultatif) : écriture
- * conditionnelle (Prompt Control) — 0 ligne si le texte a changé entre-temps.
+ * conditionnelle — 0 ligne si le texte a changé entre-temps.
  * Rend la ligne écrite, ou `null` (plus un brouillon, ou conflit).
  */
 export async function updateDraftContent(p: {

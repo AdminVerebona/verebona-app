@@ -25,8 +25,12 @@
  *
  * Quota (429), délai dépassé, indisponibilité (5xx), réseau : résultat NON
  * CONCLUANT (`null`), jamais `false` — une panne passagère ne retire pas un
- * modèle des sélecteurs. Seul un refus définitif (400/404, réponse vide,
- * JSON non conforme au schéma) vaut `false`.
+ * modèle des sélecteurs. Lot 49 (ticket 11) : réponse VIDE et erreur
+ * GLOBALE de clé / projet aussi (`probe-classification.ts`). Génération :
+ * seul un échec explicitement définitif ATTRIBUABLE AU MODÈLE (retrait, 404
+ * du modèle) vaut `false` ; un échec présumé reste `null` et passe par la
+ * confirmation de l'état opérationnel (second contrôle). Capacités : un
+ * refus de l'épreuve (400, JSON non conforme au schéma) vaut `false`.
  *
  * Aucune donnée utilisateur : prompts constants, image synthétique de 16×16
  * pixels. Appels tracés en TECHNIQUE, non facturables (comme les sondes).
@@ -35,11 +39,14 @@
 import { pgClient } from '@/db';
 import { keyFingerprint } from './model-operational.service';
 import type { ProviderCallInput } from '../gateway/providers/provider.port';
+import {
+  classifyProbeFailure, classifyProbeResponse, sanitizeProviderError, type ProbeErrorKind, type ProbeOutcome,
+} from './probe-classification';
 
 type Row = Record<string, unknown>;
 
 /** Version des épreuves : la changer requalifie tous les modèles. */
-export const QUALIFICATION_VERSION = 'qualif-v1' as const;
+export const QUALIFICATION_VERSION = 'qualif-v2' as const;
 
 export type QualifiedCapability = 'generate' | 'structured' | 'multimodal' | 'thinking';
 
@@ -50,6 +57,11 @@ export interface QualificationResult {
   multimodal: boolean | null;
   thinking: boolean | null;
   errors: Partial<Record<QualifiedCapability, string>>;
+  /**
+   * Lot 49 : issue CLASSÉE de l'épreuve de génération (ok, non concluant,
+   * échec présumé ou définitif) — enregistrée dans l'état opérationnel.
+   */
+  generateOutcome?: ProbeOutcome;
 }
 
 export interface StoredQualification {
@@ -80,9 +92,19 @@ export const QUALIFICATION_SCHEMA = {
 /** Image synthétique (16×16, rouge uni) — aucune donnée utilisateur. */
 export const QUALIFICATION_IMAGE_PNG = 'iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAAAFklEQVR4nGO4IyJCEmIY1TCqYfhqAAACcQQQFwFJQgAAAABJRU5ErkJggg==';
 
-/** Erreur transitoire (quota, délai, 5xx, réseau) : épreuve non concluante. */
+/**
+ * Erreur NON CONCLUANTE pour une épreuve de CAPACITÉ : transitoire (quota,
+ * délai, 5xx, réseau) ou globale (clé, projet). Tout autre refus de
+ * l'épreuve dit que la capacité manque.
+ */
+const CAPACITE_NON_CONCLUANTE: ReadonlySet<ProbeErrorKind> = new Set<ProbeErrorKind>([
+  'quota', 'server', 'timeout', 'network', 'auth_global', 'project_global',
+]);
+
+/** Erreur transitoire ou globale (quota, délai, 5xx, réseau, clé, projet) : épreuve non concluante. */
 export function isTransientError(message: string): boolean {
-  return /\b(429|500|502|503|504)\b|RESOURCE_EXHAUSTED|UNAVAILABLE|DEADLINE_EXCEEDED|timeout|timed out|délai|abort|ECONNRESET|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|fetch failed|socket/i.test(message);
+  const c = classifyProbeFailure(message);
+  return c.status === 'inconclusive' && CAPACITE_NON_CONCLUANTE.has(c.kind);
 }
 
 /** JSON conforme au schéma de l'épreuve (pur). */
@@ -97,8 +119,9 @@ export function conformsToQualificationSchema(raw: string): boolean {
   return o.ok === true && typeof o.mot === 'string' && o.mot.trim().length > 0;
 }
 
-type Outcome = { value: boolean | null; error?: string };
+type Outcome = { value: boolean | null; error?: string; outcome?: ProbeOutcome };
 
+/** Épreuve de CAPACITÉ : réponse vide ou erreur transitoire / globale = non concluant. */
 async function epreuve(
   run: () => Promise<{ rawText: string }>,
   check: (raw: string) => boolean,
@@ -107,12 +130,33 @@ async function epreuve(
 ): Promise<Outcome> {
   try {
     const r = await run();
-    return check(r.rawText) ? { value: true } : { value: false, error: refus };
+    if (check(r.rawText)) return { value: true };
+    // Lot 49 : une réponse vide ne prouve rien (budget de sortie, filtrage).
+    if (r.rawText.trim().length === 0) return { value: null, error: 'réponse vide (non concluant)' };
+    return { value: false, error: refus };
   } catch (e) {
-    const msg = String((e as Error)?.message ?? e ?? 'erreur inconnue');
-    const propre = (secret ? msg.split(secret).join('***') : msg).slice(0, 300);
-    return { value: isTransientError(msg) ? null : false, error: propre };
+    const c = classifyProbeFailure(e, { secret });
+    return { value: c.status === 'inconclusive' && CAPACITE_NON_CONCLUANTE.has(c.kind) ? null : false, error: c.error.slice(0, 300) };
   }
+}
+
+/**
+ * Épreuve de GÉNÉRATION (lot 49) : `true` si le modèle répond ; `false`
+ * seulement sur un échec EXPLICITEMENT définitif attribuable au modèle ;
+ * `null` sinon (non concluant, ou échec présumé à confirmer).
+ */
+async function epreuveGeneration(
+  run: () => Promise<{ rawText: string }>, model: string, secret: string | null,
+): Promise<Outcome> {
+  let outcome: ProbeOutcome;
+  try {
+    outcome = classifyProbeResponse((await run()).rawText);
+  } catch (e) {
+    outcome = classifyProbeFailure(e, { model, secret });
+  }
+  if (outcome.status === 'ok') return { value: true, outcome };
+  const error = sanitizeProviderError(outcome.error, secret).slice(0, 300);
+  return { value: outcome.status === 'failed' && outcome.definitive ? false : null, error, outcome };
 }
 
 /**
@@ -129,13 +173,10 @@ export async function qualifyModel(
   const base = { model, attachments: [], timeoutMs: TIMEOUT_MS, maxOutputTokens: MAX_OUT, reasoning: 'minimal' as const };
   const errors: QualificationResult['errors'] = {};
 
-  const gen = await epreuve(
-    () => call({ ...base, prompt: 'Réponds exactement : OK' }),
-    (raw) => raw.trim().length > 0, secret, 'réponse vide',
-  );
+  const gen = await epreuveGeneration(() => call({ ...base, prompt: 'Réponds exactement : OK' }), model, secret);
   if (gen.error) errors.generate = gen.error;
   if (gen.value !== true) {
-    return { generate: gen.value, structured: null, multimodal: null, thinking: null, errors };
+    return { generate: gen.value, structured: null, multimodal: null, thinking: null, errors, ...(gen.outcome ? { generateOutcome: gen.outcome } : {}) };
   }
 
   const structured = await epreuve(
@@ -176,7 +217,7 @@ export async function qualifyModel(
     if (t.error) errors.thinking = t.error;
   }
 
-  return { generate: true, structured: structured.value, multimodal: multimodal.value, thinking, errors };
+  return { generate: true, structured: structured.value, multimodal: multimodal.value, thinking, errors, generateOutcome: { status: 'ok' } };
 }
 
 /** Faut-il (re)qualifier ? Jamais qualifié, version changée, échec de plus de 7 j, succès de plus de 30 j. */
@@ -243,8 +284,8 @@ export async function loadQualifications(activeSecret?: string | null): Promise<
   return out;
 }
 
-/** Appel réel par le port fournisseur, tracé en technique. */
-export function defaultQualificationCall(): QualificationCall {
+/** Appel réel par le port fournisseur, tracé en technique (erreur nettoyée). */
+export function defaultQualificationCall(secret?: string | null): QualificationCall {
   return async (input) => {
     const started = Date.now();
     const { getAiProvider } = await import('../gateway/providers');
@@ -256,7 +297,7 @@ export function defaultQualificationCall(): QualificationCall {
       return r;
     } catch (e) {
       await traceTechnicalCall('model_qualification_probe', input.model, false, Date.now() - started,
-        { inputTokens: 0, outputTokens: 0 }, String((e as Error)?.message ?? e).slice(0, 300));
+        { inputTokens: 0, outputTokens: 0 }, sanitizeProviderError(e, secret).slice(0, 300));
       throw e;
     }
   };

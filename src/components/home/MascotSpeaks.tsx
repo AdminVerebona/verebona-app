@@ -50,7 +50,7 @@ import { greetingDateLong, greetingWord } from '@/lib/mascot-greeting';
 import { useWriteGuard } from '@/contexts/WriteGuardContext';
 import type { MascotAction, MascotParagraph, MascotPresentation, MascotTile, MascotTodoItem } from '@/services/home/mascot/types';
 import {
-  composeSpeech, displayedSecondaries, homeItems, homePose, homePoseLabel, homeSuggestions, splitHighlights,
+  composeSpeech, displayedSecondaries, duoInviteHomeItem, homeItems, homePose, homePoseLabel, homeSuggestions, splitHighlights,
   type ActionTile, type HomeItem,
 } from '@/services/home/mascot/bubble';
 import type { AnswerKind } from '@/lib/verebona/space';
@@ -209,6 +209,13 @@ export function MascotSpeaks({ greetingName, empty, onCreateAsset, onUploadDocum
   };
 
   const openItem = (it: HomeItem) => {
+    // Lot 49A (ticket 13) : parcours d'invitation Duo existant (« Mon compte »).
+    if (it.kind === 'duo-invite') {
+      trackClick('DUO-INVITE', 'DUO-INVITE', 'subject', 'DUO-INVITE:open');
+      space?.close();
+      router.push(it.invite.href);
+      return;
+    }
     if (it.kind === 'todo') { openTodo(it.todo); return; }
     if (it.kind === 'subject') { openTile(it.tile); return; }
     void run(it.secondary.action, it.secondary, 'secondary');
@@ -257,6 +264,8 @@ export function MascotSpeaks({ greetingName, empty, onCreateAsset, onUploadDocum
   ];
 
   const items = homeItems(presentation, empty);
+  // Compte encore vide : « Inviter quelqu'un » avant les tuiles d'amorce (lot 49A).
+  const emptyInvite = empty ? duoInviteHomeItem(presentation) : null;
   const suggestions = homeSuggestions(presentation, empty, pageSuggestions);
 
   // Lot 36 (maquette 2a/2b « Fil encadré ») : mascotte à gauche ; à droite
@@ -308,6 +317,9 @@ export function MascotSpeaks({ greetingName, empty, onCreateAsset, onUploadDocum
         {/* Niveau 2 : un seul composant pour toutes les actions (MASC2). */}
         {empty ? (
           <div className="flex flex-col gap-2 md:grid md:grid-cols-2 md:gap-2.5">
+            {emptyInvite && (
+              <ItemButton title={emptyInvite.title} sub={emptyInvite.sub} cta={emptyInvite.cta} tone={emptyInvite.tone} icon={emptyInvite.icon} onClick={() => openItem(emptyInvite)} dataActionType="DUO_INVITE" />
+            )}
             {emptyTiles.map((t) => (
               <ItemButton key={t.key} title={t.label} sub={t.sub} cta={null} tone={t.tone} icon={t.icon} onClick={t.go} />
             ))}
@@ -324,7 +336,7 @@ export function MascotSpeaks({ greetingName, empty, onCreateAsset, onUploadDocum
                 icon={it.icon}
                 onClick={() => openItem(it)}
                 dataTodoId={it.kind === 'todo' ? it.todo.todoId : undefined}
-                dataActionType={it.kind === 'todo' ? it.todo.actionType : undefined}
+                dataActionType={it.kind === 'todo' ? it.todo.actionType : it.kind === 'duo-invite' ? 'DUO_INVITE' : undefined}
               />
             ))}
           </div>

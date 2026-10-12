@@ -45,16 +45,11 @@ const t4Enregistre: TreatmentConfig = {
   masterPrompt: MASTER_T4,
   triggers: [{ kind: 'schedule', code: 'schedule_hourly', active: false }],
 };
-const t5Herite: TreatmentConfig = {
-  ...emptyTreatmentConfig('T5'), primaryModel: 'm', maxOutputTokens: 2000,
-  prompt: 'TASK = {{TASK}}\nBRANCHE MODE = ANALYZE', masterPrompt: 'ancien master incomplet',
-};
-
-type Trace = { adminUserId: number; versionId: number; treatment: string; before: TreatmentConfig; after: TreatmentConfig; legacyPromptCleared: boolean };
+type Trace = { adminUserId: number; versionId: number; treatment: string; before: TreatmentConfig; after: TreatmentConfig };
 const derniereTrace = () => recordConfigEntrySave.mock.calls.at(-1)![0] as Trace;
 
 beforeEach(() => {
-  version = { id: 7, status: 'DRAFT', environment: 'local', entries: [t4Enregistre, t5Herite] };
+  version = { id: 7, status: 'DRAFT', environment: 'local', entries: [t4Enregistre] };
   saveEntry.mockClear();
   recordConfigEntrySave.mockClear();
   vi.spyOn(console, 'error').mockImplementation(() => {});
@@ -71,7 +66,7 @@ describe('T4 — correction des déclencheurs depuis le BO', () => {
     expect([ecrit.primaryModel, ecrit.reasoningPrimary, ecrit.maxOutputTokens]).toEqual(['m', 'standard', 900]);
 
     const t = derniereTrace();
-    expect(t).toMatchObject({ adminUserId: 42, versionId: 7, treatment: 'T4', legacyPromptCleared: false });
+    expect(t).toMatchObject({ adminUserId: 42, versionId: 7, treatment: 'T4' });
     const diff = changedConfigFields(t.before, t.after);
     expect(Object.keys(diff.after)).toEqual(['triggers']);
     expect(diff.before.triggers).toEqual([{ kind: 'schedule', code: 'schedule_hourly', active: false }]);
@@ -85,23 +80,18 @@ describe('T4 — correction des déclencheurs depuis le BO', () => {
   });
 });
 
-describe('T5 — nettoyage d’un texte hérité à l’enregistrement', () => {
-  it('prompt = "", masterPrompt = null, autres réglages inchangés ; nettoyage tracé', async () => {
-    const r = await put('T5', t5Herite);
-    expect(r.status).toBe(200);
-    const t = derniereTrace();
-    expect(t.legacyPromptCleared).toBe(true);
-    expect(t.after.prompt).toBe('');
-    expect(t.after.masterPrompt).toBeNull();
-    expect([t.after.primaryModel, t.after.maxOutputTokens]).toEqual(['m', 2000]);
-    expect(Object.keys(changedConfigFields(t.before, t.after).after).sort()).toEqual(['masterPrompt', 'prompt']);
+describe('Lot 49 — T5 supprimé (ticket 12)', () => {
+  it('T12-AC11 — PUT sur T5 : refus explicite 410, aucune écriture, aucune trace (pas de réactivation)', async () => {
+    const r = await put('T5', { ...emptyTreatmentConfig('T1'), primaryModel: 'm' });
+    expect(r.status).toBe(410);
+    expect((await r.json()).error).toBe('TREATMENT_RETIRED');
+    expect(saveEntry).not.toHaveBeenCalled();
+    expect(recordConfigEntrySave).not.toHaveBeenCalled();
   });
 
-  it('seconde sauvegarde : aucun changement supplémentaire (rien à tracer)', async () => {
-    version.entries = [t4Enregistre, { ...t5Herite, prompt: '', masterPrompt: null }];
-    await put('T5', { ...t5Herite, prompt: '', masterPrompt: null });
+  it('T12-AC08 — seconde sauvegarde : aucun changement supplémentaire (rien à tracer)', async () => {
+    await put('T4', t4Enregistre);
     const t = derniereTrace();
-    expect(t.legacyPromptCleared).toBe(false);
     expect(changedConfigFields(t.before, t.after).after).toEqual({});
   });
 });

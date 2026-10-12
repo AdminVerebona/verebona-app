@@ -7,6 +7,8 @@ import { apiError } from '@/lib/api-errors';
 import { SessionService } from '@/lib/session-service';
 import { buildCanonicalAssetState, loadAssetRow, type SqlRunner } from '@/services/canonical/asset-state';
 import { pgClient } from '@/db';
+import { readOrigin } from '@/services/ai/reconciliation/field-origin';
+import { tenureEndSectionFields } from '@/lib/assets/tenure-end';
 
 /*
  * Ordre de lecture de l'adresse (arbitrage lot 16, CDC 15 X-02 / T3-05) : la
@@ -17,6 +19,10 @@ import { pgClient } from '@/db';
  */
 
 type AddressOverride = { address1: unknown; postalCode: unknown; city: unknown };
+
+/** Lot 49A (ticket 9) : date de fin du contrat / de la détention (voir `lib/assets/tenure-end`). */
+const tenureEndFields = (family: string, kc: Record<string, unknown>, context: Record<string, unknown>) =>
+  tenureEndSectionFields(family, kc, context, readOrigin);
 
 function buildSections(family: string, kc: Record<string, unknown>, assetRow: Record<string, unknown>, adresse: AddressOverride | null = null) {
   const sections: Record<string, unknown> = {};
@@ -73,6 +79,7 @@ function buildSections(family: string, kc: Record<string, unknown>, assetRow: Re
       monthlyRent: kc.monthlyRent ?? null,
       charges: kc.charges ?? null,
       occupancyNotes: kc.occupancyNotes ?? null,
+      ...tenureEndFields('IMMOBILIER', kc, { occupancyStatus: kc.occupancyStatus }),
     };
     sections.performance_technical = {
       heatingType: kc.heatingType ?? null,
@@ -134,6 +141,7 @@ function buildSections(family: string, kc: Record<string, unknown>, assetRow: Re
       leaseDurationMonths: kc.leaseDurationMonths ?? null,
       leaseMonthlyPayment: kc.leaseMonthlyPayment ?? null,
       leaseResidualValue: kc.leaseResidualValue ?? null,
+      ...tenureEndFields('VEHICULE', kc, { vehicleOwnershipStatus: kc.vehicleOwnershipStatus }),
     };
     sections.vehicle_insurance = {
       isInsured: kc.isInsured ?? null,
@@ -177,6 +185,10 @@ function buildSections(family: string, kc: Record<string, unknown>, assetRow: Re
       lastRevision: kc.lastRevision ?? null,
       maintenanceDueDate: kc.maintenanceDueDate ?? null,
       isInsured: kc.isInsured ?? null,
+      // Contexte (non modifiable ici) : le mode d'acquisition dit si l'objet
+      // est loué / prêté — détention à durée limitée (lot 49A).
+      acquisitionMode: kc.acquisitionMode ?? null,
+      ...tenureEndFields('OBJET', kc, { acquisitionMode: kc.acquisitionMode }),
     };
     sections.valuation = {
       valuationLow: kc.valuationLow ?? null,
