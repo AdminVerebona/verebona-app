@@ -219,7 +219,7 @@ describe('REPAIR-07 (cas 7) — ancien format compatible : adaptateur versionné
   });
   it('contrat versionné et empreinte (lien code / prompt / configuration / schéma)', () => {
     const ref = outputSchemaRef('T1AnalyzeDocumentOutput', T1AnalyzeDocumentOutput, 't1_analyze_document');
-    expect(ref.version).toBe('t1_analyze_document@v3');
+    expect(ref.version).toBe('t1_analyze_document@v4');
     expect(ref.hash).toMatch(/^[0-9a-f]{12}$/);
     expect(outputSchemaRef('T1AnalyzeDocumentOutput', T1AnalyzeDocumentOutput, 'x').hash).toBe(ref.hash);
   });
@@ -277,7 +277,7 @@ describe('REPAIR-11 — audit T1 : `null` pour un champ absent, `entityId` omis'
     const report = checkOutputCoherence({ repoText: () => repo('t1_master_v1'), activeTexts: { t1_analyze_document: txt } });
     const t1 = report.find((o) => o.operationCode === 't1_analyze_document')!;
     expect(t1.findings.filter((f) => f.code === 'PROMPT_EXAMPLE_INVALID')).toEqual([]);
-    expect(t1.contract).toMatch(/^t1_analyze_document@v3 · [0-9a-f]{12}$/);
+    expect(t1.contract).toMatch(/^t1_analyze_document@v4 · [0-9a-f]{12}$/);
   });
   it('lot 34D : le prompt du dépôt renvoie au contrat runtime, garde les règles de contenu (omission, dates ISO)', () => {
     const t = repo('t1_master_v1');

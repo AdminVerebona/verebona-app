@@ -3,6 +3,11 @@
  * primitive canonique (`writeCanonicalAssetField`, origine SYSTEM_RULE), et
  * une valeur USER/ADMIN n'est jamais écrasée : conflit « À traiter » à la place.
  * Tests de non-régression du moteur (application, proposition, conflit).
+ *
+ * Lot 38 (O0) : les règles génériques montant → acquisition / valorisation
+ * sont neutralisées ; le moteur est éprouvé sur une cible ordinaire
+ * (`charges`, montant en centimes → euros). La neutralisation elle-même est
+ * couverte par `o0-propagations-generiques.test.ts`.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -49,7 +54,7 @@ vi.mock('@/services/canonical/asset-state', async (orig) => ({
 const { processImpact, PROPAGATION_ORIGIN } = await import('../impact-propagation.service');
 
 const rule = (over: Record<string, unknown>) => ({
-  id: 1, sourceField: 'amountCents', targetField: 'acquisitionPrice', category: null,
+  id: 1, sourceField: 'chargesCents', targetField: 'charges', category: null,
   impactType: 'propagation', transformRule: 'cents_to_euros', confidence: 'certain', ...over,
 });
 const item = (changedFields: Record<string, unknown>) => ({
@@ -60,7 +65,7 @@ const item = (changedFields: Record<string, unknown>) => ({
 const ecrit = (outcome: string, over: Record<string, unknown> = {}) => ({
   notFound: false,
   fields: [],
-  field: { key: 'acquisitionPrice', requestedKey: 'acquisitionPrice', outcome, previousValue: null, previousOrigin: null, nextValue: 1899, origin: 'SYSTEM_RULE', mirrors: {}, ...over },
+  field: { key: 'charges', requestedKey: 'charges', outcome, previousValue: null, previousOrigin: null, nextValue: 1899, origin: 'SYSTEM_RULE', mirrors: {}, ...over },
 });
 
 beforeEach(() => {
@@ -72,35 +77,35 @@ beforeEach(() => {
 
 describe('propagation → primitive canonique', () => {
   it('champ vide, source certaine : writeCanonicalAssetField (SYSTEM_RULE, jamais USER), centimes convertis, impact chaîné', async () => {
-    const r = await processImpact(item({ amountCents: 189900 }) as never);
+    const r = await processImpact(item({ chargesCents: 189900 }) as never);
     expect(PROPAGATION_ORIGIN).toBe('SYSTEM_RULE');
     expect(h.write).toHaveBeenCalledTimes(1);
     expect(h.write).toHaveBeenCalledWith({
-      assetId: 3, accountId: 7, key: 'acquisitionPrice', value: 1899, origin: 'SYSTEM_RULE', expectedCurrent: null,
-      source: { type: 'impact_propagation', id: 'amountCents' },
+      assetId: 3, accountId: 7, key: 'charges', value: 1899, origin: 'SYSTEM_RULE', expectedCurrent: null,
+      source: { type: 'impact_propagation', id: 'chargesCents' },
     });
     expect(h.dbUpdate).not.toHaveBeenCalled();
-    expect(h.autoResolve).toHaveBeenCalledWith(3, 'acquisitionPrice');
+    expect(h.autoResolve).toHaveBeenCalledWith(3, 'charges');
     expect(h.enqueue).toHaveBeenCalledWith(expect.objectContaining({
-      assetId: 3, triggerType: 'asset_updated', metadata: { changedFields: { acquisitionPrice: 1899 } }, priority: -1,
+      assetId: 3, triggerType: 'asset_updated', metadata: { changedFields: { charges: 1899 } }, priority: -1,
     }));
     expect(r).toMatchObject({ fieldsApplied: 1, fieldsConflicted: 0, errors: 0 });
   });
 
   it('valeur USER en place (colonne miroir comprise, lue par la vue canonique) et différente : conflit À traiter, aucune écriture', async () => {
-    h.fields = { acquisitionPrice: { value: 1500, origin: 'USER' } };
-    const r = await processImpact(item({ amountCents: 189900 }) as never);
+    h.fields = { charges: { value: 1500, origin: 'USER' } };
+    const r = await processImpact(item({ chargesCents: 189900 }) as never);
     expect(h.write).not.toHaveBeenCalled();
     expect(h.createInconsistency).toHaveBeenCalledWith(expect.objectContaining({
-      accountId: 7, assetId: 3, fieldKey: 'acquisitionPrice', currentValue: '1500', proposedValue: '1899',
+      accountId: 7, assetId: 3, fieldKey: 'charges', currentValue: '1500', proposedValue: '1899',
       sourceType: 'reconciliation', inconsistencyType: 'conflictual',
     }));
     expect(r).toMatchObject({ fieldsApplied: 0, fieldsConflicted: 1 });
   });
 
   it('même valeur déjà en place : rien', async () => {
-    h.fields = { acquisitionPrice: { value: 1899, origin: 'USER' } };
-    const r = await processImpact(item({ amountCents: 189900 }) as never);
+    h.fields = { charges: { value: 1899, origin: 'USER' } };
+    const r = await processImpact(item({ chargesCents: 189900 }) as never);
     expect(h.write).not.toHaveBeenCalled();
     expect(h.createInconsistency).not.toHaveBeenCalled();
     expect(r.fieldsApplied).toBe(0);
@@ -111,9 +116,9 @@ describe('propagation → primitive canonique', () => {
       h.createInconsistency.mockClear();
       h.enqueue.mockClear();
       h.write.mockResolvedValueOnce(ecrit(outcome, { previousValue: 1500, previousOrigin: prev, nextValue: 1500 }));
-      const r = await processImpact(item({ amountCents: 189900 }) as never);
+      const r = await processImpact(item({ chargesCents: 189900 }) as never);
       expect(h.createInconsistency).toHaveBeenCalledWith(expect.objectContaining({
-        fieldKey: 'acquisitionPrice', currentValue: '1500', proposedValue: '1899', sourceType: 'reconciliation', inconsistencyType: 'conflictual',
+        fieldKey: 'charges', currentValue: '1500', proposedValue: '1899', sourceType: 'reconciliation', inconsistencyType: 'conflictual',
       }));
       expect(h.enqueue).not.toHaveBeenCalled();
       expect(r).toMatchObject({ fieldsApplied: 0, fieldsConflicted: 1 });
@@ -121,11 +126,11 @@ describe('propagation → primitive canonique', () => {
   });
 
   it('source probable sur champ vide : proposition (inchangé), aucune écriture', async () => {
-    h.rules = [rule({ targetField: 'estimatedValue', confidence: 'probable' })];
-    const r = await processImpact(item({ amountCents: 189900 }) as never);
+    h.rules = [rule({ confidence: 'probable' })];
+    const r = await processImpact(item({ chargesCents: 189900 }) as never);
     expect(h.write).not.toHaveBeenCalled();
     expect(h.createInconsistency).toHaveBeenCalledWith(expect.objectContaining({
-      fieldKey: 'estimatedValue', proposedValue: '1899', inconsistencyType: 'probable',
+      fieldKey: 'charges', proposedValue: '1899', inconsistencyType: 'probable',
     }));
     expect(r.fieldsProposed).toBe(1);
   });

@@ -14,6 +14,7 @@
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { ActionCard, type ActionView } from '@/components/to-process/ActionCard';
 import { useToProcessResolution } from '@/components/to-process/useToProcessResolution';
+import { SaleDetailsDialog } from '@/components/assets/SaleDetailsDialog';
 import type { MascotTodoItem } from '@/services/home/mascot/types';
 
 interface Props {
@@ -26,13 +27,17 @@ interface Props {
 }
 
 export function TodoChoicesDialog({ item, onClose, onRemoved, onRestored }: Props) {
-  const { busyId, choose, openTarget } = useToProcessResolution({
+  const { busyId, choose, openTarget, saleFollowUp, closeSaleFollowUp } = useToProcessResolution({
     onRemove: (a) => onRemoved(a.publicId),
     onRollback: (a) => onRestored(a.publicId),
   });
   const action = item?.card as ActionView | undefined;
 
   return (
+    <>
+    {/* Lot 43 (O4, Q5) : vente réalisée demandée après un passage à VENDU /
+        TRANSMIS — même fenêtre que la file « À traiter ». */}
+    <SaleDetailsDialog followUp={saleFollowUp} onClose={closeSaleFollowUp} />
     <Dialog open={!!item} onOpenChange={(open) => { if (!open) onClose(); }}>
       <DialogContent className="sm:max-w-lg">
         <DialogHeader>
@@ -55,5 +60,6 @@ export function TodoChoicesDialog({ item, onClose, onRemoved, onRestored }: Prop
         )}
       </DialogContent>
     </Dialog>
+    </>
   );
 }

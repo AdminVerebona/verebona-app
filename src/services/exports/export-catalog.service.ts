@@ -84,7 +84,13 @@ export interface CatalogInput {
   asset: { id: number; category: string; subtype: string | null };
   premium: { allowed: boolean; reason?: string; message?: string };
   counts: { documents: number; photos: number };
+  /**
+   * `claim` : depuis le lot 44 (O5), la sous-rubrique du sinistre le plus
+   * récent du bien (Opération CLAIM), sinon l'ancienne saisie (Q11).
+   */
   additional: Pick<AssetAdditionalInfos, 'commercial' | 'rental' | 'insurance' | 'claim'>;
+  /** Lot 44 : nombre de sinistres du bien (absent : inconnu, règle historique). */
+  claims?: number;
   /** Préparation CIL, si le bien y est éligible. */
   cil: { globalStatus: 'ready' | 'action_required'; percentage: number; blockingLabels: string[] } | null;
   /** Dossiers désactivés depuis le back-office : non proposés. */
@@ -127,7 +133,10 @@ function readinessHints(code: DossierCode, input: CatalogInput): ReadinessHint[]
       }
       break;
     case 'ASSURANCE_SINISTRE':
-      if (!has(a.claim, 'claimType') || !has(a.claim, 'occurredOn')) {
+      // Lot 44 (O5) : sinistres de la fiche (Opérations CLAIM) ; le plus récent est proposé par défaut.
+      if (input.claims === 0 && Object.keys(a.claim ?? {}).length === 0) {
+        hints.push({ code: 'CLAIM_MISSING', severity: 'warning', target: 'additional-infos:claim', message: 'Aucun sinistre renseigné : ajoutez-le dans la rubrique « Sinistres » de la fiche du bien.' });
+      } else if (!has(a.claim, 'claimType') || !has(a.claim, 'occurredOn')) {
         hints.push({ code: 'CLAIM_MISSING', severity: 'warning', target: 'additional-infos:claim', message: 'Type et date du sinistre à renseigner pour une synthèse complète.' });
       }
       break;
@@ -260,11 +269,25 @@ export async function loadExportCatalog(asset: {
     }
   }
 
+  // Lot 44 (O5) : le sinistre du dossier est l'Opération CLAIM la plus récente du bien.
+  let claims: number | undefined;
+  let claimSection = additional.claim;
+  try {
+    const { loadClaimRecords } = await import('@/services/business-operations/claims/read');
+    const { claimToSection } = await import('@/services/business-operations/claims/model');
+    const recs = await loadClaimRecords(db, asset.accountId, { assetId: asset.id });
+    claims = recs.length;
+    if (recs.length) claimSection = claimToSection(recs[0]);
+  } catch (err) {
+    console.error('[export-catalog] sinistres indisponibles :', (err as Error).message);
+  }
+
   return buildExportCatalog({
     asset: { id: asset.id, category: asset.category, subtype: asset.subtype },
     premium: { allowed: premium.allowed, reason: premium.reason, message: premium.message },
     counts: { documents: Number(fileCounts[0]?.documents ?? 0), photos: Number(fileCounts[0]?.photos ?? 0) },
-    additional,
+    additional: { ...additional, claim: claimSection },
+    claims,
     cil,
     generations,
     unavailable,

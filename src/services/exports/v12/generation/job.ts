@@ -47,6 +47,8 @@ export interface GenerationRequestSnapshot {
   requestedAt: string;
   /** Empreinte de la demande (dédoublonnage des doubles clics, `enqueue.ts`). */
   requestHash?: string;
+  /** Lot 44 (O5) : sinistre du dossier Assurance-sinistre retenu à la demande. */
+  claimOperationId?: number | null;
 }
 
 export interface JobDeps {
@@ -93,6 +95,8 @@ function buildSnapshot(code: DossierCode, source: ExportSource, choices: ExportC
     // 16b-3), version du registre et chemins de rattachement des pièces.
     dataSource: source.sourceTrace ?? null,
     additionalInfo: source.additionalInfo,
+    // Lot 44 : sinistre retenu (Opération CLAIM) — sa sous-rubrique est dans `additionalInfo.claim`.
+    claim: source.claim ?? null,
     export: { type: code, templateVersion: templateVersion(code), createdAt },
     sections: Object.entries(rendered?.plan.sections ?? choices.sections).map(([id, enabled]) => ({ id, enabled })),
     choices,
@@ -148,7 +152,11 @@ export async function runGeneration(row: GenerationRow, workerId: string, opts: 
     const generatedAt = parisIso(now);
     let source: ExportSource;
     try {
-      source = await deps.loadSource({ assetId: row.assetId, accountId: row.accountId, userId: row.userId, exportType: code });
+      const claimOperationId = req.choices?.claimOperationId ?? req.claimOperationId ?? null;
+      source = await deps.loadSource({
+        assetId: row.assetId, accountId: row.accountId, userId: row.userId, exportType: code,
+        ...(claimOperationId ? { claimOperationId } : {}),
+      });
     } catch (e) {
       throw asGenerationError(e, current);
     }

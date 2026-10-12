@@ -12,6 +12,7 @@ import type { MascotAgendaRow, MascotDocRow, MascotExportRow, MascotRawData, Mas
 import { EXT_ACTION_LOOKBACK_DAYS, mascotRightsFrom } from './signals';
 import { MAX_SECONDARIES, MAX_SUBJECTS } from './types';
 import { upcomingDeadlinesSqlFilter } from '@/services/agenda/AgendaQueryService';
+import { isHistoricalAgendaEvent } from '@/services/agenda/agenda-historical';
 import { classifyByRules } from '@/services/ai/agenda/rules/deterministic-classification';
 // Lot 34C : « en cours d'analyse » seulement si un traitement l'attend réellement.
 import { effectiveAnalysisStateSql } from '@/services/ai/processing-status/effective-state-sql';
@@ -59,7 +60,10 @@ export interface HomeAgendaItemForClassification {
  *      une démarche possible).
  */
 export function isAgendaActionItemT4(item: HomeAgendaItemForClassification): boolean {
-  if (item.eventNature === 'HISTORICAL') return false;
+  // Lot 47B : règle partagée (nature 0223, sinon champ d'origine, sinon type
+  // métier exclusivement historique) — un fait passé n'est jamais une action
+  // ni « en retard » (accueil, mascotte, assistant).
+  if (isHistoricalAgendaEvent(item)) return false;
   if (item.homeCategory === 'action') return true;
   if (item.homeCategory === 'information') return false;
   const nature = item.eventNature === 'DEADLINE' ? 'DEADLINE' as const : null;

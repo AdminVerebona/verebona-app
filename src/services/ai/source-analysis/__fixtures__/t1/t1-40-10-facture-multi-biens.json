@@ -1,0 +1,261 @@
+{
+  "case": "F-029 / F-028",
+  "description": "Facture d'une même intervention sur deux véhicules : UN candidat avec plusieurs cibles (pas un par bien) ; l'identifiant inconnu du compte (99) est neutralisé (U9).",
+  "context": {
+    "linkedAssetId": 12,
+    "assets": [
+      {
+        "id": 12,
+        "name": "Clio",
+        "category": "VEHICULE",
+        "subtype": "voiture"
+      },
+      {
+        "id": 13,
+        "name": "Tesla Model 3",
+        "category": "VEHICULE",
+        "subtype": "voiture"
+      }
+    ],
+    "rooms": [],
+    "equipments": [],
+    "existingTitles": [],
+    "verified": {
+      "ASSET": [
+        12,
+        13
+      ],
+      "EQUIPMENT": [],
+      "ROOM": [],
+      "SUPPLIER": []
+    }
+  },
+  "recording": {
+    "operationCode": "t1_analyze_document",
+    "task": "ANALYZE_DOCUMENT",
+    "output": {
+      "task": "ANALYZE_DOCUMENT",
+      "document": {
+        "title": {
+          "value": "Facture Pneus hiver Clio et Tesla",
+          "confidence": "certain",
+          "evidence": {
+            "excerpt": "Facture Pneus hiver Clio et Tesla",
+            "page": 1
+          }
+        },
+        "classification": {
+          "canonicalType": "FACTURE",
+          "rubricCode": "MAINTENANCE_WORKS",
+          "documentTypeCode": "MAINTENANCE_INVOICE",
+          "confidence": 0.92,
+          "evidence": {
+            "excerpt": "Facture Pneus hiver Clio et Tesla"
+          }
+        },
+        "documentDate": {
+          "value": "2026-10-28",
+          "confidence": "certain",
+          "evidence": {
+            "excerpt": "Date : 28/10/2026",
+            "page": 1
+          }
+        },
+        "amountCents": {
+          "value": 116000,
+          "confidence": "certain",
+          "evidence": {
+            "excerpt": "Total TTC : 1 160,00 €",
+            "page": 1
+          }
+        },
+        "supplier": {
+          "name": "Pneus Express",
+          "confidence": "certain",
+          "evidence": {
+            "excerpt": "PNEUS EXPRESS",
+            "page": 1
+          }
+        }
+      },
+      "entities": {
+        "assets": [
+          {
+            "entityId": 12,
+            "rawLabel": "Clio",
+            "score": 0.95,
+            "confidence": "certain",
+            "evidenceSignals": [
+              "Clio"
+            ],
+            "reason": "désignation lue"
+          },
+          {
+            "entityId": 13,
+            "rawLabel": "Tesla Model 3",
+            "score": 0.95,
+            "confidence": "certain",
+            "evidenceSignals": [
+              "Tesla Model 3"
+            ],
+            "reason": "désignation lue"
+          }
+        ],
+        "rooms": [],
+        "equipments": [],
+        "suppliers": [],
+        "multiAsset": true
+      },
+      "transcription": "PNEUS EXPRESS\nClio AB-123-CD : montage 4 pneus hiver\nTesla Model 3 EF-456-GH : montage 4 pneus hiver\nTotal TTC : 1 160,00 €",
+      "facts": [
+        {
+          "canonicalKey": null,
+          "rawKey": "prestation",
+          "label": "Prestation",
+          "subject": "Clio",
+          "attribute": "prestation",
+          "rawValue": "Montage pneus hiver Clio",
+          "normalizedValue": "Montage pneus hiver Clio",
+          "valueType": "string",
+          "canonicalUnit": null,
+          "target": {
+            "type": "ASSET",
+            "entityId": 12,
+            "rawLabel": "Clio",
+            "confidence": "certain",
+            "evidenceSignals": [
+              "Clio"
+            ]
+          },
+          "provenance": "TEXT_EXTRACTION",
+          "confidence": "certain",
+          "evidence": {
+            "excerpt": "Clio AB-123-CD : montage 4 pneus hiver",
+            "page": 1
+          },
+          "semanticEvent": {
+            "type": "maintenance",
+            "nature": "HISTORICAL"
+          }
+        },
+        {
+          "canonicalKey": null,
+          "rawKey": "prestation",
+          "label": "Prestation",
+          "subject": "Tesla Model 3",
+          "attribute": "prestation",
+          "rawValue": "Montage pneus hiver Tesla",
+          "normalizedValue": "Montage pneus hiver Tesla",
+          "valueType": "string",
+          "canonicalUnit": null,
+          "target": {
+            "type": "ASSET",
+            "entityId": 13,
+            "rawLabel": "Tesla Model 3",
+            "confidence": "certain",
+            "evidenceSignals": [
+              "Tesla Model 3"
+            ]
+          },
+          "provenance": "TEXT_EXTRACTION",
+          "confidence": "certain",
+          "evidence": {
+            "excerpt": "Tesla Model 3 EF-456-GH : montage 4 pneus hiver",
+            "page": 1
+          },
+          "semanticEvent": {
+            "type": "maintenance",
+            "nature": "HISTORICAL"
+          }
+        },
+        {
+          "canonicalKey": null,
+          "rawKey": "totalTtc",
+          "label": "Total TTC",
+          "subject": "facture",
+          "attribute": "total ttc",
+          "rawValue": "1 160,00 €",
+          "normalizedValue": 116000,
+          "valueType": "money_cents",
+          "canonicalUnit": "cents",
+          "target": {
+            "type": "DOCUMENT",
+            "entityId": null,
+            "rawLabel": "facture",
+            "confidence": "certain",
+            "evidenceSignals": []
+          },
+          "provenance": "TEXT_EXTRACTION",
+          "confidence": "certain",
+          "evidence": {
+            "excerpt": "Total TTC : 1 160,00 €",
+            "page": 1
+          }
+        }
+      ],
+      "hasExploitableContent": true,
+      "businessOperationCandidates": [
+        {
+          "candidateKey": "op1",
+          "established": true,
+          "confidence": "certain",
+          "typeHint": "INTERVENTION",
+          "statusHint": "REALIZED",
+          "summary": "Montage des pneus hiver de la Clio et de la Tesla",
+          "sourceRoleHint": "INVOICE",
+          "provider": "Pneus Express",
+          "targetHints": [
+            {
+              "type": "ASSET",
+              "entityId": 12,
+              "rawLabel": "Clio",
+              "confidence": "certain"
+            },
+            {
+              "type": "ASSET",
+              "entityId": 13,
+              "rawLabel": "Tesla Model 3",
+              "confidence": "certain"
+            },
+            {
+              "type": "ASSET",
+              "entityId": 99,
+              "rawLabel": "Remorque",
+              "confidence": "probable"
+            }
+          ],
+          "temporalHints": {
+            "realizedDate": "2026-10-28"
+          },
+          "financialHints": [
+            {
+              "role": "REALIZED_COST",
+              "amountMinor": 116000,
+              "currency": "EUR",
+              "amountScope": "TOTAL",
+              "factIndex": 2
+            }
+          ],
+          "evidenceFactIndexes": [
+            0,
+            1,
+            2
+          ]
+        }
+      ]
+    }
+  },
+  "expected": {
+    "operationCandidates": [
+      {
+        "typeHint": "INTERVENTION",
+        "statusHint": "REALIZED",
+        "targetEntityIds": [
+          12,
+          13,
+          null
+        ]
+      }
+    ]
+  }
+}

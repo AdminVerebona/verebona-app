@@ -416,6 +416,8 @@ export function projectedFactToExtractedField(f: ProjectedFact): ExtractedField 
     ruleCode: f.ruleCode,
     // Lot 34F : provenance (unités de la source), si elle a été posée.
     ...(f.sourceUnitIds?.length ? { sourceUnitIds: f.sourceUnitIds } : {}),
+    // Lot 40 : ancre des candidats Opération (interne, jamais persistée en colonne).
+    ...(f.t1FactRef ? { t1FactRef: f.t1FactRef } : {}),
   };
 }
 

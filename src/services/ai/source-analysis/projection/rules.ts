@@ -13,10 +13,30 @@ import { resolveDocumentType, type DocumentCatalogEntry } from '@/services/canon
 
 /** Codes des règles déterministes (ne jamais renommer : tracés en base). */
 export const PROJECTION_RULES = {
-  /** Justificatif d'achat du bien : documentDate → acquisitionDate (T1-02). */
+  /**
+   * Justificatif d'achat du bien LUI-MÊME, sans date de livraison / transfert
+   * explicite : documentDate → acquisitionDate (T1-02 ; C11.1 « date de
+   * facture uniquement si le document constitue la preuve d'acquisition et
+   * aucune meilleure date n'existe »).
+   */
   PURCHASE_RECEIPT_ACQUISITION_DATE: 'PURCHASE_RECEIPT_ACQUISITION_DATE',
-  /** Justificatif d'achat du bien : amountCents → acquisitionPrice en euros (T1-02, T1-03). */
+  /**
+   * Justificatif d'achat du bien : amountCents → acquisitionPrice en euros
+   * (T1-02, T1-03) — seulement si le montant est en EUR (C12.3, lot 38).
+   */
   PURCHASE_RECEIPT_ACQUISITION_PRICE: 'PURCHASE_RECEIPT_ACQUISITION_PRICE',
+  /** Lot 38 (O0, C11.1) : date de livraison / transfert / achat explicite retenue comme date d'acquisition. */
+  PURCHASE_DELIVERY_ACQUISITION_DATE: 'PURCHASE_DELIVERY_ACQUISITION_DATE',
+  /** Lot 38 (O0, C12.3) : montant du justificatif en devise étrangère ou indéterminée → aucun prix d'acquisition en euros. */
+  ACQUISITION_PRICE_CURRENCY_NOT_EUR: 'ACQUISITION_PRICE_CURRENCY_NOT_EUR',
+  /** Lot 38 (O0, §11.1, INV-012) : preuve de paiement — ni prix ni date d'acquisition déduits du montant / de la date du document. */
+  PAYMENT_PROOF_NO_ACQUISITION_RULE: 'PAYMENT_PROOF_NO_ACQUISITION_RULE',
+  /** Lot 38 (O0, §11.1, INV-014) : facture d'acompte ou avoir — jamais un prix / une date d'acquisition. */
+  DEPOSIT_OR_CREDIT_NOTE_NO_ACQUISITION: 'DEPOSIT_OR_CREDIT_NOTE_NO_ACQUISITION',
+  /** Lot 38 (O0, C12.3) : montant canonique en devise étrangère → connaissance générique (aucune conversion). */
+  NON_EUR_AMOUNT_NOT_CANONICAL: 'NON_EUR_AMOUNT_NOT_CANONICAL',
+  /** Lot 38 (O0, B18, C18) : valeur estimée lue sur un document de transaction (facture, devis…) → générique. */
+  VALUATION_FROM_TRANSACTION_DOCUMENT: 'VALUATION_FROM_TRANSACTION_DOCUMENT',
   /** Fait d'acquisition du modèle complété par l'événement purchase HISTORICAL (U14). */
   PURCHASE_EVENT_ON_ACQUISITION: 'PURCHASE_EVENT_ON_ACQUISITION',
   /** Facture de réparation / entretien : ni acquisitionPrice ni acquisitionDate (§13, U14, P-T1-03). */
@@ -208,4 +228,44 @@ export function classifyPurpose(s: PurposeSignals): DocumentPurpose {
   if (provesPurchase(s.entry) && (V2_ACHAT_DU_BIEN.has(v2) || assetPurchase)) return 'ASSET_PURCHASE';
   if (s.serviceEvents > 0 && !assetPurchase) return 'SERVICE';
   return 'OTHER';
+}
+
+/* ── Lot 38 — O0 : nature de la transaction, date d'acquisition explicite ── */
+
+/** Nature du justificatif pour les règles d'acquisition (CDC Opérations §11.1). */
+export type TransactionNature = 'PURCHASE' | 'PAYMENT_PROOF' | 'DEPOSIT_OR_CREDIT_NOTE';
+
+/** Types V2 de preuve de paiement. */
+const V2_PAIEMENT = /(^ACQUISITION_PAYMENT$|_PAYMENT(_PROOF)?$)/;
+/**
+ * Acompte, arrhes, avoir, note de crédit — lu dans le TITRE du document et
+ * dans l'extrait qui prouve le MONTANT seulement (une facture finale peut
+ * mentionner l'acompte déjà versé ailleurs dans son texte). « avoir » seul
+ * est un verbe courant (« merci de nous avoir… ») : seulement en tête de
+ * titre ou dans une tournure d'avoir.
+ */
+const ACOMPTE_OU_AVOIR = /(\bacompte\b|\barrhes\b|\bfacture d.?avoir\b|\bavoir n\s?[°o]|\bavoir sur facture\b|^\s*avoir\b|\bnote de cr[ée]dit\b|\bcredit note\b|\bdeposit invoice\b)/i;
+
+/**
+ * `texts` : titre du document et extrait du montant (jamais la transcription).
+ * Un ticket ou une facture d'achat (`PURCHASE`) peut prouver l'acquisition ;
+ * une preuve de paiement confirme un règlement sans ajouter de coût ni de
+ * date d'acquisition (INV-012) ; une facture d'acompte ou un avoir n'est
+ * jamais le prix du bien (INV-014, §11.1).
+ */
+export function transactionNature(s: {
+  documentTypeCode: string | null | undefined;
+  texts: Array<string | null | undefined>;
+}): TransactionNature {
+  if (s.texts.some((t) => !!t && ACOMPTE_OU_AVOIR.test(t))) return 'DEPOSIT_OR_CREDIT_NOTE';
+  if (V2_PAIEMENT.test((s.documentTypeCode ?? '').trim().toUpperCase())) return 'PAYMENT_PROOF';
+  return 'PURCHASE';
+}
+
+/** Libellés d'une date de livraison / remise / transfert / achat explicite (C11.1). */
+const DATE_ACQUISITION_EXPLICITE = /(livr|deliver|remise du bien|remis le|mise en possession|transfert de propri|enl[eè]vement|date d.?achat|achet[ée] le|date de (la )?vente|purchase date|date of purchase)/i;
+
+/** Le fait date-t-il explicitement la livraison, la remise ou l'achat du bien ? */
+export function labelsExplicitAcquisitionDate(...texts: Array<string | null | undefined>): boolean {
+  return texts.some((t) => !!t && DATE_ACQUISITION_EXPLICITE.test(t));
 }

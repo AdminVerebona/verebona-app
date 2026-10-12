@@ -10,6 +10,7 @@
  * Exemple de recette : 749 EUR → `acquisitionPrice` = 749 (fiche) et
  * `purchase_price_cents` = 74900 (miroir).
  */
+import { detectDocumentCurrency, foreignCurrencyOf } from '@/lib/document-currency';
 import { getField } from './registry';
 import type { CanonicalFieldDef, NormalizeOptions, NormalizeResult } from './types';
 
@@ -56,8 +57,9 @@ function lireNombre(raw: unknown): NombreLu | null {
   if (typeof raw === 'number') return Number.isFinite(raw) ? { n: raw } : null;
   if (typeof raw !== 'string') return null;
   let s = raw.trim().replace(/[\u00a0\u202f]/g, ' ');
-  // Devise placée avant le nombre : « € 749 », « EUR 749 ».
-  const devant = /^(€|eur|euros?)\s*(.+)$/i.exec(s);
+  // Devise placée avant le nombre : « € 749 », « EUR 749 », « CHF 1 250 »
+  // (une devise étrangère est lue pour être REFUSÉE explicitement, C12.3).
+  const devant = /^(€|eur|euros?|chf|usd|gbp|cad|aud|jpy|us\s?\$|\$|£|¥)\s*(\d.*)$/i.exec(s);
   if (devant) s = `${devant[2]} ${devant[1]}`;
   const m = /^([+-]?[\d\s.,']+)\s*(.*)$/.exec(s);
   if (!m) return null;
@@ -199,6 +201,10 @@ export function normalizeValue(key: string, raw: unknown, opts: NormalizeOptions
       const ecrite = uniteNormalisee(lu.unit);
       if (declaree && ecrite && declaree !== ecrite) return ko(`${key} : unité écrite (${ecrite}) ≠ unité déclarée (${declaree})`);
       const source = declaree ?? ecrite ?? (def.valueType === 'money_cents' ? 'cents' : 'EUR');
+      // Lot 38 (O0, C12.3) : un montant en devise étrangère n'entre jamais
+      // dans un champ en euros — aucune conversion automatique.
+      const etrangere = foreignCurrencyOf(detectDocumentCurrency({ rawValue: source.toUpperCase() }));
+      if (etrangere) return ko(`${key} : montant en ${etrangere}, aucune conversion automatique vers l’euro (C12.3)`);
       if (!['EUR', 'kEUR', 'cents'].includes(source)) return ko(`${key} : unité monétaire inconnue (${source})`);
       if (source === 'cents' && !Number.isInteger(lu.n)) return ko(`${key} : centimes non entiers (${lu.n})`);
       const eur = source === 'EUR' ? lu.n : source === 'kEUR' ? lu.n * 1000 : lu.n / 100;

@@ -102,6 +102,18 @@ export const AGENDA_STATUS_WRITER: FieldWriter = {
   // Effets d'après validation (D-13 recopie « achat », D-15 statut du bien),
   // comme `updateManualStatus` — jamais dans la transaction de résolution.
   afterCommit: async ({ accountId, targetId, value, userId }) => {
+    // Lot 47B (C4 TRG-013) : statut posé par l'utilisateur sur un élément
+    // relié à une Opération → T3 (source AGENDA, transition C8). Ne lève jamais.
+    try {
+      const [lie] = await db.select({ op: agendaItems.businessOperationId }).from(agendaItems)
+        .where(and(eq(agendaItems.id, targetId), eq(agendaItems.accountId, accountId))).limit(1);
+      if (lie?.op != null) {
+        const { notifyAgendaChangedForOperations } = await import('@/services/business-operations/agenda-projection/queue');
+        notifyAgendaChangedForOperations(accountId, { itemId: targetId, businessOperationId: Number(lie.op), userFieldsChanged: true });
+      }
+    } catch (e) {
+      console.error(`[agenda] déclencheur Agenda de l'élément ${targetId} :`, (e as Error).message);
+    }
     if (value !== 'realise') return;
     const { agendaEffectsAfterCommit } = await import('@/services/agenda/write-agenda-item');
     await agendaEffectsAfterCommit({ accountId, itemId: targetId, actorUserId: userId, created: false, manualStatus: 'realise' });
@@ -307,7 +319,21 @@ export const ASSET_STATUS_WRITER: FieldWriter = {
     await client.update(assets).set({ status: value as string, updatedAt: new Date() })
       .where(and(eq(assets.id, assetId), eq(assets.accountId, accountId), isNull(assets.deletedAt)));
   },
+  // Lot 43 (C4 TRG-009 / TRG-010) : passage à VENDU / TRANSMIS (ou retour)
+  // → Cession établie (ou retirée) par la donnée structurée du bien.
+  afterCommit: async ({ accountId, targetId, value }) => notifyAssetStatusChanged(accountId, targetId, value),
+  afterUndo: async ({ accountId, targetId, value }) => notifyAssetStatusChanged(accountId, targetId, value),
 };
+
+/** Opérations : le statut du bien a changé (après commit, ne lève jamais). */
+async function notifyAssetStatusChanged(accountId: number, assetId: number, status: unknown): Promise<void> {
+  try {
+    const { notifyOperationsEvent } = await import('@/services/business-operations/consolidation/queue');
+    notifyOperationsEvent(accountId, { trigger: status === 'VENDU' || status === 'TRANSMIS' ? 'asset_disposed' : 'asset_updated', assetId });
+  } catch (e) {
+    console.error(`[to-process] statut du bien ${assetId} : Opérations non notifiées :`, (e as Error).message);
+  }
+}
 
 /**
  * Propositions ASSET-STATUS (pures, testées) : les deux premières valeurs

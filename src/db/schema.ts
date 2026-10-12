@@ -1,5 +1,6 @@
-import { pgTable, serial, integer, text, boolean, index, uniqueIndex, uuid, check, date as pgDate, time as pgTime, timestamp as pgTimestamp, json, unique, numeric, jsonb, primaryKey, bigint, bigserial } from 'drizzle-orm/pg-core';
+import { pgTable, serial, integer, text, boolean, index, uniqueIndex, uuid, check, date as pgDate, time as pgTime, timestamp as pgTimestamp, json, unique, numeric, jsonb, primaryKey, bigint, bigserial, char, foreignKey } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
+import { documentExtractions } from './ai-schema';
 
 // ══════════════════════════════════════════════════════════════════════════
 // COLONNES EXISTANT EN BASE MAIS VOLONTAIREMENT NON DÉCLARÉES ICI
@@ -1655,6 +1656,16 @@ export const agendaItems = pgTable('agenda_items', {
   /** SOURCE | USER | DATA. */
   confirmationMode: text('confirmation_mode'),
   confirmationSource: jsonb('confirmation_source'),
+  /**
+   * Lot 39 (O1, migrations 0318-0319) — Opération représentée par l'événement
+   * (C16.1). Écrite par la projection T4 (lot 46, O7 : événement projeté ou
+   * rapproché) et par le formulaire Sinistre (lot 44) ; nulle sinon.
+   */
+  businessOperationId: bigint('business_operation_id', { mode: 'number' }),
+  /** 'OPERATION' : événement GÉNÉRÉ depuis une Opération (C16.1, anti-boucle C16.2). */
+  projectionOrigin: text('projection_origin'),
+  /** correlation_id de la chaîne T3 → T4 (C16.2). */
+  projectionCorrelationId: text('projection_correlation_id'),
   createdAt: tstz('created_at'),
   updatedAt: tstz('updated_at'),
 }, (table) => ({
@@ -1668,6 +1679,18 @@ export const agendaItems = pgTable('agenda_items', {
   manualStatusCheck: check('agenda_items_manual_status_check', sql`${table.manualStatus} IS NULL OR ${table.manualStatus} IN ('realise', 'annule')`),
   originTypeCheck: check('agenda_items_origin_type_check', sql`${table.originType} IN ('manual','asset_field','qualified_document','deduced_rule','legacy_event_migration','legacy_deadline_migration')`),
   homeCategoryCheck: check('agenda_items_home_category_check', sql`${table.homeCategory} IS NULL OR ${table.homeCategory} IN ('action', 'information')`),
+  // Lot 39 (O1) — 0318 / 0318_idx_1.
+  businessOperationFk: foreignKey({
+    name: 'agenda_items_business_operation_fk',
+    columns: [table.businessOperationId],
+    foreignColumns: [businessOperations.id],
+  }).onDelete('set null'),
+  projectionOriginCheck: check('agenda_items_projection_origin_check', sql`${table.projectionOrigin} IS NULL OR ${table.projectionOrigin} = 'OPERATION'`),
+  businessOperationIdx: index('agenda_items_business_operation_idx').on(table.businessOperationId)
+    .where(sql`business_operation_id IS NOT NULL`),
+  // Lot 46 (O7) — 0324_idx_1 : projections d'Opération (orphelines, balayage).
+  projectionOriginIdx: index('agenda_items_projection_origin_idx').on(table.accountId)
+    .where(sql`projection_origin IS NOT NULL`),
 }));
 
 export const agendaAssetLinks = pgTable('agenda_asset_links', {
@@ -3578,4 +3601,496 @@ export const roomMergeChanges = pgTable('room_merge_changes', {
     sql`${t.decision} IN ('CREATED', 'MAPPED', 'REPOINTED', 'REOPENED', 'SUPERSEDED', 'CONFLICT', 'NO_CHANGE')`),
   runIdx: index('room_merge_changes_run_idx').on(t.runId, t.id),
   roomIdx: index('room_merge_changes_room_idx').on(t.roomId, t.id),
+}));
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Opérations métier — lot 39 (O1), CDC Opérations V1 C20 / C20.1 / C27,
+// migrations 0316 (socle) et 0317 (candidats, décisions, détails, Sinistre).
+//
+// Tables neuves déclarées ALIGNÉES sur le SQL (test schema-tables-neuves et
+// e2e o1-socle-operations) : la migration fait foi. Isolation par compte :
+// chaque table fille référence l'Opération par la clé composée
+// (operation_id, account_id), mise à jour en cascade (transfert de bien, Q14).
+// Écritures : `services/business-operations` seulement (aucune API CRUD).
+// ═══════════════════════════════════════════════════════════════════════════
+
+const BO_SOURCE_KINDS_SQL = sql.raw(`'DOCUMENT', 'ASSET_DATA', 'EQUIPMENT_DATA', 'AGENDA', 'CLAIM_FORM', 'USER_ARBITRATION', 'MIGRATION'`);
+const BO_AUTHORITIES_SQL = sql.raw(`'USER', 'DOCUMENT', 'STRUCTURED', 'INFERENCE'`);
+const BO_TYPES_SQL = sql.raw(`'ACQUISITION', 'INTERVENTION', 'CONTRACT', 'FINANCING', 'CLAIM', 'DISPOSAL', 'OTHER'`);
+
+/** C27 — référentiel des 7 types, seedé par 0316 et contrôlé par le code. */
+export const businessOperationTypes = pgTable('business_operation_types', {
+  code: text('code').primaryKey(),
+  label: text('label').notNull(),
+  description: text('description').notNull(),
+  applicableAssetFamilies: jsonb('applicable_asset_families').notNull().default([]),
+  active: boolean('active').notNull().default(true),
+  createdAt: tstz('created_at'),
+  updatedAt: tstz('updated_at'),
+}, (t) => ({
+  codeChk: check('business_operation_types_code_chk', sql`${t.code} IN (${BO_TYPES_SQL})`),
+  familiesChk: check('business_operation_types_families_chk', sql`jsonb_typeof(${t.applicableAssetFamilies}) = 'array'`),
+}));
+
+/** C20 — Opération métier consolidée (technique, invisible pour l'utilisateur, P09). */
+export const businessOperations = pgTable('business_operations', {
+  id: bigserial('id', { mode: 'number' }).primaryKey(),
+  accountId: integer('account_id').notNull().references(() => accounts.id, { onDelete: 'cascade' }),
+  typeCode: text('type_code').references(() => businessOperationTypes.code),
+  status: text('status').notNull(),
+  technicalLabel: text('technical_label'),
+  parentOperationId: bigint('parent_operation_id', { mode: 'number' }),
+  provider: text('provider'),
+  plannedDate: pgDate('planned_date', { mode: 'string' }),
+  startDate: pgDate('start_date', { mode: 'string' }),
+  realizedDate: pgDate('realized_date', { mode: 'string' }),
+  endDate: pgDate('end_date', { mode: 'string' }),
+  closedAt: tstzOptional('closed_at'),
+  invalidatedAt: tstzOptional('invalidated_at'),
+  invalidationReason: text('invalidation_reason'),
+  mergedIntoOperationId: bigint('merged_into_operation_id', { mode: 'number' }),
+  lastReconciledAt: tstzOptional('last_reconciled_at'),
+  version: integer('version').notNull().default(1),
+  createdAt: tstz('created_at'),
+  updatedAt: tstz('updated_at'),
+}, (t) => ({
+  idAccountUq: unique('business_operations_id_account_uq').on(t.id, t.accountId),
+  parentFk: foreignKey({ name: 'business_operations_parent_fk', columns: [t.parentOperationId, t.accountId], foreignColumns: [t.id, t.accountId] }),
+  mergedIntoFk: foreignKey({ name: 'business_operations_merged_into_fk', columns: [t.mergedIntoOperationId, t.accountId], foreignColumns: [t.id, t.accountId] }),
+  statusChk: check('business_operations_status_chk', sql`${t.status} IN ('ENVISAGED', 'REALIZED', 'CANCELLED')`),
+  parentNotSelfChk: check('business_operations_parent_not_self_chk', sql`${t.parentOperationId} IS NULL OR ${t.parentOperationId} <> ${t.id}`),
+  mergedNotSelfChk: check('business_operations_merged_not_self_chk', sql`${t.mergedIntoOperationId} IS NULL OR ${t.mergedIntoOperationId} <> ${t.id}`),
+  mergedInvalidatedChk: check('business_operations_merged_invalidated_chk', sql`${t.mergedIntoOperationId} IS NULL OR ${t.invalidatedAt} IS NOT NULL`),
+  invalidationReasonChk: check('business_operations_invalidation_reason_chk', sql`${t.invalidatedAt} IS NULL OR ${t.invalidationReason} IS NOT NULL`),
+  versionChk: check('business_operations_version_chk', sql`${t.version} >= 1`),
+  accountActiveIdx: index('business_operations_account_active_idx').on(t.accountId, t.typeCode, t.status).where(sql`invalidated_at IS NULL`),
+  accountRealizedIdx: index('business_operations_account_realized_idx').on(t.accountId, t.realizedDate),
+  parentIdx: index('business_operations_parent_idx').on(t.parentOperationId).where(sql`parent_operation_id IS NOT NULL`),
+  mergedIntoIdx: index('business_operations_merged_into_idx').on(t.mergedIntoOperationId).where(sql`merged_into_operation_id IS NOT NULL`),
+  // Lot 47A (O9) — 0325_idx_1 à 3 : BO diagnostic (liste, indicateurs C26.2).
+  createdIdx: index('business_operations_created_idx').on(t.createdAt),
+  accountCreatedIdx: index('business_operations_account_created_idx').on(t.accountId, t.createdAt),
+  invalidatedIdx: index('business_operations_invalidated_idx').on(t.accountId, t.invalidatedAt).where(sql`invalidated_at IS NOT NULL`),
+}));
+
+/** C2 / C20 — provenance d'une Opération. */
+export const businessOperationSources = pgTable('business_operation_sources', {
+  id: bigserial('id', { mode: 'number' }).primaryKey(),
+  accountId: integer('account_id').notNull(),
+  operationId: bigint('operation_id', { mode: 'number' }).notNull(),
+  sourceKind: text('source_kind').notNull(),
+  sourceEntityKey: text('source_entity_key').notNull(),
+  sourceVersion: text('source_version'),
+  sourceRole: text('source_role'),
+  locator: jsonb('locator').notNull().default({}),
+  authority: text('authority').notNull(),
+  confidence: text('confidence'),
+  matchMethod: text('match_method'),
+  matchReason: text('match_reason'),
+  active: boolean('active').notNull().default(true),
+  supersededAt: tstzOptional('superseded_at'),
+  createdAt: tstz('created_at'),
+}, (t) => ({
+  operationFk: foreignKey({ name: 'business_operation_sources_operation_fk', columns: [t.operationId, t.accountId], foreignColumns: [businessOperations.id, businessOperations.accountId] }).onDelete('cascade').onUpdate('cascade'),
+  kindChk: check('business_operation_sources_kind_chk', sql`${t.sourceKind} IN (${BO_SOURCE_KINDS_SQL})`),
+  entityKeyChk: check('business_operation_sources_entity_key_chk', sql`${t.sourceEntityKey} <> ''`),
+  roleChk: check('business_operation_sources_role_chk', sql`${t.sourceRole} IS NULL OR ${t.sourceRole} IN ('QUOTE', 'ORDER', 'INVOICE', 'DEPOSIT_INVOICE', 'CREDIT_NOTE', 'REFUND_PROOF', 'PAYMENT_PROOF', 'CONTRACT_DOCUMENT', 'CLAIM_DOCUMENT', 'SALE_DOCUMENT', 'REPORT', 'OTHER_EVIDENCE')`),
+  locatorChk: check('business_operation_sources_locator_chk', sql`jsonb_typeof(${t.locator}) = 'object'`),
+  authorityChk: check('business_operation_sources_authority_chk', sql`${t.authority} IN (${BO_AUTHORITIES_SQL})`),
+  confidenceChk: check('business_operation_sources_confidence_chk', sql`${t.confidence} IS NULL OR ${t.confidence} IN ('certain', 'probable', 'conflictual')`),
+  matchMethodChk: check('business_operation_sources_match_method_chk', sql`${t.matchMethod} IS NULL OR ${t.matchMethod} IN ('M0', 'M1', 'M2', 'M3')`),
+  lifecycleChk: check('business_operation_sources_lifecycle_chk', sql`${t.active} = (${t.supersededAt} IS NULL)`),
+  activeUidx: uniqueIndex('business_operation_sources_active_uidx')
+    .on(t.operationId, t.sourceKind, t.sourceEntityKey, sql`COALESCE(${t.sourceRole}, '')`, sql`md5(${t.locator}::text)`)
+    .where(sql`active`),
+  entityIdx: index('business_operation_sources_entity_idx').on(t.accountId, t.sourceKind, t.sourceEntityKey).where(sql`active`),
+  operationIdx: index('business_operation_sources_operation_idx').on(t.operationId, t.active),
+}));
+
+/** C10 / C20 — biens concernés (PRIMARY / CONCERNED), sans ventilation. */
+export const businessOperationAssetLinks = pgTable('business_operation_asset_links', {
+  id: bigserial('id', { mode: 'number' }).primaryKey(),
+  accountId: integer('account_id').notNull(),
+  operationId: bigint('operation_id', { mode: 'number' }).notNull(),
+  assetId: integer('asset_id').notNull().references(() => assets.id, { onDelete: 'cascade' }),
+  linkRole: text('link_role').notNull().default('CONCERNED'),
+  authority: text('authority').notNull(),
+  sourceOperationSourceId: bigint('source_operation_source_id', { mode: 'number' }).references(() => businessOperationSources.id, { onDelete: 'set null' }),
+  active: boolean('active').notNull().default(true),
+  createdAt: tstz('created_at'),
+  updatedAt: tstz('updated_at'),
+}, (t) => ({
+  operationFk: foreignKey({ name: 'business_operation_asset_links_operation_fk', columns: [t.operationId, t.accountId], foreignColumns: [businessOperations.id, businessOperations.accountId] }).onDelete('cascade').onUpdate('cascade'),
+  roleChk: check('business_operation_asset_links_role_chk', sql`${t.linkRole} IN ('PRIMARY', 'CONCERNED')`),
+  authorityChk: check('business_operation_asset_links_authority_chk', sql`${t.authority} IN (${BO_AUTHORITIES_SQL})`),
+  pairUidx: uniqueIndex('business_operation_asset_links_pair_uidx').on(t.operationId, t.assetId),
+  primaryUidx: uniqueIndex('business_operation_asset_links_primary_uidx').on(t.operationId).where(sql`active AND link_role = 'PRIMARY'`),
+  assetIdx: index('business_operation_asset_links_asset_idx').on(t.assetId, t.operationId),
+}));
+
+/** C10.1 / C20 — équipements concernés (bien parent porté pour l'intégrité). */
+export const businessOperationEquipmentLinks = pgTable('business_operation_equipment_links', {
+  id: bigserial('id', { mode: 'number' }).primaryKey(),
+  accountId: integer('account_id').notNull(),
+  operationId: bigint('operation_id', { mode: 'number' }).notNull(),
+  equipmentId: integer('equipment_id').notNull().references(() => equipments.id, { onDelete: 'cascade' }),
+  assetId: integer('asset_id').notNull().references(() => assets.id, { onDelete: 'cascade' }),
+  authority: text('authority').notNull(),
+  sourceOperationSourceId: bigint('source_operation_source_id', { mode: 'number' }).references(() => businessOperationSources.id, { onDelete: 'set null' }),
+  active: boolean('active').notNull().default(true),
+  createdAt: tstz('created_at'),
+  updatedAt: tstz('updated_at'),
+}, (t) => ({
+  operationFk: foreignKey({ name: 'business_operation_equipment_links_operation_fk', columns: [t.operationId, t.accountId], foreignColumns: [businessOperations.id, businessOperations.accountId] }).onDelete('cascade').onUpdate('cascade'),
+  authorityChk: check('business_operation_equipment_links_authority_chk', sql`${t.authority} IN (${BO_AUTHORITIES_SQL})`),
+  pairUidx: uniqueIndex('business_operation_equipment_links_pair_uidx').on(t.operationId, t.equipmentId),
+  equipmentIdx: index('business_operation_equipment_links_equipment_idx').on(t.equipmentId, t.operationId),
+  assetIdx: index('business_operation_equipment_links_asset_idx').on(t.assetId),
+}));
+
+/** C12 / C20 — faits économiques consolidés (montant ≥ 0, signe porté par `kind`). */
+export const businessOperationFinancialComponents = pgTable('business_operation_financial_components', {
+  id: bigserial('id', { mode: 'number' }).primaryKey(),
+  accountId: integer('account_id').notNull(),
+  operationId: bigint('operation_id', { mode: 'number' }).notNull(),
+  kind: text('kind').notNull(),
+  amountMinor: bigint('amount_minor', { mode: 'number' }).notNull(),
+  currency: char('currency', { length: 3 }).notNull(),
+  amountEurCents: bigint('amount_eur_cents', { mode: 'number' }),
+  economicDate: pgDate('economic_date', { mode: 'string' }),
+  periodStart: pgDate('period_start', { mode: 'string' }),
+  periodEnd: pgDate('period_end', { mode: 'string' }),
+  targetAssetId: integer('target_asset_id').references(() => assets.id, { onDelete: 'set null' }),
+  targetEquipmentId: integer('target_equipment_id').references(() => equipments.id, { onDelete: 'set null' }),
+  label: text('label'),
+  fingerprint: text('fingerprint'),
+  active: boolean('active').notNull().default(true),
+  supersededAt: tstzOptional('superseded_at'),
+  createdAt: tstz('created_at'),
+  updatedAt: tstz('updated_at'),
+}, (t) => ({
+  operationFk: foreignKey({ name: 'business_operation_financial_components_operation_fk', columns: [t.operationId, t.accountId], foreignColumns: [businessOperations.id, businessOperations.accountId] }).onDelete('cascade').onUpdate('cascade'),
+  kindChk: check('business_operation_financial_components_kind_chk', sql`${t.kind} IN ('FORECAST_COST', 'REALIZED_COST', 'REDUCTION', 'REFUND', 'INDEMNITY', 'PROCEED')`),
+  amountChk: check('business_operation_financial_components_amount_chk', sql`${t.amountMinor} >= 0`),
+  eurChk: check('business_operation_financial_components_eur_chk', sql`${t.amountEurCents} IS NULL OR ${t.amountEurCents} >= 0`),
+  currencyChk: check('business_operation_financial_components_currency_chk', sql`${t.currency} ~ '^[A-Z]{3}$'`),
+  periodChk: check('business_operation_financial_components_period_chk', sql`${t.periodStart} IS NULL OR ${t.periodEnd} IS NULL OR ${t.periodEnd} >= ${t.periodStart}`),
+  lifecycleChk: check('business_operation_financial_components_lifecycle_chk', sql`${t.active} = (${t.supersededAt} IS NULL)`),
+  fingerprintUidx: uniqueIndex('business_operation_financial_components_fingerprint_uidx').on(t.operationId, t.fingerprint)
+    .where(sql`active AND fingerprint IS NOT NULL`),
+  operationIdx: index('business_operation_financial_components_operation_idx').on(t.operationId, t.active, t.kind),
+  targetAssetIdx: index('business_operation_financial_components_target_asset_idx').on(t.targetAssetId).where(sql`target_asset_id IS NOT NULL`),
+  targetEquipmentIdx: index('business_operation_financial_components_target_equipment_idx').on(t.targetEquipmentId).where(sql`target_equipment_id IS NOT NULL`),
+  economicDateIdx: index('business_operation_financial_components_economic_date_idx').on(t.economicDate).where(sql`economic_date IS NOT NULL`),
+}));
+
+/** 10.6 / C20 — sources soutenant une composante. */
+export const businessOperationFinancialComponentSources = pgTable('business_operation_financial_component_sources', {
+  componentId: bigint('component_id', { mode: 'number' }).notNull().references(() => businessOperationFinancialComponents.id, { onDelete: 'cascade' }),
+  operationSourceId: bigint('operation_source_id', { mode: 'number' }).notNull().references(() => businessOperationSources.id, { onDelete: 'cascade' }),
+  evidenceRole: text('evidence_role').notNull().default('SUPPORTS'),
+  isPrimary: boolean('is_primary').notNull().default(false),
+  createdAt: tstz('created_at'),
+}, (t) => ({
+  pk: primaryKey({ name: 'business_operation_financial_component_sources_pk', columns: [t.componentId, t.operationSourceId] }),
+  roleChk: check('business_operation_financial_component_sources_role_chk', sql`${t.evidenceRole} IN ('SUPPORTS', 'CORRECTS', 'SUPERSEDES')`),
+  sourceIdx: index('business_operation_financial_component_sources_source_idx').on(t.operationSourceId),
+}));
+
+/** 10.7 / C20 — changements significatifs (jamais un passage T3 sans changement). */
+export const businessOperationHistory = pgTable('business_operation_history', {
+  id: bigserial('id', { mode: 'number' }).primaryKey(),
+  accountId: integer('account_id').notNull(),
+  operationId: bigint('operation_id', { mode: 'number' }).notNull(),
+  eventType: text('event_type').notNull(),
+  reasonCode: text('reason_code').notNull(),
+  sourceId: bigint('source_id', { mode: 'number' }).references(() => businessOperationSources.id, { onDelete: 'set null' }),
+  actorUserId: integer('actor_user_id').references(() => users.id, { onDelete: 'set null' }),
+  beforeJson: jsonb('before_json'),
+  afterJson: jsonb('after_json'),
+  correlationId: text('correlation_id'),
+  createdAt: tstz('created_at'),
+}, (t) => ({
+  operationFk: foreignKey({ name: 'business_operation_history_operation_fk', columns: [t.operationId, t.accountId], foreignColumns: [businessOperations.id, businessOperations.accountId] }).onDelete('cascade').onUpdate('cascade'),
+  eventTypeChk: check('business_operation_history_event_type_chk', sql`${t.eventType} IN ('CREATED', 'UPDATED', 'TYPE_CHANGED', 'STATUS_CHANGED', 'TARGET_CHANGED', 'FINANCIAL_CHANGED', 'MERGED', 'INVALIDATED', 'REACTIVATED', 'PARENT_CHANGED', 'SOURCE_ADDED', 'SOURCE_REMOVED')`),
+  operationIdx: index('business_operation_history_operation_idx').on(t.operationId, t.createdAt),
+}));
+
+/** C16.1 — suppression durable d'une projection par l'utilisateur. */
+export const businessOperationProjectionSuppressions = pgTable('business_operation_projection_suppressions', {
+  id: bigserial('id', { mode: 'number' }).primaryKey(),
+  accountId: integer('account_id').notNull(),
+  operationId: bigint('operation_id', { mode: 'number' }).notNull(),
+  projectionKind: text('projection_kind').notNull(),
+  projectionKey: text('projection_key').notNull(),
+  userId: integer('user_id').references(() => users.id, { onDelete: 'set null' }),
+  createdAt: tstz('created_at'),
+}, (t) => ({
+  operationFk: foreignKey({ name: 'business_operation_projection_suppressions_operation_fk', columns: [t.operationId, t.accountId], foreignColumns: [businessOperations.id, businessOperations.accountId] }).onDelete('cascade').onUpdate('cascade'),
+  uq: unique('business_operation_projection_suppressions_uq').on(t.operationId, t.projectionKind, t.projectionKey),
+  kindChk: check('business_operation_projection_suppressions_kind_chk', sql`${t.projectionKind} IN ('AGENDA')`),
+}));
+
+/** Références métier (écart C20 documenté, 0316) — rapprochement M1 (C6.1). */
+export const businessOperationReferences = pgTable('business_operation_references', {
+  id: bigserial('id', { mode: 'number' }).primaryKey(),
+  accountId: integer('account_id').notNull(),
+  operationId: bigint('operation_id', { mode: 'number' }).notNull(),
+  referenceKind: text('reference_kind').notNull(),
+  referenceValue: text('reference_value').notNull(),
+  normalizedValue: text('normalized_value').notNull(),
+  sourceId: bigint('source_id', { mode: 'number' }).references(() => businessOperationSources.id, { onDelete: 'set null' }),
+  active: boolean('active').notNull().default(true),
+  supersededAt: tstzOptional('superseded_at'),
+  createdAt: tstz('created_at'),
+}, (t) => ({
+  operationFk: foreignKey({ name: 'business_operation_references_operation_fk', columns: [t.operationId, t.accountId], foreignColumns: [businessOperations.id, businessOperations.accountId] }).onDelete('cascade').onUpdate('cascade'),
+  kindChk: check('business_operation_references_kind_chk', sql`${t.referenceKind} IN ('INVOICE', 'QUOTE', 'ORDER', 'WORK_ORDER', 'CONTRACT', 'POLICY', 'CLAIM', 'LOAN', 'CUSTOMER', 'DELIVERY', 'OTHER')`),
+  valueChk: check('business_operation_references_value_chk', sql`${t.normalizedValue} <> ''`),
+  lifecycleChk: check('business_operation_references_lifecycle_chk', sql`${t.active} = (${t.supersededAt} IS NULL)`),
+  valueUidx: uniqueIndex('business_operation_references_value_uidx').on(t.operationId, t.referenceKind, t.normalizedValue),
+  lookupIdx: index('business_operation_references_lookup_idx').on(t.accountId, t.referenceKind, t.normalizedValue).where(sql`active`),
+}));
+
+/** C3.2 — candidats T1 persistés (artefact d'extraction, pas une Opération). */
+export const documentOperationCandidates = pgTable('document_operation_candidates', {
+  id: bigserial('id', { mode: 'number' }).primaryKey(),
+  accountId: integer('account_id').notNull().references(() => accounts.id, { onDelete: 'cascade' }),
+  fileId: integer('file_id').notNull().references(() => assetFiles.id, { onDelete: 'cascade' }),
+  extractionId: integer('extraction_id').notNull().references(() => documentExtractions.id, { onDelete: 'cascade' }),
+  analysisRunId: integer('analysis_run_id'),
+  candidateKey: text('candidate_key').notNull(),
+  established: boolean('established').notNull(),
+  confidence: text('confidence').notNull(),
+  typeHint: text('type_hint'),
+  statusHint: text('status_hint'),
+  summary: text('summary').notNull(),
+  payload: jsonb('payload').notNull().default({}),
+  status: text('status').notNull().default('ACTIVE'),
+  supersededAt: tstzOptional('superseded_at'),
+  createdAt: tstz('created_at'),
+  /** Lot 40 (0320) — la ligne attend T3 (C3.2, C4) ; posé par T1, levé par T3. */
+  t3Pending: boolean('t3_pending').notNull().default(true),
+  t3ProcessedAt: tstzOptional('t3_processed_at'),
+  /** Lot 40 (0320) — déclencheur C4 : source_analyzed | source_reanalyzed. */
+  triggerCode: text('trigger_code').notNull().default('source_analyzed'),
+  /** Lot 41 (0321) — issue de la machine de décision T3 (C5) et sa trace (diagnostic, reprise des HOLD). */
+  t3Outcome: text('t3_outcome'),
+  t3Reason: text('t3_reason'),
+  t3OperationId: bigint('t3_operation_id', { mode: 'number' }),
+  t3Detail: jsonb('t3_detail'),
+}, (t) => ({
+  confidenceChk: check('document_operation_candidates_confidence_chk', sql`${t.confidence} IN ('certain', 'probable', 'conflictual')`),
+  typeHintChk: check('document_operation_candidates_type_hint_chk', sql`${t.typeHint} IS NULL OR ${t.typeHint} IN (${BO_TYPES_SQL})`),
+  statusHintChk: check('document_operation_candidates_status_hint_chk', sql`${t.statusHint} IS NULL OR ${t.statusHint} IN ('ENVISAGED', 'REALIZED', 'CANCELLED')`),
+  statusChk: check('document_operation_candidates_status_chk', sql`${t.status} IN ('ACTIVE', 'SUPERSEDED')`),
+  payloadChk: check('document_operation_candidates_payload_chk', sql`jsonb_typeof(${t.payload}) = 'object'`),
+  lifecycleChk: check('document_operation_candidates_lifecycle_chk', sql`(${t.status} = 'ACTIVE') = (${t.supersededAt} IS NULL)`),
+  triggerChk: check('document_operation_candidates_trigger_chk', sql`${t.triggerCode} IN ('source_analyzed', 'source_reanalyzed')`),
+  // Lot 40 (0320) : clé locale unique parmi les ACTIFS (extraction_id n'est pas une version).
+  activeKeyUidx: uniqueIndex('document_operation_candidates_active_key_uidx').on(t.extractionId, t.candidateKey).where(sql`status = 'ACTIVE'`),
+  fileIdx: index('document_operation_candidates_file_idx').on(t.fileId, t.status),
+  accountActiveIdx: index('document_operation_candidates_account_active_idx').on(t.accountId, t.createdAt).where(sql`status = 'ACTIVE'`),
+  t3PendingIdx: index('document_operation_candidates_t3_pending_idx').on(t.accountId, t.createdAt).where(sql`t3_pending`),
+  // Lot 41 (0321) : issue T3 et candidats en attente de résolution.
+  t3OutcomeChk: check('document_operation_candidates_t3_outcome_chk', sql`${t.t3Outcome} IS NULL OR ${t.t3Outcome} IN ('NO_OPERATION', 'MATCH_AND_ENRICH', 'CREATE_NEW', 'HOLD_UNRESOLVED', 'ARBITRATION_REQUIRED')`),
+  t3DetailChk: check('document_operation_candidates_t3_detail_chk', sql`${t.t3Detail} IS NULL OR jsonb_typeof(${t.t3Detail}) = 'object'`),
+  t3HoldIdx: index('document_operation_candidates_t3_hold_idx').on(t.accountId, t.fileId).where(sql`status = 'ACTIVE' AND t3_outcome = 'HOLD_UNRESOLVED'`),
+  // Lot 47A (O9) — 0325_idx_4 : issues T3 de la période (indicateur C26.2).
+  t3ProcessedIdx: index('document_operation_candidates_t3_processed_idx').on(t.t3ProcessedAt).where(sql`t3_outcome IS NOT NULL`),
+}));
+
+/** C6.3 — décisions de rapprochement durables. */
+export const businessOperationMatchDecisions = pgTable('business_operation_match_decisions', {
+  id: bigserial('id', { mode: 'number' }).primaryKey(),
+  accountId: integer('account_id').notNull(),
+  sourceKind: text('source_kind').notNull(),
+  sourceEntityKey: text('source_entity_key').notNull(),
+  sourceVersion: text('source_version'),
+  candidateOperationId: bigint('candidate_operation_id', { mode: 'number' }).notNull(),
+  decision: text('decision').notNull(),
+  origin: text('origin').notNull(),
+  reasonCode: text('reason_code').notNull(),
+  active: boolean('active').notNull().default(true),
+  createdAt: tstz('created_at'),
+  updatedAt: tstz('updated_at'),
+}, (t) => ({
+  operationFk: foreignKey({ name: 'business_operation_match_decisions_operation_fk', columns: [t.candidateOperationId, t.accountId], foreignColumns: [businessOperations.id, businessOperations.accountId] }).onDelete('cascade').onUpdate('cascade'),
+  kindChk: check('business_operation_match_decisions_kind_chk', sql`${t.sourceKind} IN (${BO_SOURCE_KINDS_SQL})`),
+  decisionChk: check('business_operation_match_decisions_decision_chk', sql`${t.decision} IN ('CONFIRMED', 'REJECTED')`),
+  originChk: check('business_operation_match_decisions_origin_chk', sql`${t.origin} IN ('USER_ARBITRATION', 'SYSTEM_EXPLICIT_REFERENCE')`),
+  activeUidx: uniqueIndex('business_operation_match_decisions_active_uidx')
+    .on(t.candidateOperationId, t.sourceKind, t.sourceEntityKey, sql`COALESCE(${t.sourceVersion}, '')`)
+    .where(sql`active`),
+  sourceIdx: index('business_operation_match_decisions_source_idx').on(t.accountId, t.sourceKind, t.sourceEntityKey).where(sql`active`),
+}));
+
+/** C13 — CONTRACT. Effet futur : l'Opération reste ENVISAGED jusqu'à `effective_from` (Q13). */
+export const businessOperationContractDetails = pgTable('business_operation_contract_details', {
+  operationId: bigint('operation_id', { mode: 'number' }).primaryKey().references(() => businessOperations.id, { onDelete: 'cascade' }),
+  contractReference: text('contract_reference'),
+  periodicity: text('periodicity'),
+  effectiveFrom: pgDate('effective_from', { mode: 'string' }),
+  effectiveTo: pgDate('effective_to', { mode: 'string' }),
+  updatedAt: tstz('updated_at'),
+}, (t) => ({
+  periodicityChk: check('business_operation_contract_details_periodicity_chk', sql`${t.periodicity} IS NULL OR ${t.periodicity} IN ('MONTHLY', 'QUARTERLY', 'SEMIANNUAL', 'ANNUAL', 'MULTIANNUAL', 'ONE_OFF', 'OTHER')`),
+}));
+
+/** C13 — FINANCING (principal jamais au TCO, INV-FINAL-016). */
+export const businessOperationFinancingDetails = pgTable('business_operation_financing_details', {
+  operationId: bigint('operation_id', { mode: 'number' }).primaryKey().references(() => businessOperations.id, { onDelete: 'cascade' }),
+  financingReference: text('financing_reference'),
+  lender: text('lender'),
+  principalAmountMinor: bigint('principal_amount_minor', { mode: 'number' }),
+  principalCurrency: char('principal_currency', { length: 3 }),
+  effectiveFrom: pgDate('effective_from', { mode: 'string' }),
+  effectiveTo: pgDate('effective_to', { mode: 'string' }),
+  updatedAt: tstz('updated_at'),
+}, (t) => ({
+  principalChk: check('business_operation_financing_details_principal_chk', sql`${t.principalAmountMinor} IS NULL OR ${t.principalAmountMinor} >= 0`),
+  currencyChk: check('business_operation_financing_details_currency_chk', sql`${t.principalCurrency} IS NULL OR ${t.principalCurrency} ~ '^[A-Z]{3}$'`),
+  principalCurrencyChk: check('business_operation_financing_details_principal_currency_chk', sql`${t.principalAmountMinor} IS NULL OR ${t.principalCurrency} IS NOT NULL`),
+}));
+
+/** C14 — CLAIM : statut du dossier distinct du statut de l'Opération (C14.1). */
+export const businessOperationClaimDetails = pgTable('business_operation_claim_details', {
+  operationId: bigint('operation_id', { mode: 'number' }).primaryKey().references(() => businessOperations.id, { onDelete: 'cascade' }),
+  claimType: text('claim_type'),
+  declaredOn: pgDate('declared_on', { mode: 'string' }),
+  insurerClaimRef: text('insurer_claim_ref'),
+  insuranceContractOperationId: bigint('insurance_contract_operation_id', { mode: 'number' }).references(() => businessOperations.id, { onDelete: 'set null' }),
+  policyReferenceText: text('policy_reference_text'),
+  status: text('status'),
+  statusDetail: text('status_detail'),
+  circumstances: text('circumstances'),
+  consequences: text('consequences'),
+  measuresSummary: text('measures_summary'),
+  exchangesSummary: text('exchanges_summary'),
+  estimatedDamageMinor: bigint('estimated_damage_minor', { mode: 'number' }),
+  updatedAt: tstz('updated_at'),
+  /** Lot 44 (0323) : événement de l'historique choisi comme ancre (un élément d'agenda : `agenda_items.business_operation_id`). */
+  historyEventId: integer('history_event_id').references(() => events.id, { onDelete: 'set null' }),
+}, (t) => ({
+  statusChk: check('business_operation_claim_details_status_chk', sql`${t.status} IS NULL OR ${t.status} IN ('A_DECLARER', 'DECLARE', 'EXPERTISE_PREVUE', 'EXPERTISE_REALISEE', 'EN_ATTENTE_INDEMNISATION', 'INDEMNISE', 'REFUSE', 'CLOS')`),
+  estimateChk: check('business_operation_claim_details_estimate_chk', sql`${t.estimatedDamageMinor} IS NULL OR ${t.estimatedDamageMinor} >= 0`),
+  contractChk: check('business_operation_claim_details_contract_chk', sql`${t.insuranceContractOperationId} IS NULL OR ${t.insuranceContractOperationId} <> ${t.operationId}`),
+}));
+
+export const businessOperationClaimDamages = pgTable('business_operation_claim_damages', {
+  id: bigserial('id', { mode: 'number' }).primaryKey(),
+  operationId: bigint('operation_id', { mode: 'number' }).notNull().references(() => businessOperations.id, { onDelete: 'cascade' }),
+  zone: text('zone').notNull(),
+  element: text('element'),
+  finding: text('finding'),
+  estimatedAmountMinor: bigint('estimated_amount_minor', { mode: 'number' }),
+  sortOrder: integer('sort_order').notNull().default(0),
+  createdAt: tstz('created_at'),
+  /** Lot 44 (0323) : identifiant stable de la ligne côté formulaire. */
+  itemKey: text('item_key'),
+}, (t) => ({
+  estimateChk: check('business_operation_claim_damages_estimate_chk', sql`${t.estimatedAmountMinor} IS NULL OR ${t.estimatedAmountMinor} >= 0`),
+  operationIdx: index('business_operation_claim_damages_operation_idx').on(t.operationId, t.sortOrder),
+}));
+
+export const businessOperationClaimDamageDocuments = pgTable('business_operation_claim_damage_documents', {
+  damageId: bigint('damage_id', { mode: 'number' }).notNull().references(() => businessOperationClaimDamages.id, { onDelete: 'cascade' }),
+  fileId: integer('file_id').notNull().references(() => assetFiles.id, { onDelete: 'cascade' }),
+  createdAt: tstz('created_at'),
+}, (t) => ({
+  pk: primaryKey({ name: 'business_operation_claim_damage_documents_pk', columns: [t.damageId, t.fileId] }),
+  fileIdx: index('business_operation_claim_damage_documents_file_idx').on(t.fileId),
+}));
+
+export const businessOperationClaimDamagePhotos = pgTable('business_operation_claim_damage_photos', {
+  damageId: bigint('damage_id', { mode: 'number' }).notNull().references(() => businessOperationClaimDamages.id, { onDelete: 'cascade' }),
+  photoId: integer('photo_id').notNull().references(() => assetPhotos.id, { onDelete: 'cascade' }),
+  createdAt: tstz('created_at'),
+}, (t) => ({
+  pk: primaryKey({ name: 'business_operation_claim_damage_photos_pk', columns: [t.damageId, t.photoId] }),
+  photoIdx: index('business_operation_claim_damage_photos_photo_idx').on(t.photoId),
+}));
+
+export const businessOperationClaimActions = pgTable('business_operation_claim_actions', {
+  id: bigserial('id', { mode: 'number' }).primaryKey(),
+  operationId: bigint('operation_id', { mode: 'number' }).notNull().references(() => businessOperations.id, { onDelete: 'cascade' }),
+  date: pgDate('date', { mode: 'string' }),
+  endDate: pgDate('end_date', { mode: 'string' }),
+  status: text('status'),
+  title: text('title').notNull(),
+  detail: text('detail'),
+  performedBy: text('performed_by'),
+  invoiceFileId: integer('invoice_file_id').references(() => assetFiles.id, { onDelete: 'set null' }),
+  childOperationId: bigint('child_operation_id', { mode: 'number' }).references(() => businessOperations.id, { onDelete: 'set null' }),
+  sortOrder: integer('sort_order').notNull().default(0),
+  createdAt: tstz('created_at'),
+  /** Lot 44 (0323) : identifiant stable de la ligne côté formulaire. */
+  itemKey: text('item_key'),
+}, (t) => ({
+  statusChk: check('business_operation_claim_actions_status_chk', sql`${t.status} IS NULL OR ${t.status} IN ('REALISEE', 'EN_COURS', 'A_REALISER')`),
+  periodChk: check('business_operation_claim_actions_period_chk', sql`${t.date} IS NULL OR ${t.endDate} IS NULL OR ${t.endDate} >= ${t.date}`),
+  childChk: check('business_operation_claim_actions_child_chk', sql`${t.childOperationId} IS NULL OR ${t.childOperationId} <> ${t.operationId}`),
+  operationIdx: index('business_operation_claim_actions_operation_idx').on(t.operationId, t.sortOrder),
+  invoiceIdx: index('business_operation_claim_actions_invoice_idx').on(t.invoiceFileId).where(sql`invoice_file_id IS NOT NULL`),
+}));
+
+export const businessOperationClaimExchanges = pgTable('business_operation_claim_exchanges', {
+  id: bigserial('id', { mode: 'number' }).primaryKey(),
+  operationId: bigint('operation_id', { mode: 'number' }).notNull().references(() => businessOperations.id, { onDelete: 'cascade' }),
+  date: pgDate('date', { mode: 'string' }),
+  party: text('party'),
+  channel: text('channel'),
+  direction: text('direction'),
+  summary: text('summary').notNull(),
+  documentFileId: integer('document_file_id').references(() => assetFiles.id, { onDelete: 'set null' }),
+  sortOrder: integer('sort_order').notNull().default(0),
+  createdAt: tstz('created_at'),
+  /** Lot 44 (0323) : identifiant stable de la ligne côté formulaire. */
+  itemKey: text('item_key'),
+}, (t) => ({
+  partyChk: check('business_operation_claim_exchanges_party_chk', sql`${t.party} IS NULL OR ${t.party} IN ('ASSUREUR', 'EXPERT', 'AUTRE')`),
+  channelChk: check('business_operation_claim_exchanges_channel_chk', sql`${t.channel} IS NULL OR ${t.channel} IN ('EMAIL', 'COURRIER', 'TELEPHONE', 'ESPACE_CLIENT', 'RENDEZ_VOUS', 'AUTRE')`),
+  directionChk: check('business_operation_claim_exchanges_direction_chk', sql`${t.direction} IS NULL OR ${t.direction} IN ('RECU', 'ENVOYE')`),
+  operationIdx: index('business_operation_claim_exchanges_operation_idx').on(t.operationId, t.sortOrder),
+  documentIdx: index('business_operation_claim_exchanges_document_idx').on(t.documentFileId).where(sql`document_file_id IS NOT NULL`),
+}));
+
+/**
+ * Lot 43 (O4, migration 0322) — passage de la réconciliation des données
+ * STRUCTURÉES d'un bien (achat, statut et vente, assurance) vers les
+ * Opérations (CDC Opérations V1 C2 ASSET_DATA, C23.1) : un repère par bien,
+ * clé stable bien × version de migration, empreinte des données examinées et
+ * issue par nature. Technique, invisible pour l'utilisateur (P09) ; écrit et
+ * lu en SQL par `business-operations/consolidation/asset-data-consolidator.ts`.
+ */
+export const businessOperationAssetDataMarks = pgTable('business_operation_asset_data_marks', {
+  assetId: integer('asset_id').primaryKey().references(() => assets.id, { onDelete: 'cascade' }),
+  accountId: integer('account_id').notNull().references(() => accounts.id, { onDelete: 'cascade' }),
+  migrationVersion: text('migration_version').notNull(),
+  dataFingerprint: text('data_fingerprint').notNull(),
+  outcomes: jsonb('outcomes').notNull().default({}),
+  processedAt: tstz('processed_at'),
+}, (t) => ({
+  outcomesChk: check('business_operation_asset_data_marks_outcomes_chk', sql`jsonb_typeof(${t.outcomes}) = 'object'`),
+}));
+
+/**
+ * Lot 44 (O5, migration 0323) — repère par bien de la migration C14.3 de
+ * l'ancien formulaire Sinistre (`asset_additional_infos.claim_json`) vers
+ * l'Opération CLAIM : version, empreinte (md5 du JSON examiné), Opération
+ * obtenue, issue. Technique, invisible pour l'utilisateur (P09) ; écrit et lu
+ * en SQL par `business-operations/consolidation/claim-migration.ts`.
+ */
+export const businessOperationClaimMigrationMarks = pgTable('business_operation_claim_migration_marks', {
+  assetId: integer('asset_id').primaryKey().references(() => assets.id, { onDelete: 'cascade' }),
+  accountId: integer('account_id').notNull().references(() => accounts.id, { onDelete: 'cascade' }),
+  migrationVersion: text('migration_version').notNull(),
+  dataFingerprint: text('data_fingerprint').notNull(),
+  operationId: bigint('operation_id', { mode: 'number' }).references(() => businessOperations.id, { onDelete: 'set null' }),
+  outcome: text('outcome').notNull(),
+  detail: jsonb('detail').notNull().default({}),
+  processedAt: tstz('processed_at'),
+}, (t) => ({
+  detailChk: check('business_operation_claim_migration_marks_detail_chk', sql`jsonb_typeof(${t.detail}) = 'object'`),
+  outcomeChk: check('business_operation_claim_migration_marks_outcome_chk', sql`${t.outcome} IN ('CREATED', 'MATCHED', 'LINKED', 'RESYNCED', 'MIRRORED', 'BELOW_THRESHOLD', 'HOLD_AMBIGUOUS', 'EMPTY', 'ERROR')`),
 }));

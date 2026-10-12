@@ -14,6 +14,7 @@ import { eq, and, isNull, desc } from 'drizzle-orm';
 import { apiError } from '@/lib/api-errors';
 import { SessionService } from '@/lib/session-service';
 import { computeEffectiveStatus, type EffectiveStatus } from '@/services/agenda/AgendaDomainService';
+import { loadEventNatures } from '@/services/agenda/AgendaQueryService';
 
 export async function GET(
   request: NextRequest,
@@ -63,6 +64,7 @@ export async function GET(
         endDate: agendaItems.endDate,
         manualStatus: agendaItems.manualStatus,
         originType: agendaItems.originType,
+        originFieldKey: agendaItems.originFieldKey,
         requiresQualification: agendaItems.requiresQualification,
         createdAt: agendaItems.createdAt,
       })
@@ -90,6 +92,8 @@ export async function GET(
       requiresQualification: boolean;
     };
 
+    // Lot 47B : un fait historique passé est « réalisé », jamais « en retard ».
+    const natures = await loadEventNatures(rows.map((r) => r.id));
     const typedItems: FollowupItem[] = rows.flatMap(r => {
       const effectiveStatus = computeEffectiveStatus({
         startDate: r.startDate ?? null,
@@ -97,6 +101,9 @@ export async function GET(
         endDate: r.endDate ?? null,
         endTime: null,
         manualStatus: (r.manualStatus as 'realise' | 'annule' | null) ?? null,
+        eventNature: natures?.get(r.id)?.nature ?? null,
+        businessType: natures?.get(r.id)?.businessType ?? null,
+        originFieldKey: r.originFieldKey ?? null,
       });
       const isDone = effectiveStatus === 'realise' || effectiveStatus === 'annule';
       if (!includeDone && isDone) return [];

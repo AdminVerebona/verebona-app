@@ -4,7 +4,9 @@
  * Référentiels — CDC Back-Office V1 §9.
  *
  * Une page à sous-onglets (§9.1) : familles de biens, sous-catégories,
- * rubriques, types de documents, règles et mappings d'applicabilité.
+ * rubriques, types de documents, règles et mappings d'applicabilité, types
+ * d'Opération (lot 39, CDC Opérations V1 C27 : code, libellé, description,
+ * familles, actif, utilisations — aucune modification).
  * Consultation et nombre d'utilisations courant (REFD-003) ; tri par libellé,
  * code, utilisations et statut lorsqu'il existe (REFD-002). Pas de recherche
  * (REFD-001), pas de seuil « rarement utilisé » (REFD-004), pas d'historique
@@ -32,6 +34,8 @@ interface Snapshot {
   documentTypes: Row[];
   applicability: Row[];
   mappings: Row[];
+  /** Lot 39 (O1) — types d'Opération (CDC Opérations V1 C27) ; absent d'une API antérieure. */
+  operationTypes?: Row[];
 }
 
 type Sort = 'label' | 'code' | 'usage' | 'active';
@@ -42,6 +46,7 @@ const TABS = [
   { key: 'rubrics', label: 'Rubriques', detail: 'Applicabilité' },
   { key: 'document-types', label: 'Types de documents', detail: 'Rubrique' },
   { key: 'rules', label: 'Règles et mappings', detail: 'Portée' },
+  { key: 'operation-types', label: 'Types d’Opération', detail: 'Description et familles' },
 ] as const;
 type TabKey = typeof TABS[number]['key'];
 
@@ -56,8 +61,10 @@ function sortRows(rows: Row[], sort: Sort, dir: 'asc' | 'desc'): Row[] {
   });
 }
 
-function RowsTable({ rows, detailLabel, sort, dir, onSort, withStatus }: {
+function RowsTable({ rows, detailLabel, sort, dir, onSort, withStatus, wrapDetails = false }: {
   rows: Row[]; detailLabel: string | null; sort: Sort; dir: 'asc' | 'desc'; onSort: (k: Sort) => void; withStatus: boolean;
+  /** Détails longs (définitions) : retour à la ligne, lisible en mobile comme en bureau. */
+  wrapDetails?: boolean;
 }) {
   if (!rows || rows.length === 0) return <p className="text-sm text-muted-foreground py-6 text-center">Aucune valeur.</p>;
   return (
@@ -77,7 +84,7 @@ function RowsTable({ rows, detailLabel, sort, dir, onSort, withStatus }: {
             <TableRow key={`${r.code}-${i}`}>
               <TableCell className="text-sm">{r.label}</TableCell>
               <TableCell className="font-mono text-xs">{r.code}</TableCell>
-              {detailLabel && <TableCell className="text-xs text-muted-foreground">{r.details ?? '—'}</TableCell>}
+              {detailLabel && <TableCell className={`text-xs text-muted-foreground${wrapDetails ? ' whitespace-normal min-w-[16rem] max-w-xl' : ''}`}>{r.details ?? '—'}</TableCell>}
               {withStatus && (
                 <TableCell className="text-sm">
                   {r.active === null ? '—' : r.active ? <span className="text-emerald-500">Actif</span> : <span className="text-muted-foreground">Inactif</span>}
@@ -142,6 +149,8 @@ function ReferentialsScreen() {
       case 'subcategories': return <RowsTable rows={data.assetSubcategories} withStatus {...props} />;
       case 'rubrics': return <RowsTable rows={data.rubrics} withStatus={false} {...props} />;
       case 'document-types': return <RowsTable rows={data.documentTypes} withStatus {...props} />;
+      // C27 : 7 types seedés et contrôlés par le code ; lecture seule, tri alphabétique.
+      case 'operation-types': return <RowsTable rows={data.operationTypes ?? []} withStatus wrapDetails {...props} />;
       case 'rules':
         return (
           <div className="space-y-6">

@@ -415,6 +415,8 @@ export function buildChoices(s: PrepState, outputFormat: OutputFormat, pdfOnlyEx
         .map((i) => ({ sourceType: i.sourceType, sourceId: i.sourceId, selected: true, ...(s.items[i.key]?.mode ? { mode: s.items[i.key]!.mode } : {}) })),
     })),
     acknowledgements: { pdfOnlyExcludesZipItems },
+    // Lot 44 (O5, Q2) : sinistre du dossier Assurance-sinistre retenu par la préparation.
+    ...(s.prep?.claim?.selectedOperationId ? { claimOperationId: s.prep.claim.selectedOperationId } : {}),
   };
 }
 

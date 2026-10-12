@@ -171,6 +171,8 @@ export const documentExtractions = pgTable('document_extractions', {
 }, (t) => ({
   fileUidx: uniqueIndex('document_extractions_file_uidx').on(t.fileId),
   accountIdx: index('document_extractions_account_idx').on(t.accountId),
+  // Lot 47A (O9) — 0325_idx_5 : documents analysés de la période (indicateur C26.2).
+  extractedIdx: index('document_extractions_extracted_idx').on(t.extractedAt),
 }));
 
 export const documentFacts = pgTable('document_facts', {

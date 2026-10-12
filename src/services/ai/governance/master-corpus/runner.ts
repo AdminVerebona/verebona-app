@@ -21,7 +21,7 @@
  * cas qui passe. Une branche sans cas est rouge — jamais « non testée donc
  * acceptée ».
  */
-import { renderMasterPrompt, masterTextFingerprint } from '../../prompts/prompt-loader';
+import { inspectMasterTemplate, isOptionalMasterTask, renderMasterPrompt, masterTextFingerprint } from '../../prompts/prompt-loader';
 import { validateOutput } from '../../gateway/output-validator';
 import { masterOutputSchemaFor } from '../../gateway/master-output-schemas';
 import { listMasterPrompts } from '../../registry/operations';
@@ -182,20 +182,26 @@ export async function runMasterCorpus(o: RunMasterCorpusOptions): Promise<Master
     const ignores: string[] = [];
     const execution = given?.execution
       ?? executionConfigFor({ masterPromptCode: m.masterPromptCode, source: given ? (given.source === 'file' ? 'file' : 'config') : 'file' });
+    // Lot 42 : branche OPTIONNELLE absente du texte évalué (version BO
+    // antérieure) — ses cas sont ignorés et la branche n'est pas exigée.
+    const absentes = execution?.mode === 'STRUCTURED_CONTEXT' ? [] : m.tasks.filter((t) =>
+      isOptionalMasterTask(m.masterPromptCode, t) && !inspectMasterTemplate(text).branches.includes(t));
+    const exigees = m.tasks.filter((t) => !absentes.includes(t));
     for (const c of mine) {
+      if (absentes.includes(c.task)) { ignores.push(c.id); continue; }
       const r = await runCase(c, text, o.readMasterFile, m.tasks, o.live, execution);
       if (r) outcomes.push(r); else ignores.push(c.id);
     }
-    const branchesPassed = m.tasks.filter((t) => outcomes.some((x) => x.task === t && x.passed));
+    const branchesPassed = exigees.filter((t) => outcomes.some((x) => x.task === t && x.passed));
     const failures = [
-      ...m.tasks.filter((t) => !outcomes.some((x) => x.task === t))
+      ...exigees.filter((t) => !outcomes.some((x) => x.task === t))
         .map((t) => `branche ${t} : aucun cas ${o.live ? 'exécutable en réel' : 'au corpus'}`),
       ...outcomes.filter((x) => !x.passed).map((x) => `${x.id} (${x.task}) : ${x.errors.join(' ; ')}`),
     ];
     out.push({
       treatment, masterPromptCode: m.masterPromptCode,
       textSha256: masterTextFingerprint(text), textSource: given?.source ?? 'file',
-      branchesRequired: [...m.tasks], branchesPassed,
+      branchesRequired: [...exigees], branchesPassed,
       casesTotal: outcomes.length, casesPassed: outcomes.filter((x) => x.passed).length,
       status: failures.length === 0 ? 'PASSED' : 'FAILED',
       cases: outcomes, failures, skipped: ignores,

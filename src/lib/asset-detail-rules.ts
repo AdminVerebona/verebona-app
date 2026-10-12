@@ -21,6 +21,8 @@ export const DATE_DETAIL_FIELDS = new Set([
   // CDC 15, D-E (lot 20) : dates du registre devenues modifiables sur la fiche.
   'dpeExpiryDate', 'maintenanceDueDate', 'lastInspectionDate', 'registrationExpiry',
   'contractStartDate', 'warrantyStartDate',
+  // Lot 43 (O4, décision PO Q5) : date de vente / cession réalisée.
+  'saleDate',
 ]);
 
 /**

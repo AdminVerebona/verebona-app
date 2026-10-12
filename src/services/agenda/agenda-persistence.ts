@@ -415,6 +415,22 @@ async function createItem(
   requiresQualification: boolean,
   functionalKey: string | null,
 ): Promise<void> {
+  // Lot 46 (O7, C16.1, B16) : un événement lié à une Opération représente
+  // déjà ce fait (projection passée avant T4, ou événement rapproché) —
+  // même bien, date voisine, même document source ou même type métier :
+  // aucun second élément (une clé fonctionnelle ne dédoublonne pas entre
+  // sources, la projection non plus si elle est passée la première).
+  if (decision.date) {
+    const sem = resolveEventSemantics({ originFieldKey: decision.originFieldKey ?? null, ...semanticsOf(decision) });
+    const { findOperationAgendaEquivalent } = await import('@/services/business-operations/agenda-projection/service');
+    const equivalent = await findOperationAgendaEquivalent({
+      accountId, assetId, date: decision.date, businessType: sem.businessType, sourceFileId: sourceOf(decision),
+    });
+    if (equivalent !== null) {
+      console.info(JSON.stringify({ event: 't4.skip_operation_equivalent', accountId, assetId, itemId: equivalent, title: decision.title, date: decision.date }));
+      return;
+    }
+  }
   // Primitive commune (CDC 15 T4-09) : mêmes validations, liens (bien,
   // source), nature, clé et effets (D-13, D-14, D-15) que l'agenda manuel.
   const res = await upsertAgendaItem(
@@ -565,6 +581,7 @@ async function updateItem(decision: AgendaDecision, accountId: number): Promise<
     .select({
       isAutomatic: agendaItems.isAutomatic,
       isAutomaticModified: agendaItems.isAutomaticModified,
+      projectionOrigin: agendaItems.projectionOrigin,
     })
     .from(agendaItems)
     .where(and(
@@ -574,6 +591,12 @@ async function updateItem(decision: AgendaDecision, accountId: number): Promise<
     .limit(1);
 
   if (!current) return;
+  // Lot 46 (O7) : un élément PROJETÉ depuis une Opération appartient à la
+  // projection (titre, date, nature) ; T4 documentaire ne le réécrit pas.
+  if (current.projectionOrigin) {
+    console.info(`[agenda-persistence] événement ${decision.existingItemId} projeté — mise à jour documentaire sans effet`);
+    return;
+  }
   if (!current.isAutomatic || current.isAutomaticModified) {
     console.info(
       `[agenda-persistence] événement ${decision.existingItemId} devenu manuel — mise à jour annulée`,

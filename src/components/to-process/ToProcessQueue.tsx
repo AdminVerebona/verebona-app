@@ -41,6 +41,7 @@ import { TO_PROCESS_COUNT_EVENT } from '@/hooks/useToProcessCount';
 import type { OrderMode } from '@/services/to-process/priority';
 import { ActionCard, ActionRow, todoCardDomId, type ActionView } from './ActionCard';
 import { useToProcessResolution } from './useToProcessResolution';
+import { SaleDetailsDialog } from '@/components/assets/SaleDetailsDialog';
 
 type Presentation = 'CARDS' | 'LIST';
 
@@ -173,7 +174,7 @@ export function ToProcessQueue() {
    * après arbitrage, avec rollback sur erreur ») : attendre la réponse ferait
    * hésiter sur un geste qui se veut immédiat.
    */
-  const { busyId, choose, openTarget } = useToProcessResolution({
+  const { busyId, choose, openTarget, saleFollowUp, closeSaleFollowUp } = useToProcessResolution({
     onRemove: (action) => {
       setPage((current) => {
         snapshot.current = current;
@@ -194,6 +195,9 @@ export function ToProcessQueue() {
 
   return (
     <div className="space-y-6 w-full max-w-full overflow-x-hidden">
+      {/* Lot 43 (O4, Q5) : vente réalisée demandée après un passage à VENDU /
+          TRANSMIS (facultatif, desktop et mobile). */}
+      <SaleDetailsDialog followUp={saleFollowUp} onClose={closeSaleFollowUp} />
       {/* En-tête au format des autres pages : titre, décompte, commandes à
           droite (cf. « Mon agenda », « Mes biens »). */}
       <div className="flex items-center justify-between mb-6">

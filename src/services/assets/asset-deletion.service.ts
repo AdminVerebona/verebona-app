@@ -34,6 +34,8 @@ import {
   substructures,
 } from '@/db/schema';
 import { and, count, eq, inArray, isNull, notInArray, or } from 'drizzle-orm';
+import { retireDeletedAssetFromOperationsInTx } from '@/services/business-operations/asset-lifecycle';
+import { publishBusinessOperationEvents, type BusinessOperationEvent } from '@/services/business-operations/events';
 
 /** Décompte présenté avant confirmation (DeleteAssetDialog). */
 export interface AssetDeletionSummary {
@@ -205,8 +207,10 @@ export async function deleteAssetCompletely(asset: {
 }): Promise<{ blobsScheduled: number; fileIds: number[] }> {
   const assetId = asset.id;
   const bucket = isS3Configured() ? getS3Bucket() : null;
+  // Lot 39 (O1) : événements Opération publiés APRÈS commit seulement.
+  let operationEvents: BusinessOperationEvent[] = [];
 
-  return db.transaction(async (tx) => {
+  const outcome = await db.transaction(async (tx) => {
     const roomIds = tx.select({ id: rooms.id }).from(rooms).where(eq(rooms.assetId, assetId));
 
     // 1. Objets de stockage, relevés AVANT la cascade.
@@ -285,11 +289,23 @@ export async function deleteAssetCompletely(asset: {
     await tx.delete(events).where(viaPiece(tx, events, assetId));
     await tx.delete(deadlines).where(viaPiece(tx, deadlines, assetId));
 
-    // 4. Le bien ; la cascade emporte tout le reste.
+    // 4. Opérations métier (lot 39, CDC Opérations V1 B27, C25) : liens vers
+    //    le bien retirés et sources emportées désactivées, HISTORISÉS avant
+    //    que la cascade efface les lignes ; Opérations sans plus aucune source
+    //    invalidées. Une Opération multi-biens survit avec ses autres liens.
+    const [owner] = await tx.select({ accountId: assets.accountId }).from(assets).where(eq(assets.id, assetId)).limit(1);
+    if (owner?.accountId) {
+      const retrait = await retireDeletedAssetFromOperationsInTx(tx, { accountId: owner.accountId, assetId, fileIds });
+      operationEvents = retrait.events;
+    }
+
+    // 5. Le bien ; la cascade emporte tout le reste.
     await tx.delete(assets).where(eq(assets.id, assetId));
 
     // `fileIds` : documents emportés — leurs preuves portées par d'AUTRES
     // biens sont retirées par l'appelant (CDC 15 T3-03, `onAssetDeleted`).
     return { blobsScheduled: keys.length, fileIds };
   });
+  await publishBusinessOperationEvents(operationEvents);
+  return outcome;
 }

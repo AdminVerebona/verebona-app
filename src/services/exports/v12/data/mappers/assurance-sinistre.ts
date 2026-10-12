@@ -6,6 +6,9 @@
  * dans la fiche (`claim.claimEventKey`) ; à défaut, la sous-rubrique
  * « Sinistre » des informations complémentaires sert de saisie temporaire
  * (non bloquante).
+ * Lot 44 (O5, F-157) : `additionalInfo.claim` est la vue du SINISTRE retenu
+ * (Opération CLAIM, `source.claim`), sinon l'ancienne saisie du bien
+ * (compatibilité Q11). Montant estimé et indemnité imprimés s'ils existent.
  * RULE-003 : chronologie centrale, triée ; le sinistre (pastille rouge), la
  * déclaration et les événements retenus y figurent.
  * RULE-004 : échanges retenus seulement s'ils sont liés au sinistre (saisis
@@ -216,6 +219,9 @@ export function mapSinistre(m: MapInput): SinistreData {
       // Mesures saisies ligne à ligne et sans liste structurée : les cartes « Actions » les portent déjà.
       measures: !structuredActions.length && actions.length ? null : info(c, 'measures'),
       statusDetail: info(c, 'statusDetail'),
+      // Lot 44 (Q4) : montants saisis, imprimés seulement s'ils sont présents.
+      estimatedDamage: typeof c?.estimatedDamageCents === 'number' ? fmt.money(c.estimatedDamageCents) : null,
+      compensation: typeof c?.compensationCents === 'number' ? fmt.money(c.compensationCents) : null,
     },
     timeline,
     damages,

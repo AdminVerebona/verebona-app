@@ -1,0 +1,329 @@
+{
+  "case": "F-001 / F-028",
+  "description": "Facture de réparation (pièces + main-d'œuvre) : UN candidat INTERVENTION REALIZED, rôle INVOICE, coût réalisé 749,00 € (centimes, EUR) prouvé par le total.",
+  "context": {
+    "linkedAssetId": 12,
+    "assets": [
+      {
+        "id": 12,
+        "name": "Clio",
+        "category": "VEHICULE",
+        "subtype": "voiture"
+      }
+    ],
+    "rooms": [],
+    "equipments": [],
+    "existingTitles": [],
+    "verified": {
+      "ASSET": [
+        12
+      ],
+      "EQUIPMENT": [],
+      "ROOM": [],
+      "SUPPLIER": []
+    }
+  },
+  "recording": {
+    "operationCode": "t1_analyze_document",
+    "task": "ANALYZE_DOCUMENT",
+    "output": {
+      "task": "ANALYZE_DOCUMENT",
+      "document": {
+        "title": {
+          "value": "Facture Réparation embrayage Clio",
+          "confidence": "certain",
+          "evidence": {
+            "excerpt": "Facture Réparation embrayage Clio",
+            "page": 1
+          }
+        },
+        "classification": {
+          "canonicalType": "FACTURE",
+          "rubricCode": "MAINTENANCE_WORKS",
+          "documentTypeCode": "REPAIR_INVOICE",
+          "confidence": 0.92,
+          "evidence": {
+            "excerpt": "Facture Réparation embrayage Clio"
+          }
+        },
+        "documentDate": {
+          "value": "2026-06-05",
+          "confidence": "certain",
+          "evidence": {
+            "excerpt": "Date : 05/06/2026",
+            "page": 1
+          }
+        },
+        "amountCents": {
+          "value": 74900,
+          "confidence": "certain",
+          "evidence": {
+            "excerpt": "Total TTC : 749,00 €",
+            "page": 1
+          }
+        },
+        "supplier": {
+          "name": "Garage Exemple",
+          "confidence": "certain",
+          "evidence": {
+            "excerpt": "GARAGE EXEMPLE",
+            "page": 1
+          }
+        }
+      },
+      "entities": {
+        "assets": [
+          {
+            "entityId": 12,
+            "rawLabel": "Clio",
+            "score": 0.95,
+            "confidence": "certain",
+            "evidenceSignals": [
+              "Clio"
+            ],
+            "reason": "désignation lue"
+          }
+        ],
+        "rooms": [],
+        "equipments": [],
+        "suppliers": [],
+        "multiAsset": false
+      },
+      "transcription": "GARAGE EXEMPLE\nFacture n° FA-2026-0612\nDate : 05/06/2026\nVéhicule : Renault Clio AB-123-CD\nIntervention réalisée le 02/06/2026\nREMPLACEMENT KIT EMBRAYAGE\nKit embrayage : 520,00 €\nMain-d'œuvre : 229,00 €\nTotal TTC : 749,00 €",
+      "facts": [
+        {
+          "canonicalKey": null,
+          "rawKey": "prestation",
+          "label": "Réparation",
+          "subject": "Clio",
+          "attribute": "réparation",
+          "rawValue": "Remplacement kit embrayage",
+          "normalizedValue": "Remplacement kit embrayage",
+          "valueType": "string",
+          "canonicalUnit": null,
+          "target": {
+            "type": "ASSET",
+            "entityId": 12,
+            "rawLabel": "Clio",
+            "confidence": "certain",
+            "evidenceSignals": [
+              "Clio"
+            ]
+          },
+          "provenance": "TEXT_EXTRACTION",
+          "confidence": "certain",
+          "evidence": {
+            "excerpt": "REMPLACEMENT KIT EMBRAYAGE",
+            "page": 1
+          },
+          "semanticEvent": {
+            "type": "repair",
+            "nature": "HISTORICAL"
+          }
+        },
+        {
+          "canonicalKey": null,
+          "rawKey": "pieces",
+          "label": "Pièces",
+          "subject": "Clio",
+          "attribute": "pièces",
+          "rawValue": "520,00 €",
+          "normalizedValue": 52000,
+          "valueType": "money_cents",
+          "canonicalUnit": "cents",
+          "target": {
+            "type": "ASSET",
+            "entityId": 12,
+            "rawLabel": "Clio",
+            "confidence": "certain",
+            "evidenceSignals": [
+              "Clio"
+            ]
+          },
+          "provenance": "TEXT_EXTRACTION",
+          "confidence": "certain",
+          "evidence": {
+            "excerpt": "Kit embrayage : 520,00 €",
+            "page": 1
+          }
+        },
+        {
+          "canonicalKey": null,
+          "rawKey": "mainOeuvre",
+          "label": "Main-d'œuvre",
+          "subject": "Clio",
+          "attribute": "main-d'œuvre",
+          "rawValue": "229,00 €",
+          "normalizedValue": 22900,
+          "valueType": "money_cents",
+          "canonicalUnit": "cents",
+          "target": {
+            "type": "ASSET",
+            "entityId": 12,
+            "rawLabel": "Clio",
+            "confidence": "certain",
+            "evidenceSignals": [
+              "Clio"
+            ]
+          },
+          "provenance": "TEXT_EXTRACTION",
+          "confidence": "certain",
+          "evidence": {
+            "excerpt": "Main-d'œuvre : 229,00 €",
+            "page": 1
+          }
+        },
+        {
+          "canonicalKey": null,
+          "rawKey": "totalTtc",
+          "label": "Total TTC",
+          "subject": "Clio",
+          "attribute": "total ttc",
+          "rawValue": "749,00 €",
+          "normalizedValue": 74900,
+          "valueType": "money_cents",
+          "canonicalUnit": "cents",
+          "target": {
+            "type": "ASSET",
+            "entityId": 12,
+            "rawLabel": "Clio",
+            "confidence": "certain",
+            "evidenceSignals": [
+              "Clio"
+            ]
+          },
+          "provenance": "TEXT_EXTRACTION",
+          "confidence": "certain",
+          "evidence": {
+            "excerpt": "Total TTC : 749,00 €",
+            "page": 1
+          }
+        },
+        {
+          "canonicalKey": null,
+          "rawKey": "datePrestation",
+          "label": "Date d'intervention",
+          "subject": "Clio",
+          "attribute": "date d'intervention",
+          "rawValue": "2026-06-02",
+          "normalizedValue": "2026-06-02",
+          "valueType": "date",
+          "canonicalUnit": null,
+          "target": {
+            "type": "ASSET",
+            "entityId": 12,
+            "rawLabel": "Clio",
+            "confidence": "certain",
+            "evidenceSignals": [
+              "Clio"
+            ]
+          },
+          "provenance": "TEXT_EXTRACTION",
+          "confidence": "certain",
+          "evidence": {
+            "excerpt": "Intervention réalisée le 02/06/2026",
+            "page": 1
+          },
+          "semanticEvent": {
+            "type": "repair",
+            "nature": "HISTORICAL"
+          }
+        },
+        {
+          "canonicalKey": null,
+          "rawKey": "numeroFacture",
+          "label": "N° de facture",
+          "subject": "facture",
+          "attribute": "n° de facture",
+          "rawValue": "FA-2026-0612",
+          "normalizedValue": "FA-2026-0612",
+          "valueType": "string",
+          "canonicalUnit": null,
+          "target": {
+            "type": "DOCUMENT",
+            "entityId": null,
+            "rawLabel": "facture",
+            "confidence": "certain",
+            "evidenceSignals": []
+          },
+          "provenance": "TEXT_EXTRACTION",
+          "confidence": "certain",
+          "evidence": {
+            "excerpt": "Facture n° FA-2026-0612",
+            "page": 1
+          }
+        }
+      ],
+      "hasExploitableContent": true,
+      "businessOperationCandidates": [
+        {
+          "candidateKey": "op1",
+          "established": true,
+          "confidence": "certain",
+          "typeHint": "INTERVENTION",
+          "statusHint": "REALIZED",
+          "summary": "Remplacement du kit d'embrayage de la Clio",
+          "sourceRoleHint": "INVOICE",
+          "provider": "Garage Exemple",
+          "targetHints": [
+            {
+              "type": "ASSET",
+              "entityId": 12,
+              "rawLabel": "Clio",
+              "confidence": "certain"
+            }
+          ],
+          "businessReferences": [
+            {
+              "kind": "INVOICE",
+              "value": "FA-2026-0612"
+            }
+          ],
+          "temporalHints": {
+            "realizedDate": "2026-06-02"
+          },
+          "financialHints": [
+            {
+              "role": "REALIZED_COST",
+              "amountMinor": 74900,
+              "currency": "EUR",
+              "amountScope": "TOTAL",
+              "economicDate": "2026-06-02",
+              "factIndex": 3
+            }
+          ],
+          "evidenceFactIndexes": [
+            0,
+            3,
+            4,
+            5
+          ]
+        }
+      ]
+    }
+  },
+  "expected": {
+    "operationCandidates": [
+      {
+        "typeHint": "INTERVENTION",
+        "statusHint": "REALIZED",
+        "sourceRoleHint": "INVOICE",
+        "established": true,
+        "confidence": "certain",
+        "financialRoles": [
+          "REALIZED_COST"
+        ],
+        "currencies": [
+          "EUR"
+        ],
+        "amountsMinor": [
+          74900
+        ],
+        "targetEntityIds": [
+          12
+        ],
+        "evidenceCount": 4
+      }
+    ]
+  }
+}

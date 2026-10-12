@@ -27,7 +27,7 @@
  * ══════════════════════════════════════════════════════════════════════════
  */
 import { listMasterPrompts, AI_OPERATIONS } from '../registry/operations';
-import { checkMasterTemplate, inspectMasterTemplate, isOptionalMasterVariable } from '../prompts/prompt-loader';
+import { checkMasterTemplate, inspectMasterTemplate, isOptionalMasterTask, isOptionalMasterVariable } from '../prompts/prompt-loader';
 import { treatmentForUseCase, isMasterOnlyTreatment, isPromptAdministrable, type Treatment } from './treatments';
 import { retiredVariablesSet } from './retired-variables';
 import {
@@ -142,7 +142,8 @@ export function checkMasterProposal(
   const master = masterPromptForTreatment(treatment);
   if (!master) return [`aucun prompt maître déclaré pour ${treatment}`];
   if (execution?.mode === 'STRUCTURED_CONTEXT') return text.trim() === '' ? ['prompt vide'] : [];
-  const out = checkMasterTemplate(text, master.tasks);
+  // Branche optionnelle (lot 42) absente : signalée sans bloquer (`missingOptionalMasterTasks`).
+  const out = checkMasterTemplate(text, master.tasks.filter((t) => !isOptionalMasterTask(master.masterPromptCode, t)));
   const attendus = declaredMasterVariables(master.masterPromptCode);
   if (attendus.length) {
     const info = inspectMasterTemplate(text);
@@ -155,6 +156,14 @@ export function checkMasterProposal(
     if (inconnus.length) out.push(`emplacement(s) inconnu(s) du code : ${inconnus.map((m) => `{{${m}}}`).join(', ')}`);
   }
   return out;
+}
+
+/** Branches OPTIONNELLES (`OPTIONAL_MASTER_TASKS`, lot 42) absentes d'un texte master. */
+export function missingOptionalMasterTasks(treatment: Treatment, text: string): string[] {
+  const master = masterPromptForTreatment(treatment);
+  if (!master) return [];
+  const info = inspectMasterTemplate(text);
+  return master.tasks.filter((t) => isOptionalMasterTask(master.masterPromptCode, t) && !info.branches.includes(t));
 }
 
 /**
@@ -224,6 +233,15 @@ export function masterConfigIssues(
   if (texte && master) {
     for (const a of checkMasterProposal(c.treatment, texte)) {
       out.push({ field: 'masterPrompt', message: `Prompt maître incomplet (${a}) : le master doit être complet (D-03).`, blocking: true });
+    }
+    const branches = missingOptionalMasterTasks(c.treatment, texte);
+    if (branches.length && !out.some((x) => x.blocking)) {
+      out.push({
+        field: 'masterPrompt',
+        message: `Section(s) ${branches.map((b) => `« BRANCHE TASK = ${b} »`).join(', ')} absente(s) du texte master : la fonction `
+          + `correspondante reste inactive (aucune erreur). Reprenez le texte du dépôt (${master.masterPromptCode}) pour l’activer.`,
+        blocking: false,
+      });
     }
     const optionnels = missingOptionalMasterVariables(c.treatment, texte);
     if (optionnels.length) {

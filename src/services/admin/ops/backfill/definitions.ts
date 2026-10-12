@@ -7,14 +7,20 @@
  *   1. fusion pièces → sous-structures (`npm run db:merge-rooms`) ;
  *   2. liens document ↔ bien (`scripts/backfill-document-asset-links.ts`) ;
  *   3. agenda (`scripts/agenda-backfill.ts`, `source-links` puis `dedupe`) ;
- *   4. rattrapage CDC 15 (`scripts/cdc15-backfill.ts --step all`).
+ *   4. rattrapage CDC 15 (`scripts/cdc15-backfill.ts --step all`) ;
+ *   5. données des biens déplacés entre comptes (lot 40, Duo — aussi lancé
+ *      automatiquement par la tâche `asset-account-backfill`) ;
+ *   6. Opérations établies par les données structurées des biens (lot 43,
+ *      C23.1 — aussi lancé automatiquement par `operations-structured-migration`) ;
+ *   7. Sinistres : reprise de l'ancien formulaire (lot 44, C14.3 — aussi lancé
+ *      automatiquement par `operations-claim-migration`).
  *
  * Chaque bloc n'offre que ce que le script permet (simulation, application,
  * restauration). Les scripts CLI restent utilisables et appellent les mêmes
  * services.
  */
 
-export type BackfillScript = 'merge-rooms' | 'document-asset-links' | 'agenda' | 'cdc15';
+export type BackfillScript = 'merge-rooms' | 'document-asset-links' | 'agenda' | 'cdc15' | 'asset-account' | 'operations-structured' | 'operations-claims';
 export type BackfillAction = 'simulate' | 'apply' | 'restore';
 export type BackfillStatus = 'running' | 'succeeded' | 'failed' | 'interrupted';
 
@@ -78,6 +84,46 @@ export const BACKFILL_DEFINITIONS: readonly BackfillDefinition[] = [
     description: 'Étapes MIG-01, 03, 02, 04, 07, 08, 05, 06 dans cet ordre. La simulation écrit seulement son rapport ; '
       + 'l’application sauvegarde chaque valeur modifiée et se restaure par son identifiant d’exécution.',
     actions: ['simulate', 'apply', 'restore'],
+    accountFilter: true,
+  },
+  {
+    script: 'asset-account',
+    order: 5,
+    label: 'Biens déplacés : données restées dans l’ancien compte',
+    command: 'tâche planifiée « asset-account-backfill » (automatique)',
+    description: 'Biens déplacés entre comptes (Duo) avant le lot 40 : documents rattachés au seul bien, analyses, agenda, '
+      + '« À traiter » et preuves remis dans le compte du bien ; un document aussi rattaché à un autre bien reste dans '
+      + 'l’ancien compte (lien retiré). La simulation exécute le transfert dans une transaction annulée (rapport exact, '
+      + 'aucune écriture). Lancé automatiquement au démarrage puis toutes les heures tant qu’il reste des biens à traiter.',
+    actions: ['simulate', 'apply'],
+    accountFilter: false,
+  },
+  {
+    script: 'operations-structured',
+    order: 6,
+    label: 'Opérations : données structurées',
+    command: 'tâche planifiée « operations-structured-migration » (automatique)',
+    description: 'Migration structurée des Opérations (CDC Opérations C23.1) : date et prix d’achat, statut Vendu / Transmis '
+      + 'avec date et prix de vente réalisés, assureur et n° de contrat saisis sur la fiche des biens deviennent l’Acquisition, '
+      + 'la Cession et le Contrat correspondants — rapprochés des Opérations issues des documents, jamais en doublon. Seules '
+      + 'les valeurs saisies par l’utilisateur comptent ; aucun document n’est réanalysé. La simulation exécute la réconciliation '
+      + 'dans une transaction annulée (rapport exact, aucune écriture). Lancé automatiquement au démarrage puis toutes les heures '
+      + 'tant qu’il reste des biens à examiner ; rejouée, elle ne change rien.',
+    actions: ['simulate', 'apply'],
+    accountFilter: true,
+  },
+  {
+    script: 'operations-claims',
+    order: 7,
+    label: 'Sinistres : ancien formulaire',
+    command: 'tâche planifiée « operations-claim-migration » (automatique)',
+    description: 'Migration de l’ancien formulaire Sinistre (un seul sinistre par bien) vers la rubrique « Sinistres » (CDC Opérations '
+      + 'C14.3) : type, dates, références, statut du dossier, textes, dommages, actions, échanges, montants. Un sinistre n’est créé '
+      + 'que si l’ancienne saisie a au moins un type, une date, une référence ou un montant ; il est rapproché d’un sinistre déjà '
+      + 'établi par les documents (même référence, même événement d’agenda, même date) au lieu d’être dupliqué ; l’événement '
+      + 'd’agenda lié est rattaché, jamais recréé. La simulation exécute la migration dans une transaction annulée (rapport exact, '
+      + 'aucune écriture). Lancé automatiquement au démarrage puis toutes les heures ; rejouée, elle ne change rien.',
+    actions: ['simulate', 'apply'],
     accountFilter: true,
   },
 ];

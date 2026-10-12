@@ -1,0 +1,24 @@
+{
+  "case": "P-T2-08",
+  "description": "ANSWER (lot 45, O6 — CDC Opérations V1 C15, F-132, B12) — « payé » sans preuve de paiement : le règlement n’est pas affirmé, le coût consolidé est restitué tel quel, sans le mot « Opération ».",
+  "context": {
+    "intent": "ACCOUNT_FACT_ASSET",
+    "question": "Combien ai-je payé pour l’entretien de la Polo ?",
+    "sources": [
+      { "id": "expenses:maintenance:20", "type": "document_extraction", "title": "Dépenses de entretien pour la Polo",
+        "content": "Dépenses qualifiées de entretien pour la Polo : 1 250,00 € (1 intervention) · entretien : 1 250,00 € (1 intervention) · total complet · documents inclus : doc-31",
+        "meta": { "theme": "maintenance", "totalCents": 125000, "documentCount": 1, "complete": true, "operationCount": 1, "consolidatedCents": 125000 } },
+      { "id": "doc_31", "type": "document", "title": "Facture Garage Martin — intervention",
+        "content": "Intervention « Révision 60 000 km » · 2026-03-02 · coût consolidé : 1 250,00 €",
+        "meta": { "fileId": 31, "date": "2026-03-02" } }
+    ]
+  },
+  "recording": {
+    "operationCode": "t2_answer", "task": "ANSWER",
+    "output": { "mode": "ANSWER", "format": "claims", "status": "answered", "claims": [
+      { "text": "Je n’ai trouvé aucune preuve de paiement pour l’entretien de la Polo : le règlement n’est pas confirmé.", "sourceIds": ["expenses:maintenance:20"], "derivation": "direct", "factual": true },
+      { "text": "Le coût documenté de l’intervention « Révision 60 000 km » est de 1 250,00 €.", "sourceIds": ["doc_31"], "derivation": "direct", "factual": true }
+    ] }
+  },
+  "expected": { "answerContains": "1 250,00 €", "answerNotContains": ["Opération", "opération"], "supportLevel": "supported" }
+}

@@ -176,6 +176,23 @@ export interface AccountDataPort {
    * bornés au compte — « Où en est l'analyse de mes documents ? ».
    */
   listDocumentsInAnalysis?(accountId: number, opts?: { limit?: number }): Promise<DocumentHit[]>;
+  // ── Lecture « Opération d'abord » (lot 45, O6 — CDC Opérations V1 C15) ──
+  // Facultatives : sans elles (ou sans Opération), les lectures historiques
+  // répondent comme avant (16.2, P13).
+  /** Historique d'un bien : Opérations + documents non représentés (F-134). */
+  readAssetHistory?(accountId: number, assetId: number, opts?: { assetName?: string | null }): Promise<import('../canonical/operations').AssetHistory | null>;
+  /** Sinistres actifs d'un périmètre (biens, ou compte). */
+  readClaims?(accountId: number, assetIds: number[]): Promise<import('../canonical/operations').ClaimOverview[]>;
+  /** Preuves de règlement d'un périmètre (F-132). */
+  readPayments?(accountId: number, opts: { assetIds: number[]; year?: number | null }): Promise<import('../canonical/operations').PaymentsRead>;
+  /** Contrats actifs d'un périmètre (B15). */
+  readContracts?(accountId: number, assetIds: number[], opts?: { assetName?: string | null }): Promise<import('../canonical/operations').ContractOverview[]>;
+  /** Pont Opération → documents sources (« retrouve la facture de… », F-130). */
+  findOperationDocuments?(accountId: number, terms: string[], assetId?: number | null): Promise<DocumentHit[]>;
+  /** Coût consolidé d'interventions désignées par leur libellé (F-127). */
+  readOperationCosts?(accountId: number, terms: string[], assetIds: number[]): Promise<import('../canonical/operations').OperationCostRead[]>;
+  /** Achat consolidé d'un bien (C15.2). */
+  readAcquisition?(accountId: number, assetId: number, opts?: { assetName?: string | null }): Promise<import('../canonical/operations').AcquisitionRead | null>;
   listActionables?(accountId: number, opts: import('../canonical/actionables').ActionableReadOptions): Promise<{
     todos: import('./actionable-request').TodoRow[];
     deadlines: import('./actionable-request').DeadlineRow[];
@@ -215,6 +232,13 @@ export type DataAnswerStrategy =
   | 'structured.upcoming_agenda'
   | 'structured.missing_information'
   | 'structured.sum_qualified'
+  // Lot 45 (O6) : lecture « Opération d'abord » (C15).
+  | 'structured.operation_history'
+  | 'structured.claim_status'
+  | 'structured.payments'
+  | 'structured.acquisition_price'
+  | 'structured.contracts'
+  | 'structured.operation_cost'
   // Lot 34 : demandes d'actions (À traiter, échéances, retards, période).
   | 'structured.actionable'
   | 'retrieval.canonical_field'
@@ -495,7 +519,8 @@ async function tryStructured(
   // Le document de la page (ou désigné par le fil / une clarification) fait
   // foi ; sinon, le document le plus pertinent pour les termes de la
   // question — jamais un document choisi au hasard.
-  if (DOCUMENT_STATUS_QUESTION.test(m) && (RE.documents.test(m) || /\b(analyse|ce document|ce fichier)\b/.test(m) || pageDocumentId)) {
+  // Lot 45 : « où en est mon sinistre ? » est l'état d'un sinistre (C15), pas d'un document.
+  if (DOCUMENT_STATUS_QUESTION.test(m) && !/\bsinistres?\b/.test(m) && (RE.documents.test(m) || /\b(analyse|ce document|ce fichier)\b/.test(m) || pageDocumentId)) {
     let doc: DocumentHit | null = null;
     if (pageDocumentId && port.findDocument) doc = await port.findDocument(accountId, pageDocumentId).catch(() => null);
     if (!doc) {
@@ -1024,7 +1049,26 @@ export async function answerFromData(p: {
   }
 
   // ── Niveau 2 : document le plus pertinent ─────────────────────────────────
-  const docs = await p.port.searchDocuments(p.accountId, terms, scopedAssetId);
+  let docs = await p.port.searchDocuments(p.accountId, terms, scopedAssetId);
+  // Lot 45 (B15, F-130) : « retrouve la facture de l'embrayage » — une
+  // intervention, un contrat, un sinistre ou un achat sert de PONT vers ses
+  // documents sources (candidats ajoutés, jamais à la place de la recherche).
+  if (wantsDocument && p.port.findOperationDocuments) {
+    // Les mots qui désignent le bien visé sont déjà satisfaits par le périmètre.
+    const noms = scope.assets.map((a) => plain(a.name));
+    const duBien = scopedAssetId ? terms.filter((t) => noms.some((n) => n.split(/[^a-z0-9]+/).includes(plain(t)))) : [];
+    const autres = terms.filter((t) => !duBien.includes(t));
+    const pont = autres.length
+      ? (await p.port.findOperationDocuments(p.accountId, autres, scopedAssetId).catch(() => [] as DocumentHit[]))
+        .map((h) => ({ ...h, matchedTerms: h.matchedTerms + duBien.length }))
+      : [];
+    const deja = new Map(docs.map((d) => [d.fileId, d]));
+    for (const h of pont) {
+      const d = deja.get(h.fileId);
+      if (!d) docs = [...docs, h];
+      else if (h.matchedTerms > d.matchedTerms) docs = docs.map((x) => (x.fileId === h.fileId ? { ...x, matchedTerms: h.matchedTerms } : x));
+    }
+  }
   const scored = docs.map((d) => ({ ...d, score: Math.min(1, d.matchedTerms / terms.length) }));
   const decision = decideDocumentHit(scored, p.thresholds);
   attempts.push({ level: 2, strategy: 'retrieval.document', status: decision.status, score: decision.score, threshold: decision.threshold, reason: decision.reason });

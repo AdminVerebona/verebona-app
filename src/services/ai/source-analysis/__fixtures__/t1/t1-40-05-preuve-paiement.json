@@ -1,0 +1,222 @@
+{
+  "case": "INV-FINAL-015 / F-132",
+  "description": "Avis de virement (type V2 preuve de paiement) : rôle PAYMENT_PROOF imposé, montant PAYMENT (jamais un coût), confiance ramenée à probable (enrichit, ne crée pas seul).",
+  "context": {
+    "linkedAssetId": 20,
+    "assets": [
+      {
+        "id": 20,
+        "name": "Maison de Lyon",
+        "category": "IMMOBILIER",
+        "subtype": "maison"
+      }
+    ],
+    "rooms": [],
+    "equipments": [],
+    "existingTitles": [],
+    "verified": {
+      "ASSET": [
+        20
+      ],
+      "EQUIPMENT": [],
+      "ROOM": [],
+      "SUPPLIER": []
+    }
+  },
+  "recording": {
+    "operationCode": "t1_analyze_document",
+    "task": "ANALYZE_DOCUMENT",
+    "output": {
+      "task": "ANALYZE_DOCUMENT",
+      "document": {
+        "title": {
+          "value": "Avis de virement Toitures du Rhône",
+          "confidence": "certain",
+          "evidence": {
+            "excerpt": "Avis de virement Toitures du Rhône",
+            "page": 1
+          }
+        },
+        "classification": {
+          "canonicalType": "AUTRE",
+          "rubricCode": "MAINTENANCE_WORKS",
+          "documentTypeCode": "WORKS_PAYMENT_PROOF",
+          "confidence": 0.88,
+          "evidence": {
+            "excerpt": "Avis de virement Toitures du Rhône"
+          }
+        },
+        "documentDate": {
+          "value": "2026-07-10",
+          "confidence": "certain",
+          "evidence": {
+            "excerpt": "Date : 10/07/2026",
+            "page": 1
+          }
+        },
+        "amountCents": {
+          "value": 900000,
+          "confidence": "certain",
+          "evidence": {
+            "excerpt": "Montant : 9 000,00 EUR",
+            "page": 1
+          }
+        }
+      },
+      "entities": {
+        "assets": [
+          {
+            "entityId": 20,
+            "rawLabel": "Maison de Lyon",
+            "score": 0.95,
+            "confidence": "certain",
+            "evidenceSignals": [
+              "Maison de Lyon"
+            ],
+            "reason": "désignation lue"
+          }
+        ],
+        "rooms": [],
+        "equipments": [],
+        "suppliers": [],
+        "multiAsset": false
+      },
+      "transcription": "BANQUE EXEMPLE\nVIREMENT SEPA — TOITURES DU RHONE — SO-233\nMontant : 9 000,00 EUR\nExécuté le 10/07/2026",
+      "facts": [
+        {
+          "canonicalKey": null,
+          "rawKey": "virement",
+          "label": "Virement",
+          "subject": "Maison de Lyon",
+          "attribute": "virement",
+          "rawValue": "Virement Toitures du Rhône",
+          "normalizedValue": "Virement Toitures du Rhône",
+          "valueType": "string",
+          "canonicalUnit": null,
+          "target": {
+            "type": "ASSET",
+            "entityId": 20,
+            "rawLabel": "Maison de Lyon",
+            "confidence": "certain",
+            "evidenceSignals": [
+              "Maison de Lyon"
+            ]
+          },
+          "provenance": "TEXT_EXTRACTION",
+          "confidence": "certain",
+          "evidence": {
+            "excerpt": "VIREMENT SEPA — TOITURES DU RHONE — SO-233",
+            "page": 1
+          }
+        },
+        {
+          "canonicalKey": null,
+          "rawKey": "montantVire",
+          "label": "Montant viré",
+          "subject": "Maison de Lyon",
+          "attribute": "montant viré",
+          "rawValue": "9 000,00 EUR",
+          "normalizedValue": 900000,
+          "valueType": "money_cents",
+          "canonicalUnit": "cents",
+          "target": {
+            "type": "ASSET",
+            "entityId": 20,
+            "rawLabel": "Maison de Lyon",
+            "confidence": "certain",
+            "evidenceSignals": [
+              "Maison de Lyon"
+            ]
+          },
+          "provenance": "TEXT_EXTRACTION",
+          "confidence": "certain",
+          "evidence": {
+            "excerpt": "Montant : 9 000,00 EUR",
+            "page": 1
+          }
+        },
+        {
+          "canonicalKey": null,
+          "rawKey": "dateExecution",
+          "label": "Date d'exécution",
+          "subject": "Maison de Lyon",
+          "attribute": "date d'exécution",
+          "rawValue": "2026-07-10",
+          "normalizedValue": "2026-07-10",
+          "valueType": "date",
+          "canonicalUnit": null,
+          "target": {
+            "type": "ASSET",
+            "entityId": 20,
+            "rawLabel": "Maison de Lyon",
+            "confidence": "certain",
+            "evidenceSignals": [
+              "Maison de Lyon"
+            ]
+          },
+          "provenance": "TEXT_EXTRACTION",
+          "confidence": "certain",
+          "evidence": {
+            "excerpt": "Exécuté le 10/07/2026",
+            "page": 1
+          }
+        }
+      ],
+      "hasExploitableContent": true,
+      "businessOperationCandidates": [
+        {
+          "candidateKey": "op1",
+          "established": true,
+          "confidence": "certain",
+          "typeHint": "INTERVENTION",
+          "statusHint": "REALIZED",
+          "summary": "Règlement du solde des travaux de toiture",
+          "sourceRoleHint": "INVOICE",
+          "provider": "Toitures du Rhône",
+          "targetHints": [
+            {
+              "type": "ASSET",
+              "entityId": 20,
+              "rawLabel": "Maison de Lyon",
+              "confidence": "probable"
+            }
+          ],
+          "businessReferences": [
+            {
+              "kind": "INVOICE",
+              "value": "SO-233"
+            }
+          ],
+          "financialHints": [
+            {
+              "role": "REALIZED_COST",
+              "amountMinor": 900000,
+              "currency": "EUR",
+              "economicDate": "2026-07-10",
+              "factIndex": 1
+            }
+          ],
+          "evidenceFactIndexes": [
+            0,
+            1,
+            2
+          ]
+        }
+      ]
+    }
+  },
+  "expected": {
+    "operationCandidates": [
+      {
+        "sourceRoleHint": "PAYMENT_PROOF",
+        "confidence": "probable",
+        "financialRoles": [
+          "PAYMENT"
+        ],
+        "amountsMinor": [
+          900000
+        ]
+      }
+    ]
+  }
+}

@@ -93,6 +93,21 @@ export const CANONICAL_FIELDS: readonly CanonicalFieldDef[] = [
     aliases: ['purchaseLocation', 'lieuAchat'],
     mirrorColumns: [{ table: 'assets', column: 'purchase_location', transform: 'identity' }],
   }),
+  // Lot 43 (O4, décision PO Q5) : vente RÉALISÉE, demandée (facultative) au
+  // passage du bien à VENDU — date seule pour TRANSMIS (cession sans prix).
+  // Saisie seule (`inputOnly`) : jamais écrite par l'IA, jamais demandée au
+  // modèle ; une donnée humaine qui établit la Cession (C2 ASSET_DATA, C7.6).
+  // Distincte du prix SOUHAITÉ (informations commerciales, D-12) et de la
+  // valeur estimée (C18).
+  f({
+    key: 'saleDate', label: 'Date de vente / cession', families: ALL, valueType: 'date', section: 'common',
+    inputOnly: true,
+  }),
+  f({
+    key: 'salePrice', label: 'Prix de vente réalisé', families: ALL, valueType: 'money_eur', unit: 'EUR', section: 'common',
+    range: { min: 0 },
+    inputOnly: true,
+  }),
   f({
     key: 'estimatedValue', targetTypes: ['ASSET', 'EQUIPMENT'], label: 'Valeur estimée', families: ALL, valueType: 'money_eur', unit: 'EUR', section: 'valuation',
     aliases: ['valeurEstimee', 'estimatedValueCents', 'currentValue'],

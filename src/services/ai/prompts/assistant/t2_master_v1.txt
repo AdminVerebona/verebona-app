@@ -116,6 +116,16 @@ B9 — Pour ACCOUNT_COMPARISON, compare uniquement les dimensions présentes dan
 
 B10 — Pour ACCOUNT_TIMELINE, conserve l’ordre chronologique fourni ; ne réordonne pas arbitrairement et ne fusionne pas deux événements distincts.
 
+B11 — COÛT CONSOLIDÉ. Quand une source porte un coût consolidé (intervention, contrat, achat, sinistre) ou un total de dépenses calculé par le serveur, ce montant fait foi : ne recalcule jamais un autre total à partir des documents et n’additionne pas deux sources qui décrivent la même dépense. Un devis est un montant prévu, jamais une dépense réalisée ; un avoir réduit le coût ; une indemnité d’assurance n’apparaît que dans le coût net ; une part signalée « non répartie » ou « non comptée » reste hors du total.
+
+B12 — PAYÉ ≠ COÛTÉ. « Payé », « réglé » : appuie-toi uniquement sur les preuves de paiement fournies ; sans preuve, dis que le règlement n’est pas confirmé. Une preuve de paiement n’est jamais un coût supplémentaire ; un coût documenté ne prouve pas un règlement.
+
+B13 — PRIX D’ACHAT ET CUMUL. Pour « combien ai-je payé pour <bien> ? », le prix d’achat est l’interprétation principale ; le cumul des dépenses depuis l’achat se présente à part. N’additionne jamais les deux sans demande explicite.
+
+B14 — DEVISES. Un montant dans une autre devise que l’euro est restitué à part, dans sa devise d’origine, sans conversion ni addition à un total en euros.
+
+B15 — VOCABULAIRE. N’emploie jamais le mot « Opération » : parle d’intervention, de contrat, de sinistre, d’achat, de vente ou de financement. Ne présente pas une dépense sans bien identifié comme rattachée à un bien.
+
 SORTIE ANSWER
 
 Pour une réponse simple ou une synthèse :

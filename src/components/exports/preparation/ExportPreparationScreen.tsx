@@ -39,6 +39,7 @@ import { PREP_MESSAGES } from '@/services/exports/v12/preparation/messages';
 import type { ItemMode, OutputFormat, PrepSection } from '@/services/exports/v12/preparation/types';
 import { httpPreparationApi, toFailure, type PreparationApi } from './api';
 import { CilBlocksPanel } from './CilBlocksPanel';
+import { ClaimExportPanel } from './ClaimExportPanel';
 import { SaleAdsPanel } from './SaleAdsPanel';
 import { createSaleAdsRefresher } from './sale-ads-refresh';
 import { PreparationSection } from './PreparationSection';
@@ -103,14 +104,17 @@ export function ExportPreparationScreen({ assetId, exportType, onClose, api: api
   };
 
   // ── Chargement (FLOW-*-01/02/03) ──────────────────────────────────────────
-  const load = useCallback(async (keepSelections = false) => {
+  const load = useCallback(async (keepSelections = false, claimOperationId?: number) => {
     const current = stateRef.current;
     if (!keepSelections) dispatch({ type: 'LOAD_START' });
     try {
       const mobile = typeof window !== 'undefined' && window.matchMedia?.('(max-width: 1023px)').matches;
+      // Lot 44 : sinistre du dossier — choisi (nouvelle pré-sélection) ou conservé.
+      const claimId = claimOperationId ?? current.prep?.claim?.selectedOperationId ?? undefined;
       const prep = await api.prepare({
         exportType,
         clientContext: { viewport: mobile ? 'mobile' : 'desktop' },
+        ...(claimId ? { claimOperationId: claimId } : {}),
         ...(keepSelections && current.prep ? { includeCurrentSelections: true, choices: buildChoices(current, 'ZIP') } : {}),
       });
       dispatch({ type: keepSelections ? 'RELOAD_SUCCESS' : 'LOAD_SUCCESS', prep });
@@ -469,6 +473,15 @@ export function ExportPreparationScreen({ assetId, exportType, onClose, api: api
                 >
                   {s.cil && prep.cil ? (
                     <CilBlocksPanel cil={prep.cil} assetId={assetId} api={api} disabled={!editable} onChanged={() => load(true)} />
+                  ) : s.infoSections.includes('claim') && prep.claim ? (
+                    <ClaimExportPanel
+                      assetId={assetId}
+                      category={prep.asset.family}
+                      claim={prep.claim}
+                      editable={editable}
+                      onSelect={(id) => void load(false, id)}
+                      onSaveStateChange={onSaveStateChange}
+                    />
                   ) : s.infoSections.length > 0 ? (
                     <AssetAdditionalInfosSection assetId={assetId} category={prep.asset.family} sections={stableInfo(s.infoSections)} variant="embedded" readOnly={!editable} onSaveStateChange={onSaveStateChange} onSectionsSaved={prep.saleAds ? onSectionsSaved : undefined} />
                   ) : null}

@@ -406,7 +406,7 @@ export default function AssetDetailPage() {
           </TabsContent>
 
           <TabsContent value="details" className="mt-4">
-            <AssetDetailsTab asset={asset} onRefresh={handleRefresh} planType={planType} readOnly={isReadOnly} highlightField={searchParams.get('highlight')} />
+            <AssetDetailsTab asset={asset} onRefresh={handleRefresh} planType={planType} readOnly={isReadOnly} highlightField={searchParams.get('highlight')} highlightClaimId={Number(searchParams.get('claim')) || null} />
           </TabsContent>
 
           <TabsContent value="documents" className="mt-4">

@@ -1,0 +1,144 @@
+{
+  "case": "P-T3-09",
+  "description": "OPERATION_MATCH — même garage, même bien, objet différent : DISTINCT_OPERATION certain → création (source certaine, C5).",
+  "context": {
+    "operationMatch": {
+      "subject": {
+        "document": {
+          "title": "Facture Garage Martin",
+          "documentType": "INVOICE",
+          "documentDate": "2026-06-05"
+        },
+        "candidate": {
+          "type": "INTERVENTION",
+          "status": "REALIZED",
+          "sourceRole": "INVOICE",
+          "summary": "Remplacement des plaquettes de frein avant",
+          "provider": "Garage Martin",
+          "assets": [
+            "Clio"
+          ],
+          "references": [
+            "INVOICE:FA-0612"
+          ],
+          "dates": {
+            "realizedDate": "2026-06-05"
+          },
+          "amounts": [
+            "REALIZED_COST/TOTAL 249.00 EUR"
+          ]
+        }
+      },
+      "candidates": [
+        {
+          "candidateId": 12,
+          "type": "INTERVENTION",
+          "status": "ENVISAGED",
+          "provider": "Garage Martin",
+          "dates": {
+            "plannedDate": "2026-06-03"
+          },
+          "assets": [
+            "Clio"
+          ],
+          "references": [],
+          "amounts": [
+            "FORECAST_COST 255.00 EUR"
+          ],
+          "documents": [
+            {
+              "title": "Devis freinage",
+              "role": "QUOTE",
+              "summary": "Plaquettes de frein avant, main-d'œuvre"
+            }
+          ]
+        },
+        {
+          "candidateId": 15,
+          "type": "INTERVENTION",
+          "status": "REALIZED",
+          "provider": "Garage Martin",
+          "dates": {
+            "realizedDate": "2026-04-10"
+          },
+          "assets": [
+            "Clio"
+          ],
+          "references": [
+            "INVOICE:FA-0410"
+          ],
+          "amounts": [
+            "REALIZED_COST 89.00 EUR"
+          ],
+          "documents": [
+            {
+              "title": "Facture vidange",
+              "role": "INVOICE",
+              "summary": "Vidange et filtre à huile"
+            }
+          ]
+        }
+      ],
+      "candidate": {
+        "confidence": "certain",
+        "type": "INTERVENTION",
+        "status": "REALIZED",
+        "role": "INVOICE",
+        "assetIds": [
+          1
+        ],
+        "hints": [
+          {
+            "role": "REALIZED_COST",
+            "amountMinor": 24900,
+            "currency": "EUR",
+            "amountScope": "TOTAL"
+          }
+        ]
+      },
+      "operations": [
+        {
+          "id": 12,
+          "typeCode": "INTERVENTION",
+          "status": "ENVISAGED",
+          "assetIds": [
+            1
+          ]
+        },
+        {
+          "id": 15,
+          "typeCode": "INTERVENTION",
+          "status": "REALIZED",
+          "assetIds": [
+            1
+          ]
+        }
+      ],
+      "plausible": [
+        12,
+        15
+      ]
+    }
+  },
+  "recording": {
+    "operationCode": "t3_operation_match",
+    "task": "OPERATION_MATCH",
+    "output": {
+      "task": "OPERATION_MATCH",
+      "decision": "DISTINCT_OPERATION",
+      "matchedCandidateId": null,
+      "confidence": "certain",
+      "concordantSignals": [],
+      "contradictions": [
+        "objet technique différent (pneus vs freinage, vidange)"
+      ],
+      "reason": "Remplacement de pneus : aucune des interventions candidates ne porte sur cet objet."
+    }
+  },
+  "expected": {
+    "outcome": "CREATE_NEW",
+    "neverOutcomes": [
+      "MATCH_AND_ENRICH"
+    ]
+  }
+}

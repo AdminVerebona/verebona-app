@@ -56,6 +56,12 @@ export interface LifecycleDeps {
     accountId: number; userId: number; targets: Array<{ type: 'EQUIPMENT' | 'ROOM'; id: number }>;
     sourceFileId?: number | null; reason: string;
   }) => Promise<unknown>;
+  /**
+   * Lot 41 (CDC Opérations V1 C4 TRG-003 / TRG-006) : consolidation T3 des
+   * Opérations que ces documents soutiennent (retrait des contributions,
+   * invalidation sans source). Non bloquant.
+   */
+  operations?: (accountId: number, event: { trigger: 'document_deleted' | 'document_moved' | 'document_linked'; fileId?: number }) => void;
 }
 
 const defaultDeps: LifecycleDeps = {
@@ -74,6 +80,11 @@ const defaultDeps: LifecycleDeps = {
   enqueueEntities: async (input) => {
     const { enqueueT3ForEntities } = await import('../reconciliation/t3-queue');
     return enqueueT3ForEntities({ ...input, triggeredBy: 'document_linked' });
+  },
+  operations: (accountId, event) => {
+    void import('@/services/business-operations/consolidation/queue')
+      .then(({ notifyOperationsEvent }) => notifyOperationsEvent(accountId, event))
+      .catch((e) => console.error('[t3-lifecycle] consolidation des Opérations non demandée :', (e as Error).message));
   },
 };
 
@@ -191,6 +202,8 @@ export function onDocumentsDeleted(
   return (async () => {
     const r = await transition({ accountId: p.accountId, userId: p.userId, sourceIds: p.fileIds, reason: 'DOCUMENT_DELETED' }, deps);
     await retirerAgenda(deps, p.accountId, p.fileIds, null);
+    // Une seule demande : le passage T3 relit l'état (sources obsolètes), rien n'est perdu.
+    deps.operations?.(p.accountId, p.fileIds.length === 1 ? { trigger: 'document_deleted', fileId: p.fileIds[0] } : { trigger: 'document_deleted' });
     return r;
   })();
 }
@@ -241,6 +254,7 @@ export async function onDocumentAssetChanged(
   // Agenda : les événements automatiques de ce document portés par A partent
   // avec lui (B les reçoit par la reprojection / réanalyse de la route).
   await retirerAgenda(deps, p.accountId, [p.fileId], from);
+  deps.operations?.(p.accountId, { trigger: p.toAssetId ? 'document_moved' : 'document_linked', fileId: p.fileId });
 
   // ── Biens SECONDAIRES qui ne sont plus liés ───────────────────────────────
   // Un bien qui porte encore des preuves de ce document mais n'a plus AUCUN

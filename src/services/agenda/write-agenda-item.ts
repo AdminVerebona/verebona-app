@@ -88,6 +88,12 @@ export interface WriteAgendaItemOptions {
    * concurrente). 0 ligne touchée = élément protégé, rien d'autre n'est écrit.
    */
   onlyIfUntouched?: boolean;
+  /**
+   * D-15 : proposition de statut du bien pour un événement historique
+   * « vente » créé (défaut : oui). Faux pour une projection d'Opération
+   * (lot 46, O7) : la cession vient déjà de la fiche ou des documents.
+   */
+  statusProposal?: boolean;
 }
 
 export interface WriteAgendaItemResult {
@@ -270,7 +276,7 @@ export async function writeAgendaItem(
   // D-15 : un événement historique « vente » ou « sinistre » créé
   // propose le changement de statut du bien (carte À traiter ASSET-STATUS) ;
   // le statut n'est JAMAIS écrit automatiquement. Non bloquant.
-  if (effets && creation && !opts.client && semantics.nature === 'HISTORICAL' && semantics.businessType) {
+  if (effets && creation && !opts.client && opts.statusProposal !== false && semantics.nature === 'HISTORICAL' && semantics.businessType) {
     const assetIds = input.links?.assetIds ?? [];
     if (assetIds.length > 0) {
       const { proposeAssetStatusChange, ASSET_STATUS_BY_EVENT } = await import('@/services/to-process/agenda-status-cards');
@@ -324,10 +330,18 @@ export async function syncPurchaseDate(p: {
   for (const { assetId } of links) {
     // Valeur attendue vide : si une date d'acquisition existe (fiche,
     // colonne ou alias), rien n'est écrit (conflit optimiste).
-    await writeCanonicalAssetField({
+    const ecrit = await writeCanonicalAssetField({
       assetId, accountId: p.accountId, key: 'acquisitionDate', value: item.startDate, origin: 'USER',
       expectedCurrent: null, actorUserId: p.actorUserId, source: { type: 'agenda_item', id: p.itemId },
-    }).catch((e: Error) => console.error('[agenda] recopie « achat » :', e.message));
+    }).catch((e: Error) => { console.error('[agenda] recopie « achat » :', e.message); return null; });
+    // Lot 46 (O7) : date d'acquisition saisie → TRG-008 (`asset_updated`),
+    // comme une saisie sur la fiche. La projection de l'ACQUISITION qui en
+    // résulte RELIE cet événement (rapprochement C16.1) sans le réécrire ni
+    // redéclencher T3 : la boucle agenda → fiche → T3 → agenda s'arrête là.
+    if (ecrit?.field?.outcome === 'written') {
+      const { notifyOperationsEvent } = await import('@/services/business-operations/consolidation/queue');
+      notifyOperationsEvent(p.accountId, { trigger: 'asset_updated', assetId });
+    }
   }
 }
 

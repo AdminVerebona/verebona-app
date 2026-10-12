@@ -33,6 +33,64 @@ export const MASTER_CORPUS_EVALUATORS: Readonly<Record<string, Evaluator>> = {
       ...ecart(exp(c, 'groups') === undefined || JSON.stringify((output as { groups: unknown }).groups) === JSON.stringify(exp(c, 'groups')), 'regroupement inattendu'),
     ];
   },
+  // ANALYZE_DOCUMENT (lot 40, CDC Opérations V1 C3) : candidats Opération
+  // rejoués à travers l'ancrage et la BARRIÈRE SERVEUR réels
+  // (`operation-candidates/prepare`). Attendus facultatifs :
+  //   · `operationCandidates` : candidats RETENUS, dans l'ordre (type,
+  //     statut, rôle, établi, confiance, rôles et devises des montants) ;
+  //   · `noEstablishedCandidate: true` : aucun candidat établi (F-003 à F-009).
+  // Invariants contrôlés sur TOUS les cas : un candidat établi a au moins
+  // une preuve ; une preuve de paiement ne porte aucun coût (INV-FINAL-015).
+  async t1_analyze_document(c, output) {
+    const { anchorOperationCandidates, gateOperationCandidates } = await import('../../source-analysis/operation-candidates/prepare');
+    const { checkFactEvidence } = await import('../../source-analysis/master/fact-evidence');
+    const { transactionNature } = await import('../../source-analysis/projection/rules');
+    const out = structuredClone(output) as import('../../source-analysis/master/t1-contract').T1AnalyzeDocumentOutput;
+    const ancres = anchorOperationCandidates(out, 'PASS_1');
+    const ctx = c.context as { verified?: Partial<Record<'ASSET' | 'EQUIPMENT' | 'ROOM', number[]>>; capabilities?: { rooms?: boolean; equipments?: boolean } };
+    const ids = (k: 'ASSET' | 'EQUIPMENT' | 'ROOM') => new Set(ctx.verified?.[k] ?? []);
+    const gardes = out.facts.filter((f) => checkFactEvidence(f).ok) as Array<{ t1FactRef?: string }>;
+    const classification = out.document.classification;
+    const r = gateOperationCandidates(ancres, {
+      hasExploitableContent: out.hasExploitableContent,
+      documentTypeCode: classification?.documentTypeCode ?? null,
+      verifiedIds: { ASSET: ids('ASSET'), EQUIPMENT: ids('EQUIPMENT'), ROOM: ids('ROOM') },
+      capabilities: { rooms: ctx.capabilities?.rooms ?? true, equipments: ctx.capabilities?.equipments ?? true },
+      keptFactRefs: new Set(gardes.flatMap((f) => (f.t1FactRef ? [f.t1FactRef] : []))),
+      transactionNature: transactionNature({
+        documentTypeCode: classification?.documentTypeCode ?? null,
+        texts: [out.document.title?.value, out.document.amountCents?.evidence?.excerpt],
+      }),
+    });
+    const errs: string[] = [];
+    for (const x of r.candidates) {
+      errs.push(...ecart(!x.established || x.evidenceFactRefs.length > 0, `candidat ${x.candidateKey} établi sans preuve`));
+      errs.push(...ecart(x.sourceRoleHint !== 'PAYMENT_PROOF' || x.financialHints.every((h) => h.role !== 'REALIZED_COST' && h.role !== 'FORECAST_COST'),
+        `preuve de paiement ${x.candidateKey} comptée comme coût`));
+    }
+    if (exp(c, 'noEstablishedCandidate')) {
+      errs.push(...ecart(r.candidates.every((x) => !x.established), `candidat établi inattendu (${r.candidates.filter((x) => x.established).map((x) => x.typeHint ?? 'type nul').join(', ')})`));
+    }
+    const attendus = exp<Array<Record<string, unknown>>>(c, 'operationCandidates');
+    if (attendus) {
+      errs.push(...ecart(r.candidates.length === attendus.length, `${r.candidates.length} candidat(s) retenu(s) ≠ ${attendus.length}`));
+      attendus.forEach((a, i) => {
+        const x = r.candidates[i];
+        if (!x) return;
+        const vu: Record<string, unknown> = {
+          typeHint: x.typeHint, statusHint: x.statusHint, sourceRoleHint: x.sourceRoleHint, established: x.established,
+          confidence: x.confidence, exclusionReason: x.exclusionReason,
+          financialRoles: x.financialHints.map((h) => h.role), currencies: x.financialHints.map((h) => h.currency),
+          amountsMinor: x.financialHints.map((h) => h.amountMinor), amountScopes: x.financialHints.map((h) => h.amountScope),
+          targetEntityIds: x.targetHints.map((t) => t.entityId), evidenceCount: x.evidenceFactRefs.length,
+        };
+        for (const [k, v] of Object.entries(a)) {
+          errs.push(...ecart(JSON.stringify(vu[k]) === JSON.stringify(v), `candidat ${i + 1} : ${k} ${JSON.stringify(vu[k])} ≠ ${JSON.stringify(v)}`));
+        }
+      });
+    }
+    return errs;
+  },
   // ── T3 ─────────────────────────────────────────────────────────────────────
   async t3_value_conflict(c, output) {
     const { translateValueConflict } = await import('../../reconciliation/master/value-conflict');
@@ -74,6 +132,33 @@ export const MASTER_CORPUS_EVALUATORS: Readonly<Record<string, Evaluator>> = {
     return [
       ...ecart(JSON.stringify(r.retained) === JSON.stringify(exp(c, 'matches') ?? []), 'liaison automatique retenue malgré l’ambiguïté'),
       ...ecart(!attendu || JSON.stringify(r.ambiguity?.candidateIds) === JSON.stringify(attendu.candidateIds), 'ambiguïté non signalée'),
+    ];
+  },
+  // Lot 42 — OPERATION_MATCH (CDC Opérations V1 C6.2) : monde fermé puis
+  // décision serveur réelle (`applyM3Verdict`) sur la décision M3_REQUIRED du
+  // cas. Attendus : `outcome`, `operationId` (facultatif), `neverOutcomes`.
+  async t3_operation_match(c, output) {
+    const { translateOperationMatch } = await import('../../reconciliation/master/operation-match');
+    const { applyM3Verdict } = await import('../../../business-operations/consolidation/matching');
+    const om = (c.context as { operationMatch: {
+      candidate: Record<string, unknown>; operations: Array<Record<string, unknown>>; plausible: number[];
+    } }).operationMatch;
+    const ops = om.operations.map((o) => ({ providerKey: null, refs: [], assetIds: [], plannedDate: null, startDate: null, realizedDate: null, endDate: null, ...o })) as never[];
+    const identity = {
+      candidateId: 1, candidateKey: 'op1', fileId: 1, established: true, confidence: 'certain', type: null, status: 'REALIZED', role: null,
+      summary: '', provider: null, providerKey: null, assetIds: [], targetAuthority: null, equipmentIds: [], refs: [],
+      dates: { plannedDate: null, startDate: null, realizedDate: null, endDate: null }, hints: [], ...om.candidate,
+    } as never;
+    const { verdict } = translateOperationMatch(output as never, new Set(om.plausible));
+    const base = {
+      outcome: 'HOLD_UNRESOLVED' as const, operationId: null, matchMethod: null, reason: 'M3_REQUIRED',
+      detail: { certain: [], plausible: [...om.plausible], contradictions: [], excluded: [] },
+    };
+    const d = applyM3Verdict(identity, base, verdict, { operations: ops, assetStatus: new Map() });
+    return [
+      ...ecart(d.outcome === exp(c, 'outcome'), `issue ${d.outcome} ≠ ${String(exp(c, 'outcome'))}`),
+      ...ecart(exp(c, 'operationId') === undefined || d.operationId === exp(c, 'operationId'), `Opération ${String(d.operationId)}`),
+      ...ecart(!(exp<string[]>(c, 'neverOutcomes') ?? []).includes(d.outcome), `issue interdite ${d.outcome}`),
     ];
   },
   // ── T4 ─────────────────────────────────────────────────────────────────────

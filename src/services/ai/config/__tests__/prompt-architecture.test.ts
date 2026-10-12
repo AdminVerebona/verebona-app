@@ -21,7 +21,7 @@ import { runInJobContext } from '../../queue/job-context';
 import { T3_MASTER_VARIABLES } from '../../registry/operations';
 import { MASTER_ONLY_TREATMENTS, TREATMENTS } from '../treatments';
 
-const MASTER_T3 = `{{TASK}}\n${T3_MASTER_VARIABLES.map((v) => `{{${v}}}`).join('\n')}\nBRANCHE TASK = VALUE_CONFLICT\nBRANCHE TASK = LINK_AMBIGUITY\n`;
+const MASTER_T3 = `{{TASK}}\n${T3_MASTER_VARIABLES.map((v) => `{{${v}}}`).join('\n')}\nBRANCHE TASK = VALUE_CONFLICT\nBRANCHE TASK = LINK_AMBIGUITY\nBRANCHE TASK = OPERATION_MATCH\n`;
 /** Traitement fictif sans master (lot 16 : T1 à T6 en ont tous un). */
 const SANS_MASTER = 'T9' as never;
 const t3 = (over: Partial<TreatmentConfig> = {}): TreatmentConfig => ({
@@ -49,7 +49,7 @@ describe('valeur par défaut', () => {
       masterPromptCode: 't1_master_v1', tasks: ['GROUP_UPLOAD', 'ANALYZE_DOCUMENT'],
     });
     expect(masterPromptForTreatment('T3')).toEqual({
-      masterPromptCode: 't3_master_v1', tasks: ['VALUE_CONFLICT', 'LINK_AMBIGUITY'],
+      masterPromptCode: 't3_master_v1', tasks: ['VALUE_CONFLICT', 'LINK_AMBIGUITY', 'OPERATION_MATCH'],
     });
     expect(masterPromptForTreatment('T4')).toEqual({
       // TEMPORAL_AMBIGUITY : active depuis le lot 18 (R5).
@@ -142,7 +142,8 @@ describe('diff et contrôles de promotion', () => {
 
   it('texte master incomplet : bloquant (plus de cas « champ ignoré en steps »)', () => {
     const issues = masterConfigIssues(t3({ prompt: 'P', masterPrompt: 'Sois précis.' }));
-    // {{TASK}}, deux sections, et (lot 16) les emplacements attendus par le code.
+    // {{TASK}}, deux sections, et (lot 16) les emplacements attendus par le code
+    // (OPERATION_MATCH, lot 42, est une branche OPTIONNELLE : jamais bloquante).
     expect(issues.length).toBe(4);
     expect(issues.every((i) => i.field === 'masterPrompt' && i.blocking)).toBe(true);
     expect(issues[3].message).toMatch(/emplacement\(s\) supprimé/);

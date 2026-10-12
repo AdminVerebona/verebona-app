@@ -31,3 +31,19 @@ export function parseEntityFieldSourceId(id: string): { type: 'EQUIPMENT' | 'ROO
   const n = Number(m[2]);
   return Number.isSafeInteger(n) && n > 0 && getField(m[3]) ? { type: m[1] === 'room' ? 'ROOM' : 'EQUIPMENT', id: n, key: m[3] } : null;
 }
+
+/**
+ * Source d'un SINISTRE (lot 45, O6) : `claim:<assetId>:<id>` — s'ouvre sur la
+ * section Sinistres de la fiche du bien, sinistre sélectionné ; jamais sur
+ * une page « Opération » (P09). L'entité contrôlée reste le bien.
+ */
+export const claimSourceId = (assetId: number, claimId: number): string => `claim:${assetId}:${claimId}`;
+
+/** Décode `claim:<assetId>:<id>` (null sinon). */
+export function parseClaimSourceId(id: string): { assetId: number; claimId: number } | null {
+  const m = /^claim:(\d+):(\d+)$/.exec(id);
+  if (!m) return null;
+  const assetId = Number(m[1]);
+  const claimId = Number(m[2]);
+  return Number.isSafeInteger(assetId) && assetId > 0 && Number.isSafeInteger(claimId) && claimId > 0 ? { assetId, claimId } : null;
+}

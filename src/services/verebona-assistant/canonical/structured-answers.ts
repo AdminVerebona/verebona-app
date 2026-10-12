@@ -24,18 +24,31 @@ import {
   daysBetween, formatAmountCents, formatDateFr, formatList, formatNoResult, formatRelativeDays, joinFr,
 } from '../core/deterministic-format';
 import { assetFieldSource, assetFieldSourceId, type CanonicalFieldReading } from './field-reader';
-import { EXPENSE_THEME_LABELS, expenseThemeOf, expenseSumSource } from './expenses';
+import {
+  EXPENSE_THEME_LABELS, expenseThemeOf, expenseSumSource, expenseItemsLabel, mixedExpenseNotes, type QualifiedExpenses,
+} from './expenses';
+import {
+  claimSourceId, costLineSource, formatEur, formatMinorAmount, specificCostTerms,
+  type AssetHistoryEntry, type ClaimOverview, type ContractOverview, type OperationCostRead, type PaymentsRead,
+} from './operations';
+import type { ExpenseTheme } from './expense-classes';
 import { findReadableFields, purchaseMention } from './field-vocabulary';
 
 export interface ScopeLike { assets: AssetRow[]; ambiguous: boolean; unresolved: boolean; label: string | null }
 
 export type CanonicalStrategy =
-  | 'structured.asset_field' | 'structured.upcoming_agenda' | 'structured.missing_information' | 'structured.sum_qualified';
+  | 'structured.asset_field' | 'structured.upcoming_agenda' | 'structured.missing_information' | 'structured.sum_qualified'
+  // Lot 45 (O6) : lecture « Opération d'abord » (CDC Opérations V1 C15).
+  | 'structured.operation_history' | 'structured.claim_status' | 'structured.payments' | 'structured.acquisition_price'
+  | 'structured.contracts' | 'structured.operation_cost';
 
 export type CanonicalLevel1 =
   | { strategy: CanonicalStrategy; answer: string; sources: RetrievedSource[]; claims: Claim[]; kind: 'exact' | 'list' | 'calc' | 'no_result' | 'conflict' }
   | { ambiguous: AssetRow[]; reason: string }
   | null;
+
+/** Réponse structurée prête (sans ambiguïté). */
+export type CanonicalAnswer = Extract<NonNullable<CanonicalLevel1>, { strategy: CanonicalStrategy }>;
 
 const plain = (s: string) => s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/[’]/g, "'");
 const claim = (key: string, text: string, sources: RetrievedSource[], derivation: Claim['derivation']): Claim =>
@@ -99,6 +112,202 @@ const MISSING = /\b(manque|manquent|manquant|manquante|manquantes|manquants|inco
 const SPEND = /\b(depense|depenses|depensee?s?|coute|coutes?|paye|payes?|total|somme|montant total)\b/;
 const COUNT = /\b(combien|nombre)\b/;
 
+// ── Lot 45 (O6) : intentions « Opération d'abord » (pures, testées) ─────
+
+/** Question sur un sinistre (état, indemnité, dossier). */
+export const CLAIM_Q = /\bsinistres?\b/;
+const CLAIM_ASK = /\b(ou en (est|sont)|statut|etat|avancement|indemni\w*|rembourse\w*|dossiers?|suivi|quels?|quelles?|mes|mon|combien|ai-je|declare\w*|expert\w*)\b/;
+const CLAIM_STRIP = /sinistres?|o[uù] en (est|sont)|statut|[ée]tat|avancement|indemni\w*|rembours\w*|dossiers?|suivi|d[ée]clar\w*|expert\w*/gi;
+
+/**
+ * Historique d'un bien (« qu'est-ce qui a été fait sur la Polo ? », « quelles
+ * réparations sur la maison ? », « historique des interventions »).
+ */
+export const HISTORY_Q = /(qu'?est-ce qu'?(il|on) a ete fait|qu'?est-ce qui a ete (fait|realise)|ce qui a ete (fait|realise)|que s'?est-il passe|qu'?a-t-on fait|quel(le)?s? (interventions?|reparations?|travaux|entretiens?|operations?)\b(?! (prevue?s?|a venir|prochaine?s?))|historique des (interventions|reparations|travaux|entretiens|depenses)|(interventions?|travaux|reparations?) (realise(e)?s?|faite?s?|effectue(e)?s?) (sur|dans|a|au|pour))/;
+/** Une question sur l'avenir (« prévus », « à faire ») n'est pas un historique : Agenda / actions. */
+const HISTORY_NOT = /\b(prevue?s?|a venir|prochaine?s?|planifie\w*|futur\w*|dois|devrai\w*|faut|a faire|a prevoir)\b/;
+const HISTORY_STRIP = /qu['’]?est-ce qu['’]?(il|on) a [ée]t[ée] fait|qu['’]?est-ce qui a [ée]t[ée] (fait|r[ée]alis[ée])|ce qui a [ée]t[ée] (fait|r[ée]alis[ée])|que s['’]?est-il pass[ée]|qu['’]?a-t-on fait|historique|interventions?|r[ée]parations?|travaux|entretiens?|op[ée]rations?|r[ée]alis[ée]e?s?|faite?s?|effectu[ée]e?s?|quel(le)?s?/gi;
+
+/** « payé / réglé » (C15) — distinct de « coûté / dépensé » (F-132, F-133). */
+export const PAID = /\b(paye|payee|payes|payees|payer|regle|reglee|regles|reglees|regler|acquitte(e|es|s)?|verse|versee|versees)\b/;
+const COST_WORDS = /\b(coute|coutee|coutes|cout|couts|depense\w*)\b/;
+const PAID_YESNO = /\b(a-t-(il|elle) ete|ont-(ils|elles) ete|est-(il|elle)|sont-(ils|elles)|deja)\b/;
+const PAID_STRIP = /pay[ée]e?s?|payer|r[ée]gl[ée]e?s?|r[ée]gler|acquitt[ée]e?s?|vers[ée]e?s?|combien|ai-je|j['’]ai|deja|déjà|a-t-(il|elle)|est-(il|elle)|[ée]t[ée]/gi;
+
+/** Question sur un contrat (assurance, abonnement, entretien, location). */
+export const CONTRACT_Q = /\b(contrats?|polices? d'assurance)\b|\b(assurances?|abonnements?)\b.*\b(quel|quelle|quels|quelles|mes|ai-je|en cours|souscrit\w*)\b|\b(quel|quelle|quels|quelles|mes)\b.*\b(assurances?|abonnements?)\b/;
+const CONTRACT_ASK = /\b(quel|quelle|quels|quelles|mes|ai-je|en cours|souscrit\w*|liste|qui|aupres de qui|chez qui)\b/;
+const CONTRACT_NOT = /\b(expire\w*|expiration|echeance\w*|renouvel\w*|fin de|combien|retrouve\w*|montre|affiche|ouvre|cherche\w*|resilie\w*|comment)\b/;
+const CONTRACT_STRIP = /contrats?|polices?|assurances?|abonnements?|en cours|souscrits?|aupr[eè]s de qui|chez qui|quel(le)?s?/gi;
+
+const SOURCES_MAX = 6;
+const uniques = (xs: Array<RetrievedSource | null | undefined>): RetrievedSource[] => {
+  const vus = new Set<string>();
+  return xs.filter((x): x is RetrievedSource => !!x && !vus.has(x.id) && !!vus.add(x.id));
+};
+
+/** Sources ouvrables des coûts consolidés comptés dans un total (lot 45). */
+function operationSources(q: QualifiedExpenses, assets: AssetRow[]): RetrievedSource[] {
+  const comptees = new Set(q.byTheme.flatMap((t) => t.operationIds ?? []));
+  const a = assets.length === 1 ? assets[0] : null;
+  return uniques((q.operations?.lines ?? []).filter((l) => comptees.has(l.operationId))
+    .map((l) => costLineSource(l, { assetId: a?.id ?? null, assetName: a?.name ?? null }))).slice(0, SOURCES_MAX);
+}
+
+/** Réponse « sinistre(s) » (pure, testée). */
+export function claimAnswer(claims: ClaimOverview[], scope: ScopeLike, assets: AssetRow[]): CanonicalAnswer {
+  const noms = new Map(assets.map((a) => [a.id, a.name]));
+  const ligne = (c: ClaimOverview, detail: boolean) => {
+    const biens = c.assetIds.map((id) => noms.get(id)).filter((n): n is string => !!n);
+    const tete = `${c.label.charAt(0).toUpperCase()}${c.label.slice(1)}${c.occurredOn ? ` du ${formatDateFr(c.occurredOn)}` : ''}${biens.length && (!scope.label || biens.length > 1) ? ` (${joinFr(biens)})` : ''}`;
+    const etat = [
+      c.statusLabel ? `statut « ${c.statusLabel} »` : (c.closed ? 'clos' : 'statut non renseigné'),
+      c.declaredOn ? `déclaré le ${formatDateFr(c.declaredOn)}` : null,
+      detail && c.insurerClaimRef ? `référence assureur ${c.insurerClaimRef}` : null,
+    ].filter(Boolean).join(', ');
+    const montants = [
+      c.indemnityCents != null ? `indemnité reçue : ${formatEur(c.indemnityCents)}` : (detail ? 'aucune indemnité enregistrée' : null),
+      c.grossCents ? `coût des réparations : ${formatEur(c.grossCents)}` : null,
+      c.grossCents && c.indemnityCents ? `net après indemnité : ${formatEur(c.netCents)}` : null,
+    ].filter(Boolean).join(' ; ');
+    return `${tete} : ${etat}${montants ? ` — ${montants}` : ''}`;
+  };
+  const answer = claims.length === 1
+    ? `${ligne(claims[0], true)}.`
+    : formatList(`Vous avez ${claims.length} sinistres${scope.label ? ` pour ${scope.label}` : ''}`, claims.map((c) => ligne(c, false)), 8);
+  const scopeIds = new Set(scope.assets.map((a) => a.id));
+  const sources: RetrievedSource[] = claims.slice(0, SOURCES_MAX).map((c): RetrievedSource | null => {
+    const assetId = c.assetIds.find((id) => scopeIds.has(id)) ?? c.assetIds[0] ?? null;
+    const content = ligne(c, true);
+    return assetId
+      ? { id: claimSourceId(assetId, c.operationId), type: 'asset_field', title: `${c.label.charAt(0).toUpperCase()}${c.label.slice(1)}`, content, relevanceScore: 1, meta: { assetId, assetName: noms.get(assetId) ?? null, date: c.occurredOn } }
+      : c.documentIds[0]
+        ? { id: `doc_${c.documentIds[0]}`, type: 'document', title: `Sinistre — ${c.label}`, content, relevanceScore: 1, meta: { fileId: c.documentIds[0], date: c.occurredOn } }
+        : null;
+  }).filter((x): x is RetrievedSource => !!x);
+  return { strategy: 'structured.claim_status', answer, sources, claims: [claim('claims', answer, sources, 'direct')], kind: claims.length === 1 ? 'exact' : 'list' };
+}
+
+/** Réponse « coût d'une intervention précise » (pure, testée) — montant consolidé, provenance, parts à part. */
+export function operationCostAnswer(couts: OperationCostRead[], scope: ScopeLike): CanonicalAnswer {
+  const de = (lab: string) => (/^[aeiouéè]/i.test(lab) ? `de l’${lab}` : /^(sinistre|contrat|financement)\b/.test(lab) ? `du ${lab}` : `de la ${lab}`);
+  const ligne = (c: OperationCostRead) => {
+    const quand = [c.provider, c.date ? formatDateFr(c.date) : null].filter(Boolean).join(', ');
+    const montant = c.costCents != null ? formatEur(c.costCents)
+      : c.foreign.length ? `${c.foreign.map((f) => formatMinorAmount(f.amountMinor, f.currency)).join(' + ')} (non converti)`
+        : 'montant non consolidé';
+    const extras = [
+      c.costCents != null && c.foreign.length ? `en plus, non converti : ${c.foreign.map((f) => formatMinorAmount(f.amountMinor, f.currency)).join(', ')}` : null,
+      c.indemnityCents ? `indemnité reçue : ${formatEur(c.indemnityCents)}, net : ${formatEur((c.costCents ?? 0) - c.indemnityCents)}` : null,
+      c.forecastCents ? `prévu (devis) : ${formatEur(c.forecastCents)}` : null,
+      c.unattributedCents ? `part commune à plusieurs biens non répartie : ${formatEur(c.unattributedCents)}` : null,
+    ].filter(Boolean);
+    return { lab: `${c.label}${quand ? ` (${quand})` : ''}`, txt: `${montant}${extras.length ? ` — ${extras.join(' ; ')}` : ''}` };
+  };
+  const answer = couts.length === 1
+    ? `Coût ${de(ligne(couts[0]).lab)} : ${ligne(couts[0]).txt}.`
+    : formatList('Coûts correspondants', couts.map((c) => { const l = ligne(c); return `${l.lab.charAt(0).toUpperCase()}${l.lab.slice(1)} : ${l.txt}`; }), 5);
+  const sources = uniques(couts.map((c) => c.source)).slice(0, SOURCES_MAX);
+  const srcs = sources.length ? sources : scope.assets.map(assetSrc);
+  return { strategy: 'structured.operation_cost', answer, sources: srcs, claims: [claim('operation_cost', answer, srcs, 'direct')], kind: couts.length === 1 ? 'exact' : 'list' };
+}
+
+/** Réponse « contrats » (pure, testée) : prestataire, n°, période, coûts documentés, tarif annoncé. */
+export function contractsAnswer(contrats: ContractOverview[], scope: ScopeLike): CanonicalAnswer {
+  const ligne = (c: ContractOverview) => [
+    `${c.label.charAt(0).toUpperCase()}${c.label.slice(1)}`,
+    c.provider ? ` chez ${c.provider}` : '',
+    c.reference ? ` (n° ${c.reference})` : '',
+    c.from && c.to ? `, du ${formatDateFr(c.from)} au ${formatDateFr(c.to)}` : c.from ? `, depuis le ${formatDateFr(c.from)}` : c.to ? `, jusqu’au ${formatDateFr(c.to)}` : '',
+    c.status === 'ENVISAGED' ? ' — envisagé' : '',
+    c.realizedCents != null ? ` — coûts documentés : ${formatEur(c.realizedCents)}` : '',
+    c.forecastCents != null ? ` — tarif annoncé : ${formatEur(c.forecastCents)} (prévisionnel)` : '',
+  ].join('');
+  const answer = contrats.length === 1
+    ? `${ligne(contrats[0])}.`
+    : formatList(`Contrats${scope.label ? ` de ${scope.label}` : ''}`, contrats.map(ligne), 8);
+  const sources = uniques(contrats.map((c) => c.source)).slice(0, SOURCES_MAX);
+  const srcs = sources.length ? sources : scope.assets.map(assetSrc);
+  return { strategy: 'structured.contracts', answer, sources: srcs, claims: [claim('contracts', answer, srcs, 'direct')], kind: contrats.length === 1 ? 'exact' : 'list' };
+}
+
+/** Réponse « historique d'un bien » (pure, testée). */
+export function historyAnswer(a: AssetRow, entries: AssetHistoryEntry[], theme: ExpenseTheme | null): CanonicalAnswer {
+  const lignes = entries.map((e) => [
+    `${e.date ? formatDateFr(e.date) : 'date non précisée'} : ${e.label}`,
+    e.provider && e.kind === 'operation' ? ` (${e.provider})` : '',
+    e.amountCents != null ? ` — ${formatEur(e.amountCents)}` : '',
+    e.status ? ` — ${e.status}` : '',
+  ].join(''));
+  const titre = theme ? `${EXPENSE_THEME_LABELS[theme].charAt(0).toUpperCase()}${EXPENSE_THEME_LABELS[theme].slice(1)} de ${a.name}` : `Ce qui a été fait sur ${a.name}`;
+  const answer = `${titre} :\n${lignes.map((l) => `• ${l}`).join('\n')}`;
+  const sources = uniques(entries.map((e) => e.source)).slice(0, 8);
+  const srcs = sources.length ? sources : [assetSrc(a)];
+  return { strategy: 'structured.operation_history', answer, sources: srcs, claims: [claim('history', answer, srcs, 'direct')], kind: 'list' };
+}
+
+/**
+ * C15.2 — prix d'achat comme interprétation principale ; le cumul des
+ * dépenses depuis l'achat présenté À PART, jamais additionné. `null` : aucun
+ * prix d'achat connu (consolidé ni sur la fiche).
+ */
+async function acquisitionAnswer(port: AccountDataPort, accountId: number, a: AssetRow, achatSeul: boolean): Promise<CanonicalLevel1> {
+  const acq = await port.readAcquisition!(accountId, a.id, { assetName: a.name });
+  let prix: string | null = acq?.priceCents != null ? formatEur(acq.priceCents)
+    : acq?.foreign.length ? acq.foreign.map((f) => formatMinorAmount(f.amountMinor, f.currency)).join(' + ') : null;
+  let src: RetrievedSource | null = acq?.source ?? null;
+  if (!prix && port.readAssetField) {
+    const r = await port.readAssetField(accountId, a.id, 'acquisitionPrice').catch(() => null);
+    if (r && r.value !== null && r.value !== undefined && r.display) { prix = r.display; src = assetFieldSource(r); }
+  }
+  if (!prix) return null;
+  const sources = uniques([src ?? assetSrc(a)]);
+  let answer = `Prix d’achat de ${a.name} : ${prix}${acq?.date ? ` (achat du ${formatDateFr(acq.date)})` : ''}.`;
+  if (!achatSeul && port.sumQualifiedExpenses) {
+    const q = await port.sumQualifiedExpenses(accountId, { assetIds: [a.id], theme: null });
+    const hors = q.byTheme.filter((t) => t.theme !== 'purchase' && t.sumCents);
+    const somme = hors.reduce((n, t) => n + t.sumCents, 0);
+    if (hors.length && somme) {
+      answer += ` Si vous parlez des dépenses depuis l’achat (hors prix d’achat) : ${formatEur(somme)} (${hors.map((t) => `${t.label} ${formatEur(t.sumCents)}`).join(', ')})${q.complete ? '' : ', total peut-être incomplet'}. Ces deux montants ne s’additionnent pas sans que vous le demandiez.`;
+      sources.push(expenseSumSource(q, { assetIds: [a.id], scopeLabel: a.name }));
+    }
+  }
+  return { strategy: 'structured.acquisition_price', answer, sources, claims: [claim('acquisition', answer, sources, 'direct')], kind: 'exact' };
+}
+
+/** Réponse « payé / réglé » (pure, testée) — preuves de règlement, jamais le coût présenté comme réglé. */
+export function paymentsAnswer(
+  pay: PaymentsRead,
+  q: QualifiedExpenses | null,
+  ctx: { pour: string; scopeLabel: string | null; assetIds: number[]; year?: number; assets: AssetRow[] },
+): CanonicalAnswer {
+  const pl = (n: number, a: string, b: string) => (n > 1 ? b : a);
+  const cout = q && q.qualifiedSumCents ? q.qualifiedSumCents : 0;
+  const costSrc = q && cout ? expenseSumSource(q, { assetIds: ctx.assetIds, scopeLabel: ctx.scopeLabel, year: ctx.year }) : null;
+  let answer: string;
+  let kind: 'calc' | 'no_result' = 'calc';
+  const docs: RetrievedSource[] = pay.proofs.slice(0, SOURCES_MAX).map((p) => ({
+    id: `doc_${p.fileId}`, type: 'document', title: p.title,
+    content: `Preuve de paiement « ${p.title} »${p.date ? ` · ${p.date}` : ''}${p.amountCents != null ? ` · montant réglé : ${formatEur(p.amountCents)}` : ' · montant non lisible'}`,
+    relevanceScore: 1, meta: { fileId: p.fileId, date: p.date },
+  }));
+  if (pay.proofs.length) {
+    const n = pay.proofs.length;
+    answer = `Règlements justifiés${ctx.pour} : ${formatEur(pay.sumCents)} (${n} preuve${pl(n, '', 's')} de paiement : ${joinFr(pay.proofs.slice(0, 4).map((p) => `« ${p.title} »`))}${n > 4 ? '…' : ''}).`;
+    if (pay.withoutAmount) answer += ` ${pay.withoutAmount} preuve${pl(pay.withoutAmount, '', 's')} sans montant lisible.`;
+    if (cout) {
+      answer += ` Coût documenté${ctx.pour} : ${formatEur(cout)}${q!.complete ? '' : ' (total peut-être incomplet)'}.`;
+      if (cout > pay.sumCents) answer += ` Je n’ai pas de preuve de règlement pour ${formatEur(cout - pay.sumCents)}.`;
+    }
+  } else {
+    answer = `Je n’ai trouvé aucune preuve de paiement${ctx.pour} : je ne peux pas confirmer ce qui a été réglé.`;
+    if (cout) answer += ` Le coût documenté${ctx.pour} est de ${formatEur(cout)} : ce montant ne prouve pas qu’il a été réglé.`;
+    else kind = 'no_result';
+  }
+  const sources = uniques([...docs, costSrc, ...(docs.length || costSrc ? [] : ctx.assets.map(assetSrc))]);
+  return { strategy: 'structured.payments', answer, sources, claims: [claim('payments', answer, sources, 'calculated')], kind };
+}
+
 /**
  * Réponse canonique structurée, ou `null` (les branches historiques
  * s'appliquent ensuite). `resolveScope(texte)` : résolution du bien de
@@ -140,11 +349,94 @@ export async function tryCanonicalStructured(p: {
     return { strategy: 'structured.missing_information', answer, sources: srcs, claims: [claim('missing', answer, srcs, 'calculated')], kind: lignes.length ? 'list' : 'no_result' };
   }
 
+  // ══════════════════════════════════════════════════════════════════════
+  // LOT 45 (O6) — OPÉRATION D'ABORD, NON EXCLUSIVE (CDC Opérations V1 C15)
+  //
+  // Sinistre, historique d'un bien, « payé / réglé », prix d'achat : lus
+  // d'abord sur les Opérations actives (montants consolidés par T3, jamais
+  // recalculés). Aucune Opération pour la question : `null`, les branches
+  // historiques répondent comme avant (16.2). Vocabulaire P09.
+  // ══════════════════════════════════════════════════════════════════════
+
+  // ── Sinistres : « où en est mon sinistre ? », indemnité ───────────────
+  if (CLAIM_Q.test(m) && CLAIM_ASK.test(m) && !/\bcomment\b/.test(m) && port.readClaims) {
+    const reste = message.replace(CLAIM_STRIP, ' ');
+    const scope = await p.resolveScope(reste);
+    if (!scope.unresolved) {
+      const claims = await port.readClaims(accountId, scope.assets.map((a) => a.id));
+      if (claims.length) return claimAnswer(claims, scope, scope.assets.length ? scope.assets : await port.listAssets(accountId).catch(() => []));
+    }
+  }
+
+  // ── Historique d'un bien : « qu'est-ce qui a été fait sur la Polo ? » ──
+  if (HISTORY_Q.test(m) && !HISTORY_NOT.test(m) && port.readAssetHistory) {
+    const reste = message.replace(HISTORY_STRIP, ' ');
+    const scope = await p.resolveScope(reste);
+    if (scope.ambiguous) return { ambiguous: scope.assets, reason: 'HISTORY_MULTIPLE_ASSETS' };
+    if (!scope.unresolved && scope.assets.length === 1) {
+      const a = scope.assets[0];
+      const h = await port.readAssetHistory(accountId, a.id, { assetName: a.name });
+      const theme = expenseThemeOf(message);
+      const entries = (h?.entries ?? []).filter((e) => !theme || e.theme === theme);
+      if (h && entries.length) return historyAnswer(a, entries, theme);
+    }
+  }
+
+  // ── Contrats : « quel est mon contrat d'assurance pour la Polo ? » (B15) ─
+  // Une échéance (« quand expire… ») reste à l'Agenda (C15) ; une recherche
+  // explicite du document, à la recherche documentaire (pont, F-130).
+  if (CONTRACT_Q.test(m) && CONTRACT_ASK.test(m) && !CONTRACT_NOT.test(m) && port.readContracts) {
+    const reste = message.replace(CONTRACT_STRIP, ' ');
+    const scope = await p.resolveScope(reste);
+    if (scope.ambiguous) return { ambiguous: scope.assets, reason: 'CONTRACT_MULTIPLE_ASSETS' };
+    if (!scope.unresolved) {
+      const a = scope.assets.length === 1 ? scope.assets[0] : null;
+      const contrats = await port.readContracts(accountId, scope.assets.map((x) => x.id), { assetName: a?.name ?? null });
+      const theme = expenseThemeOf(message);
+      const retenus = theme === 'insurance' ? contrats.filter((c) => /assur/i.test(`${c.label} ${c.provider ?? ''}`)) : contrats;
+      if (retenus.length) return contractsAnswer(retenus, scope);
+    }
+  }
+
+  // ── « payé / réglé » ≠ « coûté » (C15, C15.2, F-132) ──────────────────
+  if (PAID.test(m) && !COST_WORDS.test(m) && (COUNT.test(m) || PAID_YESNO.test(m)) && (port.readPayments || port.readAcquisition)) {
+    const theme = expenseThemeOf(message);
+    const year = Number(m.match(/\b(20\d{2})\b/)?.[1]) || undefined;
+    const reste = message.replace(PAID_STRIP, ' ')
+      .replace(theme ? new RegExp(Object.values(EXPENSE_THEME_LABELS).join('|') + '|entretien|revision|reparations?|travaux|assurances?|achat', 'gi') : /$^/, ' ');
+    const scope = await p.resolveScope(reste);
+    if (scope.unresolved) return null;
+    if (scope.ambiguous) return { ambiguous: scope.assets, reason: 'PAID_MULTIPLE_ASSETS' };
+    const assetIds = scope.assets.map((a) => a.id);
+    const pour = `${scope.label ? ` pour ${scope.label}` : ''}${theme ? ` (${EXPENSE_THEME_LABELS[theme]})` : ''}${year ? ` en ${year}` : ''}`;
+    // C15.2 : « J'ai payé combien pour la Polo ? » — prix d'achat d'abord,
+    // le cumul des dépenses depuis l'achat à part, jamais additionnés.
+    if ((!theme || theme === 'purchase') && !year && scope.assets.length === 1 && port.readAcquisition) {
+      const r = await acquisitionAnswer(port, accountId, scope.assets[0], theme === 'purchase');
+      if (r) return r;
+    }
+    if (port.readPayments) {
+      const pay = await port.readPayments(accountId, { assetIds, year: year ?? null });
+      const q = port.sumQualifiedExpenses ? await port.sumQualifiedExpenses(accountId, { assetIds, year, theme }) : null;
+      return paymentsAnswer(pay, q, { pour, scopeLabel: scope.label, assetIds, year, assets: scope.assets });
+    }
+  }
+
   // ── Dépenses qualifiées (T2-24) ────────────────────────────────────────
   if (SPEND.test(m) && (COUNT.test(m) || /\b(total|somme)\b/.test(m)) && port.sumQualifiedExpenses) {
     const theme = expenseThemeOf(message);
     const reste = theme ? message.replace(new RegExp(Object.values(EXPENSE_THEME_LABELS).join('|') + '|entretien|revision|reparations?|travaux|assurances?|achat', 'gi'), ' ') : message;
     const scope = await p.resolveScope(reste);
+    // Lot 45 (C15 « coût d'une opération précise », F-127) : « combien a
+    // coûté la réparation du TOIT ? » — l'intervention désignée par son
+    // libellé répond par son coût CONSOLIDÉ (jamais resommé, 16.3). Rien de
+    // désigné : agrégat ci-dessous ; mot inconnu sans intervention : repli
+    // documentaire (F-128).
+    if (port.readOperationCosts && !scope.ambiguous) {
+      const termes = specificCostTerms(message, scope.assets.map((a) => a.name));
+      const couts = termes.length ? await port.readOperationCosts(accountId, termes, scope.unresolved ? [] : scope.assets.map((a) => a.id)) : [];
+      if (couts.length) return operationCostAnswer(couts, scope);
+    }
     if (scope.unresolved) return null;
     const year = Number(m.match(/\b(20\d{2})\b/)?.[1]) || undefined;
     const q = await port.sumQualifiedExpenses(accountId, { assetIds: scope.assets.map((a) => a.id), year, theme });
@@ -153,6 +445,10 @@ export async function tryCanonicalStructured(p: {
     // reformulation par le modèle reste vérifiable (claim-support, T2-31).
     const sources = [
       expenseSumSource(q, { assetIds: scope.assets.map((a) => a.id), scopeLabel: scope.label, year }),
+      // Lot 45 : interventions, contrats, achats, sinistres comptés — chacun
+      // s'ouvre sur son document (ou la section Sinistres), jamais sur une
+      // « Opération » (P09).
+      ...operationSources(q, scope.assets),
       ...scope.assets.map(assetSrc),
     ];
     // Non qualifiés : nature non précisée et/ou (année demandée) date absente.
@@ -167,27 +463,32 @@ export async function tryCanonicalStructured(p: {
       ? ` Non compté${pl(q.unqualified.count, '', 's')} : ${motifs} — le total peut être incomplet.`
       : '';
     const doublons = q.duplicates?.count ? ` Doublon${pl(q.duplicates.count, '', 's')} signalé${pl(q.duplicates.count, '', 's')} (fusion possible) écarté${pl(q.duplicates.count, '', 's')} : ${q.duplicates.count} — chaque document n’est compté qu’une fois.` : '';
-    const exclus = q.excluded.count > 0 ? ` Les devis et documents sans valeur de dépense (${q.excluded.count}) ne sont pas comptés.` : '';
+    // Lot 45 : les preuves de paiement (exclues, P16) sont dites à part (notes).
+    const autresExclus = q.excluded.count - (q.excluded.byType?.PAYMENT_PROOF ?? 0);
+    const exclus = autresExclus > 0 ? ` Les devis et documents sans valeur de dépense (${autresExclus}) ne sont pas comptés.` : '';
+    // Lot 45 (C15.1 §33) : provenance et parts non comptées du mode mixte.
+    const notes = mixedExpenseNotes(q, { scopeLabel: scope.label, year: year ?? null });
+    const mixte = notes.length ? ` ${notes.join(' ')}` : '';
     let answer: string;
     let kind: 'calc' | 'no_result' = 'calc';
     if (theme) {
       const t = q.byTheme[0];
       if (!t) {
         kind = 'no_result';
-        answer = q.unqualified.count > 0
+        answer = (q.unqualified.count > 0
           // Couverture incomplète : aucun total affirmé (T2-24).
           ? `Je ne peux pas isoler vos dépenses de ${EXPENSE_THEME_LABELS[theme]}${pour} : ${motifs}. Complétez-les (type, date du document) pour obtenir un total fiable.`
-          : formatNoResult(`aucune dépense de ${EXPENSE_THEME_LABELS[theme]} documentée`, pour.trim() || undefined);
+          : formatNoResult(`aucune dépense de ${EXPENSE_THEME_LABELS[theme]} documentée`, pour.trim() || undefined)) + mixte;
       } else {
-        answer = `Dépenses de ${t.label} documentées${pour} : ${formatAmountCents(t.sumCents)} (${t.count} document${t.count > 1 ? 's' : ''}).${incomplet}${doublons}${exclus}`;
+        answer = `Dépenses de ${t.label} documentées${pour} : ${formatAmountCents(t.sumCents)} (${expenseItemsLabel(t, q.operations)}).${incomplet}${mixte}${doublons}${exclus}`;
       }
     } else if (q.byTheme.length === 0) {
       kind = 'no_result';
-      answer = q.unqualified.count > 0
+      answer = (q.unqualified.count > 0
         ? `Je ne peux pas totaliser vos dépenses${pour} : ${motifs}.`
-        : formatNoResult('aucune dépense documentée', pour.trim() || undefined);
+        : formatNoResult('aucune dépense documentée', pour.trim() || undefined)) + mixte;
     } else {
-      answer = `${formatList(`Dépenses documentées${pour}, par thème`, q.byTheme.map((t) => `${t.label} ${formatAmountCents(t.sumCents)} (${t.count})`))} Total des dépenses qualifiées : ${formatAmountCents(q.qualifiedSumCents)}.${incomplet}${doublons}${exclus}`;
+      answer = `${formatList(`Dépenses documentées${pour}, par thème`, q.byTheme.map((t) => `${t.label} ${formatAmountCents(t.sumCents)} (${t.count})`))} Total des dépenses qualifiées : ${formatAmountCents(q.qualifiedSumCents)}.${incomplet}${mixte}${doublons}${exclus}`;
     }
     return { strategy: 'structured.sum_qualified', answer, sources, claims: [claim('sum', answer, sources, 'calculated')], kind };
   }

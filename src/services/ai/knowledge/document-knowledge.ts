@@ -14,6 +14,7 @@
  *
  * Aucun accès base ici : ces fonctions sont testées sans infrastructure.
  */
+import { detectDocumentCurrency, storableCurrency } from '@/lib/document-currency';
 import type {
   SourceAnalysisResult, ExtractedField, ExtractedTable, ExtractedRecurrence, FactProvenance, VisualEvidence, VisualObservation,
 } from '../source-analysis/types';
@@ -21,6 +22,7 @@ import { cellContext } from './document-tables';
 import { T1_MASTER_PROMPT_CODE } from '../source-analysis/master/t1-contract';
 import { VISUAL_SUMMARY_UNIT_ID, visualUnitId } from '../source-analysis/source-units/build-units';
 import type { SourceLayer } from '../source-analysis/source-units/types';
+import type { AnchoredOperationCandidate } from '../source-analysis/operation-candidates/prepare';
 
 export type KnowledgeEngine = 'source_analysis' | 'legacy';
 
@@ -107,6 +109,12 @@ export interface DocumentFactRecord {
    * qui prouvent le fait. Absent : fait historique ou sans unité retrouvée.
    */
   sourceUnitIds?: string[];
+  /**
+   * Lot 40 (interne, jamais une colonne) : empreinte du fait T1 d'origine,
+   * convertie en identifiant du fait persisté pour les preuves des
+   * candidats Opération.
+   */
+  t1FactRef?: string;
 }
 
 export interface DocumentKnowledge {
@@ -119,6 +127,14 @@ export interface DocumentKnowledge {
    * rapport de complétude), écrite dans la MÊME transaction que les faits.
    */
   sourceLayer?: SourceLayer;
+  /**
+   * Lot 40 — candidats Opération (barrière serveur appliquée), écrits dans
+   * la MÊME transaction que les faits (`operation-candidates/persist.ts`).
+   * La branche maître la fournit toujours (vide comprise : les anciens sont
+   * alors supersédés). Absent (connaissance construite hors T1) : candidats
+   * du fichier inchangés.
+   */
+  operationCandidates?: AnchoredOperationCandidate[];
 }
 
 // ── Valeurs et unités ──────────────────────────────────────────────────────
@@ -236,6 +252,7 @@ export function toFact(field: ExtractedField): DocumentFactRecord {
     evidenceOrigin: visual ? 'VISUAL_ANALYSIS' : 'TEXT_EXTRACTION',
     visualEvidence: visual ? (field.visualEvidence ?? null) : null,
     ...(field.sourceUnitIds?.length ? { sourceUnitIds: field.sourceUnitIds } : {}),
+    ...(field.t1FactRef ? { t1FactRef: field.t1FactRef } : {}),
   };
 }
 
@@ -360,6 +377,8 @@ export function buildKnowledgeFromSourceAnalysis(
     multiAsset?: boolean;
     /** Lot 34F — couche A de l'analyse (`MasterGroupAnalysis.sourceLayer`). */
     sourceLayer?: SourceLayer;
+    /** Lot 40 — candidats Opération (`MasterGroupAnalysis.operationCandidates`). */
+    operationCandidates?: AnchoredOperationCandidate[];
   },
 ): DocumentKnowledge {
   // Lot 34F : une observation enregistrée comme fait garde son unité source.
@@ -377,6 +396,9 @@ export function buildKnowledgeFromSourceAnalysis(
   keep('documentType', d.type);
 
   const hasExploitableContent = !result.warnings.some((w) => w.code === 'NO_EXPLOITABLE_CONTENT');
+  // Lot 38 (O0, C12.3) : devise LUE (extrait du montant, sinon document) —
+  // plus jamais « EUR » d'office quand le document en indique une autre.
+  const devise = detectDocumentCurrency({ amountExcerpt: d.amountCents?.excerpt, transcription: d.transcription });
 
   return {
     extraction: {
@@ -393,7 +415,7 @@ export function buildKnowledgeFromSourceAnalysis(
       supplierName: d.supplier?.value.name ?? null,
       supplierSiret: d.supplier?.value.siret ?? null,
       amountCents: typeof d.amountCents?.value === 'number' ? d.amountCents.value : null,
-      currency: 'EUR',
+      currency: storableCurrency(devise),
       fullText: d.transcription?.trim() || null,
       visualSummary: d.visual?.summary?.trim() || null,
       visualObservations: d.visual?.observations ?? [],
@@ -408,6 +430,9 @@ export function buildKnowledgeFromSourceAnalysis(
       metadata: {
         sourceIds: result.sourceGroup.sourceIds,
         legacyDocumentType: d.type?.value ?? null,
+        // Lot 38 (O0) : comment la devise a été établie (montant, document,
+        // présumée EUR faute de mention, indéterminée si plusieurs).
+        currencyDetection: { basis: devise.basis, seen: devise.seen },
         category: d.category?.value ?? null,
         warnings: result.warnings.map((w) => w.code),
         assetCandidates: result.assetCandidates.map((c) => ({
@@ -435,6 +460,7 @@ export function buildKnowledgeFromSourceAnalysis(
         : []),
     ].filter(hasEvidence),
     ...(ctx.sourceLayer ? { sourceLayer: ctx.sourceLayer } : {}),
+    ...(ctx.operationCandidates ? { operationCandidates: ctx.operationCandidates } : {}),
   };
 }
 

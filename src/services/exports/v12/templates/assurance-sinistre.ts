@@ -13,8 +13,9 @@ import { planAttachments, selected, selectedPhotos } from '../html/selection';
 import { assemble, coverPageLabel } from '../html/layout';
 import type { SinistreData, RenderContext, RenderedHtml } from '../types';
 
-export const TEMPLATE_VERSION = 'assurance_sinistre-v1.0.0';
-export const TEMPLATE_LABEL = 'assurance_sinistre · v1.0';
+// Lot 44 (O5) : montant estimé des dommages et indemnité reçue imprimés s'ils sont saisis.
+export const TEMPLATE_VERSION = 'assurance_sinistre-v1.1.0';
+export const TEMPLATE_LABEL = 'assurance_sinistre · v1.1';
 
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n > 1 ? many : one}`;
 
@@ -79,6 +80,9 @@ export function render(c: SinistreData, ctx: RenderContext): RenderedHtml {
         { label: 'Conséquences', value: claim.consequences, strong: false },
         { label: 'Mesures prises', value: claim.measures, strong: false },
         { label: 'Statut', value: claim.statusDetail },
+        // Lot 44 : montants saisis (jamais calculés) ; l'estimation n'est pas un coût réel.
+        { label: 'Dommages estimés', value: claim.estimatedDamage },
+        { label: 'Indemnité reçue', value: claim.compensation },
       ],
     }),
   });

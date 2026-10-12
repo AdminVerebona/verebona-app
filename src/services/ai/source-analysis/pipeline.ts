@@ -301,6 +301,8 @@ export async function runSourceAnalysis(
         promptVersion: master.promptVersion,
         // Lot 34F : couche A (unités de la source, couverture, faits non résolus).
         sourceLayer: master.sourceLayer,
+        // Lot 40 : candidats Opération (barrière serveur appliquée), même transaction que les faits.
+        operationCandidates: master.operationCandidates,
       })).catch((e: Error) => {
         console.error(`[source-analysis] base de connaissance du fichier ${leadSourceId} non écrite :`, e.message);
       });

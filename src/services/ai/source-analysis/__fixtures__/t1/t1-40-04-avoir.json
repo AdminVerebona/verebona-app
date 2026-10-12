@@ -1,0 +1,201 @@
+{
+  "case": "F-095",
+  "description": "Avoir de 100 € sur une facture de réparation : rôle CREDIT_NOTE, montant converti en REDUCTION par le serveur (jamais un coût supplémentaire).",
+  "context": {
+    "linkedAssetId": 12,
+    "assets": [
+      {
+        "id": 12,
+        "name": "Clio",
+        "category": "VEHICULE",
+        "subtype": "voiture"
+      }
+    ],
+    "rooms": [],
+    "equipments": [],
+    "existingTitles": [],
+    "verified": {
+      "ASSET": [
+        12
+      ],
+      "EQUIPMENT": [],
+      "ROOM": [],
+      "SUPPLIER": []
+    }
+  },
+  "recording": {
+    "operationCode": "t1_analyze_document",
+    "task": "ANALYZE_DOCUMENT",
+    "output": {
+      "task": "ANALYZE_DOCUMENT",
+      "document": {
+        "title": {
+          "value": "Avoir Réparation embrayage Clio",
+          "confidence": "certain",
+          "evidence": {
+            "excerpt": "Avoir Réparation embrayage Clio",
+            "page": 1
+          }
+        },
+        "classification": {
+          "canonicalType": "FACTURE",
+          "rubricCode": "MAINTENANCE_WORKS",
+          "documentTypeCode": "REPAIR_INVOICE",
+          "confidence": 0.92,
+          "evidence": {
+            "excerpt": "Avoir Réparation embrayage Clio"
+          }
+        },
+        "documentDate": {
+          "value": "2026-06-20",
+          "confidence": "certain",
+          "evidence": {
+            "excerpt": "Date : 20/06/2026",
+            "page": 1
+          }
+        },
+        "amountCents": {
+          "value": 10000,
+          "confidence": "certain",
+          "evidence": {
+            "excerpt": "Montant de l'avoir : 100,00 €",
+            "page": 1
+          }
+        },
+        "supplier": {
+          "name": "Garage Exemple",
+          "confidence": "certain",
+          "evidence": {
+            "excerpt": "GARAGE EXEMPLE",
+            "page": 1
+          }
+        }
+      },
+      "entities": {
+        "assets": [
+          {
+            "entityId": 12,
+            "rawLabel": "Clio",
+            "score": 0.95,
+            "confidence": "certain",
+            "evidenceSignals": [
+              "Clio"
+            ],
+            "reason": "désignation lue"
+          }
+        ],
+        "rooms": [],
+        "equipments": [],
+        "suppliers": [],
+        "multiAsset": false
+      },
+      "transcription": "GARAGE EXEMPLE\nAVOIR n° AV-77 sur facture FA-2026-0612\nMontant de l'avoir : 100,00 €",
+      "facts": [
+        {
+          "canonicalKey": null,
+          "rawKey": "objet",
+          "label": "Objet",
+          "subject": "Clio",
+          "attribute": "objet",
+          "rawValue": "Avoir sur facture FA-2026-0612",
+          "normalizedValue": "Avoir sur facture FA-2026-0612",
+          "valueType": "string",
+          "canonicalUnit": null,
+          "target": {
+            "type": "ASSET",
+            "entityId": 12,
+            "rawLabel": "Clio",
+            "confidence": "certain",
+            "evidenceSignals": [
+              "Clio"
+            ]
+          },
+          "provenance": "TEXT_EXTRACTION",
+          "confidence": "certain",
+          "evidence": {
+            "excerpt": "AVOIR n° AV-77 sur facture FA-2026-0612",
+            "page": 1
+          }
+        },
+        {
+          "canonicalKey": null,
+          "rawKey": "montantAvoir",
+          "label": "Montant de l'avoir",
+          "subject": "Clio",
+          "attribute": "montant de l'avoir",
+          "rawValue": "100,00 €",
+          "normalizedValue": 10000,
+          "valueType": "money_cents",
+          "canonicalUnit": "cents",
+          "target": {
+            "type": "ASSET",
+            "entityId": 12,
+            "rawLabel": "Clio",
+            "confidence": "certain",
+            "evidenceSignals": [
+              "Clio"
+            ]
+          },
+          "provenance": "TEXT_EXTRACTION",
+          "confidence": "certain",
+          "evidence": {
+            "excerpt": "Montant de l'avoir : 100,00 €",
+            "page": 1
+          }
+        }
+      ],
+      "hasExploitableContent": true,
+      "businessOperationCandidates": [
+        {
+          "candidateKey": "op1",
+          "established": true,
+          "confidence": "certain",
+          "typeHint": "INTERVENTION",
+          "statusHint": "REALIZED",
+          "summary": "Avoir sur la réparation de l'embrayage de la Clio",
+          "sourceRoleHint": "CREDIT_NOTE",
+          "provider": "Garage Exemple",
+          "targetHints": [
+            {
+              "type": "ASSET",
+              "entityId": 12,
+              "rawLabel": "Clio",
+              "confidence": "certain"
+            }
+          ],
+          "businessReferences": [
+            {
+              "kind": "INVOICE",
+              "value": "FA-2026-0612"
+            }
+          ],
+          "financialHints": [
+            {
+              "role": "REALIZED_COST",
+              "amountMinor": 10000,
+              "currency": "EUR",
+              "factIndex": 1
+            }
+          ],
+          "evidenceFactIndexes": [
+            0,
+            1
+          ]
+        }
+      ]
+    }
+  },
+  "expected": {
+    "operationCandidates": [
+      {
+        "sourceRoleHint": "CREDIT_NOTE",
+        "financialRoles": [
+          "REDUCTION"
+        ],
+        "amountsMinor": [
+          10000
+        ]
+      }
+    ]
+  }
+}

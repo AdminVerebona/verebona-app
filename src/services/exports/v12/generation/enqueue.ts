@@ -55,9 +55,13 @@ function canonical(v: unknown): string {
  * variante) : seule une demande STRICTEMENT identique est dédoublonnée —
  * deux clics avec des options différentes donnent deux générations.
  */
-export function requestHash(code: string, req: Pick<GenerationRequestSnapshot, 'outputFormat' | 'choices' | 'legacyOptions'>, variant: string | null): string {
+export function requestHash(code: string, req: Pick<GenerationRequestSnapshot, 'outputFormat' | 'choices' | 'legacyOptions' | 'claimOperationId'>, variant: string | null): string {
   return createHash('sha256')
-    .update(canonical({ code, outputFormat: req.outputFormat, choices: req.choices ?? null, legacyOptions: req.legacyOptions ?? null, variant }))
+    .update(canonical({
+      code, outputFormat: req.outputFormat, choices: req.choices ?? null, legacyOptions: req.legacyOptions ?? null, variant,
+      // Lot 44 : deux sinistres différents donnent deux générations (absent : empreinte inchangée).
+      ...(req.claimOperationId ? { claimOperationId: req.claimOperationId } : {}),
+    }))
     .digest('hex');
 }
 
@@ -112,11 +116,21 @@ export async function enqueueGeneration(params: {
   } else if (body.options && typeof body.options === 'object') {
     req.legacyOptions = body.options as LegacyDrawerOptions;
   }
+  // Lot 44 (Q2) : sinistre du dossier Assurance-sinistre (choix, ou racine du corps pour les anciens appels).
+  const claimRaw = req.choices?.claimOperationId ?? (body.claimOperationId == null ? null : Number(body.claimOperationId));
+  if (claimRaw !== null && claimRaw !== undefined) {
+    if (code !== 'ASSURANCE_SINISTRE' || !Number.isSafeInteger(claimRaw) || claimRaw <= 0) {
+      return { ok: false, status: 400, code: 'INVALID_PAYLOAD', message: 'La sélection transmise est invalide.', extra: { issues: [{ path: 'claimOperationId', message: 'Sinistre invalide.' }] } };
+    }
+    req.claimOperationId = claimRaw;
+  }
 
   // Seuils (§6.3) : même estimation que l'écran de préparation
   // (`preparation/estimate.ts`) ; un dossier bloqué n'est pas mis en file.
   const today = parisDate();
-  const source = await loadExportSource({ assetId: asset.id, accountId: asset.accountId, userId, exportType: code });
+  const source = await loadExportSource({ assetId: asset.id, accountId: asset.accountId, userId, exportType: code, ...(req.claimOperationId ? { claimOperationId: req.claimOperationId } : {}) });
+  // Le sinistre réellement retenu (le plus récent si aucun n'est demandé) est figé dans la demande.
+  if (code === 'ASSURANCE_SINISTRE' && source.claim?.selectedOperationId) req.claimOperationId = source.claim.selectedOperationId;
   const { warnings, blocking, dto } = estimateSelection(code, source, effectiveChoices(code, source, req, today), today, { outputFormat });
   // ALT-002 : un « PDF seul » qui retire des pièces ZIP doit avoir été confirmé.
   if (req.choices && outputFormat === 'PDF' && dto.zipOnlyItems.length > 0 && !req.choices.acknowledgements.pdfOnlyExcludesZipItems) {

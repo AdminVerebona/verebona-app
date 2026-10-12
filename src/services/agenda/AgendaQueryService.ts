@@ -65,6 +65,11 @@ export interface AgendaItemFull {
    * migration 0223 est appliquée ; absent sinon.
    */
   eventNature?: 'HISTORICAL' | 'DEADLINE' | null;
+  /**
+   * Lot 46 (O7) : l'événement représente un SINISTRE (projeté depuis lui, ou
+   * relié) — le tiroir propose de l'ouvrir dans la rubrique Sinistres du bien.
+   */
+  claimSource?: { assetId: number; claimId: number } | null;
 }
 
 export interface AgendaSearchResult {
@@ -188,6 +193,7 @@ async function enrichItems(rows: typeof agendaItems.$inferSelect[]): Promise<Age
   const ids = rows.map(r => r.id);
   const { assetLinks, fileLinks, roomLinks, equipLinks } = await loadLinks(ids);
   const natures = await loadEventNatures(ids);
+  const claims = await loadClaimSources(rows);
 
   // Load pending conflicts for attention flags
   const conflicts = await db.select({
@@ -213,12 +219,19 @@ async function enrichItems(rows: typeof agendaItems.$inferSelect[]): Promise<Age
     const itemEquips = equipLinks.filter(l => l.agendaItemId === item.id);
     const itemConflicts = conflicts.filter(c => c.agendaItemId === item.id);
 
+    // Lot 47B : nature lue pour la règle « un fait passé n'est jamais en retard ».
+    const signaux = {
+      eventNature: natures?.get(item.id)?.nature ?? null,
+      businessType: natures?.get(item.id)?.businessType ?? null,
+      originFieldKey: item.originFieldKey,
+    };
     const effectiveStatus = computeEffectiveStatus({
       startDate: item.startDate,
       startTime: item.startTime,
       endDate: item.endDate,
       endTime: item.endTime,
       manualStatus: item.manualStatus as 'realise' | 'annule' | null,
+      ...signaux,
     }, now);
 
     const attentionFlags = computeAttentionFlags(
@@ -228,6 +241,7 @@ async function enrichItems(rows: typeof agendaItems.$inferSelect[]): Promise<Age
         endDate: item.endDate,
         endTime: item.endTime,
         manualStatus: item.manualStatus as 'realise' | 'annule' | null,
+        ...signaux,
         directAssetIds: itemAssets.map(a => a.assetId),
         fileLinks: itemFiles.map(f => ({ id: f.id, resolvedAssetId: f.resolvedAssetId ?? null })),
         roomLinks: itemRooms.map(r => ({ id: r.id, resolvedAssetId: r.resolvedAssetId ?? null })),
@@ -274,23 +288,48 @@ async function enrichItems(rows: typeof agendaItems.$inferSelect[]): Promise<Age
       roomLinks: itemRooms.map(r => ({ id: r.id, substructureId: r.substructureId, name: r.name ?? '', resolvedAssetId: r.resolvedAssetId ?? null })),
       equipmentLinks: itemEquips.map(e => ({ id: e.id, equipmentId: e.equipmentId, name: e.name ?? '', resolvedAssetId: e.resolvedAssetId ?? null })),
       attentionFlags,
-      ...(natures ? { eventNature: natures.get(item.id) ?? null } : {}),
+      ...(natures ? { eventNature: natures.get(item.id)?.nature ?? null } : {}),
+      claimSource: item.businessOperationId != null ? claims.get(Number(item.businessOperationId)) ?? null : null,
     };
   });
 }
 
 /**
- * Nature des éléments (colonne 0223, non déclarée dans Drizzle) ; null si
- * la migration n'est pas appliquée (rien n'est lu).
+ * Sinistres représentés par des éléments (lot 46, O7) : Opération CLAIM
+ * active liée, et son bien principal (lien de la rubrique Sinistres). Ne
+ * lève jamais (lecture accessoire du tiroir).
  */
-async function loadEventNatures(ids: number[]): Promise<Map<number, 'HISTORICAL' | 'DEADLINE' | null> | null> {
+async function loadClaimSources(rows: Array<{ businessOperationId: number | null }>): Promise<Map<number, { assetId: number; claimId: number }>> {
+  const out = new Map<number, { assetId: number; claimId: number }>();
+  const ops = [...new Set(rows.map((r) => r.businessOperationId).filter((x): x is number => x != null).map(Number))];
+  if (ops.length === 0) return out;
+  try {
+    const r = (await db.execute(sql`
+      SELECT o.id, (SELECT l.asset_id FROM business_operation_asset_links l
+                     WHERE l.operation_id = o.id AND l.active ORDER BY (l.link_role = 'PRIMARY') DESC, l.asset_id LIMIT 1) AS asset_id
+        FROM business_operations o
+       WHERE o.id = ANY(${`{${ops.join(',')}}`}::bigint[]) AND o.type_code = 'CLAIM'
+         AND o.invalidated_at IS NULL AND o.merged_into_operation_id IS NULL`)) as unknown as Array<{ id: number; asset_id: number | null }>;
+    for (const x of r) if (x.asset_id != null) out.set(Number(x.id), { assetId: Number(x.asset_id), claimId: Number(x.id) });
+  } catch (e) {
+    console.error('[agenda] sinistres liés :', (e as Error).message);
+  }
+  return out;
+}
+
+/**
+ * Nature et type métier des éléments (colonnes 0223, non déclarées dans
+ * Drizzle) ; null si la migration n'est pas appliquée (rien n'est lu).
+ * Lot 47B : exportée pour les routes qui calculent le statut effectif.
+ */
+export async function loadEventNatures(ids: number[]): Promise<Map<number, { nature: 'HISTORICAL' | 'DEADLINE' | null; businessType: string | null }> | null> {
   if (ids.length === 0 || !(await agendaFunctionalColumnsReady())) return null;
   const { pgClient } = await import('@/db');
   const rows = (await pgClient.unsafe(
-    `SELECT id, event_nature AS nature FROM agenda_items WHERE id = ANY($1::int[])`,
+    `SELECT id, event_nature AS nature, business_type AS "businessType" FROM agenda_items WHERE id = ANY($1::int[])`,
     [ids] as never[],
-  )) as unknown as Array<{ id: number; nature: 'HISTORICAL' | 'DEADLINE' | null }>;
-  return new Map(rows.map((r) => [Number(r.id), r.nature]));
+  )) as unknown as Array<{ id: number; nature: 'HISTORICAL' | 'DEADLINE' | null; businessType: string | null }>;
+  return new Map(rows.map((r) => [Number(r.id), { nature: r.nature, businessType: r.businessType ?? null }]));
 }
 
 // ── Prochaines échéances (CDC 15 D-14) — helpers pour l'accueil (C) ─────────
@@ -483,13 +522,18 @@ export async function searchAgendaItems(query: string, accountId: number): Promi
   }
 
   const now = new Date();
-  return combined.slice(0, 20).map(item => {
+  const retenus = combined.slice(0, 20);
+  const natures = await loadEventNatures(retenus.map((r) => r.id));
+  return retenus.map(item => {
     const effectiveStatus = computeEffectiveStatus({
       startDate: item.startDate,
       startTime: item.startTime,
       endDate: item.endDate,
       endTime: item.endTime,
       manualStatus: item.manualStatus as 'realise' | 'annule' | null,
+      eventNature: natures?.get(item.id)?.nature ?? null,
+      businessType: natures?.get(item.id)?.businessType ?? null,
+      originFieldKey: item.originFieldKey ?? null,
     }, now);
     return {
       type: 'agenda' as const,

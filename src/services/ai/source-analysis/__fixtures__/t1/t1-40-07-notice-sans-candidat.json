@@ -1,0 +1,193 @@
+{
+  "case": "F-004 / F-003",
+  "description": "Notice datée avec un prix indicatif : aucune Opération — le candidat proposé à tort est rendu non établi par le serveur (type documentaire non métier).",
+  "context": {
+    "linkedAssetId": 20,
+    "assets": [
+      {
+        "id": 20,
+        "name": "Maison de Lyon",
+        "category": "IMMOBILIER",
+        "subtype": "maison"
+      }
+    ],
+    "rooms": [],
+    "equipments": [],
+    "existingTitles": [],
+    "verified": {
+      "ASSET": [
+        20
+      ],
+      "EQUIPMENT": [],
+      "ROOM": [],
+      "SUPPLIER": []
+    }
+  },
+  "recording": {
+    "operationCode": "t1_analyze_document",
+    "task": "ANALYZE_DOCUMENT",
+    "output": {
+      "task": "ANALYZE_DOCUMENT",
+      "document": {
+        "title": {
+          "value": "Notice Chaudière ecoTEC plus",
+          "confidence": "certain",
+          "evidence": {
+            "excerpt": "Notice Chaudière ecoTEC plus",
+            "page": 1
+          }
+        },
+        "classification": {
+          "canonicalType": "NOTICE",
+          "rubricCode": "CONTRACTS_WARRANTIES_DOCS",
+          "documentTypeCode": "USER_MANUAL",
+          "confidence": 0.92,
+          "evidence": {
+            "excerpt": "Notice Chaudière ecoTEC plus"
+          }
+        },
+        "documentDate": {
+          "value": "2025-03-01",
+          "confidence": "certain",
+          "evidence": {
+            "excerpt": "Date : 01/03/2025",
+            "page": 1
+          }
+        }
+      },
+      "entities": {
+        "assets": [
+          {
+            "entityId": 20,
+            "rawLabel": "Maison de Lyon",
+            "score": 0.95,
+            "confidence": "certain",
+            "evidenceSignals": [
+              "Maison de Lyon"
+            ],
+            "reason": "désignation lue"
+          }
+        ],
+        "rooms": [],
+        "equipments": [],
+        "suppliers": [],
+        "multiAsset": false
+      },
+      "transcription": "Notice d'utilisation — ecoTEC plus\nÉdition 03/2025\nPrix public indicatif : 2 500 €",
+      "facts": [
+        {
+          "canonicalKey": null,
+          "rawKey": "modele",
+          "label": "Modèle",
+          "subject": "Maison de Lyon",
+          "attribute": "modèle",
+          "rawValue": "Chaudière Vaillant ecoTEC plus",
+          "normalizedValue": "Chaudière Vaillant ecoTEC plus",
+          "valueType": "string",
+          "canonicalUnit": null,
+          "target": {
+            "type": "ASSET",
+            "entityId": 20,
+            "rawLabel": "Maison de Lyon",
+            "confidence": "certain",
+            "evidenceSignals": [
+              "Maison de Lyon"
+            ]
+          },
+          "provenance": "TEXT_EXTRACTION",
+          "confidence": "certain",
+          "evidence": {
+            "excerpt": "Notice d'utilisation — ecoTEC plus",
+            "page": 1
+          }
+        },
+        {
+          "canonicalKey": null,
+          "rawKey": "dateEdition",
+          "label": "Date d'édition",
+          "subject": "Maison de Lyon",
+          "attribute": "date d'édition",
+          "rawValue": "2025-03-01",
+          "normalizedValue": "2025-03-01",
+          "valueType": "date",
+          "canonicalUnit": null,
+          "target": {
+            "type": "ASSET",
+            "entityId": 20,
+            "rawLabel": "Maison de Lyon",
+            "confidence": "certain",
+            "evidenceSignals": [
+              "Maison de Lyon"
+            ]
+          },
+          "provenance": "TEXT_EXTRACTION",
+          "confidence": "certain",
+          "evidence": {
+            "excerpt": "Édition 03/2025",
+            "page": 1
+          }
+        },
+        {
+          "canonicalKey": null,
+          "rawKey": "prixIndicatif",
+          "label": "Prix indicatif",
+          "subject": "Maison de Lyon",
+          "attribute": "prix indicatif",
+          "rawValue": "2 500 €",
+          "normalizedValue": 250000,
+          "valueType": "money_cents",
+          "canonicalUnit": "cents",
+          "target": {
+            "type": "ASSET",
+            "entityId": 20,
+            "rawLabel": "Maison de Lyon",
+            "confidence": "certain",
+            "evidenceSignals": [
+              "Maison de Lyon"
+            ]
+          },
+          "provenance": "TEXT_EXTRACTION",
+          "confidence": "certain",
+          "evidence": {
+            "excerpt": "Prix public indicatif : 2 500 €",
+            "page": 1
+          }
+        }
+      ],
+      "hasExploitableContent": true,
+      "businessOperationCandidates": [
+        {
+          "candidateKey": "op1",
+          "established": true,
+          "confidence": "probable",
+          "typeHint": "ACQUISITION",
+          "statusHint": "REALIZED",
+          "summary": "Chaudière Vaillant",
+          "sourceRoleHint": "OTHER_EVIDENCE",
+          "financialHints": [
+            {
+              "role": "REALIZED_COST",
+              "amountMinor": 250000,
+              "currency": "EUR",
+              "factIndex": 2
+            }
+          ],
+          "evidenceFactIndexes": [
+            0,
+            1,
+            2
+          ]
+        }
+      ]
+    }
+  },
+  "expected": {
+    "noEstablishedCandidate": true,
+    "operationCandidates": [
+      {
+        "established": false,
+        "exclusionReason": "DOCUMENT_TYPE_NOT_BUSINESS"
+      }
+    ]
+  }
+}

@@ -17,6 +17,7 @@ import { pgClient } from '@/db';
 import { DELETION_EVENTS, onBusinessEvent } from './business-events';
 import { bumpRetrievalCacheVersion, clearRetrievalCache, invalidateRetrievalCacheForAccount } from '../core/retrieval-cache';
 import { assistantCachePrefix } from '../core/assistant-cache-key';
+import { subscribeBusinessOperationEvents, type BusinessOperationEvent } from '@/services/business-operations/events';
 
 /**
  * Purge les réponses modèle en cache des fils d'un compte. Rend le nombre de
@@ -84,7 +85,36 @@ export async function flushModelCachePurgesForTests(): Promise<void> {
 
 let enregistre = false;
 
+/**
+ * Lot 45 (O6, décision PO Q10, CDC C21.1, C22) : l'assistant s'abonne au bus
+ * DÉDIÉ des Opérations — sans élargir son catalogue fermé (§25.7) ni émettre
+ * d'événement d'assistant. Tout `BUSINESS_OPERATION_*` (création, montant,
+ * cible, statut, invalidation, réactivation, fusion) change ce que T2 lit
+ * (coûts, historique, sinistres) : la version de cache du compte est
+ * incrémentée EN BASE (toutes les instances) et l'instance courante libère
+ * ses entrées — pour le compte quitté aussi lors d'un transfert (Q14).
+ * Idempotent : un réabonnement sous le même nom remplace le précédent.
+ * Aucune purge des réponses modèle : rien n'est supprimé (la clé de ces
+ * réponses inclut déjà les sources, qui changent avec les données).
+ */
+export const OPERATION_CACHE_SUBSCRIBER = 'verebona-assistant-cache';
+
+export async function invalidateAssistantCacheForOperationEvent(e: BusinessOperationEvent): Promise<void> {
+  const comptes = [...new Set([e.accountId, e.previousAccountId].filter((x): x is number => Number.isSafeInteger(x)))];
+  for (const accountId of comptes) {
+    invalidateRetrievalCacheForAccount(accountId);
+    await bumpRetrievalCacheVersion(accountId, e.type);
+  }
+}
+
+export function registerAssistantOperationEventHandlers(): void {
+  subscribeBusinessOperationEvents(OPERATION_CACHE_SUBSCRIBER, invalidateAssistantCacheForOperationEvent);
+}
+
 export function registerAssistantBusinessEventHandlers(): void {
+  // Abonnement Opérations hors garde : idempotent par nom, et rétabli si le
+  // bus a été vidé (tests) — jamais deux abonnés.
+  registerAssistantOperationEventHandlers();
   if (enregistre) return;
   enregistre = true;
   onBusinessEvent('retrieval-cache', async (e) => {

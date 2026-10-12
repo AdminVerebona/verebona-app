@@ -34,6 +34,8 @@ const AUTO_ORIGIN_LABEL: Record<string, string> = {
   backup_succeeded: 'Sauvegarde réussie',
   backup_freshness_check: 'Sauvegarde récente constatée',
   referral_reward_cron: 'Récompense attribuée lors d\'un passage ultérieur',
+  // Lot 47A (O9) : anomalie dure des Opérations revenue à 0 (tâche `operations-quality-check`).
+  operations_quality_check_cleared: 'Anomalie dure des Opérations revenue à 0 (contrôle quotidien, après reconsolidation)',
 };
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {

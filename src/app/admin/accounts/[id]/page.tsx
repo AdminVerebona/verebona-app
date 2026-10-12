@@ -15,6 +15,7 @@
  *     (SUB-012) ; resynchronisation Stripe conservée comme outil de diagnostic.
  */
 import { useState, useEffect, useCallback } from 'react';
+import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -23,7 +24,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import {
   Users, User, Building2, Crown, Loader2, ArrowLeft,
-  Activity, CreditCard, RefreshCw, ExternalLink,
+  Activity, CreditCard, RefreshCw, ExternalLink, Layers,
   Package, Trash2, AlertTriangle, Ban, Power, Gauge, Receipt,
 } from 'lucide-react';
 import {
@@ -46,6 +47,7 @@ import { formatBytes, formatDate, formatDateTime, formatMoney } from '@/lib/admi
 import { EcranEnErreur } from '@/components/admin/EcranEnErreur';
 import { AccountWithdrawals } from './_components/AccountWithdrawals';
 import { AccountDocuments } from './_components/AccountDocuments';
+import { ReconsolidateAccountButton } from '../../operations/_components/ReconsolidateAccountButton';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -617,6 +619,27 @@ export default function AccountDetailPage() {
 
           {/* ── Documents, exports et transmissions (ACC-D07, ACC-D08) ── */}
           <AccountDocuments accountId={account.id} />
+
+          {/* ── Lot 47A (O9) : Opérations du compte (BO diagnostic, lecture seule) ── */}
+          <section className="rounded-xl border bg-card p-5 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+            <div>
+              <h2 className="font-semibold flex items-center gap-2">
+                <Layers className="h-4 w-4 text-muted-foreground" />
+                Opérations du compte
+              </h2>
+              <p className="text-xs text-muted-foreground mt-0.5">Opérations métier consolidées, candidats en attente, indicateurs et anomalies — lecture seule. La reconsolidation relance le moteur sur les preuves du compte (aucune modification manuelle).</p>
+            </div>
+            <div className="flex flex-col sm:flex-row sm:flex-wrap gap-2">
+              <Button asChild variant="outline" size="sm">
+                <Link href={`/admin/operations?accountId=${account.id}`}>Opérations du compte</Link>
+              </Button>
+              <Button asChild variant="ghost" size="sm">
+                <Link href={`/admin/operations?accountId=${account.id}&tab=indicateurs`}>Indicateurs</Link>
+              </Button>
+              {/* Lot 48 (O10) : action de compte avec motif, journalisée — jamais une édition d'Opération (Q9). */}
+              <ReconsolidateAccountButton accountId={account.id} />
+            </div>
+          </section>
 
           {/* ── Historique du compte (ACC-D09 à ACC-D11) ── */}
           <section className="rounded-xl border bg-card overflow-hidden">

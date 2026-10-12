@@ -161,6 +161,9 @@ export const verebonaRequestRuns = pgTable('verebona_request_runs', {
   requestIdx: index('verebona_request_runs_request_idx').on(t.requestId),
   // §28.12 (migration 0204) : intention + date.
   intentIdx: index('verebona_request_runs_intent_idx').on(t.intent, t.createdAt),
+  // Lot 47A (O9) — 0325_idx_6 : réponses T2 économiques (indicateur C26.2).
+  economicIdx: index('verebona_request_runs_economic_idx').on(t.createdAt)
+    .where(sql`((retrieval_methods_json -> 'observability' ->> 'economicMode') IS NOT NULL)`),
 }));
 
 export const verebonaAiRuns = pgTable('verebona_ai_runs', {

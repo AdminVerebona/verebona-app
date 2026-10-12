@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { categoryOptionsWithCurrent } from '@/lib/asset-taxonomy';
 import { assetHasRegistration } from '@/lib/asset-capabilities';
+import { isDisposalStatus, salePriceApplies } from '@/lib/assets/sale-fields';
 
 /**
  * Champs d'immatriculation (capacité `registration` du registre) : sans objet
@@ -14,6 +15,7 @@ import { Button } from '@/components/ui/button';
 import { AssetDetailSection, type FieldDef } from './AssetDetailSection';
 import { ValuationHistoryDrawer } from './ValuationHistoryDrawer';
 import { AssetAdditionalInfosSection } from './AssetAdditionalInfosSection';
+import { AssetClaimsSection } from './claims/AssetClaimsSection';
 import { OCCUPANCY_USAGE_OPTIONS } from '@/lib/assets/occupancy';
 import { apiClient } from '@/lib/api-client';
 import type { AssetDetail } from '@/types/asset-detail';
@@ -27,6 +29,8 @@ interface Props {
   planType: 'freemium' | 'premium';
   readOnly?: boolean;
   highlightField?: string | null;
+  /** Lot 45 : sinistre à ouvrir (`?highlight=claims&claim=<id>`, source de l'assistant). */
+  highlightClaimId?: number | null;
 }
 
 /**
@@ -34,7 +38,7 @@ interface Props {
  * plus la valeur enregistrée si elle n'y figure pas (catégorie ancienne),
  * pour ne jamais l'effacer à l'enregistrement.
  */
-function getCommonFields(category: string, currentSubtype?: string | null): FieldDef[] {
+export function getCommonFields(category: string, currentSubtype?: string | null): FieldDef[] {
   const subtypes = category === 'IMMOBILIER' || category === 'VEHICULE'
     ? categoryOptionsWithCurrent(category, currentSubtype)
     : null;
@@ -55,6 +59,11 @@ function getCommonFields(category: string, currentSubtype?: string | null): Fiel
       { value: 'CREDIT',        label: 'Crédit auto' },
       { value: 'PRET_GRATUIT',  label: 'Prêt / utilisation gratuite' },
     ]}] : []),
+    // Lot 43 (O4, décision PO Q5) : vente réalisée — bien VENDU (date et prix)
+    // ou TRANSMIS (date seule : cession sans prix). Le prix souhaité reste dans
+    // les informations commerciales (C18).
+    { key: 'saleDate', label: 'Date de vente / cession', type: 'date', visibleWhen: (d: Record<string, unknown>) => isDisposalStatus(d.status) },
+    { key: 'salePrice', label: 'Prix de vente réalisé (€)', type: 'number', visibleWhen: (d: Record<string, unknown>) => salePriceApplies(d.status) },
     { key: 'notes', label: 'Notes', type: 'textarea' },
   ];
 }
@@ -410,7 +419,7 @@ function buildFieldToSectionMap(category: string): Record<string, string> {
 
 type CoherenceAlert = { field: string; section: string; currentValue: string; issue: string; suggestedValue: string | null; sourceDocument: string; detectedAt: string };
 
-export function AssetDetailsTab({ asset, onRefresh, planType, readOnly = false, highlightField }: Props) {
+export function AssetDetailsTab({ asset, onRefresh, planType, readOnly = false, highlightField, highlightClaimId = null }: Props) {
   const [detailData, setDetailData] = useState<{ family: string; sections: Record<string, Record<string, unknown>>; coherenceAlerts?: CoherenceAlert[] } | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshTrigger, setRefreshTrigger] = useState(0);
@@ -571,9 +580,21 @@ export function AssetDetailsTab({ asset, onRefresh, planType, readOnly = false, 
         );
       })}
 
+      {/* ── Sinistres (lot 44, O5 — CDC Opérations V1 ch. 15) ────────────────
+          Plusieurs sinistres par bien, un sinistre pouvant concerner plusieurs
+          biens ; saisie ouverte à toutes les offres (Q3), l'export du dossier
+          Assurance-sinistre restant Premium. */}
+      <AssetClaimsSection
+        assetId={asset.id}
+        category={asset.category}
+        readOnly={readOnly}
+        defaultOpen={highlightField === 'claims'}
+        initialClaimId={highlightField === 'claims' ? highlightClaimId : null}
+      />
+
       {/* ── Préparation des dossiers (ex-« Informations complémentaires »,
           lot 34 point 6 ; CDC Exports V12 §4, DEC-007) ─────────────────────
-          Vente, location (immobilier), assurance, sinistre : reprises dans les
+          Vente, location (immobilier), assurance : reprises dans les
           dossiers prêts à l'emploi. Écriture réservée au droit de créer des
           dossiers (le composant applique la garde commune). */}
       <AssetAdditionalInfosSection

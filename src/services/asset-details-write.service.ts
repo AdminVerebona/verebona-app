@@ -29,6 +29,7 @@ import {
   resolveDefForFamily, writeCanonicalAssetFields,
   type CanonicalFieldWrite, type CanonicalWriteSource,
 } from '@/services/canonical/asset-state';
+import { OPERATION_ASSET_DATA_KEYS } from '@/services/business-operations/consolidation/asset-data';
 
 export const ALL_DETAIL_SECTIONS = [
   'common',
@@ -250,7 +251,7 @@ export async function updateAssetDetails(p: UpdateAssetDetailsInput): Promise<{ 
 
   await writeSectionCanonical({ ...p, origin, source }, family);
   await fermerCartesSaisies(accountId, assetId, canonicalWritesOf(fields, family));
-  await recontroleCoherence(accountId, assetId, fields);
+  await recontroleCoherence(accountId, assetId, fields, family);
   return { updated: true, section };
 }
 
@@ -274,11 +275,27 @@ async function fermerCartesSaisies(accountId: number, assetId: number, writes: C
 }
 
 /**
+ * La section modifie-t-elle une donnée structurée qui établit une Opération
+ * (lot 43 : achat, vente réalisée, assurance — alias résolus) ?
+ */
+export function touchesOperationData(fields: Record<string, unknown>, family: AssetFamily): boolean {
+  return Object.keys(fields).some((k) => OPERATION_ASSET_DATA_KEYS.has(resolveDefForFamily(k, family)?.key ?? k));
+}
+
+/**
  * Modification d'un bien : la cohérence globale du compte est recontrôlée
  * (T3), en différé et fusionnée avec les autres événements rapprochés —
  * SEULEMENT si un champ à impact de cohérence a changé (T3-004).
  */
-async function recontroleCoherence(accountId: number, assetId: number, fields: Record<string, unknown>): Promise<void> {
+async function recontroleCoherence(accountId: number, assetId: number, fields: Record<string, unknown>, family: AssetFamily): Promise<void> {
+  // Lot 41 (C4 TRG-009 / TRG-010) : le statut du bien décide du périmètre T3 des
+  // Opérations (CESSION d'un bien VENDU, création interdite sur un bien sorti).
+  // Lot 43 (TRG-008 à TRG-010) : achat, vente réalisée, assurance — données
+  // structurées qui établissent une Opération (sources ASSET_DATA).
+  if ('status' in fields || touchesOperationData(fields, family)) {
+    const { notifyOperationsEvent } = await import('@/services/business-operations/consolidation/queue');
+    notifyOperationsEvent(accountId, { trigger: fields.status === 'VENDU' || fields.status === 'TRANSMIS' ? 'asset_disposed' : 'asset_updated', assetId });
+  }
   const { hasCoherenceImpact } = await import('@/services/ai/reconciliation/coherence-impact');
   if (await hasCoherenceImpact(accountId, assetId, Object.keys(fields))) {
     const { notifyCoherenceEvent } = await import('@/services/ai/reconciliation/account-reconciliation.service');

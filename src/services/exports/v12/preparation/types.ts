@@ -159,6 +159,12 @@ export interface PreparationDto {
    * l'interface HORS PDF ; composition déterministe. Dossier VENTE seulement.
    */
   saleAds?: { short: string; detailed: string; priceMissing: boolean; generatedBy: 'deterministic' } | null;
+  /**
+   * Lot 44 (O5) : sinistre du dossier Assurance-sinistre — choisi parmi ceux
+   * du bien (Q2) ; `origin` : sinistre, ancienne saisie (compatibilité Q11)
+   * ou aucun. Dossier ASSURANCE_SINISTRE seulement.
+   */
+  claim?: { selectedOperationId: number | null; origin: 'operation' | 'legacy' | 'none'; options: Array<{ id: number; label: string; date: string | null }> } | null;
 }
 
 /** Réponse de `POST …/exports/estimate`. */

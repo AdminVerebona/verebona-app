@@ -1,0 +1,263 @@
+{
+  "case": "F-010",
+  "description": "Contrat d'assurance habitation : CONTRACT REALIZED, rôle CONTRACT_DOCUMENT, référence de police, date d'effet en startDate.",
+  "context": {
+    "linkedAssetId": 20,
+    "assets": [
+      {
+        "id": 20,
+        "name": "Maison de Lyon",
+        "category": "IMMOBILIER",
+        "subtype": "maison"
+      }
+    ],
+    "rooms": [],
+    "equipments": [],
+    "existingTitles": [],
+    "verified": {
+      "ASSET": [
+        20
+      ],
+      "EQUIPMENT": [],
+      "ROOM": [],
+      "SUPPLIER": []
+    }
+  },
+  "recording": {
+    "operationCode": "t1_analyze_document",
+    "task": "ANALYZE_DOCUMENT",
+    "output": {
+      "task": "ANALYZE_DOCUMENT",
+      "document": {
+        "title": {
+          "value": "Contrat Assurance habitation maison de Lyon",
+          "confidence": "certain",
+          "evidence": {
+            "excerpt": "Contrat Assurance habitation maison de Lyon",
+            "page": 1
+          }
+        },
+        "classification": {
+          "canonicalType": "CONTRAT",
+          "rubricCode": "INSURANCE_CLAIMS",
+          "documentTypeCode": "INSURANCE_POLICY",
+          "confidence": 0.92,
+          "evidence": {
+            "excerpt": "Contrat Assurance habitation maison de Lyon"
+          }
+        },
+        "documentDate": {
+          "value": "2025-12-10",
+          "confidence": "certain",
+          "evidence": {
+            "excerpt": "Date : 10/12/2025",
+            "page": 1
+          }
+        },
+        "amountCents": {
+          "value": 48000,
+          "confidence": "certain",
+          "evidence": {
+            "excerpt": "Prime annuelle TTC : 480,00 €",
+            "page": 1
+          }
+        },
+        "supplier": {
+          "name": "Assur'Habitat",
+          "confidence": "certain",
+          "evidence": {
+            "excerpt": "ASSUR'HABITAT",
+            "page": 1
+          }
+        }
+      },
+      "entities": {
+        "assets": [
+          {
+            "entityId": 20,
+            "rawLabel": "Maison de Lyon",
+            "score": 0.95,
+            "confidence": "certain",
+            "evidenceSignals": [
+              "Maison de Lyon"
+            ],
+            "reason": "désignation lue"
+          }
+        ],
+        "rooms": [],
+        "equipments": [],
+        "suppliers": [],
+        "multiAsset": false
+      },
+      "transcription": "ASSUR'HABITAT — Contrat Multirisque Habitation\nPolice n° HAB-559201\nDate d'effet : 01/01/2026\nPrime annuelle TTC : 480,00 €",
+      "facts": [
+        {
+          "canonicalKey": null,
+          "rawKey": "numeroPolice",
+          "label": "N° de police",
+          "subject": "Maison de Lyon",
+          "attribute": "n° de police",
+          "rawValue": "HAB-559201",
+          "normalizedValue": "HAB-559201",
+          "valueType": "string",
+          "canonicalUnit": null,
+          "target": {
+            "type": "ASSET",
+            "entityId": 20,
+            "rawLabel": "Maison de Lyon",
+            "confidence": "certain",
+            "evidenceSignals": [
+              "Maison de Lyon"
+            ]
+          },
+          "provenance": "TEXT_EXTRACTION",
+          "confidence": "certain",
+          "evidence": {
+            "excerpt": "Police n° HAB-559201",
+            "page": 1
+          }
+        },
+        {
+          "canonicalKey": null,
+          "rawKey": "assureur",
+          "label": "Assureur",
+          "subject": "Maison de Lyon",
+          "attribute": "assureur",
+          "rawValue": "Assur'Habitat",
+          "normalizedValue": "Assur'Habitat",
+          "valueType": "string",
+          "canonicalUnit": null,
+          "target": {
+            "type": "ASSET",
+            "entityId": 20,
+            "rawLabel": "Maison de Lyon",
+            "confidence": "certain",
+            "evidenceSignals": [
+              "Maison de Lyon"
+            ]
+          },
+          "provenance": "TEXT_EXTRACTION",
+          "confidence": "certain",
+          "evidence": {
+            "excerpt": "ASSUR'HABITAT — Contrat Multirisque Habitation",
+            "page": 1
+          }
+        },
+        {
+          "canonicalKey": null,
+          "rawKey": "dateEffet",
+          "label": "Date d'effet",
+          "subject": "Maison de Lyon",
+          "attribute": "date d'effet",
+          "rawValue": "2026-01-01",
+          "normalizedValue": "2026-01-01",
+          "valueType": "date",
+          "canonicalUnit": null,
+          "target": {
+            "type": "ASSET",
+            "entityId": 20,
+            "rawLabel": "Maison de Lyon",
+            "confidence": "certain",
+            "evidenceSignals": [
+              "Maison de Lyon"
+            ]
+          },
+          "provenance": "TEXT_EXTRACTION",
+          "confidence": "certain",
+          "evidence": {
+            "excerpt": "Date d'effet : 01/01/2026",
+            "page": 1
+          },
+          "semanticEvent": {
+            "type": "contract",
+            "nature": "HISTORICAL"
+          }
+        },
+        {
+          "canonicalKey": null,
+          "rawKey": "primeAnnuelle",
+          "label": "Prime annuelle",
+          "subject": "Maison de Lyon",
+          "attribute": "prime annuelle",
+          "rawValue": "480,00 €",
+          "normalizedValue": 48000,
+          "valueType": "money_cents",
+          "canonicalUnit": "cents",
+          "target": {
+            "type": "ASSET",
+            "entityId": 20,
+            "rawLabel": "Maison de Lyon",
+            "confidence": "certain",
+            "evidenceSignals": [
+              "Maison de Lyon"
+            ]
+          },
+          "provenance": "TEXT_EXTRACTION",
+          "confidence": "certain",
+          "evidence": {
+            "excerpt": "Prime annuelle TTC : 480,00 €",
+            "page": 1
+          }
+        }
+      ],
+      "hasExploitableContent": true,
+      "businessOperationCandidates": [
+        {
+          "candidateKey": "op1",
+          "established": true,
+          "confidence": "certain",
+          "typeHint": "CONTRACT",
+          "statusHint": "REALIZED",
+          "summary": "Contrat multirisque habitation de la maison de Lyon",
+          "sourceRoleHint": "CONTRACT_DOCUMENT",
+          "provider": "Assur'Habitat",
+          "targetHints": [
+            {
+              "type": "ASSET",
+              "entityId": 20,
+              "rawLabel": "Maison de Lyon",
+              "confidence": "certain"
+            }
+          ],
+          "businessReferences": [
+            {
+              "kind": "POLICY",
+              "value": "HAB-559201"
+            }
+          ],
+          "temporalHints": {
+            "startDate": "2026-01-01"
+          },
+          "financialHints": [
+            {
+              "role": "REALIZED_COST",
+              "amountMinor": 48000,
+              "currency": "EUR",
+              "amountScope": "INSTALLMENT",
+              "periodStart": "2026-01-01",
+              "periodEnd": "2026-12-31",
+              "factIndex": 3
+            }
+          ],
+          "evidenceFactIndexes": [
+            0,
+            1,
+            2,
+            3
+          ]
+        }
+      ]
+    }
+  },
+  "expected": {
+    "operationCandidates": [
+      {
+        "typeHint": "CONTRACT",
+        "statusHint": "REALIZED",
+        "sourceRoleHint": "CONTRACT_DOCUMENT",
+        "established": true,
+        "confidence": "certain"
+      }
+    ]
+  }
+}

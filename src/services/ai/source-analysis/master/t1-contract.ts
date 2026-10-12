@@ -20,9 +20,11 @@ export const T1_MASTER_PROMPT_CODE = 't1_master_v1';
 /**
  * Version du contrat de sortie ANALYZE_DOCUMENT (lot 33D, registre
  * `gateway/output-resolution/contracts`) : v1 ancien moteur, v2 lot 12,
- * v3 lot 33 (`entityId` absent = null). Affichée « t1_analyze_document@v3 ».
+ * v3 lot 33 (`entityId` absent = null), v4 lot 40 (`businessOperationCandidates[]`,
+ * CDC Opérations V1 C3.1 — une sortie v3 reste une v4 valide : aucun
+ * candidat). Affichée « t1_analyze_document@v4 ».
  */
-export const T1_ANALYZE_DOCUMENT_CONTRACT_VERSION = 3;
+export const T1_ANALYZE_DOCUMENT_CONTRACT_VERSION = 4;
 export const T1_TASKS = ['GROUP_UPLOAD', 'ANALYZE_DOCUMENT'] as const;
 export type T1Task = (typeof T1_TASKS)[number];
 
@@ -173,6 +175,100 @@ export const t1Table = z.object({
 
 const meta = <T extends z.ZodType>(value: T) => z.object({ value, confidence, evidence: t1Evidence.default({}) });
 
+// ── Candidats Opération (lot 40, CDC Opérations V1 C3, C3.1, B3, C2.1) ──────
+//
+// Vocabulaire FERMÉ, recopié ici pour que ce fichier ne dépende que de zod :
+// identique à `business-operations/model.ts` (test d'alignement C3-01).
+// T1 EXTRAIT, T3 DÉCIDE : un candidat n'est jamais une Opération.
+
+/** Types d'Opération (C27) — `OTHER` n'est jamais un repli (P18). */
+export const T1_OPERATION_TYPES = ['ACQUISITION', 'INTERVENTION', 'CONTRACT', 'FINANCING', 'CLAIM', 'DISPOSAL', 'OTHER'] as const;
+export const T1_OPERATION_STATUSES = ['ENVISAGED', 'REALIZED', 'CANCELLED'] as const;
+/** Rôle de la source documentaire (C2.1). */
+export const T1_SOURCE_ROLES = [
+  'QUOTE', 'ORDER', 'INVOICE', 'DEPOSIT_INVOICE', 'CREDIT_NOTE', 'REFUND_PROOF', 'PAYMENT_PROOF',
+  'CONTRACT_DOCUMENT', 'CLAIM_DOCUMENT', 'SALE_DOCUMENT', 'REPORT', 'OTHER_EVIDENCE',
+] as const;
+export type T1SourceRole = (typeof T1_SOURCE_ROLES)[number];
+/**
+ * Rôle économique d'un montant (C11.2, C12) ; `PAYMENT` = règlement prouvé,
+ * JAMAIS un coût (INV-FINAL-015).
+ */
+export const T1_FINANCIAL_ROLES = ['FORECAST_COST', 'REALIZED_COST', 'REDUCTION', 'REFUND', 'INDEMNITY', 'PROCEED', 'PAYMENT'] as const;
+export type T1FinancialRole = (typeof T1_FINANCIAL_ROLES)[number];
+/** Portée d'un montant : total, acompte, solde, échéance (F-092, F-093). */
+export const T1_AMOUNT_SCOPES = ['TOTAL', 'DEPOSIT', 'BALANCE', 'INSTALLMENT'] as const;
+/** Références métier (même liste que `business_operation_references`). */
+export const T1_REFERENCE_KINDS = ['INVOICE', 'QUOTE', 'ORDER', 'WORK_ORDER', 'CONTRACT', 'POLICY', 'CLAIM', 'LOAN', 'CUSTOMER', 'DELIVERY', 'OTHER'] as const;
+/**
+ * Motif d'exclusion (B3 : valorisation_only, deadline_only, descriptive_only,
+ * simulation_only…) — seuls les quatre derniers codes sont posés par le
+ * serveur (`operation-candidates/gate.ts`).
+ */
+export const T1_EXCLUSION_REASONS = [
+  'VALUATION_ONLY', 'DEADLINE_ONLY', 'DESCRIPTIVE_ONLY', 'SIMULATION_ONLY', 'WARRANTY_ONLY',
+  'METER_READING_ONLY', 'UNQUALIFIED_AMOUNT', 'OTHER',
+  'NO_EVIDENCE', 'VISUAL_ONLY', 'DOCUMENT_TYPE_NOT_BUSINESS', 'NO_EXPLOITABLE_CONTENT',
+] as const;
+export type T1ExclusionReason = (typeof T1_EXCLUSION_REASONS)[number];
+/** Borne du contrat (T1-OP-008) : au-delà, regrouper au niveau métier. */
+export const T1_MAX_OPERATION_CANDIDATES = 20;
+
+const t1OperationTargetHint = z.object({
+  type: z.enum(['ASSET', 'EQUIPMENT', 'ROOM']),
+  /** Identifiant présent dans ENTITY_CONTEXT, sinon null (U9) — revérifié en base. */
+  entityId: z.number().int().positive().nullable().default(null),
+  rawLabel: z.string().max(200).nullable().optional(),
+  confidence: confidence.default('probable'),
+});
+
+const t1FinancialHint = z.object({
+  role: z.enum(T1_FINANCIAL_ROLES),
+  /** Montant en UNITÉS MINEURES (centimes) ≥ 0 ; le signe est porté par le rôle (C12). */
+  amountMinor: z.number().int().nonnegative(),
+  /** Devise ISO 4217 LUE (C12.3) — jamais convertie par T1. */
+  currency: z.string().regex(/^[A-Z]{3}$/),
+  amountScope: z.enum(T1_AMOUNT_SCOPES).nullable().optional(),
+  economicDate: isoDate.nullable().optional(),
+  periodStart: isoDate.nullable().optional(),
+  periodEnd: isoDate.nullable().optional(),
+  /** Index (dans `facts`) du fait qui porte ce montant (T1-OP-006). */
+  factIndex: z.number().int().nonnegative(),
+});
+
+/** Candidat Opération (C3.1). */
+export const t1OperationCandidate = z.object({
+  /** Clé locale, unique dans l'analyse ; jamais l'identifiant d'une Opération. */
+  candidateKey: z.string().min(1).max(60),
+  /** La source affirme-t-elle une réalité métier ? */
+  established: z.boolean(),
+  /** certain : établit ; probable : suggère sans suffire seul ; conflictual : aucune création automatique (T1-OP-003). */
+  confidence,
+  typeHint: z.enum(T1_OPERATION_TYPES).nullable().default(null),
+  statusHint: z.enum(T1_OPERATION_STATUSES).nullable().default(null),
+  /** Synthèse métier factuelle courte. */
+  summary: z.string().min(1).max(500),
+  sourceRoleHint: z.enum(T1_SOURCE_ROLES).nullable().default(null),
+  /** Prestataire / organisme principal explicitement identifié. */
+  provider: z.string().max(200).nullable().optional(),
+  targetHints: z.array(t1OperationTargetHint).max(10).default([]),
+  businessReferences: z.array(z.object({
+    kind: z.enum(T1_REFERENCE_KINDS),
+    value: z.string().min(1).max(120),
+  })).max(10).default([]),
+  temporalHints: z.object({
+    plannedDate: isoDate.nullable().optional(),
+    startDate: isoDate.nullable().optional(),
+    realizedDate: isoDate.nullable().optional(),
+    endDate: isoDate.nullable().optional(),
+  }).default({}),
+  financialHints: z.array(t1FinancialHint).max(20).default([]),
+  /** Index (dans `facts`) des faits qui motivent le candidat — obligatoire si `established` (T1-OP-006). */
+  evidenceFactIndexes: z.array(z.number().int().nonnegative()).max(50).default([]),
+  exclusionReason: z.enum(T1_EXCLUSION_REASONS).nullable().optional(),
+});
+export type T1OperationCandidate = z.infer<typeof t1OperationCandidate>;
+
 // ── Branche GROUP_UPLOAD ────────────────────────────────────────────────────
 export const T1GroupUploadOutput = z.object({
   task: z.literal('GROUP_UPLOAD'),
@@ -226,6 +322,11 @@ export const T1AnalyzeDocumentOutput = z.object({
   tables: z.array(t1Table).max(30).default([]),
   facts: z.array(t1Fact).max(300).default([]),
   hasExploitableContent: z.boolean().default(true),
+  /**
+   * Lot 40 (contrat v4, CDC Opérations V1 C3) : candidats Opération, tableau
+   * SÉPARÉ des faits (T1-OP-001). Absent (sortie v3) = aucun candidat.
+   */
+  businessOperationCandidates: z.array(t1OperationCandidate).max(T1_MAX_OPERATION_CANDIDATES).default([]),
 });
 export type T1AnalyzeDocumentOutput = z.infer<typeof T1AnalyzeDocumentOutput>;
 
@@ -297,4 +398,15 @@ export interface ProjectedFact {
    * `page:5:table:2:row:4:cell:3`…), posées après projection.
    */
   sourceUnitIds?: string[];
+  /**
+   * Lot 40 (contrat INTERNE) : empreinte du fait T1 d'origine
+   * (`factFingerprint`, posée à la réception de la sortie — voir
+   * `operation-candidates/anchor.ts`). Elle relie les preuves des candidats
+   * Opération au fait persisté, quels que soient les décalages d'index
+   * (lots de débordement, de pages, faits écartés).
+   */
+  t1FactRef?: string;
 }
+
+/** Lot 40 — marque interne portée par un fait T1 après réception (jamais par le modèle). */
+export type T1FactWithRef = T1Fact & { t1FactRef?: string };

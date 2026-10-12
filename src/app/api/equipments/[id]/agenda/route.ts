@@ -5,6 +5,7 @@ import { eq, and, inArray } from 'drizzle-orm';
 import { SessionService } from '@/lib/session-service';
 import { apiError } from '@/lib/api-errors';
 import { computeEffectiveStatus } from '@/services/agenda/AgendaDomainService';
+import { loadEventNatures } from '@/services/agenda/AgendaQueryService';
 
 // GET /api/equipments/[id]/agenda — agenda items linked to an equipment
 export async function GET(
@@ -46,6 +47,7 @@ export async function GET(
         endTime: agendaItems.endTime,
         manualStatus: agendaItems.manualStatus,
         originType: agendaItems.originType,
+        originFieldKey: agendaItems.originFieldKey,
       })
       .from(agendaItems)
       .where(
@@ -56,6 +58,8 @@ export async function GET(
       );
 
     const now = new Date();
+    // Lot 47B : un fait historique passé est « réalisé », jamais « en retard ».
+    const natures = await loadEventNatures(rows.map((r) => r.id));
     const items = rows.map(item => ({
       id: item.id,
       publicId: item.publicId,
@@ -71,6 +75,9 @@ export async function GET(
         endDate: item.endDate,
         endTime: item.endTime,
         manualStatus: item.manualStatus as 'realise' | 'annule' | null,
+        eventNature: natures?.get(item.id)?.nature ?? null,
+        businessType: natures?.get(item.id)?.businessType ?? null,
+        originFieldKey: item.originFieldKey ?? null,
       }, now),
       originType: item.originType,
     }));

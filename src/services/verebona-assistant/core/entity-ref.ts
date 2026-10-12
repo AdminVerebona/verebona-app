@@ -30,7 +30,7 @@
  */
 import { drawerHref } from '@/lib/drawers';
 import { SUPPLIERS_ROUTE, supplierHref } from '@/lib/supplier-routes';
-import { parseAssetFieldSourceId, parseEntityFieldSourceId } from '../canonical/source-ids';
+import { parseAssetFieldSourceId, parseClaimSourceId, parseEntityFieldSourceId } from '../canonical/source-ids';
 
 /** Familles d'entités référençables par une source (§19.2). */
 export type EntityKind = 'asset' | 'document' | 'agenda_item' | 'equipment' | 'room' | 'supplier' | 'to_process' | 'export';
@@ -60,6 +60,11 @@ export interface EntityRef {
   id: number;
   /** Identifiant préfixé d'origine — conservé pour les journaux (§32). */
   sourceId: string;
+  /**
+   * Lot 45 (O6) : source d'un SINISTRE (`claim:<assetId>:<id>`) — l'entité
+   * reste le bien ; l'ouverture mène à sa section Sinistres, sinistre choisi.
+   */
+  claimId?: number;
   /**
    * Source de NIVEAU CHAMP (`asset_field:<assetId>:<clé>`, CDC 15 T2-32) :
    * clé canonique du registre. L'entité reste le BIEN (`kind: 'asset'`) : son
@@ -124,6 +129,13 @@ export function parseEntityRef(
     return { kind: 'asset', id: champ.assetId, sourceId: brut, fieldKey: champ.key };
   }
 
+  // Lot 45 (O6) : sinistre — appartenance vérifiée comme celle du bien.
+  if (brut.startsWith('claim:')) {
+    const c = parseClaimSourceId(brut);
+    if (!c || (attendu && attendu !== 'asset')) return null;
+    return { kind: 'asset', id: c.assetId, sourceId: brut, claimId: c.claimId };
+  }
+
   // Lot 29 (ticket 13 §L) : champ d'un équipement / d'une pièce — l'entité
   // reste l'équipement / la pièce (appartenance vérifiée par le bien parent).
   if (brut.startsWith('equipment_field:') || brut.startsWith('room_field:')) {
@@ -174,6 +186,9 @@ export function hrefEntite(
 ): string | null {
   switch (ref.kind) {
     case 'asset':
+      // Lot 45 : sinistre — section Sinistres de la fiche (onglet Détails),
+      // ouverte sur ce sinistre (`AssetClaimsSection`, desktop et mobile).
+      if (ref.claimId) return `${hrefBien(ref.id, 'details')}&highlight=claims&claim=${ref.claimId}`;
       // Source de niveau champ : fiche du bien, onglet « Détails », champ en
       // surbrillance (`?highlight=`, lu par AssetDetailsTab).
       return ref.fieldKey

@@ -4,6 +4,8 @@ import { assets } from '@/db/schema';
 import { eq, and, isNull } from 'drizzle-orm';
 import { apiError } from '@/lib/api-errors';
 import { SessionService } from '@/lib/session-service';
+import { loadEventNatures } from '@/services/agenda/AgendaQueryService';
+import { isHistoricalAgendaEvent } from '@/services/agenda/agenda-historical';
 
 export async function GET(
   request: NextRequest,
@@ -49,8 +51,8 @@ export async function GET(
     // désormais convertis en texte (AAAA-MM-JJ… : l'ordre est conservé).
     const [agendaRows, docs, countersRow] = await Promise.all([
       // Agenda items linked to this asset via agenda_asset_links (excludes cancelled)
-      sql<{ id: number; title: string; start_date: string | null; end_date: string | null; manual_status: string | null }[]>`
-        SELECT ai.id, ai.title, ai.start_date, ai.end_date, ai.manual_status
+      sql<{ id: number; title: string; start_date: string | null; end_date: string | null; manual_status: string | null; origin_field_key: string | null }[]>`
+        SELECT ai.id, ai.title, ai.start_date, ai.end_date, ai.manual_status, ai.origin_field_key
         FROM agenda_items ai
         INNER JOIN agenda_asset_links aal ON aal.agenda_item_id = ai.id
         WHERE aal.asset_id = ${assetId}
@@ -87,10 +89,19 @@ export async function GET(
     ]);
 
     // Build timeline from agenda items
+    // Lot 47B (règle partagée `agenda-historical`) : un fait historique passé
+    // sans statut est affiché réalisé, jamais « en retard » (rien n'est écrit).
+    const natures = await loadEventNatures(agendaRows.map((r) => Number(r.id)));
     const timeline = agendaRows.map(item => {
-      const isDone = item.manual_status === 'realise';
       const effectiveDate = item.start_date ?? null;
-      const isOverdue = !isDone && !!effectiveDate && effectiveDate < today;
+      const historique = isHistoricalAgendaEvent({
+        eventNature: natures?.get(Number(item.id))?.nature ?? null,
+        businessType: natures?.get(Number(item.id))?.businessType ?? null,
+        originFieldKey: item.origin_field_key ?? null,
+      });
+      const ouvert = !item.manual_status || item.manual_status.trim() === '';
+      const isDone = item.manual_status === 'realise' || (ouvert && historique && !!effectiveDate && effectiveDate < today);
+      const isOverdue = !isDone && !historique && !!effectiveDate && effectiveDate < today;
       return {
         itemType: 'agenda' as const,
         id: String(item.id),

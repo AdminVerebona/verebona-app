@@ -37,6 +37,7 @@ import {
 } from '@/lib/notifications/channel-activation';
 import { planLabelOf } from '@/lib/notifications/subscription-messages';
 import { formatMoney } from '@/lib/admin/format';
+import { formatSecurityIncidentDate } from '@/lib/auth/security-email';
 
 // ── Libellés ────────────────────────────────────────────────────────────────
 
@@ -102,6 +103,9 @@ export const TRANSACTIONAL_EMAILS: ReadonlyArray<{ templateCode: string; label: 
   // Lot 35C (migration 0308) : information préalable d'une revalorisation —
   // envoyée seulement depuis Exploitation › Catalogue Stripe, texte à valider.
   { templateCode: 'PRICE_CHANGE_NOTICE', label: 'Évolution du tarif de l’abonnement (information préalable)' },
+  // Lot 38 (migration 0314) : appareils déconnectés par précaution après la
+  // réutilisation d'un jeton de session (au plus un par heure et par utilisateur).
+  { templateCode: 'SECURITY_SESSIONS_REVOKED', label: 'Sécurité — appareils déconnectés par précaution' },
 ];
 
 export const CHANNEL_LABELS: Record<CommunicationChannel, string> = {
@@ -477,6 +481,9 @@ export function resolveTemplateVariables(
     accountName: ctx.accountName ?? '',
     planType: ctx.planLabel ?? '',
     loginUrl: `${base}/login`,
+    // SECURITY_SESSIONS_REVOKED (lot 38).
+    forgotPasswordUrl: `${base}/forgot-password`,
+    incidentDate: formatSecurityIncidentDate(new Date()),
     appUrl: base,
     year: String(new Date().getFullYear()),
     ...(ctx.extra ?? {}),

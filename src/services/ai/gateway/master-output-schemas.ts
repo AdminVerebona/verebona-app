@@ -12,7 +12,7 @@ import {
   T1AnalyzeDocumentOutput, T1GroupUploadOutput, T1MasterOutput,
 } from '../source-analysis/master/t1-contract';
 import {
-  T3LinkAmbiguityOutput, T3MasterOutput, T3ValueConflictOutput,
+  T3LinkAmbiguityOutput, T3MasterOutput, T3OperationMatchOutput, T3ValueConflictOutput,
 } from '../reconciliation/master/t3-contract';
 import {
   T4ClassifyEventOutput, T4MasterOutput, T4TemporalAmbiguityOutput, T4VerifyCompletionOutput,
@@ -29,6 +29,7 @@ export const MASTER_OUTPUT_SCHEMAS: Readonly<Record<string, ZodType>> = {
   T1MasterOutput,
   T3ValueConflictOutput,
   T3LinkAmbiguityOutput,
+  T3OperationMatchOutput,
   T3MasterOutput,
   T4ClassifyEventOutput,
   T4VerifyCompletionOutput,

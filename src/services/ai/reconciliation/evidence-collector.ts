@@ -7,6 +7,7 @@
  * CDC §5.6 : le document n'est jamais renvoyé au modèle. Tout part des preuves
  * déjà produites par l'analyse (usage 1).
  */
+import { isValuationEvidenceAdmissible } from '@/services/canonical/valuation-semantics';
 import { db, pgClient } from '@/db';
 import { assets } from '@/db/schema';
 import { eq, and } from 'drizzle-orm';
@@ -93,7 +94,11 @@ export async function collectAssetEvidenceState(
  * pièce : même règle, lot 18).
  */
 export function toEvidenceCandidates(fieldKey: string, evidences: FieldEvidence[]): EvidenceCandidate[] {
-  return evidences.map((e) => ({
+  // Lot 38 (O0, B18, C18) : une valeur estimée n'est jamais prouvée par un
+  // document de transaction (facture, devis, commande, paiement) — preuve
+  // écartée avant toute décision (ni écriture, ni proposition), pour le bien
+  // comme pour un équipement.
+  return evidences.filter((e) => isValuationEvidenceAdmissible(fieldKey, e.documentType)).map((e) => ({
     evidenceId: e.id,
     value: e.value,
     normalized: normalize(fieldKey, e.value),

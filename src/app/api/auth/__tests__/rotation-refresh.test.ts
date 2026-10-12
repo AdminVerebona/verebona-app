@@ -11,6 +11,8 @@ import { NextRequest } from 'next/server';
 
 const revoked = new Map<string, { revokedAt: Date; reason: 'rotated' | 'logout' | null }>();
 let revokeFails = false;
+let revokeAllFails = false;
+const securityEmails: number[] = [];
 const revokeAll: Array<{ userId: number; reason: string }> = [];
 const activity: Array<{ activityType: string; details?: Record<string, unknown> }> = [];
 vi.mock('@/db', async () => {
@@ -28,7 +30,10 @@ vi.mock('@/db', async () => {
       if (revoked.has(h)) return false;
       revoked.set(h, { revokedAt: new Date(), reason }); return true;
     },
-    revokeAllUserSessions: async (userId: number, reason: string) => { revokeAll.push({ userId, reason }); return new Date(); },
+    revokeAllUserSessions: async (userId: number, reason: string) => {
+      if (revokeAllFails) throw new Error('ECONNRESET');
+      revokeAll.push({ userId, reason }); return new Date();
+    },
     getUserSessionCutoff: async () => null,
   };
 });
@@ -37,6 +42,10 @@ vi.mock('@/services/account-service', () => ({ AccountService: {
   getUserSessionAccounts: async () => [{ account: { id: 9, subscriptionStatus: 'ACTIVE' }, membershipId: 1, role: 'owner' }],
 } }));
 vi.mock('@/lib/audit-logger', () => ({ logUserActivity: (a: { activityType: string }) => { activity.push(a); } }));
+// Lot 38 (volet B) : e-mail de sécurité planifié après la réponse.
+vi.mock('@/services/auth/sessions-revoked-email.service', () => ({
+  scheduleSessionsRevokedEmail: (userId: number) => { securityEmails.push(userId); },
+}));
 
 const { POST: refresh } = await import('../refresh/route');
 const { generateRefreshToken, verifyRefreshToken, verifyAccessToken } = await import('@/lib/jwt');
@@ -46,7 +55,7 @@ const { REFRESH_REUSE_GRACE_MS, classifyRefreshReplay } = await import('@/lib/au
 const claims = { id: 1, email: 'a@b.fr', role: 'USER' as never, planType: 'STANDARD' as never, status: 'ACTIVE' as never };
 const req = (token: string) => new NextRequest('http://x/api/auth/refresh', { method: 'POST', headers: { cookie: `refresh_token=${token}` } });
 
-beforeEach(() => { revoked.clear(); revokeFails = false; activity.length = 0; revokeAll.length = 0; });
+beforeEach(() => { revoked.clear(); revokeFails = false; revokeAllFails = false; activity.length = 0; revokeAll.length = 0; securityEmails.length = 0; });
 afterEach(() => { vi.useRealTimers(); });
 
 /** Fait vieillir la révocation d'un jeton (au-delà de la fenêtre de grâce). */
@@ -120,6 +129,31 @@ describe('rotation', () => {
     expect(rejeu.cookies.get('access_token')?.value).toBe('');
     expect(revokeAll).toEqual([{ userId: 1, reason: 'REFRESH_TOKEN_REUSE' }]);
     expect(activity.some((a) => a.activityType === 'AUTH_TOKEN_REUSE_DETECTED' && a.details?.severity === 'security_incident')).toBe(true);
+    // Lot 38 (volet B) : e-mail de sécurité planifié (après la réponse).
+    expect(securityEmails).toEqual([1]);
+  });
+
+  it('L38-B-01 aucun e-mail de sécurité dans la fenêtre de grâce, pour une déconnexion ou un motif inconnu', async () => {
+    const ancien = await generateRefreshToken(claims);
+    expect((await refresh(req(ancien))).status).toBe(200);
+    await vieillir(ancien, REFRESH_REUSE_GRACE_MS - 5_000);
+    await refresh(req(ancien));
+    const deco = await generateRefreshToken(claims);
+    revoked.set(await hashToken(deco), { revokedAt: new Date(Date.now() - 3_600_000), reason: 'logout' });
+    await refresh(req(deco));
+    const ancienFormat = await generateRefreshToken(claims);
+    revoked.set(await hashToken(ancienFormat), { revokedAt: new Date(Date.now() - 3_600_000), reason: null });
+    await refresh(req(ancienFormat));
+    expect(securityEmails).toEqual([]);
+  });
+
+  it('L38-B-02 révocation globale en échec : aucun e-mail (il affirmerait une déconnexion qui n’a pas eu lieu)', async () => {
+    const ancien = await generateRefreshToken(claims);
+    expect((await refresh(req(ancien))).status).toBe(200);
+    await vieillir(ancien, REFRESH_REUSE_GRACE_MS + 1_000);
+    revokeAllFails = true;
+    expect((await refresh(req(ancien))).status).toBe(401);
+    expect(securityEmails).toEqual([]);
   });
 
   it('C2-04 jeton révoqué par une déconnexion : refus simple, sans révocation globale ni effacement', async () => {

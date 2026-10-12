@@ -1,0 +1,287 @@
+{
+  "case": "F-092 / F-093 (solde)",
+  "description": "Facture de solde citant l'acompte : un seul candidat, montants distingués par leur portée (TOTAL, DEPOSIT, BALANCE) pour que T3 ne compte jamais deux fois.",
+  "context": {
+    "linkedAssetId": 20,
+    "assets": [
+      {
+        "id": 20,
+        "name": "Maison de Lyon",
+        "category": "IMMOBILIER",
+        "subtype": "maison"
+      }
+    ],
+    "rooms": [],
+    "equipments": [],
+    "existingTitles": [],
+    "verified": {
+      "ASSET": [
+        20
+      ],
+      "EQUIPMENT": [],
+      "ROOM": [],
+      "SUPPLIER": []
+    }
+  },
+  "recording": {
+    "operationCode": "t1_analyze_document",
+    "task": "ANALYZE_DOCUMENT",
+    "output": {
+      "task": "ANALYZE_DOCUMENT",
+      "document": {
+        "title": {
+          "value": "Facture de solde Toiture maison de Lyon",
+          "confidence": "certain",
+          "evidence": {
+            "excerpt": "Facture de solde Toiture maison de Lyon",
+            "page": 1
+          }
+        },
+        "classification": {
+          "canonicalType": "FACTURE",
+          "rubricCode": "MAINTENANCE_WORKS",
+          "documentTypeCode": "WORKS_INVOICE",
+          "confidence": 0.92,
+          "evidence": {
+            "excerpt": "Facture de solde Toiture maison de Lyon"
+          }
+        },
+        "documentDate": {
+          "value": "2026-07-03",
+          "confidence": "certain",
+          "evidence": {
+            "excerpt": "Date : 03/07/2026",
+            "page": 1
+          }
+        },
+        "amountCents": {
+          "value": 900000,
+          "confidence": "certain",
+          "evidence": {
+            "excerpt": "Solde à payer : 9 000,00 €",
+            "page": 1
+          }
+        },
+        "supplier": {
+          "name": "Toitures du Rhône",
+          "confidence": "certain",
+          "evidence": {
+            "excerpt": "TOITURES DU RHÔNE",
+            "page": 1
+          }
+        }
+      },
+      "entities": {
+        "assets": [
+          {
+            "entityId": 20,
+            "rawLabel": "Maison de Lyon",
+            "score": 0.95,
+            "confidence": "certain",
+            "evidenceSignals": [
+              "Maison de Lyon"
+            ],
+            "reason": "désignation lue"
+          }
+        ],
+        "rooms": [],
+        "equipments": [],
+        "suppliers": [],
+        "multiAsset": false
+      },
+      "transcription": "TOITURES DU RHÔNE\nFacture n° SO-233\nRéfection complète de la toiture — travaux terminés le 30/06/2026\nTotal des travaux TTC : 12 000,00 €\nAcompte versé (facture AC-102) : - 3 000,00 €\nSolde à payer : 9 000,00 €",
+      "facts": [
+        {
+          "canonicalKey": null,
+          "rawKey": "objet",
+          "label": "Objet",
+          "subject": "Maison de Lyon",
+          "attribute": "objet",
+          "rawValue": "Réfection de la toiture",
+          "normalizedValue": "Réfection de la toiture",
+          "valueType": "string",
+          "canonicalUnit": null,
+          "target": {
+            "type": "ASSET",
+            "entityId": 20,
+            "rawLabel": "Maison de Lyon",
+            "confidence": "certain",
+            "evidenceSignals": [
+              "Maison de Lyon"
+            ]
+          },
+          "provenance": "TEXT_EXTRACTION",
+          "confidence": "certain",
+          "evidence": {
+            "excerpt": "Réfection complète de la toiture — travaux terminés le 30/06/2026",
+            "page": 1
+          },
+          "semanticEvent": {
+            "type": "repair",
+            "nature": "HISTORICAL"
+          }
+        },
+        {
+          "canonicalKey": null,
+          "rawKey": "totalTravaux",
+          "label": "Total des travaux",
+          "subject": "Maison de Lyon",
+          "attribute": "total des travaux",
+          "rawValue": "12 000,00 €",
+          "normalizedValue": 1200000,
+          "valueType": "money_cents",
+          "canonicalUnit": "cents",
+          "target": {
+            "type": "ASSET",
+            "entityId": 20,
+            "rawLabel": "Maison de Lyon",
+            "confidence": "certain",
+            "evidenceSignals": [
+              "Maison de Lyon"
+            ]
+          },
+          "provenance": "TEXT_EXTRACTION",
+          "confidence": "certain",
+          "evidence": {
+            "excerpt": "Total des travaux TTC : 12 000,00 €",
+            "page": 1
+          }
+        },
+        {
+          "canonicalKey": null,
+          "rawKey": "acompteDeduit",
+          "label": "Acompte déjà versé",
+          "subject": "Maison de Lyon",
+          "attribute": "acompte déjà versé",
+          "rawValue": "3 000,00 €",
+          "normalizedValue": 300000,
+          "valueType": "money_cents",
+          "canonicalUnit": "cents",
+          "target": {
+            "type": "ASSET",
+            "entityId": 20,
+            "rawLabel": "Maison de Lyon",
+            "confidence": "certain",
+            "evidenceSignals": [
+              "Maison de Lyon"
+            ]
+          },
+          "provenance": "TEXT_EXTRACTION",
+          "confidence": "certain",
+          "evidence": {
+            "excerpt": "Acompte versé (facture AC-102) : - 3 000,00 €",
+            "page": 1
+          }
+        },
+        {
+          "canonicalKey": null,
+          "rawKey": "solde",
+          "label": "Solde à payer",
+          "subject": "Maison de Lyon",
+          "attribute": "solde à payer",
+          "rawValue": "9 000,00 €",
+          "normalizedValue": 900000,
+          "valueType": "money_cents",
+          "canonicalUnit": "cents",
+          "target": {
+            "type": "ASSET",
+            "entityId": 20,
+            "rawLabel": "Maison de Lyon",
+            "confidence": "certain",
+            "evidenceSignals": [
+              "Maison de Lyon"
+            ]
+          },
+          "provenance": "TEXT_EXTRACTION",
+          "confidence": "certain",
+          "evidence": {
+            "excerpt": "Solde à payer : 9 000,00 €",
+            "page": 1
+          }
+        }
+      ],
+      "hasExploitableContent": true,
+      "businessOperationCandidates": [
+        {
+          "candidateKey": "op1",
+          "established": true,
+          "confidence": "certain",
+          "typeHint": "INTERVENTION",
+          "statusHint": "REALIZED",
+          "summary": "Réfection de la toiture de la maison de Lyon — facture de solde",
+          "sourceRoleHint": "INVOICE",
+          "provider": "Toitures du Rhône",
+          "targetHints": [
+            {
+              "type": "ASSET",
+              "entityId": 20,
+              "rawLabel": "Maison de Lyon",
+              "confidence": "certain"
+            }
+          ],
+          "businessReferences": [
+            {
+              "kind": "INVOICE",
+              "value": "SO-233"
+            },
+            {
+              "kind": "INVOICE",
+              "value": "AC-102"
+            }
+          ],
+          "temporalHints": {
+            "realizedDate": "2026-06-30"
+          },
+          "financialHints": [
+            {
+              "role": "REALIZED_COST",
+              "amountMinor": 1200000,
+              "currency": "EUR",
+              "amountScope": "TOTAL",
+              "factIndex": 1
+            },
+            {
+              "role": "REALIZED_COST",
+              "amountMinor": 300000,
+              "currency": "EUR",
+              "amountScope": "DEPOSIT",
+              "factIndex": 2
+            },
+            {
+              "role": "REALIZED_COST",
+              "amountMinor": 900000,
+              "currency": "EUR",
+              "amountScope": "BALANCE",
+              "factIndex": 3
+            }
+          ],
+          "evidenceFactIndexes": [
+            0,
+            1,
+            2,
+            3
+          ]
+        }
+      ]
+    }
+  },
+  "expected": {
+    "operationCandidates": [
+      {
+        "typeHint": "INTERVENTION",
+        "statusHint": "REALIZED",
+        "sourceRoleHint": "INVOICE",
+        "amountScopes": [
+          "TOTAL",
+          "DEPOSIT",
+          "BALANCE"
+        ],
+        "amountsMinor": [
+          1200000,
+          300000,
+          900000
+        ]
+      }
+    ]
+  }
+}

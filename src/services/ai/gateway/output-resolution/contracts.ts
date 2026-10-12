@@ -27,8 +27,14 @@
  *          (`fieldKey`, `value`, `unit`, `excerpt`, `page`…) ;
  *     v2 — prompt maître lot 12 (`document`, `facts[]` ciblés, `evidence`) ;
  *     v3 — lot 33 : identique à v2 pour le modèle ; `entityId` absent = null,
- *          `reason` nul accepté (une v2 est toujours une v3 valide).
- *   adaptateur : t1_v1_to_v2 (v2 → v3 : aucun, compatible).
+ *          `reason` nul accepté (une v2 est toujours une v3 valide) ;
+ *     v4 — lot 40 : `businessOperationCandidates[]` (CDC Opérations V1 C3.1).
+ *          Une v3 est toujours une v4 valide (tableau absent = aucun
+ *          candidat, sans adaptation ni marque « réparée »).
+ *   adaptateurs : t1_v1_to_v2 ; v2 → v3 : aucun ; t1_v3_to_v4 pour les
+ *   seules formes ANTÉRIEURES du bloc candidat (texte BO divergent qui
+ *   suivrait le CDC §7.1 / B3 : `businessOperationCandidate` unique,
+ *   `operationCandidates[]` au vocabulaire B3).
  * ══════════════════════════════════════════════════════════════════════════
  */
 import { createHash } from 'crypto';
@@ -140,13 +146,73 @@ export const T1_V1_TO_V2: CompatAdapter = {
   },
 };
 
+// ── T1 v3 → v4 : formes antérieures du bloc candidat ────────────────────────
+
+const CERTAINTY_B3: Readonly<Record<string, { established: boolean; confidence: string }>> = {
+  SUFFICIENT: { established: true, confidence: 'certain' },
+  AMBIGUOUS: { established: true, confidence: 'probable' },
+  INSUFFICIENT: { established: false, confidence: 'probable' },
+};
+
+/** Index de faits d'une liste de preuves (nombres, ou objets `{ factIndex }`). */
+function factIndexesOf(v: unknown): number[] {
+  if (!Array.isArray(v)) return [];
+  return v.flatMap((x) => (typeof x === 'number' ? [x]
+    : isObj(x) && typeof x.factIndex === 'number' ? [x.factIndex] : []));
+}
+
+/** Candidat au vocabulaire du CDC §7.1 (`businessOperationCandidate`) ou B3 (`operationCandidates`) → C3.1. */
+function candidateOf(c: Obj, i: number): Obj {
+  const b3 = typeof c.certainty === 'string' ? CERTAINTY_B3[c.certainty.toUpperCase()] : undefined;
+  const conf = typeof c.confidence === 'string' && c.confidence.toLowerCase() === 'uncertain' ? 'probable' : c.confidence;
+  const t = isObj(c.temporalHints) ? c.temporalHints : {};
+  return {
+    candidateKey: c.candidateKey ?? c.candidate_key ?? `op${i + 1}`,
+    established: c.established ?? c.exists ?? b3?.established ?? false,
+    confidence: conf ?? b3?.confidence ?? 'probable',
+    typeHint: c.typeHint ?? c.proposed_type ?? null,
+    statusHint: c.statusHint ?? c.status_hint ?? null,
+    summary: c.summary ?? c.technical_label ?? '',
+    sourceRoleHint: c.sourceRoleHint ?? c.source_role ?? null,
+    ...(c.provider !== undefined ? { provider: c.provider } : {}),
+    targetHints: Array.isArray(c.targetHints) ? c.targetHints : Array.isArray(c.target_candidates) ? c.target_candidates : [],
+    businessReferences: Array.isArray(c.businessReferences) ? c.businessReferences
+      : typeof c.external_reference === 'string' ? [{ kind: 'OTHER', value: c.external_reference }] : [],
+    temporalHints: {
+      ...t,
+      ...(c.planned_date ? { plannedDate: c.planned_date } : {}),
+      ...(c.start_date ? { startDate: c.start_date } : {}),
+      ...(c.realized_date ? { realizedDate: c.realized_date } : {}),
+      ...(c.end_date ? { endDate: c.end_date } : {}),
+    },
+    financialHints: Array.isArray(c.financialHints) ? c.financialHints : [],
+    evidenceFactIndexes: Array.isArray(c.evidenceFactIndexes) ? c.evidenceFactIndexes : factIndexesOf(c.evidence ?? c.evidence_refs),
+    ...(c.exclusionReason ?? c.exclusion_reason ? { exclusionReason: c.exclusionReason ?? c.exclusion_reason } : {}),
+  };
+}
+
+export const T1_V3_TO_V4: CompatAdapter = {
+  id: 't1_v3_to_v4',
+  from: 3,
+  to: 4,
+  description: 'Bloc candidat Opération au format antérieur (CDC §7.1 `businessOperationCandidate` ou B3 `operationCandidates[]`) → `businessOperationCandidates[]` (C3.1).',
+  detect: (v) => isObj(v) && v.businessOperationCandidates === undefined
+    && (isObj(v.businessOperationCandidate) || Array.isArray(v.operationCandidates)),
+  apply: (v) => {
+    const { businessOperationCandidate: seul, operationCandidates: liste, ...reste } = v;
+    const sources = Array.isArray(liste) ? liste : isObj(seul) ? [seul] : [];
+    return { ...reste, businessOperationCandidates: sources.filter(isObj).map(candidateOf) };
+  },
+};
+
 // ── Registre ────────────────────────────────────────────────────────────────
 
 const CONTRACTS: readonly OutputContract[] = [
-  { name: 'T1AnalyzeDocumentOutput', label: 't1_analyze_document', version: 3, adapters: [T1_V1_TO_V2] },
+  { name: 'T1AnalyzeDocumentOutput', label: 't1_analyze_document', version: 4, adapters: [T1_V1_TO_V2, T1_V3_TO_V4] },
   { name: 'T1GroupUploadOutput', label: 't1_group_upload', version: 1, adapters: [] },
   { name: 'T3ValueConflictOutput', label: 't3_value_conflict', version: 1, adapters: [] },
   { name: 'T3LinkAmbiguityOutput', label: 't3_link_ambiguity', version: 1, adapters: [] },
+  { name: 'T3OperationMatchOutput', label: 't3_operation_match', version: 1, adapters: [] },
   { name: 'T4ClassifyEventOutput', label: 't4_classify_event', version: 1, adapters: [] },
   { name: 'T4VerifyCompletionOutput', label: 't4_verify_completion', version: 1, adapters: [] },
   { name: 'T4TemporalAmbiguityOutput', label: 't4_temporal_ambiguity', version: 1, adapters: [] },

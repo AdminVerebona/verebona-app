@@ -328,6 +328,9 @@ export async function POST(request: NextRequest) {
     if (session.currentAccountId && newAsset[0]?.id) {
       const { notifyCoherenceEvent } = await import('@/services/ai/reconciliation/account-reconciliation.service');
       notifyCoherenceEvent(session.currentAccountId, { event: 'asset_updated', objectType: 'asset', objectId: newAsset[0].id });
+      // Lot 43 (TRG-008) : achat saisi à la création → Acquisition (source ASSET_DATA).
+      const { notifyOperationsEvent } = await import('@/services/business-operations/consolidation/queue');
+      notifyOperationsEvent(session.currentAccountId, { trigger: 'asset_updated', assetId: newAsset[0].id });
     }
     return NextResponse.json(newAsset[0], { status: 201 });
   } catch (error) {
@@ -524,6 +527,12 @@ export async function PUT(request: NextRequest) {
     // §25.7, §31.7 : modification directe d'un bien — cache de l'assistant
     // invalidé sur toutes les instances avant la réponse.
     await emitBusinessEvent({ type: 'ASSET_UPDATED', accountId: session.currentAccountId, entityId: assetId });
+    // Lot 43 (C4 TRG-008 à TRG-010) : statut, achat ou fiche modifiés → Opérations
+    // établies par les données structurées du bien réévaluées.
+    if (session.currentAccountId && [status, purchaseDate, purchasePriceCents, keyCharacteristics].some((v) => v !== undefined)) {
+      const { notifyOperationsEvent } = await import('@/services/business-operations/consolidation/queue');
+      notifyOperationsEvent(session.currentAccountId, { trigger: status === 'VENDU' || status === 'TRANSMIS' ? 'asset_disposed' : 'asset_updated', assetId });
+    }
     return NextResponse.json(updatedAsset[0], { status: 200 });
   } catch (error) {
     console.error('PUT error:', error);

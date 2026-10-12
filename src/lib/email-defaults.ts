@@ -104,6 +104,30 @@ L'équipe Verebona`,
     placeholders: JSON.stringify(['firstName', 'email', 'resetUrl'])
   },
   
+  // Lot 38 (volet B) : réutilisation d'un jeton de renouvellement au-delà de
+  // la fenêtre de grâce → toutes les sessions révoquées (lot 37, C2). E-mail
+  // de sécurité envoyé après la réponse, au plus un par heure et par
+  // utilisateur, sans aucune donnée sensible (ni IP, ni appareil). Gabarit
+  // inséré par la migration 0314, modifiable dans le BO (Communications).
+  SECURITY_SESSIONS_REVOKED: {
+    subject: 'Verebona : vos appareils ont été déconnectés par précaution',
+    body: `Bonjour {{firstName}},
+
+Par précaution, nous avons déconnecté vos appareils de votre compte Verebona le {{incidentDate}} : une ancienne session a tenté de se reconnecter alors qu'elle avait déjà été renouvelée.
+
+Pour continuer à utiliser Verebona, reconnectez-vous simplement :
+
+{{loginUrl}}
+
+Si ce n'était pas vous, ou en cas de doute, changez votre mot de passe dès maintenant avec « Mot de passe oublié » :
+
+{{forgotPasswordUrl}}
+
+Cordialement,
+L'équipe Verebona`,
+    placeholders: JSON.stringify(['firstName', 'incidentDate', 'loginUrl', 'forgotPasswordUrl'])
+  },
+
   DUO_INVITATION: {
     subject: '{{ownerFirstName}} vous invite à rejoindre son espace Verebona DUO',
     body: `<!DOCTYPE html>

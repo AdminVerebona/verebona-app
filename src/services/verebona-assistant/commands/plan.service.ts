@@ -110,10 +110,15 @@ export const sqlLookup: CommandLookup = {
     )) as unknown as Array<{ id: number; title: string; date: string | null }>;
   },
   async listOpenAgendaItems(accountId, { pastOnly, assetIds, today, limit }) {
+    // Lot 47B : « mes échéances passées » — un fait historique passé est déjà
+    // réalisé (règle partagée `agenda-historical`), jamais une cible.
+    const { historicalSql } = await import('@/services/agenda/agenda-historical');
+    const { agendaFunctionalColumnsReady } = await import('@/services/agenda/agenda-columns');
+    const col = await agendaFunctionalColumnsReady().catch(() => false);
     return (await pgClient.unsafe(
       `SELECT i.id, i.title, to_char(i.start_date, 'YYYY-MM-DD') AS date FROM agenda_items i
         WHERE i.account_id = $1 AND i.manual_status IS NULL
-          AND ($2::boolean IS FALSE OR i.start_date < $3::date)
+          AND ($2::boolean IS FALSE OR (i.start_date < $3::date AND NOT ${historicalSql('i', col)}))
           AND ($4::int[] IS NULL OR EXISTS (SELECT 1 FROM agenda_asset_links l WHERE l.agenda_item_id = i.id AND l.asset_id = ANY($4::int[])))
         ORDER BY i.start_date NULLS LAST, i.id LIMIT $5`,
       [accountId, pastOnly, today, assetIds.length ? assetIds : null, limit] as never[],

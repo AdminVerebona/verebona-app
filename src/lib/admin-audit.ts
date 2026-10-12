@@ -96,7 +96,11 @@ export type AdminActionType =
   // Stripe depuis le BO (synchronisation, reprise, publication de la grille du
   // code, reprise / abandon / retour arrière, information préalable des
   // abonnés). Aucune ne modifie un montant.
-  | 'STRIPE_CATALOG_OPERATION';
+  | 'STRIPE_CATALOG_OPERATION'
+  // Lot 48 (O10) : « Reconsolider ce compte » (BO › Opérations) — mise en file
+  // du travail T3 Opérations et de la projection Agenda du compte, avec motif.
+  // Jamais une édition d'Opération (décision PO Q9).
+  | 'OPERATIONS_RECONSOLIDATE';
 
 export type AdminTargetType = 'ACCOUNT' | 'USER' | 'EXPORT_TEMPLATE' | 'COMMUNICATION_CHANNEL' | 'ANOMALY' | 'GDPR_REQUEST'
   | 'ASSISTANT_SETTING' | 'ASSISTANT_REQUEST' | 'NOTIFICATION' | 'AI_CACHE' | 'AI_METRICS'

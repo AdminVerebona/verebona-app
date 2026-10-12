@@ -40,6 +40,7 @@ import type { ExtractedTableCell, ExtractedField } from '../source-analysis/type
 import { documentFactsCanonicalReady } from '../evidence/canonical-columns';
 import { sourceLayerReady, writeSourceLayer } from '../source-analysis/source-units/repository';
 import { buildAgendaCandidatesT4 } from '../source-analysis/steps/build-agenda-candidates.step';
+import { operationCandidatesReady, replaceOperationCandidates, type PersistedFactAnchor } from '../source-analysis/operation-candidates/persist';
 
 const json = (v: unknown) => JSON.stringify(v ?? null);
 
@@ -71,6 +72,12 @@ export async function persistDocumentKnowledge(k: DocumentKnowledge): Promise<nu
   // Lot 34F : couche A (0295-0297) — contrôle HORS transaction, comme 0218.
   const couche = k.sourceLayer || k.facts.some((f) => f.sourceUnitIds?.length) ? await sourceLayerReady() : false;
   let coucheEcrite = couche;
+  // Lot 40 : candidats Opération (0317 / 0320) — contrôle HORS transaction.
+  // La branche maître (seul chemin T1 depuis le lot 16b-3) fournit TOUJOURS
+  // la liste, vide comprise : les candidats sont alors remplacés avec les
+  // faits. Absente (connaissance construite hors T1, tests historiques) :
+  // aucun contrôle de schéma, candidats inchangés.
+  const candidats = k.operationCandidates !== undefined ? await operationCandidatesReady() : false;
 
   await pgClient.begin(async (tx) => {
     const rows = await tx.unsafe(
@@ -112,7 +119,7 @@ export async function persistDocumentKnowledge(k: DocumentKnowledge): Promise<nu
          visual_observations = EXCLUDED.visual_observations,
          extracted_at = now(),
          updated_at = now()
-       RETURNING id`,
+       RETURNING id, (xmax <> 0) AS reanalysis`,
       [
         e.accountId, e.fileId, e.analysisRunId, e.assetIdAtAnalysis, e.engine, e.sourceType, e.sourceVersion,
         e.title, e.description, e.documentDate, e.supplierName, e.supplierSiret, e.amountCents, e.currency,
@@ -122,6 +129,8 @@ export async function persistDocumentKnowledge(k: DocumentKnowledge): Promise<nu
       ] as never[],
     );
     extractionId = (rows as unknown as Array<{ id: number }>)[0].id;
+    // Lot 40 : le fichier avait déjà une extraction (UPSERT) → réanalyse (C4 TRG-002).
+    const reanalysis = Boolean((rows as unknown as Array<{ reanalysis: boolean }>)[0].reanalysis);
     // Indicateur multi-biens (0218, T1-05) : écrit à part, colonne
     // conditionnelle, et SEULEMENT s'il est connu (branche maître).
     if (canonical && e.multiAsset != null) {
@@ -173,7 +182,24 @@ export async function persistDocumentKnowledge(k: DocumentKnowledge): Promise<nu
       );
     }
 
-    await insertFactRows(tx as unknown as SqlTx, e, extractionId, k.facts, { canonical, provenance: couche });
+    const factIds = await insertFactRows(tx as unknown as SqlTx, e, extractionId, k.facts, { canonical, provenance: couche });
+
+    // Lot 40 (CDC Opérations V1 C3.2, C9.1) : candidats Opération — anciens
+    // supersédés, nouveaux écrits avec des preuves ANCRÉES sur les faits
+    // persistés à l'instant (empreinte → identifiant), même transaction.
+    if (candidats && k.operationCandidates) {
+      const ancres = new Map<string, PersistedFactAnchor[]>();
+      k.facts.forEach((f, i) => {
+        if (!f.t1FactRef || factIds[i] === undefined) return;
+        const l = ancres.get(f.t1FactRef) ?? [];
+        l.push({ factId: factIds[i], sourceUnitIds: couche ? f.sourceUnitIds ?? [] : [] });
+        ancres.set(f.t1FactRef, l);
+      });
+      await replaceOperationCandidates(tx as never, {
+        accountId: e.accountId, fileId: e.fileId, extractionId, analysisRunId: e.analysisRunId,
+        reanalysis, candidates: k.operationCandidates, facts: ancres,
+      });
+    }
 
     // Lot 34F : couche A (unités, couverture, faits non résolus) — même
     // transaction que les faits : jamais de provenance vers une unité absente.
@@ -216,8 +242,12 @@ export async function insertFactRows(
   extractionId: number,
   facts: readonly DocumentFactRecord[],
   opts: { canonical: boolean; provenance: boolean },
-): Promise<void> {
+): Promise<number[]> {
   const { canonical, provenance: couche } = opts;
+  // Lot 40 : identifiants des faits écrits, dans l'ordre de `facts` (ancrage
+  // des preuves des candidats Opération).
+  const ids: number[] = [];
+  const idOf = (r: unknown) => Number((r as Array<{ id: number | string }>)[0]?.id);
   for (const f of facts) {
     const base = [
       e.accountId, e.fileId, extractionId, f.factKey, f.subject, f.attribute, f.label,
@@ -230,12 +260,13 @@ export async function insertFactRows(
     // Lot 34F (0297) : provenance fait → sourceUnitId[].
     const prov = couche && f.sourceUnitIds?.length ? f.sourceUnitIds : null;
     if (canonical && hasCanonicalFactData(f)) {
-      await tx.unsafe(
+      ids.push(idOf(await tx.unsafe(
         `INSERT INTO document_facts (${FACT_INSERT_COLUMNS},
            canonical_key, raw_key, raw_value, value_type, canonical_unit,
            target_type, target_entity_id, target_entity_label, target_confidence,
            semantic_event_type, semantic_event_nature, recurrence, projection_origin, projection_rule${prov ? ', source_unit_ids' : ''}
-         ) VALUES (${FACT_INSERT_VALUES},$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35::jsonb,$36,$37${prov ? ',$38::text[]' : ''})`,
+         ) VALUES (${FACT_INSERT_VALUES},$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35::jsonb,$36,$37${prov ? ',$38::text[]' : ''})
+         RETURNING id`,
         [
           ...base,
           f.canonicalKey ?? null, f.rawKey ?? null, f.rawValue ?? null, f.valueType ?? null, f.canonicalUnit ?? null,
@@ -245,14 +276,16 @@ export async function insertFactRows(
           f.projectionOrigin ?? null, f.projectionRule ?? null,
           ...(prov ? [prov] : []),
         ] as never[],
-      );
+      )));
     } else {
-      await tx.unsafe(
-        `INSERT INTO document_facts (${FACT_INSERT_COLUMNS}${prov ? ', source_unit_ids' : ''}) VALUES (${FACT_INSERT_VALUES}${prov ? ',$24::text[]' : ''})`,
+      ids.push(idOf(await tx.unsafe(
+        `INSERT INTO document_facts (${FACT_INSERT_COLUMNS}${prov ? ', source_unit_ids' : ''}) VALUES (${FACT_INSERT_VALUES}${prov ? ',$24::text[]' : ''})
+         RETURNING id`,
         [...base, ...(prov ? [prov] : [])] as never[],
-      );
+      )));
     }
   }
+  return ids;
 }
 
 // ── Lecture ────────────────────────────────────────────────────────────────
@@ -627,6 +660,9 @@ export async function projectDocumentKnowledgeToAsset(p: {
   // différé — la réconciliation locale ci-dessus traite l'immédiat).
   const { notifyCoherenceEvent } = await import('../reconciliation/account-reconciliation.service');
   notifyCoherenceEvent(p.accountId, { event: 'document_linked', objectType: 'asset', objectId: p.assetId });
+  // Lot 41 (C4 TRG-005) : la cible des Opérations soutenues par ce document est réévaluée.
+  const { notifyOperationsEvent } = await import('@/services/business-operations/consolidation/queue');
+  notifyOperationsEvent(p.accountId, { trigger: 'document_linked', fileId: p.fileId });
 
   // T4-05 (lot 14) : candidats agenda reconstruits
   // depuis les faits persistés — récurrence comprise (T4-06) — par LE MÊME

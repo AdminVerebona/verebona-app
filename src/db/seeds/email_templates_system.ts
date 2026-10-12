@@ -1,6 +1,7 @@
 import { db } from '@/db';
 import { emailTemplates } from '@/db/schema';
 import { eq, or } from 'drizzle-orm';
+import { DEFAULT_EMAIL_TEMPLATES } from '@/lib/email-defaults';
 
 export async function seedSystemEmailTemplates() {
     const templateTypes = [
@@ -9,7 +10,8 @@ export async function seedSystemEmailTemplates() {
         'PASSWORD_RESET',
         'DEADLINE_REMINDER',
         'DEADLINE_OVERDUE',
-        'PREMIUM_CONFIRMATION'
+        'PREMIUM_CONFIRMATION',
+        'SECURITY_SESSIONS_REVOKED'
     ];
 
     await db.delete(emailTemplates)
@@ -20,7 +22,8 @@ export async function seedSystemEmailTemplates() {
                 eq(emailTemplates.type, 'PASSWORD_RESET'),
                 eq(emailTemplates.type, 'DEADLINE_REMINDER'),
                 eq(emailTemplates.type, 'DEADLINE_OVERDUE'),
-                eq(emailTemplates.type, 'PREMIUM_CONFIRMATION')
+                eq(emailTemplates.type, 'PREMIUM_CONFIRMATION'),
+                eq(emailTemplates.type, 'SECURITY_SESSIONS_REVOKED')
             )
         );
 
@@ -260,6 +263,18 @@ export async function seedSystemEmailTemplates() {
   </body>
 </html>`,
             placeholders: JSON.stringify(['firstName', 'logoUrl', 'nextBillingDate', 'year']),
+            triggerConfig: null,
+            sender: null,
+            updatedAt: new Date(),
+            updatedBy: null,
+        },
+        // Lot 38 (volet B) : sessions révoquées après réutilisation d'un jeton
+        // (migration 0314) — même texte que `lib/email-defaults.ts`.
+        {
+            type: 'SECURITY_SESSIONS_REVOKED',
+            subject: DEFAULT_EMAIL_TEMPLATES.SECURITY_SESSIONS_REVOKED.subject,
+            body: DEFAULT_EMAIL_TEMPLATES.SECURITY_SESSIONS_REVOKED.body,
+            placeholders: DEFAULT_EMAIL_TEMPLATES.SECURITY_SESSIONS_REVOKED.placeholders,
             triggerConfig: null,
             sender: null,
             updatedAt: new Date(),

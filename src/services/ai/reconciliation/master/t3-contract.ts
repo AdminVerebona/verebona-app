@@ -1,9 +1,13 @@
 /**
  * Contrat du prompt maître T3 — CDC 15 §25, §22.2, T3-06, T3-07.
  *
- * Une seule consigne (`t3_master_v1`), deux branches imposées par le serveur :
+ * Une seule consigne (`t3_master_v1`), trois branches imposées par le serveur :
  *   - `VALUE_CONFLICT` : choisir UNE preuve fournie, ou s'abstenir ;
- *   - `LINK_AMBIGUITY` : scorer des candidats fournis, liste vide possible.
+ *   - `LINK_AMBIGUITY` : scorer des candidats fournis, liste vide possible ;
+ *   - `OPERATION_MATCH` (lot 42, CDC Opérations V1 C6.1 niveau M3, C6.2) :
+ *     la source décrit-elle la MÊME réalité métier qu'une des Opérations
+ *     candidates fournies ? Sortie fermée SAME_OPERATION / DISTINCT_OPERATION
+ *     / AMBIGUOUS, confiance, signaux concordants et contradictions.
  *
  * Sortie : union discriminée par `task`. La gateway vérifie en plus que la
  * branche renvoyée est la branche demandée (validation discriminée). Le
@@ -16,7 +20,7 @@
 import { z } from 'zod';
 
 export const T3_MASTER_PROMPT_CODE = 't3_master_v1';
-export const T3_TASKS = ['VALUE_CONFLICT', 'LINK_AMBIGUITY'] as const;
+export const T3_TASKS = ['VALUE_CONFLICT', 'LINK_AMBIGUITY', 'OPERATION_MATCH'] as const;
 export type T3Task = (typeof T3_TASKS)[number];
 
 const confidence = z.enum(['certain', 'probable', 'conflictual']);
@@ -67,14 +71,42 @@ export const T3LinkAmbiguityOutput = z.object({
 });
 export type T3LinkAmbiguityOutput = z.infer<typeof T3LinkAmbiguityOutput>;
 
+// ── Branche OPERATION_MATCH (lot 42, CDC Opérations V1 C6.1 M3, C6.2) ──────
+/**
+ * Comparaison sémantique d'une source (candidat T1 persisté) avec un jeu
+ * FERMÉ d'Opérations candidates (au plus `OPERATION_MATCH_MAX_CANDIDATES`).
+ *   · `SAME_OPERATION` : `matchedCandidateId` obligatoire (un candidat fourni) ;
+ *   · `DISTINCT_OPERATION` / `AMBIGUOUS` : `matchedCandidateId` absent ou null.
+ * Seul SAME_OPERATION + `certain` (+ absence de hard negative, contrôlée par le
+ * serveur) autorise un rattachement automatique (C6.2) ; DISTINCT_OPERATION +
+ * `certain` autorise une création seulement si la source peut créer seule (C5).
+ */
+export const T3OperationMatchOutput = z.object({
+  task: z.literal('OPERATION_MATCH'),
+  decision: z.enum(['SAME_OPERATION', 'DISTINCT_OPERATION', 'AMBIGUOUS']),
+  matchedCandidateId: z.number().int().positive().nullable().optional(),
+  confidence,
+  concordantSignals: z.array(z.string().min(1).max(200)).max(10),
+  contradictions: z.array(z.string().min(1).max(200)).max(10),
+  reason: z.string().min(1).max(400),
+}).superRefine((v, ctx) => {
+  if (v.decision === 'SAME_OPERATION' && (v.matchedCandidateId === undefined || v.matchedCandidateId === null)) {
+    ctx.addIssue({ code: 'custom', path: ['matchedCandidateId'], message: 'obligatoire quand decision = SAME_OPERATION' });
+  }
+  if (v.decision !== 'SAME_OPERATION' && v.matchedCandidateId !== undefined && v.matchedCandidateId !== null) {
+    ctx.addIssue({ code: 'custom', path: ['matchedCandidateId'], message: 'interdit hors SAME_OPERATION' });
+  }
+});
+export type T3OperationMatchOutput = z.infer<typeof T3OperationMatchOutput>;
+
 /** Union discriminée par `task` (CDC 15 §22.2). */
-export const T3MasterOutput = z.discriminatedUnion('task', [T3ValueConflictOutput, T3LinkAmbiguityOutput]);
+export const T3MasterOutput = z.discriminatedUnion('task', [T3ValueConflictOutput, T3LinkAmbiguityOutput, T3OperationMatchOutput]);
 export type T3MasterOutput = z.infer<typeof T3MasterOutput>;
 
 // ── Monde fermé (U1), contrôlé par le serveur ──────────────────────────────
 
 export interface ClosedWorldWarning {
-  code: 'UNKNOWN_EVIDENCE_ID' | 'UNKNOWN_CANDIDATE_ID' | 'DUPLICATE_CANDIDATE_ID';
+  code: 'UNKNOWN_EVIDENCE_ID' | 'UNKNOWN_CANDIDATE_ID' | 'DUPLICATE_CANDIDATE_ID' | 'UNKNOWN_OPERATION_ID';
   id: number;
 }
 
@@ -114,4 +146,25 @@ export function closedWorldLinkAmbiguity(
   }
   if (warnings.length === 0) return { output: out, warnings };
   return { output: { task: 'LINK_AMBIGUITY', matches: [] }, warnings };
+}
+
+/**
+ * OPERATION_MATCH : une Opération désignée hors du jeu fourni est une
+ * hallucination — la sortie devient AMBIGUOUS (jamais un rattachement), avec
+ * avertissement (U1).
+ */
+export function closedWorldOperationMatch(
+  out: T3OperationMatchOutput, allowedCandidateIds: ReadonlySet<number>,
+): { output: T3OperationMatchOutput; warnings: ClosedWorldWarning[] } {
+  if (out.decision !== 'SAME_OPERATION' || allowedCandidateIds.has(out.matchedCandidateId as number)) {
+    return { output: out, warnings: [] };
+  }
+  return {
+    output: {
+      task: 'OPERATION_MATCH', decision: 'AMBIGUOUS', matchedCandidateId: null, confidence: 'conflictual',
+      concordantSignals: [], contradictions: [],
+      reason: `candidat ${out.matchedCandidateId} hors des candidats fournis — ambiguïté (U1)`,
+    },
+    warnings: [{ code: 'UNKNOWN_OPERATION_ID', id: out.matchedCandidateId as number }],
+  };
 }

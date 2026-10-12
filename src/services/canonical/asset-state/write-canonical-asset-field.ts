@@ -79,6 +79,11 @@ export interface PlanContext {
    * non modifiée ne doit pas changer d'origine (relecture lot 13).
    */
   confirmUnchanged?: boolean;
+  /**
+   * Provenance de l'écriture : portée dans l'entrée `valuationHistory` d'une
+   * valorisation AUTOMATIQUE (lot 38, décision PO Q12).
+   */
+  source?: CanonicalWriteSource;
 }
 
 export interface CanonicalWritePlan {
@@ -230,7 +235,62 @@ export function planCanonicalWrites(
     });
   }
 
+  appendAutomaticValuation(kc, results, ctx, writes);
+
   return { family, kc, columns, results, changed: results.some((r) => r.outcome === 'written') };
+}
+
+/**
+ * ══════════════════════════════════════════════════════════════════════════
+ * LOT 38 — O0, DÉCISION PO Q12 (CDC Opérations V1 §19, B18, C18)
+ *
+ * « L'historique de valorisation n'est alimenté automatiquement QUE depuis
+ * une expertise ou une estimation explicite, jamais depuis un montant de
+ * facture ou de devis. » Les sources automatiques de `estimatedValue` sont
+ * fermées en amont (projection T1, preuves T3, moteur de propagation) ; toute
+ * écriture AUTOMATIQUE qui reste légitime (origine non humaine) ajoute donc
+ * ici, dans la même transaction, une entrée à `valuationHistory` avec sa
+ * source. La saisie humaine garde son propre chemin (fiche, route
+ * `/valuations`) : rien n'est ajouté ici pour USER / ADMIN.
+ * ══════════════════════════════════════════════════════════════════════════
+ */
+function appendAutomaticValuation(
+  kc: Record<string, unknown>,
+  results: CanonicalFieldWriteResult[],
+  ctx: PlanContext,
+  writes: CanonicalFieldWrite[],
+): void {
+  if (isHumanOrigin(ctx.origin)) return;
+  // Correction technique d'une valeur existante (rattrapage CDC 15 MIG-02,
+  // ×100) : pas une nouvelle valorisation.
+  if (ctx.source?.type === 'migration') return;
+  const r = results.find((x) => x.key === 'estimatedValue' && x.outcome === 'written');
+  if (!r || r.nextValue === null || r.nextValue === undefined) return;
+  const trace = writes.find((w) => w.key === r.requestedKey)?.trace;
+  const ecrit = (key: string) => {
+    const x = results.find((y) => y.key === key && y.outcome === 'written');
+    return x && x.nextValue !== null && x.nextValue !== undefined ? String(x.nextValue) : null;
+  };
+  const dateEcrite = ecrit('estimatedValueDate');
+  const modeEcrit = ecrit('estimatedValueMode');
+  const history: unknown[] = Array.isArray(kc.valuationHistory) ? [...(kc.valuationHistory as unknown[])] : [];
+  const stamp = Date.parse(ctx.now);
+  history.push({
+    id: `v_${Number.isFinite(stamp) ? stamp : Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+    value: r.nextValue,
+    // Date de la valorisation : celle écrite dans le MÊME lot, sinon la date
+    // du document preuve — jamais une date d'une valorisation antérieure.
+    date: dateEcrite ?? (trace?.sourceDate ? String(trace.sourceDate).slice(0, 10) : null),
+    mode: modeEcrit,
+    // Forme lue par l'écran (« AI » = automatique), complétée de la provenance.
+    source: 'AI',
+    origin: ctx.origin,
+    sourceType: ctx.source?.type ?? null,
+    sourceId: ctx.source?.id === undefined || ctx.source?.id === null ? null : String(ctx.source.id),
+    evidenceId: trace?.evidenceId ?? null,
+    addedAt: ctx.now,
+  });
+  kc.valuationHistory = history;
 }
 
 /* ── Persistance ─────────────────────────────────────────────────────────── */
@@ -388,7 +448,7 @@ export async function writeCanonicalAssetFields(
 ): Promise<CanonicalWriteResult> {
   const ctxPlan: PlanContext = {
     origin: input.origin, now: new Date().toISOString(), keepRequestedKey: hooks.keepRequestedKey,
-    confirmUnchanged: hooks.confirmUnchanged,
+    confirmUnchanged: hooks.confirmUnchanged, source: input.source,
   };
   const jctx: JournalContext = {
     accountId: input.accountId, assetId: input.assetId, origin: input.origin,

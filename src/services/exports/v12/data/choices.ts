@@ -44,6 +44,11 @@ export interface ExportChoices {
   sections: Record<string, boolean>;
   items: ChoiceItem[];
   acknowledgements: { pdfOnlyExcludesZipItems: boolean };
+  /**
+   * Lot 44 (O5, Q2) : sinistre du dossier Assurance-sinistre quand le bien en
+   * a plusieurs (absent : le plus récent). Figé dans le snapshot.
+   */
+  claimOperationId?: number | null;
 }
 
 // ─── Sections optionnelles par dossier (défauts §6.2) ───────────────────────
@@ -306,11 +311,19 @@ export function parseChoicesPayload(code: DossierCode, raw: unknown): { ok: true
   });
   if (Array.isArray(body.items)) body.items.forEach((it, j) => pushItem(it, `items[${j}]`));
   if (items.length > 5000) issues.push({ path: 'items', message: 'Trop d’éléments.' });
+  const claimRaw = body.claimOperationId;
+  const claimOperationId = claimRaw == null ? null : Number(claimRaw);
+  if (claimOperationId !== null && (code !== 'ASSURANCE_SINISTRE' || !Number.isSafeInteger(claimOperationId) || claimOperationId <= 0)) {
+    issues.push({ path: 'claimOperationId', message: 'Sinistre invalide.' });
+  }
   if (issues.length) return { ok: false, issues };
   const ack = (body.acknowledgements ?? {}) as Record<string, unknown>;
   return {
     ok: true,
-    choices: { outputFormat: outputFormat!, origin: 'user', sections, items, acknowledgements: { pdfOnlyExcludesZipItems: ack.pdfOnlyExcludesZipItems === true } },
+    choices: {
+      outputFormat: outputFormat!, origin: 'user', sections, items, acknowledgements: { pdfOnlyExcludesZipItems: ack.pdfOnlyExcludesZipItems === true },
+      ...(claimOperationId !== null ? { claimOperationId } : {}),
+    },
   };
 }
 

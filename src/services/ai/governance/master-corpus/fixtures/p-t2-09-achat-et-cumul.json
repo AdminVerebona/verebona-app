@@ -1,0 +1,24 @@
+{
+  "case": "P-T2-09",
+  "description": "ANSWER (lot 45, O6 — CDC Opérations V1 C15.2, B13, B14) — prix d’achat et cumul des dépenses présentés à part, jamais additionnés ; montant en devise restitué sans conversion.",
+  "context": {
+    "intent": "ACCOUNT_FACT_ASSET",
+    "question": "J’ai payé combien pour la Polo ?",
+    "sources": [
+      { "id": "asset_field:20:acquisitionPrice", "type": "asset_field", "title": "Achat « Polo »",
+        "content": "Achat de Polo · date : 2023-05-10 · prix d'achat : 18 500,00 €", "meta": { "assetId": 20 } },
+      { "id": "expenses:all:20", "type": "document_extraction", "title": "Dépenses pour Polo",
+        "content": "Dépenses qualifiées pour Polo : 20 100,00 € (1 achat, 1 intervention) · achat : 18 500,00 € (1 achat) · entretien : 1 600,00 € (1 intervention) · total incomplet : voir les éléments non comptés · Montant en devise étrangère, non converti et non compté : 300,00 CHF",
+        "meta": { "totalCents": 2010000, "complete": false, "foreignAmounts": "300,00 CHF" } }
+    ]
+  },
+  "recording": {
+    "operationCode": "t2_answer", "task": "ANSWER",
+    "output": { "mode": "ANSWER", "format": "claims", "status": "answered", "claims": [
+      { "text": "Vous avez acheté la Polo 18 500,00 €.", "sourceIds": ["asset_field:20:acquisitionPrice"], "derivation": "direct", "factual": true },
+      { "text": "Depuis l’achat, les dépenses d’entretien documentées s’élèvent à 1 600,00 €, à part du prix d’achat.", "sourceIds": ["expenses:all:20"], "derivation": "direct", "factual": true },
+      { "text": "Un montant de 300,00 CHF n’est pas converti en euros.", "sourceIds": ["expenses:all:20"], "derivation": "direct", "factual": true }
+    ] }
+  },
+  "expected": { "answerContains": "18 500,00 €", "answerNotContains": ["20 100", "Opération"], "supportLevel": "supported" }
+}

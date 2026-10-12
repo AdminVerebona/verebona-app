@@ -30,6 +30,16 @@ export interface FieldDef {
   futureOnly?: boolean;
   /** Retourne true quand le champ est sans objet (affiche N/A, désactivé en édition, envoyé null) */
   notApplicableWhen?: (data: Record<string, unknown>) => boolean;
+  /**
+   * Champ affiché seulement dans cette situation (lecture et édition) — ex.
+   * vente réalisée d'un bien vendu (lot 43, décision PO Q5). Absent : toujours.
+   */
+  visibleWhen?: (data: Record<string, unknown>) => boolean;
+}
+
+/** Champs visibles pour ces données (`visibleWhen`). */
+export function visibleFields(fields: FieldDef[], data: Record<string, unknown>): FieldDef[] {
+  return fields.filter((f) => !f.visibleWhen || f.visibleWhen(data));
 }
 
 interface Props {
@@ -216,7 +226,7 @@ export function AssetDetailSection({
 
             {editing ? (
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-                {fields.filter(f => !f.readonly).map(field => {
+                {visibleFields(fields, form).filter(f => !f.readonly).map(field => {
                   const isNa = field.notApplicableWhen?.(form) ?? false;
 
                   return (
@@ -304,7 +314,7 @@ export function AssetDetailSection({
               </div>
             ) : (
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
-                {fields.map(field => {
+                {visibleFields(fields, displayData).map(field => {
                   const isHighlighted = highlightField === field.key;
                   const alert = coherenceAlerts.find(a => a.field === field.key);
                   const isNa = (field.notApplicableWhen?.(displayData) ?? false)

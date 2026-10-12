@@ -15,6 +15,7 @@
  * matrice.
  */
 import { computeAuthorityScore } from '../../evidence/authority-score';
+import { VALUATION_DOCUMENT_TYPES } from '@/services/canonical/valuation-semantics';
 
 export const AUTHORITY_MATRIX_VERSION = 'v1-2026-07';
 
@@ -52,6 +53,15 @@ const FIELD_AUTHORITY_ORDER: Record<string, string[]> = {
 
   // surface : acte ou mesurage légal > DPE > annonce commerciale
   livingArea: ['ACTE_AUTHENTIQUE', 'ACTE_NOTARIE', 'MESURAGE_LEGAL', 'DPE', 'DIAGNOSTIC', 'ANNONCE_COMMERCIALE'],
+
+  // Lot 38 (O0, CDC Opérations V1 C18, INV-010) : valeur estimée — ordre
+  // PROPRE. Elle n'hérite plus de l'autorité du prix d'achat : un acte ou une
+  // facture prouve un prix de TRANSACTION, pas une valorisation. Expertise >
+  // estimation / avis de valeur > inventaire valorisé. La saisie utilisateur
+  // reste prioritaire (préséance des origines, jamais remplacée). Une preuve
+  // venue d'un document de transaction est en outre ÉCARTÉE avant la
+  // décision (`valuation-semantics.ts`).
+  estimatedValue: [...VALUATION_DOCUMENT_TYPES],
 };
 
 /**
@@ -76,7 +86,11 @@ const FIELD_ALIASES: Record<string, string> = {
   carrezArea: 'livingArea',
   vin: 'registrationNumber',
   serialNumber: 'registrationNumber',
-  estimatedValue: 'acquisitionPrice',
+  // Lot 38 (O0) : `estimatedValue: 'acquisitionPrice'` retiré (C18, INV-010).
+  estimatedValueDate: 'estimatedValue',
+  valuationLow: 'estimatedValue',
+  valuationHigh: 'estimatedValue',
+  valuationDate: 'estimatedValue',
 };
 
 /**

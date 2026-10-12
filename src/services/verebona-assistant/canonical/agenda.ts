@@ -20,19 +20,19 @@
 import { pgClient } from '@/db';
 import { resolveEventSemantics } from '@/services/agenda/agenda-functional-key';
 import { agendaFunctionalColumnsReady } from '@/services/agenda/agenda-columns';
-import { CANONICAL_FIELDS } from '@/services/canonical/registry';
+import { HISTORICAL_FIELD_KEYS, historicalSql, isHistoricalAgendaEvent } from '@/services/agenda/agenda-historical';
 import type { RetrievedSource } from '../types/sources';
 
-/** Champs du registre dont l'effet agenda est un fait passé (D-14). */
-export const HISTORICAL_FIELD_KEYS: readonly string[] = CANONICAL_FIELDS
-  .filter((d) => d.agendaEffect?.nature === 'HISTORICAL').map((d) => d.key);
+/** Champs du registre dont l'effet agenda est un fait passé (D-14) — règle partagée (lot 47B). */
+export { HISTORICAL_FIELD_KEYS };
 
 /**
  * Condition SQL « élément non historique » (D-14) : nature 0223, sinon
- * champ d'origine du registre. `$param` : `HISTORICAL_FIELD_KEYS`.
+ * champ d'origine du registre, sinon type métier exclusivement historique —
+ * jumeau SQL de la règle partagée `agenda-historical` (lot 47B). `$param` :
+ * `HISTORICAL_FIELD_KEYS`.
  */
-export const NOT_HISTORICAL = (col: boolean, param: string) =>
-  `coalesce(${col ? 'i.event_nature' : 'NULL::text'}, CASE WHEN i.origin_field_key = ANY(${param}::text[]) THEN 'HISTORICAL' END, '') <> 'HISTORICAL'`;
+export const NOT_HISTORICAL = (col: boolean, param: string) => `NOT ${historicalSql('i', col, param)}`;
 
 export type AgendaStatus4 = 'completed' | 'not_completed' | 'unknown' | 'not_proven';
 
@@ -56,16 +56,22 @@ export interface CanonicalAgendaItem {
   sources: Array<{ fileId: number; title: string; role: string | null }>;
 }
 
-/** Statut à 4 états (pur, testé). `date` / `today` : `AAAA-MM-JJ`. */
+/**
+ * Statut à 4 états (pur, testé). `date` / `today` : `AAAA-MM-JJ`.
+ * Lot 47B (décision PO du 12/10) : un fait HISTORICAL passé sans statut est
+ * réalisé (`completed`) — jamais « en retard », rien n'est écrit.
+ */
 export function agendaStatus4(
   manualStatus: string | null,
   pendingStatusCard: boolean,
   date: string | null,
   today: string,
+  historical = false,
 ): AgendaStatus4 {
   if (manualStatus === 'realise') return 'completed';
   if (manualStatus === 'annule') return 'not_completed';
   if (!date || date >= today) return 'unknown';
+  if (historical) return 'completed';
   return pendingStatusCard ? 'unknown' : 'not_proven';
 }
 
@@ -99,7 +105,8 @@ export async function getCanonicalAgendaItem(accountId: number, itemId: number):
     agendaSourcesOf(accountId, itemId),
   ]);
   const sem = resolveEventSemantics({ originFieldKey: r.originFieldKey, businessType: r.businessType });
-  const status = agendaStatus4(r.manualStatus || null, r.pendingCard, r.date, today());
+  const historique = isHistoricalAgendaEvent({ eventNature: r.eventNature, businessType: r.businessType, originFieldKey: r.originFieldKey });
+  const status = agendaStatus4(r.manualStatus || null, r.pendingCard, r.date, today(), historique);
   return {
     id: Number(r.id), title: r.title, date: r.date,
     nature: (r.eventNature as CanonicalAgendaItem['nature']) ?? sem.nature,
@@ -107,7 +114,7 @@ export async function getCanonicalAgendaItem(accountId: number, itemId: number):
     status, manualStatus: r.manualStatus || null,
     forecast: r.occurrenceNature === 'FORECAST',
     category: r.category, isAutomatic: r.isAutomatic, userModified: r.isAutomatic && r.isAutomaticModified,
-    overdue: !!r.date && r.date < today() && (status === 'not_proven' || status === 'unknown'),
+    overdue: !historique && !!r.date && r.date < today() && (status === 'not_proven' || status === 'unknown'),
     assets, sources,
   };
 }

@@ -27,6 +27,10 @@ import {
   registerDocumentAssetT3, requestDocumentAssetResolution, startDocumentSweep, t1CandidatesOf,
 } from './document-asset/queue';
 import { registerDocumentTitleT3, startDocumentTitleSweep } from './document-title-sweep';
+import {
+  onDocumentAnalyzedForOperations, registerBusinessOperationsT3, startOperationsSweep,
+} from '@/services/business-operations/consolidation/queue';
+import { registerOperationAgendaProjection, startAgendaProjectionSweep } from '@/services/business-operations/agenda-projection/queue';
 
 export { resolveDocumentAsset } from './document-asset/resolve-document-asset.service';
 export { requestDocumentAssetResolution, T3_TARGET_DOCUMENT } from './document-asset/queue';
@@ -55,6 +59,20 @@ export function registerReconciliationHandlers(): void {
   // bornées ouvertes par la même racine planifiée, sans relancer T1.
   registerDocumentTitleT3();
   registerT3SweepStarter('document_title', ({ cycleId, triggerCode, guard }) => startDocumentTitleSweep({ cycleId, triggerCode, guard }));
+  // Lot 41 (CDC Opérations V1 C4, O3a) — consolidation T3 DÉTERMINISTE des
+  // candidats T1 en Opérations : sorte `business_operations` (un travail par
+  // compte, sérialisé par le verrou du compte) et balayage horaire des seuls
+  // comptes qui ont quelque chose à consolider. Aucun appel IA.
+  registerBusinessOperationsT3();
+  registerT3SweepStarter('business_operations', ({ cycleId, triggerCode, guard }) => startOperationsSweep({ cycleId, triggerCode, guard }));
+  // Lot 46 (CDC Opérations V1 C16, O7) — T4 / Agenda : projection des
+  // Opérations, abonnée au bus Opérations (après commit), un travail par
+  // compte ; balayage horaire de convergence (événement perdu).
+  registerOperationAgendaProjection();
+  registerT3SweepStarter('business_operations_agenda', ({ cycleId, guard }) => startAgendaProjectionSweep({ cycleId, guard }).then(() => undefined));
+  onSourceAnalyzed('opérations', async (e) => {
+    await onDocumentAnalyzedForOperations(e.accountId, e.leadSourceId);
+  });
 
   // Lot 16b-3 : plus de drapeau (`AI_RECONCILIATION_ENGINE` supprimé).
   onSourceAnalyzed('réconciliation', async (e) => {

@@ -263,6 +263,10 @@ export interface SinistreData extends CaseBase {
     typeLabel?: Nullable<string>; date?: Nullable<string>; declaredAt?: Nullable<string>; contractLabel?: Nullable<string>;
     insurerRef?: Nullable<string>; statusLabel?: Nullable<string>; circumstances?: Nullable<string>; consequences?: Nullable<string>;
     measures?: Nullable<string>; statusDetail?: Nullable<string>;
+    /** Lot 44 : montant estimé des dommages SAISI (libellé « 12 500 € »), jamais un coût réel. */
+    estimatedDamage?: Nullable<string>;
+    /** Lot 44 : indemnité reçue (composante INDEMNITY du sinistre), libellé monétaire. */
+    compensation?: Nullable<string>;
   };
   timeline?: Array<Selectable & { date?: Nullable<string>; dateLabel?: Nullable<string>; tone?: 'past' | 'key' | 'open' | string | null; title: string; text?: Nullable<string> }>;
   /** `docIds` : pièces liées (identifiants `docRef`), renvoyées vers leur annexe. */

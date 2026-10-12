@@ -30,6 +30,7 @@ import { isInvitedRecipient } from '@/lib/invited-recipient';
 import { CopyObjectCommand } from '@aws-sdk/client-s3';
 import { s3Client, S3_BUCKET } from '@/lib/s3-client';
 import { generateS3Key, parseS3Key } from '@/lib/s3-naming';
+import { withoutSaleFields } from '@/lib/assets/sale-fields';
 
 /**
  * Copie un objet S3 vers une nouvelle clé propre au destinataire.
@@ -424,10 +425,11 @@ export async function POST(
         address: snapshot.address ?? null,
         city: snapshot.city ?? null,
         postalCode: snapshot.postalCode ?? null,
-        keyCharacteristics: JSON.stringify({
+        // Lot 43 (O4) : la vente réalisée de l'émetteur n'est pas celle du destinataire.
+        keyCharacteristics: JSON.stringify(withoutSaleFields({
           ...(snapshot.keyCharacteristics ?? {}),
           acquisitionDate: now.toISOString().split('T')[0],
-        }),
+        })),
         thumbnailUrl: (selected.includeThumbnail !== false && snapshot.thumbnailUrl) ? snapshot.thumbnailUrl : null,
         // ⚠️ Jamais l'ID de la transmission ici : cette colonne référence
         // `asset_move_requests` (clé étrangère, migration 0055) ; y écrire
@@ -767,16 +769,28 @@ export async function POST(
     }, { status: 410 });
   }
 
+  // Opérations métier (lot 39, décision PO Q14) : le bien n'est pas déplacé
+  // mais DUPLIQUÉ — l'original reste dans le compte émetteur avec ses
+  // Opérations ; aucune n'est copiée ni déplacée (pas de création automatique,
+  // pas de lien inter-comptes). Voir `business-operations/asset-lifecycle.ts`.
+
   // ── 6. Archive sender's asset unless keepActiveAfter ──────────────────────
   // Le bien est déjà chez le destinataire : un échec ici ne doit pas faire
   // échouer l'acceptation (il laisserait croire au destinataire que rien
   // n'a été ajouté). Il est journalisé pour reprise.
   if (!row.keepActiveAfter) {
     try {
-      await db
+      const [source] = await db
         .update(assets)
         .set({ status: 'TRANSMIS', archivedReason: 'transmitted' })
-        .where(eq(assets.id, row.assetId));
+        .where(eq(assets.id, row.assetId))
+        .returning({ accountId: assets.accountId });
+      // Lot 43 (C4 TRG-009, décision PO Q5) : transmission = cession sans prix,
+      // établie par le statut du bien émetteur (date : passage au statut).
+      if (source?.accountId) {
+        const { notifyOperationsEvent } = await import('@/services/business-operations/consolidation/queue');
+        notifyOperationsEvent(source.accountId, { trigger: 'asset_disposed', assetId: row.assetId });
+      }
     } catch (err) {
       console.error(`[Transmission] Archivage du bien source ${row.assetId} impossible :`, err);
     }

@@ -1,0 +1,129 @@
+{
+  "case": "F-005",
+  "description": "Photo d'une rayure : aucune Opération — preuves uniquement visuelles et type PHOTO, le candidat est rendu non établi.",
+  "context": {
+    "linkedAssetId": 12,
+    "assets": [
+      {
+        "id": 12,
+        "name": "Clio",
+        "category": "VEHICULE",
+        "subtype": "voiture"
+      }
+    ],
+    "rooms": [],
+    "equipments": [],
+    "existingTitles": [],
+    "verified": {
+      "ASSET": [
+        12
+      ],
+      "EQUIPMENT": [],
+      "ROOM": [],
+      "SUPPLIER": []
+    }
+  },
+  "recording": {
+    "operationCode": "t1_analyze_document",
+    "task": "ANALYZE_DOCUMENT",
+    "output": {
+      "task": "ANALYZE_DOCUMENT",
+      "document": {
+        "title": {
+          "value": "Photo Portière avant Clio",
+          "confidence": "certain",
+          "evidence": {}
+        },
+        "classification": {
+          "canonicalType": null,
+          "rubricCode": "MEDIA",
+          "documentTypeCode": "PHOTO",
+          "confidence": 0.9,
+          "evidence": {}
+        }
+      },
+      "entities": {
+        "assets": [
+          {
+            "entityId": 12,
+            "rawLabel": "Clio",
+            "score": 0.95,
+            "confidence": "certain",
+            "evidenceSignals": [
+              "Clio"
+            ],
+            "reason": "désignation lue"
+          }
+        ],
+        "rooms": [],
+        "equipments": [],
+        "suppliers": [],
+        "multiAsset": false
+      },
+      "facts": [
+        {
+          "canonicalKey": null,
+          "rawKey": "etat",
+          "label": "État visible",
+          "subject": "Clio",
+          "attribute": "état visible",
+          "rawValue": "Rayure sur la portière avant gauche",
+          "normalizedValue": "Rayure sur la portière avant gauche",
+          "valueType": "string",
+          "canonicalUnit": null,
+          "target": {
+            "type": "ASSET",
+            "entityId": 12,
+            "rawLabel": "Clio",
+            "confidence": "certain",
+            "evidenceSignals": [
+              "Clio"
+            ]
+          },
+          "provenance": "VISUAL_ANALYSIS",
+          "confidence": "certain",
+          "evidence": {},
+          "visualEvidence": {
+            "description": "Rayure d'environ 20 cm sur la portière avant gauche",
+            "imageIndex": 0
+          }
+        }
+      ],
+      "hasExploitableContent": true,
+      "businessOperationCandidates": [
+        {
+          "candidateKey": "op1",
+          "established": true,
+          "confidence": "probable",
+          "typeHint": "CLAIM",
+          "statusHint": "REALIZED",
+          "summary": "Rayure sur la portière",
+          "targetHints": [
+            {
+              "type": "ASSET",
+              "entityId": 12,
+              "rawLabel": "Clio",
+              "confidence": "probable"
+            }
+          ],
+          "evidenceFactIndexes": [
+            0
+          ]
+        }
+      ],
+      "visual": {
+        "summary": "Portière avant gauche d'une voiture grise rayée",
+        "observations": [
+          {
+            "description": "Rayure d'environ 20 cm sur la portière avant gauche",
+            "confidence": "certain",
+            "imageIndex": 0
+          }
+        ]
+      }
+    }
+  },
+  "expected": {
+    "noEstablishedCandidate": true
+  }
+}

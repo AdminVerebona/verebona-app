@@ -1,0 +1,18 @@
+-- ──────────────────────────────────────────────────────────────────────────────
+-- Migration 0325 : BO diagnostic des Opérations (lot 47A, O9 — CDC Opérations
+-- V1 C21 `OperationDiagnosticsService`, C26.1, C26.2).
+--
+-- AUCUN changement de schéma : le diagnostic est en LECTURE SEULE (INV-032,
+-- décision PO Q9) et ne crée ni table, ni colonne, ni drapeau (Q8, F-196).
+-- Seuls des index de lecture sont ajoutés, un par fichier
+-- `0325_operation_diagnostics_idx_N` (CONCURRENTLY, optionnels) :
+--   1. business_operations (created_at)                 liste globale, créations / jour
+--   2. business_operations (account_id, created_at)     liste et indicateurs d'un compte
+--   3. business_operations (account_id, invalidated_at) Opérations invalidées / fusionnées
+--   4. document_operation_candidates (t3_processed_at)  issues T3 de la période
+--   5. document_extractions (extracted_at)              documents analysés de la période
+--   6. verebona_request_runs (created_at), partiel       réponses T2 économiques
+--
+-- Fichier de tête conservé pour l'ordre et la traçabilité ; idempotent.
+-- ──────────────────────────────────────────────────────────────────────────────
+SET LOCAL lock_timeout = '5s';

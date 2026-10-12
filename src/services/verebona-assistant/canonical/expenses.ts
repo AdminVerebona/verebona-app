@@ -25,70 +25,30 @@
  *     date) : comptés UNE SEULE FOIS — voir `dedupePossibleMerges`.
  */
 import { pgClient } from '@/db';
-import { resolveDocumentType, type EventBusinessType } from '@/services/canonical/registry';
+import {
+  EXPENSE_THEME_LABELS, classifyExpenseDocument, isCreditNoteTitle, type ExpenseClass, type ExpenseTheme,
+} from './expense-classes';
+import {
+  emptyOperationPart, formatMinorAmount, loadScopeOperations, operationCostLines, operationCountLabel, operationReader,
+  summarizeOperationCosts, type OperationExpensePart,
+} from './operations';
 
-export type ExpenseTheme =
-  | 'maintenance' | 'repair' | 'works' | 'insurance' | 'purchase' | 'inspection' | 'subscription' | 'charges';
-
-export const EXPENSE_THEME_LABELS: Readonly<Record<ExpenseTheme, string>> = {
-  maintenance: 'entretien', repair: 'réparations', works: 'travaux', insurance: 'assurance',
-  purchase: 'achat', inspection: 'contrôles et diagnostics', subscription: 'abonnements', charges: 'charges',
-};
-
-/** Thème désigné par une question (sans accents, minuscules) ; null : aucun. */
-export function expenseThemeOf(message: string): ExpenseTheme | null {
-  const m = message.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
-  const table: Array<[RegExp, ExpenseTheme]> = [
-    [/\b(entretien|entretenir|revision|maintenance|vidange)\b/, 'maintenance'],
-    [/\b(reparation|reparations|depannage|panne)\b/, 'repair'],
-    [/\b(travaux|renovation|chantier)\b/, 'works'],
-    [/\b(assurance|assurances|assureur|cotisation)\b/, 'insurance'],
-    [/\b(controle technique|controles?|diagnostics?)\b/, 'inspection'],
-    [/\b(abonnements?)\b/, 'subscription'],
-    [/\b(charges|copropriete|syndic)\b/, 'charges'],
-    [/\b(achat|acquisition)\b/, 'purchase'],
-  ];
-  return table.find(([re]) => re.test(m))?.[1] ?? null;
-}
-
-/** Thème par type du référentiel V2 (le plus précis). */
-const THEME_BY_V2_CODE: Readonly<Record<string, ExpenseTheme>> = {
-  MAINTENANCE_INVOICE: 'maintenance', REPAIR_INVOICE: 'repair', WORKS_INVOICE: 'works',
-  ACQUISITION_INVOICE: 'purchase', SUBSCRIPTION_INVOICE: 'subscription', CHARGE_RECEIPT: 'charges',
-  INSURANCE_DUE_NOTICE: 'insurance', INSURANCE_POLICY: 'insurance', INSURANCE_CERTIFICATE: 'insurance',
-  VEHICLE_TECHNICAL_INSPECTION: 'inspection',
-};
-
-/** Types jamais sommés comme dépense. */
-const EXCLUDED_V2 = new Set(['MAINTENANCE_QUOTE', 'REPAIR_QUOTE', 'WORKS_QUOTE', 'RENT_RECEIPT', 'SECURITY_DEPOSIT_RECEIPT']);
-const EXCLUDED_CATALOG = new Set(['BON_COMMANDE', 'COMPROMIS_VENTE']);
-
-const THEME_BY_BUSINESS: Partial<Record<EventBusinessType, ExpenseTheme>> = {
-  maintenance: 'maintenance', repair: 'repair', insurance: 'insurance', purchase: 'purchase', inspection: 'inspection',
-};
-
-export type ExpenseClass =
-  | { kind: 'theme'; theme: ExpenseTheme }
-  | { kind: 'excluded'; reason: string }
-  | { kind: 'unqualified' };
-
-/** Classe d'un document à montant (pure, testée). */
-export function classifyExpenseDocument(documentTypeCode: string | null, legacyType: string | null): ExpenseClass {
-  if (documentTypeCode && EXCLUDED_V2.has(documentTypeCode)) return { kind: 'excluded', reason: documentTypeCode };
-  if (documentTypeCode && THEME_BY_V2_CODE[documentTypeCode]) return { kind: 'theme', theme: THEME_BY_V2_CODE[documentTypeCode] };
-  const entry = resolveDocumentType(documentTypeCode) ?? resolveDocumentType(legacyType);
-  if (!entry) return { kind: 'unqualified' };
-  if (entry.authority === 'WEAK' || EXCLUDED_CATALOG.has(entry.code)) return { kind: 'excluded', reason: entry.code };
-  if (entry.businessTypes.length === 1) {
-    const t = THEME_BY_BUSINESS[entry.businessTypes[0]];
-    if (t) return { kind: 'theme', theme: t };
-  }
-  return { kind: 'unqualified' };
-}
+// Vocabulaire des thèmes : `expense-classes.ts` (partagé avec les Opérations).
+export { EXPENSE_THEME_LABELS, expenseThemeOf, classifyExpenseDocument, isPaymentProofType, isCreditNoteTitle } from './expense-classes';
+export type { ExpenseTheme, ExpenseClass } from './expense-classes';
 
 export interface QualifiedExpenses {
   theme: ExpenseTheme | null;
-  byTheme: Array<{ theme: ExpenseTheme; label: string; sumCents: number; count: number; fileIds: number[] }>;
+  byTheme: Array<{
+    theme: ExpenseTheme; label: string; sumCents: number;
+    /** Éléments comptés : documents + Opérations (lot 45). */
+    count: number;
+    fileIds: number[];
+    /** Lot 45 : Opérations dont le coût consolidé est compté dans ce thème. */
+    operationIds?: number[];
+    documentCount?: number;
+    operationCount?: number;
+  }>;
   /** Somme des dépenses qualifiées (du thème demandé, ou de tous les thèmes). */
   qualifiedSumCents: number;
   qualifiedCount: number;
@@ -99,18 +59,63 @@ export interface QualifiedExpenses {
   unqualified: { count: number; sumCents: number; fileIds: number[]; undatedCount: number };
   /** Doublons « fusion possible » écartés du total (comptés une seule fois). */
   duplicates: { count: number; fileIds: number[] };
-  /** Documents exclus (devis, annonces…), par type. */
+  /** Documents exclus (devis, annonces, preuves de paiement…), par type. */
   excluded: { count: number; byType: Record<string, number> };
   /**
    * Le total est COMPLET : aucun document non qualifié ne peut en faire
    * partie. Faux : la réponse doit signaler la couverture incomplète.
    */
   complete: boolean;
+  /**
+   * Lot 45 (C15.1) : coûts CONSOLIDÉS des Opérations du périmètre (comptés
+   * en premier). Absent d'un résultat calculé sans lecture des Opérations.
+   */
+  operations?: OperationExpensePart;
+  /** Lot 45 (C15.1, C10) : repli documentaire dédupliqué. */
+  documents?: DocumentFallbackPart;
 }
 
+/** Repli documentaire (C15.1 §30) : ce qui en a été compté ou écarté. */
+export interface DocumentFallbackPart {
+  /** Documents comptés (hors Opérations) et leur somme. */
+  count: number;
+  sumCents: number;
+  /** Sources d'une Opération du périmètre : jamais recomptés (F-135). */
+  represented: { count: number; fileIds: number[] };
+  /**
+   * Sources d'une Opération HORS périmètre (bien non confirmé ou autre
+   * bien) : ni recomptés ici ni imputés au bien — total incomplet.
+   */
+  representedElsewhere: { count: number; fileIds: number[] };
+  /** Document commun à plusieurs biens dont certains hors périmètre : non réparti (C10). */
+  unattributed: { count: number; sumCents: number; fileIds: number[] };
+  /** Avoirs (réduction) comptés en négatif. */
+  creditNotes: { count: number; sumCents: number };
+}
+
+type DocRow = ExpenseRow & { amountCents: number; linked: number[] | null; retainedTitle: string | null };
+
 /**
- * Dépenses qualifiées d'un compte (voir l'en-tête). `assetIds` : documents
- * liés à ces biens par la relation N-N (repli : colonnes historiques).
+ * Dépenses d'un compte — Opération d'abord, repli documentaire dédupliqué
+ * (lot 45, CDC Opérations V1 C15.1, B15 ; T2-24 conservé) :
+ *
+ *   1. périmètre (biens, année, thème) ;
+ *   2. Opérations ACTIVES du périmètre et leurs composantes consolidées
+ *      (`operations.ts` : coût réalisé − avoirs, devis « prévu »,
+ *      indemnité dans le net, devises à part, multi-biens non ventilé) ;
+ *   3. documents sources de ces Opérations (et de toute Opération active)
+ *      écartés du repli — jamais recomptés, même si l'Opération n'a pas
+ *      encore de montant (C15.1 §31) ;
+ *   4. repli documentaire sur les autres documents (règles T2-24, preuve de
+ *      paiement exclue, avoir en réduction, document multi-biens non
+ *      réparti) ;
+ *   5. complétude conservée (non qualifiés, sans montant, non attribués,
+ *      devises).
+ *
+ * Sans Opération, le résultat est celui du lot 15 (même total, même
+ * complétude) — seules les preuves de paiement ne sont plus « non
+ * qualifiées » mais exclues (P16). `assetIds` : documents liés à ces biens
+ * par la relation N-N (repli : colonnes historiques).
  */
 export async function sumQualifiedExpenses(accountId: number, opts: {
   assetIds?: number[];
@@ -118,10 +123,17 @@ export async function sumQualifiedExpenses(accountId: number, opts: {
   theme?: ExpenseTheme | null;
 } = {}): Promise<QualifiedExpenses> {
   const ids = opts.assetIds?.length ? opts.assetIds : null;
+  const theme = opts.theme ?? null;
   const rows = (await pgClient.unsafe(
     `SELECT f.id, f.amount_cents AS "amountCents", f.document_type_code AS "v2", f.document_type AS "legacy",
             f.document_date::text AS "date", f.sha256_hash AS "hash", f.retained_title AS "title", f.asset_id AS "assetId",
-            f.supplier, f.analysis_state AS "state", f.fusion_ignored_with AS "ignored"
+            f.supplier, f.analysis_state AS "state", f.fusion_ignored_with AS "ignored", f.retained_title AS "retainedTitle",
+            ARRAY(SELECT DISTINCT u.x FROM (
+                    SELECT l.asset_id AS x FROM document_asset_links l
+                     WHERE l.account_id = f.account_id AND l.file_id = f.id AND l.status = 'ACTIVE'
+                    UNION SELECT f.asset_id UNION SELECT f.linked_asset_id) u
+                   WHERE u.x IS NOT NULL
+                     AND EXISTS (SELECT 1 FROM assets a WHERE a.id = u.x AND a.account_id = f.account_id AND a.deleted_at IS NULL)) AS "linked"
        FROM asset_files f
       WHERE f.account_id = $1 AND f.deleted_at IS NULL AND f.amount_cents IS NOT NULL
         AND ($2::int IS NULL OR f.document_date IS NULL OR extract(year FROM f.document_date) = $2)
@@ -131,19 +143,78 @@ export async function sumQualifiedExpenses(accountId: number, opts: {
              OR f.asset_id = ANY($3::int[]) OR f.linked_asset_id = ANY($3::int[]))
       ORDER BY f.id LIMIT 5000`,
     [accountId, opts.year ?? null, ids] as never[],
-  )) as unknown as Array<ExpenseRow & { amountCents: number }>;
-  const { kept, removed } = dedupePossibleMerges(rows.map((r) => ({ ...r, id: Number(r.id) })));
-  return aggregateExpenses(
-    kept.map((r) => ({
-      fileId: r.id, amountCents: Number(r.amountCents), ...classify(r),
-      undated: opts.year != null && !r.date,
-    })),
-    opts.theme ?? null,
-    removed,
+  )) as unknown as DocRow[];
+  const docs = rows.map((r) => ({ ...r, id: Number(r.id), linked: (r.linked ?? []).map(Number) }));
+
+  // ── Opérations d'abord (C15.1 §28-29) ────────────────────────────────────
+  // Lecture en échec : aucune Opération NI aucune exclusion (comportement du
+  // lot 15) — jamais une moitié de lecture qui compterait deux fois.
+  let part = emptyOperationPart();
+  let opEntries: ReturnType<typeof summarizeOperationCosts>['entries'] = [];
+  let scopeOps = new Set<number>();
+  let represented = new Map<number, number[]>();
+  try {
+    const ops = await loadScopeOperations(accountId, ids ?? []);
+    const lus = summarizeOperationCosts(operationCostLines(ops, { assetIds: ids ?? [], year: opts.year ?? null }), theme);
+    const rep = await operationReader().representedDocuments(accountId, docs.map((d) => d.id));
+    part = lus.part;
+    opEntries = lus.entries;
+    scopeOps = new Set(ops.map((o) => o.id));
+    represented = rep;
+  } catch (e) {
+    console.warn('[verebona] dépenses : lecture des coûts consolidés impossible, repli documentaire seul :', (e as Error).message);
+  }
+
+  // ── Repli documentaire dédupliqué (C15.1 §30-31, C10) ────────────────────
+  const fallback: DocumentFallbackPart = {
+    count: 0, sumCents: 0, represented: { count: 0, fileIds: [] }, representedElsewhere: { count: 0, fileIds: [] },
+    unattributed: { count: 0, sumCents: 0, fileIds: [] }, creditNotes: { count: 0, sumCents: 0 },
+  };
+  const { kept, removed } = dedupePossibleMerges(docs);
+  const entries: ExpenseEntry[] = [];
+  for (const r of kept) {
+    const ops = represented.get(r.id);
+    if (ops?.length) {
+      const cible = ops.some((o) => scopeOps.has(o)) ? fallback.represented : fallback.representedElsewhere;
+      cible.count += 1; cible.fileIds.push(r.id);
+      continue;
+    }
+    const cls = classifyExpenseDocument(r.v2, r.legacy);
+    const pertinent = cls.kind === 'unqualified' || (cls.kind === 'theme' && (!theme || cls.theme === theme));
+    if (ids && r.linked.length > 1 && r.linked.some((a) => !ids.includes(a)) && cls.kind !== 'excluded') {
+      // Facture de plusieurs biens : jamais comptée entière pour chacun.
+      if (pertinent) { fallback.unattributed.count += 1; fallback.unattributed.sumCents += Number(r.amountCents); fallback.unattributed.fileIds.push(r.id); }
+      continue;
+    }
+    const avoir = cls.kind === 'theme' && isCreditNoteTitle(r.retainedTitle);
+    const amount = avoir ? -Math.abs(Number(r.amountCents)) : Number(r.amountCents);
+    if (avoir && pertinent) { fallback.creditNotes.count += 1; fallback.creditNotes.sumCents += amount; }
+    entries.push({ fileId: r.id, amountCents: amount, cls, undated: opts.year != null && !r.date });
+  }
+  const q = aggregateExpenses(
+    entries, theme, removed,
+    opEntries.filter((e) => e.theme && !e.undated).map((e) => ({ operationId: e.operationId, amountCents: e.amountCents, theme: e.theme! })),
   );
+  for (const t of q.byTheme) {
+    fallback.count += t.fileIds.length;
+    fallback.sumCents += t.sumCents - (t.operationSumCents ?? 0);
+  }
+  return {
+    ...q,
+    byTheme: q.byTheme.map(({ operationSumCents: _o, ...t }) => t),
+    complete: q.complete && expenseCoverageComplete(part, fallback),
+    operations: part,
+    documents: fallback,
+  };
 }
 
-const classify = (r: { v2: string | null; legacy: string | null }) => ({ cls: classifyExpenseDocument(r.v2, r.legacy) });
+/** Le repli et les Opérations ne laissent aucune part non comptée (pure). */
+export function expenseCoverageComplete(part: OperationExpensePart, docs: DocumentFallbackPart): boolean {
+  return part.withoutAmount.count === 0 && part.unattributed.count === 0 && part.foreign.length === 0
+    && part.unqualified.count === 0 && part.undated.count === 0
+    && docs.unattributed.count === 0 && docs.representedElsewhere.count === 0;
+}
+
 
 /** Ligne de document utile au dédoublonnage. */
 export interface ExpenseRow {
@@ -214,28 +285,57 @@ export function dedupePossibleMerges<R extends ExpenseRow>(rows: R[]): { kept: R
   return { kept: rows.filter((r) => garde.has(r.id)), removed: removed.sort((a, b) => a - b) };
 }
 
-/** Agrégation (pure, testée). */
+/** Document à montant classé (entrée de l'agrégat). */
+export interface ExpenseEntry { fileId: number; amountCents: number; cls: ExpenseClass; undated?: boolean }
+
+/** Résultat de l'agrégat : thèmes avec la part consolidée (retirée par `sumQualifiedExpenses`). */
+export type AggregatedExpenses = Omit<QualifiedExpenses, 'byTheme'> & {
+  byTheme: Array<QualifiedExpenses['byTheme'][number] & { operationSumCents?: number }>;
+};
+
+/** Coût consolidé d'une Opération, de thème établi (lot 45). */
+export interface OperationAggregateEntry { operationId: number; amountCents: number; theme: ExpenseTheme }
+
+/**
+ * Agrégation (pure, testée). Lot 45 : `operations` — coûts CONSOLIDÉS des
+ * Opérations du périmètre, comptés dans leur thème avant les documents
+ * (déjà dédupliqués par l'appelant : aucun document source d'une Opération).
+ */
 export function aggregateExpenses(
-  docs: Array<{ fileId: number; amountCents: number; cls: ExpenseClass; undated?: boolean }>,
+  docs: ExpenseEntry[],
   theme: ExpenseTheme | null,
   duplicateFileIds: number[] = [],
-): QualifiedExpenses {
-  const par = new Map<ExpenseTheme, { sumCents: number; count: number; fileIds: number[] }>();
+  operations: OperationAggregateEntry[] = [],
+): AggregatedExpenses {
+  type Cur = { sumCents: number; count: number; fileIds: number[]; operationIds: number[]; documentCount: number; operationCount: number; operationSumCents: number };
+  const par = new Map<ExpenseTheme, Cur>();
+  const cur = (t: ExpenseTheme): Cur => {
+    const c = par.get(t) ?? { sumCents: 0, count: 0, fileIds: [], operationIds: [], documentCount: 0, operationCount: 0, operationSumCents: 0 };
+    par.set(t, c);
+    return c;
+  };
   const unq = { count: 0, sumCents: 0, fileIds: [] as number[], undatedCount: 0 };
   const exc = { count: 0, byType: {} as Record<string, number> };
+  for (const o of operations) {
+    const c = cur(o.theme);
+    c.sumCents += o.amountCents; c.operationSumCents += o.amountCents; c.count += 1; c.operationCount += 1; c.operationIds.push(o.operationId);
+  }
   for (const d of docs) {
     if (d.cls.kind === 'excluded') { exc.count += 1; exc.byType[d.cls.reason] = (exc.byType[d.cls.reason] ?? 0) + 1; continue; }
     // Année demandée, date absente : ni dans l'année ni hors d'elle — non
     // qualifié, quel que soit son thème (un devis reste exclu, ci-dessus).
     if (d.undated) { unq.count += 1; unq.undatedCount += 1; unq.sumCents += d.amountCents; unq.fileIds.push(d.fileId); continue; }
     if (d.cls.kind === 'unqualified') { unq.count += 1; unq.sumCents += d.amountCents; unq.fileIds.push(d.fileId); continue; }
-    const cur = par.get(d.cls.theme) ?? { sumCents: 0, count: 0, fileIds: [] };
-    cur.sumCents += d.amountCents; cur.count += 1; cur.fileIds.push(d.fileId);
-    par.set(d.cls.theme, cur);
+    const c = cur(d.cls.theme);
+    c.sumCents += d.amountCents; c.count += 1; c.documentCount += 1; c.fileIds.push(d.fileId);
   }
   const byTheme = [...par.entries()]
     .filter(([t]) => !theme || t === theme)
-    .map(([t, v]) => ({ theme: t, label: EXPENSE_THEME_LABELS[t], ...v }))
+    .map(([t, v]) => ({
+      theme: t, label: EXPENSE_THEME_LABELS[t], sumCents: v.sumCents, count: v.count, fileIds: v.fileIds,
+      // Champs du lot 45 seulement quand des Opérations sont comptées (forme du lot 15 inchangée sinon).
+      ...(v.operationCount ? { operationIds: v.operationIds, documentCount: v.documentCount, operationCount: v.operationCount, operationSumCents: v.operationSumCents } : {}),
+    }))
     .sort((a, b) => b.sumCents - a.sumCents);
   return {
     theme,
@@ -249,6 +349,93 @@ export function aggregateExpenses(
   };
 }
 
+// ── Libellés du total mixte (lot 45, C15.1 §33 : provenance lisible) ─────
+
+const pl = (n: number, a: string, b: string) => (n > 1 ? b : a);
+const eurFr = (c: number) => formatMinorAmount(c, 'EUR');
+
+/** Types d'Opération comptés dans un thème (pure). */
+function typesOf(ids: readonly number[] | undefined, part: OperationExpensePart | undefined): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const id of ids ?? []) {
+    const t = part?.lines.find((l) => l.operationId === id)?.typeCode ?? 'OTHER';
+    out[t] = (out[t] ?? 0) + 1;
+  }
+  return out;
+}
+
+/**
+ * « 2 documents » (forme du lot 15) ; avec des coûts consolidés :
+ * « 1 intervention et 1 document » (pure, testée).
+ */
+export function expenseItemsLabel(t: QualifiedExpenses['byTheme'][number], part?: OperationExpensePart): string {
+  if (!t.operationCount) return `${t.count} document${t.count > 1 ? 's' : ''}`;
+  const docs = t.documentCount ?? 0;
+  const ops = operationCountLabel(typesOf(t.operationIds, part));
+  return docs ? `${ops} et ${docs} document${pl(docs, '', 's')}` : ops;
+}
+
+/** Libellé des éléments du total, tous thèmes confondus (pure). */
+export function expenseTotalItemsLabel(q: QualifiedExpenses): string {
+  const ops = q.byTheme.flatMap((t) => t.operationIds ?? []);
+  if (!ops.length) return `${q.qualifiedCount} document${q.qualifiedCount > 1 ? 's' : ''}`;
+  const docs = q.byTheme.reduce((n, t) => n + t.fileIds.length, 0);
+  const lab = operationCountLabel(typesOf(ops, q.operations));
+  return docs ? `${lab} et ${docs} document${pl(docs, '', 's')}` : lab;
+}
+
+/**
+ * Phrases du mode mixte (pure, testée) — vides sans Opération ni document
+ * écarté (réponse du lot 15 inchangée). Jamais le mot « Opération » (P09).
+ */
+export function mixedExpenseNotes(q: QualifiedExpenses, ctx: { scopeLabel: string | null; year?: number | null }): string[] {
+  const part = q.operations;
+  const docs = q.documents;
+  const out: string[] = [];
+  const ici = ctx.scopeLabel ? ` pour ${ctx.scopeLabel}` : '';
+  if (part && part.count > 0 && docs && docs.count > 0) {
+    const opSum = q.byTheme.reduce((n, t) => n + (t.operationIds?.length ? sumOps(t, part) : 0), 0);
+    out.push(`Dont ${eurFr(opSum)} consolidés (${operationCountLabel(typesOf(q.byTheme.flatMap((t) => t.operationIds ?? []), part))}) et ${eurFr(q.qualifiedSumCents - opSum)} lus sur ${docs.count} document${pl(docs.count, '', 's')} non rattaché${pl(docs.count, '', 's')} à une intervention.`);
+  }
+  if (part?.untargeted.count) out.push(`Dont ${eurFr(part.untargeted.sumCents)} sans bien identifié.`);
+  if (part?.indemnity.sumCents) {
+    out.push(`Indemnités reçues : ${eurFr(part.indemnity.sumCents)} — coût net après indemnités : ${eurFr(q.qualifiedSumCents - part.indemnity.sumCents)}.`);
+  }
+  if (part?.indemnity.unallocatedCents) out.push(`Une indemnité commune à plusieurs biens (${eurFr(part.indemnity.unallocatedCents)}) n’est pas répartie : elle n’est pas déduite${ici}.`);
+  if (part?.forecast.count) out.push(`Prévu (devis, non réalisé) : ${eurFr(part.forecast.sumCents)} — non compté.`);
+  if (part?.foreign.length) out.push(`Montant${pl(part.foreign.length, '', 's')} en devise étrangère, non converti${pl(part.foreign.length, '', 's')} et non compté${pl(part.foreign.length, '', 's')} : ${part.foreign.map((f) => formatMinorAmount(f.amountMinor, f.currency)).join(', ')}.`);
+  const nonRepartis = (part?.unattributed.count ?? 0) + (docs?.unattributed.count ?? 0);
+  if (nonRepartis) {
+    const somme = (part?.unattributed.sumCents ?? 0) + (docs?.unattributed.sumCents ?? 0);
+    out.push(`${nonRepartis} dépense${pl(nonRepartis, '', 's')} commune${pl(nonRepartis, '', 's')} à plusieurs biens (${eurFr(somme)}) ${pl(nonRepartis, 'n’est', 'ne sont')} pas répartie${pl(nonRepartis, '', 's')} : non comptée${pl(nonRepartis, '', 's')}${ici}.`);
+  }
+  if (part?.withoutAmount.count) {
+    const n = part.withoutAmount.count;
+    out.push(`${n} ${pl(n, 'élément', 'éléments')} sans montant connu (${part.withoutAmount.labels.slice(0, 3).join(', ')}) : le total peut être incomplet.`);
+  }
+  if (part?.unqualified.count) out.push(`${part.unqualified.count} intervention${pl(part.unqualified.count, '', 's')} dont la nature n’est pas précisée : non comptée${pl(part.unqualified.count, '', 's')}.`);
+  if (part?.undated.count) out.push(`${part.undated.count} intervention${pl(part.undated.count, '', 's')} sans date : non comptée${pl(part.undated.count, '', 's')}${ctx.year ? ` pour ${ctx.year}` : ''}.`);
+  if (docs?.represented.count) out.push(`${docs.represented.count} document${pl(docs.represented.count, '', 's')} déjà pris en compte dans une intervention, un contrat ou un achat : non recompté${pl(docs.represented.count, '', 's')}.`);
+  if (docs?.representedElsewhere.count) out.push(`${docs.representedElsewhere.count} document${pl(docs.representedElsewhere.count, '', 's')} rattaché${pl(docs.representedElsewhere.count, '', 's')} à une dépense dont le bien n’est pas confirmé : non compté${pl(docs.representedElsewhere.count, '', 's')}${ici}.`);
+  if (docs?.creditNotes.count) out.push(`Avoir${pl(docs.creditNotes.count, '', 's')} déduit${pl(docs.creditNotes.count, '', 's')} : ${eurFr(Math.abs(docs.creditNotes.sumCents))}.`);
+  const preuves = q.excluded?.byType?.PAYMENT_PROOF ?? 0;
+  if (preuves) out.push(`${preuves} preuve${pl(preuves, '', 's')} de paiement : ${pl(preuves, 'elle confirme', 'elles confirment')} un règlement et ne s’ajoute${pl(preuves, '', 'nt')} pas au coût.`);
+  return out;
+}
+
+function sumOps(t: QualifiedExpenses['byTheme'][number], part: OperationExpensePart): number {
+  return (t.operationIds ?? []).reduce((n, id) => {
+    const l = part.lines.find((x) => x.operationId === id);
+    return n + (l ? l.costCents : 0);
+  }, 0);
+}
+
+/** Documents des Opérations comptées (sources citées du total). */
+export function countedOperationFileIds(q: QualifiedExpenses): number[] {
+  const ops = new Set(q.byTheme.flatMap((t) => t.operationIds ?? []));
+  return [...new Set((q.operations?.lines ?? []).filter((l) => ops.has(l.operationId)).flatMap((l) => l.fileIds))];
+}
+
 /** Motif d'un total incomplet : thème non établi et/ou date absente. */
 function incompletLibelle(q: QualifiedExpenses): string {
   const s = (n: number) => (n > 1 ? 's' : '');
@@ -258,6 +445,9 @@ function incompletLibelle(q: QualifiedExpenses): string {
     sansTheme ? `${sansTheme} document${s(sansTheme)} avec montant sans thème` : null,
     sansDate ? `${sansDate} document${s(sansDate)} non qualifié${s(sansDate)} (date absente)` : null,
   ].filter(Boolean);
+  // Lot 45 : la part non comptée peut venir des coûts consolidés (sans
+  // montant, non répartis, devise, nature ou date) — détaillée par les notes.
+  if (!parts.length) return 'total incomplet : voir les éléments non comptés';
   return `total incomplet : ${parts.join(', ')}, non compté${s(q.unqualified.count)}`;
 }
 
@@ -276,12 +466,16 @@ export function expenseSumSource(
 ): import('../types/sources').RetrievedSource {
   const eur = (c: number) => `${(c / 100).toLocaleString('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} €`;
   const pour = `${ctx.scopeLabel ? ` pour ${ctx.scopeLabel}` : ''}${ctx.year ? ` en ${ctx.year}` : ''}`;
-  const lignes = q.byTheme.map((t) => `${t.label} : ${eur(t.sumCents)} (${t.count} document${t.count > 1 ? 's' : ''})`);
-  const inclus = q.byTheme.flatMap((t) => t.fileIds).slice(0, 50);
+  const lignes = q.byTheme.map((t) => `${t.label} : ${eur(t.sumCents)} (${expenseItemsLabel(t, q.operations)})`);
+  // Lot 45 : documents comptés ET documents des interventions, contrats ou
+  // achats consolidés comptés (sources citées : documents et Opérations).
+  const inclus = [...new Set([...q.byTheme.flatMap((t) => t.fileIds), ...countedOperationFileIds(q)])].slice(0, 50);
+  const notes = mixedExpenseNotes(q, { scopeLabel: ctx.scopeLabel, year: ctx.year ?? null }).map((n) => n.replace(/\.$/, ''));
   const content = [
-    `Dépenses qualifiées${q.theme ? ` de ${EXPENSE_THEME_LABELS[q.theme]}` : ''}${pour} : ${eur(q.qualifiedSumCents)} (${q.qualifiedCount} document${q.qualifiedCount > 1 ? 's' : ''})`,
+    `Dépenses qualifiées${q.theme ? ` de ${EXPENSE_THEME_LABELS[q.theme]}` : ''}${pour} : ${eur(q.qualifiedSumCents)} (${expenseTotalItemsLabel(q)})`,
     ...lignes,
     q.complete ? 'total complet' : incompletLibelle(q),
+    ...notes,
     q.duplicates?.count ? `doublons (fusion possible) comptés une fois : ${q.duplicates.count} écarté${q.duplicates.count > 1 ? 's' : ''}` : null,
     q.excluded.count ? `exclus (devis, annonces…) : ${q.excluded.count}` : null,
     inclus.length ? `documents inclus : ${inclus.map((id) => `doc-${id}`).join(' ')}` : null,
@@ -297,6 +491,15 @@ export function expenseSumSource(
       complete: q.complete, unqualifiedCount: q.unqualified.count, excludedCount: q.excluded.count, year: ctx.year ?? null,
       undatedCount: q.unqualified.undatedCount ?? 0, duplicateCount: q.duplicates?.count ?? 0,
       includedDocuments: inclus.map((id) => `doc-${id}`).join(' '),
+      // Lot 45 (C15.1) : part consolidée et repli documentaire.
+      ...(q.operations ? {
+        operationCount: q.operations.count, consolidatedCents: q.operations.sumCents,
+        indemnityCents: q.operations.indemnity.sumCents, netCents: q.qualifiedSumCents - q.operations.indemnity.sumCents,
+        forecastCents: q.operations.forecast.sumCents, withoutAmountCount: q.operations.withoutAmount.count,
+        unattributedCents: q.operations.unattributed.sumCents + (q.documents?.unattributed.sumCents ?? 0),
+        foreignAmounts: q.operations.foreign.map((f) => formatMinorAmount(f.amountMinor, f.currency)).join(', ') || null,
+      } : {}),
+      ...(q.documents ? { documentFallbackCents: q.documents.sumCents, representedDocumentCount: q.documents.represented.count } : {}),
     },
   };
 }

@@ -1,0 +1,239 @@
+{
+  "case": "F-105",
+  "description": "Ticket d'achat en francs suisses : ACQUISITION REALIZED, montant conservé en CHF (devise d’origine, aucune conversion BCE — C12.3).",
+  "context": {
+    "linkedAssetId": 30,
+    "assets": [
+      {
+        "id": 30,
+        "name": "Vélo cargo",
+        "category": "OBJECT",
+        "subtype": "velo"
+      }
+    ],
+    "rooms": [],
+    "equipments": [],
+    "existingTitles": [],
+    "verified": {
+      "ASSET": [
+        30
+      ],
+      "EQUIPMENT": [],
+      "ROOM": [],
+      "SUPPLIER": []
+    }
+  },
+  "recording": {
+    "operationCode": "t1_analyze_document",
+    "task": "ANALYZE_DOCUMENT",
+    "output": {
+      "task": "ANALYZE_DOCUMENT",
+      "document": {
+        "title": {
+          "value": "Ticket d'achat Vélo cargo",
+          "confidence": "certain",
+          "evidence": {
+            "excerpt": "Ticket d'achat Vélo cargo",
+            "page": 1
+          }
+        },
+        "classification": {
+          "canonicalType": "TICKET",
+          "rubricCode": "ACQUISITION",
+          "documentTypeCode": "ACQUISITION_INVOICE",
+          "confidence": 0.92,
+          "evidence": {
+            "excerpt": "Ticket d'achat Vélo cargo"
+          }
+        },
+        "documentDate": {
+          "value": "2026-08-14",
+          "confidence": "certain",
+          "evidence": {
+            "excerpt": "Date : 14/08/2026",
+            "page": 1
+          }
+        },
+        "amountCents": {
+          "value": 449000,
+          "confidence": "certain",
+          "evidence": {
+            "excerpt": "TOTAL CHF 4'490.00",
+            "page": 1
+          }
+        },
+        "supplier": {
+          "name": "Velo Zürich AG",
+          "confidence": "certain",
+          "evidence": {
+            "excerpt": "VELO ZÜRICH AG",
+            "page": 1
+          }
+        }
+      },
+      "entities": {
+        "assets": [
+          {
+            "entityId": 30,
+            "rawLabel": "Vélo cargo",
+            "score": 0.95,
+            "confidence": "certain",
+            "evidenceSignals": [
+              "Vélo cargo"
+            ],
+            "reason": "désignation lue"
+          }
+        ],
+        "rooms": [],
+        "equipments": [],
+        "suppliers": [],
+        "multiAsset": false
+      },
+      "transcription": "VELO ZÜRICH AG\n14.08.2026 10:42\n1 x VELO CARGO ELECTRIQUE\nTOTAL CHF 4'490.00",
+      "facts": [
+        {
+          "canonicalKey": null,
+          "rawKey": "article",
+          "label": "Article",
+          "subject": "Vélo cargo",
+          "attribute": "article",
+          "rawValue": "Vélo cargo électrique",
+          "normalizedValue": "Vélo cargo électrique",
+          "valueType": "string",
+          "canonicalUnit": null,
+          "target": {
+            "type": "ASSET",
+            "entityId": 30,
+            "rawLabel": "Vélo cargo",
+            "confidence": "certain",
+            "evidenceSignals": [
+              "Vélo cargo"
+            ]
+          },
+          "provenance": "TEXT_EXTRACTION",
+          "confidence": "certain",
+          "evidence": {
+            "excerpt": "1 x VELO CARGO ELECTRIQUE",
+            "page": 1
+          },
+          "semanticEvent": {
+            "type": "purchase",
+            "nature": "HISTORICAL"
+          }
+        },
+        {
+          "canonicalKey": null,
+          "rawKey": "total",
+          "label": "Total",
+          "subject": "Vélo cargo",
+          "attribute": "total",
+          "rawValue": "CHF 4'490.00",
+          "normalizedValue": 449000,
+          "valueType": "money_cents",
+          "canonicalUnit": "cents",
+          "target": {
+            "type": "ASSET",
+            "entityId": 30,
+            "rawLabel": "Vélo cargo",
+            "confidence": "certain",
+            "evidenceSignals": [
+              "Vélo cargo"
+            ]
+          },
+          "provenance": "TEXT_EXTRACTION",
+          "confidence": "certain",
+          "evidence": {
+            "excerpt": "TOTAL CHF 4'490.00",
+            "page": 1
+          }
+        },
+        {
+          "canonicalKey": null,
+          "rawKey": "dateAchat",
+          "label": "Date d'achat",
+          "subject": "Vélo cargo",
+          "attribute": "date d'achat",
+          "rawValue": "2026-08-14",
+          "normalizedValue": "2026-08-14",
+          "valueType": "date",
+          "canonicalUnit": null,
+          "target": {
+            "type": "ASSET",
+            "entityId": 30,
+            "rawLabel": "Vélo cargo",
+            "confidence": "certain",
+            "evidenceSignals": [
+              "Vélo cargo"
+            ]
+          },
+          "provenance": "TEXT_EXTRACTION",
+          "confidence": "certain",
+          "evidence": {
+            "excerpt": "14.08.2026 10:42",
+            "page": 1
+          },
+          "semanticEvent": {
+            "type": "purchase",
+            "nature": "HISTORICAL"
+          }
+        }
+      ],
+      "hasExploitableContent": true,
+      "businessOperationCandidates": [
+        {
+          "candidateKey": "op1",
+          "established": true,
+          "confidence": "certain",
+          "typeHint": "ACQUISITION",
+          "statusHint": "REALIZED",
+          "summary": "Achat du vélo cargo électrique",
+          "sourceRoleHint": "INVOICE",
+          "provider": "Velo Zürich AG",
+          "targetHints": [
+            {
+              "type": "ASSET",
+              "entityId": 30,
+              "rawLabel": "Vélo cargo",
+              "confidence": "certain"
+            }
+          ],
+          "temporalHints": {
+            "realizedDate": "2026-08-14"
+          },
+          "financialHints": [
+            {
+              "role": "REALIZED_COST",
+              "amountMinor": 449000,
+              "currency": "CHF",
+              "amountScope": "TOTAL",
+              "economicDate": "2026-08-14",
+              "factIndex": 1
+            }
+          ],
+          "evidenceFactIndexes": [
+            0,
+            1,
+            2
+          ]
+        }
+      ]
+    }
+  },
+  "expected": {
+    "operationCandidates": [
+      {
+        "typeHint": "ACQUISITION",
+        "statusHint": "REALIZED",
+        "financialRoles": [
+          "REALIZED_COST"
+        ],
+        "currencies": [
+          "CHF"
+        ],
+        "amountsMinor": [
+          449000
+        ]
+      }
+    ]
+  }
+}

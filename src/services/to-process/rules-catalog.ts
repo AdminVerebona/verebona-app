@@ -58,7 +58,8 @@ export type RuleProducer =
   | 'T4_STATUS'
   | 'T4_PROPOSAL'
   | 'MIGRATION_REVIEW'
-  | 'T3_ASSET_CONFLICT';
+  | 'T3_ASSET_CONFLICT'
+  | 'T3_OPERATIONS';
 
 /** Où vit chaque producteur, et par quelle(s) fonction(s) il est appelé. */
 export const RULE_PRODUCERS: Readonly<Record<RuleProducer, {
@@ -79,6 +80,9 @@ export const RULE_PRODUCERS: Readonly<Record<RuleProducer, {
   T4_PROPOSAL: { module: 'src/services/to-process/agenda-proposal-cards.ts', entries: ['proposeAgendaCreation'], generic: false },
   MIGRATION_REVIEW: { module: 'src/services/to-process/migration-review-cards.ts', entries: ['upsertMigrationReviewCard'], generic: false },
   T3_ASSET_CONFLICT: { module: 'src/services/to-process/document-asset-conflict.ts', entries: ['proposeDocumentAssetConflict', 'closeObsoleteAssetConflicts'], generic: false },
+  // Lot 42 : ambiguïtés de la consolidation T3 des Opérations (appelé après
+  // chaque passage par `business-operations/consolidation/consolidator.ts`).
+  T3_OPERATIONS: { module: 'src/services/to-process/operation-cards.ts', entries: ['syncOperationCards'], generic: false },
 };
 
 export interface ProcessingRule {
@@ -440,6 +444,50 @@ export const PROCESSING_RULES: readonly ProcessingRule[] = [
     question: 'Quelle valeur garder pour ce champ de la pièce ?',
     businessImpact: 30,
     producer: 'T3_ENTITY_FIELDS',
+  },
+
+  // ── Lot 42 (CDC Opérations V1 ch. 20, B19, C19) : ambiguïtés de la ──────
+  // consolidation T3, posées sur le DOCUMENT concerné, en langage métier —
+  // « À traiter » n'est pas un écran de validation des Opérations (P09).
+  // Une carte par problème (relation suffixée : `operationMatch:<candidat>`,
+  // `operationParent:<id>`, `operationAmount:<id>:<empreinte>`) ; fermées
+  // d'elles-mêmes quand la consolidation ne les reconduit pas. Voir
+  // `operation-cards.ts`.
+  {
+    // (a) Deux réalités existantes plausibles pour un même document.
+    code: 'OPERATION-MATCH',
+    targetType: 'DOCUMENT',
+    relationKey: 'operationMatch',
+    arbitratePriority: 'DO_NEXT',
+    completePriority: null,
+    allowNotApplicable: false,
+    question: 'Ce document concerne-t-il la même intervention ?',
+    businessImpact: 70,
+    producer: 'T3_OPERATIONS',
+  },
+  {
+    // (b) Parent Sinistre ambigu entre deux dossiers.
+    code: 'OPERATION-CLAIM-PARENT',
+    targetType: 'DOCUMENT',
+    relationKey: 'operationParent',
+    arbitratePriority: 'DO_NEXT',
+    completePriority: null,
+    allowNotApplicable: false,
+    question: 'Cette intervention fait-elle suite à un sinistre ?',
+    businessImpact: 60,
+    producer: 'T3_OPERATIONS',
+  },
+  {
+    // (c) Montant contradictoire de même rôle entre preuves de même autorité.
+    code: 'OPERATION-AMOUNT',
+    targetType: 'DOCUMENT',
+    relationKey: 'operationAmount',
+    arbitratePriority: 'DO_NEXT',
+    completePriority: null,
+    allowNotApplicable: false,
+    question: 'Ces documents indiquent des montants différents : lequel est le bon ?',
+    businessImpact: 68,
+    producer: 'T3_OPERATIONS',
   },
 
   // ── CDC 15 D-15 (lot 14) : statut du bien après vente ou sinistre ───────

@@ -147,6 +147,20 @@ export interface SourceCil {
   resolutions: Array<{ blockId: string; resolution: string; justification: string | null }>;
 }
 
+/**
+ * Lot 44 (O5) — sinistre retenu pour le dossier Assurance-sinistre : un bien
+ * peut en avoir plusieurs (Q2). La sous-rubrique `additionalInfo.claim` est
+ * celle de CE sinistre (Opération CLAIM, source de vérité, F-157) ; sans
+ * sinistre, l'ancienne saisie du bien est lue (compatibilité Q11).
+ */
+export interface ExportClaimSelection {
+  /** Sinistre retenu ; null : aucun (lecture de l'ancienne saisie ou rien). */
+  selectedOperationId: number | null;
+  origin: 'operation' | 'legacy' | 'none';
+  /** Sinistres du bien proposés au choix (survenue décroissante). */
+  options: Array<{ id: number; label: string; date: string | null }>;
+}
+
 export interface ExportSource {
   exportType: DossierCode;
   family: ExportFamily;
@@ -182,6 +196,8 @@ export interface ExportSource {
   /** Pièces = sous-structures du bien (D-G, lot 20) ; type, surface, description depuis 0229. */
   rooms: Array<{ id: number; name: string; roomType?: string | null; area?: string | null; description?: string | null }>;
   additionalInfo: AdditionalInfosSnapshot;
+  /** Lot 44 : sinistre retenu (dossier Assurance-sinistre seulement). */
+  claim?: ExportClaimSelection | null;
   cil: SourceCil | null;
   preparedBy: string | null;
   /** Source réellement utilisée et version du registre (X-02, figé dans le snapshot). */
@@ -280,7 +296,36 @@ function toSourceEvents(snapshot: AssetSnapshot, agenda: Array<{
   return [...fromEvents, ...fromAgenda];
 }
 
-type LoadParams = { assetId: number; accountId: number; userId: number; exportType: DossierCode };
+type LoadParams = {
+  assetId: number; accountId: number; userId: number; exportType: DossierCode;
+  /** Lot 44 : sinistre choisi (Assurance-sinistre) ; défaut : le plus récent du bien. */
+  claimOperationId?: number | null;
+};
+
+/**
+ * Sinistre du dossier (lot 44) : celui demandé s'il concerne le bien, sinon le
+ * plus récent ; aucun → ancienne saisie (`claim_json`, Q11) telle quelle.
+ */
+export async function loadClaimSelection(
+  params: Pick<LoadParams, 'assetId' | 'accountId' | 'claimOperationId'>, legacy: InfoSection,
+): Promise<{ selection: ExportClaimSelection; claim: InfoSection }> {
+  const { loadClaimRecords } = await import('@/services/business-operations/claims/read');
+  const { claimToSection, claimLabel } = await import('@/services/business-operations/claims/model');
+  const records = await loadClaimRecords(db, params.accountId, { assetId: params.assetId });
+  const options = records.map((r) => {
+    const sec = claimToSection(r);
+    return { id: r.id, label: claimLabel(sec), date: r.realizedDate };
+  });
+  if (!records.length) {
+    const has = Object.keys(legacy ?? {}).length > 0;
+    return { selection: { selectedOperationId: null, origin: has ? 'legacy' : 'none', options }, claim: { ...(legacy ?? {}) } };
+  }
+  const chosen = records.find((r) => r.id === params.claimOperationId) ?? records[0];
+  const section: InfoSection = { ...claimToSection(chosen) };
+  // Contrat : police saisie, sinon contrat d'assurance reconnu (C13.1) ; à défaut le mappeur lit la fiche.
+  if (!section.policyReference && chosen.contractLabel) section.policyReference = chosen.contractLabel;
+  return { selection: { selectedOperationId: chosen.id, origin: 'operation', options }, claim: section };
+}
 
 /**
  * Lit les données d'un bien pour un dossier. `accountId` est le compte du
@@ -295,6 +340,12 @@ export async function loadExportSource(params: LoadParams): Promise<ExportSource
   const { traceOf } = await import('./canonical-source');
   const { source: base, snapshot } = await loadLegacyExportSource(params);
   const { source, documentPaths, unconfirmed } = await buildCanonicalExportSource(params, base, snapshot);
+  // Lot 44 (F-157) : le dossier Assurance-sinistre lit le Sinistre (Opération CLAIM).
+  if (params.exportType === 'ASSURANCE_SINISTRE') {
+    const { selection, claim } = await loadClaimSelection(params, source.additionalInfo.claim);
+    source.additionalInfo = { ...source.additionalInfo, claim };
+    source.claim = selection;
+  }
   return { ...source, sourceTrace: traceOf('canonical', { documentPaths, unconfirmedDocuments: unconfirmed }) };
 }
 

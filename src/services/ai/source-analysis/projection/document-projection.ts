@@ -37,6 +37,17 @@
  *      d'achat du bien → acquisitionDate / acquisitionPrice ; facture de
  *      prestation → jamais acquisitionPrice ; achat de pièce → pas
  *      d'acquisition du bien. Aucune règle en multi-biens.
+ *
+ *   Lot 38 (O0, CDC Opérations V1 C11.1, C12.3, C18) :
+ *      · date d'acquisition : date de livraison / remise / achat explicite
+ *        d'abord, date du document seulement pour le justificatif d'achat du
+ *        bien lui-même ; jamais pour une preuve de paiement, un acompte ou un
+ *        avoir ;
+ *      · prix : montant du justificatif seulement s'il est en EUR (devise
+ *        écrite, ou aucune autre devise dans le document) ; un montant
+ *        canonique en devise étrangère reste une connaissance générique ;
+ *      · valeur estimée : jamais lue sur un document de transaction
+ *        (facture, devis, commande, paiement).
  */
 import {
   centsToEur,
@@ -54,11 +65,14 @@ import type {
   T1AnalyzeDocumentOutput,
   T1Evidence,
   T1Fact,
+  T1FactWithRef,
   T1Recurrence,
   T1SemanticEvent,
   T1TargetType,
 } from '../master/t1-contract';
 import { factLabel } from '../master/fact-evidence';
+import { currenciesIn, detectDocumentCurrency, foreignCurrencyOf, isEurAmount } from '@/lib/document-currency';
+import { isValuationEvidenceAdmissible } from '@/services/canonical/valuation-semantics';
 import {
   classifyPurpose,
   countArticleLines,
@@ -68,7 +82,9 @@ import {
   excerptStatesPastEventOnly,
   LAST_VS_DEADLINE,
   PROJECTION_RULES,
+  labelsExplicitAcquisitionDate,
   provesPurchaseByInvoice,
+  transactionNature,
   type DocumentPurpose,
   type ProjectionRuleCode,
 } from './rules';
@@ -292,6 +308,8 @@ export function projectDocumentFacts(
       periodStart: fact.periodStart ?? null,
       periodEnd: fact.periodEnd ?? null,
       ruleCode: null,
+      // Lot 40 : empreinte du fait d'origine (ancrage des candidats Opération).
+      ...((fact as T1FactWithRef).t1FactRef ? { t1FactRef: (fact as T1FactWithRef).t1FactRef } : {}),
     };
 
     const generic = (): ProjectedFact => ({
@@ -355,6 +373,34 @@ export function projectDocumentFacts(
         message: `« ${def.key} » n'est pas applicable à la famille ${family} : connaissance générique.` });
       facts.push(generic());
       continue;
+    }
+
+    // O0 (lot 38, B18, C18) : une valeur estimée ne se lit jamais sur une
+    // facture, un devis, une commande ou une preuve de paiement.
+    if (!isValuationEvidenceAdmissible(def.key, documentType, analysis.document.classification?.documentTypeCode)) {
+      noteRule(PROJECTION_RULES.VALUATION_FROM_TRANSACTION_DOCUMENT);
+      warnings.push({ code: 'FACT_REQUALIFIED_BY_RULE', target: def.key, ruleCode: PROJECTION_RULES.VALUATION_FROM_TRANSACTION_DOCUMENT,
+        message: `« ${def.key} » lu sur un document de transaction : un prix n’est pas une valorisation, connaissance générique (C18).` });
+      facts.push({ ...generic(), ruleCode: PROJECTION_RULES.VALUATION_FROM_TRANSACTION_DOCUMENT });
+      continue;
+    }
+
+    // O0 (lot 38, C12.3) : montant en devise étrangère → jamais dans un champ
+    // en euros (aucune conversion automatique), connaissance générique.
+    if (def.valueType === 'money_eur' || def.valueType === 'money_cents') {
+      // Devise ÉCRITE dans la valeur lue d'abord (l'unité annoncée par le
+      // modèle n'est qu'une affirmation), puis extrait, puis document.
+      const ecrite = currenciesIn(typeof fact.rawValue === 'string' ? fact.rawValue : null);
+      const devise = ecrite.length === 1
+        ? (ecrite[0] === 'EUR' ? null : ecrite[0])
+        : foreignCurrencyOf(detectDocumentCurrency({ amountExcerpt: fact.evidence?.excerpt, transcription: analysis.transcription }));
+      if (devise) {
+        noteRule(PROJECTION_RULES.NON_EUR_AMOUNT_NOT_CANONICAL);
+        warnings.push({ code: 'FACT_REQUALIFIED_BY_RULE', target: def.key, ruleCode: PROJECTION_RULES.NON_EUR_AMOUNT_NOT_CANONICAL,
+          message: `« ${def.key} » exprimé en ${devise} : aucune conversion automatique vers l’euro, connaissance générique (C12.3).` });
+        facts.push({ ...generic(), ruleCode: PROJECTION_RULES.NON_EUR_AMOUNT_NOT_CANONICAL });
+        continue;
+      }
     }
 
     const n = normaliserPourCle(fact, def, aliasUnit);
@@ -647,6 +693,31 @@ function applyPurposeRules(
     };
   };
 
+  // ── O0 (lot 38, §11.1, INV-012, INV-014) : nature du justificatif ──────
+  // Acompte ou avoir : ni prix ni date d'acquisition (pas même ceux du
+  // modèle, qui reprendrait le montant de l'acompte) ; preuve de paiement :
+  // aucune déduction depuis le montant ou la date du document.
+  const nature = transactionNature({
+    documentTypeCode: analysis.document.classification?.documentTypeCode ?? null,
+    texts: [analysis.document.title?.value, analysis.document.amountCents?.evidence?.excerpt],
+  });
+  if (nature === 'DEPOSIT_OR_CREDIT_NOTE') {
+    noteRule(PROJECTION_RULES.DEPOSIT_OR_CREDIT_NOTE_NO_ACQUISITION);
+    warnings.push({ code: 'RULE_APPLIED', ruleCode: PROJECTION_RULES.DEPOSIT_OR_CREDIT_NOTE_NO_ACQUISITION,
+      message: 'Facture d’acompte ou avoir : aucun prix ni date d’acquisition (CDC Opérations §11.1).' });
+    return facts.map((f) => {
+      if (!ACQUISITION.has(f.canonicalKey ?? '') || !surLeBien(f)) return f;
+      warnings.push({ code: 'FACT_REQUALIFIED_BY_RULE', target: f.canonicalKey ?? undefined,
+        ruleCode: PROJECTION_RULES.DEPOSIT_OR_CREDIT_NOTE_NO_ACQUISITION,
+        message: `« ${f.canonicalKey} » sur un acompte ou un avoir : connaissance générique.` });
+      return {
+        ...f, canonicalKey: null, rawKey: f.rawKey ?? f.canonicalKey, semanticEvent: null,
+        origin: 'GENERIC' as const, ruleCode: PROJECTION_RULES.DEPOSIT_OR_CREDIT_NOTE_NO_ACQUISITION,
+      };
+    });
+  }
+  const preuveDePaiement = nature === 'PAYMENT_PROOF';
+
   const out = [...facts];
 
   // Faits d'acquisition fournis par le modèle : événement purchase (U14).
@@ -658,16 +729,42 @@ function applyPurposeRules(
     }
   }
 
-  // documentDate → acquisitionDate, si le modèle ne l'a pas fournie.
+  if (preuveDePaiement) {
+    noteRule(PROJECTION_RULES.PAYMENT_PROOF_NO_ACQUISITION_RULE);
+    warnings.push({ code: 'RULE_APPLIED', ruleCode: PROJECTION_RULES.PAYMENT_PROOF_NO_ACQUISITION_RULE,
+      message: 'Preuve de paiement : ni prix ni date d’acquisition déduits du montant ou de la date du document (INV-012).' });
+    return out;
+  }
+
+  // Date d'acquisition, si le modèle ne l'a pas fournie (C11.1) :
+  //   1. date de livraison / remise / achat EXPLICITE lue sur le document ;
+  //   2. sinon date du document — ce justificatif est l'achat du bien.
   const date = analysis.document.documentDate;
-  if (!out.some((f) => f.canonicalKey === 'acquisitionDate' && surLeBien(f)) && date?.value && date.evidence?.excerpt?.trim()) {
-    const n = normalizeValue('acquisitionDate', date.value);
-    if (n.ok && typeof n.value === 'string') {
-      out.push(deRegle({ key: 'acquisitionDate', value: n.value, rawValue: date.value, rawKey: 'documentDate',
-        rule: PROJECTION_RULES.PURCHASE_RECEIPT_ACQUISITION_DATE, confidence: date.confidence, evidence: date.evidence }));
-      noteRule(PROJECTION_RULES.PURCHASE_RECEIPT_ACQUISITION_DATE);
-      warnings.push({ code: 'RULE_APPLIED', target: 'acquisitionDate', ruleCode: PROJECTION_RULES.PURCHASE_RECEIPT_ACQUISITION_DATE,
-        message: 'Justificatif d’achat du bien : date du document retenue comme date d’acquisition (T1-02).' });
+  if (!out.some((f) => f.canonicalKey === 'acquisitionDate' && surLeBien(f))) {
+    const explicites = out.filter((f) => f.canonicalKey === null && (surLeBien(f) || f.target.targetType === 'DOCUMENT')
+      && f.valueType === 'date' && typeof f.value === 'string' && f.evidence.excerpt?.trim()
+      && labelsExplicitAcquisitionDate(f.rawKey, f.label, f.attribute));
+    const isoDe = (f: ProjectedFact): string | null => {
+      const n = normalizeValue('acquisitionDate', f.value);
+      return n.ok && typeof n.value === 'string' ? n.value : null;
+    };
+    const distinctes = [...new Set(explicites.map(isoDe).filter((v): v is string => v !== null))];
+    if (distinctes.length === 1) {
+      const src = explicites.find((f) => isoDe(f) === distinctes[0])!;
+      out.push(deRegle({ key: 'acquisitionDate', value: distinctes[0], rawValue: typeof src.rawValue === 'string' || typeof src.rawValue === 'number' ? src.rawValue : distinctes[0],
+        rawKey: src.rawKey ?? 'dateLivraison', rule: PROJECTION_RULES.PURCHASE_DELIVERY_ACQUISITION_DATE, confidence: src.confidence, evidence: src.evidence }));
+      noteRule(PROJECTION_RULES.PURCHASE_DELIVERY_ACQUISITION_DATE);
+      warnings.push({ code: 'RULE_APPLIED', target: 'acquisitionDate', ruleCode: PROJECTION_RULES.PURCHASE_DELIVERY_ACQUISITION_DATE,
+        message: 'Justificatif d’achat du bien : date de livraison / remise / achat explicite retenue comme date d’acquisition (C11.1).' });
+    } else if (distinctes.length === 0 && date?.value && date.evidence?.excerpt?.trim()) {
+      const n = normalizeValue('acquisitionDate', date.value);
+      if (n.ok && typeof n.value === 'string') {
+        out.push(deRegle({ key: 'acquisitionDate', value: n.value, rawValue: date.value, rawKey: 'documentDate',
+          rule: PROJECTION_RULES.PURCHASE_RECEIPT_ACQUISITION_DATE, confidence: date.confidence, evidence: date.evidence }));
+        noteRule(PROJECTION_RULES.PURCHASE_RECEIPT_ACQUISITION_DATE);
+        warnings.push({ code: 'RULE_APPLIED', target: 'acquisitionDate', ruleCode: PROJECTION_RULES.PURCHASE_RECEIPT_ACQUISITION_DATE,
+          message: 'Justificatif d’achat du bien : date du document retenue comme date d’acquisition (T1-02).' });
+      }
     }
   }
 
@@ -690,7 +787,17 @@ function applyPurposeRules(
     const lignesDuBien = achats.filter((f) => surLeBien(f) && f.canonicalKey === null
       && (f.valueType === 'money_eur' || f.valueType === 'money_cents') && f.evidence.excerpt?.trim());
 
-    if (uneSeuleLigne && amount && amount.evidence?.excerpt?.trim() && Number.isInteger(amount.value) && amount.value >= 0) {
+    // O0 (lot 38, C12.3) : le montant n'entre dans un champ en euros que
+    // s'il est en EUR — devise écrite avec le montant, ou aucune autre devise
+    // dans le document. Jamais de conversion.
+    const devise = amount ? detectDocumentCurrency({ amountExcerpt: amount.evidence?.excerpt, transcription: analysis.transcription }) : null;
+    if (amount && devise && !isEurAmount(devise)) {
+      noteRule(PROJECTION_RULES.ACQUISITION_PRICE_CURRENCY_NOT_EUR);
+      warnings.push({ code: 'RULE_APPLIED', target: 'acquisitionPrice', ruleCode: PROJECTION_RULES.ACQUISITION_PRICE_CURRENCY_NOT_EUR,
+        message: devise.code
+          ? `Montant du justificatif en ${devise.code} : aucun prix d’acquisition en euros sans conversion fiable (C12.3).`
+          : 'Plusieurs devises sur le justificatif : montant non attribuable à un prix en euros (C12.3).' });
+    } else if (uneSeuleLigne && amount && amount.evidence?.excerpt?.trim() && Number.isInteger(amount.value) && amount.value >= 0) {
       const eur = centsToEur(amount.value);
       // Nombre de lignes NON établi : le prix est gardé, mais en `probable`
       // (proposition T3, jamais application automatique).

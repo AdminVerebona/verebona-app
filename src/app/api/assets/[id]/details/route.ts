@@ -36,6 +36,10 @@ function buildSections(family: string, kc: Record<string, unknown>, assetRow: Re
     estimatedValueDate: kc.estimatedValueDate ?? null,
     estimatedValueMode: kc.estimatedValueMode ?? null,
     notes: kc.notes ?? assetRow.notes ?? null,
+    // Lot 43 (O4, décision PO Q5) : vente réalisée — affichée seulement pour un
+    // bien VENDU (date et prix) ou TRANSMIS (date), modifiable dans la fiche.
+    saleDate: kc.saleDate ?? null,
+    salePrice: kc.salePrice ?? null,
     ...(family === 'VEHICULE' ? { vehicleOwnershipStatus: kc.vehicleOwnershipStatus ?? null } : {}),
   };
 

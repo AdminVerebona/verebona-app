@@ -13,7 +13,9 @@
  * de branche absente, emplacement `{{X}}` inconnu du code, donnée fournie
  * par le code sans emplacement, rendu impossible d'une branche.
  * Non bloquant : emplacement optionnel absent (la donnée n'est pas transmise,
- * la règle reste appliquée par le serveur).
+ * la règle reste appliquée par le serveur) ; branche optionnelle absente
+ * (lot 42, `OPTIONAL_MASTER_TASKS` : la fonction reste inactive, sans erreur
+ * — une version antérieure reste activable et réactivable).
  *
  * Fonctions pures (registre et texte seulement) : instantanées, testées sans
  * base. Messages en français, sans référence technique interne.
@@ -27,7 +29,7 @@
  * tests et du corpus, jamais d'une recherche de chaînes dans le texte.
  */
 import {
-  inspectMasterTemplate, isOptionalMasterVariable, masterBranchMarker, renderMasterPrompt, MasterPromptError,
+  inspectMasterTemplate, isOptionalMasterTask, isOptionalMasterVariable, masterBranchMarker, renderMasterPrompt, MasterPromptError,
 } from '../prompts/prompt-loader';
 import { declaredMasterVariables, masterPromptForTreatment } from '../config/prompt-architecture';
 import type { Treatment } from '../config/treatments';
@@ -54,6 +56,8 @@ export type MasterPromptIssueCode =
   | 'REQUIRED_PLACEHOLDER_MISSING'
   | 'RENDER_FAILED'
   | 'OPTIONAL_PLACEHOLDER_MISSING'
+  // Lot 42 — branche optionnelle absente (non bloquant).
+  | 'OPTIONAL_BRANCH_MISSING'
   // Lot 34D — mode contexte structuré (T4).
   | 'EXECUTION_MODE_UNSUPPORTED'
   | 'INPUT_CONTRACT_INVALID'
@@ -132,6 +136,14 @@ export function checkMasterPromptContent(
   // rétablir dans CE texte.
   const sections = /BRANCHE\s+(?:TASK|MODE)\s*=/.test(content);
   for (const t of master.tasks) {
+    if (!info.branches.includes(t) && isOptionalMasterTask(master.masterPromptCode, t)) {
+      warnings.push({
+        code: 'OPTIONAL_BRANCH_MISSING', blocking: false,
+        message: `La section « ${masterBranchMarker(t, cle)} » est absente : la fonction correspondante restera inactive (aucune erreur). `
+          + 'Pour l’activer, repartez du texte livré avec l’application puis activez la version.',
+      });
+      continue;
+    }
     if (!info.branches.includes(t)) {
       blocking.push(bloquant('BRANCH_SECTION_MISSING', sections
         ? `La section « ${masterBranchMarker(t, cle)} » est absente : les appels de cette branche échoueraient.`
@@ -164,7 +176,7 @@ export function checkMasterPromptContent(
   // seulement si rien n'a été détecté — sinon le message serait redondant.
   if (blocking.length === 0) {
     const variables = Object.fromEntries(declares.map((v) => [v, null]));
-    for (const task of master.tasks) {
+    for (const task of master.tasks.filter((t) => info.branches.includes(t) || !isOptionalMasterTask(master.masterPromptCode, t))) {
       try {
         renderMasterPrompt(content, { masterPromptCode: master.masterPromptCode, task, allowedTasks: master.tasks, variables });
       } catch (e) {

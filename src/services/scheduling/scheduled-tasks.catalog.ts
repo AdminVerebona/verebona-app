@@ -51,6 +51,18 @@
  *                                                                 clés d'idempotence Stripe
  *   auth-rate-limits-purge          chaque jour à 5 h 30          suppressions idempotentes
  *                                                                 (lot 37, limiteur d'authentification)
+ *   asset-account-backfill          au démarrage, puis /h tant    verrou de ligne du bien ; ne touche
+ *                                   qu'il reste des biens         que ce qui est resté dans l'ancien
+ *                                   déplacés incohérents          compte (lot 40, Duo)
+ *   operations-structured-migration au démarrage, puis toutes      verrou Opération du compte ; repère
+ *                                   les heures (rien à faire :     par bien × version (0322) — rejouée,
+ *                                   une seule requête)             aucune écriture (lot 43, C23.1)
+ *   operations-claim-migration      au démarrage, puis toutes      verrou Opération du compte ; repère
+ *                                   les heures (rien à faire :     par bien × version × empreinte
+ *                                   une seule requête)             (0323) — rejouée, aucune écriture
+ *                                                                  (lot 44, C14.3)
+ *   operations-quality-check        chaque jour à 6 h 50          lecture seule (READ ONLY) ; alerte de
+ *                                                                 Supervision par empreinte (lot 47A, C26.2)
  *
  * Créneaux fixes hors de la fenêtre de sauvegarde de nuit (1 h – 5 h) et de
  * la plage ambiguë des changements d'heure (2 h – 3 h).
@@ -482,6 +494,87 @@ export const SCHEDULED_TASKS: readonly ScheduledTaskDef[] = [
       const { purgeAuthRateLimits } = await import('@/lib/auth/auth-rate-limit');
       const n = await purgeAuthRateLimits();
       return { note: `${n} compteur(s) de tentatives supprimé(s)` };
+    },
+  },
+  {
+    // Lot 40 (volet B, décision PO) : biens déplacés entre comptes AVANT le
+    // correctif — documents et données restés dans l'ancien compte, remis
+    // avec leur bien (même règle qu'un déplacement Duo). Idempotent ; aussi
+    // pilotable depuis le BO (Exploitation › Rattrapages, simulation).
+    code: 'asset-account-backfill',
+    label: 'Duo : données des biens déplacés restées dans l’ancien compte',
+    schedule: { kind: 'startup', delayMs: 4 * MIN, retryMs: HOUR },
+    timeoutMs: 10 * MIN,
+    run: async ({ deadline }) => {
+      const { runAssetAccountBackfill } = await import('@/services/assets/asset-account-backfill');
+      const r = await runAssetAccountBackfill({ apply: true, deadline: Math.min(deadline, Date.now() + 8 * MIN) });
+      if (r.detected === 0) return { note: 'aucun bien déplacé incohérent' };
+      const note = `${r.processed} bien(s) remis en cohérence, ${r.failed.length} en échec${r.more ? ', reste à traiter' : ''}`;
+      return { note, again: r.more || r.failed.length > 0, ...(r.processed === 0 && r.failed.length > 0 ? { error: note } : {}) };
+    },
+  },
+  {
+    // Lot 43 (O4, CDC Opérations V1 C23.1, B24) : migration STRUCTURÉE de
+    // l'existant — achat, statut / vente, assurance de chaque bien réconciliés
+    // en Opérations (sources ASSET_DATA), sans réanalyser aucun document (P19).
+    // Idempotente (repère bien × version, 0322) ; reprend aussi un bien
+    // modifié dont l'événement `asset_updated` aurait été perdu. Toutes les
+    // heures dès le démarrage : sans bien à traiter, une seule requête.
+    // Aussi pilotable depuis le BO (Exploitation › Rattrapages, simulation).
+    code: 'operations-structured-migration',
+    label: 'Opérations : données structurées des biens (achat, vente, assurance)',
+    schedule: { kind: 'interval', everyMs: HOUR },
+    timeoutMs: 10 * MIN,
+    run: async ({ deadline }) => {
+      const { runStructuredOperationsMigration } = await import('@/services/business-operations/consolidation/asset-data-consolidator');
+      const r = await runStructuredOperationsMigration({ apply: true, deadline: Math.min(deadline, Date.now() + 8 * MIN) });
+      if (r.scanned === 0) return { note: 'aucun bien à examiner' };
+      const crees = Object.values(r.outcomes).reduce((n, o) => n + (o.CREATE_NEW ?? 0), 0);
+      const enrichies = Object.values(r.outcomes).reduce((n, o) => n + (o.MATCH_AND_ENRICH ?? 0), 0);
+      const note = `${r.processed} bien(s) examiné(s), ${crees} Opération(s) créée(s), ${enrichies} enrichie(s), `
+        + `${r.failed.length} en échec${r.more ? ', reste à traiter' : ''}`;
+      return { note, ...(r.processed === 0 && r.failed.length > 0 ? { error: note } : {}) };
+    },
+  },
+  {
+    // Lot 44 (O5, CDC Opérations V1 C14.3, décision PO Q11) : l'ancien
+    // formulaire Sinistre (`claim_json`, un sinistre par bien) devient une
+    // Opération CLAIM — seuil minimal (type, date, référence ou montant),
+    // « trouver avant de créer », élément d'agenda lié sans doublon, pièces et
+    // photos rattachées. Reprend aussi une écriture de l'ancien JSON par un
+    // ancien client (retour arrière) — report sur le sinistre reflété.
+    // Idempotente (repère bien × version × empreinte, 0323). Toutes les heures
+    // dès le démarrage : sans bien à traiter, une seule requête. Aussi
+    // pilotable depuis le BO (Exploitation › Rattrapages, simulation).
+    code: 'operations-claim-migration',
+    label: 'Sinistres : reprise de l’ancien formulaire',
+    schedule: { kind: 'interval', everyMs: HOUR },
+    timeoutMs: 10 * MIN,
+    run: async ({ deadline }) => {
+      const { runClaimMigration } = await import('@/services/business-operations/consolidation/claim-migration');
+      const r = await runClaimMigration({ apply: true, deadline: Math.min(deadline, Date.now() + 8 * MIN) });
+      if (r.scanned === 0) return { note: 'aucun bien à examiner' };
+      const note = `${r.processed} bien(s) examiné(s), ${r.outcomes.CREATED ?? 0} sinistre(s) créé(s), ${(r.outcomes.MATCHED ?? 0) + (r.outcomes.LINKED ?? 0)} rapproché(s), `
+        + `${r.outcomes.RESYNCED ?? 0} resynchronisé(s), ${(r.outcomes.BELOW_THRESHOLD ?? 0) + (r.outcomes.HOLD_AMBIGUOUS ?? 0)} sans création, `
+        + `${r.failed.length} en échec${r.more ? ', reste à traiter' : ''}`;
+      return { note, ...(r.processed === 0 && r.failed.length > 0 ? { error: note } : {}) };
+    },
+  },
+  {
+    // Lot 47A (O9, CDC Opérations V1 C26.2, ACC-022) : anomalies dures des
+    // Opérations (active sans source, composante sans source, lien inter-
+    // comptes, cycle / profondeur parent, montant négatif, OTHER en repli).
+    // Lecture seule ; chaque code non nul ouvre ou consolide une anomalie de
+    // Supervision, résolue d'elle-même à 0. Jamais de réparation (Q9).
+    code: 'operations-quality-check',
+    label: 'Opérations : contrôle des anomalies dures (alerte de Supervision)',
+    schedule: { kind: 'daily', at: [6, 50], graceMs: 6 * HOUR },
+    timeoutMs: 10 * MIN,
+    run: async () => {
+      const { runOperationsQualityCheck } = await import('@/services/business-operations/diagnostics/alerts');
+      const r = await runOperationsQualityCheck();
+      const total = Object.values(r.counts).reduce((a, b) => a + b, 0);
+      return { note: `${total} anomalie(s) dure(s) — ${JSON.stringify(r.counts)} ; ${r.reported} signalée(s), ${r.resolved} résolue(s)`.slice(0, 1500) };
     },
   },
 ];

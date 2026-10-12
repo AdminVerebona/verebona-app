@@ -89,6 +89,13 @@ const BUILDERS: Record<string, Builder> = {
         reasonCode: 'AMBIGUOUS_EVIDENCE', confidence: 'probable', evidenceIds: [], deterministic: true } as never,
     });
   },
+  async t3_operation_match(c) {
+    // Lot 42 : variables enregistrées par le constructeur de production (`operationMatchVariables`).
+    const x = ctx<{ operationMatch?: { subject?: unknown; candidates?: unknown[] } }>(c).operationMatch;
+    if (!x?.subject || !x.candidates?.length) return null;
+    const { operationMatchVariables } = await import('../../reconciliation/master/operation-match');
+    return operationMatchVariables(x.subject as never, x.candidates as never);
+  },
   async t3_link_ambiguity(c) {
     // Lot 31B — relation DOCUMENT_ASSET : même constructeur que la production.
     const da = ctx<{ documentAsset?: { subject: unknown; candidates: unknown[] } }>(c).documentAsset;

@@ -15,7 +15,9 @@
  * CONNU et accordé ; le serveur refuse de toute façon l'écriture (403).
  *
  * Sous-rubriques selon la famille (§4.2) : commerciales, locatives
- * (immobilier seulement), assurance, sinistre, valeur et charges. Chaque
+ * (immobilier seulement), assurance, valeur et charges. Lot 44 (O5) : le
+ * Sinistre a quitté ce tiroir — rubrique « Sinistres » de la fiche, ouverte
+ * à toutes les offres (Opération CLAIM, plusieurs sinistres par bien). Chaque
  * saisie est enregistrée automatiquement (700 ms après la dernière frappe,
  * `additional-infos-autosave`) avec un indicateur discret : « Enregistrement… »,
  * « Enregistré », « Échec de l'enregistrement ».
@@ -34,12 +36,8 @@
  * (IC-GEN-003), il n'existe pas de copie temporaire (IC-GEN-009).
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ChevronDown, ChevronUp, Check, Loader2, AlertCircle, RefreshCw, Plus, Sparkles, Info } from 'lucide-react';
-import { Input } from '@/components/ui/input';
-import { Textarea } from '@/components/ui/textarea';
-import { Label } from '@/components/ui/label';
+import { ChevronDown, ChevronUp, AlertCircle, Plus, Sparkles, Info } from 'lucide-react';
 import { Skeleton } from '@/components/ui/skeleton';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { apiClient } from '@/lib/api-client';
 import {
   ADDITIONAL_INFO_FIELDS, ADDITIONAL_INFO_SECTION_DESCRIPTIONS, ADDITIONAL_INFO_SECTION_LABELS, fieldsFor, findField, interpretFieldInput,
@@ -57,6 +55,7 @@ import {
   canCreateDossiers, decideDossierDrawerClick, DOSSIER_PREPARATION_INTRO, DOSSIER_PREPARATION_PREMIUM_MESSAGE, DOSSIER_PREPARATION_TITLE,
 } from '@/lib/entitlements/dossier-rights';
 import { AdditionalInfosListField } from './additional-infos/AdditionalInfosListField';
+import { AdditionalInfoFieldInput, SaveIndicator } from './additional-infos/AdditionalInfoFieldInput';
 
 interface AdditionalInfosResponse extends AdditionalInfosData {
   assetId: number;
@@ -66,7 +65,6 @@ interface AdditionalInfosResponse extends AdditionalInfosData {
   references?: AdditionalInfoReferencesDto;
 }
 
-const frDate = (d: string | null) => (d ? d.slice(0, 10).split('-').reverse().join('/') : '');
 /** Champs saisis ligne à ligne (listes) ou par sélecteur dédié, hors de la grille des champs simples. */
 const isGridField = (def: AdditionalInfoFieldDef) => def.type !== 'list' && def.type !== 'eventRef';
 
@@ -94,35 +92,6 @@ interface Props {
   onSectionsSaved?: (sections: AdditionalInfoSectionKey[]) => void;
 }
 
-const NONE = '__none__';
-
-function SaveIndicator({ state, onRetry }: { state: AutosaveState; onRetry: () => void }) {
-  if (state === 'saving' || state === 'pending') {
-    return (
-      <span className="inline-flex items-center gap-1 text-[11px] text-muted-foreground" aria-live="polite">
-        <Loader2 className="w-3 h-3 animate-spin" />Enregistrement…
-      </span>
-    );
-  }
-  if (state === 'saved') {
-    return (
-      <span className="inline-flex items-center gap-1 text-[11px] text-emerald-400" aria-live="polite">
-        <Check className="w-3 h-3" />Enregistré
-      </span>
-    );
-  }
-  if (state === 'error') {
-    return (
-      <span className="inline-flex items-center gap-1.5 text-[11px] text-red-400" aria-live="assertive">
-        <AlertCircle className="w-3 h-3" />Échec de l&apos;enregistrement
-        <button type="button" onClick={onRetry} className="inline-flex items-center gap-0.5 underline underline-offset-2 hover:text-foreground">
-          <RefreshCw className="w-3 h-3" />Réessayer
-        </button>
-      </span>
-    );
-  }
-  return null;
-}
 
 export function AssetAdditionalInfosSection({
   assetId, category, readOnly: readOnlyProp = false, sections, variant = 'card', defaultOpen = false, onSaveStateChange, onSectionsSaved,
@@ -135,8 +104,10 @@ export function AssetAdditionalInfosSection({
   // Écriture seulement si le droit est connu ET accordé (aucun champ
   // brièvement modifiable pendant le chargement des droits).
   const readOnly = readOnlyProp || droitDossiers !== true;
+  // Lot 44 (O5) : le Sinistre est saisi dans sa propre rubrique de la fiche
+  // (`claims/AssetClaimsSection`, toutes offres) — plus jamais ici.
   const visible = useMemo(() => {
-    const bySection = sectionsForCategory(category);
+    const bySection = sectionsForCategory(category).filter((s) => s !== 'claim');
     return sections ? bySection.filter((s) => sections.includes(s)) : bySection;
   }, [category, sections]);
 
@@ -361,14 +332,6 @@ export function AssetAdditionalInfosSection({
     queue.set(section, def.key, state.payload.length ? state.payload : null);
   }, []);
 
-  /** Lien vers le sinistre de l'agenda : sa date devient la date du sinistre si elle n'est pas saisie. */
-  const onClaimEventChange = useCallback((def: AdditionalInfoFieldDef, key: string) => {
-    onChange('claim', def, key);
-    const ev = references?.claimEvents.find((e) => e.key === key);
-    const dateDef = findField('claim', 'occurredOn');
-    if (ev?.date && dateDef && !(inputs['claim.occurredOn'] ?? '').trim()) onChange('claim', dateDef, ev.date.slice(0, 10));
-  }, [onChange, references, inputs]);
-
   /** Refus commun (fenêtre partagée, garde d'abord l'état du compte). */
   const refuser = useCallback(() => {
     garder(() => signalerRefus({ code: 'PREMIUM_REQUIRED', message: DOSSIER_PREPARATION_PREMIUM_MESSAGE }));
@@ -407,40 +370,6 @@ export function AssetAdditionalInfosSection({
 
   const filled = Object.values(inputs).filter((v) => v.trim() !== '').length
     + Object.values(lists).filter((l) => l.length > 0).length;
-
-  const renderClaimEvent = (def: AdditionalInfoFieldDef) => {
-    const path = `claim.${def.key}`;
-    const inputId = `ai-${assetId}-claim-${def.key}`;
-    const value = inputs[path] ?? '';
-    const events = references?.claimEvents ?? [];
-    const known = !value || events.some((e) => e.key === value);
-    return (
-      <div key={path} className="space-y-1.5">
-        <Label htmlFor={inputId} className="text-xs text-muted-foreground font-medium">
-          {def.label}<span className="ml-1.5 text-[10px] font-semibold text-primary/80">Recommandé</span>
-        </Label>
-        <Select value={value || NONE} disabled={readOnly || !references} onValueChange={(v) => onClaimEventChange(def, v === NONE ? '' : v)}>
-          <SelectTrigger id={inputId} className="w-full text-sm" aria-invalid={!!errors[path]}>
-            <SelectValue placeholder={references ? 'Aucun (saisie temporaire)' : 'Chargement…'} />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value={NONE}>Aucun (saisie temporaire)</SelectItem>
-            {!known && <SelectItem value={value}>Événement supprimé ou annulé</SelectItem>}
-            {events.map((e) => (
-              <SelectItem key={e.key} value={e.key}>{[frDate(e.date), e.title].filter(Boolean).join(' · ')}</SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-        {errors[path] ? <p className="text-[11px] text-red-400">{errors[path]}</p> : (
-          <p className="text-[11px] text-muted-foreground/80 leading-snug">
-            {references && events.length === 0
-              ? "Aucun sinistre dans l'agenda de ce bien : les champs ci-dessous servent de saisie temporaire pour le dossier."
-              : def.help}
-          </p>
-        )}
-      </div>
-    );
-  };
 
   const renderHighlightSuggestions = (section: AdditionalInfoSectionKey, def: AdditionalInfoFieldDef) => {
     const items = lists[`${section}.${def.key}`] ?? [];
@@ -504,70 +433,21 @@ export function AssetAdditionalInfosSection({
             </legend>
             <p className="text-xs text-muted-foreground/80 mt-0.5">{ADDITIONAL_INFO_SECTION_DESCRIPTIONS[section]}</p>
           </div>
-          {fieldsFor(section, family).filter((d) => d.type === 'eventRef').map((def) => renderClaimEvent(def))}
           <div className={`grid grid-cols-1 gap-4 ${variant === 'embedded' ? '' : 'sm:grid-cols-2 lg:grid-cols-3'}`}>
             {fieldsFor(section, family).filter(isGridField).map((def) => {
               const path = `${section}.${def.key}`;
-              const inputId = `ai-${assetId}-${section}-${def.key}`;
-              const error = errors[path];
-              const value = inputs[path] ?? '';
-              const wide = def.type === 'textarea';
               return (
-                <div key={path} className={`space-y-1.5 ${wide && variant !== 'embedded' ? 'sm:col-span-2 lg:col-span-3' : ''}`}>
-                  <Label htmlFor={inputId} className="text-xs text-muted-foreground font-medium">
-                    {def.label}
-                    {def.recommended && <span className="ml-1.5 text-[10px] font-semibold text-primary/80">Recommandé</span>}
-                  </Label>
-                  {def.type === 'textarea' ? (
-                    <Textarea
-                      id={inputId}
-                      value={value}
-                      placeholder={def.placeholder}
-                      rows={3}
-                      aria-invalid={!!error}
-                      readOnly={readOnly}
-                      onChange={(e) => onChange(section, def, e.target.value)}
-                      className="text-sm"
-                    />
-                  ) : def.type === 'enum' ? (
-                    <Select
-                      value={value || NONE}
-                      disabled={readOnly}
-                      onValueChange={(v) => onChange(section, def, v === NONE ? '' : v)}
-                    >
-                      <SelectTrigger id={inputId} className="w-full text-sm" aria-invalid={!!error}>
-                        <SelectValue placeholder="Non renseigné" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value={NONE}>Non renseigné</SelectItem>
-                        {(def.options ?? []).map((o) => <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>)}
-                      </SelectContent>
-                    </Select>
-                  ) : (
-                    <div className="relative">
-                      <Input
-                        id={inputId}
-                        type={def.type === 'date' ? 'date' : 'text'}
-                        inputMode={def.type === 'money' || def.type === 'decimal' ? 'decimal' : def.type === 'year' ? 'numeric' : undefined}
-                        value={value}
-                        placeholder={def.placeholder ?? (def.type === 'money' ? '0' : undefined)}
-                        aria-invalid={!!error}
-                        readOnly={readOnly}
-                        onChange={(e) => onChange(section, def, e.target.value)}
-                        onBlur={() => onBlur(section, def)}
-                        className={def.type === 'money' ? 'pr-8' : undefined}
-                      />
-                      {def.type === 'money' && (
-                        <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-xs text-muted-foreground">€</span>
-                      )}
-                    </div>
-                  )}
-                  {error ? (
-                    <p className="text-[11px] text-red-400">{error}</p>
-                  ) : def.help ? (
-                    <p className="text-[11px] text-muted-foreground/80 leading-snug">{def.help}</p>
-                  ) : null}
-                </div>
+                <AdditionalInfoFieldInput
+                  key={path}
+                  def={def}
+                  inputId={`ai-${assetId}-${section}-${def.key}`}
+                  value={inputs[path] ?? ''}
+                  error={errors[path]}
+                  readOnly={readOnly}
+                  wide={variant !== 'embedded'}
+                  onChange={(raw) => onChange(section, def, raw)}
+                  onBlur={() => onBlur(section, def)}
+                />
               );
             })}
           </div>

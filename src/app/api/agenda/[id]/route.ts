@@ -88,7 +88,8 @@ export async function DELETE(req: NextRequest, context: RouteContext) {
     const id = parseInt(rawId, 10);
     if (isNaN(id)) return NextResponse.json({ error: 'Invalid id' }, { status: 400 });
 
-    await deleteAgendaItem(id, accountId);
+    // Lot 46 (O7) : l'auteur est mémorisé avec la suppression d'un événement projeté (F-146).
+    await deleteAgendaItem(id, accountId, session.userId ?? null);
     // CDC Assistant §25.7 : événement métier (caches de l'assistant, §31.4).
     await emitBusinessEvent({ type: 'AGENDA_ITEM_DELETED', accountId, entityId: id });
     return NextResponse.json({ success: true });

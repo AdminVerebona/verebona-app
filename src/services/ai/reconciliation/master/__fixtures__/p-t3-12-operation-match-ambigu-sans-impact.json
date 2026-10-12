@@ -1,0 +1,105 @@
+{
+  "case": "P-T3-12",
+  "description": "OPERATION_MATCH — AMBIGUOUS pour une source sans montant, sans bien ni changement de statut : attente silencieuse, aucune question (C5).",
+  "context": {
+    "operationMatch": {
+      "subject": {
+        "document": {
+          "title": "Facture Garage Martin",
+          "documentType": "INVOICE",
+          "documentDate": "2026-06-05"
+        },
+        "candidate": {
+          "type": "INTERVENTION",
+          "status": "REALIZED",
+          "sourceRole": "INVOICE",
+          "summary": "Remplacement des plaquettes de frein avant",
+          "provider": "Garage Martin",
+          "assets": [
+            "Clio"
+          ],
+          "references": [
+            "INVOICE:FA-0612"
+          ],
+          "dates": {
+            "realizedDate": "2026-06-05"
+          },
+          "amounts": [
+            "REALIZED_COST/TOTAL 249.00 EUR"
+          ]
+        }
+      },
+      "candidates": [
+        {
+          "candidateId": 15,
+          "type": "INTERVENTION",
+          "status": "REALIZED",
+          "provider": "Garage Martin",
+          "dates": {
+            "realizedDate": "2026-04-10"
+          },
+          "assets": [
+            "Clio"
+          ],
+          "references": [
+            "INVOICE:FA-0410"
+          ],
+          "amounts": [
+            "REALIZED_COST 89.00 EUR"
+          ],
+          "documents": [
+            {
+              "title": "Facture vidange",
+              "role": "INVOICE",
+              "summary": "Vidange et filtre à huile"
+            }
+          ]
+        }
+      ],
+      "candidate": {
+        "confidence": "certain",
+        "type": "INTERVENTION",
+        "status": "REALIZED",
+        "role": "REPORT",
+        "assetIds": [],
+        "hints": []
+      },
+      "operations": [
+        {
+          "id": 15,
+          "typeCode": "INTERVENTION",
+          "status": "REALIZED",
+          "assetIds": [
+            1
+          ]
+        }
+      ],
+      "plausible": [
+        15
+      ]
+    }
+  },
+  "recording": {
+    "operationCode": "t3_operation_match",
+    "task": "OPERATION_MATCH",
+    "output": {
+      "task": "OPERATION_MATCH",
+      "decision": "AMBIGUOUS",
+      "matchedCandidateId": null,
+      "confidence": "conflictual",
+      "concordantSignals": [
+        "même garage"
+      ],
+      "contradictions": [],
+      "reason": "Éléments insuffisants pour départager."
+    }
+  },
+  "expected": {
+    "outcome": "HOLD_UNRESOLVED",
+    "neverOutcomes": [
+      "MATCH_AND_ENRICH",
+      "CREATE_NEW",
+      "ARBITRATION_REQUIRED"
+    ]
+  }
+}

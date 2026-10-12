@@ -8,6 +8,9 @@
  *   document-asset-links  backfillDocumentAssetLinks (lot 500, pause 50 ms)
  *   agenda                backfillAgendaSourceLinks (lot 500) / dedupeAutomaticAgendaItems
  *   cdc15                 runCdc15Backfill(--step all, lot 200, pause 50 ms) / restoreCdc15Run / summarizeRun
+ *   asset-account         runAssetAccountBackfill (lot 500 ; simulation = transactions annulées)
+ *   operations-structured runStructuredOperationsMigration (lot 43 ; simulation = transactions annulées)
+ *   operations-claims     runClaimMigration (lot 44 ; simulation = transactions annulées)
  *
  * Services chargés à la demande : la route reste légère.
  */
@@ -88,6 +91,45 @@ export async function executeBackfill(sql: postgres.Sql, req: BackfillRequest, h
       });
       const s = await c.summarizeRun(sql, r.runId, { samples: SCRIPT_SAMPLES }).catch(() => null);
       return { result: r, scriptSummary: s ?? undefined, scriptText: s ? c.formatRunSummary(s) : undefined };
+    }
+    case 'asset-account': {
+      // Lot 40 : même service que la tâche planifiée (client applicatif, une
+      // transaction par bien ; simulation = transaction annulée).
+      const { runAssetAccountBackfill } = await import('@/services/assets/asset-account-backfill');
+      const r = await runAssetAccountBackfill({
+        apply: req.action === 'apply', batchSize: 500,
+        onProgress: ({ processed, detected, assetId }) => {
+          hooks.progress({ processed, detected });
+          hooks.log(`bien ${assetId} : ${processed}/${detected}`);
+        },
+      });
+      return { result: r };
+    }
+    case 'operations-structured': {
+      // Lot 43 : même service que la tâche planifiée (une transaction par bien,
+      // verrou Opération du compte ; simulation = transaction annulée).
+      const { runStructuredOperationsMigration } = await import('@/services/business-operations/consolidation/asset-data-consolidator');
+      const r = await runStructuredOperationsMigration({
+        apply: req.action === 'apply', accountId: req.accountId, batchSize: 200, maxAssets: 5_000,
+        onProgress: ({ processed, assetId }) => {
+          hooks.progress({ processed });
+          if (processed % 50 === 0) hooks.log(`bien ${assetId} : ${processed} examiné(s)`);
+        },
+      });
+      return { result: r };
+    }
+    case 'operations-claims': {
+      // Lot 44 : même service que la tâche planifiée (une transaction par bien,
+      // verrou Opération du compte ; simulation = transaction annulée).
+      const { runClaimMigration } = await import('@/services/business-operations/consolidation/claim-migration');
+      const r = await runClaimMigration({
+        apply: req.action === 'apply', accountId: req.accountId, batchSize: 200, maxAssets: 5_000,
+        onProgress: ({ processed, assetId }) => {
+          hooks.progress({ processed });
+          if (processed % 50 === 0) hooks.log(`bien ${assetId} : ${processed} examiné(s)`);
+        },
+      });
+      return { result: r };
     }
   }
 }

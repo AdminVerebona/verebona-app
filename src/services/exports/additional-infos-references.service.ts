@@ -90,7 +90,9 @@ export function collectReferences(patch: NormalizedPatch): CitedRefs {
  * Chemins des références qui n'appartiennent pas au bien (ou au compte).
  * Tableau vide : tout est cité à bon droit.
  */
-export async function findInvalidReferences(assetId: number, accountId: number, patch: NormalizedPatch): Promise<PatchValidationIssue[]> {
+export async function findInvalidReferences(asset: number | readonly number[], accountId: number, patch: NormalizedPatch): Promise<PatchValidationIssue[]> {
+  // Lot 44 : un sinistre multi-biens cite les pièces et photos de N'IMPORTE lequel de ses biens.
+  const assetIds = [...(typeof asset === 'number' ? [asset] : asset)];
   const refs = collectReferences(patch);
   const issues: PatchValidationIssue[] = [];
   const docIds = [...refs.documents.keys()];
@@ -107,22 +109,22 @@ export async function findInvalidReferences(assetId: number, accountId: number, 
         // Pièce du bien : directe, d'une pièce (sous-structure) ou d'un équipement du bien.
         or(
           // Lot 32C (PO 9) : document lié au bien (colonnes, liens PRIMARY / SECONDARY).
-          documentInAssetsCondition([assetId]),
-          inArray(assetFiles.substructureId, db.select({ id: substructures.id }).from(substructures).where(eq(substructures.assetId, assetId))),
-          inArray(assetFiles.equipmentId, db.select({ id: equipments.id }).from(equipments).where(eq(equipments.assetId, assetId))),
+          documentInAssetsCondition(assetIds),
+          inArray(assetFiles.substructureId, db.select({ id: substructures.id }).from(substructures).where(inArray(substructures.assetId, assetIds))),
+          inArray(assetFiles.equipmentId, db.select({ id: equipments.id }).from(equipments).where(inArray(equipments.assetId, assetIds))),
         ),
       ))
       : Promise.resolve([] as Array<{ id: number }>),
     photoIds.length
-      ? db.select({ id: assetPhotos.id }).from(assetPhotos).where(and(inArray(assetPhotos.id, photoIds), eq(assetPhotos.assetId, assetId)))
+      ? db.select({ id: assetPhotos.id }).from(assetPhotos).where(and(inArray(assetPhotos.id, photoIds), inArray(assetPhotos.assetId, assetIds)))
       : Promise.resolve([] as Array<{ id: number }>),
     agendaIds.length
       ? db.select({ id: agendaItems.id }).from(agendaItems)
         .innerJoin(agendaAssetLinks, eq(agendaAssetLinks.agendaItemId, agendaItems.id))
-        .where(and(inArray(agendaItems.id, agendaIds), eq(agendaItems.accountId, accountId), eq(agendaAssetLinks.assetId, assetId)))
+        .where(and(inArray(agendaItems.id, agendaIds), eq(agendaItems.accountId, accountId), inArray(agendaAssetLinks.assetId, assetIds)))
       : Promise.resolve([] as Array<{ id: number }>),
     eventIds.length
-      ? db.select({ id: events.id }).from(events).where(and(inArray(events.id, eventIds), eq(events.accountId, accountId), eq(events.assetId, assetId)))
+      ? db.select({ id: events.id }).from(events).where(and(inArray(events.id, eventIds), eq(events.accountId, accountId), inArray(events.assetId, assetIds)))
       : Promise.resolve([] as Array<{ id: number }>),
   ]);
 

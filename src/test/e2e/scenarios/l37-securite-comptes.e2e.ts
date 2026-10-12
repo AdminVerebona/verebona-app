@@ -107,6 +107,34 @@ scenario('L37', 'Sécurité des comptes — C1 à C5', ({ sql, make }) => {
     await connexion(u.email);
   });
 
+  it('L38-B-E2E-01 incident de réutilisation : un e-mail de sécurité (gabarit 0314, après la réponse), un seul par heure, sans IP', async () => {
+    const u = await compte();
+    const { POST: refreshRoute } = await import('@/app/api/auth/refresh/route');
+    const { hashToken } = await import('@/db');
+    const { settleDetachedAuthTasks } = await import('@/lib/auth/anti-enumeration');
+    const [gabarit] = await sql<{ subject: string }[]>`SELECT subject FROM email_templates WHERE type = 'SECURITY_SESSIONS_REVOKED'`;
+    expect(gabarit.subject).toMatch(/déconnectés par précaution/);
+
+    async function incident(ip: string) {
+      const s = await connexion(u.email);
+      expect((await refreshRoute(post('/api/auth/refresh', { cookie: `refresh_token=${s.refresh}` }))).status).toBe(200);
+      await sql`UPDATE revoked_tokens SET revoked_at = now() - interval '2 minutes' WHERE token_hash = ${await hashToken(s.refresh)}`;
+      const rejeu = await refreshRoute(post('/api/auth/refresh', { cookie: `refresh_token=${s.refresh}`, ip }));
+      expect(rejeu.status).toBe(401);
+      await settleDetachedAuthTasks();
+    }
+    await incident('81.200.10.42');
+    await incident('81.200.10.43');
+    const mails = await sql<{ recipient_email: string; metadata: string | null }[]>`
+      SELECT recipient_email, metadata FROM email_logs WHERE template_code = 'SECURITY_SESSIONS_REVOKED' AND recipient_user_id = ${u.id}`;
+    expect(mails).toHaveLength(1);
+    expect(mails[0].recipient_email).toBe(u.email);
+    const variables = JSON.parse(mails[0].metadata ?? '{}');
+    expect(Object.keys(variables).sort()).toEqual(['firstName', 'forgotPasswordUrl', 'incidentDate', 'loginUrl']);
+    expect(mails[0].metadata).not.toContain('81.200.10');
+    expect(variables.forgotPasswordUrl).toMatch(/\/forgot-password$/);
+  });
+
   it('C2-E2E-03 jeton d’une session déconnectée : refus simple, aucune révocation globale', async () => {
     const u = await compte();
     const s = await connexion(u.email);

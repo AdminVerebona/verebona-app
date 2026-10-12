@@ -123,8 +123,10 @@ export const T1_MASTER_VARIABLES = [
 /** Prompt maître T3 (CDC 15 §25, §29.1) — même valeur que `T3_MASTER_PROMPT_CODE`. */
 const T3_MASTER = 't3_master_v1';
 /**
- * Emplacements du master T3 (hors TASK). Un seul texte pour les deux
- * branches : chaque appel les fournit TOUS (`null` pour ceux de l'autre
+ * Emplacements du master T3 (hors TASK). Un seul texte pour les trois
+ * branches (OPERATION_MATCH, lot 42, réutilise SUBJECT_CONTEXT, CANDIDATES et
+ * RELATION_TYPE : aucun nouvel emplacement, une version BO antérieure reste
+ * valide pour les deux autres branches) : chaque appel les fournit TOUS (`null` pour ceux de l'autre
  * branche). Contrôlé contre le fichier par `prompts:check`.
  */
 export const T3_MASTER_VARIABLES = [
@@ -302,6 +304,24 @@ export const AI_OPERATIONS: Record<string, AiOperationDefinition> = {
     promptCode: T3_MASTER, masterPromptCode: T3_MASTER, task: 'LINK_AMBIGUITY', promptVariables: T3_MASTER_VARIABLES,
     timeoutMs: 30_000, jsonResponse: true,
     outputSchema: 'T3LinkAmbiguityOutput', active: true, billable: false,
+  },
+  // Lot 42 (CDC Opérations V1 C6.1 niveau M3, C6.2) : rapprochement
+  // sémantique d'une source avec un jeu FERMÉ d'Opérations candidates.
+  // Appelée UNIQUEMENT pour les candidats T1 en attente « M3_REQUIRED »
+  // (consolidation T3 des Opérations), une fois par empreinte de contexte,
+  // sous plafond par passage et par compte (`consolidation/m3.ts`). Mêmes
+  // modèles que les autres branches T3 ; non facturée au quota client
+  // (traitement de fond, comme `t3_link_ambiguity`). Sans la section
+  // « BRANCHE TASK = OPERATION_MATCH » dans la version ACTIVE du prompt maître
+  // T3, l'appel est refusé avant tout contact fournisseur et les cas restent
+  // en attente (aucun crash).
+  t3_operation_match: {
+    operationCode: 't3_operation_match', useCaseCode: 'DATA_RECONCILIATION',
+    label: 'T3 master — rapprochement sémantique d’une source et des Opérations candidates (TASK=OPERATION_MATCH)',
+    provider: GEMINI, primaryModel: DOC_PRIMARY, fallbackModels: DOC_FALLBACKS,
+    promptCode: T3_MASTER, masterPromptCode: T3_MASTER, task: 'OPERATION_MATCH', promptVariables: T3_MASTER_VARIABLES,
+    timeoutMs: 30_000, jsonResponse: true,
+    outputSchema: 'T3OperationMatchOutput', active: true, billable: false,
   },
 
   // ── Usage 3 — Assistant (CDC §4.3.4) ──────────────────────────────────────

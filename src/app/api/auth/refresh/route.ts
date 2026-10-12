@@ -14,6 +14,7 @@ import { resolveSessionAccount, accountSuspendedResponse } from '@/lib/auth/acco
 import { serverCacheDelete } from '@/lib/server-cache';
 import { sessionCutoffCacheKey } from '@/lib/auth/session-cutoff';
 import { classifyRefreshReplay, REFRESH_REUSE_GRACE_MS } from '@/lib/auth/refresh-replay';
+import { scheduleSessionsRevokedEmail } from '@/services/auth/sessions-revoked-email.service';
 
 const REFRESH_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
@@ -40,6 +41,11 @@ const REFRESH_TTL_MS = 30 * 24 * 60 * 60 * 1000;
  *     journal AUTH_TOKEN_REUSE_DETECTED ;
  *   · jeton révoqué par une DÉCONNEXION (aucun successeur) ou révoqué avant
  *     le lot 37 (motif inconnu) : refus et journal, sans révocation globale.
+ *
+ * LOT 38 (volet B, décision PO) : après la révocation globale, e-mail de
+ * sécurité « appareils déconnectés par précaution » envoyé APRÈS la réponse,
+ * au plus un par utilisateur et par heure, sans donnée sensible
+ * (`services/auth/sessions-revoked-email.service.ts`).
  * ══════════════════════════════════════════════════════════════════════════
  */
 export async function POST(request: NextRequest) {
@@ -253,6 +259,10 @@ async function handleReplay(
       },
       request,
     });
+    // Lot 38 (volet B) : prévenir l'utilisateur — après la réponse, au plus
+    // un e-mail par heure. Seulement si ses sessions ont bien été révoquées
+    // (l'e-mail l'affirme).
+    if (revokedAll) scheduleSessionsRevokedEmail(payload.userId);
     const refus = apiError(401, 'SESSION_REVOKED', 'Session revoked, please log in again');
     clearSessionCookies(refus);
     return refus;

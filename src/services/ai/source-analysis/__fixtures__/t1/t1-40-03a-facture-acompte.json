@@ -1,0 +1,232 @@
+{
+  "case": "F-093 (acompte)",
+  "description": "Facture d'acompte de 3 000 € : rôle DEPOSIT_INVOICE, montant de portée DEPOSIT (posée par le serveur) — jamais un coût total.",
+  "context": {
+    "linkedAssetId": 20,
+    "assets": [
+      {
+        "id": 20,
+        "name": "Maison de Lyon",
+        "category": "IMMOBILIER",
+        "subtype": "maison"
+      }
+    ],
+    "rooms": [],
+    "equipments": [],
+    "existingTitles": [],
+    "verified": {
+      "ASSET": [
+        20
+      ],
+      "EQUIPMENT": [],
+      "ROOM": [],
+      "SUPPLIER": []
+    }
+  },
+  "recording": {
+    "operationCode": "t1_analyze_document",
+    "task": "ANALYZE_DOCUMENT",
+    "output": {
+      "task": "ANALYZE_DOCUMENT",
+      "document": {
+        "title": {
+          "value": "Facture d'acompte Toiture maison de Lyon",
+          "confidence": "certain",
+          "evidence": {
+            "excerpt": "Facture d'acompte Toiture maison de Lyon",
+            "page": 1
+          }
+        },
+        "classification": {
+          "canonicalType": "FACTURE",
+          "rubricCode": "MAINTENANCE_WORKS",
+          "documentTypeCode": "WORKS_INVOICE",
+          "confidence": 0.92,
+          "evidence": {
+            "excerpt": "Facture d'acompte Toiture maison de Lyon"
+          }
+        },
+        "documentDate": {
+          "value": "2026-04-02",
+          "confidence": "certain",
+          "evidence": {
+            "excerpt": "Date : 02/04/2026",
+            "page": 1
+          }
+        },
+        "amountCents": {
+          "value": 300000,
+          "confidence": "certain",
+          "evidence": {
+            "excerpt": "Montant de l'acompte : 3 000,00 €",
+            "page": 1
+          }
+        },
+        "supplier": {
+          "name": "Toitures du Rhône",
+          "confidence": "certain",
+          "evidence": {
+            "excerpt": "TOITURES DU RHÔNE",
+            "page": 1
+          }
+        }
+      },
+      "entities": {
+        "assets": [
+          {
+            "entityId": 20,
+            "rawLabel": "Maison de Lyon",
+            "score": 0.95,
+            "confidence": "certain",
+            "evidenceSignals": [
+              "Maison de Lyon"
+            ],
+            "reason": "désignation lue"
+          }
+        ],
+        "rooms": [],
+        "equipments": [],
+        "suppliers": [],
+        "multiAsset": false
+      },
+      "transcription": "TOITURES DU RHÔNE\nFacture d'acompte n° AC-102\nAcompte 25 % — réfection de la toiture\nMontant de l'acompte : 3 000,00 €",
+      "facts": [
+        {
+          "canonicalKey": null,
+          "rawKey": "objet",
+          "label": "Objet",
+          "subject": "Maison de Lyon",
+          "attribute": "objet",
+          "rawValue": "Acompte travaux de toiture",
+          "normalizedValue": "Acompte travaux de toiture",
+          "valueType": "string",
+          "canonicalUnit": null,
+          "target": {
+            "type": "ASSET",
+            "entityId": 20,
+            "rawLabel": "Maison de Lyon",
+            "confidence": "certain",
+            "evidenceSignals": [
+              "Maison de Lyon"
+            ]
+          },
+          "provenance": "TEXT_EXTRACTION",
+          "confidence": "certain",
+          "evidence": {
+            "excerpt": "Acompte 25 % — réfection de la toiture",
+            "page": 1
+          }
+        },
+        {
+          "canonicalKey": null,
+          "rawKey": "montantAcompte",
+          "label": "Acompte",
+          "subject": "Maison de Lyon",
+          "attribute": "acompte",
+          "rawValue": "3 000,00 €",
+          "normalizedValue": 300000,
+          "valueType": "money_cents",
+          "canonicalUnit": "cents",
+          "target": {
+            "type": "ASSET",
+            "entityId": 20,
+            "rawLabel": "Maison de Lyon",
+            "confidence": "certain",
+            "evidenceSignals": [
+              "Maison de Lyon"
+            ]
+          },
+          "provenance": "TEXT_EXTRACTION",
+          "confidence": "certain",
+          "evidence": {
+            "excerpt": "Montant de l'acompte : 3 000,00 €",
+            "page": 1
+          }
+        },
+        {
+          "canonicalKey": null,
+          "rawKey": "numeroFacture",
+          "label": "N° de facture",
+          "subject": "Maison de Lyon",
+          "attribute": "n° de facture",
+          "rawValue": "AC-102",
+          "normalizedValue": "AC-102",
+          "valueType": "string",
+          "canonicalUnit": null,
+          "target": {
+            "type": "ASSET",
+            "entityId": 20,
+            "rawLabel": "Maison de Lyon",
+            "confidence": "certain",
+            "evidenceSignals": [
+              "Maison de Lyon"
+            ]
+          },
+          "provenance": "TEXT_EXTRACTION",
+          "confidence": "certain",
+          "evidence": {
+            "excerpt": "Facture d'acompte n° AC-102",
+            "page": 1
+          }
+        }
+      ],
+      "hasExploitableContent": true,
+      "businessOperationCandidates": [
+        {
+          "candidateKey": "op1",
+          "established": true,
+          "confidence": "certain",
+          "typeHint": "INTERVENTION",
+          "statusHint": "ENVISAGED",
+          "summary": "Réfection de la toiture de la maison de Lyon — acompte",
+          "sourceRoleHint": "DEPOSIT_INVOICE",
+          "provider": "Toitures du Rhône",
+          "targetHints": [
+            {
+              "type": "ASSET",
+              "entityId": 20,
+              "rawLabel": "Maison de Lyon",
+              "confidence": "certain"
+            }
+          ],
+          "businessReferences": [
+            {
+              "kind": "INVOICE",
+              "value": "AC-102"
+            }
+          ],
+          "financialHints": [
+            {
+              "role": "REALIZED_COST",
+              "amountMinor": 300000,
+              "currency": "EUR",
+              "factIndex": 1
+            }
+          ],
+          "evidenceFactIndexes": [
+            0,
+            1,
+            2
+          ]
+        }
+      ]
+    }
+  },
+  "expected": {
+    "operationCandidates": [
+      {
+        "typeHint": "INTERVENTION",
+        "sourceRoleHint": "DEPOSIT_INVOICE",
+        "financialRoles": [
+          "REALIZED_COST"
+        ],
+        "amountScopes": [
+          "DEPOSIT"
+        ],
+        "amountsMinor": [
+          300000
+        ]
+      }
+    ]
+  }
+}

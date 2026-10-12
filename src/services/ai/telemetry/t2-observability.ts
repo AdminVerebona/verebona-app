@@ -28,6 +28,11 @@ export const T2_TRUTH_SOURCES: readonly T2TruthSource[] = [
 
 export interface T2ObservabilityTrace {
   truthSource: T2TruthSource;
+  /**
+   * Lot 47A (O9, CDC Opérations V1 C26.2) : nature d'une réponse ÉCONOMIQUE
+   * (coût, prix d'achat, contrats, dépenses, règlements) — absente sinon.
+   */
+  economicMode?: T2EconomicMode;
   /** Nombre de sources par type (`asset_field`, `document`…). */
   sourceTypes: Record<string, number>;
   /** Cible principale : type et origine seulement. */
@@ -74,6 +79,13 @@ const PAR_STRATEGIE: Readonly<Record<string, T2TruthSource>> = {
   'structured.actionable': 'agenda',
   // Exports.
   'structured.exports': 'export',
+  // Lot 45 (O6) : lecture « Opération d'abord » — état métier consolidé.
+  'structured.operation_history': 'canonique',
+  'structured.claim_status': 'canonique',
+  'structured.acquisition_price': 'canonique',
+  'structured.payments': 'document',
+  'structured.contracts': 'canonique',
+  'structured.operation_cost': 'canonique',
 };
 
 /** Type de source → source de vérité (réponse générée sur sources). */
@@ -120,6 +132,59 @@ export function countSourceTypes(sources: ReadonlyArray<{ type?: unknown }>): Re
   return out;
 }
 
+// ── Lot 47A (O9) : réponses économiques Operation-only / mixtes / fallback-only ──
+
+/**
+ * C26.2 « T2 réponses économiques Operation-only / mixtes / fallback-only » :
+ *   · `operation_only` : chiffres lus sur les Opérations consolidées seules ;
+ *   · `mixed`          : Opérations + documents non représentés (C15.1) ;
+ *   · `fallback_only`  : documents, fiche du bien ou preuves seuls.
+ * Mesure d'adoption, jamais une contrainte (aucune exclusivité imposée).
+ */
+export type T2EconomicMode = 'operation_only' | 'mixed' | 'fallback_only';
+export const T2_ECONOMIC_MODES: readonly T2EconomicMode[] = ['operation_only', 'mixed', 'fallback_only'];
+
+/** Stratégies dont la réponse est économique (montants). */
+const ECONOMIC_STRATEGIES = new Set([
+  'structured.operation_cost', 'structured.contracts', 'structured.acquisition_price',
+  'structured.sum_qualified', 'structured.sum_amounts', 'structured.payments',
+]);
+
+type SourceLike = { type?: unknown; id?: unknown; meta?: unknown };
+const metaOf = (s: SourceLike): Record<string, unknown> => (s.meta && typeof s.meta === 'object' ? s.meta as Record<string, unknown> : {});
+const positif = (v: unknown) => typeof v === 'number' && Number.isFinite(v) && v > 0;
+
+/**
+ * Nature économique d'une réponse (pure) — d'après la stratégie et les
+ * MÉTADONNÉES de ses sources (jamais leur contenu) :
+ *   · source d'Opération : `meta.operationKind` (lot 45, `operationSource`) ;
+ *   · total de dépenses (`expenses:*`) : `operationCount` (part consolidée)
+ *     et `documentFallbackCents` / `documentCount` (repli documentaire).
+ * `null` : réponse non économique, ou sans aucun chiffre.
+ */
+export function economicModeOf(strategy: string | null | undefined, sources: ReadonlyArray<SourceLike> = []): T2EconomicMode | null {
+  const s = strategy ?? '';
+  if (!ECONOMIC_STRATEGIES.has(s)) return null;
+  let operation = s === 'structured.operation_cost' || s === 'structured.contracts';
+  let fallback = s === 'structured.sum_amounts';
+  for (const src of sources) {
+    const m = metaOf(src);
+    if (typeof m.operationKind === 'string' && m.operationKind) operation = true;
+    if (typeof src.id === 'string' && src.id.startsWith('expenses:')) {
+      if (positif(m.operationCount)) operation = true;
+      if ('documentFallbackCents' in m ? positif(m.documentFallbackCents) : (!positif(m.operationCount) && positif(m.documentCount))) fallback = true;
+    } else if (s === 'structured.payments' && src.type === 'document' && !m.operationKind) {
+      fallback = true;
+    } else if (s === 'structured.acquisition_price' && !m.operationKind && src.type === 'asset_field') {
+      fallback = true;
+    }
+  }
+  if (operation && fallback) return 'mixed';
+  if (operation) return 'operation_only';
+  if (fallback) return 'fallback_only';
+  return null;
+}
+
 /**
  * Trace T2 d'une demande. `target` est la cible principale DÉJÀ résolue
  * (`targetsFromInput(...).primary`) : seuls son type et son origine sont
@@ -127,7 +192,7 @@ export function countSourceTypes(sources: ReadonlyArray<{ type?: unknown }>): Re
  */
 export function buildT2ObservabilityTrace(p: {
   strategy: string | null | undefined;
-  sources: ReadonlyArray<{ type?: unknown }>;
+  sources: ReadonlyArray<SourceLike>;
   target?: { type?: unknown; origin?: unknown } | null;
 }): T2ObservabilityTrace {
   const sourceTypes = countSourceTypes(p.sources);
@@ -138,5 +203,6 @@ export function buildT2ObservabilityTrace(p: {
     truthSource: truthSourceOf(p.strategy, sourceTypes),
     sourceTypes,
     target: type ? { type, origin: origin ?? 'inconnue' } : null,
+    ...(() => { const m = economicModeOf(p.strategy, p.sources); return m ? { economicMode: m } : {}; })(),
   };
 }

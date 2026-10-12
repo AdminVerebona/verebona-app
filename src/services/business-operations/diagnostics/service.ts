@@ -1,0 +1,815 @@
+/**
+ * OperationDiagnosticsService — BO read-only, métriques, anomalies (lot 47A,
+ * O9 — CDC Opérations V1 C21, C26.1, C26.2, B23, ch. 21 ; décisions PO Q8, Q9).
+ *
+ * ══════════════════════════════════════════════════════════════════════════
+ * AUCUNE ÉCRITURE POSSIBLE
+ *
+ * Chaque appel s'exécute dans UNE transaction `READ ONLY` (connexion du pool,
+ * `SET LOCAL statement_timeout`) : une requête d'écriture y serait refusée par
+ * PostgreSQL lui-même (25006). Le service n'expose que des lectures ; les
+ * routes BO qui l'appellent n'exportent que GET.
+ *
+ * REQUÊTES BORNÉES ET INDEXÉES
+ *
+ *   · listes paginées (25 par défaut, 100 au plus), tri stable `created_at,
+ *     id` (index 0325 `(created_at)` et `(account_id, created_at)`) ;
+ *   · détail : listes bornées à `DETAIL_LIMIT` lignes, toutes par l'index de
+ *     l'Opération (`operation_id`) ;
+ *   · indicateurs : période d'au plus 366 jours (index 0325 sur les dates
+ *     d'événement), état courant par les index partiels « actifs » ;
+ *   · anomalies dures : décompte + échantillon de 20 (fenêtre `count(*) OVER
+ *     ()`), parcours hiérarchique borné à 12 niveaux.
+ *
+ * Isolation : le BO voit tous les comptes (droits administrateur, C25) ; un
+ * filtre compte borne chaque requête. Aucun nom de fichier, aucun IBAN, aucun
+ * texte libre de sinistre : seulement ce que le BO montre déjà.
+ * ══════════════════════════════════════════════════════════════════════════
+ */
+import {
+  CORRECTION_PROCEDURE, DETAIL_LIMIT, DIAG_ANOMALY_SAMPLE, HARD_ANOMALY_CODES, HARD_ANOMALY_LABELS, INDICATORS,
+  explainReason, indicativeNetCents, maskSensitive, pct, principalDate, typeLabel,
+  type DiagPeriod, type HardAnomalyCode, type HardAnomalyResult, type HardAnomalySample, type HoldListFilters,
+  type IndicatorDefinition, type IndicatorKey, type OperationListFilters,
+} from './model';
+import type { BusinessOperationStatus, BusinessOperationTypeCode, FinancialComponentKind } from '../model';
+
+type Row = Record<string, unknown>;
+export type DiagQuery = (sql: string, params?: unknown[]) => Promise<Row[]>;
+/** Exécute un calcul dans une session de lecture (injectable : tests). */
+export type DiagExecutor = <T>(fn: (q: DiagQuery) => Promise<T>) => Promise<T>;
+
+/** Délai par requête, appliqué par PostgreSQL (annulation 57014). */
+export const DIAG_STATEMENT_TIMEOUT_MS = 20_000;
+
+/** Session par défaut : transaction READ ONLY + délai côté base. */
+export const readOnlyExecutor: DiagExecutor = async <T>(fn: (q: DiagQuery) => Promise<T>): Promise<T> => {
+  const { pgClient } = await import('@/db');
+  const out = await pgClient.begin('read only', async (tx) => {
+    await tx.unsafe(`SET LOCAL statement_timeout = ${DIAG_STATEMENT_TIMEOUT_MS}`);
+    const q: DiagQuery = async (sql, params = []) => (await tx.unsafe(sql, params as never[])) as unknown as Row[];
+    return [await fn(q)];
+  });
+  return (out as unknown as T[])[0];
+};
+
+const num = (v: unknown): number | null => (v === null || v === undefined ? null : Number(v));
+const int = (v: unknown): number => Number(v ?? 0);
+const str = (v: unknown): string | null => (v === null || v === undefined ? null : String(v));
+const ts = (v: unknown): string | null => (v === null || v === undefined ? null : v instanceof Date ? v.toISOString() : String(v));
+const arr = <T = Row>(v: unknown): T[] => (Array.isArray(v) ? (v as T[]) : []);
+
+/** Bornes SQL d'une période de jours civils Europe/Paris ($a, $b = jours). */
+const FROM = (p: string) => `(${p}::date::timestamp AT TIME ZONE 'Europe/Paris')`;
+const TO = (p: string) => `((${p}::date + 1)::timestamp AT TIME ZONE 'Europe/Paris')`;
+
+// ── Types de réponse ────────────────────────────────────────────────────────
+
+export interface OperationListItem {
+  id: number;
+  accountId: number;
+  accountName: string | null;
+  typeCode: BusinessOperationTypeCode | null;
+  typeLabel: string;
+  status: BusinessOperationStatus;
+  label: string | null;
+  assets: Array<{ id: number; name: string | null }>;
+  equipments: Array<{ id: number; name: string | null }>;
+  parentOperationId: number | null;
+  principalDate: string | null;
+  netCents: number | null;
+  netPartial: boolean;
+  activeSourceCount: number;
+  sourceCount: number;
+  componentCount: number;
+  lastReconciledAt: string | null;
+  createdAt: string | null;
+  invalidatedAt: string | null;
+  invalidationReason: string | null;
+  mergedIntoOperationId: number | null;
+}
+
+export interface OperationListResult {
+  items: OperationListItem[];
+  total: number;
+  page: number;
+  pageSize: number;
+  totalPages: number;
+}
+
+export interface HoldItem {
+  id: number;
+  accountId: number;
+  accountName: string | null;
+  fileId: number;
+  candidateKey: string;
+  confidence: string;
+  established: boolean;
+  typeHint: string | null;
+  summary: string;
+  outcome: string;
+  reason: string | null;
+  reasonLabel: string;
+  operationId: number | null;
+  proposedOperationIds: number[];
+  processedAt: string | null;
+  createdAt: string | null;
+}
+
+export interface HoldListResult {
+  items: HoldItem[];
+  total: number;
+  page: number;
+  pageSize: number;
+  totalPages: number;
+  /** Motifs présents (filtre), avec leur décompte. */
+  reasons: Array<{ outcome: string; reason: string | null; label: string; count: number }>;
+  /** Candidats établis encore en file T3 (pas encore consolidés). */
+  pendingT3: number;
+}
+
+export interface LastT3Pass {
+  jobId: number;
+  status: string;
+  origin: string | null;
+  triggerCode: string | null;
+  businessResult: string | null;
+  createdAt: string | null;
+  finishedAt: string | null;
+  attempts: number;
+  lastError: string | null;
+  correlationId: string | null;
+}
+
+export interface OperationDetail {
+  operation: OperationListItem & {
+    provider: string | null;
+    plannedDate: string | null;
+    startDate: string | null;
+    realizedDate: string | null;
+    endDate: string | null;
+    closedAt: string | null;
+    updatedAt: string | null;
+    version: number;
+    active: boolean;
+  };
+  /** Opération canonique quand celle-ci a été fusionnée (redirection, F-185). */
+  canonicalOperationId: number | null;
+  assetLinks: Row[];
+  equipmentLinks: Row[];
+  sources: Row[];
+  components: Row[];
+  references: Row[];
+  contractDetails: Row | null;
+  financingDetails: Row | null;
+  claimDetails: Row | null;
+  parent: Row | null;
+  children: Row[];
+  mergedFrom: Row[];
+  history: Row[];
+  matchDecisions: Row[];
+  agendaItems: Row[];
+  projectionSuppressions: Row[];
+  candidates: Row[];
+  lastT3Pass: LastT3Pass | null;
+  procedure: string;
+}
+
+export interface IndicatorResult extends IndicatorDefinition {
+  value: Record<string, unknown>;
+}
+
+export interface IndicatorsReport {
+  period: DiagPeriod;
+  accountId: number | null;
+  computedAt: string;
+  indicators: IndicatorResult[];
+  anomalies: HardAnomalyResult[];
+  hardAnomalyTotal: number;
+  procedure: string;
+}
+
+// ── Liste ───────────────────────────────────────────────────────────────────
+
+function listWhere(f: OperationListFilters): { where: string; params: unknown[] } {
+  const params: unknown[] = [];
+  const conds: string[] = [];
+  const p = (v: unknown) => { params.push(v); return `$${params.length}`; };
+  if (f.accountId) conds.push(`o.account_id = ${p(f.accountId)}`);
+  if (f.type === 'NULL') conds.push('o.type_code IS NULL');
+  else if (f.type) conds.push(`o.type_code = ${p(f.type)}`);
+  if (f.status) conds.push(`o.status = ${p(f.status)}`);
+  if (f.state === 'active') conds.push('o.invalidated_at IS NULL');
+  if (f.state === 'invalidated') conds.push('o.invalidated_at IS NOT NULL AND o.merged_into_operation_id IS NULL');
+  if (f.state === 'merged') conds.push('o.merged_into_operation_id IS NOT NULL');
+  if (f.withoutAsset) {
+    conds.push(`o.invalidated_at IS NULL AND NOT EXISTS (SELECT 1 FROM business_operation_asset_links al
+                 WHERE al.operation_id = o.id AND al.active)`);
+  }
+  if (f.withoutSource) {
+    conds.push('NOT EXISTS (SELECT 1 FROM business_operation_sources s WHERE s.operation_id = o.id AND s.active)');
+  }
+  if (f.from) conds.push(`o.created_at >= ${FROM(p(f.from))}`);
+  if (f.to) conds.push(`o.created_at < ${TO(p(f.to))}`);
+  return { where: conds.length ? `WHERE ${conds.join(' AND ')}` : '', params };
+}
+
+/** Colonnes communes d'une ligne de liste (sous-requêtes par l'index de l'Opération). */
+const LIST_COLUMNS = `
+  o.id, o.account_id, acc.name AS account_name, o.type_code, o.status, o.technical_label, o.parent_operation_id,
+  o.planned_date::text AS planned_date, o.start_date::text AS start_date, o.realized_date::text AS realized_date,
+  o.end_date::text AS end_date, o.invalidated_at, o.invalidation_reason, o.merged_into_operation_id,
+  o.last_reconciled_at, o.created_at,
+  (SELECT count(*) FROM business_operation_sources s WHERE s.operation_id = o.id AND s.active)::int AS active_sources,
+  (SELECT count(*) FROM business_operation_sources s WHERE s.operation_id = o.id)::int AS all_sources,
+  (SELECT count(*) FROM business_operation_financial_components c WHERE c.operation_id = o.id AND c.active)::int AS components,
+  (SELECT coalesce(json_agg(json_build_object('id', a.id, 'name', a.name) ORDER BY al.link_role DESC, a.id), '[]'::json)
+     FROM business_operation_asset_links al JOIN assets a ON a.id = al.asset_id
+    WHERE al.operation_id = o.id AND al.active) AS assets,
+  (SELECT coalesce(json_agg(json_build_object('id', e.id, 'name', e.name) ORDER BY e.id), '[]'::json)
+     FROM business_operation_equipment_links el JOIN equipments e ON e.id = el.equipment_id
+    WHERE el.operation_id = o.id AND el.active) AS equipments,
+  (SELECT coalesce(json_agg(json_build_object('kind', c.kind, 'amountMinor', c.amount_minor, 'currency', c.currency,
+                                               'amountEurCents', c.amount_eur_cents)), '[]'::json)
+     FROM business_operation_financial_components c WHERE c.operation_id = o.id AND c.active) AS money`;
+
+function toListItem(r: Row): OperationListItem {
+  const money = arr<{ kind: FinancialComponentKind; amountMinor: number; currency: string; amountEurCents: number | null }>(r.money)
+    .map((m) => ({ ...m, amountMinor: Number(m.amountMinor), amountEurCents: num(m.amountEurCents), active: true }));
+  const net = indicativeNetCents(money);
+  const dates = { realizedDate: str(r.realized_date), startDate: str(r.start_date), plannedDate: str(r.planned_date), endDate: str(r.end_date) };
+  return {
+    id: Number(r.id),
+    accountId: Number(r.account_id),
+    accountName: str(r.account_name),
+    typeCode: (r.type_code as BusinessOperationTypeCode | null) ?? null,
+    typeLabel: typeLabel(str(r.type_code)),
+    status: r.status as BusinessOperationStatus,
+    label: str(r.technical_label),
+    assets: arr<{ id: number; name: string | null }>(r.assets).map((a) => ({ id: Number(a.id), name: a.name ?? null })),
+    equipments: arr<{ id: number; name: string | null }>(r.equipments).map((e) => ({ id: Number(e.id), name: e.name ?? null })),
+    parentOperationId: num(r.parent_operation_id),
+    principalDate: principalDate(dates),
+    netCents: net.cents,
+    netPartial: net.partial,
+    activeSourceCount: int(r.active_sources),
+    sourceCount: int(r.all_sources),
+    componentCount: int(r.components),
+    lastReconciledAt: ts(r.last_reconciled_at),
+    createdAt: ts(r.created_at),
+    invalidatedAt: ts(r.invalidated_at),
+    invalidationReason: str(r.invalidation_reason),
+    mergedIntoOperationId: num(r.merged_into_operation_id),
+  };
+}
+
+// ── Anomalies dures (C26.2) ─────────────────────────────────────────────────
+
+/** Filtre compte d'une requête d'anomalie : `$1` (nul = tous les comptes). */
+const ACC = (col: string) => `($1::int IS NULL OR ${col} = $1::int)`;
+
+/** Clé numérique d'une source (`source_entity_key`), sinon NULL (jamais d'erreur de conversion). */
+const KEY = (col: string) => `(CASE WHEN ${col} ~ '^[0-9]{1,9}$' THEN ${col}::int END)`;
+
+const ANOMALY_SQL: Readonly<Record<Exclude<HardAnomalyCode, 'PARENT_CYCLE' | 'PARENT_DEPTH_EXCEEDED'>, string>> = {
+  ACTIVE_OPERATION_WITHOUT_SOURCE: `
+    SELECT o.account_id, o.id AS operation_id, 'type ' || coalesce(o.type_code, 'non qualifié') AS detail
+      FROM business_operations o
+     WHERE o.invalidated_at IS NULL AND ${ACC('o.account_id')}
+       AND NOT EXISTS (SELECT 1 FROM business_operation_sources s WHERE s.operation_id = o.id AND s.active)`,
+  // Composante ACTIVE d'une Opération ACTIVE : une Opération invalidée garde
+  // ses composantes en l'état (elles ne sont plus consommées).
+  ACTIVE_COMPONENT_WITHOUT_SOURCE: `
+    SELECT c.account_id, c.operation_id, 'composante #' || c.id || ' (' || c.kind || ')' AS detail
+      FROM business_operation_financial_components c
+      JOIN business_operations o ON o.id = c.operation_id AND o.invalidated_at IS NULL
+     WHERE c.active AND ${ACC('c.account_id')}
+       AND NOT EXISTS (SELECT 1 FROM business_operation_financial_component_sources cs
+                         JOIN business_operation_sources s ON s.id = cs.operation_source_id AND s.active
+                        WHERE cs.component_id = c.id)`,
+  // Toute référence vers une ligne d'un autre compte. Les liens Opération →
+  // Opération et Opération → table fille sont déjà impossibles en SQL (clé
+  // composée) ; restent les clés simples vers biens, équipements, fichiers,
+  // agenda et les références croisées entre Opérations sans account_id.
+  CROSS_ACCOUNT_LINK: `
+    SELECT al.account_id, al.operation_id, 'bien #' || a.id || ' du compte ' || coalesce(a.account_id::text, '?') AS detail
+      FROM business_operation_asset_links al JOIN assets a ON a.id = al.asset_id
+     WHERE a.account_id IS DISTINCT FROM al.account_id AND ${ACC('al.account_id')}
+    UNION ALL
+    SELECT el.account_id, el.operation_id, 'équipement #' || e.id || ' (bien du compte ' || coalesce(ea.account_id::text, '?') || ')'
+      FROM business_operation_equipment_links el
+      JOIN equipments e ON e.id = el.equipment_id JOIN assets ea ON ea.id = e.asset_id JOIN assets la ON la.id = el.asset_id
+     WHERE (ea.account_id IS DISTINCT FROM el.account_id OR la.account_id IS DISTINCT FROM el.account_id) AND ${ACC('el.account_id')}
+    UNION ALL
+    SELECT c.account_id, c.operation_id, 'composante #' || c.id || ' : bien cible #' || a.id || ' du compte ' || coalesce(a.account_id::text, '?')
+      FROM business_operation_financial_components c JOIN assets a ON a.id = c.target_asset_id
+     WHERE a.account_id IS DISTINCT FROM c.account_id AND ${ACC('c.account_id')}
+    UNION ALL
+    SELECT c.account_id, c.operation_id, 'composante #' || c.id || ' : équipement cible #' || e.id
+      FROM business_operation_financial_components c JOIN equipments e ON e.id = c.target_equipment_id JOIN assets a ON a.id = e.asset_id
+     WHERE a.account_id IS DISTINCT FROM c.account_id AND ${ACC('c.account_id')}
+    UNION ALL
+    SELECT c.account_id, c.operation_id, 'composante #' || c.id || ' : source #' || s.id || ' du compte ' || s.account_id
+      FROM business_operation_financial_components c
+      JOIN business_operation_financial_component_sources cs ON cs.component_id = c.id
+      JOIN business_operation_sources s ON s.id = cs.operation_source_id
+     WHERE s.account_id <> c.account_id AND ${ACC('c.account_id')}
+    UNION ALL
+    SELECT s.account_id, s.operation_id, 'source #' || s.id || ' : document #' || f.id || ' du compte ' || f.account_id
+      FROM business_operation_sources s JOIN asset_files f ON f.id = ${KEY('s.source_entity_key')}
+     WHERE s.source_kind = 'DOCUMENT' AND f.account_id <> s.account_id AND ${ACC('s.account_id')}
+    UNION ALL
+    SELECT s.account_id, s.operation_id, 'source #' || s.id || ' : bien #' || a.id || ' du compte ' || coalesce(a.account_id::text, '?')
+      FROM business_operation_sources s JOIN assets a ON a.id = ${KEY('s.source_entity_key')}
+     WHERE s.source_kind IN ('ASSET_DATA', 'CLAIM_FORM') AND a.account_id IS DISTINCT FROM s.account_id AND ${ACC('s.account_id')}
+    UNION ALL
+    SELECT s.account_id, s.operation_id, 'source #' || s.id || ' : événement d’agenda #' || ai.id || ' du compte ' || ai.account_id
+      FROM business_operation_sources s JOIN agenda_items ai ON ai.id = ${KEY('s.source_entity_key')}
+     WHERE s.source_kind = 'AGENDA' AND ai.account_id <> s.account_id AND ${ACC('s.account_id')}
+    UNION ALL
+    SELECT o.account_id, o.id, 'événement d’agenda #' || ai.id || ' du compte ' || ai.account_id
+      FROM agenda_items ai JOIN business_operations o ON o.id = ai.business_operation_id
+     WHERE ai.business_operation_id IS NOT NULL AND ai.account_id <> o.account_id AND ${ACC('o.account_id')}
+    UNION ALL
+    SELECT o.account_id, o.id, 'contrat d’assurance #' || k.id || ' du compte ' || k.account_id
+      FROM business_operation_claim_details cd
+      JOIN business_operations o ON o.id = cd.operation_id
+      JOIN business_operations k ON k.id = cd.insurance_contract_operation_id
+     WHERE k.account_id <> o.account_id AND ${ACC('o.account_id')}
+    UNION ALL
+    SELECT o.account_id, o.id, 'action de sinistre : Opération enfant #' || k.id || ' du compte ' || k.account_id
+      FROM business_operation_claim_actions ca
+      JOIN business_operations o ON o.id = ca.operation_id
+      JOIN business_operations k ON k.id = ca.child_operation_id
+     WHERE k.account_id <> o.account_id AND ${ACC('o.account_id')}
+    UNION ALL
+    SELECT o.account_id, o.id, 'pièce de dommage : document #' || f.id || ' du compte ' || f.account_id
+      FROM business_operation_claim_damage_documents dd
+      JOIN business_operation_claim_damages d ON d.id = dd.damage_id
+      JOIN business_operations o ON o.id = d.operation_id
+      JOIN asset_files f ON f.id = dd.file_id
+     WHERE f.account_id <> o.account_id AND ${ACC('o.account_id')}
+    UNION ALL
+    SELECT o.account_id, o.id, 'candidat T1 #' || c.id || ' du compte ' || c.account_id
+      FROM document_operation_candidates c JOIN business_operations o ON o.id = c.t3_operation_id
+     WHERE c.t3_operation_id IS NOT NULL AND c.account_id <> o.account_id AND ${ACC('o.account_id')}`,
+  NEGATIVE_COMPONENT: `
+    SELECT c.account_id, c.operation_id, 'composante #' || c.id || ' (' || c.kind || ') : ' || c.amount_minor || ' ' || c.currency AS detail
+      FROM business_operation_financial_components c
+     WHERE c.active AND (c.amount_minor < 0 OR c.amount_eur_cents < 0) AND ${ACC('c.account_id')}`,
+  // OTHER n'est jamais un repli (P18, C7.7) : il doit être porté par un
+  // candidat T1 « OTHER » certain ou par une décision utilisateur.
+  OTHER_AS_FALLBACK: `
+    SELECT o.account_id, o.id AS operation_id, 'OTHER sans candidat T1 « OTHER » certain ni source utilisateur' AS detail
+      FROM business_operations o
+     WHERE o.invalidated_at IS NULL AND o.type_code = 'OTHER' AND ${ACC('o.account_id')}
+       AND NOT EXISTS (SELECT 1 FROM business_operation_sources s WHERE s.operation_id = o.id AND s.authority = 'USER')
+       AND NOT EXISTS (SELECT 1 FROM document_operation_candidates c
+                        WHERE c.account_id = o.account_id AND c.type_hint = 'OTHER' AND c.confidence = 'certain'
+                          AND (c.t3_operation_id = o.id
+                               OR c.file_id IN (SELECT ${KEY('s.source_entity_key')} FROM business_operation_sources s
+                                                 WHERE s.operation_id = o.id AND s.source_kind = 'DOCUMENT')))`,
+};
+
+/** Parcours ascendant de la hiérarchie (C8.1), borné à 12 niveaux. */
+const HIERARCHY_SQL = `
+  WITH RECURSIVE up AS (
+    SELECT o.id AS start_id, o.account_id, o.parent_operation_id AS cur, ARRAY[o.id]::bigint[] AS path, false AS cycle
+      FROM business_operations o
+     WHERE o.parent_operation_id IS NOT NULL AND ${ACC('o.account_id')}
+    UNION ALL
+    SELECT u.start_id, u.account_id, p.parent_operation_id, u.path || p.id, p.id = ANY(u.path)
+      FROM up u JOIN business_operations p ON p.id = u.cur
+     WHERE NOT u.cycle AND cardinality(u.path) < 12
+  ), agg AS (
+    SELECT start_id, account_id, bool_or(cycle) AS cycle, max(cardinality(path)) AS levels
+      FROM up GROUP BY start_id, account_id
+  )`;
+
+async function sampled(q: DiagQuery, inner: string, accountId: number | null): Promise<{ count: number; samples: HardAnomalySample[] }> {
+  const rows = await q(
+    `SELECT x.account_id, x.operation_id, x.detail, count(*) OVER () AS total
+       FROM (${inner}) x(account_id, operation_id, detail)
+      ORDER BY x.account_id, x.operation_id NULLS LAST LIMIT ${DIAG_ANOMALY_SAMPLE}`,
+    [accountId],
+  );
+  return {
+    count: rows.length ? int(rows[0].total) : 0,
+    samples: rows.map((r) => ({ accountId: Number(r.account_id), operationId: num(r.operation_id), detail: String(r.detail ?? '') })),
+  };
+}
+
+function result(code: HardAnomalyCode, count: number, samples: HardAnomalySample[]): HardAnomalyResult {
+  return {
+    code, label: HARD_ANOMALY_LABELS[code], count,
+    accountIds: [...new Set(samples.map((s) => s.accountId))].slice(0, DIAG_ANOMALY_SAMPLE),
+    samples: maskSensitive(samples),
+  };
+}
+
+async function detectHardAnomalies(q: DiagQuery, accountId: number | null): Promise<HardAnomalyResult[]> {
+  const out = new Map<HardAnomalyCode, HardAnomalyResult>();
+  for (const [code, inner] of Object.entries(ANOMALY_SQL) as Array<[HardAnomalyCode, string]>) {
+    const r = await sampled(q, inner, accountId);
+    out.set(code, result(code, r.count, r.samples));
+  }
+  const [counts] = await q(
+    `${HIERARCHY_SQL}
+     SELECT count(*) FILTER (WHERE cycle)::int AS cycles,
+            count(*) FILTER (WHERE NOT cycle AND levels > 3)::int AS deep
+       FROM agg`,
+    [accountId],
+  );
+  const hier = await q(
+    `${HIERARCHY_SQL}
+     (SELECT account_id, start_id, cycle, levels FROM agg WHERE cycle ORDER BY account_id, start_id LIMIT ${DIAG_ANOMALY_SAMPLE})
+     UNION ALL
+     (SELECT account_id, start_id, cycle, levels FROM agg WHERE NOT cycle AND levels > 3 ORDER BY account_id, start_id LIMIT ${DIAG_ANOMALY_SAMPLE})`,
+    [accountId],
+  );
+  const s = (cycle: boolean) => hier.filter((r) => Boolean(r.cycle) === cycle).map((r) => ({
+    accountId: Number(r.account_id),
+    operationId: Number(r.start_id),
+    detail: cycle ? 'la chaîne des parents revient sur elle-même' : `${int(r.levels)} niveaux (maximum 3)`,
+  }));
+  out.set('PARENT_CYCLE', result('PARENT_CYCLE', int(counts?.cycles), s(true)));
+  out.set('PARENT_DEPTH_EXCEEDED', result('PARENT_DEPTH_EXCEEDED', int(counts?.deep), s(false)));
+  return HARD_ANOMALY_CODES.map((c) => out.get(c)!);
+}
+
+// ── Service ────────────────────────────────────────────────────────────────
+
+export class OperationDiagnosticsService {
+  constructor(private readonly exec: DiagExecutor = readOnlyExecutor) {}
+
+  /** Liste filtrable et paginée (C26.1, B23). */
+  async list(f: OperationListFilters): Promise<OperationListResult> {
+    const { where, params } = listWhere(f);
+    return this.exec(async (q) => {
+      const [{ n }] = await q(`SELECT count(*)::int AS n FROM business_operations o ${where}`, params);
+      const offset = (f.page - 1) * f.pageSize;
+      const rows = await q(
+        `SELECT ${LIST_COLUMNS}
+           FROM business_operations o JOIN accounts acc ON acc.id = o.account_id
+           ${where}
+          ORDER BY o.created_at DESC, o.id DESC
+          LIMIT ${f.pageSize} OFFSET ${offset}`,
+        params,
+      );
+      const total = int(n);
+      return {
+        items: maskSensitive(rows.map(toListItem)),
+        total, page: f.page, pageSize: f.pageSize, totalPages: Math.max(1, Math.ceil(total / f.pageSize)),
+      };
+    });
+  }
+
+  /** Candidats T1 en attente (HOLD) ou en arbitrage, avec leur motif (C5, C26.1). */
+  async holds(f: HoldListFilters): Promise<HoldListResult> {
+    const params: unknown[] = [];
+    const p = (v: unknown) => { params.push(v); return `$${params.length}`; };
+    const base = [`c.status = 'ACTIVE'`, `c.t3_outcome IN ('HOLD_UNRESOLVED', 'ARBITRATION_REQUIRED')`];
+    if (f.accountId) base.push(`c.account_id = ${p(f.accountId)}`);
+    const baseParams = [...params];
+    const conds = [...base];
+    if (f.outcome) conds.push(`c.t3_outcome = ${p(f.outcome)}`);
+    if (f.reason === 'TECHNICAL_ERROR') conds.push(`c.t3_reason LIKE 'TECHNICAL_ERROR:%'`);
+    else if (f.reason) conds.push(`c.t3_reason = ${p(f.reason)}`);
+    return this.exec(async (q) => {
+      const [{ n }] = await q(`SELECT count(*)::int AS n FROM document_operation_candidates c WHERE ${conds.join(' AND ')}`, params);
+      const rows = await q(
+        `SELECT c.id, c.account_id, acc.name AS account_name, c.file_id, c.candidate_key, c.confidence, c.established,
+                c.type_hint, c.summary, c.t3_outcome, c.t3_reason, c.t3_operation_id, c.t3_processed_at, c.created_at,
+                c.t3_detail -> 'arbitration' -> 'operationIds' AS proposed, c.t3_detail -> 'plausible' AS plausible
+           FROM document_operation_candidates c JOIN accounts acc ON acc.id = c.account_id
+          WHERE ${conds.join(' AND ')}
+          ORDER BY c.t3_processed_at DESC NULLS LAST, c.id DESC
+          LIMIT ${f.pageSize} OFFSET ${(f.page - 1) * f.pageSize}`,
+        params,
+      );
+      const reasons = await q(
+        `SELECT c.t3_outcome AS outcome, c.t3_reason AS reason, count(*)::int AS n
+           FROM document_operation_candidates c WHERE ${base.join(' AND ')}
+          GROUP BY 1, 2 ORDER BY 3 DESC, 1, 2 LIMIT 100`,
+        baseParams,
+      );
+      const [pending] = await q(
+        `SELECT count(*)::int AS n FROM document_operation_candidates c
+          WHERE c.t3_pending AND c.status = 'ACTIVE' AND c.established ${f.accountId ? 'AND c.account_id = $1' : ''}`,
+        f.accountId ? [f.accountId] : [],
+      );
+      const total = int(n);
+      const ids = (v: unknown) => arr<unknown>(v).map(Number).filter((x) => Number.isSafeInteger(x));
+      return {
+        items: maskSensitive(rows.map((r): HoldItem => ({
+          id: Number(r.id), accountId: Number(r.account_id), accountName: str(r.account_name), fileId: Number(r.file_id),
+          candidateKey: String(r.candidate_key), confidence: String(r.confidence), established: Boolean(r.established),
+          typeHint: str(r.type_hint), summary: String(r.summary ?? ''), outcome: String(r.t3_outcome),
+          reason: str(r.t3_reason), reasonLabel: explainReason(str(r.t3_reason)), operationId: num(r.t3_operation_id),
+          proposedOperationIds: [...new Set([...ids(r.proposed), ...ids(r.plausible)])].slice(0, 10),
+          processedAt: ts(r.t3_processed_at), createdAt: ts(r.created_at),
+        }))),
+        total, page: f.page, pageSize: f.pageSize, totalPages: Math.max(1, Math.ceil(total / f.pageSize)),
+        reasons: reasons.map((r) => ({ outcome: String(r.outcome), reason: str(r.reason), label: explainReason(str(r.reason)), count: int(r.n) })),
+        pendingT3: int(pending?.n),
+      };
+    });
+  }
+
+  /** Détail complet d'une Opération (C26.1, ch. 21) ; `null` si inconnue. */
+  async detail(id: number): Promise<OperationDetail | null> {
+    return this.exec(async (q) => {
+      const [r] = await q(
+        `SELECT ${LIST_COLUMNS}, o.provider, o.closed_at, o.updated_at, o.version
+           FROM business_operations o JOIN accounts acc ON acc.id = o.account_id WHERE o.id = $1`,
+        [id],
+      );
+      if (!r) return null;
+      const base = toListItem(r);
+      const accountId = base.accountId;
+      const L = DETAIL_LIMIT;
+
+      // Redirection de fusion (F-185) : opération canonique au bout de la chaîne.
+      let canonical: number | null = null;
+      if (base.mergedIntoOperationId) {
+        const [c] = await q(
+          `WITH RECURSIVE m AS (
+             SELECT id, merged_into_operation_id, 1 AS n FROM business_operations WHERE id = $1 AND account_id = $2
+             UNION ALL
+             SELECT o.id, o.merged_into_operation_id, m.n + 1 FROM business_operations o JOIN m ON o.id = m.merged_into_operation_id
+              WHERE m.n < 10)
+           SELECT id FROM m WHERE merged_into_operation_id IS NULL LIMIT 1`,
+          [id, accountId],
+        );
+        canonical = c ? Number(c.id) : null;
+      }
+
+      const assetLinks = await q(
+        `SELECT al.id, al.asset_id, a.name AS asset_name, a.deleted_at IS NOT NULL AS asset_deleted, al.link_role, al.authority,
+                al.source_operation_source_id AS source_id, al.active, al.created_at, al.updated_at
+           FROM business_operation_asset_links al LEFT JOIN assets a ON a.id = al.asset_id
+          WHERE al.operation_id = $1 ORDER BY al.active DESC, al.id LIMIT ${L}`, [id]);
+      const equipmentLinks = await q(
+        `SELECT el.id, el.equipment_id, e.name AS equipment_name, el.asset_id, el.authority,
+                el.source_operation_source_id AS source_id, el.active, el.created_at
+           FROM business_operation_equipment_links el LEFT JOIN equipments e ON e.id = el.equipment_id
+          WHERE el.operation_id = $1 ORDER BY el.active DESC, el.id LIMIT ${L}`, [id]);
+      const sources = await q(
+        `SELECT s.id, s.source_kind, s.source_entity_key, s.source_version, s.source_role, s.locator, s.authority,
+                s.confidence, s.match_method, s.match_reason, s.active, s.superseded_at, s.created_at,
+                f.id AS file_id, f.document_type AS file_document_type, f.created_at AS file_created_at,
+                f.deleted_at AS file_deleted_at, f.asset_id AS file_asset_id
+           FROM business_operation_sources s
+           LEFT JOIN asset_files f ON s.source_kind = 'DOCUMENT' AND f.id = ${KEY('s.source_entity_key')} AND f.account_id = s.account_id
+          WHERE s.operation_id = $1 ORDER BY s.active DESC, s.created_at, s.id LIMIT ${L}`, [id]);
+      const components = await q(
+        `SELECT c.id, c.kind, c.amount_minor, c.currency, c.amount_eur_cents, c.economic_date::text AS economic_date,
+                c.period_start::text AS period_start, c.period_end::text AS period_end, c.target_asset_id, c.target_equipment_id,
+                c.label, c.fingerprint, c.active, c.superseded_at, c.created_at,
+                (SELECT coalesce(json_agg(json_build_object('sourceId', cs.operation_source_id, 'evidenceRole', cs.evidence_role,
+                                                             'isPrimary', cs.is_primary, 'sourceActive', s.active)
+                                          ORDER BY cs.is_primary DESC, cs.operation_source_id), '[]'::json)
+                   FROM business_operation_financial_component_sources cs
+                   LEFT JOIN business_operation_sources s ON s.id = cs.operation_source_id
+                  WHERE cs.component_id = c.id) AS sources
+           FROM business_operation_financial_components c
+          WHERE c.operation_id = $1 ORDER BY c.active DESC, c.id LIMIT ${L}`, [id]);
+      const references = await q(
+        `SELECT id, reference_kind, reference_value, normalized_value, source_id, active, superseded_at, created_at
+           FROM business_operation_references WHERE operation_id = $1 ORDER BY active DESC, id LIMIT ${L}`, [id]);
+      const [contractDetails] = await q(
+        `SELECT contract_reference, periodicity, effective_from::text AS effective_from, effective_to::text AS effective_to, updated_at
+           FROM business_operation_contract_details WHERE operation_id = $1`, [id]);
+      const [financingDetails] = await q(
+        `SELECT financing_reference, lender, principal_amount_minor, principal_currency,
+                effective_from::text AS effective_from, effective_to::text AS effective_to, updated_at
+           FROM business_operation_financing_details WHERE operation_id = $1`, [id]);
+      // Sinistre : champs structurés et décomptes seulement — aucun texte libre
+      // (circonstances, échanges) n'est rendu par le BO.
+      const [claimDetails] = await q(
+        `SELECT cd.claim_type, cd.declared_on::text AS declared_on, cd.insurer_claim_ref, cd.insurance_contract_operation_id,
+                cd.status, cd.estimated_damage_minor, cd.updated_at,
+                (SELECT count(*) FROM business_operation_claim_damages d WHERE d.operation_id = cd.operation_id)::int AS damages,
+                (SELECT count(*) FROM business_operation_claim_actions a WHERE a.operation_id = cd.operation_id)::int AS actions,
+                (SELECT count(*) FROM business_operation_claim_exchanges x WHERE x.operation_id = cd.operation_id)::int AS exchanges
+           FROM business_operation_claim_details cd WHERE cd.operation_id = $1`, [id]);
+      const [parent] = base.parentOperationId
+        ? await q(`SELECT id, type_code, status, technical_label, invalidated_at FROM business_operations WHERE id = $1 AND account_id = $2`,
+          [base.parentOperationId, accountId])
+        : [];
+      const children = await q(
+        `SELECT id, type_code, status, technical_label, invalidated_at FROM business_operations
+          WHERE parent_operation_id = $1 AND account_id = $2 ORDER BY id LIMIT ${L}`, [id, accountId]);
+      const mergedFrom = await q(
+        `SELECT id, type_code, status, technical_label, invalidated_at, invalidation_reason FROM business_operations
+          WHERE merged_into_operation_id = $1 AND account_id = $2 ORDER BY id LIMIT ${L}`, [id, accountId]);
+      const history = await q(
+        `SELECT id, event_type, reason_code, source_id, actor_user_id, before_json, after_json, correlation_id, created_at
+           FROM business_operation_history WHERE operation_id = $1 ORDER BY created_at DESC, id DESC LIMIT ${L}`, [id]);
+      const matchDecisions = await q(
+        `SELECT id, source_kind, source_entity_key, source_version, decision, origin, reason_code, active, created_at, updated_at
+           FROM business_operation_match_decisions WHERE candidate_operation_id = $1 AND account_id = $2
+          ORDER BY active DESC, id DESC LIMIT ${L}`, [id, accountId]);
+      const agendaItems = await q(
+        `SELECT id, title, start_date::text AS start_date, end_date::text AS end_date, projection_origin,
+                projection_correlation_id, manual_status, created_at
+           FROM agenda_items WHERE business_operation_id = $1 AND account_id = $2 ORDER BY id LIMIT ${L}`, [id, accountId]);
+      const projectionSuppressions = await q(
+        `SELECT id, projection_kind, projection_key, user_id, created_at
+           FROM business_operation_projection_suppressions WHERE operation_id = $1 ORDER BY id LIMIT ${L}`, [id]);
+      const candidates = await q(
+        `SELECT c.id, c.file_id, c.candidate_key, c.established, c.confidence, c.type_hint, c.status_hint, c.summary,
+                c.status, c.trigger_code, c.t3_pending, c.t3_outcome, c.t3_reason, c.t3_operation_id, c.t3_processed_at,
+                c.t3_detail, c.created_at, c.superseded_at
+           FROM document_operation_candidates c
+          WHERE c.account_id = $2
+            AND (c.t3_operation_id = $1
+                 OR c.file_id IN (SELECT ${KEY('s.source_entity_key')} FROM business_operation_sources s
+                                   WHERE s.operation_id = $1 AND s.source_kind = 'DOCUMENT'))
+          ORDER BY c.created_at DESC, c.id DESC LIMIT ${L}`, [id, accountId]);
+      const [job] = await q(
+        `SELECT id, status, origin, trigger_code, business_result, created_at, finished_at, attempts, last_error,
+                payload -> 'events' -> -1 ->> 'correlationId' AS correlation_id
+           FROM ai_job_queue
+          WHERE treatment = 'T3' AND account_id = $1 AND target_type = 'business_operations'
+          ORDER BY id DESC LIMIT 1`, [accountId]);
+
+      const withReason = (rows: Row[], col: string) => rows.map((x) => ({ ...x, [`${col}_label`]: explainReason(str(x[col])) }));
+      const detail: OperationDetail = {
+        operation: {
+          ...base,
+          provider: str(r.provider),
+          plannedDate: str(r.planned_date), startDate: str(r.start_date), realizedDate: str(r.realized_date), endDate: str(r.end_date),
+          closedAt: ts(r.closed_at), updatedAt: ts(r.updated_at), version: int(r.version), active: r.invalidated_at == null,
+        },
+        canonicalOperationId: canonical,
+        assetLinks,
+        equipmentLinks,
+        sources: withReason(sources, 'match_reason'),
+        components,
+        references,
+        contractDetails: contractDetails ?? null,
+        financingDetails: financingDetails ?? null,
+        claimDetails: claimDetails ?? null,
+        parent: parent ?? null,
+        children,
+        mergedFrom,
+        history: withReason(history, 'reason_code'),
+        matchDecisions: withReason(matchDecisions, 'reason_code'),
+        agendaItems,
+        projectionSuppressions,
+        candidates: withReason(candidates, 't3_reason'),
+        lastT3Pass: job ? {
+          jobId: Number(job.id), status: String(job.status), origin: str(job.origin), triggerCode: str(job.trigger_code),
+          businessResult: str(job.business_result), createdAt: ts(job.created_at), finishedAt: ts(job.finished_at),
+          attempts: int(job.attempts), lastError: str(job.last_error), correlationId: str(job.correlation_id),
+        } : null,
+        procedure: CORRECTION_PROCEDURE,
+      };
+      return maskSensitive(detail);
+    });
+  }
+
+  /** Anomalies dures seules (tâche planifiée, alerte d'exploitation). */
+  async hardAnomalies(accountId: number | null = null): Promise<HardAnomalyResult[]> {
+    return this.exec((q) => detectHardAnomalies(q, accountId));
+  }
+
+  /** Les 13 indicateurs C26.2 (compte ou global, période) + anomalies dures. */
+  async indicators(period: DiagPeriod, accountId: number | null = null): Promise<IndicatorsReport> {
+    return this.exec(async (q) => {
+      const pp = [period.from, period.to, accountId];
+      const acc = (col: string) => `($3::int IS NULL OR ${col} = $3::int)`;
+
+      const perDay = await q(
+        `SELECT to_char((o.created_at AT TIME ZONE 'Europe/Paris')::date, 'YYYY-MM-DD') AS day,
+                coalesce(fs.source_kind, 'AUCUNE') AS source_kind, count(*)::int AS n
+           FROM business_operations o
+           LEFT JOIN LATERAL (SELECT s.source_kind FROM business_operation_sources s
+                               WHERE s.operation_id = o.id ORDER BY s.created_at, s.id LIMIT 1) fs ON true
+          WHERE o.created_at >= ${FROM('$1')} AND o.created_at < ${TO('$2')} AND ${acc('o.account_id')}
+          GROUP BY 1, 2 ORDER BY 1, 2`, pp);
+      const [docs] = await q(
+        `SELECT count(*)::int AS analysed,
+                count(*) FILTER (WHERE EXISTS (
+                  SELECT 1 FROM document_operation_candidates c
+                   WHERE c.file_id = e.file_id AND c.status = 'ACTIVE' AND c.established AND c.confidence = 'certain'))::int AS with_certain
+           FROM document_extractions e
+          WHERE e.extracted_at >= ${FROM('$1')} AND e.extracted_at < ${TO('$2')} AND ${acc('e.account_id')}`, pp);
+      const outcomes = await q(
+        `SELECT c.t3_outcome AS outcome, count(*)::int AS n FROM document_operation_candidates c
+          WHERE c.t3_outcome IS NOT NULL AND c.established AND c.confidence = 'certain'
+            AND c.t3_processed_at >= ${FROM('$1')} AND c.t3_processed_at < ${TO('$2')} AND ${acc('c.account_id')}
+          GROUP BY 1`, pp);
+      const types = await q(
+        `SELECT o.type_code, count(*)::int AS n FROM business_operations o
+          WHERE o.invalidated_at IS NULL AND ($1::int IS NULL OR o.account_id = $1::int) GROUP BY 1`, [accountId]);
+      const [cohort] = await q(
+        `SELECT count(*)::int AS created,
+                count(*) FILTER (WHERE o.merged_into_operation_id IS NOT NULL
+                                   AND o.invalidated_at <= o.created_at + interval '7 days')::int AS merged7,
+                count(*) FILTER (WHERE o.merged_into_operation_id IS NULL AND o.invalidated_at IS NOT NULL
+                                   AND o.invalidated_at <= o.created_at + interval '7 days')::int AS invalidated7
+           FROM business_operations o
+          WHERE o.created_at >= ${FROM('$1')} AND o.created_at < ${TO('$2')} AND ${acc('o.account_id')}`, pp);
+      const [ages] = await q(
+        `SELECT count(*)::int AS total,
+                count(*) FILTER (WHERE now() - o.created_at < interval '24 hours')::int AS h24,
+                count(*) FILTER (WHERE now() - o.created_at >= interval '24 hours' AND now() - o.created_at <= interval '7 days')::int AS d7,
+                count(*) FILTER (WHERE now() - o.created_at > interval '7 days' AND now() - o.created_at <= interval '30 days')::int AS d30,
+                count(*) FILTER (WHERE now() - o.created_at > interval '30 days')::int AS older
+           FROM business_operations o
+          WHERE o.invalidated_at IS NULL AND ($1::int IS NULL OR o.account_id = $1::int)
+            AND NOT EXISTS (SELECT 1 FROM business_operation_asset_links al WHERE al.operation_id = o.id AND al.active)`, [accountId]);
+      const ambiguous = await q(
+        `SELECT c.t3_outcome AS outcome, c.t3_reason AS reason, count(*)::int AS n FROM document_operation_candidates c
+          WHERE c.status = 'ACTIVE' AND c.t3_outcome IN ('HOLD_UNRESOLVED', 'ARBITRATION_REQUIRED')
+            AND ($1::int IS NULL OR c.account_id = $1::int)
+          GROUP BY 1, 2 ORDER BY 3 DESC LIMIT 100`, [accountId]);
+      const { OPERATION_CARD_RULES } = await import('@/services/to-process/operation-cards');
+      const cards = await q(
+        `SELECT rule_code, count(*)::int AS n FROM to_process_actions
+          WHERE resolved_at IS NULL AND rule_code = ANY($1::text[]) AND ($2::int IS NULL OR account_id = $2::int)
+          GROUP BY 1`, [[...OPERATION_CARD_RULES], accountId]);
+      const t2 = await q(
+        `SELECT r.retrieval_methods_json -> 'observability' ->> 'economicMode' AS mode, count(*)::int AS n
+           FROM verebona_request_runs r
+          WHERE (r.retrieval_methods_json -> 'observability' ->> 'economicMode') IS NOT NULL
+            AND r.created_at >= ${FROM('$1')} AND r.created_at < ${TO('$2')} AND ${acc('r.account_id')}
+          GROUP BY 1`, pp);
+      const anomalies = await detectHardAnomalies(q, accountId);
+
+      const count = (code: HardAnomalyCode) => anomalies.find((a) => a.code === code)?.count ?? 0;
+      const values: Record<IndicatorKey, Record<string, unknown>> = {
+        createdPerDayBySourceKind: (() => {
+          const days = new Map<string, Record<string, number>>();
+          const byKind: Record<string, number> = {};
+          let total = 0;
+          for (const x of perDay) {
+            const d = String(x.day);
+            const k = String(x.source_kind);
+            const n = int(x.n);
+            const day = days.get(d) ?? {};
+            day[k] = (day[k] ?? 0) + n;
+            days.set(d, day);
+            byKind[k] = (byKind[k] ?? 0) + n;
+            total += n;
+          }
+          const list = [...days.entries()].map(([day, kinds]) => ({ day, total: Object.values(kinds).reduce((a, b) => a + b, 0), bySourceKind: kinds }));
+          const max = list.reduce<{ day: string; total: number } | null>((m, d) => (!m || d.total > m.total ? { day: d.day, total: d.total } : m), null);
+          return { total, bySourceKind: byKind, days: list, maxDay: max, averagePerDay: Math.round((total / period.days) * 10) / 10 };
+        })(),
+        documentsWithCertainCandidate: { analysed: int(docs?.analysed), withCertain: int(docs?.with_certain), pct: pct(int(docs?.with_certain), int(docs?.analysed)) },
+        certainCandidatesOutcome: (() => {
+          const by: Record<string, number> = Object.fromEntries(outcomes.map((o) => [String(o.outcome), int(o.n)]));
+          const total = Object.values(by).reduce((a, b) => a + b, 0);
+          const create = by.CREATE_NEW ?? 0;
+          const match = by.MATCH_AND_ENRICH ?? 0;
+          return { total, create, match, createPct: pct(create, total), matchPct: pct(match, total), byOutcome: by };
+        })(),
+        typeNull: (() => {
+          const by: Record<string, number> = Object.fromEntries(types.map((t) => [t.type_code == null ? 'NULL' : String(t.type_code), int(t.n)]));
+          const active = Object.values(by).reduce((a, b) => a + b, 0);
+          return { active, count: by.NULL ?? 0, pct: pct(by.NULL ?? 0, active), byType: by };
+        })(),
+        typeOther: (() => {
+          const active = types.reduce((a, t) => a + int(t.n), 0);
+          const other = int(types.find((t) => t.type_code === 'OTHER')?.n);
+          return { active, count: other, pct: pct(other, active) };
+        })(),
+        mergedWithin7Days: { created: int(cohort?.created), count: int(cohort?.merged7), pct: pct(int(cohort?.merged7), int(cohort?.created)) },
+        invalidatedWithin7Days: { created: int(cohort?.created), count: int(cohort?.invalidated7), pct: pct(int(cohort?.invalidated7), int(cohort?.created)) },
+        withoutTargetByAge: { total: int(ages?.total), h24: int(ages?.h24), d7: int(ages?.d7), d30: int(ages?.d30), older: int(ages?.older) },
+        ambiguousSources: (() => {
+          const byReason = ambiguous.map((a) => ({ outcome: String(a.outcome), reason: str(a.reason), label: explainReason(str(a.reason)), count: int(a.n) }));
+          const hold = byReason.filter((a) => a.outcome === 'HOLD_UNRESOLVED').reduce((n, a) => n + a.count, 0);
+          const arbitration = byReason.filter((a) => a.outcome === 'ARBITRATION_REQUIRED').reduce((n, a) => n + a.count, 0);
+          const openCards: Record<string, number> = Object.fromEntries(cards.map((c) => [String(c.rule_code), int(c.n)]));
+          const openCardsTotal = Object.values(openCards).reduce((a, b) => a + b, 0);
+          return { total: hold + arbitration, hold, arbitration, byReason, openCards, openCardsTotal };
+        })(),
+        componentsWithoutActiveSource: { count: count('ACTIVE_COMPONENT_WITHOUT_SOURCE') },
+        activeWithoutActiveSource: { count: count('ACTIVE_OPERATION_WITHOUT_SOURCE') },
+        crossAccountOrParentCycles: {
+          count: count('CROSS_ACCOUNT_LINK') + count('PARENT_CYCLE'),
+          crossAccount: count('CROSS_ACCOUNT_LINK'), parentCycles: count('PARENT_CYCLE'),
+        },
+        t2EconomicAnswers: (() => {
+          const by: Record<string, number> = Object.fromEntries(t2.map((t) => [String(t.mode), int(t.n)]));
+          const total = Object.values(by).reduce((a, b) => a + b, 0);
+          const o = by.operation_only ?? 0;
+          const m = by.mixed ?? 0;
+          const f = by.fallback_only ?? 0;
+          return { total, operationOnly: o, mixed: m, fallbackOnly: f, operationOnlyPct: pct(o, total), mixedPct: pct(m, total), fallbackOnlyPct: pct(f, total) };
+        })(),
+      };
+      return {
+        period, accountId, computedAt: new Date().toISOString(),
+        indicators: INDICATORS.map((d) => ({ ...d, value: values[d.key] })),
+        anomalies,
+        hardAnomalyTotal: anomalies.reduce((n, a) => n + a.count, 0),
+        procedure: CORRECTION_PROCEDURE,
+      };
+    });
+  }
+}

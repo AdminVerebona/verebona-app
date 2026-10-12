@@ -37,6 +37,25 @@
  * Aucune cible d'équipement ou de pièce dans le graphe de dépendances : la
  * primitive d'entité (`writeCanonicalEntityField`) n'a pas d'appelant ici.
  * ══════════════════════════════════════════════════════════════════════════
+ *
+ * ══════════════════════════════════════════════════════════════════════════
+ * LOT 38 — O0 (CDC Opérations V1 §19, §24, B18, B24, C18, C23) : AUCUNE
+ * PROPAGATION GÉNÉRIQUE VERS L'ACQUISITION, LA VALORISATION OU L'AGENDA
+ *
+ *   · cibles d'acquisition et de valorisation (`SEMANTIC_ONLY_TARGETS`) :
+ *     jamais écrites NI proposées par ce moteur, quelle que soit la règle en
+ *     base (la migration 0315 désactive les règles connues ; une règle
+ *     ajoutée plus tard par `addDependency` reste sans effet). Elles ne
+ *     s'alimentent que par une sémantique explicite : règle contextualisée
+ *     de la projection T1 (justificatif d'achat du bien) → T3, ou preuve de
+ *     valorisation explicite (`valuationHistory`) ;
+ *   · `agenda_creation` : inerte. L'ancienne création d'un événement
+ *     générique « echeance » visait des colonnes absentes du schéma
+ *     (`asset_id`, `event_type`) et doublait T4, seul responsable de
+ *     l'agenda (`services/agenda/write-agenda-item.ts`) ;
+ *   · `recalculation` : n'injecte plus jamais la valeur source dans
+ *     `estimatedValue` (l'ancien `queueRecalculation`) ; rien n'est écrit.
+ * ══════════════════════════════════════════════════════════════════════════
  */
 
 import { db } from '@/db';
@@ -49,10 +68,27 @@ import { determineAction, createInconsistency, autoResolveForField } from './inc
 import { isFieldAllowedForCategory } from '@/lib/field-validator';
 import { acceptDetailDate } from '@/lib/asset-detail-rules';
 import { getCanonicalAssetState, resolveDefForFamily, writeCanonicalAssetField } from '@/services/canonical/asset-state';
-import { isExcludedKey } from '@/services/canonical/registry';
+import { isExcludedKey, resolveAlias } from '@/services/canonical/registry';
 
 /** Origine des écritures du moteur de propagation : règle déterministe, jamais USER. */
 export const PROPAGATION_ORIGIN = 'SYSTEM_RULE' as const;
+
+/**
+ * O0 (lot 38) : cibles réservées à une sémantique explicite (acquisition,
+ * valorisation). Le moteur générique ne les écrit ni ne les propose jamais.
+ */
+export const SEMANTIC_ONLY_TARGETS: ReadonlySet<string> = new Set([
+  'acquisitionDate', 'acquisitionPrice', 'acquisitionLocation', 'acquisitionCurrency',
+  'estimatedValue', 'estimatedValueDate', 'estimatedValueMode', 'estimatedValueCurrency',
+  'valuationLow', 'valuationHigh', 'valuationDate', 'valuationSource',
+]);
+
+/** La règle vise-t-elle une cible réservée (alias compris : `prixAchat`…) ? */
+export function isSemanticOnlyTarget(targetField: string): boolean {
+  if (SEMANTIC_ONLY_TARGETS.has(targetField)) return true;
+  const key = resolveAlias(targetField);
+  return key !== null && key !== undefined && SEMANTIC_ONLY_TARGETS.has(key);
+}
 
 /**
  * Règles de transformation appliquées à la valeur source. Une règle absente
@@ -288,81 +324,6 @@ async function loadAsset(assetId: number, accountId: number): Promise<AssetData 
   };
 }
 
-// ─── Agenda Item Creation ──────────────────────────────────────────────────
-
-async function createOrUpdateAgendaItem(
-  accountId: number,
-  assetId: number,
-  fieldKey: string,
-  dateValue: string,
-  triggerType: string,
-): Promise<boolean> {
-  // Map field to event type
-  const eventTypeMap: Record<string, string> = {
-    acquisitionDate: 'acquisition',
-    insuranceExpiry: 'assurance_expiration',
-    nextInspection: 'controle_technique',
-    warrantyEnd: 'garantie_expiration',
-    lastRevision: 'revision',
-    leaseEnd: 'bail_expiration',
-  };
-
-  const eventType = eventTypeMap[fieldKey] ?? 'echeance';
-  const labelMap: Record<string, string> = {
-    acquisitionDate: 'Date d\'acquisition',
-    insuranceExpiry: 'Échéance assurance',
-    nextInspection: 'Prochain contrôle technique',
-    warrantyEnd: 'Fin de garantie',
-    lastRevision: 'Dernière révision',
-    leaseEnd: 'Fin de bail',
-  };
-  const label = labelMap[fieldKey] ?? `Échéance ${fieldKey}`;
-
-  const date = new Date(dateValue);
-  if (isNaN(date.getTime())) return false;
-
-  // Check if agenda item already exists for this asset + event type + date
-  const [existing] = await db
-    .select({ id: agendaItems.id })
-    .from(agendaItems)
-    .where(
-      and(
-        eq(agendaItems.accountId, accountId),
-        // @ts-expect-error — assetId, eventType exist in DB but not in drizzle schema
-        eq(agendaItems.assetId, assetId),
-        // @ts-expect-error — same reason
-        eq(agendaItems.eventType, eventType),
-      ) as any,
-    )
-    .orderBy(agendaItems.startDate)
-    .limit(1);
-
-  if (existing) {
-    // Update existing agenda item
-    await db
-      .update(agendaItems)
-      .set({
-        startDate: date,
-        updatedAt: new Date() as any,
-      } as any)
-      .where(eq(agendaItems.id, existing.id));
-    return true;
-  }
-
-  // Create new agenda item
-  await db.insert(agendaItems).values({
-    accountId,
-    startDate: date,
-    eventType,
-    label,
-    originType: 'asset_field',
-    source: 'impact_propagation',
-    createdAt: new Date(),
-    updatedAt: new Date(),
-  } as any);
-  return true;
-}
-
 // ─── Main Processor ────────────────────────────────────────────────────────
 
 /**
@@ -473,26 +434,26 @@ async function processDependency(
 ): Promise<void> {
   const targetField = dep.targetField;
 
+  // O0 (lot 38) : acquisition et valorisation ne s'alimentent jamais par une
+  // propagation générique (règle en base ou non).
+  if (isSemanticOnlyTarget(targetField)) {
+    console.info(`[impact-propagation] règle ${dep.sourceField}→${targetField} ignorée : cible réservée à une sémantique explicite (O0)`);
+    return;
+  }
+
   switch (dep.impactType) {
     case 'propagation':
       await handleFieldPropagation(dep, asset, targetField, newValue, result);
       break;
 
     case 'agenda_creation':
-      if (typeof newValue === 'string' || typeof newValue === 'number') {
-        const dateStr = String(newValue);
-        if (/^\d{4}-\d{2}-\d{2}/.test(dateStr)) {
-          const created = await createOrUpdateAgendaItem(
-            asset.accountId, asset.id, targetField, dateStr, dep.sourceField,
-          );
-          if (created) result.agendaItemsCreated++;
-        }
-      }
+      // O0 (lot 38) : inerte — l'agenda relève de T4 (write-agenda-item).
       break;
 
     case 'recalculation':
-      // Mark for recalculation — triggers a lightweight re-evaluation
-      await queueRecalculation(asset, targetField, newValue, dep.confidence, result);
+      // Marqueur seulement (exports à régénérer) : aucune écriture, et jamais
+      // la valeur source injectée dans `estimatedValue` (ancien
+      // `queueRecalculation`, retiré au lot 38).
       break;
 
     case 'index_update':
@@ -660,31 +621,6 @@ async function applyFieldValue(
     default:
       console.warn(`[impact-propagation] ${f.key} non écrit (${f.reason ?? f.outcome}) pour le bien ${asset.id}`);
       return 'skipped';
-  }
-}
-
-async function queueRecalculation(
-  asset: AssetData,
-  fieldKey: string,
-  value: unknown,
-  confidence: string,
-  result: PropagationResult,
-): Promise<void> {
-  // For recalculations, we just mark the field and let the nightly catch-up handle it
-  // or the user can trigger a recalculation manually
-  if (fieldKey === 'valuation' && confidence === 'certain') {
-    // High-confidence recalculation → immediate
-    await enqueue({
-      accountId: asset.accountId,
-      assetId: asset.id,
-      triggerType: 'asset_updated',
-      source: `recalculation:${fieldKey}`,
-      metadata: {
-        changedFields: { estimatedValue: value },
-        requiresRevaluation: true,
-      },
-      priority: 0,
-    });
   }
 }
 

@@ -1,6 +1,7 @@
 /**
  * AgendaDomainService — pure domain logic, no DB access
  */
+import { agendaDatePassed, isPastHistoricalShownDone, type AgendaNatureSignals } from './agenda-historical';
 
 export type ManualStatus = 'realise' | 'annule' | null;
 export type EffectiveStatus = 'a_venir' | 'en_retard' | 'realise' | 'annule';
@@ -13,7 +14,7 @@ export type OriginType =
   | 'legacy_event_migration'
   | 'legacy_deadline_migration';
 
-export interface AgendaItemRaw {
+export interface AgendaItemRaw extends AgendaNatureSignals {
   startDate: string | null;
   startTime: string | null;
   endDate: string | null;
@@ -54,36 +55,20 @@ export interface AgendaDataConflictRef {
 /**
  * computeEffectiveStatus
  * Algorithm per plan §0.2
+ *
+ * Lot 47B (décision PO du 12/10) : un fait HISTORICAL passé sans statut est
+ * « réalisé » à l'affichage (jamais « en retard ») — calcul de lecture, rien
+ * n'est écrit. Règle partagée : `agenda-historical.ts`. Sans indice de nature
+ * (appelant qui ne les lit pas), comportement inchangé.
  */
 export function computeEffectiveStatus(item: AgendaItemRaw, now: Date = new Date()): EffectiveStatus {
-  if (item.manualStatus !== null && item.manualStatus !== undefined) {
+  if (item.manualStatus !== null && item.manualStatus !== undefined && item.manualStatus !== ('' as ManualStatus)) {
     return item.manualStatus as EffectiveStatus;
   }
-
-  const nowMs = now.getTime();
-
-  if (item.endDate) {
-    let compareMs: number;
-    if (item.endTime) {
-      compareMs = new Date(`${item.endDate}T${item.endTime}`).getTime();
-    } else {
-      // End of day
-      compareMs = new Date(`${item.endDate}T23:59:59`).getTime();
-    }
-    return compareMs < nowMs ? 'en_retard' : 'a_venir';
-  }
-
-  if (item.startDate) {
-    let compareMs: number;
-    if (item.startTime) {
-      compareMs = new Date(`${item.startDate}T${item.startTime}`).getTime();
-    } else {
-      compareMs = new Date(`${item.startDate}T23:59:59`).getTime();
-    }
-    return compareMs < nowMs ? 'en_retard' : 'a_venir';
-  }
-
-  return 'a_venir';
+  const passee = agendaDatePassed(item, now);
+  if (passee === null) return 'a_venir';
+  if (!passee) return 'a_venir';
+  return isPastHistoricalShownDone(item, now) ? 'realise' : 'en_retard';
 }
 
 /**

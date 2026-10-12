@@ -30,6 +30,7 @@ import { listUpcomingAgenda, countUpcomingAgenda } from './agenda';
 import { sumQualifiedExpenses } from './expenses';
 import { listMissingInformation } from './completeness';
 import { listActionables } from './actionables';
+import { findOperationDocuments, readAcquisition, readAssetHistory, readClaims, readContracts, readOperationCosts, readPayments } from './operations';
 
 /**
  * Lectures de BASE décorées par la couche canonique (SQL direct, bornées au
@@ -181,6 +182,14 @@ export function createCanonicalAccountDataRepository(legacy: BaseAccountDataPort
     listUpcomingAgenda: (accountId, opts) => listUpcomingAgenda(accountId, opts),
     // Lot 34 : « À traiter » ouverts et échéances actives (demandes d'actions).
     listActionables: (accountId, opts) => listActionables(accountId, opts),
+    // Lot 45 (O6) : lecture « Opération d'abord », non exclusive (C15).
+    readAssetHistory: (accountId, assetId, opts) => readAssetHistory(accountId, assetId, opts),
+    readClaims: (accountId, assetIds) => readClaims(accountId, assetIds),
+    readPayments: (accountId, opts) => readPayments(accountId, opts),
+    readAcquisition: (accountId, assetId, opts) => readAcquisition(accountId, assetId, opts),
+    readContracts: (accountId, assetIds, opts) => readContracts(accountId, assetIds, opts),
+    findOperationDocuments: (accountId, terms, assetId) => findOperationDocuments(accountId, terms, assetId),
+    readOperationCosts: (accountId, terms, assetIds) => readOperationCosts(accountId, terms, assetIds),
     // Lot 34 : documents en cours d'analyse ou en échec (« Où en est l'analyse
     // de mes documents ? »), les plus récents d'abord.
     async listDocumentsInAnalysis(accountId, { limit = 10 } = {}) {

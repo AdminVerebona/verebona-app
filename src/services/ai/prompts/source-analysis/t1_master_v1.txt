@@ -142,6 +142,37 @@ ENTITÉS ET RATTACHEMENTS
 
 Retourne dans `entities` les entités réellement concernées avec les indices qui justifient le rapprochement (`evidenceSignals`, `reason`) et un `score` entre 0 et 1. `multiAsset: true` si la source concerne plusieurs biens distincts. Un fournisseur commun, à lui seul, ne rattache pas un document à un équipement. Une liaison manuelle existante (KNOWN_TARGET) n’est jamais contredite silencieusement.
 
+CANDIDATS OPÉRATION (`businessOperationCandidates`)
+
+Une Opération est une réalité métier durable — événement, engagement ou relation — distincte des documents qui la prouvent. Tu ne crées jamais d’Opération : tu signales seulement, dans `businessOperationCandidates`, les réalités métier que le document ÉTABLIT. Le serveur décidera ensuite (recherche d’une Opération existante, création ou non). Ce tableau est SÉPARÉ de `facts` : il ne remplace aucun fait, il les cite.
+
+O1 — PAR DÉFAUT, AUCUN CANDIDAT. Une date, un montant, un fournisseur, un titre de document ou leur combinaison ne suffisent JAMAIS. Le tableau est vide (ou omis) pour : notice, mode d’emploi, fiche technique, certificat descriptif, photo, plan ; garantie ou date d’expiration seule ; échéance pure ou rappel ; relevé de compteur, kilométrage ; valeur estimée, expertise de valorisation, prix souhaité de vente ; simulation ou projet non engagé ; caractéristique (adresse, VIN, immatriculation, numéro de série, puissance) ; montant dont le rôle n’est pas compris ; document illisible.
+
+O2 — UN CANDIDAT SEULEMENT SI LE DOCUMENT ÉTABLIT UNE RÉALITÉ MÉTIER. Correspondances usuelles (`typeHint` / `statusHint`) :
+- facture ou rapport d’une réparation, d’un entretien, de travaux, d’une installation, d’un contrôle réalisé comme prestation : INTERVENTION / REALIZED ;
+- devis accepté, bon de commande signé, intervention décidée et planifiée : INTERVENTION / ENVISAGED (un devis non accepté n’en produit un que s’il établit un projet distinct et engagé) ;
+- contrat ou police d’assurance, abonnement, contrat d’entretien, location, LLD, LOA : CONTRACT (REALIZED si en vigueur, ENVISAGED si l’effet est futur) ;
+- contrat de crédit, offre de prêt acceptée, tableau d’amortissement d’un prêt : FINANCING ;
+- facture ou ticket d’achat du bien : ACQUISITION / REALIZED ;
+- acte de vente, certificat de cession, preuve fiable de vente : DISPOSAL / REALIZED ;
+- déclaration de sinistre, constat, courrier d’assureur sur un sinistre, rapport d’expertise sinistre : CLAIM / REALIZED ;
+- réalité métier certaine mais type non qualifiable : `typeHint: null` (jamais OTHER par défaut) ; OTHER seulement pour une opération réelle comprise qui ne relève d’aucun des six autres types.
+
+O3 — UNE RÉALITÉ, UN CANDIDAT. Les lignes d’une même facture (pièces, main-d’œuvre, déplacement) restent UN candidat. Plusieurs candidats seulement si le document prouve plusieurs réalités réellement indépendantes (deux travaux distincts, références distinctes). Une facture multi-biens d’un même événement reste un candidat avec plusieurs `targetHints`. Au plus 20 candidats : au-delà, regroupe au niveau métier.
+
+O4 — RÔLE DE LA SOURCE (`sourceRoleHint`) : QUOTE (devis), ORDER (commande, acceptation), INVOICE (facture), DEPOSIT_INVOICE (facture d’acompte), CREDIT_NOTE (avoir), REFUND_PROOF (remboursement, aide reçue), PAYMENT_PROOF (preuve de règlement : relevé, virement, reçu de paiement), CONTRACT_DOCUMENT, CLAIM_DOCUMENT, SALE_DOCUMENT, REPORT (rapport d’intervention, de diagnostic, d’expertise), OTHER_EVIDENCE.
+Une preuve de paiement n’est JAMAIS un coût : son montant a le rôle PAYMENT, et elle ne suffit pas seule (`confidence: probable`). Un acompte, un solde et un avoir se distinguent par le rôle de la source et la portée du montant (`amountScope` : TOTAL, DEPOSIT, BALANCE, INSTALLMENT) ; un avoir est une REDUCTION ; une facture finale qui déduit un acompte déjà versé indique le TOTAL et, s’il est lu, le DEPOSIT.
+
+O5 — CONTENU D’UN CANDIDAT :
+- `candidateKey` : clé courte unique dans la réponse (op1, op2…) ; `established` : true si le document établit la réalité, sinon false avec `exclusionReason` (VALUATION_ONLY, DEADLINE_ONLY, DESCRIPTIVE_ONLY, SIMULATION_ONLY, WARRANTY_ONLY, METER_READING_ONLY, UNQUALIFIED_AMOUNT, OTHER) — un candidat non établi peut aussi simplement être omis ;
+- `confidence` : certain = le document établit l’existence ; probable = il la suggère sans suffire seul ; conflictual = il se contredit ;
+- `summary` : synthèse factuelle courte (« Remplacement du kit d’embrayage de la Clio ») ; `provider` : prestataire ou organisme principal s’il est lu ;
+- `targetHints` : bien(s), équipement(s) ou pièce(s) concernés, identifiant d’ENTITY_CONTEXT seulement (sinon `entityId: null` et le libellé lu) — mêmes règles que U7 à U9 ;
+- `businessReferences` : références exploitables (`kind` : INVOICE, QUOTE, ORDER, WORK_ORDER, CONTRACT, POLICY, CLAIM, LOAN, CUSTOMER, DELIVERY, OTHER) ;
+- `temporalHints` : `plannedDate`, `startDate`, `realizedDate`, `endDate` (AAAA-MM-JJ) selon leur sens métier : date de prestation ou de survenue plutôt que date de facture ; date d’effet d’un contrat en `startDate` ; jamais la date d’émission d’un devis comme date prévue ;
+- `financialHints` : un montant seulement si son rôle est compris (FORECAST_COST, REALIZED_COST, REDUCTION, REFUND, INDEMNITY, PROCEED, PAYMENT), en UNITÉS MINEURES (centimes : 749,00 € → 74900), avec la devise LUE en code ISO (EUR, CHF, GBP…, jamais convertie) ; le montant documentaire `document.amountCents` n’est jamais recopié d’office comme coût ;
+- `evidenceFactIndexes` : index (0 pour le premier) des faits de `facts` qui prouvent le candidat — au moins un si `established` ; chaque `financialHints[].factIndex` désigne le fait qui porte ce montant. Tout montant ou toute date cité doit donc aussi figurer dans `facts` avec sa preuve.
+
 SORTIE ANALYZE_DOCUMENT
 
 La structure technique exacte de la réponse — propriétés, types, champs obligatoires, valeurs nulles permises, énumérations, objets de preuve — est fixée par le contrat runtime joint à l’appel ; ce texte ne la recopie pas. Règles de contenu :
@@ -154,6 +185,7 @@ La structure technique exacte de la réponse — propriétés, types, champs obl
 Cas typiques (illustrations, pas un document unique) :
 - ticket d’achat du bien : `acquisitionDate` et `acquisitionPrice` (euros) ciblés sur le bien, événement `purchase` HISTORICAL, preuve = extrait lu (ligne d’article, total) ;
 - mention « Dernier entretien : 15/11/2026 » : `lastRevision`, événement `maintenance` HISTORICAL, jamais une prochaine échéance ;
-- observation visuelle non écrite (appareil fixé au mur) : provenance VISUAL_ANALYSIS, aucun extrait, description visuelle et zone de l’image, cible équipement sans identifiant si l’équipement n’est pas un candidat fourni.
+- observation visuelle non écrite (appareil fixé au mur) : provenance VISUAL_ANALYSIS, aucun extrait, description visuelle et zone de l’image, cible équipement sans identifiant si l’équipement n’est pas un candidat fourni ;
+- facture de réparation de la Clio (749,00 € TTC, prestation du 02/06/2026) : un candidat INTERVENTION REALIZED, rôle INVOICE, `realizedDate` 2026-06-02, montant REALIZED_COST 74900 EUR citant le fait du total ; une notice ou une photo du même véhicule : aucun candidat.
 
 Réponds uniquement par le JSON de la branche TASK demandée, sans texte autour.

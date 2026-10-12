@@ -12,6 +12,9 @@ import type { RunSummary } from '@/services/migration/cdc15/report';
 import type { RestoreResult as Cdc15RestoreResult } from '@/services/migration/cdc15/backup';
 import type { BackfillReport as DalReport } from '@/services/documents/document-asset-links/backfill';
 import type { DedupeReport, SourceLinksReport } from '@/services/agenda/backfill/agenda-backfill';
+import type { AssetAccountBackfillReport } from '@/services/assets/asset-account-backfill';
+import type { StructuredMigrationReport } from '@/services/business-operations/consolidation/asset-data-consolidator';
+import type { ClaimMigrationReport } from '@/services/business-operations/consolidation/claim-migration';
 import type { BackfillAction, BackfillScript } from './definitions';
 
 export interface BackfillSummary {
@@ -215,6 +218,104 @@ function cdc15(action: BackfillAction, out: RawBackfillOutput): BackfillSummary 
   };
 }
 
+function assetAccount(out: RawBackfillOutput): BackfillSummary {
+  const r = out.result as AssetAccountBackfillReport;
+  const somme = (f: (x: AssetAccountBackfillReport['results'][number]) => number) => r.results.reduce((n, x) => n + f(x), 0);
+  const simulation = r.mode === 'simulate';
+  const gardes = r.results.filter((x) => x.keptFileIds.length > 0);
+  return {
+    headline: `${simulation ? 'Simulation' : 'Application'} : ${r.processed} bien(s) ${simulation ? 'à remettre' : 'remis'} en cohérence `
+      + `sur ${r.detected} détecté(s), ${r.failed.length} échec(s)${r.more ? ' — d’autres biens restent à traiter' : ''}.`,
+    scriptRunId: null,
+    restorable: false,
+    counters: [
+      { label: 'Biens détectés (ce passage)', value: r.detected },
+      { label: simulation ? 'Biens à traiter' : 'Biens traités', value: r.processed },
+      { label: 'Documents qui suivent le bien', value: somme((x) => x.movedFileIds.length) },
+      { label: 'Documents multi-biens restés (lien retiré)', value: somme((x) => x.keptFileIds.length) },
+      { label: 'Liens document ↔ bien retirés', value: somme((x) => x.linksRemoved) },
+      { label: 'Éléments d’agenda qui suivent', value: somme((x) => x.movedAgendaItemIds.length) },
+      { label: 'Éléments d’agenda multi-biens détachés', value: somme((x) => x.detachedAgendaItemIds.length) },
+      { label: 'Actions « À traiter » déplacées', value: somme((x) => x.toProcessActionsMoved) },
+      { label: 'Preuves retirées', value: somme((x) => x.evidenceWithdrawn) },
+      { label: 'Fournisseurs réutilisés / copiés', value: `${somme((x) => x.suppliersReused)} / ${somme((x) => x.suppliersCopied)}` },
+      { label: 'Transmissions en attente annulées', value: somme((x) => x.transmissionsCancelled) },
+      { label: 'Sources d’Opération désactivées', value: somme((x) => x.operationSourcesDeactivated) },
+    ],
+    ambiguous: {
+      count: gardes.length,
+      samples: echantillon(gardes, (x) => `bien ${x.assetId} (compte ${x.fromAccountId} → ${x.toAccountId}) — documents restés : ${x.keptFileIds.join(', ')}`),
+    },
+    conflicts: { count: r.failed.length, samples: echantillon(r.failed, (f) => `bien ${f.assetId} (compte ${f.fromAccountId}) — ${f.error}`) },
+    warnings: [],
+  };
+}
+
+const NATURE_LABELS: Record<keyof StructuredMigrationReport['outcomes'], string> = {
+  ACQUISITION: 'Acquisitions', DISPOSAL: 'Cessions', CONTRACT: 'Contrats',
+};
+
+function operationsStructured(out: RawBackfillOutput): BackfillSummary {
+  const r = out.result as StructuredMigrationReport;
+  const simulation = r.mode === 'simulate';
+  const n = (nature: keyof StructuredMigrationReport['outcomes'], outcome: string) => (r.outcomes[nature] as Record<string, number | undefined>)[outcome] ?? 0;
+  const counters: BackfillSummary['counters'] = [
+    { label: 'Biens examinés (ce passage)', value: r.scanned },
+    { label: 'Écritures Opération', value: r.changes },
+  ];
+  for (const k of ['ACQUISITION', 'DISPOSAL', 'CONTRACT'] as const) {
+    counters.push({
+      label: NATURE_LABELS[k],
+      value: `${n(k, 'CREATE_NEW')} ${simulation ? 'à créer' : 'créée(s)'} · ${n(k, 'MATCH_AND_ENRICH')} rapprochée(s) d’un document · `
+        + `${n(k, 'LINKED')} déjà liée(s) · ${n(k, 'WITHDRAWN')} retirée(s) · ${n(k, 'HOLD_UNRESOLVED') + n(k, 'ARBITRATION_REQUIRED')} sans création`,
+    });
+  }
+  return {
+    headline: `${simulation ? 'Simulation' : 'Application'} : ${r.processed} bien(s) ${simulation ? 'à réconcilier' : 'réconcilié(s)'} `
+      + `sur ${r.scanned} examiné(s), ${r.changes} écriture(s) Opération, ${r.failed.length} échec(s)`
+      + `${r.more ? ' — d’autres biens restent à examiner' : ''}.`,
+    scriptRunId: null,
+    restorable: false,
+    counters,
+    ambiguous: {
+      count: r.holds.length,
+      samples: echantillon(r.holds, (h) => `bien ${h.assetId} (compte ${h.accountId}) · ${NATURE_LABELS[h.nature]} — ${h.reason ?? 'ambiguïté'}`),
+    },
+    conflicts: { count: r.failed.length, samples: echantillon(r.failed, (f) => `bien ${f.assetId} (compte ${f.accountId}) — ${f.error}`) },
+    warnings: [],
+  };
+}
+
+const CLAIM_OUTCOME_LABELS: Record<string, string> = {
+  CREATED: 'créé', MATCHED: 'rapproché d’un sinistre existant', LINKED: 'déjà migré', RESYNCED: 'resynchronisé (ancien client)',
+  BELOW_THRESHOLD: 'sous le seuil (rien créé)', HOLD_AMBIGUOUS: 'plusieurs sinistres possibles (rien créé)', EMPTY: 'vide', UNCHANGED: 'inchangé',
+};
+
+function operationsClaims(out: RawBackfillOutput): BackfillSummary {
+  const r = out.result as ClaimMigrationReport;
+  const simulation = r.mode === 'simulate';
+  const n = (k: keyof typeof r.outcomes) => r.outcomes[k] ?? 0;
+  return {
+    headline: `${simulation ? 'Simulation' : 'Application'} : ${r.processed} bien(s) examiné(s) sur ${r.scanned}, `
+      + `${n('CREATED')} sinistre(s) ${simulation ? 'à créer' : 'créé(s)'}, ${n('MATCHED') + n('LINKED')} rapproché(s), `
+      + `${r.changes} écriture(s), ${r.failed.length} échec(s)${r.more ? ' — d’autres biens restent à examiner' : ''}.`,
+    scriptRunId: null,
+    restorable: false,
+    counters: [
+      { label: 'Biens examinés (ce passage)', value: r.scanned },
+      { label: 'Écritures', value: r.changes },
+      ...(['CREATED', 'MATCHED', 'LINKED', 'RESYNCED', 'BELOW_THRESHOLD', 'HOLD_AMBIGUOUS', 'EMPTY'] as const)
+        .map((k) => ({ label: `Sinistres : ${CLAIM_OUTCOME_LABELS[k]}`, value: n(k) })),
+    ],
+    ambiguous: {
+      count: r.holds.length,
+      samples: echantillon(r.holds, (h) => `bien ${h.assetId} (compte ${h.accountId}) — ${CLAIM_OUTCOME_LABELS[h.outcome] ?? h.outcome}${h.reason ? ` · ${h.reason}` : ''}`),
+    },
+    conflicts: { count: r.failed.length, samples: echantillon(r.failed, (f) => `bien ${f.assetId} (compte ${f.accountId}) — ${f.error}`) },
+    warnings: [],
+  };
+}
+
 /** Synthèse lisible d'une exécution terminée (pure). */
 export function summarizeBackfill(script: BackfillScript, action: BackfillAction, step: string | null, out: RawBackfillOutput): BackfillSummary {
   switch (script) {
@@ -222,6 +323,9 @@ export function summarizeBackfill(script: BackfillScript, action: BackfillAction
     case 'document-asset-links': return documentAssetLinks(out);
     case 'agenda': return agenda(step, out);
     case 'cdc15': return cdc15(action, out);
+    case 'asset-account': return assetAccount(out);
+    case 'operations-structured': return operationsStructured(out);
+    case 'operations-claims': return operationsClaims(out);
   }
 }
 

@@ -182,9 +182,12 @@ scenario('L22-B', 'Lot 22 — finitions (journal des entités, cache T4, cohére
     });
 
     it('propagation : primitive canonique (SYSTEM_RULE) ; valeur USER jamais écrasée → conflit « À traiter »', async () => {
+      // Lot 38 (O0) : une règle générique vers l'acquisition ou la valorisation
+      // n'a plus d'effet — le moteur est éprouvé sur une cible ordinaire
+      // (`charges`, centimes → euros).
       const [r] = await sql<{ id: number }[]>`
         INSERT INTO field_dependencies (source_field, target_field, category, impact_type, transform_rule, confidence, is_active)
-        VALUES ('l22AmountCents', 'acquisitionPrice', NULL, 'propagation', 'cents_to_euros', 'certain', true) RETURNING id`;
+        VALUES ('l22ChargesCents', 'charges', NULL, 'propagation', 'cents_to_euros', 'certain', true) RETURNING id`;
       regle = r.id;
       (await import('@/services/coherence/field-dependency.service')).clearDependencyCache();
       const { enqueue } = await import('@/services/coherence/impact-queue.service');
@@ -192,29 +195,27 @@ scenario('L22-B', 'Lot 22 — finitions (journal des entités, cache T4, cohére
 
       const compte = await make.account();
       const vide = await make.asset(compte, { category: 'IMMOBILIER', name: 'Vide' });
-      // Prix saisi à l'écran : colonne seule, sans origine → USER (vue canonique).
-      const saisi = await make.asset(compte, { category: 'IMMOBILIER', name: 'Saisi', purchasePriceCents: 150000 });
+      // Charges saisies à l'écran : valeur sans origine → USER (vue canonique).
+      const saisi = await make.asset(compte, { category: 'IMMOBILIER', name: 'Saisi', keyCharacteristics: { charges: 1500 } });
       for (const a of [vide, saisi]) {
-        await enqueue({ accountId: compte.id, assetId: a.id, triggerType: 'manual_request', source: 'e2e', metadata: { changedFields: { l22AmountCents: 189900 } }, priority: 0 });
+        await enqueue({ accountId: compte.id, assetId: a.id, triggerType: 'manual_request', source: 'e2e', metadata: { changedFields: { l22ChargesCents: 189900 } }, priority: 0 });
       }
       const res = await processPendingImpacts(25, compte.id);
       expect(res).toMatchObject({ fieldsApplied: 1, fieldsConflicted: 1, errors: 0 });
 
-      const [v] = await sql<{ kc: string | null; ppc: number | null }[]>`SELECT key_characteristics AS kc, purchase_price_cents AS ppc FROM assets WHERE id = ${vide.id}`;
-      expect(JSON.parse(v.kc ?? '{}')).toMatchObject({ acquisitionPrice: 1899, acquisitionPrice__origin: 'SYSTEM_RULE' });
-      expect(v.ppc).toBe(189900);
+      const [v] = await sql<{ kc: string | null }[]>`SELECT key_characteristics AS kc FROM assets WHERE id = ${vide.id}`;
+      expect(JSON.parse(v.kc ?? '{}')).toMatchObject({ charges: 1899, charges__origin: 'SYSTEM_RULE' });
       const [j] = await sql<{ origin: string; source_type: string; source_id: string }[]>`
-        SELECT origin, source_type, source_id FROM canonical_field_writes WHERE asset_id = ${vide.id} AND canonical_key = 'acquisitionPrice'`;
-      expect(j).toEqual({ origin: 'SYSTEM_RULE', source_type: 'impact_propagation', source_id: 'l22AmountCents' });
-      const [{ n: traces }] = await sql<{ n: number }[]>`SELECT count(*)::int AS n FROM ai_field_updates WHERE asset_id = ${vide.id} AND field_key = 'acquisitionPrice'`;
+        SELECT origin, source_type, source_id FROM canonical_field_writes WHERE asset_id = ${vide.id} AND canonical_key = 'charges'`;
+      expect(j).toEqual({ origin: 'SYSTEM_RULE', source_type: 'impact_propagation', source_id: 'l22ChargesCents' });
+      const [{ n: traces }] = await sql<{ n: number }[]>`SELECT count(*)::int AS n FROM ai_field_updates WHERE asset_id = ${vide.id} AND field_key = 'charges'`;
       expect(traces).toBe(1);
 
-      const [s] = await sql<{ kc: string | null; ppc: number | null }[]>`SELECT key_characteristics AS kc, purchase_price_cents AS ppc FROM assets WHERE id = ${saisi.id}`;
-      expect(s.ppc).toBe(150000);
-      expect(JSON.parse(s.kc ?? '{}').acquisitionPrice).toBeUndefined();
+      const [s] = await sql<{ kc: string | null }[]>`SELECT key_characteristics AS kc FROM assets WHERE id = ${saisi.id}`;
+      expect(JSON.parse(s.kc ?? '{}').charges).toBe(1500);
       const conflits = await sql<{ field_key: string; current_value: string; proposed_value: string; source_type: string; status: string }[]>`
         SELECT field_key, current_value, proposed_value, source_type, status FROM inconsistency_registry WHERE asset_id = ${saisi.id}`;
-      expect(conflits).toEqual([{ field_key: 'acquisitionPrice', current_value: '1500', proposed_value: '1899', source_type: 'reconciliation', status: 'open' }]);
+      expect(conflits).toEqual([{ field_key: 'charges', current_value: '1500', proposed_value: '1899', source_type: 'reconciliation', status: 'open' }]);
       // La carte existe dans « À traiter » (À arbitrer).
       const { listOpenReconciliationConflicts } = await import('@/services/ai/reconciliation/to-process-conflicts');
       const cartes = await listOpenReconciliationConflicts(compte.id);

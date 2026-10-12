@@ -281,6 +281,26 @@ export const OPTIONAL_MASTER_VARIABLES: Readonly<Record<string, readonly string[
   t1_master_v1: ['ACCOUNT_CAPABILITIES'],
 };
 
+/**
+ * Branches OPTIONNELLES d'un master (lot 42) : ajoutées après coup, elles
+ * peuvent manquer dans le texte d'une version BO antérieure. Leur absence
+ * n'est JAMAIS bloquante (activation, retour arrière, promotion d'une
+ * version de configuration) : les appels de cette branche sont refusés avant
+ * tout contact fournisseur (`TASK_BRANCH_MISSING`) et l'appelant garde son
+ * repli déterministe ; les autres branches fonctionnent normalement. Le
+ * fichier du dépôt, lui, doit les contenir (`prompts:check`).
+ *   · t3_master_v1 / OPERATION_MATCH : rapprochement sémantique M3 des
+ *     Opérations — sans la branche, les cas restent en attente.
+ */
+export const OPTIONAL_MASTER_TASKS: Readonly<Record<string, readonly string[]>> = {
+  t3_master_v1: ['OPERATION_MATCH'],
+};
+
+/** Branche optionnelle pour ce master (`OPTIONAL_MASTER_TASKS`). */
+export function isOptionalMasterTask(masterPromptCode: string, task: string): boolean {
+  return (OPTIONAL_MASTER_TASKS[masterPromptCode] ?? []).includes(task);
+}
+
 /** Variable optionnelle pour ce master (`OPTIONAL_MASTER_VARIABLES`). */
 export function isOptionalMasterVariable(masterPromptCode: string, name: string): boolean {
   return (OPTIONAL_MASTER_VARIABLES[masterPromptCode] ?? []).includes(name);

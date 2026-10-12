@@ -12,12 +12,13 @@
  *    classique et tri uniquement.
  *  - Aucune criticité, aucun bouton de création (SUP-012).
  *  - Lot 25 : accès à la page « Exploitation » (lien en tête d'onglet).
+ *  - Lot 47A : accès au diagnostic « Opérations » (lien en tête d'onglet).
  *
  * Le tri et la page vivent dans l'URL : ils sont conservés au retour de
  * l'écran de traitement (UX-004).
  */
 import Link from 'next/link';
-import { ArrowDown, ArrowUp, ChevronLeft, ChevronRight, ServerCog } from 'lucide-react';
+import { ArrowDown, ArrowUp, ChevronLeft, ChevronRight, Layers, ServerCog } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { formatDateTime } from '@/lib/admin/format';
 import type { AnomalyListItem, DomainCounter } from '@/services/admin/anomaly.service';
@@ -172,6 +173,14 @@ export function SupervisionTab({
         <p className="text-sm text-muted-foreground">Santé détaillée, rattrapages de données, tâches planifiées et configuration.</p>
         <Button asChild size="sm" variant="outline">
           <Link href="/admin/exploitation"><ServerCog className="h-4 w-4 mr-1.5" />Exploitation</Link>
+        </Button>
+      </div>
+      {/* Lot 47A (O9) : BO diagnostic des Opérations (liste, détail, indicateurs
+          C26.2, anomalies dures) — lecture seule, hors barre latérale. */}
+      <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border bg-card p-4">
+        <p className="text-sm text-muted-foreground">Opérations métier : diagnostic en lecture seule, indicateurs de qualité et anomalies dures.</p>
+        <Button asChild size="sm" variant="outline">
+          <Link href="/admin/operations"><Layers className="h-4 w-4 mr-1.5" />Opérations</Link>
         </Button>
       </div>
       <Counters />

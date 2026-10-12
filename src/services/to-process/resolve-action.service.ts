@@ -70,6 +70,11 @@ export interface FieldWriter {
    * D-13, proposition de statut D-15…) ; ne lève jamais. Lot 14.
    */
   afterCommit?: (p: { accountId: number; targetId: number; value: unknown; previousValue: unknown; userId: number | null }) => Promise<void>;
+  /**
+   * Effet hors transaction après une ANNULATION (valeur restaurée) ; ne lève
+   * jamais. Lot 43 : statut du bien rétabli → Opérations réévaluées (TRG-010).
+   */
+  afterUndo?: (p: { accountId: number; targetId: number; value: unknown }) => Promise<void>;
 }
 
 const FIELD_WRITERS: FieldWriter[] = [
@@ -329,6 +334,13 @@ export async function resolveArbitration(
       return resolveDocumentAssetConflict(tx, action, value, accountId, options);
     }
 
+    // Ambiguïtés de consolidation des Opérations (lot 42, ch. 20, C19) :
+    // décision durable (C6.3, B19) puis reconsolidation après commit.
+    {
+      const { isOperationCardRule, resolveOperationCard } = await import('./operation-cards');
+      if (isOperationCardRule(action.ruleCode)) return resolveOperationCard(tx, action, value, accountId, options);
+    }
+
     // Donnée de BIEN décidée par la réconciliation (DATA-REGISTRATION,
     // DATA-ACQUISITION-PRICE — lot 32, L32-1) : primitive canonique, origine
     // USER ; champ sans objet pour ce bien (vélo) → carte retirée.
@@ -452,6 +464,11 @@ export async function undoArbitration(
   }
 
   {
+    const { isOperationCardRule, undoOperationCard } = await import('./operation-cards');
+    if (isOperationCardRule(action.ruleCode)) return undoOperationCard(action, accountId);
+  }
+
+  {
     const { isAssetFieldCard, undoAssetFieldCard } = await import('./asset-field-cards');
     if (isAssetFieldCard(action)) return undoAssetFieldCard(action, accountId);
   }
@@ -501,6 +518,7 @@ export async function undoArbitration(
 
   // Lien N-N : le lien USER posé par la résolution est retiré (hors transaction).
   await relation?.afterCommit?.({ accountId, targetId: action.targetId, value: previousValue ?? null, previousValue: applied, undo: true });
+  if (!relation) await (writer as FieldWriter).afterUndo?.({ accountId, targetId: action.targetId, value: previousValue ?? null });
 
   return { ok: true, previousValue };
 }

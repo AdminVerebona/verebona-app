@@ -34,6 +34,11 @@
  * Réponse : l'état complet `{ assetId, commercial, rental, insurance, claim,
  * finance, updatedAt, updatedBy, version }`.
  *
+ * Lot 44 (O5) : la sous-rubrique « Sinistre » n'est plus saisie ici (rubrique
+ * Sinistres de la fiche, `/api/assets/[id]/claims`, ouverte à toutes les
+ * offres) ; une écriture `claim` d'un ancien client est encore acceptée et
+ * reportée sur l'Opération CLAIM (compatibilité Q11).
+ *
  * GET `?include=references` : ajoute `references` (pièces, photos,
  * événements sinistre, suggestions de points forts) pour les sélecteurs du
  * formulaire.
@@ -186,6 +191,19 @@ export async function PATCH(request: NextRequest, { params }: Ctx) {
         },
         { status: 409 },
       );
+    }
+
+    // Lot 44 (O5, Q11) : le Sinistre est une Opération CLAIM. Une écriture de
+    // l'ancienne sous-rubrique (ancien client, onglet resté ouvert) est
+    // reportée sur le sinistre qu'elle reflète — jamais une seconde source de
+    // vérité. Non bloquant : la tâche interne de migration rattrape un échec.
+    if (result.patch.set.claim || result.patch.unset.claim?.length) {
+      try {
+        const { migrateAssetClaim } = await import('@/services/business-operations/consolidation/claim-migration');
+        await migrateAssetClaim(accountId, assetId);
+      } catch (e) {
+        console.error(`[additional-infos PATCH] report sur le sinistre du bien ${assetId} :`, (e as Error).message);
+      }
     }
 
     // CDC Assistant §25.7, §31.7 : la fiche du bien a changé — les caches de

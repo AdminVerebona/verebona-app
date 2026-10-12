@@ -34,7 +34,11 @@
  */
 import { z } from 'zod';
 import { normalizeDateValue } from '@/services/canonical/registry';
-import { T1AnalyzeDocumentOutput, t1Fact, t1Table, type T1Fact } from './t1-contract';
+import {
+  T1AnalyzeDocumentOutput, t1Fact, t1OperationCandidate, t1Table, type T1Fact,
+  T1_MAX_OPERATION_CANDIDATES, T1_OPERATION_TYPES, T1_OPERATION_STATUSES, T1_SOURCE_ROLES, T1_REFERENCE_KINDS,
+  T1_EXCLUSION_REASONS, T1_FINANCIAL_ROLES, T1_AMOUNT_SCOPES,
+} from './t1-contract';
 
 /** Bornes PAR LOT du contrat (lot 34F : jamais des bornes du document). */
 export const T1_MAX_FACTS = 300;
@@ -96,6 +100,15 @@ export interface T1NormalisationReport {
   overflow?: T1Overflow;
   /** Lot 34F — éléments écartés, conservés tels quels. */
   dropped?: T1DroppedItem[];
+  /**
+   * Lot 40 — candidats Opération mal formés écartés SEULS (le document et
+   * ses faits restent) ; ce ne sont pas des faits : jamais dans `dropped`.
+   */
+  droppedCandidates?: number;
+  /** Lot 40 — candidats au-delà de 20 (T1-OP-008 : regrouper ou signaler, jamais plus). */
+  truncatedCandidates?: number;
+  /** Lot 40 — preuves (index de faits) ne désignant aucun fait conservé, retirées. */
+  unresolvedCandidateEvidence?: number;
 }
 
 /** Tableau validé SANS borne de lignes (lot de débordement). */
@@ -292,6 +305,11 @@ function prepare(brut: unknown): unknown {
   }
 
   // ── Faits : lots de 300 ; valeur trop longue ou fait invalide écarté seul (conservé) ─
+  // Lot 40 : index d'origine d'un fait → index dans la liste rendue (lot
+  // principal puis débordement, ordre de `applyOverflow`). Les candidats
+  // Opération citent les faits PAR INDEX : un fait écarté ou déplacé décale
+  // les suivants, les références sont recalées ici.
+  const indexFaits = new Map<number, number>();
   if (Array.isArray(out.facts)) {
     const facts = out.facts as unknown[];
     const valides: unknown[] = [];
@@ -326,10 +344,20 @@ function prepare(brut: unknown): unknown {
       }
       // Lot principal : la forme d'origine (le contrat strict la valide) ;
       // au-delà de 300 : lot suivant, sous sa forme validée.
-      if (valides.length < T1_MAX_FACTS) valides.push(f);
-      else { overflow.facts.push(r.data); report.truncatedFacts++; }
+      if (valides.length < T1_MAX_FACTS) { indexFaits.set(i, valides.length); valides.push(f); }
+      else { indexFaits.set(i, T1_MAX_FACTS + overflow.facts.length); overflow.facts.push(r.data); report.truncatedFacts++; }
     });
     out.facts = valides;
+  }
+
+  // ── Candidats Opération (lot 40, C3.1) : un candidat invalide est écarté seul ─
+  if ('businessOperationCandidates' in out) {
+    const r = prepareCandidates(out.businessOperationCandidates, indexFaits);
+    if (r.candidates === null) delete out.businessOperationCandidates;
+    else out.businessOperationCandidates = r.candidates;
+    if (r.dropped) report.droppedCandidates = r.dropped;
+    if (r.truncated) report.truncatedCandidates = r.truncated;
+    if (r.unresolved) report.unresolvedCandidateEvidence = r.unresolved;
   }
 
   if (overflow.facts.length || overflow.tables || overflow.observations.length || overflow.transcriptionTail
@@ -339,6 +367,93 @@ function prepare(brut: unknown): unknown {
   if (dropped.length) report.dropped = dropped;
   out._normalisation = report;
   return out;
+}
+
+const majuscule = (v: unknown) => (typeof v === 'string' ? v.trim().toUpperCase().replace(/[\s-]+/g, '_') : v);
+const dansListe = <T extends string>(liste: readonly T[], v: unknown): T | null =>
+  (typeof v === 'string' && (liste as readonly string[]).includes(v) ? v as T : null);
+/** Symboles monétaires non ambigus → ISO 4217 ; « $ » reste illisible (USD ? CAD ?). */
+const SYMBOLES: Readonly<Record<string, string>> = { '€': 'EUR', EURO: 'EUR', EUROS: 'EUR', '£': 'GBP', FR: 'CHF', 'FR.': 'CHF', SFR: 'CHF' };
+
+/**
+ * Candidats Opération du modèle → forme du contrat, élément par élément
+ * (lot 40). Rien n'est inventé : vocabulaire inconnu → null (jamais OTHER),
+ * date non ISO normalisée sinon retirée, montant non entier ou devise
+ * illisible → indice financier retiré, index de faits recalés (fait écarté :
+ * référence retirée). Rend `null` si la valeur n'est pas une liste.
+ */
+function prepareCandidates(brut: unknown, indexFaits: Map<number, number>): {
+  candidates: unknown[] | null; dropped: number; truncated: number; unresolved: number;
+} {
+  if (!Array.isArray(brut)) return { candidates: null, dropped: brut === undefined || brut === null ? 0 : 1, truncated: 0, unresolved: 0 };
+  let dropped = 0;
+  let unresolved = 0;
+  const recale = (v: unknown): number | null => {
+    if (typeof v !== 'number' || !Number.isInteger(v)) return null;
+    const n = indexFaits.get(v);
+    if (n === undefined) { unresolved++; return null; }
+    return n;
+  };
+  const cles = new Set<string>();
+  const valides: unknown[] = [];
+  brut.forEach((c, i) => {
+    if (!isObj(c)) { dropped++; return; }
+    const o = structuredClone(c);
+    // Clé locale : présente et unique (une collision serait une perte en base).
+    let cle = typeof o.candidateKey === 'string' && o.candidateKey.trim() ? o.candidateKey.trim().slice(0, 50) : `op${i + 1}`;
+    for (let k = 2; cles.has(cle); k++) cle = `${cle.replace(/~\d+$/, '')}~${k}`;
+    cles.add(cle);
+    o.candidateKey = cle;
+    if (typeof o.established === 'string') o.established = o.established.toLowerCase() === 'true';
+    if (typeof o.confidence === 'string') {
+      const conf = o.confidence.trim().toLowerCase();
+      // T1-OP-010 : aucune 4e valeur — « uncertain » se lit « probable ».
+      o.confidence = conf === 'uncertain' ? 'probable' : conf;
+    }
+    o.typeHint = dansListe(T1_OPERATION_TYPES, majuscule(o.typeHint));
+    o.statusHint = dansListe(T1_OPERATION_STATUSES, majuscule(o.statusHint));
+    o.sourceRoleHint = dansListe(T1_SOURCE_ROLES, majuscule(o.sourceRoleHint));
+    if (o.exclusionReason !== undefined && o.exclusionReason !== null) {
+      o.exclusionReason = dansListe(T1_EXCLUSION_REASONS, majuscule(o.exclusionReason)) ?? 'OTHER';
+    }
+    if (typeof o.summary === 'string') o.summary = o.summary.trim().slice(0, 500);
+    if (typeof o.provider === 'string') o.provider = o.provider.trim().slice(0, 200) || null;
+    o.targetHints = (Array.isArray(o.targetHints) ? o.targetHints : []).filter(isObj).map((t) => ({
+      ...t, type: majuscule(t.type), ...(typeof t.rawLabel === 'string' ? { rawLabel: t.rawLabel.slice(0, 200) } : {}),
+    })).filter((t) => ['ASSET', 'EQUIPMENT', 'ROOM'].includes(String(t.type))).slice(0, 10);
+    o.businessReferences = (Array.isArray(o.businessReferences) ? o.businessReferences : []).filter(isObj)
+      .map((r) => ({ kind: dansListe(T1_REFERENCE_KINDS, majuscule(r.kind)) ?? 'OTHER', value: typeof r.value === 'string' ? r.value.trim().slice(0, 120) : String(r.value ?? '').trim() }))
+      .filter((r) => r.value !== '').slice(0, 10);
+    const t = isObj(o.temporalHints) ? o.temporalHints : {};
+    for (const k of ['plannedDate', 'startDate', 'realizedDate', 'endDate']) {
+      if (t[k] === undefined || t[k] === null) continue;
+      const iso = normalizeDateValue(t[k]);
+      if (iso) t[k] = iso; else delete t[k];
+    }
+    o.temporalHints = t;
+    o.financialHints = (Array.isArray(o.financialHints) ? o.financialHints : []).filter(isObj).flatMap((h) => {
+      const devise = typeof h.currency === 'string' ? (SYMBOLES[h.currency.trim().toUpperCase()] ?? h.currency.trim().toUpperCase()) : null;
+      const role = dansListe(T1_FINANCIAL_ROLES, majuscule(h.role));
+      const factIndex = recale(h.factIndex);
+      // T1-OP-004 / 006 : rôle compris, montant entier ≥ 0, devise lue, preuve localisable.
+      if (!role || !devise || !/^[A-Z]{3}$/.test(devise) || factIndex === null
+        || typeof h.amountMinor !== 'number' || !Number.isSafeInteger(h.amountMinor) || h.amountMinor < 0) return [];
+      const out: Obj = { ...h, role, currency: devise, factIndex, amountScope: dansListe(T1_AMOUNT_SCOPES, majuscule(h.amountScope)) };
+      for (const k of ['economicDate', 'periodStart', 'periodEnd']) {
+        if (out[k] === undefined || out[k] === null) continue;
+        const iso = normalizeDateValue(out[k]);
+        if (iso) out[k] = iso; else delete out[k];
+      }
+      return [out];
+    }).slice(0, 20);
+    o.evidenceFactIndexes = [...new Set((Array.isArray(o.evidenceFactIndexes) ? o.evidenceFactIndexes : [])
+      .map(recale).filter((n): n is number => n !== null))].slice(0, 50);
+    const r = t1OperationCandidate.safeParse(o);
+    if (!r.success) { dropped++; return; }
+    valides.push(o);
+  });
+  const truncated = Math.max(0, valides.length - T1_MAX_OPERATION_CANDIDATES);
+  return { candidates: valides.slice(0, T1_MAX_OPERATION_CANDIDATES), dropped, truncated, unresolved };
 }
 
 /** Schéma passé à la passerelle : normalisation tolérante, puis contrat strict. */
@@ -352,6 +467,9 @@ export const T1AnalyzeDocumentTolerantOutput = z.preprocess(
       overflowTables: z.number().optional(), overflowObservations: z.number().optional(),
       overflowEntities: z.number().optional(), transcriptionTailChars: z.number().optional(),
       overflow: z.any().optional(), dropped: z.array(z.any()).optional(),
+      // Lot 40 (additif) : candidats Opération écartés / au-delà de 20 / preuves recalées.
+      droppedCandidates: z.number().optional(), truncatedCandidates: z.number().optional(),
+      unresolvedCandidateEvidence: z.number().optional(),
     }).optional(),
   }),
 );

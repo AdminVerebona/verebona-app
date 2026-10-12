@@ -183,6 +183,11 @@ export interface ExtractedField {
   ruleCode?: string | null;
   /** Lot 34F — provenance : unités de la source (`document_source_units`) qui prouvent le fait. */
   sourceUnitIds?: string[];
+  /**
+   * Lot 40 (interne) : empreinte du fait T1 d'origine — ancre les preuves des
+   * candidats Opération sur le fait persisté. Jamais écrite en colonne.
+   */
+  t1FactRef?: string;
 }
 
 /** Récurrence telle que la source l'énonce (T1) — le calcul des dates relève de T4. */

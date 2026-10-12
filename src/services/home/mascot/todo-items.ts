@@ -76,6 +76,10 @@ const SUJETS: Readonly<Record<string, { noun: string; fixed?: string }>> = {
   'ENTITY-FIELD': { noun: 'Valeur', fixed: 'Valeur d’équipement à choisir' },
   'ENTITY-FIELD-ROOM': { noun: 'Valeur', fixed: 'Valeur de pièce à choisir' },
   'ASSET-STATUS': { noun: 'Statut du bien', fixed: 'Statut du bien à confirmer' },
+  // Lot 42 : ambiguïtés de consolidation (priorité « À faire ensuite » : hors mascotte, MASC3).
+  'OPERATION-MATCH': { noun: 'Document', fixed: 'Document à rapprocher' },
+  'OPERATION-CLAIM-PARENT': { noun: 'Intervention', fixed: 'Lien avec un sinistre à confirmer' },
+  'OPERATION-AMOUNT': { noun: 'Montant', fixed: 'Montant à confirmer' },
 };
 
 /** « Numéro d’immatriculation à vérifier », « Information à compléter »… (pure). */

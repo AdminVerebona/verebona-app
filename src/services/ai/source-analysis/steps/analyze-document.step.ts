@@ -33,6 +33,7 @@ import { applyOverflow } from '../source-units/merge';
 import { continueByPages } from '../source-units/continuation';
 import { fullTextOf } from '../source-units/build-units';
 import type { T1ExtractionExtras } from '../source-units/complete-extraction';
+import { anchorOperationCandidates, mergeOperationCandidates, type AnchoredOperationCandidate, type CandidateOrigin } from '../operation-candidates/prepare';
 import { catalogForPrompts } from '@/services/canonical/registry';
 import { checkFactEvidence, factLabel } from '../master/fact-evidence';
 import { verifyCandidates, type VerifiableEntity } from '../identifier-verifier';
@@ -70,6 +71,13 @@ export interface AnalyzeDocumentResult {
    * réparation ciblée). Lu par `completeT1Extraction`.
    */
   extraction?: T1ExtractionExtras;
+  /**
+   * Lot 40 — candidats Opération ANCRÉS (preuves = empreintes de faits) de la
+   * passe principale et des lots de pages, fusionnés ; barrière serveur
+   * appliquée ensuite (`analyseGroupWithMaster`). Jamais ceux des passes de
+   * réparation ciblée.
+   */
+  operationCandidates?: AnchoredOperationCandidate[];
 }
 
 /**
@@ -89,6 +97,8 @@ export async function callAnalyzeDocument(p: {
   /** Remplace `SOURCES` (lot de pages, extrait ciblé). */
   sources?: string;
   triggerCode?: string;
+  /** Lot 40 — origine des candidats Opération ancrés (défaut : lot de pages si `sources`, sinon passe 1). */
+  candidateOrigin?: CandidateOrigin;
 }) {
   const promptVariables = buildAnalyzeDocumentVariables({
     input: p.input, groupIndices: p.groupIndices, ctx: p.ctx, v2Families: p.v2Families, capabilities: p.capabilities,
@@ -111,7 +121,14 @@ export async function callAnalyzeDocument(p: {
   });
   const { output: brut, report } = splitNormalisation(res.data);
   const { output, batches } = applyOverflow(brut, report);
-  return { output, report, res, batches };
+  // Lot 40 : empreinte posée sur chaque fait, preuves des candidats ancrées
+  // AVANT tout décalage d'index (lots, faits écartés) — voir operation-candidates.
+  const operationCandidates = anchorOperationCandidates(output, p.candidateOrigin ?? (p.sources ? 'CHUNK' : 'PASS_1'));
+  if (report?.droppedCandidates || report?.truncatedCandidates) {
+    console.info(`[t1-operation-candidates] fichier(s) ${p.groupIndices.map((i) => p.input.sourceIds[i]).join(',')} : `
+      + `${report.droppedCandidates ?? 0} candidat(s) mal formé(s) écarté(s), ${report.truncatedCandidates ?? 0} au-delà de 20.`);
+  }
+  return { output, report, res, batches, operationCandidates };
 }
 
 /** Compteurs de plusieurs lectures tolérantes (passe principale et lots de pages). */
@@ -142,15 +159,18 @@ export async function analyzeDocument(
   // filtrent le contexte transmis ET la sortie (garde-fou ci-dessous).
   const capabilities = ctx.capabilities ?? await getAccountCapabilities(ctx.accountId);
 
-  const first = await callAnalyzeDocument({ input, groupIndices, ctx, capabilities, v2Families });
+  const first = await callAnalyzeDocument({ input, groupIndices, ctx, capabilities, v2Families, candidateOrigin: 'PASS_1' });
   const res = first.res;
+  let operationCandidates = first.operationCandidates;
 
   // ── Lot 34F : poursuite par lots de pages si la sortie est saturée ──────
   // (document normal : aucun effet, aucun appel). Puis fusion idempotente.
   const suite = await continueByPages({
     input, groupIndices, first: first.output, firstOutputTokens: res.outputTokens ?? 0, firstReport: first.report,
     call: async (c) => {
-      const r = await callAnalyzeDocument({ input, groupIndices, ctx, capabilities, v2Families, ...c });
+      const r = await callAnalyzeDocument({ input, groupIndices, ctx, capabilities, v2Families, ...c, candidateOrigin: 'CHUNK' });
+      // Lot 40 : candidats d'un lot de pages fusionnés (dédoublonnés, clés uniques).
+      operationCandidates = mergeOperationCandidates(operationCandidates, r.operationCandidates);
       return { output: r.output, report: r.report, batches: r.batches, outputTokens: r.res.outputTokens ?? 0 };
     },
   });
@@ -421,6 +441,7 @@ export async function analyzeDocument(
       capabilities,
       v2Families,
     },
+    operationCandidates,
   };
 }
 

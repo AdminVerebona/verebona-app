@@ -50,6 +50,7 @@ import {
   LEGACY_DOCUMENT_CODE_EQUIVALENTS, LEGACY_DOCUMENT_STORAGE_FALLBACKS,
 } from '@/lib/referential/legacy-document-codes';
 import { DOCUMENT_CATALOG } from '@/services/canonical/registry/catalogs';
+import { BUSINESS_OPERATION_TYPES } from '@/services/business-operations/model';
 
 export interface ReferentialRow {
   code: string;
@@ -70,6 +71,8 @@ export interface ReferentialsSnapshot {
   documentTypes: ReferentialRow[];
   applicability: ReferentialRow[];
   mappings: ReferentialRow[];
+  /** Lot 39 (O1) — référentiel des 7 types d'Opération (CDC Opérations V1 C27). */
+  operationTypes: ReferentialRow[];
 }
 
 /** Libellés des familles : référentiel des biens (lot 30 — plus de table locale). */
@@ -186,6 +189,39 @@ export function buildCodeMappings(): ReferentialRow[] {
   return rows;
 }
 
+/**
+ * Types d'Opération (C27, B23) — pure. Lignes de la table seedée
+ * `business_operation_types` ; repli sur le référentiel du code si elle est
+ * indisponible. Utilisations = Opérations portant le type (toutes, la clé
+ * étrangère interdisant de supprimer un type utilisé). Lecture seule : aucun
+ * 8e type, aucun champ ordre (tri alphabétique).
+ */
+export function buildOperationTypeReferentials(
+  types: Array<{ code: string; label: string; description: string; applicable_asset_families: unknown; active: boolean }> | null,
+  usage: ReadonlyMap<string, number> | null,
+  /** Lot 47A (O9) : Opérations ACTIVES (non invalidées) du type, précisées dans le détail. */
+  activeUsage?: ReadonlyMap<string, number> | null,
+): ReferentialRow[] {
+  const source = types && types.length
+    ? types
+    : BUSINESS_OPERATION_TYPES.map((t) => ({ code: t.code, label: t.label, description: t.description, applicable_asset_families: [...t.applicableAssetFamilies], active: true }));
+  return source
+    .map((t) => {
+      const familles = Array.isArray(t.applicable_asset_families) ? (t.applicable_asset_families as string[]) : [];
+      return {
+        code: t.code,
+        label: t.label,
+        active: t.active,
+        // Lot 47A : décompte réel en base ; `null` (non mesurable) si la lecture
+        // a échoué — jamais un 0 trompeur.
+        usage: usage ? usage.get(t.code) ?? 0 : null,
+        details: `${t.description} — ${familles.length ? `Familles : ${applicabilityLabel(familles as Applicability)}` : 'Toutes les familles'}`
+          + (usage && activeUsage ? ` — dont ${activeUsage.get(t.code) ?? 0} active(s)` : ''),
+      };
+    })
+    .sort((a, b) => a.label.localeCompare(b.label, 'fr'));
+}
+
 type FamilyCountRow = { family: string; n: number };
 type CategoryCountRow = { family: string; value: string | null; n: number };
 
@@ -249,7 +285,7 @@ export function buildAssetTaxonomyReferentials(
 }
 
 export async function loadReferentials(): Promise<ReferentialsSnapshot> {
-  const [familyCounts, categoryCounts, rubricCounts, typeCounts, legacyTypeCounts, mappings] = await Promise.all([
+  const [familyCounts, categoryCounts, rubricCounts, typeCounts, legacyTypeCounts, mappings, operationTypes, operationTypeUsage] = await Promise.all([
     pgClient.unsafe<FamilyCountRow[]>(
       `SELECT category AS family, count(*)::int AS n FROM assets
         WHERE deleted_at IS NULL GROUP BY category`,
@@ -281,6 +317,16 @@ export async function loadReferentials(): Promise<ReferentialsSnapshot> {
          FROM document_taxonomy_mappings m
         ORDER BY m.mapping_type, m.raw_label`,
     ),
+    // Lot 39 (O1) : table absente (migration 0316 en attente) → référentiel du code, 0 utilisation.
+    pgClient.unsafe<Array<{ code: string; label: string; description: string; applicable_asset_families: unknown; active: boolean }>>(
+      `SELECT code, label, description, applicable_asset_families, active FROM business_operation_types ORDER BY code`,
+    ).catch(() => null),
+    // Lot 47A (O9) : toutes les Opérations du type (la clé étrangère interdit de
+    // supprimer un type utilisé), dont actives.
+    pgClient.unsafe<Array<CountRow & { active: number }>>(
+      `SELECT type_code AS code, count(*)::int AS n, count(*) FILTER (WHERE invalidated_at IS NULL)::int AS active
+         FROM business_operations WHERE type_code IS NOT NULL GROUP BY type_code`,
+    ).catch(() => null),
   ]);
 
   const code = buildCodeReferentials(toMap(rubricCounts), toMap(typeCounts), toMap(legacyTypeCounts));
@@ -295,5 +341,10 @@ export async function loadReferentials(): Promise<ReferentialsSnapshot> {
       usage: m.n === null ? null : Number(m.n),
       details: m.mapping_type === 'function_code' ? 'Fonction documentaire' : 'Libellé de date',
     }))],
+    operationTypes: buildOperationTypeReferentials(
+      operationTypes,
+      operationTypeUsage ? toMap(operationTypeUsage) : null,
+      operationTypeUsage ? new Map(operationTypeUsage.map((r) => [String(r.code), Number(r.active)])) : null,
+    ),
   };
 }

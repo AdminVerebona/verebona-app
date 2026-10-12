@@ -139,6 +139,9 @@ export async function PATCH(
   if (outcome.result.documentTypeCode !== current.documentTypeCode) {
     const { onDocumentEditedByUser } = await import('@/services/to-process/document-rule-bridge');
     await onDocumentEditedByUser(accountId, row.id);
+    // Lot 41 (C4 TRG-007) : un type non métier retire les contributions du document aux Opérations.
+    const { notifyOperationsEvent } = await import('@/services/business-operations/consolidation/queue');
+    notifyOperationsEvent(accountId, { trigger: 'document_reclassified', fileId: row.id });
   }
 
   // CDC Assistant §25.7, §31.7 : classement du document modifié.

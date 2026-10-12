@@ -5,6 +5,9 @@ import {
 } from '@/db/schema';
 import { eq, and, or, isNull, ne, sql } from 'drizzle-orm';
 import { emit } from '@/lib/notifications';
+import { transferAssetOperationsInTx } from '@/services/business-operations/asset-lifecycle';
+import { publishBusinessOperationEvents, type BusinessOperationEvent } from '@/services/business-operations/events';
+import { afterAssetDataTransfer, transferAssetDataInTx, type AssetDataTransferResult } from '@/services/assets/asset-account-transfer.service';
 import type { ResolutionMode, ResolvedByType 
 } from '@/types/duo';
 
@@ -278,8 +281,12 @@ export class DuoService {
     resolvedByType: ResolvedByType;
   }) {
     const now = new Date();
+    // Lot 39 (O1, décision PO Q14) : événements Opération publiés APRÈS commit.
+    let operationEvents: BusinessOperationEvent[] = [];
+    // Lot 40 : rapports de transfert des données (T3 après commit).
+    const dataTransfers: AssetDataTransferResult[] = [];
 
-    return db.transaction(async (tx) => {
+    const outcome = await db.transaction(async (tx) => {
       const [request] = await tx
         .select()
         .from(assetMoveRequests)
@@ -295,15 +302,11 @@ export class DuoService {
       }
 
       if (params.action === 'ACCEPT') {
-        await tx
-          .update(assets)
-          .set({ 
-            accountId: request.targetAccountId,
-            duoId: null,
-            lockState: 'NONE',
-            updatedAt: now
-          })
-          .where(eq(assets.id, request.assetId));
+        // Le bien change de compte avec ses Opérations (lot 39) et ses
+        // données — documents, analyses, agenda, « À traiter »… (lot 40).
+        const t = await transferAsset(tx, request.assetId, request.targetAccountId, params.resolvedByUserId, now);
+        operationEvents = t.events;
+        dataTransfers.push(...t.data);
 
         await tx
           .update(assetMoveRequests)
@@ -358,6 +361,9 @@ export class DuoService {
         return { status: 'REFUSED' };
       }
     });
+    await publishBusinessOperationEvents(operationEvents);
+    await afterAssetDataTransfer(dataTransfers, params.resolvedByUserId);
+    return outcome;
   }
 
   static async respondToDeleteRequest(params: {
@@ -452,8 +458,12 @@ export class DuoService {
     userId: number;
   }) {
     const now = new Date();
+    // Lot 39 (O1, Q14) : événements Opération publiés APRÈS commit.
+    const operationEvents: BusinessOperationEvent[] = [];
+    // Lot 40 : rapports de transfert des données (T3 après commit).
+    const dataTransfers: AssetDataTransferResult[] = [];
 
-    return db.transaction(async (tx) => {
+    const outcome = await db.transaction(async (tx) => {
       await tx
         .update(duoMemberships)
         .set({
@@ -481,15 +491,9 @@ export class DuoService {
         );
 
       for (const request of pendingMoveRequests) {
-        await tx
-          .update(assets)
-          .set({ 
-            accountId: request.targetAccountId,
-            duoId: null,
-            lockState: 'NONE',
-            updatedAt: now
-          })
-          .where(eq(assets.id, request.assetId));
+        const t = await transferAsset(tx, request.assetId, request.targetAccountId, params.userId, now);
+        operationEvents.push(...t.events);
+        dataTransfers.push(...t.data);
 
         await tx
           .update(assetMoveRequests)
@@ -548,6 +552,9 @@ export class DuoService {
           .where(eq(duoAccounts.id, params.duoId));
       }
     });
+    await publishBusinessOperationEvents(operationEvents);
+    await afterAssetDataTransfer(dataTransfers, params.userId);
+    return outcome;
   }
 
   static async getInbox(params: { duoId: number; userId: number }) {
@@ -678,4 +685,51 @@ export class DuoService {
     }
     return user.email;
   }
+}
+
+/**
+ * Un bien Duo change de compte (demande acceptée, départ d'un membre), dans
+ * la transaction de l'appelant :
+ *   · lot 39 (décision PO Q14) — ses Opérations mono-bien le suivent, une
+ *     Opération multi-biens reste sur l'ancien compte et perd son lien ;
+ *   · le bien passe dans le compte cible (hors Duo, déverrouillé) ;
+ *   · lot 40 (décision PO) — ses DONNÉES le suivent : documents rattachés à
+ *     lui seul et tout ce qui en dérive, agenda, « À traiter », preuves…
+ *     (`asset-account-transfer.service.ts`).
+ * Événements Opération rendus, publiés par l'appelant après commit, comme
+ * la réconciliation T3 (`afterAssetDataTransfer`).
+ */
+async function transferAsset(
+  tx: Parameters<Parameters<typeof db.transaction>[0]>[0],
+  assetId: number,
+  toAccountId: number,
+  actorUserId: number | null,
+  now: Date,
+): Promise<{ events: BusinessOperationEvent[]; data: AssetDataTransferResult[] }> {
+  const [asset] = await tx
+    .select({ accountId: assets.accountId })
+    .from(assets)
+    .where(eq(assets.id, assetId))
+    .for('update')
+    .limit(1);
+  const fromAccountId = asset?.accountId ?? null;
+  const events: BusinessOperationEvent[] = [];
+  if (fromAccountId && fromAccountId !== toAccountId) {
+    const r = await transferAssetOperationsInTx(
+      tx,
+      { assetId, fromAccountId, toAccountId, reasonCode: 'ASSET_TRANSFERRED_DUO' },
+      { actorUserId },
+    );
+    events.push(...r.events);
+  }
+  await tx
+    .update(assets)
+    .set({ accountId: toAccountId, duoId: null, lockState: 'NONE', updatedAt: now })
+    .where(eq(assets.id, assetId));
+  if (!fromAccountId || fromAccountId === toAccountId) return { events, data: [] };
+  const data = await transferAssetDataInTx(tx, {
+    assetId, fromAccountId, toAccountId, reasonCode: 'ASSET_TRANSFERRED_DUO', actorUserId,
+  });
+  events.push(...data.events);
+  return { events, data: [data] };
 }

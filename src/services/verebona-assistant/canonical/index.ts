@@ -27,6 +27,12 @@ export { buildSynthesisContent, boundedExcerpt, isSensitiveFact, maskedExcerpt, 
 export { createCanonicalAccountDataRepository, canonicalAcquisitionDates, attachCanonical, readCanonicalFields } from './repository';
 export { commandAssetState, unchangedSinceConfirmation } from './commands';
 export { listActionables, listOpenTodos, listActiveDeadlines, type ActionableReadOptions } from './actionables';
+// Lot 45 (O6) : lecture « Opération d'abord », non exclusive (CDC Opérations V1 C15).
+export {
+  readAssetHistory, readClaims, readPayments, readAcquisition, readContracts, findOperationDocuments, readOperationCosts, specificCostTerms, operationCostLines, summarizeOperationCosts, operationTheme,
+  operationLabel, claimSourceId, parseClaimSourceId,
+  type AssetHistory, type ClaimOverview, type ContractOverview, type OperationCostRead, type PaymentsRead, type AcquisitionRead, type OperationExpensePart,
+} from './operations';
 export {
   tryCanonicalStructured, findReadableField, isFieldQuestion, upcomingAgendaRequest, fieldAnswer,
   type CanonicalStrategy,

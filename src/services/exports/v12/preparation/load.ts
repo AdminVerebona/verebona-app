@@ -72,7 +72,16 @@ function readChoices(code: DossierCode, raw: unknown): { ok: true; choices: Expo
   return { ok: true, choices: parsed.choices };
 }
 
-/** `POST …/exports/prepare` : `{ exportType, includeCurrentSelections?, choices? }`. */
+const claimParam = (id: number | null) => (id ? { claimOperationId: id } : {});
+
+/** Lot 44 : sinistre demandé (`choices.claimOperationId`, sinon `claimOperationId` à la racine du corps). */
+function requestedClaim(choices: ExportChoices | null, body: Record<string, unknown>): number | null {
+  if (choices?.claimOperationId) return choices.claimOperationId;
+  const n = Number(body.claimOperationId);
+  return Number.isSafeInteger(n) && n > 0 ? n : null;
+}
+
+/** `POST …/exports/prepare` : `{ exportType, includeCurrentSelections?, choices?, claimOperationId? }`. */
 export async function prepareDossier(params: { asset: AccessibleAsset; userId: number; body: Record<string, unknown> }): Promise<PrepResult<PreparationDto>> {
   const { asset, userId, body } = params;
   const checked = await checkDossier(asset, body.exportType);
@@ -86,7 +95,7 @@ export async function prepareDossier(params: { asset: AccessibleAsset; userId: n
   }
   const today = parisDate();
   const [source, lastGeneration] = await Promise.all([
-    loadExportSource({ assetId: asset.id, accountId: asset.accountId, userId, exportType: code }),
+    loadExportSource({ assetId: asset.id, accountId: asset.accountId, userId, exportType: code, ...claimParam(requestedClaim(choices, body)) }),
     lastGenerationOf(asset.id, code),
   ]);
   return { ok: true, body: buildPreparation(code, source, { today, choices, lastGeneration }) };
@@ -102,7 +111,7 @@ export async function estimateDossier(params: { asset: AccessibleAsset; userId: 
   if (!read.ok) return read;
   const choices = read.choices!;
   const today = parisDate();
-  const source = await loadExportSource({ assetId: asset.id, accountId: asset.accountId, userId, exportType: code });
+  const source = await loadExportSource({ assetId: asset.id, accountId: asset.accountId, userId, exportType: code, ...claimParam(requestedClaim(choices, body)) });
   const { dto } = estimateSelection(code, source, choices, today);
   const cilBlocked = code === 'CIL' && source.cil?.readiness.globalStatus === 'action_required';
   const canGeneratePdf = !cilBlocked && dto.blocking.length === 0;

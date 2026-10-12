@@ -104,8 +104,11 @@ scenario('L32F', 'Décisions PO du 07/10 : rétractation, statuts, notifications
     expect(new Date(body.contract.paidAt).getTime()).toBeGreaterThan(Date.now() - 3 * JOUR);
   });
 
-  it('PO-Q1 — payé il y a 16 jours : délai clos (409 à la confirmation) ; aucun paiement : aucun contrat payant', async () => {
-    const acc = await abonne({ paidDaysAgo: 16, concludedDaysAgo: 16 });
+  it('PO-Q1 — payé il y a 21 jours : délai clos (409 à la confirmation) ; aucun paiement : aucun contrat payant', async () => {
+    // 21 jours et non 16 : un délai qui finit un samedi, un dimanche ou un
+    // jour férié est prorogé au jour ouvrable suivant (fenêtre encore
+    // ouverte à J+16 selon le jour de la semaine).
+    const acc = await abonne({ paidDaysAgo: 21, concludedDaysAgo: 21 });
     expect((await eligibilite()).reason).toBe('DEADLINE_PASSED');
     const res = await confirmer(`wd-clos-${acc.id}`);
     expect(res.status).toBe(409);

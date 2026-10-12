@@ -17,7 +17,9 @@ import { deduceFromType, loadAssetFamilies, validateProposal } from './rubric-ru
 import { projectDocumentFacts, type DocumentProjection } from '../projection/document-projection';
 import { combineTraces } from '../trace';
 import { toSourceAnalysisResult } from './to-source-analysis-result';
-import type { ProjectedFact, T1AnalyzeDocumentOutput } from './t1-contract';
+import type { ProjectedFact, T1AnalyzeDocumentOutput, T1FactWithRef } from './t1-contract';
+import { gateOperationCandidates, type AnchoredOperationCandidate } from '../operation-candidates/prepare';
+import { transactionNature } from '../projection/rules';
 import type { AnalysisContext, SourceAnalysisResult, SourceInput } from '../types';
 
 export interface MasterGroupAnalysis {
@@ -34,6 +36,12 @@ export interface MasterGroupAnalysis {
    * Absente pour une analyse sans matière (étape simulée en test).
    */
   sourceLayer?: SourceLayer;
+  /**
+   * Lot 40 — candidats Opération (CDC Opérations V1 C3) après barrière
+   * serveur, persistés avec la base de connaissance. Jamais visibles côté
+   * utilisateur ; T3 les lira (lot suivant).
+   */
+  operationCandidates: AnchoredOperationCandidate[];
 }
 
 export async function analyseGroupWithMaster(
@@ -109,10 +117,34 @@ export async function analyseGroupWithMaster(
     });
   }
 
+  // Lot 40 : barrière serveur des candidats Opération (règles fermées,
+  // indépendantes du texte du prompt actif) — après la réparation ciblée
+  // (identifiants vérifiés complétés) et le contrôle de preuve des faits.
+  const a = analysed.analysis;
+  const gate = gateOperationCandidates(analysed.operationCandidates ?? [], {
+    hasExploitableContent: a.hasExploitableContent,
+    documentTypeCode: a.document.classification?.documentTypeCode ?? null,
+    verifiedIds: analysed.verifiedIds,
+    capabilities: (() => {
+      const caps = analysed.extraction?.capabilities ?? ctx.capabilities;
+      return { rooms: caps?.rooms ?? false, equipments: caps?.equipments ?? false };
+    })(),
+    keptFactRefs: new Set((a.facts as T1FactWithRef[]).flatMap((f) => (f.t1FactRef ? [f.t1FactRef] : []))),
+    transactionNature: transactionNature({
+      documentTypeCode: a.document.classification?.documentTypeCode ?? null,
+      texts: [a.document.title?.value, a.document.amountCents?.evidence?.excerpt],
+    }),
+  });
+  if (gate.omitted || gate.truncated) {
+    console.info(`[t1-operation-candidates] fichier ${input.sourceIds[groupIndices[0]]} : ${gate.candidates.length} candidat(s) retenu(s), `
+      + `${gate.omitted} non établi(s) sans motif omis, ${gate.truncated} au-delà de 20.`);
+  }
+
   return {
     result, facts: projection.facts, projection, documentAssetId: analysed.documentAssetId,
     promptVersion: analysed.promptVersion,
     ...(sourceLayer ? { sourceLayer } : {}),
+    operationCandidates: gate.candidates,
   };
 }
 

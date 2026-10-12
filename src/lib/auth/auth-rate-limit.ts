@@ -80,6 +80,11 @@ export const AUTH_LIMITS = {
    * la force brute vaine.
    */
   resetIp: { maxAttempts: 10, windowMs: 15 * MIN, lockMs: 15 * MIN },
+  /**
+   * Lot 38 (volet B) : e-mail de sécurité « appareils déconnectés » — au plus
+   * UN par utilisateur et par heure (le premier passe et pose le verrou).
+   */
+  securityEmailUser: { maxAttempts: 1, windowMs: HOUR, lockMs: HOUR },
 } as const satisfies Record<string, AuthLimitPolicy>;
 
 /** Lignes sans verrou actif et sans activité depuis cette durée : purgées. */
@@ -353,7 +358,7 @@ export function normalizeEmail(email: unknown): string {
  * Clé de compteur : `<parcours>:<ip|acct>:<HMAC tronqué>`. Jamais la valeur
  * en clair (e-mail, IP) dans la table.
  */
-export function limitKey(flow: 'login' | 'forgot' | 'resend' | 'reset', kind: 'ip' | 'acct', value: string): string {
+export function limitKey(flow: 'login' | 'forgot' | 'resend' | 'reset' | 'security-email', kind: 'ip' | 'acct', value: string): string {
   const h = createHmac('sha256', keySecret()).update(`${flow}:${kind}:${value}`).digest('hex').slice(0, 40);
   return `${flow}:${kind}:${h}`;
 }

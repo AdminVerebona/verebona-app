@@ -101,6 +101,10 @@ export async function createAgendaItem(
 
   const full = await getAgendaItemById(written.id, accountId);
   if (!full) throw new Error('Item created but not found');
+
+  // Lot 47B (C4 TRG-012) : élément saisi qui décrit une intervention → T3
+  // (source AGENDA). Un rappel, une échéance, un élément sans bien : rien.
+  await notifyLinkedOperation(accountId, full.id, true, undefined, full);
   return full;
 }
 
@@ -222,7 +226,57 @@ export async function updateAgendaItem(
   const full = await getAgendaItemById(id, accountId);
   if (!full) throw new Error('Item not found after update');
 
+  // Lot 46 (O7, C4 déclencheur Agenda) : correction utilisateur d'un élément
+  // lié à une Opération → T3, seulement si un champ a réellement changé.
+  await notifyLinkedOperation(accountId, id, userFieldsChanged(existing, full), undefined, full);
+
   return full;
+}
+
+/** Un champ visible par l'utilisateur a-t-il changé (titre, description, dates, heures, liens) ? */
+export function userFieldsChanged(before: AgendaItemFull, after: AgendaItemFull): boolean {
+  const ids = (l: Array<{ [k: string]: unknown }>, k: string) => l.map((x) => Number(x[k])).sort((a, b) => a - b).join(',');
+  return before.title !== after.title || (before.description ?? null) !== (after.description ?? null)
+    || before.startDate !== after.startDate || before.startTime !== after.startTime
+    || before.endDate !== after.endDate || before.endTime !== after.endTime
+    || ids(before.assetLinks, 'assetId') !== ids(after.assetLinks, 'assetId')
+    || ids(before.fileLinks, 'assetFileId') !== ids(after.fileLinks, 'assetFileId')
+    || ids(before.roomLinks, 'substructureId') !== ids(after.roomLinks, 'substructureId')
+    || ids(before.equipmentLinks, 'equipmentId') !== ids(after.equipmentLinks, 'equipmentId');
+}
+
+/** Opération représentée par l'élément (lien `business_operation_id`), ou null. */
+async function linkedOperationId(accountId: number, id: number): Promise<number | null> {
+  const [r] = await db.select({ op: agendaItems.businessOperationId }).from(agendaItems)
+    .where(and(eq(agendaItems.id, id), eq(agendaItems.accountId, accountId))).limit(1);
+  return r?.op ?? null;
+}
+
+/**
+ * Déclencheur Agenda → T3 (C4) ; ne lève jamais. Élément lié à une
+ * Opération : toujours (TRG-013 / TRG-014). Lot 47B (TRG-012) : élément non
+ * lié seulement s'il peut établir une intervention (`full` connu : saisi,
+ * daté, rattaché à un bien, intitulé d'intervention, ni rappel ni échéance).
+ */
+async function notifyLinkedOperation(accountId: number, id: number, changed: boolean, known?: number | null, full?: AgendaItemFull): Promise<void> {
+  if (!changed) return;
+  try {
+    const op = known !== undefined ? known : await linkedOperationId(accountId, id);
+    let candidate = false;
+    if (op === null) {
+      if (!full) return;
+      const { agendaItemMayEstablishOperation } = await import('@/services/business-operations/consolidation/agenda-source');
+      candidate = agendaItemMayEstablishOperation({
+        isAutomatic: full.isAutomatic, title: full.title, startDate: full.startDate, manualStatus: full.manualStatus,
+        assetCount: full.assetLinks.length + full.equipmentLinks.filter((e) => e.resolvedAssetId !== null).length,
+      });
+      if (!candidate) return;
+    }
+    const { notifyAgendaChangedForOperations } = await import('@/services/business-operations/agenda-projection/queue');
+    notifyAgendaChangedForOperations(accountId, { itemId: id, businessOperationId: op, userFieldsChanged: true, candidate });
+  } catch (e) {
+    console.error(`[agenda] déclencheur Agenda de l'élément ${id} :`, (e as Error).message);
+  }
 }
 
 /**
@@ -267,6 +321,10 @@ export async function updateManualStatus(
   if (manualStatus === 'realise') {
     await syncPurchaseDate({ itemId: id, accountId, actorUserId: null, manualStatus });
   }
+
+  // Lot 46 (O7, C4) : statut posé par l'utilisateur sur un élément lié
+  // (lot 47B : réalisé / annulé → transition C8 de l'intervention).
+  await notifyLinkedOperation(accountId, id, true, undefined, full);
 
   return full;
 }
@@ -324,11 +382,23 @@ async function detachSafely(
  * ce code ne dépend plus d'elle.
  * ══════════════════════════════════════════════════════════════════════════
  */
-export async function deleteAgendaItem(id: number, accountId: number): Promise<void> {
+export async function deleteAgendaItem(id: number, accountId: number, actorUserId: number | null = null): Promise<void> {
   const existing = await getAgendaItemById(id, accountId);
   if (!existing) throw new Error('Item not found');
+  const operationId = await linkedOperationId(accountId, id);
 
   await db.transaction(async tx => {
+    // 0. Lot 46 (O7, C16.1, F-146) : l'élément représente une Opération
+    //    (projeté, ou lié) — la suppression est MÉMORISÉE : la projection ne
+    //    le recréera pas. Isolée (point de sauvegarde) : elle ne bloque
+    //    jamais la suppression demandée.
+    if (operationId !== null) {
+      await detachSafely(tx, 'business_operation_projection_suppressions', async (t) => {
+        const { recordAgendaProjectionSuppression } = await import('@/services/business-operations/agenda-projection/service');
+        await recordAgendaProjectionSuppression(t, { accountId, itemId: id, userId: actorUserId });
+      });
+    }
+
     // 1. Liaisons — elles n'ont pas d'existence propre, elles disparaissent.
     await tx.delete(agendaAssetLinks).where(eq(agendaAssetLinks.agendaItemId, id));
     await tx.delete(agendaFileLinks).where(eq(agendaFileLinks.agendaItemId, id));
@@ -373,6 +443,9 @@ export async function deleteAgendaItem(id: number, accountId: number): Promise<v
     await tx.delete(agendaItems)
       .where(and(eq(agendaItems.id, id), eq(agendaItems.accountId, accountId)));
   });
+
+  // Lot 46 (O7, C4 TRG-014) : suppression utilisateur d'un élément lié → T3.
+  await notifyLinkedOperation(accountId, id, true, operationId);
 }
 
 /**
@@ -401,5 +474,7 @@ export async function confirmForecastOccurrence(
   await recordOccurrenceEvent(id, accountId, 'USER_CONFIRMED', { date: existing.startDate }, userId);
   const full = await getAgendaItemById(id, accountId);
   if (!full) throw new Error('Item not found after update');
+  // Lot 47B : la confirmation est un geste utilisateur (élément désormais « modifié »).
+  await notifyLinkedOperation(accountId, id, true, undefined, full);
   return full;
 }

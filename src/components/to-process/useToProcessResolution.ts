@@ -34,6 +34,8 @@ import { apiClient } from '@/lib/api-client';
 import { openToProcessTarget } from '@/lib/to-process-target';
 import { resolveErrorClosesCard, resolveErrorMessage } from '@/lib/to-process-resolve-errors';
 import type { ActionProposalView, ActionView } from './ActionCard';
+import { saleDetailsPrompt } from '@/lib/assets/sale-fields';
+import type { SaleFollowUp } from '@/components/assets/SaleDetailsDialog';
 
 /** Événement de synchronisation file / pastille / mascotte. */
 export const TO_PROCESS_SYNC_EVENT = 'refresh-a-traiter';
@@ -58,9 +60,21 @@ export interface ResolutionCallbacks {
   onUndone?: (action: ActionView) => void;
 }
 
+/**
+ * Lot 43 (O4, décision PO Q5) : un bien passé à VENDU / TRANSMIS par une carte
+ * ASSET-STATUS → petite fenêtre facultative de vente réalisée (date, prix ;
+ * date seule pour une transmission). Pure : null si rien à demander.
+ */
+export function saleFollowUpFor(action: ActionView, value: ActionProposalView['value']): SaleFollowUp | null {
+  if (action.targetType !== 'ASSET' || action.fieldKey !== 'status') return null;
+  const prompt = saleDetailsPrompt(value);
+  return prompt ? { assetId: action.targetId, assetName: action.target.assetName ?? action.target.label ?? null, prompt } : null;
+}
+
 export function useToProcessResolution(cb: ResolutionCallbacks = {}) {
   const router = useRouter();
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [saleFollowUp, setSaleFollowUp] = useState<SaleFollowUp | null>(null);
   // Rappels lus au moment de l'appel : les fonctions rendues restent stables.
   const ref = useRef(cb);
   ref.current = cb;
@@ -90,6 +104,8 @@ export function useToProcessResolution(cb: ResolutionCallbacks = {}) {
       toast.success('Valeur mise à jour', {
         action: { label: 'Annuler', onClick: () => void undo(action, res.previousValue) },
       });
+      const suite = saleFollowUpFor(action, proposal.value);
+      if (suite) setSaleFollowUp(suite);
       return true;
     } catch (e) {
       const code = errorCode(e);
@@ -125,5 +141,7 @@ export function useToProcessResolution(cb: ResolutionCallbacks = {}) {
     );
   }, [router]);
 
-  return { busyId, choose, undo, openTarget };
+  const closeSaleFollowUp = useCallback(() => setSaleFollowUp(null), []);
+
+  return { busyId, choose, undo, openTarget, saleFollowUp, closeSaleFollowUp };
 }

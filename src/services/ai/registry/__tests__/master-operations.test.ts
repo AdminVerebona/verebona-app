@@ -46,7 +46,7 @@ describe('opérations T1 master (seules depuis le lot 16b-3)', () => {
     expect(listMasterTasks(T1_MASTER_PROMPT_CODE).sort()).toEqual([...T1_TASKS].sort());
     expect(listMasterPrompts()).toEqual([
       { masterPromptCode: T1_MASTER_PROMPT_CODE, useCaseCode: 'SOURCE_ANALYSIS', tasks: ['GROUP_UPLOAD', 'ANALYZE_DOCUMENT'] },
-      { masterPromptCode: 't3_master_v1', useCaseCode: 'DATA_RECONCILIATION', tasks: ['VALUE_CONFLICT', 'LINK_AMBIGUITY'] },
+      { masterPromptCode: 't3_master_v1', useCaseCode: 'DATA_RECONCILIATION', tasks: ['VALUE_CONFLICT', 'LINK_AMBIGUITY', 'OPERATION_MATCH'] },
       // Lot 15 : T2, discriminant MODE (§24).
       { masterPromptCode: 't2_master_v1', useCaseCode: 'INTELLIGENT_ASSISTANT', tasks: ['UNDERSTAND', 'ANSWER', 'REVALIDATE'] },
       // TEMPORAL_AMBIGUITY : active depuis le lot 18 (R5).
@@ -117,7 +117,7 @@ describe('opérations T3 master (CDC 15 §25, lot 13 ; seules depuis le lot 16b-
       expect(AI_OPERATIONS[c], c).toBeUndefined();
     }
     const actives = listOperationsByUseCase('DATA_RECONCILIATION').filter((o) => o.active && o.provider !== 'none');
-    expect(actives.map((o) => o.operationCode)).toEqual(['t3_value_conflict', 't3_link_ambiguity']);
+    expect(actives.map((o) => o.operationCode)).toEqual(['t3_value_conflict', 't3_link_ambiguity', 't3_operation_match']);
     for (const op of actives) expect(isMasterOperation(op), op.operationCode).toBe(true);
   });
 });

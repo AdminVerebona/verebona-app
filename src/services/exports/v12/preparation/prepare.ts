@@ -391,5 +391,6 @@ export function buildPreparation(code: DossierCode, source: ExportSource, ctx: P
     thresholds: { ...THRESHOLDS },
     empty,
     saleAds: code === 'VENTE' ? saleAds(source, today) : null,
+    claim: code === 'ASSURANCE_SINISTRE' ? (source.claim ?? { selectedOperationId: null, origin: 'none', options: [] }) : null,
   };
 }

@@ -45,8 +45,11 @@ export type SynthesisKind = 'summary' | 'comparison' | 'timeline';
 export interface TimelineEvent {
   date: string;
   label: string;
-  kind: 'acquisition' | 'agenda' | 'document';
-  /** Objet d'origine (« agenda_12 », « doc_4 », « asset_field:3:acquisitionDate »). */
+  kind: 'acquisition' | 'agenda' | 'document' | 'operation';
+  /**
+   * Objet d'origine (« agenda_12 », « doc_4 », « asset_field:3:acquisitionDate »,
+   * lot 45 : « claim:3:9 » pour un sinistre).
+   */
   ref: string;
   assetName: string | null;
   /** Agenda : HISTORICAL / DEADLINE ; statut lisible. */
@@ -377,6 +380,43 @@ const DOCS_DES_BIENS = `(EXISTS (SELECT 1 FROM document_asset_links l WHERE l.ac
                            AND l.status = 'ACTIVE' AND l.asset_id = ANY($2::int[]))
          OR f.asset_id = ANY($2::int[]) OR f.linked_asset_id = ANY($2::int[]))`;
 
+/**
+ * Événements de chronologie issus des Opérations actives datées des biens
+ * (lot 45) : libellé métier (P09 — intervention, sinistre, achat…), coût
+ * consolidé, référence ouvrable (document principal ou sinistre).
+ */
+async function operationTimeline(accountId: number, assetIds: number[], limit: number) {
+  const { operationReader, operationCostLines, operationLabel, costLineSource, formatEur, claimStatusLabel } = await import('../canonical/operations');
+  const ops = await operationReader().listForAssistant(accountId, { assetIds, limit: Math.min(limit, 200) });
+  const noms = new Map(((await pgClient.unsafe(
+    `SELECT id, name FROM assets WHERE account_id = $1 AND id = ANY($2::int[]) AND deleted_at IS NULL`, [accountId, assetIds] as never[],
+  )) as unknown as Array<{ id: number; name: string }>).map((a) => [Number(a.id), a.name]));
+  const events: TimelineEvent[] = [];
+  const fileIds = new Set<number>();
+  const operationIds = new Set<number>();
+  const acquisitionAssets = new Set<number>();
+  for (const op of ops) {
+    const date = op.realizedDate ?? op.startDate ?? op.plannedDate;
+    if (!date || op.typeCode === 'FINANCING') continue;
+    const assetId = op.assetIds.find((a) => assetIds.includes(a)) ?? null;
+    const [l] = operationCostLines([op], { assetIds: assetId ? [assetId] : [] });
+    const src = l ? costLineSource(l, { assetId }) : null;
+    const lib = operationLabel(op);
+    const statut = op.typeCode === 'CLAIM' ? claimStatusLabel(op.claimStatus)
+      : op.status === 'ENVISAGED' ? 'prévu' : op.status === 'CANCELLED' ? 'annulé' : null;
+    const detail = [op.provider, l && (l.hasCost || l.costCents) ? formatEur(l.costCents) : null, statut].filter(Boolean).join(' — ') || null;
+    events.push({
+      date, label: lib.charAt(0).toUpperCase() + lib.slice(1), kind: 'operation',
+      ref: src?.id ?? (assetId ? `asset_${assetId}` : `doc_${op.documents[0]?.fileId ?? 0}`),
+      assetName: assetId ? noms.get(assetId) ?? null : null, detail,
+    });
+    operationIds.add(op.id);
+    for (const d of op.documents) fileIds.add(d.fileId);
+    if (op.typeCode === 'ACQUISITION') for (const a of op.assetIds) acquisitionAssets.add(a);
+  }
+  return { events, fileIds, operationIds, acquisitionAssets };
+}
+
 export const defaultDeps: SynthesisDeps = {
   targets: (input, route) => resolveAssistantTargets(input, route),
 
@@ -456,14 +496,14 @@ export const defaultDeps: SynthesisDeps = {
     const [agenda, docs, achats] = await Promise.all([
       pgClient.unsafe(
         `SELECT i.id, i.title, to_char(i.start_date, 'YYYY-MM-DD') AS date, i.manual_status AS "manualStatus",
-                i.origin_field_key AS "originFieldKey", min(a.name) AS "assetName"
+                i.origin_field_key AS "originFieldKey", min(a.name) AS "assetName", i.business_operation_id AS "operationId"
            FROM agenda_items i
            JOIN agenda_asset_links l ON l.agenda_item_id = i.id AND l.asset_id = ANY($2::int[])
            JOIN assets a ON a.id = l.asset_id AND a.account_id = $1 AND a.deleted_at IS NULL
           WHERE i.account_id = $1 AND i.start_date IS NOT NULL AND coalesce(i.manual_status, '') <> 'annule'
           GROUP BY i.id ORDER BY i.start_date DESC LIMIT $3`,
         [accountId, assetIds, limit] as never[],
-      ) as unknown as Promise<Array<{ id: number; title: string; date: string; manualStatus: string | null; originFieldKey: string | null; assetName: string | null }>>,
+      ) as unknown as Promise<Array<{ id: number; title: string; date: string; manualStatus: string | null; originFieldKey: string | null; assetName: string | null; operationId: number | null }>>,
       pgClient.unsafe(
         `SELECT f.id, coalesce(f.retained_title, f.original_filename, 'Document') AS title, to_char(f.document_date, 'YYYY-MM-DD') AS date,
                 (SELECT a.name FROM assets a WHERE a.id = coalesce(f.asset_id, f.linked_asset_id)) AS "assetName"
@@ -487,12 +527,25 @@ export const defaultDeps: SynthesisDeps = {
     ]);
     const today = aujourdhui();
     const out: TimelineEvent[] = [];
-    for (const a of achats) if (a) out.push({ date: a.date, label: 'Achat', kind: 'acquisition', ref: `asset_field:${a.id}:acquisitionDate`, assetName: a.name, detail: null });
+    // Lot 45 (O6, C15 « historique », B15 « que s'est-il passé ? ») : la
+    // chronologie métier CONSOLIDÉE d'abord — Opérations actives datées ;
+    // leurs documents sources et leurs projections Agenda ne sont pas
+    // répétés (sans doublon). Lecture en échec : chronologie d'avant.
+    const ops = await operationTimeline(accountId, assetIds, limit).catch((e) => {
+      console.warn('[verebona] chronologie : Opérations illisibles :', (e as Error).message);
+      return { events: [] as TimelineEvent[], fileIds: new Set<number>(), operationIds: new Set<number>(), acquisitionAssets: new Set<number>() };
+    });
+    out.push(...ops.events);
+    for (const a of achats) if (a && !ops.acquisitionAssets.has(a.id)) out.push({ date: a.date, label: 'Achat', kind: 'acquisition', ref: `asset_field:${a.id}:acquisitionDate`, assetName: a.name, detail: null });
     for (const i of agenda) {
+      if (i.operationId != null && ops.operationIds.has(Number(i.operationId))) continue;
       const statut = i.manualStatus === 'realise' ? 'réalisé' : i.date > today ? 'à venir' : null;
       out.push({ date: i.date, label: i.title, kind: 'agenda', ref: `agenda_${i.id}`, assetName: i.assetName, detail: statut });
     }
-    for (const d of docs) out.push({ date: d.date, label: `Document « ${d.title} »`, kind: 'document', ref: `doc_${d.id}`, assetName: d.assetName, detail: null });
+    for (const d of docs) {
+      if (ops.fileIds.has(Number(d.id))) continue;
+      out.push({ date: d.date, label: `Document « ${d.title} »`, kind: 'document', ref: `doc_${d.id}`, assetName: d.assetName, detail: null });
+    }
     return out;
   },
 
