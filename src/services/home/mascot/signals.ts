@@ -18,6 +18,7 @@
 import type { ToProcessActionView } from '@/services/to-process/to-process-query.service';
 import type { MascotAction, MascotFamily, MascotSubject } from './types';
 import { MAX_ACTIONS_PER_SUBJECT } from './types';
+import type { AgendaDateRole } from '@/services/agenda/agenda-date-role';
 import { deadlineBlockedText, deadlineButtonLabel, deadlineExtActionText, deadlineNextText, deadlinePairText } from './deadline-label';
 
 export interface MascotDocRow { id: number; title: string; at: string }
@@ -29,6 +30,13 @@ export interface MascotAgendaRow {
   date: string | null;
   /** Occurrence prévisionnelle (DAT-002) : jamais présentée comme certaine. */
   forecast: boolean;
+  /**
+   * Lot 50 : date à respecter (`DEADLINE`, action à prévoir) ou événement
+   * réellement planifié (`SCHEDULED_EVENT`) — `agendaDateRole`, données
+   * structurées. Distinct de `forecast` (certitude de la date). Absent :
+   * DEADLINE (jamais présenté comme organisé par défaut).
+   */
+  dateRole?: AgendaDateRole;
   /** Échéance à préciser avant de pouvoir être suivie (dépendance, MASC-BLOCKED). */
   requiresQualification: boolean;
   assetId: number | null;
@@ -288,6 +296,10 @@ function agendaInToProcess(raw: MascotRawData): Set<number> {
   return ids;
 }
 
+/** Lot 50 : rôle de la date d'une échéance lue (absent → DEADLINE). */
+export const roleOf = (i: Pick<MascotAgendaRow, 'dateRole' | 'forecast'>): AgendaDateRole =>
+  i.forecast ? 'DEADLINE' : i.dateRole ?? 'DEADLINE';
+
 function dateSubjects(raw: MascotRawData): MascotSubject[] {
   const exclues = agendaInToProcess(raw);
   const futures = (raw.agenda ?? [])
@@ -319,11 +331,13 @@ function dateSubjects(raw: MascotRawData): MascotSubject[] {
       facts: {
         date: premiere.date!, dateLabel: date,
         dateNature: prevision ? 'prévisionnelle' : 'confirmée',
+        // Lot 50 : rôle de chaque date (à prévoir / planifié), distinct de sa certitude.
+        firstDateRole: roleOf(a), secondDateRole: roleOf(b),
         firstTitle: a.title, firstAssetName: a.assetName,
         secondTitle: b.title, secondAssetName: b.assetName,
       },
       actions: [voir(a, voirA), voir(b, voirB)],
-      fallbackText: deadlinePairText(a, b, date, prevision),
+      fallbackText: deadlinePairText({ ...a, dateRole: roleOf(a) }, { ...b, dateRole: roleOf(b) }, date, prevision),
       allowedHighlight: date,
       occurrenceKey: `DATE-NEXT-2:${a.id}:${b.id}`,
       dedupeKeys: [`agenda:${a.id}`, `agenda:${b.id}`, 'date-next'],
@@ -342,12 +356,15 @@ function dateSubjects(raw: MascotRawData): MascotSubject[] {
       facts: {
         title: i.title, date: i.date!, dateLabel: date,
         dateNature: i.forecast ? 'prévisionnelle' : 'confirmée', assetName: i.assetName,
+        // Lot 50 : DEADLINE (date à respecter, action à prévoir) ou
+        // SCHEDULED_EVENT (événement planifié) — jamais déduit du titre.
+        dateRole: roleOf(i),
       },
       actions: [voir(i, 'Voir l’échéance')],
       // Lot 31 (T6) : libellé naturel, jamais le titre technique brut ; le
       // texte doit être présentable tel quel si T6 ne s'exécute pas.
       // DAT-003 : une date prévisionnelle n'est jamais présentée comme certaine.
-      fallbackText: deadlineNextText(i, date),
+      fallbackText: deadlineNextText({ ...i, dateRole: roleOf(i) }, date),
       allowedHighlight: date,
       occurrenceKey: `DATE-NEXT:${i.id}`,
       dedupeKeys: [`agenda:${i.id}`, 'date-next'],
@@ -424,7 +441,7 @@ function mascotRuleSubjects(raw: MascotRawData): MascotSubject[] {
       accountId: raw.accountId,
       targetType: 'AGENDA_ITEM', targetId: i.id,
       priority: 'DO_NEXT', requiresAttention: true, intent: 'act',
-      facts: { title: i.title, date: i.date!, dateLabel: date, assetName: i.assetName, dateState: passee ? 'passée' : 'du jour' },
+      facts: { title: i.title, date: i.date!, dateLabel: date, assetName: i.assetName, dateState: passee ? 'passée' : 'du jour', dateRole: roleOf(i) },
       actions: [voir, action(`MASC-EXT-ACTION:${i.id}:done`, 'C’est fait', {
         kind: 'done', occurrenceKey, cycleKey,
       })],

@@ -53,7 +53,7 @@ const textOf = (agenda: MascotAgendaRow[]) => subjectsOf(agenda)[0].fallbackText
 describe('T6FB-AC1 : échéance confirmée, titre technique', () => {
   it('formulation naturelle, sans titre brut ni « pour Cupra »', () => {
     const t = textOf([row({})]);
-    expect(t).toBe('Votre prochaine échéance est le contrôle technique de la Cupra, le 18 avril 2028.');
+    expect(t).toBe('Le prochain contrôle technique de la Cupra est à prévoir pour le 18 avril 2028.');
     expect(t).not.toContain('Prochain contrôle technique — CUPRA LEON E-HYBRID180');
     expect(t).not.toContain('CUPRA LEON');
     expect(t).not.toContain('pour Cupra');
@@ -71,7 +71,7 @@ describe('T6FB-AC2 : T6 indisponible — le texte déterministe est présentable
     const subjects = selectSubjects(c.candidates);
     const p = buildPresentation({ subjects, secondaries: buildSecondaries(c, subjects), degraded: c.degraded, messages: null });
     expect(p.source).toBe('fallback'); // T6 n'a rien rendu : texte de secours
-    expect(p.paragraphs[0].text).toBe('Votre prochaine échéance est le contrôle technique de la Cupra, le 18 avril 2028.');
+    expect(p.paragraphs[0].text).toBe('Le prochain contrôle technique de la Cupra est à prévoir pour le 18 avril 2028.');
   });
 
   it('il passerait lui-même les contrôles de sortie T6 (longueur, dates, nombres, nuances)', () => {
@@ -87,14 +87,14 @@ describe('T6FB-AC2 : T6 indisponible — le texte déterministe est présentable
 describe('T6FB-AC3 : date prévisionnelle toujours signalée', () => {
   it('formulation privilégiée', () => {
     expect(textOf([row({ forecast: true })]))
-      .toBe('Votre prochaine échéance est le contrôle technique de la Cupra, prévu autour du 18 avril 2028 (date estimée).');
+      .toBe('Le prochain contrôle technique de la Cupra est à prévoir autour du 18 avril 2028 (date estimée).');
   });
 
   it('formulation neutre et féminin', () => {
     expect(textOf([row({ forecast: true, assetCategory: null, assetSubtype: null })]))
-      .toBe('Votre prochaine échéance concerne Cupra : contrôle technique, autour du 18 avril 2028 (date estimée).');
+      .toBe('Votre prochaine échéance concerne Cupra : contrôle technique, à prévoir autour du 18 avril 2028 (date estimée).');
     expect(textOf([row({ forecast: true, title: 'Prochaine révision' })]))
-      .toBe('Votre prochaine échéance est la révision de la Cupra, prévue autour du 18 avril 2028 (date estimée).');
+      .toBe('La prochaine révision de la Cupra est à prévoir autour du 18 avril 2028 (date estimée).');
   });
 });
 
@@ -104,7 +104,7 @@ describe('T6FB-AC4 : DATE-NEXT-2, mêmes règles', () => {
   it('deux échéances le même jour : libellés naturels, jamais les titres bruts', () => {
     const s = subjectsOf([row({}), chaudiere])[0];
     expect(s.sourceCode).toBe('DATE-NEXT-2');
-    expect(s.fallbackText).toBe('Deux échéances sont prévues le 18 avril 2028 : le contrôle technique de la Cupra et l’entretien chaudière de la maison.');
+    expect(s.fallbackText).toBe('Deux échéances sont à prévoir pour le 18 avril 2028 : le contrôle technique de la Cupra et l’entretien chaudière de la maison.');
     expect(s.fallbackText).not.toMatch(/CUPRA LEON|[«»]|Prochain/);
     expect(s.actions.map((a) => a.label)).toEqual(['Voir « Contrôle technique »', 'Voir « Entretien chaudière »']);
     expect(s.secondaryLabel).toBe('Voir « Contrôle technique »');
@@ -112,7 +112,7 @@ describe('T6FB-AC4 : DATE-NEXT-2, mêmes règles', () => {
 
   it('prévisionnelle : estimée ; bien sans genre certain : neutre', () => {
     const s = subjectsOf([row({ forecast: true }), row({ id: 2, title: 'Ramonage', assetId: 3, assetName: 'Chez Mamie', assetCategory: 'IMMOBILIER', assetSubtype: 'Maison' })])[0];
-    expect(s.fallbackText).toBe('Deux échéances sont prévues autour du 18 avril 2028 (date estimée) : le contrôle technique de la Cupra et le ramonage (Chez Mamie).');
+    expect(s.fallbackText).toBe('Deux échéances sont à prévoir autour du 18 avril 2028 (date estimée) : le contrôle technique de la Cupra et le ramonage (Chez Mamie).');
   });
 });
 
@@ -127,11 +127,11 @@ describe('T6FB-AC5 : générique, aucun cas codé pour Cupra', () => {
   });
 
   it.each([
-    ['Prochaine révision — PEUGEOT 3008 GT HYBRID', 'Peugeot', 'Voiture', 'Votre prochaine échéance est la révision de la Peugeot, le 18 avril 2028.'],
-    ['Prochain entretien - Yamaha MT-07', 'Yamaha MT-07', 'Moto', 'Votre prochaine échéance est l’entretien de la Yamaha MT-07, le 18 avril 2028.'],
-    ['Contrôle technique (Hymer B-Class)', 'Hymer', 'Camping-car', 'Votre prochaine échéance est le contrôle technique du Hymer, le 18 avril 2028.'],
-    ['Révision Audi', 'Audi', 'Voiture', 'Votre prochaine échéance est la révision de l’Audi, le 18 avril 2028.'],
-    ['Prochain entretien', 'Vélo', 'Vélo', 'Votre prochaine échéance est l’entretien du vélo, le 18 avril 2028.'],
+    ['Prochaine révision — PEUGEOT 3008 GT HYBRID', 'Peugeot', 'Voiture', 'La prochaine révision de la Peugeot est à prévoir pour le 18 avril 2028.'],
+    ['Prochain entretien - Yamaha MT-07', 'Yamaha MT-07', 'Moto', 'Le prochain entretien de la Yamaha MT-07 est à prévoir pour le 18 avril 2028.'],
+    ['Contrôle technique (Hymer B-Class)', 'Hymer', 'Camping-car', 'Le prochain contrôle technique du Hymer est à prévoir pour le 18 avril 2028.'],
+    ['Révision Audi', 'Audi', 'Voiture', 'La prochaine révision de l’Audi est à prévoir pour le 18 avril 2028.'],
+    ['Prochain entretien', 'Vélo', 'Vélo', 'Le prochain entretien du vélo est à prévoir pour le 18 avril 2028.'],
   ])('%s (%s)', (title, assetName, subtype, attendu) => {
     expect(textOf([row({ title, assetName, assetSubtype: subtype })])).toBe(attendu);
   });
@@ -170,10 +170,10 @@ describe('T6FB-AC6 : aucune suppression non maîtrisée', () => {
 
 describe('T6FB-AC7 : titres simples', () => {
   it.each([
-    ['Ramonage', 'ramonage', 'Votre prochaine échéance est le ramonage de la maison, le 18 avril 2028.'],
-    ['Révision', 'révision', 'Votre prochaine échéance est la révision de la maison, le 18 avril 2028.'],
-    ['Entretien chaudière', 'entretien chaudière', 'Votre prochaine échéance est l’entretien chaudière de la maison, le 18 avril 2028.'],
-    ['Contrôle technique', 'contrôle technique', 'Votre prochaine échéance est le contrôle technique de la maison, le 18 avril 2028.'],
+    ['Ramonage', 'ramonage', 'Le prochain ramonage de la maison est à prévoir pour le 18 avril 2028.'],
+    ['Révision', 'révision', 'La prochaine révision de la maison est à prévoir pour le 18 avril 2028.'],
+    ['Entretien chaudière', 'entretien chaudière', 'Le prochain entretien chaudière de la maison est à prévoir pour le 18 avril 2028.'],
+    ['Contrôle technique', 'contrôle technique', 'Le prochain contrôle technique de la maison est à prévoir pour le 18 avril 2028.'],
   ])('%s', (title, label, attendu) => {
     expect(deadlineDisplayLabel({ title, assetName: 'Maison' })).toBe(label);
     expect(textOf([row({ title, assetName: 'Maison', assetCategory: 'IMMOBILIER', assetSubtype: 'Maison' })])).toBe(attendu);
@@ -181,38 +181,38 @@ describe('T6FB-AC7 : titres simples', () => {
 
   it('sans bien', () => {
     expect(deadlineNextText({ title: 'Ramonage', assetName: null, forecast: false }, '15 octobre 2026'))
-      .toBe('Votre prochaine échéance est le ramonage, le 15 octobre 2026.');
+      .toBe('Le prochain ramonage est à prévoir pour le 15 octobre 2026.');
   });
 });
 
 describe('T6FB-AC8 : formulation neutre sans donnée certaine', () => {
   it('catégorie du bien inconnue : « concerne Cupra : … »', () => {
     expect(textOf([row({ assetCategory: null, assetSubtype: null })]))
-      .toBe('Votre prochaine échéance concerne Cupra : contrôle technique, le 18 avril 2028.');
+      .toBe('Votre prochaine échéance concerne Cupra : contrôle technique, à prévoir pour le 18 avril 2028.');
   });
 
   it('logement nommé, nom avec déterminant : aucun genre deviné', () => {
     expect(textOf([row({ title: 'Ramonage', assetName: 'Chez Mamie', assetCategory: 'IMMOBILIER', assetSubtype: 'Maison' })]))
-      .toBe('Votre prochaine échéance concerne Chez Mamie : ramonage, le 18 avril 2028.');
+      .toBe('Votre prochaine échéance concerne Chez Mamie : ramonage, à prévoir pour le 18 avril 2028.');
     expect(textOf([row({ title: 'Révision', assetName: 'Ma Clio' })]))
-      .toBe('Votre prochaine échéance concerne Ma Clio : révision, le 18 avril 2028.');
+      .toBe('Votre prochaine échéance concerne Ma Clio : révision, à prévoir pour le 18 avril 2028.');
   });
 
   it('nom d’échéance hors lexique : pas d’article, ni d’élision devinée', () => {
     expect(textOf([row({ title: 'Audit énergétique' })]))
-      .toBe('Votre prochaine échéance concerne la Cupra : Audit énergétique, le 18 avril 2028.');
+      .toBe('Votre prochaine échéance concerne la Cupra : Audit énergétique, à prévoir pour le 18 avril 2028.');
     expect(deadlineNextText({ title: 'Linky', assetName: null, forecast: true }, '2 mai 2027'))
-      .toBe('Votre prochaine échéance : Linky, autour du 2 mai 2027 (date estimée).');
+      .toBe('Votre prochaine échéance : Linky, à prévoir autour du 2 mai 2027 (date estimée).');
     expect(deadlinePairText({ title: 'CT', assetName: 'Cupra' }, { title: 'Ramonage', assetName: null }, '2 mai 2027', false))
-      .toBe('Deux échéances sont prévues le 2 mai 2027 : CT (Cupra) et le ramonage.');
+      .toBe('Deux échéances sont à prévoir pour le 2 mai 2027 : CT (Cupra) et le ramonage.');
   });
 });
 
 describe('T6FB-AC9 : contrat T6', () => {
   it('DATE-NEXT : faits structurés inchangés, fallbackText naturel transmis', () => {
     const [s] = buildT6Input(subjectsOf([row({})])).subjects;
-    expect(s.facts).toEqual({ title: CUPRA_TITLE, date: '2028-04-18', dateLabel: '18 avril 2028', dateNature: 'confirmée', assetName: 'Cupra' });
-    expect(s.fallbackText).toBe('Votre prochaine échéance est le contrôle technique de la Cupra, le 18 avril 2028.');
+    expect(s.facts).toEqual({ title: CUPRA_TITLE, date: '2028-04-18', dateLabel: '18 avril 2028', dateNature: 'confirmée', assetName: 'Cupra', dateRole: 'DEADLINE' });
+    expect(s.fallbackText).toBe('Le prochain contrôle technique de la Cupra est à prévoir pour le 18 avril 2028.');
     expect(s.allowedHighlight).toBe('18 avril 2028');
   });
 
@@ -220,6 +220,7 @@ describe('T6FB-AC9 : contrat T6', () => {
     const [s] = buildT6Input(subjectsOf([row({}), row({ id: 2, title: 'Ramonage', assetId: 2, assetName: 'Maison', assetCategory: 'IMMOBILIER', assetSubtype: 'Maison' })])).subjects;
     expect(s.facts).toEqual({
       date: '2028-04-18', dateLabel: '18 avril 2028', dateNature: 'confirmée',
+      firstDateRole: 'DEADLINE', secondDateRole: 'DEADLINE',
       firstTitle: CUPRA_TITLE, firstAssetName: 'Cupra', secondTitle: 'Ramonage', secondAssetName: 'Maison',
     });
   });
@@ -254,7 +255,7 @@ describe('T6FB-AC10 : taxonomie et fixtures', () => {
       expect(brut).not.toMatch(/« Contrôle technique » pour/);
       const c = JSON.parse(brut);
       expect(c.context.input.subjects[0].fallbackText)
-        .toBe('Votre prochaine échéance est le contrôle technique de la Clio, prévu autour du 14 novembre 2026 (date estimée).');
+        .toBe('Le prochain contrôle technique de la Clio est à prévoir autour du 14 novembre 2026 (date estimée).');
       expect(JSON.parse(c.context.variables.INPUT_JSON)).toEqual(c.context.input);
       expect(evaluateT6CorpusCase(c.context, c.recording.output, c.expected ?? null)).toEqual([]);
     }

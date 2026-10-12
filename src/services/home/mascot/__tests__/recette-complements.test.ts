@@ -445,7 +445,7 @@ describe('traçabilité T6 (BO-009, LOG-005)', () => {
     subjectId: 'DATE-NEXT:1', sourceFamily: 'DATE', sourceCode: 'DATE-NEXT', accountId: 7,
     priority: null, requiresAttention: false, intent: 'deadline',
     facts: { title: 'Ramonage', dateLabel: '15 octobre 2026' }, actions: [],
-    fallbackText: 'Votre prochaine échéance est le ramonage, le 15 octobre 2026.',
+    fallbackText: 'Le prochain ramonage est à prévoir pour le 15 octobre 2026.',
     allowedHighlight: '15 octobre 2026', occurrenceKey: 'DATE-NEXT:1', dedupeKeys: [], secondaryLabel: '',
   }]);
   const deps = { treatmentAvailable: async () => true, promptVersion: async () => 'v-bo009', execute: (r: Parameters<typeof execute>[0]) => execute(r) };

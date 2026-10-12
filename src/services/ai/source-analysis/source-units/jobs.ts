@@ -339,7 +339,7 @@ async function retryDocument(p: {
   // Lacune de pages : seule une relecture du fichier peut la combler → file T1.
   if (lacunes.length > 0 && p.attempt <= p.maxRetries) {
     const { enqueueFileAnalyses } = await import('../queue/t1-handler');
-    const acceptes = await enqueueFileAnalyses([p.fileId], p.accountId, { origin: 't1-completeness-retry', billable: false });
+    const acceptes = await enqueueFileAnalyses([p.fileId], p.accountId, { origin: 't1-completeness-retry', billable: false, processingVisibility: 'TECHNICAL' });
     await pgClient.unsafe(
       `UPDATE document_extraction_coverage SET retry_attempts = $2, next_retry_at = NULL, origin = 'RETRY', updated_at = NOW(),
               last_error = $3 WHERE file_id = $1`,

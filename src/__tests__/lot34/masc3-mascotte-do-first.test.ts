@@ -16,7 +16,7 @@ import { buildTodoBlock, MAX_TODO_ITEMS } from '@/services/home/mascot/todo-item
 import { buildCandidates, type MascotRawData } from '@/services/home/mascot/signals';
 import { buildSecondaries, selectSubjects } from '@/services/home/mascot/selector';
 import { buildPresentation } from '@/services/home/mascot/presentation';
-import { composeSpeech, homeItems, NOTHING_URGENT } from '@/services/home/mascot/bubble';
+import { composeSpeech, homeItems, NOTHING_PRIORITY } from '@/services/home/mascot/bubble';
 import type { MascotPresentation } from '@/services/home/mascot/types';
 
 let n = 0;
@@ -83,7 +83,7 @@ describe('Mascotte — DO_FIRST seulement, au plus deux (MASC3)', () => {
     expect(speech(p)).not.toMatch(MENTION_TODO);
     expect(speech(p)).not.toMatch(/10|Dix/);
     // Jamais « Tout est à jour » alors que la file n'est pas vide.
-    expect(speech(p)).toBe(NOTHING_URGENT);
+    expect(speech(p)).toBe(NOTHING_PRIORITY);
   });
 
   it('MASC3-05 — 0 DO_FIRST + 10 CAN_WAIT → 0', () => {
@@ -99,7 +99,8 @@ describe('Mascotte — DO_FIRST seulement, au plus deux (MASC3)', () => {
     expect(homeItems(p, false).map((i) => i.kind)).toEqual(['todo', 'todo', 'subject']);
     const t = speech(p);
     expect(t.startsWith('Deux sujets nécessitent votre attention aujourd’hui.')).toBe(true);
-    expect(t).toMatch(/échéance/);
+    // Lot 50 : une date à respecter est « à prévoir ».
+    expect(t).toMatch(/à prévoir/);
   });
 
   it('MASC3-07 — 25 actions dont 2 DO_FIRST → « Deux sujets… », jamais « 25 »', () => {

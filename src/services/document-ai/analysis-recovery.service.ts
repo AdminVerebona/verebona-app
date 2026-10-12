@@ -198,6 +198,10 @@ async function runInterne(targetAccountId?: number): Promise<RecoveryResult> {
         const acceptes = await enqueueFileAnalyses(ids, accountId, {
           origin: 'analysis-recovery',
           billable: false,
+          // Lot 50 : reprise serveur. Un document jamais analysé garde sa
+          // visibilité USER (règle de non-déclassement) : son premier
+          // traitement reste présenté.
+          processingVisibility: 'TECHNICAL',
         });
         result.retried += acceptes.length;
       } catch (err) {

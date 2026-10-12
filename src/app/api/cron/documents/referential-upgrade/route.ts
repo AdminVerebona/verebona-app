@@ -68,6 +68,7 @@ export async function GET(req: NextRequest) {
           // facture pas à l'utilisateur.
           billable: false,
           origin: 'referential-upgrade',
+          processingVisibility: 'TECHNICAL',
           // `userId` est omis volontairement : l'entrypoint le déduit du
           // fichier. Le forcer à 0 ferait échouer la résolution.
         },

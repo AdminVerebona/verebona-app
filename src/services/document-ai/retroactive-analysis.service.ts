@@ -57,7 +57,7 @@ export async function scheduleRetroactiveAnalysis(accountId: number): Promise<vo
     // Traiter le batch en parallèle (5 analyses simultanées max)
     await Promise.allSettled(
       batch.map(file =>
-        analyzeFileSources([file.id], accountId, { origin: 'retroactive-analysis' }).catch(err =>
+        analyzeFileSources([file.id], accountId, { origin: 'retroactive-analysis', processingVisibility: 'USER' }).catch(err =>
           console.error(`[retroactive] File ${file.id} failed:`, err)
         )
       )

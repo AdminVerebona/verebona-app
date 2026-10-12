@@ -44,6 +44,7 @@ import type { RunSourceAnalysisOutput } from './pipeline';
 import { isExecutionCancelled, type ExecutionGuard } from '../queue/execution-control';
 import { REQUEUE_ORIGIN_SUFFIX } from './failure-policy';
 import { isCostCapReached } from '../gateway/errors';
+import { markAnalysisVisibility, normalizeProcessingVisibility, type ProcessingVisibility } from '../processing-status/processing-visibility';
 
 export interface AnalyzeFileSourcesOptions {
   /** Déduit du premier fichier si absent — l'ancienne signature ne le portait pas. */
@@ -53,6 +54,14 @@ export interface AnalyzeFileSourcesOptions {
   billable?: boolean;
   /** Appelant, journalisé (et repris dans l'origine d'une remise en file). */
   origin?: string;
+  /**
+   * Lot 50 : traitement attendu par l'utilisateur (`USER`, défaut) ou
+   * réanalyse interne (`TECHNICAL` : correction, rattachement, déplacement,
+   * montée de référentiel, reprise…). Déclaré par CHAQUE appelant ; hérité
+   * par les remises en file. Ne change rien à l'analyse elle-même : seule la
+   * mascotte s'en sert pour ne pas présenter une réanalyse technique.
+   */
+  processingVisibility?: ProcessingVisibility;
   /**
    * Type de source à préparer. `'file'` par défaut — aucun des neuf appelants
    * existants n'a à changer.
@@ -149,6 +158,7 @@ async function deferToNextPeriod(
     const acceptes = await enqueueFileAnalyses(ids, accountId, {
       userId: options.userId,
       origin: options.origin ?? 'inconnue',
+      processingVisibility: normalizeProcessingVisibility(options.processingVisibility),
       ...(options.billable === false ? { billable: false } : {}),
       // Même marge de 60 s que `deferJobUntil`.
       delaySeconds: Math.max(1, Math.ceil((until.getTime() - Date.now()) / 1000) + 60),
@@ -182,6 +192,7 @@ async function requeueFailedSources(
     const acceptes = await enqueueFileAnalyses(ids, accountId, {
       userId: options.userId,
       origin: `${options.origin ?? 'inconnue'}${REQUEUE_ORIGIN_SUFFIX}`,
+      processingVisibility: normalizeProcessingVisibility(options.processingVisibility),
       // Même règle que la demande initiale : rien n'a été consommé pour l'essai
       // en échec, la réussite consommera un seul crédit (ou aucun si la
       // demande n'était pas facturable).
@@ -262,6 +273,10 @@ async function runUnified(
       return null;
     }
 
+    // Lot 50 : visibilité du traitement posée AVANT l'analyse (fichiers seulement).
+    if ((options.sourceType ?? 'file') === 'file' || options.sourceType === 'web_link') {
+      await markAnalysisVisibility(fileIds, accountId, normalizeProcessingVisibility(options.processingVisibility));
+    }
     const { runSourceAnalysis } = await import('./pipeline');
     const outcome = await runSourceAnalysis({
       sourceType: options.sourceType ?? 'file',

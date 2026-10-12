@@ -34,6 +34,7 @@ export async function POST(request: NextRequest) {
       enqueueFileAnalyses(fileIds.filter(Number.isInteger).slice(0, 50), accountId, {
         userId: session.userId,
         origin: 'documents/analyze-batch',
+        processingVisibility: 'USER',
       }),
     ).catch(() => {});
 

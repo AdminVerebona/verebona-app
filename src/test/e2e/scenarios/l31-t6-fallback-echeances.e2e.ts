@@ -3,7 +3,7 @@
  *
  * T6FB-AC1 / AC2 (bout en bout) : le collecteur lit la famille et la
  * catégorie du bien (`assets.category`, `assets.subtype`) ; T6 indisponible,
- * l'accueil affiche « Votre prochaine échéance est le contrôle technique de
+ * l'accueil affiche (lot 50) « Le prochain contrôle technique de
  * la Cupra, le … » — jamais le titre technique entre guillemets.
  * T6FB-AC8 : catégorie absente → formulation neutre.
  */
@@ -22,7 +22,9 @@ scenario('L31-T6FB', 'Accueil : fallback naturel des échéances (T6 indisponibl
     const compte = await make.account({ plan: 'premium' });
     const bien = await make.asset(compte, { category: 'VEHICULE', name: 'Cupra' });
     await sql`UPDATE assets SET subtype = 'Voiture' WHERE id = ${bien.id}`;
-    await make.agendaItem(compte, { title: 'Prochain contrôle technique — CUPRA LEON E-HYBRID180', startDate: futur, assetIds: [bien.id] });
+    const ech = await make.agendaItem(compte, { title: 'Prochain contrôle technique — CUPRA LEON E-HYBRID180', startDate: futur, assetIds: [bien.id] });
+    // Lot 50 : échéance AUTOMATIQUE (champ du bien), comme en production — date à respecter.
+    await sql`UPDATE agenda_items SET is_automatic = TRUE, origin_type = 'asset_field' WHERE id = ${ech.id}`;
 
     const { collectMascotData } = await import('@/services/home/mascot/collector');
     const { formatDateFr } = await import('@/services/home/mascot/signals');
@@ -35,14 +37,16 @@ scenario('L31-T6FB', 'Accueil : fallback naturel des échéances (T6 indisponibl
     await sansModele();
     const p = await getMascotPresentation(compte.id, 'display');
     const texte = p.paragraphs.find((x) => x.sourceCode === 'DATE-NEXT')?.text;
-    expect(texte).toBe(`Votre prochaine échéance est le contrôle technique de la Cupra, le ${formatDateFr(futur)}.`);
+    expect(texte).toBe(`Le prochain contrôle technique de la Cupra est à prévoir pour le ${formatDateFr(futur)}.`);
     expect(texte).not.toMatch(/CUPRA LEON|pour Cupra|[«»]/);
   });
 
   it('T6FB-AC8 — catégorie du bien inconnue : formulation neutre', async () => {
     const compte = await make.account({ plan: 'premium' });
     const bien = await make.asset(compte, { category: 'VEHICULE', name: 'Cupra' });
-    await make.agendaItem(compte, { title: 'Prochain contrôle technique — CUPRA LEON E-HYBRID180', startDate: futur, assetIds: [bien.id] });
+    const ech = await make.agendaItem(compte, { title: 'Prochain contrôle technique — CUPRA LEON E-HYBRID180', startDate: futur, assetIds: [bien.id] });
+    // Lot 50 : échéance AUTOMATIQUE (champ du bien), comme en production — date à respecter.
+    await sql`UPDATE agenda_items SET is_automatic = TRUE, origin_type = 'asset_field' WHERE id = ${ech.id}`;
     const { resetT6Breaker } = await import('@/services/home/mascot/t6-runner');
     const { formatDateFr } = await import('@/services/home/mascot/signals');
     const { getMascotPresentation } = await import('@/services/home/mascot/mascot.service');
@@ -50,6 +54,6 @@ scenario('L31-T6FB', 'Accueil : fallback naturel des échéances (T6 indisponibl
     await sansModele();
     const p = await getMascotPresentation(compte.id, 'display');
     expect(p.paragraphs.find((x) => x.sourceCode === 'DATE-NEXT')?.text)
-      .toBe(`Votre prochaine échéance concerne Cupra : contrôle technique, le ${formatDateFr(futur)}.`);
+      .toBe(`Votre prochaine échéance concerne Cupra : contrôle technique, à prévoir pour le ${formatDateFr(futur)}.`);
   });
 });

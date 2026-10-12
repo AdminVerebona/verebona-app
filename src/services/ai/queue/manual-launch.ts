@@ -171,7 +171,8 @@ export async function launchManual(
         scope: { accountId: o.accountId, targetType: 'asset_file', targetId: o.fileId! },
         origin: 'manual',
         triggerCode: 'manual',
-        payload: { fileId: o.fileId, userId: null, origin: 'admin/manual', billable: false, requestedByUserId: adminUserId },
+        // Lot 50 : réanalyse lancée depuis le BO = traitement technique (jamais un sujet de la mascotte).
+        payload: { fileId: o.fileId, userId: null, origin: 'admin/manual', billable: false, processingVisibility: 'TECHNICAL', requestedByUserId: adminUserId },
       })
       : await deps.enqueue({
         treatment: 'T3',

@@ -117,6 +117,7 @@ export async function POST(request: NextRequest) {
           userId,
           billable: false,
           origin: 'documents/bulk-move',
+          processingVisibility: 'TECHNICAL',
         }).catch(err => {
           console.error(`[bulk-move] re-analyse après déplacement échouée (file ${fileId}):`, err);
         });

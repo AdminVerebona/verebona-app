@@ -16,6 +16,9 @@ import { isHistoricalAgendaEvent } from '@/services/agenda/agenda-historical';
 import { classifyByRules } from '@/services/ai/agenda/rules/deterministic-classification';
 // Lot 34C : « en cours d'analyse » seulement si un traitement l'attend réellement.
 import { effectiveAnalysisStateSql } from '@/services/ai/processing-status/effective-state-sql';
+// Lot 50 : seule une analyse attendue par l'utilisateur est un sujet.
+import { analysisVisibilityColumnReady, userVisibleAnalysisSql } from '@/services/ai/processing-status/processing-visibility';
+import { agendaDateRole } from '@/services/agenda/agenda-date-role';
 
 /** Un envoi ou une analyse bloqués depuis plus longtemps ne sont plus « en cours ». */
 const PROCESSING_WINDOW_HOURS = 24;
@@ -81,6 +84,11 @@ const iso = (v: unknown) => (v instanceof Date ? v.toISOString() : String(v ?? '
 
 async function readProcessing(accountId: number): Promise<MascotRawData['processing']> {
   const fenetre = `${PROCESSING_WINDOW_HOURS} hours`;
+  // Lot 50 : une réanalyse TECHNIQUE (correction, rattachement, déplacement,
+  // reprise…) est réellement en cours — l'état effectif n'est pas modifié —
+  // mais n'est jamais présentée comme un sujet (PROC-DOC-ANALYSIS). La
+  // visibilité est portée par le traitement, jamais déduite ici d'une origine.
+  const visible = userVisibleAnalysisSql('f', await analysisVisibilityColumnReady());
   const [uploads, analyses, exports] = await Promise.all([
     rows(
       `SELECT id, COALESCE(NULLIF(retained_title, ''), NULLIF(original_filename, ''), filename) AS title,
@@ -98,6 +106,7 @@ async function readProcessing(accountId: number): Promise<MascotRawData['process
          FROM asset_files f
         WHERE account_id = $1 AND deleted_at IS NULL
           AND ${effectiveAnalysisStateSql('f')} IN ('UPLOADED', 'ANALYZING')
+          AND ${visible}
           AND COALESCE(upload_status, 'COMPLETED') = 'COMPLETED'
           AND COALESCE(updated_at, created_at) > NOW() - $2::interval
         ORDER BY at DESC LIMIT 20`,
@@ -164,6 +173,8 @@ async function readAgenda(accountId: number, today: string): Promise<MascotAgend
             i.occurrence_nature AS "occurrenceNature", i.requires_qualification AS "requiresQualification",
             i.home_category AS "homeCategory", i.origin_type AS "originType",
             i.origin_field_key AS "originFieldKey",
+            i.is_automatic AS "isAutomatic", i.projection_origin AS "projectionOrigin",
+            to_char(i.start_time, 'HH24:MI') AS "startTime",
             ${t4 ? 'i.event_nature AS "eventNature", i.business_type AS "businessType",' : ''}
             l.asset_id AS "assetId", a.name AS "assetName",
             a.category AS "assetCategory", a.subtype AS "assetSubtype"
@@ -201,6 +212,16 @@ async function readAgenda(accountId: number, today: string): Promise<MascotAgend
       title: String(i.title),
       date: (i.date as string | null) ?? null,
       forecast: i.occurrenceNature === 'FORECAST',
+      // Lot 50 : date à respecter (action à prévoir) ou événement réellement
+      // planifié — données structurées de l'agenda, jamais le titre.
+      dateRole: agendaDateRole({
+        forecast: i.occurrenceNature === 'FORECAST',
+        isAutomatic: Boolean(i.isAutomatic),
+        originType: String(i.originType ?? 'manual'),
+        projectionOrigin: (i.projectionOrigin as string | null) ?? null,
+        eventNature: (i.eventNature as string | null | undefined) ?? null,
+        startTime: (i.startTime as string | null) ?? null,
+      }),
       requiresQualification: Boolean(i.requiresQualification),
       assetId: i.assetId == null ? null : Number(i.assetId),
       assetName: (i.assetName as string | null) ?? null,

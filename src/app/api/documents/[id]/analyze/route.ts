@@ -204,6 +204,7 @@ async function streamUnifiedAnalysis(args: {
     const outcome = await analyzeFileSources([assetFileId], accountId, {
       userId,
       origin: 'documents/analyze',
+      processingVisibility: 'USER',
     });
 
     // Le pipeline gère quota et déduplication : la route se contente de

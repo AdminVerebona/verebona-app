@@ -35,6 +35,7 @@ import { enqueue, type QueuedJob } from '../../queue/job-queue.repository';
 import { JobDeferredError, type JobBusinessResult } from '../../queue/queue-policy';
 import { AiCostCapReachedError } from '../../gateway/errors';
 import { REQUEUE_ORIGIN_SUFFIX } from '../failure-policy';
+import { markAnalysisVisibility, normalizeProcessingVisibility, type ProcessingVisibility } from '../../processing-status/processing-visibility';
 
 /**
  * Analyse d'un fichier en échec pendant le job (master T1, persistance) : le
@@ -106,6 +107,8 @@ export async function enqueueFileAnalyses(
   accountId: number,
   options: {
     userId?: number; origin: string; billable?: boolean;
+    /** Lot 50 : traitement utilisateur (défaut) ou réanalyse technique — voir `processing-visibility`. */
+    processingVisibility?: ProcessingVisibility;
     /** Premier prélèvement différé (remise en file après un échec hors file). */
     delaySeconds?: number;
     /** Lot 22 : report pour plafond de coût du compte, jusqu'à cette date (ISO). */
@@ -132,6 +135,8 @@ export async function enqueueDurableFileAnalyses(
   accountId: number,
   options: {
     userId?: number; origin: string;
+    /** Lot 50 : traitement utilisateur (défaut) ou réanalyse technique — voir `processing-visibility`. */
+    processingVisibility?: ProcessingVisibility;
     /** Reprise serveur ou réanalyse d'exploitation : non facturée au compte. */
     billable?: boolean;
     /** Premier prélèvement différé, en secondes. */
@@ -144,6 +149,7 @@ export async function enqueueDurableFileAnalyses(
   },
 ): Promise<number[]> {
   const acceptes: number[] = [];
+  const visibilite = normalizeProcessingVisibility(options.processingVisibility);
 
   for (const fileId of [...new Set(fileIds)]) {
     if (!Number.isInteger(fileId)) continue;
@@ -156,6 +162,8 @@ export async function enqueueDurableFileAnalyses(
         triggerCode: options.origin === UPLOAD_ORIGIN ? 'source_uploaded' : options.origin,
         payload: {
           fileId, userId: options.userId ?? null, origin: options.origin,
+          // Lot 50 : portée par le travail, héritée par l'exécution et ses remises en file.
+          processingVisibility: visibilite,
           ...(options.billable === false ? { billable: false } : {}),
           ...(options.costCapDeferredUntil ? { costCapDeferredUntil: options.costCapDeferredUntil } : {}),
         },
@@ -178,6 +186,9 @@ export async function enqueueDurableFileAnalyses(
     }
   }
 
+  // Lot 50 : visibilité du traitement posée dès la mise en file (« en file »
+  // est déjà un état présenté par la mascotte pour un dépôt).
+  if (acceptes.length > 0) await markAnalysisVisibility(acceptes, accountId, visibilite);
   // Un dépôt n'attend pas le tour suivant du boucleur (15 s) : réveil immédiat.
   if (acceptes.length > 0) nudgeQueueWorker();
   return acceptes;
@@ -209,6 +220,8 @@ export function registerSourceAnalysisHandler(): void {
       fileId?: number; userId?: number | null; origin?: string;
       /** Réanalyse lancée par l'administration (WF-11) : non facturée au compte. */
       billable?: boolean;
+      /** Lot 50 : absente (travail antérieur) → USER. */
+      processingVisibility?: string;
     };
     const fileId = payload.fileId ?? (job.targetId ? Number(job.targetId) : NaN);
 
@@ -235,6 +248,7 @@ export function registerSourceAnalysisHandler(): void {
     const outcome = await analyzeFileSources([fileId], job.accountId, {
       userId: payload.userId ?? undefined,
       origin: payload.origin ?? 'queue',
+      processingVisibility: normalizeProcessingVisibility(payload.processingVisibility),
       guard,
       // WF-11 / T1-021 : une réanalyse manuelle ne consomme pas les crédits
       // de l'utilisateur et n'est pas refusée faute de crédit (manual-launch).

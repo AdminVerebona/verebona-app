@@ -900,7 +900,7 @@ async function triggerRetroactiveAnalysis(accountId: number): Promise<void> {
 
   for (const file of unanalyzed) {
     try {
-      await analyzeFileSources([file.id], accountId, { origin: 'stripe-webhook/retroactive' });
+      await analyzeFileSources([file.id], accountId, { origin: 'stripe-webhook/retroactive', processingVisibility: 'USER' });
     } catch (err) {
       console.error(`[retroactive] File ${file.id} failed:`, err);
     }

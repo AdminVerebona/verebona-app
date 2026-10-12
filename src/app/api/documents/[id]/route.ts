@@ -9,6 +9,17 @@ import { isKnownStorageDocumentCode } from '@/lib/referential/document-codes';
 import { analyzeFileSources } from '@/services/ai/source-analysis/entrypoint';
 import { onDocumentEditedByUser } from '@/services/to-process/document-rule-bridge';
 import { displayDocumentTitle, isValidBusinessTitle } from '@/lib/documents/document-title-rules';
+import {
+  assertTargetInAccount, isCrossAccountReferenceError, logCrossAccountRefusal, ownedSql, TargetCoherenceError,
+} from '@/services/security/account-ownership';
+
+/** Identifiant de cible envoyé : `undefined` (absent), `null` (retiré) ou entier. */
+function cible(v: unknown): number | null | undefined {
+  if (v === undefined) return undefined;
+  if (v === null || v === 0 || v === '' || v === '0') return null;
+  const n = parseInt(String(v));
+  return isNaN(n) ? NaN : n;
+}
 
 export async function PUT(
   request: NextRequest,
@@ -81,6 +92,40 @@ export async function PUT(
     }
 
     const oldDoc = existingDoc[0];
+
+    // ══════════════════════════════════════════════════════════════════════
+    // LOT 49 (SEC-05) — CIBLES DU COMPTE, AVANT TOUTE ÉCRITURE
+    //
+    // Bien, pièce et équipement demandés : du compte actif ; pièce et
+    // équipement portés par le bien attendu (celui envoyé, sinon l'actuel) et
+    // par le même bien. Un refus arrête TOUT : aucune écriture partielle,
+    // aucune projection, réanalyse ni réconciliation. La mise à jour porte en
+    // plus la condition de compte dans son SQL (document ET cibles).
+    // ══════════════════════════════════════════════════════════════════════
+    const assetDemande = cible(assetId);
+    const pieceDemandee = cible(substructureId);
+    const equipementDemande = cible(equipmentId);
+    if ([assetDemande, pieceDemandee, equipementDemande].some((v) => Number.isNaN(v))) {
+      return NextResponse.json({ error: 'INVALID_INPUT', message: 'Identifiant de bien, pièce ou équipement invalide' }, { status: 400 });
+    }
+    if (assetDemande || pieceDemandee || equipementDemande) {
+      try {
+        await assertTargetInAccount(session.currentAccountId, {
+          assetId: assetDemande !== undefined ? assetDemande : (pieceDemandee || equipementDemande ? oldDoc.assetId : null),
+          substructureId: pieceDemandee ?? null,
+          equipmentId: equipementDemande ?? null,
+        });
+      } catch (e) {
+        if (isCrossAccountReferenceError(e)) {
+          logCrossAccountRefusal('PUT /api/documents/[id]', e);
+          return NextResponse.json({ error: 'NOT_FOUND', message: 'Bien, pièce ou équipement introuvable' }, { status: 404 });
+        }
+        if (e instanceof TargetCoherenceError) {
+          return NextResponse.json({ error: 'INVALID_INPUT', message: e.message }, { status: 400 });
+        }
+        throw e;
+      }
+    }
 
     const now = new Date();
     const updateData: any = {
@@ -189,10 +234,20 @@ export async function PUT(
       updateData.webLinkTitle = fileName.trim();
     }
 
-    await db
+    const cibles = [
+      ...(updateData.assetId ? [ownedSql('asset', updateData.assetId, session.currentAccountId)] : []),
+      ...(updateData.substructureId ? [ownedSql('substructure', updateData.substructureId, session.currentAccountId)] : []),
+      ...(updateData.equipmentId ? [ownedSql('equipment', updateData.equipmentId, session.currentAccountId)] : []),
+    ];
+    const ecrit = await db
       .update(assetFiles)
       .set(updateData)
-      .where(eq(assetFiles.id, documentId));
+      .where(and(eq(assetFiles.id, documentId), eq(assetFiles.accountId, session.currentAccountId), ...cibles))
+      .returning({ id: assetFiles.id });
+    if (ecrit.length === 0) {
+      // Cible devenue étrangère ou supprimée entre le contrôle et l'écriture.
+      return NextResponse.json({ error: 'NOT_FOUND', message: 'Document non trouvé' }, { status: 404 });
+    }
 
     const changes = [];
     if (updateData.originalFilename !== undefined && oldDoc.originalFilename !== fileName.trim()) {
@@ -286,6 +341,8 @@ export async function PUT(
         userId: session.userId,
         billable: false,
         origin: 'documents/PUT',
+        // Lot 50 : réanalyse après correction / rattachement — jamais un sujet de la mascotte.
+        processingVisibility: 'TECHNICAL',
       }).catch(err => {
         console.error(`[documents/PUT] re-analyse après modification manuelle échouée (file ${documentId}):`, err);
       });

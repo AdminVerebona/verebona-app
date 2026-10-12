@@ -43,7 +43,7 @@ async function mettreEnFile(ids: number[], accountId: number, userId: number): P
     const gate = await canConsumeAnalysis(accountId, 1);
     if (gate.allowed) {
       const { enqueueFileAnalyses } = await import('@/services/ai/source-analysis/queue/t1-handler');
-      await enqueueFileAnalyses(ids, accountId, { userId, origin: 'files/confirm' });
+      await enqueueFileAnalyses(ids, accountId, { userId, origin: 'files/confirm', processingVisibility: 'USER' });
     }
   } catch (e) {
     console.error(`[files/confirm] mise en file impossible pour ${ids.join(', ')} :`, (e as Error).message);

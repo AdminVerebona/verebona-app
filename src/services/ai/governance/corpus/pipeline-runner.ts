@@ -131,6 +131,7 @@ export function createPipelineRunner(): CorpusRunner {
         // elle mesure, elle ne rend pas de service.
         billable: false,
         origin: 'corpus-pipeline',
+        processingVisibility: 'TECHNICAL',
         // Un échec est un résultat mesuré : rien n'est remis en file.
         retryOnFailure: false,
       });

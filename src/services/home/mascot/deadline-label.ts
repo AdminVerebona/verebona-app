@@ -29,10 +29,15 @@
  *      référentiel (`assetNameGrammar`, `@/lib/asset-taxonomy`). Sinon,
  *      formulation neutre (« Votre prochaine échéance concerne Cupra :
  *      contrôle technique, le 18 avril 2028. ») ;
- *   4. une date prévisionnelle est toujours dite estimée (DAT-003).
+ *   4. une date prévisionnelle est toujours dite estimée (DAT-003) ;
+ *   5. lot 50 : le RÔLE de la date (`AgendaDateRole`) règle le verbe — une
+ *      date à respecter (DEADLINE) est « à prévoir », jamais « prévue » comme
+ *      un rendez-vous ; seul un événement planifié (SCHEDULED_EVENT) est
+ *      « prévu le … ». Rôle absent : DEADLINE.
  * ══════════════════════════════════════════════════════════════════════════
  */
 import { assetCategoryLabel, assetNameGrammar, type GrammaticalGender } from '@/lib/asset-taxonomy';
+import type { AgendaDateRole } from '@/services/agenda/agenda-date-role';
 
 const plain = (s: string) => s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/[’]/g, "'");
 const mots = (s: string) => plain(s).split(/[^a-z0-9]+/).filter(Boolean);
@@ -60,6 +65,8 @@ const NOMS_ECHEANCE: Readonly<Record<string, { gender: GrammaticalGender; elide?
   cotisation: { gender: 'f' }, facture: { gender: 'f' }, expiration: { gender: 'f' }, intervention: { gender: 'f' },
   reparation: { gender: 'f' }, resiliation: { gender: 'f' }, souscription: { gender: 'f' }, mise: { gender: 'f' },
   recharge: { gender: 'f' }, carte: { gender: 'f' }, location: { gender: 'f' }, fin: { gender: 'f' },
+  // Lot 50 : événements planifiés courants (« rendez-vous » : tête « rendez »).
+  rendez: { gender: 'm' }, reunion: { gender: 'f' }, livraison: { gender: 'f' }, installation: { gender: 'f' },
 };
 
 /** Voyelle initiale (le « y » initial est le plus souvent consonne : « la Yamaha »). */
@@ -81,6 +88,9 @@ function article(nom: string, gender: GrammaticalGender | null, elide = false): 
 
 /** « de » + article défini : « du », « de la », « de l’ ». */
 const de = (art: string) => (art === 'le ' ? 'du ' : `de ${art}`);
+
+/** Majuscule initiale d'une phrase. */
+const majuscule = (t: string) => t.charAt(0).toLocaleUpperCase('fr') + t.slice(1);
 
 // ── 1. Libellé ───────────────────────────────────────────────────────────────
 
@@ -173,6 +183,8 @@ export interface DeadlineWordingItem {
   /** Famille (`assets.category`) et catégorie (`assets.subtype`) du bien, si connues. */
   assetCategory?: string | null;
   assetSubtype?: string | null;
+  /** Lot 50 : rôle de la date ; absent → DEADLINE (« à prévoir »). */
+  dateRole?: AgendaDateRole;
 }
 
 interface Parts {
@@ -209,22 +221,51 @@ export function deadlineButtonLabel(i: DeadlineWordingItem): string {
   return label.charAt(0).toLocaleUpperCase('fr') + label.slice(1);
 }
 
+/** Têtes qui désignent le TERME d'une période : « la fin de contrat est fixée au … ». */
+const TERMES: Readonly<Record<string, true>> = { fin: true, expiration: true, echeance: true };
+
+/** « Le prochain » / « La prochaine » — genre certain seulement. */
+const prochain = (gender: GrammaticalGender | null): string | null =>
+  gender === 'm' ? 'le prochain ' : gender === 'f' ? 'la prochaine ' : null;
+
 /**
  * DATE-NEXT — texte déterministe immédiatement affichable (pure, testée).
- *   · « Votre prochaine échéance est le contrôle technique de la Cupra, le 18 avril 2028. »
- *   · « … , prévu autour du 18 avril 2028 (date estimée). »
- *   · repli neutre : « Votre prochaine échéance concerne Cupra : contrôle technique, le 18 avril 2028. »
+ * Date à respecter (DEADLINE, défaut) :
+ *   · « Le prochain contrôle technique de la Cupra est à prévoir pour le 18 avril 2028. »
+ *   · prévisionnelle : « … est à prévoir autour du 18 avril 2028 (date estimée). »
+ *   · repli neutre : « Votre prochaine échéance concerne Cupra : contrôle technique, à prévoir pour le 18 avril 2028. »
+ *   · terme d'une période : « La fin de contrat Matmut est fixée au 18 avril 2028. »
+ * Événement planifié (SCHEDULED_EVENT) :
+ *   · « Le rendez-vous garage de la Cupra est prévu le 18 avril 2028. »
+ *   · repli neutre : « Prévu le 18 avril 2028 pour Cupra : rendez-vous garage. »
  */
 export function deadlineNextText(i: DeadlineWordingItem & { forecast: boolean }, dateLabel: string): string {
   const p = parts(i);
-  const neutre = i.forecast ? `autour du ${dateLabel} (date estimée)` : `le ${dateLabel}`;
-  if (p.art && (p.bien || !p.assetName)) {
-    const accord = p.gender === 'f' ? 'prévue' : p.gender === 'm' ? 'prévu' : null;
-    const quand = i.forecast ? (accord ? `${accord} ${neutre}` : neutre) : neutre;
-    return `Votre prochaine échéance est ${p.art}${p.label}${p.bien ? ` ${p.bien.de}` : ''}, ${quand}.`;
+  const role: AgendaDateRole = i.forecast ? 'DEADLINE' : i.dateRole ?? 'DEADLINE';
+  const genreSur = p.art && (p.bien || !p.assetName);
+  if (role === 'SCHEDULED_EVENT') {
+    if (genreSur && p.gender) {
+      const sujet = majuscule(`${p.art}${p.label}${p.bien ? ` ${p.bien.de}` : ''}`);
+      return `${sujet} est ${p.gender === 'f' ? 'prévue' : 'prévu'} le ${dateLabel}.`;
+    }
+    if (p.assetName) return `Prévu le ${dateLabel} pour ${p.bien ? p.bien.ref : p.assetName} : ${p.label}.`;
+    return `Prévu le ${dateLabel} : ${p.label}.`;
   }
-  if (p.assetName) return `Votre prochaine échéance concerne ${p.bien ? p.bien.ref : p.assetName} : ${p.label}, ${neutre}.`;
-  return `Votre prochaine échéance : ${p.label}, ${neutre}.`;
+  // Terme d'une période (fin, expiration, échéance) : une date FIXÉE, pas une action à prévoir.
+  if (genreSur && p.gender && TERMES[tete(p.label)]) {
+    const sujet = majuscule(`${p.art}${p.label}${p.bien ? ` ${p.bien.de}` : ''}`);
+    const f = p.gender === 'f';
+    return i.forecast
+      ? `${sujet} est ${f ? 'estimée' : 'estimé'} autour du ${dateLabel}.`
+      : `${sujet} est ${f ? 'fixée' : 'fixé'} au ${dateLabel}.`;
+  }
+  const quand = i.forecast ? `autour du ${dateLabel} (date estimée)` : `pour le ${dateLabel}`;
+  const tetePro = prochain(p.gender);
+  if (genreSur && tetePro) {
+    return `${majuscule(`${tetePro}${p.label}`)}${p.bien ? ` ${p.bien.de}` : ''} est à prévoir ${quand}.`;
+  }
+  if (p.assetName) return `Votre prochaine échéance concerne ${p.bien ? p.bien.ref : p.assetName} : ${p.label}, à prévoir ${quand}.`;
+  return `Votre prochaine échéance : ${p.label}, à prévoir ${quand}.`;
 }
 
 /** Élément d'une énumération : « le contrôle technique de la Cupra », « ramonage (Maison) ». */
@@ -236,12 +277,21 @@ function element(i: DeadlineWordingItem): string {
 
 /**
  * DATE-NEXT-2 — mêmes règles que DATE-NEXT (pure, testée) :
- * « Deux échéances sont prévues le 18 avril 2028 : le contrôle technique de
- * la Cupra et l’entretien de la chaudière. »
+ *   · deux dates à respecter : « Deux échéances sont à prévoir pour le 18 avril
+ *     2028 : le contrôle technique de la Cupra et l’entretien de la chaudière. »
+ *   · deux événements planifiés : « Deux événements sont prévus le … : … »
+ *   · l'un et l'autre : « Deux dates sont à noter le … : … »
  */
 export function deadlinePairText(a: DeadlineWordingItem, b: DeadlineWordingItem, dateLabel: string, forecast: boolean): string {
-  const quand = forecast ? `autour du ${dateLabel} (date estimée)` : `le ${dateLabel}`;
-  return `Deux échéances sont prévues ${quand} : ${element(a)} et ${element(b)}.`;
+  const roleA: AgendaDateRole = forecast ? 'DEADLINE' : a.dateRole ?? 'DEADLINE';
+  const roleB: AgendaDateRole = forecast ? 'DEADLINE' : b.dateRole ?? 'DEADLINE';
+  const liste = `${element(a)} et ${element(b)}`;
+  if (roleA === 'DEADLINE' && roleB === 'DEADLINE') {
+    const quand = forecast ? `autour du ${dateLabel} (date estimée)` : `pour le ${dateLabel}`;
+    return `Deux échéances sont à prévoir ${quand} : ${liste}.`;
+  }
+  if (roleA === 'SCHEDULED_EVENT' && roleB === 'SCHEDULED_EVENT') return `Deux événements sont prévus le ${dateLabel} : ${liste}.`;
+  return `Deux dates sont à noter le ${dateLabel} : ${liste}.`;
 }
 
 // ── 3. Recommandations de la mascotte (lot 32, décision PO 20) ───────────────
@@ -252,7 +302,6 @@ export function deadlinePairText(a: DeadlineWordingItem, b: DeadlineWordingItem,
 // libellé naturel, articles seulement sur une donnée certaine, sinon
 // formulation neutre ; jamais de titre brut entre guillemets.
 
-const majuscule = (t: string) => t.charAt(0).toLocaleUpperCase('fr') + t.slice(1);
 
 /**
  * MASC-BLOCKED — « Une échéance doit être précisée avant de pouvoir être

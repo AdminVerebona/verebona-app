@@ -172,6 +172,12 @@ const RETARD = /\b(en retard|retard|depassee?s?|echue?s?|trop tard)\b/;
 const INJONCTION = /\b(vous devez|il faut|il vous faut|pensez a|n'oubliez pas|n'attendez pas|veillez a|devez)\b/;
 /** R9 / R4 : marque d'estimation — interdite sur une date confirmée. */
 const ESTIMATION = /\b(estime\w*|previsionnel\w*|approximati\w*|environ|autour du|autour de)\b/;
+/**
+ * Lot 50 : vocabulaire d'un événement ORGANISÉ — interdit pour une date à
+ * respecter (`dateRole` DEADLINE) : une échéance certaine n'est pas un
+ * rendez-vous pris. « Prévu » reste admis (prévision, date estimée).
+ */
+const ORGANISE = /\b(rendez-vous|rdv|reserve|reservee|reserves|reservees|organise|organisee|planifie|planifiee|programme|programmee|rendez vous)\b/;
 /** R5 : interface et navigation. */
 const INTERFACE = /\b(bouton|boutons|cliquez|cliquer|clic|menu|onglet|ecran|lien ci|ci-dessous|ci-dessus)\b/;
 
@@ -223,6 +229,12 @@ export function keepsEssentialFacts(text: string, facts: MascotFacts): boolean {
   return true;
 }
 
+/** Lot 50 : toutes les dates du sujet sont des dates à respecter (aucun événement planifié). */
+function onlyDeadlines(s: T6InputSubject): boolean {
+  const roles = [s.facts.dateRole, s.facts.firstDateRole, s.facts.secondDateRole].filter((r) => r != null);
+  return roles.length > 0 && roles.every((r) => r === 'DEADLINE');
+}
+
 /** R9 : nuances par intention et nature de tuile. Rend le motif d'écart, ou null (pure, testée). */
 export function nuanceViolation(text: string, s: T6InputSubject, kind: T6SubjectKind | undefined): string | null {
   const t = plainT6(text);
@@ -234,6 +246,7 @@ export function nuanceViolation(text: string, s: T6InputSubject, kind: T6Subject
   if (kind !== 'overdue' && horsFaits(RETARD)) return 'overdue_wording';
   if (s.intent === 'inform' && horsFaits(INJONCTION)) return 'inform_injunction';
   if (s.intent === 'deadline' && s.facts.dateNature === 'confirmée' && horsFaits(ESTIMATION)) return 'confirmed_as_forecast';
+  if (onlyDeadlines(s) && horsFaits(ORGANISE)) return 'deadline_as_appointment';
   return null;
 }
 

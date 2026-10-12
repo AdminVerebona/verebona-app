@@ -73,11 +73,16 @@ export function tileFor(s: MascotSubject, today: string, opts: TileOptions = {})
   if (code === 'DATE-NEXT' || code === 'DATE-NEXT-2') {
     const label = str(f.dateLabel);
     const estimee = f.dateNature === 'prévisionnelle' ? ' (estimée)' : '';
+    // Lot 50 : une date à respecter est « à prévoir », un événement planifié « prévu ».
+    const statut = !label ? 'À venir'
+      : code === 'DATE-NEXT' && f.dateRole === 'SCHEDULED_EVENT' ? `Prévu le ${label}`
+      : code === 'DATE-NEXT' && f.dateRole === 'DEADLINE' ? `À prévoir pour le ${label}${estimee}`
+      : `Le ${label}${estimee}`;
     return {
       tone: 'blue', icon: 'calendar-days', attention: false,
       assetName: asset ?? str(f.firstAssetName),
       label: code === 'DATE-NEXT-2' ? 'Voir les échéances' : 'Voir l’échéance',
-      status: label ? `Le ${label}${estimee}` : 'À venir',
+      status: statut,
       kind: 'info',
     };
   }
@@ -158,8 +163,10 @@ export function todoSummary(n: number): string {
 /**
  * MASC3 : la file contient des actions, mais aucune « À faire en premier » —
  * on ne dit ni leur nombre, ni « Tout est à jour ».
+ * Lot 50 : les sujets Verebona sont PRIORISÉS, jamais qualifiés
+ * d'« urgents » (même règle que le validateur T6) : formulation en priorité.
  */
-export const NOTHING_URGENT = 'Rien d’urgent aujourd’hui.';
+export const NOTHING_PRIORITY = 'Aucun sujet à traiter en priorité aujourd’hui.';
 
 export interface Speech {
   text: string;
@@ -206,14 +213,14 @@ export function composeSpeech({ presentation, empty, failed }: SpeechInput): Spe
   const fileNonVide = (presentation.todo?.total ?? 0) > 0;
   if (paras.length === 0) {
     if (presentation.status === 'degraded') return { text: DEGRADED_SPEECH, highlights: [] };
-    return { text: fileNonVide ? NOTHING_URGENT : CLEAR_SPEECH, highlights: [] };
+    return { text: fileNonVide ? NOTHING_PRIORITY : CLEAR_SPEECH, highlights: [] };
   }
   const attention = paras.filter((p) => p.tile?.attention ?? true);
   const info = paras.filter((p) => !(p.tile?.attention ?? true));
   const texts = (list: MascotParagraph[]) => list.map((p) => p.text.trim()).filter(Boolean);
 
   if (attention.length === 0) {
-    return { text: [fileNonVide ? NOTHING_URGENT : 'Tout est à jour.', ...texts(info)].join(' '), highlights };
+    return { text: [fileNonVide ? NOTHING_PRIORITY : 'Tout est à jour.', ...texts(info)].join(' '), highlights };
   }
   const n = attention.length;
   const intro = `${NOMBRES[n] ?? n} ${n > 1 ? 'sujets méritent' : 'sujet mérite'} votre attention aujourd’hui`;
