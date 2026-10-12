@@ -1,0 +1,4098 @@
+{
+ "titre": "Opérations V1 — matrice de traçabilité exécutable (lot 48, O10)",
+ "cdc": "CDC Opérations V1 v3, Partie III (fait foi) : C29 (F-001 à F-200), C31 (ACC-001 à ACC-022), C32, C34 (INV-FINAL-001 à 026), B33 (INV-001 à 060)",
+ "regle": "Chaque cas du périmètre est AUTOMATISÉ (identifiant présent dans chaque fichier de test cité, ou couvert « via » des cas automatisés), complété le cas échéant d'une procédure de recette préprod (modèle réel, BO), HORS PÉRIMÈTRE (décision PO citée) ou ÉCART tracé (proposition). Le test src/test/recette/__tests__/o10-matrice.test.ts échoue sinon (ACC-021).",
+ "decisions": {
+  "Q1": "Le TCO est hors de ce CDC (CDC dédié ultérieur) : les cas qui portent sur le TCO lui-même (écran, forfaits, formules C17, prorata) sont hors périmètre ; les cas qui portent sur les composantes / coûts consolidés restent dans le périmètre.",
+  "Q7": "Livraison en préprod lot par lot ; recette complète (ce lot) avant la future mise en production.",
+  "Q8": "Aucun interrupteur fonctionnel du système Opération.",
+  "Q9": "Le BO diagnostique et ne modifie jamais une Opération ; la correction passe par le code puis la reconsolidation (bouton « Reconsolider ce compte », lot 48)."
+ },
+ "procedures": [
+  {
+   "id": "RP-01",
+   "titre": "Activation des prompts maîtres livrés (lots 40, 42, 45)",
+   "etapes": [
+    "BO › Configuration IA › Prompts maîtres › T1 : « Repartir du texte livré avec l’application », enregistrer, puis « Activer » (contrat T1 v4, candidats Opération, lot 40).",
+    "BO › Configuration IA › Prompts maîtres › T3 : créer un brouillon, « Repartir du texte livré avec l’application », enregistrer, puis « Activer » (tâche OPERATION_MATCH, lot 42).",
+    "BO › Configuration IA › Prompts maîtres › T2 : même geste (règles B11-B15, lot 45) — facultatif, les règles serveur suffisent.",
+    "Contrôle : BO › Configuration IA, version effective affichée = version activée pour T1 et T3 ; BO › Exécutions IA : une analyse T1 récente porte « businessOperationCandidates »."
+   ],
+   "attendu": "T1 v4 et T3 (OPERATION_MATCH) actifs ; aucune erreur dans BO › Exécutions IA."
+  },
+  {
+   "id": "RP-02",
+   "titre": "Rattrapages BO des lots 40, 43 et 44",
+   "etapes": [
+    "BO › Exploitation › Rattrapages › « Biens déplacés » (lot 40) : Simuler (rapport exact, aucune écriture), puis Appliquer avec un motif.",
+    "BO › Exploitation › Rattrapages › « Opérations : données structurées » (lot 43) : Simuler, contrôler les décomptes ACQUISITION / DISPOSAL / CONTRACT, puis Appliquer.",
+    "BO › Exploitation › Rattrapages › « Sinistres : ancien formulaire » (lot 44) : Simuler, puis Appliquer ; contrôler qu’une ancienne saisie sous le seuil reste « Reprendre en sinistre ».",
+    "Relancer chaque simulation : 0 élément à traiter (idempotence, F-175)."
+   ],
+   "attendu": "Rattrapages appliqués une fois, rejoués sans effet ; les tâches internes correspondantes (asset-account-backfill, operations-structured-migration, operations-claim-migration) restent actives."
+  },
+  {
+   "id": "RP-03",
+   "titre": "Gating T1 et création anti-pollution avec le VRAI modèle",
+   "etapes": [
+    "Prérequis : RP-01 fait. Compte de recette Premium dédié (jamais un compte client).",
+    "Déposer le corpus de recette, un document par cas : facture de réparation datée (F-001), facture chaudière liée à l’équipement (F-002), facture sans nature (F-003), notice (F-004), photo (F-005), garantie avec date de fin (F-006), estimation de valeur (F-007), DPE facturé (F-008), DPE descriptif (F-009), contrat d’assurance (F-010), courrier d’assureur citant une référence de sinistre (F-016), ticket illisible (F-023), preuve de paiement seule (F-024, F-097), facture à deux travaux indépendants (F-027), facture pièces + main-d’œuvre (F-028), facture deux véhicules (F-029), facture avec remise sur la même facture (F-096), relevé d’intérêts de prêt (F-104), courrier d’indemnité (F-099), document listant plus de 20 événements (F-199).",
+    "Attendre la fin des analyses (BO › File IA, T1 puis T3 business_operations du compte).",
+    "BO › Opérations (filtre du compte) : pour chaque document, vérifier l’issue attendue de la matrice (Opération créée / rattachée, ou aucune) ; onglet « En attente T3 » : motifs lisibles des attentes (F-024 : source probable sans Opération).",
+    "BO › Opérations › détail : composantes (F-028 une seule, F-096 aucune REDUCTION, F-097 aucun coût), liens bien / équipement (F-002), références.",
+    "Consigner les écarts éventuels du modèle (cas, document, sortie T1 dans BO › Exécutions IA) : ils se corrigent dans le prompt maître T1 (nouvelle version BO), jamais dans le BO Opérations."
+   ],
+   "attendu": "Chaque document a l’issue attendue de la matrice ; aucun document non métier ne crée d’Opération (ACC-001, INV-FINAL-002)."
+  },
+  {
+   "id": "RP-04",
+   "titre": "Rapprochement M3 réel (lot 42)",
+   "etapes": [
+    "Prérequis : RP-01 (version T3 contenant OPERATION_MATCH active).",
+    "Compte de recette : déposer un devis (garage X, bien Y, sans référence commune), puis une facture du même garage quelques jours plus tard sans référence au devis.",
+    "Après le passage T3 du compte : BO › Exécutions IA, opération t3_operation_match présente (au plus 5 par passage, 30 par jour et par compte).",
+    "Verdict SAME_OPERATION certain + candidat unique → facture rattachée (F-059) ; probable → carte « À traiter » (F-058, F-200) ; AMBIGUOUS avec impact → carte, jamais une troisième Opération (F-048).",
+    "Répondre à la carte sur mobile puis sur desktop (« Oui, la même » / « Non ») : décision durable, jamais reproposée (F-046, F-047)."
+   ],
+   "attendu": "Aucun rattachement automatique sur verdict probable ; décisions mémorisées."
+  },
+  {
+   "id": "RP-05",
+   "titre": "Diagnostic BO, anomalies dures et « Reconsolider ce compte » (desktop et mobile)",
+   "etapes": [
+    "BO › Dashboard › Supervision › Opérations › onglet Indicateurs, sans filtre, 30 derniers jours : « Anomalies dures : 0 » (ACC-022) ; les 13 indicateurs s’affichent (F-195 pic de créations visible par jour).",
+    "BO › Exploitation › Tâches planifiées : operations-quality-check exécutée (ou « Exécuter maintenant ») sans anomalie ouverte dans Supervision.",
+    "BO › Comptes › un compte de recette › section « Opérations du compte » : bouton « Reconsolider ce compte », confirmation, motif ≥ 5 caractères ; message « mise en file » ; BO › File IA du compte : travail T3 business_operations (code manual) puis DONE ; historique admin : OPERATIONS_RECONSOLIDATE avec le motif.",
+    "Même geste depuis BO › Opérations?accountId=… sur un téléphone (largeur ≤ 390 px) : bouton pleine largeur, fenêtre lisible, motif saisissable.",
+    "Aucun bouton d’édition sur une Opération (liste, détail, référentiel des types : F-182, F-183)."
+   ],
+   "attendu": "Anomalies dures à 0 ; reconsolidation journalisée, sans modification d’un compte cohérent."
+  },
+  {
+   "id": "RP-06",
+   "titre": "Parcours utilisateur de non-régression (desktop et mobile)",
+   "etapes": [
+    "Fiche d’un bien › Sinistres : ajout, modification (Clos), suppression ; export Assurance-sinistre (Premium) avec choix du sinistre.",
+    "Agenda : événements historiques projetés (achat, intervention réalisée) affichés « réalisé », échéance prévue notifiée ; suppression d’un événement projeté non recréée après une heure.",
+    "Assistant : « Combien ai-je dépensé pour <bien> ? », « Où en est mon sinistre ? » : aucun double comptage, jamais le mot « Opération ».",
+    "Compte Duo : le second membre voit les mêmes sinistres et le même total."
+   ],
+   "attendu": "Aucune régression visible ; aucun terme technique « Opération » côté utilisateur."
+  }
+ ],
+ "ecarts": [
+  {
+   "id": "E-01",
+   "cas": [
+    "F-106"
+   ],
+   "constat": "Contrat T1 v4 : un indice financier porte un montant et sa devise, sans contre-valeur EUR. Un document CHF avec débit EUR explicite produit une composante CHF dont amount_eur_cents reste nul (aucune conversion inventée, ACC-015 respecté) : l’agrégat EUR ne la compte pas.",
+   "proposition": "Lot dédié : contrat T1 v5 avec `amountEurMinor` facultatif sur l’indice financier (« montant EUR effectivement débité / facturé, lu sur le document »), règle du prompt maître T1 et barrière serveur (même fait que le montant d’origine), copie par T3 dans amount_eur_cents ; fixtures et corpus T1. Hors de ce lot : modification de contrat IA et de prompt.",
+   "gravite": "faible (aucune donnée fausse : montant d’origine conservé, exclu de l’agrégat EUR)"
+  },
+  {
+   "id": "E-02",
+   "cas": [
+    "F-103"
+   ],
+   "constat": "Le principal d’un prêt n’est jamais une composante (attendu F-103 respecté) mais n’est pas non plus renseigné dans business_operation_financing_details.principal_amount_minor : T1 v4 n’a pas de rôle « principal ».",
+   "proposition": "Avec E-01 (contrat T1 v5) : rôle d’indice PRINCIPAL (jamais une composante), copié par T3 dans les détails FINANCING.",
+   "gravite": "faible (information descriptive manquante, aucun calcul faux)"
+  }
+ ],
+ "items": [
+  {
+   "id": "F-001",
+   "famille": "C29",
+   "domaine": "Création",
+   "scenario": "Facture réparation voiture avec date/montant/prestation/bien",
+   "attendu": "INTERVENTION REALIZED ; coût ; Agenda historique si date.",
+   "trace": "Création anti-pollution — C3, C5 — T1 + T3",
+   "tests": [
+    "src/services/ai/source-analysis/operation-candidates/__tests__/c3-candidats-t1.test.ts",
+    "src/services/business-operations/consolidation/__tests__/o3a-decision.test.ts",
+    "src/services/business-operations/consolidation/__tests__/o3a-finances-etat.test.ts",
+    "src/test/e2e/scenarios/l40-o2-candidats-t1.e2e.ts",
+    "src/test/e2e/scenarios/l41-o3a-consolidation-t3.e2e.ts"
+   ],
+   "statut": "AUTOMATISE_PREPROD",
+   "preprod": "RP-03"
+  },
+  {
+   "id": "F-002",
+   "famille": "C29",
+   "domaine": "Création",
+   "scenario": "Facture chaudière liée à équipement Premium",
+   "attendu": "INTERVENTION REALIZED ; equipment_link + asset parent ; TCO une fois.",
+   "trace": "Création anti-pollution — C3, C5 — T1 + T3",
+   "tests": [
+    "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts"
+   ],
+   "statut": "AUTOMATISE",
+   "note": "Partie « TCO une fois » : TCO hors périmètre (Q1) ; automatisé côté composante unique + T2 (F-116)."
+  },
+  {
+   "id": "F-003",
+   "famille": "C29",
+   "domaine": "Création",
+   "scenario": "Date+montant+fournisseur sans nature",
+   "attendu": "Aucune Operation.",
+   "trace": "Création anti-pollution — C3, C5 — T1 + T3",
+   "tests": [
+    "src/services/business-operations/consolidation/__tests__/o3a-decision.test.ts",
+    "src/test/e2e/scenarios/l41-o3a-consolidation-t3.e2e.ts",
+    "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts"
+   ],
+   "statut": "AUTOMATISE_PREPROD",
+   "preprod": "RP-03"
+  },
+  {
+   "id": "F-004",
+   "famille": "C29",
+   "domaine": "Création",
+   "scenario": "Notice datée",
+   "attendu": "Aucune Operation.",
+   "trace": "Création anti-pollution — C3, C5 — T1 + T3",
+   "tests": [
+    "src/services/ai/source-analysis/operation-candidates/__tests__/c3-candidats-t1.test.ts",
+    "src/test/e2e/scenarios/l40-o2-candidats-t1.e2e.ts",
+    "src/test/e2e/scenarios/l41-o3a-consolidation-t3.e2e.ts",
+    "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts"
+   ],
+   "statut": "AUTOMATISE_PREPROD",
+   "preprod": "RP-03"
+  },
+  {
+   "id": "F-005",
+   "famille": "C29",
+   "domaine": "Création",
+   "scenario": "Photo",
+   "attendu": "Aucune Operation.",
+   "trace": "Création anti-pollution — C3, C5 — T1 + T3",
+   "tests": [
+    "src/services/ai/source-analysis/operation-candidates/__tests__/c3-candidats-t1.test.ts",
+    "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts"
+   ],
+   "statut": "AUTOMATISE_PREPROD",
+   "preprod": "RP-03"
+  },
+  {
+   "id": "F-006",
+   "famille": "C29",
+   "domaine": "Création",
+   "scenario": "Garantie + date fin",
+   "attendu": "Pas Operation ; fait/Agenda possible.",
+   "trace": "Création anti-pollution — C3, C5 — T1 + T3",
+   "tests": [
+    "src/services/business-operations/consolidation/__tests__/o10-recette.test.ts",
+    "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts"
+   ],
+   "statut": "AUTOMATISE_PREPROD",
+   "preprod": "RP-03"
+  },
+  {
+   "id": "F-007",
+   "famille": "C29",
+   "domaine": "Création",
+   "scenario": "Valorisation 25 000 €",
+   "attendu": "Pas Operation ; valuationHistory.",
+   "trace": "Création anti-pollution — C3, C5 — T1 + T3",
+   "tests": [
+    "src/services/ai/source-analysis/operation-candidates/__tests__/c3-candidats-t1.test.ts"
+   ],
+   "statut": "AUTOMATISE_PREPROD",
+   "preprod": "RP-03"
+  },
+  {
+   "id": "F-008",
+   "famille": "C29",
+   "domaine": "Création",
+   "scenario": "DPE/prestation de diagnostic facturée",
+   "attendu": "INTERVENTION si le document prouve la prestation ; la valeur DPE reste canonique.",
+   "trace": "Création anti-pollution — C3, C5 — T1 + T3",
+   "tests": [
+    "src/services/business-operations/consolidation/__tests__/o10-recette.test.ts",
+    "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts"
+   ],
+   "statut": "AUTOMATISE_PREPROD",
+   "preprod": "RP-03"
+  },
+  {
+   "id": "F-009",
+   "famille": "C29",
+   "domaine": "Création",
+   "scenario": "DPE descriptif déjà existant sans coût/prestation distincte",
+   "attendu": "Pas Operation si aucune action métier identifiable.",
+   "trace": "Création anti-pollution — C3, C5 — T1 + T3",
+   "tests": [
+    "src/services/business-operations/consolidation/__tests__/o10-recette.test.ts",
+    "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts"
+   ],
+   "statut": "AUTOMATISE_PREPROD",
+   "preprod": "RP-03"
+  },
+  {
+   "id": "F-010",
+   "famille": "C29",
+   "domaine": "Création",
+   "scenario": "Contrat assurance",
+   "attendu": "CONTRACT.",
+   "trace": "Création anti-pollution — C3, C5 — T1 + T3",
+   "tests": [
+    "src/test/e2e/scenarios/l41-o3a-consolidation-t3.e2e.ts",
+    "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts"
+   ],
+   "statut": "AUTOMATISE_PREPROD",
+   "preprod": "RP-03"
+  },
+  {
+   "id": "F-011",
+   "famille": "C29",
+   "domaine": "Création",
+   "scenario": "Contrat maintenance",
+   "attendu": "CONTRACT.",
+   "trace": "Création anti-pollution — C3, C5 — T1 + T3",
+   "tests": [
+    "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-012",
+   "famille": "C29",
+   "domaine": "Création",
+   "scenario": "LLD/LOA avant propriété",
+   "attendu": "CONTRACT.",
+   "trace": "Création anti-pollution — C3, C5 — T1 + T3",
+   "tests": [
+    "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-013",
+   "famille": "C29",
+   "domaine": "Création",
+   "scenario": "Levée option LOA",
+   "attendu": "ACQUISITION nouvelle.",
+   "trace": "Création anti-pollution — C3, C5 — T1 + T3",
+   "tests": [
+    "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-014",
+   "famille": "C29",
+   "domaine": "Création",
+   "scenario": "Prêt auto",
+   "attendu": "FINANCING.",
+   "trace": "Création anti-pollution — C3, C5 — T1 + T3",
+   "tests": [
+    "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-015",
+   "famille": "C29",
+   "domaine": "Création",
+   "scenario": "Déclaration sinistre formulaire sans doc",
+   "attendu": "CLAIM REALIZED.",
+   "trace": "Création anti-pollution — C3, C5 — T1 + T3",
+   "tests": [
+    "src/test/e2e/scenarios/l44-o5-sinistre.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-016",
+   "famille": "C29",
+   "domaine": "Création",
+   "scenario": "Courrier assureur avec ref sinistre",
+   "attendu": "MATCH/CREATE CLAIM selon existant.",
+   "trace": "Création anti-pollution — C3, C5 — T1 + T3",
+   "tests": [
+    "src/test/e2e/scenarios/l48-o10-recette-complements.e2e.ts"
+   ],
+   "statut": "AUTOMATISE_PREPROD",
+   "preprod": "RP-03"
+  },
+  {
+   "id": "F-017",
+   "famille": "C29",
+   "domaine": "Création",
+   "scenario": "Acte vente",
+   "attendu": "DISPOSAL REALIZED.",
+   "trace": "Création anti-pollution — C3, C5 — T1 + T3",
+   "tests": [
+    "src/test/e2e/scenarios/l41-o3a-consolidation-t3.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-018",
+   "famille": "C29",
+   "domaine": "Création",
+   "scenario": "Prix souhaité vente",
+   "attendu": "Aucune DISPOSAL.",
+   "trace": "Création anti-pollution — C3, C5 — T1 + T3",
+   "tests": [
+    "src/services/business-operations/consolidation/__tests__/o4-asset-data.test.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-019",
+   "famille": "C29",
+   "domaine": "Création",
+   "scenario": "Statut VENDU sans prix/date",
+   "attendu": "DISPOSAL REALIZED ; date fallback changement statut.",
+   "trace": "Création anti-pollution — C3, C5 — T1 + T3",
+   "tests": [
+    "src/services/business-operations/consolidation/__tests__/o4-asset-data.test.ts",
+    "src/test/e2e/scenarios/l43-o4-donnees-structurees.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-020",
+   "famille": "C29",
+   "domaine": "Création",
+   "scenario": "Agenda rappel « penser à vérifier chaudière »",
+   "attendu": "Aucune Operation.",
+   "trace": "Création anti-pollution — C3, C5 — T1 + T3",
+   "tests": [
+    "src/services/business-operations/consolidation/__tests__/l47b-agenda-source.test.ts",
+    "src/test/e2e/scenarios/l47b-agenda-source-t3.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-021",
+   "famille": "C29",
+   "domaine": "Création",
+   "scenario": "Agenda « remplacement chaudière prévu le 20/11 »",
+   "attendu": "INTERVENTION ENVISAGED.",
+   "trace": "Création anti-pollution — C3, C5 — T1 + T3",
+   "tests": [
+    "src/services/business-operations/consolidation/__tests__/l47b-agenda-source.test.ts",
+    "src/test/e2e/scenarios/l47b-agenda-source-t3.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-022",
+   "famille": "C29",
+   "domaine": "Création",
+   "scenario": "Agenda « vidange faite aujourd’hui »",
+   "attendu": "INTERVENTION REALIZED.",
+   "trace": "Création anti-pollution — C3, C5 — T1 + T3",
+   "tests": [
+    "src/services/business-operations/consolidation/__tests__/l47b-agenda-source.test.ts",
+    "src/test/e2e/scenarios/l47b-agenda-source-t3.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-023",
+   "famille": "C29",
+   "domaine": "Création",
+   "scenario": "Montant isolé dans ticket illisible",
+   "attendu": "Pas Operation.",
+   "trace": "Création anti-pollution — C3, C5 — T1 + T3",
+   "tests": [
+    "src/services/business-operations/consolidation/__tests__/o10-recette.test.ts"
+   ],
+   "statut": "AUTOMATISE_PREPROD",
+   "preprod": "RP-03"
+  },
+  {
+   "id": "F-024",
+   "famille": "C29",
+   "domaine": "Création",
+   "scenario": "Document candidat probable sans Operation existante",
+   "attendu": "HOLD_UNRESOLVED, pas CREATE.",
+   "trace": "Création anti-pollution — C3, C5 — T1 + T3",
+   "tests": [
+    "src/services/business-operations/consolidation/__tests__/o3a-decision.test.ts",
+    "src/test/e2e/scenarios/l41-o3a-consolidation-t3.e2e.ts",
+    "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts"
+   ],
+   "statut": "AUTOMATISE_PREPROD",
+   "preprod": "RP-03"
+  },
+  {
+   "id": "F-025",
+   "famille": "C29",
+   "domaine": "Création",
+   "scenario": "Document candidat probable avec match M1 exact",
+   "attendu": "MATCH autorisé.",
+   "trace": "Création anti-pollution — C3, C5 — T1 + T3",
+   "tests": [
+    "src/services/business-operations/consolidation/__tests__/o3a-decision.test.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-026",
+   "famille": "C29",
+   "domaine": "Création",
+   "scenario": "Document candidat conflictual",
+   "attendu": "Pas CREATE/MATCH auto.",
+   "trace": "Création anti-pollution — C3, C5 — T1 + T3",
+   "tests": [
+    "src/services/business-operations/consolidation/__tests__/o3a-decision.test.ts"
+   ],
+   "statut": "AUTOMATISE_PREPROD",
+   "preprod": "RP-03"
+  },
+  {
+   "id": "F-027",
+   "famille": "C29",
+   "domaine": "Création",
+   "scenario": "Une facture avec deux travaux explicitement indépendants",
+   "attendu": "Deux candidats/Operations si T1 les sépare.",
+   "trace": "Création anti-pollution — C3, C5 — T1 + T3",
+   "tests": [
+    "src/test/e2e/scenarios/l48-o10-recette-complements.e2e.ts"
+   ],
+   "statut": "AUTOMATISE_PREPROD",
+   "preprod": "RP-03"
+  },
+  {
+   "id": "F-028",
+   "famille": "C29",
+   "domaine": "Création",
+   "scenario": "Facture pièces + main d’œuvre même réparation",
+   "attendu": "Une INTERVENTION.",
+   "trace": "Création anti-pollution — C3, C5 — T1 + T3",
+   "tests": [
+    "src/test/e2e/scenarios/l48-o10-recette-complements.e2e.ts"
+   ],
+   "statut": "AUTOMATISE_PREPROD",
+   "preprod": "RP-03"
+  },
+  {
+   "id": "F-029",
+   "famille": "C29",
+   "domaine": "Création",
+   "scenario": "Facture multi-biens même sinistre",
+   "attendu": "Une CLAIM possible + plusieurs liens, pas une par bien.",
+   "trace": "Création anti-pollution — C3, C5 — T1 + T3",
+   "tests": [
+    "src/test/e2e/scenarios/l41-o3a-consolidation-t3.e2e.ts",
+    "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts"
+   ],
+   "statut": "AUTOMATISE_PREPROD",
+   "preprod": "RP-03"
+  },
+  {
+   "id": "F-030",
+   "famille": "C29",
+   "domaine": "Création",
+   "scenario": "Type non qualifiable mais événement certain",
+   "attendu": "Operation type=null, pas OTHER.",
+   "trace": "Création anti-pollution — C3, C5 — T1 + T3",
+   "tests": [
+    "src/services/ai/source-analysis/operation-candidates/__tests__/c3-candidats-t1.test.ts",
+    "src/services/business-operations/__tests__/o1-socle.test.ts",
+    "src/services/business-operations/consolidation/__tests__/o3a-decision.test.ts",
+    "src/test/e2e/scenarios/l39-o1-socle-operations.e2e.ts"
+   ],
+   "statut": "AUTOMATISE_PREPROD",
+   "preprod": "RP-03"
+  },
+  {
+   "id": "F-031",
+   "famille": "C29",
+   "domaine": "Matching",
+   "scenario": "Devis puis facture cite devis",
+   "attendu": "Même INTERVENTION, ENVISAGED->REALIZED.",
+   "trace": "Matching/dédoublonnage — C6, C7 — T3",
+   "tests": [
+    "src/services/business-operations/consolidation/__tests__/o3a-decision.test.ts",
+    "src/test/e2e/scenarios/l41-o3a-consolidation-t3.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-032",
+   "famille": "C29",
+   "domaine": "Matching",
+   "scenario": "Deux copies même facture",
+   "attendu": "Une Operation/composante.",
+   "trace": "Matching/dédoublonnage — C6, C7 — T3",
+   "tests": [
+    "src/test/e2e/scenarios/l48-o10-recette-complements.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-033",
+   "famille": "C29",
+   "domaine": "Matching",
+   "scenario": "Même garage, même jour, réparations différentes avec refs différentes",
+   "attendu": "Deux INTERVENTION.",
+   "trace": "Matching/dédoublonnage — C6, C7 — T3",
+   "tests": [
+    "src/services/business-operations/consolidation/__tests__/o3a-decision.test.ts",
+    "src/test/e2e/scenarios/l41-o3a-consolidation-t3.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-034",
+   "famille": "C29",
+   "domaine": "Matching",
+   "scenario": "Même garage, montant identique, aucune autre preuve",
+   "attendu": "Ne suffit pas au match.",
+   "trace": "Matching/dédoublonnage — C6, C7 — T3",
+   "tests": [
+    "src/services/business-operations/consolidation/__tests__/o3a-decision.test.ts",
+    "src/test/e2e/scenarios/l41-o3a-consolidation-t3.e2e.ts",
+    "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-035",
+   "famille": "C29",
+   "domaine": "Matching",
+   "scenario": "Même contrat assurance, facture annuelle",
+   "attendu": "Même CONTRACT.",
+   "trace": "Matching/dédoublonnage — C6, C7 — T3",
+   "tests": [
+    "src/services/business-operations/consolidation/__tests__/o3a-decision.test.ts",
+    "src/services/business-operations/consolidation/__tests__/o4-asset-data.test.ts",
+    "src/test/e2e/scenarios/l41-o3a-consolidation-t3.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-036",
+   "famille": "C29",
+   "domaine": "Matching",
+   "scenario": "Même fournisseur, nouvelle police sans continuité",
+   "attendu": "Nouveau CONTRACT.",
+   "trace": "Matching/dédoublonnage — C6, C7 — T3",
+   "tests": [
+    "src/services/business-operations/consolidation/__tests__/o3a-decision.test.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-037",
+   "famille": "C29",
+   "domaine": "Matching",
+   "scenario": "Avenant mentionne contrat initial",
+   "attendu": "Même CONTRACT.",
+   "trace": "Matching/dédoublonnage — C6, C7 — T3",
+   "tests": [
+    "src/services/business-operations/consolidation/__tests__/o3a-decision.test.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-038",
+   "famille": "C29",
+   "domaine": "Matching",
+   "scenario": "Même loan ref",
+   "attendu": "Même FINANCING.",
+   "trace": "Matching/dédoublonnage — C6, C7 — T3",
+   "tests": [
+    "src/services/business-operations/consolidation/__tests__/o3a-decision.test.ts",
+    "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-039",
+   "famille": "C29",
+   "domaine": "Matching",
+   "scenario": "Deux prêts distincts même achat",
+   "attendu": "Deux FINANCING enfants possibles.",
+   "trace": "Matching/dédoublonnage — C6, C7 — T3",
+   "tests": [
+    "src/services/business-operations/consolidation/__tests__/o3a-decision.test.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-040",
+   "famille": "C29",
+   "domaine": "Matching",
+   "scenario": "Même insurerClaimRef",
+   "attendu": "Même CLAIM.",
+   "trace": "Matching/dédoublonnage — C6, C7 — T3",
+   "tests": [
+    "src/services/business-operations/consolidation/__tests__/o3a-decision.test.ts",
+    "src/test/e2e/scenarios/l44-o5-sinistre.e2e.ts",
+    "src/test/e2e/scenarios/l48-o10-recette-complements.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-041",
+   "famille": "C29",
+   "domaine": "Matching",
+   "scenario": "Deux sinistres même jour refs distinctes",
+   "attendu": "Deux CLAIM.",
+   "trace": "Matching/dédoublonnage — C6, C7 — T3",
+   "tests": [
+    "src/services/business-operations/consolidation/__tests__/o3a-decision.test.ts",
+    "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-042",
+   "famille": "C29",
+   "domaine": "Matching",
+   "scenario": "Vente structurée + acte vente",
+   "attendu": "Même DISPOSAL.",
+   "trace": "Matching/dédoublonnage — C6, C7 — T3",
+   "tests": [
+    "src/services/business-operations/consolidation/__tests__/o3a-decision.test.ts",
+    "src/services/business-operations/consolidation/__tests__/o4-asset-data.test.ts",
+    "src/test/e2e/scenarios/l43-o4-donnees-structurees.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-043",
+   "famille": "C29",
+   "domaine": "Matching",
+   "scenario": "Revente après nouvelle acquisition",
+   "attendu": "Nouvelle DISPOSAL.",
+   "trace": "Matching/dédoublonnage — C6, C7 — T3",
+   "tests": [
+    "src/services/business-operations/consolidation/__tests__/o3a-decision.test.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-044",
+   "famille": "C29",
+   "domaine": "Matching",
+   "scenario": "Acquisition facture + champs acquisitionPrice/date",
+   "attendu": "Même ACQUISITION.",
+   "trace": "Matching/dédoublonnage — C6, C7 — T3",
+   "tests": [
+    "src/services/business-operations/consolidation/__tests__/o3a-decision.test.ts",
+    "src/services/business-operations/consolidation/__tests__/o4-asset-data.test.ts",
+    "src/test/e2e/scenarios/l43-o4-donnees-structurees.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-045",
+   "famille": "C29",
+   "domaine": "Matching",
+   "scenario": "Rachat après disposal",
+   "attendu": "Nouvelle ACQUISITION.",
+   "trace": "Matching/dédoublonnage — C6, C7 — T3",
+   "tests": [
+    "src/services/business-operations/consolidation/__tests__/o3a-decision.test.ts",
+    "src/services/business-operations/consolidation/__tests__/o4-asset-data.test.ts",
+    "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-046",
+   "famille": "C29",
+   "domaine": "Matching",
+   "scenario": "Source rejetée pour Operation A puis T3 horaire",
+   "attendu": "Aucun rematch vers A.",
+   "trace": "Matching/dédoublonnage — C6, C7 — T3",
+   "tests": [
+    "src/services/business-operations/consolidation/__tests__/o3a-decision.test.ts",
+    "src/services/business-operations/consolidation/__tests__/o3b-m3-fusion.test.ts",
+    "src/test/e2e/scenarios/l42-o3b-consolidation-t3.e2e.ts",
+    "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-047",
+   "famille": "C29",
+   "domaine": "Matching",
+   "scenario": "Source confirmée par utilisateur",
+   "attendu": "M0 stable.",
+   "trace": "Matching/dédoublonnage — C6, C7 — T3",
+   "tests": [
+    "src/services/business-operations/consolidation/__tests__/o3a-decision.test.ts",
+    "src/services/business-operations/consolidation/__tests__/o3b-m3-fusion.test.ts",
+    "src/test/e2e/scenarios/l42-o3b-consolidation-t3.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-048",
+   "famille": "C29",
+   "domaine": "Matching",
+   "scenario": "Deux Operations plausibles pour facture",
+   "attendu": "À traiter, pas troisième Operation.",
+   "trace": "Matching/dédoublonnage — C6, C7 — T3",
+   "tests": [
+    "src/services/business-operations/consolidation/__tests__/o3a-decision.test.ts",
+    "src/test/e2e/scenarios/l41-o3a-consolidation-t3.e2e.ts",
+    "src/test/e2e/scenarios/l42-o3b-consolidation-t3.e2e.ts",
+    "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts"
+   ],
+   "statut": "AUTOMATISE_PREPROD",
+   "preprod": "RP-04"
+  },
+  {
+   "id": "F-049",
+   "famille": "C29",
+   "domaine": "Matching",
+   "scenario": "Fusion après référence commune découverte",
+   "attendu": "Une canonique, autre merged.",
+   "trace": "Matching/dédoublonnage — C6, C7 — T3",
+   "tests": [
+    "src/services/business-operations/consolidation/__tests__/o3a-decision.test.ts",
+    "src/services/business-operations/consolidation/__tests__/o3b-m3-fusion.test.ts",
+    "src/test/e2e/scenarios/l42-o3b-consolidation-t3.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-050",
+   "famille": "C29",
+   "domaine": "Matching",
+   "scenario": "Fusion conserve toutes sources",
+   "attendu": "Oui, sans double composante.",
+   "trace": "Matching/dédoublonnage — C6, C7 — T3",
+   "tests": [
+    "src/test/e2e/scenarios/l42-o3b-consolidation-t3.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-051",
+   "famille": "C29",
+   "domaine": "Matching",
+   "scenario": "Fusion conserve décisions rejetées pertinentes",
+   "attendu": "Oui, remappées au canonique si nécessaire.",
+   "trace": "Matching/dédoublonnage — C6, C7 — T3",
+   "tests": [
+    "src/test/e2e/scenarios/l42-o3b-consolidation-t3.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-052",
+   "famille": "C29",
+   "domaine": "Matching",
+   "scenario": "Invalidée puis nouvelle preuve même ref",
+   "attendu": "Réactivation même id.",
+   "trace": "Matching/dédoublonnage — C6, C7 — T3",
+   "tests": [
+    "src/services/business-operations/consolidation/__tests__/o3b-m3-fusion.test.ts",
+    "src/test/e2e/scenarios/l42-o3b-consolidation-t3.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-053",
+   "famille": "C29",
+   "domaine": "Matching",
+   "scenario": "Invalidée puis preuve événement distinct",
+   "attendu": "Nouvelle Operation.",
+   "trace": "Matching/dédoublonnage — C6, C7 — T3",
+   "tests": [
+    "src/services/business-operations/consolidation/__tests__/o3b-m3-fusion.test.ts",
+    "src/test/e2e/scenarios/l42-o3b-consolidation-t3.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-054",
+   "famille": "C29",
+   "domaine": "Matching",
+   "scenario": "type null puis qualification INTERVENTION",
+   "attendu": "Même id + TYPE_CHANGED.",
+   "trace": "Matching/dédoublonnage — C6, C7 — T3",
+   "tests": [
+    "src/services/business-operations/consolidation/__tests__/o10-recette.test.ts",
+    "src/services/business-operations/consolidation/__tests__/o3a-decision.test.ts",
+    "src/services/business-operations/consolidation/__tests__/o3a-finances-etat.test.ts",
+    "src/test/e2e/scenarios/l39-o1-socle-operations.e2e.ts",
+    "src/test/e2e/scenarios/l48-o10-recette-complements.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-055",
+   "famille": "C29",
+   "domaine": "Matching",
+   "scenario": "OTHER requalifié CONTRACT",
+   "attendu": "Même id si même réalité.",
+   "trace": "Matching/dédoublonnage — C6, C7 — T3",
+   "tests": [
+    "src/services/business-operations/consolidation/__tests__/o10-recette.test.ts",
+    "src/test/e2e/scenarios/l48-o10-recette-complements.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-056",
+   "famille": "C29",
+   "domaine": "Matching",
+   "scenario": "Document déplacé de dossier mais cible explicite inchangée",
+   "attendu": "Operation garde cible prouvée.",
+   "trace": "Matching/dédoublonnage — C6, C7 — T3",
+   "tests": [
+    "src/test/e2e/scenarios/l41-o3a-consolidation-t3.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-057",
+   "famille": "C29",
+   "domaine": "Matching",
+   "scenario": "Document lié manuellement autre bien contre preuve explicite",
+   "attendu": "À traiter plutôt qu’écrasement silencieux.",
+   "trace": "Matching/dédoublonnage — C6, C7 — T3",
+   "tests": [
+    "src/services/business-operations/consolidation/__tests__/o3a-decision.test.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-058",
+   "famille": "C29",
+   "domaine": "Matching",
+   "scenario": "M3 semantic SAME_OPERATION probable",
+   "attendu": "Pas auto-match.",
+   "trace": "Matching/dédoublonnage — C6, C7 — T3",
+   "tests": [
+    "src/services/business-operations/consolidation/__tests__/o3a-decision.test.ts",
+    "src/services/business-operations/consolidation/__tests__/o3b-m3-fusion.test.ts",
+    "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts"
+   ],
+   "statut": "AUTOMATISE_PREPROD",
+   "preprod": "RP-04"
+  },
+  {
+   "id": "F-059",
+   "famille": "C29",
+   "domaine": "Matching",
+   "scenario": "M3 SAME_OPERATION certain + candidat unique",
+   "attendu": "Auto-match.",
+   "trace": "Matching/dédoublonnage — C6, C7 — T3",
+   "tests": [
+    "src/services/business-operations/consolidation/__tests__/o3b-m3-fusion.test.ts",
+    "src/test/e2e/scenarios/l42-o3b-consolidation-t3.e2e.ts"
+   ],
+   "statut": "AUTOMATISE_PREPROD",
+   "preprod": "RP-04"
+  },
+  {
+   "id": "F-060",
+   "famille": "C29",
+   "domaine": "Matching",
+   "scenario": "Hard negative target",
+   "attendu": "Aucun match.",
+   "trace": "Matching/dédoublonnage — C6, C7 — T3",
+   "tests": [
+    "src/services/business-operations/consolidation/__tests__/o3a-decision.test.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-061",
+   "famille": "C29",
+   "domaine": "Cycle de vie",
+   "scenario": "Réanalyse identique",
+   "attendu": "No-op métier.",
+   "trace": "Cycle de vie — C8, C9 — T3/Repository",
+   "tests": [
+    "src/services/business-operations/consolidation/__tests__/o3a-decision.test.ts",
+    "src/test/e2e/scenarios/l41-o3a-consolidation-t3.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-062",
+   "famille": "C29",
+   "domaine": "Cycle de vie",
+   "scenario": "Réanalyse montant facture 1000->1200",
+   "attendu": "Même composante mise à jour/supersédée, pas +1200.",
+   "trace": "Cycle de vie — C8, C9 — T3/Repository",
+   "tests": [
+    "src/services/business-operations/consolidation/__tests__/o3b-m3-fusion.test.ts",
+    "src/test/e2e/scenarios/l39-o1-socle-operations.e2e.ts",
+    "src/test/e2e/scenarios/l41-o3a-consolidation-t3.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-063",
+   "famille": "C29",
+   "domaine": "Cycle de vie",
+   "scenario": "Réanalyse retire candidat",
+   "attendu": "Source désactivée ; Operation recalculée.",
+   "trace": "Cycle de vie — C8, C9 — T3/Repository",
+   "tests": [
+    "src/test/e2e/scenarios/l40-o2-candidats-t1.e2e.ts",
+    "src/test/e2e/scenarios/l41-o3a-consolidation-t3.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-064",
+   "famille": "C29",
+   "domaine": "Cycle de vie",
+   "scenario": "Suppression seule source",
+   "attendu": "Operation invalidée.",
+   "trace": "Cycle de vie — C8, C9 — T3/Repository",
+   "tests": [
+    "src/test/e2e/scenarios/l39-o1-socle-operations.e2e.ts",
+    "src/test/e2e/scenarios/l41-o3a-consolidation-t3.e2e.ts",
+    "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-065",
+   "famille": "C29",
+   "domaine": "Cycle de vie",
+   "scenario": "Suppression une source sur trois",
+   "attendu": "Operation reste active.",
+   "trace": "Cycle de vie — C8, C9 — T3/Repository",
+   "tests": [
+    "src/test/e2e/scenarios/l41-o3a-consolidation-t3.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-066",
+   "famille": "C29",
+   "domaine": "Cycle de vie",
+   "scenario": "Restauration source",
+   "attendu": "Réactivation si identité certaine.",
+   "trace": "Cycle de vie — C8, C9 — T3/Repository",
+   "tests": [
+    "src/test/e2e/scenarios/l41-o3a-consolidation-t3.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-067",
+   "famille": "C29",
+   "domaine": "Cycle de vie",
+   "scenario": "ENVISAGED dépasse date",
+   "attendu": "Reste ENVISAGED.",
+   "trace": "Cycle de vie — C8, C9 — T3/Repository",
+   "tests": [
+    "src/test/e2e/scenarios/l48-o10-recette-complements.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-068",
+   "famille": "C29",
+   "domaine": "Cycle de vie",
+   "scenario": "ENVISAGED preuve annulation",
+   "attendu": "CANCELLED.",
+   "trace": "Cycle de vie — C8, C9 — T3/Repository",
+   "tests": [
+    "src/services/business-operations/consolidation/__tests__/o3a-finances-etat.test.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-069",
+   "famille": "C29",
+   "domaine": "Cycle de vie",
+   "scenario": "ENVISAGED facture",
+   "attendu": "REALIZED.",
+   "trace": "Cycle de vie — C8, C9 — T3/Repository",
+   "tests": [
+    "src/services/business-operations/consolidation/__tests__/o3a-finances-etat.test.ts",
+    "src/test/e2e/scenarios/l41-o3a-consolidation-t3.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-070",
+   "famille": "C29",
+   "domaine": "Cycle de vie",
+   "scenario": "REALIZED perd preuve réalisation mais devis subsiste",
+   "attendu": "ENVISAGED.",
+   "trace": "Cycle de vie — C8, C9 — T3/Repository",
+   "tests": [
+    "src/services/business-operations/__tests__/o1-socle.test.ts",
+    "src/services/business-operations/consolidation/__tests__/o3a-finances-etat.test.ts",
+    "src/test/e2e/scenarios/l39-o1-socle-operations.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-071",
+   "famille": "C29",
+   "domaine": "Cycle de vie",
+   "scenario": "CANCELLED puis facture réalisation",
+   "attendu": "REALIZED.",
+   "trace": "Cycle de vie — C8, C9 — T3/Repository",
+   "tests": [
+    "src/test/e2e/scenarios/l39-o1-socle-operations.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-072",
+   "famille": "C29",
+   "domaine": "Cycle de vie",
+   "scenario": "CLAIM clos",
+   "attendu": "Operation REALIZED + closed_at.",
+   "trace": "Cycle de vie — C8, C9 — T3/Repository",
+   "tests": [
+    "src/test/e2e/scenarios/l39-o1-socle-operations.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-073",
+   "famille": "C29",
+   "domaine": "Cycle de vie",
+   "scenario": "Contrat résilié après exécution",
+   "attendu": "Operation REALIZED + end_date/closed_at, pas CANCELLED.",
+   "trace": "Cycle de vie — C8, C9 — T3/Repository",
+   "tests": [
+    "src/test/e2e/scenarios/l48-o10-recette-complements.e2e.ts",
+    "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-074",
+   "famille": "C29",
+   "domaine": "Cycle de vie",
+   "scenario": "Projet contrat annulé avant effet",
+   "attendu": "CANCELLED.",
+   "trace": "Cycle de vie — C8, C9 — T3/Repository",
+   "tests": [
+    "src/test/e2e/scenarios/l48-o10-recette-complements.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-075",
+   "famille": "C29",
+   "domaine": "Cycle de vie",
+   "scenario": "Parent claim real + enfant repair real",
+   "attendu": "Les deux REALIZED.",
+   "trace": "Cycle de vie — C8, C9 — T3/Repository",
+   "tests": [
+    "src/test/e2e/scenarios/l42-o3b-consolidation-t3.e2e.ts",
+    "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-076",
+   "famille": "C29",
+   "domaine": "Cycle de vie",
+   "scenario": "Parent claim clôturé, enfant réparation encore en cours",
+   "attendu": "Parent REALIZED/closed possible selon dossier ; enfant garde propre état.",
+   "trace": "Cycle de vie — C8, C9 — T3/Repository",
+   "tests": [
+    "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-077",
+   "famille": "C29",
+   "domaine": "Cycle de vie",
+   "scenario": "Suppression parent interdite physiquement",
+   "attendu": "Invalidation/relation reconsolidée, pas orphan FK.",
+   "trace": "Cycle de vie — C8, C9 — T3/Repository",
+   "tests": [
+    "src/test/e2e/scenarios/l39-o1-socle-operations.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-078",
+   "famille": "C29",
+   "domaine": "Cycle de vie",
+   "scenario": "Operation sans target",
+   "attendu": "Active mais exclue scopes bien/TCO.",
+   "trace": "Cycle de vie — C8, C9 — T3/Repository",
+   "tests": [
+    "src/test/e2e/scenarios/l41-o3a-consolidation-t3.e2e.ts",
+    "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-079",
+   "famille": "C29",
+   "domaine": "Cycle de vie",
+   "scenario": "Target résolu plus tard",
+   "attendu": "Ajout lien + aval.",
+   "trace": "Cycle de vie — C8, C9 — T3/Repository",
+   "tests": [
+    "src/test/e2e/scenarios/l48-o10-recette-complements.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-080",
+   "famille": "C29",
+   "domaine": "Cycle de vie",
+   "scenario": "Operation sans target >30j",
+   "attendu": "Aucune invalidation automatique ; BO bucket.",
+   "trace": "Cycle de vie — C8, C9 — T3/Repository",
+   "tests": [
+    "src/test/e2e/scenarios/l47a-o9-bo-diagnostic.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-081",
+   "famille": "C29",
+   "domaine": "Cycle de vie",
+   "scenario": "Equipment target affiné depuis asset",
+   "attendu": "Même Operation.",
+   "trace": "Cycle de vie — C8, C9 — T3/Repository",
+   "tests": [
+    "src/test/e2e/scenarios/l48-o10-recette-complements.e2e.ts",
+    "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-082",
+   "famille": "C29",
+   "domaine": "Cycle de vie",
+   "scenario": "Downgrade Standard",
+   "attendu": "Données conservées.",
+   "trace": "Cycle de vie — C8, C9 — T3/Repository",
+   "tests": [
+    "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-083",
+   "famille": "C29",
+   "domaine": "Cycle de vie",
+   "scenario": "Account Duo utilisateur 2 modifie sinistre",
+   "attendu": "Même CLAIM partagée.",
+   "trace": "Cycle de vie — C8, C9 — T3/Repository",
+   "tests": [
+    "src/test/e2e/scenarios/l44-o5-sinistre.e2e.ts",
+    "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-084",
+   "famille": "C29",
+   "domaine": "Cycle de vie",
+   "scenario": "Conversation T2 utilisateur 1",
+   "attendu": "Ne devient pas source partagée.",
+   "trace": "Cycle de vie — C8, C9 — T3/Repository",
+   "tests": [
+    "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-085",
+   "famille": "C29",
+   "domaine": "Cycle de vie",
+   "scenario": "Suppression Agenda généré",
+   "attendu": "Operation intacte + suppression projection durable.",
+   "trace": "Cycle de vie — C8, C9 — T3/Repository",
+   "tests": [
+    "src/services/business-operations/consolidation/__tests__/l47b-agenda-source.test.ts",
+    "src/test/e2e/scenarios/l47b-agenda-source-t3.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-086",
+   "famille": "C29",
+   "domaine": "Cycle de vie",
+   "scenario": "Suppression Agenda utilisateur source unique envisagée",
+   "attendu": "Retirer source ; invalider si aucune autre.",
+   "trace": "Cycle de vie — C8, C9 — T3/Repository",
+   "tests": [
+    "src/test/e2e/scenarios/l47b-agenda-source-t3.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-087",
+   "famille": "C29",
+   "domaine": "Cycle de vie",
+   "scenario": "Annulation Agenda projetée système",
+   "attendu": "Ne doit pas devenir source d’annulation métier.",
+   "trace": "Cycle de vie — C8, C9 — T3/Repository",
+   "tests": [
+    "src/services/business-operations/consolidation/__tests__/l47b-agenda-source.test.ts",
+    "src/test/e2e/scenarios/l47b-agenda-source-t3.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-088",
+   "famille": "C29",
+   "domaine": "Cycle de vie",
+   "scenario": "claim form supprimé, documents restent",
+   "attendu": "CLAIM reste.",
+   "trace": "Cycle de vie — C8, C9 — T3/Repository",
+   "tests": [
+    "src/test/e2e/scenarios/l44-o5-sinistre.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-089",
+   "famille": "C29",
+   "domaine": "Cycle de vie",
+   "scenario": "claim form supprimé, aucune preuve",
+   "attendu": "CLAIM invalidée.",
+   "trace": "Cycle de vie — C8, C9 — T3/Repository",
+   "tests": [
+    "src/test/e2e/scenarios/l44-o5-sinistre.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-090",
+   "famille": "C29",
+   "domaine": "Cycle de vie",
+   "scenario": "Hour sweep",
+   "attendu": "Convergence/no-op si rien changé.",
+   "trace": "Cycle de vie — C8, C9 — T3/Repository",
+   "tests": [
+    "src/test/e2e/scenarios/l41-o3a-consolidation-t3.e2e.ts",
+    "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-091",
+   "famille": "C29",
+   "domaine": "Finance/TCO",
+   "scenario": "Devis 1200 + facture 1350",
+   "attendu": "Forecast 1200 + realized 1350 ; TCO 1350.",
+   "trace": "Finances/TCO — C11, C12, C17 — FinancialService/TCO",
+   "tests": [
+    "src/test/e2e/scenarios/l41-o3a-consolidation-t3.e2e.ts",
+    "src/test/e2e/scenarios/l48-o10-recette-complements.e2e.ts"
+   ],
+   "statut": "AUTOMATISE",
+   "note": "Partie « TCO 1350 » : TCO hors périmètre (Q1) ; composantes FORECAST 1200 + REALIZED 1350 et T2 automatisés."
+  },
+  {
+   "id": "F-092",
+   "famille": "C29",
+   "domaine": "Finance/TCO",
+   "scenario": "Acompte 300 + final total 1200",
+   "attendu": "TCO 1200.",
+   "trace": "Finances/TCO — C11, C12, C17 — FinancialService/TCO",
+   "tests": [
+    "src/services/business-operations/consolidation/__tests__/o3a-finances-etat.test.ts",
+    "src/test/e2e/scenarios/l41-o3a-consolidation-t3.e2e.ts"
+   ],
+   "statut": "AUTOMATISE",
+   "note": "Contrôlé sur les composantes et le coût net consolidé (TCO hors périmètre, Q1)."
+  },
+  {
+   "id": "F-093",
+   "famille": "C29",
+   "domaine": "Finance/TCO",
+   "scenario": "Acompte 300 + solde 900",
+   "attendu": "TCO 1200.",
+   "trace": "Finances/TCO — C11, C12, C17 — FinancialService/TCO",
+   "tests": [
+    "src/services/business-operations/consolidation/__tests__/o3a-finances-etat.test.ts",
+    "src/test/e2e/scenarios/l41-o3a-consolidation-t3.e2e.ts"
+   ],
+   "statut": "AUTOMATISE",
+   "note": "Contrôlé sur les composantes et le coût net consolidé (TCO hors périmètre, Q1)."
+  },
+  {
+   "id": "F-094",
+   "famille": "C29",
+   "domaine": "Finance/TCO",
+   "scenario": "Deux factures partielles 500+700",
+   "attendu": "TCO 1200 si portions distinctes.",
+   "trace": "Finances/TCO — C11, C12, C17 — FinancialService/TCO",
+   "tests": [
+    "src/services/business-operations/consolidation/__tests__/o3a-finances-etat.test.ts"
+   ],
+   "statut": "AUTOMATISE",
+   "note": "Contrôlé sur les composantes (TCO hors périmètre, Q1)."
+  },
+  {
+   "id": "F-095",
+   "famille": "C29",
+   "domaine": "Finance/TCO",
+   "scenario": "Facture 1350 + avoir 100",
+   "attendu": "Net 1250.",
+   "trace": "Finances/TCO — C11, C12, C17 — FinancialService/TCO",
+   "tests": [
+    "src/services/business-operations/consolidation/__tests__/o10-recette.test.ts",
+    "src/services/business-operations/consolidation/__tests__/o3a-finances-etat.test.ts",
+    "src/test/e2e/scenarios/l41-o3a-consolidation-t3.e2e.ts",
+    "src/test/e2e/scenarios/l48-o10-recette-complements.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-096",
+   "famille": "C29",
+   "domaine": "Finance/TCO",
+   "scenario": "Remise déjà dans total facture",
+   "attendu": "Pas double réduction.",
+   "trace": "Finances/TCO — C11, C12, C17 — FinancialService/TCO",
+   "tests": [
+    "src/services/business-operations/consolidation/__tests__/o10-recette.test.ts",
+    "src/test/e2e/scenarios/l48-o10-recette-complements.e2e.ts"
+   ],
+   "statut": "AUTOMATISE_PREPROD",
+   "preprod": "RP-03"
+  },
+  {
+   "id": "F-097",
+   "famille": "C29",
+   "domaine": "Finance/TCO",
+   "scenario": "Payment proof 1250",
+   "attendu": "Aucun coût supplémentaire.",
+   "trace": "Finances/TCO — C11, C12, C17 — FinancialService/TCO",
+   "tests": [
+    "src/services/business-operations/consolidation/__tests__/o3a-finances-etat.test.ts",
+    "src/test/e2e/scenarios/l41-o3a-consolidation-t3.e2e.ts"
+   ],
+   "statut": "AUTOMATISE_PREPROD",
+   "preprod": "RP-03"
+  },
+  {
+   "id": "F-098",
+   "famille": "C29",
+   "domaine": "Finance/TCO",
+   "scenario": "Refund proof 200",
+   "attendu": "REFUND 200.",
+   "trace": "Finances/TCO — C11, C12, C17 — FinancialService/TCO",
+   "tests": [
+    "src/services/business-operations/consolidation/__tests__/o3a-finances-etat.test.ts",
+    "src/test/e2e/scenarios/l48-o10-recette-complements.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-099",
+   "famille": "C29",
+   "domaine": "Finance/TCO",
+   "scenario": "Indemnité 800 reçue",
+   "attendu": "INDEMNITY 800.",
+   "trace": "Finances/TCO — C11, C12, C17 — FinancialService/TCO",
+   "tests": [
+    "src/services/business-operations/consolidation/__tests__/o3a-finances-etat.test.ts"
+   ],
+   "statut": "AUTOMATISE_PREPROD",
+   "preprod": "RP-03"
+  },
+  {
+   "id": "F-100",
+   "famille": "C29",
+   "domaine": "Finance/TCO",
+   "scenario": "Dommage estimé 800",
+   "attendu": "Pas INDEMNITY/REALIZED_COST.",
+   "trace": "Finances/TCO — C11, C12, C17 — FinancialService/TCO",
+   "tests": [
+    "src/test/e2e/scenarios/l42-o3b-consolidation-t3.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-101",
+   "famille": "C29",
+   "domaine": "Finance/TCO",
+   "scenario": "Prix vente 10000",
+   "attendu": "PROCEED.",
+   "trace": "Finances/TCO — C11, C12, C17 — FinancialService/TCO",
+   "tests": [
+    "src/services/business-operations/consolidation/__tests__/o3a-finances-etat.test.ts",
+    "src/test/e2e/scenarios/l41-o3a-consolidation-t3.e2e.ts",
+    "src/test/e2e/scenarios/l48-o10-recette-complements.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-102",
+   "famille": "C29",
+   "domaine": "Finance/TCO",
+   "scenario": "Frais vente 500",
+   "attendu": "REALIZED_COST disposal.",
+   "trace": "Finances/TCO — C11, C12, C17 — FinancialService/TCO",
+   "tests": [
+    "src/test/e2e/scenarios/l48-o10-recette-complements.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-103",
+   "famille": "C29",
+   "domaine": "Finance/TCO",
+   "scenario": "Principal prêt 20000",
+   "attendu": "Hors TCO.",
+   "trace": "Finances/TCO — C11, C12, C17 — FinancialService/TCO",
+   "tests": [
+    "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts"
+   ],
+   "statut": "AUTOMATISE",
+   "note": "Principal jamais une composante ni ajouté à l’acquisition ; principal non renseigné dans les détails (remarque E-02)."
+  },
+  {
+   "id": "F-104",
+   "famille": "C29",
+   "domaine": "Finance/TCO",
+   "scenario": "Intérêts facturés 500",
+   "attendu": "REALIZED_COST financing.",
+   "trace": "Finances/TCO — C11, C12, C17 — FinancialService/TCO",
+   "tests": [
+    "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts"
+   ],
+   "statut": "AUTOMATISE_PREPROD",
+   "preprod": "RP-03"
+  },
+  {
+   "id": "F-105",
+   "famille": "C29",
+   "domaine": "Finance/TCO",
+   "scenario": "Devise CHF sans EUR",
+   "attendu": "Hors agrégat TCO EUR, montant original visible.",
+   "trace": "Finances/TCO — C11, C12, C17 — FinancialService/TCO",
+   "tests": [
+    "src/services/business-operations/consolidation/__tests__/o3a-finances-etat.test.ts",
+    "src/test/e2e/scenarios/l41-o3a-consolidation-t3.e2e.ts",
+    "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts"
+   ],
+   "statut": "AUTOMATISE",
+   "note": "Agrégat TCO hors périmètre (Q1) ; exclusion de l’agrégat EUR contrôlée sur T2."
+  },
+  {
+   "id": "F-106",
+   "famille": "C29",
+   "domaine": "Finance/TCO",
+   "scenario": "CHF avec débit EUR explicite",
+   "attendu": "amount_eur_cents utilisé.",
+   "trace": "Finances/TCO — C11, C12, C17 — FinancialService/TCO",
+   "tests": [
+    "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts"
+   ],
+   "statut": "ECART",
+   "ecart": "E-01"
+  },
+  {
+   "id": "F-107",
+   "famille": "C29",
+   "domaine": "Finance/TCO",
+   "scenario": "Composante source supprimée, aucune autre preuve",
+   "attendu": "active=false.",
+   "trace": "Finances/TCO — C11, C12, C17 — FinancialService/TCO",
+   "tests": [
+    "src/test/e2e/scenarios/l41-o3a-consolidation-t3.e2e.ts",
+    "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-108",
+   "famille": "C29",
+   "domaine": "Finance/TCO",
+   "scenario": "Même invoice dupliquée",
+   "attendu": "Une composante.",
+   "trace": "Finances/TCO — C11, C12, C17 — FinancialService/TCO",
+   "tests": [
+    "src/services/business-operations/consolidation/__tests__/o3a-finances-etat.test.ts",
+    "src/test/e2e/scenarios/l41-o3a-consolidation-t3.e2e.ts",
+    "src/test/e2e/scenarios/l48-o10-recette-complements.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-109",
+   "famille": "C29",
+   "domaine": "Finance/TCO",
+   "scenario": "Invoice reanalysis corrige montant",
+   "attendu": "Une composante courante.",
+   "trace": "Finances/TCO — C11, C12, C17 — FinancialService/TCO",
+   "tests": [
+    "src/services/business-operations/consolidation/__tests__/o3a-finances-etat.test.ts",
+    "src/test/e2e/scenarios/l41-o3a-consolidation-t3.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-110",
+   "famille": "C29",
+   "domaine": "Finance/TCO",
+   "scenario": "Contrat tarif mensuel sans factures",
+   "attendu": "Pas 12 coûts générés.",
+   "trace": "Finances/TCO — C11, C12, C17 — FinancialService/TCO",
+   "tests": [
+    "src/services/business-operations/consolidation/__tests__/o3a-finances-etat.test.ts",
+    "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-111",
+   "famille": "C29",
+   "domaine": "Finance/TCO",
+   "scenario": "Cotisation annuelle facturée",
+   "attendu": "REALIZED_COST période.",
+   "trace": "Finances/TCO — C11, C12, C17 — FinancialService/TCO",
+   "tests": [
+    "src/services/business-operations/consolidation/__tests__/o3a-finances-etat.test.ts",
+    "src/test/e2e/scenarios/l41-o3a-consolidation-t3.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-112",
+   "famille": "C29",
+   "domaine": "Finance/TCO",
+   "scenario": "Période contrat dépasse vente sans remboursement",
+   "attendu": "Prorata TCO au jour si règle TCO appliquée.",
+   "trace": "Finances/TCO — C11, C12, C17 — FinancialService/TCO",
+   "tests": [],
+   "statut": "HORS_PERIMETRE",
+   "decision": "Q1 — le TCO (prorata au jour C17) fait l’objet d’un CDC dédié ; aucune règle de prorata en V1 Opérations."
+  },
+  {
+   "id": "F-113",
+   "famille": "C29",
+   "domaine": "Finance/TCO",
+   "scenario": "Remboursement final réel après résiliation",
+   "attendu": "Réalité documentée remplace prorata.",
+   "trace": "Finances/TCO — C11, C12, C17 — FinancialService/TCO",
+   "tests": [],
+   "statut": "HORS_PERIMETRE",
+   "decision": "Q1 — le TCO (remplacement du prorata par la réalité documentée, C17) fait l’objet d’un CDC dédié."
+  },
+  {
+   "id": "F-114",
+   "famille": "C29",
+   "domaine": "Finance/TCO",
+   "scenario": "Multi-biens coût global sans allocation",
+   "attendu": "Pas TCO individuel.",
+   "trace": "Finances/TCO — C11, C12, C17 — FinancialService/TCO",
+   "tests": [
+    "src/services/business-operations/consolidation/__tests__/o3a-finances-etat.test.ts",
+    "src/test/e2e/scenarios/l41-o3a-consolidation-t3.e2e.ts",
+    "src/test/e2e/scenarios/l45-o6-t2-operation-first.e2e.ts",
+    "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-115",
+   "famille": "C29",
+   "domaine": "Finance/TCO",
+   "scenario": "Multi-biens composante ciblée bien A",
+   "attendu": "TCO A seulement.",
+   "trace": "Finances/TCO — C11, C12, C17 — FinancialService/TCO",
+   "tests": [
+    "src/test/e2e/scenarios/l45-o6-t2-operation-first.e2e.ts"
+   ],
+   "statut": "AUTOMATISE",
+   "note": "Partie TCO hors périmètre (Q1) ; attribution de la composante ciblée contrôlée sur T2."
+  },
+  {
+   "id": "F-116",
+   "famille": "C29",
+   "domaine": "Finance/TCO",
+   "scenario": "Equipment cost",
+   "attendu": "Roll-up parent une fois.",
+   "trace": "Finances/TCO — C11, C12, C17 — FinancialService/TCO",
+   "tests": [
+    "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts"
+   ],
+   "statut": "AUTOMATISE",
+   "note": "Roll-up TCO hors périmètre (Q1) ; coût compté une fois pour le bien parent contrôlé sur T2."
+  },
+  {
+   "id": "F-117",
+   "famille": "C29",
+   "domaine": "Finance/TCO",
+   "scenario": "Net cost négatif après remboursement",
+   "attendu": "Autorisé.",
+   "trace": "Finances/TCO — C11, C12, C17 — FinancialService/TCO",
+   "tests": [
+    "src/test/e2e/scenarios/l48-o10-recette-complements.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-118",
+   "famille": "C29",
+   "domaine": "Finance/TCO",
+   "scenario": "Operation active sans montant",
+   "attendu": "T2 peut lister l’événement ; coût inconnu.",
+   "trace": "Finances/TCO — C11, C12, C17 — FinancialService/TCO",
+   "tests": [
+    "src/services/verebona-assistant/canonical/__tests__/l45-o6-operation-first.test.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-119",
+   "famille": "C29",
+   "domaine": "Finance/TCO",
+   "scenario": "Document amount generic lié Operation sans financial hint",
+   "attendu": "Ne pas l’utiliser comme coût brut.",
+   "trace": "Finances/TCO — C11, C12, C17 — FinancialService/TCO",
+   "tests": [
+    "src/services/business-operations/consolidation/__tests__/o3a-finances-etat.test.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-120",
+   "famille": "C29",
+   "domaine": "Finance/TCO",
+   "scenario": "Credit note supérieur au coût",
+   "attendu": "Net négatif autorisé si preuve.",
+   "trace": "Finances/TCO — C11, C12, C17 — FinancialService/TCO",
+   "tests": [
+    "src/services/business-operations/consolidation/__tests__/o10-recette.test.ts",
+    "src/services/business-operations/consolidation/__tests__/o3a-finances-etat.test.ts",
+    "src/test/e2e/scenarios/l48-o10-recette-complements.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-121",
+   "famille": "C29",
+   "domaine": "Finance/TCO",
+   "scenario": "Quote annulé",
+   "attendu": "Forecast reste historique ; Operation CANCELLED si annulation prouvée.",
+   "trace": "Finances/TCO — C11, C12, C17 — FinancialService/TCO",
+   "tests": [
+    "src/test/e2e/scenarios/l48-o10-recette-complements.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-122",
+   "famille": "C29",
+   "domaine": "Finance/TCO",
+   "scenario": "Facture finale remplace prévision",
+   "attendu": "Forecast conservé mais exclu TCO réel.",
+   "trace": "Finances/TCO — C11, C12, C17 — FinancialService/TCO",
+   "tests": [
+    "src/test/e2e/scenarios/l48-o10-recette-complements.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-123",
+   "famille": "C29",
+   "domaine": "Finance/TCO",
+   "scenario": "Indemnité globale claim multi-biens",
+   "attendu": "Pas ventilation automatique.",
+   "trace": "Finances/TCO — C11, C12, C17 — FinancialService/TCO",
+   "tests": [
+    "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-124",
+   "famille": "C29",
+   "domaine": "Finance/TCO",
+   "scenario": "Prix souhaité VENDU sans réalisé",
+   "attendu": "Net provisoire seulement.",
+   "trace": "Finances/TCO — C11, C12, C17 — FinancialService/TCO",
+   "tests": [
+    "src/test/e2e/scenarios/l43-o4-donnees-structurees.e2e.ts"
+   ],
+   "statut": "AUTOMATISE",
+   "note": "Le « net provisoire » est un calcul TCO (Q1) ; côté Opération : Cession sans PROCEED tant que le prix réalisé manque."
+  },
+  {
+   "id": "F-125",
+   "famille": "C29",
+   "domaine": "Finance/TCO",
+   "scenario": "Prix réalisé arrive",
+   "attendu": "Remplace provisoire automatiquement.",
+   "trace": "Finances/TCO — C11, C12, C17 — FinancialService/TCO",
+   "tests": [
+    "src/test/e2e/scenarios/l43-o4-donnees-structurees.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-126",
+   "famille": "C29",
+   "domaine": "T2/T4/Sinistre",
+   "scenario": "T2 adresse maison",
+   "attendu": "Canonique, pas Operation.",
+   "trace": "T2 — C15 — T2 router/read service",
+   "tests": [
+    "src/services/verebona-assistant/canonical/__tests__/l45-o6-operation-first.test.ts",
+    "src/test/e2e/scenarios/l45-o6-t2-operation-first.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-127",
+   "famille": "C29",
+   "domaine": "T2/T4/Sinistre",
+   "scenario": "T2 coût réparation avec Operation",
+   "attendu": "Composante Operation.",
+   "trace": "T2 — C15 — T2 router/read service",
+   "tests": [
+    "src/services/verebona-assistant/canonical/__tests__/l45-o6-operation-first.test.ts",
+    "src/test/e2e/scenarios/l45-o6-t2-operation-first.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-128",
+   "famille": "C29",
+   "domaine": "T2/T4/Sinistre",
+   "scenario": "T2 coût réparation sans Operation",
+   "attendu": "Fallback doc/facts qualifié.",
+   "trace": "T2 — C15 — T2 router/read service",
+   "tests": [
+    "src/test/e2e/scenarios/l45-o6-t2-operation-first.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-129",
+   "famille": "C29",
+   "domaine": "T2/T4/Sinistre",
+   "scenario": "T2 agrégat 2 Operations + 1 vieille facture hors Operation",
+   "attendu": "Somme Operations + fallback vieille facture, sans docs sources des Operations.",
+   "trace": "T2 — C15 — T2 router/read service",
+   "tests": [
+    "src/services/verebona-assistant/canonical/__tests__/l45-o6-operation-first.test.ts",
+    "src/test/e2e/scenarios/l45-o6-t2-operation-first.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-130",
+   "famille": "C29",
+   "domaine": "T2/T4/Sinistre",
+   "scenario": "T2 facture source Operation",
+   "attendu": "Retourne document via source.",
+   "trace": "T2 — C15 — T2 router/read service",
+   "tests": [
+    "src/test/e2e/scenarios/l45-o6-t2-operation-first.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-131",
+   "famille": "C29",
+   "domaine": "T2/T4/Sinistre",
+   "scenario": "T2 valeur actuelle",
+   "attendu": "valuationHistory.",
+   "trace": "T2 — C15 — T2 router/read service",
+   "tests": [
+    "src/test/e2e/scenarios/l45-o6-t2-operation-first.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-132",
+   "famille": "C29",
+   "domaine": "T2/T4/Sinistre",
+   "scenario": "T2 « payé/réglé » sans preuve paiement",
+   "attendu": "Ne pas prétendre réglé ; distinguer coût.",
+   "trace": "T2 — C15 — T2 router/read service",
+   "tests": [
+    "src/services/verebona-assistant/canonical/__tests__/l45-o6-operation-first.test.ts",
+    "src/test/e2e/scenarios/l45-o6-t2-operation-first.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-133",
+   "famille": "C29",
+   "domaine": "T2/T4/Sinistre",
+   "scenario": "T2 « coûté »",
+   "attendu": "Coût économique.",
+   "trace": "T2 — C15 — T2 router/read service",
+   "tests": [
+    "src/services/verebona-assistant/canonical/__tests__/l45-o6-operation-first.test.ts",
+    "src/test/e2e/scenarios/l45-o6-t2-operation-first.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-134",
+   "famille": "C29",
+   "domaine": "T2/T4/Sinistre",
+   "scenario": "T2 historique voiture",
+   "attendu": "Operations + compléments non représentés.",
+   "trace": "T2 — C15 — T2 router/read service",
+   "tests": [
+    "src/services/verebona-assistant/canonical/__tests__/l45-o6-operation-first.test.ts",
+    "src/test/e2e/scenarios/l45-o6-t2-operation-first.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-135",
+   "famille": "C29",
+   "domaine": "T2/T4/Sinistre",
+   "scenario": "T2 old doc source d’une Operation",
+   "attendu": "Pas recompter en fallback.",
+   "trace": "T2 — C15 — T2 router/read service",
+   "tests": [
+    "src/test/e2e/scenarios/l45-o6-t2-operation-first.e2e.ts",
+    "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-136",
+   "famille": "C29",
+   "domaine": "T2/T4/Sinistre",
+   "scenario": "T2 Operation sans target dans question bien",
+   "attendu": "Exclue.",
+   "trace": "T2 — C15 — T2 router/read service",
+   "tests": [
+    "src/services/verebona-assistant/canonical/__tests__/l45-o6-operation-first.test.ts",
+    "src/test/e2e/scenarios/l45-o6-t2-operation-first.e2e.ts",
+    "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-137",
+   "famille": "C29",
+   "domaine": "T2/T4/Sinistre",
+   "scenario": "T2 Operation sans target question compte global",
+   "attendu": "Peut être mentionnée sans affirmer bien.",
+   "trace": "T2 — C15 — T2 router/read service",
+   "tests": [
+    "src/services/verebona-assistant/canonical/__tests__/l45-o6-operation-first.test.ts",
+    "src/test/e2e/scenarios/l45-o6-t2-operation-first.e2e.ts",
+    "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-138",
+   "famille": "C29",
+   "domaine": "T2/T4/Sinistre",
+   "scenario": "T4 intervention envisagée datée",
+   "attendu": "Agenda planifié.",
+   "trace": "T4/Agenda — C16 — T4 projection",
+   "tests": [
+    "src/services/business-operations/agenda-projection/__tests__/o7-projection.test.ts",
+    "src/test/e2e/scenarios/l46-o7-agenda-projection.e2e.ts",
+    "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-139",
+   "famille": "C29",
+   "domaine": "T2/T4/Sinistre",
+   "scenario": "T4 intervention réalisée datée sans agenda",
+   "attendu": "Agenda historique.",
+   "trace": "T4/Agenda — C16 — T4 projection",
+   "tests": [
+    "src/services/business-operations/agenda-projection/__tests__/o7-projection.test.ts",
+    "src/test/e2e/scenarios/l46-o7-agenda-projection.e2e.ts",
+    "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-140",
+   "famille": "C29",
+   "domaine": "T2/T4/Sinistre",
+   "scenario": "T4 intervention réalisée sans date",
+   "attendu": "Pas date inventée.",
+   "trace": "T4/Agenda — C16 — T4 projection",
+   "tests": [
+    "src/services/business-operations/agenda-projection/__tests__/o7-projection.test.ts",
+    "src/test/e2e/scenarios/l46-o7-agenda-projection.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-141",
+   "famille": "C29",
+   "domaine": "T2/T4/Sinistre",
+   "scenario": "T4 claim date connue",
+   "attendu": "Agenda historique sinistre.",
+   "trace": "T4/Agenda — C16 — T4 projection",
+   "tests": [
+    "src/services/business-operations/agenda-projection/__tests__/o7-projection.test.ts",
+    "src/test/e2e/scenarios/l46-o7-agenda-projection.e2e.ts",
+    "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-142",
+   "famille": "C29",
+   "domaine": "T2/T4/Sinistre",
+   "scenario": "T4 acquisition date connue",
+   "attendu": "Agenda historique acquisition.",
+   "trace": "T4/Agenda — C16 — T4 projection",
+   "tests": [
+    "src/services/business-operations/agenda-projection/__tests__/o7-projection.test.ts",
+    "src/test/e2e/scenarios/l46-o7-agenda-projection.e2e.ts",
+    "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-143",
+   "famille": "C29",
+   "domaine": "T2/T4/Sinistre",
+   "scenario": "T4 disposal date connue",
+   "attendu": "Agenda historique sortie.",
+   "trace": "T4/Agenda — C16 — T4 projection",
+   "tests": [
+    "src/services/business-operations/agenda-projection/__tests__/o7-projection.test.ts",
+    "src/test/e2e/scenarios/l46-o7-agenda-projection.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-144",
+   "famille": "C29",
+   "domaine": "T2/T4/Sinistre",
+   "scenario": "T4 contract sans échéance actionnable",
+   "attendu": "Pas copie Agenda.",
+   "trace": "T4/Agenda — C16 — T4 projection",
+   "tests": [
+    "src/services/business-operations/agenda-projection/__tests__/o7-projection.test.ts",
+    "src/test/e2e/scenarios/l46-o7-agenda-projection.e2e.ts",
+    "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-145",
+   "famille": "C29",
+   "domaine": "T2/T4/Sinistre",
+   "scenario": "T4 projection puis event callback",
+   "attendu": "Boucle bloquée.",
+   "trace": "T4/Agenda — C16 — T4 projection",
+   "tests": [
+    "src/services/business-operations/agenda-projection/__tests__/o7-projection.test.ts",
+    "src/test/e2e/scenarios/l46-o7-agenda-projection.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-146",
+   "famille": "C29",
+   "domaine": "T2/T4/Sinistre",
+   "scenario": "Utilisateur supprime projection Agenda",
+   "attendu": "Pas recréée par hourly.",
+   "trace": "T4/Agenda — C16 — T4 projection",
+   "tests": [
+    "src/components/agenda/__tests__/l46-o7-tiroir-source.test.ts",
+    "src/services/business-operations/agenda-projection/__tests__/o7-projection.test.ts",
+    "src/test/e2e/scenarios/l46-o7-agenda-projection.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-147",
+   "famille": "C29",
+   "domaine": "T2/T4/Sinistre",
+   "scenario": "Agenda utilisateur existe avant Operation",
+   "attendu": "Lier, ne pas dupliquer.",
+   "trace": "T4/Agenda — C16 — T4 projection",
+   "tests": [
+    "src/services/business-operations/agenda-projection/__tests__/o7-projection.test.ts",
+    "src/test/e2e/scenarios/l44-o5-sinistre.e2e.ts",
+    "src/test/e2e/scenarios/l46-o7-agenda-projection.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-148",
+   "famille": "C29",
+   "domaine": "T2/T4/Sinistre",
+   "scenario": "Sinistre A_DECLARER",
+   "attendu": "CLAIM REALIZED, dossier A_DECLARER.",
+   "trace": "Sinistre — C14 — ClaimOperationService/exports",
+   "tests": [
+    "src/services/business-operations/claims/__tests__/o5-sinistre.test.ts",
+    "src/test/e2e/scenarios/l44-o5-sinistre.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-149",
+   "famille": "C29",
+   "domaine": "T2/T4/Sinistre",
+   "scenario": "Sinistre CLOS",
+   "attendu": "CLAIM REALIZED + closed_at.",
+   "trace": "Sinistre — C14 — ClaimOperationService/exports",
+   "tests": [
+    "src/services/business-operations/claims/__tests__/o5-sinistre.test.ts",
+    "src/test/e2e/scenarios/l44-o5-sinistre.e2e.ts",
+    "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-150",
+   "famille": "C29",
+   "domaine": "T2/T4/Sinistre",
+   "scenario": "Sinistre refusé",
+   "attendu": "CLAIM REALIZED, status dossier REFUSE.",
+   "trace": "Sinistre — C14 — ClaimOperationService/exports",
+   "tests": [
+    "src/services/business-operations/claims/__tests__/o5-sinistre.test.ts",
+    "src/test/e2e/scenarios/l44-o5-sinistre.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-151",
+   "famille": "C29",
+   "domaine": "T2/T4/Sinistre",
+   "scenario": "Action sinistre couper eau",
+   "attendu": "Pas child Operation.",
+   "trace": "Sinistre — C14 — ClaimOperationService/exports",
+   "tests": [
+    "src/test/e2e/scenarios/l44-o5-sinistre.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-152",
+   "famille": "C29",
+   "domaine": "T2/T4/Sinistre",
+   "scenario": "Action sinistre réparation avec facture",
+   "attendu": "INTERVENTION enfant possible/match.",
+   "trace": "Sinistre — C14 — ClaimOperationService/exports",
+   "tests": [
+    "src/test/e2e/scenarios/l44-o5-sinistre.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-153",
+   "famille": "C29",
+   "domaine": "T2/T4/Sinistre",
+   "scenario": "Dommage list item",
+   "attendu": "Pas Operation.",
+   "trace": "Sinistre — C14 — ClaimOperationService/exports",
+   "tests": [
+    "src/services/business-operations/claims/__tests__/o5-sinistre.test.ts",
+    "src/test/e2e/scenarios/l44-o5-sinistre.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-154",
+   "famille": "C29",
+   "domaine": "T2/T4/Sinistre",
+   "scenario": "Échange assureur",
+   "attendu": "Pas Operation.",
+   "trace": "Sinistre — C14 — ClaimOperationService/exports",
+   "tests": [
+    "src/services/business-operations/claims/__tests__/o5-sinistre.test.ts",
+    "src/test/e2e/scenarios/l44-o5-sinistre.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-155",
+   "famille": "C29",
+   "domaine": "T2/T4/Sinistre",
+   "scenario": "Policy ref matches Contract",
+   "attendu": "claim_details insurance_contract_operation_id.",
+   "trace": "Sinistre — C14 — ClaimOperationService/exports",
+   "tests": [
+    "src/test/e2e/scenarios/l44-o5-sinistre.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-156",
+   "famille": "C29",
+   "domaine": "T2/T4/Sinistre",
+   "scenario": "Policy ref ambigu",
+   "attendu": "Texte conservé, pas faux lien.",
+   "trace": "Sinistre — C14 — ClaimOperationService/exports",
+   "tests": [
+    "src/test/e2e/scenarios/l44-o5-sinistre.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-157",
+   "famille": "C29",
+   "domaine": "T2/T4/Sinistre",
+   "scenario": "Export assurance après migration",
+   "attendu": "Lit CLAIM, pas additionalInfo comme source de vérité.",
+   "trace": "Sinistre — C14 — ClaimOperationService/exports",
+   "tests": [
+    "src/test/e2e/scenarios/l44-o5-sinistre.e2e.ts",
+    "src/test/e2e/scenarios/l48-o10-recette-complements.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-158",
+   "famille": "C29",
+   "domaine": "T2/T4/Sinistre",
+   "scenario": "Claim multi-biens",
+   "attendu": "Une CLAIM.",
+   "trace": "Sinistre — C14 — ClaimOperationService/exports",
+   "tests": [
+    "src/test/e2e/scenarios/l44-o5-sinistre.e2e.ts",
+    "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-159",
+   "famille": "C29",
+   "domaine": "T2/T4/Sinistre",
+   "scenario": "Claim indemnity allocated asset A",
+   "attendu": "TCO A réduit.",
+   "trace": "Sinistre — C14 — ClaimOperationService/exports",
+   "tests": [
+    "src/services/business-operations/claims/__tests__/o5-sinistre.test.ts",
+    "src/test/e2e/scenarios/l44-o5-sinistre.e2e.ts"
+   ],
+   "statut": "AUTOMATISE",
+   "note": "Réduction du TCO hors périmètre (Q1) ; indemnité attribuée au bien et net T2 contrôlés."
+  },
+  {
+   "id": "F-160",
+   "famille": "C29",
+   "domaine": "T2/T4/Sinistre",
+   "scenario": "Claim indemnity unallocated",
+   "attendu": "Pas réduction TCO individuel.",
+   "trace": "Sinistre — C14 — ClaimOperationService/exports",
+   "tests": [
+    "src/services/business-operations/claims/__tests__/o5-sinistre.test.ts",
+    "src/test/e2e/scenarios/l44-o5-sinistre.e2e.ts",
+    "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts"
+   ],
+   "statut": "AUTOMATISE",
+   "note": "Réduction du TCO hors périmètre (Q1) ; indemnité non allouée jamais imputée à un bien (T2) contrôlée."
+  },
+  {
+   "id": "F-161",
+   "famille": "C29",
+   "domaine": "T2/T4/Sinistre",
+   "scenario": "Valuation doc fiable",
+   "attendu": "valuationHistory, pas Operation.",
+   "trace": "Valorisation — C18 — Valuation service/coherence",
+   "tests": [
+    "src/services/ai/source-analysis/projection/__tests__/o0-acquisition-contextualisee.test.ts",
+    "src/services/canonical/__tests__/o0-valorisation-devise.test.ts",
+    "src/test/e2e/scenarios/l38-o0-propagations.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-162",
+   "famille": "C29",
+   "domaine": "T2/T4/Sinistre",
+   "scenario": "Acquisition invoice amount",
+   "attendu": "Acquisition cost, pas estimatedValue.",
+   "trace": "Valorisation — C18 — Valuation service/coherence",
+   "tests": [
+    "src/services/ai/source-analysis/projection/__tests__/o0-acquisition-contextualisee.test.ts",
+    "src/test/e2e/scenarios/l41-o3a-consolidation-t3.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-163",
+   "famille": "C29",
+   "domaine": "T2/T4/Sinistre",
+   "scenario": "Document date générique",
+   "attendu": "Ne propage pas acquisitionDate sans sémantique.",
+   "trace": "Valorisation — C18 — Valuation service/coherence",
+   "tests": [
+    "src/services/ai/source-analysis/projection/__tests__/o0-acquisition-contextualisee.test.ts",
+    "src/services/coherence/__tests__/o0-propagations-generiques.test.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-164",
+   "famille": "C29",
+   "domaine": "T2/T4/Sinistre",
+   "scenario": "Amount generic",
+   "attendu": "Ne propage pas acquisitionPrice/estimatedValue.",
+   "trace": "Valorisation — C18 — Valuation service/coherence",
+   "tests": [
+    "src/services/ai/source-analysis/projection/__tests__/o0-acquisition-contextualisee.test.ts",
+    "src/services/coherence/__tests__/o0-propagations-generiques.test.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-165",
+   "famille": "C29",
+   "domaine": "T2/T4/Sinistre",
+   "scenario": "Question « prochaine échéance »",
+   "attendu": "Agenda/T4 prioritaire, Operation contexte.",
+   "trace": "Valorisation — C18 — Valuation service/coherence",
+   "tests": [
+    "src/services/coherence/__tests__/o0-propagations-generiques.test.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-166",
+   "famille": "C29",
+   "domaine": "Technique/Migration",
+   "scenario": "Deux jobs T3 même source",
+   "attendu": "Une seule Operation grâce sérialisation/unique.",
+   "trace": "Concurrence/migration — C23-C25 — DB/T3/migrations",
+   "tests": [
+    "src/test/e2e/scenarios/l39-o1-socle-operations.e2e.ts",
+    "src/test/e2e/scenarios/l41-o3a-consolidation-t3.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-167",
+   "famille": "C29",
+   "domaine": "Technique/Migration",
+   "scenario": "Échec T4 après commit Operation",
+   "attendu": "Operation reste ; projection rejouable.",
+   "trace": "Concurrence/migration — C23-C25 — DB/T3/migrations",
+   "tests": [
+    "src/test/e2e/scenarios/l48-o10-recette-complements.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-168",
+   "famille": "C29",
+   "domaine": "Technique/Migration",
+   "scenario": "Échec pendant fusion",
+   "attendu": "Rollback complet.",
+   "trace": "Concurrence/migration — C23-C25 — DB/T3/migrations",
+   "tests": [
+    "src/test/e2e/scenarios/l42-o3b-consolidation-t3.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-169",
+   "famille": "C29",
+   "domaine": "Technique/Migration",
+   "scenario": "Cross-account parent",
+   "attendu": "Rejet intégrité.",
+   "trace": "Concurrence/migration — C23-C25 — DB/T3/migrations",
+   "tests": [
+    "src/test/e2e/scenarios/l39-o1-socle-operations.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-170",
+   "famille": "C29",
+   "domaine": "Technique/Migration",
+   "scenario": "Cross-account source",
+   "attendu": "Rejet intégrité.",
+   "trace": "Concurrence/migration — C23-C25 — DB/T3/migrations",
+   "tests": [
+    "src/test/e2e/scenarios/l39-o1-socle-operations.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-171",
+   "famille": "C29",
+   "domaine": "Technique/Migration",
+   "scenario": "Cycle parent",
+   "attendu": "Rejet.",
+   "trace": "Concurrence/migration — C23-C25 — DB/T3/migrations",
+   "tests": [
+    "src/services/business-operations/__tests__/o1-socle.test.ts",
+    "src/test/e2e/scenarios/l39-o1-socle-operations.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-172",
+   "famille": "C29",
+   "domaine": "Technique/Migration",
+   "scenario": "Profondeur 4",
+   "attendu": "Rejet.",
+   "trace": "Concurrence/migration — C23-C25 — DB/T3/migrations",
+   "tests": [
+    "src/services/business-operations/__tests__/o1-socle.test.ts",
+    "src/test/e2e/scenarios/l39-o1-socle-operations.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-173",
+   "famille": "C29",
+   "domaine": "Technique/Migration",
+   "scenario": "Active component sans active source",
+   "attendu": "Diagnostic anomalie dure.",
+   "trace": "Concurrence/migration — C23-C25 — DB/T3/migrations",
+   "tests": [
+    "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts"
+   ],
+   "statut": "AUTOMATISE_PREPROD",
+   "preprod": "RP-05"
+  },
+  {
+   "id": "F-174",
+   "famille": "C29",
+   "domaine": "Technique/Migration",
+   "scenario": "Active Operation sans active source",
+   "attendu": "Diagnostic anomalie dure.",
+   "trace": "Concurrence/migration — C23-C25 — DB/T3/migrations",
+   "tests": [
+    "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts"
+   ],
+   "statut": "AUTOMATISE_PREPROD",
+   "preprod": "RP-05"
+  },
+  {
+   "id": "F-175",
+   "famille": "C29",
+   "domaine": "Technique/Migration",
+   "scenario": "Migration relancée",
+   "attendu": "Idempotente.",
+   "trace": "Concurrence/migration — C23-C25 — DB/T3/migrations",
+   "tests": [
+    "src/test/e2e/scenarios/l43-o4-donnees-structurees.e2e.ts",
+    "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-176",
+   "famille": "C29",
+   "domaine": "Technique/Migration",
+   "scenario": "Old document non retraité",
+   "attendu": "Aucune Operation créée par backfill.",
+   "trace": "Concurrence/migration — C23-C25 — DB/T3/migrations",
+   "tests": [
+    "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-177",
+   "famille": "C29",
+   "domaine": "Technique/Migration",
+   "scenario": "Old document réanalysé",
+   "attendu": "Entre dans modèle normal.",
+   "trace": "Concurrence/migration — C23-C25 — DB/T3/migrations",
+   "tests": [
+    "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-178",
+   "famille": "C29",
+   "domaine": "Technique/Migration",
+   "scenario": "Migration acquisition fields",
+   "attendu": "Une ACQUISITION.",
+   "trace": "Concurrence/migration — C23-C25 — DB/T3/migrations",
+   "tests": [
+    "src/services/business-operations/consolidation/__tests__/o4-asset-data.test.ts",
+    "src/test/e2e/scenarios/l43-o4-donnees-structurees.e2e.ts",
+    "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-179",
+   "famille": "C29",
+   "domaine": "Technique/Migration",
+   "scenario": "Migration status vendu",
+   "attendu": "Une DISPOSAL.",
+   "trace": "Concurrence/migration — C23-C25 — DB/T3/migrations",
+   "tests": [
+    "src/test/e2e/scenarios/l43-o4-donnees-structurees.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-180",
+   "famille": "C29",
+   "domaine": "Technique/Migration",
+   "scenario": "Migration claim",
+   "attendu": "Une CLAIM + détails.",
+   "trace": "Concurrence/migration — C23-C25 — DB/T3/migrations",
+   "tests": [
+    "src/test/e2e/scenarios/l44-o5-sinistre.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-181",
+   "famille": "C29",
+   "domaine": "Technique/Migration",
+   "scenario": "additionalInfo.claim après cutover",
+   "attendu": "Pas de double écriture source de vérité.",
+   "trace": "Concurrence/migration — C23-C25 — DB/T3/migrations",
+   "tests": [
+    "src/test/e2e/scenarios/l48-o10-recette-complements.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-182",
+   "famille": "C29",
+   "domaine": "Technique/Migration",
+   "scenario": "BO utilisateur admin tente edit",
+   "attendu": "Aucune action d’édition disponible.",
+   "trace": "Concurrence/migration — C23-C25 — DB/T3/migrations",
+   "tests": [
+    "src/app/admin/operations/__tests__/o9-bo-diagnostic-ui.test.ts",
+    "src/app/api/admin/accounts/[id]/operations-reconsolidation/__tests__/o10-reconsolidation.test.ts",
+    "src/app/api/admin/operations/__tests__/o9-routes.test.ts",
+    "src/services/business-operations/__tests__/o1-socle.test.ts",
+    "src/services/business-operations/diagnostics/__tests__/o9-diagnostics.test.ts"
+   ],
+   "statut": "AUTOMATISE_PREPROD",
+   "preprod": "RP-05"
+  },
+  {
+   "id": "F-183",
+   "famille": "C29",
+   "domaine": "Technique/Migration",
+   "scenario": "Type referential usage count",
+   "attendu": "Affiché.",
+   "trace": "Concurrence/migration — C23-C25 — DB/T3/migrations",
+   "tests": [
+    "src/app/admin/operations/__tests__/o9-bo-diagnostic-ui.test.ts",
+    "src/services/business-operations/__tests__/o1-socle.test.ts",
+    "src/test/e2e/scenarios/l39-o1-socle-operations.e2e.ts",
+    "src/test/e2e/scenarios/l47a-o9-bo-diagnostic.e2e.ts"
+   ],
+   "statut": "AUTOMATISE_PREPROD",
+   "preprod": "RP-05"
+  },
+  {
+   "id": "F-184",
+   "famille": "C29",
+   "domaine": "Technique/Migration",
+   "scenario": "T3 hourly no change",
+   "attendu": "0 histoire métier.",
+   "trace": "Concurrence/migration — C23-C25 — DB/T3/migrations",
+   "tests": [
+    "src/test/e2e/scenarios/l41-o3a-consolidation-t3.e2e.ts",
+    "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-185",
+   "famille": "C29",
+   "domaine": "Technique/Migration",
+   "scenario": "Merged operation queried by old ID",
+   "attendu": "Redirection canonique.",
+   "trace": "Concurrence/migration — C23-C25 — DB/T3/migrations",
+   "tests": [
+    "src/test/e2e/scenarios/l39-o1-socle-operations.e2e.ts",
+    "src/test/e2e/scenarios/l47a-o9-bo-diagnostic.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-186",
+   "famille": "C29",
+   "domaine": "Technique/Migration",
+   "scenario": "Account deletion",
+   "attendu": "Données Operation supprimées selon RGPD.",
+   "trace": "Concurrence/migration — C23-C25 — DB/T3/migrations",
+   "tests": [
+    "src/test/e2e/scenarios/l39-o1-socle-operations.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-187",
+   "famille": "C29",
+   "domaine": "Technique/Migration",
+   "scenario": "Asset deletion multi-asset",
+   "attendu": "Autres liens survivent si politique le permet ; aucune FK invalide.",
+   "trace": "Concurrence/migration — C23-C25 — DB/T3/migrations",
+   "tests": [
+    "src/test/e2e/scenarios/l39-o1-socle-operations.e2e.ts",
+    "src/test/e2e/scenarios/l44-o5-sinistre.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-188",
+   "famille": "C29",
+   "domaine": "Technique/Migration",
+   "scenario": "Downgrade plan",
+   "attendu": "Pas suppression données.",
+   "trace": "Concurrence/migration — C23-C25 — DB/T3/migrations",
+   "tests": [
+    "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-189",
+   "famille": "C29",
+   "domaine": "Technique/Migration",
+   "scenario": "Duo",
+   "attendu": "Operations partagées.",
+   "trace": "Concurrence/migration — C23-C25 — DB/T3/migrations",
+   "tests": [
+    "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-190",
+   "famille": "C29",
+   "domaine": "Technique/Migration",
+   "scenario": "Standard",
+   "attendu": "Pas nouvelle dépendance équipement.",
+   "trace": "Concurrence/migration — C23-C25 — DB/T3/migrations",
+   "tests": [
+    "src/services/business-operations/consolidation/__tests__/o10-recette.test.ts",
+    "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-191",
+   "famille": "C29",
+   "domaine": "Technique/Migration",
+   "scenario": "Candidate probable stale",
+   "attendu": "Pas création par âge.",
+   "trace": "Observabilité/architecture — C26-C28 — BO/deploy",
+   "tests": [
+    "src/services/business-operations/diagnostics/__tests__/o9-diagnostics.test.ts",
+    "src/test/e2e/scenarios/l47a-o9-bo-diagnostic.e2e.ts",
+    "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-192",
+   "famille": "C29",
+   "domaine": "Technique/Migration",
+   "scenario": "Arbitration REJECTED",
+   "attendu": "Persiste.",
+   "trace": "Observabilité/architecture — C26-C28 — BO/deploy",
+   "tests": [
+    "src/services/business-operations/diagnostics/__tests__/o9-diagnostics.test.ts",
+    "src/test/e2e/scenarios/l47a-o9-bo-diagnostic.e2e.ts",
+    "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-193",
+   "famille": "C29",
+   "domaine": "Technique/Migration",
+   "scenario": "New source version materially changed",
+   "attendu": "Peut rouvrir matching sans effacer historique.",
+   "trace": "Observabilité/architecture — C26-C28 — BO/deploy",
+   "tests": [
+    "src/services/business-operations/diagnostics/__tests__/o9-diagnostics.test.ts",
+    "src/test/e2e/scenarios/l47a-o9-bo-diagnostic.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-194",
+   "famille": "C29",
+   "domaine": "Technique/Migration",
+   "scenario": "Unknown type high rate",
+   "attendu": "Métrique, pas fallback OTHER automatique.",
+   "trace": "Observabilité/architecture — C26-C28 — BO/deploy",
+   "tests": [
+    "src/services/business-operations/__tests__/o1-socle.test.ts",
+    "src/services/business-operations/diagnostics/__tests__/o9-diagnostics.test.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-195",
+   "famille": "C29",
+   "domaine": "Technique/Migration",
+   "scenario": "Operation creation spike",
+   "attendu": "Visible BO, système reste actif.",
+   "trace": "Observabilité/architecture — C26-C28 — BO/deploy",
+   "tests": [
+    "src/services/business-operations/diagnostics/__tests__/o9-diagnostics.test.ts"
+   ],
+   "statut": "AUTOMATISE_PREPROD",
+   "preprod": "RP-05"
+  },
+  {
+   "id": "F-196",
+   "famille": "C29",
+   "domaine": "Technique/Migration",
+   "scenario": "No feature flag OPERATIONS_ENABLED",
+   "attendu": "Absent.",
+   "trace": "Observabilité/architecture — C26-C28 — BO/deploy",
+   "tests": [
+    "src/services/business-operations/__tests__/o1-socle.test.ts",
+    "src/services/business-operations/__tests__/o10-invariants.test.ts",
+    "src/services/business-operations/diagnostics/__tests__/o9-diagnostics.test.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-197",
+   "famille": "C29",
+   "domaine": "Technique/Migration",
+   "scenario": "No shadow mode",
+   "attendu": "Operations exploitées dès création.",
+   "trace": "Observabilité/architecture — C26-C28 — BO/deploy",
+   "tests": [
+    "src/services/business-operations/__tests__/o10-invariants.test.ts",
+    "src/services/business-operations/diagnostics/__tests__/o9-diagnostics.test.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-198",
+   "famille": "C29",
+   "domaine": "Technique/Migration",
+   "scenario": "ai_operations table",
+   "attendu": "Jamais utilisée pour BusinessOperation.",
+   "trace": "Observabilité/architecture — C26-C28 — BO/deploy",
+   "tests": [
+    "src/services/business-operations/__tests__/o1-socle.test.ts",
+    "src/services/business-operations/diagnostics/__tests__/o9-diagnostics.test.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "F-199",
+   "famille": "C29",
+   "domaine": "Technique/Migration",
+   "scenario": "T1 candidate >20 events",
+   "attendu": "Doit regrouper ou signaler, pas créer >20 candidats.",
+   "trace": "Observabilité/architecture — C26-C28 — BO/deploy",
+   "tests": [
+    "src/services/ai/source-analysis/operation-candidates/__tests__/c3-candidats-t1.test.ts",
+    "src/services/business-operations/diagnostics/__tests__/o9-diagnostics.test.ts"
+   ],
+   "statut": "AUTOMATISE_PREPROD",
+   "preprod": "RP-03"
+  },
+  {
+   "id": "F-200",
+   "famille": "C29",
+   "domaine": "Technique/Migration",
+   "scenario": "Match semantic probable",
+   "attendu": "Pas auto.",
+   "trace": "Observabilité/architecture — C26-C28 — BO/deploy",
+   "tests": [
+    "src/services/business-operations/diagnostics/__tests__/o9-diagnostics.test.ts",
+    "src/test/e2e/scenarios/l47a-o9-bo-diagnostic.e2e.ts",
+    "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts"
+   ],
+   "statut": "AUTOMATISE_PREPROD",
+   "preprod": "RP-04"
+  },
+  {
+   "id": "ACC-001",
+   "famille": "C31",
+   "domaine": "Acceptation globale",
+   "scenario": "Aucun document non métier ne crée une Operation uniquement parce qu’il contient date/montant/fournisseur.",
+   "attendu": "Critère satisfait",
+   "trace": "C31",
+   "tests": [
+    "src/test/e2e/scenarios/l41-o3a-consolidation-t3.e2e.ts",
+    "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts"
+   ],
+   "statut": "AUTOMATISE_PREPROD",
+   "preprod": "RP-03"
+  },
+  {
+   "id": "ACC-002",
+   "famille": "C31",
+   "domaine": "Acceptation globale",
+   "scenario": "Toute Operation active a au moins une source active et une provenance diagnostiquable.",
+   "attendu": "Critère satisfait",
+   "trace": "C31",
+   "tests": [
+    "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "ACC-003",
+   "famille": "C31",
+   "domaine": "Acceptation globale",
+   "scenario": "Tout candidat T1 est persisté/versionné ou explicitement absent ; T3 ne dépend pas du fichier brut.",
+   "attendu": "Critère satisfait",
+   "trace": "C31",
+   "tests": [
+    "src/services/business-operations/__tests__/o10-invariants.test.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "ACC-004",
+   "famille": "C31",
+   "domaine": "Acceptation globale",
+   "scenario": "T3 recherche toujours un match avant CREATE_NEW.",
+   "attendu": "Critère satisfait",
+   "trace": "C31",
+   "tests": [],
+   "statut": "AUTOMATISE",
+   "via": [
+    "INV-FINAL-004",
+    "F-001"
+   ]
+  },
+  {
+   "id": "ACC-005",
+   "famille": "C31",
+   "domaine": "Acceptation globale",
+   "scenario": "Une ambiguïté entre Operations plausibles ne crée pas une troisième Operation par défaut.",
+   "attendu": "Critère satisfait",
+   "trace": "C31",
+   "tests": [
+    "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "ACC-006",
+   "famille": "C31",
+   "domaine": "Acceptation globale",
+   "scenario": "Les 7 types et type=null sont les seules classifications structurantes V1.",
+   "attendu": "Critère satisfait",
+   "trace": "C31",
+   "tests": [
+    "src/services/business-operations/__tests__/o1-socle.test.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "ACC-007",
+   "famille": "C31",
+   "domaine": "Acceptation globale",
+   "scenario": "Les documents dupliqués, acomptes, paiements et avoirs ne provoquent aucun double comptage.",
+   "attendu": "Critère satisfait",
+   "trace": "C31",
+   "tests": [
+    "src/test/e2e/scenarios/l48-o10-recette-complements.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "ACC-008",
+   "famille": "C31",
+   "domaine": "Acceptation globale",
+   "scenario": "T2 utilise Operation lorsqu’elle porte la donnée consolidée mais conserve les autres sources selon C15.",
+   "attendu": "Critère satisfait",
+   "trace": "C31",
+   "tests": [],
+   "statut": "AUTOMATISE",
+   "via": [
+    "F-127",
+    "F-128"
+   ]
+  },
+  {
+   "id": "ACC-009",
+   "famille": "C31",
+   "domaine": "Acceptation globale",
+   "scenario": "Le fallback économique T2 exclut les documents déjà représentés par les Operations retenues.",
+   "attendu": "Critère satisfait",
+   "trace": "C31",
+   "tests": [],
+   "statut": "AUTOMATISE",
+   "via": [
+    "F-129",
+    "F-135"
+   ]
+  },
+  {
+   "id": "ACC-010",
+   "famille": "C31",
+   "domaine": "Acceptation globale",
+   "scenario": "T4 produit l’Agenda attendu sans boucle ni doublon et respecte les suppressions utilisateur.",
+   "attendu": "Critère satisfait",
+   "trace": "C31",
+   "tests": [],
+   "statut": "AUTOMATISE",
+   "via": [
+    "F-138",
+    "F-145",
+    "F-146",
+    "F-147"
+   ]
+  },
+  {
+   "id": "ACC-011",
+   "famille": "C31",
+   "domaine": "Acceptation globale",
+   "scenario": "TCO ne lit pas directement les montants génériques de documents ; il consomme les composantes consolidées + valuationHistory.",
+   "attendu": "Critère satisfait",
+   "trace": "C31",
+   "tests": [],
+   "statut": "HORS_PERIMETRE",
+   "decision": "Q1 — le TCO n’existe pas encore (CDC dédié) ; la règle côté composantes (montant documentaire générique jamais un coût) est automatisée par F-119."
+  },
+  {
+   "id": "ACC-012",
+   "famille": "C31",
+   "domaine": "Acceptation globale",
+   "scenario": "CLAIM devient la source de vérité Sinistre ; additionalInfo.claim n’est plus double-écrit après migration.",
+   "attendu": "Critère satisfait",
+   "trace": "C31",
+   "tests": [
+    "src/test/e2e/scenarios/l48-o10-recette-complements.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "ACC-013",
+   "famille": "C31",
+   "domaine": "Acceptation globale",
+   "scenario": "Aucune donnée de valorisation n’est transformée en Operation.",
+   "attendu": "Critère satisfait",
+   "trace": "C31",
+   "tests": [],
+   "statut": "AUTOMATISE",
+   "via": [
+    "F-007",
+    "F-161",
+    "INV-FINAL-014"
+   ]
+  },
+  {
+   "id": "ACC-014",
+   "famille": "C31",
+   "domaine": "Acceptation globale",
+   "scenario": "Les Operations multi-biens n’inventent aucune ventilation.",
+   "attendu": "Critère satisfait",
+   "trace": "C31",
+   "tests": [
+    "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "ACC-015",
+   "famille": "C31",
+   "domaine": "Acceptation globale",
+   "scenario": "Aucun taux de change externe automatique n’est introduit en V1.",
+   "attendu": "Critère satisfait",
+   "trace": "C31",
+   "tests": [
+    "src/services/business-operations/__tests__/o10-invariants.test.ts",
+    "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "ACC-016",
+   "famille": "C31",
+   "domaine": "Acceptation globale",
+   "scenario": "Aucun ledger de paiement n’est introduit.",
+   "attendu": "Critère satisfait",
+   "trace": "C31",
+   "tests": [
+    "src/services/business-operations/__tests__/o10-invariants.test.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "ACC-017",
+   "famille": "C31",
+   "domaine": "Acceptation globale",
+   "scenario": "Aucune scission automatique générique n’est introduite.",
+   "attendu": "Critère satisfait",
+   "trace": "C31",
+   "tests": [
+    "src/services/business-operations/__tests__/o10-invariants.test.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "ACC-018",
+   "famille": "C31",
+   "domaine": "Acceptation globale",
+   "scenario": "Aucune API CRUD générique Operation utilisateur n’est exposée.",
+   "attendu": "Critère satisfait",
+   "trace": "C31",
+   "tests": [
+    "src/services/business-operations/__tests__/o1-socle.test.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "ACC-019",
+   "famille": "C31",
+   "domaine": "Acceptation globale",
+   "scenario": "Aucun shadow mode ni feature flag fonctionnel Operation n’existe.",
+   "attendu": "Critère satisfait",
+   "trace": "C31",
+   "tests": [
+    "src/services/business-operations/__tests__/o10-invariants.test.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "ACC-020",
+   "famille": "C31",
+   "domaine": "Acceptation globale",
+   "scenario": "Les migrations structurées sont idempotentes et aucun backfill massif des documents n’est lancé.",
+   "attendu": "Critère satisfait",
+   "trace": "C31",
+   "tests": [
+    "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "ACC-021",
+   "famille": "C31",
+   "domaine": "Acceptation globale",
+   "scenario": "Les 200 cas C29 sont automatisés ou couverts par recette tracée selon pertinence.",
+   "attendu": "Critère satisfait",
+   "trace": "C31",
+   "tests": [
+    "src/test/recette/__tests__/o10-matrice.test.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "ACC-022",
+   "famille": "C31",
+   "domaine": "Acceptation globale",
+   "scenario": "Les anomalies dures BO sont à zéro avant MEP : cross-account, cycles parent, component sans source, Operation active sans source.",
+   "attendu": "Critère satisfait",
+   "trace": "C31",
+   "tests": [
+    "src/services/business-operations/diagnostics/__tests__/o9-diagnostics.test.ts",
+    "src/test/e2e/scenarios/l48-o10-recette-complements.e2e.ts",
+    "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts"
+   ],
+   "statut": "AUTOMATISE_PREPROD",
+   "preprod": "RP-05"
+  },
+  {
+   "id": "INV-FINAL-001",
+   "famille": "C34",
+   "domaine": "Invariant final",
+   "scenario": "Une source n’est jamais confondue avec l’Operation qu’elle prouve.",
+   "attendu": "Invariant vérifié",
+   "trace": "C34",
+   "tests": [
+    "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "INV-FINAL-002",
+   "famille": "C34",
+   "domaine": "Invariant final",
+   "scenario": "Une date ou un montant isolé ne crée jamais une Operation.",
+   "attendu": "Invariant vérifié",
+   "trace": "C34",
+   "tests": [
+    "src/services/business-operations/consolidation/__tests__/o10-recette.test.ts",
+    "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts"
+   ],
+   "statut": "AUTOMATISE_PREPROD",
+   "preprod": "RP-03"
+  },
+  {
+   "id": "INV-FINAL-003",
+   "famille": "C34",
+   "domaine": "Invariant final",
+   "scenario": "Une source probable ne crée jamais seule une nouvelle Operation.",
+   "attendu": "Invariant vérifié",
+   "trace": "C34",
+   "tests": [
+    "src/services/business-operations/consolidation/__tests__/o3a-decision.test.ts",
+    "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "INV-FINAL-004",
+   "famille": "C34",
+   "domaine": "Invariant final",
+   "scenario": "Toute création est précédée d’un matching.",
+   "attendu": "Invariant vérifié",
+   "trace": "C34",
+   "tests": [
+    "src/services/business-operations/__tests__/o10-invariants.test.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "INV-FINAL-005",
+   "famille": "C34",
+   "domaine": "Invariant final",
+   "scenario": "Une ambiguïté de matching ne crée pas un doublon.",
+   "attendu": "Invariant vérifié",
+   "trace": "C34",
+   "tests": [
+    "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "INV-FINAL-006",
+   "famille": "C34",
+   "domaine": "Invariant final",
+   "scenario": "Une Operation peut exister sans document mais jamais sans source.",
+   "attendu": "Invariant vérifié",
+   "trace": "C34",
+   "tests": [
+    "src/test/e2e/scenarios/l41-o3a-consolidation-t3.e2e.ts",
+    "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "INV-FINAL-007",
+   "famille": "C34",
+   "domaine": "Invariant final",
+   "scenario": "Une Operation sans target fiable n’alimente pas un TCO ou historique de bien.",
+   "attendu": "Invariant vérifié",
+   "trace": "C34",
+   "tests": [
+    "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "INV-FINAL-008",
+   "famille": "C34",
+   "domaine": "Invariant final",
+   "scenario": "Le type peut être null ; OTHER ne signifie jamais « inconnu ».",
+   "attendu": "Invariant vérifié",
+   "trace": "C34",
+   "tests": [
+    "src/services/business-operations/__tests__/o1-socle.test.ts",
+    "src/services/business-operations/consolidation/__tests__/o3a-decision.test.ts",
+    "src/test/e2e/scenarios/l39-o1-socle-operations.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "INV-FINAL-009",
+   "famille": "C34",
+   "domaine": "Invariant final",
+   "scenario": "T3 est le seul moteur de consolidation.",
+   "attendu": "Invariant vérifié",
+   "trace": "C34",
+   "tests": [
+    "src/services/business-operations/__tests__/o10-invariants.test.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "INV-FINAL-010",
+   "famille": "C34",
+   "domaine": "Invariant final",
+   "scenario": "T2 n’est pas limité aux Operations.",
+   "attendu": "Invariant vérifié",
+   "trace": "C34",
+   "tests": [
+    "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "INV-FINAL-011",
+   "famille": "C34",
+   "domaine": "Invariant final",
+   "scenario": "T2 ne recalcule pas une donnée déjà consolidée.",
+   "attendu": "Invariant vérifié",
+   "trace": "C34",
+   "tests": [],
+   "statut": "AUTOMATISE",
+   "via": [
+    "F-127",
+    "F-135"
+   ]
+  },
+  {
+   "id": "INV-FINAL-012",
+   "famille": "C34",
+   "domaine": "Invariant final",
+   "scenario": "T4 est une projection temporelle, pas une source miroir systématique.",
+   "attendu": "Invariant vérifié",
+   "trace": "C34",
+   "tests": [
+    "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "INV-FINAL-013",
+   "famille": "C34",
+   "domaine": "Invariant final",
+   "scenario": "Le TCO est un consommateur, pas le moteur du modèle.",
+   "attendu": "Invariant vérifié",
+   "trace": "C34",
+   "tests": [
+    "src/services/business-operations/__tests__/o10-invariants.test.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "INV-FINAL-014",
+   "famille": "C34",
+   "domaine": "Invariant final",
+   "scenario": "Une valorisation n’est jamais une Operation.",
+   "attendu": "Invariant vérifié",
+   "trace": "C34",
+   "tests": [],
+   "statut": "AUTOMATISE",
+   "via": [
+    "F-007",
+    "F-161"
+   ]
+  },
+  {
+   "id": "INV-FINAL-015",
+   "famille": "C34",
+   "domaine": "Invariant final",
+   "scenario": "Une preuve de paiement n’est jamais un coût supplémentaire.",
+   "attendu": "Invariant vérifié",
+   "trace": "C34",
+   "tests": [
+    "src/services/ai/source-analysis/operation-candidates/__tests__/c3-candidats-t1.test.ts",
+    "src/services/business-operations/consolidation/__tests__/o3a-finances-etat.test.ts",
+    "src/test/e2e/scenarios/l41-o3a-consolidation-t3.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "INV-FINAL-016",
+   "famille": "C34",
+   "domaine": "Invariant final",
+   "scenario": "Le principal d’un financement n’est jamais ajouté au coût d’acquisition.",
+   "attendu": "Invariant vérifié",
+   "trace": "C34",
+   "tests": [
+    "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "INV-FINAL-017",
+   "famille": "C34",
+   "domaine": "Invariant final",
+   "scenario": "Une indemnité non allouée multi-biens ne réduit aucun TCO individuel.",
+   "attendu": "Invariant vérifié",
+   "trace": "C34",
+   "tests": [
+    "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "INV-FINAL-018",
+   "famille": "C34",
+   "domaine": "Invariant final",
+   "scenario": "Une fusion conserve toutes les preuves et évite tout double compte.",
+   "attendu": "Invariant vérifié",
+   "trace": "C34",
+   "tests": [],
+   "statut": "AUTOMATISE",
+   "via": [
+    "F-049",
+    "F-050",
+    "F-051"
+   ]
+  },
+  {
+   "id": "INV-FINAL-019",
+   "famille": "C34",
+   "domaine": "Invariant final",
+   "scenario": "Une source supprimée est retirée de l’état courant mais reste historisée.",
+   "attendu": "Invariant vérifié",
+   "trace": "C34",
+   "tests": [
+    "src/test/e2e/scenarios/l41-o3a-consolidation-t3.e2e.ts",
+    "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "INV-FINAL-020",
+   "famille": "C34",
+   "domaine": "Invariant final",
+   "scenario": "Une Operation invalidée cesse immédiatement d’alimenter les consommateurs actifs.",
+   "attendu": "Invariant vérifié",
+   "trace": "C34",
+   "tests": [
+    "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "INV-FINAL-021",
+   "famille": "C34",
+   "domaine": "Invariant final",
+   "scenario": "Les décisions utilisateur de matching sont mémorisées.",
+   "attendu": "Invariant vérifié",
+   "trace": "C34",
+   "tests": [
+    "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "INV-FINAL-022",
+   "famille": "C34",
+   "domaine": "Invariant final",
+   "scenario": "Le Sinistre reste REALIZED même quand le dossier assurance est refusé ou clos.",
+   "attendu": "Invariant vérifié",
+   "trace": "C34",
+   "tests": [
+    "src/services/business-operations/claims/__tests__/o5-sinistre.test.ts",
+    "src/test/e2e/scenarios/l44-o5-sinistre.e2e.ts",
+    "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "INV-FINAL-023",
+   "famille": "C34",
+   "domaine": "Invariant final",
+   "scenario": "Le claim status est distinct du status Operation.",
+   "attendu": "Invariant vérifié",
+   "trace": "C34",
+   "tests": [
+    "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "INV-FINAL-024",
+   "famille": "C34",
+   "domaine": "Invariant final",
+   "scenario": "Les anciens documents ne sont pas backfillés massivement.",
+   "attendu": "Invariant vérifié",
+   "trace": "C34",
+   "tests": [
+    "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "INV-FINAL-025",
+   "famille": "C34",
+   "domaine": "Invariant final",
+   "scenario": "Les données structurées sémantiques existantes sont migrées pour éviter les doubles sources de vérité.",
+   "attendu": "Invariant vérifié",
+   "trace": "C34",
+   "tests": [
+    "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "INV-FINAL-026",
+   "famille": "C34",
+   "domaine": "Invariant final",
+   "scenario": "Le système Operation est actif dès la mise en production et ne dispose d’aucun mode shadow.",
+   "attendu": "Invariant vérifié",
+   "trace": "C34",
+   "tests": [
+    "src/services/business-operations/__tests__/o10-invariants.test.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "INV-001",
+   "famille": "B33",
+   "domaine": "Invariant normatif",
+   "scenario": "Une Opération = une réalité métier consolidée, jamais un document.",
+   "attendu": "Invariant vérifié",
+   "trace": "B33",
+   "tests": [],
+   "statut": "AUTOMATISE",
+   "via": [
+    "INV-FINAL-001",
+    "F-031"
+   ]
+  },
+  {
+   "id": "INV-002",
+   "famille": "B33",
+   "domaine": "Invariant normatif",
+   "scenario": "Un document peut alimenter plusieurs Opérations ; une Opération peut avoir plusieurs documents.",
+   "attendu": "Invariant vérifié",
+   "trace": "B33",
+   "tests": [
+    "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "INV-003",
+   "famille": "B33",
+   "domaine": "Invariant normatif",
+   "scenario": "Une date n’est pas une preuve d’Opération.",
+   "attendu": "Invariant vérifié",
+   "trace": "B33",
+   "tests": [
+    "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "INV-004",
+   "famille": "B33",
+   "domaine": "Invariant normatif",
+   "scenario": "Un montant n’est pas une preuve d’Opération.",
+   "attendu": "Invariant vérifié",
+   "trace": "B33",
+   "tests": [
+    "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "INV-005",
+   "famille": "B33",
+   "domaine": "Invariant normatif",
+   "scenario": "Un fournisseur n’est pas une preuve d’Opération.",
+   "attendu": "Invariant vérifié",
+   "trace": "B33",
+   "tests": [
+    "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "INV-006",
+   "famille": "B33",
+   "domaine": "Invariant normatif",
+   "scenario": "T1 extrait et qualifie ; T3 consolide et persiste l’Opération.",
+   "attendu": "Invariant vérifié",
+   "trace": "B33",
+   "tests": [
+    "src/services/business-operations/__tests__/o10-invariants.test.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "INV-007",
+   "famille": "B33",
+   "domaine": "Invariant normatif",
+   "scenario": "T3 recherche avant de créer.",
+   "attendu": "Invariant vérifié",
+   "trace": "B33",
+   "tests": [
+    "src/services/business-operations/consolidation/__tests__/o3a-decision.test.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "INV-008",
+   "famille": "B33",
+   "domaine": "Invariant normatif",
+   "scenario": "Une ambiguïté entre plusieurs Opérations existantes ne crée pas automatiquement une nouvelle Opération.",
+   "attendu": "Invariant vérifié",
+   "trace": "B33",
+   "tests": [
+    "src/services/business-operations/consolidation/__tests__/o3a-decision.test.ts",
+    "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "INV-009",
+   "famille": "B33",
+   "domaine": "Invariant normatif",
+   "scenario": "type=null signifie type non encore qualifié ; AUTRE signifie type compris mais hors six catégories principales.",
+   "attendu": "Invariant vérifié",
+   "trace": "B33",
+   "tests": [],
+   "statut": "AUTOMATISE",
+   "via": [
+    "INV-FINAL-008",
+    "F-030"
+   ]
+  },
+  {
+   "id": "INV-010",
+   "famille": "B33",
+   "domaine": "Invariant normatif",
+   "scenario": "La valeur estimée n’est jamais une Opération.",
+   "attendu": "Invariant vérifié",
+   "trace": "B33",
+   "tests": [
+    "src/services/canonical/__tests__/o0-valorisation-devise.test.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "INV-011",
+   "famille": "B33",
+   "domaine": "Invariant normatif",
+   "scenario": "Un rappel pur n’est jamais une Opération.",
+   "attendu": "Invariant vérifié",
+   "trace": "B33",
+   "tests": [],
+   "statut": "AUTOMATISE",
+   "via": [
+    "F-020"
+   ]
+  },
+  {
+   "id": "INV-012",
+   "famille": "B33",
+   "domaine": "Invariant normatif",
+   "scenario": "Un paiement n’est jamais un coût additionnel.",
+   "attendu": "Invariant vérifié",
+   "trace": "B33",
+   "tests": [
+    "src/services/ai/source-analysis/projection/__tests__/o0-acquisition-contextualisee.test.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "INV-013",
+   "famille": "B33",
+   "domaine": "Invariant normatif",
+   "scenario": "Un devis n’entre pas dans le TCO réalisé.",
+   "attendu": "Invariant vérifié",
+   "trace": "B33",
+   "tests": [
+    "src/services/business-operations/consolidation/__tests__/o3a-finances-etat.test.ts",
+    "src/test/e2e/scenarios/l48-o10-recette-complements.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "INV-014",
+   "famille": "B33",
+   "domaine": "Invariant normatif",
+   "scenario": "Une facture finale incluant un acompte ne s’additionne pas à l’acompte.",
+   "attendu": "Invariant vérifié",
+   "trace": "B33",
+   "tests": [
+    "src/services/ai/source-analysis/projection/__tests__/o0-acquisition-contextualisee.test.ts",
+    "src/services/business-operations/consolidation/__tests__/o3a-finances-etat.test.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "INV-015",
+   "famille": "B33",
+   "domaine": "Invariant normatif",
+   "scenario": "Une réduction/remboursement/indemnité ne doit pas être comptée deux fois.",
+   "attendu": "Invariant vérifié",
+   "trace": "B33",
+   "tests": [],
+   "statut": "AUTOMATISE",
+   "via": [
+    "F-095",
+    "F-096",
+    "F-097",
+    "F-120"
+   ]
+  },
+  {
+   "id": "INV-016",
+   "famille": "B33",
+   "domaine": "Invariant normatif",
+   "scenario": "Une composante non attribuable d’une Opération multi-biens ne nourrit aucun TCO individuel.",
+   "attendu": "Invariant vérifié",
+   "trace": "B33",
+   "tests": [
+    "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "INV-017",
+   "famille": "B33",
+   "domaine": "Invariant normatif",
+   "scenario": "Une sous-opération ne hérite pas automatiquement de tous les biens du parent.",
+   "attendu": "Invariant vérifié",
+   "trace": "B33",
+   "tests": [
+    "src/test/e2e/scenarios/l39-o1-socle-operations.e2e.ts",
+    "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "INV-018",
+   "famille": "B33",
+   "domaine": "Invariant normatif",
+   "scenario": "Un parent peut n’avoir aucun montant propre.",
+   "attendu": "Invariant vérifié",
+   "trace": "B33",
+   "tests": [
+    "src/test/e2e/scenarios/l39-o1-socle-operations.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "INV-019",
+   "famille": "B33",
+   "domaine": "Invariant normatif",
+   "scenario": "Le parent REALIZED n’impose pas REALIZED aux enfants sans preuve propre.",
+   "attendu": "Invariant vérifié",
+   "trace": "B33",
+   "tests": [
+    "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "INV-020",
+   "famille": "B33",
+   "domaine": "Invariant normatif",
+   "scenario": "Une Opération annulée peut avoir des enfants réalisés si ceux-ci ont réellement eu lieu.",
+   "attendu": "Invariant vérifié",
+   "trace": "B33",
+   "tests": [
+    "src/test/e2e/scenarios/l39-o1-socle-operations.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "INV-021",
+   "famille": "B33",
+   "domaine": "Invariant normatif",
+   "scenario": "Un Sinistre est REALIZED lorsqu’il survient, pas lorsqu’il est clôturé par l’assureur.",
+   "attendu": "Invariant vérifié",
+   "trace": "B33",
+   "tests": [
+    "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "INV-022",
+   "famille": "B33",
+   "domaine": "Invariant normatif",
+   "scenario": "Le contrat d’assurance n’est pas parent du Sinistre par défaut.",
+   "attendu": "Invariant vérifié",
+   "trace": "B33",
+   "tests": [
+    "src/test/e2e/scenarios/l39-o1-socle-operations.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "INV-023",
+   "famille": "B33",
+   "domaine": "Invariant normatif",
+   "scenario": "La réparation d’un Sinistre peut être une sous-opération.",
+   "attendu": "Invariant vérifié",
+   "trace": "B33",
+   "tests": [
+    "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "INV-024",
+   "famille": "B33",
+   "domaine": "Invariant normatif",
+   "scenario": "Le financement peut être sous-opération de l’Acquisition.",
+   "attendu": "Invariant vérifié",
+   "trace": "B33",
+   "tests": [
+    "src/test/e2e/scenarios/l39-o1-socle-operations.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "INV-025",
+   "famille": "B33",
+   "domaine": "Invariant normatif",
+   "scenario": "Le principal d’un financement ne double jamais le prix d’acquisition dans le TCO.",
+   "attendu": "Invariant vérifié",
+   "trace": "B33",
+   "tests": [
+    "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "INV-026",
+   "famille": "B33",
+   "domaine": "Invariant normatif",
+   "scenario": "T2 lit l’information là où elle appartient naturellement.",
+   "attendu": "Invariant vérifié",
+   "trace": "B33",
+   "tests": [],
+   "statut": "AUTOMATISE",
+   "via": [
+    "F-126",
+    "F-131"
+   ]
+  },
+  {
+   "id": "INV-027",
+   "famille": "B33",
+   "domaine": "Invariant normatif",
+   "scenario": "T2 ne recalcule pas une réalité déjà consolidée par T3.",
+   "attendu": "Invariant vérifié",
+   "trace": "B33",
+   "tests": [],
+   "statut": "AUTOMATISE",
+   "via": [
+    "F-127",
+    "F-135"
+   ]
+  },
+  {
+   "id": "INV-028",
+   "famille": "B33",
+   "domaine": "Invariant normatif",
+   "scenario": "Le fallback T2 exclut les documents déjà représentés par les Opérations comptées.",
+   "attendu": "Invariant vérifié",
+   "trace": "B33",
+   "tests": [],
+   "statut": "AUTOMATISE",
+   "via": [
+    "F-129",
+    "F-135"
+   ]
+  },
+  {
+   "id": "INV-029",
+   "famille": "B33",
+   "domaine": "Invariant normatif",
+   "scenario": "T4 projette dans le temps ; il n’est pas source unique de l’Opération.",
+   "attendu": "Invariant vérifié",
+   "trace": "B33",
+   "tests": [
+    "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "INV-030",
+   "famille": "B33",
+   "domaine": "Invariant normatif",
+   "scenario": "Une projection Agenda issue d’une Opération ne doit pas provoquer une boucle de création.",
+   "attendu": "Invariant vérifié",
+   "trace": "B33",
+   "tests": [
+    "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "INV-031",
+   "famille": "B33",
+   "domaine": "Invariant normatif",
+   "scenario": "TCO est un calcul dérivé et ne persiste pas une vérité financière concurrente.",
+   "attendu": "Invariant vérifié",
+   "trace": "B33",
+   "tests": [
+    "src/services/business-operations/__tests__/o10-invariants.test.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "INV-032",
+   "famille": "B33",
+   "domaine": "Invariant normatif",
+   "scenario": "Le BO diagnostique mais ne répare pas les Opérations par édition directe.",
+   "attendu": "Invariant vérifié",
+   "trace": "B33",
+   "tests": [
+    "src/app/admin/operations/__tests__/o10-reconsolidation-ui.test.ts",
+    "src/app/api/admin/accounts/[id]/operations-reconsolidation/__tests__/o10-reconsolidation.test.ts",
+    "src/app/api/admin/operations/__tests__/o9-routes.test.ts",
+    "src/services/business-operations/diagnostics/__tests__/o9-diagnostics.test.ts",
+    "src/test/e2e/scenarios/l47a-o9-bo-diagnostic.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "INV-033",
+   "famille": "B33",
+   "domaine": "Invariant normatif",
+   "scenario": "Aucun shadow mode n’est prévu.",
+   "attendu": "Invariant vérifié",
+   "trace": "B33",
+   "tests": [
+    "src/services/business-operations/__tests__/o10-invariants.test.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "INV-034",
+   "famille": "B33",
+   "domaine": "Invariant normatif",
+   "scenario": "Aucune feature flag fonctionnelle de désactivation du système Opération n’est prévue.",
+   "attendu": "Invariant vérifié",
+   "trace": "B33",
+   "tests": [
+    "src/services/business-operations/__tests__/o1-socle.test.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "INV-035",
+   "famille": "B33",
+   "domaine": "Invariant normatif",
+   "scenario": "Le rollback est technique, pas un mode produit.",
+   "attendu": "Invariant vérifié",
+   "trace": "B33",
+   "tests": [
+    "src/services/business-operations/__tests__/o10-invariants.test.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "INV-036",
+   "famille": "B33",
+   "domaine": "Invariant normatif",
+   "scenario": "Les anciens documents ne sont pas backfillés massivement.",
+   "attendu": "Invariant vérifié",
+   "trace": "B33",
+   "tests": [
+    "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "INV-037",
+   "famille": "B33",
+   "domaine": "Invariant normatif",
+   "scenario": "Les données structurées qui affirment une réalité métier doivent converger vers une Opération.",
+   "attendu": "Invariant vérifié",
+   "trace": "B33",
+   "tests": [
+    "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "INV-038",
+   "famille": "B33",
+   "domaine": "Invariant normatif",
+   "scenario": "Chaque valeur consolidée doit rester explicable par ses sources et son historique.",
+   "attendu": "Invariant vérifié",
+   "trace": "B33",
+   "tests": [],
+   "statut": "AUTOMATISE",
+   "via": [
+    "ACC-002",
+    "F-050"
+   ]
+  },
+  {
+   "id": "INV-039",
+   "famille": "B33",
+   "domaine": "Invariant normatif",
+   "scenario": "Une réanalyse identique est idempotente.",
+   "attendu": "Invariant vérifié",
+   "trace": "B33",
+   "tests": [
+    "src/test/e2e/scenarios/l41-o3a-consolidation-t3.e2e.ts",
+    "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "INV-040",
+   "famille": "B33",
+   "domaine": "Invariant normatif",
+   "scenario": "Un balayage horaire sans changement n’écrit rien.",
+   "attendu": "Invariant vérifié",
+   "trace": "B33",
+   "tests": [
+    "src/test/e2e/scenarios/l39-o1-socle-operations.e2e.ts",
+    "src/test/e2e/scenarios/l41-o3a-consolidation-t3.e2e.ts",
+    "src/test/e2e/scenarios/l48-o10-recette-complements.e2e.ts",
+    "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "INV-041",
+   "famille": "B33",
+   "domaine": "Invariant normatif",
+   "scenario": "Une fusion ne perd ni source, ni composante, ni historique, ni relation utile.",
+   "attendu": "Invariant vérifié",
+   "trace": "B33",
+   "tests": [],
+   "statut": "AUTOMATISE",
+   "via": [
+    "F-049",
+    "F-050",
+    "F-051"
+   ]
+  },
+  {
+   "id": "INV-042",
+   "famille": "B33",
+   "domaine": "Invariant normatif",
+   "scenario": "Une Opération invalidée ne nourrit plus T2 consolidé, T4, TCO ou exports métier.",
+   "attendu": "Invariant vérifié",
+   "trace": "B33",
+   "tests": [
+    "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "INV-043",
+   "famille": "B33",
+   "domaine": "Invariant normatif",
+   "scenario": "Une Opération absorbée résout vers son Opération canonique.",
+   "attendu": "Invariant vérifié",
+   "trace": "B33",
+   "tests": [
+    "src/test/e2e/scenarios/l39-o1-socle-operations.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "INV-044",
+   "famille": "B33",
+   "domaine": "Invariant normatif",
+   "scenario": "Les corrections utilisateur ont une autorité supérieure aux inférences automatiques sur le fait corrigé.",
+   "attendu": "Invariant vérifié",
+   "trace": "B33",
+   "tests": [],
+   "statut": "AUTOMATISE",
+   "via": [
+    "F-044",
+    "F-047"
+   ]
+  },
+  {
+   "id": "INV-045",
+   "famille": "B33",
+   "domaine": "Invariant normatif",
+   "scenario": "Les rejets utilisateur de matching sont durables.",
+   "attendu": "Invariant vérifié",
+   "trace": "B33",
+   "tests": [
+    "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "INV-046",
+   "famille": "B33",
+   "domaine": "Invariant normatif",
+   "scenario": "La profondeur hiérarchique maximale est de 3 niveaux.",
+   "attendu": "Invariant vérifié",
+   "trace": "B33",
+   "tests": [
+    "src/test/e2e/scenarios/l39-o1-socle-operations.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "INV-047",
+   "famille": "B33",
+   "domaine": "Invariant normatif",
+   "scenario": "Une Opération n’a qu’un parent en V1.",
+   "attendu": "Invariant vérifié",
+   "trace": "B33",
+   "tests": [
+    "src/services/business-operations/__tests__/o10-invariants.test.ts",
+    "src/test/e2e/scenarios/l39-o1-socle-operations.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "INV-048",
+   "famille": "B33",
+   "domaine": "Invariant normatif",
+   "scenario": "Il n’existe pas de graphe transverse générique en V1.",
+   "attendu": "Invariant vérifié",
+   "trace": "B33",
+   "tests": [
+    "src/services/business-operations/__tests__/o10-invariants.test.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "INV-049",
+   "famille": "B33",
+   "domaine": "Invariant normatif",
+   "scenario": "La devise originale est toujours conservée.",
+   "attendu": "Invariant vérifié",
+   "trace": "B33",
+   "tests": [
+    "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "INV-050",
+   "famille": "B33",
+   "domaine": "Invariant normatif",
+   "scenario": "Une conversion EUR n’est jamais inventée.",
+   "attendu": "Invariant vérifié",
+   "trace": "B33",
+   "tests": [
+    "src/services/business-operations/__tests__/o10-invariants.test.ts",
+    "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "INV-051",
+   "famille": "B33",
+   "domaine": "Invariant normatif",
+   "scenario": "Un contrat ne reconstruit pas des périodes tarifaires inconnues.",
+   "attendu": "Invariant vérifié",
+   "trace": "B33",
+   "tests": [],
+   "statut": "AUTOMATISE",
+   "via": [
+    "F-110"
+   ]
+  },
+  {
+   "id": "INV-052",
+   "famille": "B33",
+   "domaine": "Invariant normatif",
+   "scenario": "Une cession utilise le prix réalisé lorsqu’il est connu ; le prix souhaité reste distinct.",
+   "attendu": "Invariant vérifié",
+   "trace": "B33",
+   "tests": [],
+   "statut": "AUTOMATISE",
+   "via": [
+    "F-018",
+    "F-124",
+    "F-125"
+   ]
+  },
+  {
+   "id": "INV-053",
+   "famille": "B33",
+   "domaine": "Invariant normatif",
+   "scenario": "Le TCO peut être négatif.",
+   "attendu": "Invariant vérifié",
+   "trace": "B33",
+   "tests": [
+    "src/test/e2e/scenarios/l48-o10-recette-complements.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "INV-054",
+   "famille": "B33",
+   "domaine": "Invariant normatif",
+   "scenario": "Les composants financiers sont des faits économiques, pas des documents.",
+   "attendu": "Invariant vérifié",
+   "trace": "B33",
+   "tests": [],
+   "statut": "AUTOMATISE",
+   "via": [
+    "F-032",
+    "F-108"
+   ]
+  },
+  {
+   "id": "INV-055",
+   "famille": "B33",
+   "domaine": "Invariant normatif",
+   "scenario": "Plusieurs sources peuvent prouver une même composante financière.",
+   "attendu": "Invariant vérifié",
+   "trace": "B33",
+   "tests": [],
+   "statut": "AUTOMATISE",
+   "via": [
+    "F-108"
+   ]
+  },
+  {
+   "id": "INV-056",
+   "famille": "B33",
+   "domaine": "Invariant normatif",
+   "scenario": "Une source supprimée force la réévaluation des faits qu’elle soutenait.",
+   "attendu": "Invariant vérifié",
+   "trace": "B33",
+   "tests": [
+    "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "INV-057",
+   "famille": "B33",
+   "domaine": "Invariant normatif",
+   "scenario": "Le système ne maintient pas deux sources de vérité Sinistre après migration.",
+   "attendu": "Invariant vérifié",
+   "trace": "B33",
+   "tests": [
+    "src/test/e2e/scenarios/l48-o10-recette-complements.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "INV-058",
+   "famille": "B33",
+   "domaine": "Invariant normatif",
+   "scenario": "Toutes les Opérations sont scoppées au compte.",
+   "attendu": "Invariant vérifié",
+   "trace": "B33",
+   "tests": [
+    "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "INV-059",
+   "famille": "B33",
+   "domaine": "Invariant normatif",
+   "scenario": "Les Opérations Duo sont partagées au niveau du compte ; les conversations T2 restent individuelles.",
+   "attendu": "Invariant vérifié",
+   "trace": "B33",
+   "tests": [
+    "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  },
+  {
+   "id": "INV-060",
+   "famille": "B33",
+   "domaine": "Invariant normatif",
+   "scenario": "Les Opérations suivent les politiques RGPD et de suppression du compte.",
+   "attendu": "Invariant vérifié",
+   "trace": "B33",
+   "tests": [
+    "src/test/e2e/scenarios/l39-o1-socle-operations.e2e.ts",
+    "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts"
+   ],
+   "statut": "AUTOMATISE"
+  }
+ ]
+}

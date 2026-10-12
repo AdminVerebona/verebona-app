@@ -17,6 +17,8 @@ node_modules
 # Documents de travail privés ; seule la documentation d'exploitation est versionnée.
 docs/*
 !docs/exploitation/
+# Recette versionnée (matrice exécutable lue par la CI, lot 48).
+!docs/recette/
 
 *.tsbuildinfo
 .orchids
