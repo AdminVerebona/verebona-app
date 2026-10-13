@@ -272,7 +272,7 @@ describe('DIAG-14 / DIAG-15 — compteurs explicites et diagnostic final factuel
       calls: [appel(1, 'primary', 'error'), appel(2, 'primary', 'error', 'repair'), appel(3, 'fallback_1', 'error'), appel(4, 'fallback_2', 'success')],
       job: { status: 'DONE', attempts: 2 },
     });
-    expect(d.counters).toEqual({ jobAttempts: 2, modelCalls: 3, modelFallbacks: 2, repairCalls: 1 });
+    expect(d.counters).toEqual({ jobAttempts: 2, modelCalls: 3, modelFallbacks: 2, structuredOutputRetries: 0, repairCalls: 1 });
     expect(d.calls.map((c) => c.label)).toEqual(['principal', 'réparation (principal)', 'fallback 1', 'fallback 2']);
     expect(d.result.businessResult).toBe('SUCCEEDED');
     expect(d.finalDiagnosis[0]).toBe('Réussite T1.');

@@ -26,6 +26,8 @@ interface Estimate {
   objects: number;
   accounts: number;
   waitsForReactivation: boolean;
+  /** Lot 52A : comptes demandés hors périmètre (ni bien actif ni « À traiter » ouvert pour T3). */
+  excludedAccountIds?: number[];
 }
 
 const LIBELLES: Record<Launchable, string> = {
@@ -34,7 +36,11 @@ const LIBELLES: Record<Launchable, string> = {
   T4: 'T4 — nouveau passage sur les échéances candidates (sans réanalyse)',
 };
 
-export function ManualLaunch({ onLaunched }: { onLaunched: () => void | Promise<void> }) {
+/**
+ * `onLaunched(ids)` : identifiants des jobs RÉELLEMENT créés (lot 52A, COR-02 /
+ * COR-03) — l'écran les affiche aussitôt, quels que soient ses filtres.
+ */
+export function ManualLaunch({ onLaunched }: { onLaunched: (jobIds: number[]) => void | Promise<void> }) {
   const [treatment, setTreatment] = useState<Launchable>('T3');
   const [all, setAll] = useState(false);
   const [accounts, setAccounts] = useState('');
@@ -57,11 +63,20 @@ export function ManualLaunch({ onLaunched }: { onLaunched: () => void | Promise<
   const lancer = async () => {
     setBusy(true);
     try {
-      const r = await apiClient.post<Estimate & { jobIds: number[] }>(`/api/admin/ai/treatments/${treatment}/launch`, body());
-      toast.success(`${r.jobIds.length} exécution(s) manuelle(s) ${treatment} mise(s) en file`
-        + (r.waitsForReactivation ? ' — elles démarreront à la réactivation du traitement.' : '.'));
+      const r = await apiClient.post<Estimate & { jobIds: number[]; refused?: number }>(`/api/admin/ai/treatments/${treatment}/launch`, body());
+      // Lot 52A (COR-02) : jamais de réussite annoncée sans job créé (le
+      // serveur refuse alors avec un motif — branche d'erreur ci-dessous).
+      if (!Array.isArray(r.jobIds) || r.jobIds.length === 0) {
+        toast.error('Aucun job n’a été créé.');
+        return;
+      }
+      const premiers = r.jobIds.slice(0, 5).map((id) => `#${id}`).join(', ');
+      toast.success(`${r.jobIds.length} job(s) ${treatment} créé(s) : ${premiers}${r.jobIds.length > 5 ? '…' : ''}`
+        + (r.waitsForReactivation ? ' — ils démarreront à la réactivation du traitement.' : '.')
+        + (r.refused ? ` ${r.refused} demande(s) refusée(s) par le contrôle de périmètre.` : '')
+        + (r.excludedAccountIds?.length ? ` Comptes non retenus : ${r.excludedAccountIds.join(', ')}.` : ''));
       setEstimate(null);
-      await onLaunched();
+      await onLaunched(r.jobIds);
     } catch (e) {
       toast.error((e as Error).message || 'Lancement impossible.');
     } finally { setBusy(false); }
@@ -109,6 +124,8 @@ export function ManualLaunch({ onLaunched }: { onLaunched: () => void | Promise<
                 <>
                   {estimate.objects} {treatment === 'T3' ? 'compte(s)' : 'document(s)'} sur {estimate.accounts} compte(s).
                   {estimate.waitsForReactivation && ` ${treatment} est actuellement coupé : les exécutions attendront sa réactivation.`}
+                  {estimate.excludedAccountIds && estimate.excludedAccountIds.length > 0
+                    && ` Comptes non retenus (${treatment === 'T3' ? 'ni bien actif ni « À traiter » ouvert' : 'aucun objet à traiter'}) : ${estimate.excludedAccountIds.join(', ')}.`}
                 </>
               )}
             </DialogDescription>

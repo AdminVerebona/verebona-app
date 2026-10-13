@@ -97,6 +97,9 @@ function appel(c: ExecutionRow) {
     runtimeContract: c.runtimeContract ?? null,
     transformations: c.transformations ? masquer(c.transformations) : null,
     structuredContext: c.structuredContext ?? null,
+    // Lot 52B : requête fournisseur (sans contenu) et tentatives internes.
+    providerRequest: c.providerRequest ?? null,
+    providerAttempts: c.providerAttempts ?? [],
   };
 }
 

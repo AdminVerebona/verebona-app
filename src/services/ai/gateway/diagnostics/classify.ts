@@ -290,6 +290,24 @@ export function classifyCallError(err: unknown): ClassifiedFailure {
   return out('UNKNOWN', declaredStage ?? 'provider_request');
 }
 
+/**
+ * Lot 52B — HTTP 400 / `INVALID_ARGUMENT` GÉNÉRIQUE (« Request contains an
+ * invalid argument. ») : aucune cause plus précise n'a été identifiée.
+ *
+ * Seule la famille `INPUT_ERROR` sans sous-type est concernée : un refus
+ * EXPLICITE du schéma (`STRUCTURED_OUTPUT_REJECTED`), une clé invalide
+ * (`AUTH_ERROR`, même en 400), un contexte trop grand, un quota, un blocage
+ * de sécurité, un délai ou une erreur réseau ont déjà leur classification et
+ * ne sont jamais « génériques ». Un statut fournisseur plus précis qu'
+ * `INVALID_ARGUMENT` (`FAILED_PRECONDITION`, `NOT_FOUND`) non plus.
+ */
+export function isGenericInvalidArgument(c: Pick<ClassifiedFailure, 'family' | 'subtype' | 'httpStatus' | 'providerErrorCode'>): boolean {
+  if (c.family !== 'INPUT_ERROR' || c.subtype !== null) return false;
+  const code = c.providerErrorCode;
+  const statusOk = code === null || code === 'INVALID_ARGUMENT' || code === '400';
+  return statusOk && (c.httpStatus === 400 || code === 'INVALID_ARGUMENT');
+}
+
 // ── Signature d'échec (§10) ─────────────────────────────────────────────────
 
 /** Chemin sans indices de tableau (`$.facts[*].target`). */

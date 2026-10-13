@@ -35,6 +35,7 @@ import { pgClient } from '@/db';
 import type { Treatment } from '../config/treatments';
 import { TREATMENT_DEFINITIONS } from '../config/treatments';
 import type { RuntimeContractTrace, OutputTransformationsTrace, StructuredContextTrace } from './ai-trace.service';
+import type { ProviderAttemptTrace, ProviderRequestTrace } from '../gateway/diagnostics/taxonomy';
 
 type Row = Record<string, unknown>;
 
@@ -136,6 +137,13 @@ export interface ExecutionRow {
   transformations: OutputTransformationsTrace | null;
   /** Lot 34D (T4) : mode d'exécution, versions prompt / contrat d'entrée / contrat de sortie. */
   structuredContext: StructuredContextTrace | null;
+  /**
+   * Lot 52B : requête fournisseur sans contenu et tentatives internes de
+   * l'appel (structurée → essai sans schéma) — `null` / `[]` pour une trace
+   * antérieure au lot 52B.
+   */
+  providerRequest?: ProviderRequestTrace | null;
+  providerAttempts?: ProviderAttemptTrace[];
   /** Lot 34C : tentative du job de file pendant laquelle l'appel a eu lieu (`null` : hors file ou trace antérieure). */
   jobAttempt: number | null;
   /** Lot 34C : trace (cascade) de l'appel. */
@@ -199,6 +207,9 @@ function toRow(r: Row): ExecutionRow {
     runtimeContract: objet<RuntimeContractTrace>(metadata.runtimeContract),
     transformations: objet<OutputTransformationsTrace>(metadata.transformations),
     structuredContext: objet<StructuredContextTrace>(metadata.structuredContext),
+    providerRequest: objet<ProviderRequestTrace>(metadata.providerRequest),
+    providerAttempts: Array.isArray(metadata.providerAttempts)
+      ? (metadata.providerAttempts as unknown[]).filter((a): a is ProviderAttemptTrace => Boolean(a) && typeof a === 'object') : [],
     jobAttempt: typeof metadata.jobAttempt === 'number' ? metadata.jobAttempt : null,
     traceId: typeof metadata.traceId === 'string' ? metadata.traceId : null,
   };

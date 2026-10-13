@@ -48,7 +48,12 @@ export interface T4Source {
 }
 
 export class ManualLaunchRefused extends Error {
-  constructor(readonly code: 'EMERGENCY_STOP' | 'NOT_LAUNCHABLE' | 'EMPTY_SCOPE' | 'SCOPE_TOO_LARGE', message: string) {
+  constructor(
+    readonly code: 'EMERGENCY_STOP' | 'NOT_LAUNCHABLE' | 'EMPTY_SCOPE' | 'SCOPE_TOO_LARGE' | 'NO_JOB_CREATED',
+    message: string,
+    /** Lot 52A : comptes demandés mais non retenus / demandes refusées (motif explicite). */
+    readonly details?: { excludedAccountIds?: number[]; refused?: number },
+  ) {
     super(message);
     this.name = 'ManualLaunchRefused';
   }
@@ -69,11 +74,22 @@ export interface ManualLaunchDeps {
   canStart(t: Treatment): Promise<boolean>;
   /** T1 : fichiers à réanalyser (id, compte). */
   listFiles(accountIds: number[] | null, limit: number): Promise<Array<{ id: number; accountId: number }>>;
-  /** T3 : comptes pertinents (au moins un bien actif). */
+  /**
+   * T3 : comptes pertinents — au moins un bien actif OU une ligne « À
+   * traiter » ouverte (lot 52A, NR-09 : même périmètre que le balayage).
+   */
   listAccounts(accountIds: number[] | null, limit: number): Promise<number[]>;
   /** T4 : documents dont l'analyse de référence porte des échéances candidates. */
   listT4Sources(accountIds: number[] | null, limit: number, withCandidates: boolean): Promise<T4Source[]>;
   enqueue: typeof import('./job-queue.repository').enqueue;
+  /**
+   * Lot 52A (COR-02) : relit les jobs créés — seuls les identifiants
+   * RÉELLEMENT persistés sont annoncés. Absente : identifiants rendus par
+   * `enqueue` (déjà relus par son `RETURNING`).
+   */
+  confirmPersisted?(ids: number[]): Promise<number[]>;
+  /** Lot 52A (COR-02) : réveille le boucleur de ce processus (sans attendre le tour suivant). */
+  nudge?(): void;
 }
 
 export interface ManualLaunchResult {
@@ -83,6 +99,12 @@ export interface ManualLaunchResult {
   objects: number;
   accounts: number;
   jobIds: number[];
+  /** Lot 52A : jobs créés, avec leur compte (affichage immédiat dans la File IA). */
+  jobs?: Array<{ id: number; accountId: number }>;
+  /** Lot 52A : demandes non mises en file (contrôle de périmètre, refus journalisé). */
+  refused?: number;
+  /** Lot 52A : comptes demandés hors du périmètre pertinent du traitement. */
+  excludedAccountIds?: number[];
   /** Traitement coupé (hors arrêt d'urgence) : les jobs attendront la réactivation. */
   waitsForReactivation: boolean;
 }
@@ -134,15 +156,26 @@ export async function launchManual(
       `Plus de ${MANUAL_LAUNCH_MAX_JOBS} objets : découpez le lancement par comptes.`,
     );
   }
-  const accounts = new Set(objets.map((o) => o.accountId)).size;
+  const retenus = new Set(objets.map((o) => o.accountId));
+  const accounts = retenus.size;
+  // Lot 52A : comptes demandés explicitement mais hors périmètre — dits, jamais tus.
+  const excludedAccountIds = accountIds ? accountIds.filter((a) => !retenus.has(a)) : [];
   if (options.dryRun) {
-    return { treatment, dryRun: true, objects: objets.length, accounts, jobIds: [], waitsForReactivation };
+    return { treatment, dryRun: true, objects: objets.length, accounts, jobIds: [], excludedAccountIds, waitsForReactivation };
   }
   if (objets.length === 0) {
-    throw new ManualLaunchRefused('EMPTY_SCOPE', 'Aucun objet à traiter dans ce périmètre.');
+    throw new ManualLaunchRefused(
+      'EMPTY_SCOPE',
+      treatment === 'T3'
+        ? 'Aucun compte à traiter : les comptes choisis n’ont ni bien actif ni élément « À traiter » ouvert (ou n’existent pas).'
+        : 'Aucun objet à traiter dans ce périmètre.',
+      { excludedAccountIds },
+    );
   }
 
   const jobIds: number[] = [];
+  const jobs: Array<{ id: number; accountId: number }> = [];
+  let refused = 0;
   for (const o of objets) {
     // `origin: 'manual'` : hors de l'index de déduplication (queue-policy) —
     // une nouvelle exécution même si un job automatique équivalent attend
@@ -162,7 +195,7 @@ export async function launchManual(
           candidates: t4.candidates, requestedByUserId: adminUserId,
         },
       });
-      if (jobId !== null) jobIds.push(jobId);
+      if (jobId !== null) { jobIds.push(jobId); jobs.push({ id: jobId, accountId: t4.accountId }); } else refused++;
       continue;
     }
     const { jobId } = treatment === 'T1'
@@ -181,12 +214,37 @@ export async function launchManual(
         triggerCode: 'manual',
         payload: { kind: 'account', scope: 'full', requestedByUserId: adminUserId },
       });
-    if (jobId !== null) jobIds.push(jobId);
+    if (jobId !== null) { jobIds.push(jobId); jobs.push({ id: jobId, accountId: o.accountId }); } else refused++;
   }
+
+  // COR-02 : seuls les jobs RÉELLEMENT persistés sont annoncés.
+  const persistes = deps.confirmPersisted ? new Set(await deps.confirmPersisted(jobIds)) : new Set(jobIds);
+  const confirmes = jobs.filter((j) => persistes.has(j.id));
+  const perdus = jobIds.length - confirmes.length;
+  if (confirmes.length === 0) {
+    // Aucun message de réussite trompeur : motif explicite.
+    const motifs = [
+      refused > 0 ? `${refused} demande(s) refusée(s) par le contrôle de périmètre du compte (références d’un autre compte, journalisé)` : null,
+      perdus > 0 ? `${perdus} job(s) introuvable(s) après création` : null,
+      treatment === 'T4' && refused === 0 && perdus === 0 ? 'aucune échéance candidate dans les analyses de référence' : null,
+    ].filter(Boolean);
+    throw new ManualLaunchRefused(
+      'NO_JOB_CREATED',
+      `Aucun job ${treatment} n’a été créé${motifs.length ? ` : ${motifs.join(' ; ')}` : ''}.`,
+      { excludedAccountIds, refused },
+    );
+  }
+  // COR-02 : réveil immédiat du boucleur (ce processus) ; les autres instances
+  // prennent les jobs à leur tour suivant (15 s).
+  try { deps.nudge?.(); } catch { /* jamais bloquant */ }
   console.info(
-    `[manual-launch] ${treatment} : ${jobIds.length} job(s) manuel(s) sur ${accounts} compte(s) par l'administrateur ${adminUserId}.`,
+    `[manual-launch] ${treatment} : ${confirmes.length} job(s) manuel(s) [${confirmes.map((j) => j.id).join(', ')}] sur ${accounts} compte(s) par l'administrateur ${adminUserId}`
+    + `${refused ? ` — ${refused} refus de périmètre` : ''}.`,
   );
-  return { treatment, dryRun: false, objects: jobIds.length, accounts, jobIds, waitsForReactivation };
+  return {
+    treatment, dryRun: false, objects: confirmes.length, accounts: new Set(confirmes.map((j) => j.accountId)).size,
+    jobIds: confirmes.map((j) => j.id), jobs: confirmes, refused, excludedAccountIds, waitsForReactivation,
+  };
 }
 
 /** Dépendances branchées sur la base. */
@@ -196,6 +254,16 @@ export async function defaultManualLaunchDeps(): Promise<ManualLaunchDeps> {
     emergencyStopActive: async () => (await repo.getEmergencyStop()).active,
     canStart: repo.canStart,
     enqueue: repo.enqueue,
+    async confirmPersisted(ids) {
+      if (ids.length === 0) return [];
+      const rows = (await pgClient.unsafe(
+        `SELECT id FROM ai_job_queue WHERE id = ANY($1::int[])`, [ids] as never[],
+      )) as unknown as Array<{ id: number }>;
+      return rows.map((r) => Number(r.id));
+    },
+    nudge() {
+      void import('./queue-worker').then((w) => w.nudgeQueueWorker()).catch(() => undefined);
+    },
     async listFiles(accountIds, limit) {
       const rows = (await pgClient.unsafe(
         `SELECT id, account_id FROM asset_files
@@ -210,7 +278,9 @@ export async function defaultManualLaunchDeps(): Promise<ManualLaunchDeps> {
       const rows = (await pgClient.unsafe(
         `SELECT a.id FROM accounts a
           WHERE ($1::int[] IS NULL OR a.id = ANY($1::int[]))
-            AND EXISTS (SELECT 1 FROM assets s WHERE s.account_id = a.id AND s.deleted_at IS NULL)
+            AND (EXISTS (SELECT 1 FROM assets s WHERE s.account_id = a.id AND s.deleted_at IS NULL)
+                 -- Lot 52A (NR-09) : une ligne « À traiter » ouverte suffit (même périmètre que le balayage, 49B).
+                 OR EXISTS (SELECT 1 FROM to_process_actions t WHERE t.account_id = a.id AND t.resolved_at IS NULL))
           ORDER BY a.id LIMIT $2`,
         [accountIds, limit] as never[],
       )) as unknown as Array<{ id: number }>;

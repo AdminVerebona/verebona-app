@@ -24,6 +24,27 @@ function needsFilesApi(mimeType: string): boolean {
   return mimeType === 'application/pdf' || mimeType.startsWith('video/') || mimeType.startsWith('audio/');
 }
 
+/**
+ * Lot 52B — transport d'une pièce jointe, selon les MÊMES règles que
+ * `appendParts` (observabilité BO, sans téléchargement) : `inline` (données
+ * en ligne), `files_api` (upload temporaire), `provider_uri` (URI déjà chez
+ * le fournisseur), `text_extracted` (bureautique extraite côté serveur).
+ */
+export function attachmentTransport(att: Pick<AiAttachment, 'url' | 'mimeType' | 'data'>): 'inline' | 'files_api' | 'provider_uri' | 'text_extracted' {
+  if (att.data !== undefined) return 'inline';
+  if (isProviderNativeUri(att.url)) return 'provider_uri';
+  if (needsFilesApi(att.mimeType)) return 'files_api';
+  if (INLINE_IMAGE_MIMES.has(att.mimeType)) return 'inline';
+  return 'text_extracted';
+}
+
+/** Pièces jointes décrites sans contenu ni nom (au plus 20 détaillées). */
+export function describeAttachments(atts: ReadonlyArray<Pick<AiAttachment, 'url' | 'mimeType' | 'data'>>): {
+  count: number; items: Array<{ mimeType: string; transport: string }>;
+} {
+  return { count: atts.length, items: atts.slice(0, 20).map((a) => ({ mimeType: a.mimeType, transport: attachmentTransport(a) })) };
+}
+
 export interface PreparedAttachments {
   parts: Part[];
   /** URIs à supprimer après l'appel. */

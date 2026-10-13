@@ -115,7 +115,7 @@ scenario('L33D', 'Diagnostic des échecs IA, réparation des sorties et rejeu au
       ['fallback 2', 'FAILED', 'INVALID_OUTPUT / INVALID_ENUM'],
     ]);
     expect(detail?.diagnosis.cascade).toMatchObject({ identical: true, failedCalls: 3, path: '$.task' });
-    expect(detail?.diagnosis.counters).toEqual({ jobAttempts: 2, modelCalls: 3, modelFallbacks: 2, repairCalls: 0 });
+    expect(detail?.diagnosis.counters).toEqual({ jobAttempts: 2, modelCalls: 3, modelFallbacks: 2, structuredOutputRetries: 0, repairCalls: 0 });
     expect(detail?.diagnosis.result).toMatchObject({ jobStatus: 'DONE', businessResult: 'FAILED', doneButFailed: true });
     expect(detail?.diagnosis.finalDiagnosis.join(' ')).toMatch(/Échec T1\..*même signature/);
     expect(JSON.stringify(detail)).not.toContain('IBAN_MASQUE'); // la sortie n'est jamais dans le détail

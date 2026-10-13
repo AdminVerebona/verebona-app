@@ -117,13 +117,6 @@ scenario('L31C', 'Contrat de la file durable T3 (worker réel)', ({ sql, make })
        AND target_type IS NOT DISTINCT FROM ${targetType} AND target_id IS NOT DISTINCT FROM ${targetId}
        AND status IN ('PENDING', 'RUNNING') ORDER BY id`;
   const executer = async (id: number) => { await seul(id); expect(await runOne('T3')).toBe(true); return lire(id); };
-  const jobCompte = async (accountId: number) => {
-    const { jobId } = await repo.enqueue({
-      treatment: 'T3', scope: { accountId }, origin: 'manual', triggerCode: 'manual',
-      payload: contrat.buildT3Payload('account', { scope: 'full' }),
-    });
-    return jobId!;
-  };
   const jobAttente = async (accountId: number, cible: number) => (await repo.enqueue({
     treatment: 'T3', scope: { accountId, targetType: 'e2e_cible', targetId: cible },
     triggerCode: 'manual', origin: 'manual', payload: contrat.buildT3Payload('e2e_attente', {}),
@@ -320,11 +313,18 @@ scenario('L31C', 'Contrat de la file durable T3 (worker réel)', ({ sql, make })
 
   it('T3Q-16/17/18 : échecs 1 à 4 → PENDING (backoff) ; 5e exécution → FAILED ; exactement cinq exécutions', async () => {
     const compte = await make.account();
-    await make.asset(compte);
-    // Exécution compte déjà en cours hors file : chaque exécution échoue (erreur technique).
-    await sql`INSERT INTO account_reconciliation_runs (account_id, trigger_type, correlation_id, scope, status, started_at)
-              VALUES (${compte.id}, 'manual', 'e2e-31c', 'full', 'running', now())`;
-    const id = await jobCompte(compte.id);
+    // Lot 52A : une exécution compte déjà en cours est désormais un REPORT
+    // (tentative rendue — voir l52a NR-10), plus une erreur technique. Le
+    // contrat d'échec technique est vérifié avec une sorte qui lève toujours.
+    contrat.registerT3JobKind<{ cible: number }>({
+      kind: 'e2e_echec', targetTypes: ['e2e_echec_cible'], account: 'required', versions: [1],
+      parse: (_raw, j) => ({ cible: contrat.parseTargetId(j) }),
+      async run() { throw new Error('erreur technique e2e — déjà en cours (simulée)'); },
+    });
+    const id = (await repo.enqueue({
+      treatment: 'T3', scope: { accountId: compte.id, targetType: 'e2e_echec_cible', targetId: 1 },
+      triggerCode: 'manual', origin: 'manual', payload: contrat.buildT3Payload('e2e_echec', {}),
+    })).jobId!;
     let executions = 0;
     for (let n = 1; n <= 10; n++) {
       await seul(id);
@@ -340,7 +340,6 @@ scenario('L31C', 'Contrat de la file durable T3 (worker réel)', ({ sql, make })
       }
     }
     expect(executions).toBe(5);
-    await sql`UPDATE account_reconciliation_runs SET status = 'failed', finished_at = now() WHERE account_id = ${compte.id} AND status = 'running'`;
   });
 
   // ── Interruption ─────────────────────────────────────────────────────────

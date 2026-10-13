@@ -30,6 +30,16 @@ describe('rejeu des sorties enregistrées', () => {
     expect((await r.call(appel('generate_answer'))).rawText).toBe('texte');
   });
 
+  it('lot 52B — filtre sur le structured output (`whenStructured`)', async () => {
+    const r = new ReplayProvider([
+      { operationCode: 'o', whenStructured: true, output: null, error: { message: 'Request contains an invalid argument.', status: 400 } },
+      { operationCode: 'o', whenStructured: false, output: 'sans schéma' },
+    ]);
+    expect((await r.call(appel('o'))).rawText).toBe('sans schéma');
+    await expect(r.call({ ...appel('o'), responseSchema: { type: 'object' } })).rejects.toMatchObject({ status: 400 });
+    expect(r.pending()).toEqual([]);
+  });
+
   it('filtre sur le prompt', async () => {
     const r = new ReplayProvider([
       { operationCode: 'o', output: 'A', promptIncludes: 'facture' },

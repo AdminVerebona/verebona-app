@@ -54,6 +54,9 @@ import { EcranEnErreur } from '@/components/admin/EcranEnErreur';
 import { apiClient } from '@/lib/api-client';
 import { AiEnvBanner } from '../ai-dashboard/_components/AiEnvBanner';
 import { ManualLaunch } from './_components/ManualLaunch';
+import {
+  T3Supervision, PHASE_LABEL, formatDuration, type ExecutionPhase, type T3SupervisionData,
+} from './_components/T3Supervision';
 
 type Treatment = 'T1' | 'T2' | 'T3' | 'T4' | 'T6';
 type JobStatus = 'PENDING' | 'RUNNING' | 'DONE' | 'FAILED' | 'CANCELLED';
@@ -82,6 +85,23 @@ interface Job {
   recoveredCount?: number;
   payload?: { kind?: string; payloadVersion?: number } | null;
   businessResult?: string | null;
+  /** Lot 52A (COR-05) : compteurs du résultat métier (T3 : objets, appels modèle). */
+  businessResultDetail?: Record<string, unknown> | null;
+  /** Lot 52A (COR-05) : phase lisible calculée par le serveur. */
+  phase?: ExecutionPhase;
+}
+
+/** Lot 52A (COR-05) : objets examinés / modifiés et appels modèle d'un passage T3. */
+function t3Counters(job: Job): string | null {
+  const d = job.businessResultDetail;
+  if (!d || job.treatment !== 'T3') return null;
+  const n = (v: unknown) => (typeof v === 'number' ? v : null);
+  const parts: string[] = [];
+  if (n(d.objectsExamined) != null) parts.push(`${n(d.objectsExamined)} objet(s) examiné(s) · ${n(d.objectsModified) ?? n(d.decisionsApplied) ?? 0} modifié(s)`);
+  if (n(d.openActionsExamined) != null) parts.push(`${n(d.openActionsExamined)} « À traiter » réexaminé(s)`);
+  if (n(d.enqueued) != null) parts.push(`${n(d.enqueued)} compte(s) mis en file`);
+  if (n(d.aiCalls) != null) parts.push(n(d.aiCalls) === 0 ? 'sans appel au modèle' : `${n(d.aiCalls)} appel(s) au modèle`);
+  return parts.length ? parts.join(' · ') : null;
 }
 
 interface Summary { treatment: Treatment; pending: number; running: number; failed: number }
@@ -185,7 +205,13 @@ function AiQueueScreen() {
   // Filtres initialisés depuis l'URL : les liens préfiltrés ouvrent enfin
   // l'écran filtré (ALT-01, COST-009).
   const [filterTreatment, setFilterTreatment] = useState(sp.get('treatment') ?? '');
-  const [filterStatus, setFilterStatus] = useState(sp.get('status') ?? (sp.get('treatment') ? '' : 'PENDING'));
+  // Lot 52A (COR-03) : tous les statuts par défaut (DONE, FAILED, PENDING,
+  // RUNNING, CANCELLED), plus récents d'abord.
+  const [filterStatus, setFilterStatus] = useState(sp.get('status') ?? '');
+  // Lot 52A (COR-03) : recherche par identifiant(s) de job — prime sur les filtres.
+  const [filterIds, setFilterIds] = useState(sp.get('ids') ?? sp.get('jobId') ?? '');
+  const [idsInput, setIdsInput] = useState(sp.get('ids') ?? sp.get('jobId') ?? '');
+  const [supervision, setSupervision] = useState<T3SupervisionData | null>(null);
   const [filterAccount, setFilterAccount] = useState(sp.get('accountId') ?? '');
   const [filterOrigin, setFilterOrigin] = useState(sp.get('origin') ?? '');
   const [filterTrigger, setFilterTrigger] = useState(sp.get('trigger') ?? '');
@@ -200,6 +226,8 @@ function AiQueueScreen() {
   const load = useCallback(async () => {
     try {
       const params = new URLSearchParams();
+      const ids = filterIds.split(/[\s,;#]+/).filter((x) => /^\d+$/.test(x));
+      if (ids.length > 0) params.set('ids', ids.join(','));
       if (filterTreatment) params.set('treatment', filterTreatment);
       if (filterStatus) params.set('status', filterStatus);
       if (/^\d+$/.test(filterAccount)) params.set('accountId', filterAccount);
@@ -209,12 +237,15 @@ function AiQueueScreen() {
       if (filterTo) params.set('to', filterTo);
       window.history.replaceState(null, '', `?${params}`);
 
-      const [o, j] = await Promise.all([
+      const [o, j, sup] = await Promise.all([
         apiClient.get<Overview>('/api/admin/ai/queue'),
         apiClient.get<{ jobs: Job[] }>(`/api/admin/ai/queue/jobs?${params}`),
+        // Lot 52A (COR-04) : supervision — jamais bloquante pour l'écran.
+        apiClient.get<T3SupervisionData>('/api/admin/ai/queue/supervision').catch(() => null),
       ]);
       setOverview(o);
       setJobs(j.jobs);
+      setSupervision(sup);
     } catch (e) {
       // Message ET code du serveur. Le code — VERSION_NOT_FOUND,
       // CONFIG_OPERATION_FAILED — est stable et cherchable dans le dépôt ;
@@ -226,9 +257,25 @@ function AiQueueScreen() {
     } finally {
       setLoading(false);
     }
-  }, [filterTreatment, filterStatus, filterAccount, filterOrigin, filterTrigger, filterFrom, filterTo]);
+  }, [filterTreatment, filterStatus, filterAccount, filterOrigin, filterTrigger, filterFrom, filterTo, filterIds]);
 
   useEffect(() => { load(); }, [load]);
+
+  // Lot 52A (COR-03) : jobs recherchés encore vivants → actualisation toutes
+  // les 10 s, pour voir leur statut évoluer sans recharger la page.
+  const vivants = filterIds !== '' && jobs.some((j) => j.status === 'PENDING' || j.status === 'RUNNING');
+  useEffect(() => {
+    if (!vivants) return;
+    const t = setInterval(() => { void load(); }, 10_000);
+    return () => clearInterval(t);
+  }, [vivants, load]);
+
+  /** Affiche ces jobs, quels que soient les filtres choisis (lancement manuel, recherche). */
+  const showJobs = (ids: number[]) => {
+    const v = ids.join(',');
+    setIdsInput(v);
+    setFilterIds(v);
+  };
 
   const toggleTreatment = async (t: Treatment, enabled: boolean) => {
     setBusy(true);
@@ -313,7 +360,10 @@ function AiQueueScreen() {
       </div>
 
       {/* WF-11 : lancement manuel T1 / T3 (estimation, confirmation) */}
-      <ManualLaunch onLaunched={load} />
+      <ManualLaunch onLaunched={(ids) => (ids.length > 0 ? showJobs(ids) : load())} />
+
+      {/* Lot 52A (COR-04) : état du boucleur (toutes instances), exécutant T3, derniers passages */}
+      <T3Supervision data={supervision} onOpenJob={(id) => showJobs([id])} />
 
       {stop?.active && (
         <div className="rounded-xl border border-red-500/30 bg-red-500/5 p-4 flex items-start gap-3">
@@ -374,6 +424,29 @@ function AiQueueScreen() {
         })}
       </div>
 
+      {/* Lot 52A (COR-03) : recherche par identifiant de job */}
+      <form
+        className="flex flex-col sm:flex-row gap-2 sm:items-center"
+        onSubmit={(e) => { e.preventDefault(); setFilterIds(idsInput.trim()); }}
+      >
+        <Input placeholder="N° de job (ex. 1284, 1285)" value={idsInput} inputMode="numeric"
+          onChange={(e) => setIdsInput(e.target.value)}
+          className="sm:max-w-xs bg-[color:var(--bg-input)]" aria-label="Rechercher un job par identifiant" />
+        <div className="flex gap-2">
+          <Button type="submit" size="sm" variant="outline">Rechercher</Button>
+          {filterIds && (
+            <Button type="button" size="sm" variant="ghost" onClick={() => { setIdsInput(''); setFilterIds(''); }}>
+              Effacer la recherche
+            </Button>
+          )}
+        </div>
+      </form>
+      {filterIds && (
+        <p className="text-xs text-[color:var(--text-muted)]">
+          Affichage des jobs n° {filterIds} — les autres filtres sont ignorés pendant la recherche.
+        </p>
+      )}
+
       {/* Filtres — SCR-08, NFR-001 */}
       <div className="flex flex-wrap gap-2">
         <select value={filterTreatment} onChange={(e) => setFilterTreatment(e.target.value)}
@@ -403,7 +476,7 @@ function AiQueueScreen() {
         <Input type="date" value={filterTo} onChange={(e) => setFilterTo(e.target.value)} className="max-w-[160px] bg-[color:var(--bg-input)]" />
       </div>
 
-      {/* Liste */}
+      {/* Liste — lot 52A : plus récents d'abord (l'ordre de service du boucleur reste FIFO) */}
       <div className="rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--bg-card)] divide-y divide-[color:var(--border-subtle)]">
         {jobs.length === 0 && (
           <p className="p-6 text-sm text-[color:var(--text-muted)]">
@@ -446,6 +519,7 @@ function AiQueueScreen() {
                 {job.status === 'PENDING' && ` · disponible à ${new Date(job.availableAt).toLocaleString('fr-FR')}`}
                 {job.startedAt && ` · démarré ${new Date(job.startedAt).toLocaleTimeString('fr-FR')}`}
                 {job.finishedAt && ` · fini ${new Date(job.finishedAt).toLocaleTimeString('fr-FR')}`}
+                {job.startedAt && job.finishedAt && ` · durée ${formatDuration(new Date(job.finishedAt).getTime() - new Date(job.startedAt).getTime())}`}
                 {job.configVersionId && ` · version #${job.configVersionId}`}
                 {job.payload?.kind && ` · ${job.payload.kind}${job.payload.payloadVersion ? ` v${job.payload.payloadVersion}` : ''}`}
                 {job.workerId && ` · ${job.workerId}`}
@@ -467,10 +541,18 @@ function AiQueueScreen() {
               {job.lastError && job.status !== 'PENDING' && (
                 <p className="text-xs text-[color:var(--text-muted)] truncate">{job.lastError}</p>
               )}
+              {job.phase && (
+                <p className="text-xs text-[color:var(--text-secondary)]">
+                  Étape : {PHASE_LABEL[job.phase] ?? job.phase}
+                </p>
+              )}
               {job.businessResult && (
                 <p className="text-xs text-[color:var(--text-secondary)]">
                   Résultat métier : {BUSINESS_RESULT_LABEL[job.businessResult] ?? job.businessResult}
                 </p>
+              )}
+              {t3Counters(job) && (
+                <p className="text-xs text-[color:var(--text-muted)]">{t3Counters(job)}</p>
               )}
               {job.attempts > 1 && (
                 <p className="text-xs text-[color:var(--text-muted)]">

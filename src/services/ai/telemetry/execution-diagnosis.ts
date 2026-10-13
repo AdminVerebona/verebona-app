@@ -15,7 +15,10 @@
 import type { ExecutionRow } from './execution-log.repository';
 import type { StoredCallDiagnostic } from '../gateway/diagnostics/diagnostic.repository';
 import { cascadeDiagnosis, finalDiagnosis, type CascadeDiagnosis } from '../gateway/diagnostics/classify';
-import { displayCause, emptyControlChain, type CallDiagnostic } from '../gateway/diagnostics/taxonomy';
+import {
+  displayCause, displayErrorCode, emptyControlChain, isStructuredOutputRetry, providerFailureCategory,
+  type CallDiagnostic, type ProviderAttemptTrace, type ProviderFailureCategory, type ProviderRequestTrace,
+} from '../gateway/diagnostics/taxonomy';
 
 export interface CallReport {
   callId: number;
@@ -40,6 +43,14 @@ export interface CallReport {
   /** Message d'erreur enregistré avec l'appel (traces antérieures au lot 33). */
   errorCode: string | null;
   errorMessage: string | null;
+  /**
+   * Lot 52B : fournisseur indisponible ≠ requête refusée ≠ structured output
+   * refusé (échec avant sortie) ; `null` sinon.
+   */
+  failureCategory?: ProviderFailureCategory | null;
+  /** Lot 52B : requête fournisseur sans contenu, tentatives internes de l'appel. */
+  providerRequest?: ProviderRequestTrace | null;
+  providerAttempts?: ProviderAttemptTrace[];
 }
 
 export interface ExecutionCounters {
@@ -49,6 +60,12 @@ export interface ExecutionCounters {
   modelCalls: number;
   /** Fallbacks modèle (appels de rang repli). */
   modelFallbacks: number;
+  /**
+   * Lot 52B : nouveaux essais du MÊME modèle sans structured output (refus
+   * explicite du schéma ou essai diagnostique après un 400 générique). Ni
+   * fallback modèle, ni tentative du job, ni réparation.
+   */
+  structuredOutputRetries: number;
   /** Passes de réparation ciblée (sans relecture du document). */
   repairCalls: number;
 }
@@ -123,8 +140,11 @@ export function buildExecutionDiagnosis(p: {
       diagnostic: diag,
       diagnosticId: stored?.id ?? null,
       hasModelOutput: stored?.hasModelOutput ?? false,
-      errorCode: c.errorCode,
+      errorCode: displayErrorCode(c.errorCode, diag?.family ?? c.failure?.family, diag?.subtype ?? c.failure?.subtype),
       errorMessage: c.errorMessage,
+      failureCategory: diag && !diag.outputReceived ? providerFailureCategory(diag.family, diag.subtype) : null,
+      providerRequest: c.providerRequest ?? null,
+      providerAttempts: c.providerAttempts ?? [],
     };
   });
 
@@ -140,6 +160,7 @@ export function buildExecutionDiagnosis(p: {
     jobAttempts: p.job ? p.job.attempts : null,
     modelCalls: analyses.length,
     modelFallbacks: analyses.filter((r) => r.rank === 'fallback_1' || r.rank === 'fallback_2').length,
+    structuredOutputRetries: analyses.reduce((n, r) => n + (r.providerAttempts ?? []).filter(isStructuredOutputRetry).length, 0),
     repairCalls: reports.length - analyses.length,
   };
   const lastFailed = [...analyses].reverse().find((r) => r.status === 'FAILED');
@@ -156,11 +177,38 @@ export function buildExecutionDiagnosis(p: {
     cascade,
     counters,
     result,
-    finalDiagnosis: finalDiagnosis({
-      treatment: p.treatment,
-      succeeded: business !== 'FAILED' && succeeded,
-      calls: reports.map(asDiag),
-      businessResult: p.job?.businessResult ?? null,
-    }),
+    finalDiagnosis: [
+      ...finalDiagnosis({
+        treatment: p.treatment,
+        succeeded: business !== 'FAILED' && succeeded,
+        calls: reports.map(asDiag),
+        businessResult: p.job?.businessResult ?? null,
+      }),
+      ...structuredRetryLines(analyses),
+    ],
   };
+}
+
+/**
+ * Lot 52B — constats sur les essais sans structured output, construits
+ * uniquement à partir des tentatives tracées (aucune hypothèse).
+ */
+export function structuredRetryLines(calls: Array<Pick<CallReport, 'model' | 'providerAttempts'>>): string[] {
+  const lines: string[] = [];
+  for (const c of calls) {
+    const attempts = c.providerAttempts ?? [];
+    const retry = attempts.find(isStructuredOutputRetry);
+    if (!retry) continue;
+    const first = attempts.find((a) => a.kind === 'initial');
+    const refus = first ? `HTTP ${first.httpStatus ?? '?'}${first.providerErrorCode && first.providerErrorCode !== String(first.httpStatus) ? ` ${first.providerErrorCode}` : ''}` : 'refus';
+    const schema = first?.providerSchemaHash ? ` (schéma fournisseur ${first.providerSchemaHash})` : '';
+    if (retry.kind === 'schema_rejected_retry') {
+      lines.push(`${c.model ?? 'Modèle'} : structured output refusé explicitement${schema} — nouvel essai du même modèle sans responseSchema : ${retry.outcome === 'SUCCESS' ? 'réponse reçue' : 'échec'}.`);
+    } else if (retry.outcome === 'SUCCESS') {
+      lines.push(`${c.model ?? 'Modèle'} : ${refus} avec structured output${schema} ; essai diagnostique du même modèle sans responseSchema réussi — le structured output est la cause, refus mémorisé, aucun fallback modèle nécessaire.`);
+    } else {
+      lines.push(`${c.model ?? 'Modèle'} : ${refus} avec structured output${schema} ; essai diagnostique sans responseSchema également en échec (HTTP ${retry.httpStatus ?? '?'}) — le schéma n’est pas mis en cause.`);
+    }
+  }
+  return lines;
 }

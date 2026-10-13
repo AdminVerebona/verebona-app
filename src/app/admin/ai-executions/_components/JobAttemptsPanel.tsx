@@ -63,6 +63,10 @@ function CallLine({ c }: { c: CallReportView }) {
       <span>
         {c.model ?? 'modèle inconnu'} · <span className={c.status === 'FAILED' ? 'text-red-400' : 'text-emerald-500'}>{CALL_STATUS[c.status]}</span>
         {c.cause && <> · {c.cause}</>}
+        {/* Lot 52B : essai interne du même modèle sans structured output (ni fallback, ni retry du job). */}
+        {(c.providerAttempts ?? []).some((a) => a.kind !== 'initial') && (
+          <> · <span className="text-amber-500">structured output refusé → même modèle sans schéma : {(c.providerAttempts ?? []).filter((a) => a.kind !== 'initial').map((a) => a.outcome).join(', ')}</span></>
+        )}
         {' · '}{fmtDuration(c.durationMs)}
         {(c.inputTokens !== null || c.outputTokens !== null) && <> · {fmtInt(c.inputTokens)} + {fmtInt(c.outputTokens)} tokens</>}
       </span>

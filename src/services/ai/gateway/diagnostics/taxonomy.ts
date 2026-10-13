@@ -264,6 +264,101 @@ export const SUBTYPE_LABELS: Record<InvalidOutputSubtype, string> = {
   UNKNOWN: 'non classé',
 };
 
+// ══════════════════════════════════════════════════════════════════════════
+// LOT 52B — REQUÊTE FOURNISSEUR ET TENTATIVES INTERNES D'UN APPEL
+//
+// Métadonnées SANS CONTENU (ni prompt, ni document, ni schéma) : empreintes,
+// compteurs, réglages effectifs. Figées dans `ai_usage_event.metadata`
+// (`providerRequest`, `providerAttempts`) pour CHAQUE appel, réussi compris.
+// ══════════════════════════════════════════════════════════════════════════
+
+/** Requête réellement construite pour le fournisseur (première tentative de l'appel). */
+export interface ProviderRequestTrace {
+  /** `responseSchema` transmis au fournisseur (structured output). */
+  responseSchemaSent: boolean;
+  /** Empreinte (12) du schéma fournisseur DÉRIVÉ du contrat, transmis ou non. */
+  providerSchemaHash: string | null;
+  /** Nombre de nœuds du schéma dérivé (borne `MAX_PROVIDER_SCHEMA_NODES`). */
+  schemaNodes: number | null;
+  /** Mots-clés retirés à la réduction (contraintes vérifiées par Verebona). */
+  droppedKeywords: string[];
+  /**
+   * Motif d'absence de `responseSchema` : `not_requested`,
+   * `structured_output_off` (AI_STRUCTURED_OUTPUT=off), `too_complex`,
+   * `unrepresentable`, `recent_rejection` (refus mémorisé) ; `null` si transmis.
+   */
+  schemaOmittedReason: string | null;
+  /** `application/json` ou `null` (texte libre). */
+  responseMimeType: string | null;
+  maxOutputTokens: number | null;
+  /** `aucun`, `low`, `high` ou `budget N`. */
+  thinkingConfig: string;
+  /** Pièces jointes : nombre, type MIME et transport (jamais de nom ni d'URL). */
+  attachments: { count: number; items: Array<{ mimeType: string; transport: string }> };
+}
+
+/**
+ * Tentative fournisseur INTERNE à un appel modèle : la tentative structurée,
+ * puis l'éventuel nouvel essai du MÊME modèle sans `responseSchema`. Ce
+ * n'est ni un fallback modèle, ni une tentative du job, ni une réparation.
+ */
+export interface ProviderAttemptTrace {
+  /** 1 : tentative initiale ; 2 : nouvel essai sans schéma. */
+  step: number;
+  /**
+   * `initial` (avec ou sans schéma), `schema_rejected_retry` (refus EXPLICITE
+   * du schéma), `diagnostic_retry` (400 INVALID_ARGUMENT générique : essai
+   * diagnostique sans schéma, lot 52B).
+   */
+  kind: 'initial' | 'schema_rejected_retry' | 'diagnostic_retry';
+  responseSchemaSent: boolean;
+  providerSchemaHash: string | null;
+  responseMimeType: string | null;
+  outcome: 'SUCCESS' | 'FAILED';
+  httpStatus: number | null;
+  providerErrorCode: string | null;
+  family: AiFailureFamily | null;
+  durationMs: number;
+}
+
+/** Nouvel essai du même modèle sans structured output (compteur `structuredOutputRetries`). */
+export function isStructuredOutputRetry(a: Pick<ProviderAttemptTrace, 'kind'>): boolean {
+  return a.kind === 'schema_rejected_retry' || a.kind === 'diagnostic_retry';
+}
+
+/**
+ * Lot 52B — nature d'un échec AVANT sortie, pour le BO : un HTTP 400
+ * INVALID_ARGUMENT n'est jamais une indisponibilité du fournisseur.
+ */
+export type ProviderFailureCategory = 'PROVIDER_UNAVAILABLE' | 'REQUEST_REJECTED' | 'STRUCTURED_OUTPUT_REJECTED';
+
+export const PROVIDER_FAILURE_CATEGORY_LABELS: Record<ProviderFailureCategory, string> = {
+  PROVIDER_UNAVAILABLE: 'Fournisseur indisponible',
+  REQUEST_REJECTED: 'Requête refusée par le fournisseur',
+  STRUCTURED_OUTPUT_REJECTED: 'Structured output refusé',
+};
+
+export function providerFailureCategory(family: string | null | undefined, subtype: string | null | undefined): ProviderFailureCategory | null {
+  if (subtype === 'STRUCTURED_OUTPUT_REJECTED') return 'STRUCTURED_OUTPUT_REJECTED';
+  switch (family) {
+    case 'INPUT_ERROR': case 'CONTEXT_TOO_LARGE': case 'AUTH_ERROR': return 'REQUEST_REJECTED';
+    case 'PROVIDER_ERROR': case 'NETWORK_ERROR': case 'TIMEOUT': case 'RATE_LIMIT': return 'PROVIDER_UNAVAILABLE';
+    default: return null;
+  }
+}
+
+/**
+ * Code d'erreur AFFICHÉ au BO. Les traces antérieures au lot 52B portent
+ * `PROVIDER_UNAVAILABLE` pour toute erreur brute du fournisseur, y compris un
+ * 400 INVALID_ARGUMENT : la famille enregistrée corrige l'affichage (aucune
+ * réécriture en base).
+ */
+export function displayErrorCode(errorCode: string | null, family: string | null | undefined, subtype?: string | null): string | null {
+  if (errorCode !== 'PROVIDER_UNAVAILABLE') return errorCode;
+  const cat = providerFailureCategory(family, subtype);
+  return cat === 'REQUEST_REJECTED' || cat === 'STRUCTURED_OUTPUT_REJECTED' ? 'PROVIDER_REQUEST_REJECTED' : errorCode;
+}
+
 /** Code affiché : `INVALID_OUTPUT / SCHEMA_VALIDATION_FAILED`, `TIMEOUT`… */
 export function displayCause(family: AiFailureFamily | null, subtype: InvalidOutputSubtype | null): string | null {
   if (!family) return null;

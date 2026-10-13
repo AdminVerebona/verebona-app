@@ -7,7 +7,9 @@
  *   · sinon : un job `origin = manual` par objet, sans déduplication.
  *
  * 409 EMERGENCY_STOP si l'arrêt d'urgence est engagé (précondition WF-11) ;
- * 422 pour un traitement non batch, un périmètre vide ou trop large. T4 force
+ * 422 pour un traitement non batch, un périmètre vide ou trop large, ou
+ * NO_JOB_CREATED (lot 52A) quand aucun job n'a été persisté (motif explicite).
+ * 202 : `jobIds` = jobs RÉELLEMENT persistés ; le boucleur est réveillé. T4 force
  * un nouveau passage sur les échéances candidates T1 persistées (T4-016). Un traitement désactivé ou suspendu accepte la demande, qui
  * attend sa réactivation (`waitsForReactivation`).
  */
@@ -41,8 +43,9 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ tre
     return NextResponse.json(result, { status: result.dryRun ? 200 : 202 });
   } catch (e) {
     if (e instanceof ManualLaunchRefused) {
+      // Lot 52A (COR-02) : motif explicite et éléments non retenus, jamais un succès trompeur.
       return NextResponse.json(
-        { error: e.code, message: e.message },
+        { error: e.code, message: e.message, ...(e.details ? { details: e.details } : {}) },
         { status: e.code === 'EMERGENCY_STOP' ? 409 : 422 },
       );
     }

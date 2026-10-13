@@ -16,6 +16,7 @@ import type { AiUseCaseCode } from '../registry/use-cases';
 import { getExecutionContext, type ModelRank } from './execution-context';
 import { currentJobContext } from '../queue/job-context';
 import { getCachedPrice } from '../gateway/pricing/pricing.repository';
+import type { ProviderAttemptTrace, ProviderRequestTrace } from '../gateway/diagnostics/taxonomy';
 
 export interface CallTrace {
   traceId: string;
@@ -104,6 +105,15 @@ export interface CallTrace {
    * empreinte du prompt et du contexte construit.
    */
   structuredContext?: StructuredContextTrace;
+  /**
+   * Lot 52B — requête fournisseur SANS CONTENU (responseSchema envoyé,
+   * empreinte et taille du schéma dérivé, mots-clés retirés, motif
+   * d'omission, responseMimeType, maxOutputTokens, thinkingConfig, pièces
+   * jointes : nombre, MIME, transport) et tentatives internes de l'appel
+   * (tentative structurée, puis essai du même modèle sans schéma).
+   */
+  providerRequest?: ProviderRequestTrace;
+  providerAttempts?: ProviderAttemptTrace[];
 }
 
 /** Contrat runtime tracé avec un appel (lot 34D). */
@@ -243,6 +253,8 @@ export async function recordCallTrace(t: CallTrace): Promise<number | null> {
         ...(t.runtimeContract ? { runtimeContract: t.runtimeContract } : {}),
         ...(t.transformations ? { transformations: t.transformations } : {}),
         ...(t.structuredContext ? { structuredContext: t.structuredContext } : {}),
+        ...(t.providerRequest ? { providerRequest: t.providerRequest } : {}),
+        ...(t.providerAttempts?.length ? { providerAttempts: t.providerAttempts.slice(0, 5) } : {}),
         // Lot 34C : tentative du JOB de file pendant laquelle l'appel a eu
         // lieu — BO › Exécutions IA regroupe la cascade de modèles par
         // tentative (fallback modèle ≠ retry du job).

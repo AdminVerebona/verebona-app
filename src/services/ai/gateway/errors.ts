@@ -7,6 +7,13 @@ export type AiErrorCode =
   | 'OPERATION_INACTIVE'
   | 'USE_CASE_MISMATCH'
   | 'PROVIDER_UNAVAILABLE'
+  /**
+   * Lot 52B : requête REFUSÉE par le fournisseur (HTTP 400 INVALID_ARGUMENT,
+   * contexte trop grand, clé refusée, structured output refusé) — le
+   * fournisseur répond, ce n'est pas une indisponibilité. Récupérable comme
+   * avant (modèle suivant, reprise de la file) : seul le libellé change.
+   */
+  | 'PROVIDER_REQUEST_REJECTED'
   | 'TIMEOUT'
   | 'INVALID_OUTPUT'
   | 'ALL_MODELS_FAILED'

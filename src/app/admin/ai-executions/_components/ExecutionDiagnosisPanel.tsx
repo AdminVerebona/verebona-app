@@ -21,8 +21,9 @@ import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { apiClient } from '@/lib/api-client';
 import {
-  CONTROL_LABELS, FAMILY_LABELS, SUBTYPE_LABELS,
-  type CallDiagnostic, type ControlChain, type ControlState,
+  CONTROL_LABELS, FAMILY_LABELS, PROVIDER_FAILURE_CATEGORY_LABELS, SUBTYPE_LABELS,
+  type CallDiagnostic, type ControlChain, type ControlState, type ProviderAttemptTrace,
+  type ProviderFailureCategory, type ProviderRequestTrace,
 } from '@/services/ai/gateway/diagnostics/taxonomy';
 import { CopyBlockButton } from './CopyJson';
 
@@ -44,6 +45,10 @@ export interface CallReportView {
   hasModelOutput: boolean;
   errorCode: string | null;
   errorMessage: string | null;
+  /** Lot 52B : fournisseur indisponible / requête refusée / structured output refusé. */
+  failureCategory?: ProviderFailureCategory | null;
+  providerRequest?: ProviderRequestTrace | null;
+  providerAttempts?: ProviderAttemptTrace[];
 }
 
 export interface DiagnosisView {
@@ -52,7 +57,7 @@ export interface DiagnosisView {
     analysisCalls: number; failedCalls: number; identical: boolean; signature: string | null;
     cause: string | null; path: string | null; expected: string | null; received: string | null; stage: string | null;
   };
-  counters: { jobAttempts: number | null; modelCalls: number; modelFallbacks: number; repairCalls: number };
+  counters: { jobAttempts: number | null; modelCalls: number; modelFallbacks: number; structuredOutputRetries?: number; repairCalls: number };
   result: { jobStatus: string | null; businessResult: string | null; cause: string | null; doneButFailed: boolean };
   finalDiagnosis: string[];
 }
@@ -86,6 +91,59 @@ function causeLabel(d: CallDiagnostic | null): string | null {
   return d.family === 'INVALID_OUTPUT' && d.subtype ? `${fam} — ${SUBTYPE_LABELS[d.subtype] ?? d.subtype}` : fam;
 }
 
+const ATTEMPT_KIND: Record<ProviderAttemptTrace['kind'], string> = {
+  initial: 'tentative',
+  schema_rejected_retry: 'nouvel essai (schéma refusé)',
+  diagnostic_retry: 'tentative diagnostique',
+};
+
+/**
+ * Lot 52B — tentatives INTERNES d'un appel (même modèle) : tentative
+ * structurée, puis éventuel essai sans responseSchema. Distinctes des
+ * fallbacks modèle, des tentatives du job et des réparations.
+ */
+function ProviderAttempts({ attempts, model }: { attempts: ProviderAttemptTrace[]; model: string | null }) {
+  if (attempts.length < 2) return null;
+  return (
+    <ol className="space-y-0.5" data-testid="execution-call-attempts">
+      {attempts.map((a) => (
+        <li key={a.step} className="break-words">
+          <span className="text-[color:var(--text-muted)]">{a.step}. {ATTEMPT_KIND[a.kind] ?? a.kind} · </span>
+          {model ?? 'modèle'} · structured {a.responseSchemaSent ? `oui${a.providerSchemaHash ? ` (schéma ${a.providerSchemaHash})` : ''}` : 'non'}
+          {' → '}
+          <span className={a.outcome === 'SUCCESS' ? 'text-emerald-500' : 'text-red-400'}>
+            {a.outcome === 'SUCCESS' ? 'SUCCESS' : `${a.httpStatus ? `HTTP ${a.httpStatus} ` : ''}${a.providerErrorCode && a.providerErrorCode !== String(a.httpStatus) ? a.providerErrorCode : a.family ?? 'échec'}`}
+          </span>
+          <span className="text-[color:var(--text-muted)]"> · {fmtDuration(a.durationMs)}</span>
+        </li>
+      ))}
+    </ol>
+  );
+}
+
+/** Lot 52B — requête fournisseur, sans prompt, contenu ni schéma. */
+function ProviderRequest({ r }: { r: ProviderRequestTrace }) {
+  const pj = r.attachments;
+  const rows: Array<[string, string | null]> = [
+    ['responseSchema envoyé', r.responseSchemaSent ? 'oui' : 'non'],
+    ['providerSchemaHash', r.providerSchemaHash],
+    ['Nœuds du schéma', r.schemaNodes == null ? null : String(r.schemaNodes)],
+    ['Mots-clés retirés', r.droppedKeywords.length ? r.droppedKeywords.join(', ') : null],
+    ['Motif d’omission du schéma', r.schemaOmittedReason],
+    ['responseMimeType', r.responseMimeType ?? 'aucun (texte)'],
+    ['maxOutputTokens', r.maxOutputTokens == null ? 'défaut du modèle' : fmtInt(r.maxOutputTokens)],
+    ['thinkingConfig', r.thinkingConfig],
+    ['Pièces jointes', pj.count === 0 ? 'aucune' : `${pj.count} · ${pj.items.map((i) => `${i.mimeType} (${i.transport === 'files_api' ? 'Files API' : i.transport})`).join(', ')}`],
+  ];
+  return (
+    <dl className="grid grid-cols-[auto,1fr] gap-x-3 gap-y-0.5" data-testid="execution-call-request">
+      {rows.filter(([, v]) => v !== null && v !== '').map(([k, v]) => (
+        <div key={k} className="contents"><dt className="text-[color:var(--text-muted)]">{k}</dt><dd className="break-all">{v}</dd></div>
+      ))}
+    </dl>
+  );
+}
+
 function Controls({ controls }: { controls: ControlChain }) {
   return (
     <dl className="grid grid-cols-[auto,1fr] gap-x-3 gap-y-0.5" data-testid="execution-call-controls">
@@ -117,6 +175,7 @@ function CallCard({ r }: { r: CallReportView }) {
           {STATUS_LABEL[r.status]}
         </dd>
         {r.cause && (<><dt className="text-[color:var(--text-muted)]">Cause</dt><dd>{r.cause}{causeLabel(d) ? ` (${causeLabel(d)})` : ''}</dd></>)}
+        {r.failureCategory && (<><dt className="text-[color:var(--text-muted)]">Nature</dt><dd data-testid="execution-call-category">{PROVIDER_FAILURE_CATEGORY_LABELS[r.failureCategory]}</dd></>)}
         {r.stage && (<><dt className="text-[color:var(--text-muted)]">Étape</dt><dd>{r.stage}</dd></>)}
         <dt className="text-[color:var(--text-muted)]">Entrée</dt><dd>{fmtInt(r.inputTokens)} tokens</dd>
         <dt className="text-[color:var(--text-muted)]">Sortie</dt>
@@ -130,6 +189,8 @@ function CallCard({ r }: { r: CallReportView }) {
         <dt className="text-[color:var(--text-muted)]">Sortie reçue</dt>
         <dd>{d ? (d.outputReceived ? 'oui' : 'aucune') : (r.outputTokens ?? 0) > 0 ? 'oui' : 'aucune'}</dd>
       </dl>
+
+      <ProviderAttempts attempts={r.providerAttempts ?? []} model={r.model} />
 
       {first && (
         <div className="space-y-0.5" data-testid="execution-call-error">
@@ -159,11 +220,18 @@ function CallCard({ r }: { r: CallReportView }) {
         <details><summary className="cursor-pointer text-[color:var(--text-muted)]">Pile technique</summary><pre className="whitespace-pre-wrap break-all">{d.error.exception ? `${d.error.exception}\n` : ''}{d.error.stack}</pre></details>
       )}
 
+      {!d && r.providerRequest && (
+        <details>
+          <summary className="cursor-pointer text-[color:var(--text-muted)]">Requête fournisseur</summary>
+          <div className="mt-1"><ProviderRequest r={r.providerRequest} /></div>
+        </details>
+      )}
       {d && (
         <details>
-          <summary className="cursor-pointer text-[color:var(--text-muted)]">Chaîne de contrôles, fournisseur, contrat de sortie</summary>
+          <summary className="cursor-pointer text-[color:var(--text-muted)]">Chaîne de contrôles, requête fournisseur, contrat de sortie</summary>
           <div className="mt-1 space-y-1.5">
             <Controls controls={d.controls} />
+            {r.providerRequest && <ProviderRequest r={r.providerRequest} />}
             <dl className="grid grid-cols-[auto,1fr] gap-x-3 gap-y-0.5" data-testid="execution-call-provider">
               {([
                 ['Fournisseur', p?.provider], ['Modèle servi', p?.modelVersion], ['Identifiant de réponse', p?.providerRequestId],
@@ -262,6 +330,7 @@ export function ExecutionDiagnosisPanel({ callId, diagnosis }: { callId: number;
         <p className="text-xs text-[color:var(--text-secondary)]" data-testid="execution-counters">
           {counters.jobAttempts !== null && <>Tentatives du job : {counters.jobAttempts} · </>}
           Appels modèle de cette tentative : {counters.modelCalls} · Fallbacks modèle : {counters.modelFallbacks}
+          {(counters.structuredOutputRetries ?? 0) > 0 && <> · Nouveaux essais sans structured output : {counters.structuredOutputRetries}</>}
           {counters.repairCalls > 0 && <> · Réparations ciblées : {counters.repairCalls}</>}
         </p>
       </section>

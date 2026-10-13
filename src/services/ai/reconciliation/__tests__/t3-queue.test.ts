@@ -90,7 +90,8 @@ describe('exécutant', () => {
     const startedAt = new Date('2026-10-07T10:00:00Z');
     await runT3Job(job({ accountId: null, triggerCode: 'schedule_weekly', startedAt }), NO_GUARD, d);
     expect(d.listSweepAccounts).toHaveBeenCalledWith({
-      since: new Date(startedAt.getTime() - 168 * 3_600_000), afterAccountId: 0, limit: 50,
+      // Lot 52A (NR-02) : fraîcheur = début du cycle − période / 2.
+      since: new Date(startedAt.getTime() - (168 * 3_600_000) / 2), afterAccountId: 0, limit: 50,
     });
     expect(enqueue).toHaveBeenCalledTimes(2); // page incomplète : pas de continuation
     expect(enqueue.mock.calls[1][0]).toMatchObject({ scope: { accountId: 2 }, triggerCode: 'schedule_weekly' });

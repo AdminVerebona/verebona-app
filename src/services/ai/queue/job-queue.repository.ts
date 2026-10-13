@@ -862,11 +862,37 @@ export interface QueueFilters {
   createdTo?: Date;
   /** Lot 31C : résultat métier (APPLIED, NO_CHANGE, ABSTAIN, SUPERSEDED, TARGET_GONE). */
   businessResult?: string;
+  /**
+   * Lot 52A (COR-03) : identifiants de jobs recherchés (recherche par
+   * identifiant, jobs créés par un lancement manuel). Bornés à 500.
+   */
+  ids?: number[];
+  /**
+   * Lot 52A (COR-03) : ordre d'AFFICHAGE. `recent` (défaut, BO) : plus
+   * récents d'abord. `service` : ordre de service du boucleur (tête de file,
+   * puis FIFO). N'affecte jamais `claimNext`, qui garde son propre ordre.
+   */
+  order?: 'recent' | 'service';
   limit?: number;
+}
+
+/** Identifiants de jobs valides (entiers positifs), dédoublonnés, bornés à 500. */
+export function cleanJobIds(raw: ReadonlyArray<unknown>): number[] {
+  const out = new Set<number>();
+  for (const v of raw) {
+    const n = typeof v === 'string' && /^\d{1,12}$/.test(v.trim()) ? Number(v.trim()) : v;
+    if (typeof n === 'number' && Number.isSafeInteger(n) && n > 0) out.add(n);
+    if (out.size >= 500) break;
+  }
+  return [...out];
 }
 
 /** NFR-001 et NFR-002 : filtré et borné côté serveur, jamais tout chargé. */
 export async function listJobs(filters: QueueFilters = {}): Promise<QueuedJob[]> {
+  const ids = filters.ids ? cleanJobIds(filters.ids) : null;
+  // Liste d'identifiants vide après nettoyage : aucun résultat (jamais « tout »).
+  if (ids && ids.length === 0) return [];
+  const order = filters.order === 'service' ? 'head_priority DESC, created_at, id' : 'created_at DESC, id DESC';
   const rows = await pgClient.unsafe(
     `SELECT ${COLS} FROM ai_job_queue
       WHERE ($1::text IS NULL OR treatment = $1)
@@ -877,14 +903,15 @@ export async function listJobs(filters: QueueFilters = {}): Promise<QueuedJob[]>
         AND ($7::timestamptz IS NULL OR created_at >= $7)
         AND ($8::timestamptz IS NULL OR created_at <= $8)
         AND ($9::text IS NULL OR business_result = $9)
-      ORDER BY head_priority DESC, created_at
+        AND ($10::bigint[] IS NULL OR id = ANY($10::bigint[]))
+      ORDER BY ${order}
       LIMIT $4`,
     [
       filters.treatment ?? null, filters.status ?? null,
       filters.accountId ?? null, Math.min(filters.limit ?? 100, 500),
       filters.origin ?? null, filters.triggerCode ?? null,
       filters.createdFrom?.toISOString() ?? null, filters.createdTo?.toISOString() ?? null,
-      filters.businessResult ?? null,
+      filters.businessResult ?? null, ids,
     ] as never[],
   );
   return (rows as unknown as Row[]).map(toJob);

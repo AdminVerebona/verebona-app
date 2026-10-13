@@ -52,6 +52,29 @@ export function thinkingConfigFor(model: string, level: ReasoningLevel | null | 
   return undefined;
 }
 
+/** Libellé BO du raisonnement transmis : `aucun`, `low`, `high`, `budget N`. */
+export function thinkingConfigLabel(tc: GeminiThinkingConfig | undefined): string {
+  if (!tc) return 'aucun';
+  return 'thinkingLevel' in tc ? tc.thinkingLevel : `budget ${tc.thinkingBudget}`;
+}
+
+/**
+ * Lot 52B — réglages EFFECTIFS d'un appel, lus sur le `generationConfig`
+ * réellement construit (même fonction que l'adaptateur) : rien n'est
+ * recalculé à part. Aucun contenu : ni prompt, ni schéma.
+ */
+export function describeGenerationConfig(input: Parameters<typeof buildGenerationConfig>[0]): {
+  responseSchemaSent: boolean; responseMimeType: string | null; maxOutputTokens: number | null; thinkingConfig: string;
+} {
+  const cfg = buildGenerationConfig(input);
+  return {
+    responseSchemaSent: cfg.responseJsonSchema !== undefined,
+    responseMimeType: typeof cfg.responseMimeType === 'string' ? cfg.responseMimeType : null,
+    maxOutputTokens: typeof cfg.maxOutputTokens === 'number' ? cfg.maxOutputTokens : null,
+    thinkingConfig: thinkingConfigLabel(cfg.thinkingConfig as GeminiThinkingConfig | undefined),
+  };
+}
+
 /** `generationConfig` complet d'un appel. */
 export function buildGenerationConfig(input: {
   model: string;

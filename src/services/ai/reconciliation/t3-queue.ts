@@ -57,7 +57,7 @@
 import { randomUUID } from 'crypto';
 import type { QueuedJob } from '../queue/job-queue.repository';
 import { isExecutionCancelled, type ExecutionGuard } from '../queue/execution-control';
-import { PermanentJobError, type JobBusinessResult } from '../queue/queue-policy';
+import { PermanentJobError, JobDeferredError, type JobBusinessResult } from '../queue/queue-policy';
 import type { T3Trigger } from './account-reconciliation.service';
 import type { ReconciliationDecision } from './types';
 import { envNumber } from '@/lib/env-number';
@@ -437,12 +437,19 @@ async function runAccount(job: QueuedJob, p: T3AccountPayload, guard: ExecutionG
     }
   }
 
-  const result = await deps.reconcileAccount(accountId, trigger, { scope, guard, userId: p.requestedByUserId ?? undefined, triggerCode: job.triggerCode ?? null });
+  const result = await deps.reconcileAccount(accountId, trigger, {
+    scope, guard, userId: p.requestedByUserId ?? undefined, triggerCode: job.triggerCode ?? null,
+    // Lot 52A (NR-10) : lien run ↔ job, pour reconnaître une exécution orpheline.
+    queueJob: { id: job.id, executionId: job.executionId },
+  });
 
   if (result.status === 'skipped_concurrent') {
-    // Une exécution compte est en cours hors file (route historique) : on
-    // réessaie plus tard via le backoff, plutôt que de clore sans rien faire.
-    throw new Error('exécution T3 déjà en cours sur ce compte — nouvelle tentative différée');
+    // Une AUTRE exécution du compte est réellement en cours (l'orpheline d'un
+    // processus arrêté est close par `claim`). Lot 52A : REPORT (5, 15, 60
+    // min ; tentative rendue), plus un échec — le backoff d'échec (≈ 7 min 30
+    // pour cinq tentatives) épuisait le job avant la fin d'une exécution
+    // longue ou de la péremption d'une exécution d'avant ce lot (30 min).
+    throw new JobDeferredError('exécution T3 déjà en cours sur ce compte — reprise différée');
   }
   if (result.status === 'skipped_blocked') {
     // T3 coupé entre le prélèvement et le démarrage : interruption, pas
@@ -458,6 +465,11 @@ async function runAccount(job: QueuedJob, p: T3AccountPayload, guard: ExecutionG
   }
   const detail = {
     runId: result.runId, scope, status: result.status, objectsExamined: result.objectsExamined,
+    // Lot 52A (COR-04, COR-05) : objets modifiés et appels modèle du passage
+    // (0 = passage sans appel Gemini, tracé comme tel).
+    objectsModified: result.objectsModified,
+    aiCalls: (result.aiCalls ?? 0) + (result.openActions?.aiCalls ?? 0),
+    openActionsExamined: result.openActions?.examined ?? 0,
     decisionsApplied: result.decisionsApplied, conflictsCreated: result.conflictsCreated, errors: result.errors,
     ...(result.openKnowledge ? { openKnowledge: result.openKnowledge } : {}),
     // Lot 49B : rapport des lignes « À traiter » ouvertes examinées (borné).
@@ -547,7 +559,7 @@ async function runSweep(job: QueuedJob, p: T3SweepPayload, guard: ExecutionGuard
   let fin = false;
   if (backlog < size) {
     comptes = await deps.listSweepAccounts({
-      since: new Date(new Date(cycleStartedAt).getTime() - periodHours * 3_600_000),
+      since: sweepFreshSince(cycleStartedAt, periodHours),
       afterAccountId: after, limit: size,
     });
     for (const accountId of comptes) {
@@ -581,6 +593,23 @@ async function runSweep(job: QueuedJob, p: T3SweepPayload, guard: ExecutionGuard
       nextAccountId: fin ? null : suivant, last: fin,
     },
   };
+}
+
+/**
+ * Fraîcheur d'un compte au balayage (lot 52A, NR-02) : un compte rationalisé
+ * depuis cette date n'est pas remis en file par le cycle.
+ *
+ * Avant : début du cycle − période. Le passage du cycle PRÉCÉDENT se termine
+ * forcément APRÈS le début de ce cycle-là, soit un peu moins d'une période
+ * avant le cycle courant : il était donc toujours « frais » et le compte était
+ * sauté — un balayage « toutes les heures » ne rationalisait chaque compte
+ * qu'une heure sur deux (les pages suivantes, différées, jamais à l'heure).
+ * Désormais : début du cycle − période / 2. Un passage récent (événement,
+ * lancement manuel, dans la dernière demi-période) dispense toujours du
+ * balayage ; le passage du cycle précédent, non. Pure, testée.
+ */
+export function sweepFreshSince(cycleStartedAt: string | Date, periodHours: number): Date {
+  return new Date(new Date(cycleStartedAt).getTime() - (periodHours * 3_600_000) / 2);
 }
 
 // ── Accès base (exécutant branché) ──────────────────────────────────────────

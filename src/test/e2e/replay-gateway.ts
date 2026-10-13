@@ -47,6 +47,12 @@ export interface RecordedOutput {
    * l'appel lève au lieu de rendre `output`.
    */
   error?: { message: string; status?: number; code?: string; recoverable?: boolean };
+  /**
+   * Lot 52B — filtre sur le structured output de l'appel : `true` ne répond
+   * qu'à un appel portant un `responseSchema`, `false` qu'à un appel sans
+   * (essai diagnostique de la passerelle). Absent : les deux.
+   */
+  whenStructured?: boolean;
 }
 
 const cle = (operationCode: string, task?: string, callKind?: 'analysis' | 'repair') =>
@@ -104,13 +110,15 @@ export class ReplayProvider implements AiProvider {
 
   private take(k: string, input: ProviderCallInput): RecordedOutput | null {
     const file = this.files.get(k) ?? [];
-    const i = file.findIndex((r) => !r.promptIncludes || input.prompt.includes(r.promptIncludes));
+    const i = file.findIndex((r) => (!r.promptIncludes || input.prompt.includes(r.promptIncludes))
+      && (r.whenStructured === undefined || r.whenStructured === (input.responseSchema !== undefined)));
     if (i >= 0) {
       const [r] = file.splice(i, 1);
       if (r.repeat) this.derniers.set(k, r);
       return r;
     }
-    return this.derniers.get(k) ?? null;
+    const dernier = this.derniers.get(k) ?? null;
+    return dernier && (dernier.whenStructured === undefined || dernier.whenStructured === (input.responseSchema !== undefined)) ? dernier : null;
   }
 }
 

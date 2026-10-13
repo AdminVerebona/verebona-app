@@ -33,8 +33,13 @@ import {
   providerJsonSchema, structuredOutputEnabled, noteSchemaRejected, schemaRejectedRecently,
 } from './output-resolution/provider-schema';
 import { buildRepairPrompt, mergeRepair, repairPassEnabled, REPAIR_MAX_INPUT_CHARS } from './output-resolution/repair-pass';
-import { classifyCallError, failureSignature, type ClassifiedFailure } from './diagnostics/classify';
-import { emptyControlChain, type CallDiagnostic, type ProviderCallMetadata } from './diagnostics/taxonomy';
+import { classifyCallError, failureSignature, isGenericInvalidArgument, type ClassifiedFailure } from './diagnostics/classify';
+import {
+  emptyControlChain, providerFailureCategory,
+  type CallDiagnostic, type ProviderCallMetadata, type ProviderAttemptTrace, type ProviderRequestTrace,
+} from './diagnostics/taxonomy';
+import { describeGenerationConfig } from './providers/gemini-generation-config';
+import { describeAttachments } from './providers/gemini-files';
 import { recordCallDiagnostic } from './diagnostics/diagnostic.repository';
 import { getAiProvider } from './providers';
 import { resolvePrompt, resolveMasterPrompt, masterPromptVersionOf, loadMasterTemplate, MasterPromptError } from '../prompts/prompt-loader';
@@ -504,6 +509,18 @@ export class AiGateway {
         let soStatus: string = providerSchema?.schema ? 'requested_schema' : jsonResponse ? 'json_mode' : 'none';
         if (providerSchema && !providerSchema.schema) soStatus = `schema_omitted_${providerSchema.omitted ?? 'unknown'}`;
 
+        // Lot 52B : requête fournisseur décrite sans contenu, et tentatives
+        // internes de CET appel (structurée, puis éventuel essai sans schéma).
+        const trail: ProviderAttemptTrace[] = [];
+        const providerRequest = providerRequestOf({
+          model, maxOutputTokens, reasoning, jsonResponse, sendSchema, attachments: req.attachments ?? [],
+          psHash, providerSchema, omittedReason: sendSchema ? null
+            : !(op.structuredOutput ?? (jsonResponse && isMasterOperation(op))) ? 'not_requested'
+              : !structuredOutputEnabled() ? 'structured_output_off'
+                : !providerSchema?.schema ? providerSchema?.omitted ?? 'unknown'
+                  : 'recent_rejection',
+        });
+
         const baseTrace = {
           traceId, useCaseCode: op.useCaseCode, operationCode, accountId: req.accountId, userId: req.userId,
           parentOperationId: req.parentOperationId, provider: provider.name, model, promptVersion, usedFallback,
@@ -521,7 +538,9 @@ export class AiGateway {
           (s) => { soStatus = s; }, () => noteSchemaRejected(model, contract.schemaHash),
           // Schéma refusé : même modèle, sans structured output — le schéma
           // DÉRIVÉ du même contrat passe alors dans le prompt.
-          `${withContract(true)}${notice}`);
+          `${withContract(true)}${notice}`,
+          // Lot 52B : 400 INVALID_ARGUMENT générique → essai diagnostique.
+          { trail, providerSchemaHash: psHash, diagnosticRetry: true });
           if (soStatus === 'requested_schema' && !sendSchema) soStatus = 'schema_skipped_recent_rejection';
         } catch (e) {
           // ── Échec AVANT toute sortie exploitable (fournisseur, réseau, délai) ──
@@ -533,7 +552,7 @@ export class AiGateway {
             output: Number((e as { outputTokens?: number })?.outputTokens ?? 0),
           };
           failures.push(`${model} : ${message}`);
-          lastFailureCode = isAiGatewayError(e) ? e.code : 'PROVIDER_UNAVAILABLE';
+          lastFailureCode = gatewayCodeOf(e, c);
           attempts.push({ model, succeeded: false });
           const diag = buildDiagnostic({
             outcome: 'FAILED', callKind: 'analysis', family: c.family, subtype: c.subtype, stage: c.stage,
@@ -551,6 +570,7 @@ export class AiGateway {
             errorCode: lastFailureCode, errorMessage: sansSortieBrute(op.useCaseCode) ? stripRawExcerpt(message) : message,
             billable: Boolean(tokens.input || tokens.output) && op.billable && !req.shadow,
             failure: failureSummary(diag), providerMeta: compactProviderMeta(diag.provider), callKind: 'analysis',
+            providerRequest, providerAttempts: trail,
             runtimeContract: contractTraceOf(soStatus),
             ...(structuredTrace ? { structuredContext: structuredTrace } : {}),
           }).catch(() => null);
@@ -649,6 +669,7 @@ export class AiGateway {
           // stockée, même en extrait : empreinte et longueur seulement.
           outputPreview: keepRawOutput ? previewForLog(out.rawText) : outputDigestForLog(out.rawText),
           failure: failureSummary(diag), providerMeta: compactProviderMeta(meta), callKind: 'analysis',
+          providerRequest, providerAttempts: trail,
           ...(diag.outcome === 'REPAIRED' ? { repaired: true } : {}),
           runtimeContract: contractTraceOf(soStatus, first.ok ? null : first.contractMismatch ?? null),
           transformations: transformationsOf(final.ok ? final.repairs : first.repairs, repairRun),
@@ -779,7 +800,7 @@ export class AiGateway {
       const c = classifyCallError(e);
       return {
         resolution: null, rawText: null, inputTokens: 0, outputTokens: 0, durationMs: Date.now() - start,
-        errorCode: isAiGatewayError(e) ? e.code : 'PROVIDER_UNAVAILABLE', errorMessage: c.error.message,
+        errorCode: gatewayCodeOf(e, c), errorMessage: c.error.message,
         diagnostic: buildDiagnostic({
           outcome: 'FAILED', callKind: 'repair', family: c.family, subtype: c.subtype, stage: c.stage, outputReceived: false,
           error: c.error, issues: [], issueCount: 0, controls: { ...emptyControlChain(), providerResponse: 'failed' },
@@ -891,6 +912,27 @@ interface RepairRun {
  * le schéma, `STRUCTURED_OUTPUT_REJECTED`) est rattrapé : même modèle, sans
  * schéma (mode JSON seul), et le refus est mémorisé pour ne pas le rejouer.
  * Le modèle reste dans la cascade (§24).
+ *
+ * ══════════════════════════════════════════════════════════════════════════
+ * LOT 52B — 400 INVALID_ARGUMENT GÉNÉRIQUE (« Request contains an invalid
+ * argument. ») sur une requête qui portait un `responseSchema`
+ *
+ * Google ne dit pas QUEL argument est refusé : le schéma n'est pas cité,
+ * donc pas de `STRUCTURED_OUTPUT_REJECTED`. Avant de changer de modèle (qui
+ * recevrait le MÊME schéma), UNE tentative diagnostique du MÊME modèle :
+ *   · sans `responseSchema`, `responseMimeType` application/json conservé ;
+ *   · prompt `promptWithoutSchema` : schéma DÉRIVÉ du même contrat runtime
+ *     joint au prompt (`runtimeContractBlock(…, schemaInPrompt: true)`) ;
+ *   · succès → le structured output est la cause opérationnelle : statut
+ *     `schema_rejected_retried_without`, refus mémorisé (modèle + schemaHash,
+ *     TTL existant), la réponse est validée normalement, la cascade s'arrête ;
+ *   · échec → cause NON démontrée : rien n'est mémorisé, l'erreur d'ORIGINE
+ *     est relevée (INPUT_ERROR, cause réellement observée), cascade normale.
+ * Jamais pour AUTH_ERROR, RATE_LIMIT, CONTEXT_TOO_LARGE, SAFETY_BLOCK,
+ * TIMEOUT, NETWORK_ERROR (`isGenericInvalidArgument`). Une seule tentative,
+ * aucune boucle. Réservé aux appels d'ANALYSE (`diagnosticRetry`) : la passe
+ * de réparation garde le comportement historique.
+ * ══════════════════════════════════════════════════════════════════════════
  */
 async function callWithSchemaFallback(
   provider: AiProvider,
@@ -900,16 +942,51 @@ async function callWithSchemaFallback(
   onRejected: () => void,
   /** Lot 34D : prompt du nouvel essai sans structured output (schéma du contrat inclus). */
   promptWithoutSchema?: string,
+  /** Lot 52B : tentatives internes (tracées) et essai diagnostique autorisé. */
+  opts: { trail?: ProviderAttemptTrace[]; providerSchemaHash?: string | null; diagnosticRetry?: boolean } = {},
 ): Promise<ProviderCallOutput> {
-  if (!schema) return provider.call(input);
+  const trail = opts.trail;
+  const note = (a: Omit<ProviderAttemptTrace, 'step'>) => { trail?.push({ step: (trail?.length ?? 0) + 1, ...a }); };
+  const mime = (structured: boolean, i: ProviderCallInput) => (structured || i.jsonResponse ? 'application/json' : null);
+  const timed = async (i: ProviderCallInput, kind: ProviderAttemptTrace['kind']): Promise<ProviderCallOutput> => {
+    const structured = i.responseSchema !== undefined;
+    const t0 = Date.now();
+    const base = { kind, responseSchemaSent: structured, providerSchemaHash: structured ? opts.providerSchemaHash ?? null : null, responseMimeType: mime(structured, i) };
+    try {
+      const out = await provider.call(i);
+      note({ ...base, outcome: 'SUCCESS', httpStatus: null, providerErrorCode: null, family: null, durationMs: Date.now() - t0 });
+      return out;
+    } catch (e) {
+      const c = classifyCallError(e);
+      note({ ...base, outcome: 'FAILED', httpStatus: c.httpStatus, providerErrorCode: c.providerErrorCode, family: c.family, durationMs: Date.now() - t0 });
+      throw e;
+    }
+  };
+  if (!schema) return timed(input, 'initial');
   try {
-    return await provider.call({ ...input, responseSchema: schema });
+    return await timed({ ...input, responseSchema: schema }, 'initial');
   } catch (e) {
     const c = classifyCallError(e);
-    if (c.subtype !== 'STRUCTURED_OUTPUT_REJECTED') throw e;
+    // Nouvel essai SANS schéma : `responseMimeType` application/json conservé.
+    const sansSchema: ProviderCallInput = {
+      ...input, jsonResponse: true, ...(promptWithoutSchema !== undefined ? { prompt: promptWithoutSchema } : {}),
+    };
+    if (c.subtype === 'STRUCTURED_OUTPUT_REJECTED') {
+      onRejected();
+      setStatus('schema_rejected_retried_without');
+      return timed(sansSchema, 'schema_rejected_retry');
+    }
+    if (!opts.diagnosticRetry || !isGenericInvalidArgument(c)) throw e;
+    let out: ProviderCallOutput;
+    try {
+      out = await timed(sansSchema, 'diagnostic_retry');
+    } catch {
+      // Cause non démontrée : erreur d'origine, aucune mémorisation.
+      throw e;
+    }
     onRejected();
     setStatus('schema_rejected_retried_without');
-    return provider.call(promptWithoutSchema !== undefined ? { ...input, prompt: promptWithoutSchema } : input);
+    return out;
   }
 }
 
@@ -962,6 +1039,42 @@ function providerMetaOf(
   };
   m.maxTokensReached = String(m.finishReason ?? '').toUpperCase() === 'MAX_TOKENS';
   return m;
+}
+
+/**
+ * Code de passerelle d'une erreur levée PENDANT l'appel fournisseur. Lot 52B :
+ * une erreur brute du fournisseur n'est plus systématiquement
+ * `PROVIDER_UNAVAILABLE` — une requête REFUSÉE (400 INVALID_ARGUMENT,
+ * contexte trop grand, clé refusée, structured output refusé) devient
+ * `PROVIDER_REQUEST_REJECTED`. Même caractère récupérable qu'avant.
+ */
+export function gatewayCodeOf(e: unknown, c: Pick<ClassifiedFailure, 'family' | 'subtype'>): AiErrorCode {
+  if (isAiGatewayError(e)) return e.code;
+  const cat = providerFailureCategory(c.family, c.subtype);
+  return cat === 'REQUEST_REJECTED' || cat === 'STRUCTURED_OUTPUT_REJECTED' ? 'PROVIDER_REQUEST_REJECTED' : 'PROVIDER_UNAVAILABLE';
+}
+
+/** Lot 52B — requête fournisseur d'un appel, sans contenu (BO › Exécutions IA). */
+function providerRequestOf(p: {
+  model: string; maxOutputTokens: number | undefined; reasoning: ProviderCallInput['reasoning']; jsonResponse: boolean;
+  sendSchema: Record<string, unknown> | null; attachments: ProviderCallInput['attachments'];
+  psHash: string | null; providerSchema: { nodes: number; dropped: string[] } | null; omittedReason: string | null;
+}): ProviderRequestTrace {
+  const g = describeGenerationConfig({
+    model: p.model, maxOutputTokens: p.maxOutputTokens, reasoning: p.reasoning, jsonResponse: p.jsonResponse,
+    ...(p.sendSchema ? { responseSchema: p.sendSchema } : {}),
+  });
+  return {
+    responseSchemaSent: g.responseSchemaSent,
+    providerSchemaHash: p.psHash,
+    schemaNodes: p.providerSchema ? p.providerSchema.nodes : null,
+    droppedKeywords: p.providerSchema ? [...p.providerSchema.dropped].slice(0, 40) : [],
+    schemaOmittedReason: p.omittedReason,
+    responseMimeType: g.responseMimeType,
+    maxOutputTokens: g.maxOutputTokens,
+    thinkingConfig: g.thinkingConfig,
+    attachments: describeAttachments(p.attachments),
+  };
 }
 
 /** Résumé d'échec figé dans `ai_usage_event.metadata` (listes, filtres). */

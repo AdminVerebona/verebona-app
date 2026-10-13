@@ -211,13 +211,36 @@ async function selectScope(accountId: number, scope: 'full' | 'incremental', tri
  * Prend l'exécution du compte : au plus une en cours. Une exécution restée
  * « running » au-delà de STALE_RUN_MINUTES est close en échec (processus
  * arrêté) avant une nouvelle tentative.
+ *
+ * Lot 52A (NR-10) : une exécution « running » portée par un job de file qui
+ * n'est plus RUNNING avec le même jeton (processus tué par un redéploiement,
+ * job repris après expiration du bail) est ORPHELINE : close tout de suite.
+ * Avant, elle bloquait le compte 30 minutes — plus que les cinq tentatives du
+ * job repris (≈ 7 min 30 de backoff) : le job passait FAILED « exécution T3
+ * déjà en cours » sans jamais avoir été exécuté.
  */
-async function claim(accountId: number, trigger: T3Trigger, scope: 'full' | 'incremental', queuedId?: number): Promise<number | null> {
-  await pgClient.unsafe(
-    `UPDATE account_reconciliation_runs SET status = 'failed', finished_at = now()
-      WHERE account_id = $1 AND status = 'running' AND started_at < now() - ($2 || ' minutes')::interval`,
-    [accountId, String(STALE_RUN_MINUTES)] as never[],
-  );
+export function orphanRunCleanupSql(withQueueLink: boolean): string {
+  return `UPDATE account_reconciliation_runs r SET status = 'failed', finished_at = now()
+      WHERE r.account_id = $1 AND r.status = 'running'
+        AND (r.started_at < now() - ($2 || ' minutes')::interval${withQueueLink ? `
+             OR (r.queue_job_id IS NOT NULL AND NOT EXISTS (
+                   SELECT 1 FROM ai_job_queue q
+                    WHERE q.id = r.queue_job_id AND q.status = 'RUNNING'
+                      AND q.execution_id IS NOT DISTINCT FROM r.queue_execution_id))` : ''})`;
+}
+
+const colonneAbsente = (e: unknown) => (e as { code?: string })?.code === '42703';
+
+async function claim(
+  accountId: number, trigger: T3Trigger, scope: 'full' | 'incremental', queuedId?: number,
+  queueJob?: { id: number; executionId: string | null } | null,
+): Promise<number | null> {
+  // Colonnes de la migration 0338 absentes (déploiement partiel) : règle historique seule.
+  await pgClient.unsafe(orphanRunCleanupSql(true), [accountId, String(STALE_RUN_MINUTES)] as never[])
+    .catch(async (e) => {
+      if (!colonneAbsente(e)) throw e;
+      await pgClient.unsafe(orphanRunCleanupSql(false), [accountId, String(STALE_RUN_MINUTES)] as never[]);
+    });
   try {
     if (queuedId) {
       const rows = (await pgClient.unsafe(
@@ -227,14 +250,23 @@ async function claim(accountId: number, trigger: T3Trigger, scope: 'full' | 'inc
       )) as unknown as Array<{ id: number }>;
       return rows[0]?.id ?? null;
     }
-    const rows = (await pgClient.unsafe(
-      `INSERT INTO account_reconciliation_runs
-         (account_id, trigger_type, trigger_event, trigger_object_type, trigger_object_id, correlation_id,
-          requested_by_user_id, scope, status, started_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'running', now()) RETURNING id`,
-      [accountId, trigger.type, trigger.event ?? null, trigger.objectType ?? null, trigger.objectId ?? null,
-       trigger.correlationId ?? randomUUID(), trigger.requestedByUserId ?? null, scope] as never[],
-    )) as unknown as Array<{ id: number }>;
+    const valeurs = [accountId, trigger.type, trigger.event ?? null, trigger.objectType ?? null, trigger.objectId ?? null,
+      trigger.correlationId ?? randomUUID(), trigger.requestedByUserId ?? null, scope];
+    const inserer = (avecLien: boolean) => pgClient.unsafe(
+      avecLien
+        ? `INSERT INTO account_reconciliation_runs
+             (account_id, trigger_type, trigger_event, trigger_object_type, trigger_object_id, correlation_id,
+              requested_by_user_id, scope, status, started_at, queue_job_id, queue_execution_id)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'running', now(), $9, $10::uuid) RETURNING id`
+        : `INSERT INTO account_reconciliation_runs
+             (account_id, trigger_type, trigger_event, trigger_object_type, trigger_object_id, correlation_id,
+              requested_by_user_id, scope, status, started_at)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'running', now()) RETURNING id`,
+      (avecLien ? [...valeurs, queueJob?.id ?? null, queueJob?.executionId ?? null] : valeurs) as never[],
+    ) as unknown as Promise<Array<{ id: number }>>;
+    const rows = queueJob
+      ? await inserer(true).catch((e) => { if (colonneAbsente(e)) return inserer(false); throw e; })
+      : await inserer(false);
     return rows[0]?.id ?? null;
   } catch (e) {
     // Violation de l'unicité « une exécution en cours par compte ».
@@ -269,6 +301,8 @@ export async function reconcileAccount(
     guard?: import('../queue/execution-control').ExecutionGuard;
     /** Déclencheur du travail (monitoring des reprises de connaissance ouverte). */
     triggerCode?: string | null;
+    /** Lot 52A : job de file porteur (exécution orpheline reconnue après un redéploiement). */
+    queueJob?: { id: number; executionId: string | null } | null;
   } = {},
   deps: AccountReconciliationDeps = defaultDeps,
 ): Promise<AccountRunResult> {
@@ -283,7 +317,7 @@ export async function reconcileAccount(
       errors: 0, aiCalls: 0, details: [],
     };
   }
-  const runId = await claim(accountId, trigger, scope, options.queuedRunId);
+  const runId = await claim(accountId, trigger, scope, options.queuedRunId, options.queueJob ?? null);
   if (!runId) {
     return {
       runId: 0, accountId, triggerType: trigger.type, scope, status: 'skipped_concurrent', startedAt, finishedAt: startedAt,

@@ -94,7 +94,8 @@ describe('déclencheurs réels (§4-6)', () => {
       const d = deps({ listSweepAccounts: vi.fn(async () => [1]) });
       await runT3Job(job({ accountId: null, triggerCode, payload: null }), NO_GUARD, d);
       expect(d.listSweepAccounts).toHaveBeenCalledWith(expect.objectContaining({
-        since: new Date(new Date('2026-10-07T08:00:05Z').getTime() - 3_600_000),
+        // Lot 52A (NR-02) : fraîcheur = début du cycle − période / 2.
+        since: new Date(new Date('2026-10-07T08:00:05Z').getTime() - 3_600_000 / 2),
       }));
       expect(enqueue.mock.calls[0][0]).toMatchObject({ scope: { accountId: 1 }, triggerCode: 'schedule_hourly' });
     }

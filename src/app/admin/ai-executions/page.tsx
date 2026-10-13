@@ -43,6 +43,7 @@
 
 import { Suspense, useState, useEffect, useCallback } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
+import Link from 'next/link';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Loader2, RefreshCw, AlertTriangle, ChevronLeft, ChevronRight, X } from 'lucide-react';
@@ -59,6 +60,9 @@ import { ExecutionDiagnosisPanel, type DiagnosisView } from './_components/Execu
 import { RuntimeContractPanel, type ContractCallView } from './_components/RuntimeContractPanel';
 import { T1CompletenessPanel } from './_components/T1CompletenessPanel';
 import { JobAttemptsPanel, type JobExecutionViewDto, type UserViewDto } from './_components/JobAttemptsPanel';
+import {
+  displayErrorCode, providerFailureCategory, PROVIDER_FAILURE_CATEGORY_LABELS,
+} from '@/services/ai/gateway/diagnostics/taxonomy';
 
 interface Execution {
   id: number;
@@ -106,12 +110,18 @@ interface Execution {
   runtimeContract?: ContractCallView['runtimeContract'];
   transformations?: ContractCallView['transformations'];
   structuredContext?: ContractCallView['structuredContext'];
+  /** Lot 52B : tentatives internes (structurée → même modèle sans schéma). */
+  providerAttempts?: Array<{ kind: string; outcome: string; httpStatus: number | null; providerErrorCode: string | null }>;
 }
 
 /** `INVALID_OUTPUT / SCHEMA_VALIDATION_FAILED · étape schema_validation`, sinon le code enregistré. */
 function causeOf(r: Pick<Execution, 'errorCode' | 'failure'>): string | null {
   const f = r.failure;
-  if (f?.family) return `${f.family === 'INVALID_OUTPUT' ? `INVALID_OUTPUT / ${f.subtype ?? 'UNKNOWN'}` : f.family}${f.stage ? ` · étape ${f.stage}` : ''}`;
+  if (f?.family) {
+    // Lot 52B : fournisseur indisponible ≠ requête refusée ≠ structured output refusé.
+    const cat = providerFailureCategory(f.family, f.subtype);
+    return `${f.family === 'INVALID_OUTPUT' ? `INVALID_OUTPUT / ${f.subtype ?? 'UNKNOWN'}` : f.family}${f.stage ? ` · étape ${f.stage}` : ''}${cat ? ` · ${PROVIDER_FAILURE_CATEGORY_LABELS[cat].toLowerCase()}` : ''}`;
+  }
   return r.errorCode;
 }
 
@@ -279,6 +289,11 @@ function AiExecutionsScreen() {
           <p className="text-sm text-[color:var(--text-muted)]">
             Appels modèles de tous les traitements, et routage des requêtes de l&apos;assistant.
           </p>
+          {/* Lot 52A (COR-05) : un passage sans appel modèle n'a pas de ligne ici. */}
+          <p className="text-xs text-[color:var(--text-muted)]">
+            Les passages T1, T3 et T4 sans appel au modèle (par exemple T3 « terminé sans modification ») sont tracés dans la{' '}
+            <Link href="/admin/ai-queue?treatment=T3" className="text-[color:var(--accent)] hover:underline">File IA</Link>.
+          </p>
         </div>
         <Button size="sm" variant="outline" onClick={load} disabled={loading}>
           <RefreshCw className="w-3.5 h-3.5 mr-1.5" /> Actualiser
@@ -307,7 +322,7 @@ function AiExecutionsScreen() {
                 onClick={() => setFilters({ ...filters, treatment: e.treatment ?? '', model: e.model ?? '', errorsOnly: true })}>
                 <span className="font-medium text-[color:var(--text-primary)]">{e.count}×</span>
                 {' '}{e.treatment ?? 'traitement inconnu'}
-                {e.errorCode && ` · ${e.errorCode}${e.failureSubtype && e.failureSubtype !== e.errorCode ? ` / ${e.failureSubtype}` : ''}`}
+                {e.errorCode && ` · ${displayErrorCode(e.errorCode, e.failureSubtype, e.failureSubtype)}${e.failureSubtype && e.failureSubtype !== e.errorCode ? ` / ${e.failureSubtype}` : ''}`}
                 {e.model && ` · ${e.model}`}
                 <span className="text-[color:var(--text-muted)]">
                   {' '}— dernier le {new Date(e.lastSeen).toLocaleDateString('fr-FR')}
@@ -486,6 +501,14 @@ function AiExecutionsScreen() {
                 <p className="text-xs text-amber-500">Sortie acceptée après correction automatique{r.failure?.subtype ? ` (${r.failure.subtype})` : ''}</p>
               )}
               {r.callKind === 'repair' && <p className="text-xs text-[color:var(--text-muted)]">Passe de réparation ciblée (sans relecture du document)</p>}
+              {(r.providerAttempts ?? []).some((a) => a.kind !== 'initial') && (
+                <p className="text-xs text-amber-500" data-testid="execution-row-structured-retry">
+                  Structured output : {(() => {
+                    const [a1, a2] = [r.providerAttempts!.find((a) => a.kind === 'initial'), r.providerAttempts!.find((a) => a.kind !== 'initial')];
+                    return `${a1?.httpStatus ? `HTTP ${a1.httpStatus} ` : ''}${a1?.providerErrorCode && a1.providerErrorCode !== String(a1.httpStatus) ? a1.providerErrorCode : 'refus'} → même modèle sans schéma : ${a2?.outcome ?? '—'}`;
+                  })()}
+                </p>
+              )}
             </button>
           ))}
         </div>
@@ -571,7 +594,7 @@ function ExecutionDetailPanel({ detail, onClose }: { detail: Detail; onClose: ()
             <h3 className="text-sm font-semibold text-[color:var(--text-primary)]">Appels de la chaîne de modèles</h3>
             {detail.calls.map((c) => (
               <p key={c.id} className="text-xs text-[color:var(--text-secondary)]">
-                {RANK_LABEL[c.modelRank ?? ''] ?? 'rang inconnu'} · {c.model} · {c.status === 'error' ? `échec ${c.errorCode ?? ''}` : 'succès'}
+                {RANK_LABEL[c.modelRank ?? ''] ?? 'rang inconnu'} · {c.model} · {c.status === 'error' ? `échec ${displayErrorCode(c.errorCode, c.failure?.family, c.failure?.subtype) ?? ''}` : 'succès'}
                 {' · '}{duration(c.durationMs)} · {cost(c.costMicros)}
                 {c.inputTokens !== null && ` · ${c.inputTokens} + ${c.outputTokens} tokens`}
               </p>

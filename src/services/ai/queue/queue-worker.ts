@@ -66,6 +66,7 @@ import {
 } from './execution-control';
 import { runInJobContext, executionTimeoutMs } from './job-context';
 import { isAiBlocked } from './runnable-guard';
+import { noteWorkerClaim, noteWorkerError, writeWorkerHeartbeat } from './worker-heartbeat';
 import { hostname } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { envNumber } from '@/lib/env-number';
@@ -177,6 +178,8 @@ export async function runOne(treatment: Treatment, onClaimed?: () => void): Prom
   const configVersionId = await pinnableVersionId();
   const job = await claimNext(treatment, WORKER_ID, LEASE_SECONDS, configVersionId);
   if (!job) return false;
+  // Lot 52A : dernière activité de ce processus (battement, supervision BO).
+  noteWorkerClaim(treatment);
   // Pool : un job pris signale qu'il y a du travail — une autre place peut
   // s'ouvrir sans attendre le tour suivant.
   try { onClaimed?.(); } catch { /* jamais bloquant */ }
@@ -514,6 +517,7 @@ export function fillSlots(): void {
         if (!pris) return;
       }
     } catch (e) {
+      noteWorkerError(`place d’exécution : ${(e as Error).message}`);
       console.error('[queue] place d’exécution en échec (non bloquant) :', (e as Error).message);
     } finally {
       p.active--;
@@ -536,6 +540,22 @@ export function nudgeQueueWorker(): void {
 export function getPoolState(): { active: number; concurrency: number; running: Partial<Record<Treatment, number>> } {
   const p = pool();
   return { active: p.active, concurrency: queueConcurrency(), running: Object.fromEntries(p.running) };
+}
+
+/**
+ * Lot 52A (COR-04) : écrit le battement de CE processus (une ligne par
+ * instance, `worker-heartbeat`). Appelé à chaque tour ; jamais bloquant.
+ */
+export function writeHeartbeat(): Promise<boolean> {
+  const p = pool();
+  return writeWorkerHeartbeat({
+    workerId: WORKER_ID,
+    handlers: listBatchTreatments().filter((t) => handlers.has(t)),
+    concurrency: queueConcurrency(),
+    activeSlots: p.active,
+    running: Object.fromEntries(p.running),
+    intervalMs: INTERVAL_MS,
+  });
 }
 
 /** Réservé aux tests. */
@@ -566,6 +586,9 @@ export function startQueueWorker(): void {
   p.started = true;
 
   const tick = async () => {
+    // Lot 52A : battement AVANT l'entretien — un entretien bloqué n'efface pas
+    // la preuve que le boucleur tourne (et prélève) sur cette instance.
+    void writeHeartbeat();
     try {
       const { withJobLock } = await import('@/lib/job-lock');
       await withJobLock(LOCK_NAME, HOUSEKEEPING_LOCK_MS, async () => {
@@ -598,6 +621,7 @@ export function startQueueWorker(): void {
             console.info(`[queue] passage planifié ${f.treatment} (${f.triggerCode}) mis en file.`);
           }
         } catch (e) {
+          noteWorkerError(`planification : ${(e as Error).message}`);
           console.error('[queue] planification en échec (non bloquant) :', (e as Error).message);
         }
 
@@ -609,6 +633,7 @@ export function startQueueWorker(): void {
     } catch (e) {
       // Un tour en échec ne doit pas arrêter la boucle : la panne est souvent
       // passagère, et s'arrêter demanderait un redéploiement pour repartir.
+      noteWorkerError(`tour : ${(e as Error).message}`);
       console.error('[queue] tour en échec (non bloquant) :', (e as Error).message);
     }
     // Prélèvement HORS du bail d'entretien, sur CHAQUE instance : le pool est
