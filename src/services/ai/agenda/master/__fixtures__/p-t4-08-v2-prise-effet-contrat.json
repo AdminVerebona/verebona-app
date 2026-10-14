@@ -1,0 +1,34 @@
+{
+  "case": "P-T4-08",
+  "description": "CLASSIFY_EVENT v2 — prise d'effet d'un contrat le 05/11/2026, sans récurrence envisagée ⇒ accept, information, recurrenceDecision=not_applicable.",
+  "context": {
+    "candidate": {
+      "title": "Prise d'effet du contrat",
+      "date": "2026-11-05",
+      "confidence": "certain",
+      "documentType": "CONTRAT_ASSURANCE",
+      "excerpt": "Le présent contrat prend effet le 05/11/2026."
+    },
+    "recurrenceCandidate": null
+  },
+  "recording": {
+    "operationCode": "t4_classify_event",
+    "task": "CLASSIFY_EVENT",
+    "outputContract": "t4_output_v2",
+    "output": {
+      "task": "CLASSIFY_EVENT",
+      "agendaDecision": "accept",
+      "recurrenceDecision": "not_applicable",
+      "homeCategory": "information",
+      "businessType": null,
+      "confidence": "certain",
+      "reason": "date de prise d'effet explicite du contrat : information datée",
+      "recurrenceReason": null
+    }
+  },
+  "expected": {
+    "agendaDecision": "accept",
+    "recurrenceDecision": "not_applicable",
+    "category": "information"
+  }
+}

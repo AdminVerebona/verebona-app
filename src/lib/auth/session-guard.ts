@@ -26,6 +26,7 @@ import { serverCacheGet, serverCacheSet } from '@/lib/server-cache';
 import { sessionCutoffCacheKey } from './session-cutoff';
 import { isApiAllowedWhilePendingDeletion, isPendingDeletion } from './account-closure';
 import { SESSION_UNAVAILABLE_CODE } from './session-errors';
+import { hasActiveAccountAccess } from './account-access';
 
 /**
  * Jeton émis avant la révocation globale de son utilisateur ? (borne en cache 60 s)
@@ -73,5 +74,9 @@ export async function verifySessionAccessToken(
   if (!payload?.userId) return null;
   if (!sessionStatusAllows(payload.status, request.nextUrl?.pathname ?? '', request.method ?? 'GET')) return null;
   if (await isRevokedByCutoff(payload)) return null;
+  // Lot 54 (SEC-01) : droit actif sur le compte du jeton (lu en base, sans
+  // cache). Base injoignable : `SESSION_UNAVAILABLE` remonte (503).
+  if (payload.currentAccountId != null
+    && !(await hasActiveAccountAccess(payload.userId, payload.currentAccountId))) return null;
   return payload;
 }

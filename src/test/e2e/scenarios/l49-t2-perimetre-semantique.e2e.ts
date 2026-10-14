@@ -59,10 +59,11 @@ scenario('L49-T2SEM', 'Lot 49 — T2 : périmètre sémantique, STRONG / WEAK, o
     const cupra = await bien(c, 'Cupra');
     await contrat(c, cupra.id, { label: 'LLD Cupra', provider: 'Leasys', from: '2024-07-01', to: '2027-06-30' });
     await contrat(c, cupra.id, { label: 'Assurance auto', provider: 'MAAF', from: '2026-01-01', to: '2026-12-31' });
-    const replay = await useRecordings([understand({ intent: 'ACCOUNT_FACT_ASSET', entityHints: [{ type: 'asset', value: 'Cupra' }], requestedTopics: ['contrat'] })]);
+    const replay = await useRecordings([understand({ intent: 'ACCOUNT_FACT_ASSET', entityHints: [{ type: 'asset', value: 'Cupra' }], requestedTopics: ['contrat'] }), understand({ intent: 'ACCOUNT_FACT_ASSET', semanticDecision: { decision: 'CLARIFY', selectedCandidateRef: null, confidence: 'probable', reason: 'e2e' } })]);
     const r0 = await demander(c, 'Bonjour');
     const r = await demander(c, 'Quand finit le contrat de la Cupra ?', { conversationId: r0.conversationId });
-    expect(replay.calls).toHaveLength(1);
+    // Lot 54E (#419 écart 1) : plusieurs candidats → ARBITRAGE par T2 (2e appel), ici « CLARIFY ».
+    expect(replay.calls).toHaveLength(2);
     expect(r.answer).toBe('De quel contrat parlez-vous ?');
     expect(r.clarification?.candidates.map((x) => x.label).sort()).toEqual(['Contrat « Assurance auto »', 'Contrat « LLD Cupra »']);
     const [run] = await sql<{ j: { semantic?: Record<string, unknown> } }[]>`SELECT retrieval_methods_json AS j FROM verebona_request_runs WHERE request_id = ${r.requestId}`;
@@ -78,7 +79,7 @@ scenario('L49-T2SEM', 'Lot 49 — T2 : périmètre sémantique, STRONG / WEAK, o
     expect(issue.kind).toBe('resume');
     const suite = await executerIssueClarification(issue, { accountId: c.id, userId: c.ownerUserId, planType: 'PREMIUM', locale: 'fr-FR' }, { runAssistant, ports: buildOrchestratorPorts() });
     expect(suite.kind === 'result' && suite.result.answer).toBe('Contrat « LLD Cupra » (Cupra) se termine le 30 juin 2027.');
-    expect(replay.calls).toHaveLength(1);
+    expect(replay.calls).toHaveLength(2);
   });
 
   it('T2SEM-E2E-02 — « Je paye combien pour internet à la maison ? » : montant de l’opération pertinente, jamais la somme des abonnements', async () => {

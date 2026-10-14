@@ -150,9 +150,14 @@ scenario('T4-L14-UNIFIE', 'Écriture agenda unifiée', ({ sql, make }) => {
     const [{ id: ok }] = await sql<{ id: number }[]>`
       INSERT INTO agenda_items (account_id, title, start_date, is_automatic, origin_type, origin_ref_type, origin_ref_id)
       VALUES (${compte.id}, 'CT', '2027-01-01', true, 'qualified_document', 'asset_file', ${doc.id}) RETURNING id`;
-    const [{ id: ko }] = await sql<{ id: number }[]>`
-      INSERT INTO agenda_items (account_id, title, start_date, is_automatic, origin_type, origin_ref_type, origin_ref_id)
-      VALUES (${compte.id}, 'CT', '2027-01-01', true, 'qualified_document', 'asset_file', ${docAutre.id}) RETURNING id`;
+    // Référence d'origine vers un autre compte : état historique (refusé en base depuis le lot 54, garde 0373).
+    const ko = await sql.begin(async (tx) => {
+      await tx`SET LOCAL session_replication_role = replica`;
+      const [{ id }] = await tx<{ id: number }[]>`
+        INSERT INTO agenda_items (account_id, title, start_date, is_automatic, origin_type, origin_ref_type, origin_ref_id)
+        VALUES (${compte.id}, 'CT', '2027-01-01', true, 'qualified_document', 'asset_file', ${docAutre.id}) RETURNING id`;
+      return id;
+    });
 
     const simu = await backfill.backfillAgendaSourceLinks(sql);
     expect(simu.applied).toBe(false);

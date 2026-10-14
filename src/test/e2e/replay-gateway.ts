@@ -58,6 +58,36 @@ export interface RecordedOutput {
 const cle = (operationCode: string, task?: string, callKind?: 'analysis' | 'repair') =>
   `${callKind === 'repair' ? 'repair:' : ''}${operationCode}::${task ?? '*'}`;
 
+/**
+ * Lot 54 — répondeurs PAR DÉFAUT (opération, branche), consultés seulement
+ * quand aucun enregistrement ne correspond. Posés explicitement par un
+ * harnais (`chain.ts` : T4 simulé « bien élevé » pour les scénarios dont T4
+ * n'est pas le sujet), retirés par lui. Un scénario qui enregistre ses
+ * propres sorties les voit toujours passer en premier.
+ */
+const repondeurs = new Map<string, (input: ProviderCallInput) => unknown>();
+export function setDefaultResponder(operationCode: string, task: string | undefined, fn: ((input: ProviderCallInput) => unknown) | null): void {
+  const k = cle(operationCode, task);
+  if (fn) repondeurs.set(k, fn); else repondeurs.delete(k);
+}
+
+/**
+ * Lot 54 — T4 CLASSIFY_EVENT simulé : accepte l'événement, reprend la
+ * catégorie de l'indice déterministe transmis (sinon `action`) et accepte la
+ * récurrence envisagée par le serveur — le comportement antérieur au lot 54.
+ * Contrat v2 si le contexte structuré v2 est injecté, sinon sortie v1.
+ */
+export function t4AcceptingResponder(input: ProviderCallInput): unknown {
+  const i = input.prompt.indexOf('\nEXECUTION_CONTEXT\n');
+  const ctx = i >= 0 ? JSON.parse(input.prompt.slice(i + '\nEXECUTION_CONTEXT\n'.length).split('\n')[0]) as { event_context?: Record<string, unknown> } : null;
+  const ec = ctx?.event_context ?? {};
+  const hint = (ec.ruleHint as { category?: string } | undefined)?.category;
+  const homeCategory = hint === 'information' ? 'information' : 'action';
+  const base = { task: 'CLASSIFY_EVENT', businessType: null, homeCategory, confidence: hint ? 'certain' : 'probable', reason: 'T4 simulé (e2e)' };
+  if (!ctx || !('recurrenceCandidate' in ec)) return base;
+  return { ...base, agendaDecision: 'accept', recurrenceDecision: ec.recurrenceCandidate ? 'accept' : 'not_applicable', recurrenceReason: ec.recurrenceCandidate ? 'T4 simulé (e2e)' : null };
+}
+
 export class ReplayProvider implements AiProvider {
   readonly name = 'replay';
   /** Appels reçus, dans l'ordre — pour les assertions des scénarios. */
@@ -91,6 +121,8 @@ export class ReplayProvider implements AiProvider {
     const op = input.operationCode ?? '?';
     const kind = input.callKind;
     const r = this.take(cle(op, input.task, kind), input) ?? this.take(cle(op, undefined, kind), input);
+    const defaut = !r && kind !== 'repair' ? repondeurs.get(cle(op, input.task)) : undefined;
+    if (defaut) return { rawText: JSON.stringify(defaut(input)), inputTokens: 0, outputTokens: 0 };
     if (!r) {
       throw new Error(
         `[replay] aucune sortie enregistrée pour l'opération « ${op} »`

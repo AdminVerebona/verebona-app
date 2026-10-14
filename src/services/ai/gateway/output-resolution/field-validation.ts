@@ -34,11 +34,33 @@ export function splitPipe(schema: ZodType): { pre: ZodType | null; main: ZodType
   return { pre: null, main: schema };
 }
 
+/**
+ * Lot 54G (ticket T1 « couverture réelle », point 3) : champ ou élément RETIRÉ,
+ * avec sa valeur ORIGINALE (copie intégrale). Ne voyage qu'en mémoire jusqu'à
+ * l'appelant (couche A de T1 → `document_unresolved_facts`) : jamais écrit
+ * dans les traces ni les diagnostics de la passerelle (contenu du document).
+ */
+export interface PrunedFieldValue {
+  /** Chemin CONCRET dans la valeur préparée, au moment du retrait (`$.visual.observations[0].region`). */
+  path: string;
+  /** Chemin générique (`$.visual.observations[*].region`), celui du rapport `field_pruning`. */
+  genericPath: string;
+  /** Valeur retirée, intégrale. */
+  originalValue: unknown;
+  /** Élément de liste de premier niveau qui la contenait (fait, observation, tableau…), intégral, avant retrait. */
+  container: { path: string; value: unknown } | null;
+  /** Motif de validation (message caviardé, 200 caractères au plus). */
+  reason: string;
+  rule: 'field_pruned_invalid' | 'array_element_pruned';
+}
+
 export interface PruneResult {
   value: unknown;
   success: boolean;
   data?: unknown;
   pruned: number;
+  /** Lot 54G : chaque retrait avec sa valeur originale (même ordre que les étapes `field_pruning`). */
+  removed: PrunedFieldValue[];
   /** Dernière erreur de validation (si échec). */
   error?: import('zod').ZodError;
 }
@@ -55,9 +77,21 @@ export function pruneInvalidFields(
   const protegees = new Set(options.protectedKeys ?? []);
   let cur = structuredClone(value);
   let pruned = 0;
+  const removed: PrunedFieldValue[] = [];
+  /** Lot 54G : original (et élément englobant) capturé AVANT le retrait. */
+  const garder = (sub: PropertyKey[], rule: PrunedFieldValue['rule'], message: string) => {
+    const i = sub.findIndex((x) => typeof x === 'number');
+    const cPath = i >= 0 && i < sub.length - 1 ? sub.slice(0, i + 1) : null;
+    removed.push({
+      path: jsonPath(sub), genericPath: genericPath(jsonPath(sub)),
+      originalValue: copie(valueAt(cur, sub)),
+      container: cPath ? { path: jsonPath(cPath), value: copie(valueAt(cur, cPath)) } : null,
+      reason: redact(message).slice(0, 200), rule,
+    });
+  };
   for (let round = 0; round < (options.maxRounds ?? 8); round++) {
     const r = schema.safeParse(cur);
-    if (r.success) return { value: cur, success: true, data: r.data, pruned };
+    if (r.success) return { value: cur, success: true, data: r.data, pruned, removed };
     const deletions: Array<{ parent: PropertyKey[]; key: string }> = [];
     const removals = new Map<string, { path: PropertyKey[]; indices: Set<number> }>();
     for (const issue of r.error.issues) {
@@ -77,6 +111,7 @@ export function pruneInvalidFields(
             if (arr.node.min === null || restants >= arr.node.min) {
               entry.indices.add(key);
               removals.set(k, entry);
+              garder(sub, 'array_element_pruned', issue.message);
               report.push({
                 stage: 'field_pruning', rule: 'array_element_pruned', path: genericPath(jsonPath(sub)),
                 detail: redact(issue.message).slice(0, 200),
@@ -92,6 +127,7 @@ export function pruneInvalidFields(
           if (f?.optional && key in parentVal) {
             if (deletions.some((x) => x.key === key && JSON.stringify(x.parent) === JSON.stringify(parentPath))) break;
             deletions.push({ parent: parentPath, key });
+            garder(sub, 'field_pruned_invalid', issue.message);
             report.push({
               stage: 'field_pruning', rule: 'field_pruned_invalid', path: genericPath(jsonPath(sub)),
               detail: redact(issue.message).slice(0, 200),
@@ -101,7 +137,7 @@ export function pruneInvalidFields(
         }
       }
     }
-    if (deletions.length === 0 && removals.size === 0) return { value: cur, success: false, pruned, error: r.error };
+    if (deletions.length === 0 && removals.size === 0) return { value: cur, success: false, pruned, error: r.error, removed };
     for (const d of deletions) {
       const p = valueAt(cur, d.parent);
       if (isObj(p) && d.key in p) { delete p[d.key]; pruned++; }
@@ -116,6 +152,11 @@ export function pruneInvalidFields(
   }
   const last = schema.safeParse(cur);
   return last.success
-    ? { value: cur, success: true, data: last.data, pruned }
-    : { value: cur, success: false, pruned, error: last.error };
+    ? { value: cur, success: true, data: last.data, pruned, removed }
+    : { value: cur, success: false, pruned, error: last.error, removed };
+}
+
+function copie(v: unknown): unknown {
+  if (v === undefined) return null;
+  try { return structuredClone(v); } catch { return JSON.parse(JSON.stringify(v)) as unknown; }
 }

@@ -29,7 +29,11 @@ import { WRITE_COMMAND_CATALOG } from './catalog';
 import { parseCommands, type CommandDraft } from './parser';
 import { runAction, EXECUTORS, type Executor, type ExecutionContext } from './executors';
 import { armUndo, purgeExpiredUndoSteps, type UndoCapture } from './undo.service';
-import { ASSISTANT_ASSET_FIELDS, familyOf, formatFieldValue } from './asset-fields';
+import { ASSISTANT_ASSET_FIELDS, familyOf, formatFieldValue, type AssetFieldDefinition } from './asset-fields';
+import { parseDateFr } from './parser';
+import type { SuppliedFact } from '../types/contracts';
+import { getField } from '@/services/canonical/registry';
+import { tenureEndKey, TENURE_END_LABEL } from '@/lib/assets/tenure-end';
 import { validateDetailChanges } from '@/lib/asset-detail-rules';
 
 /** Validité d'un plan non confirmé. */
@@ -226,13 +230,18 @@ async function resolveAssetFieldUpdate(
   input: AssistantRequestInput,
   lookup: CommandLookup,
   actionId: string,
+  // Lot 54E (#419 §15) : proposition issue d'UNDERSTAND — capacité et bien
+  // déjà résolus par le SERVEUR ; mêmes contrôles et même plan ensuite.
+  opts: { def?: AssetFieldDefinition; assetId?: number | null; applicable?: (asset: AssetState) => string | null } = {},
 ): Promise<PlannedAction | { needInfo: string }> {
-  const def = ASSISTANT_ASSET_FIELDS.find((f) => f.key === draft.field);
+  const def = opts.def ?? ASSISTANT_ASSET_FIELDS.find((f) => f.key === draft.field);
   if (!def || !lookup.getAssetState) return { needInfo: 'Je ne peux pas modifier ce champ depuis l’assistant.' };
 
   // Le bien : nommé, ou celui du fil / de la page.
-  let assetId: number | null = null;
-  if (draft.assetWords.length) {
+  let assetId: number | null = opts.assetId ?? null;
+  if (assetId) {
+    // Bien déjà résolu par le serveur (proposition de mise à jour).
+  } else if (draft.assetWords.length) {
     const found = await lookup.findAssets(input.accountId, draft.assetWords);
     if (found.length === 0) return { needInfo: `Je n’ai pas trouvé ce bien dans votre compte. Pour quel bien voulez-vous modifier « ${def.label} » ?` };
     if (found.length > 1) {
@@ -253,6 +262,8 @@ async function resolveAssetFieldUpdate(
   }
   const section = def.sections[familyOf(asset.category)];
   if (!section) return { needInfo: `« ${def.label} » ne s’applique pas à ${nomBien(asset)}.` };
+  const nonApplicable = opts.applicable?.(asset) ?? null;
+  if (nonApplicable) return { needInfo: nonApplicable };
 
   if (draft.value === null) {
     const attendu = def.type === 'date' ? 'une date complète, par exemple 25/05/2021' : def.type === 'number' ? 'un nombre' : 'une valeur';
@@ -401,6 +412,117 @@ export async function prepareCommand(
   };
   await savePlan(plan, null);
   return { kind: 'plan', plan, preview: toPreview(plan) };
+}
+
+// ── Proposition de mise à jour issue d'UNDERSTAND (lot 54E, #419 §15) ─────
+
+/**
+ * Capacité d'écriture RÉELLE d'une information apportée (pure, testée) —
+ * résolue par le SERVEUR à partir d'une clé du FIELD_CATALOG, jamais choisie
+ * par le modèle (ni table, ni colonne, ni identifiant) :
+ *   · `asset_field`      champ modifiable depuis l'assistant (registre,
+ *                        `assistantWritable`) — même liste que la commande ;
+ *   · `asset_tenure_end` « Fin de contrat prévue » de la fiche (LLD / LOA,
+ *                        bail, prêt) : la clé qui s'applique à la SITUATION
+ *                        du bien, saisie dans la section usage de la fiche.
+ * Extensible : une capacité future (champ d'opération…) s'ajoute ici.
+ */
+export type UpdateCapability =
+  | { type: 'asset_field'; def: AssetFieldDefinition }
+  | { type: 'asset_tenure_end'; def: AssetFieldDefinition };
+
+const TENURE_SECTIONS: Record<string, string> = { IMMOBILIER: 'occupancy_usage', VEHICULE: 'vehicle_usage', OBJET: 'object_usage' };
+
+export function updateCapabilityFor(fieldKey: string | null): UpdateCapability | null {
+  if (!fieldKey) return null;
+  const champ = ASSISTANT_ASSET_FIELDS.find((f) => f.key === fieldKey);
+  if (champ) return { type: 'asset_field', def: champ };
+  if (fieldKey === 'leaseEndDate' || fieldKey === 'contractEndDate') {
+    const reg = getField(fieldKey);
+    if (!reg) return null;
+    const familles = reg.families.map((f) => (f === 'OBJECT' ? 'OBJET' : f)) as Array<'IMMOBILIER' | 'VEHICULE' | 'OBJET'>;
+    const sections: AssetFieldDefinition['sections'] = {};
+    for (const f of familles) if (TENURE_SECTIONS[f]) sections[f] = TENURE_SECTIONS[f];
+    return { type: 'asset_tenure_end', def: { key: fieldKey, label: TENURE_END_LABEL, sections, type: 'date', aliases: [] } };
+  }
+  return null;
+}
+
+const plainTxt = (s: string) => s.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[’]/g, "'");
+
+/**
+ * Valeur proposée, VALIDÉE par le serveur (pure, testée) : type du champ, et
+ * présence dans le message de l'utilisateur — le modèle ne peut pas
+ * introduire une valeur que l'utilisateur n'a pas donnée.
+ */
+export function validateSuppliedValue(def: AssetFieldDefinition, fact: Pick<SuppliedFact, 'value' | 'normalizedValue'>, message: string, today: string): string | number | null {
+  const brut = (fact.normalizedValue ?? fact.value ?? '').trim();
+  if (!brut) return null;
+  if (def.type === 'date') {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(brut)) return null;
+    const [y, m, d] = brut.split('-').map(Number);
+    const dt = new Date(Date.UTC(y, m - 1, d));
+    if (dt.getUTCFullYear() !== y || dt.getUTCMonth() !== m - 1 || dt.getUTCDate() !== d) return null;
+    return message.includes(brut) || parseDateFr(message, today) === brut ? brut : null;
+  }
+  if (def.type === 'number') {
+    const n = Number(brut.replace(/[\s\u00a0\u202f]/g, '').replace(',', '.'));
+    if (!Number.isFinite(n)) return null;
+    const nombres = (plainTxt(message).match(/\d{1,3}(?:[ \u00a0\u202f.]\d{3})+(?:,\d+)?|\d+(?:,\d+)?/g) ?? [])
+      .map((x) => Number(x.replace(/[ \u00a0\u202f.]/g, '').replace(',', '.')));
+    const k = /k(?:€|m)?\b/.test(plainTxt(message)) ? nombres.map((x) => x * 1000) : [];
+    return [...nombres, ...k].includes(n) ? n : null;
+  }
+  return brut.length >= 2 && brut.length <= 80 && plainTxt(message).includes(plainTxt(brut)) ? brut : null;
+}
+
+export type ProposalPreparation =
+  | { kind: 'plan'; plan: StoredPlan; preview: CommandPlanPreview; capability: UpdateCapability['type'] }
+  | { kind: 'need_info'; message: string; reason: string; capability: UpdateCapability['type'] | null };
+
+/**
+ * Prépare un plan PENDING_CONFIRMATION à partir d'une information APPORTÉE
+ * (UPDATE_PROPOSAL compris par T2). Même résolution, mêmes contrôles (bien
+ * du compte, disponibilité, verrou, famille, règles de la fiche, valeur
+ * actuelle), même table de plans et MÊME confirmation que les commandes :
+ * aucun second mécanisme, aucune écriture ici.
+ */
+export async function prepareUpdateProposal(
+  input: AssistantRequestInput,
+  req: { fact: SuppliedFact; assetId: number | null },
+  lookup: CommandLookup = sqlLookup,
+  now: Date = new Date(),
+): Promise<ProposalPreparation> {
+  const cap = updateCapabilityFor(req.fact.fieldKey);
+  if (!cap) {
+    return {
+      kind: 'need_info', capability: null, reason: req.fact.fieldKey ? 'FIELD_NOT_WRITABLE' : 'NO_FIELD',
+      message: 'Merci pour cette information. Je ne peux pas l’enregistrer depuis l’assistant : rien n’a été modifié. Vous pouvez la renseigner depuis la fiche concernée.',
+    };
+  }
+  const valeur = validateSuppliedValue(cap.def, req.fact, input.message, lookup.today());
+  if (valeur === null) {
+    return {
+      kind: 'need_info', capability: cap.type, reason: 'VALUE_NOT_VALIDATED',
+      message: `Je n’ai pas pu relire avec certitude la valeur de « ${cap.def.label} » dans votre message : rien n’a été modifié. Précisez-la, par exemple « 21/05/2027 ».`,
+    };
+  }
+  const draft: Extract<CommandDraft, { command: 'UPDATE_ASSET_FIELD' }> = {
+    command: 'UPDATE_ASSET_FIELD', field: cap.def.key, value: valeur, assetWords: [], assetFromContext: false,
+  };
+  const applicable = cap.type === 'asset_tenure_end'
+    ? (a: AssetState) => (tenureEndKey(familyOf(a.category), a.characteristics) === cap.def.key ? null
+      : `« ${cap.def.label} » ne s’applique pas à la situation actuelle de ${nomBien(a)} (statut de détention ou d’occupation à compléter sur la fiche) : rien n’a été modifié.`)
+    : undefined;
+  const r = await resolveAssetFieldUpdate(draft, input, lookup, 'a1', { def: cap.def, assetId: req.assetId, applicable });
+  if ('needInfo' in r) return { kind: 'need_info', message: r.needInfo, reason: 'RESOLUTION', capability: cap.type };
+  const plan: StoredPlan = {
+    planId: randomUUID(), accountId: input.accountId, userId: input.userId, conversationId: input.conversationId ?? null,
+    summary: `${r.preview} Confirmez-vous ?`, actions: [r], expiresAt: new Date(now.getTime() + PLAN_TTL_MS).toISOString(),
+  };
+  await savePlan(plan, null);
+  await tracer(plan.planId, plan.accountId, plan.userId, 'PROPOSED_FROM_UNDERSTAND', { capability: cap.type, field: cap.def.key });
+  return { kind: 'plan', plan, preview: toPreview(plan), capability: cap.type };
 }
 
 // ── Confirmation et exécution ──────────────────────────────────────────────

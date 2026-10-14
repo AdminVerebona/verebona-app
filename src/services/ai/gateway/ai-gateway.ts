@@ -349,6 +349,9 @@ export class AiGateway {
       masterPromptVersion: master?.masterPromptVersion ?? req.masterPromptVersion ?? null,
       engine: req.engine ?? ('new' as const),
       triggerCode: req.triggerCode ?? currentJobContext()?.triggerCode ?? null,
+      // Lot 54 : révision de la configuration réellement appliquée.
+      configRevisionId: configuration.configRevisionId ?? null,
+      configRevisionNumber: configuration.configRevisionNumber ?? null,
     };
     // §2.1 : le plafond ne vaut que pour le modèle principal ; les replis
     // en héritent, faute de valeur propre. C'est ce que dit le CDC, et
@@ -398,11 +401,23 @@ export class AiGateway {
     let resolvedContract: ResolvedContract | null = null;
     if (!preCallRefusal) {
       try {
-        resolvedContract = resolveRuntimeContract({
-          schemaName: structured?.built.output.schemaName ?? schemaName, operationCode,
-          callerSchema: req.outputSchema as ZodType,
-          requestedVersion: structured?.built.output.contractVersion ?? null,
-        });
+        // Lot 54 : l'appelant peut accepter plusieurs contrats (T4 v1 / v2) —
+        // on retient le schéma qui correspond au contrat résolu.
+        for (const callerSchema of [req.outputSchema as ZodType, ...(req.acceptedOutputSchemas ?? [])]) {
+          resolvedContract = resolveRuntimeContract({
+            schemaName: structured?.built.output.schemaName ?? schemaName, operationCode,
+            callerSchema,
+            requestedVersion: structured?.built.output.contractVersion ?? null,
+          });
+          if (!resolvedContract.mismatch) break;
+        }
+        if (resolvedContract?.mismatch && req.acceptedOutputSchemas?.length) {
+          resolvedContract = resolveRuntimeContract({
+            schemaName: structured?.built.output.schemaName ?? schemaName, operationCode,
+            callerSchema: req.outputSchema as ZodType,
+            requestedVersion: structured?.built.output.contractVersion ?? null,
+          });
+        }
       } catch (e) {
         if (!(e instanceof ContractResolutionError)) throw e;
         preCallRefusal = structured && spec
@@ -723,6 +738,8 @@ export class AiGateway {
             inputTokens: totalIn, outputTokens: totalOut,
             costMicros: totalCost, durationMs: Date.now() - startedAt, traceId, fromCache: false,
             outputRepairs: final.repairs,
+            // Lot 54G : originaux des champs retirés — en mémoire pour l'appelant, jamais tracés.
+            ...(final.pruned?.length ? { prunedValues: final.pruned } : {}),
           };
         }
 

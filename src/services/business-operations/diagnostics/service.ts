@@ -116,6 +116,10 @@ export interface HoldItem {
   createdAt: string | null;
   /** Lot 53 (D7) : examen M3 progressif — lot courant, examinées / restantes, report et reprise. */
   m3?: import('./model').M3ProgressView | null;
+  /** Lot 54D (E01) : erreur technique T3 — tentatives, prochaine reprise automatique, cause et job. */
+  technicalError?: { attempts: number; retryAt: string | null; exhausted: boolean; code: string | null; message: string | null; jobId: number | null; at: string | null } | null;
+  /** Lot 54D (E05) : cartes « À traiter » du document en attente de resynchronisation. */
+  cardsPending?: boolean;
 }
 
 export interface HoldListResult {
@@ -352,6 +356,33 @@ const ANOMALY_SQL: Readonly<Record<Exclude<HardAnomalyCode, 'PARENT_CYCLE' | 'PA
       JOIN asset_files f ON f.id = dd.file_id
      WHERE f.account_id <> o.account_id AND ${ACC('o.account_id')}
     UNION ALL
+    -- Lot 54 (SEC-06) : photos de dommage, facture d'une action, document
+    -- d'un échange, événement historique du sinistre.
+    SELECT o.account_id, o.id, 'photo de dommage #' || p.id || ' (bien du compte ' || coalesce(pa.account_id::text, '?') || ', fichier du compte ' || coalesce(pf.account_id::text, '?') || ')'
+      FROM business_operation_claim_damage_photos dp
+      JOIN business_operation_claim_damages d ON d.id = dp.damage_id
+      JOIN business_operations o ON o.id = d.operation_id
+      JOIN asset_photos p ON p.id = dp.photo_id JOIN assets pa ON pa.id = p.asset_id JOIN asset_files pf ON pf.id = p.file_id
+     WHERE (pa.account_id IS DISTINCT FROM o.account_id OR pf.account_id IS DISTINCT FROM o.account_id) AND ${ACC('o.account_id')}
+    UNION ALL
+    SELECT o.account_id, o.id, 'action de sinistre : facture #' || f.id || ' du compte ' || f.account_id
+      FROM business_operation_claim_actions ca
+      JOIN business_operations o ON o.id = ca.operation_id
+      JOIN asset_files f ON f.id = ca.invoice_file_id
+     WHERE f.account_id <> o.account_id AND ${ACC('o.account_id')}
+    UNION ALL
+    SELECT o.account_id, o.id, 'échange de sinistre : document #' || f.id || ' du compte ' || f.account_id
+      FROM business_operation_claim_exchanges ce
+      JOIN business_operations o ON o.id = ce.operation_id
+      JOIN asset_files f ON f.id = ce.document_file_id
+     WHERE f.account_id <> o.account_id AND ${ACC('o.account_id')}
+    UNION ALL
+    SELECT o.account_id, o.id, 'sinistre : événement historique #' || ev.id || ' du compte ' || coalesce(ev.account_id::text, '?')
+      FROM business_operation_claim_details cd
+      JOIN business_operations o ON o.id = cd.operation_id
+      JOIN events ev ON ev.id = cd.history_event_id
+     WHERE ev.account_id IS DISTINCT FROM o.account_id AND ${ACC('o.account_id')}
+    UNION ALL
     SELECT o.account_id, o.id, 'candidat T1 #' || c.id || ' du compte ' || c.account_id
       FROM document_operation_candidates c JOIN business_operations o ON o.id = c.t3_operation_id
      WHERE c.t3_operation_id IS NOT NULL AND c.account_id <> o.account_id AND ${ACC('o.account_id')}`,
@@ -359,6 +390,29 @@ const ANOMALY_SQL: Readonly<Record<Exclude<HardAnomalyCode, 'PARENT_CYCLE' | 'PA
     SELECT c.account_id, c.operation_id, 'composante #' || c.id || ' (' || c.kind || ') : ' || c.amount_minor || ' ' || c.currency AS detail
       FROM business_operation_financial_components c
      WHERE c.active AND (c.amount_minor < 0 OR c.amount_eur_cents < 0) AND ${ACC('c.account_id')}`,
+  // Lot 54D (§4.5) : même indemnité (montant, devise) portée par deux composantes
+  // actives d'un même sinistre (et de ses interventions) — déduction multiple.
+  FIN_INDEMNITY_DUPLICATED: `
+    SELECT o.account_id, o.id AS operation_id, count(*) || ' indemnités de ' || c.amount_minor || ' ' || trim(c.currency) AS detail
+      FROM business_operation_financial_components c JOIN business_operations o ON o.id = c.operation_id
+     WHERE c.active AND c.kind = 'INDEMNITY' AND o.type_code = 'CLAIM' AND o.invalidated_at IS NULL AND o.merged_into_operation_id IS NULL
+       AND ${ACC('c.account_id')}
+     GROUP BY o.account_id, o.id, c.amount_minor, c.currency HAVING count(*) > 1`,
+  // Lot 54D (E04, §4.5) : le capital n'est jamais un coût (53D, Q16).
+  FIN_PRINCIPAL_AS_COST: `
+    SELECT o.account_id, o.id AS operation_id, 'composante #' || c.id || ' = capital ' || fd.principal_amount_minor || ' ' || trim(fd.principal_currency) AS detail
+      FROM business_operation_financial_components c
+      JOIN business_operations o ON o.id = c.operation_id AND o.type_code = 'FINANCING' AND o.invalidated_at IS NULL
+      JOIN business_operation_financing_details fd ON fd.operation_id = o.id
+     WHERE c.active AND c.kind = 'REALIZED_COST' AND fd.principal_amount_minor IS NOT NULL
+       AND c.amount_minor = fd.principal_amount_minor AND c.currency = fd.principal_currency AND ${ACC('c.account_id')}`,
+  // Lot 54D (E01) : candidat en erreur technique dont les reprises bornées sont épuisées.
+  T3_TECHNICAL_ERROR_EXHAUSTED: `
+    SELECT c.account_id, c.t3_operation_id AS operation_id,
+           'document #' || c.file_id || ' : ' || coalesce(c.t3_last_error->>'code', c.t3_reason) || ' (' || c.t3_error_attempts || ' tentatives)' AS detail
+      FROM document_operation_candidates c
+     WHERE c.status = 'ACTIVE' AND c.t3_reason LIKE 'TECHNICAL_ERROR:%' AND c.t3_retry_at IS NULL AND c.t3_error_attempts > 0
+       AND ${ACC('c.account_id')}`,
   // OTHER n'est jamais un repli (P18, C7.7) : il doit être porté par un
   // candidat T1 « OTHER » certain ou par une décision utilisateur.
   OTHER_AS_FALLBACK: `
@@ -483,7 +537,8 @@ export class OperationDiagnosticsService {
         `SELECT c.id, c.account_id, acc.name AS account_name, c.file_id, c.candidate_key, c.confidence, c.established,
                 c.type_hint, c.summary, c.t3_outcome, c.t3_reason, c.t3_operation_id, c.t3_processed_at, c.created_at,
                 c.t3_detail -> 'arbitration' -> 'operationIds' AS proposed, c.t3_detail -> 'plausible' AS plausible,
-                c.t3_detail -> 'm3' AS m3, c.t3_detail -> 'm3Batch' AS m3_batch, c.t3_detail -> 'm3Progress' AS m3_progress
+                c.t3_detail -> 'm3' AS m3, c.t3_detail -> 'm3Batch' AS m3_batch, c.t3_detail -> 'm3Progress' AS m3_progress,
+                c.t3_error_attempts, c.t3_retry_at, c.t3_last_error, c.t3_cards_pending
            FROM document_operation_candidates c JOIN accounts acc ON acc.id = c.account_id
           WHERE ${conds.join(' AND ')}
           ORDER BY c.t3_processed_at DESC NULLS LAST, c.id DESC
@@ -512,6 +567,14 @@ export class OperationDiagnosticsService {
           proposedOperationIds: [...new Set([...ids(r.proposed), ...ids(r.plausible)])].slice(0, 10),
           processedAt: ts(r.t3_processed_at), createdAt: ts(r.created_at),
           m3: r.t3_reason === 'M3_REQUIRED' || r.m3 ? toM3ProgressView(r.m3, r.m3_batch, r.m3_progress, r.plausible) : null,
+          technicalError: String(r.t3_reason ?? '').startsWith('TECHNICAL_ERROR:') ? (() => {
+            const le = (r.t3_last_error ?? {}) as Record<string, unknown>;
+            return {
+              attempts: int(r.t3_error_attempts), retryAt: ts(r.t3_retry_at), exhausted: r.t3_retry_at == null,
+              code: str(le.code), message: str(le.message), jobId: num(le.jobId), at: str(le.at),
+            };
+          })() : null,
+          cardsPending: r.t3_cards_pending === true,
         }))),
         total, page: f.page, pageSize: f.pageSize, totalPages: Math.max(1, Math.ceil(total / f.pageSize)),
         reasons: reasons.map((r) => ({ outcome: String(r.outcome), reason: str(r.reason), label: explainReason(str(r.reason)), count: int(r.n) })),

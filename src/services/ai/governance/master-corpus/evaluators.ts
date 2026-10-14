@@ -164,9 +164,21 @@ export const MASTER_CORPUS_EVALUATORS: Readonly<Record<string, Evaluator>> = {
   },
   // ── T4 ─────────────────────────────────────────────────────────────────────
   async t4_classify_event(c, output) {
-    const { translateClassifyEvent } = await import('../../agenda/master/classify-event');
+    const { translateClassifyEvent, translateEventDecision } = await import('../../agenda/master/classify-event');
     const r = translateClassifyEvent(output as never);
-    return ecart(r.classification.category === exp(c, 'category'), `catégorie ${r.classification.category} ≠ ${String(exp(c, 'category'))}`);
+    const errs = exp(c, 'category') === undefined ? []
+      : ecart(r.classification.category === exp(c, 'category'), `catégorie ${r.classification.category} ≠ ${String(exp(c, 'category'))}`);
+    // Lot 54 (t4_output_v2) : décision appliquée par le moteur, cohérence
+    // avec l'entrée réelle comprise (candidat de récurrence présent ou non).
+    if (exp(c, 'agendaDecision') !== undefined || exp(c, 'recurrenceDecision') !== undefined) {
+      const avecCandidat = Boolean((c.context as { recurrenceCandidate?: unknown }).recurrenceCandidate);
+      const d = translateEventDecision(output as never, avecCandidat);
+      errs.push(
+        ...ecart(exp(c, 'agendaDecision') === undefined || d.agendaDecision === exp(c, 'agendaDecision'), `agendaDecision ${d.agendaDecision} ≠ ${String(exp(c, 'agendaDecision'))}`),
+        ...ecart(exp(c, 'recurrenceDecision') === undefined || d.recurrenceDecision === exp(c, 'recurrenceDecision'), `recurrenceDecision ${d.recurrenceDecision} ≠ ${String(exp(c, 'recurrenceDecision'))}`),
+      );
+    }
+    return errs;
   },
   async t4_temporal_ambiguity(c, output) {
     const { translateTemporalAmbiguity } = await import('../../agenda/master/temporal-ambiguity');

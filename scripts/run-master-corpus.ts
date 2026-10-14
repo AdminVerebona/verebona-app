@@ -153,7 +153,7 @@ function print(
     console.log(`${r.status === 'PASSED' ? '✓' : '✗'} ${r.treatment} ${r.masterPromptCode} [${r.textSource} ${r.textSha256.slice(0, 12)}] `
       + `${r.casesPassed}/${r.casesTotal} cas · branches ${r.branchesPassed.join(', ') || '—'} / ${r.branchesRequired.join(', ')}`
       + (schema ? ` · ${schema} cas au niveau schéma seul` : '')
-      + (r.skipped?.length ? ` · hors passage réel : ${r.skipped.join(', ')}` : ''));
+      + (r.skipped?.length ? ` · non rejoués (passage réel impossible, branche absente ou autre contrat de sortie) : ${r.skipped.join(', ')}` : ''));
     for (const f of r.failures) console.log(`    ✗ ${f}`);
   }
   if (drift.length) {

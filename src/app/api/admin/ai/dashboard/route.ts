@@ -335,12 +335,12 @@ export async function GET(req: NextRequest) {
             uid: active.uid,
             shortUid: shortUid(active.uid),
             activatedAt: isoOrNull(active.activatedAt),
+            // Lot 54 : révision courante (la version active reste modifiable).
+            revisionNumber: active.currentRevisionNumber,
           }
         : null,
-      // VER-004 : en préproduction, une version « À tester » prime sur l'Active.
-      // Le bandeau doit le dire, sinon on lit la configuration active en croyant
-      // lire celle qui s'exécute. Une « À tester » n'a pas de date
-      // d'activation : on donne sa date de validation.
+      // Lot 54 : la version effective EST l'active (plus de « À tester ») —
+      // champ conservé pour les clients antérieurs, toujours `null`.
       effectiveVersion: effective && effective.id !== active?.id
         ? {
             id: effective.id,
@@ -353,7 +353,7 @@ export async function GET(req: NextRequest) {
             validatedAt: isoOrNull(effective.validatedAt),
           }
         : null,
-      // DRF-01 : liste détaillée des brouillons (libellé, base, obsolète, date, auteur).
+      // DRF-01 / lot 54 : versions non actives (numéro, nom, origine, date, auteur).
       drafts,
       health,
       versions,

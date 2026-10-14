@@ -29,6 +29,11 @@ interface InvitationData {
   memberName?: string | null;
 }
 
+/** Ancre de « Mon compte » ouvrant le tiroir « Mon abonnement » (lot 54F). */
+export const DUO_INVITATION_ANCHOR = 'duo-invitation';
+/** Bloc « 2e utilisateur Duo » (identifiant distinct de l'ancre du tiroir). */
+export const DUO_INVITATION_PANEL_ID = 'duo-invitation-panel';
+
 export function DuoInvitationPanel() {
   const [loading, setLoading] = useState(true);
   const [data, setData] = useState<InvitationData>({ status: 'NONE' });
@@ -57,12 +62,19 @@ export function DuoInvitationPanel() {
     fetchStatus();
   }, []);
 
-  // Lot 49A (ticket 13) : arrivée depuis « Inviter quelqu'un » (mascotte,
-  // `/mon-compte#duo-invitation`) — panneau amené à l'écran, champ e-mail prêt.
+  // Lot 49A (ticket 13) / 54F : arrivée depuis « Inviter quelqu'un » (mascotte,
+  // `/mon-compte#duo-invitation`). Le tiroir « Mon abonnement » porte l'ancre
+  // et s'est ouvert (CollapsibleCard anchorId) — ce panneau n'est monté
+  // qu'ouvert. Une fois l'état lu : bloc « 2e utilisateur Duo » amené à
+  // l'écran APRÈS le défilement de la carte (100 ms), puis focus sur le champ
+  // e-mail s'il est affiché. Même composant sur ordinateur et mobile.
   useEffect(() => {
-    if (loading || typeof window === 'undefined' || window.location.hash !== '#duo-invitation') return;
-    document.getElementById('duo-invitation')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    if (data.status === 'NONE') document.getElementById('invite-email')?.focus({ preventScroll: true });
+    if (loading || typeof window === 'undefined' || window.location.hash !== `#${DUO_INVITATION_ANCHOR}`) return;
+    const t = window.setTimeout(() => {
+      document.getElementById(DUO_INVITATION_PANEL_ID)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      document.getElementById('invite-email')?.focus({ preventScroll: true });
+    }, 150);
+    return () => window.clearTimeout(t);
   }, [loading, data.status]);
 
   const handleSend = async () => {

@@ -7,6 +7,7 @@ import { users } from '@/db/schema';
 import { eq } from 'drizzle-orm';
 import { invalidateAccountReadCache, invalidateUserReadCache, isMutatingMethod } from './server-cache';
 import { isRevokedByCutoff } from './auth/session-guard';
+import { assertSessionAccountAccess } from './auth/account-access';
 import {
   ACCOUNT_PENDING_DELETION_CODE,
   isApiAllowedWhilePendingDeletion,
@@ -105,6 +106,12 @@ export class SessionService {
     if (await isRevokedByCutoff(payload)) {
       throw new Error('INVALID_TOKEN');
     }
+
+    // Lot 54 (SEC-01) : droit ACTIF sur le compte du jeton, relu en base à
+    // chaque requête (sans cache) — un membre retiré ou parti perd l'accès
+    // tout de suite, même avec un jeton encore valide. Le renouvellement lui
+    // rend une session sur ses autres espaces (`lib/auth/account-access`).
+    await assertSessionAccountAccess(payload);
 
     // ══════════════════════════════════════════════════════════════════════
     // AUCUN CONTRÔLE D'ABONNEMENT ICI (APP-FUNC-31)

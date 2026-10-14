@@ -145,28 +145,50 @@ export function masterPromptOf(c: Pick<TreatmentConfig, 'masterPrompt'> | null |
   return typeof t === 'string' && t.trim() !== '' ? t : null;
 }
 
-/** Version globale : un instantané des cinq traitements (GEN-002). */
+/**
+ * Version globale : un instantané des traitements (GEN-002). Lot 54 : active
+ * ou non active, numérotée dès sa création, modifiable, historisée par
+ * révisions (`ai_config_revisions`).
+ */
 export interface ConfigVersion {
   id: number;
   uid: string;
   environment: AiEnvironment;
+  /** `ACTIVE` ou non active (anciennes valeurs lues comme non active). */
   status: ConfigVersionStatus;
-  /** vN, attribué à la validation seulement (VER-006). */
+  /** Lot 54 : `status === 'ACTIVE'`. */
+  active: boolean;
+  /** vN, attribué à la création depuis le lot 54 (avant : à la validation). */
   visibleNumber: number | null;
   label: string | null;
+  description: string | null;
   baseVersionId: number | null;
-  /** Attribut, pas statut (§4.1) : un Brouillon obsolète reste un Brouillon. */
+  /** Hérité (lot 54 : toujours faux, plus de brouillon obsolète). */
   isStale: boolean;
   createdBy: number | null;
   createdAt: Date;
+  updatedAt: Date | null;
+  updatedBy: number | null;
   validatedAt: Date | null;
   activatedAt: Date | null;
   archivedAt: Date | null;
+  /** Suppression logique (lot 54). */
+  deletedAt: Date | null;
+  /** Révision courante (dernier état enregistré). `null` : pas encore reprise. */
+  currentRevisionId: number | null;
+  currentRevisionNumber: number | null;
+  /** Statut d'origine avant le lot 54 (information). */
+  legacyStatus: string | null;
 }
 
 export interface ConfigVersionWithEntries extends ConfigVersion {
   /** Lignes des traitements OPÉRATIONNELS (T1, T2, T3, T4, T6). */
   entries: TreatmentConfig[];
+  /**
+   * Lot 54 : prompts maîtres figés dans la révision courante (référence et
+   * texte), par traitement. Absent : la version ne pilote pas ce prompt.
+   */
+  masterPrompts?: import('./config-snapshot').ConfigSnapshot['masterPrompts'];
   /**
    * Lot 49 (ticket 12) : traitements RETIRÉS encore présents dans cette
    * version historique (ex. `['T5']`). Conservés en base pour l'audit,
@@ -208,7 +230,7 @@ export const FIELD_LABELS: Readonly<Record<ConfigFieldKey, string>> = {
   masterPrompt: 'Prompt maître',
 };
 
-/** Configuration vide d'un traitement — base d'un premier Brouillon. */
+/** Configuration vide d'un traitement — base d'une première version. */
 export function emptyTreatmentConfig(treatment: Treatment): TreatmentConfig {
   return {
     treatment,

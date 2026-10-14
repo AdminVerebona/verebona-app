@@ -222,7 +222,7 @@ scenario('L44-O5', 'Sinistre = Opération CLAIM : fiche, multi-biens, indemnité
     const v = (await lire(maison.id, id)).body.version as number;
     await modifier(maison.id, id, { claim: { actions: [{ id: 'r1', title: 'Remplacement du plafond', status: 'REALISEE', invoiceDocumentId: facture }] }, version: v });
     const dto = (await lire(maison.id, id)).body;
-    expect(dto.costs).toEqual({ grossCents: 200000, indemnityCents: 120000, netCents: 80000 });
+    expect(dto.costs).toMatchObject({ grossCents: 200000, indemnityCents: 120000, netCents: 80000, complete: true });
     const [inter] = await sql<{ id: number; parent: number }[]>`SELECT id::int AS id, parent_operation_id::int AS parent FROM business_operations WHERE account_id = ${compte.id} AND type_code = 'INTERVENTION'`;
     expect(inter.parent).toBe(id);
     expect(await composantes(inter.id)).toEqual([{ kind: 'REALIZED_COST', amount_minor: 200000, target_asset_id: null }]);

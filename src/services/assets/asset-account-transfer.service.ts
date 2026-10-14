@@ -120,6 +120,8 @@ export const ASSET_SCOPED_TABLES: readonly string[] = [
   'asset_additional_infos', 'field_evidence', 'ai_field_updates', 'canonical_field_writes', 'rooms',
   'inconsistency_registry', 'reconciliation_runs', 'reconciliation_decisions', 'document_asset_identifier_changes',
   'agenda_item_removals', 'impact_queue',
+  // Lot 54D (TCO §3.5) : forfaits d'usage du bien — suivent le bien.
+  'asset_usage_budgets',
 ];
 
 /**
@@ -312,7 +314,11 @@ export async function transferAssetDataInTx(
     out.linksRemoved += (await rows(tx, sql`DELETE FROM document_asset_links WHERE file_id = ANY(${ints(M)}) AND account_id = ${from} RETURNING id`)).length;
     for (const [table, col] of FILE_SCOPED_TABLES) {
       if (!tables.has(table)) continue;
-      await maj(table, sql`UPDATE ${sql.identifier(table)} SET account_id = ${to} WHERE ${sql.identifier(col)} = ANY(${ints(M)}) AND account_id = ${from} RETURNING 1`);
+      // Lot 54 (SEC-02) : un « champ complété » d'un AUTRE bien resté dans
+      // l'ancien compte ne part pas avec le document (sinon relation
+      // intercomptes, refusée en base par la garde 0373).
+      const memeBien = table === 'ai_field_updates' ? sql` AND asset_id = ${A}` : sql``;
+      await maj(table, sql`UPDATE ${sql.identifier(table)} SET account_id = ${to} WHERE ${sql.identifier(col)} = ANY(${ints(M)}) AND account_id = ${from}${memeBien} RETURNING 1`);
     }
     // Cible d'un fait vers une entité restée dans l'ancien compte : neutralisée (U8 : cible inconnue, jamais une fuite).
     await maj('document_facts (cibles neutralisées)', sql`
@@ -338,6 +344,18 @@ export async function transferAssetDataInTx(
   }
 
   // ── 4. Données du bien ─────────────────────────────────────────────────────
+  // Lot 54 (SEC-02) : preuves du bien tirées d'un document qui RESTE dans
+  // l'ancien compte (hors arbre du bien : rattaché ailleurs depuis) —
+  // retirées comme celles des documents conservés (étape 2) : elles ne
+  // suivent jamais le bien vers l'autre compte.
+  out.evidenceWithdrawn += (await rows(tx, sql`
+    UPDATE field_evidence fe SET lifecycle_status = 'WITHDRAWN', superseded_at = now()
+     WHERE fe.asset_id = ${A} AND fe.account_id = ${from}
+       AND fe.source_type IN ('document', 'asset_file', 'file', 'web_link')
+       AND (fe.lifecycle_status IS NULL OR fe.lifecycle_status = 'ACTIVE')
+       AND NOT (fe.source_id = ANY(${ints(M)}))
+       AND EXISTS (SELECT 1 FROM asset_files f WHERE f.id = fe.source_id AND f.account_id = ${from})
+    RETURNING fe.id`)).length;
   for (const table of ASSET_SCOPED_TABLES) {
     if (!tables.has(table)) continue;
     await maj(table, sql`UPDATE ${sql.identifier(table)} SET account_id = ${to} WHERE asset_id = ${A} AND account_id = ${from} RETURNING 1`);
@@ -401,6 +419,13 @@ export async function transferAssetDataInTx(
   out.detachedAgendaItemIds = agStay;
   if (agMove.length) {
     await maj('agenda_items', sql`UPDATE agenda_items SET account_id = ${to}, updated_at = now() WHERE id = ANY(${ints(agMove)}) AND account_id = ${from} RETURNING 1`);
+    // Lot 54 (SEC-02) : document d'origine resté dans l'ancien compte — la
+    // référence d'origine est retirée (jamais une relation intercomptes).
+    await maj('agenda_items (origine retirée)', sql`
+      UPDATE agenda_items i SET origin_ref_id = NULL
+       WHERE i.id = ANY(${ints(agMove)}) AND i.origin_ref_type = 'asset_file' AND i.origin_ref_id IS NOT NULL
+         AND EXISTS (SELECT 1 FROM asset_files f WHERE f.id = i.origin_ref_id AND f.account_id <> ${to})
+      RETURNING 1`);
     await maj('agenda_occurrence_events', sql`UPDATE agenda_occurrence_events SET account_id = ${to} WHERE agenda_item_id = ANY(${ints(agMove)}) AND account_id = ${from} RETURNING 1`);
     await maj('agenda_data_conflicts', sql`
       UPDATE agenda_data_conflicts SET account_id = ${to}

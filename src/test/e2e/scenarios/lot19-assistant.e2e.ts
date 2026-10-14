@@ -73,7 +73,12 @@ scenario('LOT19-ASSISTANT', 'Reliquats assistant : chronologie persistée, compa
     // Après la réponse : l'événement « Révision » est supprimé, le document passe à un autre compte.
     await sql`DELETE FROM agenda_items WHERE id = ${revision}`;
     const autre = await compteDe();
-    await sql`UPDATE asset_files SET account_id = ${autre.id} WHERE id = ${f.id}`;
+    // Document passé dans un autre compte en laissant son rattachement (état historique, refusé en base
+    // depuis le lot 54, garde 0373) : reconstitué hors gardes.
+    await sql.begin(async (tx) => {
+      await tx`SET LOCAL session_replication_role = replica`;
+      await tx`UPDATE asset_files SET account_id = ${autre.id} WHERE id = ${f.id}`;
+    });
 
     const hist = await relire(c, r.conversationId!);
     const relue = hist.messages.find((m) => m.role === 'assistant')!.timeline_events_json!;

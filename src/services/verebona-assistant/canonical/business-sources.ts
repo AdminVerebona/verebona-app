@@ -27,8 +27,8 @@
 import { pgClient } from '@/db';
 import { listFields, getField } from '@/services/canonical/registry';
 import type { RetrievedSource } from '../types/sources';
-import type { BusinessSource, SemanticNeed, ValueNeed } from '../core/semantic-scope';
-import { textMatchesTerms } from '../core/semantic-scope';
+import type { BusinessSource, BusinessSourceDomain, SemanticNeed, SourceDomainDescriptor, ValueNeed } from '../core/semantic-scope';
+import { registerSourceDomain, textMatchesTerms } from '../core/semantic-scope';
 import {
   operationReader, operationLabel, operationNoun, operationSource, componentEurCents, formatEur, operationCostLines,
   type AssistantOperationRead,
@@ -86,6 +86,7 @@ export function operationBusinessSource(op: AssistantOperationRead, assetId: num
     text: [op.technicalLabel, op.provider, op.contractReference, ...op.documents.map((d) => `${d.title} ${d.documentTypeCode ?? ''}`)].filter(Boolean).join(' '),
     kindNoun: operationNoun(op.typeCode),
     assetId,
+    provider: op.provider ?? null,
     amountCents: dernier?.cents ?? (prevu.length ? prevu[prevu.length - 1] : null),
     endDate: fin,
     date,
@@ -118,6 +119,192 @@ export function fieldKeysFor(need: SemanticNeed): string[] {
   return [...keys].slice(0, MAX_FIELDS);
 }
 
+// ══════════════════════════════════════════════════════════════════════════
+// FOURNISSEURS DE SOURCES — lot 54E (#419 écart 8)
+//
+// Chaque domaine est un FOURNISSEUR enregistré (liste + relecture), avec son
+// descripteur (autorité, structuration) : un domaine futur (« À traiter »,
+// fournisseurs…) s'ajoute par `registerBusinessSourceProvider`, sans toucher
+// à la sélection (`selectInterpretations`), à l'étape sémantique ni à
+// l'orchestrateur.
+// ══════════════════════════════════════════════════════════════════════════
+
+export interface ProviderContext {
+  ids: number[];
+  nom: (id: number | null) => string | null;
+  need: SemanticNeed;
+}
+
+export interface BusinessSourceProvider {
+  domain: BusinessSourceDomain;
+  /** Descripteur du domaine (autorité, structuration) ; défaut : celui déjà déclaré. */
+  descriptor?: SourceDomainDescriptor;
+  /** Sources du périmètre ; `null` : domaine non applicable à ce besoin (non déclaré disponible). */
+  list(accountId: number, ctx: ProviderContext): Promise<BusinessSource[] | null>;
+  /** Relecture d'UNE source par sa référence (reprise), revalidée — `null` : refusée. */
+  read?(accountId: number, ref: string, ctx: { assetIds: number[]; nom: (id: number | null) => string | null }): Promise<BusinessSource | null>;
+}
+
+const operationProvider: BusinessSourceProvider = {
+  domain: 'operation',
+  async list(accountId, { ids, nom }) {
+    const out: BusinessSource[] = [];
+    const ops = await operationReader().listForAssistant(accountId, { assetIds: ids.length ? ids : null, includeUntargeted: ids.length === 0, limit: MAX_OPERATIONS });
+    for (const op of ops) {
+      if (op.status === 'CANCELLED' || op.typeCode === 'DISPOSAL') continue;
+      // Aucun bien disponible dans le périmètre : seules les opérations SANS
+      // bien sont exposées (jamais celles d'un bien archivé, vendu, transmis).
+      if (!ids.length && op.assetIds.length) continue;
+      const assetId = op.assetIds.find((a) => ids.includes(a)) ?? (ids.length === 1 ? ids[0] : op.assetIds[0] ?? null);
+      out.push(operationBusinessSource(op, assetId, nom(assetId)));
+    }
+    return out;
+  },
+  async read(accountId, ref, { assetIds, nom }) {
+    const id = Number(ref.split(':')[1]);
+    const [op] = await operationReader().listForAssistant(accountId, { ids: [id], limit: 1 });
+    if (!op || op.status === 'CANCELLED') return null;
+    // Bien de la reprise : l'opération doit le concerner (lien ACTIF).
+    // Sans bien de reprise : seule une opération sans bien est relisible.
+    if (assetIds.length ? !op.assetIds.some((x) => assetIds.includes(x)) : op.assetIds.length > 0) return null;
+    const assetId = op.assetIds.find((x) => assetIds.includes(x)) ?? op.assetIds[0] ?? null;
+    return operationBusinessSource(op, assetId, nom(assetId));
+  },
+};
+
+/** Source d'un champ canonique lu (pure). */
+function fieldSource(ref: string, assetId: number, key: string, r: NonNullable<Awaited<ReturnType<typeof readCanonicalField>>>, text: string): BusinessSource {
+  const def = getField(key);
+  return {
+    ref, domain: 'field', label: r.label, detail: r.display, text, fieldKey: key, assetId,
+    amountCents: def?.valueType === 'money_eur' && typeof r.value === 'number' ? Math.round(r.value * 100) : null,
+    date: def?.valueType === 'date' ? String(r.value).slice(0, 10) : null,
+    endDate: def?.valueType === 'date' && def.agendaEffect?.nature === 'DEADLINE' ? String(r.value).slice(0, 10) : null,
+    source: assetFieldSource(r),
+    meta: { display: r.display, assetName: r.assetName },
+  };
+}
+
+const fieldProvider: BusinessSourceProvider = {
+  domain: 'field',
+  async list(accountId, { ids, nom, need }) {
+    const keys = fieldKeysFor(need);
+    if (!keys.length || !ids.length || ids.length > 3) return null;
+    const out: BusinessSource[] = [];
+    for (const assetId of ids) {
+      for (const key of keys) {
+        const r = await readCanonicalField(accountId, assetId, key, { assetName: nom(assetId) }).catch(() => null);
+        if (!r || r.value == null || r.display == null) continue;
+        out.push(fieldSource(`field:${assetId}:${key}`, assetId, key, r, `${r.label} ${key}`));
+      }
+    }
+    return out;
+  },
+  async read(accountId, ref, { assetIds, nom }) {
+    const [, a, b] = ref.split(':');
+    const id = Number(a);
+    // Bien DISPONIBLE (règle unique) : la reprise passe `assetIds` résolus par le serveur.
+    if (!b || !assetIds.includes(id)) return null;
+    const r = await readCanonicalField(accountId, id, b, { assetName: nom(id) }).catch(() => null);
+    if (!r || r.value == null || r.display == null) return null;
+    return fieldSource(ref, id, b, r, r.label);
+  },
+};
+
+const agendaProvider: BusinessSourceProvider = {
+  domain: 'agenda',
+  async list(accountId, { ids, need }) {
+    if (!need.need || need.need === 'amount' || !need.terms.length) return null;
+    const rows = await listUpcomingAgenda(accountId, { assetIds: ids.length ? ids : undefined, windowDays: null, limit: 30 });
+    return rows.map((r): BusinessSource => ({
+      ref: `agenda:${r.id}`, domain: 'agenda', label: r.title, detail: frDate(r.date), text: r.title, assetId: ids.length === 1 ? ids[0] : null,
+      date: r.date, endDate: r.date,
+      source: { id: `agenda_${r.id}`, type: 'agenda_item', title: r.title, content: `${r.date}${r.forecast ? ' · date prévisionnelle' : ''}`, relevanceScore: 1, meta: { date: r.date, forecast: r.forecast } },
+      meta: { forecast: r.forecast },
+    }));
+  },
+  async read(accountId, ref, { assetIds }) {
+    const id = Number(ref.split(':')[1]);
+    const rows = (await pgClient.unsafe(
+      `SELECT i.id, i.title, to_char(i.start_date, 'YYYY-MM-DD') AS date FROM agenda_items i WHERE i.id = $1 AND i.account_id = $2
+          AND ($3::int[] IS NULL OR EXISTS (SELECT 1 FROM agenda_asset_links x WHERE x.agenda_item_id = i.id AND x.asset_id = ANY($3::int[])))`,
+      [id, accountId, assetIds.length ? assetIds : null] as never[],
+    )) as unknown as Array<{ id: number; title: string; date: string | null }>;
+    const r = rows[0];
+    return r ? {
+      ref, domain: 'agenda', label: r.title, detail: frDate(r.date), text: r.title, assetId: assetIds[0] ?? null, date: r.date, endDate: r.date,
+      source: { id: `agenda_${id}`, type: 'agenda_item', title: r.title, content: r.date ?? '', relevanceScore: 1, meta: { date: r.date } },
+    } : null;
+  },
+};
+
+const documentProvider: BusinessSourceProvider = {
+  domain: 'document',
+  async list(accountId, { ids, need }) {
+    if (!need.terms.length) return null;
+    const docs = (await pgClient.unsafe(
+      `SELECT f.id, coalesce(nullif(f.retained_title, ''), f.original_filename, 'Document') AS title, f.supplier,
+              to_char(f.document_date, 'YYYY-MM-DD') AS date, f.amount_cents AS "amountCents", f.document_type_code AS type
+         FROM asset_files f
+        WHERE f.account_id = $1 AND f.deleted_at IS NULL AND (f.amount_cents IS NOT NULL OR f.document_date IS NOT NULL)
+          AND ($2::int[] IS NULL
+               OR EXISTS (SELECT 1 FROM document_asset_links l WHERE l.account_id = f.account_id AND l.file_id = f.id
+                           AND l.status = 'ACTIVE' AND l.asset_id = ANY($2::int[]))
+               OR f.asset_id = ANY($2::int[]) OR f.linked_asset_id = ANY($2::int[]))
+        ORDER BY f.document_date DESC NULLS LAST, f.id DESC LIMIT ${MAX_DOCUMENTS}`,
+      [accountId, ids.length ? ids : null] as never[],
+    )) as unknown as Array<{ id: number; title: string; supplier: string | null; date: string | null; amountCents: number | null; type: string | null }>;
+    return docs.map((d): BusinessSource => {
+      const id = Number(d.id);
+      return {
+        ref: `document:${id}`, domain: 'document', label: d.title,
+        detail: [d.supplier, frDate(d.date), d.amountCents != null ? formatEur(Number(d.amountCents)) : null].filter(Boolean).join(' · ') || null,
+        text: `${d.title} ${d.supplier ?? ''} ${d.type ?? ''}`, assetId: ids.length === 1 ? ids[0] : null, provider: d.supplier ?? null,
+        amountCents: d.amountCents == null ? null : Number(d.amountCents), date: d.date,
+        source: { id: `doc_${id}`, type: 'document', title: d.title, content: `${d.title}${d.date ? ` · ${d.date}` : ''}${d.amountCents != null ? ` · montant : ${formatEur(Number(d.amountCents))}` : ''}`, relevanceScore: 1, meta: { fileId: id, date: d.date } },
+      };
+    });
+  },
+  async read(accountId, ref, { assetIds }) {
+    const id = Number(ref.split(':')[1]);
+    const rows = (await pgClient.unsafe(
+      `SELECT f.id, coalesce(nullif(f.retained_title, ''), f.original_filename, 'Document') AS title, f.supplier,
+              to_char(f.document_date, 'YYYY-MM-DD') AS date, f.amount_cents AS "amountCents"
+         FROM asset_files f WHERE f.id = $1 AND f.account_id = $2 AND f.deleted_at IS NULL
+          AND ($3::int[] IS NULL
+               OR EXISTS (SELECT 1 FROM document_asset_links l WHERE l.account_id = f.account_id AND l.file_id = f.id
+                           AND l.status = 'ACTIVE' AND l.asset_id = ANY($3::int[]))
+               OR f.asset_id = ANY($3::int[]) OR f.linked_asset_id = ANY($3::int[]))`,
+      [id, accountId, assetIds.length ? assetIds : null] as never[],
+    )) as unknown as Array<{ id: number; title: string; supplier: string | null; date: string | null; amountCents: number | null }>;
+    const d = rows[0];
+    return d ? {
+      ref, domain: 'document', label: d.title, detail: [d.supplier, frDate(d.date)].filter(Boolean).join(' · ') || null, text: d.title,
+      assetId: assetIds[0] ?? null, provider: d.supplier ?? null, amountCents: d.amountCents == null ? null : Number(d.amountCents), date: d.date,
+      source: { id: `doc_${id}`, type: 'document', title: d.title, content: `${d.title}${d.date ? ` · ${d.date}` : ''}`, relevanceScore: 1, meta: { fileId: id, date: d.date } },
+    } : null;
+  },
+};
+
+/** Fournisseurs enregistrés, dans l'ordre de lecture (aucune priorité de sélection). */
+const PROVIDERS: BusinessSourceProvider[] = [operationProvider, fieldProvider, agendaProvider, documentProvider];
+
+/**
+ * Enregistre (ou remplace) le fournisseur d'un domaine — extensibilité
+ * (#419 écart 8). Rend une fonction de retrait (tests, désactivation).
+ */
+export function registerBusinessSourceProvider(p: BusinessSourceProvider): () => void {
+  const i = PROVIDERS.findIndex((x) => x.domain === p.domain);
+  const precedent = i >= 0 ? PROVIDERS[i] : null;
+  if (i >= 0) PROVIDERS[i] = p; else PROVIDERS.push(p);
+  if (p.descriptor) registerSourceDomain(p.descriptor);
+  return () => {
+    const j = PROVIDERS.indexOf(p);
+    if (j < 0) return;
+    if (precedent) PROVIDERS[j] = precedent; else PROVIDERS.splice(j, 1);
+  };
+}
+
 /**
  * Sources métier d'un périmètre (biens disponibles déjà résolus par le
  * serveur). Chaque fournisseur est indépendant : une lecture en échec ne
@@ -132,90 +319,14 @@ export async function listBusinessSources(accountId: number, req: {
   const nom = (id: number | null) => (id != null ? req.assetNames?.[id] ?? null : null);
   const domains: string[] = [];
   const out: BusinessSource[] = [];
-
-  // ── Opérations (source privilégiée) ────────────────────────────────────
-  try {
-    const ops = await operationReader().listForAssistant(accountId, { assetIds: ids.length ? ids : null, includeUntargeted: ids.length === 0, limit: MAX_OPERATIONS });
-    domains.push('operation');
-    for (const op of ops) {
-      if (op.status === 'CANCELLED' || op.typeCode === 'DISPOSAL') continue;
-      // Aucun bien disponible dans le périmètre : seules les opérations SANS
-      // bien sont exposées (jamais celles d'un bien archivé, vendu, transmis).
-      if (!ids.length && op.assetIds.length) continue;
-      const assetId = op.assetIds.find((a) => ids.includes(a)) ?? (ids.length === 1 ? ids[0] : op.assetIds[0] ?? null);
-      out.push(operationBusinessSource(op, assetId, nom(assetId)));
-    }
-  } catch (e) {
-    console.warn('[assistant] sources métier : opérations illisibles —', (e as Error).message);
-  }
-
-  // ── Champs du registre (faits demandés, libellés pertinents) ───────────
-  const keys = fieldKeysFor(req.need);
-  if (keys.length && ids.length && ids.length <= 3) {
-    domains.push('field');
-    for (const assetId of ids) {
-      for (const key of keys) {
-        const r = await readCanonicalField(accountId, assetId, key, { assetName: nom(assetId) }).catch(() => null);
-        if (!r || r.value == null || r.display == null) continue;
-        const def = getField(key);
-        out.push({
-          ref: `field:${assetId}:${key}`, domain: 'field', label: r.label, detail: r.display, text: `${r.label} ${key}`, fieldKey: key, assetId,
-          amountCents: def?.valueType === 'money_eur' && typeof r.value === 'number' ? Math.round(r.value * 100) : null,
-          date: def?.valueType === 'date' ? String(r.value).slice(0, 10) : null,
-          endDate: def?.valueType === 'date' && def.agendaEffect?.nature === 'DEADLINE' ? String(r.value).slice(0, 10) : null,
-          source: assetFieldSource(r),
-          meta: { display: r.display, assetName: r.assetName },
-        });
-      }
-    }
-  }
-
-  // ── Agenda (dates) ──────────────────────────────────────────────────────
-  if (req.need.need && req.need.need !== 'amount' && req.need.terms.length) {
+  for (const p of PROVIDERS) {
     try {
-      const rows = await listUpcomingAgenda(accountId, { assetIds: ids.length ? ids : undefined, windowDays: null, limit: 30 });
-      domains.push('agenda');
-      for (const r of rows) {
-        out.push({
-          ref: `agenda:${r.id}`, domain: 'agenda', label: r.title, detail: frDate(r.date), text: r.title, assetId: ids.length === 1 ? ids[0] : null,
-          date: r.date, endDate: r.date,
-          source: { id: `agenda_${r.id}`, type: 'agenda_item', title: r.title, content: `${r.date}${r.forecast ? ' · date prévisionnelle' : ''}`, relevanceScore: 1, meta: { date: r.date, forecast: r.forecast } },
-          meta: { forecast: r.forecast },
-        });
-      }
+      const r = await p.list(accountId, { ids, nom, need: req.need });
+      if (!r) continue;
+      domains.push(p.domain);
+      out.push(...r);
     } catch (e) {
-      console.warn('[assistant] sources métier : agenda illisible —', (e as Error).message);
-    }
-  }
-
-  // ── Documents du périmètre (montant ou date) ────────────────────────────
-  if (req.need.terms.length) {
-    try {
-      const docs = (await pgClient.unsafe(
-        `SELECT f.id, coalesce(nullif(f.retained_title, ''), f.original_filename, 'Document') AS title, f.supplier,
-                to_char(f.document_date, 'YYYY-MM-DD') AS date, f.amount_cents AS "amountCents", f.document_type_code AS type
-           FROM asset_files f
-          WHERE f.account_id = $1 AND f.deleted_at IS NULL AND (f.amount_cents IS NOT NULL OR f.document_date IS NOT NULL)
-            AND ($2::int[] IS NULL
-                 OR EXISTS (SELECT 1 FROM document_asset_links l WHERE l.account_id = f.account_id AND l.file_id = f.id
-                             AND l.status = 'ACTIVE' AND l.asset_id = ANY($2::int[]))
-                 OR f.asset_id = ANY($2::int[]) OR f.linked_asset_id = ANY($2::int[]))
-          ORDER BY f.document_date DESC NULLS LAST, f.id DESC LIMIT ${MAX_DOCUMENTS}`,
-        [accountId, ids.length ? ids : null] as never[],
-      )) as unknown as Array<{ id: number; title: string; supplier: string | null; date: string | null; amountCents: number | null; type: string | null }>;
-      domains.push('document');
-      for (const d of docs) {
-        const id = Number(d.id);
-        out.push({
-          ref: `document:${id}`, domain: 'document', label: d.title,
-          detail: [d.supplier, frDate(d.date), d.amountCents != null ? formatEur(Number(d.amountCents)) : null].filter(Boolean).join(' · ') || null,
-          text: `${d.title} ${d.supplier ?? ''} ${d.type ?? ''}`, assetId: ids.length === 1 ? ids[0] : null,
-          amountCents: d.amountCents == null ? null : Number(d.amountCents), date: d.date,
-          source: { id: `doc_${id}`, type: 'document', title: d.title, content: `${d.title}${d.date ? ` · ${d.date}` : ''}${d.amountCents != null ? ` · montant : ${formatEur(Number(d.amountCents))}` : ''}`, relevanceScore: 1, meta: { fileId: id, date: d.date } },
-        });
-      }
-    } catch (e) {
-      console.warn('[assistant] sources métier : documents illisibles —', (e as Error).message);
+      console.warn(`[assistant] sources métier : ${p.domain} illisible —`, (e as Error).message);
     }
   }
   return { sources: out, domains };
@@ -227,64 +338,13 @@ export async function listBusinessSources(accountId: number, req: {
  * Le choix de l'utilisateur n'est jamais cru sur parole.
  */
 export async function readBusinessSource(accountId: number, ref: string, ctx: { assetIds: number[]; assetNames?: Record<number, string> } = { assetIds: [] }): Promise<BusinessSource | null> {
-  const [domain, a, b] = ref.split(':');
+  const [domain, a] = ref.split(':');
   const id = Number(a);
   if (!Number.isSafeInteger(id) || id <= 0) return null;
+  const p = PROVIDERS.find((x) => x.domain === domain);
+  if (!p?.read) return null;
   const nom = (x: number | null) => (x != null ? ctx.assetNames?.[x] ?? null : null);
-  if (domain === 'operation') {
-    const [op] = await operationReader().listForAssistant(accountId, { ids: [id], limit: 1 });
-    if (!op || op.status === 'CANCELLED') return null;
-    // Bien de la reprise : l'opération doit le concerner (lien ACTIF).
-    // Sans bien de reprise : seule une opération sans bien est relisible.
-    if (ctx.assetIds.length ? !op.assetIds.some((x) => ctx.assetIds.includes(x)) : op.assetIds.length > 0) return null;
-    const assetId = op.assetIds.find((x) => ctx.assetIds.includes(x)) ?? op.assetIds[0] ?? null;
-    return operationBusinessSource(op, assetId, nom(assetId));
-  }
-  if (domain === 'field' && b) {
-    // Bien DISPONIBLE (règle unique) : la reprise passe `assetIds` résolus par le serveur.
-    if (!ctx.assetIds.includes(id)) return null;
-    const r = await readCanonicalField(accountId, id, b, { assetName: nom(id) }).catch(() => null);
-    if (!r || r.value == null || r.display == null) return null;
-    const def = getField(b);
-    return {
-      ref, domain: 'field', label: r.label, detail: r.display, text: r.label, fieldKey: b, assetId: id,
-      amountCents: def?.valueType === 'money_eur' && typeof r.value === 'number' ? Math.round(r.value * 100) : null,
-      date: def?.valueType === 'date' ? String(r.value).slice(0, 10) : null,
-      endDate: def?.valueType === 'date' && def.agendaEffect?.nature === 'DEADLINE' ? String(r.value).slice(0, 10) : null,
-      source: assetFieldSource(r), meta: { display: r.display, assetName: r.assetName },
-    };
-  }
-  if (domain === 'agenda') {
-    const rows = (await pgClient.unsafe(
-      `SELECT i.id, i.title, to_char(i.start_date, 'YYYY-MM-DD') AS date FROM agenda_items i WHERE i.id = $1 AND i.account_id = $2
-          AND ($3::int[] IS NULL OR EXISTS (SELECT 1 FROM agenda_asset_links x WHERE x.agenda_item_id = i.id AND x.asset_id = ANY($3::int[])))`,
-      [id, accountId, ctx.assetIds.length ? ctx.assetIds : null] as never[],
-    )) as unknown as Array<{ id: number; title: string; date: string | null }>;
-    const r = rows[0];
-    return r ? {
-      ref, domain: 'agenda', label: r.title, detail: frDate(r.date), text: r.title, assetId: ctx.assetIds[0] ?? null, date: r.date, endDate: r.date,
-      source: { id: `agenda_${id}`, type: 'agenda_item', title: r.title, content: r.date ?? '', relevanceScore: 1, meta: { date: r.date } },
-    } : null;
-  }
-  if (domain === 'document') {
-    const rows = (await pgClient.unsafe(
-      `SELECT f.id, coalesce(nullif(f.retained_title, ''), f.original_filename, 'Document') AS title, f.supplier,
-              to_char(f.document_date, 'YYYY-MM-DD') AS date, f.amount_cents AS "amountCents"
-         FROM asset_files f WHERE f.id = $1 AND f.account_id = $2 AND f.deleted_at IS NULL
-          AND ($3::int[] IS NULL
-               OR EXISTS (SELECT 1 FROM document_asset_links l WHERE l.account_id = f.account_id AND l.file_id = f.id
-                           AND l.status = 'ACTIVE' AND l.asset_id = ANY($3::int[]))
-               OR f.asset_id = ANY($3::int[]) OR f.linked_asset_id = ANY($3::int[]))`,
-      [id, accountId, ctx.assetIds.length ? ctx.assetIds : null] as never[],
-    )) as unknown as Array<{ id: number; title: string; supplier: string | null; date: string | null; amountCents: number | null }>;
-    const d = rows[0];
-    return d ? {
-      ref, domain: 'document', label: d.title, detail: [d.supplier, frDate(d.date)].filter(Boolean).join(' · ') || null, text: d.title,
-      assetId: ctx.assetIds[0] ?? null, amountCents: d.amountCents == null ? null : Number(d.amountCents), date: d.date,
-      source: { id: `doc_${id}`, type: 'document', title: d.title, content: `${d.title}${d.date ? ` · ${d.date}` : ''}`, relevanceScore: 1, meta: { fileId: id, date: d.date } },
-    } : null;
-  }
-  return null;
+  return p.read(accountId, ref, { assetIds: ctx.assetIds, nom });
 }
 
 /** Réponse SERVEUR depuis une source métier choisie (pure, testée) — lecture canonique, aucune génération. */

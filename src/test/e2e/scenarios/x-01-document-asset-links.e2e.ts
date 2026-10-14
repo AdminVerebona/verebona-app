@@ -93,10 +93,11 @@ scenario('X-01', 'document_asset_links : déclencheur, rattrapage, liens multi-b
     for (const { prosrc } of src) expect(prosrc).not.toMatch(/EXCEPTION\s+WHEN/i);
   });
 
-  it('colonne vers un bien d’un autre compte : aucun lien, aucune erreur', async () => {
+  it('colonne vers un bien d’un autre compte : aucun lien (écriture refusée en base depuis le lot 54, garde 0373)', async () => {
     const [c1, c2] = [await make.account(), await make.account()];
     const etranger = await make.asset(c2);
-    const f = await make.assetFile(c1, { assetId: etranger.id });
+    const f = await make.assetFile(c1, { assetId: null });
+    await expect(sql`UPDATE asset_files SET asset_id = ${etranger.id} WHERE id = ${f.id}`).rejects.toThrow(/CROSS_ACCOUNT_LINK/);
     expect(await liens(f.id)).toEqual([]);
   });
 

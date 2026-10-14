@@ -5,6 +5,7 @@
  */
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { processAgendaCandidates, creationAuthorization, AUTHORIZED_CREATION_TYPES } from '../agenda-intelligence.service';
+import { t4Simule } from './support/t4-simule';
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -12,7 +13,7 @@ const cand = (over: Record<string, unknown> = {}) => ({
   title: 'Contrôle technique', date: '2027-05-12', confidence: 'certain' as const, excerpt: 'avant le 12/05/2027', ...over,
 });
 const run = (candidates: unknown[]) => processAgendaCandidates({
-  accountId: 1, assetId: 3, candidates: candidates as never, existing: [], today: '2026-09-29',
+  accountId: 1, assetId: 3, candidates: candidates as never, existing: [], today: '2026-09-29', decide: t4Simule,
 });
 
 describe('creationAuthorization', () => {
@@ -65,6 +66,7 @@ describe('processAgendaCandidates', () => {
 
   it('classification détaillée portée par la décision (T4-10)', async () => {
     const [d] = await run([cand({ documentType: 'FACTURE', originFieldKey: 'nextInspection' })]);
-    expect(d.classification).toMatchObject({ category: 'action', source: 'registry', requiresQualification: false });
+    // Lot 54 : la classification vient de la décision T4 (le registre n'est plus qu'un indice).
+    expect(d.classification).toMatchObject({ category: 'action', source: 'model', requiresQualification: false });
   });
 });

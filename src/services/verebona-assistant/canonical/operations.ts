@@ -32,6 +32,8 @@ import type { BusinessOperationTypeCode } from '@/services/business-operations/m
 import { CLAIM_STATUS_OPTIONS, CLAIM_TYPE_OPTIONS } from '@/lib/assets/additional-infos';
 import type { RetrievedSource } from '../types/sources';
 import { classifyExpenseDocument, expenseThemeOf, isPaymentProofType, type ExpenseTheme } from './expense-classes';
+// Lot 54D (§4.1) : règles économiques du moteur canonique PARTAGÉ (T2, TCO, Sinistres, exports).
+import { attributeComponent, componentEurMinor, COST_SIGN } from '@/services/business-operations/finance/engine';
 import { assetFieldSourceId, claimSourceId } from './source-ids';
 
 export type { AssistantOperationRead };
@@ -117,8 +119,7 @@ export function operationTheme(op: Pick<AssistantOperationRead, 'typeCode' | 'te
 
 /** Montant EUR d'une composante : euros, ou contre-valeur EXPLICITE ; sinon null (devise à part). */
 export function componentEurCents(c: { amountMinor: number; currency: string; amountEurCents: number | null }): number | null {
-  if (c.currency === 'EUR') return c.amountMinor;
-  return c.amountEurCents ?? null;
+  return componentEurMinor(c);
 }
 
 /** « 1 200,00 CHF » : montant d'origine, unités mineures selon la devise, jamais converti. */
@@ -210,15 +211,15 @@ export function operationCostLines(
       primaryFileId: documentPrincipal(op)?.fileId ?? null, primaryTitle: documentPrincipal(op)?.title ?? null,
     };
     for (const c of op.components) {
-      const attrib = global ? 'in'
-        : c.targetAssetId != null ? (scope.has(c.targetAssetId) ? 'in' : 'out')
-          : op.assetIds.every((a) => scope.has(a)) ? 'in' : 'unallocated';
+      // Lot 54D : attribution du moteur partagé (C10) — mêmes règles que le TCO et les Sinistres.
+      const a = attributeComponent(c, op.assetIds, global ? null : scope);
+      const attrib = a === 'IN' ? 'in' : a === 'OUT' ? 'out' : 'unallocated';
       if (attrib === 'out') continue;
       const date = c.economicDate ?? line.date;
       if (ctx.year != null && date && Number(date.slice(0, 4)) !== ctx.year) continue;
       line.noAmount = false;
       const eur = componentEurCents(c);
-      const sign: 1 | -1 = c.kind === 'REDUCTION' || c.kind === 'REFUND' ? -1 : 1;
+      const sign: 1 | -1 = COST_SIGN[c.kind] === -1 && c.kind !== 'INDEMNITY' && c.kind !== 'PROCEED' ? -1 : 1;
       if (c.kind === 'PROCEED') { if (eur != null && attrib === 'in') line.proceedCents += eur; continue; }
       if (c.kind === 'FORECAST_COST') {
         // Le devis d'une intervention réalisée reste historique (C12) : seul
@@ -334,13 +335,29 @@ export function summarizeOperationCosts(lines: readonly OperationCostLine[], the
   return { entries, part };
 }
 
-/** Opérations du périmètre d'une question de coût (bornée, indexée). */
+/**
+ * Lot 54D (E02) : lecture EXHAUSTIVE d'un périmètre (pages sur curseur
+ * stable) ; `complete` faux seulement au-delà du garde-fou mémoire — jamais
+ * une troncature silencieuse à 500.
+ */
+export async function readAllOperations(accountId: number, filters: Omit<NonNullable<Parameters<BusinessOperationReadService['listForAssistant']>[1]>, 'limit' | 'afterId'>): Promise<{ operations: AssistantOperationRead[]; complete: boolean }> {
+  const r = operationReader();
+  if (typeof r.listAllForAssistant === 'function') {
+    const x = await r.listAllForAssistant(accountId, filters);
+    return { operations: x.operations, complete: x.complete };
+  }
+  const ops = await r.listForAssistant(accountId, { ...filters, limit: 500 });
+  return { operations: ops, complete: ops.length < 500 };
+}
+
+/** Opérations du périmètre d'une question de coût — exhaustives (lot 54D, E02). */
 export async function loadScopeOperations(accountId: number, assetIds: readonly number[]): Promise<AssistantOperationRead[]> {
-  return operationReader().listForAssistant(accountId, {
-    assetIds: assetIds.length ? assetIds : null,
-    includeUntargeted: assetIds.length === 0,
-    limit: 500,
-  });
+  return (await loadScopeOperationsRead(accountId, assetIds)).operations;
+}
+
+/** Comme `loadScopeOperations`, avec l'indicateur de lecture complète (E02). */
+export async function loadScopeOperationsRead(accountId: number, assetIds: readonly number[]): Promise<{ operations: AssistantOperationRead[]; complete: boolean }> {
+  return readAllOperations(accountId, { assetIds: assetIds.length ? assetIds : null, includeUntargeted: assetIds.length === 0 });
 }
 
 // ── Sources (ouverture : document ou sinistre, jamais une « Opération ») ──
@@ -546,7 +563,8 @@ export interface PaymentsRead {
  * Jamais confondues avec le coût (P16).
  */
 export async function readPayments(accountId: number, opts: { assetIds: readonly number[]; year?: number | null }): Promise<PaymentsRead> {
-  const ops = await operationReader().listForAssistant(accountId, { assetIds: opts.assetIds.length ? opts.assetIds : null, includeUntargeted: opts.assetIds.length === 0, limit: 500 });
+  // Lot 54D (E02) : toutes les Opérations du périmètre (curseur), plus de borne à 500.
+  const { operations: ops } = await readAllOperations(accountId, { assetIds: opts.assetIds.length ? opts.assetIds : null, includeUntargeted: opts.assetIds.length === 0 });
   const proofs = new Map<number, PaymentsRead['proofs'][number]>();
   for (const o of ops) {
     for (const d of o.documents) {

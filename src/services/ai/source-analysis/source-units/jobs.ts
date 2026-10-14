@@ -33,7 +33,8 @@
  */
 import { buildSourceUnits } from './build-units';
 import {
-  buildCompletenessReport, computeCoverage, selectRepairUnits, SourceUnitLinker, withRepairStates, type EvidenceRef,
+  buildCompletenessReport, computeCoverage, resolveTableParents, selectRepairUnits, selectSourceRereadUnits, SourceUnitLinker, withRepairStates,
+  type EvidenceRef,
 } from './coverage';
 import {
   loadDocumentCoverage, loadDocumentSourceUnits, loadUnresolvedDocumentFacts, maxCompletenessRetries, sourceLayerReady, writeSourceLayer,
@@ -42,8 +43,11 @@ import {
 import {
   SOURCE_LAYER_VERSION, type CoveredSourceUnit, type SourceLayer, type T1CoverageDiagnostics, type UnresolvedFactRecord,
 } from './types';
-import { verificationAutoRetryDue } from './verification-followup';
-import type { ExtractedTable, VisualObservation } from '../types';
+import { needsSourceRetryDue, verificationAutoRetryDue } from './verification-followup';
+import type { AnalysisContext, ExtractedTable, SourceInput, VisualObservation } from '../types';
+import type { AccountCapabilities } from '@/services/account-capabilities.service';
+import type { AssetFamily as V2AssetFamily } from '@/lib/referential/v2';
+import type { SourceRereadCall, SourceRereadResult } from './source-reread';
 import type { T1AnalyzeDocumentOutput, T1Fact } from '../master/t1-contract';
 
 type Row = Record<string, unknown>;
@@ -321,11 +325,17 @@ function storedDiagnostics(v: Record<string, unknown> | null | undefined) {
       verified: [], missing: nums(d.pagesMissing), unverified: nums(d.pagesUnverified), scanned: nums(d.pagesScanned), reread: nums(d.pagesReread),
     }
     : null;
+  if (verification && Array.isArray(d.pagesCitedUnverified)) (verification as { citedUnverified?: number[] }).citedUnverified = nums(d.pagesCitedUnverified);
   return {
     verification,
-    normalisation: { truncations: Number(d.truncations ?? 0), originalsPreserved: Number(d.originalsPreserved ?? 0), losses: Number(d.normalisationLosses ?? 0) },
+    normalisation: {
+      truncations: Number(d.truncations ?? 0), originalsPreserved: Number(d.originalsPreserved ?? 0), losses: Number(d.normalisationLosses ?? 0),
+      prunedFields: Number(d.prunedFields ?? 0), prunedOriginalsPreserved: Number(d.prunedOriginalsPreserved ?? 0),
+    },
     pagesVerified: Number(d.pagesVerified ?? 0),
     continuationRuns: Number(d.continuationRuns ?? 0),
+    // Lot 54G : relectures du fichier (cumul du document).
+    sourceReread: { runs: Number(d.sourceRereads ?? 0), failed: Number(d.sourceRereadsFailed ?? 0), resolved: Number(d.sourceRereadResolved ?? 0) },
   };
 }
 
@@ -371,11 +381,18 @@ async function retryDocument(p: {
       await requeueDocumentForReread({ fileId: p.fileId, accountId: p.accountId, attempt: p.attempt, origin: 't1-completeness-retry', result: 'REQUEUED_T1' });
       return 'requeued';
     }
-    await pgClient.unsafe(
-      `UPDATE document_extraction_coverage SET next_retry_at = NULL, last_retry_at = NOW(), last_retry_result = 'MANUAL_CHECK_REQUIRED' WHERE file_id = $1`,
-      [p.fileId] as never[],
-    ).catch(() => undefined);
-    return 'repaired';
+    // Lot 54G (point 2) : une observation NEEDS_SOURCE (image, scan) a une VRAIE reprise :
+    // relecture ciblée du fichier, même si la couverture globale reste non vérifiable.
+    const aRelire = p.attempt <= p.maxRetries
+      ? selectSourceRereadUnits((await loadDocumentSourceUnits(p.fileId, { accountId: p.accountId, kinds: ['VISUAL_OBSERVATION'], limit: 5_000 })).map(toCovered), sourceRereadCap(p.env))
+      : [];
+    if (aRelire.length === 0) {
+      await pgClient.unsafe(
+        `UPDATE document_extraction_coverage SET next_retry_at = NULL, last_retry_at = NOW(), last_retry_result = 'MANUAL_CHECK_REQUIRED' WHERE file_id = $1`,
+        [p.fileId] as never[],
+      ).catch(() => undefined);
+      return 'repaired';
+    }
   }
 
   const stored = await loadDocumentSourceUnits(p.fileId, { accountId: p.accountId, limit: 50_000 });
@@ -400,7 +417,12 @@ async function retryDocument(p: {
   let failed = new Map<string, { reason: string; retryable: boolean }>();
   let attempted: string[] = [];
   let notAttempted: string[] = [];
-  if (cibles.length > 0 && (p.attempt <= p.maxRetries || continuation)) {
+  // Lot 54G (point 2) : unités NEEDS_SOURCE — relecture du FICHIER (bornée, comptée à part).
+  const sourceCap = sourceRereadCap(p.env);
+  const aRelire = p.attempt <= p.maxRetries ? selectSourceRereadUnits(units, sourceCap) : [];
+  let relecture: SourceRereadResult | null = null;
+  const textuelle = cibles.length > 0 && (p.attempt <= p.maxRetries || continuation);
+  if (aRelire.length > 0 || textuelle) {
     const [{ loadAnalysisContext }, { getAccountCapabilities }, { loadAssetFamilies }, step] = await Promise.all([
       import('../pipeline'),
       import('@/services/account-capabilities.service'),
@@ -409,19 +431,28 @@ async function retryDocument(p: {
     ]);
     const ctx = await loadAnalysisContext(p.accountId, p.assetId);
     const capabilities = await getAccountCapabilities(p.accountId);
-    const r = await runRepairPass({
-      input: {
-        sourceType: 'file', sourceIds: [p.fileId], accountId: p.accountId, userId: p.userId,
-        mimeTypes: ['text/plain'], displayNames: [p.title ?? `document ${p.fileId}`], linkedAssetId: p.assetId,
-      },
-      groupIndices: [0], ctx: { ...ctx, capabilities }, capabilities,
-      v2Families: await loadAssetFamilies(p.assetId ? [p.assetId] : []),
-      units: cibles, maxCalls: repairSettings(p.env).maxCalls, pass: 1 + p.attempt, call: (c) => step.callAnalyzeDocument(c),
-    });
-    facts.push(...r.facts);
-    failed = r.failed;
-    attempted = r.attempted;
-    notAttempted = r.notAttempted;
+    const v2Families = await loadAssetFamilies(p.assetId ? [p.assetId] : []);
+    if (aRelire.length > 0) {
+      relecture = await rereadSource({ ...p, targets: aRelire, ctx: { ...ctx, capabilities }, capabilities, v2Families, call: (c) => step.callAnalyzeDocument(c) });
+      facts.push(...relecture.facts);
+      console.info(`[t1-source-reread] fichier ${p.fileId} : ${aRelire.length} unité(s) NEEDS_SOURCE, ${relecture.calls} appel(s), `
+        + `${relecture.resolved.length} levée(s)${relecture.failed ? `, échec : ${relecture.error}` : ''}`);
+    }
+    if (textuelle) {
+      const r = await runRepairPass({
+        input: {
+          sourceType: 'file', sourceIds: [p.fileId], accountId: p.accountId, userId: p.userId,
+          mimeTypes: ['text/plain'], displayNames: [p.title ?? `document ${p.fileId}`], linkedAssetId: p.assetId,
+        },
+        groupIndices: [0], ctx: { ...ctx, capabilities }, capabilities,
+        v2Families,
+        units: cibles, maxCalls: repairSettings(p.env).maxCalls, pass: 1 + p.attempt, call: (c) => step.callAnalyzeDocument(c),
+      });
+      facts.push(...r.facts);
+      failed = r.failed;
+      attempted = r.attempted;
+      notAttempted = r.notAttempted;
+    }
   }
 
   // Faits ajoutés : projection (registre, cibles vérifiées), provenance, écriture.
@@ -437,7 +468,11 @@ async function retryDocument(p: {
     for (const id of new Set((f.sourceUnitIds ?? []).map((x) => x.replace(/:cell:\d+$/, '')))) confirmations.set(id, (confirmations.get(id) ?? 0) + 1);
   }
   const tentees = new Set(attempted);
-  let majs: CoveredSourceUnit[] = units.map((u) => {
+  const relues = new Set(relecture?.attempted ?? []);
+  // Lot 54G : relecture du fichier — levée seulement sur preuve nouvelle, sinon incertitude MAINTENUE.
+  const apresRelecture = relecture ? (await import('./source-reread')).applySourceReread(units, relecture) : units;
+  let majs: CoveredSourceUnit[] = apresRelecture.map((u) => {
+    if (relues.has(u.sourceUnitId)) return u;
     if (!tentees.has(u.sourceUnitId)) return u;
     const base = { ...u, repairAttempts: u.repairAttempts + 1 };
     const f = failed.get(u.sourceUnitId);
@@ -455,11 +490,13 @@ async function retryDocument(p: {
     if (u.status === 'UNCERTAIN') return base;
     return { ...base, status: 'UNRESOLVED', reason: u.salient ? 'not_extracted' : 'not_structured' };
   });
+  // Lot 54G (point 4) : parent TABLE recalculé depuis la couverture réelle de ses lignes.
+  majs = resolveTableParents(majs);
   const progression = attempted.some((id) => units.find((u) => u.sourceUnitId === id)?.repairState === 'PENDING') && failed.size === 0;
-  const consomme = !(continuation && progression);
+  const consomme = !(continuation && progression) || relecture !== null;
   const tentativesStockees = consomme ? p.attempt : p.attempt - 1;
   const runs = diag.continuationRuns + (continuation && attempted.length > 0 ? 1 : 0);
-  majs = withRepairStates(majs, { attempted: tentees, pending: new Set(notAttempted), cap });
+  majs = withRepairStates(majs, { attempted: new Set([...tentees, ...relues]), pending: new Set(notAttempted), cap, sourceCap });
   if (runs >= continuationMaxRuns(p.env)) {
     // Plafond de continuation atteint : les unités restantes sont « plafond atteint », explicitement.
     majs = majs.map((u) => (u.repairState === 'PENDING' ? { ...u, repairState: 'EXHAUSTED' } : u));
@@ -488,13 +525,27 @@ async function retryDocument(p: {
     retryAllowed,
     verification: diag.verification ? { ...diag.verification, verified: Array.from({ length: diag.pagesVerified }, (_, i) => i + 1) } : null,
     normalisation: diag.normalisation,
+    sourceReread: {
+      runs: diag.sourceReread.runs + (relecture ? 1 : 0),
+      failed: diag.sourceReread.failed + (relecture && (relecture.failed || relecture.resolved.length < relecture.attempted.length) ? 1 : 0),
+      resolved: diag.sourceReread.resolved + (relecture?.resolved.length ?? 0),
+    },
   });
   if (report.diagnostics) (report.diagnostics as T1CoverageDiagnostics & { continuationRuns?: number }).continuationRuns = runs;
   // Unités en attente avec progression : continuation rapprochée ; sinon délai croissant.
-  const prochaine = report.qualityState !== 'INCOMPLETE_RETRYABLE' ? null
-    : new Date(Date.now() + (progression && report.diagnostics!.pendingRepairUnits > 0 ? 5 * 60_000 : retryDelayMs(tentativesStockees + 1)));
-  const resultat = attempted.length === 0 ? 'NOTHING_TO_REPAIR'
+  // Lot 54G (point 2) : relecture du fichier encore due (NEEDS_SOURCE, tentatives restantes) : reprise programmée.
+  const relectureDue = needsSourceRetryDue({ needsSourceUnits: report.diagnostics!.needsSourceUnits, retryAttempts: tentativesStockees, maxRetries: p.maxRetries });
+  const prochaine = report.qualityState === 'INCOMPLETE_RETRYABLE'
+    ? new Date(Date.now() + (progression && report.diagnostics!.pendingRepairUnits > 0 ? 5 * 60_000 : retryDelayMs(tentativesStockees + 1)))
+    : relectureDue ? new Date(Date.now() + retryDelayMs(tentativesStockees + 1)) : null;
+  const resultatTexte = attempted.length === 0 ? 'NOTHING_TO_REPAIR'
     : failed.size > 0 ? 'REPAIR_FAILED' : nouveaux.length > 0 ? `REPAIRED_${nouveaux.length}` : 'NO_NEW_FACT';
+  const resultatRelecture = !relecture ? null
+    : relecture.failed && relecture.resolved.length === 0 ? 'SOURCE_REREAD_FAILED'
+      : relecture.resolved.length === relecture.attempted.length ? `SOURCE_REREAD_RESOLVED_${relecture.resolved.length}`
+        : `SOURCE_REREAD_PARTIAL_${relecture.resolved.length}_OF_${relecture.attempted.length}`;
+  const resultat = resultatRelecture && attempted.length === 0 ? resultatRelecture
+    : resultatRelecture ? `${resultatRelecture}+${resultatTexte}` : resultatTexte;
   await pgClient.begin(async (tx) => {
     await writeSourceLayer(tx as never, {
       accountId: p.accountId, fileId: p.fileId, extractionId: p.extractionId, origin: 'RETRY',
@@ -513,6 +564,36 @@ async function retryDocument(p: {
       .catch((e: Error) => console.error('[t1-completeness-retry] projection sur le bien :', e.message));
   }
   return report.qualityState === 'INCOMPLETE_FINAL' ? 'final' : 'repaired';
+}
+
+/** Lot 54G : relectures du FICHIER au plus par unité NEEDS_SOURCE (= reprises automatiques, 1 au moins). */
+export function sourceRereadCap(env: Record<string, string | undefined> = process.env): number {
+  return Math.max(1, maxCompletenessRetries(env));
+}
+
+/**
+ * Lot 54G (point 2) : relecture du FICHIER ORIGINAL des unités NEEDS_SOURCE.
+ * Fichier du compte uniquement (adaptateur : contrôle d'appartenance) ; un
+ * fichier introuvable ou illisible est une relecture en échec (tentative comptée).
+ */
+async function rereadSource(p: {
+  fileId: number; accountId: number; userId: number; assetId: number | null; env?: Record<string, string | undefined>;
+  targets: CoveredSourceUnit[]; ctx: AnalysisContext; capabilities: AccountCapabilities; v2Families: V2AssetFamily[];
+  call: SourceRereadCall;
+}): Promise<SourceRereadResult> {
+  const [{ runSourceReread }, { FileSourceAdapter }, { repairSettings }, { chunkSettings, fetchSourceBytes }] = await Promise.all([
+    import('./source-reread'), import('../adapters/file-source.adapter'), import('./repair'), import('./page-chunks'),
+  ]);
+  let input: SourceInput;
+  try {
+    input = await new FileSourceAdapter().prepare({ sourceIds: [p.fileId], accountId: p.accountId, userId: p.userId, linkedAssetId: p.assetId });
+  } catch (e) {
+    return { attempted: p.targets.map((u) => u.sourceUnitId), resolved: [], facts: [], pages: [], calls: 0, failed: true, error: (e as Error).message };
+  }
+  return runSourceReread({
+    input, ctx: p.ctx, capabilities: p.capabilities, v2Families: p.v2Families, targets: p.targets,
+    maxCalls: repairSettings(p.env).maxCalls, chunkPages: chunkSettings(p.env).chunkPages, call: p.call, fetchBytes: fetchSourceBytes,
+  });
 }
 
 /** Projette et AJOUTE les faits d'une reprise (les faits existants ne sont pas réécrits). */
@@ -555,6 +636,8 @@ async function appendRepairedFacts(p: {
   for (const f of projection.facts) {
     f.sourceUnitIds = p.linker.link({
       provenance: f.provenance, excerpt: f.evidence?.excerpt ?? null, page: f.evidence?.page ?? null,
+      // Lot 54G : fait visuel d'une relecture du fichier — rattaché à son observation.
+      visualDescription: f.visualEvidence?.description ?? null, visualPage: f.visualEvidence?.page ?? null,
       values: [f.rawValue, f.value], labels: [f.rawKey, f.label, f.attribute],
     });
   }

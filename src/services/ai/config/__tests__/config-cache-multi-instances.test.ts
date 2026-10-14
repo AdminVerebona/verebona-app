@@ -21,12 +21,20 @@ const partage = vi.hoisted(() => ({
   counterUnreadable: false,
 }));
 
-vi.mock('../config-version.repository', () => ({
-  getEffectiveVersion: async () => {
+vi.mock('../config-version.repository', () => {
+  const lire = async () => {
     partage.lectures += 1;
     return partage.effective;
-  },
-}));
+  };
+  return {
+    getEffectiveVersion: lire,
+    // Lot 54 : le résolveur lit version active + révision en une requête.
+    getRuntimeConfiguration: async () => {
+      const v = (await lire()) as { id: number; visibleNumber?: number | null; entries: unknown[] } | null;
+      return v ? { versionId: v.id, visibleNumber: v.visibleNumber ?? null, revisionId: null, revisionNumber: null, entries: v.entries, masterPrompts: {} } : null;
+    },
+  };
+});
 
 const store: ConfigVersionCounterStore = {
   async read() {
@@ -144,25 +152,28 @@ describe('CFG-01 : coût de la clé partagée', () => {
   });
 });
 
-describe('CFG-01 : le service de versions incrémente la clé partagée', () => {
-  it('promote / backToDraft / validate / activate / rollback / édition', async () => {
+describe('CFG-01 : le service de versions invalide les caches après chaque écriture (lot 54)', () => {
+  it('activation, réactivation, enregistrement, restauration : caches locaux vidés ; clé partagée incrémentée (stockage de test)', async () => {
     vi.resetModules();
     const bump = vi.fn(async () => true);
-    vi.doMock('../config-cache-version', () => ({ bumpConfigVersionCounter: bump }));
-    vi.doMock('../config-resolver', () => ({ invalidateConfigCache: () => {} }));
+    const vidage = vi.fn();
+    vi.doMock('../config-cache-version', () => ({
+      bumpConfigVersionCounter: bump, forgetConfigVersionCounter: () => {}, hasTestCounterStore: () => true,
+    }));
+    vi.doMock('../config-resolver', () => ({ invalidateConfigCache: () => vidage() }));
     vi.doMock('../../telemetry/execution-context', () => ({ invalidateConfigVersionCache: () => {} }));
-    vi.doMock('../../queue/job-queue.repository', () => ({ requeueRunning: async () => 0 }));
     vi.doMock('@/services/verebona-assistant/core/model-startup-check', () => ({ runAssistantStartupCheck: async () => null }));
-    const valide = { id: 9, status: 'VALIDATED', environment: 'local', isStale: false, label: 'v', activatedAt: new Date(), visibleNumber: 3, entries: [] };
+    vi.doMock('../config-entry.audit', () => ({ recordConfigAudit: async () => {} }));
+    const valide = { id: 9, status: 'INACTIVE', environment: 'local', label: 'v', activatedAt: new Date(), visibleNumber: 3, entries: [], deletedAt: null, currentRevisionNumber: 1 };
+    const ecrit = { versionId: 9, revisionId: 2, revisionNumber: 2, changed: true, active: true, masterPromptSwitches: [] };
     vi.doMock('../config-version.repository', () => ({
       getVersion: async () => valide,
       getActiveVersion: async () => null,
-      listVersions: async () => [],
-      demoteToDraft: async () => 'DRAFT',
-      switchActive: async () => ({ previousId: null }),
-      markStaleDrafts: async () => 0,
-      saveEntry: async () => undefined,
-      validateVersion: async () => ({ visibleNumber: 3 }),
+      activateVersion: async () => ({ previousId: null, alreadyActive: false, revisionNumber: 1, masterPromptSwitches: [] }),
+      writeSnapshot: async () => ecrit,
+      getRevision: async () => ({ id: 5, versionId: 9, revisionNumber: 1, snapshot: { format: 'ai-config-snapshot-v1', entries: [], masterPrompts: {} } }),
+      getMasterPromptVersionRef: async () => null,
+      ConfigVersionRefused: class extends Error {},
     }));
     vi.doMock('../config-validation.service', () => ({ validateVersion: () => ({ valid: true, issues: [] }) }));
     vi.doMock('../../gateway/pricing/gemini-public-catalog', () => ({ GEMINI_PUBLIC_CATALOG: [] }));
@@ -174,14 +185,14 @@ describe('CFG-01 : le service de versions incrémente la clé partagée', () => 
     }));
 
     const svc = await import('../config-version.service');
-    await svc.backToDraft(9);
-    await svc.validate(9, 1);
     await svc.activate(9, 1);
     await svc.rollback(9, 1);
-    await svc.saveTreatmentConfig(9, emptyTreatmentConfig('T1'), 1);
+    await svc.saveConfiguration(9, { expectedRevision: 1, entries: [emptyTreatmentConfig('T1')] }, 1);
+    await svc.restoreRevision(9, 5, 1);
     expect(bump.mock.calls.map((c) => String((c as unknown[])[0]).split(':')[0])).toEqual(
-      ['demote', 'validate', 'activate', 'rollback', 'edit'],
+      ['activate', 'activate', 'save', 'restore'],
     );
+    expect(vidage).toHaveBeenCalledTimes(4);
     vi.doUnmock('../config-cache-version');
   });
 });

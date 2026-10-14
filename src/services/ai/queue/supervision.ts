@@ -143,8 +143,139 @@ export function summarizeT3Job(job: QueuedJob & { attemptHistoryLength?: number 
   };
 }
 
+// ── Phase A : diagnostic de CRÉATION des jobs T3 (lot 54A) ─────────────────
+
+/** Dernière évaluation de la planification T3 connue (toutes instances). */
+export interface T3ScheduleEvaluation {
+  at: string;
+  workerId: string;
+  due: boolean;
+  decision: string;
+  reasonCode: string | null;
+  jobId: number | null;
+  nextDueAt: string | null;
+  error: string | null;
+}
+
+export interface T3CreationFinding {
+  code:
+    | 'OK' | 'EMERGENCY_STOP' | 'MIGRATION_0338_MISSING' | 'MIGRATION_0370_MISSING' | 'NO_LIVE_WORKER'
+    | 'SCHEDULE_DISABLED' | 'SCHEDULER_STALLED' | 'SCHEDULE_ABSORBED' | 'SCHEDULE_OVERDUE' | 'LAST_MANUAL_REFUSED'
+    | 'MIXED_VERSIONS' | 'UNKNOWN_COMMIT';
+  level: 'ok' | 'warn' | 'error';
+  message: string;
+}
+
+/** Délai au-delà duquel l'absence d'évaluation de la planification est anormale (instances vivantes). */
+export const SCHEDULER_STALE_MS = 5 * 60_000;
+
+/**
+ * Diagnostic de la PHASE A (création des jobs T3), sans SQL (pur, testé) :
+ * chaque constat dit pourquoi une demande T3 ne produit pas de job, ou que
+ * rien ne l'empêche. Ordre : le plus bloquant d'abord.
+ */
+export function diagnoseT3Creation(input: {
+  now: Date;
+  emergencyStop: boolean;
+  migrations: { heartbeats0338: boolean; enqueueTrace0370: boolean };
+  workers: Pick<WorkerSummary, 'state' | 'liveInstances'>;
+  scheduleTriggerCode: string | null;
+  scheduleNextDueAt: string | null;
+  scheduleEvaluation: T3ScheduleEvaluation | null;
+  lastManualRequest: { decision: string; reasonCode: string | null; reasonLabel: string | null; accountId: number | null; createdAt: string } | null;
+  liveCommits: string[];
+  servingCommit: string | null;
+}): T3CreationFinding[] {
+  const out: T3CreationFinding[] = [];
+  const t = input.now.getTime();
+  if (input.emergencyStop) {
+    out.push({ code: 'EMERGENCY_STOP', level: 'error', message: 'Arrêt d’urgence engagé : tout lancement manuel est refusé (409) et rien ne démarre.' });
+  }
+  if (!input.migrations.heartbeats0338) {
+    out.push({ code: 'MIGRATION_0338_MISSING', level: 'error', message: 'Migration 0338 non appliquée : battements du boucleur indisponibles (supervision partielle).' });
+  }
+  if (!input.migrations.enqueueTrace0370) {
+    out.push({ code: 'MIGRATION_0370_MISSING', level: 'warn', message: 'Migration 0370 non appliquée : les demandes T3 ne sont tracées que dans le journal applicatif ([t3-enqueue]).' });
+  }
+  if (!input.servingCommit) {
+    out.push({ code: 'UNKNOWN_COMMIT', level: 'warn', message: 'Commit déployé inconnu (SOURCE_VERSION / APP_COMMIT absents) : impossible de confirmer la version qui tourne.' });
+  }
+  if (new Set(input.liveCommits).size > 1) {
+    out.push({ code: 'MIXED_VERSIONS', level: 'warn', message: `Plusieurs versions du code tournent en même temps : ${[...new Set(input.liveCommits)].map((c) => c.slice(0, 12)).join(', ')}.` });
+  }
+  if (input.workers.state === 'NO_LIVE_WORKER') {
+    out.push({ code: 'NO_LIVE_WORKER', level: 'error', message: 'Aucun boucleur vivant : la planification n’est pas évaluée, aucun passage planifié ne peut être créé (le lancement manuel crée ses jobs, qui attendent).' });
+  }
+  if (!input.scheduleTriggerCode) {
+    out.push({ code: 'SCHEDULE_DISABLED', level: 'warn', message: 'Aucune planification T3 active dans la configuration effective (TRIGGER_DISABLED) : aucun passage planifié ne sera créé.' });
+  } else if (input.workers.liveInstances > 0 && input.migrations.heartbeats0338) {
+    const ev = input.scheduleEvaluation;
+    if (!ev || t - new Date(ev.at).getTime() > SCHEDULER_STALE_MS) {
+      out.push({
+        code: 'SCHEDULER_STALLED', level: 'error',
+        message: `Le boucleur tourne mais n’évalue plus la planification${ev ? ` depuis le ${new Date(ev.at).toLocaleString('fr-FR')}` : ' (aucune évaluation connue — code antérieur au lot 54 ou entretien bloqué)'} : aucun passage planifié ne peut être créé.`,
+      });
+    } else if (ev.due && ev.decision !== 'create') {
+      out.push({
+        code: 'SCHEDULE_ABSORBED', level: 'warn',
+        message: `Passage planifié échu mais AUCUN job créé : ${ev.reasonCode ?? ev.decision}${ev.jobId ? ` (job vivant #${ev.jobId})` : ''}${ev.error ? ` — ${ev.error}` : ''}.`,
+      });
+    }
+  }
+  if (input.scheduleTriggerCode && input.scheduleNextDueAt && t - new Date(input.scheduleNextDueAt).getTime() > 10 * 60_000
+    && !out.some((f) => f.code === 'SCHEDULER_STALLED' || f.code === 'NO_LIVE_WORKER' || f.code === 'SCHEDULE_ABSORBED')) {
+    out.push({ code: 'SCHEDULE_OVERDUE', level: 'warn', message: `Balayage planifié en retard (attendu le ${new Date(input.scheduleNextDueAt).toLocaleString('fr-FR')}).` });
+  }
+  const m = input.lastManualRequest;
+  if (m && m.decision !== 'create') {
+    out.push({
+      code: 'LAST_MANUAL_REFUSED', level: 'warn',
+      message: `Dernière demande manuelle sans job${m.accountId ? ` (compte ${m.accountId})` : ''} : ${m.reasonCode ?? m.decision}${m.reasonLabel ? ` — ${m.reasonLabel}` : ''}.`,
+    });
+  }
+  if (out.every((f) => f.level !== 'error' && f.code !== 'SCHEDULE_ABSORBED' && f.code !== 'LAST_MANUAL_REFUSED' && f.code !== 'SCHEDULE_DISABLED')) {
+    out.unshift({ code: 'OK', level: 'ok', message: 'Création des jobs T3 : rien ne l’empêche (lancement manuel et planification opérationnels).' });
+  }
+  return out;
+}
+
+/** Dernière évaluation de la planification T3 parmi les instances (pure). */
+export function latestT3ScheduleEvaluation(
+  instances: Array<{ workerId: string; schedule?: { at: string; outcomes: Array<Record<string, unknown>> } | null }>,
+): T3ScheduleEvaluation | null {
+  let best: T3ScheduleEvaluation | null = null;
+  for (const i of instances) {
+    const s = i.schedule;
+    if (!s?.at || !Array.isArray(s.outcomes)) continue;
+    const o = s.outcomes.find((x) => x && x.treatment === 'T3');
+    if (!o) continue;
+    if (best && new Date(best.at) >= new Date(s.at)) continue;
+    best = {
+      at: s.at, workerId: i.workerId, due: o.due === true, decision: String(o.decision ?? 'none'),
+      reasonCode: o.reasonCode == null ? null : String(o.reasonCode),
+      jobId: typeof o.jobId === 'number' ? o.jobId : null,
+      nextDueAt: typeof o.nextDueAt === 'string' ? o.nextDueAt : null,
+      error: typeof o.error === 'string' ? o.error : null,
+    };
+  }
+  return best;
+}
+
 export interface T3Supervision {
   generatedAt: string;
+  /** Lot 54A : code qui répond (commit) et versions des instances vivantes. */
+  build: {
+    commit: string | null; commitSource: string | null; container: string | null;
+    instances: Array<{ workerId: string; commit: string | null; alive: boolean; lastTickAt: string }>;
+  };
+  /** Lot 54A : migrations nécessaires à la supervision T3. */
+  migrations: { heartbeats0338: boolean; enqueueTrace0370: boolean };
+  /** Lot 54A : dernière évaluation de la planification T3 (toutes instances). */
+  scheduleEvaluation: T3ScheduleEvaluation | null;
+  /** Lot 54A : dernières demandes T3 (manuel, planifié, événements) et leur issue — `null` si 0370 absente. */
+  requests: import('./t3-enqueue-trace').T3EnqueueEventRow[] | null;
+  /** Lot 54A : diagnostic de la phase A (création des jobs). */
+  creation: T3CreationFinding[];
   workers: WorkerSummary;
   executor: ExecutorAvailability;
   state: { treatment: 'T3'; state: 'ENABLED' | 'DISABLED' | 'SUSPENDED'; suspendedReason: string | null; nextProbeAt: string | null };
@@ -210,9 +341,42 @@ export async function getT3Supervision(now: Date = new Date()): Promise<T3Superv
     dernier(`account_id IS NULL AND target_type IS NULL`),
   ]);
 
+  // ── Lot 54A : phase A (création) ─────────────────────────────────────
+  const { getBuildIdentity } = await import('@/lib/runtime-identity');
+  const { listT3EnqueueEvents } = await import('./t3-enqueue-trace');
+  const ident = getBuildIdentity();
+  const [tables] = (await pgClient.unsafe(
+    `SELECT to_regclass('ai_queue_worker_heartbeats') IS NOT NULL AS hb, to_regclass('ai_t3_enqueue_events') IS NOT NULL AS ev`,
+    [] as never[],
+  )) as unknown as Array<{ hb: boolean; ev: boolean }>;
+  const migrations = { heartbeats0338: tables?.hb === true, enqueueTrace0370: tables?.ev === true };
+  const requests = migrations.enqueueTrace0370 ? await listT3EnqueueEvents(15) : null;
+  const scheduleEvaluation = latestT3ScheduleEvaluation(workers.instances);
+  const lastManualRow = requests?.find((r) => r.origin === 'manual') ?? null;
+  const liveCommits = workers.instances.filter((i) => i.alive && i.buildCommit).map((i) => i.buildCommit as string);
+
   const c = compteurs ?? {};
   return {
     generatedAt: now.toISOString(),
+    build: {
+      commit: ident.commit, commitSource: ident.commitSource, container: ident.container,
+      instances: workers.instances.slice(0, 10).map((i) => ({
+        workerId: i.workerId, commit: i.buildCommit ?? null, alive: i.alive, lastTickAt: i.lastTickAt.toISOString(),
+      })),
+    },
+    migrations,
+    scheduleEvaluation,
+    requests,
+    creation: diagnoseT3Creation({
+      now, emergencyStop: stop.active, migrations, workers,
+      scheduleTriggerCode: triggerCode, scheduleNextDueAt: nextDue ? nextDue.toISOString() : null,
+      scheduleEvaluation,
+      lastManualRequest: lastManualRow ? {
+        decision: lastManualRow.decision, reasonCode: lastManualRow.reasonCode, reasonLabel: lastManualRow.reasonLabel,
+        accountId: lastManualRow.accountId, createdAt: lastManualRow.createdAt,
+      } : null,
+      liveCommits, servingCommit: ident.commit,
+    }),
     workers,
     executor: t3ExecutorAvailability({
       emergencyStop: stop.active, state, suspendedReason: etat?.suspendedReason ?? null,

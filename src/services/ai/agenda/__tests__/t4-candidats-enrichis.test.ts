@@ -10,6 +10,7 @@
  *      possible.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { t4Simule } from './support/t4-simule';
 
 vi.mock('../../telemetry/ai-trace.service', async (orig) => ({
   ...(await orig<typeof import('../../telemetry/ai-trace.service')>()),
@@ -32,7 +33,11 @@ const candidat = (over: Record<string, unknown> = {}) => ({
   ...over,
 });
 const run = (candidates: unknown[], existing: unknown[] = []) => processAgendaCandidates({
-  accountId: 1, assetId: 3, candidates: candidates as never, existing: existing as never, today: '2026-09-29', sourceFileId: 40,
+  accountId: 1, assetId: 3, candidates: candidates as never, existing: existing as never, today: '2026-09-29', sourceFileId: 40, decide: t4Simule,
+});
+/** Lot 54 : T4 réel par la passerelle (modèle simulé `FakeProvider`). */
+const runReel = (candidates: unknown[]) => processAgendaCandidates({
+  accountId: 1, assetId: 3, candidates: candidates as never, existing: [], today: '2026-09-29', sourceFileId: 40,
 });
 
 let fake: InstanceType<typeof FakeProvider>;
@@ -109,29 +114,29 @@ describe('3. assurance et fin de validité du DPE : règles v2, puis modèle', (
     // Lot 16b-2 : l'ancienne règle « champ de bien ⇒ information » est retirée.
   });
 
-  it('master T4 : le modèle classe ; abstention → catégorie prudente à qualifier', async () => {
+  it('master T4 : le modèle classe ; abstention → aucun événement (lot 54), acceptation → catégorie du modèle', async () => {
     __setConfigForTests({ versionId: 44, entries: [{ ...emptyTreatmentConfig('T4'), primaryModel: 'm-a', promptArchitecture: 'master' }] });
     fake.onAny((input) => ({
       rawText: JSON.stringify(input.prompt.includes('dpeExpiryDate')
-        ? { task: 'CLASSIFY_EVENT', businessType: 'dpe', homeCategory: 'unknown', confidence: 'ambiguous', reason: 'aucune démarche explicite' }
-        : { task: 'CLASSIFY_EVENT', businessType: 'insurance', homeCategory: 'action', confidence: 'certain', reason: 'résiliation à envoyer avant l’échéance' }),
+        ? { task: 'CLASSIFY_EVENT', agendaDecision: 'abstain', recurrenceDecision: 'not_applicable', businessType: null, homeCategory: 'unknown', confidence: 'ambiguous', reason: 'aucune démarche explicite', recurrenceReason: null }
+        : { task: 'CLASSIFY_EVENT', agendaDecision: 'accept', recurrenceDecision: 'not_applicable', businessType: 'insurance', homeCategory: 'action', confidence: 'certain', reason: 'résiliation à envoyer avant l’échéance', recurrenceReason: null }),
       inputTokens: 1, outputTokens: 1,
     }));
-    const [dpe, assurance] = await run([
+    const [dpe, assurance] = await runReel([
       candidat({ title: 'Fin de validité du DPE', date: '2031-01-01', originFieldKey: 'dpeExpiryDate', businessType: 'dpe', suggestedCategory: undefined, documentType: 'DPE', excerpt: 'valable jusqu’au 01/01/2031' }),
       candidat({ title: 'Échéance de l’assurance — Clio', date: '2027-01-01', originFieldKey: 'insuranceExpiry', businessType: 'insurance', suggestedCategory: undefined, documentType: 'CONTRAT_ASSURANCE', excerpt: 'pour résilier, envoyer le courrier avant le 01/12/2026' }),
     ]);
     expect(fake.calls).toHaveLength(2);
-    expect(dpe).toMatchObject({ category: 'action', classification: { category: 'unknown', source: 'model', requiresQualification: true } });
+    expect(dpe).toMatchObject({ action: 'ignore', reasonCode: 'MODEL_ABSTAINED', t4: { verdict: 'ABSTAINED' } });
     expect(assurance).toMatchObject({ category: 'action', classification: { category: 'action', source: 'model', requiresQualification: false } });
   });
 
   it('sans version de configuration : le master T4 classe quand même (plus d’architecture « steps »)', async () => {
     fake.onAny(() => ({
-      rawText: JSON.stringify({ task: 'CLASSIFY_EVENT', businessType: 'insurance', homeCategory: 'action', confidence: 'certain', reason: 'démarche demandée' }),
+      rawText: JSON.stringify({ task: 'CLASSIFY_EVENT', agendaDecision: 'accept', recurrenceDecision: 'not_applicable', businessType: 'insurance', homeCategory: 'action', confidence: 'certain', reason: 'démarche demandée', recurrenceReason: null }),
       inputTokens: 1, outputTokens: 1,
     }));
-    const [d] = await run([candidat({ title: 'Échéance de l’assurance — Clio', originFieldKey: 'insuranceExpiry', businessType: 'insurance', suggestedCategory: undefined, documentType: 'CONTRAT_ASSURANCE' })]);
+    const [d] = await runReel([candidat({ title: 'Échéance de l’assurance — Clio', originFieldKey: 'insuranceExpiry', businessType: 'insurance', suggestedCategory: undefined, documentType: 'CONTRAT_ASSURANCE' })]);
     expect(fake.calls).toHaveLength(1);
     expect(fake.calls[0].prompt).toContain('CLASSIFY_EVENT');
     expect(d.classification).toMatchObject({ category: 'action', source: 'model' });

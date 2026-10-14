@@ -10,6 +10,7 @@ import { parseRecurrenceFr, computeOccurrences, inferHistoricalRecurrence, addIn
 import { processAgendaCandidates } from '../agenda-intelligence.service';
 import { recurrenceOf } from '../../source-analysis/steps/build-agenda-candidates.step';
 import type { ExistingAgendaItem } from '../types';
+import { t4Simule } from './support/t4-simule';
 
 const TODAY = '2026-09-25';
 
@@ -65,7 +66,7 @@ describe('historique', () => {
 
 describe('moteur T4', () => {
   const run = (excerpt: string, existing: ExistingAgendaItem[] = []) => processAgendaCandidates({
-    accountId: 1, assetId: 2, sourceFileId: 9, today: TODAY, existing,
+    accountId: 1, assetId: 2, sourceFileId: 9, today: TODAY, existing, decide: t4Simule,
     // Source autoritaire (T4-04, toujours appliqué depuis le lot 16b-2).
     candidates: [{ title: 'Entretien à prévoir', date: '2026-11-15', confidence: 'certain', excerpt, originFieldKey: 'maintenanceDueDate', documentType: 'RAPPORT_ENTRETIEN', recurrence: parseRecurrenceFr(excerpt) ?? undefined }],
   });

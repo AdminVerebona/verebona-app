@@ -36,7 +36,9 @@ scenario('CORPUS-DOCS', 'Corpus §15 — documents de bout en bout (enabled / ma
     const f = loadT1Fixture('p-t1-02-ticket-draisienne.json');
     const r = await analyser(compte, fichier.id, bien.id, withIds(f.recording.output, { 184: bien.id }));
     expect(r.analysedCount).toBe(1);
-    expect(r.replay.calls.map((c) => [c.operationCode, c.task])).toEqual([['t1_analyze_document', 'ANALYZE_DOCUMENT']]);
+    // Lot 54 : T4 décide de chaque candidat Agenda documentaire (T4 simulé du harnais : accept).
+    expect(r.replay.calls.map((c) => [c.operationCode, c.task]).filter(([op]) => op !== 't4_classify_event')).toEqual([['t1_analyze_document', 'ANALYZE_DOCUMENT']]);
+    expect(r.replay.calls.every((c) => c.operationCode !== 't4_classify_event' || c.task === 'CLASSIFY_EVENT')).toBe(true);
 
     // Fiche (T3) : date et prix, attribuables au bien.
     const fi = await fiche(sql, bien.id);

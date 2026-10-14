@@ -147,14 +147,19 @@ describe('O10-03 file T3 : déclencheur admin_reconsolidation', () => {
     expect(await q.requestOperationsConsolidation(5, { trigger: 'document_moved' }, { enqueue, isTriggerActive } as never)).toBeNull();
   });
 
-  it('O10-03b exécutant : passage complet (tous les biens, attentes réexaminées, chaque Opération active recalculée), bornes', async () => {
+  it('O10-03b / OPS-E08 exécutant : passage complet (tous les biens, attentes réexaminées, chaque Opération active recalculée), pages sans plafond', async () => {
     const src = readFileSync(join(process.cwd(), 'src/services/business-operations/consolidation/queue.ts'), 'utf8');
     expect(src).toMatch(/const admin = p\.events\.find\(\(e\) => e\.trigger === 'admin_reconsolidation'\)/);
     expect(src).toMatch(/reevaluateHolds: !!admin \|\|/);
     expect(src).toMatch(/if \(admin\) \{\s*const r = await reconsolidateAllActiveOperations/);
     const q = await import('@/services/business-operations/consolidation/queue');
-    expect(q.ADMIN_RECONSOLIDATION_MAX_OPERATIONS).toBe(2000);
-    expect(q.ADMIN_RECONSOLIDATION_MAX_ASSETS).toBe(500);
+    // Lot 54D (E08) : plus de plafond 500 biens / 2 000 Opérations — pages sur curseur jusqu'à épuisement.
+    expect(q.ADMIN_RECONSOLIDATION_PAGE_OPERATIONS).toBe(2000);
+    expect(q.ADMIN_RECONSOLIDATION_PAGE_ASSETS).toBe(500);
+    expect(src).not.toMatch(/ADMIN_RECONSOLIDATION_MAX_/);
+    expect(q.adminReconsolidationReport({ assets: 1, candidatesRequeued: 0, operations: 3, operationBatchesFailed: 0, documentsRemaining: false, technicalErrors: 0 }).status).toBe('COMPLET');
+    expect(q.adminReconsolidationReport({ assets: 1, candidatesRequeued: 9, operations: 3, operationBatchesFailed: 0, documentsRemaining: true, technicalErrors: 0 }).status).toBe('PARTIEL');
+    expect(q.adminReconsolidationReport({ assets: 1, candidatesRequeued: 0, operations: 3, operationBatchesFailed: 1, documentsRemaining: false, technicalErrors: 0 }).status).toBe('ERREUR');
   });
 });
 

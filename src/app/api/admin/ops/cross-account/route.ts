@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { requireAdmin } from '@/lib/auth-guards';
 import { detectCrossAccountRelations, readOnlyDetectionExecutor } from '@/services/security/cross-account/detection';
 import { inventoryRemediation, readRemediationJournal } from '@/services/security/cross-account/remediation';
+import { readIsolationHistory, recordIsolationCheck } from '@/services/security/cross-account/alerts';
 import { guardAdmin, NO_STORE, opsError } from '../_shared';
 
 export const dynamic = 'force-dynamic';
@@ -17,12 +18,26 @@ export const dynamic = 'force-dynamic';
  * indécidables ; `journal` — dernières corrections appliquées depuis
  * Rattrapages (preuve, restauration). La correction elle-même passe par
  * `/api/admin/ops/backfills` (script `cross-account`).
+ *
+ * Lot 54 (SEC-07/08, « Isolation des comptes ») : `status` (Conforme /
+ * Anomalies détectées / Contrôle incomplet), `history` (dernières
+ * exécutions, dernier contrôle complet, dernier contrôle conforme) ; chaque
+ * lecture est historisée (`trigger = bo`) sans toucher aux alertes. Le
+ * lancement manuel du contrôle complet (alertes comprises) passe par la tâche
+ * `cross-account-relations-check` (`/api/admin/ops/scheduled-tasks/…/run`).
  */
 export async function GET(request: NextRequest) {
   const g = await guardAdmin(() => requireAdmin(request));
   if (!g.ok) return g.response;
   try {
+    const startedAt = new Date().toISOString();
     const rapport = await detectCrossAccountRelations();
+    await recordIsolationCheck({
+      startedAt, trigger: 'bo', status: rapport.status, total: rapport.total, checksTotal: rapport.checks.length,
+      checksFailed: rapport.checksFailed, counts: Object.fromEntries(rapport.checks.map((c) => [c.code, c.count])),
+      errors: Object.fromEntries(rapport.checks.filter((c) => c.error).map((c) => [c.code, c.error as string])),
+      accountIds: rapport.accountIds, reported: 0, resolved: 0,
+    });
     const { inventory, journal } = await readOnlyDetectionExecutor(async (q) => ({
       inventory: await inventoryRemediation(q),
       journal: await (async () => {
@@ -38,8 +53,9 @@ export async function GET(request: NextRequest) {
         }
       })(),
     }));
-    return NextResponse.json({ ...rapport, inventory, journal }, { headers: NO_STORE });
+    const history = await readIsolationHistory();
+    return NextResponse.json({ ...rapport, inventory, journal, history }, { headers: NO_STORE });
   } catch (e) {
-    return opsError(e, 'relations intercomptes', 'OPS_CROSS_ACCOUNT_FAILED');
+    return opsError(e, 'isolation des comptes', 'OPS_CROSS_ACCOUNT_FAILED');
   }
 }

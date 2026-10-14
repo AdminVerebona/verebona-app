@@ -42,7 +42,7 @@ import { pgClient } from '@/db';
 import { assistantAssetAvailability } from './asset-availability';
 import { buildGenerationPort } from './generation.adapter';
 import { isTreatmentRunnable } from '@/services/ai/queue/runnable-guard';
-import { buildClassificationPort } from './classification.adapter';
+import { buildArbitrationPort, buildClassificationPort } from './classification.adapter';
 import { answerFromData } from './data-answer.service';
 import { accountDataRepository } from './account-data.repository';
 import { loadCascadeThresholds } from './cascade-thresholds';
@@ -427,6 +427,21 @@ export function buildOrchestratorPorts(): OrchestratorPorts {
     readBusinessSource: async (accountId, ref, ctx) => {
       const { readBusinessSource } = await import('../canonical/business-sources');
       return readBusinessSource(accountId, ref, ctx);
+    },
+    // Lot 54E (#419 écart 1) : arbitrage T2 entre candidats prévalidés.
+    arbitrateWithAI: buildArbitrationPort(),
+    canArbitrateWithAI: async () => {
+      const { effectiveMasterPromptText } = await import('@/services/ai/config/config-resolver');
+      const texte = await effectiveMasterPromptText('T2');
+      return texte == null || texte.includes('{{BUSINESS_CANDIDATES}}');
+    },
+    // Lot 54E (#419 §15) : information apportée → plan PENDING_CONFIRMATION
+    // (même interrupteur que les commandes : coupé, aucune proposition).
+    prepareUpdateProposal: async (input, req) => {
+      if (!areWriteCommandsEnabled()) return null;
+      const { prepareUpdateProposal } = await import('../commands/plan.service');
+      const r = await prepareUpdateProposal(input, req);
+      return r.kind === 'plan' ? { kind: 'plan' as const, preview: r.preview, capability: r.capability } : r;
     },
 
     buildSynthesisContext: async (route, input) => {

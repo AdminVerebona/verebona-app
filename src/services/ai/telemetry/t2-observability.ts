@@ -86,6 +86,8 @@ const PAR_STRATEGIE: Readonly<Record<string, T2TruthSource>> = {
   'structured.payments': 'document',
   'structured.contracts': 'canonique',
   'structured.operation_cost': 'canonique',
+  // Lot 54D : coût de possession (composantes consolidées, service TCO).
+  'structured.ownership_cost': 'canonique',
 };
 
 /** Type de source → source de vérité (réponse générée sur sources). */
@@ -147,7 +149,7 @@ export const T2_ECONOMIC_MODES: readonly T2EconomicMode[] = ['operation_only', '
 /** Stratégies dont la réponse est économique (montants). */
 const ECONOMIC_STRATEGIES = new Set([
   'structured.operation_cost', 'structured.contracts', 'structured.acquisition_price',
-  'structured.sum_qualified', 'structured.sum_amounts', 'structured.payments',
+  'structured.sum_qualified', 'structured.sum_amounts', 'structured.payments', 'structured.ownership_cost',
 ]);
 
 type SourceLike = { type?: unknown; id?: unknown; meta?: unknown };
@@ -165,7 +167,7 @@ const positif = (v: unknown) => typeof v === 'number' && Number.isFinite(v) && v
 export function economicModeOf(strategy: string | null | undefined, sources: ReadonlyArray<SourceLike> = []): T2EconomicMode | null {
   const s = strategy ?? '';
   if (!ECONOMIC_STRATEGIES.has(s)) return null;
-  let operation = s === 'structured.operation_cost' || s === 'structured.contracts';
+  let operation = s === 'structured.operation_cost' || s === 'structured.contracts' || s === 'structured.ownership_cost';
   let fallback = s === 'structured.sum_amounts';
   for (const src of sources) {
     const m = metaOf(src);

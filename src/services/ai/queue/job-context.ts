@@ -49,6 +49,12 @@ export interface AiJobContext {
    */
   configVersionId: number | null;
   /**
+   * Lot 54 : RÉVISION de cette version figée au démarrage (la version active
+   * reste modifiable : la version seule ne suffit plus à garantir une
+   * configuration cohérente jusqu'au bout). Absente : épinglage par version.
+   */
+  configRevisionId?: number | null;
+  /**
    * Déclencheur du job (`ai_job_queue.trigger_code`), tracé avec chaque appel
    * modèle de l'exécution (CDC 15 OBS-CFG). Absent : inconnu.
    */

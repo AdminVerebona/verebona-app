@@ -58,7 +58,7 @@ import { masterPromptVersionOf } from '../prompts/prompt-loader';
 import { checkMasterPromptContent, MASTER_PROMPT_MAX_CHARS, type MasterPromptIssue } from './master-prompt-checks';
 import {
   structuredSpecFor, executionConfigFor, draftExecutionConfig, normalizeExecutionConfig, availableContextOf,
-  MASTER_EXECUTION_MODES, LEGACY_EXECUTION, type MasterExecutionConfig,
+  MASTER_EXECUTION_MODES, LEGACY_EXECUTION, executionSignature, type MasterExecutionConfig,
 } from './structured-context';
 import * as repo from './master-prompt.repository';
 import type { MasterPromptTestRunRow, MasterPromptVersionRow, MasterPromptActivationRow, TestFailure } from './master-prompt.repository';
@@ -151,6 +151,8 @@ export interface StructuredInfo {
   references: Record<(typeof MASTER_EXECUTION_MODES)[number], string>;
   /** Scénarios du corpus disponibles pour l'aperçu. */
   scenarios: Array<{ id: string; task: string; description: string }>;
+  /** Lot 54 — configuration du texte de référence (contexte structuré : contrats par défaut). */
+  defaults: MasterExecutionConfig;
 }
 
 export interface ActivationView {
@@ -358,7 +360,7 @@ function structuredInfoOf(masterPromptCode: string, fileText: string): Structure
   return {
     modes: [
       { value: 'STRUCTURED_CONTEXT', label: 'Contexte structuré (données transmises automatiquement)' },
-      { value: 'LEGACY_TEMPLATE', label: 'Legacy (emplacements {{…}} dans le texte)' },
+      { value: 'LEGACY_TEMPLATE', label: 'Mode historique à emplacements ({{…}} dans le texte)' },
     ],
     knownTasks: [...spec.knownTasks],
     inputContracts: Object.keys(spec.inputContracts),
@@ -369,6 +371,7 @@ function structuredInfoOf(masterPromptCode: string, fileText: string): Structure
       LEGACY_TEMPLATE: referenceTextFor(masterPromptCode, 'LEGACY_TEMPLATE', fileText),
     },
     scenarios: [],
+    defaults: { ...spec.defaults, allowedTasks: spec.defaults.allowedTasks ? [...spec.defaults.allowedTasks] : null },
   };
 }
 
@@ -528,8 +531,13 @@ export async function startDraft(treatment: Treatment, userId: number, content?:
   const cree = await repo.insertDraft({
     environment, treatment, masterPromptCode: active.masterPromptCode, content: texte,
     origin: 'admin', basedOnId: active.id, userId,
-    // Lot 34D : le brouillon reprend le mode de la version de départ.
-    execution: draftExecutionConfig(active.masterPromptCode, executionOfVersion(active)),
+    // Lot 34D : le brouillon reprend le mode de la version de départ —
+    // SAUF (lot 54) s'il part du texte de référence livré : il prend alors
+    // la configuration de ce texte (T4 : contexte structuré v2), jamais un
+    // ancien mode Legacy incompatible hérité silencieusement.
+    execution: await isReferenceText(active.masterPromptCode, texte)
+      ? referenceExecution(active.masterPromptCode)
+      : draftExecutionConfig(active.masterPromptCode, executionOfVersion(active)),
   });
   // Création concurrente : un autre administrateur vient d'ouvrir le brouillon.
   return cree ?? (await repo.getDraft(environment, treatment))!;
@@ -602,7 +610,33 @@ export async function saveDraft(treatment: Treatment, versionId: number, content
   if (!ecrit) {
     throw new MasterPromptRefused('VERSION_NOT_EDITABLE', 'Ce brouillon vient d’être activé ou abandonné : rechargez la page.');
   }
+  // Lot 54 : brouillon repris depuis le texte de référence livré alors qu'il
+  // portait une autre configuration (copie d'un Actif Legacy ou v1) — il
+  // prend la configuration de ce texte. Une configuration EXPLICITE envoyée
+  // avec le texte (`saveDraftExecution`, appelée ensuite par la route) reste
+  // prioritaire.
+  const ref = await isReferenceText(ecrit.masterPromptCode, content) ? referenceExecution(ecrit.masterPromptCode) : null;
+  if (ref && executionSignature(executionOfVersion(ecrit) ?? LEGACY_EXECUTION) !== executionSignature(ref)) {
+    return (await repo.updateDraftExecution({ id: versionId, execution: ref, userId })) ?? ecrit;
+  }
   return ecrit;
+}
+
+/** Texte de référence livré avec l'application (fichier du dépôt), pour un prompt à contrat d'exécution. */
+async function isReferenceText(masterPromptCode: string, content: string): Promise<boolean> {
+  if (!structuredSpecFor(masterPromptCode)) return false;
+  const norm = (t: string) => t.replace(/\r\n?/g, '\n').trim();
+  try {
+    const { readMasterFileFromRepo } = await import('../governance/master-corpus/cases');
+    return norm(readMasterFileFromRepo(masterPromptCode)) === norm(content);
+  } catch {
+    return false;
+  }
+}
+
+/** Configuration d'exécution du texte de référence (contrat d'exécution : défaut déclaré). */
+function referenceExecution(masterPromptCode: string): MasterExecutionConfig {
+  return executionConfigFor({ masterPromptCode, source: 'file' });
 }
 
 export async function discardDraft(treatment: Treatment, versionId: number): Promise<void> {
@@ -675,8 +709,22 @@ async function switchTo(treatment: Treatment, versionId: number, userId: number,
   const tests = testStateOf(byVersion.get(v.id) ?? []);
   const email = (await repo.userEmails([userId])).get(userId) ?? emails.get(userId) ?? null;
 
+  // Lot 54 : la configuration ACTIVE fige les prompts maîtres en service —
+  // chaque bascule crée sa révision, dans la même transaction.
+  const cfg = await import('../config/config-version.repository');
   const r = await repo.switchActivePrompt({
     environment, treatment, targetId: v.id, action, userId, userEmail: email, testSummary: testSummaryText(tests),
+  }, {
+    before: async (sql) => {
+      if ((await sql.unsafe(`SELECT to_regclass('ai_config_revisions') IS NOT NULL AS ok`) as Array<{ ok: boolean }>)[0]?.ok) {
+        await cfg.lockEnvironment(sql, environment);
+      }
+    },
+    after: async (sql, current) => {
+      await cfg.recordMasterPromptRevisionInTx(sql, environment, {
+        userId, comment: `Prompt maître ${treatment} v${current.versionNumber} ${action === 'rollback' ? 'réactivé' : 'activé'}`,
+      });
+    },
   });
   if ('refused' in r) {
     throw new MasterPromptRefused(r.refused === 'NOT_FOUND' ? 'VERSION_NOT_FOUND' : 'VERSION_CHANGED',
@@ -847,7 +895,10 @@ export async function previewStructured(
   }
 
   const cases = loadMasterCorpusCases(readMasterFileFromRepo).filter((c) => c.masterPromptCode === master.masterPromptCode && c.task === p.task);
-  const c = (p.scenarioId ? cases.find((x) => x.id === p.scenarioId) : undefined) ?? cases[0] ?? null;
+  // Lot 54 : scénario par défaut pris parmi ceux du contrat de sortie de la version (T4 v1 / v2).
+  const { caseMatchesExecution } = await import('../governance/master-corpus/runner');
+  const c = (p.scenarioId ? cases.find((x) => x.id === p.scenarioId) : undefined)
+    ?? cases.find((x) => caseMatchesExecution(x, execution)) ?? cases[0] ?? null;
   const variables = (c ? await liveVariablesFor(c) : null) ?? {};
   const op = Object.values(AI_OPERATIONS).find((o) => o.active && o.masterPromptCode === master.masterPromptCode && o.task === p.task);
 

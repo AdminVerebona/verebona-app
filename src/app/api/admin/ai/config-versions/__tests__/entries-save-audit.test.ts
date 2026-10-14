@@ -2,7 +2,8 @@
  * BO IA — enregistrement d'un traitement (tickets T4 et T5) : la liste
  * corrigée est enregistrée telle quelle, les autres réglages sont intacts, la
  * modification est TRACÉE (utilisateur, version, valeurs avant / après), une
- * seconde sauvegarde ne trace rien, une version non éditable est refusée.
+ * seconde sauvegarde ne trace rien. Lot 54 : la version ACTIVE est
+ * modifiable (révision) ; seule une version supprimée est refusée.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { NextRequest } from 'next/server';
@@ -12,17 +13,24 @@ import { changedConfigFields } from '@/services/ai/config/config-entry.audit';
 vi.mock('@/lib/auth-guards', () => ({ requireAdmin: async () => 42 }));
 vi.mock('@/lib/session-service', () => ({ SessionService: {} }));
 vi.mock('@/db', () => ({ ensureMigrations: async () => {} }));
-vi.mock('@/services/ai/config/config-cache-version', () => ({ bumpConfigVersionCounter: async () => true }));
+vi.mock('@/services/ai/config/config-cache-version', () => ({
+  bumpConfigVersionCounter: async () => true, forgetConfigVersionCounter: () => {}, hasTestCounterStore: () => false,
+}));
 
-let version: { id: number; status: string; environment: string; entries: TreatmentConfig[] };
-const saveEntry = vi.fn(async (id: number, c: TreatmentConfig) => {
-  // Même règle que le dépôt réel : seul un Brouillon est modifiable (VER-002).
-  if (version.status !== 'DRAFT') throw new Error(`[config] Version ${id} au statut « ${version.status} » : seule une version au statut Brouillon est modifiable (VER-002).`);
-  void c;
-});
+let version: { id: number; status: string; environment: string; entries: TreatmentConfig[]; deletedAt: Date | null; currentRevisionNumber: number };
+const saveEntry = vi.fn((_id: number, _c: TreatmentConfig) => {});
+class ConfigVersionRefused extends Error { constructor(readonly code: string, m: string) { super(m); } }
 vi.mock('@/services/ai/config/config-version.repository', () => ({
   getVersion: async () => version,
-  saveEntry: (id: number, c: TreatmentConfig) => saveEntry(id, c),
+  ConfigVersionRefused,
+  // Même règle que le dépôt réel (lot 54) : toute version non supprimée est modifiable.
+  writeSnapshot: async (p: { versionId: number; next: (c: unknown) => { entries: TreatmentConfig[] } }) => {
+    if (version.deletedAt) throw new ConfigVersionRefused('VERSION_DELETED', 'Cette version a été supprimée.');
+    const n = p.next({ format: 'ai-config-snapshot-v1', entries: version.entries, masterPrompts: {} });
+    for (const e of n.entries) if (!version.entries.some((x) => JSON.stringify(x) === JSON.stringify(e))) saveEntry(p.versionId, e);
+    version = { ...version, entries: n.entries, currentRevisionNumber: version.currentRevisionNumber + 1 };
+    return { versionId: p.versionId, revisionId: 1, revisionNumber: version.currentRevisionNumber, changed: true, active: version.status === 'ACTIVE', masterPromptSwitches: [] };
+  },
 }));
 const recordConfigEntrySave = vi.fn(async (_t: unknown) => {});
 vi.mock('@/services/ai/config/config-entry.audit', async (orig) => ({
@@ -49,7 +57,7 @@ type Trace = { adminUserId: number; versionId: number; treatment: string; before
 const derniereTrace = () => recordConfigEntrySave.mock.calls.at(-1)![0] as Trace;
 
 beforeEach(() => {
-  version = { id: 7, status: 'DRAFT', environment: 'local', entries: [t4Enregistre] };
+  version = { id: 7, status: 'INACTIVE', environment: 'local', entries: [t4Enregistre], deletedAt: null, currentRevisionNumber: 1 };
   saveEntry.mockClear();
   recordConfigEntrySave.mockClear();
   vi.spyOn(console, 'error').mockImplementation(() => {});
@@ -72,10 +80,18 @@ describe('T4 — correction des déclencheurs depuis le BO', () => {
     expect(diff.before.triggers).toEqual([{ kind: 'schedule', code: 'schedule_hourly', active: false }]);
   });
 
-  it('version non éditable (Active) : refus, aucune écriture, aucune trace', async () => {
+  it('BOIA-03 — version ACTIVE : modifiable directement (plus de lecture seule), tracée', async () => {
     version.status = 'ACTIVE';
     const r = await put('T4', { ...t4Enregistre, triggers: [] });
-    expect(r.status).not.toBe(200);
+    expect(r.status).toBe(200);
+    expect(recordConfigEntrySave).toHaveBeenCalled();
+  });
+
+  it('version supprimée : refus 409, aucune écriture, aucune trace', async () => {
+    version.deletedAt = new Date();
+    const r = await put('T4', { ...t4Enregistre, triggers: [] });
+    expect(r.status).toBe(409);
+    expect(saveEntry).not.toHaveBeenCalled();
     expect(recordConfigEntrySave).not.toHaveBeenCalled();
   });
 });

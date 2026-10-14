@@ -332,11 +332,15 @@ scenario('L48-O10b', 'Recette Opérations V1 : cas C29 complémentaires et « Re
         SELECT status, business_result, business_result_detail FROM ai_job_queue WHERE id = ${r.body.operationsJobId as number}`;
       expect(fini).toMatchObject({ status: 'DONE', business_result: 'APPLIED', business_result_detail: { reconsolidated: 2 } });
       expect(await k.anomaliesDures(compte.id)).toEqual({});
+      // Lot 54D (E08) : la reconsolidation couvre aussi les CANDIDATS — le document
+      // R-1, toujours présent et analysé, re-prouve sa réalité : l'Opération est
+      // rétablie depuis ses preuves (source réactivée), sans doublon.
       const ops = await k.operations(compte);
-      expect(ops.find((o) => o.id === cassee)!.invalidated_at).not.toBeNull();
-      expect(ops.filter((o) => o.invalidated_at === null)).toHaveLength(1);
-      expect(await sql`SELECT correlation_id FROM business_operation_history WHERE operation_id = ${cassee} AND event_type = 'INVALIDATED'`)
-        .toEqual([{ correlation_id: r.body.correlationId }]);
+      expect(ops.filter((o) => o.invalidated_at === null)).toHaveLength(2);
+      const { t3_operation_id: apres } = (await k.candidat(f1))[0];
+      expect(ops.find((o) => o.id === apres)!.invalidated_at).toBeNull();
+      expect((await k.sources(apres!)).filter((x) => x.active && x.source_kind === 'DOCUMENT')).toHaveLength(1);
+      expect(await k.coutNet(apres!)).toBe(1000);
 
       // Rejouée sur le compte désormais cohérent : aucune écriture (INV-040).
       const h = await k.historique(compte);

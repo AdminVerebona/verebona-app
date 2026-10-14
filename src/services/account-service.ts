@@ -10,6 +10,7 @@ import crypto from 'crypto';
 import { emailService } from '@/lib/email/email-service';
 import { emit } from '@/lib/notifications';
 import { orderSessionAccounts, type SessionAccountCandidate } from '@/lib/auth/account-suspension';
+import { invalidateAccountReadCache, invalidateUserReadCache } from '@/lib/server-cache';
 import type { PlanType, SubscriptionTier, SubscriptionStatus, MembershipRole, MembershipStatus } from '@/types/domain';
 
 export interface Account {
@@ -406,6 +407,12 @@ export class AccountService {
         updatedAt: now,
       })
       .where(eq(accountMemberships.id, membership.id));
+    // Lot 54 (SEC-01) : retrait effectif tout de suite. Le jeton du membre est
+    // refusé dès sa prochaine requête (droit relu en base à chaque requête,
+    // `lib/auth/account-access`) ; les lectures mises en cache pour ce compte
+    // et cet utilisateur ne sont plus servies sur cette instance.
+    invalidateAccountReadCache(accountId);
+    invalidateUserReadCache(memberUserId);
 
     const [remover] = await db
       .select()
@@ -466,6 +473,9 @@ export class AccountService {
         updatedAt: now,
       })
       .where(eq(accountMemberships.id, membership.id));
+    // Lot 54 (SEC-01) : départ effectif tout de suite (voir `removeMember`).
+    invalidateAccountReadCache(accountId);
+    invalidateUserReadCache(userId);
 
     const [user] = await db
       .select()

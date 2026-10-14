@@ -64,6 +64,32 @@ export interface RouteUnderstanding {
     supplier?: string | null;
     upcoming?: boolean | null;
   };
+  /**
+   * Lot 54E (#419 §15) : nature du message et informations APPORTÉES, lues
+   * par T2. Des indices : jamais une écriture — une proposition devient au
+   * mieux un plan PENDING_CONFIRMATION construit par le serveur. Absent :
+   * QUERY sans information apportée (versions de prompt antérieures).
+   */
+  interaction?: RouteInteraction;
+}
+
+export type InteractionMode = 'QUERY' | 'UPDATE_PROPOSAL' | 'ACTION_REQUEST' | 'CONTEXT_ONLY' | 'MIXED' | 'AMBIGUOUS';
+
+export interface SuppliedFact {
+  targetHint: string | null;
+  /** Clé du FIELD_CATALOG (déjà restreinte par le serveur), sinon `null`. */
+  fieldKey: string | null;
+  topic: string | null;
+  value: string | null;
+  normalizedValue: string | null;
+  unit: string | null;
+  role: 'update' | 'context' | 'unknown';
+  confidence: Confidence;
+}
+
+export interface RouteInteraction {
+  mode: InteractionMode;
+  suppliedFacts: SuppliedFact[];
 }
 
 /**

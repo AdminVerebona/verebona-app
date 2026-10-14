@@ -267,7 +267,7 @@ async function closeCards(ids: number[], reason: string): Promise<number> {
 
 // ── Producteur ──────────────────────────────────────────────────────────────
 
-export interface OperationCardsReport { created: number; updated: number; closed: number; skipped: number }
+export interface OperationCardsReport { created: number; updated: number; closed: number; skipped: number; /** Lot 54D (E05) : échec de synchronisation (repris au passage T3 suivant). */ error?: string }
 
 /**
  * Pose, met à jour ou ferme les cartes demandées par un passage T3 (après
@@ -399,6 +399,8 @@ export async function syncOperationCards(accountId: number, needs: OperationCard
     rep.closed += await closeCards(aFermer, 'RESOLVED_BY_T3');
   } catch (e) {
     console.error(`[to-process] cartes de consolidation du compte ${accountId} non synchronisées :`, (e as Error).message);
+    // Lot 54D (E05) : l'échec est RENDU à l'appelant (reprise programmée), plus jamais avalé.
+    rep.error = (e as Error).message || 'CARDS_SYNC_FAILED';
   }
   return rep;
 }

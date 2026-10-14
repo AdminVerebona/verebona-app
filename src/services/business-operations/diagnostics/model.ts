@@ -388,6 +388,10 @@ export const HARD_ANOMALY_CODES = [
   'PARENT_DEPTH_EXCEEDED',
   'NEGATIVE_COMPONENT',
   'OTHER_AS_FALLBACK',
+  // Lot 54D (§4.5, E01) : contrôles financiers et reprises T3, tracés (jamais corrigés depuis le BO).
+  'FIN_INDEMNITY_DUPLICATED',
+  'FIN_PRINCIPAL_AS_COST',
+  'T3_TECHNICAL_ERROR_EXHAUSTED',
 ] as const;
 export type HardAnomalyCode = (typeof HARD_ANOMALY_CODES)[number];
 
@@ -399,6 +403,9 @@ export const HARD_ANOMALY_LABELS: Readonly<Record<HardAnomalyCode, string>> = {
   PARENT_DEPTH_EXCEEDED: 'Hiérarchie de plus de 3 niveaux',
   NEGATIVE_COMPONENT: 'Composante de montant négatif',
   OTHER_AS_FALLBACK: 'Type OTHER sans qualification explicite (repli)',
+  FIN_INDEMNITY_DUPLICATED: 'Indemnité portée deux fois sur un même sinistre (déduction multiple possible)',
+  FIN_PRINCIPAL_AS_COST: 'Capital emprunté compté comme coût d’un financement',
+  T3_TECHNICAL_ERROR_EXHAUSTED: 'Erreur technique T3 : reprises automatiques épuisées',
 };
 
 /** Indicateur C26.2 qui porte chaque anomalie dure. */
@@ -412,6 +419,9 @@ export const HARD_ANOMALY_INDICATOR: Readonly<Record<HardAnomalyCode, IndicatorK
   PARENT_DEPTH_EXCEEDED: null,
   NEGATIVE_COMPONENT: null,
   OTHER_AS_FALLBACK: null,
+  FIN_INDEMNITY_DUPLICATED: null,
+  FIN_PRINCIPAL_AS_COST: null,
+  T3_TECHNICAL_ERROR_EXHAUSTED: null,
 };
 
 /** Rappel de la procédure (décision PO Q9) — affiché avec chaque alerte. */

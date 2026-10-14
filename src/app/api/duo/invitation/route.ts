@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { SessionService } from '@/lib/session-service';
 import { db } from '@/db';
 import { users, duoAccounts, duoMemberships } from '@/db/schema';
-import { eq, and } from 'drizzle-orm';
+import { eq, and, sql } from 'drizzle-orm';
 import { emailService } from '@/lib/email/email-service';
 import crypto from 'crypto';
 import { getAppBaseUrl } from '@/lib/app-url';
@@ -122,6 +122,10 @@ export async function POST(request: NextRequest) {
         pendingInviteToken: token,
         pendingInviteTokenExpiresAt: expiresAt,
         pendingInviteSentAt: new Date(),
+        // Lot 54F : trace DURABLE du premier envoi de cette souscription (la
+        // mascotte ne repropose plus « Inviter quelqu'un ») — conservée par
+        // l'annulation (DELETE ci-dessous) et l'expiration du lien.
+        duoFirstInviteSentAt: sql`COALESCE(${duoAccounts.duoFirstInviteSentAt}, now())`,
         updatedAt: new Date(),
       })
       .where(eq(duoAccounts.id, duo.id));
@@ -169,6 +173,8 @@ export async function POST(request: NextRequest) {
 /**
  * DELETE /api/duo/invitation
  * Cancel the pending invitation
+ * (lot 54F : `duo_first_invite_sent_at` n'est PAS effacé — la mascotte ne
+ * repropose pas l'invitation ; l'invitation manuelle reste possible ici.)
  */
 export async function DELETE(request: NextRequest) {
   try {

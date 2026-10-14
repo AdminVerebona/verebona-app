@@ -1,7 +1,7 @@
 /**
  * Lot 32B — validation serveur des modèles (ticket « modèles réellement
- * utilisables par traitement », §5) : enregistrement d'un brouillon, mise à
- * l'essai, activation. Une requête API manuelle ne contourne pas le filtrage
+ * utilisables par traitement », §5) : enregistrement d'une version (lot 54 :
+ * active ou non), activation. Une requête API manuelle ne contourne pas le filtrage
  * du BO. Contexte d'éligibilité injecté (aucune base, aucun fournisseur).
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -9,20 +9,25 @@ import { emptyTreatmentConfig, type TreatmentConfig } from '../config-types';
 import type { UsableModelsContext } from '../../registry/usable-models';
 import { TREATMENTS, type Treatment } from '../treatments';
 
+const ecriture = vi.fn(async () => ({ versionId: 7, revisionId: 1, revisionNumber: 2, changed: true, active: false, masterPromptSwitches: [] }));
 const repo = {
   getVersion: vi.fn(),
   getActiveVersion: vi.fn(async () => null),
   listVersions: vi.fn(async () => [] as unknown[]),
-  promoteToTest: vi.fn(async () => 'TO_TEST'),
-  switchActive: vi.fn(async () => ({ previousId: null })),
-  markStaleDrafts: vi.fn(async () => 0),
-  saveEntry: vi.fn(async () => undefined),
+  activateVersion: vi.fn(async () => ({ previousId: null, alreadyActive: false, revisionNumber: 1, masterPromptSwitches: [] })),
+  // Lot 54 : toute sauvegarde passe par une révision (`writeSnapshot`).
+  saveEntry: ecriture,
+  writeSnapshot: ecriture,
+  getMasterPromptVersionRef: vi.fn(async () => null),
+  ConfigVersionRefused: class extends Error { code = ''; },
 };
 vi.mock('../config-version.repository', () => repo);
 vi.mock('../config-resolver', () => ({ invalidateConfigCache: () => {} }));
 vi.mock('../../telemetry/execution-context', () => ({ invalidateConfigVersionCache: () => {} }));
 vi.mock('../../queue/job-queue.repository', () => ({ requeueRunning: async () => 0 }));
-vi.mock('../config-cache-version', () => ({ bumpConfigVersionCounter: async () => true }));
+vi.mock('../config-cache-version', () => ({
+  bumpConfigVersionCounter: async () => true, forgetConfigVersionCounter: () => {}, hasTestCounterStore: () => false,
+}));
 vi.mock('@/services/verebona-assistant/core/model-startup-check', () => ({
   runAssistantStartupCheck: async () => ({ ok: true }),
 }));
@@ -58,7 +63,7 @@ const brouillon = (over: Partial<Record<Treatment, Partial<TreatmentConfig>>> = 
 });
 
 beforeEach(() => {
-  for (const f of Object.values(repo)) f.mockClear();
+  for (const f of Object.values(repo)) if (typeof (f as { mockClear?: unknown }).mockClear === "function") (f as { mockClear: () => void }).mockClear();
   disponible = new Set(['gemini-3.5-flash-lite', 'gemini-3.1-flash-lite', 'gemini-3.6-flash', 'gemini-3.5-flash', 'gemini-2.5-flash', 'gemini-2.5-pro']);
   repo.getActiveVersion.mockResolvedValue({ id: 1, entries: TREATMENTS.map((t) => entree(t, { maxOutputTokens: 300 })) } as never);
 });
@@ -86,33 +91,15 @@ describe('§5 — enregistrement d’un brouillon (contournement de l’interfac
   });
 });
 
-describe('§5 — mise à l’essai, activation', () => {
-  it('MOD-26 — brouillon référençant un modèle non utilisable : promotion refusée, motif par traitement et champ', async () => {
-    repo.getVersion.mockResolvedValue(brouillon({ T4: { primaryModel: 'gemini-2.5-pro' } }));
-    const r = await svc.promote(7);
-    expect(r.promoted).toBe(false);
-    expect(r.validation.issues.filter((i) => i.blocking).map((i) => `${i.treatment}:${i.field}`)).toEqual(['T4:primaryModel']);
-    expect(repo.promoteToTest).not.toHaveBeenCalled();
-  });
-
-  it('MOD-27 — modèle retiré par le fournisseur entre l’édition et la promotion : promotion refusée ; avant : acceptée', async () => {
-    repo.getVersion.mockResolvedValue(brouillon({ T4: { fallback1: 'gemini-3.5-flash', reasoningFallback1: 'standard' } }));
-    expect((await svc.promote(7)).promoted).toBe(true);
-    repo.promoteToTest.mockClear();
-    disponible.delete('gemini-3.5-flash');
-    const r = await svc.promote(7);
-    expect(r.promoted).toBe(false);
-    expect(r.validation.issues.find((i) => i.blocking)?.message).toMatch(/gemini-3\.5-flash.*absent du catalogue du fournisseur/);
-    expect(repo.promoteToTest).not.toHaveBeenCalled();
-  });
-
+describe('§5 — activation (lot 54 : plus de mise à l’essai)', () => {
   it('MOD-28 — activation : modèle devenu non utilisable → refus MODEL_NOT_USABLE, aucune bascule ; rollback jamais bloqué', async () => {
     repo.getVersion.mockResolvedValue({ ...brouillon({ T1: { fallback2: 'gemini-3.5-flash' } }), status: 'VALIDATED' });
     disponible.delete('gemini-3.5-flash');
     await expect(svc.activate(7, 1)).rejects.toMatchObject({ code: 'MODEL_NOT_USABLE', details: [expect.objectContaining({ treatment: 'T1', field: 'fallback2' })] });
-    expect(repo.switchActive).not.toHaveBeenCalled();
+    expect(repo.activateVersion).not.toHaveBeenCalled();
     repo.getVersion.mockResolvedValue({ ...brouillon({ T1: { fallback2: 'gemini-3.5-flash' } }), status: 'VALIDATED', activatedAt: new Date() });
-    await expect(svc.rollback(7, 1)).resolves.toMatchObject({ interrupts: true });
+    // Réactivation d'une version déjà active par le passé : jamais bloquée, sans interruption.
+    await expect(svc.rollback(7, 1)).resolves.toMatchObject({ interrupts: false });
   });
 
   it('PRO-13 — un Pro accepté sur T2 ne change rien aux protections coût / latence du contrat T2', async () => {

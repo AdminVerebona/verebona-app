@@ -247,7 +247,12 @@ export async function runOperationsJob(job: QueuedJob, p: OperationsPayload, gua
   // n'a changé, INV-040). Jamais une édition d'Opération (décision PO Q9).
   const admin = p.events.find((e) => e.trigger === 'admin_reconsolidation');
   const correlationId = admin?.correlationId ?? p.events.find((e) => e.correlationId)?.correlationId ?? `t3-operations:${job.id}`;
+  // Lot 54D (E08) : reconsolidation complète — TOUS les biens (pages sur
+  // curseur, plus de borne à 500) et couverture des CANDIDATS : chaque
+  // candidat actif du compte est remis en consolidation (traité par pages de
+  // DOCUMENTS_PER_RUN, passages enchaînés jusqu'à épuisement).
   const tousLesBiens = admin ? await listAccountAssetsForReconsolidation(p.accountId) : [];
+  const candidatsRemis = admin ? await requeueAccountCandidates(p.accountId) : 0;
   const res = await consolidateAccountOperations(p.accountId, {
     fileIds,
     assetIds: [...new Set([...assetIds, ...tousLesBiens])],
@@ -255,70 +260,124 @@ export async function runOperationsJob(job: QueuedJob, p: OperationsPayload, gua
     reevaluateHolds: !!admin || p.events.some((e) => e.trigger === 'asset_updated' || e.trigger === 'asset_disposed' || e.trigger === 'arbitration_resolved'),
     correlationId,
     beforeWrite: (what) => guard.assertActive(what),
+    jobId: job.id,
   });
+  let reconsolidation: AdminReconsolidationReport | undefined;
   if (admin) {
     const r = await reconsolidateAllActiveOperations(p.accountId, { correlationId, beforeWrite: (what) => guard.assertActive(what) });
     res.changes += r.changes;
     res.errors += r.errors;
     res.reconsolidated = r.operations;
+    reconsolidation = adminReconsolidationReport({
+      assets: tousLesBiens.length, candidatesRequeued: candidatsRemis, operations: r.operations, operationBatchesFailed: r.errors,
+      documentsRemaining: res.remaining, technicalErrors: res.technicalErrors?.length ?? 0,
+    });
+    // Couverture des projections : la projection Agenda COMPLÈTE suit (curseur, E07).
+    const { requestAgendaProjection } = await import('../agenda-projection/queue');
+    await requestAgendaProjection(p.accountId, { all: true, correlationId });
   }
   if (res.remaining) {
     // Passage consolidé suivant (le travail vivant est marqué « à repasser », WF-10).
     await requestOperationsConsolidation(p.accountId, { trigger: 'schedule_hourly' });
   }
-  const detail = { accountId: p.accountId, ...res };
+  const detail = { accountId: p.accountId, ...res, ...(reconsolidation ? { reconsolidation } : {}) };
+  // Lot 54D (E01) : une erreur technique subsiste → jamais APPLIED / NO_CHANGE
+  // (succès global interdit) ; la reprise automatique est programmée.
+  if (res.errors > 0) return { result: 'FAILED', detail: { ...detail, failure: 'T3_TECHNICAL_ERRORS' } };
   if (res.changes > 0) return { result: 'APPLIED', detail };
   if ((res.outcomes.HOLD_UNRESOLVED ?? 0) > 0 || (res.outcomes.ARBITRATION_REQUIRED ?? 0) > 0) return { result: 'ABSTAIN', detail };
   return { result: 'NO_CHANGE', detail };
 }
 
-/** Lot 48 (O10) : biens vivants du compte examinés par une reconsolidation complète (bornés). */
-export const ADMIN_RECONSOLIDATION_MAX_ASSETS = 500;
-/** Lot 48 (O10) : Opérations actives recalculées par une reconsolidation complète (bornées), par lots. */
-export const ADMIN_RECONSOLIDATION_MAX_OPERATIONS = 2_000;
+/** Lot 48 (O10) puis 54D (E08) : taille des pages de biens d'une reconsolidation complète (plus de plafond). */
+export const ADMIN_RECONSOLIDATION_PAGE_ASSETS = 500;
+/** Lot 54D (E08) : taille des pages d'Opérations (curseur stable) ; chaque lot de 100 = une transaction. */
+export const ADMIN_RECONSOLIDATION_PAGE_OPERATIONS = 2_000;
 const ADMIN_RECONSOLIDATION_BATCH = 100;
+
+/** Lot 54D (E08) : statut d'une reconsolidation complète, avec compteurs. */
+export interface AdminReconsolidationReport {
+  /** COMPLET : tout traité ; PARTIEL : passages suivants en file (documents restants) ; ERREUR : erreurs techniques. */
+  status: 'COMPLET' | 'PARTIEL' | 'ERREUR';
+  assets: number;
+  candidatesRequeued: number;
+  operations: number;
+  operationBatchesFailed: number;
+  documentsRemaining: boolean;
+  technicalErrors: number;
+}
+
+/** Statut d'une reconsolidation (pure) : aucun traitement tronqué n'est déclaré terminé. */
+export function adminReconsolidationReport(x: Omit<AdminReconsolidationReport, 'status'>): AdminReconsolidationReport {
+  const status = x.operationBatchesFailed > 0 || x.technicalErrors > 0 ? 'ERREUR' : x.documentsRemaining ? 'PARTIEL' : 'COMPLET';
+  return { status, ...x };
+}
 
 async function listAccountAssetsForReconsolidation(accountId: number): Promise<number[]> {
   const { pgClient } = await import('@/db');
+  const out: number[] = [];
+  let curseur = 0;
+  for (;;) {
+    const r = ((await pgClient.unsafe(
+      `SELECT id FROM assets WHERE account_id = $1 AND deleted_at IS NULL AND id > $2 ORDER BY id LIMIT $3`,
+      [accountId, curseur, ADMIN_RECONSOLIDATION_PAGE_ASSETS] as never[],
+    )) as unknown as Array<{ id: number }>).map((x) => Number(x.id));
+    out.push(...r);
+    if (r.length < ADMIN_RECONSOLIDATION_PAGE_ASSETS) return out;
+    curseur = r[r.length - 1];
+  }
+}
+
+/** Lot 54D (E08) : candidats actifs du compte remis en consolidation (couverture complète des sources documentaires). */
+async function requeueAccountCandidates(accountId: number): Promise<number> {
+  const { pgClient } = await import('@/db');
   const r = (await pgClient.unsafe(
-    `SELECT id FROM assets WHERE account_id = $1 AND deleted_at IS NULL ORDER BY id LIMIT $2`,
-    [accountId, ADMIN_RECONSOLIDATION_MAX_ASSETS] as never[],
-  )) as unknown as Array<{ id: number }>;
-  return r.map((x) => Number(x.id));
+    `UPDATE document_operation_candidates SET t3_pending = true
+      WHERE account_id = $1 AND status = 'ACTIVE' AND NOT t3_pending RETURNING id`,
+    [accountId] as never[],
+  )) as unknown as unknown[];
+  return r.length;
 }
 
 /**
  * Recalcule chaque Opération active (non fusionnée) du compte depuis ses
  * sources, par lots d'une transaction chacun (verrou du compte). Une erreur
- * d'intégrité sur un lot est comptée, les autres lots passent.
+ * d'intégrité sur un lot est comptée, les autres lots passent. Lot 54D
+ * (E08) : pages sur curseur stable jusqu'à épuisement — plus de plafond à
+ * 2 000 ; une interruption (garde) lève, le travail est rejoué (idempotent :
+ * un lot déjà cohérent n'écrit rien).
  */
 export async function reconsolidateAllActiveOperations(
   accountId: number, opts: { correlationId?: string; beforeWrite?: (what: string) => Promise<void>; today?: string } = {},
 ): Promise<{ operations: number; changes: number; errors: number; truncated: boolean }> {
   const { pgClient } = await import('@/db');
-  const ids = ((await pgClient.unsafe(
-    `SELECT id FROM business_operations
-      WHERE account_id = $1 AND invalidated_at IS NULL AND merged_into_operation_id IS NULL
-      ORDER BY id LIMIT $2`,
-    [accountId, ADMIN_RECONSOLIDATION_MAX_OPERATIONS + 1] as never[],
-  )) as unknown as Array<{ id: number }>).map((x) => Number(x.id));
-  const truncated = ids.length > ADMIN_RECONSOLIDATION_MAX_OPERATIONS;
-  const retenues = ids.slice(0, ADMIN_RECONSOLIDATION_MAX_OPERATIONS);
   const { reconsolidateOperations } = await import('./consolidator');
   const { isBusinessOperationIntegrityError } = await import('../errors');
   let changes = 0;
   let errors = 0;
-  for (let i = 0; i < retenues.length; i += ADMIN_RECONSOLIDATION_BATCH) {
-    try {
-      changes += await reconsolidateOperations(accountId, retenues.slice(i, i + ADMIN_RECONSOLIDATION_BATCH), opts);
-    } catch (e) {
-      if (!isBusinessOperationIntegrityError(e)) throw e;
-      errors++;
-      console.error(`[t3-operations] reconsolidation complète (compte ${accountId}) : ${(e as Error).message}`);
+  let total = 0;
+  let curseur = 0;
+  for (;;) {
+    const ids = ((await pgClient.unsafe(
+      `SELECT id FROM business_operations
+        WHERE account_id = $1 AND invalidated_at IS NULL AND merged_into_operation_id IS NULL AND id > $2
+        ORDER BY id LIMIT $3`,
+      [accountId, curseur, ADMIN_RECONSOLIDATION_PAGE_OPERATIONS] as never[],
+    )) as unknown as Array<{ id: number }>).map((x) => Number(x.id));
+    for (let i = 0; i < ids.length; i += ADMIN_RECONSOLIDATION_BATCH) {
+      try {
+        changes += await reconsolidateOperations(accountId, ids.slice(i, i + ADMIN_RECONSOLIDATION_BATCH), opts);
+      } catch (e) {
+        if (!isBusinessOperationIntegrityError(e)) throw e;
+        errors++;
+        console.error(`[t3-operations] reconsolidation complète (compte ${accountId}) : ${(e as Error).message}`);
+      }
     }
+    total += ids.length;
+    if (ids.length < ADMIN_RECONSOLIDATION_PAGE_OPERATIONS) break;
+    curseur = ids[ids.length - 1];
   }
-  if (truncated) console.warn(`[t3-operations] reconsolidation complète du compte ${accountId} bornée à ${ADMIN_RECONSOLIDATION_MAX_OPERATIONS} Opérations.`);
-  return { operations: retenues.length, changes, errors, truncated };
+  return { operations: total, changes, errors, truncated: false };
 }
 
 /** Comptes mis en file par page de balayage (`T3_OPERATIONS_SWEEP_PAGE_SIZE`, 100 par défaut, 1 à 1000). */

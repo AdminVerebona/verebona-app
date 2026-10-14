@@ -76,6 +76,14 @@ export function verificationAutoRetryDue(p: { qualityState: string; verification
     && (p.retryAttempts ?? 0) < (p.maxRetries ?? 2);
 }
 
+/**
+ * Lot 54G (point 2) : une relecture du FICHIER reste-t-elle due ? Unités
+ * NEEDS_SOURCE (plafond non atteint) et reprises automatiques restantes (pure).
+ */
+export function needsSourceRetryDue(p: { needsSourceUnits: number; retryAttempts: number; maxRetries: number }): boolean {
+  return p.needsSourceUnits > 0 && p.retryAttempts < p.maxRetries;
+}
+
 /** Suivi d'un document `VERIFICATION_INCOMPLETE` ; `null` pour un autre état (pure). */
 export function verificationFollowup(p: VerificationFollowupInput): VerificationFollowup | null {
   if (p.qualityState !== 'VERIFICATION_INCOMPLETE') return null;

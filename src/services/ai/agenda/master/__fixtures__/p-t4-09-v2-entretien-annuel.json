@@ -1,0 +1,43 @@
+{
+  "case": "P-T4-09",
+  "description": "CLASSIFY_EVENT v2 — entretien de chaudière à réaliser tous les 12 mois (mention explicite) ⇒ accept, action, recurrenceDecision=accept.",
+  "context": {
+    "candidate": {
+      "title": "Entretien chaudière",
+      "date": "2027-03-15",
+      "confidence": "certain",
+      "documentType": "RAPPORT_ENTRETIEN",
+      "excerpt": "Entretien annuel obligatoire : visite à réaliser tous les 12 mois, prochaine visite le 15/03/2027."
+    },
+    "recurrenceCandidate": {
+      "mode": "EXPLICIT_SOURCE",
+      "frequency": "yearly",
+      "interval": 1,
+      "startDate": null,
+      "endDate": null,
+      "occurrenceCount": null,
+      "excerpt": "visite à réaliser tous les 12 mois",
+      "history": []
+    }
+  },
+  "recording": {
+    "operationCode": "t4_classify_event",
+    "task": "CLASSIFY_EVENT",
+    "outputContract": "t4_output_v2",
+    "output": {
+      "task": "CLASSIFY_EVENT",
+      "agendaDecision": "accept",
+      "recurrenceDecision": "accept",
+      "homeCategory": "action",
+      "businessType": null,
+      "confidence": "certain",
+      "reason": "visite d'entretien à réaliser par l'utilisateur",
+      "recurrenceReason": "la source exige explicitement une visite tous les 12 mois"
+    }
+  },
+  "expected": {
+    "agendaDecision": "accept",
+    "recurrenceDecision": "accept",
+    "category": "action"
+  }
+}

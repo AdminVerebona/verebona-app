@@ -1,0 +1,42 @@
+{
+  "case": "P-T4-07",
+  "description": "CLASSIFY_EVENT v2 — facture d'abonnement de télésurveillance, période du 01/10/2026 au 31/10/2026, facturation mensuelle : une période facturée n'est ni une échéance ni une série d'actions ⇒ agendaDecision=reject, recurrenceDecision=reject.",
+  "context": {
+    "candidate": {
+      "title": "Abonnement télésurveillance",
+      "date": "2026-10-31",
+      "confidence": "certain",
+      "documentType": "FACTURE",
+      "excerpt": "Facture n° TS-2026-10 — Abonnement télésurveillance mensuel — Période du 01/10/2026 au 31/10/2026 — 39,90 € TTC"
+    },
+    "recurrenceCandidate": {
+      "mode": "EXPLICIT_SOURCE",
+      "frequency": "monthly",
+      "interval": 1,
+      "startDate": "2026-10-01",
+      "endDate": null,
+      "occurrenceCount": null,
+      "excerpt": "Abonnement télésurveillance mensuel",
+      "history": []
+    }
+  },
+  "recording": {
+    "operationCode": "t4_classify_event",
+    "task": "CLASSIFY_EVENT",
+    "outputContract": "t4_output_v2",
+    "output": {
+      "task": "CLASSIFY_EVENT",
+      "agendaDecision": "reject",
+      "recurrenceDecision": "reject",
+      "homeCategory": "unknown",
+      "businessType": null,
+      "confidence": "certain",
+      "reason": "fin d'une période de facturation mensuelle (01/10/2026 → 31/10/2026) : ni échéance ni action",
+      "recurrenceReason": "la mensualité décrit la facturation de l'abonnement, pas une action récurrente"
+    }
+  },
+  "expected": {
+    "agendaDecision": "reject",
+    "recurrenceDecision": "reject"
+  }
+}

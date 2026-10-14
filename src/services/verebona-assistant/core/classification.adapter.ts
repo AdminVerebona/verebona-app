@@ -81,7 +81,7 @@ export async function classifyAssistantIntent(
   if (!r) return null;
   return {
     ...toIntentRoute(r.plan, input.planType),
-    understanding: { requestedFacts: r.requestedFacts, requestedTopics: r.requestedTopics, filters: r.filters ?? {} },
+    understanding: { requestedFacts: r.requestedFacts, requestedTopics: r.requestedTopics, filters: r.filters ?? {}, interaction: r.interaction },
   };
 }
 
@@ -118,4 +118,20 @@ export function toIntentRoute(plan: ToolPlan, planType: string): IntentRoute {
 /** Port de compréhension UNDERSTAND (toujours branché depuis le lot 16b-2). */
 export function buildClassificationPort(): (message: string, input: AssistantRequestInput) => Promise<IntentRoute | null> {
   return classifyAssistantIntent;
+}
+
+/**
+ * Lot 54E (#419 écart 1) — port d'ARBITRAGE : T2 choisit parmi des candidats
+ * prévalidés par le serveur (références opaques). Rend la décision brute ;
+ * `null` en cas d'échec — jamais une exception. La validation reste serveur.
+ */
+export function buildArbitrationPort(): NonNullable<import('./assistant-orchestrator.service').OrchestratorPorts['arbitrateWithAI']> {
+  return async (message, input, candidates) => {
+    try {
+      const { arbitrateWithT2Master } = await import('@/services/ai/assistant/master/t2-understand');
+      return await arbitrateWithT2Master(message, input, candidates);
+    } catch {
+      return null;
+    }
+  };
 }

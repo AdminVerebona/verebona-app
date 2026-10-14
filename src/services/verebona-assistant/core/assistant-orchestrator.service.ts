@@ -97,6 +97,11 @@ import {
   type BusinessSource, type SemanticNeed, type SemanticTrace,
 } from './semantic-scope';
 import { runSemanticStage, resumeSemanticChoice, type SemanticOutcome } from './semantic-stage';
+import { type ArbitrationCandidate } from './semantic-stage';
+import type { RawSemanticDecision } from './semantic-scope';
+import {
+  CONTEXT_ONLY_MESSAGE, UPDATE_DISABLED_MESSAGE, UPDATE_READ_ONLY_MESSAGE, interactionHandling, updateFactsOf,
+} from './interaction';
 import { expenseThemeWords } from '../canonical/expense-classes';
 
 /** Ports injectés (implémentés par les autres services / le repo). */
@@ -232,6 +237,26 @@ export interface OrchestratorPorts {
   listBusinessSources?(accountId: number, req: { assetIds: number[]; assetNames?: Record<number, string>; need: SemanticNeed }): Promise<{ sources: BusinessSource[]; domains: string[] }>;
   /** Lot 49 : relecture d'UNE source métier (reprise après clarification), revalidée. */
   readBusinessSource?(accountId: number, ref: string, ctx: { assetIds: number[]; assetNames?: Record<number, string> }): Promise<BusinessSource | null>;
+  /**
+   * Lot 54E (#419 écart 1) : ARBITRAGE par T2 entre candidats PRÉVALIDÉS
+   * (références opaques). Décision brute, validée ensuite par le serveur.
+   * Absent : aucun arbitrage IA (clarification).
+   */
+  arbitrateWithAI?(message: string, input: AssistantRequestInput, candidates: ArbitrationCandidate[]): Promise<RawSemanticDecision | null>;
+  /**
+   * Lot 54E : le prompt maître T2 ACTIF sait-il arbitrer (emplacement
+   * {{BUSINESS_CANDIDATES}}) ? Non : aucun appel dépensé, clarification.
+   */
+  canArbitrateWithAI?(): Promise<boolean>;
+  /**
+   * Lot 54E (#419 §15) : plan PENDING_CONFIRMATION issu d'une information
+   * APPORTÉE (UPDATE_PROPOSAL) — même table et même confirmation que les
+   * commandes ; AUCUNE écriture. `null` : modifications désactivées.
+   */
+  prepareUpdateProposal?(input: AssistantRequestInput, req: { fact: import('../types/contracts').SuppliedFact; assetId: number | null }): Promise<
+    | { kind: 'plan'; preview: import('../commands/catalog').CommandPlanPreview; capability: string }
+    | { kind: 'need_info'; message: string; reason: string; capability: string | null }
+    | null>;
 }
 
 export async function runAssistant(
@@ -465,7 +490,7 @@ export async function runAssistant(
      * cascade continue (étape non applicable ou nouvelle route).
      */
     const servirSemantique = async (o: SemanticOutcome, r: IntentRoute): Promise<AssistantRunResult | null> => {
-      if (o.kind === 'continue' || o.kind === 'reroute') return null;
+      if (o.kind === 'continue' || o.kind === 'reroute' || o.kind === 'interaction') return null;
       const routeSem: IntentRoute = { ...routeForIntent(o.intent, input.planType, 'périmètre sémantique'), entityHints: r.entityHints, understanding: r.understanding };
       base.route = routeSem;
       trace.intent = routeSem.intent;
@@ -691,6 +716,100 @@ export async function runAssistant(
       for (const r of reasons) if (!comprehension.reasons.includes(r)) comprehension.reasons.push(r);
       comprehension.resolvedBy = resolvedBy;
     };
+    // ══════════════════════════════════════════════════════════════════════
+    // LOT 54E (#419 §15) — INFORMATION APPORTÉE PAR L'UTILISATEUR
+    //
+    // Appliqué après CHAQUE compréhension UNDERSTAND : T2 a lu la nature du
+    // message (`interactionMode`, `suppliedFacts`). Une information à
+    // enregistrer devient au mieux un plan PENDING_CONFIRMATION préparé par
+    // le SERVEUR (cible, capacité, droits, valeur actuelle — CommandPlan
+    // existant) ; une information de contexte n'est jamais persistée.
+    // AUCUNE écriture ici. `null` : la demande suit son cours (question).
+    // ══════════════════════════════════════════════════════════════════════
+    const traiterInteraction = async (compris: IntentRoute | null): Promise<AssistantRunResult | null> => {
+      const inter = compris?.understanding?.interaction;
+      if (!inter || input.resume) return null;
+      semTrace.interactionMode = inter.mode;
+      semTrace.suppliedFactsCount = inter.suppliedFacts.length;
+      const traitement = interactionHandling(inter);
+      if (!traitement) return null;
+      const routeI = routeForIntent('UNSUPPORTED_ACTION', input.planType, `information apportée (${inter.mode})`);
+      base.route = routeI;
+      trace.intent = traitement === 'proposal' ? 'WRITE_COMMAND' : routeI.intent;
+      marquer('COMPLETE', [], 'understand');
+      if (traitement === 'context_only') {
+        trace.escalationReasons.push('INTERACTION:CONTEXT_ONLY');
+        done('template', 'interaction.context_only', null, 0);
+        return finalize(base, machine, 'deterministic', CONTEXT_ONLY_MESSAGE, [], [], [], ports, input);
+      }
+      trace.escalationReasons.push(`INTERACTION:${inter.mode}`);
+      const fait = updateFactsOf(inter)[0];
+      if (input.planLimit) {
+        semTrace.updateCapabilityResolved = false;
+        done('template', 'interaction.read_only', null, 0);
+        return finalize(base, machine, 'deterministic', UPDATE_READ_ONLY_MESSAGE, [], [], [], ports, input);
+      }
+      // Cible : résolue par le SERVEUR dans les biens DISPONIBLES du compte
+      // (indice littéral de T2, sinon page / fil) — jamais un identifiant du modèle.
+      let assetId: number | null = null;
+      if (fait.targetHint && ports.resolveTargets) {
+        const r: IntentRoute = { ...routeForIntent('ACCOUNT_FACT_ASSET', input.planType, 'cible d’une information apportée'), entityHints: [{ type: 'asset', value: fait.targetHint }] };
+        const cibles = await withDeadline(ports.resolveTargets(input, r), retrievalDeadline()).catch(() => null);
+        if (cibles?.asset) assetId = cibles.asset.id;
+        else {
+          semTrace.updateCapabilityResolved = false;
+          const ambigus = cibles?.ambiguity?.kind === 'asset' ? cibles.ambiguity.candidates : [];
+          const texte = ambigus.length >= 2
+            ? `Plusieurs biens correspondent à « ${fait.targetHint} » : ${ambigus.slice(0, 5).map((c) => c.name).join(', ')}. Précisez lequel ; rien n’a été modifié.`
+            : `Je n’ai pas trouvé « ${fait.targetHint} » parmi vos biens disponibles : rien n’a été modifié.`;
+          done('template', 'interaction.target_unresolved', 'AMBIGUOUS_TARGET', 0);
+          return finalize(base, machine, 'deterministic', texte, [], [], [], ports, input, 'insufficient');
+        }
+      }
+      const prep = ports.prepareUpdateProposal ? await ports.prepareUpdateProposal(input, { fact: fait, assetId }).catch((e) => {
+        console.error('[verebona] proposition de mise à jour impossible :', (e as Error).message);
+        return null;
+      }) : null;
+      if (!prep) {
+        semTrace.updateCapabilityResolved = false;
+        done('template', 'interaction.update_disabled', null, 0);
+        return finalize(base, machine, 'deterministic', UPDATE_DISABLED_MESSAGE, [], [], [], ports, input);
+      }
+      semTrace.updateTargetType = prep.capability;
+      semTrace.updateCapabilityResolved = prep.kind === 'plan' || (prep.capability != null && prep.reason !== 'FIELD_NOT_WRITABLE');
+      semTrace.confirmationPlanCreated = prep.kind === 'plan';
+      if (prep.kind === 'need_info') trace.escalationReasons.push(`INTERACTION:PROPOSAL_REFUSED:${prep.reason}`);
+      done('template', prep.kind === 'plan' ? 'command.proposal_preview' : 'command.proposal_need_info', null, 0);
+      const result = await finalize(base, machine, 'deterministic', prep.kind === 'plan' ? prep.preview.summary : prep.message, [], [], [], ports, input);
+      if (prep.kind === 'plan') result.commandPlan = prep.preview;
+      return result;
+    };
+
+    /**
+     * Lot 54E (#419 écart 1) — ARBITRAGE T2 borné : même éligibilité que
+     * UNDERSTAND (IA active, offre, budget du message, annulation). `null` :
+     * pas d'appel — l'étape sémantique clarifie, jamais un choix lexical.
+     */
+    const arbitrer = async (cands: ArbitrationCandidate[]): Promise<RawSemanticDecision | null> => {
+      if (!aiActif || !ports.arbitrateWithAI || !isPlanAiEligible(input.planType) || !budget.canCall()) {
+        if (ports.arbitrateWithAI && aiActif && !budget.canCall()) trace.escalationReasons.push('SEMANTIC:ARBITRATION_BUDGET_EXHAUSTED');
+        return null;
+      }
+      if (ports.canArbitrateWithAI && !(await ports.canArbitrateWithAI().catch(() => false))) {
+        // Version de prompt antérieure (action BO) : aucun appel inutile.
+        trace.escalationReasons.push('SEMANTIC:ARBITRATION_PROMPT_UNSUPPORTED');
+        return null;
+      }
+      if (await avantAppelModele() === 'cancelled') return null;
+      if (!budget.canCall()) return null;
+      trace.escalationReasons.push(`SEMANTIC:ARBITRATION:${cands.length}`);
+      const avant = budget.used;
+      const d = await ports.arbitrateWithAI(input.message, input, cands).catch(() => null);
+      reconcilierBudget(budget, avant, 1);
+      trace.aiCalls = budget.used;
+      return d;
+    };
+
     /** UNDERSTAND déjà appelé pour cette demande (jamais un second appel). */
     let comprisParModele = false;
     /** UNDERSTAND appelé au routage (intention inconnue des règles) — lot 33. */
@@ -815,6 +934,9 @@ export async function runAssistant(
               trace.escalationReasons.push('ROUTING:AI_BUDGET_EXHAUSTED');
             }
           }
+          // Lot 54E (#419 §15) : information APPORTÉE — proposition ou contexte, jamais une lecture.
+          const interactionCible = await traiterInteraction(compris);
+          if (interactionCible) return interactionCible;
           const intentionModele = compris && compris.intent.startsWith('ACCOUNT_') ? compris.intent : null;
           const intention: VerebonaIntent | null = intentionModele ?? (route.intent.startsWith('ACCOUNT_') ? route.intent : null);
           if (compris && !intentionModele && compris.confidence !== 'ambiguous' && compris.intent !== 'UNKNOWN') {
@@ -946,6 +1068,10 @@ export async function runAssistant(
         } else if (!aiActif && ports.classifyWithAI) {
           trace.escalationReasons.push('ROUTING:AI_DISABLED');
         }
+        // Lot 54E (#419 §15) : « La date de fin de LLD de la Cupra est le
+        // 21/05/2027 » — un champ détecté n'en fait pas une question.
+        const interactionChamp = await traiterInteraction(compris);
+        if (interactionChamp) return interactionChamp;
         if (compris) {
           // Champs du modèle VALIDÉS par le serveur : registre, lisibles par l'assistant.
           const faitsModele = dedupeLecture(compris.understanding?.requestedFacts ?? []);
@@ -1013,6 +1139,8 @@ export async function runAssistant(
             trace.aiCalls = budget.used;
             classeParFaits = true;
             comprisParModele = true;
+            const interactionPartielle = await traiterInteraction(classified);
+            if (interactionPartielle) return interactionPartielle;
             if (classified) {
               marquer('COMPLETE', [], 'understand');
               route = affinerRoute(classified, input);
@@ -1080,7 +1208,9 @@ export async function runAssistant(
         understand: o.preset ? null : comprendrePourSemantique,
         preset: o.preset ?? null,
         withDeadline: (x) => withDeadline(x, retrievalDeadline()),
+        arbitrate: arbitrer,
       });
+      if (issue.kind === 'interaction') return traiterInteraction(issue.route);
       if (issue.kind === 'reroute') {
         route = affinerRoute(issue.route, input);
         base.route = route;
@@ -1316,6 +1446,9 @@ export async function runAssistant(
       reconcilierBudget(budget, avantCl, 1);
       trace.aiCalls = budget.used;
       classeAuRoutage = Boolean(classified);
+      // Lot 54E (#419 §15) : information APPORTÉE (proposition, contexte seul).
+      const interactionRoutage = await traiterInteraction(classified);
+      if (interactionRoutage) return interactionRoutage;
       // Lot 29 (8b §K) : compréhension impossible (modèle en échec) — motif
       // distinct, jamais confondu avec « rien trouvé ».
       if (!classified) { comprehensionEchouee = true; trace.escalationReasons.push('ROUTING:UNDERSTANDING_FAILED'); }

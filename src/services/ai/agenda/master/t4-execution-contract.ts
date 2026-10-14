@@ -48,6 +48,7 @@
 import { z } from 'zod';
 import type { StructuredContextSpec } from '../../master-prompts/structured-context';
 import { T4_MASTER_PROMPT_CODE, T4_TASKS } from './t4-contract';
+import { RECURRENCE_MODES } from '../rules/recurrence';
 
 const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
 
@@ -94,6 +95,42 @@ const T4_INPUT_V1_FIELDS = {
   },
 } as const;
 
+/**
+ * Lot 54 — candidat de récurrence transmis à T4 (ticket « T4 décisionnaire »,
+ * §1) : le serveur DIT pourquoi il envisage une récurrence (mention de la
+ * source, ou dates passées régulières) ; T4 décide (`recurrenceDecision`). Aucun
+ * extrait documentaire long : `excerpt` ≤ 300 caractères.
+ */
+const recurrenceCandidateSchema = z.object({
+  mode: z.enum(RECURRENCE_MODES),
+  frequency: z.string().min(1),
+  interval: z.number().int().positive(),
+  startDate: isoDate.nullable().optional(),
+  endDate: isoDate.nullable().optional(),
+  occurrenceCount: z.number().int().positive().nullable().optional(),
+  excerpt: z.string().max(300).nullable().optional(),
+  history: z.array(isoDate).optional(),
+}).nullable();
+
+/**
+ * Contrat d'entrée T4 v2 (lot 54) : v1 + `event_context.recurrenceCandidate`,
+ * `event_context.documentType` et `document_type` OPTIONNEL pour
+ * CLASSIFY_EVENT. VERIFY_COMPLETION et TEMPORAL_AMBIGUITY : inchangés.
+ */
+const T4_INPUT_V2_FIELDS = {
+  ...T4_INPUT_V1_FIELDS,
+  event_context: {
+    legacyVariable: 'EVENT_CONTEXT',
+    description: 'Événement à classer (titre, date, description, champ d’origine, nature, type métier, type documentaire) et récurrence envisagée par le serveur (`recurrenceCandidate` : mode, fréquence, intervalle, bornes, historique), ou null.',
+    schema: z.looseObject({
+      title: z.string().min(1),
+      date: z.string().nullable().optional(),
+      documentType: z.string().nullable().optional(),
+      recurrenceCandidate: recurrenceCandidateSchema,
+    }),
+  },
+} as const;
+
 export const T4_EXECUTION_SPEC: StructuredContextSpec = {
   masterPromptCode: T4_MASTER_PROMPT_CODE,
   treatment: 'T4',
@@ -121,6 +158,32 @@ export const T4_EXECUTION_SPEC: StructuredContextSpec = {
         },
       },
     },
+    t4_input_v2: {
+      version: 't4_input_v2',
+      fields: T4_INPUT_V2_FIELDS,
+      tasks: {
+        CLASSIFY_EVENT: {
+          required: ['event_context', 'event_catalog'],
+          optional: ['evidence', 'document_type'],
+          schemas: {
+            evidence: z.string().max(2000).nullable(),
+            // Type documentaire de la source, s'il est connu (sans preuves de réalisation).
+            document_type: z.looseObject({ code: z.string().nullable(), label: z.string().nullable() }),
+          },
+        },
+        VERIFY_COMPLETION: {
+          required: ['agenda_item', 'document_type', 'evidence'],
+          optional: [],
+          schemas: {
+            evidence: z.looseObject({ excerpt: z.string(), documentDate: isoDate.nullable(), occurrenceDate: isoDate.nullable() }),
+          },
+        },
+        TEMPORAL_AMBIGUITY: {
+          required: ['temporal_context', 'temporal_candidates'],
+          optional: [],
+        },
+      },
+    },
   },
   outputContracts: {
     t4_output_v1: {
@@ -131,14 +194,25 @@ export const T4_EXECUTION_SPEC: StructuredContextSpec = {
         TEMPORAL_AMBIGUITY: { schemaName: 'T4TemporalAmbiguityOutput', contractVersion: 1 },
       },
     },
+    // Lot 54 : CLASSIFY_EVENT décide de l'existence Agenda et de la récurrence.
+    t4_output_v2: {
+      version: 't4_output_v2',
+      byTask: {
+        CLASSIFY_EVENT: { schemaName: 'T4ClassifyEventV2Output', contractVersion: 2 },
+        VERIFY_COMPLETION: { schemaName: 'T4VerifyCompletionOutput', contractVersion: 1 },
+        TEMPORAL_AMBIGUITY: { schemaName: 'T4TemporalAmbiguityOutput', contractVersion: 1 },
+      },
+    },
   },
-  // Fichier du dépôt (`t4_master_v1.txt`, sans emplacement) et nouvelles
-  // versions du BO : contexte structuré. Une version BO antérieure au lot 34D
-  // reste LEGACY_TEMPLATE (migration 0290, explicite).
+  // Fichier du dépôt (`t4_master_v1.txt`, sans emplacement — texte de
+  // référence v2 depuis le lot 54) et nouvelles versions créées depuis ce
+  // texte : contexte structuré v2. Une version BO antérieure au lot 34D reste
+  // LEGACY_TEMPLATE (migration 0290, explicite) ; une version structurée v1
+  // reste v1 (réactivable).
   defaults: {
     mode: 'STRUCTURED_CONTEXT',
-    inputContractVersion: 't4_input_v1',
-    outputContractVersion: 't4_output_v1',
+    inputContractVersion: 't4_input_v2',
+    outputContractVersion: 't4_output_v2',
     allowedTasks: [...T4_TASKS],
   },
   errorCodes: {

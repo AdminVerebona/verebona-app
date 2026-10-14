@@ -57,7 +57,8 @@ function raw(toProcess: ToProcessActionView[] = []) {
   };
 }
 
-const DUO_NEUF = { subscriptionStatus: 'ACTIVE', pendingInviteEmail: null, memberships: 0 };
+// Lot 54F : Duo pris HIER (premier mois), aucune invitation envoyée.
+const DUO_NEUF = { subscriptionStatus: 'ACTIVE', pendingInviteEmail: null, memberships: 0, startedAt: new Date(Date.now() - 86_400_000), firstInviteSentAt: null };
 
 beforeEach(() => {
   duoRows = [];
@@ -137,10 +138,14 @@ describe('AC13-3 — clic : parcours d’invitation existant', () => {
   it('« Mon compte » › « 2e utilisateur Duo » (DuoInvitationPanel), ancre et champ e-mail prêts', () => {
     const ui = src('src/components/home/MascotSpeaks.tsx');
     expect(ui).toMatch(/if \(it\.kind === 'duo-invite'\) \{[\s\S]*?router\.push\(it\.invite\.href\)/);
+    // Lot 54F : l'ancre est portée par le tiroir « Mon abonnement » (anchorId),
+    // le bloc « 2e utilisateur Duo » a son propre identifiant.
     const resume = src('src/components/subscription/SubscriptionSummary.tsx');
-    expect(resume).toMatch(/id="duo-invitation"[\s\S]{0,600}?2e utilisateur Duo[\s\S]{0,300}?<DuoInvitationPanel \/>/);
+    expect(resume).toMatch(/anchorId=\{showDuoInvitation \? DUO_INVITATION_ANCHOR : undefined\}/);
+    expect(resume).toMatch(/id=\{DUO_INVITATION_PANEL_ID\}[\s\S]{0,600}?2e utilisateur Duo[\s\S]{0,300}?<DuoInvitationPanel \/>/);
     const panneau = src('src/components/subscription/DuoInvitationPanel.tsx');
-    expect(panneau).toContain("window.location.hash !== '#duo-invitation'");
+    expect(panneau).toContain("export const DUO_INVITATION_ANCHOR = 'duo-invitation'");
+    expect(panneau).toContain("window.location.hash !== `#${DUO_INVITATION_ANCHOR}`");
     expect(panneau).toContain("getElementById('invite-email')?.focus");
   });
 });

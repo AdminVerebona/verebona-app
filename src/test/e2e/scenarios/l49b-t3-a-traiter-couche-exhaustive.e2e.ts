@@ -322,7 +322,7 @@ scenario('L49B', 'T3 : À traiter ouverts réexaminés à chaque passage ; couch
     expect(new Set((r.entries as unknown as Entree[]).map((e) => e.actionId)).size).toBe(230);
   });
 
-  it('plafond de coût (lot 42) : réarbitrage à contexte inchangé au-delà du plafond du passage → reporté (AI_DEFERRED), carte maintenue, aucun appel', async () => {
+  it('plafond de coût (lot 42) — RÉVISÉ lot 54A (écart 1) : l’ancienne variable de plafond est ignorée, le réarbitrage a lieu (jamais AI_DEFERRED)', async () => {
     const compte = await make.account();
     const a = await maison(compte, 'Maison A');
     const b = await maison(compte, 'Maison B');
@@ -333,16 +333,18 @@ scenario('L49B', 'T3 : À traiter ouverts réexaminés à chaque passage ; couch
     const [carte] = await ouvertes(doc.id);
     await figer(compte, doc.id);
     process.env.T3_OPEN_ACTION_AI_MAX_PER_PASS = '0';
+    process.env.T3_OPEN_ACTION_AI_MAX_PER_DAY = '0';
     try {
       const replay = await rejouer([T3_ABSTENTION]);
       const r = await passage(compte);
-      expect(entree(r, carte.id)).toMatchObject({ actionEffect: 'STILL_OPEN', aiCalled: false, note: 'ai_deferred:PASS_CAP' });
-      expect(r.aiDeferred).toBe(1);
-      expect(appels(replay, 't3_link_ambiguity')).toBe(0);
-      expect((await resolution(doc.id)).e).toMatchObject({ result: 'AI_DEFERRED', reevaluated: true });
+      expect(entree(r, carte.id)).toMatchObject({ actionEffect: 'STILL_OPEN', aiCalled: true, evaluationMode: 'AI_REEVALUATION', resolutionAttempted: true });
+      expect(r.aiDeferred).toBe(0);
+      expect(appels(replay, 't3_link_ambiguity')).toBe(1);
+      expect((await resolution(doc.id)).e).toMatchObject({ result: 'ABSTAINED', reevaluated: true, aiCalled: true });
       expect(await ouvertes(doc.id)).toHaveLength(1);
     } finally {
       delete process.env.T3_OPEN_ACTION_AI_MAX_PER_PASS;
+      delete process.env.T3_OPEN_ACTION_AI_MAX_PER_DAY;
     }
   });
 

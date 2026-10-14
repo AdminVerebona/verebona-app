@@ -33,7 +33,7 @@ import { applyCompatAdapters } from './contracts';
 import { applyFieldCompatMappings } from './compat-mappings';
 import { normalizeToSchema } from './normalize';
 import { describe } from './schema-introspect';
-import { pruneInvalidFields, splitPipe } from './field-validation';
+import { pruneInvalidFields, splitPipe, type PrunedFieldValue } from './field-validation';
 import { findUnknownFields, unknownFieldIssue, noteIgnoredUnknown, type UnknownField } from './unknown-fields';
 import { compareStamps, contractStamp, type ContractMismatch, type ContractStamp, type RuntimeContract } from './runtime-contract';
 
@@ -75,6 +75,8 @@ export type Resolution =
     controls: ControlChain;
     parsed: unknown;
     extracted: string | null;
+    /** Lot 54G : champs retirés par la validation champ par champ, avec leur valeur originale (mémoire seulement). */
+    pruned?: PrunedFieldValue[];
   }
   | {
     ok: false;
@@ -313,7 +315,7 @@ export function resolveOutput(input: ResolveInput): Resolution {
       noteIgnoredUnknown(suspects(v.prepared), repairs, 'unknown_field_dropped');
       reporterCompteurs(v.prepared, pr.data);
       controls.schema = 'repaired';
-      return { ok: true, data: pr.data, repairs, controls, parsed, extracted };
+      return { ok: true, data: pr.data, repairs, controls, parsed, extracted, ...(pr.removed.length > 0 ? { pruned: pr.removed } : {}) };
     }
   }
 

@@ -29,8 +29,8 @@ import {
   EXPENSE_THEME_LABELS, classifyExpenseDocument, isCreditNoteTitle, type ExpenseClass, type ExpenseTheme,
 } from './expense-classes';
 import {
-  emptyOperationPart, formatMinorAmount, loadScopeOperations, operationCostLines, operationCountLabel, operationLabel, operationReader,
-  summarizeOperationCosts, type OperationExpensePart,
+  emptyOperationPart, formatMinorAmount, loadScopeOperationsRead, operationCostLines, operationCountLabel, operationLabel, operationReader,
+  readAllOperations, summarizeOperationCosts, type OperationExpensePart,
 } from './operations';
 
 // Vocabulaire des thèmes : `expense-classes.ts` (partagé avec les Opérations).
@@ -80,6 +80,14 @@ export interface QualifiedExpenses {
    * effet sur la complétude de leur total.
    */
   accountUnassigned?: { count: number; sumCents: number; labels: string[] };
+  /**
+   * Lot 54D (E02, §4.4) : état de LECTURE du calcul, distinct de la
+   * complétude métier — `COMPLETE` : tout le périmètre lu ; `PARTIAL` : garde-
+   * fou de volume atteint ; `DEGRADED` : lecture des coûts consolidés en échec,
+   * le résultat n'est qu'un repli documentaire (jamais présenté comme un
+   * total consolidé complet). Absent : forme antérieure (lecture complète).
+   */
+  readStatus?: 'COMPLETE' | 'PARTIAL' | 'DEGRADED';
 }
 
 /** Repli documentaire (C15.1 §30) : ce qui en a été compté ou écarté. */
@@ -144,7 +152,47 @@ export async function sumQualifiedExpenses(accountId: number, opts: {
 } = {}): Promise<QualifiedExpenses> {
   const ids = opts.assetIds?.length ? opts.assetIds : null;
   const theme = opts.theme ?? null;
-  const rows = (await pgClient.unsafe(
+  // Lot 54D (E02) : documents lus par pages sur curseur stable (`f.id`), plus
+  // de borne silencieuse à 5 000 ; garde-fou mémoire → lecture PARTIELLE signalée.
+  const { rows, complete: docsComplets } = await readExpenseDocuments(accountId, { year: opts.year ?? null, assetIds: ids });
+  const docs = rows.map((r) => ({ ...r, id: Number(r.id), linked: (r.linked ?? []).map(Number) }));
+  let lectureComplete = docsComplets;
+  let degradee = false;
+
+  // ── Opérations d'abord (C15.1 §28-29) ────────────────────────────────────
+  // Lecture en échec : aucune Opération NI aucune exclusion (comportement du
+  // lot 15) — jamais une moitié de lecture qui compterait deux fois. Lot 54D :
+  // l'échec est SIGNALÉ (`readStatus = DEGRADED`, total jamais « complet »).
+  let part = emptyOperationPart();
+  let opEntries: ReturnType<typeof summarizeOperationCosts>['entries'] = [];
+  let scopeOps = new Set<number>();
+  let represented = new Map<number, number[]>();
+  try {
+    const lu = await loadScopeOperationsRead(accountId, ids ?? []);
+    const ops = lu.operations;
+    if (!lu.complete) lectureComplete = false;
+    const lus = summarizeOperationCosts(operationCostLines(ops, { assetIds: ids ?? [], year: opts.year ?? null }), theme);
+    const rep = await operationReader().representedDocuments(accountId, docs.map((d) => d.id));
+    part = lus.part;
+    opEntries = lus.entries;
+    scopeOps = new Set(ops.map((o) => o.id));
+    represented = rep;
+  } catch (e) {
+    degradee = true;
+    console.warn('[verebona] dépenses : lecture des coûts consolidés impossible, repli documentaire seul :', (e as Error).message);
+  }
+  return finishQualifiedExpenses(accountId, { ids, theme, year: opts.year ?? null, docs, part, opEntries, scopeOps, represented, lectureComplete, degradee });
+}
+
+const EXPENSE_DOCS_PAGE = 2000;
+const EXPENSE_DOCS_MAX = 200_000;
+
+/** Lot 54D (E02) : documents à montant du périmètre, pages sur curseur `f.id` jusqu'à épuisement. */
+async function readExpenseDocuments(accountId: number, o: { year: number | null; assetIds: number[] | null }): Promise<{ rows: DocRow[]; complete: boolean }> {
+  const out: DocRow[] = [];
+  let curseur = 0;
+  for (;;) {
+    const lot = (await pgClient.unsafe(
     `SELECT f.id, f.amount_cents AS "amountCents", f.document_type_code AS "v2", f.document_type AS "legacy",
             f.document_date::text AS "date", f.sha256_hash AS "hash", f.retained_title AS "title", f.asset_id AS "assetId",
             f.supplier, f.analysis_state AS "state", f.fusion_ignored_with AS "ignored", f.retained_title AS "retainedTitle",
@@ -159,35 +207,31 @@ export async function sumQualifiedExpenses(accountId: number, opts: {
                    WHERE u.x IS NOT NULL
                      AND EXISTS (SELECT 1 FROM assets a WHERE a.id = u.x AND a.account_id = f.account_id AND a.deleted_at IS NULL)) AS "linked"
        FROM asset_files f
-      WHERE f.account_id = $1 AND f.deleted_at IS NULL AND f.amount_cents IS NOT NULL
+      WHERE f.account_id = $1 AND f.deleted_at IS NULL AND f.amount_cents IS NOT NULL AND f.id > $4
         AND ($2::int IS NULL OR f.document_date IS NULL OR extract(year FROM f.document_date) = $2)
         AND ($3::int[] IS NULL
              OR EXISTS (SELECT 1 FROM document_asset_links l WHERE l.account_id = f.account_id AND l.file_id = f.id
                          AND l.status = 'ACTIVE' AND l.asset_id = ANY($3::int[]))
              OR f.asset_id = ANY($3::int[]) OR f.linked_asset_id = ANY($3::int[]))
-      ORDER BY f.id LIMIT 5000`,
-    [accountId, opts.year ?? null, ids] as never[],
-  )) as unknown as DocRow[];
-  const docs = rows.map((r) => ({ ...r, id: Number(r.id), linked: (r.linked ?? []).map(Number) }));
-
-  // ── Opérations d'abord (C15.1 §28-29) ────────────────────────────────────
-  // Lecture en échec : aucune Opération NI aucune exclusion (comportement du
-  // lot 15) — jamais une moitié de lecture qui compterait deux fois.
-  let part = emptyOperationPart();
-  let opEntries: ReturnType<typeof summarizeOperationCosts>['entries'] = [];
-  let scopeOps = new Set<number>();
-  let represented = new Map<number, number[]>();
-  try {
-    const ops = await loadScopeOperations(accountId, ids ?? []);
-    const lus = summarizeOperationCosts(operationCostLines(ops, { assetIds: ids ?? [], year: opts.year ?? null }), theme);
-    const rep = await operationReader().representedDocuments(accountId, docs.map((d) => d.id));
-    part = lus.part;
-    opEntries = lus.entries;
-    scopeOps = new Set(ops.map((o) => o.id));
-    represented = rep;
-  } catch (e) {
-    console.warn('[verebona] dépenses : lecture des coûts consolidés impossible, repli documentaire seul :', (e as Error).message);
+      ORDER BY f.id LIMIT $5`,
+      [accountId, o.year, o.assetIds, curseur, EXPENSE_DOCS_PAGE] as never[],
+    )) as unknown as DocRow[];
+    out.push(...lot);
+    if (lot.length < EXPENSE_DOCS_PAGE) return { rows: out, complete: true };
+    if (out.length >= EXPENSE_DOCS_MAX) return { rows: out, complete: false };
+    curseur = Number(lot[lot.length - 1].id);
   }
+}
+
+type DocLine = DocRow & { id: number; linked: number[] };
+
+async function finishQualifiedExpenses(accountId: number, x: {
+  ids: number[] | null; theme: ExpenseTheme | null; year: number | null; docs: DocLine[];
+  part: OperationExpensePart; opEntries: ReturnType<typeof summarizeOperationCosts>['entries'];
+  scopeOps: Set<number>; represented: Map<number, number[]>; lectureComplete: boolean; degradee: boolean;
+}): Promise<QualifiedExpenses> {
+  const { ids, theme, docs, part, opEntries, scopeOps, represented } = x;
+  const opts = { year: x.year ?? undefined };
 
   // ── Repli documentaire dédupliqué (C15.1 §30-31, C10) ────────────────────
   const fallback: DocumentFallbackPart = {
@@ -232,7 +276,7 @@ export async function sumQualifiedExpenses(accountId: number, opts: {
   try {
     if (ailleurs.size) {
       const opIds = [...new Set([...ailleurs.values()].flat())];
-      const lues = await operationReader().listForAssistant(accountId, { ids: opIds, limit: 500 });
+      const lues = (await readAllOperations(accountId, { ids: opIds })).operations;
       const parId = new Map(lues.map((o) => [o.id, o]));
       const lignes = new Map(operationCostLines(lues, { assetIds: [], year: opts.year ?? null }).map((l) => [l.operationId, l]));
       for (const [fileId, ops] of ailleurs) {
@@ -251,7 +295,7 @@ export async function sumQualifiedExpenses(accountId: number, opts: {
     }
     if (ids) {
       const deja = new Set(fallback.unconfirmedAsset!.items.map((i) => i.operationId));
-      const libres = (await operationReader().listForAssistant(accountId, { untargetedOnly: true, limit: 500 })).filter((o) => !deja.has(o.id));
+      const libres = (await readAllOperations(accountId, { untargetedOnly: true })).operations.filter((o) => !deja.has(o.id));
       const lignes = summarizeOperationCosts(operationCostLines(libres, { assetIds: [], year: opts.year ?? null }), theme).part;
       if (lignes.count) accountUnassigned = { count: lignes.count, sumCents: lignes.sumCents, labels: lignes.lines.filter((x) => lignes.operationIds.includes(x.operationId)).map((x) => x.label).slice(0, 3) };
     }
@@ -269,13 +313,16 @@ export async function sumQualifiedExpenses(accountId: number, opts: {
     fallback.count += t.fileIds.length;
     fallback.sumCents += t.sumCents - (t.operationSumCents ?? 0);
   }
+  const readStatus: NonNullable<QualifiedExpenses['readStatus']> = x.degradee ? 'DEGRADED' : x.lectureComplete ? 'COMPLETE' : 'PARTIAL';
   return {
     ...q,
     byTheme: q.byTheme.map(({ operationSumCents: _o, ...t }) => t),
-    complete: q.complete && expenseCoverageComplete(part, fallback),
+    // Lot 54D (E02) : une lecture partielle ou dégradée n'est JAMAIS un total complet.
+    complete: q.complete && expenseCoverageComplete(part, fallback) && readStatus === 'COMPLETE',
     operations: part,
     documents: fallback,
     ...(accountUnassigned ? { accountUnassigned } : {}),
+    readStatus,
   };
 }
 
@@ -468,6 +515,9 @@ export function mixedExpenseNotes(q: QualifiedExpenses, ctx: { scopeLabel: strin
   const docs = q.documents;
   const out: string[] = [];
   const ici = ctx.scopeLabel ? ` pour ${ctx.scopeLabel}` : '';
+  // Lot 54D (E02) : lecture dégradée ou partielle dite en premier, jamais un total présenté comme complet.
+  if (q.readStatus === 'DEGRADED') out.push('Les coûts consolidés n’ont pas pu être lus : ce total ne repose que sur les documents et peut être incomplet.');
+  if (q.readStatus === 'PARTIAL') out.push('Volume exceptionnel : seule une partie des éléments a pu être lue, ce total est partiel.');
   if (part && part.count > 0 && docs && docs.count > 0) {
     const opSum = q.byTheme.reduce((n, t) => n + (t.operationIds?.length ? sumOps(t, part) : 0), 0);
     out.push(`Dont ${eurFr(opSum)} consolidés (${operationCountLabel(typesOf(q.byTheme.flatMap((t) => t.operationIds ?? []), part))}) et ${eurFr(q.qualifiedSumCents - opSum)} lus sur ${docs.count} document${pl(docs.count, '', 's')} non rattaché${pl(docs.count, '', 's')} à une intervention.`);

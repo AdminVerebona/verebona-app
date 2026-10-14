@@ -44,7 +44,7 @@ export interface CrossAccountRow {
 export interface CrossAccountCheck {
   code: string;
   /** Famille de relation (§5 du ticket). */
-  family: 'documents' | 'fournisseurs' | 'evenements' | 'agenda' | 'preuves' | 'a_traiter' | 'jobs';
+  family: 'documents' | 'fournisseurs' | 'evenements' | 'agenda' | 'preuves' | 'a_traiter' | 'jobs' | 'operations';
   label: string;
   /**
    * SELECT rendant `account_id` (compte de la relation ou de l'objet
@@ -55,6 +55,41 @@ export interface CrossAccountCheck {
 }
 
 const ID = (expr: string) => `(CASE WHEN ${expr} ~ '^[0-9]{1,9}$' THEN (${expr})::int END)`;
+
+/**
+ * Références d'un job de la file (cible ET contexte, à toute profondeur —
+ * lot 54, SEC-05/06) : une ligne par objet référencé (`account_id`, `ref`).
+ * Partagé par le contrôle (AI_JOB_PENDING) et la correction contrôlée.
+ */
+export const AI_JOB_REFS_SQL = (q: string): string => {
+  const chemins = (cles: string[]) => cles.map((k) => `SELECT v FROM jsonb_path_query(${q}.payload, 'lax $.**.${k}[*]') v`).join(' UNION ALL ');
+  const ids = (cles: string[]) => `(SELECT (x.v #>> '{}')::int FROM (${chemins(cles)}) x WHERE jsonb_typeof(x.v) IN ('number', 'string') AND (x.v #>> '{}') ~ '^[0-9]{1,9}$')`;
+  return `SELECT a.account_id, 'assets#' || a.id AS ref FROM assets a
+               WHERE a.id = CASE WHEN ${q}.target_type = 'asset' THEN ${ID(`${q}.target_id`)} END
+                  OR a.id IN ${ids(['assetId', 'assetIds', 'linkedAssetId', 'liveAssetIds'])}
+              UNION ALL
+              SELECT f.account_id, 'asset_files#' || f.id FROM asset_files f
+               WHERE f.id = CASE WHEN ${q}.target_type IN ('asset_file', 'document') THEN ${ID(`${q}.target_id`)} END
+                  OR f.id IN ${ids(['fileId', 'fileIds', 'leadSourceId', 'sourceFileId', 'documentId', 'documentIds', 'assetFileId', 'invoiceFileId'])}
+              UNION ALL
+              SELECT b.account_id, 'equipments#' || e.id FROM equipments e JOIN assets b ON b.id = e.asset_id
+               WHERE e.id = CASE WHEN ${q}.target_type = 'equipment' THEN ${ID(`${q}.target_id`)} END
+                  OR e.id IN ${ids(['equipmentId', 'equipmentIds'])}
+              UNION ALL
+              SELECT b.account_id, 'substructures#' || s.id FROM substructures s JOIN assets b ON b.id = s.asset_id
+               WHERE s.id = CASE WHEN ${q}.target_type = 'room' THEN ${ID(`${q}.target_id`)} END
+                  OR s.id IN ${ids(['substructureId', 'substructureIds'])}
+              UNION ALL
+              SELECT i.account_id, 'agenda_items#' || i.id FROM agenda_items i
+               WHERE i.id = CASE WHEN ${q}.target_type = 'agenda_item' THEN ${ID(`${q}.target_id`)} END
+                  OR i.id IN ${ids(['agendaItemId', 'agendaItemIds'])}
+              UNION ALL
+              SELECT o.account_id, 'business_operations#' || o.id FROM business_operations o
+               WHERE o.id IN ${ids(['operationId', 'operationIds', 'canonicalOperationId', 'businessOperationId', 'parentOperationId', 'mergedIntoOperationId', 'proposedOperationIds'])}
+              UNION ALL
+              SELECT ${ID(`${q}.target_id`)}, 'cible ' || ${q}.target_type || '#' || ${q}.target_id
+               WHERE ${q}.target_type IN ('business_operations', 'business_operations_agenda')`;
+};
 
 /** Catalogue des contrôles (ordre d'affichage). */
 export const CROSS_ACCOUNT_CHECKS: readonly CrossAccountCheck[] = [
@@ -103,6 +138,13 @@ export const CROSS_ACCOUNT_CHECKS: readonly CrossAccountCheck[] = [
                   OR (a.id IS NOT NULL AND a.account_id IS DISTINCT FROM l.account_id)
                   OR (sa.id IS NOT NULL AND sa.account_id IS DISTINCT FROM l.account_id)
                   OR (ea.id IS NOT NULL AND ea.account_id IS DISTINCT FROM l.account_id))`,
+  },
+  {
+    // Lot 54 (SEC-06) : photo d'un bien dont le fichier est d'un autre compte.
+    code: 'PHOTO_FILE', family: 'documents', label: 'Photo d’un bien → fichier d’un autre compte',
+    sql: `SELECT a.account_id, f.account_id AS other_account_id, 'asset_photos#' || p.id || ' (assets#' || a.id || ', asset_files#' || f.id || ')' AS ref
+            FROM asset_photos p JOIN assets a ON a.id = p.asset_id JOIN asset_files f ON f.id = p.file_id
+           WHERE f.account_id IS DISTINCT FROM a.account_id`,
   },
   // ── Fournisseurs ──────────────────────────────────────────────────────────
   {
@@ -250,25 +292,102 @@ export const CROSS_ACCOUNT_CHECKS: readonly CrossAccountCheck[] = [
     code: 'AI_JOB_PENDING', family: 'jobs', label: 'Job IA en attente référençant un objet d’un autre compte',
     sql: `SELECT q.account_id, o.account_id AS other_account_id, 'ai_job_queue#' || q.id || ' (' || q.treatment || ', ' || o.ref || ')' AS ref
             FROM ai_job_queue q
-            CROSS JOIN LATERAL (
-              SELECT a.account_id, 'assets#' || a.id AS ref FROM assets a
-               WHERE a.id = CASE WHEN q.target_type = 'asset' THEN ${ID('q.target_id')} END
-                  OR a.id = ${ID("q.payload ->> 'assetId'")}
-              UNION ALL
-              SELECT f.account_id, 'asset_files#' || f.id FROM asset_files f
-               WHERE f.id = CASE WHEN q.target_type IN ('asset_file', 'document') THEN ${ID('q.target_id')} END
-                  OR f.id = ${ID("q.payload ->> 'leadSourceId'")}
-                  OR f.id = ${ID("q.payload ->> 'sourceFileId'")}
-                  OR f.id = ${ID("q.payload ->> 'fileId'")}
-              UNION ALL
-              SELECT b.account_id, 'equipments#' || e.id FROM equipments e JOIN assets b ON b.id = e.asset_id
-               WHERE e.id = CASE WHEN q.target_type = 'equipment' THEN ${ID('q.target_id')} END
-              UNION ALL
-              SELECT b.account_id, 'substructures#' || s.id FROM substructures s JOIN assets b ON b.id = s.asset_id
-               WHERE s.id = CASE WHEN q.target_type = 'room' THEN ${ID('q.target_id')} END
-            ) o
+            CROSS JOIN LATERAL (${AI_JOB_REFS_SQL('q')}) o
            WHERE q.status IN ('PENDING', 'RUNNING') AND q.account_id IS NOT NULL
              AND o.account_id IS DISTINCT FROM q.account_id`,
+  },
+  // ── Opérations et Sinistres (lot 54, SEC-06) ──────────────────────────────
+  // Références secondaires d'un sinistre (contrat, événement historique,
+  // facture, échange, pièces et photos de dommage) ; les liens « cœur » des
+  // Opérations (biens, équipements, composantes, sources, agenda, candidats
+  // T1) sont recensés par OP_CORE_LINK — même SQL que l'anomalie dure
+  // CROSS_ACCOUNT_LINK du BO Opérations, désormais comptée ici aussi.
+  {
+    code: 'CLAIM_CONTRACT', family: 'operations', label: 'Sinistre → contrat d’assurance d’un autre compte',
+    sql: `SELECT o.account_id, k.account_id AS other_account_id, 'business_operation_claim_details(operation_id=' || o.id || ') -> business_operations#' || k.id AS ref
+            FROM business_operation_claim_details cd JOIN business_operations o ON o.id = cd.operation_id
+            JOIN business_operations k ON k.id = cd.insurance_contract_operation_id
+           WHERE k.account_id <> o.account_id`,
+  },
+  {
+    code: 'CLAIM_HISTORY_EVENT', family: 'operations', label: 'Sinistre → événement historique d’un autre compte',
+    sql: `SELECT o.account_id, ev.account_id AS other_account_id, 'business_operation_claim_details(operation_id=' || o.id || ') -> events#' || ev.id AS ref
+            FROM business_operation_claim_details cd JOIN business_operations o ON o.id = cd.operation_id
+            JOIN events ev ON ev.id = cd.history_event_id
+           WHERE ev.account_id IS DISTINCT FROM o.account_id`,
+  },
+  {
+    code: 'CLAIM_ACTION_REF', family: 'operations', label: 'Action de sinistre → facture ou Opération enfant d’un autre compte',
+    sql: `SELECT o.account_id, f.account_id AS other_account_id, 'business_operation_claim_actions#' || ca.id || ' -> asset_files#' || f.id AS ref
+            FROM business_operation_claim_actions ca JOIN business_operations o ON o.id = ca.operation_id
+            JOIN asset_files f ON f.id = ca.invoice_file_id
+           WHERE f.account_id <> o.account_id
+          UNION ALL
+          SELECT o.account_id, k.account_id, 'business_operation_claim_actions#' || ca.id || ' -> business_operations#' || k.id
+            FROM business_operation_claim_actions ca JOIN business_operations o ON o.id = ca.operation_id
+            JOIN business_operations k ON k.id = ca.child_operation_id
+           WHERE k.account_id <> o.account_id`,
+  },
+  {
+    code: 'CLAIM_EXCHANGE_DOCUMENT', family: 'operations', label: 'Échange de sinistre → document d’un autre compte',
+    sql: `SELECT o.account_id, f.account_id AS other_account_id, 'business_operation_claim_exchanges#' || ce.id || ' -> asset_files#' || f.id AS ref
+            FROM business_operation_claim_exchanges ce JOIN business_operations o ON o.id = ce.operation_id
+            JOIN asset_files f ON f.id = ce.document_file_id
+           WHERE f.account_id <> o.account_id`,
+  },
+  {
+    code: 'CLAIM_DAMAGE_DOCUMENT', family: 'operations', label: 'Dommage de sinistre → document d’un autre compte',
+    sql: `SELECT o.account_id, f.account_id AS other_account_id, 'business_operation_claim_damage_documents(damage_id=' || dd.damage_id || ', file_id=' || f.id || ')' AS ref
+            FROM business_operation_claim_damage_documents dd JOIN business_operation_claim_damages d ON d.id = dd.damage_id
+            JOIN business_operations o ON o.id = d.operation_id JOIN asset_files f ON f.id = dd.file_id
+           WHERE f.account_id <> o.account_id`,
+  },
+  {
+    code: 'CLAIM_DAMAGE_PHOTO', family: 'operations', label: 'Dommage de sinistre → photo d’un autre compte',
+    sql: `SELECT o.account_id, coalesce(NULLIF(pa.account_id, o.account_id), NULLIF(pf.account_id, o.account_id)) AS other_account_id,
+                 'business_operation_claim_damage_photos(damage_id=' || dp.damage_id || ', photo_id=' || p.id || ')' AS ref
+            FROM business_operation_claim_damage_photos dp JOIN business_operation_claim_damages d ON d.id = dp.damage_id
+            JOIN business_operations o ON o.id = d.operation_id
+            JOIN asset_photos p ON p.id = dp.photo_id JOIN assets pa ON pa.id = p.asset_id JOIN asset_files pf ON pf.id = p.file_id
+           WHERE pa.account_id IS DISTINCT FROM o.account_id OR pf.account_id IS DISTINCT FROM o.account_id`,
+  },
+  {
+    code: 'OP_CORE_LINK', family: 'operations', label: 'Opération → bien, équipement, composante, source, agenda ou candidat T1 d’un autre compte',
+    sql: `SELECT al.account_id, a.account_id AS other_account_id, 'business_operation_asset_links#' || al.id || ' (business_operations#' || al.operation_id || ', assets#' || a.id || ')' AS ref
+            FROM business_operation_asset_links al JOIN assets a ON a.id = al.asset_id
+           WHERE al.active AND a.account_id IS DISTINCT FROM al.account_id
+          UNION ALL
+          SELECT el.account_id, ea.account_id, 'business_operation_equipment_links#' || el.id || ' (business_operations#' || el.operation_id || ', equipments#' || e.id || ')'
+            FROM business_operation_equipment_links el JOIN equipments e ON e.id = el.equipment_id JOIN assets ea ON ea.id = e.asset_id
+           WHERE el.active AND ea.account_id IS DISTINCT FROM el.account_id
+          UNION ALL
+          SELECT c.account_id, a.account_id, 'business_operation_financial_components#' || c.id || ' -> assets#' || a.id
+            FROM business_operation_financial_components c JOIN assets a ON a.id = c.target_asset_id
+           WHERE c.active AND a.account_id IS DISTINCT FROM c.account_id
+          UNION ALL
+          SELECT c.account_id, a.account_id, 'business_operation_financial_components#' || c.id || ' -> equipments#' || e.id
+            FROM business_operation_financial_components c JOIN equipments e ON e.id = c.target_equipment_id JOIN assets a ON a.id = e.asset_id
+           WHERE c.active AND a.account_id IS DISTINCT FROM c.account_id
+          UNION ALL
+          SELECT s.account_id, f.account_id, 'business_operation_sources#' || s.id || ' -> asset_files#' || f.id
+            FROM business_operation_sources s JOIN asset_files f ON f.id = ${ID('s.source_entity_key')}
+           WHERE s.active AND s.source_kind = 'DOCUMENT' AND f.account_id <> s.account_id
+          UNION ALL
+          SELECT s.account_id, a.account_id, 'business_operation_sources#' || s.id || ' -> assets#' || a.id
+            FROM business_operation_sources s JOIN assets a ON a.id = ${ID('s.source_entity_key')}
+           WHERE s.active AND s.source_kind IN ('ASSET_DATA', 'CLAIM_FORM') AND a.account_id IS DISTINCT FROM s.account_id
+          UNION ALL
+          SELECT s.account_id, ai.account_id, 'business_operation_sources#' || s.id || ' -> agenda_items#' || ai.id
+            FROM business_operation_sources s JOIN agenda_items ai ON ai.id = ${ID('s.source_entity_key')}
+           WHERE s.active AND s.source_kind = 'AGENDA' AND ai.account_id <> s.account_id
+          UNION ALL
+          SELECT ai.account_id, o.account_id, 'agenda_items#' || ai.id || ' -> business_operations#' || o.id
+            FROM agenda_items ai JOIN business_operations o ON o.id = ai.business_operation_id
+           WHERE ai.account_id <> o.account_id
+          UNION ALL
+          SELECT c.account_id, o.account_id, 'document_operation_candidates#' || c.id || ' -> business_operations#' || o.id
+            FROM document_operation_candidates c JOIN business_operations o ON o.id = c.t3_operation_id
+           WHERE c.account_id <> o.account_id`,
   },
 ];
 
@@ -299,8 +418,31 @@ export interface CrossAccountCheckResult {
   error?: string;
 }
 
+/**
+ * Lot 54 (SEC-07) : état global à trois valeurs. « Conforme » SEULEMENT si
+ * tous les contrôles ont été exécutés et que tous les compteurs valent 0 ;
+ * un seul contrôle non exécuté rend le diagnostic « incomplet » (jamais
+ * conforme, même à 0).
+ */
+export type IsolationStatus = 'CONFORME' | 'ANOMALIES' | 'INCOMPLET';
+
+export const ISOLATION_STATUS_LABELS: Record<IsolationStatus, string> = {
+  CONFORME: 'Conforme',
+  ANOMALIES: 'Anomalies détectées',
+  INCOMPLET: 'Contrôle incomplet',
+};
+
+export function isolationStatus(checks: ReadonlyArray<Pick<CrossAccountCheckResult, 'count' | 'error'>>, expected = CROSS_ACCOUNT_CHECKS.length): IsolationStatus {
+  if (checks.length < expected || checks.some((c) => c.error)) return 'INCOMPLET';
+  return checks.some((c) => c.count > 0) ? 'ANOMALIES' : 'CONFORME';
+}
+
 export interface CrossAccountReport {
   computedAt: string;
+  /** Lot 54 (SEC-07) : Conforme / Anomalies détectées / Contrôle incomplet. */
+  status: IsolationStatus;
+  /** Contrôles non exécutés. */
+  checksFailed: number;
   total: number;
   /** Comptes concernés, tous types confondus (bornés). */
   accountIds: number[];
@@ -362,7 +504,8 @@ export async function detectCrossAccountRelations(
         });
       } catch (e) {
         await q('ROLLBACK TO SAVEPOINT cross_account_check').catch(() => {});
-        out.push({ code: c.code, family: c.family, label: c.label, count: 0, accountIds: [], samples: [], error: (e as Error).message.slice(0, 300) });
+        // Compteur à 0 mais `error` : jamais lu comme « aucune anomalie » (SEC-07).
+        out.push({ code: c.code, family: c.family, label: c.label, count: 0, accountIds: [], samples: [], error: (e as Error).message.slice(0, 300) || 'contrôle non exécuté' });
       }
     }
     return out;
@@ -371,6 +514,8 @@ export async function detectCrossAccountRelations(
   for (const r of results) r.accountIds.forEach((a) => comptes.add(a));
   return {
     computedAt: new Date().toISOString(),
+    status: isolationStatus(results, checks.length),
+    checksFailed: results.filter((r) => r.error).length,
     total: results.reduce((n, r) => n + r.count, 0),
     accountIds: [...comptes].sort((a, b) => a - b).slice(0, ACCOUNTS_LIMIT),
     checks: results,
@@ -386,12 +531,12 @@ export async function detectCrossAccountRelations(
 export function renderCrossAccountSqlScript(): string {
   const tete = [
     '-- ════════════════════════════════════════════════════════════════════════════',
-    '-- Relations intercomptes — contrôle en LECTURE SEULE (lot 49, ticket SEC-P0 §5)',
+    '-- Isolation des comptes — contrôle en LECTURE SEULE (lot 49 SEC-P0 §5, lot 54 SEC-P0-CORR)',
     '--',
     '-- FICHIER GÉNÉRÉ depuis src/services/security/cross-account/detection.ts',
     '-- (CROSS_ACCOUNT_CHECKS) — ne pas modifier à la main.',
     '--',
-    '-- Même contrôle que BO › Exploitation › Relations intercomptes et que la tâche',
+    '-- Même contrôle que BO › Exploitation › Isolation des comptes et que la tâche',
     '-- planifiée `cross-account-relations-check`. Aucune écriture : la transaction',
     '-- est ouverte en READ ONLY. Pour chaque type : décompte, puis détail',
     '-- (compte de la relation, autre compte, identifiants techniques).',

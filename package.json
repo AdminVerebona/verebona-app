@@ -47,6 +47,8 @@
     "test:run": "vitest --run",
     "test:coverage": "vitest --run --coverage",
     "test:e2e": "vitest --run --config vitest.e2e.config.ts",
+    "test:security": "vitest --run src/services/security src/services/ai/queue/__tests__/job-scope.test.ts src/services/ai/queue/__tests__/l54b-sec05-job-scope.test.ts src/lib/auth && npm run test:security:e2e",
+    "test:security:e2e": "vitest --run --config vitest.e2e.config.ts src/test/e2e/scenarios/l49-sec-p0-intercomptes.e2e.ts src/test/e2e/scenarios/l53b-d23-intercomptes.e2e.ts src/test/e2e/scenarios/l53b-q18-sinistre-multi-biens.e2e.ts src/test/e2e/scenarios/l53a-securite-cdc18.e2e.ts src/test/e2e/scenarios/l40-duo-donnees-bien.e2e.ts src/test/e2e/scenarios/l54b-sec-p0-isolation.e2e.ts",
     "ai:inventory": "tsx scripts/ai-inventory.ts",
     "ai:inventory:json": "tsx scripts/ai-inventory.ts --json",
     "ai:inventory:observed": "tsx scripts/ai-inventory.ts --observed",

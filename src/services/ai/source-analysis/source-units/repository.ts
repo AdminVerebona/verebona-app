@@ -23,7 +23,7 @@
  * ══════════════════════════════════════════════════════════════════════════
  */
 import { wordStartPattern } from '@/lib/search/match-engine';
-import { verificationAutoRetryDue } from './verification-followup';
+import { needsSourceRetryDue, verificationAutoRetryDue } from './verification-followup';
 import type { CoverageStatus, SourceLayer, SourceUnitKind, T1CompletenessReport, T1QualityState, UnresolvedFactRecord } from './types';
 
 type Tx = { unsafe: (q: string, p?: never[]) => Promise<unknown> };
@@ -207,6 +207,8 @@ export async function writeSourceLayer(tx: Tx, p: {
         : (r.qualityState === 'INCOMPLETE_RETRYABLE'
           // Lot 53 (D19) : vérification incomplète pour une cause transitoire (source illisible) : relecture programmée.
           || verificationAutoRetryDue({ qualityState: r.qualityState, verificationReason: verif?.verificationReason ?? null, retryAttempts, maxRetries: maxCompletenessRetries() })
+          // Lot 54G (point 2) : observation incertaine → relecture du fichier programmée (bornée).
+          || needsSourceRetryDue({ needsSourceUnits: verif?.needsSourceUnits ?? 0, retryAttempts, maxRetries: maxCompletenessRetries() })
           ? new Date(Date.now() + 15 * 60_000) : null))?.toISOString() ?? null,
       p.lastError ?? null,
     ] as never[],

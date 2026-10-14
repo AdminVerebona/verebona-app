@@ -23,7 +23,9 @@
  */
 
 export type RecurrenceFrequency = 'daily' | 'weekly' | 'monthly' | 'yearly';
-export type RecurrenceMode = 'EXPLICIT_SOURCE' | 'HISTORICAL_PATTERN';
+/** Modes de récurrence (formes de données, sans sémantique métier). */
+export const RECURRENCE_MODES = ['EXPLICIT_SOURCE', 'HISTORICAL_PATTERN'] as const;
+export type RecurrenceMode = (typeof RECURRENCE_MODES)[number];
 
 export interface RecurrenceSpec {
   mode: RecurrenceMode;

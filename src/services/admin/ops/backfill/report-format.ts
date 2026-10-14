@@ -231,6 +231,8 @@ function assetAccount(out: RawBackfillOutput): BackfillSummary {
     restorable: false,
     counters: [
       { label: 'Biens détectés (ce passage)', value: r.detected },
+      // Lot 54 (SEC-P0-CORR) : sans demande de déplacement acceptée, rien n'est transféré.
+      { label: 'Sans preuve de déplacement (non transférés, Isolation des comptes)', value: r.unproven ?? 0 },
       { label: simulation ? 'Biens à traiter' : 'Biens traités', value: r.processed },
       { label: 'Documents qui suivent le bien', value: somme((x) => x.movedFileIds.length) },
       { label: 'Documents multi-biens restés (lien retiré)', value: somme((x) => x.keptFileIds.length) },
@@ -342,17 +344,24 @@ function crossAccount(action: BackfillAction, out: RawBackfillOutput): BackfillS
       + `${r.duo} relevant du Duo (signalées, non corrigées), ${r.undecidable} indécidable(s), ${r.failed} échec(s)${r.more ? ' — d’autres relations restent : relancer' : ''}.`,
     scriptRunId: simulation ? null : r.runId,
     restorable: !simulation && r.corrected > 0,
-    counters: r.categories.flatMap((c) => [
+    counters: r.categories.flatMap((c): BackfillSummary['counters'] => [
       { label: `${c.code} : relations`, value: c.candidates },
       { label: `${c.code} : ${simulation ? 'à corriger' : 'corrigées'}`, value: c.corrected },
       ...(c.duo ? [{ label: `${c.code} : Duo (signalées)`, value: c.duo }] : []),
       ...(c.undecidable ? [{ label: `${c.code} : indécidables`, value: c.undecidable }] : []),
-    ]),
+      ...(c.manual ? [{ label: `${c.code} : en attente de décision (procédure d’incident)`, value: c.manual }] : []),
+    ]).concat(r.postCheck ? [
+      // Lot 54 (SEC-09) : recontrôle d'intégrité après application.
+      { label: 'Recontrôle après correction : relations restantes', value: Object.values(r.postCheck.remaining).reduce((n, x) => n + x, 0) },
+      ...(r.postCheck.incomplete.length ? [{ label: 'Recontrôle incomplet', value: r.postCheck.incomplete.join(', ') }] : []),
+    ] : []),
     ambiguous: { count: r.duo + r.undecidable, samples: duo.slice(0, SAMPLE_LIMIT) },
     conflicts: { count: r.failed, samples: echantillon(r.categories.flatMap((c) => c.failures.map((x) => `${c.code} · ${x}`)), (x) => x) },
     warnings: [
       ...(r.duo ? [`${r.duo} relation(s) relèvent du Duo (D3 ouvert côté PO) : signalées, aucune correction appliquée.`] : []),
       ...(r.undecidable ? [`${r.undecidable} relation(s) dont un compte est inconnu : signalées, aucune correction appliquée.`] : []),
+      ...(r.categories.some((c) => c.manual) ? ['Liens « cœur » des Opérations : procédure d’incident (BO › Opérations), aucune correction appliquée ici.'] : []),
+      ...(r.postCheck?.incomplete.length ? [`Recontrôle incomplet (${r.postCheck.incomplete.join(', ')}) : l’intégrité n’est PAS confirmée.`] : []),
     ],
   };
 }

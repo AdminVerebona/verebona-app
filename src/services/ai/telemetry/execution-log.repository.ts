@@ -137,6 +137,8 @@ export interface ExecutionRow {
   transformations: OutputTransformationsTrace | null;
   /** Lot 34D (T4) : mode d'exécution, versions prompt / contrat d'entrée / contrat de sortie. */
   structuredContext: StructuredContextTrace | null;
+  /** Lot 54 (T4 CLASSIFY_EVENT) : décision appliquée par le moteur (existence, récurrence, verdict). */
+  t4Decision?: Record<string, unknown> | null;
   /**
    * Lot 52B : requête fournisseur sans contenu et tentatives internes de
    * l'appel (structurée → essai sans schéma) — `null` / `[]` pour une trace
@@ -207,6 +209,7 @@ function toRow(r: Row): ExecutionRow {
     runtimeContract: objet<RuntimeContractTrace>(metadata.runtimeContract),
     transformations: objet<OutputTransformationsTrace>(metadata.transformations),
     structuredContext: objet<StructuredContextTrace>(metadata.structuredContext),
+    t4Decision: objet<Record<string, unknown>>(metadata.t4Decision),
     providerRequest: objet<ProviderRequestTrace>(metadata.providerRequest),
     providerAttempts: Array.isArray(metadata.providerAttempts)
       ? (metadata.providerAttempts as unknown[]).filter((a): a is ProviderAttemptTrace => Boolean(a) && typeof a === 'object') : [],

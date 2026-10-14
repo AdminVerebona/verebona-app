@@ -1,12 +1,11 @@
 /**
- * POST /api/admin/ai/config-versions/[id]/archive — CDC BO IA VER-008, VER-009.
+ * POST /api/admin/ai/config-versions/[id]/archive — compatibilité (lot 54).
  *
- * L'archivage est définitif : ni désarchivage, ni suppression. Et une Active ne
- * peut pas être archivée — la machine à états refuse la transition, ce qui rend
- * 409 plutôt qu'un 500.
+ * « Archiver » = supprimer LOGIQUEMENT une version non active : retirée de
+ * la liste, révisions conservées et restaurables. L'active : 409.
  */
 import { NextRequest, NextResponse } from 'next/server';
-import { archive } from '@/services/ai/config/config-version.service';
+import { deleteConfigVersion } from '@/services/ai/config/config-version.service';
 import { requireAdminContext, parseVersionId, invalidId, toErrorResponse } from '../../_shared';
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
@@ -18,8 +17,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   if (versionId === null) return invalidId(id);
 
   try {
-    await archive(versionId);
-    return NextResponse.json({ archived: true });
+    await deleteConfigVersion(versionId, guard.ctx.adminUserId);
+    return NextResponse.json({ archived: true, deleted: true });
   } catch (e) {
     return toErrorResponse(e, 'POST /api/admin/ai/config-versions/[id]/archive');
   }

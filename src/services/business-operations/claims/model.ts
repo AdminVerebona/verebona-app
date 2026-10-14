@@ -77,6 +77,19 @@ export interface ClaimCosts {
   indemnityCents: number;
   /** Coût net = brut − indemnité (peut être négatif si l'indemnité dépasse le coût connu). */
   netCents: number;
+  /**
+   * Lot 54D (§4.3) : avoirs et remboursements (REDUCTION, REFUND) — le « reste
+   * à charge économique complet » = brut − réductions − indemnités, distinct
+   * du net après indemnité quand d'autres réductions existent.
+   */
+  reductionsCents?: number;
+  outOfPocketCents?: number;
+  /**
+   * Lot 54D (E09) : montants SANS contre-valeur EUR établie (devise d'origine),
+   * jamais comptés comme 0 € ; `complete` faux dès qu'il en existe.
+   */
+  unconverted?: Array<{ kind: string; amountMinor: number; currency: string }>;
+  complete?: boolean;
 }
 
 export interface ClaimRecord {
@@ -274,14 +287,33 @@ export function pickMirrorClaim<T extends Pick<ClaimRecord, 'id' | 'realizedDate
 
 // ── Coûts (Q4) ─────────────────────────────────────────────────────────────
 
-export interface ComponentAmount { kind: string; amountCents: number }
+/**
+ * Composante d'un sinistre : `amountCents` = montant EUR (centimes) ou `null`
+ * si la contre-valeur EUR n'est pas établie (lot 54D, E09 : jamais 0) ;
+ * devise et montant d'origine conservés pour le signalement.
+ */
+export interface ComponentAmount { kind: string; amountCents: number | null; amountMinor?: number; currency?: string }
 
-/** Coût brut (REALIZED_COST), indemnité (INDEMNITY), net = brut − indemnité. Le brut n'est jamais diminué. */
+/**
+ * Coût brut (REALIZED_COST), indemnité (INDEMNITY), net = brut − indemnité.
+ * Le brut n'est jamais diminué (Q4). Lot 54D : règles du moteur partagé —
+ * un montant non convertible est exclu des totaux EUR et signalé (E09) ;
+ * réductions / remboursements donnent le reste à charge complet (§4.3).
+ */
 export function claimCosts(components: readonly ComponentAmount[]): ClaimCosts {
-  const sum = (k: string) => components.filter((c) => c.kind === k).reduce((n, c) => n + c.amountCents, 0);
+  const connus = components.filter((c) => c.amountCents !== null && c.amountCents !== undefined);
+  const sum = (...k: string[]) => connus.filter((c) => k.includes(c.kind)).reduce((n, c) => n + (c.amountCents as number), 0);
   const grossCents = sum('REALIZED_COST');
   const indemnityCents = sum('INDEMNITY');
-  return { grossCents, indemnityCents, netCents: grossCents - indemnityCents };
+  const reductionsCents = sum('REDUCTION', 'REFUND');
+  const unconverted = components
+    .filter((c) => (c.amountCents === null || c.amountCents === undefined) && ['REALIZED_COST', 'INDEMNITY', 'REDUCTION', 'REFUND'].includes(c.kind))
+    .map((c) => ({ kind: c.kind, amountMinor: c.amountMinor ?? 0, currency: (c.currency ?? 'XXX').trim().toUpperCase() }));
+  return {
+    grossCents, indemnityCents, netCents: grossCents - indemnityCents,
+    reductionsCents, outOfPocketCents: grossCents - reductionsCents - indemnityCents,
+    unconverted, complete: unconverted.length === 0,
+  };
 }
 
 // ── Libellés (liste de la fiche, choix du dossier) ─────────────────────────

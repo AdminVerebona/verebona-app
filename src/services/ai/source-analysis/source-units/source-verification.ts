@@ -14,9 +14,15 @@
  *          image seule (page scannée), vide ; échantillon du texte lisible
  *          (chaînes littérales, polices simples) ;
  *        · page VÉRIFIÉE : son texte se retrouve dans la transcription
- *          (≥ 50 % des mots distinctifs), ou T1 la cite (marque de page,
- *          preuve d'un fait, tableau, observation), ou elle est vide, ou le
- *          document n'a qu'une page et T1 a rendu un contenu ;
+ *          (≥ 50 % des mots distinctifs), ou elle est vide, ou elle a été
+ *          relue par une reprise ciblée ; lot 54G : une CITATION (marque de
+ *          page, preuve d'un fait, tableau, observation) n'est plus qu'un
+ *          signal COMPLÉMENTAIRE — elle ne vérifie qu'une page dont
+ *          l'échantillon lisible correspond partiellement (zone 30-50 %) ou
+ *          trop pauvre pour conclure ; jamais une page sans échantillon
+ *          (scannée, police illisible) ni une page dont l'échantillon
+ *          démontre une omission (< 30 %) ; « page citée » ≠ « page
+ *          couverte » (`citedUnverified`) ;
  *        · page MANQUANTE (omission → reprise ciblée de CES pages) : texte
  *          lisible absent de la transcription (< 30 %), ou transcription
  *          paginée (marques « --- page N --- ») sans cette page ;
@@ -77,6 +83,8 @@ export interface SourceVerification {
   reason: string | null;
   /** Pages relues par une reprise ciblée. */
   reread?: number[];
+  /** Lot 54G : pages citées par T1 (mentionnées / visitées) mais NON vérifiées. */
+  citedUnverified?: number[];
 }
 
 export const verificationNotApplicable = (reason: string): SourceVerification => ({
@@ -162,9 +170,11 @@ export function readContentStream(content: string): { textOps: number; doOps: nu
 /** Le texte est-il lisible (police simple) ? Majorité de lettres / chiffres / espaces. */
 export function readableSample(text: string | null | undefined): string | null {
   const t = (text ?? '').trim();
-  if (plat(t).length < 40) return null;
+  const n = plat(t).length;
+  if (n === 0) return null;
   const lisibles = (t.match(/[A-Za-zÀ-ÿ0-9\s.,;:'’()€%/-]/g) ?? []).length;
-  return lisibles / t.length >= 0.75 ? t : null;
+  // Lot 54G : un texte COURT reste un échantillon (page peu remplie), avec une exigence de lisibilité plus forte.
+  return lisibles / t.length >= (n < 40 ? 0.9 : 0.75) ? t : null;
 }
 
 /**
@@ -205,7 +215,9 @@ export async function probePdf(bytes: Uint8Array, maxPages = PROBE_MAX_PAGES): P
             if (sub === lib.PDFName.of('Image')) images++; else formes++;
           }
         }
-        const kind: PageKind = r.textOps > 0 ? 'TEXT' : formes > 0 && r.doOps > 0 ? 'UNKNOWN' : images > 0 && r.doOps > 0 ? 'SCANNED'
+        // Lot 54G : opérateurs de texte sans aucun caractère, ni image ni forme : page objectivement VIDE.
+        const texteVide = r.textOps > 0 && !r.text.trim() && r.doOps === 0;
+        const kind: PageKind = texteVide ? 'EMPTY' : r.textOps > 0 ? 'TEXT' : formes > 0 && r.doOps > 0 ? 'UNKNOWN' : images > 0 && r.doOps > 0 ? 'SCANNED'
           : content.trim() ? 'UNKNOWN' : 'EMPTY';
         pages.push({ page: i + 1, kind, sample: r.textOps > 0 ? readableSample(r.text) : null });
       } catch {
@@ -277,18 +289,30 @@ export function verifyPdfCoverage(p: {
   const missing: number[] = [];
   const unverified: number[] = [];
   const scanned: number[] = [];
+  const citeesNonVerifiees: number[] = [];
   for (let page = 1; page <= probe.pageCount; page++) {
     const s = parPage.get(page);
     if (s?.kind === 'SCANNED') scanned.push(page);
     if (p.reread?.has(page)) { verified.push(page); continue; }
-    const m = s?.sample ? pageMatchRatio(s.sample, motsTranscription) : null;
-    if (m && m.ratio >= MATCH_VERIFIED) { verified.push(page); continue; }
-    if (cited.pages.has(page)) { verified.push(page); continue; }
     if (s?.kind === 'EMPTY') { verified.push(page); continue; }
-    if (probe.pageCount === 1 && p.hasContent && !(m && m.ratio < MATCH_MISSING && m.words >= MIN_WORDS_FOR_MISSING)) { verified.push(page); continue; }
-    if (m && m.ratio < MATCH_MISSING && m.words >= MIN_WORDS_FOR_MISSING) { missing.push(page); continue; }
-    // Lecture paginée sans cette page : omission (texte lisible ou non).
-    if (cited.markers && s?.kind !== 'SCANNED' && s !== undefined) { missing.push(page); continue; }
+    const m = s?.sample ? pageMatchRatio(s.sample, motsTranscription) : null;
+    // 1. Échantillon textuel exploitable : il fait foi, comparé à la transcription.
+    if (m && m.ratio >= MATCH_VERIFIED) { verified.push(page); continue; }
+    const omission = !!m && m.ratio < MATCH_MISSING && m.words >= MIN_WORDS_FOR_MISSING;
+    const citee = cited.pages.has(page);
+    if (omission) {
+      // Omission démontrée par la source : MANQUANTE même si un fait cite la page (TC13).
+      missing.push(page);
+      if (citee) citeesNonVerifiees.push(page);
+      continue;
+    }
+    // 2. Correspondance partielle ou échantillon trop pauvre : la citation (ou un
+    //    document d'une seule page lu) complète un indice textuel réel.
+    if (m && (citee || (probe.pageCount === 1 && p.hasContent))) { verified.push(page); continue; }
+    // 3. Aucun échantillon (scannée, police illisible) : une citation ne prouve
+    //    jamais la page entière (TC14) — NON VÉRIFIÉE, sauf omission paginée.
+    if (cited.markers && s?.kind !== 'SCANNED' && s !== undefined && !citee) { missing.push(page); continue; }
+    if (citee) citeesNonVerifiees.push(page);
     unverified.push(page);
   }
   const status: SourceVerificationStatus = missing.length === 0 && unverified.length === 0 ? 'VERIFIED' : 'PARTIAL';
@@ -296,6 +320,7 @@ export function verifyPdfCoverage(p: {
     status, pagesExpected: probe.pageCount, verified, missing, unverified, scanned,
     reason: missing.length > 0 ? 'pages_missing' : unverified.length > 0 ? 'pages_unverified' : null,
     ...(p.reread && p.reread.size > 0 ? { reread: [...p.reread].sort((a, b) => a - b) } : {}),
+    ...(citeesNonVerifiees.length > 0 ? { citedUnverified: citeesNonVerifiees } : {}),
   };
 }
 

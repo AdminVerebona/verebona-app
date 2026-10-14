@@ -547,7 +547,12 @@ export async function buildAssetSnapshot(
       fileCreatedAt: assetFiles.createdAt,
     })
     .from(assetPhotos)
-    .leftJoin(assetFiles, eq(assetFiles.id, assetPhotos.fileId))
+    // Lot 54 (SEC-04) : photo dont le fichier appartient à un AUTRE compte
+    // (relation incorrecte en base) : jamais incluse dans un export.
+    .innerJoin(assetFiles, and(
+      eq(assetFiles.id, assetPhotos.fileId),
+      assetRow.accountId == null ? undefined : eq(assetFiles.accountId, assetRow.accountId),
+    ))
     .where(eq(assetPhotos.assetId, assetId));
 
   // Load events (non-draft, non-ignored)

@@ -1,39 +1,45 @@
 /**
- * Orchestration du cycle de vie d'une version — CDC BO IA WF-01 à WF-06.
+ * Versions de configuration IA — orchestration — lot 54 (54C), ticket
+ * « BO-IA — Refonte de la gestion des versions, restauration et export ».
  *
  * ══════════════════════════════════════════════════════════════════════════
- * « ÉCHEC DE VALIDATION : AUCUNE TRANSITION D'ÉTAT »
+ * NOUVEAU FONCTIONNEMENT (remplace WF-01 à WF-06 du CDC BO IA)
  *
- * C'est la phrase du WF-02, et c'est toute la raison d'être de ce service.
- * Le dépôt sait faire transiter une version ; la machine à états sait si la
- * transition est permise. Ni l'un ni l'autre ne sait si la CONFIGURATION est
- * valide — et rien n'empêcherait un appelant de promouvoir un Brouillon dont
- * un prompt est vide.
+ *   · Créer / dupliquer une version (non active par défaut), la nommer, la
+ *     décrire, la consulter et la MODIFIER, active ou non.
+ *   · « Activer en préproduction » : une seule active ; l'ancienne est
+ *     désactivée dans la même transaction ; la version active reste
+ *     modifiable et chaque sauvegarde s'applique aux prochaines exécutions
+ *     sans réactivation.
+ *   · Chaque sauvegarde effective crée une révision restaurable ; restaurer
+ *     une révision en crée une nouvelle (l'historique n'est jamais réécrit).
+ *   · Suppression logique des versions non actives, révisions conservées.
+ *   · Aucune activation ni publication en production depuis ce module.
  *
- * Ce service enchaîne donc, dans cet ordre et sans le raccourcir : diff,
- * contrôles, puis transition. Une version promue puis rétrogradée aurait déjà
- * pu être lue par une exécution en préproduction.
- *
- * ══════════════════════════════════════════════════════════════════════════
- * LES CATALOGUES SONT ASSEMBLÉS ICI
- *
- * `config-validation` les reçoit en paramètre pour rester testable sans base.
- * C'est ici qu'ils sont réellement construits : modèles servis et tarifés
- * viennent de la grille, garde-fous et déclencheurs des catalogues fermés.
+ * Les contrôles qui BLOQUENT restent ceux d'avant pour chaque geste :
+ *   · sauvegarde : modèle NOUVELLEMENT choisi utilisable (lot 32B) et
+ *     architecture `master` (lot 16b) ; les autres contrôles de la
+ *     configuration sont rendus en avertissements ;
+ *   · activation d'une version jamais active : modèles utilisables et
+ *     cohérence avec le registre (lot 23/32B) ; réactivation d'une version
+ *     déjà active par le passé et restauration d'une révision : aucun
+ *     contrôle bloquant (retour arrière toujours possible, WF-06).
  */
-import { getAiEnvironment, allowsTestVersions } from './environment';
 import { diffVersions, type ConfigDiff } from './config-diff.service';
 import {
   validateVersion, type ConfigCatalogs, type ValidationResult,
 } from './config-validation.service';
 import { guardrailCodes, triggerCodes } from './catalogs';
+import * as repo from './config-version.repository';
 import {
-  getVersion, getActiveVersion, createDraft, saveEntry,
-  promoteToTest, demoteToDraft, validateVersion as commitValidation,
-  switchActive, archiveVersion, listVersions, markStaleDrafts,
+  getVersion, getActiveVersion, ConfigVersionRefused, type WriteOutcome,
 } from './config-version.repository';
 import { promptArchitectureOf, type ConfigVersionWithEntries, type TreatmentConfig } from './config-types';
 import { checkPromptArchitectureChange } from './prompt-architecture';
+import { mergeSnapshot, type ConfigSnapshot, type MasterPromptRef } from './config-snapshot';
+import { isTreatment, type Treatment } from './treatments';
+import { getAiEnvironment } from './environment';
+import { recordConfigAudit } from './config-entry.audit';
 
 /** Refus fonctionnel — distinct d'une erreur technique. */
 export class ConfigOperationRefused extends Error {
@@ -47,31 +53,28 @@ export class ConfigOperationRefused extends Error {
   }
 }
 
+/** Refus du dépôt → refus de service (même code). */
+function asRefusal(e: unknown): never {
+  if (e instanceof ConfigVersionRefused) throw new ConfigOperationRefused(e.code, e.message, e.details);
+  throw e;
+}
+
 /**
- * Assemble les catalogues à partir du code et de la grille tarifaire.
- *
- * `listModelsWithoutPricing` renvoie ce qui MANQUE ; on a besoin de l'inverse.
- * On part donc du catalogue public, source des modèles servis, et on retire
- * ceux sans tarif connu.
+ * Assemble les catalogues à partir du code et de la grille tarifaire (lot
+ * 32B/35B : un seul contexte, celui de `usableModelsForTreatment`).
  */
 async function buildCatalogs(): Promise<ConfigCatalogs> {
-  // Lot 32B/35B : un seul contexte (catalogue fournisseur, tarifs informatifs,
-  // qualification, état opérationnel) — celui de `usableModelsForTreatment`.
   const { loadUsableModelsContext, evaluateModelForTreatment } = await import('../registry/usable-models');
   const { selectableModels } = await import('../provider/model-catalog.service');
   const ctx = await loadUsableModelsContext();
-  // E-04, WF-29, WF-40 : disponibilité réelle chez le fournisseur, au dernier
-  // rafraîchissement du catalogue ; jamais rafraîchi → catalogue du code.
   const available = selectableModels(ctx.codeCatalog, ctx.catalog as never);
   const priced = new Set<string>([...available].filter((m) => ctx.price(m) !== null));
-
   return {
     modelEligibility: (treatment, model) => evaluateModelForTreatment(treatment, model, ctx),
     availableModels: available,
     pricedModels: priced,
     guardrailCodes: guardrailCodes(),
     triggerCodes: triggerCodes(),
-    // Point resté ouvert : avertissement tant que l'arbitrage n'est pas rendu.
     requireActiveTrigger: false,
   };
 }
@@ -83,8 +86,7 @@ const MODEL_FIELDS = ['primaryModel', 'fallback1', 'fallback2'] as const;
  * Lot 32B, §5 — enregistrement : un modèle NOUVELLEMENT choisi (absent de la
  * ligne enregistrée à ce rang) doit être utilisable pour le traitement, et
  * ne pas doubler un autre rang. Une valeur déjà enregistrée et devenue
- * inutilisable reste acceptée (brouillon incomplet ou hérité, §4) : elle est
- * signalée et bloque la promotion, jamais l'enregistrement d'autres champs.
+ * inutilisable reste acceptée : signalée, jamais bloquante pour les autres champs.
  */
 export async function assertNewModelSelections(
   current: TreatmentConfig | null | undefined,
@@ -120,65 +122,215 @@ async function load(versionId: number): Promise<ConfigVersionWithEntries> {
   return version;
 }
 
-// ── WF-01 — Brouillon ───────────────────────────────────────────────────────
-
-export async function startDraft(userId: number, label?: string): Promise<ConfigVersionWithEntries> {
-  return createDraft(userId, label ?? null);
+/**
+ * Caches locaux vidés après une écriture validée (la clé partagée a déjà été
+ * incrémentée DANS la transaction : les autres instances suivent dès le
+ * commit). Prompts maîtres basculés : cache du chargeur de prompts aussi.
+ */
+async function afterCommit(reason: string, switches: WriteOutcome['masterPromptSwitches'] = []): Promise<void> {
+  const [{ invalidateConfigCache }, { invalidateConfigVersionCache }, { forgetConfigVersionCounter, bumpConfigVersionCounter, hasTestCounterStore }, { invalidatePromptCache }] = await Promise.all([
+    import('./config-resolver'),
+    import('../telemetry/execution-context'),
+    import('./config-cache-version'),
+    import('../prompts/prompt-loader'),
+  ]);
+  // Stockage de test injecté (plusieurs « instances » simulées) : il ne voit
+  // pas la base — on l'incrémente aussi, comme avant le lot 54.
+  if (hasTestCounterStore()) await bumpConfigVersionCounter(reason);
+  forgetConfigVersionCounter();
+  invalidateConfigCache();
+  invalidateConfigVersionCache();
+  for (const s of switches) invalidatePromptCache(s.masterPromptCode);
+  // CDC Assistant §15.14 : tout changement de configuration effective refait
+  // le contrôle du registre de modèles de l'assistant (non bloquant).
+  void import('@/services/verebona-assistant/core/model-startup-check')
+    .then(({ runAssistantStartupCheck }) => runAssistantStartupCheck('config_change'))
+    .catch(() => { /* contrôle impossible : journalisé par le module */ });
 }
 
+// ── Création, duplication ───────────────────────────────────────────────────
+
+export async function createConfigVersion(userId: number, p: {
+  label?: string | null; description?: string | null;
+  /** Dupliquer cette version (sa révision courante). */
+  sourceVersionId?: number | null;
+  /** Repartir d'une révision précise (récupération, version supprimée comprise). */
+  sourceRevisionId?: number | null;
+  /** Sans source : copie de la configuration active (sinon configuration vide). */
+}): Promise<ConfigVersionWithEntries> {
+  const source = p.sourceRevisionId ? { revisionId: p.sourceRevisionId }
+    : p.sourceVersionId ? { versionId: p.sourceVersionId } : { active: true as const };
+  const v = await repo.createVersion({ userId, label: p.label ?? null, description: p.description ?? null, source }).catch(asRefusal);
+  await recordConfigAudit('ai_config_version_create', userId, null, {
+    versionId: v.id, number: v.visibleNumber, label: v.label, source,
+  });
+  return v;
+}
+
+/** Compatibilité : « Créer un brouillon » = nouvelle version copiée de l'active. */
+export async function startDraft(userId: number, label?: string): Promise<ConfigVersionWithEntries> {
+  return createConfigVersion(userId, { label: label ?? null });
+}
+
+// ── Sauvegarde ──────────────────────────────────────────────────────────────
+
+export interface SaveInput {
+  /** Révision éditée (contrôle de concurrence). Obligatoire depuis l'écran. */
+  expectedRevision: number | null;
+  /** Traitements modifiés (configuration complète de chacun). */
+  entries?: TreatmentConfig[];
+  /** Prompt maître retenu par traitement : id de version, `null` = non piloté. */
+  masterPromptVersionIds?: Partial<Record<Treatment, number | null>>;
+  label?: string | null;
+  description?: string | null;
+  comment?: string | null;
+}
+
+export interface SaveResult {
+  versionId: number;
+  revisionNumber: number;
+  changed: boolean;
+  active: boolean;
+  /** Contrôles non bloquants de la configuration enregistrée. */
+  warnings: string[];
+}
+
+async function resolveMasterPromptRefs(
+  ids: Partial<Record<Treatment, number | null>> | undefined,
+  environment: string,
+): Promise<ConfigSnapshot['masterPrompts']> {
+  const out: ConfigSnapshot['masterPrompts'] = {};
+  for (const [t, id] of Object.entries(ids ?? {})) {
+    if (!isTreatment(t)) continue;
+    if (id == null) { out[t] = null; continue; }
+    const ref = await repo.getMasterPromptVersionRef(id);
+    if (!ref || ref.treatment !== t || ref.environment !== environment) {
+      throw new ConfigOperationRefused('MASTER_PROMPT_VERSION_NOT_FOUND', `Version de prompt maître ${id} introuvable pour ${t}.`);
+    }
+    if (ref.status === 'DRAFT') {
+      throw new ConfigOperationRefused('MASTER_PROMPT_IS_DRAFT',
+        `Le prompt maître ${t} v${ref.versionNumber} est un brouillon : activez-le dans « Prompts maîtres » avant de le retenir.`);
+    }
+    const { treatment: _t, environment: _e, status: _s, ...pure } = ref;
+    out[t] = pure as MasterPromptRef;
+  }
+  return out;
+}
+
+/**
+ * Enregistre la configuration d'une version (active ou non) : UNE révision
+ * pour l'ensemble des traitements modifiés, ou rien si rien ne change.
+ */
+export async function saveConfiguration(versionId: number, input: SaveInput, userId: number): Promise<SaveResult> {
+  const version = await load(versionId);
+  if (version.deletedAt) {
+    throw new ConfigOperationRefused('VERSION_DELETED', 'Cette version a été supprimée : restaurez-la dans la liste avant de la modifier.');
+  }
+  // Contrôle précoce (revérifié sous verrou par le dépôt).
+  if (input.expectedRevision != null && version.currentRevisionNumber != null && input.expectedRevision !== version.currentRevisionNumber) {
+    throw new ConfigOperationRefused('REVISION_CONFLICT',
+      `La version a été enregistrée entre-temps (révision ${version.currentRevisionNumber}, vous éditiez la révision ${input.expectedRevision}). `
+      + 'Rechargez-la : vos modifications non enregistrées ne sont pas appliquées.',
+      { currentRevision: version.currentRevisionNumber, expectedRevision: input.expectedRevision });
+  }
+  const entries: TreatmentConfig[] = [];
+  let catalogs: ConfigCatalogs | null = null;
+  for (const raw of input.entries ?? []) {
+    if (!isTreatment(String(raw.treatment))) {
+      throw new ConfigOperationRefused('UNKNOWN_TREATMENT', `Traitement « ${String(raw.treatment)} » inconnu ou retiré.`);
+    }
+    const current = version.entries.find((e) => e.treatment === raw.treatment);
+    // Champ omis (client antérieur) : architecture et texte master en place.
+    const next = raw.promptArchitecture === undefined && current ? promptArchitectureOf(current) : (raw.promptArchitecture ?? promptArchitectureOf(raw));
+    const decision = checkPromptArchitectureChange({
+      status: version.status, treatment: raw.treatment,
+      from: current ? promptArchitectureOf(current) : null, to: next,
+    });
+    if (!decision.allowed) throw new ConfigOperationRefused(decision.code, decision.message);
+    const masterPrompt = raw.masterPrompt === undefined ? (current?.masterPrompt ?? null) : raw.masterPrompt;
+    const entry: TreatmentConfig = { ...raw, promptArchitecture: next, masterPrompt };
+    // Lot 32B, §5 : le filtrage du BO n'est pas une règle de sécurité.
+    const nouveaux = MODEL_FIELDS.some((f) => entry[f] && entry[f] !== (current?.[f] ?? null));
+    if (nouveaux) {
+      catalogs ??= await buildCatalogs();
+      await assertNewModelSelections(current, entry, catalogs);
+    }
+    entries.push(entry);
+  }
+  const masterPrompts = await resolveMasterPromptRefs(input.masterPromptVersionIds, version.environment);
+
+  const outcome = await repo.writeSnapshot({
+    versionId, userId, kind: 'save', expectedRevision: input.expectedRevision,
+    comment: input.comment ?? null,
+    label: input.label === undefined ? undefined : (input.label?.trim() || null),
+    description: input.description === undefined ? undefined : (input.description?.trim() || null),
+    next: (cur) => mergeSnapshot(cur, { entries, masterPrompts }),
+  }).catch(asRefusal);
+
+  if (outcome.changed) {
+    await afterCommit(`save:${versionId}:r${outcome.revisionNumber}`, outcome.masterPromptSwitches);
+    await recordConfigAudit('ai_config_version_save', userId,
+      { versionId, revision: version.currentRevisionNumber },
+      { versionId, revision: outcome.revisionNumber, active: outcome.active, treatments: entries.map((e) => e.treatment), masterPrompts: Object.keys(masterPrompts) });
+  }
+  // Contrôles non bloquants de ce qui est désormais enregistré.
+  let warnings: string[] = [];
+  try {
+    const saved = await load(versionId);
+    const v = validateVersion(saved.entries, catalogs ?? await buildCatalogs());
+    warnings = v.issues.map((i) => `${i.treatment} · ${i.label} : ${i.message}`);
+  } catch { /* contrôles indisponibles : la sauvegarde est faite */ }
+  return { versionId, revisionNumber: outcome.revisionNumber, changed: outcome.changed, active: outcome.active, warnings };
+}
+
+/**
+ * Compatibilité (route historique par traitement, scénarios antérieurs) :
+ * enregistre UN traitement. Rend les valeurs avant / après (journal T4).
+ */
 export async function saveTreatmentConfig(
   versionId: number,
   config: TreatmentConfig,
   userId: number,
-): Promise<{ before: TreatmentConfig | null; after: TreatmentConfig }> {
-  // CDC 15 §29.1, D-04 : bascule d'architecture seulement dans un Brouillon,
-  // et seulement vers un master déclaré. `saveEntry` refuse déjà toute
-  // édition hors Brouillon ; ce contrôle rend le motif explicite.
-  // Champ omis (client antérieur au lot 12) : l'architecture en place est
-  // conservée, jamais remise à `steps` en silence.
-  const version = await getVersion(versionId);
-  const current = version?.entries.find((e) => e.treatment === config.treatment);
-  // Valeur DEMANDÉE (brute) : pour tout traitement (lot 16b-3), `steps` explicitement demandé est
-  // refusé (lot 16b) plutôt que ramené à `master` en silence.
-  const next = config.promptArchitecture === undefined && current
-    ? promptArchitectureOf(current)
-    : (config.promptArchitecture ?? promptArchitectureOf(config));
-  if (version) {
-    const decision = checkPromptArchitectureChange({
-      status: version.status, treatment: config.treatment,
-      from: current ? promptArchitectureOf(current) : null, to: next,
-    });
-    if (!decision.allowed) throw new ConfigOperationRefused(decision.code, decision.message);
-  }
-  // Même règle pour le texte master (D-03) : omis ⇒ celui en place.
-  const masterPrompt = config.masterPrompt === undefined ? (current?.masterPrompt ?? null) : config.masterPrompt;
-  const enregistree: TreatmentConfig = { ...config, promptArchitecture: next, masterPrompt };
-  // Lot 32B, §5 : le filtrage du BO n'est pas une règle de sécurité.
-  // Version absente ou non modifiable : `saveEntry` rend le refus explicite.
-  if (version?.status === 'DRAFT') await assertNewModelSelections(current, enregistree);
-  await saveEntry(versionId, enregistree, userId);
-  // CFG-01 (CDC 15) : une édition ne touche qu'un Brouillon (`saveEntry`
-  // refuse tout autre statut), jamais la version effective. La clé partagée
-  // est tout de même incrémentée : le coût est un rechargement par instance,
-  // et la règle « toute écriture de configuration invalide partout » ne
-  // dépend plus de ce que la machine à états autorise aujourd'hui.
-  const { bumpConfigVersionCounter } = await import('./config-cache-version');
-  await bumpConfigVersionCounter(`edit:${versionId}:${config.treatment}`);
-  // Valeurs avant / après (après = ce que `upsertEntry` écrit réellement) :
-  // la route les journalise (ticket T4).
-  return { before: current ?? null, after: enregistree };
+  expectedRevision: number | null = null,
+): Promise<{ before: TreatmentConfig | null; after: TreatmentConfig; revisionNumber: number }> {
+  const version = await load(versionId);
+  const before = version.entries.find((e) => e.treatment === config.treatment) ?? null;
+  const r = await saveConfiguration(versionId, { expectedRevision, entries: [config] }, userId);
+  const after = (await load(versionId)).entries.find((e) => e.treatment === config.treatment) ?? config;
+  return { before, after, revisionNumber: r.revisionNumber };
 }
 
-// ── Diff et contrôles, sans transition ──────────────────────────────────────
+// ── Restauration d'une révision ─────────────────────────────────────────────
 
 /**
- * Diff d'une version contre l'Active de son environnement.
- *
- * Contre l'Active COURANTE, et non contre la version de base mémorisée : c'est
- * ce que le VER-003 demande, et c'est aussi le seul diff utile — l'administrateur
- * décide par rapport à ce qui tourne, pas par rapport à ce qui tournait quand il
- * a créé son Brouillon.
+ * Restaure INTÉGRALEMENT une révision antérieure d'une version : nouvelle
+ * révision identique à celle choisie (les révisions intermédiaires restent).
+ * Version active : appliquée aux prochaines exécutions, sans réactivation.
  */
+export async function restoreRevision(versionId: number, revisionId: number, userId: number, opts: {
+  expectedRevision?: number | null; comment?: string | null;
+} = {}): Promise<SaveResult> {
+  const rev = await repo.getRevision(revisionId);
+  if (!rev || rev.versionId !== versionId) {
+    throw new ConfigOperationRefused('REVISION_NOT_FOUND', `Révision ${revisionId} introuvable pour cette version.`);
+  }
+  const outcome = await repo.writeSnapshot({
+    versionId, userId, kind: 'restore', expectedRevision: opts.expectedRevision ?? null,
+    restoredFrom: rev.id,
+    comment: opts.comment?.trim() || `Restauration de la révision ${rev.revisionNumber}`,
+    next: () => rev.snapshot,
+  }).catch(asRefusal);
+  await afterCommit(`restore:${versionId}:r${outcome.revisionNumber}`, outcome.masterPromptSwitches);
+  await recordConfigAudit('ai_config_revision_restore', userId,
+    { versionId, fromRevision: rev.revisionNumber },
+    { versionId, revision: outcome.revisionNumber, active: outcome.active });
+  const warnings = (await assertModelRegistryCoherence(rev.snapshot).catch((e: ConfigOperationRefused) => [{ message: e.message }])).map((i) => i.message);
+  return { versionId, revisionNumber: outcome.revisionNumber, changed: true, active: outcome.active, warnings };
+}
+
+// ── Diff et contrôles, sans écriture ────────────────────────────────────────
+
+/** Diff d'une version contre l'active de son environnement. */
 export async function diffAgainstActive(versionId: number): Promise<{
   diff: ConfigDiff;
   version: ConfigVersionWithEntries;
@@ -186,11 +338,7 @@ export async function diffAgainstActive(versionId: number): Promise<{
 }> {
   const version = await load(versionId);
   const active = await getActiveVersion(version.environment);
-  return {
-    diff: diffVersions(active?.entries ?? [], version.entries),
-    version,
-    active,
-  };
+  return { diff: diffVersions(active?.entries ?? [], version.entries), version, active };
 }
 
 export async function checkVersion(versionId: number): Promise<ValidationResult> {
@@ -198,192 +346,12 @@ export async function checkVersion(versionId: number): Promise<ValidationResult>
   return validateVersion(version.entries, await buildCatalogs());
 }
 
-// ── WF-02 — Promotion ───────────────────────────────────────────────────────
-
-export interface PromotionResult {
-  diff: ConfigDiff;
-  validation: ValidationResult;
-  promoted: boolean;
-}
-
-/**
- * Promeut un Brouillon en « À tester » (WF-02).
- *
- * Trois refus possibles, dans cet ordre — et aucun ne laisse d'écriture
- * derrière lui :
- *   · environnement de production, où le cycle de test n'existe pas ;
- *   · diff vide : promouvoir une version identique à l'Active n'a pas d'objet ;
- *   · contrôles en échec, rendus par traitement et par champ.
- *
- * Le diff et les contrôles sont rendus même en cas de refus : l'écran doit
- * pouvoir les afficher sans rappeler le serveur.
- */
-/**
- * Vide les caches de configuration après une bascule.
- *
- * Sans cela, une activation mettrait jusqu'à trente secondes à s'appliquer :
- * l'administrateur verrait la version active changer à l'écran, tandis que les
- * appels continueraient d'utiliser l'ancienne. Un délai bref est acceptable
- * pour une lecture opportuniste ; il ne l'est pas juste après un geste
- * délibéré, et encore moins après un rollback fait pendant un incident.
- */
-async function invalidateCaches(reason: string): Promise<void> {
-  const [{ invalidateConfigCache }, { invalidateConfigVersionCache }, { bumpConfigVersionCounter }] = await Promise.all([
-    import('./config-resolver'),
-    import('../telemetry/execution-context'),
-    import('./config-cache-version'),
-  ]);
-  // CFG-01 (CDC 15) : la clé partagée d'abord, pour TOUTES les instances
-  // (relue à chaque résolution) ; puis le cache local, pour celle-ci. Échec
-  // de l'incrément : journalisé, les autres instances suivent au TTL.
-  await bumpConfigVersionCounter(reason);
-  invalidateConfigCache();
-  invalidateConfigVersionCache();
-  // CDC Assistant §15.14 : tout changement de la version effective refait le
-  // contrôle du registre de modèles de l'assistant (non bloquant : le verdict
-  // et l'alerte éventuelle suffisent).
-  void import('@/services/verebona-assistant/core/model-startup-check')
-    .then(({ runAssistantStartupCheck }) => runAssistantStartupCheck('config_change'))
-    .catch(() => { /* contrôle impossible : journalisé par le module */ });
-}
-
-export async function promote(
-  versionId: number,
-  options: { acknowledgeStale?: boolean } = {},
-): Promise<PromotionResult> {
-  const environment = getAiEnvironment();
-  if (!allowsTestVersions(environment)) {
-    throw new ConfigOperationRefused(
-      'PRODUCTION_ENVIRONMENT',
-      'Le cycle de test n\'existe pas en production : une version y arrive par import '
-      + 'et s\'active explicitement (VER-012).',
-    );
-  }
-
-  const { diff, version } = await diffAgainstActive(versionId);
-
-  // VER-002 : un seul « À tester ». Jusqu'ici l'index unique levait une
-  // erreur transformée en 500 générique ; le refus est désormais explicite et
-  // désigne la version à repasser en Brouillon (l'écran le propose).
-  const existing = (await listVersions()).find((v) => v.status === 'TO_TEST' && v.id !== versionId);
-  if (existing) {
-    throw new ConfigOperationRefused(
-      'TO_TEST_EXISTS',
-      `La version « ${existing.label ?? existing.id} » est déjà À tester : repassez-la en Brouillon d'abord.`,
-      { id: existing.id },
-    );
-  }
-  // WF-27, WF-01 : pas de promotion silencieuse d'un Brouillon obsolète —
-  // l'Active de base a changé ; l'administrateur doit avoir vu le diff.
-  if (version.isStale && !options.acknowledgeStale) {
-    throw new ConfigOperationRefused(
-      'STALE_DRAFT',
-      'Ce Brouillon est obsolète : l\'Active dont il dérive a changé. Relisez le diff puis confirmez.',
-      { diff },
-    );
-  }
-
-  const validation = validateVersion(version.entries, await buildCatalogs());
-
-  if (diff.identical) {
-    return { diff, validation, promoted: false };
-  }
-  if (!validation.valid) {
-    return { diff, validation, promoted: false };
-  }
-
-  // La machine à états refusera si la version n'est pas un Brouillon.
-  await promoteToTest(versionId);
-  // La version « À tester » devient effective en préproduction (VER-004) :
-  // même raison que pour une bascule d'Active, elle doit s'appliquer tout de suite.
-  await invalidateCaches(`promote:${versionId}`);
-  return { diff, validation, promoted: true };
-}
-
-/**
- * VER-012 (partie II) / VER-005 — retour « À tester » → Brouillon : la
- * préproduction revient sur la dernière Active.
- *
- * Les caches sont vidés : la version « À tester » était la version EFFECTIVE
- * en préproduction (VER-004) ; sans invalidation, les appels continueraient de
- * l'utiliser jusqu'à trente secondes après le retour — précisément la version
- * qu'on vient de juger mauvaise.
- */
-export async function backToDraft(versionId: number): Promise<void> {
-  await demoteToDraft(versionId);
-  await invalidateCaches(`demote:${versionId}`);
-}
-
-// ── Corpus des masters : plus une garde (BO-IA-PROMPTS-01) ──────────────────
-//
-// Jusqu'au lot 26, validation, activation et restauration exigeaient un
-// corpus vert sur l'empreinte exacte de CHAQUE prompt maître de la version
-// (CDC 15 §30, D-17) — exigence globale T1 → T6, commande en terminal,
-// justification pour un rollback. Décision fonctionnelle BO-IA-PROMPTS-01 :
-// le corpus n'est plus une condition de mise en production. Il reste un
-// contrôle qualité facultatif (« Tester avec le corpus » au BO, `ai:corpus`
-// en ligne de commande). Seuls les contrôles TECHNIQUES bloquent
-// (`validateVersion` : prompt maître incomplet, emplacement inconnu…).
-
-// ── WF-03 — Validation ──────────────────────────────────────────────────────
-
-/**
- * Valide la version « À tester » : elle devient Active et reçoit son numéro.
- *
- * Les contrôles sont rejoués. La configuration n'a pas pu changer depuis la
- * promotion — une version « À tester » n'est pas modifiable —, mais les
- * catalogues, eux, ont pu bouger : un modèle peut avoir été retiré par le
- * fournisseur entre les tests et la validation. C'est arrivé.
- */
-export async function validate(
-  versionId: number,
-  userId: number,
-): Promise<{ visibleNumber: number; warnings: string[] }> {
-  const version = await load(versionId);
-  const validation = validateVersion(version.entries, await buildCatalogs());
-  if (!validation.valid) {
-    throw new ConfigOperationRefused(
-      'VALIDATION_FAILED',
-      'La configuration ne satisfait plus les contrôles.',
-      validation.issues.filter((i) => i.blocking),
-    );
-  }
-  // Lot 23 (§15.12) : modèles cohérents avec le registre déclaratif.
-  const avertissements = await assertModelRegistryCoherence(version);
-  const { visibleNumber } = await commitValidation(versionId, userId);
-  await invalidateCaches(`validate:${versionId}`);
-  return { visibleNumber, warnings: avertissements.map((i) => i.message) };
-}
-
-// ── §15.13, §32.7 — modèle preview en production : garde supprimée (lot 35B) ──
-
-/*
- * Lot 35B (ticket « Catalogue IA dynamique Google ») : la garde « modèle
- * preview en production » (`assertPreviewModelsApproved`, réglage
- * « preview_models_allowed » à double validation, refus
- * PREVIEW_MODEL_NOT_APPROVED) est SUPPRIMÉE. Un modèle preview est
- * sélectionnable et activable dans les mêmes conditions techniques qu'un
- * stable (disponible avec la clé active + qualification réussie) ; son statut
- * reste visible au registre des modèles. Un modèle EXPÉRIMENTAL reste exclu
- * (`usableModelsForTreatment`, motif EXPERIMENTAL).
- */
-
 // ── §15.12, §15.14 — cohérence avec le registre des modèles (lot 23) ────────
 
 /**
- * Contrôle de cohérence d'une version avec les EXCEPTIONS du registre des
- * modèles (`registry/models.ts`), à la validation et à l'activation :
- *   · modèle interdit, ou exclu pour le prompt maître du traitement
- *     (exception documentée) → erreur ;
- *   · modèle de rollback déclaré absent ou non stable → erreur ;
- *   · déprécié, anomalie connue → avertissement rendu à l'appelant.
- * Lot 35B : un modèle ABSENT du registre n'est plus une incohérence ni un
- * « preview » — sa disponibilité et ses capacités sont établies par le
- * catalogue et la qualification automatique (`assertVersionModelsUsable`).
- * Plus aucune condition preview (PREVIEW_NOT_ALLOWED supprimé).
- *
- * Bloquant (`MODEL_REGISTRY_INCOHERENT`) dans tous les environnements. Pas
- * appliqué au rollback (WF-06).
+ * Contrôle de cohérence d'une configuration avec les EXCEPTIONS du registre
+ * des modèles : modèle interdit ou exclu pour le prompt maître → erreur
+ * (`MODEL_REGISTRY_INCOHERENT`) ; déprécié, anomalie connue → avertissement.
  */
 export async function assertModelRegistryCoherence(
   version: Pick<ConfigVersionWithEntries, 'entries'>,
@@ -415,12 +383,8 @@ export async function assertModelRegistryCoherence(
 }
 
 /**
- * Lot 32B, §5 — activation : les MODÈLES de la version doivent être
- * utilisables pour leur traitement, au moment de l'activation (un modèle
- * retiré par le fournisseur entre la validation et l'activation est refusé).
- * Seuls les contrôles de modèles sont rejoués : la version a déjà passé les
- * autres à sa validation. Pas appliqué au rollback (WF-06) — restaurer une
- * version déjà active doit rester possible pendant un incident.
+ * Lot 32B, §5 — activation : chaque modèle (principal, replis) doit être
+ * utilisable pour son traitement au moment de l'activation.
  */
 export async function assertVersionModelsUsable(
   version: Pick<ConfigVersionWithEntries, 'entries'>,
@@ -439,103 +403,84 @@ export async function assertVersionModelsUsable(
     }
   }
   if (refus.length > 0) {
-    throw new ConfigOperationRefused(
-      'MODEL_NOT_USABLE',
-      `Activation impossible : ${refus.map((i) => i.message).join(' ')}`,
-      refus,
-    );
+    throw new ConfigOperationRefused('MODEL_NOT_USABLE', `Activation impossible : ${refus.map((i) => i.message).join(' ')}`, refus);
   }
 }
 
-// ── WF-05 et WF-06 — Activation et restauration ─────────────────────────────
+// ── Activation ──────────────────────────────────────────────────────────────
 
 export interface SwitchResult {
   previousId: number | null;
-  /** `true` pour un rollback : les exécutions en cours ont été interrompues. */
+  /** Toujours `false` : les exécutions démarrées gardent leur révision. */
   interrupts: boolean;
-  /** Nombre de travaux remis en tête de file. Nul pour une activation normale. */
+  /** Toujours 0 (plus de remise en file à l'activation). */
   requeuedJobs: number;
-  /** Avertissements du registre des modèles (déprécié, inconnu) — lot 23. */
+  revisionNumber: number;
+  alreadyActive: boolean;
+  /** Avertissements du registre des modèles. */
   warnings?: string[];
 }
 
-/** WF-05 — activation normale : n'interrompt aucune exécution en cours. */
-export async function activate(versionId: number, userId: number): Promise<SwitchResult> {
-  const version = await load(versionId);
-  // Lot 32B, §5 : chaque modèle (principal, replis) ∈ usableModelsForTreatment.
-  await assertVersionModelsUsable(version);
-  // BO-IA-PROMPTS-01 : aucun corpus exigé. Contrôles techniques seulement.
-  const avertissements = await assertModelRegistryCoherence(version);
-  const r = await switchActive(versionId, userId, 'activate');
-  await invalidateCaches(`activate:${versionId}`);
-  // WF-27 : les Brouillons dérivés de l'Active remplacée deviennent obsolètes
-  // (jusqu'ici seul `validateVersion` les marquait).
-  if (r.previousId) await markStaleDrafts(r.previousId);
-  // WF-05 : « aucune interruption des exécutions en cours ». Elles se terminent
-  // avec leur configuration ; seuls les démarrages suivants utilisent celle-ci.
-  return { previousId: r.previousId, interrupts: false, requeuedJobs: 0, warnings: avertissements.map((i) => i.message) };
-}
-
 /**
- * WF-06 — restauration d'une ancienne Active.
+ * « Activer en préproduction » (ou réactiver une version précédente) : le
+ * dernier état enregistré de la version devient la configuration appliquée
+ * aux nouveaux démarrages, atomiquement.
  *
- * À la différence de l'activation normale, le rollback INTERROMPT : le WF-06
- * exige d'arrêter immédiatement les exécutions concernées et de remettre les
- * jobs batch en tête de file, pour qu'ils reprennent depuis le début avec la
- * version restaurée.
- *
- * L'ordre compte. La bascule d'abord, la remise en file ensuite : un job remis
- * en tête avant la bascule pourrait être repris par une autre instance sous
- * l'ancienne configuration, c'est-à-dire précisément celle qu'on abandonne.
+ * Rien ici n'agit sur un AUTRE environnement : la préproduction n'active ni
+ * ne publie jamais en production. Dans la console de production elle-même
+ * (paramétrage indépendant, à partir du fichier exporté), l'activation exige
+ * la confirmation explicite de l'environnement, vérifiée par le serveur.
  */
-export async function rollback(versionId: number, userId: number): Promise<SwitchResult> {
+export async function activate(versionId: number, userId: number, opts: { confirmProduction?: boolean } = {}): Promise<SwitchResult> {
+  if (getAiEnvironment() === 'production' && opts.confirmProduction !== true) {
+    throw new ConfigOperationRefused('PRODUCTION_CONFIRMATION_REQUIRED',
+      'Environnement de PRODUCTION : saisissez « production » pour confirmer l’activation.');
+  }
   const version = await load(versionId);
-  if (version.activatedAt === null) {
-    throw new ConfigOperationRefused(
-      'NEVER_ACTIVE',
-      'Cette version n\'a jamais été active : la restaurer ne serait pas un retour en arrière (VER-007).',
-    );
+  if (version.deletedAt) {
+    throw new ConfigOperationRefused('VERSION_DELETED', 'Cette version a été supprimée : restaurez-la dans la liste avant de l’activer.');
   }
-  // BO-IA-PROMPTS-01 : restauration jamais conditionnée au corpus, sans
-  // justification à saisir ; la bascule est tracée comme toute bascule.
-
-  const r = await switchActive(versionId, userId, 'rollback');
-  await invalidateCaches(`rollback:${versionId}`);
-  if (r.previousId) await markStaleDrafts(r.previousId);
-
-  const { requeueRunning } = await import('../queue/job-queue.repository');
-  const { listBatchTreatments } = await import('./treatments');
-  let requeued = 0;
-  for (const t of listBatchTreatments()) {
-    requeued += await requeueRunning(t, `restauration de la version ${version.visibleNumber ?? versionId}`);
+  let warnings: string[] = [];
+  // Version jamais active : mêmes contrôles qu'avant (lot 23, 32B). Déjà
+  // active par le passé : retour arrière, jamais bloqué (WF-06).
+  if (version.activatedAt === null && !version.active) {
+    await assertVersionModelsUsable(version);
+    warnings = (await assertModelRegistryCoherence(version)).map((i) => i.message);
+  } else {
+    warnings = (await assertModelRegistryCoherence(version).catch((e: ConfigOperationRefused) => [{ message: e.message }])).map((i) => i.message);
   }
-
-  return { previousId: r.previousId, interrupts: true, requeuedJobs: requeued };
+  const r = await repo.activateVersion(versionId, userId).catch(asRefusal);
+  if (!r.alreadyActive) {
+    await afterCommit(`activate:${versionId}:r${r.revisionNumber}`, r.masterPromptSwitches);
+    await recordConfigAudit('ai_config_version_activate', userId,
+      { activeVersionId: r.previousId },
+      { activeVersionId: versionId, revision: r.revisionNumber });
+  }
+  return { previousId: r.previousId, interrupts: false, requeuedJobs: 0, revisionNumber: r.revisionNumber, alreadyActive: r.alreadyActive, warnings };
 }
 
-/**
- * VER-008 et VER-009 — archivage définitif, impossible sur une Active.
- *
- * VER-020 : l'archivage ne doit jamais supprimer le DERNIER point de rollback
- * viable — une version Validée déjà active par le passé, autre que l'Active.
- * Sans elle, un incident sur l'Active n'aurait plus de retour arrière.
- */
-export async function archive(versionId: number): Promise<void> {
-  const versions = await listVersions(undefined, 500);
-  if (isLastRollbackPoint(versionId, versions)) {
-    throw new ConfigOperationRefused(
-      'LAST_ROLLBACK',
-      'Cette version est le dernier point de rollback viable : l\'archiver supprimerait tout retour arrière (VER-020).',
-    );
-  }
-  await archiveVersion(versionId);
+/** Compatibilité : « Restaurer » une ancienne version = la réactiver. */
+export async function rollback(versionId: number, userId: number, opts: { confirmProduction?: boolean } = {}): Promise<SwitchResult> {
+  return activate(versionId, userId, opts);
 }
 
-/** Pur : la version est-elle le seul rollback viable ? */
-export function isLastRollbackPoint(
-  versionId: number,
-  versions: Array<Pick<ConfigVersionWithEntries, 'id' | 'status' | 'activatedAt'>>,
-): boolean {
-  const viables = versions.filter((v) => v.status === 'VALIDATED' && v.activatedAt !== null);
-  return viables.length === 1 && viables[0].id === versionId;
+// ── Suppression ─────────────────────────────────────────────────────────────
+
+/** Suppression LOGIQUE d'une version non active (révisions conservées). */
+export async function deleteConfigVersion(versionId: number, userId: number): Promise<void> {
+  await load(versionId);
+  const r = await repo.deleteVersion(versionId, userId).catch(asRefusal);
+  if (!r.alreadyDeleted) await recordConfigAudit('ai_config_version_delete', userId, { versionId }, { versionId, deleted: true });
+}
+
+/** Compatibilité : « Archiver » = supprimer (logiquement). */
+export async function archive(versionId: number, userId = 0): Promise<void> {
+  return deleteConfigVersion(versionId, userId);
+}
+
+/** Remet une version supprimée dans la liste, NON active. */
+export async function restoreDeletedVersion(versionId: number, userId: number): Promise<void> {
+  await load(versionId);
+  await repo.undeleteVersion(versionId, userId).catch(asRefusal);
+  await recordConfigAudit('ai_config_version_undelete', userId, { versionId, deleted: true }, { versionId, deleted: false });
 }

@@ -43,7 +43,7 @@
  */
 import { randomUUID } from 'node:crypto';
 import type postgres from 'postgres';
-import { CROSS_ACCOUNT_CHECKS, readOnlyDetectionExecutor, type CrossAccountCheck, type DetectionExecutor } from './detection';
+import { AI_JOB_REFS_SQL, CROSS_ACCOUNT_CHECKS, readOnlyDetectionExecutor, type CrossAccountCheck, type DetectionExecutor } from './detection';
 
 export type RemediationFamily = CrossAccountCheck['family'];
 export type RemediationMode = 'nullify' | 'status' | 'delete';
@@ -70,12 +70,22 @@ export interface RemediationSpec {
   code: string;
   family: RemediationFamily;
   parts: readonly RemediationPart[];
+  /**
+   * Lot 54 (SEC-09) : aucune correction automatique possible sans risque
+   * pour les données légitimes (liens « cœur » des Opérations : la
+   * correction passe par le moteur Opérations et sa réconsolidation) —
+   * procédure d'incident décrite ici ; `parts` est vide, les lignes sont
+   * seulement recensées (inventaire « en attente de décision »).
+   */
+  manual?: string;
 }
 
 const pk = (alias: string, ...cols: string[]) => `jsonb_build_object(${cols.map((c) => `'${c}', ${alias}.${c}`).join(', ')})`;
 const ids = (...exprs: string[]) => `array_remove(ARRAY[${exprs.join(', ')}]::int[], NULL)`;
 const nul = (cond: string, col: string) => `CASE WHEN ${cond} THEN '${col}' END`;
 const ID = (expr: string) => `(CASE WHEN ${expr} ~ '^[0-9]{1,9}$' THEN (${expr})::int END)`;
+/** Biens d'une Opération (qualification Duo d'une relation de sinistre). */
+const OP_ASSETS = (op: string) => `coalesce((SELECT array_agg(l.asset_id) FROM business_operation_asset_links l WHERE l.operation_id = ${op}), '{}')::int[]`;
 
 /** Correction par catégorie (mêmes codes que `CROSS_ACCOUNT_CHECKS`). */
 export const REMEDIATION_SPECS: readonly RemediationSpec[] = [
@@ -317,33 +327,107 @@ export const REMEDIATION_SPECS: readonly RemediationSpec[] = [
       set: { status: `'CANCELLED'`, last_error: `'CROSS_ACCOUNT_REMEDIATION : job référençant un objet d''un autre compte'` },
       still: `status = 'CANCELLED'`,
       // PENDING seulement : un job RUNNING est déjà refusé à l'exécution (job-scope).
+      // Lot 54 (SEC-05/06) : mêmes références que le contrôle (cible et contexte imbriqué).
       sql: `SELECT DISTINCT ON (q.id) ${pk('q', 'id')} AS row_pk, q.account_id, o.account_id AS other_account_id,
                    ${ids(`CASE WHEN q.target_type = 'asset' THEN ${ID('q.target_id')} END`, ID("q.payload ->> 'assetId'"))} AS asset_ids, NULL::text[] AS cols
               FROM ai_job_queue q
-              CROSS JOIN LATERAL (
-                SELECT a.account_id FROM assets a
-                 WHERE a.id = CASE WHEN q.target_type = 'asset' THEN ${ID('q.target_id')} END
-                    OR a.id = ${ID("q.payload ->> 'assetId'")}
-                UNION ALL
-                SELECT f.account_id FROM asset_files f
-                 WHERE f.id = CASE WHEN q.target_type IN ('asset_file', 'document') THEN ${ID('q.target_id')} END
-                    OR f.id = ${ID("q.payload ->> 'leadSourceId'")}
-                    OR f.id = ${ID("q.payload ->> 'sourceFileId'")}
-                    OR f.id = ${ID("q.payload ->> 'fileId'")}
-                UNION ALL
-                SELECT b.account_id FROM equipments e JOIN assets b ON b.id = e.asset_id
-                 WHERE e.id = CASE WHEN q.target_type = 'equipment' THEN ${ID('q.target_id')} END
-                UNION ALL
-                SELECT b.account_id FROM substructures s JOIN assets b ON b.id = s.asset_id
-                 WHERE s.id = CASE WHEN q.target_type = 'room' THEN ${ID('q.target_id')} END
-              ) o
+              CROSS JOIN LATERAL (${AI_JOB_REFS_SQL('q')}) o
              WHERE q.status = 'PENDING' AND q.account_id IS NOT NULL AND o.account_id IS DISTINCT FROM q.account_id
              ORDER BY q.id`,
     }],
   },
+  // ── Documents : photos (lot 54, SEC-06) ───────────────────────────────
+  {
+    code: 'PHOTO_FILE', family: 'documents', parts: [{
+      // Association photo ↔ bien retirée ; le fichier reste dans son compte.
+      table: 'asset_photos', pk: ['id'], mode: 'delete',
+      sql: `SELECT ${pk('p', 'id')} AS row_pk, a.account_id, f.account_id AS other_account_id, ${ids('a.id', 'f.asset_id')} AS asset_ids, NULL::text[] AS cols
+              FROM asset_photos p JOIN assets a ON a.id = p.asset_id JOIN asset_files f ON f.id = p.file_id
+             WHERE f.account_id IS DISTINCT FROM a.account_id`,
+    }],
+  },
+  // ── Opérations et Sinistres (lot 54, SEC-06 / SEC-09) ─────────────────
+  {
+    code: 'CLAIM_CONTRACT', family: 'operations', parts: [{
+      table: 'business_operation_claim_details', pk: ['operation_id'], mode: 'nullify',
+      sql: `SELECT ${pk('cd', 'operation_id')} AS row_pk, o.account_id, k.account_id AS other_account_id, ${OP_ASSETS('o.id')} AS asset_ids,
+                   ARRAY['insurance_contract_operation_id'] AS cols
+              FROM business_operation_claim_details cd JOIN business_operations o ON o.id = cd.operation_id
+              JOIN business_operations k ON k.id = cd.insurance_contract_operation_id
+             WHERE k.account_id <> o.account_id`,
+    }],
+  },
+  {
+    code: 'CLAIM_HISTORY_EVENT', family: 'operations', parts: [{
+      table: 'business_operation_claim_details', pk: ['operation_id'], mode: 'nullify',
+      sql: `SELECT ${pk('cd', 'operation_id')} AS row_pk, o.account_id, ev.account_id AS other_account_id, ${OP_ASSETS('o.id')} AS asset_ids,
+                   ARRAY['history_event_id'] AS cols
+              FROM business_operation_claim_details cd JOIN business_operations o ON o.id = cd.operation_id
+              JOIN events ev ON ev.id = cd.history_event_id
+             WHERE ev.account_id IS DISTINCT FROM o.account_id`,
+    }],
+  },
+  {
+    code: 'CLAIM_ACTION_REF', family: 'operations', parts: [
+      {
+        table: 'business_operation_claim_actions', pk: ['id'], mode: 'nullify',
+        sql: `SELECT ${pk('ca', 'id')} AS row_pk, o.account_id, f.account_id AS other_account_id, ${OP_ASSETS('o.id')} AS asset_ids,
+                     ARRAY['invoice_file_id'] AS cols
+                FROM business_operation_claim_actions ca JOIN business_operations o ON o.id = ca.operation_id
+                JOIN asset_files f ON f.id = ca.invoice_file_id
+               WHERE f.account_id <> o.account_id`,
+      },
+      {
+        table: 'business_operation_claim_actions', pk: ['id'], mode: 'nullify',
+        sql: `SELECT ${pk('ca', 'id')} AS row_pk, o.account_id, k.account_id AS other_account_id, ${OP_ASSETS('o.id')} AS asset_ids,
+                     ARRAY['child_operation_id'] AS cols
+                FROM business_operation_claim_actions ca JOIN business_operations o ON o.id = ca.operation_id
+                JOIN business_operations k ON k.id = ca.child_operation_id
+               WHERE k.account_id <> o.account_id`,
+      },
+    ],
+  },
+  {
+    code: 'CLAIM_EXCHANGE_DOCUMENT', family: 'operations', parts: [{
+      table: 'business_operation_claim_exchanges', pk: ['id'], mode: 'nullify',
+      sql: `SELECT ${pk('ce', 'id')} AS row_pk, o.account_id, f.account_id AS other_account_id, ${OP_ASSETS('o.id')} AS asset_ids,
+                   ARRAY['document_file_id'] AS cols
+              FROM business_operation_claim_exchanges ce JOIN business_operations o ON o.id = ce.operation_id
+              JOIN asset_files f ON f.id = ce.document_file_id
+             WHERE f.account_id <> o.account_id`,
+    }],
+  },
+  {
+    code: 'CLAIM_DAMAGE_DOCUMENT', family: 'operations', parts: [{
+      table: 'business_operation_claim_damage_documents', pk: ['damage_id', 'file_id'], mode: 'delete',
+      sql: `SELECT ${pk('dd', 'damage_id', 'file_id')} AS row_pk, o.account_id, f.account_id AS other_account_id, ${OP_ASSETS('o.id')} AS asset_ids, NULL::text[] AS cols
+              FROM business_operation_claim_damage_documents dd JOIN business_operation_claim_damages d ON d.id = dd.damage_id
+              JOIN business_operations o ON o.id = d.operation_id JOIN asset_files f ON f.id = dd.file_id
+             WHERE f.account_id <> o.account_id`,
+    }],
+  },
+  {
+    code: 'CLAIM_DAMAGE_PHOTO', family: 'operations', parts: [{
+      table: 'business_operation_claim_damage_photos', pk: ['damage_id', 'photo_id'], mode: 'delete',
+      sql: `SELECT ${pk('dp', 'damage_id', 'photo_id')} AS row_pk, o.account_id,
+                   coalesce(NULLIF(pa.account_id, o.account_id), NULLIF(pf.account_id, o.account_id)) AS other_account_id,
+                   ${OP_ASSETS('o.id')} AS asset_ids, NULL::text[] AS cols
+              FROM business_operation_claim_damage_photos dp JOIN business_operation_claim_damages d ON d.id = dp.damage_id
+              JOIN business_operations o ON o.id = d.operation_id
+              JOIN asset_photos p ON p.id = dp.photo_id JOIN assets pa ON pa.id = p.asset_id JOIN asset_files pf ON pf.id = p.file_id
+             WHERE pa.account_id IS DISTINCT FROM o.account_id OR pf.account_id IS DISTINCT FROM o.account_id`,
+    }],
+  },
+  {
+    code: 'OP_CORE_LINK', family: 'operations', parts: [],
+    manual: 'Procédure d’incident : aucune correction directe (liens de preuve et de calcul des Opérations). Lectures et écritures '
+      + 'déjà bornées au compte. BO › Opérations › Diagnostic (anomalie dure CROSS_ACCOUNT_LINK) puis réconsolidation du compte '
+      + 'concerné (BO › Opérations › Réconsolidation, simulation puis application) ; en attente de décision tant que l’origine '
+      + '(déplacement Duo, donnée historique) n’est pas établie.',
+  },
 ];
 
-export const REMEDIATION_FAMILIES: readonly RemediationFamily[] = ['documents', 'fournisseurs', 'evenements', 'agenda', 'preuves', 'a_traiter', 'jobs'];
+export const REMEDIATION_FAMILIES: readonly RemediationFamily[] = ['documents', 'fournisseurs', 'evenements', 'agenda', 'preuves', 'a_traiter', 'jobs', 'operations'];
 
 export function remediationSpec(code: string): RemediationSpec | null {
   return REMEDIATION_SPECS.find((s) => s.code === code) ?? null;
@@ -385,6 +469,8 @@ export interface RemediationInventoryEntry {
   correctable: number;
   duo: number;
   undecidable: number;
+  /** Lot 54 : relations sans correction automatique (procédure d'incident, en attente de décision). */
+  manual?: number;
   error?: string;
 }
 
@@ -396,6 +482,16 @@ export async function inventoryRemediation(q: Q, accountId: number | null = null
   for (const spec of REMEDIATION_SPECS) {
     const e: RemediationInventoryEntry = { code: spec.code, family: spec.family, total: 0, correctable: 0, duo: 0, undecidable: 0 };
     try {
+      if (spec.manual) {
+        const check = CROSS_ACCOUNT_CHECKS.find((c) => c.code === spec.code);
+        if (check) {
+          await q('SAVEPOINT cross_account_inventory');
+          const [r] = await q(`SELECT count(*)::int AS n FROM (${check.sql}) z`);
+          await q('RELEASE SAVEPOINT cross_account_inventory');
+          e.manual = Number(r?.n ?? 0);
+          e.total += e.manual;
+        }
+      }
       for (const part of spec.parts) {
         await q('SAVEPOINT cross_account_inventory');
         const rows = await q(`SELECT qualification, count(*)::int AS n FROM (${qualifiedSql(part, accountId)}) z GROUP BY qualification`);
@@ -456,6 +552,8 @@ export interface RemediationCategoryResult {
   samples: string[];
   duoSamples: string[];
   failures: string[];
+  /** Lot 54 : relations recensées sans correction automatique (procédure d'incident). */
+  manual?: number;
 }
 
 export interface RemediationReport {
@@ -470,6 +568,12 @@ export interface RemediationReport {
   /** Lot borné atteint : relancer pour la suite. */
   more: boolean;
   categories: RemediationCategoryResult[];
+  /**
+   * Lot 54 (SEC-09) : contrôle d'intégrité REJOUÉ après l'application
+   * (lecture seule) — relations restantes par catégorie de la famille ;
+   * `incomplete` : un contrôle n'a pas pu s'exécuter.
+   */
+  postCheck?: { at: string; remaining: Record<string, number>; incomplete: string[] };
 }
 
 export const REMEDIATION_BATCH = 2_000;
@@ -543,14 +647,42 @@ export async function runCrossAccountRemediation(sql: postgres.Sql, o: Remediati
         res = { ...res, failed: res.failed + 1, failures: [...res.failures, `catégorie ${spec.code} — ${(e as Error).message.slice(0, 200)}`] };
       }
     }
-    o.log?.(`${spec.code} : ${res.candidates} relation(s), ${res.corrected} ${o.apply ? 'corrigée(s)' : 'à corriger'}, ${res.duo} Duo (signalées), ${res.undecidable} indécidable(s), ${res.failed} échec(s)`);
+    if (spec.manual) {
+      const check = CROSS_ACCOUNT_CHECKS.find((c) => c.code === spec.code);
+      if (check) {
+        const filtre = o.accountId ? ` WHERE z.account_id = ${Number(o.accountId)} OR z.other_account_id = ${Number(o.accountId)}` : '';
+        const [r] = await sql.unsafe<Array<{ n: number }>>(`SELECT count(*)::int AS n FROM (${check.sql}) z${filtre}`).catch(() => [{ n: -1 }]);
+        res.manual = Number(r?.n ?? 0);
+      }
+    }
+    o.log?.(`${spec.code} : ${res.candidates} relation(s), ${res.corrected} ${o.apply ? 'corrigée(s)' : 'à corriger'}, ${res.duo} Duo (signalées), ${res.undecidable} indécidable(s), ${res.failed} échec(s)${spec.manual ? `, ${res.manual ?? 0} en attente de décision (procédure d'incident)` : ''}`);
     report.categories.push(res);
     report.corrected += res.corrected;
     report.duo += res.duo;
     report.undecidable += res.undecidable;
     report.failed += res.failed;
   }
+  if (o.apply) report.postCheck = await recontroler(sql, o.family);
   return report;
+}
+
+/** Lot 54 (SEC-09) : recontrôle de la famille après correction (READ ONLY). */
+async function recontroler(sql: postgres.Sql, family: RemediationFamily): Promise<NonNullable<RemediationReport['postCheck']>> {
+  const { detectCrossAccountRelations } = await import('./detection');
+  const exec: DetectionExecutor = async <T>(fn: (q: (s: string) => Promise<Array<Record<string, unknown>>>) => Promise<T>): Promise<T> => {
+    const out = await sql.begin('read only', async (tx) => [await fn(async (s) => (await tx.unsafe(s)) as unknown as Array<Record<string, unknown>>)]);
+    return (out as unknown as T[])[0];
+  };
+  try {
+    const r = await detectCrossAccountRelations(exec, CROSS_ACCOUNT_CHECKS.filter((c) => c.family === family));
+    return {
+      at: r.computedAt,
+      remaining: Object.fromEntries(r.checks.map((c) => [c.code, c.count])),
+      incomplete: r.checks.filter((c) => c.error).map((c) => c.code),
+    };
+  } catch (e) {
+    return { at: new Date().toISOString(), remaining: {}, incomplete: [`recontrôle indisponible : ${(e as Error).message.slice(0, 120)}`] };
+  }
 }
 
 async function corrigerLigne(

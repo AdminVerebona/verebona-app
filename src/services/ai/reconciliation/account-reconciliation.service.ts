@@ -376,12 +376,18 @@ export async function reconcileAccount(
       }
     }
     // Lot 49B : toutes les lignes « À traiter » ouvertes, à chaque passage.
+    // Lot 54A (écart 5) — CONTRAT : tout passage T3 GLOBAL du compte (manuel,
+    // planifié, réconciliation globale) passe ICI et réexamine TOUS les « À
+    // traiter » ouverts ; les sous-jobs spécialisés (DOCUMENT_ASSET, ASSET,
+    // ENTITY, BUSINESS_OPERATIONS…) ne relancent jamais l'ensemble du compte.
     if (deps.reconcileOpenActions) {
       if (options.guard) await options.guard.assertActive('« À traiter » ouverts du compte');
       try {
         openActions = await deps.reconcileOpenActions(accountId, {
           guard: options.guard, triggerCode: options.triggerCode ?? null, runStartedAt: debutPassage,
           reconciledAssetIds: new Set(details.filter((d) => d.status !== 'SKIPPED').map((d) => d.objectId)),
+          // Lot 54A (écart 6) : journal durable rattaché au passage et au job porteur.
+          accountRunId: runId, queueJobId: options.queueJob?.id ?? null,
         });
       } catch (e) {
         if (isExecutionCancelled(e)) throw e;

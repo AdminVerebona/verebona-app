@@ -188,7 +188,7 @@ export function computeCoverage(units: readonly SourceUnit[], c: CoverageInput):
   const tableIncertaine = new Map<string, boolean>();
   for (const u of units) if (u.kind === 'TABLE') tableIncertaine.set(u.sourceUnitId, u.payload.uncertain === true);
 
-  return units.map((u) => {
+  return resolveTableParents(units.map((u): CoveredSourceUnit => {
     const confs = parUnite.get(u.sourceUnitId) ?? [];
     const cov = (status: CoverageStatus, reason: string | null): UnitCoverage => ({ status, reason, factCount: confs.length });
     const echec = c.failed?.get(u.sourceUnitId);
@@ -220,6 +220,39 @@ export function computeCoverage(units: readonly SourceUnit[], c: CoverageInput):
     else if (ecartes.has(u.sourceUnitId)) r = cov('UNRESOLVED', 'fact_dropped');
     else r = cov('UNRESOLVED', u.salient ? 'not_extracted' : 'not_structured');
     return { ...u, ...r, repairAttempts: c.repairAttempts?.get(u.sourceUnitId) ?? 0 };
+  }));
+}
+
+/**
+ * Lot 54G (ticket T1 « finaliser la couverture réelle », point 4) — état d'un
+ * tableau INCERTAIN dérivé de la couverture RÉELLE de ses lignes (pure), sans
+ * jamais toucher `payload.uncertain` :
+ *   · COVERED / `table_verified` si le tableau a au moins une ligne
+ *     informative, que TOUTES ses lignes informatives sont confirmées
+ *     cellule par cellule (`table_verified`) et qu'aucune contradiction
+ *     structurelle ne subsiste (nombre de lignes conforme à la structure,
+ *     aucune ligne incertaine, non structurée ou en échec) ;
+ *   · sinon UNCERTAIN / `table_uncertain` (incertitude maintenue).
+ * Un tableau en échec (FAILED) ou non incertain n'est pas modifié.
+ */
+export function resolveTableParents<U extends CoveredSourceUnit>(units: readonly U[]): U[] {
+  const enfants = new Map<string, U[]>();
+  for (const u of units) {
+    if (u.kind !== 'TABLE_ROW' || !u.parentUnitId) continue;
+    const l = enfants.get(u.parentUnitId) ?? [];
+    l.push(u);
+    enfants.set(u.parentUnitId, l);
+  }
+  return units.map((u) => {
+    if (u.kind !== 'TABLE' || u.payload.uncertain !== true || u.status === 'FAILED') return u;
+    const lignes = enfants.get(u.sourceUnitId) ?? [];
+    const informatives = lignes.filter((l) => l.status !== 'NON_INFORMATIONAL');
+    const structure = Number(u.payload.rowCount ?? lignes.length) === lignes.length;
+    const verifie = structure && informatives.length > 0
+      && informatives.every((l) => l.status === 'COVERED' && l.reason === 'table_verified');
+    const status: CoverageStatus = verifie ? 'COVERED' : 'UNCERTAIN';
+    const reason = verifie ? 'table_verified' : 'table_uncertain';
+    return u.status === status && u.reason === reason ? u : { ...u, status, reason };
   });
 }
 
@@ -255,18 +288,32 @@ export function needsSourceUnits(units: readonly CoveredSourceUnit[]): CoveredSo
 }
 
 /**
+ * Lot 54G (point 2) — unités à soumettre à une RELECTURE DU FICHIER : état
+ * NEEDS_SOURCE, plafond de relectures non atteint (jamais une unité épuisée).
+ */
+export function selectSourceRereadUnits(units: readonly CoveredSourceUnit[], sourceCap: number): CoveredSourceUnit[] {
+  return needsSourceUnits(units).filter((u) => u.repairState !== 'EXHAUSTED' && u.repairAttempts < Math.max(1, sourceCap));
+}
+
+/**
  * État de réparation des unités après une passe (lot 49B, DEV-04) — pure.
  *   attempted   unités soumises à la passe ; notAttempted  sélectionnées mais
  *   hors budget (reprise programmée) ; cap  tentatives au plus par unité.
  */
 export function withRepairStates(units: readonly CoveredSourceUnit[], p: {
   attempted?: ReadonlySet<string>; pending?: ReadonlySet<string>; cap: number;
+  /**
+   * Lot 54G (point 2) : relectures du FICHIER au plus par unité NEEDS_SOURCE
+   * (défaut : `cap`). Plafond atteint, incertitude maintenue : EXHAUSTED.
+   */
+  sourceCap?: number;
 }): CoveredSourceUnit[] {
+  const sourceCap = Math.max(1, p.sourceCap ?? p.cap);
   return units.map((u) => {
     const before = u.repairState ?? null;
     const tentee = p.attempted?.has(u.sourceUnitId) === true;
     let state: CoveredSourceUnit['repairState'] = before;
-    if (u.kind === 'VISUAL_OBSERVATION' && u.status === 'UNCERTAIN') state = 'NEEDS_SOURCE';
+    if (u.kind === 'VISUAL_OBSERVATION' && u.status === 'UNCERTAIN') state = u.repairAttempts >= sourceCap ? 'EXHAUSTED' : 'NEEDS_SOURCE';
     else if (u.status === 'COVERED' || u.status === 'NON_INFORMATIONAL') state = u.repairAttempts > 0 && (tentee || before !== null) ? 'SUCCEEDED' : null;
     else if (p.pending?.has(u.sourceUnitId)) state = 'PENDING';
     else if (before === 'PENDING' && !tentee) state = 'PENDING';
@@ -293,9 +340,11 @@ export interface ReportInput {
    * Lot 49B (DEV-01) : vérification de la source. Absente : non contrôlée
    * (appel direct) — l'état n'est pas dégradé.
    */
-  verification?: Pick<SourceVerification, 'status' | 'reason' | 'pagesExpected' | 'verified' | 'missing' | 'unverified' | 'scanned'> & { reread?: number[] } | null;
-  /** Lot 49B (DEV-03) : réductions comptées, originaux conservés, pertes non compensées. */
-  normalisation?: { truncations: number; originalsPreserved: number; losses: number };
+  verification?: Pick<SourceVerification, 'status' | 'reason' | 'pagesExpected' | 'verified' | 'missing' | 'unverified' | 'scanned'> & { reread?: number[]; citedUnverified?: number[] } | null;
+  /** Lot 49B (DEV-03) : réductions comptées, originaux conservés, pertes non compensées ; lot 54G : champs retirés. */
+  normalisation?: { truncations: number; originalsPreserved: number; losses: number; prunedFields?: number; prunedOriginalsPreserved?: number };
+  /** Lot 54G (point 2) : relectures du fichier (cumul du document). */
+  sourceReread?: { runs: number; failed: number; resolved: number };
 }
 
 /** Faits écartés à la 1re passe et non retrouvés (motifs de rejet d'un fait du modèle). */
@@ -327,6 +376,7 @@ export function buildCompletenessReport(units: readonly CoveredSourceUnit[], p: 
   const nonVerifiee = v !== null && (v.status === 'UNVERIFIABLE' || v.status === 'RECONSTRUCTED' || (v.status === 'PARTIAL' && missing === 0));
   const pertes = p.normalisation?.losses ?? 0;
   const nonInterpretes = p.unresolvedFacts.filter((f) => f.status === 'UNRESOLVED' && f.reason === 'VALUE_NOT_NORMALIZABLE').length;
+  const tablesIncertains = units.filter((u) => u.kind === 'TABLE' && u.status === 'UNCERTAIN').length;
 
   let quality: T1QualityState;
   if (failed > 0 || p.truncatedSectionsCount > 0) {
@@ -338,7 +388,9 @@ export function buildCompletenessReport(units: readonly CoveredSourceUnit[], p: 
     // Lot 53 (retour PO D19) : couverture documentaire NON VÉRIFIABLE — jamais
     // « complète », même avec des points non résolus : vérification incomplète.
     quality = 'VERIFICATION_INCOMPLETE';
-  } else if (unresolved > 0 || uncertain > 0 || dropped > 0 || pertes > 0 || nonInterpretes > 0) {
+  } else if (unresolved > 0 || uncertain > 0 || dropped > 0 || pertes > 0 || nonInterpretes > 0
+    // Lot 54G (point 5) : relecture du fichier ou réparation encore active — jamais COMPLETE.
+    || etat('NEEDS_SOURCE') > 0 || etat('ATTEMPTED_FAILED') > 0 || tablesIncertains > 0) {
     quality = 'COMPLETE_WITH_UNRESOLVED';
   } else {
     quality = 'COMPLETE';
@@ -391,6 +443,16 @@ export function buildCompletenessReport(units: readonly CoveredSourceUnit[], p: 
       truncations: p.normalisation?.truncations ?? 0,
       originalsPreserved: p.normalisation?.originalsPreserved ?? 0,
       normalisationLosses: pertes,
+      // Lot 54G (§6) : pages citées non vérifiées, relectures du fichier, champs retirés, tableaux.
+      pagesCitedUnverified: v?.citedUnverified ?? [],
+      sourceRereads: p.sourceReread?.runs ?? 0,
+      sourceRereadsFailed: p.sourceReread?.failed ?? 0,
+      sourceRereadResolved: p.sourceReread?.resolved ?? 0,
+      needsSourceExhausted: units.filter((u) => u.kind === 'VISUAL_OBSERVATION' && u.repairState === 'EXHAUSTED').length,
+      prunedFields: p.normalisation?.prunedFields ?? 0,
+      prunedOriginalsPreserved: p.normalisation?.prunedOriginalsPreserved ?? 0,
+      tablesUncertain: tablesIncertains,
+      tablesResolved: units.filter((u) => u.kind === 'TABLE' && u.status === 'COVERED' && u.reason === 'table_verified').length,
     },
   };
 }

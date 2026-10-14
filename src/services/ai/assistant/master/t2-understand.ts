@@ -24,13 +24,17 @@ import { assistantIdempotencyKey } from '@/services/verebona-assistant/core/assi
 import { VEREBONA_INTENTS, type VerebonaIntent } from '@/services/verebona-assistant/types/intents';
 import { getIntentDefinition } from '@/services/verebona-assistant/registries/intent-registry';
 import type { AssistantRequestInput, IntentRoute } from '@/services/verebona-assistant/types/contracts';
-import { T2UnderstandOutput } from './t2-contract';
+import { T2UnderstandOutput, type T2SemanticDecision } from './t2-contract';
+import type { RouteInteraction } from '@/services/verebona-assistant/types/contracts';
 import { t2MasterVariables } from './t2-answer';
 
 const SCHEMA_DESCRIPTION =
   '{"mode":"UNDERSTAND","intent":"<intention du catalogue>","confidence":"exact"|"probable"|"ambiguous",'
   + '"entityHints":[{"type":"asset","value":"…"}],"requestedFacts":["<clé du FIELD_CATALOG>"],"requestedTopics":[],'
-  + '"filters":{"documentType":null,"periodStart":null,"periodEnd":null,"unlinked":null,"status":null,"supplier":null,"upcoming":null},"reason":"…"}';
+  + '"filters":{"documentType":null,"periodStart":null,"periodEnd":null,"unlinked":null,"status":null,"supplier":null,"upcoming":null},"reason":"…",'
+  + '"interactionMode":"QUERY"|"UPDATE_PROPOSAL"|"ACTION_REQUEST"|"CONTEXT_ONLY"|"MIXED"|"AMBIGUOUS",'
+  + '"suppliedFacts":[{"targetHint":"…","fieldKey":"<clé du FIELD_CATALOG>|null","topic":"…","value":"…","normalizedValue":"…","unit":null,"role":"update"|"context"|"unknown","confidence":"exact"|"probable"|"ambiguous"}],'
+  + '"semanticDecision":null|{"decision":"SELECT"|"CLARIFY"|"NONE","selectedCandidateRef":"C1"|null,"confidence":"exact"|"probable"|"ambiguous","reason":"…"}}';
 
 /** Borne du contexte conversationnel transmis (caractères). */
 const MAX_CONVERSATION_CHARS = 2000;
@@ -57,6 +61,10 @@ export interface T2Understanding {
   requestedFacts: string[];
   requestedTopics: string[];
   filters: T2UnderstandOutput['filters'];
+  /** Lot 54E (#419 §15) : nature du message et informations apportées (indices). */
+  interaction: RouteInteraction;
+  /** Lot 54E (#419 écart 1) : arbitrage entre candidats exposés (s'ils l'ont été). */
+  semanticDecision: T2SemanticDecision | null;
   /** Réparation / escalade (trace). */
   events: string[];
 }
@@ -100,7 +108,10 @@ export function describeFieldCatalog(): string {
 const FIELD_KEYS = (): Set<string> => new Set(catalogForT2Read().fields.map((f) => f.key));
 
 /** Contrôles serveur de la sortie validée. Pure. */
-export function toT2Understanding(out: T2UnderstandOutput, events: string[] = []): T2Understanding {
+/** Sortie validée ; les champs du lot 54E restent facultatifs pour les appelants historiques. */
+type UnderstandOut = Omit<T2UnderstandOutput, 'interactionMode' | 'suppliedFacts'> & Partial<Pick<T2UnderstandOutput, 'interactionMode' | 'suppliedFacts'>>;
+
+export function toT2Understanding(out: UnderstandOut, events: string[] = []): T2Understanding {
   const cles = FIELD_KEYS();
   const facts = [...new Set(out.requestedFacts.filter((k) => cles.has(k)))];
   const horsCatalogue = out.requestedFacts.filter((k) => !cles.has(k));
@@ -117,6 +128,21 @@ export function toT2Understanding(out: T2UnderstandOutput, events: string[] = []
     requestedFacts: facts,
     requestedTopics: [...out.requestedTopics, ...horsCatalogue].slice(0, 20),
     filters: out.filters,
+    interaction: {
+      mode: out.interactionMode ?? 'QUERY',
+      // Clé hors FIELD_CATALOG : jamais une destination — rabattue en sujet.
+      suppliedFacts: (out.suppliedFacts ?? []).map((f) => ({
+        targetHint: f.targetHint?.trim() || null,
+        fieldKey: f.fieldKey && cles.has(f.fieldKey) ? f.fieldKey : null,
+        topic: f.topic?.trim() || (f.fieldKey && !cles.has(f.fieldKey) ? f.fieldKey : null),
+        value: f.value ?? null,
+        normalizedValue: f.normalizedValue ?? null,
+        unit: f.unit ?? null,
+        role: f.role ?? 'unknown',
+        confidence: f.confidence ?? 'probable',
+      })),
+    },
+    semanticDecision: out.semanticDecision ?? null,
     events: horsCatalogue.length ? [...events, `T2_UNDERSTAND:FACTS_OUT_OF_CATALOG:${horsCatalogue.length}`] : events,
   };
 }
@@ -125,11 +151,37 @@ export function toT2Understanding(out: T2UnderstandOutput, events: string[] = []
  * Classe la question par le master T2 (MODE=UNDERSTAND). Rend `null` en cas
  * d'échec — jamais une exception (même contrat que `classifyAssistantIntent`).
  */
+/**
+ * Candidat exposé à T2 pour l'ARBITRAGE (lot 54E, #419 écart 1) : référence
+ * OPAQUE (`C1`…), libellés issus des données réelles déjà bornées au compte
+ * par le serveur — jamais un identifiant, une table, ni une source non
+ * autorisée. `carriesRequestedValue` : la source porte la valeur demandée.
+ */
+export interface T2ArbitrationCandidate {
+  ref: string;
+  kind: string;
+  label: string;
+  detail: string | null;
+  asset: string | null;
+  carriesRequestedValue: boolean;
+}
+
+/** {{BUSINESS_CANDIDATES}} (pure) : masqué, échappé, borné. */
+export function formatBusinessCandidates(cands: readonly T2ArbitrationCandidate[], message: string): string {
+  const besoin = sensitiveNecessityFor(message);
+  const m = (t: string | null) => (t == null ? null : maskSensitiveText(t, besoin).text.replace(/</g, '&lt;').slice(0, 200));
+  return JSON.stringify(cands.slice(0, 12).map((c) => ({
+    ref: c.ref, kind: c.kind, label: m(c.label), detail: m(c.detail), asset: m(c.asset), carriesRequestedValue: c.carriesRequestedValue,
+  })));
+}
+
 export async function understandWithT2Master(
   message: string,
   input: AssistantRequestInput,
+  opts: { candidates?: readonly T2ArbitrationCandidate[] } = {},
 ): Promise<T2Understanding | null> {
   if (!message.trim()) return null;
+  const arbitrage = Boolean(opts.candidates?.length);
   try {
     const besoin = sensitiveNecessityFor(message);
     const conversation = input.threadContextText
@@ -149,6 +201,9 @@ export async function understandWithT2Master(
       FIELD_CATALOG: describeFieldCatalog(),
       PAGE_CONTEXT: page,
       CONVERSATION_CONTEXT: conversation,
+      // Lot 54E : emplacement FACULTATIF (absent d'une version BO antérieure :
+      // ignoré, le serveur clarifie alors sans arbitrage IA).
+      BUSINESS_CANDIDATES: arbitrage ? formatBusinessCandidates(opts.candidates!, message) : null,
     });
     const { res, events } = await callWithRepairOrEscalation({
       budget: input.aiBudget,
@@ -172,11 +227,11 @@ export async function understandWithT2Master(
       },
       trace: {
         requestId: input.requestId ?? input.clientRequestId,
-        routeReason: 'classification : aucune règle déterministe (master T2)',
+        routeReason: arbitrage ? 'arbitrage sémantique entre candidats exposés (master T2)' : 'classification : aucune règle déterministe (master T2)',
         promptId: 't2_master_v1', promptVersion: 'UNDERSTAND',
       },
     });
-    const r = toT2Understanding(res.data as T2UnderstandOutput, events.map((e) => `CLASSIFICATION:${e}`));
+    const r = toT2Understanding(res.data as T2UnderstandOutput, events.map((e) => `${arbitrage ? 'ARBITRATION' : 'CLASSIFICATION'}:${e}`));
     input.aiReport?.events.push(...r.events);
     return r;
   } catch (e) {
@@ -184,4 +239,21 @@ export async function understandWithT2Master(
     console.warn(`[assistant] Classification master indisponible (${detail}) — intention inconnue.`);
     return null;
   }
+}
+
+/**
+ * Lot 54E (#419 écart 1) — ARBITRAGE par T2 entre candidats prévalidés par
+ * le serveur. Même opération (`t2_understand`), même enveloppe (budget,
+ * masquage, idempotence) ; rend la décision brute (`null` : échec, aucune
+ * décision) — la VALIDATION (référence présentée, confiance) est faite par
+ * le serveur (`validateSemanticDecision`).
+ */
+export async function arbitrateWithT2Master(
+  message: string,
+  input: AssistantRequestInput,
+  candidates: readonly T2ArbitrationCandidate[],
+): Promise<T2SemanticDecision | null> {
+  if (!candidates.length) return null;
+  const r = await understandWithT2Master(message, input, { candidates });
+  return r?.semanticDecision ?? null;
 }

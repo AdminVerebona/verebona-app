@@ -10,6 +10,7 @@ vi.mock('../../gateway/ai-gateway', () => ({ AiGateway: { execute: vi.fn(async (
 import { processAgendaCandidates } from '../agenda-intelligence.service';
 import { findDuplicate } from '../dedupe.service';
 import type { ExistingAgendaItem } from '../types';
+import { t4Simule } from './support/t4-simule';
 
 const TODAY = '2026-09-25';
 const src = (p: string) => readFileSync(join(process.cwd(), p), 'utf-8');
@@ -20,7 +21,7 @@ const item = (o: Partial<ExistingAgendaItem> & { id: number; date: string }): Ex
 });
 
 const run = (date: string, existing: ExistingAgendaItem[], title = 'Contrôle technique') => processAgendaCandidates({
-  accountId: 1, assetId: 2, sourceFileId: 9, today: TODAY, existing,
+  accountId: 1, assetId: 2, sourceFileId: 9, today: TODAY, existing, decide: t4Simule,
   candidates: [{ title, date, confidence: 'certain', excerpt: `Prochain contrôle : ${date}`, originFieldKey: 'nextInspection' }],
 });
 
@@ -49,7 +50,7 @@ describe('confirmation d’une occurrence prévisionnelle', () => {
 
   it('correspondance incertaine (autre champ, titre voisin) : arbitrage, pas de confirmation', async () => {
     const [d] = await processAgendaCandidates({
-      accountId: 1, assetId: 2, sourceFileId: 9, today: TODAY,
+      accountId: 1, assetId: 2, sourceFileId: 9, today: TODAY, decide: t4Simule,
       existing: [{ ...prevue, originFieldKey: null }],
       candidates: [{ title: 'Contrôle technique véhicule', date: '2026-11-17', confidence: 'certain', excerpt: 'CT le 17/11/2026' }],
     });

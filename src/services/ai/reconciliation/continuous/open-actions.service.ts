@@ -15,14 +15,19 @@
  *                          persistées, Candidate Builder, état actuel de tous
  *                          les biens, déterministe, puis IA si nécessaire),
  *                          même empreinte identique ; l'issue précédente n'est
- *                          qu'un historique. Plafond de coût des réarbitrages
- *                          à contexte inchangé (`rearbitration-budget.ts`) ;
+ *                          qu'un historique. Lot 54A : AUCUN quota T3 interne
+ *                          (plus jamais AI_DEFERRED) ;
  *   LINK-ASSET-CONFLICT  → T3 conflit document / bien (obsolescence) ;
- *   LINK-ELT             → rattachement équipement : obsolescence déterministe ;
+ *   LINK-ELT             → lot 54A : candidats RECONSTRUITS depuis l'état
+ *                          courant (`resolveDocumentElementLink`), déterministe
+ *                          puis arbitrage T3 — jamais limité aux anciennes
+ *                          propositions ;
  *   DATA-* (RECONCILIATION_BRIDGE) → réconciliation T3 du bien (périmètre du
  *                          passage élargi à ces biens) ;
- *   ENTITY-FIELD(-ROOM)  → réconciliation T3 de l'entité ;
- *   OPERATION-*          → consolidation T3 des Opérations (balayage dédié) ;
+ *   ENTITY-FIELD(-ROOM)  → réconciliation T3 de l'entité (1 par passage) ;
+ *   OPERATION-*          → lot 54A : consolidation Opérations RÉELLEMENT
+ *                          relancée (une fois par passage et par compte),
+ *                          puis carte relue (CLOSED / UPDATED / STILL_OPEN) ;
  *   T4 et autres         → SKIPPED_NOT_T3 (prompt T3 jamais détourné), après
  *                          contrôle d'obsolescence (cible supprimée).
  *
@@ -37,6 +42,18 @@
  * targetType, targetId, previousResolution, resolver, candidateCount,
  * deterministicAttempted, aiCalled, newResolution, actionEffect, empreinte à
  * titre informatif) — détail du travail T3 du compte (borné), journal.
+ * Lot 54A : `examined` (la carte a été vue) est distingué de
+ * `resolutionAttempted` (un VRAI mécanisme de résolution a tourné) et de
+ * `evaluationMode` ; TOUTES les cartes sont journalisées durablement
+ * (`t3_open_action_evaluations`, migration 0371), au-delà des 500 entrées du
+ * résumé du job.
+ *
+ * PÉRIMÈTRE (lot 54A, écart 5) — contrat : tout passage T3 GLOBAL du compte
+ * (manuel, planifié, réconciliation globale : `reconcileAccount`) réexamine
+ * TOUS les « À traiter » ouverts. Les sous-jobs techniques spécialisés
+ * (DOCUMENT_ASSET, ASSET, ENTITY, BUSINESS_OPERATIONS…) ne relancent PAS
+ * l'ensemble du compte (ni boucle, ni double traitement) ; ils restent la
+ * voie de leur seul objet.
  * ══════════════════════════════════════════════════════════════════════════
  */
 import { getRule, type RuleProducer } from '@/services/to-process/rules-catalog';
@@ -66,9 +83,21 @@ export interface OpenActionEntry {
   /** DOCUMENT_ASSET : empreinte du contexte, à titre INFORMATIF (jamais une condition de saut). */
   fingerprint?: string | null;
   fingerprintChanged?: boolean | null;
-  /** Précision (travail vivant, réarbitrage reporté, cible supprimée…). */
+  /** Précision (travail vivant, cible supprimée…). */
   note?: string;
+  /** Lot 54A : la carte a été vue par le passage (toujours vrai dans le rapport). */
+  examined?: boolean;
+  /** Lot 54A : un VRAI mécanisme de résolution a tourné (≠ simple constat). */
+  resolutionAttempted?: boolean;
+  /** Lot 54A : nature de l'évaluation. */
+  evaluationMode?: EvaluationMode;
 }
+
+/** Lot 54A (écart 4) : nature de l'évaluation d'une carte. */
+export const EVALUATION_MODES = [
+  'FULL_REEVALUATION', 'DETERMINISTIC_REEVALUATION', 'AI_REEVALUATION', 'OBSOLESCENCE_ONLY', 'NOT_T3', 'SUPERSEDED', 'ERROR',
+] as const;
+export type EvaluationMode = (typeof EVALUATION_MODES)[number];
 
 export interface OpenActionsResult {
   examined: number;
@@ -76,7 +105,15 @@ export interface OpenActionsResult {
   byEffect: Record<OpenActionEffect, number>;
   byResolver: Record<string, number>;
   aiCalls: number;
+  /** Lot 54A : toujours 0 (plus aucun report pour quota T3) — conservé pour compatibilité. */
   aiDeferred: number;
+  /** Lot 54A : cartes pour lesquelles un vrai mécanisme de résolution a tourné. */
+  resolutionAttempted: number;
+  byEvaluationMode: Partial<Record<EvaluationMode, number>>;
+  /** Lot 54A : consolidations Opérations relancées par la phase (0 ou 1). */
+  operationsConsolidations: number;
+  /** Lot 54A : lignes écrites dans le journal durable (`t3_open_action_evaluations`) ; null : journal indisponible. */
+  journaled: number | null;
   entries: OpenActionEntry[];
   /** Entrées non détaillées (au-delà de `OPEN_ACTIONS_REPORT_MAX`). */
   omittedEntries: number;
@@ -120,34 +157,102 @@ export interface OpenActionsDeps {
   resolveDocumentAsset: typeof import('../document-asset/resolve-document-asset.service').resolveDocumentAsset;
   reconcileEntity: (p: { accountId: number; target: { type: 'EQUIPMENT' | 'ROOM'; id: number } }) => Promise<{ skipped: boolean }>;
   closeObsoleteAssetConflicts: (accountId: number) => Promise<number>;
-  /** Appels `t3_link_ambiguity` du compte sur 24 h. */
-  callsLastDay: (accountId: number) => Promise<number>;
-  maxPerPass: number;
-  maxPerDay: number;
+  /** Lot 54A : LINK-ELT — réévaluation depuis l'état courant. */
+  resolveElementLink?: typeof import('./document-element-link').resolveDocumentElementLink;
+  /** Lot 54A : relance de la consolidation Opérations du compte (cartes T3_OPERATIONS). */
+  consolidateOperations?: (accountId: number, p: { fileIds: number[]; operationIds: number[]; beforeWrite?: (what: string) => Promise<void> }) => Promise<{ changes: number; aiCalls: number }>;
+  /** Lot 49B, SUPPRIMÉS au lot 54A (plus aucun quota T3) : ignorés s'ils sont fournis. */
+  callsLastDay?: (accountId: number) => Promise<number>;
+  maxPerPass?: number;
+  maxPerDay?: number;
+}
+
+/** Consolidation Opérations du compte, depuis les données ACTUELLES (lot 54A, écart 3). */
+async function defaultConsolidateOperations(
+  accountId: number, p: { fileIds: number[]; operationIds: number[]; beforeWrite?: (what: string) => Promise<void> },
+): Promise<{ changes: number; aiCalls: number }> {
+  const { consolidateAccountOperations, reconsolidateOperations } = await import('@/services/business-operations/consolidation/consolidator');
+  const r = await consolidateAccountOperations(accountId, {
+    fileIds: p.fileIds, reevaluateHolds: true, beforeWrite: p.beforeWrite, correlationId: `t3-open-actions:${accountId}`,
+  });
+  let changes = r.changes;
+  // Questions portées par une Opération (parent Sinistre, montant…) : recalculées
+  // même si aucun document n'a changé (sinon la carte ne serait que constatée).
+  if (p.operationIds.length) changes += await reconsolidateOperations(accountId, p.operationIds, { beforeWrite: p.beforeWrite });
+  return { changes, aiCalls: r.m3?.calls ?? 0 };
 }
 
 async function defaultDeps(): Promise<OpenActionsDeps> {
-  const [r, e, c, b] = await Promise.all([
+  const [r, e, c, l] = await Promise.all([
     import('../document-asset/resolve-document-asset.service'),
     import('../entity-reconciliation'),
     import('@/services/to-process/document-asset-conflict'),
-    import('../document-asset/rearbitration-budget'),
+    import('./document-element-link'),
   ]);
   return {
     resolveDocumentAsset: r.resolveDocumentAsset,
     reconcileEntity: async (p) => e.reconcileEntity({ accountId: p.accountId, target: p.target, triggeredBy: 'manual' }),
     closeObsoleteAssetConflicts: c.closeObsoleteAssetConflicts,
-    callsLastDay: b.linkAmbiguityCallsLastDay,
-    maxPerPass: b.rearbitrationsPerPass(),
-    maxPerDay: b.rearbitrationsPerDay(),
+    resolveElementLink: l.resolveDocumentElementLink,
+    consolidateOperations: defaultConsolidateOperations,
   };
 }
 
 const vide = (): OpenActionsResult => ({
   examined: 0, pages: 0,
   byEffect: Object.fromEntries(OPEN_ACTION_EFFECTS.map((k) => [k, 0])) as Record<OpenActionEffect, number>,
-  byResolver: {}, aiCalls: 0, aiDeferred: 0, entries: [], omittedEntries: 0,
+  byResolver: {}, aiCalls: 0, aiDeferred: 0, resolutionAttempted: 0, byEvaluationMode: {}, operationsConsolidations: 0,
+  journaled: 0, entries: [], omittedEntries: 0,
 });
+
+/**
+ * Mode d'évaluation et tentative réelle d'une entrée (pur, testé) — lot 54A,
+ * écart 4. Une simple vérification « ancienne proposition encore valable »
+ * ou un constat STILL_OPEN n'est JAMAIS présenté comme une résolution.
+ */
+export function classifyEvaluation(e: OpenActionEntry): { evaluationMode: EvaluationMode; resolutionAttempted: boolean } {
+  if (e.evaluationMode) return { evaluationMode: e.evaluationMode, resolutionAttempted: e.resolutionAttempted ?? false };
+  if (e.actionEffect === 'ERROR') return { evaluationMode: 'ERROR', resolutionAttempted: false };
+  if (e.actionEffect === 'SKIPPED_NOT_T3') return { evaluationMode: 'NOT_T3', resolutionAttempted: false };
+  if (e.aiCalled) return { evaluationMode: 'AI_REEVALUATION', resolutionAttempted: true };
+  return { evaluationMode: 'OBSOLESCENCE_ONLY', resolutionAttempted: false };
+}
+
+/** Lot 54A (écart 6) : journal durable, une ligne par carte. Ne lève jamais ; null si indisponible. */
+async function journaliser(
+  accountId: number, ctx: { accountRunId?: number | null; queueJobId?: number | null }, lot: OpenActionEntry[],
+): Promise<number | null> {
+  if (lot.length === 0) return 0;
+  try {
+    const db = await sql();
+    const cols = ['account_id', 'account_run_id', 'queue_job_id', 'action_id', 'rule_code', 'target_type', 'target_id', 'resolver',
+      'previous_resolution', 'candidate_count', 'deterministic_attempted', 'ai_called', 'resolution_attempted', 'evaluation_mode',
+      'new_resolution', 'action_effect', 'fingerprint', 'fingerprint_changed', 'note'];
+    const params: unknown[] = [];
+    const lignes = lot.map((e) => {
+      const v = [accountId, ctx.accountRunId ?? null, ctx.queueJobId ?? null, e.actionId, e.ruleCode, e.targetType, e.targetId, e.resolver,
+        e.previousResolution, e.candidateCount, e.deterministicAttempted, e.aiCalled, e.resolutionAttempted ?? false,
+        e.evaluationMode ?? 'OBSOLESCENCE_ONLY', e.newResolution, e.actionEffect, e.fingerprint ?? null, e.fingerprintChanged ?? null,
+        e.note ? e.note.slice(0, 300) : null];
+      const ph = v.map((x) => { params.push(x); return `$${params.length}`; });
+      return `(${ph.join(', ')})`;
+    });
+    await db.unsafe(`INSERT INTO t3_open_action_evaluations (${cols.join(', ')}) VALUES ${lignes.join(', ')}`, params as never[]);
+    return lot.length;
+  } catch (e) {
+    console.error(`[t3-open-actions] compte ${accountId} : journal des réexamens indisponible (${(e as Error).message}) — rapport du job seul.`);
+    return null;
+  }
+}
+
+/** Rétention du journal (90 jours), par compte. Ne lève jamais. */
+async function purgerJournal(accountId: number): Promise<void> {
+  try {
+    await (await sql()).unsafe(
+      `DELETE FROM t3_open_action_evaluations WHERE account_id = $1 AND created_at < now() - interval '90 days'`, [accountId] as never[],
+    );
+  } catch { /* table absente : rien à purger */ }
+}
 
 async function sql() { return (await import('@/db')).pgClient; }
 
@@ -190,22 +295,6 @@ async function targetExists(accountId: number, targetType: string, targetId: num
   return rows.length > 0;
 }
 
-/**
- * LINK-ELT encore pertinent ? Le document existe, n'a pas d'équipement, et au
- * moins un équipement proposé appartient encore à son bien.
- */
-async function equipmentLinkStillRelevant(accountId: number, fileId: number, proposals: number[]): Promise<boolean> {
-  const rows = (await (await sql()).unsafe(
-    `SELECT f.equipment_id, coalesce(f.asset_id, f.linked_asset_id) AS asset_id,
-            (SELECT count(*)::int FROM equipments e JOIN assets a ON a.id = e.asset_id AND a.account_id = $2 AND a.deleted_at IS NULL
-              WHERE e.id = ANY($3::int[]) AND e.asset_id = coalesce(f.asset_id, f.linked_asset_id) AND e.archived_at IS NULL) AS candidats
-       FROM asset_files f WHERE f.id = $1 AND f.account_id = $2 AND f.deleted_at IS NULL`,
-    [fileId, accountId, proposals] as never[],
-  )) as unknown as Array<{ equipment_id: number | null; asset_id: number | null; candidats: number }>;
-  const r = rows[0];
-  return !!r && r.equipment_id === null && r.asset_id !== null && Number(r.candidats) > 0;
-}
-
 const parseCtx = (v: ActionRow['trigger_context']): Record<string, unknown> =>
   (typeof v === 'string' ? (() => { try { return JSON.parse(v) as Record<string, unknown>; } catch { return {}; } })() : v ?? {});
 
@@ -222,6 +311,9 @@ export async function reconcileOpenToProcessActions(accountId: number, opts: {
   reconciledAssetIds?: ReadonlySet<number>;
   indexes?: MatchingIndexCache;
   deps?: OpenActionsDeps;
+  /** Lot 54A : passage du compte et job porteur (journal durable). */
+  accountRunId?: number | null;
+  queueJobId?: number | null;
 } = {}): Promise<OpenActionsResult> {
   const d = opts.deps ?? await defaultDeps();
   const out = vide();
@@ -240,23 +332,31 @@ export async function reconcileOpenToProcessActions(accountId: number, opts: {
   const [{ max: borne }] = (await db.unsafe(
     `SELECT coalesce(max(id), 0)::int AS max FROM to_process_actions WHERE account_id = $1`, [accountId] as never[],
   )) as unknown as Array<{ max: number }>;
-  const enregistrer = (e: OpenActionEntry) => {
+  const tampon: OpenActionEntry[] = [];
+  let journalOk = true;
+  const vider = async () => {
+    const lot = tampon.splice(0, tampon.length);
+    const n = await journaliser(accountId, { accountRunId: opts.accountRunId, queueJobId: opts.queueJobId }, lot);
+    if (n === null) journalOk = false;
+    else if (out.journaled !== null) out.journaled += n;
+  };
+  const enregistrer = (brute: OpenActionEntry) => {
+    const e: OpenActionEntry = { ...brute, examined: true, ...classifyEvaluation(brute) };
     out.examined += 1;
     out.byEffect[e.actionEffect] += 1;
     out.byResolver[e.resolver] = (out.byResolver[e.resolver] ?? 0) + 1;
+    out.byEvaluationMode[e.evaluationMode!] = (out.byEvaluationMode[e.evaluationMode!] ?? 0) + 1;
+    if (e.resolutionAttempted) out.resolutionAttempted += 1;
     if (e.aiCalled) out.aiCalls += 1;
     if (out.entries.length < OPEN_ACTIONS_REPORT_MAX) out.entries.push(e);
     else out.omittedEntries += 1;
+    tampon.push(e);
     if (e.actionEffect !== 'STILL_OPEN' && e.actionEffect !== 'SKIPPED_NOT_T3') {
       console.info(`[t3-open-actions] ${JSON.stringify({ accountId, ...e })}`);
     }
   };
 
-  const entites = new Set<string>();
-  // Plafond des réarbitrages à contexte INCHANGÉ (rearbitration-budget.ts).
-  const restantJour = Math.max(0, d.maxPerDay - await d.callsLastDay(accountId));
-  const motifReport: 'PASS_CAP' | 'DAY_CAP' = restantJour > 0 ? 'PASS_CAP' : 'DAY_CAP';
-  const reportes: Array<{ row: ActionRow; entry: OpenActionEntry; lastAiAt: string | null }> = [];
+  const ctxAutres: OtherCtx = { reconciledAssetIds: opts.reconciledAssetIds, d, entites: new Set<string>(), guard: opts.guard, borne: Number(borne), operations: null, out };
   let curseur = 0;
   for (;;) {
     await g('page');
@@ -279,56 +379,44 @@ export async function reconcileOpenToProcessActions(accountId: number, opts: {
       try {
         // Fermée pendant le passage (réconciliation des biens, utilisateur) : rapportée.
         if (row.resolved_at !== null) {
+          // Lot 54A : fermée par la consolidation Opérations relancée PAR CE PASSAGE → résolue.
+          const parConsolidation = resolver === 'T3_OPERATIONS' && ctxAutres.operations?.effets.get(Number(row.id))?.effect === 'CLOSED';
+          const effet = parConsolidation ? 'CLOSED' : effectOfClosedDuringRun(resolver, row.resolution_reason);
           enregistrer({
             ...base, previousResolution: null, resolver, candidateCount: null, deterministicAttempted: t3, aiCalled: false,
-            newResolution: row.resolution_reason, actionEffect: effectOfClosedDuringRun(resolver, row.resolution_reason), note: 'closed_during_run',
+            newResolution: row.resolution_reason, actionEffect: effet, note: 'closed_during_run',
+            // Fermée par la réconciliation T3 du passage : vraie résolution déterministe.
+            evaluationMode: effet === 'CLOSED' ? 'DETERMINISTIC_REEVALUATION' : 'SUPERSEDED', resolutionAttempted: effet === 'CLOSED',
           });
           continue;
         }
         if (resolver === 'T3_DOCUMENT_ASSET') {
-          // 1er temps : réexamen complet ; un réarbitrage IA à contexte inchangé
-          // est mis de côté (budget réparti ensuite, plus anciens d'abord).
-          const e = await reexamineDocument(accountId, row, base, { ...opts, d, rearbitration: { defer: motifReport } });
-          if (e.deferred) reportes.push({ row, entry: e.entry, lastAiAt: e.lastAiAt });
-          else enregistrer(e.entry);
+          // Réexamen complet, IA si nécessaire — lot 54A : jamais reporté pour quota T3.
+          enregistrer(await reexamineDocument(accountId, row, base, { ...opts, d }));
           continue;
         }
-        enregistrer(await reexamineOther(accountId, row, base, resolver, t3, { reconciledAssetIds: opts.reconciledAssetIds, d, entites }));
+        enregistrer(await reexamineOther(accountId, row, base, resolver, t3, ctxAutres));
       } catch (err) {
         if (isExecutionCancelled(err)) throw err;
         enregistrer({
           ...base, previousResolution: null, resolver, candidateCount: null, deterministicAttempted: false, aiCalled: false,
           newResolution: null, actionEffect: 'ERROR', note: (err as Error).message.slice(0, 200),
+          evaluationMode: 'ERROR', resolutionAttempted: t3,
         });
       }
     }
+    await vider();
     if (rows.length < OPEN_ACTIONS_PAGE_SIZE) break;
   }
-
-  // 2e temps : réarbitrages à contexte INCHANGÉ dans la limite du passage et
-  // du jour, les plus anciennement arbitrés d'abord ; les autres restent
-  // reportés (carte maintenue, évaluation AI_DEFERRED) au passage suivant.
-  let budget = Math.min(d.maxPerPass, restantJour);
-  reportes.sort((a, b) => (a.lastAiAt ?? '').localeCompare(b.lastAiAt ?? '') || Number(a.row.id) - Number(b.row.id));
-  for (const { row, entry } of reportes) {
-    if (budget <= 0) {
-      out.aiDeferred += 1;
-      enregistrer(entry);
-      continue;
-    }
-    try {
-      const e = await reexamineDocument(accountId, row, entry, { ...opts, d, rearbitration: 'allow' });
-      if (e.entry.aiCalled) budget -= 1;
-      enregistrer(e.entry);
-    } catch (err) {
-      if (isExecutionCancelled(err)) throw err;
-      enregistrer({ ...entry, aiCalled: false, actionEffect: 'ERROR', note: (err as Error).message.slice(0, 200) });
-    }
-  }
+  await vider();
+  if (!journalOk) out.journaled = null;
+  if (out.examined > 0) await purgerJournal(accountId);
   if (out.examined > 0) {
-    console.info(`[t3-open-actions] compte ${accountId} : ${out.examined} ligne(s) ouverte(s) examinée(s) en ${out.pages} page(s) — `
+    console.info(`[t3-open-actions] compte ${accountId} : ${out.examined} ligne(s) ouverte(s) examinée(s) en ${out.pages} page(s), `
+      + `${out.resolutionAttempted} réellement retentée(s) — `
       + `${OPEN_ACTION_EFFECTS.filter((k) => out.byEffect[k] > 0).map((k) => `${k} ${out.byEffect[k]}`).join(', ')}`
-      + ` · IA ${out.aiCalls}${out.aiDeferred ? ` (reportée ${out.aiDeferred})` : ''}`);
+      + ` · IA ${out.aiCalls}${out.operationsConsolidations ? ' · consolidation Opérations relancée' : ''}`
+      + ` · journal ${out.journaled ?? 'indisponible'}`);
   }
   return out;
 }
@@ -338,36 +426,34 @@ type Base = Pick<OpenActionEntry, 'actionId' | 'ruleCode' | 'targetType' | 'targ
 /** LINK-ASSET : réexamen complet du document (voie canonique). */
 async function reexamineDocument(accountId: number, row: ActionRow, base: Base, o: {
   guard?: ExecutionGuard; triggerCode?: string | null; indexes?: MatchingIndexCache; d: OpenActionsDeps;
-  rearbitration: 'allow' | { defer: 'PASS_CAP' | 'DAY_CAP' };
-}): Promise<{ entry: OpenActionEntry; deferred: boolean; lastAiAt: string | null }> {
+}): Promise<OpenActionEntry> {
   const fileId = Number(row.target_id);
   const cle = { actionId: base.actionId, ruleCode: base.ruleCode, targetType: base.targetType, targetId: base.targetId };
   if (await liveDocumentJob(fileId)) {
     // Un travail DOCUMENT_ASSET vivant réexamine déjà ce document : jamais deux évaluations.
     return {
-      entry: {
-        ...cle, previousResolution: null, resolver: 'T3_DOCUMENT_ASSET', candidateCount: null, deterministicAttempted: false,
-        aiCalled: false, newResolution: null, actionEffect: 'STILL_OPEN', note: 'job_pending', fingerprint: null, fingerprintChanged: null,
-      },
-      deferred: false, lastAiAt: null,
+      ...cle, previousResolution: null, resolver: 'T3_DOCUMENT_ASSET', candidateCount: null, deterministicAttempted: false,
+      aiCalled: false, newResolution: null, actionEffect: 'STILL_OPEN', note: 'job_pending', fingerprint: null, fingerprintChanged: null,
+      evaluationMode: 'SUPERSEDED', resolutionAttempted: false,
     };
   }
   const index = o.indexes ? await o.indexes.get(accountId) : undefined;
   const avant = await cardSnapshot(Number(row.id));
   const r = await o.d.resolveDocumentAsset({
     accountId, fileId, guard: o.guard, triggerCode: o.triggerCode ?? 'schedule_hourly', reprocessReason: 'OPEN_ACTION',
-    openActionId: Number(row.id), rearbitration: o.rearbitration, ...(index ? { index } : {}),
+    openActionId: Number(row.id), rearbitration: 'allow', ...(index ? { index } : {}),
   });
   const ev = r.evaluation;
+  const tente = r.status !== 'USER_DECIDED' && r.status !== 'TARGET_GONE' && r.status !== 'ALREADY_LINKED';
   const commun = {
     ...cle, resolver: 'T3_DOCUMENT_ASSET', previousResolution: ev?.previousResolution ?? null,
     candidateCount: ev?.candidateCount ?? null, deterministicAttempted: r.status !== 'USER_DECIDED' && r.status !== 'TARGET_GONE',
     aiCalled: r.aiCalled, newResolution: r.status, fingerprint: ev?.currentFingerprint ?? null,
     fingerprintChanged: ev?.fingerprintChanged ?? null,
+    // Lot 54A : Candidate Builder + déterministe (+ IA) réellement rejoués.
+    evaluationMode: (r.aiCalled ? 'AI_REEVALUATION' : tente ? 'FULL_REEVALUATION' : r.status === 'USER_DECIDED' ? 'SUPERSEDED' : 'OBSOLESCENCE_ONLY') as EvaluationMode,
+    resolutionAttempted: tente,
   };
-  if (r.aiDeferred) {
-    return { entry: { ...commun, actionEffect: 'STILL_OPEN', note: `ai_deferred:${r.aiDeferred}` }, deferred: true, lastAiAt: ev?.lastAiAt ?? null };
-  }
   let actionEffect: OpenActionEffect;
   let note: string | undefined;
   if (r.outcome === 'APPLIED') {
@@ -395,13 +481,86 @@ async function reexamineDocument(accountId: number, row: ActionRow, base: Base, 
       if (r.status === 'USER_DECIDED') note = 'user_decision_protected';
     }
   }
-  return { entry: { ...commun, actionEffect, ...(note ? { note } : {}) }, deferred: false, lastAiAt: null };
+  return { ...commun, actionEffect, ...(note ? { note } : {}) };
+}
+
+interface OtherCtx {
+  reconciledAssetIds?: ReadonlySet<number>;
+  d: OpenActionsDeps;
+  /** ENTITY : 1 réconciliation max par entité et par passage. */
+  entites: Set<string>;
+  guard?: ExecutionGuard;
+  /** T3_OPERATIONS : consolidation du passage (une seule) et effet par carte. */
+  /** Borne du cycle : cartes ouvertes au début du passage. */
+  borne: number;
+  operations: null | { effets: Map<number, { effect: OpenActionEffect; reason: string | null }>; note: string; attempted: boolean; error: string | null };
+  out: OpenActionsResult;
+}
+
+/**
+ * Lot 54A (écart 3) : relance UNE consolidation Opérations du compte pour le
+ * passage (données actuelles), puis relit chaque carte T3_OPERATIONS ouverte
+ * au début du passage. Un travail BUSINESS_OPERATIONS vivant du compte la
+ * porte déjà : aucune seconde consolidation (jamais de double traitement).
+ */
+async function consolidationOperations(accountId: number, borne: number, o: OtherCtx): Promise<NonNullable<OtherCtx['operations']>> {
+  const db = await sql();
+  const cartes = (await db.unsafe(
+    `SELECT id, rule_code, target_type, target_id, trigger_context,
+            action_kind || '|' || coalesce(proposals_json::text, '') AS snap
+       FROM to_process_actions
+      WHERE account_id = $1 AND resolved_at IS NULL AND id <= $2 AND rule_code = ANY($3::text[])`,
+    [accountId, borne, operationRuleCodes()] as never[],
+  )) as unknown as Array<ActionRow & { snap: string }>;
+  const avant = new Map(cartes.map((c) => [Number(c.id), c.snap]));
+  const [vivant] = (await db.unsafe(
+    `SELECT id FROM ai_job_queue WHERE treatment = 'T3' AND target_type = 'business_operations' AND target_id = $1
+        AND status IN ('PENDING', 'RUNNING') LIMIT 1`,
+    [String(accountId)] as never[],
+  )) as unknown as Array<{ id: number }>;
+  if (vivant) return { effets: new Map(), note: `operations_job_pending:${vivant.id}`, attempted: false, error: null };
+  const fileIds = [...new Set(cartes.filter((c) => c.target_type === 'DOCUMENT').map((c) => Number(c.target_id)))];
+  const operationIds = [...new Set(cartes.map((c) => Number(parseCtx(c.trigger_context).operationId)).filter((n) => Number.isInteger(n) && n > 0))];
+  let error: string | null = null;
+  try {
+    await o.guard?.assertActive('T3 À traiter ouverts — consolidation Opérations');
+    const r = await o.d.consolidateOperations!(accountId, { fileIds, operationIds, beforeWrite: o.guard ? (w) => o.guard!.assertActive(w) : undefined });
+    o.out.operationsConsolidations += 1;
+    o.out.aiCalls += r.aiCalls;
+  } catch (e) {
+    if (isExecutionCancelled(e)) throw e;
+    error = (e as Error).message.slice(0, 200);
+    console.error(`[t3-open-actions] compte ${accountId} : consolidation Opérations en échec — ${error}`);
+  }
+  const effets = new Map<number, { effect: OpenActionEffect; reason: string | null }>();
+  if (cartes.length) {
+    const apres = (await db.unsafe(
+      `SELECT id, resolved_at IS NULL AS open, resolution_reason, action_kind || '|' || coalesce(proposals_json::text, '') AS snap
+         FROM to_process_actions WHERE id = ANY($1::int[])`,
+      [[...avant.keys()]] as never[],
+    )) as unknown as Array<{ id: number; open: boolean; resolution_reason: string | null; snap: string }>;
+    for (const a of apres) {
+      effets.set(Number(a.id), {
+        effect: !a.open ? 'CLOSED' : a.snap !== avant.get(Number(a.id)) ? 'UPDATED' : 'STILL_OPEN',
+        reason: a.resolution_reason,
+      });
+    }
+  }
+  return { effets, note: 'operations_consolidated', attempted: error === null, error };
+}
+
+let reglesOperations: string[] | null = null;
+function operationRuleCodes(): string[] {
+  if (!reglesOperations) {
+    // Registre unique (`PROCESSING_RULES`) : toutes les règles produites par T3_OPERATIONS.
+    reglesOperations = ['OPERATION-MATCH', 'OPERATION-CLAIM-PARENT', 'OPERATION-AMOUNT', 'OPERATION-CLAIM-DETACH', 'OPERATION-CLAIM-ASSET']
+      .filter((c) => resolverOf(c).resolver === 'T3_OPERATIONS');
+  }
+  return reglesOperations;
 }
 
 /** Autres règles : résolveur T3 dédié, ou SKIPPED_NOT_T3 après contrôle d'obsolescence. */
-async function reexamineOther(accountId: number, row: ActionRow, base: Base, resolver: string, t3: boolean, o: {
-  reconciledAssetIds?: ReadonlySet<number>; d: OpenActionsDeps; entites: Set<string>;
-}): Promise<OpenActionEntry> {
+async function reexamineOther(accountId: number, row: ActionRow, base: Base, resolver: string, t3: boolean, o: OtherCtx): Promise<OpenActionEntry> {
   const entry = (p: Partial<OpenActionEntry> & Pick<OpenActionEntry, 'actionEffect'>): OpenActionEntry => ({
     ...base, previousResolution: null, resolver, candidateCount: null, deterministicAttempted: false, aiCalled: false,
     newResolution: null, ...p,
@@ -409,31 +568,49 @@ async function reexamineOther(accountId: number, row: ActionRow, base: Base, res
   // Cible supprimée : la carte est sans objet, quel que soit son producteur.
   if (!(await targetExists(accountId, row.target_type, Number(row.target_id)))) {
     await closeAction(Number(row.id), 'TARGET_DELETED');
-    return entry({ actionEffect: 'SUPERSEDED', newResolution: 'TARGET_DELETED', note: 'target_gone' });
+    return entry({ actionEffect: 'SUPERSEDED', newResolution: 'TARGET_DELETED', note: 'target_gone', evaluationMode: 'OBSOLESCENCE_ONLY', resolutionAttempted: false });
   }
-  if (!t3) return entry({ actionEffect: 'SKIPPED_NOT_T3', note: resolver === 'UNKNOWN_RULE' ? 'unknown_rule' : 'outside_t3' });
+  // T4 et hors T3 : jamais le prompt T3, jamais une « résolution ».
+  if (!t3) return entry({ actionEffect: 'SKIPPED_NOT_T3', note: resolver === 'UNKNOWN_RULE' ? 'unknown_rule' : 'outside_t3', evaluationMode: 'NOT_T3', resolutionAttempted: false });
 
   switch (resolver) {
     case 'T3_ASSET_CONFLICT': {
-      // Obsolescence évaluée en tête de phase (une requête par compte).
-      return entry({ actionEffect: 'STILL_OPEN', deterministicAttempted: true });
+      // Obsolescence évaluée en tête de phase (une requête par compte) : constat seulement.
+      return entry({ actionEffect: 'STILL_OPEN', deterministicAttempted: true, evaluationMode: 'OBSOLESCENCE_ONLY', resolutionAttempted: false });
     }
     case 'T3_EQUIPMENT_LINK': {
-      const proposals = (() => {
-        const ctx = parseCtx(row.trigger_context);
-        const ids = Array.isArray(ctx.candidates) ? ctx.candidates : [];
-        return ids.map(Number).filter((n) => Number.isInteger(n) && n > 0);
-      })();
-      if (row.target_type === 'DOCUMENT' && proposals.length > 0
-        && !(await equipmentLinkStillRelevant(accountId, Number(row.target_id), proposals))) {
-        await closeAction(Number(row.id), 'OBSOLETE');
-        return entry({ actionEffect: 'SUPERSEDED', deterministicAttempted: true, newResolution: 'OBSOLETE', note: 'equipment_link_obsolete' });
+      // Lot 54A (écart 2) : candidats RECONSTRUITS depuis l'état courant.
+      if (row.target_type !== 'DOCUMENT' || !o.d.resolveElementLink) {
+        return entry({ actionEffect: 'STILL_OPEN', evaluationMode: 'OBSOLESCENCE_ONLY', resolutionAttempted: false, note: 'unsupported_target' });
       }
-      return entry({ actionEffect: 'STILL_OPEN', deterministicAttempted: true });
+      const avant = await cardSnapshot(Number(row.id));
+      const r = await o.d.resolveElementLink({ accountId, fileId: Number(row.target_id), actionId: Number(row.id), guard: o.guard });
+      const commun = {
+        candidateCount: r.candidateCount, deterministicAttempted: r.deterministicAttempted, aiCalled: r.aiCalled, newResolution: r.status,
+      };
+      if (r.status === 'APPLIED') {
+        return entry({ ...commun, actionEffect: 'CLOSED', evaluationMode: r.aiCalled ? 'AI_REEVALUATION' : 'FULL_REEVALUATION', resolutionAttempted: true, note: `equipment:${r.equipmentId}` });
+      }
+      if (r.status === 'ALREADY_LINKED' || r.status === 'TARGET_GONE') {
+        await closeAction(Number(row.id), r.status === 'TARGET_GONE' ? 'TARGET_DELETED' : 'OBSOLETE');
+        return entry({ ...commun, actionEffect: 'SUPERSEDED', evaluationMode: 'OBSOLESCENCE_ONLY', resolutionAttempted: false, note: r.status === 'TARGET_GONE' ? 'document_gone' : 'equipment_link_obsolete' });
+      }
+      if (r.status === 'NO_ASSET') {
+        return entry({ ...commun, actionEffect: 'STILL_OPEN', evaluationMode: 'OBSOLESCENCE_ONLY', resolutionAttempted: false, note: 'document_without_asset' });
+      }
+      const apres = await cardSnapshot(Number(row.id));
+      return entry({
+        ...commun, actionEffect: apres !== null && apres !== avant ? 'UPDATED' : 'STILL_OPEN',
+        evaluationMode: r.aiCalled ? 'AI_REEVALUATION' : 'FULL_REEVALUATION', resolutionAttempted: true,
+      });
     }
     case 'T3_ASSET': {
+      // Le bien de la carte DATA-* est ajouté au périmètre du passage (reconcileAccount) : réconciliation réelle.
       const fait = o.reconciledAssetIds?.has(Number(row.target_id)) === true;
-      return entry({ actionEffect: 'STILL_OPEN', deterministicAttempted: fait, ...(fait ? {} : { note: 'asset_not_eligible' }) });
+      return entry({
+        actionEffect: 'STILL_OPEN', deterministicAttempted: fait, ...(fait ? {} : { note: 'asset_not_eligible' }),
+        evaluationMode: fait ? 'DETERMINISTIC_REEVALUATION' : 'OBSOLESCENCE_ONLY', resolutionAttempted: fait,
+      });
     }
     case 'T3_ENTITY': {
       const type = row.target_type === 'ROOM' ? 'ROOM' as const : 'EQUIPMENT' as const;
@@ -443,15 +620,35 @@ async function reexamineOther(accountId: number, row: ActionRow, base: Base, res
         const r = await o.d.reconcileEntity({ accountId, target: { type, id: Number(row.target_id) } });
         if (r.skipped) {
           await closeAction(Number(row.id), 'TARGET_DELETED');
-          return entry({ actionEffect: 'SUPERSEDED', deterministicAttempted: true, newResolution: 'TARGET_DELETED', note: 'entity_gone' });
+          return entry({ actionEffect: 'SUPERSEDED', deterministicAttempted: true, newResolution: 'TARGET_DELETED', note: 'entity_gone', evaluationMode: 'OBSOLESCENCE_ONLY', resolutionAttempted: false });
         }
       }
       const etat = await isOpen(Number(row.id));
-      return entry({ actionEffect: etat.open ? 'STILL_OPEN' : 'CLOSED', deterministicAttempted: true, newResolution: etat.reason });
+      return entry({
+        actionEffect: etat.open ? 'STILL_OPEN' : 'CLOSED', deterministicAttempted: true, newResolution: etat.reason,
+        evaluationMode: 'DETERMINISTIC_REEVALUATION', resolutionAttempted: true,
+      });
     }
-    case 'T3_OPERATIONS':
-      return entry({ actionEffect: 'STILL_OPEN', note: 'operations_consolidation' });
+    case 'T3_OPERATIONS': {
+      // Lot 54A (écart 3) : consolidation RÉELLEMENT relancée, une fois par passage.
+      if (!o.d.consolidateOperations) {
+        return entry({ actionEffect: 'STILL_OPEN', note: 'operations_consolidation_unavailable', evaluationMode: 'OBSOLESCENCE_ONLY', resolutionAttempted: false });
+      }
+      if (!o.operations) o.operations = await consolidationOperations(accountId, o.borne, o);
+      const ops = o.operations;
+      if (!ops.attempted) {
+        return entry({
+          actionEffect: ops.error ? 'ERROR' : 'STILL_OPEN', note: ops.error ?? ops.note,
+          evaluationMode: ops.error ? 'ERROR' : 'SUPERSEDED', resolutionAttempted: ops.error !== null,
+        });
+      }
+      const eff = ops.effets.get(Number(row.id)) ?? { effect: 'STILL_OPEN' as OpenActionEffect, reason: null };
+      return entry({
+        actionEffect: eff.effect, deterministicAttempted: true, newResolution: eff.reason, note: ops.note,
+        evaluationMode: 'DETERMINISTIC_REEVALUATION', resolutionAttempted: true,
+      });
+    }
     default:
-      return entry({ actionEffect: 'SKIPPED_NOT_T3' });
+      return entry({ actionEffect: 'SKIPPED_NOT_T3', evaluationMode: 'NOT_T3', resolutionAttempted: false });
   }
 }

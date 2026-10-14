@@ -346,9 +346,19 @@ export async function deleteDraft(id: number): Promise<boolean> {
 export async function switchActivePrompt(p: {
   environment: string; treatment: string; targetId: number; action: 'activate' | 'rollback';
   userId: number; userEmail: string | null; testSummary: string | null;
-}): Promise<{ previous: MasterPromptVersionRow | null; current: MasterPromptVersionRow; activationId: number } | { refused: 'NOT_FOUND' | 'WRONG_STATUS'; status?: string }> {
+}, hooks: {
+  /**
+   * Lot 54 : appelé AVANT le verrou du prompt (ordre des verrous : version
+   * de configuration de l'environnement, puis prompt — comme une activation
+   * de configuration ; aucun interblocage).
+   */
+  before?: (sql: Sql) => Promise<void>;
+  /** Lot 54 : appelé dans la transaction après la bascule (révision de la configuration active). */
+  after?: (sql: Sql, current: MasterPromptVersionRow) => Promise<void>;
+} = {}): Promise<{ previous: MasterPromptVersionRow | null; current: MasterPromptVersionRow; activationId: number } | { refused: 'NOT_FOUND' | 'WRONG_STATUS'; status?: string }> {
   return pgClient.begin(async (tx) => {
     const sql = tx as unknown as Sql;
+    if (hooks.before) await hooks.before(sql);
     await lock(sql, p.environment, p.treatment);
     const cible = (await rows(
       `SELECT * FROM ai_master_prompt_versions WHERE id = $1 AND environment = $2 AND treatment = $3 FOR UPDATE`,
@@ -383,6 +393,7 @@ export async function switchActivePrompt(p: {
       [p.environment, p.treatment, p.action, previous?.id ?? null, previous?.versionNumber ?? null,
        current.id, current.versionNumber, p.userId, p.userEmail, p.testSummary], sql,
     );
+    if (hooks.after) await hooks.after(sql, current);
     return { previous, current, activationId: Number(journal[0].id) };
   }) as never;
 }

@@ -11,6 +11,7 @@ import { SessionService } from '@/lib/session-service';
 import { requireAdmin } from '@/lib/auth-guards';
 import { ensureMigrations } from '@/db';
 import { ConfigOperationRefused } from '@/services/ai/config/config-version.service';
+import { ConfigVersionRefused } from '@/services/ai/config/config-version.repository';
 
 export interface AdminContext {
   adminUserId: number;
@@ -31,6 +32,18 @@ export async function requireAdminContext(
   } catch (e) {
     return { ok: false, response: SessionService.handleSessionError(e) };
   }
+}
+
+/**
+ * Lot 54 : gestes du workflow supprimé (promotion « À tester », validation,
+ * retour en brouillon) et de publication en production (package, import) —
+ * 410, avec le geste qui les remplace.
+ */
+export function removedWorkflow(geste: string, remplacement: string): NextResponse {
+  return NextResponse.json(
+    { error: 'WORKFLOW_REMOVED', message: `« ${geste} » n’existe plus : ${remplacement}` },
+    { status: 410 },
+  );
 }
 
 /** Identifiant de version, strictement entier positif. */
@@ -56,11 +69,12 @@ export function invalidId(raw: string): NextResponse {
  * ni la requête ni le serveur ne sont en cause.
  */
 export function toErrorResponse(e: unknown, route: string): NextResponse {
-  if (e instanceof ConfigOperationRefused) {
-    return NextResponse.json(
-      { error: e.code, message: e.message, details: e.details ?? null },
-      { status: e.code === 'VERSION_NOT_FOUND' ? 404 : 409 },
-    );
+  if (e instanceof ConfigOperationRefused || e instanceof ConfigVersionRefused) {
+    const status = e.code === 'VERSION_NOT_FOUND' || e.code === 'REVISION_NOT_FOUND' || e.code === 'EXPORT_NOT_FOUND' ? 404
+      // Lot 54 : un fichier qui ne passe pas ses contrôles n'est jamais rendu.
+      : e.code === 'EXPORT_INVALID' ? 422
+        : 409;
+    return NextResponse.json({ error: e.code, message: e.message, details: e.details ?? null }, { status });
   }
 
   // Les refus de la machine à états arrivent ici : ils disent qu'une transition

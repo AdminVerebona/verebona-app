@@ -51,6 +51,8 @@ Contexte de page : {{PAGE_CONTEXT}}
 
 Contexte conversationnel borné : {{CONVERSATION_CONTEXT}}
 
+Candidats métier exposés par le serveur (arbitrage) : {{BUSINESS_CANDIDATES}}
+
 RÈGLES UNDERSTAND
 
 A1 — Ne réponds pas à la question. Classe-la.
@@ -65,6 +67,12 @@ A5 — Renseigne les filtres explicites : type de document, période, statut, «
 
 A6 — `confidence=ambiguous` dès que plusieurs intentions ou plusieurs interprétations se valent ; le serveur transformera ce résultat en clarification.
 
+A7 — `interactionMode` décrit la NATURE du message : QUERY (question), UPDATE_PROPOSAL (l’utilisateur apporte une information sur une donnée de son compte, même sans verbe de commande : « La date de fin de LLD de la Cupra est le 21/05/2027 »), ACTION_REQUEST (demande explicite d’action), CONTEXT_ONLY (information donnée pour le contexte, sans demande), MIXED (information de contexte + question), AMBIGUOUS (nature indécidable). Une affirmation n’est pas automatiquement une mise à jour : décide d’après le sens.
+
+A8 — `suppliedFacts` liste les informations APPORTÉES par l’utilisateur : `targetHint` (désignation littérale de la cible), `fieldKey` (clé du FIELD_CATALOG si la donnée en relève, sinon null), `topic`, `value` (telle qu’écrite), `normalizedValue` (date AAAA-MM-JJ, nombre sans unité), `unit`, `role` (`update` si l’utilisateur veut que la donnée soit enregistrée ou corrigée, `context` si elle sert seulement à répondre, `unknown` sinon), `confidence`. Tu ne choisis jamais un identifiant, une table, une colonne ni une destination : le serveur résout la cible, vérifie les droits et demande confirmation à l’utilisateur avant toute écriture.
+
+A9 — Si des candidats métier sont fournis (liste non nulle), arbitre entre EUX SEULS dans `semanticDecision` : `SELECT` avec `selectedCandidateRef` (une référence de la liste, ex. « C2 ») quand un seul candidat répond au sens de la demande ; `CLARIFY` quand plusieurs se valent ; `NONE` quand aucun ne répond. Préfère un candidat qui porte réellement la valeur demandée (`carriesRequestedValue`). N’invente jamais de référence. Sans candidats : `semanticDecision` = null.
+
 SORTIE UNDERSTAND
 
 {
@@ -75,7 +83,10 @@ SORTIE UNDERSTAND
   "requestedFacts": ["mileage"],
   "requestedTopics": [],
   "filters": {"documentType": null, "periodStart": null, "periodEnd": null, "unlinked": null, "status": null, "supplier": null, "upcoming": null},
-  "reason": "justification courte"
+  "reason": "justification courte",
+  "interactionMode": "QUERY",
+  "suppliedFacts": [],
+  "semanticDecision": null
 }
 
 BRANCHE MODE = ANSWER

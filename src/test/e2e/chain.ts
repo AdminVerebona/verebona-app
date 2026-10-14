@@ -54,11 +54,16 @@ async function cabler(): Promise<void> {
  */
 export function useTargetState(
   extra: Record<string, string> = {},
-  opts: { masters?: Array<'T1' | 'T2' | 'T4'> } = {},
+  opts: { masters?: Array<'T1' | 'T2' | 'T4'>; /** Lot 54 : `null` — aucun T4 simulé par défaut. */ t4Responder?: null } = {},
 ): void {
   const avant = { ...process.env };
   beforeAll(async () => {
     await cabler();
+    // Lot 54 : T4 décide de chaque candidat documentaire. Les scénarios de
+    // chaîne dont T4 n'est pas le sujet reçoivent un T4 simulé qui accepte
+    // (sorties enregistrées d'un scénario : toujours prioritaires).
+    const { setDefaultResponder, t4AcceptingResponder } = await import('./replay-gateway');
+    setDefaultResponder('t4_classify_event', 'CLASSIFY_EVENT', opts.t4Responder === null ? null : t4AcceptingResponder);
     const cfg = await import('@/services/ai/config/config-resolver');
     const { emptyTreatmentConfig } = await import('@/services/ai/config/config-types');
     // Version réelle (clé étrangère des travaux en file), contenu simulé.
@@ -82,6 +87,7 @@ export function useTargetState(
       if (avant[k] === undefined) delete process.env[k]; else process.env[k] = avant[k];
     }
     (await import('@/services/ai/config/config-resolver')).__setConfigForTests(null);
+    (await import('./replay-gateway')).setDefaultResponder('t4_classify_event', 'CLASSIFY_EVENT', null);
   });
 }
 

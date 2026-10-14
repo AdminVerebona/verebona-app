@@ -47,15 +47,54 @@ export interface T4Source {
   candidates?: unknown[];
 }
 
+/** Lot 54A : issue d'une demande du lancement (une par objet), motivée. */
+export interface ManualLaunchRequestOutcome {
+  accountId: number;
+  decision: 'create' | 'skip' | 'coalesce' | 'refused' | 'lost';
+  /** Motif quand aucun job n'est annoncé pour cette demande. */
+  reasonCode: string | null;
+  jobId: number | null;
+}
+
+export interface ManualLaunchDetails {
+  excludedAccountIds?: number[];
+  refused?: number;
+  /** Lot 54A : décompte des motifs de non-création (CROSS_ACCOUNT_SCOPE, PERSISTENCE_NOT_CONFIRMED…). */
+  reasons?: Record<string, number>;
+  /** Lot 54A : issue de chaque demande (bornée à 50). */
+  requests?: ManualLaunchRequestOutcome[];
+  /** Lot 54A (erreur technique) : étape en échec et jobs créés AVANT l'échec (ils existent). */
+  stage?: string;
+  createdJobIds?: number[];
+}
+
 export class ManualLaunchRefused extends Error {
   constructor(
     readonly code: 'EMERGENCY_STOP' | 'NOT_LAUNCHABLE' | 'EMPTY_SCOPE' | 'SCOPE_TOO_LARGE' | 'NO_JOB_CREATED',
     message: string,
     /** Lot 52A : comptes demandés mais non retenus / demandes refusées (motif explicite). */
-    readonly details?: { excludedAccountIds?: number[]; refused?: number },
+    readonly details?: ManualLaunchDetails,
   ) {
     super(message);
     this.name = 'ManualLaunchRefused';
+  }
+}
+
+/**
+ * Lot 54A — erreur TECHNIQUE du lancement (écriture ou relecture en base) :
+ * HTTP 5xx, motif exploitable (`INSERT_FAILED`, `PERSISTENCE_NOT_CONFIRMED`),
+ * jamais un succès ni un refus fonctionnel. Les jobs créés avant l'échec sont
+ * listés (ils existent et seront exécutés).
+ */
+export class ManualLaunchFailed extends Error {
+  constructor(
+    readonly code: 'INSERT_FAILED' | 'PERSISTENCE_NOT_CONFIRMED',
+    message: string,
+    readonly details: ManualLaunchDetails,
+    readonly cause?: unknown,
+  ) {
+    super(message);
+    this.name = 'ManualLaunchFailed';
   }
 }
 
@@ -90,6 +129,8 @@ export interface ManualLaunchDeps {
   confirmPersisted?(ids: number[]): Promise<number[]>;
   /** Lot 52A (COR-02) : réveille le boucleur de ce processus (sans attendre le tour suivant). */
   nudge?(): void;
+  /** Lot 54A : trace `[t3-enqueue]` (défaut : journal + `ai_t3_enqueue_events`). */
+  trace?: (t: import('./t3-enqueue-trace').T3EnqueueTrace) => Promise<void>;
 }
 
 export interface ManualLaunchResult {
@@ -105,6 +146,8 @@ export interface ManualLaunchResult {
   refused?: number;
   /** Lot 52A : comptes demandés hors du périmètre pertinent du traitement. */
   excludedAccountIds?: number[];
+  /** Lot 54A : motifs des demandes qui n'ont pas créé de job (absent : aucune). */
+  reasons?: Record<string, number>;
   /** Traitement coupé (hors arrêt d'urgence) : les jobs attendront la réactivation. */
   waitsForReactivation: boolean;
 }
@@ -137,6 +180,7 @@ export async function launchManual(
 
   // Précondition WF-11 : « traitement non bloqué par Emergency Stop ».
   if (await deps.emergencyStopActive()) {
+    if (!options.dryRun) await tracer(treatment, deps, { decision: 'refused', reason: 'EMERGENCY_STOP', steps: { requested: true } });
     throw new ManualLaunchRefused('EMERGENCY_STOP', 'L’arrêt d’urgence est engagé : aucun lancement n’est accepté.');
   }
   const waitsForReactivation = !(await deps.canStart(treatment));
@@ -163,19 +207,64 @@ export async function launchManual(
   if (options.dryRun) {
     return { treatment, dryRun: true, objects: objets.length, accounts, jobIds: [], excludedAccountIds, waitsForReactivation };
   }
+  // Lot 54A : chaque compte demandé mais non retenu est tracé (motif explicite).
+  for (const a of excludedAccountIds) {
+    await tracer(treatment, deps, { accountId: a, decision: 'refused', reason: 'NO_ELIGIBLE_ACCOUNT', steps: { requested: true, scopeEligible: false } });
+  }
   if (objets.length === 0) {
     throw new ManualLaunchRefused(
       'EMPTY_SCOPE',
       treatment === 'T3'
         ? 'Aucun compte à traiter : les comptes choisis n’ont ni bien actif ni élément « À traiter » ouvert (ou n’existent pas).'
         : 'Aucun objet à traiter dans ce périmètre.',
-      { excludedAccountIds },
+      { excludedAccountIds, reasons: excludedAccountIds.length ? { NO_ELIGIBLE_ACCOUNT: excludedAccountIds.length } : {} },
     );
   }
 
   const jobIds: number[] = [];
   const jobs: Array<{ id: number; accountId: number }> = [];
+  const requests: ManualLaunchRequestOutcome[] = [];
   let refused = 0;
+  const motifs: Record<string, number> = {};
+  const compter = (m: string | null | undefined) => { if (m) motifs[m] = (motifs[m] ?? 0) + 1; };
+  // Lot 54A : la trace de chaque demande T3 est écrite ICI (après relecture),
+  // pas par `enqueue` — une seule ligne par demande, avec ses étapes.
+  const traceParAppelant = treatment === 'T3' ? { t3Trace: 'caller' as const } : {};
+  const mettreEnFile = async (o: { accountId: number }, input: Parameters<ManualLaunchDeps['enqueue']>[0]) => {
+    try {
+      return await deps.enqueue({ ...input, ...traceParAppelant });
+    } catch (e) {
+      // Erreur TECHNIQUE (écriture refusée, base indisponible) : 5xx, jamais
+      // un succès ni un refus fonctionnel. Les jobs déjà créés sont dits.
+      const message = (e as Error)?.message ?? String(e);
+      await tracer(treatment, deps, {
+        accountId: o.accountId, decision: 'error', reason: 'INSERT_FAILED', error: message,
+        steps: { requested: true, scopeEligible: true },
+      });
+      console.error(`[manual-launch] ${treatment} : mise en file impossible pour le compte ${o.accountId} — ${message}`);
+      throw new ManualLaunchFailed(
+        'INSERT_FAILED',
+        `Lancement ${treatment} interrompu : écriture du job impossible pour le compte ${o.accountId} (${message.slice(0, 200)}).`
+          + (jobIds.length ? ` ${jobIds.length} job(s) déjà créé(s) : ${jobIds.map((i) => `#${i}`).join(', ')}.` : ' Aucun job créé.'),
+        { stage: 'enqueue', createdJobIds: [...jobIds], excludedAccountIds, reasons: { ...motifs, INSERT_FAILED: 1 } },
+        e,
+      );
+    }
+  };
+  const noter = (accountId: number, r: { decision: string; jobId: number | null; reasonCode?: string | null }) => {
+    // Manuel : `create` attendu (WF-11, hors déduplication). Tout autre issue
+    // n'annonce AUCUN job, avec son motif.
+    if (r.decision === 'create' && r.jobId !== null) {
+      jobIds.push(r.jobId);
+      jobs.push({ id: r.jobId, accountId });
+      requests.push({ accountId, decision: 'create', reasonCode: null, jobId: r.jobId });
+      return;
+    }
+    refused++;
+    const motif = r.reasonCode ?? (r.jobId === null ? 'CROSS_ACCOUNT_SCOPE' : r.decision === 'coalesce' ? 'DUPLICATE_RUNNING' : 'DUPLICATE_PENDING');
+    compter(motif);
+    requests.push({ accountId, decision: motif === 'CROSS_ACCOUNT_SCOPE' ? 'refused' : (r.decision as 'skip' | 'coalesce'), reasonCode: motif, jobId: r.jobId });
+  };
   for (const o of objets) {
     // `origin: 'manual'` : hors de l'index de déduplication (queue-policy) —
     // une nouvelle exécution même si un job automatique équivalent attend
@@ -185,7 +274,7 @@ export async function launchManual(
       if (!Array.isArray(t4.candidates) || t4.candidates.length === 0) continue;
       // Même forme que le déclencheur `source_analyzed` (agenda/index.ts,
       // T4Payload), mais origine manuelle : hors déduplication.
-      const { jobId } = await deps.enqueue({
+      noter(t4.accountId, await mettreEnFile(o, {
         treatment: 'T4',
         scope: { accountId: t4.accountId, targetType: 'asset_file', targetId: t4.fileId },
         origin: 'manual',
@@ -194,12 +283,11 @@ export async function launchManual(
           assetId: t4.assetId, userId: t4.userId, leadSourceId: t4.fileId,
           candidates: t4.candidates, requestedByUserId: adminUserId,
         },
-      });
-      if (jobId !== null) { jobIds.push(jobId); jobs.push({ id: jobId, accountId: t4.accountId }); } else refused++;
+      }));
       continue;
     }
-    const { jobId } = treatment === 'T1'
-      ? await deps.enqueue({
+    noter(o.accountId, treatment === 'T1'
+      ? await mettreEnFile(o, {
         treatment: 'T1',
         scope: { accountId: o.accountId, targetType: 'asset_file', targetId: o.fileId! },
         origin: 'manual',
@@ -207,31 +295,66 @@ export async function launchManual(
         // Lot 50 : réanalyse lancée depuis le BO = traitement technique (jamais un sujet de la mascotte).
         payload: { fileId: o.fileId, userId: null, origin: 'admin/manual', billable: false, processingVisibility: 'TECHNICAL', requestedByUserId: adminUserId },
       })
-      : await deps.enqueue({
+      : await mettreEnFile(o, {
         treatment: 'T3',
         scope: { accountId: o.accountId },
         origin: 'manual',
         triggerCode: 'manual',
         payload: { kind: 'account', scope: 'full', requestedByUserId: adminUserId },
-      });
-    if (jobId !== null) { jobIds.push(jobId); jobs.push({ id: jobId, accountId: o.accountId }); } else refused++;
+      }));
   }
 
-  // COR-02 : seuls les jobs RÉELLEMENT persistés sont annoncés.
-  const persistes = deps.confirmPersisted ? new Set(await deps.confirmPersisted(jobIds)) : new Set(jobIds);
+  // COR-02 : seuls les jobs RÉELLEMENT persistés sont annoncés — relus par une
+  // AUTRE requête que l'insertion (même base, même pool que la File IA).
+  let persistes: Set<number>;
+  try {
+    persistes = deps.confirmPersisted ? new Set(await deps.confirmPersisted(jobIds)) : new Set(jobIds);
+  } catch (e) {
+    const message = (e as Error)?.message ?? String(e);
+    for (const j of jobs) {
+      await tracer(treatment, deps, {
+        accountId: j.accountId, decision: 'error', reason: 'PERSISTENCE_NOT_CONFIRMED', jobId: j.id, persisted: null, error: message,
+        steps: { requested: true, scopeEligible: true, scopeAllowed: true },
+      });
+    }
+    throw new ManualLaunchFailed(
+      'PERSISTENCE_NOT_CONFIRMED',
+      `Lancement ${treatment} : relecture des jobs créés impossible (${message.slice(0, 200)}) — vérifiez la File IA (jobs ${jobIds.map((i) => `#${i}`).join(', ')}).`,
+      { stage: 'confirmPersisted', createdJobIds: [...jobIds], excludedAccountIds, reasons: { ...motifs } },
+      e,
+    );
+  }
   const confirmes = jobs.filter((j) => persistes.has(j.id));
-  const perdus = jobIds.length - confirmes.length;
+  const perdus = jobs.filter((j) => !persistes.has(j.id));
+  for (const j of perdus) {
+    compter('PERSISTENCE_NOT_CONFIRMED');
+    const req = requests.find((r) => r.jobId === j.id && r.decision === 'create');
+    if (req) { req.decision = 'lost'; req.reasonCode = 'PERSISTENCE_NOT_CONFIRMED'; }
+  }
+  // Lot 54A : une trace par demande (manuel T3), après relecture.
+  if (treatment === 'T3') {
+    for (const r of requests) {
+      await tracer(treatment, deps, {
+        accountId: r.accountId,
+        decision: r.decision === 'lost' ? 'error' : r.decision,
+        reason: (r.reasonCode as never) ?? null, jobId: r.jobId,
+        persisted: r.decision === 'create' ? true : r.decision === 'lost' ? false : null,
+        steps: { requested: true, scopeEligible: true, scopeAllowed: r.reasonCode !== 'CROSS_ACCOUNT_SCOPE' },
+      });
+    }
+  }
   if (confirmes.length === 0) {
     // Aucun message de réussite trompeur : motif explicite.
-    const motifs = [
-      refused > 0 ? `${refused} demande(s) refusée(s) par le contrôle de périmètre du compte (références d’un autre compte, journalisé)` : null,
-      perdus > 0 ? `${perdus} job(s) introuvable(s) après création` : null,
-      treatment === 'T4' && refused === 0 && perdus === 0 ? 'aucune échéance candidate dans les analyses de référence' : null,
+    const libelles = [
+      refused > 0 ? `${refused} demande(s) sans job : ${Object.entries(motifs).filter(([k]) => k !== 'PERSISTENCE_NOT_CONFIRMED').map(([k, n]) => `${k} ×${n}`).join(', ')}`
+        + (motifs.CROSS_ACCOUNT_SCOPE ? ' (contrôle de périmètre du compte : références d’un autre compte, journalisé)' : '') : null,
+      perdus.length > 0 ? `${perdus.length} job(s) introuvable(s) après création (PERSISTENCE_NOT_CONFIRMED)` : null,
+      treatment === 'T4' && refused === 0 && perdus.length === 0 ? 'aucune échéance candidate dans les analyses de référence' : null,
     ].filter(Boolean);
     throw new ManualLaunchRefused(
       'NO_JOB_CREATED',
-      `Aucun job ${treatment} n’a été créé${motifs.length ? ` : ${motifs.join(' ; ')}` : ''}.`,
-      { excludedAccountIds, refused },
+      `Aucun job ${treatment} n’a été créé${libelles.length ? ` : ${libelles.join(' ; ')}` : ''}.`,
+      { excludedAccountIds, refused, reasons: motifs, requests: requests.slice(0, 50) },
     );
   }
   // COR-02 : réveil immédiat du boucleur (ce processus) ; les autres instances
@@ -239,12 +362,25 @@ export async function launchManual(
   try { deps.nudge?.(); } catch { /* jamais bloquant */ }
   console.info(
     `[manual-launch] ${treatment} : ${confirmes.length} job(s) manuel(s) [${confirmes.map((j) => j.id).join(', ')}] sur ${accounts} compte(s) par l'administrateur ${adminUserId}`
-    + `${refused ? ` — ${refused} refus de périmètre` : ''}.`,
+    + `${refused ? ` — ${refused} demande(s) sans job (${Object.entries(motifs).map(([k, n]) => `${k} ×${n}`).join(', ')})` : ''}.`,
   );
   return {
     treatment, dryRun: false, objects: confirmes.length, accounts: new Set(confirmes.map((j) => j.accountId)).size,
     jobIds: confirmes.map((j) => j.id), jobs: confirmes, refused, excludedAccountIds, waitsForReactivation,
+    ...(Object.keys(motifs).length ? { reasons: motifs } : {}),
   };
+}
+
+/** Trace `[t3-enqueue]` d'une demande manuelle T3 (autres traitements : rien). Jamais bloquante. */
+async function tracer(
+  treatment: ManualTreatment, deps: ManualLaunchDeps,
+  t: Omit<import('./t3-enqueue-trace').T3EnqueueTrace, 'origin' | 'triggerCode'>,
+): Promise<void> {
+  if (treatment !== 'T3') return;
+  try {
+    const trace = deps.trace ?? (await import('./t3-enqueue-trace')).traceT3Enqueue;
+    await trace({ origin: 'manual', triggerCode: 'manual', ...t });
+  } catch { /* la trace ne bloque jamais le lancement */ }
 }
 
 /** Dépendances branchées sur la base. */

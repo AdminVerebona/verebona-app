@@ -191,6 +191,8 @@ export interface AccountDataPort {
   findOperationDocuments?(accountId: number, terms: string[], assetId?: number | null): Promise<DocumentHit[]>;
   /** Coût consolidé d'interventions désignées par leur libellé (F-127). */
   readOperationCosts?(accountId: number, terms: string[], assetIds: number[]): Promise<import('../canonical/operations').OperationCostRead[]>;
+  /** Lot 54D (§4.3) : coût de possession d'un bien — service TCO (moteur partagé), jamais un calcul parallèle. */
+  readOwnershipCost?(accountId: number, assetId: number): Promise<import('@/services/business-operations/tco/model').TcoResult>;
   /** Achat consolidé d'un bien (C15.2). */
   readAcquisition?(accountId: number, assetId: number, opts?: { assetName?: string | null }): Promise<import('../canonical/operations').AcquisitionRead | null>;
   listActionables?(accountId: number, opts: import('../canonical/actionables').ActionableReadOptions): Promise<{
@@ -239,6 +241,8 @@ export type DataAnswerStrategy =
   | 'structured.acquisition_price'
   | 'structured.contracts'
   | 'structured.operation_cost'
+  // Lot 54D (§4.3) : coût de possession (service TCO).
+  | 'structured.ownership_cost'
   // Lot 34 : demandes d'actions (À traiter, échéances, retards, période).
   | 'structured.actionable'
   | 'retrieval.canonical_field'

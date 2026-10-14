@@ -25,6 +25,7 @@ import {
 import { factLabel } from '../master/fact-evidence';
 import type { ProjectedFact, T1Fact } from '../master/t1-contract';
 import type { T1DroppedItem, T1PreservedOriginal } from '../master/tolerant-output';
+import type { PrunedFieldValue } from '../../gateway/output-resolution/field-validation';
 import type { SourceVerification } from './source-verification';
 import type { ProjectionWarning } from '../projection/document-projection';
 import type { AnalysisContext, AnalysisWarning, SourceInput } from '../types';
@@ -39,8 +40,13 @@ export interface T1ExtractionExtras {
   dropped: Array<T1DroppedItem & { pass: SourceUnitOrigin }>;
   /** Faits lus sans preuve adaptée (écartés des faits, conservés ici). */
   noEvidence: T1Fact[];
-  /** Champs retirés par la validation champ par champ de la passerelle (lot 33D). */
+  /** Champs retirés par la validation champ par champ de la passerelle (lot 33D) — chemins génériques. */
   prunedPaths: string[];
+  /**
+   * Lot 54G (point 3) : les mêmes retraits AVEC leur valeur originale, leur
+   * élément englobant et leur motif (passe principale et lots de pages).
+   */
+  prunedFields?: Array<PrunedFieldValue & { pass: SourceUnitOrigin; pageOffset: number }>;
   batchedSections: number;
   truncatedSections: number;
   chunkCount: number;
@@ -170,9 +176,12 @@ export async function completeT1Extraction(p: {
       rawKey: f.rawKey ?? f.label ?? null, canonicalKey: f.canonicalKey, rawValue: str(f.rawValue ?? f.normalizedValue),
       originalPayload: f, pass: 'PASS_1', detail: f.provenance,
     })),
-    ...x.prunedPaths.map((path): UnresolvedFactRecord => ({
+    // Lot 54G (point 3) : champ retiré par la validation de la passerelle — valeur ORIGINALE conservée.
+    ...(x.prunedFields ?? []).map((pf) => prunedRecord(pf, linker)),
+    // Retrait connu par son seul chemin (original indisponible) : perte NON compensée, signalée.
+    ...prunedPathsWithoutOriginal(x).map((path): UnresolvedFactRecord => ({
       reason: 'FIELD_PRUNED', status: 'UNRESOLVED', sourceUnitIds: [], rawKey: null, canonicalKey: null, rawValue: null,
-      originalPayload: { path }, pass: 'PASS_1', detail: path,
+      originalPayload: { path, preserved: false }, pass: 'PASS_1', detail: path,
     })),
     // Lot 49B (DEV-03) : original intégral de chaque valeur réduite ou retirée par la lecture tolérante.
     ...(x.originals ?? []).map((o) => originalRecord(o, linker)),
@@ -253,16 +262,61 @@ function originalRecord(o: T1PreservedOriginal & { pass: SourceUnitOrigin }, lin
   };
 }
 
+/** Retraits du rapport `field_pruning` (chemins génériques) sans original transmis (lot 54G). */
+export function prunedPathsWithoutOriginal(x: Pick<T1ExtractionExtras, 'prunedPaths' | 'prunedFields'>): string[] {
+  const avecOriginal = new Set((x.prunedFields ?? []).map((p) => p.genericPath));
+  return x.prunedPaths.filter((path) => !avecOriginal.has(path));
+}
+
+/** Le retrait d'un champ a-t-il conservé sa valeur originale ? (lot 54G) */
+export function prunedOriginalPreserved(r: Pick<UnresolvedFactRecord, 'reason' | 'originalPayload'>): boolean {
+  return r.reason === 'FIELD_PRUNED' && isObj(r.originalPayload) && r.originalPayload.preserved === true;
+}
+
+/**
+ * Champ retiré par la validation de la passerelle (lot 54G, point 3) :
+ * chemin, valeur originale intégrale, élément englobant (fait, observation,
+ * tableau) et motif ; rattaché à l'unité source quand sa preuve le permet.
+ */
+function prunedRecord(pf: PrunedFieldValue & { pass: SourceUnitOrigin; pageOffset: number }, linker: SourceUnitLinker): UnresolvedFactRecord {
+  const ev = evidenceOfRaw(pf.container?.value);
+  const decale = (n: number | null | undefined) => (typeof n === 'number' ? n + pf.pageOffset : n ?? null);
+  const ids = pf.container ? linker.link({ ...ev, page: decale(ev.page), visualPage: decale(ev.visualPage) }) : [];
+  const v = pf.originalValue;
+  return {
+    reason: 'FIELD_PRUNED',
+    status: 'UNRESOLVED',
+    sourceUnitIds: ids,
+    rawKey: pf.path.replace(/^\$\.?/, ''),
+    canonicalKey: isObj(pf.container?.value) && typeof pf.container.value.canonicalKey === 'string' ? pf.container.value.canonicalKey : null,
+    rawValue: v === null || v === undefined ? null : typeof v === 'string' ? v : JSON.stringify(v),
+    originalPayload: {
+      path: pf.path, genericPath: pf.genericPath, originalValue: v ?? null, container: pf.container, reason: pf.reason, rule: pf.rule,
+      pageOffset: pf.pageOffset, preserved: true,
+    },
+    pass: pf.pass,
+    detail: `champ retiré par la validation (${pf.reason})`.slice(0, 300),
+  };
+}
+
 /**
  * Cohérence des réductions (DEV-03) : chaque réduction comptée doit avoir son
- * original conservé ; un champ retiré par la validation (chemin seul) est une
- * perte non compensée.
+ * original conservé. Lot 54G (point 3) : un champ retiré par la validation
+ * dont l'original est conservé n'est PLUS une perte ; seul un retrait connu
+ * par son chemin seul (original indisponible) en est une.
  */
-export function normalisationBalance(draft: Pick<SourceLayerDraft, 'unresolved' | 'extras'>): { truncations: number; originalsPreserved: number; losses: number } {
+export function normalisationBalance(draft: Pick<SourceLayerDraft, 'unresolved' | 'extras'>): {
+  truncations: number; originalsPreserved: number; losses: number; prunedFields: number; prunedOriginalsPreserved: number;
+} {
   const truncations = draft.extras.truncatedStrings ?? 0;
   const originalsPreserved = draft.unresolved.filter((u) => u.reason === 'VALUE_TRUNCATED').length;
-  const pruned = draft.unresolved.filter((u) => u.reason === 'FIELD_PRUNED').length;
-  return { truncations, originalsPreserved, losses: Math.max(0, truncations - originalsPreserved) + pruned };
+  const pruned = draft.unresolved.filter((u) => u.reason === 'FIELD_PRUNED');
+  const conserves = pruned.filter(prunedOriginalPreserved).length;
+  return {
+    truncations, originalsPreserved,
+    losses: Math.max(0, truncations - originalsPreserved) + (pruned.length - conserves),
+    prunedFields: pruned.length, prunedOriginalsPreserved: conserves,
+  };
 }
 
 

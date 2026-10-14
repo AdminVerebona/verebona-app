@@ -93,6 +93,15 @@ describe('T4-10 : unknown et classification prudente', () => {
   });
 });
 
+/**
+ * Lot 54 : le texte du dépôt (aucune version BO) est en t4_output_v2 — le
+ * modèle répond avec la décision d'existence et de récurrence. Sortie v1
+ * d'une fixture → sortie v2 équivalente.
+ */
+const v2 = (o: Record<string, unknown>) => (o.homeCategory === 'unknown'
+  ? { ...o, agendaDecision: 'abstain', recurrenceDecision: 'not_applicable', businessType: null, confidence: 'ambiguous', recurrenceReason: null }
+  : { ...o, agendaDecision: 'accept', recurrenceDecision: 'not_applicable', recurrenceReason: null });
+
 describe('P-T4-01 et master T4 seul', () => {
   it('champ nextInspection : action par le registre, sans appel', async () => {
     T4('master');
@@ -103,7 +112,7 @@ describe('P-T4-01 et master T4 seul', () => {
 
   it('master : cas ambigu → t4_classify_event, catalogue en données, action', async () => {
     T4('master');
-    fake.onAny(() => ({ rawText: JSON.stringify(P1.recording.output), inputTokens: 1, outputTokens: 1 }));
+    fake.onAny(() => ({ rawText: JSON.stringify(v2(P1.recording.output)), inputTokens: 1, outputTokens: 1 }));
     const cand = P1.context.candidate;
     const c = await classifyAgendaEvent({ title: cand.title, originType: 'document', description: null }, { ...ctx, excerpt: cand.excerpt, date: cand.date });
     expect(c).toMatchObject({ category: 'action', confidence: 'certain', source: 'model', businessType: 'inspection' });
@@ -116,13 +125,13 @@ describe('P-T4-01 et master T4 seul', () => {
 
   it('master : unknown → catégorie prudente sur le chemin manuel', async () => {
     T4('master');
-    fake.onAny(() => ({ rawText: JSON.stringify({ task: 'CLASSIFY_EVENT', homeCategory: 'unknown', confidence: 'ambiguous', reason: 'r' }), inputTokens: 1, outputTokens: 1 }));
+    fake.onAny(() => ({ rawText: JSON.stringify(v2({ task: 'CLASSIFY_EVENT', homeCategory: 'unknown', confidence: 'ambiguous', reason: 'r' })), inputTokens: 1, outputTokens: 1 }));
     await expect(classifyAgendaCategory({ title: 'Truc', originType: 'manual' }, { ...ctx, date: '2020-01-01' })).resolves.toBe('information');
   });
 
   it('version ancienne en `steps` : le master T4 s’applique quand même (lot 16b-2)', async () => {
     T4('steps');
-    fake.onAny(() => ({ rawText: JSON.stringify({ task: 'CLASSIFY_EVENT', homeCategory: 'information', confidence: 'probable', reason: 'r' }), inputTokens: 1, outputTokens: 1 }));
+    fake.onAny(() => ({ rawText: JSON.stringify(v2({ task: 'CLASSIFY_EVENT', homeCategory: 'information', confidence: 'probable', reason: 'r' })), inputTokens: 1, outputTokens: 1 }));
     const c = await classifyAgendaEvent({ title: 'Truc', originType: 'manual' }, ctx);
     expect(c).toMatchObject({ category: 'information', source: 'model' });
     expect(traces[0]).toMatchObject({ operationCode: 't4_classify_event', task: 'CLASSIFY_EVENT' });

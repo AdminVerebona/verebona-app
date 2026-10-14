@@ -239,7 +239,12 @@ scenario('L47A-O9', 'BO diagnostic des Opérations : liste, détail, 13 indicate
     await comp(C, sansCompSrc, { sources: [sA] });                              // saine
     const croise = await op(C, {});
     await src(C, croise, {});
-    await link(C, croise, bienB.id);                                            // A3 : bien de B
+    // Relation intercomptes HISTORIQUE (refusée en base depuis le lot 54, garde 0373) : injectée hors gardes.
+    await sql.begin(async (tx) => {
+      await tx`SET LOCAL session_replication_role = replica`;
+      await tx`INSERT INTO business_operation_asset_links (account_id, operation_id, asset_id, link_role, authority, active)
+               VALUES (${C.id}, ${croise}, ${bienB.id}, 'PRIMARY', 'DOCUMENT', true)`;
+    });                                                                          // A3 : bien de B
     await src(C, croise, { key: fichierB.id });                                 // A3 : document de B
     await sql`INSERT INTO agenda_items (account_id, title, business_operation_id) VALUES (${B.id}, 'Agenda B', ${croise})`; // A3
     const x = await op(C, {});

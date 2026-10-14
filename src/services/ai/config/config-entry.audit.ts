@@ -36,6 +36,38 @@ export function changedConfigFields(
   return { before: b, after: a };
 }
 
+/**
+ * Lot 54 — geste sur une version de configuration (création, sauvegarde,
+ * restauration, activation, suppression, export) dans `ai_admin_audit_log`.
+ * Ne lève jamais : le geste a déjà eu lieu (révision, export : tracés en
+ * base dans leurs propres tables, immuables).
+ */
+export async function recordConfigAudit(
+  actionType: string,
+  adminUserId: number,
+  before: Record<string, unknown> | null,
+  after: Record<string, unknown>,
+): Promise<void> {
+  if (!adminUserId) return;
+  try {
+    const { eq } = await import('drizzle-orm');
+    const { db } = await import('@/db');
+    const { aiAdminAuditLog, users } = await import('@/db/schema');
+    const admin = await db.select({ email: users.email }).from(users).where(eq(users.id, adminUserId)).limit(1).then((r) => r[0]);
+    await db.insert(aiAdminAuditLog).values({
+      adminUserId,
+      adminEmail: admin?.email ?? `user:${adminUserId}`,
+      actionType,
+      beforeValue: before,
+      afterValue: after,
+      reason: null,
+      createdAt: new Date(),
+    });
+  } catch (e) {
+    console.error('[config] trace d’administration impossible (non bloquant) :', (e as Error).message);
+  }
+}
+
 export async function recordConfigEntrySave(t: {
   adminUserId: number;
   versionId: number;

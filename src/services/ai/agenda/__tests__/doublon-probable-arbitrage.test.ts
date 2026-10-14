@@ -10,13 +10,14 @@ vi.mock('../../gateway/ai-gateway', () => ({ AiGateway: { execute: vi.fn(async (
 import { processAgendaCandidates } from '../agenda-intelligence.service';
 import { findDuplicate } from '../dedupe.service';
 import type { ExistingAgendaItem } from '../types';
+import { t4Simule } from './support/t4-simule';
 
 const read = (p: string) => readFileSync(join(process.cwd(), p), 'utf-8');
 const existant = (over: Partial<ExistingAgendaItem> = {}): ExistingAgendaItem => ({
   id: 7, title: 'Contrôle technique', date: '2026-11-15', category: 'action', status: null, manual: false, originFieldKey: null, ...over,
 });
 const traiter = (title: string, date: string, existing: ExistingAgendaItem[]) =>
-  processAgendaCandidates({ accountId: 1, assetId: 2, candidates: [{ title, date, confidence: 'certain', excerpt: '' } as never], existing, sourceFileId: 9 });
+  processAgendaCandidates({ accountId: 1, assetId: 2, candidates: [{ title, date, confidence: 'certain', excerpt: '' } as never], existing, sourceFileId: 9, decide: t4Simule });
 
 describe('findDuplicate', () => {
   it('« Contrôle technique » 15/11 / « Contrôle technique véhicule » 17/11 : probable', () => {

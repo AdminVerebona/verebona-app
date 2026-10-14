@@ -1,66 +1,20 @@
 /**
- * PUT /api/admin/ai/config-versions/[id]/entries/[treatment] — CDC BO IA WF-01.
- *
- * Enregistre la configuration d'UN traitement dans un Brouillon. Le WF-01
- * demande un enregistrement explicite onglet par onglet : c'est pourquoi la
- * route porte sur un traitement et non sur la version entière.
- *
- * ── LA VALIDATION D'ENTRÉE N'EST PAS LES CONTRÔLES BLOCANTS ────────────────
- * Ici, on vérifie que la charge utile a la bonne FORME. Les contrôles
- * fonctionnels du WF-02 — modèle disponible, tarif connu, garde-fou du
- * catalogue — n'interviennent qu'à la promotion. Un Brouillon en cours
- * d'édition a le droit d'être incomplet ; l'interdire obligerait à tout saisir
- * d'un coup ou à ne rien enregistrer.
+ * PUT /api/admin/ai/config-versions/[id]/entries/[treatment] — route
+ * HISTORIQUE (enregistrement d'un seul traitement). Lot 54 : délègue à
+ * l'enregistrement global — une révision par sauvegarde effective, version
+ * active comprise (plus de restriction « Brouillon »). `baseRevision`
+ * (facultatif ici, obligatoire sur PUT /config-versions/[id]) : refus 409
+ * REVISION_CONFLICT si la version a été enregistrée entre-temps.
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import { saveTreatmentConfig } from '@/services/ai/config/config-version.service';
 import { isRetiredTreatment, isTreatment, type Treatment } from '@/services/ai/config/treatments';
 import { recordConfigEntrySave } from '@/services/ai/config/config-entry.audit';
-import { REASONING_LEVELS, GUARDRAIL_REACTIONS, PROMPT_ARCHITECTURES } from '@/services/ai/config/config-types';
+import { EntryPayload } from '../../entry-payload';
 import { requireAdminContext, parseVersionId, invalidId, toErrorResponse } from '../../../_shared';
 
-const Guardrail = z.object({
-  code: z.string().min(1).max(100),
-  threshold: z.number().finite(),
-  reaction: z.enum(GUARDRAIL_REACTIONS),
-});
-
-const Trigger = z.object({
-  kind: z.enum(['event', 'schedule']),
-  code: z.string().min(1).max(100),
-  active: z.boolean(),
-});
-
-const Payload = z.object({
-  // Pas de borne haute : le SCR-02 veut un éditeur « sans limite artificielle
-  // imposée par le BO ». La borne réelle est celle du modèle, contrôlée ailleurs.
-  prompt: z.string().default(''),
-  primaryModel: z.string().max(200).nullable().default(null),
-  fallback1: z.string().max(200).nullable().default(null),
-  fallback2: z.string().max(200).nullable().default(null),
-  reasoningPrimary: z.enum(REASONING_LEVELS).nullable().default(null),
-  reasoningFallback1: z.enum(REASONING_LEVELS).nullable().default(null),
-  reasoningFallback2: z.enum(REASONING_LEVELS).nullable().default(null),
-  maxOutputTokens: z.number().int().positive().nullable().default(null),
-  guardrails: z.array(Guardrail).max(50).default([]),
-  triggers: z.array(Trigger).max(50).default([]),
-  // Seuils de la cascade — T2 uniquement. Les bornes sont ici ; le fait que
-  // seul T2 puisse en avoir est un contrôle fonctionnel, pas de forme.
-  cascade: z.object({
-    database: z.number().min(0).max(1),
-    text: z.number().min(0).max(1),
-    semantic: z.number().min(0).max(1),
-    semanticEnabled: z.boolean(),
-  }).nullable().default(null),
-  // CDC 15 D-04 : architecture des prompts du traitement. Omise : celle en
-  // place est conservée. La règle §29.1 (Brouillon seulement, master déclaré)
-  // est appliquée par le service.
-  promptArchitecture: z.enum(PROMPT_ARCHITECTURES).optional(),
-  // CDC 15 D-03 : texte COMPLET du prompt maître, distinct du préambule.
-  // Omis : celui en place est conservé ; `null`/vide : fichier du dépôt.
-  masterPrompt: z.string().nullable().optional(),
-});
+const Payload = EntryPayload.extend({ baseRevision: z.number().int().positive().nullable().optional() });
 
 export async function PUT(
   req: NextRequest,
@@ -102,10 +56,12 @@ export async function PUT(
   }
 
   try {
-    const { before, after } = await saveTreatmentConfig(
+    const { baseRevision, ...entry } = parsed.data;
+    const { before, after, revisionNumber } = await saveTreatmentConfig(
       versionId,
-      { treatment: treatment as Treatment, ...parsed.data },
+      { treatment: treatment as Treatment, ...entry },
       guard.ctx.adminUserId,
+      baseRevision ?? null,
     );
     // Traçabilité (ticket T4) : utilisateur, version, champs modifiés
     // avant / après — retrait d'un déclencheur incompatible. Rien à tracer si
@@ -117,7 +73,7 @@ export async function PUT(
       before,
       after,
     });
-    return NextResponse.json({ saved: true, treatment });
+    return NextResponse.json({ saved: true, treatment, revisionNumber });
   } catch (e) {
     return toErrorResponse(e, 'PUT /api/admin/ai/config-versions/[id]/entries/[treatment]');
   }

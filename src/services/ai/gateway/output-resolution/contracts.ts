@@ -217,6 +217,9 @@ const CONTRACTS: readonly OutputContract[] = [
   { name: 'T3LinkAmbiguityOutput', label: 't3_link_ambiguity', version: 1, adapters: [] },
   { name: 'T3OperationMatchOutput', label: 't3_operation_match', version: 1, adapters: [] },
   { name: 'T4ClassifyEventOutput', label: 't4_classify_event', version: 1, adapters: [] },
+  // Lot 54 : même contrat (T4_CLASSIFY_EVENT), version 2 — schéma distinct,
+  // choisi par le contrat de sortie `t4_output_v2` de la version de prompt.
+  { name: 'T4ClassifyEventV2Output', label: 't4_classify_event', version: 2, adapters: [] },
   { name: 'T4VerifyCompletionOutput', label: 't4_verify_completion', version: 1, adapters: [] },
   { name: 'T4TemporalAmbiguityOutput', label: 't4_temporal_ambiguity', version: 1, adapters: [] },
   { name: 'T2UnderstandOutput', label: 't2_understand', version: 1, adapters: [] },

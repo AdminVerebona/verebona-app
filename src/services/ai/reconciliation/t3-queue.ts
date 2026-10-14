@@ -470,6 +470,10 @@ async function runAccount(job: QueuedJob, p: T3AccountPayload, guard: ExecutionG
     objectsModified: result.objectsModified,
     aiCalls: (result.aiCalls ?? 0) + (result.openActions?.aiCalls ?? 0),
     openActionsExamined: result.openActions?.examined ?? 0,
+    // Lot 54A (écarts 4, 5) : passage GLOBAL du compte — toutes les cartes
+    // ouvertes réexaminées ; vraies tentatives distinguées du simple constat.
+    openActionsPhase: 'ACCOUNT_GLOBAL',
+    openActionsResolutionAttempted: result.openActions?.resolutionAttempted ?? 0,
     decisionsApplied: result.decisionsApplied, conflictsCreated: result.conflictsCreated, errors: result.errors,
     ...(result.openKnowledge ? { openKnowledge: result.openKnowledge } : {}),
     // Lot 49B : rapport des lignes « À traiter » ouvertes examinées (borné).

@@ -1,46 +1,30 @@
 /**
- * Plafond de coût des RÉARBITRAGES T3 à contexte inchangé (lot 49B — ticket
- * « T3 — Réexaminer systématiquement les À traiter ouverts », conciliation
- * avec le ticket « T3 : exploiter la couche exhaustive T1 », §8 / AC6).
+ * Réarbitrages T3 des cartes LINK-ASSET ouvertes — lot 49B, RÉVISÉ au lot 54A
+ * (ticket « [P1] T3 — Achever le réexamen systématique de tous les À traiter
+ * ouverts », écart 1).
  *
  * ══════════════════════════════════════════════════════════════════════════
- * RÈGLE
+ * RÈGLE (lot 54A)
  *
- *   · Document AVEC une carte « À traiter » LINK-ASSET ouverte : réexamen
- *     COMPLET à chaque passage T3 (Candidate Builder, déterministe, puis IA si
- *     des candidats demandent un arbitrage) — même empreinte identique
- *     (ticket « À traiter », tests 1, 2, 4, 6).
- *   · Document SANS carte ouverte (balayage, AC6) : empreinte identique →
- *     CONFIRMED_NO_CHANGE, aucun appel.
+ * Une carte LINK-ASSET ouverte est un problème ACTIF : à chaque passage T3
+ * global du compte, elle est réellement retentée — Candidate Builder,
+ * déterministe, puis appel T3 si un arbitrage est nécessaire. AUCUN quota
+ * métier T3 ne la fait sauter : les plafonds `T3_OPEN_ACTION_AI_MAX_PER_PASS`
+ * et `T3_OPEN_ACTION_AI_MAX_PER_DAY` (lot 49B) sont SUPPRIMÉS (variables
+ * d'environnement ignorées) et l'issue `AI_DEFERRED` n'est plus produite.
  *
- * Seul l'appel modèle d'un réexamen à contexte INCHANGÉ est plafonné (comme
- * le niveau M3 du lot 42) ; un contexte modifié n'est jamais retenu ici :
- *   · `T3_OPEN_ACTION_AI_MAX_PER_PASS` (défaut 10, 0 à 100) réarbitrages par
- *     passage et par compte (phase « open actions ») ;
- *   · `T3_OPEN_ACTION_AI_MAX_PER_DAY` (défaut 100, 0 à 2000) appels
- *     `t3_link_ambiguity` du compte sur 24 h glissantes (`ai_usage_event`,
- *     traces de la passerelle) — au-delà, le réarbitrage est REPORTÉ au
- *     passage suivant (carte maintenue, évaluation `AI_DEFERRED`) ;
- *   · plafond mensuel de coût du compte (passerelle, lot 22).
- * Les cartes reportées passent en tête au passage suivant (les plus
- * anciennement évaluées d'abord) : aucune n'est oubliée.
+ * Le coût reste maîtrisé par les mécanismes GLOBAUX de la passerelle :
+ * plafond mensuel de coût du compte (lot 22), disponibilité du modèle,
+ * retry/backoff de la file, circuit breaker. Un document SANS carte ouverte
+ * à contexte inchangé reste confirmé sans IA (AC6, inchangé).
+ *
+ * Ne subsistent ici que le code d'opération et la mesure de consommation
+ * (monitoring).
  * ══════════════════════════════════════════════════════════════════════════
  */
-import { envNumber } from '@/lib/env-number';
-
 export const LINK_AMBIGUITY_OPERATION = 't3_link_ambiguity';
 
-/** Réarbitrages à contexte inchangé par passage et par compte. */
-export function rearbitrationsPerPass(): number {
-  return Math.min(100, Math.floor(envNumber('T3_OPEN_ACTION_AI_MAX_PER_PASS', 10, { min: 0 })));
-}
-
-/** Appels `t3_link_ambiguity` du compte sur 24 h au-delà desquels un réarbitrage à contexte inchangé est reporté. */
-export function rearbitrationsPerDay(): number {
-  return Math.min(2000, Math.floor(envNumber('T3_OPEN_ACTION_AI_MAX_PER_DAY', 100, { min: 0 })));
-}
-
-/** Appels `t3_link_ambiguity` du compte sur 24 h glissantes. Ne lève pas (illisible : plafond considéré atteint). */
+/** Appels `t3_link_ambiguity` du compte sur 24 h glissantes. Monitoring seulement (lot 54A : plus une condition). Ne lève pas (illisible : -1). */
 export async function linkAmbiguityCallsLastDay(accountId: number): Promise<number> {
   try {
     const { pgClient } = await import('@/db');
@@ -52,14 +36,9 @@ export async function linkAmbiguityCallsLastDay(accountId: number): Promise<numb
     return Number(r?.n ?? 0);
   } catch (e) {
     console.error(`[t3-open-actions] consommation IA du compte ${accountId} illisible :`, (e as Error).message);
-    return Number.MAX_SAFE_INTEGER;
+    return -1;
   }
 }
 
-/** Motif d'un réarbitrage reporté (monitoring). */
+/** Motif d'un réarbitrage reporté par l'ancien plafond (évaluations historiques seulement, lot 49B). */
 export type RearbitrationDeferral = 'PASS_CAP' | 'DAY_CAP';
-
-/** Le plafond journalier autorise-t-il un réarbitrage de plus ? */
-export async function dailyRearbitrationAllowed(accountId: number): Promise<boolean> {
-  return (await linkAmbiguityCallsLastDay(accountId)) < rearbitrationsPerDay();
-}

@@ -152,8 +152,18 @@ scenario('L40-DUO', 'Duo : les données suivent le bien qui change de compte', (
 
   it('DUO-03 — rattrapage des déplacements passés : détecté, simulation exacte sans écriture, application, idempotent ; tâche planifiée', async () => {
     const w = await monde(sql, make);
-    // Déplacement « d'avant le lot 40 » : seul le bien a changé de compte.
-    await sql`UPDATE assets SET account_id = ${w.cible.id}, duo_id = NULL WHERE id = ${w.voiture.id}`;
+    // Déplacement « d'avant le lot 40 » : seul le bien a changé de compte, sur
+    // demande de déplacement ACCEPTÉE (preuve exigée depuis le lot 54). L'état
+    // historique est reconstitué hors gardes (0373 refuse désormais un
+    // changement de propriétaire qui laisse des données derrière lui).
+    await sql.begin(async (tx) => {
+      await tx`SET LOCAL session_replication_role = replica`;
+      await tx`UPDATE assets SET account_id = ${w.cible.id}, duo_id = NULL WHERE id = ${w.voiture.id}`;
+    });
+    await sql`
+      INSERT INTO asset_move_requests (asset_id, duo_id, target_account_id, initiator_user_id, validator_user_id, status, resolved_at, resolved_by_type,
+                                       asset_label_snapshot, target_user_snapshot, initiator_user_snapshot)
+      VALUES (${w.voiture.id}, ${w.duo.id}, ${w.cible.id}, ${w.membre.id}, ${w.titulaire.id}, 'ACCEPTED', now(), 'USER', 'Voiture', 'Membre', 'Membre')`;
     const { findMisplacedAssetData, runAssetAccountBackfill } = await import('@/services/assets/asset-account-backfill');
     const mien = (l: Array<{ assetId: number }>) => l.filter((c) => c.assetId === w.voiture.id);
     expect(mien(await findMisplacedAssetData(500))).toEqual([{ assetId: w.voiture.id, toAccountId: w.cible.id, fromAccountId: w.duoCompte.id }]);

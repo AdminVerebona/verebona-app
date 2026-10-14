@@ -13,6 +13,20 @@
  * un autre `account_id` que lui. Le téléversement exige que le bien soit dans
  * le compte courant : un tel écart ne peut venir que d'un déplacement.
  *
+ * Lot 54 (ticket SEC-P0-CORR, variante PRUDENTE — risque signalé par 53B) :
+ * « un tel écart ne peut venir que d'un déplacement » est une HYPOTHÈSE, pas
+ * une preuve. Une relation intercomptes héritée (document du compte B
+ * rattaché à tort au bien du compte A) aurait été traitée comme un
+ * déplacement et ses données transférées de B vers A, chaque heure, sans
+ * validation. Le rattrapage AUTOMATIQUE ne traite plus que les couples
+ * PROUVÉS : une demande de déplacement ACCEPTÉE (`asset_move_requests`) du
+ * bien vers son compte actuel, dans un Duo auquel l'ancien compte est relié
+ * (compte titulaire `duo_account_id`, titulaire payeur ou membre du Duo).
+ * Les autres couples sont seulement COMPTÉS (`unproven`) : ils restent des
+ * anomalies d'isolation (BO › Exploitation › Isolation des comptes), traitées
+ * par la correction contrôlée (détachement, jamais un transfert) ou en
+ * attente de décision (Duo, D3 ouvert).
+ *
  * Correction : `transferAssetOperationsInTx` (lot 39) puis
  * `transferAssetDataInTx` (même règle qu'un déplacement d'aujourd'hui), une
  * transaction par couple (bien, ancien compte). Idempotent : un couple traité
@@ -37,6 +51,8 @@ export interface AssetAccountBackfillReport {
   mode: 'simulate' | 'apply';
   /** Couples (bien, ancien compte) détectés dans ce passage. */
   detected: number;
+  /** Lot 54 : couples SANS preuve de déplacement — jamais transférés (anomalies d'isolation). */
+  unproven: number;
   processed: number;
   failed: Array<{ assetId: number; fromAccountId: number; error: string }>;
   /** Il reste des couples (lot borné ou délai atteint). */
@@ -47,8 +63,29 @@ export interface AssetAccountBackfillReport {
 const BATCH = 50;
 class Simulation extends Error {}
 
+/**
+ * Preuve d'un déplacement légitime (lot 54) : demande ACCEPTÉE du bien vers
+ * son compte actuel, dans un Duo relié à l'ancien compte. SQL partagé.
+ */
+export const PROVEN_MOVE_SQL = (asset: string, to: string, from: string) => `EXISTS (
+  SELECT 1 FROM asset_move_requests m
+   WHERE m.asset_id = ${asset} AND m.status = 'ACCEPTED' AND m.target_account_id = ${to}
+     AND (EXISTS (SELECT 1 FROM accounts fa WHERE fa.id = ${from} AND fa.duo_account_id = m.duo_id)
+       OR EXISTS (SELECT 1 FROM accounts fa JOIN duo_accounts d ON d.billing_owner_user_id = fa.owner_user_id
+                   WHERE fa.id = ${from} AND d.id = m.duo_id)
+       OR EXISTS (SELECT 1 FROM accounts fa JOIN duo_memberships dm ON dm.user_id = fa.owner_user_id
+                   WHERE fa.id = ${from} AND dm.duo_id = m.duo_id)))`;
+
 /** Couples (bien, ancien compte) dont des données sont restées dans l'ancien compte. */
-export async function findMisplacedAssetData(limit = BATCH): Promise<MisplacedAssetData[]> {
+export async function findMisplacedAssetData(
+  limit = BATCH,
+  /** `true` (défaut) : couples prouvés ; `false` : sans preuve ; `null` : tous. */
+  opts: { proven?: boolean | null } = {},
+): Promise<MisplacedAssetData[]> {
+  const preuve = opts.proven === undefined ? true : opts.proven;
+  const filtre = preuve === null ? sql`` : preuve
+    ? sql.raw(` AND ${PROVEN_MOVE_SQL('a.id', 'a.account_id', 'x.account_id')}`)
+    : sql.raw(` AND NOT ${PROVEN_MOVE_SQL('a.id', 'a.account_id', 'x.account_id')}`);
   const r = (await db.execute(sql`
     SELECT DISTINCT a.id AS asset_id, a.account_id AS to_account, x.account_id AS from_account
       FROM assets a
@@ -64,7 +101,7 @@ export async function findMisplacedAssetData(limit = BATCH): Promise<MisplacedAs
         UNION SELECT t.account_id FROM to_process_actions t
                WHERE t.target_type = 'ASSET' AND t.target_id = a.id AND t.account_id <> a.account_id
       ) x ON true
-     WHERE a.account_id IS NOT NULL
+     WHERE a.account_id IS NOT NULL${filtre}
      ORDER BY a.id, x.account_id
      LIMIT ${limit}`)) as unknown as Array<{ asset_id: number; to_account: number; from_account: number }>;
   return r.map((x) => ({ assetId: Number(x.asset_id), toAccountId: Number(x.to_account), fromAccountId: Number(x.from_account) }));
@@ -104,9 +141,11 @@ export async function runAssetAccountBackfill(p: {
   apply: boolean; deadline?: number; batchSize?: number;
   onProgress?: (x: { processed: number; detected: number; assetId: number }) => void;
 }): Promise<AssetAccountBackfillReport> {
-  const couples = await findMisplacedAssetData(p.batchSize ?? BATCH);
+  const couples = await findMisplacedAssetData(p.batchSize ?? BATCH, { proven: true });
+  // Sans preuve : comptés, jamais transférés (lot 54, variante prudente).
+  const sansPreuve = await findMisplacedAssetData(Math.max(p.batchSize ?? BATCH, 500), { proven: false });
   const report: AssetAccountBackfillReport = {
-    mode: p.apply ? 'apply' : 'simulate', detected: couples.length, processed: 0, failed: [], more: false, results: [],
+    mode: p.apply ? 'apply' : 'simulate', detected: couples.length, unproven: sansPreuve.length, processed: 0, failed: [], more: false, results: [],
   };
   for (const c of couples) {
     if (p.deadline && Date.now() > p.deadline) { report.more = true; break; }

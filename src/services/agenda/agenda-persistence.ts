@@ -236,6 +236,18 @@ export async function persistAgendaDecisions(
         case 'confirm_forecast':
           await confirmForecast(decision, accountId);
           break;
+
+        case 'ignore':
+          // Lot 54 : T4 a refusé l'événement, s'est abstenu ou a échoué —
+          // aucun Agenda, aucune proposition. Action non créatrice de clé :
+          // l'ancien élément automatique de la source, s'il existe et n'a
+          // pas été touché par l'utilisateur, est retiré par la
+          // synchronisation ci-dessous (analyse complète).
+          console.info(JSON.stringify({
+            event: 't4.candidate_ignored', accountId, assetId, sourceFileId: opts.sourceFileId ?? decision.sourceFileId ?? null,
+            reasonCode: decision.reasonCode, verdict: decision.t4?.verdict ?? null,
+          }));
+          break;
       }
     } catch (e) {
       console.error(

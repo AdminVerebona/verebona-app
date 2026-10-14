@@ -53,7 +53,8 @@ describe('sous-ensemble critique du passage réel', () => {
     execute.mockReset().mockImplementation(async (req: { operationCode: string; idempotencyKey: string }) => {
       const id = req.idempotencyKey.split(':')[1];
       const out = cases.find((c) => c.id === id && c.operationCode === req.operationCode)!.output as Record<string, unknown>;
-      return { data: id === 'P-T4-01' ? { ...out, homeCategory: 'information' } : out };
+      // Lot 54 : le texte du dépôt est en t4_output_v2 — cas v2 (P-T4-09, attendu « action »).
+      return { data: id === 'P-T4-09' ? { ...out, homeCategory: 'information' } : out };
     });
     const live = await buildLiveRunner(cases, { accountId: 42, userId: 3 });
     const [t4] = await runMasterCorpus({ readMasterFile: readMasterFileFromRepo, cases, live, treatments: ['T4'] });

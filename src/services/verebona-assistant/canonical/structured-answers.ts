@@ -41,7 +41,9 @@ export type CanonicalStrategy =
   | 'structured.asset_field' | 'structured.upcoming_agenda' | 'structured.missing_information' | 'structured.sum_qualified'
   // Lot 45 (O6) : lecture « Opération d'abord » (CDC Opérations V1 C15).
   | 'structured.operation_history' | 'structured.claim_status' | 'structured.payments' | 'structured.acquisition_price'
-  | 'structured.contracts' | 'structured.operation_cost';
+  | 'structured.contracts' | 'structured.operation_cost'
+  // Lot 54D (§4.3) : coût de possession (service TCO).
+  | 'structured.ownership_cost';
 
 export type CanonicalLevel1 =
   | { strategy: CanonicalStrategy; answer: string; sources: RetrievedSource[]; claims: Claim[]; kind: 'exact' | 'list' | 'calc' | 'no_result' | 'conflict' }
@@ -158,6 +160,19 @@ export const HISTORY_Q = /(qu'?est-ce qu'?(il|on) a ete fait|qu'?est-ce qui a et
 /** Une question sur l'avenir (« prévus », « à faire ») n'est pas un historique : Agenda / actions. */
 const HISTORY_NOT = /\b(prevue?s?|a venir|prochaine?s?|planifie\w*|futur\w*|dois|devrai\w*|faut|a faire|a prevoir)\b/;
 const HISTORY_STRIP = /qu['’]?est-ce qu['’]?(il|on) a [ée]t[ée] fait|qu['’]?est-ce qui a [ée]t[ée] (fait|r[ée]alis[ée])|ce qui a [ée]t[ée] (fait|r[ée]alis[ée])|que s['’]?est-il pass[ée]|qu['’]?a-t-on fait|historique|interventions?|r[ée]parations?|travaux|entretiens?|op[ée]rations?|r[ée]alis[ée]e?s?|faite?s?|effectu[ée]e?s?|quel(le)?s?/gi;
+
+/**
+ * Lot 54D (§4.3) : question de COÛT DE POSSESSION d'un bien (« combien m'a
+ * coûté la Polo au total ? », « coût de possession », « TCO ») — T2 lit le
+ * service TCO, jamais un calcul parallèle.
+ */
+export const TCO_Q = /\b(couts? (total|totaux|global|globaux|complet|reel) de (possession|detention)|couts? de (possession|detention)|tco|cout total|cout global|au total (m'?a|a) coute|m'?a coute au total|combien (m'?a|a) coute .*\bau total\b|combien (me|m'?a) coute (de|d') ?(posseder|avoir))\b/;
+/** Question de coût de possession (pure) : un thème (« coût total des réparations ») ou une année reste un total de dépenses (T2-24). */
+export function isOwnershipCostQuestion(message: string): boolean {
+  const m = plain(message);
+  return TCO_Q.test(m) && !expenseThemeOf(message) && !/\b(19|20)\d{2}\b/.test(m);
+}
+const TCO_STRIP = /co[uû]ts? (total|totaux|global|globaux|complet|r[ée]el) de (possession|d[ée]tention)|co[uû]ts? de (possession|d[ée]tention)|tco|co[uû]t total|co[uû]t global|au total|combien|m['’]?a|co[uû]t[ée]?|me|de|d['’]|poss[ée]der|avoir|quel|est|le|la|mon|ma/gi;
 
 /** « payé / réglé » (C15) — distinct de « coûté / dépensé » (F-132, F-133). */
 export const PAID = /\b(paye|payee|payes|payees|payer|regle|reglee|regles|reglees|regler|acquitte(e|es|s)?|verse|versee|versees)\b/;
@@ -284,6 +299,43 @@ export function historyAnswer(a: AssetRow, entries: AssetHistoryEntry[], theme: 
 }
 
 /**
+ * Lot 54D (§4.3) — réponse « coût de possession » : chiffres du service TCO
+ * (moteur partagé), jamais recalculés ici. La source porte chaque montant cité
+ * (vérifiable par `claim-support`) ; une couverture incomplète est dite.
+ */
+export function ownershipCostAnswer(a: AssetRow, t: import('@/services/business-operations/tco/model').TcoResult): CanonicalLevel1 {
+  const postes = t.breakdown.map((b) => `${b.label.toLowerCase()} ${formatEur(b.costsCents)}`);
+  if (t.reductionsCents) postes.push(`avoirs − ${formatEur(t.reductionsCents)}`);
+  if (t.refundsCents) postes.push(`remboursements − ${formatEur(t.refundsCents)}`);
+  if (t.indemnitiesCents) postes.push(`indemnités − ${formatEur(t.indemnitiesCents)}`);
+  const phrases = [`Coût de possession de ${a.name} : coût cumulé documenté ${formatEur(t.summary.cumulativeCostCents)}${postes.length ? ` (${postes.join(', ')})` : ''}${t.period.start ? `, depuis le ${formatDateFr(t.period.start)}` : ''}.`];
+  if (t.disposed) {
+    phrases.push(t.summary.netFinalCents != null
+      ? `Après la vente (prix réalisé ${formatEur(t.disposal.realizedPriceCents ?? 0)}), coût net final : ${formatEur(t.summary.netFinalCents)}.`
+      : 'Le prix de cession réalisé n’est pas documenté : le coût net final n’est pas établi.');
+  } else if (t.summary.currentValue && t.summary.netEstimatedCents != null) {
+    phrases.push(`Valeur actuelle ${formatEur(t.summary.currentValue.cents)} (au ${formatDateFr(t.summary.currentValue.date)}) : coût net estimé ${formatEur(t.summary.netEstimatedCents)}.`);
+  } else {
+    phrases.push('Aucune valorisation datée : seul le coût cumulé est indiqué, aucune dépréciation n’est estimée.');
+  }
+  if (t.reliability.unconverted.length) phrases.push(`Non comptés (devise sans contre-valeur en euros) : ${t.reliability.unconverted.map((u) => formatMinorAmount(u.amountMinor, u.currency)).join(', ')}.`);
+  if (t.reliability.unallocated.count) phrases.push('Des montants communs à plusieurs biens ne sont pas ventilés et ne sont pas comptés.');
+  if (t.status !== 'COMPLETE') phrases.push(t.status === 'PARTIAL' ? 'Résultat partiel.' : 'Ce total peut être incomplet.');
+  if (t.usage.annualEstimateCents) phrases.push(`Budget d’usage estimé (forfaits, non compté dans le coût) : ${formatEur(t.usage.annualEstimateCents)} par an.`);
+  const answer = phrases.join(' ');
+  const src: RetrievedSource = {
+    id: `tco:${a.id}`, type: 'document_extraction', title: `Coût de possession — ${a.name}`, content: answer.slice(0, 1500), relevanceScore: 1,
+    meta: {
+      assetId: a.id, assetName: a.name, cumulativeCostCents: t.summary.cumulativeCostCents, netEstimatedCents: t.summary.netEstimatedCents,
+      netFinalCents: t.summary.netFinalCents, status: t.status, operationCount: t.reliability.operationsCounted,
+      includedDocuments: t.reliability.documents.slice(0, 50).map((d) => `doc-${d.fileId}`).join(' '),
+    },
+  };
+  const sources = [src];
+  return { strategy: 'structured.ownership_cost', answer, sources, claims: [claim('ownership_cost', answer, sources, 'calculated')], kind: 'exact' };
+}
+
+/**
  * C15.2 — prix d'achat comme interprétation principale ; le cumul des
  * dépenses depuis l'achat présenté À PART, jamais additionné. `null` : aucun
  * prix d'achat connu (consolidé ni sur la fiche).
@@ -370,7 +422,79 @@ export function paymentsAnswer(
  * s'appliquent ensuite). `resolveScope(texte)` : résolution du bien de
  * `data-answer` (clarification, page, mots du message).
  */
+// ══════════════════════════════════════════════════════════════════════════
+// LOT 54E (#419 écart 7) — BARRIÈRE SÉMANTIQUE TRANSVERSALE
+//
+// Avant qu'une réponse STRUCTURÉE ne soit servie, une barrière UNIQUE
+// vérifie que la stratégie candidate CONSOMME tout le sens de la question :
+//
+//   strategyCandidate + semanticScopeResolved + unresolvedSemanticTerms
+//
+//   résolu      → la réponse est servie ;
+//   non résolu  → aucune stratégie plus large : `scopeUnresolved` (T2
+//                 UNDERSTAND, sources réelles, clarification ou insuffisant).
+//
+// Chaque stratégie DÉCLARE ici sa portée (type exhaustif : une stratégie
+// ajoutée sans déclaration ne compile pas) :
+//   · `structural` — le périmètre est entièrement fixé par une donnée
+//     structurée (clé du registre, liste explicite, opération désignée par
+//     son libellé réel) : rien ne peut être élargi ;
+//   · `semantic`   — agrégat ou lecture large : tout terme significatif non
+//     consommé par son vocabulaire bloque la réponse.
+// Les gardes historiques par stratégie (lot 49) restent en place ; la
+// barrière est le filet commun, y compris pour les stratégies futures.
+// ══════════════════════════════════════════════════════════════════════════
+export const STRATEGY_SCOPE: Readonly<Record<CanonicalStrategy, { scope: 'structural' | 'semantic'; vocabulary: RegExp | null }>> = {
+  'structured.asset_field': { scope: 'structural', vocabulary: null },
+  'structured.upcoming_agenda': { scope: 'structural', vocabulary: null },
+  'structured.missing_information': { scope: 'structural', vocabulary: null },
+  'structured.operation_cost': { scope: 'structural', vocabulary: null },
+  'structured.sum_qualified': { scope: 'semantic', vocabulary: /d[ée]pens\w*|co[uû]t\w*|pay\w*|total|somme|montant|combien|nombre|ai-je|j['’]ai/gi },
+  'structured.payments': { scope: 'semantic', vocabulary: PAID_STRIP_SOURCE() },
+  'structured.acquisition_price': { scope: 'semantic', vocabulary: PAID_STRIP_SOURCE() },
+  'structured.contracts': { scope: 'semantic', vocabulary: /contrats?|polices?|assurances?|abonnements?|en cours|souscrits?|aupr[eè]s de qui|chez qui|quel(le)?s?/gi },
+  'structured.operation_history': { scope: 'semantic', vocabulary: /qu['’]?est-ce qu['’]?(il|on) a [ée]t[ée] fait|qu['’]?est-ce qui a [ée]t[ée] (fait|r[ée]alis[ée])|ce qui a [ée]t[ée] (fait|r[ée]alis[ée])|que s['’]?est-il pass[ée]|qu['’]?a-t-on fait|historique|interventions?|r[ée]parations?|travaux|entretiens?|op[ée]rations?|r[ée]alis[ée]e?s?|faite?s?|effectu[ée]e?s?|quel(le)?s?/gi },
+  'structured.claim_status': { scope: 'semantic', vocabulary: /sinistres?|o[uù] en (est|sont)|statut|[ée]tat|avancement|indemni\w*|rembours\w*|dossiers?|suivi|d[ée]clar\w*|expert\w*/gi },
+  'structured.ownership_cost': { scope: 'semantic', vocabulary: /co[uû]ts? (total|totaux|global|globaux|complet|r[ée]el) de (possession|d[ée]tention)|co[uû]ts? de (possession|d[ée]tention)|tco|co[uû]t total|co[uû]t global|au total|combien|m['’]?a|co[uû]t[ée]?|poss[ée]der|avoir|d[ée]tention|possession/gi },
+};
+
+/** Vocabulaire « payé / réglé » (même motif que la stratégie). */
+function PAID_STRIP_SOURCE(): RegExp {
+  return /pay[ée]e?s?|payer|r[ée]gl[ée]e?s?|r[ée]gler|acquitt[ée]e?s?|vers[ée]e?s?|combien|ai-je|j['’]ai|deja|déjà|a-t-(il|elle)|est-(il|elle)|[ée]t[ée]|prix|achat|achet[ée]e?/gi;
+}
+
+/**
+ * Barrière (pure, testée) : termes significatifs de la question que la
+ * stratégie candidate ne consomme pas. `[]` : périmètre résolu.
+ */
+export function structuredScopeBarrier(strategy: CanonicalStrategy, message: string, assetNames: readonly string[]): { semanticScopeResolved: boolean; unresolvedSemanticTerms: string[] } {
+  const d = STRATEGY_SCOPE[strategy];
+  if (d.scope === 'structural') return { semanticScopeResolved: true, unresolvedSemanticTerms: [] };
+  const consumed = [...expenseThemeWords(message), ...MOTS_DEPENSE, ...Object.values(EXPENSE_THEME_LABELS), ...(d.vocabulary ? message.match(d.vocabulary) ?? [] : [])];
+  const terms = semanticResidue(message, { assetNames, consumed });
+  return { semanticScopeResolved: terms.length === 0, unresolvedSemanticTerms: terms };
+}
+
+/**
+ * Réponse canonique structurée, ou `null` — toute réponse passe par la
+ * barrière sémantique transversale (lot 54E) avant d'être servie.
+ */
 export async function tryCanonicalStructured(p: {
+  port: AccountDataPort;
+  accountId: number;
+  message: string;
+  resolveScope: (text: string) => Promise<ScopeLike>;
+}): Promise<CanonicalLevel1> {
+  let dernier: ScopeLike | null = null;
+  const r = await tryCanonicalStructuredInner({ ...p, resolveScope: async (t) => (dernier = await p.resolveScope(t)) });
+  if (!r || !('strategy' in r)) return r;
+  const assets = (dernier as ScopeLike | null)?.assets ?? [];
+  const b = structuredScopeBarrier(r.strategy, p.message, assets.map((a) => a.name));
+  if (b.semanticScopeResolved) return r;
+  return { scopeUnresolved: { strategyCandidate: r.strategy, terms: b.unresolvedSemanticTerms, assetIds: assets.map((a) => a.id) } };
+}
+
+async function tryCanonicalStructuredInner(p: {
   port: AccountDataPort;
   accountId: number;
   message: string;
@@ -419,6 +543,21 @@ export async function tryCanonicalStructured(p: {
   // recalculés). Aucune Opération pour la question : `null`, les branches
   // historiques répondent comme avant (16.2). Vocabulaire P09.
   // ══════════════════════════════════════════════════════════════════════
+
+  // ── Lot 54D (§4.3) : coût de possession d'un bien → service TCO ─────────
+  if (isOwnershipCostQuestion(message) && port.readOwnershipCost) {
+    const scope = await p.resolveScope(message.replace(TCO_STRIP, ' '));
+    if (scope.ambiguous) return { ambiguous: scope.assets, reason: 'TCO_MULTIPLE_ASSETS' };
+    if (!scope.unresolved && scope.assets.length === 1) {
+      const a = scope.assets[0];
+      // Lot 54E (#419 écart 7) : barrière transversale AVANT exécution —
+      // « combien m'a coûté internet au total ? » n'est pas le coût du bien.
+      const b = structuredScopeBarrier('structured.ownership_cost', message, [a.name]);
+      if (!b.semanticScopeResolved) return nonResolu('structured.ownership_cost', b.unresolvedSemanticTerms, scope);
+      const tco = await port.readOwnershipCost(accountId, a.id).catch(() => null);
+      if (tco) return ownershipCostAnswer(a, tco);
+    }
+  }
 
   // ── Sinistres : « où en est mon sinistre ? », indemnité ───────────────
   if (CLAIM_Q.test(m) && CLAIM_ASK.test(m) && !/\bcomment\b/.test(m) && port.readClaims) {

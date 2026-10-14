@@ -1,46 +1,14 @@
 /**
- * POST /api/admin/ai/config-versions/[id]/promote — CDC BO IA WF-02.
+ * POST /api/admin/ai/config-versions/[id]/promote — SUPPRIMÉ (lot 54).
  *
- * Promeut un Brouillon en « À tester ». Préproduction uniquement.
- *
- * ── UN REFUS N'EST PAS UNE ERREUR ──────────────────────────────────────────
- * Quand le diff est vide ou que les contrôles échouent, la route rend 200 avec
- * `promoted: false`, le diff et les issues. C'est délibéré : l'écran doit
- * afficher POURQUOI, et une réponse d'erreur l'obligerait à retrouver ces
- * informations ailleurs. Le WF-02 exige « présenter les erreurs par traitement
- * et champ » — elles sont dans la réponse.
- *
- * Les 409 sont réservés aux conflits d'état : version introuvable, statut
- * incompatible, ou environnement de production.
+ * Le statut « À tester » n'existe plus : une version est active ou non, et
+ * la version active reste modifiable. Rend 410 avec le geste de remplacement.
  */
-import { NextRequest, NextResponse } from 'next/server';
-import { promote } from '@/services/ai/config/config-version.service';
-import { requireAdminContext, parseVersionId, invalidId, toErrorResponse } from '../../_shared';
+import { NextRequest } from 'next/server';
+import { requireAdminContext, removedWorkflow } from '../../_shared';
 
-export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+export async function POST(req: NextRequest) {
   const guard = await requireAdminContext(req);
   if (!guard.ok) return guard.response;
-
-  const { id } = await params;
-  const versionId = parseVersionId(id);
-  if (versionId === null) return invalidId(id);
-
-  try {
-    // WF-27 : un Brouillon obsolète n'est promu qu'après lecture du diff,
-    // confirmée par `acknowledgeStale` (refus 409 STALE_DRAFT sinon).
-    const body = await req.json().catch(() => ({}));
-    const result = await promote(versionId, { acknowledgeStale: body?.acknowledgeStale === true });
-    return NextResponse.json({
-      promoted: result.promoted,
-      diff: result.diff,
-      validation: result.validation,
-      reason: result.promoted
-        ? null
-        : result.diff.identical
-          ? 'IDENTICAL_TO_ACTIVE'
-          : 'VALIDATION_FAILED',
-    });
-  } catch (e) {
-    return toErrorResponse(e, 'POST /api/admin/ai/config-versions/[id]/promote');
-  }
+  return removedWorkflow('Mettre à l’essai', 'utilisez « Activer en préproduction » sur la version.');
 }

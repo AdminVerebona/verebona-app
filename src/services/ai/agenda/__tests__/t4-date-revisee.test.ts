@@ -5,6 +5,7 @@
  * quand la date n'a pas changé, jamais bloquante.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { t4Simule } from './support/t4-simule';
 
 const h = vi.hoisted(() => ({ choix: 1 as number | null }));
 vi.mock('../master/temporal-ambiguity', async (orig) => ({
@@ -22,7 +23,7 @@ const cand = {
 };
 const run = (reviseDate: ReturnType<typeof vi.fn>, c: Record<string, unknown> = cand) => processAgendaCandidates({
   accountId: 1, userId: 2, assetId: 3, sourceFileId: 40, candidates: [c] as never, existing: [], today: '2026-10-02',
-  reviseDate: reviseDate as never,
+  reviseDate: reviseDate as never, decide: t4Simule,
 });
 
 beforeEach(() => {

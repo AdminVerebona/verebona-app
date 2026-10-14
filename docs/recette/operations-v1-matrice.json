@@ -3,7 +3,7 @@
  "cdc": "CDC Opérations V1 v3, Partie III (fait foi) : C29 (F-001 à F-200), C31 (ACC-001 à ACC-022), C32, C34 (INV-FINAL-001 à 026), B33 (INV-001 à 060)",
  "regle": "Chaque cas du périmètre est AUTOMATISÉ (identifiant présent dans chaque fichier de test cité, ou couvert « via » des cas automatisés), complété le cas échéant d'une procédure de recette préprod (modèle réel, BO), HORS PÉRIMÈTRE (décision PO citée) ou ÉCART tracé (proposition). Le test src/test/recette/__tests__/o10-matrice.test.ts échoue sinon (ACC-021).",
  "decisions": {
-  "Q1": "Le TCO est hors de ce CDC (CDC dédié ultérieur) : les cas qui portent sur le TCO lui-même (écran, forfaits, formules C17, prorata) sont hors périmètre ; les cas qui portent sur les composantes / coûts consolidés restent dans le périmètre.",
+  "Q1": "Décision PO du 13/10/2026 (lot 54D) : le TCO est INCLUS dans Opérations V1 — service TCO sur les composantes consolidées (moteur financier partagé T2 / TCO / Sinistres), formules C17, prorata au jour, forfaits d’usage, tiroir « Coût de possession » (Premium / Premium Duo, verrouillé en Standard). Plus aucun cas TCO hors périmètre.",
   "Q7": "Livraison en préprod lot par lot ; recette complète (ce lot) avant la future mise en production.",
   "Q8": "Aucun interrupteur fonctionnel du système Opération.",
   "Q9": "Le BO diagnostique et ne modifie jamais une Opération ; la correction passe par le code puis la reconsolidation (bouton « Reconsolider ce compte », lot 48).",
@@ -89,8 +89,8 @@
    "cas": [
     "F-106"
    ],
-   "constat": "Contrat T1 v4 : un indice financier porte un montant et sa devise, sans contre-valeur EUR. Un document CHF avec débit EUR explicite produit une composante CHF dont amount_eur_cents reste nul (aucune conversion inventée, ACC-015 respecté) : l’agrégat EUR ne la compte pas.",
-   "proposition": "Lot dédié : contrat T1 v5 avec `amountEurMinor` facultatif sur l’indice financier (« montant EUR effectivement débité / facturé, lu sur le document »), règle du prompt maître T1 et barrière serveur (même fait que le montant d’origine), copie par T3 dans amount_eur_cents ; fixtures et corpus T1. Hors de ce lot : modification de contrat IA et de prompt.",
+   "constat": "RÉSOLU (lots 53D puis 54D) — contrat T1 v5 : contre-valeur EUR écrite `amountEurMinor` propagée aux candidats puis aux composantes (`amount_eur_cents`) ; absente ou contradictoire entre justificatifs : aucune, montant d’origine conservé et signalé (OPS-E03).",
+   "proposition": "Aucune action restante : recette préprod sur un document CHF avec débit EUR (rapport de recette, section TCO).",
    "gravite": "faible (aucune donnée fausse : montant d’origine conservé, exclu de l’agrégat EUR)"
   },
   {
@@ -98,8 +98,8 @@
    "cas": [
     "F-103"
    ],
-   "constat": "Le principal d’un prêt n’est jamais une composante (attendu F-103 respecté) mais n’est pas non plus renseigné dans business_operation_financing_details.principal_amount_minor : T1 v4 n’a pas de rôle « principal ».",
-   "proposition": "Avec E-01 (contrat T1 v5) : rôle d’indice PRINCIPAL (jamais une composante), copié par T3 dans les détails FINANCING.",
+   "constat": "RÉSOLU (lots 53D puis 54D) — capital (`LOAN_PRINCIPAL`) renseigné dans business_operation_financing_details.principal_amount_minor, jamais une composante ; idempotent après réanalyse (OPS-E04) ; contrôle BO FIN_PRINCIPAL_AS_COST.",
+   "proposition": "Aucune action restante : recette préprod sur une offre de prêt (rapport de recette, section TCO).",
    "gravite": "faible (information descriptive manquante, aucun calcul faux)"
   }
  ],
@@ -129,10 +129,11 @@
    "attendu": "INTERVENTION REALIZED ; equipment_link + asset parent ; TCO une fois.",
    "trace": "Création anti-pollution — C3, C5 — T1 + T3",
    "tests": [
-    "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts"
+    "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts",
+    "src/services/business-operations/finance/__tests__/l54d-finance-tco.test.ts"
    ],
    "statut": "AUTOMATISE",
-   "note": "Partie « TCO une fois » : TCO hors périmètre (Q1) ; automatisé côté composante unique + T2 (F-116)."
+   "note": "Lot 54D : TCO automatisé — coût d’équipement remonté une seule fois au bien parent (TCO-15)."
   },
   {
    "id": "F-003",
@@ -1293,10 +1294,11 @@
    "trace": "Finances/TCO — C11, C12, C17 — FinancialService/TCO",
    "tests": [
     "src/test/e2e/scenarios/l41-o3a-consolidation-t3.e2e.ts",
-    "src/test/e2e/scenarios/l48-o10-recette-complements.e2e.ts"
+    "src/test/e2e/scenarios/l48-o10-recette-complements.e2e.ts",
+    "src/services/business-operations/finance/__tests__/l54d-finance-tco.test.ts"
    ],
    "statut": "AUTOMATISE",
-   "note": "Partie « TCO 1350 » : TCO hors périmètre (Q1) ; composantes FORECAST 1200 + REALIZED 1350 et T2 automatisés."
+   "note": "Lot 54D : TCO automatisé — devis exclu, réalisé 1 350 compté (TCO-15)."
   },
   {
    "id": "F-092",
@@ -1307,10 +1309,11 @@
    "trace": "Finances/TCO — C11, C12, C17 — FinancialService/TCO",
    "tests": [
     "src/services/business-operations/consolidation/__tests__/o3a-finances-etat.test.ts",
-    "src/test/e2e/scenarios/l41-o3a-consolidation-t3.e2e.ts"
+    "src/test/e2e/scenarios/l41-o3a-consolidation-t3.e2e.ts",
+    "src/services/business-operations/finance/__tests__/l54d-finance-tco.test.ts"
    ],
    "statut": "AUTOMATISE",
-   "note": "Contrôlé sur les composantes et le coût net consolidé (TCO hors périmètre, Q1)."
+   "note": "Lot 54D : TCO 1 200 contrôlé (FIN-D, TCO-15)."
   },
   {
    "id": "F-093",
@@ -1321,10 +1324,11 @@
    "trace": "Finances/TCO — C11, C12, C17 — FinancialService/TCO",
    "tests": [
     "src/services/business-operations/consolidation/__tests__/o3a-finances-etat.test.ts",
-    "src/test/e2e/scenarios/l41-o3a-consolidation-t3.e2e.ts"
+    "src/test/e2e/scenarios/l41-o3a-consolidation-t3.e2e.ts",
+    "src/services/business-operations/finance/__tests__/l54d-finance-tco.test.ts"
    ],
    "statut": "AUTOMATISE",
-   "note": "Contrôlé sur les composantes et le coût net consolidé (TCO hors périmètre, Q1)."
+   "note": "Lot 54D : TCO 1 200 contrôlé (TCO-15)."
   },
   {
    "id": "F-094",
@@ -1334,10 +1338,11 @@
    "attendu": "TCO 1200 si portions distinctes.",
    "trace": "Finances/TCO — C11, C12, C17 — FinancialService/TCO",
    "tests": [
-    "src/services/business-operations/consolidation/__tests__/o3a-finances-etat.test.ts"
+    "src/services/business-operations/consolidation/__tests__/o3a-finances-etat.test.ts",
+    "src/services/business-operations/finance/__tests__/l54d-finance-tco.test.ts"
    ],
    "statut": "AUTOMATISE",
-   "note": "Contrôlé sur les composantes (TCO hors périmètre, Q1)."
+   "note": "Lot 54D : TCO 1 200 contrôlé (TCO-15)."
   },
   {
    "id": "F-095",
@@ -1482,10 +1487,12 @@
    "tests": [
     "src/services/business-operations/consolidation/__tests__/o3a-finances-etat.test.ts",
     "src/test/e2e/scenarios/l41-o3a-consolidation-t3.e2e.ts",
-    "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts"
+    "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts",
+    "src/services/business-operations/finance/__tests__/l54d-finance-tco.test.ts",
+    "src/test/e2e/scenarios/l54d-operations-tco.e2e.ts"
    ],
    "statut": "AUTOMATISE",
-   "note": "Agrégat TCO hors périmètre (Q1) ; exclusion de l’agrégat EUR contrôlée sur T2."
+   "note": "Lot 54D : agrégat TCO EUR et T2 contrôlés, montant d’origine conservé (OPS-E03, TCO-15)."
   },
   {
    "id": "F-106",
@@ -1495,10 +1502,12 @@
    "attendu": "amount_eur_cents utilisé.",
    "trace": "Finances/TCO — C11, C12, C17 — FinancialService/TCO",
    "tests": [
-    "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts"
+    "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts",
+    "src/test/e2e/scenarios/l53d-retours-po.e2e.ts",
+    "src/test/e2e/scenarios/l54d-operations-tco.e2e.ts"
    ],
-   "statut": "ECART",
-   "ecart": "E-01"
+   "statut": "AUTOMATISE",
+   "note": "Lot 53D (Q16) puis 54D (E03) : contre-valeur EUR écrite → amount_eur_cents ; absente ou contradictoire → aucune (OPS-E03)."
   },
   {
    "id": "F-107",
@@ -1573,9 +1582,11 @@
    "scenario": "Période contrat dépasse vente sans remboursement",
    "attendu": "Prorata TCO au jour si règle TCO appliquée.",
    "trace": "Finances/TCO — C11, C12, C17 — FinancialService/TCO",
-   "tests": [],
-   "statut": "HORS_PERIMETRE",
-   "decision": "Q1 — le TCO (prorata au jour C17) fait l’objet d’un CDC dédié ; aucune règle de prorata en V1 Opérations."
+   "tests": [
+    "src/services/business-operations/finance/__tests__/l54d-finance-tco.test.ts"
+   ],
+   "statut": "AUTOMATISE",
+   "note": "Lot 54D : prorata exact au jour (TCO-02) ; remboursement réel prioritaire (TCO-03)."
   },
   {
    "id": "F-113",
@@ -1584,9 +1595,11 @@
    "scenario": "Remboursement final réel après résiliation",
    "attendu": "Réalité documentée remplace prorata.",
    "trace": "Finances/TCO — C11, C12, C17 — FinancialService/TCO",
-   "tests": [],
-   "statut": "HORS_PERIMETRE",
-   "decision": "Q1 — le TCO (remplacement du prorata par la réalité documentée, C17) fait l’objet d’un CDC dédié."
+   "tests": [
+    "src/services/business-operations/finance/__tests__/l54d-finance-tco.test.ts"
+   ],
+   "statut": "AUTOMATISE",
+   "note": "Lot 54D : prorata exact au jour (TCO-02) ; remboursement réel prioritaire (TCO-03)."
   },
   {
    "id": "F-114",
@@ -1611,10 +1624,11 @@
    "attendu": "TCO A seulement.",
    "trace": "Finances/TCO — C11, C12, C17 — FinancialService/TCO",
    "tests": [
-    "src/test/e2e/scenarios/l45-o6-t2-operation-first.e2e.ts"
+    "src/test/e2e/scenarios/l45-o6-t2-operation-first.e2e.ts",
+    "src/services/business-operations/finance/__tests__/l54d-finance-tco.test.ts"
    ],
    "statut": "AUTOMATISE",
-   "note": "Partie TCO hors périmètre (Q1) ; attribution de la composante ciblée contrôlée sur T2."
+   "note": "Lot 54D : TCO du bien ciblé seulement (TCO-15)."
   },
   {
    "id": "F-116",
@@ -1624,10 +1638,11 @@
    "attendu": "Roll-up parent une fois.",
    "trace": "Finances/TCO — C11, C12, C17 — FinancialService/TCO",
    "tests": [
-    "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts"
+    "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts",
+    "src/services/business-operations/finance/__tests__/l54d-finance-tco.test.ts"
    ],
    "statut": "AUTOMATISE",
-   "note": "Roll-up TCO hors périmètre (Q1) ; coût compté une fois pour le bien parent contrôlé sur T2."
+   "note": "Lot 54D : roll-up équipement → bien parent une fois (TCO-04, TCO-15)."
   },
   {
    "id": "F-117",
@@ -1723,10 +1738,11 @@
    "attendu": "Net provisoire seulement.",
    "trace": "Finances/TCO — C11, C12, C17 — FinancialService/TCO",
    "tests": [
-    "src/test/e2e/scenarios/l43-o4-donnees-structurees.e2e.ts"
+    "src/test/e2e/scenarios/l43-o4-donnees-structurees.e2e.ts",
+    "src/services/business-operations/finance/__tests__/l54d-finance-tco.test.ts"
    ],
    "statut": "AUTOMATISE",
-   "note": "Le « net provisoire » est un calcul TCO (Q1) ; côté Opération : Cession sans PROCEED tant que le prix réalisé manque."
+   "note": "Lot 54D : net provisoire au prix souhaité, jamais un résultat définitif (TCO-08, TCO-15)."
   },
   {
    "id": "F-125",
@@ -2183,10 +2199,11 @@
    "trace": "Sinistre — C14 — ClaimOperationService/exports",
    "tests": [
     "src/services/business-operations/claims/__tests__/o5-sinistre.test.ts",
-    "src/test/e2e/scenarios/l44-o5-sinistre.e2e.ts"
+    "src/test/e2e/scenarios/l44-o5-sinistre.e2e.ts",
+    "src/services/business-operations/finance/__tests__/l54d-finance-tco.test.ts"
    ],
    "statut": "AUTOMATISE",
-   "note": "Réduction du TCO hors périmètre (Q1) ; indemnité attribuée au bien et net T2 contrôlés."
+   "note": "Lot 54D : réduction du TCO du bien contrôlée (TCO-15, FIN-A)."
   },
   {
    "id": "F-160",
@@ -2198,10 +2215,11 @@
    "tests": [
     "src/services/business-operations/claims/__tests__/o5-sinistre.test.ts",
     "src/test/e2e/scenarios/l44-o5-sinistre.e2e.ts",
-    "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts"
+    "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts",
+    "src/services/business-operations/finance/__tests__/l54d-finance-tco.test.ts"
    ],
    "statut": "AUTOMATISE",
-   "note": "Réduction du TCO hors périmètre (Q1) ; indemnité non allouée jamais imputée à un bien (T2) contrôlée."
+   "note": "Lot 54D : aucune réduction d’un TCO individuel (TCO-15, FIN-G)."
   },
   {
    "id": "F-161",
@@ -2864,9 +2882,11 @@
    "scenario": "TCO ne lit pas directement les montants génériques de documents ; il consomme les composantes consolidées + valuationHistory.",
    "attendu": "Critère satisfait",
    "trace": "C31",
-   "tests": [],
-   "statut": "HORS_PERIMETRE",
-   "decision": "Q1 — le TCO n’existe pas encore (CDC dédié) ; la règle côté composantes (montant documentaire générique jamais un coût) est automatisée par F-119."
+   "tests": [
+    "src/test/e2e/scenarios/l54d-operations-tco.e2e.ts"
+   ],
+   "statut": "AUTOMATISE",
+   "note": "Lot 54D : le service TCO lit les composantes consolidées, liens biens / équipements et valuationHistory ; aucun montant documentaire générique (FIN-B)."
   },
   {
    "id": "ACC-012",

@@ -511,8 +511,11 @@ export const SCHEDULED_TASKS: readonly ScheduledTaskDef[] = [
     run: async ({ deadline }) => {
       const { runAssetAccountBackfill } = await import('@/services/assets/asset-account-backfill');
       const r = await runAssetAccountBackfill({ apply: true, deadline: Math.min(deadline, Date.now() + 8 * MIN) });
-      if (r.detected === 0) return { note: 'aucun bien déplacé incohérent' };
-      const note = `${r.processed} bien(s) remis en cohérence, ${r.failed.length} en échec${r.more ? ', reste à traiter' : ''}`;
+      // Lot 54 : seuls les déplacements PROUVÉS sont rattrapés ; les autres
+      // écarts restent des anomalies d'isolation (jamais transférés ici).
+      const sansPreuve = r.unproven ? ` ; ${r.unproven} écart(s) sans preuve de déplacement, non transféré(s) (Isolation des comptes)` : '';
+      if (r.detected === 0) return { note: `aucun bien déplacé incohérent${sansPreuve}` };
+      const note = `${r.processed} bien(s) remis en cohérence, ${r.failed.length} en échec${r.more ? ', reste à traiter' : ''}${sansPreuve}`;
       return { note, again: r.more || r.failed.length > 0, ...(r.processed === 0 && r.failed.length > 0 ? { error: note } : {}) };
     },
   },
@@ -588,16 +591,18 @@ export const SCHEDULED_TASKS: readonly ScheduledTaskDef[] = [
     // même à 0. JAMAIS de correction ni de suppression automatique : rapport
     // complet dans BO › Exploitation › Relations intercomptes.
     code: 'cross-account-relations-check',
-    label: 'Sécurité : contrôle des relations intercomptes (alerte de Supervision)',
+    label: 'Sécurité : contrôle de l’isolation des comptes (alerte de Supervision)',
     schedule: { kind: 'daily', at: [7, 5], graceMs: 6 * HOUR },
     timeoutMs: 15 * MIN,
-    run: async () => {
+    run: async ({ trigger }) => {
       const { runCrossAccountCheck } = await import('@/services/security/cross-account/alerts');
-      const r = await runCrossAccountCheck();
+      const { ISOLATION_STATUS_LABELS } = await import('@/services/security/cross-account/detection');
+      const r = await runCrossAccountCheck(undefined, trigger === 'manual' ? 'manual' : 'scheduled');
       const erreurs = Object.keys(r.errors);
-      const note = `${r.total} relation(s) intercomptes — ${JSON.stringify(Object.fromEntries(Object.entries(r.counts).filter(([, n]) => n > 0)))} ; `
+      const note = `${ISOLATION_STATUS_LABELS[r.status]} — ${r.total} relation(s) intercomptes — ${JSON.stringify(Object.fromEntries(Object.entries(r.counts).filter(([, n]) => n > 0)))} ; `
         + `${r.reported} signalée(s), ${r.resolved} résolue(s)${erreurs.length ? ` ; contrôles non exécutés : ${erreurs.join(', ')}` : ''}`;
-      return { note: note.slice(0, 1500), ...(erreurs.length === Object.keys(r.counts).length && erreurs.length > 0 ? { error: note.slice(0, 500) } : {}) };
+      // Lot 54 (SEC-07) : un seul contrôle non exécuté = échec global du diagnostic.
+      return { note: note.slice(0, 1500), ...(r.status === 'INCOMPLET' ? { error: note.slice(0, 500) } : {}) };
     },
   },
 ];

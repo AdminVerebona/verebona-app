@@ -47,7 +47,7 @@ const SUITES: Readonly<Record<string, readonly string[]>> = {
   document_extraction_coverage: ['0329_t1_source_verification.sql'],
   // Lot 41 : issue T3 des candidats (0321).
   // Lot 47A (O9) : index de lecture du BO diagnostic (0325).
-  document_operation_candidates: ['0320_document_operation_candidates_t3.sql', '0321_document_operation_candidates_t3_outcome.sql', '0325_operation_diagnostics.sql'],
+  document_operation_candidates: ['0320_document_operation_candidates_t3.sql', '0321_document_operation_candidates_t3_outcome.sql', '0325_operation_diagnostics.sql', '0379_operations_t3_retry_cards.sql'],
   business_operations: ['0325_operation_diagnostics.sql'],
   // Lot 44 (O5) : ancre historique du Sinistre et clé stable des lignes de ses listes (0323).
   business_operation_claim_details: ['0323_claim_operations.sql'],

@@ -63,8 +63,8 @@
  *     si des candidats demandent un arbitrage). L'issue précédente n'est
  *     qu'un historique (monitoring), jamais une donnée de décision ;
  *   · sans carte ouverte, contexte identique → CONFIRMED_NO_CHANGE (AC6) ;
- *   · le réarbitrage à contexte INCHANGÉ est plafonné
- *     (`rearbitration-budget.ts`) : au-delà, AI_DEFERRED (carte maintenue) ;
+ *   · le réarbitrage à contexte INCHANGÉ n'est plus plafonné par T3 (lot 54A :
+ *     plus jamais AI_DEFERRED ; seuls les freins globaux de la passerelle) ;
  *   · sources documentaires réellement utilisées (`documentSources`) et
  *     unités source considérées (`matchedSourceUnitIds`) tracées.
  * ══════════════════════════════════════════════════════════════════════════
@@ -82,7 +82,7 @@ import {
 } from './decision';
 import { candidateSourcesOf, computeDocumentAssetContext, type DocumentAssetContext } from './context';
 import { usedDocumentSources } from './document-sources';
-import { dailyRearbitrationAllowed, type RearbitrationDeferral } from './rearbitration-budget';
+import type { RearbitrationDeferral } from './rearbitration-budget';
 import type { AccountMatchingIndex } from './matching-index';
 import { DOCUMENT_ASSET_RESOLUTION_VERSION } from './version';
 import {
@@ -180,6 +180,7 @@ export interface ResolveDocumentAssetInput {
    * `allow` (budget accordé par la phase « open actions »), `defer` (budget du
    * passage épuisé). Absent : plafond journalier vérifié ici.
    */
+  /** Lot 54A : IGNORÉ (plus aucun report pour quota T3) — conservé pour compatibilité des appelants. */
   rearbitration?: 'allow' | { defer: RearbitrationDeferral };
   /** Lot 49B : carte LINK-ASSET ouverte déjà connue (phase « open actions ») ; à défaut, relue. */
   openActionId?: number | null;
@@ -202,6 +203,7 @@ export interface ResolveDocumentAssetDeps {
   /** Carte LINK-ASSET ouverte du document (défaut : base). */
   openAssetLinkAction?: (accountId: number, fileId: number) => Promise<number | null>;
   /** Plafond journalier des réarbitrages (défaut : `ai_usage_event`). */
+  /** Lot 54A : IGNORÉ (plafond journalier supprimé). */
   dailyRearbitrationAllowed?: (accountId: number) => Promise<boolean>;
 }
 
@@ -322,20 +324,11 @@ export async function resolveDocumentAsset(
       decision = { kind: 'ABSTAIN', reasonCode: 'NO_CANDIDATE', ranked: [] };
     } else if (input.skipAi) {
       decision = { kind: 'ABSTAIN', reasonCode: 'AI_UNAVAILABLE', ranked: rankCandidates(ctx.candidates) };
-    } else if (inchange && (typeof input.rearbitration === 'object'
-      || (input.rearbitration === undefined && !(await (deps.dailyRearbitrationAllowed ?? dailyRearbitrationAllowed)(accountId))))) {
-      // Lot 49B : réarbitrage à contexte INCHANGÉ au-delà du plafond de coût —
-      // reporté au passage suivant, carte maintenue telle quelle (mêmes candidats).
-      const motif: RearbitrationDeferral = typeof input.rearbitration === 'object' ? input.rearbitration.defer : 'DAY_CAP';
-      const evaluation: DocumentAssetEvaluation = {
-        ...reexamen, newResolution: resolution!.lastOutcome, aiCalled: false, decision: null, linkedAssetId: null,
-        toProcessAction: 'UNCHANGED', result: 'AI_DEFERRED', promptCandidateCount: 0, aiDeferred: motif,
-      };
-      await g('état de résolution');
-      await restoreLastOutcome(fileId, { identifiersFingerprint: ctx.idsFingerprint, knowledgeRevision: revision, lastEvaluation: { ...evaluation } });
-      logEvaluation(evaluation);
-      return { outcome: 'NO_CHANGE', status: resolution!.lastOutcome, aiCalled: false, evaluation, aiDeferred: motif };
     } else {
+      // Lot 54A (écart 1) : plus aucun report pour quota T3 interne — une carte
+      // ouverte qui demande un arbitrage est TOUJOURS arbitrée (le plafond de
+      // coût du compte, la disponibilité du modèle et le circuit breaker de la
+      // passerelle restent les seuls freins ; `rearbitration` est ignoré).
       await input.guard?.assertActive('T3 DOCUMENT_ASSET — appel du modèle');
       const ext = ctx.sources?.extraction;
       const subject: DocumentSubject = {

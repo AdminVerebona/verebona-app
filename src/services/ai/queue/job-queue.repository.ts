@@ -136,6 +136,13 @@ export interface EnqueueInput {
    * `{ decision: 'skip', jobId: <existant> }` sinon.
    */
   onlyIfNeverQueued?: boolean;
+  /**
+   * Lot 54A — trace `[t3-enqueue]` des demandes T3 (phase A) : `auto`
+   * (défaut) la trace ici, avec ces étapes ; `caller` la laisse à l'appelant
+   * (lancement manuel : trace après relecture de la persistance).
+   */
+  t3Trace?: 'auto' | 'caller';
+  traceSteps?: Record<string, boolean | number | string | null>;
 }
 
 /** Borne des événements fusionnés conservés dans un contexte (T3). */
@@ -144,6 +151,34 @@ export const MAX_MERGED_EVENTS = 50;
 export interface EnqueueResult {
   decision: QueueDecision;
   jobId: number | null;
+  /**
+   * Lot 54A — motif quand aucun NOUVEAU job n'a été créé (jamais un `skip`
+   * muet) : CROSS_ACCOUNT_SCOPE (contrôle de périmètre, `jobId` nul),
+   * DUPLICATE_PENDING / DUPLICATE_RUNNING (absorbée par le job automatique
+   * vivant `jobId`), ALREADY_QUEUED (continuation déjà mise en file).
+   * `null` pour une création.
+   */
+  reasonCode?: EnqueueReasonCode | null;
+}
+
+/** Motifs de non-création rendus par `enqueue` (sous-ensemble des motifs T3 tracés). */
+export type EnqueueReasonCode = 'CROSS_ACCOUNT_SCOPE' | 'DUPLICATE_PENDING' | 'DUPLICATE_RUNNING' | 'ALREADY_QUEUED';
+
+/** Trace `[t3-enqueue]` d'une issue d'`enqueue` (T3 seulement, jamais bloquante). */
+async function tracerT3(input: EnqueueInput, r: EnqueueResult | null, error?: unknown): Promise<void> {
+  if (input.treatment !== 'T3' || input.t3Trace === 'caller') return;
+  const { traceT3Enqueue } = await import('./t3-enqueue-trace');
+  const scope = input.scope ?? {};
+  await traceT3Enqueue({
+    origin: input.origin ?? 'automatic', triggerCode: input.triggerCode ?? null, accountId: scope.accountId ?? null,
+    targetType: scope.targetType ?? null, targetId: scope.targetId ?? null,
+    decision: error ? 'error' : r?.reasonCode === 'CROSS_ACCOUNT_SCOPE' ? 'refused' : (r?.decision ?? 'error'),
+    reason: error ? 'INSERT_FAILED' : r?.reasonCode ?? null,
+    jobId: r?.jobId ?? null,
+    // RETURNING relit la ligne écrite dans la même instruction.
+    persisted: r && r.decision === 'create' && r.jobId != null ? true : null,
+    steps: input.traceSteps, error: error ? (error as Error).message ?? String(error) : null,
+  }).catch(() => undefined);
 }
 
 /**
@@ -154,6 +189,19 @@ export interface EnqueueResult {
  * cours. Le lancement manuel passe toujours outre (WF-11).
  */
 export async function enqueue(input: EnqueueInput): Promise<EnqueueResult> {
+  let r: EnqueueResult;
+  try {
+    r = await enqueueUntraced(input);
+  } catch (e) {
+    // SCR-08 : l'échec n'est jamais acquitté — il est tracé (INSERT_FAILED) puis propagé.
+    await tracerT3(input, null, e);
+    throw e;
+  }
+  await tracerT3(input, r);
+  return r;
+}
+
+async function enqueueUntraced(input: EnqueueInput): Promise<EnqueueResult> {
   const origin = input.origin ?? 'automatic';
   const key = dedupeKey(input.treatment, input.scope ?? {});
 
@@ -162,7 +210,7 @@ export async function enqueue(input: EnqueueInput): Promise<EnqueueResult> {
   // mise en file. Rien n'est écrit ; `jobId` nul.
   {
     const { enqueueScopeAllowed } = await import('./job-scope');
-    if (!(await enqueueScopeAllowed(input))) return { decision: 'skip', jobId: null };
+    if (!(await enqueueScopeAllowed(input))) return { decision: 'skip', jobId: null, reasonCode: 'CROSS_ACCOUNT_SCOPE' };
   }
 
   if (input.onlyIfNeverQueued) return enqueueOnce(input, key, origin);
@@ -220,7 +268,7 @@ export async function enqueue(input: EnqueueInput): Promise<EnqueueResult> {
         );
       }
     }
-    return { decision, jobId: existingId };
+    return { decision, jobId: existingId, reasonCode: decision === 'skip' ? 'DUPLICATE_PENDING' : 'DUPLICATE_RUNNING' };
   }
 
   const scope = input.scope ?? {};
@@ -259,7 +307,7 @@ export async function enqueue(input: EnqueueInput): Promise<EnqueueResult> {
   if (input.payload && (row.payload == null || typeof row.payload !== 'object')) {
     throw new Error(`[queue] Job ${row.id} persisté sans son contexte de reprise : la demande n'est pas acquittée.`);
   }
-  return { decision, jobId: Number(row.id) };
+  return { decision, jobId: Number(row.id), reasonCode: null };
 }
 
 /**
@@ -289,7 +337,7 @@ async function enqueueOnce(input: EnqueueInput, key: string, origin: JobOrigin):
     if ((e as { code?: string })?.code !== '23505') throw e;
     rows = [];
   }
-  if (rows[0]) return { decision: 'create', jobId: Number(rows[0].id) };
+  if (rows[0]) return { decision: 'create', jobId: Number(rows[0].id), reasonCode: null };
   const existing = (await pgClient.unsafe(
     `SELECT id FROM ai_job_queue WHERE dedupe_key = $1 ORDER BY id LIMIT 1`, [key] as never[],
   )) as unknown as Row[];
@@ -297,7 +345,7 @@ async function enqueueOnce(input: EnqueueInput, key: string, origin: JobOrigin):
     // SCR-08 : ni insérée, ni existante — ne pas acquitter.
     throw new Error('[queue] Mise en file non persistée : la demande n\'est pas acquittée.');
   }
-  return { decision: 'skip', jobId: Number(existing[0].id) };
+  return { decision: 'skip', jobId: Number(existing[0].id), reasonCode: 'ALREADY_QUEUED' };
 }
 
 // ── Prélèvement et fin d'exécution ──────────────────────────────────────────

@@ -33,7 +33,42 @@ export type AgendaDecisionAction =
    */
   | 'arbitrate_duplicate'
   /** Preuve insuffisante pour créer sans validation. */
-  | 'propose';
+  | 'propose'
+  /**
+   * Lot 54 — T4 a refusé l'événement (`MODEL_REJECTED_NOT_AGENDA`), s'est
+   * abstenu (`MODEL_ABSTAINED`) ou a échoué techniquement
+   * (`T4_TECHNICAL_FAILURE`) : aucun Agenda, aucune proposition. Action NON
+   * créatrice de clé : une réanalyse complète retire l'ancien élément
+   * automatique de la source (synchronisation T4-08), jamais un élément
+   * modifié ou confirmé par l'utilisateur.
+   */
+  | 'ignore';
+
+/** Lot 54 — trace de la décision T4 CLASSIFY_EVENT (BO), sans contenu documentaire brut. */
+export interface T4DecisionTrace {
+  agendaDecision: 'accept' | 'reject' | 'abstain';
+  recurrenceDecision: 'accept' | 'reject' | 'abstain' | 'not_applicable';
+  /** Candidat de récurrence soumis à T4 (sans extrait), ou null. */
+  recurrenceCandidate: {
+    mode: 'EXPLICIT_SOURCE' | 'HISTORICAL_PATTERN'; frequency: string; interval: number;
+    startDate: string | null; endDate: string | null; occurrenceCount: number | null; history: string[];
+  } | null;
+  homeCategory: 'action' | 'information' | 'unknown';
+  businessType: string | null;
+  confidence: 'certain' | 'probable' | 'ambiguous';
+  reason: string;
+  recurrenceReason: string | null;
+  /** model_v2 | model_v1 (version de prompt historique) | technical_failure. */
+  outcome: 'model_v2' | 'model_v1' | 'technical_failure';
+  /**
+   * Lecture BO : EVENT_REJECTED, RECURRENCE_REJECTED (événement accepté,
+   * récurrence refusée ou non retenue), ABSTAINED, TECHNICAL_FAILURE, ACCEPTED.
+   */
+  verdict: 'ACCEPTED' | 'RECURRENCE_REJECTED' | 'EVENT_REJECTED' | 'ABSTAINED' | 'TECHNICAL_FAILURE';
+  warnings: string[];
+  errorCode?: string | null;
+  traceId?: string | null;
+}
 
 export interface AgendaDecision {
   action: AgendaDecisionAction;
@@ -109,6 +144,8 @@ export interface AgendaDecision {
   mayCreateAgenda?: boolean | null;
   /** Récurrence énoncée par la source (spécification du candidat). */
   recurrence?: import('./rules/recurrence').RecurrenceSpec | null;
+  /** Lot 54 — décision T4 CLASSIFY_EVENT ayant gouverné ce candidat (BO). */
+  t4?: T4DecisionTrace;
   /** Rapprochement incertain : ce qui a fait penser au même événement. */
   duplicate?: {
     similarity: number;

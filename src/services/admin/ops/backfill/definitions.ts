@@ -131,14 +131,15 @@ export const BACKFILL_DEFINITIONS: readonly BackfillDefinition[] = [
   {
     script: 'cross-account',
     order: 8,
-    label: 'Relations intercomptes : correction contrôlée',
+    label: 'Isolation des comptes : correction contrôlée des anomalies',
     command: 'BO uniquement (aucune commande)',
-    description: 'Détache les relations anciennes entre deux comptes (BO › Exploitation › Relations intercomptes), famille par famille : '
+    description: 'Détache les relations anciennes entre deux comptes (BO › Exploitation › Isolation des comptes), famille par famille : '
       + 'colonne de rattachement remise à vide, lien retiré ou rendu inactif — chaque objet reste dans son propre compte, rien n’est '
       + 'supprimé d’un compte ni déplacé. Les relations relevant du Duo (déplacement de bien, comptes reliés par un Duo) et celles dont '
       + 'un compte est inconnu sont SIGNALÉES, jamais corrigées. La simulation exécute la correction dans une transaction annulée '
-      + '(rapport exact) ; l’application est journalisée ligne à ligne et se restaure par son identifiant d’exécution. Jamais lancée '
-      + 'automatiquement.',
+      + '(rapport exact) ; l’application est journalisée ligne à ligne (état avant complet : sauvegarde), suivie d’un recontrôle '
+      + 'd’intégrité de la famille, et se restaure par son identifiant d’exécution. Les liens « cœur » des Opérations restent en '
+      + 'procédure d’incident (recensés, jamais modifiés ici). Jamais lancée automatiquement.',
     actions: ['simulate', 'apply', 'restore'],
     steps: [
       { code: 'documents', label: 'Documents → biens, pièces, équipements', description: 'Colonnes de rattachement et liens N-N document ↔ bien.' },
@@ -147,7 +148,8 @@ export const BACKFILL_DEFINITIONS: readonly BackfillDefinition[] = [
       { code: 'agenda', label: 'Agenda', description: 'Liens bien, document, pièce, équipement et traces de source.' },
       { code: 'preuves', label: 'Preuves et données projetées', description: 'Preuves retirées, faits « superseded », journal « Ce que j’ai fait ».' },
       { code: 'a_traiter', label: 'À traiter', description: 'Cartes ouvertes visant un objet d’un autre compte (closes « obsolètes »).' },
-      { code: 'jobs', label: 'Jobs IA en attente', description: 'Jobs PENDING référençant un objet d’un autre compte (annulés).' },
+      { code: 'jobs', label: 'Jobs IA en attente', description: 'Jobs PENDING référençant un objet d’un autre compte, y compris dans leur contexte imbriqué (annulés).' },
+      { code: 'operations', label: 'Opérations et Sinistres', description: 'Contrat, événement, facture, échange, pièces et photos de dommage d’un autre compte (détachés) ; liens « cœur » des Opérations : procédure d’incident.' },
     ],
     accountFilter: true,
     warning: 'Correction de sécurité (D23) : à lancer après lecture de la simulation. Le Duo (D3) reste ouvert : ses relations ne sont jamais modifiées ici.',

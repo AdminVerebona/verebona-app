@@ -57,11 +57,17 @@ const LEGACY = readFileSync(join(process.cwd(), 'src/services/ai/agenda/master/r
 const fixture = (f: string) => JSON.parse(readFileSync(join(__dirname, '..', '__fixtures__', f), 'utf8'));
 const P6 = fixture('p-t4-06-facture-internet-periode.json');
 
-const STRUCTURE = sc.executionConfigFor({ masterPromptCode: 't4_master_v1', source: 'file' });
+// Lot 54 : le fichier du dépôt est désormais en t4_input_v2 / t4_output_v2. Les
+// tests du lot 34D portent sur le contrat v1 (toujours réactivable) : version
+// BO structurée v1 explicite.
+const STRUCTURE: import('../../../master-prompts/structured-context').MasterExecutionConfig = {
+  mode: 'STRUCTURED_CONTEXT', inputContractVersion: 't4_input_v1', outputContractVersion: 't4_output_v1',
+  allowedTasks: ['CLASSIFY_EVENT', 'VERIFY_COMPLETION', 'TEMPORAL_AMBIGUITY'],
+};
 let fake: InstanceType<typeof FakeProvider>;
 
 /** Configuration T4 « master » ; `bo` : version active du BO (texte + configuration d'exécution). */
-function t4(bo?: { content: string; execution: import('../../../master-prompts/structured-context').MasterExecutionConfig | null; versionNumber?: number }) {
+function t4(bo: { content: string; execution: import('../../../master-prompts/structured-context').MasterExecutionConfig | null; versionNumber?: number } | undefined = { content: FICHIER, execution: STRUCTURE }) {
   __setConfigForTests({ versionId: 41, entries: [{ ...emptyTreatmentConfig('T4'), primaryModel: 'm-a', fallback1: 'm-b', promptArchitecture: 'master' }] });
   __setActiveMasterPromptsForTests(bo ? [{ id: 900, treatment: 'T4', versionNumber: bo.versionNumber ?? 12, content: bo.content, execution: bo.execution }] : null);
 }
@@ -94,7 +100,8 @@ afterEach(() => { __setConfigForTests(null); __setActiveMasterPromptsForTests(nu
 describe('T4C-01 — prompt sans emplacement : appel possible', () => {
   it('le prompt maître livré ne contient aucun {{…}} ; le contexte est injecté une fois (EXECUTION_CONTEXT)', async () => {
     expect(FICHIER).not.toMatch(/\{\{[A-Z_]+\}\}/);
-    expect(STRUCTURE).toEqual({ mode: 'STRUCTURED_CONTEXT', inputContractVersion: 't4_input_v1', outputContractVersion: 't4_output_v1', allowedTasks: ['CLASSIFY_EVENT', 'VERIFY_COMPLETION', 'TEMPORAL_AMBIGUITY'] });
+    // Lot 54 : texte du dépôt = texte de référence v2.
+    expect(sc.executionConfigFor({ masterPromptCode: 't4_master_v1', source: 'file' })).toEqual({ mode: 'STRUCTURED_CONTEXT', inputContractVersion: 't4_input_v2', outputContractVersion: 't4_output_v2', allowedTasks: ['CLASSIFY_EVENT', 'VERIFY_COMPLETION', 'TEMPORAL_AMBIGUITY'] });
     t4();
     fake.onAny(() => ({ rawText: classifyOut, inputTokens: 1, outputTokens: 1 }));
     const res = await execClassify();
@@ -383,14 +390,16 @@ describe('T4C-14 — éditeur BO : contexte disponible (informatif)', () => {
 describe('T4C-15 — aperçu / test : chaque étape inspectable', () => {
   it('prompt maître, TASK, contrat d’entrée, contexte construit, contrat de sortie, sortie brute, résultat validé', async () => {
     const { previewStructured } = await import('../../../master-prompts/master-prompt.service');
-    const p = await previewStructured('T4', { versionId: 'file', task: 'CLASSIFY_EVENT', scenarioId: 'P-T4-06' });
-    expect(p).toMatchObject({ mode: 'STRUCTURED_CONTEXT', task: 'CLASSIFY_EVENT', scenario: { id: 'P-T4-06' }, contextError: null });
-    expect(p.inputContract.version).toBe('t4_input_v1');
-    expect(p.context).toContain('07/09/2026');
+    // Lot 54 : le texte du dépôt est en t4_input_v2 / t4_output_v2 — scénario v2 (P-T4-07).
+    const p = await previewStructured('T4', { versionId: 'file', task: 'CLASSIFY_EVENT', scenarioId: 'P-T4-07' });
+    expect(p).toMatchObject({ mode: 'STRUCTURED_CONTEXT', task: 'CLASSIFY_EVENT', scenario: { id: 'P-T4-07' }, contextError: null });
+    expect(p.inputContract.version).toBe('t4_input_v2');
+    expect(p.context).toContain('31/10/2026');
+    expect(p.context).toContain('recurrenceCandidate');
     expect(p.prompt).toContain('EXECUTION_CONTEXT');
-    expect(p.outputContract).toMatchObject({ version: 't4_output_v1', contractId: 'T4_CLASSIFY_EVENT', contractVersion: 1 });
-    expect(p.rawOutput).toContain('information');
-    expect(p.validated).toMatchObject({ ok: true, data: { homeCategory: 'information' } });
+    expect(p.outputContract).toMatchObject({ version: 't4_output_v2', contractId: 'T4_CLASSIFY_EVENT', contractVersion: 2 });
+    expect(p.rawOutput).toContain('reject');
+    expect(p.validated).toMatchObject({ ok: true, data: { agendaDecision: 'reject', recurrenceDecision: 'reject' } });
   });
 });
 

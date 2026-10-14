@@ -12,6 +12,7 @@ import { isDefinitiveGatewayFailure } from '../failure-policy';
 import type { AiAttachment } from '../../gateway/types';
 import type { T1AnalyzeDocumentOutput } from '../master/t1-contract';
 import type { T1DroppedItem, T1NormalisationReport } from '../master/tolerant-output';
+import type { PrunedFieldValue } from '../../gateway/output-resolution/field-validation';
 import type { SourceInput } from '../types';
 import * as pages from './page-chunks';
 import { lastPageSeen, mergeChunkOutput, offsetPages } from './merge';
@@ -29,6 +30,8 @@ export interface ChunkCallResult {
   report: T1NormalisationReport | null;
   batches: number;
   outputTokens: number;
+  /** Lot 54G : champs retirés par la validation de la passerelle, avec leur original. */
+  pruned?: PrunedFieldValue[];
 }
 
 export type ChunkCall = (p: { attachments: AiAttachment[]; sources: string; triggerCode: string }) => Promise<ChunkCallResult>;
@@ -48,6 +51,8 @@ export interface ContinuationResult {
   pageCount: number | null;
   /** Lot 49B (DEV-01) : couverture réelle de la source (pages vérifiées, manquantes, non vérifiées). */
   verification?: SourceVerification;
+  /** Lot 54G (point 3) : champs retirés par la validation dans les lots de pages (page recalée par `pageOffset`). */
+  pruned?: Array<PrunedFieldValue & { pass: SourceUnitOrigin; pageOffset: number }>;
 }
 
 /** Dernière page désignée par une marque de page dans le texte. */
@@ -127,6 +132,7 @@ export async function continueByPages(p: {
   const gaps: PageGap[] = [];
   const dropped: ContinuationResult['dropped'] = [];
   const reports: T1NormalisationReport[] = [];
+  const pruned: NonNullable<ContinuationResult['pruned']> = [];
   const relues = new Set<number>();
   let batches = 0;
   const name = p.input.displayNames[idx] ?? 'document';
@@ -147,6 +153,7 @@ export async function continueByPages(p: {
       batches += r.batches;
       if (r.report) reports.push(r.report);
       for (const d of r.report?.dropped ?? []) dropped.push({ ...d, pass: 'CHUNK' });
+      for (const x of r.pruned ?? []) pruned.push({ ...x, pass: 'CHUNK', pageOffset: c.start - 1 });
     } catch (e) {
       if (isExecutionCancelled(e) || isCostCapReached(e)) throw e;
       gaps.push({ pageStart: c.start, pageEnd: c.end, retryable: !isDefinitiveGatewayFailure(e), message: (e as Error).message ?? 'échec du lot' });
@@ -156,7 +163,7 @@ export async function continueByPages(p: {
     gaps.push({ pageStart: plan.beyond.start, pageEnd: plan.beyond.end, retryable: false, message: `au-delà de ${maxChunks} lots de pages` });
   }
   return {
-    output, segments, gaps, chunkCount: plan.chunks.length, truncatedSections: 0, batches, dropped, reports, pageCount,
+    output, segments, gaps, chunkCount: plan.chunks.length, truncatedSections: 0, batches, dropped, reports, pageCount, pruned,
     verification: final(output, segments, probe, relues),
   };
 }

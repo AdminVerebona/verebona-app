@@ -15,6 +15,7 @@
  * de ce master est rouge.
  */
 import { AiGateway } from '../../gateway/ai-gateway';
+import { structuredSpecFor } from '../../master-prompts/structured-context';
 import { masterOutputSchemaFor } from '../../gateway/master-output-schemas';
 import { AI_OPERATIONS } from '../../registry/operations';
 import type { MasterCorpusCase } from './cases';
@@ -116,13 +117,18 @@ const BUILDERS: Record<string, Builder> = {
     return null;
   },
   async t4_classify_event(c) {
-    const x = ctx<{ candidate?: { title: string; date?: string; excerpt?: string }; field?: { title: string; originFieldKey?: string; date?: string } }>(c);
+    const x = ctx<{
+      candidate?: { title: string; date?: string; excerpt?: string; documentType?: string };
+      field?: { title: string; originFieldKey?: string; date?: string };
+      /** Lot 54 : récurrence envisagée par le serveur (t4_input_v2). */
+      recurrenceCandidate?: import('../../agenda/master/classify-event').T4RecurrenceCandidate | null;
+    }>(c);
     const src = x.field ?? x.candidate;
     if (!src) return null;
     const { classifyEventVariables } = await import('../../agenda/master/classify-event');
     return classifyEventVariables(
       { title: src.title, originFieldKey: x.field?.originFieldKey ?? null, description: x.candidate?.excerpt ?? null } as never,
-      { accountId: 0, date: src.date ?? null, excerpt: x.candidate?.excerpt },
+      { accountId: 0, date: src.date ?? null, excerpt: x.candidate?.excerpt, documentType: x.candidate?.documentType ?? null, recurrenceCandidate: x.recurrenceCandidate ?? null },
     );
   },
   async t4_temporal_ambiguity(c) {
@@ -151,6 +157,14 @@ export async function liveVariablesFor(c: MasterCorpusCase): Promise<Vars | null
   return b ? b(c) : null;
 }
 
+/** Lot 54 — schémas de sortie possibles de la branche (contrats de sortie déclarés), hors schéma de l'opération. */
+function branchSchemas(c: MasterCorpusCase) {
+  const spec = structuredSpecFor(c.masterPromptCode);
+  if (!spec) return [];
+  const noms = new Set(Object.values(spec.outputContracts).map((o) => o.byTask[c.task]?.schemaName).filter((n): n is string => Boolean(n) && n !== c.outputSchema));
+  return [...noms].map((n) => masterOutputSchemaFor(n)).filter((x): x is NonNullable<typeof x> => Boolean(x));
+}
+
 /** Construit l'adaptateur `live` du runner : variables pré-calculées, appel par la passerelle réelle. */
 export async function buildLiveRunner(cases: MasterCorpusCase[], account: { accountId: number; userId: number }) {
   const vars = new Map<string, Vars | null>();
@@ -165,6 +179,8 @@ export async function buildLiveRunner(cases: MasterCorpusCase[], account: { acco
         useCaseCode: op.useCaseCode, operationCode: c.operationCode,
         accountId: account.accountId, userId: account.userId,
         promptVariables: variables, outputSchema: schema,
+        // Lot 54 : schémas de la branche selon le contrat de sortie de la version active (T4 v1 / v2).
+        acceptedOutputSchemas: branchSchemas(c),
         idempotencyKey: `master-corpus-live:${c.id}:${Date.now()}`,
         // Lot 22 : campagne de mesure du BO, hors plafond de coût du compte.
         costCapExempt: true,

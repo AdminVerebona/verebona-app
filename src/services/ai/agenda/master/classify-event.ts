@@ -1,17 +1,54 @@
 /**
  * T4 master — branche CLASSIFY_EVENT (CDC 15 §26, T4-10, T4-11, C1 à C5).
  *
- * Appelée seulement quand les règles déterministes (registre, règles métier
- * stables, motifs) n'ont pas tranché ET que la version de configuration met
- * T4 en architecture `master`. Le catalogue d'événements est transmis en
- * DONNÉES (EVENT_CATALOG du registre, U6) ; aucune règle par type de contrat
- * dans le prompt (C4). Sortie à trois valeurs, `unknown` compris.
+ * Le catalogue d'événements est transmis en DONNÉES (EVENT_CATALOG du
+ * registre, U6) ; aucune règle par type de contrat dans le code (C4).
+ *
+ * ══════════════════════════════════════════════════════════════════════════
+ * LOT 54 — T4 DÉCISIONNAIRE (ticket « rendre l'IA décisionnaire de
+ * l'existence et de la récurrence d'un événement Agenda »)
+ *
+ *   · `decideAgendaEvent` (flux documentaire AUTOMATIQUE) : T4 est le gate
+ *     sémantique AVANT toute création. Le serveur fournit le contexte (dont
+ *     le candidat de récurrence et, à titre d'indice, la classification
+ *     déterministe existante) ; T4 répond `agendaDecision` et
+ *     `recurrenceDecision` (`t4_output_v2`). Le code VÉRIFIE la cohérence
+ *     avec l'entrée réelle puis respecte strictement la décision. Échec
+ *     complet de la cascade : abstention (aucune création), jamais le repli
+ *     historique `action`.
+ *   · `classifyEventMaster` (parcours MANUEL) : inchangé dans son principe —
+ *     catégorie, repli `action` ambigu en cas d'échec.
+ *
+ * Une version de prompt restée en `t4_output_v1` (Legacy réactivée, ou
+ * structurée v1) répond sans décision d'existence ni de récurrence : la
+ * sortie est lue comme `accept` (v1 ne sait pas refuser) et la récurrence
+ * comme `abstain` — aucune série créée sans décision explicite de T4.
+ * ══════════════════════════════════════════════════════════════════════════
  */
 import { AiGateway } from '../../gateway/ai-gateway';
 import { isExecutionCancelled } from '../../queue/execution-control';
-import { EVENT_CATALOG } from '@/services/canonical/registry';
+import { EVENT_CATALOG, resolveDocumentType } from '@/services/canonical/registry';
 import type { AgendaClassification, AgendaClassificationInput } from '../types';
-import { T4ClassifyEventOutput, closedWorldBusinessType, type T4ClassifyEventOutput as Out } from './t4-contract';
+import type { RecurrenceSpec } from '../rules/recurrence';
+import {
+  T4ClassifyEventOutput, T4ClassifyEventV2Output, closedWorldBusinessType, closedWorldBusinessTypeV2,
+  type T4ClassifyEventOutput as Out, type T4ClassifyEventV2Output as OutV2,
+  type T4AgendaDecisionValue, type T4RecurrenceDecisionValue,
+} from './t4-contract';
+
+/** Récurrence ENVISAGÉE par le serveur, soumise à T4 (ticket §1, §5). */
+export interface T4RecurrenceCandidate {
+  mode: 'EXPLICIT_SOURCE' | 'HISTORICAL_PATTERN';
+  frequency: string;
+  interval: number;
+  startDate: string | null;
+  endDate: string | null;
+  occurrenceCount: number | null;
+  /** Passage de la source qui énonce la récurrence (≤ 300 caractères). */
+  excerpt: string | null;
+  /** Dates historiques comparables (HISTORICAL_PATTERN). */
+  history: string[];
+}
 
 export interface ClassifyEventContext {
   accountId: number;
@@ -19,6 +56,12 @@ export interface ClassifyEventContext {
   sourceFileId?: number | null;
   excerpt?: string;
   date?: string | null;
+  /** Lot 54 : type documentaire de la source (code du DOCUMENT_CATALOG), s'il est connu. */
+  documentType?: string | null;
+  /** Lot 54 : récurrence envisagée par le serveur, ou null. */
+  recurrenceCandidate?: T4RecurrenceCandidate | null;
+  /** Lot 54 : classification déterministe existante, transmise comme INDICE (jamais décisive). */
+  ruleHint?: { category: string; source: string; ruleCode: string } | null;
 }
 
 /** Catalogue fermé transmis au modèle (U6). */
@@ -26,7 +69,22 @@ export function eventCatalogForPrompt(): Array<{ businessType: string; label: st
   return EVENT_CATALOG.map((e) => ({ businessType: e.businessType, label: e.label, natures: [...e.natures] }));
 }
 
+/** Candidat de récurrence à partir d'une spécification (sans dates listées ni texte long). */
+export function recurrenceCandidateOf(spec: RecurrenceSpec, history?: string[]): T4RecurrenceCandidate {
+  return {
+    mode: spec.mode,
+    frequency: spec.frequency,
+    interval: spec.interval,
+    startDate: spec.startDate ?? null,
+    endDate: spec.endDate ?? null,
+    occurrenceCount: spec.occurrenceCount ?? null,
+    excerpt: spec.excerpt ? spec.excerpt.slice(0, 300) : null,
+    history: history ? [...history] : [],
+  };
+}
+
 export function classifyEventVariables(input: AgendaClassificationInput, ctx: ClassifyEventContext): Record<string, unknown> {
+  const doc = ctx.documentType ? resolveDocumentType(ctx.documentType) : null;
   return {
     EVENT_CONTEXT: {
       title: input.title,
@@ -35,16 +93,35 @@ export function classifyEventVariables(input: AgendaClassificationInput, ctx: Cl
       originFieldKey: input.originFieldKey ?? null,
       nature: input.nature ?? null,
       businessType: input.businessType ?? null,
+      documentType: ctx.documentType ?? null,
+      // Le modèle sait POURQUOI le moteur envisage une récurrence (ou qu'il
+      // n'en envisage aucune : null).
+      recurrenceCandidate: ctx.recurrenceCandidate ?? null,
+      ...(ctx.ruleHint ? { ruleHint: ctx.ruleHint } : {}),
     },
     EVENT_CATALOG: eventCatalogForPrompt(),
     EVIDENCE: (ctx.excerpt ?? input.description ?? '').slice(0, 500) || null,
-    AGENDA_ITEM: null, DOCUMENT_TYPE: null, TEMPORAL_CONTEXT: null, TEMPORAL_CANDIDATES: null,
+    // Type documentaire (contexte optionnel de CLASSIFY_EVENT en t4_input_v2 ;
+    // ignoré par t4_input_v1).
+    DOCUMENT_TYPE: ctx.documentType ? { code: ctx.documentType, label: doc?.label ?? null } : null,
+    AGENDA_ITEM: null, TEMPORAL_CONTEXT: null, TEMPORAL_CANDIDATES: null,
   };
 }
 
-/** Traduction pure (monde fermé U6). */
-export function translateClassifyEvent(out: Out): { classification: AgendaClassification; warning: string | null } {
+/** Traduction pure d'une sortie v1 (monde fermé U6). */
+export function translateClassifyEvent(out: Out | OutV2): { classification: AgendaClassification; warning: string | null } {
   const allowed = new Set(EVENT_CATALOG.map((e) => e.businessType as string));
+  if ('agendaDecision' in out) {
+    const { output, warning } = closedWorldBusinessTypeV2(out, allowed);
+    return {
+      classification: {
+        category: output.agendaDecision === 'accept' ? output.homeCategory : 'unknown',
+        confidence: output.agendaDecision === 'accept' ? output.confidence : 'ambiguous',
+        source: 'model', businessType: output.businessType ?? null, reason: output.reason,
+      },
+      warning,
+    };
+  }
   const { output, warning } = closedWorldBusinessType(out, allowed);
   return {
     classification: {
@@ -55,20 +132,132 @@ export function translateClassifyEvent(out: Out): { classification: AgendaClassi
   };
 }
 
-/** Classification par le master. Échec : repli historique `action`, ambigu. */
+// ── Décision T4 (flux documentaire automatique) ─────────────────────────────
+
+/** Issue de l'appel T4 : sortie v2, sortie v1 (version historique), ou échec technique. */
+export type T4DecisionOutcome = 'model_v2' | 'model_v1' | 'technical_failure';
+
+export interface T4EventDecision {
+  agendaDecision: T4AgendaDecisionValue;
+  recurrenceDecision: T4RecurrenceDecisionValue;
+  /** Catégorie retenue (`unknown` hors `accept`) et confiance. */
+  classification: AgendaClassification;
+  reason: string;
+  recurrenceReason: string | null;
+  outcome: T4DecisionOutcome;
+  /** Avertissements serveur (cohérence, monde fermé, contrat v1). */
+  warnings: string[];
+  /** Échec technique : code et message (sans contenu documentaire). */
+  error?: { code: string; message: string };
+  /** Trace de l'appel (BO › Exécutions IA). */
+  traceId?: string;
+}
+
+/**
+ * Cohérence de la sortie v2 avec l'ENTRÉE réelle (ticket §2) :
+ *   · sans candidat de récurrence → `not_applicable` (toute autre valeur
+ *     est ramenée à `not_applicable`, avertissement) ;
+ *   · avec candidat → `accept | reject | abstain` (`not_applicable` → abstain) ;
+ *   · événement refusé ou abstenu → aucune récurrence acceptée (abstain si
+ *     le modèle l'acceptait).
+ */
+export function checkDecisionCoherence(
+  out: OutV2, hasRecurrenceCandidate: boolean,
+): { recurrenceDecision: T4RecurrenceDecisionValue; warnings: string[] } {
+  const warnings: string[] = [];
+  let r = out.recurrenceDecision;
+  if (!hasRecurrenceCandidate && r !== 'not_applicable') {
+    warnings.push(`RECURRENCE_DECISION_WITHOUT_CANDIDATE:${r}`);
+    r = 'not_applicable';
+  }
+  if (hasRecurrenceCandidate && r === 'not_applicable') {
+    warnings.push('RECURRENCE_CANDIDATE_NOT_DECIDED');
+    r = 'abstain';
+  }
+  if (out.agendaDecision !== 'accept' && r === 'accept') {
+    warnings.push(`RECURRENCE_ACCEPTED_ON_${out.agendaDecision.toUpperCase()}`);
+    r = 'abstain';
+  }
+  return { recurrenceDecision: r, warnings };
+}
+
+/** Traduction pure d'une sortie (v2 ou v1) en décision appliquée par le moteur. */
+export function translateEventDecision(out: Out | OutV2, hasRecurrenceCandidate: boolean): T4EventDecision {
+  const { classification, warning } = translateClassifyEvent(out);
+  const warnings = warning ? [warning] : [];
+  if ('agendaDecision' in out) {
+    const c = checkDecisionCoherence(out, hasRecurrenceCandidate);
+    return {
+      agendaDecision: out.agendaDecision, recurrenceDecision: c.recurrenceDecision, classification,
+      reason: out.reason, recurrenceReason: out.recurrenceReason ?? null, outcome: 'model_v2', warnings: [...warnings, ...c.warnings],
+    };
+  }
+  // Version de prompt historique (t4_output_v1) : aucune décision d'existence
+  // ni de récurrence. L'événement est lu comme accepté (v1 ne sait pas
+  // refuser) ; la récurrence, jamais décidée, n'est PAS créée.
+  return {
+    agendaDecision: 'accept',
+    recurrenceDecision: hasRecurrenceCandidate ? 'abstain' : 'not_applicable',
+    classification, reason: out.reason, recurrenceReason: hasRecurrenceCandidate ? 'contrat de sortie t4_output_v1 : récurrence non évaluée' : null,
+    outcome: 'model_v1', warnings: [...warnings, ...(hasRecurrenceCandidate ? ['T4_OUTPUT_V1_NO_RECURRENCE_DECISION'] : [])],
+  };
+}
+
+/** Décision d'abstention sur échec technique (ticket §9). */
+export function failedEventDecision(hasRecurrenceCandidate: boolean, error: { code: string; message: string }): T4EventDecision {
+  return {
+    agendaDecision: 'abstain',
+    recurrenceDecision: hasRecurrenceCandidate ? 'abstain' : 'not_applicable',
+    classification: { category: 'unknown', confidence: 'ambiguous', source: 'fallback', reason: 'échec technique T4' },
+    reason: 'échec technique T4 : aucune décision du modèle', recurrenceReason: null,
+    outcome: 'technical_failure', warnings: [], error,
+  };
+}
+
+async function callClassify(input: AgendaClassificationInput, ctx: ClassifyEventContext) {
+  return AiGateway.execute<Out | OutV2>({
+    useCaseCode: 'AGENDA_INTELLIGENCE',
+    operationCode: 't4_classify_event',
+    accountId: ctx.accountId,
+    userId: ctx.userId,
+    sourceIds: ctx.sourceFileId ? [ctx.sourceFileId] : undefined,
+    promptVariables: classifyEventVariables(input, ctx),
+    // Contrat de sortie choisi par la version de prompt : v1 (historique) ou
+    // v2 (`t4_output_v2`). La passerelle retient le schéma de CE contrat.
+    outputSchema: T4ClassifyEventOutput,
+    acceptedOutputSchemas: [T4ClassifyEventV2Output],
+  });
+}
+
+/**
+ * Décision T4 d'un candidat Agenda AUTOMATIQUE (ticket §3, §7, §9). Jamais
+ * d'exception hors annulation : un échec complet de la cascade rend une
+ * abstention marquée `technical_failure`.
+ */
+export async function decideAgendaEvent(
+  input: AgendaClassificationInput, ctx: ClassifyEventContext,
+  deps: { call?: typeof callClassify } = {},
+): Promise<T4EventDecision> {
+  const hasCandidate = Boolean(ctx.recurrenceCandidate);
+  let d: T4EventDecision;
+  try {
+    const res = await (deps.call ?? callClassify)(input, ctx);
+    d = { ...translateEventDecision(res.data, hasCandidate), traceId: res.traceId };
+  } catch (e) {
+    if (isExecutionCancelled(e)) throw e;
+    const err = e as { code?: string; message?: string };
+    d = failedEventDecision(hasCandidate, { code: typeof err.code === 'string' ? err.code : 'T4_CALL_FAILED', message: String(err.message ?? e).slice(0, 300) });
+  }
+  if (d.warnings.length) console.warn(`[t4_classify_event] ${d.warnings.join(', ')}`);
+  return d;
+}
+
+/** Classification par le master (parcours manuel). Échec : repli historique `action`, ambigu. */
 export async function classifyEventMaster(
   input: AgendaClassificationInput, ctx: ClassifyEventContext,
 ): Promise<AgendaClassification> {
   try {
-    const res = await AiGateway.execute({
-      useCaseCode: 'AGENDA_INTELLIGENCE',
-      operationCode: 't4_classify_event',
-      accountId: ctx.accountId,
-      userId: ctx.userId,
-      sourceIds: ctx.sourceFileId ? [ctx.sourceFileId] : undefined,
-      promptVariables: classifyEventVariables(input, ctx),
-      outputSchema: T4ClassifyEventOutput,
-    });
+    const res = await callClassify(input, ctx);
     const { classification, warning } = translateClassifyEvent(res.data);
     if (warning) console.warn(`[t4_classify_event] ${warning} — type métier ignoré (U6)`);
     return classification;

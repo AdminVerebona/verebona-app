@@ -395,6 +395,9 @@ export function consolidateComponentsDetailed(
 ): { components: ComponentContribution[]; conflicts: AmountConflict[] } {
   const par = new Map<string, ComponentContribution>();
   const valeurs = new Map<string, Array<{ amountMinor: number; currency: string; sourceIds: number[] }>>();
+  /** Lot 54D (E03) : empreintes dont deux sources donnent des contre-valeurs EUR différentes. */
+  const contreValeursContradictoires = new Set<string>();
+  const contreValeurVue = new Set<string>();
   const ordonnees = [...contributions].sort((a, b) => a.sourceId - b.sourceId);
   for (const { sourceId, components } of ordonnees) {
     for (const c of components) {
@@ -406,12 +409,22 @@ export function consolidateComponentsDetailed(
       if (cur) {
         if (!cur.sourceIds.includes(sourceId)) cur.sourceIds.push(sourceId);
         // Lot 53D (Q16) : une contre-valeur EUR documentaire complète la composante.
-        if (cur.amountEurCents === null && c.amountEurCents !== null && cur.currency === c.currency && cur.amountMinor === c.amountMinor) cur.amountEurCents = c.amountEurCents;
+        // Lot 54D (E03) : deux contre-valeurs DIFFÉRENTES pour le même fait → aucune
+        // n'est retenue (jamais choisir un taux) : montant hors total EUR, signalé.
+        if (cur.currency === c.currency && cur.amountMinor === c.amountMinor && c.amountEurCents !== null) {
+          if (contreValeursContradictoires.has(c.fingerprint)) { /* reste nulle */ }
+          else if (cur.amountEurCents === null && !contreValeurVue.has(c.fingerprint)) cur.amountEurCents = c.amountEurCents;
+          else if (cur.amountEurCents !== null && cur.amountEurCents !== c.amountEurCents) {
+            contreValeursContradictoires.add(c.fingerprint);
+            cur.amountEurCents = null;
+          }
+        }
         // Un acompte reconnu par sa facture d'acompte garde son rôle de source.
         if (c.sourceRole === 'DEPOSIT_INVOICE') cur.sourceRole = 'DEPOSIT_INVOICE';
       } else {
         par.set(c.fingerprint, { ...c, sourceIds: [sourceId] });
       }
+      if (c.amountEurCents !== null) contreValeurVue.add(c.fingerprint);
     }
   }
   const conflicts: AmountConflict[] = [];

@@ -15,7 +15,7 @@ import {
   T3LinkAmbiguityOutput, T3MasterOutput, T3OperationMatchOutput, T3ValueConflictOutput,
 } from '../reconciliation/master/t3-contract';
 import {
-  T4ClassifyEventOutput, T4MasterOutput, T4TemporalAmbiguityOutput, T4VerifyCompletionOutput,
+  T4ClassifyEventOutput, T4ClassifyEventV2Output, T4MasterOutput, T4TemporalAmbiguityOutput, T4VerifyCompletionOutput,
 } from '../agenda/master/t4-contract';
 import {
   T2AnswerOutput, T2MasterOutput, T2RevalidateOutput, T2UnderstandOutput,
@@ -31,6 +31,8 @@ export const MASTER_OUTPUT_SCHEMAS: Readonly<Record<string, ZodType>> = {
   T3OperationMatchOutput,
   T3MasterOutput,
   T4ClassifyEventOutput,
+  // Lot 54 : contrat de sortie `t4_output_v2` de CLASSIFY_EVENT (décision Agenda + récurrence).
+  T4ClassifyEventV2Output,
   T4VerifyCompletionOutput,
   T4TemporalAmbiguityOutput,
   T4MasterOutput,

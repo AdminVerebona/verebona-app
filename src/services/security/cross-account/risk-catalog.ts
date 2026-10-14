@@ -62,6 +62,19 @@ export interface CategoryRisk {
 
 const E2E = 'src/test/e2e/scenarios/l53b-d23-intercomptes.e2e.ts';
 const L49 = 'src/test/e2e/scenarios/l49-sec-p0-intercomptes.e2e.ts';
+const L54 = 'src/test/e2e/scenarios/l54b-sec-p0-isolation.e2e.ts';
+const ECRITURE_0373: ChannelRisk = {
+  channel: 'ecriture', risk: 'Nouvelle relation de ce type créée par une route, un traitement ou du SQL direct.',
+  guard: 'Garde en base 0373 (account_isolation_*) : écriture refusée (CROSS_ACCOUNT_LINK), transaction annulée.',
+};
+const SINISTRE_LECTURE: ChannelRisk = {
+  channel: 'lecture', risk: 'Libellé, identifiant ou pièce d’un autre compte restitué dans la fiche Sinistre.',
+  guard: 'claims/read.ts : chaque référence secondaire relue dans le compte du sinistre (lot 54, SEC-04).',
+};
+const SINISTRE_EXPORT: ChannelRisk = {
+  channel: 'exports', risk: 'Pièce d’un autre compte incluse dans un export Sinistre.',
+  guard: 'Exports bornés au compte (loadExportSource, export-snapshot : photos du compte seulement — lot 54).',
+};
 
 const LECTURE_DOCS: ChannelRisk = {
   channel: 'lecture', risk: 'Nom du bien de l’autre compte affiché à côté du document (listes Documents, accueil, À traiter).',
@@ -271,7 +284,73 @@ export const CATEGORY_RISKS: readonly CategoryRisk[] = [
     summary: 'Job IA en attente référençant un objet d’un autre compte.',
     channels: [{ channel: 'ia', risk: 'Écriture T1/T3/T4 sur l’objet étranger.', guard: 'job-scope : refus à l’exécution, jobs anciens et relancés compris (lot 49).' }],
     treatment: 'Job PENDING annulé (CANCELLED), restaurable.',
-    proofs: [`${E2E} PO-D23-05`, `${L49} AC05`],
+    proofs: [`${E2E} PO-D23-05`, `${L49} AC05`, `${L54} SEC-05`],
+  },
+  // ── Lot 54 (SEC-06) ──────────────────────────────────────────────────────
+  {
+    code: 'PHOTO_FILE', level: 'moyen', duo: true,
+    summary: 'Photo d’un bien dont le fichier appartient à un autre compte.',
+    channels: [
+      { channel: 'miniatures', risk: 'Photo de l’autre compte affichée sur le bien.', guard: '/api/files/[id]/* : fichier du compte actif seulement (404).' },
+      { channel: 'exports', risk: 'Photo de l’autre compte incluse dans l’export du bien.', guard: 'export-snapshot : fichier de la photo dans le compte du bien (lot 54).' },
+      ECRITURE_0373,
+    ],
+    treatment: 'Association photo ↔ bien retirée (le fichier reste dans son compte), restaurable.',
+    proofs: [`${L54} SEC-04, SEC-06, SEC-09`],
+  },
+  {
+    code: 'CLAIM_CONTRACT', level: 'élevé', duo: false,
+    summary: 'Sinistre rattaché au contrat d’assurance (Opération) d’un autre compte.',
+    channels: [SINISTRE_LECTURE, SINISTRE_EXPORT, ECRITURE_0373],
+    treatment: 'insurance_contract_operation_id remis à NULL, restaurable.',
+    proofs: [`${L54} SEC-04, SEC-06, SEC-09`],
+  },
+  {
+    code: 'CLAIM_HISTORY_EVENT', level: 'moyen', duo: false,
+    summary: 'Sinistre rattaché à l’événement historique d’un autre compte.',
+    channels: [SINISTRE_LECTURE, ECRITURE_0373],
+    treatment: 'history_event_id remis à NULL, restaurable.',
+    proofs: [`${L54} SEC-04, SEC-06`],
+  },
+  {
+    code: 'CLAIM_ACTION_REF', level: 'moyen', duo: false,
+    summary: 'Action de sinistre citant la facture (document) ou l’intervention (Opération) d’un autre compte.',
+    channels: [SINISTRE_LECTURE, SINISTRE_EXPORT, ECRITURE_0373],
+    treatment: 'invoice_file_id / child_operation_id remis à NULL, restaurable.',
+    proofs: [`${L54} SEC-04, SEC-06`],
+  },
+  {
+    code: 'CLAIM_EXCHANGE_DOCUMENT', level: 'moyen', duo: false,
+    summary: 'Échange de sinistre citant un document d’un autre compte.',
+    channels: [SINISTRE_LECTURE, ECRITURE_0373],
+    treatment: 'document_file_id remis à NULL, restaurable.',
+    proofs: [`${L54} SEC-04, SEC-06`],
+  },
+  {
+    code: 'CLAIM_DAMAGE_DOCUMENT', level: 'moyen', duo: false,
+    summary: 'Pièce de dommage (document) d’un autre compte.',
+    channels: [SINISTRE_LECTURE, SINISTRE_EXPORT, ECRITURE_0373],
+    treatment: 'Lien dommage ↔ document retiré, restaurable.',
+    proofs: [`${L54} SEC-04, SEC-06`],
+  },
+  {
+    code: 'CLAIM_DAMAGE_PHOTO', level: 'moyen', duo: false,
+    summary: 'Photo de dommage d’un autre compte.',
+    channels: [SINISTRE_LECTURE, { channel: 'miniatures', risk: 'Photo de l’autre compte affichée dans le dommage.', guard: 'claims/read.ts : photo (bien et fichier) du compte du sinistre seulement.' }, ECRITURE_0373],
+    treatment: 'Lien dommage ↔ photo retiré, restaurable.',
+    proofs: [`${L54} SEC-04, SEC-06`],
+  },
+  {
+    code: 'OP_CORE_LINK', level: 'élevé', duo: true,
+    summary: 'Lien « cœur » d’une Opération (bien, équipement, composante, source, agenda, candidat T1) vers un autre compte.',
+    channels: [
+      { channel: 'lecture', risk: 'Bien ou montant d’un autre compte dans une Opération.', guard: 'Lectures Opérations bornées au compte (read-service, claims/read — lots 39-54).' },
+      { channel: 'agenda', risk: 'Événement d’agenda projeté depuis l’Opération d’un autre compte.', guard: 'agenda-projection : Opération et élément du même compte.' },
+      { channel: 'ia', risk: 'Réconciliation T3 Opérations sur une source étrangère.', guard: 'job-scope (cible compte, références imbriquées — lot 54) ; sources lues dans le compte.' },
+      ECRITURE_0373,
+    ],
+    treatment: 'Procédure d’incident : diagnostic BO Opérations (CROSS_ACCOUNT_LINK) puis réconsolidation du compte ; jamais de correction directe.',
+    proofs: [`${L54} SEC-06, SEC-09`],
   },
 ];
 

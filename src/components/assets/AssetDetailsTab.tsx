@@ -14,12 +14,13 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { Button } from '@/components/ui/button';
 import { AssetDetailSection, type FieldDef } from './AssetDetailSection';
 import { ValuationHistoryDrawer } from './ValuationHistoryDrawer';
+import { TcoDrawer } from './TcoDrawer';
 import { AssetAdditionalInfosSection } from './AssetAdditionalInfosSection';
 import { AssetClaimsSection } from './claims/AssetClaimsSection';
 import { OCCUPANCY_USAGE_OPTIONS } from '@/lib/assets/occupancy';
 import { apiClient } from '@/lib/api-client';
 import type { AssetDetail } from '@/types/asset-detail';
-import { ChevronDown, ChevronUp, TrendingUp } from 'lucide-react';
+import { Calculator, ChevronDown, ChevronUp, TrendingUp } from 'lucide-react';
 import { toast } from 'sonner';
 import { displayDocumentTitle } from '@/lib/documents/document-title-rules';
 import { TENURE_END_LABEL, TENURE_META_KEY, tenureEndKey, tenureSourceLabel, type TenureEndMeta } from '@/lib/assets/tenure-end';
@@ -470,6 +471,8 @@ export function AssetDetailsTab({ asset, onRefresh, planType, readOnly = false, 
     return map[highlightField] ?? null;
   });
   const [valuationDrawerOpen, setValuationDrawerOpen] = useState(false);
+  // Lot 54D (TCO §3.6) : tiroir « Coût de possession » (desktop et mobile : même composant).
+  const [tcoDrawerOpen, setTcoDrawerOpen] = useState(false);
   const highlightAppliedRef = useRef(false);
 
   const load = useCallback(async () => {
@@ -565,6 +568,13 @@ export function AssetDetailsTab({ asset, onRefresh, planType, readOnly = false, 
         assetName={asset.name}
         onSaved={onRefresh}
       />
+      <TcoDrawer
+        open={tcoDrawerOpen}
+        onClose={() => setTcoDrawerOpen(false)}
+        assetId={asset.id}
+        assetName={asset.name}
+        readOnly={readOnly}
+      />
 
       {/* ── Sections ──────────────────────────────────────────────────────────── */}
       {sectionEntries.map(([key, data]) => {
@@ -595,15 +605,27 @@ export function AssetDetailsTab({ asset, onRefresh, planType, readOnly = false, 
               onDismissAlert={handleDismissAlert}
               onApplyAlert={handleApplyAlert}
               headerActions={key === 'valuation' ? (
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => setValuationDrawerOpen(true)}
-                  title="Historique de valorisation"
-                >
-                  <TrendingUp className="w-3.5 h-3.5 mr-1" />
-                  Valorisation
-                </Button>
+                <div className="flex flex-wrap items-center gap-1">
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => setValuationDrawerOpen(true)}
+                    title="Historique de valorisation"
+                  >
+                    <TrendingUp className="w-3.5 h-3.5 mr-1" />
+                    Valorisation
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => setTcoDrawerOpen(true)}
+                    title="Coût de possession"
+                    data-tco-open
+                  >
+                    <Calculator className="w-3.5 h-3.5 mr-1" />
+                    Coût de possession
+                  </Button>
+                </div>
               ) : undefined}
             />
           </div>

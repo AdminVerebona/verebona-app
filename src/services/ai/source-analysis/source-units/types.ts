@@ -188,6 +188,22 @@ export interface T1CoverageDiagnostics {
   originalsPreserved: number;
   /** Pertes NON compensées (valeur non conservée) — 0 attendu. */
   normalisationLosses: number;
+  // ── Lot 54G (ticket T1 « finaliser la couverture réelle », §6) — compteurs seulement ──
+  /** Pages citées par T1 (fait, tableau, observation, marque) mais NON vérifiées : citées ≠ couvertes. */
+  pagesCitedUnverified?: number[];
+  /** Relectures du FICHIER (reprise NEEDS_SOURCE) exécutées / sans levée d'incertitude (cumul du document). */
+  sourceRereads?: number;
+  sourceRereadsFailed?: number;
+  /** Unités levées par une relecture du fichier (cumul). */
+  sourceRereadResolved?: number;
+  /** Relectures du fichier épuisées (plafond atteint, incertitude maintenue). */
+  needsSourceExhausted?: number;
+  /** Champs retirés par la validation de la passerelle / dont l'original est conservé. */
+  prunedFields?: number;
+  prunedOriginalsPreserved?: number;
+  /** Tableaux encore incertains / résolus par la vérification de leurs lignes. */
+  tablesUncertain?: number;
+  tablesResolved?: number;
 }
 
 export const T1_COMPLETENESS_ANOMALIES = [

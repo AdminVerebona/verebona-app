@@ -510,7 +510,7 @@ export function diagnosticLinkFor(domain: string, detail: Record<string, unknown
   // Lot 49 : contrôle d'exploitation « Relations intercomptes » — lien vers
   // son rapport complet dans le BO (chemin interne seulement).
   if (domain === 'other' && typeof detail?.boLink === 'string' && detail.boLink.startsWith('/admin/exploitation?tab=intercomptes')) {
-    return { href: detail.boLink, label: 'Ouvrir le rapport « Relations intercomptes »' };
+    return { href: detail.boLink, label: 'Ouvrir « Isolation des comptes »' };
   }
   if (domain !== 'ai') return null;
   const operationId = detail?.operationId;

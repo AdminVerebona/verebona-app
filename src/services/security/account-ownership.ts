@@ -21,6 +21,7 @@
  *   · événement     events.account_id (domaine historique)
  *   · échéance      deadlines.account_id (domaine historique)
  *   · agenda        agenda_items.account_id
+ *   · Opération     business_operations.account_id (lot 54, SEC-05)
  *
  * Utilisable par les routes, les services de persistance et les traitements
  * asynchrones : chaque fonction accepte l'exécutant (base ou transaction
@@ -39,10 +40,10 @@ import { sql, type SQL } from 'drizzle-orm';
 
 /** Types d'objets contrôlés. */
 export type OwnedKind =
-  | 'asset' | 'file' | 'substructure' | 'equipment' | 'supplier' | 'event' | 'deadline' | 'agenda_item';
+  | 'asset' | 'file' | 'substructure' | 'equipment' | 'supplier' | 'event' | 'deadline' | 'agenda_item' | 'operation';
 
 export const OWNED_KINDS: readonly OwnedKind[] = [
-  'asset', 'file', 'substructure', 'equipment', 'supplier', 'event', 'deadline', 'agenda_item',
+  'asset', 'file', 'substructure', 'equipment', 'supplier', 'event', 'deadline', 'agenda_item', 'operation',
 ];
 
 /** Références d'une opération, par type (listes ou identifiant seul). */
@@ -100,6 +101,7 @@ function ownerQuery(kind: OwnedKind, ids: readonly number[]): SQL {
     case 'event': return sql`SELECT 'event' AS kind, id, account_id FROM events WHERE id = ANY(${a})`;
     case 'deadline': return sql`SELECT 'deadline' AS kind, id, account_id FROM deadlines WHERE id = ANY(${a})`;
     case 'agenda_item': return sql`SELECT 'agenda_item' AS kind, id, account_id FROM agenda_items WHERE id = ANY(${a})`;
+    case 'operation': return sql`SELECT 'operation' AS kind, id::int AS id, account_id FROM business_operations WHERE id = ANY(${a})`;
   }
 }
 
@@ -223,6 +225,42 @@ export async function assertTargetInAccount(
   }
 }
 
+/**
+ * Lot 54 (SEC-03 « écritures concurrentes ») : même contrôle que
+ * `assertTargetInAccount`, mais DANS la transaction de l'écriture et APRÈS
+ * avoir verrouillé (FOR SHARE) le bien, la pièce et l'équipement visés et le
+ * bien porteur de chacun. Un changement de compte ou de rattachement
+ * concurrent (UPDATE de `assets.account_id`, `equipments.asset_id`…) attend
+ * la fin de la transaction : l'appartenance vérifiée est celle du moment
+ * effectif de l'écriture. Filet en base : garde différée 0373.
+ *
+ * À appeler avec l'exécutant de la transaction (`db.transaction(tx => …)`).
+ */
+export async function lockTargetInAccount(
+  accountId: number,
+  t: { assetId?: number | null; substructureId?: number | null; equipmentId?: number | null },
+  tx: SqlExecutor,
+): Promise<void> {
+  const sid = t.substructureId ?? null;
+  const eid = t.equipmentId ?? null;
+  if (sid) await tx.execute(sql`SELECT id FROM substructures WHERE id = ${sid}::int FOR SHARE`);
+  if (eid) await tx.execute(sql`SELECT id FROM equipments WHERE id = ${eid}::int FOR SHARE`);
+  await tx.execute(sql`
+    SELECT b.id FROM assets b
+     WHERE b.id IN (${t.assetId ?? null}::int,
+                    (SELECT asset_id FROM substructures WHERE id = ${sid}::int),
+                    (SELECT asset_id FROM equipments WHERE id = ${eid}::int))
+     ORDER BY b.id
+       FOR SHARE`);
+  await assertTargetInAccount(accountId, t, tx);
+}
+
+/** Refus de la garde en base (0332 / 0373) : `CROSS_ACCOUNT_LINK`, SQLSTATE 23514. */
+export function isCrossAccountDbRefusal(e: unknown): boolean {
+  const x = e as { message?: unknown; cause?: { message?: unknown } } | null;
+  return /CROSS_ACCOUNT_LINK/.test(`${String(x?.message ?? '')} ${String(x?.cause?.message ?? '')}`);
+}
+
 // ── Condition de compte DANS le SQL d'une écriture ──────────────────────────
 
 /**
@@ -242,6 +280,7 @@ export function ownedSql(kind: OwnedKind, idExpr: SQL | number, accountId: SQL |
     case 'event': return sql`EXISTS (SELECT 1 FROM events o WHERE o.id = ${id} AND o.account_id = ${acc})`;
     case 'deadline': return sql`EXISTS (SELECT 1 FROM deadlines o WHERE o.id = ${id} AND o.account_id = ${acc})`;
     case 'agenda_item': return sql`EXISTS (SELECT 1 FROM agenda_items o WHERE o.id = ${id} AND o.account_id = ${acc})`;
+    case 'operation': return sql`EXISTS (SELECT 1 FROM business_operations o WHERE o.id = ${id} AND o.account_id = ${acc})`;
   }
 }
 

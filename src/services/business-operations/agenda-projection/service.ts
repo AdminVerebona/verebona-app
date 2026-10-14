@@ -58,8 +58,12 @@ const todayUtc = () => new Date().toISOString().slice(0, 10);
 
 /** Pool de rapprochement borné par passage (charge). */
 const CANDIDATE_LIMIT = 2000;
-/** Opérations lues par passage complet (au-delà : passage suivant via le balayage). */
-const ALL_OPERATIONS_LIMIT = 1000;
+/**
+ * Lot 54D (E07) : taille des PAGES d'un passage complet (curseur stable sur
+ * l'identifiant) — le passage va jusqu'à épuisement du périmètre, plus de
+ * plafond à 1 000 Opérations.
+ */
+export const PROJECTION_PAGE_SIZE = 500;
 
 export interface ProjectionRunOptions {
   /** Opérations à projeter (identifiants, fusionnées comprises : la canonique est traitée). */
@@ -77,6 +81,8 @@ export interface ProjectionRunOptions {
    * rapprochement.
    */
   forceCreateOperationIds?: readonly number[];
+  /** Tests : taille de page d'un passage complet (E07). */
+  pageSize?: number;
 }
 
 export interface ProjectionRunResult {
@@ -92,6 +98,9 @@ export interface ProjectionRunResult {
   suppressed: number;
   /** Lot 53 (D14) : cartes « À traiter » de rapprochement incertain posées / mises à jour. */
   matchCards?: number;
+  /** Lot 54D (E07) : pages traitées (passage complet), dernier identifiant atteint. */
+  pages?: number;
+  lastOperationId?: number | null;
   /** Écritures effectives (0 = no-op). */
   changes: number;
   skipped?: 'COLUMNS_MISSING';
@@ -117,15 +126,15 @@ async function canonicalIds(accountId: number, ids: readonly number[]): Promise<
   return r.map((x) => Number(x.id));
 }
 
-async function allProjectableIds(accountId: number): Promise<number[]> {
+async function projectableIdsPage(accountId: number, afterId: number, size: number): Promise<number[]> {
   const r = await rows<{ id: string }>(db, sql`
     SELECT o.id FROM business_operations o
-     WHERE o.account_id = ${accountId}
+     WHERE o.account_id = ${accountId} AND o.id > ${afterId}
        AND ((o.invalidated_at IS NULL AND o.merged_into_operation_id IS NULL
              AND o.type_code IN ('INTERVENTION', 'CLAIM', 'ACQUISITION', 'DISPOSAL', 'CONTRACT'))
             OR EXISTS (SELECT 1 FROM agenda_items ai WHERE ai.business_operation_id = o.id AND ai.account_id = o.account_id))
      ORDER BY o.id
-     LIMIT ${ALL_OPERATIONS_LIMIT}`);
+     LIMIT ${size}`);
   return r.map((x) => Number(x.id));
 }
 
@@ -440,10 +449,41 @@ export async function projectAccountOperations(accountId: number, opts: Projecti
   const today = opts.today ?? todayUtc();
   const correlationId = opts.correlationId ?? null;
 
-  const ids = opts.all ? await allProjectableIds(accountId) : await canonicalIds(accountId, opts.operationIds ?? []);
-  if (opts.all) await cleanupOrphans(accountId, res, beforeWrite);
-  if (!ids.length) return res;
+  if (opts.all) {
+    // Lot 54D (E07) : passage COMPLET par pages sur curseur stable, jusqu'à
+    // épuisement. Interrompu (garde), le travail est rejoué : les pages déjà
+    // projetées n'écrivent plus rien (idempotence), rien n'est omis.
+    await cleanupOrphans(accountId, res, beforeWrite);
+    res.pages = 0;
+    res.lastOperationId = null;
+    let curseur = 0;
+    for (;;) {
+      const page = await projectableIdsPage(accountId, curseur, opts.pageSize ?? PROJECTION_PAGE_SIZE);
+      if (!page.length) break;
+      await projectIds(accountId, page, res, { ...opts, beforeWrite, today, correlationId });
+      res.pages++;
+      curseur = page[page.length - 1];
+      res.lastOperationId = curseur;
+      if (page.length < (opts.pageSize ?? PROJECTION_PAGE_SIZE)) break;
+    }
+  } else {
+    const ids = await canonicalIds(accountId, opts.operationIds ?? []);
+    if (!ids.length) return res;
+    await projectIds(accountId, ids, res, { ...opts, beforeWrite, today, correlationId });
+  }
+  if (res.changes > 0) {
+    console.info(JSON.stringify({ event: 't4.operation_projection', accountId, correlationId, ...res }));
+  }
+  return res;
+}
 
+/** Projette un lot d'Opérations (identifiants canoniques) — corps commun aux deux modes. */
+async function projectIds(
+  accountId: number, ids: readonly number[], res: ProjectionRunResult,
+  o: ProjectionRunOptions & { beforeWrite: (w: string) => Promise<void> | void; today: string; correlationId: string | null },
+): Promise<void> {
+  const { beforeWrite, today, correlationId } = o;
+  const opts = o;
   const ops = await loadOperationSnapshots(accountId, ids);
   const linked = await loadLinkedItems(accountId, ops.map((o) => o.id));
   const suppressions = await loadSuppressions(ops.map((o) => o.id));
@@ -483,13 +523,9 @@ export async function projectAccountOperations(accountId: number, opts: Projecti
   }
   {
     const { syncAgendaProjectionCards } = await import('@/services/to-process/agenda-projection-cards');
-    const r = await syncAgendaProjectionCards(accountId, besoins, ops.map((o) => o.id));
-    res.matchCards = r.created + r.updated;
+    const r = await syncAgendaProjectionCards(accountId, besoins, ops.map((x) => x.id));
+    res.matchCards = (res.matchCards ?? 0) + r.created + r.updated;
   }
-  if (res.changes > 0) {
-    console.info(JSON.stringify({ event: 't4.operation_projection', accountId, correlationId, ...res }));
-  }
-  return res;
 }
 
 // ── Suppression utilisateur mémorisée (C16.1, F-146) ───────────────────────
@@ -567,11 +603,15 @@ export async function findOperationAgendaEquivalent(p: {
 }
 
 /**
- * Comptes dont des Opérations récentes n'ont encore aucune représentation
- * d'agenda attendue, ou qui portent des projections orphelines (convergence
- * du balayage horaire, NFR-OP-006 : un événement de bus perdu est rattrapé).
- * Fenêtre de 48 h sur les Opérations : une abstention (rapprochement
- * probable) n'est pas réexaminée indéfiniment.
+ * Comptes dont des Opérations n'ont encore aucune représentation d'agenda
+ * attendue, ou qui portent des projections orphelines (convergence du
+ * balayage horaire, NFR-OP-006 : un événement de bus perdu est rattrapé).
+ * Lot 54D (E06) : plus de fenêtre de 48 h — une projection manquante est
+ * restaurée QUEL QUE SOIT son âge. Ce qui n'est pas réexaminé : une
+ * suppression utilisateur (tombstone `business_operation_projection_
+ * suppressions`), un événement déjà lié, et une abstention en attente de
+ * l'utilisateur (carte AGENDA-PROJECTION-MATCH ouverte) — aucune boucle :
+ * une Opération déjà évaluée sans écriture n'est pas remise en file.
  */
 export async function listAccountsNeedingProjection(limit: number): Promise<number[]> {
   if (!(await agendaFunctionalColumnsReady())) return [];
@@ -579,14 +619,17 @@ export async function listAccountsNeedingProjection(limit: number): Promise<numb
     SELECT account_id FROM (
       SELECT o.account_id FROM business_operations o
        WHERE o.invalidated_at IS NULL AND o.merged_into_operation_id IS NULL
-         AND o.updated_at > now() - interval '48 hours'
+         AND NOT EXISTS (SELECT 1 FROM to_process_actions t
+                          WHERE t.account_id = o.account_id AND t.rule_code = 'AGENDA-PROJECTION-MATCH' AND t.resolved_at IS NULL
+                            AND t.trigger_context ? 'operationId' AND (t.trigger_context->>'operationId')::bigint = o.id)
          AND ((o.type_code = 'INTERVENTION' AND ((o.status = 'ENVISAGED' AND o.planned_date IS NOT NULL) OR (o.status = 'REALIZED' AND o.realized_date IS NOT NULL)))
               OR (o.type_code IN ('ACQUISITION', 'DISPOSAL') AND o.status = 'REALIZED' AND o.realized_date IS NOT NULL)
               OR (o.type_code = 'CLAIM' AND o.status = 'REALIZED' AND o.realized_date IS NOT NULL
                   AND NOT EXISTS (SELECT 1 FROM business_operation_claim_details kd WHERE kd.operation_id = o.id AND kd.history_event_id IS NOT NULL))
               OR (o.type_code = 'CONTRACT' AND o.status <> 'CANCELLED'
                   AND EXISTS (SELECT 1 FROM business_operation_contract_details cd WHERE cd.operation_id = o.id AND cd.effective_to >= CURRENT_DATE)))
-         AND EXISTS (SELECT 1 FROM business_operation_asset_links l WHERE l.operation_id = o.id AND l.active)
+         AND EXISTS (SELECT 1 FROM business_operation_asset_links l JOIN assets a ON a.id = l.asset_id AND a.account_id = o.account_id AND a.deleted_at IS NULL
+                      WHERE l.operation_id = o.id AND l.active)
          AND NOT EXISTS (SELECT 1 FROM agenda_items ai WHERE ai.business_operation_id = o.id)
          AND NOT EXISTS (SELECT 1 FROM business_operation_projection_suppressions s WHERE s.operation_id = o.id)
       UNION

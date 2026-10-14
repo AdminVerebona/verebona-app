@@ -123,7 +123,7 @@ describe('BO-IA-PROMPTS-01 — service', () => {
       scenariosFailed: 3, failures: [], error: null, requestedBy: 7, startedAt: new Date(), finishedAt: new Date() });
     const r = await svc.activateDraft('T2', 2, 7);
     expect(r.notices).toContain('3 scénarios en échec sur 50.');
-    expect(repo.switchActivePrompt).toHaveBeenCalledWith(expect.objectContaining({ testSummary: 'Testée : 3 échec(s) sur 50' }));
+    expect(repo.switchActivePrompt).toHaveBeenCalledWith(expect.objectContaining({ testSummary: 'Testée : 3 échec(s) sur 50' }), expect.anything());
   });
 
   it('AC06 — activer T2 ne lit ni T1, ni T3, T4, T6', async () => {
@@ -161,7 +161,7 @@ describe('BO-IA-PROMPTS-01 — service', () => {
     expect(versions.get(1)!.status).toBe('PREVIOUS');
     expect(repo.switchActivePrompt).toHaveBeenCalledWith(expect.objectContaining({
       treatment: 'T2', targetId: 2, action: 'activate', userId: 7, userEmail: 'admin7@verebona.test',
-    }));
+    }), expect.anything());
     expect(audit).toHaveBeenCalledWith(expect.objectContaining({
       actionType: 'ai_master_prompt_activate', adminUserId: 7,
       beforeValue: expect.objectContaining({ treatment: 'T2', versionNumber: 1 }), afterValue: expect.objectContaining({ versionNumber: 2 }),
@@ -174,7 +174,7 @@ describe('BO-IA-PROMPTS-01 — service', () => {
     const r = await svc.reactivateVersion('T2', 1, 7);
     expect(r).toMatchObject({ activeVersionNumber: 1, previousVersionNumber: 2 });
     expect(versions.get(2)!.status).toBe('PREVIOUS');
-    expect(repo.switchActivePrompt).toHaveBeenCalledWith(expect.objectContaining({ action: 'rollback' }));
+    expect(repo.switchActivePrompt).toHaveBeenCalledWith(expect.objectContaining({ action: 'rollback' }), expect.anything());
     await expect(svc.reactivateVersion('T2', 1, 7)).rejects.toMatchObject({ code: 'NOT_REACTIVABLE' });
     brouillon('T2', FICHIER_T2, 3, 3);
     await expect(svc.reactivateVersion('T2', 3, 7)).rejects.toMatchObject({ code: 'NOT_REACTIVABLE' });

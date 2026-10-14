@@ -105,12 +105,12 @@ async function runCase(
       if (live) {
         let sortie: unknown;
         try { sortie = await live.call(c, variables); } catch (e) { return { ...base, passed: false, errors: [`appel réel : ${(e as Error).message}`] }; }
-        return finish(c, sortie, base, text, readMasterFile);
+        return finish(c, sortie, base, text, readMasterFile, schemaNameFor(c, execution));
       }
     } catch (e) {
       return { ...base, passed: false, errors: [`contexte : ${(e as Error).message}`] };
     }
-    return finish(c, c.output, base, text, readMasterFile);
+    return finish(c, c.output, base, text, readMasterFile, schemaNameFor(c, execution));
   }
   // 1. Rendu de la branche sur le texte évalué.
   try {
@@ -139,19 +139,43 @@ async function runCase(
   return finish(c, c.output, base, text, readMasterFile);
 }
 
+/**
+ * Lot 54 — schéma de sortie de la branche d'un cas pour la version évaluée :
+ * contrat de sortie configuré (contexte structuré), sinon schéma historique
+ * de l'opération (LEGACY_TEMPLATE).
+ */
+export function schemaNameFor(c: Pick<MasterCorpusCase, 'masterPromptCode' | 'task' | 'outputSchema'>, execution?: MasterExecutionConfig | null): string {
+  const spec = structuredSpecFor(c.masterPromptCode);
+  if (!spec || execution?.mode !== 'STRUCTURED_CONTEXT' || !execution.outputContractVersion) return c.outputSchema;
+  return spec.outputContracts[execution.outputContractVersion]?.byTask[c.task]?.schemaName ?? c.outputSchema;
+}
+
+/** Lot 54 — la sortie enregistrée du cas relève-t-elle du contrat de sortie de la version évaluée ? */
+export function caseMatchesExecution(c: MasterCorpusCase, execution?: MasterExecutionConfig | null): boolean {
+  return caseSchemaName(c) === schemaNameFor(c, execution);
+}
+
+/** Schéma de sortie propre à la sortie enregistrée d'un cas (`outputContract`, sinon historique). */
+function caseSchemaName(c: MasterCorpusCase): string {
+  const spec = structuredSpecFor(c.masterPromptCode);
+  if (!spec || !c.outputContract) return c.outputSchema;
+  return spec.outputContracts[c.outputContract]?.byTask[c.task]?.schemaName ?? c.outputSchema;
+}
+
 async function finish(
   c: MasterCorpusCase, output: unknown, base: Omit<CorpusCaseOutcome, 'passed' | 'errors'>, text: string, readMasterFile: MasterFileReader,
+  schemaName: string = c.outputSchema,
 ): Promise<CorpusCaseOutcome> {
   const errors: string[] = [];
   const evaluator = MASTER_CORPUS_EVALUATORS[c.operationCode] as (typeof MASTER_CORPUS_EVALUATORS)[string] | undefined;
   // 2. Validation discriminée (même contrôle que la passerelle).
-  const schema = masterOutputSchemaFor(c.outputSchema);
-  if (!schema) return { ...base, passed: false, errors: [`schéma ${c.outputSchema} inconnu`] };
+  const schema = masterOutputSchemaFor(schemaName);
+  if (!schema) return { ...base, passed: false, errors: [`schéma ${schemaName} inconnu`] };
   let data: unknown;
   try {
     // Lot 33D : même résolution déterministe que la passerelle (adaptateurs,
     // normalisation, validation champ par champ) — sans réparation IA.
-    data = validateOutput(JSON.stringify(output), schema, c.operationCode, 'json', { expectedTask: c.task, taskField: c.taskField, schemaName: c.outputSchema });
+    data = validateOutput(JSON.stringify(output), schema, c.operationCode, 'json', { expectedTask: c.task, taskField: c.taskField, schemaName });
   } catch (e) {
     return { ...base, passed: false, errors: [`sortie : ${(e as Error).message}`] };
   }
@@ -189,6 +213,9 @@ export async function runMasterCorpus(o: RunMasterCorpusOptions): Promise<Master
     const exigees = m.tasks.filter((t) => !absentes.includes(t));
     for (const c of mine) {
       if (absentes.includes(c.task)) { ignores.push(c.id); continue; }
+      // Lot 54 : sortie enregistrée d'un autre contrat de sortie que celui de
+      // la version évaluée (T4 CLASSIFY_EVENT v1 ↔ v2) — non rejouée ici.
+      if (caseSchemaName(c) !== schemaNameFor(c, execution)) { ignores.push(c.id); continue; }
       const r = await runCase(c, text, o.readMasterFile, m.tasks, o.live, execution);
       if (r) outcomes.push(r); else ignores.push(c.id);
     }

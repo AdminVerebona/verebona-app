@@ -11,10 +11,23 @@
  *
  * Critère d'acceptation n°17. Le compteur `deterministic` de chaque décision
  * permet de vérifier en production qu'aucun appel n'est émis sur un cas tranché.
+ *
+ * LOT 54 — T4 DÉCISIONNAIRE (flux documentaire automatique). Ordre :
+ *   validation technique de la date → préparation du candidat de récurrence
+ *   → décision T4 (CLASSIFY_EVENT : existence, catégorie, récurrence) →
+ *   déduplication → autorisation technique de la source → persistance.
+ * La classification déterministe n'est plus une décision finale : elle est
+ * transmise à T4 comme indice. Le code ne décide pas qu'un événement est ou
+ * non une échéance : il respecte strictement `agendaDecision` et
+ * `recurrenceDecision`. Le parcours manuel (`classifyAgendaEvent`) est
+ * inchangé.
  */
 import { classifyByRulesDetailed } from './rules/deterministic-classification';
 import { prudentCategory } from './rules/prudent-category';
-import { classifyEventMaster } from './master/classify-event';
+import {
+  classifyEventMaster, decideAgendaEvent, recurrenceCandidateOf,
+  type ClassifyEventContext, type T4EventDecision,
+} from './master/classify-event';
 import { DOCUMENT_CATALOG, documentMayCreateEvent, resolveDocumentType } from '@/services/canonical/registry';
 import { interpretDate, detectTemporalAmbiguity } from './rules/date-interpreter';
 import { findDuplicate, titleSimilarity, containmentSimilarity } from './dedupe.service';
@@ -23,7 +36,7 @@ import {
 } from './rules/recurrence';
 import { createHash } from 'crypto';
 import type {
-  AgendaDecision, ExistingAgendaItem, HomeCategory, AgendaClassificationInput, AgendaClassification,
+  AgendaDecision, ExistingAgendaItem, HomeCategory, AgendaClassificationInput, AgendaClassification, T4DecisionTrace,
 } from './types';
 import type { AgendaCandidate } from '../source-analysis/types';
 import { isExecutionCancelled } from '../queue/execution-control';
@@ -43,6 +56,11 @@ export interface AgendaIntelligenceInput {
    * `reviseDateEvidenceFromT4` (toujours depuis le lot 16b-3, jamais bloquant).
    */
   reviseDate?: (p: import('../evidence/revised-date-evidence').ReviseDateInput) => Promise<unknown>;
+  /**
+   * Lot 54 — décision T4 CLASSIFY_EVENT d'un candidat (injectable pour les
+   * tests) ; défaut : `decideAgendaEvent` (passerelle IA).
+   */
+  decide?: (input: AgendaClassificationInput, ctx: ClassifyEventContext) => Promise<T4EventDecision>;
 }
 
 /**
@@ -145,9 +163,42 @@ export async function processAgendaCandidates(
     // du champ d'origine, puis T3 par les primitives canoniques (jamais
     // au-dessus d'une valeur USER/ADMIN) — toujours depuis le lot 16b-3.
     if (candidate.date !== brut.date) await reviserPreuveDate(brut, candidate.date, input);
-    const base = await processOne(candidate, { ...input, existing: planned, today });
+
+    // ── Lot 54 : validation technique de la date — sans appel modèle ──────
+    const dateTechnique = interpretDate(candidate.date);
+    if (dateTechnique.qualification !== 'explicit') {
+      const d = await processOne(candidate, { ...input, existing: planned, today }, null);
+      Object.assign(d, t4Semantics(candidate as T4AgendaCandidate, input.sourceFileId));
+      decisions.push(d);
+      planned.push(asPlanned(d, planned.length));
+      continue;
+    }
+    // ── Préparation du candidat de récurrence (le code ne décide pas) ─────
+    const recurrence = prepareRecurrenceCandidate(candidate, input.assetId, planned);
+    // ── Décision T4 : existence, catégorie, récurrence ─────────────────────
+    const t4 = await decideCandidate(candidate, recurrence, input);
+    const trace = t4Trace(t4, recurrence);
+    if (t4.agendaDecision !== 'accept') {
+      // reject / abstain / échec technique : aucun Agenda, aucune proposition.
+      decisions.push({
+        ...t4Semantics(candidate as T4AgendaCandidate, input.sourceFileId),
+        action: 'ignore', title: candidate.title, date: candidate.date, category: 'information',
+        confidence: candidate.confidence, deterministic: false, t4: trace,
+        reasonCode: t4.outcome === 'technical_failure' ? 'T4_TECHNICAL_FAILURE'
+          : t4.agendaDecision === 'reject' ? 'MODEL_REJECTED_NOT_AGENDA' : 'MODEL_ABSTAINED',
+      });
+      await logT4Decision(input, candidate, trace);
+      continue;
+    }
+    await logT4Decision(input, candidate, trace);
+    const base = await processOne(candidate, { ...input, existing: planned, today }, t4.classification);
+    base.t4 = trace;
     decisions.push(base);
-    let recurrent = await forecastsFor(candidate, base, input, planned, today);
+    // Récurrence : seule une acceptation EXPLICITE de T4 produit une série
+    // (reject, abstain, not_applicable → aucune occurrence prévisionnelle).
+    let recurrent = recurrence && t4.recurrenceDecision === 'accept'
+      ? await forecastsFor(candidate, base, input, planned, today, recurrence)
+      : [];
     // T4-04 : une source non autorisée ne crée pas non plus les occurrences
     // de sa récurrence — elles sont proposées, comme l'occurrence de base.
     if (base.reasonCode === 'SOURCE_TYPE_NOT_AUTHORIZED' || base.reasonCode === 'SOURCE_TYPE_UNKNOWN') {
@@ -189,6 +240,91 @@ async function reviserPreuveDate(brut: AgendaCandidate, chosenDate: string, inpu
   }
 }
 
+/** Candidat de récurrence préparé par le serveur (ticket §5) : spécification, historique, série. */
+export interface RecurrencePlan {
+  spec: RecurrenceSpec;
+  history?: string[];
+  seriesKey: string;
+  serie: ExistingAgendaItem[];
+}
+
+/**
+ * Récurrence ENVISAGÉE pour un candidat — jamais décidée ici :
+ *   · mention explicite de la source (EXPLICIT_SOURCE, portée par T1) ;
+ *   · sinon historique d'au moins trois occurrences régulières de la même
+ *     série (HISTORICAL_PATTERN, `inferHistoricalRecurrence`) ;
+ *   · sinon aucune.
+ * T4 décide ensuite (`recurrenceDecision`).
+ */
+export function prepareRecurrenceCandidate(
+  candidate: AgendaCandidate, assetId: number | null, planned: ExistingAgendaItem[],
+): RecurrencePlan | null {
+  const seriesKey = seriesKeyFor(assetId, candidate);
+  const serie = sameSeries(candidate, planned, seriesKey);
+  let spec: RecurrenceSpec | null = candidate.recurrence ?? null;
+  let history: string[] | undefined;
+  if (!spec) {
+    // Historique : seules les occurrences CONFIRMÉES comptent — une prévision
+    // ne prouve pas une récurrence.
+    const dates = [...serie.filter((e) => e.nature !== 'FORECAST').map((e) => e.date), candidate.date];
+    spec = inferHistoricalRecurrence(dates);
+    if (spec) history = [...new Set(dates)].sort();
+  }
+  return spec ? { spec, history, seriesKey, serie } : null;
+}
+
+/** Décision T4 d'un candidat automatique (contexte : candidat, récurrence, indice déterministe). */
+async function decideCandidate(
+  candidate: AgendaCandidate, recurrence: RecurrencePlan | null, input: AgendaIntelligenceInput,
+): Promise<T4EventDecision> {
+  const ci = toClassificationInput(candidate);
+  // Indice seulement (ticket §4) : la classification déterministe existante
+  // n'empêche plus l'appel et ne tranche pas l'existence de l'événement.
+  const regle = classifyByRulesDetailed(ci);
+  return (input.decide ?? decideAgendaEvent)(ci, {
+    accountId: input.accountId, userId: input.userId, sourceFileId: input.sourceFileId,
+    excerpt: candidate.excerpt, date: candidate.date,
+    documentType: (candidate as T4AgendaCandidate).documentType ?? null,
+    recurrenceCandidate: recurrence ? recurrenceCandidateOf(recurrence.spec, recurrence.history) : null,
+    ruleHint: regle ? { category: regle.category, source: regle.source, ruleCode: regle.ruleCode } : null,
+  });
+}
+
+/** Trace BO de la décision T4 (ticket §12) — sans contenu documentaire brut. */
+export function t4Trace(t4: T4EventDecision, recurrence: RecurrencePlan | null): T4DecisionTrace {
+  const c = recurrence ? recurrenceCandidateOf(recurrence.spec, recurrence.history) : null;
+  const verdict: T4DecisionTrace['verdict'] = t4.outcome === 'technical_failure' ? 'TECHNICAL_FAILURE'
+    : t4.agendaDecision === 'reject' ? 'EVENT_REJECTED'
+      : t4.agendaDecision === 'abstain' ? 'ABSTAINED'
+        : recurrence && t4.recurrenceDecision !== 'accept' ? 'RECURRENCE_REJECTED' : 'ACCEPTED';
+  return {
+    agendaDecision: t4.agendaDecision, recurrenceDecision: t4.recurrenceDecision,
+    recurrenceCandidate: c ? {
+      mode: c.mode, frequency: c.frequency, interval: c.interval, startDate: c.startDate, endDate: c.endDate,
+      occurrenceCount: c.occurrenceCount, history: c.history,
+    } : null,
+    homeCategory: t4.classification.category, businessType: t4.classification.businessType ?? null,
+    confidence: t4.classification.confidence, reason: t4.reason, recurrenceReason: t4.recurrenceReason,
+    outcome: t4.outcome, verdict, warnings: t4.warnings, errorCode: t4.error?.code ?? null, traceId: t4.traceId ?? null,
+  };
+}
+
+/** Journal structuré + trace sur l'exécution IA (BO › Exécutions IA). Jamais bloquant. */
+async function logT4Decision(input: AgendaIntelligenceInput, candidate: AgendaCandidate, trace: T4DecisionTrace): Promise<void> {
+  console.info(JSON.stringify({
+    event: 't4.event_decision', accountId: input.accountId, sourceFileId: input.sourceFileId ?? null,
+    originFieldKey: candidate.originFieldKey ?? null, verdict: trace.verdict, agendaDecision: trace.agendaDecision,
+    recurrenceDecision: trace.recurrenceDecision, outcome: trace.outcome, errorCode: trace.errorCode ?? null,
+  }));
+  if (trace.traceId && !input.decide) {
+    try {
+      await (await import('./master/t4-decision-trace')).attachT4DecisionToTrace(trace.traceId, trace);
+    } catch (e) {
+      console.error('[t4] trace de décision non écrite (non bloquant) :', (e as Error).message);
+    }
+  }
+}
+
 function todayParis(): string {
   return new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Paris', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
 }
@@ -221,7 +357,7 @@ function sameSeries(c: AgendaCandidate, existing: ExistingAgendaItem[], key: str
 }
 
 /**
- * Occurrences prévisionnelles justifiées par une récurrence DÉMONTRÉE.
+ * Occurrences prévisionnelles d'une récurrence ACCEPTÉE par T4 (lot 54).
  *
  *   · mention explicite de la source (EXPLICIT_SOURCE) ;
  *   · sinon historique d'au moins trois occurrences régulières de la même
@@ -237,21 +373,11 @@ async function forecastsFor(
   input: AgendaIntelligenceInput,
   planned: ExistingAgendaItem[],
   today: string,
+  plan: RecurrencePlan,
 ): Promise<AgendaDecision[]> {
   if (base.reasonCode === 'INVALID_DATE' || base.reasonCode === 'DATE_OUT_OF_RANGE') return [];
-  const seriesKey = seriesKeyFor(input.assetId, candidate);
-  const serie = sameSeries(candidate, planned, seriesKey);
-
-  let spec: RecurrenceSpec | null = candidate.recurrence ?? null;
-  let history: string[] | undefined;
-  if (!spec) {
-    // Historique : seules les occurrences CONFIRMÉES comptent — une prévision
-    // ne prouve pas une récurrence.
-    const dates = [...serie.filter((e) => e.nature !== 'FORECAST').map((e) => e.date), candidate.date];
-    spec = inferHistoricalRecurrence(dates);
-    if (spec) history = [...new Set(dates)].sort();
-  }
-  if (!spec) return [];
+  // Lot 54 : récurrence préparée AVANT la décision T4, acceptée par T4.
+  const { spec, history, seriesKey, serie } = plan;
 
   // L'occurrence de base appartient à la série ; sa date reste EXPLICITE.
   base.occurrence = { nature: 'CONFIRMED', dateSource: 'EXPLICIT_DATE', seriesKey };
@@ -415,6 +541,8 @@ export async function resoudreAmbiguiteTemporelle(
 async function processOne(
   candidate: AgendaCandidate,
   input: AgendaIntelligenceInput,
+  /** Lot 54 : classification issue de la décision T4 (null : date invalide, aucun appel). */
+  t4Classification: AgendaClassification | null,
 ): Promise<AgendaDecision> {
   const base = {
     title: candidate.title,
@@ -507,8 +635,8 @@ async function processOne(
     };
   }
 
-  // ── Étapes 1, 4 et 5 : classification, règles métier, appel ciblé ──────
-  const classification = await classify(candidate, input);
+  // ── Classification : celle de la décision T4 (lot 54) ──────────────────
+  const classification = t4Classification ?? { category: 'unknown', confidence: 'ambiguous', source: 'fallback' } as AgendaClassification;
   const deterministic = classification.source !== 'model' && classification.source !== 'fallback';
   const prudent = prudentCategory(classification, { date: candidate.date, today: input.today ?? todayParis() });
 
@@ -535,24 +663,9 @@ async function processOne(
 }
 
 /**
- * Étape 1 puis étape 5 : les règles d'abord, le modèle seulement si elles
- * n'ont pas tranché.
- */
-async function classify(
-  candidate: AgendaCandidate,
-  input: AgendaIntelligenceInput,
-): Promise<AgendaClassification> {
-  return classifyAgendaEvent(toClassificationInput(candidate), {
-    accountId: input.accountId,
-    userId: input.userId,
-    sourceFileId: input.sourceFileId,
-    excerpt: candidate.excerpt,
-    date: candidate.date,
-  });
-}
-
-/**
- * Classification DÉTAILLÉE d'un événement (CDC 15 T4-10) :
+ * Classification DÉTAILLÉE d'un événement — PARCOURS MANUEL (CDC 15 T4-10 ;
+ * le flux documentaire automatique passe par `decideAgendaEvent` depuis le
+ * lot 54) :
  *   1. règles déterministes (registre, règles métier stables T4-11, motifs) ;
  *   2. sinon, branche CLASSIFY_EVENT du master T4 (action | information |
  *      unknown, confiance) — seul moteur depuis le lot 16b-2 ;

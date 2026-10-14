@@ -122,7 +122,24 @@ export interface ConsolidationOptions {
   syncCards?: boolean;
   /** Tests : étape de fusion (injection d'erreur, F-168). */
   onMergeStep?: (step: string) => void | Promise<void>;
+  /** Lot 54D (E01) : travail de file à l'origine du passage (trace de l'erreur technique). */
+  jobId?: number | null;
 }
+
+// ── Lot 54D (E01, E05) : reprise automatique bornée ─────────────────────────
+
+/** Tentatives T3 en erreur technique avant abandon (exposé au BO, reprise par « Reconsolider »). */
+export const T3_TECHNICAL_RETRY_MAX = 6;
+/** Backoff : 5 min × 2^(n−1), plafonné à 6 h. */
+export function t3RetryDelayMinutes(attempt: number): number | null {
+  if (!Number.isInteger(attempt) || attempt < 1 || attempt > T3_TECHNICAL_RETRY_MAX) return null;
+  return Math.min(360, 5 * 2 ** (attempt - 1));
+}
+
+type FaultHook = (stage: 'document' | 'cards', ctx: { accountId: number; fileId?: number }) => void | Promise<void>;
+let faultHook: FaultHook | null = null;
+/** Tests seulement : injection d'une panne (intégrité T3, service de cartes). */
+export function setT3FaultHookForTests(h: FaultHook | null): void { faultHook = h; }
 
 const todayUtc = () => new Date().toISOString().slice(0, 10);
 
@@ -1025,6 +1042,7 @@ export async function consolidateDocument(accountId: number, fileId: number, opt
       const file = await loadFile(tx, accountId, fileId);
       const valid = !!file && !file.deleted && !(file.documentTypeCode && NON_BUSINESS_DOCUMENT_TYPES.has(file.documentTypeCode));
       const cands = await loadCandidates(tx, accountId, fileId);
+      await faultHook?.('document', { accountId, fileId });
       const actifs = cands.filter((c) => c.status === 'ACTIVE');
       const docSources = await loadDocumentSources(tx, accountId, fileId);
       const ids = targetIdsOf(actifs, file?.assetId ?? null);
@@ -1158,6 +1176,14 @@ export async function consolidateDocument(accountId: number, fileId: number, opt
                  t3_operation_id = ${d.operationId}, t3_detail = ${JSON.stringify(detail)}::jsonb
            WHERE id = ${c.id}`);
       }
+      // Lot 54D (E01) : consolidation réussie — la reprise programmée est levée,
+      // la cause reste lisible au BO (`resolvedAt`). Aucune écriture sinon.
+      await tx.execute(sql`
+        UPDATE document_operation_candidates
+           SET t3_error_attempts = 0, t3_retry_at = NULL,
+               t3_last_error = CASE WHEN t3_last_error IS NOT NULL AND NOT (t3_last_error ? 'resolvedAt')
+                                    THEN t3_last_error || jsonb_build_object('resolvedAt', now()) ELSE t3_last_error END
+         WHERE file_id = ${fileId} AND account_id = ${accountId} AND (t3_error_attempts > 0 OR t3_retry_at IS NOT NULL)`);
       result.changes = changes.n;
       result.operations = [...touched].sort((a, b) => a - b);
     }, { correlationId: opts.correlationId });
@@ -1165,16 +1191,23 @@ export async function consolidateDocument(accountId: number, fileId: number, opt
     if (opts.syncCards !== false) await syncCards(accountId, cards);
   } catch (e) {
     if (!isBusinessOperationIntegrityError(e)) throw e;
-    // NFR-OP-008 : erreur technique journalisée ; le candidat n'attend plus T3
-    // (pas de boucle horaire), la trace permet le diagnostic BO.
+    // NFR-OP-008 : erreur technique journalisée. Lot 54D (E01) : distincte d'une
+    // décision métier (motif `TECHNICAL_ERROR:<code>`), cause / candidat / compte /
+    // job conservés, reprise AUTOMATIQUE programmée (backoff borné) — jamais un
+    // succès silencieux, jamais une boucle (au plus T3_TECHNICAL_RETRY_MAX tentatives).
     console.error(`[t3-operations] document ${fileId} (compte ${accountId}) : ${e.message}`);
     const { pgClient } = await import('@/db');
     await pgClient.unsafe(
       `UPDATE document_operation_candidates
           SET t3_pending = false, t3_processed_at = now(), t3_outcome = CASE WHEN status = 'ACTIVE' THEN 'HOLD_UNRESOLVED' ELSE t3_outcome END,
-              t3_reason = CASE WHEN status = 'ACTIVE' THEN $3 ELSE t3_reason END
+              t3_reason = CASE WHEN status = 'ACTIVE' THEN $3 ELSE t3_reason END,
+              t3_error_attempts = CASE WHEN status = 'ACTIVE' THEN t3_error_attempts + 1 ELSE t3_error_attempts END,
+              t3_retry_at = CASE WHEN status = 'ACTIVE' AND t3_error_attempts + 1 <= $6
+                                 THEN now() + make_interval(mins => LEAST(360, 5 * power(2, t3_error_attempts)::int)) ELSE NULL END,
+              t3_last_error = jsonb_build_object('code', $4::text, 'message', left($5::text, 500), 'jobId', $7::bigint,
+                                                 'correlationId', $8::text, 'at', now(), 'attempt', t3_error_attempts + 1)
         WHERE file_id = $1 AND account_id = $2 AND (status = 'ACTIVE' OR t3_pending)`,
-      [fileId, accountId, `TECHNICAL_ERROR:${e.code}`] as never[],
+      [fileId, accountId, `TECHNICAL_ERROR:${e.code}`, e.code, e.message, T3_TECHNICAL_RETRY_MAX, opts.jobId ?? null, opts.correlationId ?? null] as never[],
     );
     result.error = e.code;
   }
@@ -1188,11 +1221,38 @@ export async function consolidateDocument(accountId: number, fileId: number, opt
  */
 export async function syncCards(accountId: number, cards: OperationCardNeeds): Promise<void> {
   if (!cards.reviewedFiles.length && !cards.reviewedOperations.length) return;
+  let echec: string | null = null;
   try {
+    await faultHook?.('cards', { accountId });
     const { syncOperationCards } = await import('@/services/to-process/operation-cards');
-    await syncOperationCards(accountId, cards);
+    const rep = await syncOperationCards(accountId, cards);
+    echec = rep.error ?? null;
   } catch (e) {
-    console.error(`[t3-operations] cartes « À traiter » du compte ${accountId} non synchronisées :`, (e as Error).message);
+    echec = (e as Error).message;
+  }
+  // Lot 54D (E05) : l'échec n'est plus seulement journalisé — les documents
+  // concernés sont marqués (état durable) et repris par le passage T3 suivant
+  // (balayage horaire), qui recalcule et resynchronise leurs cartes sans
+  // doublon (clé de relation) ni intervention utilisateur. Succès : marque levée.
+  try {
+    const { pgClient } = await import('@/db');
+    if (echec) {
+      console.error(`[t3-operations] cartes « À traiter » du compte ${accountId} non synchronisées (reprise programmée) :`, echec);
+      await pgClient.unsafe(
+        `UPDATE document_operation_candidates SET t3_cards_pending = true
+          WHERE account_id = $1 AND status = 'ACTIVE' AND NOT t3_cards_pending
+            AND (file_id = ANY($2::int[]) OR t3_operation_id = ANY($3::bigint[]))`,
+        [accountId, `{${cards.reviewedFiles.join(',')}}`, `{${cards.reviewedOperations.join(',')}}`] as never[],
+      );
+    } else if (cards.reviewedFiles.length) {
+      await pgClient.unsafe(
+        `UPDATE document_operation_candidates SET t3_cards_pending = false
+          WHERE account_id = $1 AND t3_cards_pending AND file_id = ANY($2::int[])`,
+        [accountId, `{${cards.reviewedFiles.join(',')}}`] as never[],
+      );
+    }
+  } catch (e) {
+    console.error(`[t3-operations] marque de reprise des cartes (compte ${accountId}) :`, (e as Error).message);
   }
 }
 
@@ -1224,6 +1284,8 @@ export interface AccountConsolidationResult {
   holdsReevaluated: number;
   contractsActivated: number;
   errors: number;
+  /** Lot 54D (E01) : erreurs TECHNIQUES du passage (distinctes des attentes métier HOLD / arbitrage). */
+  technicalErrors?: Array<{ fileId: number | null; code: string }>;
   /** D'autres documents attendent encore (passage suivant demandé). */
   remaining: boolean;
   /** Niveau M3 (lot 42) : appels modèle, reports (plafonds), prompt sans la branche, erreurs. */
@@ -1248,6 +1310,13 @@ export async function listDirtyDocuments(accountId: number, limit: number): Prom
   const r = (await (await pg()).unsafe(
     `SELECT file_id FROM (
        SELECT c.file_id FROM document_operation_candidates c WHERE c.account_id = $1 AND c.t3_pending
+       UNION
+       -- Lot 54D (E01) : reprise programmée d'une erreur technique, échue.
+       SELECT c.file_id FROM document_operation_candidates c
+        WHERE c.account_id = $1 AND c.status = 'ACTIVE' AND c.t3_retry_at IS NOT NULL AND c.t3_retry_at <= now()
+       UNION
+       -- Lot 54D (E05) : cartes « À traiter » à resynchroniser.
+       SELECT c.file_id FROM document_operation_candidates c WHERE c.account_id = $1 AND c.t3_cards_pending
        UNION
        SELECT (CASE WHEN s.source_entity_key ~ '^[0-9]{1,9}$' THEN s.source_entity_key::int END) AS file_id
          FROM business_operation_sources s ${STALE_DOCUMENT_SOURCE_JOINS}
@@ -1328,7 +1397,7 @@ export async function consolidateAccountOperations(
     traites.add(fileId);
     res.documents++;
     res.changes += r.changes;
-    if (r.error) res.errors++;
+    if (r.error) { res.errors++; (res.technicalErrors ??= []).push({ fileId, code: r.error }); }
     for (const [k, v] of Object.entries(r.outcomes)) res.outcomes[k as T3Outcome] = (res.outcomes[k as T3Outcome] ?? 0) + (v ?? 0);
   };
   for (const f of fichiers) await passer(f);
@@ -1341,6 +1410,8 @@ export async function consolidateAccountOperations(
     const holds = (await (await pg()).unsafe(
       `SELECT DISTINCT file_id FROM document_operation_candidates
         WHERE account_id = $1 AND status = 'ACTIVE' AND t3_outcome IN ('HOLD_UNRESOLVED', 'ARBITRATION_REQUIRED') AND NOT t3_pending
+          -- Lot 54D (E01) : une erreur technique suit SA reprise bornée (t3_retry_at), pas le réexamen.
+          AND (t3_reason IS NULL OR t3_reason NOT LIKE 'TECHNICAL_ERROR:%')
         ORDER BY file_id LIMIT $2`,
       [accountId, HOLD_REEVALUATION_LIMIT] as never[],
     )) as unknown as Array<{ file_id: number }>;
@@ -1410,6 +1481,12 @@ export async function listAccountsToConsolidate(afterAccountId: number, limit: n
   const r = (await (await pg()).unsafe(
     `SELECT account_id FROM (
        SELECT c.account_id FROM document_operation_candidates c WHERE c.t3_pending AND c.account_id > $1
+       UNION
+       -- Lot 54D (E01, E05) : reprises programmées échues, cartes à resynchroniser.
+       SELECT c.account_id FROM document_operation_candidates c
+        WHERE c.account_id > $1 AND c.status = 'ACTIVE' AND c.t3_retry_at IS NOT NULL AND c.t3_retry_at <= now()
+       UNION
+       SELECT c.account_id FROM document_operation_candidates c WHERE c.account_id > $1 AND c.t3_cards_pending
        UNION
        SELECT s.account_id FROM business_operation_sources s ${STALE_DOCUMENT_SOURCE_JOINS}
         WHERE s.account_id > $1 AND ${STALE_DOCUMENT_SOURCE_SQL}

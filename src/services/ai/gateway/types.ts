@@ -36,6 +36,13 @@ export interface AiGatewayRequest<T> {
   attachments?: AiAttachment[];
   outputSchema: ZodType<T>;
   /**
+   * Lot 54 — autres schémas acceptés par l'appelant (T4 CLASSIFY_EVENT :
+   * `t4_output_v1` ou `t4_output_v2` selon la version de prompt). La
+   * passerelle retient celui qui correspond au contrat runtime résolu ;
+   * aucun ne correspond : RUNTIME_CONTRACT_MISMATCH, comme avant.
+   */
+  acceptedOutputSchemas?: ZodType[];
+  /**
    * Clé d'idempotence (CDC §5.7). Si absente, elle est dérivée de
    * compte + opération + sources + hash des variables.
    */
@@ -153,4 +160,11 @@ export interface AiGatewayResponse<T> {
    * acceptée telle quelle.
    */
   outputRepairs?: import('./diagnostics/taxonomy').OutputRepairStep[];
+  /**
+   * Lot 54G (ticket T1 « couverture réelle », point 3) : champs retirés par la
+   * validation champ par champ, AVEC leur valeur originale et le motif. En
+   * mémoire seulement (jamais persisté par la passerelle : contenu du
+   * document) ; T1 les conserve dans `document_unresolved_facts`.
+   */
+  prunedValues?: import('./output-resolution/field-validation').PrunedFieldValue[];
 }

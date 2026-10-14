@@ -1,10 +1,7 @@
 /**
- * GET /api/admin/ai/config-versions/[id]/diff — CDC BO IA VER-003, WF-02.
- *
- * Diff complet contre l'Active de l'environnement, accompagné des contrôles.
- * Le WF-02 affiche les deux sur le même écran avant de demander confirmation :
- * les rendre ensemble évite un second aller-retour, et surtout évite d'afficher
- * un diff sans dire qu'il ne passera pas les contrôles.
+ * GET /api/admin/ai/config-versions/[id]/diff — « Comparer à la version
+ * active » (VER-003 ; lot 54 : plus de promotion, le diff informe avant une
+ * activation), accompagné des contrôles non bloquants de la configuration.
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { diffAgainstActive, checkVersion } from '@/services/ai/config/config-version.service';
@@ -31,10 +28,6 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
       diff,
       text: renderDiff(diff),
       validation,
-      // Ce que l'écran doit savoir avant de proposer le bouton : promouvoir une
-      // version identique à l'Active n'a pas d'objet, et une version en échec
-      // de contrôle ne transitera pas (WF-02).
-      promotable: !diff.identical && validation.valid && version.status === 'DRAFT',
     });
   } catch (e) {
     return toErrorResponse(e, 'GET /api/admin/ai/config-versions/[id]/diff');

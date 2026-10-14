@@ -25,6 +25,8 @@ vi.mock('@/db', () => ({
 }));
 
 const repo = await import('../config-version.repository');
+const db = () => (pgClientRef as unknown as Parameters<typeof repo.writeEntryRow>[0]);
+const { pgClient: pgClientRef } = await import('@/db');
 const { emptyTreatmentConfig } = await import('../config-types');
 
 beforeEach(() => {
@@ -50,7 +52,9 @@ describe('colonne 0220 présente', () => {
   });
 
   it('écriture réelle dans le même INSERT … ON CONFLICT', async () => {
-    await repo.saveEntry(3, {
+    // Lot 54 : `saveEntry` passe par une révision (transaction) ; la ligne
+    // de la copie de travail est écrite par `writeEntryRow`.
+    await repo.writeEntryRow(db(), 3, {
       ...emptyTreatmentConfig('T1'), prompt: 'Préambule', promptArchitecture: 'master', masterPrompt: 'MASTER',
     }, 1);
     const ins = calls.find((c) => /INSERT INTO ai_config_entries/.test(c.q))!;
@@ -80,7 +84,7 @@ describe('colonne 0220 absente (migration en échec)', () => {
 
   it('ligne sans texte master écrite sans la colonne (master par défaut) ; texte master refusé AVANT toute écriture', async () => {
     colonne = false;
-    await repo.saveEntry(3, emptyTreatmentConfig('T3'), 1);
+    await repo.writeEntryRow(db(), 3, emptyTreatmentConfig('T3'), 1);
     const ins = calls.find((c) => /INSERT INTO ai_config_entries/.test(c.q))!;
     expect(ins.q).not.toMatch(/prompt_architecture/);
     expect(ins.p).toHaveLength(14);

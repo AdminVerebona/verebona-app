@@ -216,7 +216,7 @@ scenario('L52A', 'T3 — déclenchement manuel et horaire (NR-01 à NR-10)', ({ 
     const bienB = await make.asset(b);
     // Mise en file d'une référence d'un autre compte : refusée, rien n'est écrit.
     const refus = await repo.enqueue({ treatment: 'T3', scope: { accountId: a.id, targetType: 'asset', targetId: bienB.id }, payload: { kind: 'asset', userId: a.ownerUserId } });
-    expect(refus).toEqual({ decision: 'skip', jobId: null });
+    expect(refus).toEqual({ decision: 'skip', jobId: null, reasonCode: 'CROSS_ACCOUNT_SCOPE' });
     expect(await sql`SELECT 1 FROM ai_job_queue WHERE account_id = ${a.id} AND target_type = 'asset' AND target_id = ${String(bienB.id)}`).toHaveLength(0);
     // Job ancien portant une référence étrangère : échec définitif, motif lisible, aucune écriture.
     const [{ id: vieux }] = await sql<{ id: number }[]>`

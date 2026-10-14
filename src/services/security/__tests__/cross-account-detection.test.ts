@@ -21,7 +21,7 @@ import { diagnosticLinkFor } from '@/services/admin/anomaly.service';
 describe('lot 49 — AC08 : contrôle des relations intercomptes', () => {
   it('AC08 — les familles du ticket §5 sont toutes contrôlées', () => {
     const familles = new Set(CROSS_ACCOUNT_CHECKS.map((c) => c.family));
-    expect([...familles].sort()).toEqual(['a_traiter', 'agenda', 'documents', 'evenements', 'fournisseurs', 'jobs', 'preuves']);
+    expect([...familles].sort()).toEqual(['a_traiter', 'agenda', 'documents', 'evenements', 'fournisseurs', 'jobs', 'operations', 'preuves']);
     const codes = CROSS_ACCOUNT_CHECKS.map((c) => c.code);
     expect(new Set(codes).size).toBe(codes.length);
     for (const c of ['DOC_ASSET', 'DOC_SUBSTRUCTURE', 'DOC_EQUIPMENT', 'DOC_SUPPLIER', 'EQUIPMENT_SUPPLIER', 'EVENT_DOCUMENT',
@@ -84,7 +84,7 @@ describe('lot 49 — AC08 : contrôle des relations intercomptes', () => {
     const report = vi.fn(async () => 1);
     const resolveF = vi.fn(async () => true);
     const r = await runCrossAccountCheck({
-      detect: async () => ({ computedAt: 'x', total: 3, accountIds: [1, 2], readOnly: true, checks: [res('DOC_ASSET', 3), res('AGENDA_FILE', 0)] }),
+      detect: async () => ({ computedAt: 'x', status: 'ANOMALIES' as const, checksFailed: 0, total: 3, accountIds: [1, 2], readOnly: true, checks: [res('DOC_ASSET', 3), res('AGENDA_FILE', 0)] }),
       openFingerprints: async () => [crossAccountFingerprint('AGENDA_FILE')],
       report, resolve: resolveF,
     });

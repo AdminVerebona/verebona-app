@@ -49,6 +49,13 @@ export interface MasterCorpusCase {
   context: Record<string, unknown>;
   /** Sortie modèle enregistrée (synthétique, D-08). */
   output: unknown;
+  /**
+   * Lot 54 — contrat de sortie de la sortie enregistrée (`t4_output_v2`…),
+   * pour un master à contrat d'exécution ; `null` : contrat historique
+   * (schéma de l'opération). Un cas n'est rejoué que sur une version dont
+   * le schéma de sortie de la branche est le sien.
+   */
+  outputContract?: string | null;
   expected: Record<string, unknown> | null;
 }
 
@@ -76,7 +83,7 @@ export function loadMasterCorpusCases(read: MasterFileReader, dirs: readonly str
       const path = join(dir, f);
       const raw = JSON.parse(readFileSync(path, 'utf8')) as {
         case?: string; description?: string; context?: Record<string, unknown>;
-        recording?: { operationCode?: string; task?: string; output?: unknown }; expected?: Record<string, unknown>;
+        recording?: { operationCode?: string; task?: string; output?: unknown; outputContract?: string }; expected?: Record<string, unknown>;
       };
       const op = raw.recording?.operationCode ? AI_OPERATIONS[raw.recording.operationCode] : undefined;
       if (!op || !op.active || !isMasterOperation(op)) continue;
@@ -91,6 +98,7 @@ export function loadMasterCorpusCases(read: MasterFileReader, dirs: readonly str
         outputSchema: op.outputSchema,
         context: raw.context ?? {},
         output: expand(raw.recording?.output, read),
+        outputContract: typeof raw.recording?.outputContract === 'string' ? raw.recording.outputContract : null,
         expected: raw.expected ?? null,
       });
     }

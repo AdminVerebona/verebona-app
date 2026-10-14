@@ -55,6 +55,12 @@ export interface CallTrace {
    * VER-015). Absente : version effective au moment de la trace.
    */
   configVersionId?: number | null;
+  /**
+   * Lot 54 : révision de cette version réellement appliquée (la version
+   * active reste modifiable). Figée en métadonnée `configRevision`.
+   */
+  configRevisionId?: number | null;
+  configRevisionNumber?: number | null;
   /** Mode d'appel déclaré par l'appelant (CDC Mascotte BO-009), figé en métadonnée. */
   callerMode?: 'displayed' | 'pregeneration';
   /**
@@ -164,6 +170,9 @@ export function configMetadata(t: CallTrace): Record<string, unknown> {
     ...(t.maxOutputTokens !== undefined ? { maxOutputTokens: t.maxOutputTokens } : {}),
     ...(t.engine ? { engine: t.engine } : {}),
     ...(trigger ? { trigger } : {}),
+    ...(t.configRevisionId != null
+      ? { configRevision: { id: t.configRevisionId, number: t.configRevisionNumber ?? null } }
+      : {}),
   };
 }
 

@@ -62,7 +62,7 @@ describe('lot 49 — AC05 : périmètre des travaux T1 / T3 / T4', () => {
     await expect(assertJobScope({ id: 2, accountId: 10, targetType: 'asset', targetId: '99', payload: null }, e)).resolves.toBeUndefined();
   });
 
-  it('AC05 — mise en file : référence étrangère → refusée ; panne du contrôle → mise en file (contrôle d’exécution bloquant)', async () => {
+  it('AC05 — mise en file : référence étrangère → refusée ; panne du contrôle → REFUSÉE (lot 54, SEC-05 : fail closed)', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const err = vi.spyOn(console, 'error').mockImplementation(() => {});
     __setJobScopeCheckForTests((job) => assertJobScope(job, exec({ 'asset:3': 20 })));
@@ -70,7 +70,7 @@ describe('lot 49 — AC05 : périmètre des travaux T1 / T3 / T4', () => {
     __setJobScopeCheckForTests((job) => assertJobScope(job, exec({ 'asset:3': 10 })));
     expect(await enqueueScopeAllowed({ treatment: 'T3', scope: { accountId: 10, targetType: 'asset', targetId: 3 } })).toBe(true);
     __setJobScopeCheckForTests(async () => { throw new Error('base indisponible'); });
-    expect(await enqueueScopeAllowed({ treatment: 'T3', scope: { accountId: 10, targetType: 'asset', targetId: 3 } })).toBe(true);
+    expect(await enqueueScopeAllowed({ treatment: 'T3', scope: { accountId: 10, targetType: 'asset', targetId: 3 } })).toBe(false);
     warn.mockRestore();
     err.mockRestore();
   });

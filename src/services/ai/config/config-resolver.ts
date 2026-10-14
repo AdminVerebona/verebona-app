@@ -96,6 +96,13 @@ export interface ResolvedOperationConfig {
   /** Version dont vient cette configuration. `null` = configuration du code. */
   configVersionId: number | null;
   visibleNumber: number | null;
+  /**
+   * Lot 54 : révision de cette version effectivement appliquée (la version
+   * active reste modifiable). `null` : configuration du code, ou version
+   * sans révision (schéma antérieur à 0376).
+   */
+  configRevisionId?: number | null;
+  configRevisionNumber?: number | null;
 }
 
 const CACHE_TTL_MS = 30_000;
@@ -110,6 +117,9 @@ let cache: {
   counter?: number | null;
   versionId: number | null;
   visibleNumber: number | null;
+  /** Lot 54 : révision appliquée (dernier état enregistré de l'active). */
+  revisionId?: number | null;
+  revisionNumber?: number | null;
   byTreatment: Map<string, TreatmentConfig>;
   /**
    * Prompts maîtres ACTIFS administrés au BO (BO-IA-PROMPTS-01), par
@@ -120,12 +130,21 @@ let cache: {
 } | null = null;
 
 /**
- * Versions épinglées par une exécution (VER-015). Une version numérotée
- * (Validée, Active, Archivée) ou À tester n'est plus modifiable (`saveEntry`
- * refuse tout statut ≠ DRAFT) : son contenu peut être gardé sans expiration.
+ * RÉVISIONS épinglées par une exécution (VER-015, lot 54). Une version est
+ * désormais modifiable, une révision jamais (déclencheur 0376) : seul son
+ * contenu peut être gardé sans expiration. Clé : identifiant de révision.
  * Borné pour ne pas grossir indéfiniment sur une instance de longue durée.
  */
-const pinned = new Map<number, Map<string, TreatmentConfig>>();
+interface PinnedConfig {
+  versionId: number;
+  visibleNumber: number | null;
+  revisionId: number | null;
+  revisionNumber: number | null;
+  byTreatment: Map<string, TreatmentConfig>;
+  /** Prompts maîtres figés dans la révision (texte et exécution connus). */
+  masterPrompts: Map<string, ActiveMasterPrompt>;
+}
+const pinned = new Map<number, PinnedConfig>();
 const PINNED_MAX = 16;
 
 /** Vidé à chaque bascule d'Active, pour qu'une activation prenne effet tout de suite. */
@@ -142,6 +161,7 @@ export function __setConfigForTests(
   pinnable: Array<{ versionId: number; entries: TreatmentConfig[] }> = [],
 ): void {
   pinned.clear();
+  pinnedVersions.clear();
   cache = effective
     ? {
       expiresAt: Number.MAX_SAFE_INTEGER,
@@ -150,28 +170,80 @@ export function __setConfigForTests(
       byTreatment: new Map(effective.entries.map((e) => [e.treatment as string, e])),
     }
     : null;
-  for (const p of pinnable) pinned.set(p.versionId, new Map(p.entries.map((e) => [e.treatment as string, e])));
+  for (const p of pinnable) {
+    pinnedVersions.set(p.versionId, {
+      versionId: p.versionId, visibleNumber: null, revisionId: null, revisionNumber: null,
+      byTreatment: new Map(p.entries.map((e) => [e.treatment as string, e])), masterPrompts: new Map(),
+    });
+  }
 }
 
 /**
- * Identifiant de la version effective à cet instant — celle qu'un job prélevé
- * maintenant doit figer (VER-016). Ne lève jamais : `null` = configuration du code.
+ * Version et révision effectives à cet instant — celles qu'un job prélevé
+ * maintenant doit figer (VER-016, lot 54). Ne lève jamais : `null` =
+ * configuration du code.
  */
+export async function resolveEffectivePin(): Promise<{ versionId: number | null; revisionId: number | null }> {
+  const e = await loadEffective();
+  return { versionId: e.versionId, revisionId: e.revisionId ?? null };
+}
+
+/** Compatibilité : identifiant de la version effective seul. */
 export async function resolveEffectiveVersionId(): Promise<number | null> {
   return (await loadEffective()).versionId;
 }
 
-async function loadPinned(versionId: number): Promise<Map<string, TreatmentConfig> | null> {
-  const hit = pinned.get(versionId);
+/** Prompts maîtres figés dans une révision dont l'exécution est connue. */
+function pinnedMasterPrompts(refs: import('./config-snapshot').ConfigSnapshot['masterPrompts']): Map<string, ActiveMasterPrompt> {
+  const out = new Map<string, ActiveMasterPrompt>();
+  for (const [t, r] of Object.entries(refs)) {
+    // Configuration d'exécution inconnue de l'instantané (reprise) : le prompt
+    // actif s'applique, jamais un mode d'exécution deviné.
+    if (!r || r.execution === undefined) continue;
+    out.set(t, { id: r.versionId, treatment: t as Treatment, versionNumber: r.versionNumber, content: r.content, execution: r.execution });
+  }
+  return out;
+}
+
+async function loadPinnedRevision(revisionId: number): Promise<PinnedConfig | null> {
+  const hit = pinned.get(revisionId);
   if (hit) return hit;
+  try {
+    const { getRevisionConfiguration } = await import('./config-version.repository');
+    const v = await withTimeout(getRevisionConfiguration(revisionId), LOOKUP_TIMEOUT_MS, null);
+    if (!v) return null;
+    const p: PinnedConfig = {
+      versionId: v.versionId, visibleNumber: v.visibleNumber, revisionId: v.revisionId, revisionNumber: v.revisionNumber,
+      byTreatment: new Map(v.entries.map((e) => [e.treatment as string, e])),
+      masterPrompts: pinnedMasterPrompts(v.masterPrompts),
+    };
+    if (pinned.size >= PINNED_MAX) pinned.delete(pinned.keys().next().value as number);
+    pinned.set(revisionId, p);
+    return p;
+  } catch {
+    return null;
+  }
+}
+
+/** Versions épinglées par les tests (`__setConfigForTests`) ; jamais en cache réel. */
+const pinnedVersions = new Map<number, PinnedConfig>();
+
+/**
+ * Épinglage par VERSION seule (contexte antérieur au lot 54, sans révision) :
+ * dernier état enregistré de cette version, relu (une version est modifiable,
+ * son contenu n'est donc jamais gardé sans expiration).
+ */
+async function loadPinnedVersion(versionId: number): Promise<PinnedConfig | null> {
+  const t = pinnedVersions.get(versionId);
+  if (t) return t;
   try {
     const { getVersion } = await import('./config-version.repository');
     const v = await withTimeout(getVersion(versionId), LOOKUP_TIMEOUT_MS, null);
     if (!v) return null;
-    const map = new Map(v.entries.map((e) => [e.treatment as string, e]));
-    if (pinned.size >= PINNED_MAX) pinned.delete(pinned.keys().next().value as number);
-    pinned.set(versionId, map);
-    return map;
+    return {
+      versionId: v.id, visibleNumber: v.visibleNumber, revisionId: v.currentRevisionId, revisionNumber: v.currentRevisionNumber,
+      byTreatment: new Map(v.entries.map((e) => [e.treatment as string, e])), masterPrompts: new Map(),
+    };
   } catch {
     return null;
   }
@@ -184,19 +256,31 @@ async function loadPinned(versionId: number): Promise<Map<string, TreatmentConfi
  * hors file, la version effective. `null` = configuration du code.
  */
 async function entriesForCurrentExecution(): Promise<{
-  versionId: number | null; visibleNumber: number | null; byTreatment: Map<string, TreatmentConfig>;
+  versionId: number | null; visibleNumber: number | null; revisionId?: number | null; revisionNumber?: number | null;
+  byTreatment: Map<string, TreatmentConfig>;
+  /** Prompts maîtres figés de la révision épinglée (sinon : les actifs). */
+  pinnedMasterPrompts?: Map<string, ActiveMasterPrompt>;
 }> {
   const effective = await loadEffective();
   const ctx = currentJobContext();
-  if (!ctx || ctx.configVersionId === effective.versionId) return effective;
+  if (!ctx) return effective;
+  // Lot 54 : la révision figée au démarrage fait foi (la version active
+  // reste modifiable pendant l'exécution).
+  if (ctx.configRevisionId != null) {
+    if (ctx.configRevisionId === effective.revisionId) return effective;
+    const p = await loadPinnedRevision(ctx.configRevisionId);
+    // Révision illisible (base indisponible) : repli sur l'effective,
+    // plutôt que sur le code — c'est la plus proche de ce qui a été figé.
+    if (!p) return effective;
+    return { ...p, pinnedMasterPrompts: p.masterPrompts };
+  }
+  if (ctx.configVersionId === effective.versionId) return effective;
   // Aucune version au démarrage : le code s'applique jusqu'au bout, même si
   // une version est activée pendant l'exécution.
   if (ctx.configVersionId === null) return { versionId: null, visibleNumber: null, byTreatment: new Map() };
-  const map = await loadPinned(ctx.configVersionId);
-  // Version épinglée illisible (base indisponible) : repli sur l'effective,
-  // plutôt que sur le code — c'est la plus proche de ce qui a été figé.
-  if (!map) return effective;
-  return { versionId: ctx.configVersionId, visibleNumber: null, byTreatment: map };
+  const p = await loadPinnedVersion(ctx.configVersionId);
+  if (!p) return effective;
+  return p;
 }
 
 /**
@@ -251,14 +335,17 @@ async function loadEffective(): Promise<NonNullable<typeof cache>> {
   };
 
   try {
-    const { getEffectiveVersion } = await import('./config-version.repository');
-    const version = await withTimeout(getEffectiveVersion(), LOOKUP_TIMEOUT_MS, null);
+    // Lot 54 : version active ET sa révision courante, lues en une requête.
+    const { getRuntimeConfiguration } = await import('./config-version.repository');
+    const version = await withTimeout(getRuntimeConfiguration(), LOOKUP_TIMEOUT_MS, null);
     cache = version
       ? {
         expiresAt: Date.now() + CACHE_TTL_MS,
         counter,
-        versionId: version.id,
+        versionId: version.versionId,
         visibleNumber: version.visibleNumber,
+        revisionId: version.revisionId,
+        revisionNumber: version.revisionNumber,
         byTreatment: new Map(version.entries.map((e) => [e.treatment, e])),
       }
       : vide;
@@ -291,6 +378,23 @@ async function activeMasterPrompts(): Promise<Map<string, ActiveMasterPrompt>> {
   const test = activeMasterPromptsTestOverride();
   if (test) return test;
   return (await loadEffective()).masterPrompts ?? new Map();
+}
+
+/**
+ * Lot 54E — texte master EFFECTIF d'un traitement administrable : version
+ * active du BO, sinon texte de la version de configuration ; `null` : le
+ * fichier du dépôt s'applique. Sert à savoir si une fonction liée à un
+ * emplacement FACULTATIF (ex. {{BUSINESS_CANDIDATES}}) est disponible avant
+ * de dépenser un appel modèle. Ne lève jamais.
+ */
+export async function effectiveMasterPromptText(treatment: Treatment): Promise<string | null> {
+  try {
+    const actif = (await activeMasterPrompts()).get(treatment);
+    if (actif?.content) return actif.content;
+    return masterPromptOf(await resolveTreatmentConfig(treatment));
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -336,7 +440,10 @@ export async function resolveOperationConfig(
   // BO-IA-PROMPTS-01 (AC15) : la version ACTIVE du prompt maître administrée
   // au BO prime sur le texte de la version de configuration — avec ou sans
   // version de configuration.
-  const actif = isMasterPromptAdministrable(treatment) ? (await activeMasterPrompts()).get(treatment) ?? null : null;
+  // Lot 54 : exécution épinglée sur une révision antérieure — ses prompts
+  // maîtres figés priment (configuration cohérente jusqu'au bout).
+  const figes = effective.pinnedMasterPrompts?.get(treatment) ?? null;
+  const actif = isMasterPromptAdministrable(treatment) ? figes ?? (await activeMasterPrompts()).get(treatment) ?? null : null;
   const avecPrompt = <T extends ResolvedOperationConfig>(c: T): T => (actif && c.promptArchitecture === 'master'
     ? { ...c, masterPromptText: actif.content, masterPromptVersionId: actif.id, masterPromptVersionNumber: actif.versionNumber, masterExecution: actif.execution ?? null }
     : c);
@@ -375,6 +482,8 @@ export async function resolveOperationConfig(
     ...promptOf(entry),
     configVersionId: effective.versionId,
     visibleNumber: effective.visibleNumber,
+    configRevisionId: effective.revisionId ?? null,
+    configRevisionNumber: effective.revisionNumber ?? null,
   });
 }
 

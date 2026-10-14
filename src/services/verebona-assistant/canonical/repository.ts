@@ -187,6 +187,8 @@ export function createCanonicalAccountDataRepository(legacy: BaseAccountDataPort
     readClaims: (accountId, assetIds) => readClaims(accountId, assetIds),
     readPayments: (accountId, opts) => readPayments(accountId, opts),
     readAcquisition: (accountId, assetId, opts) => readAcquisition(accountId, assetId, opts),
+    // Lot 54D (§4.3) : coût de possession → service TCO (aucun calcul parallèle).
+    readOwnershipCost: async (accountId, assetId) => (await import('@/services/business-operations/tco/service')).readAssetTco(accountId, assetId),
     readContracts: (accountId, assetIds, opts) => readContracts(accountId, assetIds, opts),
     findOperationDocuments: (accountId, terms, assetId) => findOperationDocuments(accountId, terms, assetId),
     readOperationCosts: (accountId, terms, assetIds) => readOperationCosts(accountId, terms, assetIds),

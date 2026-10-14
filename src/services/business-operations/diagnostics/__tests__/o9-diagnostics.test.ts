@@ -115,6 +115,8 @@ describe('C26-01 les 13 indicateurs C26.2, exactement', () => {
     expect(HARD_ANOMALY_CODES).toEqual([
       'ACTIVE_OPERATION_WITHOUT_SOURCE', 'ACTIVE_COMPONENT_WITHOUT_SOURCE', 'CROSS_ACCOUNT_LINK', 'PARENT_CYCLE',
       'PARENT_DEPTH_EXCEEDED', 'NEGATIVE_COMPONENT', 'OTHER_AS_FALLBACK',
+      // Lot 54D (§4.5, E01) : contrôles financiers et reprises T3 épuisées.
+      'FIN_INDEMNITY_DUPLICATED', 'FIN_PRINCIPAL_AS_COST', 'T3_TECHNICAL_ERROR_EXHAUSTED',
     ]);
     expect(Object.values(HARD_ANOMALY_INDICATOR).filter(Boolean).length).toBe(4);
     expect(CORRECTION_PROCEDURE).toMatch(/ne modifie jamais/);

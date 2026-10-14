@@ -24,7 +24,8 @@ export async function GET(
       return NextResponse.json({ error: 'INVALID_DUO_ID' }, { status: 400 });
     }
 
-    const duo = await DuoService.getDuoByUserId(payload.userId);
+    // Lot 54 (SEC-01) : membre ACTIF seulement (invitation en attente ou départ : aucun accès).
+    const duo = await DuoService.getActiveDuoByUserId(payload.userId);
     if (!duo || duo.id !== duoId) {
       return NextResponse.json({ error: 'NOT_A_MEMBER' }, { status: 403 });
     }

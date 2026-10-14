@@ -52,7 +52,17 @@ export interface LegacyClaim {
   reason: 'BELOW_THRESHOLD' | 'HOLD_AMBIGUOUS' | 'PENDING';
 }
 
-export interface ClaimCostsView { grossCents: number; indemnityCents: number; netCents: number }
+export interface ClaimCostsView {
+  grossCents: number; indemnityCents: number; netCents: number;
+  /** Lot 54D (E09) : montants sans contre-valeur en euros (jamais comptés comme 0 €). */
+  unconverted?: Array<{ kind: string; amountMinor: number; currency: string }>;
+}
+
+/** « 1 200,00 CHF » — montant d'origine, jamais converti (lot 54D, E09). */
+function montantOrigine(amountMinor: number, currency: string): string {
+  if (currency === 'XXX') return `${formatCentsForInput(amountMinor)} (devise à confirmer)`;
+  try { return new Intl.NumberFormat('fr-FR', { style: 'currency', currency }).format(amountMinor / 100); } catch { return `${formatCentsForInput(amountMinor)} ${currency}`; }
+}
 
 const euros = (cents: number | null | undefined) => (cents == null ? null : `${formatCentsForInput(cents)} €`);
 const statusLabel = (v: string | null) => CLAIM_STATUS_OPTIONS.find((o) => o.value === v)?.label ?? null;
@@ -278,11 +288,18 @@ export function ClaimFormView(p: ClaimFormViewProps) {
           })}
         </div>
 
-        {p.costs && (p.costs.grossCents > 0 || p.costs.indemnityCents > 0) && (
-          <div className="rounded-lg border border-border bg-muted/30 p-3 grid grid-cols-1 sm:grid-cols-3 gap-2 text-xs" data-claim-costs>
-            <div><p className="text-muted-foreground">Coût des réparations</p><p className="font-semibold">{euros(p.costs.grossCents)}</p></div>
-            <div><p className="text-muted-foreground">Indemnité reçue</p><p className="font-semibold">{euros(p.costs.indemnityCents)}</p></div>
-            <div><p className="text-muted-foreground">Reste à votre charge</p><p className="font-semibold">{euros(p.costs.netCents)}</p></div>
+        {p.costs && (p.costs.grossCents > 0 || p.costs.indemnityCents > 0 || !!p.costs.unconverted?.length) && (
+          <div className="rounded-lg border border-border bg-muted/30 p-3 text-xs space-y-2" data-claim-costs>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+              <div><p className="text-muted-foreground">Coût des réparations</p><p className="font-semibold">{euros(p.costs.grossCents)}</p></div>
+              <div><p className="text-muted-foreground">Indemnité reçue</p><p className="font-semibold">{euros(p.costs.indemnityCents)}</p></div>
+              <div><p className="text-muted-foreground">Reste à votre charge</p><p className="font-semibold">{euros(p.costs.netCents)}</p></div>
+            </div>
+            {!!p.costs.unconverted?.length && (
+              <p className="text-muted-foreground" data-claim-costs-unconverted>
+                Non compté en euros (contre-valeur non établie) : {p.costs.unconverted.map((u) => `${u.kind === 'INDEMNITY' ? 'indemnité' : 'coût'} ${montantOrigine(u.amountMinor, u.currency)}`).join(', ')} — montants ci-dessus incomplets.
+              </p>
+            )}
           </div>
         )}
 

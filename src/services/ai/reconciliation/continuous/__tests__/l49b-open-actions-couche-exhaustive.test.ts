@@ -8,7 +8,7 @@
  */
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { effectOfClosedDuringRun, resolverOf, OPEN_ACTION_EFFECTS } from '../open-actions.service';
 import { addressTerms, identifierTerms, nameTerms } from '../source-unit-targeting';
 import {
@@ -20,7 +20,7 @@ import { documentKnowledgeDigest, usedDocumentSources, type DocumentKnowledgeSou
 import { buildMatchingIndex, type IndexedAsset } from '../../document-asset/matching-index';
 import { normalizeText } from '../../document-asset/identifiers';
 import { previousAiAt } from '../../document-asset/resolve-document-asset.service';
-import { rearbitrationsPerDay, rearbitrationsPerPass } from '../../document-asset/rearbitration-budget';
+import * as budget from '../../document-asset/rearbitration-budget';
 
 const bien = (id: number, name: string, values: Record<string, string> = {}, family: IndexedAsset['family'] = 'IMMOBILIER'): IndexedAsset => ({
   assetId: id, name, normalizedName: normalizeText(name), aliases: [], family, category: 'IMMOBILIER', subtype: null,
@@ -60,12 +60,10 @@ describe('ticket « À traiter ouverts » — routage par le registre PROCESSING
     expect(effectOfClosedDuringRun('T3_ASSET', 'USER_DISMISSED')).toBe('SUPERSEDED');
   });
 
-  it('plafond de coût des réarbitrages à contexte inchangé : défauts et bornes', () => {
-    expect(rearbitrationsPerPass()).toBe(10);
-    expect(rearbitrationsPerDay()).toBe(100);
-    vi.stubEnv('T3_OPEN_ACTION_AI_MAX_PER_PASS', '500');
-    expect(rearbitrationsPerPass()).toBe(100);
-    vi.unstubAllEnvs();
+  it('T3-OPEN-E01 (lot 54A) : plus aucun plafond T3 des réarbitrages — fonctions et variables supprimées', () => {
+    expect(budget).not.toHaveProperty('rearbitrationsPerPass');
+    expect(budget).not.toHaveProperty('rearbitrationsPerDay');
+    expect(budget).not.toHaveProperty('dailyRearbitrationAllowed');
   });
 
   it('l’issue précédente n’est qu’un historique (date du dernier appel modèle, monitoring)', () => {

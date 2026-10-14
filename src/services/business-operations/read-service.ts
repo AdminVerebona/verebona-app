@@ -232,6 +232,8 @@ export class BusinessOperationReadService {
     /** Lot 53D (D12) : seulement les Opérations sans aucun lien bien actif (dépenses hors répartition du compte). */
     untargetedOnly?: boolean;
     limit?: number;
+    /** Lot 54D (E02) : pagination par curseur stable (identifiant croissant). */
+    afterId?: number;
   } = {}): Promise<AssistantOperationRead[]> {
     const ids = (filters.assetIds ?? []).filter((x) => Number.isSafeInteger(x) && x > 0);
     const conds: SQL[] = [sql`o.account_id = ${accountId}`, sql`o.invalidated_at IS NULL`, sql`o.merged_into_operation_id IS NULL`];
@@ -245,6 +247,9 @@ export class BusinessOperationReadService {
       conds.push(filters.includeUntargeted ? sql`(${lie} OR ${sansCible})` : lie);
     }
     const limit = Math.min(Math.max(filters.limit ?? 200, 1), 500);
+    const parCurseur = filters.afterId !== undefined;
+    if (parCurseur) conds.push(sql`o.id > ${Math.max(0, Math.floor(filters.afterId ?? 0))}`);
+    const ordre = parCurseur ? sql`o.id` : sql`COALESCE(o.realized_date, o.start_date, o.planned_date) DESC NULLS LAST, o.id DESC`;
     const ops = await rows(this.runner, sql`
       SELECT ${O_COLUMNS}, cd.contract_reference, cd.effective_from::text AS effective_from, cd.effective_to::text AS effective_to,
              cl.status AS claim_status, cl.insurer_claim_ref, cl.declared_on::text AS declared_on, cl.claim_type
@@ -252,7 +257,7 @@ export class BusinessOperationReadService {
         LEFT JOIN business_operation_contract_details cd ON cd.operation_id = o.id
         LEFT JOIN business_operation_claim_details cl ON cl.operation_id = o.id
        WHERE ${sql.join(conds, sql` AND `)}
-       ORDER BY COALESCE(o.realized_date, o.start_date, o.planned_date) DESC NULLS LAST, o.id DESC
+       ORDER BY ${ordre}
        LIMIT ${limit}`);
     if (!ops.length) return [];
     const liste = pgIntArray(ops.map((o) => Number(o.id)));
@@ -310,6 +315,30 @@ export class BusinessOperationReadService {
         sourceKinds: ((kinds.find(mine)?.kinds as string[] | null) ?? []).map(String) as SourceKind[],
       };
     });
+  }
+
+  /**
+   * Lot 54D (E02, E07) : TOUTES les Opérations d'un périmètre, par pages de
+   * 500 sur un curseur stable (identifiant croissant) jusqu'à épuisement —
+   * aucun total calculé sur une lecture tronquée en silence. Garde-fou
+   * mémoire `maxRows` (200 000 par défaut) : au-delà, `complete` est faux et
+   * l'appelant DOIT signaler une lecture partielle.
+   */
+  async listAllForAssistant(accountId: number, filters: Omit<NonNullable<Parameters<BusinessOperationReadService['listForAssistant']>[1]>, 'limit' | 'afterId'> = {},
+    opts: { pageSize?: number; maxRows?: number } = {}): Promise<{ operations: AssistantOperationRead[]; complete: boolean; pages: number }> {
+    const page = Math.min(Math.max(opts.pageSize ?? 500, 1), 500);
+    const max = Math.max(opts.maxRows ?? 200_000, 1);
+    const out: AssistantOperationRead[] = [];
+    let curseur = 0;
+    let pages = 0;
+    for (;;) {
+      const lot = await this.listForAssistant(accountId, { ...filters, limit: page, afterId: curseur });
+      pages++;
+      out.push(...lot);
+      if (lot.length < page) return { operations: out, complete: true, pages };
+      if (out.length >= max) return { operations: out, complete: false, pages };
+      curseur = lot[lot.length - 1].id;
+    }
   }
 
   /**

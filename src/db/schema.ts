@@ -1172,6 +1172,16 @@ export const duoAccounts = pgTable('duo_accounts', {
   pendingInviteToken: text('pending_invite_token').unique(),
   pendingInviteTokenExpiresAt: tstzOptional('pending_invite_token_expires_at'),
   pendingInviteSentAt: tstzOptional('pending_invite_sent_at'),
+  // Lot 54F (0385) : début EFFECTIF de l'abonnement Duo en cours — posé par
+  // le déclencheur `duo_accounts_subscription_period` au passage à
+  // ACTIVE/TRIALING depuis un état hors offre (jamais par l'application,
+  // jamais décalé par un renouvellement, un rejeu ou une resynchronisation).
+  // Distinct de `activated_at` (partage entre membres). NULL : inconnu.
+  duoSubscriptionStartedAt: tstzOptional('duo_subscription_started_at'),
+  // Lot 54F (0385) : premier envoi d'invitation de cette souscription — trace
+  // durable, que l'annulation ou l'expiration du lien n'effacent pas ;
+  // remise à NULL par le déclencheur à l'ouverture d'une nouvelle souscription.
+  duoFirstInviteSentAt: tstzOptional('duo_first_invite_sent_at'),
   createdAt: tstz('created_at'),
   updatedAt: tstz('updated_at'),
 }, (table) => ({
@@ -3902,6 +3912,12 @@ export const documentOperationCandidates = pgTable('document_operation_candidate
   t3Reason: text('t3_reason'),
   t3OperationId: bigint('t3_operation_id', { mode: 'number' }),
   t3Detail: jsonb('t3_detail'),
+  /** Lot 54D (0379, E01) — reprise automatique bornée d'une erreur technique T3. */
+  t3ErrorAttempts: integer('t3_error_attempts').notNull().default(0),
+  t3RetryAt: tstzOptional('t3_retry_at'),
+  t3LastError: jsonb('t3_last_error'),
+  /** Lot 54D (0379, E05) — cartes « À traiter » du document à resynchroniser. */
+  t3CardsPending: boolean('t3_cards_pending').notNull().default(false),
 }, (t) => ({
   confidenceChk: check('document_operation_candidates_confidence_chk', sql`${t.confidence} IN ('certain', 'probable', 'conflictual')`),
   typeHintChk: check('document_operation_candidates_type_hint_chk', sql`${t.typeHint} IS NULL OR ${t.typeHint} IN (${BO_TYPES_SQL})`),
@@ -3921,6 +3937,9 @@ export const documentOperationCandidates = pgTable('document_operation_candidate
   t3HoldIdx: index('document_operation_candidates_t3_hold_idx').on(t.accountId, t.fileId).where(sql`status = 'ACTIVE' AND t3_outcome = 'HOLD_UNRESOLVED'`),
   // Lot 47A (O9) — 0325_idx_4 : issues T3 de la période (indicateur C26.2).
   t3ProcessedIdx: index('document_operation_candidates_t3_processed_idx').on(t.t3ProcessedAt).where(sql`t3_outcome IS NOT NULL`),
+  // Lot 54D — 0379_idx_1 / _idx_2 : reprises programmées, cartes à resynchroniser.
+  t3RetryIdx: index('document_operation_candidates_t3_retry_idx').on(t.t3RetryAt, t.accountId).where(sql`t3_retry_at IS NOT NULL`),
+  t3CardsPendingIdx: index('document_operation_candidates_t3_cards_pending_idx').on(t.accountId, t.fileId).where(sql`t3_cards_pending`),
 }));
 
 /** C6.3 — décisions de rapprochement durables. */

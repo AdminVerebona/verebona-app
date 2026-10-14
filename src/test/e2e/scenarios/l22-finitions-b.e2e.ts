@@ -111,10 +111,15 @@ scenario('L22-B', 'Lot 22 — finitions (journal des entités, cache T4, cohére
     // Équipement d'un AUTRE compte portant le même identifiant : jamais lu (cloisonnement par compte).
     const autre = await make.account();
     const bienAutre = await make.asset(autre, { category: 'IMMOBILIER', name: 'Autre' });
-    await sql`UPDATE equipments SET asset_id = ${bienAutre.id} WHERE id = ${m.equipement.id}`;
+    // État historique (refusé en base depuis le lot 54, garde 0373) : reconstitué hors gardes.
+    const horsGardes = (q: (tx: typeof sql) => Promise<unknown>) => sql.begin(async (tx) => {
+      await tx`SET LOCAL session_replication_role = replica`;
+      await q(tx as unknown as typeof sql);
+    });
+    await horsGardes((tx) => tx`UPDATE equipments SET asset_id = ${bienAutre.id} WHERE id = ${m.equipement.id}`);
     const ailleurs = await (await GET(new NextRequest('http://x/api/ai-history?limit=50'))).json() as typeof hist;
     expect(ailleurs.items.filter((i) => i.fieldLabel.includes('(équipement supprimé)'))).toHaveLength(2);
-    await sql`UPDATE equipments SET asset_id = ${garage.id} WHERE id = ${m.equipement.id}`;
+    await horsGardes((tx) => tx`UPDATE equipments SET asset_id = ${garage.id} WHERE id = ${m.equipement.id}`);
 
     // Annulation : fiche de l'ÉQUIPEMENT restaurée (USER), fiche du bien intacte.
     const sn = hist.items.find((i) => i.fieldLabel.startsWith('Numéro de série'))!;

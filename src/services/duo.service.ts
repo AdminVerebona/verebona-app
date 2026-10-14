@@ -43,6 +43,23 @@ export class DuoService {
     return duo[0] || null;
   }
 
+  /**
+   * Lot 54 (SEC-01) : Duo dont l'utilisateur est membre ACTIF. Une invitation
+   * en attente (INVITED) ou une adhésion terminée (LEFT, REMOVED) n'ouvre
+   * aucune lecture de données du Duo (biens, demandes) — révocation effective
+   * dès le départ ou le retrait.
+   */
+  static async getActiveDuoByUserId(userId: number) {
+    const [m] = await db
+      .select({ duoId: duoMemberships.duoId })
+      .from(duoMemberships)
+      .where(and(eq(duoMemberships.userId, userId), eq(duoMemberships.status, 'ACTIVE')))
+      .limit(1);
+    if (!m) return null;
+    const [duo] = await db.select().from(duoAccounts).where(eq(duoAccounts.id, m.duoId)).limit(1);
+    return duo ?? null;
+  }
+
   static async getDuoMembers(duoId: number) {
     return db
       .select({

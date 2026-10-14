@@ -27,6 +27,8 @@ interface Activity {
   lastErrorAt: number | null;
   startedAt: number;
   lastPurgeAt: number;
+  /** Lot 54A : dernière évaluation de la planification par ce processus. */
+  lastSchedule?: { at: number; outcomes: unknown[] } | null;
 }
 const KEY = Symbol.for('verebona.ai.queue-worker.activity');
 function activity(): Activity {
@@ -48,6 +50,16 @@ export function noteWorkerError(message: string, at: number = Date.now()): void 
   a.lastErrorAt = at;
 }
 
+/** Lot 54A : dernière évaluation de la planification (une issue par traitement). */
+export function noteScheduleEvaluation(outcomes: ReadonlyArray<unknown>, at: number = Date.now()): void {
+  activity().lastSchedule = { at, outcomes: [...outcomes] };
+}
+
+/** Lot 54A : dernière évaluation de ce processus (tests, diagnostic). */
+export function lastScheduleEvaluation(): { at: number; outcomes: unknown[] } | null {
+  return activity().lastSchedule ?? null;
+}
+
 export interface HeartbeatInput {
   workerId: string;
   handlers: Treatment[];
@@ -64,27 +76,44 @@ export async function writeWorkerHeartbeat(input: HeartbeatInput): Promise<boole
     const [{ pgClient }, os] = await Promise.all([import('@/db'), import('node:os')]);
     let host = 'local';
     try { host = os.hostname(); } catch { /* conteneur sans nom */ }
-    await pgClient.unsafe(
-      `INSERT INTO ai_queue_worker_heartbeats
+    const params = [
+      input.workerId, host, process.pid, new Date(a.startedAt).toISOString(),
+      a.lastClaimAt ? new Date(a.lastClaimAt).toISOString() : null, a.lastClaimTreatment,
+      a.lastError, a.lastErrorAt ? new Date(a.lastErrorAt).toISOString() : null,
+      `{${input.handlers.join(',')}}`, input.concurrency, input.activeSlots, JSON.stringify(input.running), input.intervalMs,
+    ];
+    const base = `INSERT INTO ai_queue_worker_heartbeats
          (worker_id, hostname, pid, started_at, last_tick_at, last_claim_at, last_claim_treatment,
-          last_error, last_error_at, handlers, concurrency, active_slots, running_json, interval_ms)
-       VALUES ($1, $2, $3, $4::timestamptz, NOW(), $5::timestamptz, $6, $7, $8::timestamptz, $9::text[], $10, $11, $12::jsonb, $13)
+          last_error, last_error_at, handlers, concurrency, active_slots, running_json, interval_ms%COLS%)
+       VALUES ($1, $2, $3, $4::timestamptz, NOW(), $5::timestamptz, $6, $7, $8::timestamptz, $9::text[], $10, $11, $12::jsonb, $13%VALS%)
        ON CONFLICT (worker_id) DO UPDATE SET
          last_tick_at = NOW(), last_claim_at = EXCLUDED.last_claim_at, last_claim_treatment = EXCLUDED.last_claim_treatment,
          last_error = EXCLUDED.last_error, last_error_at = EXCLUDED.last_error_at, handlers = EXCLUDED.handlers,
          concurrency = EXCLUDED.concurrency, active_slots = EXCLUDED.active_slots, running_json = EXCLUDED.running_json,
-         interval_ms = EXCLUDED.interval_ms`,
-      [
-        input.workerId, host, process.pid, new Date(a.startedAt).toISOString(),
-        a.lastClaimAt ? new Date(a.lastClaimAt).toISOString() : null, a.lastClaimTreatment,
-        a.lastError, a.lastErrorAt ? new Date(a.lastErrorAt).toISOString() : null,
-        `{${input.handlers.join(',')}}`, input.concurrency, input.activeSlots, JSON.stringify(input.running), input.intervalMs,
-      ] as never[],
-    );
+         interval_ms = EXCLUDED.interval_ms%SETS%`;
+    // Lot 54A (migration 0370) : commit du code de CETTE instance et dernière
+    // évaluation de la planification. Colonnes absentes (0370 non appliquée) :
+    // battement d'avant ce lot, sans ces deux informations.
+    let commit: string | null = null;
+    try { commit = (await import('@/lib/runtime-identity')).getBuildIdentity().commit; } catch { commit = null; }
+    const planif = a.lastSchedule ? JSON.stringify({ at: new Date(a.lastSchedule.at).toISOString(), outcomes: a.lastSchedule.outcomes }) : null;
+    try {
+      await pgClient.unsafe(
+        base.replace('%COLS%', ', build_commit, schedule_json').replace('%VALS%', ', $14, $15::jsonb')
+          .replace('%SETS%', ', build_commit = EXCLUDED.build_commit, schedule_json = COALESCE(EXCLUDED.schedule_json, ai_queue_worker_heartbeats.schedule_json)'),
+        [...params, commit, planif] as never[],
+      );
+    } catch (e) {
+      if ((e as { code?: string }).code !== '42703') throw e;
+      await pgClient.unsafe(base.replace('%COLS%', '').replace('%VALS%', '').replace('%SETS%', ''), params as never[]);
+    }
     // Purge des instances disparues depuis plus de 7 jours (au plus une fois par heure et par processus).
     if (Date.now() - a.lastPurgeAt > 3_600_000) {
       a.lastPurgeAt = Date.now();
       await pgClient.unsafe(`DELETE FROM ai_queue_worker_heartbeats WHERE last_tick_at < NOW() - interval '7 days'`, [] as never[]);
+      // Lot 54A : traces des demandes T3 de plus de 30 jours.
+      const { purgeT3EnqueueEvents } = await import('./t3-enqueue-trace');
+      await purgeT3EnqueueEvents();
     }
     return true;
   } catch {
@@ -107,18 +136,30 @@ export interface WorkerHeartbeatRow {
   activeSlots: number;
   running: Record<string, number>;
   intervalMs: number;
+  /** Lot 54A : commit du code de l'instance (null : inconnu ou 0370 absente). */
+  buildCommit?: string | null;
+  /** Lot 54A : dernière évaluation de la planification par l'instance. */
+  schedule?: { at: string; outcomes: Array<Record<string, unknown>> } | null;
 }
 
 /** Lignes connues (vivantes ou non), plus récentes d'abord ; `null` si la table est absente. */
 export async function listWorkerHeartbeats(): Promise<WorkerHeartbeatRow[] | null> {
   try {
     const { pgClient } = await import('@/db');
-    const rows = (await pgClient.unsafe(
-      `SELECT worker_id, hostname, pid, started_at, last_tick_at, last_claim_at, last_claim_treatment,
-              last_error, last_error_at, handlers, concurrency, active_slots, running_json, interval_ms
-         FROM ai_queue_worker_heartbeats ORDER BY last_tick_at DESC LIMIT 50`,
-      [] as never[],
-    )) as unknown as Array<Record<string, unknown>>;
+    const cols = `worker_id, hostname, pid, started_at, last_tick_at, last_claim_at, last_claim_treatment,
+              last_error, last_error_at, handlers, concurrency, active_slots, running_json, interval_ms`;
+    let rows: Array<Record<string, unknown>>;
+    try {
+      rows = (await pgClient.unsafe(
+        `SELECT ${cols}, build_commit, schedule_json FROM ai_queue_worker_heartbeats ORDER BY last_tick_at DESC LIMIT 50`, [] as never[],
+      )) as unknown as Array<Record<string, unknown>>;
+    } catch (e) {
+      // Lot 54A : colonnes 0370 absentes — lecture d'avant ce lot.
+      if ((e as { code?: string }).code !== '42703') throw e;
+      rows = (await pgClient.unsafe(
+        `SELECT ${cols} FROM ai_queue_worker_heartbeats ORDER BY last_tick_at DESC LIMIT 50`, [] as never[],
+      )) as unknown as Array<Record<string, unknown>>;
+    }
     const d = (v: unknown) => (v ? new Date(String(v)) : null);
     return rows.map((r) => ({
       workerId: String(r.worker_id),
@@ -135,6 +176,8 @@ export async function listWorkerHeartbeats(): Promise<WorkerHeartbeatRow[] | nul
       activeSlots: Number(r.active_slots ?? 0),
       running: (r.running_json ?? {}) as Record<string, number>,
       intervalMs: Number(r.interval_ms ?? 15_000),
+      buildCommit: r.build_commit == null ? null : String(r.build_commit),
+      schedule: (r.schedule_json ?? null) as WorkerHeartbeatRow['schedule'],
     }));
   } catch {
     return null;

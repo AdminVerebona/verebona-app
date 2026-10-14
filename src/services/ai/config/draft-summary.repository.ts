@@ -1,9 +1,7 @@
 /**
- * Brouillons détaillés pour le tableau de bord IA — CDC BO IA DRF-01 (SCR-01).
- *
- * « Label, base, stale, date, auteur ; ouvrir/créer. » Une seule requête :
- * la version de base (vN) et l'auteur sont joints, pour que l'écran n'ait
- * pas à croiser la liste des versions (limitée) ni celle des utilisateurs.
+ * Versions NON actives pour le tableau de bord IA — CDC BO IA DRF-01 ; lot 54 :
+ * plus de « brouillons », les versions non actives (non supprimées) les
+ * remplacent. Une seule requête : version d'origine (vN) et auteur joints.
  */
 import { pgClient } from '@/db';
 import { getAiEnvironment, type AiEnvironment } from './environment';
@@ -11,6 +9,10 @@ import { getAiEnvironment, type AiEnvironment } from './environment';
 export interface DraftSummary {
   id: number;
   uid: string;
+  /** Lot 54 : numéro de la version (attribué à la création). */
+  visibleNumber?: number | null;
+  /** Lot 54 : révision courante. */
+  revisionNumber?: number | null;
   label: string | null;
   isStale: boolean;
   createdAt: string;
@@ -33,8 +35,11 @@ export function toDraftSummary(r: Row): DraftSummary {
   return {
     id: Number(r.id),
     uid: String(r.uid),
+    visibleNumber: r.visible_number == null ? null : Number(r.visible_number),
+    revisionNumber: r.current_revision_number == null ? null : Number(r.current_revision_number),
     label: (r.label as string | null) ?? null,
-    isStale: Boolean(r.is_stale),
+    // Lot 54 : plus de brouillon obsolète.
+    isStale: false,
     createdAt: new Date(String(r.created_at)).toISOString(),
     base: r.base_version_id == null
       ? null
@@ -52,14 +57,14 @@ export async function listDraftSummaries(
   limit = 20,
 ): Promise<DraftSummary[]> {
   const rows = await pgClient.unsafe(
-    `SELECT v.id, v.uid, v.label, v.is_stale, v.created_at, v.base_version_id,
+    `SELECT v.id, v.uid, v.visible_number, v.current_revision_number, v.label, v.created_at, v.base_version_id,
             b.visible_number AS base_visible_number, b.label AS base_label,
             u.first_name, u.last_name, u.email
        FROM ai_config_versions v
        LEFT JOIN ai_config_versions b ON b.id = v.base_version_id
        LEFT JOIN users u ON u.id = v.created_by
-      WHERE v.environment = $1 AND v.status = 'DRAFT'
-      ORDER BY v.created_at DESC
+      WHERE v.environment = $1 AND v.status <> 'ACTIVE' AND v.deleted_at IS NULL
+      ORDER BY COALESCE(v.updated_at, v.created_at) DESC
       LIMIT $2`,
     [environment, limit] as never[],
   );

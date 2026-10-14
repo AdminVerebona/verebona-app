@@ -1,0 +1,32 @@
+{
+  "case": "P-T4-12",
+  "description": "CLASSIFY_EVENT v2 — mention datée sans objet identifiable ⇒ agendaDecision=abstain (unknown, ambiguous), aucun événement inventé.",
+  "context": {
+    "candidate": {
+      "title": "Référence 2026-12",
+      "date": "2026-12-01",
+      "confidence": "probable",
+      "excerpt": "Réf. dossier 2026-12 — édité le 01/12/2026."
+    },
+    "recurrenceCandidate": null
+  },
+  "recording": {
+    "operationCode": "t4_classify_event",
+    "task": "CLASSIFY_EVENT",
+    "outputContract": "t4_output_v2",
+    "output": {
+      "task": "CLASSIFY_EVENT",
+      "agendaDecision": "abstain",
+      "recurrenceDecision": "not_applicable",
+      "homeCategory": "unknown",
+      "businessType": null,
+      "confidence": "ambiguous",
+      "reason": "date d'édition d'un document, aucun événement identifiable",
+      "recurrenceReason": null
+    }
+  },
+  "expected": {
+    "agendaDecision": "abstain",
+    "recurrenceDecision": "not_applicable"
+  }
+}

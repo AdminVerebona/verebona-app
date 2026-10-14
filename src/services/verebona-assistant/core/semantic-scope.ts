@@ -178,15 +178,51 @@ function consumedByStem(w: string, consommes: ReadonlySet<string>): boolean {
 
 /**
  * Domaines de sources métier. T2 raisonne sur ces sources sans connaître
- * leur stockage ; une source future (fournisseurs, « À traiter »…) s'ajoute
- * par un nouveau fournisseur, sans règle lexicale.
+ * leur stockage. Lot 54E (#419 écart 8) : liste OUVERTE — une source future
+ * (« À traiter », fournisseurs…) s'ajoute par un fournisseur et un
+ * descripteur (`registerSourceDomain`), sans modifier la sélection ni
+ * l'orchestrateur.
  */
-export type BusinessSourceDomain = 'operation' | 'field' | 'agenda' | 'document';
+export type BusinessSourceDomain = 'operation' | 'field' | 'agenda' | 'document' | (string & {});
+
+/**
+ * Descripteur d'un domaine (#419 écart 2) : AUTORITÉ / provenance (une
+ * opération consolidée, un champ canonique > une pièce brute) et niveau de
+ * STRUCTURATION. Ils ordonnent les candidats et départagent des sources
+ * COMPLÉMENTAIRES d'une même réalité ; ils ne font JAMAIS gagner une source
+ * qui ne porte pas la valeur demandée face à une source qui la porte.
+ */
+export interface SourceDomainDescriptor {
+  domain: BusinessSourceDomain;
+  /** 0–3 : 3 = état métier consolidé (opération, champ canonique). */
+  authority: number;
+  /** Donnée structurée (valeur typée) plutôt que pièce à interpréter. */
+  structured: boolean;
+  /** Nom métier par défaut (clarification) quand la source n'en porte pas. */
+  noun: string;
+}
+
+const DOMAINES = new Map<string, SourceDomainDescriptor>([
+  ['operation', { domain: 'operation', authority: 3, structured: true, noun: 'élément' }],
+  ['field', { domain: 'field', authority: 3, structured: true, noun: 'information' }],
+  ['agenda', { domain: 'agenda', authority: 2, structured: true, noun: 'échéance' }],
+  ['document', { domain: 'document', authority: 1, structured: false, noun: 'document' }],
+]);
+
+/** Déclare (ou remplace) un domaine de sources — extensibilité (#419 écart 8). */
+export function registerSourceDomain(d: SourceDomainDescriptor): void {
+  DOMAINES.set(d.domain, d);
+}
+
+/** Descripteur d'un domaine (inconnu : autorité minimale, non structuré). */
+export function sourceDomain(domain: BusinessSourceDomain): SourceDomainDescriptor {
+  return DOMAINES.get(domain) ?? { domain, authority: 0, structured: false, noun: 'élément' };
+}
 
 /**
  * Candidat métier RÉEL (lu en base, borné au compte et aux biens disponibles)
  * — jamais fourni par le modèle. `ref` est validé par le serveur à chaque
- * usage (clarification, reprise).
+ * usage (clarification, reprise, arbitrage).
  */
 export interface BusinessSource {
   /** Référence stable : `operation:<id>`, `field:<bienId>:<clé>`, `agenda:<id>`, `document:<id>`. */
@@ -203,6 +239,8 @@ export interface BusinessSource {
   /** Clé canonique (domaine `field`). */
   fieldKey?: string | null;
   assetId: number | null;
+  /** Prestataire / fournisseur STRUCTURÉ (opération, document) — preuve de même réalité. */
+  provider?: string | null;
   /** Montant (centimes EUR) porté par la source, s'il y en a un. */
   amountCents?: number | null;
   /** Date de fin (contrat, échéance) ou date significative. */
@@ -247,7 +285,12 @@ export function textMatchesTerms(text: string, terms: readonly string[]): boolea
   return terms.some((t) => mots.some((w) => correspond(t, w)));
 }
 
-/** Score d'une source : nombre de termes distincts retrouvés dans SON texte (pure). */
+/**
+ * Nombre de termes distincts retrouvés dans le texte RÉEL d'une source
+ * (pure). Lot 54E (#419 écart 1) : sert UNIQUEMENT à dire si une source est
+ * PLAUSIBLE (> 0) — jamais à choisir entre plusieurs sources plausibles
+ * (aucun « meilleur score » : ce choix revient à T2 ou à l'utilisateur).
+ */
 export function sourceScore(s: BusinessSource, terms: readonly string[]): number {
   const mots = new Set(tokensOf(`${s.text} ${s.kindNoun ?? ''}`));
   let n = 0;
@@ -255,36 +298,67 @@ export function sourceScore(s: BusinessSource, terms: readonly string[]): number
   return n;
 }
 
-/** La source porte-t-elle la valeur demandée ? */
-function porteLaValeur(s: BusinessSource, need: ValueNeed | null): boolean {
+/**
+ * CAPACITÉ réelle d'une source à répondre au besoin (#419 écart 2) : elle
+ * PORTE la valeur demandée (montant, date de fin, date). Une opération
+ * pertinente SANS la valeur n'est plus réputée capable.
+ */
+export function carriesRequestedValue(s: BusinessSource, need: ValueNeed | null): boolean {
   if (!need) return true;
-  if (s.domain === 'operation') return true; // l'interprétation reste plausible ; la valeur absente est dite
   if (need === 'amount') return s.amountCents != null;
+  if (need === 'end_date') return Boolean(s.endDate ?? (s.domain === 'operation' ? null : s.date));
   return Boolean(s.endDate ?? s.date);
 }
 
-/** Priorité des domaines (ticket §9) : l'opération d'abord quand elle existe. */
-export const DOMAIN_PRIORITY: readonly BusinessSourceDomain[] = ['operation', 'field', 'agenda', 'document'];
+const norm = (t: string | null | undefined) => tokensOf(t ?? '').join(' ');
+
+/**
+ * Sources COMPLÉMENTAIRES d'une même réalité (pure) : une opération et des
+ * pièces / échéances du MÊME prestataire structuré, sur le même bien. Preuve
+ * STRUCTURÉE (prestataire, bien), jamais une proximité de mots.
+ */
+function memeRealite(op: BusinessSource, autre: BusinessSource): boolean {
+  if (!op.provider || !autre.provider) return false;
+  if (op.assetId != null && autre.assetId != null && op.assetId !== autre.assetId) return false;
+  return norm(op.provider) !== '' && norm(op.provider) === norm(autre.provider);
+}
+
+/** Ordre de présentation (pure) : capable, autorité, structuration — jamais un score lexical. */
+function rang(s: BusinessSource, need: ValueNeed | null): number {
+  const d = sourceDomain(s.domain);
+  return (carriesRequestedValue(s, need) ? 100 : 0) + d.authority * 10 + (d.structured ? 1 : 0);
+}
 
 export interface SemanticSelection {
-  /** Interprétations retenues (même meilleur score, domaine prioritaire). */
+  /**
+   * Interprétations retenues : 1 → réponse directe (preuve structurée
+   * unique) ; ≥ 2 → arbitrage T2 ou clarification ; 0 → aucune.
+   */
   selected: BusinessSource[];
-  /** Domaine retenu, ou `null` : aucune source pertinente. */
+  /** Domaine de l'interprétation unique, ou `null`. */
   domain: BusinessSourceDomain | null;
-  /** Candidats examinés, avec leur score (trace). */
-  scored: Array<{ ref: string; domain: BusinessSourceDomain; score: number }>;
+  /** Candidats examinés : pertinence (> 0 = plausible), capacité (trace). */
+  scored: Array<{ ref: string; domain: BusinessSourceDomain; score: number; capable?: boolean }>;
+  /** Sources éligibles (compte, période, non représentées), ordonnées — réservoir d'arbitrage. */
+  eligible: BusinessSource[];
+  /** Raison de la décision (trace). */
+  reason: 'SINGLE_CAPABLE' | 'SINGLE_PLAUSIBLE' | 'COMPLEMENTARY_SAME_REALITY' | 'MULTIPLE_PLAUSIBLE' | 'PLAUSIBLE_WITHOUT_VALUE' | 'NO_PLAUSIBLE';
 }
 
 /**
- * Sélection des interprétations plausibles parmi les sources RÉELLES (pure,
- * testée) — aucune règle lexicale :
- *   · un champ du registre demandé par UNDERSTAND et RENSEIGNÉ est plausible ;
- *   · une autre source l'est si son texte répond à au moins un terme du
- *     besoin, au meilleur score ;
- *   · domaine prioritaire : opérations, puis champs, agenda, documents — une
- *     opération et ses propres documents ne font jamais deux interprétations.
- * Une seule interprétation → réponse directe ; plusieurs → clarification ;
- * aucune → information insuffisante (jamais un total plus large).
+ * Sélection des interprétations parmi les sources RÉELLES (pure, testée) —
+ * lot 54E (#419 écarts 1 et 2), aucune règle lexicale ni priorité absolue :
+ *   1. ÉLIMINATION déterministe : pièces représentées par une opération,
+ *      pièces / échéances datées hors de la période demandée ;
+ *   2. PLAUSIBILITÉ : texte réel répondant à un terme compris, ou champ du
+ *      registre demandé par UNDERSTAND et renseigné ;
+ *   3. CAPACITÉ : parmi les plausibles, celles qui PORTENT la valeur
+ *      demandée l'emportent sur celles qui ne la portent pas (une opération
+ *      sans montant ne masque plus la facture qui le porte) ;
+ *   4. une opération et les pièces du MÊME prestataire (même bien) sont UNE
+ *      réalité : l'opération, plus structurée, la représente ;
+ *   5. au-delà d'une interprétation : AUCUN départage par score —
+ *      l'arbitrage revient à T2 (candidats prévalidés) ou à l'utilisateur.
  */
 export function selectInterpretations(
   sources: readonly BusinessSource[], need: SemanticNeed, opts: { period?: { from: string; to: string } | null } = {},
@@ -296,21 +370,72 @@ export function selectInterpretations(
   const horsPeriode = (s: BusinessSource) => Boolean(opts.period) && (s.domain === 'document' || s.domain === 'agenda')
     && Boolean(s.date) && (String(s.date).slice(0, 10) < opts.period!.from || String(s.date).slice(0, 10) > opts.period!.to);
   const utiles = sources.filter((s) => !(s.domain === 'document' && representes.has(Number(s.ref.split(':')[1]))) && !horsPeriode(s));
+  // Période demandée : une opération porte des montants DATÉS — la réponse
+  // dit ceux de la période (ou leur absence) ; elle reste capable.
+  const capable = (s: BusinessSource) => carriesRequestedValue(s, need.need) || (Boolean(opts.period) && s.domain === 'operation');
   const scored = utiles.map((s) => {
-    const parFait = s.domain === 'field' && s.fieldKey != null && need.facts.includes(s.fieldKey) ? 1 : 0;
-    return { s, score: porteLaValeur(s, need.need) ? sourceScore(s, need.terms) + parFait : 0 };
+    const parFait = s.fieldKey != null && need.facts.includes(s.fieldKey) ? 1 : 0;
+    return { s, score: sourceScore(s, need.terms) + parFait, capable: capable(s) };
   });
-  for (const domain of DOMAIN_PRIORITY) {
-    const dans = scored.filter((x) => x.s.domain === domain && x.score > 0);
-    if (!dans.length) continue;
-    const best = Math.max(...dans.map((x) => x.score));
-    return {
-      selected: dans.filter((x) => x.score === best).map((x) => x.s),
-      domain,
-      scored: scored.map((x) => ({ ref: x.s.ref, domain: x.s.domain, score: x.score })),
-    };
+  const trace = scored.map((x) => ({ ref: x.s.ref, domain: x.s.domain, score: x.score, capable: x.capable }));
+  const eligible = [...utiles].sort((a, b) => rang(b, need.need) - rang(a, need.need));
+  const fin = (selected: BusinessSource[], reason: SemanticSelection['reason']): SemanticSelection => ({
+    selected, domain: selected.length === 1 ? selected[0].domain : null, scored: trace, eligible, reason,
+  });
+
+  const plausibles = scored.filter((x) => x.score > 0);
+  if (!plausibles.length) return fin([], 'NO_PLAUSIBLE');
+  const capables = plausibles.filter((x) => x.capable).map((x) => x.s);
+  if (!capables.length) {
+    // Aucune source plausible ne porte la valeur : l'interprétation reste
+    // celle des sources qui décrivent l'état métier (opérations), dont la
+    // réponse dit explicitement l'absence — jamais une pièce sans valeur.
+    const etats = plausibles.map((x) => x.s).filter((s) => sourceDomain(s.domain).authority >= 3 && s.domain !== 'field');
+    return fin(etats, 'PLAUSIBLE_WITHOUT_VALUE');
   }
-  return { selected: [], domain: null, scored: scored.map((x) => ({ ref: x.s.ref, domain: x.s.domain, score: x.score })) };
+  if (capables.length === 1) return fin(capables, plausibles.length === 1 ? 'SINGLE_PLAUSIBLE' : 'SINGLE_CAPABLE');
+  // Réalité unique : UNE opération et des pièces / échéances complémentaires du même prestataire.
+  const ops = capables.filter((s) => s.domain === 'operation');
+  if (ops.length === 1 && capables.every((s) => s === ops[0] || (sourceDomain(s.domain).authority < sourceDomain('operation').authority && memeRealite(ops[0], s)))) {
+    return fin([ops[0]], 'COMPLEMENTARY_SAME_REALITY');
+  }
+  return fin([...capables].sort((a, b) => rang(b, need.need) - rang(a, need.need)), 'MULTIPLE_PLAUSIBLE');
+}
+
+// ── Arbitrage par T2 (lot 54E, #419 écart 1) ───────────────────────────────
+
+/** Décision d'arbitrage BRUTE rendue par T2 (avant validation serveur). */
+export interface RawSemanticDecision {
+  decision: 'SELECT' | 'CLARIFY' | 'NONE';
+  selectedCandidateRef?: string | null;
+  confidence: 'exact' | 'probable' | 'ambiguous';
+  reason?: string;
+}
+
+/** Décision VALIDÉE par le serveur. */
+export type ValidatedSemanticDecision =
+  | { kind: 'select'; source: BusinessSource; ref: string }
+  | { kind: 'clarify'; failure: string | null }
+  | { kind: 'none' };
+
+/**
+ * Validation SERVEUR d'une décision T2 (pure, testée) : la référence doit
+ * être l'une de celles PRÉSENTÉES (jamais un identifiant inventé), la
+ * confiance suffisante (`exact` exigée quand UNDERSTAND avait lui-même
+ * signalé une ambiguïté). Tout le reste → clarification (jamais un choix
+ * lexical de repli).
+ */
+export function validateSemanticDecision(
+  d: RawSemanticDecision | null, presented: ReadonlyMap<string, BusinessSource>, o: { requireExact?: boolean } = {},
+): ValidatedSemanticDecision {
+  if (!d) return { kind: 'clarify', failure: 'NO_DECISION' };
+  if (d.decision === 'NONE') return { kind: 'none' };
+  if (d.decision === 'CLARIFY') return { kind: 'clarify', failure: null };
+  const ref = (d.selectedCandidateRef ?? '').trim();
+  const s = presented.get(ref);
+  if (!s) return { kind: 'clarify', failure: ref ? 'UNKNOWN_CANDIDATE_REF' : 'MISSING_CANDIDATE_REF' };
+  if (d.confidence === 'ambiguous' || (o.requireExact && d.confidence !== 'exact')) return { kind: 'clarify', failure: 'INSUFFICIENT_CONFIDENCE' };
+  return { kind: 'select', source: s, ref };
 }
 
 /** Genre des noms métier (P09) pour la question de clarification. */
@@ -321,7 +446,7 @@ const FEMININ = new Set(['intervention', 'vente', 'dépense', 'information', 'é
  * « De quel contrat parlez-vous ? » quand tous sont du même type métier.
  */
 export function semanticQuestion(cands: readonly BusinessSource[]): string {
-  const noms = [...new Set(cands.map((c) => (c.domain === 'operation' ? c.kindNoun ?? null : c.domain === 'field' ? 'information' : c.domain === 'agenda' ? 'échéance' : 'document')))];
+  const noms = [...new Set(cands.map((c) => (c.domain === 'operation' ? c.kindNoun ?? null : c.kindNoun ?? sourceDomain(c.domain).noun)))];
   if (noms.length === 1 && noms[0]) return `De quel${FEMININ.has(noms[0]) ? 'le' : ''} ${noms[0]} parlez-vous ?`;
   return 'Plusieurs éléments correspondent à votre question. Lequel voulez-vous consulter ?';
 }
@@ -370,6 +495,25 @@ export interface SemanticTrace {
   fallbackReason: string | null;
   /** Ce qui a déclenché l'étape (`none` : décision déterministe exécutée telle quelle). */
   trigger: 'none' | 'weak_route' | 'structured_scope' | 'resume_choice' | 'resume_scope' | 'classified_scope';
+  // ── Lot 54E (#419 écart 9) : décision sémantique IA ─────────────────────
+  /** Qui a choisi la source servie : preuve structurée (`deterministic`) ou T2 (`ai`). */
+  candidateSelectionMode: 'deterministic' | 'ai' | null;
+  /** Motif de la sélection déterministe (`selectInterpretations`). */
+  selectionReason: string | null;
+  semanticDecision: 'SELECT' | 'CLARIFY' | 'NONE' | null;
+  semanticDecisionConfidence: string | null;
+  /** Références de sources (serveur) présentées à T2 — jamais de contenu. */
+  candidateRefsPresentedToAI: string[];
+  candidateRefSelectedByAI: string | null;
+  candidateRefValidated: boolean | null;
+  candidateValidationFailure: string | null;
+  // ── Lot 54E (#419 §15) : informations apportées ─────────────────────────
+  interactionMode: string | null;
+  suppliedFactsCount: number;
+  updateCapabilityResolved: boolean | null;
+  /** Capacité d'écriture résolue par le serveur (`asset_field`…), jamais une table. */
+  updateTargetType: string | null;
+  confirmationPlanCreated: boolean;
 }
 
 export function emptySemanticTrace(p: Pick<SemanticTrace, 'trigger' | 'deterministicMatch' | 'deterministicConfidence'>): SemanticTrace {
@@ -379,5 +523,8 @@ export function emptySemanticTrace(p: Pick<SemanticTrace, 'trigger' | 'determini
     semanticCandidates: [], sourceDomainsAvailable: [], operationCandidates: [], selectedOperationId: null, selectedSource: null,
     structuredStrategyCandidate: null, structuredStrategyExecuted: false, structuredScopeFallbackPrevented: false,
     clarificationCreated: false, clarificationReason: null, fallbackReason: null,
+    candidateSelectionMode: null, selectionReason: null, semanticDecision: null, semanticDecisionConfidence: null,
+    candidateRefsPresentedToAI: [], candidateRefSelectedByAI: null, candidateRefValidated: null, candidateValidationFailure: null,
+    interactionMode: null, suppliedFactsCount: 0, updateCapabilityResolved: null, updateTargetType: null, confirmationPlanCreated: false,
   };
 }

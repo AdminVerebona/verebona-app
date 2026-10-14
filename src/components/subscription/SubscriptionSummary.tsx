@@ -10,7 +10,7 @@ import { useSession } from '@/hooks/useSession';
 import { useEntitlements } from '@/hooks/useEntitlements';
 import { apiClient, ApiClientError, isRequestAborted } from '@/lib/api-client';
 import { buildStorageQuotaUsage, type StorageQuotaUsage } from '@/lib/storage-display';
-import { DuoInvitationPanel } from './DuoInvitationPanel';
+import { DUO_INVITATION_ANCHOR, DUO_INVITATION_PANEL_ID, DuoInvitationPanel } from './DuoInvitationPanel';
 import { DuoLeaveButton } from './DuoLeaveButton';
 import { libelleEssai } from './trial-label';
 import { openBillingPortal } from '@/lib/billing/open-billing-portal';
@@ -269,6 +269,7 @@ export function SubscriptionSummary() {
   }
 
   const { trial, subscription, quotas } = data;
+  const showDuoInvitation = !isDuoMember && data.plan === 'premium_duo' && user?.duoRole === 'BILLING_OWNER';
   const planLabel = PLAN_LABELS[data.plan] ?? data.plan;
   const periodLabel =
     subscription.billingPeriod === 'monthly'
@@ -285,6 +286,11 @@ export function SubscriptionSummary() {
       title="Mon abonnement"
       description={isUnpaid(data) ? 'Paiement en échec : une action est requise.' : RESUME}
       defaultOpen={isUnpaid(data) || Boolean(data.isRestricted)}
+      // Lot 54F : « Inviter quelqu'un » (mascotte) ouvre `/mon-compte#duo-invitation` :
+      // le tiroir se déplie seul (mécanisme anchorId) — l'ancre est portée par
+      // la carte, et par elle SEULE (le bloc « 2e utilisateur Duo » a son
+      // propre identifiant), uniquement quand le panneau d'invitation existe.
+      anchorId={showDuoInvitation ? DUO_INVITATION_ANCHOR : undefined}
     >
 
       {/* Etat du compte */}
@@ -428,9 +434,10 @@ export function SubscriptionSummary() {
       {actions}
 
       {/* 2e utilisateur — Offre Duo (repris de l'ancien bloc « Abonnement ») */}
-      {!isDuoMember && data.plan === 'premium_duo' && user?.duoRole === 'BILLING_OWNER' && (
-        // Lot 49A (ticket 13) : ancre de « Inviter quelqu'un » (mascotte d'accueil).
-        <div id="duo-invitation" className="mt-5 scroll-mt-24 border-t border-[color:var(--border)] pt-4">
+      {showDuoInvitation && (
+        // Lot 49A (ticket 13) / 54F : cible de « Inviter quelqu'un » (mascotte
+        // d'accueil), amenée à l'écran par `DuoInvitationPanel`.
+        <div id={DUO_INVITATION_PANEL_ID} className="mt-5 scroll-mt-24 border-t border-[color:var(--border)] pt-4">
           <div className="mb-3 flex items-center gap-2">
             <Users className="h-4 w-4 text-emerald-400" />
             <span className="text-sm font-medium text-[color:var(--text-primary)]">2e utilisateur Duo</span>

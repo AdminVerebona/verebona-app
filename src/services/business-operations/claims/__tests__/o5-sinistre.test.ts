@@ -135,8 +135,8 @@ describe('O5-U04 — Q11 miroir : le sinistre le plus récent du bien', () => {
 describe('O5-U05 — Q4 indemnité : coût brut jamais diminué, net = brut − indemnité (F-159, F-160)', () => {
   it('composantes du sinistre et de ses interventions', () => {
     expect(claimCosts([{ kind: 'REALIZED_COST', amountCents: 200000 }, { kind: 'REALIZED_COST', amountCents: 45000 }, { kind: 'INDEMNITY', amountCents: 120000 }]))
-      .toEqual({ grossCents: 245000, indemnityCents: 120000, netCents: 125000 });
-    expect(claimCosts([])).toEqual({ grossCents: 0, indemnityCents: 0, netCents: 0 });
+      .toMatchObject({ grossCents: 245000, indemnityCents: 120000, netCents: 125000, complete: true });
+    expect(claimCosts([])).toMatchObject({ grossCents: 0, indemnityCents: 0, netCents: 0 });
   });
   it('l\'indemnité saisie est une composante INDEMNITY : attribuée au bien d\'un sinistre mono-bien, globale sinon', () => {
     const src = readFileSync(join(process.cwd(), 'src/services/business-operations/consolidation/claim-form.ts'), 'utf8');

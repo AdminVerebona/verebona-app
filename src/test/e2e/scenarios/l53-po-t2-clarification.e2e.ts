@@ -62,10 +62,11 @@ scenario('L53-PO-T2', 'Lot 53 (53F) — retours PO D21, D22, Q24 sur PostgreSQL 
     const appart = await bien(c, 'Appartement Lyon', 'IMMOBILIER');
     await contrat(c, maison.id, { label: 'Orange Fibre', provider: 'Orange', from: '2025-01-01', couts: [[3999, '2026-09-02']] });
     await contrat(c, appart.id, { label: 'Orange Fibre', provider: 'Orange', from: '2025-01-01', couts: [[2999, '2026-09-02']] });
-    const replay = await useRecordings([understand({ intent: 'ACCOUNT_FACT_ASSET', entityHints: [], requestedTopics: ['internet', 'fibre'] })]);
+    const replay = await useRecordings([understand({ intent: 'ACCOUNT_FACT_ASSET', entityHints: [], requestedTopics: ['internet', 'fibre'] }), understand({ intent: 'ACCOUNT_FACT_ASSET', semanticDecision: { decision: 'CLARIFY', selectedCandidateRef: null, confidence: 'probable', reason: 'e2e' } })]);
     const r0 = await demander(c, 'Bonjour');
     const r = await demander(c, 'Je paye combien pour internet ?', { conversationId: r0.conversationId });
-    expect(replay.calls).toHaveLength(1);
+    // Lot 54E (#419 écart 1) : plusieurs candidats → ARBITRAGE par T2 (2e appel), ici « CLARIFY ».
+    expect(replay.calls).toHaveLength(2);
     expect(r.clarification?.candidates.map((x) => x.secondaryLabel?.split(' · ')[0]).sort()).toEqual(['Appartement Lyon', 'Maison']);
   });
 
@@ -74,10 +75,11 @@ scenario('L53-PO-T2', 'Lot 53 (53F) — retours PO D21, D22, Q24 sur PostgreSQL 
     const maison = await bien(c, 'Maison', 'IMMOBILIER');
     await contrat(c, maison.id, { label: 'Box SFR', provider: 'SFR', from: '2025-01-01', couts: [[2999, '2026-09-03']] });
     await contrat(c, maison.id, { label: 'Abonnement Netflix', provider: 'Netflix', from: '2025-01-01', couts: [[1349, '2026-09-10']] });
-    const replay = await useRecordings([understand({ intent: 'ACCOUNT_FACT_ASSET', entityHints: [{ type: 'asset', value: 'maison' }], requestedTopics: ['internet'] })]);
+    const replay = await useRecordings([understand({ intent: 'ACCOUNT_FACT_ASSET', entityHints: [{ type: 'asset', value: 'maison' }], requestedTopics: ['internet'] }), understand({ intent: 'ACCOUNT_FACT_ASSET', semanticDecision: { decision: 'CLARIFY', selectedCandidateRef: null, confidence: 'probable', reason: 'e2e' } })]);
     const r0 = await demander(c, 'Bonjour');
     const r = await demander(c, 'Je paye combien pour internet à la maison ?', { conversationId: r0.conversationId });
-    expect(replay.calls).toHaveLength(1);
+    // Lot 54E (#419 écart 1) : plusieurs candidats → ARBITRAGE par T2 (2e appel), ici « CLARIFY ».
+    expect(replay.calls).toHaveLength(2);
     expect(r.answer).toBe('Je n’ai trouvé aucun élément mentionnant « internet » pour Maison. De quel contrat ou service parlez-vous ?');
     expect(r.clarification?.candidates.map((x) => x.label).sort()).toEqual(['Contrat « Abonnement Netflix »', 'Contrat « Box SFR »']);
   });

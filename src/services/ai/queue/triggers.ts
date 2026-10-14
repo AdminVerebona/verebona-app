@@ -129,8 +129,34 @@ export function schedulableTreatments(): Treatment[] {
 
 export interface ScheduleDeps {
   lastScheduledAt(treatment: Treatment): Promise<Date | null>;
-  enqueueScheduled(treatment: Treatment, triggerCode: string): Promise<void>;
+  /**
+   * Lot 54A : rend l'issue de la mise en file (création, ou motif de
+   * non-création). `void` (anciens doubles de test) : création supposée.
+   */
+  enqueueScheduled(treatment: Treatment, triggerCode: string): Promise<import('./job-queue.repository').EnqueueResult | void>;
   loadTriggers(treatment: Treatment): Promise<TriggerSetting[] | null>;
+}
+
+/**
+ * Lot 54A — issue de l'évaluation de la planification d'un traitement, à
+ * chaque tour (jamais muette) :
+ *   · `TRIGGER_DISABLED` : aucune planification active (configuration) ;
+ *   · `SCHEDULE_NOT_DUE` : dernière racine trop récente (`nextDueAt`) ;
+ *   · échue : `decision` de la file — `create` (job créé), ou absorbée
+ *     (`DUPLICATE_PENDING` / `DUPLICATE_RUNNING`, job vivant `jobId`) ;
+ *   · `INSERT_FAILED` : la mise en file a levé (message dans `error`).
+ */
+export interface ScheduleOutcome {
+  treatment: Treatment;
+  triggerCode: string | null;
+  periodHours: number | null;
+  due: boolean;
+  lastRootAt: string | null;
+  nextDueAt: string | null;
+  decision: 'create' | 'skip' | 'coalesce' | 'none' | 'error';
+  reasonCode: string | null;
+  jobId: number | null;
+  error?: string;
 }
 
 const defaultScheduleDeps: ScheduleDeps = {
@@ -154,7 +180,7 @@ const defaultScheduleDeps: ScheduleDeps = {
     const payload = treatment === 'T3'
       ? { payloadVersion: 1, kind: 'sweep', scheduled: true, triggerCode, requestedAt: new Date().toISOString() }
       : { scheduled: true, triggerCode };
-    await enqueue({ treatment, scope: {}, triggerCode, payload });
+    return enqueue({ treatment, scope: {}, triggerCode, payload, traceSteps: { due: true } });
   },
   async loadTriggers(treatment) {
     return (await loader(treatment))?.triggers ?? null;
@@ -162,25 +188,66 @@ const defaultScheduleDeps: ScheduleDeps = {
 };
 
 /**
+ * Lot 54A — évalue la planification de chaque traitement planifiable et met
+ * en file les passages échus. Rend UNE issue par traitement, toujours
+ * motivée (jamais un saut muet). Ne lève jamais.
+ */
+export async function evaluateDueSchedules(
+  now: Date = new Date(),
+  deps: ScheduleDeps = defaultScheduleDeps,
+): Promise<ScheduleOutcome[]> {
+  const out: ScheduleOutcome[] = [];
+  for (const treatment of schedulableTreatments()) {
+    const o: ScheduleOutcome = {
+      treatment, triggerCode: null, periodHours: null, due: false, lastRootAt: null, nextDueAt: null,
+      decision: 'none', reasonCode: null, jobId: null,
+    };
+    try {
+      const codes = activeTriggerCodes(treatment, await deps.loadTriggers(treatment).catch(() => null));
+      const schedule = shortestSchedule(codes);
+      if (!schedule) {
+        o.reasonCode = 'TRIGGER_DISABLED';
+        out.push(o);
+        continue;
+      }
+      o.triggerCode = schedule.code;
+      o.periodHours = schedule.periodHours;
+      const last = await deps.lastScheduledAt(treatment);
+      o.lastRootAt = last ? last.toISOString() : null;
+      o.nextDueAt = new Date(last ? last.getTime() + schedule.periodHours * 3_600_000 : now.getTime()).toISOString();
+      if (!isScheduleDue(last, schedule.periodHours, now)) {
+        o.reasonCode = 'SCHEDULE_NOT_DUE';
+        out.push(o);
+        continue;
+      }
+      o.due = true;
+      const r = await deps.enqueueScheduled(treatment, schedule.code);
+      o.decision = r ? r.decision : 'create';
+      o.jobId = r ? r.jobId : null;
+      o.reasonCode = r ? r.reasonCode ?? null : null;
+    } catch (e) {
+      o.decision = 'error';
+      o.reasonCode = 'INSERT_FAILED';
+      o.error = (e as Error).message;
+      console.error(`[triggers] planification ${treatment} impossible (non bloquant) :`, (e as Error).message);
+    }
+    out.push(o);
+  }
+  return out;
+}
+
+/**
  * Met en file les passages planifiés échus. Appelé à chaque tour du boucleur,
  * sous son bail (une seule instance planifie). Ne lève jamais.
+ *
+ * Lot 54A : ne rend QUE les passages réellement créés — une demande absorbée
+ * par un job vivant (ou refusée) n'est plus annoncée « mise en file ».
  */
 export async function runDueSchedules(
   now: Date = new Date(),
   deps: ScheduleDeps = defaultScheduleDeps,
 ): Promise<Array<{ treatment: Treatment; triggerCode: string }>> {
-  const fired: Array<{ treatment: Treatment; triggerCode: string }> = [];
-  for (const treatment of schedulableTreatments()) {
-    try {
-      const codes = activeTriggerCodes(treatment, await deps.loadTriggers(treatment).catch(() => null));
-      const schedule = shortestSchedule(codes);
-      if (!schedule) continue;
-      if (!isScheduleDue(await deps.lastScheduledAt(treatment), schedule.periodHours, now)) continue;
-      await deps.enqueueScheduled(treatment, schedule.code);
-      fired.push({ treatment, triggerCode: schedule.code });
-    } catch (e) {
-      console.error(`[triggers] planification ${treatment} impossible (non bloquant) :`, (e as Error).message);
-    }
-  }
-  return fired;
+  return (await evaluateDueSchedules(now, deps))
+    .filter((o) => o.due && o.decision === 'create' && o.triggerCode)
+    .map((o) => ({ treatment: o.treatment, triggerCode: o.triggerCode as string }));
 }

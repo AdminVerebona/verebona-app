@@ -24,9 +24,11 @@ import type { VerebonaIntent } from '../types/intents';
 import type { AssistantTargets } from './assistant-targets';
 import { CLARIFICATION_TTL_MS } from './clarification-builder';
 import {
-  contextualQuestion, detectValueNeed, selectInterpretations, semanticQuestion, semanticTerms,
-  type BusinessSource, type SemanticNeed, type SemanticTrace, type ValueNeed,
+  carriesRequestedValue, contextualQuestion, detectValueNeed, selectInterpretations, semanticQuestion, semanticTerms, sourceDomain,
+  validateSemanticDecision,
+  type BusinessSource, type RawSemanticDecision, type SemanticNeed, type SemanticTrace, type ValueNeed,
 } from './semantic-scope';
+import { interactionHandling } from './interaction';
 import { answerFromBusinessSource } from '../canonical/business-sources';
 import { buildTargetClarification } from './clarification-builder';
 import { routeForIntent } from './intent-router.service';
@@ -45,6 +47,18 @@ function periodeDe(message: string): PeriodeResolue | null {
 /** Bornes d'une clarification contextuelle (lot 53, PO Q24). */
 const CONTEXTUAL_MIN = 2;
 const CONTEXTUAL_MAX = 6;
+/** Candidats présentés au plus à T2 pour l'arbitrage (lot 54E, #419 écart 1). */
+export const ARBITRATION_MAX = 12;
+
+/** Candidat présenté à T2 (référence OPAQUE, données déjà bornées par le serveur). */
+export interface ArbitrationCandidate {
+  ref: string;
+  kind: string;
+  label: string;
+  detail: string | null;
+  asset: string | null;
+  carriesRequestedValue: boolean;
+}
 
 /** Ports utilisés par l'étape (sous-ensemble de `OrchestratorPorts`). */
 export interface SemanticPorts {
@@ -59,6 +73,8 @@ export type SemanticOutcome =
   | { kind: 'insufficient'; text: string; intent: VerebonaIntent; strategy: string }
   /** UNDERSTAND lit autre chose qu'une question sur les données (aide…) : sa route prime. */
   | { kind: 'reroute'; route: IntentRoute }
+  /** Lot 54E (#419 §15) : l'utilisateur APPORTE une information — traitée par l'orchestrateur (proposition, contexte). */
+  | { kind: 'interaction'; route: IntentRoute }
   /** Étape non applicable (aucun port, aucune cible lisible) : la cascade suit son cours, sans élargissement. */
   | { kind: 'continue' };
 
@@ -104,6 +120,12 @@ export interface SemanticStageParams {
   preset?: { terms: string[]; facts: string[]; need: ValueNeed | null } | null;
   /** Délai des lectures (ms). */
   withDeadline: <T>(p: Promise<T>) => Promise<T>;
+  /**
+   * Lot 54E (#419 écart 1) : ARBITRAGE par T2 entre candidats prévalidés
+   * (budget, annulation, offre contrôlés par l'orchestrateur) ; `null` /
+   * absent : aucun appel — clarification, jamais un choix lexical.
+   */
+  arbitrate?: ((cands: ArbitrationCandidate[]) => Promise<RawSemanticDecision | null>) | null;
 }
 
 /** Exécute l'étape sémantique (voir en-tête). */
@@ -122,6 +144,13 @@ export async function runSemanticStage(p: SemanticStageParams): Promise<Semantic
     trace.understandConfidence = compris.confidence;
     trace.requestedFacts = compris.understanding?.requestedFacts ?? [];
     trace.requestedTopics = compris.understanding?.requestedTopics ?? [];
+    const inter = compris.understanding?.interaction;
+    if (inter) {
+      trace.interactionMode = inter.mode;
+      trace.suppliedFactsCount = inter.suppliedFacts.length;
+      // Information APPORTÉE (proposition, contexte seul) : jamais servie comme une lecture.
+      if (interactionHandling(inter)) return { kind: 'interaction', route: compris };
+    }
     if (!compris.intent.startsWith('ACCOUNT_') && compris.intent !== 'UNKNOWN' && compris.confidence !== 'ambiguous') {
       trace.fallbackReason = 'UNDERSTAND_NON_DATA_INTENT';
       return { kind: 'reroute', route: compris };
@@ -184,34 +213,85 @@ export async function runSemanticStage(p: SemanticStageParams): Promise<Semantic
   const periode = periodeDe(input.message);
   const sel = selectInterpretations(lues.sources, need, { period: periode });
   trace.semanticCandidates = sel.scored.filter((x) => x.score > 0).slice(0, 20);
+  trace.selectionReason = sel.reason;
   trace.operationCandidates = sel.selected.filter((s) => s.domain === 'operation').map((s) => Number(s.ref.split(':')[1]));
+  /** UNDERSTAND a signalé une ambiguïté (#419 écart 6) : elle pèse sur la décision finale. */
+  const ambigu = compris?.confidence === 'ambiguous';
+  const nomPour = (s: BusinessSource) => bien?.name || (s.assetId != null ? assetNames[s.assetId] ?? null : null);
 
   // ── 4. Une / plusieurs / aucune interprétation ──────────────────────────
+  // Réservoir d'arbitrage / de clarification ; `contextuelle` : aucune
+  // source ne mentionne les termes compris (lot 53, Q24).
+  let pool: BusinessSource[];
+  let motif: 'SEMANTIC_MULTIPLE_INTERPRETATIONS' | 'SEMANTIC_UNDERSTANDING_AMBIGUOUS' | 'SEMANTIC_NO_MATCH_CONTEXTUAL';
   if (sel.selected.length === 1) {
     const s = sel.selected[0];
-    return repondre(s, need.need, bien?.name || (s.assetId != null ? assetNames[s.assetId] ?? null : null), intent, trace, periode);
+    // Autres sources capables de porter la valeur sur le même périmètre :
+    // ce sont les interprétations concurrentes d'une demande ambiguë.
+    const concurrentes = sel.eligible.filter((x) => x !== s && carriesRequestedValue(x, need.need) && sourceDomain(x.domain).authority >= 2
+      && (!bien || x.assetId === bien.id));
+    // Preuve STRUCTURÉE forte : champ du registre demandé, ou aucune autre
+    // lecture possible dans les données. Sinon, l'ambiguïté signalée par T2
+    // n'est jamais levée par une simple correspondance de mots.
+    const preuveForte = !ambigu || (s.fieldKey != null && need.facts.includes(s.fieldKey)) || concurrentes.length === 0;
+    if (preuveForte) {
+      trace.candidateSelectionMode = 'deterministic';
+      return repondre(s, need.need, nomPour(s), intent, trace, periode);
+    }
+    pool = [s, ...concurrentes];
+    motif = 'SEMANTIC_UNDERSTANDING_AMBIGUOUS';
+  } else if (sel.selected.length > 1) {
+    pool = sel.selected;
+    motif = 'SEMANTIC_MULTIPLE_INTERPRETATIONS';
+  } else {
+    // ── Lot 53 (PO Q24) : aucune correspondance — candidats CONTEXTUELS ──
+    // Le bien porte des opérations susceptibles de porter la valeur
+    // demandée (contrats, services…) ; sans bien, seulement si elles sont
+    // peu nombreuses. Jamais une seule opération servie sans arbitrage.
+    const ctx = sel.eligible.filter((s) => s.domain === 'operation' && porteValeurDemandee(s, need.need) && (!bien || s.assetId === bien.id));
+    pool = bien || ctx.length <= ARBITRATION_MAX ? ctx : [];
+    motif = 'SEMANTIC_NO_MATCH_CONTEXTUAL';
   }
-  // ── Lot 53 (PO Q24) : aucune correspondance — clarification CONTEXTUELLE ──
-  // Le bien est connu et porte plusieurs opérations susceptibles de porter
-  // la valeur demandée (contrats, services…) : on demande laquelle, choix
-  // issus des données, plutôt que le message générique. Jamais une seule
-  // opération servie à la place de la demande (ce serait une substitution) ;
-  // au-delà de CONTEXTUAL_MAX, la liste ne serait plus une question utile.
-  const contextuels = sel.selected.length === 0 && bien
-    ? lues.sources.filter((s) => s.domain === 'operation' && s.assetId === bien.id && porteValeurDemandee(s, need.need))
-    : [];
-  if (sel.selected.length === 0 && (contextuels.length < CONTEXTUAL_MIN || contextuels.length > CONTEXTUAL_MAX)) {
+
+  // ── 5. Arbitrage par T2 (#419 écart 1) : candidats PRÉVALIDÉS seulement ──
+  if (p.arbitrate && pool.length >= 1 && pool.length <= ARBITRATION_MAX) {
+    const presentes = new Map<string, BusinessSource>(pool.map((s, i) => [`C${i + 1}`, s]));
+    trace.candidateRefsPresentedToAI = pool.map((s) => s.ref);
+    const brut = await p.arbitrate([...presentes].map(([ref, s]) => ({
+      ref, kind: s.kindNoun ?? sourceDomain(s.domain).noun, label: s.label, detail: s.detail,
+      asset: s.assetId != null ? assetNames[s.assetId] ?? null : null, carriesRequestedValue: carriesRequestedValue(s, need.need),
+    }))).catch(() => null);
+    const v = validateSemanticDecision(brut, presentes, { requireExact: ambigu });
+    trace.semanticDecision = brut?.decision ?? null;
+    trace.semanticDecisionConfidence = brut?.confidence ?? null;
+    trace.candidateRefSelectedByAI = brut?.decision === 'SELECT'
+      ? (presentes.get((brut.selectedCandidateRef ?? '').trim())?.ref ?? (brut.selectedCandidateRef ?? null)) : null;
+    trace.candidateRefValidated = brut?.decision === 'SELECT' ? v.kind === 'select' : null;
+    trace.candidateValidationFailure = v.kind === 'clarify' ? v.failure : null;
+    if (v.kind === 'select') {
+      trace.candidateSelectionMode = 'ai';
+      return repondre(v.source, need.need, nomPour(v.source), intent, trace, periode);
+    }
+    if (v.kind === 'none') {
+      trace.fallbackReason = 'AI_NO_MATCHING_CANDIDATE';
+      return { kind: 'insufficient', text: insufficientMessage(need.terms, bien?.name ?? null), intent, strategy: 'semantic.insufficient' };
+    }
+  }
+
+  // ── 6. Clarification (choix issus des données) ou information insuffisante ──
+  if (motif === 'SEMANTIC_NO_MATCH_CONTEXTUAL' && (!bien || pool.length < CONTEXTUAL_MIN || pool.length > CONTEXTUAL_MAX)) {
     trace.fallbackReason = 'NO_MATCHING_SOURCE';
     return { kind: 'insufficient', text: insufficientMessage(need.terms, bien?.name ?? null), intent, strategy: 'semantic.insufficient' };
   }
-  const contextuelle = sel.selected.length === 0;
+  const contextuels = pool;
+  const contextuelle = motif === 'SEMANTIC_NO_MATCH_CONTEXTUAL';
   const now = new Date();
-  const cands = (contextuelle ? contextuels : sel.selected).slice(0, CONTEXTUAL_MAX);
+  const cands = contextuels.slice(0, CONTEXTUAL_MAX);
   // Plusieurs biens parmi les choix : le nom du bien les distingue (lot 53, D21).
   const plusieursBiens = new Set(cands.map((c) => c.assetId ?? null)).size > 1;
   trace.semanticAmbiguity = true;
   trace.clarificationCreated = true;
-  trace.clarificationReason = contextuelle ? 'SEMANTIC_NO_MATCH_CONTEXTUAL' : 'SEMANTIC_MULTIPLE_INTERPRETATIONS';
+  trace.clarificationReason = motif;
   if (contextuelle) trace.fallbackReason = 'NO_MATCHING_SOURCE';
   const state: ClarificationState = {
     clarificationId: randomUUID(),
@@ -221,7 +301,7 @@ export async function runSemanticStage(p: SemanticStageParams): Promise<Semantic
       pageAssetId: Number(input.pageContext?.assetId) || null, assetId: bien?.id ?? null, requestedFacts: need.facts,
       semantic: { terms: need.terms, facts: need.facts, need: need.need, strategyCandidate: trace.structuredStrategyCandidate },
     },
-    ambiguity: { kind: 'semantic', field: 'source', reason: contextuelle ? 'SEMANTIC_NO_MATCH_CONTEXTUAL' : 'SEMANTIC_MULTIPLE_INTERPRETATIONS' },
+    ambiguity: { kind: 'semantic', field: 'source', reason: motif },
     candidateType: 'business_source',
     candidates: cands.map((s) => {
       const second = [plusieursBiens && s.assetId != null ? assetNames[s.assetId] ?? null : null, s.detail].filter(Boolean).join(' · ');

@@ -195,14 +195,22 @@ describe('variables retirées encore posées (/api/health) — lot 16b : plus au
 describe('saveTreatmentConfig — §29.1 appliqué par le service', () => {
   it('refuse `steps` ; conserve architecture et texte master omis', async () => {
     vi.resetModules();
-    const saveEntry = vi.fn(async (..._a: unknown[]) => undefined);
+    // Lot 54 : l'enregistrement passe par `writeSnapshot` (révision) ; la
+    // ligne enregistrée est celle que calcule `next` à partir de l'instantané.
+    const saveEntry = vi.fn();
     const brouillon = {
-      id: 5, status: 'DRAFT', environment: 'local', entries: [
+      id: 5, status: 'INACTIVE', environment: 'local', deletedAt: null, currentRevisionNumber: 1, entries: [
         { ...emptyTreatmentConfig('T1'), promptArchitecture: 'master', masterPrompt: 'MASTER EN PLACE' }, emptyTreatmentConfig(SANS_MASTER),
       ],
     };
-    vi.doMock('../config-version.repository', () => ({ getVersion: async () => brouillon, saveEntry }));
-    vi.doMock('../config-cache-version', () => ({ bumpConfigVersionCounter: async () => true }));
+    const writeSnapshot = vi.fn(async (p: { next: (c: unknown) => { entries: TreatmentConfig[] } }) => {
+      const n = p.next({ format: 'ai-config-snapshot-v1', entries: brouillon.entries, masterPrompts: {} });
+      saveEntry(5, n.entries.find((e) => e.treatment === 'T1'));
+      return { versionId: 5, revisionId: 2, revisionNumber: 2, changed: true, active: false, masterPromptSwitches: [] };
+    });
+    vi.doMock('../config-version.repository', () => ({ getVersion: async () => brouillon, writeSnapshot, ConfigVersionRefused: class extends Error {} }));
+    vi.doMock('../config-cache-version', () => ({ bumpConfigVersionCounter: async () => true, forgetConfigVersionCounter: () => {}, hasTestCounterStore: () => false }));
+    vi.doMock('../config-entry.audit', () => ({ recordConfigAudit: async () => {} }));
     const svc = await import('../config-version.service');
 
     // Lot 16b : `master` est l'architecture de toute ligne — l'enregistrer
@@ -220,6 +228,7 @@ describe('saveTreatmentConfig — §29.1 appliqué par le service', () => {
     expect((saveEntry.mock.calls[0][1] as TreatmentConfig).masterPrompt).toBe('MASTER EN PLACE');
     vi.doUnmock('../config-version.repository');
     vi.doUnmock('../config-cache-version');
+    vi.doUnmock('../config-entry.audit');
   });
 });
 

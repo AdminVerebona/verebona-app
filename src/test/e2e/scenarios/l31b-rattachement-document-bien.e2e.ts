@@ -426,6 +426,13 @@ scenario('L31B', 'Rattachement document → bien : identifiants canoniques (T1) 
     await sql`DELETE FROM ai_job_queue WHERE treatment = 'T3' AND target_type = 'document' AND target_id = ${String(doc.id)}`;
     await sql`UPDATE document_asset_resolutions SET requested_at = now() - interval '2 hours' WHERE file_id = ${doc.id}`;
 
+    // Lot 54 (intégration) : la page compte TOUT l'arriéré T3 « document » de
+    // la base (contrat 31C, file non saturée). Avec une page de taille 1, une
+    // demande en attente laissée par un scénario précédent suffisait à faire
+    // sauter la page (NO_CHANGE) : on part d'une file sans autre arriéré.
+    await sql`UPDATE ai_job_queue SET status = 'CANCELLED', finished_at = now()
+               WHERE treatment = 'T3' AND target_type = 'document' AND status = 'PENDING'
+                 AND target_id <> ${String(doc.id)}`;
     const avant = process.env.T3_DOCUMENT_SWEEP_PAGE_SIZE;
     process.env.T3_DOCUMENT_SWEEP_PAGE_SIZE = '1';
     try {

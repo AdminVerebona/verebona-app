@@ -566,11 +566,12 @@ describe('TC01 — omission silencieuse (DEV-01)', () => {
     expect(r.diagnostics).toMatchObject({ sourceVerification: 'PARTIAL', pagesMissing: [8, 9, 10] });
   });
 
-  it('lecture paginée (marques « --- page N --- ») d’un PDF scanné de 10 pages, marques 1 à 7 : pages 8 à 10 manquantes (pur)', () => {
+  it('lecture paginée (marques « --- page N --- ») d’un PDF de 10 pages illisibles, marques 1 à 7 : pages 8 à 10 manquantes (pur)', () => {
     const probe = { pageCount: 10, pages: Array.from({ length: 10 }, (_, k) => ({ page: k + 1, kind: 'UNKNOWN' as const, sample: null })) };
     const transcription = [1, 2, 3, 4, 5, 6, 7].map((p) => `--- page ${p} ---\nContenu`).join('\n');
     const v = sv.verifyPdfCoverage({ probe, cited: sv.citedPages({ facts: [], tables: [], transcription }), transcription, hasContent: true });
-    expect(v).toMatchObject({ status: 'PARTIAL', missing: [8, 9, 10], verified: [1, 2, 3, 4, 5, 6, 7] });
+    // Lot 54G (TC14) : une marque de page sans échantillon lisible ne VÉRIFIE plus la page — citée ≠ couverte.
+    expect(v).toMatchObject({ status: 'PARTIAL', missing: [8, 9, 10], verified: [], unverified: [1, 2, 3, 4, 5, 6, 7], citedUnverified: [1, 2, 3, 4, 5, 6, 7] });
     expect(sv.pageRanges(v.missing)).toEqual([{ start: 8, end: 10 }]);
   });
 });
@@ -674,17 +675,26 @@ describe('TC04 — tableau incertain (DEV-02)', () => {
   });
 });
 
-describe('TC05 — observation visuelle incertaine (DEV-02)', () => {
-  it('aucune relecture textuelle ; UNCERTAIN maintenu, état « relecture du fichier nécessaire »', async () => {
-    repondre(() => ({ output: sortie({
-      transcription: 'Relevé de test\nRéférence : REF-1', facts: [fait('Référence : REF-1', 'REF-1')],
-      observations: [{ description: 'Trace d’humidité au plafond', confidence: 'conflictual', page: 1 }],
-    }) }));
+describe('TC05 — observation visuelle incertaine (DEV-02 ; lot 54G : cycle complet NEEDS_SOURCE → relecture du fichier)', () => {
+  it('aucune relecture TEXTUELLE ; NEEDS_SOURCE → relecture du FICHIER (pages concernées, même contrat) → SUCCEEDED → couverture recalculée', async () => {
+    repondre((i) => (estRelectureFichier(i)
+      ? { output: sortie({ observations: [{ description: 'Trace d’humidité au plafond', confidence: 'certain', page: 1 }] }) }
+      : { output: sortie({
+        transcription: 'Relevé de test\nRéférence : REF-1', facts: [fait('Référence : REF-1', 'REF-1')],
+        observations: [{ description: 'Trace d’humidité au plafond', confidence: 'conflictual', page: 1 }],
+      }) }));
     const m = await analyser();
     expect(fake.calls).toHaveLength(1);
     expect(m.sourceLayer!.units.find((u) => u.kind === 'VISUAL_OBSERVATION')).toMatchObject({ status: 'UNCERTAIN', repairState: 'NEEDS_SOURCE' });
     expect(m.sourceLayer!.report.diagnostics).toMatchObject({ needsSourceUnits: 1 });
     expect(m.sourceLayer!.report.qualityState).toBe('COMPLETE_WITH_UNRESOLVED');
+    // Reprise : relecture du FICHIER (pièce jointe : la page concernée), jamais du texte déjà extrait.
+    const cycle = await relireFichier(m.sourceLayer!.units);
+    expect(cycle.r.calls).toBe(1);
+    const appel = fake.calls.find(estRelectureFichier)!;
+    expect(appel.attachments[0]).toMatchObject({ mimeType: 'application/pdf', displayName: expect.stringContaining('pages 1 à 1') });
+    expect(cycle.units.find((u) => u.kind === 'VISUAL_OBSERVATION')).toMatchObject({ status: 'COVERED', reason: 'observation_verified', repairState: 'SUCCEEDED', repairAttempts: 1 });
+    expect(cycle.report.diagnostics).toMatchObject({ needsSourceUnits: 0, uncertainUnits: 0 });
   });
 });
 
@@ -796,5 +806,303 @@ describe('TC12 — document historique (reprise sans réanalyse)', () => {
     // Lot 53 (D19) : couverture reconstruite, jamais vérifiée → vérification incomplète.
     expect(b.layer.report).toMatchObject({ qualityState: 'VERIFICATION_INCOMPLETE', diagnostics: { sourceVerification: 'RECONSTRUCTED' } });
     expect(fake.calls).toHaveLength(0);
+  });
+});
+
+// ══════════════════════════════════════════════════════════════════════════
+// Lot 54G — ticket « T1 : finaliser la couverture réelle des documents et
+// supprimer les pertes résiduelles d'extraction » : TC13 à TC19 (unitaires ;
+// sur base réelle : `src/test/e2e/scenarios/l54g-t1-couverture.e2e.ts`).
+// ══════════════════════════════════════════════════════════════════════════
+
+/** Appel de relecture du FICHIER (reprise NEEDS_SOURCE) : déclencheur et SOURCES dédiés. */
+const estRelectureFichier = (i: ProviderCallInput) => i.prompt.includes('relecture ciblée');
+const rapportMinimal = {
+  factsCount: 1, unresolvedFacts: [], truncatedSectionsCount: 0, batchedSectionsCount: 0, repairPassCount: 0, chunkCount: 0,
+  warningCodes: [], retryAllowed: true,
+} as const;
+
+/** Une passe de relecture du fichier (même enchaînement que `t1-completeness-retry`, sans base). */
+const relireFichier = async (units: Parameters<typeof selectSourceRereadUnits>[0], sourceCap = 2) => {
+  pdf.bytes = pdf.bytes ?? await pdfReel(['Releve de test humidite plafond reference']);
+  const { runSourceReread, applySourceReread } = await import('../source-reread');
+  const step = await import('../../steps/analyze-document.step');
+  const cibles = selectSourceRereadUnits(units, sourceCap);
+  const r = await runSourceReread({
+    input: input(URL_PDF), ctx, capabilities: { rooms: true, equipments: true } as never, v2Families: ['IMMOBILIER'] as never,
+    targets: cibles, maxCalls: 3, chunkPages: 20, call: (c) => step.callAnalyzeDocument(c),
+  });
+  const apres = withRepairStates(applySourceReread(units, r), { attempted: new Set(r.attempted), cap: 3, sourceCap });
+  const report = buildCompletenessReport(apres, { ...rapportMinimal, sourceReread: { runs: 1, failed: r.resolved.length < r.attempted.length ? 1 : 0, resolved: r.resolved.length } });
+  return { r, cibles, units: apres, report };
+};
+const { selectSourceRereadUnits, resolveTableParents } = await import('../coverage');
+
+describe('TC13 — page partiellement extraite (lot 54G, point 1)', () => {
+  it('une citation (evidence.page) ne vérifie pas une page dont l’échantillon source démontre une omission : MANQUANTE (pur)', () => {
+    const probe = { pageCount: 2, pages: [{ page: 1, kind: 'TEXT' as const, sample: textePage(1) }, { page: 2, kind: 'TEXT' as const, sample: textePage(2) }] };
+    const transcription = textePage(1);
+    // Un seul fait extrait de la page 2 (un seul mot de la page) : la page est citée.
+    const cited = sv.citedPages({ facts: [fait('radiateuralpha', 'radiateuralpha', { evidence: { excerpt: 'radiateuralpha', page: 2 } })] as never, tables: [], transcription });
+    expect(cited.pages.has(2)).toBe(true);
+    const v = sv.verifyPdfCoverage({ probe, cited, transcription: `${transcription}\nradiateuralpha`, hasContent: true });
+    expect(v).toMatchObject({ status: 'PARTIAL', verified: [1], missing: [2], citedUnverified: [2], reason: 'pages_missing' });
+  });
+
+  it('analyse : page citée par un seul fait mais omise de la transcription → reprise CIBLÉE de cette page, jamais COMPLETE avant', async () => {
+    pdf.bytes = await pdfReel([textePage(1), textePage(2)]);
+    repondre((i) => {
+      if (lotDePages(i)) return { output: sortie({ transcription: textePage(2) }) };
+      return { output: sortie({
+        transcription: `Relevé de test\n${textePage(1)}\nRéférence : radiateuralpha`,
+        facts: [fait('Référence : radiateuralpha', 'radiateuralpha', { evidence: { excerpt: 'Référence : radiateuralpha', page: 2 } })],
+      }) };
+    });
+    const m = await analyser(URL_PDF);
+    expect(fake.calls.map(lotDePages).filter(Boolean)).toEqual([{ start: 2, end: 2 }]);
+    expect(m.sourceLayer!.report.diagnostics).toMatchObject({ sourceVerification: 'VERIFIED', pagesVerified: 2, pagesReread: [2], pagesMissing: [] });
+  });
+
+  it('cas objectivement vérifiables non dégradés : texte retrouvé, page vide, correspondance partielle complétée par une citation (pur)', () => {
+    const probe = {
+      pageCount: 3,
+      pages: [
+        { page: 1, kind: 'TEXT' as const, sample: textePage(1) },
+        { page: 2, kind: 'EMPTY' as const, sample: null },
+        { page: 3, kind: 'TEXT' as const, sample: textePage(3) },
+      ],
+    };
+    // Page 3 : 4 mots sur 10 retrouvés (zone 30-50 %) + citation → vérifiée ; sans citation → non vérifiée.
+    const partiel = SUFFIXES.slice(0, 4).map((x) => `thermostat${x}`).join(' ');
+    const transcription = `${textePage(1)}\n${partiel}`;
+    const avec = sv.verifyPdfCoverage({ probe, cited: { pages: new Set([3]), markers: false }, transcription, hasContent: true });
+    expect(avec).toMatchObject({ status: 'VERIFIED', verified: [1, 2, 3] });
+    const sans = sv.verifyPdfCoverage({ probe, cited: { pages: new Set(), markers: false }, transcription, hasContent: true });
+    expect(sans).toMatchObject({ status: 'PARTIAL', verified: [1, 2], unverified: [3] });
+  });
+});
+
+describe('TC13 — non-dégradation des pages objectivement vérifiables (lot 54G)', () => {
+  it('page au texte vide → EMPTY (vérifiée) ; page courte lisible → échantillon comparé, vérifiée si retrouvée (sonde réelle)', async () => {
+    const probe = (await sv.probePdf(await pdfReel(['', 'Facture FAC-778'])))!;
+    expect(probe.pages.map((p) => p.kind)).toEqual(['EMPTY', 'TEXT']);
+    expect(probe.pages[1].sample).toBe('Facture FAC-778');
+    const v = sv.verifyPdfCoverage({ probe, cited: { pages: new Set(), markers: false }, transcription: 'Facture FAC-778', hasContent: true });
+    expect(v).toMatchObject({ status: 'VERIFIED', verified: [1, 2] });
+  });
+});
+
+describe('TC14 — page scannée citée (lot 54G, point 1)', () => {
+  it('observation sur une page scannée : page citée ≠ page VERIFIED (pur, PDF d’une page)', () => {
+    const probe = { pageCount: 1, pages: [{ page: 1, kind: 'SCANNED' as const, sample: null }] };
+    const out = { facts: [], tables: [], visual: { observations: [{ description: 'Fissure en façade', confidence: 'certain' as const, page: 1 }] }, transcription: '' };
+    const v = sv.verifyPdfCoverage({ probe, cited: sv.citedPages(out), transcription: '', hasContent: true });
+    expect(v).toMatchObject({ status: 'PARTIAL', verified: [], unverified: [1], scanned: [1], citedUnverified: [1] });
+  });
+
+  it('analyse d’un PDF scanné de 2 pages avec observation et fait visuel page 1 : aucune page vérifiée, VERIFICATION_INCOMPLETE, jamais COMPLETE', async () => {
+    pdf.bytes = await pdfReel([null, null], [1, 2]);
+    repondre(() => ({ output: sortie({
+      transcription: 'Relevé de test',
+      observations: [{ description: 'Fissure en façade', confidence: 'certain', page: 1 }],
+      facts: [fait('', 'fissure', { provenance: 'VISUAL_ANALYSIS', evidence: { page: 1 }, visualEvidence: { description: 'Fissure en façade', page: 1 } })],
+    }) }));
+    const m = await analyser(URL_PDF);
+    const r = m.sourceLayer!.report;
+    expect(r.diagnostics).toMatchObject({ sourceVerification: 'PARTIAL', pagesVerified: 0, pagesUnverified: [1, 2], pagesCitedUnverified: [1], pagesScanned: [1, 2] });
+    expect(r.qualityState).toBe('VERIFICATION_INCOMPLETE');
+    expect(r.anomalies).toEqual(expect.arrayContaining(['PAGE_UNVERIFIED', 'COVERAGE_UNVERIFIED']));
+  });
+});
+
+describe('TC15 — NEEDS_SOURCE résolu (lot 54G, point 2)', () => {
+  it('observation incertaine → relecture du fichier → observation confirmée (non conflictuelle, même page) → SUCCEEDED, couverture recalculée, COMPLETE possible', async () => {
+    repondre((i) => (estRelectureFichier(i)
+      ? { output: sortie({ observations: [{ description: 'Trace d’humidité au plafond de la cuisine', confidence: 'certain', page: 1 }] }) }
+      : { output: sortie({
+        transcription: 'Relevé de test\nRéférence : REF-1', facts: [fait('Référence : REF-1', 'REF-1')],
+        observations: [{ description: 'Trace d’humidité au plafond', confidence: 'conflictual', page: 1 }],
+      }) }));
+    const m = await analyser();
+    const cycle = await relireFichier(m.sourceLayer!.units);
+    expect(cycle.cibles.map((u) => u.kind)).toEqual(['VISUAL_OBSERVATION']);
+    expect(cycle.r).toMatchObject({ resolved: [cycle.cibles[0].sourceUnitId], failed: false, pages: [1] });
+    expect(cycle.units.find((u) => u.kind === 'VISUAL_OBSERVATION')).toMatchObject({ status: 'COVERED', repairState: 'SUCCEEDED' });
+    expect(cycle.report).toMatchObject({ qualityState: 'COMPLETE', diagnostics: { needsSourceUnits: 0, sourceRereads: 1, sourceRereadResolved: 1 } });
+    // Télémétrie : relecture du fichier distincte d'une réparation textuelle (déclencheur dédié).
+    const { SOURCE_REREAD_TRIGGER } = await import('../source-reread');
+    expect(SOURCE_REREAD_TRIGGER).toBe('t1_source_reread');
+    expect(fake.calls.filter(estRelectureFichier)).toHaveLength(1);
+    expect(fake.calls.filter(estRelectureFichier)[0].attachments).toHaveLength(1);
+  });
+
+  it('correspondance de description (pure) : inclusion ou mots communs ; jamais une observation d’une autre page ni conflictuelle', async () => {
+    const { sameObservation, resolveFromReread } = await import('../source-reread');
+    expect(sameObservation('Trace d’humidité au plafond', 'Trace d humidite au plafond de la cuisine')).toBe(true);
+    expect(sameObservation('Fissure en façade', 'Trace d’humidité au plafond')).toBe(false);
+    const u = buildSourceUnits({ segments: [], visual: { observations: [{ description: 'Fissure en façade', confidence: 'conflictual', page: 2 }] } });
+    const cov = withRepairStates(computeCoverage(u, { facts: [] }), { cap: 3 });
+    expect(resolveFromReread(cov, { facts: [], visual: { observations: [{ description: 'Fissure en façade', confidence: 'certain', page: 1 }] } }).resolved).toEqual([]);
+    expect(resolveFromReread(cov, { facts: [], visual: { observations: [{ description: 'Fissure en façade', confidence: 'conflictual', page: 2 }] } }).resolved).toEqual([]);
+    expect(resolveFromReread(cov, { facts: [], visual: { observations: [{ description: 'Fissure en façade', confidence: 'probable', page: 2 }] } }).resolved).toHaveLength(1);
+  });
+});
+
+describe('TC16 — NEEDS_SOURCE non résolu (lot 54G, point 2)', () => {
+  it('relecture sans preuve suffisante : UNCERTAIN maintenu → tentatives bornées → EXHAUSTED → plus jamais relue, jamais COMPLETE', async () => {
+    repondre((i) => (estRelectureFichier(i)
+      ? { output: sortie({ observations: [{ description: 'Trace d’humidité au plafond', confidence: 'conflictual', page: 1 }] }) }
+      : { output: sortie({
+        transcription: 'Relevé de test\nRéférence : REF-1', facts: [fait('Référence : REF-1', 'REF-1')],
+        observations: [{ description: 'Trace d’humidité au plafond', confidence: 'conflictual', page: 1 }],
+      }) }));
+    const m = await analyser();
+    const t1 = await relireFichier(m.sourceLayer!.units, 2);
+    expect(t1.units.find((u) => u.kind === 'VISUAL_OBSERVATION')).toMatchObject({ status: 'UNCERTAIN', repairState: 'NEEDS_SOURCE', repairAttempts: 1 });
+    expect(t1.report.qualityState).toBe('COMPLETE_WITH_UNRESOLVED');
+    const t2 = await relireFichier(t1.units, 2);
+    expect(t2.units.find((u) => u.kind === 'VISUAL_OBSERVATION')).toMatchObject({ status: 'UNCERTAIN', repairState: 'EXHAUSTED', repairAttempts: 2 });
+    expect(t2.report).toMatchObject({ qualityState: 'COMPLETE_WITH_UNRESOLVED', diagnostics: { needsSourceUnits: 0, needsSourceExhausted: 1 } });
+    expect(t2.report.anomalies).toContain('REPAIR_EXHAUSTED');
+    // Plafond atteint : plus aucune relecture (aucune boucle).
+    expect(selectSourceRereadUnits(t2.units, 2)).toEqual([]);
+    expect(fake.calls.filter(estRelectureFichier)).toHaveLength(2);
+  });
+
+  it('fichier illisible : relecture en échec, tentative comptée, incertitude maintenue', async () => {
+    repondre(() => ({ output: sortie({ transcription: 'Relevé de test', observations: [{ description: 'Tache', confidence: 'conflictual', page: 1 }] }) }));
+    const m = await analyser();
+    pdf.bytes = null;
+    const { runSourceReread } = await import('../source-reread');
+    const r = await runSourceReread({
+      input: input(URL_PDF), ctx, capabilities: {} as never, v2Families: [], targets: selectSourceRereadUnits(m.sourceLayer!.units, 2),
+      maxCalls: 1, chunkPages: 20, call: async () => { throw new Error('jamais appelé'); },
+    });
+    expect(r).toMatchObject({ failed: true, resolved: [], calls: 0 });
+    expect(r.attempted).toHaveLength(1);
+  });
+});
+
+describe('TC17 — champ pruné par la validation de la passerelle (lot 54G, point 3)', () => {
+  it('valeur rejetée : FIELD_PRUNED avec original intégral, élément englobant, motif ; rattachée à son unité ; NORMALISATION_LOSS = 0', async () => {
+    const region = { x1: 'gauche', y1: 0.1, x2: 0.5, y2: 0.6 };
+    repondre(() => ({ output: sortie({
+      transcription: 'Relevé de test\nRéférence : REF-1', facts: [fait('Référence : REF-1', 'REF-1')],
+      observations: [{ description: 'Fissure en façade', confidence: 'certain', page: 1, region }],
+    }) }));
+    const m = await analyser();
+    const rec = m.sourceLayer!.unresolvedFacts.filter((f) => f.reason === 'FIELD_PRUNED');
+    expect(rec).toHaveLength(1);
+    expect(rec[0]).toMatchObject({
+      status: 'UNRESOLVED', rawKey: 'visual.observations[0].region', rawValue: JSON.stringify(region),
+      sourceUnitIds: [m.sourceLayer!.units.find((u) => u.kind === 'VISUAL_OBSERVATION')!.sourceUnitId],
+    });
+    expect(rec[0].originalPayload).toMatchObject({
+      originalValue: region, preserved: true, path: '$.visual.observations[0].region',
+      container: { path: '$.visual.observations[0]', value: expect.objectContaining({ description: 'Fissure en façade', region }) },
+      reason: expect.stringContaining('expected number'),
+    });
+    expect(m.sourceLayer!.report.diagnostics).toMatchObject({ normalisationLosses: 0, prunedFields: 1, prunedOriginalsPreserved: 1 });
+    expect(m.sourceLayer!.report.anomalies).not.toContain('NORMALISATION_LOSS');
+    // L'observation elle-même est conservée (seul le champ invalide est retiré).
+    expect(m.sourceLayer!.units.find((u) => u.kind === 'VISUAL_OBSERVATION')).toMatchObject({ status: 'COVERED' });
+  });
+
+  it('contrat de pruning (pur) : chaque retrait rend chemin, valeur originale, motif ; seul un retrait SANS original est une perte', async () => {
+    const { pruneInvalidFields } = await import('@/services/ai/gateway/output-resolution/field-validation');
+    const { z } = await import('zod');
+    const S = z.object({ a: z.string(), b: z.number().optional(), l: z.array(z.object({ v: z.number() })) });
+    const r = pruneInvalidFields({ a: 'ok', b: 'douze', l: [{ v: 1 }, { v: 'x' }] }, S, []);
+    expect(r.success).toBe(true);
+    expect(r.removed).toEqual(expect.arrayContaining([
+      expect.objectContaining({ path: '$.b', originalValue: 'douze', rule: 'field_pruned_invalid', container: null }),
+      expect.objectContaining({ path: '$.l[1]', originalValue: { v: 'x' }, rule: 'array_element_pruned' }),
+    ]));
+    const { normalisationBalance } = await import('../complete-extraction');
+    const base = { extras: { truncatedStrings: 0 } as never };
+    const conserve = { reason: 'FIELD_PRUNED' as const, status: 'UNRESOLVED' as const, sourceUnitIds: [], rawKey: 'b', canonicalKey: null, rawValue: 'douze', originalPayload: { preserved: true }, pass: 'PASS_1' as const };
+    expect(normalisationBalance({ ...base, unresolved: [conserve] })).toMatchObject({ losses: 0, prunedFields: 1, prunedOriginalsPreserved: 1 });
+    expect(normalisationBalance({ ...base, unresolved: [{ ...conserve, rawValue: null, originalPayload: { path: '$.b', preserved: false } }] })).toMatchObject({ losses: 1 });
+  });
+});
+
+describe('TC18 / TC19 — parent TABLE résolu par ses lignes (lot 54G, point 4)', () => {
+  const tableau = {
+    title: 'Pièces', pageStart: 1, uncertain: true, uncertaintyNote: 'colonnes ambiguës',
+    columns: [{ header: 'Réf' }, { header: 'Prix' }],
+    rows: [{ cells: [{ column: 0, value: 'KIT-778' }, { column: 1, value: '24,90 €' }] }, { cells: [{ column: 0, value: 'JOINT-12' }, { column: 1, value: '3,50 €' }] }],
+  };
+
+  it('TC18 — toutes les cellules confirmées : TABLE_ROW → COVERED, TABLE → COVERED / table_verified (payload.uncertain inchangé)', async () => {
+    repondre((i) => (reparationCiblee(i)
+      ? { output: sortie({ facts: [fait('KIT-778', 'KIT-778'), fait('24,90 €', '24,90 €'), fait('JOINT-12', 'JOINT-12'), fait('3,50 €', '3,50 €')] }) }
+      : { output: sortie({ transcription: 'Relevé de test', tables: [tableau] }) }));
+    const m = await analyser();
+    const l = m.sourceLayer!;
+    expect(l.units.filter((u) => u.kind === 'TABLE_ROW').map((u) => [u.status, u.reason])).toEqual([['COVERED', 'table_verified'], ['COVERED', 'table_verified']]);
+    const t = l.units.find((u) => u.kind === 'TABLE')!;
+    expect(t).toMatchObject({ status: 'COVERED', reason: 'table_verified' });
+    expect(t.payload.uncertain).toBe(true);
+    expect(l.report.diagnostics).toMatchObject({ tablesUncertain: 0, tablesResolved: 1 });
+  });
+
+  it('TC19 — une ligne reste incertaine : TABLE reste UNCERTAIN, document jamais COMPLETE', async () => {
+    repondre((i) => (reparationCiblee(i)
+      ? { output: sortie({ facts: [fait('KIT-778', 'KIT-778'), fait('24,90 €', '24,90 €'), fait('JOINT-12', 'JOINT-12')] }) }
+      : { output: sortie({ transcription: 'Relevé de test', tables: [tableau] }) }));
+    const m = await analyser();
+    const l = m.sourceLayer!;
+    expect(l.units.find((u) => u.kind === 'TABLE')).toMatchObject({ status: 'UNCERTAIN', reason: 'table_uncertain' });
+    expect(l.report.qualityState).not.toBe('COMPLETE');
+    expect(l.report.diagnostics).toMatchObject({ tablesUncertain: 1, tablesResolved: 0 });
+  });
+
+  it('dérivation pure : contradiction structurelle (lignes manquantes) ou aucune ligne informative → UNCERTAIN ; tableau non incertain intact', () => {
+    const u = buildSourceUnits({
+      segments: [],
+      tables: [{ index: 0, title: 'T', pageStart: 1, pageEnd: 1, columns: [{ header: 'A', path: ['A'] }], rowCount: 1, columnCount: 1,
+        cells: [{ row: 0, column: 0, rowHeader: null, columnHeader: 'A', columnPath: ['A'], value: 'X-1', normalized: null, valueType: null, colspan: 1, rowspan: 1, page: 1, confidence: 'probable' }],
+        confidence: 'probable', uncertain: true, issues: [] }],
+    });
+    const cov = computeCoverage(u, { facts: [{ unitIds: [cellUnitId({ index: 0, pageStart: 1 }, 0, 0)], confidence: 'certain', repair: true }] });
+    expect(cov.find((x) => x.kind === 'TABLE')).toMatchObject({ status: 'COVERED', reason: 'table_verified' });
+    // Structure contradictoire : la table annonce 2 lignes, une seule est présente.
+    const contradictoire = cov.map((x) => (x.kind === 'TABLE' ? { ...x, payload: { ...x.payload, rowCount: 2 } } : x));
+    expect(resolveTableParents(contradictoire).find((x) => x.kind === 'TABLE')).toMatchObject({ status: 'UNCERTAIN', reason: 'table_uncertain' });
+    const sansLigne = cov.filter((x) => x.kind === 'TABLE').map((x) => ({ ...x, payload: { ...x.payload, rowCount: 0 } }));
+    expect(resolveTableParents(sansLigne)[0]).toMatchObject({ status: 'UNCERTAIN' });
+  });
+});
+
+describe('§5 — états de qualité (lot 54G)', () => {
+  it('jamais COMPLETE avec NEEDS_SOURCE, réparation tentée sans succès ou tableau incertain, même si les compteurs de couverture sont pleins (pur)', () => {
+    const units = buildSourceUnits({ segments: [{ text: 'Réf : A-1', pageOffset: 0, origin: 'PASS_1' }] });
+    const cov = computeCoverage(units, { facts: [{ unitIds: ['page:1:field:1'], confidence: 'certain' }] });
+    expect(buildCompletenessReport(cov, rapportMinimal).qualityState).toBe('COMPLETE');
+    for (const etat of ['NEEDS_SOURCE', 'ATTEMPTED_FAILED'] as const) {
+      const x = cov.map((u) => ({ ...u, repairState: etat }));
+      expect(buildCompletenessReport(x, rapportMinimal).qualityState).toBe('COMPLETE_WITH_UNRESOLVED');
+    }
+  });
+
+  it('BO › Exécutions IA : diagnostics de la ligne et totaux de la période, compteurs seulement (desktop et mobile : même composant)', async () => {
+    const { diagnosticsText, totalsText } = await import('@/app/admin/ai-executions/_components/T1CompletenessPanel');
+    const t = diagnosticsText({
+      sourceVerification: 'PARTIAL', lastRetryAt: null, lastRetryResult: null,
+      verification: { pagesExpected: 3, pagesVerified: 1, pagesReread: [2], pagesCitedUnverified: [3], needsSourceUnits: 1, sourceRereads: 2, sourceRereadsFailed: 1, needsSourceExhausted: 1, prunedFields: 2, prunedOriginalsPreserved: 2, tablesUncertain: 1, tablesResolved: 1 },
+    });
+    expect(t).toContain('1 page(s) relue(s)');
+    expect(t).toContain('1 citée(s) non vérifiée(s)');
+    expect(t).toContain('2 relecture(s) du fichier dont 1 sans levée');
+    expect(t).toContain('2 champ(s) retiré(s) par la validation, 2 original(aux) conservé(s)');
+    expect(t).toContain('1 tableau(x) incertain(s)');
+    const lignes = totalsText({
+      documents: 4, pagesExpected: 10, pagesVerified: 7, pagesMissing: 1, pagesUnverified: 2, pagesReread: 1, pagesCitedUnverified: 2,
+      needsSourceUnits: 1, sourceRereads: 3, sourceRereadsFailed: 1, sourceRereadResolved: 2, needsSourceExhausted: 1,
+      pendingRepairUnits: 0, exhaustedRepairUnits: 1, prunedFields: 2, prunedOriginalsPreserved: 2, normalisationLosses: 0, tablesUncertain: 1, tablesResolved: 2,
+    });
+    expect(lignes).toHaveLength(5);
+    expect(lignes.join('\n')).toContain('3 relecture(s) exécutée(s)');
+    expect(totalsText(null)).toEqual([]);
   });
 });

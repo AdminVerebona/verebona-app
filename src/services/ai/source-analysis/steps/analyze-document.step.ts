@@ -171,7 +171,7 @@ export async function analyzeDocument(
       const r = await callAnalyzeDocument({ input, groupIndices, ctx, capabilities, v2Families, ...c, candidateOrigin: 'CHUNK' });
       // Lot 40 : candidats d'un lot de pages fusionnés (dédoublonnés, clés uniques).
       operationCandidates = mergeOperationCandidates(operationCandidates, r.operationCandidates);
-      return { output: r.output, report: r.report, batches: r.batches, outputTokens: r.res.outputTokens ?? 0 };
+      return { output: r.output, report: r.report, batches: r.batches, outputTokens: r.res.outputTokens ?? 0, pruned: r.res.prunedValues ?? [] };
     },
   });
   const report = sommeRapports([first.report, ...suite.reports]);
@@ -434,6 +434,11 @@ export async function analyzeDocument(
       ],
       noEvidence: sansPreuve,
       prunedPaths: [...new Set(retires.map((r) => r.path))],
+      // Lot 54G (point 3) : champs retirés par la validation AVEC leur valeur originale (passe + lots de pages).
+      prunedFields: [
+        ...(res.prunedValues ?? []).map((x) => ({ ...x, pass: 'PASS_1' as const, pageOffset: 0 })),
+        ...(suite.pruned ?? []),
+      ],
       batchedSections: first.batches + suite.batches + suite.chunkCount,
       truncatedSections: suite.truncatedSections + (debordementPerdu > 0 ? 1 : 0),
       chunkCount: suite.chunkCount,

@@ -66,7 +66,7 @@ import {
 } from './execution-control';
 import { runInJobContext, executionTimeoutMs } from './job-context';
 import { isAiBlocked } from './runnable-guard';
-import { noteWorkerClaim, noteWorkerError, writeWorkerHeartbeat } from './worker-heartbeat';
+import { noteWorkerClaim, noteWorkerError, noteScheduleEvaluation, writeWorkerHeartbeat } from './worker-heartbeat';
 import { hostname } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { envNumber } from '@/lib/env-number';
@@ -175,7 +175,8 @@ export async function runOne(treatment: Treatment, onClaimed?: () => void): Prom
 
   // VER-016 : la version effective est lue AU DÉMARRAGE et figée sur le job ;
   // VER-015 : l'exécution la garde jusqu'au bout (contexte ci-dessous).
-  const configVersionId = await pinnableVersionId();
+  // Lot 54 : version ET révision (la version active reste modifiable).
+  const { versionId: configVersionId, revisionId: configRevisionId } = await pinnableConfig();
   const job = await claimNext(treatment, WORKER_ID, LEASE_SECONDS, configVersionId);
   if (!job) return false;
   // Lot 52A : dernière activité de ce processus (battement, supervision BO).
@@ -244,6 +245,8 @@ export async function runOne(treatment: Treatment, onClaimed?: () => void): Prom
     execution = runInJobContext(
       {
         jobId: job.id, treatment, configVersionId: job.configVersionId ?? configVersionId,
+        // Révision figée au prélèvement (même lecture que la version écrite sur le job).
+        configRevisionId: (job.configVersionId ?? configVersionId) === configVersionId ? configRevisionId : null,
         // Lot 34C : tentative en cours, tracée avec chaque appel modèle.
         jobAttempt: job.attempts ?? null,
         // CDC 15 OBS-CFG : déclencheur effectif, tracé avec chaque appel.
@@ -381,13 +384,19 @@ export async function runOne(treatment: Treatment, onClaimed?: () => void): Prom
   return true;
 }
 
-/** Version effective à figer ; jamais bloquant (repli : configuration du code). */
-async function pinnableVersionId(): Promise<number | null> {
+/** Version et révision effectives à figer ; jamais bloquant (repli : configuration du code). */
+async function pinnableConfig(): Promise<{ versionId: number | null; revisionId: number | null }> {
   try {
-    const { resolveEffectiveVersionId } = await import('../config/config-resolver');
-    return await resolveEffectiveVersionId();
+    const resolver = await import('../config/config-resolver');
+    // Résolveur réduit (doubles de test antérieurs au lot 54) : version seule.
+    let pin: typeof resolver.resolveEffectivePin | undefined;
+    try { pin = resolver.resolveEffectivePin; } catch { pin = undefined; }
+    if (typeof pin !== 'function') {
+      return { versionId: await resolver.resolveEffectiveVersionId(), revisionId: null };
+    }
+    return await pin();
   } catch {
-    return null;
+    return { versionId: null, revisionId: null };
   }
 }
 
@@ -616,9 +625,21 @@ export function startQueueWorker(): void {
         // Planifications versionnées (§15.1, T3-006, T3-UI-05) : un passage
         // global échu est mis en file AVANT le prélèvement.
         try {
-          const { runDueSchedules } = await import('./triggers');
-          for (const f of await runDueSchedules()) {
-            console.info(`[queue] passage planifié ${f.treatment} (${f.triggerCode}) mis en file.`);
+          const { evaluateDueSchedules } = await import('./triggers');
+          const issues = await evaluateDueSchedules();
+          // Lot 54A : dernière évaluation de CETTE instance, publiée par son
+          // battement (BO › Supervision T3) — y compris « non échue » /
+          // « planification coupée », jamais journalisées toutes les 15 s.
+          noteScheduleEvaluation(issues);
+          for (const f of issues) {
+            if (!f.due) continue;
+            if (f.decision === 'create') {
+              console.info(`[queue] passage planifié ${f.treatment} (${f.triggerCode}) mis en file — job ${f.jobId ?? '?'}.`);
+            } else {
+              // Jamais « mis en file » quand rien n'a été créé (lot 54A).
+              console.warn(`[queue] passage planifié ${f.treatment} (${f.triggerCode}) échu mais AUCUN job créé — `
+                + `${f.reasonCode ?? f.decision}${f.jobId ? ` (job vivant ${f.jobId})` : ''}${f.error ? ` : ${f.error}` : ''}.`);
+            }
           }
         } catch (e) {
           noteWorkerError(`planification : ${(e as Error).message}`);

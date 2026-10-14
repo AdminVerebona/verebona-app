@@ -46,6 +46,15 @@ export function completenessLogLine(fileId: number, r: T1CompletenessReport): st
       truncations: r.diagnostics.truncations,
       originalsPreserved: r.diagnostics.originalsPreserved,
       normalisationLosses: r.diagnostics.normalisationLosses,
+      // Lot 54G : pages citées non vérifiées, relectures du fichier, champs retirés, tableaux.
+      pagesCitedUnverified: r.diagnostics.pagesCitedUnverified?.length ?? 0,
+      needsSourceUnits: r.diagnostics.needsSourceUnits,
+      sourceRereads: r.diagnostics.sourceRereads ?? 0,
+      sourceRereadsFailed: r.diagnostics.sourceRereadsFailed ?? 0,
+      prunedFields: r.diagnostics.prunedFields ?? 0,
+      prunedOriginalsPreserved: r.diagnostics.prunedOriginalsPreserved ?? 0,
+      tablesUncertain: r.diagnostics.tablesUncertain ?? 0,
+      tablesResolved: r.diagnostics.tablesResolved ?? 0,
     } : {}),
   })}`;
 }
@@ -135,8 +144,40 @@ export interface CompletenessOverview {
   rows: CompletenessDocumentRow[];
   /** Lot 53 (D19) : reprises automatiques au plus par document (suivi d'une vérification incomplète). */
   maxRetries?: number;
+  /** Lot 54G (§6) : diagnostics T1 agrégés sur la période (compteurs, jamais de contenu). */
+  totals?: T1DiagnosticsTotals;
   /** Couche A absente (migrations 0295-0297 non appliquées). */
   unavailable?: boolean;
+}
+
+/** Lot 54G (§6) — totaux des diagnostics de couverture réelle sur la période. */
+export interface T1DiagnosticsTotals {
+  documents: number;
+  pagesExpected: number; pagesVerified: number; pagesMissing: number; pagesUnverified: number; pagesReread: number;
+  pagesCitedUnverified: number;
+  needsSourceUnits: number; sourceRereads: number; sourceRereadsFailed: number; sourceRereadResolved: number; needsSourceExhausted: number;
+  pendingRepairUnits: number; exhaustedRepairUnits: number;
+  prunedFields: number; prunedOriginalsPreserved: number; normalisationLosses: number;
+  tablesUncertain: number; tablesResolved: number;
+}
+
+/** Clés numériques (compteurs) et listes (pages) du JSONB `verification` agrégées (lot 54G). */
+const TOTAL_COUNTERS: ReadonlyArray<keyof T1DiagnosticsTotals> = [
+  'pagesExpected', 'pagesVerified', 'needsSourceUnits', 'sourceRereads', 'sourceRereadsFailed', 'sourceRereadResolved', 'needsSourceExhausted',
+  'pendingRepairUnits', 'exhaustedRepairUnits', 'prunedFields', 'prunedOriginalsPreserved', 'normalisationLosses', 'tablesUncertain', 'tablesResolved',
+];
+const TOTAL_LISTS: ReadonlyArray<[keyof T1DiagnosticsTotals, string]> = [
+  ['pagesMissing', 'pagesMissing'], ['pagesUnverified', 'pagesUnverified'], ['pagesReread', 'pagesReread'], ['pagesCitedUnverified', 'pagesCitedUnverified'],
+];
+
+/** Requête des totaux (exportée pour les tests) : clés fixes, aucune donnée utilisateur interpolée. */
+export function diagnosticsTotalsSql(): string {
+  const n = (k: string) => `coalesce(SUM(CASE WHEN jsonb_typeof(verification -> '${k}') = 'number' THEN (verification ->> '${k}')::float8 END), 0)::float8 AS "${k}"`;
+  const l = (k: string, col: string) => `coalesce(SUM(CASE WHEN jsonb_typeof(verification -> '${col}') = 'array' THEN jsonb_array_length(verification -> '${col}') END), 0)::float8 AS "${k}"`;
+  // `to_jsonb(c)` : colonne 0329 lue sans erreur si absente (même tolérance que les lignes).
+  return `SELECT COUNT(*)::float8 AS documents, ${[...TOTAL_COUNTERS.map(n), ...TOTAL_LISTS.map(([k, c]) => l(k, c))].join(', ')}
+            FROM (SELECT to_jsonb(c) -> 'verification' AS verification FROM document_extraction_coverage c WHERE c.updated_at >= $1) x
+           WHERE jsonb_typeof(verification) = 'object'`;
 }
 
 export async function getT1CompletenessOverview(opts: { days?: number; limit?: number; anomaly?: string | null } = {}): Promise<CompletenessOverview> {
@@ -149,7 +190,7 @@ export async function getT1CompletenessOverview(opts: { days?: number; limit?: n
   if (!(await sourceLayerReady())) return { ...empty, unavailable: true };
   const { pgClient } = await import('@/db');
   const since = new Date(Date.now() - days * 86_400_000).toISOString();
-  const [agg, anomalies, rows, verifs] = await Promise.all([
+  const [agg, anomalies, rows, verifs, totaux] = await Promise.all([
     pgClient.unsafe(
       `SELECT quality_state AS q, COUNT(*)::int AS n, AVG(coverage_ratio)::float8 AS avg, SUM(repair_pass_count)::int AS repairs
          FROM document_extraction_coverage WHERE updated_at >= $1 GROUP BY quality_state`,
@@ -184,6 +225,8 @@ export async function getT1CompletenessOverview(opts: { days?: number; limit?: n
          FROM document_extraction_coverage c WHERE c.updated_at >= $1 GROUP BY 1`,
       [since] as never[],
     ) as unknown as Promise<Array<{ v: string; n: number }>>,
+    (pgClient.unsafe(diagnosticsTotalsSql(), [since] as never[]) as unknown as Promise<Array<Record<string, number>>>)
+      .catch(() => [] as Array<Record<string, number>>),
   ]);
   const out = { ...empty, byQuality: { ...empty.byQuality } };
   let total = 0;
@@ -198,6 +241,9 @@ export async function getT1CompletenessOverview(opts: { days?: number; limit?: n
   for (const a of anomalies) out.byAnomaly[a.code] = Number(a.n);
   for (const v of verifs) out.bySourceVerification[v.v] = Number(v.n);
   out.rows = rows.map((r) => ({ ...r, coverageRatio: Number(r.coverageRatio) }));
+  if (totaux[0]) {
+    out.totals = Object.fromEntries(Object.entries(totaux[0]).map(([k, v]) => [k, Number(v ?? 0)])) as unknown as T1DiagnosticsTotals;
+  }
   const { maxCompletenessRetries } = await import('./repository');
   out.maxRetries = maxCompletenessRetries();
   return out;

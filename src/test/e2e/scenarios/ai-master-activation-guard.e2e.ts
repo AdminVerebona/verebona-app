@@ -68,7 +68,8 @@ scenario('AI-MASTER-NO-GATE', 'Versions de configuration activables sans corpus 
     await sql`UPDATE ai_config_versions SET activated_at = now() - interval '1 day' WHERE id = ${versionId}`;
     await sql`DELETE FROM ai_master_corpus_runs WHERE master_prompt_code = 't1_master_v1'`;
     const { rollback } = await import('@/services/ai/config/config-version.service');
-    await expect(rollback(versionId, user.id)).resolves.toMatchObject({ interrupts: true });
+    // Lot 54 : réactiver = activer — les exécutions démarrées gardent leur révision (aucune interruption).
+    await expect(rollback(versionId, user.id)).resolves.toMatchObject({ interrupts: false });
     const [v] = await sql<{ status: string }[]>`SELECT status FROM ai_config_versions WHERE id = ${versionId}`;
     expect(v.status).toBe('ACTIVE');
   });

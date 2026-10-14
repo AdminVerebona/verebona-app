@@ -22,12 +22,12 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/db';
 import { events, assets, calendarAdditions } from '@/db/schema';
-import { eq, like, and, gt, desc } from 'drizzle-orm';
+import { eq, like, and, gt, desc, sql as dsql, type SQL } from 'drizzle-orm';
 import { parsePaginationParams, buildPaginationResponse, getCursorId } from '@/lib/pagination';
 import { apiError } from '@/lib/api-errors';
 import { SessionService } from '@/lib/session-service';
 import {
-  assertTargetInAccount, isCrossAccountReferenceError, logCrossAccountRefusal, TargetCoherenceError,
+  isCrossAccountDbRefusal, isCrossAccountReferenceError, lockTargetInAccount, logCrossAccountRefusal, TargetCoherenceError,
 } from '@/services/security/account-ownership';
 
 /** Refus d'une cible (bien, pièce, équipement) — réponse, ou null si l'erreur est autre. */
@@ -37,8 +37,18 @@ function targetRefusal(e: unknown, context: string) {
     return apiError(404, 'NOT_FOUND', 'Asset, room or equipment not found');
   }
   if (e instanceof TargetCoherenceError) return apiError(400, 'INVALID_INPUT', e.message);
+  // Lot 54 (SEC-03) : refus de la garde en base (changement concurrent de
+  // compte ou de rattachement entre le contrôle et la validation) — rien
+  // n'est écrit (transaction annulée), même réponse qu'une cible étrangère.
+  if (isCrossAccountDbRefusal(e)) {
+    console.warn(JSON.stringify({ event: 'security.cross_account_refused', context, reason: 'db_guard' }));
+    return apiError(404, 'NOT_FOUND', 'Asset, room or equipment not found');
+  }
   return null;
 }
+
+/** Ligne absente au moment de l'écriture (supprimée ou d'un autre compte). */
+class EventGoneError extends Error {}
 
 const toId = (v: unknown): number | null => {
   if (v === null || v === undefined || v === '' || v === 0) return null;
@@ -247,15 +257,6 @@ export async function POST(request: NextRequest) {
       return apiError(400, 'INVALID_INPUT', `statut must be one of: ${VALID_STATUTS.join(', ')}`);
     }
 
-    // Bien, pièce et équipement : du compte, et cohérents entre eux.
-    try {
-      await assertTargetInAccount(accountId, { assetId: toId(assetId), substructureId: toId(substructureId), equipmentId: toId(equipmentId) });
-    } catch (e) {
-      const refus = targetRefusal(e, 'POST /api/events');
-      if (refus) return refus;
-      throw e;
-    }
-
     if (costCents !== undefined && costCents !== null && costCents !== '') {
       const costInt = parseInt(costCents);
       if (isNaN(costInt) || costInt < 0) {
@@ -263,25 +264,39 @@ export async function POST(request: NextRequest) {
       }
     }
 
+    // Bien, pièce et équipement : du compte, et cohérents entre eux — contrôlés
+    // DANS la transaction de l'insertion, cibles verrouillées (lot 54, SEC-03) :
+    // un changement de compte concurrent attend, ou fait échouer l'écriture.
     const now = new Date();
-    const [newEvent] = await db.insert(events).values({
-      accountId,
-      userId: session.userId,
-      assetId: assetId ? parseInt(assetId) : null,
-      categorie: categorie.trim(),
-      title: title.trim(),
-      date: date || null,
-      substructureId: substructureId ? parseInt(substructureId) : null,
-      equipmentId: equipmentId ? parseInt(equipmentId) : null,
-      statut: finalStatut,
-      important: important ? true : false,
-      provider: provider ? provider.trim() : null,
-      costCents: costCents ? parseInt(costCents) : null,
-      notes: notes || null,
-      description: description || null,
-      createdAt: now,
-      updatedAt: now,
-    }).returning();
+    let newEvent: unknown;
+    try {
+      newEvent = await db.transaction(async (tx) => {
+        await lockTargetInAccount(accountId, { assetId: toId(assetId), substructureId: toId(substructureId), equipmentId: toId(equipmentId) }, tx);
+        const [row] = await tx.insert(events).values({
+          accountId,
+          userId: session.userId,
+          assetId: assetId ? parseInt(assetId) : null,
+          categorie: categorie.trim(),
+          title: title.trim(),
+          date: date || null,
+          substructureId: substructureId ? parseInt(substructureId) : null,
+          equipmentId: equipmentId ? parseInt(equipmentId) : null,
+          statut: finalStatut,
+          important: important ? true : false,
+          provider: provider ? provider.trim() : null,
+          costCents: costCents ? parseInt(costCents) : null,
+          notes: notes || null,
+          description: description || null,
+          createdAt: now,
+          updatedAt: now,
+        }).returning();
+        return row;
+      });
+    } catch (e) {
+      const refus = targetRefusal(e, 'POST /api/events');
+      if (refus) return refus;
+      throw e;
+    }
 
     return NextResponse.json(newEvent, { status: 201 });
   } catch (error) {
@@ -368,7 +383,7 @@ export async function PUT(request: NextRequest) {
     }
 
     if (important !== undefined) {
-      updates.important = important ? 1 : 0;
+      updates.important = important ? true : false;
     }
 
     if (substructureId !== undefined) {
@@ -403,26 +418,6 @@ export async function PUT(request: NextRequest) {
       updates.description = description || null;
     }
 
-    // Pièce / équipement modifiés : du compte, et portés par le bien de l'événement.
-    if (substructureId !== undefined || equipmentId !== undefined) {
-      try {
-        await assertTargetInAccount(session.currentAccountId, {
-          assetId: existingEvent[0].assetId ?? null,
-          substructureId: substructureId !== undefined ? toId(substructureId) : existingEvent[0].substructureId,
-          equipmentId: equipmentId !== undefined ? toId(equipmentId) : existingEvent[0].equipmentId,
-        });
-      } catch (e) {
-        const refus = targetRefusal(e, 'PUT /api/events');
-        if (refus) return refus;
-        throw e;
-      }
-    }
-
-    // Build SET clause dynamically using raw SQL to avoid schema mismatch
-    const setClauses: string[] = ['updated_at = NOW()'];
-    const values: any[] = [];
-    let paramIdx = 1;
-
     const columnMap: Record<string, string> = {
       categorie: 'categorie',
       title: 'titre',
@@ -436,18 +431,41 @@ export async function PUT(request: NextRequest) {
       notes: 'notes',
       description: 'description',
     };
-
+    const sets: SQL[] = [dsql`updated_at = NOW()`];
     for (const [key, col] of Object.entries(columnMap)) {
-      if (key in updates) {
-        setClauses.push(`${col} = $${paramIdx++}`);
-        values.push(updates[key] ?? null);
-      }
+      if (key in updates) sets.push(dsql`${dsql.identifier(col)} = ${updates[key] ?? null}`);
     }
 
-    values.push(parseInt(id));
-    values.push(session.currentAccountId);
-    const sql = `UPDATE events SET ${setClauses.join(', ')} WHERE id = $${paramIdx} AND account_id = $${paramIdx + 1} RETURNING *`;
-    const result = await db.$client.unsafe(sql, values);
+    // Lot 54 (SEC-03) : contrôle et écriture dans UNE transaction — ligne de
+    // l'événement verrouillée (FOR UPDATE, bornée au compte), cibles
+    // verrouillées (FOR SHARE) puis vérifiées, puis mise à jour bornée au compte.
+    const accountId = session.currentAccountId;
+    const eventId = parseInt(id);
+    let result: Array<Record<string, unknown>>;
+    try {
+      result = await db.transaction(async (tx) => {
+        const [courant] = (await tx.execute(dsql`
+          SELECT asset_id, substructure_id, equipment_id FROM events
+           WHERE id = ${eventId} AND account_id = ${accountId} FOR UPDATE`)) as unknown as Array<{ asset_id: number | null; substructure_id: number | null; equipment_id: number | null }>;
+        if (!courant) throw new EventGoneError();
+        // Pièce / équipement modifiés : du compte, et portés par le bien de l'événement.
+        if (substructureId !== undefined || equipmentId !== undefined) {
+          await lockTargetInAccount(accountId, {
+            assetId: courant.asset_id ?? null,
+            substructureId: substructureId !== undefined ? toId(substructureId) : courant.substructure_id,
+            equipmentId: equipmentId !== undefined ? toId(equipmentId) : courant.equipment_id,
+          }, tx);
+        }
+        return (await tx.execute(dsql`
+          UPDATE events SET ${dsql.join(sets, dsql`, `)}
+           WHERE id = ${eventId} AND account_id = ${accountId} RETURNING *`)) as unknown as Array<Record<string, unknown>>;
+      });
+    } catch (e) {
+      if (e instanceof EventGoneError) return apiError(404, 'NOT_FOUND', 'Event not found');
+      const refus = targetRefusal(e, 'PUT /api/events');
+      if (refus) return refus;
+      throw e;
+    }
 
     if (result.length === 0) {
       return apiError(404, 'NOT_FOUND', 'Event not found');

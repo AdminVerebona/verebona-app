@@ -28,7 +28,7 @@ describe('INSERT ai_job_queue', () => {
     expect(ins.sql).toMatch(/trigger_code, payload, available_at\)/);
     expect(placeholders(ins.sql)).toBe(ins.params.length);
     expect(JSON.parse(String(ins.params[7]))).toEqual({ fileId: 42, userId: 7, origin: 'upload' });
-    expect(r).toEqual({ decision: 'create', jobId: 5 });
+    expect(r).toEqual({ decision: 'create', jobId: 5, reasonCode: null });
   });
 
   it('n’acquitte pas un job relu sans son contexte', async () => {
@@ -63,7 +63,7 @@ describe('options de mise en file (lot IA 2 — T3/T4 durables)', () => {
   it('remplace le contexte d’un job en attente absorbant (T4 : candidats les plus récents)', async () => {
     respond = (sql) => (sql.startsWith('SELECT id, status') ? [{ id: 11, status: 'PENDING' }] : []);
     const r = await enqueue({ treatment: 'T4', scope: { accountId: 1, targetType: 'asset_file', targetId: 3 }, payload: { candidates: [1] }, payloadOnDedupe: 'replace' });
-    expect(r).toEqual({ decision: 'skip', jobId: 11 });
+    expect(r).toEqual({ decision: 'skip', jobId: 11, reasonCode: 'DUPLICATE_PENDING' });
     const upd = calls.find((c) => c.sql.includes('SET payload = $2::jsonb'))!;
     expect(upd.params).toEqual([11, JSON.stringify({ candidates: [1] })]);
     expect(calls.some((c) => c.sql.includes('INSERT'))).toBe(false);
