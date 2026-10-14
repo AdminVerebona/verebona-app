@@ -21,9 +21,10 @@ import {
   toStatusView,
 } from '@/services/account/voluntary-deletion.service';
 import { PENDING_DELETION_PAGE } from '@/lib/auth/account-closure';
-import { checkAuthRateLimit, getClientIp, resetAuthRateLimit } from '@/lib/rate-limiter';
+import { reauthBlockedResponse, recordReauthFailure, recordReauthSuccess } from '@/lib/auth/reauth-throttle';
+import { REFRESH_TOKEN_TTL_S } from '@/lib/auth/token-lifetimes';
 
-const REFRESH_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+const REFRESH_TTL_MS = REFRESH_TOKEN_TTL_S * 1000;
 
 /**
  * Rouvre une session sur cet appareil, émise strictement APRÈS la borne de
@@ -54,22 +55,13 @@ export async function handleCloseAccount(request: NextRequest): Promise<NextResp
     return SessionService.handleSessionError(error);
   }
 
-  // Vérification de mot de passe : même limiteur que la connexion (5 essais /
-  // 15 min), par adresse IP ET par utilisateur — une session volée ne doit
-  // pas servir à deviner le mot de passe. Désactivé en développement, comme
-  // la connexion.
-  if (process.env.NODE_ENV !== 'development') {
-    const ip = getClientIp(request.headers);
-    for (const key of [`account-deletion:ip:${ip}`, `account-deletion:user:${userId}`]) {
-      const rl = checkAuthRateLimit(key);
-      if (!rl.allowed) {
-        return NextResponse.json(
-          { error: 'RATE_LIMIT_EXCEEDED', message: `Trop de tentatives. Réessayez dans ${rl.retryAfterSeconds} secondes.` },
-          { status: 429, headers: { 'Retry-After': String(rl.retryAfterSeconds) } },
-        );
-      }
-    }
-  }
+  // Vérification de mot de passe : limiteur PARTAGÉ de la réauthentification
+  // (lot 53A, CDC 18 §33 / SEC-04 — était un `Map` en mémoire par instance),
+  // par utilisateur ET par IP ; seuls les mots de passe faux comptent. Une
+  // session volée ne doit pas servir à deviner le mot de passe. Désactivé en
+  // développement, comme la connexion.
+  const blocked = await reauthBlockedResponse(request, userId);
+  if (blocked) return blocked;
 
   const body = (await request.json().catch(() => ({}))) as { confirmation?: unknown; password?: unknown };
   const now = new Date();
@@ -81,11 +73,11 @@ export async function handleCloseAccount(request: NextRequest): Promise<NextResp
       now,
     });
     if (!result.ok) {
+      if (result.code === 'INVALID_PASSWORD') await recordReauthFailure(request, userId, 'account_deletion');
       return NextResponse.json({ error: result.code, message: result.message }, { status: CLOSURE_ERROR_STATUS[result.code] });
     }
 
-    resetAuthRateLimit(`account-deletion:user:${userId}`);
-    resetAuthRateLimit(`account-deletion:ip:${getClientIp(request.headers)}`);
+    await recordReauthSuccess(userId);
     const response = NextResponse.json({
       success: true,
       deletion: toStatusView(result.schedule, now),

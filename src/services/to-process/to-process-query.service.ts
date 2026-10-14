@@ -269,7 +269,7 @@ async function hydrateTargets(
         thumbUpdatedAt: assetFileThumbnails.updatedAt,
       })
       .from(assetFiles)
-      .leftJoin(assets, eq(assetFiles.assetId, assets.id))
+      .leftJoin(assets, and(eq(assetFiles.assetId, assets.id), eq(assets.accountId, assetFiles.accountId)))
       .leftJoin(assetFileThumbnails, and(
         eq(assetFileThumbnails.fileId, assetFiles.id),
         eq(assetFileThumbnails.variant, THUMBNAIL_VARIANT),

@@ -13,14 +13,16 @@
  *   6. Opérations établies par les données structurées des biens (lot 43,
  *      C23.1 — aussi lancé automatiquement par `operations-structured-migration`) ;
  *   7. Sinistres : reprise de l'ancien formulaire (lot 44, C14.3 — aussi lancé
- *      automatiquement par `operations-claim-migration`).
+ *      automatiquement par `operations-claim-migration`) ;
+ *   8. Relations intercomptes : correction contrôlée par famille (lot 53,
+ *      retour PO D23 — jamais automatique, journalisée et restaurable).
  *
  * Chaque bloc n'offre que ce que le script permet (simulation, application,
  * restauration). Les scripts CLI restent utilisables et appellent les mêmes
  * services.
  */
 
-export type BackfillScript = 'merge-rooms' | 'document-asset-links' | 'agenda' | 'cdc15' | 'asset-account' | 'operations-structured' | 'operations-claims';
+export type BackfillScript = 'merge-rooms' | 'document-asset-links' | 'agenda' | 'cdc15' | 'asset-account' | 'operations-structured' | 'operations-claims' | 'cross-account';
 export type BackfillAction = 'simulate' | 'apply' | 'restore';
 export type BackfillStatus = 'running' | 'succeeded' | 'failed' | 'interrupted';
 
@@ -126,6 +128,30 @@ export const BACKFILL_DEFINITIONS: readonly BackfillDefinition[] = [
     actions: ['simulate', 'apply'],
     accountFilter: true,
   },
+  {
+    script: 'cross-account',
+    order: 8,
+    label: 'Relations intercomptes : correction contrôlée',
+    command: 'BO uniquement (aucune commande)',
+    description: 'Détache les relations anciennes entre deux comptes (BO › Exploitation › Relations intercomptes), famille par famille : '
+      + 'colonne de rattachement remise à vide, lien retiré ou rendu inactif — chaque objet reste dans son propre compte, rien n’est '
+      + 'supprimé d’un compte ni déplacé. Les relations relevant du Duo (déplacement de bien, comptes reliés par un Duo) et celles dont '
+      + 'un compte est inconnu sont SIGNALÉES, jamais corrigées. La simulation exécute la correction dans une transaction annulée '
+      + '(rapport exact) ; l’application est journalisée ligne à ligne et se restaure par son identifiant d’exécution. Jamais lancée '
+      + 'automatiquement.',
+    actions: ['simulate', 'apply', 'restore'],
+    steps: [
+      { code: 'documents', label: 'Documents → biens, pièces, équipements', description: 'Colonnes de rattachement et liens N-N document ↔ bien.' },
+      { code: 'fournisseurs', label: 'Fournisseurs', description: 'Liens document / équipement / bien ↔ fiche fournisseur d’un autre compte.' },
+      { code: 'evenements', label: 'Événements et échéances historiques', description: 'Pièces jointes et cibles d’un autre compte.' },
+      { code: 'agenda', label: 'Agenda', description: 'Liens bien, document, pièce, équipement et traces de source.' },
+      { code: 'preuves', label: 'Preuves et données projetées', description: 'Preuves retirées, faits « superseded », journal « Ce que j’ai fait ».' },
+      { code: 'a_traiter', label: 'À traiter', description: 'Cartes ouvertes visant un objet d’un autre compte (closes « obsolètes »).' },
+      { code: 'jobs', label: 'Jobs IA en attente', description: 'Jobs PENDING référençant un objet d’un autre compte (annulés).' },
+    ],
+    accountFilter: true,
+    warning: 'Correction de sécurité (D23) : à lancer après lecture de la simulation. Le Duo (D3) reste ouvert : ses relations ne sont jamais modifiées ici.',
+  },
 ];
 
 export const ACTION_LABELS: Record<BackfillAction, string> = {
@@ -175,7 +201,8 @@ export function validateBackfillRequest(body: unknown): { ok: true; value: Backf
     return { ok: false, code: 'ACTION_NOT_SUPPORTED', message: `« ${def.label} » ne permet pas l’action « ${action || '?'} ».` };
   }
   let step: string | null = null;
-  if (def.steps) {
+  // Une restauration vise une exécution (son identifiant), pas une étape.
+  if (def.steps && action !== 'restore') {
     step = String(b.step ?? '');
     if (!def.steps.some((s) => s.code === step)) return { ok: false, code: 'INVALID_STEP', message: 'Étape inconnue.' };
   }

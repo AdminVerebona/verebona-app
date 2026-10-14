@@ -29,7 +29,7 @@ import { emptyCardNeeds } from '../consolidation/card-needs';
 import {
   ClaimFormError, createClaimInSession, patchClaimSection, removeClaimInSession, updateClaimInSession, type ClaimMutationResult,
 } from '../consolidation/claim-form';
-import { CLAIM_MIGRATION_VERSION, claimToSection, claimLabel, toClaimSummary, type ClaimCosts, type ClaimRecord, type ClaimSummaryDto } from './model';
+import { CLAIM_MIGRATION_VERSION, claimPatchHasContent, claimToSection, claimLabel, toClaimSummary, type ClaimCosts, type ClaimRecord, type ClaimSummaryDto } from './model';
 import { loadAssetNames, loadClaimRecords } from './read';
 
 export { ClaimFormError };
@@ -148,6 +148,11 @@ export const ClaimOperationService = {
 
   /** Nouveau sinistre sur le bien (et, si demandé, d'autres biens du compte). */
   async create(accountId: number, userId: number, assetId: number, p: { patch: NormalizedPatch | null; assetIds?: readonly number[] }): Promise<ClaimDto> {
+    // Lot 53 (retour PO D10) : la création n'a lieu qu'à la première sauvegarde
+    // EFFECTIVE du brouillon — jamais une fiche vide au seul clic « Ajouter ».
+    if (!claimPatchHasContent(p.patch)) {
+      throw new ClaimFormError('EMPTY_CLAIM', 'Renseignez au moins une information pour enregistrer ce sinistre.');
+    }
     let cards = emptyCardNeeds();
     const r: ClaimMutationResult = await withBusinessOperationWrite(accountId, (_repo, session) => {
       cards = emptyCardNeeds();

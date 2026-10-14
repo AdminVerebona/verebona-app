@@ -58,6 +58,7 @@ import {
 import { loadClaimRecords } from '../claims/read';
 import { emptyCardNeeds, type OperationCardNeeds } from './card-needs';
 import { Changes, reconsolidateOperation } from './consolidator';
+import { excludeAsset, releaseExclusion } from './asset-exclusions';
 
 type Row = Record<string, unknown>;
 const rows = async <T = Row>(tx: DbTx, q: SQL): Promise<T[]> => (await tx.execute(q)) as unknown as T[];
@@ -67,7 +68,7 @@ const todayUtc = () => new Date().toISOString().slice(0, 10);
 /** Erreur métier de la saisie Sinistre (route : 404 / 409 / 422). */
 export class ClaimFormError extends Error {
   constructor(
-    readonly code: 'CLAIM_NOT_FOUND' | 'CONFLICT' | 'INVALID_ASSETS' | 'EVENT_ALREADY_LINKED' | 'EVENT_NOT_FOUND',
+    readonly code: 'CLAIM_NOT_FOUND' | 'CONFLICT' | 'INVALID_ASSETS' | 'EVENT_ALREADY_LINKED' | 'EVENT_NOT_FOUND' | 'EMPTY_CLAIM',
     message: string,
     readonly details: Record<string, unknown> = {},
   ) {
@@ -99,8 +100,12 @@ export async function liveAccountAssets(tx: DbTx, accountId: number, assetIds: r
  * Pose les biens concernés : une source CLAIM_FORM et un lien (autorité USER)
  * par bien ; un bien retiré perd sa source et son lien (historisés). Rend la
  * source CLAIM_FORM du bien principal.
+ *
+ * Lot 53 (retour PO Q17) : un bien retiré par l'utilisateur est EXCLU de façon
+ * mémorisée (un document qui le cite ne le réintègre plus) ; le cocher à
+ * nouveau lève l'exclusion (nouvel arbitrage).
  */
-async function setClaimAssets(repo: BusinessOperationRepository, tx: DbTx, claimId: number, assetIds: readonly number[], primaryAssetId: number): Promise<number> {
+async function setClaimAssets(repo: BusinessOperationRepository, tx: DbTx, claimId: number, assetIds: readonly number[], primaryAssetId: number, userId: number | null = null): Promise<number> {
   const voulus = new Set(assetIds);
   const actuels = await rows<{ asset_id: number }>(tx, sql`
     SELECT asset_id FROM business_operation_asset_links WHERE operation_id = ${claimId} AND active`);
@@ -111,7 +116,14 @@ async function setClaimAssets(repo: BusinessOperationRepository, tx: DbTx, claim
       SELECT id FROM business_operation_sources WHERE operation_id = ${claimId} AND active AND source_kind = 'CLAIM_FORM' AND source_entity_key = ${String(a)}`);
     for (const s of src) await repo.deactivateSource(Number(s.id), 'CLAIM_FORM_ASSET_REMOVED');
     await repo.unlinkAsset(claimId, a, 'CLAIM_FORM_ASSET_REMOVED');
+    // Les documents déjà rattachés au sinistre sont CONNUS au moment de la
+    // décision : ils ne la contredisent pas (seul un NOUVEAU document le fera).
+    const connus = (await rows<{ k: string }>(tx, sql`
+      SELECT DISTINCT source_entity_key AS k FROM business_operation_sources
+       WHERE operation_id = ${claimId} AND active AND source_kind = 'DOCUMENT' AND source_entity_key ~ '^[0-9]{1,9}$'`)).map((x) => Number(x.k));
+    await excludeAsset(tx, repo.accountId, claimId, a, userId, connus);
   }
+  for (const a of assetIds) await releaseExclusion(tx, repo.accountId, claimId, a, 'CLAIM_FORM_ASSET_READDED');
   let primarySource = 0;
   for (const a of [primaryAssetId, ...assetIds.filter((x) => x !== primaryAssetId)]) {
     const sourceId = await repo.addSource(claimId, {
@@ -317,12 +329,26 @@ export async function applyClaimSection(session: WriteSession, accountId: number
   else changes.track(await repo.reopen(claimId, 'CLAIM_FILE_REOPENED'));
 
   await syncIndemnity(repo, tx, claimId, w.compensationCents, o.sourceId, o.assetIds, changes);
+  // Lot 53 (retour PO D11) : interventions désignées jusqu'ici par la facture d'une action.
+  const enfantsAvant = (await rows<{ child: string }>(tx, sql`
+    SELECT DISTINCT child_operation_id AS child FROM business_operation_claim_actions
+     WHERE operation_id = ${claimId} AND child_operation_id IS NOT NULL`)).map((x) => Number(x.child));
   const lists = await linkActionInterventions(repo, tx, accountId, claimId, w.lists, changes);
   changes.track(await repo.replaceClaimLists(claimId, lists, 'CLAIM_FORM_LISTS'));
   await syncClaimReference(repo, tx, accountId, claimId, w.details.insurerClaimRef ?? null, o.sourceId, changes, cards);
 
   // T3 : les preuves documentaires du sinistre sont reconsolidées avec la saisie.
-  await reconsolidateOperation(repo, tx, claimId, o.today ?? todayUtc(), changes, cards);
+  const today = o.today ?? todayUtc();
+  await reconsolidateOperation(repo, tx, claimId, today, changes, cards);
+  // Lot 53 (D11) : facture retirée d'une action — l'intervention reste rattachée
+  // (jamais de dissociation automatique) ; sans autre justification, sa
+  // reconsolidation pose la question à l'utilisateur.
+  const enfantsApres = new Set(lists.actions.map((a) => a.childOperationId).filter((c): c is number => c !== null));
+  for (const enfant of enfantsAvant.filter((e) => !enfantsApres.has(e))) {
+    const [vivant] = await rows(tx, sql`
+      SELECT 1 FROM business_operations WHERE id = ${enfant} AND account_id = ${accountId} AND merged_into_operation_id IS NULL`);
+    if (vivant) await reconsolidateOperation(repo, tx, enfant, today, changes, cards);
+  }
 }
 
 // ── Création, modification, suppression ────────────────────────────────────
@@ -368,7 +394,7 @@ export async function createClaimInSession(session: WriteSession, accountId: num
   });
   const changes = new Changes();
   changes.track(true);
-  const sourceId = await setClaimAssets(repo, tx, created.id, assetIds, p.primaryAssetId);
+  const sourceId = await setClaimAssets(repo, tx, created.id, assetIds, p.primaryAssetId, session.actorUserId);
   await applyClaimSection(session, accountId, created.id, p.section, { sourceId, assetIds, primaryAssetId: p.primaryAssetId, today: p.today, changes, cards: p.cards });
   const touched = await syncClaimMirror(tx, accountId, assetIds);
   return { claimId: created.id, assets: touched, changes: changes.n };
@@ -401,7 +427,7 @@ export async function updateClaimInSession(session: WriteSession, accountId: num
   }
   const primaryNext = assetIds.includes(primary) ? primary : assetIds.includes(p.assetId) ? p.assetId : assetIds[0];
   const changes = new Changes();
-  const sourceId = await setClaimAssets(repo, tx, p.claimId, assetIds, primaryNext);
+  const sourceId = await setClaimAssets(repo, tx, p.claimId, assetIds, primaryNext, session.actorUserId);
   const section = p.patch ? patchClaimSection(cur.section, p.patch) : cur.section;
   await applyClaimSection(session, accountId, p.claimId, section, { sourceId, assetIds, primaryAssetId: primaryNext, today: p.today, changes, cards: p.cards });
   const touched = await syncClaimMirror(tx, accountId, [...new Set([...avant, ...assetIds])]);

@@ -78,7 +78,8 @@ import type { TargetAnswer } from './target-answer';
 import { buildTargetClarification } from './clarification-builder';
 import { diagnosticMessage, TargetReadError } from './t2-diagnostics';
 import { deterministicRequestedFacts, unconsumedInformationWords } from '../canonical/field-vocabulary';
-import { isFieldQuestion } from '../canonical/structured-answers';
+import { fieldRequestForm } from '../canonical/structured-answers';
+import { requestedFactsMissingMessage, substitutedFieldKeys } from './requested-facts-guard';
 import { getField } from '@/services/canonical/registry';
 import { parseEntityRef } from './entity-ref';
 import { ASSET_NO_LONGER_AVAILABLE_MESSAGE } from './asset-availability';
@@ -874,13 +875,128 @@ export async function runAssistant(
     // son cours (le modèle peut encore la comprendre).
     // ══════════════════════════════════════════════════════════════════════
     let classeParFaits = false;
+    /**
+     * Lot 53 (53H) : faits demandés DÉTERMINÉS (compréhension déterministe
+     * complète, UNDERSTAND, reprise). Garde-fou de fidélité : une réponse qui
+     * ne porte que sur un AUTRE champ est rejetée (`garantirFidelite`).
+     */
+    let faitsExiges: string[] = [];
+    /**
+     * Garde-fou de fidélité (lot 53, AC09) : `null` si la réponse est fidèle
+     * (ou ne porte sur aucun champ). Sinon elle est REJETÉE : lecture ciblée
+     * des champs demandés (fiche canonique, puis cascade documentaire du
+     * champ), à défaut absence explicite — jamais la donnée substituée.
+     */
+    const garantirFidelite = async (claims: Claim[], origine: string): Promise<AssistantRunResult | null> => {
+      const autres = substitutedFieldKeys(faitsExiges, claims);
+      if (!autres.length) return null;
+      trace.escalationReasons.push(`FIDELITY:REJECTED_OTHER_FIELD:${origine}:${autres.join('+')}`);
+      if (ports.readTarget) {
+        const r: IntentRoute = { ...route, understanding: { ...route.understanding, requestedFacts: faitsExiges, filters: route.understanding?.filters ?? {} } };
+        const lu = await withDeadline(ports.readTarget(input, targetsFromInput(input, r), r), retrievalDeadline()).catch(lectureEchouee);
+        // Une ambiguïté de cible n'est pas posée ici (étape tardive) : absence prudente.
+        const facts = lu?.facts ?? [];
+        if (lu && !lu.ambiguity && facts.some((f) => f.key && faitsExiges.includes(f.key))) {
+          const servi = await servirLectureCiblee(lu, r, { reprise: true });
+          if (servi) return servi;
+        }
+      }
+      trace.diagnostic = 'FIELD_NOT_SET';
+      const actions = await ports.resolveActions(route, input, []);
+      done('template', 'fidelity.requested_fact_missing', 'INSUFFICIENT', 0);
+      return finalize(base, machine, 'deterministic', requestedFactsMissingMessage(faitsExiges), [], [], actions, ports, input, 'insufficient');
+    };
     if (ports.readTarget && !isHelpIntent(route.intent)) {
       const faitsReprise = input.resume?.requestedFacts ?? [];
       let faits = faitsReprise.length ? faitsReprise : deterministicRequestedFacts(input.message);
       const cibleDocument = Boolean(input.pageContext?.documentId) || input.reference?.type === 'document' || Boolean(input.resume?.documentId);
       const intentionCompatible = needsClassification || FACT_STEP_INTENTS.has(route.intent)
         || (route.intent === 'ACCOUNT_FACT_DOCUMENT' && !cibleDocument);
-      if (faits.length && (faitsReprise.length || (intentionCompatible && isFieldQuestion(input.message)))) {
+      // Lot 53 (53H) : la FORME de la demande. Une question explicite est une
+      // compréhension complète ; une commande ou un comptage n'est pas une
+      // lecture ; sinon la forme est INDÉTERMINÉE (« date d'achat polo »).
+      const forme = fieldRequestForm(input.message);
+      if (faits.length && !faitsReprise.length && intentionCompatible && forme === 'undetermined') {
+        // ════════════════════════════════════════════════════════════════
+        // LOT 53 (53H) — CHAMP DÉTECTÉ, FORME INDÉTERMINÉE → UNDERSTAND
+        //
+        // Un champ du registre est reconnu mais la demande n'est pas une
+        // question explicite : compréhension INCOMPLÈTE. Jamais l'abandon du
+        // champ puis une recherche large sur le bien (qui rendait « Motorisation
+        // de Polo » pour une date d'achat). T2 UNDERSTAND traduit la demande en
+        // `requestedFacts` (FIELD_CATALOG) ; le serveur valide les champs,
+        // résout la cible dans le compte et lit la donnée canonique.
+        // ════════════════════════════════════════════════════════════════
+        marquer('PARTIAL', ['UNDETERMINED_FIELD_REQUEST'], null);
+        trace.escalationReasons.push('UNDERSTANDING:UNDETERMINED_FIELD_REQUEST');
+        // Déjà compris par le modèle (évaluation de la cible) : sa route vaut
+        // compréhension, jamais un second appel.
+        let compris: IntentRoute | null = comprisParModele && !comprehensionEchouee ? route : null;
+        if (!comprisParModele && aiActif && ports.classifyWithAI && isPlanAiEligible(input.planType) && budget.canCall()) {
+          if (await avantAppelModele() === 'cancelled') return annuler();
+          if (budget.canCall()) {
+            const avantCl = budget.used;
+            compris = await ports.classifyWithAI(input.message, input).catch(() => null);
+            reconcilierBudget(budget, avantCl, 1);
+            trace.aiCalls = budget.used;
+            classeParFaits = true;
+            comprisParModele = true;
+            if (!compris) { comprehensionEchouee = true; trace.escalationReasons.push('ROUTING:UNDERSTANDING_FAILED'); }
+          }
+        } else if (!aiActif && ports.classifyWithAI) {
+          trace.escalationReasons.push('ROUTING:AI_DISABLED');
+        }
+        if (compris) {
+          // Champs du modèle VALIDÉS par le serveur : registre, lisibles par l'assistant.
+          const faitsModele = dedupeLecture(compris.understanding?.requestedFacts ?? []);
+          if (compris.confidence === 'ambiguous' || (!faitsModele.length && compris.intent === 'UNKNOWN')) {
+            // Formulation ambiguë (« date polo ») : jamais un champ choisi au hasard.
+            marquer('PARTIAL', ['AMBIGUOUS_INTENT'], null);
+            if (ports.saveClarification) {
+              const state = buildIntentClarification({
+                accountId: input.accountId, userId: input.userId, conversationId: input.conversationId,
+                originalMessage: input.message, originalMessageId: messageId, proposed: compris.intent,
+              });
+              if (await ports.saveClarification(state).catch(() => false)) {
+                trace.escalationReasons.push('CLARIFICATION:UNDETERMINED_FIELD_REQUEST');
+                marquer(comprehension.status, [], 'clarification');
+                done('template', 'clarification.classification', 'AMBIGUOUS_TARGET', state.candidates.length);
+                return finalizeClarification(base, machine, state, ports, input);
+              }
+            }
+            const actions = await ports.resolveActions(route, input, []);
+            trace.diagnostic = 'UNDERSTANDING_FAILED';
+            done('template', 'understanding.failed', 'INSUFFICIENT', 0);
+            return finalize(base, machine, 'deterministic', diagnosticMessage('UNDERSTANDING_FAILED'), [], [], actions, ports, input, 'insufficient');
+          }
+          route = affinerRoute(compris, input);
+          base.route = route;
+          trace.intent = route.intent;
+          marquer('COMPLETE', [], 'understand');
+          if (faitsModele.length) {
+            faitsExiges = faitsModele;
+            trace.escalationReasons.push(`UNDERSTANDING:REQUESTED_FACTS:${faitsModele.join('+')}`);
+            const routeModele: IntentRoute = { ...route, understanding: { ...route.understanding, requestedFacts: faitsModele, filters: route.understanding?.filters ?? {} } };
+            const lu = await withDeadline(ports.readTarget(input, targetsFromInput(input, routeModele), routeModele), retrievalDeadline()).catch(lectureEchouee);
+            const servi = lu ? await servirLectureCiblee(lu, routeModele, { reprise: false }) : null;
+            if (servi) return servi;
+          }
+          // Le modèle ne lit pas une demande de champ : sa compréhension prime,
+          // la cascade continue sur SA route (garde-fou actif si des faits sont exigés).
+        } else {
+          // Sans UNDERSTAND (IA coupée, offre, budget, échec) : repli PRUDENT —
+          // seul le champ reconnu par le registre canonique est lu, jamais une
+          // autre donnée du bien ; sinon absence explicite (garde-fou).
+          faitsExiges = dedupeLecture(faits);
+          trace.escalationReasons.push('UNDERSTANDING:REGISTRY_FALLBACK');
+          if (faitsExiges.length) {
+            const routeFaits: IntentRoute = { ...route, understanding: { ...route.understanding, requestedFacts: faitsExiges, filters: route.understanding?.filters ?? {} } };
+            const lu = await withDeadline(ports.readTarget(input, targetsFromInput(input, routeFaits), routeFaits), retrievalDeadline()).catch(lectureEchouee);
+            const servi = lu ? await servirLectureCiblee(lu, routeFaits, { reprise: false }) : null;
+            if (servi) return servi;
+          }
+        }
+      } else if (faits.length && (faitsReprise.length || (intentionCompatible && forme === 'question'))) {
         let routeFaits: IntentRoute = { ...route, understanding: { requestedFacts: faits, filters: route.understanding?.filters ?? {} } };
         // Compréhension PARTIELLE (« quand ai-je acheté la Polo et combien
         // l'ai-je payée ? ») : le modèle comprend la demande — une intention
@@ -912,6 +1028,7 @@ export async function runAssistant(
             }
           }
         }
+        faitsExiges = dedupeLecture(routeFaits.understanding?.requestedFacts ?? faits);
         const lu = await withDeadline(ports.readTarget(input, targetsFromInput(input, routeFaits), routeFaits), retrievalDeadline()).catch(lectureEchouee);
         const servi = lu ? await servirLectureCiblee(lu, routeFaits, { reprise: faitsReprise.length > 0 }) : null;
         if (servi) return servi;
@@ -950,7 +1067,7 @@ export async function runAssistant(
     /** Exécute l'étape sémantique ; `null` : la cascade continue (route éventuellement remplacée). */
     const etapeSemantique = async (
       declencheur: SemanticTrace['trigger'], residu: string[],
-      o: { preset?: { terms: string[]; facts: string[]; need: SemanticNeed['need'] } | null } = {},
+      o: { preset?: { terms: string[]; facts: string[]; need: SemanticNeed['need'] } | null; continueOnInsufficient?: boolean } = {},
     ): Promise<AssistantRunResult | null> => {
       semTrace.trigger = declencheur;
       semTrace.semanticResidue = [...residu];
@@ -971,6 +1088,9 @@ export async function runAssistant(
         marquer('COMPLETE', [], 'understand');
         return null;
       }
+      // Lot 53 (D21) : étape ajoutée APRÈS la classification — une absence
+      // de correspondance y laisse la cascade existante suivre son cours.
+      if (o.continueOnInsufficient && issue.kind === 'insufficient') return null;
       if (issue.kind !== 'continue') {
         if (issue.kind === 'answer') marquer('COMPLETE', [], semTrace.understandCalled ? 'understand' : 'deterministic');
         else if (issue.kind === 'clarify') marquer('PARTIAL', ['UNCONSUMED_MEANING'], 'clarification');
@@ -985,7 +1105,10 @@ export async function runAssistant(
         const r = input.resume.semantic;
         const servi = await etapeSemantique('resume_scope', r.terms, { preset: { terms: r.terms, facts: r.facts, need: r.need } });
         if (servi) return servi;
-      } else if (!input.resume && route.deterministicConfidence === 'WEAK' && route.intent.startsWith('ACCOUNT_')) {
+      } else if ((!input.resume ? route.deterministicConfidence === 'WEAK' : repriseDePeriodeFaible(input)) && route.intent.startsWith('ACCOUNT_')) {
+        // Lot 53 (PO D21) : la reprise d'une clarification de PÉRIODE (« mars »
+        // → « mars 2025 ») rejoue la demande : elle garde l'analyse sémantique
+        // qu'aurait eue la question initiale (jamais un total plus large).
         const besoin = detectValueNeed(input.message);
         if (besoin) {
           const cibles = ports.resolveTargets ? await withDeadline(ports.resolveTargets(input, route), retrievalDeadline()).catch(() => null) : null;
@@ -1156,6 +1279,9 @@ export async function runAssistant(
         }
 
         if (data.handled && data.answer) {
+          // Lot 53 (53H) : jamais une autre donnée à la place de celle demandée.
+          const infidele = await garantirFidelite(data.claims, data.strategy);
+          if (infidele) return infidele;
           if (data.strategy.startsWith('structured.')) semTrace.structuredStrategyExecuted = true;
           const resolvedData = await ports.resolveSources(data.sources, input.accountId);
           const actions = await ports.resolveActions(route, input, data.sources);
@@ -1245,6 +1371,33 @@ export async function runAssistant(
     }
 
     // ══════════════════════════════════════════════════════════════════════
+    // LOT 53 (PO D21) — PÉRIMÈTRE SÉMANTIQUE APRÈS CLASSIFICATION
+    //
+    // « Je paye combien pour internet ? » (aucun bien nommé) n'avait pas de
+    // règle déterministe : UNDERSTAND la classait en question sur les données,
+    // puis la recherche plein texte répondait « rien trouvé ». La compréhension
+    // obtenue (même appel, aucun second appel modèle) alimente désormais la
+    // même étape que la route faible : sources réelles de TOUS les biens
+    // disponibles, réponse si une seule interprétation, clarification (biens
+    // distingués) sinon. Aucune correspondance : la cascade suit son cours.
+    // ══════════════════════════════════════════════════════════════════════
+    if (classeAuRoutage && !input.resume && ports.listBusinessSources && route.intent.startsWith('ACCOUNT_')
+      && !route.clarificationRequired && !route.understanding?.requestedFacts.length) {
+      const besoin = detectValueNeed(input.message);
+      if (besoin) {
+        const cibles = ports.resolveTargets ? await withDeadline(ports.resolveTargets(input, route), retrievalDeadline()).catch(() => null) : null;
+        const noms = [...(cibles?.catalog ?? []).map((a) => a.name), ...(cibles?.asset?.label ? [cibles.asset.label] : [])];
+        const residu = semanticResidue(input.message, { assetNames: noms, consumed: expenseThemeWords(input.message) });
+        if (residu.length) {
+          // La classification VAUT compréhension : aucun second appel modèle.
+          comprisParModele = true;
+          const servi = await etapeSemantique('classified_scope', residu, { continueOnInsufficient: true });
+          if (servi) return servi;
+        }
+      }
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
     // FAIT DEMANDÉ PAR LE MASTER T2 — CDC 15 §24 A4 (lecture canonique)
     //
     // `t2_understand` a identifié UN champ du FIELD_CATALOG : s'il porte sur
@@ -1252,6 +1405,8 @@ export async function runAssistant(
     // canonique, sans recherche ni génération.
     // ══════════════════════════════════════════════════════════════════════
     if (ports.readTarget && route.understanding?.requestedFacts.length) {
+      // Lot 53 (53H) : faits exigés — garde-fou de fidélité pour la suite.
+      if (!faitsExiges.length) faitsExiges = dedupeLecture(route.understanding.requestedFacts);
       // L'IA n'a produit qu'une intention STRUCTURÉE (champs, indices) : le
       // serveur reprend la main — résolution dans le compte, lecture
       // canonique, réponse rédigée par le serveur (8b §G ; aucun SQL du modèle).
@@ -1511,6 +1666,10 @@ export async function runAssistant(
         // Lot 32 : seulement sur une demande COMPRISE — une compréhension
         // incomplète (intention inconnue, cible manquante ou ambiguë, sens non
         // consommé) ne devient jamais « aucun résultat ».
+        // Lot 53 (53H) : des cartes de CHAMPS autres que ceux demandés ne
+        // répondent pas à la demande (fidélité, AC09).
+        const infideleRecherche = await garantirFidelite([{ claimKey: 'retrieval.adapters', text: '', sourceIds: adapters.map((x) => x.id), derivation: 'direct' }], 'retrieval.adapters');
+        if (infideleRecherche) return infideleRecherche;
         const incomprise = comprehensionEchouee || comprehension.status !== 'COMPLETE';
         if (adapters.length === 0) trace.diagnostic = incomprise ? 'UNDERSTANDING_FAILED' : 'SEARCH_NO_RESULT';
         const resolvedAdapters = adapters.length ? await ports.resolveSources(adapters, input.accountId) : [];
@@ -1567,6 +1726,9 @@ export async function runAssistant(
           || aiReport.events.slice(evenementsAvant).some((e) => e.startsWith('REPAIR:'));
         if (repare) machine.transition('REPAIRING');
         if (gen) {
+          // Lot 53 (53H) : la réponse rédigée reste fidèle aux faits demandés.
+          const infideleGen = await garantirFidelite(gen.claims ?? [], 'llm.generate_answer');
+          if (infideleGen) return infideleGen;
           machine.transition('VALIDATING');
           trace.model = gen.model ?? null;
           const actions = gen.actions.length ? gen.actions : await ports.resolveActions(route, input, sources);
@@ -1611,6 +1773,12 @@ export async function runAssistant(
       trace.fallbackUsed = sousContrat.fallbackUsed;
       trace.escalationReasons.push(`FALLBACK:${sousContrat.fallbackReason}`);
       trace.fallbackReason = sousContrat.fallbackReason;
+    }
+    // Lot 53 (53H) : un repli qui ne présenterait que des cartes d'AUTRES
+    // champs (« Motorisation — Polo ») ne répond pas à la demande (AC09).
+    if (!nonCompris && !isHelpIntent(route.intent)) {
+      const infideleRepli = await garantirFidelite([{ claimKey: 'fallback.sources', text: '', sourceIds: sources.map((x) => x.id), derivation: 'direct' }], 'fallback.sources');
+      if (infideleRepli) return infideleRepli;
     }
     const repli = nonCompris
       ? diagnosticMessage('UNDERSTANDING_FAILED')
@@ -1996,6 +2164,37 @@ const SYNTHESIS_INTENTS = new Set(['ACCOUNT_SUMMARY', 'ACCOUNT_COMPARISON', 'ACC
  * en plus d'une question qui demandait une classification.
  */
 const FACT_STEP_INTENTS = new Set<string>(['ACCOUNT_FACT_ASSET', 'ACCOUNT_SEARCH_ASSET', 'UNKNOWN']);
+
+/**
+ * Reprise d'une clarification de PÉRIODE sur une question à route FAIBLE
+ * (lot 53, PO D21) : reprise sans autre contexte (ni bien, ni document, ni
+ * entité, ni faits, ni besoin sémantique) dont la demande rejouée — celle que
+ * le serveur a construite avec la période choisie — est encore décidée par
+ * des signaux faibles. Pure.
+ */
+function repriseDePeriodeFaible(input: AssistantRequestInput): boolean {
+  const r = input.resume;
+  if (!r || r.assetId || r.documentId || r.entity || r.requestedFacts?.length || r.semantic || r.semanticSource) return false;
+  const p = analyserPeriode(input.message, aujourdhuiParis());
+  if (p?.kind !== 'resolved') return false;
+  const o = routeDeterministic({ message: input.message, planType: input.planType, hasPendingClarification: false });
+  return o.kind === 'route' && o.route.deterministicConfidence === 'WEAK';
+}
+
+/**
+ * Faits demandés VALIDÉS par le serveur (lot 53, 53H) : clés du registre
+ * canonique lisibles par l'assistant (`assistantReadable`), dédoublonnées,
+ * ordre conservé, ≤ 20. Une clé proposée par le modèle hors registre n'est
+ * jamais lue.
+ */
+function dedupeLecture(keys: readonly string[]): string[] {
+  const out: string[] = [];
+  for (const k of keys) {
+    if (getField(k)?.assistantReadable && !out.includes(k)) out.push(k);
+    if (out.length >= 20) break;
+  }
+  return out;
+}
 
 /** Dédoublonnage logique (§13.8) : même entité, même contenu, copie. */
 function dedupeSources(list: RetrievedSource[]): RetrievedSource[] {

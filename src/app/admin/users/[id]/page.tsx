@@ -108,7 +108,14 @@ interface Communication {
   status: 'sent' | 'failed' | 'pending' | 'skipped';
 }
 
-interface LoginEntry { at: string; device: string | null; ip: string | null }
+interface LoginEntry { at: string; device: string | null; ip: string | null; result?: 'success' | 'failure' | 'throttled'; detail?: string | null }
+
+/** Lot 53A (D1) : résultat de la tentative — échecs et pauses anti-force brute visibles. */
+const LOGIN_RESULT_LABEL: Record<'success' | 'failure' | 'throttled', string> = {
+  success: 'Réussie',
+  failure: 'Échec',
+  throttled: 'Pause',
+};
 
 interface UserData {
   user: UserDetails;
@@ -562,21 +569,27 @@ export default function UserDetailPage() {
 
       <Card>
         <CardHeader>
-          <CardTitle className="text-base">Connexions des {loginHistory.days} derniers jours</CardTitle>
+          <CardTitle className="text-base">Connexions et tentatives des {loginHistory.days} derniers jours</CardTitle>
         </CardHeader>
         <CardContent>
           {loginHistory.entries.length === 0 ? (
-            <p className="text-sm text-muted-foreground">Aucune connexion sur les {loginHistory.days} derniers jours.</p>
+            <p className="text-sm text-muted-foreground">Aucune connexion ni tentative sur les {loginHistory.days} derniers jours.</p>
           ) : (
             <div className="overflow-x-auto max-h-96 overflow-y-auto">
               <table className="w-full text-sm">
                 <thead className="text-left text-muted-foreground border-b">
-                  <tr><th className="py-2 pr-3">Date</th><th className="py-2 pr-3">Appareil / navigateur</th><th className="py-2">IP (tronquée)</th></tr>
+                  <tr><th className="py-2 pr-3">Date</th><th className="py-2 pr-3">Résultat</th><th className="py-2 pr-3">Appareil / navigateur</th><th className="py-2">IP (tronquée)</th></tr>
                 </thead>
                 <tbody>
                   {loginHistory.entries.map((l, i) => (
                     <tr key={i} className="border-b last:border-0">
                       <td className="py-2 pr-3 whitespace-nowrap">{formatDateTime(l.at)}</td>
+                      <td className="py-2 pr-3">
+                        <span className={l.result === 'success' || !l.result ? '' : 'text-destructive'}>
+                          {LOGIN_RESULT_LABEL[l.result ?? 'success']}
+                        </span>
+                        {l.detail ? <span className="block text-xs text-muted-foreground">{l.detail}</span> : null}
+                      </td>
                       <td className="py-2 pr-3">{l.device ?? '—'}</td>
                       <td className="py-2 font-mono text-xs">{l.ip ?? '—'}</td>
                     </tr>

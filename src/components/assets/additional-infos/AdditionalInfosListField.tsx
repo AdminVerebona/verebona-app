@@ -165,7 +165,7 @@ export function AdditionalInfosListField({
               {!known && <SelectItem value={String(current)}>Pièce supprimée du bien</SelectItem>}
               {docs.map((d) => (
                 <SelectItem key={d.id} value={String(d.id)}>
-                  {d.title}{d.date ? ` · ${frDate(d.date)}` : ''}{d.sensitive ? ' · sensible' : ''}
+                  {d.title}{d.assetName ? ` · ${d.assetName}` : ''}{d.date ? ` · ${frDate(d.date)}` : ''}{d.sensitive ? ' · sensible' : ''}
                 </SelectItem>
               ))}
             </SelectContent>

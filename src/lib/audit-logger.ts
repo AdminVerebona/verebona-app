@@ -6,7 +6,11 @@ import { getClientIp } from '@/lib/auth/client-ip';
 type ActivityType = 'LOGIN_SUCCESS' | 'LOGIN_FAILED' | 'EMAIL_CHANGE' | 'PROFILE_UPDATE' | 'PASSWORD_CHANGE' | 'SERVER_ERROR' |
   // Evenements d'authentification (CDC cookies §13)
   'AUTH_TOKEN_REFRESH' | 'AUTH_TOKEN_REUSE_DETECTED' | 'AUTH_LOGOUT' |
-  'AUTH_SESSION_REVOKED' | 'AUTH_SESSION_EXPIRED';
+  'AUTH_SESSION_REVOKED' | 'AUTH_SESSION_EXPIRED' |
+  // Lot 53A (retour PO D1 / Q21, CDC 18 §23.1) : pause anti-force brute
+  // déclenchée (connexion ou réauthentification), réinitialisation terminée,
+  // inscription demandée sur une adresse déjà inscrite (aucun compte créé).
+  'AUTH_LOGIN_THROTTLED' | 'AUTH_REAUTH_THROTTLED' | 'PASSWORD_RESET_COMPLETED' | 'SIGNUP_EXISTING_EMAIL';
 
 interface LogActivityParams {
   activityType: ActivityType;

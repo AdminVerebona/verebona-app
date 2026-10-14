@@ -98,7 +98,7 @@ export type PublicCatalogReason =
   | 'PUBLICATION_FAILED'
   | 'PRICES_UNAVAILABLE';
 
-export const CATALOG_REASONS: Readonly<Record<PublicCatalogReason | 'EXPECTED_MODE_MISSING' | 'MODE_MISMATCH' | 'BACKFILL_PENDING' | 'WAITING_INSTANCES', ReasonExplanation>> = {
+export const CATALOG_REASONS: Readonly<Record<PublicCatalogReason | 'EXPECTED_MODE_MISSING' | 'MODE_MISMATCH' | 'BACKFILL_PENDING' | 'WAITING_INSTANCES' | 'PREVIOUS_FAILURE', ReasonExplanation>> = {
   STRIPE_NOT_CONFIGURED: {
     label: 'STRIPE_SECRET_KEY absente ou illisible',
     auto: 'Aucune (rien ne peut être lu chez Stripe).',
@@ -137,6 +137,12 @@ export const CATALOG_REASONS: Readonly<Record<PublicCatalogReason | 'EXPECTED_MO
     action: 'publish',
   },
   WAITING_INSTANCES: { label: 'Délai de 20 min après déploiement (instances homogènes)', auto: 'Publication automatique à l’échéance.', action: null },
+  // Lot 53I : « Publier la grille du code » refusé (PREVIOUS_FAILURE) — dire pourquoi et qui reprend.
+  PREVIOUS_FAILURE: {
+    label: 'Grille du code non publiée : une publication précédente est en échec (« Publier » est refusé tant qu’elle n’est pas reprise)',
+    auto: 'Préproduction : la reprise automatique ciblée reprend cette publication (voir « Reprise automatique de la publication »). Ailleurs, l’ancienne grille reste vendue.',
+    action: 'resume',
+  },
 };
 
 export function explainCoupleReason(code: string | null | undefined): ReasonExplanation | null {

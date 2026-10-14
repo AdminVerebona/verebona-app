@@ -6,10 +6,14 @@
  * QUAND LE MODÈLE EST-IL APPELÉ ?
  *
  * UNIQUEMENT pour un candidat T1 actif en attente « M3_REQUIRED » : M0 à M2
- * n'ont rien tranché, aucune contradiction, et 1 à
- * `OPERATION_MATCH_MAX_CANDIDATES` Opérations restent plausibles (au-delà :
- * TOO_MANY_CANDIDATES, aucun appel, attente tracée). Les Opérations rejetées
- * par l'utilisateur (REJECTED) n'en font jamais partie (C6.3).
+ * n'ont rien tranché, aucune contradiction, et des Opérations restent
+ * plausibles. Le modèle reçoit au plus `OPERATION_MATCH_MAX_CANDIDATES` (5)
+ * Opérations : au-delà, examen PROGRESSIF par lots classés (lot 53, retour PO
+ * D7, `m3-progress.ts`) — le lot courant (`t3_detail.m3Batch`) d'abord, les
+ * suivants aux cycles suivants ; jamais d'abandon (l'ancien statut
+ * TOO_MANY_CANDIDATES n'est plus produit, les traces antérieures sont
+ * reprises). Les Opérations rejetées par l'utilisateur (REJECTED) n'en font
+ * jamais partie (C6.3).
  *
  * Une fois par EMPREINTE de contexte (`m3-context.ts`) : la consolidation
  * enregistre l'empreinte courante (`t3_detail.m3Fingerprint`), la phase
@@ -23,7 +27,12 @@
  *     sur 24 h glissantes (lu dans `ai_usage_event`, traces de la passerelle) ;
  *   · plafond mensuel de coût du compte (passerelle, lot 22) ;
  *   au-delà : DEFERRED, repris au passage suivant (plafond de passage) ou
- *   le lendemain (plafond journalier, plafond mensuel atteint).
+ *   le lendemain (plafond journalier, plafond mensuel atteint). Ces plafonds
+ *   d'APPELS sont distincts du plafond des cartes « À traiter » réexaminées
+ *   (D20, `rearbitration-budget.ts`). Lot 53 (D7) : les candidats dus sont
+ *   servis du plus anciennement tenté au plus récent (aucune famine), chaque
+ *   report porte son motif et sa date de reprise (BO › Opérations › En
+ *   attente T3, colonne « Rapprochement IA »).
  *
  * GOUVERNANCE DU PROMPT
  * La branche « BRANCHE TASK = OPERATION_MATCH » doit figurer dans la version
@@ -81,6 +90,7 @@ export function M3_PENDING_SQL(promptVersionParam: string): string {
          OR c.t3_detail->'m3'->>'fingerprint' IS DISTINCT FROM c.t3_detail->>'m3Fingerprint'
          OR (c.t3_detail->'m3'->>'status' IN ('DEFERRED', 'ERROR')
              AND COALESCE((c.t3_detail->'m3'->>'retryAfter')::timestamptz, now()) <= now())
+         OR c.t3_detail->'m3'->>'status' = 'TOO_MANY_CANDIDATES'
          OR (c.t3_detail->'m3'->>'status' = 'PROMPT_UNAVAILABLE' AND ${promptVersionParam}::text IS NOT NULL
              AND c.t3_detail->'m3'->>'promptVersion' IS DISTINCT FROM ${promptVersionParam}::text))`;
 }
@@ -134,8 +144,15 @@ export interface OperationMatchPhaseResult {
   calls: number;
   deferred: number;
   unavailable: number;
+  /** Toujours 0 depuis le lot 53 (D7 : examen progressif) — conservé pour la forme des rapports. */
   tooMany: number;
   errors: number;
+  /** Lot 53 (D7) : contexte disparu entre deux passages — candidat remis en consolidation. */
+  requeued?: number;
+  /** Lot 53 (D7) : reports par motif (PASS_CAP, DAILY_CAP, COST_CAP_REACHED, AI_BLOCKED). */
+  deferredReasons?: Record<string, number>;
+  /** Lot 53 (D7) : candidats dus non servis ce passage (au-delà de la borne de lecture). */
+  notServed?: number;
   /** Documents dont un candidat a reçu un verdict : à reconsolider. */
   files: number[];
 }
@@ -167,6 +184,8 @@ export function m3Due(detail: Record<string, unknown> | null, now: Date, promptV
   if (m3.fingerprint !== fp) return true;
   if (m3.status === 'DEFERRED' || m3.status === 'ERROR') return !m3.retryAfter || Date.parse(m3.retryAfter) <= now.getTime();
   if (m3.status === 'PROMPT_UNAVAILABLE') return promptVersion !== null && m3.promptVersion !== promptVersion;
+  // Lot 53 (D7) : trace « trop de candidats » du lot 42 — reprise par l'examen progressif.
+  if (m3.status === 'TOO_MANY_CANDIDATES') return true;
   return false;
 }
 
@@ -190,14 +209,19 @@ export async function runOperationMatchPhase(
   if (!existe) return res;
 
   const prompt = await (opts.promptStatus ?? operationMatchPromptStatus)();
+  // Lot 53 (D7) : le plus anciennement tenté d'abord (jamais tenté en tête) —
+  // un candidat reporté par un plafond ne peut pas être dépassé indéfiniment.
   const lignes = (await pgClient.unsafe(
-    `SELECT c.id, c.file_id, c.t3_detail FROM document_operation_candidates c
+    `SELECT c.id, c.file_id, c.t3_detail, count(*) OVER () AS total FROM document_operation_candidates c
       WHERE c.account_id = $1 AND ${M3_PENDING_SQL('$3')}
-      ORDER BY c.id LIMIT $2`,
+      ORDER BY (c.t3_detail->'m3'->>'at') NULLS FIRST, c.id LIMIT $2`,
     [accountId, OPERATION_MATCH_SCAN_LIMIT, prompt.version] as never[],
-  )) as unknown as Array<{ id: number; file_id: number; t3_detail: Record<string, unknown> | null }>;
+  )) as unknown as Array<{ id: number; file_id: number; t3_detail: Record<string, unknown> | null; total: number | string }>;
   const dus = lignes.filter((l) => m3Due(l.t3_detail, now(), prompt.version));
   res.examined = dus.length;
+  res.notServed = Math.max(0, Number(lignes[0]?.total ?? 0) - lignes.length);
+  res.deferredReasons = {};
+  const reporte = (motif: string) => { res.deferredReasons![motif] = (res.deferredReasons![motif] ?? 0) + 1; };
   if (!dus.length) return res;
 
   const parPassage = opts.maxCallsPerPass ?? operationMatchCallsPerPass();
@@ -217,19 +241,32 @@ export async function runOperationMatchPhase(
     }
     if (res.calls >= parPassage || dejaJour + res.calls >= parJour) {
       const journalier = dejaJour + res.calls >= parJour;
+      // Lot 53 (D7) : un report n'est pas une tentative — `at` garde la dernière
+      // tentative réelle (vide si aucune) pour que le reporté passe en tête au
+      // cycle suivant ; `deferredAt` date le report.
+      const derniere = (l.t3_detail?.m3 as StoredM3 | undefined)?.at ?? '';
       await store(l.id, {
-        status: 'DEFERRED', fingerprint: fp, promptVersion: prompt.version, at,
+        status: 'DEFERRED', fingerprint: fp, promptVersion: prompt.version, at: derniere, deferredAt: at,
         retryAfter: new Date(now().getTime() + (journalier ? 24 * HEURE : 0)).toISOString(),
         detail: journalier ? 'DAILY_CAP' : 'PASS_CAP',
+        ...progressOf(l.t3_detail),
       });
       res.deferred++;
+      reporte(journalier ? 'DAILY_CAP' : 'PASS_CAP');
       continue;
     }
     const ctx = await prepareContext(accountId, l.id);
     if (!ctx) continue;
     if (ctx.operationIds.length === 0 || ctx.plausible.length > OPERATION_MATCH_MAX_CANDIDATES) {
-      await store(l.id, { status: 'TOO_MANY_CANDIDATES', fingerprint: ctx.fingerprint, promptVersion: prompt.version, at, operationIds: ctx.operationIds });
-      res.tooMany++;
+      // Lot 53 (D7) : contexte disparu ou trace antérieure au lot 53 — jamais
+      // abandonné : le candidat est remis en consolidation, qui recalcule son
+      // lot courant ; la trace dit pourquoi.
+      await store(l.id, {
+        status: 'DEFERRED', fingerprint: ctx.fingerprint, promptVersion: prompt.version, at, retryAfter: at,
+        detail: 'CONTEXT_CHANGED', operationIds: ctx.operationIds,
+      });
+      await requeueCandidate(l.id);
+      res.requeued = (res.requeued ?? 0) + 1;
       continue;
     }
     await opts.beforeCall?.('T3 Opérations — rapprochement sémantique (M3)');
@@ -259,7 +296,7 @@ export async function runOperationMatchPhase(
         status: code === 'COST_CAP_REACHED' || code === 'AI_BLOCKED' ? 'DEFERRED' : 'ERROR', fingerprint: ctx.fingerprint,
         promptVersion: prompt.version, at, retryAfter: new Date(now().getTime() + delai).toISOString(), detail: String(code).slice(0, 80),
       });
-      if (code === 'COST_CAP_REACHED' || code === 'AI_BLOCKED') res.deferred++;
+      if (code === 'COST_CAP_REACHED' || code === 'AI_BLOCKED') { res.deferred++; reporte(String(code)); }
       else {
         res.errors++;
         console.warn(`[t3-operations] M3 indisponible pour le candidat ${l.id} (compte ${accountId}) : ${code} — attente.`);
@@ -268,6 +305,18 @@ export async function runOperationMatchPhase(
   }
   res.files = [...fichiers].sort((a, b) => a - b);
   return res;
+}
+
+/** Progression de l'examen progressif recopiée dans la trace d'un report (diagnostic). */
+function progressOf(detail: Record<string, unknown> | null): Pick<StoredM3, 'operationIds'> {
+  const lot = detail?.m3Batch;
+  return Array.isArray(lot) ? { operationIds: lot.map(Number).filter((n) => Number.isSafeInteger(n)) } : {};
+}
+
+/** Remet un candidat en consolidation T3 (recalcul du lot courant au passage suivant). */
+async function requeueCandidate(candidateId: number): Promise<void> {
+  const { pgClient } = await import('@/db');
+  await pgClient.unsafe(`UPDATE document_operation_candidates SET t3_pending = true WHERE id = $1 AND status = 'ACTIVE'`, [candidateId] as never[]);
 }
 
 async function prepareContext(accountId: number, candidateId: number) {

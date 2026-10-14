@@ -21,7 +21,7 @@ import { diagnosticLinkFor } from '@/services/admin/anomaly.service';
 describe('lot 49 — AC08 : contrôle des relations intercomptes', () => {
   it('AC08 — les familles du ticket §5 sont toutes contrôlées', () => {
     const familles = new Set(CROSS_ACCOUNT_CHECKS.map((c) => c.family));
-    expect([...familles].sort()).toEqual(['agenda', 'documents', 'evenements', 'fournisseurs', 'jobs', 'preuves']);
+    expect([...familles].sort()).toEqual(['a_traiter', 'agenda', 'documents', 'evenements', 'fournisseurs', 'jobs', 'preuves']);
     const codes = CROSS_ACCOUNT_CHECKS.map((c) => c.code);
     expect(new Set(codes).size).toBe(codes.length);
     for (const c of ['DOC_ASSET', 'DOC_SUBSTRUCTURE', 'DOC_EQUIPMENT', 'DOC_SUPPLIER', 'EQUIPMENT_SUPPLIER', 'EVENT_DOCUMENT',

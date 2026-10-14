@@ -91,12 +91,31 @@ function purchaseQuestion(message: string): { def: CanonicalFieldDef; phrase: st
   return x ? { def: x.def, phrase: x.phrase } : null;
 }
 
+/**
+ * Forme d'une demande portant sur un champ (pure, testée) — lot 53 (53H) :
+ *   · `question`     question de LECTURE explicite (« Quelle est la date
+ *                    d'achat de la Polo ? ») : compréhension déterministe
+ *                    complète, lecture directe ;
+ *   · `command`      commande d'écriture (« Mets le kilométrage… ») : jamais
+ *                    une lecture (fast-path d'écriture inchangé) ;
+ *   · `count`        comptage (« combien de… ») : pas la valeur d'un champ ;
+ *   · `undetermined` rien de tout cela (« date d'achat polo ») : la forme et
+ *                    l'intention ne sont PAS complètement déterminées — c'est
+ *                    un signal de compréhension incomplète (→ UNDERSTAND),
+ *                    jamais une raison d'abandonner le champ.
+ * Mêmes motifs qu'avant le lot 53 : aucune formulation ajoutée.
+ */
+export type FieldRequestForm = 'question' | 'command' | 'count' | 'undetermined';
+export function fieldRequestForm(message: string): FieldRequestForm {
+  const m = plain(message);
+  if (/\b(combien de|nombre de)\b/.test(m)) return 'count';
+  if (/^\s*(mets|met|modifie|change|remplace|fixe|corrige|renseigne)\b/.test(m)) return 'command';
+  return /\?|\b(quel|quelle|quels|quelles|quand|combien|rappelle|donne|indique|dis-moi|c'est quoi|a quelle date)\b/.test(m) ? 'question' : 'undetermined';
+}
+
 /** Question de LECTURE (pas une commande, pas un comptage) (pure, testée). */
 export function isFieldQuestion(message: string): boolean {
-  const m = plain(message);
-  if (/\b(combien de|nombre de)\b/.test(m)) return false;
-  if (/^\s*(mets|met|modifie|change|remplace|fixe|corrige|renseigne)\b/.test(m)) return false;
-  return /\?|\b(quel|quelle|quels|quelles|quand|combien|rappelle|donne|indique|dis-moi|c'est quoi|a quelle date)\b/.test(m);
+  return fieldRequestForm(message) === 'question';
 }
 
 // ── Échéances à venir (T2-15) ──────────────────────────────────────────────

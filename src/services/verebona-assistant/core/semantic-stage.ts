@@ -24,12 +24,27 @@ import type { VerebonaIntent } from '../types/intents';
 import type { AssistantTargets } from './assistant-targets';
 import { CLARIFICATION_TTL_MS } from './clarification-builder';
 import {
-  detectValueNeed, selectInterpretations, semanticQuestion, semanticTerms,
+  contextualQuestion, detectValueNeed, selectInterpretations, semanticQuestion, semanticTerms,
   type BusinessSource, type SemanticNeed, type SemanticTrace, type ValueNeed,
 } from './semantic-scope';
 import { answerFromBusinessSource } from '../canonical/business-sources';
 import { buildTargetClarification } from './clarification-builder';
 import { routeForIntent } from './intent-router.service';
+import { analyserPeriode, aujourdhuiParis, type PeriodeResolue } from './query-period';
+
+/**
+ * Période RÉSOLUE de la question (lot 53, PO D21) : « en 2025 », « mars
+ * 2026 » (une période ambiguë a déjà fait l'objet d'une clarification de
+ * période en amont ; la reprise rejoue la demande avec la période choisie).
+ */
+function periodeDe(message: string): PeriodeResolue | null {
+  const p = analyserPeriode(message ?? '', aujourdhuiParis());
+  return p?.kind === 'resolved' ? p : null;
+}
+
+/** Bornes d'une clarification contextuelle (lot 53, PO Q24). */
+const CONTEXTUAL_MIN = 2;
+const CONTEXTUAL_MAX = 6;
 
 /** Ports utilisés par l'étape (sous-ensemble de `OrchestratorPorts`). */
 export interface SemanticPorts {
@@ -61,8 +76,11 @@ function intentionDonnees(route: IntentRoute, compris: IntentRoute | null): Vere
 }
 
 /** Réponse d'une interprétation unique (lecture canonique). */
-function repondre(s: BusinessSource, need: ValueNeed | null, assetName: string | null, intent: VerebonaIntent, trace: SemanticTrace): SemanticOutcome {
-  const r = answerFromBusinessSource(s, need, { assetName });
+function repondre(
+  s: BusinessSource, need: ValueNeed | null, assetName: string | null, intent: VerebonaIntent, trace: SemanticTrace,
+  period: PeriodeResolue | null = null,
+): SemanticOutcome {
+  const r = answerFromBusinessSource(s, need, { assetName, period });
   trace.semanticScopeResolved = true;
   trace.selectedSource = s.ref;
   trace.selectedOperationId = s.domain === 'operation' ? Number(s.ref.split(':')[1]) : null;
@@ -163,24 +181,38 @@ export async function runSemanticStage(p: SemanticStageParams): Promise<Semantic
     return { kind: 'insufficient', text: insufficientMessage(need.terms, bien?.name ?? null), intent, strategy: 'semantic.insufficient' };
   }
   trace.sourceDomainsAvailable = lues.domains;
-  const sel = selectInterpretations(lues.sources, need);
+  const periode = periodeDe(input.message);
+  const sel = selectInterpretations(lues.sources, need, { period: periode });
   trace.semanticCandidates = sel.scored.filter((x) => x.score > 0).slice(0, 20);
   trace.operationCandidates = sel.selected.filter((s) => s.domain === 'operation').map((s) => Number(s.ref.split(':')[1]));
 
   // ── 4. Une / plusieurs / aucune interprétation ──────────────────────────
   if (sel.selected.length === 1) {
     const s = sel.selected[0];
-    return repondre(s, need.need, bien?.name || (s.assetId != null ? assetNames[s.assetId] ?? null : null), intent, trace);
+    return repondre(s, need.need, bien?.name || (s.assetId != null ? assetNames[s.assetId] ?? null : null), intent, trace, periode);
   }
-  if (sel.selected.length === 0) {
+  // ── Lot 53 (PO Q24) : aucune correspondance — clarification CONTEXTUELLE ──
+  // Le bien est connu et porte plusieurs opérations susceptibles de porter
+  // la valeur demandée (contrats, services…) : on demande laquelle, choix
+  // issus des données, plutôt que le message générique. Jamais une seule
+  // opération servie à la place de la demande (ce serait une substitution) ;
+  // au-delà de CONTEXTUAL_MAX, la liste ne serait plus une question utile.
+  const contextuels = sel.selected.length === 0 && bien
+    ? lues.sources.filter((s) => s.domain === 'operation' && s.assetId === bien.id && porteValeurDemandee(s, need.need))
+    : [];
+  if (sel.selected.length === 0 && (contextuels.length < CONTEXTUAL_MIN || contextuels.length > CONTEXTUAL_MAX)) {
     trace.fallbackReason = 'NO_MATCHING_SOURCE';
     return { kind: 'insufficient', text: insufficientMessage(need.terms, bien?.name ?? null), intent, strategy: 'semantic.insufficient' };
   }
+  const contextuelle = sel.selected.length === 0;
   const now = new Date();
-  const cands = sel.selected.slice(0, 6);
+  const cands = (contextuelle ? contextuels : sel.selected).slice(0, CONTEXTUAL_MAX);
+  // Plusieurs biens parmi les choix : le nom du bien les distingue (lot 53, D21).
+  const plusieursBiens = new Set(cands.map((c) => c.assetId ?? null)).size > 1;
   trace.semanticAmbiguity = true;
   trace.clarificationCreated = true;
-  trace.clarificationReason = 'SEMANTIC_MULTIPLE_INTERPRETATIONS';
+  trace.clarificationReason = contextuelle ? 'SEMANTIC_NO_MATCH_CONTEXTUAL' : 'SEMANTIC_MULTIPLE_INTERPRETATIONS';
+  if (contextuelle) trace.fallbackReason = 'NO_MATCHING_SOURCE';
   const state: ClarificationState = {
     clarificationId: randomUUID(),
     conversationId: input.conversationId, accountId: input.accountId, userId: input.userId,
@@ -189,16 +221,19 @@ export async function runSemanticStage(p: SemanticStageParams): Promise<Semantic
       pageAssetId: Number(input.pageContext?.assetId) || null, assetId: bien?.id ?? null, requestedFacts: need.facts,
       semantic: { terms: need.terms, facts: need.facts, need: need.need, strategyCandidate: trace.structuredStrategyCandidate },
     },
-    ambiguity: { kind: 'semantic', field: 'source', reason: 'SEMANTIC_MULTIPLE_INTERPRETATIONS' },
+    ambiguity: { kind: 'semantic', field: 'source', reason: contextuelle ? 'SEMANTIC_NO_MATCH_CONTEXTUAL' : 'SEMANTIC_MULTIPLE_INTERPRETATIONS' },
     candidateType: 'business_source',
-    candidates: cands.map((s) => ({
-      id: `src_${s.ref.replace(/[^a-zA-Z0-9]+/g, '_')}`,
-      label: s.label,
-      ...(s.detail ? { secondaryLabel: s.detail } : {}),
-      sourceRef: s.ref,
-      assetId: s.assetId ?? bien?.id ?? null,
-    })),
-    question: semanticQuestion(cands),
+    candidates: cands.map((s) => {
+      const second = [plusieursBiens && s.assetId != null ? assetNames[s.assetId] ?? null : null, s.detail].filter(Boolean).join(' · ');
+      return {
+        id: `src_${s.ref.replace(/[^a-zA-Z0-9]+/g, '_')}`,
+        label: s.label,
+        ...(second ? { secondaryLabel: second } : {}),
+        sourceRef: s.ref,
+        assetId: s.assetId ?? bien?.id ?? null,
+      };
+    }),
+    question: contextuelle ? contextualQuestion(need.terms, cands, bien?.name ?? null) : semanticQuestion(cands),
     createdAt: now.toISOString(),
     expiresAt: new Date(now.getTime() + CLARIFICATION_TTL_MS).toISOString(),
     attemptCount: 0,
@@ -236,5 +271,13 @@ export async function resumeSemanticChoice(p: {
     return { kind: 'insufficient', text: 'Cet élément n’est plus disponible.', intent, strategy: 'semantic.choice_unavailable' };
   }
   p.trace.resolvedTargets = choix.assetId ? [choix.assetId] : [];
-  return repondre(s, choix.need, choix.assetId ? assetNames[choix.assetId] ?? null : null, intent, p.trace);
+  return repondre(s, choix.need, choix.assetId ? assetNames[choix.assetId] ?? null : null, intent, p.trace, periodeDe(p.input.message));
+}
+
+/** L'opération porte-t-elle la valeur demandée (clarification contextuelle, Q24) ? */
+function porteValeurDemandee(s: BusinessSource, need: ValueNeed | null): boolean {
+  if (need === 'amount') return s.amountCents != null;
+  if (need === 'end_date') return Boolean(s.endDate);
+  if (need === 'date') return Boolean(s.endDate ?? s.date);
+  return false;
 }

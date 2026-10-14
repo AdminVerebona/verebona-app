@@ -22,7 +22,7 @@ import { formatDate, formatDateTime, formatMoney } from '@/lib/admin/format';
 import type {
   HoldItem, IndicatorResult, IndicatorsReport, OperationDetail, OperationListItem,
 } from '@/services/business-operations/diagnostics/service';
-import type { HardAnomalyResult } from '@/services/business-operations/diagnostics/model';
+import { m3ProgressLabel, type HardAnomalyResult } from '@/services/business-operations/diagnostics/model';
 
 type Row = Record<string, unknown>;
 
@@ -133,12 +133,13 @@ export function HoldsTable({ items }: { items: HoldItem[] }) {
             <th className="px-3 py-2 font-medium">Issue T3</th>
             <th className="px-3 py-2 font-medium min-w-[14rem]">Motif</th>
             <th className="px-3 py-2 font-medium">Opérations proposées</th>
+            <th className="px-3 py-2 font-medium min-w-[14rem]">Rapprochement IA (M3)</th>
             <th className="px-3 py-2 font-medium">Dernier passage</th>
           </tr>
         </thead>
         <tbody>
           {items.length === 0 && (
-            <tr><td colSpan={9} className="px-3 py-6 text-center text-muted-foreground">Aucun candidat en attente.</td></tr>
+            <tr><td colSpan={10} className="px-3 py-6 text-center text-muted-foreground">Aucun candidat en attente.</td></tr>
           )}
           {items.map((c) => (
             <tr key={c.id} className="border-b last:border-b-0 align-top">
@@ -155,6 +156,15 @@ export function HoldsTable({ items }: { items: HoldItem[] }) {
                 {c.proposedOperationIds.length
                   ? c.proposedOperationIds.map((id, i) => <span key={id}>{i ? ', ' : ''}<Link href={`/admin/operations/${id}`} className="hover:underline">#{id}</Link></span>)
                   : '—'}
+              </td>
+              <td className="px-3 py-2 text-xs" data-m3-progress>
+                {c.m3 ? (
+                  <>
+                    <span>{m3ProgressLabel(c.m3)}</span>
+                    {c.m3.retryAfter ? <span className="block text-muted-foreground">reprise après {formatDateTime(c.m3.retryAfter)}</span> : null}
+                    {c.m3.lastAttemptAt ? <span className="block text-muted-foreground">dernière tentative {formatDateTime(c.m3.lastAttemptAt)}</span> : null}
+                  </>
+                ) : '—'}
               </td>
               <td className="px-3 py-2 whitespace-nowrap text-xs">{formatDateTime(c.processedAt)}</td>
             </tr>

@@ -86,7 +86,8 @@ const NON_SUJETS = new Set([
   'veux', 'voudrais', 'sais', 'savoir', 'dis', 'dire', 'dit', 'donne', 'donner', 'montre', 'montrer', 'affiche', 'afficher', 'voir',
   'connaitre', 'rappelle', 'rappeler', 'indique', 'indiquer', 'trouve', 'trouver', 'retrouve', 'retrouver', 'cherche', 'chercher',
   'svp', 'stp', 'merci', 'bonjour', 'actuellement', 'actuel', 'actuelle', 'reste', 'restent', 'arrive', 'arrivent',
-  'vaut', 'valent', 'valait', 'lieu', 'passe', 'concerne', 'concernant',
+  // Lot 53 (PO D22) : « vaut », « lieu », « passe », « concerne »… ne sont
+  // PLUS exclus d'office — leur rôle est lu dans le CONTEXTE (`roleGrammatical`).
   // Signaux de besoin : date / montant (§3 — des indices, pas des sujets).
   'date', 'dates', 'fin', 'finit', 'finissent', 'finira', 'termine', 'terminee', 'terminent', 'terminera', 'expire', 'expirent', 'expirera',
   'expiration', 'echeance', 'echeances', 'echu', 'echue', 'jusqu', 'terme', 'bientot', 'prochain', 'prochaine', 'prochains', 'prochaines',
@@ -99,6 +100,39 @@ const NON_SUJETS = new Set([
 
 /** Mois et années : une période, jamais un sujet. */
 const PERIODE = /^(janvier|fevrier|mars|avril|mai|juin|juillet|aout|septembre|octobre|novembre|decembre|\d{1,4})$/;
+
+/**
+ * ANALYSE CONTEXTUELLE (lot 53, retour PO D22) — remplace l'exclusion
+ * systématique de « vaut », « lieu », « passe », « concerne »… (lot 49).
+ *
+ * Ces mots sont des HOMOGRAPHES : verbe ou locution dans « quand a lieu… »,
+ * « ce qui se passe », « l'an passé », « pour ce qui concerne… », « combien
+ * vaut… » ; NOM (donc sujet métier) dans « le lieu de stockage », « le passe
+ * Navigo ». Leur rôle se lit dans la phrase : un nom est introduit par un
+ * DÉTERMINANT (« le », « mon », « quel »…), un verbe ou une locution ne l'est
+ * jamais. Un nom est donc conservé dans le résidu (→ compréhension, sources,
+ * clarification si plusieurs lectures) ; un verbe ou une locution, non.
+ * Aucun mot n'est plus exempté par principe : un homographe employé comme nom
+ * déclenche la même analyse que n'importe quel autre sujet.
+ */
+const HOMOGRAPHES = /^(lieu|lieux|passe|passee|passes|passees|concerne|concernee|concernes|concernees|concernent|concernant|concernait|vaut|valent|valait|valaient|vaudra)$/;
+const DETERMINANTS = new Set([
+  'le', 'la', 'les', 'l', 'un', 'une', 'du', 'des', 'au', 'aux', 'ce', 'cet', 'cette', 'ces', 'mon', 'ma', 'mes', 'ton', 'ta', 'tes',
+  'son', 'sa', 'ses', 'notre', 'nos', 'votre', 'vos', 'leur', 'leurs', 'quel', 'quelle', 'quels', 'quelles', 'chaque',
+]);
+
+/**
+ * Rôle d'un homographe dans la question (pure, testée) : `nom` s'il est
+ * introduit par un déterminant (hors locution « au lieu de »), `grammatical`
+ * sinon (verbe, participe, locution : « a lieu », « se passe », « an passé »).
+ */
+export function roleGrammatical(tokens: readonly string[], i: number): 'nom' | 'grammatical' {
+  const w = tokens[i];
+  const avant = tokens[i - 1];
+  if (!avant || !DETERMINANTS.has(avant)) return 'grammatical';
+  if (/^lieux?$/.test(w) && avant === 'au' && /^(de|d|du|des)$/.test(tokens[i + 1] ?? '')) return 'grammatical';
+  return 'nom';
+}
 
 /**
  * RÉSIDU SÉMANTIQUE (pure, testée) : termes significatifs de la question
@@ -122,8 +156,11 @@ export function semanticResidue(
   const noms = new Set((opts.assetNames ?? []).flatMap((n) => tokensOf(n)));
   const consommes = new Set((opts.consumed ?? []).flatMap((c) => tokensOf(c)));
   const out = new Set<string>();
-  for (const w of tokensOf(m)) {
+  const mots = tokensOf(m);
+  for (const [i, w] of mots.entries()) {
     if (w.length < 3 || NON_SUJETS.has(w) || PERIODE.test(w)) continue;
+    // Lot 53 (D22) : homographe verbe / nom — le CONTEXTE décide.
+    if (HOMOGRAPHES.test(w) && roleGrammatical(mots, i) === 'grammatical') continue;
     if (/-(je|tu|il|elle|on|nous|vous|ils|elles|t|ce)$/.test(w)) continue;
     if (noms.has(w) || consommes.has(w) || consumedByStem(w, consommes) || isAssetVocabularyWord(w)) continue;
     out.add(w);
@@ -249,9 +286,16 @@ export interface SemanticSelection {
  * Une seule interprétation → réponse directe ; plusieurs → clarification ;
  * aucune → information insuffisante (jamais un total plus large).
  */
-export function selectInterpretations(sources: readonly BusinessSource[], need: SemanticNeed): SemanticSelection {
+export function selectInterpretations(
+  sources: readonly BusinessSource[], need: SemanticNeed, opts: { period?: { from: string; to: string } | null } = {},
+): SemanticSelection {
   const representes = new Set(sources.filter((s) => s.domain === 'operation').flatMap((s) => s.representedFileIds ?? []));
-  const utiles = sources.filter((s) => !(s.domain === 'document' && representes.has(Number(s.ref.split(':')[1]))));
+  // Lot 53 (PO D21) : période demandée — une pièce ou une échéance DATÉE hors
+  // de la période n'y répond pas (une opération reste plausible : sa réponse
+  // ne retient que les montants de la période, ou dit qu'il n'y en a pas).
+  const horsPeriode = (s: BusinessSource) => Boolean(opts.period) && (s.domain === 'document' || s.domain === 'agenda')
+    && Boolean(s.date) && (String(s.date).slice(0, 10) < opts.period!.from || String(s.date).slice(0, 10) > opts.period!.to);
+  const utiles = sources.filter((s) => !(s.domain === 'document' && representes.has(Number(s.ref.split(':')[1]))) && !horsPeriode(s));
   const scored = utiles.map((s) => {
     const parFait = s.domain === 'field' && s.fieldKey != null && need.facts.includes(s.fieldKey) ? 1 : 0;
     return { s, score: porteLaValeur(s, need.need) ? sourceScore(s, need.terms) + parFait : 0 };
@@ -282,6 +326,22 @@ export function semanticQuestion(cands: readonly BusinessSource[]): string {
   return 'Plusieurs éléments correspondent à votre question. Lequel voulez-vous consulter ?';
 }
 
+/**
+ * Lot 53 (PO Q24) — question de clarification CONTEXTUELLE quand aucune
+ * source ne correspond aux termes de la demande mais que le bien porte
+ * plusieurs contrats / services susceptibles d'y répondre (libellés des
+ * données différents des mots de l'utilisateur) : « De quel contrat ou
+ * service parlez-vous ? » plutôt que le message générique d'absence.
+ * Pure, testée ; texte soumis à la relecture du PO (Q24).
+ */
+export function contextualQuestion(terms: readonly string[], cands: readonly BusinessSource[], assetName: string | null): string {
+  const sujet = terms.length ? `« ${terms.slice(0, 3).join(' ')} »` : 'votre demande';
+  const pour = assetName ? ` pour ${assetName}` : '';
+  const noms = [...new Set(cands.map((c) => c.kindNoun ?? null))];
+  const question = noms.length === 1 && noms[0] === 'contrat' ? 'De quel contrat ou service parlez-vous ?' : semanticQuestion(cands);
+  return `Je n’ai trouvé aucun élément mentionnant ${sujet}${pour}. ${question}`;
+}
+
 /** Trace d'observabilité du périmètre sémantique (ticket §13). */
 export interface SemanticTrace {
   deterministicMatch: string | null;
@@ -309,7 +369,7 @@ export interface SemanticTrace {
   clarificationReason: string | null;
   fallbackReason: string | null;
   /** Ce qui a déclenché l'étape (`none` : décision déterministe exécutée telle quelle). */
-  trigger: 'none' | 'weak_route' | 'structured_scope' | 'resume_choice' | 'resume_scope';
+  trigger: 'none' | 'weak_route' | 'structured_scope' | 'resume_choice' | 'resume_scope' | 'classified_scope';
 }
 
 export function emptySemanticTrace(p: Pick<SemanticTrace, 'trigger' | 'deterministicMatch' | 'deterministicConfidence'>): SemanticTrace {

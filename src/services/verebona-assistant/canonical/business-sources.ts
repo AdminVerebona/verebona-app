@@ -98,6 +98,10 @@ export function operationBusinessSource(op: AssistantOperationRead, assetId: num
       typeCode: op.typeCode,
       operationId: op.id,
       realizedCount: op.components.filter((c) => c.kind === 'REALIZED_COST').length,
+      // Lot 53 (PO D21) : montants réalisés datés, pour une question bornée à une période.
+      realized: op.components.filter((c) => c.kind === 'REALIZED_COST')
+        .map((c) => ({ cents: componentEurCents(c), date: c.economicDate ?? null }))
+        .filter((c): c is { cents: number; date: string | null } => c.cents != null),
     },
   };
 }
@@ -284,13 +288,35 @@ export async function readBusinessSource(accountId: number, ref: string, ctx: { 
 }
 
 /** Réponse SERVEUR depuis une source métier choisie (pure, testée) — lecture canonique, aucune génération. */
-export function answerFromBusinessSource(s: BusinessSource, need: ValueNeed | null, ctx: { assetName?: string | null } = {}): { text: string; sources: RetrievedSource[] } {
+export function answerFromBusinessSource(
+  s: BusinessSource, need: ValueNeed | null,
+  ctx: { assetName?: string | null; period?: { from: string; to: string; label: string } | null } = {},
+): { text: string; sources: RetrievedSource[] } {
   const sources = s.source ? [s.source] : [];
   const pour = ctx.assetName ? ` (${ctx.assetName})` : '';
   const meta = (s.meta ?? {}) as Record<string, unknown>;
   if (s.domain === 'field') {
     const v = String(meta.display ?? s.detail ?? '');
     return { text: `${s.label}${pour} : ${v}.`, sources };
+  }
+  if (need === 'amount' && ctx.period && s.domain === 'operation') {
+    // ══════════════════════════════════════════════════════════════════════
+    // Lot 53 (PO D21) — PÉRIODE DEMANDÉE : jamais le total de toute la vie
+    // de l'opération à la place de celui de la période. Seuls les montants
+    // réalisés DATÉS dans la période sont comptés ; aucun → absence dite.
+    // ══════════════════════════════════════════════════════════════════════
+    const p = ctx.period;
+    const realises = Array.isArray(meta.realized) ? (meta.realized as Array<{ cents: number; date: string | null }>) : [];
+    const dans = realises.filter((r) => r.date && r.date.slice(0, 10) >= p.from && r.date.slice(0, 10) <= p.to)
+      .sort((a, b) => (b.date ?? '').localeCompare(a.date ?? ''));
+    if (!dans.length) return { text: `${s.label}${pour} : aucun montant documenté sur ${p.label}.`, sources };
+    const total = dans.reduce((n, r) => n + r.cents, 0);
+    if (dans.length === 1) return { text: `${s.label}${pour} : ${formatEur(total)} documenté sur ${p.label} (${frDate(dans[0].date)}).`, sources };
+    return { text: `${s.label}${pour} : total documenté ${formatEur(total)} sur ${p.label} (${dans.length} montants, dernier ${formatEur(dans[0].cents)} le ${frDate(dans[0].date)}).`, sources };
+  }
+  if (need === 'amount' && ctx.period && s.domain === 'document' && s.amountCents != null) {
+    const d = s.date ? String(s.date).slice(0, 10) : null;
+    if (!d || d < ctx.period.from || d > ctx.period.to) return { text: `« ${s.label} »${pour} : aucun montant documenté sur ${ctx.period.label}.`, sources };
   }
   if (need === 'amount') {
     if (s.domain === 'operation') {

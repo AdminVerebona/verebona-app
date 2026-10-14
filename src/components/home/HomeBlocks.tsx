@@ -412,7 +412,7 @@ export function RecentDocuments({ docs, onUpload, className = '' }: { docs: Home
     <HomeSection
       id="home-docs"
       title="Documents récents"
-      link={docs.length > 0 ? { href: '/documents', label: 'Tous' } : null}
+      link={docs.length > 0 ? { href: '/documents', label: 'Tous les documents', short: 'Tous' } : null}
       className={className}
       bodyClassName="mt-3"
     >

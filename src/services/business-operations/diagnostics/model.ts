@@ -206,6 +206,10 @@ const REASONS: Readonly<Record<string, string>> = {
   USER_CONFIRMED: 'rapprochement confirmé par l’utilisateur',
   SAME_SOURCE: 'même source documentaire',
   INVALIDATED: 'Opération invalidée',
+  // Lot 53 (D11, Q17) : décisions utilisateur sur un sinistre.
+  CLAIM_FORM_ASSET_EXCLUDED: 'bien retiré du sinistre par l’utilisateur (exclusion mémorisée)',
+  USER_CLAIM_DETACHED: 'intervention dissociée du sinistre par l’utilisateur',
+  USER_CLAIM_ASSET_REINSTATED: 'bien réintégré au sinistre par l’utilisateur',
 };
 
 const REFERENCE_KIND_LABELS: Readonly<Record<string, string>> = {
@@ -227,6 +231,73 @@ export function explainReason(code: string | null | undefined): string {
   if (cycle) return `même cycle de possession (${cycle[1] === 'ACQUISITION' ? 'acquisition' : 'cession'})`;
   if (code.startsWith('MIGRATION_')) return 'migration des données existantes';
   return code;
+}
+
+// ── Rapprochement IA progressif (lot 53, retour PO D7) ─────────────────────
+
+/** État de l'examen M3 d'un candidat en attente (trace `t3_detail`), pour le BO. */
+export interface M3ProgressView {
+  /** DONE, DEFERRED, ERROR, PROMPT_UNAVAILABLE, WAITING (jamais tenté), TOO_MANY_CANDIDATES (trace antérieure). */
+  status: string;
+  /** Motif d'un report ou d'une erreur (PASS_CAP, DAILY_CAP, COST_CAP_REACHED, CONTEXT_CHANGED…). */
+  detail: string | null;
+  retryAfter: string | null;
+  lastAttemptAt: string | null;
+  /** Lot courant soumis (ou à soumettre) au modèle. */
+  batch: number[];
+  /** Opérations plausibles déjà examinées (écartées), restantes, total. */
+  examined: number;
+  remaining: number;
+  total: number;
+  rounds: number;
+}
+
+const ids = (v: unknown): number[] => (Array.isArray(v) ? v.map(Number).filter((n) => Number.isSafeInteger(n)) : []);
+
+/** Trace brute (`t3_detail.m3`, `m3Batch`, `m3Progress`, `plausible`) → vue BO (pure). */
+export function toM3ProgressView(m3: unknown, batch: unknown, progress: unknown, plausible: unknown): M3ProgressView | null {
+  const t = (m3 && typeof m3 === 'object' ? m3 : null) as Record<string, unknown> | null;
+  const p = (progress && typeof progress === 'object' ? progress : null) as Record<string, unknown> | null;
+  const lot = ids(batch);
+  const toutes = ids(plausible);
+  if (!t && !p && !lot.length && !toutes.length) return null;
+  const examined = ids(p?.distinct).length;
+  const total = typeof p?.total === 'number' ? p.total : toutes.length;
+  const remaining = typeof p?.remaining === 'number' ? p.remaining : Math.max(0, total - examined - lot.length);
+  return {
+    status: typeof t?.status === 'string' ? t.status : 'WAITING',
+    detail: typeof t?.detail === 'string' ? t.detail : null,
+    retryAfter: typeof t?.retryAfter === 'string' ? t.retryAfter : null,
+    lastAttemptAt: typeof t?.at === 'string' && t.at ? t.at : null,
+    batch: lot.length ? lot : toutes.slice(0, 5),
+    examined, remaining, total,
+    rounds: typeof p?.rounds === 'number' ? p.rounds : 0,
+  };
+}
+
+const M3_STATUS_LABELS: Readonly<Record<string, string>> = {
+  WAITING: 'à soumettre (prochain cycle T3)',
+  DONE: 'verdict obtenu',
+  DEFERRED: 'reporté',
+  ERROR: 'erreur, nouvel essai prévu',
+  PROMPT_UNAVAILABLE: 'prompt T3 sans la tâche OPERATION_MATCH (activer la version livrée)',
+  TOO_MANY_CANDIDATES: 'trace antérieure au lot 53 : reprise par l’examen progressif',
+};
+const M3_DETAIL_LABELS: Readonly<Record<string, string>> = {
+  PASS_CAP: 'plafond d’appels du passage',
+  DAILY_CAP: 'plafond d’appels du jour',
+  COST_CAP_REACHED: 'plafond de coût du compte',
+  AI_BLOCKED: 'IA suspendue',
+  CONTEXT_CHANGED: 'contexte modifié : lot recalculé',
+};
+
+/** « reporté (plafond d'appels du jour) · lot 6/12 examiné… » (pure). */
+export function m3ProgressLabel(v: M3ProgressView | null): string {
+  if (!v) return '—';
+  const etat = M3_STATUS_LABELS[v.status] ?? v.status;
+  const motif = v.detail ? ` (${M3_DETAIL_LABELS[v.detail] ?? v.detail})` : '';
+  const lot = v.total > 0 ? ` · ${v.examined} examinée(s), ${v.batch.length} dans le lot courant, ${v.remaining} restante(s) sur ${v.total}` : '';
+  return `${etat}${motif}${lot}`;
 }
 
 // ── Montant net indicatif (B23) ─────────────────────────────────────────────

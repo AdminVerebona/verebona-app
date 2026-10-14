@@ -20,6 +20,8 @@ export function validatePassword(pwd: string): boolean {
 
 export interface PasswordValidationError {
   error: string;
+  /** Code stable lu par les formulaires (inscription, réinitialisation) — lot 53A. */
+  code: 'WEAK_PASSWORD';
   message: string;
   details: {
     rules: string[];
@@ -29,6 +31,7 @@ export interface PasswordValidationError {
 export function getPasswordValidationError(): PasswordValidationError {
   return {
     error: "WEAK_PASSWORD",
+    code: "WEAK_PASSWORD",
     message: "Le mot de passe ne respecte pas les exigences de sécurité.",
     details: {
       rules: [

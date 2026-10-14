@@ -188,6 +188,7 @@ async function loadAssociations(fileIds: number[]) {
   const rows = await db
     .select({
       fileId: assetFiles.id,
+      accountId: assetFiles.accountId,
       assetId: assetFiles.assetId,
       linkedAssetId: assetFiles.linkedAssetId,
       otherAssetIds: OTHER_ASSET_IDS_SQL,
@@ -201,16 +202,20 @@ async function loadAssociations(fileIds: number[]) {
   const assetIds = [...new Set(rows.flatMap((r) => [r.assetId, r.linkedAssetId, ...others(r.otherAssetIds)]).filter(Boolean))] as number[];
   const equipmentIds = [...new Set(rows.map((r) => r.equipmentId).filter(Boolean))] as number[];
 
+  // Lot 53 (retour PO D23) : seuls les biens / équipements du MÊME compte que
+  // le document sont associés — une relation intercomptes héritée n'en
+  // révèle ni le nom ni l'existence.
   const assetRows = assetIds.length
-    ? await db.select({ id: assets.id, name: assets.name }).from(assets).where(inArray(assets.id, assetIds))
+    ? await db.select({ id: assets.id, name: assets.name, accountId: assets.accountId }).from(assets).where(inArray(assets.id, assetIds))
     : [];
   const equipmentRows = equipmentIds.length
-    ? await db.select({ id: equipments.id, name: equipments.name }).from(equipments)
+    ? await db.select({ id: equipments.id, name: equipments.name, accountId: assets.accountId }).from(equipments)
+        .innerJoin(assets, eq(assets.id, equipments.assetId))
         .where(inArray(equipments.id, equipmentIds))
     : [];
 
-  const assetName = new Map(assetRows.map((a) => [a.id, a.name]));
-  const equipmentName = new Map(equipmentRows.map((e) => [e.id, e.name]));
+  const assetInfo = new Map(assetRows.map((a) => [a.id, a]));
+  const equipmentInfo = new Map(equipmentRows.map((e) => [e.id, e]));
 
   const byFileAssets = new Map<number, Array<{ id: number; name: string; kind: 'asset' }>>();
   const byFileEquipments = new Map<number, Array<{ id: number; name: string; kind: 'equipment' }>>();
@@ -219,15 +224,17 @@ async function loadAssociations(fileIds: number[]) {
     // Déduplication exigée par le §8.3 : `assetId` et `linkedAssetId` peuvent
     // désigner le même bien.
     // Lot 32C (PO 9) : les biens liés par la relation N-N s'ajoutent.
-    const ids = [...new Set([row.assetId, row.linkedAssetId, ...others(row.otherAssetIds)].filter(Boolean))] as number[];
+    const ids = ([...new Set([row.assetId, row.linkedAssetId, ...others(row.otherAssetIds)].filter(Boolean))] as number[])
+      .filter((id) => assetInfo.get(id)?.accountId === row.accountId);
     byFileAssets.set(
       row.fileId,
-      ids.map((id) => ({ id, name: assetName.get(id) ?? `Bien ${id}`, kind: 'asset' as const })),
+      ids.map((id) => ({ id, name: assetInfo.get(id)?.name ?? `Bien ${id}`, kind: 'asset' as const })),
     );
-    if (row.equipmentId) {
+    const equip = row.equipmentId ? equipmentInfo.get(row.equipmentId) : undefined;
+    if (row.equipmentId && equip && equip.accountId === row.accountId) {
       byFileEquipments.set(row.fileId, [{
         id: row.equipmentId,
-        name: equipmentName.get(row.equipmentId) ?? `Élément ${row.equipmentId}`,
+        name: equip.name ?? `Élément ${row.equipmentId}`,
         kind: 'equipment' as const,
       }]);
     }

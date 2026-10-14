@@ -334,6 +334,12 @@ export async function resolveArbitration(
       return resolveDocumentAssetConflict(tx, action, value, accountId, options);
     }
 
+    // Rapprochement agenda incertain de la projection (lot 53, retour PO D14).
+    if (action.ruleCode === 'AGENDA-PROJECTION-MATCH') {
+      const { resolveAgendaProjectionMatch } = await import('./agenda-projection-cards');
+      return resolveAgendaProjectionMatch(tx, action, value, accountId, options);
+    }
+
     // Ambiguïtés de consolidation des Opérations (lot 42, ch. 20, C19) :
     // décision durable (C6.3, B19) puis reconsolidation après commit.
     {
@@ -461,6 +467,11 @@ export async function undoArbitration(
   if (action.ruleCode === 'LINK-ASSET-CONFLICT') {
     const { undoDocumentAssetConflict } = await import('./document-asset-conflict');
     return undoDocumentAssetConflict(action, accountId);
+  }
+
+  if (action.ruleCode === 'AGENDA-PROJECTION-MATCH') {
+    const { undoAgendaProjectionMatch } = await import('./agenda-projection-cards');
+    return undoAgendaProjectionMatch(action, accountId);
   }
 
   {

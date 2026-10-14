@@ -53,7 +53,8 @@ import {
   buildCandidateIdentity, consolidateOperationState, normalizeProvider,
   type CandidateIdentity, type CandidateRecord, type SourceContribution,
 } from './model';
-import { applyM3Verdict, decideCandidate, type CandidateDecision, type ExistingOperation, type T3Outcome } from './matching';
+import { applyM3Verdict, decideCandidate, rankPlausible, type CandidateDecision, type ExistingOperation, type MatchContext, type T3Outcome } from './matching';
+import { advanceM3Progress, m3ProgressFor, m3SubjectFingerprint, selectM3Batch, type M3Progress } from './m3-progress';
 import type { AmountChoice } from './model';
 import { OPERATION_MATCH_MAX_CANDIDATES, type OperationMatchVerdict } from '@/services/ai/reconciliation/master/operation-match';
 import { emptyCardNeeds, type OperationCardNeeds } from './card-needs';
@@ -61,6 +62,7 @@ import { operationMatchContext, type StoredM3 } from './m3-context';
 import { applyStructuredAuthority, assetDataContribution, type AssetDataRow } from './asset-data';
 import { agendaContribution, applyAgendaAuthority } from './agenda-source';
 import { loadAgendaSourceItem } from './agenda-source-read';
+import { applyAssetExclusions, exclusionsTableReady, loadActiveExclusions } from './asset-exclusions';
 
 /**
  * Sources AGENDA actives dont l'élément n'existe plus dans le compte (lot
@@ -190,7 +192,10 @@ export async function prepareOperationMatch(accountId: number, candidateId: numb
     const ids = targetIdsOf([c], file.assetId);
     const actx = await loadAssetContext(tx, accountId, ids.assets, ids.equipments);
     const identity = buildCandidateIdentity(c, { fileAssetId: file.assetId, liveAssetIds: actx.live, equipmentAssets: actx.equipments });
-    const plausible = (((c.t3Detail?.plausible as unknown[] | undefined) ?? []).map(Number)).filter((n) => Number.isSafeInteger(n));
+    // Lot 53 (D7) : le LOT courant de l'examen progressif (au plus 5 Opérations),
+    // à défaut (trace antérieure au lot 53) les Opérations plausibles.
+    const lot = (c.t3Detail?.m3Batch ?? c.t3Detail?.plausible) as unknown[] | undefined;
+    const plausible = ((lot ?? []).map(Number)).filter((n) => Number.isSafeInteger(n));
     const m3 = await operationMatchContext(tx, accountId, identity, plausible);
     return { fileId: c.fileId, ...m3, plausible };
   });
@@ -296,7 +301,10 @@ export async function loadMatchableOperations(
        ORDER BY (o.invalidated_at IS NULL) DESC, o.id DESC
        LIMIT ${MATCHING_OPERATION_LIMIT}
     )
-    SELECT o.id, o.type_code, o.status, o.provider, o.invalidated_at IS NOT NULL AS invalidated,
+    SELECT o.id, o.type_code, o.status, o.provider, o.invalidated_at IS NOT NULL AS invalidated, o.technical_label,
+           -- Lot 53 (D5) : montants actifs (cohérence des montants du faisceau).
+           COALESCE((SELECT json_agg(json_build_object('kind', fc.kind, 'amountMinor', fc.amount_minor, 'currency', btrim(fc.currency)))
+                       FROM business_operation_financial_components fc WHERE fc.operation_id = o.id AND fc.active), '[]') AS amounts,
            o.planned_date::text AS planned_date, o.start_date::text AS start_date,
            o.realized_date::text AS realized_date, o.end_date::text AS end_date,
            COALESCE((SELECT array_agg(l.asset_id ORDER BY l.asset_id) FROM business_operation_asset_links l
@@ -307,12 +315,23 @@ export async function loadMatchableOperations(
            (EXISTS (SELECT 1 FROM business_operation_sources s WHERE s.operation_id = o.id AND s.active AND s.source_kind = 'AGENDA')
             AND NOT EXISTS (SELECT 1 FROM business_operation_sources s WHERE s.operation_id = o.id AND s.active AND s.source_kind <> 'AGENDA')) AS agenda_only
       FROM business_operations o JOIN cand ON cand.id = o.id`);
+  // Lot 53 (Q17) : un bien retiré d'un sinistre par l'utilisateur reste un bien
+  // que ce sinistre CONCERNE pour le rapprochement (un document qui le cite est
+  // bien celui du sinistre — carte de décision —, jamais une contradiction).
+  const exclus = new Map<number, number[]>();
+  if (r.length && await exclusionsTableReady(tx)) {
+    for (const e of await rows<{ operation_id: string; asset_id: number }>(tx, sql`
+      SELECT operation_id, asset_id FROM business_operation_asset_exclusions
+       WHERE account_id = ${accountId} AND active AND operation_id = ANY(${intArray(r.map((x) => Number(x.id)))}::bigint[])`)) {
+      exclus.set(Number(e.operation_id), [...(exclus.get(Number(e.operation_id)) ?? []), Number(e.asset_id)]);
+    }
+  }
   return r.map((x) => ({
     id: Number(x.id),
     typeCode: (x.type_code as BusinessOperationTypeCode | null) ?? null,
     status: x.status as BusinessOperationStatus,
     providerKey: normalizeProvider(x.provider as string | null),
-    assetIds: ((x.assets as number[] | null) ?? []).map(Number),
+    assetIds: [...new Set([...((x.assets as number[] | null) ?? []).map(Number), ...(exclus.get(Number(x.id)) ?? [])])].sort((a, b) => a - b),
     refs: ((x.refs as Array<{ kind: ReferenceKind; normalized: string }> | null) ?? []),
     plannedDate: (x.planned_date as string | null) ?? null,
     startDate: (x.start_date as string | null) ?? null,
@@ -320,6 +339,9 @@ export async function loadMatchableOperations(
     endDate: (x.end_date as string | null) ?? null,
     invalidated: Boolean(x.invalidated),
     ...(x.agenda_only === true ? { agendaOnly: true } : {}),
+    label: (x.technical_label as string | null) ?? null,
+    amounts: ((x.amounts as Array<{ kind: string; amountMinor: number | string; currency: string }> | null) ?? [])
+      .map((a) => ({ kind: String(a.kind), amountMinor: Number(a.amountMinor), currency: String(a.currency) })),
   }));
 }
 
@@ -541,7 +563,24 @@ export async function reconsolidateOperation(
   if (op.provider === null && state.provider) attrs.provider = state.provider;
   changes.track(await repo.updateAttributes(operationId, attrs, 'T3_ATTRIBUTES_CONSOLIDATED'));
 
-  await syncAssets(repo, tx, operationId, managedIds, state.assets, changes);
+  // Lot 53 (retour PO Q17) : un bien retiré du sinistre par l'utilisateur n'est
+  // jamais relié à nouveau automatiquement ; un document non arbitré qui le
+  // cite → carte de décision (document à l'origine).
+  let assetsVoulus = state.assets;
+  if (op.typeCode === 'CLAIM') {
+    const exclusions = await loadActiveExclusions(tx, accountId, operationId);
+    if (exclusions.length) {
+      const fichiers = new Map(sources.filter((x) => x.managed && x.kind === 'DOCUMENT').map((x) => [x.id, Number(x.entityKey)]));
+      const citations = contributions.flatMap((c) => {
+        const f = fichiers.get(c.sourceId);
+        return f === undefined ? [] : c.identity.assetIds.map((assetId) => ({ assetId, fileId: f }));
+      });
+      const r = applyAssetExclusions(state.assets, citations, exclusions);
+      assetsVoulus = r.assets;
+      for (const k of r.conflicts) cards.exclusion.push({ operationId, assetId: k.assetId, fileIds: k.fileIds });
+    }
+  }
+  await syncAssets(repo, tx, operationId, managedIds, assetsVoulus, changes);
   await syncEquipments(repo, tx, operationId, managedIds, state.equipments, changes);
   await syncReferences(repo, tx, operationId, managedIds, activeIds, state.references, changes);
   // Lot 44 (C19, Q4) : l'indemnité SAISIE d'un sinistre (formulaire ou ancien
@@ -587,7 +626,14 @@ async function consolidateClaimParent(
   decisions: OpSource[], sources: OpSource[], cards: OperationCardNeeds, changes: Changes,
 ): Promise<void> {
   const op = await repo.load(operationId, { allowInactive: true });
-  if (op.typeCode !== 'INTERVENTION' || op.invalidatedAt !== null || op.parentOperationId !== null) return;
+  if (op.typeCode !== 'INTERVENTION' || op.invalidatedAt !== null) return;
+  if (op.parentOperationId !== null) {
+    // Lot 53 (retour PO D11) : un parent déjà posé n'est jamais retiré
+    // automatiquement ; s'il ne tient plus qu'à une facture retirée des
+    // actions du sinistre, l'utilisateur est consulté.
+    await reviewClaimParentJustification(tx, repo.accountId, operationId, op.parentOperationId, state, decisions, sources, cards);
+    return;
+  }
   const choix = [...decisions].reverse().find((d) => (d.decision as { decision?: unknown }).decision === 'CLAIM_PARENT');
   if (choix) {
     const parentId = (choix.decision as { parentOperationId?: unknown }).parentOperationId;
@@ -638,6 +684,48 @@ async function consolidateClaimParent(
       ?? [...sources].reverse().find((x) => x.managed && x.kind === 'DOCUMENT');
     if (porteuse) cards.parent.push({ operationId, fileId: Number(porteuse.entityKey), claimIds: claims });
   }
+}
+
+/**
+ * Lot 53 (retour PO D11) — le rattachement d'une intervention à son sinistre
+ * est-il encore justifié ? Seuls les rattachements posés par la FACTURE d'une
+ * action (`CLAIM_ACTION_INVOICE`) sont réexaminés. Justifié si l'un de ces
+ * éléments subsiste : une action du sinistre désigne encore une facture de
+ * l'intervention ; une référence de sinistre commune ; une décision
+ * utilisateur qui confirme ce sinistre. Sinon : carte « À traiter » (garder /
+ * dissocier) — jamais de dissociation automatique.
+ */
+async function reviewClaimParentJustification(
+  tx: DbTx, accountId: number, operationId: number, parentId: number, state: ReturnType<typeof consolidateOperationState>,
+  decisions: OpSource[], sources: OpSource[], cards: OperationCardNeeds,
+): Promise<void> {
+  const [parent] = await rows<{ type_code: string | null }>(tx, sql`
+    SELECT type_code FROM business_operations WHERE id = ${parentId} AND account_id = ${accountId} AND invalidated_at IS NULL AND merged_into_operation_id IS NULL`);
+  if (parent?.type_code !== 'CLAIM') return;
+  const [pose] = await rows<{ reason_code: string }>(tx, sql`
+    SELECT reason_code FROM business_operation_history
+     WHERE operation_id = ${operationId} AND account_id = ${accountId} AND event_type = 'PARENT_CHANGED'
+       AND (after_json->>'parent_operation_id')::bigint = ${parentId}
+     ORDER BY id DESC LIMIT 1`);
+  if (pose?.reason_code !== 'CLAIM_ACTION_INVOICE') return;
+  // Décision utilisateur confirmant ce sinistre (carte « garder » ou parent choisi).
+  if (decisions.some((d) => (d.decision as { decision?: unknown; parentOperationId?: unknown }).decision === 'CLAIM_PARENT'
+    && (d.decision as { parentOperationId?: unknown }).parentOperationId === parentId)) return;
+  const factures = sources.filter((x) => x.managed && x.kind === 'DOCUMENT').map((x) => Number(x.entityKey)).filter((n) => Number.isSafeInteger(n));
+  if (factures.length) {
+    const [action] = await rows(tx, sql`
+      SELECT 1 FROM business_operation_claim_actions WHERE operation_id = ${parentId} AND invoice_file_id = ANY(${intArray(factures)}::int[]) LIMIT 1`);
+    if (action) return;
+  }
+  const refs = state.references.filter((r) => r.kind === 'CLAIM').map((r) => r.normalized);
+  if (refs.length) {
+    const [commune] = await rows(tx, sql`
+      SELECT 1 FROM business_operation_references WHERE operation_id = ${parentId} AND active AND reference_kind = 'CLAIM'
+         AND normalized_value = ANY(${textArray(refs)}::text[]) LIMIT 1`);
+    if (commune) return;
+  }
+  const porteuse = factures.at(-1);
+  if (porteuse !== undefined) cards.detach.push({ operationId, claimId: parentId, fileId: porteuse });
 }
 
 async function syncAssets(
@@ -806,6 +894,57 @@ async function syncDetails(
   }
 }
 
+// ── Niveau M3 progressif (lot 53, retour PO D7) ────────────────────────────
+
+/** Trace de l'examen M3 progressif d'un candidat (persistée dans `t3_detail`). */
+export interface ProgressiveM3Trace {
+  /** Empreinte du contexte du lot courant (null : plus rien à soumettre). */
+  fingerprint: string | null;
+  batch: number[];
+  progress: M3Progress;
+  selection: { examined: number[]; remaining: number[]; total: number };
+}
+
+/**
+ * Décision « M3_REQUIRED » → lot courant de l'examen progressif et, si un
+ * verdict enregistré porte l'empreinte de ce lot, son application (voir
+ * `m3-progress.ts`). Au plus UN lot avance par consolidation : le lot
+ * suivant est soumis au modèle au cycle suivant (reprise automatique).
+ */
+export async function resolveProgressiveM3(
+  tx: DbTx, accountId: number, identity: CandidateIdentity, d: CandidateDecision,
+  ctx: Pick<MatchContext, 'operations' | 'assetStatus' | 'userDistinct'>, t3Detail: Record<string, unknown> | null,
+): Promise<{ decision: CandidateDecision; trace: ProgressiveM3Trace }> {
+  const plausibles = ctx.operations.filter((o) => d.detail.plausible.includes(o.id));
+  const ranked = rankPlausible(identity, plausibles);
+  let progress = m3ProgressFor(t3Detail?.m3Progress, m3SubjectFingerprint(identity));
+  const stored = (t3Detail?.m3 ?? null) as StoredM3 | null;
+  for (let tour = 0; tour < 3; tour++) {
+    const sel = selectM3Batch(ranked, progress, OPERATION_MATCH_MAX_CANDIDATES);
+    const selection = { examined: sel.examined, remaining: sel.remaining, total: sel.total };
+    if (!sel.batch.length) {
+      // Toutes les Opérations plausibles ont été examinées et jugées distinctes.
+      const verdict: OperationMatchVerdict = {
+        decision: 'DISTINCT_OPERATION', matchedOperationId: null, confidence: 'certain',
+        concordantSignals: [], contradictions: [], reason: 'ALL_CANDIDATES_EXAMINED_DISTINCT',
+      };
+      return { decision: applyM3Verdict(identity, d, verdict, ctx), trace: { fingerprint: null, batch: [], progress, selection } };
+    }
+    const m3 = await operationMatchContext(tx, accountId, identity, sel.batch);
+    const trace: ProgressiveM3Trace = { fingerprint: m3.fingerprint, batch: sel.batch, progress, selection };
+    if (stored?.status !== 'DONE' || stored.fingerprint !== m3.fingerprint || !stored.verdict) return { decision: d, trace };
+    const v = stored.verdict as OperationMatchVerdict;
+    if (v.decision === 'DISTINCT_OPERATION' && v.confidence === 'certain' && sel.remaining.length) {
+      // Lot écarté avec certitude, d'autres Opérations restent : lot suivant (jamais de création ici).
+      progress = advanceM3Progress(progress, sel.batch, stored.at);
+      continue;
+    }
+    const applied = applyM3Verdict(identity, { ...d, detail: { ...d.detail, plausible: sel.batch } }, v, ctx);
+    return { decision: { ...applied, detail: { ...applied.detail, plausible: d.detail.plausible } }, trace };
+  }
+  return { decision: d, trace: { fingerprint: null, batch: [], progress, selection: { examined: [], remaining: [], total: ranked.length } } };
+}
+
 // ── Un document (TRG-001 à TRG-007) ────────────────────────────────────────
 
 /**
@@ -838,6 +977,7 @@ export async function consolidateDocument(accountId: number, fileId: number, opt
       const touched = new Set<number>(docSources.filter((s) => s.active && !s.opMerged).map((s) => s.operationId));
       const decisions = new Map<number, CandidateDecision>();
       const m3Fingerprints = new Map<number, string>();
+      const m3Traces = new Map<number, ProgressiveM3Trace>();
       cards.reviewedFiles.push(fileId);
 
       for (const c of actifs) {
@@ -858,14 +998,13 @@ export async function consolidateDocument(accountId: number, fileId: number, opt
             userDistinct: dec.userDistinct, nonMergeable: await loadNonMergeable(tx, accountId, ops.map((o) => o.id)),
           };
           d = decideCandidate(identity, ctx);
-          // Niveau M3 (C6.2) : verdict enregistré appliqué seulement si le contexte est inchangé.
-          if (d.reason === 'M3_REQUIRED' && d.detail.plausible.length <= OPERATION_MATCH_MAX_CANDIDATES) {
-            const m3 = await operationMatchContext(tx, accountId, identity, d.detail.plausible);
-            m3Fingerprints.set(c.id, m3.fingerprint);
-            const stored = (c.t3Detail?.m3 ?? null) as StoredM3 | null;
-            if (stored?.status === 'DONE' && stored.fingerprint === m3.fingerprint && stored.verdict) {
-              d = applyM3Verdict(identity, d, stored.verdict as OperationMatchVerdict, ctx);
-            }
+          // Niveau M3 (C6.2) : verdict enregistré appliqué seulement si le contexte
+          // est inchangé ; lot 53 (D7) : examen PROGRESSIF par lots de 5 au plus.
+          if (d.reason === 'M3_REQUIRED') {
+            const r = await resolveProgressiveM3(tx, accountId, identity, d, ctx, c.t3Detail);
+            d = r.decision;
+            m3Traces.set(c.id, r.trace);
+            if (r.trace.fingerprint) m3Fingerprints.set(c.id, r.trace.fingerprint);
           }
         }
         decisions.set(c.id, d);
@@ -933,9 +1072,17 @@ export async function consolidateDocument(accountId: number, fileId: number, opt
         }
         const fp = m3Fingerprints.get(c.id) ?? null;
         const ancien = c.t3Detail ?? {};
+        const trace = m3Traces.get(c.id) ?? null;
         const memeArbitrage = JSON.stringify(ancien.arbitration ?? null) === JSON.stringify(d.arbitration ?? null);
+        // Lot 53 (D7) : lot courant et progression de l'examen M3 (diagnostic BO, reprise).
+        const m3Batch = trace && trace.batch.length ? trace.batch : null;
+        const m3Progress = trace && (trace.progress.rounds > 0 || trace.selection.total > OPERATION_MATCH_MAX_CANDIDATES)
+          ? { ...trace.progress, total: trace.selection.total, remaining: trace.selection.remaining.length }
+          : null;
+        const memeProgression = JSON.stringify(ancien.m3Batch ?? null) === JSON.stringify(m3Batch)
+          && JSON.stringify(ancien.m3Progress ?? null) === JSON.stringify(m3Progress);
         if (!c.t3Pending && c.t3Outcome === d.outcome && c.t3Reason === d.reason && c.t3OperationId === d.operationId
-          && (ancien.m3Fingerprint ?? null) === fp && memeArbitrage) continue;
+          && (ancien.m3Fingerprint ?? null) === fp && memeArbitrage && memeProgression) continue;
         // La trace M3 (verdict, report…) survit aux passages suivants : elle n'est
         // remplacée que par la phase M3 elle-même.
         const detail = {
@@ -943,6 +1090,8 @@ export async function consolidateDocument(accountId: number, fileId: number, opt
           ...(d.mergeIds?.length ? { mergeIds: d.mergeIds } : {}),
           ...(d.arbitration ? { arbitration: d.arbitration } : {}),
           ...(fp ? { m3Fingerprint: fp } : {}),
+          ...(m3Batch ? { m3Batch } : {}),
+          ...(m3Progress ? { m3Progress } : {}),
           ...(ancien.m3 ? { m3: ancien.m3 } : {}),
         };
         await tx.execute(sql`
@@ -1150,7 +1299,8 @@ export async function consolidateAccountOperations(
   if (res.changes > 0) {
     const ouvertes = (await (await pg()).unsafe(
       `SELECT DISTINCT (trigger_context->>'operationId')::bigint AS id FROM to_process_actions
-        WHERE account_id = $1 AND resolved_at IS NULL AND rule_code IN ('OPERATION-CLAIM-PARENT', 'OPERATION-AMOUNT')
+        WHERE account_id = $1 AND resolved_at IS NULL
+          AND rule_code IN ('OPERATION-CLAIM-PARENT', 'OPERATION-AMOUNT', 'OPERATION-CLAIM-DETACH', 'OPERATION-CLAIM-ASSET')
           AND trigger_context ? 'operationId'
         ORDER BY 1 LIMIT 50`,
       [accountId] as never[],

@@ -988,9 +988,15 @@ export function listFormState(def: AdditionalInfoFieldDef, items: readonly ListI
 export interface HighlightSuggestion { key: string; title: string; text: string }
 
 export interface AdditionalInfoReferencesDto {
-  documents: Array<{ id: number; title: string; typeLabel: string; date: string | null; format: string; sensitive: boolean; occupantData: boolean }>;
+  /**
+   * Lot 53 (retour PO Q18) : dans un sinistre multi-biens, les pièces et
+   * photos des AUTRES biens concernés (accessibles dans le compte) sont
+   * proposées aussi ; `assetId` / `assetName` disent alors de quel bien
+   * elles viennent (absents : bien de la fiche).
+   */
+  documents: Array<{ id: number; title: string; typeLabel: string; date: string | null; format: string; sensitive: boolean; occupantData: boolean; assetId?: number; assetName?: string | null }>;
   /** `id` : photo de la galerie (`asset_photos.id`) ; `fileId` : fichier pour la vignette. */
-  photos: Array<{ id: number; fileId: number | null; caption: string | null; date: string | null; isPrimary: boolean }>;
+  photos: Array<{ id: number; fileId: number | null; caption: string | null; date: string | null; isPrimary: boolean; assetId?: number; assetName?: string | null }>;
   /** Événements « sinistre » (agenda ou historique), du plus récent au plus ancien. */
   claimEvents: Array<{ key: string; title: string; date: string | null; source: 'agenda' | 'event' }>;
   highlightSuggestions: HighlightSuggestion[];

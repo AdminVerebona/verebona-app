@@ -354,7 +354,7 @@ export async function searchTableCells(
        SELECT DISTINCT c.table_id, c.row_index
          FROM document_table_cells c
          JOIN document_tables t ON t.id = c.table_id AND t.status = 'active'
-         JOIN asset_files af ON af.id = t.file_id AND af.deleted_at IS NULL
+         JOIN asset_files af ON af.id = t.file_id AND af.account_id = $1 AND af.deleted_at IS NULL
         WHERE c.account_id = $1
           AND ($2::int IS NULL OR af.asset_id = $2 OR af.linked_asset_id = $2)
           AND (${cond})
@@ -369,7 +369,7 @@ export async function searchTableCells(
        FROM lignes l
        JOIN document_table_cells c ON c.table_id = l.table_id AND c.row_index = l.row_index
        JOIN document_tables t ON t.id = c.table_id
-       JOIN asset_files af ON af.id = t.file_id
+       JOIN asset_files af ON af.id = t.file_id AND af.account_id = $1
       ORDER BY c.table_id, c.row_index, c.column_index`,
     [accountId, opts.assetId ?? null, ...clean.map(wordStartPattern)] as never[],
   );
@@ -530,7 +530,7 @@ export async function searchDocumentFacts(
               coalesce(af.asset_id, af.linked_asset_id) AS "assetId",
               (${scoreSql}) AS "matchedTerms"
          FROM document_facts f
-         JOIN asset_files af ON af.id = f.file_id AND af.deleted_at IS NULL
+         JOIN asset_files af ON af.id = f.file_id AND af.account_id = f.account_id AND af.deleted_at IS NULL
         WHERE f.account_id = $1 AND f.status = 'active'
           AND ($2::int IS NULL OR af.asset_id = $2 OR af.linked_asset_id = $2)
      ) s
@@ -564,7 +564,7 @@ export async function searchDocumentText(
               coalesce(e.full_text, e.description, '') AS body,
               (${scoreSql}) AS "matchedTerms"
          FROM document_extractions e
-         JOIN asset_files af ON af.id = e.file_id AND af.deleted_at IS NULL
+         JOIN asset_files af ON af.id = e.file_id AND af.account_id = e.account_id AND af.deleted_at IS NULL
         WHERE e.account_id = $1
           AND ($2::int IS NULL OR af.asset_id = $2 OR af.linked_asset_id = $2)
      ) s

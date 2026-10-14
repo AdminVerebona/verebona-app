@@ -274,7 +274,8 @@ scenario('L42-O3b', 'Consolidation T3 : M3, décisions durables, fusion, réacti
     const clio = await make.asset(compte);
     const devis = await document(compte, clio.id, [cand({ sourceRoleHint: 'QUOTE', statusHint: 'ENVISAGED', targetHints: [cible(clio.id)], businessReferences: [{ kind: 'QUOTE', value: 'D1' }], financialHints: [fh('FORECAST_COST', 30000)] })]);
     // Ordre de travail sans prestataire lu : rien ne le rapproche du devis (deux Opérations).
-    const ot = await document(compte, clio.id, [cand({ provider: null, sourceRoleHint: 'ORDER', statusHint: 'ENVISAGED', targetHints: [cible(clio.id)], businessReferences: [{ kind: 'WORK_ORDER', value: 'OT9' }], temporalHints: { plannedDate: '2026-01-10' } })]);
+    // Lot 53 (PO-D5) : nature de travaux différente du devis (sinon même bien + même nature = plausible).
+    const ot = await document(compte, clio.id, [cand({ provider: null, summary: 'Ordre de travail géométrie', sourceRoleHint: 'ORDER', statusHint: 'ENVISAGED', targetHints: [cible(clio.id)], businessReferences: [{ kind: 'WORK_ORDER', value: 'OT9' }], temporalHints: { plannedDate: '2026-01-10' } })]);
     await passer(compte, { operationMatch: false });
     const [a, b] = await actives(compte);
     expect([a, b].every(Boolean)).toBe(true);
@@ -321,7 +322,7 @@ scenario('L42-O3b', 'Consolidation T3 : M3, décisions durables, fusion, réacti
     const compte = await make.account();
     const clio = await make.asset(compte);
     await document(compte, clio.id, [cand({ sourceRoleHint: 'QUOTE', statusHint: 'ENVISAGED', targetHints: [cible(clio.id)], businessReferences: [{ kind: 'QUOTE', value: 'D1' }], financialHints: [fh('FORECAST_COST', 30000)] })]);
-    await document(compte, clio.id, [cand({ provider: null, sourceRoleHint: 'ORDER', statusHint: 'ENVISAGED', targetHints: [cible(clio.id)], businessReferences: [{ kind: 'WORK_ORDER', value: 'OT9' }] })]);
+    await document(compte, clio.id, [cand({ provider: null, summary: 'Ordre de travail géométrie', sourceRoleHint: 'ORDER', statusHint: 'ENVISAGED', targetHints: [cible(clio.id)], businessReferences: [{ kind: 'WORK_ORDER', value: 'OT9' }] })]);
     await passer(compte, { operationMatch: false });
     const avant = await operations(compte);
     expect(avant).toHaveLength(2);
@@ -471,7 +472,8 @@ scenario('L42-O3b', 'Consolidation T3 : M3, décisions durables, fusion, réacti
     await document(compte, clio.id, [cand({ provider: 'Garage A', targetHints: [cible(clio.id)], businessReferences: [{ kind: 'QUOTE', value: 'D1' }] })], 'Devis A');
     const b = await document(compte, clio.id, [cand({ provider: 'Garage B', targetHints: [cible(clio.id)], businessReferences: [{ kind: 'WORK_ORDER', value: 'OT9' }] })], 'Ordre B');
     await passer(compte, { operationMatch: false });
-    const deux = await document(compte, clio.id, [cand({ targetHints: [cible(clio.id)], businessReferences: [{ kind: 'QUOTE', value: 'D1' }, { kind: 'WORK_ORDER', value: 'OT9' }], financialHints: [fh('REALIZED_COST', 1000)] })]);
+    // Prestataire non lu (lot 53, PO-D5 : un même numéro chez un AUTRE prestataire ne serait qu'un indice).
+    const deux = await document(compte, clio.id, [cand({ provider: null, targetHints: [cible(clio.id)], businessReferences: [{ kind: 'QUOTE', value: 'D1' }, { kind: 'WORK_ORDER', value: 'OT9' }], financialHints: [fh('REALIZED_COST', 1000)] })]);
     await passer(compte, { operationMatch: false });
     const [carte] = await ouvertes(compte, 'OPERATION-MATCH');
     expect(carte).toMatchObject({ target_id: deux });

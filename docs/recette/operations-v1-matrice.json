@@ -6,7 +6,10 @@
   "Q1": "Le TCO est hors de ce CDC (CDC dédié ultérieur) : les cas qui portent sur le TCO lui-même (écran, forfaits, formules C17, prorata) sont hors périmètre ; les cas qui portent sur les composantes / coûts consolidés restent dans le périmètre.",
   "Q7": "Livraison en préprod lot par lot ; recette complète (ce lot) avant la future mise en production.",
   "Q8": "Aucun interrupteur fonctionnel du système Opération.",
-  "Q9": "Le BO diagnostique et ne modifie jamais une Opération ; la correction passe par le code puis la reconsolidation (bouton « Reconsolider ce compte », lot 48)."
+  "Q9": "Le BO diagnostique et ne modifie jamais une Opération ; la correction passe par le code puis la reconsolidation (bouton « Reconsolider ce compte », lot 48).",
+  "D5-D6": "Retour PO du 12/10/2026 (lot 53) : rapprochement automatique seulement à forte confiance (bien, nature, références, montants, prestataire, dates = indices) ; deux factures finales de numéros différents ne font plus systématiquement deux interventions ; doute → carte « À traiter » (docs/exploitation/operations-rapprochement.md).",
+  "D7": "Retour PO du 12/10/2026 (lot 53) : plafonds d’appels conservés, examen M3 progressif par lots de 5, report tracé et repris, jamais d’abandon.",
+  "D14": "Retour PO du 12/10/2026 (lot 53) : projection agenda incertaine → carte « À traiter » avec candidats et provenance, jamais de projection automatique."
  },
  "procedures": [
   {
@@ -533,13 +536,15 @@
    "famille": "C29",
    "domaine": "Matching",
    "scenario": "Même garage, même jour, réparations différentes avec refs différentes",
-   "attendu": "Deux INTERVENTION.",
+   "attendu": "Deux INTERVENTION quand les travaux diffèrent (numéros différents = indice contraire) ; mêmes travaux et numéros différents : plus de création d’office — M3 puis carte « À traiter » en cas de doute (décision PO D6, lot 53).",
    "trace": "Matching/dédoublonnage — C6, C7 — T3",
    "tests": [
     "src/services/business-operations/consolidation/__tests__/o3a-decision.test.ts",
-    "src/test/e2e/scenarios/l41-o3a-consolidation-t3.e2e.ts"
+    "src/test/e2e/scenarios/l41-o3a-consolidation-t3.e2e.ts",
+    "src/test/e2e/scenarios/l53c-po-rapprochement.e2e.ts"
    ],
-   "statut": "AUTOMATISE"
+   "statut": "AUTOMATISE",
+   "note": "Règle adaptée au retour PO D6 (lot 53) : deux factures finales distinctes peuvent porter sur une même intervention ; voir docs/exploitation/operations-rapprochement.md."
   },
   {
    "id": "F-034",
@@ -2023,9 +2028,11 @@
    "tests": [
     "src/services/business-operations/agenda-projection/__tests__/o7-projection.test.ts",
     "src/test/e2e/scenarios/l44-o5-sinistre.e2e.ts",
-    "src/test/e2e/scenarios/l46-o7-agenda-projection.e2e.ts"
+    "src/test/e2e/scenarios/l46-o7-agenda-projection.e2e.ts",
+    "src/test/e2e/scenarios/l53c-po-sinistres-agenda.e2e.ts"
    ],
-   "statut": "AUTOMATISE"
+   "statut": "AUTOMATISE",
+   "note": "Lot 53 (décision PO D14) : rapprochement seulement probable → aucune projection, carte « À traiter » avec les événements candidats et leur provenance."
   },
   {
    "id": "F-148",

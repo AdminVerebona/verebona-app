@@ -200,9 +200,10 @@ describe('Lot 49 — T2 : périmètre de dépense précis (Cas B)', () => {
   it('T2SEM-AC09 — aucun service identifiable : information insuffisante, jamais une somme globale', async () => {
     const h = harness([MAISON], [netflix(), electricite()], { understand: compris('ACCOUNT_FACT_ASSET', [{ type: 'asset', value: 'maison' }], ['internet']) });
     const r = await h.ask('Je paye combien pour internet à la maison ?');
-    expect(r.clarification).toBeNull();
-    expect(r.supportLevel).toBe('insufficient');
-    expect(r.answer).toMatch(/aucune donnée sur « internet » pour Maison/);
+    // Lot 53 (PO Q24) : le bien porte plusieurs contrats — question de
+    // clarification contextuelle au lieu du message générique ; toujours
+    // aucune somme (cas « un seul candidat » : PO-Q24-03, message d'absence).
+    expect(r.clarification?.question).toBe('Je n’ai trouvé aucun élément mentionnant « internet » pour Maison. De quel contrat ou service parlez-vous ?');
     expect(r.answer).not.toMatch(/€/);
     expect(r.cascade?.semantic?.fallbackReason).toBe('NO_MATCHING_SOURCE');
   });
@@ -235,7 +236,10 @@ describe('Lot 49 — T2 : périmètre de dépense précis (Cas B)', () => {
     const r = await h.ask('Je paye combien pour internet à la maison ?');
     expect(h.classify).not.toHaveBeenCalled();
     expect(r.answer).not.toMatch(/13,49|Netflix/);
-    expect(r.supportLevel).toBe('insufficient');
+    // Lot 53 (PO Q24) : sans IA, le résidu « internet » ne correspond à aucun
+    // libellé — clarification contextuelle (choix issus des données, aucun montant).
+    expect(r.clarification?.candidateType).toBe('business_source');
+    expect(r.answer).not.toMatch(/€/);
   });
 });
 

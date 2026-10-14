@@ -111,12 +111,12 @@ describe('Prochaines échéances', () => {
 
 describe('Documents récents', () => {
   // Lot 36 : vignettes du carrousel (nom, bien · date) ; le type reste en infobulle.
-  it('vignettes : statut, titre, bien · date ; lien « Tous »', () => {
+  it('vignettes : statut, titre, bien · date ; lien « Tous les documents » (L54-04)', () => {
     const html = renderToStaticMarkup(h(RecentDocuments, {
       onUpload: noop,
       docs: [{ id: 1, title: 'Carte grise', assetId: 3, assetName: 'Ferrari Testarossa', typeLabel: 'Administratif', date: '2026-09-02', status: 'En analyse', tone: 'slate' }],
     }));
-    expect(html).toMatch(/href="\/documents"[^>]*>Tous</);
+    expect(html).toMatch(/href="\/documents"[^>]*><span class="md:hidden">Tous<\/span><span class="hidden md:inline">Tous les documents<\/span>/);
     expect(html).toContain('En analyse');
     expect(html).toContain('Ferrari Testarossa · 02/09/2026');
     expect(html).toContain('title="Carte grise · Administratif"');

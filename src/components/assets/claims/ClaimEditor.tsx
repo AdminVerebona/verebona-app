@@ -13,6 +13,12 @@
  *
  * Utilisé dans la fiche (rubrique « Sinistres ») et dans l'écran de
  * préparation du dossier Assurance-sinistre (`compact`).
+ *
+ * Lot 53 (retour PO D10) : `claimId = null` ouvre un BROUILLON — rien n'est
+ * écrit en base au clic « Ajouter un sinistre ». La première sauvegarde
+ * EFFECTIVE (au moins une valeur non vide) crée le sinistre (POST), les
+ * suivantes le modifient (PATCH) ; un brouillon vide fermé ou abandonné ne
+ * laisse rien. Même composant sur ordinateur et sur mobile.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { AlertCircle } from 'lucide-react';
@@ -25,6 +31,7 @@ import {
 import {
   createAutosaveQueue, patchListPaths, rebaseAfterConflict, withRequeue, type AutosaveQueue, type AutosaveState,
 } from '@/lib/assets/additional-infos-autosave';
+import { draftPatchHasContent } from '@/lib/assets/claim-draft';
 import { parseWriteBlocked } from '@/lib/write-blocked';
 import { useWriteGuard } from '@/contexts/WriteGuardContext';
 import { toExportFamily } from '@/services/exports/catalog';
@@ -44,7 +51,10 @@ export interface ClaimResponse {
 
 interface Props {
   assetId: number;
-  claimId: number;
+  /** null : brouillon (lot 53, D10) — créé à la première saisie effective. */
+  claimId: number | null;
+  /** Brouillon enregistré : identifiant du sinistre créé. */
+  onCreated?: (claimId: number) => void;
   category: string;
   assetOptions: Array<{ id: number; name: string }>;
   readOnly?: boolean;
@@ -56,9 +66,14 @@ interface Props {
   onSaveStateChange?: (s: AutosaveState) => void;
 }
 
-export function ClaimEditor({ assetId, claimId, category, assetOptions, readOnly = false, compact = false, onBack, onDeleted, onSaved, onSaveStateChange }: Props) {
+export function ClaimEditor({ assetId, claimId, category, assetOptions, readOnly = false, compact = false, onBack, onDeleted, onSaved, onSaveStateChange, onCreated }: Props) {
   const family = toExportFamily(category);
-  const url = `/api/assets/${assetId}/claims/${claimId}`;
+  // Identifiant du sinistre : fixe, ou attribué à la première sauvegarde du brouillon.
+  const [savedId, setSavedId] = useState<number | null>(claimId);
+  const idRef = useRef<number | null>(claimId);
+  const draft = savedId === null;
+  const url = savedId === null ? null : `/api/assets/${assetId}/claims/${savedId}`;
+  const draftUrl = `/api/assets/${assetId}/claims`;
   const { signalerRefus } = useWriteGuard();
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(false);
@@ -74,8 +89,12 @@ export function ClaimEditor({ assetId, claimId, category, assetOptions, readOnly
   const versionRef = useRef(0);
   const baseListsRef = useRef<Record<string, ListItem[]>>({});
   const queueRef = useRef<AutosaveQueue | null>(null);
-  const cbRef = useRef({ onSaved, onSaveStateChange });
-  cbRef.current = { onSaved, onSaveStateChange };
+  const assetIdsRef = useRef<number[]>([assetId]);
+  /** Brouillon abandonné explicitement : plus aucun envoi (même une saisie en attente). */
+  const abandonedRef = useRef(false);
+  assetIdsRef.current = assetIds;
+  const cbRef = useRef({ onSaved, onSaveStateChange, onCreated });
+  cbRef.current = { onSaved, onSaveStateChange, onCreated };
 
   const adoptServer = useCallback((data: ClaimResponse) => {
     versionRef.current = data.version ?? 0;
@@ -89,8 +108,22 @@ export function ClaimEditor({ assetId, claimId, category, assetOptions, readOnly
   const load = useCallback(async () => {
     setLoading(true);
     setLoadError(false);
+    if (claimId === null) {
+      // Brouillon : formulaire vierge, aucun appel serveur.
+      const next: Record<string, string> = {};
+      const nextLists: Record<string, ListItem[]> = {};
+      for (const def of fieldsFor('claim', family)) {
+        if (def.type === 'list') nextLists[`claim.${def.key}`] = [];
+        else next[`claim.${def.key}`] = '';
+      }
+      setInputs(next);
+      setLists(nextLists);
+      baseListsRef.current = {};
+      setLoading(false);
+      return;
+    }
     try {
-      const data = await apiClient.get<ClaimResponse>(url);
+      const data = await apiClient.get<ClaimResponse>(`/api/assets/${assetId}/claims/${claimId}`);
       const next: Record<string, string> = {};
       const nextLists: Record<string, ListItem[]> = {};
       for (const def of fieldsFor('claim', family)) {
@@ -106,17 +139,20 @@ export function ClaimEditor({ assetId, claimId, category, assetOptions, readOnly
     } finally {
       setLoading(false);
     }
-  }, [url, family, adoptServer]);
+  }, [assetId, claimId, family, adoptServer]);
 
   useEffect(() => { void load(); }, [load]);
 
+  // Lot 53 (Q18) : pièces et photos de TOUS les biens concernés (accessibles),
+  // relues quand la liste des biens change.
+  const assetKey = [...assetIds].sort((a, b) => a - b).join(',');
   useEffect(() => {
     let stop = false;
-    apiClient.get<{ references?: AdditionalInfoReferencesDto }>(`/api/assets/${assetId}/claims?include=references`)
+    apiClient.get<{ references?: AdditionalInfoReferencesDto }>(`/api/assets/${assetId}/claims?include=references&claimId=${claimId}`)
       .then((d) => { if (!stop) setReferences(d.references ?? null); })
       .catch(() => undefined);
     return () => { stop = true; };
-  }, [assetId]);
+  }, [assetId, claimId, assetKey]);
 
   const reportError = useCallback((err: unknown) => {
     const e = err as { status?: number; code?: string; serverMessage?: string };
@@ -139,13 +175,29 @@ export function ClaimEditor({ assetId, claimId, category, assetOptions, readOnly
     }
   }, [signalerRefus]);
 
-  // File d'enregistrement : une par sinistre.
+  // File d'enregistrement : une par sinistre (le brouillon garde la même file après sa création).
   useEffect(() => {
-    const send = (patch: AdditionalInfosPatch) => apiClient.patch<ClaimResponse>(url, {
+    const send = (patch: AdditionalInfosPatch) => apiClient.patch<ClaimResponse>(`${draftUrl}/${idRef.current}`, {
       claim: patch.claim ?? {}, ...(patchListPaths(patch).length ? { version: versionRef.current } : {}),
     });
     const queue = createAutosaveQueue({
       save: async (patch) => {
+        if (idRef.current === null) {
+          // Lot 53 (D10) : brouillon — rien n'est créé tant qu'aucune information n'est saisie.
+          if (abandonedRef.current || !draftPatchHasContent(patch)) return;
+          try {
+            const created = await apiClient.post<ClaimResponse>(draftUrl, { claim: patch.claim ?? {}, assetIds: assetIdsRef.current });
+            idRef.current = created.id;
+            setSavedId(created.id);
+            adoptServer(created);
+            cbRef.current.onCreated?.(created.id);
+          } catch (err) {
+            reportError(err);
+            throw err;
+          }
+          cbRef.current.onSaved?.();
+          return;
+        }
         try {
           try {
             adoptServer(await send(patch));
@@ -189,7 +241,7 @@ export function ClaimEditor({ assetId, claimId, category, assetOptions, readOnly
       if (queue.hasPending()) void queue.flush();
       queue.dispose();
     };
-  }, [url, adoptServer, reportError]);
+  }, [draftUrl, adoptServer, reportError]);
 
   const clearError = (path: string) => setErrors((prev) => {
     if (!(path in prev)) return prev;
@@ -248,6 +300,8 @@ export function ClaimEditor({ assetId, claimId, category, assetOptions, readOnly
     const next = checked ? [...new Set([...assetIds, id])] : assetIds.filter((a) => a !== id);
     if (!next.length) return;
     setAssetIds(next);
+    // Brouillon : les biens concernés partiront avec la première sauvegarde effective.
+    if (url === null) return;
     try {
       await queueRef.current?.flush();
       adoptServer(await apiClient.patch<ClaimResponse>(url, { assetIds: next }));
@@ -259,6 +313,13 @@ export function ClaimEditor({ assetId, claimId, category, assetOptions, readOnly
   }, [assetIds, url, adoptServer, reportError]);
 
   const onDelete = useCallback(async () => {
+    if (url === null) {
+      // Brouillon jamais enregistré : abandon sans aucune écriture.
+      abandonedRef.current = true;
+      queueRef.current?.dispose();
+      if (onBack) onBack(); else onDeleted?.(false);
+      return;
+    }
     if (!window.confirm('Supprimer ce sinistre ? Les documents liés restent dans vos documents.')) return;
     try {
       await queueRef.current?.flush();
@@ -267,7 +328,7 @@ export function ClaimEditor({ assetId, claimId, category, assetOptions, readOnly
     } catch (err) {
       reportError(err);
     }
-  }, [url, onDeleted, reportError]);
+  }, [url, onBack, onDeleted, reportError]);
 
   if (loading) {
     return <div className="space-y-2">{[1, 2, 3].map((i) => <Skeleton key={i} className="h-9 w-full" />)}</div>;
@@ -283,10 +344,11 @@ export function ClaimEditor({ assetId, claimId, category, assetOptions, readOnly
   }
   return (
     <ClaimFormView
-      claimId={claimId}
-      idPrefix={`claim-${claimId}`}
+      claimId={savedId}
+      draft={draft}
+      idPrefix={`claim-${savedId ?? 'brouillon'}`}
       family={family}
-      title={meta?.label ?? 'Sinistre'}
+      title={meta?.label ?? (draft ? 'Nouveau sinistre' : 'Sinistre')}
       inputs={inputs}
       errors={errors}
       lists={lists}

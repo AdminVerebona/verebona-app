@@ -22,6 +22,13 @@
  *                                      CIBLÉ de la publication préprod en
  *                                      échec (doublons de périodicité du
  *                                      portail) — `catalog-recovery.service` ;
+ *                                      Lot 53I : puis, si ce rattrapage est
+ *                                      terminé en échec, la REPRISE
+ *                                      CORRECTIVE unique (relecture du portail
+ *                                      avec expansion) ; une publication
+ *                                      active dont la chaîne n'est pas
+ *                                      vérifiée (portail final, contrôles)
+ *                                      est signalée en erreur ;
  *   stripe-price-revaluation   /1 h    applique la campagne de revalorisation
  *                                      (lignes prouvées, préavis échu) et
  *                                      constate les bascules.
@@ -66,14 +73,20 @@ export async function runCatalogPublishTask(): Promise<TaskRunResult> {
   const d = catalogDeps();
   const context = d.context();
   if (!context.mode) return { note: 'STRIPE_SECRET_KEY absente : rien à faire' };
-  // Lot 49A — rattrapage ciblé (préprod uniquement, voir le service).
-  const { runPortalIntervalRecovery } = await import('./catalog-recovery.service');
-  const rec = await runPortalIntervalRecovery(d);
-  const recNote = rec.status === 'skipped' ? '' : `rattrapage : ${rec.status}${'reason' in rec ? ` (${rec.reason})` : ''} ; `;
+  // Lot 49A puis lot 53I — rattrapages ciblés (préprod uniquement, garde
+  // live explicite, voir le service) : le premier non ignoré s'exécute.
+  const { runCatalogRecoveries } = await import('./catalog-recovery.service');
+  const rec = await runCatalogRecoveries(d);
+  const recNote = rec.status === 'skipped' ? '' : `rattrapage${rec.key ? ` ${rec.key}` : ''} : ${rec.status}${'reason' in rec ? ` (${rec.reason})` : ''} ; `;
   if (rec.status === 'failed') return { error: `rattrapage de la publication en échec : ${rec.reason}`.slice(0, 500), note: recNote };
   const { decision, result: r } = await runAutoPublication(d, { actor: 'task:stripe-catalog-publish' });
   if (!decision.publish || !r) return { note: `${recNote}aucune publication (${decision.reason})` };
   if (r.status === 'failed') return { error: `publication en échec (${r.step}) : ancienne grille conservée`, note: r.reason };
+  // Lot 53I : grille active mais chaîne non vérifiée → jamais un succès silencieux.
+  if (r.status === 'published' && r.complete === false) {
+    const why = [r.portalFinal && !r.portalFinal.ok ? `portail final : ${r.portalFinal.error}` : '', ...(r.checks?.issues ?? [])].filter(Boolean).join(' ; ');
+    return { error: `publication active mais vérification incomplète : ${why}`.slice(0, 500), note: `publication : published (incomplète)` };
+  }
   return { note: `publication : ${r.status}${'reason' in r ? ` (${r.reason})` : ''}` };
 }
 

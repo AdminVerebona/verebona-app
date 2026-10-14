@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { hasActiveSubscriptionStatus } from '@/lib/billing/subscription-status';
 import { db, getRevokedTokenInfo, hashToken, getUserSessionCutoff, isIssuedBefore, revokeAllUserSessions } from '@/db';
-import { clearSessionCookies } from '@/lib/auth/session-tokens';
+import { clearSessionCookies, setSessionCookies } from '@/lib/auth/session-tokens';
 import { users } from '@/db/schema';
 import { eq } from 'drizzle-orm';
 import { verifyRefreshToken, generateSessionTokens, newSessionId, type JWTPayload } from '@/lib/jwt';
@@ -15,8 +15,9 @@ import { serverCacheDelete } from '@/lib/server-cache';
 import { sessionCutoffCacheKey } from '@/lib/auth/session-cutoff';
 import { classifyRefreshReplay, REFRESH_REUSE_GRACE_MS } from '@/lib/auth/refresh-replay';
 import { scheduleSessionsRevokedEmail } from '@/services/auth/sessions-revoked-email.service';
+import { REFRESH_TOKEN_TTL_S } from '@/lib/auth/token-lifetimes';
 
-const REFRESH_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+const REFRESH_TTL_MS = REFRESH_TOKEN_TTL_S * 1000;
 
 /**
  * Renouvellement de session (rotation du jeton de renouvellement).
@@ -181,23 +182,8 @@ export async function POST(request: NextRequest) {
       message: 'Token refreshed successfully',
     });
 
-    const isProduction = process.env.NODE_ENV === 'production';
-
-    response.cookies.set('access_token', newAccessToken, {
-      httpOnly: true,
-      secure: isProduction,
-      sameSite: 'lax',
-      maxAge: 15 * 60, // 15 minutes
-      path: '/',
-    });
-
-    response.cookies.set('refresh_token', newRefreshToken, {
-      httpOnly: true,
-      secure: isProduction,
-      sameSite: 'lax',
-      maxAge: 30 * 24 * 60 * 60, // CDC §5.4
-      path: '/',
-    });
+    // Durées des cookies = durées des JWT (source unique, lot 53A).
+    setSessionCookies(response, { accessToken: newAccessToken, refreshToken: newRefreshToken });
 
     return response;
   } catch (error) {

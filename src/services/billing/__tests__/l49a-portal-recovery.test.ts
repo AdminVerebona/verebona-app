@@ -204,7 +204,7 @@ describe('sécurisation de l’activation et retour arrière du portail', () => 
     expect(newPrices().every((p) => p.active)).toBe(true);
   });
 
-  it('AC-L49A-4 — restauration impossible : anomalie explicite et montées en gamme BLOQUÉES (« réessayez »)', async () => {
+  it('AC-L49A-4 — restauration impossible : anomalie explicite et montées en gamme BLOQUÉES (lot 53I : PORTAL_BLOCKED, échec durable)', async () => {
     deploy(seedAccount());
     await tick();
     await store.setBackfillCompleted(CTX, new Date());
@@ -220,7 +220,8 @@ describe('sécurisation de l’activation et retour arrière du portail', () => 
     expect(t.anomalies.some((a) => a.fingerprint === `stripe:catalog:${CTX}:portal-restore`)).toBe(true);
     expect((await store.getState(CTX))!.publicationState).toBe('FAILED');
     const writes = rs.portalWrites.length;
-    await expect(ensureUpgradePortalConfiguration(t.deps)).rejects.toMatchObject({ code: 'PORTAL_UPDATING' });
+    // Lot 53I : publication en ÉCHEC = blocage DURABLE (PORTAL_BLOCKED, sans « réessayez dans quelques minutes »).
+    await expect(ensureUpgradePortalConfiguration(t.deps)).rejects.toMatchObject({ code: 'PORTAL_BLOCKED' });
     // Le clic n'écrit jamais le portail pendant la transition.
     expect(rs.portalWrites.length).toBe(writes);
   });
@@ -242,7 +243,7 @@ describe('rattrapage automatique de la publication préprod en échec', () => {
     at(40);
     const r = await runCatalogPublishTask();
     expect(r.error).toBeUndefined();
-    expect(r.note).toMatch(/rattrapage : done/);
+    expect(r.note).toMatch(/rattrapage portal-unique-intervals-2026-10 : done/);
     await expectManifestPublished();
     // Même publication, mêmes prix : ni nouvelle exécution, ni nouveau Price.
     expect(store.runs).toHaveLength(inc.runs);

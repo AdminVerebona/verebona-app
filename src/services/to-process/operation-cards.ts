@@ -49,15 +49,25 @@ import type { OperationCardNeeds } from '@/services/business-operations/consolid
 export const OPERATION_MATCH_RULE = 'OPERATION-MATCH';
 export const OPERATION_PARENT_RULE = 'OPERATION-CLAIM-PARENT';
 export const OPERATION_AMOUNT_RULE = 'OPERATION-AMOUNT';
-export const OPERATION_CARD_RULES = [OPERATION_MATCH_RULE, OPERATION_PARENT_RULE, OPERATION_AMOUNT_RULE] as const;
+/** Lot 53 (retour PO D11) : facture retirée d'une action — garder ou dissocier l'intervention du sinistre. */
+export const OPERATION_DETACH_RULE = 'OPERATION-CLAIM-DETACH';
+/** Lot 53 (retour PO Q17) : bien retiré du sinistre cité par un nouveau document — le rattacher à nouveau ? */
+export const OPERATION_ASSET_EXCLUSION_RULE = 'OPERATION-CLAIM-ASSET';
+export const OPERATION_CARD_RULES = [
+  OPERATION_MATCH_RULE, OPERATION_PARENT_RULE, OPERATION_AMOUNT_RULE, OPERATION_DETACH_RULE, OPERATION_ASSET_EXCLUSION_RULE,
+] as const;
 
 const MATCH_RELATION = 'operationMatch';
 const PARENT_RELATION = 'operationParent';
 const AMOUNT_RELATION = 'operationAmount';
+const DETACH_RELATION = 'operationDetach';
+const EXCLUSION_RELATION = 'operationAssetExclusion';
 
 export const matchRelationKey = (candidateKey: string) => `${MATCH_RELATION}:${candidateKey}`;
 export const parentRelationKey = (operationId: number) => `${PARENT_RELATION}:${operationId}`;
 export const amountRelationKey = (operationId: number, fingerprint: string) => `${AMOUNT_RELATION}:${operationId}:${fingerprint.slice(0, 16)}`;
+export const detachRelationKey = (operationId: number) => `${DETACH_RELATION}:${operationId}`;
+export const exclusionRelationKey = (operationId: number, assetId: number) => `${EXCLUSION_RELATION}:${operationId}:${assetId}`;
 
 // ── Libellés métier (purs) ──────────────────────────────────────────────────
 
@@ -142,6 +152,32 @@ export function amountProposals(
   return [
     ...options.filter((o) => !est(o)).slice(-2).reverse().map((o, i) => ({ value: `AMOUNT:${o.amountMinor}:${o.currency}`, label: lib(o), confidence: 0.6 - i * 0.1 })),
     ...options.filter(est).slice(0, 1).map((o) => ({ value: `AMOUNT:${o.amountMinor}:${o.currency}`, label: lib(o), confidence: 1, isCurrentValue: true })),
+  ];
+}
+
+/** Question (d) — lot 53, D11 (pure). */
+export function detachQuestion(claimLabel: string): string {
+  return `Sa facture a été retirée des actions du sinistre ${guillemets(claimLabel)} : cette intervention fait-elle toujours suite à ce sinistre ?`;
+}
+
+/** Propositions (d) : dissocier, ou garder le rattachement actuel (pures). */
+export function detachProposals(): ActionProposal[] {
+  return [
+    { value: 'DETACH', label: 'Non, la dissocier du sinistre', confidence: 0.6 },
+    { value: 'KEEP', label: 'Oui, elle reste liée à ce sinistre', confidence: 1, isCurrentValue: true },
+  ];
+}
+
+/** Question (e) — lot 53, Q17 (pure). */
+export function exclusionQuestion(assetName: string, claimLabel: string): string {
+  return `Ce document mentionne ${guillemets(assetName)}, que vous avez retiré du sinistre ${guillemets(claimLabel)} : faut-il l’y rattacher à nouveau ?`;
+}
+
+/** Propositions (e) : réintégrer, ou garder l'exclusion (état actuel) — pures. */
+export function exclusionProposals(assetName: string): ActionProposal[] {
+  return [
+    { value: 'REINSTATE', label: `Oui, rattacher ${guillemets(assetName)} au sinistre`, confidence: 0.6 },
+    { value: 'KEEP_EXCLUDED', label: 'Non, il reste hors du sinistre', confidence: 1, isCurrentValue: true },
   ];
 }
 
@@ -266,6 +302,42 @@ export async function syncOperationCards(accountId: number, needs: OperationCard
       gardees.add(`A:${n.fileId}:${amountRelationKey(n.operationId, n.fingerprint)}`);
     }
 
+    // (d) Lot 53 (D11) : intervention dont la facture a été retirée des actions du sinistre.
+    for (const n of needs.detach ?? []) {
+      const labels = await operationLabels(accountId, [n.claimId], null);
+      const sinistre = labels.get(n.claimId)?.label ?? 'Sinistre';
+      const r = await upsertAction({
+        accountId, targetType: 'DOCUMENT', targetId: n.fileId, relationKey: detachRelationKey(n.operationId),
+        actionKind: 'ARBITRATE', ruleCode: OPERATION_DETACH_RULE,
+        question: detachQuestion(sinistre), proposals: detachProposals(),
+        triggerContext: { kind: 'operation_detach', operationId: n.operationId, claimId: n.claimId },
+      });
+      compter(r.status);
+      gardees.add(`D:${n.fileId}:${detachRelationKey(n.operationId)}`);
+    }
+
+    // (e) Lot 53 (Q17) : bien exclu du sinistre cité par un document non encore arbitré.
+    for (const n of needs.exclusion ?? []) {
+      const fileId = n.fileIds.at(-1);
+      if (fileId === undefined) continue;
+      const labels = await operationLabels(accountId, [n.operationId], null);
+      const [bien] = (await pgClient.unsafe(`SELECT name FROM assets WHERE id = $1 AND account_id = $2`, [n.assetId, accountId] as never[])) as unknown as Array<{ name: string | null }>;
+      const nom = bien?.name ?? 'ce bien';
+      const titres = await fileTitles(accountId, n.fileIds);
+      const r = await upsertAction({
+        accountId, targetType: 'DOCUMENT', targetId: fileId, relationKey: exclusionRelationKey(n.operationId, n.assetId),
+        actionKind: 'ARBITRATE', ruleCode: OPERATION_ASSET_EXCLUSION_RULE,
+        question: exclusionQuestion(nom, labels.get(n.operationId)?.label ?? 'Sinistre'), proposals: exclusionProposals(nom),
+        triggerContext: {
+          kind: 'operation_asset_exclusion', operationId: n.operationId, assetId: n.assetId, fileIds: n.fileIds,
+          // Provenance : document(s) à l'origine de la contradiction.
+          documents: n.fileIds.map((f) => ({ fileId: f, title: titres.get(f) ?? 'Document' })),
+        },
+      });
+      compter(r.status);
+      gardees.add(`E:${fileId}:${exclusionRelationKey(n.operationId, n.assetId)}`);
+    }
+
     // Fermeture automatique : cartes des documents / Opérations réexaminés que ce passage ne reconduit pas.
     const ouvertes = (await pgClient.unsafe(
       `SELECT id, rule_code, target_id, relation_key, (trigger_context->>'operationId')::bigint AS op
@@ -275,7 +347,10 @@ export async function syncOperationCards(accountId: number, needs: OperationCard
                OR (rule_code <> $3 AND (trigger_context->>'operationId')::bigint = ANY($5::bigint[])))`,
       [accountId, `{${OPERATION_CARD_RULES.join(',')}}`, OPERATION_MATCH_RULE, intArray(needs.reviewedFiles), intArray(needs.reviewedOperations)] as never[],
     )) as unknown as Array<{ id: number; rule_code: string; target_id: number; relation_key: string }>;
-    const prefixe: Record<string, string> = { [OPERATION_MATCH_RULE]: 'M', [OPERATION_PARENT_RULE]: 'P', [OPERATION_AMOUNT_RULE]: 'A' };
+    const prefixe: Record<string, string> = {
+      [OPERATION_MATCH_RULE]: 'M', [OPERATION_PARENT_RULE]: 'P', [OPERATION_AMOUNT_RULE]: 'A',
+      [OPERATION_DETACH_RULE]: 'D', [OPERATION_ASSET_EXCLUSION_RULE]: 'E',
+    };
     const aFermer = ouvertes.filter((o) => !gardees.has(`${prefixe[o.rule_code]}:${o.target_id}:${o.relation_key}`)).map((o) => Number(o.id));
     rep.closed += await closeCards(aFermer, 'RESOLVED_BY_T3');
   } catch (e) {
@@ -294,12 +369,26 @@ type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 interface MatchCtx { kind: 'operation_match'; candidateKey: string; basis: 'CERTAIN' | 'M3'; operationIds: number[] }
 interface ParentCtx { kind: 'operation_parent'; operationId: number; claimIds: number[] }
 interface AmountCtx { kind: 'operation_amount'; operationId: number; fingerprint: string; options: Array<{ amountMinor: number; currency: string }> }
+interface DetachCtx { kind: 'operation_detach'; operationId: number; claimId: number }
+interface ExclusionCtx { kind: 'operation_asset_exclusion'; operationId: number; assetId: number; fileIds: number[] }
 
 /** Choix reçu (pur) ; `null` : invalide (une requête forgée ne désigne rien hors de la carte). */
 export function parseOperationCardChoice(ruleCode: string, value: unknown, ctx: unknown):
   | { kind: 'SAME'; operationId: number } | { kind: 'DISTINCT' } | { kind: 'PARENT'; operationId: number } | { kind: 'NONE' }
-  | { kind: 'AMOUNT'; amountMinor: number; currency: string } | null {
+  | { kind: 'AMOUNT'; amountMinor: number; currency: string } | { kind: 'DETACH' }
+  | { kind: 'REINSTATE' } | { kind: 'KEEP_EXCLUDED' } | null {
   if (typeof value !== 'string' || !ctx || typeof ctx !== 'object') return null;
+  if (ruleCode === OPERATION_DETACH_RULE) {
+    const c = ctx as DetachCtx;
+    if (!Number.isSafeInteger(c.claimId)) return null;
+    // « Garder » = confirmer le sinistre actuel comme parent (décision durable).
+    if (value === 'KEEP') return { kind: 'PARENT', operationId: c.claimId };
+    return value === 'DETACH' ? { kind: 'DETACH' } : null;
+  }
+  if (ruleCode === OPERATION_ASSET_EXCLUSION_RULE) {
+    if (value === 'REINSTATE') return { kind: 'REINSTATE' };
+    return value === 'KEEP_EXCLUDED' ? { kind: 'KEEP_EXCLUDED' } : null;
+  }
   if (ruleCode === OPERATION_MATCH_RULE) {
     const c = ctx as MatchCtx;
     if (value === 'DISTINCT') return c.basis === 'M3' ? { kind: 'DISTINCT' } : null;
@@ -333,7 +422,11 @@ async function canonicalId(tx: Tx, accountId: number, id: number): Promise<numbe
   return r[0] ? Number(r[0].id) : null;
 }
 
-interface Previous { decisionIds?: number[]; sourceId?: number | null; previousParent?: number | null; operationId?: number; resolvedAt?: string }
+interface Previous {
+  decisionIds?: number[]; sourceId?: number | null; previousParent?: number | null; operationId?: number; resolvedAt?: string;
+  /** Lot 53 (Q17) : bien et documents de l'arbitrage d'une exclusion. */
+  assetId?: number; fileIds?: number[];
+}
 
 export async function resolveOperationCard(
   tx: DbClient, action: Action, value: unknown, accountId: number, options: ResolveOptions,
@@ -374,12 +467,31 @@ export async function resolveOperationCard(
       fileToConsolidate = action.targetId;
       return needs;
     }
-    const ctx = action.triggerContext as unknown as ParentCtx | AmountCtx;
+    const ctx = action.triggerContext as unknown as ParentCtx | AmountCtx | DetachCtx | ExclusionCtx;
     const opId = await canonicalId(t, accountId, ctx.operationId);
     if (opId === null) { stale = true; return needs; }
     const op = await repo.load(opId, { allowInactive: true });
     if (op.invalidatedAt !== null) { stale = true; return needs; }
     previous.operationId = opId;
+    if (choice.kind === 'REINSTATE' || choice.kind === 'KEEP_EXCLUDED') {
+      // Lot 53 (Q17) : nouvel arbitrage de l'exclusion — jamais décidé à la place de l'utilisateur.
+      const x = ctx as ExclusionCtx;
+      const ex = await import('@/services/business-operations/consolidation/asset-exclusions');
+      if (choice.kind === 'REINSTATE') {
+        await ex.releaseExclusion(session.tx, accountId, opId, x.assetId, 'USER_CLAIM_ASSET_REINSTATED');
+      } else {
+        await ex.acknowledgeExclusion(session.tx, accountId, opId, x.assetId, x.fileIds ?? []);
+      }
+      previous.assetId = x.assetId;
+      previous.fileIds = x.fileIds ?? [];
+      const { reconsolidateOperation } = await import('@/services/business-operations/consolidation/consolidator');
+      await reconsolidateOperation(repo, session.tx, opId, now.toISOString().slice(0, 10), undefined, needs);
+      if (choice.kind === 'REINSTATE') {
+        const { syncClaimMirror } = await import('@/services/business-operations/consolidation/claim-form');
+        await syncClaimMirror(session.tx, accountId, [x.assetId]);
+      }
+      return needs;
+    }
     const genre = choice.kind === 'AMOUNT' ? 'AMOUNT' : 'CLAIM_PARENT';
     // La décision la plus récente remplace la précédente du même genre (et de la même empreinte).
     const anciennes = (await t.execute(sql`
@@ -393,10 +505,14 @@ export async function resolveOperationCard(
       : { decision: 'CLAIM_PARENT', parentOperationId: choice.kind === 'PARENT' ? await canonicalId(t, accountId, choice.operationId) : null };
     previous.sourceId = await repo.addSource(opId, {
       kind: 'USER_ARBITRATION', entityKey: action.id, authority: 'USER', confidence: 'certain', locator,
-    }, genre === 'AMOUNT' ? 'USER_AMOUNT_CHOSEN' : 'USER_CLAIM_PARENT');
+    }, genre === 'AMOUNT' ? 'USER_AMOUNT_CHOSEN' : choice.kind === 'DETACH' ? 'USER_CLAIM_DETACHED' : 'USER_CLAIM_PARENT');
     previous.previousParent = op.parentOperationId;
     if (choice.kind === 'PARENT' && typeof locator.parentOperationId === 'number' && locator.parentOperationId !== op.parentOperationId) {
       await repo.setParent(opId, locator.parentOperationId, 'USER_CLAIM_PARENT');
+    }
+    // Lot 53 (D11) : dissociation décidée par l'utilisateur (jamais automatique).
+    if (choice.kind === 'DETACH' && op.parentOperationId !== null) {
+      await repo.setParent(opId, null, 'USER_CLAIM_DETACHED');
     }
     const { reconsolidateOperation } = await import('@/services/business-operations/consolidation/consolidator');
     await reconsolidateOperation(repo, session.tx, opId, now.toISOString().slice(0, 10), undefined, needs);
@@ -483,9 +599,19 @@ export async function undoOperationCard(action: Action, accountId: number): Prom
         await repo.deactivateSource(Number(s.id), 'USER_DECISION_UNDONE');
         await reconsolidateOperation(repo, tx, Number(s.operation_id), today, undefined, needs);
       }
+    } else if (prev?.operationId && action.ruleCode === OPERATION_ASSET_EXCLUSION_RULE && prev.assetId) {
+      // Lot 53 (Q17) : l'exclusion redevient celle d'avant l'arbitrage.
+      const ex = await import('@/services/business-operations/consolidation/asset-exclusions');
+      const [ev2] = await db.select({ newValue: toProcessActionEvents.newValue }).from(toProcessActionEvents)
+        .where(and(eq(toProcessActionEvents.actionId, action.id), eq(toProcessActionEvents.event, 'RESOLVED_ARBITRATION')))
+        .orderBy(desc(toProcessActionEvents.id)).limit(1);
+      const choix = (ev2?.newValue as { kind?: string } | null)?.kind;
+      if (choix === 'REINSTATE') await ex.excludeAsset(tx, accountId, prev.operationId, prev.assetId, null);
+      else await ex.unacknowledgeExclusion(tx, accountId, prev.operationId, prev.assetId, prev.fileIds ?? []);
+      await reconsolidateOperation(repo, tx, prev.operationId, today, undefined, needs);
     } else if (prev?.operationId) {
       if (prev.sourceId) await repo.deactivateSource(prev.sourceId, 'USER_DECISION_UNDONE');
-      if (action.ruleCode === OPERATION_PARENT_RULE) {
+      if (action.ruleCode === OPERATION_PARENT_RULE || action.ruleCode === OPERATION_DETACH_RULE) {
         const op = await repo.load(prev.operationId, { allowInactive: true, allowMerged: true });
         if (op.mergedIntoOperationId === null && op.invalidatedAt === null && op.parentOperationId !== (prev.previousParent ?? null)) {
           await repo.setParent(prev.operationId, prev.previousParent ?? null, 'USER_CLAIM_PARENT_UNDONE');

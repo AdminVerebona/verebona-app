@@ -258,7 +258,14 @@ export type PublishResult =
   | { status: 'noop'; reason: string; version: string | null }
   | { status: 'simulated'; plan: DiffEntry[]; manifestRevision: string }
   | { status: 'refused'; reason: string }
-  | { status: 'published'; runId: number; version: string; created: Record<string, string>; plan: DiffEntry[]; checks?: PublishedCatalogChecks }
+  | { status: 'published'; runId: number; version: string; created: Record<string, string>; plan: DiffEntry[]; checks?: PublishedCatalogChecks;
+      /**
+       * Lot 53I : publication INTÉGRALEMENT réussie — révision active ET
+       * portail final vérifié par relecture ET contrôles après activation
+       * conformes. `false` : grille active, mais chaîne non vérifiée (jamais
+       * présentée comme un succès complet).
+       */
+      complete?: boolean; portalFinal?: { ok: boolean; error?: string } }
   | { status: 'failed'; runId: number; reason: string; step: string; /** Panne Stripe passagère (reprise espacée possible). */ transient?: boolean };
 
 /**
@@ -557,8 +564,8 @@ async function doPublish(opts: PublishOptions, manifest: Manifest, d: CatalogDep
         const r = await syncUpgradePortal({ reason: `publication:${runId}`, snapshot, persist: false, requireComplete: true }, d);
         await step('portal-candidate', { configurationId: r.configurationId, prices: portalProductsFor(snapshot) });
       } catch (e) {
-        // Le contrôle des doublons lève AVANT tout appel : portail intact.
-        if ((e as { code?: string })?.code === 'PORTAL_DUPLICATE_INTERVAL') portalTouched = false;
+        // Contrôles structurels levés AVANT tout appel : portail intact.
+        if (['PORTAL_DUPLICATE_INTERVAL', 'PORTAL_INCOMPLETE', 'PORTAL_PRODUCT_NOT_APPROVED'].includes((e as { code?: string })?.code ?? '')) portalTouched = false;
         return await fail('portal', (e as Error).message, e);
       }
     } else {
@@ -590,12 +597,22 @@ async function doPublish(opts: PublishOptions, manifest: Manifest, d: CatalogDep
     console.info(JSON.stringify({ evt: 'billing.catalog.published', context, runId, from: state.activeRevision, to: snapshot.version, created, recovery: Boolean(opts.recovery) }));
 
     // Portail de la révision active, vérifié (exclusivement ses six prix, LK-50) et mémorisé.
+    // Lot 53I : un échec ici n'est JAMAIS silencieux — la publication n'est
+    // pas « intégralement réussie » (journal, anomalie, tâche en erreur).
+    let portalFinal: { ok: boolean; error?: string } = { ok: true };
     try {
       await syncUpgradePortal({ reason: `publication:${runId}:final`, force: true }, d);
-      await step('portal-final');
+      await step('portal-final', { ok: true });
     } catch (e) {
-      await step('portal-final', { error: (e as Error).message });
+      portalFinal = { ok: false, error: (e as Error).message };
+      await step('portal-final', { ok: false, error: (e as Error).message });
+      await d.anomalies.report({
+        fingerprint: catalogFingerprint(context, 'portal-final'),
+        title: 'Catalogue Stripe : grille active mais portail de montée en gamme NON vérifié après publication',
+        detail: { runId, error: (e as Error).message },
+      }).catch(() => undefined);
     }
+    if (portalFinal.ok) await d.anomalies.resolve(catalogFingerprint(context, 'portal-final')).catch(() => undefined);
 
     // ── 7. Campagne de revalorisation (opération distincte) ──
     if (opts.recovery) {
@@ -630,13 +647,15 @@ async function doPublish(opts: PublishOptions, manifest: Manifest, d: CatalogDep
     const fpChecks = catalogFingerprint(context, 'post-check');
     if (checks.ok) await d.anomalies.resolve(fpChecks).catch(() => undefined);
     else await d.anomalies.report({ fingerprint: fpChecks, title: 'Catalogue Stripe : contrôles après publication en écart', detail: { runId, issues: checks.issues } }).catch(() => undefined);
-    await d.store.updateRun(runId, { report: { plan, created, transfers, probes, checks }, finished: true, step: { step: 'probes', probes, checksOk: checks.ok } });
-    return { status: 'published', runId, version: snapshot.version, created, plan, checks };
+    const complete = portalFinal.ok && checks.ok && divergent.length === 0;
+    await d.store.updateRun(runId, { report: { plan, created, transfers, probes, checks, portalFinal, complete }, finished: true, step: { step: 'probes', probes, checksOk: checks.ok, complete } });
+    return { status: 'published', runId, version: snapshot.version, created, plan, checks, complete, portalFinal };
   } catch (error) {
     if (activated) {
       // Révision déjà active : jamais d'état FAILED a posteriori.
       await step('post-activation-error', { error: (error as Error)?.message ?? String(error) }).catch(() => undefined);
-      return { status: 'published', runId, version: (await d.store.getState(context))?.activeRevision ?? '', created, plan };
+      await d.store.updateRun(runId, { report: { plan, created, complete: false, error: (error as Error)?.message ?? String(error) }, finished: true }).catch(() => undefined);
+      return { status: 'published', runId, version: (await d.store.getState(context))?.activeRevision ?? '', created, plan, complete: false };
     }
     return fail('unexpected', (error as Error)?.message ?? String(error), error);
   }
@@ -648,7 +667,7 @@ export interface PublishedCatalogChecks {
   ok: boolean;
   issues: string[];
   couples: Array<{ lookupKey: string; priceId: string | null; unitAmountCents: number | null; taxBehavior: string | null; ok: boolean }>;
-  portal: { configurationId: string | null; exclusive: boolean } | null;
+  portal: { configurationId: string | null; exclusive: boolean; determinate?: boolean; accepted?: Array<{ product: string; prices: string[] }> | null } | null;
 }
 
 /**
@@ -716,10 +735,14 @@ export async function verifyPublishedCatalog(
   }
   let portal: PublishedCatalogChecks['portal'] = null;
   try {
+    // Lot 53I : relecture AVEC expansion ; indéterminé ≠ conforme.
     const backup = await capturePortalConfiguration(d);
-    const exclusive = Boolean(backup) && JSON.stringify(backup!.products) === JSON.stringify(portalProductsFor(snap)) && backup!.settingsOk;
-    portal = { configurationId: backup?.configurationId ?? null, exclusive };
-    if (!exclusive) issues.push('portail : ne correspond pas exclusivement aux six prix actifs');
+    const determinate = Boolean(backup && backup.products !== null);
+    const exclusive = Boolean(backup) && determinate && JSON.stringify(backup!.products) === JSON.stringify(portalProductsFor(snap)) && backup!.settingsOk;
+    portal = { configurationId: backup?.configurationId ?? null, exclusive, determinate, accepted: backup?.products ?? null };
+    if (!backup) issues.push('portail : aucune configuration de montée en gamme');
+    else if (!determinate) issues.push('portail : prix autorisés non relus (propriété absente de la réponse Stripe, état indéterminé)');
+    else if (!exclusive) issues.push('portail : ne correspond pas exclusivement aux six prix actifs');
   } catch (e) {
     issues.push(`portail illisible : ${(e as Error).message}`);
   }

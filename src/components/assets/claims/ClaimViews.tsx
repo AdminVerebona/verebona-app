@@ -142,7 +142,10 @@ export function ClaimsListView({
 const frDate = (d: string | null) => (d ? d.slice(0, 10).split('-').reverse().join('/') : '');
 
 export interface ClaimFormViewProps {
-  claimId: number;
+  /** null : brouillon pas encore enregistré (lot 53, D10). */
+  claimId: number | null;
+  /** Lot 53 (D10) : brouillon — rien n'existe en base avant la première saisie effective. */
+  draft?: boolean;
   idPrefix: string;
   family: ExportFamily | null;
   title: string;
@@ -185,7 +188,7 @@ export function ClaimFormView(p: ClaimFormViewProps) {
   const autres = p.assetOptions.filter((a) => a.id !== p.currentAssetId);
 
   return (
-    <div className="space-y-5" data-claim-form={p.claimId}>
+    <div className="space-y-5" data-claim-form={p.claimId ?? 'draft'} data-claim-draft={p.draft ? 'true' : undefined}>
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-center gap-2 min-w-0">
           {p.onBack && !p.compact && (
@@ -204,6 +207,11 @@ export function ClaimFormView(p: ClaimFormViewProps) {
           <span className="flex-1">{p.notice}</span>
           <button type="button" onClick={p.onDismissNotice} className="underline underline-offset-2 hover:text-foreground">Compris</button>
         </div>
+      )}
+      {p.draft && (
+        <p className="text-[11px] text-muted-foreground leading-snug" data-claim-draft-hint>
+          Brouillon : ce sinistre sera enregistré dès votre première saisie. Si vous revenez en arrière sans rien saisir, rien n’est conservé.
+        </p>
       )}
       {p.documented && (
         <p className="text-[11px] text-muted-foreground leading-snug">
@@ -303,7 +311,7 @@ export function ClaimFormView(p: ClaimFormViewProps) {
       {p.onDelete && !p.readOnly && (
         <div className="pt-2 border-t border-border">
           <Button type="button" variant="ghost" size="sm" onClick={p.onDelete} className="text-red-400 hover:text-red-500">
-            <Trash2 className="w-3.5 h-3.5 mr-1" />Supprimer ce sinistre
+            <Trash2 className="w-3.5 h-3.5 mr-1" />{p.draft ? 'Abandonner ce brouillon' : 'Supprimer ce sinistre'}
           </Button>
         </div>
       )}

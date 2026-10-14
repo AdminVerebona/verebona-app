@@ -34,6 +34,42 @@ export function unresolvedPlaceholders(text: string): string[] {
   return [...new Set([...text.matchAll(/\{\{\s*([A-Za-z0-9_]+)\s*\}\}/g)].map((m) => m[1]))];
 }
 
+/**
+ * Lot 53 — liens d'action : noms équivalents entre gabarits et appelants.
+ *
+ * Les gabarits en base (migration 0125, retouches BO) attendent souvent
+ * `{{actionUrl}}`, quand les gabarits par défaut du code et certains
+ * appelants parlent d'`inviteUrl`, `verificationUrl`… Un nom différent
+ * laissait « Accepter : {{actionUrl}} » dans l'e-mail (invitation Duo,
+ * 12 et 13/10/2026). Le lien fourni sous l'un de ces noms est repris sous
+ * les autres, sans jamais écraser une valeur fournie.
+ */
+const ACTION_LINK_ALIASES = ['actionUrl', 'inviteUrl', 'invitationLink', 'verificationUrl', 'resetUrl', 'activationUrl', 'confirmUrl'] as const;
+
+export function withActionLinkAliases(variables: Record<string, string>): Record<string, string> {
+  const fourni = ACTION_LINK_ALIASES.map((k) => variables[k]).find((v) => typeof v === 'string' && /^https?:\/\//.test(v));
+  if (!fourni) return variables;
+  const out = { ...variables };
+  if (!out.actionUrl) out.actionUrl = fourni;
+  if (!out.inviteUrl) out.inviteUrl = fourni;
+  if (!out.invitationLink) out.invitationLink = fourni;
+  return out;
+}
+
+/**
+ * Gabarits dont le lien est la raison d'être : une invitation sans lien
+ * utilisable n'est pas envoyée (lot 53). Liste fermée et volontairement
+ * courte : pour les autres gabarits, une variable manquante reste signalée
+ * dans le journal (lot 49) sans bloquer l'envoi — un e-mail de sécurité ou
+ * de facturation ne doit jamais être retenu.
+ */
+export const LINK_REQUIRED_TEMPLATES: ReadonlySet<string> = new Set(['DUO_INVITATION', 'ACCOUNT_INVITATION']);
+
+/** Lien d'action resté non remplacé (`{{…Url}}`, `{{…Link}}`, hors logo). */
+export function missingActionLinks(text: string): string[] {
+  return unresolvedPlaceholders(text).filter((n) => /(url|link)$/i.test(n) && n !== 'logoUrl');
+}
+
 class EmailService {
   private resend: Resend;
   
@@ -428,7 +464,7 @@ class EmailService {
       const computedLogo = await this.getVerebonaEmailLogo();
 
       const variablesForReplacement = {
-        ...options.variables,
+        ...withActionLinkAliases(options.variables ?? {}),
         year: new Date().getFullYear().toString(),
       };
       
@@ -446,6 +482,21 @@ class EmailService {
       }
 
       logEntry.subject = subject;
+
+      // Lot 53 : une invitation dont le lien n'est pas remplacé est
+      // inutilisable (bouton « Accepter » mort) — elle n'est pas envoyée, et
+      // l'échec est visible dans le journal des e-mails du BO avec son motif.
+      const liensManquants = LINK_REQUIRED_TEMPLATES.has(options.templateCode.toUpperCase())
+        ? missingActionLinks(`${subject}\n${bodyProcessed}`)
+        : [];
+      if (liensManquants.length > 0) {
+        const error = `Lien manquant : ${liensManquants.join(', ')} — e-mail non envoyé`;
+        console.error(`[EmailService] ${options.templateCode} : ${error}`);
+        logEntry.status = 'failed';
+        logEntry.errorMessage = error;
+        await db.insert(emailLogs).values(logEntry);
+        return { success: false, error: 'MISSING_ACTION_LINK' };
+      }
 
       let htmlBody = this.isCompleteHTML(bodyProcessed)
         ? bodyProcessed

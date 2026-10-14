@@ -22,8 +22,9 @@ export const CROSS_ACCOUNT_BO_LINK = '/admin/exploitation?tab=intercomptes';
 
 /** Procédure de remise en conformité (jamais automatique). */
 export const CROSS_ACCOUNT_PROCEDURE =
-  'Aucune correction automatique. Remise en conformité maîtrisée : sauvegarde, simulation, validation, '
-  + 'exécution journalisée, contrôle après correction — docs/exploitation/relations-intercomptes.md.';
+  'Aucune correction automatique. Accès déjà neutralisés (lectures et écritures bornées au compte). Correction contrôlée '
+  + 'dans le BO : Exploitation › Rattrapages › « Relations intercomptes » (simuler, appliquer avec motif, restaurer) — '
+  + 'docs/exploitation/relations-intercomptes.md.';
 
 export function crossAccountFingerprint(code: string): string {
   return `${CROSS_ACCOUNT_ANOMALY_PREFIX}${code.toLowerCase()}`;

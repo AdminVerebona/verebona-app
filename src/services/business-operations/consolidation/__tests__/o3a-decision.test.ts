@@ -57,7 +57,10 @@ describe('C5 — machine de décision de création', () => {
       op({ id: 1, refs: [ref('QUOTE', 'D1')] }), op({ id: 2, providerKey: 'autre', refs: [ref('WORK_ORDER', 'OT9')] }),
     ]));
     expect(d).toMatchObject({ outcome: 'ARBITRATION_REQUIRED', reason: 'ARBITRATION_REQUIRED', operationId: null });
-    expect(d.detail.certain.map((c) => c.operationId).sort()).toEqual([1, 2]);
+    // Lot 53 (PO-D5) : la référence de l'autre prestataire est « fragile » — proposée, jamais certaine.
+    expect(d.arbitration?.operationIds).toEqual([1, 2]);
+    expect(d.detail.certain.map((c) => c.operationId)).toEqual([1]);
+    expect(d.detail.fragile).toEqual([2]);
   });
 
   it('C5-07 / EXH-004 / F-058 Opération seulement plausible (M3 requis, hors lot) → HOLD, pas de doublon', () => {
@@ -122,10 +125,11 @@ describe('C7 — règles fermées par type', () => {
     expect(d).toMatchObject({ outcome: 'MATCH_AND_ENRICH', matchMethod: 'M1' });
   });
 
-  it('C7-02b / F-033 INTERVENTION : même garage, factures de numéros différents sans lien → deux Opérations', () => {
+  it('C7-02b / F-033 / PO-D6-01 INTERVENTION : même garage, factures de numéros différents → plus jamais deux Opérations d\'office (M3, puis l\'utilisateur)', () => {
+    // Lot 53 (retour PO D6) : les numéros différents sont un indice contraire, plus une exclusion.
     const d = decideCandidate(cand({ refs: [ref('INVOICE', 'FA2')] }), ctx([op({ refs: [ref('INVOICE', 'FA1')] })]));
-    expect(d.outcome).toBe('CREATE_NEW');
-    expect(d.detail.excluded[0].why).toContain('REFERENCE_DIFFERENT_INVOICE');
+    expect(d).toMatchObject({ outcome: 'HOLD_UNRESOLVED', reason: 'M3_REQUIRED' });
+    expect(hardNegatives(cand({ refs: [ref('INVOICE', 'FA2')] }), op({ refs: [ref('INVOICE', 'FA1')] }))).toEqual([]);
   });
 
   it('C7-02c / F-034 INTERVENTION : même garage, même montant, aucune autre preuve → jamais un rapprochement (HOLD)', () => {
@@ -139,8 +143,9 @@ describe('C7 — règles fermées par type', () => {
     expect(decideCandidate(cand({ assetIds: [2] }), ctx([op({ assetIds: [1] })])).outcome).toBe('CREATE_NEW');
   });
 
-  it('C7-02e INTERVENTION : même prestataire hors période cohérente (> 120 j) → rien de plausible', () => {
-    expect(decideCandidate(cand({ dates: { plannedDate: null, startDate: null, realizedDate: '2026-12-01', endDate: null } }), ctx([op({ realizedDate: '2026-01-02' })])).outcome).toBe('CREATE_NEW');
+  it('C7-02e / PO-D5-03 INTERVENTION : la fenêtre de 120 j est un indice — même prestataire et même bien hors fenêtre → plausible (M3) ; très loin (> 360 j) → rien de plausible', () => {
+    expect(decideCandidate(cand({ dates: { plannedDate: null, startDate: null, realizedDate: '2026-12-01', endDate: null } }), ctx([op({ realizedDate: '2026-01-02' })])).reason).toBe('M3_REQUIRED');
+    expect(decideCandidate(cand({ dates: { plannedDate: null, startDate: null, realizedDate: '2027-06-01', endDate: null } }), ctx([op({ realizedDate: '2026-01-02' })])).outcome).toBe('CREATE_NEW');
   });
 
   it('C7-03 / F-035 / F-036 / F-037 CONTRACT : même police → même contrat ; nouvelle police sans continuité → nouveau ; renouvellement citant l\'ancienne → même', () => {

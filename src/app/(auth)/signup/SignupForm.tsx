@@ -18,7 +18,7 @@ import { ArrowLeft, Crown, Users } from 'lucide-react';
 import { ForceTheme } from '@/components/ForceTheme';
 import { publicSiteUrl } from '@/lib/external-urls';
 import { z } from 'zod';
-import { MIN_PASSWORD_LENGTH } from '@/lib/auth/password-rules';
+import { MIN_PASSWORD_LENGTH, checkPassword } from '@/lib/auth/password-rules';
 import { Checkbox } from '@/components/ui/checkbox';
 
 const signupSchema = z.object({
@@ -26,13 +26,18 @@ const signupSchema = z.object({
   lastName: z.string().min(1, "Le nom est requis"),
   username: z.string().optional(),
   email: z.string().email("Email invalide"),
-  password: z
-    .string()
-    .min(MIN_PASSWORD_LENGTH, `Minimum ${MIN_PASSWORD_LENGTH} caractères`)
-    .regex(/[A-Za-z]/, "Une lettre est requise")
-    .regex(/\d/, "Un chiffre est requis")
-    .regex(/[!@#$%^&*()\-_=+\[\]{};:,.?]/, "Un caractère spécial est requis")
-    .regex(/^\S+$/, "Pas d'espace autorisé"),
+  // CDC 18 §10.1 (lot 53A) : la règle vient de la SOURCE PARTAGÉE
+  // `password-rules` — celle que le serveur applique — et n'est plus
+  // redéclarée ici (risque de divergence client/serveur).
+  password: z.string().superRefine((value, ctx) => {
+    const r = checkPassword(value);
+    const fail = (message: string) => ctx.addIssue({ code: 'custom', message });
+    if (!r.hasMinLength) fail(`Minimum ${MIN_PASSWORD_LENGTH} caractères`);
+    if (!r.hasLetter) fail("Une lettre est requise");
+    if (!r.hasDigit) fail("Un chiffre est requis");
+    if (!r.hasSpecial) fail("Un caractère spécial est requis");
+    if (!r.hasNoSpace) fail("Pas d'espace autorisé");
+  }),
   confirmPassword: z.string(),
   acceptedTerms: z.boolean().refine((val) => val === true, {
     message: "Vous devez accepter les CGSU pour créer un compte",

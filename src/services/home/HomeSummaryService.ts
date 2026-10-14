@@ -259,7 +259,7 @@ export async function buildHomeSummary(accountId: number): Promise<HomeSummaryPa
       thumbUpdatedAt: assetFileThumbnails.updatedAt,
     })
       .from(assetFiles)
-      .leftJoin(assets, eq(assetFiles.assetId, assets.id))
+      .leftJoin(assets, and(eq(assetFiles.assetId, assets.id), eq(assets.accountId, assetFiles.accountId)))
       .leftJoin(assetFileThumbnails, and(
         eq(assetFileThumbnails.fileId, assetFiles.id),
         eq(assetFileThumbnails.variant, THUMBNAIL_VARIANT),
@@ -285,7 +285,7 @@ export async function buildHomeSummary(accountId: number): Promise<HomeSummaryPa
       entityName: cibleCols.entityName,
     })
       .from(aiFieldUpdates)
-      .innerJoin(assets, eq(aiFieldUpdates.assetId, assets.id))
+      .innerJoin(assets, and(eq(aiFieldUpdates.assetId, assets.id), eq(assets.accountId, aiFieldUpdates.accountId)))
       .where(and(
         eq(aiFieldUpdates.accountId, accountId),
         gte(aiFieldUpdates.createdAt, new Date(dateMinus(30) + 'T00:00:00')),
@@ -327,7 +327,7 @@ export async function buildHomeSummary(accountId: number): Promise<HomeSummaryPa
       assetName: assets.name,
     })
       .from(assetFiles)
-      .leftJoin(assets, eq(assetFiles.assetId, assets.id))
+      .leftJoin(assets, and(eq(assetFiles.assetId, assets.id), eq(assets.accountId, assetFiles.accountId)))
       .where(and(
         eq(assetFiles.accountId, accountId),
         isNull(assetFiles.deletedAt),

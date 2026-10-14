@@ -11,7 +11,8 @@ export async function seedSystemEmailTemplates() {
         'DEADLINE_REMINDER',
         'DEADLINE_OVERDUE',
         'PREMIUM_CONFIRMATION',
-        'SECURITY_SESSIONS_REVOKED'
+        'SECURITY_SESSIONS_REVOKED',
+        'SIGNUP_EXISTING_ACCOUNT'
     ];
 
     await db.delete(emailTemplates)
@@ -23,7 +24,8 @@ export async function seedSystemEmailTemplates() {
                 eq(emailTemplates.type, 'DEADLINE_REMINDER'),
                 eq(emailTemplates.type, 'DEADLINE_OVERDUE'),
                 eq(emailTemplates.type, 'PREMIUM_CONFIRMATION'),
-                eq(emailTemplates.type, 'SECURITY_SESSIONS_REVOKED')
+                eq(emailTemplates.type, 'SECURITY_SESSIONS_REVOKED'),
+                eq(emailTemplates.type, 'SIGNUP_EXISTING_ACCOUNT')
             )
         );
 
@@ -275,6 +277,18 @@ export async function seedSystemEmailTemplates() {
             subject: DEFAULT_EMAIL_TEMPLATES.SECURITY_SESSIONS_REVOKED.subject,
             body: DEFAULT_EMAIL_TEMPLATES.SECURITY_SESSIONS_REVOKED.body,
             placeholders: DEFAULT_EMAIL_TEMPLATES.SECURITY_SESSIONS_REVOKED.placeholders,
+            triggerConfig: null,
+            sender: null,
+            updatedAt: new Date(),
+            updatedBy: null,
+        },
+        // Lot 53A : inscription sur une adresse déjà inscrite (migration 0342)
+        // — même texte que `lib/email-defaults.ts`.
+        {
+            type: 'SIGNUP_EXISTING_ACCOUNT',
+            subject: DEFAULT_EMAIL_TEMPLATES.SIGNUP_EXISTING_ACCOUNT.subject,
+            body: DEFAULT_EMAIL_TEMPLATES.SIGNUP_EXISTING_ACCOUNT.body,
+            placeholders: DEFAULT_EMAIL_TEMPLATES.SIGNUP_EXISTING_ACCOUNT.placeholders,
             triggerConfig: null,
             sender: null,
             updatedAt: new Date(),

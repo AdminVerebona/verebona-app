@@ -7,9 +7,13 @@ import type { UserRole, PlanType, UserStatus } from '@/types/domain';
 import { logUserActivity } from '@/lib/audit-logger';
 import { AccountService } from '@/services/account-service';
 import { getClientIp } from '@/lib/auth/client-ip';
+import { authRateLimitEnabled, getAuthRateLimiter, normalizeEmail } from '@/lib/auth/auth-rate-limit';
 import {
-  AUTH_LIMITS, authRateLimitEnabled, getAuthRateLimiter, limitKey, normalizeEmail, rateLimitBody,
-} from '@/lib/auth/auth-rate-limit';
+  checkLoginThrottle, loginThrottledBody, recordLoginFailure, recordLoginSuccess,
+  type LoginAttemptContext, type ThrottleVerdict,
+} from '@/lib/auth/login-throttle';
+import { readDeviceCookie, rememberTrustedDevice, trustedDeviceFor } from '@/lib/auth/device-trust';
+import { setSessionCookies } from '@/lib/auth/session-tokens';
 import { comparePasswordConstantTime } from '@/lib/auth/anti-enumeration';
 import { EMAIL_NOT_VERIFIED_MESSAGE, INVALID_CREDENTIALS_MESSAGE } from '@/lib/auth/auth-messages';
 import { userGuideProgress } from '@/db/schema';
@@ -25,10 +29,18 @@ function invalidCredentials() {
 }
 
 function tooManyAttempts(retryAfterSeconds: number) {
-  return NextResponse.json(rateLimitBody(retryAfterSeconds), {
+  return NextResponse.json(loginThrottledBody(retryAfterSeconds), {
     status: 429,
     headers: { 'Retry-After': String(retryAfterSeconds) },
   });
+}
+
+/** Détail de journal de la limitation (aucune clé, aucune IP, aucune adresse). */
+function throttleDetails(ctx: LoginAttemptContext, verdict: ThrottleVerdict | null) {
+  return {
+    trustedDevice: !!ctx.trustedDeviceId,
+    ...(verdict?.lockedNow ? { throttle: { rule: verdict.rule, retryAfterSeconds: verdict.retryAfterSeconds } } : {}),
+  };
 }
 
 /**
@@ -46,9 +58,16 @@ function tooManyAttempts(retryAfterSeconds: number) {
  *   2. bcrypt TOUJOURS exécuté (empreinte factice pour une adresse inconnue) ;
  *   3. adresse inconnue ou mot de passe faux → MÊME réponse (401
  *      INVALID_CREDENTIALS, même corps), échec compté sur les deux clés ;
- *   4. mot de passe prouvé → seule la clé de CE compte est remise à zéro ;
- *      les états du compte (suspendu, supprimé, e-mail non vérifié) ne sont
- *      dits qu'à ce moment-là (CDC 18 §30 EMAIL_NOT_VERIFIED).
+ *   4. mot de passe prouvé → les états du compte (suspendu, supprimé,
+ *      e-mail non vérifié) ne sont dits qu'à ce moment-là (CDC 18 §30
+ *      EMAIL_NOT_VERIFIED).
+ *
+ * LOT 53A — D1 (retour PO) : le limiteur ne bloque plus l'ADRESSE pour tout
+ * le monde. Règles (origine, origine × adresse, adresse pour les appareils
+ * non reconnus, appareil reconnu) : `lib/auth/login-throttle.ts`. Une
+ * session ouverte fait reconnaître ce navigateur pour ce compte
+ * (`lib/auth/device-trust.ts`) : une attaque ultérieure, même distribuée,
+ * ne l'empêche pas de se connecter.
  * ══════════════════════════════════════════════════════════════════════════
  */
 export async function POST(request: NextRequest) {
@@ -64,11 +83,15 @@ export async function POST(request: NextRequest) {
     const normalized = normalizeEmail(email);
     const limiter = getAuthRateLimiter();
     const limitEnabled = authRateLimitEnabled();
-    const ipEntry = { key: limitKey('login', 'ip', getClientIp(request.headers)), policy: AUTH_LIMITS.loginIp };
-    const accountEntry = { key: limitKey('login', 'acct', normalized), policy: AUTH_LIMITS.loginAccount };
+    const throttleCtx: LoginAttemptContext = {
+      identifier: normalized,
+      ip: getClientIp(request.headers),
+      trustedDeviceId: trustedDeviceFor(readDeviceCookie(request), normalized),
+    };
 
     if (limitEnabled) {
-      const decision = await limiter.check([ipEntry, accountEntry]);
+      // Avant toute lecture du compte : le refus est identique pour toute adresse.
+      const decision = await checkLoginThrottle(limiter, throttleCtx);
       if (!decision.allowed) return tooManyAttempts(decision.retryAfterSeconds);
     }
 
@@ -100,22 +123,34 @@ export async function POST(request: NextRequest) {
     const passwordMatch = await comparePasswordConstantTime(password, row?.password_hash);
 
     if (!row || !passwordMatch) {
+      const verdict = limitEnabled ? await recordLoginFailure(limiter, throttleCtx) : null;
+      const throttle = throttleDetails(throttleCtx, verdict);
       void logUserActivity({
         activityType: 'LOGIN_FAILED',
         userId: row?.id ?? null,
         userEmail: row?.email ?? normalized,
         details: row
-          ? { reason: 'invalid_password', attemptCount: 1, accountStatus: String(row.status).toLowerCase() }
-          : { reason: 'user_not_found', attemptCount: 1, accountStatus: 'not_found' },
+          ? { reason: 'invalid_password', attemptCount: 1, accountStatus: String(row.status).toLowerCase(), ...throttle }
+          : { reason: 'user_not_found', attemptCount: 1, accountStatus: 'not_found', ...throttle },
         request,
       });
-      if (limitEnabled) await limiter.recordFailure([ipEntry, accountEntry]);
+      if (verdict?.lockedNow) {
+        // Traçabilité D1 : une pause vient d'être déclenchée (une ligne par pause).
+        void logUserActivity({
+          activityType: 'AUTH_LOGIN_THROTTLED',
+          userId: row?.id ?? null,
+          userEmail: row?.email ?? normalized,
+          details: { rule: verdict.rule, retryAfterSeconds: verdict.retryAfterSeconds, trustedDevice: !!throttleCtx.trustedDeviceId },
+          request,
+        });
+      }
       return invalidCredentials();
     }
 
-    // Mot de passe prouvé : seule la clé de CE compte repart à zéro (jamais
-    // la clé IP, jamais celle d'un autre compte).
-    if (limitEnabled) await limiter.reset(accountEntry.key);
+    // Mot de passe prouvé : seuls les compteurs de CET appareil reconnu ou de
+    // la paire (IP, adresse) repartent à zéro — jamais celui de l'IP, ni
+    // celui de l'adresse toutes origines (D1).
+    if (limitEnabled) await recordLoginSuccess(limiter, throttleCtx);
 
     const user = {
       id: row.id,
@@ -216,6 +251,8 @@ export async function POST(request: NextRequest) {
         role: user.role,
         planType: user.planType,
         currentAccountId: defaultAccount?.id,
+        // D1 : appareil déjà reconnu pour ce compte (sinon : premier succès ici).
+        trustedDevice: !!throttleCtx.trustedDeviceId,
       },
       request,
     });
@@ -263,23 +300,10 @@ export async function POST(request: NextRequest) {
       // Ils sont deposes uniquement en cookies HttpOnly ci-dessous.
     });
 
-    const isProduction = process.env.NODE_ENV === 'production';
-
-    response.cookies.set('access_token', accessToken, {
-      httpOnly: true,
-      secure: isProduction,
-      sameSite: 'lax',
-      maxAge: 15 * 60,
-      path: '/',
-    });
-
-    response.cookies.set('refresh_token', refreshToken, {
-      httpOnly: true,
-      secure: isProduction,
-      sameSite: 'lax',
-      maxAge: 30 * 24 * 60 * 60, // CDC §5.4
-      path: '/',
-    });
+    // Durées = celles des JWT (accès 15 min, renouvellement 30 j glissants).
+    setSessionCookies(response, { accessToken, refreshToken });
+    // D1 : ce navigateur / cette application est désormais reconnu pour ce compte.
+    rememberTrustedDevice(request, response, normalizeEmail(user.email));
 
     return response;
   } catch (error) {

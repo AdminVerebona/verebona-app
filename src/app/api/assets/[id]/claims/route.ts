@@ -10,7 +10,10 @@
  * GET : `{ claims: [...résumés], legacy: {...} | null }` — `legacy` :
  * ancienne saisie du bien qui n'est pas (encore) devenue un sinistre
  * (lecture de compatibilité, Q11). `?include=references` : pièces, photos et
- * événements « sinistre » proposés par le formulaire.
+ * événements « sinistre » proposés par le formulaire. Lot 53 (retour PO
+ * Q18) : `&claimId=N` — ceux aussi des AUTRES biens concernés par ce
+ * sinistre du compte, accessibles seulement (bien du compte, non supprimé) ;
+ * un sinistre introuvable dans le compte n'élargit rien.
  *
  * POST : `{ assetIds?: number[], claim?: {...}, version? }` → le sinistre
  * créé (forme du formulaire, `version` pour le verrou optimiste).
@@ -19,7 +22,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { SessionService } from '@/lib/session-service';
 import { findAccessibleAssetForExport } from '@/services/exports/export-access';
-import { loadAdditionalInfoReferences } from '@/services/exports/additional-infos-references.service';
+import { loadAdditionalInfoReferences, loadClaimReferences } from '@/services/exports/additional-infos-references.service';
 import { ClaimOperationService } from '@/services/business-operations/claims/claim-operation.service';
 import {
   claimErrorResponse, notFound, parseClaimBody, parsePositiveId, validationError, writableAssetOr,
@@ -35,11 +38,22 @@ export async function GET(request: NextRequest, { params }: Ctx) {
     const asset = await findAccessibleAssetForExport(session, assetId);
     if (!asset) return notFound();
     const withReferences = request.nextUrl.searchParams.get('include') === 'references';
-    const [list, references] = await Promise.all([
+    const claimId = parsePositiveId(request.nextUrl.searchParams.get('claimId') ?? '');
+    const references = async () => {
+      if (claimId) {
+        // Biens concernés lus DANS le compte courant (sinistre d'un autre compte : rien).
+        const claim = await ClaimOperationService.get(asset.accountId, assetId, claimId);
+        if (claim) {
+          return loadClaimReferences({ assetId, accountId: asset.accountId, userId: session.userId, claimAssetIds: claim.assets.map((a) => a.id) });
+        }
+      }
+      return loadAdditionalInfoReferences({ assetId, accountId: asset.accountId, userId: session.userId });
+    };
+    const [list, refs] = await Promise.all([
       ClaimOperationService.list(asset.accountId, assetId),
-      withReferences ? loadAdditionalInfoReferences({ assetId, accountId: asset.accountId, userId: session.userId }) : Promise.resolve(undefined),
+      withReferences ? references() : Promise.resolve(undefined),
     ]);
-    return NextResponse.json({ assetId, ...list, ...(references ? { references } : {}) });
+    return NextResponse.json({ assetId, ...list, ...(refs ? { references: refs } : {}) });
   } catch (error) {
     return claimErrorResponse('GET', error);
   }

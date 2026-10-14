@@ -20,6 +20,11 @@
  *     ouvre / consolide une anomalie de Supervision par type non nul et la
  *     résout d'elle-même à 0 (`alerts.ts`).
  *
+ * Lot 53 (retour PO D23) : la correction contrôlée (BO › Rattrapages,
+ * journalisée, restaurable) est dans `remediation.ts` ; la qualification des
+ * risques par catégorie dans `risk-catalog.ts`. Les preuves et données déjà
+ * neutralisées (WITHDRAWN, superseded) ne sont plus comptées.
+ *
  * Le même SQL figure dans `docs/exploitation/relations-intercomptes.sql`
  * (test de parité : `cross-account-detection.test.ts`).
  *
@@ -39,7 +44,7 @@ export interface CrossAccountRow {
 export interface CrossAccountCheck {
   code: string;
   /** Famille de relation (§5 du ticket). */
-  family: 'documents' | 'fournisseurs' | 'evenements' | 'agenda' | 'preuves' | 'jobs';
+  family: 'documents' | 'fournisseurs' | 'evenements' | 'agenda' | 'preuves' | 'a_traiter' | 'jobs';
   label: string;
   /**
    * SELECT rendant `account_id` (compte de la relation ou de l'objet
@@ -203,19 +208,42 @@ export const CROSS_ACCOUNT_CHECKS: readonly CrossAccountCheck[] = [
     code: 'EVIDENCE_ASSET', family: 'preuves', label: 'Preuve (field_evidence) → bien d’un autre compte',
     sql: `SELECT fe.account_id, a.account_id AS other_account_id, 'field_evidence#' || fe.id || ' -> assets#' || a.id || ' (' || fe.status || ')' AS ref
             FROM field_evidence fe JOIN assets a ON a.id = fe.asset_id
-           WHERE a.account_id IS DISTINCT FROM fe.account_id`,
+           WHERE a.account_id IS DISTINCT FROM fe.account_id AND fe.lifecycle_status IS DISTINCT FROM 'WITHDRAWN'`,
   },
   {
     code: 'EVIDENCE_SOURCE', family: 'preuves', label: 'Preuve (field_evidence) issue d’un document d’un autre compte',
     sql: `SELECT fe.account_id, f.account_id AS other_account_id, 'field_evidence#' || fe.id || ' <- asset_files#' || f.id || ' (' || fe.status || ')' AS ref
             FROM field_evidence fe JOIN asset_files f ON f.id = fe.source_id
-           WHERE fe.source_type IN ('document', 'asset_file', 'file') AND f.account_id <> fe.account_id`,
+           WHERE fe.source_type IN ('document', 'asset_file', 'file') AND f.account_id <> fe.account_id
+             AND fe.lifecycle_status IS DISTINCT FROM 'WITHDRAWN'`,
   },
   {
     code: 'FACT_SOURCE', family: 'preuves', label: 'Fait extrait (document_facts) d’un document d’un autre compte',
     sql: `SELECT df.account_id, f.account_id AS other_account_id, 'document_facts#' || df.id || ' <- asset_files#' || f.id AS ref
             FROM document_facts df JOIN asset_files f ON f.id = df.file_id
-           WHERE f.account_id <> df.account_id`,
+           WHERE f.account_id <> df.account_id AND df.status = 'active'`,
+  },
+  {
+    // Lot 53 (retour PO D23) : « Ce que j'ai fait » de l'accueil (champs
+    // complétés par l'analyse) citant un bien d'un autre compte.
+    code: 'AI_FIELD_UPDATE', family: 'preuves', label: 'Champ complété par l’analyse (ai_field_updates) sur un bien d’un autre compte',
+    sql: `SELECT u.account_id, a.account_id AS other_account_id, 'ai_field_updates#' || u.id || ' -> assets#' || a.id AS ref
+            FROM ai_field_updates u JOIN assets a ON a.id = u.asset_id
+           WHERE a.account_id IS DISTINCT FROM u.account_id`,
+  },
+  // ── « À traiter » (lot 53, retour PO D23) ─────────────────────────────────
+  {
+    code: 'TO_PROCESS_TARGET', family: 'a_traiter', label: 'Carte « À traiter » ouverte visant un objet d’un autre compte',
+    sql: `SELECT t.account_id, o.account_id AS other_account_id, 'to_process_actions#' || t.id || ' -> ' || t.target_type || '#' || t.target_id AS ref
+            FROM to_process_actions t
+            CROSS JOIN LATERAL (SELECT CASE t.target_type
+                WHEN 'ASSET' THEN (SELECT x.account_id FROM assets x WHERE x.id = t.target_id)
+                WHEN 'DOCUMENT' THEN (SELECT x.account_id FROM asset_files x WHERE x.id = t.target_id)
+                WHEN 'EQUIPMENT' THEN (SELECT b.account_id FROM equipments x JOIN assets b ON b.id = x.asset_id WHERE x.id = t.target_id)
+                WHEN 'AGENDA_ITEM' THEN (SELECT x.account_id FROM agenda_items x WHERE x.id = t.target_id)
+                WHEN 'SUPPLIER' THEN (SELECT x.account_id FROM suppliers x WHERE x.id = t.target_id)
+              END AS account_id) o
+           WHERE t.resolved_at IS NULL AND o.account_id IS NOT NULL AND o.account_id <> t.account_id`,
   },
   // ── Jobs IA en attente ────────────────────────────────────────────────────
   {

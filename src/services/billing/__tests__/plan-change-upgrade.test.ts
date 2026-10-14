@@ -188,6 +188,16 @@ describe('montée en gamme immédiate', () => {
     expect(stripe.subscriptions.update).not.toHaveBeenCalled();
   });
 
+  it('STRIPE-P1-17 — publication en échec durable : PORTAL_BLOCKED (et non PORTAL_UPDATING), aucun parcours ouvert ni changement', async () => {
+    selectResults = [[{ planCode: 'premium', status: 'active', stripeSubscriptionId: 'sub_1', stripeCustomerId: 'cus_1', ownerUserId: 5 }]];
+    stripe.subscriptions.retrieve.mockResolvedValue({ id: 'sub_1', status: 'active', schedule: null, items: { data: [{ id: 'si_1', price: { id: 'price_pre_m' } }] } });
+    portal.ensure.mockRejectedValueOnce(Object.assign(new Error('PORTAL_BLOCKED: publication en échec'), { code: 'PORTAL_BLOCKED' }));
+    const r = await startImmediateUpgrade({ accountId: 1, planCode: 'premium_duo', billingPeriod: 'monthly', appBaseUrl: 'x', displayedPriceRevision: REV });
+    expect(r).toEqual({ ok: false, reason: 'PORTAL_BLOCKED' });
+    expect(stripe.billingPortal.sessions.create).not.toHaveBeenCalled();
+    expect(stripe.subscriptions.update).not.toHaveBeenCalled();
+  });
+
   it('refuse une baisse de gamme', async () => {
     selectResults = [[{ planCode: 'premium_duo', status: 'active', stripeSubscriptionId: 'sub_1', stripeCustomerId: 'cus_1', ownerUserId: 5 }]];
     const r = await startImmediateUpgrade({ accountId: 1, planCode: 'standard', billingPeriod: 'monthly', appBaseUrl: 'x', displayedPriceRevision: REV });

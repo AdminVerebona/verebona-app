@@ -49,13 +49,15 @@ describe('/api/users/me/deletion', () => {
 });
 
 describe('limitation des essais de mot de passe (clôture)', () => {
-  it('même limiteur que la connexion, par IP et par utilisateur, remis à zéro après succès', () => {
+  // Lot 53A (CDC 18 §33 / SEC-04) : limiteur PARTAGÉ de la réauthentification
+  // (par utilisateur et par IP) au lieu du `Map` en mémoire de l'instance.
+  it('PO-Q21-REAUTH-02 limiteur partagé, par IP et par utilisateur, vérifié avant la clôture, remis à zéro après succès', () => {
     const close = read('src/app/api/users/me/deletion/close-account.ts');
-    expect(close).toContain('checkAuthRateLimit(key)');
-    expect(close).toContain('`account-deletion:ip:${ip}`');
-    expect(close).toContain('`account-deletion:user:${userId}`');
-    expect(close.indexOf('checkAuthRateLimit(key)')).toBeLessThan(close.indexOf('closeAccountForDeletion({'));
-    expect(close).toContain('resetAuthRateLimit(`account-deletion:user:${userId}`)');
+    expect(close).toContain('reauthBlockedResponse(request, userId)');
+    expect(close.indexOf('reauthBlockedResponse(request, userId)')).toBeLessThan(close.indexOf('closeAccountForDeletion({'));
+    expect(close).toContain("if (result.code === 'INVALID_PASSWORD') await recordReauthFailure(request, userId, 'account_deletion')");
+    expect(close).toContain('await recordReauthSuccess(userId)');
+    expect(close).not.toMatch(/checkAuthRateLimit|resetAuthRateLimit/);
   });
 });
 

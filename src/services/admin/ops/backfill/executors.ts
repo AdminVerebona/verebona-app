@@ -11,6 +11,8 @@
  *   asset-account         runAssetAccountBackfill (lot 500 ; simulation = transactions annulées)
  *   operations-structured runStructuredOperationsMigration (lot 43 ; simulation = transactions annulées)
  *   operations-claims     runClaimMigration (lot 44 ; simulation = transactions annulées)
+ *   cross-account         runCrossAccountRemediation / restoreCrossAccountRemediation (lot 53, D23 ;
+ *                         simulation = transaction annulée par catégorie)
  *
  * Services chargés à la demande : la route reste légère.
  */
@@ -128,6 +130,20 @@ export async function executeBackfill(sql: postgres.Sql, req: BackfillRequest, h
           hooks.progress({ processed });
           if (processed % 50 === 0) hooks.log(`bien ${assetId} : ${processed} examiné(s)`);
         },
+      });
+      return { result: r };
+    }
+    case 'cross-account': {
+      // Lot 53 (D23) : correction contrôlée, une famille par exécution.
+      const m = await import('@/services/security/cross-account/remediation');
+      if (req.action === 'restore') {
+        const r = await m.restoreCrossAccountRemediation(sql, req.runId!);
+        hooks.log(`restauration ${req.runId} : ${r.restored} ligne(s), ${r.conflicts.length} conflit(s)`);
+        return { result: r };
+      }
+      const r = await m.runCrossAccountRemediation(sql, {
+        family: req.step as import('@/services/security/cross-account/remediation').RemediationFamily,
+        apply: req.action === 'apply', accountId: req.accountId, reason: req.reason, log: hooks.log,
       });
       return { result: r };
     }

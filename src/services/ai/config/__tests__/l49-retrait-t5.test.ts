@@ -66,13 +66,13 @@ describe('T12-AC05 / T12-AC06 / T12-AC07 — référentiel à cinq traitements, 
     }
   });
 
-  it('T12-AC07 / T12-AC10 — journaux : une sonde est « Technique », un ancien appel T5 « T5 (historique) », jamais confondus', async () => {
+  it('T12-AC07 / T12-AC10 — journaux : une sonde est « Technique », un ancien appel T5 « T5 (retiré) » (libellé lot 53, D24), jamais confondus', async () => {
     const { executionScopeLabel } = await import('../../telemetry/execution-filters');
     expect(executionScopeLabel({ treatment: null, useCaseCode: 'AI_GOVERNANCE', operationCode: 'model_operational_probe' })).toBe('Technique');
     expect(executionScopeLabel({ treatment: null, useCaseCode: 'AI_GOVERNANCE', operationCode: 'model_qualification_probe' })).toBe('Technique');
     expect(executionScopeLabel({ treatment: null, useCaseCode: 'AI_GOVERNANCE', operationCode: 'provider_test' })).toBe('Technique');
-    expect(executionScopeLabel({ treatment: null, useCaseCode: 'AI_GOVERNANCE', operationCode: 't5_analyze' })).toBe('T5 (historique)');
-    expect(executionScopeLabel({ treatment: null, useCaseCode: 'AI_GOVERNANCE', operationCode: 't5_modify' })).toBe('T5 (historique)');
+    expect(executionScopeLabel({ treatment: null, useCaseCode: 'AI_GOVERNANCE', operationCode: 't5_analyze' })).toBe('T5 (retiré)');
+    expect(executionScopeLabel({ treatment: null, useCaseCode: 'AI_GOVERNANCE', operationCode: 't5_modify' })).toBe('T5 (retiré)');
     expect(executionScopeLabel({ treatment: 'T2', useCaseCode: 'ASSISTANT', operationCode: 't2_answer' })).toBe('T2');
     // Un ancien lien `?treatment=T5` est ignoré (filtre courant à cinq traitements).
     const { readExecutionFilters } = await import('../../telemetry/execution-filters');

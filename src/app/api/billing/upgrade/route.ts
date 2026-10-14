@@ -20,7 +20,7 @@ import { CATALOG_ERROR_HTTP, CATALOG_ERROR_MESSAGES, type BillingCatalogErrorCod
  * Réservé au propriétaire du compte, comme le reste de la facturation.
  * Le client ne transmet jamais de Price ID (CDC §5.6).
  */
-const MESSAGES: Record<string, string> = {
+const UPGRADE_MESSAGES: Record<string, string> = {
   INVALID_TARGET: "L'offre ou la périodicité demandée est invalide.",
   NO_SUBSCRIPTION: "Aucun abonnement n'est associé à ce compte.",
   NOT_AN_UPGRADE: "Cette offre n'est pas une montée en gamme : son changement est programmé à l'échéance.",
@@ -31,6 +31,8 @@ const MESSAGES: Record<string, string> = {
   MUTATION_IN_PROGRESS: "Une modification de votre abonnement est déjà en cours. Patientez quelques minutes avant de réessayer.",
   PORTAL_UNAVAILABLE: "La page de paiement est momentanément indisponible. Aucun changement n'a été fait.",
   PORTAL_UPDATING: "Les offres sont en cours de mise à jour. Aucun changement n'a été fait : réessayez dans quelques minutes.",
+  // Lot 53I : échec durable (publication en échec) — pas de « réessayez dans quelques minutes ».
+  PORTAL_BLOCKED: "Le changement d'offre immédiat est momentanément suspendu le temps qu'un incident de mise à jour des offres soit résolu par notre équipe. Aucun changement n'a été fait ; votre abonnement actuel continue normalement.",
 };
 
 export async function POST(request: NextRequest) {
@@ -66,10 +68,10 @@ export async function POST(request: NextRequest) {
         {
           error: result.reason,
           code: result.reason,
-          message: catalogCode ? CATALOG_ERROR_MESSAGES[catalogCode] : MESSAGES[result.reason],
+          message: catalogCode ? CATALOG_ERROR_MESSAGES[catalogCode] : UPGRADE_MESSAGES[result.reason],
           ...(result.offer ? { offer: result.offer, details: { offer: result.offer } } : {}),
         },
-        { status: catalogCode ? CATALOG_ERROR_HTTP[catalogCode] : result.reason === 'MUTATION_IN_PROGRESS' ? 409 : result.reason === 'PORTAL_UNAVAILABLE' || result.reason === 'PORTAL_UPDATING' ? 503 : 400 },
+        { status: catalogCode ? CATALOG_ERROR_HTTP[catalogCode] : result.reason === 'MUTATION_IN_PROGRESS' ? 409 : result.reason === 'PORTAL_UNAVAILABLE' || result.reason === 'PORTAL_UPDATING' || result.reason === 'PORTAL_BLOCKED' ? 503 : 400 },
       );
     }
     return NextResponse.json({ url: result.url, offer: result.offer, scheduled_change_released: result.scheduledChangeReleased });

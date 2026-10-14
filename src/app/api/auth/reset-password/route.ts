@@ -7,7 +7,13 @@ import { serverCacheDelete } from '@/lib/server-cache';
 import { sessionCutoffCacheKey } from '@/lib/auth/session-cutoff';
 import { verifyPasswordResetToken, consumePasswordResetToken } from '@/services/auth/password-reset.service';
 import { getClientIp } from '@/lib/auth/client-ip';
-import { AUTH_LIMITS, authRateLimitEnabled, getAuthRateLimiter, limitKey, rateLimitBody } from '@/lib/auth/auth-rate-limit';
+import { AUTH_LIMITS, authRateLimitEnabled, getAuthRateLimiter, limitKey, normalizeEmail, rateLimitBody } from '@/lib/auth/auth-rate-limit';
+import { passwordResetReleaseKeys } from '@/lib/auth/login-throttle';
+import { rememberTrustedDevice } from '@/lib/auth/device-trust';
+import { logUserActivity } from '@/lib/audit-logger';
+import { db } from '@/db';
+import { users } from '@/db/schema';
+import { eq } from 'drizzle-orm';
 
 /**
  * Route pour réinitialiser le mot de passe avec un token
@@ -101,10 +107,40 @@ export async function POST(request: NextRequest) {
       console.error('[reset-password] emit PASSWORD_RESET_COMPLETED échoué:', err);
     }
 
-    return NextResponse.json({
+    const response = NextResponse.json({
       success: true,
       message: 'Mot de passe réinitialisé avec succès'
     });
+
+    // ══════════════════════════════════════════════════════════════════════
+    // LOT 53A — D1 : la réinitialisation est la VÉRIFICATION SUPPLÉMENTAIRE
+    // du titulaire pendant une attaque (lien reçu par e-mail = preuve de
+    // contrôle de la boîte). Elle lève les pauses de connexion de l'adresse
+    // (toutes origines, et depuis cette IP) et fait reconnaître ce
+    // navigateur pour ce compte. Jamais bloquant : un échec est journalisé.
+    // ══════════════════════════════════════════════════════════════════════
+    try {
+      const [row] = await db.select({ email: users.email }).from(users).where(eq(users.id, user.id)).limit(1);
+      const identifier = normalizeEmail(row?.email);
+      if (identifier) {
+        if (authRateLimitEnabled()) {
+          const limiter = getAuthRateLimiter();
+          for (const key of passwordResetReleaseKeys(identifier, getClientIp(request.headers))) await limiter.reset(key);
+        }
+        rememberTrustedDevice(request, response, identifier);
+        void logUserActivity({
+          activityType: 'PASSWORD_RESET_COMPLETED',
+          userId: user.id,
+          userEmail: row?.email ?? '',
+          details: { sessionsRevoked: true, loginThrottleReleased: true },
+          request,
+        });
+      }
+    } catch (e) {
+      console.error('[reset-password] levée des pauses de connexion / appareil reconnu :', (e as Error)?.message);
+    }
+
+    return response;
     
   } catch (error) {
     console.error('Reset password error:', error);

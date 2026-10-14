@@ -110,6 +110,8 @@ export async function parseClaimBody(body: unknown, opts: { category: string; ac
 /** Erreurs connues → réponse ; sinon 500 journalisé. */
 export function claimErrorResponse(context: string, error: unknown): NextResponse {
   if (error instanceof ClaimFormError) {
+    // Lot 53 (D10) : aucun sinistre vide n'est créé en base.
+    if (error.code === 'EMPTY_CLAIM') return NextResponse.json({ error: 'EMPTY_CLAIM', code: 'EMPTY_CLAIM', message: error.message }, { status: 422 });
     if (error.code === 'CLAIM_NOT_FOUND') return NextResponse.json({ error: 'CLAIM_NOT_FOUND', code: 'NOT_FOUND', message: error.message }, { status: 404 });
     if (error.code === 'INVALID_ASSETS' || error.code === 'EVENT_NOT_FOUND' || error.code === 'EVENT_ALREADY_LINKED') {
       return validationError([{ path: String(error.details.path ?? ''), message: error.message }]);

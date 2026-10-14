@@ -98,76 +98,13 @@ export const exportGenerationRateLimiter = new RateLimiter({
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Limiteur en mémoire, 5 tentatives / 15 minutes par clé — conservé pour la
-// clôture de compte (CDC 18 §33 : « conserver le rate limiting existant »).
-// La CONNEXION et les parcours publics d'authentification utilisent depuis le
-// lot 37 le limiteur PARTAGÉ en base (`lib/auth/auth-rate-limit.ts`).
+// Lot 53A : l'ancien limiteur d'authentification EN MÉMOIRE (5 / 15 min par
+// clé, utilisé par la clôture de compte) est retiré. Toute limitation
+// d'authentification passe par les compteurs PARTAGÉS en base
+// (`lib/auth/auth-rate-limit.ts`) : connexion (`login-throttle.ts`),
+// réauthentification (`reauth-throttle.ts`), parcours d'e-mail (CDC 18 §32,
+// §33, SEC-04).
 // ─────────────────────────────────────────────────────────────────────────────
-
-interface SlidingWindowEntry {
-  timestamps: number[];
-}
-
-const AUTH_MAX_ATTEMPTS = 5;
-const AUTH_WINDOW_MS = 15 * 60 * 1000; // 15 min
-
-const authStore = new Map<string, SlidingWindowEntry>();
-
-// Nettoyage périodique (toutes les 5 min, non bloquant)
-const cleanupTimer = setInterval(() => {
-  const now = Date.now();
-  for (const [key, entry] of authStore.entries()) {
-    entry.timestamps = entry.timestamps.filter((ts) => now - ts < AUTH_WINDOW_MS);
-    if (entry.timestamps.length === 0) authStore.delete(key);
-  }
-}, 5 * 60 * 1000);
-
-// Ne pas bloquer le processus Node en mode test / serverless
-if (typeof cleanupTimer === 'object' && cleanupTimer !== null && 'unref' in cleanupTimer) {
-  (cleanupTimer as unknown as { unref: () => void }).unref();
-}
-
-export interface AuthRateLimitResult {
-  allowed: boolean;
-  remaining: number;
-  retryAfterSeconds: number;
-  limit: number;
-}
-
-/**
- * Vérifie + enregistre une tentative de login pour la clé IP donnée.
- */
-export function checkAuthRateLimit(ip: string): AuthRateLimitResult {
-  const now = Date.now();
-  const entry = authStore.get(ip) ?? { timestamps: [] };
-
-  // Supprimer les tentatives hors de la fenêtre glissante
-  entry.timestamps = entry.timestamps.filter((ts) => now - ts < AUTH_WINDOW_MS);
-
-  if (entry.timestamps.length >= AUTH_MAX_ATTEMPTS) {
-    const oldest = entry.timestamps[0];
-    const retryAfterSeconds = Math.ceil((AUTH_WINDOW_MS - (now - oldest)) / 1000);
-    authStore.set(ip, entry);
-    return { allowed: false, remaining: 0, retryAfterSeconds, limit: AUTH_MAX_ATTEMPTS };
-  }
-
-  entry.timestamps.push(now);
-  authStore.set(ip, entry);
-
-  return {
-    allowed: true,
-    remaining: AUTH_MAX_ATTEMPTS - entry.timestamps.length,
-    retryAfterSeconds: 0,
-    limit: AUTH_MAX_ATTEMPTS,
-  };
-}
-
-/**
- * Réinitialise le compteur auth pour une IP (appelé après login réussi)
- */
-export function resetAuthRateLimit(ip: string): void {
-  authStore.delete(ip);
-}
 
 /**
  * IP cliente réelle derrière le routeur Scalingo (lot 37, C4) : lecture de

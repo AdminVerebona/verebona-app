@@ -13,6 +13,9 @@ import {
   parseEmailVerificationToken,
 } from '@/services/auth/email-verification.service';
 import type { UserRole, PlanType, UserStatus } from '@/types/domain';
+import { setSessionCookies } from '@/lib/auth/session-tokens';
+import { rememberTrustedDevice } from '@/lib/auth/device-trust';
+import { normalizeEmail } from '@/lib/auth/auth-rate-limit';
 
 const baseUrl = () =>
   process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000';
@@ -104,6 +107,12 @@ export async function GET(request: NextRequest) {
       userId: user.id,
     }).catch(err => console.error('Failed to send welcome email:', err));
 
+    // CDC 18 §6 / LOGIN-05 : un compte suspendu ou supprimé entre-temps
+    // n'obtient pas de session par le lien (l'adresse reste vérifiée).
+    if (user.status === 'SUSPENDED' || user.status === 'DELETED') {
+      return redirect(`/verify-email?status=already_verified${planSuffix}`);
+    }
+
     // Generate auth tokens so the user is logged in immediately after verification
     try {
       const defaultAccount = await AccountService.getUserDefaultAccount(user.id);
@@ -143,21 +152,12 @@ export async function GET(request: NextRequest) {
       const targetPath = normalizedPlan ? '/abonnement/onboarding' : '/verify-email';
       const response = NextResponse.redirect(`${baseUrl()}${targetPath}?${params.toString()}`);
 
-      const isProduction = process.env.NODE_ENV === 'production';
-      response.cookies.set('access_token', accessToken, {
-        httpOnly: true,
-        secure: isProduction,
-        sameSite: 'lax',
-        maxAge: 2 * 60 * 60,
-        path: '/',
-      });
-      response.cookies.set('refresh_token', refreshToken, {
-        httpOnly: true,
-        secure: isProduction,
-        sameSite: 'lax',
-        maxAge: 30 * 24 * 60 * 60,
-        path: '/',
-      });
+      // Lot 53A (Q21, CDC 18 §19.3) : mêmes durées que partout ailleurs —
+      // l'accès vivait ici 2 h au lieu de 15 min.
+      setSessionCookies(response, { accessToken, refreshToken });
+      // D1 : le lien reçu par e-mail prouve le contrôle de la boîte — ce
+      // navigateur est reconnu pour ce compte.
+      rememberTrustedDevice(request, response, normalizeEmail(user.email));
 
       return response;
     } catch {

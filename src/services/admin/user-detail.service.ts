@@ -141,6 +141,46 @@ export interface LoginEntry {
   at: string;
   device: string | null;
   ip: string | null;
+  /**
+   * Lot 53A (retour PO D1, traçabilité) : connexion réussie, échec (mot de
+   * passe faux…) ou pause anti-force brute déclenchée.
+   */
+  result: LoginResult;
+  /** Libellé du motif (échec, règle de la pause), sans donnée technique. */
+  detail: string | null;
+}
+
+export type LoginResult = 'success' | 'failure' | 'throttled';
+
+const FAILURE_LABELS: Record<string, string> = {
+  invalid_password: 'Mot de passe incorrect',
+  account_suspended: 'Utilisateur suspendu',
+  account_suspended_by_admin: 'Compte suspendu',
+  account_deleted: 'Compte supprimé',
+  email_not_verified: 'Adresse non vérifiée',
+};
+
+const THROTTLE_LABELS: Record<string, string> = {
+  trusted_device: 'Pause sur un appareil reconnu',
+  origin: 'Pause de l’adresse IP (tous comptes)',
+  origin_identifier: 'Ralentissement (cette IP, cette adresse)',
+  identifier_untrusted: 'Pause des appareils non reconnus (attaque possible)',
+};
+
+/** Libellé lisible d'une ligne du journal de connexion (pur, testé). */
+export function describeLoginActivity(activityType: string, rawDetails: string | null | undefined): { result: LoginResult; detail: string | null } {
+  let d: Record<string, unknown> = {};
+  try { d = rawDetails ? JSON.parse(rawDetails) : {}; } catch { d = {}; }
+  const trusted = d.trustedDevice === true ? ' · appareil reconnu' : '';
+  if (activityType === 'AUTH_LOGIN_THROTTLED') {
+    const minutes = typeof d.retryAfterSeconds === 'number' ? Math.max(1, Math.ceil(d.retryAfterSeconds / 60)) : null;
+    const label = THROTTLE_LABELS[String(d.rule)] ?? 'Pause anti-force brute';
+    return { result: 'throttled', detail: `${label}${minutes ? ` — ${minutes} min` : ''}` };
+  }
+  if (activityType === 'LOGIN_FAILED') {
+    return { result: 'failure', detail: `${FAILURE_LABELS[String(d.reason)] ?? 'Échec'}${trusted}` };
+  }
+  return { result: 'success', detail: d.trustedDevice === false ? 'Premier succès sur cet appareil' : null };
 }
 
 type Row = Record<string, unknown>;
@@ -328,12 +368,16 @@ export async function loadCommunications(userId: number, labelOf: (code: string)
     }));
 }
 
-/** USR-D01 : connexions réussies sur 90 jours ; USR-D02 : appareil, IP tronquée. */
+/**
+ * USR-D01 : connexions réussies sur 90 jours ; USR-D02 : appareil, IP
+ * tronquée. Lot 53A (retour PO D1) : s'y ajoutent les ÉCHECS et les PAUSES
+ * anti-force brute visant ce compte (traçabilité, sans requête SQL).
+ */
 export async function loadLoginHistory(userId: number, now = new Date()): Promise<LoginEntry[]> {
   const since = new Date(now.getTime() - LOGIN_HISTORY_DAYS * 24 * 3600 * 1000);
   const rows = await pgClient.unsafe<Row[]>(
-    `SELECT timestamp, ip_address, user_agent FROM user_activity_log
-      WHERE user_id = $1 AND activity_type = 'LOGIN_SUCCESS' AND timestamp >= $2
+    `SELECT timestamp, ip_address, user_agent, activity_type, details FROM user_activity_log
+      WHERE user_id = $1 AND activity_type IN ('LOGIN_SUCCESS', 'LOGIN_FAILED', 'AUTH_LOGIN_THROTTLED') AND timestamp >= $2
       ORDER BY timestamp DESC LIMIT 500`,
     [userId, since.toISOString()],
   );
@@ -341,6 +385,7 @@ export async function loadLoginHistory(userId: number, now = new Date()): Promis
     at: iso(r.timestamp)!,
     device: describeUserAgent(r.user_agent as string),
     ip: truncateIp(r.ip_address as string),
+    ...describeLoginActivity(String(r.activity_type ?? 'LOGIN_SUCCESS'), r.details as string | null),
   }));
 }
 

@@ -15,6 +15,7 @@ import type { DedupeReport, SourceLinksReport } from '@/services/agenda/backfill
 import type { AssetAccountBackfillReport } from '@/services/assets/asset-account-backfill';
 import type { StructuredMigrationReport } from '@/services/business-operations/consolidation/asset-data-consolidator';
 import type { ClaimMigrationReport } from '@/services/business-operations/consolidation/claim-migration';
+import type { RemediationReport, RemediationRestoreReport } from '@/services/security/cross-account/remediation';
 import type { BackfillAction, BackfillScript } from './definitions';
 
 export interface BackfillSummary {
@@ -316,6 +317,46 @@ function operationsClaims(out: RawBackfillOutput): BackfillSummary {
   };
 }
 
+/** Lot 53 (D23) : correction contrôlée des relations intercomptes. */
+function crossAccount(action: BackfillAction, out: RawBackfillOutput): BackfillSummary {
+  if (action === 'restore') {
+    const r = out.result as RemediationRestoreReport;
+    return {
+      headline: `Restauration de ${r.runId} : ${r.restored} ligne(s) remise(s) dans leur état d’avant, ${r.conflicts.length} conflit(s).`,
+      scriptRunId: r.runId,
+      restorable: false,
+      counters: [
+        { label: 'Lignes restaurées', value: r.restored },
+        { label: 'Conflits (non restaurés)', value: r.conflicts.length },
+      ],
+      ambiguous: { count: 0, samples: [] },
+      conflicts: { count: r.conflicts.length, samples: echantillon(r.conflicts, (c) => `${c.ref} — ${c.reason}`) },
+      warnings: [],
+    };
+  }
+  const r = out.result as RemediationReport;
+  const simulation = r.mode === 'simulate';
+  const duo = r.categories.flatMap((c) => c.duoSamples.map((x) => `${c.code} · ${x}`));
+  return {
+    headline: `${simulation ? 'Simulation' : 'Application'} (${r.family}) : ${r.corrected} relation(s) ${simulation ? 'à corriger' : 'corrigée(s)'}, `
+      + `${r.duo} relevant du Duo (signalées, non corrigées), ${r.undecidable} indécidable(s), ${r.failed} échec(s)${r.more ? ' — d’autres relations restent : relancer' : ''}.`,
+    scriptRunId: simulation ? null : r.runId,
+    restorable: !simulation && r.corrected > 0,
+    counters: r.categories.flatMap((c) => [
+      { label: `${c.code} : relations`, value: c.candidates },
+      { label: `${c.code} : ${simulation ? 'à corriger' : 'corrigées'}`, value: c.corrected },
+      ...(c.duo ? [{ label: `${c.code} : Duo (signalées)`, value: c.duo }] : []),
+      ...(c.undecidable ? [{ label: `${c.code} : indécidables`, value: c.undecidable }] : []),
+    ]),
+    ambiguous: { count: r.duo + r.undecidable, samples: duo.slice(0, SAMPLE_LIMIT) },
+    conflicts: { count: r.failed, samples: echantillon(r.categories.flatMap((c) => c.failures.map((x) => `${c.code} · ${x}`)), (x) => x) },
+    warnings: [
+      ...(r.duo ? [`${r.duo} relation(s) relèvent du Duo (D3 ouvert côté PO) : signalées, aucune correction appliquée.`] : []),
+      ...(r.undecidable ? [`${r.undecidable} relation(s) dont un compte est inconnu : signalées, aucune correction appliquée.`] : []),
+    ],
+  };
+}
+
 /** Synthèse lisible d'une exécution terminée (pure). */
 export function summarizeBackfill(script: BackfillScript, action: BackfillAction, step: string | null, out: RawBackfillOutput): BackfillSummary {
   switch (script) {
@@ -326,6 +367,7 @@ export function summarizeBackfill(script: BackfillScript, action: BackfillAction
     case 'asset-account': return assetAccount(out);
     case 'operations-structured': return operationsStructured(out);
     case 'operations-claims': return operationsClaims(out);
+    case 'cross-account': return crossAccount(action, out);
   }
 }
 

@@ -9,6 +9,9 @@ import { emit } from '@/lib/notifications';
 import { revokeAllUserSessions, revokeToken, hashToken } from '@/db';
 import { serverCacheDelete } from '@/lib/server-cache';
 import { clearSessionCookies, issueSessionTokens, setSessionCookies, sessionCutoffCacheKey } from '@/lib/auth/session-tokens';
+import { reauthBlockedResponse, recordReauthFailure, recordReauthSuccess } from '@/lib/auth/reauth-throttle';
+import { logUserActivity } from '@/lib/audit-logger';
+import { REFRESH_TOKEN_TTL_S } from '@/lib/auth/token-lifetimes';
 
 export async function POST(request: NextRequest) {
   try {
@@ -39,9 +42,15 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // Lot 53A (CDC 18 §33) : réauthentification limitée — compteurs partagés,
+    // par utilisateur et par IP (`lib/auth/reauth-throttle.ts`).
+    const blocked = await reauthBlockedResponse(request, session.userId);
+    if (blocked) return blocked;
+
     // Verify current password
     const isPasswordCorrect = await bcrypt.compare(currentPassword, user.passwordHash);
     if (!isPasswordCorrect) {
+      await recordReauthFailure(request, session.userId, 'change_password');
       return NextResponse.json(
         // Code stable : un 401 de saisie n'est pas une session expirée, le
         // client ne doit pas renouveler la session pour autant (APP-PERF-20).
@@ -49,6 +58,8 @@ export async function POST(request: NextRequest) {
         { status: 401 }
       );
     }
+
+    await recordReauthSuccess(session.userId);
 
     // Validate new password strength
     if (!validatePassword(newPassword)) {
@@ -81,9 +92,18 @@ export async function POST(request: NextRequest) {
     serverCacheDelete(sessionCutoffCacheKey(session.userId));
     const presented = request.cookies.get('refresh_token')?.value;
     if (presented) {
-      await revokeToken(await hashToken(presented), session.userId, new Date(Date.now() + 30 * 24 * 60 * 60 * 1000))
+      await revokeToken(await hashToken(presented), session.userId, new Date(Date.now() + REFRESH_TOKEN_TTL_S * 1000))
         .catch((e) => console.error('[change-password] révocation du jeton courant :', e));
     }
+
+    // Journal interne (CDC 18 §23.1 PASSWORD_CHANGED) — sans aucun secret.
+    void logUserActivity({
+      activityType: 'PASSWORD_CHANGE',
+      userId: session.userId,
+      userEmail: user.email,
+      details: { sessionsRevoked: true, keepCurrentSession },
+      request,
+    });
 
     // Événement de sécurité obligatoire (cloche + email, CDC §7.7).
     try {

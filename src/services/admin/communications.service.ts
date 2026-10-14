@@ -106,6 +106,9 @@ export const TRANSACTIONAL_EMAILS: ReadonlyArray<{ templateCode: string; label: 
   // Lot 38 (migration 0314) : appareils déconnectés par précaution après la
   // réutilisation d'un jeton de session (au plus un par heure et par utilisateur).
   { templateCode: 'SECURITY_SESSIONS_REVOKED', label: 'Sécurité — appareils déconnectés par précaution' },
+  // Lot 53A (migration 0342) : inscription demandée avec une adresse déjà
+  // inscrite — aucun compte créé (inscription non énumérable, CDC 18 §7.1).
+  { templateCode: 'SIGNUP_EXISTING_ACCOUNT', label: 'Inscription — adresse déjà associée à un compte' },
 ];
 
 export const CHANNEL_LABELS: Record<CommunicationChannel, string> = {
@@ -484,6 +487,8 @@ export function resolveTemplateVariables(
     // SECURITY_SESSIONS_REVOKED (lot 38).
     forgotPasswordUrl: `${base}/forgot-password`,
     incidentDate: formatSecurityIncidentDate(new Date()),
+    // SIGNUP_EXISTING_ACCOUNT (lot 53A).
+    requestDate: formatSecurityIncidentDate(new Date()),
     appUrl: base,
     year: String(new Date().getFullYear()),
     ...(ctx.extra ?? {}),

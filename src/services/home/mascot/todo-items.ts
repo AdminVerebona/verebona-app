@@ -80,6 +80,10 @@ const SUJETS: Readonly<Record<string, { noun: string; fixed?: string }>> = {
   'OPERATION-MATCH': { noun: 'Document', fixed: 'Document à rapprocher' },
   'OPERATION-CLAIM-PARENT': { noun: 'Intervention', fixed: 'Lien avec un sinistre à confirmer' },
   'OPERATION-AMOUNT': { noun: 'Montant', fixed: 'Montant à confirmer' },
+  // Lot 53 (retour PO D11, Q17, D14).
+  'OPERATION-CLAIM-DETACH': { noun: 'Intervention', fixed: 'Lien avec un sinistre à confirmer' },
+  'OPERATION-CLAIM-ASSET': { noun: 'Bien du sinistre', fixed: 'Bien retiré d’un sinistre à confirmer' },
+  'AGENDA-PROJECTION-MATCH': { noun: 'Événement', fixed: 'Événement de l’agenda à rapprocher' },
 };
 
 /** « Numéro d’immatriculation à vérifier », « Information à compléter »… (pure). */

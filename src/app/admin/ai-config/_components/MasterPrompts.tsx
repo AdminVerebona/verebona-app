@@ -2,7 +2,9 @@
 
 /**
  * Prompts maîtres T1, T2, T3, T4 et T6 — administration MANUELLE depuis le
- * BO. Ticket BO-IA-PROMPTS-01 ; lot 49 : T5 (Prompt Control) supprimé.
+ * BO. Ticket BO-IA-PROMPTS-01 ; lot 49 : T5 (Prompt Control) supprimé ;
+ * lot 53 (D24) : son historique reste consultable en lecture seule, libellé
+ * « retiré ».
  *
  * Parcours nominal : Modifier → Enregistrer → (éventuellement Tester) →
  * Activer. En cas de problème : Historique → Réactiver cette version.
@@ -613,17 +615,55 @@ function MasterPromptEditor({ treatment, onChanged }: { treatment: string; onCha
   );
 }
 
+// ─── Traitements retirés (lot 53, retour PO D24) ──────────────────────────────
+
+interface RetiredHistory {
+  treatment: string; label: string; statusLabel: string;
+  versions: Array<{ id: number; versionNumber: number; status: string; masterPromptCode: string; origin: string; createdAt: string; activatedAt: string | null; content: string }>;
+}
+
+/** Historique en LECTURE SEULE d'un traitement retiré (T5) : aucune action. */
+function RetiredPromptHistory({ h }: { h: RetiredHistory }) {
+  return (
+    <details className="rounded-lg border border-[color:var(--border-subtle)]" data-testid={`retired-prompt-${h.treatment}`}>
+      <summary className="cursor-pointer px-3 py-2.5 flex flex-wrap items-center gap-2 text-sm text-[color:var(--text-muted)]">
+        <span className="font-medium">{h.treatment} · {h.label}</span>
+        <span className="text-xs">— {h.statusLabel} · historique en lecture seule ({h.versions.length} version{h.versions.length > 1 ? 's' : ''})</span>
+      </summary>
+      <div className="px-3 pb-3 space-y-2">
+        <p className="text-xs text-[color:var(--text-muted)]">
+          Traitement retiré au lot 49 : aucune exécution, aucun déclencheur. Les versions ci-dessous sont conservées pour l’audit
+          et ne sont jamais appliquées.
+        </p>
+        {h.versions.length === 0 && <p className="text-xs text-[color:var(--text-muted)]">Aucune version conservée.</p>}
+        {h.versions.map((v) => (
+          <details key={v.id} className="rounded-md border border-[color:var(--border-subtle)]">
+            <summary className="cursor-pointer px-2 py-1.5 text-xs text-[color:var(--text-muted)] break-words">
+              v{v.versionNumber} · {v.status === 'ACTIVE' ? 'dernière active avant le retrait' : v.status === 'DRAFT' ? 'brouillon' : 'ancienne'} · créée le {dateHeure(v.createdAt)}
+              {v.activatedAt ? ` · activée le ${dateHeure(v.activatedAt)}` : ''}
+            </summary>
+            <pre className="px-2 pb-2 text-[11px] whitespace-pre-wrap break-words max-h-64 overflow-y-auto text-[color:var(--text-primary)]">{v.content}</pre>
+          </details>
+        ))}
+      </div>
+    </details>
+  );
+}
+
 // ─── Section ──────────────────────────────────────────────────────────────────
 
 export function MasterPrompts({ refreshKey }: { refreshKey?: number }) {
   const [prompts, setPrompts] = useState<Summary[] | null>(null);
+  const [retires, setRetires] = useState<RetiredHistory[]>([]);
   const [erreur, setErreur] = useState<string | null>(null);
   const [ouverts, setOuverts] = useState<Set<string>>(new Set());
 
   const charger = useCallback(async () => {
     setErreur(null);
     try {
-      setPrompts((await apiClient.get<{ prompts: Summary[] }>('/api/admin/ai/master-prompts')).prompts);
+      const r = await apiClient.get<{ prompts: Summary[]; retired?: RetiredHistory[] }>('/api/admin/ai/master-prompts');
+      setPrompts(r.prompts);
+      setRetires(r.retired ?? []);
     } catch (e) {
       setErreur(errMessage(e, 'Prompts maîtres indisponibles.'));
     }
@@ -678,6 +718,7 @@ export function MasterPrompts({ refreshKey }: { refreshKey?: number }) {
           )}
         </details>
       ))}
+      {prompts && retires.map((h) => <RetiredPromptHistory key={h.treatment} h={h} />)}
     </section>
   );
 }

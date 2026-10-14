@@ -9,6 +9,7 @@ import { generateSessionTokens } from '@/lib/jwt';
 import { AccountService } from '@/services/account-service';
 import { hasActiveSubscriptionStatus } from '@/lib/billing/subscription-status';
 import type { UserRole, PlanType, UserStatus } from '@/types/domain';
+import { ACCESS_TOKEN_TTL_S, REFRESH_TOKEN_TTL_S } from './token-lifetimes';
 
 export interface SessionUser {
   id: number;
@@ -37,13 +38,19 @@ export async function issueSessionTokens(user: SessionUser): Promise<{ accessTok
   return { accessToken, refreshToken };
 }
 
+/**
+ * Dépôt des deux cookies de session. SEUL point d'écriture (connexion,
+ * renouvellement, vérification d'adresse, changement de mot de passe,
+ * clôture) : durées = celles des JWT (`token-lifetimes`), aucune divergence
+ * « 15 min / 2 h selon la route » (CDC 18 §19.3, lot 53A).
+ */
 export function setSessionCookies(response: NextResponse, tokens: { accessToken: string; refreshToken: string }): void {
   const secure = process.env.NODE_ENV === 'production';
   response.cookies.set('access_token', tokens.accessToken, {
-    httpOnly: true, secure, sameSite: 'lax', maxAge: 15 * 60, path: '/',
+    httpOnly: true, secure, sameSite: 'lax', maxAge: ACCESS_TOKEN_TTL_S, path: '/',
   });
   response.cookies.set('refresh_token', tokens.refreshToken, {
-    httpOnly: true, secure, sameSite: 'lax', maxAge: 30 * 24 * 60 * 60, path: '/', // CDC §5.4
+    httpOnly: true, secure, sameSite: 'lax', maxAge: REFRESH_TOKEN_TTL_S, path: '/', // CDC §5.4
   });
 }
 

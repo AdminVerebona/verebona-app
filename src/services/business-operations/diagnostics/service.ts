@@ -28,7 +28,7 @@
  */
 import {
   CORRECTION_PROCEDURE, DETAIL_LIMIT, DIAG_ANOMALY_SAMPLE, HARD_ANOMALY_CODES, HARD_ANOMALY_LABELS, INDICATORS,
-  explainReason, indicativeNetCents, maskSensitive, pct, principalDate, typeLabel,
+  explainReason, indicativeNetCents, maskSensitive, pct, principalDate, toM3ProgressView, typeLabel,
   type DiagPeriod, type HardAnomalyCode, type HardAnomalyResult, type HardAnomalySample, type HoldListFilters,
   type IndicatorDefinition, type IndicatorKey, type OperationListFilters,
 } from './model';
@@ -114,6 +114,8 @@ export interface HoldItem {
   proposedOperationIds: number[];
   processedAt: string | null;
   createdAt: string | null;
+  /** Lot 53 (D7) : examen M3 progressif — lot courant, examinées / restantes, report et reprise. */
+  m3?: import('./model').M3ProgressView | null;
 }
 
 export interface HoldListResult {
@@ -480,7 +482,8 @@ export class OperationDiagnosticsService {
       const rows = await q(
         `SELECT c.id, c.account_id, acc.name AS account_name, c.file_id, c.candidate_key, c.confidence, c.established,
                 c.type_hint, c.summary, c.t3_outcome, c.t3_reason, c.t3_operation_id, c.t3_processed_at, c.created_at,
-                c.t3_detail -> 'arbitration' -> 'operationIds' AS proposed, c.t3_detail -> 'plausible' AS plausible
+                c.t3_detail -> 'arbitration' -> 'operationIds' AS proposed, c.t3_detail -> 'plausible' AS plausible,
+                c.t3_detail -> 'm3' AS m3, c.t3_detail -> 'm3Batch' AS m3_batch, c.t3_detail -> 'm3Progress' AS m3_progress
            FROM document_operation_candidates c JOIN accounts acc ON acc.id = c.account_id
           WHERE ${conds.join(' AND ')}
           ORDER BY c.t3_processed_at DESC NULLS LAST, c.id DESC
@@ -508,6 +511,7 @@ export class OperationDiagnosticsService {
           reason: str(r.t3_reason), reasonLabel: explainReason(str(r.t3_reason)), operationId: num(r.t3_operation_id),
           proposedOperationIds: [...new Set([...ids(r.proposed), ...ids(r.plausible)])].slice(0, 10),
           processedAt: ts(r.t3_processed_at), createdAt: ts(r.created_at),
+          m3: r.t3_reason === 'M3_REQUIRED' || r.m3 ? toM3ProgressView(r.m3, r.m3_batch, r.m3_progress, r.plausible) : null,
         }))),
         total, page: f.page, pageSize: f.pageSize, totalPages: Math.max(1, Math.ceil(total / f.pageSize)),
         reasons: reasons.map((r) => ({ outcome: String(r.outcome), reason: str(r.reason), label: explainReason(str(r.reason)), count: int(r.n) })),

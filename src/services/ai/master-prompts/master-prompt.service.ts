@@ -390,6 +390,40 @@ async function runsByVersion(versions: MasterPromptVersionRow[]): Promise<{ byVe
   return { byVersion, emails };
 }
 
+/**
+ * Lot 53 (retour PO D24) — HISTORIQUE des traitements retirés (T5 « Prompt
+ * Control »), en LECTURE SEULE : versions conservées en base depuis le
+ * lot 49, jamais proposées en édition ni appliquées (déclencheur 0336). Le BO
+ * les affiche sous le libellé « retiré » ; aucune action n'y est possible.
+ */
+export interface RetiredPromptHistory {
+  treatment: string;
+  label: string;
+  statusLabel: 'retiré';
+  versions: Array<{
+    id: number; versionNumber: number; status: string; masterPromptCode: string; origin: string;
+    createdAt: string; activatedAt: string | null; content: string;
+  }>;
+}
+
+export async function listRetiredPromptHistory(environment: AiEnvironment = getAiEnvironment()): Promise<RetiredPromptHistory[]> {
+  await assertTables();
+  const { RETIRED_TREATMENTS } = await import('../config/treatments');
+  const out: RetiredPromptHistory[] = [];
+  for (const t of RETIRED_TREATMENTS) {
+    const versions = await repo.listPromptVersions(environment, t);
+    out.push({
+      treatment: t, label: 'Prompt Control', statusLabel: 'retiré',
+      versions: versions.map((v) => ({
+        id: v.id, versionNumber: v.versionNumber, status: v.status, masterPromptCode: v.masterPromptCode, origin: v.origin,
+        createdAt: new Date(v.createdAt).toISOString(), activatedAt: v.activatedAt ? new Date(v.activatedAt).toISOString() : null,
+        content: v.content,
+      })),
+    });
+  }
+  return out;
+}
+
 /** Vue d'ensemble : un résumé par prompt administrable. */
 export async function listPromptSummaries(environment: AiEnvironment = getAiEnvironment()): Promise<PromptSummary[]> {
   await assertTables();

@@ -16,7 +16,7 @@ export const dynamic = 'force-dynamic';
 
 const T5_RETIRED_BODY = {
   error: 'T5_RETIRED',
-  message: 'Prompt Control (T5) a été supprimé : les prompts maîtres s’administrent manuellement dans « Prompts maîtres ».',
+  message: 'Prompt Control (T5) est retiré : les prompts maîtres s’administrent manuellement dans « Prompts maîtres ».',
 } as const;
 
 async function retire(req: NextRequest): Promise<NextResponse> {

@@ -26,6 +26,10 @@
  *     son mot de passe — jamais la clé IP, jamais celle d'un autre compte ;
  *   · verrouillage progressif : 15 min, puis 30, puis 60 (plafond) en cas de
  *     récidive dans les 24 h ;
+ *   · LOT 53A (retour PO D1) : pour la CONNEXION, l'adresse n'est plus
+ *     verrouillée pour tous (un tiers pouvait bloquer le titulaire) — règles
+ *     par origine, origine × adresse, adresse pour les appareils non
+ *     reconnus et appareil reconnu : `login-throttle.ts` ;
  *   · la clé « compte » est calculée sur l'adresse SAISIE : une adresse sans
  *     compte se verrouille exactement comme une adresse inscrite (aucune
  *     énumération par le verrouillage).
@@ -63,10 +67,11 @@ export interface AuthLimitPolicy {
  * réussies). Parcours d'e-mail : chaque DEMANDE compte.
  */
 export const AUTH_LIMITS = {
-  /** Échecs de connexion par adresse saisie. */
-  loginAccount: { maxAttempts: 5, windowMs: 15 * MIN, lockMs: 15 * MIN, progressive: true, maxLockMs: HOUR, levelResetMs: 24 * HOUR },
-  /** Échecs de connexion par IP (tous comptes confondus). */
-  loginIp: { maxAttempts: 20, windowMs: 15 * MIN, lockMs: 15 * MIN, progressive: true, maxLockMs: HOUR, levelResetMs: 24 * HOUR },
+  // Connexion : règles du lot 53A (retour PO D1) dans `login-throttle.ts`
+  // (origine, origine × adresse, adresse toutes origines pour les appareils
+  // non reconnus, appareil reconnu). Le verrou « 5 échecs → adresse bloquée
+  // 15/30/60 min pour tous » du lot 37 est retiré : il permettait à un tiers
+  // de bloquer le titulaire.
   /** « Mot de passe oublié » : demandes par IP (429) et par adresse (silencieux). */
   forgotIp: { maxAttempts: 5, windowMs: 15 * MIN, lockMs: 15 * MIN },
   forgotAccount: { maxAttempts: 3, windowMs: HOUR, lockMs: HOUR },
@@ -85,6 +90,20 @@ export const AUTH_LIMITS = {
    * UN par utilisateur et par heure (le premier passe et pose le verrou).
    */
   securityEmailUser: { maxAttempts: 1, windowMs: HOUR, lockMs: HOUR },
+  /**
+   * Lot 53A (CDC 18 §33 « Reauth password : même niveau de protection que
+   * login + user/session key ») : mot de passe ACTUEL exigé par une action
+   * sensible (changement de mot de passe, clôture du compte). Échecs par
+   * utilisateur (session requise : aucun tiers ne peut bloquer le titulaire)
+   * et par IP.
+   */
+  reauthUser: { maxAttempts: 5, windowMs: 15 * MIN, lockMs: 15 * MIN, progressive: true, maxLockMs: HOUR, levelResetMs: 24 * HOUR },
+  reauthIp: { maxAttempts: 20, windowMs: 15 * MIN, lockMs: 15 * MIN },
+  /**
+   * Lot 53A (inscription non énumérable) : e-mail « vous avez déjà un compte »
+   * — au plus UN par adresse et par heure (silencieux au-delà).
+   */
+  signupExistingEmail: { maxAttempts: 1, windowMs: HOUR, lockMs: HOUR },
 } as const satisfies Record<string, AuthLimitPolicy>;
 
 /** Lignes sans verrou actif et sans activité depuis cette durée : purgées. */
@@ -358,7 +377,11 @@ export function normalizeEmail(email: unknown): string {
  * Clé de compteur : `<parcours>:<ip|acct>:<HMAC tronqué>`. Jamais la valeur
  * en clair (e-mail, IP) dans la table.
  */
-export function limitKey(flow: 'login' | 'forgot' | 'resend' | 'reset' | 'security-email', kind: 'ip' | 'acct', value: string): string {
+export function limitKey(
+  flow: 'login' | 'forgot' | 'resend' | 'reset' | 'security-email' | 'reauth' | 'signup',
+  kind: 'ip' | 'acct' | 'dev' | 'pair' | 'acctu' | 'user',
+  value: string,
+): string {
   const h = createHmac('sha256', keySecret()).update(`${flow}:${kind}:${value}`).digest('hex').slice(0, 40);
   return `${flow}:${kind}:${h}`;
 }

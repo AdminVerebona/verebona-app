@@ -41,6 +41,9 @@ export async function GET(
 
     const today = new Date().toISOString().split('T')[0];
     const sql = db.$client;
+    // Lot 53 (retour PO D23) : une relation intercomptes héritée (document ou
+    // élément d'agenda d'un AUTRE compte rattaché à ce bien) n'est jamais lue.
+    const accountId = session.currentAccountId;
 
     // All queries in parallel
     //
@@ -55,7 +58,7 @@ export async function GET(
         SELECT ai.id, ai.title, ai.start_date, ai.end_date, ai.manual_status, ai.origin_field_key
         FROM agenda_items ai
         INNER JOIN agenda_asset_links aal ON aal.agenda_item_id = ai.id
-        WHERE aal.asset_id = ${assetId}
+        WHERE aal.asset_id = ${assetId} AND ai.account_id = ${accountId}
           AND (ai.manual_status IS NULL OR ai.manual_status != 'annule')
         ORDER BY ai.start_date ASC NULLS LAST
         LIMIT 50
@@ -67,7 +70,7 @@ export async function GET(
         WHERE (asset_id = ${assetId} OR linked_asset_id = ${assetId}
                OR id IN (SELECT file_id FROM document_asset_links
                           WHERE asset_id = ${assetId} AND status = 'ACTIVE' AND link_role IN ('PRIMARY', 'SECONDARY')))
-          AND deleted_at IS NULL AND upload_status = 'COMPLETED'
+          AND account_id = ${accountId} AND deleted_at IS NULL AND upload_status = 'COMPLETED'
         ORDER BY COALESCE(document_date::text, uploaded_at::text) DESC NULLS LAST
         LIMIT 3
       `,
@@ -78,10 +81,10 @@ export async function GET(
             WHERE (asset_id = ${assetId} OR linked_asset_id = ${assetId}
                    OR id IN (SELECT file_id FROM document_asset_links
                               WHERE asset_id = ${assetId} AND status = 'ACTIVE' AND link_role IN ('PRIMARY', 'SECONDARY')))
-              AND deleted_at IS NULL AND upload_status = 'COMPLETED')::text AS doc_count,
+              AND account_id = ${accountId} AND deleted_at IS NULL AND upload_status = 'COMPLETED')::text AS doc_count,
           (SELECT COUNT(*) FROM agenda_asset_links aal
             INNER JOIN agenda_items ai ON ai.id = aal.agenda_item_id
-            WHERE aal.asset_id = ${assetId}
+            WHERE aal.asset_id = ${assetId} AND ai.account_id = ${accountId}
               AND (ai.manual_status IS NULL OR ai.manual_status != 'annule'))::text AS agenda_count,
           (SELECT COUNT(*) FROM substructures WHERE asset_id = ${assetId})::text AS room_count,
           (SELECT COUNT(*) FROM equipments WHERE asset_id = ${assetId} AND archived_at IS NULL)::text AS eq_count

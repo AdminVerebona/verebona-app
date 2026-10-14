@@ -121,12 +121,13 @@ export function periodBounds(period: CostPeriod, now: Date = new Date(), custom?
  * appel. L'usage technique AI_GOVERNANCE n'est rattaché à aucun traitement :
  *   · sondes de modèles, qualification, test fournisseur, évaluation de
  *     prompt → « Technique » (jamais « T5 ») ;
- *   · anciens appels `t5_analyze` / `t5_modify` → « T5 (historique) »,
+ *   · anciens appels `t5_analyze` / `t5_modify` → « T5 (retiré) » (lot 53,
+ *     retour PO D24 : libellé « retiré » confirmé dans le BO),
  *     consultables en lecture seule, jamais confondus avec les sondes.
  */
 export function executionScopeLabel(row: { treatment: string | null; useCaseCode?: string | null; operationCode?: string | null }): string {
   if (row.treatment) return row.treatment;
-  if (row.operationCode && /^t5_(analyze|modify)$/.test(row.operationCode)) return 'T5 (historique)';
+  if (row.operationCode && /^t5_(analyze|modify)$/.test(row.operationCode)) return 'T5 (retiré)';
   if (row.useCaseCode === 'AI_GOVERNANCE') return 'Technique';
   return '—';
 }

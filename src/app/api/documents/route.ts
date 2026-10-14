@@ -1,388 +1,276 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { emitBusinessEvent } from '@/services/verebona-assistant/events/business-events';
-import { hasProjectableKnowledge, projectDocumentKnowledgeToAsset } from '@/services/ai/knowledge/document-knowledge.service';
 import { db } from '@/db';
-import { assetFiles, adminAuditLog, documentTypes } from '@/db/schema';
-import { eq, and, isNull } from 'drizzle-orm';
-import { getSession } from '@/lib/auth-guards';
-import { isKnownStorageDocumentCode } from '@/lib/referential/document-codes';
-import { analyzeFileSources } from '@/services/ai/source-analysis/entrypoint';
-import { onDocumentEditedByUser } from '@/services/to-process/document-rule-bridge';
-import { displayDocumentTitle, isValidBusinessTitle } from '@/lib/documents/document-title-rules';
-import {
-  assertTargetInAccount, isCrossAccountReferenceError, logCrossAccountRefusal, ownedSql, TargetCoherenceError,
-} from '@/services/security/account-ownership';
+import { assetFiles, assets, documentTypes } from '@/db/schema';
+import { eq, and, sql, isNull, or } from 'drizzle-orm';
+import { documentInAssetsCondition } from '@/services/documents/asset-document-scope';
 
-/** Identifiant de cible envoyé : `undefined` (absent), `null` (retiré) ou entier. */
-function cible(v: unknown): number | null | undefined {
-  if (v === undefined) return undefined;
-  if (v === null || v === 0 || v === '' || v === '0') return null;
-  const n = parseInt(String(v));
-  return isNaN(n) ? NaN : n;
+function matchesSearch(
+  doc: { fileName: string | null; originalFilename?: string | null; assetName: string | null; documentType: string | null; retainedTitle?: string | null; retainedFunctionCode?: string | null; description?: string | null; extractedText?: string | null },
+  terms: string[],
+  typeLabels: Record<string, string>
+): boolean {
+  const typeCode = doc.retainedFunctionCode || doc.documentType || '';
+  const typeLabel = typeCode ? (typeLabels[typeCode] ?? typeCode) : '';
+  const haystack = [
+    doc.fileName ?? '',
+    doc.originalFilename ?? '',
+    doc.assetName ?? '',
+    typeCode,
+    typeLabel,
+    doc.retainedTitle ?? '',
+    doc.description ?? '',
+    doc.extractedText ?? '',
+  ].join(' ').toLowerCase();
+  return terms.every(t => haystack.includes(t));
+}
+import { getSession } from '@/lib/auth-guards';
+import { resolveDocumentCode } from '@/lib/referential/document-codes';
+
+// Lot 30 : plus de liste locale (ancien `VALID_DOCUMENT_TYPES`, 6 codes sur
+// les 40 stockés) — le filtre accepte tout code V1 du référentiel, normalisé
+// par le résolveur documentaire unique (ancien code IA compris).
+
+// Helper to get file extension
+function getFileExtension(fileName: string): string {
+  const parts = fileName.toLowerCase().split('.');
+  return parts.length > 1 ? parts[parts.length - 1] : '';
 }
 
-export async function PUT(
-  request: NextRequest,
-  { params }: { params: Promise<{ id: string }> }
-) {
+// Helper to map format filter to extensions
+function matchesFormat(fileName: string, format: string): boolean {
+  const ext = getFileExtension(fileName);
+  
+  switch (format) {
+    case 'pdf':
+      return ext === 'pdf';
+    case 'image':
+      return ['jpg', 'jpeg', 'png', 'webp', 'gif', 'bmp'].includes(ext);
+    case 'word':
+      return ['doc', 'docx'].includes(ext);
+    case 'excel':
+      return ['xls', 'xlsx', 'csv'].includes(ext);
+    case 'autre':
+      // Anything that's not pdf, image, word, or excel
+      return !['pdf', 'jpg', 'jpeg', 'png', 'webp', 'gif', 'bmp', 'doc', 'docx', 'xls', 'xlsx', 'csv'].includes(ext);
+    default:
+      return true;
+  }
+}
+
+/**
+ * DELETE /api/documents — not supported on the collection.
+ * Use DELETE /api/documents/{id} to delete a specific document.
+ */
+export async function DELETE() {
+  return NextResponse.json(
+    {
+      error: 'METHOD_NOT_ALLOWED',
+      message: 'DELETE is not supported on the document collection. Use DELETE /api/documents/{id} to delete a specific document.',
+    },
+    { status: 405, headers: { Allow: 'GET' } }
+  );
+}
+
+export async function GET(request: NextRequest) {
   try {
     const session = await getSession(request);
-    const { userId } = session;
     if (!session.currentAccountId) {
       return NextResponse.json(
-        { error: 'NO_ACCOUNT', message: 'Aucun compte sélectionné' },
-        { status: 400 }
+        { error: 'UNAUTHORIZED', message: 'No account selected' },
+        { status: 401 }
       );
     }
-    const { id: rawId } = await params;
-    const documentId = parseInt(rawId);
+    const accountId = session.currentAccountId;
+    const { searchParams } = new URL(request.url);
 
-    if (isNaN(documentId)) {
-      return NextResponse.json(
-        { error: 'INVALID_INPUT', message: 'ID de document invalide' },
-        { status: 400 }
-      );
-    }
+    // Parse query params
+    const assetId = searchParams.get('assetId');
+    const documentType = searchParams.get('documentType');
+    const format = searchParams.get('format');
+    const searchRaw = searchParams.get('search') ?? '';
+    const searchTerms = searchRaw.trim().toLowerCase().split(/\s+/).filter(Boolean);
+    const sortBy = searchParams.get('sortBy') || 'createdAt';
+    const sortDir = searchParams.get('sortDir') || 'desc';
+    const page = parseInt(searchParams.get('page') || '1');
+    const pageSize = Math.min(parseInt(searchParams.get('pageSize') || '20'), 1000);
 
-    const body = await request.json();
-    const { fileName, documentType, assetId, substructureId, equipmentId, webLinkUrl, documentDate, retainedTitle, retainedFunctionCode, supplier, description, notes, amountCents, userEditedFields } = body;
+    // Validate sortBy and sortDir
+    const validSortBy = ['fileName', 'assetName', 'documentType', 'mimeType', 'createdAt', 'documentDate'];
+    const validSortDir = ['asc', 'desc'];
+    const finalSortBy = validSortBy.includes(sortBy) ? sortBy : 'documentDate';
+    const finalSortDir = validSortDir.includes(sortDir) ? sortDir : 'desc';
 
-    if (!fileName || !documentType) {
-      return NextResponse.json(
-        { error: 'MISSING_FIELD', message: 'Le nom et le type de document sont requis' },
-        { status: 400 }
-      );
-    }
+    // Load document type labels for search enrichment
+    const allDocTypes = await db.select({ code: documentTypes.code, label: documentTypes.label }).from(documentTypes);
+    const typeLabels: Record<string, string> = {};
+    for (const dt of allDocTypes) typeLabels[dt.code] = dt.label.toLowerCase();
 
-    // Lot 30 : le référentiel V1 (résolveur documentaire unique) valide ; la
-    // table `document_types` reste consultée pour un type ajouté en back-office.
-    const validDocType = isKnownStorageDocumentCode(documentType)
-      ? [{ id: 0 }]
-      : await db
-        .select({ id: documentTypes.id })
-        .from(documentTypes)
-        .where(eq(documentTypes.code, documentType))
-        .limit(1);
-
-    if (validDocType.length === 0) {
-      return NextResponse.json(
-        { error: 'INVALID_INPUT', message: 'Type de document invalide ou inactif' },
-        { status: 400 }
-      );
-    }
-
-    const existingDoc = await db
-      .select()
+    // Get total count (all account documents, no filters) - only COMPLETED and not deleted
+    const totalResult = await db
+      .select({ count: sql<number>`count(*)` })
       .from(assetFiles)
       .where(
         and(
-          eq(assetFiles.id, documentId),
-          eq(assetFiles.userId, userId),
-          eq(assetFiles.accountId, session.currentAccountId),
+          eq(assetFiles.accountId, accountId),
+          or(eq(assetFiles.uploadStatus, 'COMPLETED'), isNull(assetFiles.uploadStatus)),
           isNull(assetFiles.deletedAt)
         )
-      )
-      .limit(1);
-
-    if (existingDoc.length === 0) {
-      return NextResponse.json(
-        { error: 'NOT_FOUND', message: 'Document non trouvé' },
-        { status: 404 }
       );
-    }
+    const total = totalResult[0]?.count || 0;
 
-    const oldDoc = existingDoc[0];
+      // Build query with LEFT JOIN on assets
+        let query = db
+          .select({
+            id: assetFiles.id,
+            fileName: assetFiles.originalFilename,
+            originalFilename: assetFiles.originalFilename,
+            mimeType: assetFiles.mimeType,
+            fileSize: assetFiles.size,
+            documentType: assetFiles.documentType,
+            documentDate: assetFiles.documentDate,
+            createdAt: assetFiles.createdAt,
+            assetId: assetFiles.assetId,
+            assetName: assets.name,
+            retainedTitle: assetFiles.retainedTitle,
+            retainedFunctionCode: assetFiles.retainedFunctionCode,
+            webLinkUrl: assetFiles.webLinkUrl,
+            description: assetFiles.description,
+            extractedText: assetFiles.extractedText,
+            analysisState: assetFiles.analysisState,
+            lastAnalysisAt: assetFiles.lastAnalysisAt,
+          })
 
-    // ══════════════════════════════════════════════════════════════════════
-    // LOT 49 (SEC-05) — CIBLES DU COMPTE, AVANT TOUTE ÉCRITURE
-    //
-    // Bien, pièce et équipement demandés : du compte actif ; pièce et
-    // équipement portés par le bien attendu (celui envoyé, sinon l'actuel) et
-    // par le même bien. Un refus arrête TOUT : aucune écriture partielle,
-    // aucune projection, réanalyse ni réconciliation. La mise à jour porte en
-    // plus la condition de compte dans son SQL (document ET cibles).
-    // ══════════════════════════════════════════════════════════════════════
-    const assetDemande = cible(assetId);
-    const pieceDemandee = cible(substructureId);
-    const equipementDemande = cible(equipmentId);
-    if ([assetDemande, pieceDemandee, equipementDemande].some((v) => Number.isNaN(v))) {
-      return NextResponse.json({ error: 'INVALID_INPUT', message: 'Identifiant de bien, pièce ou équipement invalide' }, { status: 400 });
-    }
-    if (assetDemande || pieceDemandee || equipementDemande) {
-      try {
-        await assertTargetInAccount(session.currentAccountId, {
-          assetId: assetDemande !== undefined ? assetDemande : (pieceDemandee || equipementDemande ? oldDoc.assetId : null),
-          substructureId: pieceDemandee ?? null,
-          equipmentId: equipementDemande ?? null,
-        });
-      } catch (e) {
-        if (isCrossAccountReferenceError(e)) {
-          logCrossAccountRefusal('PUT /api/documents/[id]', e);
-          return NextResponse.json({ error: 'NOT_FOUND', message: 'Bien, pièce ou équipement introuvable' }, { status: 404 });
-        }
-        if (e instanceof TargetCoherenceError) {
-          return NextResponse.json({ error: 'INVALID_INPUT', message: e.message }, { status: 400 });
-        }
-        throw e;
+        .from(assetFiles)
+        .leftJoin(assets, and(eq(assetFiles.assetId, assets.id), eq(assets.accountId, assetFiles.accountId)))
+        .where(
+          and(
+            eq(assetFiles.accountId, accountId),
+            or(eq(assetFiles.uploadStatus, 'COMPLETED'), isNull(assetFiles.uploadStatus)),
+            isNull(assetFiles.deletedAt)
+          )
+        )
+        .$dynamic();
+
+      // Apply filters
+      const conditions = [
+        eq(assetFiles.accountId, accountId),
+        or(eq(assetFiles.uploadStatus, 'COMPLETED'), isNull(assetFiles.uploadStatus)),
+        isNull(assetFiles.deletedAt)
+      ];
+
+    if (assetId) {
+      const assetIdInt = parseInt(assetId);
+      if (!isNaN(assetIdInt)) {
+        // Lot 32C (PO 9) : documents liés au bien (colonnes, liens PRIMARY / SECONDARY).
+        conditions.push(documentInAssetsCondition([assetIdInt]));
       }
     }
 
-    const now = new Date();
-    const updateData: any = {
-      documentType,
-      documentDate: documentDate || null,
-      updatedAt: now,
-    };
-    // Lot 33C : quand le titre est envoyé à part (tiroir), le nom ORIGINAL du
-    // fichier est conservé — il sert de repli d'affichage (« nom original
-    // exploitable ») et n'est pas le titre. Lien web et anciens appelants
-    // (sans `retainedTitle`) : comportement historique.
-    if (retainedTitle === undefined || oldDoc.isWebLink) {
-      updateData.originalFilename = fileName.trim();
+    const documentTypeFilter = documentType ? resolveDocumentCode(documentType).storageCode : null;
+    if (documentTypeFilter) {
+      conditions.push(eq(assetFiles.documentType, documentTypeFilter));
     }
 
-    // ══════════════════════════════════════════════════════════════════════
-    // TITRE UTILISATEUR (lot 33C, ticket T1/T3) — `title_source = USER`
-    //
-    // Un titre MODIFIÉ ici n'est plus jamais réécrit automatiquement. « Modifié »
-    // s'entend par rapport au titre AFFICHÉ : un tiroir qui renvoie le titre
-    // tel qu'il l'a montré ne fait pas d'un titre système un titre
-    // utilisateur. Client antérieur au lot 33C : il renvoyait le NOM DE
-    // FICHIER (« <uuid>.pdf ») à la place d'un titre métier — ignoré.
-    // ══════════════════════════════════════════════════════════════════════
-    let titreUtilisateur: 'USER' | 'SYSTEM' | null = null;
-    let titreIgnore = false;
-    if (retainedTitle !== undefined) {
-      const nouveau = typeof retainedTitle === 'string' ? retainedTitle.trim() : '';
-      const ancien = oldDoc.retainedTitle?.trim() ?? '';
-      const ids = { s3Key: oldDoc.s3Key, publicId: oldDoc.publicId };
-      const affiche = displayDocumentTitle(oldDoc, '');
-      const renvoiNomFichier = nouveau === (oldDoc.originalFilename?.trim() ?? '')
-        && isValidBusinessTitle(ancien, ids) && !isValidBusinessTitle(nouveau, ids);
-      if (nouveau === ancien) {
-        // Inchangé.
-      } else if (nouveau === affiche || renvoiNomFichier) {
-        titreIgnore = true;
-      } else {
-        updateData.retainedTitle = nouveau || null;
-        titreUtilisateur = nouveau ? 'USER' : 'SYSTEM';
-        updateData.titleSource = titreUtilisateur;
+    // Apply conditions
+    if (conditions.length > 3) {
+      query = query.where(and(...conditions));
+    }
+
+    // Get all matching documents (before format filter and pagination)
+    const allMatchingDocs = await query;
+
+    // Apply format filter (post-query since it's based on file extension)
+    let filteredDocs = allMatchingDocs;
+    if (format && format !== 'all') {
+      filteredDocs = filteredDocs.filter(doc => matchesFormat(doc.fileName ?? '', format));
+    }
+
+    // Apply full-text search across filename, asset name, document type and labels
+    if (searchTerms.length > 0) {
+      filteredDocs = filteredDocs.filter(doc => matchesSearch(doc, searchTerms, typeLabels));
+    }
+
+    const filteredTotal = filteredDocs.length;
+
+    // Apply sorting
+    filteredDocs.sort((a, b) => {
+      let aVal: any, bVal: any;
+      
+      switch (finalSortBy) {
+        case 'fileName':
+          aVal = (a.fileName ?? '').toLowerCase();
+          bVal = (b.fileName ?? '').toLowerCase();
+          break;
+        case 'assetName':
+          aVal = (a.assetName || '').toLowerCase();
+          bVal = (b.assetName || '').toLowerCase();
+          break;
+        case 'documentType':
+          aVal = a.documentType;
+          bVal = b.documentType;
+          break;
+          case 'mimeType':
+            aVal = a.mimeType;
+            bVal = b.mimeType;
+            break;
+          case 'documentDate':
+            aVal = a.documentDate ? new Date(a.documentDate).getTime() : 0;
+            bVal = b.documentDate ? new Date(b.documentDate).getTime() : 0;
+            break;
+          case 'createdAt':
+          default:
+
+          aVal = new Date(a.createdAt).getTime();
+          bVal = new Date(b.createdAt).getTime();
+          break;
       }
-    }
-    if (retainedFunctionCode !== undefined) {
-      updateData.retainedFunctionCode = retainedFunctionCode || null;
-    }
-    if (supplier !== undefined) {
-      updateData.supplier = supplier || null;
-    }
-    if (description !== undefined) {
-      updateData.description = description || null;
-    }
-    if (notes !== undefined) {
-      updateData.notes = notes || null;
-    }
-    if (amountCents !== undefined) {
-      updateData.amountCents = amountCents != null ? parseInt(amountCents) : null;
-    }
-    if (userEditedFields !== undefined && userEditedFields !== null && typeof userEditedFields === 'object') {
-      updateData.userEditedFields = userEditedFields;
-    }
-    // La marque `retainedTitle` suit la source du titre (lot 33C).
-    if (titreUtilisateur || titreIgnore) {
-      const marques = { ...((updateData.userEditedFields ?? oldDoc.userEditedFields ?? {}) as Record<string, boolean>) };
-      if (titreUtilisateur === 'USER') marques.retainedTitle = true;
-      else {
-        // Titre vidé, ou titre non modifié (la marque envoyée par le client
-        // n'est pas crue : un ancien tiroir la posait à tort) — la marque
-        // antérieure n'est conservée que sur un titre courant conforme.
-        const avantMarque = (oldDoc.userEditedFields as Record<string, boolean> | null)?.retainedTitle === true;
-        const conforme = isValidBusinessTitle(oldDoc.retainedTitle, { s3Key: oldDoc.s3Key, publicId: oldDoc.publicId });
-        if (titreUtilisateur === null && avantMarque && conforme) marques.retainedTitle = true;
-        else delete marques.retainedTitle;
-      }
-      updateData.userEditedFields = marques;
-    }
 
-    if (assetId !== undefined) {
-      updateData.assetId = assetId === null || assetId === 0 ? null : parseInt(assetId);
-    }
+      if (aVal < bVal) return finalSortDir === 'asc' ? -1 : 1;
+      if (aVal > bVal) return finalSortDir === 'asc' ? 1 : -1;
+      return 0;
+    });
 
-    // Lot 28 (« À traiter », LINK-ASSET) : un rattachement choisi — ou RETIRÉ
-    // — par l'utilisateur est une décision utilisateur, qu'aucune analyse
-    // ultérieure ne défait automatiquement. Le tiroir renvoie
-    // `userEditedFields` en entier : la marque est conservée d'un
-    // enregistrement à l'autre.
-    {
-      const avant = (oldDoc.userEditedFields ?? {}) as Record<string, boolean>;
-      const rattachementModifie = assetId !== undefined && updateData.assetId !== oldDoc.assetId;
-      if (rattachementModifie || avant.assetId === true) {
-        updateData.userEditedFields = {
-          ...((updateData.userEditedFields ?? avant) as Record<string, boolean>),
-          assetId: true,
-        };
-      }
-    }
-    if (substructureId !== undefined) {
-      updateData.substructureId = substructureId === null || substructureId === 0 ? null : parseInt(substructureId);
-    }
-    if (equipmentId !== undefined) {
-      updateData.equipmentId = equipmentId === null || equipmentId === 0 ? null : parseInt(equipmentId);
-    }
+    // Apply pagination
+    const offset = (page - 1) * pageSize;
+    const paginatedDocs = filteredDocs.slice(offset, offset + pageSize);
 
-    if (oldDoc.isWebLink && webLinkUrl !== undefined) {
-      updateData.webLinkUrl = webLinkUrl.trim();
-      updateData.webLinkTitle = fileName.trim();
-    }
+    // Format response
+    const data = paginatedDocs.map(doc => ({
+        id: doc.id,
+        fileName: doc.fileName,
+        retainedTitle: doc.retainedTitle ?? null,
+        mimeType: doc.mimeType,
+        fileSize: doc.fileSize,
+        documentType: doc.documentType,
+        documentDate: doc.documentDate,
+        asset: doc.assetId ? {
+          id: doc.assetId,
+          name: doc.assetName || 'Bien supprimé',
+        } : null,
+        createdAt: doc.createdAt,
+        webLinkUrl: doc.webLinkUrl ?? null,
+      }));
 
-    const cibles = [
-      ...(updateData.assetId ? [ownedSql('asset', updateData.assetId, session.currentAccountId)] : []),
-      ...(updateData.substructureId ? [ownedSql('substructure', updateData.substructureId, session.currentAccountId)] : []),
-      ...(updateData.equipmentId ? [ownedSql('equipment', updateData.equipmentId, session.currentAccountId)] : []),
-    ];
-    const ecrit = await db
-      .update(assetFiles)
-      .set(updateData)
-      .where(and(eq(assetFiles.id, documentId), eq(assetFiles.accountId, session.currentAccountId), ...cibles))
-      .returning({ id: assetFiles.id });
-    if (ecrit.length === 0) {
-      // Cible devenue étrangère ou supprimée entre le contrôle et l'écriture.
-      return NextResponse.json({ error: 'NOT_FOUND', message: 'Document non trouvé' }, { status: 404 });
-    }
-
-    const changes = [];
-    if (updateData.originalFilename !== undefined && oldDoc.originalFilename !== fileName.trim()) {
-      changes.push(`Nom: "${oldDoc.originalFilename}" → "${fileName.trim()}"`);
-    }
-    if (titreUtilisateur) {
-      changes.push(`Titre: "${oldDoc.retainedTitle ?? ''}" → "${updateData.retainedTitle ?? ''}"`);
-    }
-    if (oldDoc.documentType !== documentType) {
-      changes.push(`Type: "${oldDoc.documentType}" → "${documentType}"`);
-    }
-    if (oldDoc.documentDate !== (documentDate || null)) {
-      changes.push(`Date du document: "${oldDoc.documentDate || 'non définie'}" → "${documentDate || 'non définie'}"`);
-    }
-    if (assetId !== undefined && oldDoc.assetId !== (assetId === null || assetId === 0 ? null : parseInt(assetId))) {
-      const newAssetId = assetId === null || assetId === 0 ? 'aucun' : assetId;
-      changes.push(`Bien: ${oldDoc.assetId || 'aucun'} → ${newAssetId}`);
-    }
-
-    if (changes.length > 0) {
-      try {
-        await db.insert(adminAuditLog).values({
-          timestamp: new Date(),
-          adminUserId: userId,
-          adminEmail: 'user',
-          actionType: 'ASSET_UPDATE',
-          targetType: 'document',
-          targetId: documentId,
-          details: changes.join(', '),
-        });
-      } catch (auditError) {
-        // Audit log failure must not block the save
-        console.warn('PUT /api/documents/[id] audit log error:', auditError);
-      }
-    }
-
-    // Toute modification manuelle fournit du contexte supplémentaire pour l'IA :
-    // relancer une analyse en arrière-plan si le document a déjà été analysé.
-    const hasBeenAnalysed = oldDoc.analysisState != null && oldDoc.analysisState !== 'UPLOADING' && oldDoc.analysisState !== 'UPLOADED';
-    const accountId = session.currentAccountId;
-
-    // ══════════════════════════════════════════════════════════════════════
-    // RATTACHEMENT À UN BIEN : PROJECTION DEPUIS T1, SANS RELIRE LE FICHIER
-    //
-    // Quand seul le bien change et que T1 a déjà produit la représentation
-    // durable du document (texte, faits, preuves), les projections métier
-    // du bien sont produites depuis ces données persistées — plus de
-    // réanalyse complète du fichier, ni de consommation de quota.
-    // Les autres corrections manuelles conservent la réanalyse existante.
-    // ══════════════════════════════════════════════════════════════════════
-    const assetCible =
-      assetId === undefined ? undefined
-        : assetId === null || assetId === 0 ? null
-          : parseInt(assetId);
-    // « Seul le bien change » se vérifie sur TOUS les champs envoyés, pas
-    // seulement sur ceux que journalise l'audit : une description, un
-    // fournisseur ou un montant corrigé en même temps justifient une
-    // réanalyse (contexte nouveau pour l'IA).
-    const memeValeur = (a: unknown, b: unknown) => {
-      const norm = (v: unknown) => (v === undefined || v === '' ? null : v instanceof Date ? v.toISOString() : v);
-      const x = norm(a), y = norm(b);
-      if (x !== null && typeof x === 'object') return JSON.stringify(x) === JSON.stringify(y);
-      return x === y || String(x) === String(y);
-    };
-    const autresChampsModifies = Object.keys(updateData)
-      // `userEditedFields` ne fait que marquer les champs ci-dessus (et, lot 28,
-      // le rattachement) : il ne constitue pas une correction à lui seul.
-      .filter((k) => k !== 'updatedAt' && k !== 'assetId' && k !== 'userEditedFields' && k !== 'titleSource')
-      .some((k) => !memeValeur(updateData[k], (oldDoc as Record<string, unknown>)[k]));
-    const seulLeBienChange =
-      assetCible !== undefined && assetCible !== oldDoc.assetId && !autresChampsModifies;
-    // CDC 15 T3-03 : détachement ou déplacement A → B — les preuves portées
-    // par A sont retirées et A réconcilié AVANT la reprojection sur B
-    // (ne lève jamais).
-    if (accountId && assetCible !== undefined && oldDoc.assetId && assetCible !== oldDoc.assetId) {
-      const { onDocumentAssetChanged } = await import('@/services/ai/evidence/document-evidence-lifecycle');
-      await onDocumentAssetChanged({
-        accountId, userId: session.userId, fileId: documentId, fromAssetId: oldDoc.assetId, toAssetId: assetCible,
-      });
-    }
-
-    const projectionPossible =
-      hasBeenAnalysed && !!accountId && seulLeBienChange && !!assetCible
-      && await hasProjectableKnowledge(documentId).catch(() => false);
-
-    const reanalyser = () => {
-      if (!accountId) return;
-      // Réanalyse consécutive à une correction manuelle : pas de crédit
-      // consommé, l'utilisateur n'a pas déposé de nouveau document.
-      analyzeFileSources([documentId], accountId, {
-        userId: session.userId,
-        billable: false,
-        origin: 'documents/PUT',
-      }).catch(err => {
-        console.error(`[documents/PUT] re-analyse après modification manuelle échouée (file ${documentId}):`, err);
-      });
-    };
-
-    if (projectionPossible && accountId && assetCible) {
-      void projectDocumentKnowledgeToAsset({
-        accountId, userId: session.userId, fileId: documentId, assetId: assetCible,
-      }).then((preuves) => {
-        // Aucune preuve produite : repli sur la réanalyse.
-        if (preuves === 0) reanalyser();
-      }).catch(err => {
-        console.error(`[documents/PUT] projection T1 après rattachement échouée (file ${documentId}):`, err);
-        reanalyser();
-      });
-    } else if (hasBeenAnalysed && accountId) {
-      reanalyser();
-    }
-
-    // Lot 16b-3 (D-H1) : plus d'enrichissement silencieux du bien au
-    // rattachement (`asset-enrichment-trigger`, moteur historique supprimé).
-    // La fiche du bien est alimentée par la projection des faits T1 puis la
-    // réconciliation T3 (ci-dessus), ou par la réanalyse en repli.
-
-    // Lot 28 : « À traiter » suit la correction — rattachement, fournisseur…
-    // L'action résolue se ferme, un problème réapparu (document détaché) se
-    // rouvre. Ne lève jamais.
-    if (accountId) await onDocumentEditedByUser(accountId, documentId);
-
-    // CDC Assistant §25.7 : événement métier (caches de l'assistant).
-    if (accountId) await emitBusinessEvent({ type: 'DOCUMENT_UPDATED', accountId, entityId: documentId });
-
-    return NextResponse.json(
-      { message: 'Document mis à jour avec succès', documentId },
-      { status: 200 }
-    );
+    return NextResponse.json({
+      data,
+      pagination: {
+        page,
+        pageSize,
+        filteredTotal,
+        total,
+      },
+    }, { status: 200 });
 
   } catch (error) {
-    if (error instanceof Response) {
-      return error;
+    if (error instanceof Response) return error;
+    const msg = (error as Error).message;
+    if (msg === 'AUTH_REQUIRED' || msg === 'INVALID_TOKEN') {
+      return NextResponse.json({ error: 'UNAUTHORIZED', message: 'Authentication required' }, { status: 401 });
     }
-    console.error('PUT /api/documents/[id] error:', error instanceof Error ? error.message : error);
+    if (msg === 'FORBIDDEN' || msg === 'INSUFFICIENT_PERMISSIONS') {
+      return NextResponse.json({ error: 'FORBIDDEN', message: 'Access denied' }, { status: 403 });
+    }
+    console.error('GET /api/documents error:', error);
     return NextResponse.json(
       { error: 'INTERNAL_ERROR', message: 'Erreur serveur interne' },
       { status: 500 }

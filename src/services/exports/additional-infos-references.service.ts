@@ -24,7 +24,7 @@
 import { and, eq, inArray, isNull, or } from 'drizzle-orm';
 import { documentInAssetsCondition } from '@/services/documents/asset-document-scope';
 import { db } from '@/db';
-import { agendaAssetLinks, agendaItems, assetFiles, assetPhotos, equipments, events, substructures } from '@/db/schema';
+import { agendaAssetLinks, agendaItems, assetFiles, assetPhotos, assets, equipments, events, substructures } from '@/db/schema';
 import {
   EVENT_KEY_RE, findField,
   type AdditionalInfoReferencesDto,
@@ -54,6 +54,51 @@ export async function loadAdditionalInfoReferences(params: { assetId: number; ac
       .sort((a, b) => String(b.date ?? '').localeCompare(String(a.date ?? ''))),
     highlightSuggestions: highlightSuggestions(source, today),
   };
+}
+
+/** Autres biens d'un sinistre dont les références sont proposées (borne). */
+export const CLAIM_REFERENCE_ASSETS_MAX = 10;
+
+/**
+ * Lot 53 (retour PO Q18) — sélecteur multi-biens d'un sinistre : pièces,
+ * photos et événements « sinistre » du bien de la fiche PUIS des autres
+ * biens CONCERNÉS par le sinistre, uniquement ceux ACCESSIBLES : bien du
+ * compte courant, non supprimé (même règle que l'accès à la fiche et que
+ * `findInvalidReferences`). Un bien d'un autre compte, supprimé ou hors du
+ * sinistre n'apporte rien. Chaque élément d'un autre bien porte `assetId`
+ * et `assetName` ; un élément commun à plusieurs biens n'apparaît qu'une
+ * fois (sous le premier bien qui le porte, celui de la fiche d'abord).
+ * Suggestions de points forts : celles du bien de la fiche seulement.
+ */
+export async function loadClaimReferences(params: {
+  assetId: number; accountId: number; userId: number; claimAssetIds: readonly number[];
+}): Promise<AdditionalInfoReferences> {
+  const base = await loadAdditionalInfoReferences({ assetId: params.assetId, accountId: params.accountId, userId: params.userId });
+  const autres = [...new Set(params.claimAssetIds.filter((id) => Number.isSafeInteger(id) && id > 0 && id !== params.assetId))];
+  if (!autres.length) return base;
+  const accessibles = await db.select({ id: assets.id, name: assets.name }).from(assets)
+    .where(and(inArray(assets.id, autres), eq(assets.accountId, params.accountId), isNull(assets.deletedAt)))
+    .orderBy(assets.name, assets.id)
+    .limit(CLAIM_REFERENCE_ASSETS_MAX);
+  const docs = new Set(base.documents.map((d) => d.id));
+  const photos = new Set(base.photos.map((p) => p.id));
+  const evts = new Set(base.claimEvents.map((e) => e.key));
+  const out: AdditionalInfoReferences = { ...base, documents: [...base.documents], photos: [...base.photos], claimEvents: [...base.claimEvents] };
+  for (const a of accessibles) {
+    let r: AdditionalInfoReferences;
+    try {
+      r = await loadAdditionalInfoReferences({ assetId: a.id, accountId: params.accountId, userId: params.userId });
+    } catch (e) {
+      // Bien devenu inaccessible entre-temps : il n'apporte rien.
+      if ((e as { exportErrorCode?: string }).exportErrorCode === 'ASSET_NOT_FOUND') continue;
+      throw e;
+    }
+    for (const d of r.documents) if (!docs.has(d.id)) { docs.add(d.id); out.documents.push({ ...d, assetId: a.id, assetName: a.name }); }
+    for (const p of r.photos) if (!photos.has(p.id)) { photos.add(p.id); out.photos.push({ ...p, assetId: a.id, assetName: a.name }); }
+    for (const e of r.claimEvents) if (!evts.has(e.key)) { evts.add(e.key); out.claimEvents.push(e); }
+  }
+  out.claimEvents.sort((x, y) => String(y.date ?? '').localeCompare(String(x.date ?? '')));
+  return out;
 }
 
 interface CitedRefs {
@@ -116,7 +161,10 @@ export async function findInvalidReferences(asset: number | readonly number[], a
       ))
       : Promise.resolve([] as Array<{ id: number }>),
     photoIds.length
-      ? db.select({ id: assetPhotos.id }).from(assetPhotos).where(and(inArray(assetPhotos.id, photoIds), inArray(assetPhotos.assetId, assetIds)))
+      // Lot 53 (Q18) : photo d'un bien concerné ET du compte (le bien porteur est vérifié, pas seulement cité).
+      ? db.select({ id: assetPhotos.id }).from(assetPhotos)
+        .innerJoin(assets, and(eq(assets.id, assetPhotos.assetId), eq(assets.accountId, accountId), isNull(assets.deletedAt)))
+        .where(and(inArray(assetPhotos.id, photoIds), inArray(assetPhotos.assetId, assetIds)))
       : Promise.resolve([] as Array<{ id: number }>),
     agendaIds.length
       ? db.select({ id: agendaItems.id }).from(agendaItems)

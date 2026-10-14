@@ -33,7 +33,7 @@ import {
   rooms,
   substructures,
 } from '@/db/schema';
-import { and, count, eq, inArray, isNull, notInArray, or } from 'drizzle-orm';
+import { and, count, eq, inArray, isNull, notInArray, or, sql, type SQL } from 'drizzle-orm';
 import { retireDeletedAssetFromOperationsInTx } from '@/services/business-operations/asset-lifecycle';
 import { publishBusinessOperationEvents, type BusinessOperationEvent } from '@/services/business-operations/events';
 
@@ -114,6 +114,19 @@ function roomIdsOf(assetId: number) {
   return db.select({ id: rooms.id }).from(rooms).where(eq(rooms.assetId, assetId));
 }
 
+/**
+ * Lot 53 (retour PO D23) : une ligne d'un AUTRE compte qui cite le bien
+ * (relation intercomptes héritée) n'est jamais emportée par sa suppression —
+ * ni compte rendu, ni ligne supprimée, ni objet de stockage purgé. Le
+ * déclencheur `assets_detach_foreign_refs` (migration 0346) la DÉTACHE
+ * (colonne remise à NULL) avant la cascade : elle reste dans son compte.
+ * Bien ou ligne sans compte (historique) : comportement antérieur.
+ */
+function sameAccountAsAsset(t: typeof assetFiles | typeof events | typeof deadlines, assetId: number): SQL {
+  return sql`(${t.accountId} IS NULL OR NOT EXISTS (
+    SELECT 1 FROM assets o WHERE o.id = ${assetId} AND o.account_id IS NOT NULL AND o.account_id <> ${t.accountId}))`;
+}
+
 /** Pièces (sous-structures) du bien. */
 function subIdsOf(run: Pick<typeof db, 'select'>, assetId: number) {
   return run.select({ id: substructures.id }).from(substructures).where(eq(substructures.assetId, assetId));
@@ -131,17 +144,17 @@ function viaPiece(
   t: typeof assetFiles | typeof events | typeof deadlines,
   assetId: number,
 ) {
-  return and(inArray(t.substructureId, subIdsOf(run, assetId)), isNull(t.assetId));
+  return and(inArray(t.substructureId, subIdsOf(run, assetId)), isNull(t.assetId), sameAccountAsAsset(t, assetId));
 }
 
 /** Tout ce que la suppression emporte parmi les fichiers : bien, bien lié, pièce du bien. */
 function filesScope(assetId: number) {
-  return or(
+  return and(or(
     eq(assetFiles.assetId, assetId),
     eq(assetFiles.linkedAssetId, assetId),
     inArray(assetFiles.linkedRoomId, roomIdsOf(assetId)),
     viaPiece(db, assetFiles, assetId),
-  );
+  ), sameAccountAsAsset(assetFiles, assetId));
 }
 
 export async function getAssetDeletionSummary(assetId: number): Promise<AssetDeletionSummary> {
@@ -168,6 +181,7 @@ export async function getAssetDeletionSummary(assetId: number): Promise<AssetDel
           inArray(deadlines.linkedRoomId, roomIdsOf(assetId)),
           viaPiece(db, deadlines, assetId),
         ),
+        sameAccountAsAsset(deadlines, assetId),
         eq(deadlines.isDraft, false),
       )),
     db
@@ -180,6 +194,7 @@ export async function getAssetDeletionSummary(assetId: number): Promise<AssetDel
           inArray(events.linkedRoomId, roomIdsOf(assetId)),
           viaPiece(db, events, assetId),
         ),
+        sameAccountAsAsset(events, assetId),
         eq(events.isDraft, false),
       )),
     db.select({ n: count() }).from(substructures).where(eq(substructures.assetId, assetId)),
@@ -217,12 +232,12 @@ export async function deleteAssetCompletely(asset: {
     const files = await tx
       .select({ id: assetFiles.id, s3Key: assetFiles.s3Key })
       .from(assetFiles)
-      .where(or(
+      .where(and(or(
         eq(assetFiles.assetId, assetId),
         eq(assetFiles.linkedAssetId, assetId),
         inArray(assetFiles.linkedRoomId, roomIds),
         viaPiece(tx, assetFiles, assetId),
-      ));
+      ), sameAccountAsAsset(assetFiles, assetId)));
     const fileIds = files.map((f) => f.id);
 
     const versions = fileIds.length

@@ -58,6 +58,12 @@ export type UnderstandingReason =
   | 'AMBIGUOUS_TARGET'
   | 'UNRESOLVED_REFERENCE'
   | 'UNCONSUMED_MEANING'
+  /**
+   * Lot 53 (53H) : un champ du registre est détecté mais la FORME de la
+   * demande n'est pas déterminée (« date d'achat polo » : ni question
+   * explicite, ni commande) — UNDERSTAND, jamais l'abandon du champ.
+   */
+  | 'UNDETERMINED_FIELD_REQUEST'
   | 'UNKNOWN_INTENT'
   | 'AMBIGUOUS_INTENT';
 

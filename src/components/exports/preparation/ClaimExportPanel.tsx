@@ -10,6 +10,9 @@
  *     valeur saisie ici EST celle de la fiche ;
  *   · aucun sinistre → ajout ; ancienne saisie encore lue → invitation à la
  *     reprendre depuis la fiche (rubrique « Sinistres »).
+ *   · lot 53 (retour PO D10) : « Ajouter un sinistre » ouvre un BROUILLON
+ *     (`ClaimEditor` sans identifiant) : rien n'est créé en base avant la
+ *     première saisie effective, qui sélectionne alors le sinistre du dossier.
  */
 import { useEffect, useState } from 'react';
 import { Button } from '@/components/ui/button';
@@ -17,7 +20,7 @@ import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { apiClient } from '@/lib/api-client';
 import type { AutosaveState } from '@/lib/assets/additional-infos-autosave';
-import { ClaimEditor, type ClaimResponse } from '@/components/assets/claims/ClaimEditor';
+import { ClaimEditor } from '@/components/assets/claims/ClaimEditor';
 import type { PreparationDto } from '@/services/exports/v12/preparation/types';
 
 interface Props {
@@ -31,7 +34,7 @@ interface Props {
 
 export function ClaimExportPanel({ assetId, category, claim, editable, onSelect, onSaveStateChange }: Props) {
   const [assetOptions, setAssetOptions] = useState<Array<{ id: number; name: string }>>([]);
-  const [busy, setBusy] = useState(false);
+  const [draft, setDraft] = useState(false);
   useEffect(() => {
     let stop = false;
     apiClient.get<{ assetOptions: Array<{ id: number; name: string }> }>(`/api/assets/${assetId}/claims`)
@@ -40,13 +43,6 @@ export function ClaimExportPanel({ assetId, category, claim, editable, onSelect,
     return () => { stop = true; };
   }, [assetId]);
 
-  const ajouter = () => {
-    setBusy(true);
-    apiClient.post<ClaimResponse>(`/api/assets/${assetId}/claims`, {})
-      .then((c) => onSelect(c.id))
-      .catch(() => undefined)
-      .finally(() => setBusy(false));
-  };
 
   return (
     <div className="space-y-4" data-claim-export>
@@ -73,6 +69,20 @@ export function ClaimExportPanel({ assetId, category, claim, editable, onSelect,
           compact
           onSaveStateChange={onSaveStateChange}
         />
+      ) : draft ? (
+        <ClaimEditor
+          key="brouillon"
+          assetId={assetId}
+          claimId={null}
+          category={category}
+          assetOptions={assetOptions}
+          readOnly={!editable}
+          compact
+          onBack={() => setDraft(false)}
+          onDeleted={() => setDraft(false)}
+          onCreated={(id) => onSelect(id)}
+          onSaveStateChange={onSaveStateChange}
+        />
       ) : (
         <div className="space-y-2 text-xs text-muted-foreground">
           <p>
@@ -81,7 +91,7 @@ export function ClaimExportPanel({ assetId, category, claim, editable, onSelect,
               : 'Aucun sinistre n’est enregistré pour ce bien.'}
           </p>
           {editable && (
-            <Button type="button" size="sm" variant="outline" disabled={busy} onClick={ajouter}>Ajouter un sinistre</Button>
+            <Button type="button" size="sm" variant="outline" onClick={() => setDraft(true)}>Ajouter un sinistre</Button>
           )}
         </div>
       )}

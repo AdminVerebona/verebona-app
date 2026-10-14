@@ -182,29 +182,33 @@ scenario('L37', 'Sécurité des comptes — C1 à C5', ({ sql, make }) => {
     await settleDetachedAuthTasks();
   });
 
-  it('C4-E2E-01 compteurs en base : verrou du compte après 5 échecs, partagé entre instances, clés pseudonymisées', async () => {
+  // Lot 53A (retour PO D1) : le verrou « 5 échecs → adresse bloquée pour
+  // tous » est remplacé (lib/auth/login-throttle.ts) — scénarios complets
+  // dans l53a-securite-cdc18.e2e.ts (PO-D1-E2E-xx).
+  it('C4-E2E-01 / PO-D1 compteurs en base : pause des appareils non reconnus après 10 échecs toutes IP, partagée entre instances, clés pseudonymisées', async () => {
     const { POST } = await import('@/app/api/auth/login/route');
     const u = await compte();
-    for (let i = 0; i < 5; i++) {
+    for (let i = 0; i < 10; i++) {
       const r = await POST(post('/api/auth/login', { body: { email: u.email, password: 'Faux' }, ip: `82.1.${i}.9` }));
       expect(r.status).toBe(401);
     }
-    const { limitKey, AUTH_LIMITS, AuthRateLimiter, PgAuthLimitStore } = await import('@/lib/auth/auth-rate-limit');
-    const key = limitKey('login', 'acct', u.email);
+    const { limitKey, AuthRateLimiter, PgAuthLimitStore } = await import('@/lib/auth/auth-rate-limit');
+    const { LOGIN_THROTTLE_POLICIES } = await import('@/lib/auth/login-throttle');
+    const key = limitKey('login', 'acctu', u.email);
     const [row] = await sql<{ locked_until: Date; lock_level: number }[]>`SELECT locked_until, lock_level FROM auth_rate_limits WHERE bucket_key = ${key}`;
     expect(new Date(row.locked_until).getTime()).toBeGreaterThan(Date.now() + 14 * 60_000);
     expect(row.lock_level).toBe(1);
     const tout = await sql<{ bucket_key: string }[]>`SELECT bucket_key FROM auth_rate_limits`;
     expect(tout.some((r) => r.bucket_key.includes(u.email) || r.bucket_key.includes('82.1.'))).toBe(false);
 
-    // Une AUTRE instance (autre limiteur, même base) voit le verrou.
+    // Une AUTRE instance (autre limiteur, même base) voit la pause.
     const autreInstance = new AuthRateLimiter(new PgAuthLimitStore());
-    expect((await autreInstance.check([{ key, policy: AUTH_LIMITS.loginAccount }])).allowed).toBe(false);
-    // Même le bon mot de passe, depuis une IP neuve, est refusé pendant le verrou.
+    expect((await autreInstance.check([{ key, policy: LOGIN_THROTTLE_POLICIES.identifierUntrusted }])).allowed).toBe(false);
+    // Le bon mot de passe, depuis un appareil NON reconnu et une IP neuve, est refusé pendant la pause.
     expect((await POST(post('/api/auth/login', { body: { email: u.email, password: PASSWORD }, ip: '82.9.9.9' }))).status).toBe(429);
   });
 
-  it('C4-E2E-02 la connexion réussie d’un autre compte ne remet pas le compteur IP à zéro', async () => {
+  it('C4-E2E-02 la connexion réussie d’un autre compte ne remet pas les compteurs de l’IP ni de la cible à zéro', async () => {
     const { POST } = await import('@/app/api/auth/login/route');
     const cible = await compte();
     const autre = await compte();
@@ -214,8 +218,10 @@ scenario('L37', 'Sécurité des comptes — C1 à C5', ({ sql, make }) => {
     const { limitKey } = await import('@/lib/auth/auth-rate-limit');
     const [r] = await sql<{ attempts: number }[]>`SELECT attempts FROM auth_rate_limits WHERE bucket_key = ${limitKey('login', 'ip', ip)}`;
     expect(r.attempts).toBe(3);
-    const [c] = await sql<{ attempts: number }[]>`SELECT attempts FROM auth_rate_limits WHERE bucket_key = ${limitKey('login', 'acct', cible.email)}`;
+    const [c] = await sql<{ attempts: number }[]>`SELECT attempts FROM auth_rate_limits WHERE bucket_key = ${limitKey('login', 'acctu', cible.email)}`;
     expect(c.attempts).toBe(3);
+    const [p] = await sql<{ attempts: number }[]>`SELECT attempts FROM auth_rate_limits WHERE bucket_key = ${limitKey('login', 'pair', `${ip}|${cible.email}`)}`;
+    expect(p.attempts).toBe(3);
   });
 
   it('C4-E2E-03 purge par la tâche interne : lignes inactives supprimées, verrou en cours conservé', async () => {

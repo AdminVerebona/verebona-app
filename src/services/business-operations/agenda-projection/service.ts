@@ -71,6 +71,12 @@ export interface ProjectionRunOptions {
   today?: string;
   /** Garde du travail de file, appelée avant chaque écriture. */
   beforeWrite?: (what: string) => Promise<void> | void;
+  /**
+   * Lot 53 (D14) : réalités pour lesquelles l'utilisateur a choisi « ajouter
+   * un nouvel événement » (carte de rapprochement) — création sans nouveau
+   * rapprochement.
+   */
+  forceCreateOperationIds?: readonly number[];
 }
 
 export interface ProjectionRunResult {
@@ -84,6 +90,8 @@ export interface ProjectionRunResult {
   proposed: number;
   abstained: number;
   suppressed: number;
+  /** Lot 53 (D14) : cartes « À traiter » de rapprochement incertain posées / mises à jour. */
+  matchCards?: number;
   /** Écritures effectives (0 = no-op). */
   changes: number;
   skipped?: 'COLUMNS_MISSING';
@@ -443,23 +451,40 @@ export async function projectAccountOperations(accountId: number, opts: Projecti
   const candidates = await loadCandidates(accountId, actifs.flatMap((o) => o.assetIds), actifs.flatMap((o) => o.documentFileIds));
   const cards = await loadStatusCardItems(accountId, [...linked, ...candidates].map((i) => i.id));
   const taken = new Set<number>(linked.map((i) => i.id));
+  const forcer = new Set(opts.forceCreateOperationIds ?? []);
+  // Lot 53 (D14) : rapprochements incertains → carte « À traiter » (candidats, provenance).
+  const besoins: import('@/services/to-process/agenda-projection-cards').AgendaProjectionCardNeed[] = [];
 
   for (const op of ops) {
     res.operations++;
+    const decision = decideProjection(op, today);
     const plan = planOperationProjection({
       op,
-      decision: decideProjection(op, today),
+      decision,
       linked: linked.filter((i) => i.businessOperationId === op.id),
       suppressedKeys: suppressions.get(op.id) ?? new Set(),
       candidates,
       taken,
       statusCardItems: cards,
+      forceCreate: forcer.has(op.id),
     });
     for (const action of plan) {
       if (action.kind === 'LINK') taken.add(action.itemId);
+      if (action.kind === 'ABSTAIN' && action.candidates?.length && action.key && decision.kind === 'PROJECT' && op.assetIds.length) {
+        besoins.push({
+          operationId: op.id, key: action.key, assetId: op.assetIds[0],
+          desired: { title: decision.desired.title, date: decision.desired.date, typeCode: op.typeCode },
+          candidates: action.candidates, fileIds: op.documentFileIds,
+        });
+      }
       const created = await applyAction(op, action, res, { beforeWrite, correlationId });
       if (created !== null) taken.add(created);
     }
+  }
+  {
+    const { syncAgendaProjectionCards } = await import('@/services/to-process/agenda-projection-cards');
+    const r = await syncAgendaProjectionCards(accountId, besoins, ops.map((o) => o.id));
+    res.matchCards = r.created + r.updated;
   }
   if (res.changes > 0) {
     console.info(JSON.stringify({ event: 't4.operation_projection', accountId, correlationId, ...res }));

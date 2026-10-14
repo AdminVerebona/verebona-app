@@ -40,7 +40,11 @@
  * intervention planifiée et sa réalisation). Un rapprochement seulement
  * PROBABLE (intitulé proche — `findDuplicate` de T4 —, même document à une
  * autre date, deux événements aussi plausibles) : la projection S'ABSTIENT —
- * ni lien hasardeux, ni doublon.
+ * ni lien hasardeux, ni doublon — et, depuis le lot 53 (retour PO D14), une
+ * carte « À traiter » présente les événements candidats et leur provenance
+ * (`to-process/agenda-projection-cards.ts`) : l'utilisateur relie, ou fait
+ * ajouter un nouvel événement. Une hypothèse n'est jamais promue en
+ * événement confirmé sans ce choix.
  *
  * CONVENTIONS AGENDA RÉUTILISÉES (§4.4.4, T4-12) : un élément modifié par
  * l'utilisateur n'est jamais réécrit ; une réalisation est écrite
@@ -286,9 +290,14 @@ export function dayGap(a: string, b: string): number {
   return Math.abs(Math.round((x - y) / DAY));
 }
 
+/** Lot 53 (D14) : événements candidats d'un rapprochement incertain, par ordre de préférence. */
+export interface ProbableCandidate { item: AgendaItemSnapshot; reason: string }
+/** Candidats présentés au plus dans une carte (2 propositions affichées + « nouvel événement »). */
+export const PROBABLE_CANDIDATES_MAX = 3;
+
 export type MatchResult =
   | { kind: 'certain'; item: AgendaItemSnapshot; reason: string }
-  | { kind: 'probable'; item: AgendaItemSnapshot; reason: string }
+  | { kind: 'probable'; item: AgendaItemSnapshot; reason: string; candidates: ProbableCandidate[] }
   | { kind: 'none' };
 
 /**
@@ -305,7 +314,7 @@ export function matchExistingItem(op: OperationSnapshot, desired: DesiredProject
 
   type Scored = { item: AgendaItemSnapshot; score: number; reason: string };
   const certains: Scored[] = [];
-  let probable: { item: AgendaItemSnapshot; reason: string } | null = null;
+  const probables: Array<ProbableCandidate & { ecart: number }> = [];
 
   for (const c of candidates) {
     if (!c.date || c.manualStatus === 'annule') continue;
@@ -332,19 +341,27 @@ export function matchExistingItem(op: OperationSnapshot, desired: DesiredProject
       });
       continue;
     }
-    if (!probable && (doublon.kind === 'probable' || (memeDoc && ecart <= SAME_DOCUMENT_PROBABLE_DAYS) || (typeOk && memeBien && ecart <= tolerance * 2))) {
-      probable = { item: c, reason: doublon.kind === 'probable' ? doublon.reason : memeDoc ? `même document, écart ${ecart} j` : `type compatible, écart ${ecart} j` };
+    if (doublon.kind === 'probable' || (memeDoc && ecart <= SAME_DOCUMENT_PROBABLE_DAYS) || (typeOk && memeBien && ecart <= tolerance * 2)) {
+      probables.push({ item: c, ecart, reason: doublon.kind === 'probable' ? doublon.reason : memeDoc ? `même document, écart ${ecart} j` : `type compatible, écart ${ecart} j` });
     }
   }
 
   if (certains.length) {
     certains.sort((a, b) => b.score - a.score || a.item.id - b.item.id);
     const [best, second] = certains;
-    // Deux événements aussi plausibles : aucun choix arbitraire.
-    if (second && second.score === best.score) return { kind: 'probable', item: best.item, reason: 'plusieurs événements équivalents' };
+    // Deux événements aussi plausibles : aucun choix arbitraire (lot 53, D14 : l'utilisateur choisit).
+    if (second && second.score === best.score) {
+      const ex = certains.filter((x) => x.score === best.score).slice(0, PROBABLE_CANDIDATES_MAX)
+        .map((x) => ({ item: x.item, reason: `plusieurs événements équivalents (${x.reason})` }));
+      return { kind: 'probable', item: best.item, reason: 'plusieurs événements équivalents', candidates: ex };
+    }
     return { kind: 'certain', item: best.item, reason: best.reason };
   }
-  return probable ? { kind: 'probable', item: probable.item, reason: probable.reason } : { kind: 'none' };
+  if (!probables.length) return { kind: 'none' };
+  // Ordre stable : écart de date croissant, puis le plus ancien élément.
+  probables.sort((a, b) => a.ecart - b.ecart || a.item.id - b.item.id);
+  const retenus = probables.slice(0, PROBABLE_CANDIDATES_MAX).map(({ item, reason }) => ({ item, reason }));
+  return { kind: 'probable', item: retenus[0].item, reason: retenus[0].reason, candidates: retenus };
 }
 
 // ── Plan d'une Opération ───────────────────────────────────────────────────
@@ -369,7 +386,13 @@ export type ProjectionAction =
   | { kind: 'DETACH'; itemId: number; reason: string }
   | { kind: 'MARK_DONE'; itemId: number }
   | { kind: 'PROPOSE_DONE'; itemId: number }
-  | { kind: 'ABSTAIN'; reason: string; itemId?: number }
+  | {
+    kind: 'ABSTAIN'; reason: string; itemId?: number;
+    /** Lot 53 (D14) : rapprochement incertain — événements candidats et motif (carte « À traiter »). */
+    candidates?: Array<{ itemId: number; title: string; date: string | null; reason: string }>;
+    /** Clé de projection concernée (carte, décision « ne rien ajouter »). */
+    key?: string;
+  }
   | { kind: 'SUPPRESSED'; key: string };
 
 export interface PlanInput {
@@ -385,6 +408,12 @@ export interface PlanInput {
   taken?: ReadonlySet<number>;
   /** Éléments ayant déjà une carte de statut (ouverte ou tranchée) : jamais reproposée. */
   statusCardItems?: ReadonlySet<number>;
+  /**
+   * Lot 53 (D14) : l'utilisateur a répondu « nouvel événement » à la carte de
+   * rapprochement — création sans nouveau rapprochement (suppression utilisateur
+   * toujours respectée).
+   */
+  forceCreate?: boolean;
 }
 
 const sameSet = (a: readonly number[], b: readonly number[]): boolean => {
@@ -441,9 +470,18 @@ export function planOperationProjection(p: PlanInput): ProjectionAction[] {
   } else {
     if (p.suppressedKeys.has(d.key)) return [{ kind: 'SUPPRESSED', key: d.key }];
     if (!d.date) return [{ kind: 'ABSTAIN', reason: 'NO_DATE' }];
+    if (p.forceCreate) {
+      if (!d.creatable) return [{ kind: 'ABSTAIN', reason: 'NOT_CREATABLE' }];
+      return [{ kind: 'CREATE', desired: d, functionalKey: fk }];
+    }
     const pool = p.taken?.size ? p.candidates.filter((c) => !p.taken!.has(c.id)) : p.candidates;
     const m = matchExistingItem(op, d, pool);
-    if (m.kind === 'probable') return [{ kind: 'ABSTAIN', reason: `PROBABLE_EQUIVALENT: ${m.reason}`, itemId: m.item.id }];
+    if (m.kind === 'probable') {
+      return [{
+        kind: 'ABSTAIN', reason: `PROBABLE_EQUIVALENT: ${m.reason}`, itemId: m.item.id, key: d.key,
+        candidates: m.candidates.map((c) => ({ itemId: c.item.id, title: c.item.title, date: c.item.date, reason: c.reason })),
+      }];
+    }
     if (m.kind === 'certain') {
       actions.push({ kind: 'LINK', itemId: m.item.id, reason: m.reason });
       actions.push(...statusActions(op, m.item, d, cards));

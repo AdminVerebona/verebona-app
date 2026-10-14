@@ -84,7 +84,7 @@ describe('AC36A-2 — sections en cartes bordées', () => {
     ['home-biens', 'Mes biens', 'Tous les biens', 'Tous'],
     ['home-echeances', 'Prochaines échéances', 'Mon agenda', 'Agenda'],
     ['home-fait', 'Ce que j’ai fait', 'Toute l’activité', 'Tout'],
-    ['home-docs', 'Documents récents', 'Tous', null],
+    ['home-docs', 'Documents récents', 'Tous les documents', 'Tous'],
   ];
   const html = {
     'home-biens': renderToStaticMarkup(h(HomeAssets, { assets: [asset(1, 'Polo')], onAddAsset: noop })),

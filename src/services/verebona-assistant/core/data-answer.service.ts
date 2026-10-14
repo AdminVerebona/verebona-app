@@ -954,11 +954,24 @@ export async function answerFromData(p: {
 
   const wantsDocument = RE.findDoc.test(plain(p.message)) || p.intent === 'ACCOUNT_SEARCH_DOCUMENT';
 
+  // ── Lot 53 (53H) : aucune VALEUR choisie par la seule désignation du bien ──
+  // « date polo », « date d'achat polo » : une fois les mots de question
+  // écartés, il ne reste que le nom du bien. Un fait (ou une cellule) qui ne
+  // correspond qu'à ce nom n'est qu'UNE caractéristique PARMI d'autres du bien
+  // (« Motorisation de Polo : … ») : la répondre serait une sélection
+  // arbitraire. Aucune valeur n'est rendue ici ; la compréhension (UNDERSTAND)
+  // ou la lecture ciblée du champ demandé décide.
+  const motsDuBien = scopedAssetId ? scope.assets.flatMap((a) => plain(a.name).split(/[^a-z0-9]+/).filter(Boolean)) : [];
+  const seulementLeBien = !wantsDocument && motsDuBien.length > 0 && terms.every((t) => motsDuBien.includes(plain(t)));
+  if (seulementLeBien) {
+    attempts.push({ level: 2, strategy: 'retrieval.t1_fact', status: 'INSUFFICIENT', score: 0, threshold: p.thresholds.text, reason: 'NO_RESULT' });
+  }
+
   // ── Niveau 2 : intersection ligne / colonne d'un tableau T1 ─────────────
   // « Quel était le kilométrage de la Clio au 3 septembre 2026 ? » : la
   // colonne (Kilométrage) et la ligne (Clio, 03/09/2026) désignent UNE
   // cellule. Réponse directe seulement si la cellule est unique et sûre.
-  if (!wantsDocument && p.port.searchTableCells) {
+  if (!wantsDocument && !seulementLeBien && p.port.searchTableCells) {
     const cells = await p.port.searchTableCells(p.accountId, terms, scopedAssetId).catch(() => [] as TableCellRow[]);
     if (cells.length > 0) {
       const dates = [parseFrDate(p.message)].filter((d): d is string => !!d);
@@ -990,7 +1003,7 @@ export async function answerFromData(p: {
     }
   }
 
-  if (!wantsDocument) {
+  if (!wantsDocument && !seulementLeBien) {
     const facts = await p.port.searchFacts(p.accountId, terms, scopedAssetId);
 
     // CDC 15 T2-02 : un fait qui porte une clé du registre cède la

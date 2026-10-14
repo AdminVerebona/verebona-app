@@ -149,6 +149,7 @@ export const ACCOUNT_OWNED_TABLES: Readonly<Record<string, string>> = {
   business_operation_financial_components: 'Opérations : lot 39',
   business_operation_asset_data_marks: 'Opérations : repère technique (lot 43) — un bien déplacé est réexaminé dans son nouveau compte (compte du repère ≠ compte du bien)',
   business_operation_claim_migration_marks: 'Opérations : repère technique de la migration Sinistre (lot 44) — un bien déplacé est réexaminé dans son nouveau compte (compte du repère ≠ compte du bien)',
+  business_operation_asset_exclusions: 'Opérations : décision de l’utilisateur sur SON sinistre (lot 53, Q17 — bien retiré, exclusion mémorisée) — le sinistre reste au compte ; l’exclusion ne concerne que lui (sans effet sur le compte cible)',
   deadlines_compat_view: 'vue de compatibilité (deadlines)',
 };
 

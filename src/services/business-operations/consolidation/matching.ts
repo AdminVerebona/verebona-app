@@ -40,6 +40,20 @@
  * rattache jamais (M4, F-034) — il ne fait que rendre une Opération
  * PLAUSIBLE, donc empêcher la création d'un doublon.
  *
+ * LOT 53 (retour PO D5 / D6, docs/exploitation/operations-rapprochement.md) :
+ *   · la plausibilité est un FAISCEAU pondéré (`plausibilityEvidence`) : bien
+ *     concerné, prestataire, nature des travaux, cohérence des montants,
+ *     dates (les fenêtres de 120 j / 30 j sont des INDICES, jamais des
+ *     preuves : hors fenêtre, un faisceau fort reste plausible), numéros de
+ *     facture distincts (indice contraire, plus une exclusion) ;
+ *   · deux factures finales de numéros différents ne créent plus
+ *     systématiquement deux interventions (D6) : elles sont soumises à M3
+ *     puis, en cas de doute, à l'utilisateur ;
+ *   · une référence commune portée par deux prestataires différents n'est
+ *     plus une preuve (M1 « fragile ») : jamais de rattachement automatique ;
+ *   · M3 examine les Opérations plausibles par lots ordonnés
+ *     (`rankPlausible`, `selectM3Batch`, D7) — jamais d'abandon au-delà de 5.
+ *
  * Raisons auditables (B6) : chaque décision rend ses motifs stables.
  * ══════════════════════════════════════════════════════════════════════════
  */
@@ -79,6 +93,10 @@ export interface ExistingOperation {
    * une facture que sémantiquement (M3) : plausible, jamais doublée.
    */
   agendaOnly?: boolean;
+  /** Lot 53 (D5) : libellé technique (nature des travaux), pour le faisceau de plausibilité. */
+  label?: string | null;
+  /** Lot 53 (D5) : montants actifs de l'Opération (cohérence des montants). */
+  amounts?: ReadonlyArray<{ kind: string; amountMinor: number; currency: string }>;
 }
 
 export interface MatchContext {
@@ -113,6 +131,12 @@ export interface CandidateDecision {
     plausible: number[];
     contradictions: Array<{ operationId: number; why: string }>;
     excluded: Array<{ operationId: number; why: string }>;
+    /**
+     * Lot 53 (D5) : Opérations partageant une référence de document avec un
+     * AUTRE prestataire (référence « fragile ») — plausibles, jamais un
+     * rattachement automatique.
+     */
+    fragile?: number[];
   };
   /** Fusion V1 (B8) : Opérations absorbées par `operationId` (canonique) dans la même transaction. */
   mergeIds?: number[];
@@ -193,17 +217,35 @@ export function hardNegatives(c: CandidateIdentity, op: ExistingOperation): stri
   for (const fam of negativeFamilies(type)) {
     if (disjoints(refSet(c.refs, fam), refSet(op.refs, fam))) out.push(`REFERENCE_DIFFERENT_${fam.join('_')}`);
   }
-  // C7.2 / F-033 : deux factures FINALES de numéros différents, sans aucune
-  // référence commune, sont deux interventions. Ne vaut ni pour un acompte /
-  // un solde (qui se rattachent par référence), ni pour un contrat ou un
-  // financement (factures périodiques d'une même relation).
-  if ((type === 'INTERVENTION' || type === 'OTHER' || type === null) && c.role === 'INVOICE'
+  // Lot 53 (retour PO D6) : deux factures FINALES de numéros différents ne
+  // sont PLUS une exclusion (C7.2 / F-033 livré au lot 41) — deux factures
+  // peuvent porter sur une même intervention. C'est désormais un indice
+  // contraire du faisceau (`distinctFinalInvoices`, `plausibilityEvidence`).
+  return out;
+}
+
+/**
+ * Deux factures FINALES de numéros différents, sans référence commune (pure) :
+ * indice contraire (D6), jamais une exclusion. Ne vaut ni pour un acompte /
+ * un solde, ni pour un contrat ou un financement.
+ */
+export function distinctFinalInvoices(c: CandidateIdentity, op: ExistingOperation): boolean {
+  const type = c.type ?? op.typeCode;
+  return (type === 'INTERVENTION' || type === 'OTHER' || type === null) && c.role === 'INVOICE'
     && !c.hints.some((h) => h.amountScope === 'DEPOSIT' || h.amountScope === 'BALANCE')
     && disjoints(refSet(c.refs, ['INVOICE']), refSet(op.refs, ['INVOICE']))
-    && sharedIdentifyingReferences(c, op).length === 0) {
-    out.push('REFERENCE_DIFFERENT_INVOICE');
-  }
-  return out;
+    && sharedIdentifyingReferences(c, op).length === 0;
+}
+
+/**
+ * Référence commune « fragile » (lot 53, D5) : une facture, un devis, un bon
+ * portent un numéro propre AU PRESTATAIRE — le même numéro chez deux
+ * prestataires différents (tous deux connus) ne prouve rien. Pure.
+ */
+export function referenceProviderMismatch(c: CandidateIdentity, op: ExistingOperation): boolean {
+  if (c.providerKey === null || op.providerKey === null || c.providerKey === op.providerKey) return false;
+  const kinds = new Set(sharedIdentifyingReferences(c, op).map((r) => r.split(':')[0]));
+  return kinds.size > 0 && [...kinds].every((k) => k === 'INVOICE' || k === 'QUOTE' || k === 'ORDER' || k === 'WORK_ORDER' || k === 'DELIVERY');
 }
 
 // ── Cycle de possession (C7.1, C7.6) ───────────────────────────────────────
@@ -235,9 +277,16 @@ export function sameOwnershipCycle(
 // ── Plausibilité (faisceau C7 sans clé exacte : M3 requis) ─────────────────
 
 const JOUR = 86_400_000;
+function ecartJours(a: string | null, b: string | null): number | null {
+  if (!a || !b) return null;
+  const x = Date.parse(`${a}T00:00:00Z`);
+  const y = Date.parse(`${b}T00:00:00Z`);
+  if (Number.isNaN(x) || Number.isNaN(y)) return null;
+  return Math.abs(x - y) / JOUR;
+}
 function proches(a: string | null, b: string | null, jours: number): boolean {
-  if (!a || !b) return true;
-  return Math.abs(Date.parse(`${a}T00:00:00Z`) - Date.parse(`${b}T00:00:00Z`)) <= jours * JOUR;
+  const e = ecartJours(a, b);
+  return e === null || e <= jours;
 }
 const dateCandidat = (c: CandidateIdentity) => c.dates.realizedDate ?? c.dates.plannedDate ?? c.dates.startDate ?? c.dates.endDate;
 const dateOperation = (o: ExistingOperation) => o.realizedDate ?? o.plannedDate ?? o.startDate ?? o.endDate;
@@ -245,17 +294,106 @@ const memeTiers = (c: CandidateIdentity, o: ExistingOperation) => c.providerKey 
 const ciblesCompatibles = (c: CandidateIdentity, o: ExistingOperation) =>
   !c.assetIds.length || !o.assetIds.length || c.assetIds.some((a) => o.assetIds.includes(a));
 
-/** Fenêtre de cohérence temporelle d'une même intervention (jours). */
+/** Fenêtre de cohérence temporelle d'une même intervention (jours) — INDICE (lot 53, D5), jamais une preuve. */
 export const INTERVENTION_PERIOD_DAYS = 120;
-/** Fenêtre d'un même sinistre déclaré sans référence (jours). */
+/** Fenêtre d'un même sinistre déclaré sans référence (jours) — INDICE (lot 53, D5). */
 export const CLAIM_PERIOD_DAYS = 30;
 /** Lot 47B : document ↔ intervention établie par l'agenda seul, même bien (jours). */
 export const AGENDA_OPERATION_PERIOD_DAYS = 60;
+/** Au-delà de ce multiple de la fenêtre, l'écart de dates devient un indice contraire. */
+export const FAR_WINDOW_FACTOR = 3;
+/** Score minimal du faisceau pour qu'une Opération soit plausible (lot 53, D5). */
+export const PLAUSIBILITY_THRESHOLD = 3;
+
+/**
+ * Poids du faisceau de plausibilité (lot 53, D5 ; documentés dans
+ * docs/exploitation/operations-rapprochement.md). Plausible = score ≥ seuil
+ * ET un ancrage : même prestataire, ou même bien avec la même nature de
+ * travaux ou des montants concordants (`hasAnchor`).
+ */
+export const PLAUSIBILITY_WEIGHTS = {
+  PROVIDER_SAME: 3,
+  PROVIDER_DIFFERENT: -4,
+  ASSET_SAME: 2,
+  DATE_IN_WINDOW: 1,
+  DATE_FAR: -6,
+  NATURE_COMMON: 1,
+  NATURE_DIFFERENT: -2,
+  AMOUNT_COHERENT: 1,
+  INVOICE_NUMBERS_DIFFERENT: -2,
+} as const;
+export type PlausibilitySignal = keyof typeof PLAUSIBILITY_WEIGHTS;
+
+/** Mots sans valeur discriminante pour la « nature des travaux » (normalisés, sans accents). */
+const MOTS_VIDES = new Set([
+  'facture', 'factures', 'devis', 'avoir', 'acompte', 'solde', 'intervention', 'interventions', 'travaux', 'prestation',
+  'prestations', 'montant', 'total', 'reglement', 'paiement', 'entreprise', 'societe', 'client', 'numero', 'reference',
+  'document', 'service', 'services', 'pour', 'avec', 'dans', 'sans', 'chez', 'votre', 'notre', 'date', 'euros',
+  'realise', 'realisee', 'effectue', 'effectuee', 'prevu', 'prevue', 'garage', 'artisan', 'commande', 'livraison',
+  // Gestes génériques : ils ne disent pas QUELS travaux (« remplacement » de quoi ?).
+  'remplacement', 'changement', 'fourniture', 'reparation', 'installation', 'avant', 'arriere',
+  // Désignations génériques de biens : elles disent OÙ, pas QUELS travaux.
+  'maison', 'appartement', 'immeuble', 'logement', 'local', 'residence', 'voiture', 'vehicule', 'velo', 'bien', 'biens',
+]);
+
+/** Mots porteurs de nature (≥ 4 lettres, hors mots vides), normalisés (pure). */
+export function natureTokens(text: string | null | undefined): Set<string> {
+  if (!text) return new Set();
+  const mots = text.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().split(/[^a-z0-9]+/);
+  return new Set(mots.filter((m) => m.length >= 4 && !/^\d+$/.test(m) && !MOTS_VIDES.has(m)));
+}
+
+/** Montants concordants (même devise, écart ≤ 1 %) entre le candidat et l'Opération (pure). */
+export function amountsCoherent(c: CandidateIdentity, o: ExistingOperation): boolean {
+  const ops = o.amounts ?? [];
+  if (!ops.length || !c.hints.length) return false;
+  return c.hints.some((h) => ops.some((x) => x.currency === h.currency && x.amountMinor > 0
+    && Math.abs(x.amountMinor - h.amountMinor) <= Math.max(1, Math.round(x.amountMinor / 100))));
+}
+
+export interface PlausibilityEvidence {
+  score: number;
+  /** Ancrage minimal (même prestataire, ou même bien + nature / montant). */
+  anchored: boolean;
+  /** Faisceau suffisant : score ≥ seuil et ancré. */
+  plausible: boolean;
+  signals: PlausibilitySignal[];
+  /** Écart de dates (jours), null si inconnu — sert au classement. */
+  gapDays: number | null;
+}
+
+/**
+ * Faisceau de plausibilité d'une Opération pour un candidat (pure, lot 53,
+ * D5) : prestataire, bien, dates (fenêtre = indice), nature, montants,
+ * numéros de facture. `windowDays` : fenêtre du type (120 j intervention,
+ * 30 j sinistre).
+ */
+export function plausibilityEvidence(c: CandidateIdentity, o: ExistingOperation, windowDays = INTERVENTION_PERIOD_DAYS): PlausibilityEvidence {
+  const signals: PlausibilitySignal[] = [];
+  if (c.providerKey !== null && o.providerKey !== null) signals.push(c.providerKey === o.providerKey ? 'PROVIDER_SAME' : 'PROVIDER_DIFFERENT');
+  if (c.assetIds.some((a) => o.assetIds.includes(a))) signals.push('ASSET_SAME');
+  const gapDays = ecartJours(dateCandidat(c), dateOperation(o));
+  if (gapDays !== null) {
+    if (gapDays <= windowDays) signals.push('DATE_IN_WINDOW');
+    else if (gapDays > windowDays * FAR_WINDOW_FACTOR) signals.push('DATE_FAR');
+  }
+  const a = natureTokens(c.summary);
+  const b = natureTokens(o.label ?? null);
+  if ([...a].some((m) => b.has(m))) signals.push('NATURE_COMMON');
+  else if (a.size && b.size) signals.push('NATURE_DIFFERENT');
+  if (amountsCoherent(c, o)) signals.push('AMOUNT_COHERENT');
+  if (distinctFinalInvoices(c, o)) signals.push('INVOICE_NUMBERS_DIFFERENT');
+  const score = signals.reduce((n, s) => n + PLAUSIBILITY_WEIGHTS[s], 0);
+  const anchored = signals.includes('PROVIDER_SAME')
+    || (signals.includes('ASSET_SAME') && (signals.includes('NATURE_COMMON') || signals.includes('AMOUNT_COHERENT')));
+  return { score, anchored, plausible: anchored && score >= PLAUSIBILITY_THRESHOLD, signals, gapDays };
+}
 
 /**
  * L'Opération POURRAIT-elle représenter la même réalité (forts C7 réunis sans
  * clé exacte) ? Une Opération plausible interdit la création (EXH-004) et
- * appellerait un rapprochement sémantique M3 (hors lot).
+ * appelle le rapprochement sémantique M3 (lot 42), puis l'utilisateur en cas
+ * de doute (lot 53, D5).
  */
 export function isPlausible(c: CandidateIdentity, o: ExistingOperation): boolean {
   const type = c.type ?? o.typeCode;
@@ -266,20 +404,40 @@ export function isPlausible(c: CandidateIdentity, o: ExistingOperation): boolean
   if (o.agendaOnly && !c.agenda && (type === 'INTERVENTION' || type === null)
     && c.assetIds.some((a) => o.assetIds.includes(a))
     && proches(dateCandidat(c), dateOperation(o), AGENDA_OPERATION_PERIOD_DAYS)) return true;
+  // Sources agenda / données structurées (lots 43, 47B) : règle d'origine
+  // (même tiers, fenêtre) — leur rapprochement propre est ailleurs.
+  const documentaire = !c.agenda && !c.structured;
   switch (type) {
     case 'CONTRACT':
     case 'FINANCING':
       return memeTiers(c, o) && ciblesCompatibles(c, o);
     case 'CLAIM':
-      return (c.dates.realizedDate !== null && c.dates.realizedDate === o.realizedDate && c.assetIds.some((a) => o.assetIds.includes(a)))
-        || (memeTiers(c, o) && ciblesCompatibles(c, o) && proches(dateCandidat(c), dateOperation(o), CLAIM_PERIOD_DAYS));
+      if (c.dates.realizedDate !== null && c.dates.realizedDate === o.realizedDate && c.assetIds.some((a) => o.assetIds.includes(a))) return true;
+      if (!documentaire) return memeTiers(c, o) && ciblesCompatibles(c, o) && proches(dateCandidat(c), dateOperation(o), CLAIM_PERIOD_DAYS);
+      return ciblesCompatibles(c, o) && plausibilityEvidence(c, o, CLAIM_PERIOD_DAYS).plausible;
     case 'ACQUISITION':
     case 'DISPOSAL':
       // Couvert par la règle de cycle (M2) ; hors cycle : rien de plausible.
       return false;
     default:
-      return memeTiers(c, o) && ciblesCompatibles(c, o) && proches(dateCandidat(c), dateOperation(o), INTERVENTION_PERIOD_DAYS);
+      if (!documentaire) return memeTiers(c, o) && ciblesCompatibles(c, o) && proches(dateCandidat(c), dateOperation(o), INTERVENTION_PERIOD_DAYS);
+      return ciblesCompatibles(c, o) && plausibilityEvidence(c, o, INTERVENTION_PERIOD_DAYS).plausible;
   }
+}
+
+/**
+ * Classement des Opérations plausibles pour l'examen M3 progressif (lot 53,
+ * D7) : faisceau le plus fort, puis dates les plus proches, puis la plus
+ * récente. Déterministe (pur).
+ */
+export function rankPlausible(c: CandidateIdentity, ops: readonly ExistingOperation[]): number[] {
+  const fenetre = (c.type ?? null) === 'CLAIM' ? CLAIM_PERIOD_DAYS : INTERVENTION_PERIOD_DAYS;
+  return ops
+    .map((o) => ({ id: o.id, e: plausibilityEvidence(c, o, fenetre) }))
+    .sort((x, y) => y.e.score - x.e.score
+      || (x.e.gapDays ?? Number.MAX_SAFE_INTEGER) - (y.e.gapDays ?? Number.MAX_SAFE_INTEGER)
+      || y.id - x.id)
+    .map((x) => x.id);
 }
 
 // ── Décision (C5, C6) ──────────────────────────────────────────────────────
@@ -334,6 +492,12 @@ export function decideCandidate(c: CandidateIdentity, ctx: MatchContext): Candid
     const communes = sharedIdentifyingReferences(c, op);
     if (communes.length) {
       if (negatifs.length) { detail.contradictions.push({ operationId: op.id, why: `${communes[0]} / ${negatifs.join(',')}` }); continue; }
+      // Lot 53 (D5) : même numéro de document chez deux prestataires différents → plausible seulement.
+      if (referenceProviderMismatch(c, op)) {
+        detail.plausible.push(op.id);
+        (detail.fragile ??= []).push(op.id);
+        continue;
+      }
       detail.certain.push({ operationId: op.id, method: 'M1', why: `REFERENCE ${communes.join(',')}` });
       continue;
     }
@@ -369,6 +533,14 @@ export function decideCandidate(c: CandidateIdentity, ctx: MatchContext): Candid
   const ids = [...new Set(certains.map((x) => x.operationId))];
   if (ids.length === 1) {
     const m = certains.find((x) => x.operationId === ids[0])!;
+    // Lot 53 (D5) : une référence exacte (M1) concurrencée par une référence
+    // fragile vers une autre Opération n'est plus une forte confiance → arbitrage.
+    const fragiles = (detail.fragile ?? []).filter((id) => id !== ids[0]);
+    if (m.method === 'M1' && fragiles.length) {
+      const parId = new Map(ctx.operations.map((o) => [o.id, o]));
+      const ops = [ids[0], ...fragiles].map((id) => parId.get(id)).filter((o): o is ExistingOperation => !!o);
+      return arbitrate(c, ops, res, 'CERTAIN', 'ARBITRATION_REQUIRED');
+    }
     return res('MATCH_AND_ENRICH', `MATCH_${m.method}`, ids[0], m.method);
   }
   if (ids.length > 1) {

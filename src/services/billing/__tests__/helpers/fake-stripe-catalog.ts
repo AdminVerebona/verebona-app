@@ -130,6 +130,15 @@ export interface FakeStripe {
   client: Stripe;
 }
 
+/** Vue API d'une configuration de portail : `products` seulement si demandé par `expand` (lot 53I). */
+function apiView(c: Stripe.BillingPortal.Configuration, expand: string[] | undefined): Stripe.BillingPortal.Configuration {
+  const out = JSON.parse(JSON.stringify(c)) as Stripe.BillingPortal.Configuration;
+  if (!(expand ?? []).includes('features.subscription_update.products') && out.features?.subscription_update) {
+    delete (out.features.subscription_update as { products?: unknown }).products;
+  }
+  return out;
+}
+
 export function fakeStripe(initial: Stripe.Price[], products: Array<{ id: string; plan: string; active?: boolean }> = []): FakeStripe {
   const prices = new Map(initial.map((p) => [p.id, p]));
   const prods = new Map<string, Stripe.Product>(products.map((p) => [p.id, { id: p.id, object: 'product', active: p.active ?? true, metadata: { verebona_plan: `verebona_${p.plan}` } } as unknown as Stripe.Product]));
@@ -214,23 +223,29 @@ export function fakeStripe(initial: Stripe.Price[], products: Array<{ id: string
       create: async () => { throw new Error('ne doit pas créer de produit'); },
     },
     billingPortal: {
+      // Lot 53I : `features.subscription_update.products` est INCLUDABLE —
+      // omis des réponses sauf `expand` explicite (comportement de l'API).
       configurations: {
-        list: () => ({ [Symbol.asyncIterator]: async function* () { for (const c of portal.values()) yield c; } }),
-        retrieve: async (id: string) => portal.get(id) ?? Promise.reject(new Error('missing')),
-        create: async (params: Stripe.BillingPortal.ConfigurationCreateParams) => {
+        list: () => ({ [Symbol.asyncIterator]: async function* () { for (const c of portal.values()) yield apiView(c, undefined); } }),
+        retrieve: async (id: string, params?: { expand?: string[] }) => {
+          const c = portal.get(id);
+          if (!c) throw new Error('missing');
+          return apiView(c, params?.expand);
+        },
+        create: async (params: Stripe.BillingPortal.ConfigurationCreateParams & { expand?: string[] }) => {
           uniqueIntervals(params.features);
-          const c = { id: `bpc_${portal.size + 1}`, active: true, metadata: params.metadata, features: params.features } as unknown as Stripe.BillingPortal.Configuration;
+          const c = { id: `bpc_${portal.size + 1}`, active: true, metadata: params.metadata, features: JSON.parse(JSON.stringify(params.features)) } as unknown as Stripe.BillingPortal.Configuration;
           portal.set(c.id, c);
           calls.push('portal.create');
-          return c;
+          return apiView(c, params.expand);
         },
-        update: async (id: string, params: Stripe.BillingPortal.ConfigurationUpdateParams) => {
+        update: async (id: string, params: Stripe.BillingPortal.ConfigurationUpdateParams & { expand?: string[] }) => {
           uniqueIntervals(params.features as Stripe.BillingPortal.ConfigurationCreateParams.Features);
           const c = portal.get(id)!;
-          const next = { ...c, features: { ...c.features, ...params.features } } as unknown as Stripe.BillingPortal.Configuration;
+          const next = { ...c, features: { ...c.features, ...JSON.parse(JSON.stringify(params.features ?? {})) } } as unknown as Stripe.BillingPortal.Configuration;
           portal.set(id, next);
           calls.push('portal.update');
-          return next;
+          return apiView(next, params.expand);
         },
       },
     },

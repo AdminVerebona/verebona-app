@@ -122,7 +122,8 @@ describe('O7-10 — rapprochement avant projection (C16.1, F-147)', () => {
   it('C16-13 — rapprochement seulement probable : la projection s\'abstient (ni lien, ni doublon)', () => {
     // Même document, mais à 10 jours : rapprochement probable seulement.
     const memeDoc = item({ id: 6, title: 'Note', date: '2026-03-20', fileIds: [77], assetIds: [] });
-    expect(plan(op(), { candidates: [memeDoc] })).toEqual([{ kind: 'ABSTAIN', reason: expect.stringContaining('PROBABLE_EQUIVALENT'), itemId: 6 }]);
+    // Lot 53 (PO-D14) : l'abstention porte désormais ses candidats (carte « À traiter »).
+    expect(plan(op(), { candidates: [memeDoc] })).toEqual([expect.objectContaining({ kind: 'ABSTAIN', reason: expect.stringContaining('PROBABLE_EQUIVALENT'), itemId: 6 })]);
     // Deux événements aussi plausibles : aucun choix arbitraire.
     const deux = plan(op(), { candidates: [item({ id: 7, title: 'Entretien', date: '2026-03-10' }), item({ id: 8, title: 'Réparation', date: '2026-03-10' })] });
     expect(deux).toEqual([expect.objectContaining({ kind: 'ABSTAIN', reason: expect.stringContaining('PROBABLE_EQUIVALENT') })]);

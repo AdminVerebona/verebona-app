@@ -210,7 +210,7 @@ scenario('L49E-12', 'Retrait de T5 : migration 0336, versions historiques, rollb
     const t5 = await searchExecutions({ operationCode: 't5_analyze', since: debut });
     expect(t5.rows).toHaveLength(1);
     expect(t5.rows[0].treatment).toBeNull();
-    expect(executionScopeLabel(t5.rows[0])).toBe('T5 (historique)');
+    expect(executionScopeLabel(t5.rows[0])).toBe('T5 (retiré)');
     const sonde = await searchExecutions({ operationCode: 'model_operational_probe', since: debut });
     expect(executionScopeLabel(sonde.rows[0])).toBe('Technique');
 

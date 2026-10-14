@@ -207,15 +207,18 @@ function VerifyEmailContent() {
           Vérifiez votre boîte mail
         </CardTitle>
         <CardDescription className="text-center text-[color:var(--text-muted)]">
+          {/* Lot 53A (CDC 18 §7.1, §9.1) : texte NEUTRE — l'inscription répond
+              de la même façon si l'adresse a déjà un compte ; l'e-mail reçu dit
+              alors comment se connecter. Même composant mobile et ordinateur. */}
           {emailFromUrl ? (
             <>
-              Nous avons envoyé un lien de confirmation à{' '}
+              Nous avons envoyé un e-mail à{' '}
               <span className="font-medium text-[color:var(--text-primary)]">{emailFromUrl}</span>.
-              Cliquez dessus pour activer votre compte et démarrer votre essai.
+              Cliquez sur le lien qu&apos;il contient pour activer votre compte et démarrer votre essai.
             </>
           ) : (
             <>
-              Nous vous avons envoyé un lien de confirmation. Cliquez dessus pour
+              Nous vous avons envoyé un e-mail. Cliquez sur le lien qu&apos;il contient pour
               activer votre compte et démarrer votre essai.
             </>
           )}
@@ -224,6 +227,7 @@ function VerifyEmailContent() {
       <CardContent className="space-y-4">
         <p className="text-xs text-[color:var(--text-muted)] text-center">
           Le lien est valable 24 heures. Pensez à regarder dans vos courriers indésirables.
+          Si cette adresse a déjà un compte Verebona, l&apos;e-mail vous indique simplement comment vous connecter.
         </p>
         <ResendBlock
           email={resendEmail}

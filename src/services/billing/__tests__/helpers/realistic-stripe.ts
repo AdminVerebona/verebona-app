@@ -39,7 +39,27 @@ export interface RealisticOptions {
   portalFail?: (n: number, products: Array<{ product: string; prices: string[] }>) => 'transient' | 'invalid' | 'intervals' | null;
   /** Identifiant du compte renvoyé par `accounts.retrieve` (défaut `acct_preprod_test`). */
   accountId?: string;
+  /**
+   * Lot 53I — `features.subscription_update.products` est un champ
+   * INCLUDABLE de l'API (SDK 18.5.0 : `products?:`, absent de l'exemple
+   * d'objet de la documentation) : il n'est renvoyé que s'il est demandé par
+   * `expand` (`features.subscription_update.products`, ou
+   * `data.features.subscription_update.products` sur une liste). Les
+   * réponses de retrieve / create / update / list l'OMETTENT sinon — c'est
+   * le comportement qui a produit « prix acceptés ∅ » en préprod.
+   *   - `legacyAlwaysIncludeProducts` : ancien comportement de la doublure
+   *     (toujours renvoyé) — jamais utilisé par les tests du lot 53 ;
+   *   - `rejectProductsExpand` : Stripe refuse l'expansion (« This property
+   *     cannot be expanded ») — repli sans expansion, état indéterminé ;
+   *   - `omitProductsEvenExpanded` : propriété absente même demandée.
+   */
+  legacyAlwaysIncludeProducts?: boolean;
+  rejectProductsExpand?: boolean;
+  omitProductsEvenExpanded?: boolean;
 }
+
+/** Chemin d'expansion du champ includable (lot 53I). */
+export const PRODUCTS_EXPAND_PATH = 'features.subscription_update.products';
 
 /** Message EXACT renvoyé par Stripe lors de l'incident préprod (lot 49A). */
 export const STRIPE_UNIQUE_INTERVALS_ERROR = 'For each product, its price must have unique billing intervals.';
@@ -52,7 +72,34 @@ export interface RealisticStripe {
   client: Stripe;
   portal: Map<string, Stripe.BillingPortal.Configuration>;
   /** Écritures de portail demandées (acceptées ou refusées). */
-  portalWrites: Array<{ op: 'create' | 'update'; id: string | null; products: Array<{ product: string; prices: string[] }>; accepted: boolean; error?: string }>;
+  portalWrites: Array<{ op: 'create' | 'update'; id: string | null; products: Array<{ product: string; prices: string[] }>; accepted: boolean; error?: string; productsSent: boolean }>;
+  /** Lectures de portail (op, expansion demandée, `products` présent dans la réponse). */
+  portalReads: Array<{ op: 'retrieve' | 'create' | 'update' | 'list'; id: string | null; expand: string[]; productsReturned: boolean }>;
+  /** Sessions de portail créées (flux de confirmation de montée en gamme). */
+  portalSessions: Array<{ id: string; configuration: string; subscription: string; item: string; price: string }>;
+  /** Abonnements simulés (montée en gamme, lot 53I). */
+  subscriptions: Map<string, SimSubscription>;
+  /** Factures simulées (prorata). */
+  invoices: Array<{ subscription: string; amount: number; lines: Array<{ description: string; amount: number }>; at: number }>;
+  /**
+   * Confirmation d'une session de portail par le client (ce que fait la
+   * page Stripe) : règles du portail appliquées — prix autorisé par la
+   * configuration, `proration_behavior` de la configuration, échéance
+   * conservée (pas de changement d'ancre de facturation).
+   */
+  confirmPortalSession: (sessionId: string, nowSec: number) => SimSubscription;
+}
+
+/** Abonnement simulé : un item, période courante, ancre de facturation. */
+export interface SimSubscription {
+  id: string;
+  customer: string;
+  status: 'active' | 'past_due' | 'canceled';
+  itemId: string;
+  priceId: string;
+  current_period_start: number;
+  current_period_end: number;
+  billing_cycle_anchor: number;
 }
 
 const permission = () => Object.assign(new Error('The provided key does not have the required permissions'), { type: 'StripePermissionError', statusCode: 403, rawType: 'permission_error' });
@@ -83,6 +130,32 @@ export function realisticStripe(initialPrices: Stripe.Price[], initialProducts: 
   const idem = new Map<string, unknown>();
   const portal = new Map<string, Stripe.BillingPortal.Configuration>();
   const portalWrites: RealisticStripe['portalWrites'] = [];
+  const portalReads: RealisticStripe['portalReads'] = [];
+  const portalSessions: RealisticStripe['portalSessions'] = [];
+  const subscriptions = new Map<string, SimSubscription>();
+  const invoices: RealisticStripe['invoices'] = [];
+  /**
+   * Réponse API d'une configuration : `products` (includable) n'est renvoyé
+   * que sur demande explicite. L'objet stocké (`portal`) reste complet : il
+   * représente l'état RÉEL chez Stripe, que les tests consultent directement.
+   */
+  const respond = (op: RealisticStripe['portalReads'][number]['op'], c: Stripe.BillingPortal.Configuration, expandList: string[] | undefined, path = PRODUCTS_EXPAND_PATH) => {
+    const expandAsked = (expandList ?? []).includes(path);
+    if (expandAsked && opts.rejectProductsExpand) {
+      throw invalid(`This property cannot be expanded (${path}).`);
+    }
+    const include = opts.legacyAlwaysIncludeProducts || (expandAsked && !opts.omitProductsEvenExpanded);
+    const out = JSON.parse(JSON.stringify(c)) as Stripe.BillingPortal.Configuration;
+    if (!include && out.features?.subscription_update) delete (out.features.subscription_update as { products?: unknown }).products;
+    portalReads.push({ op, id: c.id ?? null, expand: [...(expandList ?? [])], productsReturned: Boolean(out.features?.subscription_update && 'products' in out.features.subscription_update) });
+    return out;
+  };
+  /** Forme stockée par Stripe : `adjustable_quantity` par défaut sur chaque produit. */
+  const stored = (features: unknown) => {
+    const f = JSON.parse(JSON.stringify(features ?? {})) as { subscription_update?: { products?: Array<Record<string, unknown>> } };
+    for (const p of f.subscription_update?.products ?? []) p.adjustable_quantity ??= { enabled: false, maximum: null, minimum: 1 };
+    return f;
+  };
   let n = 0;
   /** Règles Stripe du portail : prix existants, du bon produit, une périodicité par produit. */
   const checkPortal = (op: 'create' | 'update', id: string | null, features: Stripe.BillingPortal.ConfigurationCreateParams.Features | undefined) => {
@@ -105,7 +178,12 @@ export function realisticStripe(initialPrices: Stripe.Price[], initialProducts: 
       }
       if (error) break;
     }
-    portalWrites.push({ op, id, products, accepted: !error, ...(error ? { error: error.message } : {}) });
+    const productsSent = Boolean(features?.subscription_update && 'products' in (features.subscription_update as object));
+    // Liste explicitement VIDE avec mise à jour activée : refus Stripe (aucun produit autorisé).
+    if (!error && productsSent && products.length === 0 && (features?.subscription_update as { enabled?: boolean })?.enabled) {
+      error = invalid('features[subscription_update][products]: you must specify at least one product when subscription updates are enabled.');
+    }
+    portalWrites.push({ op, id, products, accepted: !error, productsSent, ...(error ? { error: error.message } : {}) });
     calls.push(`portal.${op}`);
     if (error) throw error;
   };
@@ -186,30 +264,107 @@ export function realisticStripe(initialPrices: Stripe.Price[], initialProducts: 
         return p;
       },
     },
-    subscriptions: { list: () => ({ [Symbol.asyncIterator]: async function* () { /* aucun */ } }) },
+    subscriptions: {
+      list: () => ({ [Symbol.asyncIterator]: async function* () { /* aucun */ } }),
+      retrieve: async (id: string) => {
+        const sub = subscriptions.get(id);
+        if (!sub) throw invalid(`No such subscription: '${id}'`);
+        return { ...sub };
+      },
+      update: async (id: string) => { calls.push(`subscriptions.update:${id}`); return { ...subscriptions.get(id) }; },
+    },
     billingPortal: {
       configurations: {
-        list: () => ({ [Symbol.asyncIterator]: async function* () { for (const c of portal.values()) yield c; } }),
-        retrieve: async (id: string) => portal.get(id) ?? Promise.reject(new Error('missing')),
-        create: async (params: Stripe.BillingPortal.ConfigurationCreateParams) => {
-          if (opts.failOnce?.portal) { opts.failOnce.portal = false; throw invalid('business_profile requis'); }
-          checkPortal('create', null, params.features);
-          const c = { id: `bpc_${portal.size + 1}`, active: true, metadata: params.metadata, features: JSON.parse(JSON.stringify(params.features)) } as unknown as Stripe.BillingPortal.Configuration;
-          portal.set(c.id, c);
-          return c;
+        list: (params?: { expand?: string[] }) => {
+          const all = [...portal.values()];
+          return { [Symbol.asyncIterator]: async function* () { for (const c of all) yield respond('list', c, params?.expand, `data.${PRODUCTS_EXPAND_PATH}`); } };
         },
-        update: async (id: string, params: Stripe.BillingPortal.ConfigurationUpdateParams) => {
+        retrieve: async (id: string, params?: { expand?: string[] }) => {
+          const c = portal.get(id);
+          if (!c) throw Object.assign(new Error(`No such configuration: '${id}'`), { type: 'StripeInvalidRequestError', code: 'resource_missing', statusCode: 404 });
+          return respond('retrieve', c, params?.expand);
+        },
+        create: async (params: Stripe.BillingPortal.ConfigurationCreateParams & { expand?: string[] }) => {
+          if (opts.failOnce?.portal) { opts.failOnce.portal = false; throw invalid('business_profile requis'); }
+          if (opts.rejectProductsExpand && (params.expand ?? []).includes(PRODUCTS_EXPAND_PATH)) throw invalid(`This property cannot be expanded (${PRODUCTS_EXPAND_PATH}).`);
+          checkPortal('create', null, params.features);
+          const c = {
+            id: `bpc_${portal.size + 1}`, object: 'billing_portal.configuration', active: true, livemode: false, is_default: false,
+            metadata: params.metadata ?? {}, name: params.name ?? null, features: stored(params.features),
+          } as unknown as Stripe.BillingPortal.Configuration;
+          portal.set(c.id, c);
+          return respond('create', c, params.expand);
+        },
+        update: async (id: string, params: Stripe.BillingPortal.ConfigurationUpdateParams & { expand?: string[] }) => {
           const c = portal.get(id);
           if (!c) throw invalid(`No such configuration: '${id}'`);
+          if (opts.rejectProductsExpand && (params.expand ?? []).includes(PRODUCTS_EXPAND_PATH)) throw invalid(`This property cannot be expanded (${PRODUCTS_EXPAND_PATH}).`);
           checkPortal('update', id, params.features as Stripe.BillingPortal.ConfigurationCreateParams.Features);
-          const next = { ...c, features: { ...c.features, ...JSON.parse(JSON.stringify(params.features ?? {})) } } as unknown as Stripe.BillingPortal.Configuration;
+          // Fusion par sous-objet (comportement Stripe : un champ non envoyé est conservé).
+          const sent = stored(params.features) as Record<string, Record<string, unknown>>;
+          const features = JSON.parse(JSON.stringify(c.features)) as Record<string, Record<string, unknown>>;
+          for (const [k, v] of Object.entries(sent)) features[k] = { ...(features[k] ?? {}), ...v };
+          const next = { ...c, features } as unknown as Stripe.BillingPortal.Configuration;
           portal.set(id, next);
-          return next;
+          return respond('update', next, params.expand);
+        },
+      },
+      sessions: {
+        /**
+         * Flux `subscription_update_confirm` : Stripe refuse un prix cible non
+         * autorisé par la configuration (produit + prix) ou une configuration
+         * dont la mise à jour est désactivée.
+         */
+        create: async (params: Stripe.BillingPortal.SessionCreateParams) => {
+          const conf = portal.get(params.configuration ?? '');
+          if (!conf) throw invalid(`No such configuration: '${params.configuration}'`);
+          const flow = params.flow_data?.subscription_update_confirm;
+          if (flow) {
+            const su = conf.features.subscription_update;
+            const item = flow.items[0];
+            const target = prices.get(item.price ?? '');
+            const allowed = su.enabled && (su.products ?? []).some((p) => p.product === target?.product && p.prices.includes(item.price ?? ''));
+            if (!target || !allowed) throw invalid(`The price ${item.price} is not allowed by the portal configuration ${conf.id}.`);
+            if (!subscriptions.has(flow.subscription)) throw invalid(`No such subscription: '${flow.subscription}'`);
+            const id = `bps_${portalSessions.length + 1}`;
+            portalSessions.push({ id, configuration: conf.id, subscription: flow.subscription, item: item.id, price: item.price! });
+            calls.push('portal.session');
+            return { id, url: `https://billing.stripe.test/p/session/${id}` };
+          }
+          return { id: `bps_${portalSessions.length + 1}`, url: 'https://billing.stripe.test/p/session/x' };
         },
       },
     },
   } as unknown as Stripe;
-  return { prices, products, calls, opts, client, portal, portalWrites };
+
+  const confirmPortalSession = (sessionId: string, nowSec: number): SimSubscription => {
+    const session = portalSessions.find((x) => x.id === sessionId);
+    if (!session) throw invalid(`No such session: '${sessionId}'`);
+    const conf = portal.get(session.configuration)!;
+    const sub = subscriptions.get(session.subscription)!;
+    const from = prices.get(sub.priceId)!;
+    const to = prices.get(session.price)!;
+    // Prorata au temps restant de la période EN COURS, ancre inchangée.
+    const total = sub.current_period_end - sub.current_period_start;
+    const remaining = Math.max(0, sub.current_period_end - nowSec);
+    const credit = -Math.round(((from.unit_amount ?? 0) * remaining) / total);
+    const debit = Math.round(((to.unit_amount ?? 0) * remaining) / total);
+    const behavior = conf.features.subscription_update.proration_behavior;
+    if (behavior !== 'none') {
+      const lines = [
+        { description: `Temps inutilisé sur ${from.id}`, amount: credit },
+        { description: `Temps restant sur ${to.id}`, amount: debit },
+      ];
+      // `always_invoice` : facture immédiate ; `create_prorations` : lignes en attente (prochaine facture).
+      if (behavior === 'always_invoice') invoices.push({ subscription: sub.id, amount: credit + debit, lines, at: nowSec });
+    }
+    const next = { ...sub, priceId: to.id };
+    subscriptions.set(sub.id, next);
+    calls.push(`portal.confirm:${sessionId}`);
+    return { ...next };
+  };
+
+  return { prices, products, calls, opts, client, portal, portalWrites, portalReads, portalSessions, subscriptions, invoices, confirmPortalSession };
 }
 
 // ─── Comptes types ───────────────────────────────────────────────────────────

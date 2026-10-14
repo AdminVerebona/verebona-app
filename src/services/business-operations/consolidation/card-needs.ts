@@ -38,16 +38,42 @@ export interface AmountCardNeed {
   retained: { amountMinor: number; currency: string };
 }
 
+/**
+ * (d) Lot 53 (retour PO D11) : intervention rattachée à un sinistre par la
+ * facture d'une action, facture retirée depuis, sans autre justification —
+ * « Cette intervention fait-elle toujours suite au sinistre … ? ».
+ */
+export interface DetachCardNeed {
+  operationId: number;
+  claimId: number;
+  fileId: number;
+}
+
+/**
+ * (e) Lot 53 (retour PO Q17) : bien retiré du sinistre par l'utilisateur,
+ * cité par un nouveau document — « Faut-il le rattacher à nouveau ? ».
+ */
+export interface ExclusionCardNeed {
+  operationId: number;
+  assetId: number;
+  /** Documents (non encore arbitrés) qui citent le bien ; le premier porte la carte. */
+  fileIds: number[];
+}
+
 export interface OperationCardNeeds {
   match: MatchCardNeed[];
   /** Documents dont les candidats ont été évalués : leurs cartes (a) non reconduites se ferment. */
   reviewedFiles: number[];
   parent: ParentCardNeed[];
   amount: AmountCardNeed[];
-  /** Opérations recalculées : leurs cartes (b) / (c) non reconduites se ferment. */
+  /** Lot 53 (D11). */
+  detach: DetachCardNeed[];
+  /** Lot 53 (Q17). */
+  exclusion: ExclusionCardNeed[];
+  /** Opérations recalculées : leurs cartes (b) à (e) non reconduites se ferment. */
   reviewedOperations: number[];
 }
 
 export function emptyCardNeeds(): OperationCardNeeds {
-  return { match: [], reviewedFiles: [], parent: [], amount: [], reviewedOperations: [] };
+  return { match: [], reviewedFiles: [], parent: [], amount: [], detach: [], exclusion: [], reviewedOperations: [] };
 }

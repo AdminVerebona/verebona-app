@@ -13,12 +13,53 @@ import { logDatabaseError } from '@/lib/database-diagnostic';
 import { recordAcceptance } from '@/services/legal/legal-acceptances.service';
 import { getSignupMode, SIGNUP_CLOSED_CODE, SIGNUP_CLOSED_MESSAGE } from '@/lib/prelaunch';
 import { resolveSignupInvitation, type SignupInvitation } from '@/lib/prelaunch-invitations';
+import { SIGNUP_NEUTRAL_MESSAGE } from '@/lib/auth/auth-messages';
+import { runDetached } from '@/lib/auth/anti-enumeration';
+import { scheduleSignupExistingEmail } from '@/services/auth/signup-existing-email.service';
+import { logUserActivity } from '@/lib/audit-logger';
 
 const VALID_PLAN_TYPES = ['STANDARD', 'PREMIUM', 'PREMIUM_DUO', 'PREMIUM_PRO'];
 
-function excludePasswordHash<T extends { passwordHash?: string }>(user: T): Omit<T, 'passwordHash'> {
-  const { passwordHash, ...userWithoutPassword } = user;
-  return userWithoutPassword;
+/*
+ * ══════════════════════════════════════════════════════════════════════════
+ * LOT 53A — INSCRIPTION NON ÉNUMÉRABLE (retour PO Q21 ; CDC 18 §7.1, §9.1,
+ * §40)
+ *
+ * Avant : une adresse déjà inscrite recevait « 409 Cet email est déjà
+ * utilisé » — n'importe qui pouvait tester si une adresse avait un compte
+ * Verebona. Désormais la réponse est la MÊME (201, même corps) que
+ * l'adresse soit libre ou déjà inscrite :
+ *   · libre → compte créé (non vérifié), e-mail d'activation (lien signé
+ *     24 h, usage unique, ouvre la session) ;
+ *   · déjà inscrite → RIEN n'est créé ni modifié ; e-mail « vous avez déjà
+ *     un compte » au propriétaire de la boîte (au plus un par heure) ;
+ *     journal SIGNUP_EXISTING_EMAIL.
+ * Ordre des contrôles choisi pour qu'aucun refus ne dépende de l'existence
+ * du compte : champs, CGVU, mot de passe, nom d'utilisateur, invitation —
+ * puis seulement l'adresse. Même coût bcrypt dans les deux cas ; l'e-mail
+ * part après la réponse dans les deux cas.
+ *
+ * Exception assumée : une INVITATION valide pour cette adresse (compte
+ * partagé, Duo, transmission en pré-lancement) prouve que le demandeur a reçu
+ * un secret dans cette boîte ; il est alors orienté explicitement vers la
+ * connexion (409 DUPLICATE_EMAIL) pour accepter l'invitation.
+ * ══════════════════════════════════════════════════════════════════════════
+ */
+function neutralSignupResponse() {
+  return NextResponse.json(
+    { success: true, code: 'SIGNUP_ACCEPTED', message: SIGNUP_NEUTRAL_MESSAGE },
+    { status: 201 },
+  );
+}
+
+function duplicateEmailResponse() {
+  return NextResponse.json(
+    {
+      error: 'Cet email est déjà utilisé. Veuillez vous connecter ou utiliser un autre email.',
+      code: 'DUPLICATE_EMAIL',
+    },
+    { status: 409 },
+  );
 }
 
 /*
@@ -179,9 +220,36 @@ export async function POST(request: NextRequest) {
     const sanitizedLastName = lastName.trim();
     const sanitizedUsername = username ? String(username).trim() : null;
 
-    // Libère l'email d'un compte jamais vérifié — un compte non vérifié n'est
-    // pas un vrai compte, l'email doit rester réutilisable.
-    await releaseUnverifiedEmail(sanitizedEmail);
+    // Nom d'utilisateur (facultatif) : contrôlé AVANT l'adresse, pour que son
+    // refus ne dépende jamais de l'existence d'un compte (lot 53A).
+    if (sanitizedUsername) {
+      const existingUserByUsername = await db
+        .select({ id: users.id })
+        .from(users)
+        .where(eq(users.username, sanitizedUsername))
+        .limit(1);
+
+      if (existingUserByUsername.length > 0) {
+        return NextResponse.json(
+          { error: "Ce nom d'utilisateur est déjà utilisé.", code: 'DUPLICATE_USERNAME' },
+          { status: 409 }
+        );
+      }
+    }
+
+    // Invitation : contrôlée AVANT l'adresse — son verdict ne dépend que du
+    // jeton et de l'adresse saisie, jamais de l'existence d'un compte.
+    if (inviteToken) {
+      invitation ??= await resolveSignupInvitation(inviteToken, sanitizedEmail);
+      if (!invitation.valid) {
+        const messages = {
+          INVALID_INVITE_TOKEN: 'Invalid invite token',
+          INVITE_EMAIL_MISMATCH: 'Invite token email mismatch',
+          INVITE_TOKEN_EXPIRED: 'Invite token expired',
+        } as const;
+        return NextResponse.json({ error: messages[invitation.code], code: invitation.code }, { status: 400 });
+      }
+    }
 
     // Check if a verified account already exists with this email
     //
@@ -199,30 +267,25 @@ export async function POST(request: NextRequest) {
       .limit(1);
 
     if (existingUserByEmail.length > 0) {
-      return NextResponse.json(
-        {
-          error: 'Cet email est déjà utilisé. Veuillez vous connecter ou utiliser un autre email.',
-          code: 'DUPLICATE_EMAIL',
-        },
-        { status: 409 }
-      );
+      // Invitation valide pour cette adresse : orientation explicite (voir l'en-tête).
+      if (invitation?.valid) return duplicateEmailResponse();
+      // Même coût que la création (bcrypt), aucune écriture, e-mail après la réponse.
+      await bcrypt.hash(password, 10);
+      const existingId = existingUserByEmail[0].id;
+      scheduleSignupExistingEmail(existingId);
+      void logUserActivity({
+        activityType: 'SIGNUP_EXISTING_EMAIL',
+        userId: existingId,
+        userEmail: sanitizedEmail,
+        details: { accountCreated: false, emailScheduled: true },
+        request,
+      });
+      return neutralSignupResponse();
     }
 
-    // Check if user already exists with this username (if provided)
-    if (sanitizedUsername) {
-      const existingUserByUsername = await db
-        .select({ id: users.id })
-        .from(users)
-        .where(eq(users.username, sanitizedUsername))
-        .limit(1);
-
-      if (existingUserByUsername.length > 0) {
-        return NextResponse.json(
-          { error: "Ce nom d'utilisateur est déjà utilisé.", code: 'DUPLICATE_USERNAME' },
-          { status: 409 }
-        );
-      }
-    }
+    // Libère l'email d'un compte jamais vérifié — un compte non vérifié n'est
+    // pas un vrai compte, l'email doit rester réutilisable.
+    await releaseUnverifiedEmail(sanitizedEmail);
 
     const now = new Date();
 
@@ -234,19 +297,8 @@ export async function POST(request: NextRequest) {
       | (typeof accountMemberships.$inferSelect)
       | undefined;
 
-    if (inviteToken) {
-      invitation ??= await resolveSignupInvitation(inviteToken, sanitizedEmail);
-      if (!invitation.valid) {
-        const messages = {
-          INVALID_INVITE_TOKEN: 'Invalid invite token',
-          INVITE_EMAIL_MISMATCH: 'Invite token email mismatch',
-          INVITE_TOKEN_EXPIRED: 'Invite token expired',
-        } as const;
-        return NextResponse.json({ error: messages[invitation.code], code: invitation.code }, { status: 400 });
-      }
-      if (invitation.kind === 'account') {
-        pendingMembership = invitation.membership;
-      }
+    if (invitation?.valid && invitation.kind === 'account') {
+      pendingMembership = invitation.membership;
     }
 
     // Hash password
@@ -395,21 +447,24 @@ export async function POST(request: NextRequest) {
       const plan = signupPlan && ['standard', 'premium', 'premium_duo', 'premium_pro'].includes(signupPlan) ? signupPlan : null;
       const verificationUrl = buildEmailVerificationUrl(baseUrl, { id: newUser.id, email: newUser.email }, plan);
 
-      await emailService
-        .send({
+      // Après la réponse (lot 53A) : la réponse ne doit pas durer plus
+      // longtemps quand un compte est créé que lorsque l'adresse est déjà
+      // inscrite (e-mail « compte existant », lui aussi après la réponse).
+      const verificationTo = { id: newUser.id, email: newUser.email, firstName: newUser.firstName };
+      runDetached('e-mail de vérification (inscription)', async () => {
+        const res = await emailService.send({
           templateCode: 'EMAIL_VERIFICATION',
-          to: newUser.email,
+          to: verificationTo.email,
           variables: {
-            firstName: newUser.firstName,
+            firstName: verificationTo.firstName,
             verificationUrl,
           },
-          userId: newUser.id,
-        })
-        .catch((err) => {
-          console.error('Failed to send verification email:', err);
+          userId: verificationTo.id,
         });
+        if (res && res.success === false) console.error('Failed to send verification email:', res.error ?? 'unknown');
+      });
 
-      return NextResponse.json(excludePasswordHash(newUser), { status: 201 });
+      return neutralSignupResponse();
     } catch (dbError: any) {
       console.error('Database error during user creation:', dbError);
 
@@ -422,13 +477,9 @@ export async function POST(request: NextRequest) {
 
       if (isConstraintError) {
         if (errorMessage.includes('email') || errorMessage.includes('users.email')) {
-          return NextResponse.json(
-            {
-              error: 'Cet email est déjà utilisé. Veuillez vous connecter ou utiliser un autre email.',
-              code: 'DUPLICATE_EMAIL',
-            },
-            { status: 409 }
-          );
+          // Inscription concurrente sur la même adresse : même réponse neutre
+          // (lot 53A), sauf invitation valide (orientation explicite).
+          return invitation?.valid ? duplicateEmailResponse() : neutralSignupResponse();
         }
 
         if (errorMessage.includes('username') || errorMessage.includes('users.username')) {

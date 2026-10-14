@@ -181,13 +181,26 @@ describe('C3 — renvoi de l’e-mail de vérification', () => {
 });
 
 describe('C4 — limiteur au niveau de la connexion', () => {
-  it('C4-20 cinq échecs sur un compte : la 6e tentative est refusée (429) même avec le bon mot de passe et depuis une autre IP', async () => {
-    for (let i = 0; i < 5; i++) {
+  // Lot 53A (retour PO D1) : l'adresse n'est plus verrouillée pour TOUS après
+  // 5 échecs ; seuls les appareils NON reconnus sont mis en pause après 10
+  // échecs toutes IP confondues — l'appareil reconnu du titulaire passe.
+  it('PO-D1-R01 attaque distribuée (10 IP) : appareil non reconnu refusé (429, 15 min) même avec le bon mot de passe ; appareil reconnu du titulaire accepté', async () => {
+    const premiere = await login(post('/api/auth/login', { email: 'actif@x.fr', password: PASSWORD }, '81.3.1.1'));
+    expect(premiere.status).toBe(200);
+    const appareil = premiere.cookies.get('vb_device')?.value;
+    expect(appareil).toMatch(/^d1\./);
+    for (let i = 0; i < 10; i++) {
       expect((await login(post('/api/auth/login', { email: 'actif@x.fr', password: 'Faux' }, `81.3.0.${i}`))).status).toBe(401);
     }
     const r = await login(post('/api/auth/login', { email: 'actif@x.fr', password: PASSWORD }, '81.3.0.99'));
     expect(r.status).toBe(429);
     expect(r.headers.get('retry-after')).toBe('900');
+    const titulaire = new NextRequest('http://localhost:3000/api/auth/login', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-forwarded-for': '81.3.0.98', cookie: `vb_device=${appareil}` },
+      body: JSON.stringify({ email: 'actif@x.fr', password: PASSWORD }),
+    });
+    expect((await login(titulaire)).status).toBe(200);
   });
 
   it('C4-21 une connexion réussie d’un autre compte depuis la même IP ne remet pas les compteurs à zéro', async () => {
@@ -198,8 +211,8 @@ describe('C4 — limiteur au niveau de la connexion', () => {
     expect((await login(post('/api/auth/login', { email: 'actif@x.fr', password: PASSWORD }))).status).toBe(429);
   });
 
-  it('C4-22 le verrou d’une adresse inconnue est indiscernable de celui d’un compte existant (pas d’énumération)', async () => {
-    for (let i = 0; i < 5; i++) {
+  it('C4-22 / PO-D1-R02 la pause d’une adresse inconnue est indiscernable de celle d’un compte existant (pas d’énumération)', async () => {
+    for (let i = 0; i < 10; i++) {
       await login(post('/api/auth/login', { email: 'personne@x.fr', password: 'Faux' }, `81.4.0.${i}`));
       await login(post('/api/auth/login', { email: 'actif@x.fr', password: 'Faux' }, `81.4.1.${i}`));
     }

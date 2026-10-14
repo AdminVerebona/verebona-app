@@ -20,7 +20,8 @@ import { explainCatalogReason, explainCoupleReason } from '@/lib/billing/catalog
 import { allowedCatalogOrigins, refusedOrigins } from '@/lib/billing/catalog-cors';
 import { LEGACY_PRICE_VARS } from './legacy-price-env';
 import { listCampaign } from './price-revaluation.service';
-import { PORTAL_INTERVAL_RECOVERY, RECOVERY_MAX_ATTEMPTS, recoveryTargets } from './catalog-recovery.service';
+import { CATALOG_RECOVERIES, RECOVERY_MAX_ATTEMPTS, recoveryTargetsFor } from './catalog-recovery.service';
+import { recoveryDisplay, recoveryStepLabel } from '@/lib/billing/catalog-recovery-display';
 
 type Row = Record<string, unknown>;
 async function q<T = Row>(text: string, params: unknown[] = []): Promise<T[]> {
@@ -94,25 +95,48 @@ export async function getCatalogDiagnostic() {
   const expectedMode = getExpectedStripeMode();
   const writeBlocker = !ctx.mode ? null : !expectedMode ? 'EXPECTED_MODE_MISSING' : expectedMode !== ctx.mode ? 'MODE_MISMATCH' : null;
   const publicationReason = writeBlocker
-    ?? (autoPublish.reason === 'BACKFILL_PENDING' || autoPublish.reason === 'WAITING_INSTANCES' ? autoPublish.reason : null);
+    ?? (autoPublish.reason === 'BACKFILL_PENDING' || autoPublish.reason === 'WAITING_INSTANCES' || autoPublish.reason === 'PREVIOUS_FAILURE' ? autoPublish.reason : null);
 
   const legacyVars = LEGACY_PRICE_VARS.map((v) => ({ name: v.name, present: Boolean(process.env[v.name]?.trim()) }));
-  // Lot 49A — rattrapage ciblé : en attente, en cours, résultat, erreur exploitable.
-  const recoveryRow = ctx.mode ? await d.store.getRecovery(ctx.catalogContext, PORTAL_INTERVAL_RECOVERY.key).catch(() => null) : null;
-  const recoveryTarget = recoveryTargets({
-    catalogContext: ctx.catalogContext, mode: ctx.mode, publicationState: state?.publicationState ?? null,
-    publicationError: state?.publicationError ?? null, publicationRunId: state?.publicationRunId ?? null,
-  }, recoveryRow);
-  const recovery = {
-    key: PORTAL_INTERVAL_RECOVERY.key,
-    maxAttempts: RECOVERY_MAX_ATTEMPTS,
-    /** Incident ciblé détecté, rattrapage pas encore commencé : prochain passage de `stripe-catalog-publish`. */
-    pending: !recoveryRow && recoveryTarget.targeted,
-    row: recoveryRow ? {
-      status: recoveryRow.status, runId: recoveryRow.runId, attempts: recoveryRow.attempts, lastError: recoveryRow.lastError,
-      lastAttemptAt: recoveryRow.lastAttemptAt?.toISOString() ?? null, nextAttemptAt: recoveryRow.nextAttemptAt?.toISOString() ?? null,
-      completedAt: recoveryRow.completedAt?.toISOString() ?? null, report: recoveryRow.report,
-    } : null,
+  // Lot 49A / 53I — rattrapages ciblés : statut distinct (en cours, en
+  // attente, échec définitif, terminé), étape bloquante, erreur, tentatives,
+  // contrôles. La reprise « courante » est la plus récente engagée ou prévue.
+  const allRows = ctx.mode ? await d.store.listRecoveries(ctx.catalogContext).catch(() => []) : [];
+  const recoveries = CATALOG_RECOVERIES.map((def) => {
+    const row = allRows.find((r) => r.recoveryKey === def.key) ?? null;
+    const target = recoveryTargetsFor(def, {
+      catalogContext: ctx.catalogContext, mode: ctx.mode, publicationState: state?.publicationState ?? null,
+      publicationError: state?.publicationError ?? null, publicationRunId: state?.publicationRunId ?? null,
+    }, row, allRows.filter((r) => r.recoveryKey !== def.key), now);
+    const pending = !row && target.targeted;
+    const report = (row?.report ?? null) as Record<string, unknown> | null;
+    const blocking = (report?.blocking ?? null) as { step?: string; error?: string } | null;
+    const step = blocking?.step ?? (typeof report?.step === 'string' ? report.step : null);
+    return {
+      key: def.key,
+      label: def.label,
+      maxAttempts: RECOVERY_MAX_ATTEMPTS,
+      /** Incident ciblé détecté, rattrapage pas encore commencé : prochain passage de `stripe-catalog-publish`. */
+      pending,
+      display: recoveryDisplay(row ? { status: row.status, nextAttemptAt: row.nextAttemptAt?.toISOString() ?? null } : null, pending),
+      step: step ? { code: step, label: recoveryStepLabel(step) } : null,
+      row: row ? {
+        status: row.status, runId: row.runId, attempts: row.attempts, lastError: row.lastError,
+        lastAttemptAt: row.lastAttemptAt?.toISOString() ?? null, nextAttemptAt: row.nextAttemptAt?.toISOString() ?? null,
+        completedAt: row.completedAt?.toISOString() ?? null, report: row.report,
+      } : null,
+    };
+  });
+  const engaged = recoveries.filter((r) => r.row || r.pending);
+  const recovery = engaged[engaged.length - 1] ?? recoveries[0];
+  // Lot 53I — publication « intégralement réussie » seulement si le portail
+  // final et les contrôles après activation sont conformes.
+  const lastReport = (lastRun?.report ?? null) as { complete?: boolean; portalFinal?: { ok: boolean; error?: string }; checks?: { ok?: boolean; issues?: string[] } } | null;
+  const publication = {
+    runId: lastRun?.id ?? null,
+    complete: lastRun?.kind === 'publish' && lastRun.state === 'ACTIVE' ? (lastReport?.complete ?? lastReport?.checks?.ok ?? null) : null,
+    portalFinal: lastReport?.portalFinal ?? null,
+    issues: lastReport?.checks?.issues ?? [],
   };
   const campaign = ctx.mode ? await listCampaign(null, 200).catch(() => ({ revisionId: null, counts: {}, rows: [] })) : { revisionId: null, counts: {}, rows: [] };
 
@@ -181,5 +205,7 @@ export async function getCatalogDiagnostic() {
     legacyVarsRemovable: Boolean(state?.backfillCompletedAt) && subscriptions.unknown === 0,
     campaign,
     recovery,
+    recoveries,
+    publication,
   };
 }

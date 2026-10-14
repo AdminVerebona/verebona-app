@@ -351,7 +351,7 @@ export async function getDocumentFeed(query: DocumentFeedQuery): Promise<FeedRes
         ...keyColumns,
       })
       .from(assetFiles)
-      .leftJoin(assets, eq(assetFiles.assetId, assets.id))
+      .leftJoin(assets, and(eq(assetFiles.assetId, assets.id), eq(assets.accountId, assetFiles.accountId)))
       .where(and(...where))
       .orderBy(...components.map((c) => sql`${KEY_SQL[c.key].expr} ${sql.raw(c.dir === 'asc' ? 'ASC' : 'DESC')} NULLS LAST`))
       .limit(query.limit + 1),
@@ -428,7 +428,7 @@ async function loadMeta(query: DocumentFeedQuery, scope: SQL[]): Promise<FeedMet
         count: sql<number>`COUNT(*)::int`,
       })
       .from(assetFiles)
-      .leftJoin(assets, eq(assetFiles.assetId, assets.id))
+      .leftJoin(assets, and(eq(assetFiles.assetId, assets.id), eq(assets.accountId, assetFiles.accountId)))
       .where(and(...scope))
       .groupBy(assetFiles.assetId, assets.name, sql`3`, assetFiles.rubricCode, assetFiles.documentTypeCode),
     loadVisibilityContext(query.accountId, query.assetIds),

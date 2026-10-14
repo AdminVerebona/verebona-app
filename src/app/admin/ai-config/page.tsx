@@ -841,7 +841,7 @@ export default function AiConfigPage() {
             )}
             {(current.retiredTreatments?.length ?? 0) > 0 && (
               <span data-testid="retired-treatments-note" className="text-xs text-[color:var(--text-muted)] break-words">
-                Version historique : contient {current.retiredTreatments!.join(', ')} (traitement supprimé), conservé pour l’audit et jamais appliqué.
+                Version historique : contient {current.retiredTreatments!.join(', ')} (traitement retiré), conservé pour l’audit et jamais appliqué.
               </span>
             )}
             <span className="flex-1" />

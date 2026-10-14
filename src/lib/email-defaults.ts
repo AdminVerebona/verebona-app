@@ -128,6 +128,32 @@ L'équipe Verebona`,
     placeholders: JSON.stringify(['firstName', 'incidentDate', 'loginUrl', 'forgotPasswordUrl'])
   },
 
+  // Lot 53A (retour PO Q21, CDC 18 §7.1) : inscription non énumérable — une
+  // adresse déjà inscrite reçoit cet e-mail au lieu d'un refus « adresse déjà
+  // utilisée ». Gabarit inséré par la migration 0342, modifiable dans le BO.
+  SIGNUP_EXISTING_ACCOUNT: {
+    subject: 'Verebona : vous avez déjà un compte',
+    body: `Bonjour {{firstName}},
+
+Une demande de création de compte Verebona a été faite avec votre adresse e-mail le {{requestDate}}.
+
+Vous avez déjà un compte Verebona avec cette adresse : aucun nouveau compte n'a été créé et votre compte n'a pas été modifié.
+
+Pour vous connecter :
+
+{{loginUrl}}
+
+Mot de passe oublié ? Choisissez-en un nouveau ici :
+
+{{forgotPasswordUrl}}
+
+Si vous n'êtes pas à l'origine de cette demande, ignorez simplement ce message.
+
+Cordialement,
+L'équipe Verebona`,
+    placeholders: JSON.stringify(['firstName', 'requestDate', 'loginUrl', 'forgotPasswordUrl'])
+  },
+
   DUO_INVITATION: {
     subject: '{{ownerFirstName}} vous invite à rejoindre son espace Verebona DUO',
     body: `<!DOCTYPE html>

@@ -150,7 +150,8 @@ describe('C6.1 — contrat OPERATION_MATCH et empreinte de contexte (NFR-OP-005)
     expect(m3Due({ m3Fingerprint: 'F', m3: { status: 'DEFERRED', fingerprint: 'F', at: '', retryAfter: '2026-10-12T09:00:00Z' } }, now, 'v1')).toBe(true);
     expect(m3Due({ m3Fingerprint: 'F', m3: { status: 'PROMPT_UNAVAILABLE', fingerprint: 'F', at: '', promptVersion: 'v1' } }, now, 'v1')).toBe(false);
     expect(m3Due({ m3Fingerprint: 'F', m3: { status: 'PROMPT_UNAVAILABLE', fingerprint: 'F', at: '', promptVersion: 'v1' } }, now, 'v2')).toBe(true);
-    expect(m3Due({ m3Fingerprint: 'F', m3: { status: 'TOO_MANY_CANDIDATES', fingerprint: 'F', at: '' } }, now, 'v1')).toBe(false);
+    // Lot 53 (PO-D7) : une trace « trop de candidats » du lot 42 est reprise (examen progressif).
+    expect(m3Due({ m3Fingerprint: 'F', m3: { status: 'TOO_MANY_CANDIDATES', fingerprint: 'F', at: '' } }, now, 'v1')).toBe(true);
     expect(m3Due(null, now, 'v1')).toBe(false);
   });
 });

@@ -5,6 +5,9 @@
  * informations complémentaires (dommages, actions, échanges, éléments à
  * assurer). Les identifiants proposés viennent de `GET …/additional-infos
  * ?include=references` : ce sont ceux que le moteur de dossiers retrouvera.
+ * Lot 53 (Q18) : dans un sinistre multi-biens, les éléments des autres biens
+ * concernés sont proposés aussi, préfixés du nom de leur bien (même
+ * composant sur ordinateur et sur mobile).
  *
  * Une pièce sensible peut être liée : elle n'apparaîtra dans le PDF que si
  * elle est retenue à la préparation du dossier — le sélecteur le signale.
@@ -67,8 +70,8 @@ export function AdditionalInfosRefPicker({ kind, value, onChange, documents, pho
   const [query, setQuery] = useState('');
   const isPhoto = kind === 'photos';
   const options = useMemo(() => (isPhoto
-    ? photos.map((p) => ({ id: p.id, title: p.caption || `Photo du ${frDate(p.date)}` || 'Photo', meta: frDate(p.date), fileId: p.fileId, flag: null as string | null }))
-    : documents.filter((d) => !d.occupantData).map((d) => ({ id: d.id, title: d.title, meta: [d.typeLabel, frDate(d.date)].filter(Boolean).join(' · '), fileId: null, flag: d.sensitive ? 'Sensible : incluse seulement si vous la cochez' : null }))),
+    ? photos.map((p) => ({ id: p.id, title: p.caption || `Photo du ${frDate(p.date)}` || 'Photo', meta: [p.assetName, frDate(p.date)].filter(Boolean).join(' · '), fileId: p.fileId, flag: null as string | null }))
+    : documents.filter((d) => !d.occupantData).map((d) => ({ id: d.id, title: d.title, meta: [d.assetName, d.typeLabel, frDate(d.date)].filter(Boolean).join(' · '), fileId: null, flag: d.sensitive ? 'Sensible : incluse seulement si vous la cochez' : null }))),
   [isPhoto, photos, documents]);
   const thumbs = useThumbnails(isPhoto ? options.map((o) => o.fileId).filter((x): x is number => x != null) : [], open && isPhoto);
   const byId = new Map(options.map((o) => [o.id, o]));
@@ -107,7 +110,7 @@ export function AdditionalInfosRefPicker({ kind, value, onChange, documents, pho
           <div className="max-h-72 overflow-y-auto p-1" role="listbox" aria-multiselectable="true" aria-label={label}>
             {shown.length === 0 && (
               <p className="px-2 py-6 text-center text-xs text-muted-foreground">
-                {options.length === 0 ? (isPhoto ? 'Aucune photo dans la galerie de ce bien.' : 'Aucune pièce dans les documents de ce bien.') : 'Aucun résultat.'}
+                {options.length === 0 ? (isPhoto ? 'Aucune photo disponible dans la galerie.' : 'Aucune pièce disponible dans les documents.') : 'Aucun résultat.'}
               </p>
             )}
             {shown.map((o) => {

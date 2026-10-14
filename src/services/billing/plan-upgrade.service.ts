@@ -87,6 +87,8 @@ export type UpgradeResult =
         | 'PORTAL_UNAVAILABLE'
         /** Lot 49A : portail en cours d'alignement (publication) — réessayer. */
         | 'PORTAL_UPDATING'
+        /** Lot 53I : publication en échec durable — montée en gamme suspendue jusqu'à la reprise. */
+        | 'PORTAL_BLOCKED'
         | BillingCatalogError['code'];
       offer?: PublicOffer;
     };
@@ -207,7 +209,9 @@ export async function startImmediateUpgrade(params: {
     configuration = await ensureUpgradePortalConfiguration();
   } catch (error) {
     console.error('[upgrade] portail indisponible :', (error as Error).message);
-    if ((error as { code?: string })?.code === 'PORTAL_UPDATING') return { ok: false, reason: 'PORTAL_UPDATING' };
+    const code = (error as { code?: string })?.code;
+    if (code === 'PORTAL_UPDATING') return { ok: false, reason: 'PORTAL_UPDATING' };
+    if (code === 'PORTAL_BLOCKED') return { ok: false, reason: 'PORTAL_BLOCKED' };
     return { ok: false, reason: 'PORTAL_UNAVAILABLE' };
   }
 

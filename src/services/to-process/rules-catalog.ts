@@ -59,7 +59,8 @@ export type RuleProducer =
   | 'T4_PROPOSAL'
   | 'MIGRATION_REVIEW'
   | 'T3_ASSET_CONFLICT'
-  | 'T3_OPERATIONS';
+  | 'T3_OPERATIONS'
+  | 'T4_PROJECTION_MATCH';
 
 /** Où vit chaque producteur, et par quelle(s) fonction(s) il est appelé. */
 export const RULE_PRODUCERS: Readonly<Record<RuleProducer, {
@@ -83,6 +84,9 @@ export const RULE_PRODUCERS: Readonly<Record<RuleProducer, {
   // Lot 42 : ambiguïtés de la consolidation T3 des Opérations (appelé après
   // chaque passage par `business-operations/consolidation/consolidator.ts`).
   T3_OPERATIONS: { module: 'src/services/to-process/operation-cards.ts', entries: ['syncOperationCards'], generic: false },
+  // Lot 53 (retour PO D14) : rapprochement agenda incertain de la projection
+  // des Opérations (appelé par `business-operations/agenda-projection/service.ts`).
+  T4_PROJECTION_MATCH: { module: 'src/services/to-process/agenda-projection-cards.ts', entries: ['syncAgendaProjectionCards'], generic: false },
 };
 
 export interface ProcessingRule {
@@ -488,6 +492,50 @@ export const PROCESSING_RULES: readonly ProcessingRule[] = [
     question: 'Ces documents indiquent des montants différents : lequel est le bon ?',
     businessImpact: 68,
     producer: 'T3_OPERATIONS',
+  },
+  {
+    // (d) Lot 53 (retour PO D11) : facture retirée d'une action du sinistre,
+    // rattachement de l'intervention sans autre justification — garder ou
+    // dissocier (jamais automatique).
+    code: 'OPERATION-CLAIM-DETACH',
+    targetType: 'DOCUMENT',
+    relationKey: 'operationDetach',
+    arbitratePriority: 'DO_NEXT',
+    completePriority: null,
+    allowNotApplicable: false,
+    question: 'Cette intervention fait-elle toujours suite à ce sinistre ?',
+    businessImpact: 58,
+    producer: 'T3_OPERATIONS',
+  },
+  {
+    // (e) Lot 53 (retour PO Q17) : bien retiré du sinistre par l'utilisateur,
+    // cité par un nouveau document — jamais réintégré automatiquement.
+    code: 'OPERATION-CLAIM-ASSET',
+    targetType: 'DOCUMENT',
+    relationKey: 'operationAssetExclusion',
+    arbitratePriority: 'DO_NEXT',
+    completePriority: null,
+    allowNotApplicable: false,
+    question: 'Ce document mentionne un bien retiré du sinistre : faut-il l’y rattacher à nouveau ?',
+    businessImpact: 58,
+    producer: 'T3_OPERATIONS',
+  },
+
+  // ── Lot 53 (retour PO D14) : projection d'agenda incertaine ─────────────
+  // La projection d'une réalité consolidée hésite entre des événements
+  // existants : ni lien, ni doublon, une question avec les candidats et leur
+  // provenance (relation `agendaProjectionMatch:<id>:<clé>`, sur le bien).
+  // Voir `agenda-projection-cards.ts`.
+  {
+    code: 'AGENDA-PROJECTION-MATCH',
+    targetType: 'ASSET',
+    relationKey: 'agendaProjectionMatch',
+    arbitratePriority: 'DO_NEXT',
+    completePriority: null,
+    allowNotApplicable: false,
+    question: 'Cet événement de l’agenda correspond-il à cette intervention ?',
+    businessImpact: 55,
+    producer: 'T4_PROJECTION_MATCH',
   },
 
   // ── CDC 15 D-15 (lot 14) : statut du bien après vente ou sinistre ───────

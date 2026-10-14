@@ -36,6 +36,8 @@ export interface StoredM3 {
   at: string;
   /** DEFERRED / ERROR : pas de nouvel essai avant cette date. */
   retryAfter?: string;
+  /** Lot 53 (D7) : date du report par un plafond d'appels (`at` = dernière tentative réelle, vide si aucune). */
+  deferredAt?: string;
   /** Motif d'un report ou d'une erreur. */
   detail?: string;
   warnings?: string[];

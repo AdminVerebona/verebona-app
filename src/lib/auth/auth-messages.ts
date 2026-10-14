@@ -19,3 +19,12 @@ export const FORGOT_PASSWORD_NEUTRAL_MESSAGE =
 /** CDC 18 §11.2 : réponse neutre du renvoi de l'e-mail de vérification. */
 export const RESEND_VERIFICATION_NEUTRAL_MESSAGE =
   'Si un compte non vérifié correspond à cette adresse, un nouveau lien de vérification vient d’être envoyé.';
+
+/**
+ * Lot 53A (retour PO Q21, CDC 18 §7.1 / §9.1) : réponse NEUTRE de
+ * l'inscription — identique que l'adresse soit libre (compte créé, e-mail
+ * d'activation) ou déjà inscrite (aucun compte créé, e-mail « vous avez déjà
+ * un compte »).
+ */
+export const SIGNUP_NEUTRAL_MESSAGE =
+  'Vérifiez votre boîte mail : nous vous avons envoyé un e-mail pour finaliser votre inscription.';

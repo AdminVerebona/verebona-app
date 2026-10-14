@@ -49,7 +49,8 @@ export function AssetClaimsSection({ assetId, category, readOnly = false, defaul
   const [data, setData] = useState<ListResponse | null>(null);
   const [loadError, setLoadError] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [selected, setSelected] = useState<number | null>(null);
+  /** Sinistre ouvert ; 'draft' : brouillon d'« Ajouter un sinistre » (lot 53, D10 — rien en base avant la première saisie). */
+  const [selected, setSelected] = useState<number | 'draft' | null>(null);
   const [message, setMessage] = useState<string | null>(null);
 
   const load = useCallback(async () => {
@@ -82,14 +83,12 @@ export function AssetClaimsSection({ assetId, category, readOnly = false, defaul
     else setMessage('L’enregistrement a échoué. Réessayez dans un instant.');
   }, [signalerRefus]);
 
+  // Lot 53 (retour PO D10) : « Ajouter un sinistre » ouvre un brouillon, sans
+  // aucune écriture ; le sinistre est créé à la première saisie effective.
   const add = useCallback(() => garder(() => {
-    setBusy(true);
     setMessage(null);
-    apiClient.post<ClaimResponse>(`/api/assets/${assetId}/claims`, {})
-      .then(async (c) => { await load(); setSelected(c.id); })
-      .catch(refus)
-      .finally(() => setBusy(false));
-  }), [garder, assetId, load, refus]);
+    setSelected('draft');
+  }), [garder]);
 
   const resume = useCallback(() => garder(() => {
     setBusy(true);
@@ -132,7 +131,8 @@ export function AssetClaimsSection({ assetId, category, readOnly = false, defaul
             <ClaimEditor
               key={selected}
               assetId={assetId}
-              claimId={selected}
+              claimId={selected === 'draft' ? null : selected}
+              onCreated={() => { void load(); }}
               category={category}
               assetOptions={data.assetOptions}
               readOnly={readOnly}

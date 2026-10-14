@@ -58,7 +58,7 @@ scenario('L41-O3a', 'Consolidation T3 déterministe : candidats T1 → Opératio
     await t1(compte, f.id, candidats);
     return f.id;
   }
-  const passer = async (compte: AccountRow, opts: { today?: string; fileIds?: number[]; reevaluateHolds?: boolean } = {}) =>
+  const passer = async (compte: AccountRow, opts: { today?: string; fileIds?: number[]; reevaluateHolds?: boolean; operationMatch?: false } = {}) =>
     (await consolidator()).consolidateAccountOperations(compte.id, { today: AUJOURDHUI, ...opts });
   const operations = (compte: AccountRow) => sql<Op[]>`
     SELECT id::int AS id, type_code, status, provider, planned_date::text AS planned_date, start_date::text AS start_date,
@@ -248,13 +248,19 @@ scenario('L41-O3a', 'Consolidation T3 déterministe : candidats T1 → Opératio
     expect(await coutNet(op.id)).toBe(900000);
   });
 
-  it('F-033 / C7-02b — deux factures distinctes du même prestataire (numéros différents) : deux Opérations', async () => {
+  it('F-033 / C7-02b / PO-D6-05 — deux factures distinctes du même prestataire : deux Opérations si les travaux diffèrent ; mêmes travaux → plus jamais deux d\'office (M3)', async () => {
     const compte = await make.account();
     const clio = await make.asset(compte);
     await document(compte, clio.id, [cand({ targetHints: [cible(clio.id)], businessReferences: [{ kind: 'INVOICE', value: 'FA-1' }], temporalHints: { realizedDate: '2026-06-02' }, financialHints: [fh('REALIZED_COST', 10000)] })]);
-    await document(compte, clio.id, [cand({ targetHints: [cible(clio.id)], businessReferences: [{ kind: 'INVOICE', value: 'FA-2' }], temporalHints: { realizedDate: '2026-06-02' }, financialHints: [fh('REALIZED_COST', 10000)] })]);
-    await passer(compte);
+    // Lot 53 (retour PO D6) : autres travaux, autre numéro → deux interventions (aucun doute).
+    await document(compte, clio.id, [cand({ summary: 'Remplacement des pneus avant', targetHints: [cible(clio.id)], businessReferences: [{ kind: 'INVOICE', value: 'FA-2' }], temporalHints: { realizedDate: '2026-06-02' }, financialHints: [fh('REALIZED_COST', 32000)] })]);
+    await passer(compte, { operationMatch: false });
     expect(await operations(compte)).toHaveLength(2);
+    // Mêmes travaux, autre numéro : deux factures peuvent porter sur une même intervention → examen M3, aucune création d'office.
+    const meme = await document(compte, clio.id, [cand({ targetHints: [cible(clio.id)], businessReferences: [{ kind: 'INVOICE', value: 'FA-3' }], temporalHints: { realizedDate: '2026-06-04' }, financialHints: [fh('REALIZED_COST', 4000)] })]);
+    await passer(compte, { operationMatch: false });
+    expect(await operations(compte)).toHaveLength(2);
+    expect((await candidats(meme))[0]).toMatchObject({ t3_outcome: 'HOLD_UNRESOLVED', t3_reason: 'M3_REQUIRED' });
   });
 
   it('F-048 / F-034 / C5-06 / C5-07 — ambiguïtés : deux Opérations certaines, ou faisceau sans clé (M3) → HOLD tracé, aucune troisième Opération', async () => {
@@ -264,7 +270,8 @@ scenario('L41-O3a', 'Consolidation T3 déterministe : candidats T1 → Opératio
     await document(compte, clio.id, [cand({ provider: 'Garage B', targetHints: [cible(clio.id)], businessReferences: [{ kind: 'WORK_ORDER', value: 'OT9' }], temporalHints: { realizedDate: '2026-06-03' } })]);
     await passer(compte);
     expect(await operations(compte)).toHaveLength(2);
-    const deux = await document(compte, clio.id, [cand({ targetHints: [cible(clio.id)], businessReferences: [{ kind: 'QUOTE', value: 'D1' }, { kind: 'WORK_ORDER', value: 'OT9' }] })]);
+    // Prestataire non lu (lot 53, PO-D5 : un même numéro chez un AUTRE prestataire ne serait qu'un indice).
+    const deux = await document(compte, clio.id, [cand({ provider: null, targetHints: [cible(clio.id)], businessReferences: [{ kind: 'QUOTE', value: 'D1' }, { kind: 'WORK_ORDER', value: 'OT9' }] })]);
     // Même garage, même bien, quelques jours plus tard, sans référence : seul un rapprochement sémantique (M3) trancherait.
     const faisceau = await document(compte, clio.id, [cand({ provider: 'Garage A', targetHints: [cible(clio.id)], temporalHints: { realizedDate: '2026-06-05' }, financialHints: [fh('REALIZED_COST', 5000)] })]);
     await passer(compte);

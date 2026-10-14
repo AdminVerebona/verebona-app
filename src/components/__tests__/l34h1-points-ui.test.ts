@@ -57,7 +57,7 @@ describe('point 1 — Documents récents mobile en vignettes', () => {
     expect(mobile).toContain('vb-no-scrollbar');
     expect(mobile.match(/w-\[calc\(\(100%-20px\)\/3\)\] flex-shrink-0 snap-start/g)?.length).toBe(4);
     expect(mobile).toContain('rounded-xl');
-    expect(html).toMatch(/href="\/documents"[^>]*>Tous</);
+    expect(html).toMatch(/href="\/documents"[^>]*><span class="md:hidden">Tous<\/span><span class="hidden md:inline">Tous les documents<\/span>/);
     expect(mobile).toContain('Polo · 31/07/2026');
     // Plus de lignes-cartes.
     expect(html).not.toContain('min-h-[60px] items-center gap-3 rounded-2xl');

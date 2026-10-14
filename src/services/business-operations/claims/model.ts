@@ -36,7 +36,7 @@
  */
 import {
   CLAIM_TYPE_OPTIONS, sanitizeSection,
-  type AdditionalInfoSectionData, type ListItem,
+  type AdditionalInfoSectionData, type ListItem, type NormalizedPatch,
 } from '@/lib/assets/additional-infos';
 import type { BusinessOperationStatus, ClaimFileStatus } from '../model';
 import type { ClaimActionInput, ClaimDamageInput, ClaimDetailsInput, ClaimExchangeInput, ClaimListsInput } from '../repository';
@@ -206,6 +206,25 @@ export function sectionToClaimWrite(s: AdditionalInfoSectionData): ClaimSectionW
     claimEventKey: str(s.claimEventKey),
     lists: { damages, actions, exchanges },
   };
+}
+
+// ── Brouillon (lot 53, retour PO D10) ──────────────────────────────────────
+
+/**
+ * Le correctif porte-t-il au moins UNE information du sinistre (valeur non
+ * vide, ligne de liste) ? Un sinistre n'est créé en base qu'à la première
+ * sauvegarde EFFECTIVE : « Ajouter un sinistre » ouvre un brouillon côté
+ * interface, et un brouillon vide ou abandonné ne laisse rien en base. Pure.
+ */
+export function claimPatchHasContent(patch: NormalizedPatch | null | undefined): boolean {
+  const set = patch?.set?.claim;
+  if (!set) return false;
+  return Object.values(set).some((v) => {
+    if (v === null || v === undefined) return false;
+    if (typeof v === 'string') return v.trim() !== '';
+    if (Array.isArray(v)) return v.length > 0;
+    return true;
+  });
 }
 
 // ── Statuts (C14.1) ────────────────────────────────────────────────────────

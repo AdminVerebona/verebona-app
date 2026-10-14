@@ -45,9 +45,12 @@
  */
 
 import { UserRole, PlanType, UserStatus } from '@/types/domain';
+import { ACCESS_TOKEN_TTL_S, LEGACY_ACCESS_TOKEN_MAX_S, REFRESH_TOKEN_TTL_S } from '@/lib/auth/token-lifetimes';
 
-const JWT_ACCESS_EXPIRY_S  = 2 * 60 * 60;        // 2h
-const JWT_REFRESH_EXPIRY_S = 30 * 24 * 60 * 60;  // 30d
+// Lot 53A (retour PO Q21, CDC 18 §19.2 / SESS-01) : accès 15 min (était 2 h),
+// renouvellement 30 jours glissants — source unique `auth/token-lifetimes`.
+const JWT_ACCESS_EXPIRY_S  = ACCESS_TOKEN_TTL_S;   // 15 min
+const JWT_REFRESH_EXPIRY_S = REFRESH_TOKEN_TTL_S;  // 30 j (rotation à chaque renouvellement)
 
 export type TokenUse = 'access' | 'refresh';
 
@@ -63,7 +66,7 @@ export const JWT_KID: Readonly<Record<TokenUse, string>> = { access: 'v2-access'
 export const LEGACY_TOKENS_ACCEPTED_UNTIL = Date.parse('2027-03-31T00:00:00Z');
 /** Durées maximales des jetons historiques (celles de l'ancien émetteur). */
 const LEGACY_MAX_LIFETIME_S: Readonly<Record<TokenUse, number>> = {
-  access: JWT_ACCESS_EXPIRY_S,
+  access: LEGACY_ACCESS_TOKEN_MAX_S,
   refresh: JWT_REFRESH_EXPIRY_S,
 };
 
