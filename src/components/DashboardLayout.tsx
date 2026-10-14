@@ -280,6 +280,7 @@ export function DashboardLayout({ children, user: userProp }: DashboardLayoutPro
   // garde d'écriture (`useWriteGuard`) : refus annoncé avant la saisie.
   // ══════════════════════════════════════════════════════════════════════
   const [addSheetOpen, setAddSheetOpen] = useState(false);
+  const [addAnchor, setAddAnchor] = useState<DOMRect | null>(null);
 
   // Panneaux et fenêtres montés à leur première ouverture seulement
   // (APP-PERF-05) : un composant `dynamic` MONTÉ demande son chunk dès
@@ -339,7 +340,7 @@ export function DashboardLayout({ children, user: userProp }: DashboardLayoutPro
         onToggle={toggleCollapsed}
         toProcessCount={aTraiterCount}
         footerSlot={<SidebarPlanCard trialDaysLeft={user.subscription?.trialDaysLeft ?? null} />}
-        onAdd={() => setAddSheetOpen(true)}
+        onAdd={(e) => { setAddAnchor(e.currentTarget.getBoundingClientRect()); setAddSheetOpen(true); }}
       />
 
       {/* Colonne de la page : header, espace de réponse superposé, contenu */}
@@ -428,7 +429,7 @@ export function DashboardLayout({ children, user: userProp }: DashboardLayoutPro
     {!isMobileMenuOpen && <BottomNavigation toProcessCount={aTraiterCount} />}
 
     {/* Panneau du « + Ajouter » du menu latéral (ordinateur) */}
-    {addSheetMounted && <MobileActionsSheet open={addSheetOpen} onOpenChange={setAddSheetOpen} allViewports />}
+    {addSheetMounted && <MobileActionsSheet open={addSheetOpen} onOpenChange={setAddSheetOpen} allViewports anchor={addAnchor} />}
 
     {/* Espace de réponse mobile, plein écran (§6.3) */}
     <VerebonaMobileSpace />

@@ -87,9 +87,10 @@ describe('PO20 — formulation naturelle (MASC-BLOCKED, MASC-EXT-ACTION)', () =>
 
   it('PO20 — MASC-EXT-ACTION : passée / du jour, accord du genre, repli neutre sans article deviné', () => {
     expect(deadlineExtActionText(cupra, '18 avril 2028', true))
-      .toBe('Le contrôle technique de la Cupra était prévu le 18 avril 2028. Si c’est fait, vous pouvez l’indiquer.');
+      // Lot 53 (D27) : une date à respecter (rôle par défaut) était « à prévoir », jamais « prévue » comme un rendez-vous.
+      .toBe('Le contrôle technique de la Cupra était à prévoir pour le 18 avril 2028. Si c’est fait, vous pouvez l’indiquer.');
     expect(deadlineExtActionText({ title: 'Vidange Clio', assetName: 'Clio', assetCategory: 'VEHICULE', assetSubtype: 'Voiture' }, '7 octobre 2026', false))
-      .toBe('La vidange de la Clio est prévue aujourd’hui, le 7 octobre 2026. Une fois que c’est fait, vous pouvez l’indiquer.');
+      .toBe('La vidange de la Clio est à prévoir pour aujourd’hui, le 7 octobre 2026. Une fois que c’est fait, vous pouvez l’indiquer.');
     expect(deadlineExtActionText({ title: 'Audit énergétique', assetName: 'Polo' }, '1er octobre 2026', true))
       .toBe('Votre échéance du 1er octobre 2026 concerne Polo : Audit énergétique. Si c’est fait, vous pouvez l’indiquer.');
     expect(deadlineExtActionText({ title: 'Audit', assetName: null }, '1er octobre 2026', true))

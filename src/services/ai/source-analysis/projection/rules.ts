@@ -57,6 +57,12 @@ export const PROJECTION_RULES = {
    * en `probable` — T3 en fait une proposition, jamais une application.
    */
   ACQUISITION_PRICE_LINE_COUNT_UNKNOWN: 'ACQUISITION_PRICE_LINE_COUNT_UNKNOWN',
+  /**
+   * Lot 53D (retour PO D2) : aucune devise écrite sur le document — l'euro
+   * n'est qu'une hypothèse : montant gardé en `probable` (proposition à
+   * confirmer, jamais une application automatique ni un agrégat EUR).
+   */
+  CURRENCY_PRESUMED_TO_CONFIRM: 'CURRENCY_PRESUMED_TO_CONFIRM',
   /** Prix d'acquisition tiré d'une ligne d'achat explicite du bien (ticket à plusieurs articles). */
   PURCHASE_LINE_ACQUISITION_PRICE: 'PURCHASE_LINE_ACQUISITION_PRICE',
   /** Document multi-biens : aucune règle d'acquisition déterministe (U8, T1-05). */

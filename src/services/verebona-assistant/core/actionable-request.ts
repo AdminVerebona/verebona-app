@@ -286,6 +286,10 @@ export interface TodoRow {
   document: { id: number; title: string } | null;
 }
 
+/** Bornes de lecture canonique (`canonical/actionables`) : au-delà, la page « À traiter » / l'agenda font foi. */
+export const MAX_TODO_ROWS = 200;
+export const MAX_DEADLINE_ROWS = 300;
+
 /** Échéance active (ouverte, non HISTORICAL, biens disponibles), telle que lue. */
 export interface DeadlineRow {
   id: number;
@@ -467,7 +471,8 @@ function ligne(r: ActionableResult, fmtDate: (iso: string) => string): string {
     : '';
   const quoi = `« ${r.title} »${bien}`;
   switch (r.reasonForInclusion) {
-    case 'OVERDUE': return `En retard (prévu le ${fmtDate(r.dueDate!)}${prev}) : ${quoi}${docs}`;
+    // Lot 53 (D27 / Q25) : une échéance n'est pas un rendez-vous « prévu ».
+    case 'OVERDUE': return `En retard (échéance du ${fmtDate(r.dueDate!)}${prev}) : ${quoi}${docs}`;
     case 'DUE_TODAY': return `Aujourd’hui${prev} : ${quoi}${docs}`;
     case 'DUE_IN_PERIOD': return `Le ${fmtDate(r.dueDate!)}${prev} : ${quoi}${docs}`;
     case 'PRIORITY_TODO': return `À faire d’abord : ${quoi}${docs}`;
@@ -475,16 +480,42 @@ function ligne(r: ActionableResult, fmtDate: (iso: string) => string): string {
   }
 }
 
+/**
+ * Lot 53 (retour PO Q25, cohérence D25) : vocabulaire de PRIORITÉ commun à
+ * la mascotte — jamais « urgent ». Même phrase que la bulle d'accueil.
+ */
+export const NO_PRIORITY_SUBJECT = 'Aucun sujet à traiter en priorité aujourd’hui';
+
+/**
+ * Ce que la lecture sait AU-DELÀ des résultats retenus (lot 53, Q25) : on ne
+ * dit « aucun sujet » qu'avec ce que l'état des données permet d'affirmer.
+ *   otherOpenTodos  « À traiter » ouverts lus mais non retenus (ni « À faire
+ *                   d'abord », ni datés de la période) ;
+ *   truncated       lecture bornée atteinte : la liste peut être incomplète.
+ */
+export interface ActionableReadContext {
+  otherOpenTodos?: number;
+  truncated?: boolean;
+}
+
 /** Réponse « aucun résultat » : une résolution RÉUSSIE, dite comme telle (pure). */
-export function phraseAucunActionnable(req: ActionableRequest): string {
+export function phraseAucunActionnable(req: ActionableRequest, ctx: ActionableReadContext = {}): string {
   const p = req.label;
   switch (req.family) {
     case 'OVERDUE':
       return req.allowedSourceTypes.includes('TODO')
         ? 'Rien en retard : aucune échéance ni aucun élément « À traiter » dont la date est dépassée.'
         : 'Aucune échéance en retard.';
-    case 'URGENT':
-      return 'Rien d’urgent : aucun retard, aucune échéance aujourd’hui et aucun élément « À faire d’abord ».';
+    case 'URGENT': {
+      // Q25 : formulation de priorité (plus « urgent ») ; les éléments
+      // « À traiter » non prioritaires ne sont jamais passés sous silence.
+      const autres = ctx.otherOpenTodos ?? 0;
+      const base = `${NO_PRIORITY_SUBJECT} : aucune échéance dépassée, aucune échéance aujourd’hui et aucun élément « À faire d’abord ».`;
+      const suite = autres > 0
+        ? ` ${autres === 1 ? 'Un autre élément reste' : `${autres} autres éléments restent`} à voir dans « À traiter », sans priorité immédiate.`
+        : '';
+      return `${base}${suite}${ctx.truncated ? ' (Lecture partielle : consultez « À traiter » et l’agenda pour la liste complète.)' : ''}`;
+    }
     case 'TO_PROCESS':
       return req.appliedTimeScope === 'NONE' || req.appliedTimeScope === 'TODAY'
         ? 'Vous n’avez aucun élément « À traiter » en attente.'
@@ -503,14 +534,15 @@ export function formatActionnables(
   req: ActionableRequest,
   results: ActionableResult[],
   fmtDate: (iso: string) => string,
+  ctx: ActionableReadContext = {},
 ): string {
-  if (results.length === 0) return phraseAucunActionnable(req);
+  if (results.length === 0) return phraseAucunActionnable(req, ctx);
   const n = results.length;
   const quoi = req.family === 'DEADLINES' ? `${n} ${pluriel(n, 'échéance')}`
     : req.family === 'TO_PROCESS' ? `${n} ${pluriel(n, 'élément')} « À traiter »`
       : `${n} ${pluriel(n, 'élément')}`;
   const intro = req.family === 'OVERDUE' ? `Vous avez ${quoi} en retard`
-    : req.family === 'URGENT' ? `Vous avez ${quoi} urgent${n > 1 ? 's' : ''}`
+    : req.family === 'URGENT' ? `Vous avez ${n} ${pluriel(n, 'sujet')} à traiter en priorité aujourd’hui`
       : req.family === 'TO_PROCESS' && req.appliedTimeScope === 'NONE' ? `Vous avez ${quoi} en attente`
         : req.family === 'ACTIONS' && req.appliedTimeScope === 'TODAY' ? `Pour aujourd’hui, vous avez ${quoi} à traiter`
           : `Vous avez ${quoi} ${req.label}`.trim();

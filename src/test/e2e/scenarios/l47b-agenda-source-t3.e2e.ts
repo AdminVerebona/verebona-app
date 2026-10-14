@@ -315,7 +315,8 @@ scenario('L47B', 'Agenda source T3 (TRG-012 à 014) et historique passé affich�
 
   // ══ Point 2 : historique passé affiché réalisé, sans écriture ═════════════
 
-  it('O7b-H10 — historique passé : « réalisé » (agenda, recherche, fiche, suivi, assistant) ; échéance passée : « en retard » ; AUCUN statut écrit', async () => {
+  // Lot 53 (retour PO D17) : une date passée ne prouve pas la réalisation — « à confirmer », plus « réalisé ».
+  it('O7b-H10 — historique passé : « à confirmer » (agenda, recherche, fiche, suivi, assistant), jamais en retard ; échéance passée : date échue ; AUCUN statut écrit', async () => {
     const compte = await make.account({ plan: 'premium' });
     const clio = await make.asset(compte, { category: 'VEHICULE' });
     session.currentAccountId = compte.id;
@@ -332,11 +333,11 @@ scenario('L47B', 'Agenda source T3 (TRG-012 à 014) et historique passé affich�
     });
     const { getAgendaItems, getAgendaItemById, searchAgendaItems, getHomepageAgendaItems } = await import('@/services/agenda/AgendaQueryService');
     const parId = new Map((await getAgendaItems({ accountId: compte.id, includeUndated: true })).map((i) => [i.id, i]));
-    expect(parId.get(hist.id)).toMatchObject({ effectiveStatus: 'realise', manualStatus: null });
+    expect(parId.get(hist.id)).toMatchObject({ effectiveStatus: 'a_confirmer', manualStatus: null });
     expect(parId.get(hist.id)!.attentionFlags).not.toContain('en_retard');
     expect(parId.get(echeance.id)).toMatchObject({ effectiveStatus: 'en_retard' });
-    expect((await getAgendaItemById(hist.id, compte.id))!.effectiveStatus).toBe('realise');
-    expect((await searchAgendaItems('Achat', compte.id)).find((x) => x.id === hist.id)?.effectiveStatus).toBe('realise');
+    expect((await getAgendaItemById(hist.id, compte.id))!.effectiveStatus).toBe('a_confirmer');
+    expect((await searchAgendaItems('Achat', compte.id)).find((x) => x.id === hist.id)?.effectiveStatus).toBe('a_confirmer');
     const accueil = (await getHomepageAgendaItems(compte.id)).map((i) => i.id);
     expect(accueil).not.toContain(hist.id);
     expect(accueil).toContain(echeance.id);
@@ -345,15 +346,15 @@ scenario('L47B', 'Agenda source T3 (TRG-012 à 014) et historique passé affich�
     const overview = await import('@/app/api/assets/[id]/overview/route');
     const o = await overview.GET(new NextRequest(`http://x/api/assets/${clio.id}/overview`), { params: Promise.resolve({ id: String(clio.id) }) });
     const timeline = ((await o.json()) as { timeline: Array<{ id: string; isDone: boolean; isOverdue: boolean }> }).timeline;
-    expect(timeline.find((t) => t.id === String(hist.id))).toMatchObject({ isDone: true, isOverdue: false });
+    expect(timeline.find((t) => t.id === String(hist.id))).toMatchObject({ isDone: false, isOverdue: false, toConfirm: true });
     expect(timeline.find((t) => t.id === String(echeance.id))).toMatchObject({ isDone: false, isOverdue: true });
     const followup = await import('@/app/api/assets/[id]/followup/route');
     const fr = await followup.GET(new NextRequest(`http://x/api/assets/${clio.id}/followup?includeDone=true`), { params: Promise.resolve({ id: String(clio.id) }) });
     const suivi = ((await fr.json()) as { items: Array<{ id: string; effectiveStatus: string; isOverdue: boolean }> }).items;
-    expect(suivi.find((t) => t.id === String(hist.id))).toMatchObject({ effectiveStatus: 'realise', isOverdue: false });
+    expect(suivi.find((t) => t.id === String(hist.id))).toMatchObject({ effectiveStatus: 'a_confirmer', isOverdue: false });
     expect(suivi.find((t) => t.id === String(echeance.id))).toMatchObject({ effectiveStatus: 'en_retard', isOverdue: true });
     const { getCanonicalAgendaItem } = await import('@/services/verebona-assistant/canonical/agenda');
-    expect(await getCanonicalAgendaItem(compte.id, hist.id)).toMatchObject({ status: 'completed', overdue: false });
+    expect(await getCanonicalAgendaItem(compte.id, hist.id)).toMatchObject({ status: 'not_proven', overdue: false });
     expect(await getCanonicalAgendaItem(compte.id, echeance.id)).toMatchObject({ status: 'not_proven', overdue: true });
     const { listActiveDeadlines } = await import('@/services/verebona-assistant/canonical/actionables');
     const actives = (await listActiveDeadlines(compte.id, { from: null, to: null })).map((d) => d.id);

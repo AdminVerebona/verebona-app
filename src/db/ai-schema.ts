@@ -313,7 +313,8 @@ export const documentExtractionCoverage = pgTable('document_extraction_coverage'
     .where(sql`quality_state <> 'COMPLETE'`),
   // Règle du ticket : aucune unité silencieusement ignorée (somme des états = total).
   sumChk: check('document_extraction_coverage_sum_chk', sql`${t.totalUnits} = ${t.coveredUnits} + ${t.nonInformationalUnits} + ${t.unresolvedUnits} + ${t.uncertainUnits} + ${t.failedUnits}`),
-  qualityChk: check('document_extraction_coverage_quality_chk', sql`${t.qualityState} IN ('COMPLETE', 'COMPLETE_WITH_UNRESOLVED', 'INCOMPLETE_RETRYABLE', 'INCOMPLETE_FINAL')`),
+  // Lot 53 (D19) : VERIFICATION_INCOMPLETE (migration 0354).
+  qualityChk: check('document_extraction_coverage_quality_chk', sql`${t.qualityState} IN ('COMPLETE', 'COMPLETE_WITH_UNRESOLVED', 'VERIFICATION_INCOMPLETE', 'INCOMPLETE_RETRYABLE', 'INCOMPLETE_FINAL')`),
   originChk: check('document_extraction_coverage_origin_chk', sql`${t.origin} IN ('ANALYSIS', 'BACKFILL', 'RETRY')`),
 }));
 

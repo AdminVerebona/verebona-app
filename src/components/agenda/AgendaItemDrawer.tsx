@@ -53,6 +53,7 @@ import { apiClient } from "@/lib/api-client";
 import { toast } from "sonner";
 import { assetSupportsStructuralFeatures } from "@/types/domain";
 import type { AgendaItemFull } from "@/services/agenda/AgendaQueryService";
+import { EFFECTIVE_STATUS_LABELS, type AgendaEffectiveStatus } from '@/lib/agenda/effective-status';
 import { RoomDrawer } from "@/components/assets/RoomDrawer";
 import type { RoomDrawerItem } from "@/components/assets/RoomDrawer";
 import { EquipmentDrawer } from "@/components/assets/EquipmentDrawer";
@@ -60,20 +61,18 @@ import type { EquipmentDrawerItem } from "@/components/assets/EquipmentDrawer";
 import { useWriteGuard } from '@/contexts/WriteGuardContext';
 import { displayDocumentTitle } from '@/lib/documents/document-title-rules';
 
-type EffectiveStatus = "a_venir" | "en_retard" | "realise" | "annule";
+// Lot 53 (D17) : libellés partagés des cinq états.
+type EffectiveStatus = AgendaEffectiveStatus;
 
-const STATUS_LABELS: Record<EffectiveStatus, string> = {
-  a_venir: "À venir",
-  en_retard: "En retard",
-  realise: "Réalisé",
-  annule: "Annulé",
-};
+const STATUS_LABELS: Record<EffectiveStatus, string> = EFFECTIVE_STATUS_LABELS;
 
 const STATUS_STYLES: Record<EffectiveStatus, string> = {
   a_venir:
     "bg-[rgba(59,130,246,0.15)] text-[#93c5fd] border border-[rgba(59,130,246,0.25)]",
   en_retard:
     "bg-[rgba(239,68,68,0.15)] text-[#fca5a5] border border-[rgba(239,68,68,0.25)]",
+  a_confirmer:
+    "bg-[rgba(245,158,11,0.15)] text-[#fcd34d] border border-[rgba(245,158,11,0.25)]",
   realise:
     "bg-[rgba(34,197,94,0.15)] text-[#86efac] border border-[rgba(34,197,94,0.25)]",
   annule:
@@ -82,7 +81,7 @@ const STATUS_STYLES: Record<EffectiveStatus, string> = {
 
 const ATTENTION_LABELS: Record<string, string> = {
   sans_bien: "Sans bien associé",
-  en_retard: "En retard",
+  en_retard: "Date échue",
   date_incoherente: "Date incohérente",
   donnee_distincte_a_qualifier: "Donnée à qualifier",
 };

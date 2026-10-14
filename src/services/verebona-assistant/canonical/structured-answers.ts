@@ -300,6 +300,7 @@ async function acquisitionAnswer(port: AccountDataPort, accountId: number, a: As
   if (!prix) return null;
   const sources = uniques([src ?? assetSrc(a)]);
   let answer = `Prix d’achat de ${a.name} : ${prix}${acq?.date ? ` (achat du ${formatDateFr(acq.date)})` : ''}.`;
+  answer += acquisitionSideNotes(acq);
   if (!achatSeul && port.sumQualifiedExpenses) {
     const q = await port.sumQualifiedExpenses(accountId, { assetIds: [a.id], theme: null });
     const hors = q.byTheme.filter((t) => t.theme !== 'purchase' && t.sumCents);
@@ -310,6 +311,25 @@ async function acquisitionAnswer(port: AccountDataPort, accountId: number, a: As
     }
   }
   return { strategy: 'structured.acquisition_price', answer, sources, claims: [claim('acquisition', answer, sources, 'direct')], kind: 'exact' };
+}
+
+/**
+ * Lot 53D (retour PO D9) — écarts et frais annexes de l'achat (pure, testée) :
+ * la valeur saisie reste la référence, l'écart avec un document est dit (pas
+ * effacé), les frais connus sont cités à part, jamais additionnés.
+ */
+export function acquisitionSideNotes(acq: Pick<import('./operations').AcquisitionRead, 'priceCents' | 'documentPrices' | 'fees'> | null | undefined): string {
+  if (!acq) return '';
+  const out: string[] = [];
+  const titre = (t: string | null) => (t ? ` « ${t.slice(0, 60)} »` : '');
+  for (const d of (acq.documentPrices ?? []).slice(0, 2)) {
+    out.push(`Le document${titre(d.title)} indique ${formatMinorAmount(d.amountMinor, d.currency)} : la valeur saisie sur la fiche est conservée comme référence.`);
+  }
+  const fees = acq.fees ?? [];
+  if (fees.length) {
+    out.push(`Frais annexes connus, non inclus dans ce prix : ${fees.slice(0, 3).map((f) => `${formatMinorAmount(f.amountMinor, f.currency)}${titre(f.title)}`).join(', ')}.`);
+  }
+  return out.length ? ` ${out.join(' ')}` : '';
 }
 
 /** Réponse « payé / réglé » (pure, testée) — preuves de règlement, jamais le coût présenté comme réglé. */

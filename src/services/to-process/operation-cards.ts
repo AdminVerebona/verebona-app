@@ -19,14 +19,20 @@
  *   OPERATION-AMOUNT        (c) « Ces documents indiquent des montants
  *                           différents pour la même dépense : lequel est le
  *                           bon ? » — même facture, montants différents.
+ *   OPERATION-CURRENCY      (d) lot 53D, retour PO D2 : « Aucune devise
+ *                           n'est écrite clairement pour ce montant (749,00) :
+ *                           de quelle devise s'agit-il ? » — montant gardé hors
+ *                           des totaux en euros jusqu'à la réponse.
  *
  * Chaque choix écrit une décision DURABLE puis relance la consolidation :
  *   (a) `business_operation_match_decisions` (C6.3) — CONFIRMED sur
  *       l'Opération choisie, REJECTED sur les autres propositions, ou
  *       REJECTED partout (« c'est une autre intervention ») : jamais
  *       reproposé, jamais rejoué par l'IA ;
- *   (b) (c) source `USER_ARBITRATION` de l'Opération (B19 : « persistée comme
- *       source explicite »), `locator.decision` = CLAIM_PARENT / AMOUNT.
+ *   (b) (c) (d) source `USER_ARBITRATION` de l'Opération (B19 : « persistée
+ *       comme source explicite »), `locator.decision` = CLAIM_PARENT / AMOUNT /
+ *       CURRENCY (« je ne sais pas » : devise null, montant laissé hors des
+ *       totaux, question non reposée).
  *
  * Une carte par problème (relation propre : `operationMatch:<clé du
  * candidat>`, `operationParent:<Opération>`, `operationAmount:<Opération>:
@@ -53,8 +59,10 @@ export const OPERATION_AMOUNT_RULE = 'OPERATION-AMOUNT';
 export const OPERATION_DETACH_RULE = 'OPERATION-CLAIM-DETACH';
 /** Lot 53 (retour PO Q17) : bien retiré du sinistre cité par un nouveau document — le rattacher à nouveau ? */
 export const OPERATION_ASSET_EXCLUSION_RULE = 'OPERATION-CLAIM-ASSET';
+/** Lot 53D (retour PO D2) : devise d'un montant non établie sur le document. */
+export const OPERATION_CURRENCY_RULE = 'OPERATION-CURRENCY';
 export const OPERATION_CARD_RULES = [
-  OPERATION_MATCH_RULE, OPERATION_PARENT_RULE, OPERATION_AMOUNT_RULE, OPERATION_DETACH_RULE, OPERATION_ASSET_EXCLUSION_RULE,
+  OPERATION_MATCH_RULE, OPERATION_PARENT_RULE, OPERATION_AMOUNT_RULE, OPERATION_DETACH_RULE, OPERATION_ASSET_EXCLUSION_RULE, OPERATION_CURRENCY_RULE,
 ] as const;
 
 const MATCH_RELATION = 'operationMatch';
@@ -62,12 +70,14 @@ const PARENT_RELATION = 'operationParent';
 const AMOUNT_RELATION = 'operationAmount';
 const DETACH_RELATION = 'operationDetach';
 const EXCLUSION_RELATION = 'operationAssetExclusion';
+const CURRENCY_RELATION = 'operationCurrency';
 
 export const matchRelationKey = (candidateKey: string) => `${MATCH_RELATION}:${candidateKey}`;
 export const parentRelationKey = (operationId: number) => `${PARENT_RELATION}:${operationId}`;
 export const amountRelationKey = (operationId: number, fingerprint: string) => `${AMOUNT_RELATION}:${operationId}:${fingerprint.slice(0, 16)}`;
 export const detachRelationKey = (operationId: number) => `${DETACH_RELATION}:${operationId}`;
 export const exclusionRelationKey = (operationId: number, assetId: number) => `${EXCLUSION_RELATION}:${operationId}:${assetId}`;
+export const currencyRelationKey = (operationId: number, fingerprint: string) => `${CURRENCY_RELATION}:${operationId}:${fingerprint.slice(0, 16)}`;
 
 // ── Libellés métier (purs) ──────────────────────────────────────────────────
 
@@ -89,6 +99,8 @@ export const frDate = (iso: string | null | undefined): string | null =>
   iso && /^\d{4}-\d{2}-\d{2}/.test(iso) ? iso.slice(0, 10).split('-').reverse().join('/') : null;
 
 export function formatAmount(minor: number, currency: string): string {
+  // Lot 53D (D2) : « XXX » = aucune devise établie — jamais « ¤ ».
+  if (currency === 'XXX') return `${(minor / 100).toLocaleString('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} (devise non établie)`;
   try {
     return new Intl.NumberFormat('fr-FR', { style: 'currency', currency }).format(minor / 100);
   } catch {
@@ -178,6 +190,23 @@ export function exclusionProposals(assetName: string): ActionProposal[] {
   return [
     { value: 'REINSTATE', label: `Oui, rattacher ${guillemets(assetName)} au sinistre`, confidence: 0.6 },
     { value: 'KEEP_EXCLUDED', label: 'Non, il reste hors du sinistre', confidence: 1, isCurrentValue: true },
+  ];
+}
+
+const NOMS_DEVISES: Readonly<Record<string, string>> = { EUR: 'euros', CHF: 'francs suisses', USD: 'dollars américains', GBP: 'livres sterling', CAD: 'dollars canadiens' };
+
+/** Question (d) — pure. */
+export function currencyQuestion(amountMinor: number): string {
+  const n = (amountMinor / 100).toLocaleString('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  return `Aucune devise n’est écrite clairement pour le montant ${n} de ce document : de quelle devise s’agit-il ?`;
+}
+
+/** Propositions (d) — pures. « Je ne sais pas » est l'état actuel : montant hors des totaux en euros. */
+export function currencyProposals(candidates: readonly string[]): ActionProposal[] {
+  const liste = [...new Set(candidates.filter((c) => /^[A-Z]{3}$/.test(c) && c !== 'XXX'))].slice(0, 3);
+  return [
+    ...liste.map((c, i) => ({ value: `CURRENCY:${c}`, label: `En ${NOMS_DEVISES[c] ?? c}`, confidence: 0.6 - i * 0.1 })),
+    { value: 'UNKNOWN', label: 'Je ne sais pas — le laisser hors des totaux', confidence: 1, isCurrentValue: true },
   ];
 }
 
@@ -338,6 +367,21 @@ export async function syncOperationCards(accountId: number, needs: OperationCard
       gardees.add(`E:${fileId}:${exclusionRelationKey(n.operationId, n.assetId)}`);
     }
 
+    // (d) Lot 53D (D2) : devise d'un montant non établie.
+    for (const n of needs.currency ?? []) {
+      const r = await upsertAction({
+        accountId, targetType: 'DOCUMENT', targetId: n.fileId, relationKey: currencyRelationKey(n.operationId, n.fingerprint),
+        actionKind: 'ARBITRATE', ruleCode: OPERATION_CURRENCY_RULE,
+        question: currencyQuestion(n.amountMinor), proposals: currencyProposals(n.candidates),
+        triggerContext: {
+          kind: 'operation_currency', operationId: n.operationId, fingerprint: n.fingerprint, amountMinor: n.amountMinor,
+          candidates: currencyProposals(n.candidates).flatMap((p) => (String(p.value).startsWith('CURRENCY:') ? [String(p.value).slice(9)] : [])),
+        },
+      });
+      compter(r.status);
+      gardees.add(`C:${n.fileId}:${currencyRelationKey(n.operationId, n.fingerprint)}`);
+    }
+
     // Fermeture automatique : cartes des documents / Opérations réexaminés que ce passage ne reconduit pas.
     const ouvertes = (await pgClient.unsafe(
       `SELECT id, rule_code, target_id, relation_key, (trigger_context->>'operationId')::bigint AS op
@@ -349,7 +393,7 @@ export async function syncOperationCards(accountId: number, needs: OperationCard
     )) as unknown as Array<{ id: number; rule_code: string; target_id: number; relation_key: string }>;
     const prefixe: Record<string, string> = {
       [OPERATION_MATCH_RULE]: 'M', [OPERATION_PARENT_RULE]: 'P', [OPERATION_AMOUNT_RULE]: 'A',
-      [OPERATION_DETACH_RULE]: 'D', [OPERATION_ASSET_EXCLUSION_RULE]: 'E',
+      [OPERATION_DETACH_RULE]: 'D', [OPERATION_ASSET_EXCLUSION_RULE]: 'E', [OPERATION_CURRENCY_RULE]: 'C',
     };
     const aFermer = ouvertes.filter((o) => !gardees.has(`${prefixe[o.rule_code]}:${o.target_id}:${o.relation_key}`)).map((o) => Number(o.id));
     rep.closed += await closeCards(aFermer, 'RESOLVED_BY_T3');
@@ -371,12 +415,13 @@ interface ParentCtx { kind: 'operation_parent'; operationId: number; claimIds: n
 interface AmountCtx { kind: 'operation_amount'; operationId: number; fingerprint: string; options: Array<{ amountMinor: number; currency: string }> }
 interface DetachCtx { kind: 'operation_detach'; operationId: number; claimId: number }
 interface ExclusionCtx { kind: 'operation_asset_exclusion'; operationId: number; assetId: number; fileIds: number[] }
+interface CurrencyCtx { kind: 'operation_currency'; operationId: number; fingerprint: string; amountMinor: number; candidates: string[] }
 
 /** Choix reçu (pur) ; `null` : invalide (une requête forgée ne désigne rien hors de la carte). */
 export function parseOperationCardChoice(ruleCode: string, value: unknown, ctx: unknown):
   | { kind: 'SAME'; operationId: number } | { kind: 'DISTINCT' } | { kind: 'PARENT'; operationId: number } | { kind: 'NONE' }
   | { kind: 'AMOUNT'; amountMinor: number; currency: string } | { kind: 'DETACH' }
-  | { kind: 'REINSTATE' } | { kind: 'KEEP_EXCLUDED' } | null {
+  | { kind: 'REINSTATE' } | { kind: 'KEEP_EXCLUDED' } | { kind: 'CURRENCY'; currency: string | null } | null {
   if (typeof value !== 'string' || !ctx || typeof ctx !== 'object') return null;
   if (ruleCode === OPERATION_DETACH_RULE) {
     const c = ctx as DetachCtx;
@@ -407,6 +452,12 @@ export function parseOperationCardChoice(ruleCode: string, value: unknown, ctx: 
     if (!m) return null;
     const o = { amountMinor: Number(m[1]), currency: m[2] };
     return c.options?.some((x) => x.amountMinor === o.amountMinor && x.currency === o.currency) ? { kind: 'AMOUNT', ...o } : null;
+  }
+  if (ruleCode === OPERATION_CURRENCY_RULE) {
+    const c = ctx as CurrencyCtx;
+    if (value === 'UNKNOWN') return { kind: 'CURRENCY', currency: null };
+    const m = /^CURRENCY:([A-Z]{3})$/.exec(value);
+    return m && c.candidates?.includes(m[1]) ? { kind: 'CURRENCY', currency: m[1] } : null;
   }
   return null;
 }
@@ -467,7 +518,7 @@ export async function resolveOperationCard(
       fileToConsolidate = action.targetId;
       return needs;
     }
-    const ctx = action.triggerContext as unknown as ParentCtx | AmountCtx | DetachCtx | ExclusionCtx;
+    const ctx = action.triggerContext as unknown as ParentCtx | AmountCtx | DetachCtx | ExclusionCtx | CurrencyCtx;
     const opId = await canonicalId(t, accountId, ctx.operationId);
     if (opId === null) { stale = true; return needs; }
     const op = await repo.load(opId, { allowInactive: true });
@@ -492,22 +543,24 @@ export async function resolveOperationCard(
       }
       return needs;
     }
-    const genre = choice.kind === 'AMOUNT' ? 'AMOUNT' : 'CLAIM_PARENT';
+    const genre = choice.kind === 'AMOUNT' ? 'AMOUNT' : choice.kind === 'CURRENCY' ? 'CURRENCY' : 'CLAIM_PARENT';
     // La décision la plus récente remplace la précédente du même genre (et de la même empreinte).
     const anciennes = (await t.execute(sql`
       SELECT id FROM business_operation_sources
        WHERE operation_id = ${opId} AND account_id = ${accountId} AND active AND source_kind = 'USER_ARBITRATION'
          AND locator->>'decision' = ${genre}
-         AND (${genre} <> 'AMOUNT' OR locator->>'fingerprint' = ${(ctx as AmountCtx).fingerprint ?? ''})`)) as unknown as Array<{ id: string }>;
+         AND (${genre} NOT IN ('AMOUNT', 'CURRENCY') OR locator->>'fingerprint' = ${(ctx as AmountCtx).fingerprint ?? ''})`)) as unknown as Array<{ id: string }>;
     for (const a of anciennes) await repo.deactivateSource(Number(a.id), 'USER_DECISION_REPLACED');
     const locator = choice.kind === 'AMOUNT'
       ? { decision: 'AMOUNT', fingerprint: (ctx as AmountCtx).fingerprint, amountMinor: choice.amountMinor, currency: choice.currency, known: (ctx as AmountCtx).options }
-      : { decision: 'CLAIM_PARENT', parentOperationId: choice.kind === 'PARENT' ? await canonicalId(t, accountId, choice.operationId) : null };
+      : choice.kind === 'CURRENCY'
+        ? { decision: 'CURRENCY', fingerprint: (ctx as CurrencyCtx).fingerprint, currency: choice.currency }
+        : { decision: 'CLAIM_PARENT', parentOperationId: choice.kind === 'PARENT' ? await canonicalId(t, accountId, choice.operationId) : null };
     previous.sourceId = await repo.addSource(opId, {
       kind: 'USER_ARBITRATION', entityKey: action.id, authority: 'USER', confidence: 'certain', locator,
-    }, genre === 'AMOUNT' ? 'USER_AMOUNT_CHOSEN' : choice.kind === 'DETACH' ? 'USER_CLAIM_DETACHED' : 'USER_CLAIM_PARENT');
+    }, genre === 'AMOUNT' ? 'USER_AMOUNT_CHOSEN' : genre === 'CURRENCY' ? 'USER_CURRENCY_CONFIRMED' : choice.kind === 'DETACH' ? 'USER_CLAIM_DETACHED' : 'USER_CLAIM_PARENT');
     previous.previousParent = op.parentOperationId;
-    if (choice.kind === 'PARENT' && typeof locator.parentOperationId === 'number' && locator.parentOperationId !== op.parentOperationId) {
+    if (choice.kind === 'PARENT' && 'parentOperationId' in locator && typeof locator.parentOperationId === 'number' && locator.parentOperationId !== op.parentOperationId) {
       await repo.setParent(opId, locator.parentOperationId, 'USER_CLAIM_PARENT');
     }
     // Lot 53 (D11) : dissociation décidée par l'utilisateur (jamais automatique).

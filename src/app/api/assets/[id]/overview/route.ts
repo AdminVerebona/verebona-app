@@ -93,7 +93,9 @@ export async function GET(
 
     // Build timeline from agenda items
     // Lot 47B (règle partagée `agenda-historical`) : un fait historique passé
-    // sans statut est affiché réalisé, jamais « en retard » (rien n'est écrit).
+    // n'est jamais « en retard ». Lot 53 (D17) : sans statut, il est « à
+    // confirmer » (une date passée ne prouve pas la réalisation) ; seul
+    // `manual_status = 'realise'` le rend réalisé. Rien n'est écrit.
     const natures = await loadEventNatures(agendaRows.map((r) => Number(r.id)));
     const timeline = agendaRows.map(item => {
       const effectiveDate = item.start_date ?? null;
@@ -103,8 +105,9 @@ export async function GET(
         originFieldKey: item.origin_field_key ?? null,
       });
       const ouvert = !item.manual_status || item.manual_status.trim() === '';
-      const isDone = item.manual_status === 'realise' || (ouvert && historique && !!effectiveDate && effectiveDate < today);
-      const isOverdue = !isDone && !historique && !!effectiveDate && effectiveDate < today;
+      const isDone = item.manual_status === 'realise';
+      const toConfirm = ouvert && historique && !!effectiveDate && effectiveDate < today;
+      const isOverdue = ouvert && !historique && !!effectiveDate && effectiveDate < today;
       return {
         itemType: 'agenda' as const,
         id: String(item.id),
@@ -112,6 +115,7 @@ export async function GET(
         effectiveDate,
         isDone,
         isOverdue,
+        toConfirm,
       };
     }).sort((a, b) => {
       if (!a.effectiveDate && !b.effectiveDate) return 0;

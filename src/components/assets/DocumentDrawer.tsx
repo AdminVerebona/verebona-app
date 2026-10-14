@@ -1,6 +1,7 @@
 "use client"
 
 import { useState, useCallback, useEffect, useRef } from 'react';
+import { effectiveStatusLabel } from '@/lib/agenda/effective-status';
 import Image from 'next/image';
 import {
   Sheet, SheetContent, SheetHeader, SheetTitle,
@@ -1859,13 +1860,10 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
                               item.effectiveStatus === 'realise' ? 'bg-green-500/15 text-green-500' :
                               item.effectiveStatus === 'annule' ? 'bg-muted text-muted-foreground' :
                               item.effectiveStatus === 'en_retard' ? 'bg-red-500/15 text-red-500' :
+                              item.effectiveStatus === 'a_confirmer' ? 'bg-amber-500/15 text-amber-500' :
                               'bg-primary/10 text-primary'
                             }`}>
-                              {item.effectiveStatus === 'realise' ? 'Réalisé' :
-                               item.effectiveStatus === 'annule' ? 'Annulé' :
-                               item.effectiveStatus === 'en_retard' ? 'En retard' :
-                               item.effectiveStatus === 'aujourd_hui' ? "Aujourd'hui" :
-                               'À venir'}
+                              {item.effectiveStatus === 'aujourd_hui' ? "Aujourd'hui" : effectiveStatusLabel(item.effectiveStatus || 'a_venir')}
                             </span>
                             )}
                           </button>

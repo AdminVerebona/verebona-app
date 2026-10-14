@@ -42,7 +42,7 @@ import { getIntentDefinition } from '../registries/intent-registry';
 import type { VerebonaIntent } from '../types/intents';
 import type { ActionableTrace } from '../types/contracts';
 import {
-  ACTIONABLE_SOURCE_TYPES, actionableReadWindow, analyserDemandeActionnable, compterActionnables, formatActionnables, selectionnerActionnables,
+  ACTIONABLE_SOURCE_TYPES, MAX_DEADLINE_ROWS, MAX_TODO_ROWS, actionableReadWindow, analyserDemandeActionnable, compterActionnables, formatActionnables, selectionnerActionnables,
   type ActionableRequest, type ActionableResult,
 } from './actionable-request';
 import { tryCanonicalStructured, fieldAnswer, type ScopeUnresolved } from '../canonical/structured-answers';
@@ -1250,7 +1250,14 @@ async function resolveActionable(
   const results = selectionnerActionnables(req, lu, today);
   const counts = compterActionnables(results);
   const sources = results.slice(0, 50).map(actionableSource);
-  const answer = formatActionnables(req, results, formatDateFr);
+  // Lot 53 (Q25) : « aucun sujet » seulement si l'état lu le permet — les
+  // « À traiter » ouverts non retenus et une lecture bornée sont signalés.
+  const retenus = new Set(results.filter((r) => r.sourceType === 'TODO').map((r) => r.id));
+  const fusionnes = new Set(results.flatMap((r) => r.mergedSourceIds));
+  const answer = formatActionnables(req, results, formatDateFr, {
+    otherOpenTodos: lu.todos.filter((t) => !retenus.has(t.id) && !fusionnes.has(`todo_${t.id}`)).length,
+    truncated: lu.todos.length >= MAX_TODO_ROWS || lu.deadlines.length >= MAX_DEADLINE_ROWS,
+  });
   const decision = decideStructured(results.length ? 'list' : 'no_result', p.thresholds);
   attempts.push({ level: 1, strategy: 'structured.actionable', status: decision.status, score: decision.score, threshold: decision.threshold, reason: decision.reason });
   const actionable: ActionableTrace = {

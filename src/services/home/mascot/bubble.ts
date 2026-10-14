@@ -168,6 +168,21 @@ export function todoSummary(n: number): string {
  */
 export const NOTHING_PRIORITY = 'Aucun sujet à traiter en priorité aujourd’hui.';
 
+/**
+ * Lot 53 (retour PO D25, harmonisé avec T2 — Q25) : « aucun sujet prioritaire »
+ * ne masque jamais une échéance dépassée encore ouverte (hors sujets : plus
+ * de 60 jours, au-delà des deux sujets) — signalée sans en dire le nombre —
+ * et n'est jamais une assurance catégorique sur des données incomplètes
+ * (source en panne : on le dit). Les « À traiter » non prioritaires restent
+ * comptés par la pastille du menu et la page « À traiter » ; la bulle n'en
+ * parle pas (règle MASC3 du lot 34, maintenue).
+ */
+export const PARTIAL_DATA_SPEECH = 'Certaines informations n’ont pas pu être actualisées.';
+
+export function nothingPriorityText(p: { overdue: boolean }): string {
+  return p.overdue ? `${NOTHING_PRIORITY} Des échéances dépassées sont à vérifier dans l’agenda.` : NOTHING_PRIORITY;
+}
+
 export interface Speech {
   text: string;
   /** Segments à mettre en valeur (T6-010), présents dans `text`. */
@@ -211,16 +226,21 @@ export function composeSpeech({ presentation, empty, failed }: SpeechInput): Spe
   }
   // File non vide sans DO_FIRST : ni son total, ni « Tout est à jour ».
   const fileNonVide = (presentation.todo?.total ?? 0) > 0;
+  // Lot 53 (D25) : échéances dépassées encore ouvertes hors sujets.
+  const overdue = (presentation.overdueDeadlines ?? 0) > 0;
+  const rienDePrioritaire = fileNonVide || overdue ? nothingPriorityText({ overdue }) : null;
   if (paras.length === 0) {
     if (presentation.status === 'degraded') return { text: DEGRADED_SPEECH, highlights: [] };
-    return { text: fileNonVide ? NOTHING_PRIORITY : CLEAR_SPEECH, highlights: [] };
+    return { text: rienDePrioritaire ?? CLEAR_SPEECH, highlights: [] };
   }
   const attention = paras.filter((p) => p.tile?.attention ?? true);
   const info = paras.filter((p) => !(p.tile?.attention ?? true));
   const texts = (list: MascotParagraph[]) => list.map((p) => p.text.trim()).filter(Boolean);
 
   if (attention.length === 0) {
-    return { text: [fileNonVide ? NOTHING_PRIORITY : 'Tout est à jour.', ...texts(info)].join(' '), highlights };
+    // Source en panne : jamais « Tout est à jour » devant les sujets informatifs (D25).
+    const tete = presentation.status === 'degraded' ? PARTIAL_DATA_SPEECH : rienDePrioritaire ?? 'Tout est à jour.';
+    return { text: [tete, ...texts(info)].join(' '), highlights };
   }
   const n = attention.length;
   const intro = `${NOMBRES[n] ?? n} ${n > 1 ? 'sujets méritent' : 'sujet mérite'} votre attention aujourd’hui`;
@@ -421,6 +441,9 @@ export function homePose(p: MascotPresentation | null, empty: boolean, failed = 
   if (kinds.includes('verify')) return 'questioning';
   if (kinds.includes('action')) return 'reminder-bell';
   if (p.status === 'degraded' && kinds.length === 0) return 'neutral';
+  // Lot 53 (D25) : il reste des éléments ou des échéances dépassées — ni
+  // « tout est à jour », ni alerte : pose neutre.
+  if (kinds.length === 0 && ((p.todo?.total ?? 0) > 0 || (p.overdueDeadlines ?? 0) > 0)) return 'neutral';
   return 'success-check';
 }
 

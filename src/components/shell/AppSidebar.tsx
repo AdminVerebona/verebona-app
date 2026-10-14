@@ -61,7 +61,8 @@ interface AppSidebarProps {
   /** Carte d'essai, affichée menu déplié. */
   footerSlot?: React.ReactNode;
   /** Bouton « + Ajouter » en tête de la navigation (absent si non fourni). */
-  onAdd?: () => void;
+  /** Reçoit le clic : le menu « Ajouter » s'accroche au bouton (lot 53b). */
+  onAdd?: (e: React.MouseEvent<HTMLButtonElement>) => void;
 }
 
 export function AppSidebar({ pathname, collapsed, onToggle, toProcessCount, footerSlot, onAdd }: AppSidebarProps) {

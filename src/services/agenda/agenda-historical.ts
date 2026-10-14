@@ -5,14 +5,18 @@
  * ══════════════════════════════════════════════════════════════════════════
  * UN FAIT PASSÉ N'EST JAMAIS « EN RETARD »
  *
- * Un élément de nature HISTORICAL (achat, sinistre, cession, intervention
- * réalisée, historique lu par T4 dans un document) raconte ce qui a EU LIEU.
- * Daté dans le passé et sans statut posé par l'utilisateur, il s'AFFICHE
- * comme réalisé — partout (vues agenda desktop et mobile, fiche du bien,
- * équipement, document, accueil, mascotte, assistant) — sans qu'aucun statut
- * ne soit écrit en base : `manual_status` reste nul, le calcul est fait à la
- * lecture. Une ÉCHÉANCE à venir non faite reste « en retard » une fois sa
- * date passée, comme avant.
+ * Un élément de nature HISTORICAL (achat, sinistre, cession, intervention,
+ * historique lu par T4 dans un document) n'est jamais « en retard ».
+ *
+ * Lot 53 (retour PO D17, cohérence D4 / D15 / D17) : UNE DATE PASSÉE NE
+ * PROUVE PAS LA RÉALISATION. Daté dans le passé et sans statut, un fait
+ * historique n'est plus affiché « réalisé » ni masqué du suivi : il est
+ * « statut à confirmer » (`a_confirmer`) — partout (vues agenda desktop et
+ * mobile, fiche du bien, suivi, équipement, document, assistant). Seul un
+ * statut ÉTABLI le rend « réalisé » : `manual_status = 'realise'`, posé par
+ * l'utilisateur ou par la consolidation sur preuve de réalisation
+ * (COMPLETION_PROVEN). Rien n'est écrit en base (calcul de lecture). Une
+ * ÉCHÉANCE passée non faite reste « date échue » (`en_retard`), comme avant.
  *
  * Nature d'un élément (même précédence que `resolveEventSemantics`) :
  *   1. colonne `event_nature` (0223) quand elle est renseignée ;
@@ -91,8 +95,11 @@ export function isAgendaOverdue(
   return !isHistoricalAgendaEvent(item);
 }
 
-/** Fait historique passé, sans statut : affiché « réalisé » (rien n'est écrit). */
-export function isPastHistoricalShownDone(
+/**
+ * Fait historique passé, sans statut : « statut à confirmer » (D17) — jamais
+ * « réalisé » sur la seule foi de la date, jamais masqué ; rien n'est écrit.
+ */
+export function isPastHistoricalUnconfirmed(
   item: { startDate: string | null; startTime?: string | null; endDate?: string | null; endTime?: string | null; manualStatus?: string | null } & AgendaNatureSignals,
   now: Date = new Date(),
 ): boolean {

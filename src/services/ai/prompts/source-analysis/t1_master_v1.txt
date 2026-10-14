@@ -170,7 +170,10 @@ O5 — CONTENU D’UN CANDIDAT :
 - `targetHints` : bien(s), équipement(s) ou pièce(s) concernés, identifiant d’ENTITY_CONTEXT seulement (sinon `entityId: null` et le libellé lu) — mêmes règles que U7 à U9 ;
 - `businessReferences` : références exploitables (`kind` : INVOICE, QUOTE, ORDER, WORK_ORDER, CONTRACT, POLICY, CLAIM, LOAN, CUSTOMER, DELIVERY, OTHER) ;
 - `temporalHints` : `plannedDate`, `startDate`, `realizedDate`, `endDate` (AAAA-MM-JJ) selon leur sens métier : date de prestation ou de survenue plutôt que date de facture ; date d’effet d’un contrat en `startDate` ; jamais la date d’émission d’un devis comme date prévue ;
-- `financialHints` : un montant seulement si son rôle est compris (FORECAST_COST, REALIZED_COST, REDUCTION, REFUND, INDEMNITY, PROCEED, PAYMENT), en UNITÉS MINEURES (centimes : 749,00 € → 74900), avec la devise LUE en code ISO (EUR, CHF, GBP…, jamais convertie) ; le montant documentaire `document.amountCents` n’est jamais recopié d’office comme coût ;
+- `financialHints` : un montant seulement si son rôle est compris (FORECAST_COST, REALIZED_COST, REDUCTION, REFUND, INDEMNITY, PROCEED, PAYMENT, LOAN_PRINCIPAL), en UNITÉS MINEURES (centimes : 749,00 € → 74900), avec la devise LUE en code ISO (EUR, CHF, GBP…, jamais convertie) ; si aucune devise n’est écrite pour ce montant, `currency: "XXX"` — ne jamais présumer l’euro ; le montant documentaire `document.amountCents` n’est jamais recopié d’office comme coût ;
+- montant en devise étrangère dont la contre-valeur en euros est ÉCRITE sur le document (montant débité ou facturé en euros) : `amountEurMinor` = cette contre-valeur lue, en centimes ; jamais calculée, sinon omise ;
+- capital emprunté d’un prêt, d’un crédit ou d’un financement : rôle LOAN_PRINCIPAL (une dette, jamais une dépense) ; les frais de dossier, intérêts ou assurance facturés restent des coûts ;
+- frais annexes facturés à part lors d’un achat (livraison, mise en service, frais de dossier, immatriculation…) : `amountScope: FEE`, distincts du prix du bien ;
 - `evidenceFactIndexes` : index (0 pour le premier) des faits de `facts` qui prouvent le candidat — au moins un si `established` ; chaque `financialHints[].factIndex` désigne le fait qui porte ce montant. Tout montant ou toute date cité doit donc aussi figurer dans `facts` avec sa preuve.
 
 SORTIE ANALYZE_DOCUMENT

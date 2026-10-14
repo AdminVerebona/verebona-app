@@ -21,6 +21,7 @@ import { pgClient } from '@/db';
 import { resolveEventSemantics } from '@/services/agenda/agenda-functional-key';
 import { agendaFunctionalColumnsReady } from '@/services/agenda/agenda-columns';
 import { HISTORICAL_FIELD_KEYS, historicalSql, isHistoricalAgendaEvent } from '@/services/agenda/agenda-historical';
+import { agendaDateRole, type AgendaDateRole } from '@/services/agenda/agenda-date-role';
 import type { RetrievedSource } from '../types/sources';
 
 /** Champs du registre dont l'effet agenda est un fait passé (D-14) — règle partagée (lot 47B). */
@@ -52,14 +53,20 @@ export interface CanonicalAgendaItem {
   /** Élément automatique modifié par l'utilisateur. */
   userModified: boolean;
   overdue: boolean;
+  /**
+   * Lot 53 (D27) : date à respecter (DEADLINE) ou événement saisi par
+   * l'utilisateur (SCHEDULED_EVENT) — règle partagée avec la mascotte.
+   */
+  dateRole?: AgendaDateRole;
   assets: Array<{ assetId: number; name: string }>;
   sources: Array<{ fileId: number; title: string; role: string | null }>;
 }
 
 /**
  * Statut à 4 états (pur, testé). `date` / `today` : `AAAA-MM-JJ`.
- * Lot 47B (décision PO du 12/10) : un fait HISTORICAL passé sans statut est
- * réalisé (`completed`) — jamais « en retard », rien n'est écrit.
+ * Lot 47B : un fait HISTORICAL passé n'est jamais « en retard » (`overdue`
+ * faux). Lot 53 (retour PO D17) : sans statut, il n'est plus `completed` — une
+ * date passée ne prouve pas la réalisation : `not_proven` (à confirmer).
  */
 export function agendaStatus4(
   manualStatus: string | null,
@@ -71,7 +78,8 @@ export function agendaStatus4(
   if (manualStatus === 'realise') return 'completed';
   if (manualStatus === 'annule') return 'not_completed';
   if (!date || date >= today) return 'unknown';
-  if (historical) return 'completed';
+  // D17 : fait passé sans statut — à confirmer, jamais réalisé sur la seule date.
+  if (historical) return 'not_proven';
   return pendingStatusCard ? 'unknown' : 'not_proven';
 }
 
@@ -84,6 +92,7 @@ export async function getCanonicalAgendaItem(accountId: number, itemId: number):
     `SELECT i.id, i.title, to_char(i.start_date, 'YYYY-MM-DD') AS date, i.manual_status AS "manualStatus",
             i.occurrence_nature AS "occurrenceNature", i.home_category AS category, i.is_automatic AS "isAutomatic",
             i.is_automatic_modified AS "isAutomaticModified", i.origin_field_key AS "originFieldKey",
+            i.origin_type AS "originType", to_jsonb(i) ->> 'projection_origin' AS "projectionOrigin",
             ${col ? 'i.event_nature' : 'NULL::text'} AS "eventNature", ${col ? 'i.business_type' : 'NULL::text'} AS "businessType",
             EXISTS (SELECT 1 FROM to_process_actions t WHERE t.account_id = i.account_id AND t.target_type = 'AGENDA_ITEM'
                      AND t.target_id = i.id AND t.field_key = 'manualStatus' AND t.resolved_at IS NULL) AS "pendingCard"
@@ -92,6 +101,7 @@ export async function getCanonicalAgendaItem(accountId: number, itemId: number):
   )) as unknown as Array<{
     id: number; title: string; date: string | null; manualStatus: string | null; occurrenceNature: string | null; category: string | null;
     isAutomatic: boolean; isAutomaticModified: boolean; originFieldKey: string | null; eventNature: string | null; businessType: string | null;
+    originType: string | null; projectionOrigin: string | null;
     pendingCard: boolean;
   }>;
   if (!r) return null;
@@ -115,6 +125,10 @@ export async function getCanonicalAgendaItem(accountId: number, itemId: number):
     forecast: r.occurrenceNature === 'FORECAST',
     category: r.category, isAutomatic: r.isAutomatic, userModified: r.isAutomatic && r.isAutomaticModified,
     overdue: !historique && !!r.date && r.date < today() && (status === 'not_proven' || status === 'unknown'),
+    dateRole: agendaDateRole({
+      forecast: r.occurrenceNature === 'FORECAST', isAutomatic: r.isAutomatic, originType: r.originType ?? 'manual',
+      projectionOrigin: r.projectionOrigin, eventNature: r.eventNature,
+    }),
     assets, sources,
   };
 }

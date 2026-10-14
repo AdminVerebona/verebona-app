@@ -600,7 +600,8 @@ describe('TC02 — page 1 non vérifiée (DEV-01)', () => {
     pdf.bytes = null;
     repondre(() => ({ output: sortie({ transcription: 'Relevé de test\nRéférence : REF-1', facts: [fait('Référence : REF-1', 'REF-1')] }) }));
     const m = await analyser(URL_PDF);
-    expect(m.sourceLayer!.report).toMatchObject({ qualityState: 'COMPLETE_WITH_UNRESOLVED', diagnostics: { sourceVerification: 'UNVERIFIABLE' } });
+    // Lot 53 (D19) : jamais « complète » — vérification incomplète.
+    expect(m.sourceLayer!.report).toMatchObject({ qualityState: 'VERIFICATION_INCOMPLETE', diagnostics: { sourceVerification: 'UNVERIFIABLE' } });
     expect(m.sourceLayer!.report.anomalies).toContain('SOURCE_UNREADABLE');
   });
 
@@ -792,7 +793,8 @@ describe('TC12 — document historique (reprise sans réanalyse)', () => {
       tables: [],
       facts: [{ id: 1, confidence: 'certain', excerpt: 'Référence : REF-1', location: { page: 1 }, evidence_origin: 'TEXT_EXTRACTION', visual_evidence: null, value_text: 'REF-1', normalized_value: 'REF-1', label: null, attribute: null, fact_key: 'info.ref' }],
     });
-    expect(b.layer.report).toMatchObject({ qualityState: 'COMPLETE_WITH_UNRESOLVED', diagnostics: { sourceVerification: 'RECONSTRUCTED' } });
+    // Lot 53 (D19) : couverture reconstruite, jamais vérifiée → vérification incomplète.
+    expect(b.layer.report).toMatchObject({ qualityState: 'VERIFICATION_INCOMPLETE', diagnostics: { sourceVerification: 'RECONSTRUCTED' } });
     expect(fake.calls).toHaveLength(0);
   });
 });

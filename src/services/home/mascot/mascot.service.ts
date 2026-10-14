@@ -7,7 +7,7 @@
  * l'afficher, les parcours existants COMMENT modifier les données (§5).
  */
 import { collectMascotData } from './collector';
-import { buildCandidates } from './signals';
+import { buildCandidates, openOverdueCount } from './signals';
 import { buildSecondaries, selectSubjects } from './selector';
 import { buildPresentation, contextHashOf } from './presentation';
 import { buildT6Input } from './t6-contract';
@@ -72,8 +72,11 @@ export async function getMascotPresentation(
   // ne relance pas la formulation des autres sujets.
   const contextHash = contextHashOf(subjects, secondaries, candidates.degraded);
 
+  // Lot 53 (D25) : échéances dépassées encore ouvertes (au-delà des sujets).
+  const overdueDeadlines = openOverdueCount(raw);
+
   if (subjects.length === 0) {
-    return buildPresentation({ subjects, secondaries, degraded: candidates.degraded, messages: null, today: raw.today, tiles, todo, duoInvite });
+    return buildPresentation({ subjects, secondaries, degraded: candidates.degraded, messages: null, today: raw.today, tiles, todo, duoInvite, overdueDeadlines });
   }
 
   const input = buildT6Input(subjects);
@@ -82,7 +85,7 @@ export async function getMascotPresentation(
   const outcome = await formulateWithT6({ accountId, input, contextHash, mode, kinds });
   void logT6({ accountId, contextHash, mode, outcome, input });
   return buildPresentation({
-    subjects, secondaries, degraded: candidates.degraded, messages: outcome.messages, today: raw.today, tiles, todo, duoInvite,
+    subjects, secondaries, degraded: candidates.degraded, messages: outcome.messages, today: raw.today, tiles, todo, duoInvite, overdueDeadlines,
   });
 }
 

@@ -147,7 +147,8 @@ describe('Rôle de la date — données structurées, jamais le titre', () => {
     ['échéance saisie avec nature DEADLINE', { eventNature: 'DEADLINE' }, 'DEADLINE'],
     ['événement saisi par l’utilisateur', {}, 'SCHEDULED_EVENT'],
     ['événement historique migré', { originType: 'legacy_event_migration' }, 'SCHEDULED_EVENT'],
-    ['heure fixée, même automatique', { isAutomatic: true, originType: 'qualified_document', startTime: '09:30' }, 'SCHEDULED_EVENT'],
+    // Lot 53 (D27) : une heure ne prouve pas une programmation.
+    ['heure fixée, même automatique', { isAutomatic: true, originType: 'qualified_document', startTime: '09:30' }, 'DEADLINE'],
     ['ancienne échéance migrée', { originType: 'legacy_deadline_migration' }, 'DEADLINE'],
   ])('%s', (_l, over, attendu) => {
     expect(agendaDateRole({ ...base, ...over })).toBe(attendu);

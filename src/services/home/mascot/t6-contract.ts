@@ -178,6 +178,15 @@ const ESTIMATION = /\b(estime\w*|previsionnel\w*|approximati\w*|environ|autour d
  * rendez-vous pris. « Prévu » reste admis (prévision, date estimée).
  */
 const ORGANISE = /\b(rendez-vous|rdv|reserve|reservee|reserves|reservees|organise|organisee|planifie|planifiee|programme|programmee|rendez vous)\b/;
+/**
+ * Lot 53 (retour PO D27) : aucune donnée de Verebona ne prouve une
+ * réservation effective — un sujet daté (échéance OU événement saisi par
+ * l'utilisateur) n'est jamais dit « confirmé », « réservé » ou « pris »,
+ * sauf si le mot vient des faits (titre saisi). La nature de la date
+ * (« confirmée » = certaine, par opposition à estimée) n'est pas une
+ * confirmation de rendez-vous et ne compte pas comme fait ici.
+ */
+const CONFIRMATION = /\b(confirme|confirmee|confirmes|confirmees|reserve|reservee|reserves|reservees|rendez-vous pris|rdv pris|rendez vous pris|cale|calee)\b/;
 /** R5 : interface et navigation. */
 const INTERFACE = /\b(bouton|boutons|cliquez|cliquer|clic|menu|onglet|ecran|lien ci|ci-dessous|ci-dessus)\b/;
 
@@ -235,6 +244,11 @@ function onlyDeadlines(s: T6InputSubject): boolean {
   return roles.length > 0 && roles.every((r) => r === 'DEADLINE');
 }
 
+/** Lot 53 (D27) : le sujet porte au moins une date d'agenda (échéance ou événement). */
+function hasDateRole(s: T6InputSubject): boolean {
+  return [s.facts.dateRole, s.facts.firstDateRole, s.facts.secondDateRole].some((r) => r != null);
+}
+
 /** R9 : nuances par intention et nature de tuile. Rend le motif d'écart, ou null (pure, testée). */
 export function nuanceViolation(text: string, s: T6InputSubject, kind: T6SubjectKind | undefined): string | null {
   const t = plainT6(text);
@@ -247,6 +261,12 @@ export function nuanceViolation(text: string, s: T6InputSubject, kind: T6Subject
   if (s.intent === 'inform' && horsFaits(INJONCTION)) return 'inform_injunction';
   if (s.intent === 'deadline' && s.facts.dateNature === 'confirmée' && horsFaits(ESTIMATION)) return 'confirmed_as_forecast';
   if (onlyDeadlines(s) && horsFaits(ORGANISE)) return 'deadline_as_appointment';
+  if (hasDateRole(s)) {
+    const { dateNature: _n, ...sansNature } = s.facts as Record<string, unknown>;
+    void _n;
+    const faitsSansNature = plainT6(`${JSON.stringify(sansNature)} ${s.fallbackText}`);
+    if ([...t.matchAll(new RegExp(CONFIRMATION.source, 'g'))].some((m) => !faitsSansNature.includes(m[0]))) return 'unproven_confirmation';
+  }
   return null;
 }
 

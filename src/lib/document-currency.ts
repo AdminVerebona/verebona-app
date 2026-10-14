@@ -10,10 +10,18 @@
  *   · devise écrite avec le montant          → retenue (`basis: 'amount'`) ;
  *   · sinon une seule devise dans le document → retenue (`'document'`) ;
  *   · aucune mention de devise               → EUR présumé (`'presumed'`) :
- *     document d'un compte français, et le contrat T1 déclare `amountCents`
- *     en centimes d'euro — c'est le comportement historique, conservé ;
+ *     simple HYPOTHÈSE de lecture (le contrat T1 déclare `amountCents` en
+ *     centimes d'euro), jamais une devise établie ;
  *   · plusieurs devises sans devise écrite avec le montant → INDÉTERMINÉE
  *     (`code: null`, `'ambiguous'`) : jamais présumée EUR.
+ *
+ * Lot 53D (retour PO D2, 13/10/2026) : « ne pas intégrer aux totaux un prix
+ * exprimé dans une devise seulement présumée ; ne pas déduire EUR du seul
+ * contexte du compte ». Une devise PRÉSUMÉE n'est donc jamais une devise
+ * ÉTABLIE (`isCurrencyEstablished`) : le montant est conservé, sa devise est
+ * stockée « XXX » (ISO 4217 : aucune devise) et il reste hors des agrégats
+ * EUR jusqu'à confirmation ; un prix d'achat ainsi lu n'est qu'une
+ * proposition à confirmer.
  *
  * Seul `code === 'EUR'` autorise une propagation vers un champ en euros
  * (`isEurAmount`). Aucune conversion n'est jamais faite ici.
@@ -115,7 +123,64 @@ export function foreignCurrencyOf(d: CurrencyDetection): string | null {
   return d.code !== null && d.code !== 'EUR' ? d.code : null;
 }
 
-/** Valeur stockable dans `document_extractions.currency` (NOT NULL). */
+/** Devise ÉCRITE sur le document (avec le montant, ou seule devise du document) — jamais présumée. */
+export function isCurrencyEstablished(d: CurrencyDetection): boolean {
+  return d.code !== null && (d.basis === 'amount' || d.basis === 'document');
+}
+
+/**
+ * Valeur stockable dans `document_extractions.currency` (NOT NULL). Lot 53D
+ * (D2) : une devise seulement PRÉSUMÉE est stockée « XXX » — le montant est
+ * conservé, il n'entre dans aucun agrégat EUR.
+ */
 export function storableCurrency(d: CurrencyDetection): string {
-  return d.code ?? UNDETERMINED_CURRENCY;
+  return isCurrencyEstablished(d) ? d.code! : UNDETERMINED_CURRENCY;
+}
+
+/** Écritures possibles d'un montant (unités mineures, 2 décimales) : « 1 250,00 », « 1250.00 », « 1.250,00 »… */
+function amountWritings(amountMinor: number): string[] {
+  if (!Number.isSafeInteger(amountMinor) || amountMinor < 0) return [];
+  const ent = Math.floor(amountMinor / 100);
+  const dec = String(amountMinor % 100).padStart(2, '0');
+  const groupe = (sep: string) => String(ent).replace(/\B(?=(\d{3})+(?!\d))/g, sep);
+  const entiers = [...new Set([String(ent), groupe(' '), groupe(' '), groupe(' '), groupe('.'), groupe(','), groupe('\'')])];
+  const out = new Set<string>();
+  for (const e of entiers) {
+    out.add(`${e},${dec}`);
+    out.add(`${e}.${dec}`);
+    if (dec === '00') { out.add(`${e},-`); out.add(`${e}.-`); }
+  }
+  // Montant rond écrit sans décimales (« 1 250 € »), seulement s'il est groupé ou ≥ 10.
+  if (dec === '00' && ent >= 10) for (const e of entiers) out.add(e);
+  return [...out];
+}
+
+const echapper = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/**
+ * Devises écrites JUSTE À CÔTÉ d'un montant donné dans des textes (lot 53D,
+ * D2 / Q16) : « 1 250,00 CHF », « CHF 1 250.00 », « 749,00 € ». Pure. Rend
+ * les devises distinctes trouvées (ordre d'apparition) ; vide : le montant
+ * n'est écrit nulle part avec une devise accolée.
+ */
+export function currenciesNextToAmount(texts: ReadonlyArray<string | null | undefined>, amountMinor: number): string[] {
+  const formes = amountWritings(amountMinor).sort((a, b) => b.length - a.length);
+  if (!formes.length) return [];
+  // Ni chiffre avant (« 11 250,00 » ne contient pas « 1 250,00 »), ni groupe de milliers (« 1 250,00 » ne contient pas « 250,00 »).
+  const motif = new RegExp(`(?<![\\d.,])(?<!\\d[\\s  .,'])(?:${formes.map(echapper).join('|')})(?![\\d]|[.,]\\d)`, 'g');
+  const vues: string[] = [];
+  for (const t of texts) {
+    if (!t) continue;
+    let m: RegExpExecArray | null;
+    while ((m = motif.exec(t)) !== null) {
+      const avant = t.slice(Math.max(0, m.index - 6), m.index);
+      const apres = t.slice(m.index + m[0].length, m.index + m[0].length + 12);
+      // Devise accolée : immédiatement après (« 749,00 € », « 749,00 EUR TTC »), sinon immédiatement avant (« CHF 749.00 »).
+      const suite = currenciesIn(/^\s{0,2}(\S+(?:\s+suisses?|\s+CFP|\s+CFA|\s+sterling|\s+canadiens?)?)/i.exec(apres)?.[1] ?? '');
+      const devant = currenciesIn(/(\S+)\s{0,2}$/.exec(avant)?.[1] ?? '');
+      const c = suite[0] ?? devant[0];
+      if (c && !vues.includes(c)) vues.push(c);
+    }
+  }
+  return vues;
 }

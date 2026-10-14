@@ -1,6 +1,20 @@
 /**
- * Date de fin du contrat / de la détention (lot 49A, ticket 9) — pur,
+ * Fin de contrat PRÉVUE (lot 49A, ticket 9 ; lot 53, retour PO D18) — pur,
  * partagé par la route GET /api/assets/[id]/details et la fiche (client).
+ *
+ * ══════════════════════════════════════════════════════════════════════════
+ * FIN CONTRACTUELLE ≠ FIN RÉELLE DE DÉTENTION (D18)
+ *
+ * La date affichée ici est l'échéance PRÉVUE d'un contrat (LLD / LOA, bail,
+ * prêt, location) : une fin contractuelle prévisionnelle, jamais une cession
+ * ni une restitution constatée. La fin RÉELLE de détention d'un bien est un
+ * fait distinct (vente / cession datée : statut « Vendu » et sa date, lot
+ * 43) ; elle n'est jamais déduite d'une fin de contrat. Aucune date n'est
+ * proposée pour un bien acheté (détention sans échéance contractuelle) : la
+ * section ne montre alors aucun champ — jamais de date inventée.
+ * Origine toujours dite : « Calculée » (début + durée), « Extraite d'un
+ * document », « Déclarée » (saisie de l'utilisateur).
+ * ══════════════════════════════════════════════════════════════════════════
  *
  * ══════════════════════════════════════════════════════════════════════════
  * AUCUN NOUVEAU CHAMP : deux clés canoniques EXISTANTES sont réutilisées,
@@ -26,7 +40,8 @@
  * ══════════════════════════════════════════════════════════════════════════
  */
 
-export const TENURE_END_LABEL = 'Date de fin du contrat / de la détention';
+/** Libellé (D18) : fin CONTRACTUELLE prévue — jamais « fin de détention ». */
+export const TENURE_END_LABEL = 'Fin de contrat prévue';
 
 export type TenureEndKey = 'leaseEndDate' | 'contractEndDate';
 export type TenureEndSource = 'user' | 'document' | 'computed';
@@ -107,10 +122,11 @@ export function resolveTenureEnd(input: { stored: unknown; origin: string | null
   return computed ? { value: computed, source: 'computed' } : { value: null, source: null };
 }
 
-/** Libellé de provenance affiché à côté du champ. */
+/** Libellé de provenance affiché à côté du champ (D18 : calculée, extraite, déclarée). */
 export function tenureSourceLabel(source: TenureEndSource | null | undefined): string | null {
   if (source === 'computed') return 'Calculée (début + durée)';
-  if (source === 'document') return 'Trouvée dans un document';
+  if (source === 'document') return 'Extraite d’un document';
+  if (source === 'user') return 'Déclarée';
   return null;
 }
 

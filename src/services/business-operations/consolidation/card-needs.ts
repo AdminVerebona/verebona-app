@@ -60,6 +60,17 @@ export interface ExclusionCardNeed {
   fileIds: number[];
 }
 
+/** (d) Lot 53D (D2) : la devise de ce montant n'est pas écrite clairement sur le document. */
+export interface CurrencyCardNeed {
+  operationId: number;
+  fileId: number;
+  fingerprint: string;
+  kind: string;
+  amountMinor: number;
+  /** Devises plausibles (au plus 3), à confirmer. */
+  candidates: string[];
+}
+
 export interface OperationCardNeeds {
   match: MatchCardNeed[];
   /** Documents dont les candidats ont été évalués : leurs cartes (a) non reconduites se ferment. */
@@ -70,10 +81,12 @@ export interface OperationCardNeeds {
   detach: DetachCardNeed[];
   /** Lot 53 (Q17). */
   exclusion: ExclusionCardNeed[];
-  /** Opérations recalculées : leurs cartes (b) à (e) non reconduites se ferment. */
+  /** Lot 53D (D2). */
+  currency: CurrencyCardNeed[];
+  /** Opérations recalculées : leurs cartes (b) à (e) et devise non reconduites se ferment. */
   reviewedOperations: number[];
 }
 
 export function emptyCardNeeds(): OperationCardNeeds {
-  return { match: [], reviewedFiles: [], parent: [], amount: [], detach: [], exclusion: [], reviewedOperations: [] };
+  return { match: [], reviewedFiles: [], parent: [], amount: [], detach: [], exclusion: [], currency: [], reviewedOperations: [] };
 }

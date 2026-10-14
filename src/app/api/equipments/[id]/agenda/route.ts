@@ -62,7 +62,8 @@ export async function GET(
       );
 
     const now = new Date();
-    // Lot 47B : un fait historique passé est « réalisé », jamais « en retard ».
+    // Lot 47B / lot 53 (D17) : un fait historique passé n'est jamais « en retard » ;
+    // sans statut, il est « à confirmer » (jamais réalisé sur la seule date).
     const natures = await loadEventNatures(rows.map((r) => r.id));
     const items = rows.map(item => ({
       id: item.id,

@@ -54,11 +54,12 @@ describe('C3-01 — contrat v4 : vocabulaire fermé aligné sur le modèle des O
     expect([...T1_OPERATION_STATUSES]).toEqual([...BUSINESS_OPERATION_STATUSES]);
     expect([...T1_SOURCE_ROLES]).toEqual([...SOURCE_ROLES]);
     expect([...T1_REFERENCE_KINDS]).toEqual([...REFERENCE_KINDS]);
-    expect([...T1_FINANCIAL_ROLES]).toEqual([...FINANCIAL_COMPONENT_KINDS, 'PAYMENT']);
+    // Lot 53D (PO-Q16) : capital emprunté = rôle propre, jamais une composante.
+    expect([...T1_FINANCIAL_ROLES]).toEqual([...FINANCIAL_COMPONENT_KINDS, 'PAYMENT', 'LOAN_PRINCIPAL']);
   });
-  it('version 4 affichée par le registre des contrats', () => {
-    expect(T1_ANALYZE_DOCUMENT_CONTRACT_VERSION).toBe(4);
-    expect(outputSchemaRef('T1AnalyzeDocumentOutput', T1AnalyzeDocumentOutput, 't1_analyze_document').version).toBe('t1_analyze_document@v4');
+  it('version 5 affichée par le registre des contrats (lot 53D)', () => {
+    expect(T1_ANALYZE_DOCUMENT_CONTRACT_VERSION).toBe(5);
+    expect(outputSchemaRef('T1AnalyzeDocumentOutput', T1AnalyzeDocumentOutput, 't1_analyze_document').version).toBe('t1_analyze_document@v5');
   });
 });
 
@@ -128,7 +129,7 @@ describe('C3-04 — lecture tolérante des candidats', () => {
     const { output } = lire({ facts: [fait('a'), fait('b')], businessOperationCandidates: [candidat({ candidateKey: '' }), candidat({ candidateKey: 'op1' }), candidat({ candidateKey: 'op1' })] });
     expect(output.businessOperationCandidates.map((c) => c.candidateKey)).toEqual(['op1', 'op1~2', 'op1~3']);
   });
-  it('C12.3 — devise lue normalisée (« chf », « € ») ; illisible (« $ ») ou montant non entier → indice retiré ; date normalisée', () => {
+  it('C12.3 — devise lue normalisée (« chf », « € ») ; illisible (« $ ») → « XXX », montant conservé (PO-D2) ; montant non entier → indice retiré ; date normalisée', () => {
     const { output } = lire({
       facts: [fait('a'), fait('b')],
       businessOperationCandidates: [candidat({ temporalHints: { realizedDate: '14.08.2026' }, financialHints: [
@@ -139,7 +140,7 @@ describe('C3-04 — lecture tolérante des candidats', () => {
       ] })],
     });
     const c = output.businessOperationCandidates[0];
-    expect(c.financialHints.map((h) => [h.role, h.currency, h.amountMinor])).toEqual([['REALIZED_COST', 'CHF', 449000], ['REALIZED_COST', 'EUR', 100]]);
+    expect(c.financialHints.map((h) => [h.role, h.currency, h.amountMinor])).toEqual([['REALIZED_COST', 'CHF', 449000], ['REALIZED_COST', 'EUR', 100], ['REALIZED_COST', 'XXX', 100]]);
     expect(c.temporalHints.realizedDate).toBe('2026-08-14');
   });
   it('T1-OP-008 / F-199 — au plus 20 candidats, le surplus est signalé', () => {
@@ -283,6 +284,6 @@ describe('C3-08 — payload persisté : preuves ancrées sur le fait persisté',
     expect(p.evidenceFactIds).toEqual([501]);
     expect(p.unresolvedEvidence).toBe(1);
     expect((p.financialHints as Array<{ evidence: { factId: number } }>)[0].evidence.factId).toBe(502);
-    expect(p).toMatchObject({ contract: 't1_analyze_document@v4', sourceRoleHint: 'INVOICE' });
+    expect(p).toMatchObject({ contract: 't1_analyze_document@v5', sourceRoleHint: 'INVOICE' });
   });
 });

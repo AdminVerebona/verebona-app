@@ -332,7 +332,8 @@ scenario('L34F', 'T1 — extraction exhaustive, persistée et réexploitable (T1
     while (r.more) r = await runSourceUnitsBackfill({ env: { T1_BACKFILL_BATCH: '1000' } });
     expect(r.failed).toBe(0);
     // Lot 49B (TC12) : couverture RECONSTRUITE, jamais vérifiée sur l'original → jamais COMPLETE.
-    expect(await couverture(f.id)).toMatchObject({ origin: 'BACKFILL', quality_state: 'COMPLETE_WITH_UNRESOLVED' });
+    // Lot 53 (D19) : ni « complète avec points non résolus » — vérification incomplète.
+    expect(await couverture(f.id)).toMatchObject({ origin: 'BACKFILL', quality_state: 'VERIFICATION_INCOMPLETE' });
     expect((await sql<{ v: string }[]>`SELECT source_verification AS v FROM document_extraction_coverage WHERE file_id = ${f.id}`)[0].v).toBe('RECONSTRUCTED');
     expect((await faits(f.id))[0].source_unit_ids).toEqual(['page:1:field:1']);
     expect(appelsT1(replay)).toHaveLength(n);

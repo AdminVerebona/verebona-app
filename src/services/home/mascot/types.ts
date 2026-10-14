@@ -247,6 +247,13 @@ export interface MascotPresentation {
    * (Premium Duo, personne invitée). Absent ou `null` : rien.
    */
   duoInvite?: MascotDuoInvite | null;
+  /**
+   * Lot 53 (retour PO D25) : échéances dépassées encore ouvertes, au-delà
+   * des sujets affichés. La bulle n'en dit jamais le nombre, mais ne dit
+   * jamais « aucune échéance dépassée » ni « tout est à jour » s'il en
+   * reste. Absent ou `null` : inconnu (présentation ancienne, lecture en échec).
+   */
+  overdueDeadlines?: number | null;
 }
 
 /** Plafonds UX (UX-007, SEC-001). */

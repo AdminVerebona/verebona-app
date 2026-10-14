@@ -161,12 +161,26 @@ describe('O0-04 — devise (C12.3)', () => {
     expect(byKey('acquisitionPrice')).toEqual([]);
   });
 
-  it('O0-04d document français sans aucune mention de devise : EUR présumé (comportement conservé)', () => {
-    const { byKey } = ticket((o) => {
+  it('O0-04d / PO-D2-09 document sans aucune mention de devise : EUR seulement présumé — prix gardé en PROPOSITION à confirmer (lot 53D)', () => {
+    const { p, byKey } = ticket((o) => {
       o.document.amountCents = { value: 12900, confidence: 'certain', evidence: { excerpt: 'TOTAL TTC 129,00' } };
       o.transcription = 'TICKET DE CAISSE\n24/04/2026\nDRAISIENNE BOIS 12 POUCES 129,00\nTOTAL TTC 129,00';
     });
-    expect(byKey('acquisitionPrice')).toEqual([expect.objectContaining({ value: 129 })]);
+    expect(byKey('acquisitionPrice')).toEqual([expect.objectContaining({ value: 129, confidence: 'probable' })]);
+    expect(p.appliedRules).toContain(PROJECTION_RULES.CURRENCY_PRESUMED_TO_CONFIRM);
+  });
+
+  it('PO-D2-10 fait canonique en euros sans aucune devise écrite : proposition (probable) ; avec « € » écrit : inchangé', () => {
+    const sans = ticket((o) => {
+      o.transcription = 'TICKET DE CAISSE\nDRAISIENNE 129,00\nTOTAL TTC 129,00';
+      (o.document.amountCents as Record<string, unknown>) = { value: 12900, confidence: 'certain', evidence: { excerpt: 'TOTAL TTC 129,00' } };
+      o.facts.push(fait({ canonicalKey: 'acquisitionPrice', rawValue: '129,00', normalizedValue: 129, valueType: 'money_eur', canonicalUnit: 'EUR', evidence: { excerpt: 'TOTAL TTC 129,00' } }));
+    });
+    expect(sans.byKey('acquisitionPrice').every((f) => f.confidence !== 'certain')).toBe(true);
+    const avec = ticket((o) => {
+      o.facts.push(fait({ canonicalKey: 'acquisitionPrice', rawValue: '129,00 €', normalizedValue: 129, valueType: 'money_eur', canonicalUnit: 'EUR', evidence: { excerpt: 'TOTAL TTC 129,00 €' } }));
+    });
+    expect(avec.byKey('acquisitionPrice').some((f) => f.value === 129 && f.confidence === 'certain')).toBe(true);
   });
 
   it('O0-04e fait canonique acquisitionPrice lu « 1 250,00 CHF » : connaissance générique, jamais en euros', () => {

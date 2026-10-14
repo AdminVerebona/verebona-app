@@ -29,7 +29,7 @@ import {
   EXPENSE_THEME_LABELS, classifyExpenseDocument, isCreditNoteTitle, type ExpenseClass, type ExpenseTheme,
 } from './expense-classes';
 import {
-  emptyOperationPart, formatMinorAmount, loadScopeOperations, operationCostLines, operationCountLabel, operationReader,
+  emptyOperationPart, formatMinorAmount, loadScopeOperations, operationCostLines, operationCountLabel, operationLabel, operationReader,
   summarizeOperationCosts, type OperationExpensePart,
 } from './operations';
 
@@ -73,6 +73,13 @@ export interface QualifiedExpenses {
   operations?: OperationExpensePart;
   /** Lot 45 (C15.1, C10) : repli documentaire dédupliqué. */
   documents?: DocumentFallbackPart;
+  /**
+   * Lot 53D (retour PO D12) : question limitée à des biens — dépenses du
+   * COMPTE sans bien identifié et sans lien probable avec ces biens.
+   * Incertitude de niveau compte : exposée, jamais imputée aux biens et sans
+   * effet sur la complétude de leur total.
+   */
+  accountUnassigned?: { count: number; sumCents: number; labels: string[] };
 }
 
 /** Repli documentaire (C15.1 §30) : ce qui en a été compté ou écarté. */
@@ -91,9 +98,22 @@ export interface DocumentFallbackPart {
   unattributed: { count: number; sumCents: number; fileIds: number[] };
   /** Avoirs (réduction) comptés en négatif. */
   creditNotes: { count: number; sumCents: number };
+  /**
+   * Lot 53D (D12) : parmi `representedElsewhere`, dépenses SANS bien confirmé
+   * dont un document est lié au périmètre (lien probable identifié) : non
+   * comptées, elles rendent le total du périmètre incomplet — identifiées.
+   */
+  unconfirmedAsset?: { count: number; sumCents: number; items: Array<{ fileId: number; operationId: number; label: string; amountCents: number | null }> };
+  /**
+   * Lot 53D (D12) : parmi `representedElsewhere`, dépenses attribuées par T3
+   * à d'AUTRES biens seulement : comptées pour ces biens, sans incertitude ici.
+   */
+  countedForOtherAssets?: { count: number; fileIds: number[] };
+  /** Lot 53D (D2) : montants documentaires en devise étrangère ou non établie : jamais sommés en euros. */
+  foreign?: Array<{ fileId: number; amountMinor: number; currency: string }>;
 }
 
-type DocRow = ExpenseRow & { amountCents: number; linked: number[] | null; retainedTitle: string | null };
+type DocRow = ExpenseRow & { amountCents: number; linked: number[] | null; retainedTitle: string | null; currency: string | null };
 
 /**
  * Dépenses d'un compte — Opération d'abord, repli documentaire dédupliqué
@@ -128,6 +148,10 @@ export async function sumQualifiedExpenses(accountId: number, opts: {
     `SELECT f.id, f.amount_cents AS "amountCents", f.document_type_code AS "v2", f.document_type AS "legacy",
             f.document_date::text AS "date", f.sha256_hash AS "hash", f.retained_title AS "title", f.asset_id AS "assetId",
             f.supplier, f.analysis_state AS "state", f.fusion_ignored_with AS "ignored", f.retained_title AS "retainedTitle",
+            -- Lot 53D (D2) : devise du montant lu (extraction) ; montant saisi à la main dans le tiroir (en €) : EUR.
+            CASE WHEN COALESCE(f.user_edited_fields->>'amountCents', 'false') = 'true' THEN 'EUR'
+                 ELSE (SELECT upper(trim(e.currency)) FROM document_extractions e WHERE e.file_id = f.id AND e.account_id = f.account_id
+                        ORDER BY e.id DESC LIMIT 1) END AS "currency",
             ARRAY(SELECT DISTINCT u.x FROM (
                     SELECT l.asset_id AS x FROM document_asset_links l
                      WHERE l.account_id = f.account_id AND l.file_id = f.id AND l.status = 'ACTIVE'
@@ -169,7 +193,9 @@ export async function sumQualifiedExpenses(accountId: number, opts: {
   const fallback: DocumentFallbackPart = {
     count: 0, sumCents: 0, represented: { count: 0, fileIds: [] }, representedElsewhere: { count: 0, fileIds: [] },
     unattributed: { count: 0, sumCents: 0, fileIds: [] }, creditNotes: { count: 0, sumCents: 0 },
+    unconfirmedAsset: { count: 0, sumCents: 0, items: [] }, countedForOtherAssets: { count: 0, fileIds: [] }, foreign: [],
   };
+  const ailleurs = new Map<number, number[]>();
   const { kept, removed } = dedupePossibleMerges(docs);
   const entries: ExpenseEntry[] = [];
   for (const r of kept) {
@@ -177,9 +203,17 @@ export async function sumQualifiedExpenses(accountId: number, opts: {
     if (ops?.length) {
       const cible = ops.some((o) => scopeOps.has(o)) ? fallback.represented : fallback.representedElsewhere;
       cible.count += 1; cible.fileIds.push(r.id);
+      if (cible === fallback.representedElsewhere) ailleurs.set(r.id, ops);
       continue;
     }
     const cls = classifyExpenseDocument(r.v2, r.legacy);
+    // Lot 53D (D2) : un montant dont la devise n'est pas l'euro (étrangère ou
+    // seulement présumée) n'entre jamais dans un total en euros.
+    if (r.currency && r.currency !== 'EUR' && cls.kind !== 'excluded') {
+      const pertinentDevise = cls.kind === 'unqualified' || (cls.kind === 'theme' && (!theme || cls.theme === theme));
+      if (pertinentDevise) fallback.foreign!.push({ fileId: r.id, amountMinor: Number(r.amountCents), currency: r.currency });
+      continue;
+    }
     const pertinent = cls.kind === 'unqualified' || (cls.kind === 'theme' && (!theme || cls.theme === theme));
     if (ids && r.linked.length > 1 && r.linked.some((a) => !ids.includes(a)) && cls.kind !== 'excluded') {
       // Facture de plusieurs biens : jamais comptée entière pour chacun.
@@ -191,6 +225,42 @@ export async function sumQualifiedExpenses(accountId: number, opts: {
     if (avoir && pertinent) { fallback.creditNotes.count += 1; fallback.creditNotes.sumCents += amount; }
     entries.push({ fileId: r.id, amountCents: amount, cls, undated: opts.year != null && !r.date });
   }
+  // Lot 53D (D12) : documents du périmètre rattachés à une dépense hors
+  // périmètre — dépense sans bien confirmé (lien probable : ce document) ou
+  // dépense attribuée à d'autres biens. Lecture en échec : forme du lot 45.
+  let accountUnassigned: QualifiedExpenses['accountUnassigned'];
+  try {
+    if (ailleurs.size) {
+      const opIds = [...new Set([...ailleurs.values()].flat())];
+      const lues = await operationReader().listForAssistant(accountId, { ids: opIds, limit: 500 });
+      const parId = new Map(lues.map((o) => [o.id, o]));
+      const lignes = new Map(operationCostLines(lues, { assetIds: [], year: opts.year ?? null }).map((l) => [l.operationId, l]));
+      for (const [fileId, ops] of ailleurs) {
+        const sansBien = ops.map((id) => parId.get(id)).filter((o): o is NonNullable<typeof o> => !!o && o.assetIds.length === 0);
+        if (!sansBien.length && ops.every((id) => parId.has(id))) {
+          fallback.countedForOtherAssets!.count += 1; fallback.countedForOtherAssets!.fileIds.push(fileId);
+          continue;
+        }
+        const o = sansBien[0] ?? null;
+        const l = o ? lignes.get(o.id) : undefined;
+        const montant = l && (l.hasCost || l.costCents) ? l.costCents : null;
+        fallback.unconfirmedAsset!.count += 1;
+        fallback.unconfirmedAsset!.sumCents += montant ?? 0;
+        fallback.unconfirmedAsset!.items.push({ fileId, operationId: o?.id ?? ops[0], label: o ? operationLabel(o) : 'dépense', amountCents: montant });
+      }
+    }
+    if (ids) {
+      const deja = new Set(fallback.unconfirmedAsset!.items.map((i) => i.operationId));
+      const libres = (await operationReader().listForAssistant(accountId, { untargetedOnly: true, limit: 500 })).filter((o) => !deja.has(o.id));
+      const lignes = summarizeOperationCosts(operationCostLines(libres, { assetIds: [], year: opts.year ?? null }), theme).part;
+      if (lignes.count) accountUnassigned = { count: lignes.count, sumCents: lignes.sumCents, labels: lignes.lines.filter((x) => lignes.operationIds.includes(x.operationId)).map((x) => x.label).slice(0, 3) };
+    }
+  } catch (e) {
+    console.warn('[verebona] dépenses : portée des dépenses hors périmètre non établie :', (e as Error).message);
+    fallback.unconfirmedAsset = undefined;
+    fallback.countedForOtherAssets = undefined;
+  }
+
   const q = aggregateExpenses(
     entries, theme, removed,
     opEntries.filter((e) => e.theme && !e.undated).map((e) => ({ operationId: e.operationId, amountCents: e.amountCents, theme: e.theme! })),
@@ -205,6 +275,7 @@ export async function sumQualifiedExpenses(accountId: number, opts: {
     complete: q.complete && expenseCoverageComplete(part, fallback),
     operations: part,
     documents: fallback,
+    ...(accountUnassigned ? { accountUnassigned } : {}),
   };
 }
 
@@ -212,7 +283,11 @@ export async function sumQualifiedExpenses(accountId: number, opts: {
 export function expenseCoverageComplete(part: OperationExpensePart, docs: DocumentFallbackPart): boolean {
   return part.withoutAmount.count === 0 && part.unattributed.count === 0 && part.foreign.length === 0
     && part.unqualified.count === 0 && part.undated.count === 0
-    && docs.unattributed.count === 0 && docs.representedElsewhere.count === 0;
+    && docs.unattributed.count === 0
+    // Lot 53D (D12) : seule une dépense SANS bien confirmé liée au périmètre le
+    // rend incomplet — une dépense attribuée à un autre bien ne le dégrade pas.
+    && (docs.unconfirmedAsset ? docs.unconfirmedAsset.count : docs.representedElsewhere.count) === 0
+    && (docs.foreign?.length ?? 0) === 0;
 }
 
 
@@ -403,7 +478,11 @@ export function mixedExpenseNotes(q: QualifiedExpenses, ctx: { scopeLabel: strin
   }
   if (part?.indemnity.unallocatedCents) out.push(`Une indemnité commune à plusieurs biens (${eurFr(part.indemnity.unallocatedCents)}) n’est pas répartie : elle n’est pas déduite${ici}.`);
   if (part?.forecast.count) out.push(`Prévu (devis, non réalisé) : ${eurFr(part.forecast.sumCents)} — non compté.`);
-  if (part?.foreign.length) out.push(`Montant${pl(part.foreign.length, '', 's')} en devise étrangère, non converti${pl(part.foreign.length, '', 's')} et non compté${pl(part.foreign.length, '', 's')} : ${part.foreign.map((f) => formatMinorAmount(f.amountMinor, f.currency)).join(', ')}.`);
+  // Lot 53D (D2) : devise étrangère (non convertie) et devise NON ÉTABLIE (à confirmer) distinguées.
+  const etrangers = [...(part?.foreign ?? []), ...(docs?.foreign ?? [])].filter((f) => f.currency !== 'XXX');
+  const incertains = [...(part?.foreign ?? []), ...(docs?.foreign ?? [])].filter((f) => f.currency === 'XXX');
+  if (etrangers.length) out.push(`Montant${pl(etrangers.length, '', 's')} en devise étrangère, non converti${pl(etrangers.length, '', 's')} et non compté${pl(etrangers.length, '', 's')} : ${etrangers.map((f) => formatMinorAmount(f.amountMinor, f.currency)).join(', ')}.`);
+  if (incertains.length) out.push(`Montant${pl(incertains.length, '', 's')} dont la devise n’est pas écrite sur le document, à confirmer et non compté${pl(incertains.length, '', 's')} en euros : ${incertains.map((f) => formatMinorAmount(f.amountMinor, f.currency)).join(', ')}.`);
   const nonRepartis = (part?.unattributed.count ?? 0) + (docs?.unattributed.count ?? 0);
   if (nonRepartis) {
     const somme = (part?.unattributed.sumCents ?? 0) + (docs?.unattributed.sumCents ?? 0);
@@ -416,7 +495,20 @@ export function mixedExpenseNotes(q: QualifiedExpenses, ctx: { scopeLabel: strin
   if (part?.unqualified.count) out.push(`${part.unqualified.count} intervention${pl(part.unqualified.count, '', 's')} dont la nature n’est pas précisée : non comptée${pl(part.unqualified.count, '', 's')}.`);
   if (part?.undated.count) out.push(`${part.undated.count} intervention${pl(part.undated.count, '', 's')} sans date : non comptée${pl(part.undated.count, '', 's')}${ctx.year ? ` pour ${ctx.year}` : ''}.`);
   if (docs?.represented.count) out.push(`${docs.represented.count} document${pl(docs.represented.count, '', 's')} déjà pris en compte dans une intervention, un contrat ou un achat : non recompté${pl(docs.represented.count, '', 's')}.`);
-  if (docs?.representedElsewhere.count) out.push(`${docs.representedElsewhere.count} document${pl(docs.representedElsewhere.count, '', 's')} rattaché${pl(docs.representedElsewhere.count, '', 's')} à une dépense dont le bien n’est pas confirmé : non compté${pl(docs.representedElsewhere.count, '', 's')}${ici}.`);
+  if (docs?.unconfirmedAsset) {
+    // Lot 53D (D12) : portée de l'incertitude explicitée, dépenses identifiées.
+    const u = docs.unconfirmedAsset;
+    if (u.count) {
+      const detail = u.items.slice(0, 3).map((i) => `${i.label}${i.amountCents != null ? ` (${eurFr(i.amountCents)})` : ''}`).join(', ');
+      out.push(`${u.count} document${pl(u.count, '', 's')}${ici} ${pl(u.count, 'est', 'sont')} rattaché${pl(u.count, '', 's')} à une dépense dont le bien n’est pas confirmé : ${detail} — non comptée${pl(u.count, '', 's')}${ici}, le total peut être incomplet de ${pl(u.count, 'ce montant', 'ces montants')}.`);
+    }
+    const a = docs.countedForOtherAssets;
+    if (a?.count) out.push(`${a.count} document${pl(a.count, '', 's')} lié${pl(a.count, '', 's')}${ici} ${pl(a.count, 'concerne', 'concernent')} une dépense attribuée à un autre bien : comptée${pl(a.count, '', 's')} pour cet autre bien.`);
+  } else if (docs?.representedElsewhere.count) out.push(`${docs.representedElsewhere.count} document${pl(docs.representedElsewhere.count, '', 's')} rattaché${pl(docs.representedElsewhere.count, '', 's')} à une dépense dont le bien n’est pas confirmé : non compté${pl(docs.representedElsewhere.count, '', 's')}${ici}.`);
+  if (q.accountUnassigned?.count) {
+    const n = q.accountUnassigned.count;
+    out.push(`Au niveau du compte, ${n} dépense${pl(n, '', 's')} sans bien identifié (${eurFr(q.accountUnassigned.sumCents)}) ${pl(n, 'n’est imputée', 'ne sont imputées')} à aucun bien${ici ? `, ni${ici.replace(/^ pour/, ' à')}` : ''}.`);
+  }
   if (docs?.creditNotes.count) out.push(`Avoir${pl(docs.creditNotes.count, '', 's')} déduit${pl(docs.creditNotes.count, '', 's')} : ${eurFr(Math.abs(docs.creditNotes.sumCents))}.`);
   const preuves = q.excluded?.byType?.PAYMENT_PROOF ?? 0;
   if (preuves) out.push(`${preuves} preuve${pl(preuves, '', 's')} de paiement : ${pl(preuves, 'elle confirme', 'elles confirment')} un règlement et ne s’ajoute${pl(preuves, '', 'nt')} pas au coût.`);

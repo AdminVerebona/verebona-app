@@ -22,6 +22,8 @@ export function contextHashOf(
   subjects: MascotSubject[], secondaries: MascotSecondary[], degraded: boolean, todo?: MascotTodoBlock | null,
   /** Lot 49A (ticket 13) : l'invitation envoyée fait disparaître l'action. */
   duoInvite?: MascotDuoInvite | null,
+  /** Lot 53 (D25) : une échéance dépassée qui apparaît ou disparaît change la bulle. */
+  overdueDeadlines?: number | null,
 ): string {
   return sha256(canonicalJson({
     subjects: subjects.map((s) => ({ id: s.subjectId, facts: s.facts, actions: s.actions, text: s.fallbackText })),
@@ -31,6 +33,7 @@ export function contextHashOf(
       ? { todo: todo ? { total: todo.total, items: todo.items.map((i) => ({ id: i.todoId, t: i.actionType, c: i.availableChoices ?? null, q: i.card.question })) } : null }
       : {}),
     ...(duoInvite ? { duoInvite: duoInvite.href } : {}),
+    ...(overdueDeadlines ? { overdue: true } : {}),
   })).slice(0, 32);
 }
 
@@ -48,8 +51,10 @@ export function buildPresentation(p: {
   todo?: MascotTodoBlock | null;
   /** « Inviter quelqu'un » (lot 49A, ticket 13) — première action. */
   duoInvite?: MascotDuoInvite | null;
+  /** Lot 53 (D25) : échéances dépassées encore ouvertes (voir `MascotPresentation`). */
+  overdueDeadlines?: number | null;
 }): MascotPresentation {
-  const contextHash = contextHashOf(p.subjects, p.secondaries, p.degraded, p.todo, p.duoInvite);
+  const contextHash = contextHashOf(p.subjects, p.secondaries, p.degraded, p.todo, p.duoInvite, p.overdueDeadlines);
   const computedAt = (p.now ?? new Date()).toISOString();
   const base = {
     schemaVersion: 'mascot-presentation-v1' as const,
@@ -59,6 +64,7 @@ export function buildPresentation(p: {
     computedAt,
     ...(p.todo !== undefined ? { todo: p.todo } : {}),
     ...(p.duoInvite ? { duoInvite: p.duoInvite } : {}),
+    ...(p.overdueDeadlines !== undefined ? { overdueDeadlines: p.overdueDeadlines } : {}),
   };
 
   if (p.subjects.length === 0) {
@@ -70,6 +76,8 @@ export function buildPresentation(p: {
     if (p.todo && p.todo.total > 0) return { ...base, status: 'ok', source: 'deterministic', paragraphs: [] };
     // Lot 49A (ticket 13) : « Inviter quelqu'un » proposé — jamais « Tout est à jour ».
     if (p.duoInvite) return { ...base, status: 'ok', source: 'deterministic', paragraphs: [] };
+    // Lot 53 (D25) : une échéance dépassée reste ouverte — jamais « Tout est à jour ».
+    if ((p.overdueDeadlines ?? 0) > 0) return { ...base, status: 'ok', source: 'deterministic', paragraphs: [] };
     return {
       ...base,
       status: 'clear',

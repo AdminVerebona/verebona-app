@@ -183,7 +183,7 @@ describe('Lot 34 — T2 demandes d’actions temporelles (TEMP-01 à TEMP-12)', 
     sansDocumentNiModele(h, r);
     expect(r.cascade?.actionable?.results).toEqual([expect.objectContaining({ sourceId: `agenda_${e.id}`, reasonForInclusion: 'OVERDUE', dueDate: HIER })]);
     expect(r.cascade?.actionable?.overdueCount).toBe(1);
-    expect(r.answer).toMatch(/En retard \(prévu le 8 octobre 2026\) : « Contrôle technique »/);
+    expect(r.answer).toMatch(/En retard \(échéance du 8 octobre 2026\) : « Contrôle technique »/);
   });
 
   it('TEMP-04 — échéance d’hier close (réalisée) : non retournée', async () => {

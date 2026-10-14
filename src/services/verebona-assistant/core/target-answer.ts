@@ -166,20 +166,28 @@ export function agendaTargetAnswer(i: CanonicalAgendaItem, attr: AgendaAttribute
   const quand = i.date ? formatDateFr(i.date) : null;
   let text: string;
   if (attr === 'date') {
+    // Lot 53 (D17, D27) : « a eu lieu » seulement si la réalisation est établie ;
+    // « prévu » seulement pour un événement saisi par l'utilisateur — une
+    // échéance est « à prévoir » / « fixée », jamais un rendez-vous confirmé.
+    const passe = i.date! < today;
     text = !quand ? `Aucune date n’est enregistrée pour ${t}.`
-      : i.nature === 'HISTORICAL' ? `${t} a eu lieu le ${quand}.`
-        : i.forecast ? `${t} est prévu le ${quand} (date prévisionnelle, à confirmer par un document).`
-          : `${t} est ${i.date! < today ? 'prévu depuis le' : 'prévu le'} ${quand}.`;
+      : i.nature === 'HISTORICAL'
+        ? (i.status === 'completed' ? `${t} a eu lieu le ${quand}.` : `${t} est daté du ${quand} dans votre historique ; sa réalisation n’est pas confirmée.`)
+        : i.forecast ? `${t} est estimé autour du ${quand} (date prévisionnelle, à confirmer par un document).`
+          : i.status === 'completed' ? `${t} est marqué comme réalisé (date du ${quand}).`
+            : (i.dateRole ?? 'DEADLINE') === 'SCHEDULED_EVENT'
+              ? `${t} ${passe ? 'était prévu le' : 'est prévu le'} ${quand}.`
+              : `${t} ${passe ? 'était à prévoir pour le' : 'est à prévoir pour le'} ${quand}.`;
   } else {
     switch (i.status) {
       case 'completed': text = `${t} est marqué comme réalisé${quand ? ` (échéance du ${quand})` : ''}.`; break;
       case 'not_completed': text = `${t} est marqué comme annulé : il n’aura pas lieu.`; break;
       case 'unknown': text = `La réalisation de ${t} est à confirmer : une question vous attend dans « À traiter ».`; break;
       default:
-        text = i.nature === 'HISTORICAL'
-          ? `${t} est un fait passé${quand ? ` (${quand})` : ''}, enregistré dans votre historique.`
+        text = i.nature === 'HISTORICAL' && i.date && i.date < today
+          ? `${t} est enregistré dans votre historique${quand ? ` à la date du ${quand}` : ''}, mais sa réalisation n’est pas confirmée : une date passée ne le prouve pas. Vous pouvez le marquer comme réalisé depuis l’agenda.`
           : i.date && i.date < today
-            ? `Aucune réalisation n’est enregistrée pour ${t}, prévu le ${quand} : une date passée ne prouve pas qu’il a été fait. Vous pouvez le marquer comme réalisé depuis l’agenda.`
+            ? `Aucune réalisation n’est enregistrée pour ${t}, daté du ${quand} : une date passée ne prouve pas qu’il a été fait. Vous pouvez le marquer comme réalisé depuis l’agenda.`
             : `${t} est à venir${quand ? ` (le ${quand})` : ''}.`;
     }
   }

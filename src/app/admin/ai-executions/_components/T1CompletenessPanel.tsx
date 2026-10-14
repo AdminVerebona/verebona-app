@@ -11,8 +11,9 @@
 import { useEffect, useState } from 'react';
 import { AlertTriangle } from 'lucide-react';
 import { apiClient } from '@/lib/api-client';
+import { verificationFollowup } from '@/services/ai/source-analysis/source-units/verification-followup';
 
-type Quality = 'COMPLETE' | 'COMPLETE_WITH_UNRESOLVED' | 'INCOMPLETE_RETRYABLE' | 'INCOMPLETE_FINAL';
+type Quality = 'COMPLETE' | 'COMPLETE_WITH_UNRESOLVED' | 'VERIFICATION_INCOMPLETE' | 'INCOMPLETE_RETRYABLE' | 'INCOMPLETE_FINAL';
 
 interface Row {
   fileId: number; accountId: number; title: string | null; qualityState: Quality; anomalies: string[];
@@ -22,8 +23,11 @@ interface Row {
   /** Lot 49B : vérification de la source et diagnostics (compteurs, numéros de page). */
   sourceVerification?: string | null; verification?: Diagnostics | null;
   lastRetryAt?: string | null; lastRetryResult?: string | null;
+  /** Lot 53 (D19) : reprise automatique programmée. */
+  nextRetryAt?: string | null;
 }
 interface Diagnostics {
+  verificationReason?: string | null;
   pagesExpected?: number | null; pagesVerified?: number; pagesMissing?: number[]; pagesUnverified?: number[]; pagesScanned?: number[];
   pendingRepairUnits?: number; exhaustedRepairUnits?: number; needsSourceUnits?: number;
   truncations?: number; originalsPreserved?: number; normalisationLosses?: number;
@@ -32,11 +36,14 @@ interface Overview {
   days: number; byQuality: Record<Quality, number>; byAnomaly: Record<string, number>;
   averageCoverage: number | null; repairPasses: number; rows: Row[]; unavailable?: boolean;
   bySourceVerification?: Record<string, number>;
+  maxRetries?: number;
 }
 
 export const QUALITY_LABEL: Record<Quality, string> = {
   COMPLETE: 'complète',
   COMPLETE_WITH_UNRESOLVED: 'complète, part non structurée conservée',
+  // Lot 53 (D19) : couverture du document original non vérifiable — jamais « complète ».
+  VERIFICATION_INCOMPLETE: 'vérification incomplète — pages non vérifiables',
   INCOMPLETE_RETRYABLE: 'incomplète — reprise programmée',
   INCOMPLETE_FINAL: 'incomplète — définitive',
 };
@@ -54,7 +61,18 @@ export const ANOMALY_LABEL: Record<string, string> = {
   REPAIR_EXHAUSTED: 'Réparation épuisée',
   NORMALISATION_LOSS: 'Perte de normalisation',
   SOURCE_UNREADABLE: 'Source impossible à relire',
+  COVERAGE_UNVERIFIED: 'Vérification incomplète',
 };
+
+/** Lot 53 (D19) : motif, pages, statut et prochaine action d'une vérification incomplète (pure). */
+export function followupOf(r: Pick<Row, 'qualityState' | 'sourceVerification' | 'verification' | 'retryAttempts' | 'nextRetryAt'>, maxRetries?: number) {
+  const d = r.verification ?? {};
+  return verificationFollowup({
+    qualityState: r.qualityState, sourceVerification: r.sourceVerification ?? null, verificationReason: d.verificationReason ?? null,
+    pagesUnverified: d.pagesUnverified ?? null, pagesExpected: d.pagesExpected ?? null,
+    retryAttempts: r.retryAttempts, maxRetries, retryScheduled: !!r.nextRetryAt,
+  });
+}
 
 export const VERIFICATION_LABEL: Record<string, string> = {
   VERIFIED: 'source vérifiée',
@@ -84,6 +102,15 @@ export function diagnosticsText(r: Pick<Row, 'sourceVerification' | 'verificatio
 export function T1CompletenessPanel({ days = 7 }: { days?: number }) {
   const [data, setData] = useState<Overview | null>(null);
   const [anomaly, setAnomaly] = useState<string>('');
+  const [reprises, setReprises] = useState<Record<number, string>>({});
+
+  // Lot 53 (D19) : reprise manuelle d'une vérification incomplète (relecture du fichier, tracée).
+  const relancer = (fileId: number) => {
+    setReprises((x) => ({ ...x, [fileId]: 'en cours…' }));
+    apiClient.post<{ ok: boolean; queued: boolean }>('/api/admin/ai/t1-completeness/retry', { fileId })
+      .then((r) => setReprises((x) => ({ ...x, [fileId]: r.queued ? 'analyse relancée' : 'déjà en file' })))
+      .catch(() => setReprises((x) => ({ ...x, [fileId]: 'échec de la reprise' })));
+  };
 
   useEffect(() => {
     let annule = false;
@@ -107,6 +134,7 @@ export function T1CompletenessPanel({ days = 7 }: { days?: number }) {
       </h2>
       <p className="text-xs text-[color:var(--text-muted)]">
         {data.byQuality.COMPLETE} complète(s) · {data.byQuality.COMPLETE_WITH_UNRESOLVED} avec part non structurée conservée ·{' '}
+        {data.byQuality.VERIFICATION_INCOMPLETE ?? 0} vérification(s) incomplète(s) ·{' '}
         {data.byQuality.INCOMPLETE_RETRYABLE} en reprise · {data.byQuality.INCOMPLETE_FINAL} incomplète(s) définitive(s)
         {data.averageCoverage !== null && ` · couverture moyenne ${Math.round(data.averageCoverage * 100)} %`}
         {` · ${data.repairPasses} passe(s) de réparation ciblée`}
@@ -138,6 +166,24 @@ export function T1CompletenessPanel({ days = 7 }: { days?: number }) {
               {r.retryAttempts > 0 && ` · ${r.retryAttempts} reprise(s)`}
               <span className="text-[color:var(--text-muted)]"> — {r.anomalies.map((a) => ANOMALY_LABEL[a] ?? a).join(', ')}</span>
               {diagnosticsText(r) && <span className="block break-words text-[color:var(--text-muted)]">{diagnosticsText(r)}</span>}
+              {(() => {
+                const f = followupOf(r, data.maxRetries);
+                if (!f) return null;
+                return (
+                  <span className="block break-words" data-testid="t1-verification-followup">
+                    <span className="font-medium text-[color:var(--text-primary)]">Statut : {f.status}</span>
+                    {` · Motif : ${f.reason}`}
+                    {f.pages && ` · Pages : ${f.pages.slice(0, 20).join(', ')}${f.pages.length > 20 ? '…' : ''}`}
+                    {` · Prochaine action : ${f.nextAction}`}
+                    {f.manualRetry && (
+                      <button type="button" onClick={() => relancer(r.fileId)} disabled={!!reprises[r.fileId] && reprises[r.fileId] !== 'échec de la reprise'}
+                        className="ml-2 text-xs rounded border border-[color:var(--border-subtle)] px-2 py-0.5 text-[color:var(--text-secondary)] disabled:opacity-60">
+                        {reprises[r.fileId] ?? 'Relancer l’analyse'}
+                      </button>
+                    )}
+                  </span>
+                );
+              })()}
             </li>
           ))}
         </ul>

@@ -80,7 +80,7 @@ const vehicleContractNa = (statuts: string[]) => (d: Record<string, unknown>) =>
 };
 
 /**
- * Lot 49A (ticket 9) — « Date de fin du contrat / de la détention » dans la
+ * Lot 49A (ticket 9) / lot 53 (D18) — « Fin de contrat prévue » dans la
  * section usage, visible seulement pour une détention à durée limitée. Deux
  * clés canoniques EXISTANTES (aucun doublon) : `leaseEndDate` (LLD / LOA,
  * locataire) ou `contractEndDate` (prêt, occupant gratuit, objet loué ou

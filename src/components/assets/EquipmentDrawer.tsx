@@ -1,6 +1,7 @@
 "use client"
 
 import { useState, useCallback, useEffect } from 'react';
+import { EFFECTIVE_STATUS_LABELS } from '@/lib/agenda/effective-status';
 import {
   Sheet, SheetContent, SheetHeader, SheetTitle,
 } from '@/components/ui/sheet';
@@ -126,6 +127,8 @@ function AgendaStatusIcon({ status }: { status: string }) {
   if (status === 'realise') return <CheckCircle2 className="w-3.5 h-3.5 text-green-500 flex-shrink-0" />;
   if (status === 'annule') return <X className="w-3.5 h-3.5 text-muted-foreground flex-shrink-0" />;
   if (status === 'en_retard') return <AlertCircle className="w-3.5 h-3.5 text-red-500 flex-shrink-0" />;
+  // Lot 53 (D17) : fait passé sans preuve de réalisation — à confirmer, jamais coché « réalisé ».
+  if (status === 'a_confirmer') return <Clock className="w-3.5 h-3.5 text-amber-400 flex-shrink-0" />;
   if (status === 'aujourd_hui') return <Clock className="w-3.5 h-3.5 text-amber-400 flex-shrink-0" />;
   return <Circle className="w-3.5 h-3.5 text-muted-foreground flex-shrink-0" />;
 }
@@ -607,7 +610,12 @@ export function EquipmentDrawer({ open, onOpenChange, assetId, equipment: eq, su
                 )}
                 {item.effectiveStatus === 'en_retard' && item.manualStatus !== 'realise' && (
                   <span className="text-[9px] font-semibold uppercase tracking-wider px-1.5 py-0.5 rounded bg-red-500/10 text-red-400 border border-red-500/20 flex-shrink-0">
-                    En retard
+                    {EFFECTIVE_STATUS_LABELS.en_retard}
+                  </span>
+                )}
+                {item.effectiveStatus === 'a_confirmer' && (
+                  <span className="text-[9px] font-semibold uppercase tracking-wider px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-400 border border-amber-500/20 flex-shrink-0">
+                    {EFFECTIVE_STATUS_LABELS.a_confirmer}
                   </span>
                 )}
               </div>

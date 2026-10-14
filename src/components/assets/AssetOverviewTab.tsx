@@ -41,6 +41,8 @@ interface TimelineItem {
   deadlineType?: string;
   isDone: boolean;
   isOverdue: boolean;
+  /** Lot 53 (D17) : fait passé sans preuve de réalisation — ni « fait », ni masqué. */
+  toConfirm?: boolean;
 }
 
 interface OverviewData {
@@ -409,6 +411,8 @@ export function AssetOverviewTab({ assetId, onTabChange, readOnly = false }: Pro
                 const isLoading = loadingItem === item.id;
                 const dotColor = isOverdue
                   ? 'bg-destructive'
+                  : item.toConfirm
+                  ? 'bg-amber-500'
                   : isDone
                   ? 'bg-green-500'
                   : 'bg-[#3b82f6]';
@@ -424,6 +428,7 @@ export function AssetOverviewTab({ assetId, onTabChange, readOnly = false }: Pro
                       {item.effectiveDate && (
                         <p className="text-[10px] text-muted-foreground leading-none mb-0.5">
                           {formatDate(item.effectiveDate)}
+                          {item.toConfirm && <span className="text-amber-500"> · statut à confirmer</span>}
                         </p>
                       )}
                       <p className={`text-xs font-medium leading-snug truncate ${isDone ? 'text-muted-foreground' : 'text-foreground'}`}>
@@ -503,6 +508,8 @@ export function AssetOverviewTab({ assetId, onTabChange, readOnly = false }: Pro
                   {sortedTimeline.slice(0, 10).map((item) => {
                     const dotColor = item.isOverdue
                       ? 'bg-destructive'
+                      : item.toConfirm
+                      ? 'bg-amber-500'
                       : item.isDone
                       ? 'bg-green-500'
                       : 'bg-[#3b82f6]';
@@ -518,6 +525,7 @@ export function AssetOverviewTab({ assetId, onTabChange, readOnly = false }: Pro
                           {item.effectiveDate && (
                             <p className="text-[10px] text-muted-foreground leading-none mb-0.5">
                               {formatDate(item.effectiveDate)}
+                              {item.toConfirm && <span className="text-amber-500"> · statut à confirmer</span>}
                             </p>
                           )}
                           <p className={`text-xs font-medium leading-snug ${item.isDone ? 'text-muted-foreground' : 'text-foreground'}`}>
@@ -682,6 +690,8 @@ function TimelineRow({ item, muted }: { item: TimelineItem; muted?: boolean }) {
 
   const stateIcon = item.isOverdue
     ? <AlertCircle className="w-3 h-3 text-destructive" />
+    : item.toConfirm
+    ? <Clock className="w-3 h-3 text-amber-500" />
     : item.isDone
     ? <CheckCircle2 className="w-3 h-3 text-green-500" />
     : <Clock className="w-3 h-3 text-muted-foreground" />;

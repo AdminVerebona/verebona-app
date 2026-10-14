@@ -55,7 +55,7 @@ import {
 } from './model';
 import { applyM3Verdict, decideCandidate, rankPlausible, type CandidateDecision, type ExistingOperation, type MatchContext, type T3Outcome } from './matching';
 import { advanceM3Progress, m3ProgressFor, m3SubjectFingerprint, selectM3Batch, type M3Progress } from './m3-progress';
-import type { AmountChoice } from './model';
+import { applyCurrencyChoices, type AmountChoice, type CurrencyChoice, type SideAmount } from './model';
 import { OPERATION_MATCH_MAX_CANDIDATES, type OperationMatchVerdict } from '@/services/ai/reconciliation/master/operation-match';
 import { emptyCardNeeds, type OperationCardNeeds } from './card-needs';
 import { operationMatchContext, type StoredM3 } from './m3-context';
@@ -528,12 +528,21 @@ export async function reconsolidateOperation(
       amountChoices.set(v.fingerprint, { amountMinor: v.amountMinor, currency: v.currency, ...(known ? { known } : {}) });
     }
   }
+  // Lot 53D (D2) : devise confirmée par l'utilisateur pour un montant « XXX » (la plus récente par empreinte).
+  const currencyChoices = new Map<string, CurrencyChoice>();
+  for (const d of decisions) {
+    const v = d.decision as { decision?: unknown; fingerprint?: unknown; currency?: unknown };
+    if (v.decision === 'CURRENCY' && typeof v.fingerprint === 'string') {
+      currencyChoices.set(v.fingerprint, { currency: typeof v.currency === 'string' ? v.currency : null });
+    }
+  }
   // Lot 43 : la donnée saisie sur la fiche prime pour le fait qu'elle porte
   // (date, prix d'achat, prix de vente) — jamais deux montants pour un même achat.
   // Lot 47B (C19) : la saisie Agenda de l'utilisateur prime pour les dates qu'elle porte.
   const state = applyAgendaAuthority(
     applyStructuredAuthority(consolidateOperationState(op.typeCode, contributions, today, amountChoices), contributions), contributions,
     agendaCtx.otherSupport);
+  state.components = applyCurrencyChoices(state.components, currencyChoices);
   const fullyManaged = unmanaged === 0;
 
   // Type nul qualifié (F-054) ; lot 48 (C7.7, F-055) : OTHER requalifié vers un type connu, même identifiant.
@@ -594,6 +603,9 @@ export async function reconsolidateOperation(
                         WHERE cs.component_id = c.id AND s.source_kind NOT IN ('CLAIM_FORM', 'MIGRATION')) LIMIT 1`)).length > 0;
   await syncComponents(repo, tx, operationId, managedIds, indemniteSaisie ? state.components.filter((c) => c.kind !== 'INDEMNITY') : state.components, changes);
   await syncDetails(repo, tx, operationId, state, changes, userSaisie);
+  // Lot 53D (D9) : frais annexes et écarts document / saisie, conservés hors total.
+  await syncSideAmounts(tx, repo.accountId, operationId, state.sideAmounts ?? []);
+
 
   // Lot 42 (B19, ch. 20) : montant contradictoire de même rôle entre preuves
   // de même autorité → question à l'utilisateur (la valeur de la plus ancienne
@@ -607,6 +619,19 @@ export async function reconsolidateOperation(
     const recent = Math.max(...c.options.flatMap((o) => o.sourceIds));
     const fileId = fichierDe.get(recent);
     if (fileId !== undefined) cards.amount.push({ operationId, fileId, fingerprint: c.fingerprint, kind: c.kind, options, retained: c.retained });
+  }
+
+  // Lot 53D (D2) : montant dont la devise n'est pas établie → question
+  // « À traiter » (hors agrégats EUR d'ici là) ; « je ne sais pas » n'est
+  // plus reproposé.
+  for (const c of state.components.filter((x) => x.currency === 'XXX' && !currencyChoices.has(x.fingerprint))) {
+    const fileId = c.sourceIds.map((id) => fichierDe.get(id)).find((f): f is number => f !== undefined);
+    if (fileId !== undefined) {
+      cards.currency.push({
+        operationId, fileId, fingerprint: c.fingerprint, kind: c.kind, amountMinor: c.amountMinor,
+        candidates: c.currencyCandidates?.length ? c.currencyCandidates : ['EUR'],
+      });
+    }
   }
 
   await consolidateClaimParent(repo, tx, operationId, state, decisions, sources, cards, changes);
@@ -817,7 +842,7 @@ async function syncComponents(
   for (const d of desired) {
     const c = parFp.get(d.fingerprint);
     const memes = c && c.kind === d.kind && Number(c.amount_minor) === d.amountMinor && String(c.currency).trim() === d.currency
-      && c.amount_eur_cents === null && c.economic_date === d.economicDate && c.period_start === d.periodStart
+      && num(c.amount_eur_cents) === (d.amountEurCents ?? null) && c.economic_date === d.economicDate && c.period_start === d.periodStart
       && c.period_end === d.periodEnd && c.target_asset_id === null && c.target_equipment_id === null && c.label === d.label;
     if (c && memes) {
       for (const s of d.sourceIds) if (!c.sources.includes(s)) await repo.attachComponentSource(c.id, s);
@@ -827,11 +852,41 @@ async function syncComponents(
     // Nouvelle composante, ou même fait économique dont la valeur change :
     // l'ancienne est supersédée, jamais additionnée (C12.1, F-062).
     await repo.addFinancialComponent(opId, {
-      kind: d.kind, amountMinor: d.amountMinor, currency: d.currency, amountEurCents: null,
+      kind: d.kind, amountMinor: d.amountMinor, currency: d.currency, amountEurCents: d.amountEurCents ?? null,
       economicDate: d.economicDate, periodStart: d.periodStart, periodEnd: d.periodEnd, label: d.label,
       fingerprint: d.fingerprint, sources: d.sourceIds.map((sourceId, i) => ({ sourceId, isPrimary: i === 0 })),
     }, 'T3_COMPONENT_CONSOLIDATED');
     changes.track(true);
+  }
+}
+
+/**
+ * Lot 53D (D9) : montants hors total de l'Opération (`business_operation_side_amounts`,
+ * 0351) — remplacés par l'état consolidé, sans écriture quand rien ne change.
+ * Table absente (migration non appliquée) : rien n'est écrit (code tolérant).
+ */
+async function syncSideAmounts(tx: DbTx, accountId: number, opId: number, desired: readonly SideAmount[]): Promise<void> {
+  const [t] = await rows<{ ok: boolean }>(tx, sql`SELECT to_regclass('business_operation_side_amounts') IS NOT NULL AS ok`);
+  if (!t?.ok) return;
+  const cur = await rows<Row>(tx, sql`
+    SELECT id, nature, fingerprint, kind, amount_minor, currency, amount_eur_cents, economic_date::text AS economic_date, source_ids
+      FROM business_operation_side_amounts WHERE operation_id = ${opId} AND account_id = ${accountId}`);
+  const cle = (n: string, f: string) => `${n}|${f}`;
+  const voulus = new Map(desired.map((d) => [cle(d.nature, d.fingerprint), d]));
+  for (const c of cur) {
+    const d = voulus.get(cle(String(c.nature), String(c.fingerprint)));
+    const memes = d && d.kind === c.kind && d.amountMinor === Number(c.amount_minor) && d.currency === String(c.currency).trim()
+      && (d.amountEurCents ?? null) === num(c.amount_eur_cents) && (d.economicDate ?? null) === (c.economic_date ?? null)
+      && [...d.sourceIds].sort((a, b) => a - b).join(',') === ((c.source_ids as Array<string | number>) ?? []).map(Number).sort((a, b) => a - b).join(',');
+    if (memes) { voulus.delete(cle(d.nature, d.fingerprint)); continue; }
+    await tx.execute(sql`DELETE FROM business_operation_side_amounts WHERE id = ${Number(c.id)} AND account_id = ${accountId}`);
+  }
+  for (const d of voulus.values()) {
+    await tx.execute(sql`
+      INSERT INTO business_operation_side_amounts
+        (account_id, operation_id, nature, kind, fingerprint, amount_minor, currency, amount_eur_cents, economic_date, source_ids)
+      VALUES (${accountId}, ${opId}, ${d.nature}, ${d.kind}, ${d.fingerprint}, ${d.amountMinor}, ${d.currency}, ${d.amountEurCents ?? null},
+              ${d.economicDate ?? null}, ${intArray(d.sourceIds)}::bigint[])`);
   }
 }
 
@@ -860,12 +915,15 @@ async function syncDetails(
     const v = {
       financingReference: state.financing.financingReference ?? (d?.financing_reference as string | null) ?? null,
       lender: (d?.lender as string | null) ?? state.financing.lender,
-      principalAmountMinor: num(d?.principal_amount_minor),
-      principalCurrency: (d?.principal_currency as string | null)?.trim() ?? null,
+      // Lot 53D (Q16) : capital emprunté lu sur une source (jamais une dépense) ; à défaut, valeur en place.
+      principalAmountMinor: state.financing.principalAmountMinor ?? num(d?.principal_amount_minor),
+      principalCurrency: state.financing.principalAmountMinor != null
+        ? state.financing.principalCurrency ?? null
+        : (d?.principal_currency as string | null)?.trim() ?? null,
       effectiveFrom: state.financing.effectiveFrom ?? (d?.effective_from as string | null) ?? null,
       effectiveTo: state.financing.effectiveTo ?? (d?.effective_to as string | null) ?? null,
     };
-    if (d || v.financingReference || v.lender || v.effectiveFrom) changes.track(await repo.upsertFinancingDetails(opId, v, 'T3_DETAILS_CONSOLIDATED'));
+    if (d || v.financingReference || v.lender || v.effectiveFrom || v.principalAmountMinor != null) changes.track(await repo.upsertFinancingDetails(opId, v, 'T3_DETAILS_CONSOLIDATED'));
   }
   if (op.typeCode === 'CLAIM' && state.claim) {
     const [d] = await rows<Row>(tx, sql`
@@ -1300,7 +1358,7 @@ export async function consolidateAccountOperations(
     const ouvertes = (await (await pg()).unsafe(
       `SELECT DISTINCT (trigger_context->>'operationId')::bigint AS id FROM to_process_actions
         WHERE account_id = $1 AND resolved_at IS NULL
-          AND rule_code IN ('OPERATION-CLAIM-PARENT', 'OPERATION-AMOUNT', 'OPERATION-CLAIM-DETACH', 'OPERATION-CLAIM-ASSET')
+          AND rule_code IN ('OPERATION-CLAIM-PARENT', 'OPERATION-AMOUNT', 'OPERATION-CLAIM-DETACH', 'OPERATION-CLAIM-ASSET', 'OPERATION-CURRENCY')
           AND trigger_context ? 'operationId'
         ORDER BY 1 LIMIT 50`,
       [accountId] as never[],

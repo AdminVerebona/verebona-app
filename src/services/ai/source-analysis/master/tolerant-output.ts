@@ -500,13 +500,19 @@ function prepareCandidates(brut: unknown, indexFaits: Map<number, number>): {
     }
     o.temporalHints = t;
     o.financialHints = (Array.isArray(o.financialHints) ? o.financialHints : []).filter(isObj).flatMap((h) => {
-      const devise = typeof h.currency === 'string' ? (SYMBOLES[h.currency.trim().toUpperCase()] ?? h.currency.trim().toUpperCase()) : null;
+      const lue = typeof h.currency === 'string' ? (SYMBOLES[h.currency.trim().toUpperCase()] ?? h.currency.trim().toUpperCase()) : null;
+      // Lot 53D (D2) : devise absente ou illisible → « XXX » (aucune devise
+      // établie) : le montant est CONSERVÉ, la barrière serveur établit sa
+      // devise sur le document ou le laisse hors des agrégats EUR.
+      const devise = lue && /^[A-Z]{3}$/.test(lue) ? lue : 'XXX';
       const role = dansListe(T1_FINANCIAL_ROLES, majuscule(h.role));
       const factIndex = recale(h.factIndex);
-      // T1-OP-004 / 006 : rôle compris, montant entier ≥ 0, devise lue, preuve localisable.
-      if (!role || !devise || !/^[A-Z]{3}$/.test(devise) || factIndex === null
+      // T1-OP-004 / 006 : rôle compris, montant entier ≥ 0, preuve localisable.
+      if (!role || factIndex === null
         || typeof h.amountMinor !== 'number' || !Number.isSafeInteger(h.amountMinor) || h.amountMinor < 0) return [];
       const out: Obj = { ...h, role, currency: devise, factIndex, amountScope: dansListe(T1_AMOUNT_SCOPES, majuscule(h.amountScope)) };
+      // Lot 53D (Q16) : contre-valeur EUR entière ≥ 0, sinon retirée.
+      if (!(typeof out.amountEurMinor === 'number' && Number.isSafeInteger(out.amountEurMinor) && out.amountEurMinor >= 0)) delete out.amountEurMinor;
       for (const k of ['economicDate', 'periodStart', 'periodEnd']) {
         if (out[k] === undefined || out[k] === null) continue;
         const iso = normalizeDateValue(out[k]);

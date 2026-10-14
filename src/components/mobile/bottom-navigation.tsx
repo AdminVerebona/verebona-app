@@ -40,6 +40,7 @@ function isActive(id: string, href: string, pathname: string): boolean {
 export function BottomNavigation({ toProcessCount }: { toProcessCount?: number | null }) {
   const pathname = usePathname() ?? '';
   const [showActionsSheet, setShowActionsSheet] = useState(false);
+  const [anchor, setAnchor] = useState<DOMRect | null>(null);
   // Panneau monté à sa première ouverture seulement (APP-PERF-05), puis
   // conservé : le formulaire choisi y vit après la fermeture du panneau.
   const sheetMounted = useMountedOnce(showActionsSheet);
@@ -79,7 +80,9 @@ export function BottomNavigation({ toProcessCount }: { toProcessCount?: number |
           {/* « + » détaché, au-dessus de la barre, centré (2b). */}
           <button
             type="button"
-            onClick={() => setShowActionsSheet(true)}
+            onClick={(e) => { setAnchor(e.currentTarget.getBoundingClientRect()); setShowActionsSheet(true); }}
+            aria-haspopup="menu"
+            aria-expanded={showActionsSheet}
             aria-label="Ajouter un bien, un document ou une échéance"
             className="pointer-events-auto group relative z-[2] -mb-3.5 flex h-[58px] w-[58px] items-center justify-center rounded-full border-4 border-[color:var(--bg-page)] text-white shadow-relief-2xl transition-transform duration-150 hover:scale-[1.06]"
             style={{ background: 'linear-gradient(135deg, var(--vb-blue-500), var(--vb-blue-700))' }}
@@ -100,7 +103,7 @@ export function BottomNavigation({ toProcessCount }: { toProcessCount?: number |
         </div>
       </div>
 
-      {sheetMounted && <MobileActionsSheet open={showActionsSheet} onOpenChange={setShowActionsSheet} />}
+      {sheetMounted && <MobileActionsSheet open={showActionsSheet} onOpenChange={setShowActionsSheet} anchor={anchor} />}
     </>
   );
 }

@@ -128,7 +128,10 @@ describe('toutes les entrées appliquent le même contrat (CA-02)', () => {
   it('le fichier initial (menu mobile, appareil photo) passe par le même tri que le sélecteur', () => {
     expect(DIALOGUE).toMatch(/addFiles\(initialFiles, \[\]\)/);
     expect(DIALOGUE).toMatch(/trierFichiersPourDepot\(/);
-    expect(MOBILE).toMatch(/input\.accept = ACCEPT_DEPOT/);
+    // Lot 53b (point 11) : le menu « Ajouter » n'ouvre plus de sélecteur à
+    // lui ; le tiroir d'ajout porte le seul sélecteur, multiple, au contrat.
+    expect(MOBILE).not.toMatch(/input\.type = 'file'/);
+    expect(DIALOGUE).toMatch(/multiple\s+accept=\{ACCEPT_DEPOT\}/);
   });
 
   it('le dépassement est annoncé, pas silencieux', () => {

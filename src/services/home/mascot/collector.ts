@@ -230,6 +230,40 @@ async function readAgenda(accountId: number, today: string): Promise<MascotAgend
     }));
 }
 
+/** Échéances dépassées lues au plus (au-delà : la présence suffit, jamais un total affiché). */
+const OVERDUE_AGENDA_LIMIT = 200;
+
+/**
+ * Lot 53 (retour PO D25) : TOUTES les échéances « action » ouvertes dont la
+ * date est dépassée — sans la fenêtre de 60 jours des sujets ni la limite
+ * de deux sujets. La bulle ne dit jamais « aucune échéance dépassée » ou
+ * « tout est à jour » tant qu'il en reste une (identifiants et dates seuls).
+ */
+async function readOverdueAgenda(accountId: number, today: string): Promise<Array<{ id: number; date: string }>> {
+  const filtreT4 = await upcomingDeadlinesSqlFilter('i');
+  const t4 = filtreT4 !== '';
+  const r = await rows(
+    `SELECT i.id, to_char(i.start_date, 'YYYY-MM-DD') AS date, i.title,
+            i.home_category AS "homeCategory", i.origin_type AS "originType", i.origin_field_key AS "originFieldKey"
+            ${t4 ? ', i.event_nature AS "eventNature", i.business_type AS "businessType"' : ''}
+       FROM agenda_items i
+      WHERE i.account_id = $1
+        AND (i.manual_status IS NULL OR trim(i.manual_status) = '')
+        ${t4 ? filtreT4 : "AND (i.is_automatic = FALSE OR i.occurrence_nature = 'FORECAST')"}
+        AND coalesce(greatest(i.end_date, i.start_date), i.start_date) < $2::date
+      ORDER BY i.start_date DESC, i.id DESC
+      LIMIT ${OVERDUE_AGENDA_LIMIT}`,
+    [accountId, today],
+  );
+  return r
+    .filter((i) => isAgendaActionItemT4({
+      homeCategory: (i.homeCategory as string | null) ?? null, originType: String(i.originType ?? 'manual'), title: String(i.title ?? ''),
+      eventNature: (i.eventNature as string | null | undefined) ?? null, businessType: (i.businessType as string | null | undefined) ?? null,
+      originFieldKey: (i.originFieldKey as string | null | undefined) ?? null,
+    }))
+    .map((i) => ({ id: Number(i.id), date: String(i.date) }));
+}
+
 /** ATP-004 : toutes les échéances déjà portées par une action ouverte (ids seuls). */
 async function readToProcessAgendaIds(accountId: number): Promise<number[]> {
   const r = await rows(
@@ -281,7 +315,7 @@ export async function collectMascotData(accountId: number, now: Date = new Date(
       return null;
     }
   };
-  const [processing, onboarding, toProcess, toProcessAgendaIds, agenda, acknowledgments, rights] = await Promise.all([
+  const [processing, onboarding, toProcess, toProcessAgendaIds, agenda, acknowledgments, rights, overdueAgenda] = await Promise.all([
     safe('traitements', () => readProcessing(accountId)),
     safe('onboarding', () => readOnboarding(accountId)),
     // NFR-001 : tête de file seulement, dans l'ordre « Par priorité » du service.
@@ -292,6 +326,7 @@ export async function collectMascotData(accountId: number, now: Date = new Date(
     safe('agenda', () => readAgenda(accountId, today)),
     safe('acquittements', () => readAcknowledgments(accountId)),
     safe('droits', () => readRights(accountId)),
+    safe('échéances dépassées', () => readOverdueAgenda(accountId, today)),
   ]);
   return {
     accountId, today, processing, onboarding, agenda, acknowledgments,
@@ -301,5 +336,6 @@ export async function collectMascotData(accountId: number, now: Date = new Date(
     // Échéances d'actions ouvertes : en échec, la file lue suffit (repli sur `toProcess`).
     toProcessAgendaIds,
     rights,
+    overdueAgenda,
   };
 }

@@ -46,7 +46,7 @@ import { isHumanOrigin } from '@/services/ai/reconciliation/field-origin';
 import { readCanonicalValue, type AssetRowJson } from '@/services/canonical/asset-state/canonical-asset-view';
 import { eurToCents } from '@/services/canonical/registry/normalize';
 import { isIsoDate, normalizeBusinessReference, type BusinessOperationTypeCode, type FinancialComponentKind } from '../model';
-import { normalizeProvider, type CandidateIdentity, type ConsolidatedState, type SourceContribution } from './model';
+import { normalizeProvider, sideAmountOf, type CandidateIdentity, type ConsolidatedState, type SourceContribution } from './model';
 
 export const ASSET_DATA_NATURES = ['ACQUISITION', 'DISPOSAL', 'CONTRACT'] as const;
 export type AssetDataNature = (typeof ASSET_DATA_NATURES)[number];
@@ -232,13 +232,19 @@ const FAIT_STRUCTURE: Partial<Record<BusinessOperationTypeCode, FinancialCompone
  *     Montant égal → une seule composante, soutenue par les deux sources.
  *     Montant différent → la saisie prime, la composante documentaire de ce
  *     rôle n'est pas comptée (jamais 2 prix pour un même achat).
+ *     Lot 53D (retour PO D9) : l'écart n'est plus effacé en silence — le
+ *     montant documentaire écarté est CONSERVÉ hors total
+ *     (`DOCUMENT_AMOUNT_DIFFERS`, tracé à ses sources) pour être exposé ;
+ *     les frais annexes (portée FEE) restent isolés (`ANCILLARY_FEE`).
  */
 export function applyStructuredAuthority(
   state: ConsolidatedState, sources: readonly SourceContribution[],
 ): ConsolidatedState {
   const structurees = sources.filter((s) => s.identity.structured);
   if (!structurees.length || state.type === null) return state;
-  const out: ConsolidatedState = { ...state, components: [...state.components], amountConflicts: [...state.amountConflicts] };
+  const out: ConsolidatedState = {
+    ...state, components: [...state.components], amountConflicts: [...state.amountConflicts], sideAmounts: [...(state.sideAmounts ?? [])],
+  };
 
   if (state.type === 'ACQUISITION' || state.type === 'DISPOSAL') {
     const saisies = structurees.filter((s) => s.identity.structured?.nature === state.type);
@@ -258,6 +264,7 @@ export function applyStructuredAuthority(
         out.components = out.components.filter((c) => c !== saisie);
       } else if (docs.length) {
         const ecartees = new Set(docs.map((c) => c.fingerprint));
+        for (const c of docs) out.sideAmounts.push(sideAmountOf('DOCUMENT_AMOUNT_DIFFERS', c));
         out.components = out.components.filter((c) => !ecartees.has(c.fingerprint));
         out.amountConflicts = out.amountConflicts.filter((c) => !ecartees.has(c.fingerprint));
       }

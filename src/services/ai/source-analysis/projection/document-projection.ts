@@ -403,6 +403,15 @@ export function projectDocumentFacts(
       }
     }
 
+    // Lot 53D (D2) : montant sans AUCUNE devise écrite (ni valeur, ni extrait,
+    // ni document) — l'euro n'est que présumé : proposition à confirmer.
+    let devisePresumee = false;
+    if (def.valueType === 'money_eur' || def.valueType === 'money_cents') {
+      devisePresumee = detectDocumentCurrency({
+        rawValue: typeof fact.rawValue === 'string' ? fact.rawValue : null, amountExcerpt: fact.evidence?.excerpt, transcription: analysis.transcription,
+      }).basis === 'presumed';
+    }
+
     const n = normaliserPourCle(fact, def, aliasUnit);
     if (!n.ok) {
       warnings.push({ code: n.code, target: def.key, message: `${n.reason} : connaissance générique.` });
@@ -425,8 +434,14 @@ export function projectDocumentFacts(
       semanticEvent = attendu;
     }
 
+    if (devisePresumee && base.confidence === 'certain') {
+      noteRule(PROJECTION_RULES.CURRENCY_PRESUMED_TO_CONFIRM);
+      warnings.push({ code: 'DERIVED_VALUE_UNCERTAIN', target: def.key, ruleCode: PROJECTION_RULES.CURRENCY_PRESUMED_TO_CONFIRM,
+        message: `« ${def.key} » : aucune devise écrite sur le document, euro seulement présumé — proposition à confirmer (D2).` });
+    }
     facts.push({
       ...base,
+      ...(devisePresumee && base.confidence === 'certain' ? { confidence: 'probable' as const } : {}),
       canonicalKey: def.key,
       value: scalaire(n.value),
       valueType: def.valueType,
@@ -799,14 +814,21 @@ function applyPurposeRules(
           : 'Plusieurs devises sur le justificatif : montant non attribuable à un prix en euros (C12.3).' });
     } else if (uneSeuleLigne && amount && amount.evidence?.excerpt?.trim() && Number.isInteger(amount.value) && amount.value >= 0) {
       const eur = centsToEur(amount.value);
-      // Nombre de lignes NON établi : le prix est gardé, mais en `probable`
-      // (proposition T3, jamais application automatique).
-      const incertain = !nombreEtabli;
+      // Nombre de lignes NON établi, ou devise seulement PRÉSUMÉE (lot 53D,
+      // D2) : le prix est gardé, mais en `probable` (proposition T3, jamais
+      // application automatique ni agrégat EUR avant confirmation).
+      const presumee = devise?.basis === 'presumed';
+      const incertain = !nombreEtabli || presumee;
       out.push(deRegle({ key: 'acquisitionPrice', value: eur, rawValue: amount.value, rawKey: 'amountCents',
         rule: PROJECTION_RULES.PURCHASE_RECEIPT_ACQUISITION_PRICE,
         confidence: incertain ? 'probable' : amount.confidence, evidence: amount.evidence }));
       noteRule(PROJECTION_RULES.PURCHASE_RECEIPT_ACQUISITION_PRICE);
-      if (incertain) {
+      if (presumee) {
+        noteRule(PROJECTION_RULES.CURRENCY_PRESUMED_TO_CONFIRM);
+        warnings.push({ code: 'DERIVED_VALUE_UNCERTAIN', target: 'acquisitionPrice', ruleCode: PROJECTION_RULES.CURRENCY_PRESUMED_TO_CONFIRM,
+          message: 'Aucune devise écrite sur le justificatif : euro seulement présumé, prix d’acquisition gardé comme proposition à confirmer (D2).' });
+      }
+      if (!nombreEtabli) {
         noteRule(PROJECTION_RULES.ACQUISITION_PRICE_LINE_COUNT_UNKNOWN);
         warnings.push({ code: 'DERIVED_VALUE_UNCERTAIN', target: 'acquisitionPrice', ruleCode: PROJECTION_RULES.ACQUISITION_PRICE_LINE_COUNT_UNKNOWN,
           message: 'Nombre d’articles du ticket non établi : prix d’acquisition tiré du total, gardé comme proposition (probable).' });

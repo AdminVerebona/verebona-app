@@ -49,11 +49,12 @@
  * elles complètent des faits manquants, pas l'interprétation métier.
  * ══════════════════════════════════════════════════════════════════════════
  */
+import { currenciesNextToAmount, detectDocumentCurrency, isCurrencyEstablished, UNDETERMINED_CURRENCY } from '@/lib/document-currency';
 import { factFingerprint } from '../source-units/merge';
 import { plat } from '../source-units/text';
 import {
   T1_MAX_OPERATION_CANDIDATES,
-  type T1AnalyzeDocumentOutput, type T1Confidence, type T1ExclusionReason, type T1FactWithRef,
+  type T1AmountScope, type T1AnalyzeDocumentOutput, type T1Confidence, type T1ExclusionReason, type T1FactWithRef,
   type T1FinancialRole, type T1OperationCandidate, type T1SourceRole,
 } from '../master/t1-contract';
 
@@ -63,8 +64,14 @@ export type CandidateOrigin = 'PASS_1' | 'CHUNK';
 export interface AnchoredFinancialHint {
   role: T1FinancialRole;
   amountMinor: number;
+  /** Devise ISO ; « XXX » : devise NON ÉTABLIE (lot 53D, D2) — hors agrégats EUR. */
   currency: string;
-  amountScope: 'TOTAL' | 'DEPOSIT' | 'BALANCE' | 'INSTALLMENT' | null;
+  /** Lot 53D (Q16) : contre-valeur EUR écrite sur le document (centimes), revérifiée par la barrière. */
+  amountEurMinor?: number | null;
+  /** Lot 53D (D2) : devise « XXX » — devises plausibles à faire confirmer, et pourquoi. */
+  currencyCandidates?: string[];
+  currencyBasis?: 'PRESUMED' | 'AMBIGUOUS' | 'CONTRADICTED';
+  amountScope: T1AmountScope | null;
   economicDate: string | null;
   periodStart: string | null;
   periodEnd: string | null;
@@ -120,6 +127,7 @@ export function anchorOperationCandidates(out: Out, origin: CandidateOrigin): An
       const factRef = refOf(h.factIndex);
       return factRef ? [{
         role: h.role, amountMinor: h.amountMinor, currency: h.currency, amountScope: h.amountScope ?? null,
+        ...(typeof h.amountEurMinor === 'number' ? { amountEurMinor: h.amountEurMinor } : {}),
         economicDate: h.economicDate ?? null, periodStart: h.periodStart ?? null, periodEnd: h.periodEnd ?? null, factRef,
       }] : [];
     });
@@ -208,6 +216,15 @@ export interface CandidateGateContext {
    * un document classé preuve de paiement l'est quel que soit le rôle proposé.
    */
   transactionNature?: 'PURCHASE' | 'PAYMENT_PROOF' | 'DEPOSIT_OR_CREDIT_NOTE';
+  /**
+   * Lot 53D (D2, Q16) : textes du document pour établir la devise de chaque
+   * montant (fait porteur : valeur lue, extrait ; transcription). Absent :
+   * règles de devise non appliquées (appelants historiques des tests).
+   */
+  currencyEvidence?: {
+    facts: ReadonlyMap<string, { rawValue: string | null; excerpt: string | null; key: string | null }>;
+    transcription: string | null;
+  };
 }
 
 export interface CandidateGateResult {
@@ -265,6 +282,20 @@ export function gateOperationCandidates(
       if (role === 'DEPOSIT_INVOICE' && h.role === 'REALIZED_COST' && h.amountScope === null) { h.amountScope = 'DEPOSIT'; c.adjustments.push('DEPOSIT_SCOPE'); }
     }
     if (role === 'PAYMENT_PROOF' && c.confidence === 'certain') { c.confidence = 'probable'; c.adjustments.push('PAYMENT_PROOF_ENRICH_ONLY'); }
+
+    // Lot 53D (Q16) : le capital emprunté d'un financement est une dette,
+    // jamais une dépense — même si le modèle l'a proposé comme coût.
+    if (c.typeHint === 'FINANCING' && ctx.currencyEvidence) {
+      for (const h of c.financialHints) {
+        const f = ctx.currencyEvidence.facts.get(h.factRef);
+        if (COUTS.has(h.role) && f && isLoanPrincipalText([f.key, f.excerpt].filter(Boolean).join(' '))) {
+          h.role = 'LOAN_PRINCIPAL'; c.adjustments.push('LOAN_PRINCIPAL_NOT_A_COST');
+        }
+      }
+    }
+    // Lot 53D (D2, Q16) : devise ÉTABLIE sur le document, jamais présumée ;
+    // contre-valeur EUR seulement si elle est écrite.
+    if (ctx.currencyEvidence) for (const h of c.financialHints) c.adjustments.push(...establishHintCurrency(h, ctx.currencyEvidence));
     if ((role === 'QUOTE' || role === 'ORDER') && c.statusHint === 'REALIZED') { c.statusHint = 'ENVISAGED'; c.adjustments.push('QUOTE_NOT_REALIZED'); }
 
     // Cibles : monde fermé (U9) et capacités du compte (U7).
@@ -286,4 +317,78 @@ export function gateOperationCandidates(
   }
   const truncated = Math.max(0, out.length - T1_MAX_OPERATION_CANDIDATES);
   return { candidates: out.slice(0, T1_MAX_OPERATION_CANDIDATES), omitted, truncated };
+}
+
+
+// ── Lot 53D : devise et nature des montants (retours PO D2, Q16) ───────────
+
+/** Libellé de capital emprunté (« capital emprunté », « montant du prêt », « montant financé »…). */
+const CAPITAL = /\b(capital\s+(emprunt|financ|du\s+pr[eê]t|initial)|montant\s+(du|de\s+l['’])\s*(pr[eê]t|emprunt|cr[eé]dit|financement)|montant\s+(emprunt|financ)|somme\s+emprunt|loan\s+amount|principal)/i;
+
+export function isLoanPrincipalText(t: string | null | undefined): boolean {
+  return !!t && CAPITAL.test(t);
+}
+
+/**
+ * Établit la devise d'un indice financier sur le DOCUMENT (pure ; modifie
+ * l'indice ; rend les codes d'ajustement) — retour PO D2 / Q16 :
+ *   1. devise écrite à côté de CE montant (fait porteur, puis transcription)
+ *      et une seule → retenue (corrige au besoin la devise annoncée) ;
+ *   2. sinon devise ÉTABLIE (écrite avec le montant ou seule devise du
+ *      document) égale à l'annoncée, ou annoncée absente → retenue ;
+ *   3. sinon (aucune devise écrite = présumée, plusieurs, contradiction) :
+ *      devise « XXX », montant conservé, devises plausibles gardées pour
+ *      la confirmation ; jamais EUR déduit du seul contexte du compte ;
+ *   4. contre-valeur EUR : gardée seulement pour une devise établie autre
+ *      que l'euro ET si ce montant EUR est écrit avec « € / EUR » sur le
+ *      document (aucune conversion arbitraire).
+ */
+export function establishHintCurrency(
+  h: AnchoredFinancialHint, ev: NonNullable<CandidateGateContext['currencyEvidence']>,
+): string[] {
+  const adj: string[] = [];
+  const f = ev.facts.get(h.factRef);
+  const porteur = [f?.rawValue ?? null, f?.excerpt ?? null];
+  const annoncee = h.currency;
+  const pres = currenciesNextToAmount(porteur, h.amountMinor);
+  const proches = pres.length ? pres : currenciesNextToAmount([ev.transcription], h.amountMinor);
+  if (proches.length === 1) {
+    if (proches[0] !== annoncee) { h.currency = proches[0]; adj.push('CURRENCY_READ_NEXT_TO_AMOUNT'); }
+  } else {
+    const d = detectDocumentCurrency({ rawValue: f?.rawValue ?? null, amountExcerpt: f?.excerpt ?? null, transcription: ev.transcription });
+    if (proches.length === 0 && isCurrencyEstablished(d) && (d.code === annoncee || annoncee === UNDETERMINED_CURRENCY)) {
+      if (d.code !== annoncee) adj.push('CURRENCY_READ_ON_DOCUMENT');
+      h.currency = d.code!;
+    } else {
+      const basis: AnchoredFinancialHint['currencyBasis'] = proches.length > 1 || d.basis === 'ambiguous' ? 'AMBIGUOUS'
+        : d.basis === 'presumed' ? 'PRESUMED' : 'CONTRADICTED';
+      const plausibles = [...new Set([
+        ...proches, ...(annoncee !== UNDETERMINED_CURRENCY ? [annoncee] : []), ...d.seen, ...(basis === 'PRESUMED' ? ['EUR'] : []),
+      ])].slice(0, 3);
+      h.currency = UNDETERMINED_CURRENCY;
+      h.currencyCandidates = plausibles;
+      h.currencyBasis = basis;
+      adj.push('CURRENCY_NOT_ESTABLISHED');
+    }
+  }
+  if (h.amountEurMinor !== undefined && h.amountEurMinor !== null) {
+    const ecrite = h.currency !== 'EUR' && h.currency !== UNDETERMINED_CURRENCY
+      && currenciesNextToAmount([...porteur, ev.transcription], h.amountEurMinor).includes('EUR');
+    if (!ecrite) { delete h.amountEurMinor; adj.push('EUR_COUNTERVALUE_NOT_READ'); }
+  }
+  return adj;
+}
+
+/** Textes du document pour `currencyEvidence` (faits ancrés + transcription). Pure. */
+export function currencyEvidenceOf(out: Pick<T1AnalyzeDocumentOutput, 'facts' | 'transcription'>): NonNullable<CandidateGateContext['currencyEvidence']> {
+  const facts = new Map<string, { rawValue: string | null; excerpt: string | null; key: string | null }>();
+  for (const f of out.facts as T1FactWithRef[]) {
+    if (!f.t1FactRef || facts.has(f.t1FactRef)) continue;
+    facts.set(f.t1FactRef, {
+      rawValue: f.rawValue === null || f.rawValue === undefined ? null : String(f.rawValue),
+      excerpt: f.evidence?.excerpt ?? null,
+      key: f.rawKey ?? f.canonicalKey ?? null,
+    });
+  }
+  return { facts, transcription: out.transcription ?? null };
 }

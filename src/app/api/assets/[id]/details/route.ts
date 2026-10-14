@@ -20,7 +20,7 @@ import { tenureEndSectionFields } from '@/lib/assets/tenure-end';
 
 type AddressOverride = { address1: unknown; postalCode: unknown; city: unknown };
 
-/** Lot 49A (ticket 9) : date de fin du contrat / de la détention (voir `lib/assets/tenure-end`). */
+/** Lot 49A (ticket 9) / lot 53 (D18) : fin de contrat PRÉVUE, jamais une fin de détention (voir `lib/assets/tenure-end`). */
 const tenureEndFields = (family: string, kc: Record<string, unknown>, context: Record<string, unknown>) =>
   tenureEndSectionFields(family, kc, context, readOrigin);
 

@@ -10,7 +10,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { computeAttentionFlags, computeEffectiveStatus } from '../AgendaDomainService';
 import {
-  HISTORICAL_ONLY_BUSINESS_TYPES, historicalSql, isAgendaOverdue, isHistoricalAgendaEvent, isPastHistoricalShownDone,
+  HISTORICAL_ONLY_BUSINESS_TYPES, historicalSql, isAgendaOverdue, isHistoricalAgendaEvent, isPastHistoricalUnconfirmed,
 } from '../agenda-historical';
 import { agendaStatus4 } from '@/services/verebona-assistant/canonical/agenda';
 import { isAgendaActionItemT4 } from '@/services/home/mascot/collector';
@@ -46,16 +46,17 @@ describe('O7b-H01 — règle partagée : nature historique (0223, champ d\'origi
   });
 });
 
-describe('O7b-H02 — statut effectif : historique passé = réalisé ; échéance passée = en retard (inchangé)', () => {
-  it('historique passé sans statut → « realise » (affichage) ; aucun statut écrit (calcul de lecture)', () => {
+describe('O7b-H02 — statut effectif : historique passé jamais en retard ; échéance passée = date échue', () => {
+  // Lot 53 (retour PO D17) : une date passée ne prouve pas la réalisation — « à confirmer », plus « réalisé ».
+  it('historique passé sans statut → « a_confirmer » (affichage) ; aucun statut écrit (calcul de lecture)', () => {
     const item = { ...passe, eventNature: 'HISTORICAL' as const };
-    expect(computeEffectiveStatus(item, NOW)).toBe('realise');
+    expect(computeEffectiveStatus(item, NOW)).toBe('a_confirmer');
     expect(item.manualStatus).toBeNull();
-    expect(isPastHistoricalShownDone(item, NOW)).toBe(true);
+    expect(isPastHistoricalUnconfirmed(item, NOW)).toBe(true);
     expect(isAgendaOverdue(item, NOW)).toBe(false);
     // Achat / sinistre / cession / réparation lus par T4 sans nature : même règle.
     for (const businessType of ['purchase', 'claim', 'sale', 'repair']) {
-      expect(computeEffectiveStatus({ ...passe, businessType }, NOW)).toBe('realise');
+      expect(computeEffectiveStatus({ ...passe, businessType }, NOW)).toBe('a_confirmer');
     }
   });
 
@@ -80,8 +81,9 @@ describe('O7b-H02 — statut effectif : historique passé = réalisé ; échéan
 });
 
 describe('O7b-H03 — assistant (lot 34 « qu\'est-ce qui est en retard ? »), accueil et mascotte', () => {
-  it('statut à 4 états : historique passé = réalisé, jamais « non prouvé » ; échéance passée inchangée', () => {
-    expect(agendaStatus4(null, false, '2026-03-10', '2026-10-12', true)).toBe('completed');
+  it('statut à 4 états : historique passé sans statut = non prouvé (D17, lot 53), jamais en retard ; échéance passée inchangée', () => {
+    expect(agendaStatus4(null, false, '2026-03-10', '2026-10-12', true)).toBe('not_proven');
+    expect(agendaStatus4('realise', false, '2026-03-10', '2026-10-12', true)).toBe('completed');
     expect(agendaStatus4(null, false, '2026-03-10', '2026-10-12')).toBe('not_proven');
     expect(agendaStatus4('annule', false, '2026-03-10', '2026-10-12', true)).toBe('not_completed');
   });

@@ -11,6 +11,7 @@ import dynamic from 'next/dynamic';
 import { apiClient } from '@/lib/api-client';
 import { toast } from 'sonner';
 import type { AgendaItemFull } from '@/services/agenda/AgendaQueryService';
+import { EFFECTIVE_STATUS_LABELS, type AgendaEffectiveStatus } from '@/lib/agenda/effective-status';
 import { useSession } from '@/hooks/useSession';
 
 const AgendaItemDrawer = dynamic(
@@ -30,18 +31,15 @@ const DocumentDrawer = dynamic(
   { ssr: false }
 );
 
-type EffectiveStatus = 'a_venir' | 'en_retard' | 'realise' | 'annule';
+// Lot 53 (D17) : cinq états distincts, libellés partagés (desktop et mobile : même ligne).
+type EffectiveStatus = AgendaEffectiveStatus;
 
-const STATUS_LABELS: Record<EffectiveStatus, string> = {
-  a_venir: 'À venir',
-  en_retard: 'En retard',
-  realise: 'Réalisé',
-  annule: 'Annulé',
-};
+const STATUS_LABELS: Record<EffectiveStatus, string> = EFFECTIVE_STATUS_LABELS;
 
 const STATUS_COLORS: Record<EffectiveStatus, string> = {
   a_venir: 'bg-amber-500/10 text-amber-400',
   en_retard: 'bg-red-500/10 text-red-400',
+  a_confirmer: 'bg-orange-500/10 text-orange-400',
   realise: 'bg-teal-500/10 text-teal-400',
   annule: 'bg-muted text-muted-foreground',
 };
@@ -49,6 +47,7 @@ const STATUS_COLORS: Record<EffectiveStatus, string> = {
 const STATUS_BORDER: Record<EffectiveStatus, string> = {
   a_venir: 'border-amber-500/20',
   en_retard: 'border-red-500/20',
+  a_confirmer: 'border-orange-500/20',
   realise: 'border-teal-500/20',
   annule: 'border-border/40',
 };

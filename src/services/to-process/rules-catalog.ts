@@ -537,6 +537,18 @@ export const PROCESSING_RULES: readonly ProcessingRule[] = [
     businessImpact: 55,
     producer: 'T4_PROJECTION_MATCH',
   },
+  {
+    // (d) Lot 53D (retour PO D2) : devise d'un montant non établie sur le document.
+    code: 'OPERATION-CURRENCY',
+    targetType: 'DOCUMENT',
+    relationKey: 'operationCurrency',
+    arbitratePriority: 'DO_NEXT',
+    completePriority: null,
+    allowNotApplicable: false,
+    question: 'De quelle devise s’agit-il pour ce montant ?',
+    businessImpact: 62,
+    producer: 'T3_OPERATIONS',
+  },
 
   // ── CDC 15 D-15 (lot 14) : statut du bien après vente ou sinistre ───────
   // Un événement historique ne change jamais le statut : il le propose.

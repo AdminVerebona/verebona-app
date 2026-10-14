@@ -8,7 +8,7 @@
  *          LOA, locataire — clé produite par T1 pour un contrat de location)
  *          ou `contractEndDate` (prêt, occupant gratuit, objet loué / prêté) ;
  * AC-T9-2  calculé si début + durée connus (affiché « Calculée », modifiable) ;
- * AC-T9-3  sinon trouvé dans les documents (affiché « Trouvée dans un document ») ;
+ * AC-T9-3  sinon trouvé dans les documents (affiché « Extraite d’un document ») ;
  * AC-T9-4  sinon saisi ; la saisie utilisateur prime toujours ;
  * AC-T9-5  visible SEULEMENT pour une détention à durée limitée ;
  * AC-T9-6  écriture par la primitive canonique (origine USER), valeur
@@ -137,7 +137,7 @@ describe('AC-T9-2 / AC-T9-3 / AC-T9-4 — calculé, trouvé dans un document, sa
   it('AC-T9-3 — valeur d’un document (origine automatique) : affichée telle quelle, pastille « document »', () => {
     const f = vehicule('LOA', { leaseEndDate: '2027-04-01', leaseEndDate__origin: 'DOCUMENT_EXTRACTION', contractStartDate: '2024-03-20', leaseDurationMonths: 36 });
     expect(f).toMatchObject({ leaseEndDate: '2027-04-01', [TENURE_META_KEY]: { source: 'document' } });
-    expect(rendre('vehicle_usage', { vehicleOwnershipStatus: 'LOA', ...f })).toContain('Trouvée dans un document');
+    expect(rendre('vehicle_usage', { vehicleOwnershipStatus: 'LOA', ...f })).toContain('Extraite d’un document');
   });
 
   it('AC-T9-4 — la saisie utilisateur prime sur le calcul et sur le document ; aucune pastille', () => {
@@ -146,7 +146,7 @@ describe('AC-T9-2 / AC-T9-3 / AC-T9-4 — calculé, trouvé dans un document, sa
     expect(resolveTenureEnd({ stored: '2026-12-31', origin: 'ADMIN', start: '2024-03-20', months: 36 }).source).toBe('user');
     const html = rendre('vehicle_usage', { vehicleOwnershipStatus: 'LLD', ...f });
     expect(html).not.toContain('Calculée');
-    expect(html).not.toContain('Trouvée dans un document');
+    expect(html).not.toContain('Extraite d’un document');
     // Rien d'enregistré, rien de calculable : vide, saisissable.
     expect(vehicule('LLD', {})).toMatchObject({ leaseEndDate: null, [TENURE_META_KEY]: { source: null } });
   });

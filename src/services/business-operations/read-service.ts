@@ -229,6 +229,8 @@ export class BusinessOperationReadService {
     ids?: readonly number[];
     typeCodes?: readonly BusinessOperationTypeCode[];
     includeUntargeted?: boolean;
+    /** Lot 53D (D12) : seulement les Opérations sans aucun lien bien actif (dépenses hors répartition du compte). */
+    untargetedOnly?: boolean;
     limit?: number;
   } = {}): Promise<AssistantOperationRead[]> {
     const ids = (filters.assetIds ?? []).filter((x) => Number.isSafeInteger(x) && x > 0);
@@ -236,6 +238,7 @@ export class BusinessOperationReadService {
     if (filters.typeCodes?.length) conds.push(sql`o.type_code = ANY(${pgTextArray(filters.typeCodes)}::text[])`);
     if (filters.ids) conds.push(sql`o.id = ANY(${pgIntArray(filters.ids)}::bigint[])`);
     const sansCible = sql`NOT EXISTS (SELECT 1 FROM business_operation_asset_links l0 WHERE l0.operation_id = o.id AND l0.active)`;
+    if (filters.untargetedOnly) conds.push(sansCible);
     if (ids.length) {
       const lie = sql`EXISTS (SELECT 1 FROM business_operation_asset_links l WHERE l.operation_id = o.id AND l.active
                                AND l.asset_id = ANY(${pgIntArray(ids)}::int[]))`;
@@ -307,6 +310,36 @@ export class BusinessOperationReadService {
         sourceKinds: ((kinds.find(mine)?.kinds as string[] | null) ?? []).map(String) as SourceKind[],
       };
     });
+  }
+
+  /**
+   * Lot 53D (D9) : montants CONNUS hors total des Opérations (frais annexes
+   * d'un achat, prix documentaire écarté par la saisie) — 0351. Titre du
+   * document qui porte le montant (première source DOCUMENT active). Table
+   * absente : liste vide (code tolérant).
+   */
+  async sideAmounts(accountId: number, operationIds: readonly number[]): Promise<Array<{
+    operationId: number; nature: string; kind: string; amountMinor: number; currency: string; amountEurCents: number | null; fileId: number | null; title: string | null;
+  }>> {
+    const ids = operationIds.filter((x) => Number.isSafeInteger(x) && x > 0);
+    if (!ids.length) return [];
+    const [t] = await rows<{ ok: boolean }>(this.runner, sql`SELECT to_regclass('business_operation_side_amounts') IS NOT NULL AS ok`);
+    if (!t?.ok) return [];
+    const r = await rows(this.runner, sql`
+      SELECT a.operation_id, a.nature, a.kind, a.amount_minor, a.currency, a.amount_eur_cents, f.id AS file_id,
+             coalesce(nullif(f.retained_title, ''), f.original_filename) AS title
+        FROM business_operation_side_amounts a
+        LEFT JOIN LATERAL (
+          SELECT f.id, f.retained_title, f.original_filename FROM business_operation_sources s
+            JOIN asset_files f ON f.account_id = s.account_id AND f.id::text = s.source_entity_key AND f.deleted_at IS NULL
+           WHERE s.id = ANY(a.source_ids) AND s.account_id = a.account_id AND s.active AND s.source_kind = 'DOCUMENT'
+           ORDER BY s.id LIMIT 1) f ON TRUE
+       WHERE a.account_id = ${accountId} AND a.operation_id = ANY(${pgIntArray(ids)}::bigint[])
+       ORDER BY a.operation_id, a.nature, a.id`);
+    return r.map((x) => ({
+      operationId: Number(x.operation_id), nature: String(x.nature), kind: String(x.kind), amountMinor: Number(x.amount_minor),
+      currency: String(x.currency).trim(), amountEurCents: num(x.amount_eur_cents), fileId: num(x.file_id), title: (x.title as string | null) ?? null,
+    }));
   }
 
   /**

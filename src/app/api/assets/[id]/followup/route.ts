@@ -87,12 +87,15 @@ export async function GET(
       effectiveStatus: EffectiveStatus;
       isDone: boolean;
       isOverdue: boolean;
+      /** D17 (lot 53) : fait passé sans preuve de réalisation — affiché, jamais masqué. */
+      toConfirm: boolean;
       description: string | null;
       originType: string;
       requiresQualification: boolean;
     };
 
-    // Lot 47B : un fait historique passé est « réalisé », jamais « en retard ».
+    // Lot 47B : un fait historique passé n'est jamais « en retard ». Lot 53 (D17) :
+    // sans statut, il est « à confirmer » — ni réalisé, ni masqué du suivi.
     const natures = await loadEventNatures(rows.map((r) => r.id));
     const typedItems: FollowupItem[] = rows.flatMap(r => {
       const effectiveStatus = computeEffectiveStatus({
@@ -116,6 +119,7 @@ export async function GET(
         effectiveStatus,
         isDone,
         isOverdue: effectiveStatus === 'en_retard',
+        toConfirm: effectiveStatus === 'a_confirmer',
         description: r.description ?? null,
         originType: r.originType,
         requiresQualification: r.requiresQualification,

@@ -23,6 +23,7 @@
  * ══════════════════════════════════════════════════════════════════════════
  */
 import { wordStartPattern } from '@/lib/search/match-engine';
+import { verificationAutoRetryDue } from './verification-followup';
 import type { CoverageStatus, SourceLayer, SourceUnitKind, T1CompletenessReport, T1QualityState, UnresolvedFactRecord } from './types';
 
 type Tx = { unsafe: (q: string, p?: never[]) => Promise<unknown> };
@@ -202,7 +203,11 @@ export async function writeSourceLayer(tx: Tx, p: {
       r.uncertainUnits, r.failedUnits, r.factsCount, r.droppedFactsCount, r.truncatedSectionsCount, r.batchedSectionsCount,
       r.chunkCount, r.repairPassCount, r.coverageRatio, r.qualityState, r.anomalies, p.origin ?? 'ANALYSIS', layer.layerVersion,
       retryAttempts,
-      (p.nextRetryAt !== undefined ? p.nextRetryAt : (r.qualityState === 'INCOMPLETE_RETRYABLE' ? new Date(Date.now() + 15 * 60_000) : null))?.toISOString() ?? null,
+      (p.nextRetryAt !== undefined ? p.nextRetryAt
+        : (r.qualityState === 'INCOMPLETE_RETRYABLE'
+          // Lot 53 (D19) : vérification incomplète pour une cause transitoire (source illisible) : relecture programmée.
+          || verificationAutoRetryDue({ qualityState: r.qualityState, verificationReason: verif?.verificationReason ?? null, retryAttempts, maxRetries: maxCompletenessRetries() })
+          ? new Date(Date.now() + 15 * 60_000) : null))?.toISOString() ?? null,
       p.lastError ?? null,
     ] as never[],
   );
@@ -407,7 +412,7 @@ export async function searchDocumentSourceUnits(
 
 /** Documents dont la couche A est à reprendre (états de qualité). */
 export async function countByQualityState(): Promise<Record<T1QualityState, number>> {
-  const out: Record<T1QualityState, number> = { COMPLETE: 0, COMPLETE_WITH_UNRESOLVED: 0, INCOMPLETE_RETRYABLE: 0, INCOMPLETE_FINAL: 0 };
+  const out: Record<T1QualityState, number> = { COMPLETE: 0, COMPLETE_WITH_UNRESOLVED: 0, VERIFICATION_INCOMPLETE: 0, INCOMPLETE_RETRYABLE: 0, INCOMPLETE_FINAL: 0 };
   if (!(await sourceLayerReady())) return out;
   const { pgClient } = await import('@/db');
   const rows = (await pgClient.unsafe(

@@ -23,13 +23,12 @@ import { pgClient } from '@/db';
 import { agendaFunctionalColumnsReady } from '@/services/agenda/agenda-columns';
 import { isAgendaActionItemT4 } from '@/services/home/mascot/collector';
 import { assistantAssetAvailability } from '../core/asset-availability';
-import type { DeadlineRow, TodoRow } from '../core/actionable-request';
+import { MAX_DEADLINE_ROWS, MAX_TODO_ROWS, type DeadlineRow, type TodoRow } from '../core/actionable-request';
 import { HISTORICAL_FIELD_KEYS, NOT_HISTORICAL } from './agenda';
 import { DOC_OF_ASSETS } from './repository';
 
-/** Bornes de lecture (au-delà, la page « À traiter » / l'agenda font foi). */
-export const MAX_TODO_ROWS = 200;
-export const MAX_DEADLINE_ROWS = 300;
+/** Bornes de lecture (au-delà, la page « À traiter » / l'agenda font foi) — module pur partagé (lot 53). */
+export { MAX_TODO_ROWS, MAX_DEADLINE_ROWS };
 
 export interface ActionableReadOptions {
   /** Biens visés (liens canoniques) ; vide : tout le compte. */

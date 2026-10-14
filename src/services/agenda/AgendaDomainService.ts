@@ -1,10 +1,18 @@
 /**
  * AgendaDomainService — pure domain logic, no DB access
  */
-import { agendaDatePassed, isPastHistoricalShownDone, type AgendaNatureSignals } from './agenda-historical';
+import { agendaDatePassed, isPastHistoricalUnconfirmed, type AgendaNatureSignals } from './agenda-historical';
 
 export type ManualStatus = 'realise' | 'annule' | null;
-export type EffectiveStatus = 'a_venir' | 'en_retard' | 'realise' | 'annule';
+/**
+ * Statut effectif (lu, jamais écrit) — D17 (lot 53) : cinq états distincts
+ *   a_venir      prévu / à venir
+ *   en_retard    date échue (échéance passée sans statut)
+ *   a_confirmer  statut à confirmer (fait passé sans preuve de réalisation)
+ *   realise      réalisé (statut établi)
+ *   annule       annulé
+ */
+export type EffectiveStatus = 'a_venir' | 'en_retard' | 'a_confirmer' | 'realise' | 'annule';
 export type AttentionFlag = 'sans_bien' | 'en_retard' | 'date_incoherente' | 'donnee_distincte_a_qualifier';
 export type OriginType =
   | 'manual'
@@ -56,10 +64,10 @@ export interface AgendaDataConflictRef {
  * computeEffectiveStatus
  * Algorithm per plan §0.2
  *
- * Lot 47B (décision PO du 12/10) : un fait HISTORICAL passé sans statut est
- * « réalisé » à l'affichage (jamais « en retard ») — calcul de lecture, rien
- * n'est écrit. Règle partagée : `agenda-historical.ts`. Sans indice de nature
- * (appelant qui ne les lit pas), comportement inchangé.
+ * Lot 47B : un fait HISTORICAL passé n'est jamais « en retard ». Lot 53
+ * (D17) : sans statut, il est « à confirmer », plus « réalisé » — une date
+ * passée ne prouve pas la réalisation. Calcul de lecture, rien n'est écrit.
+ * Règle partagée : `agenda-historical.ts`.
  */
 export function computeEffectiveStatus(item: AgendaItemRaw, now: Date = new Date()): EffectiveStatus {
   if (item.manualStatus !== null && item.manualStatus !== undefined && item.manualStatus !== ('' as ManualStatus)) {
@@ -68,7 +76,7 @@ export function computeEffectiveStatus(item: AgendaItemRaw, now: Date = new Date
   const passee = agendaDatePassed(item, now);
   if (passee === null) return 'a_venir';
   if (!passee) return 'a_venir';
-  return isPastHistoricalShownDone(item, now) ? 'realise' : 'en_retard';
+  return isPastHistoricalUnconfirmed(item, now) ? 'a_confirmer' : 'en_retard';
 }
 
 /**

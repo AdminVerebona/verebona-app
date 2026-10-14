@@ -84,6 +84,12 @@ export interface MascotRawData {
    * serveur (quota, lecture seule).
    */
   rights?: MascotRights | null;
+  /**
+   * Lot 53 (D25) : échéances « action » ouvertes à date dépassée, SANS la
+   * fenêtre des sujets (identifiants et dates seuls, bornés). Absent :
+   * non lu (comportement antérieur) ; `null` : lecture en échec (dégradé).
+   */
+  overdueAgenda?: Array<{ id: number; date: string }> | null;
 }
 
 /** Droits utiles aux recommandations (REC-005). */
@@ -460,6 +466,17 @@ function mascotRuleSubjects(raw: MascotRawData): MascotSubject[] {
 
 // ── Assemblage ───────────────────────────────────────────────────────────────
 
+/**
+ * Lot 53 (D25) : nombre d'échéances dépassées encore ouvertes — hors celles
+ * que l'utilisateur a déclarées faites (« C'est fait », même cycle). `null` :
+ * inconnu (lecture absente ou en échec). Pure.
+ */
+export function openOverdueCount(raw: MascotRawData): number | null {
+  if (raw.overdueAgenda === undefined || raw.overdueAgenda === null) return null;
+  const acquittes = new Set((raw.acknowledgments ?? []).map((a) => `${a.occurrenceKey}|${a.cycleKey}`));
+  return raw.overdueAgenda.filter((i) => !acquittes.has(`${extActionOccurrenceKey(i.id)}|${i.date}`)).length;
+}
+
 export function buildCandidates(raw: MascotRawData): MascotCandidates {
   const candidates = [
     ...processingSubjects(raw),
@@ -468,6 +485,8 @@ export function buildCandidates(raw: MascotRawData): MascotCandidates {
     ...mascotRuleSubjects(raw),
   ];
   const degraded = raw.processing === null || raw.onboarding === null || raw.toProcess === null
-    || raw.agenda === null || raw.acknowledgments === null;
+    || raw.agenda === null || raw.acknowledgments === null
+    // Lot 53 (D25) : sans savoir s'il reste des échéances dépassées, jamais « tout est à jour ».
+    || raw.overdueAgenda === null;
   return { candidates, degraded };
 }

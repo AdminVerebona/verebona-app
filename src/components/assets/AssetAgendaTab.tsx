@@ -1,6 +1,7 @@
 "use client"
 
 import { useState, useEffect, useCallback } from 'react';
+import { EFFECTIVE_STATUS_LABELS, type AgendaEffectiveStatus } from '@/lib/agenda/effective-status';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -21,18 +22,15 @@ const CreateAgendaItemDrawer = dynamic(
   { ssr: false }
 );
 
-type EffectiveStatus = 'a_venir' | 'en_retard' | 'realise' | 'annule';
+// Lot 53 (D17) : libellés partagés — « Statut à confirmer » n'est ni réalisé, ni masqué.
+type EffectiveStatus = AgendaEffectiveStatus;
 
-const STATUS_LABELS: Record<EffectiveStatus, string> = {
-  a_venir: 'À venir',
-  en_retard: 'En retard',
-  realise: 'Réalisé',
-  annule: 'Annulé',
-};
+const STATUS_LABELS: Record<EffectiveStatus, string> = EFFECTIVE_STATUS_LABELS;
 
 const STATUS_COLORS: Record<EffectiveStatus, string> = {
   a_venir: 'bg-blue-100 text-blue-800',
   en_retard: 'bg-red-100 text-red-800',
+  a_confirmer: 'bg-orange-100 text-orange-800',
   realise: 'bg-green-100 text-green-800',
   annule: 'bg-gray-100 text-gray-600',
 };

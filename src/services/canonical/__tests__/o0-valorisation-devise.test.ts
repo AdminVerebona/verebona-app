@@ -142,6 +142,7 @@ describe('O0-08 — devise conservée, jamais présumée à tort (C12.3)', () =>
     const fr = buildKnowledgeFromSourceAnalysis({ ...base, document: {
       amountCents: { value: 12900, confidence: 'certain', excerpt: 'TOTAL TTC 129,00', location: {} }, transcription: 'TOTAL TTC 129,00',
     } } as never, ctx);
-    expect(fr.extraction.currency).toBe('EUR');
+    // Lot 53D (PO-D2) : aucune devise écrite → euro seulement présumé, stocké « XXX » (hors agrégats EUR).
+    expect(fr.extraction.currency).toBe('XXX');
   });
 });

@@ -1,8 +1,8 @@
 "use client";
 
-import { useState } from 'react';
+import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { CalendarDays, FileText, Package, X } from 'lucide-react';
+import { CalendarDays, FileText, Package } from 'lucide-react';
 import { useSession } from '@/hooks/useSession';
 // Formulaires chargés à l'usage, jamais dans le JavaScript initial (APP-PERF-05).
 import {
@@ -12,7 +12,6 @@ import {
   preloadAddForm,
 } from './add-forms';
 import { useWriteGuard } from '@/contexts/WriteGuardContext';
-import { ACCEPT_DEPOT } from '@/lib/upload-limits';
 
 interface MobileActionsSheetProps {
   open: boolean;
@@ -22,6 +21,37 @@ interface MobileActionsSheetProps {
    * latéral). Par défaut, mobile seulement (`md:hidden`).
    */
   allViewports?: boolean;
+  /**
+   * Lot 53b (point 11) : position du bouton « + » qui ouvre le menu. Le menu
+   * s'accroche à ce bouton (au-dessus du « + » mobile, sous ou à droite du
+   * « + Ajouter » du menu latéral) au lieu d'un panneau latéral plein écran.
+   */
+  anchor?: DOMRect | null;
+}
+
+/** Largeur du menu « Ajouter » (bornée par la marge de 16 px sur mobile). */
+export const ADD_MENU_WIDTH = 288;
+const GUTTER = 16;
+
+export interface AddMenuPosition { left: number; top?: number; bottom?: number; origin: 'top' | 'bottom' | 'left' }
+
+/**
+ * Position du menu « Ajouter » : pure, testée. Bouton dans la moitié basse
+ * (« + » de la barre mobile) → au-dessus, centré sur le bouton ; bouton
+ * étroit (menu latéral replié) → à droite ; sinon → dessous, aligné à gauche.
+ * Toujours dans l'écran, à 16 px des bords.
+ */
+export function addMenuPosition(anchor: Pick<DOMRect, 'top' | 'bottom' | 'left' | 'right' | 'width'> | null | undefined, vw: number, vh: number): AddMenuPosition {
+  const w = Math.min(ADD_MENU_WIDTH, vw - 2 * GUTTER);
+  const clampX = (x: number) => Math.max(GUTTER, Math.min(x, vw - w - GUTTER));
+  if (!anchor) return { left: clampX((vw - w) / 2), bottom: 104, origin: 'bottom' };
+  if (anchor.top > vh / 2) {
+    return { left: clampX(anchor.left + anchor.width / 2 - w / 2), bottom: Math.max(GUTTER, vh - anchor.top + 10), origin: 'bottom' };
+  }
+  if (anchor.width < 64) {
+    return { left: clampX(anchor.right + 8), top: Math.max(GUTTER, anchor.top), origin: 'left' };
+  }
+  return { left: clampX(anchor.left), top: anchor.bottom + 6, origin: 'top' };
 }
 
 type ActionType = 'file' | 'agenda' | 'asset' | null;
@@ -53,10 +83,12 @@ const ACTIONS = [
   },
 ];
 
-export function MobileActionsSheet({ open, onOpenChange, allViewports = false }: MobileActionsSheetProps) {
+export function MobileActionsSheet({ open, onOpenChange, allViewports = false, anchor = null }: MobileActionsSheetProps) {
   const viewport = allViewports ? '' : ' md:hidden';
   const { user } = useSession();
   const [selectedAction, setSelectedAction] = useState<ActionType>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const retourFocus = useRef<HTMLElement | null>(null);
 
   /**
    * Garde déportée dans `WriteGuardContext` — même fenêtre que le bouton
@@ -68,14 +100,38 @@ export function MobileActionsSheet({ open, onOpenChange, allViewports = false }:
     garder(() => { bloque = false; }, quota);
     return bloque;
   };
-  const [capturedFiles, setCapturedFiles] = useState<File[]>([]);
+
+  // Ouverture : focus sur la première action (clavier), retour au « + » à la
+  // fermeture par Échap. Échap ferme aussi depuis n'importe où.
+  useEffect(() => {
+    if (!open) return;
+    retourFocus.current = (typeof document !== 'undefined' ? document.activeElement : null) as HTMLElement | null;
+    const t = window.setTimeout(() => menuRef.current?.querySelector<HTMLElement>('[role="menuitem"]')?.focus(), 0);
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') { e.preventDefault(); onOpenChange(false); retourFocus.current?.focus?.(); }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => { window.clearTimeout(t); window.removeEventListener('keydown', onKey); };
+  }, [open, onOpenChange]);
+
+  const naviguerClavier = (e: ReactKeyboardEvent<HTMLDivElement>) => {
+    const items = Array.from(menuRef.current?.querySelectorAll<HTMLElement>('[role="menuitem"]') ?? []);
+    if (items.length === 0) return;
+    const i = items.indexOf(document.activeElement as HTMLElement);
+    const aller = (n: number) => { e.preventDefault(); items[(n + items.length) % items.length]?.focus(); };
+    if (e.key === 'ArrowDown') aller(i + 1);
+    else if (e.key === 'ArrowUp') aller(i - 1);
+    else if (e.key === 'Home') aller(0);
+    else if (e.key === 'End') aller(items.length - 1);
+    else if (e.key === 'Tab') onOpenChange(false);
+  };
 
   const handleActionSelect = (action: ActionType) => {
     onOpenChange(false);
 
     // Même garde que le « + » de la barre latérale : on n'ouvre pas un
-    // formulaire ni un sélecteur de fichier pour une action que le serveur
-    // refusera. Le refus est annoncé avec son chemin de sortie.
+    // formulaire pour une action que le serveur refusera. Le refus est
+    // annoncé avec son chemin de sortie.
     if (action === 'asset' && refuserEcriture('assets')) return;
     if (action === 'file' && refuserEcriture('documents')) return;
     // L'agenda manquait : ajouter une échéance est une écriture, refusée par
@@ -83,128 +139,85 @@ export function MobileActionsSheet({ open, onOpenChange, allViewports = false }:
     if (action === 'agenda' && refuserEcriture()) return;
 
     if (action === 'file') {
-      // Le chunk du dialogue se charge pendant le choix du fichier.
+      // Lot 53b (point 11) : le tiroir d'ajout de document s'ouvre (dépôt,
+      // sélection multiple, lien web) au lieu de l'explorateur de fichiers à
+      // choix unique. Le tri des fichiers reste celui du tiroir.
       preloadAddForm('file');
-      const input = document.createElement('input');
-      input.type = 'file';
-      // Même liste que le dialogue, dérivée du contrat de dépôt (APP-PERF-28).
-      // Le fichier choisi passe ensuite par le même tri que toute autre
-      // entrée (taille, type, lot) avant tout transfert.
-      input.accept = ACCEPT_DEPOT;
-      input.onchange = (e) => {
-        const file = (e.target as HTMLInputElement).files?.[0];
-        if (file) {
-          setCapturedFiles([file]);
-          setSelectedAction('file');
-        }
-      };
-      input.click();
-    } else {
-      setSelectedAction(action);
     }
+    setSelectedAction(action);
   };
 
   const handleCloseAction = () => {
     setSelectedAction(null);
-    setCapturedFiles([]);
   };
+
+  const vw = typeof window !== 'undefined' ? window.innerWidth : 390;
+  const vh = typeof window !== 'undefined' ? window.innerHeight : 844;
+  const pos = addMenuPosition(anchor, vw, vh);
+  const decalage = pos.origin === 'bottom' ? 6 : pos.origin === 'top' ? -6 : 0;
 
   return (
     <>
-      {/* Panneau latéral droit (il montait par le bas : règle d'interface,
-          les tiroirs s'ouvrent à droite) */}
+      {/* Lot 53b (point 11) : petit menu accroché au « + » (plus de panneau
+          latéral plein écran). Clic à côté, Échap ou choix d'une action :
+          fermeture. Ni voile sombre ni flou. */}
       <AnimatePresence>
         {open && (
           <>
-            {/* Backdrop */}
-            <motion.div
-              key="backdrop"
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              transition={{ duration: 0.2 }}
-              className={`fixed inset-0 z-50 bg-black/60 backdrop-blur-sm${viewport}`}
+            <div
+              key="catcher"
+              aria-hidden
+              className={`fixed inset-0 z-50${viewport}`}
               onClick={() => onOpenChange(false)}
             />
-
-            {/* Sheet */}
             <motion.div
-              key="sheet"
-              initial={{ x: '100%' }}
-              animate={{ x: 0 }}
-              exit={{ x: '100%' }}
-              transition={{ type: 'spring', damping: 28, stiffness: 320 }}
-              className={`fixed inset-y-0 right-0 z-50 w-[85vw] max-w-sm${viewport}`}
+              key="menu"
+              ref={menuRef}
+              role="menu"
+              aria-label="Ajouter"
+              onKeyDown={naviguerClavier}
+              initial={{ opacity: 0, scale: 0.96, y: decalage }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.96, y: decalage }}
+              transition={{ duration: 0.14, ease: 'easeOut' }}
+              style={{ left: pos.left, top: pos.top, bottom: pos.bottom, width: Math.min(ADD_MENU_WIDTH, vw - 32), transformOrigin: pos.origin === 'bottom' ? 'bottom center' : pos.origin === 'top' ? 'top left' : 'left top' }}
+              className={`fixed z-50 rounded-2xl border border-[color:var(--border-subtle)] bg-[color:var(--bg-card)] p-1.5 shadow-2xl${viewport}`}
             >
-              <div className="h-full overflow-y-auto bg-[color:var(--bg-card)] border-l border-[color:var(--border-subtle)] shadow-2xl pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)]">
-
-                {/* Header */}
-                <div className="flex items-center justify-between px-6 pt-6 pb-5">
-                  <h2 className="text-lg font-semibold text-[color:var(--text-primary)]">
-                    Ajouter
-                  </h2>
-                  <button
-                    onClick={() => onOpenChange(false)}
-                    aria-label="Fermer"
-                    className="w-8 h-8 flex items-center justify-center rounded-full bg-[color:var(--bg-page)] text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)] transition-colors"
-                  >
-                    <X className="w-4 h-4" />
-                  </button>
-                </div>
-
-                {/* Actions */}
-                <div className="px-4 pb-6 space-y-2.5">
-                  {ACTIONS.map((action, i) => (
-                    <motion.button
-                      key={action.id}
-                      initial={{ opacity: 0, x: 12 }}
-                      animate={{ opacity: 1, x: 0 }}
-                      transition={{ delay: i * 0.05, duration: 0.2 }}
-                      onClick={() => handleActionSelect(action.id)}
-                      // Préchargement sur intention : pointeur, toucher ou
-                      // focus clavier sur l'action — pas à l'ouverture du
-                      // panneau, ni au chargement de la page.
-                      onPointerEnter={() => preloadAddForm(action.id)}
-                      onTouchStart={() => preloadAddForm(action.id)}
-                      onFocus={() => preloadAddForm(action.id)}
-                      className="w-full flex items-center gap-4 px-4 py-4 rounded-2xl bg-[color:var(--bg-page)] border border-[color:var(--border-subtle)] active:scale-[0.98] transition-all hover:border-[color:var(--accent)]/40 hover:bg-[color:var(--accent-soft)] group"
-                    >
-                      {/* Icon bubble */}
-                      <div className={`w-11 h-11 flex-shrink-0 rounded-xl flex items-center justify-center ${action.iconBg}`}>
-                        <action.icon className={`w-5 h-5 ${action.iconColor}`} />
-                      </div>
-
-                      {/* Text */}
-                      <div className="flex-1 text-left min-w-0">
-                        <div className="font-semibold text-sm text-[color:var(--text-primary)] leading-tight">
-                          {action.label}
-                        </div>
-                        <div className="text-xs text-[color:var(--text-muted)] mt-0.5 leading-snug">
-                          {action.sub}
-                        </div>
-                      </div>
-
-                      {/* Arrow */}
-                      <svg className="w-4 h-4 text-[color:var(--text-muted)] group-hover:text-[color:var(--accent)] transition-colors flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
-                      </svg>
-                    </motion.button>
-                  ))}
-                </div>
-              </div>
+              {ACTIONS.map((action) => (
+                <button
+                  key={action.id}
+                  type="button"
+                  role="menuitem"
+                  tabIndex={-1}
+                  onClick={() => handleActionSelect(action.id)}
+                  // Préchargement sur intention : pointeur, toucher ou
+                  // focus clavier sur l'action — pas à l'ouverture du
+                  // menu, ni au chargement de la page.
+                  onPointerEnter={() => preloadAddForm(action.id)}
+                  onTouchStart={() => preloadAddForm(action.id)}
+                  onFocus={() => preloadAddForm(action.id)}
+                  className="flex w-full items-center gap-3 rounded-xl px-2.5 py-2.5 text-left transition-colors hover:bg-[color:var(--accent-soft)] focus-visible:bg-[color:var(--accent-soft)] focus-visible:outline-none active:scale-[0.98]"
+                >
+                  <span className={`flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-lg ${action.iconBg}`}>
+                    <action.icon className={`h-[18px] w-[18px] ${action.iconColor}`} aria-hidden />
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block text-[13.5px] font-semibold leading-tight text-[color:var(--text-primary)]">{action.label}</span>
+                    <span className="mt-0.5 block text-[11.5px] leading-snug text-[color:var(--text-muted)]">{action.sub}</span>
+                  </span>
+                </button>
+              ))}
             </motion.div>
           </>
         )}
       </AnimatePresence>
 
-      {/* Formulaires (hors du panneau pour ne pas être rognés), montés
+      {/* Formulaires (hors du menu pour ne pas être rognés), montés
           seulement une fois l'action choisie ET autorisée par la garde. */}
-      {selectedAction === 'file' && capturedFiles.length > 0 && (
+      {selectedAction === 'file' && (
         <LazyUnifiedDocumentDialog
           open={true}
           onOpenChange={(v) => { if (!v) handleCloseAction(); }}
-          initialFiles={capturedFiles}
-          initialSource="file"
           onSuccess={handleCloseAction}
         />
       )}

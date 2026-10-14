@@ -42,7 +42,7 @@ export const MASTER_CORPUS_EVALUATORS: Readonly<Record<string, Evaluator>> = {
   // Invariants contrôlés sur TOUS les cas : un candidat établi a au moins
   // une preuve ; une preuve de paiement ne porte aucun coût (INV-FINAL-015).
   async t1_analyze_document(c, output) {
-    const { anchorOperationCandidates, gateOperationCandidates } = await import('../../source-analysis/operation-candidates/prepare');
+    const { anchorOperationCandidates, currencyEvidenceOf, gateOperationCandidates } = await import('../../source-analysis/operation-candidates/prepare');
     const { checkFactEvidence } = await import('../../source-analysis/master/fact-evidence');
     const { transactionNature } = await import('../../source-analysis/projection/rules');
     const out = structuredClone(output) as import('../../source-analysis/master/t1-contract').T1AnalyzeDocumentOutput;
@@ -57,6 +57,7 @@ export const MASTER_CORPUS_EVALUATORS: Readonly<Record<string, Evaluator>> = {
       verifiedIds: { ASSET: ids('ASSET'), EQUIPMENT: ids('EQUIPMENT'), ROOM: ids('ROOM') },
       capabilities: { rooms: ctx.capabilities?.rooms ?? true, equipments: ctx.capabilities?.equipments ?? true },
       keptFactRefs: new Set(gardes.flatMap((f) => (f.t1FactRef ? [f.t1FactRef] : []))),
+      currencyEvidence: currencyEvidenceOf(out),
       transactionNature: transactionNature({
         documentTypeCode: classification?.documentTypeCode ?? null,
         texts: [out.document.title?.value, out.document.amountCents?.evidence?.excerpt],

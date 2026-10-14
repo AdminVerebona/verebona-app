@@ -42,6 +42,7 @@ import {
 import {
   SOURCE_LAYER_VERSION, type CoveredSourceUnit, type SourceLayer, type T1CoverageDiagnostics, type UnresolvedFactRecord,
 } from './types';
+import { verificationAutoRetryDue } from './verification-followup';
 import type { ExtractedTable, VisualObservation } from '../types';
 import type { T1AnalyzeDocumentOutput, T1Fact } from '../master/t1-contract';
 
@@ -283,6 +284,7 @@ export async function runCompletenessRetry(opts: { deadline?: number; env?: Reco
     try {
       const out = await retryDocument({
         fileId, accountId, extractionId: r.extraction_id == null ? null : Number(r.extraction_id), attempt,
+        qualityState: String(r.quality_state ?? ''),
         maxRetries: s.maxRetries, assetId: Number(r.asset_id ?? r.linked_asset_id ?? 0) || null,
         userId: Number(r.owner_user_id), title: r.title == null ? null : String(r.title), env: opts.env,
       });
@@ -327,27 +329,62 @@ function storedDiagnostics(v: Record<string, unknown> | null | undefined) {
   };
 }
 
+/**
+ * Relecture du FICHIER : le document repasse dans la file T1 (traitement
+ * technique, non facturé, non annoncé). Consomme une tentative. Lot 53 (D19) :
+ * partagée par la reprise d'une lacune de pages, d'une vérification
+ * incomplète transitoire et la reprise manuelle du BO (`result`).
+ */
+export async function requeueDocumentForReread(p: {
+  fileId: number; accountId: number; attempt: number; origin: string; result: string;
+}): Promise<boolean> {
+  const { pgClient } = await import('@/db');
+  const { enqueueFileAnalyses } = await import('../queue/t1-handler');
+  const acceptes = await enqueueFileAnalyses([p.fileId], p.accountId, { origin: p.origin, billable: false, processingVisibility: 'TECHNICAL' });
+  const ok = acceptes.includes(p.fileId);
+  await pgClient.unsafe(
+    `UPDATE document_extraction_coverage SET retry_attempts = $2, next_retry_at = NULL, origin = 'RETRY', updated_at = NOW(),
+            last_error = $3 WHERE file_id = $1`,
+    [p.fileId, p.attempt, ok ? null : 'mise en file T1 refusée'] as never[],
+  );
+  await pgClient.unsafe(
+    `UPDATE document_extraction_coverage SET last_retry_at = NOW(), last_retry_result = $2 WHERE file_id = $1`, [p.fileId, p.result] as never[],
+  ).catch(() => undefined);
+  return ok;
+}
+
 async function retryDocument(p: {
   fileId: number; accountId: number; extractionId: number | null; attempt: number; maxRetries: number;
   assetId: number | null; userId: number; title: string | null; env?: Record<string, string | undefined>;
+  /** Lot 53 (D19) : état de qualité de la ligne réservée. */
+  qualityState?: string;
 }): Promise<'repaired' | 'requeued' | 'final'> {
   const { pgClient } = await import('@/db');
+
+  // Lot 53 (D19) : vérification incomplète — seule une cause transitoire
+  // (source illisible) justifie une relecture automatique du fichier ; sinon
+  // la reprise est manuelle (BO) et rien n'est rejoué ici (jamais de boucle).
+  if (p.qualityState === 'VERIFICATION_INCOMPLETE') {
+    const cov = await loadDocumentCoverage(p.fileId, p.accountId);
+    const raison = ((cov?.verification ?? {}) as { verificationReason?: string | null }).verificationReason ?? null;
+    if (verificationAutoRetryDue({ qualityState: p.qualityState, verificationReason: raison, retryAttempts: p.attempt - 1, maxRetries: p.maxRetries })) {
+      await requeueDocumentForReread({ fileId: p.fileId, accountId: p.accountId, attempt: p.attempt, origin: 't1-completeness-retry', result: 'REQUEUED_T1' });
+      return 'requeued';
+    }
+    await pgClient.unsafe(
+      `UPDATE document_extraction_coverage SET next_retry_at = NULL, last_retry_at = NOW(), last_retry_result = 'MANUAL_CHECK_REQUIRED' WHERE file_id = $1`,
+      [p.fileId] as never[],
+    ).catch(() => undefined);
+    return 'repaired';
+  }
+
   const stored = await loadDocumentSourceUnits(p.fileId, { accountId: p.accountId, limit: 50_000 });
   const units = stored.map(toCovered);
   const lacunes = units.filter((u) => u.kind === 'PAGE_GAP' && u.status === 'FAILED' && u.payload.retryable === true);
 
   // Lacune de pages : seule une relecture du fichier peut la combler → file T1.
   if (lacunes.length > 0 && p.attempt <= p.maxRetries) {
-    const { enqueueFileAnalyses } = await import('../queue/t1-handler');
-    const acceptes = await enqueueFileAnalyses([p.fileId], p.accountId, { origin: 't1-completeness-retry', billable: false, processingVisibility: 'TECHNICAL' });
-    await pgClient.unsafe(
-      `UPDATE document_extraction_coverage SET retry_attempts = $2, next_retry_at = NULL, origin = 'RETRY', updated_at = NOW(),
-              last_error = $3 WHERE file_id = $1`,
-      [p.fileId, p.attempt, acceptes.includes(p.fileId) ? null : 'mise en file T1 refusée'] as never[],
-    );
-    await pgClient.unsafe(
-      `UPDATE document_extraction_coverage SET last_retry_at = NOW(), last_retry_result = 'REQUEUED_T1' WHERE file_id = $1`, [p.fileId] as never[],
-    ).catch(() => undefined);
+    await requeueDocumentForReread({ fileId: p.fileId, accountId: p.accountId, attempt: p.attempt, origin: 't1-completeness-retry', result: 'REQUEUED_T1' });
     return 'requeued';
   }
 

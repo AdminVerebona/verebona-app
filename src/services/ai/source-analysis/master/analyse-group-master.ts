@@ -18,7 +18,7 @@ import { projectDocumentFacts, type DocumentProjection } from '../projection/doc
 import { combineTraces } from '../trace';
 import { toSourceAnalysisResult } from './to-source-analysis-result';
 import type { ProjectedFact, T1AnalyzeDocumentOutput, T1FactWithRef } from './t1-contract';
-import { gateOperationCandidates, type AnchoredOperationCandidate } from '../operation-candidates/prepare';
+import { currencyEvidenceOf, gateOperationCandidates, type AnchoredOperationCandidate } from '../operation-candidates/prepare';
 import { transactionNature } from '../projection/rules';
 import type { AnalysisContext, SourceAnalysisResult, SourceInput } from '../types';
 
@@ -130,6 +130,8 @@ export async function analyseGroupWithMaster(
       return { rooms: caps?.rooms ?? false, equipments: caps?.equipments ?? false };
     })(),
     keptFactRefs: new Set((a.facts as T1FactWithRef[]).flatMap((f) => (f.t1FactRef ? [f.t1FactRef] : []))),
+    // Lot 53D (D2, Q16) : devise et contre-valeur établies sur le document.
+    currencyEvidence: currencyEvidenceOf(a),
     transactionNature: transactionNature({
       documentTypeCode: a.document.classification?.documentTypeCode ?? null,
       texts: [a.document.title?.value, a.document.amountCents?.evidence?.excerpt],

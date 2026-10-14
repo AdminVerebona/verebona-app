@@ -50,7 +50,14 @@ export type SourceUnitKind = (typeof SOURCE_UNIT_KINDS)[number];
 export const COVERAGE_STATUSES = ['COVERED', 'NON_INFORMATIONAL', 'UNRESOLVED', 'UNCERTAIN', 'FAILED'] as const;
 export type CoverageStatus = (typeof COVERAGE_STATUSES)[number];
 
-export const T1_QUALITY_STATES = ['COMPLETE', 'COMPLETE_WITH_UNRESOLVED', 'INCOMPLETE_RETRYABLE', 'INCOMPLETE_FINAL'] as const;
+/**
+ * États de qualité d'une analyse T1. Lot 53 (retour PO D19) :
+ * `VERIFICATION_INCOMPLETE` — la couverture du document original n'a pas pu
+ * être vérifiée (image, PDF non sondable, pages non vérifiables, couverture
+ * reconstruite) : l'analyse n'est JAMAIS dite « complète », même si tout ce
+ * qui a été lu est structuré (migration 0354).
+ */
+export const T1_QUALITY_STATES = ['COMPLETE', 'COMPLETE_WITH_UNRESOLVED', 'VERIFICATION_INCOMPLETE', 'INCOMPLETE_RETRYABLE', 'INCOMPLETE_FINAL'] as const;
 export type T1QualityState = (typeof T1_QUALITY_STATES)[number];
 
 /** Origine d'une unité : passe principale, lot de débordement, découpage par pages, réparation, reprise historique. */
@@ -187,6 +194,8 @@ export const T1_COMPLETENESS_ANOMALIES = [
   'FACTS_TRUNCATED', 'PARTIAL_EXTRACTION', 'FACT_INVALID_DROPPED', 'SOURCE_UNIT_FAILED', 'COVERAGE_INCOMPLETE',
   // Lot 49B : page ou zone non vérifiée, page manquante, réparation en attente / épuisée, perte de normalisation, source illisible.
   'PAGE_UNVERIFIED', 'PAGE_MISSING', 'REPAIR_PENDING', 'REPAIR_EXHAUSTED', 'NORMALISATION_LOSS', 'SOURCE_UNREADABLE',
+  // Lot 53 (D19) : couverture de la source non vérifiable — toujours visible dans BO › Complétude T1.
+  'COVERAGE_UNVERIFIED',
 ] as const;
 
 /** Segment de texte lu : passe principale ou lot de pages (décalage de page). */

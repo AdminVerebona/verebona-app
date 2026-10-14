@@ -50,8 +50,13 @@ import {
 export interface PersistedFinancialHint {
   role: string;
   amountMinor: number;
+  /** « XXX » : devise non établie sur le document (lot 53D, D2). */
   currency: string;
-  amountScope?: 'TOTAL' | 'DEPOSIT' | 'BALANCE' | 'INSTALLMENT' | null;
+  /** Lot 53D (Q16) : contre-valeur EUR écrite sur le document, vérifiée par la barrière T1. */
+  amountEurMinor?: number | null;
+  /** Lot 53D (D2) : devises plausibles d'un montant « XXX » (question de confirmation). */
+  currencyCandidates?: string[];
+  amountScope?: 'TOTAL' | 'DEPOSIT' | 'BALANCE' | 'INSTALLMENT' | 'FEE' | null;
   economicDate?: string | null;
   periodStart?: string | null;
   periodEnd?: string | null;
@@ -238,6 +243,10 @@ export interface DesiredComponent {
   kind: FinancialComponentKind;
   amountMinor: number;
   currency: string;
+  /** Lot 53D (Q16) : contre-valeur EUR documentaire (jamais calculée), sinon null. */
+  amountEurCents: number | null;
+  /** Lot 53D (D2) : devise « XXX » — devises plausibles à confirmer. */
+  currencyCandidates?: string[];
   economicDate: string | null;
   periodStart: string | null;
   periodEnd: string | null;
@@ -312,15 +321,20 @@ export function componentsFromIdentity(id: CandidateIdentity): DesiredComponent[
     const periodEnd = dateOrNull(h.periodEnd);
     // Acompte / solde : un même acompte cité par plusieurs documents est une
     // seule composante — identité par montant, sans référence ni date.
-    const fingerprint = scope === 'DEPOSIT' || scope === 'BALANCE'
+    // Lot 53D (D9) : plusieurs frais annexes d'une même facture restent distincts (montant dans l'identité).
+    const fingerprint = scope === 'FEE'
+      ? empreinte(['v1', kind, scope, ref, h.currency, h.amountMinor, economicDate])
+      : scope === 'DEPOSIT' || scope === 'BALANCE'
       ? empreinte(['v1', kind, scope, h.currency, h.amountMinor])
       : ref
         ? empreinte(['v1', kind, scope, ref, periodStart, periodEnd])
         : empreinte(['v1', kind, scope, h.currency, h.amountMinor, economicDate, periodStart, periodEnd]);
     if (out.has(fingerprint)) continue;
+    const eur = h.currency !== 'EUR' && h.currency !== 'XXX' && isMinorAmount(h.amountEurMinor) ? h.amountEurMinor : null;
     out.set(fingerprint, {
-      fingerprint, kind, amountMinor: h.amountMinor, currency: h.currency, economicDate, periodStart, periodEnd, scope,
+      fingerprint, kind, amountMinor: h.amountMinor, currency: h.currency, amountEurCents: eur, economicDate, periodStart, periodEnd, scope,
       sourceRole: id.role, label: null,
+      ...(h.currency === 'XXX' && h.currencyCandidates?.length ? { currencyCandidates: h.currencyCandidates.filter((c) => isIsoCurrency(c)).slice(0, 3) } : {}),
     });
   }
   return [...out.values()];
@@ -391,6 +405,8 @@ export function consolidateComponentsDetailed(
       const cur = par.get(c.fingerprint);
       if (cur) {
         if (!cur.sourceIds.includes(sourceId)) cur.sourceIds.push(sourceId);
+        // Lot 53D (Q16) : une contre-valeur EUR documentaire complète la composante.
+        if (cur.amountEurCents === null && c.amountEurCents !== null && cur.currency === c.currency && cur.amountMinor === c.amountMinor) cur.amountEurCents = c.amountEurCents;
         // Un acompte reconnu par sa facture d'acompte garde son rôle de source.
         if (c.sourceRole === 'DEPOSIT_INVOICE') cur.sourceRole = 'DEPOSIT_INVOICE';
       } else {
@@ -399,9 +415,23 @@ export function consolidateComponentsDetailed(
     }
   }
   const conflicts: AmountConflict[] = [];
-  for (const [fp, opts] of valeurs) {
+  for (const [fp, brutes] of valeurs) {
+    // Lot 53D (D2) : un même montant dont la devise n'est pas établie (« XXX »)
+    // sur une source et ÉTABLIE sur une autre n'est pas une contradiction :
+    // la devise écrite le confirme.
+    const opts = brutes.filter((o) => o.currency !== 'XXX' || !brutes.some((x) => x.currency !== 'XXX' && x.amountMinor === o.amountMinor));
+    for (const o of brutes) {
+      if (opts.includes(o)) continue;
+      const e = opts.find((x) => x.currency !== 'XXX' && x.amountMinor === o.amountMinor)!;
+      for (const id of o.sourceIds) if (!e.sourceIds.includes(id)) e.sourceIds.push(id);
+    }
+    const cur0 = par.get(fp)!;
+    if (cur0.currency === 'XXX') {
+      const e = opts.find((x) => x.currency !== 'XXX' && x.amountMinor === cur0.amountMinor);
+      if (e) { cur0.currency = e.currency; delete cur0.currencyCandidates; }
+    }
     if (opts.length < 2) continue;
-    const cur = par.get(fp)!;
+    const cur = cur0;
     const choix = choices?.get(fp);
     const retenu = choix ? opts.find((o) => o.amountMinor === choix.amountMinor && o.currency === choix.currency) : undefined;
     if (retenu) { cur.amountMinor = retenu.amountMinor; cur.currency = retenu.currency; }
@@ -443,8 +473,18 @@ export interface ConsolidatedState {
   components: ComponentContribution[];
   /** Montants contradictoires de même rôle (lot 42, B19). */
   amountConflicts: AmountConflict[];
+  /**
+   * Lot 53D (D9) : montants CONNUS mais hors du total — frais annexes d'un
+   * achat, montant documentaire écarté par la saisie de la fiche. Préservés
+   * distinctement (futur TCO), jamais additionnés d'office.
+   */
+  sideAmounts: SideAmount[];
   contract: { contractReference: string | null; effectiveFrom: string | null; effectiveTo: string | null } | null;
-  financing: { financingReference: string | null; lender: string | null; effectiveFrom: string | null; effectiveTo: string | null } | null;
+  financing: {
+    financingReference: string | null; lender: string | null; effectiveFrom: string | null; effectiveTo: string | null;
+    /** Lot 53D (Q16) : capital emprunté lu sur une source (devise établie), jamais une dépense. */
+    principalAmountMinor?: number | null; principalCurrency?: string | null;
+  } | null;
   claim: { insurerClaimRef: string | null; policyReferenceText: string | null } | null;
 }
 
@@ -556,6 +596,26 @@ export function consolidateOperationState(
   const { components, conflicts: amountConflicts } = consolidateComponentsDetailed(
     srcs.map((s) => ({ sourceId: s.sourceId, components: componentsFromIdentity(s.identity) })), amountChoices);
 
+  // Lot 53D (D9) : frais annexes d'un ACHAT (portée FEE) — isolés, jamais
+  // additionnés d'office au prix d'achat (inclusion TCO : CDC TCO à venir).
+  const sideAmounts: SideAmount[] = [];
+  const retenues = type === 'ACQUISITION'
+    ? components.filter((c) => {
+      if (c.scope !== 'FEE' || c.kind !== 'REALIZED_COST') return true;
+      sideAmounts.push(sideAmountOf('ANCILLARY_FEE', c));
+      return false;
+    })
+    : components;
+
+  // Lot 53D (Q16) : capital emprunté — détail du financement, jamais une composante.
+  let principal: { amountMinor: number; currency: string } | null = null;
+  if (type === 'FINANCING') {
+    for (const s of srcs) {
+      const h = s.identity.hints.find((x) => x.role === 'LOAN_PRINCIPAL' && x.currency !== 'XXX');
+      if (h) { principal = { amountMinor: h.amountMinor, currency: h.currency }; break; }
+    }
+  }
+
   const premiereRef = (kinds: ReferenceKind[]) => references.find((r) => kinds.includes(r.kind))?.value ?? null;
   return {
     type,
@@ -569,10 +629,62 @@ export function consolidateOperationState(
     assets: cibles,
     equipments,
     references,
-    components,
-    amountConflicts,
+    components: retenues,
+    amountConflicts: amountConflicts.filter((c) => retenues.some((r) => r.fingerprint === c.fingerprint)),
+    sideAmounts,
     contract: type === 'CONTRACT' ? { contractReference: premiereRef(['CONTRACT', 'POLICY']), effectiveFrom: startDate, effectiveTo: endDate } : null,
-    financing: type === 'FINANCING' ? { financingReference: premiereRef(['LOAN']), lender: provider, effectiveFrom: startDate, effectiveTo: endDate } : null,
+    financing: type === 'FINANCING' ? {
+      financingReference: premiereRef(['LOAN']), lender: provider, effectiveFrom: startDate, effectiveTo: endDate,
+      ...(principal ? { principalAmountMinor: principal.amountMinor, principalCurrency: principal.currency } : {}),
+    } : null,
     claim: type === 'CLAIM' ? { insurerClaimRef: premiereRef(['CLAIM']), policyReferenceText: premiereRef(['POLICY', 'CONTRACT']) } : null,
   };
+}
+
+// ── Lot 53D : montants hors total (D9) et devise confirmée (D2) ───────────
+
+export const SIDE_AMOUNT_NATURES = ['ANCILLARY_FEE', 'DOCUMENT_AMOUNT_DIFFERS'] as const;
+export type SideAmountNature = (typeof SIDE_AMOUNT_NATURES)[number];
+
+/**
+ * Montant connu, tracé à ses sources, mais HORS du total de l'Opération :
+ *   · ANCILLARY_FEE : frais annexes d'un achat (livraison, mise en service,
+ *     immatriculation…) — préparés pour le futur TCO ;
+ *   · DOCUMENT_AMOUNT_DIFFERS : prix (ou prix de vente) d'un document qui
+ *     diffère de la valeur SAISIE sur la fiche — la saisie reste la
+ *     référence, l'écart est exposé, jamais écrasé ni additionné.
+ */
+export interface SideAmount {
+  nature: SideAmountNature;
+  kind: FinancialComponentKind;
+  fingerprint: string;
+  amountMinor: number;
+  currency: string;
+  amountEurCents: number | null;
+  economicDate: string | null;
+  sourceIds: number[];
+}
+
+export function sideAmountOf(nature: SideAmountNature, c: ComponentContribution): SideAmount {
+  return {
+    nature, kind: c.kind, fingerprint: c.fingerprint, amountMinor: c.amountMinor, currency: c.currency,
+    amountEurCents: c.amountEurCents, economicDate: c.economicDate, sourceIds: [...c.sourceIds],
+  };
+}
+
+/** Devise confirmée par l'utilisateur pour un montant « XXX » (null : « je ne sais pas »). */
+export interface CurrencyChoice { currency: string | null }
+
+/**
+ * Applique les devises confirmées (pure) : une composante « XXX » dont
+ * l'empreinte a un choix prend la devise choisie ; « je ne sais pas » la
+ * laisse hors des agrégats EUR, sans reposer la question.
+ */
+export function applyCurrencyChoices(components: ComponentContribution[], choices: ReadonlyMap<string, CurrencyChoice>): ComponentContribution[] {
+  return components.map((c) => {
+    const ch = choices.get(c.fingerprint);
+    if (c.currency !== 'XXX' || !ch || !ch.currency || !isIsoCurrency(ch.currency) || ch.currency === 'XXX') return c;
+    const { currencyCandidates: _c, ...reste } = c;
+    return { ...reste, currency: ch.currency };
+  });
 }

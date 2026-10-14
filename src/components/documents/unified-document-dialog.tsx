@@ -787,7 +787,7 @@ export function UnifiedDocumentDialog({
           >
             <Upload className="w-10 h-10 mx-auto mb-3 text-[color:var(--text-muted)]" />
             <p className="text-sm font-medium text-[color:var(--text-primary)]">
-              {isMobile ? 'Toucher pour sélectionner un fichier' : 'Glissez vos fichiers ici ou cliquez pour parcourir'}
+              {isMobile ? 'Toucher pour sélectionner un ou plusieurs fichiers' : 'Glissez vos fichiers ici ou cliquez pour parcourir'}
             </p>
             <p className="text-xs text-[color:var(--text-muted)] mt-1">PDF, images, vidéos, Word, Excel…</p>
           </div>

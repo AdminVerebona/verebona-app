@@ -123,6 +123,8 @@ export function componentEurCents(c: { amountMinor: number; currency: string; am
 
 /** « 1 200,00 CHF » : montant d'origine, unités mineures selon la devise, jamais converti. */
 export function formatMinorAmount(amountMinor: number, currency: string): string {
+  // Lot 53D (D2) : « XXX » = devise non établie sur le document — jamais « ¤ ».
+  if (currency === 'XXX') return `${(amountMinor / 100).toLocaleString('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).replace(/ /g, ' ')} (devise non établie)`;
   try {
     const f = new Intl.NumberFormat('fr-FR', { style: 'currency', currency });
     const digits = f.resolvedOptions().maximumFractionDigits ?? 2;
@@ -590,6 +592,10 @@ export interface AcquisitionRead {
   date: string | null;
   provider: string | null;
   source: RetrievedSource | null;
+  /** Lot 53D (D9) : prix lus sur des documents qui diffèrent de la saisie de la fiche (saisie conservée). */
+  documentPrices?: Array<{ amountMinor: number; currency: string; title: string | null }>;
+  /** Lot 53D (D9) : frais annexes connus, isolés — jamais additionnés au prix d'achat. */
+  fees?: Array<{ amountMinor: number; currency: string; title: string | null }>;
 }
 
 /** Achat ACTIF d'un bien, prix consolidé (REALIZED_COST − avoirs attribuables). */
@@ -605,8 +611,13 @@ export async function readAcquisition(accountId: number, assetId: number, opts: 
     prix != null ? `prix d'achat : ${formatEur(prix)}` : 'prix d’achat non consolidé',
     op.provider ? `vendeur : ${op.provider}` : null,
   ].filter(Boolean).join(' · ');
+  // Lot 53D (D9) : écarts document / saisie et frais annexes, exposés à part (lecture en échec : rien).
+  const lecteurOps = operationReader();
+  const hors = typeof lecteurOps.sideAmounts === 'function' ? await lecteurOps.sideAmounts(accountId, [op.id]).catch(() => []) : [];
+  const de = (n: string) => hors.filter((x) => x.nature === n).map((x) => ({ amountMinor: x.amountMinor, currency: x.currency, title: x.title }));
   return {
     operationId: op.id, priceCents: prix,
+    ...(hors.length ? { documentPrices: de('DOCUMENT_AMOUNT_DIFFERS'), fees: de('ANCILLARY_FEE') } : {}),
     foreign: (l?.foreign ?? []).map((f) => ({ currency: f.currency, amountMinor: f.sign * f.amountMinor })),
     date: op.realizedDate, provider: op.provider,
     source: operationSource(op, { content, assetId, assetName: opts.assetName ?? null }),

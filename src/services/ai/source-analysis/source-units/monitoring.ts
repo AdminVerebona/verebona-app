@@ -71,7 +71,9 @@ export async function recordT1Completeness(p: {
         persisted: p.persisted,
       },
     });
-  } else if (r.qualityState === 'COMPLETE' || r.qualityState === 'COMPLETE_WITH_UNRESOLVED') {
+  } else if (r.qualityState === 'COMPLETE' || r.qualityState === 'COMPLETE_WITH_UNRESOLVED' || r.qualityState === 'VERIFICATION_INCOMPLETE') {
+    // D19 : une vérification incomplète n'est pas un échec définitif (pas de
+    // Supervision) — elle reste visible dans BO › Complétude T1 avec sa reprise.
     await autoResolveAnomaly(completenessFingerprint(p.fileId), { origin: 't1_completeness', cause: `analyse ${r.qualityState}` });
   }
   // Lot 49B (DEV-03) : perte de normalisation NON compensée (valeur non conservée) — Supervision.
@@ -115,6 +117,8 @@ export interface CompletenessDocumentRow {
   verification: Record<string, unknown> | null;
   lastRetryAt: string | null;
   lastRetryResult: string | null;
+  /** Lot 53 (D19) : reprise automatique programmée (null : aucune). */
+  nextRetryAt?: string | null;
 }
 
 export interface CompletenessOverview {
@@ -129,6 +133,8 @@ export interface CompletenessOverview {
   /** Lot 49B : documents par vérification de la source (null : antérieurs au lot 49B). */
   bySourceVerification: Record<string, number>;
   rows: CompletenessDocumentRow[];
+  /** Lot 53 (D19) : reprises automatiques au plus par document (suivi d'une vérification incomplète). */
+  maxRetries?: number;
   /** Couche A absente (migrations 0295-0297 non appliquées). */
   unavailable?: boolean;
 }
@@ -136,7 +142,7 @@ export interface CompletenessOverview {
 export async function getT1CompletenessOverview(opts: { days?: number; limit?: number; anomaly?: string | null } = {}): Promise<CompletenessOverview> {
   const days = Math.min(Math.max(opts.days ?? 7, 1), 90);
   const empty: CompletenessOverview = {
-    days, byQuality: { COMPLETE: 0, COMPLETE_WITH_UNRESOLVED: 0, INCOMPLETE_RETRYABLE: 0, INCOMPLETE_FINAL: 0 },
+    days, byQuality: { COMPLETE: 0, COMPLETE_WITH_UNRESOLVED: 0, VERIFICATION_INCOMPLETE: 0, INCOMPLETE_RETRYABLE: 0, INCOMPLETE_FINAL: 0 },
     byAnomaly: {}, averageCoverage: null, repairPasses: 0, bySourceVerification: {}, rows: [],
   };
   const { sourceLayerReady } = await import('./repository');
@@ -162,12 +168,14 @@ export async function getT1CompletenessOverview(opts: { days?: number; limit?: n
               c.truncated_sections_count AS "truncatedSectionsCount", c.repair_pass_count AS "repairPassCount",
               c.chunk_count AS "chunkCount", c.retry_attempts AS "retryAttempts", c.origin, c.updated_at AS "updatedAt",
               to_jsonb(c) ->> 'source_verification' AS "sourceVerification", to_jsonb(c) -> 'verification' AS verification,
-              to_jsonb(c) ->> 'last_retry_at' AS "lastRetryAt", to_jsonb(c) ->> 'last_retry_result' AS "lastRetryResult"
+              to_jsonb(c) ->> 'last_retry_at' AS "lastRetryAt", to_jsonb(c) ->> 'last_retry_result' AS "lastRetryResult",
+              c.next_retry_at AS "nextRetryAt"
          FROM document_extraction_coverage c
          LEFT JOIN asset_files af ON af.id = c.file_id
         WHERE c.updated_at >= $1 AND cardinality(c.anomalies) > 0
           AND ($2::text IS NULL OR $2 = ANY(c.anomalies))
-        ORDER BY (c.quality_state = 'INCOMPLETE_FINAL') DESC, (c.quality_state = 'INCOMPLETE_RETRYABLE') DESC, c.updated_at DESC
+        ORDER BY (c.quality_state = 'INCOMPLETE_FINAL') DESC, (c.quality_state = 'INCOMPLETE_RETRYABLE') DESC,
+                 (c.quality_state = 'VERIFICATION_INCOMPLETE') DESC, c.updated_at DESC
         LIMIT $3`,
       [since, opts.anomaly ?? null, Math.min(Math.max(opts.limit ?? 50, 1), 200)] as never[],
     ) as unknown as Promise<CompletenessDocumentRow[]>,
@@ -190,5 +198,7 @@ export async function getT1CompletenessOverview(opts: { days?: number; limit?: n
   for (const a of anomalies) out.byAnomaly[a.code] = Number(a.n);
   for (const v of verifs) out.bySourceVerification[v.v] = Number(v.n);
   out.rows = rows.map((r) => ({ ...r, coverageRatio: Number(r.coverageRatio) }));
+  const { maxCompletenessRetries } = await import('./repository');
+  out.maxRetries = maxCompletenessRetries();
   return out;
 }

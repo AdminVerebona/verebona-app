@@ -22,9 +22,12 @@ export const T1_MASTER_PROMPT_CODE = 't1_master_v1';
  * `gateway/output-resolution/contracts`) : v1 ancien moteur, v2 lot 12,
  * v3 lot 33 (`entityId` absent = null), v4 lot 40 (`businessOperationCandidates[]`,
  * CDC Opérations V1 C3.1 — une sortie v3 reste une v4 valide : aucun
- * candidat). Affichée « t1_analyze_document@v4 ».
+ * candidat), v5 lot 53D (retours PO D2, D9, Q16 : rôle `LOAN_PRINCIPAL`,
+ * portée `FEE`, contre-valeur `amountEurMinor`, devise « XXX » non établie —
+ * une sortie v4 reste une v5 valide : champs facultatifs, listes étendues).
+ * Affichée « t1_analyze_document@v5 ».
  */
-export const T1_ANALYZE_DOCUMENT_CONTRACT_VERSION = 4;
+export const T1_ANALYZE_DOCUMENT_CONTRACT_VERSION = 5;
 export const T1_TASKS = ['GROUP_UPLOAD', 'ANALYZE_DOCUMENT'] as const;
 export type T1Task = (typeof T1_TASKS)[number];
 
@@ -192,12 +195,19 @@ export const T1_SOURCE_ROLES = [
 export type T1SourceRole = (typeof T1_SOURCE_ROLES)[number];
 /**
  * Rôle économique d'un montant (C11.2, C12) ; `PAYMENT` = règlement prouvé,
- * JAMAIS un coût (INV-FINAL-015).
+ * JAMAIS un coût (INV-FINAL-015) ; `LOAN_PRINCIPAL` (lot 53D, Q16) = capital
+ * emprunté d'un financement : une dette, JAMAIS une dépense.
  */
-export const T1_FINANCIAL_ROLES = ['FORECAST_COST', 'REALIZED_COST', 'REDUCTION', 'REFUND', 'INDEMNITY', 'PROCEED', 'PAYMENT'] as const;
+export const T1_FINANCIAL_ROLES = ['FORECAST_COST', 'REALIZED_COST', 'REDUCTION', 'REFUND', 'INDEMNITY', 'PROCEED', 'PAYMENT', 'LOAN_PRINCIPAL'] as const;
 export type T1FinancialRole = (typeof T1_FINANCIAL_ROLES)[number];
-/** Portée d'un montant : total, acompte, solde, échéance (F-092, F-093). */
-export const T1_AMOUNT_SCOPES = ['TOTAL', 'DEPOSIT', 'BALANCE', 'INSTALLMENT'] as const;
+/**
+ * Portée d'un montant : total, acompte, solde, échéance (F-092, F-093) ;
+ * `FEE` (lot 53D, D9) = frais annexes facturés à part (livraison, mise en
+ * service, frais de dossier, immatriculation…), jamais additionnés d'office
+ * au prix d'achat.
+ */
+export const T1_AMOUNT_SCOPES = ['TOTAL', 'DEPOSIT', 'BALANCE', 'INSTALLMENT', 'FEE'] as const;
+export type T1AmountScope = (typeof T1_AMOUNT_SCOPES)[number];
 /** Références métier (même liste que `business_operation_references`). */
 export const T1_REFERENCE_KINDS = ['INVOICE', 'QUOTE', 'ORDER', 'WORK_ORDER', 'CONTRACT', 'POLICY', 'CLAIM', 'LOAN', 'CUSTOMER', 'DELIVERY', 'OTHER'] as const;
 /**
@@ -226,8 +236,14 @@ const t1FinancialHint = z.object({
   role: z.enum(T1_FINANCIAL_ROLES),
   /** Montant en UNITÉS MINEURES (centimes) ≥ 0 ; le signe est porté par le rôle (C12). */
   amountMinor: z.number().int().nonnegative(),
-  /** Devise ISO 4217 LUE (C12.3) — jamais convertie par T1. */
+  /** Devise ISO 4217 LUE (C12.3) — jamais convertie par T1 ; « XXX » : aucune devise écrite (lot 53D, D2). */
   currency: z.string().regex(/^[A-Z]{3}$/),
+  /**
+   * Lot 53D (Q16, écart F-106) : contre-valeur EUR EXPLICITEMENT écrite sur le
+   * document pour ce montant en devise étrangère (montant débité / facturé en
+   * euros), en centimes — jamais calculée. Revérifiée par le serveur.
+   */
+  amountEurMinor: z.number().int().nonnegative().nullable().optional(),
   amountScope: z.enum(T1_AMOUNT_SCOPES).nullable().optional(),
   economicDate: isoDate.nullable().optional(),
   periodStart: isoDate.nullable().optional(),

@@ -103,7 +103,7 @@ export function candidatePayload(c: AnchoredOperationCandidate, facts: ReadonlyM
   const evidence = c.evidenceFactRefs.map((r) => anchorOf(r, facts));
   return {
     payloadVersion: OPERATION_CANDIDATE_PAYLOAD_VERSION,
-    contract: 't1_analyze_document@v4',
+    contract: 't1_analyze_document@v5',
     origin: c.origin,
     sourceRoleHint: c.sourceRoleHint,
     provider: c.provider,

@@ -7,7 +7,8 @@
  *   unité → COVERED | NON_INFORMATIONAL | UNRESOLVED | UNCERTAIN | FAILED ;
  *   document → T1CompletenessReport (somme des états = total) et état de
  *              qualité COMPLETE / COMPLETE_WITH_UNRESOLVED /
- *              INCOMPLETE_RETRYABLE / INCOMPLETE_FINAL.
+ *              VERIFICATION_INCOMPLETE (lot 53, D19) / INCOMPLETE_RETRYABLE /
+ *              INCOMPLETE_FINAL.
  *
  * Aucun appel modèle : la décision de réparer est prise ici, sur des faits
  * vérifiables. Une unité est COUVERTE dès qu'une donnée persistée exploitable
@@ -333,7 +334,11 @@ export function buildCompletenessReport(units: readonly CoveredSourceUnit[], p: 
   } else if (pending > 0 || missing > 0) {
     // Lecture ou réparation encore nécessaire et réalisable (reprise programmée).
     quality = 'INCOMPLETE_RETRYABLE';
-  } else if (unresolved > 0 || uncertain > 0 || dropped > 0 || nonVerifiee || pertes > 0 || nonInterpretes > 0) {
+  } else if (nonVerifiee) {
+    // Lot 53 (retour PO D19) : couverture documentaire NON VÉRIFIABLE — jamais
+    // « complète », même avec des points non résolus : vérification incomplète.
+    quality = 'VERIFICATION_INCOMPLETE';
+  } else if (unresolved > 0 || uncertain > 0 || dropped > 0 || pertes > 0 || nonInterpretes > 0) {
     quality = 'COMPLETE_WITH_UNRESOLVED';
   } else {
     quality = 'COMPLETE';
@@ -351,6 +356,7 @@ export function buildCompletenessReport(units: readonly CoveredSourceUnit[], p: 
   if (pending > 0) anomalies.add('REPAIR_PENDING');
   if (exhausted > 0) anomalies.add('REPAIR_EXHAUSTED');
   if (pertes > 0) anomalies.add('NORMALISATION_LOSS');
+  if (quality === 'VERIFICATION_INCOMPLETE') anomalies.add('COVERAGE_UNVERIFIED');
 
   return {
     totalSourceUnits: total,

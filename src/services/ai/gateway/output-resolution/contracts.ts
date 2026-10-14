@@ -31,7 +31,10 @@
  *     v4 — lot 40 : `businessOperationCandidates[]` (CDC Opérations V1 C3.1).
  *          Une v3 est toujours une v4 valide (tableau absent = aucun
  *          candidat, sans adaptation ni marque « réparée »).
- *   adaptateurs : t1_v1_to_v2 ; v2 → v3 : aucun ; t1_v3_to_v4 pour les
+ *     v5 — lot 53D (retours PO D2, D9, Q16) : `financialHints[].amountEurMinor`
+ *          facultatif, rôle `LOAN_PRINCIPAL`, portée `FEE`, devise « XXX ».
+ *          Une v4 est toujours une v5 valide (aucun adaptateur).
+ *   adaptateurs : t1_v1_to_v2 ; v2 → v3 : aucun ; v4 → v5 : aucun ; t1_v3_to_v4 pour les
  *   seules formes ANTÉRIEURES du bloc candidat (texte BO divergent qui
  *   suivrait le CDC §7.1 / B3 : `businessOperationCandidate` unique,
  *   `operationCandidates[]` au vocabulaire B3).
@@ -208,7 +211,7 @@ export const T1_V3_TO_V4: CompatAdapter = {
 // ── Registre ────────────────────────────────────────────────────────────────
 
 const CONTRACTS: readonly OutputContract[] = [
-  { name: 'T1AnalyzeDocumentOutput', label: 't1_analyze_document', version: 4, adapters: [T1_V1_TO_V2, T1_V3_TO_V4] },
+  { name: 'T1AnalyzeDocumentOutput', label: 't1_analyze_document', version: 5, adapters: [T1_V1_TO_V2, T1_V3_TO_V4] },
   { name: 'T1GroupUploadOutput', label: 't1_group_upload', version: 1, adapters: [] },
   { name: 'T3ValueConflictOutput', label: 't3_value_conflict', version: 1, adapters: [] },
   { name: 'T3LinkAmbiguityOutput', label: 't3_link_ambiguity', version: 1, adapters: [] },

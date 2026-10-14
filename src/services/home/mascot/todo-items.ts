@@ -84,6 +84,8 @@ const SUJETS: Readonly<Record<string, { noun: string; fixed?: string }>> = {
   'OPERATION-CLAIM-DETACH': { noun: 'Intervention', fixed: 'Lien avec un sinistre à confirmer' },
   'OPERATION-CLAIM-ASSET': { noun: 'Bien du sinistre', fixed: 'Bien retiré d’un sinistre à confirmer' },
   'AGENDA-PROJECTION-MATCH': { noun: 'Événement', fixed: 'Événement de l’agenda à rapprocher' },
+  // Lot 53D (D2) : devise d'un montant à confirmer.
+  'OPERATION-CURRENCY': { noun: 'Devise', fixed: 'Devise d’un montant à confirmer' },
 };
 
 /** « Numéro d’immatriculation à vérifier », « Information à compléter »… (pure). */
