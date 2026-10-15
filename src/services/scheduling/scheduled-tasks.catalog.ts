@@ -380,7 +380,10 @@ export const SCHEDULED_TASKS: readonly ScheduledTaskDef[] = [
         import('@/services/ai/telemetry/log-archive.job'),
       ]);
       const n = await purgeCallDiagnostics({ olderThanDays: archiveAfterDays(), deadline });
-      return { note: `${n} diagnostic(s) supprimé(s) (plus de ${archiveAfterDays()} jours)` };
+      // Lot 58C : rapports d'exécution T1 / T3 — même horizon que les traces.
+      const { purgeExecutionReports } = await import('@/services/ai/execution-report/repository');
+      const r = await purgeExecutionReports({ olderThanDays: archiveAfterDays(), deadline });
+      return { note: `${n} diagnostic(s), ${r} rapport(s) d’exécution supprimé(s) (plus de ${archiveAfterDays()} jours)` };
     },
   },
   {

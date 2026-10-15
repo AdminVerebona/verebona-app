@@ -5,6 +5,7 @@ import { Button } from '@/components/ui/button';
 import { YearPicker } from '@/components/ui/year-picker';
 import { TimePicker } from '@/components/ui/time-picker';
 import { NumberInput } from '@/components/ui/number-input';
+import { formatNumberForInput, parseNumberInput, MONEY_INPUT, QUANTITY_INPUT, type NumberParseOptions } from '@/lib/number-input';
 import { DatePicker } from '@/components/ui/date-picker';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -81,6 +82,34 @@ interface Props {
   onApplyAlert?: (field: string, suggestedValue: string) => void;
 }
 
+/** Champ numérique saisi au clavier (les années passent par le sélecteur d'année). */
+function isTypedNumberField(field: FieldDef): boolean {
+  return field.type === 'number' && !field.options && !field.key.toLowerCase().includes('year');
+}
+
+/** Montant (libellé en €) : 2 décimales max ; autre grandeur : positive (lot 58A). */
+export function numberParseOptionsFor(field: FieldDef): NumberParseOptions {
+  return field.label.includes('€') ? MONEY_INPUT : QUANTITY_INPUT;
+}
+
+/**
+ * Lot 58A — textes saisis des champs numériques → valeurs du formulaire.
+ * Conversion à la validation seulement ; un texte invalide bloque tout
+ * l'enregistrement (jamais d'envoi partiel).
+ */
+export function resolveNumberTexts(
+  fields: FieldDef[], form: Record<string, unknown>, texts: Record<string, string>,
+): { ok: true; form: Record<string, unknown> } | { ok: false; field: FieldDef; error: string } {
+  const out = { ...form };
+  for (const field of visibleFields(fields, form)) {
+    if (field.readonly || !isTypedNumberField(field) || !(field.key in texts)) continue;
+    const r = parseNumberInput(texts[field.key], numberParseOptionsFor(field));
+    if (!r.ok) return { ok: false, field, error: r.error };
+    out[field.key] = r.value;
+  }
+  return { ok: true, form: out };
+}
+
 export function formatValue(value: unknown, field: FieldDef): string {
   if (value === null || value === undefined || value === '') return '—';
   if (field.type === 'date' && typeof value === 'string') {
@@ -112,6 +141,7 @@ export function AssetDetailSection({
   onDismissAlert,
   onApplyAlert,
 }: Props) {
+  const fieldDefs = fields;
   const [open, setOpen] = useState(defaultOpen);
   const [editing, setEditing] = useState(false);
   const [form, setForm] = useState<Record<string, unknown>>({ ...data });
@@ -119,6 +149,9 @@ export function AssetDetailSection({
   const [showCancelConfirm, setShowCancelConfirm] = useState(false);
   const [dirty, setDirty] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
+  // Lot 58A : texte saisi des champs numériques (converti à l'enregistrement).
+  const [numberTexts, setNumberTexts] = useState<Record<string, string>>({});
+  const [showNumberErrors, setShowNumberErrors] = useState(false);
   // justSaved kept for potential future use but no longer triggers visual feedback
   const justSaved = false;
 
@@ -137,6 +170,8 @@ export function AssetDetailSection({
     if (forceEdit && !forceEditApplied.current && !savedRef.current) {
       forceEditApplied.current = true;
       setForm({ ...data });
+      setNumberTexts({});
+      setShowNumberErrors(false);
       setEditing(true);
       setOpen(true);
     }
@@ -156,6 +191,8 @@ export function AssetDetailSection({
   const handleEdit = useCallback(() => {
     garder(() => {
       setForm({ ...data });
+      setNumberTexts({});
+      setShowNumberErrors(false);
       setDirty(false);
       setEditing(true);
       setOpen(true);
@@ -171,15 +208,27 @@ export function AssetDetailSection({
   }, [dirty]);
 
   const handleSave = useCallback(async () => {
+    // Lot 58A : un nombre invalide ou ambigu bloque l'enregistrement (message explicite).
+    const resolved = resolveNumberTexts(fieldDefs, form, numberTexts);
+    if (!resolved.ok) {
+      setShowNumberErrors(true);
+      toast.error(`${resolved.field.label} : ${resolved.error}`);
+      return;
+    }
+    const finalForm = resolved.form;
     setIsSaving(true);
     try {
       // Seuls les champs modifiés sont envoyés (lot 20) : un champ non touché
       // n'est ni effacé ni marqué saisi par l'utilisateur.
+      // `form` : formulaire dont les textes numériques sont convertis (lot 58A).
+      const form = finalForm;
       const fields = changedDetailFields(data, form);
       if (Object.keys(fields).length > 0) {
         await apiClient.patch(`/api/assets/${assetId}/details/${sectionKey}`, { fields });
       }
-      setDisplayData({ ...form });
+      setForm(finalForm);
+      setNumberTexts({});
+      setDisplayData({ ...finalForm });
       savedRef.current = true;
       setEditing(false);
       setDirty(false);
@@ -190,7 +239,7 @@ export function AssetDetailSection({
     } finally {
       setIsSaving(false);
     }
-  }, [assetId, sectionKey, data, form, onRefresh]);
+  }, [assetId, sectionKey, data, form, numberTexts, fieldDefs, onRefresh]);
 
   const setField = useCallback((key: string, value: unknown) => {
     setForm(prev => ({ ...prev, [key]: value }));
@@ -249,7 +298,9 @@ export function AssetDetailSection({
                       {/* Label row */}
                       <div className="flex items-center gap-1.5 flex-wrap">
                         <Label className="text-xs text-muted-foreground">{field.label}</Label>
-                        {field.badge && String(form[field.key] ?? '') === String(data[field.key] ?? '') && <FieldBadge text={field.badge(data)} />}
+                        {field.badge && (field.key in numberTexts
+                          ? numberTexts[field.key] === formatNumberForInput(data[field.key])
+                          : String(form[field.key] ?? '') === String(data[field.key] ?? '')) && <FieldBadge text={field.badge(data)} />}
                       </div>
 
                       {/* Input */}
@@ -297,8 +348,11 @@ export function AssetDetailSection({
                         />
                       ) : field.type === 'number' ? (
                         <NumberInput
-                          value={form[field.key] ? Number(form[field.key]) : ''}
-                          onChange={e => setField(field.key, e.target.value === '' ? null : Number(e.target.value))}
+                          value={numberTexts[field.key] ?? formatNumberForInput(form[field.key])}
+                          onValueChange={text => { setNumberTexts(prev => ({ ...prev, [field.key]: text })); setDirty(true); }}
+                          parseOptions={numberParseOptionsFor(field)}
+                          showError={showNumberErrors}
+                          aria-label={field.label}
                           showButtons={false}
                           className=""
                         />

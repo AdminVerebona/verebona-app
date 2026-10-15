@@ -30,6 +30,8 @@ import { openRun, closeRun, recordDecisions, failRun } from './reconciliation-ru
 import { syncReconciliationToProcess } from '@/services/to-process/reconciliation-bridge';
 import type { ReconciliationDecision, ReconciliationRun } from './types';
 import { assertJobActive } from '../queue/execution-control';
+import { T3ExecutionRecorder, writeT3Report } from '../execution-report/t3-report';
+import { isRegistryKey } from './canonical-key';
 
 export interface ReconcileInput {
   accountId: number;
@@ -50,14 +52,26 @@ export async function reconcileAsset(input: ReconcileInput): Promise<Reconciliat
     accountId: input.accountId, assetId: input.assetId,
     triggeredBy: input.triggeredBy, shadow: false, traceId, accountRunId: input.accountRunId ?? null,
   });
+  // Lot 58C : rapport d'exécution (champs examinés, écritures confirmées, motifs).
+  const rec = new T3ExecutionRecorder(traceId);
+  const rapport = () => writeT3Report(rec, {
+    accountId: input.accountId, assetId: input.assetId, reconciliationRunId: runId, accountRunId: input.accountRunId ?? null,
+    sourceFileId: input.sourceFileId ?? null, triggeredBy: input.triggeredBy,
+  });
   try {
-    const run = await runEngine(input, runId, traceId);
+    const run = await runEngine(input, runId, traceId, rec);
     await reconcileAgendaStatusAfter(input);
+    await rapport();
     return run;
   } catch (e) {
     // Un run local en échec est clos comme tel : il n'apparaît plus « en
     // cours », et l'exécution T3 qui l'a lancé peut continuer avec les autres.
     await failRun(runId).catch(() => {});
+    const { isExecutionCancelled } = await import('../queue/execution-control');
+    if (!isExecutionCancelled(e)) {
+      rec.failure = (e as Error)?.message ?? String(e);
+      await rapport();
+    }
     throw e;
   }
 }
@@ -87,7 +101,7 @@ async function reconcileAgendaStatusAfter(input: ReconcileInput): Promise<void> 
   }
 }
 
-async function runEngine(input: ReconcileInput, runId: number, traceId: string): Promise<ReconciliationRun> {
+async function runEngine(input: ReconcileInput, runId: number, traceId: string, rec?: T3ExecutionRecorder): Promise<ReconciliationRun> {
 
   const { kc, fields: collected } = await collectAssetEvidenceState(input.accountId, input.assetId);
   const decisions: ReconciliationDecision[] = [];
@@ -127,6 +141,9 @@ async function runEngine(input: ReconcileInput, runId: number, traceId: string):
     }
 
     decisions.push(decision);
+    if (!decision.deterministic && rec) rec.aiCalls++;
+    const trace = { fieldKey: decision.fieldKey, current: field.input.current, candidates: field.input.candidates, decision, registry: isRegistryKey(decision.fieldKey) } as import('../execution-report/t3-report').T3FieldRecord;
+    rec?.fields.push(trace);
 
     switch (decision.action) {
       case 'apply':
@@ -134,15 +151,21 @@ async function runEngine(input: ReconcileInput, runId: number, traceId: string):
         // Lot 31C : garde avant toute écriture métier — une exécution de file
         // qui a perdu son jeton ou son bail n'écrit plus (sans effet hors file).
         await assertJobActive(`valeur ${decision.fieldKey}`);
-        await applyDecision(decision, {
-          accountId: input.accountId,
-          assetId: input.assetId,
-          sourceFileId: input.sourceFileId ?? null,
-          bestCandidate: field.input.candidates.find(
-            (c) => c.evidenceId === decision.evidenceIds[0],
-          ),
-          traceId,
-        });
+        try {
+          // Lot 58C : le RÉSULTAT réel de l'écriture est conservé (compteurs, rapport).
+          trace.outcome = await applyDecision(decision, {
+            accountId: input.accountId,
+            assetId: input.assetId,
+            sourceFileId: input.sourceFileId ?? null,
+            bestCandidate: field.input.candidates.find(
+              (c) => c.evidenceId === decision.evidenceIds[0],
+            ),
+            traceId,
+          });
+        } catch (e) {
+          trace.error = (e as Error)?.message ?? String(e);
+          throw e;
+        }
         // Une décision tranchée rend caduc un arbitrage antérieur sur ce champ.
         await resolveObsoleteConflict(
           input.accountId, input.assetId, decision.fieldKey,
@@ -179,6 +202,10 @@ async function runEngine(input: ReconcileInput, runId: number, traceId: string):
       });
       if (outcome === 'written') {
         decisions.push(retractionDecision(r));
+        rec?.fields.push({
+          fieldKey: r.fieldKey, current: { value: r.currentValue, normalized: null, origin: 'RECONCILIATION', updatedAt: null },
+          candidates: [], decision: retractionDecision(r), outcome, retraction: true, registry: isRegistryKey(r.fieldKey),
+        });
         await resolveObsoleteConflict(input.accountId, input.assetId, r.fieldKey, `valeur retirée : ${NEGATIVE_REASON.RETRACT}`);
       }
     }
@@ -199,7 +226,8 @@ async function runEngine(input: ReconcileInput, runId: number, traceId: string):
     accountId: input.accountId,
     assetId: input.assetId,
     decisions,
-  }).catch((e) => {
+  }).then(() => rec?.ok('TO_PROCESS_SYNC'), (e) => {
+    rec?.fail('TO_PROCESS_SYNC', e);
     console.error(
       `[reconciliation] file « À traiter » non synchronisée pour le bien ${input.assetId} :`,
       (e as Error).message,
@@ -212,7 +240,12 @@ async function runEngine(input: ReconcileInput, runId: number, traceId: string):
     assetId: input.assetId,
     triggeredBy: input.triggeredBy,
     decisions,
-    appliedCount: decisions.filter((d) => d.action === 'apply' || d.action === 'update').length,
+    // Lot 58C : écritures CONFIRMÉES (résultat `written` de la primitive), plus
+    // les intentions. Sans enregistreur (tests historiques) : intentions.
+    appliedCount: rec
+      ? rec.writtenCount
+      : decisions.filter((d) => d.action === 'apply' || d.action === 'update').length,
+    intendedCount: decisions.filter((d) => d.action === 'apply' || d.action === 'update').length,
     conflictCount: decisions.filter((d) => d.action === 'create_conflict').length,
     aiReviewCount: decisions.filter((d) => !d.deterministic).length,
     shadow: false,

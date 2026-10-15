@@ -113,6 +113,8 @@ export const FILE_SCOPED_TABLES: ReadonlyArray<readonly [table: string, column: 
   ['document_operation_candidates', 'file_id'],
   ['t1_quality_signals', 'file_id'],
   ['ai_field_updates', 'asset_file_id'],
+  // Lot 58B : diagnostic et mémoire de pertinence des règles documentaires (0418).
+  ['document_rule_evaluations', 'file_id'],
 ];
 
 /** Tables des données du BIEN (colonne `asset_id`) qui suivent le bien. */
@@ -134,6 +136,7 @@ export const ACCOUNT_OWNED_TABLES: Readonly<Record<string, string>> = {
   ai_operation: 'trace d’appel IA du compte',
   ai_security_lock: 'verrou de sécurité IA du compte',
   ai_output_replays: 'rejeu technique des sorties IA',
+  ai_execution_reports: 'rapport d’exécution T1 / T3 figé du compte qui a analysé (diagnostic BO, lot 58C) — jamais déplacé',
   export_generation: 'archive générée et téléchargée par l’ancien titulaire',
   cdc15_migration_backups: 'sauvegarde de migration historique (restauration)',
   cdc15_migration_report: 'rapport de migration historique',

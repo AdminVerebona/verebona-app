@@ -93,11 +93,50 @@ export interface T3CardEvaluation {
   writeVerified: boolean | null;
 }
 
+/**
+ * Lot 58B : évaluation d'une règle documentaire (DATA-CONTRACT-END…) sur un
+ * document, quel que soit le déclencheur (analyse T1, balayage, passage T3,
+ * correction utilisateur) — table `document_rule_evaluations` (0418).
+ */
+export interface DocumentRuleEvaluation {
+  id: number;
+  createdAt: string;
+  lastSeenAt: string;
+  seenCount: number;
+  accountId: number;
+  fileId: number;
+  ruleCode: string;
+  fieldKey: string | null;
+  trigger: string;
+  runRef: string | null;
+  engineVersion: string;
+  targetPresent: boolean | null;
+  userValidated: boolean | null;
+  sources: Record<string, number>;
+  missingSources: string[];
+  observations: Array<{ source: string; key: string | null; raw: string | null; normalized: string | null; status: string }>;
+  proposals: Array<{ value: string | null; confidence: number }>;
+  titleHint: { dates: string[]; confirmed: string[]; excerpt: string | null } | null;
+  pertinence: string | null;
+  pertinenceReason: string | null;
+  aiOperation: string | null;
+  aiTraceId: string | null;
+  aiStatus: string | null;
+  decision: string;
+  reasonCode: string | null;
+  actionId: number | null;
+  writeVerified: boolean | null;
+  error: string | null;
+  failedStep: string | null;
+}
+
 export interface T3OpenActionsDiagnostic {
   generatedAt: string;
-  migrations: { journal0371: boolean; diagnostic0410: boolean };
+  migrations: { journal0371: boolean; diagnostic0410: boolean; documentRules0418?: boolean };
   runs: T3RunDiagnostic[];
   cards: T3CardEvaluation[];
+  /** Lot 58B : évaluations des règles documentaires (filtres compte, document, règle, résultat). */
+  documentRules?: DocumentRuleEvaluation[];
   /** Pagination : identifiant à passer en `before` pour la page suivante. */
   nextBefore: number | null;
 }
@@ -114,9 +153,10 @@ async function migrations(): Promise<T3OpenActionsDiagnostic['migrations']> {
   const rows = (await pgClient.unsafe(
     `SELECT to_regclass('t3_open_action_evaluations') IS NOT NULL AS j,
             EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema()
-                     AND table_name = 't3_open_action_evaluations' AND column_name = 'reason_code') AS d`,
-  )) as unknown as Array<{ j: boolean; d: boolean }>;
-  return { journal0371: rows[0]?.j === true, diagnostic0410: rows[0]?.d === true };
+                     AND table_name = 't3_open_action_evaluations' AND column_name = 'reason_code') AS d,
+            to_regclass('document_rule_evaluations') IS NOT NULL AS r`,
+  )) as unknown as Array<{ j: boolean; d: boolean; r: boolean }>;
+  return { journal0371: rows[0]?.j === true, diagnostic0410: rows[0]?.d === true, documentRules0418: rows[0]?.r === true };
 }
 
 /** Nettoie les filtres (entiers positifs, codes bornés). Pure. */
@@ -134,8 +174,12 @@ export async function getT3OpenActionsDiagnostic(input: T3DiagnosticFilters, now
   const mig = await migrations();
   const runs = await loadRuns(f);
   const cards = mig.journal0371 ? await loadCards(f, mig.diagnostic0410) : [];
+  // Les évaluations de règles documentaires ne portent ni job ni passage :
+  // affichées quand le filtre vise un compte, un document ou une règle.
+  const documentRules = mig.documentRules0418 && (f.accountId || f.documentId || f.ruleCode) && !f.jobId && !f.runId && !f.actionId
+    ? await loadDocumentRules(f) : [];
   return {
-    generatedAt: now.toISOString(), migrations: mig, runs, cards,
+    generatedAt: now.toISOString(), migrations: mig, runs, cards, documentRules,
     nextBefore: cards.length === f.limit ? cards[cards.length - 1].id : null,
   };
 }
@@ -224,6 +268,35 @@ async function loadCards(f: ReturnType<typeof cleanFilters>, enrichi: boolean): 
       aiError: (e.ai_error as string) ?? null, decision: (e.decision as string) ?? null, confidence: num(e.confidence),
       writeAttempted: typeof e.write_attempted === 'boolean' ? e.write_attempted : null,
       writeVerified: typeof e.write_verified === 'boolean' ? e.write_verified : null,
+    };
+  });
+}
+
+async function loadDocumentRules(f: ReturnType<typeof cleanFilters>): Promise<DocumentRuleEvaluation[]> {
+  const rows = (await pgClient.unsafe(
+    `SELECT to_jsonb(e) AS e FROM document_rule_evaluations e
+      WHERE ($1::int IS NULL OR e.account_id = $1)
+        AND ($2::int IS NULL OR e.file_id = $2)
+        AND ($3::text IS NULL OR e.rule_code = $3)
+        AND ($4::text IS NULL OR e.decision = $4 OR e.reason_code = $4 OR e.pertinence = $4)
+      ORDER BY e.id DESC LIMIT $5`,
+    [f.accountId, f.documentId, f.ruleCode, f.result, f.limit] as never[],
+  ).catch(() => [])) as unknown as Array<{ e: Record<string, unknown> }>;
+  return rows.map(({ e: brut }) => {
+    const e = obj<Record<string, unknown>>(brut) ?? {};
+    return {
+      id: Number(e.id), createdAt: iso(e.created_at) ?? '', lastSeenAt: iso(e.last_seen_at) ?? '', seenCount: Number(e.seen_count ?? 1),
+      accountId: Number(e.account_id), fileId: Number(e.file_id), ruleCode: String(e.rule_code), fieldKey: (e.field_key as string) ?? null,
+      trigger: String(e.trigger_code), runRef: (e.run_ref as string) ?? null, engineVersion: String(e.engine_version),
+      targetPresent: typeof e.target_present === 'boolean' ? e.target_present : null,
+      userValidated: typeof e.user_validated === 'boolean' ? e.user_validated : null,
+      sources: obj(e.sources) ?? {}, missingSources: obj(e.missing_sources) ?? [], observations: obj(e.observations) ?? [],
+      proposals: obj(e.proposals) ?? [], titleHint: obj(e.title_hint), pertinence: (e.pertinence as string) ?? null,
+      pertinenceReason: (e.pertinence_reason as string) ?? null, aiOperation: (e.ai_operation as string) ?? null,
+      aiTraceId: (e.ai_trace_id as string) ?? null, aiStatus: (e.ai_status as string) ?? null, decision: String(e.decision),
+      reasonCode: (e.reason_code as string) ?? null, actionId: num(e.action_id),
+      writeVerified: typeof e.write_verified === 'boolean' ? e.write_verified : null, error: (e.error as string) ?? null,
+      failedStep: (e.failed_step as string) ?? null,
     };
   });
 }

@@ -23,6 +23,7 @@
 import { isDefinitiveGatewayFailure, userFacingFailReason, MAX_ANALYSIS_RETRIES } from './failure-policy';
 import { buildKnowledgeFromSourceAnalysis } from '../knowledge/document-knowledge';
 import { persistDocumentKnowledge } from '../knowledge/document-knowledge.service';
+import { T1ExecutionRecorder, writeT1Report } from '../execution-report/t1-report';
 import { db } from '@/db';
 import { assetFiles, assets, substructures, equipments, documentLots, documentLotItems } from '@/db/schema';
 import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
@@ -240,6 +241,8 @@ export async function runSourceAnalysis(
 
     broadcast(leadSourceId, { type: 'progress', stage: 'extraction' });
 
+    // Lot 58C : rapport d'exécution du document (étapes, déclaré, écritures relues).
+    const rec = new T1ExecutionRecorder();
     try {
       let master: MasterGroupAnalysis;
       try {
@@ -247,6 +250,7 @@ export async function runSourceAnalysis(
       } catch (e) {
         // Lot 22 : un refus pour plafond n'est jamais un échec du master.
         if (isExecutionCancelled(e) || isCostCapReached(e)) throw e;
+        rec.fail('MASTER', e);
         throw new T1MasterAnalysisError((e as Error).message, {
           // Revue 3a : le code de la passerelle n'est plus écrasé — il
           // distingue une sortie invalide (définitif) d'une panne (transitoire).
@@ -256,6 +260,9 @@ export async function runSourceAnalysis(
         });
       }
       const result = master.result;
+      rec.ok('MASTER', { facts: master.facts.length, promptVersion: master.promptVersion });
+      rec.traceIds = result.operationTrace?.traceIds ?? [];
+      rec.masterFacts = master.facts;
 
       // Candidats agenda (CDC 15 T4-01, T4-03, T4-04) : registre et nature
       // HISTORICAL / DEADLINE — toujours depuis le lot 16b-2 (AI_T4_EFFECTS
@@ -278,11 +285,13 @@ export async function runSourceAnalysis(
       broadcast(leadSourceId, { type: 'progress', stage: 'persistance' });
 
       // Étape 12 — persistance, idempotente.
-      const persisted = await persistAnalysisResult({
+      const persisted = await rec.run('ANALYSIS_RUN', async () => await persistAnalysisResult({
         input, leadSourceId, groupSourceIds, lotId, result,
         // Version résolue du master dans l'empreinte du run.
         master: { masterPromptVersion: master.promptVersion },
-      });
+      }));
+      rec.analysisRunId = persisted.runId ?? null;
+      rec.deduplicated = persisted.deduplicated === true;
 
       // ══════════════════════════════════════════════════════════════════
       // ÉTAPE 12 bis — REPRÉSENTATION DURABLE DU DOCUMENT (base de connaissance)
@@ -295,7 +304,7 @@ export async function runSourceAnalysis(
       // run et les propositions, eux, sont déjà écrits.
       // ══════════════════════════════════════════════════════════════════
       await guard?.assertActive('base de connaissance');
-      await persistDocumentKnowledge(buildKnowledgeFromSourceAnalysis(result, {
+      const knowledge = buildKnowledgeFromSourceAnalysis(result, {
         accountId: input.accountId,
         fileId: leadSourceId,
         analysisRunId: persisted.runId ?? null,
@@ -310,7 +319,15 @@ export async function runSourceAnalysis(
         sourceLayer: master.sourceLayer,
         // Lot 40 : candidats Opération (barrière serveur appliquée), même transaction que les faits.
         operationCandidates: master.operationCandidates,
-      })).catch((e: Error) => {
+      });
+      rec.knowledge = knowledge;
+      await persistDocumentKnowledge(knowledge).then((extractionId) => {
+        rec.extractionId = extractionId;
+        rec.ok('KNOWLEDGE', { extractionId });
+      }, (e: Error) => {
+        // Lot 58C : l'échec n'est plus seulement journalisé — le rapport
+        // l'affiche et liste chaque donnée déclarée comme NON enregistrée.
+        rec.fail('KNOWLEDGE', e);
         console.error(`[source-analysis] base de connaissance du fichier ${leadSourceId} non écrite :`, e.message);
       });
 
@@ -327,7 +344,7 @@ export async function runSourceAnalysis(
       // perdue pour un titre ; T3 rattrape.
       // ══════════════════════════════════════════════════════════════════
       await guard?.assertActive('titre du document');
-      await ensureBusinessTitle({
+      const titre = await ensureBusinessTitle({
         fileId: leadSourceId,
         accountId: input.accountId,
         origin: 'T1',
@@ -335,6 +352,8 @@ export async function runSourceAnalysis(
         inputs: titleInputsFromAnalysis(result),
         guard: guard ?? undefined,
       });
+      if (titre?.outcome === 'FAILED') rec.fail('TITLE', titre.reason ?? 'échec');
+      else rec.ok('TITLE', { outcome: titre?.outcome ?? null, reason: titre?.reason ?? null });
 
       // ══════════════════════════════════════════════════════════════════
       // ÉTAPE 12 ter — CLASSEMENT V2 ET FILE « À TRAITER » (CDC V2 §10.2, §11.3)
@@ -368,7 +387,8 @@ export async function runSourceAnalysis(
         assetFamilies: await loadAssetFamilies(assetIdsForV2),
         promptVersion: result.document.rubric?.promptVersion ?? null,
         pipelineVersion: PIPELINE_VERSION,
-      }).catch((e) => {
+      }).then(() => rec.ok('CLASSIFICATION'), (e) => {
+        rec.fail('CLASSIFICATION', e);
         console.error(
           `[source-analysis] classement V2 du fichier ${leadSourceId} impossible :`,
           (e as Error).message,
@@ -382,7 +402,7 @@ export async function runSourceAnalysis(
       // seul bien. Appelé MÊME sans fait : c'est ce qui retire (supersede) les
       // preuves d'une analyse antérieure.
       await guard?.assertActive('preuves');
-      const ecrites = await persistProjectedFacts({
+      const ecrites = await rec.run('EVIDENCE', async () => await persistProjectedFacts({
         input,
         leadSourceId,
         facts: master.facts,
@@ -392,7 +412,8 @@ export async function runSourceAnalysis(
         trace: result.operationTrace,
         analysisRunId: persisted.runId,
         promptVersion: master.promptVersion,
-      });
+      }));
+      rec.projection = ecrites ?? null;
       // Candidats T4 : preuve du champ d'origine sur le bien du document (T4-07, T4-08).
       if (assetId && ecrites?.evidenceIds) {
         const suffixe = `@ASSET:${assetId}`;
@@ -434,14 +455,16 @@ export async function runSourceAnalysis(
           documentAssetId: master.documentAssetId,
           knownAssetId: input.linkedAssetId ?? null,
         }),
-      }).catch((e: Error) => {
+      }).then(() => rec.ok('LINKS'), (e: Error) => {
+        rec.fail('LINKS', e);
         console.error(`[source-analysis] liens document ↔ biens du fichier ${leadSourceId} non écrits :`, e.message);
       });
       // Lot 31B : rattachement principal VISIBLE (colonne lue par les listes
       // de documents) pour un bien retenu automatiquement — jamais par-dessus
       // un choix ou un retrait de l'utilisateur (`ASSET_LINK_SLOT.writeAuto`).
       if (assetId !== null && assetId !== (input.linkedAssetId ?? null)) {
-        await writeAutomaticPrimaryColumn(input.accountId, leadSourceId, assetId).catch((e: Error) => {
+        await writeAutomaticPrimaryColumn(input.accountId, leadSourceId, assetId).then(() => rec.ok('PRIMARY_ASSET', { assetId }), (e: Error) => {
+          rec.fail('PRIMARY_ASSET', e);
           console.error(`[source-analysis] rattachement principal du fichier ${leadSourceId} non écrit :`, e.message);
         });
       }
@@ -458,12 +481,15 @@ export async function runSourceAnalysis(
       // rattaché). Ne lève jamais.
       // ══════════════════════════════════════════════════════════════════
       await guard?.assertActive('règles « À traiter »');
-      await syncDocumentRulesFromAnalysis({
+      await rec.run('RULES', () => syncDocumentRulesFromAnalysis({
         accountId: input.accountId,
         fileId: leadSourceId,
+        runRef: persisted.runId ? `analysis_run:${persisted.runId}` : null,
         observations: {
+          // Lot 58B : la clé LUE accompagne un fait sans clé canonique (fait
+          // requalifié générique) — le pont la rapproche par le registre.
           facts: master.facts.map((f) => ({
-            canonicalKey: f.canonicalKey, value: f.value, confidence: f.confidence, excerpt: f.evidence?.excerpt ?? null,
+            canonicalKey: f.canonicalKey, rawKey: f.rawKey ?? null, value: f.value, confidence: f.confidence, excerpt: f.evidence?.excerpt ?? null,
           })),
           assetCandidates: result.assetCandidates.map((c) => ({
             entityId: c.entityId, verified: c.verified, score: c.score, confidence: c.confidence,
@@ -484,7 +510,7 @@ export async function runSourceAnalysis(
               : undefined,
           },
         },
-      });
+      }));
 
       // ⚠️ CORRECTION §4.1.7 — la suppression des fichiers secondaires
       // n'intervient qu'ici, après persistance ET preuves réussies.
@@ -540,6 +566,7 @@ export async function runSourceAnalysis(
       if (!estDoublon) {
         await setState(groupSourceIds, etatFinal);
       }
+      rec.ok('FINAL_STATE', { state: estDoublon ? 'FUSION_SUGGESTED' : etatFinal });
 
       // Un doublon ne compte ni dans le total analysé, ni donc dans les
       // crédits consommés plus bas.
@@ -557,6 +584,9 @@ export async function runSourceAnalysis(
         leadSourceId,
         result,
       });
+      rec.ok('DOWNSTREAM_EVENT');
+      // Lot 58C : instantané immuable, après les écritures (ne lève jamais).
+      await writeT1Report(rec, { accountId: req.accountId, fileId: leadSourceId, groupSourceIds });
     } catch (e) {
       // Interruption : aucune écriture (pas même l'échec) — la nouvelle
       // exécution reprendra ces sources avec la configuration restaurée.
@@ -582,6 +612,8 @@ export async function runSourceAnalysis(
       console.warn(`[source-analysis] analyse T1 en échec pour la source ${leadSourceId} :`, (e as Error).message);
       const definitif = e instanceof T1MasterAnalysisError && e.definitive;
       await failSources(groupSourceIds, failReason(e), lotId, { definitive: definitif });
+      rec.failure = failReason(e);
+      await writeT1Report(rec, { accountId: req.accountId, fileId: leadSourceId, groupSourceIds });
       failedSourceIds.push(...groupSourceIds);
       if (definitif) definitiveFailedSourceIds.push(...groupSourceIds);
     }

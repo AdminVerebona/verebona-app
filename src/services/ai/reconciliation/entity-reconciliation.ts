@@ -118,6 +118,12 @@ export async function reconcileEntity(input: ReconcileEntityInput, deps?: Entity
   if (!state || state.archived) return vide();
   const out = vide(false);
   const traceId = randomUUID();
+  // Lot 58C : rapport d'exécution de l'entité (champs examinés, écritures confirmées).
+  const { T3ExecutionRecorder, writeT3Report } = await import('../execution-report/t3-report');
+  const rec = new T3ExecutionRecorder(traceId);
+  const rapport = () => (deps ? Promise.resolve(null) : writeT3Report(rec, {
+    accountId: input.accountId, assetId: state.assetId, target: input.target, sourceFileId: input.sourceFileId ?? null, triggeredBy: input.triggeredBy,
+  }));
   const source = input.sourceFileId ? { type: 'document', id: input.sourceFileId } : { type: 'reconciliation', id: traceId };
 
   const keys = await d.evidenceKeys(input.accountId, input.target);
@@ -139,12 +145,16 @@ export async function reconcileEntity(input: ReconcileEntityInput, deps?: Entity
     if (revision && decision.action === 'update') decision = { ...decision, reasonCode: T4_REVISION_REASON };
     else if (unproven && decision.action === 'update') decision = { ...decision, reasonCode: NEGATIVE_REASON.REPLACE };
     out.decisions.push(decision);
+    const trace: import('../execution-report/t3-report').T3FieldRecord = { fieldKey: def.key, current, candidates, decision, registry: true };
+    rec.fields.push(trace);
     if (decision.action !== 'apply' && decision.action !== 'update') continue;
 
     const best = candidates.find((c) => c.evidenceId === decision.evidenceIds[0]);
     // Lot 31C : garde avant écriture (sans effet hors file).
     await assertJobActive(`valeur ${def.key}`);
-    const res = await d.write({
+    let res: Awaited<ReturnType<typeof d.write>>;
+    try {
+      res = await d.write({
       target: input.target, accountId: input.accountId, origin: 'RECONCILIATION', source, traceId,
       writes: [{
         key: def.key, value: decision.proposedValue, expectedCurrent: decision.currentValue ?? null,
@@ -154,8 +164,15 @@ export async function reconcileEntity(input: ReconcileEntityInput, deps?: Entity
           sourceDate: best?.documentDate ? new Date(best.documentDate).toISOString() : null,
         },
       }],
-    });
+      });
+    } catch (e) {
+      trace.error = (e as Error)?.message ?? String(e);
+      rec.failure = trace.error;
+      await rapport();
+      throw e;
+    }
     const f = res.fields[0];
+    trace.outcome = f?.outcome ?? 'skipped';
     if (f?.outcome === 'written') out.written.push(def.key);
     else if (f?.outcome === 'protected') out.protectedKeys.push(def.key);
   }
@@ -175,6 +192,7 @@ export async function reconcileEntity(input: ReconcileEntityInput, deps?: Entity
       if (res.fields[0]?.outcome === 'written') {
         out.retracted.push(r.fieldKey);
         out.decisions.push(retractionDecision(r));
+        rec.fields.push({ fieldKey: r.fieldKey, current: null, candidates: [], decision: retractionDecision(r), outcome: 'written', retraction: true, registry: true });
       }
     }
   }
@@ -194,5 +212,6 @@ export async function reconcileEntity(input: ReconcileEntityInput, deps?: Entity
     written: out.written, retracted: out.retracted, protected: out.protectedKeys,
     conflicts: out.decisions.filter((x) => x.action === 'create_conflict').map((x) => x.fieldKey),
   }));
+  await rapport();
   return out;
 }

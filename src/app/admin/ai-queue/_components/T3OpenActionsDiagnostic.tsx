@@ -39,7 +39,29 @@ interface Card {
   aiOperation: string | null; aiTraceId: string | null; aiStatus: string | null; aiError: string | null; decision: string | null;
   confidence: number | null; writeAttempted: boolean | null; writeVerified: boolean | null;
 }
-interface Data { migrations: { journal0371: boolean; diagnostic0410: boolean }; runs: Run[]; cards: Card[]; nextBefore: number | null }
+interface RuleEval {
+  id: number; createdAt: string; lastSeenAt: string; seenCount: number; accountId: number; fileId: number; ruleCode: string;
+  fieldKey: string | null; trigger: string; runRef: string | null; engineVersion: string; targetPresent: boolean | null;
+  userValidated: boolean | null; sources: Record<string, number>; missingSources: string[];
+  observations: Array<{ source: string; key: string | null; raw: string | null; normalized: string | null; status: string }>;
+  proposals: Array<{ value: string | null; confidence: number }>; titleHint: { dates: string[]; confirmed: string[] } | null;
+  pertinence: string | null; pertinenceReason: string | null; aiOperation: string | null; aiTraceId: string | null; aiStatus: string | null;
+  decision: string; reasonCode: string | null; actionId: number | null; writeVerified: boolean | null; error: string | null; failedStep: string | null;
+}
+interface Data {
+  migrations: { journal0371: boolean; diagnostic0410: boolean; documentRules0418?: boolean };
+  runs: Run[]; cards: Card[]; nextBefore: number | null; documentRules?: RuleEval[];
+}
+
+/** Lot 58B — règles documentaires (pont « À traiter ») : décision et pertinence. */
+const DECISION_LABEL: Record<string, string> = {
+  WRITE: 'valeur écrite', CREATE: 'carte créée', UPDATE: 'carte actualisée', KEEP: 'carte maintenue', CLOSE: 'carte fermée', NONE: 'aucune action', ERROR: 'EN ERREUR',
+};
+const PERTINENCE_LABEL: Record<string, string> = {
+  NOT_EVALUATED: 'non évaluée (règle sans échéance)', FUTURE_OR_UNDATED: 'date future ou inconnue : question utile',
+  ACTION_REQUIRED: 'échéance passée, action attendue', NO_ACTION_NEEDED: 'échéance historique, aucune intervention', UNDECIDED: 'indécise (question maintenue)',
+};
+const TRIGGER_LABEL: Record<string, string> = { ANALYSIS: 'analyse T1', SWEEP: 'balayage', T3: 'passage T3', USER: 'correction utilisateur' };
 
 const OUTCOME_LABEL: Record<string, string> = {
   SUCCESS: 'Réussite complète', PARTIAL_SUCCESS: 'Réussite partielle', BUSINESS_ABSTENTION: 'Abstention métier (cartes à arbitrer)',
@@ -147,6 +169,47 @@ function CardRow({ c }: { c: Card }) {
   );
 }
 
+function RuleRow({ r }: { r: RuleEval }) {
+  const [open, setOpen] = useState(false);
+  const decisionTone = r.decision === 'ERROR' ? 'text-red-400' : r.decision === 'CLOSE' || r.decision === 'WRITE' || r.decision === 'NONE' ? 'text-emerald-500' : 'text-amber-500';
+  return (
+    <li className="rounded-lg border border-[color:var(--border-subtle)] p-2 min-w-0">
+      <button type="button" className="w-full text-left flex items-start gap-2" onClick={() => setOpen((o) => !o)} aria-expanded={open}>
+        <ChevronDown className={`w-3.5 h-3.5 mt-0.5 shrink-0 transition-transform ${open ? '' : '-rotate-90'}`} />
+        <span className="text-xs break-words min-w-0">
+          <span className="font-medium text-[color:var(--text-primary)]">Document {r.fileId}</span> · {r.ruleCode}
+          {' · '}<span className={decisionTone}>{DECISION_LABEL[r.decision] ?? r.decision}</span>
+          {r.reasonCode ? <span className="text-[color:var(--text-secondary)]"> — {r.reasonCode}</span> : null}
+          <span className="text-[color:var(--text-muted)]"> · {TRIGGER_LABEL[r.trigger] ?? r.trigger} · {dt(r.lastSeenAt)}{r.seenCount > 1 ? ` (×${r.seenCount})` : ''}</span>
+        </span>
+      </button>
+      {open && (
+        <dl className="mt-2 grid gap-x-3 gap-y-1 text-xs sm:grid-cols-2 break-words">
+          {([
+            ['Compte / exécution', `${r.accountId} · ${r.runRef ?? '—'} · version ${r.engineVersion}`],
+            ['Champ cible', `${r.fieldKey ?? '—'} · ${r.targetPresent == null ? '?' : r.targetPresent ? 'présent' : 'absent'}${r.userValidated ? ' · choix utilisateur' : ''}`],
+            ['Sources consultées', kv(r.sources)],
+            ['Sources absentes / en échec', r.missingSources.length ? r.missingSources.join(', ') : '—'],
+            ['Valeurs lues (normalisation)', r.observations.length ? r.observations.map((o) => `${o.source}${o.key ? `/${o.key}` : ''} « ${o.raw ?? ''} » → ${o.normalized ?? 'rejetée'} (${o.status})`).join(' ; ') : '—'],
+            ['Propositions retenues', r.proposals.length ? r.proposals.map((p) => `${p.value} (${p.confidence})`).join(', ') : '—'],
+            ['Indice du titre', r.titleHint ? `${r.titleHint.dates.join(', ') || '—'} · retrouvé dans le contenu : ${r.titleHint.confirmed.join(', ') || 'non'}` : '—'],
+            ['Pertinence métier', r.pertinence ? `${PERTINENCE_LABEL[r.pertinence] ?? r.pertinence}${r.pertinenceReason ? ` · ${r.pertinenceReason}` : ''}` : '—'],
+            ['IA', r.aiOperation ? `${r.aiOperation} · ${r.aiStatus ?? '?'}${r.aiTraceId ? ` · trace ${r.aiTraceId}` : ''}` : 'non'],
+            ['Décision', `${DECISION_LABEL[r.decision] ?? r.decision}${r.actionId ? ` · action #${r.actionId}` : ''}${r.writeVerified == null ? '' : r.writeVerified ? ' · vérifiée en base' : ' · NON vérifiée'}`],
+            ['Erreur', r.error ? `${r.error}${r.failedStep ? ` (étape ${r.failedStep})` : ''}` : '—'],
+            ['Première / dernière évaluation', `${dt(r.createdAt)} → ${dt(r.lastSeenAt)}`],
+          ] as Array<[string, string]>).map(([k, v]) => (
+            <div key={k} className="min-w-0">
+              <dt className="text-[color:var(--text-secondary)]">{k}</dt>
+              <dd className="text-[color:var(--text-muted)]">{v}</dd>
+            </div>
+          ))}
+        </dl>
+      )}
+    </li>
+  );
+}
+
 export function T3OpenActionsDiagnostic({ initialJobId }: { initialJobId?: number | null }) {
   const vide: Filters = { accountId: '', jobId: initialJobId ? String(initialJobId) : '', runId: '', documentId: '', ruleCode: '', actionId: '', result: '' };
   const [filters, setFilters] = useState<Filters>(vide);
@@ -204,6 +267,15 @@ export function T3OpenActionsDiagnostic({ initialJobId }: { initialJobId?: numbe
               <Button type="button" size="sm" variant="outline" disabled={loading} onClick={() => void charger(filters, data.nextBefore)}>Afficher plus</Button>
             )}
           </div>
+          {data.migrations.documentRules0418 === false && (
+            <p className="text-xs text-amber-500 break-words">Diagnostic des règles documentaires ABSENT (migration 0418).</p>
+          )}
+          {data.documentRules && data.documentRules.length > 0 && (
+            <div className="space-y-2">
+              <p className="text-xs text-[color:var(--text-secondary)]">Règles documentaires — dates, fournisseur ({data.documentRules.length})</p>
+              <ul className="space-y-1.5">{data.documentRules.map((r) => <RuleRow key={r.id} r={r} />)}</ul>
+            </div>
+          )}
         </>
       )}
     </div>

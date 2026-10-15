@@ -35,6 +35,7 @@ import { db } from '@/db';
 import { assetFiles, assets, documentAssetLinks, documentFieldValues, documentSuppliers, suppliers } from '@/db/schema';
 import { getField } from '@/services/canonical/registry';
 import type { ActionProposal, ValueOrigin } from './action-model';
+import { parseDocumentDate } from './document-field-evidence';
 
 /** Client de base : transaction en cours ou `db` (même contrat que `resolve-action`). */
 export type SlotClient = Pick<typeof db, 'select' | 'update' | 'insert'>;
@@ -123,7 +124,10 @@ export async function documentExists(client: SlotClient, accountId: number, file
 /** Emplacement générique d'une donnée documentaire du catalogue. */
 export function valueStoreSlot(key: string): DocumentSlot {
   const isDate = getField(key)?.valueType === 'date';
-  const normalize = (v: unknown) => (isDate ? toIsoDate(v) : asText(v));
+  // Lot 58B : date lue sous une forme NON ambiguë (20:06:2026, 20/06/2026,
+  // 20 juin 2026…) → ISO ; forme refusée (année sur deux chiffres,
+  // séparateurs mêlés) → null. Voir `parseDocumentDate`.
+  const normalize = (v: unknown) => (isDate ? (toIsoDate(v) ?? parseDocumentDate(v).iso) : asText(v));
   return {
     key,
     kind: 'field',

@@ -132,7 +132,12 @@ function jourValide(y: number, m: number, d: number): boolean {
 
 const pad = (n: number) => String(n).padStart(2, '0');
 
-/** Date → `AAAA-MM-JJ`, ou null si invalide. Formes : ISO (avec heure), JJ/MM/AAAA, JJ-MM-AAAA, JJ.MM.AAAA, Date. */
+/**
+ * Date → `AAAA-MM-JJ`, ou null si invalide. Formes : ISO (avec heure),
+ * JJ/MM/AAAA, JJ-MM-AAAA, JJ.MM.AAAA, Date. Lot 58B : aussi JJ:MM:AAAA
+ * (« 20:06:2026 », lu tel quel dans des titres et noms de fichiers), avec le
+ * MÊME séparateur des deux côtés — un « 20:06/2026 » reste refusé.
+ */
 export function normalizeDateValue(raw: unknown): string | null {
   if (raw instanceof Date) {
     return Number.isNaN(raw.getTime()) ? null : raw.toISOString().slice(0, 10);
@@ -141,7 +146,7 @@ export function normalizeDateValue(raw: unknown): string | null {
   const s = raw.trim();
   let y: number, m: number, d: number;
   const iso = /^(\d{4})-(\d{2})-(\d{2})(?:$|[T ])/.exec(s);
-  const fr = /^(\d{1,2})[/.\-](\d{1,2})[/.\-](\d{4})$/.exec(s);
+  const fr = /^(\d{1,2})[/.\-](\d{1,2})[/.\-](\d{4})$/.exec(s) ?? /^(\d{1,2}):(\d{1,2}):(\d{4})$/.exec(s);
   if (iso) { y = +iso[1]; m = +iso[2]; d = +iso[3]; }
   else if (fr) { d = +fr[1]; m = +fr[2]; y = +fr[3]; }
   else return null;

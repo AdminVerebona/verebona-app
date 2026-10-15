@@ -59,6 +59,7 @@ import { CopyBlockButton, ExecutionExportButtons } from './_components/CopyJson'
 import { ExecutionDiagnosisPanel, type DiagnosisView } from './_components/ExecutionDiagnosisPanel';
 import { RuntimeContractPanel, type ContractCallView } from './_components/RuntimeContractPanel';
 import { T1CompletenessPanel } from './_components/T1CompletenessPanel';
+import { ExecutionReportsTab, LinkedExecutionReports } from './_components/ExecutionReportPanel';
 import { JobAttemptsPanel, type JobExecutionViewDto, type UserViewDto } from './_components/JobAttemptsPanel';
 import {
   displayErrorCode, providerFailureCategory, PROVIDER_FAILURE_CATEGORY_LABELS,
@@ -212,8 +213,9 @@ function AiExecutionsScreen() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const [filters, setFilters] = useState<ExecutionScreenFilters>(() => readExecutionFilters(searchParams));
-  const [tab, setTab] = useState<'calls' | 't2' | 'archives'>(
-    searchParams.get('tab') === 't2' ? 't2' : searchParams.get('tab') === 'archives' ? 'archives' : 'calls');
+  const [tab, setTab] = useState<'calls' | 't2' | 'archives' | 'reports'>(
+    searchParams.get('tab') === 't2' ? 't2' : searchParams.get('tab') === 'archives' ? 'archives'
+      : searchParams.get('tab') === 'reports' ? 'reports' : 'calls');
   const [archives, setArchives] = useState<Archives | null>(null);
   const [page, setPage] = useState<Page | null>(null);
   const [t2, setT2] = useState<{ rows: T2Row[]; total: number } | null>(null);
@@ -229,6 +231,7 @@ function AiExecutionsScreen() {
     const q = executionFiltersToParams(filters);
     if (tab === 't2') { q.set('tab', 't2'); if (t2Route) q.set('route', t2Route); }
     if (tab === 'archives') q.set('tab', 'archives');
+    if (tab === 'reports') q.set('tab', 'reports');
     router.replace(`?${q}`, { scroll: false });
   }, [filters, tab, t2Route, router]);
 
@@ -239,7 +242,9 @@ function AiExecutionsScreen() {
       const params = executionFiltersToParams(filters);
       params.set('offset', String(offset));
       params.set('limit', '50');
-      if (tab === 'archives') {
+      if (tab === 'reports') {
+        // Lot 58C : l'onglet charge lui-même ses rapports (ExecutionReportsTab).
+      } else if (tab === 'archives') {
         setArchives(await apiClient.get<Archives>('/api/admin/ai/log-archives?limit=100'));
       } else if (tab === 't2') {
         const q = new URLSearchParams({ offset: String(offset), limit: '50' });
@@ -279,7 +284,7 @@ function AiExecutionsScreen() {
     }
   };
 
-  const total = tab === 't2' ? t2?.total ?? 0 : tab === 'archives' ? archives?.totals.archives ?? 0 : page?.total ?? 0;
+  const total = tab === 'reports' ? 0 : tab === 't2' ? t2?.total ?? 0 : tab === 'archives' ? archives?.totals.archives ?? 0 : page?.total ?? 0;
 
   return (
     <div className="space-y-6 max-w-6xl">
@@ -302,8 +307,8 @@ function AiExecutionsScreen() {
         </Button>
       </div>
 
-      <div className="flex gap-2">
-        {([['calls', 'Appels modèles'], ['t2', 'Requêtes T2 (routage)'], ['archives', 'Archives (> 90 j)']] as const).map(([k, label]) => (
+      <div className="flex flex-wrap gap-2">
+        {([['calls', 'Appels modèles'], ['t2', 'Requêtes T2 (routage)'], ['reports', 'Rapports T1/T3'], ['archives', 'Archives (> 90 j)']] as const).map(([k, label]) => (
           <Button key={k} size="sm" variant={tab === k ? 'default' : 'outline'}
             onClick={() => { setTab(k); setOffset(0); }}>{label}</Button>
         ))}
@@ -402,9 +407,11 @@ function AiExecutionsScreen() {
           au <input type="date" value={filters.to} onChange={(e) => set('to', e.target.value)} className={SELECT} />
         </label>
         </>}
-        <span className="text-sm text-[color:var(--text-muted)] ml-auto">
-          {total} {tab === 't2' ? 'requête' : tab === 'archives' ? 'archive' : 'appel'}{total > 1 ? 's' : ''}
-        </span>
+        {tab !== 'reports' && (
+          <span className="text-sm text-[color:var(--text-muted)] ml-auto">
+            {total} {tab === 't2' ? 'requête' : tab === 'archives' ? 'archive' : 'appel'}{total > 1 ? 's' : ''}
+          </span>
+        )}
       </div>
 
       {erreur ? (
@@ -413,6 +420,8 @@ function AiExecutionsScreen() {
         <div className="flex items-center justify-center py-16 text-[color:var(--text-muted)]">
           <Loader2 className="w-4 h-4 mr-2 animate-spin" /> Chargement…
         </div>
+      ) : tab === 'reports' ? (
+        <ExecutionReportsTab accountId={filters.accountId} />
       ) : tab === 'archives' ? (
         <ArchivesPanel archives={archives} />
       ) : tab === 't2' ? (
@@ -587,6 +596,9 @@ function ExecutionDetailPanel({ detail, onClose }: { detail: Detail; onClose: ()
         {detail.jobExecution && (
           <JobAttemptsPanel view={detail.jobExecution} userView={detail.userView ?? null} treatment={detail.job?.treatment ?? 'métier'} />
         )}
+
+        {/* Lot 58C : rapport d'exécution T1 / T3 fondé sur les écritures confirmées en base. */}
+        <LinkedExecutionReports callId={detail.call.id} treatment={detail.call.treatment} />
 
         {/* Lot 33D : diagnostic final, résultat métier, compteurs, rapport par appel. */}
         {detail.diagnosis ? (

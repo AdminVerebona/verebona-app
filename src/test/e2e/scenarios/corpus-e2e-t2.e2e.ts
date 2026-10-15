@@ -10,7 +10,7 @@
  * t2_revalidate, t1_analyze_document) sont des enregistrements synthétiques
  * rejoués par la vraie passerelle (D-08) ; aucun réseau (D-17).
  */
-import { expect, it, vi } from 'vitest';
+import { beforeEach, expect, it, vi } from 'vitest';
 import { scenario } from '../scenario';
 import {
   agenda, analyserDocument, demander, drainQueues, fiche, preuves, sortieT1, useTargetState, type FaitT1,
@@ -34,6 +34,16 @@ const ids = (r: Reponse) => r.sources.map((s) => s.id);
 
 scenario('CORPUS-T2', 'Corpus §15 — assistant T2 (enabled / master)', ({ sql, make, useRecordings }) => {
   useTargetState({}, { masters: ['T1', 'T2'] });
+
+  // La vidange des files (`drainQueues`, 60 passages, ordre d'arrivée) ne doit
+  // pas s'épuiser sur des jobs T3/T4 laissés en attente par des scénarios
+  // précédents (base partagée, fichiers en série) : chaque test part d'une
+  // file sans arriéré étranger. Sans cela, la fiche n'était parfois jamais
+  // mise à jour (E2E-T2-01, 22, 23 rouges selon l'ordre des fichiers).
+  beforeEach(async () => {
+    await sql`UPDATE ai_job_queue SET status = 'CANCELLED', finished_at = now()
+               WHERE status = 'PENDING' AND treatment IN ('T3', 'T4')`;
+  });
 
   const compteDe = async (): Promise<Compte> => {
     const a = await make.account();

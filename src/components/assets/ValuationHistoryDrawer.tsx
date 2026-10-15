@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
 import { DatePicker } from '@/components/ui/date-picker';
 import { NumberInput } from '@/components/ui/number-input';
+import { MONEY_INPUT, parseNumberInput } from '@/lib/number-input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Loader2, Plus, Sparkles, TrendingUp } from 'lucide-react';
 import { apiClient } from '@/lib/api-client';
@@ -49,7 +50,9 @@ export function ValuationHistoryDrawer({ open, onClose, assetId, assetName, onSa
   const [showForm, setShowForm] = useState(false);
   const [saving, setSaving] = useState(false);
 
-  const [formValue, setFormValue] = useState<number | null>(null);
+  // Texte saisi (lot 58A) : converti à l'enregistrement.
+  const [formValue, setFormValue] = useState('');
+  const [valueError, setValueError] = useState(false);
   const [formDate, setFormDate] = useState<string | null>(null);
   const [formMode, setFormMode] = useState<string | null>(null);
 
@@ -69,16 +72,19 @@ export function ValuationHistoryDrawer({ open, onClose, assetId, assetName, onSa
   useEffect(() => { loadHistory(); }, [loadHistory]);
 
   const handleSave = async () => {
-    if (formValue == null) { toast.error('La valeur estimée est requise'); return; }
+    const lu = parseNumberInput(formValue, MONEY_INPUT);
+    if (!lu.ok) { setValueError(true); toast.error(`Valeur estimée : ${lu.error}`); return; }
+    if (lu.value == null) { toast.error('La valeur estimée est requise'); return; }
     setSaving(true);
     try {
       await apiClient.post(`/api/assets/${assetId}/valuations`, {
-        value: formValue,
+        value: lu.value,
         date: formDate,
         mode: formMode,
         source: 'USER',
       });
-      setFormValue(null);
+      setFormValue('');
+      setValueError(false);
       setFormDate(null);
       setFormMode(null);
       setShowForm(false);
@@ -139,8 +145,10 @@ export function ValuationHistoryDrawer({ open, onClose, assetId, assetName, onSa
               <div className="space-y-1">
                 <Label className="text-xs text-muted-foreground">Valeur estimée (€) *</Label>
                 <NumberInput
-                  value={formValue ?? ''}
-                  onChange={e => setFormValue(e.target.value === '' ? null : Number(e.target.value))}
+                  value={formValue}
+                  onValueChange={setFormValue}
+                  parseOptions={MONEY_INPUT}
+                  showError={valueError}
                   placeholder="ex: 250000"
                 />
               </div>

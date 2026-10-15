@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { DatePicker } from '@/components/ui/date-picker';
 import { NumberInput } from '@/components/ui/number-input';
+import { MONEY_INPUT, parseMoneyInputToCents } from '@/lib/number-input';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Upload, X, FileIcon, Loader2, Link as LinkIcon, Camera, ImageIcon, LayoutGrid, Settings, Check, ChevronDown, Video } from 'lucide-react';
@@ -260,6 +261,7 @@ export function UnifiedDocumentDialog({
   const [assetId, setAssetId] = useState<string>(preselectedAssetId?.toString() || '0');
   const [supplier, setSupplier] = useState('');
   const [amount, setAmount] = useState('');
+  const [amountError, setAmountError] = useState(false);
   const [webLinkUrl, setWebLinkUrl] = useState('');
   const [webLinkTitle, setWebLinkTitle] = useState('');
   const [showExtraFields, setShowExtraFields] = useState(false);
@@ -496,6 +498,7 @@ export function UnifiedDocumentDialog({
     setAssetId(preselectedAssetId?.toString() || '0');
     setSupplier('');
     setAmount('');
+    setAmountError(false);
     setSelectedEventIds([]);
     setCreateEvent(false);
     setEventType('');
@@ -542,7 +545,8 @@ export function UnifiedDocumentDialog({
       documentDate,
       supplier,
       title,
-      amountCents: amount ? Math.round(parseFloat(amount) * 100) : null,
+      // Montant déjà validé par `handleSubmit` (lot 58A).
+      amountCents: (() => { const m = parseMoneyInputToCents(amount); return m.ok ? m.cents : null; })(),
       targetAssetId,
       webLinkTitle,
       webLinkUrl,
@@ -617,6 +621,13 @@ export function UnifiedDocumentDialog({
     }
     if (createEvent && !eventType) {
       toast.error('Veuillez sélectionner un type d\'événement');
+      return;
+    }
+    // Lot 58A : montant invalide ou ambigu → aucun envoi (jamais de montant partiel).
+    const montant = parseMoneyInputToCents(amount);
+    if (!montant.ok) {
+      setAmountError(true);
+      toast.error(`Montant : ${montant.error}`);
       return;
     }
 
@@ -915,7 +926,7 @@ export function UnifiedDocumentDialog({
               </div>
               <div className="space-y-2">
                 <Label>Montant (€)</Label>
-                <NumberInput step={0.01} value={amount} onChange={e => setAmount(e.target.value)} placeholder="0.00" disabled={isUploading} showButtons={false} />
+                <NumberInput value={amount} onValueChange={setAmount} parseOptions={MONEY_INPUT} showError={amountError} placeholder="0,00" disabled={isUploading} showButtons={false} />
               </div>
             </div>
           </div>

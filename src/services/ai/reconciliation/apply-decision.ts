@@ -22,17 +22,14 @@ import { db, pgClient } from '@/db';
 import { assets, aiFieldUpdates } from '@/db/schema';
 import { and, eq } from 'drizzle-orm';
 import { writeOrigin } from './field-origin';
-import { getField, resolveAlias, isExcludedKey, isInputOnlyKey } from '@/services/canonical/registry';
+import { isInputOnlyKey } from '@/services/canonical/registry';
 import {
   writeCanonicalAssetField, type CanonicalFieldWriteResult,
 } from '@/services/canonical/asset-state';
 import type { ReconciliationDecision, EvidenceCandidate } from './types';
 
-/** Clé écrite par la primitive : clé canonique ou alias connu du registre. */
-export function isRegistryKey(fieldKey: string): boolean {
-  if (isExcludedKey(fieldKey)) return false;
-  return !!getField(fieldKey) || !!resolveAlias(fieldKey);
-}
+import { isRegistryKey } from './canonical-key';
+export { isRegistryKey };
 
 export interface ApplyContext {
   accountId: number;
@@ -123,9 +120,12 @@ async function applyOutsideRegistry(
   next[`${decision.fieldKey}__sourceDate`] =
     ctx.bestCandidate?.documentDate?.toISOString() ?? null;
 
-  await db.update(assets)
+  // Lot 58C : écriture CONFIRMÉE par RETURNING — aucune ligne touchée = rien d'écrit.
+  const touchees = await db.update(assets)
     .set({ keyCharacteristics: JSON.stringify(next), updatedAt: new Date() } as never)
-    .where(and(eq(assets.id, ctx.assetId), eq(assets.accountId, ctx.accountId)));
+    .where(and(eq(assets.id, ctx.assetId), eq(assets.accountId, ctx.accountId)))
+    .returning({ id: assets.id });
+  if (touchees.length === 0) return 'skipped';
 
   await db.insert(aiFieldUpdates).values({
     accountId: ctx.accountId,

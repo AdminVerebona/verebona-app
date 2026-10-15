@@ -21,6 +21,7 @@ import { DatePicker } from '@/components/ui/date-picker';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Label } from '@/components/ui/label';
 import { NumberInput } from '@/components/ui/number-input';
+import { MONEY_INPUT } from '@/lib/number-input';
 import { apiClient } from '@/lib/api-client';
 import { saleDetailsPatch, type SaleDetailsPrompt } from '@/lib/assets/sale-fields';
 
@@ -58,7 +59,8 @@ export function SaleDetailsForm({ followUp, busy = false, onSubmit, onSkip }: Fo
             <Label className="text-xs text-muted-foreground">Prix de vente réalisé (€)</Label>
             <NumberInput
               value={price}
-              onChange={(e) => setPrice(e.target.value)}
+              onValueChange={setPrice}
+              parseOptions={MONEY_INPUT}
               showButtons={false}
             />
           </div>

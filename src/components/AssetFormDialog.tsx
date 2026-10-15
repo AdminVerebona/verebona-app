@@ -19,6 +19,7 @@ import {
 import { Textarea } from '@/components/ui/textarea';
 import { Package, X, Check, Loader2, Info } from 'lucide-react';
 import { toast } from 'sonner';
+import { MONEY_INPUT, parseMoneyInputToCents } from '@/lib/number-input';
 import {
   parseWriteBlocked,
   notifyWriteBlocked,
@@ -48,13 +49,15 @@ export function AssetFormDialog({
 }: AssetFormDialogProps) {
   const router = useRouter();
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [priceError, setPriceError] = useState(false);
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [formData, setFormData] = useState({
     name: '',
     category: '',
     subtype: '',
     purchaseDate: '',
-    purchasePriceCents: '' as string | number,
+    // Texte saisi en EUROS (converti en centimes à l'envoi, lot 58A).
+    purchasePriceCents: '',
     notes: '',
     thumbnailUrl: null as string | null,
     objectCategory: '',
@@ -77,6 +80,7 @@ export function AssetFormDialog({
         purchaseLocation: '',
       });
       setDetailsOpen(false);
+      setPriceError(false);
     }
   }, [open]);
 
@@ -97,6 +101,14 @@ export function AssetFormDialog({
       return;
     }
 
+    // Lot 58A : conversion à la validation ; saisie invalide → aucun envoi.
+    const prix = parseMoneyInputToCents(formData.purchasePriceCents);
+    if (!prix.ok) {
+      setPriceError(true);
+      toast.error(`Prix d'achat : ${prix.error}`);
+      return;
+    }
+
     setIsSubmitting(true);
 
     try {
@@ -106,7 +118,7 @@ export function AssetFormDialog({
         category: formData.category,
         subtype: formData.subtype || undefined,
         purchaseDate: formData.purchaseDate || undefined,
-        purchasePriceCents: formData.purchasePriceCents ? Math.round(parseFloat(formData.purchasePriceCents.toString()) * 100) : undefined,
+        purchasePriceCents: prix.cents ?? undefined,
         notes: formData.notes || undefined,
         thumbnailUrl: formData.thumbnailUrl || undefined,
         purchaseLocation: formData.purchaseLocation || undefined,
@@ -277,10 +289,11 @@ export function AssetFormDialog({
                   <Label htmlFor="purchasePrice">Prix d'achat TTC (€)</Label>
                   <NumberInput
                     id="purchasePrice"
-                    step={0.01}
-                    placeholder="0.00"
+                    placeholder="0,00"
                     value={formData.purchasePriceCents}
-                    onChange={(e) => setFormData({ ...formData, purchasePriceCents: e.target.value })}
+                    onValueChange={(text) => setFormData((prev) => ({ ...prev, purchasePriceCents: text }))}
+                    parseOptions={MONEY_INPUT}
+                    showError={priceError}
                     showButtons={false}
                   />
                 </div>

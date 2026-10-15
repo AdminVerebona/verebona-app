@@ -18,6 +18,8 @@
  * ══════════════════════════════════════════════════════════════════════════
  */
 
+import { MONEY_INPUT, parseNumberInput } from '@/lib/number-input';
+
 /** Statuts d'un bien sorti par une cession (vente ou transmission). */
 export const DISPOSAL_ASSET_STATUSES = ['VENDU', 'TRANSMIS'] as const;
 
@@ -73,11 +75,12 @@ export function saleDetailsPatch(
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return { error: 'Date invalide.' };
     fields.saleDate = date;
   }
-  const brut = input.price.trim().replace(/\s/g, '').replace(',', '.');
-  if (prompt.askPrice && brut) {
-    const n = Number(brut);
-    if (!Number.isFinite(n) || n < 0) return { error: 'Prix invalide.' };
-    fields.salePrice = Math.round(n * 100) / 100;
+  // Lot 58A : lecture partagée du champ montant (virgule décimale, espaces
+  // de milliers) ; ambigu ou invalide → refus explicite, jamais d'arrondi.
+  if (prompt.askPrice) {
+    const lu = parseNumberInput(input.price, MONEY_INPUT);
+    if (!lu.ok) return { error: `Prix invalide : ${lu.error}` };
+    if (lu.value !== null) fields.salePrice = lu.value;
   }
   return Object.keys(fields).length ? { fields } : null;
 }

@@ -393,7 +393,7 @@ scenario('L57B-T3', 'T3 : À traiter non résolus corrigés, journal et diagnost
       expect(lignes[0].n).toBe(run.openActions!.examined);
     }
     const diag = await (await import('@/services/ai/queue/t3-open-actions-diagnostic')).getT3OpenActionsDiagnostic({ accountId: compte.id });
-    expect(diag.migrations).toEqual({ journal0371: true, diagnostic0410: true });
+    expect(diag.migrations).toMatchObject({ journal0371: true, diagnostic0410: true }); // 58B : + documentRules0418
     expect(diag.runs[0]).toMatchObject({ accountId: compte.id, outcome: expect.any(String), phases: expect.any(Object) });
     expect(diag.runs[0].counters).toMatchObject({ examined: expect.any(Number), resolved: expect.any(Number), journaled: expect.any(Number) });
     expect(diag.cards.length).toBeGreaterThan(0);

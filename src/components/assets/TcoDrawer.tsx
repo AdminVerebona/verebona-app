@@ -26,6 +26,7 @@ import { Label } from '@/components/ui/label';
 import { Input } from '@/components/ui/input';
 import { DatePicker } from '@/components/ui/date-picker';
 import { NumberInput } from '@/components/ui/number-input';
+import { formatNumberForInput, MONEY_INPUT, parseMoneyInputToCents } from '@/lib/number-input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Calculator, FileText, Loader2, Lock, Pencil, Plus, Trash2 } from 'lucide-react';
 import { apiClient } from '@/lib/api-client';
@@ -62,8 +63,8 @@ const KIND_LABELS: Record<string, string> = {
   REALIZED_COST: 'Coût', REDUCTION: 'Avoir', REFUND: 'Remboursement', INDEMNITY: 'Indemnité', PROCEED: 'Prix de cession', FORECAST_COST: 'Prévu',
 };
 
-type BudgetForm = { id: number | null; category: string; label: string; amount: number | null; periodicity: string; validFrom: string | null; validTo: string | null };
-const VIDE: BudgetForm = { id: null, category: 'FUEL', label: '', amount: null, periodicity: 'MONTHLY', validFrom: null, validTo: null };
+type BudgetForm = { id: number | null; category: string; label: string; /** Texte saisi en euros (lot 58A). */ amount: string; periodicity: string; validFrom: string | null; validTo: string | null };
+const VIDE: BudgetForm = { id: null, category: 'FUEL', label: '', amount: '', periodicity: 'MONTHLY', validFrom: null, validTo: null };
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
@@ -90,6 +91,8 @@ export function TcoDrawer({ open, onClose, assetId, assetName, readOnly, onOpenD
   const [error, setError] = useState(false);
   const [loading, setLoading] = useState(false);
   const [form, setForm] = useState<BudgetForm | null>(null);
+  const [amountError, setAmountError] = useState(false);
+  useEffect(() => { if (!form) setAmountError(false); }, [form]);
   const [saving, setSaving] = useState(false);
 
   const load = useCallback(async () => {
@@ -112,11 +115,14 @@ export function TcoDrawer({ open, onClose, assetId, assetName, readOnly, onOpenD
   useEffect(() => { load(); }, [load]);
 
   const saveBudget = async () => {
-    if (!form || form.amount == null || form.amount < 0) { toast.error('Le montant est requis'); return; }
+    if (!form) return;
+    const montant = parseMoneyInputToCents(form.amount);
+    if (!montant.ok) { setAmountError(true); toast.error(`Montant : ${montant.error}`); return; }
+    if (montant.cents == null) { toast.error('Le montant est requis'); return; }
     setSaving(true);
     try {
       const body = {
-        category: form.category, label: form.label.trim() || null, amountMinor: Math.round(form.amount * 100), currency: 'EUR',
+        category: form.category, label: form.label.trim() || null, amountMinor: montant.cents, currency: 'EUR',
         periodicity: form.periodicity, validFrom: form.validFrom, validTo: form.validTo,
       };
       if (form.id) await apiClient.patch(`/api/assets/${assetId}/usage-budgets/${form.id}`, body);
@@ -228,7 +234,7 @@ export function TcoDrawer({ open, onClose, assetId, assetName, readOnly, onOpenD
                       </div>
                       {canEdit && (
                         <div className="flex shrink-0 gap-1">
-                          <Button variant="ghost" size="sm" aria-label="Modifier" onClick={() => setForm({ id: b.id, category: b.category, label: b.label ?? '', amount: b.amountMinor / 100, periodicity: b.periodicity, validFrom: b.validFrom, validTo: b.validTo })}><Pencil className="w-3.5 h-3.5" /></Button>
+                          <Button variant="ghost" size="sm" aria-label="Modifier" onClick={() => setForm({ id: b.id, category: b.category, label: b.label ?? '', amount: formatNumberForInput(b.amountMinor / 100), periodicity: b.periodicity, validFrom: b.validFrom, validTo: b.validTo })}><Pencil className="w-3.5 h-3.5" /></Button>
                           <Button variant="ghost" size="sm" aria-label="Supprimer" onClick={() => removeBudget(b.id)}><Trash2 className="w-3.5 h-3.5" /></Button>
                         </div>
                       )}
@@ -257,7 +263,7 @@ export function TcoDrawer({ open, onClose, assetId, assetName, readOnly, onOpenD
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                       <div className="space-y-1">
                         <Label className="text-xs text-muted-foreground">Montant (€) *</Label>
-                        <NumberInput value={form.amount ?? ''} onChange={(e) => setForm({ ...form, amount: e.target.value === '' ? null : Number(e.target.value) })} />
+                        <NumberInput value={form.amount} onValueChange={(text) => setForm((prev) => (prev ? { ...prev, amount: text } : prev))} parseOptions={MONEY_INPUT} showError={amountError} />
                       </div>
                       <div className="space-y-1">
                         <Label className="text-xs text-muted-foreground">Périodicité</Label>

@@ -26,7 +26,8 @@ vi.mock('@/db', () => {
     pgClient: { unsafe: vi.fn(async (sql: string, params: unknown[]) => { h.sql.push({ sql, params }); return h.retractRows; }) },
     db: {
       select: () => chain,
-      update: () => ({ set: (v: Record<string, unknown>) => ({ where: async () => { h.updates.push(v); } }) }),
+      // Lot 58C : écriture hors registre confirmée par RETURNING.
+      update: () => ({ set: (v: Record<string, unknown>) => ({ where: () => ({ returning: async () => { h.updates.push(v); return [{ id: 1 }]; } }) }) }),
       insert: () => ({ values: async (v: Record<string, unknown>) => { h.inserts.push(v); } }),
     },
   };

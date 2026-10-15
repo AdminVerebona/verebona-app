@@ -53,10 +53,14 @@
  */
 import { and, desc, eq, inArray, isNotNull, isNull, sql } from 'drizzle-orm';
 import { db, pgClient } from '@/db';
-import { assets, toProcessActions } from '@/db/schema';
+import { assets, toProcessActionEvents, toProcessActions } from '@/db/schema';
 import { AI_CONFIDENCE_THRESHOLD } from '@/lib/referential/v2';
-import { resolveAlias } from '@/services/canonical/registry';
 import type { ActionKind, ActionProposal, ResolutionReason } from './action-model';
+import {
+  assessDeadlinePertinence, documentBridgeFieldKey, gatherFieldEvidence, isDeadlineRule, parseDocumentDate,
+  recordRuleEvaluation, rememberedPertinence, ruleEvaluationsReady, t1KeyDesignates, todayParis,
+  type FieldEvidence, type PertinenceCandidate, type PertinenceResult, type RuleDecision, type RuleTrigger,
+} from './document-field-evidence';
 import { decide } from './decision-engine';
 import { documentSlotFor, formatIsoDate, toIsoDate, type DocumentSlot, type DocumentSlotState } from './document-slots';
 import {
@@ -209,6 +213,13 @@ const score = (c: string | null | undefined) => SCORE[c ?? ''] ?? 0.3;
 /** Fait lu par l'analyse, réduit à ce que le pont consomme. */
 export interface ObservedFact {
   canonicalKey: string | null;
+  /**
+   * Lot 58B : clé LUE par T1 quand le fait n'a pas de clé canonique (fait
+   * requalifié générique faute de normalisation, alias du registre). Elle
+   * désigne la donnée par le registre (`t1KeyDesignates`), jamais par
+   * ressemblance.
+   */
+  rawKey?: string | null;
   value: string | number | boolean | null;
   confidence: T1Confidence | string;
   excerpt?: string | null;
@@ -286,7 +297,13 @@ export function proposalsFromAnalysis(
     });
   };
   for (const f of obs.facts) {
-    if (f.canonicalKey === key) ajouter(f.value, score(f.confidence), f.excerpt);
+    // Lot 58B : clé canonique, ou — fait sans clé canonique — clé lue qui
+    // désigne la donnée par le registre (alias canoniques).
+    if (f.canonicalKey === key || (!f.canonicalKey && t1KeyDesignates(f.rawKey, key))) {
+      // Une date dont l'ordre jour / mois reste ambigu n'est jamais certaine.
+      const ambigu = typeof f.value === 'string' && parseDocumentDate(f.value).status === 'ORDER_AMBIGUOUS';
+      ajouter(f.value, ambigu ? Math.min(score(f.confidence), SCORE.probable) : score(f.confidence), f.excerpt);
+    }
   }
   const meta = obs.metadata?.[key];
   if (meta && parValeur.size === 0) ajouter(meta.value, score(meta.confidence), meta.excerpt);
@@ -309,9 +326,13 @@ export interface DocumentRulesReport {
   written: number;
   /** Décision par règle, pour le journal et les tests. */
   plans: Record<string, RulePlan['kind']>;
+  /** Lot 58B : motif de la décision par règle (NO_ACTION_NEEDED, REQUIRED_DATA_MISSING…). */
+  reasons: Record<string, string>;
+  /** Lot 58B : règles en erreur (aussi journalisées en base, diagnostic 0418). */
+  errors: Record<string, string>;
 }
 
-const emptyReport = (): DocumentRulesReport => ({ created: 0, updated: 0, closed: 0, written: 0, plans: {} });
+const emptyReport = (): DocumentRulesReport => ({ created: 0, updated: 0, closed: 0, written: 0, plans: {}, reasons: {}, errors: {} });
 
 /** Contexte du document : Type, éligibilité à une nouvelle action. */
 interface DocumentContext {
@@ -403,14 +424,18 @@ async function executePlan(
   state: DocumentSlotState,
   report: DocumentRulesReport,
   closeReason: ResolutionReason,
-): Promise<void> {
+  closeMotive: Record<string, unknown> = {},
+): Promise<{ actionId?: number | null } | void> {
   const key = ruleDataKey(rule);
   report.plans[rule.code] = plan.kind;
+  report.reasons[rule.code] = plan.reason;
   switch (plan.kind) {
     case 'NONE':
       return;
     case 'RESOLVE':
-      report.closed += await resolveActionsForData(accountId, 'DOCUMENT', fileId, key, closeReason);
+      report.closed += plan.reason === 'NO_ACTION_NEEDED'
+        ? await closeWithoutPurpose(accountId, fileId, rule, closeMotive)
+        : await resolveActionsForData(accountId, 'DOCUMENT', fileId, key, closeReason);
       return;
     case 'WRITE': {
       // Fermer AVANT d'écrire : l'écriture d'un rattachement déclenche la
@@ -438,9 +463,34 @@ async function executePlan(
       });
       if (res.status === 'CREATED') report.created += 1;
       else if (res.status === 'UPDATED') report.updated += 1;
-      return;
+      return { actionId: res.actionId ?? null };
     }
   }
+}
+
+/**
+ * Lot 58B : fermeture d'une carte devenue SANS OBJET (échéance historique,
+ * aucune intervention attendue). Motif `OBSOLETE` (« le problème a
+ * disparu ») et trace explicable dans `to_process_action_events`
+ * (`details.reason = NO_ACTION_NEEDED`, pertinence, trace IA). Une carte que
+ * l'utilisateur a déjà tranchée n'est plus active : jamais touchée.
+ */
+async function closeWithoutPurpose(accountId: number, fileId: number, rule: ProcessingRule, motive: Record<string, unknown>): Promise<number> {
+  const now = new Date();
+  const closed = await db.update(toProcessActions)
+    .set({ resolvedAt: now, resolutionReason: 'OBSOLETE' satisfies ResolutionReason, updatedAt: now })
+    .where(and(
+      eq(toProcessActions.accountId, accountId), eq(toProcessActions.targetType, 'DOCUMENT'), eq(toProcessActions.targetId, fileId),
+      sql`COALESCE(${toProcessActions.fieldKey}, ${toProcessActions.relationKey}) = ${ruleDataKey(rule)}`, isNull(toProcessActions.resolvedAt),
+    ))
+    .returning({ id: toProcessActions.id });
+  if (closed.length) {
+    await db.insert(toProcessActionEvents).values(closed.map((a) => ({
+      actionId: a.id, accountId, event: 'OBSOLETE', actorUserId: null, targetType: 'DOCUMENT', targetId: fileId,
+      fieldKey: ruleDataKey(rule), details: { ruleCode: rule.code, reason: 'NO_ACTION_NEEDED', ...motive }, createdAt: now,
+    }))).catch((e: Error) => console.error(`[to-process] trace de fermeture de la règle ${rule.code} (document ${fileId}) non écrite :`, e.message));
+  }
+  return closed.length;
 }
 
 /** Noms des biens du compte, pour les libellés des propositions. */
@@ -453,6 +503,193 @@ async function assetNamesOf(accountId: number, ids: number[]): Promise<Map<numbe
   return new Map(rows.map((r) => [r.id, r.name ?? `Bien ${r.id}`]));
 }
 
+
+// ══════════════════════════════════════════════════════════════════════════
+// LOT 58B — DONNÉE DOCUMENTAIRE : CONNAISSANCE, PERTINENCE, DÉCISION, TRACE
+// ══════════════════════════════════════════════════════════════════════════
+
+/** Dépendances injectables (tests) : décision T4, date du jour. */
+export interface FieldRuleDeps {
+  decide?: Parameters<typeof assessDeadlinePertinence>[0]['decide'];
+  today?: string;
+}
+
+interface FieldRuleInput {
+  accountId: number;
+  fileId: number;
+  rule: ProcessingRule;
+  slot: DocumentSlot;
+  ctx: DocumentContext;
+  state: DocumentSlotState;
+  active: { actionKind: ActionKind; snapshot: string | null } | null;
+  relevant: boolean;
+  trigger: RuleTrigger;
+  mayCreate: boolean;
+  closeReason: ResolutionReason;
+  /** Analyse T1 : propositions de la sortie fraîche. */
+  obsProposals?: ActionProposal[];
+  runRef?: string | null;
+  deps?: FieldRuleDeps;
+  report: DocumentRulesReport;
+}
+
+export interface FieldRuleOutcome {
+  plan: RulePlan;
+  /** KNOWLEDGE : connaissance persistée consultée ; CLASSIC : chemin antérieur (donnée présente, retirée, hors pertinence). */
+  path: 'KNOWLEDGE' | 'CLASSIC';
+  evidence: FieldEvidence | null;
+  proposals: ActionProposal[];
+  pertinence: PertinenceResult | null;
+  writeAttempted: boolean;
+  /** Écriture relue en base (WRITE), sinon null. */
+  verified: boolean | null;
+  actionId: number | null;
+  decision: RuleDecision;
+}
+
+/** Propositions fusionnées par valeur (la meilleure confiance l'emporte), ordre stable. */
+function mergeProposals(...lots: ActionProposal[][]): ActionProposal[] {
+  const m = new Map<string, ActionProposal>();
+  for (const p of lots.flat()) {
+    const k = String(p.value);
+    const prev = m.get(k);
+    if (!prev || prev.confidence < p.confidence) m.set(k, prev?.sourceContext && !p.sourceContext ? { ...p, sourceContext: prev.sourceContext } : p);
+  }
+  return [...m.values()].sort(byConfidenceThenValue);
+}
+
+/** Dates candidates d'une échéance (propositions + indice du titre non confirmé), pour la pertinence. Pure. */
+export function pertinenceCandidates(proposals: ActionProposal[], evidence: FieldEvidence | null): PertinenceCandidate[] {
+  const source = (v: string) => evidence?.facts.find((f) => String(f.value) === v)?.source ?? 'T1_OUTPUT';
+  const out: PertinenceCandidate[] = [];
+  for (const p of proposals) {
+    const v = String(p.value);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(v)) continue;
+    out.push({ iso: v, source: source(v), excerpt: evidence?.facts.find((f) => String(f.value) === v)?.excerpt ?? p.sourceContext?.label ?? null });
+  }
+  const hint = evidence?.titleHint;
+  if (hint) {
+    for (const d of hint.dates) {
+      if (!out.some((c) => c.iso === d)) out.push({ iso: d, source: hint.confirmed.includes(d) ? 'TITLE_CONFIRMED' : 'TITLE_ONLY', excerpt: hint.excerpt });
+    }
+  }
+  return out;
+}
+
+const diagDecision = (plan: RulePlan, report: DocumentRulesReport, before: DocumentRulesReport, hadActive: boolean): RuleDecision => {
+  if (plan.kind === 'WRITE') return 'WRITE';
+  if (plan.kind === 'RESOLVE') return report.closed > before.closed ? 'CLOSE' : 'NONE';
+  if (plan.kind === 'UPSERT') return report.created > before.created ? 'CREATE' : hadActive ? 'UPDATE' : 'NONE';
+  return hadActive ? 'KEEP' : 'NONE';
+};
+
+/**
+ * Une donnée documentaire (champ) d'une règle du pont, pour UN document —
+ * même décision quel que soit le déclencheur (analyse T1, balayage, passage
+ * T3, correction utilisateur) :
+ *
+ *   1. donnée présente, retirée par l'utilisateur ou hors pertinence du
+ *      Type → chemin antérieur (`planDocumentRule`), inchangé ;
+ *   2. sinon, AVANT toute question : connaissance T1 persistée (faits, alias
+ *      canoniques, faits non intégrés, unités, titre vérifié contre le
+ *      contenu) + sortie fraîche de l'analyse → matrice `decide()` : valeur
+ *      fiable écrite et relue, valeurs incertaines → À arbitrer ;
+ *   3. une question subsiste sur une ÉCHÉANCE entièrement passée → la
+ *      pertinence est demandée à T4 CLASSIFY_EVENT (branche existante) :
+ *      information historique → pas de carte (fermée si elle existait,
+ *      motif tracé) ; action, abstention, échec → question maintenue ;
+ *   4. diagnostic par règle (0418), y compris en erreur.
+ */
+async function evaluateFieldRule(i: FieldRuleInput): Promise<FieldRuleOutcome> {
+  const { accountId, fileId, rule, slot, state, active, relevant, report } = i;
+  const key = ruleDataKey(rule);
+  const present = !isEmpty(state.value);
+  const avant = { ...report };
+  const userCleared = state.userValidated && !present;
+  let evidence: FieldEvidence | null = null;
+  let pertinence: PertinenceResult | null = null;
+  let proposals: ActionProposal[] = i.obsProposals ?? [];
+  let plan: RulePlan;
+  let path: FieldRuleOutcome['path'] = 'CLASSIC';
+  let failedStep = 'PLAN';
+
+  try {
+    if (present || userCleared || !relevant) {
+      plan = i.trigger === 'ANALYSIS'
+        ? planDocumentRule({ rule, state, proposals, mode: 'analysis', relevant, mayCreate: i.mayCreate })
+        : planDocumentRule({ rule, state, proposals: [], mode: 'state', relevant, active, mayCreate: i.mayCreate });
+    } else {
+      path = 'KNOWLEDGE';
+      failedStep = 'KNOWLEDGE';
+      evidence = await gatherFieldEvidence(accountId, fileId, key);
+      const connus = proposalsFromAnalysis(key, slot, {
+        facts: evidence.facts.map((f) => ({ canonicalKey: key, value: f.value, confidence: f.confidence, excerpt: f.excerpt ?? null })),
+        assetCandidates: [], documentAssetId: null,
+      });
+      proposals = mergeProposals(i.obsProposals ?? [], connus);
+      failedStep = 'PLAN';
+      plan = planDocumentRule({ rule, state, proposals, mode: 'analysis', relevant, active, mayCreate: i.mayCreate });
+      if (plan.kind === 'UPSERT' && isDeadlineRule(rule)) {
+        failedStep = 'PERTINENCE';
+        pertinence = await assessDeadlinePertinence({
+          accountId, fileId, rule, documentType: i.ctx.documentTypeCode, candidates: pertinenceCandidates(proposals, evidence),
+          today: i.deps?.today ?? todayParis(), decide: i.deps?.decide, documentTitle: evidence.documentTitle ?? null,
+          remembered: await rememberedPertinence(accountId, fileId, rule.code),
+        });
+        if (pertinence.pertinence === 'NO_ACTION_NEEDED') {
+          plan = active ? { kind: 'RESOLVE', reason: 'NO_ACTION_NEEDED' } : { kind: 'NONE', reason: 'NO_ACTION_NEEDED' };
+        }
+      }
+      // Réévaluation sans élément nouveau : la même question reste en l'état.
+      if (i.trigger !== 'ANALYSIS' && plan.kind === 'UPSERT' && plan.actionKind === 'COMPLETE' && active?.actionKind === 'COMPLETE') {
+        plan = { kind: 'NONE', reason: 'STILL_OPEN' };
+      }
+    }
+    failedStep = plan.kind === 'WRITE' ? 'WRITE' : 'EXECUTE';
+    const exec = await executePlan(accountId, fileId, rule, slot, plan, state, report, i.closeReason, pertinence ? {
+      pertinence: pertinence.pertinence, pertinenceReason: pertinence.reason, aiTraceId: pertinence.aiTraceId, trigger: i.trigger,
+    } : {});
+    let verified: boolean | null = null;
+    if (plan.kind === 'WRITE') {
+      failedStep = 'VERIFY';
+      const apres = await slot.read(db, accountId, fileId);
+      const ferme = !(await activeActions(accountId, fileId)).has(key);
+      verified = report.written > avant.written && apres.value !== null && String(apres.value) === String(slot.normalize(plan.value)) && ferme;
+    }
+    const outcome: FieldRuleOutcome = {
+      plan, path, evidence, proposals, pertinence, writeAttempted: plan.kind === 'WRITE', verified,
+      actionId: exec && 'actionId' in exec ? exec.actionId ?? null : null, decision: diagDecision(plan, report, avant, !!active),
+    };
+    await recordRuleEvaluation({
+      accountId, fileId, ruleCode: rule.code, fieldKey: key, trigger: i.trigger, runRef: i.runRef ?? null,
+      targetPresent: present, userValidated: state.userValidated, sources: evidence?.sources ?? {}, missingSources: evidence?.missing ?? [],
+      observations: evidence?.observations ?? [], proposals: proposals.map((p) => ({ value: p.value, confidence: p.confidence })),
+      titleHint: evidence?.titleHint ?? null, pertinence, decision: plan.kind === 'WRITE' && verified === false ? 'ERROR' : outcome.decision,
+      reasonCode: plan.kind === 'WRITE' && verified === false ? 'PERSISTENCE_FAILED' : plan.reason, actionId: outcome.actionId,
+      writeVerified: verified, failedStep: plan.kind === 'WRITE' && verified === false ? 'VERIFY' : null,
+    });
+    return outcome;
+  } catch (e) {
+    report.errors[rule.code] = (e as Error).message;
+    await recordRuleEvaluation({
+      accountId, fileId, ruleCode: rule.code, fieldKey: key, trigger: i.trigger, runRef: i.runRef ?? null,
+      targetPresent: present, userValidated: state.userValidated, sources: evidence?.sources ?? {}, missingSources: evidence?.missing ?? [],
+      observations: evidence?.observations ?? [], titleHint: evidence?.titleHint ?? null, pertinence,
+      decision: 'ERROR', reasonCode: 'RULE_EVALUATION_FAILED', error: (e as Error).message, failedStep,
+    });
+    throw e;
+  }
+}
+
+/** Erreur d'évaluation d'une RELATION ou hors champ : tracée en base (0418), pas seulement en console. */
+async function recordRuleError(accountId: number, fileId: number, rule: ProcessingRule, trigger: RuleTrigger, e: unknown, report: DocumentRulesReport): Promise<void> {
+  report.errors[rule.code] = (e as Error).message;
+  await recordRuleEvaluation({
+    accountId, fileId, ruleCode: rule.code, fieldKey: rule.fieldKey ?? rule.relationKey ?? null, trigger, targetPresent: null, userValidated: null,
+    decision: 'ERROR', reasonCode: 'RULE_EVALUATION_FAILED', error: (e as Error).message, failedStep: 'PLAN',
+  });
+}
+
 /**
  * Après l'analyse d'un document (pipeline T1, une fois le classement V2 et
  * les liens N-N écrits). Ne lève jamais.
@@ -461,6 +698,9 @@ export async function syncDocumentRulesFromAnalysis(input: {
   accountId: number;
   fileId: number;
   observations: AnalysisObservations;
+  /** Lot 58B : référence d'exécution (diagnostic). */
+  runRef?: string | null;
+  deps?: FieldRuleDeps;
 }): Promise<DocumentRulesReport> {
   const report = emptyReport();
   try {
@@ -478,12 +718,22 @@ export async function syncDocumentRulesFromAnalysis(input: {
         ? input.observations.documentAssetId : null,
     };
 
+    const actives = await activeActions(input.accountId, input.fileId);
     for (const rule of documentBridgeRules()) {
       const key = ruleDataKey(rule);
       try {
         const slot = documentSlotFor(key);
         const state = await slot.read(db, input.accountId, input.fileId);
         const proposals = proposalsFromAnalysis(key, slot, obs, names);
+        if (slot.kind === 'field') {
+          // Lot 58B : connaissance persistée, alias, pertinence, diagnostic.
+          await evaluateFieldRule({
+            accountId: input.accountId, fileId: input.fileId, rule, slot, ctx, state, active: actives.get(key) ?? null,
+            relevant: isRuleRelevantForDocument(rule, ctx.documentTypeCode), trigger: 'ANALYSIS', mayCreate: ctx.open,
+            closeReason: 'OBSOLETE', obsProposals: proposals, runRef: input.runRef ?? null, deps: input.deps, report,
+          });
+          continue;
+        }
         const plan = planDocumentRule({
           rule, state, proposals, mode: 'analysis',
           relevant: isRuleRelevantForDocument(rule, ctx.documentTypeCode),
@@ -495,6 +745,7 @@ export async function syncDocumentRulesFromAnalysis(input: {
         await executePlan(input.accountId, input.fileId, rule, slot, plan, state, report, 'OBSOLETE');
       } catch (e) {
         console.error(`[to-process] règle ${rule.code} du document ${input.fileId} non évaluée :`, (e as Error).message);
+        if (!(rule.code in report.errors)) await recordRuleError(input.accountId, input.fileId, rule, 'ANALYSIS', e, report);
       }
     }
   } catch (e) {
@@ -513,7 +764,7 @@ export async function syncDocumentRulesFromAnalysis(input: {
 export async function syncDocumentRulesFromState(
   accountId: number,
   fileId: number,
-  opts: { reason?: ResolutionReason; create?: boolean } = {},
+  opts: { reason?: ResolutionReason; create?: boolean; trigger?: RuleTrigger; runRef?: string | null; deps?: FieldRuleDeps } = {},
 ): Promise<DocumentRulesReport> {
   const report = emptyReport();
   const reason = opts.reason ?? 'OBSOLETE';
@@ -548,9 +799,20 @@ export async function syncDocumentRulesFromState(
           && (key !== 'assetIds' || (await assetLinkQuestionAllowed(accountId, fileId)));
         const proposals = mayCreate && slot.storedProposals ? await slot.storedProposals(accountId, fileId) : [];
         const plan = planDocumentRule({ rule, state, proposals, mode: 'state', relevant, active, mayCreate });
+        // Lot 58B : avant de créer ou de maintenir une question sur un champ,
+        // la connaissance persistée et la pertinence sont consultées.
+        if (slot.kind === 'field' && plan.kind !== 'RESOLVE' && (active || mayCreate)) {
+          await evaluateFieldRule({
+            accountId, fileId, rule, slot, ctx, state, active, relevant, trigger: opts.trigger ?? (reason === 'USER_COMPLETED' ? 'USER' : 'SWEEP'),
+            // Carte active : la mettre à jour reste possible (document ouvert).
+            mayCreate: active ? ctx.open : mayCreate, closeReason: reason, runRef: opts.runRef ?? null, deps: opts.deps, report,
+          });
+          continue;
+        }
         await executePlan(accountId, fileId, rule, slot, plan, state, report, reason);
       } catch (e) {
         console.error(`[to-process] règle ${rule.code} du document ${fileId} non réévaluée :`, (e as Error).message);
+        if (!(rule.code in report.errors)) await recordRuleError(accountId, fileId, rule, opts.trigger ?? 'SWEEP', e, report);
       }
     }
   } catch (e) {
@@ -593,6 +855,10 @@ export async function documentsToReevaluate(accountId: number, limit = 200): Pro
   )) as unknown as Array<{ id: number }>;
   for (const r of actifs) ids.add(Number(r.id));
 
+  // Lot 58B : un document dont la DERNIÈRE évaluation de la règle a conclu
+  // « aucune intervention nécessaire » (échéance historique) n'est pas repris
+  // tant qu'il n'a pas changé — ni carte recréée, ni IA rappelée.
+  const memoire = await ruleEvaluationsReady();
   let budget = limit;
   for (const rule of rules) {
     // Seules les règles qui justifient une complétion peuvent naître d'un état.
@@ -612,6 +878,11 @@ export async function documentsToReevaluate(accountId: number, limit = 200): Pro
         WHERE f.account_id = $1 AND ${ELIGIBLE_SQL}
           AND ($2::text[] IS NULL OR f.document_type_code = ANY($2::text[]))
           AND ${manque}
+          ${memoire && rule.fieldKey ? `AND NOT EXISTS (
+            SELECT 1 FROM document_rule_evaluations e
+             WHERE e.id = (SELECT max(x.id) FROM document_rule_evaluations x
+                            WHERE x.account_id = f.account_id AND x.file_id = f.id AND x.rule_code = $5)
+               AND e.reason_code = 'NO_ACTION_NEEDED' AND e.last_seen_at >= f.updated_at)` : ''}
           AND NOT EXISTS (
             SELECT 1 FROM to_process_actions a WHERE a.account_id = f.account_id AND a.target_type = 'DOCUMENT'
                AND a.target_id = f.id AND COALESCE(a.field_key, a.relation_key) = $4
@@ -621,7 +892,7 @@ export async function documentsToReevaluate(accountId: number, limit = 200): Pro
                     AND b.resolved_at > a.resolved_at))))
         ORDER BY f.id
         LIMIT $3`,
-      [accountId, types, budget, key] as never[],
+      (memoire && rule.fieldKey ? [accountId, types, budget, key, rule.code] : [accountId, types, budget, key]) as never[],
     )) as unknown as Array<{ id: number }>;
     for (const r of rows) {
       if (!ids.has(Number(r.id))) budget -= 1;
@@ -635,18 +906,8 @@ export async function documentsToReevaluate(accountId: number, limit = 200): Pro
 // SAISIE DEPUIS UN ÉCRAN MÉTIER — valeur utilisateur d'une donnée du pont
 // ══════════════════════════════════════════════════════════════════════════
 
-/**
- * Clé d'une donnée documentaire du pont pour une clé d'écran (proposition
- * d'analyse validée ou modifiée dans le tiroir : `warrantyEndDate`,
- * `dateFinContrat`…), sinon null. Les relations (rattachement) ont leurs
- * propres écrans et ne passent pas ici.
- */
-export function documentBridgeFieldKey(screenKey: string): string | null {
-  const keys = new Set(documentBridgeRules().filter((r) => r.fieldKey).map((r) => r.fieldKey!));
-  if (keys.has(screenKey)) return screenKey;
-  const canonique = resolveAlias(screenKey);
-  return canonique && keys.has(canonique) ? canonique : null;
-}
+/** Clé d'une donnée documentaire du pont pour une clé d'écran (déplacée en 58B, réexportée). */
+export { documentBridgeFieldKey, t1KeyDesignates, t1LabelDesignates } from './document-field-evidence';
 
 /**
  * Enregistre la valeur SAISIE ou VALIDÉE par l'utilisateur pour une donnée
@@ -682,16 +943,18 @@ export async function recordUserDocumentValue(
 export interface KnowledgeFieldResolution {
   /**
    * WRITTEN : valeur fiable écrite, carte fermée · RESOLVED : carte close sans
-   * écriture (donnée déjà présente, plus pertinente…) · ARBITRATE : valeur(s)
-   * incertaine(s), carte maintenue avec propositions · NO_EVIDENCE : aucune
-   * valeur dans T1 · USER_PROTECTED : choix de l'utilisateur protégé ·
-   * TARGET_GONE · NOT_A_FIELD (relation, règle inconnue) · NO_T1_KNOWLEDGE.
+   * écriture (donnée déjà présente, plus pertinente…) · NO_ACTION_NEEDED
+   * (58B) : échéance historique sans intervention attendue, carte fermée avec
+   * motif tracé · ARBITRATE : valeur(s) incertaine(s), carte maintenue avec
+   * propositions · NO_EVIDENCE : aucune valeur dans T1 · USER_PROTECTED :
+   * choix de l'utilisateur protégé · TARGET_GONE · NOT_A_FIELD (relation,
+   * règle inconnue) · NO_T1_KNOWLEDGE.
    */
-  status: 'WRITTEN' | 'RESOLVED' | 'ARBITRATE' | 'NO_EVIDENCE' | 'USER_PROTECTED' | 'TARGET_GONE' | 'NOT_A_FIELD' | 'NO_T1_KNOWLEDGE';
+  status: 'WRITTEN' | 'RESOLVED' | 'NO_ACTION_NEEDED' | 'ARBITRATE' | 'NO_EVIDENCE' | 'USER_PROTECTED' | 'TARGET_GONE' | 'NOT_A_FIELD' | 'NO_T1_KNOWLEDGE';
   reasonCode: string;
   /** Propositions issues de T1 (après regroupement par valeur). */
   proposals: number;
-  /** Éléments T1 lus par source (FACTS, UNRESOLVED_FACTS, SOURCE_UNITS). */
+  /** Éléments T1 lus par source (FACTS, UNRESOLVED_FACTS, SOURCE_UNITS, TITLE_HINT…). */
   sources: Record<string, number>;
   /** Sources absentes ou en échec. */
   missingSources: string[];
@@ -699,116 +962,38 @@ export interface KnowledgeFieldResolution {
   writeAttempted: boolean;
   /** Écriture et fermeture relues en base. */
   verified: boolean;
-}
-
-/** Une clé lue par T1 désigne-t-elle la donnée `key` du pont ? (pure, registre canonique) */
-export function t1KeyDesignates(raw: string | null | undefined, key: string): boolean {
-  if (!raw) return false;
-  if (raw === key) return true;
-  return documentBridgeFieldKey(raw) === key;
-}
-
-const normLabel = (v: string) => v.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
-
-/**
- * Libellé LU dans le document (unité « libellé : valeur ») qui désigne la
- * donnée `key` : clé ou alias du registre, ou libellé du registre contenu
- * dans le libellé lu (« Date de fin de contrat » ⊃ « Fin de contrat »). Pure.
- */
-export function t1LabelDesignates(label: string | null | undefined, key: string, registryLabel: string | null): boolean {
-  if (!label) return false;
-  if (t1KeyDesignates(label, key)) return true;
-  if (!registryLabel) return false;
-  const l = ` ${normLabel(label)} `;
-  const r = normLabel(registryLabel);
-  return r.length >= 6 && l.includes(` ${r} `);
+  /** Lot 58B : pertinence métier évaluée (échéance passée) et appel IA éventuel. */
+  pertinence?: string | null;
+  aiCalled?: boolean;
+  aiTraceId?: string | null;
+  aiStatus?: string | null;
 }
 
 /**
- * Valeur BRUTE lue (unité source, fait non intégré) : une date française
- * « JJ/MM/AAAA » (ou « JJ.MM.AAAA », « JJ-MM-AAAA ») devient ISO ; le reste
- * est rendu tel quel (le slot normalise ou rejette). Pure.
+ * Valeur BRUTE lue (unité source, fait non intégré) : une date non ambiguë
+ * (« JJ/MM/AAAA », « JJ.MM.AAAA », « JJ-MM-AAAA », « JJ:MM:AAAA »,
+ * « 20 juin 2026 ») devient ISO ; le reste est rendu tel quel (le slot
+ * normalise ou rejette). Pure.
  */
 export function rawValueOf(v: string): string {
-  const m = /^\s*(\d{1,2})[/.-](\d{1,2})[/.-](\d{4})\s*$/.exec(v);
-  if (!m) return v.trim();
-  return `${m[3]}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}`;
-}
-
-/** Faits T1 persistés relatifs à `key` (faits actifs, faits non intégrés fiables, unités « libellé : valeur »). */
-async function knowledgeObservations(accountId: number, fileId: number, key: string): Promise<{
-  facts: ObservedFact[]; sources: Record<string, number>; missing: string[]; hasExtraction: boolean;
-}> {
-  const sources: Record<string, number> = {};
-  const missing: string[] = [];
-  const facts: ObservedFact[] = [];
-  const { getField } = await import('@/services/canonical/registry');
-  const registryLabel = getField(key)?.label ?? null;
-  const [ext] = (await pgClient.unsafe(
-    `SELECT id FROM document_extractions WHERE account_id = $1 AND file_id = $2 LIMIT 1`, [accountId, fileId] as never[],
-  )) as unknown as Array<{ id: number }>;
-  if (!ext) return { facts, sources, missing: ['EXTRACTION'], hasExtraction: false };
-  try {
-    const rows = (await pgClient.unsafe(
-      `SELECT to_jsonb(f) ->> 'canonical_key' AS canonical, f.fact_key AS raw, f.label, f.normalized_value AS norm,
-              f.value_text AS text, f.confidence, f.excerpt
-         FROM document_facts f WHERE f.file_id = $1 AND f.account_id = $2 AND f.status = 'active'`,
-      [fileId, accountId] as never[],
-    )) as unknown as Array<{ canonical: string | null; raw: string; label: string | null; norm: string | null; text: string | null; confidence: string; excerpt: string | null }>;
-    for (const r of rows) {
-      if (!t1KeyDesignates(r.canonical, key) && !t1KeyDesignates(r.raw, key) && !(!r.canonical && t1LabelDesignates(r.label, key, registryLabel))) continue;
-      sources.FACTS = (sources.FACTS ?? 0) + 1;
-      facts.push({ canonicalKey: key, value: r.norm ?? r.text, confidence: r.confidence, excerpt: r.excerpt });
-    }
-  } catch { missing.push('FACTS'); }
-  try {
-    const { sourceLayerReady } = await import('@/services/ai/source-analysis/source-units/repository');
-    if (!(await sourceLayerReady())) {
-      missing.push('SOURCE_UNITS', 'UNRESOLVED_FACTS');
-    } else {
-      const { RELIABLE_UNRESOLVED_REASONS } = await import('@/services/ai/reconciliation/document-asset/source-unit-provider');
-      const nr = (await pgClient.unsafe(
-        `SELECT canonical_key AS canonical, raw_key AS raw, raw_value AS value, reason
-           FROM document_unresolved_facts WHERE file_id = $1 AND account_id = $2 AND status IN ('UNRESOLVED', 'RETAINED') LIMIT 500`,
-        [fileId, accountId] as never[],
-      )) as unknown as Array<{ canonical: string | null; raw: string | null; value: string | null; reason: string }>;
-      for (const r of nr) {
-        if (!r.value || (!t1KeyDesignates(r.canonical, key) && !t1KeyDesignates(r.raw, key))) continue;
-        sources.UNRESOLVED_FACTS = (sources.UNRESOLVED_FACTS ?? 0) + 1;
-        // Charge brute : jamais « certaine » (proposition seulement).
-        facts.push({ canonicalKey: key, value: rawValueOf(r.value), confidence: RELIABLE_UNRESOLVED_REASONS.includes(r.reason) ? 'probable' : 'conflictual' });
-      }
-      const units = (await pgClient.unsafe(
-        `SELECT label, value_text AS value, coverage_status AS coverage
-           FROM document_source_units
-          WHERE file_id = $1 AND account_id = $2 AND kind IN ('LABEL_VALUE', 'FORM_FIELD')
-            AND coverage_status IN ('COVERED', 'UNRESOLVED', 'UNCERTAIN') AND label IS NOT NULL AND value_text IS NOT NULL
-          ORDER BY ordinal LIMIT 2000`,
-        [fileId, accountId] as never[],
-      )) as unknown as Array<{ label: string; value: string; coverage: string }>;
-      for (const u of units) {
-        if (!t1LabelDesignates(u.label, key, registryLabel)) continue;
-        sources.SOURCE_UNITS = (sources.SOURCE_UNITS ?? 0) + 1;
-        // Unité lue mais non structurée en fait : proposition, jamais écriture silencieuse.
-        facts.push({ canonicalKey: key, value: rawValueOf(u.value), confidence: u.coverage === 'UNCERTAIN' ? 'conflictual' : 'probable' });
-      }
-    }
-  } catch { missing.push('SOURCE_UNITS'); }
-  return { facts, sources, missing, hasExtraction: true };
+  return parseDocumentDate(v).iso ?? v.trim();
 }
 
 /**
  * Reprise CIBLÉE d'une donnée documentaire (DATA-CONTRACT-END,
- * DATA-WARRANTY-END, DATA-SUPPLIER…) depuis la connaissance T1 PERSISTÉE — par
- * le résolveur du pont (`planDocumentRule`, matrice `decide()`), jamais par
- * le nom du fichier, jamais en relisant le fichier ni en relançant T1 :
+ * DATA-WARRANTY-END, DATA-SUPPLIER…) depuis la connaissance T1 PERSISTÉE,
+ * appelée par le passage T3 sur une carte ouverte — même décision que
+ * l'analyse et le balayage (`evaluateFieldRule`), jamais le nom du fichier
+ * seul, jamais en relisant le fichier ni en relançant T1 :
  *   · valeur fiable (fait certain, unique) → écrite, carte fermée, relue ;
- *   · valeurs incertaines ou contradictoires → carte maintenue (ARBITRATE)
- *     avec les propositions ;
+ *   · valeurs incertaines ou contradictoires → carte maintenue (ARBITRATE) ;
+ *   · échéance passée sans intervention attendue (T4) → carte fermée ;
  *   · valeur de l'utilisateur (saisie ou retrait) → jamais écrasée.
  * Ne lève que pour une erreur technique (journalisée RESOLVER_FAILED par l'appelant).
  */
-export async function resolveDocumentRuleFromKnowledge(accountId: number, fileId: number, ruleCode: string): Promise<KnowledgeFieldResolution> {
+export async function resolveDocumentRuleFromKnowledge(
+  accountId: number, fileId: number, ruleCode: string, deps: FieldRuleDeps & { runRef?: string | null } = {},
+): Promise<KnowledgeFieldResolution> {
   const { getRule } = await import('./rules-catalog');
   const res = (p: Partial<KnowledgeFieldResolution> & Pick<KnowledgeFieldResolution, 'status' | 'reasonCode'>): KnowledgeFieldResolution => ({
     proposals: 0, sources: {}, missingSources: [], confidence: null, writeAttempted: false, verified: false, ...p,
@@ -826,6 +1011,7 @@ export async function resolveDocumentRuleFromKnowledge(accountId: number, fileId
   const active = (await activeActions(accountId, fileId)).get(key) ?? null;
   const relevant = isRuleRelevantForDocument(rule, ctx.documentTypeCode);
   const report = emptyReport();
+  const present = !isEmpty(state.value);
 
   // 1. Réévaluation d'état : donnée déjà renseignée, plus pertinente, tranchée ailleurs.
   const etat = planDocumentRule({ rule, state, proposals: [], mode: 'state', relevant, active, mayCreate: false });
@@ -834,26 +1020,28 @@ export async function resolveDocumentRuleFromKnowledge(accountId: number, fileId
     return res({ status: 'RESOLVED', reasonCode: etat.reason, verified: !(await activeActions(accountId, fileId)).has(key) });
   }
   // 2. Valeur RETIRÉE par l'utilisateur : rien n'est réécrit automatiquement.
-  const present = !isEmpty(state.value);
   if (state.userValidated && !present) return res({ status: 'USER_PROTECTED', reasonCode: 'USER_DECISION_PROTECTED' });
+  if (present) return res({ status: 'RESOLVED', reasonCode: 'ALREADY_SATISFIED', verified: !(await activeActions(accountId, fileId)).has(key) });
 
-  // 3. Connaissance T1 persistée (faits, faits non intégrés, unités source).
-  const obs = await knowledgeObservations(accountId, fileId, key);
-  if (!obs.hasExtraction) return res({ status: 'NO_T1_KNOWLEDGE', reasonCode: 'NO_T1_KNOWLEDGE', missingSources: obs.missing });
-  const proposals = proposalsFromAnalysis(key, slot, { facts: obs.facts, assetCandidates: [], documentAssetId: null });
-  const base = { proposals: proposals.length, sources: obs.sources, missingSources: obs.missing, confidence: proposals[0]?.confidence ?? null };
-  if (proposals.length === 0) return res({ ...base, status: 'NO_EVIDENCE', reasonCode: 'FIELD_NOT_IN_T1' });
-
-  // 4. Matrice du pont (`decide()`) : écriture si fiable, arbitrage sinon.
-  const plan = planDocumentRule({ rule, state, proposals, mode: 'analysis', relevant, active, mayCreate: ctx.open });
-  await executePlan(accountId, fileId, rule, slot, plan, state, report, 'OBSOLETE');
-  if (plan.kind === 'WRITE') {
-    const apres = await slot.read(db, accountId, fileId);
-    const ferme = !(await activeActions(accountId, fileId)).has(key);
-    const ok = report.written > 0 && apres.value !== null && String(apres.value) === String(slot.normalize(plan.value));
-    return res({ ...base, status: 'WRITTEN', reasonCode: ok && ferme ? 'RESOLVED' : 'PERSISTENCE_FAILED', writeAttempted: true, verified: ok && ferme, confidence: plan.confidence });
+  // 3. Connaissance T1 persistée, matrice du pont, pertinence, trace (0418).
+  const o = await evaluateFieldRule({
+    accountId, fileId, rule, slot, ctx, state, active, relevant, trigger: 'T3', mayCreate: ctx.open, closeReason: 'OBSOLETE',
+    runRef: deps.runRef ?? null, deps, report,
+  });
+  const ev = o.evidence;
+  const base = {
+    proposals: o.proposals.length, sources: ev?.sources ?? {}, missingSources: ev?.missing ?? [], confidence: o.proposals[0]?.confidence ?? null,
+    pertinence: o.pertinence?.pertinence ?? null, aiCalled: o.pertinence?.aiCalled ?? false, aiTraceId: o.pertinence?.aiTraceId ?? null,
+    aiStatus: o.pertinence?.aiStatus ?? null,
+  };
+  if (o.plan.reason === 'NO_ACTION_NEEDED') {
+    return res({ ...base, status: 'NO_ACTION_NEEDED', reasonCode: 'NO_ACTION_NEEDED', verified: !(await activeActions(accountId, fileId)).has(key) });
   }
-  if (plan.kind === 'RESOLVE') return res({ ...base, status: 'RESOLVED', reasonCode: plan.reason, verified: !(await activeActions(accountId, fileId)).has(key) });
-  if (state.userValidated) return res({ ...base, status: 'USER_PROTECTED', reasonCode: 'USER_DECISION_PROTECTED' });
-  return res({ ...base, status: 'ARBITRATE', reasonCode: proposals.length > 1 ? 'AMBIGUOUS' : 'INSUFFICIENT_EVIDENCE' });
+  if (ev && !ev.hasExtraction && o.proposals.length === 0) return res({ ...base, status: 'NO_T1_KNOWLEDGE', reasonCode: 'NO_T1_KNOWLEDGE' });
+  if (o.plan.kind === 'WRITE') {
+    return res({ ...base, status: 'WRITTEN', reasonCode: o.verified ? 'RESOLVED' : 'PERSISTENCE_FAILED', writeAttempted: true, verified: o.verified === true, confidence: o.plan.confidence });
+  }
+  if (o.plan.kind === 'RESOLVE') return res({ ...base, status: 'RESOLVED', reasonCode: o.plan.reason, verified: !(await activeActions(accountId, fileId)).has(key) });
+  if (o.proposals.length === 0) return res({ ...base, status: 'NO_EVIDENCE', reasonCode: 'FIELD_NOT_IN_T1' });
+  return res({ ...base, status: 'ARBITRATE', reasonCode: o.proposals.length > 1 ? 'AMBIGUOUS' : 'INSUFFICIENT_EVIDENCE' });
 }

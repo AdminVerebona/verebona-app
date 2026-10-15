@@ -147,6 +147,8 @@ export const REASON_CODES = [
   'AI_UNAVAILABLE', 'JOB_PENDING', 'DEPENDENCY_STALLED', 'RESOLVER_FAILED', 'PERSISTENCE_FAILED', 'USER_DECISION_PROTECTED',
   'NOT_T3', 'TARGET_GONE', 'ALREADY_LINKED', 'CLOSED_DURING_RUN', 'SUPERSEDED', 'ASSET_NOT_ELIGIBLE', 'AWAITING_USER',
   'CONFLICT_STILL_VALID', 'NO_ASSET',
+  // Lot 58B : échéance historique, aucune intervention attendue (T4) — carte fermée, motif tracé.
+  'NO_ACTION_NEEDED',
 ] as const;
 export type ReasonCode = (typeof REASON_CODES)[number];
 
@@ -587,7 +589,10 @@ export async function reconcileOpenToProcessActions(accountId: number, opts: {
     }
   };
 
-  const ctxAutres: OtherCtx = { reconciledAssetIds: opts.reconciledAssetIds, d, entites: new Set<string>(), guard: opts.guard, borne: Number(borne), operations: null, out };
+  const ctxAutres: OtherCtx = {
+    reconciledAssetIds: opts.reconciledAssetIds, d, entites: new Set<string>(), guard: opts.guard, borne: Number(borne), operations: null, out,
+    runRef: opts.accountRunId ? `t3_run:${opts.accountRunId}${opts.queueJobId ? `/job:${opts.queueJobId}` : ''}` : opts.queueJobId ? `job:${opts.queueJobId}` : null,
+  };
   let curseur = 0;
   for (;;) {
     await g('page');
@@ -800,6 +805,8 @@ interface OtherCtx {
   /** T3_OPERATIONS : consolidation du passage (une seule) et effet par carte. */
   /** Borne du cycle : cartes ouvertes au début du passage. */
   borne: number;
+  /** Lot 58B : référence d'exécution transmise au diagnostic par règle documentaire (0418). */
+  runRef?: string | null;
   operations: null | { effets: Map<number, { effect: OpenActionEffect; reason: string | null }>; note: string; attempted: boolean; error: string | null; job?: DelegatedJob | null; aiCalls?: number };
   out: OpenActionsResult;
 }
@@ -890,16 +897,25 @@ async function reexamineOther(accountId: number, row: ActionRow, base: Base, res
         return entry({ actionEffect: 'STILL_OPEN', evaluationMode: 'OBSOLESCENCE_ONLY', resolutionAttempted: false, note: 'unsupported_target' });
       }
       const avant = await cardSnapshot(Number(row.id));
-      const r = await o.d.resolveDocumentField(accountId, Number(row.target_id), row.rule_code);
+      const r = await o.d.resolveDocumentField(accountId, Number(row.target_id), row.rule_code, { runRef: o.runRef ?? null });
       etape(trace, 'VERIFY');
       const apres = await cardSnapshot(Number(row.id));
       const commun = {
         deterministicAttempted: true, newResolution: r.status, knowledgeSources: r.sources, missingSources: r.missingSources,
-        candidateCount: r.proposals, decision: `FIELD:${r.status}`, confidence: r.confidence, writeAttempted: r.writeAttempted,
-        writeVerified: r.writeAttempted || r.status === 'RESOLVED' ? r.verified : null, aiReason: 'DETERMINISTIC_PROOF',
+        candidateCount: r.proposals, decision: `FIELD:${r.status}${r.pertinence ? `:${r.pertinence}` : ''}`, confidence: r.confidence, writeAttempted: r.writeAttempted,
+        writeVerified: r.writeAttempted || r.status === 'RESOLVED' || r.status === 'NO_ACTION_NEEDED' ? r.verified : null,
+        aiReason: r.aiCalled ? 'DEADLINE_PERTINENCE' : 'DETERMINISTIC_PROOF',
         candidateOrigins: Object.keys(r.sources).length ? r.sources : null,
+        // Lot 58B : pertinence d'une échéance passée demandée à T4 (branche existante).
+        ...(r.aiCalled ? { aiCalled: true, aiOperation: 't4_classify_event', aiTraceId: r.aiTraceId ?? null, aiStatus: (r.aiStatus === 'ERROR' ? 'ERROR' : 'OK') as 'ERROR' | 'OK' } : {}),
       };
       if (r.status === 'TARGET_GONE') return entry({ ...commun, actionEffect: 'SUPERSEDED', note: 'document_gone', evaluationMode: 'OBSOLESCENCE_ONLY', resolutionAttempted: false, reasonCode: 'TARGET_GONE' });
+      if (r.status === 'NO_ACTION_NEEDED') {
+        return entry({
+          ...commun, actionEffect: r.verified ? 'CLOSED' : 'ERROR', evaluationMode: r.aiCalled ? 'AI_REEVALUATION' : 'DETERMINISTIC_REEVALUATION',
+          resolutionAttempted: true, reasonCode: r.verified ? 'NO_ACTION_NEEDED' : 'PERSISTENCE_FAILED', lastStep: 'CLOSE', note: 'deadline_without_action',
+        });
+      }
       if ((r.status === 'WRITTEN' || r.status === 'RESOLVED') && r.verified) {
         return entry({ ...commun, actionEffect: 'CLOSED', evaluationMode: 'DETERMINISTIC_REEVALUATION', resolutionAttempted: true, reasonCode: 'RESOLVED', lastStep: 'CLOSE' });
       }

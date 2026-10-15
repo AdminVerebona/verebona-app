@@ -346,10 +346,13 @@ const decisionsDe = (run: unknown): ReconciliationDecision[] => {
 };
 
 /** Résultat métier d'une réconciliation (bien ou entité) — pur. */
-export function reconciliationBusinessResult(decisions: ReconciliationDecision[], written = 0): JobBusinessResult {
-  const applied = Math.max(written, decisions.filter((x) => x.action === 'apply' || x.action === 'update').length);
+export function reconciliationBusinessResult(decisions: ReconciliationDecision[], written?: number | null): JobBusinessResult {
+  // Lot 58C : APPLIED = écritures CONFIRMÉES quand elles sont connues ; les
+  // intentions (apply / update) ne comptent que pour un appelant historique.
+  const intended = decisions.filter((x) => x.action === 'apply' || x.action === 'update').length;
+  const applied = written ?? intended;
   const conflicts = decisions.filter((x) => x.action === 'create_conflict').length;
-  const detail = { decisions: decisions.length, applied, conflicts };
+  const detail = { decisions: decisions.length, applied, conflicts, ...(written != null && intended !== applied ? { intended } : {}) };
   if (applied > 0) return { result: 'APPLIED', detail };
   if (conflicts > 0) return { result: 'ABSTAIN', detail };
   return { result: 'NO_CHANGE', detail };
@@ -392,7 +395,8 @@ async function runAsset(job: QueuedJob, p: T3AssetPayload, guard: ExecutionGuard
     accountId, userId: p.userId, assetId: p.assetId, triggeredBy: p.triggeredBy,
     sourceFileId: p.sourceFileId ?? undefined,
   });
-  const res = reconciliationBusinessResult(decisionsDe(run));
+  const confirmees = (run as { appliedCount?: unknown } | null)?.appliedCount;
+  const res = reconciliationBusinessResult(decisionsDe(run), typeof confirmees === 'number' ? confirmees : null);
   return { ...res, detail: { ...res.detail, assetId: p.assetId, runId: (run as { runId?: number } | null)?.runId ?? null } };
 }
 

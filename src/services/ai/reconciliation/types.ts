@@ -94,7 +94,10 @@ export interface ReconciliationRun {
   assetId: number;
   triggeredBy: string;
   decisions: ReconciliationDecision[];
+  /** Lot 58C : écritures CONFIRMÉES (résultat `written` de la primitive), jamais de simples intentions. */
   appliedCount: number;
+  /** Lot 58C : décisions apply / update (intentions), pour comparaison. */
+  intendedCount?: number;
   conflictCount: number;
   aiReviewCount: number;
   /** true si les décisions n'ont pas été écrites (§10.2). */

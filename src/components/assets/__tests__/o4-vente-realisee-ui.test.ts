@@ -123,7 +123,7 @@ describe('O4-UI-04 écriture vers la fiche', () => {
     expect(saleDetailsPatch(vente, { date: '2026-09-30', price: '12 000,50' })).toEqual({ fields: { saleDate: '2026-09-30', salePrice: 12000.5 } });
     expect(saleDetailsPatch(vente, { date: '', price: '9000' })).toEqual({ fields: { salePrice: 9000 } });
     expect(saleDetailsPatch(vente, { date: '', price: '' })).toBeNull();
-    expect(saleDetailsPatch(vente, { date: '', price: '-3' })).toEqual({ error: 'Prix invalide.' });
+    expect(saleDetailsPatch(vente, { date: '', price: '-3' })).toEqual({ error: 'Prix invalide : Valeur négative non acceptée.' });
     // Transmission : un prix n'est jamais envoyé.
     expect(saleDetailsPatch(saleDetailsPrompt('TRANSMIS')!, { date: '2026-08-01', price: '5000' })).toEqual({ fields: { saleDate: '2026-08-01' } });
     expect(saleDetailsPrompt('EN_SERVICE')).toBeNull();

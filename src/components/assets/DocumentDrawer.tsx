@@ -13,6 +13,7 @@ import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { DatePicker } from '@/components/ui/date-picker';
 import { NumberInput } from '@/components/ui/number-input';
+import { formatNumberForInput, MONEY_INPUT, parseMoneyInputToCents } from '@/lib/number-input';
 import { Separator } from '@/components/ui/separator';
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
@@ -301,6 +302,7 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
   const [editDocDate, setEditDocDate] = useState('');
   const [editSupplier, setEditSupplier] = useState('');
   const [editAmount, setEditAmount] = useState('');
+  const [editAmountError, setEditAmountError] = useState(false);
   const [editDescription, setEditDescription] = useState('');
   const [editNotes, setEditNotes] = useState('');
   // Rattachement
@@ -628,7 +630,8 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
     setEditClassement({ rubricCode: fullData.rubricCode, documentTypeCode: fullData.documentTypeCode });
     setEditDocDate(fullData.documentDate ?? '');
     setEditSupplier(fullData.supplier ?? '');
-    setEditAmount(fullData.amountCents != null ? String(fullData.amountCents / 100) : '');
+    setEditAmount(fullData.amountCents != null ? formatNumberForInput(fullData.amountCents / 100) : '');
+    setEditAmountError(false);
     setEditDescription(fullData.description ?? '');
     setEditNotes(fullData.notes ?? '');
     setEditAssetId(fullData.assetId ?? null);
@@ -648,7 +651,7 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
         if (p.targetKey === 'retainedFunctionCode') setEditDocType(resolveDocumentTypeCode(String(val)));
         if (p.targetKey === 'documentDate') setEditDocDate(String(val).substring(0, 10));
         if (p.targetKey === 'supplier') setEditSupplier(String(val));
-        if (p.targetKey === 'amountCents') setEditAmount(String(Number(val) / 100));
+        if (p.targetKey === 'amountCents') setEditAmount(formatNumberForInput(Number(val) / 100));
         if (p.targetKey === 'description') setEditDescription(String(val));
         if (p.targetKey === 'matchedAssetId') {
           const id = Number(val);
@@ -749,7 +752,8 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
     setEditClassement({ rubricCode: fullData.rubricCode, documentTypeCode: fullData.documentTypeCode });
     setEditDocDate(fullData.documentDate ?? '');
     setEditSupplier(fullData.supplier ?? '');
-    setEditAmount(fullData.amountCents != null ? String(fullData.amountCents / 100) : '');
+    setEditAmount(fullData.amountCents != null ? formatNumberForInput(fullData.amountCents / 100) : '');
+    setEditAmountError(false);
     setEditDescription(fullData.description ?? '');
     setEditNotes(fullData.notes ?? '');
     const currentAssetId = fullData.assetId ?? null;
@@ -805,9 +809,12 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
   const handleSave = useCallback(async () => {
     if (!doc || !fullData) return;
     if (!editFilename.trim()) { toast.error('Le titre du document est requis'); return; }
+    // Lot 58A : montant converti à la validation ; saisie invalide → aucun envoi.
+    const montant = parseMoneyInputToCents(editAmount);
+    if (!montant.ok) { setEditAmountError(true); toast.error(`Montant : ${montant.error}`); return; }
     setIsSaving(true);
     try {
-      const amountCents = editAmount ? Math.round(parseFloat(editAmount) * 100) : null;
+      const amountCents = montant.cents;
       const validDocType = resolveDocumentTypeCode(editDocType);
       // Compute userEditedFields: mark fields that differ from what AI detected
     const userEdited: Record<string, boolean> = { ...(fullData.userEditedFields ?? {}) };
@@ -816,7 +823,7 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
       if (validDocType !== fullData.documentType) userEdited.retainedFunctionCode = true;
       if ((editDocDate || null) !== fullData.documentDate) userEdited.documentDate = true;
       if ((editSupplier.trim() || null) !== fullData.supplier) userEdited.supplier = true;
-      const newAmt = editAmount ? Math.round(parseFloat(editAmount) * 100) : null;
+      const newAmt = amountCents;
       if (newAmt !== fullData.amountCents) userEdited.amountCents = true;
     }
 
@@ -835,7 +842,7 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
           supplier: editSupplier.trim() || null,
           description: editDescription.trim() || null,
           notes: editNotes.trim() || null,
-          amountCents: editAmount ? Math.round(parseFloat(editAmount) * 100) : null,
+          amountCents,
           userEditedFields: userEdited,
         }),
       });
@@ -1615,7 +1622,7 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
                 </div>
                 <div className="space-y-1.5">
                   <Label>Montant (€)</Label>
-                  <NumberInput step={0.01} min={0} value={editAmount} onChange={e => setEditAmount(e.target.value)} placeholder="Ex: 150.00" showButtons={false} />
+                  <NumberInput value={editAmount} onValueChange={setEditAmount} parseOptions={MONEY_INPUT} showError={editAmountError} placeholder="Ex : 150,00" showButtons={false} />
                 </div>
                 <div className="space-y-1.5">
                   <Label>Description</Label>
