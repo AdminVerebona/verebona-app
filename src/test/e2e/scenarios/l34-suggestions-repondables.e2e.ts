@@ -7,7 +7,8 @@
  *
  *   préconditions satisfaites (données réelles créées pour elle seule)
  *   → suggestion AFFICHÉE (vraie route `/api/verebona/suggestions`, et pour
- *     l'accueil, vraie mascotte `getMascotPresentation`)
+ *     l'accueil — lot 55A : la mascotte ne reprend plus ce catalogue, ses
+ *     questions viennent de T6, cf. l55a-suggestions.e2e.ts)
  *   → CLIQUÉE (le libellé, avec le contexte que le champ / la mascotte envoie)
  *   → intention T2 attendue (`canonicalIntent`)
  *   → sources du domaine attendu (`SUGGESTION_DOMAIN_SOURCES`)
@@ -72,8 +73,6 @@ function modeleSimule() {
   return { calls, provider };
 }
 
-/** Sujets de la mascotte équivalents à une question (SEC-004) : la question n'est alors pas répétée. */
-const EQUIVALENT: Record<string, string[]> = { deadlines: ['DATE-NEXT', 'DATE-NEXT-2'], analysis: ['PROC-DOC-ANALYSIS'] };
 
 /** Réponses qui ne sont PAS une réponse (repli, aveu, erreur). */
 const NON_REPONSE = /semblent liés|Résultats proches|Je n’ai rien trouvé|ne peux pas répondre de façon fiable|pas trouvé dans le Centre d’aide|Je ne sais pas|n’est plus disponible|une erreur/i;
@@ -170,7 +169,6 @@ scenario('L34-SUGG', 'Lot 34 — chaque suggestion affichée → cliquée → in
 
   it('CONTRAT — chaque suggestion publiable : affichée → cliquée → intention attendue → source du bon domaine → réponse non fallback', async () => {
     const { ALL_SUGGESTIONS, SUGGESTION_DOMAIN_SOURCES } = await import('@/services/verebona-assistant/registries/capability-registry');
-    const { getMascotPresentation } = await import('@/services/home/mascot/mascot.service');
     const echecs: string[] = [];
     const verifies: string[] = [];
 
@@ -184,21 +182,10 @@ scenario('L34-SUGG', 'Lot 34 — chaque suggestion affichée → cliquée → in
       if (!s) { echecs.push(`${e.id} : non affichée sur ${route} (${affichees.map((x) => x.id).join(', ')})`); continue; }
       expect(affichees.length, `${e.id} ${route}`).toBeLessThanOrEqual(3);
 
-      // Accueil : la mascotte propose la même question, avec l'intention canonique.
-      let contexteClic: Record<string, unknown> = { ...(await contexte(route)) };
-      if (e.routeExact?.includes('/accueil')) {
-        const p = await getMascotPresentation(c.id, 'display');
-        const q = p.secondaries.find((x) => x.action.label === s.label);
-        // SEC-004 / T2-02 : une question équivalente à un sujet DÉJÀ dit par
-        // la mascotte (date à venir, analyse en cours) n'est pas répétée.
-        const sujetAffiche = (EQUIVALENT[e.topic ?? e.id] ?? []).some((code) => p.paragraphs.some((x) => x.sourceCode === code));
-        if (!q && !sujetAffiche) { echecs.push(`${e.id} : absente de la mascotte (${p.secondaries.map((x) => x.action.label).join(' | ')})`); continue; }
-        if (q && q.action.target.kind === 'ask') {
-          if (q.action.target.context.intent !== e.canonicalIntent) echecs.push(`${e.id} : mascotte intention ${q.action.target.context.intent}`);
-          // Contexte que la mascotte envoie au clic (bien revalidé côté serveur).
-          contexteClic = { ...contexteClic, intent: q.action.target.context.intent, ...(q.action.target.context.assetId ? { assetId: String(q.action.target.context.assetId) } : {}) };
-        }
-      }
+      // Lot 55A : la mascotte ne propose plus le catalogue — ses questions
+      // sont rédigées par T6 (voir l55a-suggestions.e2e.ts) ; le champ
+      // « Demander à Verebona » garde ce catalogue, vérifié ici.
+      const contexteClic: Record<string, unknown> = { ...(await contexte(route)) };
 
       // 2. Cliquée : le libellé part au moteur réel.
       sim.calls.length = 0;

@@ -151,7 +151,18 @@ export function HoldsTable({ items }: { items: HoldItem[] }) {
               <td className="px-3 py-2 text-xs">{c.summary || '—'}{c.typeHint ? <span className="text-muted-foreground"> · indice {c.typeHint}</span> : null}</td>
               <td className="px-3 py-2 whitespace-nowrap">{c.confidence}</td>
               <td className="px-3 py-2 whitespace-nowrap">{c.outcome === 'ARBITRATION_REQUIRED' ? 'Arbitrage (À traiter)' : 'En attente (HOLD)'}</td>
-              <td className="px-3 py-2 text-xs"><span>{c.reasonLabel}</span>{c.reason ? <code className="ml-1 text-[10px] text-muted-foreground">{c.reason}</code> : null}</td>
+              <td className="px-3 py-2 text-xs">
+                <span>{c.reasonLabel}</span>{c.reason ? <code className="ml-1 text-[10px] text-muted-foreground">{c.reason}</code> : null}
+                {c.technicalError ? (
+                  <span className="block text-muted-foreground" data-t3-technical-error>
+                    {c.technicalError.attempts} tentative{c.technicalError.attempts > 1 ? 's' : ''}
+                    {c.technicalError.exhausted ? ' — reprises automatiques épuisées (corriger la cause, puis relancer le passage complet du compte)' : c.technicalError.retryAt ? ` — reprise automatique après ${formatDateTime(c.technicalError.retryAt)}` : ''}
+                    {c.technicalError.jobId ? ` · job #${c.technicalError.jobId}` : ''}
+                    {c.technicalError.message ? ` · ${c.technicalError.message}` : ''}
+                  </span>
+                ) : null}
+                {c.cardsPending ? <span className="block text-muted-foreground" data-t3-cards-pending>cartes « À traiter » en attente de resynchronisation (reprise automatique)</span> : null}
+              </td>
               <td className="px-3 py-2 text-xs whitespace-nowrap">
                 {c.proposedOperationIds.length
                   ? c.proposedOperationIds.map((id, i) => <span key={id}>{i ? ', ' : ''}<Link href={`/admin/operations/${id}`} className="hover:underline">#{id}</Link></span>)
@@ -385,6 +396,7 @@ export function OperationDetailView({ d }: { d: OperationDetail }) {
           ['Net indicatif', money(o.netCents, o.netPartial)],
           ['Créée le', formatDateTime(o.createdAt)],
           ['Dernière réconciliation', formatDateTime(o.lastReconciledAt)],
+          ['État de réconciliation', <span key="r" className={d.reconciliation.state === 'A_JOUR' ? '' : 'text-amber-600'}>{d.reconciliation.label}</span>],
           ['Version', String(o.version)],
         ]} />
       </Section>
@@ -456,13 +468,13 @@ export function OperationDetailView({ d }: { d: OperationDetail }) {
       </Section>
 
       <Section title="Candidats T1 liés et issue T3" count={d.candidates.length}>
-        <Table cols={['#', 'Document', 'Résumé', 'Confiance', 'Indice de type', 'Issue T3', 'Motif', 'Opération', 'État']} empty="Aucun candidat T1."
+        <Table cols={['#', 'Document', 'Résumé', 'Confiance', 'Indice de type', 'Issue T3', 'Motif', 'Exécution IA', 'Opération', 'État']} empty="Aucun candidat T1."
           rows={d.candidates.map((c: Row) => [
             s(c.id),
             <Link key="d" href={documentHref(acc, n(c.file_id))} className="hover:underline whitespace-nowrap">document #{s(c.file_id)}</Link>,
             s(c.summary), `${s(c.confidence)}${yes(c.established) ? '' : ' (non établi)'}`, s(c.type_hint),
             yes(c.t3_pending) ? 'en file T3' : s(c.t3_outcome),
-            s(c.t3_reason_label), opLink(c.t3_operation_id), s(c.status),
+            s(c.t3_reason_label), s(c.ai_label), opLink(c.t3_operation_id), s(c.status),
           ])} />
       </Section>
 
@@ -493,6 +505,13 @@ export function OperationDetailView({ d }: { d: OperationDetail }) {
             ['Dernière erreur', s(d.lastT3Pass.lastError)],
           ]} />
         ) : <p className="text-xs text-muted-foreground">Aucun travail T3 Opérations pour ce compte.</p>}
+        {d.operationMatchBranch && (
+          <p className={`text-xs mt-3 ${d.operationMatchBranch.available ? 'text-muted-foreground' : 'text-amber-600'}`}>
+            Rapprochement IA (OPERATION_MATCH) : {d.operationMatchBranch.available
+              ? `disponible dans la configuration active${d.operationMatchBranch.version ? ` (${d.operationMatchBranch.version})` : ''}`
+              : 'ABSENT de la configuration active — BO › Configuration IA › Prompts maîtres › T3 : « Repartir du texte livré avec l’application » puis « Activer »'}
+          </p>
+        )}
         <p className="text-xs text-muted-foreground mt-3">{d.procedure}</p>
         <Link href={t3QueueHref(acc)} className="mt-2 inline-flex items-center gap-1 text-xs underline">Travaux T3 du compte (File IA)</Link>
       </Section>

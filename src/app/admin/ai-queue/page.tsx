@@ -212,6 +212,7 @@ function AiQueueScreen() {
   const [filterIds, setFilterIds] = useState(sp.get('ids') ?? sp.get('jobId') ?? '');
   const [idsInput, setIdsInput] = useState(sp.get('ids') ?? sp.get('jobId') ?? '');
   const [supervision, setSupervision] = useState<T3SupervisionData | null>(null);
+  const [supervisionErreur, setSupervisionErreur] = useState<string | null>(null);
   const [filterAccount, setFilterAccount] = useState(sp.get('accountId') ?? '');
   const [filterOrigin, setFilterOrigin] = useState(sp.get('origin') ?? '');
   const [filterTrigger, setFilterTrigger] = useState(sp.get('trigger') ?? '');
@@ -241,11 +242,17 @@ function AiQueueScreen() {
         apiClient.get<Overview>('/api/admin/ai/queue'),
         apiClient.get<{ jobs: Job[] }>(`/api/admin/ai/queue/jobs?${params}`),
         // Lot 52A (COR-04) : supervision — jamais bloquante pour l'écran.
-        apiClient.get<T3SupervisionData>('/api/admin/ai/queue/supervision').catch(() => null),
+        // Lot 54A : l'échec est DIT (motif), plus jamais une carte qui disparaît.
+        apiClient.get<T3SupervisionData>('/api/admin/ai/queue/supervision')
+          .then((d) => ({ d, err: null as string | null }))
+          .catch((e: { message?: string; code?: string; status?: number }) => ({
+            d: null, err: [e?.message, e?.code && `(${e.code}${e.status ? ` — ${e.status}` : ''})`].filter(Boolean).join(' ') || 'erreur inconnue',
+          })),
       ]);
       setOverview(o);
       setJobs(j.jobs);
-      setSupervision(sup);
+      setSupervision(sup.d);
+      setSupervisionErreur(sup.err);
     } catch (e) {
       // Message ET code du serveur. Le code — VERSION_NOT_FOUND,
       // CONFIG_OPERATION_FAILED — est stable et cherchable dans le dépôt ;
@@ -363,7 +370,7 @@ function AiQueueScreen() {
       <ManualLaunch onLaunched={(ids) => (ids.length > 0 ? showJobs(ids) : load())} />
 
       {/* Lot 52A (COR-04) : état du boucleur (toutes instances), exécutant T3, derniers passages */}
-      <T3Supervision data={supervision} onOpenJob={(id) => showJobs([id])} />
+      <T3Supervision data={supervision} error={supervisionErreur} onOpenJob={(id) => showJobs([id])} />
 
       {stop?.active && (
         <div className="rounded-xl border border-red-500/30 bg-red-500/5 p-4 flex items-start gap-3">

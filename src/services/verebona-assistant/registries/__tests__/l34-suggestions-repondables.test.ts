@@ -186,9 +186,10 @@ describe('L34-SUGG — mascotte : même catalogue, mêmes règles', () => {
     const c = buildCandidates(raw({ toProcess: null }) as never);
     expect(buildSecondaries(c, selectSubjects(c.candidates)).filter((s) => s.kind === 'question')).toEqual([]);
   });
-  it('le service de la mascotte lit le catalogue unique de l’accueil', () => {
+  it('lot 55A : la mascotte ne lit plus le catalogue — ses questions viennent de T6 (même appel que la bulle)', () => {
     const t = readFileSync(join(ROOT, 'src/services/home/mascot/mascot.service.ts'), 'utf8');
-    expect(t).toMatch(/suggestionsForRoute\('\/accueil', ctx\)/);
-    expect(t).toMatch(/buildSecondaries\(candidates, subjects, await homeCatalogQuestions\(accountId\)\)/);
+    expect(t).not.toMatch(/suggestionsForRoute|homeCatalogQuestions/);
+    expect(t).toMatch(/buildSecondaries\(candidates, subjects, \[\]\)/);
+    expect(t).toMatch(/suggestionSecondaries\(outcome\.suggestions \?\? \[\]\)/);
   });
 });

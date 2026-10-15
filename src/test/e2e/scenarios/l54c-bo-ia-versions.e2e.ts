@@ -464,7 +464,18 @@ scenario('L54C-BOIA', 'Versions, révisions restaurables et export de la configu
       expect(apres.masterPrompts?.T6?.versionId).toBe(ancien.id);
       expect((await repo.listRevisions(apres.id))[0].kind).toBe('master_prompt');
     }
-    async function r6() { return (await resolver()).resolveOperationConfig('t6_formulate'); }
+    // La lecture de la configuration abandonne au-delà de 1,5 s (repli voulu
+    // sur le code, jamais bloquant). Sous la charge de la suite complète, ce
+    // délai était parfois atteint : relecture après invalidation (3 essais).
+    async function r6() {
+      const r = await resolver();
+      let c = await r.resolveOperationConfig('t6_formulate');
+      for (let i = 0; i < 3 && c.masterPromptVersionId == null; i += 1) {
+        r.invalidateConfigCache();
+        c = await r.resolveOperationConfig('t6_formulate');
+      }
+      return c;
+    }
   });
 
   it('BOIA-18 — instantané autonome : version de prompt maître figée disparue → son texte est rétabli à l’activation (retour arrière jamais bloqué)', async () => {

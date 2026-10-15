@@ -37,7 +37,7 @@ const AUTO_ORIGIN_LABEL: Record<string, string> = {
   // Lot 47A (O9) : anomalie dure des Opérations revenue à 0 (tâche `operations-quality-check`).
   operations_quality_check_cleared: 'Anomalie dure des Opérations revenue à 0 (contrôle quotidien, après reconsolidation)',
   // Lot 49 : relations intercomptes revenues à 0 (tâche `cross-account-relations-check`).
-  cross_account_check_cleared: 'Relations intercomptes revenues à 0 (contrôle quotidien)',
+  cross_account_check_cleared: 'Isolation des comptes : contrôle complet revenu à 0',
 };
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {

@@ -1,31 +1,27 @@
 "use client";
 
 /**
- * Admin — Configuration IA (BO IA) — CDC BO IA SCR-01 à SCR-06.
+ * Admin — Configuration IA — lot 54 (54C), ticket « BO-IA — Refonte de la
+ * gestion des versions, restauration et export ».
  *
  * ══════════════════════════════════════════════════════════════════════════
- * UNE VERSION, CINQ ONGLETS (T1, T2, T3, T4, T6 — T5 retiré au lot 49)
+ * UNE VERSION = TOUTE LA CONFIGURATION (T1, T2, T3, T4, T6 — T5 retiré)
  *
- * Le GEN-002 veut un instantané cohérent des traitements. Les onglets pointent
- * donc vers la MÊME version : on n'édite pas cinq configurations mais une
- * seule, vue par traitement. C'est ce que le WF-01 décrit — « tous les onglets
- * pointent vers le même Brouillon global » — et c'est pourquoi le sélecteur de
- * version est au-dessus des onglets, jamais dans l'un d'eux.
+ *   · Versions : nouvelle, dupliquer, modifier, « Activer en préproduction »,
+ *     historique, supprimer (non active). Une seule active, clairement
+ *     signalée ; elle reste modifiable — plus de Brouillon / À tester /
+ *     Validé / Archivé, plus de lecture seule liée au statut.
+ *   · Éditeur : version, révision courante, état, « Enregistrer » (UNE
+ *     révision pour tous les traitements modifiés), historique.
+ *   · Historique : révisions consultables et restaurables (confirmation) ;
+ *     restaurer crée une nouvelle révision, rien n'est effacé.
+ *   · « Exporter la configuration » : la configuration ACTIVE enregistrée,
+ *     fichier validé par le serveur ; avertit si des modifications ne sont
+ *     pas enregistrées ; indique si elle a changé depuis le dernier export.
+ *   · Aucune publication ni activation vers la production.
  *
- * ══════════════════════════════════════════════════════════════════════════
- * CE QUE L'ÉCRAN DOIT EMPÊCHER
- *
- * Perdre une saisie. Le WF-01 exige les trois choix — enregistrer, quitter sans
- * enregistrer, annuler — quand on quitte un onglet modifié. Ils sont ici, y
- * compris en changeant de version.
- *
- * Confondre activer et restaurer. Le WF-05 laisse terminer les exécutions en
- * cours, le WF-06 les interrompt. Deux boutons distincts, et une confirmation
- * renforcée sur le second, qui nomme la conséquence au lieu de demander « êtes-
- * vous sûr ».
- *
- * Croire qu'on modifie ce qui tourne. Une Active est en lecture seule (VER-002).
- * Les champs sont désactivés, et l'écran propose de créer un Brouillon.
+ * Desktop et mobile : mêmes composants, actions en `flex-wrap`, listes en
+ * colonne sous `sm`.
  */
 
 import { useState, useEffect, useCallback, useRef } from 'react';
@@ -35,15 +31,14 @@ import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription,
 } from '@/components/ui/dialog';
 import {
-  Loader2, Plus, GitCompare, CheckCircle2, AlertTriangle, RotateCcw,
-  Archive, Play, Save, Lock, Undo2,
+  Loader2, Plus, GitCompare, CheckCircle2, RotateCcw,
+  Save, Lock, Undo2, Copy, History, Trash2, Download, Pencil, Eye,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { MasterPrompts } from './_components/MasterPrompts';
 import { EcranEnErreur } from '@/components/admin/EcranEnErreur';
 import { apiClient } from '@/lib/api-client';
 import { TreatmentStateControl, type TreatmentRuntimeState } from './_components/TreatmentStateControl';
-import { MepPackages } from './_components/MepPackages';
 import { AssistantSettings } from './_components/AssistantSettings';
 import { ModelRegistry } from './_components/ModelRegistry';
 import { Supervision, type Metric, type MetricTable } from './_components/Supervision';
@@ -59,7 +54,8 @@ import { useRouter } from 'next/navigation';
 // ─── Types de l'écran ─────────────────────────────────────────────────────────
 
 type Treatment = 'T1' | 'T2' | 'T3' | 'T4' | 'T6';
-type Status = 'DRAFT' | 'TO_TEST' | 'ACTIVE' | 'VALIDATED' | 'ARCHIVED';
+/** Lot 54 : `ACTIVE` ou non active (anciennes valeurs lues comme non active). */
+type Status = string;
 
 interface GuardrailDef { code: string; label: string; description: string; unit: string }
 interface TriggerDef { code: string; label: string; kind: 'event' | 'schedule'; help?: string | null }
@@ -134,15 +130,24 @@ interface Entry {
 interface Version {
   id: number;
   status: Status;
+  active: boolean;
+  stateLabel?: string;
   visibleNumber: number | null;
   label: string | null;
-  isStale: boolean;
+  description: string | null;
   activatedAt: string | null;
   createdAt: string;
+  updatedAt: string | null;
+  updatedByEmail?: string | null;
+  deletedAt: string | null;
+  currentRevisionNumber: number | null;
 }
+
+interface MasterPromptRef { versionId: number; versionNumber: number; masterPromptCode: string; contentSha256: string }
 
 interface VersionDetail extends Version {
   entries: Entry[];
+  masterPrompts?: Partial<Record<Treatment, MasterPromptRef | null>>;
   readOnly: boolean;
   executing: boolean;
   /** Modèles que le fournisseur ne sert plus. N'empêche rien : informe. */
@@ -160,45 +165,62 @@ interface Issue {
 }
 
 interface DiffResponse {
-  diff: { treatments: Array<{ treatment: Treatment; changes: Array<{ label: string; before: string | null; after: string | null }> }>; identical: boolean; changeCount: number };
+  diff: { identical: boolean; changeCount: number };
   text: string;
   validation: { issues: Issue[]; valid: boolean };
-  promotable: boolean;
   activeVisibleNumber: number | null;
 }
 
-// ─── Libellés ─────────────────────────────────────────────────────────────────
-
-const STATUS_LABEL: Record<Status, string> = {
-  DRAFT: 'Brouillon',
-  TO_TEST: 'À tester',
-  ACTIVE: 'Active',
-  VALIDATED: 'Validée',
-  ARCHIVED: 'Archivée',
-};
-
-const STATUS_STYLE: Record<Status, string> = {
-  DRAFT: 'bg-slate-500/10 text-slate-400 border-slate-500/20',
-  TO_TEST: 'bg-amber-500/10 text-amber-500 border-amber-500/20',
-  ACTIVE: 'bg-emerald-500/10 text-emerald-500 border-emerald-500/20',
-  VALIDATED: 'bg-sky-500/10 text-sky-500 border-sky-500/20',
-  ARCHIVED: 'bg-[color:var(--bg-page)] text-[color:var(--text-muted)] border-[color:var(--border-subtle)]',
-};
-
-function versionName(v: Version): string {
-  if (v.visibleNumber) return `v${v.visibleNumber}${v.label ? ` — ${v.label}` : ''}`;
-  return v.label ?? `Brouillon ${v.id}`;
+interface Revision {
+  id: number; revisionNumber: number; kind: string; comment: string | null;
+  restoredFromRevisionNumber: number | null; createdByEmail: string | null; createdAt: string; snapshotSha256: string;
 }
 
-// ─── Fragments ────────────────────────────────────────────────────────────────
+interface ExportRecord {
+  id: number; versionNumber: number; revisionNumber: number; fileName: string; contentSha256: string;
+  exportedByEmail: string | null; exportedAt: string;
+}
 
-function StatusBadge({ status }: { status: Status }) {
+interface ExportState {
+  active: { versionId: number; versionNumber: number | null; name: string | null; revisionNumber: number } | null;
+  lastExport: ExportRecord | null;
+  changedSinceLastExport: boolean | null;
+  changes: Array<'version' | 'revision' | 'content'>;
+  exports: ExportRecord[];
+}
+
+/** Versions de prompt maître sélectionnables (actives ou anciennes, jamais un brouillon). */
+interface PromptChoice { id: number; versionNumber: number; status: string }
+
+// ─── Libellés ─────────────────────────────────────────────────────────────────
+
+const KIND_LABEL: Record<string, string> = {
+  migration: 'Reprise automatique',
+  create: 'Création',
+  duplicate: 'Copie',
+  save: 'Enregistrement',
+  restore: 'Restauration',
+  master_prompt: 'Prompt maître activé',
+};
+
+function versionName(v: Pick<Version, 'visibleNumber' | 'label' | 'id'>): string {
+  return `v${v.visibleNumber ?? v.id}${v.label ? ` — ${v.label}` : ''}`;
+}
+
+const dateHeure = (d: string | null | undefined) => (d ? new Date(d).toLocaleString('fr-FR', { dateStyle: 'short', timeStyle: 'short' }) : '—');
+
+function StateBadge({ v, environment }: { v: Pick<Version, 'active' | 'stateLabel'>; environment: string }) {
+  const label = v.stateLabel ?? (v.active ? (environment === 'production' ? 'Active en production' : 'Active en préproduction') : 'Non active');
   return (
-    <span className={`text-xs px-2 py-0.5 rounded-full border ${STATUS_STYLE[status]}`}>
-      {STATUS_LABEL[status]}
+    <span className={`shrink-0 text-xs px-2 py-0.5 rounded-full border ${v.active
+      ? 'bg-emerald-500/10 text-emerald-500 border-emerald-500/20'
+      : 'bg-[color:var(--bg-page)] text-[color:var(--text-muted)] border-[color:var(--border-subtle)]'}`}>
+      {label}
     </span>
   );
 }
+
+// ─── Fragments ────────────────────────────────────────────────────────────────
 
 function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
   return (
@@ -285,20 +307,20 @@ function TreatmentEditor({
       */}
       {catalog.master ? (
         <p className="text-xs text-[color:var(--text-muted)] rounded-lg border border-[color:var(--border-subtle)] p-3">
-          Le texte du prompt maître de {entry.treatment} s’administre dans la section « Prompts maîtres » (brouillon,
-          test facultatif, activation, historique), indépendamment de cette version de configuration.
+          Le texte du prompt maître de {entry.treatment} s’administre dans la section « Prompts maîtres » (rédaction,
+          test facultatif, activation, historique) ; la version retenue par cette configuration se choisit ci-dessus.
         </p>
       ) : null}
 
       <p className="text-xs text-[color:var(--text-muted)]">
-        Les réglages ci-dessous (modèles, replis, garde-fous, déclencheurs) suivent le cycle des versions de configuration.
+        Les réglages ci-dessous (modèles, replis, garde-fous, déclencheurs) font partie de cette version de configuration.
       </p>
 
       {invalides.length > 0 ? (
         <p role="status" className="text-xs text-amber-500">
           {readOnly
             ? `Modèle(s) devenu(s) indisponible(s) pour ${entry.treatment} : `
-            : `Modèle(s) non utilisable(s) pour ${entry.treatment} — à remplacer avant la mise à l’essai ou la validation : `}
+            : `Modèle(s) non utilisable(s) pour ${entry.treatment} — à remplacer avant l’activation : `}
           {invalides.map((r) => `${RANG_LABEL[r]} « ${entry[r]} » (${motif(entry[r]!)})`).join(' ; ')}.
         </p>
       ) : null}
@@ -491,32 +513,48 @@ function TreatmentEditor({
 
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
+type ConfirmKind = 'activate' | 'delete' | 'restore' | 'export';
+
 export default function AiConfigPage() {
   const [catalogs, setCatalogs] = useState<Catalogs | null>(null);
   const [environment, setEnvironment] = useState('');
   const [versions, setVersions] = useState<Version[]>([]);
+  const [deleted, setDeleted] = useState<Version[] | null>(null);
   const [current, setCurrent] = useState<VersionDetail | null>(null);
   const [tab, setTab] = useState<Treatment>('T1');
   const [drafts, setDrafts] = useState<Record<string, Entry>>({});
   const [dirty, setDirty] = useState<Set<Treatment>>(new Set());
+  // Prompt maître retenu par traitement (id de version), modifié localement.
+  const [promptChoices, setPromptChoices] = useState<Partial<Record<Treatment, number | null>>>({});
+  const [promptOptions, setPromptOptions] = useState<Partial<Record<Treatment, PromptChoice[]>>>({});
+  const [meta, setMeta] = useState<{ label: string; description: string }>({ label: '', description: '' });
+  const [metaDirty, setMetaDirty] = useState(false);
   const [loading, setLoading] = useState(true);
   const [erreur, setErreur] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [diff, setDiff] = useState<DiffResponse | null>(null);
-  const [confirm, setConfirm] = useState<null | {
-    kind: 'rollback' | 'validate' | 'activate' | 'demote' | 'promote' | 'archive'; onOk: () => void;
-  }>(null);
-  // Confirmation renforcée en production (VER-026, WF-04) : saisir le nom de
-  // l'environnement avant d'activer ou de restaurer.
+  const [confirm, setConfirm] = useState<null | { kind: ConfirmKind; title: string; text: string; onOk: () => void }>(null);
   const [saisieEnv, setSaisieEnv] = useState('');
-  // État opérationnel runtime (non versionné) et arrêt d'urgence (WF-07, WF-08).
   const [runtime, setRuntime] = useState<TreatmentRuntimeState[]>([]);
   const [emergencyStop, setEmergencyStop] = useState(false);
   const [leaving, setLeaving] = useState<null | (() => void)>(null);
   const [metrics, setMetrics] = useState<Record<string, { metrics: Metric[]; tables?: MetricTable[]; windowDays: number }>>({});
-  // Fenêtre choisie par traitement : on observe rarement T1 et T2 à la même
-  // échelle, et imposer une fenêtre commune obligerait à la régler deux fois.
   const [fenetres, setFenetres] = useState<Record<string, number>>({});
+  const [history, setHistory] = useState<null | { version: Version; revisions: Revision[] }>(null);
+  const [revisionView, setRevisionView] = useState<null | { revision: Revision; text: string; identical: boolean; masterPromptChanges: Array<{ treatment: string; current: string | null; revision: string | null }>; isCurrent: boolean }>(null);
+  const [exportState, setExportState] = useState<ExportState | null>(null);
+  const [promptsKey, setPromptsKey] = useState(0);
+
+  const promptsDirty = Object.keys(promptChoices).length > 0;
+  const hasUnsaved = dirty.size > 0 || promptsDirty || metaDirty;
+
+  const loadExportState = useCallback(async () => {
+    try {
+      setExportState(await apiClient.get<ExportState>('/api/admin/ai/config-exports'));
+    } catch {
+      setExportState(null);
+    }
+  }, []);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -530,9 +568,6 @@ export default function AiConfigPage() {
       setEnvironment(list.environment);
       setVersions(list.versions);
     } catch (e) {
-      // Message ET code du serveur. Le code — VERSION_NOT_FOUND,
-      // CONFIG_OPERATION_FAILED — est stable et cherchable dans le dépôt ;
-      // le message seul obligerait à ouvrir les outils de développement.
       const err = e as { message?: string; code?: string; status?: number };
       setErreur([err.message, err.code && `(${err.code}${err.status ? ` — ${err.status}` : ''})`]
         .filter(Boolean).join(' ') || null);
@@ -540,12 +575,23 @@ export default function AiConfigPage() {
     } finally {
       setLoading(false);
     }
-  }, []);
+    void loadExportState();
+  }, [loadExportState]);
 
   useEffect(() => { load(); }, [load]);
 
-  // Ticket T4 : « Réessayer » du bloc Déclencheurs — relit le catalogue seul,
-  // sans recharger la version ni perdre une saisie en cours.
+  const reloadList = useCallback(async () => {
+    try {
+      const list = await apiClient.get<{ environment: string; versions: Version[] }>('/api/admin/ai/config-versions');
+      setVersions(list.versions);
+      if (deleted !== null) {
+        setDeleted((await apiClient.get<{ versions: Version[] }>('/api/admin/ai/config-versions?deleted=only')).versions);
+      }
+    } catch { /* la liste précédente reste affichée */ }
+    void loadExportState();
+  }, [deleted, loadExportState]);
+
+  // Ticket T4 : « Réessayer » du bloc Déclencheurs — relit le catalogue seul.
   const reloadCatalogs = useCallback(async () => {
     try {
       setCatalogs(await apiClient.get<Catalogs>('/api/admin/ai/config-catalogs'));
@@ -554,8 +600,6 @@ export default function AiConfigPage() {
     }
   }, []);
 
-  // État des traitements : lu une fois, puis mis à jour par chaque commande.
-  // Silencieux en cas d'échec : la configuration reste utilisable sans lui.
   useEffect(() => {
     apiClient
       .get<{ states: TreatmentRuntimeState[]; emergencyStop: { active: boolean } }>('/api/admin/ai/queue')
@@ -563,11 +607,7 @@ export default function AiConfigPage() {
       .catch(() => {});
   }, []);
 
-  // Chargés à l'ouverture de l'onglet, et non tous d'un coup : cinq requêtes
-  // d'agrégation à chaque affichage de l'écran seraient payées même par qui
-  // vient seulement corriger un prompt.
   const fenetre = fenetres[tab] ?? 30;
-
   useEffect(() => {
     if (metrics[tab]?.windowDays === fenetre) return;
     let annule = false;
@@ -576,11 +616,21 @@ export default function AiConfigPage() {
         `/api/admin/ai/treatments/${tab}/metrics?days=${fenetre}`,
       )
       .then((r) => { if (!annule) setMetrics((m) => ({ ...m, [tab]: r })); })
-      // Silencieux : la supervision est un complément, son absence ne doit pas
-      // empêcher de configurer.
       .catch(() => {});
     return () => { annule = true; };
   }, [tab, fenetre, metrics]);
+
+  // Versions de prompt maître proposées pour un traitement (à l'ouverture).
+  const loadPromptOptions = useCallback(async (t: Treatment) => {
+    try {
+      const d = await apiClient.get<{ active: PromptChoice | null; history: PromptChoice[] }>(`/api/admin/ai/master-prompts/${t}`);
+      const all = [...(d.active ? [d.active] : []), ...(d.history ?? [])].filter((v) => v.status !== 'DRAFT');
+      const uniques = [...new Map(all.map((v) => [v.id, v])).values()].sort((a, b) => b.versionNumber - a.versionNumber);
+      setPromptOptions((o) => ({ ...o, [t]: uniques }));
+    } catch {
+      setPromptOptions((o) => ({ ...o, [t]: [] }));
+    }
+  }, []);
 
   const openVersion = useCallback(async (id: number) => {
     try {
@@ -588,14 +638,16 @@ export default function AiConfigPage() {
       setCurrent(v);
       setDrafts(Object.fromEntries(v.entries.map((e) => [e.treatment, e])));
       setDirty(new Set());
+      setPromptChoices({});
+      setMeta({ label: v.label ?? '', description: v.description ?? '' });
+      setMetaDirty(false);
       setDiff(null);
     } catch {
       toast.error('Version introuvable.');
     }
   }, []);
 
-  // DRF-01 : le tableau de bord ouvre un brouillon par `?version=<id>`. Lu une
-  // seule fois, au premier chargement de la liste.
+  // DRF-01 : le tableau de bord ouvre une version par `?version=<id>`.
   const [versionDemandee, setVersionDemandee] = useState<number | null | undefined>(undefined);
   useEffect(() => {
     if (versionDemandee !== undefined) return;
@@ -608,86 +660,107 @@ export default function AiConfigPage() {
     void openVersion(versionDemandee);
   }, [versionDemandee, versions, openVersion]);
 
-
-  // VER-007, WF-26 : quitter la page (fermeture, rechargement, lien externe)
-  // avec des saisies non enregistrées demande confirmation au navigateur.
+  // VER-007, WF-26 : quitter la page avec des saisies non enregistrées.
   useEffect(() => {
-    if (dirty.size === 0) return;
+    if (!hasUnsaved) return;
     const onBeforeUnload = (e: BeforeUnloadEvent) => { e.preventDefault(); e.returnValue = ''; };
     window.addEventListener('beforeunload', onBeforeUnload);
     return () => window.removeEventListener('beforeunload', onBeforeUnload);
-  }, [dirty]);
+  }, [hasUnsaved]);
 
   /** VER-008 : « Réinitialiser » — annule les modifications locales d'un traitement. */
   const resetTreatment = (t: Treatment) => {
     const saved = current?.entries.find((e) => e.treatment === t);
-    if (!saved) return;
-    setDrafts((d) => ({ ...d, [t]: saved }));
+    if (saved) setDrafts((d) => ({ ...d, [t]: saved }));
     setDirty((s) => { const n = new Set(s); n.delete(t); return n; });
+    setPromptChoices((c) => { const n = { ...c }; delete n[t]; return n; });
   };
 
-  /** WF-01 — trois choix quand une saisie n'est pas enregistrée. */
+  const resetAll = () => {
+    if (!current) return;
+    setDrafts(Object.fromEntries(current.entries.map((e) => [e.treatment, e])));
+    setDirty(new Set());
+    setPromptChoices({});
+    setMeta({ label: current.label ?? '', description: current.description ?? '' });
+    setMetaDirty(false);
+  };
+
   const guardUnsaved = (go: () => void) => {
-    if (dirty.size === 0) { go(); return; }
+    if (!hasUnsaved) { go(); return; }
     setLeaving(() => go);
   };
 
-  // VER-007, WF-26 : navigation client (menu, liens) interceptée elle aussi —
-  // `beforeunload` ne la voit pas.
   const router = useRouter();
   const askLeave = useCallback((go: () => void) => setLeaving(() => go), []);
   const navigateTo = useCallback((href: string) => router.push(href), [router]);
-  useUnsavedNavigationGuard(dirty.size > 0, askLeave, navigateTo);
+  useUnsavedNavigationGuard(hasUnsaved, askLeave, navigateTo);
 
   // Saisies faites PENDANT un enregistrement : jamais écrasées par la réponse.
   const edits = useRef(createEditTracker()).current;
 
-  const saveTreatment = async (t: Treatment): Promise<boolean> => {
+  /**
+   * « Enregistrer » : UNE révision pour tous les traitements modifiés, les
+   * prompts maîtres retenus, le nom et la description. Révision éditée
+   * envoyée : une sauvegarde plus récente n'est jamais écrasée (409).
+   */
+  const saveAll = async (): Promise<boolean> => {
     if (!current) return false;
-    const entry = drafts[t];
-    const repere = edits.mark(t);
-    try {
-      await apiClient.put(`/api/admin/ai/config-versions/${current.id}/entries/${t}`, entry);
-      // Modifié de nouveau pendant l'envoi : reste « non enregistré ».
-      if (edits.unchangedSince(t, repere)) setDirty((d) => { const n = new Set(d); n.delete(t); return n; });
-      setDiff(null);
-      toast.success(`${t} enregistré`);
-    } catch {
-      toast.error(`${t} n'a pas pu être enregistré.`);
-      return false;
-    }
-    // Relecture de ce qui est RÉELLEMENT enregistré (ticket T4) : la liste
-    // de déclencheurs telle que persistée.
-    try {
-      const v = await apiClient.get<VersionDetail>(`/api/admin/ai/config-versions/${current.id}`);
-      const relue = v.entries.find((e) => e.treatment === t);
-      // Seulement si le traitement n'a pas été modifié depuis l'envoi : sinon
-      // la saisie en cours est conservée (la ligne enregistrée est tout de
-      // même relue dans `current`).
-      if (relue && edits.unchangedSince(t, repere)) setDrafts((d) => ({ ...d, [t]: relue }));
-      setCurrent((c) => (c && c.id === v.id ? { ...c, entries: v.entries } : c));
-    } catch {
-      // Enregistré ; seule la relecture a échoué — l'écran garde la saisie.
-    }
-    return true;
-  };
-
-  const saveAllDirty = async () => {
-    for (const t of dirty) {
-      if (!(await saveTreatment(t))) return false;
-    }
-    return true;
-  };
-
-  const createDraft = async () => {
+    const treatments = [...dirty];
+    const reperes = Object.fromEntries(treatments.map((t) => [t, edits.mark(t)]));
     setBusy(true);
     try {
-      const d = await apiClient.post<VersionDetail>('/api/admin/ai/config-versions', {});
-      toast.success('Brouillon créé');
-      await load();
+      const r = await apiClient.put<{ revisionNumber: number; changed: boolean; warnings: string[] }>(
+        `/api/admin/ai/config-versions/${current.id}`,
+        {
+          baseRevision: current.currentRevisionNumber ?? 1,
+          entries: treatments.map((t) => drafts[t]),
+          ...(promptsDirty ? { masterPromptVersionIds: promptChoices } : {}),
+          ...(metaDirty ? { label: meta.label, description: meta.description } : {}),
+        },
+      );
+      toast.success(r.changed
+        ? `Enregistré : révision ${r.revisionNumber}${current.active ? ' — appliquée aux prochaines exécutions' : ''}`
+        : 'Aucune modification à enregistrer.');
+      if (r.warnings?.length) toast.warning(`${r.warnings.length} point(s) à vérifier dans la configuration enregistrée.`, { duration: 8_000 });
+      // Relecture de ce qui est RÉELLEMENT enregistré ; une saisie faite
+      // pendant l'envoi reste « non enregistrée ».
+      const v = await apiClient.get<VersionDetail>(`/api/admin/ai/config-versions/${current.id}`);
+      setCurrent(v);
+      const encore = treatments.filter((t) => !edits.unchangedSince(t, reperes[t]));
+      setDrafts((d) => {
+        const n = { ...d };
+        for (const e of v.entries) if (!encore.includes(e.treatment)) n[e.treatment] = e;
+        return n;
+      });
+      setDirty(new Set(encore));
+      setPromptChoices({});
+      setMetaDirty(false);
+      setDiff(null);
+      await reloadList();
+      return true;
+    } catch (e) {
+      const err = e as { message?: string; code?: string };
+      if (err.code === 'REVISION_CONFLICT') {
+        toast.error(err.message ?? 'La version a été enregistrée entre-temps.', {
+          duration: 15_000,
+          action: { label: 'Recharger', onClick: () => void openVersion(current.id) },
+        });
+      } else {
+        toast.error(err.message || 'Enregistrement impossible : rien n’a été modifié.');
+      }
+      return false;
+    } finally { setBusy(false); }
+  };
+
+  const createVersion = async (body: Record<string, unknown>, message: string) => {
+    setBusy(true);
+    try {
+      const d = await apiClient.post<VersionDetail>('/api/admin/ai/config-versions', body);
+      toast.success(message);
+      await reloadList();
       await openVersion(d.id);
-    } catch {
-      toast.error('Création impossible.');
+    } catch (e) {
+      toast.error((e as Error).message || 'Création impossible.');
     } finally { setBusy(false); }
   };
 
@@ -701,47 +774,137 @@ export default function AiConfigPage() {
     } finally { setBusy(false); }
   };
 
-  const act = async (path: string, success: string, body: Record<string, unknown> = {}) => {
-    if (!current) return;
+  const activateVersion = (v: Version) => setConfirm({
+    kind: 'activate',
+    title: `${environment === 'production' ? 'Activer en production' : 'Activer en préproduction'} — ${versionName(v)}`,
+    text: 'Le dernier état enregistré de cette version devient la configuration des nouvelles exécutions ; la version active actuelle '
+      + 'est désactivée (conservée, réactivable). Les exécutions déjà démarrées terminent avec leur configuration.',
+    onOk: async () => {
+      setBusy(true);
+      try {
+        const r = await apiClient.post<{ warnings?: string[] }>(`/api/admin/ai/config-versions/${v.id}/activate`,
+          // Production : bouton actif seulement après la saisie « production ».
+          environment === 'production' ? { confirmEnvironment: 'production' } : {});
+        toast.success(`${versionName(v)} est active`);
+        for (const w of r.warnings ?? []) toast.warning(w, { duration: 10_000 });
+        await reloadList();
+        if (current?.id === v.id || current?.active) await openVersion(current!.id);
+        setPromptsKey((k) => k + 1);
+      } catch (e) {
+        toast.error((e as Error).message || 'Activation impossible : rien n’a été modifié.');
+      } finally { setBusy(false); }
+    },
+  });
+
+  const deleteVersion = (v: Version) => setConfirm({
+    kind: 'delete',
+    title: `Supprimer ${versionName(v)}`,
+    text: 'La version disparaît de la liste. Ses révisions sont conservées : elle reste récupérable depuis « Versions supprimées ».',
+    onOk: async () => {
+      setBusy(true);
+      try {
+        await apiClient.delete(`/api/admin/ai/config-versions/${v.id}`);
+        toast.success(`${versionName(v)} supprimée`);
+        if (current?.id === v.id) setCurrent(null);
+        await reloadList();
+      } catch (e) {
+        toast.error((e as Error).message || 'Suppression impossible.');
+      } finally { setBusy(false); }
+    },
+  });
+
+  const undeleteVersion = async (v: Version) => {
     setBusy(true);
     try {
-      const r = await apiClient.post<Record<string, unknown>>(
-        `/api/admin/ai/config-versions/${current.id}/${path}`, body,
-      );
-      if (path === 'promote' && r.promoted === false) {
-        setDiff({ ...(r as unknown as DiffResponse), promotable: false, activeVisibleNumber: null });
-        toast.error(r.reason === 'IDENTICAL_TO_ACTIVE'
-          ? 'Cette version est identique à l\'Active : rien à tester.'
-          : 'Des contrôles ont échoué. Le détail est affiché sous les onglets.');
-        return;
-      }
-      toast.success(success);
-      // Lot 23 (§15.12) : avertissements du registre des modèles (modèle
-      // déprécié, absent du registre) rendus par la validation / l'activation.
-      if (Array.isArray(r.warnings)) {
-        for (const w of r.warnings as unknown[]) if (typeof w === 'string') toast.warning(w, { duration: 10_000 });
-      }
-      await load();
-      await openVersion(current.id);
+      await apiClient.post(`/api/admin/ai/config-versions/${v.id}/undelete`, {});
+      toast.success(`${versionName(v)} remise dans la liste (non active)`);
+      await reloadList();
     } catch (e) {
-      // Refus explicites du serveur (409) : leur message dit quoi faire.
-      const err = e as { message?: string; code?: string; details?: { id?: number } };
-      if (err.code === 'STALE_DRAFT') {
-        // WF-27 : Brouillon obsolète — diff affiché, confirmation explicite.
-        await showDiff();
-        setConfirm({ kind: 'promote', onOk: () => act('promote', 'Version passée à l’essai', { acknowledgeStale: true }) });
-        toast.warning(err.message ?? 'Brouillon obsolète : relisez le diff.');
-      } else if (err.code === 'TO_TEST_EXISTS') {
-        // VER-002 : proposer d'ouvrir la version À tester pour la repasser en Brouillon.
-        toast.error(err.message ?? 'Une version est déjà À tester.', {
-          action: err.details?.id
-            ? { label: 'Ouvrir', onClick: () => guardUnsaved(() => openVersion(err.details!.id!)) }
-            : undefined,
-        });
-      } else {
-        toast.error(err.message || "L'opération n'a pas abouti.");
-      }
+      toast.error((e as Error).message || 'Opération impossible.');
     } finally { setBusy(false); }
+  };
+
+  const openHistory = async (v: Version) => {
+    try {
+      const r = await apiClient.get<{ revisions: Revision[] }>(`/api/admin/ai/config-versions/${v.id}/revisions`);
+      setHistory({ version: v, revisions: r.revisions });
+      setRevisionView(null);
+    } catch {
+      toast.error('Historique indisponible.');
+    }
+  };
+
+  const viewRevision = async (rev: Revision) => {
+    if (!history) return;
+    try {
+      const r = await apiClient.get<{ isCurrent: boolean; diffWithCurrent: { identical: boolean; text: string; masterPromptChanges: Array<{ treatment: string; current: string | null; revision: string | null }> } }>(
+        `/api/admin/ai/config-versions/${history.version.id}/revisions/${rev.id}`,
+      );
+      setRevisionView({ revision: rev, text: r.diffWithCurrent.text, identical: r.diffWithCurrent.identical, masterPromptChanges: r.diffWithCurrent.masterPromptChanges, isCurrent: r.isCurrent });
+    } catch {
+      toast.error('Révision illisible.');
+    }
+  };
+
+  const restoreRevision = (rev: Revision) => {
+    if (!history) return;
+    const v = history.version;
+    setConfirm({
+      kind: 'restore',
+      title: `Restaurer la révision ${rev.revisionNumber} de ${versionName(v)}`,
+      text: `Toute la configuration de la révision ${rev.revisionNumber} est reprise dans une NOUVELLE révision ; les révisions existantes restent disponibles.`
+        + (v.active ? ' Cette version est active : la restauration s’applique aux prochaines exécutions.' : ''),
+      onOk: async () => {
+        setBusy(true);
+        try {
+          const r = await apiClient.post<{ revisionNumber: number }>(
+            `/api/admin/ai/config-versions/${v.id}/revisions/${rev.id}/restore`, {},
+          );
+          toast.success(`Révision ${rev.revisionNumber} restaurée en révision ${r.revisionNumber}`);
+          await reloadList();
+          await openHistory({ ...v, currentRevisionNumber: r.revisionNumber });
+          if (current?.id === v.id) await openVersion(v.id);
+          setPromptsKey((k) => k + 1);
+        } catch (e) {
+          toast.error((e as Error).message || 'Restauration impossible : rien n’a été modifié.');
+        } finally { setBusy(false); }
+      },
+    });
+  };
+
+  const doExport = async () => {
+    setBusy(true);
+    try {
+      const r = await apiClient.post<{ fileName: string; content: string; warnings?: string[] }>('/api/admin/ai/config-exports', {});
+      const url = URL.createObjectURL(new Blob([r.content], { type: 'application/json' }));
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = r.fileName;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      toast.success(`Configuration exportée : ${r.fileName}`);
+      for (const w of r.warnings ?? []) toast.warning(w, { duration: 8_000 });
+      await loadExportState();
+    } catch (e) {
+      // Aucun fichier proposé : export refusé (contrôles) ou impossible.
+      toast.error((e as Error).message || 'Export impossible : aucun fichier n’a été produit.', { duration: 15_000 });
+    } finally { setBusy(false); }
+  };
+
+  const askExport = () => {
+    // Des modifications non enregistrées : seuls les paramètres enregistrés partent.
+    if (hasUnsaved) {
+      setConfirm({
+        kind: 'export',
+        title: 'Des modifications ne sont pas enregistrées',
+        text: 'Seuls les paramètres ENREGISTRÉS de la configuration active sont exportés. Les modifications en cours ne figureront pas dans le fichier.',
+        onOk: () => void doExport(),
+      });
+      return;
+    }
+    void doExport();
   };
 
   if (erreur) {
@@ -756,42 +919,92 @@ export default function AiConfigPage() {
     );
   }
 
-  const readOnly = current ? current.status !== 'DRAFT' : true;
-
+  // Lot 54 : aucune lecture seule liée au statut — seule une version
+  // supprimée (à remettre dans la liste) n'est pas modifiable.
+  const readOnly = current ? current.readOnly : true;
+  const isProduction = environment === 'production';
   const issuesFor = (t: Treatment) => diff?.validation.issues.filter((i) => i.treatment === t) ?? [];
 
   return (
     <div className="space-y-6 max-w-5xl">
       {/* VER-026 / GST-01 : environnement et état global, sur chaque page IA */}
       <AiEnvBanner />
-      {/* Lot 35B : nouveaux modèles Gemini (bandeau acquitté en base) et modèles actifs devenus indisponibles. */}
       <CatalogBanners />
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-        <div>
+        <div className="min-w-0">
           <h1 className="text-2xl font-bold text-[color:var(--text-primary)]">Configuration IA</h1>
           <p className="text-sm text-[color:var(--text-muted)]">
-            Une version couvre les cinq traitements. Environnement : {environment}.
+            Une version couvre tous les traitements (T1, T2, T3, T4, T6). Environnement : {environment}.
           </p>
         </div>
-        <Button size="sm" onClick={createDraft} disabled={busy}>
-          <Plus className="w-3.5 h-3.5 mr-1.5" /> Créer un brouillon
+        <Button size="sm" onClick={() => guardUnsaved(() => void createVersion({}, 'Nouvelle version créée (non active)'))} disabled={busy}>
+          <Plus className="w-3.5 h-3.5 mr-1.5" /> Nouvelle version
         </Button>
       </div>
 
-      {/*
-        BO-IA-PROMPTS-01 : prompts maîtres T1–T4, T6 — Brouillon → Actif,
-        test du corpus facultatif, historique et réactivation. Indépendant de
-        la version de configuration affichée.
-      */}
-      <MasterPrompts />
+      {/* §4 — Export de la configuration ACTIVE enregistrée */}
+      <section data-testid="config-export" className="rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--bg-card)] p-4 space-y-3">
+        <div className="flex flex-col sm:flex-row sm:items-center gap-3">
+          <div className="flex-1 min-w-0 space-y-1">
+            <h2 className="text-sm font-semibold text-[color:var(--text-primary)]">Configuration active</h2>
+            {exportState?.active ? (
+              <p className="text-sm text-[color:var(--text-secondary)] break-words">
+                v{exportState.active.versionNumber ?? exportState.active.versionId}
+                {exportState.active.name ? ` — ${exportState.active.name}` : ''} · révision {exportState.active.revisionNumber}
+              </p>
+            ) : (
+              <p className="text-sm text-amber-500">
+                Aucune version active : l’export est indisponible. Activez une version pour pouvoir l’exporter.
+              </p>
+            )}
+            {exportState?.lastExport ? (
+              <p className="text-xs text-[color:var(--text-muted)] break-words">
+                Dernier export : {dateHeure(exportState.lastExport.exportedAt)}
+                {exportState.lastExport.exportedByEmail ? ` par ${exportState.lastExport.exportedByEmail}` : ''}
+                {` · v${exportState.lastExport.versionNumber} r${exportState.lastExport.revisionNumber}`}
+                {exportState.changedSinceLastExport
+                  ? <span className="text-amber-500"> · configuration modifiée depuis cet export</span>
+                  : <span className="text-emerald-500"> · aucune modification depuis cet export</span>}
+              </p>
+            ) : exportState?.active ? (
+              <p className="text-xs text-[color:var(--text-muted)]">Jamais exportée.</p>
+            ) : null}
+          </div>
+          <Button size="sm" onClick={askExport} disabled={busy || !exportState?.active}
+            title={exportState?.active ? undefined : 'Aucune version active : rien à exporter.'}>
+            <Download className="w-3.5 h-3.5 mr-1.5" /> Exporter la configuration
+          </Button>
+        </div>
+        {hasUnsaved && exportState?.active && (
+          <p role="status" className="text-xs text-amber-500">
+            Des modifications ne sont pas enregistrées : seuls les paramètres enregistrés seront exportés.
+          </p>
+        )}
+        <p className="text-xs text-[color:var(--text-muted)]">
+          Fichier JSON complet et autonome (prompts maîtres, modèles et replis, paramètres, déclencheurs, garde-fous) destiné au
+          paramétrage de la production — sans clé API ni secret ; les paramètres sensibles à renseigner séparément y sont listés.
+          Aucune opération n’est faite en production.
+        </p>
+        {(exportState?.exports.length ?? 0) > 0 && (
+          <details>
+            <summary className="cursor-pointer text-xs text-[color:var(--text-secondary)]">Historique des exports ({exportState!.exports.length})</summary>
+            <ul className="mt-2 space-y-1.5">
+              {exportState!.exports.map((x) => (
+                <li key={x.id} className="text-xs text-[color:var(--text-secondary)] flex flex-wrap items-center gap-x-2 gap-y-0.5">
+                  <span>{dateHeure(x.exportedAt)}</span>
+                  <span>v{x.versionNumber} r{x.revisionNumber}</span>
+                  <span className="text-[color:var(--text-muted)]">{x.exportedByEmail ?? '—'}</span>
+                  <span className="font-mono text-[color:var(--text-muted)]" title={x.contentSha256}>SHA-256 {x.contentSha256.slice(0, 12)}…</span>
+                  <a href={`/api/admin/ai/config-exports/${x.id}`} className="text-[color:var(--accent)] hover:underline">Télécharger</a>
+                </li>
+              ))}
+            </ul>
+          </details>
+        )}
+      </section>
 
-      {/* WF-04 — préparer (préproduction) ou importer (production) un package */}
-      <MepPackages
-        environment={environment}
-        active={versions.find((v) => v.status === 'ACTIVE') ?? null}
-        onImported={load}
-        onOpenVersion={(id) => guardUnsaved(() => openVersion(id))}
-      />
+      {/* BO-IA-PROMPTS-01 : prompts maîtres — une activation crée une révision de la configuration active. */}
+      <MasterPrompts refreshKey={promptsKey} onChanged={() => { void reloadList(); if (current?.active && !hasUnsaved) void openVersion(current.id); }} />
 
       {/* D-J1 (lot 21) : seuils et interrupteurs de l'assistant, administrés et journalisés. */}
       <AssistantSettings />
@@ -799,202 +1012,319 @@ export default function AiConfigPage() {
       {/* Lot 23 (§15.12, §32.6) : registre des modèles, lecture seule. */}
       <ModelRegistry />
 
-      {/* Versions */}
-      <div className="rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--bg-card)] divide-y divide-[color:var(--border-subtle)]">
-        {versions.length === 0 && (
-          <p className="p-6 text-sm text-[color:var(--text-muted)]">
-            Aucune version pour l&apos;instant. Créez un brouillon pour commencer.
-          </p>
-        )}
-        {versions.map((v) => (
-          <button
-            key={v.id}
-            onClick={() => guardUnsaved(() => openVersion(v.id))}
-            className={`w-full text-left px-4 py-3 flex items-center gap-3 hover:bg-[color:var(--accent-soft)] transition-colors ${
-              current?.id === v.id ? 'bg-[color:var(--accent-soft)]' : ''}`}
-          >
-            <StatusBadge status={v.status} />
-            <span className="text-sm text-[color:var(--text-primary)] flex-1 truncate">
-              {versionName(v)}
-            </span>
-            {v.isStale && (
-              <span className="text-xs text-amber-500 flex items-center gap-1">
-                <AlertTriangle className="w-3 h-3" /> base dépassée
-              </span>
-            )}
-            <span className="text-xs text-[color:var(--text-muted)]">
-              {new Date(v.createdAt).toLocaleDateString('fr-FR')}
-            </span>
-          </button>
-        ))}
-      </div>
-
-      {current && catalogs && (
-        <>
-          <div className="flex flex-wrap items-center gap-2">
-            <StatusBadge status={current.status} />
-            <span className="text-sm text-[color:var(--text-primary)]">{versionName(current)}</span>
-            {readOnly && (
-              <span className="text-xs text-[color:var(--text-muted)] flex items-center gap-1">
-                <Lock className="w-3 h-3" /> lecture seule — créez un brouillon pour modifier
-              </span>
-            )}
-            {(current.retiredTreatments?.length ?? 0) > 0 && (
-              <span data-testid="retired-treatments-note" className="text-xs text-[color:var(--text-muted)] break-words">
-                Version historique : contient {current.retiredTreatments!.join(', ')} (traitement retiré), conservé pour l’audit et jamais appliqué.
-              </span>
-            )}
-            <span className="flex-1" />
-
-            <Button size="sm" variant="outline" onClick={showDiff} disabled={busy}>
-              <GitCompare className="w-3.5 h-3.5 mr-1.5" /> Comparer à l&apos;Active
-            </Button>
-
-            {current.status === 'DRAFT' && (
-              // VER-009, WF-02 : diff et contrôles affichés AVANT la mise à
-              // l'essai, qui est confirmée.
-              <Button size="sm" disabled={busy} onClick={async () => {
-                await showDiff();
-                setConfirm({ kind: 'promote', onOk: () => act('promote', 'Version passée à l’essai') });
-              }}>
-                <Play className="w-3.5 h-3.5 mr-1.5" /> Mettre à l&apos;essai
-              </Button>
-            )}
-            {current.status === 'TO_TEST' && (
-              <Button size="sm" disabled={busy}
-                onClick={() => setConfirm({ kind: 'validate', onOk: () => act('validate', 'Version validée et activée') })}>
-                <CheckCircle2 className="w-3.5 h-3.5 mr-1.5" /> Valider et activer
-              </Button>
-            )}
-            {/* VER-012 (§26) / TST-01 : la préproduction revient sur l'Active. */}
-            {current.status === 'TO_TEST' && (
-              <Button size="sm" variant="outline" disabled={busy}
-                onClick={() => setConfirm({ kind: 'demote', onOk: () => act('demote', 'Version revenue en brouillon') })}>
-                <Undo2 className="w-3.5 h-3.5 mr-1.5" /> Revenir en brouillon
-              </Button>
-            )}
-            {current.status === 'VALIDATED' && (
-              <>
-                <Button size="sm" variant="outline" disabled={busy}
-                  onClick={() => setConfirm({ kind: 'activate', onOk: () => act('activate', 'Version activée') })}>
-                  Activer
+      {/* Liste des versions */}
+      <section className="space-y-2">
+        <h2 className="text-sm font-semibold text-[color:var(--text-primary)]">Versions</h2>
+        <div data-testid="config-versions" className="rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--bg-card)] divide-y divide-[color:var(--border-subtle)]">
+          {versions.length === 0 && (
+            <p className="p-6 text-sm text-[color:var(--text-muted)]">
+              Aucune version pour l&apos;instant. Créez une version pour commencer.
+            </p>
+          )}
+          {versions.map((v) => (
+            <div key={v.id} className={`px-4 py-3 flex flex-col sm:flex-row sm:items-center gap-2 ${current?.id === v.id ? 'bg-[color:var(--accent-soft)]' : ''}`}>
+              <div className="flex-1 min-w-0 flex flex-wrap items-center gap-2">
+                <StateBadge v={v} environment={environment} />
+                <span className="text-sm text-[color:var(--text-primary)] break-words">{versionName(v)}</span>
+                <span className="text-xs text-[color:var(--text-muted)]">
+                  r{v.currentRevisionNumber ?? 1} · modifiée {dateHeure(v.updatedAt ?? v.createdAt)}{v.updatedByEmail ? ` par ${v.updatedByEmail}` : ''}
+                </span>
+              </div>
+              <div className="flex flex-wrap gap-1.5">
+                <Button size="sm" variant="outline" disabled={busy} onClick={() => guardUnsaved(() => void openVersion(v.id))}>
+                  <Pencil className="w-3.5 h-3.5 mr-1.5" /> Modifier
                 </Button>
-                {current.activatedAt && (
-                  <Button size="sm" variant="outline" disabled={busy}
-                    onClick={() => setConfirm({ kind: 'rollback', onOk: () => act('rollback', 'Version restaurée') })}>
-                    <RotateCcw className="w-3.5 h-3.5 mr-1.5" /> Restaurer
+                <Button size="sm" variant="ghost" disabled={busy} onClick={() => guardUnsaved(() => void createVersion({ sourceVersionId: v.id, label: v.label ? `Copie de ${v.label}` : null }, `${versionName(v)} dupliquée`))}>
+                  <Copy className="w-3.5 h-3.5 mr-1.5" /> Dupliquer
+                </Button>
+                {!v.active && (
+                  <Button size="sm" variant="outline" disabled={busy} onClick={() => guardUnsaved(() => activateVersion(v))}>
+                    <CheckCircle2 className="w-3.5 h-3.5 mr-1.5" /> {isProduction ? 'Activer en production' : 'Activer en préproduction'}
                   </Button>
                 )}
-              </>
+                <Button size="sm" variant="ghost" disabled={busy} onClick={() => void openHistory(v)}>
+                  <History className="w-3.5 h-3.5 mr-1.5" /> Historique
+                </Button>
+                {!v.active && (
+                  <Button size="sm" variant="ghost" disabled={busy} aria-label={`Supprimer ${versionName(v)}`} onClick={() => deleteVersion(v)}>
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </Button>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+
+        {/* §3.4 — versions supprimées : récupérables, jamais réactivées implicitement. */}
+        <details onToggle={(e) => {
+          if ((e.currentTarget as HTMLDetailsElement).open && deleted === null) {
+            apiClient.get<{ versions: Version[] }>('/api/admin/ai/config-versions?deleted=only')
+              .then((r) => setDeleted(r.versions)).catch(() => setDeleted([]));
+          }
+        }}>
+          <summary className="cursor-pointer text-xs text-[color:var(--text-secondary)]">Versions supprimées</summary>
+          <div className="mt-2 rounded-xl border border-[color:var(--border-subtle)] divide-y divide-[color:var(--border-subtle)]">
+            {deleted === null && <p className="p-3 text-xs text-[color:var(--text-muted)]">Chargement…</p>}
+            {deleted?.length === 0 && <p className="p-3 text-xs text-[color:var(--text-muted)]">Aucune version supprimée.</p>}
+            {deleted?.map((v) => (
+              <div key={v.id} className="px-3 py-2 flex flex-col sm:flex-row sm:items-center gap-2">
+                <span className="flex-1 min-w-0 text-sm text-[color:var(--text-secondary)] break-words">
+                  {versionName(v)} · r{v.currentRevisionNumber ?? 1} · supprimée {dateHeure(v.deletedAt)}
+                </span>
+                <div className="flex flex-wrap gap-1.5">
+                  <Button size="sm" variant="outline" disabled={busy} onClick={() => void undeleteVersion(v)}>
+                    <Undo2 className="w-3.5 h-3.5 mr-1.5" /> Remettre dans la liste
+                  </Button>
+                  <Button size="sm" variant="ghost" disabled={busy} onClick={() => void openHistory(v)}>
+                    <History className="w-3.5 h-3.5 mr-1.5" /> Historique
+                  </Button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </details>
+      </section>
+
+      {/* Éditeur de configuration */}
+      {current && catalogs && (
+        <section data-testid="config-editor" className="space-y-4">
+          <div className="rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--bg-card)] p-4 space-y-3">
+            <div className="flex flex-wrap items-center gap-2">
+              <StateBadge v={current} environment={environment} />
+              <span className="text-sm font-medium text-[color:var(--text-primary)] break-words">{versionName(current)}</span>
+              <span className="text-xs text-[color:var(--text-muted)]">révision {current.currentRevisionNumber ?? 1}</span>
+              {current.deletedAt && (
+                <span className="text-xs text-[color:var(--text-muted)] flex items-center gap-1">
+                  <Lock className="w-3 h-3" /> version supprimée — remettez-la dans la liste pour la modifier
+                </span>
+              )}
+              {(current.retiredTreatments?.length ?? 0) > 0 && (
+                <span data-testid="retired-treatments-note" className="text-xs text-[color:var(--text-muted)] break-words">
+                  Version historique : contient {current.retiredTreatments!.join(', ')} (traitement retiré), conservé pour l’audit et jamais appliqué.
+                </span>
+              )}
+            </div>
+            {current.active && (
+              <p className="text-xs text-emerald-500">
+                Version active : chaque enregistrement crée une révision appliquée aux prochaines exécutions, sans réactivation.
+              </p>
             )}
-            {/* ACT-01 : pas d'Archiver sur une version À tester (transition
-                interdite par la machine à états) ; VER-020 / WF-28 : confirmé. */}
-            {current.status !== 'ACTIVE' && current.status !== 'ARCHIVED' && current.status !== 'TO_TEST' && (
-              <Button size="sm" variant="ghost" disabled={busy} aria-label="Archiver"
-                onClick={() => setConfirm({ kind: 'archive', onOk: () => act('archive', 'Version archivée') })}>
-                <Archive className="w-3.5 h-3.5" />
+            <div className="grid gap-3 sm:grid-cols-2">
+              <Field label="Nom (facultatif)">
+                <Input value={meta.label} disabled={readOnly} maxLength={200} className="bg-[color:var(--bg-input)]"
+                  onChange={(e) => { setMeta((m) => ({ ...m, label: e.target.value })); setMetaDirty(true); }} />
+              </Field>
+              <Field label="Description (facultative)">
+                <Input value={meta.description} disabled={readOnly} maxLength={2000} className="bg-[color:var(--bg-input)]"
+                  onChange={(e) => { setMeta((m) => ({ ...m, description: e.target.value })); setMetaDirty(true); }} />
+              </Field>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <Button size="sm" onClick={() => void saveAll()} disabled={readOnly || !hasUnsaved || busy}>
+                <Save className="w-3.5 h-3.5 mr-1.5" /> Enregistrer
               </Button>
-            )}
+              <Button size="sm" variant="ghost" onClick={resetAll} disabled={!hasUnsaved || busy}>
+                <Undo2 className="w-3.5 h-3.5 mr-1.5" /> Annuler les modifications
+              </Button>
+              <Button size="sm" variant="outline" onClick={() => void openHistory(current)} disabled={busy}>
+                <History className="w-3.5 h-3.5 mr-1.5" /> Historique et restauration
+              </Button>
+              {!current.active && (
+                <Button size="sm" variant="outline" onClick={showDiff} disabled={busy}>
+                  <GitCompare className="w-3.5 h-3.5 mr-1.5" /> Comparer à la version active
+                </Button>
+              )}
+              {hasUnsaved && <span className="text-xs text-amber-500">• modifications non enregistrées</span>}
+            </div>
           </div>
 
           {/*
-            Réglages techniques par traitement — repliés, sans onglets :
-            modèles, replis, garde-fous, déclencheurs (T1, T2, T3, T4, T6).
+            Réglages par traitement — repliés : prompt maître retenu, modèles,
+            replis, garde-fous, déclencheurs (T1, T2, T3, T4, T6).
           */}
-          <section className="space-y-2">
-            <h2 className="text-sm font-semibold text-[color:var(--text-primary)]">Réglages techniques par traitement</h2>
-            {catalogs.treatments.map((t) => (
-              <details
-                key={t.code}
-                className="rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--bg-card)]"
-                onToggle={(e) => { if ((e.currentTarget as HTMLDetailsElement).open) setTab(t.code); }}
-              >
-                <summary className="cursor-pointer px-4 py-3 flex items-center gap-2 text-sm text-[color:var(--text-primary)]">
-                  <span className="font-medium">{t.code} · {t.label}</span>
-                  {dirty.has(t.code) && <span className="text-amber-500 text-xs">• non enregistré</span>}
-                  {issuesFor(t.code).some((i) => i.blocking) && <span className="text-red-400 text-xs">• contrôle bloquant</span>}
-                </summary>
-                <div className="px-4 pb-4 space-y-4">
-                  <TreatmentStateControl
-                    treatment={t.code}
-                    batch={t.batch}
-                    state={runtime.find((s) => s.treatment === t.code)}
-                    emergencyStop={emergencyStop}
-                    onChanged={setRuntime}
-                  />
-
-                  {issuesFor(t.code).length > 0 && (
-                    <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-3 space-y-1">
-                      {issuesFor(t.code).map((i, k) => (
-                        <p key={k} className="text-sm text-[color:var(--text-secondary)]">
-                          <span className={i.blocking ? 'text-red-400' : 'text-amber-500'}>
-                            {i.blocking ? 'Bloquant' : 'À vérifier'}
-                          </span>
-                          {' · '}{i.label} : {i.message}
-                        </p>
-                      ))}
-                    </div>
-                  )}
-
-                  {drafts[t.code] && (
-                    <TreatmentEditor
-                      entry={drafts[t.code]}
-                      catalog={t}
-                      catalogs={catalogs}
-                      readOnly={readOnly}
-                      onRetryCatalogs={reloadCatalogs}
-                      onChange={(next) => {
-                        setDrafts((d) => ({ ...d, [t.code]: next }));
-                        edits.bump(t.code);
-                        setDirty((s) => new Set(s).add(t.code));
-                      }}
-                    />
-                  )}
-
-                  {!readOnly && (
-                    <div className="flex justify-end gap-2">
-                      <Button size="sm" variant="ghost" onClick={() => resetTreatment(t.code)} disabled={!dirty.has(t.code) || busy}>
-                        <Undo2 className="w-3.5 h-3.5 mr-1.5" /> Réinitialiser
-                      </Button>
-                      <Button size="sm" onClick={() => saveTreatment(t.code)}
-                        disabled={!dirty.has(t.code) || busy}>
-                        <Save className="w-3.5 h-3.5 mr-1.5" /> Enregistrer {t.code}
-                      </Button>
-                    </div>
-                  )}
-
-                  {metrics[t.code] && (
-                    <Supervision
+          <div className="space-y-2">
+            <h2 className="text-sm font-semibold text-[color:var(--text-primary)]">Réglages par traitement</h2>
+            {catalogs.treatments.map((t) => {
+              const fige = current.masterPrompts?.[t.code] ?? null;
+              const choix = promptChoices[t.code];
+              const valeur = choix !== undefined ? choix : fige?.versionId ?? null;
+              const options = promptOptions[t.code];
+              return (
+                <details
+                  key={t.code}
+                  className="rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--bg-card)]"
+                  onToggle={(e) => {
+                    if (!(e.currentTarget as HTMLDetailsElement).open) return;
+                    setTab(t.code);
+                    if (t.master && !promptOptions[t.code]) void loadPromptOptions(t.code);
+                  }}
+                >
+                  <summary className="cursor-pointer px-4 py-3 flex flex-wrap items-center gap-2 text-sm text-[color:var(--text-primary)]">
+                    <span className="font-medium">{t.code} · {t.label}</span>
+                    {(dirty.has(t.code) || choix !== undefined) && <span className="text-amber-500 text-xs">• non enregistré</span>}
+                    {issuesFor(t.code).some((i) => i.blocking) && <span className="text-red-400 text-xs">• contrôle à revoir</span>}
+                  </summary>
+                  <div className="px-4 pb-4 space-y-4">
+                    <TreatmentStateControl
                       treatment={t.code}
-                      metrics={metrics[t.code].metrics}
-                      tables={metrics[t.code].tables}
-                      windowDays={metrics[t.code].windowDays}
-                      onWindowChange={(d) => setFenetres((f) => ({ ...f, [t.code]: d }))}
+                      batch={t.batch}
+                      state={runtime.find((s) => s.treatment === t.code)}
+                      emergencyStop={emergencyStop}
+                      onChanged={setRuntime}
                     />
-                  )}
-                </div>
-              </details>
-            ))}
-          </section>
+
+                    {t.master && (
+                      <Field label="Prompt maître retenu par cette version"
+                        hint={current.active
+                          ? 'Version active : le prompt choisi est activé à l’enregistrement. Les textes se rédigent dans « Prompts maîtres ».'
+                          : 'Activé avec cette version. Les textes se rédigent dans « Prompts maîtres ».'}>
+                        <select className={selectClass} disabled={readOnly || !options}
+                          value={valeur ?? ''}
+                          onChange={(e) => {
+                            const id = e.target.value === '' ? null : Number(e.target.value);
+                            setPromptChoices((c) => {
+                              const n = { ...c };
+                              if (id === (fige?.versionId ?? null)) delete n[t.code]; else n[t.code] = id;
+                              return n;
+                            });
+                          }}>
+                          {!current.active && <option value="">Non figé — le prompt actif est conservé</option>}
+                          {fige && !(options ?? []).some((o) => o.id === fige.versionId) && (
+                            <option value={fige.versionId}>v{fige.versionNumber}</option>
+                          )}
+                          {(options ?? []).map((o) => (
+                            <option key={o.id} value={o.id}>v{o.versionNumber}{o.status === 'ACTIVE' ? ' (actif)' : ''}</option>
+                          ))}
+                        </select>
+                      </Field>
+                    )}
+
+                    {issuesFor(t.code).length > 0 && (
+                      <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-3 space-y-1">
+                        {issuesFor(t.code).map((i, k) => (
+                          <p key={k} className="text-sm text-[color:var(--text-secondary)]">
+                            <span className={i.blocking ? 'text-red-400' : 'text-amber-500'}>
+                              {i.blocking ? 'À corriger' : 'À vérifier'}
+                            </span>
+                            {' · '}{i.label} : {i.message}
+                          </p>
+                        ))}
+                      </div>
+                    )}
+
+                    {drafts[t.code] && (
+                      <TreatmentEditor
+                        entry={drafts[t.code]}
+                        catalog={t}
+                        catalogs={catalogs}
+                        readOnly={readOnly}
+                        onRetryCatalogs={reloadCatalogs}
+                        onChange={(next) => {
+                          setDrafts((d) => ({ ...d, [t.code]: next }));
+                          edits.bump(t.code);
+                          setDirty((s) => new Set(s).add(t.code));
+                        }}
+                      />
+                    )}
+
+                    {!readOnly && (
+                      <div className="flex flex-wrap justify-end gap-2">
+                        <Button size="sm" variant="ghost" onClick={() => resetTreatment(t.code)} disabled={!(dirty.has(t.code) || choix !== undefined) || busy}>
+                          <Undo2 className="w-3.5 h-3.5 mr-1.5" /> Réinitialiser {t.code}
+                        </Button>
+                        <Button size="sm" onClick={() => void saveAll()} disabled={!hasUnsaved || busy}>
+                          <Save className="w-3.5 h-3.5 mr-1.5" /> Enregistrer
+                        </Button>
+                      </div>
+                    )}
+
+                    {metrics[t.code] && (
+                      <Supervision
+                        treatment={t.code}
+                        metrics={metrics[t.code].metrics}
+                        tables={metrics[t.code].tables}
+                        windowDays={metrics[t.code].windowDays}
+                        onWindowChange={(d) => setFenetres((f) => ({ ...f, [t.code]: d }))}
+                      />
+                    )}
+                  </div>
+                </details>
+              );
+            })}
+          </div>
 
           {diff && (
             <div className="rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--bg-card)] p-4 space-y-2">
-              <h2 className="text-sm font-semibold text-[color:var(--text-primary)]">
-                Écarts avec la version active
-              </h2>
+              <h2 className="text-sm font-semibold text-[color:var(--text-primary)]">Écarts avec la version active</h2>
               {diff.diff.identical ? (
-                <p className="text-sm text-[color:var(--text-muted)]">
-                  Cette version est identique à l&apos;Active.
-                </p>
+                <p className="text-sm text-[color:var(--text-muted)]">Cette version est identique à la version active.</p>
               ) : (
-                <pre className="text-xs text-[color:var(--text-secondary)] whitespace-pre-wrap font-mono">
-                  {diff.text}
-                </pre>
+                <pre className="text-xs text-[color:var(--text-secondary)] whitespace-pre-wrap break-words font-mono">{diff.text}</pre>
               )}
             </div>
           )}
-        </>
+        </section>
       )}
+
+      {/* §3 — Historique d'une version : révisions consultables et restaurables */}
+      <Dialog open={history !== null} onOpenChange={(o) => { if (!o) { setHistory(null); setRevisionView(null); } }}>
+        <DialogContent className="max-w-2xl max-h-[85vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Historique — {history ? versionName(history.version) : ''}</DialogTitle>
+            <DialogDescription>
+              Chaque enregistrement est une révision complète. Restaurer en crée une nouvelle : rien n’est effacé.
+            </DialogDescription>
+          </DialogHeader>
+          <ul className="space-y-2">
+            {history?.revisions.map((r) => (
+              <li key={r.id} className="rounded-lg border border-[color:var(--border-subtle)] p-3 space-y-1.5">
+                <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm">
+                  <span className="font-medium text-[color:var(--text-primary)]">Révision {r.revisionNumber}</span>
+                  {r.revisionNumber === (history.version.currentRevisionNumber ?? -1) && (
+                    <span className="text-xs text-emerald-500">courante</span>
+                  )}
+                  <span className="text-xs text-[color:var(--text-muted)]">
+                    {KIND_LABEL[r.kind] ?? r.kind}{r.restoredFromRevisionNumber ? ` de la révision ${r.restoredFromRevisionNumber}` : ''}
+                    {' · '}{dateHeure(r.createdAt)}{r.createdByEmail ? ` · ${r.createdByEmail}` : ''}
+                  </span>
+                </div>
+                {r.comment && <p className="text-xs text-[color:var(--text-secondary)] break-words">{r.comment}</p>}
+                <div className="flex flex-wrap gap-1.5">
+                  <Button size="sm" variant="ghost" onClick={() => void viewRevision(r)}>
+                    <Eye className="w-3.5 h-3.5 mr-1.5" /> Consulter
+                  </Button>
+                  {history.version.deletedAt ? (
+                    <Button size="sm" variant="outline" disabled={busy}
+                      onClick={() => { setHistory(null); void createVersion({ sourceRevisionId: r.id, label: history.version.label }, `Nouvelle version créée depuis la révision ${r.revisionNumber}`); }}>
+                      <Copy className="w-3.5 h-3.5 mr-1.5" /> Nouvelle version depuis cette révision
+                    </Button>
+                  ) : r.revisionNumber !== history.version.currentRevisionNumber && (
+                    <Button size="sm" variant="outline" disabled={busy} onClick={() => restoreRevision(r)}>
+                      <RotateCcw className="w-3.5 h-3.5 mr-1.5" /> Restaurer cette révision
+                    </Button>
+                  )}
+                </div>
+                {revisionView?.revision.id === r.id && (
+                  <div className="rounded border border-[color:var(--border-subtle)] p-2 space-y-1">
+                    <p className="text-xs text-[color:var(--text-muted)]">
+                      {revisionView.isCurrent ? 'Révision courante.' : revisionView.identical && revisionView.masterPromptChanges.length === 0
+                        ? 'Identique au dernier état enregistré.' : 'Écarts avec le dernier état enregistré :'}
+                    </p>
+                    {revisionView.masterPromptChanges.map((c) => (
+                      <p key={c.treatment} className="text-xs font-mono text-[color:var(--text-secondary)]">
+                        {c.treatment} · Prompt maître : {c.current ?? 'non figé'} → {c.revision ?? 'non figé'}
+                      </p>
+                    ))}
+                    {!revisionView.identical && (
+                      <pre className="max-h-60 overflow-auto text-xs whitespace-pre-wrap break-words font-mono text-[color:var(--text-secondary)]">{revisionView.text}</pre>
+                    )}
+                  </div>
+                )}
+              </li>
+            ))}
+          </ul>
+        </DialogContent>
+      </Dialog>
 
       {/* WF-01 — trois choix, jamais deux */}
       <Dialog open={leaving !== null} onOpenChange={(o) => !o && setLeaving(null)}>
@@ -1002,65 +1332,41 @@ export default function AiConfigPage() {
           <DialogHeader>
             <DialogTitle>Des modifications ne sont pas enregistrées</DialogTitle>
             <DialogDescription>
-              {[...dirty].join(', ')} {dirty.size > 1 ? 'ont' : 'a'} été modifié sans être enregistré.
+              {[...dirty, ...(Object.keys(promptChoices) as Treatment[])].filter((x, i, a) => a.indexOf(x) === i).join(', ') || 'Nom ou description'}
+              {' '}: modifications non enregistrées.
             </DialogDescription>
           </DialogHeader>
           <DialogFooter className="gap-2">
             <Button variant="ghost" onClick={() => setLeaving(null)}>Annuler</Button>
             <Button variant="outline" onClick={() => {
               // WF-26 étape 3 : « Quitter » restaure la dernière valeur persistée.
-              const go = leaving; [...dirty].forEach(resetTreatment); setDirty(new Set()); setLeaving(null); go?.();
+              const go = leaving; resetAll(); setLeaving(null); go?.();
             }}>
               Quitter sans enregistrer
             </Button>
-            <Button onClick={async () => { if (await saveAllDirty()) { const go = leaving; setLeaving(null); go?.(); } }}>
+            <Button onClick={async () => { if (await saveAll()) { const go = leaving; setLeaving(null); go?.(); } }}>
               Enregistrer puis continuer
             </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
 
-      {/* Confirmations — elles nomment la conséquence, pas « êtes-vous sûr » */}
+      {/* Confirmations — elles nomment la conséquence */}
       <Dialog open={confirm !== null} onOpenChange={(o) => { if (!o) { setConfirm(null); setSaisieEnv(''); } }}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>
-              {confirm?.kind === 'rollback' ? 'Restaurer cette version'
-                : confirm?.kind === 'validate' ? 'Valider et activer'
-                  : confirm?.kind === 'demote' ? 'Revenir en brouillon'
-                    : confirm?.kind === 'promote' ? 'Mettre à l’essai'
-                      : confirm?.kind === 'archive' ? 'Archiver cette version'
-                        : 'Activer cette version'}
-            </DialogTitle>
+            <DialogTitle>{confirm?.title}</DialogTitle>
             <DialogDescription>
-              {confirm?.kind === 'promote'
-                ? `La version devient effective en préproduction dès maintenant. ${diff
-                  ? (diff.diff.identical ? 'Elle est identique à l’Active.' : 'Écarts avec l’Active ci-dessous.')
-                  : ''}${diff && diff.validation.issues.some((i) => i.blocking) ? ' Des contrôles bloquants échouent : la mise à l’essai sera refusée.' : ''}`
-                : confirm?.kind === 'archive'
-                  ? 'L’archivage est définitif : la version ne pourra plus être activée ni restaurée. Le dernier point de rollback viable ne peut pas être archivé.'
-                  : confirm?.kind === 'rollback'
-                ? 'Les exécutions en cours seront interrompues et les traitements par lots repris depuis le début avec cette version.'
-                : confirm?.kind === 'demote'
-                  ? 'La version redevient un brouillon modifiable. La préproduction revient immédiatement sur la dernière Active pour les nouveaux appels.'
-                  : 'Les exécutions en cours se termineront avec la configuration actuelle. Les suivantes utiliseront celle-ci.'}
-              {confirm?.kind === 'promote' && diff && !diff.diff.identical && (
-                <pre className="block mt-2 max-h-60 overflow-auto text-xs whitespace-pre-wrap font-mono text-[color:var(--text-secondary)]">
-                  {diff.text}
-                </pre>
-              )}
-              {confirm?.kind !== 'demote' && confirm?.kind !== 'archive' && (current?.unavailableModels?.length ?? 0) > 0 && (
+              {confirm?.text}
+              {confirm?.kind === 'activate' && current && (current.unavailableModels?.length ?? 0) > 0 && (
                 <span className="block mt-2 text-amber-500">
-                  Attention : {current!.unavailableModels.map((m) =>
-                    `${m.treatment} utilise « ${m.model} » (${m.rank})`).join(', ')} — le
-                  fournisseur ne sert plus {current!.unavailableModels.length > 1
-                    ? 'ces modèles' : 'ce modèle'}. Cette version échouera à moins qu&apos;un
-                  repli ne prenne le relais.
+                  Attention : {current.unavailableModels.map((m) => `${m.treatment} utilise « ${m.model} » (${m.rank})`).join(', ')} — modèle(s)
+                  que le fournisseur ne sert plus.
                 </span>
               )}
             </DialogDescription>
           </DialogHeader>
-          {environment === 'production' && (confirm?.kind === 'activate' || confirm?.kind === 'rollback') && (
+          {isProduction && confirm?.kind === 'activate' && (
             <label className="block space-y-1.5">
               <span className="text-sm text-red-400">
                 Environnement de PRODUCTION. Saisissez « production » pour confirmer.
@@ -1072,16 +1378,14 @@ export default function AiConfigPage() {
           <DialogFooter className="gap-2">
             <Button variant="ghost" onClick={() => { setConfirm(null); setSaisieEnv(''); }}>Annuler</Button>
             <Button
-              variant={confirm?.kind === 'rollback' ? 'destructive' : 'default'}
-              disabled={environment === 'production'
-                && (confirm?.kind === 'activate' || confirm?.kind === 'rollback')
-                && saisieEnv.trim() !== 'production'}
-              onClick={() => { const ok = confirm?.onOk; setConfirm(null); setSaisieEnv(''); ok?.(); }}
+              variant={confirm?.kind === 'delete' ? 'destructive' : 'default'}
+              disabled={isProduction && confirm?.kind === 'activate' && saisieEnv.trim() !== 'production'}
+              onClick={() => { const ok = confirm?.onOk; setConfirm(null); ok?.(); setSaisieEnv(''); }}
             >
-              {confirm?.kind === 'rollback' ? 'Restaurer'
-                : confirm?.kind === 'demote' ? 'Revenir en brouillon'
-                  : confirm?.kind === 'promote' ? 'Mettre à l’essai'
-                    : confirm?.kind === 'archive' ? 'Archiver' : 'Activer'}
+              {confirm?.kind === 'delete' ? 'Supprimer'
+                : confirm?.kind === 'restore' ? 'Restaurer'
+                  : confirm?.kind === 'export' ? 'Exporter la configuration enregistrée'
+                    : 'Activer'}
             </Button>
           </DialogFooter>
         </DialogContent>

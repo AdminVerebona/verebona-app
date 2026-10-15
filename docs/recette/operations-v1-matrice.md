@@ -10,11 +10,11 @@
 
 | Famille | Total | Automatisés | dont + recette préprod | Recette préprod seule | Hors périmètre | Écarts |
 |---|---|---|---|---|---|---|
-| C29 | 200 | 200 | 31 | 0 | 0 | 0 |
+| C29 | 200 | 200 | 33 | 0 | 0 | 0 |
 | C31 | 22 | 22 | 2 | 0 | 0 | 0 |
 | C34 | 26 | 26 | 1 | 0 | 0 | 0 |
 | B33 | 60 | 60 | 0 | 0 | 0 | 0 |
-| **Total** | **308** | **308** | **34** | **0** | **0** | **0** |
+| **Total** | **308** | **308** | **36** | **0** | **0** | **0** |
 
 ## Décisions PO citées
 
@@ -91,6 +91,15 @@
 
 *Attendu :* Aucune régression visible ; aucun terme technique « Opération » côté utilisateur.
 
+### RP-55B — Factures d’un même contrat (lot 55B) — constat avant / après sur le compte concerné, sans SQL
+
+1. Après déploiement (migrations 0398 et 0399 appliquées automatiquement), attendre le balayage T3 horaire, ou BO › Comptes › compte concerné › Opérations : « Reconsolider ce compte ».
+2. BO › Opérations › filtre du compte : l’opération d’alarme est de type « Contrat », « Sources actives » = nombre de factures d’alarme, « Composantes » = nombre de mensualités distinctes ; les anciennes opérations séparées sont « Fusionnée dans #… ».
+3. Fiche de l’opération : « État de réconciliation » = à jour, « Dernière réconciliation » renseignée ; « Candidats T1 liés et issue T3 » : chaque facture rattachée (motif, colonne « Exécution IA ») ; « Dernier passage T3 » : « Rapprochement IA (OPERATION_MATCH) : disponible ».
+4. État « non définitive » : BO › Opérations › En attente T3 (colonne Rapprochement IA : report, plafond, date de reprise), ou carte « À traiter » OPERATION-MATCH côté utilisateur.
+
+*Attendu :* Une opération Contrat portant toutes les factures d’alarme, un coût par mensualité, montants exacts ; aucune opération doublon active ; aucun autre compte touché.
+
 ## C29 — Matrice de recette fonctionnelle (F-001 à F-200)
 
 | ID | Domaine (C32) | Scénario | Attendu | Statut | Couverture |
@@ -126,8 +135,8 @@
 | F-029 | Création anti-pollution — C3, C5 — T1 + T3 | Facture multi-biens même sinistre | Une CLAIM possible + plusieurs liens, pas une par bien. | AUTOMATISÉ + RECETTE PRÉPROD | `e2e/l41-o3a-consolidation-t3.e2e.ts`<br>`e2e/l48-o10-recette-jeux.e2e.ts`<br>préprod RP-03 |
 | F-030 | Création anti-pollution — C3, C5 — T1 + T3 | Type non qualifiable mais événement certain | Operation type=null, pas OTHER. | AUTOMATISÉ + RECETTE PRÉPROD | `services/ai/source-analysis/operation-candidates/__tests__/c3-candidats-t1.test.ts`<br>`services/business-operations/__tests__/o1-socle.test.ts`<br>`services/business-operations/consolidation/__tests__/o3a-decision.test.ts`<br>`e2e/l39-o1-socle-operations.e2e.ts`<br>préprod RP-03 |
 | F-031 | Matching/dédoublonnage — C6, C7 — T3 | Devis puis facture cite devis | Même INTERVENTION, ENVISAGED->REALIZED. | AUTOMATISÉ | `services/business-operations/consolidation/__tests__/o3a-decision.test.ts`<br>`e2e/l41-o3a-consolidation-t3.e2e.ts` |
-| F-032 | Matching/dédoublonnage — C6, C7 — T3 | Deux copies même facture | Une Operation/composante. | AUTOMATISÉ | `e2e/l48-o10-recette-complements.e2e.ts` |
-| F-033 | Matching/dédoublonnage — C6, C7 — T3 | Même garage, même jour, réparations différentes avec refs différentes | Deux INTERVENTION quand les travaux diffèrent (numéros différents = indice contraire) ; mêmes travaux et numéros différents : plus de création d’office — M3 puis carte « À traiter » en cas de doute (décision PO D6, lot 53). | AUTOMATISÉ | `services/business-operations/consolidation/__tests__/o3a-decision.test.ts`<br>`e2e/l41-o3a-consolidation-t3.e2e.ts`<br>`e2e/l53c-po-rapprochement.e2e.ts`<br>*Règle adaptée au retour PO D6 (lot 53) : deux factures finales distinctes peuvent porter sur une même intervention ; voir docs/exploitation/operations-rapprochement.md.* |
+| F-032 | Matching/dédoublonnage — C6, C7 — T3 | Deux copies même facture | Une Operation/composante. | AUTOMATISÉ + RECETTE PRÉPROD | `e2e/l48-o10-recette-complements.e2e.ts`<br>`e2e/l55b-contrats.e2e.ts`<br>`services/business-operations/consolidation/__tests__/l55b-contrats.test.ts`<br>préprod RP-55B |
+| F-033 | Matching/dédoublonnage — C6, C7 — T3 | Même garage, même jour, réparations différentes avec refs différentes | Deux INTERVENTION quand les travaux diffèrent (numéros différents = indice contraire) ; mêmes travaux et numéros différents : plus de création d’office — M3 puis carte « À traiter » en cas de doute (décision PO D6, lot 53). | AUTOMATISÉ | `services/business-operations/consolidation/__tests__/o3a-decision.test.ts`<br>`e2e/l41-o3a-consolidation-t3.e2e.ts`<br>`e2e/l53c-po-rapprochement.e2e.ts`<br>`e2e/l55b-contrats.e2e.ts`<br>`services/business-operations/consolidation/__tests__/l55b-contrats.test.ts`<br>*Règle adaptée au retour PO D6 (lot 53) : deux factures finales distinctes peuvent porter sur une même intervention ; voir docs/exploitation/operations-rapprochement.md.* |
 | F-034 | Matching/dédoublonnage — C6, C7 — T3 | Même garage, montant identique, aucune autre preuve | Ne suffit pas au match. | AUTOMATISÉ | `services/business-operations/consolidation/__tests__/o3a-decision.test.ts`<br>`e2e/l41-o3a-consolidation-t3.e2e.ts`<br>`e2e/l48-o10-recette-jeux.e2e.ts` |
 | F-035 | Matching/dédoublonnage — C6, C7 — T3 | Même contrat assurance, facture annuelle | Même CONTRACT. | AUTOMATISÉ | `services/business-operations/consolidation/__tests__/o3a-decision.test.ts`<br>`services/business-operations/consolidation/__tests__/o4-asset-data.test.ts`<br>`e2e/l41-o3a-consolidation-t3.e2e.ts` |
 | F-036 | Matching/dédoublonnage — C6, C7 — T3 | Même fournisseur, nouvelle police sans continuité | Nouveau CONTRACT. | AUTOMATISÉ | `services/business-operations/consolidation/__tests__/o3a-decision.test.ts` |
@@ -144,7 +153,7 @@
 | F-047 | Matching/dédoublonnage — C6, C7 — T3 | Source confirmée par utilisateur | M0 stable. | AUTOMATISÉ | `services/business-operations/consolidation/__tests__/o3a-decision.test.ts`<br>`services/business-operations/consolidation/__tests__/o3b-m3-fusion.test.ts`<br>`e2e/l42-o3b-consolidation-t3.e2e.ts` |
 | F-048 | Matching/dédoublonnage — C6, C7 — T3 | Deux Operations plausibles pour facture | À traiter, pas troisième Operation. | AUTOMATISÉ + RECETTE PRÉPROD | `services/business-operations/consolidation/__tests__/o3a-decision.test.ts`<br>`e2e/l41-o3a-consolidation-t3.e2e.ts`<br>`e2e/l42-o3b-consolidation-t3.e2e.ts`<br>`e2e/l48-o10-recette-jeux.e2e.ts`<br>préprod RP-04 |
 | F-049 | Matching/dédoublonnage — C6, C7 — T3 | Fusion après référence commune découverte | Une canonique, autre merged. | AUTOMATISÉ | `services/business-operations/consolidation/__tests__/o3a-decision.test.ts`<br>`services/business-operations/consolidation/__tests__/o3b-m3-fusion.test.ts`<br>`e2e/l42-o3b-consolidation-t3.e2e.ts` |
-| F-050 | Matching/dédoublonnage — C6, C7 — T3 | Fusion conserve toutes sources | Oui, sans double composante. | AUTOMATISÉ | `e2e/l42-o3b-consolidation-t3.e2e.ts` |
+| F-050 | Matching/dédoublonnage — C6, C7 — T3 | Fusion conserve toutes sources | Oui, sans double composante. | AUTOMATISÉ | `e2e/l42-o3b-consolidation-t3.e2e.ts`<br>`e2e/l55b-contrats.e2e.ts` |
 | F-051 | Matching/dédoublonnage — C6, C7 — T3 | Fusion conserve décisions rejetées pertinentes | Oui, remappées au canonique si nécessaire. | AUTOMATISÉ | `e2e/l42-o3b-consolidation-t3.e2e.ts` |
 | F-052 | Matching/dédoublonnage — C6, C7 — T3 | Invalidée puis nouvelle preuve même ref | Réactivation même id. | AUTOMATISÉ | `services/business-operations/consolidation/__tests__/o3b-m3-fusion.test.ts`<br>`e2e/l42-o3b-consolidation-t3.e2e.ts` |
 | F-053 | Matching/dédoublonnage — C6, C7 — T3 | Invalidée puis preuve événement distinct | Nouvelle Operation. | AUTOMATISÉ | `services/business-operations/consolidation/__tests__/o3b-m3-fusion.test.ts`<br>`e2e/l42-o3b-consolidation-t3.e2e.ts` |
@@ -152,8 +161,8 @@
 | F-055 | Matching/dédoublonnage — C6, C7 — T3 | OTHER requalifié CONTRACT | Même id si même réalité. | AUTOMATISÉ | `services/business-operations/consolidation/__tests__/o10-recette.test.ts`<br>`e2e/l48-o10-recette-complements.e2e.ts` |
 | F-056 | Matching/dédoublonnage — C6, C7 — T3 | Document déplacé de dossier mais cible explicite inchangée | Operation garde cible prouvée. | AUTOMATISÉ | `e2e/l41-o3a-consolidation-t3.e2e.ts` |
 | F-057 | Matching/dédoublonnage — C6, C7 — T3 | Document lié manuellement autre bien contre preuve explicite | À traiter plutôt qu’écrasement silencieux. | AUTOMATISÉ | `services/business-operations/consolidation/__tests__/o3a-decision.test.ts` |
-| F-058 | Matching/dédoublonnage — C6, C7 — T3 | M3 semantic SAME_OPERATION probable | Pas auto-match. | AUTOMATISÉ + RECETTE PRÉPROD | `services/business-operations/consolidation/__tests__/o3a-decision.test.ts`<br>`services/business-operations/consolidation/__tests__/o3b-m3-fusion.test.ts`<br>`e2e/l48-o10-recette-jeux.e2e.ts`<br>préprod RP-04 |
-| F-059 | Matching/dédoublonnage — C6, C7 — T3 | M3 SAME_OPERATION certain + candidat unique | Auto-match. | AUTOMATISÉ + RECETTE PRÉPROD | `services/business-operations/consolidation/__tests__/o3b-m3-fusion.test.ts`<br>`e2e/l42-o3b-consolidation-t3.e2e.ts`<br>préprod RP-04 |
+| F-058 | Matching/dédoublonnage — C6, C7 — T3 | M3 semantic SAME_OPERATION probable | Pas auto-match. | AUTOMATISÉ + RECETTE PRÉPROD | `services/business-operations/consolidation/__tests__/o3a-decision.test.ts`<br>`services/business-operations/consolidation/__tests__/o3b-m3-fusion.test.ts`<br>`e2e/l48-o10-recette-jeux.e2e.ts`<br>`e2e/l55b-contrats.e2e.ts`<br>préprod RP-04 |
+| F-059 | Matching/dédoublonnage — C6, C7 — T3 | M3 SAME_OPERATION certain + candidat unique | Auto-match. | AUTOMATISÉ + RECETTE PRÉPROD | `services/business-operations/consolidation/__tests__/o3b-m3-fusion.test.ts`<br>`e2e/l42-o3b-consolidation-t3.e2e.ts`<br>`e2e/l55b-contrats.e2e.ts`<br>préprod RP-55B |
 | F-060 | Matching/dédoublonnage — C6, C7 — T3 | Hard negative target | Aucun match. | AUTOMATISÉ | `services/business-operations/consolidation/__tests__/o3a-decision.test.ts` |
 | F-061 | Cycle de vie — C8, C9 — T3/Repository | Réanalyse identique | No-op métier. | AUTOMATISÉ | `services/business-operations/consolidation/__tests__/o3a-decision.test.ts`<br>`e2e/l41-o3a-consolidation-t3.e2e.ts` |
 | F-062 | Cycle de vie — C8, C9 — T3/Repository | Réanalyse montant facture 1000->1200 | Même composante mise à jour/supersédée, pas +1200. | AUTOMATISÉ | `services/business-operations/consolidation/__tests__/o3b-m3-fusion.test.ts`<br>`e2e/l39-o1-socle-operations.e2e.ts`<br>`e2e/l41-o3a-consolidation-t3.e2e.ts` |
@@ -205,7 +214,7 @@
 | F-108 | Finances/TCO — C11, C12, C17 — FinancialService/TCO | Même invoice dupliquée | Une composante. | AUTOMATISÉ | `services/business-operations/consolidation/__tests__/o3a-finances-etat.test.ts`<br>`e2e/l41-o3a-consolidation-t3.e2e.ts`<br>`e2e/l48-o10-recette-complements.e2e.ts` |
 | F-109 | Finances/TCO — C11, C12, C17 — FinancialService/TCO | Invoice reanalysis corrige montant | Une composante courante. | AUTOMATISÉ | `services/business-operations/consolidation/__tests__/o3a-finances-etat.test.ts`<br>`e2e/l41-o3a-consolidation-t3.e2e.ts` |
 | F-110 | Finances/TCO — C11, C12, C17 — FinancialService/TCO | Contrat tarif mensuel sans factures | Pas 12 coûts générés. | AUTOMATISÉ | `services/business-operations/consolidation/__tests__/o3a-finances-etat.test.ts`<br>`e2e/l48-o10-recette-jeux.e2e.ts` |
-| F-111 | Finances/TCO — C11, C12, C17 — FinancialService/TCO | Cotisation annuelle facturée | REALIZED_COST période. | AUTOMATISÉ | `services/business-operations/consolidation/__tests__/o3a-finances-etat.test.ts`<br>`e2e/l41-o3a-consolidation-t3.e2e.ts` |
+| F-111 | Finances/TCO — C11, C12, C17 — FinancialService/TCO | Cotisation annuelle facturée | REALIZED_COST période. | AUTOMATISÉ + RECETTE PRÉPROD | `services/business-operations/consolidation/__tests__/o3a-finances-etat.test.ts`<br>`e2e/l41-o3a-consolidation-t3.e2e.ts`<br>`e2e/l55b-contrats.e2e.ts`<br>`services/business-operations/consolidation/__tests__/l55b-contrats.test.ts`<br>préprod RP-55B |
 | F-112 | Finances/TCO — C11, C12, C17 — FinancialService/TCO | Période contrat dépasse vente sans remboursement | Prorata TCO au jour si règle TCO appliquée. | AUTOMATISÉ | `services/business-operations/finance/__tests__/l54d-finance-tco.test.ts`<br>*Lot 54D : prorata exact au jour (TCO-02) ; remboursement réel prioritaire (TCO-03).* |
 | F-113 | Finances/TCO — C11, C12, C17 — FinancialService/TCO | Remboursement final réel après résiliation | Réalité documentée remplace prorata. | AUTOMATISÉ | `services/business-operations/finance/__tests__/l54d-finance-tco.test.ts`<br>*Lot 54D : prorata exact au jour (TCO-02) ; remboursement réel prioritaire (TCO-03).* |
 | F-114 | Finances/TCO — C11, C12, C17 — FinancialService/TCO | Multi-biens coût global sans allocation | Pas TCO individuel. | AUTOMATISÉ | `services/business-operations/consolidation/__tests__/o3a-finances-etat.test.ts`<br>`e2e/l41-o3a-consolidation-t3.e2e.ts`<br>`e2e/l45-o6-t2-operation-first.e2e.ts`<br>`e2e/l48-o10-recette-jeux.e2e.ts` |
@@ -269,7 +278,7 @@
 | F-172 | Concurrence/migration — C23-C25 — DB/T3/migrations | Profondeur 4 | Rejet. | AUTOMATISÉ | `services/business-operations/__tests__/o1-socle.test.ts`<br>`e2e/l39-o1-socle-operations.e2e.ts` |
 | F-173 | Concurrence/migration — C23-C25 — DB/T3/migrations | Active component sans active source | Diagnostic anomalie dure. | AUTOMATISÉ + RECETTE PRÉPROD | `e2e/l48-o10-recette-jeux.e2e.ts`<br>préprod RP-05 |
 | F-174 | Concurrence/migration — C23-C25 — DB/T3/migrations | Active Operation sans active source | Diagnostic anomalie dure. | AUTOMATISÉ + RECETTE PRÉPROD | `e2e/l48-o10-recette-jeux.e2e.ts`<br>préprod RP-05 |
-| F-175 | Concurrence/migration — C23-C25 — DB/T3/migrations | Migration relancée | Idempotente. | AUTOMATISÉ | `e2e/l43-o4-donnees-structurees.e2e.ts`<br>`e2e/l48-o10-recette-jeux.e2e.ts` |
+| F-175 | Concurrence/migration — C23-C25 — DB/T3/migrations | Migration relancée | Idempotente. | AUTOMATISÉ | `e2e/l43-o4-donnees-structurees.e2e.ts`<br>`e2e/l48-o10-recette-jeux.e2e.ts`<br>`e2e/l55b-contrats.e2e.ts` |
 | F-176 | Concurrence/migration — C23-C25 — DB/T3/migrations | Old document non retraité | Aucune Operation créée par backfill. | AUTOMATISÉ | `e2e/l48-o10-recette-jeux.e2e.ts` |
 | F-177 | Concurrence/migration — C23-C25 — DB/T3/migrations | Old document réanalysé | Entre dans modèle normal. | AUTOMATISÉ | `e2e/l48-o10-recette-jeux.e2e.ts` |
 | F-178 | Concurrence/migration — C23-C25 — DB/T3/migrations | Migration acquisition fields | Une ACQUISITION. | AUTOMATISÉ | `services/business-operations/consolidation/__tests__/o4-asset-data.test.ts`<br>`e2e/l43-o4-donnees-structurees.e2e.ts`<br>`e2e/l48-o10-recette-jeux.e2e.ts` |
@@ -331,7 +340,7 @@
 | INV-FINAL-002 | Une date ou un montant isolé ne crée jamais une Operation. | AUTOMATISÉ + RECETTE PRÉPROD | `services/business-operations/consolidation/__tests__/o10-recette.test.ts`<br>`e2e/l48-o10-recette-jeux.e2e.ts`<br>préprod RP-03 |
 | INV-FINAL-003 | Une source probable ne crée jamais seule une nouvelle Operation. | AUTOMATISÉ | `services/business-operations/consolidation/__tests__/o3a-decision.test.ts`<br>`e2e/l48-o10-recette-jeux.e2e.ts` |
 | INV-FINAL-004 | Toute création est précédée d’un matching. | AUTOMATISÉ | `services/business-operations/__tests__/o10-invariants.test.ts` |
-| INV-FINAL-005 | Une ambiguïté de matching ne crée pas un doublon. | AUTOMATISÉ | `e2e/l48-o10-recette-jeux.e2e.ts` |
+| INV-FINAL-005 | Une ambiguïté de matching ne crée pas un doublon. | AUTOMATISÉ | `e2e/l48-o10-recette-jeux.e2e.ts`<br>`e2e/l55b-contrats.e2e.ts` |
 | INV-FINAL-006 | Une Operation peut exister sans document mais jamais sans source. | AUTOMATISÉ | `e2e/l41-o3a-consolidation-t3.e2e.ts`<br>`e2e/l48-o10-recette-jeux.e2e.ts` |
 | INV-FINAL-007 | Une Operation sans target fiable n’alimente pas un TCO ou historique de bien. | AUTOMATISÉ | `e2e/l48-o10-recette-jeux.e2e.ts` |
 | INV-FINAL-008 | Le type peut être null ; OTHER ne signifie jamais « inconnu ». | AUTOMATISÉ | `services/business-operations/__tests__/o1-socle.test.ts`<br>`services/business-operations/consolidation/__tests__/o3a-decision.test.ts`<br>`e2e/l39-o1-socle-operations.e2e.ts` |
@@ -396,9 +405,9 @@
 | INV-036 | Les anciens documents ne sont pas backfillés massivement. | AUTOMATISÉ | `e2e/l48-o10-recette-jeux.e2e.ts` |
 | INV-037 | Les données structurées qui affirment une réalité métier doivent converger vers une Opération. | AUTOMATISÉ | `e2e/l48-o10-recette-jeux.e2e.ts` |
 | INV-038 | Chaque valeur consolidée doit rester explicable par ses sources et son historique. | AUTOMATISÉ | via ACC-002, F-050 |
-| INV-039 | Une réanalyse identique est idempotente. | AUTOMATISÉ | `e2e/l41-o3a-consolidation-t3.e2e.ts`<br>`e2e/l48-o10-recette-jeux.e2e.ts` |
+| INV-039 | Une réanalyse identique est idempotente. | AUTOMATISÉ | `e2e/l41-o3a-consolidation-t3.e2e.ts`<br>`e2e/l48-o10-recette-jeux.e2e.ts`<br>`e2e/l55b-contrats.e2e.ts` |
 | INV-040 | Un balayage horaire sans changement n’écrit rien. | AUTOMATISÉ | `e2e/l39-o1-socle-operations.e2e.ts`<br>`e2e/l41-o3a-consolidation-t3.e2e.ts`<br>`e2e/l48-o10-recette-complements.e2e.ts`<br>`e2e/l48-o10-recette-jeux.e2e.ts` |
-| INV-041 | Une fusion ne perd ni source, ni composante, ni historique, ni relation utile. | AUTOMATISÉ | via F-049, F-050, F-051 |
+| INV-041 | Une fusion ne perd ni source, ni composante, ni historique, ni relation utile. | AUTOMATISÉ | `e2e/l55b-contrats.e2e.ts`<br>via F-049, F-050, F-051 |
 | INV-042 | Une Opération invalidée ne nourrit plus T2 consolidé, T4, TCO ou exports métier. | AUTOMATISÉ | `e2e/l48-o10-recette-jeux.e2e.ts` |
 | INV-043 | Une Opération absorbée résout vers son Opération canonique. | AUTOMATISÉ | `e2e/l39-o1-socle-operations.e2e.ts` |
 | INV-044 | Les corrections utilisateur ont une autorité supérieure aux inférences automatiques sur le fait corrigé. | AUTOMATISÉ | via F-044, F-047 |

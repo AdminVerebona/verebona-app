@@ -460,6 +460,12 @@ scenario('L31C', 'Contrat de la file durable T3 (worker réel)', ({ sql, make })
     await sql`UPDATE ai_job_queue SET created_at = created_at - interval '2 hours'
                WHERE treatment = 'T3' AND account_id IS NULL AND target_type IS NULL`;
     await sql`UPDATE ai_job_queue SET status = 'CANCELLED' WHERE treatment = 'T3' AND target_type = 't3_sweep' AND status IN ('PENDING', 'RUNNING')`;
+    // Lot 54A : un passage échu absorbé par une racine vivante n'est plus
+    // déclaré « mis en file » (SCHEDULE_ABSORBED). Une racine laissée en
+    // attente par un scénario précédent ferait donc échouer T3Q-25 : on part
+    // d'une file sans racine T3 vivante.
+    await sql`UPDATE ai_job_queue SET status = 'CANCELLED'
+               WHERE treatment = 'T3' AND account_id IS NULL AND target_type IS NULL AND status IN ('PENDING', 'RUNNING')`;
     // Charge planifiée laissée par d'autres scénarios : elle reporterait les pages.
     await sql`UPDATE ai_job_queue SET status = 'CANCELLED'
                WHERE treatment = 'T3' AND status = 'PENDING' AND account_id IS NOT NULL AND target_type IS NULL

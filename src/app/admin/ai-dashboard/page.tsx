@@ -94,9 +94,9 @@ interface Package {
 
 interface Degraded { source: string; message: string }
 
-/** DRF-01 : brouillon détaillé. */
+/** DRF-01 / lot 54 : version non active détaillée. */
 interface Draft {
-  id: number; uid: string; label: string | null; isStale: boolean; createdAt: string;
+  id: number; uid: string; visibleNumber?: number | null; revisionNumber?: number | null; label: string | null; isStale: boolean; createdAt: string;
   base: { id: number; visibleNumber: number | null; label: string | null } | null;
   author: string | null;
 }
@@ -104,6 +104,8 @@ interface Draft {
 interface VersionRef {
   id: number; visibleNumber: number | null; label: string | null;
   uid?: string; shortUid?: string; activatedAt?: string | null;
+  /** Lot 54 : révision courante de la version active. */
+  revisionNumber?: number | null;
 }
 
 interface Dashboard {
@@ -128,7 +130,7 @@ interface Dashboard {
 /** VER-01 : « v3 — Libellé · UID 1a2b3c4d · activée le … ». */
 function versionLine(v: VersionRef, dateLabel: string, date: string | null | undefined): string {
   return [
-    `v${v.visibleNumber ?? '?'}${v.label ? ` — ${v.label}` : ''}`,
+    `v${v.visibleNumber ?? '?'}${v.revisionNumber ? ` · r${v.revisionNumber}` : ''}${v.label ? ` — ${v.label}` : ''}`,
     v.shortUid ? `UID ${v.shortUid}` : null,
     date ? `${dateLabel} ${formatDateTime(date)}` : null,
   ].filter(Boolean).join(' · ');
@@ -185,7 +187,7 @@ export default function AiDashboardPage() {
     setBusy(true);
     try {
       await apiClient.post('/api/admin/ai/config-versions', {});
-      toast.success('Brouillon créé');
+      toast.success('Version créée (non active)');
       await load();
     } catch {
       toast.error('Création impossible.');
@@ -205,12 +207,11 @@ export default function AiDashboardPage() {
     );
   }
 
-  // DRF-01 : liste détaillée du serveur ; à défaut (source dégradée), les
-  // brouillons de la liste des versions, sans base ni auteur.
+  // DRF-01 / lot 54 : versions NON actives (plus de brouillons) ; à défaut
+  // (source dégradée), celles de la liste des versions, sans base ni auteur.
   const drafts: Draft[] = data.drafts ?? data.versions
-    .filter((v) => v.status === 'DRAFT')
-    .map((v) => ({ id: v.id, uid: '', label: v.label, isStale: v.isStale, createdAt: v.createdAt, base: null, author: null }));
-  const toTest = data.versions.find((v) => v.status === 'TO_TEST');
+    .filter((v) => v.status !== 'ACTIVE')
+    .map((v) => ({ id: v.id, uid: '', visibleNumber: v.visibleNumber, label: v.label, isStale: false, createdAt: v.createdAt, base: null, author: null }));
   const status = data.globalStatus
     ?? (data.emergencyStop.active
       ? { key: 'emergency_stop' as const, label: 'Arrêt d’urgence' }
@@ -413,7 +414,7 @@ export default function AiDashboardPage() {
           <h2 className="text-sm font-semibold text-[color:var(--text-primary)]">Versions</h2>
           <div className="flex gap-2">
             <Button size="sm" variant="outline" onClick={createDraft} disabled={busy}>
-              <Plus className="w-3.5 h-3.5 mr-1.5" /> Brouillon
+              <Plus className="w-3.5 h-3.5 mr-1.5" /> Nouvelle version
             </Button>
             <Link href="/admin/ai-config">
               <Button size="sm" variant="ghost">Ouvrir</Button>
@@ -422,23 +423,17 @@ export default function AiDashboardPage() {
         </div>
 
         <p className="text-sm text-[color:var(--text-secondary)]">
-          {drafts.length} brouillon{drafts.length > 1 ? 's' : ''}
-          {toTest && ' · une version à l’essai'}
-          {drafts.some((d) => d.isStale) && (
-            <span className="text-amber-500">
-              {' '}· certains brouillons reposent sur une version dépassée
-            </span>
-          )}
+          {drafts.length} version{drafts.length > 1 ? 's' : ''} non active{drafts.length > 1 ? 's' : ''}
         </p>
 
-        {/* DRF-01 : libellé, base, obsolète, date, auteur ; ouvrir. */}
+        {/* DRF-01 / lot 54 : numéro, nom, origine, date, auteur ; ouvrir. */}
         {drafts.length > 0 && (
           <div className="overflow-x-auto">
             <table className="w-full text-sm" data-testid="ai-drafts">
               <thead>
                 <tr className="text-left text-xs text-[color:var(--text-muted)]">
-                  <th className="py-1.5 pr-3 font-medium">Brouillon</th>
-                  <th className="py-1.5 pr-3 font-medium">Base</th>
+                  <th className="py-1.5 pr-3 font-medium">Version</th>
+                  <th className="py-1.5 pr-3 font-medium">Origine</th>
                   <th className="py-1.5 pr-3 font-medium">Créé le</th>
                   <th className="py-1.5 pr-3 font-medium">Auteur</th>
                   <th className="py-1.5" />
@@ -448,18 +443,12 @@ export default function AiDashboardPage() {
                 {drafts.map((d) => (
                   <tr key={d.id} className="border-t border-[color:var(--border-subtle)]">
                     <td className="py-1.5 pr-3 text-[color:var(--text-primary)]">
-                      {d.label || `Brouillon #${d.id}`}
-                      {d.isStale && (
-                        <span className="ml-2 rounded border border-amber-500/40 px-1.5 py-0.5 text-[10px] text-amber-500"
-                          title="La version de base n’est plus l’Active : ce brouillon repose sur une version dépassée.">
-                          obsolète
-                        </span>
-                      )}
+                      {`v${d.visibleNumber ?? d.id}${d.revisionNumber ? ` · r${d.revisionNumber}` : ''}`}{d.label ? ` — ${d.label}` : ''}
                     </td>
                     <td className="py-1.5 pr-3 text-[color:var(--text-secondary)]">
                       {d.base
                         ? `v${d.base.visibleNumber ?? '?'}${d.base.label ? ` — ${d.base.label}` : ''}`
-                        : 'aucune (premier brouillon)'}
+                        : '—'}
                     </td>
                     <td className="py-1.5 pr-3 text-xs text-[color:var(--text-secondary)]">{formatDateTime(d.createdAt)}</td>
                     <td className="py-1.5 pr-3 text-xs text-[color:var(--text-secondary)]">{d.author ?? '—'}</td>
@@ -478,33 +467,28 @@ export default function AiDashboardPage() {
         {!data.activeVersion && (
           <p className="text-sm text-amber-500">
             Aucune configuration active : les traitements utilisent les valeurs du code.
-            Créez un brouillon, puis validez-le pour amorcer le versioning.
+            Créez une version, puis activez-la en préproduction.
           </p>
         )}
       </div>
 
-      {/* Mise en production */}
+      {/* Lot 54 : plus de mise en production depuis le BO — export du fichier
+          de configuration (Configuration IA), packages antérieurs en historique. */}
       <div className="rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--bg-card)] p-4 space-y-2">
         <h2 className="text-sm font-semibold text-[color:var(--text-primary)]">
-          Mise en production
+          Export de la configuration
         </h2>
-        {data.packages.length === 0 ? (
-          <p className="text-sm text-[color:var(--text-muted)]">
-            Aucun package préparé. Un package se prépare depuis une version validée.
+        <p className="text-sm text-[color:var(--text-muted)]">
+          Le paramétrage de la production se fait séparément, à partir du fichier « Exporter la configuration »
+          (<Link href="/admin/ai-config" className="text-[color:var(--accent)] hover:underline">Configuration IA</Link>).
+          Aucune publication en production n’est faite depuis le back-office.
+        </p>
+        {data.packages.length > 0 && data.packages.map((p) => (
+          <p key={p.id} className="text-xs text-[color:var(--text-muted)]">
+            Ancien package v{p.visibleNumber}{p.label ? ` — ${p.label}` : ''} · depuis {p.sourceEnvironment}
+            {p.importedAt ? ` · importé le ${formatDateTime(p.importedAt)}` : ''}
           </p>
-        ) : (
-          data.packages.map((p) => (
-            <p key={p.id} className="text-sm text-[color:var(--text-secondary)]">
-              v{p.visibleNumber}{p.label ? ` — ${p.label}` : ''}
-              <span className="text-[color:var(--text-muted)]">
-                {' '}· depuis {p.sourceEnvironment}
-                {p.importedAt
-                  ? ` · importé le ${formatDateTime(p.importedAt)}`
-                  : ' · pas encore importé'}
-              </span>
-            </p>
-          ))
-        )}
+        ))}
       </div>
 
       {/* Coûts */}

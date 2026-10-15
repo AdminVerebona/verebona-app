@@ -31,12 +31,26 @@ interface Diagnostics {
   pagesExpected?: number | null; pagesVerified?: number; pagesMissing?: number[]; pagesUnverified?: number[]; pagesScanned?: number[];
   pendingRepairUnits?: number; exhaustedRepairUnits?: number; needsSourceUnits?: number;
   truncations?: number; originalsPreserved?: number; normalisationLosses?: number;
+  /** Lot 54G : pages relues / citées non vérifiées, relectures du fichier, champs retirés, tableaux. */
+  pagesReread?: number[]; pagesCitedUnverified?: number[];
+  sourceRereads?: number; sourceRereadsFailed?: number; needsSourceExhausted?: number;
+  prunedFields?: number; prunedOriginalsPreserved?: number; tablesUncertain?: number; tablesResolved?: number;
+}
+/** Lot 54G (§6) : totaux de la période (compteurs seulement). */
+export interface Totals {
+  documents: number;
+  pagesExpected: number; pagesVerified: number; pagesMissing: number; pagesUnverified: number; pagesReread: number; pagesCitedUnverified: number;
+  needsSourceUnits: number; sourceRereads: number; sourceRereadsFailed: number; sourceRereadResolved: number; needsSourceExhausted: number;
+  pendingRepairUnits: number; exhaustedRepairUnits: number;
+  prunedFields: number; prunedOriginalsPreserved: number; normalisationLosses: number;
+  tablesUncertain: number; tablesResolved: number;
 }
 interface Overview {
   days: number; byQuality: Record<Quality, number>; byAnomaly: Record<string, number>;
   averageCoverage: number | null; repairPasses: number; rows: Row[]; unavailable?: boolean;
   bySourceVerification?: Record<string, number>;
   maxRetries?: number;
+  totals?: Totals;
 }
 
 export const QUALITY_LABEL: Record<Quality, string> = {
@@ -93,10 +107,33 @@ export function diagnosticsText(r: Pick<Row, 'sourceVerification' | 'verificatio
   if (d.pendingRepairUnits) parts.push(`${d.pendingRepairUnits} réparation(s) en attente`);
   if (d.exhaustedRepairUnits) parts.push(`${d.exhaustedRepairUnits} épuisée(s)`);
   if (d.needsSourceUnits) parts.push(`${d.needsSourceUnits} à relire dans le fichier`);
+  // Lot 54G (§6) : pages relues, citées sans être vérifiées, relectures du fichier, champs retirés, tableaux.
+  if (d.pagesReread?.length) parts.push(`${d.pagesReread.length} page(s) relue(s)`);
+  if (d.pagesCitedUnverified?.length) parts.push(`${d.pagesCitedUnverified.length} citée(s) non vérifiée(s)`);
+  if (d.sourceRereads) parts.push(`${d.sourceRereads} relecture(s) du fichier${d.sourceRereadsFailed ? ` dont ${d.sourceRereadsFailed} sans levée` : ''}`);
+  if (d.needsSourceExhausted) parts.push(`${d.needsSourceExhausted} relecture(s) épuisée(s)`);
+  if (d.prunedFields) parts.push(`${d.prunedFields} champ(s) retiré(s) par la validation, ${d.prunedOriginalsPreserved ?? 0} original(aux) conservé(s)`);
+  if (d.tablesUncertain) parts.push(`${d.tablesUncertain} tableau(x) incertain(s)`);
+  if (d.tablesResolved) parts.push(`${d.tablesResolved} tableau(x) vérifié(s)`);
   if (d.truncations) parts.push(`${d.originalsPreserved ?? 0}/${d.truncations} original(aux) conservé(s)`);
   if (d.normalisationLosses) parts.push(`${d.normalisationLosses} perte(s) non compensée(s)`);
   if (r.lastRetryAt) parts.push(`dernière reprise ${new Date(r.lastRetryAt).toLocaleString('fr-FR')}${r.lastRetryResult ? ` (${r.lastRetryResult})` : ''}`);
   return parts.join(' · ');
+}
+
+/** Lot 54G (§6) : totaux de la période, en lignes courtes (pure ; compteurs seulement). */
+export function totalsText(t: Totals | undefined | null): string[] {
+  if (!t || !t.documents) return [];
+  return [
+    `Pages : ${t.pagesExpected} attendue(s) · ${t.pagesVerified} vérifiée(s) · ${t.pagesMissing} manquante(s) · ${t.pagesUnverified} non vérifiée(s)`
+      + ` · ${t.pagesReread} relue(s) · ${t.pagesCitedUnverified} citée(s) non vérifiée(s)`,
+    `Relecture du fichier : ${t.needsSourceUnits} unité(s) à relire · ${t.sourceRereads} relecture(s) exécutée(s)`
+      + ` · ${t.sourceRereadResolved} levée(s) · ${t.sourceRereadsFailed} sans levée · ${t.needsSourceExhausted} épuisée(s)`,
+    `Réparations : ${t.pendingRepairUnits} en attente · ${t.exhaustedRepairUnits} épuisée(s)`,
+    `Validation : ${t.prunedFields} champ(s) retiré(s) · ${t.prunedOriginalsPreserved} original(aux) conservé(s)`
+      + ` · ${t.normalisationLosses} perte(s) non compensée(s)`,
+    `Tableaux : ${t.tablesUncertain} incertain(s) · ${t.tablesResolved} vérifié(s) par leurs lignes`,
+  ];
 }
 
 export function T1CompletenessPanel({ days = 7 }: { days?: number }) {
@@ -139,6 +176,11 @@ export function T1CompletenessPanel({ days = 7 }: { days?: number }) {
         {data.averageCoverage !== null && ` · couverture moyenne ${Math.round(data.averageCoverage * 100)} %`}
         {` · ${data.repairPasses} passe(s) de réparation ciblée`}
       </p>
+      {totalsText(data.totals).length > 0 && (
+        <ul className="text-xs text-[color:var(--text-muted)] space-y-0.5" data-testid="t1-completeness-totals">
+          {totalsText(data.totals).map((l) => <li key={l} className="break-words">{l}</li>)}
+        </ul>
+      )}
       <div className="flex flex-wrap gap-2">
         {anomalies.map(([code, n]) => (
           <button key={code} type="button" onClick={() => setAnomaly(anomaly === code ? '' : code)}

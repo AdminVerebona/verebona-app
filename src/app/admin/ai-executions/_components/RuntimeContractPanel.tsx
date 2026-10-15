@@ -55,7 +55,32 @@ export interface ContractCallView {
   runtimeContract?: RuntimeContractTraceView | null;
   transformations?: TransformationsView | null;
   structuredContext?: StructuredContextView | null;
+  /** Lot 54 : décision T4 CLASSIFY_EVENT appliquée par le moteur. */
+  t4Decision?: T4DecisionView | null;
 }
+
+/** Lot 54 — décision T4 CLASSIFY_EVENT (sans contenu documentaire). */
+export interface T4DecisionView {
+  verdict?: string;
+  agendaDecision?: string;
+  recurrenceDecision?: string;
+  recurrenceCandidate?: { mode: string; frequency: string; interval: number; history?: string[] } | null;
+  homeCategory?: string;
+  businessType?: string | null;
+  confidence?: string;
+  reason?: string;
+  recurrenceReason?: string | null;
+  outcome?: string;
+  warnings?: string[];
+}
+
+const VERDICT: Record<string, string> = {
+  ACCEPTED: 'T4 a accepté l’événement',
+  RECURRENCE_REJECTED: 'T4 a accepté l’événement mais pas la récurrence',
+  EVENT_REJECTED: 'T4 a rejeté l’événement',
+  ABSTAINED: 'T4 s’est abstenu',
+  TECHNICAL_FAILURE: 'Échec technique T4',
+};
 
 const RANG: Record<string, string> = { primary: 'Principal', fallback_1: 'Repli 1', fallback_2: 'Repli 2' };
 
@@ -78,6 +103,7 @@ export function RuntimeContractPanel({ calls }: { calls: ContractCallView[] }) {
   const mismatch = avec.find((c) => c.runtimeContract!.mismatch || c.errorCode === 'RUNTIME_CONTRACT_MISMATCH');
   const sc = calls.find((c) => c.structuredContext)?.structuredContext ?? null;
   const contrat = calls.find((c) => c.errorCode?.startsWith('T4_'));
+  const t4 = calls.find((c) => c.t4Decision)?.t4Decision ?? null;
 
   return (
     <section className="space-y-2" data-testid="execution-runtime-contract">
@@ -101,12 +127,29 @@ export function RuntimeContractPanel({ calls }: { calls: ContractCallView[] }) {
 
       {sc && (
         <dl className="grid grid-cols-[auto,1fr] gap-x-3 gap-y-0.5 text-xs" data-testid="execution-structured-context">
-          <Ligne label="Mode d’exécution">{sc.mode === 'STRUCTURED_CONTEXT' ? 'Contexte structuré' : 'Legacy (emplacements)'}</Ligne>
+          <Ligne label="Mode d’exécution">{sc.mode === 'STRUCTURED_CONTEXT' ? 'Contexte structuré' : 'Mode historique à emplacements'}</Ligne>
           <Ligne label="TASK">{sc.task}</Ligne>
           <Ligne label="Prompt">{sc.promptVersion} · empreinte {sc.promptHash}</Ligne>
           <Ligne label="Contrat d’entrée">{sc.inputContractVersion ?? '—'}</Ligne>
           <Ligne label="Contrat de sortie">{sc.outputContractVersion ?? '—'}</Ligne>
           <Ligne label="Contexte construit">{sc.contextHash ? `empreinte ${sc.contextHash}` : '—'}</Ligne>
+        </dl>
+      )}
+      {t4 && (
+        <dl className="grid grid-cols-[auto,1fr] gap-x-3 gap-y-0.5 text-xs" data-testid="execution-t4-decision">
+          <Ligne label="Décision T4">{VERDICT[t4.verdict ?? ''] ?? t4.verdict ?? '—'}</Ligne>
+          <Ligne label="agendaDecision">{t4.agendaDecision ?? '—'}</Ligne>
+          <Ligne label="recurrenceCandidate">{t4.recurrenceCandidate
+            ? `${t4.recurrenceCandidate.mode} · ${t4.recurrenceCandidate.frequency} / ${t4.recurrenceCandidate.interval}${t4.recurrenceCandidate.history?.length ? ` · historique ${t4.recurrenceCandidate.history.join(', ')}` : ''}`
+            : 'aucun'}</Ligne>
+          <Ligne label="recurrenceDecision">{t4.recurrenceDecision ?? '—'}</Ligne>
+          <Ligne label="homeCategory">{t4.homeCategory ?? '—'}</Ligne>
+          <Ligne label="businessType">{t4.businessType ?? '—'}</Ligne>
+          <Ligne label="confidence">{t4.confidence ?? '—'}</Ligne>
+          <Ligne label="reason">{t4.reason ?? '—'}</Ligne>
+          <Ligne label="recurrenceReason">{t4.recurrenceReason ?? '—'}</Ligne>
+          {t4.outcome === 'model_v1' && <Ligne label="Contrat">t4_output_v1 : récurrence non évaluée par le modèle</Ligne>}
+          {t4.warnings?.length ? <Ligne label="Contrôles serveur">{t4.warnings.join(' ; ')}</Ligne> : null}
         </dl>
       )}
       {contrat && (

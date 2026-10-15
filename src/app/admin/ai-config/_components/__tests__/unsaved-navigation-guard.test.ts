@@ -27,7 +27,9 @@ describe('interception des liens internes (WF-26)', () => {
   });
   it('la page de configuration IA branche la garde', () => {
     const src = readFileSync(join(process.cwd(), 'src/app/admin/ai-config/page.tsx'), 'utf8');
-    expect(src).toMatch(/useUnsavedNavigationGuard\(dirty\.size > 0/);
-    expect(src).toMatch(/forEach\(resetTreatment\)/);
+    // Lot 54 : toute modification non enregistrée (traitements, prompts maîtres, nom).
+    expect(src).toMatch(/useUnsavedNavigationGuard\(hasUnsaved/);
+    // « Quitter sans enregistrer » restaure la dernière valeur persistée.
+    expect(src).toMatch(/const go = leaving; resetAll\(\);/);
   });
 });

@@ -78,7 +78,11 @@ export function ManualLaunch({ onLaunched }: { onLaunched: (jobIds: number[]) =>
       setEstimate(null);
       await onLaunched(r.jobIds);
     } catch (e) {
-      toast.error((e as Error).message || 'Lancement impossible.');
+      // Lot 54A : code et motif du serveur (EMPTY_SCOPE, NO_JOB_CREATED, INSERT_FAILED…), jamais un succès.
+      const err = e as { message?: string; code?: string; status?: number };
+      toast.error(`${err.message || 'Lancement impossible.'}${err.code ? ` (${err.code}${err.status ? ` — ${err.status}` : ''})` : ''}`);
+      setEstimate(null);
+      await onLaunched([]);
     } finally { setBusy(false); }
   };
 

@@ -30,17 +30,17 @@ describe('T4 — déclencheurs', () => {
     expect(page).toContain('onRetryCatalogs={reloadCatalogs}');
   });
 
-  it('après enregistrement, la ligne enregistrée est relue', () => {
-    const save = page.slice(page.indexOf('const saveTreatment'), page.indexOf('const saveAllDirty'));
+  it('après enregistrement, la configuration enregistrée est relue (lot 54 : enregistrement global)', () => {
+    const save = page.slice(page.indexOf('const saveAll = async'), page.indexOf('const createVersion = async'));
     expect(save).toContain('apiClient.get<VersionDetail>(`/api/admin/ai/config-versions/${current.id}`)');
-    expect(save).toContain('setDrafts((d) => ({ ...d, [t]: relue }))');
+    expect(save).toContain('for (const e of v.entries) if (!encore.includes(e.treatment)) n[e.treatment] = e;');
   });
 
   it('une saisie faite pendant l’enregistrement n’est jamais écrasée par la relecture', () => {
-    const save = page.slice(page.indexOf('const saveTreatment'), page.indexOf('const saveAllDirty'));
-    expect(save).toContain('const repere = edits.mark(t);');
-    expect(save).toContain('if (relue && edits.unchangedSince(t, repere)) setDrafts(');
-    expect(save).toContain('if (edits.unchangedSince(t, repere)) setDirty(');
+    const save = page.slice(page.indexOf('const saveAll = async'), page.indexOf('const createVersion = async'));
+    expect(save).toContain('edits.mark(t)');
+    expect(save).toContain('!edits.unchangedSince(t, reperes[t])');
+    expect(save).toContain('setDirty(new Set(encore))');
     expect(page).toContain('edits.bump(t.code);');
 
     const tr = createEditTracker();
@@ -60,7 +60,7 @@ describe('Lot 49 — T5 supprimé de l’écran (ticket 12)', () => {
     expect(page).toContain("type Treatment = 'T1' | 'T2' | 'T3' | 'T4' | 'T6';");
     // Plus de message ni de bouton propres à T5 ; l'enregistrement ne dépend que des modifications.
     expect(page).not.toMatch(/legacyT5|T5_REPOSITORY_PROMPT_MESSAGE|T5_LEGACY_TEXT_MESSAGE|hasLegacyPromptText/);
-    expect(page).toContain('disabled={!dirty.has(t.code) || busy}');
+    expect(page).toContain('disabled={readOnly || !hasUnsaved || busy}');
   });
 
   it('T12-AC01 — autres écrans d’administration courante : aucune option T5 (supervision, coûts, file, tableau de bord)', () => {
@@ -77,7 +77,7 @@ describe('Lot 49 — T5 supprimé de l’écran (ticket 12)', () => {
   });
 
   it('T12-AC03 — la section « Prompts maîtres » reste branchée (administration manuelle)', () => {
-    expect(page).toContain('<MasterPrompts />');
+    expect(page).toContain('<MasterPrompts refreshKey={promptsKey}');
     expect(page).toContain('s’administre dans la section « Prompts maîtres »');
   });
 });

@@ -396,8 +396,9 @@ function ItemButton({ title, sub, cta, tone, icon, onClick, dataTodoId, dataActi
         <Icon className="h-[18px] w-[18px]" aria-hidden />
       </span>
       <span className="flex min-w-0 flex-1 flex-col gap-0.5 md:gap-[3px]">
-        <span className="text-[14px] font-semibold md:text-[14.5px]">{title}</span>
-        {sub && <span className="truncate text-[12px] text-[color:var(--muted-foreground)] md:whitespace-normal md:text-[12.5px]">{sub}</span>}
+        <span className="break-words text-[14px] font-semibold md:text-[14.5px]">{title}</span>
+        {/* Lot 55A : bien · date complète, sur deux lignes si besoin — jamais tronqués (mobile comme desktop). */}
+        {sub && <span data-item-sub className="break-words text-[12px] text-[color:var(--muted-foreground)] md:text-[12.5px]">{sub}</span>}
       </span>
       {cta && <span className="flex-shrink-0 text-[12.5px] font-medium text-[color:var(--accent)] md:text-[13px]">{cta}</span>}
       <ArrowRight className="h-4 w-4 flex-shrink-0 text-[color:var(--accent)]" strokeWidth={2.2} aria-hidden />

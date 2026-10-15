@@ -110,6 +110,8 @@ interface Execution {
   runtimeContract?: ContractCallView['runtimeContract'];
   transformations?: ContractCallView['transformations'];
   structuredContext?: ContractCallView['structuredContext'];
+  /** Lot 54 : décision T4 CLASSIFY_EVENT. */
+  t4Decision?: ContractCallView['t4Decision'];
   /** Lot 52B : tentatives internes (structurée → même modèle sans schéma). */
   providerAttempts?: Array<{ kind: string; outcome: string; httpStatus: number | null; providerErrorCode: string | null }>;
 }

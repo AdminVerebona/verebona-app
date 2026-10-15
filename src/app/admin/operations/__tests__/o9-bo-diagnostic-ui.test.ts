@@ -127,8 +127,17 @@ describe('O9-UI-04 / C26.1 détail complet — lecture seule, desktop et mobile'
     candidates: [{ id: 5, file_id: 77, summary: 'Facture', confidence: 'certain', established: true, t3_outcome: 'CREATE_NEW', t3_reason_label: 'aucune Opération correspondante, source certaine : création', t3_operation_id: 41, status: 'ACTIVE' }],
     lastT3Pass: { jobId: 12, status: 'DONE', origin: 'automatic', triggerCode: 'source_analyzed', businessResult: 'APPLIED', createdAt: null, finishedAt: '2026-10-01T10:00:00Z', attempts: 1, lastError: null, correlationId: 'corr-9' },
     procedure: CORRECTION_PROCEDURE,
+    reconciliation: { state: 'A_JOUR', label: 'à jour : aucun traitement en attente', pending: 0, blocked: 0, lastReconciledAt: '2026-10-01T10:00:00Z' },
+    operationMatchBranch: { available: false, version: 't3_master_v1@bo' },
   };
   const html = renderToStaticMarkup(h(OperationDetailView, { d }));
+
+  it('L55B-E3 — état de réconciliation, exécution IA et branche OPERATION_MATCH affichés (même composant ordinateur / mobile)', () => {
+    expect(html).toContain('État de réconciliation');
+    expect(html).toContain('à jour : aucun traitement en attente');
+    expect(html).toContain('Exécution IA');
+    expect(html).toContain('ABSENT de la configuration active');
+  });
 
   it('toutes les sections du ch. 21 / C26.1', () => {
     for (const t of ['Identité', 'Biens et équipements', 'Sources (actives et historiques)', 'Composantes financières', 'Références',

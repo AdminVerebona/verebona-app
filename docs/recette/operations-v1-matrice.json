@@ -81,6 +81,17 @@
     "Compte Duo : le second membre voit les mêmes sinistres et le même total."
    ],
    "attendu": "Aucune régression visible ; aucun terme technique « Opération » côté utilisateur."
+  },
+  {
+   "id": "RP-55B",
+   "titre": "Factures d’un même contrat (lot 55B) — constat avant / après sur le compte concerné, sans SQL",
+   "etapes": [
+    "Après déploiement (migrations 0398 et 0399 appliquées automatiquement), attendre le balayage T3 horaire, ou BO › Comptes › compte concerné › Opérations : « Reconsolider ce compte ».",
+    "BO › Opérations › filtre du compte : l’opération d’alarme est de type « Contrat », « Sources actives » = nombre de factures d’alarme, « Composantes » = nombre de mensualités distinctes ; les anciennes opérations séparées sont « Fusionnée dans #… ».",
+    "Fiche de l’opération : « État de réconciliation » = à jour, « Dernière réconciliation » renseignée ; « Candidats T1 liés et issue T3 » : chaque facture rattachée (motif, colonne « Exécution IA ») ; « Dernier passage T3 » : « Rapprochement IA (OPERATION_MATCH) : disponible ».",
+    "État « non définitive » : BO › Opérations › En attente T3 (colonne Rapprochement IA : report, plafond, date de reprise), ou carte « À traiter » OPERATION-MATCH côté utilisateur."
+   ],
+   "attendu": "Une opération Contrat portant toutes les factures d’alarme, un coût par mensualité, montants exacts ; aucune opération doublon active ; aucun autre compte touché."
   }
  ],
  "ecarts": [
@@ -528,9 +539,12 @@
    "attendu": "Une Operation/composante.",
    "trace": "Matching/dédoublonnage — C6, C7 — T3",
    "tests": [
-    "src/test/e2e/scenarios/l48-o10-recette-complements.e2e.ts"
+    "src/test/e2e/scenarios/l48-o10-recette-complements.e2e.ts",
+    "src/test/e2e/scenarios/l55b-contrats.e2e.ts",
+    "src/services/business-operations/consolidation/__tests__/l55b-contrats.test.ts"
    ],
-   "statut": "AUTOMATISE"
+   "statut": "AUTOMATISE_PREPROD",
+   "preprod": "RP-55B"
   },
   {
    "id": "F-033",
@@ -542,7 +556,9 @@
    "tests": [
     "src/services/business-operations/consolidation/__tests__/o3a-decision.test.ts",
     "src/test/e2e/scenarios/l41-o3a-consolidation-t3.e2e.ts",
-    "src/test/e2e/scenarios/l53c-po-rapprochement.e2e.ts"
+    "src/test/e2e/scenarios/l53c-po-rapprochement.e2e.ts",
+    "src/test/e2e/scenarios/l55b-contrats.e2e.ts",
+    "src/services/business-operations/consolidation/__tests__/l55b-contrats.test.ts"
    ],
    "statut": "AUTOMATISE",
    "note": "Règle adaptée au retour PO D6 (lot 53) : deux factures finales distinctes peuvent porter sur une même intervention ; voir docs/exploitation/operations-rapprochement.md."
@@ -772,7 +788,8 @@
    "attendu": "Oui, sans double composante.",
    "trace": "Matching/dédoublonnage — C6, C7 — T3",
    "tests": [
-    "src/test/e2e/scenarios/l42-o3b-consolidation-t3.e2e.ts"
+    "src/test/e2e/scenarios/l42-o3b-consolidation-t3.e2e.ts",
+    "src/test/e2e/scenarios/l55b-contrats.e2e.ts"
    ],
    "statut": "AUTOMATISE"
   },
@@ -877,7 +894,8 @@
    "tests": [
     "src/services/business-operations/consolidation/__tests__/o3a-decision.test.ts",
     "src/services/business-operations/consolidation/__tests__/o3b-m3-fusion.test.ts",
-    "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts"
+    "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts",
+    "src/test/e2e/scenarios/l55b-contrats.e2e.ts"
    ],
    "statut": "AUTOMATISE_PREPROD",
    "preprod": "RP-04"
@@ -891,10 +909,11 @@
    "trace": "Matching/dédoublonnage — C6, C7 — T3",
    "tests": [
     "src/services/business-operations/consolidation/__tests__/o3b-m3-fusion.test.ts",
-    "src/test/e2e/scenarios/l42-o3b-consolidation-t3.e2e.ts"
+    "src/test/e2e/scenarios/l42-o3b-consolidation-t3.e2e.ts",
+    "src/test/e2e/scenarios/l55b-contrats.e2e.ts"
    ],
    "statut": "AUTOMATISE_PREPROD",
-   "preprod": "RP-04"
+   "preprod": "RP-55B"
   },
   {
    "id": "F-060",
@@ -1571,9 +1590,12 @@
    "trace": "Finances/TCO — C11, C12, C17 — FinancialService/TCO",
    "tests": [
     "src/services/business-operations/consolidation/__tests__/o3a-finances-etat.test.ts",
-    "src/test/e2e/scenarios/l41-o3a-consolidation-t3.e2e.ts"
+    "src/test/e2e/scenarios/l41-o3a-consolidation-t3.e2e.ts",
+    "src/test/e2e/scenarios/l55b-contrats.e2e.ts",
+    "src/services/business-operations/consolidation/__tests__/l55b-contrats.test.ts"
    ],
-   "statut": "AUTOMATISE"
+   "statut": "AUTOMATISE_PREPROD",
+   "preprod": "RP-55B"
   },
   {
    "id": "F-112",
@@ -2408,7 +2430,8 @@
    "trace": "Concurrence/migration — C23-C25 — DB/T3/migrations",
    "tests": [
     "src/test/e2e/scenarios/l43-o4-donnees-structurees.e2e.ts",
-    "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts"
+    "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts",
+    "src/test/e2e/scenarios/l55b-contrats.e2e.ts"
    ],
    "statut": "AUTOMATISE"
   },
@@ -3086,7 +3109,8 @@
    "attendu": "Invariant vérifié",
    "trace": "C34",
    "tests": [
-    "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts"
+    "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts",
+    "src/test/e2e/scenarios/l55b-contrats.e2e.ts"
    ],
    "statut": "AUTOMATISE"
   },
@@ -3847,7 +3871,8 @@
    "trace": "B33",
    "tests": [
     "src/test/e2e/scenarios/l41-o3a-consolidation-t3.e2e.ts",
-    "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts"
+    "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts",
+    "src/test/e2e/scenarios/l55b-contrats.e2e.ts"
    ],
    "statut": "AUTOMATISE"
   },
@@ -3873,7 +3898,9 @@
    "scenario": "Une fusion ne perd ni source, ni composante, ni historique, ni relation utile.",
    "attendu": "Invariant vérifié",
    "trace": "B33",
-   "tests": [],
+   "tests": [
+    "src/test/e2e/scenarios/l55b-contrats.e2e.ts"
+   ],
    "statut": "AUTOMATISE",
    "via": [
     "F-049",

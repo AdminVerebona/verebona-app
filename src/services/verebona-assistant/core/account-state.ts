@@ -119,6 +119,19 @@ async function biensDisponibles(accountId: number): Promise<BienLu[]> {
   return rows.map((r) => ({ id: Number(r.id), name: r.name, documents: Number(r.documents ?? 0), deadlines: Number(r.deadlines ?? 0) }));
 }
 
+/**
+ * Lot 55A — biens DISPONIBLES nommables sans ambiguïté (même règle que les
+ * exemples : `isAssetNameSuggestable`), pour le contexte des questions
+ * suggérées par T6. Bornés au compte, `limit` premiers (plus récents).
+ */
+export async function listNameableSuggestionAssets(accountId: number, limit: number): Promise<Array<SuggestionAsset & { id: number }>> {
+  const biens = await biensDisponibles(accountId);
+  return biens
+    .filter((b) => isAssetNameSuggestable(b.name, biens.filter((o) => o.id !== b.id).map((o) => o.name)))
+    .slice(0, limit)
+    .map((b) => ({ id: b.id, name: (b.name ?? '').replace(/\s+/g, ' ').trim(), documents: b.documents, ...(b.deadlines != null ? { deadlines: b.deadlines } : {}) }));
+}
+
 /** Identifiant du bien d'une fiche (`/assets/42`, `/assets/42/documents`). */
 export function assetIdFromRoute(route: string | null | undefined): number | null {
   const m = /^\/assets\/(\d{1,10})(\/|$)/.exec((route ?? '').split(/[?#]/)[0]);

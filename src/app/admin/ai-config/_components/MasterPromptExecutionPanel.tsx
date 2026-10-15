@@ -38,6 +38,8 @@ export interface StructuredInfo {
   context: Array<{ field: string; description: string; tasks: Array<{ task: string; requirement: 'requis' | 'optionnel' }> }>;
   references: Record<ExecutionMode, string>;
   scenarios: Array<{ id: string; task: string; description: string }>;
+  /** Lot 54 : configuration du texte de référence (contrats par défaut). Absente : premier contrat listé. */
+  defaults?: ExecutionConfig;
 }
 interface Preview {
   mode: ExecutionMode; task: string; versionNumber: number | null;
@@ -53,7 +55,7 @@ interface Preview {
 
 const MODE_LABEL: Record<ExecutionMode, string> = {
   STRUCTURED_CONTEXT: 'Contexte structuré',
-  LEGACY_TEMPLATE: 'Legacy (emplacements {{…}})',
+  LEGACY_TEMPLATE: 'Mode historique à emplacements',
 };
 
 const pre = 'mt-1 max-h-72 overflow-auto rounded bg-[color:var(--bg-page)] p-2 text-xs font-mono whitespace-pre-wrap text-[color:var(--text-secondary)]';
@@ -61,8 +63,8 @@ const pre = 'mt-1 max-h-72 overflow-auto rounded bg-[color:var(--bg-page)] p-2 t
 /** Résumé lisible d'une configuration (version active, historique). */
 export function executionSummary(e: ExecutionConfig | null): string {
   if (!e) return '';
-  if (e.mode === 'LEGACY_TEMPLATE') return MODE_LABEL.LEGACY_TEMPLATE;
-  return `${MODE_LABEL.STRUCTURED_CONTEXT} · entrée ${e.inputContractVersion ?? '—'} · sortie ${e.outputContractVersion ?? '—'} · TASK ${(e.allowedTasks ?? ['toutes']).join(', ')}`;
+  if (e.mode === 'LEGACY_TEMPLATE') return `Mode d’exécution : ${MODE_LABEL.LEGACY_TEMPLATE}`;
+  return `Mode d’exécution : ${MODE_LABEL.STRUCTURED_CONTEXT} · entrée ${e.inputContractVersion ?? '—'} · sortie ${e.outputContractVersion ?? '—'} · TASK ${(e.allowedTasks ?? ['toutes']).join(', ')}`;
 }
 
 function Volet({ titre, children, ouvert }: { titre: string; children: React.ReactNode; ouvert?: boolean }) {
@@ -86,7 +88,8 @@ export function MasterPromptExecutionPanel({
   versionTarget: number | 'active';
   disabled?: boolean;
   onChange?: (e: ExecutionConfig) => void;
-  onLoadReference?: (text: string) => void;
+  /** Lot 54 : le texte de référence du contexte structuré arrive AVEC sa configuration (jamais un ancien mode hérité). */
+  onLoadReference?: (text: string, execution?: ExecutionConfig) => void;
 }) {
   const cfg: ExecutionConfig = execution ?? { mode: 'LEGACY_TEMPLATE', inputContractVersion: null, outputContractVersion: null, allowedTasks: null };
   const [task, setTask] = useState(info.knownTasks[0] ?? '');
@@ -99,9 +102,10 @@ export function MasterPromptExecutionPanel({
   const changer = (patch: Partial<ExecutionConfig>) => {
     const next = { ...cfg, ...patch };
     if (patch.mode === 'STRUCTURED_CONTEXT') {
-      next.inputContractVersion = next.inputContractVersion ?? info.inputContracts[0] ?? null;
-      next.outputContractVersion = next.outputContractVersion ?? info.outputContracts[0] ?? null;
-      next.allowedTasks = next.allowedTasks ?? [...info.knownTasks];
+      // Lot 54 : contrats du texte de référence (T4 : v2), pas le premier listé.
+      next.inputContractVersion = next.inputContractVersion ?? info.defaults?.inputContractVersion ?? info.inputContracts[0] ?? null;
+      next.outputContractVersion = next.outputContractVersion ?? info.defaults?.outputContractVersion ?? info.outputContracts[0] ?? null;
+      next.allowedTasks = next.allowedTasks ?? (info.defaults?.allowedTasks ? [...info.defaults.allowedTasks] : [...info.knownTasks]);
     }
     onChange?.(next);
   };
@@ -121,6 +125,9 @@ export function MasterPromptExecutionPanel({
     <div className="rounded-lg border border-[color:var(--border-subtle)] p-3 space-y-3" data-testid="master-prompt-execution">
       <div className="space-y-1">
         <p className="text-sm font-medium text-[color:var(--text-primary)]">Exécution</p>
+        <p className="text-xs text-[color:var(--text-secondary)]" data-testid="master-prompt-execution-mode">
+          Mode d’exécution : {MODE_LABEL[cfg.mode]}
+        </p>
         {editable ? (
           <div className="flex flex-wrap items-center gap-2 text-xs">
             <label className="text-[color:var(--text-muted)]" htmlFor={`mode-${treatment}`}>Mode</label>
@@ -156,7 +163,7 @@ export function MasterPromptExecutionPanel({
             )}
           </div>
         ) : (
-          <p className="text-xs text-[color:var(--text-secondary)]">{executionSummary(cfg)}</p>
+          <p className="text-xs text-[color:var(--text-secondary)] break-words">{executionSummary(cfg)}</p>
         )}
         {editable && structure && (
           <div className="flex flex-wrap items-center gap-3 text-xs">
@@ -175,11 +182,14 @@ export function MasterPromptExecutionPanel({
         <p className="text-xs text-[color:var(--text-muted)]">
           {structure
             ? 'Les données sont transmises automatiquement au modèle (bloc EXECUTION_CONTEXT) : le texte est libre, aucun emplacement {{…}} ni titre de section n’est exigé.'
-            : 'Mode legacy : le texte doit contenir {{TASK}}, les emplacements de données et une section « BRANCHE TASK = … » par TASK.'}
-          {' '}Retour au mode legacy : choisir « Legacy » sur un brouillon (texte de référence legacy), ou réactiver une version legacy depuis l’historique.
+            : 'Mode historique à emplacements : le texte doit contenir {{TASK}}, les emplacements de données et une section « BRANCHE TASK = … » par TASK.'}
+          {' '}Retour au mode historique : le choisir sur un brouillon (texte de référence à emplacements), ou réactiver une version historique depuis l’historique.
         </p>
         {editable && onLoadReference && (
-          <Button size="sm" variant="outline" disabled={disabled || !info.references[cfg.mode]} onClick={() => onLoadReference(info.references[cfg.mode])}>
+          <Button size="sm" variant="outline" disabled={disabled || !info.references[cfg.mode]} onClick={() => onLoadReference(
+            info.references[cfg.mode],
+            cfg.mode === 'STRUCTURED_CONTEXT' && info.defaults ? { ...info.defaults } : undefined,
+          )}>
             Repartir du texte de référence ({MODE_LABEL[cfg.mode]})
           </Button>
         )}

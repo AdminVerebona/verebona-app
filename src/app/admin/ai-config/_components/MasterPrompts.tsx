@@ -442,7 +442,7 @@ function MasterPromptEditor({ treatment, onChanged }: { treatment: string; onCha
               treatment={treatment} info={detail.structured} execution={execution} editable
               versionTarget={draft.id} disabled={busy !== null}
               onChange={(e) => { setExecution(e); setDirty(true); }}
-              onLoadReference={(t) => { setTexte(t); setDirty(true); }}
+              onLoadReference={(t, e) => { setTexte(t); if (e) setExecution(e); setDirty(true); }}
             />
           )}
 
@@ -652,7 +652,11 @@ function RetiredPromptHistory({ h }: { h: RetiredHistory }) {
 
 // ─── Section ──────────────────────────────────────────────────────────────────
 
-export function MasterPrompts({ refreshKey }: { refreshKey?: number }) {
+export function MasterPrompts({ refreshKey, onChanged }: {
+  refreshKey?: number;
+  /** Lot 54 : une activation crée une révision de la configuration active — l'écran la relit. */
+  onChanged?: () => void;
+}) {
   const [prompts, setPrompts] = useState<Summary[] | null>(null);
   const [retires, setRetires] = useState<RetiredHistory[]>([]);
   const [erreur, setErreur] = useState<string | null>(null);
@@ -677,7 +681,7 @@ export function MasterPrompts({ refreshKey }: { refreshKey?: number }) {
         <h2 className="text-base font-semibold text-[color:var(--text-primary)]">Prompts maîtres</h2>
         <p className="text-xs text-[color:var(--text-muted)]">
           Modifier → Enregistrer → (éventuellement Tester) → Activer. Chaque prompt s’administre indépendamment ;
-          une ancienne version se réactive depuis l’historique.
+          activer (ou réactiver) un prompt l’applique à la configuration active, dont une nouvelle révision est enregistrée.
         </p>
       </div>
       {erreur && (
@@ -713,7 +717,7 @@ export function MasterPrompts({ refreshKey }: { refreshKey?: number }) {
           </summary>
           {ouverts.has(p.treatment) && (
             <div className="px-3 pb-3">
-              <MasterPromptEditor key={`${p.treatment}-${refreshKey ?? 0}`} treatment={p.treatment} onChanged={() => void charger()} />
+              <MasterPromptEditor key={`${p.treatment}-${refreshKey ?? 0}`} treatment={p.treatment} onChanged={() => { void charger(); onChanged?.(); }} />
             </div>
           )}
         </details>
