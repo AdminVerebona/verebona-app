@@ -19,7 +19,7 @@ import type { ToProcessActionView } from '@/services/to-process/to-process-query
 import type { MascotAction, MascotFamily, MascotSubject } from './types';
 import { MAX_ACTIONS_PER_SUBJECT } from './types';
 import type { AgendaDateRole } from '@/services/agenda/agenda-date-role';
-import { deadlineBlockedText, deadlineButtonLabel, deadlineExtActionText, deadlineNextText, deadlinePairText } from './deadline-label';
+import { deadlineBlockedText, deadlineButtonLabel, deadlineExtActionText, deadlineNextText, deadlinePairText, deadlinePhraseLabel } from './deadline-label';
 
 export interface MascotDocRow { id: number; title: string; at: string }
 export interface MascotExportRow { id: number; exportType: string; assetId: number; assetName: string; at: string }
@@ -189,7 +189,9 @@ function processingSubjects(raw: MascotRawData): MascotSubject[] {
         allowedHighlight: latest.title,
         occurrenceKey: `${code}:${latest.id}`,
         dedupeKeys: [`document:${latest.id}`],
-        secondaryLabel: `Voir ${q(latest.title)}`,
+        // Lot 55A : intitulé, la carte porte déjà « Voir → ».
+        secondaryLabel: latest.title,
+        tileTitle: latest.title,
       }),
       at: latest.at,
     });
@@ -216,7 +218,8 @@ function processingSubjects(raw: MascotRawData): MascotSubject[] {
         allowedHighlight: e.assetName,
         occurrenceKey: `PROC-EXPORT:${e.id}`,
         dedupeKeys: [`export:${e.id}`],
-        secondaryLabel: 'Voir les exports',
+        secondaryLabel: `Export ${q(libelle)}`,
+        tileTitle: libelle.charAt(0).toLocaleUpperCase('fr') + libelle.slice(1),
         assetId: e.assetId, assetName: e.assetName,
       }),
       at: e.at,
@@ -347,7 +350,9 @@ function dateSubjects(raw: MascotRawData): MascotSubject[] {
       allowedHighlight: date,
       occurrenceKey: `DATE-NEXT-2:${a.id}:${b.id}`,
       dedupeKeys: [`agenda:${a.id}`, `agenda:${b.id}`, 'date-next'],
-      secondaryLabel: voirA,
+      // Lot 55A : intitulés métier, jamais « Voir les échéances ».
+      secondaryLabel: deadlineButtonLabel(a),
+      tileTitle: `${deadlineButtonLabel(a)} et ${deadlinePhraseLabel(b)}`,
       assetId: a.assetId && a.assetId === b.assetId ? a.assetId : null,
       assetName: a.assetId && a.assetId === b.assetId ? a.assetName : null,
     }));
@@ -374,7 +379,9 @@ function dateSubjects(raw: MascotRawData): MascotSubject[] {
       allowedHighlight: date,
       occurrenceKey: `DATE-NEXT:${i.id}`,
       dedupeKeys: [`agenda:${i.id}`, 'date-next'],
-      secondaryLabel: 'Voir la prochaine échéance',
+      // Lot 55A : intitulé métier (« Contrôle technique »), jamais « Voir l'échéance ».
+      secondaryLabel: deadlineButtonLabel(i),
+      tileTitle: deadlineButtonLabel(i),
       assetId: i.assetId, assetName: i.assetName,
     }));
   }

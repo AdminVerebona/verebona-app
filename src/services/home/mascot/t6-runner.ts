@@ -42,6 +42,10 @@ import {
   T6FormulateOutput, T6_MASTER_PROMPT_CODE, T6_OUTPUT_SCHEMA_VERSION_V2, validateT6MasterOutput,
   type T6Input, type T6Message, type T6SubjectKind,
 } from './t6-contract';
+import {
+  promptSupportsSuggestions, validateT6Suggestions,
+  type T6Suggestion, type T6SuggestionBundle,
+} from './t6-suggestions';
 
 /** Branche FORMULATE du prompt maître T6 (CDC 15 §28) — seule opération de T6. */
 export const T6_MASTER_OPERATION = 't6_formulate';
@@ -94,6 +98,11 @@ export interface T6Outcome {
   architecture?: 'master';
   /** Ajustements serveur du master : R11 (repli par sujet), R8 (formulation stable). */
   adjustments?: string[];
+  /**
+   * Lot 55A : questions suggérées validées, issues de la MÊME sortie T6 que
+   * `messages`. `null`/absent : indisponibles (aucune question affichée).
+   */
+  suggestions?: T6Suggestion[] | null;
 }
 
 // ── Empreintes ───────────────────────────────────────────────────────────────
@@ -105,7 +114,17 @@ export { canonicalJson, sha256 };
  * master, qui ne sont donc plus jamais relues (les générations écrivent sous
  * `t6-output-v2`).
  */
-export function t6CacheKey(p: { accountId: number; input: T6Input; promptVersion: string; outputSchema?: string }): string {
+export function t6CacheKey(p: {
+  accountId: number; input: T6Input; promptVersion: string; outputSchema?: string;
+  /**
+   * Lot 55A : contexte des questions suggérées (message affiché, état du
+   * compte, biens, échéances). Présent, il fait partie de la clé : un
+   * changement pertinent du compte invalide les questions avec la bulle —
+   * jamais de questions anciennes sous un message nouveau. Absent : clé
+   * historique inchangée.
+   */
+  suggestionContext?: unknown;
+}): string {
   return sha256(canonicalJson({
     accountId: p.accountId,
     context: p.input.subjects,
@@ -113,6 +132,7 @@ export function t6CacheKey(p: { accountId: number; input: T6Input; promptVersion
     promptVersion: p.promptVersion,
     inputSchema: p.input.schemaVersion,
     outputSchema: p.outputSchema ?? T6_OUTPUT_SCHEMA_VERSION,
+    ...(p.suggestionContext != null ? { suggestionContext: p.suggestionContext } : {}),
   }));
 }
 
@@ -132,6 +152,23 @@ export async function getT6MasterPromptVersion(): Promise<string> {
     promptVersionId: config.masterPromptVersionId ?? null,
   });
   return `${version}|cfg:${config.configVersionId ?? 'code'}`;
+}
+
+/**
+ * Lot 55A — le prompt maître T6 EFFECTIF (version BO active, sinon fichier du
+ * dépôt) porte-t-il `{{SUGGESTION_CONTEXT}}` (R12) ? Non : une version BO
+ * antérieure est en service — aucune question suggérée (comportement
+ * prudent) tant qu'une nouvelle version n'est pas activée. Ne lève jamais.
+ */
+export async function t6SuggestionsAvailable(): Promise<boolean> {
+  try {
+    const config = await resolveOperationConfig(T6_MASTER_OPERATION);
+    // Même résolution que la passerelle (`configuredMasterText`) : texte
+    // administré en architecture master, sinon fichier du dépôt.
+    return promptSupportsSuggestions(config.promptArchitecture === 'master' ? config.masterPromptText : null);
+  } catch {
+    return false;
+  }
 }
 
 // ── Disjoncteur (BO-007) ─────────────────────────────────────────────────────
@@ -157,15 +194,30 @@ export function resetT6Breaker(): void { breaker.failures = 0; breaker.openUntil
 // ── Cache ────────────────────────────────────────────────────────────────────
 
 export async function readT6Cache(accountId: number, cacheKey: string, input: T6Input): Promise<T6Message[] | null> {
+  return (await readT6CacheEntry(accountId, cacheKey, input))?.messages ?? null;
+}
+
+/**
+ * Entrée du cache : textes et — lot 55A — questions suggérées de la même
+ * génération (`suggestions` : null si la génération n'en portait pas).
+ */
+export async function readT6CacheEntry(
+  accountId: number, cacheKey: string, input: T6Input, bundle?: T6SuggestionBundle | null,
+): Promise<{ messages: T6Message[]; suggestions: T6Suggestion[] | null } | null> {
   try {
     const r = (await pgClient.unsafe(
-      `SELECT messages FROM home_mascot_cache WHERE account_id = $1 AND cache_key = $2 LIMIT 1`,
+      bundle
+        ? `SELECT messages, suggestions FROM home_mascot_cache WHERE account_id = $1 AND cache_key = $2 LIMIT 1`
+        : `SELECT messages FROM home_mascot_cache WHERE account_id = $1 AND cache_key = $2 LIMIT 1`,
       [accountId, cacheKey] as never[],
-    )) as unknown as Array<{ messages: unknown }>;
+    )) as unknown as Array<{ messages: unknown; suggestions?: unknown }>;
     if (!r[0]) return null;
     // Cache illisible ou désaccordé : ignoré, jamais servi (§20).
     const v = validateT6Output(input, { messages: r[0].messages });
-    return v.ok ? v.messages : null;
+    if (!v.ok) return null;
+    // Questions revalidées contre le contexte COURANT (références de biens).
+    const suggestions = bundle && Array.isArray(r[0].suggestions) ? validateT6Suggestions(r[0].suggestions, bundle.assetIds) : null;
+    return { messages: v.messages, suggestions };
   } catch {
     return null;
   }
@@ -174,15 +226,29 @@ export async function readT6Cache(accountId: number, cacheKey: string, input: T6
 async function writeT6Cache(p: {
   accountId: number; cacheKey: string; contextHash: string; promptVersion: string;
   messages: T6Message[]; model: string | null; schemaVersion?: string;
+  /** Lot 55A : questions de la même génération (migration 0395). */
+  suggestions?: T6Suggestion[] | null;
 }): Promise<void> {
   try {
-    await pgClient.unsafe(
-      `INSERT INTO home_mascot_cache (account_id, cache_key, context_hash, prompt_version, schema_version, messages, model)
-       VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7)
-       ON CONFLICT (account_id, cache_key) DO NOTHING`,
-      [p.accountId, p.cacheKey, p.contextHash, p.promptVersion, p.schemaVersion ?? T6_OUTPUT_SCHEMA_VERSION,
-        JSON.stringify(p.messages), p.model] as never[],
-    );
+    if (p.suggestions) {
+      await pgClient.unsafe(
+        `INSERT INTO home_mascot_cache (account_id, cache_key, context_hash, prompt_version, schema_version, messages, model, suggestions)
+         VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8::jsonb)
+         ON CONFLICT (account_id, cache_key) DO NOTHING`,
+        [p.accountId, p.cacheKey, p.contextHash, p.promptVersion, p.schemaVersion ?? T6_OUTPUT_SCHEMA_VERSION,
+          JSON.stringify(p.messages), p.model,
+          // Les références de biens d'origine, revalidées à la relecture.
+          JSON.stringify(p.suggestions.map((x) => ({ question: x.question, assetRef: x.assetRef ?? null })))] as never[],
+      );
+    } else {
+      await pgClient.unsafe(
+        `INSERT INTO home_mascot_cache (account_id, cache_key, context_hash, prompt_version, schema_version, messages, model)
+         VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7)
+         ON CONFLICT (account_id, cache_key) DO NOTHING`,
+        [p.accountId, p.cacheKey, p.contextHash, p.promptVersion, p.schemaVersion ?? T6_OUTPUT_SCHEMA_VERSION,
+          JSON.stringify(p.messages), p.model] as never[],
+      );
+    }
     // Purge légère : les contextes d'il y a plus de 30 jours ne reviendront pas.
     if (Math.random() < 0.02) {
       await pgClient.unsafe(`DELETE FROM home_mascot_cache WHERE created_at < NOW() - INTERVAL '30 days'`, [] as never[]);
@@ -194,6 +260,8 @@ async function writeT6Cache(p: {
 
 export async function logT6(p: {
   accountId: number; contextHash: string; mode: T6Mode; outcome: T6Outcome; input: T6Input | null;
+  /** Lot 55A : contexte des questions, transmis à T6 (LOG-005 : ni plus, ni moins). */
+  suggestionContext?: unknown;
 }): Promise<void> {
   const o = p.outcome;
   // LOG-005 : une lecture du cache n'est pas un appel T6 — ni l'entrée ni la
@@ -209,7 +277,7 @@ export async function logT6(p: {
       [p.accountId, p.contextHash, p.mode, o.status, o.promptVersion, o.model ?? null,
         Boolean(o.usedFallbackModel), o.latencyMs ?? null, o.costMicros ?? null, o.traceId ?? null,
         // LOG-005 : rien de plus que ce qui a été transmis à T6.
-        !leger && p.input ? JSON.stringify(p.input) : null,
+        !leger && p.input ? JSON.stringify(p.suggestionContext != null ? { ...p.input, suggestionContext: p.suggestionContext } : p.input) : null,
         leger ? null
           : o.output !== undefined ? JSON.stringify(o.output) : (o.messages ? JSON.stringify({ messages: o.messages }) : null),
         o.error ?? null] as never[],
@@ -292,6 +360,7 @@ export function previousWording(
 async function generateMaster(p: {
   accountId: number; input: T6Input; cacheKey: string; contextHash: string; promptVersion: string; mode: T6Mode;
   kinds?: Array<T6SubjectKind | undefined>; pinned: Map<number, T6Message>;
+  suggestions?: T6SuggestionBundle | null;
 }, execute: T6Dependencies['execute']): Promise<T6Outcome> {
   const startedAt = Date.now();
   try {
@@ -300,7 +369,12 @@ async function generateMaster(p: {
       operationCode: T6_MASTER_OPERATION,
       accountId: p.accountId,
       // MODE=FORMULATE est imposé par la passerelle (branche de l'opération).
-      promptVariables: { INPUT_JSON: JSON.stringify(p.input) },
+      // Lot 55A : contexte des questions suggérées (R12), `null` sans questions
+      // — toujours fourni (un emplacement présent sans valeur est refusé).
+      promptVariables: {
+        INPUT_JSON: JSON.stringify(p.input),
+        SUGGESTION_CONTEXT: p.suggestions ? JSON.stringify(p.suggestions.context) : null,
+      },
       outputSchema: T6FormulateOutput,
       idempotencyKey: `mascot:${p.cacheKey}:${randomUUID()}`,
       callerMode: gatewayCallerMode(p.mode),
@@ -321,11 +395,16 @@ async function generateMaster(p: {
     breakerRecord(true);
     const messages = v.messages;
     const adjustments = v.adjustments;
+    // Lot 55A : questions de la MÊME sortie, validées à part (structure).
+    const suggestions = p.suggestions
+      ? validateT6Suggestions((res.data as { suggestions?: unknown } | null)?.suggestions, p.suggestions.assetIds)
+      : null;
     await writeT6Cache({
       accountId: p.accountId, cacheKey: p.cacheKey, contextHash: p.contextHash,
       promptVersion: p.promptVersion, messages, model: res.model, schemaVersion: T6_OUTPUT_SCHEMA_VERSION_V2,
+      suggestions,
     });
-    return { ...base, status: 'generated', messages, adjustments };
+    return { ...base, status: 'generated', messages, adjustments, suggestions };
   } catch (e) {
     // Lot 22 : plafond IA du mois du compte atteint — texte de secours
     // déterministe, sans compter d'échec au disjoncteur T6 (partagé par tous
@@ -367,7 +446,15 @@ const defaultDeps: T6Dependencies = {
  * Ne lève jamais.
  */
 export async function formulateWithT6(
-  p: { accountId: number; input: T6Input; contextHash: string; mode: T6Mode; kinds?: Array<T6SubjectKind | undefined> },
+  p: {
+    accountId: number; input: T6Input; contextHash: string; mode: T6Mode; kinds?: Array<T6SubjectKind | undefined>;
+    /**
+     * Lot 55A : contexte des questions suggérées (`loadT6SuggestionContext`).
+     * Présent : T6 rédige aussi les questions, dans le même appel ; il entre
+     * dans la clé du cache. Absent : comportement historique.
+     */
+    suggestions?: T6SuggestionBundle | null;
+  },
   deps: T6Dependencies = defaultDeps,
 ): Promise<T6Outcome> {
   let promptVersion: string;
@@ -382,30 +469,44 @@ export async function formulateWithT6(
     return { status: 'error', messages: null, promptVersion: null, error: (e as Error).message };
   }
 
-  const cacheKey = t6CacheKey({ accountId: p.accountId, input: p.input, promptVersion, outputSchema: T6_OUTPUT_SCHEMA_VERSION_V2 });
+  const bundle = p.suggestions ?? null;
+  const cacheKey = t6CacheKey({
+    accountId: p.accountId, input: p.input, promptVersion, outputSchema: T6_OUTPUT_SCHEMA_VERSION_V2,
+    suggestionContext: bundle?.context,
+  });
   // Cache du compte et bulles précédentes (R8) lus ensemble : un aller-retour
   // en base de moins sur le chemin de l'affichage.
   const [cached, prev] = await Promise.all([
-    readT6Cache(p.accountId, cacheKey, p.input),
+    readT6CacheEntry(p.accountId, cacheKey, p.input, bundle),
     deps.previousBubbles
       ? deps.previousBubbles(p.accountId, promptVersion).catch(() => [] as T6PreviousBubble[])
       : Promise.resolve(null),
   ]);
-  if (cached) return { status: 'cache_hit', messages: cached, promptVersion, architecture: 'master' };
+  if (cached) {
+    return {
+      status: 'cache_hit', messages: cached.messages, promptVersion, architecture: 'master',
+      ...(bundle ? { suggestions: cached.suggestions } : {}),
+    };
+  }
 
   // R8 dans le temps : même état qu'une bulle précédente → mêmes textes,
   // sans appel ; sujets inchangés → formulation conservée.
+  // Lot 55A : avec des questions à rédiger (contexte du compte changé, clé
+  // nouvelle), les textes précédents sont FIGÉS et T6 est appelé pour les
+  // questions seulement — la bulle ne se reformule pas.
   let pinned = new Map<number, T6Message>();
   if (prev) {
     const w = previousWording(p.input, prev, p.kinds);
-    if (w.reuse) {
+    if (w.reuse && bundle) {
+      w.reuse.forEach((m, i) => pinned.set(i, m));
+    } else if (w.reuse) {
       await writeT6Cache({
         accountId: p.accountId, cacheKey, contextHash: p.contextHash, promptVersion,
         messages: w.reuse, model: null, schemaVersion: T6_OUTPUT_SCHEMA_VERSION_V2,
       });
       return { status: 'cache_hit', messages: w.reuse, promptVersion, architecture: 'master', adjustments: ['r8_reused'] };
     }
-    pinned = w.pinned;
+    if (!w.reuse) pinned = w.pinned;
   }
 
   if (!breakerAllows()) {
@@ -414,13 +515,13 @@ export async function formulateWithT6(
 
   let run = inflight.get(cacheKey);
   if (!run) {
-    run = generateMaster({ accountId: p.accountId, input: p.input, cacheKey, contextHash: p.contextHash, promptVersion, mode: p.mode, kinds: p.kinds, pinned }, deps.execute)
+    run = generateMaster({ accountId: p.accountId, input: p.input, cacheKey, contextHash: p.contextHash, promptVersion, mode: p.mode, kinds: p.kinds, pinned, suggestions: bundle }, deps.execute)
       .finally(() => inflight.delete(cacheKey));
     inflight.set(cacheKey, run);
     // La génération qui s'achève après le délai d'affichage est journalisée
     // en pré-génération : elle n'a pas été vue (RUN-011).
     if (p.mode === 'display') {
-      void run.then((o) => { if (tardive.has(run!)) void logT6({ accountId: p.accountId, contextHash: p.contextHash, mode: 'pregen', outcome: o, input: p.input }); });
+      void run.then((o) => { if (tardive.has(run!)) void logT6({ accountId: p.accountId, contextHash: p.contextHash, mode: 'pregen', outcome: o, input: p.input, suggestionContext: bundle?.context }); });
     }
   }
 

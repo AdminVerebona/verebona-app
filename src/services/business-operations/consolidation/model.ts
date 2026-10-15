@@ -236,6 +236,51 @@ export function buildCandidateIdentity(c: CandidateRecord, ctx: IdentityContext)
   };
 }
 
+// ── Lot 55B : preuve périodique (échéance d'un contrat) ────────────────────
+
+/**
+ * Le candidat porte-t-il la preuve d'une ÉCHÉANCE (pure) : un montant de
+ * portée INSTALLMENT, ou une période facturée réelle (début < fin) ? Lue
+ * telle que T1 l'a extraite (aucune interprétation du libellé) : c'est un
+ * INDICE qui rend un contrat existant plausible pour la facture (M3 tranche),
+ * jamais une preuve de rattachement à lui seul.
+ */
+export function hasRecurringPeriod(id: Pick<CandidateIdentity, 'hints'>): boolean {
+  return id.hints.some((h) => h.amountScope === 'INSTALLMENT'
+    || (isIsoDate(h.periodStart) && isIsoDate(h.periodEnd) && (h.periodStart as string) < (h.periodEnd as string)));
+}
+
+/** Clé de la période facturée d'un candidat (première période réelle), sinon null. */
+export function billingPeriodKey(id: Pick<CandidateIdentity, 'hints'>): string | null {
+  const h = id.hints.find((x) => isIsoDate(x.periodStart) && isIsoDate(x.periodEnd) && (x.periodStart as string) < (x.periodEnd as string));
+  return h ? `${h.periodStart}/${h.periodEnd}` : null;
+}
+
+/**
+ * Lot 55B — les sources d'une Opération prouvent-elles une relation
+ * CONTRACTUELLE (pure) ? Toutes les sources documentaires sont compatibles
+ * avec un contrat (qualifiées CONTRACT, ou échéances périodiques qualifiées
+ * INTERVENTION / OTHER / sans type), au moins une est une échéance, ET : une
+ * source est qualifiée CONTRACT, ou au moins deux échéances portent des
+ * périodes facturées DIFFÉRENTES.
+ * Une installation ou une réparation ponctuelle (aucune période) l'empêche :
+ * l'Opération garde son type. Ne s'applique qu'à des sources que T3 a déjà
+ * réunies (M0 / M1 / M3) — jamais une raison de rattacher.
+ */
+export function recurringContractEvidence(sources: readonly SourceContribution[]): boolean {
+  const docs = sources.filter((s) => !s.identity.agenda && !s.identity.structured);
+  if (!docs.length) return false;
+  const compatibles = docs.every((s) => s.identity.type === 'CONTRACT'
+    || ((s.identity.type === null || s.identity.type === 'INTERVENTION' || s.identity.type === 'OTHER') && hasRecurringPeriod(s.identity)));
+  if (!compatibles) return false;
+  // Au moins une échéance : une Opération qualifiée autrement dont les seules
+  // sources sont des documents contractuels garde son type (C5-11, F-055).
+  if (!docs.some((s) => hasRecurringPeriod(s.identity))) return false;
+  if (docs.some((s) => s.identity.type === 'CONTRACT')) return true;
+  const periodes = new Set(docs.map((s) => billingPeriodKey(s.identity)).filter((k): k is string => k !== null));
+  return periodes.size >= 2;
+}
+
 // ── Composantes financières (C12) ──────────────────────────────────────────
 
 export interface DesiredComponent {
@@ -254,6 +299,12 @@ export interface DesiredComponent {
   /** Rôle de la source qui la porte (règle de facture totale). */
   sourceRole: SourceRole | null;
   label: string | null;
+  /**
+   * Lot 55B (D) : ce qui distingue ce fait économique d'un autre de même
+   * montant — référence du document, date ou période, portée (acompte /
+   * solde / frais), ou RIEN (`NONE` : ni référence, ni date, ni période).
+   */
+  identityBasis?: 'REFERENCE' | 'DATE' | 'PERIOD' | 'SCOPE' | 'NONE';
 }
 
 /** Référence économique PROPRE au document, selon son rôle (identité C12.1). */
@@ -330,10 +381,15 @@ export function componentsFromIdentity(id: CandidateIdentity): DesiredComponent[
         ? empreinte(['v1', kind, scope, ref, periodStart, periodEnd])
         : empreinte(['v1', kind, scope, h.currency, h.amountMinor, economicDate, periodStart, periodEnd]);
     if (out.has(fingerprint)) continue;
+    const identityBasis: DesiredComponent['identityBasis'] = scope === 'FEE' || scope === 'DEPOSIT' || scope === 'BALANCE' ? 'SCOPE'
+      : ref ? 'REFERENCE' : periodStart || periodEnd ? 'PERIOD' : economicDate ? 'DATE' : 'NONE';
     const eur = h.currency !== 'EUR' && h.currency !== 'XXX' && isMinorAmount(h.amountEurMinor) ? h.amountEurMinor : null;
     out.set(fingerprint, {
       fingerprint, kind, amountMinor: h.amountMinor, currency: h.currency, amountEurCents: eur, economicDate, periodStart, periodEnd, scope,
       sourceRole: id.role, label: null,
+      // Lot 55B : règle d'identité insuffisante réservée aux DOCUMENTS (une saisie
+      // de la fiche ou de l'agenda garde son autorité propre, lots 43 / 47B).
+      ...(id.structured || id.agenda ? {} : { identityBasis }),
       ...(h.currency === 'XXX' && h.currencyCandidates?.length ? { currencyCandidates: h.currencyCandidates.filter((c) => isIsoCurrency(c)).slice(0, 3) } : {}),
     });
   }
@@ -392,15 +448,18 @@ export interface AmountConflict {
 export function consolidateComponentsDetailed(
   contributions: ReadonlyArray<{ sourceId: number; components: DesiredComponent[] }>,
   choices?: ReadonlyMap<string, AmountChoice>,
-): { components: ComponentContribution[]; conflicts: AmountConflict[] } {
+): { components: ComponentContribution[]; conflicts: AmountConflict[]; uncertain: UncertainDuplicate[] } {
   const par = new Map<string, ComponentContribution>();
   const valeurs = new Map<string, Array<{ amountMinor: number; currency: string; sourceIds: number[] }>>();
   /** Lot 54D (E03) : empreintes dont deux sources donnent des contre-valeurs EUR différentes. */
   const contreValeursContradictoires = new Set<string>();
   const contreValeurVue = new Set<string>();
   const ordonnees = [...contributions].sort((a, b) => a.sourceId - b.sourceId);
+  /** Lot 55B (D) : documents sans référence, ni date, ni période, par empreinte. */
+  const sansIdentite = new Map<string, number[]>();
   for (const { sourceId, components } of ordonnees) {
     for (const c of components) {
+      if (c.identityBasis === 'NONE') sansIdentite.set(c.fingerprint, [...new Set([...(sansIdentite.get(c.fingerprint) ?? []), sourceId])]);
       const opts = valeurs.get(c.fingerprint) ?? [];
       const o = opts.find((x) => x.amountMinor === c.amountMinor && x.currency === c.currency);
       if (o) { if (!o.sourceIds.includes(sourceId)) o.sourceIds.push(sourceId); } else opts.push({ amountMinor: c.amountMinor, currency: c.currency, sourceIds: [sourceId] });
@@ -425,6 +484,40 @@ export function consolidateComponentsDetailed(
         par.set(c.fingerprint, { ...c, sourceIds: [sourceId] });
       }
       if (c.amountEurCents !== null) contreValeurVue.add(c.fingerprint);
+    }
+  }
+  // Lot 55B (D) : identité économique insuffisante — jamais d'addition ni
+  // d'effacement arbitraire.
+  //   · une source SANS référence (copie dont le numéro n'a pas été lu) dont
+  //     le montant, la devise et la date (ou la période) sont ceux d'un fait
+  //     IDENTIFIÉ par sa référence : même fait, une preuve de plus ;
+  //   · une source sans référence, ni date, ni période (`NONE`) : son montant
+  //     n'est compté qu'une fois avec un fait de même rôle et de même montant
+  //     (copie ou autre échéance ?) — l'excédent reste CONNU, hors total
+  //     (montant « UNCERTAIN_DUPLICATE »), jamais additionné ni perdu.
+  const uncertain: UncertainDuplicate[] = [];
+  const memeValeur = (a: ComponentContribution, b: ComponentContribution) =>
+    a.kind === b.kind && a.currency === b.currency && a.amountMinor === b.amountMinor && a.currency !== 'XXX';
+  for (const [fp, faible] of [...par]) {
+    if (faible.identityBasis !== 'DATE' && faible.identityBasis !== 'PERIOD' && faible.identityBasis !== 'NONE') continue;
+    if ((valeurs.get(fp) ?? []).length > 1) continue;
+    const fort = [...par.values()].find((x) => x !== faible && x.identityBasis === 'REFERENCE' && memeValeur(x, faible)
+      && (faible.identityBasis === 'NONE'
+        || (faible.economicDate !== null && x.economicDate === faible.economicDate)
+        || (faible.periodStart !== null && x.periodStart === faible.periodStart && x.periodEnd === faible.periodEnd)));
+    const cible = fort ?? (faible.identityBasis === 'NONE'
+      ? [...par.values()].find((x) => x !== faible && x.identityBasis !== undefined && memeValeur(x, faible) && x.sourceIds[0] < faible.sourceIds[0])
+      : undefined);
+    if (!cible) continue;
+    for (const id of faible.sourceIds) if (!cible.sourceIds.includes(id)) cible.sourceIds.push(id);
+    par.delete(fp);
+    valeurs.delete(fp);
+    if (faible.identityBasis === 'NONE') uncertain.push({ fingerprint: cible.fingerprint, absorbedFingerprint: fp, sourceIds: [...faible.sourceIds] });
+  }
+  for (const c of par.values()) {
+    const docs = sansIdentite.get(c.fingerprint) ?? [];
+    if (docs.length > 1 && (valeurs.get(c.fingerprint) ?? []).length < 2) {
+      uncertain.push({ fingerprint: c.fingerprint, absorbedFingerprint: c.fingerprint, sourceIds: docs.slice(1) });
     }
   }
   const conflicts: AmountConflict[] = [];
@@ -460,7 +553,22 @@ export function consolidateComponentsDetailed(
   return {
     components: all.filter((c) => !(totale && c.kind === 'REALIZED_COST' && (c.scope === 'DEPOSIT' || c.scope === 'BALANCE'))),
     conflicts,
+    uncertain,
   };
+}
+
+/**
+ * Lot 55B (D) : montant d'une source dont l'identité économique ne permet pas
+ * de dire s'il s'agit d'une copie ou d'un autre fait (ni référence, ni date,
+ * ni période) — compté UNE fois, l'excédent tenu hors total.
+ */
+export interface UncertainDuplicate {
+  /** Composante retenue (comptée une fois). */
+  fingerprint: string;
+  /** Empreinte de la contribution non additionnée. */
+  absorbedFingerprint: string;
+  /** Sources dont le montant n'est pas additionné. */
+  sourceIds: number[];
 }
 
 // ── État consolidé de l'Opération (C8, C11.1, C10, C13) ────────────────────
@@ -526,15 +634,21 @@ export function consolidateOperationState(
   sources: readonly SourceContribution[],
   today: string,
   amountChoices?: ReadonlyMap<string, AmountChoice>,
+  opts: { recurringRequalification?: boolean } = {},
 ): ConsolidatedState {
   const srcs = [...sources].sort((a, b) => a.sourceId - b.sourceId);
   // Type : celui de l'Opération ; à défaut, le type non nul commun des candidats (F-054).
   // Lot 48 (C7.7, F-055) : OTHER → type connu commun à toutes les sources typées (même identité).
   const types = [...new Set(srcs.map((s) => s.identity.type).filter((t): t is BusinessOperationTypeCode => t !== null))];
   const commun = types.length === 1 ? types[0] : null;
-  const type = currentType === null ? commun
+  let type = currentType === null ? commun
     : currentType === 'OTHER' && commun !== null && commun !== 'OTHER' ? commun
       : currentType;
+  // Lot 55B (A) : échéances d'un même contrat réunies par T3 (M0 / M1 / M3) —
+  // l'Opération est la relation contractuelle, même si T1 a qualifié une
+  // facture d'« intervention » ou sans type (jamais une installation ponctuelle).
+  if ((type === null || type === 'INTERVENTION' || type === 'OTHER') && opts.recurringRequalification !== false
+    && recurringContractEvidence(srcs)) type = 'CONTRACT';
 
   // Statut (C8, B7) : seules les sources CERTAINES établissent la réalisation ou l'annulation.
   const certaines = srcs.filter((s) => s.identity.confidence === 'certain');
@@ -606,7 +720,7 @@ export function consolidateOperationState(
     }
   }
 
-  const { components, conflicts: amountConflicts } = consolidateComponentsDetailed(
+  const { components, conflicts: amountConflicts, uncertain } = consolidateComponentsDetailed(
     srcs.map((s) => ({ sourceId: s.sourceId, components: componentsFromIdentity(s.identity) })), amountChoices);
 
   // Lot 53D (D9) : frais annexes d'un ACHAT (portée FEE) — isolés, jamais
@@ -619,6 +733,12 @@ export function consolidateOperationState(
       return false;
     })
     : components;
+
+  // Lot 55B (D) : montants non additionnés faute d'identité économique suffisante.
+  for (const u of uncertain) {
+    const c = retenues.find((x) => x.fingerprint === u.fingerprint);
+    if (c) sideAmounts.push({ ...sideAmountOf('UNCERTAIN_DUPLICATE', c), fingerprint: u.absorbedFingerprint === u.fingerprint ? `${u.fingerprint}:dup` : u.absorbedFingerprint, sourceIds: [...u.sourceIds] });
+  }
 
   // Lot 53D (Q16) : capital emprunté — détail du financement, jamais une composante.
   let principal: { amountMinor: number; currency: string } | null = null;
@@ -656,7 +776,7 @@ export function consolidateOperationState(
 
 // ── Lot 53D : montants hors total (D9) et devise confirmée (D2) ───────────
 
-export const SIDE_AMOUNT_NATURES = ['ANCILLARY_FEE', 'DOCUMENT_AMOUNT_DIFFERS'] as const;
+export const SIDE_AMOUNT_NATURES = ['ANCILLARY_FEE', 'DOCUMENT_AMOUNT_DIFFERS', 'UNCERTAIN_DUPLICATE'] as const;
 export type SideAmountNature = (typeof SIDE_AMOUNT_NATURES)[number];
 
 /**
@@ -665,7 +785,10 @@ export type SideAmountNature = (typeof SIDE_AMOUNT_NATURES)[number];
  *     immatriculation…) — préparés pour le futur TCO ;
  *   · DOCUMENT_AMOUNT_DIFFERS : prix (ou prix de vente) d'un document qui
  *     diffère de la valeur SAISIE sur la fiche — la saisie reste la
- *     référence, l'écart est exposé, jamais écrasé ni additionné.
+ *     référence, l'écart est exposé, jamais écrasé ni additionné ;
+ *   · UNCERTAIN_DUPLICATE (lot 55B) : montant d'une source sans référence, ni
+ *     date, ni période, égal à un fait déjà compté — copie ou autre échéance,
+ *     on ne sait pas : compté une fois, l'excédent exposé ici.
  */
 export interface SideAmount {
   nature: SideAmountNature;

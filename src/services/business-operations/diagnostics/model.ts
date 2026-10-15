@@ -190,6 +190,10 @@ const REASONS: Readonly<Record<string, string>> = {
   NO_MATCH_ESTABLISHED: 'aucune Opération correspondante, source certaine : création',
   USER_DISTINCT_OPERATION: 'déclarée distincte par l’utilisateur : création',
   M3_DISTINCT: 'comparaison sémantique certaine : réalité distincte, création',
+  // Lot 55B : factures d'un même contrat.
+  RETRO_MERGE: 'réexamen rétroactif : même réalité établie, Opérations fusionnées',
+  T3_RETRO_MERGE: 'réexamen rétroactif : même réalité établie (fusion)',
+  T3_TYPE_RECURRING_CONTRACT: 'échéances d’un même contrat : requalifiée en contrat',
   USER_CLAIM_FORM: 'formulaire Sinistre saisi par l’utilisateur',
   LEGACY_CLAIM_FORM_RESYNC: 'reprise de l’ancien formulaire Sinistre',
   T3_CREATE_NEW: 'création par la consolidation T3',
@@ -298,6 +302,52 @@ export function m3ProgressLabel(v: M3ProgressView | null): string {
   const motif = v.detail ? ` (${M3_DETAIL_LABELS[v.detail] ?? v.detail})` : '';
   const lot = v.total > 0 ? ` · ${v.examined} examinée(s), ${v.batch.length} dans le lot courant, ${v.remaining} restante(s) sur ${v.total}` : '';
   return `${etat}${motif}${lot}`;
+}
+
+// ── Lot 55B (E) : état de réconciliation d'une Opération ───────────────────
+
+export type ReconciliationState = 'A_JOUR' | 'EN_ATTENTE' | 'BLOQUEE' | 'JAMAIS';
+
+export interface ReconciliationView {
+  state: ReconciliationState;
+  label: string;
+  /** Documents encore en file T3, en attente du modèle (M3) ou de l'utilisateur, réexamen rétroactif en cours. */
+  pending: number;
+  /** Documents en erreur technique, IA en échec ou indisponible, cartes non synchronisées. */
+  blocked: number;
+  lastReconciledAt: string | null;
+}
+
+/**
+ * État de réconciliation (pure) : jamais « à jour » tant qu'un document du
+ * même bien (ou rattaché / proposé à l'Opération) reste bloqué ou en attente
+ * — le résultat affiché n'est alors pas définitif.
+ */
+export function reconciliationView(x: { pending: number; blocked: number; lastReconciledAt: string | null; active: boolean }): ReconciliationView {
+  const base = { pending: x.pending, blocked: x.blocked, lastReconciledAt: x.lastReconciledAt };
+  if (x.blocked > 0) return { ...base, state: 'BLOQUEE', label: `non définitive : ${x.blocked} document(s) bloqué(s) (erreur technique ou IA indisponible), reprise automatique` };
+  if (x.pending > 0) return { ...base, state: 'EN_ATTENTE', label: `non définitive : ${x.pending} document(s) en cours d’examen (file T3, IA ou arbitrage utilisateur)` };
+  if (x.active && !x.lastReconciledAt) return { ...base, state: 'JAMAIS', label: 'aucune réconciliation T3 enregistrée depuis le lot 55B (prochain passage)' };
+  return { ...base, state: 'A_JOUR', label: 'à jour : aucun traitement en attente' };
+}
+
+const AI_RUN_LABELS: Readonly<Record<string, string>> = {
+  DONE: 'IA exécutée',
+  DEFERRED: 'IA différée',
+  ERROR: 'IA en échec (nouvel essai prévu)',
+  PROMPT_UNAVAILABLE: 'IA indisponible (branche OPERATION_MATCH absente du prompt actif)',
+  TOO_MANY_CANDIDATES: 'IA différée (reprise progressive)',
+};
+
+/**
+ * Exécution IA (M3) d'un candidat, pour le BO (pure) : réalisée, différée,
+ * en échec, indisponible, attendue, ou sans objet (rapprochement déterministe).
+ */
+export function aiRunLabel(detail: Record<string, unknown> | null | undefined, outcome: string | null, reason: string | null): string {
+  const m3 = (detail?.m3 ?? null) as { status?: string; detail?: string } | null;
+  if (m3?.status) return `${AI_RUN_LABELS[m3.status] ?? m3.status}${m3.detail ? ` (${M3_DETAIL_LABELS[m3.detail] ?? m3.detail})` : ''}`;
+  if (outcome === 'HOLD_UNRESOLVED' && reason === 'M3_REQUIRED') return 'IA attendue (prochain passage T3)';
+  return 'sans appel IA (règles déterministes)';
 }
 
 // ── Montant net indicatif (B23) ─────────────────────────────────────────────

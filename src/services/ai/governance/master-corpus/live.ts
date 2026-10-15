@@ -147,7 +147,9 @@ const BUILDERS: Record<string, Builder> = {
   },
   async t6_formulate(c) {
     const input = ctx<{ input?: unknown }>(c).input;
-    return input ? { INPUT_JSON: JSON.stringify(input) } : null;
+    // Lot 55A : emplacement facultatif des questions suggérées — `null` (bulle seule).
+    const suggestions = ctx<{ suggestionContext?: unknown }>(c).suggestionContext ?? null;
+    return input ? { INPUT_JSON: JSON.stringify(input), SUGGESTION_CONTEXT: suggestions ? JSON.stringify(suggestions) : null } : null;
   },
 };
 

@@ -58,6 +58,15 @@ export async function operationMatchContext(
   const noms = new Map((await rows<{ id: number; name: string | null }>(r, sql`
     SELECT id, name FROM assets WHERE account_id = ${accountId}
        AND id = ANY(${intArray([...identity.assetIds])}::int[])`)).map((x) => [Number(x.id), x.name ?? `bien ${x.id}`]));
+  // Lot 55B (B) : équipements nommés (bornés au compte par le bien parent).
+  const equipements = identity.equipmentIds.length ? (await rows<{ id: number; name: string | null }>(r, sql`
+    SELECT e.id, e.name FROM equipments e JOIN assets a ON a.id = e.asset_id
+     WHERE a.account_id = ${accountId} AND e.id = ANY(${intArray(identity.equipmentIds)}::int[]) ORDER BY e.id`))
+    .map((x) => x.name ?? `équipement ${x.id}`) : [];
+  // Lot 55B (B) : périodes économiques des montants (échéances d'un contrat).
+  const periodes = identity.hints
+    .filter((h) => h.periodStart || h.periodEnd || h.amountScope === 'INSTALLMENT')
+    .map((h) => `${h.periodStart ?? '?'}→${h.periodEnd ?? '?'} ${h.amountScope ?? h.role} ${montant(h.amountMinor, h.currency)}${h.economicDate ? ` (date ${h.economicDate})` : ''}`);
 
   const subject: OperationMatchSubject = {
     document: { title: doc?.title ?? null, documentType: doc?.document_type_code ?? null, documentDate: doc?.document_date ?? null },
@@ -71,6 +80,8 @@ export async function operationMatchContext(
       references: identity.refs.map((x) => `${x.kind}:${x.value}`),
       dates: dates({ ...identity.dates }),
       amounts: identity.hints.map((h) => `${h.role}${h.amountScope ? `/${h.amountScope}` : ''} ${montant(h.amountMinor, h.currency)}`),
+      ...(periodes.length ? { periods: periodes } : {}),
+      ...(equipements.length ? { equipments: equipements } : {}),
     },
   };
 
@@ -84,7 +95,17 @@ export async function operationMatchContext(
              COALESCE((SELECT array_agg(r.reference_kind || ':' || r.reference_value ORDER BY r.reference_kind, r.normalized_value)
                          FROM business_operation_references r WHERE r.operation_id = o.id AND r.active), '{}') AS refs,
              COALESCE((SELECT array_agg(c.kind || ' ' || to_char(c.amount_minor / 100.0, 'FM999999999990.00') || ' ' || c.currency ORDER BY c.id)
-                         FROM business_operation_financial_components c WHERE c.operation_id = o.id AND c.active), '{}') AS amounts
+                         FROM business_operation_financial_components c WHERE c.operation_id = o.id AND c.active), '{}') AS amounts,
+             -- Lot 55B (B) : périodes facturées, équipements, détail du contrat.
+             COALESCE((SELECT array_agg(COALESCE(c.period_start::text, '?') || '→' || COALESCE(c.period_end::text, '?') || ' '
+                                        || to_char(c.amount_minor / 100.0, 'FM999999999990.00') || ' ' || btrim(c.currency) ORDER BY c.period_start, c.id)
+                         FROM business_operation_financial_components c
+                        WHERE c.operation_id = o.id AND c.active AND (c.period_start IS NOT NULL OR c.period_end IS NOT NULL)), '{}') AS periods,
+             COALESCE((SELECT array_agg(COALESCE(e.name, 'équipement ' || e.id) ORDER BY e.id) FROM business_operation_equipment_links l
+                        JOIN equipments e ON e.id = l.equipment_id WHERE l.operation_id = o.id AND l.active), '{}') AS equipments,
+             (SELECT json_build_object('reference', d.contract_reference, 'periodicity', d.periodicity,
+                                       'effectiveFrom', d.effective_from::text, 'effectiveTo', d.effective_to::text)
+                FROM business_operation_contract_details d WHERE d.operation_id = o.id) AS contract
         FROM business_operations o
        WHERE o.account_id = ${accountId} AND o.id = ANY(${intArray(ids)}::bigint[])
        ORDER BY o.id`);
@@ -110,6 +131,9 @@ export async function operationMatchContext(
         amounts: ((o.amounts as string[] | null) ?? []).map(String),
         documents: docs.filter((d) => Number(d.operation_id) === id)
           .map((d) => ({ title: String(d.title ?? 'Document'), role: d.role ?? null, summary: d.summary ? String(d.summary).slice(0, 300) : null })),
+        ...(((o.periods as string[] | null) ?? []).length ? { periods: (o.periods as string[]).map(String) } : {}),
+        ...(((o.equipments as string[] | null) ?? []).length ? { equipments: (o.equipments as string[]).map(String) } : {}),
+        ...(o.contract ? { contract: o.contract as OperationMatchCandidate['contract'] } : {}),
       });
     }
   }

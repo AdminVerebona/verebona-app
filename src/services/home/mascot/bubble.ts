@@ -71,29 +71,33 @@ export function tileFor(s: MascotSubject, today: string, opts: TileOptions = {})
     return { tone: 'amber', icon: 'circle-alert', attention: true, assetName: asset, label: 'Préciser l’échéance', status: 'À préciser', kind: 'action' };
   }
   if (code === 'DATE-NEXT' || code === 'DATE-NEXT-2') {
+    // Lot 55A (T6 / T2) : intitulé MÉTIER (« Contrôle technique »), bien et
+    // date complète (« Cupra · 18 avril 2028 ») — l'action « Voir → » est
+    // portée par la carte, jamais répétée dans le titre. Une date
+    // prévisionnelle le reste (DAT-003).
     const label = str(f.dateLabel);
     const estimee = f.dateNature === 'prévisionnelle' ? ' (estimée)' : '';
-    // Lot 50 : une date à respecter est « à prévoir », un événement planifié « prévu ».
-    const statut = !label ? 'À venir'
-      : code === 'DATE-NEXT' && f.dateRole === 'SCHEDULED_EVENT' ? `Prévu le ${label}`
-      : code === 'DATE-NEXT' && f.dateRole === 'DEADLINE' ? `À prévoir pour le ${label}${estimee}`
-      : `Le ${label}${estimee}`;
+    const deux = code === 'DATE-NEXT-2';
+    const biens = deux ? [...new Set([str(f.firstAssetName), str(f.secondAssetName)].filter((x): x is string => !!x))] : [];
     return {
       tone: 'blue', icon: 'calendar-days', attention: false,
-      assetName: asset ?? str(f.firstAssetName),
-      label: code === 'DATE-NEXT-2' ? 'Voir les échéances' : 'Voir l’échéance',
-      status: statut,
+      assetName: asset ?? (biens.length ? biens.join(' et ') : null),
+      label: str(s.tileTitle) ?? (deux
+        ? [str(f.firstTitle), str(f.secondTitle)].filter(Boolean).join(' et ') || 'Prochaines échéances'
+        : str(f.title) ?? 'Prochaine échéance'),
+      status: label ? `${label}${estimee}` : 'À venir',
       kind: 'info',
     };
   }
   if (code === 'PROC-DOC-UPLOAD' || code === 'PROC-DOC-ANALYSIS') {
+    // Lot 55A : le document est l'intitulé (plus de « Voir le document » + « Voir »).
     return {
-      tone: 'blue', icon: 'file-text', attention: false, assetName: str(f.documentTitle),
-      label: 'Voir le document', status: code === 'PROC-DOC-UPLOAD' ? 'En cours d’envoi' : 'En analyse', kind: 'info',
+      tone: 'blue', icon: 'file-text', attention: false, assetName: null,
+      label: str(s.tileTitle) ?? str(f.documentTitle) ?? 'Document', status: code === 'PROC-DOC-UPLOAD' ? 'En cours d’envoi' : 'En analyse', kind: 'info',
     };
   }
   if (code === 'PROC-EXPORT') {
-    return { tone: 'blue', icon: 'file-text', attention: false, assetName: asset, label: 'Voir les exports', status: 'En préparation', kind: 'info' };
+    return { tone: 'blue', icon: 'file-text', attention: false, assetName: asset, label: str(s.tileTitle) ?? 'Export', status: 'En préparation', kind: 'info' };
   }
   if (code === 'ONB-ASSET') {
     return { tone: 'blue', icon: 'plus', attention: true, assetName: null, label: 'Ajouter un premier bien', status: 'Maison, véhicule, objet…', kind: 'action' };
@@ -101,7 +105,7 @@ export function tileFor(s: MascotSubject, today: string, opts: TileOptions = {})
   if (code === 'ONB-DOC') {
     return { tone: 'green', icon: 'download', attention: true, assetName: asset, label: 'Déposer un document', status: 'Je le lis et le range pour vous', kind: 'action' };
   }
-  return { tone: 'blue', icon: 'circle-alert', attention: s.requiresAttention, assetName: asset, label: s.actions[0]?.label ?? 'Voir', status: 'À voir', kind: s.requiresAttention ? 'action' : 'info' };
+  return { tone: 'blue', icon: 'circle-alert', attention: s.requiresAttention, assetName: asset, label: str(s.tileTitle) ?? str(s.secondaryLabel) ?? s.actions[0]?.label ?? 'Information', status: 'À voir', kind: s.requiresAttention ? 'action' : 'info' };
 }
 
 /** AAAA-MM-JJ, Europe/Paris (même référence que le collecteur). */

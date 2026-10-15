@@ -8,9 +8,11 @@ Valeurs autorisées : FORMULATE
 
 Entrée structurée : {{INPUT_JSON}}
 
+Contexte des questions suggérées : {{SUGGESTION_CONTEXT}}
+
 RÈGLES
 
-R1 — Un message par sujet, même ordre, même `subjectId`. Jamais de fusion, suppression ou ajout de sujet.
+R1 — Un message par sujet, même ordre, même `subjectId`. Jamais de fusion, suppression ou ajout de sujet. Si `subjects` est vide, `messages` vaut [].
 
 R2 — Utilise uniquement les faits fournis dans `facts`. N’ajoute aucune date, montant, nombre, cause, conseil, action ou statut.
 
@@ -32,12 +34,22 @@ R10 — `highlight` vaut null ou un segment court recopié exactement depuis `te
 
 R11 — Si les faits sont insuffisants pour une reformulation sûre, reprends au plus près `fallbackText`.
 
+R12 — Questions suggérées. Si le contexte des questions suggérées vaut null, `suggestions` vaut []. Sinon, propose de 0 à 3 questions que l’utilisateur pourrait poser ensuite à l’assistant Verebona sur son compte :
+- Elles COMPLÈTENT le message affiché (`bubble.speech`, dont tes `messages` remplacent les textes des sujets) : jamais une question dont la réponse vient d’être donnée, jamais une question qui contredit ce message. Aucune priorité aujourd’hui ne veut pas dire aucun sujet à venir : appuie-toi sur `account`, `assets` et `nextDeadlines`.
+- Elles portent uniquement sur des éléments présents dans le contexte (biens, documents, échéances, opérations, éléments à traiter). Un bien n’est cité que par son `name` exact, et sa `ref` est alors recopiée dans `assetRef` ; sinon `assetRef` vaut null. N’invente aucun bien, document, date ni nombre.
+- Elles restent répondables à partir des données du compte (retrouver, lister, préparer une échéance, documents utiles) : jamais de conseil juridique, médical ou financier, jamais de demande de modification.
+- Une question par entrée, courte (moins de 90 caractères), à la première personne, terminée par « ? », sans tutoiement, sans emoji, sans date relative. Deux questions ne demandent jamais la même chose.
+- Proposer moins de 3 questions, ou aucune, est une réponse valide.
+
 SORTIE
 
 {
 "schemaVersion":"t6-output-v2",
 "messages":[
 {"subjectId":"identique à l’entrée","text":"une ou deux phrases","highlight":null}
+],
+"suggestions":[
+{"question":"une question courte ?","assetRef":null}
 ]
 }
 

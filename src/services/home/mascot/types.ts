@@ -80,8 +80,16 @@ export interface MascotSubject {
   occurrenceKey: string;
   /** Doublons fonctionnels (SEL-003, UX-008) : même clé = même sujet métier. */
   dedupeKeys: string[];
-  /** Libellé court quand le sujet n'est proposé qu'en élément secondaire. */
+  /**
+   * Libellé court quand le sujet n'est proposé qu'en élément secondaire.
+   * Lot 55A : un intitulé, jamais « Voir … » (la carte porte déjà « Voir → »).
+   */
   secondaryLabel: string;
+  /**
+   * Lot 55A : intitulé MÉTIER de la carte du sujet (« Contrôle technique »),
+   * calculé côté serveur à partir des données structurées. Jamais transmis à T6.
+   */
+  tileTitle?: string | null;
   /** Bien concerné, pour la question « Que sais-tu sur … ? » (Q-ASSET). */
   assetId?: number | null;
   assetName?: string | null;

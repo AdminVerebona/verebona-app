@@ -28,7 +28,7 @@
  */
 import {
   CORRECTION_PROCEDURE, DETAIL_LIMIT, DIAG_ANOMALY_SAMPLE, HARD_ANOMALY_CODES, HARD_ANOMALY_LABELS, INDICATORS,
-  explainReason, indicativeNetCents, maskSensitive, pct, principalDate, toM3ProgressView, typeLabel,
+  aiRunLabel, explainReason, reconciliationView, indicativeNetCents, maskSensitive, pct, principalDate, toM3ProgressView, typeLabel,
   type DiagPeriod, type HardAnomalyCode, type HardAnomalyResult, type HardAnomalySample, type HoldListFilters,
   type IndicatorDefinition, type IndicatorKey, type OperationListFilters,
 } from './model';
@@ -179,6 +179,10 @@ export interface OperationDetail {
   candidates: Row[];
   lastT3Pass: LastT3Pass | null;
   procedure: string;
+  /** Lot 55B (E) : réconciliation à jour, en attente ou bloquée (jamais « à jour » si un traitement reste dû). */
+  reconciliation: import('./model').ReconciliationView;
+  /** Lot 55B (B) : branche IA OPERATION_MATCH présente dans la version EFFECTIVE du prompt maître T3. */
+  operationMatchBranch?: { available: boolean; version: string | null };
 }
 
 export interface IndicatorResult extends IndicatorDefinition {
@@ -692,8 +696,34 @@ export class OperationDiagnosticsService {
           WHERE c.account_id = $2
             AND (c.t3_operation_id = $1
                  OR c.file_id IN (SELECT ${KEY('s.source_entity_key')} FROM business_operation_sources s
-                                   WHERE s.operation_id = $1 AND s.source_kind = 'DOCUMENT'))
+                                   WHERE s.operation_id = $1 AND s.source_kind = 'DOCUMENT')
+                 -- Lot 55B (E) : documents qui attendent une décision sur CETTE Opération.
+                 OR (c.status = 'ACTIVE' AND (COALESCE(c.t3_detail->'plausible', '[]'::jsonb) @> to_jsonb($1::bigint)
+                      OR COALESCE(c.t3_detail->'arbitration'->'operationIds', '[]'::jsonb) @> to_jsonb($1::bigint))))
           ORDER BY c.created_at DESC, c.id DESC LIMIT ${L}`, [id, accountId]);
+      // Lot 55B (E) : traitements T3 encore dus pour cette Opération — documents
+      // rattachés ou proposés, et documents du même bien (une facture en échec
+      // n'est rattachée à rien) : en attente ou bloqués.
+      const [etat] = await q(
+        `WITH lies AS (
+           SELECT c.* FROM document_operation_candidates c
+            WHERE c.account_id = $2 AND c.status = 'ACTIVE'
+              AND (c.t3_operation_id = $1
+                   OR COALESCE(c.t3_detail->'plausible', '[]'::jsonb) @> to_jsonb($1::bigint)
+                   OR COALESCE(c.t3_detail->'arbitration'->'operationIds', '[]'::jsonb) @> to_jsonb($1::bigint)
+                   OR EXISTS (SELECT 1 FROM asset_files f JOIN business_operation_asset_links l
+                                ON l.operation_id = $1 AND l.active AND l.asset_id = COALESCE(f.asset_id, f.linked_asset_id)
+                               WHERE f.id = c.file_id AND f.account_id = $2 AND f.deleted_at IS NULL))
+         )
+         SELECT
+           count(*) FILTER (WHERE (t3_reason LIKE 'TECHNICAL_ERROR:%' AND t3_outcome = 'HOLD_UNRESOLVED') OR t3_cards_pending
+                              OR (t3_outcome = 'HOLD_UNRESOLVED' AND t3_detail->'m3'->>'status' IN ('ERROR', 'PROMPT_UNAVAILABLE')))::int AS blocked,
+           count(*) FILTER (WHERE NOT ((t3_reason LIKE 'TECHNICAL_ERROR:%' AND t3_outcome = 'HOLD_UNRESOLVED') OR t3_cards_pending
+                                       OR (t3_outcome = 'HOLD_UNRESOLVED' AND t3_detail->'m3'->>'status' IN ('ERROR', 'PROMPT_UNAVAILABLE')))
+                              AND (t3_pending OR (t3_outcome = 'HOLD_UNRESOLVED' AND t3_reason = 'M3_REQUIRED')
+                                   OR (t3_outcome = 'ARBITRATION_REQUIRED' AND (t3_operation_id = $1 OR COALESCE(t3_detail->'arbitration'->'operationIds', '[]'::jsonb) @> to_jsonb($1::bigint)))
+                                   OR t3_detail->'retro'->>'status' = 'PENDING'))::int AS pending
+           FROM lies`, [id, accountId]);
       const [job] = await q(
         `SELECT id, status, origin, trigger_code, business_result, created_at, finished_at, attempts, last_error,
                 payload -> 'events' -> -1 ->> 'correlationId' AS correlation_id
@@ -725,7 +755,14 @@ export class OperationDiagnosticsService {
         matchDecisions: withReason(matchDecisions, 'reason_code'),
         agendaItems,
         projectionSuppressions,
-        candidates: withReason(candidates, 't3_reason'),
+        candidates: withReason(candidates, 't3_reason').map((c) => ({
+          ...c, ai_label: aiRunLabel(c.t3_detail as Record<string, unknown> | null, str(c.t3_outcome), str(c.t3_reason)),
+        })),
+        reconciliation: reconciliationView({
+          pending: int(etat?.pending), blocked: int(etat?.blocked), lastReconciledAt: base.lastReconciledAt,
+          active: r.invalidated_at == null && r.merged_into_operation_id == null,
+        }),
+        operationMatchBranch: await (await import('../consolidation/m3')).operationMatchPromptStatus(),
         lastT3Pass: job ? {
           jobId: Number(job.id), status: String(job.status), origin: str(job.origin), triggerCode: str(job.trigger_code),
           businessResult: str(job.business_result), createdAt: ts(job.created_at), finishedAt: ts(job.finished_at),

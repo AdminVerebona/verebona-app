@@ -26,14 +26,14 @@ const KINDS = P.context.kinds;
 const OK = P.recording.output;
 
 describe('prompt maître t6_master_v1 (§28) et registre', () => {
-  it('transcription du §28 : MODE imposé par le serveur, R1 à R11, sortie t6-output-v2', () => {
+  it('transcription du §28 : MODE imposé par le serveur, R1 à R12 (lot 55A), sortie t6-output-v2', () => {
     expect(checkMasterTemplate(MASTER, ['FORMULATE'])).toEqual([]);
-    for (let i = 1; i <= 11; i++) expect(MASTER).toContain(`R${i} — `);
+    for (let i = 1; i <= 12; i++) expect(MASTER).toContain(`R${i} — `);
     expect(MASTER).toContain('"schemaVersion":"t6-output-v2"');
     expect(MASTER).toContain('R8 — Évite les répétitions mécaniques entre sujets successifs.');
     expect(MASTER).toContain('un sujet `deadline` conserve la nature confirmée/prévisionnelle de la date');
     const rendu = renderMasterPrompt(MASTER, {
-      masterPromptCode: 't6_master_v1', task: 'FORMULATE', allowedTasks: ['FORMULATE'], variables: { INPUT_JSON: '{"x":1}' },
+      masterPromptCode: 't6_master_v1', task: 'FORMULATE', allowedTasks: ['FORMULATE'], variables: { INPUT_JSON: '{"x":1}', SUGGESTION_CONTEXT: null },
     });
     expect(rendu).toContain('MODE = FORMULATE');
     expect(rendu).toContain('Entrée structurée : {"x":1}');

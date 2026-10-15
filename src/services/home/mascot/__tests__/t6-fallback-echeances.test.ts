@@ -107,7 +107,9 @@ describe('T6FB-AC4 : DATE-NEXT-2, mêmes règles', () => {
     expect(s.fallbackText).toBe('Deux échéances sont à prévoir pour le 18 avril 2028 : le contrôle technique de la Cupra et l’entretien chaudière de la maison.');
     expect(s.fallbackText).not.toMatch(/CUPRA LEON|[«»]|Prochain/);
     expect(s.actions.map((a) => a.label)).toEqual(['Voir « Contrôle technique »', 'Voir « Entretien chaudière »']);
-    expect(s.secondaryLabel).toBe('Voir « Contrôle technique »');
+    // Lot 55A : intitulé métier (la carte porte déjà « Voir → »).
+    expect(s.secondaryLabel).toBe('Contrôle technique');
+    expect(s.tileTitle).toBe('Contrôle technique et entretien chaudière');
   });
 
   it('prévisionnelle : estimée ; bien sans genre certain : neutre', () => {

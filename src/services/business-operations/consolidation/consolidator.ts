@@ -50,10 +50,14 @@ import type { BusinessOperationRepository } from '../repository';
 import { withBusinessOperationWrite } from '../write';
 import { NON_BUSINESS_DOCUMENT_TYPES } from '@/services/ai/source-analysis/operation-candidates/prepare';
 import {
-  buildCandidateIdentity, consolidateOperationState, normalizeProvider,
+  buildCandidateIdentity, consolidateOperationState, hasRecurringPeriod, normalizeProvider,
   type CandidateIdentity, type CandidateRecord, type SourceContribution,
 } from './model';
-import { applyM3Verdict, decideCandidate, rankPlausible, type CandidateDecision, type ExistingOperation, type MatchContext, type T3Outcome } from './matching';
+import {
+  applyM3Verdict, canonicalOf, decideCandidate, operationsMergeable, rankPlausible,
+  type CandidateDecision, type ExistingOperation, type MatchContext, type T3Outcome,
+} from './matching';
+import { requestRetroReconciliation, retroActive, type RetroTrace } from './retro';
 import { advanceM3Progress, m3ProgressFor, m3SubjectFingerprint, selectM3Batch, type M3Progress } from './m3-progress';
 import { applyCurrencyChoices, type AmountChoice, type CurrencyChoice, type SideAmount } from './model';
 import { OPERATION_MATCH_MAX_CANDIDATES, type OperationMatchVerdict } from '@/services/ai/reconciliation/master/operation-match';
@@ -299,6 +303,10 @@ export async function loadMatchableOperations(
 ): Promise<ExistingOperation[]> {
   const refs = c.refs.map((r) => `${r.kind}:${r.normalized}`);
   const cycle = c.type === 'ACQUISITION' || c.type === 'DISPOSAL';
+  // Lot 55B : échéance qualifiée autrement qu'en CONTRACT (ou contrat face à
+  // des échéances qualifiées « intervention ») — les deux qualifications sont
+  // lues ; `hardNegatives` / `isPlausible` décident (recurringCrossType).
+  const croise = c.type === 'CONTRACT' || ((c.type === 'INTERVENTION' || c.type === 'OTHER') && hasRecurringPeriod(c));
   const r = await rows<Row>(tx, sql`
     WITH cand AS (
       SELECT o.id FROM business_operations o
@@ -310,7 +318,8 @@ export async function loadMatchableOperations(
                             AND (r.reference_kind || ':' || r.normalized_value) = ANY(${textArray(refs)}::text[]))
               OR (o.invalidated_at IS NULL AND (
                    ((${c.type}::text IS NULL OR o.type_code IS NULL OR o.type_code = ${c.type}
-                     OR (${cycle} AND o.type_code IN ('ACQUISITION', 'DISPOSAL')))
+                     OR (${cycle} AND o.type_code IN ('ACQUISITION', 'DISPOSAL'))
+                     OR (${croise} AND o.type_code IN ('CONTRACT', 'INTERVENTION', 'OTHER')))
                     AND (cardinality(${intArray(c.assetIds)}::int[]) = 0
                          OR EXISTS (SELECT 1 FROM business_operation_asset_links l
                                      WHERE l.operation_id = o.id AND l.active AND l.asset_id = ANY(${intArray(c.assetIds)}::int[]))
@@ -319,6 +328,9 @@ export async function loadMatchableOperations(
        LIMIT ${MATCHING_OPERATION_LIMIT}
     )
     SELECT o.id, o.type_code, o.status, o.provider, o.invalidated_at IS NOT NULL AS invalidated, o.technical_label,
+           -- Lot 55B : Opération d'échéances (contrat, ou coûts actifs à période facturée réelle).
+           (o.type_code = 'CONTRACT' OR EXISTS (SELECT 1 FROM business_operation_financial_components fc
+              WHERE fc.operation_id = o.id AND fc.active AND fc.period_start IS NOT NULL AND fc.period_end > fc.period_start)) AS periodic,
            -- Lot 53 (D5) : montants actifs (cohérence des montants du faisceau).
            COALESCE((SELECT json_agg(json_build_object('kind', fc.kind, 'amountMinor', fc.amount_minor, 'currency', btrim(fc.currency)))
                        FROM business_operation_financial_components fc WHERE fc.operation_id = o.id AND fc.active), '[]') AS amounts,
@@ -357,6 +369,7 @@ export async function loadMatchableOperations(
     invalidated: Boolean(x.invalidated),
     ...(x.agenda_only === true ? { agendaOnly: true } : {}),
     label: (x.technical_label as string | null) ?? null,
+    ...(x.periodic === true ? { periodic: true } : {}),
     amounts: ((x.amounts as Array<{ kind: string; amountMinor: number | string; currency: string }> | null) ?? [])
       .map((a) => ({ kind: String(a.kind), amountMinor: Number(a.amountMinor), currency: String(a.currency) })),
   }));
@@ -532,6 +545,7 @@ export async function reconsolidateOperation(
     // (F-107, C9.1) ; sans autre source, Opération invalidée (F-064, décision PO C8).
     await syncComponents(repo, tx, operationId, managedIds, [], changes);
     if (unmanaged === 0) changes.track(await repo.invalidateIfUnsupported(operationId, 'T3_NO_ACTIVE_SOURCE'));
+    await repo.markReconciled(operationId);
     return;
   }
   if (op.invalidatedAt !== null) changes.track(await repo.reactivate(operationId, 'T3_SOURCE_RESTORED'));
@@ -556,15 +570,23 @@ export async function reconsolidateOperation(
   // Lot 43 : la donnée saisie sur la fiche prime pour le fait qu'elle porte
   // (date, prix d'achat, prix de vente) — jamais deux montants pour un même achat.
   // Lot 47B (C19) : la saisie Agenda de l'utilisateur prime pour les dates qu'elle porte.
+  // Lot 55B (A) : des échéances réunies peuvent requalifier une intervention
+  // en CONTRACT — jamais sous un parent (C8.1 : un contrat n'est l'enfant de
+  // rien) ni au-dessus d'enfants (une intervention peut avoir des sous-interventions).
+  const requalifiable = op.typeCode === null || op.typeCode === 'OTHER'
+    || (op.typeCode === 'INTERVENTION' && await recurringRequalificationAllowed(tx, accountId, operationId, op.parentOperationId));
   const state = applyAgendaAuthority(
-    applyStructuredAuthority(consolidateOperationState(op.typeCode, contributions, today, amountChoices), contributions), contributions,
+    applyStructuredAuthority(consolidateOperationState(op.typeCode, contributions, today, amountChoices, { recurringRequalification: requalifiable }), contributions), contributions,
     agendaCtx.otherSupport);
   state.components = applyCurrencyChoices(state.components, currencyChoices);
   const fullyManaged = unmanaged === 0;
 
   // Type nul qualifié (F-054) ; lot 48 (C7.7, F-055) : OTHER requalifié vers un type connu, même identifiant.
-  if ((op.typeCode === null || op.typeCode === 'OTHER') && state.type !== null && state.type !== op.typeCode) {
-    changes.track(await repo.setType(operationId, typeInput(state.type), 'T3_TYPE_QUALIFIED'));
+  // Lot 55B (A) : INTERVENTION → CONTRACT quand ses sources sont les échéances d'un contrat.
+  if ((op.typeCode === null || op.typeCode === 'OTHER' || (op.typeCode === 'INTERVENTION' && state.type === 'CONTRACT'))
+    && state.type !== null && state.type !== op.typeCode) {
+    const echeances = state.type === 'CONTRACT' && contributions.some((c) => c.identity.type !== 'CONTRACT');
+    changes.track(await repo.setType(operationId, typeInput(state.type), echeances ? 'T3_TYPE_RECURRING_CONTRACT' : 'T3_TYPE_QUALIFIED'));
   }
 
   // Statut (C8, B7) : REALIZED → CANCELLED interdit (l'Opération reste réalisée) ;
@@ -652,6 +674,16 @@ export async function reconsolidateOperation(
   }
 
   await consolidateClaimParent(repo, tx, operationId, state, decisions, sources, cards, changes);
+  // Lot 55B (E) : dernière réconciliation RÉELLEMENT effectuée (ni historique, ni version).
+  await repo.markReconciled(operationId);
+}
+
+/** Lot 55B : une INTERVENTION sans parent ni enfant peut devenir le CONTRACT de ses échéances. */
+async function recurringRequalificationAllowed(tx: DbTx, accountId: number, operationId: number, parentId: number | null): Promise<boolean> {
+  if (parentId !== null) return false;
+  const [enfant] = await rows(tx, sql`
+    SELECT 1 FROM business_operations WHERE parent_operation_id = ${operationId} AND account_id = ${accountId} AND merged_into_operation_id IS NULL LIMIT 1`);
+  return !enfant;
 }
 
 /**
@@ -989,13 +1021,15 @@ export interface ProgressiveM3Trace {
 export async function resolveProgressiveM3(
   tx: DbTx, accountId: number, identity: CandidateIdentity, d: CandidateDecision,
   ctx: Pick<MatchContext, 'operations' | 'assetStatus' | 'userDistinct'>, t3Detail: Record<string, unknown> | null,
+  /** Lot 55B : taille des lots (1 pour l'examen rétroactif : doublons examinés deux à deux). */
+  batchSize: number = OPERATION_MATCH_MAX_CANDIDATES,
 ): Promise<{ decision: CandidateDecision; trace: ProgressiveM3Trace }> {
   const plausibles = ctx.operations.filter((o) => d.detail.plausible.includes(o.id));
   const ranked = rankPlausible(identity, plausibles);
   let progress = m3ProgressFor(t3Detail?.m3Progress, m3SubjectFingerprint(identity));
   const stored = (t3Detail?.m3 ?? null) as StoredM3 | null;
   for (let tour = 0; tour < 3; tour++) {
-    const sel = selectM3Batch(ranked, progress, OPERATION_MATCH_MAX_CANDIDATES);
+    const sel = selectM3Batch(ranked, progress, batchSize);
     const selection = { examined: sel.examined, remaining: sel.remaining, total: sel.total };
     if (!sel.batch.length) {
       // Toutes les Opérations plausibles ont été examinées et jugées distinctes.
@@ -1018,6 +1052,82 @@ export async function resolveProgressiveM3(
     return { decision: { ...applied, detail: { ...applied.detail, plausible: d.detail.plausible } }, trace };
   }
   return { decision: d, trace: { fingerprint: null, batch: [], progress, selection: { examined: [], remaining: [], total: ranked.length } } };
+}
+
+// ── Lot 55B (C) : examen rétroactif d'un document déjà consolidé ──────────
+
+interface RetroOutcome {
+  /** Décision APPLIQUÉE aux sources (fusion réalisée), sinon celle du passage normal. */
+  action?: CandidateDecision;
+  /** Décision TRACÉE sur le candidat (attente M3 / arbitrage : la source reste sur sa propre Opération). */
+  recorded?: CandidateDecision;
+  trace: RetroTrace;
+  m3?: ProgressiveM3Trace;
+  absorbed?: number;
+}
+
+/**
+ * Le document (seule source de sa propre Opération X) appartient-il à une
+ * AUTRE Opération du compte (voir `retro.ts`) ? Décision T3 recalculée sans
+ * X — M0 / M1 / M3 certain seulement ; les Opérations plausibles sont
+ * soumises au modèle UNE à la fois (deux doublons ne se rendent pas
+ * mutuellement « ambigus »). Identité établie → fusion X ⇄ cible (la plus
+ * ancienne reste, l'échéance qualifiée « intervention » devient CONTRACT si
+ * l'autre est le contrat) ; doute → attente tracée, la source ne bouge pas.
+ */
+async function examineRetro(
+  repo: BusinessOperationRepository, tx: DbTx, accountId: number, c: CandidateRow, identity: CandidateIdentity,
+  d: CandidateDecision, ctx: MatchContext & { operations: ExistingOperation[] }, propres: number[],
+  opts: ConsolidationOptions, changes: Changes,
+): Promise<RetroOutcome> {
+  const X = propres.length === 1 ? propres[0] : null;
+  const fin = (result: string): RetroOutcome => ({ trace: { status: 'DONE', operationId: X ?? 0, result } });
+  const xOp = X === null ? undefined : ctx.operations.find((o) => o.id === X);
+  if (!xOp || xOp.invalidated || !(xOp.typeCode === null || xOp.typeCode === 'CONTRACT' || xOp.typeCode === 'INTERVENTION' || xOp.typeCode === 'OTHER')
+    || !(identity.type === 'CONTRACT' || hasRecurringPeriod(identity))) return fin('NOT_APPLICABLE');
+  const [seule] = await rows<{ n: number }>(tx, sql`
+    SELECT count(*)::int AS n FROM business_operation_sources WHERE operation_id = ${xOp.id} AND account_id = ${accountId} AND active`);
+  if (Number(seule?.n) !== 1) return fin('NOT_APPLICABLE');
+
+  let d2: CandidateDecision;
+  let m3: ProgressiveM3Trace | undefined;
+  if (d.outcome === 'MATCH_AND_ENRICH' && d.operationId !== null && d.operationId !== xOp.id && !d.mergeIds?.length) {
+    d2 = d; // décision utilisateur (M0) ou référence exacte (M1) vers une autre Opération
+  } else if (d.outcome === 'MATCH_AND_ENRICH' && d.operationId === xOp.id && d.matchMethod === 'M2') {
+    const ctx2 = { ...ctx, operations: ctx.operations.filter((o) => o.id !== xOp.id) };
+    d2 = decideCandidate(identity, ctx2);
+    if (d2.reason === 'M3_REQUIRED') {
+      const r = await resolveProgressiveM3(tx, accountId, identity, d2, ctx2, c.t3Detail, 1);
+      d2 = r.decision;
+      m3 = r.trace;
+    }
+  } else {
+    return fin('NOT_APPLICABLE');
+  }
+
+  if (d2.outcome === 'MATCH_AND_ENRICH' && d2.operationId !== null && d2.operationId !== xOp.id && !d2.mergeIds?.length) {
+    const yOp = ctx.operations.find((o) => o.id === d2.operationId);
+    if (!yOp || yOp.invalidated || !operationsMergeable(xOp, yOp, ctx.nonMergeable, { semantic: true })) return { ...fin('NOT_MERGEABLE'), m3 };
+    if (xOp.typeCode !== null && yOp.typeCode !== null && xOp.typeCode !== yOp.typeCode) {
+      // Échéance qualifiée « intervention » ↔ contrat : la relation est le contrat.
+      const autre = xOp.typeCode === 'CONTRACT' ? yOp : xOp;
+      const op = await repo.load(autre.id);
+      if (!(await recurringRequalificationAllowed(tx, accountId, autre.id, op.parentOperationId))) return { ...fin('NOT_MERGEABLE'), m3 };
+      changes.track(await repo.setType(autre.id, { code: 'CONTRACT' }, 'T3_TYPE_RECURRING_CONTRACT'));
+    }
+    const canon = canonicalOf([xOp, yOp]);
+    const absorbee = canon.id === xOp.id ? yOp : xOp;
+    if (await repo.mergeOperations(absorbee.id, canon.id, 'T3_RETRO_MERGE', { onStep: opts.onMergeStep })) changes.track(true);
+    return {
+      action: { outcome: 'MATCH_AND_ENRICH', operationId: canon.id, matchMethod: d2.matchMethod, reason: 'RETRO_MERGE', detail: { ...d2.detail }, mergeIds: [absorbee.id] },
+      trace: { status: 'DONE', operationId: xOp.id, result: 'MERGED' }, m3, absorbed: absorbee.id,
+    };
+  }
+  if ((d2.outcome === 'HOLD_UNRESOLVED' && d2.reason === 'M3_REQUIRED') || d2.outcome === 'ARBITRATION_REQUIRED') {
+    // Attente du modèle ou de l'utilisateur : la source reste sur sa propre Opération.
+    return { recorded: { ...d2, operationId: xOp.id }, trace: { status: 'PENDING', operationId: xOp.id }, m3 };
+  }
+  return fin('NO_MATCH');
 }
 
 // ── Un document (TRG-001 à TRG-007) ────────────────────────────────────────
@@ -1052,8 +1162,11 @@ export async function consolidateDocument(accountId: number, fileId: number, opt
       const createdHere = new Set<number>();
       const touched = new Set<number>(docSources.filter((s) => s.active && !s.opMerged).map((s) => s.operationId));
       const decisions = new Map<number, CandidateDecision>();
+      /** Lot 55B : décision tracée distincte de la décision appliquée (attente d'un examen rétroactif). */
+      const recordedDecisions = new Map<number, CandidateDecision>();
       const m3Fingerprints = new Map<number, string>();
       const m3Traces = new Map<number, ProgressiveM3Trace>();
+      const retroTraces = new Map<number, RetroTrace>();
       cards.reviewedFiles.push(fileId);
 
       for (const c of actifs) {
@@ -1082,11 +1195,28 @@ export async function consolidateDocument(accountId: number, fileId: number, opt
             m3Traces.set(c.id, r.trace);
             if (r.trace.fingerprint) m3Fingerprints.set(c.id, r.trace.fingerprint);
           }
+          // Lot 55B (C) : document déjà consolidé marqué pour réexamen rétroactif.
+          if (retroActive(c.t3Detail)) {
+            const propres = [...new Set(memeSource.filter((s) => s.active).map((s) => s.operationId))];
+            const r = await examineRetro(repo, tx, accountId, c, identity, d, ctx, propres, opts, changes);
+            retroTraces.set(c.id, r.trace);
+            if (r.m3 && (r.recorded || r.action)) {
+              m3Traces.set(c.id, r.m3);
+              if (r.m3.fingerprint) m3Fingerprints.set(c.id, r.m3.fingerprint);
+            }
+            if (r.action) d = r.action;
+            if (r.absorbed !== undefined) {
+              touched.delete(r.absorbed);
+              cards.reviewedOperations.push(r.absorbed);
+            }
+            if (r.recorded) recordedDecisions.set(c.id, r.recorded);
+          }
         }
-        decisions.set(c.id, d);
-        result.outcomes[d.outcome] = (result.outcomes[d.outcome] ?? 0) + 1;
-        if (d.outcome === 'ARBITRATION_REQUIRED' && d.arbitration) {
-          cards.match.push({ fileId, candidateKey: c.candidateKey, basis: d.arbitration.basis, operationIds: d.arbitration.operationIds, typeHint: identity.type });
+        const trace = recordedDecisions.get(c.id) ?? d;
+        decisions.set(c.id, trace);
+        result.outcomes[trace.outcome] = (result.outcomes[trace.outcome] ?? 0) + 1;
+        if (trace.outcome === 'ARBITRATION_REQUIRED' && trace.arbitration) {
+          cards.match.push({ fileId, candidateKey: c.candidateKey, basis: trace.arbitration.basis, operationIds: trace.arbitration.operationIds, typeHint: identity.type });
         }
 
         const source = {
@@ -1157,8 +1287,14 @@ export async function consolidateDocument(accountId: number, fileId: number, opt
           : null;
         const memeProgression = JSON.stringify(ancien.m3Batch ?? null) === JSON.stringify(m3Batch)
           && JSON.stringify(ancien.m3Progress ?? null) === JSON.stringify(m3Progress);
+        // Lot 55B (C) : état de l'examen rétroactif (horodaté seulement quand il change).
+        const r = retroTraces.get(c.id);
+        const ancienRetro = (ancien.retro ?? null) as RetroTrace | null;
+        const sansDate = (x: RetroTrace | null) => (x ? JSON.stringify({ ...x, at: undefined }) : null);
+        const retro = r ? (sansDate(ancienRetro) === sansDate(r) ? ancienRetro : { ...r, at: new Date().toISOString() }) : ancienRetro;
+        const memeRetro = JSON.stringify(retro) === JSON.stringify(ancienRetro) && !ancien.retroRequested;
         if (!c.t3Pending && c.t3Outcome === d.outcome && c.t3Reason === d.reason && c.t3OperationId === d.operationId
-          && (ancien.m3Fingerprint ?? null) === fp && memeArbitrage && memeProgression) continue;
+          && (ancien.m3Fingerprint ?? null) === fp && memeArbitrage && memeProgression && memeRetro) continue;
         // La trace M3 (verdict, report…) survit aux passages suivants : elle n'est
         // remplacée que par la phase M3 elle-même.
         const detail = {
@@ -1169,6 +1305,7 @@ export async function consolidateDocument(accountId: number, fileId: number, opt
           ...(m3Batch ? { m3Batch } : {}),
           ...(m3Progress ? { m3Progress } : {}),
           ...(ancien.m3 ? { m3: ancien.m3 } : {}),
+          ...(retro ? { retro } : {}),
         };
         await tx.execute(sql`
           UPDATE document_operation_candidates
@@ -1296,6 +1433,8 @@ export interface AccountConsolidationResult {
   agendaItems?: number;
   /** Lot 48 (O10) : Opérations actives recalculées par une reconsolidation complète (BO). */
   reconsolidated?: number;
+  /** Lot 55B (C) : documents déjà consolidés marqués pour réexamen rétroactif. */
+  retroMarked?: number;
 }
 
 type Sql = typeof import('@/db').pgClient;
@@ -1392,11 +1531,14 @@ export async function consolidateAccountOperations(
   res.remaining = sales.length > limit;
   const fichiers = [...new Set([...sales.slice(0, limit), ...(opts.fileIds ?? [])])].sort((a, b) => a - b);
   const traites = new Set<number>();
+  /** Lot 55B (C) : Opérations créées / enrichies / requalifiées pendant ce passage. */
+  const changees = new Set<number>();
   const passer = async (fileId: number) => {
     const r = await consolidateDocument(accountId, fileId, opts);
     traites.add(fileId);
     res.documents++;
     res.changes += r.changes;
+    if (r.changes > 0) for (const id of r.operations) changees.add(id);
     if (r.error) { res.errors++; (res.technicalErrors ??= []).push({ fileId, code: r.error }); }
     for (const [k, v] of Object.entries(r.outcomes)) res.outcomes[k as T3Outcome] = (res.outcomes[k as T3Outcome] ?? 0) + (v ?? 0);
   };
@@ -1443,6 +1585,19 @@ export async function consolidateAccountOperations(
         console.error(`[t3-operations] revérification des questions ouvertes (compte ${accountId}) : ${e.message}`);
       }
     }
+  }
+
+  // Lot 55B (C) : une Opération a été créée, enrichie ou requalifiée — les
+  // documents DÉJÀ consolidés qui pourraient lui appartenir (échéances seules
+  // sur leur Opération, même prestataire ou même bien) sont réexaminés, dans
+  // ce passage pour ceux qui n'y ont pas encore été vus, au suivant sinon
+  // (marque durable : reprise après interruption). Aucun appel IA ici : M3
+  // seulement si une Opération reste plausible.
+  if (changees.size) {
+    const marques = await requestRetroReconciliation(accountId, [...changees]);
+    res.retroMarked = marques.length;
+    for (const f of marques.filter((x) => !traites.has(x))) await passer(f);
+    if (marques.some((x) => traites.has(x))) res.remaining = true;
   }
 
   // Niveau M3 (C6.1, C6.2) : hors verrou, borné, une fois par empreinte de

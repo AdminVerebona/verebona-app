@@ -247,7 +247,8 @@ describe('DUO-M1-09 — après le mois : invitation manuelle toujours possible d
 describe('DUO-M1-10 — guide de bienvenue et T6 inchangés', () => {
   it('la mascotte ne transmet pas l’invitation à T6 (empreinte T6 : sujets et secondaires)', () => {
     const svc = src('src/services/home/mascot/mascot.service.ts');
-    expect(svc).toMatch(/const contextHash = contextHashOf\(subjects, secondaries, candidates\.degraded\);/);
+    // Lot 55A : secondaires hors questions (les questions viennent de T6 lui-même).
+    expect(svc).toMatch(/const contextHash = contextHashOf\(subjects, baseSecondaries, candidates\.degraded\);/);
     expect(src('src/services/home/mascot/t6-contract.ts')).not.toMatch(/duoInvite|duo_subscription/);
   });
 });

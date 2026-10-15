@@ -32,7 +32,9 @@ describe('sous-ensemble critique du passage réel', () => {
   it('cas à pièce jointe (REVALIDATE visuel) hors sous-ensemble ; variables réelles construites par les constructeurs de production', async () => {
     expect(await liveVariablesFor(cases.find((c) => c.id === 'P-T2-04')!)).toBeNull();
     const t6 = await liveVariablesFor(cases.find((c) => c.id === 'P-T6-01')!);
-    expect(Object.keys(t6!)).toEqual(['INPUT_JSON']);
+    // Lot 55A : emplacement facultatif des questions suggérées (null : bulle seule).
+    expect(Object.keys(t6!)).toEqual(['INPUT_JSON', 'SUGGESTION_CONTEXT']);
+    expect(t6!.SUGGESTION_CONTEXT).toBeNull();
     const t1 = await liveVariablesFor(cases.find((c) => c.id === 'P-T1-02')!);
     expect(String(t1!.EXTRACTED_CONTENT)).toContain('DRAISIENNE BOIS');
   });

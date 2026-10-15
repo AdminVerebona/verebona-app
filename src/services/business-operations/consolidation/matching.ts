@@ -58,7 +58,7 @@
  * ══════════════════════════════════════════════════════════════════════════
  */
 import type { BusinessOperationStatus, BusinessOperationTypeCode, MatchMethod, ReferenceKind } from '../model';
-import { componentsFromIdentity, type CandidateIdentity } from './model';
+import { componentsFromIdentity, hasRecurringPeriod, type CandidateIdentity } from './model';
 import type { OperationMatchVerdict } from '@/services/ai/reconciliation/master/operation-match';
 
 export type T3Outcome = 'NO_OPERATION' | 'MATCH_AND_ENRICH' | 'CREATE_NEW' | 'HOLD_UNRESOLVED' | 'ARBITRATION_REQUIRED';
@@ -97,6 +97,11 @@ export interface ExistingOperation {
   label?: string | null;
   /** Lot 53 (D5) : montants actifs de l'Opération (cohérence des montants). */
   amounts?: ReadonlyArray<{ kind: string; amountMinor: number; currency: string }>;
+  /**
+   * Lot 55B : Opération d'échéances — CONTRACT, ou coûts actifs portant une
+   * période facturée réelle (abonnement qualifié « intervention » par T1).
+   */
+  periodic?: boolean;
 }
 
 export interface MatchContext {
@@ -190,6 +195,39 @@ const refSet = (refs: ReadonlyArray<{ kind: ReferenceKind; normalized: string }>
 
 const disjoints = (a: Set<string>, b: Set<string>) => a.size > 0 && b.size > 0 && ![...a].some((x) => b.has(x));
 
+// ── Lot 55B : échéances d'un contrat (qualification T1 hésitante) ─────────
+
+const TYPES_CONTRAT_OU_ECHEANCE = new Set<BusinessOperationTypeCode | null>(['CONTRACT', 'INTERVENTION', 'OTHER', null]);
+
+/**
+ * Une facture périodique et un contrat peuvent-ils être la même réalité
+ * malgré des qualifications T1 différentes (pure) ? Facture d'échéance
+ * (période facturée / portée INSTALLMENT) qualifiée INTERVENTION, OTHER ou
+ * sans type face à un CONTRACT ; ou document CONTRACT face à une Opération
+ * d'échéances (périodique) qualifiée autrement. Ce n'est JAMAIS une preuve :
+ * seulement « ne pas exclure prématurément » — le faisceau rend l'Opération
+ * plausible et le rapprochement sémantique (M3) tranche.
+ */
+export function recurringCrossType(c: CandidateIdentity, op: ExistingOperation): boolean {
+  if (c.type === op.typeCode || !TYPES_CONTRAT_OU_ECHEANCE.has(c.type) || !TYPES_CONTRAT_OU_ECHEANCE.has(op.typeCode)) return false;
+  if (op.typeCode === 'CONTRACT') return hasRecurringPeriod(c);
+  if (c.type === 'CONTRACT') return op.periodic === true;
+  return false;
+}
+
+/** Deux Opérations d'échéances d'un même contrat, de qualifications différentes (pure). */
+function recurringPair(a: ExistingOperation, b: ExistingOperation): boolean {
+  if (a.typeCode === b.typeCode) return false;
+  const [k, o] = a.typeCode === 'CONTRACT' ? [a, b] : b.typeCode === 'CONTRACT' ? [b, a] : [null, null];
+  return !!k && !!o && TYPES_CONTRAT_OU_ECHEANCE.has(o.typeCode) && o.periodic === true;
+}
+
+/** Référence de contrat / police commune (pure). */
+function sharedContractReference(c: CandidateIdentity, op: ExistingOperation): boolean {
+  const a = refSet(c.refs, ['CONTRACT', 'POLICY']);
+  return op.refs.some((r) => (r.kind === 'CONTRACT' || r.kind === 'POLICY') && a.has(r.normalized));
+}
+
 /** Références communes qui identifient l'Opération (M1). */
 export function sharedIdentifyingReferences(c: CandidateIdentity, op: ExistingOperation): string[] {
   const type = c.type ?? op.typeCode;
@@ -211,10 +249,16 @@ export function hardNegatives(c: CandidateIdentity, op: ExistingOperation): stri
   const out: string[] = [];
   // Lot 48 (C7.7, F-055) : une Opération OTHER peut être requalifiée vers un
   // type connu sans changer d'identité ; l'inverse reste incompatible.
-  if (c.type !== null && op.typeCode !== null && c.type !== op.typeCode && op.typeCode !== 'OTHER') out.push('TYPE_INCOMPATIBLE');
+  // Lot 55B : une facture d'échéance face à un contrat (ou l'inverse) n'est
+  // pas une incompatibilité de type — seulement une hypothèse que M3 tranche.
+  const croise = recurringCrossType(c, op);
+  if (c.type !== null && op.typeCode !== null && c.type !== op.typeCode && op.typeCode !== 'OTHER' && !croise) out.push('TYPE_INCOMPATIBLE');
   if (c.assetIds.length && op.assetIds.length && !c.assetIds.some((a) => op.assetIds.includes(a))) out.push('TARGET_INCOMPATIBLE');
   const type = c.type ?? op.typeCode;
-  for (const fam of negativeFamilies(type)) {
+  const familles = negativeFamilies(type);
+  // Couple croisé : deux numéros de contrat différents restent une autre réalité.
+  if (croise && !familles.some((f) => f.includes('CONTRACT'))) familles.push(['CONTRACT', 'POLICY']);
+  for (const fam of familles) {
     if (disjoints(refSet(c.refs, fam), refSet(op.refs, fam))) out.push(`REFERENCE_DIFFERENT_${fam.join('_')}`);
   }
   // Lot 53 (retour PO D6) : deux factures FINALES de numéros différents ne
@@ -373,16 +417,20 @@ export function plausibilityEvidence(c: CandidateIdentity, o: ExistingOperation,
   if (c.providerKey !== null && o.providerKey !== null) signals.push(c.providerKey === o.providerKey ? 'PROVIDER_SAME' : 'PROVIDER_DIFFERENT');
   if (c.assetIds.some((a) => o.assetIds.includes(a))) signals.push('ASSET_SAME');
   const gapDays = ecartJours(dateCandidat(c), dateOperation(o));
+  // Lot 55B : échéance face à une Opération d'échéances — un abonnement court
+  // dans le temps et chaque échéance a son propre numéro de facture : ni
+  // l'écart de dates ni les numéros distincts ne sont des indices contraires.
+  const echeances = o.periodic === true && hasRecurringPeriod(c);
   if (gapDays !== null) {
     if (gapDays <= windowDays) signals.push('DATE_IN_WINDOW');
-    else if (gapDays > windowDays * FAR_WINDOW_FACTOR) signals.push('DATE_FAR');
+    else if (gapDays > windowDays * FAR_WINDOW_FACTOR && !echeances) signals.push('DATE_FAR');
   }
   const a = natureTokens(c.summary);
   const b = natureTokens(o.label ?? null);
   if ([...a].some((m) => b.has(m))) signals.push('NATURE_COMMON');
   else if (a.size && b.size) signals.push('NATURE_DIFFERENT');
   if (amountsCoherent(c, o)) signals.push('AMOUNT_COHERENT');
-  if (distinctFinalInvoices(c, o)) signals.push('INVOICE_NUMBERS_DIFFERENT');
+  if (!echeances && distinctFinalInvoices(c, o)) signals.push('INVOICE_NUMBERS_DIFFERENT');
   const score = signals.reduce((n, s) => n + PLAUSIBILITY_WEIGHTS[s], 0);
   const anchored = signals.includes('PROVIDER_SAME')
     || (signals.includes('ASSET_SAME') && (signals.includes('NATURE_COMMON') || signals.includes('AMOUNT_COHERENT')));
@@ -407,6 +455,13 @@ export function isPlausible(c: CandidateIdentity, o: ExistingOperation): boolean
   // Sources agenda / données structurées (lots 43, 47B) : règle d'origine
   // (même tiers, fenêtre) — leur rapprochement propre est ailleurs.
   const documentaire = !c.agenda && !c.structured;
+  // Lot 55B : facture d'échéance ↔ contrat qualifiés différemment par T1 —
+  // même règle qu'entre deux contrats (même tiers, ou même référence de
+  // contrat sans tiers contradictoire), cibles compatibles.
+  if (documentaire && recurringCrossType(c, o)) {
+    const tiersContraire = c.providerKey !== null && o.providerKey !== null && c.providerKey !== o.providerKey;
+    return ciblesCompatibles(c, o) && (memeTiers(c, o) || (sharedContractReference(c, o) && !tiersContraire));
+  }
   switch (type) {
     case 'CONTRACT':
     case 'FINANCING':
@@ -580,16 +635,27 @@ const paire = (a: number, b: number) => (a < b ? `${a}:${b}` : `${b}:${a}`);
  * (F-033 : un paiement qui cite deux factures ne les fusionne pas), aucune
  * décision utilisateur qui les sépare (F-046).
  */
-export function operationsMergeable(a: ExistingOperation, b: ExistingOperation, nonMergeable?: ReadonlySet<string>): boolean {
+export function operationsMergeable(
+  a: ExistingOperation, b: ExistingOperation, nonMergeable?: ReadonlySet<string>,
+  /**
+   * Lot 55B (D6) : identité commune établie SÉMANTIQUEMENT (verdict M3
+   * certain, décision utilisateur) et non par une référence citée : deux
+   * numéros de facture différents ne l'excluent plus (indice contraire déjà
+   * pesé), et un contrat peut absorber ses échéances qualifiées autrement.
+   */
+  opts: { semantic?: boolean } = {},
+): boolean {
   if (nonMergeable?.has(paire(a.id, b.id))) return false;
-  if (a.typeCode !== null && b.typeCode !== null && a.typeCode !== b.typeCode) return false;
+  const croise = opts.semantic === true && recurringPair(a, b);
+  if (a.typeCode !== null && b.typeCode !== null && a.typeCode !== b.typeCode && !croise) return false;
   if (a.assetIds.length && b.assetIds.length && !a.assetIds.some((x) => b.assetIds.includes(x))) return false;
   if (a.providerKey !== null && b.providerKey !== null && a.providerKey !== b.providerKey) return false;
-  const type = a.typeCode ?? b.typeCode;
+  const type = croise ? 'CONTRACT' : a.typeCode ?? b.typeCode;
   for (const fam of negativeFamilies(type)) {
     if (disjoints(refSet(a.refs, fam), refSet(b.refs, fam))) return false;
   }
-  if ((type === 'INTERVENTION' || type === 'OTHER' || type === null) && disjoints(refSet(a.refs, ['INVOICE']), refSet(b.refs, ['INVOICE']))) return false;
+  if (!opts.semantic && (type === 'INTERVENTION' || type === 'OTHER' || type === null)
+    && disjoints(refSet(a.refs, ['INVOICE']), refSet(b.refs, ['INVOICE']))) return false;
   return true;
 }
 

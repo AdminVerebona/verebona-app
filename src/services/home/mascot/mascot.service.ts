@@ -8,35 +8,15 @@
  */
 import { collectMascotData } from './collector';
 import { buildCandidates, openOverdueCount } from './signals';
-import { buildSecondaries, selectSubjects } from './selector';
+import { buildSecondaries, selectSubjects, withSuggestedQuestions } from './selector';
 import { buildPresentation, contextHashOf } from './presentation';
 import { buildT6Input } from './t6-contract';
-import { formulateWithT6, logT6, type T6Mode } from './t6-runner';
+import { formulateWithT6, logT6, t6SuggestionsAvailable, type T6Mode } from './t6-runner';
 import type { MascotPresentation } from './types';
-import { parisDay, tileFor } from './bubble';
+import { composeSpeech, parisDay, tileFor } from './bubble';
 import { MAX_TODO_ITEMS, buildTodoBlock } from './todo-items';
 import { readDuoInvite } from './duo-invite';
-import type { CatalogQuestion } from './selector';
-
-/**
- * Lot 34 : questions « Ou demandez-moi » = catalogue UNIQUE de Verebona pour
- * l'accueil (`suggestionsForRoute`), rendu avec l'état du compte (mêmes
- * préconditions que le champ « Demander à Verebona »). Indisponible : aucune
- * question (jamais une question non garantie).
- */
-export async function homeCatalogQuestions(accountId: number): Promise<CatalogQuestion[]> {
-  try {
-    const [{ loadSuggestionContext }, { suggestionsForRoute }] = await Promise.all([
-      import('@/services/verebona-assistant/core/account-state'),
-      import('@/services/verebona-assistant/registries/capability-registry'),
-    ]);
-    const ctx = await loadSuggestionContext(accountId, '/accueil');
-    return suggestionsForRoute('/accueil', ctx);
-  } catch (e) {
-    console.error('[mascotte] questions du catalogue indisponibles :', (e as Error).message);
-    return [];
-  }
-}
+import { loadT6SuggestionContext, suggestionSecondaries, type T6SuggestionBundle } from './t6-suggestions';
 
 export async function getMascotPresentation(
   accountId: number,
@@ -49,6 +29,8 @@ export async function getMascotPresentation(
     console.error('[mascotte] source « invitation Duo » indisponible :', (e as Error).message);
     return null;
   });
+  // Lot 55A : le prompt T6 en service sait-il rédiger les questions (R12) ?
+  const questionsP = t6SuggestionsAvailable();
   try {
     raw = await collectMascotData(accountId);
   } catch (e) {
@@ -62,7 +44,10 @@ export async function getMascotPresentation(
   const tiles = { unprovenOverdueIsQuestion: true };
   const candidates = buildCandidates(raw);
   const subjects = selectSubjects(candidates.candidates);
-  const secondaries = buildSecondaries(candidates, subjects, await homeCatalogQuestions(accountId));
+  // Lot 55A : actions secondaires seulement (onboarding, recommandations) —
+  // les questions « Ou demandez-moi » ne viennent plus du catalogue
+  // déterministe, mais de T6 (même appel que la bulle, ci-dessous).
+  const baseSecondaries = buildSecondaries(candidates, subjects, []);
   // Lot 32 (MASC2) : « À traiter » = niveau 2 de la bulle, depuis la file.
   // Lot 49A (ticket 13) : « Inviter quelqu'un » passe EN PREMIER et compte
   // dans les deux actions « À faire en premier » (MASC3).
@@ -70,23 +55,36 @@ export async function getMascotPresentation(
   const todo = buildTodoBlock(raw.toProcess, raw.toProcessTotal, duoInvite ? MAX_TODO_ITEMS - 1 : MAX_TODO_ITEMS);
   // Empreinte T6 : sujets et secondaires seulement — un « À traiter » résolu
   // ne relance pas la formulation des autres sujets.
-  const contextHash = contextHashOf(subjects, secondaries, candidates.degraded);
+  const contextHash = contextHashOf(subjects, baseSecondaries, candidates.degraded);
 
   // Lot 53 (D25) : échéances dépassées encore ouvertes (au-delà des sujets).
   const overdueDeadlines = openOverdueCount(raw);
+  const commun = { degraded: candidates.degraded, today: raw.today, tiles, todo, duoInvite, overdueDeadlines };
+  // Bulle telle qu'affichée sans reformulation (texte déterministe).
+  const secours = buildPresentation({ subjects, secondaries: baseSecondaries, messages: null, ...commun });
 
-  if (subjects.length === 0) {
-    return buildPresentation({ subjects, secondaries, degraded: candidates.degraded, messages: null, today: raw.today, tiles, todo, duoInvite, overdueDeadlines });
+  // Lot 55A : contexte des questions suggérées — le MESSAGE AFFICHÉ, l'état
+  // canonique du compte, ses biens et ses échéances. Données partielles
+  // (source en panne) : aucune question plutôt qu'une question trompeuse.
+  let questions: T6SuggestionBundle | null = null;
+  if (!candidates.degraded && await questionsP) {
+    const speech = composeSpeech({ presentation: secours, empty: false }).text;
+    const attentionToday = (todo?.items.length ?? 0) > 0 || !!duoInvite
+      || secours.paragraphs.some((x) => x.tile?.attention ?? false);
+    questions = await loadT6SuggestionContext(accountId, { speech, attentionToday, agenda: raw.agenda, today: raw.today ?? parisDay() });
   }
+
+  // RUN-013 : rien à formuler ni à suggérer — pas de T6.
+  if (subjects.length === 0 && !questions) return secours;
 
   const input = buildT6Input(subjects);
   // Nature de la tuile de chaque sujet (pose graduée) : nuances R9 du master T6.
   const kinds = subjects.map((s) => tileFor(s, raw.today ?? parisDay(), tiles).kind);
-  const outcome = await formulateWithT6({ accountId, input, contextHash, mode, kinds });
-  void logT6({ accountId, contextHash, mode, outcome, input });
-  return buildPresentation({
-    subjects, secondaries, degraded: candidates.degraded, messages: outcome.messages, today: raw.today, tiles, todo, duoInvite, overdueDeadlines,
-  });
+  const outcome = await formulateWithT6({ accountId, input, contextHash, mode, kinds, suggestions: questions });
+  void logT6({ accountId, contextHash, mode, outcome, input, suggestionContext: questions?.context });
+  // Questions de la MÊME sortie que les textes : indisponibles → aucune.
+  const secondaries = withSuggestedQuestions(baseSecondaries, subjects, suggestionSecondaries(outcome.suggestions ?? []));
+  return buildPresentation({ subjects, secondaries, messages: outcome.messages, ...commun });
 }
 
 // ── Pré-génération (RUN-007 à RUN-011 ; durable depuis le lot 32, PO 6) ──────

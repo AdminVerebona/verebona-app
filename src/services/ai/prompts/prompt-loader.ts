@@ -283,6 +283,9 @@ export const OPTIONAL_MASTER_VARIABLES: Readonly<Record<string, readonly string[
   // T2 : candidats métier pour l'arbitrage sémantique, lot 54E (#419 écart 1).
   // Absent d'une version BO antérieure : aucun arbitrage IA, clarification.
   t2_master_v1: ['BUSINESS_CANDIDATES'],
+  // T6 : contexte des questions suggérées de l'accueil, lot 55A. Absent d'une
+  // version BO antérieure : aucune question suggérée (jamais le catalogue).
+  t6_master_v1: ['SUGGESTION_CONTEXT'],
 };
 
 /**

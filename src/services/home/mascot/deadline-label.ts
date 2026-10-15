@@ -215,6 +215,11 @@ function parts(i: DeadlineWordingItem): Parts {
   };
 }
 
+/** Lot 55A : le libellé tel qu'il s'écrit en milieu de phrase (« assurance »), sans article. */
+export function deadlinePhraseLabel(i: DeadlineWordingItem): string {
+  return parts(i).label;
+}
+
 /** Le libellé, sans article, avec sa majuscule (boutons « Voir « Contrôle technique » »). */
 export function deadlineButtonLabel(i: DeadlineWordingItem): string {
   const { label } = parts(i);

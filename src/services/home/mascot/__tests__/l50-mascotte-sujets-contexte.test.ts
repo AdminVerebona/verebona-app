@@ -166,7 +166,8 @@ describe('MASC50-AC05 — échéance future certaine, aucun rendez-vous', () => 
     expect(s.facts).toMatchObject({ dateRole: 'DEADLINE', dateNature: 'confirmée' });
     expect(s.fallbackText).toBe('Le prochain contrôle technique de la Cupra est à prévoir pour le 18 avril 2028.');
     expect(s.fallbackText).not.toMatch(/rendez-vous|est prévu/);
-    expect(tileFor(s, TODAY).status).toBe('À prévoir pour le 18 avril 2028');
+    // Lot 55A : carte « bien · date complète » — le rôle de la date reste dit par la bulle.
+    expect(tileFor(s, TODAY).status).toBe('18 avril 2028');
   });
   it('rôle absent (lecture antérieure) → DEADLINE, jamais présenté comme organisé', () => {
     const s = buildCandidates(raw({ agenda: [row({})] })).candidates.find((c) => c.sourceCode === 'DATE-NEXT')!;
@@ -185,7 +186,8 @@ describe('MASC50-AC06 — événement réellement planifié', () => {
     expect(s.facts).toMatchObject({ dateRole: 'SCHEDULED_EVENT', dateNature: 'confirmée' });
     expect(s.fallbackText).toBe('Le rendez-vous garage de la Cupra est prévu le 18 avril 2028.');
     expect(s.fallbackText).not.toMatch(/à prévoir/);
-    expect(tileFor(s, TODAY).status).toBe('Prévu le 18 avril 2028');
+    // Lot 55A : carte « bien · date complète », jamais « à prévoir » pour un événement planifié.
+    expect(tileFor(s, TODAY).status).toBe('18 avril 2028');
   });
   it('genre inconnu : formulation neutre, toujours « prévu »', () => {
     expect(deadlineNextText({ title: 'Audit', assetName: 'Cupra', forecast: false, dateRole: 'SCHEDULED_EVENT' }, '18 avril 2028'))
@@ -207,7 +209,8 @@ describe('MASC50-AC07 — date prévisionnelle', () => {
       .candidates.find((c) => c.sourceCode === 'DATE-NEXT')!;
     expect(s.facts).toMatchObject({ dateRole: 'DEADLINE', dateNature: 'prévisionnelle' });
     expect(s.fallbackText).toBe('Le prochain contrôle technique de la Cupra est à prévoir autour du 18 avril 2028 (date estimée).');
-    expect(tileFor(s, TODAY).status).toBe('À prévoir pour le 18 avril 2028 (estimée)');
+    // Lot 55A : date complète, toujours marquée estimée (DAT-003).
+    expect(tileFor(s, TODAY).status).toBe('18 avril 2028 (estimée)');
   });
 });
 

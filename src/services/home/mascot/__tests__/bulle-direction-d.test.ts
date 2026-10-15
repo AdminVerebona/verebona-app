@@ -109,7 +109,7 @@ describe('tuiles d’action (§3.2)', () => {
     expect(tileFor(subject({ sourceCode: 'MASC-EXT-ACTION', facts: { date: TODAY } }), TODAY))
       .toMatchObject({ tone: 'amber', status: 'Aujourd’hui' });
     expect(tileFor(subject({ sourceCode: 'DATE-NEXT', requiresAttention: false, facts: { dateLabel: '12 octobre 2026', dateNature: 'confirmée' } }), TODAY))
-      .toMatchObject({ tone: 'blue', attention: false, status: 'Le 12 octobre 2026' });
+      .toMatchObject({ tone: 'blue', attention: false, status: '12 octobre 2026' });
   });
 
   it('au plus 2 tuiles, sous-ligne « bien · statut »', () => {

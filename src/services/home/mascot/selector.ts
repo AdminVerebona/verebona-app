@@ -114,13 +114,29 @@ export function eligibleQuestions(
  * Dans la limite de 5 actions au total et de 3 secondaires (UX-007). Rien
  * n'est ajouté pour « remplir » (UI-04).
  */
+/** Places des éléments secondaires (UX-007) : 3 au plus, 5 actions au total. */
+export function secondaryPlaces(subjects: MascotSubject[]): number {
+  const actionsSujets = subjects.reduce((n, s) => n + s.actions.length, 0);
+  return Math.max(0, Math.min(MAX_SECONDARIES, MAX_ACTIONS_TOTAL - actionsSujets));
+}
+
+/**
+ * Lot 55A : questions suggérées par T6 ajoutées APRÈS les actions secondaires
+ * (onboarding, recommandations), dans la limite des places — aucun filtrage
+ * par sujet (la complémentarité avec la bulle appartient à T6, R12).
+ */
+export function withSuggestedQuestions(
+  secondaries: MascotSecondary[], subjects: MascotSubject[], questions: MascotSecondary[],
+): MascotSecondary[] {
+  return [...secondaries, ...questions].slice(0, secondaryPlaces(subjects));
+}
+
 export function buildSecondaries(
   input: MascotCandidates,
   subjects: MascotSubject[],
   catalog: readonly CatalogQuestion[] = [],
 ): MascotSecondary[] {
-  const actionsSujets = subjects.reduce((n, s) => n + s.actions.length, 0);
-  const places = Math.max(0, Math.min(MAX_SECONDARIES, MAX_ACTIONS_TOTAL - actionsSujets));
+  const places = secondaryPlaces(subjects);
 
   const affiches = new Set<string>();
   subjects.forEach((s) => { affiches.add(s.occurrenceKey); s.dedupeKeys.forEach((k) => affiches.add(k)); });

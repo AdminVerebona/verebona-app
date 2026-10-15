@@ -78,8 +78,8 @@ export const T6_TEXT_MAX = 420;
 /** Formulations relatives interdites en V1 (DAT-005). */
 const RELATIVE = /\b(aujourd['’]hui|demain|hier|apr[eè]s-demain|avant-hier|ce soir|ce matin|cette semaine|la semaine (prochaine|derni[eè]re)|ce week-end|le mois (prochain|dernier)|l['’]ann[ée]e (prochaine|derni[eè]re)|dans (\d+|un|une|deux|trois|quatre|cinq|six|sept|huit|neuf|dix|quelques) (jours?|semaines?|mois|ans?)|il y a (\d+|un|une|deux|trois|quelques) (jours?|semaines?|mois|ans?))\b/i;
 /** Tutoiement : le vouvoiement est obligatoire (T6-007). */
-const TUTOIEMENT = /(^|[\s,;:(«"'’])(tu|toi|ton|ta|tes|te|t['’])(?=[\s,.;:!?»")]|$)/i;
-const EMOJI = /\p{Extended_Pictographic}/u;
+export const TUTOIEMENT = /(^|[\s,;:(«"'’])(tu|toi|ton|ta|tes|te|t['’])(?=[\s,.;:!?»")]|$)/i;
+export const EMOJI = /\p{Extended_Pictographic}/u;
 const PREVISIONNEL = /(pr[ée]vu|pr[ée]vue|pr[ée]vues|pr[ée]vus|estim[ée]|pr[ée]visionnel|autour d[ue]|environ|approximativ)/i;
 
 function nombres(texte: string): string[] {
@@ -156,6 +156,13 @@ export const T6FormulateOutput = z.object({
     text: z.string(),
     highlight: z.string().nullable().optional(),
   })),
+  /**
+   * Lot 55A (T6 / T2) : questions suggérées, FACULTATIVES (R12 du master,
+   * `{{SUGGESTION_CONTEXT}}`). Volontairement non typées ici : une liste mal
+   * formée ne doit jamais rejeter la bulle — elle est validée à part, élément
+   * par élément (`validateT6Suggestions`), et abandonnée au moindre doute.
+   */
+  suggestions: z.unknown().optional(),
 });
 export type T6FormulateOutput = z.infer<typeof T6FormulateOutput>;
 
@@ -344,8 +351,9 @@ export function validateT6MasterOutput(input: T6Input, raw: unknown, opts: T6Mas
     }
   }
 
-  // 3. Violation qui touche tous les sujets : rejet de la bulle.
-  if (fallbackSubjects.length >= input.subjects.length) return { ok: false, reason: motifs[0] ?? 'all_subjects' };
+  // 3. Violation qui touche tous les sujets : rejet de la bulle. Lot 55A :
+  //    une bulle SANS sujet (questions suggérées seules) n'a rien à rejeter.
+  if (input.subjects.length > 0 && fallbackSubjects.length >= input.subjects.length) return { ok: false, reason: motifs[0] ?? 'all_subjects' };
   return { ok: true, messages, adjustments, fallbackSubjects: [...fallbackSubjects].sort((a, b) => a - b) };
 }
 
@@ -402,7 +410,9 @@ export const T6_MASTER_OPERATION_SPEC = {
   masterPromptCode: T6_MASTER_PROMPT_CODE,
   task: T6_MASTER_MODE,
   taskField: 'none',
-  promptVariables: ['INPUT_JSON'],
+  // Lot 55A : `SUGGESTION_CONTEXT` FACULTATIF (`OPTIONAL_MASTER_VARIABLES`) —
+  // une version BO antérieure qui ne le porte pas reste valable (aucune question).
+  promptVariables: ['INPUT_JSON', 'SUGGESTION_CONTEXT'],
   outputSchema: 'T6FormulateOutput',
   timeoutMs: 8_000,
   jsonResponse: true,

@@ -48,6 +48,13 @@ export interface OperationMatchSubject {
     references: string[];
     dates: Record<string, string>;
     amounts: string[];
+    /**
+     * Lot 55B : périodes facturées (échéances) et équipements concernés —
+     * présents seulement s'ils existent (un contexte sans ces données garde
+     * son empreinte : aucun rappel du modèle sans changement).
+     */
+    periods?: string[];
+    equipments?: string[];
   };
 }
 
@@ -61,6 +68,10 @@ export interface OperationMatchCandidate {
   references: string[];
   amounts: string[];
   documents: Array<{ title: string; role: string | null; summary: string | null }>;
+  /** Lot 55B : périodes facturées des coûts actifs, équipements, détail du contrat (si présents). */
+  periods?: string[];
+  equipments?: string[];
+  contract?: { reference: string | null; periodicity: string | null; effectiveFrom: string | null; effectiveTo: string | null };
 }
 
 /** Canonicalisation (clés triées) : empreinte stable. */

@@ -253,6 +253,12 @@ export async function runOperationsJob(job: QueuedJob, p: OperationsPayload, gua
   // DOCUMENTS_PER_RUN, passages enchaînés jusqu'à épuisement).
   const tousLesBiens = admin ? await listAccountAssetsForReconsolidation(p.accountId) : [];
   const candidatsRemis = admin ? await requeueAccountCandidates(p.accountId) : 0;
+  // Lot 55B (C) : « Reconsolider ce compte » réexamine aussi les échéances déjà
+  // consolidées seules sur leur Opération (mêmes règles que le rattrapage 0398).
+  if (admin) {
+    const { requestAccountRetroReconciliation } = await import('./retro');
+    await requestAccountRetroReconciliation(p.accountId);
+  }
   const res = await consolidateAccountOperations(p.accountId, {
     fileIds,
     assetIds: [...new Set([...assetIds, ...tousLesBiens])],
