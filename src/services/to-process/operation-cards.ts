@@ -130,7 +130,8 @@ export function matchQuestion(type: string | null, basis: 'CERTAIN' | 'M3', labe
 export function matchProposals(type: string | null, basis: 'CERTAIN' | 'M3', labels: readonly OperationLabel[]): ActionProposal[] {
   const props: ActionProposal[] = labels.slice(0, 2).map((l, i) => ({
     value: `SAME:${l.id}`,
-    label: basis === 'M3' && labels.length === 1 ? 'Oui, la même' : `Oui, ${guillemets(l.label)}`,
+    // Lot 56A : « Oui » — jamais un accord grammatical dépendant de la nature (contrat, intervention…).
+    label: basis === 'M3' && labels.length === 1 ? 'Oui' : `Oui, ${guillemets(l.label)}`,
     confidence: 0.6 - i * 0.1,
   }));
   if (basis === 'M3') props.push({ value: 'DISTINCT', label: `Non, c’est ${businessNoun(type).autre}`, confidence: 1, isCurrentValue: true });
@@ -182,14 +183,15 @@ export function detachProposals(): ActionProposal[] {
 
 /** Question (e) — lot 53, Q17 (pure). */
 export function exclusionQuestion(assetName: string, claimLabel: string): string {
-  return `Ce document mentionne ${guillemets(assetName)}, que vous avez retiré du sinistre ${guillemets(claimLabel)} : faut-il l’y rattacher à nouveau ?`;
+  return `Ce document mentionne ${guillemets(assetName)} ; ce bien a été retiré du sinistre ${guillemets(claimLabel)} : faut-il l’y rattacher à nouveau ?`;
 }
 
 /** Propositions (e) : réintégrer, ou garder l'exclusion (état actuel) — pures. */
 export function exclusionProposals(assetName: string): ActionProposal[] {
   return [
     { value: 'REINSTATE', label: `Oui, rattacher ${guillemets(assetName)} au sinistre`, confidence: 0.6 },
-    { value: 'KEEP_EXCLUDED', label: 'Non, il reste hors du sinistre', confidence: 1, isCurrentValue: true },
+    // Lot 56A : formulation neutre (le nom du bien peut être féminin ou masculin).
+    { value: 'KEEP_EXCLUDED', label: 'Non, pas de nouveau rattachement au sinistre', confidence: 1, isCurrentValue: true },
   ];
 }
 
@@ -249,7 +251,7 @@ async function fileTitles(accountId: number, ids: readonly number[]): Promise<Ma
   return new Map(r.map((x) => [Number(x.id), x.t]));
 }
 
-async function closeCards(ids: number[], reason: string): Promise<number> {
+async function closeCards(ids: number[], reason: string, extra: ReadonlyMap<number, Record<string, unknown>> = new Map()): Promise<number> {
   if (!ids.length) return 0;
   const now = new Date();
   const closed = await db.update(toProcessActions)
@@ -259,10 +261,42 @@ async function closeCards(ids: number[], reason: string): Promise<number> {
   if (closed.length) {
     await db.insert(toProcessActionEvents).values(closed.map((a) => ({
       actionId: a.id, accountId: a.accountId, event: 'OBSOLETE', actorUserId: null, targetType: a.targetType, targetId: a.targetId,
-      fieldKey: a.relationKey, details: { ruleCode: a.ruleCode, reason }, createdAt: now,
+      fieldKey: a.relationKey, details: { ruleCode: a.ruleCode, reason, ...(extra.get(Number(a.id)) ?? {}) }, createdAt: now,
     })));
   }
   return closed.length;
+}
+
+/**
+ * Lot 56A : motif tracé de la fermeture automatique d'une question « même
+ * réalité ? » — issue T3 actuelle du document (rattachement M3 par l'IA,
+ * référence, création…) et, pour un rattachement sémantique, l'issue et la
+ * raison données par le modèle. Journal `to_process_action_events`
+ * (OBSOLETE) : explicable et réversible (BO, historique de l'Opération).
+ */
+async function matchClosureTrace(
+  accountId: number, cartes: ReadonlyArray<{ id: number; rule_code: string; target_id: number; candidate_key: string | null }>,
+): Promise<Map<number, Record<string, unknown>>> {
+  const out = new Map<number, Record<string, unknown>>();
+  const match = cartes.filter((c) => c.rule_code === OPERATION_MATCH_RULE && c.candidate_key);
+  if (!match.length) return out;
+  const r = (await pgClient.unsafe(
+    `SELECT c.file_id, c.candidate_key, c.t3_outcome, c.t3_reason, c.t3_operation_id::bigint AS operation_id,
+            c.t3_detail->'m3'->'verdict' AS verdict
+       FROM document_operation_candidates c
+      WHERE c.account_id = $1 AND c.status = 'ACTIVE' AND c.file_id = ANY($2::int[])`,
+    [accountId, intArray(match.map((c) => Number(c.target_id)))] as never[],
+  )) as unknown as Array<{ file_id: number; candidate_key: string; t3_outcome: string | null; t3_reason: string | null; operation_id: string | null; verdict: Record<string, unknown> | null }>;
+  for (const c of match) {
+    const x = r.find((y) => Number(y.file_id) === Number(c.target_id) && y.candidate_key === c.candidate_key);
+    if (!x) continue;
+    const v = x.t3_reason === 'MATCH_M3' && x.verdict ? x.verdict : null;
+    out.set(Number(c.id), {
+      t3Outcome: x.t3_outcome, t3Reason: x.t3_reason, operationId: x.operation_id === null ? null : Number(x.operation_id),
+      ...(v ? { ai: { resolution: v.resolution ?? null, reason: v.reason ?? null, concordantSignals: v.concordantSignals ?? [] } } : {}),
+    });
+  }
+  return out;
 }
 
 // ── Producteur ──────────────────────────────────────────────────────────────
@@ -384,19 +418,20 @@ export async function syncOperationCards(accountId: number, needs: OperationCard
 
     // Fermeture automatique : cartes des documents / Opérations réexaminés que ce passage ne reconduit pas.
     const ouvertes = (await pgClient.unsafe(
-      `SELECT id, rule_code, target_id, relation_key, (trigger_context->>'operationId')::bigint AS op
+      `SELECT id, rule_code, target_id, relation_key, (trigger_context->>'operationId')::bigint AS op,
+              trigger_context->>'candidateKey' AS candidate_key
          FROM to_process_actions
         WHERE account_id = $1 AND target_type = 'DOCUMENT' AND resolved_at IS NULL AND rule_code = ANY($2::text[])
           AND ((rule_code = $3 AND target_id = ANY($4::int[]))
                OR (rule_code <> $3 AND (trigger_context->>'operationId')::bigint = ANY($5::bigint[])))`,
       [accountId, `{${OPERATION_CARD_RULES.join(',')}}`, OPERATION_MATCH_RULE, intArray(needs.reviewedFiles), intArray(needs.reviewedOperations)] as never[],
-    )) as unknown as Array<{ id: number; rule_code: string; target_id: number; relation_key: string }>;
+    )) as unknown as Array<{ id: number; rule_code: string; target_id: number; relation_key: string; candidate_key: string | null }>;
     const prefixe: Record<string, string> = {
       [OPERATION_MATCH_RULE]: 'M', [OPERATION_PARENT_RULE]: 'P', [OPERATION_AMOUNT_RULE]: 'A',
       [OPERATION_DETACH_RULE]: 'D', [OPERATION_ASSET_EXCLUSION_RULE]: 'E', [OPERATION_CURRENCY_RULE]: 'C',
     };
-    const aFermer = ouvertes.filter((o) => !gardees.has(`${prefixe[o.rule_code]}:${o.target_id}:${o.relation_key}`)).map((o) => Number(o.id));
-    rep.closed += await closeCards(aFermer, 'RESOLVED_BY_T3');
+    const fermees = ouvertes.filter((o) => !gardees.has(`${prefixe[o.rule_code]}:${o.target_id}:${o.relation_key}`));
+    rep.closed += await closeCards(fermees.map((o) => Number(o.id)), 'RESOLVED_BY_T3', await matchClosureTrace(accountId, fermees));
   } catch (e) {
     console.error(`[to-process] cartes de consolidation du compte ${accountId} non synchronisées :`, (e as Error).message);
     // Lot 54D (E05) : l'échec est RENDU à l'appelant (reprise programmée), plus jamais avalé.

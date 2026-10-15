@@ -89,6 +89,16 @@ export const T3OperationMatchOutput = z.object({
   concordantSignals: z.array(z.string().min(1).max(200)).max(10),
   contradictions: z.array(z.string().min(1).max(200)).max(10),
   reason: z.string().min(1).max(400),
+  /**
+   * Lot 56A : issue EXPLICITE décidée par le modèle — ATTACH (rattacher sans
+   * solliciter l'utilisateur), ARBITRATE (ambiguïté réelle : question
+   * « À traiter »), DISTINCT (éléments qui écartent le rapprochement).
+   * Facultative : une version BO du prompt maître antérieure au lot 56A n'en
+   * produit pas — le serveur applique alors la règle historique (seul
+   * SAME_OPERATION + certain rattache). Validée par le serveur
+   * (`translateOperationMatch`) : jamais un rattachement sans signal positif.
+   */
+  resolution: z.enum(['ATTACH', 'ARBITRATE', 'DISTINCT']).optional(),
 }).superRefine((v, ctx) => {
   if (v.decision === 'SAME_OPERATION' && (v.matchedCandidateId === undefined || v.matchedCandidateId === null)) {
     ctx.addIssue({ code: 'custom', path: ['matchedCandidateId'], message: 'obligatoire quand decision = SAME_OPERATION' });

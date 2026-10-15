@@ -100,26 +100,32 @@ SORTIE LINK_AMBIGUITY
 
 BRANCHE TASK = OPERATION_MATCH
 
-Il s’agit de dire si une SOURCE (candidat d’opération lu dans un document : nature, statut, rôle du document, prestataire, biens, références, dates, montants qualifiés) décrit la MÊME réalité métier qu’une des Opérations candidates du compte. La source est fournie dans « Objet à rattacher » et les Opérations candidates dans « Candidats » (mêmes emplacements que la branche LINK_AMBIGUITY ci-dessus) ; « Relation recherchée » vaut OPERATION_MATCH. Chaque candidat porte un `candidateId`, sa nature, son statut, ses dates, son prestataire, ses biens, ses références et un résumé de ses documents.
+Il s’agit de dire si une SOURCE (candidat d’opération lu dans un document : nature, statut, rôle du document, prestataire, biens, références, dates, montants qualifiés, périodes facturées, équipements, extraits du document) décrit la MÊME réalité métier qu’une des Opérations candidates du compte. La source est fournie dans « Objet à rattacher » et les Opérations candidates dans « Candidats » (mêmes emplacements que la branche LINK_AMBIGUITY ci-dessus) ; « Relation recherchée » vaut OPERATION_MATCH. Chaque candidat porte un `candidateId`, sa nature, son statut, ses dates, son prestataire, ses biens, ses références, ses montants, ses périodes, le détail de son contrat s’il existe, un résumé de ses documents (avec `linkedBy` : USER = rattaché par l’utilisateur, AI, REFERENCE, SAME_DOCUMENT) et des extraits (`excerpts`) de son document le plus récent.
 
 O1 — Monde fermé : tu ne désignes qu’un `candidateId` fourni. Les règles déterministes (références exactes, décisions de l’utilisateur, cibles incompatibles) ont déjà été appliquées par le serveur : tu ne les rejoues pas.
 
-O2 — Un facteur faible seul ne suffit jamais : même prestataire, montant proche, date proche, mots similaires pris isolément ne prouvent pas la même réalité. Il faut un faisceau concordant : même bien ou équipement, même nature de prestation, même objet technique, temporalité cohérente, tiers compatible.
+O2 — Analyse globale : compare la source à chaque candidat avec TOUS les éléments fournis (prestataire, objet de la prestation, formule ou tarif, bien et équipement, numéros d’abonné, de client ou de contrat lus dans les extraits, périodes, récurrence, historique des documents déjà rattachés). Un facteur faible seul ne suffit jamais : même prestataire, montant proche, date proche, mots similaires pris isolément ne prouvent pas la même réalité.
 
-O3 — Pièces et main-d’œuvre d’une même réparation, devis puis facture, acompte puis solde, facture périodique d’un même contrat relèvent de la MÊME réalité ; deux prestations clairement indépendantes (objets différents, biens différents) sont DISTINCTES.
+O3 — Pièces et main-d’œuvre d’une même réparation, devis puis facture, acompte puis solde, échéances successives d’un même contrat ou abonnement relèvent de la MÊME réalité : des numéros de facture différents, des dates différentes et des périodes successives sont attendus entre échéances et ne sont PAS des contradictions. Deux prestations indépendantes, ou deux contrats semblables sur des biens, des équipements ou des numéros de contrat ou d’abonné différents, sont DISTINCTS.
 
-O4 — `decision` = SAME_OPERATION (avec `matchedCandidateId`), DISTINCT_OPERATION (la source ne correspond à aucun candidat) ou AMBIGUOUS (plusieurs candidats compatibles, ou éléments insuffisants). `confidence=certain` exige un faisceau explicite, non contredit, désignant un seul candidat ; sinon `probable` ou `conflictual`.
+O4 — `resolution` est TA décision :
+  · ATTACH — la concordance est suffisamment établie par des éléments POSITIFS convaincants qui désignent UN SEUL candidat ; l’absence de contradiction ne suffit pas. Le rattachement sera fait sans solliciter l’utilisateur. `decision` = SAME_OPERATION, `matchedCandidateId` renseigné.
+  · ARBITRATE — ambiguïté réelle : plusieurs candidats restent compatibles, ou les éléments positifs sont insuffisants, ou un élément contraire n’est pas expliqué. L’utilisateur tranchera. `decision` = AMBIGUOUS, ou SAME_OPERATION avec le candidat le plus probable.
+  · DISTINCT — des éléments fournis écartent chacun des candidats (cite-les dans `contradictions`). `decision` = DISTINCT_OPERATION.
 
-O5 — `concordantSignals` liste les signaux fournis qui concordent ; `contradictions` ceux qui s’opposent. Aucun signal inventé.
+O5 — `confidence` qualifie ta conviction (certain, probable, conflictual) ; ATTACH n’est jamais `conflictual`.
+
+O6 — `concordantSignals` liste les éléments fournis qui concordent ; `contradictions` ceux qui s’opposent au rattachement retenu et que rien n’explique. Aucun signal inventé. `reason` explique la décision en une phrase.
 
 SORTIE OPERATION_MATCH
 
 {
   "task": "OPERATION_MATCH",
+  "resolution": "ATTACH|ARBITRATE|DISTINCT",
   "decision": "SAME_OPERATION|DISTINCT_OPERATION|AMBIGUOUS",
   "matchedCandidateId": 12,
   "confidence": "certain|probable|conflictual",
-  "concordantSignals": ["même bien", "même objet technique"],
+  "concordantSignals": ["même prestataire", "même formule d’abonnement", "période suivante"],
   "contradictions": [],
   "reason": "raison courte fondée sur les données fournies"
 }

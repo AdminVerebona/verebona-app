@@ -78,15 +78,28 @@ export const OPERATION_MATCH_SCAN_LIMIT = 50;
 const HEURE = 3_600_000;
 
 /**
+ * Lot 56A : candidats que la phase M3 peut (ré)évaluer — attente M3
+ * (`M3_REQUIRED`) et question M3 encore ouverte dans « À traiter »
+ * (`ARBITRATION_REQUIRED` / `M3_AMBIGUOUS` : verdict sémantique incertain).
+ * Une question fondée sur des références exactes (CERTAIN) n'en fait pas
+ * partie ; une question répondue par l'utilisateur non plus (décision M0).
+ */
+export const M3_SUBJECT_SQL = `((c.t3_outcome = 'HOLD_UNRESOLVED' AND c.t3_reason = 'M3_REQUIRED')
+    OR (c.t3_outcome = 'ARBITRATION_REQUIRED' AND c.t3_reason = 'M3_AMBIGUOUS'))`;
+
+/**
  * Prédicat SQL (alias `c`) des candidats dont le niveau M3 reste à évaluer :
  * jamais évalué, contexte changé, report échu, prompt indisponible alors que
  * la version effective a changé (`$n` = version effective, ou NULL : clause
  * ignorée).
  */
 export function M3_PENDING_SQL(promptVersionParam: string): string {
-  return `c.status = 'ACTIVE' AND c.t3_outcome = 'HOLD_UNRESOLVED' AND c.t3_reason = 'M3_REQUIRED' AND NOT c.t3_pending
+  return `c.status = 'ACTIVE' AND ${M3_SUBJECT_SQL} AND NOT c.t3_pending
     AND c.t3_detail ? 'm3Fingerprint'
     AND (c.t3_detail->'m3' IS NULL
+         -- Lot 56A : question M3 ouverte, verdict obtenu avec une AUTRE version du prompt — réexaminée une fois.
+         OR (c.t3_outcome = 'ARBITRATION_REQUIRED' AND c.t3_detail->'m3'->>'status' = 'DONE' AND ${promptVersionParam}::text IS NOT NULL
+             AND c.t3_detail->'m3'->>'promptVersion' IS DISTINCT FROM ${promptVersionParam}::text)
          OR c.t3_detail->'m3'->>'fingerprint' IS DISTINCT FROM c.t3_detail->>'m3Fingerprint'
          OR (c.t3_detail->'m3'->>'status' IN ('DEFERRED', 'ERROR')
              AND COALESCE((c.t3_detail->'m3'->>'retryAfter')::timestamptz, now()) <= now())
@@ -176,12 +189,18 @@ async function store(candidateId: number, m3: StoredM3): Promise<void> {
 }
 
 /** Une évaluation est-elle due pour ce candidat ? (pure, même règle que `M3_PENDING_SQL`) */
-export function m3Due(detail: Record<string, unknown> | null, now: Date, promptVersion: string | null): boolean {
+export function m3Due(
+  detail: Record<string, unknown> | null, now: Date, promptVersion: string | null,
+  /** Lot 56A : le candidat porte une question M3 ouverte (ARBITRATION_REQUIRED / M3_AMBIGUOUS). */
+  openQuestion = false,
+): boolean {
   const fp = detail?.m3Fingerprint;
   if (typeof fp !== 'string') return false;
   const m3 = (detail?.m3 ?? null) as StoredM3 | null;
   if (!m3) return true;
   if (m3.fingerprint !== fp) return true;
+  // Lot 56A : question ouverte évaluée par une autre version du prompt — réexamen (une fois par version).
+  if (openQuestion && m3.status === 'DONE') return promptVersion !== null && m3.promptVersion !== promptVersion;
   if (m3.status === 'DEFERRED' || m3.status === 'ERROR') return !m3.retryAfter || Date.parse(m3.retryAfter) <= now.getTime();
   if (m3.status === 'PROMPT_UNAVAILABLE') return promptVersion !== null && m3.promptVersion !== promptVersion;
   // Lot 53 (D7) : trace « trop de candidats » du lot 42 — reprise par l'examen progressif.
@@ -203,7 +222,7 @@ export async function runOperationMatchPhase(
   const { pgClient } = await import('@/db');
   const [existe] = (await pgClient.unsafe(
     `SELECT 1 FROM document_operation_candidates c
-      WHERE c.account_id = $1 AND c.status = 'ACTIVE' AND c.t3_outcome = 'HOLD_UNRESOLVED' AND c.t3_reason = 'M3_REQUIRED' LIMIT 1`,
+      WHERE c.account_id = $1 AND c.status = 'ACTIVE' AND ${M3_SUBJECT_SQL} LIMIT 1`,
     [accountId] as never[],
   )) as unknown as unknown[];
   if (!existe) return res;
@@ -212,12 +231,12 @@ export async function runOperationMatchPhase(
   // Lot 53 (D7) : le plus anciennement tenté d'abord (jamais tenté en tête) —
   // un candidat reporté par un plafond ne peut pas être dépassé indéfiniment.
   const lignes = (await pgClient.unsafe(
-    `SELECT c.id, c.file_id, c.t3_detail, count(*) OVER () AS total FROM document_operation_candidates c
+    `SELECT c.id, c.file_id, c.t3_detail, c.t3_outcome = 'ARBITRATION_REQUIRED' AS question, count(*) OVER () AS total FROM document_operation_candidates c
       WHERE c.account_id = $1 AND ${M3_PENDING_SQL('$3')}
       ORDER BY (c.t3_detail->'m3'->>'at') NULLS FIRST, c.id LIMIT $2`,
     [accountId, OPERATION_MATCH_SCAN_LIMIT, prompt.version] as never[],
-  )) as unknown as Array<{ id: number; file_id: number; t3_detail: Record<string, unknown> | null; total: number | string }>;
-  const dus = lignes.filter((l) => m3Due(l.t3_detail, now(), prompt.version));
+  )) as unknown as Array<{ id: number; file_id: number; t3_detail: Record<string, unknown> | null; question: boolean; total: number | string }>;
+  const dus = lignes.filter((l) => m3Due(l.t3_detail, now(), prompt.version, l.question === true));
   res.examined = dus.length;
   res.notServed = Math.max(0, Number(lignes[0]?.total ?? 0) - lignes.length);
   res.deferredReasons = {};

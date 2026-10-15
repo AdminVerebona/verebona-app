@@ -43,6 +43,47 @@ export interface StoredM3 {
   warnings?: string[];
 }
 
+/** Lot 56A : mode de rattachement d'un document déjà lié (historique des décisions, sans valeur métier). */
+const LIEN: Readonly<Record<string, string>> = { M0: 'USER', M1: 'REFERENCE', M2: 'SAME_DOCUMENT', M3: 'AI' };
+
+/** Lot 56A : bornes des extraits d'unités documentaires T1 transmis au modèle (par document). */
+export const M3_EXCERPTS_PER_DOCUMENT = 12;
+export const M3_EXCERPT_MAX_CHARS = 160;
+
+/**
+ * Lot 56A : extraits des unités documentaires T1 (`document_source_units`)
+ * de documents du compte — libellé : valeur, champs, lignes de tableau,
+ * blocs de texte ; unités comprises ou incertaines seulement (jamais une
+ * unité en échec ou non informative) ; saillantes d'abord, puis ordre de
+ * lecture. Bornés (`M3_EXCERPTS_PER_DOCUMENT` × `M3_EXCERPT_MAX_CHARS`).
+ * Le modèle y trouve les indices que T1 n'a pas structurés (numéro
+ * d'abonné, formule, adresse d'installation…) ; aucune règle serveur.
+ */
+export async function sourceUnitExcerpts(r: Runner, accountId: number, fileIds: readonly number[]): Promise<Map<number, string[]>> {
+  const out = new Map<number, string[]>();
+  const ids = [...new Set(fileIds)].filter((x) => Number.isSafeInteger(x) && x > 0);
+  if (!ids.length) return out;
+  const u = await rows<{ file_id: number; label: string | null; value_text: string | null; content_text: string | null }>(r, sql`
+    SELECT x.file_id, x.label, x.value_text, x.content_text FROM (
+      SELECT u.file_id, u.label, u.value_text, u.content_text,
+             row_number() OVER (PARTITION BY u.file_id ORDER BY u.salient DESC, u.page NULLS LAST, u.ordinal, u.id) AS n
+        FROM document_source_units u
+       WHERE u.account_id = ${accountId} AND u.file_id = ANY(${intArray(ids)}::int[])
+         AND u.coverage_status IN ('COVERED', 'UNCERTAIN', 'UNRESOLVED')
+         AND u.kind IN ('LABEL_VALUE', 'FORM_FIELD', 'TABLE_ROW', 'TEXT_BLOCK')
+         AND (COALESCE(btrim(u.content_text), '') <> '' OR COALESCE(btrim(u.value_text), '') <> '')
+    ) x WHERE x.n <= ${M3_EXCERPTS_PER_DOCUMENT} ORDER BY x.file_id, x.n`);
+  for (const x of u) {
+    const lv = [x.label, x.value_text].filter((v) => v && String(v).trim()).join(' : ');
+    const brut = x.value_text && x.value_text.trim() ? lv : (x.content_text && x.content_text.trim() ? x.content_text : lv);
+    const t = brut.replace(/\s+/g, ' ').trim();
+    if (!t) continue;
+    const k = Number(x.file_id);
+    out.set(k, [...(out.get(k) ?? []), t.length > M3_EXCERPT_MAX_CHARS ? `${t.slice(0, M3_EXCERPT_MAX_CHARS - 1)}…` : t]);
+  }
+  return out;
+}
+
 const montant = (minor: number, currency: string) => `${(minor / 100).toFixed(2)} ${currency}`;
 const dates = (o: Record<string, string | null | undefined>): Record<string, string> =>
   Object.fromEntries(Object.entries(o).filter(([, v]) => typeof v === 'string' && v)) as Record<string, string>;
@@ -68,8 +109,13 @@ export async function operationMatchContext(
     .filter((h) => h.periodStart || h.periodEnd || h.amountScope === 'INSTALLMENT')
     .map((h) => `${h.periodStart ?? '?'}→${h.periodEnd ?? '?'} ${h.amountScope ?? h.role} ${montant(h.amountMinor, h.currency)}${h.economicDate ? ` (date ${h.economicDate})` : ''}`);
 
+  // Lot 56A : extraits des unités documentaires T1 (document_source_units) du document source.
+  const extraitsSujet = (await sourceUnitExcerpts(r, accountId, [identity.fileId])).get(identity.fileId) ?? [];
   const subject: OperationMatchSubject = {
-    document: { title: doc?.title ?? null, documentType: doc?.document_type_code ?? null, documentDate: doc?.document_date ?? null },
+    document: {
+      title: doc?.title ?? null, documentType: doc?.document_type_code ?? null, documentDate: doc?.document_date ?? null,
+      ...(extraitsSujet.length ? { excerpts: extraitsSujet } : {}),
+    },
     candidate: {
       type: identity.type,
       status: identity.status,
@@ -109,15 +155,25 @@ export async function operationMatchContext(
         FROM business_operations o
        WHERE o.account_id = ${accountId} AND o.id = ANY(${intArray(ids)}::bigint[])
        ORDER BY o.id`);
-    const docs = await rows<{ operation_id: string; title: string | null; role: string | null; summary: string | null }>(r, sql`
-      SELECT x.operation_id, x.title, x.role, x.summary FROM (
+    const docs = await rows<{ operation_id: string; title: string | null; role: string | null; summary: string | null; method: string | null }>(r, sql`
+      SELECT x.operation_id, x.title, x.role, x.summary, x.method FROM (
         SELECT s.operation_id, COALESCE(f.retained_title, f.original_filename, f.filename, 'Document') AS title, s.source_role AS role,
-               c.summary, row_number() OVER (PARTITION BY s.operation_id ORDER BY s.id) AS n
+               c.summary, s.match_method AS method, row_number() OVER (PARTITION BY s.operation_id ORDER BY s.id) AS n
           FROM business_operation_sources s
           JOIN asset_files f ON f.id = (CASE WHEN s.source_entity_key ~ '^[0-9]{1,9}$' THEN s.source_entity_key::int END) AND f.account_id = s.account_id
           LEFT JOIN document_operation_candidates c ON c.file_id = f.id AND c.status = 'ACTIVE' AND c.candidate_key = s.locator->>'candidateKey'
          WHERE s.account_id = ${accountId} AND s.active AND s.source_kind = 'DOCUMENT' AND s.operation_id = ANY(${intArray(ids)}::bigint[])
       ) x WHERE x.n <= 5 ORDER BY x.operation_id, x.n`);
+    // Lot 56A : document le plus récent de chaque Opération → ses extraits T1.
+    const derniers = await rows<{ operation_id: string; file_id: number }>(r, sql`
+      SELECT DISTINCT ON (s.operation_id) s.operation_id, f.id AS file_id
+        FROM business_operation_sources s
+        JOIN asset_files f ON f.id = (CASE WHEN s.source_entity_key ~ '^[0-9]{1,9}$' THEN s.source_entity_key::int END) AND f.account_id = s.account_id
+       WHERE s.account_id = ${accountId} AND s.active AND s.source_kind = 'DOCUMENT' AND s.operation_id = ANY(${intArray(ids)}::bigint[])
+         AND f.id <> ${identity.fileId}
+       ORDER BY s.operation_id, s.id DESC`);
+    const extraits = await sourceUnitExcerpts(r, accountId, derniers.map((x) => Number(x.file_id)));
+    const dernierDe = new Map(derniers.map((x) => [Number(x.operation_id), Number(x.file_id)]));
     for (const o of ops) {
       const id = Number(o.id);
       candidates.push({
@@ -130,7 +186,11 @@ export async function operationMatchContext(
         references: ((o.refs as string[] | null) ?? []).map(String),
         amounts: ((o.amounts as string[] | null) ?? []).map(String),
         documents: docs.filter((d) => Number(d.operation_id) === id)
-          .map((d) => ({ title: String(d.title ?? 'Document'), role: d.role ?? null, summary: d.summary ? String(d.summary).slice(0, 300) : null })),
+          .map((d) => ({
+            title: String(d.title ?? 'Document'), role: d.role ?? null, summary: d.summary ? String(d.summary).slice(0, 300) : null,
+            ...(d.method && LIEN[d.method] ? { linkedBy: LIEN[d.method] } : {}),
+          })),
+        ...((extraits.get(dernierDe.get(id) ?? -1) ?? []).length ? { excerpts: extraits.get(dernierDe.get(id)!)! } : {}),
         ...(((o.periods as string[] | null) ?? []).length ? { periods: (o.periods as string[]).map(String) } : {}),
         ...(((o.equipments as string[] | null) ?? []).length ? { equipments: (o.equipments as string[]).map(String) } : {}),
         ...(o.contract ? { contract: o.contract as OperationMatchCandidate['contract'] } : {}),

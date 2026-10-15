@@ -178,7 +178,7 @@ scenario('L42-O3b', 'Consolidation T3 : M3, décisions durables, fusion, réacti
     expect((await candidat(facture)).t3_operation_id).not.toBe(op.id);
   });
 
-  it('C6-24 / F-047 / C19-21 — carte (a) « Oui, la même » : CONFIRMED (ancre M0 stable) ; annulation : décision retirée, rattachement défait, même carte rouverte', async () => {
+  it('C6-24 / F-047 / C19-21 — carte (a) « Oui » : CONFIRMED (ancre M0 stable) ; annulation : décision retirée, rattachement défait, même carte rouverte', async () => {
     const compte = await make.account();
     const clio = await make.asset(compte);
     const { facture, op } = await devisPuisFacture(compte, clio.id);

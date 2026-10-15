@@ -32,11 +32,11 @@ describe('C19 — libellés métier (P09 : jamais « Opération » côté utilis
     for (const t of [q, ...p.map((x) => x.label)]) expect(t).not.toMatch(SANS_OPERATION);
   });
 
-  it('C19-02 (a) verdict M3 incertain sur une seule réalité : « Oui, la même » / « Non, c’est une autre intervention » (état actuel)', () => {
+  it('C19-02 (a) verdict M3 incertain sur une seule réalité : « Oui » / « Non, c’est une autre intervention » (état actuel, lot 56A : « Oui » sans accord)', () => {
     expect(cards.matchQuestion('INTERVENTION', 'M3', [A])).toBe('Ce document concerne-t-il la même intervention que « Devis freinage du 03/06/2026 » ?');
     const p = cards.matchProposals('INTERVENTION', 'M3', [A]);
     expect(p).toEqual([
-      { value: 'SAME:12', label: 'Oui, la même', confidence: 0.6 },
+      { value: 'SAME:12', label: 'Oui', confidence: 0.6 },
       { value: 'DISTINCT', label: 'Non, c’est une autre intervention', confidence: 1, isCurrentValue: true },
     ]);
     // Tout est affiché (deux propositions + l'état actuel).

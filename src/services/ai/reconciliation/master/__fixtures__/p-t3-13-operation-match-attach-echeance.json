@@ -1,0 +1,146 @@
+{
+  "case": "P-T3-13",
+  "description": "OPERATION_MATCH (lot 56A) — échéance suivante d'un abonnement : issue ATTACH explicite (signaux positifs, aucune contradiction) → rattachement sans question, même si la confiance n'est que « probable ».",
+  "context": {
+    "operationMatch": {
+      "subject": {
+        "document": {
+          "title": "Facture télésurveillance mars",
+          "documentType": "INVOICE",
+          "documentDate": "2026-03-05",
+          "excerpts": [
+            "N° d'abonné : 4471-22",
+            "Formule Sérénité — 01/03/2026 au 31/03/2026",
+            "Total TTC : 39,90 €"
+          ]
+        },
+        "candidate": {
+          "type": "INTERVENTION",
+          "status": "REALIZED",
+          "sourceRole": "INVOICE",
+          "summary": "Abonnement télésurveillance — mars 2026",
+          "provider": "Sécurité Gamma",
+          "assets": [
+            "Maison"
+          ],
+          "references": [
+            "INVOICE:FA-2026-03"
+          ],
+          "dates": {
+            "startDate": "2026-03-01",
+            "endDate": "2026-03-31"
+          },
+          "amounts": [
+            "REALIZED_COST/INSTALLMENT 39.90 EUR"
+          ],
+          "periods": [
+            "2026-03-01→2026-03-31 INSTALLMENT 39.90 EUR (date 2026-03-05)"
+          ]
+        }
+      },
+      "candidates": [
+        {
+          "candidateId": 21,
+          "type": "CONTRACT",
+          "status": "IN_PROGRESS",
+          "provider": "Sécurité Gamma",
+          "dates": {
+            "startDate": "2026-01-01"
+          },
+          "assets": [
+            "Maison"
+          ],
+          "references": [
+            "INVOICE:FA-2026-01",
+            "INVOICE:FA-2026-02"
+          ],
+          "amounts": [
+            "REALIZED_COST 39.90 EUR",
+            "REALIZED_COST 39.90 EUR"
+          ],
+          "periods": [
+            "2026-01-01→2026-01-31 39.90 EUR",
+            "2026-02-01→2026-02-28 39.90 EUR"
+          ],
+          "documents": [
+            {
+              "title": "Facture télésurveillance janvier",
+              "role": "INVOICE",
+              "summary": "Abonnement télésurveillance — janvier 2026"
+            },
+            {
+              "title": "Facture télésurveillance février",
+              "role": "INVOICE",
+              "summary": "Abonnement télésurveillance — février 2026",
+              "linkedBy": "USER"
+            }
+          ],
+          "excerpts": [
+            "N° d'abonné : 4471-22",
+            "Formule Sérénité — 01/02/2026 au 28/02/2026"
+          ]
+        }
+      ],
+      "candidate": {
+        "confidence": "certain",
+        "type": "INTERVENTION",
+        "status": "REALIZED",
+        "role": "INVOICE",
+        "assetIds": [
+          1
+        ],
+        "hints": [
+          {
+            "role": "REALIZED_COST",
+            "amountMinor": 3990,
+            "currency": "EUR",
+            "amountScope": "INSTALLMENT",
+            "periodStart": "2026-03-01",
+            "periodEnd": "2026-03-31"
+          }
+        ]
+      },
+      "operations": [
+        {
+          "id": 21,
+          "typeCode": "CONTRACT",
+          "status": "IN_PROGRESS",
+          "assetIds": [
+            1
+          ],
+          "periodic": true
+        }
+      ],
+      "plausible": [
+        21
+      ]
+    }
+  },
+  "recording": {
+    "operationCode": "t3_operation_match",
+    "task": "OPERATION_MATCH",
+    "output": {
+      "task": "OPERATION_MATCH",
+      "resolution": "ATTACH",
+      "decision": "SAME_OPERATION",
+      "matchedCandidateId": 21,
+      "confidence": "probable",
+      "concordantSignals": [
+        "même prestataire",
+        "même numéro d'abonné",
+        "même formule et même tarif",
+        "période suivante"
+      ],
+      "contradictions": [],
+      "reason": "Échéance de mars du même abonnement (même numéro d'abonné, période qui suit février)."
+    }
+  },
+  "expected": {
+    "outcome": "MATCH_AND_ENRICH",
+    "operationId": 21,
+    "neverOutcomes": [
+      "CREATE_NEW",
+      "ARBITRATION_REQUIRED"
+    ]
+  }
+}

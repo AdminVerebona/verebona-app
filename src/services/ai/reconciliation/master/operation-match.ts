@@ -20,11 +20,13 @@
  * reste valide pour VALUE_CONFLICT et LINK_AMBIGUITY.
  *
  * Après le modèle, en code : monde fermé (un identifiant hors jeu =
- * AMBIGUOUS, jamais un rattachement), puis décision serveur
- * (`applyM3Verdict`, `matching.ts`) : seul SAME_OPERATION + certain sur un
- * candidat encore plausible rattache (M3) ; DISTINCT_OPERATION + certain ne
- * crée que si la source peut créer seule (C5) ; tout le reste est une
- * ambiguïté (« À traiter » si impact métier, sinon attente).
+ * AMBIGUOUS, jamais un rattachement), validation de l'issue explicite
+ * (lot 56A, `validateResolution`), puis décision serveur (`applyM3Verdict`,
+ * `matching.ts`) : ATTACH sur un candidat encore plausible rattache (M3) ;
+ * DISTINCT ne crée que si la source peut créer seule (C5) ; ARBITRATE est
+ * une ambiguïté (« À traiter » si impact métier, sinon attente). Sortie sans
+ * issue (version BO du prompt antérieure au lot 56A) : règle historique
+ * (`m3Resolution` : seul SAME_OPERATION + certain rattache).
  * ══════════════════════════════════════════════════════════════════════════
  */
 import { createHash } from 'node:crypto';
@@ -32,12 +34,22 @@ import { closedWorldOperationMatch, type ClosedWorldWarning, type T3OperationMat
 
 /** Borne du monde fermé : au-delà, aucun appel (trop d'Opérations plausibles pour un départage robuste). */
 export const OPERATION_MATCH_MAX_CANDIDATES = 5;
-/** Version du constructeur de contexte : entre dans l'empreinte (un changement de format rappelle le modèle). */
-export const OPERATION_MATCH_CONTEXT_VERSION = 'm3v1';
+/**
+ * Version du constructeur de contexte : entre dans l'empreinte (un changement
+ * de format rappelle le modèle). Lot 56A : `m3v2` — extraits des unités
+ * documentaires T1 (`document_source_units`) et mode de rattachement des
+ * documents déjà liés ; chaque attente / arbitrage M3 est réévalué une fois
+ * (plafonds d'appels inchangés).
+ */
+export const OPERATION_MATCH_CONTEXT_VERSION = 'm3v2';
 export const OPERATION_MATCH_RELATION = 'OPERATION_MATCH — la source décrit-elle la même réalité métier qu’une des Opérations candidates ?';
 
 export interface OperationMatchSubject {
-  document: { title: string | null; documentType: string | null; documentDate: string | null };
+  document: {
+    title: string | null; documentType: string | null; documentDate: string | null;
+    /** Lot 56A : extraits des unités documentaires T1 (libellé : valeur, lignes, blocs), bornés — présents s'ils existent. */
+    excerpts?: string[];
+  };
   candidate: {
     type: string | null;
     status: string;
@@ -67,7 +79,13 @@ export interface OperationMatchCandidate {
   assets: string[];
   references: string[];
   amounts: string[];
-  documents: Array<{ title: string; role: string | null; summary: string | null }>;
+  documents: Array<{
+    title: string; role: string | null; summary: string | null;
+    /** Lot 56A : comment le document a été lié (USER = décision utilisateur, AI = rapprochement sémantique, REFERENCE, SAME_DOCUMENT). */
+    linkedBy?: string;
+  }>;
+  /** Lot 56A : extraits des unités documentaires T1 du document le plus récent de l'Opération (bornés). */
+  excerpts?: string[];
   /** Lot 55B : périodes facturées des coûts actifs, équipements, détail du contrat (si présents). */
   periods?: string[];
   equipments?: string[];
@@ -103,6 +121,21 @@ export function operationMatchFingerprint(variables: Record<string, unknown>): s
   return createHash('sha256').update(JSON.stringify([OPERATION_MATCH_CONTEXT_VERSION, canonical(variables)])).digest('hex').slice(0, 32);
 }
 
+/** Lot 56A : les trois issues d'un rapprochement Document → Opération. */
+export type OperationMatchResolution = 'ATTACH' | 'ARBITRATE' | 'DISTINCT';
+
+/**
+ * Lot 56A : motif d'un déclassement serveur (issue du modèle non retenue,
+ * toujours vers ARBITRATE — jamais vers un rattachement).
+ */
+export type OperationMatchDowngrade =
+  | 'ATTACH_WITHOUT_CANDIDATE'
+  | 'ATTACH_WITHOUT_POSITIVE_SIGNAL'
+  | 'ATTACH_WITH_CONTRADICTIONS'
+  | 'ATTACH_CONFLICTUAL'
+  | 'DISTINCT_INCONSISTENT'
+  | 'DISTINCT_WITHOUT_EVIDENCE';
+
 /** Verdict M3 retenu par le serveur (après monde fermé). */
 export interface OperationMatchVerdict {
   decision: T3OperationMatchOutput['decision'];
@@ -111,24 +144,78 @@ export interface OperationMatchVerdict {
   concordantSignals: string[];
   contradictions: string[];
   reason: string;
+  /**
+   * Lot 56A : issue retenue par le serveur. Absente d'un verdict enregistré
+   * avant le lot 56A (règle historique, voir `m3Resolution`).
+   */
+  resolution?: OperationMatchResolution;
+  /** Lot 56A : MODEL = issue explicite du modèle validée ; LEGACY = sortie sans issue (prompt antérieur). */
+  resolutionOrigin?: 'MODEL' | 'LEGACY';
+  /** Lot 56A : issue du modèle déclassée par le serveur (motif). */
+  downgraded?: OperationMatchDowngrade;
 }
 
-/** Sortie modèle → verdict (monde fermé U1). Pure. */
+/**
+ * Issue d'un verdict (pure). Verdict sans issue explicite (prompt antérieur
+ * au lot 56A, trace enregistrée) : règle historique — SAME_OPERATION +
+ * certain rattache, DISTINCT_OPERATION + certain écarte, tout le reste est
+ * une ambiguïté.
+ */
+export function m3Resolution(v: Pick<OperationMatchVerdict, 'decision' | 'confidence' | 'matchedOperationId' | 'resolution'>): OperationMatchResolution {
+  if (v.resolution) return v.resolution;
+  if (v.decision === 'SAME_OPERATION' && v.confidence === 'certain' && v.matchedOperationId !== null) return 'ATTACH';
+  if (v.decision === 'DISTINCT_OPERATION' && v.confidence === 'certain') return 'DISTINCT';
+  return 'ARBITRATE';
+}
+
+/**
+ * Validation serveur de l'issue EXPLICITE du modèle (pure, lot 56A). Le
+ * serveur ne rejoue aucun raisonnement métier : il vérifie seulement que
+ * l'issue est COHÉRENTE avec ce que le modèle déclare lui-même —
+ *   · ATTACH exige un candidat désigné dans le jeu fourni, au moins un
+ *     signal concordant (une absence de contradiction n'est pas une preuve),
+ *     aucune contradiction déclarée, une confiance non conflictuelle ;
+ *   · DISTINCT exige DISTINCT_OPERATION et au moins un élément qui écarte ;
+ *   · sinon : ARBITRATE (question à l'utilisateur), motif tracé.
+ */
+export function validateResolution(
+  out: Pick<T3OperationMatchOutput, 'decision' | 'confidence' | 'concordantSignals' | 'contradictions' | 'resolution'>, matchedOperationId: number | null,
+): { resolution: OperationMatchResolution; downgraded?: OperationMatchDowngrade } {
+  const r = out.resolution;
+  if (r === 'ATTACH') {
+    if (out.decision !== 'SAME_OPERATION' || matchedOperationId === null) return { resolution: 'ARBITRATE', downgraded: 'ATTACH_WITHOUT_CANDIDATE' };
+    if (out.confidence === 'conflictual') return { resolution: 'ARBITRATE', downgraded: 'ATTACH_CONFLICTUAL' };
+    if (!out.concordantSignals.some((x) => x.trim())) return { resolution: 'ARBITRATE', downgraded: 'ATTACH_WITHOUT_POSITIVE_SIGNAL' };
+    if (out.contradictions.some((x) => x.trim())) return { resolution: 'ARBITRATE', downgraded: 'ATTACH_WITH_CONTRADICTIONS' };
+    return { resolution: 'ATTACH' };
+  }
+  if (r === 'DISTINCT') {
+    if (out.decision !== 'DISTINCT_OPERATION') return { resolution: 'ARBITRATE', downgraded: 'DISTINCT_INCONSISTENT' };
+    if (!out.contradictions.some((x) => x.trim())) return { resolution: 'ARBITRATE', downgraded: 'DISTINCT_WITHOUT_EVIDENCE' };
+    return { resolution: 'DISTINCT' };
+  }
+  return { resolution: 'ARBITRATE' };
+}
+
+/** Sortie modèle → verdict (monde fermé U1, puis validation de l'issue — lot 56A). Pure. */
 export function translateOperationMatch(
   out: T3OperationMatchOutput, allowedOperationIds: ReadonlySet<number>,
 ): { verdict: OperationMatchVerdict; warnings: ClosedWorldWarning[] } {
   const { output, warnings } = closedWorldOperationMatch(out, allowedOperationIds);
-  return {
-    verdict: {
-      decision: output.decision,
-      matchedOperationId: output.decision === 'SAME_OPERATION' ? (output.matchedCandidateId ?? null) : null,
-      confidence: output.confidence,
-      concordantSignals: output.concordantSignals.slice(0, 10),
-      contradictions: output.contradictions.slice(0, 10),
-      reason: output.reason.slice(0, 400),
-    },
-    warnings,
+  const matchedOperationId = output.decision === 'SAME_OPERATION' ? (output.matchedCandidateId ?? null) : null;
+  const base: OperationMatchVerdict = {
+    decision: output.decision,
+    matchedOperationId,
+    confidence: output.confidence,
+    concordantSignals: output.concordantSignals.slice(0, 10),
+    contradictions: output.contradictions.slice(0, 10),
+    reason: output.reason.slice(0, 400),
   };
+  // Monde fermé violé : la sortie de remplacement n'a pas d'issue — ambiguïté.
+  const explicite = warnings.length === 0 ? out.resolution : undefined;
+  if (!explicite) return { verdict: { ...base, resolution: m3Resolution(base), resolutionOrigin: 'LEGACY' }, warnings };
+  const v = validateResolution({ ...output, resolution: explicite }, matchedOperationId);
+  return { verdict: { ...base, resolution: v.resolution, resolutionOrigin: 'MODEL', ...(v.downgraded ? { downgraded: v.downgraded } : {}) }, warnings };
 }
 
 export interface OperationMatchCall {

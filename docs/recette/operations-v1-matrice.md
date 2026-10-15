@@ -68,7 +68,7 @@
 2. Compte de recette : déposer un devis (garage X, bien Y, sans référence commune), puis une facture du même garage quelques jours plus tard sans référence au devis.
 3. Après le passage T3 du compte : BO › Exécutions IA, opération t3_operation_match présente (au plus 5 par passage, 30 par jour et par compte).
 4. Verdict SAME_OPERATION certain + candidat unique → facture rattachée (F-059) ; probable → carte « À traiter » (F-058, F-200) ; AMBIGUOUS avec impact → carte, jamais une troisième Opération (F-048).
-5. Répondre à la carte sur mobile puis sur desktop (« Oui, la même » / « Non ») : décision durable, jamais reproposée (F-046, F-047).
+5. Répondre à la carte sur mobile puis sur desktop (« Oui » / « Non ») : décision durable, jamais reproposée (F-046, F-047).
 
 *Attendu :* Aucun rattachement automatique sur verdict probable ; décisions mémorisées.
 

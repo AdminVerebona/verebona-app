@@ -59,7 +59,7 @@
  */
 import type { BusinessOperationStatus, BusinessOperationTypeCode, MatchMethod, ReferenceKind } from '../model';
 import { componentsFromIdentity, hasRecurringPeriod, type CandidateIdentity } from './model';
-import type { OperationMatchVerdict } from '@/services/ai/reconciliation/master/operation-match';
+import { m3Resolution, type OperationMatchVerdict } from '@/services/ai/reconciliation/master/operation-match';
 
 export type T3Outcome = 'NO_OPERATION' | 'MATCH_AND_ENRICH' | 'CREATE_NEW' | 'HOLD_UNRESOLVED' | 'ARBITRATION_REQUIRED';
 
@@ -691,10 +691,11 @@ function arbitrate(
 /**
  * Applique le verdict M3 (déjà passé au monde fermé, empreinte de contexte
  * vérifiée par l'appelant) à une décision « M3_REQUIRED ». Pure.
- *   · SAME_OPERATION + certain + candidat encore plausible → MATCH_AND_ENRICH (M3, F-059) ;
- *   · DISTINCT_OPERATION + certain → CREATE_NEW si la source peut créer
- *     seule (C5), sinon attente ;
- *   · tout le reste (probable, conflictuel, AMBIGUOUS — F-058) → ambiguïté :
+ *   · ATTACH (lot 56A : issue explicite validée ; verdict antérieur :
+ *     SAME_OPERATION + certain) + candidat encore plausible → MATCH_AND_ENRICH (M3, F-059) ;
+ *   · DISTINCT (verdict antérieur : DISTINCT_OPERATION + certain) → CREATE_NEW
+ *     si la source peut créer seule (C5), sinon attente ;
+ *   · ARBITRATE (verdict antérieur : probable, conflictuel, AMBIGUOUS — F-058) → ambiguïté :
  *     « À traiter » si impact métier, sinon attente. Jamais de rattachement
  *     silencieux.
  */
@@ -706,11 +707,13 @@ export function applyM3Verdict(
   const res = (outcome: T3Outcome, reason: string, operationId: number | null = null, matchMethod: MatchMethod | null = null): CandidateDecision =>
     ({ outcome, operationId, matchMethod, reason, detail });
   const plausibles = detail.plausible;
-  if (verdict.decision === 'SAME_OPERATION' && verdict.confidence === 'certain'
-    && verdict.matchedOperationId !== null && plausibles.includes(verdict.matchedOperationId)) {
+  // Lot 56A : issue explicite du modèle validée par le serveur (`translateOperationMatch`) ;
+  // verdict antérieur sans issue : règle historique (`m3Resolution`).
+  const issue = m3Resolution(verdict);
+  if (issue === 'ATTACH' && verdict.matchedOperationId !== null && plausibles.includes(verdict.matchedOperationId)) {
     return res('MATCH_AND_ENRICH', 'MATCH_M3', verdict.matchedOperationId, 'M3');
   }
-  if (verdict.decision === 'DISTINCT_OPERATION' && verdict.confidence === 'certain') {
+  if (issue === 'DISTINCT') {
     if (c.confidence !== 'certain' && !ctx.userDistinct) return res('HOLD_UNRESOLVED', 'PROBABLE_WITHOUT_MATCH');
     if (creationOutOfPerimeter(c, ctx.assetStatus)) return res('HOLD_UNRESOLVED', 'TARGET_OUT_OF_PORTFOLIO');
     return res('CREATE_NEW', 'M3_DISTINCT');

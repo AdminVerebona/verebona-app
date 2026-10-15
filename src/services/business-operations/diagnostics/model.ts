@@ -254,6 +254,10 @@ export interface M3ProgressView {
   remaining: number;
   total: number;
   rounds: number;
+  /** Lot 56A : issue du dernier verdict (ATTACH, ARBITRATE, DISTINCT), son origine, son déclassement serveur et sa raison. */
+  resolution?: string | null;
+  downgraded?: string | null;
+  reason?: string | null;
 }
 
 const ids = (v: unknown): number[] => (Array.isArray(v) ? v.map(Number).filter((n) => Number.isSafeInteger(n)) : []);
@@ -276,8 +280,27 @@ export function toM3ProgressView(m3: unknown, batch: unknown, progress: unknown,
     batch: lot.length ? lot : toutes.slice(0, 5),
     examined, remaining, total,
     rounds: typeof p?.rounds === 'number' ? p.rounds : 0,
+    ...verdictOf(t?.verdict),
   };
 }
+
+/** Lot 56A : issue explicable du verdict enregistré (pure ; verdict antérieur : règle historique). */
+function verdictOf(v: unknown): Pick<M3ProgressView, 'resolution' | 'downgraded' | 'reason'> {
+  if (!v || typeof v !== 'object') return {};
+  const x = v as Record<string, unknown>;
+  const resolution = typeof x.resolution === 'string' ? x.resolution
+    : x.decision === 'SAME_OPERATION' && x.confidence === 'certain' ? 'ATTACH'
+      : x.decision === 'DISTINCT_OPERATION' && x.confidence === 'certain' ? 'DISTINCT' : 'ARBITRATE';
+  return {
+    resolution,
+    downgraded: typeof x.downgraded === 'string' ? x.downgraded : null,
+    reason: typeof x.reason === 'string' ? x.reason.slice(0, 200) : null,
+  };
+}
+
+const M3_RESOLUTION_LABELS: Readonly<Record<string, string>> = {
+  ATTACH: 'IA : rattacher', ARBITRATE: 'IA : question à l’utilisateur', DISTINCT: 'IA : réalité distincte',
+};
 
 const M3_STATUS_LABELS: Readonly<Record<string, string>> = {
   WAITING: 'à soumettre (prochain cycle T3)',
@@ -301,7 +324,11 @@ export function m3ProgressLabel(v: M3ProgressView | null): string {
   const etat = M3_STATUS_LABELS[v.status] ?? v.status;
   const motif = v.detail ? ` (${M3_DETAIL_LABELS[v.detail] ?? v.detail})` : '';
   const lot = v.total > 0 ? ` · ${v.examined} examinée(s), ${v.batch.length} dans le lot courant, ${v.remaining} restante(s) sur ${v.total}` : '';
-  return `${etat}${motif}${lot}`;
+  // Lot 56A : issue décidée par l'IA, déclassement serveur éventuel, raison.
+  const issue = v.status === 'DONE' && v.resolution
+    ? ` · ${M3_RESOLUTION_LABELS[v.resolution] ?? v.resolution}${v.downgraded ? ` (déclassée par le serveur : ${v.downgraded})` : ''}${v.reason ? ` — ${v.reason}` : ''}`
+    : '';
+  return `${etat}${motif}${lot}${issue}`;
 }
 
 // ── Lot 55B (E) : état de réconciliation d'une Opération ───────────────────

@@ -60,7 +60,7 @@ import {
 import { requestRetroReconciliation, retroActive, type RetroTrace } from './retro';
 import { advanceM3Progress, m3ProgressFor, m3SubjectFingerprint, selectM3Batch, type M3Progress } from './m3-progress';
 import { applyCurrencyChoices, type AmountChoice, type CurrencyChoice, type SideAmount } from './model';
-import { OPERATION_MATCH_MAX_CANDIDATES, type OperationMatchVerdict } from '@/services/ai/reconciliation/master/operation-match';
+import { OPERATION_MATCH_MAX_CANDIDATES, m3Resolution, type OperationMatchVerdict } from '@/services/ai/reconciliation/master/operation-match';
 import { emptyCardNeeds, type OperationCardNeeds } from './card-needs';
 import { operationMatchContext, type StoredM3 } from './m3-context';
 import { applyStructuredAuthority, assetDataContribution, type AssetDataRow } from './asset-data';
@@ -1041,9 +1041,25 @@ export async function resolveProgressiveM3(
     }
     const m3 = await operationMatchContext(tx, accountId, identity, sel.batch);
     const trace: ProgressiveM3Trace = { fingerprint: m3.fingerprint, batch: sel.batch, progress, selection };
-    if (stored?.status !== 'DONE' || stored.fingerprint !== m3.fingerprint || !stored.verdict) return { decision: d, trace };
+    if (stored?.status !== 'DONE' || stored.fingerprint !== m3.fingerprint || !stored.verdict) {
+      // Lot 56A : question M3 déjà posée à l'utilisateur, contexte changé (ou
+      // nouvelle version du prompt) — le modèle va la réexaminer (phase M3) ;
+      // d'ici là la question RESTE posée (jamais fermée puis rouverte, jamais
+      // un rattachement sur un verdict périmé). Les décisions utilisateur ont
+      // déjà été appliquées par `decideCandidate` (M0 / rejets).
+      const precedent = t3Detail?.arbitration as { basis?: string; operationIds?: unknown[] } | undefined;
+      if (precedent?.basis === 'M3') {
+        const enAttente: OperationMatchVerdict = {
+          decision: 'AMBIGUOUS', matchedOperationId: null, confidence: 'probable', concordantSignals: [], contradictions: [],
+          reason: 'M3_REEVALUATION_PENDING', resolution: 'ARBITRATE',
+        };
+        const applied = applyM3Verdict(identity, { ...d, detail: { ...d.detail, plausible: sel.batch } }, enAttente, ctx);
+        return { decision: { ...applied, detail: { ...applied.detail, plausible: d.detail.plausible } }, trace };
+      }
+      return { decision: d, trace };
+    }
     const v = stored.verdict as OperationMatchVerdict;
-    if (v.decision === 'DISTINCT_OPERATION' && v.confidence === 'certain' && sel.remaining.length) {
+    if (m3Resolution(v) === 'DISTINCT' && sel.remaining.length) {
       // Lot écarté avec certitude, d'autres Opérations restent : lot suivant (jamais de création ici).
       progress = advanceM3Progress(progress, sel.batch, stored.at);
       continue;
