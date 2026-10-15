@@ -20,6 +20,41 @@ import { publicSiteUrl } from '@/lib/external-urls';
 import { z } from 'zod';
 import { MIN_PASSWORD_LENGTH, checkPassword } from '@/lib/auth/password-rules';
 import { Checkbox } from '@/components/ui/checkbox';
+import { rememberPendingDuoJoin } from '@/lib/duo/pending-duo-join';
+
+/**
+ * Contexte d'invitation établi CÔTÉ SERVEUR par ./page.tsx à partir du jeton
+ * (lot 57A, ticket P2) — jamais déduit d'un paramètre d'URL côté client.
+ */
+export type SignupFormInvitation =
+  | { kind: 'duo'; ownerName: string | null; inviteEmail: string | null }
+  | { kind: 'account' };
+
+/** Textes exacts du ticket P2 (invités Premium Duo / parrainage). */
+export const DUO_INVITE_SIGNUP_TEXT =
+  "Vous avez été invité à rejoindre un abonnement Premium Duo. Créez votre compte pour accepter l'invitation.";
+export const DUO_INVITE_SIGNUP_BUTTON = 'Créer mon compte et rejoindre le Duo';
+export const REFERRAL_FIELD_HELP = "Vous disposez d'un code de parrainage ? Saisissez-le ici.";
+
+/** Refus d'invitation renvoyés par POST /api/users, en français. */
+function invitationErrorMessage(code: string, duo: boolean): string | null {
+  switch (code) {
+    case 'INVITE_EMAIL_MISMATCH':
+      return duo
+        ? 'Cette invitation Premium Duo est destinée à une autre adresse e-mail. Utilisez l’adresse à laquelle vous avez reçu l’invitation.'
+        : 'Ce lien d’invitation est destiné à une autre adresse e-mail.';
+    case 'INVITE_TOKEN_EXPIRED':
+      return duo
+        ? 'Cette invitation Premium Duo a expiré. Demandez au titulaire de l’abonnement de vous en envoyer une nouvelle.'
+        : 'Ce lien d’invitation a expiré. Demandez-en un nouveau à la personne qui vous a invité.';
+    case 'INVALID_INVITE_TOKEN':
+      return duo
+        ? 'Cette invitation Premium Duo n’est plus valide (déjà utilisée ou retirée). Demandez une nouvelle invitation au titulaire.'
+        : 'Ce lien d’invitation n’est plus valide. Demandez-en un nouveau à la personne qui vous a invité.';
+    default:
+      return null;
+  }
+}
 
 const signupSchema = z.object({
   firstName: z.string().min(1, "Le prénom est requis"),
@@ -49,8 +84,11 @@ const signupSchema = z.object({
 
 type SignupFormData = z.infer<typeof signupSchema>;
 
-export function SignupForm() {
+export function SignupForm(props: { invitation?: SignupFormInvitation | null }) {
+  const invitation = props.invitation ?? null;
   const router = useRouter();
+  // Lot 57A (P2) : invité Premium Duo — contexte distinct du parrainage.
+  const isDuoInvite = invitation?.kind === 'duo';
   const [inviteToken, setInviteToken] = useState<string | null>(null);
   // Transmission d'un bien reçue sans compte : le jeton ouvre l'inscription
   // en pré-lancement (POST /api/users) et le bien est accepté après la
@@ -102,7 +140,8 @@ export function SignupForm() {
     const emailParam = params.get('email');
     const ref = params.get('ref');
 
-    if (ref) {
+    if (ref && !isDuoInvite) {
+      // Lot 57A (P2) : jamais de parrainage pour un invité Premium Duo.
       // CDC §4.2/§4.3 : le code de parrainage n'est conserve nulle part de
       // maniere persistante. Il vit uniquement en memoire pour la duree du
       // parcours, puis est propage par le parametre d'URL (§4.4).
@@ -110,6 +149,12 @@ export function SignupForm() {
     }
     {
       setInviteToken(token);
+    }
+    if (token && isDuoInvite) {
+      // Contexte Duo conservé à travers rafraîchissement, vérification de
+      // l'adresse et redirections (même navigateur) ; ailleurs, la reprise se
+      // fait par l'adresse vérifiée (voir `lib/duo/pending-duo-join`).
+      rememberPendingDuoJoin(token);
     }
     if (transmission) {
       setTransmissionToken(transmission);
@@ -133,7 +178,11 @@ export function SignupForm() {
       });
     if (emailParam) {
       setFormData(prev => ({ ...prev, email: emailParam }));
+    } else if (invitation?.kind === 'duo' && invitation.inviteEmail) {
+      const invited = invitation.inviteEmail;
+      setFormData(prev => (prev.email ? prev : { ...prev, email: invited }));
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- lecture unique à l'ouverture du formulaire
   }, []);
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -213,7 +262,7 @@ export function SignupForm() {
           acceptedTerms: formData.acceptedTerms,
           // Code de la version affichée, jamais « la version courante » (§18).
           termsVersion: legalVersion?.versionCode,
-          referralCode: referralCode || undefined,
+          referralCode: isDuoInvite ? undefined : referralCode || undefined,
           inviteToken: inviteToken || undefined,
           transmissionToken: transmissionToken || undefined,
         }),
@@ -228,6 +277,8 @@ export function SignupForm() {
               setError(data.error || 'Ce nom d\'utilisateur est déjà utilisé.');
             } else if (data.code === 'WEAK_PASSWORD') {
             setError(data.message || 'Le mot de passe ne respecte pas les exigences de sécurité.');
+          } else if (invitationErrorMessage(String(data.code ?? ''), isDuoInvite)) {
+            setError(invitationErrorMessage(String(data.code), isDuoInvite)!);
           } else {
             // La reference technique permet de retrouver l'incident dans les
             // journaux sans exposer la cause a l'utilisateur.
@@ -240,8 +291,11 @@ export function SignupForm() {
 
         // Verification de l'email obligatoire avant connexion. Aucune offre
         // n'est transportee : l'essai de 7 jours est deja actif cote serveur.
-        const refParam = referralCode ? `&ref=${referralCode}` : '';
-        router.push(`/verify-email?email=${encodeURIComponent(formData.email)}${refParam}`);
+        // Lot 57A (P2) : le contexte Duo suit l'utilisateur jusqu'à la page
+        // d'attente (rafraîchissement compris) ; aucun parrainage pour lui.
+        const refParam = referralCode && !isDuoInvite ? `&ref=${referralCode}` : '';
+        const duoParam = isDuoInvite ? '&duo=1' : '';
+        router.push(`/verify-email?email=${encodeURIComponent(formData.email)}${refParam}${duoParam}`);
     } catch (err) {
       setError('Une erreur est survenue. Veuillez réessayer.');
       setIsLoading(false);
@@ -265,11 +319,28 @@ export function SignupForm() {
               <LogoWithBaseline size={50} />
             </div>
             <CardTitle className="text-center text-[color:var(--text-primary)]">Créer un compte</CardTitle>
+            {isDuoInvite ? (
+              <div
+                data-testid="duo-invite-signup-context"
+                className="bg-gradient-to-r from-emerald-950/40 to-emerald-900/20 border border-emerald-500/30 rounded-lg p-3 flex items-start gap-3"
+              >
+                <Users className="w-5 h-5 text-emerald-400 flex-shrink-0 mt-0.5" />
+                <div className="text-sm">
+                  <p className="font-medium text-[color:var(--text-success)]">{DUO_INVITE_SIGNUP_TEXT}</p>
+                  {invitation?.kind === 'duo' && invitation.ownerName && (
+                    <p className="text-[color:var(--text-muted)] text-xs mt-0.5">
+                      Invitation de {invitation.ownerName}. Rien ne vous sera facturé.
+                    </p>
+                  )}
+                </div>
+              </div>
+            ) : (
             <CardDescription className="text-center text-[color:var(--text-muted)]">
               {inviteToken
                 ? 'Créez votre compte pour rejoindre le compte partagé'
                 : 'Votre essai gratuit de 7 jours commence dès la création du compte'}
             </CardDescription>
+            )}
 
             {/* Essai de 7 jours — CDC tarification §3.1 à §3.3. Les trois
                 mentions rassurantes sont explicitement demandées au §14 :
@@ -291,7 +362,7 @@ export function SignupForm() {
               </div>
             )}
 
-            {inviteToken && (
+            {inviteToken && !isDuoInvite && (
               <div className="bg-gradient-to-r from-emerald-950/40 to-emerald-900/20 border border-emerald-500/30 rounded-lg p-3 flex items-start gap-3">
                 <Users className="w-5 h-5 text-emerald-400 flex-shrink-0 mt-0.5" />
                 <div className="text-sm">
@@ -302,7 +373,7 @@ export function SignupForm() {
                 </div>
               </div>
             )}
-            {referralCode && (
+            {referralCode && !isDuoInvite && (
               <div className="bg-blue-950/40 border border-blue-500/30 rounded-lg p-3 flex items-start gap-3">
                 <span className="text-xl flex-shrink-0">🎁</span>
                 <div className="text-sm">
@@ -418,8 +489,10 @@ export function SignupForm() {
               </div>
 
               {/* Code de parrainage — saisie manuelle (CDC §4.1).
-                  Pre-rempli si l'utilisateur est arrive par un lien ?ref=. */}
-              <div className="space-y-2">
+                  Pre-rempli si l'utilisateur est arrive par un lien ?ref=.
+                  Lot 57A (P2) : absent pour un invité Premium Duo. */}
+              {!isDuoInvite && (
+              <div className="space-y-2" data-testid="referral-code-field">
                 <Label htmlFor="referralCode">Code de parrainage (facultatif)</Label>
                 <Input
                   id="referralCode"
@@ -431,10 +504,11 @@ export function SignupForm() {
                   autoComplete="off"
                 />
                 <p className="text-xs text-[color:var(--text-muted)]">
-                  Un proche vous a invité ? Saisissez son code : il bénéficiera d&apos;un mois
-                  offert lorsque vous souscrirez un abonnement annuel.
+                  {REFERRAL_FIELD_HELP} Votre parrain bénéficiera d&apos;un mois offert lorsque
+                  vous souscrirez un abonnement annuel.
                 </p>
               </div>
+              )}
 
               <div className="space-y-3 pt-2">
                 <div className="flex items-start gap-3">
@@ -502,6 +576,8 @@ export function SignupForm() {
               <Button type="submit" className="w-full" disabled={isLoading}>
                 {isLoading
                   ? 'Création...'
+                  : isDuoInvite
+                  ? DUO_INVITE_SIGNUP_BUTTON
                   : inviteToken
                   ? 'Créer mon compte et rejoindre'
                   : 'Créer mon compte et démarrer l\u2019essai gratuit'

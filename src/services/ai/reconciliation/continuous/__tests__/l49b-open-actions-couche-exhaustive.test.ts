@@ -92,7 +92,8 @@ describe('orchestration du passage compte (§1, §13) — exécutée sur base r�
   });
 
   it('voie canonique unique : la phase s’efface devant un travail DOCUMENT_ASSET vivant ; le balayage délègue les cartes ouvertes à contexte identique', () => {
-    expect(O).toMatch(/liveDocumentJob\(fileId\)/);
+    // Lot 57B : détection du job délégué (vivant ou bloqué) — `delegatedJob` remplace `liveDocumentJob`.
+    expect(O).toMatch(/delegatedJob\('document', fileId\)/);
     expect(Q).toMatch(/verdict === 'OPEN_ACTION'\) \{ delegated \+= 1; continue; \}/);
   });
 

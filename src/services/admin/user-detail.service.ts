@@ -392,7 +392,7 @@ export async function loadLoginHistory(userId: number, now = new Date()): Promis
 // ── USR-A01 : renvoi d'invitation ───────────────────────────────────────────
 
 export type ResendResult =
-  | { ok: true; email: string; renewed: boolean; duoId: number }
+  | { ok: true; email: string; renewed: boolean; duoId: number; emailStatus: 'accepted' | 'queued' | 'failed'; emailError: string | null }
   | { ok: false; code: 'NO_INVITATION' | 'NOT_REISSUABLE'; message: string };
 
 /**
@@ -422,7 +422,6 @@ export async function resendInvitation(userId: number, appUrl: string, now = new
             pending_invite_token_expires_at = CASE
               WHEN pending_invite_token_expires_at IS NULL OR pending_invite_token_expires_at < $2 THEN $4
               ELSE pending_invite_token_expires_at END,
-            pending_invite_sent_at = $2,
             updated_at = $2
       WHERE id = $1 AND pending_invite_email IS NOT NULL AND pending_invite_token IS NOT NULL
       RETURNING billing_owner_user_id, pending_invite_token, pending_invite_email`,
@@ -430,24 +429,15 @@ export async function resendInvitation(userId: number, appUrl: string, now = new
   );
   if (!duo) return { ok: false, code: 'NOT_REISSUABLE', message: 'L’invitation a été retirée entre-temps.' };
 
-  const [owner] = await pgClient.unsafe<{ first_name: string; last_name: string }[]>(
-    `SELECT first_name, last_name FROM users WHERE id = $1`,
-    [duo.billing_owner_user_id],
-  );
-  const { emailService } = await import('@/lib/email/email-service');
-  await emailService.send({
-    templateCode: 'DUO_INVITATION',
-    to: duo.pending_invite_email,
-    variables: {
-      ownerFirstName: owner?.first_name ?? '',
-      ownerLastName: owner?.last_name ?? '',
-      ownerFullName: owner ? `${owner.first_name} ${owner.last_name}` : '',
-      inviteUrl: `${appUrl.replace(/\/$/, '')}/duo/join/${duo.pending_invite_token}`,
-      // Gabarit en base (0125) : {{actionUrl}} ; gabarit du code : {{inviteUrl}}.
-      actionUrl: `${appUrl.replace(/\/$/, '')}/duo/join/${duo.pending_invite_token}`,
-      expiresIn: `${DUO_INVITE_TTL_DAYS} jours`,
-    },
-    userId: duo.billing_owner_user_id,
+  // Lot 57A (P1-E) : même demande DURABLE que le parcours du titulaire —
+  // e-mail DUO_INVITATION (destinataire : l'invité, émetteur : le titulaire),
+  // date d'envoi posée seulement à l'acceptation par Resend ; le résultat
+  // (`success: false` compris) est rendu au BO au lieu d'être ignoré.
+  const { enqueueDuoInvitationEmail, processEmailJob } = await import('@/services/email/transactional-email-jobs.service');
+  const job = await enqueueDuoInvitationEmail({
+    duoId: target.duoId, recipientEmail: duo.pending_invite_email, triggeredByUserId: duo.billing_owner_user_id, baseUrl: appUrl,
   });
-  return { ok: true, email: duo.pending_invite_email, renewed: target.expired, duoId: target.duoId };
+  const outcome = await processEmailJob(job.jobId);
+  const emailStatus = outcome.status === 'accepted' ? 'accepted' : outcome.status === 'failed' || outcome.status === 'cancelled' ? 'failed' : 'queued';
+  return { ok: true, email: duo.pending_invite_email, renewed: target.expired, duoId: target.duoId, emailStatus, emailError: outcome.error ?? null };
 }

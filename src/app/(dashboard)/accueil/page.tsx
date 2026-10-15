@@ -25,7 +25,7 @@ import { useBreadcrumb } from '@/contexts/BreadcrumbContext';
 import { toast } from 'sonner';
 import { markAccountDataMutated } from '@/lib/data-freshness';
 import { useRouter } from 'next/navigation';
-import { duoJoinErrorMessage, joinDuo, takePendingDuoJoin } from '@/lib/duo/pending-duo-join';
+import { duoJoinErrorMessage, joinDuo, peekPendingDuoJoin, settlePendingDuoJoin } from '@/lib/duo/pending-duo-join';
 import { useHomeSummary } from '@/components/home/useHomeSummary';
 import { prefetchMascotPresentation } from '@/components/home/useMascotPresentation';
 // Mêmes chunks et même préchargement que le panneau « Ajouter » (APP-PERF-05).
@@ -181,9 +181,12 @@ export default function DashboardPage() {
   // rattaché dès sa première arrivée sur l'accueil, sans repasser par le lien.
   useEffect(() => {
     if (!user) return;
-    const duoToken = takePendingDuoJoin();
+    // Lot 57A : le jeton n'est retiré qu'après confirmation (ou refus
+    // définitif) — une panne laisse la reprise possible au prochain passage.
+    const duoToken = peekPendingDuoJoin();
     if (!duoToken) return;
     void joinDuo(duoToken).then((result) => {
+      settlePendingDuoJoin(duoToken, result);
       if (result.ok) {
         toast.success('Vous avez rejoint l’espace Premium Duo.');
         refreshSummary();

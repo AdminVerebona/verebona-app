@@ -25,8 +25,9 @@
  * l'abonnement du Duo est actif (mêmes règles que GET /api/duo/join).
  */
 import { db } from '@/db';
-import { accountMemberships, assetTransmissions, duoAccounts } from '@/db/schema';
+import { accountMemberships, assetTransmissions, duoAccounts, users } from '@/db/schema';
 import { eq } from 'drizzle-orm';
+import { inviteTokenHash } from '@/lib/duo/invite-token-hash';
 
 export type InvitationError = 'INVALID_INVITE_TOKEN' | 'INVITE_EMAIL_MISMATCH' | 'INVITE_TOKEN_EXPIRED';
 
@@ -116,3 +117,72 @@ export async function resolveSignupInvitation(
 
   return { valid: false, code: 'INVALID_INVITE_TOKEN' };
 }
+
+// ── Contexte d'inscription affiché (lot 57A, ticket P2 « Premium Duo :
+//    supprimer le parrainage du formulaire d'inscription des invités ») ──────
+
+/**
+ * Contexte d'invitation du formulaire d'inscription, établi CÔTÉ SERVEUR à
+ * partir du jeton (jamais d'un simple paramètre d'URL) : nature de
+ * l'invitation (Premium Duo, compte partagé, transmission) et état. L'adresse
+ * saisie n'est pas connue ici : sa correspondance reste contrôlée par
+ * POST /api/users, puis par POST /api/duo/join.
+ */
+export type SignupInvitationContext =
+  | { kind: 'duo'; state: 'valid'; ownerName: string | null; inviteEmail: string | null }
+  | { kind: 'duo'; state: 'expired' | 'used' | 'inactive' }
+  | { kind: 'account' | 'transmission'; state: 'valid' | 'expired' | 'used' }
+  | { kind: 'unknown'; state: 'invalid' };
+
+export async function describeSignupInvitation(rawToken: unknown, now: Date = new Date()): Promise<SignupInvitationContext> {
+  const token = typeof rawToken === 'string' ? rawToken.trim() : '';
+  if (!token) return { kind: 'unknown', state: 'invalid' };
+
+  const [membership] = await db
+    .select({ status: accountMemberships.status, expiresAt: accountMemberships.inviteTokenExpiresAt })
+    .from(accountMemberships)
+    .where(eq(accountMemberships.inviteToken, token))
+    .limit(1);
+  if (membership) {
+    if (membership.status !== 'pending') return { kind: 'account', state: 'used' };
+    return { kind: 'account', state: isExpired(membership.expiresAt, now) ? 'expired' : 'valid' };
+  }
+
+  const [duo] = await db
+    .select({
+      ownerUserId: duoAccounts.billingOwnerUserId,
+      pendingInviteEmail: duoAccounts.pendingInviteEmail,
+      expiresAt: duoAccounts.pendingInviteTokenExpiresAt,
+      subscriptionStatus: duoAccounts.subscriptionStatus,
+    })
+    .from(duoAccounts)
+    .where(eq(duoAccounts.pendingInviteToken, token))
+    .limit(1);
+  if (duo) {
+    if (!DUO_ACTIVE_STATUSES.includes(duo.subscriptionStatus)) return { kind: 'duo', state: 'inactive' };
+    if (isExpired(duo.expiresAt, now)) return { kind: 'duo', state: 'expired' };
+    const [owner] = await db
+      .select({ firstName: users.firstName, lastName: users.lastName })
+      .from(users)
+      .where(eq(users.id, duo.ownerUserId))
+      .limit(1);
+    const ownerName = owner ? `${owner.firstName ?? ''} ${owner.lastName ?? ''}`.trim() || null : null;
+    return { kind: 'duo', state: 'valid', ownerName, inviteEmail: duo.pendingInviteEmail };
+  }
+  const [usedDuo] = await db
+    .select({ id: duoAccounts.id })
+    .from(duoAccounts)
+    .where(eq(duoAccounts.lastUsedInviteTokenHash, inviteTokenHash(token)))
+    .limit(1);
+  if (usedDuo) return { kind: 'duo', state: 'used' };
+
+  const [transmission] = await db
+    .select({ status: assetTransmissions.status })
+    .from(assetTransmissions)
+    .where(eq(assetTransmissions.token, token))
+    .limit(1);
+  if (transmission) return { kind: 'transmission', state: transmission.status === 'pending' ? 'valid' : 'used' };
+
+  return { kind: 'unknown', state: 'invalid' };
+}
+

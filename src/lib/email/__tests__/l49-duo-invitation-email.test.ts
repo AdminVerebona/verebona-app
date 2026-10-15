@@ -12,17 +12,22 @@ const read = (p: string) => readFileSync(join(root, p), 'utf8');
  * `inviteUrl` seulement).
  */
 describe('L49-DUO-MAIL — invitation Duo', () => {
-  it('DUO-MAIL-01 : la route d’invitation fournit actionUrl ET inviteUrl', () => {
-    const src = read('src/app/api/duo/invitation/route.ts');
+  // Lot 57A : les variables de l'e-mail sont construites par la demande
+  // durable (`transactional-email-jobs.service`), commune à la route et au BO.
+  const JOBS = 'src/services/email/transactional-email-jobs.service.ts';
+
+  it('DUO-MAIL-01 : l’e-mail d’invitation fournit actionUrl ET inviteUrl', () => {
+    const src = read(JOBS);
     expect(src).toMatch(/templateCode:\s*'DUO_INVITATION'/);
     expect(src).toMatch(/actionUrl:\s*inviteUrl/);
     expect(src).toMatch(/\binviteUrl,/);
+    expect(read('src/app/api/duo/invitation/route.ts')).toMatch(/enqueueDuoInvitationEmail\(/);
   });
 
-  it('DUO-MAIL-02 : le renvoi depuis le BO fournit aussi actionUrl', () => {
+  it('DUO-MAIL-02 : le renvoi depuis le BO passe par la même construction', () => {
     const src = read('src/services/admin/user-detail.service.ts');
-    const block = src.slice(src.indexOf("templateCode: 'DUO_INVITATION'"));
-    expect(block.slice(0, 800)).toMatch(/actionUrl:/);
+    expect(src).toMatch(/enqueueDuoInvitationEmail\(/);
+    expect(src).not.toMatch(/emailService\.send\(\{\s*templateCode: 'DUO_INVITATION'/);
   });
 
   it('DUO-MAIL-03 : le lien utilise l’adresse publique de l’application, jamais l’en-tête Origin', () => {
@@ -38,7 +43,7 @@ describe('L49-DUO-MAIL — invitation Duo', () => {
     const textPart = body.slice(0, body.lastIndexOf("'["));
     const expected = unresolvedPlaceholders(textPart);
     expect(expected).toContain('actionUrl');
-    const route = read('src/app/api/duo/invitation/route.ts');
+    const route = read(JOBS);
     for (const name of expected) expect(route).toMatch(new RegExp(`\\b${name}\\b`));
   });
 

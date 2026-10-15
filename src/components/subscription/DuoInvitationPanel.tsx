@@ -20,10 +20,20 @@ import {
 
 type InvitationStatus = 'NONE' | 'PENDING' | 'EXPIRED' | 'ACTIVE_MEMBER';
 
+/** Lot 57A : expédition et livraison de l'e-mail d'invitation (GET /api/duo/invitation). */
+interface InvitationEmailState {
+  state: 'queued' | 'accepted' | 'delivered' | 'delayed' | 'failed';
+  acceptedAt: string | null;
+  deliveredAt: string | null;
+  nextAttemptAt: string | null;
+  reason: string | null;
+}
+
 interface InvitationData {
   status: InvitationStatus;
   inviteEmail?: string;
   sentAt?: string | null;
+  email?: InvitationEmailState | null;
   inviteLink?: string | null;
   memberEmail?: string | null;
   memberName?: string | null;
@@ -33,6 +43,50 @@ interface InvitationData {
 export const DUO_INVITATION_ANCHOR = 'duo-invitation';
 /** Bloc « 2e utilisateur Duo » (identifiant distinct de l'ancre du tiroir). */
 export const DUO_INVITATION_PANEL_ID = 'duo-invitation-panel';
+
+interface SendResponse { success?: boolean; emailStatus?: 'accepted' | 'queued' | 'failed' }
+
+/**
+ * Lot 57A (P0-C) : l'invitation est toujours ENREGISTRÉE (lien copiable) ;
+ * le message dit ce qu'il en est de l'e-mail — jamais « envoyée » après un
+ * échec.
+ */
+function announce(res: SendResponse | undefined, okMessage: string) {
+  const status = res?.emailStatus ?? 'accepted';
+  if (status === 'accepted') toast.success(okMessage);
+  else if (status === 'queued') {
+    toast.warning('Invitation créée. L’e-mail n’a pas encore pu être expédié : une nouvelle tentative est programmée. Vous pouvez aussi copier le lien.');
+  } else {
+    toast.error('Invitation créée, mais l’e-mail n’a pas pu être expédié. Copiez le lien pour le transmettre vous-même, ou réessayez.');
+  }
+}
+
+const dateFr = (iso: string) => new Date(iso).toLocaleDateString('fr-FR', { day: 'numeric', month: 'long', year: 'numeric' });
+
+/** Invitation créée / expédition acceptée / livraison connue / échec (lot 57A, E). */
+function InvitationEmailLine({ email, sentAt }: { email: InvitationEmailState | null; sentAt: string | null }) {
+  if (!email) {
+    // Invitation antérieure au suivi : seule la date d'envoi connue est affichée.
+    return sentAt ? <p className="text-xs text-[color:var(--text-muted)]">Envoyée le {dateFr(sentAt)}</p> : null;
+  }
+  const muted = 'text-xs text-[color:var(--text-muted)]';
+  switch (email.state) {
+    case 'queued':
+      return <p className="text-xs text-amber-500" data-testid="duo-invite-email-state">Invitation créée — e-mail pas encore expédié, nouvelle tentative automatique en cours.</p>;
+    case 'accepted':
+      return <p className={muted} data-testid="duo-invite-email-state">E-mail expédié le {dateFr(email.acceptedAt ?? sentAt ?? new Date().toISOString())} (livraison non encore confirmée).</p>;
+    case 'delayed':
+      return <p className="text-xs text-amber-500" data-testid="duo-invite-email-state">E-mail expédié ; livraison retardée par la messagerie du destinataire.</p>;
+    case 'delivered':
+      return <p className={muted} data-testid="duo-invite-email-state">E-mail remis à la messagerie du destinataire le {dateFr(email.deliveredAt ?? email.acceptedAt ?? new Date().toISOString())}.</p>;
+    default:
+      return (
+        <p className="text-xs text-destructive" data-testid="duo-invite-email-state">
+          E-mail non remis{email.reason ? ` : ${email.reason}` : '.'} Copiez le lien pour le transmettre vous-même, ou renvoyez l’invitation.
+        </p>
+      );
+  }
+}
 
 export function DuoInvitationPanel() {
   const [loading, setLoading] = useState(true);
@@ -81,8 +135,8 @@ export function DuoInvitationPanel() {
     if (!emailInput.trim()) return;
     setSending(true);
     try {
-      await apiClient.post('/api/duo/invitation', { email: emailInput.trim() });
-      toast.success('Invitation envoyée.');
+      const res = await apiClient.post<SendResponse>('/api/duo/invitation', { email: emailInput.trim() });
+      announce(res, 'Invitation envoyée.');
       setEmailInput('');
       await fetchStatus();
     } catch (error: any) {
@@ -100,8 +154,8 @@ export function DuoInvitationPanel() {
     if (!data.inviteEmail) return;
     setSending(true);
     try {
-      await apiClient.post('/api/duo/invitation', { email: data.inviteEmail, resend: true });
-      toast.success('Invitation renvoyée.');
+      const res = await apiClient.post<SendResponse>('/api/duo/invitation', { email: data.inviteEmail, resend: true });
+      announce(res, 'Invitation renvoyée.');
       await fetchStatus();
     } catch (error: any) {
       toast.error(error?.message || 'Une erreur est survenue.');
@@ -220,11 +274,7 @@ export function DuoInvitationPanel() {
             </p>
           </div>
           <p className="text-sm text-[color:var(--text-muted)]">{data.inviteEmail}</p>
-          {data.sentAt && (
-            <p className="text-xs text-[color:var(--text-muted)]">
-              Envoyée le {new Date(data.sentAt).toLocaleDateString('fr-FR', { day: 'numeric', month: 'long', year: 'numeric' })}
-            </p>
-          )}
+          <InvitationEmailLine email={data.email ?? null} sentAt={data.sentAt ?? null} />
         </div>
 
         <div className="flex flex-wrap gap-2">

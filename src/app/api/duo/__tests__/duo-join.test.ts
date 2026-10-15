@@ -75,7 +75,9 @@ describe('page /duo/join/[token]', () => {
     expect(PAGE).toContain('rememberPendingDuoJoin(token)');
     expect(PAGE).toContain('/login?returnUrl=');
     const ACCUEIL = readFileSync(join(process.cwd(), 'src/app/(dashboard)/accueil/page.tsx'), 'utf8');
-    expect(ACCUEIL).toContain('takePendingDuoJoin()');
+    // Lot 57A : jeton relu, retiré seulement après confirmation ou refus définitif.
+    expect(ACCUEIL).toContain('peekPendingDuoJoin()');
+    expect(ACCUEIL).toContain('settlePendingDuoJoin(duoToken, result)');
   });
 });
 

@@ -100,11 +100,14 @@ export type AdminActionType =
   // Lot 48 (O10) : « Reconsolider ce compte » (BO › Opérations) — mise en file
   // du travail T3 Opérations et de la projection Agenda du compte, avec motif.
   // Jamais une édition d'Opération (décision PO Q9).
-  | 'OPERATIONS_RECONSOLIDATE';
+  | 'OPERATIONS_RECONSOLIDATE'
+  // Lot 57A : recherche dans le suivi des e-mails transactionnels (BO ›
+  // Communications) — critères sans adresse complète.
+  | 'EMAIL_LOG_SEARCH';
 
 export type AdminTargetType = 'ACCOUNT' | 'USER' | 'EXPORT_TEMPLATE' | 'COMMUNICATION_CHANNEL' | 'ANOMALY' | 'GDPR_REQUEST'
   | 'ASSISTANT_SETTING' | 'ASSISTANT_REQUEST' | 'NOTIFICATION' | 'AI_CACHE' | 'AI_METRICS'
-  | 'OPS_BACKFILL' | 'SCHEDULED_TASK' | 'AI_EXECUTION' | 'STRIPE_CATALOG';
+  | 'OPS_BACKFILL' | 'SCHEDULED_TASK' | 'AI_EXECUTION' | 'STRIPE_CATALOG' | 'EMAIL_LOG';
 
 type Executor = Pick<typeof db, 'insert' | 'select'>;
 

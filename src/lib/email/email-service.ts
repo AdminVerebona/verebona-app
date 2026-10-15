@@ -70,6 +70,34 @@ export function missingActionLinks(text: string): string[] {
   return unresolvedPlaceholders(text).filter((n) => /(url|link)$/i.test(n) && n !== 'logoUrl');
 }
 
+/**
+ * Lot 57A — aucun jeton dans le journal des e-mails. `email_logs.metadata`
+ * recopiait les variables, liens d'action compris : lien de vérification
+ * signé (ouvre une session), lien d'invitation Duo… Le jeton est remplacé par
+ * « [masqué] » ; les clés et le reste de l'URL (hôte, chemin) restent
+ * lisibles pour le diagnostic.
+ */
+export function redactActionLinks(variables: Record<string, string>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(variables ?? {})) {
+    if (typeof v !== 'string' || !/^https?:\/\//.test(v)) { out[k] = v; continue; }
+    out[k] = v
+      .replace(/([?&](?:token|inviteToken|transmissionToken|code)=)[^&#]+/gi, '$1[masqué]')
+      .replace(/\/(join|invitation|invite|transmission|reset-password|verify-email)\/[^/?#]{8,}/gi, '/$1/[masqué]');
+  }
+  return out;
+}
+
+/** Résultat d'un envoi (lot 57A : identifiants utiles à la reprise et au suivi). */
+export interface EmailSendResult {
+  success: boolean;
+  error?: string;
+  /** Ligne `email_logs` écrite pour cette tentative. */
+  logId?: number;
+  /** Identifiant du message chez Resend (accepté). */
+  providerMessageId?: string | null;
+}
+
 class EmailService {
   private resend: Resend;
   
@@ -393,16 +421,28 @@ class EmailService {
      * notifications, qui contrôle lui-même le canal par type d'événement.
      */
     skipChannelCheck?: boolean;
-  }): Promise<{success: boolean, error?: string}> {
+    /** Lot 57A : utilisateur à l'origine de l'envoi (titulaire Duo), distinct du destinataire. */
+    triggeredByUserId?: number | null;
+    /** Lot 57A : clé d'idempotence transmise à Resend (une par tentative). */
+    idempotencyKey?: string;
+    /** Lot 57A : envoi durable dont cette ligne est une tentative. */
+    emailJobId?: number;
+  }): Promise<EmailSendResult> {
     const logEntry: any = {
       templateCode: options.templateCode,
       recipientEmail: options.to,
       recipientUserId: options.userId || null,
+      triggeredByUserId: options.triggeredByUserId ?? null,
+      emailJobId: options.emailJobId ?? null,
       subject: '',
       status: 'pending' as const,
       errorMessage: null,
       sentAt: new Date(),
-      metadata: JSON.stringify(options.variables),
+      metadata: JSON.stringify(redactActionLinks(options.variables)),
+    };
+    const journaliser = async (): Promise<number | undefined> => {
+      const [row] = await db.insert(emailLogs).values(logEntry).returning({ id: emailLogs.id });
+      return row?.id;
     };
     
     try {
@@ -412,8 +452,7 @@ class EmailService {
         logEntry.status = 'failed';
         logEntry.errorMessage = 'Emails disabled globally';
         logEntry.subject = `[Disabled] Email ${options.templateCode}`;
-        await db.insert(emailLogs).values(logEntry);
-        return { success: false, error: 'Emails disabled' };
+        return { success: false, error: 'Emails disabled', logId: await journaliser() };
       }
 
       // CDC BO COM-011 : e-mail transactionnel désactivé depuis l'écran
@@ -422,8 +461,7 @@ class EmailService {
         logEntry.status = 'skipped';
         logEntry.errorMessage = 'CHANNEL_DISABLED';
         logEntry.subject = `[Désactivé] Email ${options.templateCode}`;
-        await db.insert(emailLogs).values(logEntry);
-        return { success: false, error: 'CHANNEL_DISABLED' };
+        return { success: false, error: 'CHANNEL_DISABLED', logId: await journaliser() };
       }
 
       // ══════════════════════════════════════════════════════════════════
@@ -456,8 +494,7 @@ class EmailService {
         logEntry.status = 'failed';
         logEntry.errorMessage = error;
         logEntry.subject = `[Error] Template not found`;
-        await db.insert(emailLogs).values(logEntry);
-        return { success: false, error };
+        return { success: false, error, logId: await journaliser() };
       }
       
       const template = templates[0];
@@ -494,8 +531,7 @@ class EmailService {
         console.error(`[EmailService] ${options.templateCode} : ${error}`);
         logEntry.status = 'failed';
         logEntry.errorMessage = error;
-        await db.insert(emailLogs).values(logEntry);
-        return { success: false, error: 'MISSING_ACTION_LINK' };
+        return { success: false, error: 'MISSING_ACTION_LINK', logId: await journaliser() };
       }
 
       let htmlBody = this.isCompleteHTML(bodyProcessed)
@@ -510,8 +546,7 @@ class EmailService {
       if (!process.env.RESEND_API_KEY) {
         logEntry.status = 'failed';
         logEntry.errorMessage = 'Resend API key not configured';
-        await db.insert(emailLogs).values(logEntry);
-        return { success: false, error: 'Email provider not configured' };
+        return { success: false, error: 'Email provider not configured', logId: await journaliser() };
       }
       
       const { data, error } = await this.resend.emails.send({
@@ -521,19 +556,36 @@ class EmailService {
         html: htmlBody,
         text: bodyText,
         replyTo: settings.replyToEmail,
-      });
+      }, options.idempotencyKey ? { idempotencyKey: options.idempotencyKey } : undefined);
       
       if (error) {
         logEntry.status = 'failed';
-        logEntry.errorMessage = error.message || JSON.stringify(error);
-        await db.insert(emailLogs).values(logEntry);
-        return { success: false, error: error.message };
+        // Lot 57A : le CODE Resend (validation_error, invalid_from_address,
+        // rate_limit_exceeded…) précède le message — cause lisible dans le BO.
+        const code = (error as { name?: string }).name;
+        logEntry.errorMessage = `${code ? `[${code}] ` : ''}${error.message || JSON.stringify(error)}`;
+        return { success: false, error: error.message, logId: await journaliser() };
       }
       
+      // `sent` = ACCEPTÉ par Resend (sens inchangé). La livraison est suivie à
+      // part (`delivery_status`, webhooks Resend — lot 57A).
       logEntry.status = 'sent';
-      await db.insert(emailLogs).values(logEntry);
+      const providerMessageId = (data as { id?: string } | null)?.id ?? null;
+      logEntry.providerMessageId = providerMessageId;
+      logEntry.deliveryStatus = 'accepted';
+      logEntry.deliveryStatusAt = new Date();
+      const logId = await journaliser();
+      if (providerMessageId) {
+        // Webhook arrivé AVANT cette écriture (ordre indifférent) : rejoué ici.
+        try {
+          const { replayStoredProviderEvents } = await import('@/services/email/email-provider-events.service');
+          await replayStoredProviderEvents(providerMessageId);
+        } catch (e) {
+          console.error('[EmailService] rejeu des événements Resend impossible :', (e as Error)?.message ?? e);
+        }
+      }
       
-      return { success: true };
+      return { success: true, logId, providerMessageId };
       
     } catch (err) {
       console.error('❌ EmailService error:', err);
@@ -541,11 +593,12 @@ class EmailService {
       logEntry.status = 'failed';
       logEntry.errorMessage = errorMessage;
       
+      let logId: number | undefined;
       try {
-        await db.insert(emailLogs).values(logEntry);
+        logId = await journaliser();
       } catch (logError) {}
       
-      return { success: false, error: errorMessage };
+      return { success: false, error: errorMessage, logId };
     }
   }
   
@@ -558,7 +611,7 @@ class EmailService {
     templateCode: string,
     testEmail: string,
     variables: Record<string, string>,
-  ): Promise<{success: boolean, error?: string}> {
+  ): Promise<EmailSendResult> {
     return this.send({ templateCode, to: testEmail, variables, skipChannelCheck: true });
   }
 }

@@ -5,7 +5,8 @@ import {
 } from '@/lib/auth/auth-rate-limit';
 import { runDetached } from '@/lib/auth/anti-enumeration';
 import { RESEND_VERIFICATION_NEUTRAL_MESSAGE } from '@/lib/auth/auth-messages';
-import { resendVerification } from '@/services/auth/resend-verification.service';
+import { recordVerificationResendRequest } from '@/services/auth/resend-verification.service';
+import { processEmailJob } from '@/services/email/transactional-email-jobs.service';
 
 /**
  * Route pour renvoyer l'email de vérification
@@ -59,7 +60,12 @@ export async function POST(request: NextRequest) {
       if (!account.allowed) return neutral();
     }
 
-    runDetached('renvoi de vérification', () => resendVerification(normalized));
+    // Lot 57A (P0-B) : la DEMANDE est enregistrée en base avant la réponse
+    // (pour toute adresse, sans lecture du compte : coût identique) ; la
+    // tentative suit la réponse, et la tâche `transactional-emails-retry`
+    // reprend une demande non aboutie (échec, processus arrêté).
+    const jobId = await recordVerificationResendRequest(normalized);
+    runDetached('renvoi de vérification', () => processEmailJob(jobId));
     return neutral();
   } catch (error) {
     console.error('Resend verification error:', (error as Error)?.message ?? error);

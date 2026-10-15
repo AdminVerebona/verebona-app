@@ -315,12 +315,14 @@ scenario('L31B', 'Rattachement document → bien : identifiants canoniques (T1) 
     expect((await liens(doc.id)).filter((l) => l[1] !== 'MENTIONED')).toEqual([]);
   });
 
-  it('T3DOC-07 — aucun candidat : aucune invention, aucun appel modèle, « À traiter » À compléter', async () => {
+  it('T3DOC-07 — aucun candidat STRUCTURÉ : une recherche sémantique (lot 57B), le modèle s’abstient → aucune invention, « À traiter » À compléter', async () => {
     const compte = await make.account();
     await make.asset(compte, { category: 'IMMOBILIER', name: 'Maison' });
     const doc = await make.assetFile(compte, { assetId: null });
-    const { replay } = await analyser(compte, doc.id, sortie({}));
-    expect(appelsT3(replay)).toBe(0);
+    const { replay } = await analyser(compte, doc.id, sortie({}), { extra: [t3Sortie([])] });
+    // Lot 57B (ticket P0 « À traiter non résolus », défaut B) : plus de NO_CANDIDATE
+    // sans raisonnement — UNE recherche sémantique parmi les biens du compte.
+    expect(appelsT3(replay)).toBe(1);
     expect(await liens(doc.id)).toEqual([]);
     expect(await actionsLink(doc.id)).toEqual([expect.objectContaining({ action_kind: 'COMPLETE', active: true })]);
     expect(await resolution(doc.id)).toMatchObject({ status: 'NO_CANDIDATE' });

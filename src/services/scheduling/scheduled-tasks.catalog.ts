@@ -51,6 +51,9 @@
  *                                                                 clés d'idempotence Stripe
  *   auth-rate-limits-purge          chaque jour à 5 h 30          suppressions idempotentes
  *                                                                 (lot 37, limiteur d'authentification)
+ *   transactional-emails-retry      toutes les minutes            prise atomique par demande (UPDATE
+ *                                                                 conditionnel), une demande ouverte par
+ *                                                                 compte / Duo (lot 57A, 0405)
  *   asset-account-backfill          au démarrage, puis /h tant    verrou de ligne du bien ; ne touche
  *                                   qu'il reste des biens         que ce qui est resté dans l'ancien
  *                                   déplacés incohérents          compte (lot 40, Duo)
@@ -497,6 +500,25 @@ export const SCHEDULED_TASKS: readonly ScheduledTaskDef[] = [
       const { purgeAuthRateLimits } = await import('@/lib/auth/auth-rate-limit');
       const n = await purgeAuthRateLimits();
       return { note: `${n} compteur(s) de tentatives supprimé(s)` };
+    },
+  },
+  {
+    // Lot 57A (ticket P0 e-mails) : e-mails indispensables au parcours
+    // (vérification d'adresse, invitation Duo) dont la demande est enregistrée
+    // en base (`transactional_email_jobs`, 0405) — reprise des demandes jamais
+    // tentées (processus arrêté), des échecs temporaires et des tentatives
+    // interrompues. Bornée (6 tentatives), sans doublon (prise atomique).
+    code: 'transactional-emails-retry',
+    label: 'E-mails indispensables : vérification d’adresse et invitations Duo (reprise)',
+    schedule: { kind: 'interval', everyMs: MIN },
+    timeoutMs: 4 * MIN,
+    startupDelayMs: MIN,
+    critical: { staleAfterMs: 30 * MIN },
+    ownSlot: true,
+    run: async ({ deadline }) => {
+      const { runTransactionalEmailRetry } = await import('@/services/email/transactional-email-jobs.service');
+      const r = await runTransactionalEmailRetry({ deadline: Math.min(deadline, Date.now() + 50_000) });
+      if (r.processed > 0) return { note: JSON.stringify(r) };
     },
   },
   {

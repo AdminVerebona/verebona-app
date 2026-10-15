@@ -4,7 +4,8 @@ import { signalerDroitsModifies } from '@/services/duo/duo-exit.service';
 import { SessionService } from '@/lib/session-service';
 import { db } from '@/db';
 import { users, duoAccounts, duoMemberships } from '@/db/schema';
-import { eq, and } from 'drizzle-orm';
+import { eq, and, isNotNull, sql } from 'drizzle-orm';
+import { inviteTokenHash } from '@/lib/duo/invite-token-hash';
 
 /**
  * GET /api/duo/join?token=xxx
@@ -31,6 +32,14 @@ export async function GET(request: NextRequest) {
     .limit(1);
 
   if (!duo) {
+    // Lot 57A (P2 inscription des invités) : invitation DÉJÀ UTILISÉE
+    // distinguée d'un lien inconnu, par l'empreinte du dernier jeton consommé.
+    const [used] = await db
+      .select({ id: duoAccounts.id })
+      .from(duoAccounts)
+      .where(eq(duoAccounts.lastUsedInviteTokenHash, inviteTokenHash(token)))
+      .limit(1);
+    if (used) return NextResponse.json({ error: 'USED_TOKEN' }, { status: 410 });
     return NextResponse.json({ error: 'INVALID_TOKEN' }, { status: 404 });
   }
 
@@ -66,7 +75,32 @@ export async function POST(request: NextRequest) {
   try {
     const session = await SessionService.getSession(request);
     const body = await request.json();
-    const { token } = body;
+    let token: string | undefined = typeof body?.token === 'string' ? body.token : undefined;
+
+    // ════════════════════════════════════════════════════════════════════
+    // LOT 57A — REPRISE SANS JETON LOCAL (deux navigateurs)
+    //
+    // L'invité a créé son compte dans un navigateur et ouvert l'e-mail de
+    // vérification dans un autre (téléphone…) : le jeton mémorisé n'y est
+    // pas. `{ invitedEmail: true }` retrouve l'invitation EN ATTENTE adressée
+    // à l'adresse de la SESSION — adresse vérifiée (aucune session sans
+    // vérification). Jamais un identifiant fourni par le client : aucun
+    // rattachement à un autre Duo par manipulation. Toutes les règles
+    // ci-dessous (expiration, abonnement, place libre…) s'appliquent.
+    // ════════════════════════════════════════════════════════════════════
+    if (!token && body?.invitedEmail === true) {
+      const email = String(session.email ?? '').trim().toLowerCase();
+      const candidates = email
+        ? await db
+            .select({ token: duoAccounts.pendingInviteToken })
+            .from(duoAccounts)
+            .where(and(isNotNull(duoAccounts.pendingInviteToken), sql`lower(${duoAccounts.pendingInviteEmail}) = ${email}`))
+            .limit(2)
+        : [];
+      if (candidates.length === 0) return NextResponse.json({ error: 'NO_PENDING_INVITATION' }, { status: 404 });
+      if (candidates.length > 1) return NextResponse.json({ error: 'MULTIPLE_INVITATIONS' }, { status: 409 });
+      token = candidates[0].token ?? undefined;
+    }
 
     if (!token) {
       return NextResponse.json({ error: 'MISSING_TOKEN' }, { status: 400 });
@@ -172,6 +206,7 @@ export async function POST(request: NextRequest) {
         pendingInviteToken: null,
         pendingInviteTokenExpiresAt: null,
         pendingInviteSentAt: null,
+        lastUsedInviteTokenHash: inviteTokenHash(token),
         updatedAt: now,
       })
       .where(eq(duoAccounts.id, duo.id));

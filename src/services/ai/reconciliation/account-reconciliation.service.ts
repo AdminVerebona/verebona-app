@@ -92,6 +92,48 @@ export interface AccountRunResult {
   openKnowledge?: import('./continuous/open-knowledge.service').OpenKnowledgeResult;
   /** Lot 49B : lignes « À traiter » ouvertes examinées ; absente si la phase n'a pas tourné. */
   openActions?: import('./continuous/open-actions.service').OpenActionsResult;
+  /** Lot 57B : état de CHAQUE phase obligatoire (jamais « non exécutée » présentée comme « zéro résultat »). */
+  phases?: RunPhases;
+  /** Lot 57B : réussite complète, partielle, abstention métier ou échec technique. */
+  outcome?: RunOutcome;
+}
+
+/**
+ * Lot 57B (défaut A) — phases d'un passage T3 global. `NOT_RUN` : la phase n'a
+ * pas été exécutée (interruption, phase précédente en échec, dépendance
+ * absente) ; `FAILED` : elle a levé ; `PARTIAL` : certaines cartes / certains
+ * biens en erreur ; `NOT_CONFIGURED` : phase absente de cet orchestrateur
+ * (tests), jamais obligatoire.
+ */
+export type PhaseStatus = 'DONE' | 'PARTIAL' | 'FAILED' | 'NOT_RUN' | 'NOT_CONFIGURED';
+export interface PhaseReport { status: PhaseStatus; error: string | null; counts?: Record<string, number> }
+export type RunPhaseName = 'ASSETS' | 'OPEN_KNOWLEDGE' | 'OPEN_ACTIONS' | 'JOURNAL';
+export type RunPhases = Record<RunPhaseName, PhaseReport>;
+export type RunOutcome = 'SUCCESS' | 'PARTIAL_SUCCESS' | 'BUSINESS_ABSTENTION' | 'TECHNICAL_FAILURE';
+
+/**
+ * Issue d'un passage (pure, testée). Une phase obligatoire en échec ou non
+ * exécutée → TECHNICAL_FAILURE (le journal seul en échec : PARTIAL_SUCCESS —
+ * les écritures métier sont faites, la traçabilité est dégradée) ; une phase
+ * partielle → PARTIAL_SUCCESS ; sinon des cartes encore ouvertes faute de
+ * preuve → BUSINESS_ABSTENTION ; sinon SUCCESS.
+ */
+export function runOutcome(phases: RunPhases, p: { changes: number; keptOpen: number }): RunOutcome {
+  const obligatoires: RunPhaseName[] = ['ASSETS', 'OPEN_KNOWLEDGE', 'OPEN_ACTIONS'];
+  if (obligatoires.some((n) => phases[n].status === 'FAILED' || phases[n].status === 'NOT_RUN')) return 'TECHNICAL_FAILURE';
+  if (Object.values(phases).some((ph) => ph.status === 'PARTIAL' || ph.status === 'FAILED')) return 'PARTIAL_SUCCESS';
+  if (p.keptOpen > 0 && p.changes === 0) return 'BUSINESS_ABSTENTION';
+  return 'SUCCESS';
+}
+
+/** Phases mises à jour par l'orchestrateur (pure). */
+export function initialPhases(deps: Pick<AccountReconciliationDeps, 'reconcileOpenKnowledge' | 'reconcileOpenActions'>): RunPhases {
+  return {
+    ASSETS: { status: 'NOT_RUN', error: null },
+    OPEN_KNOWLEDGE: { status: deps.reconcileOpenKnowledge ? 'NOT_RUN' : 'NOT_CONFIGURED', error: null },
+    OPEN_ACTIONS: { status: deps.reconcileOpenActions ? 'NOT_RUN' : 'NOT_CONFIGURED', error: null },
+    JOURNAL: { status: deps.reconcileOpenActions ? 'NOT_RUN' : 'NOT_CONFIGURED', error: null },
+  };
 }
 
 /** Au-delà, un run « en cours » est réputé abandonné (processus arrêté). */
@@ -330,6 +372,7 @@ export async function reconcileAccount(
   let openKnowledge: AccountRunResult['openKnowledge'];
   let openActions: AccountRunResult['openActions'];
   const debutPassage = new Date();
+  const phases = initialPhases(deps);
   // Lot 31C : une exécution INTERROMPUE (jeton révoqué, garde) ou arrêtée par
   // une erreur n'est jamais journalisée « completed » — sinon le travail remis
   // en file la croirait achevée (SUPERSEDED) alors qu'une partie des biens
@@ -364,14 +407,25 @@ export async function reconcileAccount(
         details.push({ objectType: 'asset', objectId: c.id, status: 'ERROR', applied: 0, conflicts: 0, aiReviews: 0, reason: (e as Error).message.slice(0, 300) });
       }
     }
+    {
+      const t = consolidate(details);
+      phases.ASSETS = {
+        status: t.errors === 0 ? 'DONE' : t.status === 'failed' ? 'FAILED' : 'PARTIAL',
+        error: t.errors ? `${t.errors} bien(s) en erreur` : null,
+        counts: { examined: t.objectsExamined, modified: t.objectsModified, errors: t.errors },
+      };
+    }
     // Connaissance ouverte (lot 34E) : faits sans cible, documents non
     // résolus dont le contexte a changé. Non bloquante (sauf interruption).
     if (deps.reconcileOpenKnowledge) {
       if (options.guard) await options.guard.assertActive('connaissance ouverte du compte');
       try {
         openKnowledge = await deps.reconcileOpenKnowledge(accountId, { guard: options.guard, triggerCode: options.triggerCode ?? null });
+        phases.OPEN_KNOWLEDGE = { status: 'DONE', error: null };
       } catch (e) {
         if (isExecutionCancelled(e)) throw e;
+        // Lot 57B (défaut A) : l'échec est porté par le statut du passage (jamais masqué).
+        phases.OPEN_KNOWLEDGE = { status: 'FAILED', error: (e as Error).message.slice(0, 300) };
         console.error(`[t3] connaissance ouverte du compte ${accountId} non reprise :`, (e as Error).message);
       }
     }
@@ -389,8 +443,22 @@ export async function reconcileAccount(
           // Lot 54A (écart 6) : journal durable rattaché au passage et au job porteur.
           accountRunId: runId, queueJobId: options.queueJob?.id ?? null,
         });
+        const oa = openActions;
+        phases.OPEN_ACTIONS = {
+          status: oa.errors > 0 ? 'PARTIAL' : 'DONE', error: oa.errors > 0 ? `${oa.errors} carte(s) en erreur` : null,
+          counts: {
+            openAtStart: oa.openAtStart, examined: oa.examined, resolutionAttempted: oa.resolutionAttempted, resolved: oa.resolved,
+            keptAmbiguous: oa.keptAmbiguous, delegated: oa.delegated, stalledRecovered: oa.stalledRecovered, errors: oa.errors, aiCalls: oa.aiCalls,
+          },
+        };
+        phases.JOURNAL = {
+          status: oa.journalStatus === 'OK' ? 'DONE' : oa.journalStatus === 'PARTIAL' ? 'PARTIAL' : 'FAILED',
+          error: oa.journalError, counts: { journaled: oa.journaled ?? 0 },
+        };
       } catch (e) {
         if (isExecutionCancelled(e)) throw e;
+        // Lot 57B (défaut A) : phase obligatoire en échec → passage en échec technique (repris par la file).
+        phases.OPEN_ACTIONS = { status: 'FAILED', error: (e as Error).message.slice(0, 300) };
         console.error(`[t3] « À traiter » ouverts du compte ${accountId} non réexaminés :`, (e as Error).message);
       }
     }
@@ -399,25 +467,51 @@ export async function reconcileAccount(
     throw e;
   } finally {
     const totals = consolidate(details);
-    await pgClient.unsafe(
+    const issue = interrompue ? 'TECHNICAL_FAILURE' as const : issueDu(phases, totals, openActions);
+    const statut = interrompue ? 'failed' : statutDu(details, totals, issue);
+    const valeurs = [runId, statut, totals.objectsExamined, totals.objectsModified,
+      totals.decisionsApplied, totals.conflictsCreated, totals.arbitrationsNeeded, totals.errors,
+      totals.aiCalls, JSON.stringify(details)];
+    const ecrire = (avecPhases: boolean) => pgClient.unsafe(
       `UPDATE account_reconciliation_runs SET
          status = $2, finished_at = now(), objects_examined = $3, objects_modified = $4,
          decisions_applied = $5, conflicts_created = $6, arbitrations_needed = $7, errors = $8,
-         ai_calls = $9, details_json = $10::jsonb
+         ai_calls = $9, details_json = $10::jsonb${avecPhases ? ', outcome = $11, phases_json = $12::jsonb' : ''}
        WHERE id = $1`,
-      [runId, interrompue ? 'failed' : details.length === 0 ? 'completed' : totals.status, totals.objectsExamined, totals.objectsModified,
-       totals.decisionsApplied, totals.conflictsCreated, totals.arbitrationsNeeded, totals.errors,
-       totals.aiCalls, JSON.stringify(details)] as never[],
+      (avecPhases ? [...valeurs, issue, JSON.stringify(phases)] : valeurs) as never[],
     );
+    // Colonnes 0410 absentes (déploiement partiel) : statut seul, phases dans le résumé du job.
+    await ecrire(true).catch((e) => { if (colonneAbsente(e)) return ecrire(false); throw e; });
   }
 
   const totals = consolidate(details);
+  const outcome = issueDu(phases, totals, openActions);
   return {
     runId, accountId, triggerType: trigger.type, scope, startedAt, finishedAt: new Date().toISOString(),
-    details, ...totals, status: details.length === 0 ? 'completed' : totals.status,
+    details, ...totals, status: statutDu(details, totals, outcome),
     ...(openKnowledge ? { openKnowledge } : {}),
     ...(openActions ? { openActions } : {}),
+    phases, outcome,
   };
+}
+
+/** Issue du passage (pure). */
+function issueDu(phases: RunPhases, totals: ReturnType<typeof consolidate>, oa: AccountRunResult['openActions']): RunOutcome {
+  return runOutcome(phases, {
+    changes: totals.decisionsApplied + (oa ? oa.byEffect.CLOSED + oa.byEffect.UPDATED : 0),
+    keptOpen: oa ? oa.byEffect.STILL_OPEN + oa.byEffect.UPDATED : 0,
+  });
+}
+
+/**
+ * Statut historique du passage (pure) : `failed` si tous les biens examinés
+ * sont en erreur ; lot 57B : `partial` dès qu'une phase est partielle, en
+ * échec ou non exécutée (jamais `completed`).
+ */
+function statutDu(details: ObjectResult[], totals: ReturnType<typeof consolidate>, issue: RunOutcome): AccountRunResult['status'] {
+  const base = details.length === 0 ? 'completed' : totals.status;
+  if (base === 'failed') return 'failed';
+  return issue === 'TECHNICAL_FAILURE' || issue === 'PARTIAL_SUCCESS' ? 'partial' : base;
 }
 
 // ── Déclenchement : file durable (CDC BO IA OPS-001, NFR-003, T3-003) ──────

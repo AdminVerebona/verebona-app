@@ -4,8 +4,6 @@ import { users, accounts, accountMemberships } from '@/db/schema';
 import { eq, and } from 'drizzle-orm';
 import bcrypt from 'bcrypt';
 import { validatePassword, getPasswordValidationError } from '@/lib/auth/password';
-import { emailService } from '@/lib/email/email-service';
-import { buildEmailVerificationUrl } from '@/services/auth/email-verification.service';
 import { grantTrial } from '@/services/trial.service';
 import { recordSignupReferral } from '@/services/referral-attribution.service';
 import { getCurrentVersion } from '@/services/legal';
@@ -14,7 +12,8 @@ import { recordAcceptance } from '@/services/legal/legal-acceptances.service';
 import { getSignupMode, SIGNUP_CLOSED_CODE, SIGNUP_CLOSED_MESSAGE } from '@/lib/prelaunch';
 import { resolveSignupInvitation, type SignupInvitation } from '@/lib/prelaunch-invitations';
 import { SIGNUP_NEUTRAL_MESSAGE } from '@/lib/auth/auth-messages';
-import { runDetached } from '@/lib/auth/anti-enumeration';
+import { comparePasswordConstantTime, runDetached } from '@/lib/auth/anti-enumeration';
+import { enqueueVerificationEmail, processEmailJob } from '@/services/email/transactional-email-jobs.service';
 import { scheduleSignupExistingEmail } from '@/services/auth/signup-existing-email.service';
 import { logUserActivity } from '@/lib/audit-logger';
 
@@ -266,6 +265,30 @@ export async function POST(request: NextRequest) {
       .where(and(eq(users.email, sanitizedEmail), eq(users.isActive, true)))
       .limit(1);
 
+    // ══════════════════════════════════════════════════════════════════════
+    // LOT 57A (P1-E) — RÉINSCRIPTION D'UNE ADRESSE ENCORE NON VÉRIFIÉE
+    //
+    // Avant : le compte non vérifié était supprimé (ou son adresse
+    // neutralisée) et un nouveau créé — l'ancien lien de vérification, encore
+    // dans la boîte, devenait inutilisable. Désormais, si la demande porte LE
+    // MÊME mot de passe (la personne recommence, l'e-mail n'est pas arrivé),
+    // le compte en attente est CONSERVÉ : ancien lien toujours valable, nouvel
+    // e-mail demandé (même demande durable s'il y en a une en cours).
+    // Mot de passe différent : comportement précédent (les identifiants
+    // changent, l'ancien lien ne doit plus activer l'ancien mot de passe).
+    //
+    // Anti-énumération (53A) : UNE comparaison bcrypt et UN hachage dans
+    // TOUS les cas (empreinte factice si aucun compte en attente) ; même
+    // réponse neutre.
+    // ══════════════════════════════════════════════════════════════════════
+    const pendingRows = existingUserByEmail.length > 0 ? [] : await db
+      .select({ id: users.id, passwordHash: users.passwordHash })
+      .from(users)
+      .where(and(eq(users.email, sanitizedEmail), eq(users.isActive, false)))
+      .limit(1);
+    const pendingUser = pendingRows[0] ?? null;
+    const samePendingSignup = await comparePasswordConstantTime(password, pendingUser?.passwordHash);
+
     if (existingUserByEmail.length > 0) {
       // Invitation valide pour cette adresse : orientation explicite (voir l'en-tête).
       if (invitation?.valid) return duplicateEmailResponse();
@@ -280,6 +303,14 @@ export async function POST(request: NextRequest) {
         details: { accountCreated: false, emailScheduled: true },
         request,
       });
+      return neutralSignupResponse();
+    }
+
+    if (pendingUser && samePendingSignup) {
+      await bcrypt.hash(password, 10); // même coût que la création
+      const plan = signupPlan && ['standard', 'premium', 'premium_duo', 'premium_pro'].includes(signupPlan) ? signupPlan : null;
+      const job = await enqueueVerificationEmail({ userId: pendingUser.id, email: sanitizedEmail, plan });
+      runDetached('e-mail de vérification (réinscription)', () => processEmailJob(job.jobId));
       return neutralSignupResponse();
     }
 
@@ -440,29 +471,23 @@ export async function POST(request: NextRequest) {
         }
       }
 
-      const baseUrl = process.env.NEXT_PUBLIC_APP_URL || process.env.APP_URL || 'http://localhost:3000';
-      // Lien SIGNÉ (voir `email-verification.service`) : l'ancien
-      // `base64(email:horodatage)` se fabriquait sans recevoir l'e-mail et
-      // ouvrait une session.
       const plan = signupPlan && ['standard', 'premium', 'premium_duo', 'premium_pro'].includes(signupPlan) ? signupPlan : null;
-      const verificationUrl = buildEmailVerificationUrl(baseUrl, { id: newUser.id, email: newUser.email }, plan);
+      if (newUser.isActive) return neutralSignupResponse(); // compte partagé : actif par l'invitation
 
-      // Après la réponse (lot 53A) : la réponse ne doit pas durer plus
-      // longtemps quand un compte est créé que lorsque l'adresse est déjà
-      // inscrite (e-mail « compte existant », lui aussi après la réponse).
-      const verificationTo = { id: newUser.id, email: newUser.email, firstName: newUser.firstName };
-      runDetached('e-mail de vérification (inscription)', async () => {
-        const res = await emailService.send({
-          templateCode: 'EMAIL_VERIFICATION',
-          to: verificationTo.email,
-          variables: {
-            firstName: verificationTo.firstName,
-            verificationUrl,
-          },
-          userId: verificationTo.id,
-        });
-        if (res && res.success === false) console.error('Failed to send verification email:', res.error ?? 'unknown');
-      });
+      // ══════════════════════════════════════════════════════════════════
+      // LOT 57A (P0-A) — DEMANDE D'E-MAIL DE VÉRIFICATION DURABLE
+      //
+      // L'envoi partait dans une promesse détachée : un échec du fournisseur
+      // ou un arrêt du processus laissait le compte inactif, sans reprise.
+      // La demande est désormais ENREGISTRÉE en base avant la réponse
+      // (`transactional_email_jobs`) ; la tentative a lieu après la réponse
+      // (neutralité du lot 53A : même durée que pour une adresse déjà
+      // inscrite), et la tâche planifiée `transactional-emails-retry`
+      // reprend toute demande non aboutie. Le lien SIGNÉ (24 h, usage
+      // unique) est construit à chaque tentative ; aucun jeton n'est stocké.
+      // ══════════════════════════════════════════════════════════════════
+      const job = await enqueueVerificationEmail({ userId: newUser.id, email: newUser.email, plan });
+      runDetached('e-mail de vérification (inscription)', () => processEmailJob(job.jobId));
 
       return neutralSignupResponse();
     } catch (dbError: any) {

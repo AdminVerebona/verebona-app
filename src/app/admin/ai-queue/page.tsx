@@ -54,6 +54,7 @@ import { EcranEnErreur } from '@/components/admin/EcranEnErreur';
 import { apiClient } from '@/lib/api-client';
 import { AiEnvBanner } from '../ai-dashboard/_components/AiEnvBanner';
 import { ManualLaunch } from './_components/ManualLaunch';
+import { T3OpenActionsDiagnostic } from './_components/T3OpenActionsDiagnostic';
 import {
   T3Supervision, PHASE_LABEL, formatDuration, type ExecutionPhase, type T3SupervisionData,
 } from './_components/T3Supervision';
@@ -99,6 +100,13 @@ function t3Counters(job: Job): string | null {
   const parts: string[] = [];
   if (n(d.objectsExamined) != null) parts.push(`${n(d.objectsExamined)} objet(s) examiné(s) · ${n(d.objectsModified) ?? n(d.decisionsApplied) ?? 0} modifié(s)`);
   if (n(d.openActionsExamined) != null) parts.push(`${n(d.openActionsExamined)} « À traiter » réexaminé(s)`);
+  // Lot 57B : compteurs DISTINCTS (jamais « examinée » pour « résolue ») et issue du passage.
+  if (n(d.openActionsResolutionAttempted) != null && n(d.openActionsResolved) != null) {
+    parts.push(`${n(d.openActionsResolutionAttempted)} résolution(s) tentée(s) · ${n(d.openActionsResolved)} résolue(s) et fermée(s)`
+      + `${n(d.openActionsErrors) ? ` · ${n(d.openActionsErrors)} en erreur` : ''}`);
+  }
+  if (d.outcome === 'PARTIAL_SUCCESS') parts.push('réussite PARTIELLE');
+  if (d.journal === 'FAILED') parts.push('journal par carte EN ÉCHEC');
   if (n(d.enqueued) != null) parts.push(`${n(d.enqueued)} compte(s) mis en file`);
   if (n(d.aiCalls) != null) parts.push(n(d.aiCalls) === 0 ? 'sans appel au modèle' : `${n(d.aiCalls)} appel(s) au modèle`);
   return parts.length ? parts.join(' · ') : null;
@@ -371,6 +379,9 @@ function AiQueueScreen() {
 
       {/* Lot 52A (COR-04) : état du boucleur (toutes instances), exécutant T3, derniers passages */}
       <T3Supervision data={supervision} error={supervisionErreur} onOpenJob={(id) => showJobs([id])} />
+
+      {/* Lot 57B : diagnostic des « À traiter » T3 par exécution globale et par carte (filtres, sans SQL) */}
+      <T3OpenActionsDiagnostic initialJobId={Number(sp.get('t3Job')) || null} />
 
       {stop?.active && (
         <div className="rounded-xl border border-red-500/30 bg-red-500/5 p-4 flex items-start gap-3">

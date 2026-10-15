@@ -673,3 +673,187 @@ export async function recordUserDocumentValue(
     return false;
   }
 }
+
+// ══════════════════════════════════════════════════════════════════════════
+// LOT 57B (défaut E) — REPRISE CIBLÉE D'UN CHAMP DEPUIS LA CONNAISSANCE T1
+// ══════════════════════════════════════════════════════════════════════════
+
+/** Issue de la reprise d'une donnée documentaire depuis la connaissance T1 persistée. */
+export interface KnowledgeFieldResolution {
+  /**
+   * WRITTEN : valeur fiable écrite, carte fermée · RESOLVED : carte close sans
+   * écriture (donnée déjà présente, plus pertinente…) · ARBITRATE : valeur(s)
+   * incertaine(s), carte maintenue avec propositions · NO_EVIDENCE : aucune
+   * valeur dans T1 · USER_PROTECTED : choix de l'utilisateur protégé ·
+   * TARGET_GONE · NOT_A_FIELD (relation, règle inconnue) · NO_T1_KNOWLEDGE.
+   */
+  status: 'WRITTEN' | 'RESOLVED' | 'ARBITRATE' | 'NO_EVIDENCE' | 'USER_PROTECTED' | 'TARGET_GONE' | 'NOT_A_FIELD' | 'NO_T1_KNOWLEDGE';
+  reasonCode: string;
+  /** Propositions issues de T1 (après regroupement par valeur). */
+  proposals: number;
+  /** Éléments T1 lus par source (FACTS, UNRESOLVED_FACTS, SOURCE_UNITS). */
+  sources: Record<string, number>;
+  /** Sources absentes ou en échec. */
+  missingSources: string[];
+  confidence: number | null;
+  writeAttempted: boolean;
+  /** Écriture et fermeture relues en base. */
+  verified: boolean;
+}
+
+/** Une clé lue par T1 désigne-t-elle la donnée `key` du pont ? (pure, registre canonique) */
+export function t1KeyDesignates(raw: string | null | undefined, key: string): boolean {
+  if (!raw) return false;
+  if (raw === key) return true;
+  return documentBridgeFieldKey(raw) === key;
+}
+
+const normLabel = (v: string) => v.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+
+/**
+ * Libellé LU dans le document (unité « libellé : valeur ») qui désigne la
+ * donnée `key` : clé ou alias du registre, ou libellé du registre contenu
+ * dans le libellé lu (« Date de fin de contrat » ⊃ « Fin de contrat »). Pure.
+ */
+export function t1LabelDesignates(label: string | null | undefined, key: string, registryLabel: string | null): boolean {
+  if (!label) return false;
+  if (t1KeyDesignates(label, key)) return true;
+  if (!registryLabel) return false;
+  const l = ` ${normLabel(label)} `;
+  const r = normLabel(registryLabel);
+  return r.length >= 6 && l.includes(` ${r} `);
+}
+
+/**
+ * Valeur BRUTE lue (unité source, fait non intégré) : une date française
+ * « JJ/MM/AAAA » (ou « JJ.MM.AAAA », « JJ-MM-AAAA ») devient ISO ; le reste
+ * est rendu tel quel (le slot normalise ou rejette). Pure.
+ */
+export function rawValueOf(v: string): string {
+  const m = /^\s*(\d{1,2})[/.-](\d{1,2})[/.-](\d{4})\s*$/.exec(v);
+  if (!m) return v.trim();
+  return `${m[3]}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}`;
+}
+
+/** Faits T1 persistés relatifs à `key` (faits actifs, faits non intégrés fiables, unités « libellé : valeur »). */
+async function knowledgeObservations(accountId: number, fileId: number, key: string): Promise<{
+  facts: ObservedFact[]; sources: Record<string, number>; missing: string[]; hasExtraction: boolean;
+}> {
+  const sources: Record<string, number> = {};
+  const missing: string[] = [];
+  const facts: ObservedFact[] = [];
+  const { getField } = await import('@/services/canonical/registry');
+  const registryLabel = getField(key)?.label ?? null;
+  const [ext] = (await pgClient.unsafe(
+    `SELECT id FROM document_extractions WHERE account_id = $1 AND file_id = $2 LIMIT 1`, [accountId, fileId] as never[],
+  )) as unknown as Array<{ id: number }>;
+  if (!ext) return { facts, sources, missing: ['EXTRACTION'], hasExtraction: false };
+  try {
+    const rows = (await pgClient.unsafe(
+      `SELECT to_jsonb(f) ->> 'canonical_key' AS canonical, f.fact_key AS raw, f.label, f.normalized_value AS norm,
+              f.value_text AS text, f.confidence, f.excerpt
+         FROM document_facts f WHERE f.file_id = $1 AND f.account_id = $2 AND f.status = 'active'`,
+      [fileId, accountId] as never[],
+    )) as unknown as Array<{ canonical: string | null; raw: string; label: string | null; norm: string | null; text: string | null; confidence: string; excerpt: string | null }>;
+    for (const r of rows) {
+      if (!t1KeyDesignates(r.canonical, key) && !t1KeyDesignates(r.raw, key) && !(!r.canonical && t1LabelDesignates(r.label, key, registryLabel))) continue;
+      sources.FACTS = (sources.FACTS ?? 0) + 1;
+      facts.push({ canonicalKey: key, value: r.norm ?? r.text, confidence: r.confidence, excerpt: r.excerpt });
+    }
+  } catch { missing.push('FACTS'); }
+  try {
+    const { sourceLayerReady } = await import('@/services/ai/source-analysis/source-units/repository');
+    if (!(await sourceLayerReady())) {
+      missing.push('SOURCE_UNITS', 'UNRESOLVED_FACTS');
+    } else {
+      const { RELIABLE_UNRESOLVED_REASONS } = await import('@/services/ai/reconciliation/document-asset/source-unit-provider');
+      const nr = (await pgClient.unsafe(
+        `SELECT canonical_key AS canonical, raw_key AS raw, raw_value AS value, reason
+           FROM document_unresolved_facts WHERE file_id = $1 AND account_id = $2 AND status IN ('UNRESOLVED', 'RETAINED') LIMIT 500`,
+        [fileId, accountId] as never[],
+      )) as unknown as Array<{ canonical: string | null; raw: string | null; value: string | null; reason: string }>;
+      for (const r of nr) {
+        if (!r.value || (!t1KeyDesignates(r.canonical, key) && !t1KeyDesignates(r.raw, key))) continue;
+        sources.UNRESOLVED_FACTS = (sources.UNRESOLVED_FACTS ?? 0) + 1;
+        // Charge brute : jamais « certaine » (proposition seulement).
+        facts.push({ canonicalKey: key, value: rawValueOf(r.value), confidence: RELIABLE_UNRESOLVED_REASONS.includes(r.reason) ? 'probable' : 'conflictual' });
+      }
+      const units = (await pgClient.unsafe(
+        `SELECT label, value_text AS value, coverage_status AS coverage
+           FROM document_source_units
+          WHERE file_id = $1 AND account_id = $2 AND kind IN ('LABEL_VALUE', 'FORM_FIELD')
+            AND coverage_status IN ('COVERED', 'UNRESOLVED', 'UNCERTAIN') AND label IS NOT NULL AND value_text IS NOT NULL
+          ORDER BY ordinal LIMIT 2000`,
+        [fileId, accountId] as never[],
+      )) as unknown as Array<{ label: string; value: string; coverage: string }>;
+      for (const u of units) {
+        if (!t1LabelDesignates(u.label, key, registryLabel)) continue;
+        sources.SOURCE_UNITS = (sources.SOURCE_UNITS ?? 0) + 1;
+        // Unité lue mais non structurée en fait : proposition, jamais écriture silencieuse.
+        facts.push({ canonicalKey: key, value: rawValueOf(u.value), confidence: u.coverage === 'UNCERTAIN' ? 'conflictual' : 'probable' });
+      }
+    }
+  } catch { missing.push('SOURCE_UNITS'); }
+  return { facts, sources, missing, hasExtraction: true };
+}
+
+/**
+ * Reprise CIBLÉE d'une donnée documentaire (DATA-CONTRACT-END,
+ * DATA-WARRANTY-END, DATA-SUPPLIER…) depuis la connaissance T1 PERSISTÉE — par
+ * le résolveur du pont (`planDocumentRule`, matrice `decide()`), jamais par
+ * le nom du fichier, jamais en relisant le fichier ni en relançant T1 :
+ *   · valeur fiable (fait certain, unique) → écrite, carte fermée, relue ;
+ *   · valeurs incertaines ou contradictoires → carte maintenue (ARBITRATE)
+ *     avec les propositions ;
+ *   · valeur de l'utilisateur (saisie ou retrait) → jamais écrasée.
+ * Ne lève que pour une erreur technique (journalisée RESOLVER_FAILED par l'appelant).
+ */
+export async function resolveDocumentRuleFromKnowledge(accountId: number, fileId: number, ruleCode: string): Promise<KnowledgeFieldResolution> {
+  const { getRule } = await import('./rules-catalog');
+  const res = (p: Partial<KnowledgeFieldResolution> & Pick<KnowledgeFieldResolution, 'status' | 'reasonCode'>): KnowledgeFieldResolution => ({
+    proposals: 0, sources: {}, missingSources: [], confidence: null, writeAttempted: false, verified: false, ...p,
+  });
+  const rule = getRule(ruleCode);
+  if (!rule || rule.producer !== 'DOCUMENT_BRIDGE' || !rule.fieldKey) return res({ status: 'NOT_A_FIELD', reasonCode: 'NOT_A_FIELD' });
+  const key = ruleDataKey(rule);
+  const ctx = await loadContext(accountId, fileId);
+  if (!ctx.exists) {
+    await resolveActionsForData(accountId, 'DOCUMENT', fileId, key, 'TARGET_DELETED');
+    return res({ status: 'TARGET_GONE', reasonCode: 'TARGET_GONE' });
+  }
+  const slot = documentSlotFor(key);
+  const state = await slot.read(db, accountId, fileId);
+  const active = (await activeActions(accountId, fileId)).get(key) ?? null;
+  const relevant = isRuleRelevantForDocument(rule, ctx.documentTypeCode);
+  const report = emptyReport();
+
+  // 1. Réévaluation d'état : donnée déjà renseignée, plus pertinente, tranchée ailleurs.
+  const etat = planDocumentRule({ rule, state, proposals: [], mode: 'state', relevant, active, mayCreate: false });
+  if (etat.kind === 'RESOLVE') {
+    await executePlan(accountId, fileId, rule, slot, etat, state, report, 'OBSOLETE');
+    return res({ status: 'RESOLVED', reasonCode: etat.reason, verified: !(await activeActions(accountId, fileId)).has(key) });
+  }
+  // 2. Valeur RETIRÉE par l'utilisateur : rien n'est réécrit automatiquement.
+  const present = !isEmpty(state.value);
+  if (state.userValidated && !present) return res({ status: 'USER_PROTECTED', reasonCode: 'USER_DECISION_PROTECTED' });
+
+  // 3. Connaissance T1 persistée (faits, faits non intégrés, unités source).
+  const obs = await knowledgeObservations(accountId, fileId, key);
+  if (!obs.hasExtraction) return res({ status: 'NO_T1_KNOWLEDGE', reasonCode: 'NO_T1_KNOWLEDGE', missingSources: obs.missing });
+  const proposals = proposalsFromAnalysis(key, slot, { facts: obs.facts, assetCandidates: [], documentAssetId: null });
+  const base = { proposals: proposals.length, sources: obs.sources, missingSources: obs.missing, confidence: proposals[0]?.confidence ?? null };
+  if (proposals.length === 0) return res({ ...base, status: 'NO_EVIDENCE', reasonCode: 'FIELD_NOT_IN_T1' });
+
+  // 4. Matrice du pont (`decide()`) : écriture si fiable, arbitrage sinon.
+  const plan = planDocumentRule({ rule, state, proposals, mode: 'analysis', relevant, active, mayCreate: ctx.open });
+  await executePlan(accountId, fileId, rule, slot, plan, state, report, 'OBSOLETE');
+  if (plan.kind === 'WRITE') {
+    const apres = await slot.read(db, accountId, fileId);
+    const ferme = !(await activeActions(accountId, fileId)).has(key);
+    const ok = report.written > 0 && apres.value !== null && String(apres.value) === String(slot.normalize(plan.value));
+    return res({ ...base, status: 'WRITTEN', reasonCode: ok && ferme ? 'RESOLVED' : 'PERSISTENCE_FAILED', writeAttempted: true, verified: ok && ferme, confidence: plan.confidence });
+  }
+  if (plan.kind === 'RESOLVE') return res({ ...base, status: 'RESOLVED', reasonCode: plan.reason, verified: !(await activeActions(accountId, fileId)).has(key) });
+  if (state.userValidated) return res({ ...base, status: 'USER_PROTECTED', reasonCode: 'USER_DECISION_PROTECTED' });
+  return res({ ...base, status: 'ARBITRATE', reasonCode: proposals.length > 1 ? 'AMBIGUOUS' : 'INSUFFICIENT_EVIDENCE' });
+}

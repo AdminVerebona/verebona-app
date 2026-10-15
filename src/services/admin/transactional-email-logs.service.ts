@@ -1,0 +1,170 @@
+/**
+ * BO › Communications › E-mails transactionnels — suivi des envois (lot 57A,
+ * ticket P0 e-mails, volet E « Back-Office »).
+ *
+ * Recherche par type de message (gabarit) et destinataire ; pour chaque
+ * tentative : statut d'envoi (`status`, sens inchangé), état de LIVRAISON
+ * (webhooks Resend), cause technique, identifiant Resend, demande durable
+ * (tentatives, prochaine reprise). Les demandes enregistrées mais pas encore
+ * tentées sont listées à part (« demande d'envoi enregistrée »).
+ *
+ * JAMAIS de jeton : ni `metadata` (variables, liens d'action), ni contexte de
+ * la demande ne sont renvoyés. Réservé aux administrateurs (route).
+ */
+import { pgClient } from '@/db';
+
+export interface TransactionalEmailSearch {
+  type?: string | null;
+  recipient?: string | null;
+  problemsOnly?: boolean;
+  limit?: number;
+}
+
+export interface TransactionalEmailLogRow {
+  id: number;
+  at: string | null;
+  templateCode: string;
+  recipientEmail: string;
+  recipientUserId: number | null;
+  triggeredByUserId: number | null;
+  status: string;
+  errorMessage: string | null;
+  providerMessageId: string | null;
+  deliveryStatus: string | null;
+  deliveryStatusAt: string | null;
+  deliveredAt: string | null;
+  deliveryError: string | null;
+  job: { id: number; status: string; attempts: number; maxAttempts: number; nextAttemptAt: string | null } | null;
+}
+
+export interface PendingEmailRequestRow {
+  jobId: number;
+  kind: string;
+  recipientEmail: string;
+  status: string;
+  attempts: number;
+  maxAttempts: number;
+  nextAttemptAt: string | null;
+  lastError: string | null;
+  createdAt: string | null;
+}
+
+const PROBLEM_DELIVERY = ['bounced', 'complained', 'failed', 'suppressed', 'delivery_delayed'];
+const iso = (v: string | Date | null) => (v ? new Date(v).toISOString() : null);
+
+/** Filtres normalisés (pur) : type en majuscules, destinataire échappé pour LIKE. */
+export function normalizeEmailSearch(q: TransactionalEmailSearch): { type: string | null; like: string | null; problemsOnly: boolean; limit: number } {
+  const type = q.type?.trim() ? q.type.trim().toUpperCase().slice(0, 100) : null;
+  const r = q.recipient?.trim().toLowerCase().slice(0, 200) ?? '';
+  const like = r ? `%${r.replace(/[\\%_]/g, (c) => `\\${c}`)}%` : null;
+  const limit = Math.min(Math.max(Math.trunc(q.limit ?? 50) || 50, 1), 200);
+  return { type, like, problemsOnly: !!q.problemsOnly, limit };
+}
+
+export async function searchTransactionalEmails(q: TransactionalEmailSearch): Promise<{ logs: TransactionalEmailLogRow[]; pendingRequests: PendingEmailRequestRow[] }> {
+  const f = normalizeEmailSearch(q);
+  const rows = await pgClient.unsafe<Record<string, unknown>[]>(
+    `SELECT l.id, l.sent_at, l.template_code, l.recipient_email, l.recipient_user_id, l.triggered_by_user_id, l.status,
+            l.error_message, l.provider_message_id, l.delivery_status, l.delivery_status_at, l.delivered_at, l.delivery_error,
+            j.id AS job_id, j.status AS job_status, j.attempts, j.max_attempts, j.next_attempt_at
+       FROM email_logs l
+       LEFT JOIN transactional_email_jobs j ON j.id = l.email_job_id
+      WHERE ($1::text IS NULL OR upper(l.template_code) = $1)
+        AND ($2::text IS NULL OR lower(l.recipient_email) LIKE $2)
+        AND (NOT $3::boolean OR l.status = 'failed' OR l.delivery_status = ANY($4::text[]))
+      ORDER BY l.sent_at DESC NULLS LAST, l.id DESC
+      LIMIT $5`,
+    [f.type, f.like, f.problemsOnly, PROBLEM_DELIVERY, f.limit] as never[],
+  );
+  const pending = await pgClient.unsafe<Record<string, unknown>[]>(
+    `SELECT id, kind, recipient_email, status, attempts, max_attempts, next_attempt_at, last_error, created_at
+       FROM transactional_email_jobs
+      WHERE status IN ('pending', 'sending')
+        AND ($1::text IS NULL OR kind = $1)
+        AND ($2::text IS NULL OR lower(recipient_email) LIKE $2)
+      ORDER BY next_attempt_at LIMIT 50`,
+    [f.type, f.like] as never[],
+  );
+  return {
+    logs: rows.map((r) => ({
+      id: Number(r.id),
+      at: iso(r.sent_at as string | null),
+      templateCode: String(r.template_code),
+      recipientEmail: String(r.recipient_email),
+      recipientUserId: (r.recipient_user_id as number | null) ?? null,
+      triggeredByUserId: (r.triggered_by_user_id as number | null) ?? null,
+      status: String(r.status),
+      errorMessage: (r.error_message as string | null) ?? null,
+      providerMessageId: (r.provider_message_id as string | null) ?? null,
+      deliveryStatus: (r.delivery_status as string | null) ?? null,
+      deliveryStatusAt: iso(r.delivery_status_at as string | null),
+      deliveredAt: iso(r.delivered_at as string | null),
+      deliveryError: (r.delivery_error as string | null) ?? null,
+      job: r.job_id == null ? null : {
+        id: Number(r.job_id), status: String(r.job_status), attempts: Number(r.attempts),
+        maxAttempts: Number(r.max_attempts), nextAttemptAt: iso(r.next_attempt_at as string | null),
+      },
+    })),
+    pendingRequests: pending.map((r) => ({
+      jobId: Number(r.id),
+      kind: String(r.kind),
+      recipientEmail: String(r.recipient_email),
+      status: String(r.status),
+      attempts: Number(r.attempts),
+      maxAttempts: Number(r.max_attempts),
+      nextAttemptAt: iso(r.next_attempt_at as string | null),
+      lastError: (r.last_error as string | null) ?? null,
+      createdAt: iso(r.created_at as string | null),
+    })),
+  };
+}
+
+// ── Configuration d'envoi effective (lecture seule) ─────────────────────────
+
+export interface TransactionalEmailConfig {
+  /** `base` : ligne `email_settings` ; `defaut` : valeurs de repli du code (aucune ligne). */
+  source: 'base' | 'defaut';
+  emailsEnabled: boolean;
+  senderName: string;
+  senderEmail: string;
+  senderDomain: string;
+  replyToEmail: string;
+  apiKeyConfigured: boolean;
+  webhookSecretConfigured: boolean;
+  /** Gabarits indispensables présents en base. */
+  templates: Record<string, boolean>;
+  lastWebhookAt: string | null;
+}
+
+const REQUIRED_TEMPLATES = ['EMAIL_VERIFICATION', 'DUO_INVITATION', 'PASSWORD_RESET', 'WELCOME'];
+
+/**
+ * Lot 57A — ce que le diagnostic exige de vérifier SANS SQL : expéditeur
+ * réellement utilisé (et son domaine, à comparer au domaine vérifié chez
+ * Resend), e-mails activés, clé et secret de webhook PRÉSENTS (jamais leur
+ * valeur), gabarits indispensables, dernier webhook reçu.
+ */
+export async function getTransactionalEmailConfig(env: Record<string, string | undefined> = process.env): Promise<TransactionalEmailConfig> {
+  const [row] = await pgClient.unsafe<{ emails_enabled: boolean; sender_name: string; sender_email: string; reply_to_email: string }[]>(
+    `SELECT emails_enabled, sender_name, sender_email, reply_to_email FROM email_settings WHERE id = 1`,
+  );
+  // Mêmes valeurs de repli que `email-service.ts` (getSettings).
+  const s = row ?? { emails_enabled: true, sender_name: 'Verebona', sender_email: 'noreply@verebona.com', reply_to_email: 'support@verebona.com' };
+  const present = await pgClient.unsafe<{ code: string }[]>(
+    `SELECT DISTINCT upper(type) AS code FROM email_templates WHERE upper(type) = ANY($1::text[])`, [REQUIRED_TEMPLATES] as never[],
+  );
+  const [hook] = await pgClient.unsafe<{ at: string | null }[]>(`SELECT max(received_at) AS at FROM email_provider_events`);
+  const codes = new Set(present.map((p) => p.code));
+  return {
+    source: row ? 'base' : 'defaut',
+    emailsEnabled: !!s.emails_enabled,
+    senderName: s.sender_name,
+    senderEmail: s.sender_email,
+    senderDomain: (s.sender_email.split('@')[1] ?? '').toLowerCase(),
+    replyToEmail: s.reply_to_email,
+    apiKeyConfigured: !!env.RESEND_API_KEY,
+    webhookSecretConfigured: !!env.RESEND_WEBHOOK_SECRET,
+    templates: Object.fromEntries(REQUIRED_TEMPLATES.map((t) => [t, codes.has(t)])),
+    lastWebhookAt: iso(hook?.at ?? null),
+  };
+}

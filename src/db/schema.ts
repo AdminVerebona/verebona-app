@@ -568,6 +568,15 @@ export const emailLogs = pgTable('email_logs', {
   errorMessage: text('error_message'),
   sentAt: tstz('sent_at'),
   metadata: text('metadata'),
+  // Lot 57A (migration 0405) : livraison DISTINCTE du statut d'envoi
+  // (`status = 'sent'` garde son sens : accepté par Resend).
+  providerMessageId: text('provider_message_id'),
+  deliveryStatus: text('delivery_status'),
+  deliveryStatusAt: tstzOptional('delivery_status_at'),
+  deliveredAt: tstzOptional('delivered_at'),
+  deliveryError: text('delivery_error'),
+  triggeredByUserId: integer('triggered_by_user_id'),
+  emailJobId: integer('email_job_id'),
 }, (table) => ({
   statusIdx: index('email_logs_status_idx').on(table.status),
   sentAtIdx: index('email_logs_sent_at_idx').on(table.sentAt),
@@ -1182,6 +1191,9 @@ export const duoAccounts = pgTable('duo_accounts', {
   // durable, que l'annulation ou l'expiration du lien n'effacent pas ;
   // remise à NULL par le déclencheur à l'ouverture d'une nouvelle souscription.
   duoFirstInviteSentAt: tstzOptional('duo_first_invite_sent_at'),
+  // Lot 57A (0405) : empreinte SHA-256 du dernier jeton consommé (« invitation
+  // déjà utilisée ») — jamais le jeton lui-même.
+  lastUsedInviteTokenHash: text('last_used_invite_token_hash'),
   createdAt: tstz('created_at'),
   updatedAt: tstz('updated_at'),
 }, (table) => ({
@@ -4135,4 +4147,54 @@ export const businessOperationClaimMigrationMarks = pgTable('business_operation_
 }, (t) => ({
   detailChk: check('business_operation_claim_migration_marks_detail_chk', sql`jsonb_typeof(${t.detail}) = 'object'`),
   outcomeChk: check('business_operation_claim_migration_marks_outcome_chk', sql`${t.outcome} IN ('CREATED', 'MATCHED', 'LINKED', 'RESYNCED', 'MIRRORED', 'BELOW_THRESHOLD', 'HOLD_AMBIGUOUS', 'EMPTY', 'ERROR')`),
+}));
+
+/**
+ * Lot 57A (migration 0405) — file DURABLE des e-mails indispensables
+ * (vérification d'adresse, invitation Duo). Aucun jeton stocké : le lien est
+ * reconstruit à chaque tentative. Accès par SQL brut
+ * (`services/email/transactional-email-jobs.service.ts`) ; déclarée ici pour
+ * protéger la table d'un `db:push`.
+ */
+export const transactionalEmailJobs = pgTable('transactional_email_jobs', {
+  id: serial('id').primaryKey(),
+  kind: text('kind').notNull(),
+  userId: integer('user_id').references(() => users.id, { onDelete: 'cascade' }),
+  duoId: integer('duo_id').references(() => duoAccounts.id, { onDelete: 'cascade' }),
+  triggeredByUserId: integer('triggered_by_user_id').references(() => users.id, { onDelete: 'set null' }),
+  recipientEmail: text('recipient_email').notNull(),
+  context: jsonb('context').notNull().default({}),
+  status: text('status').notNull().default('pending'),
+  attempts: integer('attempts').notNull().default(0),
+  maxAttempts: integer('max_attempts').notNull().default(6),
+  nextAttemptAt: tstz('next_attempt_at'),
+  lockedUntil: tstzOptional('locked_until'),
+  lastError: text('last_error'),
+  lastEmailLogId: integer('last_email_log_id'),
+  providerMessageId: text('provider_message_id'),
+  acceptedAt: tstzOptional('accepted_at'),
+  createdAt: tstz('created_at'),
+  updatedAt: tstz('updated_at'),
+}, (t) => ({
+  kindCheck: check('transactional_email_jobs_kind_check', sql`${t.kind} IN ('EMAIL_VERIFICATION', 'DUO_INVITATION')`),
+  statusCheck: check('transactional_email_jobs_status_check', sql`${t.status} IN ('pending', 'sending', 'accepted', 'failed', 'cancelled')`),
+  dueIdx: index('transactional_email_jobs_due_idx').on(t.nextAttemptAt).where(sql`status IN ('pending', 'sending')`),
+  userIdx: index('transactional_email_jobs_user_idx').on(t.userId, t.kind),
+  duoIdx: index('transactional_email_jobs_duo_idx').on(t.duoId, t.kind),
+}));
+
+/** Lot 57A (0405) — événements webhook Resend (svix-id unique : rejeu sans effet). */
+export const emailProviderEvents = pgTable('email_provider_events', {
+  id: serial('id').primaryKey(),
+  provider: text('provider').notNull().default('resend'),
+  eventId: text('event_id').notNull(),
+  eventType: text('event_type').notNull(),
+  providerMessageId: text('provider_message_id'),
+  occurredAt: tstzOptional('occurred_at'),
+  detail: text('detail'),
+  appliedAt: tstzOptional('applied_at'),
+  receivedAt: tstz('received_at'),
+}, (t) => ({
+  eventUnique: unique('email_provider_events_event_unique').on(t.provider, t.eventId),
+  messageIdx: index('email_provider_events_message_idx').on(t.providerMessageId),
 }));

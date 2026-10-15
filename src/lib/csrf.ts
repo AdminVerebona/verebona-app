@@ -28,11 +28,12 @@ const MUTATING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
  *
  * Elles sont protegees par un autre mecanisme :
  *   - le webhook Stripe verifie la signature cryptographique de Stripe ;
+ *   - le webhook Resend verifie la signature Svix (lot 57A) ;
  *   - les taches planifiees utilisent CRON_SECRET.
  * Aucune ne repose sur un cookie de session, donc aucune n'est vulnerable
  * au CSRF.
  */
-const CSRF_EXEMPT_PREFIXES = ['/api/billing/stripe-webhook', '/api/cron/'];
+const CSRF_EXEMPT_PREFIXES = ['/api/billing/stripe-webhook', '/api/webhooks/resend', '/api/cron/'];
 
 /** Construit la liste des origines autorisees a partir de l'environnement. */
 function allowedOrigins(): string[] {

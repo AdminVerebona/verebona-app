@@ -12,7 +12,7 @@ import {
   joinDuo,
   peekPendingDuoJoin,
   rememberPendingDuoJoin,
-  takePendingDuoJoin,
+  settlePendingDuoJoin,
 } from '@/lib/duo/pending-duo-join';
 
 type PageState =
@@ -20,6 +20,7 @@ type PageState =
   | 'valid'
   | 'invalid'
   | 'expired'
+  | 'used'
   | 'already_in_duo'
   | 'subscription_inactive'
   | 'joining'
@@ -53,6 +54,8 @@ function DuoJoinContent() {
           setPageState('valid');
         } else if (data.error === 'EXPIRED_TOKEN') {
           setPageState('expired');
+        } else if (data.error === 'USED_TOKEN') {
+          setPageState('used');
         } else if (data.error === 'SUBSCRIPTION_INACTIVE') {
           setPageState('subscription_inactive');
         } else {
@@ -72,9 +75,9 @@ function DuoJoinContent() {
     }
 
     setPageState('joining');
-    // Tentative unique : le jeton mémorisé est retiré quelle que soit l'issue.
-    if (peekPendingDuoJoin() === token) takePendingDuoJoin();
+    // Lot 57A : jeton mémorisé retiré APRÈS confirmation ou refus définitif.
     const result = await joinDuo(token);
+    settlePendingDuoJoin(token, result);
     if (result.ok) {
       setPageState('success');
       setTimeout(() => router.push('/accueil'), 2000);
@@ -158,6 +161,18 @@ function DuoJoinContent() {
           message="Ce lien d'invitation a expiré. Demandez au titulaire de l'abonnement d'en générer un nouveau."
           showBack
           onBack={() => router.push('/accueil')}
+        />
+      );
+    }
+
+    if (pageState === 'used') {
+      return (
+        <ErrorBlock
+          title="Invitation déjà utilisée"
+          message="Cette invitation Premium Duo a déjà été acceptée. Si vous l'avez acceptée vous-même, connectez-vous pour accéder à l'espace partagé ; sinon, demandez au titulaire une nouvelle invitation."
+          showBack
+          onBack={() => router.push(user ? '/accueil' : '/login')}
+          backLabel={user ? 'Retour à l\'accueil' : 'Se connecter'}
         />
       );
     }

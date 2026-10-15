@@ -16,6 +16,10 @@ import {
   agenda, analyserDocument, demander, drainQueues, fiche, preuves, sortieT1, useTargetState, type FaitT1,
 } from '../chain';
 
+// Lot 55A : T6 (mascotte, questions suggérées) peut s'exécuter en arrière-plan
+// pendant un scénario ; seuls les appels des traitements testés comptent ici.
+const horsT6 = <T extends { operationCode?: string | null }>(calls: T[]): T[] => calls.filter((c) => !String(c.operationCode ?? '').startsWith('t6_'));
+
 vi.mock('@/lib/asset-quota-guard', () => ({ assetModificationDecision: async () => ({ allowed: true }) }));
 vi.mock('@/services/verebona-assistant/events/business-events', async (o) => ({
   ...(await o<object>()), emitBusinessEvent: async () => {}, emitBusinessEvents: async () => {},
@@ -264,8 +268,8 @@ scenario('CORPUS-T2', 'Corpus §15 — assistant T2 (enabled / master)', ({ sql,
     expect(r.route?.intent).toBe('ACCOUNT_SUMMARY');
     expect(ids(r)).toEqual(expect.arrayContaining(attendus));
     expect(new Set(r.sources.map((s) => s.type))).toEqual(new Set(['asset_field', 'document_extraction', 'agenda_item', 'to_process_item']));
-    expect(replay.calls[0].task).toBe('ANSWER');
-    for (const id of attendus) expect(replay.calls[0].prompt).toContain(`"sourceId": "${id}"`);
+    expect(horsT6(replay.calls)[0].task).toBe('ANSWER');
+    for (const id of attendus) expect(horsT6(replay.calls)[0].prompt).toContain(`"sourceId": "${id}"`);
     expect(r.answer).toContain('12 000 €');
     expect(r.answer).toContain('À traiter');
     expect(r.supportLevel).toBe('supported');
@@ -293,7 +297,7 @@ scenario('CORPUS-T2', 'Corpus §15 — assistant T2 (enabled / master)', ({ sql,
     const fiches = r.sources.filter((s) => s.type === 'asset_field');
     expect(fiches.map((s) => s.id).sort()).toEqual([`asset_${clio.id}`, `asset_${polo.id}`].sort());
     // Mêmes dimensions, dans le même ordre, pour les deux biens.
-    const prompt = replay.calls[0].prompt;
+    const prompt = horsT6(replay.calls)[0].prompt;
     const dimensions = (nom: string) => {
       const m = prompt.match(new RegExp(`Fiche de ${nom} \\(vehicule\\)((?:\\\\n[^\\\\"]+)+)`));
       return (m?.[1] ?? '').split('\\n').filter(Boolean).map((l) => l.split(' : ')[0]);
@@ -354,7 +358,7 @@ scenario('CORPUS-T2', 'Corpus §15 — assistant T2 (enabled / master)', ({ sql,
       },
     }]);
     const r = await demander(c, 'Et le truc de la dernière fois ?');
-    expect(replay.calls[0].task).toBe('UNDERSTAND');
+    expect(horsT6(replay.calls)[0].task).toBe('UNDERSTAND');
     expect(r.cascade?.strategy).toMatch(/^clarification\./);
     expect(r.sources).toEqual([]);
     expect(r.answer).toMatch(/Que cherchez-vous \?/);
@@ -423,7 +427,7 @@ scenario('CORPUS-T2', 'Corpus §15 — assistant T2 (enabled / master)', ({ sql,
     });
     await drainQueues();
 
-    expect(replay.calls[0].task).toBe('REVALIDATE');
+    expect(horsT6(replay.calls)[0].task).toBe('REVALIDATE');
     expect(r).toMatchObject({ status: 'CORRECTED', value: '2027-10-03' });
     expect(r!.reinjectedFactId).toBeTruthy();
     // T3 : une seule preuve active, la valeur corrigée sur la fiche.

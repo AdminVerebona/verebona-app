@@ -12,10 +12,15 @@
  *                         jamais une information connue ; NON_INFORMATIONAL
  *                         est ignoré ; une lacune de pages n'a pas de texte) ;
  *                       · unités de TEXTE (bloc, libellé : valeur, formulaire)
- *                         COUVERTES déjà présentes dans la tranche de
- *                         transcription lue par T3 (`fullText.slice(0, 200 000)`)
- *                         écartées : elles n'apporteraient rien ; au-delà, ou
- *                         non comprises / incertaines : retenues (AC8) ;
+ *                         COUVERTES dont le texte figure RÉELLEMENT dans la
+ *                         tranche de transcription lue par T3 écartées : elles
+ *                         n'apporteraient rien ; absentes de la transcription
+ *                         (transcription vide, tronquée, texte différent), ou
+ *                         non comprises / incertaines : retenues (AC8). Lot
+ *                         57B (défaut D) : la présence est VÉRIFIÉE (`strpos`),
+ *                         plus supposée d'après le cumul des longueurs — une
+ *                         unité « libellé : valeur » n'a pas de texte, elle est
+ *                         toujours retenue ;
  *                       · métadonnées couvertes écartées (déjà dans
  *                         l'extraction) ; lignes de tableau et observations
  *                         visuelles retenues (absentes de la transcription) ;
@@ -154,15 +159,21 @@ export async function loadReconciliationSourceUnits(accountId: number, fileId: n
   return (await pgClient.unsafe(
     `SELECT s.source_unit_id AS "sourceUnitId", s.kind, s.coverage_status AS "coverageStatus",
             s.content_text AS text, s.label, s.value_text AS value
-       FROM (
-         SELECT u.*, sum(CASE WHEN u.kind IN ('TEXT_BLOCK', 'LABEL_VALUE', 'FORM_FIELD') THEN length(coalesce(u.content_text, '')) + 1 ELSE 0 END)
-                       OVER (ORDER BY u.ordinal) AS cum
-           FROM document_source_units u
-          WHERE u.file_id = $1 AND u.account_id = $2
-            AND u.coverage_status IN ('COVERED', 'UNRESOLVED', 'UNCERTAIN') AND u.kind <> 'PAGE_GAP'
-       ) s
-      WHERE NOT (s.kind IN ('TEXT_BLOCK', 'LABEL_VALUE', 'FORM_FIELD') AND s.coverage_status = 'COVERED' AND s.cum <= $3)
-        AND NOT (s.kind = 'DOCUMENT_METADATA' AND s.coverage_status = 'COVERED')
+       FROM document_source_units s
+       LEFT JOIN LATERAL (
+         SELECT left(coalesce(e.full_text, ''), $3) AS lu, true AS present
+           FROM document_extractions e WHERE e.file_id = s.file_id AND e.account_id = s.account_id LIMIT 1
+       ) x ON true
+      WHERE s.file_id = $1 AND s.account_id = $2
+        AND s.coverage_status IN ('COVERED', 'UNRESOLVED', 'UNCERTAIN') AND s.kind <> 'PAGE_GAP'
+        -- Lot 57B (défaut D) : une unité de texte COUVERTE n'est écartée que si
+        -- son texte figure RÉELLEMENT dans la tranche de transcription lue par
+        -- T3 (vérifié, jamais supposé d'après un cumul de longueurs).
+        AND NOT (s.kind IN ('TEXT_BLOCK', 'LABEL_VALUE', 'FORM_FIELD') AND s.coverage_status = 'COVERED'
+                 AND length(coalesce(s.content_text, '')) > 0 AND x.lu IS NOT NULL
+                 AND strpos(x.lu, s.content_text) > 0)
+        -- Métadonnées couvertes : écartées seulement si l'extraction existe.
+        AND NOT (s.kind = 'DOCUMENT_METADATA' AND s.coverage_status = 'COVERED' AND x.present IS TRUE)
       ORDER BY s.ordinal
       LIMIT $4`,
     [fileId, accountId, TRANSCRIPTION_COVERED_PREFIX, SOURCE_UNITS_MAX] as never[],

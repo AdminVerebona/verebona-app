@@ -2,12 +2,27 @@ import { NextRequest, NextResponse } from 'next/server';
 import { SessionService } from '@/lib/session-service';
 import { db } from '@/db';
 import { users, duoAccounts, duoMemberships } from '@/db/schema';
-import { eq, and, sql } from 'drizzle-orm';
-import { emailService } from '@/lib/email/email-service';
+import { eq, and } from 'drizzle-orm';
 import crypto from 'crypto';
 import { getAppBaseUrl } from '@/lib/app-url';
+import {
+  enqueueDuoInvitationEmail,
+  getDuoInvitationEmailState,
+  processEmailJob,
+  type EmailJobOutcome,
+} from '@/services/email/transactional-email-jobs.service';
 
 const TOKEN_TTL_DAYS = 7;
+/** Attente maximale de la réponse de Resend avant de répondre au titulaire. */
+const SEND_WAIT_MS = 15_000;
+
+/** Statut d'expédition rendu au titulaire (lot 57A, P0-C). */
+function emailStatusOf(outcome: EmailJobOutcome | { status: 'timeout' }) {
+  if (outcome.status === 'accepted') return { emailStatus: 'accepted' as const, emailAccepted: true };
+  if (outcome.status === 'failed') return { emailStatus: 'failed' as const, emailAccepted: false };
+  // pending (nouvelle tentative programmée), busy (tentative en cours), timeout.
+  return { emailStatus: 'queued' as const, emailAccepted: false };
+}
 
 /**
  * GET /api/duo/invitation
@@ -53,11 +68,15 @@ export async function GET(request: NextRequest) {
     }
 
     const isExpired = duo.pendingInviteTokenExpiresAt && new Date(duo.pendingInviteTokenExpiresAt) < new Date();
+    // Lot 57A (E) : invitation créée ≠ expédition acceptée ≠ livraison connue.
+    const email = await getDuoInvitationEmailState(duo.id);
 
     return NextResponse.json({
       status: isExpired ? 'EXPIRED' : 'PENDING',
       inviteEmail: duo.pendingInviteEmail,
+      // Date d'expédition CONFIRMÉE (acceptation par Resend) uniquement.
       sentAt: duo.pendingInviteSentAt,
+      email,
       inviteLink: duo.pendingInviteToken
         ? (() => {
             return `${getAppBaseUrl(request).replace(/\/$/, '')}/duo/join/${duo.pendingInviteToken}`;
@@ -107,35 +126,40 @@ export async function POST(request: NextRequest) {
 
     // Generate new token or reuse existing if resend
     let token: string;
-    if (resend && duo.pendingInviteToken && duo.pendingInviteEmail === email) {
-      token = duo.pendingInviteToken;
+    const reuse = !!(resend && duo.pendingInviteToken && duo.pendingInviteEmail === email);
+    if (reuse) {
+      token = duo.pendingInviteToken!;
     } else {
       token = crypto.randomBytes(32).toString('hex');
     }
 
     const expiresAt = new Date(Date.now() + TOKEN_TTL_DAYS * 24 * 60 * 60 * 1000);
 
+    // ════════════════════════════════════════════════════════════════════
+    // LOT 57A (P0-C) — PLUS D'EXPÉDITION ANNONCÉE À TORT
+    //
+    // Avant : date d'envoi posée ici, e-mail « fire and forget », réponse
+    // `success: true` sans rien savoir du transport. Désormais :
+    //   · l'INVITATION est enregistrée (lien exploitable, copiable) ;
+    //   · la date d'envoi n'est posée qu'à l'ACCEPTATION par Resend — par la
+    //     demande durable (`transactional_email_jobs`), qui pose aussi la
+    //     trace du premier envoi (lot 54F, mascotte) ; une nouvelle
+    //     invitation remet la date à vide jusqu'à cette acceptation ;
+    //   · la réponse attend Resend (au plus 15 s) et dit ce qu'il en est :
+    //     `emailStatus` accepted | queued (nouvelle tentative programmée) |
+    //     failed. `success` signifie « invitation enregistrée ».
+    // Destinataire de l'e-mail = l'invité ; émetteur = le titulaire (P1-E).
+    // ════════════════════════════════════════════════════════════════════
     await db
       .update(duoAccounts)
       .set({
         pendingInviteEmail: email,
         pendingInviteToken: token,
         pendingInviteTokenExpiresAt: expiresAt,
-        pendingInviteSentAt: new Date(),
-        // Lot 54F : trace DURABLE du premier envoi de cette souscription (la
-        // mascotte ne repropose plus « Inviter quelqu'un ») — conservée par
-        // l'annulation (DELETE ci-dessous) et l'expiration du lien.
-        duoFirstInviteSentAt: sql`COALESCE(${duoAccounts.duoFirstInviteSentAt}, now())`,
+        pendingInviteSentAt: reuse ? duo.pendingInviteSentAt : null,
         updatedAt: new Date(),
       })
       .where(eq(duoAccounts.id, duo.id));
-
-    // Fetch owner name
-    const [owner] = await db
-      .select({ firstName: users.firstName, lastName: users.lastName })
-      .from(users)
-      .where(eq(users.id, session.userId))
-      .limit(1);
 
     // Adresse publique de l'application (APP_URL / NEXT_PUBLIC_APP_URL, sinon
     // l'hôte de la requête) : jamais l'en-tête Origin, qui vaut
@@ -144,26 +168,19 @@ export async function POST(request: NextRequest) {
     const baseUrl = getAppBaseUrl(request).replace(/\/$/, '');
     const inviteUrl = `${baseUrl}/duo/join/${token}`;
 
-    // Send invitation email (fire-and-forget)
-    emailService.send({
-      templateCode: 'DUO_INVITATION',
-      to: email,
-      variables: {
-        ownerFirstName: owner?.firstName || '',
-        ownerLastName: owner?.lastName || '',
-        ownerFullName: owner ? `${owner.firstName} ${owner.lastName}` : '',
-        inviteUrl,
-        // Le gabarit en base (migration 0125) attend {{actionUrl}} ; le
-        // gabarit par défaut du code attend {{inviteUrl}} : on fournit les deux.
-        actionUrl: inviteUrl,
-        expiresIn: `${TOKEN_TTL_DAYS} jours`,
-      },
-      userId: session.userId,
-    }).catch((err) => console.error('[DuoInvitation] Email send failed:', err));
+    const job = await enqueueDuoInvitationEmail({
+      duoId: duo.id, recipientEmail: email, triggeredByUserId: session.userId, baseUrl,
+    });
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const outcome = await Promise.race([
+      processEmailJob(job.jobId),
+      new Promise<{ status: 'timeout' }>((r) => { timer = setTimeout(() => r({ status: 'timeout' }), SEND_WAIT_MS); }),
+    ]).finally(() => clearTimeout(timer));
 
     return NextResponse.json({
       success: true,
       inviteLink: inviteUrl,
+      ...emailStatusOf(outcome),
     });
   } catch (error) {
     return SessionService.handleSessionError(error);

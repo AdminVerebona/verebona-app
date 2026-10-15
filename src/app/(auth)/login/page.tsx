@@ -192,7 +192,11 @@ function LoginForm() {
                 <div className="space-y-2 text-sm">
                   {resendState === 'sent' ? (
                     <p className="text-[color:var(--text-muted)]">
-                      Si un compte non vérifié correspond à cette adresse, un nouveau lien de vérification vient d’être envoyé.
+                      Demande enregistrée. Si un compte non vérifié correspond à cette adresse, un nouveau lien de
+                      vérification va lui être envoyé dans quelques instants. Rien reçu ?{' '}
+                      <a href={publicSiteUrl('/contact')} className="text-primary hover:underline" target="_blank" rel="noopener noreferrer">
+                        Contacter l’assistance
+                      </a>
                     </p>
                   ) : (
                     <Button

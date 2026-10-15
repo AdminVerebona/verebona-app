@@ -159,14 +159,16 @@ scenario('L49B', 'T3 : À traiter ouverts réexaminés à chaque passage ; couch
     const [carte] = await ouvertes(doc.id);
     const empreinte = await figer(compte, doc.id);
     const avant = await resolution(doc.id);
-    const replay = await rejouer([]);
+    // Lot 57B (ticket P0, défaut B) : aucun candidat STRUCTURÉ → recherche sémantique IA à chaque
+    // passage (tentative réelle) ; le modèle s'abstient → toujours NO_CANDIDATE.
+    const replay = await rejouer([T3_ABSTENTION]);
 
     for (const n of [1, 2]) {
       const r = await passage(compte);
       expect(entree(r, carte.id), `passage ${n}`).toMatchObject({
         ruleCode: 'LINK-ASSET', targetType: 'DOCUMENT', targetId: doc.id, resolver: 'T3_DOCUMENT_ASSET',
         previousResolution: 'NO_CANDIDATE', newResolution: 'NO_CANDIDATE', candidateCount: 0,
-        deterministicAttempted: true, aiCalled: false, actionEffect: 'STILL_OPEN', fingerprint: empreinte, fingerprintChanged: false,
+        deterministicAttempted: true, aiCalled: true, actionEffect: 'STILL_OPEN', fingerprint: empreinte, fingerprintChanged: false,
       });
       const apres = await resolution(doc.id);
       expect(apres.e).toMatchObject({ result: 'NO_CANDIDATE', reevaluated: true, fingerprintChanged: false, openActionId: carte.id, reprocessReason: 'OPEN_ACTION' });
@@ -174,7 +176,7 @@ scenario('L49B', 'T3 : À traiter ouverts réexaminés à chaque passage ; couch
       // Nouvelle tentative RÉELLE (décision réécrite) : le compteur d'évaluations avance.
       expect(apres.runs).toBe(avant.runs + n);
     }
-    expect(appels(replay, 't3_link_ambiguity')).toBe(0);
+    expect(appels(replay, 't3_link_ambiguity')).toBe(2);
     expect(await ouvertes(doc.id)).toHaveLength(1);
   });
 
@@ -272,8 +274,10 @@ scenario('L49B', 'T3 : À traiter ouverts réexaminés à chaque passage ; couch
     expect(entree(r, ids.disparu)).toMatchObject({ actionEffect: 'SUPERSEDED', newResolution: 'TARGET_DELETED' });
     expect(entree(r, carte.id)).toMatchObject({ resolver: 'T3_DOCUMENT_ASSET', deterministicAttempted: true });
     expect(Object.values(r.byEffect).reduce((s, n) => s + n, 0)).toBe(r.examined);
-    // T4 jamais détourné vers le modèle T3.
-    expect(r.aiCalls).toBe(0);
+    // T4 jamais détourné vers le modèle T3 (lot 57B : seule la carte LINK-ASSET sans candidat
+    // structuré donne lieu à la recherche sémantique).
+    expect((r.entries as unknown as Entree[]).filter((e) => e.aiCalled).map((e) => e.ruleCode)).toEqual(['LINK-ASSET']);
+    expect(r.aiCalls).toBe(1);
   });
 
   it('T3OA-08 — décision utilisateur : carte résolue manuellement avant le cycle → aucune nouvelle tentative, aucune modification', async () => {

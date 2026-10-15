@@ -89,6 +89,23 @@ export interface DocumentKnowledgeSources {
   facts: DocumentSourceFact[];
   /** Empreinte de la connaissance documentaire (côté document du contexte). */
   digest: string;
+  /**
+   * Lot 57B (journal par carte) : fournisseurs EN ÉCHEC (exception) — jamais
+   * confondus avec « rien à dire ». Hors empreinte.
+   */
+  failedOrigins?: string[];
+}
+
+/**
+ * Lot 57B : éléments exploitables chargés, par source (journal par carte :
+ * « sources T1 effectivement chargées et nombre d'éléments »). Pure.
+ */
+export function knowledgeSourceCounts(s: Pick<DocumentKnowledgeSources, 'texts' | 'facts'> | null): Record<string, number> {
+  const out: Record<string, number> = {};
+  if (!s) return out;
+  for (const t of s.texts) out[String(t.origin)] = (out[String(t.origin)] ?? 0) + 1;
+  if (s.facts.length > 0) out.FACTS = (out.FACTS ?? 0) + s.facts.length;
+  return out;
 }
 
 /** Contribution d'un fournisseur (partielle). */
@@ -208,7 +225,7 @@ export async function loadDocumentKnowledgeSources(p: {
   accountId: number; fileId: number; t1Candidates?: readonly StoredT1Candidate[];
 }): Promise<DocumentKnowledgeSources | null> {
   const out: Omit<DocumentKnowledgeSources, 'digest'> = {
-    accountId: p.accountId, fileId: p.fileId, origins: [], extraction: null, texts: [], facts: [],
+    accountId: p.accountId, fileId: p.fileId, origins: [], extraction: null, texts: [], facts: [], failedOrigins: [],
   };
   for (const provider of providers.values()) {
     let c: DocumentSourceContribution | null = null;
@@ -216,6 +233,7 @@ export async function loadDocumentKnowledgeSources(p: {
       c = await provider.load({ accountId: p.accountId, fileId: p.fileId, t1Candidates: p.t1Candidates ?? [] });
     } catch (e) {
       console.error(`[t3-document-sources] fournisseur ${provider.name} en échec (document ${p.fileId}) :`, (e as Error).message);
+      out.failedOrigins!.push(String(provider.name));
       continue;
     }
     if (!c) continue;

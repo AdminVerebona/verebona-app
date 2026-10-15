@@ -18,7 +18,7 @@ export const FORGOT_PASSWORD_NEUTRAL_MESSAGE =
 
 /** CDC 18 §11.2 : réponse neutre du renvoi de l'e-mail de vérification. */
 export const RESEND_VERIFICATION_NEUTRAL_MESSAGE =
-  'Si un compte non vérifié correspond à cette adresse, un nouveau lien de vérification vient d’être envoyé.';
+  'Demande enregistrée. Si un compte non vérifié correspond à cette adresse, un nouveau lien de vérification va lui être envoyé.';
 
 /**
  * Lot 53A (retour PO Q21, CDC 18 §7.1 / §9.1) : réponse NEUTRE de
@@ -27,4 +27,7 @@ export const RESEND_VERIFICATION_NEUTRAL_MESSAGE =
  * un compte »).
  */
 export const SIGNUP_NEUTRAL_MESSAGE =
-  'Vérifiez votre boîte mail : nous vous avons envoyé un e-mail pour finaliser votre inscription.';
+  'Demande enregistrée : un e-mail pour finaliser votre inscription va être envoyé à cette adresse. Vérifiez votre boîte mail dans quelques minutes.';
+// Lot 57A (P0-A/B) : les deux messages disent qu'une DEMANDE est enregistrée
+// — jamais qu'un e-mail « a été envoyé » (l'acceptation par le fournisseur
+// n'est pas connue au moment de la réponse, et ne doit pas l'être : 53A).

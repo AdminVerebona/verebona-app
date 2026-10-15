@@ -185,11 +185,13 @@ scenario('L34E', 'Réconciliation T3 continue : révision de connaissance, Candi
     const apres = await resolution(a.id);
     expect(apres).toMatchObject({ status: 'NO_CANDIDATE', runs: avant.runs, context_fingerprint: avant.context_fingerprint });
     expect(await cartes(a.id)).toHaveLength(1);
-    // Phase « open actions » : réexamen réel, empreinte identique, toujours sans IA (aucun candidat).
+    // Phase « open actions » : réexamen réel, empreinte identique. Lot 57B (ticket P0, défaut B) :
+    // aucun candidat STRUCTURÉ → recherche sémantique IA (une) ; le modèle s'abstient → NO_CANDIDATE.
+    const semantique = await rejouer([{ operationCode: 't3_link_ambiguity', task: 'LINK_AMBIGUITY', output: { task: 'LINK_AMBIGUITY', matches: [] }, repeat: true }]);
     const { reconcileOpenToProcessActions } = await import('@/services/ai/reconciliation/continuous/open-actions.service');
     await reconcileOpenToProcessActions(compte.id);
-    expect((await resolution(a.id)).e).toMatchObject({ result: 'NO_CANDIDATE', reevaluated: true, aiCalled: false, fingerprintChanged: false, candidateCount: 0 });
-    expect(appels(replay, 't3_link_ambiguity')).toBe(0);
+    expect((await resolution(a.id)).e).toMatchObject({ result: 'NO_CANDIDATE', reevaluated: true, aiCalled: true, fingerprintChanged: false, candidateCount: 0 });
+    expect(appels(semantique, 't3_link_ambiguity')).toBe(2); // cartes ouvertes de A et de C
     expect(await cartes(a.id)).toHaveLength(1);
   });
 

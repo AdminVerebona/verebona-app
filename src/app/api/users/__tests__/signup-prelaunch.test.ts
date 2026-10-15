@@ -39,6 +39,11 @@ vi.mock('@/db', async () => {
 vi.mock('@/lib/prelaunch-invitations', () => ({ resolveSignupInvitation }));
 vi.mock('bcrypt', () => ({ default: { hash: async () => 'hash' } }));
 vi.mock('@/lib/email/email-service', () => ({ emailService: { send: async () => undefined } }));
+// Lot 57A : demande d'e-mail de vérification durable (file en base).
+vi.mock('@/services/email/transactional-email-jobs.service', () => ({
+  enqueueVerificationEmail: async () => ({ jobId: 1, created: true }),
+  processEmailJob: async () => ({ jobId: 1, status: 'accepted' }),
+}));
 vi.mock('@/services/trial.service', () => ({ grantTrial: async () => ({ granted: true }) }));
 vi.mock('@/services/referral-attribution.service', () => ({ recordSignupReferral: async () => null }));
 vi.mock('@/services/legal', () => ({ getCurrentVersion: async () => ({ versionCode: 'CGVU-2026-01' }) }));

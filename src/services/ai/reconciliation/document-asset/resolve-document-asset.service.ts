@@ -78,10 +78,11 @@ import { attachAutomatically, clearAutomaticPrimaryColumn, closeAssetLinkQuestio
 import { hasPrimaryAttachment, hasUserDecision, readAttachmentState, type AttachmentState } from './attachment-state';
 import {
   decideContextualDeterministic, decideDeterministic, decideFromAiOutput, documentAssetVariables, promptCandidates, rankCandidates,
-  type DocumentAssetDecision, type DocumentSubject,
+  type DocumentAssetCandidate, type DocumentAssetDecision, type DocumentSubject,
 } from './decision';
 import { candidateSourcesOf, computeDocumentAssetContext, type DocumentAssetContext } from './context';
-import { usedDocumentSources } from './document-sources';
+import { knowledgeSourceCounts, usedDocumentSources } from './document-sources';
+import { loadSupplierHistory, semanticCandidates, semanticPages, semanticShortlist, SEMANTIC_RELATION } from './semantic-search';
 import type { RearbitrationDeferral } from './rearbitration-budget';
 import type { AccountMatchingIndex } from './matching-index';
 import { DOCUMENT_ASSET_RESOLUTION_VERSION } from './version';
@@ -147,6 +148,18 @@ export interface DocumentAssetEvaluation {
   aiDeferred?: RearbitrationDeferral | null;
   /** Lot 49B : dernier appel modèle pour ce document (priorité des réarbitrages reportés). */
   lastAiAt?: string | null;
+  /** Lot 57B : éléments T1 exploitables chargés, par source. */
+  knowledgeCounts?: Record<string, number>;
+  /** Lot 57B : sources T1 absentes (EXTRACTION : aucune connaissance T1) ou en échec. */
+  missingSources?: string[];
+  /** Lot 57B : motif exploitable de l'issue (NO_CANDIDATE, INSUFFICIENT_EVIDENCE, AMBIGUOUS, AI_UNAVAILABLE…). */
+  reasonCode?: string | null;
+  /** Lot 57B : appels IA (opération, traces, erreur). */
+  ai?: { operation: string; traceIds: string[]; status: 'OK' | 'ERROR' | 'NOT_CALLED'; error: string | null; reason: string } | null;
+  /** Lot 57B : recherche sémantique (aucun candidat structuré). */
+  semanticSearch?: {
+    attempted: boolean; reason: string; rounds: number; presented: number; matched: number; origins: Record<string, number>;
+  } | null;
 }
 
 /** Dernier appel modèle connu d'une résolution (monitoring précédent). Pure. */
@@ -199,7 +212,9 @@ export interface ResolveDocumentAssetResult {
 
 /** Points d'injection (tests unitaires). */
 export interface ResolveDocumentAssetDeps {
-  callModel?: (p: { accountId: number; userId: number | null; fileId: number; variables: Record<string, unknown> }) => Promise<T3LinkAmbiguityOutput>;
+  callModel?: (p: { accountId: number; userId: number | null; fileId: number; variables: Record<string, unknown>; onTrace?: (traceId: string) => void }) => Promise<T3LinkAmbiguityOutput>;
+  /** Lot 57B : historique fournisseur (défaut : base). */
+  supplierHistory?: (accountId: number, fileId: number, supplier: string | null) => Promise<Map<number, number>>;
   /** Carte LINK-ASSET ouverte du document (défaut : base). */
   openAssetLinkAction?: (accountId: number, fileId: number) => Promise<number | null>;
   /** Plafond journalier des réarbitrages (défaut : `ai_usage_event`). */
@@ -218,7 +233,7 @@ export async function openAssetLinkActionOf(accountId: number, fileId: number): 
   return rows[0] ? Number(rows[0].id) : null;
 }
 
-async function defaultCallModel(p: { accountId: number; userId: number | null; fileId: number; variables: Record<string, unknown> }) {
+async function defaultCallModel(p: { accountId: number; userId: number | null; fileId: number; variables: Record<string, unknown>; onTrace?: (traceId: string) => void }) {
   const res = await AiGateway.execute({
     useCaseCode: 'DATA_RECONCILIATION',
     operationCode: 't3_link_ambiguity',
@@ -228,6 +243,7 @@ async function defaultCallModel(p: { accountId: number; userId: number | null; f
     promptVariables: p.variables,
     outputSchema: T3LinkAmbiguityOutput,
   });
+  if (res.traceId) p.onTrace?.(res.traceId);
   return res.data as T3LinkAmbiguityOutput;
 }
 
@@ -265,6 +281,8 @@ export function evaluationBase(p: {
     documentSources: usedDocumentSources(p.ctx.sources),
     matchedSourceUnitIds: (p.ctx.matchedSourceUnits ?? []).map((u) => u.unitId).slice(0, 50),
     lastAiAt: previousAiAt(p.resolution),
+    knowledgeCounts: knowledgeSourceCounts(p.ctx.sources),
+    missingSources: p.ctx.sources ? [...(p.ctx.sources.failedOrigins ?? [])] : ['EXTRACTION'],
   };
 }
 
@@ -316,13 +334,37 @@ export async function resolveDocumentAsset(
   let decision = decideDeterministic(ctx.identification, { multiAssetDeclared: ctx.multiAssetDeclared })
     ?? decideContextualDeterministic(ctx.candidates, ctx.identification, { multiAssetDeclared: ctx.multiAssetDeclared });
   let aiCalled = false;
-  const pourModele = promptCandidates(ctx.candidates);
+  let pourModele = promptCandidates(ctx.candidates);
+  const traces: string[] = [];
+  let aiError: string | null = null;
+  let aiReason = decision ? 'DETERMINISTIC_PROOF' : 'NOT_NEEDED';
+  let semantic: DocumentAssetEvaluation['semanticSearch'] = null;
+  const callModel = deps.callModel ?? defaultCallModel;
+  const ext0 = ctx.sources?.extraction;
+  const subject0: DocumentSubject = {
+    title: ext0?.title ?? null, documentType: ext0?.documentType ?? null, documentDate: ext0?.documentDate ?? null,
+    supplier: ext0?.supplier ?? null, description: ext0?.description ?? null, multiAssetDeclared: ext0?.multiAsset ?? null,
+    facts: (ctx.sources?.facts ?? []).map((f) => ({ canonicalKey: f.canonicalKey, label: f.label, value: f.value, excerpt: f.excerpt })),
+  };
 
   // ── 4. Modèle (candidats du serveur seulement, monde fermé) ───────────
   if (!decision) {
     if (ctx.candidates.length === 0) {
-      decision = { kind: 'ABSTAIN', reasonCode: 'NO_CANDIDATE', ranked: [] };
+      // Lot 57B (défaut B) : aucun candidat STRUCTURÉ → recherche sémantique
+      // IA parmi les biens du compte (sélection progressive), jamais un
+      // NO_CANDIDATE sans raisonnement quand la connaissance T1 existe.
+      const r = await semanticSearch({
+        accountId, fileId, userId: input.userId ?? state.userId, ctx, subject: subject0, skipAi: input.skipAi === true,
+        guard: input.guard, callModel, supplierHistory: deps.supplierHistory ?? loadSupplierHistory, traces,
+      });
+      decision = r.decision;
+      aiCalled = r.aiCalled;
+      aiError = r.aiError;
+      semantic = r.semantic;
+      aiReason = r.aiCalled ? 'SEMANTIC_SEARCH' : `SEMANTIC_SEARCH_SKIPPED:${r.semantic.reason}`;
+      if (r.presented.length) pourModele = r.presented;
     } else if (input.skipAi) {
+      aiReason = 'AI_DISABLED';
       decision = { kind: 'ABSTAIN', reasonCode: 'AI_UNAVAILABLE', ranked: rankCandidates(ctx.candidates) };
     } else {
       // Lot 54A (écart 1) : plus aucun report pour quota T3 interne — une carte
@@ -330,20 +372,12 @@ export async function resolveDocumentAsset(
       // coût du compte, la disponibilité du modèle et le circuit breaker de la
       // passerelle restent les seuls freins ; `rearbitration` est ignoré).
       await input.guard?.assertActive('T3 DOCUMENT_ASSET — appel du modèle');
-      const ext = ctx.sources?.extraction;
-      const subject: DocumentSubject = {
-        title: ext?.title ?? null,
-        documentType: ext?.documentType ?? null,
-        documentDate: ext?.documentDate ?? null,
-        supplier: ext?.supplier ?? null,
-        description: ext?.description ?? null,
-        multiAssetDeclared: ext?.multiAsset ?? null,
-        facts: (ctx.sources?.facts ?? []).map((f) => ({ canonicalKey: f.canonicalKey, label: f.label, value: f.value, excerpt: f.excerpt })),
-      };
+      aiReason = 'STRUCTURED_CANDIDATES_NEED_ARBITRATION';
       try {
         aiCalled = true;
-        const output = await (deps.callModel ?? defaultCallModel)({
-          accountId, userId: input.userId ?? state.userId, fileId, variables: documentAssetVariables(subject, pourModele),
+        const output = await callModel({
+          accountId, userId: input.userId ?? state.userId, fileId, variables: documentAssetVariables(subject0, pourModele),
+          onTrace: (t) => traces.push(t),
         });
         decision = decideFromAiOutput(output, pourModele);
         // Candidats découverts au-delà de la borne du prompt : toujours proposés à l'utilisateur.
@@ -353,6 +387,7 @@ export async function resolveDocumentAsset(
         }
       } catch (e) {
         if (isExecutionCancelled(e)) throw e;
+        aiError = (e as Error).message.slice(0, 200);
         // Panne du modèle : nouvelle tentative par la file (backoff) ; à la
         // dernière, l'utilisateur est sollicité plutôt que de laisser le
         // document sans bien.
@@ -367,11 +402,92 @@ export async function resolveDocumentAsset(
   await input.guard?.assertActive('T3 DOCUMENT_ASSET — écriture');
   const result = await applyDecision({
     accountId, fileId, userId: input.userId ?? state.userId, decision, ctx, revision, g,
-    evaluation: { ...reexamen, aiCalled, promptCandidateCount: aiCalled ? pourModele.length : 0, ...(aiCalled ? { lastAiAt: new Date().toISOString() } : {}) },
+    evaluation: {
+      ...reexamen, aiCalled, promptCandidateCount: aiCalled ? pourModele.length : 0, ...(aiCalled ? { lastAiAt: new Date().toISOString() } : {}),
+      reasonCode: decision.kind === 'ABSTAIN' ? (aiError && decision.reasonCode === 'NO_CANDIDATE' ? 'AI_UNAVAILABLE' : decision.reasonCode) : 'RESOLVED',
+      ai: { operation: 't3_link_ambiguity', traceIds: traces.slice(0, 5), status: aiError ? 'ERROR' : aiCalled ? 'OK' : 'NOT_CALLED', error: aiError, reason: aiReason },
+      semanticSearch: semantic,
+    },
   });
   console.info(`[t3-document-asset] document ${fileId} : ${decision.kind}${decision.kind === 'ABSTAIN' ? ` (${decision.reasonCode})` : ` [${decision.method}]`} → ${result.outcome}`);
   if (result.evaluation) logEvaluation(result.evaluation);
   return { ...result, decision, aiCalled };
+}
+
+/**
+ * Lot 57B (défaut B) — recherche sémantique IA quand aucun candidat
+ * structuré n'existe (`semantic-search.ts`). Biens du compte seulement
+ * (index du compte), sélection progressive, branche IA existante. Ne lève
+ * que pour une interruption : une panne du modèle est rendue (AI_UNAVAILABLE),
+ * la carte reste ouverte et sera retentée au passage suivant.
+ */
+async function semanticSearch(p: {
+  accountId: number; fileId: number; userId: number | null; ctx: DocumentAssetContext; subject: DocumentSubject; skipAi: boolean;
+  guard?: ExecutionGuard; callModel: NonNullable<ResolveDocumentAssetDeps['callModel']>;
+  supplierHistory: NonNullable<ResolveDocumentAssetDeps['supplierHistory']>; traces: string[];
+}): Promise<{
+  decision: DocumentAssetDecision; aiCalled: boolean; aiError: string | null;
+  semantic: NonNullable<DocumentAssetEvaluation['semanticSearch']>; presented: DocumentAssetCandidate[];
+}> {
+  const vide = (reason: string) => ({
+    decision: { kind: 'ABSTAIN' as const, reasonCode: 'NO_CANDIDATE' as const, ranked: [] }, aiCalled: false, aiError: null,
+    semantic: { attempted: false, reason, rounds: 0, presented: 0, matched: 0, origins: {} }, presented: [] as DocumentAssetCandidate[],
+  });
+  const { ctx } = p;
+  if (!ctx.sources) return vide('NO_T1_KNOWLEDGE');
+  if (ctx.index.assets.length === 0) return vide('NO_ASSET_IN_ACCOUNT');
+  if (p.skipAi) return vide('AI_DISABLED');
+  const historique = await p.supplierHistory(p.accountId, p.fileId, ctx.sources.extraction?.supplier ?? null);
+  const shortlist = semanticShortlist(ctx.index, ctx.sources, historique);
+  const pages = semanticPages(shortlist);
+  const origins: Record<string, number> = {};
+  for (const h of shortlist) for (const o of h.origins) origins[o] = (origins[o] ?? 0) + 1;
+  const presented: DocumentAssetCandidate[] = [];
+  let rounds = 0;
+  for (const page of pages) {
+    const cands = semanticCandidates(page, ctx.index);
+    for (const c of cands) {
+      const a = ctx.index.byId.get(c.assetId)!;
+      ctx.labels.set(c.assetId, { name: a.name, category: a.category, subtype: a.subtype });
+    }
+    presented.push(...cands);
+    await p.guard?.assertActive('T3 DOCUMENT_ASSET — recherche sémantique');
+    rounds += 1;
+    let output: T3LinkAmbiguityOutput;
+    try {
+      output = await p.callModel({
+        accountId: p.accountId, userId: p.userId, fileId: p.fileId,
+        variables: { ...documentAssetVariables(p.subject, cands), RELATION_TYPE: SEMANTIC_RELATION },
+        onTrace: (t) => p.traces.push(t),
+      });
+    } catch (e) {
+      if (isExecutionCancelled(e)) throw e;
+      const err = (e as Error).message.slice(0, 200);
+      console.warn(`[t3-document-asset] document ${p.fileId} : recherche sémantique — modèle indisponible (${err}).`);
+      return {
+        decision: { kind: 'ABSTAIN', reasonCode: 'NO_CANDIDATE', ranked: [] }, aiCalled: true, aiError: err,
+        semantic: { attempted: true, reason: 'AI_UNAVAILABLE', rounds, presented: presented.length, matched: 0, origins }, presented,
+      };
+    }
+    const decision = decideFromAiOutput(output, cands);
+    const retenus = new Set(output.matches.map((m) => m.candidateId).filter((id) => cands.some((c) => c.assetId === id)));
+    if (decision.kind !== 'ABSTAIN') {
+      return { decision, aiCalled: true, aiError: null, semantic: { attempted: true, reason: 'RESOLVED', rounds, presented: presented.length, matched: retenus.size, origins }, presented };
+    }
+    if (retenus.size > 0) {
+      // Le modèle désigne un ou des biens sans preuve suffisante : proposés à l'utilisateur (justification du modèle).
+      const ranked = decision.reasonCode === 'CLOSED_WORLD_VIOLATION' ? [] : decision.ranked.filter((r) => retenus.has(r.assetId));
+      return {
+        decision: ranked.length ? { ...decision, ranked } : { kind: 'ABSTAIN', reasonCode: 'NO_CANDIDATE', ranked: [] },
+        aiCalled: true, aiError: null,
+        semantic: { attempted: true, reason: decision.reasonCode, rounds, presented: presented.length, matched: retenus.size, origins }, presented,
+      };
+    }
+  }
+  return {
+    decision: { kind: 'ABSTAIN', reasonCode: 'NO_CANDIDATE', ranked: [] }, aiCalled: rounds > 0, aiError: null,
+    semantic: { attempted: rounds > 0, reason: rounds > 0 ? 'NO_MATCH' : 'NO_ASSET_IN_ACCOUNT', rounds, presented: presented.length, matched: 0, origins }, presented,
+  };
 }
 
 /** Une ligne de journal lisible par évaluation (exploitation). */

@@ -14,6 +14,7 @@ import { agendaItemRemovals, aiMasterCorpusRuns, documentFieldValues, cdc15Migra
   businessOperationContractDetails, businessOperationFinancingDetails, businessOperationClaimDetails, businessOperationClaimDamages,
   businessOperationClaimDamageDocuments, businessOperationClaimDamagePhotos, businessOperationClaimActions, businessOperationClaimExchanges,
   businessOperationAssetDataMarks, businessOperationClaimMigrationMarks, stripeCatalogRecoveries,
+  transactionalEmailJobs, emailProviderEvents,
 } from '../schema';
 
 const MIG = join(process.cwd(), 'src/db/migrations');
@@ -97,6 +98,9 @@ const CAS: Array<[PgTable, string, string]> = [
   [businessOperationClaimMigrationMarks, '0323_claim_operations.sql', 'business_operation_claim_migration_marks'],
   // Lot 49A : rattrapages ciblés du catalogue Stripe.
   [stripeCatalogRecoveries, '0326_stripe_catalog_recoveries.sql', 'stripe_catalog_recoveries'],
+  // Lot 57A : e-mails indispensables durables et événements Resend.
+  [transactionalEmailJobs, '0405_transactional_email_reliability.sql', 'transactional_email_jobs'],
+  [emailProviderEvents, '0405_transactional_email_reliability.sql', 'email_provider_events'],
 ];
 
 describe('tables neuves : Drizzle = SQL', () => {

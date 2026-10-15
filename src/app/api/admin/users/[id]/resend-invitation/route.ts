@@ -36,6 +36,30 @@ export async function POST(request: NextRequest, context: { params: Promise<{ id
       });
       return NextResponse.json({ error: result.code, code: result.code, message: result.message }, { status: 409 });
     }
+    // Lot 57A (P1-E) : un e-mail NON accepté par le fournisseur n'est plus
+    // présenté comme « Invitation renvoyée ». L'invitation reste valable ; la
+    // demande est reprise automatiquement (sauf échec définitif).
+    if (result.emailStatus !== 'accepted') {
+      await logAdminAction({
+        adminId,
+        action: 'USER_INVITATION_RESEND',
+        targetType: 'USER',
+        targetId: userId,
+        result: 'FAILURE',
+        details: { duoId: result.duoId, tokenRenewed: result.renewed, emailStatus: result.emailStatus, error: result.emailError },
+      });
+      return NextResponse.json(
+        {
+          error: 'EMAIL_NOT_ACCEPTED',
+          code: 'EMAIL_NOT_ACCEPTED',
+          emailStatus: result.emailStatus,
+          message: result.emailStatus === 'queued'
+            ? `Invitation conservée, mais l’e-mail n’a pas été accepté par le prestataire (${result.emailError ?? 'cause inconnue'}). Nouvelle tentative automatique programmée — détail dans Communications › E-mails transactionnels.`
+            : `Invitation conservée, mais l’e-mail n’a pas pu être expédié (${result.emailError ?? 'cause inconnue'}). Détail dans Communications › E-mails transactionnels.`,
+        },
+        { status: 502 },
+      );
+    }
     await logAdminAction({
       adminId,
       action: 'USER_INVITATION_RESEND',
@@ -44,7 +68,7 @@ export async function POST(request: NextRequest, context: { params: Promise<{ id
       result: 'SUCCESS',
       details: { duoId: result.duoId, tokenRenewed: result.renewed },
     });
-    return NextResponse.json({ success: true, email: result.email, renewed: result.renewed });
+    return NextResponse.json({ success: true, email: result.email, renewed: result.renewed, emailStatus: result.emailStatus });
   } catch (error) {
     if (isSessionError(error)) return sessionErrorResponse(error);
     console.error('[admin/users/resend-invitation] échec :', error);

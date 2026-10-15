@@ -155,12 +155,16 @@ describe('DUO-M1-03 / DUO-M1-04 — invitation envoyée : disparition, sans réa
 
   it('route : l’envoi pose la trace (sans l’écraser) ; l’annulation ne l’efface pas', () => {
     const route = src('src/app/api/duo/invitation/route.ts');
-    expect(route).toMatch(/duoFirstInviteSentAt: sql`COALESCE\(\$\{duoAccounts\.duoFirstInviteSentAt\}, now\(\)\)`/);
+    // Lot 57A : la trace est posée à l'ACCEPTATION de l'e-mail par Resend
+    // (demande durable), jamais avant — toujours sans écraser la première.
+    expect(src('src/services/email/transactional-email-jobs.service.ts'))
+      .toMatch(/duo_first_invite_sent_at = COALESCE\(duo_first_invite_sent_at, \$3::timestamptz\)/);
+    expect(route).not.toMatch(/duoFirstInviteSentAt:/);
     const del = route.slice(route.indexOf('export async function DELETE'));
     expect(del).not.toMatch(/duoFirstInviteSentAt/);
     // Renvoi / annulation / remplacement : inchangés.
     expect(del).toMatch(/pendingInviteSentAt: null/);
-    expect(route).toMatch(/if \(resend && duo\.pendingInviteToken && duo\.pendingInviteEmail === email\)/);
+    expect(route).toMatch(/const reuse = !!\(resend && duo\.pendingInviteToken && duo\.pendingInviteEmail === email\)/);
   });
 });
 

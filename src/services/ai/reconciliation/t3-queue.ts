@@ -463,6 +463,15 @@ async function runAccount(job: QueuedJob, p: T3AccountPayload, guard: ExecutionG
     // métier — retry + backoff (MOD-005), jamais un DONE silencieux.
     throw new Error(`exécution T3 du compte ${accountId} en échec sur tous les biens examinés (${result.errors} erreur(s))`);
   }
+  if (result.outcome === 'TECHNICAL_FAILURE' && result.phases) {
+    // Lot 57B (défaut A) : une phase OBLIGATOIRE en échec ou non exécutée n'est
+    // jamais un DONE — échec technique, repris par la file (backoff). Les
+    // écritures déjà faites sont conservées (idempotentes au passage suivant) ;
+    // le passage (`account_reconciliation_runs`, phases) reste consultable.
+    const ko = Object.entries(result.phases).filter(([, ph]) => ph.status === 'FAILED' || ph.status === 'NOT_RUN')
+      .map(([n, ph]) => `${n} ${ph.status}${ph.error ? ` (${ph.error.slice(0, 120)})` : ''}`);
+    throw new Error(`exécution T3 du compte ${accountId} (passage #${result.runId}) : phase(s) obligatoire(s) en échec — ${ko.join(' ; ')}`);
+  }
   const detail = {
     runId: result.runId, scope, status: result.status, objectsExamined: result.objectsExamined,
     // Lot 52A (COR-04, COR-05) : objets modifiés et appels modèle du passage
@@ -474,6 +483,16 @@ async function runAccount(job: QueuedJob, p: T3AccountPayload, guard: ExecutionG
     // ouvertes réexaminées ; vraies tentatives distinguées du simple constat.
     openActionsPhase: 'ACCOUNT_GLOBAL',
     openActionsResolutionAttempted: result.openActions?.resolutionAttempted ?? 0,
+    // Lot 57B : issue et phases du passage, compteurs distincts (jamais confondus).
+    outcome: result.outcome ?? null,
+    ...(result.phases ? { phases: result.phases } : {}),
+    openActionsOpenAtStart: result.openActions?.openAtStart ?? null,
+    openActionsResolved: result.openActions?.resolved ?? null,
+    openActionsKeptAmbiguous: result.openActions?.keptAmbiguous ?? null,
+    openActionsDelegated: result.openActions?.delegated ?? null,
+    openActionsErrors: result.openActions?.errors ?? null,
+    aiCallsByOperation: result.openActions?.aiCallsByOperation ?? {},
+    journal: result.openActions?.journalStatus ?? null,
     decisionsApplied: result.decisionsApplied, conflictsCreated: result.conflictsCreated, errors: result.errors,
     ...(result.openKnowledge ? { openKnowledge: result.openKnowledge } : {}),
     // Lot 49B : rapport des lignes « À traiter » ouvertes examinées (borné).

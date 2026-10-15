@@ -37,7 +37,16 @@ vi.mock('@/lib/audit-logger', () => ({ logUserActivity: () => Promise.resolve() 
 const startPasswordReset = vi.fn();
 vi.mock('@/services/auth/password-reset.service', () => ({ startPasswordReset: (e: string) => startPasswordReset(e) }));
 const resendVerification = vi.fn();
-vi.mock('@/services/auth/resend-verification.service', () => ({ resendVerification: (e: string) => resendVerification(e) }));
+// Lot 57A : la demande est enregistrée (même coût pour toute adresse), puis
+// tentée après la réponse — c'est cette tentative que simule `resendVerification`.
+const pendingEmails: string[] = [];
+const recordRequest = vi.fn(async (e: string) => { pendingEmails.push(e); return 1; });
+vi.mock('@/services/auth/resend-verification.service', () => ({
+  recordVerificationResendRequest: (e: string) => recordRequest(e),
+}));
+vi.mock('@/services/email/transactional-email-jobs.service', () => ({
+  processEmailJob: () => resendVerification(pendingEmails.shift()),
+}));
 
 const { AuthRateLimiter, MemoryAuthLimitStore, setAuthRateLimiterForTests } = await import('@/lib/auth/auth-rate-limit');
 const { settleDetachedAuthTasks, DUMMY_BCRYPT_HASH } = await import('@/lib/auth/anti-enumeration');
@@ -63,7 +72,7 @@ async function snap(res: Response) {
 
 beforeEach(() => {
   users.clear(); writes.length = 0;
-  startPasswordReset.mockReset(); resendVerification.mockReset();
+  startPasswordReset.mockReset(); resendVerification.mockReset(); recordRequest.mockClear(); pendingEmails.length = 0;
   setAuthRateLimiterForTests(new AuthRateLimiter(new MemoryAuthLimitStore()));
   addUser('actif@x.fr');
   addUser('suspendu@x.fr', { status: 'SUSPENDED' });
@@ -169,6 +178,8 @@ describe('C3 — renvoi de l’e-mail de vérification', () => {
     await settleDetachedAuthTasks();
     for (const r of reps) expect(r).toEqual({ status: 200, retry: null, body: { success: true, message: RESEND_VERIFICATION_NEUTRAL_MESSAGE } });
     expect(JSON.stringify(reps)).not.toMatch(/alreadyVerified|cause|remede/);
+    // MAIL-P0-06 (lot 57A) : demande durable enregistrée AVANT la réponse, pour toute adresse.
+    expect(recordRequest.mock.calls.map((c) => c[0])).toEqual(emails);
   });
 
   it('C3-10 la réponse n’attend pas l’envoi', async () => {

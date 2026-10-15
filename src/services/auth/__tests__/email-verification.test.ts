@@ -110,11 +110,14 @@ describe('secret de signature', () => {
 describe('producteurs et consommateur du lien', () => {
   it('inscription et renvoi n’émettent plus de base64(email:horodatage)', () => {
     // Lot 37 : l'envoi du renvoi vit dans un service exécuté après la réponse neutre.
+    // Lot 57A : inscription et renvoi passent par la demande durable, qui
+    // construit le lien SIGNÉ à chaque tentative.
     for (const p of ['src/app/api/users/route.ts', 'src/services/auth/resend-verification.service.ts']) {
       const src = read(p);
-      expect(src).toMatch(/buildEmailVerificationUrl\(/);
+      expect(src).toMatch(/enqueueVerificationEmail\(/);
       expect(src).not.toMatch(/Buffer\.from\(tokenData\)/);
     }
+    expect(read('src/services/email/transactional-email-jobs.service.ts')).toMatch(/buildEmailVerificationUrl\(/);
   });
 
   it('la route vérifie la signature, active de façon conditionnelle et explique les anciens liens', () => {

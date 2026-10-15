@@ -21,7 +21,7 @@
  * cookies HttpOnly posés par la route de vérification (CDC cookies §5.1).
  */
 
-import { useState, Suspense } from 'react';
+import { useEffect, useRef, useState, Suspense } from 'react';
 import Link from 'next/link';
 import { useSearchParams, useRouter } from 'next/navigation';
 import { Button } from '@/components/ui/button';
@@ -29,7 +29,76 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { LogoWithBaseline } from '@/components/Logo';
 import { LandingFooter } from '@/components/LandingFooter';
 import { ForceTheme } from '@/components/ForceTheme';
-import { MailCheck, CheckCircle, AlertCircle, Loader2 } from 'lucide-react';
+import { MailCheck, CheckCircle, AlertCircle, Loader2, Users } from 'lucide-react';
+import { publicSiteUrl } from '@/lib/external-urls';
+import { duoJoinErrorMessage, joinDuo, peekPendingDuoJoin, settlePendingDuoJoin } from '@/lib/duo/pending-duo-join';
+
+/** Lot 57A : accès à l'assistance quand l'e-mail n'arrive pas (site public). */
+function SupportHint() {
+  return (
+    <p className="text-xs text-[color:var(--text-muted)] text-center">
+      Toujours rien après quelques minutes ? Vérifiez vos courriers indésirables, renvoyez le lien, ou{' '}
+      <a href={publicSiteUrl('/contact')} target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">
+        contactez l&apos;assistance
+      </a>
+      .
+    </p>
+  );
+}
+
+/**
+ * Lot 57A / ticket P2 : après vérification, rattachement au Premium Duo.
+ * Jeton mémorisé dans ce navigateur → tentative automatique (parcours de
+ * l'invitation) ; sinon (e-mail ouvert dans un autre navigateur) → bouton,
+ * le serveur retrouvant l'invitation adressée à l'adresse vérifiée.
+ * Le jeton n'est retiré qu'après confirmation ou refus définitif.
+ */
+function DuoJoinAfterVerification() {
+  const router = useRouter();
+  const [state, setState] = useState<'idle' | 'joining' | 'done' | 'error'>('idle');
+  const [message, setMessage] = useState('');
+  const started = useRef(false);
+
+  const join = async () => {
+    setState('joining');
+    const token = peekPendingDuoJoin();
+    const result = await joinDuo(token);
+    settlePendingDuoJoin(token, result);
+    if (result.ok) {
+      setState('done');
+      setTimeout(() => router.push('/accueil'), 1500);
+    } else {
+      setMessage(result.message || duoJoinErrorMessage(result.error));
+      setState('error');
+    }
+  };
+
+  useEffect(() => {
+    if (started.current || !peekPendingDuoJoin()) return;
+    started.current = true;
+    void join();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- tentative unique à l'affichage
+  }, []);
+
+  return (
+    <div className="bg-emerald-950/30 border border-emerald-500/25 rounded-lg p-3 space-y-3" data-testid="duo-join-after-verification">
+      <div className="flex items-start gap-3 text-sm">
+        <Users className="w-5 h-5 text-emerald-400 flex-shrink-0 mt-0.5" />
+        <p className="text-[color:var(--text-muted)]">
+          {state === 'done'
+            ? 'Vous avez rejoint l’espace Premium Duo. Redirection vers l’accueil…'
+            : 'Vous avez été invité à rejoindre un abonnement Premium Duo. Votre adresse étant vérifiée, vous pouvez maintenant accepter l’invitation.'}
+        </p>
+      </div>
+      {state === 'error' && <p className="text-xs text-destructive">{message}</p>}
+      {state !== 'done' && (
+        <Button className="w-full" onClick={() => void join()} disabled={state === 'joining'}>
+          {state === 'joining' ? <><Loader2 className="w-4 h-4 mr-2 animate-spin" />Rattachement…</> : state === 'error' ? 'Réessayer' : 'Rejoindre le Duo'}
+        </Button>
+      )}
+    </div>
+  );
+}
 
 /** Cas de sortie produits par `/api/auth/verify-email`. */
 type VerificationError =
@@ -93,6 +162,10 @@ function VerifyEmailContent() {
   const status = params.get('status');
   const rawError = params.get('error');
   const emailFromUrl = params.get('email') ?? '';
+  // Contexte Premium Duo (lot 57A, P2) : posé par l'inscription d'un invité
+  // et par la route de vérification (invitation en attente pour l'adresse).
+  // Indication d'affichage seulement : le rattachement est contrôlé côté serveur.
+  const duoContext = params.get('duo') === '1';
 
   const error = (rawError && rawError in ERROR_CONTENT ? rawError : null) as VerificationError | null;
 
@@ -148,7 +221,12 @@ function VerifyEmailContent() {
               enregistrée et aucun prélèvement n&apos;aura lieu à la fin de l&apos;essai.
             </div>
           )}
-          <Button className="w-full" onClick={() => router.push(alreadyVerified ? '/login' : '/accueil')}>
+          {duoContext && !alreadyVerified && <DuoJoinAfterVerification />}
+          <Button
+            className="w-full"
+            variant={duoContext && !alreadyVerified ? 'outline' : 'default'}
+            onClick={() => router.push(alreadyVerified ? '/login' : '/accueil')}
+          >
             {alreadyVerified ? 'Se connecter' : 'Accéder à Verebona'}
           </Button>
         </CardContent>
@@ -183,6 +261,7 @@ function VerifyEmailContent() {
               onResend={handleResend}
             />
           )}
+          {content.canResend && <SupportHint />}
           <div className="text-center text-sm text-[color:var(--text-muted)]">
             <Link href="/login" className="text-primary hover:underline">
               Retour à la connexion
@@ -210,16 +289,20 @@ function VerifyEmailContent() {
           {/* Lot 53A (CDC 18 §7.1, §9.1) : texte NEUTRE — l'inscription répond
               de la même façon si l'adresse a déjà un compte ; l'e-mail reçu dit
               alors comment se connecter. Même composant mobile et ordinateur. */}
+          {/* Lot 57A (P0-A) : une DEMANDE est enregistrée — l'expédition
+              n'est pas annoncée comme faite. */}
           {emailFromUrl ? (
             <>
-              Nous avons envoyé un e-mail à{' '}
-              <span className="font-medium text-[color:var(--text-primary)]">{emailFromUrl}</span>.
-              Cliquez sur le lien qu&apos;il contient pour activer votre compte et démarrer votre essai.
+              Votre demande est enregistrée : un e-mail va être envoyé à{' '}
+              <span className="font-medium text-[color:var(--text-primary)]">{emailFromUrl}</span>{' '}
+              dans quelques instants. Cliquez sur le lien qu&apos;il contient pour activer votre compte
+              {duoContext ? '.' : ' et démarrer votre essai.'}
             </>
           ) : (
             <>
-              Nous vous avons envoyé un e-mail. Cliquez sur le lien qu&apos;il contient pour
-              activer votre compte et démarrer votre essai.
+              Votre demande est enregistrée : un e-mail va vous être envoyé dans quelques instants.
+              Cliquez sur le lien qu&apos;il contient pour activer votre compte
+              {duoContext ? '.' : ' et démarrer votre essai.'}
             </>
           )}
         </CardDescription>
@@ -229,6 +312,12 @@ function VerifyEmailContent() {
           Le lien est valable 24 heures. Pensez à regarder dans vos courriers indésirables.
           Si cette adresse a déjà un compte Verebona, l&apos;e-mail vous indique simplement comment vous connecter.
         </p>
+        {duoContext && (
+          <p className="text-xs text-[color:var(--text-muted)] text-center" data-testid="duo-context-pending">
+            Une fois votre adresse vérifiée, vous pourrez rejoindre l&apos;abonnement Premium Duo auquel vous avez été invité,
+            même si vous ouvrez l&apos;e-mail sur un autre appareil.
+          </p>
+        )}
         <ResendBlock
           email={resendEmail}
           askEmail={!emailFromUrl}
@@ -236,6 +325,7 @@ function VerifyEmailContent() {
           state={resendState}
           onResend={handleResend}
         />
+        <SupportHint />
         <div className="text-center text-sm text-[color:var(--text-muted)]">
           Déjà vérifié ?{' '}
           <Link href="/login" className="text-primary hover:underline">
@@ -264,7 +354,8 @@ function ResendBlock({
   if (state === 'sent') {
     return (
       <div className="bg-emerald-950/30 border border-emerald-500/25 rounded-lg p-3 text-sm text-[color:var(--text-muted)]">
-        Si un compte existe avec cette adresse, un nouveau lien vient d&apos;être envoyé.
+        Demande enregistrée. Si un compte non vérifié correspond à cette adresse, un nouveau lien va lui
+        être envoyé dans quelques instants. L&apos;ancien lien reste valable s&apos;il n&apos;a pas expiré.
       </div>
     );
   }

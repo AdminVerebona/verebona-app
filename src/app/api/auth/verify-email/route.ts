@@ -1,8 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { hasActiveSubscriptionStatus } from '@/lib/billing/subscription-status';
 import { db } from '@/db';
-import { users } from '@/db/schema';
-import { eq } from 'drizzle-orm';
+import { users, duoAccounts } from '@/db/schema';
+import { and, eq, gt, isNotNull, sql } from 'drizzle-orm';
+import { runDetached } from '@/lib/auth/anti-enumeration';
 import { emailService } from '@/lib/email/email-service';
 import { generateSessionTokens } from '@/lib/jwt';
 import { AccountService } from '@/services/account-service';
@@ -97,7 +98,9 @@ export async function GET(request: NextRequest) {
       return redirect(`/verify-email?status=already_verified${planSuffix}`);
     }
 
-    await emailService.send({
+    // Lot 57A (P1-E) : le message de bienvenue n'est plus ATTENDU — un
+    // fournisseur lent ou en panne ne retarde plus l'accès au compte.
+    runDetached('e-mail de bienvenue', () => emailService.send({
       templateCode: 'WELCOME',
       to: user.email,
       variables: {
@@ -105,7 +108,7 @@ export async function GET(request: NextRequest) {
         loginUrl: `${baseUrl()}/login`,
       },
       userId: user.id,
-    }).catch(err => console.error('Failed to send welcome email:', err));
+    }));
 
     // CDC 18 §6 / LOGIN-05 : un compte suspendu ou supprimé entre-temps
     // n'obtient pas de session par le lien (l'adresse reste vérifiée).
@@ -149,7 +152,15 @@ export async function GET(request: NextRequest) {
       const params = new URLSearchParams({ status: 'success' });
       if (normalizedPlan) params.set('plan', normalizedPlan);
 
-      const targetPath = normalizedPlan ? '/abonnement/onboarding' : '/verify-email';
+      // Lot 57A / P2 inscription des invités : une invitation Premium Duo EN
+      // ATTENTE pour cette adresse (désormais vérifiée) → la page propose de
+      // rejoindre le Duo, même si l'e-mail est ouvert dans un autre
+      // navigateur que l'inscription. Simple indication : le rattachement
+      // reste contrôlé par POST /api/duo/join (session, adresse invitée).
+      const pendingDuo = await hasPendingDuoInvitation(user.email);
+      if (pendingDuo) params.set('duo', '1');
+
+      const targetPath = normalizedPlan && !pendingDuo ? '/abonnement/onboarding' : '/verify-email';
       const response = NextResponse.redirect(`${baseUrl()}${targetPath}?${params.toString()}`);
 
       // Lot 53A (Q21, CDC 18 §19.3) : mêmes durées que partout ailleurs —
@@ -168,5 +179,23 @@ export async function GET(request: NextRequest) {
   } catch (error) {
     console.error('Verify email error:', error);
     return redirect('/verify-email?error=server_error');
+  }
+}
+
+/** Invitation Premium Duo en attente, non expirée, adressée à cette adresse. */
+async function hasPendingDuoInvitation(email: string): Promise<boolean> {
+  try {
+    const rows = await db
+      .select({ id: duoAccounts.id })
+      .from(duoAccounts)
+      .where(and(
+        isNotNull(duoAccounts.pendingInviteToken),
+        sql`lower(${duoAccounts.pendingInviteEmail}) = ${email.trim().toLowerCase()}`,
+        sql`(${duoAccounts.pendingInviteTokenExpiresAt} IS NULL OR ${gt(duoAccounts.pendingInviteTokenExpiresAt, new Date())})`,
+      ))
+      .limit(1);
+    return rows.length > 0;
+  } catch {
+    return false; // indication seulement : jamais bloquant
   }
 }
