@@ -76,18 +76,25 @@ const SECTION_LABEL: Record<string, string> = {
   UNRESOLVED: 'Faits non résolus', COVERAGE: 'Couverture', OPERATION_CANDIDATE: 'Candidats Opération',
   PROJECTION: 'Projection sur fiche', EVIDENCE: 'Preuves', DOCUMENT: 'Document', LINK: 'Liens document ↔ biens',
   RULE: 'Règles « À traiter »', FIELD: 'Champs examinés', NOT_EXAMINED: 'Données non examinées',
+  // Lot 60 (T6) : chaque échéance candidate, affichée OU écartée, et la justification IA référencée.
+  INTERPELLATION: 'Interpellations T6 (affichées, différées, écartées)', INTERPELLATION_AI: 'Évaluations IA (justification)',
 };
 
 const pill = (tone: string) => `text-xs px-2 py-0.5 rounded-full border ${tone}`;
 const fmt = (v: unknown) => (v === null || v === undefined ? '∅' : typeof v === 'string' ? v : JSON.stringify(v, null, 2));
 export const reportTitle = (r: Pick<ReportSummaryDto, 'id' | 'treatment' | 'scope' | 'fileId' | 'targetId' | 'assetId'>) =>
-  `${r.treatment} #${r.id} · ${r.treatment === 'T1' ? `document ${r.fileId ?? '—'}` : `${r.scope === 'ASSET' ? 'bien' : r.scope === 'EQUIPMENT' ? 'équipement' : 'pièce'} ${r.targetId ?? r.assetId ?? '—'}`}`;
+  `${r.treatment} #${r.id} · ${r.treatment === 'T1' ? `document ${r.fileId ?? '—'}`
+    // Lot 60 : décision d'interpellation de l'accueil, pour un utilisateur (ou le compte en pré-génération).
+    : r.treatment === 'T6' ? `accueil · ${r.targetId != null ? `utilisateur ${r.targetId}` : 'compte (pré-génération)'}`
+    : `${r.scope === 'ASSET' ? 'bien' : r.scope === 'EQUIPMENT' ? 'équipement' : 'pièce'} ${r.targetId ?? r.assetId ?? '—'}`}`;
 
 /** En-tête compact d'un rapport (liste, corrélations). */
 export function ReportHeaderLine({ r, onOpen }: { r: ReportSummaryDto; onOpen?: (id: number) => void }) {
   const c = r.counters ?? {};
   const resume = r.treatment === 'T1'
     ? `${c.factsPersisted ?? 0}/${c.factsDeclared ?? 0} fait(s) enregistré(s) · ${c.evidenceWritten ?? 0} preuve(s) · ${c.factsNotPersisted ?? 0} non enregistré(s)`
+    : r.treatment === 'T6'
+      ? `${c.candidates ?? 0} échéance(s) évaluée(s) · ${c.shown ?? 0} affichée(s) · ${c.deferred ?? 0} différée(s) · ${c.suppressed ?? 0} écartée(s) · seuil ${c.thresholdDays ?? '—'} j`
     : `${c.examined ?? 0} champ(s) examiné(s) · ${c.written ?? 0} écrit(s) confirmé(s) · ${c.failed ?? 0} échec(s) · ${c.notExamined ?? 0} non examiné(s)`;
   return (
     <div className="flex flex-wrap items-center gap-2 text-xs">
@@ -113,7 +120,7 @@ export function LinkedExecutionReports({ callId, treatment }: { callId: number; 
       .catch(() => { if (vivant) setData({ available: false, reports: [] }); });
     return () => { vivant = false; };
   }, [callId]);
-  if (treatment !== 'T1' && treatment !== 'T3') return null;
+  if (treatment !== 'T1' && treatment !== 'T3' && treatment !== 'T6') return null;
   return (
     <section className="space-y-2" data-testid="execution-reports">
       <h3 className="text-sm font-semibold text-[color:var(--text-primary)]">Rapport d&apos;exécution {treatment} (données BDD)</h3>
@@ -332,7 +339,8 @@ export function ExecutionReportsTab({ accountId }: { accountId: string }) {
     <div className="space-y-3" data-testid="execution-reports-tab">
       <div className="flex flex-wrap gap-2">
         <select value={treatment} onChange={(e) => { setTreatment(e.target.value); setOffset(0); }} className={SELECT} aria-label="Traitement">
-          <option value="">T1 et T3</option><option value="T1">T1 (documents)</option><option value="T3">T3 (biens, entités)</option>
+          <option value="">T1, T3 et T6</option><option value="T1">T1 (documents)</option><option value="T3">T3 (biens, entités)</option>
+          <option value="T6">T6 (interpellations de l’accueil)</option>
         </select>
         <select value={status} onChange={(e) => { setStatus(e.target.value); setOffset(0); }} className={SELECT} aria-label="Statut">
           <option value="">Tous les statuts</option>

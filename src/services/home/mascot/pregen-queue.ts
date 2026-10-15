@@ -222,18 +222,25 @@ export async function runMascotPregeneration(opts: { deadline?: number; batch?: 
  * date (« prochaine échéance » → « c'est fait ? »), passe la veille, ou sort
  * de la fenêtre de rappel. Les comptes concernés sont signalés (bornés).
  */
-export async function enqueueDeadlineSituations(today: string, lookbackDays: number, limit = 5_000): Promise<number> {
+export async function enqueueDeadlineSituations(today: string, lookbackDays: number, limit = 5_000, thresholdDays?: number): Promise<number> {
+  if (thresholdDays === undefined) {
+    const { t6ThresholdDays } = await import('./t6-interpellation.service');
+    thresholdDays = await t6ThresholdDays();
+  }
   const r = await rows(
     `INSERT INTO home_mascot_pregen_requests (account_id, requested_at, reason)
      SELECT DISTINCT i.account_id, clock_timestamp(), 'deadline'
        FROM agenda_items i
        JOIN accounts a ON a.id = i.account_id
       WHERE (i.manual_status IS NULL OR trim(i.manual_status) = '')
-        AND i.start_date IN ($1::date, $1::date - 1, $1::date - ($2::int + 1))
+        AND (i.start_date IN ($1::date, $1::date - 1, $1::date - ($2::int + 1))
+             -- Lot 60 (T6) : le seuil d'interpellation est franchi aujourd'hui
+             -- (60 jours par défaut) — l'échéance est réévaluée.
+             OR i.start_date = $1::date + $4::int)
       LIMIT $3
      ON CONFLICT (account_id) DO UPDATE SET requested_at = clock_timestamp(), reason = 'deadline', attempts = 0
      RETURNING account_id`,
-    [today, lookbackDays, limit],
+    [today, lookbackDays, limit, thresholdDays],
   );
   return r.length;
 }

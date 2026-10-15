@@ -80,8 +80,9 @@ export interface ReportEntry {
 
 export interface ReportHeader {
   accountId: number;
-  treatment: 'T1' | 'T3';
-  scope: 'DOCUMENT' | 'ASSET' | 'EQUIPMENT' | 'ROOM';
+  /** Lot 60 : T6 (décision d'interpellation de l'accueil, migration 0432). */
+  treatment: 'T1' | 'T3' | 'T6';
+  scope: 'DOCUMENT' | 'ASSET' | 'EQUIPMENT' | 'ROOM' | 'HOME';
   jobId?: number | null;
   jobAttempt?: number | null;
   traceIds?: string[];

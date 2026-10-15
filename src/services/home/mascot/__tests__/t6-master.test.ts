@@ -33,7 +33,7 @@ describe('prompt maître t6_master_v1 (§28) et registre', () => {
     expect(MASTER).toContain('R8 — Évite les répétitions mécaniques entre sujets successifs.');
     expect(MASTER).toContain('un sujet `deadline` conserve la nature confirmée/prévisionnelle de la date');
     const rendu = renderMasterPrompt(MASTER, {
-      masterPromptCode: 't6_master_v1', task: 'FORMULATE', allowedTasks: ['FORMULATE'], variables: { INPUT_JSON: '{"x":1}', SUGGESTION_CONTEXT: null },
+      masterPromptCode: 't6_master_v1', task: 'FORMULATE', allowedTasks: ['FORMULATE'], variables: { INPUT_JSON: '{"x":1}', SUGGESTION_CONTEXT: null, INTERPELLATION_CONTEXT: null },
     });
     expect(rendu).toContain('MODE = FORMULATE');
     expect(rendu).toContain('Entrée structurée : {"x":1}');

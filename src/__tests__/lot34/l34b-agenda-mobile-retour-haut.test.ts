@@ -14,6 +14,8 @@ import {
 
 const lire = (f: string) => readFileSync(join(process.cwd(), f), 'utf8');
 const AGENDA = () => lire('src/app/(dashboard)/agenda/page.tsx');
+// Lot 59 (point 5) : sélecteur et navigation partagés avec l'onglet Agenda d'un bien.
+const VUES = () => lire('src/components/agenda/AgendaPeriodViews.tsx');
 
 function bloc(src: string, marker: string, until: string): string {
   const i = src.indexOf(marker);
@@ -23,7 +25,12 @@ function bloc(src: string, marker: string, until: string): string {
 }
 
 describe('Agenda mobile — contrôles de vue (lot 34, points 3/4)', () => {
-  const controles = () => bloc(AGENDA(), 'data-agenda-view-controls', '{/* Content */}');
+  const controles = () => bloc(VUES(), 'data-agenda-view-controls', '</>');
+
+  it('L34-AGENDA-00 — « Mon agenda » et l’onglet Agenda d’un bien montent le MÊME sélecteur', () => {
+    expect(AGENDA()).toContain('<AgendaViewControls');
+    expect(lire('src/components/assets/AssetAgendaTab.tsx')).toContain('<AgendaViewControls');
+  });
 
   it('L34-AGENDA-01 — mobile : sélecteur sur sa propre ligne, navigation de période dessous (jamais superposés)', () => {
     const c = controles();
@@ -39,7 +46,7 @@ describe('Agenda mobile — contrôles de vue (lot 34, points 3/4)', () => {
   it('L34-AGENDA-02 — sélecteur pleine largeur sur mobile, trois parts égales, libellés jamais tronqués', () => {
     const c = controles();
     expect(c).toContain('className="flex w-full overflow-hidden rounded-md border md:w-auto"');
-    const src = AGENDA();
+    const src = VUES();
     const tab = /const VIEW_TAB = '([^']+)'/.exec(src)?.[1] ?? '';
     for (const cls of ['flex-1', 'min-w-0', 'whitespace-nowrap', 'justify-center', 'md:flex-none', 'md:px-3']) {
       expect(tab.split(' ')).toContain(cls);

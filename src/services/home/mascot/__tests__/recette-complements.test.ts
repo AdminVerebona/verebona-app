@@ -21,6 +21,8 @@ const etat = {
   assets: new Map<number, { account: number }>(),
 };
 const sqlLog: string[] = [];
+/** Lot 60 : empreinte d'échéance (module réel, chargé après les simulations). */
+let empreinte: ((x: { title: string; date: string | null; forecast: boolean; requiresQualification: boolean }) => string) | null = null;
 const callLog: Array<{ sql: string; p: unknown[] }> = [];
 
 async function unsafe(sql: string, p: unknown[] = []): Promise<unknown[]> {
@@ -50,6 +52,19 @@ async function unsafe(sql: string, p: unknown[] = []): Promise<unknown[]> {
     // Aucune notion d'utilisateur : l'acquittement est celui du compte (DONE-004).
     return etat.acks.filter((a) => a.account === account && !a.undone)
       .map((a) => ({ occurrenceKey: a.occurrenceKey, cycleKey: a.cycleKey }));
+  }
+  // Lot 60 : décision d'interpellation T6 — les échéances simulées sont
+  // évaluées « à traiter maintenant » (même contexte), comme après une
+  // évaluation IA réussie : la décision les présente.
+  if (/FROM t6_interpellation_assessments a/.test(sql)) {
+    const [account] = p as [number];
+    const jour = new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Paris', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
+    return [...etat.agenda.entries()].filter(([, i]) => i.account === account && !i.manualStatus).map(([id, i]) => ({
+      id: 900 + id, agenda_item_id: id, assessed_on: jour, interpellation: 'ACT_NOW', action_needed: true, priority: 'MEDIUM',
+      context_fingerprint: empreinte!({ title: i.title, date: i.date, forecast: false, requiresQualification: false }),
+      reason: 'Évaluation simulée (test).', action_date: null, reevaluate_on: null, action: null, consequence: null,
+      uncertainty: null, exception_reason: null, prompt_version: null, trace_id: null,
+    }));
   }
   if (/to_char\(start_date, 'YYYY-MM-DD'\) AS date/.test(sql)) {
     const [id, account] = p as [number, number];
@@ -117,6 +132,7 @@ const { buildSecondaries, selectSubjects } = await import('../selector');
 const { buildPresentation } = await import('../presentation');
 const { buildTodoBlock } = await import('../todo-items');
 const { getMascotPresentation, scheduleMascotPregeneration, pendingPregenerations } = await import('../mascot.service');
+empreinte = (await import('../t6-interpellation.service')).agendaFingerprint;
 const { t6CacheKey, readT6Cache, formulateWithT6, logT6, gatewayCallerMode, resetT6Breaker } = await import('../t6-runner');
 const { buildT6Input } = await import('../t6-contract');
 const { openToProcessTarget } = await import('@/lib/to-process-target');

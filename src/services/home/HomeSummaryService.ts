@@ -17,6 +17,7 @@ import {
 } from '@/services/documents/thumbnails/document-previews';
 import { eq, and, or, isNull, isNotNull, gte, lte, sql, inArray, notInArray, desc, asc } from 'drizzle-orm';
 import { OTHER_ASSET_IDS_SQL, documentInAssetsCondition } from '@/services/documents/asset-document-scope';
+import { effectiveThumbnailUrl, loadDefaultAssetPhotos } from '@/services/assets/default-asset-photo';
 import { getToProcessPage } from '@/services/to-process/to-process-query.service';
 import {
   deriveUpcoming, deriveVerebonaWork, docStatus, docTone,
@@ -70,6 +71,8 @@ export interface HomeAsset {
   subtype?: string | null;
   status?: string | null;
   thumbnailUrl?: string | null;
+  /** Lot 59 (point 2) : vignette affichée — choisie, sinon la première photo du bien. */
+  effectiveThumbnailUrl?: string | null;
   signedThumbnailUrl?: string | null;
   documentCount: number;
   documentLabels: string[];
@@ -561,6 +564,8 @@ export async function buildHomeSummary(accountId: number): Promise<HomeSummaryPa
 
   // Les signed URLs S3 sont intentionnellement absentes ici pour ne pas bloquer
   // le rendu initial. Elles sont chargées côté client via useThumbnailUrl (cache 55 min).
+  // Lot 59 (point 2) : photo par défaut des biens sans vignette choisie.
+  const defaultPhotos = await loadDefaultAssetPhotos(accountId, assetRows.filter((a) => !a.thumbnailUrl).map((a) => a.id));
   const enrichedAssets: HomeAsset[] = assetRows.map((asset) => {
     const stats = assetDocStats[asset.id] ?? { count: 0, labels: [] };
     const next = assetNextDate[asset.id] ?? null;
@@ -572,6 +577,7 @@ export async function buildHomeSummary(accountId: number): Promise<HomeSummaryPa
       subtype: asset.subtype,
       status: asset.status,
       thumbnailUrl: asset.thumbnailUrl,
+      effectiveThumbnailUrl: effectiveThumbnailUrl(asset.thumbnailUrl, defaultPhotos.get(asset.id)),
       signedThumbnailUrl: null,
       documentCount: stats.count,
       documentLabels: stats.labels,

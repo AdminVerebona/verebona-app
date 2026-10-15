@@ -48,6 +48,7 @@ import { openDrawer } from '@/lib/drawers';
 import { openToProcessTarget } from '@/lib/to-process-target';
 import { greetingDateLong, greetingWord } from '@/lib/mascot-greeting';
 import { useWriteGuard } from '@/contexts/WriteGuardContext';
+import { preloadAddForm } from '@/components/mobile/add-forms';
 import type { MascotAction, MascotParagraph, MascotPresentation, MascotTile, MascotTodoItem } from '@/services/home/mascot/types';
 import {
   composeSpeech, displayedSecondaries, duoInviteHomeItem, homeItems, homePose, homePoseLabel, homeSuggestions, splitHighlights,
@@ -58,6 +59,7 @@ import { MascotPose } from '@/components/verebona/space/MascotPose';
 import { useVerebonaSpace } from '@/components/verebona/space/VerebonaSpaceProvider';
 import { useMascotPresentation } from './useMascotPresentation';
 import { TodoChoicesDialog } from './TodoChoicesDialog';
+import { T6ReminderActions } from './T6ReminderControls';
 
 /** Page « À traiter » sur une carte précise (OPEN_TODO_CARD) — ciblage par ID. */
 export function todoCardHref(todoId: string): string {
@@ -70,6 +72,52 @@ export function withoutTodos(p: MascotPresentation | null, hidden: ReadonlySet<s
   const items = p.todo.items.filter((i) => !hidden.has(i.todoId));
   const retires = p.todo.items.length - items.length;
   return { ...p, todo: { total: Math.max(0, p.todo.total - retires), items } };
+}
+
+/**
+ * Lot 60 : sujets T6 reportés ou refusés depuis leur carte — retirés aussitôt
+ * (texte ET carte, mêmes décisions), jusqu'à la relecture qui fait foi.
+ */
+export function withoutSubjects(p: MascotPresentation | null, hidden: ReadonlySet<string>): MascotPresentation | null {
+  if (!p || hidden.size === 0) return p;
+  return { ...p, paragraphs: p.paragraphs.filter((x) => !hidden.has(x.occurrenceKey)) };
+}
+
+/** Tuile d'amorce d'un compte vide (§12ter). */
+export interface EmptyStartTile {
+  key: 'add-asset' | 'add-doc';
+  label: string;
+  sub: string;
+  tone: MascotTile['tone'];
+  icon: MascotTile['icon'];
+  go: () => void;
+}
+
+/**
+ * Lot 59, point 1 — tuiles « Ajouter un premier bien » / « Déposer un
+ * document » d'un compte vide. Comme le menu « + Ajouter »
+ * (`mobile-actions-sheet.tsx`) : formulaire préchargé, garde d'écriture
+ * standard avec le quota concerné (fin d'essai, abonnement, quota : fenêtre
+ * de refus habituelle), puis ouverture DIRECTE du formulaire d'ajout de bien
+ * (`AssetFormDialog`) ou du tiroir d'ajout de document
+ * (`UnifiedDocumentDialog`) monté par l'accueil. Aucun passage par T2.
+ */
+export function emptyStartTiles(deps: {
+  garder: (action: () => void, quota?: 'assets' | 'documents') => void;
+  closeSpace: () => void;
+  onCreateAsset: () => void;
+  onUploadDocument: (assetId?: number | null) => void;
+}): EmptyStartTile[] {
+  return [
+    {
+      key: 'add-asset', label: 'Ajouter un premier bien', sub: 'Maison, véhicule, objet…', tone: 'blue', icon: 'plus',
+      go: () => { deps.closeSpace(); preloadAddForm('asset'); deps.garder(() => deps.onCreateAsset(), 'assets'); },
+    },
+    {
+      key: 'add-doc', label: 'Déposer un document', sub: 'Je le lis et le range pour vous', tone: 'green', icon: 'download',
+      go: () => { deps.closeSpace(); preloadAddForm('file'); deps.garder(() => deps.onUploadDocument(null), 'documents'); },
+    },
+  ];
 }
 
 interface MascotSpeaksProps {
@@ -118,8 +166,10 @@ export function MascotSpeaks({ greetingName, empty, onCreateAsset, onUploadDocum
   // « À traiter » résolus depuis la bulle : retirés aussitôt, jusqu'à la
   // relecture (nouvelle empreinte) qui fait foi.
   const [hidden, setHidden] = useState<ReadonlySet<string>>(() => new Set());
-  useEffect(() => { setHidden(new Set()); }, [brute?.contextHash]);
-  const presentation = useMemo(() => withoutTodos(brute, hidden), [brute, hidden]);
+  // Lot 60 : idem pour les sujets T6 reportés ou refusés depuis leur carte.
+  const [hiddenSubjects, setHiddenSubjects] = useState<ReadonlySet<string>>(() => new Set());
+  useEffect(() => { setHidden(new Set()); setHiddenSubjects(new Set()); }, [brute?.contextHash]);
+  const presentation = useMemo(() => withoutSubjects(withoutTodos(brute, hidden), hiddenSubjects), [brute, hidden, hiddenSubjects]);
   const [choices, setChoices] = useState<MascotTodoItem | null>(null);
 
   const speech = composeSpeech({ presentation, empty, failed });
@@ -241,27 +291,17 @@ export function MascotSpeaks({ greetingName, empty, onCreateAsset, onUploadDocum
     });
   };
 
-  /** Compte vide (§12ter) : les parcours d'ajout, dans l'espace de réponse. */
-  const emptyTiles: Array<{ key: string; label: string; sub: string; tone: MascotTile['tone']; icon: MascotTile['icon']; go: () => void }> = [
-    {
-      key: 'add-asset', label: 'Ajouter un premier bien', sub: 'Maison, véhicule, objet…', tone: 'blue', icon: 'plus',
-      go: () => space?.askLocal({
-        question: 'Ajouter un bien',
-        content: 'Je crée la fiche de votre bien : choisissez son type, puis donnez-lui un nom. Je vous indiquerai ensuite les documents utiles à rassembler.',
-        kind: 'action', summary: 'Ajouter un bien',
-        actions: [{ label: 'Créer la fiche du bien', primary: true, run: () => { space.close(); onCreateAsset(); } }],
-      }),
-    },
-    {
-      key: 'add-doc', label: 'Déposer un document', sub: 'Je le lis et le range pour vous', tone: 'green', icon: 'download',
-      go: () => space?.askLocal({
-        question: 'Déposer un document',
-        content: 'Déposez une facture, un contrat, une garantie ou une notice : je la lis, j’en extrais les informations utiles et je la rattache au bon bien.',
-        kind: 'help', summary: 'Déposer un document',
-        actions: [{ label: 'Choisir un fichier', primary: true, run: () => { space.close(); onUploadDocument(null); } }],
-      }),
-    },
-  ];
+  /**
+   * Compte vide (§12ter) — lot 59, point 1 : les tuiles ouvrent DIRECTEMENT
+   * les formulaires du menu « + Ajouter » (formulaire d'ajout de bien,
+   * tiroir d'ajout de document), plus de détour par l'espace de réponse.
+   */
+  const emptyTiles = emptyStartTiles({
+    garder,
+    closeSpace: () => space?.close(),
+    onCreateAsset,
+    onUploadDocument,
+  });
 
   const items = homeItems(presentation, empty);
   // Compte encore vide : « Inviter quelqu'un » avant les tuiles d'amorce (lot 49A).
@@ -326,19 +366,40 @@ export function MascotSpeaks({ greetingName, empty, onCreateAsset, onUploadDocum
           </div>
         ) : items.length > 0 && (
           <div className="flex flex-col gap-2 md:grid md:grid-cols-2 md:gap-2.5" aria-label="Sujets à traiter">
-            {items.map((it) => (
-              <ItemButton
-                key={it.key}
-                title={it.title}
-                sub={it.sub}
-                cta={it.cta}
-                tone={it.tone}
-                icon={it.icon}
-                onClick={() => openItem(it)}
-                dataTodoId={it.kind === 'todo' ? it.todo.todoId : undefined}
-                dataActionType={it.kind === 'todo' ? it.todo.actionType : it.kind === 'duo-invite' ? 'DUO_INVITE' : undefined}
-              />
-            ))}
+            {items.map((it) => {
+              const bouton = (
+                <ItemButton
+                  key={it.key}
+                  title={it.title}
+                  sub={it.sub}
+                  cta={it.cta}
+                  tone={it.tone}
+                  icon={it.icon}
+                  onClick={() => openItem(it)}
+                  dataTodoId={it.kind === 'todo' ? it.todo.todoId : undefined}
+                  dataActionType={it.kind === 'todo' ? it.todo.actionType : it.kind === 'duo-invite' ? 'DUO_INVITE' : undefined}
+                />
+              );
+              // Lot 60 : carte T6 d'une échéance décidée — commandes de rappel
+              // sous la carte, visant cette seule échéance.
+              const rappel = it.kind === 'subject' ? it.tile.paragraph.reminder : null;
+              if (!rappel || it.kind !== 'subject') return bouton;
+              const occurrenceKey = it.tile.paragraph.occurrenceKey;
+              return (
+                <div key={it.key} className="flex min-w-0 flex-col gap-0.5">
+                  {bouton}
+                  <T6ReminderActions
+                    reminder={rappel}
+                    subject={it.sub ? `${it.title} · ${it.sub}` : it.title}
+                    onDone={(kind) => {
+                      if (kind === 'cleared') { setHiddenSubjects((h) => { const n = new Set(h); n.delete(occurrenceKey); return n; }); }
+                      else setHiddenSubjects((h) => new Set(h).add(occurrenceKey));
+                      void refresh();
+                    }}
+                  />
+                </div>
+              );
+            })}
           </div>
         )}
       </div>

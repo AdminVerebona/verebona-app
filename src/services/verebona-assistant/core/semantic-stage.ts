@@ -24,8 +24,8 @@ import type { VerebonaIntent } from '../types/intents';
 import type { AssistantTargets } from './assistant-targets';
 import { CLARIFICATION_TTL_MS } from './clarification-builder';
 import {
-  carriesRequestedValue, contextualQuestion, detectValueNeed, selectInterpretations, semanticQuestion, semanticTerms, sourceDomain,
-  validateSemanticDecision,
+  carriesRequestedValue, contextualQuestion, detectValueNeed, diversifiedCandidates, lexicalMatchEstablished, selectInterpretations,
+  semanticQuestion, semanticTerms, sourceDomain, validateSemanticDecision,
   type BusinessSource, type RawSemanticDecision, type SemanticNeed, type SemanticTrace, type ValueNeed,
 } from './semantic-scope';
 import { interactionHandling } from './interaction';
@@ -149,7 +149,7 @@ export async function runSemanticStage(p: SemanticStageParams): Promise<Semantic
       trace.interactionMode = inter.mode;
       trace.suppliedFactsCount = inter.suppliedFacts.length;
       // Information APPORTÉE (proposition, contexte seul) : jamais servie comme une lecture.
-      if (interactionHandling(inter)) return { kind: 'interaction', route: compris };
+      if (interactionHandling(inter, input.message)) return { kind: 'interaction', route: compris };
     }
     if (!compris.intent.startsWith('ACCOUNT_') && compris.intent !== 'UNKNOWN' && compris.confidence !== 'ambiguous') {
       trace.fallbackReason = 'UNDERSTAND_NON_DATA_INTENT';
@@ -214,6 +214,7 @@ export async function runSemanticStage(p: SemanticStageParams): Promise<Semantic
   const sel = selectInterpretations(lues.sources, need, { period: periode });
   trace.semanticCandidates = sel.scored.filter((x) => x.score > 0).slice(0, 20);
   trace.selectionReason = sel.reason;
+  trace.candidatesExcluded = sel.excluded.slice(0, 20);
   trace.operationCandidates = sel.selected.filter((s) => s.domain === 'operation').map((s) => Number(s.ref.split(':')[1]));
   /** UNDERSTAND a signalé une ambiguïté (#419 écart 6) : elle pèse sur la décision finale. */
   const ambigu = compris?.confidence === 'ambiguous';
@@ -223,33 +224,43 @@ export async function runSemanticStage(p: SemanticStageParams): Promise<Semantic
   // Réservoir d'arbitrage / de clarification ; `contextuelle` : aucune
   // source ne mentionne les termes compris (lot 53, Q24).
   let pool: BusinessSource[];
-  let motif: 'SEMANTIC_MULTIPLE_INTERPRETATIONS' | 'SEMANTIC_UNDERSTANDING_AMBIGUOUS' | 'SEMANTIC_NO_MATCH_CONTEXTUAL';
+  /** Clarification de repli (sans arbitrage) — Q24 : opérations seulement. */
+  let repliClarification: BusinessSource[] | null = null;
+  let motif: 'SEMANTIC_MULTIPLE_INTERPRETATIONS' | 'SEMANTIC_UNDERSTANDING_AMBIGUOUS' | 'SEMANTIC_NO_MATCH_CONTEXTUAL' | 'SEMANTIC_PARTIAL_MATCH';
   if (sel.selected.length === 1) {
     const s = sel.selected[0];
     // Autres sources capables de porter la valeur sur le même périmètre :
     // ce sont les interprétations concurrentes d'une demande ambiguë.
     const concurrentes = sel.eligible.filter((x) => x !== s && carriesRequestedValue(x, need.need) && sourceDomain(x.domain).authority >= 2
       && (!bien || x.assetId === bien.id));
-    // Preuve STRUCTURÉE forte : champ du registre demandé, ou aucune autre
-    // lecture possible dans les données. Sinon, l'ambiguïté signalée par T2
-    // n'est jamais levée par une simple correspondance de mots.
-    const preuveForte = !ambigu || (s.fieldKey != null && need.facts.includes(s.fieldKey)) || concurrentes.length === 0;
+    const champDemande = s.fieldKey != null && need.facts.includes(s.fieldKey);
+    // Lot 59 (#419 R04) : une correspondance de mots PARTIELLE n'est pas une
+    // preuve — la sélection directe est réservée aux cas établis.
+    const etabli = sel.reason === 'COMPLEMENTARY_SAME_REALITY' || lexicalMatchEstablished(s, need, compris?.understanding?.requestedTopics ?? []);
+    trace.lexicalMatchEstablished = etabli;
+    // Lot 59 (#419 R05) : une ambiguïté signalée par T2 n'est levée que par
+    // une preuve STRUCTURÉE (champ du registre demandé) ou un arbitrage IA
+    // validé — l'absence de concurrent n'est PAS une preuve positive.
+    const preuveForte = ambigu ? champDemande : (etabli || concurrentes.length === 0);
     if (preuveForte) {
       trace.candidateSelectionMode = 'deterministic';
       return repondre(s, need.need, nomPour(s), intent, trace, periode);
     }
     pool = [s, ...concurrentes];
-    motif = 'SEMANTIC_UNDERSTANDING_AMBIGUOUS';
+    motif = ambigu ? 'SEMANTIC_UNDERSTANDING_AMBIGUOUS' : 'SEMANTIC_PARTIAL_MATCH';
   } else if (sel.selected.length > 1) {
     pool = sel.selected;
     motif = 'SEMANTIC_MULTIPLE_INTERPRETATIONS';
   } else {
-    // ── Lot 53 (PO Q24) : aucune correspondance — candidats CONTEXTUELS ──
-    // Le bien porte des opérations susceptibles de porter la valeur
-    // demandée (contrats, services…) ; sans bien, seulement si elles sont
-    // peu nombreuses. Jamais une seule opération servie sans arbitrage.
-    const ctx = sel.eligible.filter((s) => s.domain === 'operation' && porteValeurDemandee(s, need.need) && (!bien || s.assetId === bien.id));
-    pool = bien || ctx.length <= ARBITRATION_MAX ? ctx : [];
+    // ── Lot 53 (PO Q24) / lot 59 (#419 R04) : aucune correspondance ──────
+    // T2 reçoit les candidats de TOUS les domaines qui portent la valeur
+    // demandée sur le bien (opérations, champs, agenda, documents), bornés
+    // et répartis par domaine ; sans bien, seulement des opérations peu
+    // nombreuses. Jamais une seule source servie sans arbitrage.
+    const ctxOps = sel.eligible.filter((s) => s.domain === 'operation' && porteValeurDemandee(s, need.need) && (!bien || s.assetId === bien.id));
+    const ctxTous = sel.eligible.filter((s) => porteValeurDemandee(s, need.need) && (!bien || s.assetId === bien.id));
+    pool = bien ? diversifiedCandidates(ctxTous, ARBITRATION_MAX) : ctxOps.length <= ARBITRATION_MAX ? ctxOps : [];
+    repliClarification = bien || ctxOps.length <= ARBITRATION_MAX ? ctxOps : [];
     motif = 'SEMANTIC_NO_MATCH_CONTEXTUAL';
   }
 
@@ -279,6 +290,7 @@ export async function runSemanticStage(p: SemanticStageParams): Promise<Semantic
   }
 
   // ── 6. Clarification (choix issus des données) ou information insuffisante ──
+  if (repliClarification) pool = repliClarification;
   if (motif === 'SEMANTIC_NO_MATCH_CONTEXTUAL' && (!bien || pool.length < CONTEXTUAL_MIN || pool.length > CONTEXTUAL_MAX)) {
     trace.fallbackReason = 'NO_MATCHING_SOURCE';
     return { kind: 'insufficient', text: insufficientMessage(need.terms, bien?.name ?? null), intent, strategy: 'semantic.insufficient' };

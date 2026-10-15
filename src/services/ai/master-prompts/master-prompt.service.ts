@@ -192,6 +192,12 @@ export interface PromptDetail {
   reference: { content: string; execution: MasterExecutionConfig | null };
   /** Lot 34D — contexte structuré (T4) ; `null` : prompt à emplacements seulement. */
   structured: StructuredInfo | null;
+  /**
+   * Lot 59 (#419) — contrôle du prompt maître T2 RÉELLEMENT actif (et du
+   * brouillon) : A7–A9, interactionMode, suppliedFacts, {{BUSINESS_CANDIDATES}} ;
+   * dit explicitement quand l'arbitrage est impossible. Autres traitements : absent.
+   */
+  t2Capabilities?: { active: import('../assistant/master/t2-prompt-capabilities').T2PromptCapabilities; draft: import('../assistant/master/t2-prompt-capabilities').T2PromptCapabilities | null } | null;
 }
 
 const STATUS_LABEL: Record<repo.MasterPromptStatus, string> = { DRAFT: 'Brouillon', ACTIVE: 'Active', PREVIOUS: 'Ancienne' };
@@ -463,11 +469,20 @@ export async function getPromptDetail(treatment: Treatment, environment: AiEnvir
   const { readMasterFileFromRepo } = await import('../governance/master-corpus/cases');
   let fichier = '';
   try { fichier = readMasterFileFromRepo(master.masterPromptCode); } catch { /* fichier absent : aucune référence */ }
+  const initialContent = active ? null : await runtimeBaseline(treatment, environment);
+  let t2Capabilities: PromptDetail['t2Capabilities'] = null;
+  if (treatment === 'T2') {
+    const { t2PromptCapabilities } = await import('../assistant/master/t2-prompt-capabilities');
+    t2Capabilities = {
+      active: t2PromptCapabilities(active?.content ?? initialContent?.content ?? fichier),
+      draft: draft ? t2PromptCapabilities(draft.content) : null,
+    };
+  }
   return {
     treatment, label: TREATMENT_DEFINITIONS[treatment].label, masterPromptCode: master.masterPromptCode, environment,
     initial: !active,
     active: active ? { ...vue(active), content: active.content } : null,
-    initialContent: active ? null : await runtimeBaseline(treatment, environment),
+    initialContent,
     draft: draft && checks ? { ...vue(draft), content: draft.content, issues: checks.blocking, warnings: checks.warnings } : null,
     history: versions.filter((v) => v.status !== 'DRAFT').map(vue),
     activations: activations.map(activationView),
@@ -477,6 +492,7 @@ export async function getPromptDetail(treatment: Treatment, environment: AiEnvir
       execution: structuredSpecFor(master.masterPromptCode) ? executionConfigFor({ masterPromptCode: master.masterPromptCode, source: 'file' }) : null,
     },
     structured: await withScenarios(treatment, structuredInfoOf(master.masterPromptCode, fichier)),
+    t2Capabilities,
   };
 }
 

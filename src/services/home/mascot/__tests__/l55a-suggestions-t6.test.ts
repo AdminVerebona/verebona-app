@@ -264,7 +264,9 @@ describe('L55A-06 — configuration IA pilotable par le BO', () => {
     expect(master).toContain('Aucune priorité aujourd’hui ne veut pas dire aucun sujet à venir');
     expect(isOptionalMasterVariable('t6_master_v1', 'SUGGESTION_CONTEXT')).toBe(true);
     // Une version BO antérieure (sans l'emplacement) reste rendable : la variable est ignorée.
-    const ancien = master.replace(/\nContexte des questions suggérées : \{\{SUGGESTION_CONTEXT\}\}\n/, '\n');
+    const ancien = master.replace(/\nContexte des questions suggérées : \{\{SUGGESTION_CONTEXT\}\}\n/, '\n')
+      // Lot 60 : emplacement R13, facultatif lui aussi (absent d'une version antérieure).
+      .replace(/\nCandidats d’interpellation à évaluer : \{\{INTERPELLATION_CONTEXT\}\}\n/, '\n');
     expect(renderMasterPrompt(ancien, { masterPromptCode: 't6_master_v1', task: 'FORMULATE', allowedTasks: ['FORMULATE'], variables: { INPUT_JSON: '{}', SUGGESTION_CONTEXT: '{"a":1}' } }))
       .not.toContain('{"a":1}');
   });

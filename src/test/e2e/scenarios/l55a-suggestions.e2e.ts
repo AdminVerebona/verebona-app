@@ -22,6 +22,7 @@
 import { beforeAll, beforeEach, expect, it, vi } from 'vitest';
 import { scenario } from '../scenario';
 import { demander, useTargetState } from '../chain';
+import { dansJours, evaluerEcheance } from '../t6-assessment';
 
 vi.mock('@/lib/asset-quota-guard', () => ({ assetModificationDecision: async () => ({ allowed: true }) }));
 
@@ -186,7 +187,11 @@ scenario('L55A-SUGG', 'Lot 55A — questions suggérées par T6, cohérentes ave
   });
 
   it('L55A-E2E-04 — IA indisponible : accueil fonctionnel (texte de secours, cartes), aucune question', async () => {
-    const { c } = await compteDuTicket();
+    const { c, echeance } = await compteDuTicket();
+    // Lot 60 : échéance proche, déjà jugée « à traiter » par T6 — seule une
+    // échéance DÉCIDÉE est présentée (le contrôle de 2028 ne l'est plus).
+    await sql`UPDATE agenda_items SET start_date = ${dansJours(20)} WHERE id = ${echeance}`;
+    await evaluerEcheance(sql, echeance);
     modele.t6Down = true;
     const p = await (await svc()).getMascotPresentation(c.id, 'pregen');
     expect(p.status).toBe('ok');
@@ -219,10 +224,17 @@ scenario('L55A-SUGG', 'Lot 55A — questions suggérées par T6, cohérentes ave
 
   it('L55A-E2E-06 — carte d’échéance : « Contrôle technique » / « Cupra · 18 avril 2028 » / « Voir → », tiroir de l’échéance', async () => {
     const { c, echeance } = await compteDuTicket();
+    // Lot 60 : le contrôle de 2028 n'est plus présenté d'office (au-delà du
+    // seuil, aucune démarche) ; une échéance proche, jugée « à traiter » par
+    // T6, garde la même carte — l'état d'interpellation s'ajoute au statut.
+    const date = dansJours(20);
+    await sql`UPDATE agenda_items SET start_date = ${date} WHERE id = ${echeance}`;
+    await evaluerEcheance(sql, echeance);
     const p = await (await svc()).getMascotPresentation(c.id, 'pregen');
     const { homeItems } = await import('@/services/home/mascot/bubble');
+    const { formatDateFr } = await import('@/services/home/mascot/signals');
     const carte = homeItems(p, false).find((x) => x.kind === 'subject');
-    expect(carte).toMatchObject({ title: 'Contrôle technique', sub: 'Cupra · 18 avril 2028', cta: 'Voir' });
+    expect(carte).toMatchObject({ title: 'Contrôle technique', sub: `Cupra · Action à prévoir · ${formatDateFr(date)}`, cta: 'Voir' });
     expect(carte?.kind === 'subject' && carte.tile.paragraph.actions[0].target).toEqual({ kind: 'drawer', drawer: 'echeance', id: echeance, mode: 'view' });
   });
 });

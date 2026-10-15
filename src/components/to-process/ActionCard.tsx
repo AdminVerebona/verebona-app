@@ -1,20 +1,25 @@
 'use client';
 
 /**
- * Carte et ligne d'action — CDC V2.0 §8.4, §8.5, §8.6, §8.7, §16.2.
+ * Carte d'action — CDC V2.0 §8.4, §8.5, §8.6, §16.2.
  *
  * ══════════════════════════════════════════════════════════════════════════
- * DEUX DENSITÉS, UN SEUL PARCOURS
+ * UNE SEULE PRÉSENTATION : LES CARTES
  *
- * Le §8.7 ne laisse pas de marge : « La vue Liste ne simplifie pas le parcours
- * fonctionnel : propositions cliquables, bouton Compléter, source ouvrable,
- * nature et priorité restent directement accessibles. Seule la densité
- * visuelle change. » (critère UX-02)
+ * Lot 60A (point 6, retour utilisateur du 15/10) : la vue « Liste »
+ * (`ActionRow`, CDC §8.2 / §8.7) est supprimée — écart assumé au CDC. La
+ * carte est la seule présentation, dans la file « À traiter » comme dans les
+ * choix ouverts depuis la mascotte (`TodoChoicesDialog`) : propositions
+ * cliquables, « Ouvrir », source ouvrable, nature et priorité.
  *
- * D'où un seul fichier et une seule logique d'interaction : `ActionCard` et
- * `ActionRow` diffèrent par leur mise en page, jamais par ce qu'elles
- * permettent. Deux composants autonomes auraient divergé au premier ajout —
- * et c'est toujours la vue dense qui perd une capacité.
+ * ── LES PROPOSITIONS PASSENT À LA LIGNE (lot 60A, point 7) ────────────────
+ *
+ * Une proposition longue (« Oui, « Entretien réalisé — Peugeot 3008 Hybrid -
+ * 2022 » du 19/10/2025 ») débordait de la carte et recouvrait son texte :
+ * hauteur fixe, libellé sur une ligne. Les boutons de choix passent
+ * désormais à la ligne entre eux (flex-wrap) ET sur plusieurs lignes dans
+ * leur propre libellé, sans dépasser la largeur de la carte — lisibles à
+ * 360 px, sans défilement horizontal.
  *
  * ── LA PRIORITÉ N'EST PAS PORTÉE PAR LA COULEUR SEULE ─────────────────────
  *
@@ -67,7 +72,7 @@ export interface ActionView {
 
 interface Handlers {
   onChoose: (action: ActionView, value: ActionProposalView) => void;
-  /** « Autre » et « Compléter » mènent au même endroit : le drawer, sur le champ. */
+  /** « Autre » et « Ouvrir » mènent au même endroit : le drawer, sur le champ. */
   onOpenTarget: (action: ActionView) => void;
   busy?: boolean;
   /**
@@ -146,11 +151,18 @@ function Badges({ action }: { action: ActionView }) {
 }
 
 /**
- * Contrôles de résolution.
- *
- * Partagés par les deux densités, pour la raison donnée en tête de fichier.
- * Les zones tactiles restent à 36 px de haut et les propositions passent à la
- * ligne plutôt que de se tronquer (§16.1).
+ * Classes d'un bouton de proposition (lot 60A, point 7) : 36 px de haut AU
+ * MOINS (zone tactile, §16.1) mais hauteur libre, libellé sur plusieurs
+ * lignes (jamais `whitespace-nowrap` ni troncature), largeur bornée à la
+ * carte, coupure des mots trop longs. Coins adoucis plutôt qu'en pilule pour
+ * un libellé sur deux lignes.
+ */
+export const PROPOSAL_BUTTON_CLASS = 'h-auto min-h-9 max-w-full whitespace-normal rounded-2xl py-1.5 text-left leading-snug';
+
+/**
+ * Contrôles de résolution. Les zones tactiles restent à 36 px de haut au
+ * moins et les propositions passent à la ligne plutôt que de se tronquer
+ * (§16.1).
  */
 function Controls({ action, onChoose, onOpenTarget, busy }: { action: ActionView } & Handlers) {
   if (action.actionKind === 'COMPLETE' && action.inputType) {
@@ -165,13 +177,13 @@ function Controls({ action, onChoose, onOpenTarget, busy }: { action: ActionView
         onClick={() => onOpenTarget(action)}
         className="h-9"
       >
-        {MICROCOPY.complete}
+        {MICROCOPY.open}
       </Button>
     );
   }
 
   return (
-    <div className="flex flex-wrap items-center gap-2">
+    <div data-proposals className="flex min-w-0 max-w-full flex-wrap items-center gap-2">
       {action.proposals.map((proposal, index) => (
         <Button
           key={`${action.publicId}-${index}`}
@@ -179,14 +191,16 @@ function Controls({ action, onChoose, onOpenTarget, busy }: { action: ActionView
           variant={proposal.isCurrentValue ? 'secondary' : 'default'}
           disabled={busy}
           onClick={() => onChoose(action, proposal)}
-          className="h-9 max-w-full whitespace-normal text-left"
+          className={PROPOSAL_BUTTON_CLASS}
         >
-          <span className="truncate">{proposal.label}</span>
-          {proposal.isCurrentValue && (
-            // §8.5 : la valeur actuelle est proposée pour confirmation, et
-            // identifiée « discrètement ».
-            <span className="ml-1.5 text-[11px] opacity-70">(actuelle)</span>
-          )}
+          <span data-proposal-label className="min-w-0 [overflow-wrap:anywhere]">
+            {proposal.label}
+            {proposal.isCurrentValue && (
+              // §8.5 : la valeur actuelle est proposée pour confirmation, et
+              // identifiée « discrètement ».
+              <span className="ml-1.5 whitespace-nowrap text-[11px] opacity-70">(actuelle)</span>
+            )}
+          </span>
         </Button>
       ))}
       <Button
@@ -206,7 +220,7 @@ function Controls({ action, onChoose, onOpenTarget, busy }: { action: ActionView
  * « À compléter » en ligne (lot 28) : une date de fin de contrat ou de
  * garantie se saisit sur la carte, sans ouvrir le document. La valeur suit
  * le même chemin qu'une proposition retenue (résolution atomique, toast
- * « Annuler »). « Compléter » ouvre toujours l'objet.
+ * « Annuler »). « Ouvrir » ouvre toujours l'objet.
  */
 function InlineCompletion({ action, onChoose, onOpenTarget, busy }: { action: ActionView } & Handlers) {
   const [value, setValue] = useState('');
@@ -234,7 +248,7 @@ function InlineCompletion({ action, onChoose, onOpenTarget, busy }: { action: Ac
         Valider
       </Button>
       <Button type="button" size="sm" variant="outline" disabled={busy} onClick={() => onOpenTarget(action)} className="h-9">
-        {MICROCOPY.complete}
+        {MICROCOPY.open}
       </Button>
     </form>
   );
@@ -305,33 +319,5 @@ function CardBody({ action, ...handlers }: { action: ActionView } & Handlers) {
         <Source action={action} onOpenTarget={handlers.onOpenTarget} />
       </div>
     </>
-  );
-}
-
-export function ActionRow({ action, focused, ...handlers }: { action: ActionView } & Handlers) {
-  return (
-    <article
-      id={todoCardDomId(action.publicId)}
-      data-todo-id={action.publicId}
-      aria-current={focused ? 'true' : undefined}
-      className={`scroll-mt-24 flex flex-col gap-2 border-b py-3 last:border-b-0 focus-within:ring-2 focus-within:ring-ring sm:flex-row sm:items-center sm:justify-between ${focused ? 'ring-2 ring-primary rounded-md' : ''}`}
-    >
-      <div className="min-w-0 flex-1">
-        <p className="truncate text-sm font-medium">{action.question}</p>
-        <div className="mt-1 flex items-center gap-2 text-xs text-muted-foreground">
-          <TargetIcon action={action} />
-          <span className="truncate">{action.target.label}</span>
-          <Badges action={action} />
-        </div>
-        <div className="mt-1">
-          <Source action={action} onOpenTarget={handlers.onOpenTarget} />
-        </div>
-      </div>
-
-      {/* Mêmes capacités qu'en vue Cartes — seule la densité change (§8.7). */}
-      <div className="shrink-0">
-        <Controls action={action} {...handlers} />
-      </div>
-    </article>
   );
 }

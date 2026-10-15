@@ -12,6 +12,7 @@ import { apiClient } from '@/lib/api-client';
 import { toast } from 'sonner';
 import type { AgendaItemFull } from '@/services/agenda/AgendaQueryService';
 import { useWriteGuard } from '@/contexts/WriteGuardContext';
+import { AgendaViewControls, CalendarView, YearView, currentMonth, type AgendaView } from '@/components/agenda/AgendaPeriodViews';
 
 const AgendaItemDrawer = dynamic(
   () => import('@/components/agenda/AgendaItemDrawer').then(m => ({ default: m.AgendaItemDrawer })),
@@ -46,9 +47,18 @@ interface Props {
 
 type PeriodFilter = 'all' | 'upcoming' | 'past';
 
+/**
+ * Onglet Agenda d'un bien. Lot 59 (point 5) : mêmes vues que « Mon agenda »
+ * — Liste / Mensuel / Annuel, même sélecteur, même grille (composants
+ * partagés `AgendaPeriodViews`), desktop et mobile —, limitées au bien.
+ */
 export function AssetAgendaTab({ assetId }: Props) {
   const [items, setItems] = useState<AgendaItemFull[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadedOnce, setLoadedOnce] = useState(false);
+  const [view, setView] = useState<AgendaView>('list');
+  const [month, setMonth] = useState<string>(() => currentMonth());
+  const [year, setYear] = useState<number>(() => new Date().getFullYear());
   const [refreshKey, setRefreshKey] = useState(0);
   const [period, setPeriod] = useState<PeriodFilter>('all');
   const [includeCancelled, setIncludeCancelled] = useState(false);
@@ -62,20 +72,25 @@ export function AssetAgendaTab({ assetId }: Props) {
   const load = useCallback(async () => {
     setLoading(true);
     try {
+      // Mêmes paramètres que « Mon agenda » : le mois pour la vue mensuelle,
+      // l'année (toutes périodes) pour la vue annuelle.
       const params = new URLSearchParams({
         assetIds: String(assetId),
-        period,
+        period: view === 'year' ? 'all' : period,
         includeCancelled: String(includeCancelled),
         includeUndated: 'true',
       });
+      if (view === 'calendar') params.set('month', month);
+      if (view === 'year') params.set('year', String(year));
       const data = await apiClient.get<{ items: AgendaItemFull[] }>(`/api/agenda?${params}`);
       setItems(data.items ?? []);
     } catch {
       toast.error('Erreur lors du chargement');
     } finally {
       setLoading(false);
+      setLoadedOnce(true);
     }
-  }, [assetId, period, includeCancelled, refreshKey]);
+  }, [assetId, period, includeCancelled, refreshKey, view, month, year]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -91,12 +106,18 @@ export function AssetAgendaTab({ assetId }: Props) {
     return () => window.removeEventListener('agenda-mutated', handler);
   }, []);
 
+  // Comme « Mon agenda » : sélecteur masqué seulement si l'agenda du bien est
+  // RÉELLEMENT vide (vue Liste, aucun filtre) — un mois vide n'est pas un
+  // agenda vide.
+  const agendaVide = !loading && items.length === 0 && view === 'list' && period === 'all' && !includeCancelled;
+
   return (
     <div className="space-y-4">
       {/* Toolbar */}
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          {(['all', 'upcoming', 'past'] as PeriodFilter[]).map(p => (
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          {/* Vue annuelle : toute l'année, comme « Mon agenda » — pas de filtre de période. */}
+          {view !== 'year' && (['all', 'upcoming', 'past'] as PeriodFilter[]).map(p => (
             <button
               key={p}
               className={`text-xs px-2.5 py-1 rounded-full border transition-colors ${period === p ? 'bg-primary text-primary-foreground border-primary' : 'border-border hover:bg-muted'}`}
@@ -112,18 +133,40 @@ export function AssetAgendaTab({ assetId }: Props) {
             Annulés
           </button>
         </div>
-        {items.length > 0 && (
+        {(items.length > 0 || view !== 'list') && (
           <Button variant="secondary" size="sm" onClick={ouvrirCreation} className="btn-add">
             <Plus className="h-4 w-4 btn-add-plus-icon" /> Ajouter
           </Button>
         )}
       </div>
 
-      {/* List */}
+      {/* Lot 59 (point 5) : Liste / Mensuel / Annuel, comme « Mon agenda ». */}
+      <AgendaViewControls
+        view={view}
+        month={month}
+        year={year}
+        hidden={!loadedOnce || agendaVide}
+        label="Affichage de l’agenda du bien"
+        onView={setView}
+        onMonth={setMonth}
+        onYear={setYear}
+      />
+
+      {/* Content */}
       {loading ? (
-        <div className="space-y-2">
-          {[...Array(3)].map((_, i) => <Skeleton key={i} className="h-14 w-full" />)}
-        </div>
+        view === 'year' ? (
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
+            {[...Array(12)].map((_, i) => <Skeleton key={i} className="h-48 w-full rounded-2xl" />)}
+          </div>
+        ) : (
+          <div className="space-y-2">
+            {[...Array(3)].map((_, i) => <Skeleton key={i} className="h-14 w-full" />)}
+          </div>
+        )
+      ) : view === 'year' ? (
+        <YearView items={items} year={year} onItemClick={setSelectedItem} />
+      ) : view === 'calendar' ? (
+        <CalendarView items={items} month={month} onItemClick={setSelectedItem} onNew={ouvrirCreation} />
       ) : items.length === 0 ? (
         <EmptyStateCard
           icon={<CalendarDays className="w-4 h-4 text-emerald-500" />}

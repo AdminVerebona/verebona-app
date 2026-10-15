@@ -444,11 +444,17 @@ export function paymentsAnswer(
 // Les gardes historiques par stratégie (lot 49) restent en place ; la
 // barrière est le filet commun, y compris pour les stratégies futures.
 // ══════════════════════════════════════════════════════════════════════════
-export const STRATEGY_SCOPE: Readonly<Record<CanonicalStrategy, { scope: 'structural' | 'semantic'; vocabulary: RegExp | null }>> = {
+// Lot 59 (#419 R06) : une stratégie `structural` n'est plus réputée résolue
+// par principe. Seule la lecture d'un CHAMP DU REGISTRE l'est (sa phrase
+// désigne exactement la clé lue, consommée par `findReadableFields`) ; les
+// autres sont `designated` : leur périmètre est démontré par les DONNÉES
+// servies (titres des éléments lus) — un sujet significatif que ni leur
+// vocabulaire ni ces données ne consomment bloque la réponse (T2 reprend).
+export const STRATEGY_SCOPE: Readonly<Record<CanonicalStrategy, { scope: 'structural' | 'designated' | 'semantic'; vocabulary: RegExp | null }>> = {
   'structured.asset_field': { scope: 'structural', vocabulary: null },
-  'structured.upcoming_agenda': { scope: 'structural', vocabulary: null },
-  'structured.missing_information': { scope: 'structural', vocabulary: null },
-  'structured.operation_cost': { scope: 'structural', vocabulary: null },
+  'structured.upcoming_agenda': { scope: 'designated', vocabulary: /[ée]ch[ée]ances?|rendez-vous|[ée]v[ée]nements?|rappels?|bient[ôo]t|arrivent|prochaine?s?|[àa] venir|agenda|quel(le)?s?/gi },
+  'structured.missing_information': { scope: 'designated', vocabulary: /informations?|manqu\w*|incompl\w*|compl[eé]ter|renseign\w*|fiches?|quel(le)?s?/gi },
+  'structured.operation_cost': { scope: 'designated', vocabulary: /d[ée]pens\w*|co[uû]t\w*|pay\w*|total|somme|montant|combien|prix|r[ée]parations?|entretiens?|travaux|interventions?|r[ée]visions?/gi },
   'structured.sum_qualified': { scope: 'semantic', vocabulary: /d[ée]pens\w*|co[uû]t\w*|pay\w*|total|somme|montant|combien|nombre|ai-je|j['’]ai/gi },
   'structured.payments': { scope: 'semantic', vocabulary: PAID_STRIP_SOURCE() },
   'structured.acquisition_price': { scope: 'semantic', vocabulary: PAID_STRIP_SOURCE() },
@@ -467,11 +473,17 @@ function PAID_STRIP_SOURCE(): RegExp {
  * Barrière (pure, testée) : termes significatifs de la question que la
  * stratégie candidate ne consomme pas. `[]` : périmètre résolu.
  */
-export function structuredScopeBarrier(strategy: CanonicalStrategy, message: string, assetNames: readonly string[]): { semanticScopeResolved: boolean; unresolvedSemanticTerms: string[] } {
+export function structuredScopeBarrier(
+  strategy: CanonicalStrategy, message: string, assetNames: readonly string[], served: readonly string[] = [],
+): { semanticScopeResolved: boolean; unresolvedSemanticTerms: string[] } {
   const d = STRATEGY_SCOPE[strategy];
   if (d.scope === 'structural') return { semanticScopeResolved: true, unresolvedSemanticTerms: [] };
-  const consumed = [...expenseThemeWords(message), ...MOTS_DEPENSE, ...Object.values(EXPENSE_THEME_LABELS), ...(d.vocabulary ? message.match(d.vocabulary) ?? [] : [])];
-  const terms = semanticResidue(message, { assetNames, consumed });
+  const consumed = [...expenseThemeWords(message), ...MOTS_DEPENSE, ...Object.values(EXPENSE_THEME_LABELS), ...(d.vocabulary ? message.match(d.vocabulary) ?? [] : []),
+    // Stratégie DÉSIGNÉE : les données réellement servies consomment le sujet qu'elles portent.
+    ...(d.scope === 'designated' ? served : [])];
+  // Même correspondance que la lecture des données (« toit » → « toiture »).
+  const servi = d.scope === 'designated' ? served.join(' ') : '';
+  const terms = semanticResidue(message, { assetNames, consumed }).filter((t) => !servi || !textMatchesTerms(servi, [t]));
   return { semanticScopeResolved: terms.length === 0, unresolvedSemanticTerms: terms };
 }
 
@@ -489,7 +501,7 @@ export async function tryCanonicalStructured(p: {
   const r = await tryCanonicalStructuredInner({ ...p, resolveScope: async (t) => (dernier = await p.resolveScope(t)) });
   if (!r || !('strategy' in r)) return r;
   const assets = (dernier as ScopeLike | null)?.assets ?? [];
-  const b = structuredScopeBarrier(r.strategy, p.message, assets.map((a) => a.name));
+  const b = structuredScopeBarrier(r.strategy, p.message, assets.map((a) => a.name), [r.answer, ...r.sources.map((x) => x.title ?? '')]);
   if (b.semanticScopeResolved) return r;
   return { scopeUnresolved: { strategyCandidate: r.strategy, terms: b.unresolvedSemanticTerms, assetIds: assets.map((a) => a.id) } };
 }

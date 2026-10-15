@@ -477,8 +477,13 @@ export function validateSuppliedValue(def: AssetFieldDefinition, fact: Pick<Supp
 }
 
 export type ProposalPreparation =
-  | { kind: 'plan'; plan: StoredPlan; preview: CommandPlanPreview; capability: UpdateCapability['type'] }
-  | { kind: 'need_info'; message: string; reason: string; capability: UpdateCapability['type'] | null };
+  | { kind: 'plan'; plan: StoredPlan; preview: CommandPlanPreview; capability: UpdateCapability['type']; proposed?: number; refused?: ProposalRefusal[] }
+  | { kind: 'need_info'; message: string; reason: string; capability: UpdateCapability['type'] | null; proposed?: number; refused?: ProposalRefusal[] };
+
+/** Information apportée NON proposée, et pourquoi (lot 59, #419 R08 — jamais abandonnée en silence). */
+export interface ProposalRefusal { fieldKey: string | null; reason: string; message: string }
+
+type ProposalRequest = { fact: SuppliedFact; assetId: number | null };
 
 /**
  * Prépare un plan PENDING_CONFIRMATION à partir d'une information APPORTÉE
@@ -486,43 +491,80 @@ export type ProposalPreparation =
  * du compte, disponibilité, verrou, famille, règles de la fiche, valeur
  * actuelle), même table de plans et MÊME confirmation que les commandes :
  * aucun second mécanisme, aucune écriture ici.
+ *
+ * Lot 59 (#419 R08) : TOUTES les informations apportées (`req` puis
+ * `req.more`) sont traitées. Toutes validées → UN plan regroupant chaque
+ * modification (confirmation unique) ; une seule refusée → AUCUN plan
+ * partiel : le refus est expliqué information par information et
+ * l'utilisateur est invité à préciser ou séparer sa demande.
  */
 export async function prepareUpdateProposal(
   input: AssistantRequestInput,
-  req: { fact: SuppliedFact; assetId: number | null },
+  req: ProposalRequest & { more?: ProposalRequest[] },
   lookup: CommandLookup = sqlLookup,
   now: Date = new Date(),
 ): Promise<ProposalPreparation> {
-  const cap = updateCapabilityFor(req.fact.fieldKey);
-  if (!cap) {
-    return {
-      kind: 'need_info', capability: null, reason: req.fact.fieldKey ? 'FIELD_NOT_WRITABLE' : 'NO_FIELD',
-      message: 'Merci pour cette information. Je ne peux pas l’enregistrer depuis l’assistant : rien n’a été modifié. Vous pouvez la renseigner depuis la fiche concernée.',
-    };
-  }
-  const valeur = validateSuppliedValue(cap.def, req.fact, input.message, lookup.today());
-  if (valeur === null) {
-    return {
-      kind: 'need_info', capability: cap.type, reason: 'VALUE_NOT_VALIDATED',
-      message: `Je n’ai pas pu relire avec certitude la valeur de « ${cap.def.label} » dans votre message : rien n’a été modifié. Précisez-la, par exemple « 21/05/2027 ».`,
-    };
-  }
-  const draft: Extract<CommandDraft, { command: 'UPDATE_ASSET_FIELD' }> = {
-    command: 'UPDATE_ASSET_FIELD', field: cap.def.key, value: valeur, assetWords: [], assetFromContext: false,
+  const demandes: ProposalRequest[] = [{ fact: req.fact, assetId: req.assetId }, ...(req.more ?? [])];
+  const multiple = demandes.length > 1;
+  const actions: PlannedAction[] = [];
+  const caps: UpdateCapability['type'][] = [];
+  const refused: ProposalRefusal[] = [];
+  let premierRefus: { message: string; reason: string; capability: UpdateCapability['type'] | null } | null = null;
+  const refuser = (fieldKey: string | null, reason: string, message: string, capability: UpdateCapability['type'] | null) => {
+    refused.push({ fieldKey, reason, message });
+    premierRefus ??= { message, reason, capability };
   };
-  const applicable = cap.type === 'asset_tenure_end'
-    ? (a: AssetState) => (tenureEndKey(familyOf(a.category), a.characteristics) === cap.def.key ? null
-      : `« ${cap.def.label} » ne s’applique pas à la situation actuelle de ${nomBien(a)} (statut de détention ou d’occupation à compléter sur la fiche) : rien n’a été modifié.`)
-    : undefined;
-  const r = await resolveAssetFieldUpdate(draft, input, lookup, 'a1', { def: cap.def, assetId: req.assetId, applicable });
-  if ('needInfo' in r) return { kind: 'need_info', message: r.needInfo, reason: 'RESOLUTION', capability: cap.type };
+  for (const [i, d] of demandes.entries()) {
+    const cap = updateCapabilityFor(d.fact.fieldKey);
+    if (!cap) {
+      refuser(d.fact.fieldKey ?? null, d.fact.fieldKey ? 'FIELD_NOT_WRITABLE' : 'NO_FIELD',
+        'Merci pour cette information. Je ne peux pas l’enregistrer depuis l’assistant : rien n’a été modifié. Vous pouvez la renseigner depuis la fiche concernée.', null);
+      continue;
+    }
+    const valeur = validateSuppliedValue(cap.def, d.fact, input.message, lookup.today());
+    if (valeur === null) {
+      refuser(cap.def.key, 'VALUE_NOT_VALIDATED',
+        `Je n’ai pas pu relire avec certitude la valeur de « ${cap.def.label} » dans votre message : rien n’a été modifié. Précisez-la, par exemple « 21/05/2027 ».`, cap.type);
+      continue;
+    }
+    const draft: Extract<CommandDraft, { command: 'UPDATE_ASSET_FIELD' }> = {
+      command: 'UPDATE_ASSET_FIELD', field: cap.def.key, value: valeur, assetWords: [], assetFromContext: false,
+    };
+    const applicable = cap.type === 'asset_tenure_end'
+      ? (a: AssetState) => (tenureEndKey(familyOf(a.category), a.characteristics) === cap.def.key ? null
+        : `« ${cap.def.label} » ne s’applique pas à la situation actuelle de ${nomBien(a)} (statut de détention ou d’occupation à compléter sur la fiche) : rien n’a été modifié.`)
+      : undefined;
+    const r = await resolveAssetFieldUpdate(draft, input, lookup, `a${i + 1}`, { def: cap.def, assetId: d.assetId, applicable });
+    if ('needInfo' in r) { refuser(cap.def.key, 'RESOLUTION', r.needInfo, cap.type); continue; }
+    // Deux valeurs DIFFÉRENTES pour la même information du même bien : jamais un choix arbitraire.
+    const cle = (a: PlannedAction) => ('field' in a.params ? `${a.params.assetId}:${a.params.field}` : a.actionId);
+    const doublon = actions.find((a) => cle(a) === cle(r));
+    if (doublon && 'value' in doublon.params && 'value' in r.params && String(doublon.params.value) === String(r.params.value)) continue;
+    if (doublon) {
+      refuser(cap.def.key, 'CONFLICTING_VALUES', `Votre message donne deux valeurs pour « ${cap.def.label} » : rien n’a été modifié. Précisez la bonne valeur.`, cap.type);
+      continue;
+    }
+    actions.push(r);
+    caps.push(cap.type);
+  }
+  if (refused.length) {
+    const p = premierRefus!;
+    if (!multiple) return { kind: 'need_info', message: p.message, reason: p.reason, capability: p.capability, proposed: 0, refused };
+    const message = `Votre message contient ${demandes.length} informations ; je ne peux pas toutes les proposer, donc je n’ai rien préparé et rien n’a été modifié. `
+      + refused.map((x) => x.message.replace(/\s*:?\s*rien n’a été modifié\.?/g, '').replace(/\s+$/, '')).map((m) => `— ${m.replace(/\.$/, '')}.`).join(' ')
+      + ' Précisez ces informations ou envoyez-les séparément.';
+    return { kind: 'need_info', message, reason: multiple ? 'MULTIPLE_PARTIALLY_REFUSED' : p.reason, capability: p.capability, proposed: 0, refused };
+  }
+  const summary = actions.length === 1
+    ? `${actions[0].preview} Confirmez-vous ?`
+    : `Je vais effectuer ${actions.length} modifications : ${actions.map((a) => a.preview.replace(/\.$/, '')).join(' ; ')}. Confirmez-vous l’ensemble ?`;
   const plan: StoredPlan = {
     planId: randomUUID(), accountId: input.accountId, userId: input.userId, conversationId: input.conversationId ?? null,
-    summary: `${r.preview} Confirmez-vous ?`, actions: [r], expiresAt: new Date(now.getTime() + PLAN_TTL_MS).toISOString(),
+    summary, actions, expiresAt: new Date(now.getTime() + PLAN_TTL_MS).toISOString(),
   };
   await savePlan(plan, null);
-  await tracer(plan.planId, plan.accountId, plan.userId, 'PROPOSED_FROM_UNDERSTAND', { capability: cap.type, field: cap.def.key });
-  return { kind: 'plan', plan, preview: toPreview(plan), capability: cap.type };
+  await tracer(plan.planId, plan.accountId, plan.userId, 'PROPOSED_FROM_UNDERSTAND', { capability: caps[0], capabilities: caps, fields: actions.map((a) => ('field' in a.params ? a.params.field : null)) });
+  return { kind: 'plan', plan, preview: toPreview(plan), capability: caps[0], proposed: actions.length, refused: [] };
 }
 
 // ── Confirmation et exécution ──────────────────────────────────────────────

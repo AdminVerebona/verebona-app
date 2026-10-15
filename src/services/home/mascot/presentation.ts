@@ -99,6 +99,8 @@ export function buildPresentation(p: {
       highlight: m ? m.highlight : (s.allowedHighlight && s.fallbackText.includes(s.allowedHighlight) ? s.allowedHighlight : null),
       actions: s.actions,
       tile: tileFor(s, p.today ?? parisDay(p.now), p.tiles),
+      // Lot 60 : commandes de rappel de la carte (échéance précise).
+      ...(s.reminder ? { reminder: s.reminder } : {}),
     };
   });
   return {

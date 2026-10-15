@@ -163,6 +163,13 @@ export const T6FormulateOutput = z.object({
    * par élément (`validateT6Suggestions`), et abandonnée au moindre doute.
    */
   suggestions: z.unknown().optional(),
+  /**
+   * Lot 60 : évaluations d'interpellation, FACULTATIVES (R13 du master,
+   * `{{INTERPELLATION_CONTEXT}}`). Non typées ici pour la même raison que
+   * `suggestions` : validées élément par élément (`validateT6Assessments`) ;
+   * un élément douteux laisse son candidat « en attente », jamais affiché.
+   */
+  assessments: z.unknown().optional(),
 });
 export type T6FormulateOutput = z.infer<typeof T6FormulateOutput>;
 
@@ -412,7 +419,9 @@ export const T6_MASTER_OPERATION_SPEC = {
   taskField: 'none',
   // Lot 55A : `SUGGESTION_CONTEXT` FACULTATIF (`OPTIONAL_MASTER_VARIABLES`) —
   // une version BO antérieure qui ne le porte pas reste valable (aucune question).
-  promptVariables: ['INPUT_JSON', 'SUGGESTION_CONTEXT'],
+  // Lot 60 : `INTERPELLATION_CONTEXT` FACULTATIF de même (R13, évaluation
+  // d'interpellation) — absent d'une version BO antérieure : décision prudente.
+  promptVariables: ['INPUT_JSON', 'SUGGESTION_CONTEXT', 'INTERPELLATION_CONTEXT'],
   outputSchema: 'T6FormulateOutput',
   timeoutMs: 8_000,
   jsonResponse: true,

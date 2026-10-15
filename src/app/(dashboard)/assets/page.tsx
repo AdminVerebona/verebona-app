@@ -37,6 +37,7 @@ import {
   isOutOfPortfolioStatus, isReadOnlyAssetStatus,
 } from '@/lib/asset-status';
 import { useThumbnailUrl } from '@/hooks/useThumbnailUrl';
+import { displayThumbnailKey } from '@/lib/assets/display-thumbnail';
 import { WriteBlockedDialog } from '@/components/premium/WriteBlockedDialog';
 
 // ⚡ Lazy load AssetFormDialog
@@ -54,6 +55,8 @@ interface Asset {
   purchaseDate?: string;
   status: string;
   thumbnailUrl?: string | null;
+  /** Lot 59 (point 2) : vignette choisie, sinon la première photo du bien. */
+  effectiveThumbnailUrl?: string | null;
   lockState?: 'NONE' | 'PENDING_MOVE' | 'PENDING_DELETE';
 }
 
@@ -76,7 +79,7 @@ const AssetCardWithThumbnail = React.memo(function AssetCardWithThumbnail({
   const router = useNextRouter();
   const [isNavigating, setIsNavigating] = useState(false);
   const Icon = getAssetIcon(asset.category, asset.subtype, asset.name);
-  const { signedUrl, isLoading: thumbnailLoading } = useThumbnailUrl(asset.id, asset.thumbnailUrl);
+  const { signedUrl, isLoading: thumbnailLoading } = useThumbnailUrl(asset.id, displayThumbnailKey(asset));
   // Lot 32 (PO-Q11) : statuts officiels. Vendu / transmis / archivé = sorti
   // du portefeuille (grisé) ; transmis / archivé = consultation seule.
   const isOutOfPortfolio = isOutOfPortfolioStatus(asset.status);

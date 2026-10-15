@@ -72,10 +72,13 @@ describe('L33-6 — « À traiter » sans phrase d’introduction', () => {
     }
   });
 
-  it('L33-6 — le reste est conservé : décompte, bascules, cartes, message de filtres', () => {
+  it('L33-6 — le reste est conservé : décompte, bascule d’ordre, cartes, message de filtres', () => {
     const page = lire('src/components/to-process/ToProcessQueue.tsx');
-    for (const t of ['Rien à traiter pour le moment', 'Par priorité', 'Par action', 'Cartes', 'Liste', '<ActionCard', '<ActionRow', 'TO_PROCESS_NO_FILTER_RESULT']) {
+    for (const t of ['Rien à traiter pour le moment', 'Par priorité', 'Par action', '<ActionCard', 'TO_PROCESS_NO_FILTER_RESULT']) {
       expect(page).toContain(t);
     }
+    // Lot 60A (point 6) : bascule Cartes / Liste supprimée.
+    expect(page).not.toContain('<ActionRow');
+    expect(page).not.toContain('aria-label="Présentation"');
   });
 });

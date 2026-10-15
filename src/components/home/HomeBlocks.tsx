@@ -19,6 +19,7 @@ import { Children, useCallback, useEffect, useRef, useState, type KeyboardEvent,
 import { ChevronLeft, ChevronRight, Download, FileText, Folder, House, Package } from 'lucide-react';
 import { getAssetIcon } from '@/lib/asset-icons';
 import { useThumbnailUrl } from '@/hooks/useThumbnailUrl';
+import { displayThumbnailKey } from '@/lib/assets/display-thumbnail';
 import { openDrawer } from '@/lib/drawers';
 import { relativeAgo, type HomeRecentDocument, type HomeUpcomingItem, type VerebonaWorkItem } from '@/services/home/home-blocks';
 import type { HomeAsset } from '@/services/home/HomeSummaryService';
@@ -139,7 +140,8 @@ export function HomeCarousel({ label, children, className = '' }: { label: strin
  */
 export function HomeAssetCard({ asset, className = '', priority = false }: { asset: HomeAsset; className?: string; priority?: boolean }) {
   const Icon = getAssetIcon(asset.category, asset.subtype ?? undefined, asset.name);
-  const { signedUrl } = useThumbnailUrl(asset.signedThumbnailUrl ? null : asset.id, asset.signedThumbnailUrl ? null : asset.thumbnailUrl);
+  // Lot 59 (point 2) : vignette choisie, sinon la première photo du bien.
+  const { signedUrl } = useThumbnailUrl(asset.signedThumbnailUrl ? null : asset.id, asset.signedThumbnailUrl ? null : displayThumbnailKey(asset));
   const photo = asset.signedThumbnailUrl ?? signedUrl;
   const docs = `${asset.documentCount} document${asset.documentCount > 1 ? 's' : ''}`;
   return (

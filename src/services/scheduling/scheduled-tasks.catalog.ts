@@ -31,7 +31,7 @@
  *   t3-legacy-transfer              au démarrage, puis /h tant    bail `t3-legacy-transfer`
  *                                   que des demandes subsistent
  *   mascot-pregeneration            toutes les minutes            FOR UPDATE SKIP LOCKED + bail par compte
- *   mascot-pregeneration-deadlines  chaque jour à 5 h 40          une ligne par compte (upsert)
+ *   mascot-pregeneration-deadlines  chaque jour à 5 h 40          une ligne par compte (upsert) ; nettoyage rappels T6 (lot 60)
  *   t1-invalid-output-replay        au démarrage, puis /h tant    contrainte unique (document,
  *                                   qu'il reste des rejeux        version de résolution) — 0285
  *   ai-call-diagnostics-purge       chaque jour à 5 h 50          suppressions idempotentes
@@ -349,7 +349,11 @@ export const SCHEDULED_TASKS: readonly ScheduledTaskDef[] = [
         import('@/services/home/mascot/signals'),
       ]);
       const n = await enqueueDeadlineSituations(todayParis(), EXT_ACTION_LOOKBACK_DAYS);
-      return { note: `${n} compte(s) signalé(s)` };
+      // Lot 60 (T6) : nettoyage des rappels et évaluations sans objet
+      // (reports échus, échéances réalisées, déplacées ou séries disparues).
+      const { cleanupT6Reminders } = await import('@/services/home/mascot/t6-reminders.service');
+      const c = await cleanupT6Reminders(todayParis()).catch((e) => ({ error: (e as Error).message }));
+      return { note: `${n} compte(s) signalé(s) ; rappels T6 : ${JSON.stringify(c)}` };
     },
   },
   {

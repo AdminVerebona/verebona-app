@@ -46,6 +46,7 @@ import {
   promptSupportsSuggestions, validateT6Suggestions,
   type T6Suggestion, type T6SuggestionBundle,
 } from './t6-suggestions';
+import { promptSupportsInterpellation, validateT6Assessments, type T6InterpellationBundle } from './t6-interpellation';
 
 /** Branche FORMULATE du prompt maître T6 (CDC 15 §28) — seule opération de T6. */
 export const T6_MASTER_OPERATION = 't6_formulate';
@@ -124,6 +125,12 @@ export function t6CacheKey(p: {
    * historique inchangée.
    */
   suggestionContext?: unknown;
+  /**
+   * Lot 60 : candidats à évaluer (R13). Présent, il fait partie de la clé :
+   * une génération sans évaluation n'est jamais servie à une demande qui en
+   * attend une. Absent : clé historique inchangée.
+   */
+  interpellationContext?: unknown;
 }): string {
   return sha256(canonicalJson({
     accountId: p.accountId,
@@ -133,6 +140,7 @@ export function t6CacheKey(p: {
     inputSchema: p.input.schemaVersion,
     outputSchema: p.outputSchema ?? T6_OUTPUT_SCHEMA_VERSION,
     ...(p.suggestionContext != null ? { suggestionContext: p.suggestionContext } : {}),
+    ...(p.interpellationContext != null ? { interpellationContext: p.interpellationContext } : {}),
   }));
 }
 
@@ -166,6 +174,22 @@ export async function t6SuggestionsAvailable(): Promise<boolean> {
     // Même résolution que la passerelle (`configuredMasterText`) : texte
     // administré en architecture master, sinon fichier du dépôt.
     return promptSupportsSuggestions(config.promptArchitecture === 'master' ? config.masterPromptText : null);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Lot 60 — T6 peut-il JUGER l'interpellation (R13) ? Il faut T6 disponible
+ * (ni coupé, ni suspendu, ni arrêt d'urgence) ET un prompt maître effectif
+ * porteur de `{{INTERPELLATION_CONTEXT}}`. Non : version BO antérieure en
+ * service ou T6 indisponible — dégradation prudente de la décision (aucune
+ * interpellation au-delà du seuil). Ne lève jamais.
+ */
+export async function t6InterpellationAvailable(): Promise<boolean> {
+  try {
+    const [config, ok] = await Promise.all([resolveOperationConfig(T6_MASTER_OPERATION), canStart('T6')]);
+    return ok && promptSupportsInterpellation(config.promptArchitecture === 'master' ? config.masterPromptText : null);
   } catch {
     return false;
   }
@@ -262,6 +286,8 @@ export async function logT6(p: {
   accountId: number; contextHash: string; mode: T6Mode; outcome: T6Outcome; input: T6Input | null;
   /** Lot 55A : contexte des questions, transmis à T6 (LOG-005 : ni plus, ni moins). */
   suggestionContext?: unknown;
+  /** Lot 60 : candidats d'interpellation transmis à T6 (R13). */
+  interpellationContext?: unknown;
 }): Promise<void> {
   const o = p.outcome;
   // LOG-005 : une lecture du cache n'est pas un appel T6 — ni l'entrée ni la
@@ -277,7 +303,11 @@ export async function logT6(p: {
       [p.accountId, p.contextHash, p.mode, o.status, o.promptVersion, o.model ?? null,
         Boolean(o.usedFallbackModel), o.latencyMs ?? null, o.costMicros ?? null, o.traceId ?? null,
         // LOG-005 : rien de plus que ce qui a été transmis à T6.
-        !leger && p.input ? JSON.stringify(p.suggestionContext != null ? { ...p.input, suggestionContext: p.suggestionContext } : p.input) : null,
+        !leger && p.input ? JSON.stringify({
+          ...p.input,
+          ...(p.suggestionContext != null ? { suggestionContext: p.suggestionContext } : {}),
+          ...(p.interpellationContext != null ? { interpellationContext: p.interpellationContext } : {}),
+        }) : null,
         leger ? null
           : o.output !== undefined ? JSON.stringify(o.output) : (o.messages ? JSON.stringify({ messages: o.messages }) : null),
         o.error ?? null] as never[],
@@ -357,10 +387,28 @@ export function previousWording(
   return { reuse: null, pinned };
 }
 
+/**
+ * Lot 60 : évaluations R13 de la sortie, validées et persistées — même si
+ * les textes sont rejetés (l'évaluation est un résultat distinct). Ne lève
+ * jamais ; rend le nombre d'évaluations enregistrées.
+ */
+async function persistAssessments(bundle: T6InterpellationBundle | null | undefined, data: unknown, meta: { promptVersion: string; traceId: string | null }): Promise<number> {
+  if (!bundle) return 0;
+  try {
+    const raw = data && typeof data === 'object' ? (data as { assessments?: unknown }).assessments : undefined;
+    const list = validateT6Assessments(raw, new Set(bundle.refs.keys()), bundle.context.today);
+    return list.length ? await bundle.persist(list, meta) : 0;
+  } catch (e) {
+    console.error('[mascotte] évaluations T6 non enregistrées :', (e as Error).message);
+    return 0;
+  }
+}
+
 async function generateMaster(p: {
   accountId: number; input: T6Input; cacheKey: string; contextHash: string; promptVersion: string; mode: T6Mode;
   kinds?: Array<T6SubjectKind | undefined>; pinned: Map<number, T6Message>;
   suggestions?: T6SuggestionBundle | null;
+  interpellation?: T6InterpellationBundle | null;
 }, execute: T6Dependencies['execute']): Promise<T6Outcome> {
   const startedAt = Date.now();
   try {
@@ -374,6 +422,8 @@ async function generateMaster(p: {
       promptVariables: {
         INPUT_JSON: JSON.stringify(p.input),
         SUGGESTION_CONTEXT: p.suggestions ? JSON.stringify(p.suggestions.context) : null,
+        // Lot 60 (R13) : candidats à évaluer, `null` sans évaluation demandée.
+        INTERPELLATION_CONTEXT: p.interpellation ? JSON.stringify(p.interpellation.context) : null,
       },
       outputSchema: T6FormulateOutput,
       idempotencyKey: `mascot:${p.cacheKey}:${randomUUID()}`,
@@ -384,6 +434,7 @@ async function generateMaster(p: {
       latencyMs: Date.now() - startedAt, costMicros: res.fromCache ? 0 : res.costMicros, traceId: res.traceId,
       output: res.data, architecture: 'master' as const,
     };
+    await persistAssessments(p.interpellation, res.data, { promptVersion: p.promptVersion, traceId: res.traceId ?? null });
     // Sujets figés (R8 dans le temps) recollés AVANT la validation ; repli
     // sujet par sujet (R8, R9, R11) ; rejet complet seulement si la sortie
     // est structurellement invalide ou si tous les sujets sont fautifs.
@@ -454,6 +505,12 @@ export async function formulateWithT6(
      * dans la clé du cache. Absent : comportement historique.
      */
     suggestions?: T6SuggestionBundle | null;
+    /**
+     * Lot 60 : candidats d'interpellation à évaluer (R13), dans le même
+     * appel ; persistés à l'issue de la génération (y compris en arrière-
+     * plan). Absent : comportement historique.
+     */
+    interpellation?: T6InterpellationBundle | null;
   },
   deps: T6Dependencies = defaultDeps,
 ): Promise<T6Outcome> {
@@ -470,9 +527,10 @@ export async function formulateWithT6(
   }
 
   const bundle = p.suggestions ?? null;
+  const evaluation = p.interpellation ?? null;
   const cacheKey = t6CacheKey({
     accountId: p.accountId, input: p.input, promptVersion, outputSchema: T6_OUTPUT_SCHEMA_VERSION_V2,
-    suggestionContext: bundle?.context,
+    suggestionContext: bundle?.context, interpellationContext: evaluation?.context,
   });
   // Cache du compte et bulles précédentes (R8) lus ensemble : un aller-retour
   // en base de moins sur le chemin de l'affichage.
@@ -497,7 +555,8 @@ export async function formulateWithT6(
   let pinned = new Map<number, T6Message>();
   if (prev) {
     const w = previousWording(p.input, prev, p.kinds);
-    if (w.reuse && bundle) {
+    // Lot 60 : une évaluation à produire impose l'appel, textes figés.
+    if (w.reuse && (bundle || evaluation)) {
       w.reuse.forEach((m, i) => pinned.set(i, m));
     } else if (w.reuse) {
       await writeT6Cache({
@@ -515,13 +574,13 @@ export async function formulateWithT6(
 
   let run = inflight.get(cacheKey);
   if (!run) {
-    run = generateMaster({ accountId: p.accountId, input: p.input, cacheKey, contextHash: p.contextHash, promptVersion, mode: p.mode, kinds: p.kinds, pinned, suggestions: bundle }, deps.execute)
+    run = generateMaster({ accountId: p.accountId, input: p.input, cacheKey, contextHash: p.contextHash, promptVersion, mode: p.mode, kinds: p.kinds, pinned, suggestions: bundle, interpellation: evaluation }, deps.execute)
       .finally(() => inflight.delete(cacheKey));
     inflight.set(cacheKey, run);
     // La génération qui s'achève après le délai d'affichage est journalisée
     // en pré-génération : elle n'a pas été vue (RUN-011).
     if (p.mode === 'display') {
-      void run.then((o) => { if (tardive.has(run!)) void logT6({ accountId: p.accountId, contextHash: p.contextHash, mode: 'pregen', outcome: o, input: p.input, suggestionContext: bundle?.context }); });
+      void run.then((o) => { if (tardive.has(run!)) void logT6({ accountId: p.accountId, contextHash: p.contextHash, mode: 'pregen', outcome: o, input: p.input, suggestionContext: bundle?.context, interpellationContext: evaluation?.context }); });
     }
   }
 

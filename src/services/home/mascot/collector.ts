@@ -174,7 +174,7 @@ async function readAgenda(accountId: number, today: string): Promise<MascotAgend
             i.home_category AS "homeCategory", i.origin_type AS "originType",
             i.origin_field_key AS "originFieldKey",
             i.is_automatic AS "isAutomatic", i.projection_origin AS "projectionOrigin",
-            to_char(i.start_time, 'HH24:MI') AS "startTime",
+            to_char(i.start_time, 'HH24:MI') AS "startTime", i.series_key AS "seriesKey",
             ${t4 ? 'i.event_nature AS "eventNature", i.business_type AS "businessType",' : ''}
             l.asset_id AS "assetId", a.name AS "assetName",
             a.category AS "assetCategory", a.subtype AS "assetSubtype"
@@ -227,6 +227,7 @@ async function readAgenda(accountId: number, today: string): Promise<MascotAgend
       assetName: (i.assetName as string | null) ?? null,
       assetCategory: (i.assetCategory as string | null) ?? null,
       assetSubtype: (i.assetSubtype as string | null) ?? null,
+      seriesKey: (i.seriesKey as string | null) ?? null,
     }));
 }
 

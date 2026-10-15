@@ -285,7 +285,9 @@ export const OPTIONAL_MASTER_VARIABLES: Readonly<Record<string, readonly string[
   t2_master_v1: ['BUSINESS_CANDIDATES'],
   // T6 : contexte des questions suggérées de l'accueil, lot 55A. Absent d'une
   // version BO antérieure : aucune question suggérée (jamais le catalogue).
-  t6_master_v1: ['SUGGESTION_CONTEXT'],
+  // Lot 60 : candidats d'interpellation à évaluer (R13). Absent : décision
+  // prudente sans IA (aucune interpellation au-delà du seuil).
+  t6_master_v1: ['SUGGESTION_CONTEXT', 'INTERPELLATION_CONTEXT'],
 };
 
 /**

@@ -50,7 +50,10 @@ describe('PO-D17 — statuts distincts, jamais « réalisé » sur la seule date
   });
 
   it('PO-D17-04 — desktop ET mobile : toutes les vues affichent le statut reçu avec les libellés partagés, « à confirmer » compris', () => {
-    for (const f of ['src/app/(dashboard)/agenda/page.tsx', 'src/components/assets/AssetAgendaTab.tsx', 'src/components/agenda/AgendaItemDrawer.tsx']) {
+    // Lot 59 (point 5) : couleurs des statuts de « Mon agenda » dans les vues partagées.
+    expect(lire('src/app/(dashboard)/agenda/page.tsx')).toContain('EFFECTIVE_STATUS_LABELS');
+    expect(lire('src/app/(dashboard)/agenda/page.tsx')).toMatch(/STATUS_BORDER, STATUS_COLORS[\s\S]*from '@\/components\/agenda\/AgendaPeriodViews'/);
+    for (const f of ['src/components/agenda/AgendaPeriodViews.tsx', 'src/components/assets/AssetAgendaTab.tsx', 'src/components/agenda/AgendaItemDrawer.tsx']) {
       const src = lire(f);
       expect(src, f).toContain('EFFECTIVE_STATUS_LABELS');
       expect(src, f).toMatch(/a_confirmer:/);

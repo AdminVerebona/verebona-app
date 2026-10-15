@@ -149,7 +149,13 @@ const BUILDERS: Record<string, Builder> = {
     const input = ctx<{ input?: unknown }>(c).input;
     // Lot 55A : emplacement facultatif des questions suggérées — `null` (bulle seule).
     const suggestions = ctx<{ suggestionContext?: unknown }>(c).suggestionContext ?? null;
-    return input ? { INPUT_JSON: JSON.stringify(input), SUGGESTION_CONTEXT: suggestions ? JSON.stringify(suggestions) : null } : null;
+    // Lot 60 : emplacement facultatif des candidats d'interpellation (R13).
+    const candidats = ctx<{ interpellationContext?: unknown }>(c).interpellationContext ?? null;
+    return input ? {
+      INPUT_JSON: JSON.stringify(input),
+      SUGGESTION_CONTEXT: suggestions ? JSON.stringify(suggestions) : null,
+      INTERPELLATION_CONTEXT: candidats ? JSON.stringify(candidats) : null,
+    } : null;
   },
 };
 

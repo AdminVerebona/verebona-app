@@ -387,6 +387,22 @@ async function activeMasterPrompts(): Promise<Map<string, ActiveMasterPrompt>> {
  * emplacement FACULTATIF (ex. {{BUSINESS_CANDIDATES}}) est disponible avant
  * de dépenser un appel modèle. Ne lève jamais.
  */
+/**
+ * Lot 59 (#419) — texte EFFECTIF et sa provenance : version active du BO
+ * (`v<numéro>`), version de configuration (`config`), sinon le fichier du
+ * dépôt (`file`, texte `null`). Ne lève jamais.
+ */
+export async function effectiveMasterPromptInfo(treatment: Treatment): Promise<{ text: string | null; version: string }> {
+  try {
+    const actif = (await activeMasterPrompts()).get(treatment);
+    if (actif?.content) return { text: actif.content, version: actif.versionNumber != null ? `v${actif.versionNumber}` : 'bo' };
+    const conf = masterPromptOf(await resolveTreatmentConfig(treatment));
+    return conf ? { text: conf, version: 'config' } : { text: null, version: 'file' };
+  } catch {
+    return { text: null, version: 'file' };
+  }
+}
+
 export async function effectiveMasterPromptText(treatment: Treatment): Promise<string | null> {
   try {
     const actif = (await activeMasterPrompts()).get(treatment);

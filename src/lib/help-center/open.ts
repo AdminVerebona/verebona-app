@@ -65,3 +65,48 @@ export function prefersIntegratedHelp(): boolean {
   return window.matchMedia('(max-width: 767px)').matches
     || window.matchMedia('(display-mode: standalone)').matches;
 }
+
+/**
+ * Lot 59, point 3 — le Centre d'aide s'ouvre TOUJOURS dans un nouvel onglet
+ * du navigateur, sur le site public, jamais dans l'application (ordinateur
+ * ET mobile ; dans l'application installée, l'adresse externe part dans le
+ * navigateur du téléphone). Le Centre d'aide intégré (`/aide`) reste
+ * joignable par son adresse (anciens liens, réponses enregistrées), mais
+ * plus aucune entrée de l'application n'y mène.
+ */
+export function openHelpCenter(path: string = '/aide'): void {
+  if (typeof window === 'undefined') return;
+  window.open(helpPageUrl(path, false), '_blank', 'noopener,noreferrer');
+}
+
+/**
+ * Page du Centre d'aide désignée par un lien interne de l'application
+ * (`/aide`, `/aide?page=/aide/<slug>`, `/aide/<slug>` — réponses de
+ * l'assistant), ou `null` si le lien ne mène pas au Centre d'aide.
+ */
+export function helpPathFromAppHref(href: string | null | undefined): string | null {
+  if (!href || !href.startsWith('/aide')) return null;
+  const [path, query = ''] = href.split('#')[0].split('?');
+  if (path !== '/aide') return isHelpPath(href.split('#')[0]) ? href.split('#')[0] : null;
+  const params = new URLSearchParams(query);
+  const page = params.get('page');
+  if (page) return isHelpPath(page) ? page : '/aide';
+  const q = params.get('q');
+  return q ? `/aide?q=${encodeURIComponent(q)}` : '/aide';
+}
+
+/**
+ * Clic sur un lien interne vers le Centre d'aide : ouvert dans un nouvel
+ * onglet (site public), sans navigation dans l'application. Rend `true` si
+ * le clic est traité.
+ */
+export function openHelpFromLink(
+  e: { preventDefault(): void } | null | undefined,
+  href: string | null | undefined,
+): boolean {
+  const path = helpPathFromAppHref(href);
+  if (!path) return false;
+  e?.preventDefault();
+  openHelpCenter(path);
+  return true;
+}

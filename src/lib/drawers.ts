@@ -20,6 +20,8 @@
  * ══════════════════════════════════════════════════════════════════════════
  */
 
+import { openHelpFromLink } from '@/lib/help-center/open';
+
 export type DrawerKind = 'document' | 'echeance' | 'equipement' | 'piece';
 
 export interface DrawerTarget {
@@ -96,6 +98,9 @@ export function openDrawerFromLink(
   href: string | null | undefined,
 ): boolean {
   if (e.metaKey || e.ctrlKey || e.shiftKey || (e.button ?? 0) !== 0) return false;
+  // Lot 59 (point 3) : un lien vers le Centre d'aide s'ouvre dans un nouvel
+  // onglet (site public), jamais dans l'application.
+  if (openHelpFromLink(e, href)) return true;
   const t = drawerFromHref(href);
   if (!t) return false;
   e.preventDefault();

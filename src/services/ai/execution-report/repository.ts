@@ -185,7 +185,7 @@ export async function listExecutionReports(f: ReportListFilter): Promise<{ rows:
   if (!(await executionReportsReady())) return { rows: [], total: 0, available: false };
   const where: string[] = []; const params: unknown[] = [];
   const add = (sql: string, v: unknown) => { params.push(v); where.push(sql.replace('?', `$${params.length}`)); };
-  if (f.treatment === 'T1' || f.treatment === 'T3') add('treatment = ?', f.treatment);
+  if (f.treatment === 'T1' || f.treatment === 'T3' || f.treatment === 'T6') add('treatment = ?', f.treatment);
   if (f.accountId) add('account_id = ?', f.accountId);
   if (f.fileId) add('file_id = ?', f.fileId);
   if (f.assetId) add('asset_id = ?', f.assetId);
@@ -282,6 +282,8 @@ const RESOLVABLE: Readonly<Record<string, readonly string[]>> = {
   document_tables: ['columns', 'issues'],
   field_evidence: ['value_json', 'evidence_excerpt', 'source_location', 'visual_evidence'],
   document_analysis_proposals: ['proposed_value_json'],
+  // Lot 60 : justification de l'évaluation IA d'interpellation (T6).
+  t6_interpellation_assessments: ['reason'],
 };
 
 export type ResolvedContent =

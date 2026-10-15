@@ -306,21 +306,58 @@ export function sourceScore(s: BusinessSource, terms: readonly string[]): number
 export function carriesRequestedValue(s: BusinessSource, need: ValueNeed | null): boolean {
   if (!need) return true;
   if (need === 'amount') return s.amountCents != null;
-  if (need === 'end_date') return Boolean(s.endDate ?? (s.domain === 'operation' ? null : s.date));
+  // Lot 59 (#419 R02) : une date de FIN n'est portée que par une donnée dont
+  // la SIGNIFICATION est une fin (fin contractuelle, échéance) — jamais par
+  // la date d'un document (`document_date`) ni par une date d'effet.
+  if (need === 'end_date') return Boolean(s.endDate);
   return Boolean(s.endDate ?? s.date);
+}
+
+/**
+ * L'opération porte-t-elle RÉELLEMENT la valeur demandée (pure) — lot 59
+ * (#419 R01) : pour un montant, un montant RÉALISÉ consolidé (un tarif
+ * annoncé est prévisionnel : il ne représente pas une facture réelle).
+ * Sans détail (`meta.realizedCount`), la capacité générale s'applique.
+ */
+export function operationCarriesValue(op: BusinessSource, need: ValueNeed | null): boolean {
+  if (!need) return true;
+  if (need === 'amount') {
+    const n = (op.meta as { realizedCount?: unknown } | undefined)?.realizedCount;
+    return typeof n === 'number' ? n > 0 : op.amountCents != null;
+  }
+  return carriesRequestedValue(op, need);
+}
+
+/** Identifiant de fichier d'une source documentaire (`document:<id>`), sinon `null`. */
+function fileIdOf(s: BusinessSource): number | null {
+  if (s.domain !== 'document') return null;
+  const id = Number(s.ref.split(':')[1]);
+  return Number.isSafeInteger(id) && id > 0 ? id : null;
 }
 
 const norm = (t: string | null | undefined) => tokensOf(t ?? '').join(' ');
 
 /**
- * Sources COMPLÉMENTAIRES d'une même réalité (pure) : une opération et des
- * pièces / échéances du MÊME prestataire structuré, sur le même bien. Preuve
- * STRUCTURÉE (prestataire, bien), jamais une proximité de mots.
+ * Sources COMPLÉMENTAIRES d'une même réalité (pure) — lot 59 (#419 R03) :
+ * l'identité métier n'est retenue que sur une preuve EXPLICITE —
+ *   · rattachement documentaire effectif (la pièce est une source ACTIVE de
+ *     l'opération : `representedFileIds`) ;
+ *   · référence contractuelle identique et non vide (`meta.contractReference`) ;
+ *   · rattachement déclaré par la source elle-même (`meta.operationId`).
+ * Même prestataire + même bien NE SUFFIT PLUS : deux contrats distincts chez
+ * le même fournisseur restent deux réalités (T2 arbitre, sinon clarification).
+ * Aucun rapprochement propre à un fournisseur ou à un produit.
  */
-function memeRealite(op: BusinessSource, autre: BusinessSource): boolean {
-  if (!op.provider || !autre.provider) return false;
+export function memeRealite(op: BusinessSource, autre: BusinessSource): boolean {
   if (op.assetId != null && autre.assetId != null && op.assetId !== autre.assetId) return false;
-  return norm(op.provider) !== '' && norm(op.provider) === norm(autre.provider);
+  const fid = fileIdOf(autre);
+  if (fid != null && (op.representedFileIds ?? []).includes(fid)) return true;
+  const mo = (op.meta ?? {}) as { contractReference?: unknown; operationId?: unknown };
+  const ma = (autre.meta ?? {}) as { contractReference?: unknown; operationId?: unknown };
+  const refOp = typeof mo.contractReference === 'string' ? norm(mo.contractReference) : '';
+  const refAutre = typeof ma.contractReference === 'string' ? norm(ma.contractReference) : '';
+  if (refOp !== '' && refOp === refAutre) return true;
+  return mo.operationId != null && ma.operationId != null && Number(mo.operationId) === Number(ma.operationId);
 }
 
 /** Ordre de présentation (pure) : capable, autorité, structuration — jamais un score lexical. */
@@ -341,6 +378,8 @@ export interface SemanticSelection {
   scored: Array<{ ref: string; domain: BusinessSourceDomain; score: number; capable?: boolean }>;
   /** Sources éligibles (compte, période, non représentées), ordonnées — réservoir d'arbitrage. */
   eligible: BusinessSource[];
+  /** Lot 59 : candidats ÉCARTÉS avant la sélection, et pourquoi (trace, références seulement). */
+  excluded: Array<{ ref: string; reason: 'REPRESENTED_BY_OPERATION' | 'OUT_OF_PERIOD' }>;
   /** Raison de la décision (trace). */
   reason: 'SINGLE_CAPABLE' | 'SINGLE_PLAUSIBLE' | 'COMPLEMENTARY_SAME_REALITY' | 'MULTIPLE_PLAUSIBLE' | 'PLAUSIBLE_WITHOUT_VALUE' | 'NO_PLAUSIBLE';
 }
@@ -363,24 +402,49 @@ export interface SemanticSelection {
 export function selectInterpretations(
   sources: readonly BusinessSource[], need: SemanticNeed, opts: { period?: { from: string; to: string } | null } = {},
 ): SemanticSelection {
-  const representes = new Set(sources.filter((s) => s.domain === 'operation').flatMap((s) => s.representedFileIds ?? []));
+  const ops = sources.filter((s) => s.domain === 'operation');
+  /** Opération qui REPRÉSENTE effectivement la pièce (rattachement documentaire). */
+  const rattachee = (s: BusinessSource) => {
+    const fid = fileIdOf(s);
+    return fid == null ? null : ops.find((o) => (o.representedFileIds ?? []).includes(fid)) ?? null;
+  };
+  // Lot 59 (#419 R01) : une pièce n'est masquée par son opération que si
+  // l'opération PORTE la valeur demandée (montant réalisé consolidé, date de
+  // fin…). Sinon la pièce reste la donnée qui répond — jamais « aucun
+  // montant » quand la facture rattachée le porte ; jamais de double
+  // comptage quand l'opération consolide déjà ce montant.
+  const representee = (s: BusinessSource) => {
+    const o = rattachee(s);
+    return o != null && operationCarriesValue(o, need.need);
+  };
   // Lot 53 (PO D21) : période demandée — une pièce ou une échéance DATÉE hors
   // de la période n'y répond pas (une opération reste plausible : sa réponse
   // ne retient que les montants de la période, ou dit qu'il n'y en a pas).
-  const horsPeriode = (s: BusinessSource) => Boolean(opts.period) && (s.domain === 'document' || s.domain === 'agenda')
+  const horsPeriode = (s: BusinessSource) => Boolean(opts.period) && s.domain !== 'operation' && s.domain !== 'field'
     && Boolean(s.date) && (String(s.date).slice(0, 10) < opts.period!.from || String(s.date).slice(0, 10) > opts.period!.to);
-  const utiles = sources.filter((s) => !(s.domain === 'document' && representes.has(Number(s.ref.split(':')[1]))) && !horsPeriode(s));
+  const excluded: SemanticSelection['excluded'] = [];
+  const utiles = sources.filter((s) => {
+    if (representee(s)) { excluded.push({ ref: s.ref, reason: 'REPRESENTED_BY_OPERATION' }); return false; }
+    if (horsPeriode(s)) { excluded.push({ ref: s.ref, reason: 'OUT_OF_PERIOD' }); return false; }
+    return true;
+  });
   // Période demandée : une opération porte des montants DATÉS — la réponse
   // dit ceux de la période (ou leur absence) ; elle reste capable.
-  const capable = (s: BusinessSource) => carriesRequestedValue(s, need.need) || (Boolean(opts.period) && s.domain === 'operation');
+  const capable = (s: BusinessSource) => carriesRequestedValue(s, need.need) || (Boolean(opts.period) && s.domain === 'operation')
+    // Champ du registre DEMANDÉ par T2 : sa signification a été choisie par la compréhension.
+    || (s.fieldKey != null && need.facts.includes(s.fieldKey) && need.need === 'end_date' && carriesRequestedValue(s, 'date'));
+  const lexical = new Map(utiles.map((s) => [s, sourceScore(s, need.terms) + (s.fieldKey != null && need.facts.includes(s.fieldKey) ? 1 : 0)]));
+  // Une pièce RATTACHÉE à une opération pertinente l'est aussi (lien structuré,
+  // pas une proximité de mots) — même si son titre ne reprend pas les termes.
   const scored = utiles.map((s) => {
-    const parFait = s.fieldKey != null && need.facts.includes(s.fieldKey) ? 1 : 0;
-    return { s, score: sourceScore(s, need.terms) + parFait, capable: capable(s) };
+    const o = rattachee(s);
+    const herite = o && (lexical.get(o) ?? 0) > 0 ? 1 : 0;
+    return { s, score: Math.max(lexical.get(s) ?? 0, herite), capable: capable(s) };
   });
   const trace = scored.map((x) => ({ ref: x.s.ref, domain: x.s.domain, score: x.score, capable: x.capable }));
   const eligible = [...utiles].sort((a, b) => rang(b, need.need) - rang(a, need.need));
   const fin = (selected: BusinessSource[], reason: SemanticSelection['reason']): SemanticSelection => ({
-    selected, domain: selected.length === 1 ? selected[0].domain : null, scored: trace, eligible, reason,
+    selected, domain: selected.length === 1 ? selected[0].domain : null, scored: trace, eligible, excluded, reason,
   });
 
   const plausibles = scored.filter((x) => x.score > 0);
@@ -394,12 +458,95 @@ export function selectInterpretations(
     return fin(etats, 'PLAUSIBLE_WITHOUT_VALUE');
   }
   if (capables.length === 1) return fin(capables, plausibles.length === 1 ? 'SINGLE_PLAUSIBLE' : 'SINGLE_CAPABLE');
-  // Réalité unique : UNE opération et des pièces / échéances complémentaires du même prestataire.
-  const ops = capables.filter((s) => s.domain === 'operation');
-  if (ops.length === 1 && capables.every((s) => s === ops[0] || (sourceDomain(s.domain).authority < sourceDomain('operation').authority && memeRealite(ops[0], s)))) {
-    return fin([ops[0]], 'COMPLEMENTARY_SAME_REALITY');
+  // Réalité unique DÉMONTRÉE (rattachement, référence) : UNE opération et ses
+  // pièces / échéances. L'opération la représente si elle porte la valeur ;
+  // sinon la pièce rattachée la plus récente qui la porte (jamais une somme :
+  // aucun double comptage).
+  const opsCapables = capables.filter((s) => s.domain === 'operation');
+  const pivot = opsCapables.length === 1 ? opsCapables[0]
+    : opsCapables.length === 0 ? (() => {
+      const liees = [...new Set(capables.map((s) => rattachee(s)).filter((o): o is BusinessSource => o != null))];
+      return liees.length === 1 ? liees[0] : null;
+    })() : null;
+  if (pivot && capables.every((s) => s === pivot || (sourceDomain(s.domain).authority < sourceDomain('operation').authority && memeRealite(pivot, s)))) {
+    if (capables.includes(pivot) && operationCarriesValue(pivot, need.need)) return fin([pivot], 'COMPLEMENTARY_SAME_REALITY');
+    const pieces = capables.filter((s) => s !== pivot).sort((a, b) => String(b.date ?? '').localeCompare(String(a.date ?? '')));
+    if (pieces.length) return fin([pieces[0]], 'COMPLEMENTARY_SAME_REALITY');
   }
   return fin([...capables].sort((a, b) => rang(b, need.need) - rang(a, need.need)), 'MULTIPLE_PLAUSIBLE');
+}
+
+/**
+ * Lot 59 (#419 R04) — la correspondance lexicale d'une source unique
+ * est-elle ÉTABLIE (pure) ? Les sujets compris par T2 sont des formulations
+ * ALTERNATIVES d'un même besoin (« internet », « fibre », « box internet ») :
+ * la correspondance est établie si la source répond ENTIÈREMENT à au moins
+ * un sujet (tous les mots de ce sujet), ou si elle est le champ du registre
+ * demandé. Une correspondance PARTIELLE à un sujet composé (« box » retrouvé
+ * dans « box internet », « internet » non) n'est qu'un indice : T2 arbitre
+ * parmi les lectures concurrentes, sinon l'utilisateur choisit. Sans sujet
+ * compris (IA indisponible) : comportement inchangé (un terme suffit).
+ */
+export function lexicalMatchEstablished(s: BusinessSource, need: SemanticNeed, topics: readonly string[] = []): boolean {
+  if (s.fieldKey != null && need.facts.includes(s.fieldKey)) return true;
+  const sujets = topics.map((t) => semanticTerms([], [t])).filter((t) => t.length > 0);
+  if (!sujets.length) return need.terms.length === 0 || sourceScore(s, need.terms) > 0;
+  return sujets.some((mots) => mots.every((m) => sourceScore(s, [m]) > 0));
+}
+
+/**
+ * Candidats CONTEXTUELS bornés (pure) — lot 59 (#419 R04) : sans
+ * correspondance lexicale, T2 reçoit des candidats de TOUS les domaines qui
+ * portent la valeur demandée (opérations, champs, agenda, documents…),
+ * répartis par domaine (aucun domaine n'évince les autres), dans la limite
+ * `max`. Ordre interne d'un domaine : capacité, autorité (jamais un score).
+ */
+export function diversifiedCandidates(sources: readonly BusinessSource[], max: number): BusinessSource[] {
+  const parDomaine = new Map<string, BusinessSource[]>();
+  for (const s of sources) parDomaine.set(s.domain, [...(parDomaine.get(s.domain) ?? []), s]);
+  const files = [...parDomaine.values()];
+  const out: BusinessSource[] = [];
+  for (let i = 0; out.length < max && files.some((f) => i < f.length); i += 1) {
+    for (const f of files) if (i < f.length && out.length < max) out.push(f[i]);
+  }
+  return out;
+}
+
+/**
+ * Lot 59 (#419 R07) — unité d'un DÉCOMPTE de périodes restantes (« combien
+ * de mensualités me reste-t-il ? ») : signal générique de calendrier (mois,
+ * trimestre, année, semaine), jamais un sujet métier. `null` : la question
+ * ne demande pas un tel décompte.
+ */
+export type PeriodUnit = 'month' | 'quarter' | 'year' | 'week';
+export function remainingCountUnit(message: string): PeriodUnit | null {
+  const m = plain(message ?? '');
+  if (!/\bcombien\b/.test(m) || !/\b(rest\w*|encore)\b/.test(m)) return null;
+  const apres = m.slice(m.search(/\bcombien\b/));
+  if (/\b(mensualite\w*|mois)\b/.test(apres)) return 'month';
+  if (/\b(trimestrialite\w*|trimestre\w*)\b/.test(apres)) return 'quarter';
+  if (/\b(annuite\w*|annee\w*|ans)\b/.test(apres)) return 'year';
+  if (/\bsemaines?\b/.test(apres)) return 'week';
+  return null;
+}
+
+/** Nombre de périodes ENTIÈRES de `today` (exclu) à `end` (inclus) — pure, testée. */
+export function remainingPeriods(today: string, end: string, unit: PeriodUnit): number {
+  const [y, m, d] = today.slice(0, 10).split('-').map(Number);
+  const fin = end.slice(0, 10);
+  if (fin <= today.slice(0, 10)) return 0;
+  const pas = unit === 'month' ? 1 : unit === 'quarter' ? 3 : unit === 'year' ? 12 : 0;
+  let n = 0;
+  for (let k = 1; k < 2000; k += 1) {
+    const dt = pas ? new Date(Date.UTC(y, m - 1 + k * pas, 1)) : new Date(Date.UTC(y, m - 1, d + 7 * k));
+    if (pas) {
+      const dernier = new Date(Date.UTC(dt.getUTCFullYear(), dt.getUTCMonth() + 1, 0)).getUTCDate();
+      dt.setUTCDate(Math.min(d, dernier));
+    }
+    if (dt.toISOString().slice(0, 10) > fin) break;
+    n = k;
+  }
+  return n;
 }
 
 // ── Arbitrage par T2 (lot 54E, #419 écart 1) ───────────────────────────────
@@ -446,6 +593,9 @@ const FEMININ = new Set(['intervention', 'vente', 'dépense', 'information', 'é
  * « De quel contrat parlez-vous ? » quand tous sont du même type métier.
  */
 export function semanticQuestion(cands: readonly BusinessSource[]): string {
+  // Lot 59 (#419 R05) : une seule lecture possible mais non prouvée — on la
+  // fait CONFIRMER plutôt que de la servir.
+  if (cands.length === 1) return `Pour être sûr de bien vous répondre : votre question porte-t-elle sur ${cands[0].label} ?`;
   const noms = [...new Set(cands.map((c) => (c.domain === 'operation' ? c.kindNoun ?? null : c.kindNoun ?? sourceDomain(c.domain).noun)))];
   if (noms.length === 1 && noms[0]) return `De quel${FEMININ.has(noms[0]) ? 'le' : ''} ${noms[0]} parlez-vous ?`;
   return 'Plusieurs éléments correspondent à votre question. Lequel voulez-vous consulter ?';
@@ -514,6 +664,27 @@ export interface SemanticTrace {
   /** Capacité d'écriture résolue par le serveur (`asset_field`…), jamais une table. */
   updateTargetType: string | null;
   confirmationPlanCreated: boolean;
+  // ── Lot 59 (#419 finalisation) : reconstitution de la décision ─────────
+  /** Candidats écartés AVANT la sélection et leur motif (références seulement). */
+  candidatesExcluded: Array<{ ref: string; reason: string }>;
+  /** Correspondance lexicale de la source unique jugée établie (sinon : arbitrage / clarification). */
+  lexicalMatchEstablished: boolean | null;
+  /** Arbitrage IA impossible : motif (`PROMPT_UNSUPPORTED`, `BUDGET`, `AI_UNAVAILABLE`…). */
+  arbitrationUnavailableReason: string | null;
+  /** Capacités du prompt maître T2 EFFECTIF (BO) constatées pour cette demande. */
+  t2PromptCapabilities: { arbitration: boolean; interaction: boolean; version: string | null } | null;
+  /** Informations de CONTEXTE (clés du registre) exploitées pour cette seule demande — jamais enregistrées. */
+  contextFactsUsed: string[];
+  /** Informations de contexte écartées (valeur non relue dans le message, clé inconnue). */
+  contextFactsIgnored: number;
+  /** Contradiction entre une information de contexte et une donnée du compte (signalée, jamais tranchée). */
+  contextContradiction: boolean;
+  /** Calcul serveur réalisé (`remaining_periods`) ou refusé faute de données (`remaining_periods:missing`). */
+  calculation: string | null;
+  /** Modifications proposées dans le plan (toutes les informations validées). */
+  updateFactsProposed: number;
+  /** Informations NON proposées et motif (aucun abandon silencieux). */
+  updateFactsRefused: Array<{ fieldKey: string | null; reason: string }>;
 }
 
 export function emptySemanticTrace(p: Pick<SemanticTrace, 'trigger' | 'deterministicMatch' | 'deterministicConfidence'>): SemanticTrace {
@@ -526,5 +697,7 @@ export function emptySemanticTrace(p: Pick<SemanticTrace, 'trigger' | 'determini
     candidateSelectionMode: null, selectionReason: null, semanticDecision: null, semanticDecisionConfidence: null,
     candidateRefsPresentedToAI: [], candidateRefSelectedByAI: null, candidateRefValidated: null, candidateValidationFailure: null,
     interactionMode: null, suppliedFactsCount: 0, updateCapabilityResolved: null, updateTargetType: null, confirmationPlanCreated: false,
+    candidatesExcluded: [], lexicalMatchEstablished: null, arbitrationUnavailableReason: null, t2PromptCapabilities: null,
+    contextFactsUsed: [], contextFactsIgnored: 0, contextContradiction: false, calculation: null, updateFactsProposed: 0, updateFactsRefused: [],
   };
 }

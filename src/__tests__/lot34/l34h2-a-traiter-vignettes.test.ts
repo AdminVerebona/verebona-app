@@ -24,7 +24,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 vi.mock('@/db', () => ({ db: {}, pgClient: {} }));
 (globalThis as { React?: typeof React }).React = React;
 
-const { ActionCard, ActionRow } = await import('@/components/to-process/ActionCard');
+const { ActionCard } = await import('@/components/to-process/ActionCard');
 const { documentPreviews } = await import('@/services/documents/thumbnails/document-previews');
 const { toPreviewRow } = await import('@/services/to-process/to-process-query.service');
 const { documentThumbnailKey } = await import('@/services/documents/thumbnails/thumbnail-spec');
@@ -75,9 +75,7 @@ describe('L34-11 — visuel des cartes', () => {
     expect(ic).toMatch(/class="[^"]*h-11 w-11[^"]*sm:h-14 sm:w-14/);
   });
 
-  it('L34-11-5 — vue Liste et dialogue de la mascotte inchangés (aucun visuel)', () => {
-    const ligne = renderToStaticMarkup(h(ActionRow, { action: action({}, { thumbnailUrl: 'https://x/t.webp' }), onChoose: noop, onOpenTarget: noop }));
-    expect(ligne).not.toContain('data-card-visual');
+  it('L34-11-5 — dialogue de la mascotte inchangé (aucun visuel) ; vue Liste supprimée (lot 60A)', () => {
     expect(carte(action({}, { thumbnailUrl: 'https://x/t.webp' }), false)).not.toContain('data-card-visual');
     const file = lire('src/components/to-process/ToProcessQueue.tsx');
     expect(file).toMatch(/<ActionCard[\s\S]*?visual\s*\/>/);

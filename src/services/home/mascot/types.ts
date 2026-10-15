@@ -93,6 +93,35 @@ export interface MascotSubject {
   /** Bien concerné, pour la question « Que sais-tu sur … ? » (Q-ASSET). */
   assetId?: number | null;
   assetName?: string | null;
+  /**
+   * Lot 60 (T6) : interpellation DÉCIDÉE (`decideT6Interpellation`, SHOW_NOW)
+   * — à traiter maintenant, à anticiper, ou rappel historique sans IA.
+   * Absent : sujet hors décision d'interpellation (traitement, onboarding…).
+   */
+  interpellation?: MascotInterpellation | null;
+  /** Lot 60 : commandes de rappel de la carte (un sujet = une échéance précise). */
+  reminder?: MascotReminderRef | null;
+}
+
+/** Lot 60 : interpellation retenue pour un sujet d'échéance. */
+export interface MascotInterpellation {
+  mode: 'ACT_NOW' | 'ANTICIPATE' | 'LEGACY';
+  priority: 'HIGH' | 'MEDIUM' | 'LOW';
+  /** Code de justification (`T6DecisionCode`). */
+  code: string;
+}
+
+/**
+ * Lot 60 : cible des commandes « Me le rappeler plus tard » / « Ne plus me
+ * rappeler » — TOUJOURS une échéance précise, identifiée par son id
+ * (revalidé côté serveur dans le compte de la session).
+ */
+export interface MascotReminderRef {
+  agendaItemId: number;
+  /** Date de rappel proposée (AAAA-MM-JJ), modifiable par l'utilisateur. */
+  suggestedDate: string;
+  /** L'échéance appartient à une série récurrente (portée « série » proposée). */
+  hasSeries: boolean;
 }
 
 export type MascotSecondaryKind = 'onboarding' | 'recommendation' | 'question';
@@ -118,6 +147,8 @@ export interface MascotParagraph {
    * bien et statut. Calculée côté serveur à partir des faits du sujet.
    */
   tile?: MascotTile;
+  /** Lot 60 : commandes de rappel de la carte (sujet d'échéance décidé). */
+  reminder?: MascotReminderRef | null;
 }
 
 /** Tuile d'action d'un sujet (Direction D v2 §3.2). */

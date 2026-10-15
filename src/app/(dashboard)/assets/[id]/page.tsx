@@ -152,6 +152,7 @@ function AdaptiveTabsList({
 import dynamic from 'next/dynamic';
 import { useSession } from '@/hooks/useSession';
 import { useThumbnailUrl } from '@/hooks/useThumbnailUrl';
+import { displayThumbnailKey } from '@/lib/assets/display-thumbnail';
 import { toast } from 'sonner';
 import { getAssetIcon, CATEGORY_LABELS } from '@/lib/asset-icons';
 import { apiClient } from '@/lib/api-client';
@@ -203,7 +204,8 @@ export default function AssetDetailPage() {
 
   const { signedUrl: thumbnailSignedUrl, isLoading: thumbnailLoading } = useThumbnailUrl(
     asset?.id,
-    asset?.thumbnailUrl
+    // Lot 59 (point 2) : vignette choisie, sinon la première photo du bien.
+    displayThumbnailKey(asset)
   );
 
   const loadAsset = useCallback(async (id: number) => {

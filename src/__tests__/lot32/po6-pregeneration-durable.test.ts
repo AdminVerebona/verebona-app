@@ -111,7 +111,8 @@ describe('PO6 — pré-génération durable du texte T6', () => {
   it('PO6 — passage d’une échéance : comptes signalés par la tâche quotidienne (bornée)', async () => {
     expect(await Q.enqueueDeadlineSituations('2026-10-07', 60)).toBe(2);
     const c = h.calls.find((x) => /SELECT DISTINCT i\.account_id/.test(x.sql))!;
-    expect(c.p).toEqual(['2026-10-07', 60, 5000]);
+    // Lot 60 : 4e paramètre — seuil d'interpellation T6 (échéance qui le franchit ce jour).
+    expect(c.p).toEqual(['2026-10-07', 60, 5000, 60]);
     expect(c.sql).toMatch(/LIMIT \$3/);
   });
 

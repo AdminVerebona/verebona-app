@@ -20,7 +20,8 @@ export async function GET(req: NextRequest) {
   if (!s.ok) return s.response;
   try {
     const t0 = Date.now();
-    const presentation = await getMascotPresentation(s.accountId, 'display');
+    // Lot 60 : préférences de rappel de l'utilisateur de la session (Duo : les siennes).
+    const presentation = await getMascotPresentation(s.accountId, 'display', s.userId);
     // Mesure (lot 26, point 17) : visible dans l'onglet Réseau du navigateur ;
     // une prise de parole lente est signalée dans les journaux.
     const ms = Date.now() - t0;

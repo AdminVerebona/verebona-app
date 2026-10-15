@@ -6,6 +6,8 @@ export interface AssetDetail {
   status: string;
   notes?: string | null;
   thumbnailUrl?: string | null;
+  /** Lot 59 (point 2) : vignette affichée — choisie, sinon la première photo du bien. */
+  effectiveThumbnailUrl?: string | null;
   assetTypeId?: number | null;
   assetTypeSubcategoryId?: number | null;
   duoId?: number | null;

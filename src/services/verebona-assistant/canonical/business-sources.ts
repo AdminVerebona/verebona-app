@@ -35,6 +35,7 @@ import {
 } from './operations';
 import { readCanonicalField, assetFieldSource } from './field-reader';
 import { listUpcomingAgenda } from './agenda';
+import { isPaymentProofType } from './expense-classes';
 
 const capitalize = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 const frDate = (iso: string | null | undefined): string | null => {
@@ -43,6 +44,16 @@ const frDate = (iso: string | null | undefined): string | null => {
   if (!y || !m || !d) return iso;
   return new Date(Date.UTC(y, m - 1, d)).toLocaleDateString('fr-FR', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' });
 };
+
+/**
+ * Nature du montant d'une pièce (pure) — lot 59 (#419 R01) : montant
+ * FACTURÉ / documenté, RÈGLEMENT (preuve de paiement : jamais un coût de
+ * plus) ou PRÉVISIONNEL (devis). Codes de type génériques, aucun fournisseur.
+ */
+export function amountNatureOf(type: string | null | undefined): 'documented' | 'payment' | 'forecast' {
+  if (isPaymentProofType(type)) return 'payment';
+  return /QUOTE$|^DEVIS/i.test((type ?? '').trim()) ? 'forecast' : 'documented';
+}
 
 /** Bornes de lecture (latence et coût maîtrisés). */
 const MAX_OPERATIONS = 200;
@@ -98,6 +109,8 @@ export function operationBusinessSource(op: AssistantOperationRead, assetId: num
       forecastCents: prevu.length ? prevu[prevu.length - 1] : null,
       typeCode: op.typeCode,
       operationId: op.id,
+      // Lot 59 (#419 R03) : référence contractuelle — preuve d'identité métier.
+      contractReference: op.contractReference ?? null,
       realizedCount: op.components.filter((c) => c.kind === 'REALIZED_COST').length,
       // Lot 53 (PO D21) : montants réalisés datés, pour une question bornée à une période.
       realized: op.components.filter((c) => c.kind === 'REALIZED_COST')
@@ -261,6 +274,9 @@ const documentProvider: BusinessSourceProvider = {
         detail: [d.supplier, frDate(d.date), d.amountCents != null ? formatEur(Number(d.amountCents)) : null].filter(Boolean).join(' · ') || null,
         text: `${d.title} ${d.supplier ?? ''} ${d.type ?? ''}`, assetId: ids.length === 1 ? ids[0] : null, provider: d.supplier ?? null,
         amountCents: d.amountCents == null ? null : Number(d.amountCents), date: d.date,
+        // Lot 59 (#419 R01/R02) : la date d'un document est sa `document_date`
+        // (jamais une fin de contrat) ; nature du montant (facturé, réglé, devis).
+        meta: { dateKind: 'document_date', amountNature: amountNatureOf(d.type) },
         source: { id: `doc_${id}`, type: 'document', title: d.title, content: `${d.title}${d.date ? ` · ${d.date}` : ''}${d.amountCents != null ? ` · montant : ${formatEur(Number(d.amountCents))}` : ''}`, relevanceScore: 1, meta: { fileId: id, date: d.date } },
       };
     });
@@ -269,18 +285,19 @@ const documentProvider: BusinessSourceProvider = {
     const id = Number(ref.split(':')[1]);
     const rows = (await pgClient.unsafe(
       `SELECT f.id, coalesce(nullif(f.retained_title, ''), f.original_filename, 'Document') AS title, f.supplier,
-              to_char(f.document_date, 'YYYY-MM-DD') AS date, f.amount_cents AS "amountCents"
+              to_char(f.document_date, 'YYYY-MM-DD') AS date, f.amount_cents AS "amountCents", f.document_type_code AS type
          FROM asset_files f WHERE f.id = $1 AND f.account_id = $2 AND f.deleted_at IS NULL
           AND ($3::int[] IS NULL
                OR EXISTS (SELECT 1 FROM document_asset_links l WHERE l.account_id = f.account_id AND l.file_id = f.id
                            AND l.status = 'ACTIVE' AND l.asset_id = ANY($3::int[]))
                OR f.asset_id = ANY($3::int[]) OR f.linked_asset_id = ANY($3::int[]))`,
       [id, accountId, assetIds.length ? assetIds : null] as never[],
-    )) as unknown as Array<{ id: number; title: string; supplier: string | null; date: string | null; amountCents: number | null }>;
+    )) as unknown as Array<{ id: number; title: string; supplier: string | null; date: string | null; amountCents: number | null; type: string | null }>;
     const d = rows[0];
     return d ? {
       ref, domain: 'document', label: d.title, detail: [d.supplier, frDate(d.date)].filter(Boolean).join(' · ') || null, text: d.title,
       assetId: assetIds[0] ?? null, provider: d.supplier ?? null, amountCents: d.amountCents == null ? null : Number(d.amountCents), date: d.date,
+      meta: { dateKind: 'document_date', amountNature: amountNatureOf(d.type) },
       source: { id: `doc_${id}`, type: 'document', title: d.title, content: `${d.title}${d.date ? ` · ${d.date}` : ''}`, relevanceScore: 1, meta: { fileId: id, date: d.date } },
     } : null;
   },
@@ -391,7 +408,9 @@ export function answerFromBusinessSource(
       return { text: `${s.label}${pour} : ${parts.join(' ; ')}.`, sources };
     }
     if (s.amountCents == null) return { text: `« ${s.label} »${pour} ne porte pas de montant lisible.`, sources };
-    return { text: `« ${s.label} »${pour} : ${formatEur(s.amountCents)}${s.date ? ` (${frDate(s.date)})` : ''}.`, sources };
+    // Lot 59 (#419 R01) : réalisé, réglé et prévisionnel ne se confondent pas.
+    const nature = meta.amountNature === 'payment' ? 'montant réglé ' : meta.amountNature === 'forecast' ? 'montant prévisionnel (devis) ' : '';
+    return { text: `« ${s.label} »${pour} : ${nature}${formatEur(s.amountCents)}${s.date ? ` (${frDate(s.date)})` : ''}.`, sources };
   }
   if (need === 'end_date' || need === 'date') {
     if (s.domain === 'operation') {
@@ -403,6 +422,10 @@ export function answerFromBusinessSource(
       }
       const d = s.endDate ?? s.date;
       return { text: d ? `${s.label}${pour} : ${frDate(d)}.` : `${s.label}${pour} : aucune date n’est renseignée.`, sources };
+    }
+    // Lot 59 (#419 R02) : une date de FIN n'est jamais la date du document.
+    if (need === 'end_date') {
+      return { text: s.endDate ? `« ${s.label} »${pour} : le ${frDate(s.endDate)}.` : `« ${s.label} »${pour} : aucune date de fin n’est renseignée.`, sources };
     }
     const d = s.endDate ?? s.date;
     return { text: d ? `« ${s.label} »${pour} : le ${frDate(d)}.` : `« ${s.label} »${pour} : aucune date n’est renseignée.`, sources };

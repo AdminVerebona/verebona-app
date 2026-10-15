@@ -9,6 +9,7 @@
  */
 import { it, expect } from 'vitest';
 import { scenario } from '../scenario';
+import { dansJours, evaluerEcheance } from '../t6-assessment';
 
 async function sansModele() {
   const { setAiProvider } = await import('@/services/ai/gateway/providers');
@@ -16,7 +17,10 @@ async function sansModele() {
 }
 
 scenario('L31-T6FB', 'Accueil : fallback naturel des échéances (T6 indisponible)', ({ sql, make }) => {
-  const futur = new Date(Date.now() + 400 * 86_400_000).toISOString().slice(0, 10);
+  // Lot 60 : échéance dans le seuil d'interpellation, déjà évaluée « à
+  // traiter » par T6 (seule une échéance DÉCIDÉE est présentée) ; T6 est
+  // ensuite indisponible pour la formulation — c'est le sujet de ce scénario.
+  const futur = dansJours(20);
 
   it('T6FB-AC1 / T6FB-AC2 — voiture « Cupra » : formulation naturelle affichée sans T6', async () => {
     const compte = await make.account({ plan: 'premium' });
@@ -25,6 +29,7 @@ scenario('L31-T6FB', 'Accueil : fallback naturel des échéances (T6 indisponibl
     const ech = await make.agendaItem(compte, { title: 'Prochain contrôle technique — CUPRA LEON E-HYBRID180', startDate: futur, assetIds: [bien.id] });
     // Lot 50 : échéance AUTOMATIQUE (champ du bien), comme en production — date à respecter.
     await sql`UPDATE agenda_items SET is_automatic = TRUE, origin_type = 'asset_field' WHERE id = ${ech.id}`;
+    await evaluerEcheance(sql, ech.id);
 
     const { collectMascotData } = await import('@/services/home/mascot/collector');
     const { formatDateFr } = await import('@/services/home/mascot/signals');
@@ -47,6 +52,7 @@ scenario('L31-T6FB', 'Accueil : fallback naturel des échéances (T6 indisponibl
     const ech = await make.agendaItem(compte, { title: 'Prochain contrôle technique — CUPRA LEON E-HYBRID180', startDate: futur, assetIds: [bien.id] });
     // Lot 50 : échéance AUTOMATIQUE (champ du bien), comme en production — date à respecter.
     await sql`UPDATE agenda_items SET is_automatic = TRUE, origin_type = 'asset_field' WHERE id = ${ech.id}`;
+    await evaluerEcheance(sql, ech.id);
     const { resetT6Breaker } = await import('@/services/home/mascot/t6-runner');
     const { formatDateFr } = await import('@/services/home/mascot/signals');
     const { getMascotPresentation } = await import('@/services/home/mascot/mascot.service');

@@ -7,6 +7,7 @@
 import { beforeAll, it, expect, vi } from 'vitest';
 import sharp from 'sharp';
 import { scenario } from '../scenario';
+import { dansJours, evaluerEcheance } from '../t6-assessment';
 
 // File des miniatures neutralisée : la génération est pilotée par le test
 // (stockage simulé), jamais lancée contre un S3 réel.
@@ -48,8 +49,10 @@ scenario('L26-ACCUEIL', 'Accueil : vignettes des documents récents, mascotte im
     const compte = await make.account({ plan: 'premium' });
     const bien = await make.asset(compte, { category: 'VEHICULE', name: 'Cupra' });
     await make.asset(compte, { category: 'IMMOBILIER', name: 'Maison' });
-    const futur = new Date(Date.now() + 400 * 86_400_000).toISOString().slice(0, 10);
-    await make.agendaItem(compte, { title: 'Prochain contrôle technique', startDate: futur, assetIds: [bien.id] });
+    // Lot 60 : échéance dans le seuil d'interpellation, déjà évaluée par T6
+    // (seule une échéance DÉCIDÉE est présentée).
+    const ech = await make.agendaItem(compte, { title: 'Prochain contrôle technique', startDate: dansJours(20), assetIds: [bien.id] });
+    await evaluerEcheance(sql, ech.id);
     const fichiers = [];
     for (let i = 0; i < 5; i++) fichiers.push(await make.assetFile(compte, { assetId: i % 2 ? bien.id : null, name: `doc-${i}.pdf` }));
     await sql`UPDATE asset_files SET upload_status = 'COMPLETED', uploaded_at = now() - (id || ' seconds')::interval WHERE account_id = ${compte.id}`;
@@ -80,7 +83,11 @@ scenario('L26-ACCUEIL', 'Accueil : vignettes des documents récents, mascotte im
     const { getMascotPresentation } = await import('@/services/home/mascot/mascot.service');
     const { resetT6Breaker } = await import('@/services/home/mascot/t6-runner');
     resetT6Breaker();
-    const sujets = selectSubjects(buildCandidates(await collectMascotData(compte.id)).candidates);
+    // Lot 60 : mêmes sujets que l'accueil (décision d'interpellation appliquée).
+    const raw = await collectMascotData(compte.id);
+    const { prepareT6Interpellation } = await import('@/services/home/mascot/t6-interpellation.service');
+    const prep = await prepareT6Interpellation({ accountId: compte.id, userId: null, raw }, { aiCapable: async () => true, thresholdDays: async () => 60 });
+    const sujets = selectSubjects(buildCandidates(raw, { interpellation: { shown: prep.shown } }).candidates);
     expect(sujets.length).toBeGreaterThan(0);
     const sortie = {
       schemaVersion: 't6-output-v2',

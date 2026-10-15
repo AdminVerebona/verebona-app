@@ -15,13 +15,16 @@
  * V1 faisait — des compartiments dans lesquels l'utilisateur descend, et dont
  * les derniers ne sont jamais atteints. L'ordre suffit à porter la hiérarchie.
  *
- * ── DEUX BASCULES, DEUX MÉMOIRES DIFFÉRENTES ──────────────────────────────
+ * ── UNE SEULE BASCULE, SANS MÉMOIRE ───────────────────────────────────────
  *
- * §8.2 : Cartes / Liste est mémorisé, Par priorité / Par action ne l'est pas
- * (critères ATP-02, ATP-03). La distinction n'est pas un oubli du CDC : la
- * densité est une préférence durable, l'ordre est une façon de chercher,
- * propre au moment. Rouvrir la page sur « Par action » ferait perdre le repère
- * de ce qui compte le plus.
+ * Par priorité / Par action n'est pas mémorisé (critère ATP-02) : l'ordre est
+ * une façon de chercher, propre au moment. Rouvrir la page sur « Par action »
+ * ferait perdre le repère de ce qui compte le plus.
+ *
+ * Lot 60A (point 6) : la bascule Cartes / Liste (§8.2, ATP-03, §8.7) est
+ * SUPPRIMÉE — les cartes sont la seule présentation, desktop et mobile. Une
+ * préférence « Liste » déjà mémorisée (`a-traiter:presentation`) est
+ * ignorée en silence et effacée : la page s'ouvre en Cartes.
  *
  * ── L'ANNULATION EST CE QUI REND LE CLIC ANODIN ───────────────────────────
  *
@@ -33,19 +36,31 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { toast } from 'sonner';
-import { LayoutGrid, List, Loader2 } from 'lucide-react';
+import { Loader2 } from 'lucide-react';
 import { useBreadcrumb } from '@/contexts/BreadcrumbContext';
 import { apiClient } from '@/lib/api-client';
 import { TO_PROCESS_NO_FILTER_RESULT } from '@/lib/referential/v2/microcopy';
 import { TO_PROCESS_COUNT_EVENT } from '@/hooks/useToProcessCount';
 import type { OrderMode } from '@/services/to-process/priority';
-import { ActionCard, ActionRow, todoCardDomId, type ActionView } from './ActionCard';
+import { ActionCard, todoCardDomId, type ActionView } from './ActionCard';
 import { useToProcessResolution } from './useToProcessResolution';
 import { SaleDetailsDialog } from '@/components/assets/SaleDetailsDialog';
 
-type Presentation = 'CARDS' | 'LIST';
+/**
+ * Ancienne préférence Cartes / Liste (§8.2, supprimée au lot 60A) : plus
+ * jamais lue, seulement effacée — une valeur « Liste » restée dans le
+ * navigateur ne change rien à l'affichage.
+ */
+export const LEGACY_PRESENTATION_KEY = 'a-traiter:presentation';
 
-const PRESENTATION_KEY = 'a-traiter:presentation';
+/** Efface la préférence de présentation héritée (sans effet si le stockage est indisponible). */
+export function forgetLegacyPresentation(storage: Pick<Storage, 'removeItem'> | null | undefined): void {
+  try {
+    storage?.removeItem(LEGACY_PRESENTATION_KEY);
+  } catch {
+    /* stockage indisponible : rien à effacer */
+  }
+}
 
 /** Paramètre d'URL d'une carte ciblée par la mascotte (OPEN_TODO_CARD, lot 32). */
 export const TODO_FOCUS_PARAM = 'todo';
@@ -71,7 +86,6 @@ export function ToProcessQueue() {
   const { setBreadcrumbs } = useBreadcrumb();
   // §8.2 / ATP-02 : la vue par défaut est « Par priorité » à chaque visite.
   const [orderMode, setOrderMode] = useState<OrderMode>('BY_PRIORITY');
-  const [presentation, setPresentation] = useState<Presentation>('CARDS');
   const [page, setPage] = useState<PageResponse | null>(null);
   const [loading, setLoading] = useState(true);
   // Carte ciblée par son ID (mascotte) : positionnée et mise en évidence.
@@ -79,26 +93,13 @@ export function ToProcessQueue() {
   const focusPending = useRef<string | null>(null);
   const snapshot = useRef<PageResponse | null>(null);
 
-  // ATP-03 : la présentation est une préférence durable. Lue après le premier
-  // rendu pour ne pas dépendre du stockage pendant l'hydratation.
+  // Lot 60A (point 6) : la préférence Cartes / Liste n'existe plus ; une
+  // valeur héritée est effacée, jamais lue. Après le premier rendu, comme la
+  // lecture de la carte ciblée par l'URL.
   useEffect(() => {
-    try {
-      const stored = localStorage.getItem(PRESENTATION_KEY);
-      if (stored === 'LIST' || stored === 'CARDS') setPresentation(stored);
-    } catch {
-      /* stockage indisponible : la valeur par défaut convient. */
-    }
+    forgetLegacyPresentation(typeof window !== 'undefined' ? window.localStorage : null);
     focusPending.current = focusFromUrl();
   }, []);
-
-  const choosePresentation = (value: Presentation) => {
-    setPresentation(value);
-    try {
-      localStorage.setItem(PRESENTATION_KEY, value);
-    } catch {
-      /* ignore */
-    }
-  };
 
   const load = useCallback(async (mode: OrderMode) => {
     setLoading(true);
@@ -217,7 +218,7 @@ export function ToProcessQueue() {
           d'affichage) est retirée (demande produit) ; le décompte sous le
           titre suffit. Aucun message dans les cartes (§17.1). */}
 
-      {/* Bascules : même composant visuel que les vues de l'agenda. */}
+      {/* Bascule d'ordre : même composant visuel que les vues de l'agenda. */}
       {count > 0 && (
         <div className="flex flex-wrap items-center gap-3">
           <div className="flex rounded-md border overflow-hidden" role="group" aria-label="Organisation">
@@ -236,23 +237,6 @@ export function ToProcessQueue() {
               Par action
             </button>
           </div>
-
-          <div className="flex rounded-md border overflow-hidden" role="group" aria-label="Présentation">
-            <button
-              className={`px-3 py-1.5 text-sm flex items-center gap-1.5 ${presentation === 'CARDS' ? 'bg-primary text-primary-foreground' : 'hover:bg-muted'}`}
-              aria-pressed={presentation === 'CARDS'}
-              onClick={() => choosePresentation('CARDS')}
-            >
-              <LayoutGrid className="h-3.5 w-3.5" aria-hidden /> Cartes
-            </button>
-            <button
-              className={`px-3 py-1.5 text-sm flex items-center gap-1.5 ${presentation === 'LIST' ? 'bg-primary text-primary-foreground' : 'hover:bg-muted'}`}
-              aria-pressed={presentation === 'LIST'}
-              onClick={() => choosePresentation('LIST')}
-            >
-              <List className="h-3.5 w-3.5" aria-hidden /> Liste
-            </button>
-          </div>
         </div>
       )}
 
@@ -269,31 +253,20 @@ export function ToProcessQueue() {
           <p className="py-8 text-sm text-muted-foreground">{TO_PROCESS_NO_FILTER_RESULT}</p>
         ) : null
       ) : (
-        // Liste continue, sans section ni onglet (§8.3, ATP-01).
-        <div className={presentation === 'CARDS' ? 'space-y-3' : 'rounded-lg border px-4'}>
-          {page!.actions.map((action) =>
-            presentation === 'CARDS' ? (
-              <ActionCard
-                key={action.publicId}
-                action={action}
-                onChoose={(a, p) => { void choose(a, p); }}
-                onOpenTarget={openTarget}
-                busy={busyId === action.publicId}
-                focused={focusId === action.publicId}
-                // Lot 34, point 11 : vignette du document / icône de la cible.
-                visual
-              />
-            ) : (
-              <ActionRow
-                key={action.publicId}
-                action={action}
-                onChoose={(a, p) => { void choose(a, p); }}
-                onOpenTarget={openTarget}
-                busy={busyId === action.publicId}
-                focused={focusId === action.publicId}
-              />
-            ),
-          )}
+        // Liste continue de cartes, sans section ni onglet (§8.3, ATP-01).
+        <div className="space-y-3">
+          {page!.actions.map((action) => (
+            <ActionCard
+              key={action.publicId}
+              action={action}
+              onChoose={(a, p) => { void choose(a, p); }}
+              onOpenTarget={openTarget}
+              busy={busyId === action.publicId}
+              focused={focusId === action.publicId}
+              // Lot 34, point 11 : vignette du document / icône de la cible.
+              visual
+            />
+          ))}
         </div>
       )}
     </div>

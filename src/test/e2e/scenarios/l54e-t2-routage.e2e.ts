@@ -18,6 +18,7 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import { scenario } from '../scenario';
 import { demander, fiche, useTargetState } from '../chain';
+import { setDefaultResponder } from '../replay-gateway';
 
 vi.mock('@/lib/asset-quota-guard', () => ({ assetModificationDecision: async () => ({ allowed: true }) }));
 
@@ -162,5 +163,191 @@ scenario('L54E-T2-419', 'Lot 54E — T2 : arbitrage sémantique IA, capacité de
     expect(nbsp(cmd.commandPlan?.summary)).toMatch(/80 000 km → 45 000 km/);
     for (const q of ['Quelles sont mes échéances ?', 'Que dois-je traiter ?', 'Quels documents ne sont rattachés à aucun bien ?']) await demander(c, q);
     expect(replay.calls).toHaveLength(0);
+  });
+
+  // ════════════════════════════════════════════════════════════════════════
+  // LOT 59 (59B) — finalisation du #419 : R01…R08 sur PostgreSQL 16 réel,
+  // rattachements documentaires effectifs, isolation des comptes,
+  // confirmation des modifications, réponses IA NON scriptées (R10).
+  // ════════════════════════════════════════════════════════════════════════
+  const piece = async (c: Compte, assetId: number, v: { title: string; amount?: number | null; date?: string | null; supplier?: string | null }) => {
+    const f = await make.assetFile({ id: c.id, ownerUserId: c.ownerUserId } as never, { assetId, name: `${v.title}.pdf` });
+    await sql`UPDATE asset_files SET retained_title = ${v.title}, amount_cents = ${v.amount ?? null}, document_date = ${v.date ?? null},
+              supplier = ${v.supplier ?? null}, analysis_state = 'ANALYZED' WHERE id = ${f.id}`;
+    return f.id as number;
+  };
+  const rattacher = (c: Compte, opId: number, fileId: number) => ecrire(c, (r) => r.addSource(opId, {
+    kind: 'DOCUMENT', entityKey: fileId, role: 'INVOICE', authority: 'DOCUMENT', confidence: 'certain',
+  } as never));
+  const MAISON_U = (topics: string[], extra: Record<string, unknown> = {}) =>
+    understand({ intent: 'ACCOUNT_FACT_ASSET', entityHints: [{ type: 'asset', value: 'maison' }], requestedTopics: topics, ...extra }, 'Candidats métier exposés par le serveur (arbitrage) : null');
+  afterEach(() => setDefaultResponder('t2_understand', 'UNDERSTAND', null));
+
+  it('T2-419-R01-E2E — contrat Internet sans montant + facture 39,99 € RATTACHÉE (source active de l’Opération) : montant restitué, 1 seul appel', async () => {
+    const c = await compte();
+    const maison = await bien(c, 'Maison', 'IMMOBILIER');
+    const opId = await contrat(c, maison.id, { label: 'Contrat Internet', provider: 'Sosh', from: '2025-01-01' });
+    await rattacher(c, opId, await piece(c, maison.id, { title: 'Facture Sosh octobre', amount: 3999, date: '2026-10-02', supplier: 'Sosh' }));
+    const replay = await useRecordings([MAISON_U(['internet'])]);
+    const r = await demander(c, 'Je paye combien pour internet à la maison ?');
+    expect(replay.calls).toHaveLength(1);
+    expect(nbsp(r.answer)).toBe('« Facture Sosh octobre » (Maison) : 39,99 € (2 octobre 2026).');
+    expect(r.answer).not.toMatch(/aucun montant|79,98/);
+  });
+
+  it('T2-419-R02-E2E — contrat sans date de fin + facture datée : aucune date de fin inventée', async () => {
+    const c = await compte();
+    const maison = await bien(c, 'Maison', 'IMMOBILIER');
+    await contrat(c, maison.id, { label: 'Contrat Internet', provider: 'Sosh', from: '2025-01-01' });
+    await piece(c, maison.id, { title: 'Facture Internet septembre', amount: 3999, date: '2026-09-02', supplier: 'Sosh' });
+    await useRecordings([MAISON_U(['contrat', 'internet'])]);
+    const r = await demander(c, 'Quand se termine mon contrat internet à la maison ?');
+    expect(r.answer).not.toMatch(/2 septembre 2026/);
+    expect(r.answer).not.toMatch(/se termine le/);
+  });
+
+  it('T2-419-R03-E2E — deux contrats chez le même fournisseur, même bien : aucune fusion ; l’Opération d’un AUTRE compte n’est jamais candidate', async () => {
+    const autre = await compte();
+    const sa = await bien(autre, 'Maison', 'IMMOBILIER');
+    await contrat(autre, sa.id, { label: 'Orange Box Pro', provider: 'Orange', from: '2025-01-01', couts: [[9999, '2026-09-01']] });
+    const c = await compte();
+    const maison = await bien(c, 'Maison', 'IMMOBILIER');
+    await contrat(c, maison.id, { label: 'Orange Fibre', provider: 'Orange', from: '2025-01-01', couts: [[3999, '2026-09-02']] });
+    await contrat(c, maison.id, { label: 'Orange Mobile', provider: 'Orange', from: '2025-01-01', couts: [[1999, '2026-09-05']] });
+    const replay = await useRecordings([MAISON_U(['orange']), arbitrage('C1', 'Contrat « Orange Mobile »'), arbitrage('C2', 'Contrat « Orange Mobile »')]);
+    const r = await demander(c, 'Je paye combien chez orange à la maison ?');
+    expect(replay.calls).toHaveLength(2);
+    expect(replay.calls[1].prompt).not.toMatch(/Box Pro|99,99/);
+    expect(nbsp(r.answer)).toMatch(/^Contrat « Orange Mobile » \(Maison\) : dernier montant documenté 19,99 €/);
+    expect(await trace(r.requestId)).toMatchObject({ selectionReason: 'MULTIPLE_PLAUSIBLE', candidateSelectionMode: 'ai' });
+  });
+
+  it('T2-419-R04-E2E — formulation différente des libellés : T2 reçoit des candidats de plusieurs domaines (opération ET document)', async () => {
+    const c = await compte();
+    const maison = await bien(c, 'Maison', 'IMMOBILIER');
+    await contrat(c, maison.id, { label: 'Abonnement Sosh', provider: 'Sosh', from: '2025-01-01', couts: [[2999, '2026-09-02']] });
+    await piece(c, maison.id, { title: 'Relevé box', amount: 3500, date: '2026-09-20' });
+    const replay = await useRecordings([MAISON_U(['connexion']), understand({ intent: 'ACCOUNT_FACT_ASSET', semanticDecision: { decision: 'CLARIFY', selectedCandidateRef: null, confidence: 'probable', reason: 'e2e' } })]);
+    const r = await demander(c, 'Combien me coûte ma connexion à la maison ?');
+    expect(replay.calls).toHaveLength(2);
+    expect(replay.calls[1].prompt).toContain('"kind":"document"');
+    expect(replay.calls[1].prompt).toContain('"kind":"contrat"');
+    expect(r.answer).not.toMatch(/€/);
+  });
+
+  it('T2-419-R05-E2E — T2 « ambiguous », une seule source correspond : arbitrage « probable » refusé (exact exigé), clarification', async () => {
+    const c = await compte();
+    const cupra = await bien(c, 'Cupra', 'VEHICULE');
+    await contrat(c, cupra.id, { label: 'LLD Cupra Formentor', provider: 'Leasys', from: '2024-07-01', to: '2027-06-30' });
+    const replay = await useRecordings([
+      understand({ intent: 'ACCOUNT_FACT_ASSET', confidence: 'ambiguous', entityHints: [{ type: 'asset', value: 'Cupra' }], requestedTopics: ['formentor'] }, 'Candidats métier exposés par le serveur (arbitrage) : null'),
+      arbitrage('C1', 'Contrat « LLD Cupra Formentor »'),
+    ]);
+    const r = await demander(c, 'Quand finit la Formentor de la Cupra ?');
+    expect(replay.calls).toHaveLength(2);
+    expect(r.answer).not.toMatch(/se termine le/);
+    expect(r.answer).toMatch(/votre question porte-t-elle sur Contrat « LLD Cupra Formentor »/);
+    expect(await trace(r.requestId)).toMatchObject({
+      candidateValidationFailure: 'INSUFFICIENT_CONFIDENCE', clarificationReason: 'SEMANTIC_UNDERSTANDING_AMBIGUOUS',
+      t2PromptCapabilities: { arbitration: true, interaction: true },
+    });
+  });
+
+  it('T2-419-R06-E2E — « Combien m’a coûté Internet au total pour la maison ? » : jamais le coût de possession de la maison', async () => {
+    const c = await compte();
+    const maison = await bien(c, 'Maison', 'IMMOBILIER');
+    await contrat(c, maison.id, { label: 'Abonnement Orange Fibre', provider: 'Orange', from: '2025-01-01', couts: [[3999, '2026-08-02'], [3999, '2026-09-02']] });
+    await contrat(c, maison.id, { label: 'Abonnement Netflix', provider: 'Netflix', from: '2025-01-01', couts: [[1349, '2026-09-10']] });
+    await useRecordings([MAISON_U(['internet']), arbitrage('C1', 'Contrat « Abonnement Orange Fibre »'), arbitrage('C2', 'Contrat « Abonnement Orange Fibre »')]);
+    const r = await demander(c, 'Combien m’a coûté Internet au total pour la maison ?');
+    expect(r.cascade?.strategy).not.toBe('structured.ownership_cost');
+    expect(r.answer).not.toMatch(/possession|Netflix|13,49/);
+    expect(nbsp(r.answer)).toMatch(/Orange Fibre.*79,98 €/);
+  });
+
+  it('T2-419-R07-E2E — information de contexte (MIXED) : calcul avec la date apportée, rien enregistré ; contradiction avec la fiche signalée', async () => {
+    const { remainingPeriods } = await import('@/services/verebona-assistant/core/semantic-scope');
+    const { aujourdhuiParis } = await import('@/services/verebona-assistant/core/query-period');
+    const mixed = () => understand({
+      intent: 'ACCOUNT_FACT_ASSET', entityHints: [{ type: 'asset', value: 'Cupra' }], requestedTopics: ['mensualités'], interactionMode: 'MIXED',
+      suppliedFacts: [{ targetHint: 'Cupra', fieldKey: 'leaseEndDate', value: '21/05/2027', normalizedValue: '2027-05-21', role: 'context' }],
+    });
+    const Q = 'La LLD de la Cupra finit le 21/05/2027, combien de mensualités me reste-t-il ?';
+    const c = await compte();
+    const cupra = await bien(c, 'Cupra', 'VEHICULE', { vehicleOwnershipStatus: 'LLD' });
+    await useRecordings([mixed()]);
+    const r = await demander(c, Q);
+    expect(nbsp(r.answer)).toContain(`il reste ${remainingPeriods(aujourdhuiParis(), '2027-05-21', 'month')} mois`);
+    expect(r.commandPlan ?? null).toBeNull();
+    expect((await fiche(sql, cupra.id)).leaseEndDate ?? null).toBeNull();
+    expect(await trace(r.requestId)).toMatchObject({ contextFactsUsed: ['leaseEndDate'], calculation: 'remaining_periods' });
+    const c2 = await compte();
+    const cupra2 = await bien(c2, 'Cupra', 'VEHICULE', { vehicleOwnershipStatus: 'LLD', leaseEndDate: '2027-06-30' });
+    await useRecordings([mixed()]);
+    const r2 = await demander(c2, Q);
+    expect(r2.answer).toMatch(/Je ne tranche pas/);
+    expect((await fiche(sql, cupra2.id)).leaseEndDate).toBe('2027-06-30');
+  });
+
+  it('T2-419-R08-E2E — deux modifications sur un même bien : UN plan à deux actions, rien écrit avant confirmation ; un autre compte ne confirme pas', async () => {
+    const c = await compte();
+    const polo = await bien(c, 'Polo', 'VEHICULE', { mileage: 80000 });
+    await useRecordings([understand({
+      intent: 'ACCOUNT_FACT_ASSET', entityHints: [{ type: 'asset', value: 'Polo' }], interactionMode: 'UPDATE_PROPOSAL',
+      suppliedFacts: [
+        { targetHint: 'Polo', fieldKey: 'mileage', value: '45 000 km', normalizedValue: '45000', unit: 'km', role: 'update' },
+        { targetHint: 'Polo', fieldKey: 'estimatedValue', value: '12 000 €', normalizedValue: '12000', role: 'update' },
+      ],
+    })]);
+    const r = await demander(c, 'Le kilométrage de la Polo est de 45 000 km et sa valeur est de 12 000 €');
+    expect(r.commandPlan?.actions).toHaveLength(2);
+    expect(r.commandPlan?.summary).toMatch(/^Je vais effectuer 2 modifications/);
+    expect(Number((await fiche(sql, polo.id)).mileage)).toBe(80000);
+    const { confirmCommandPlan } = await import('@/services/verebona-assistant/commands/plan.service');
+    const intrus = await compte();
+    expect(await confirmCommandPlan({ planId: r.commandPlan!.planId, accountId: intrus.id, userId: intrus.ownerUserId })).toMatchObject({ ok: false });
+    expect(await confirmCommandPlan({ planId: r.commandPlan!.planId, accountId: c.id, userId: c.ownerUserId })).toMatchObject({ ok: true });
+    const apres = await fiche(sql, polo.id);
+    expect(Number(apres.mileage)).toBe(45000);
+    expect(Number(apres.estimatedValue)).toBe(12000);
+  });
+
+  it('T2-419-R10-E2E — arbitrage T2 NON scripté (réponses génériques aléatoires reproductibles) : la validation serveur tient sur PG réel', async () => {
+    let graine = 4190;
+    const alea = () => ((graine = (graine * 1103515245 + 12345) % 2147483648) / 2147483648);
+    const c = await compte();
+    const maison = await bien(c, 'Maison', 'IMMOBILIER');
+    await contrat(c, maison.id, { label: 'Abonnement Orange Fibre', provider: 'Orange', from: '2025-01-01', couts: [[3999, '2026-09-02']] });
+    await contrat(c, maison.id, { label: 'Free Fibre', provider: 'Free', from: '2025-01-01', couts: [[2999, '2026-09-05']] });
+    const decisions: string[] = [];
+    // Modèle GÉNÉRIQUE : lit les candidats réellement présentés et répond au hasard (référence, confiance, décision).
+    setDefaultResponder('t2_understand', 'UNDERSTAND', (input) => {
+      const m = input.prompt.match(/Candidats métier exposés par le serveur \(arbitrage\) : (\[.*\])/);
+      const cands = m ? (JSON.parse(m[1]) as Array<{ ref: string }>) : [];
+      const refs = [...cands.map((x) => x.ref), 'C7', 'operation:1'];
+      const decision = ['SELECT', 'SELECT', 'CLARIFY', 'NONE'][Math.floor(alea() * 4)];
+      const ref = decision === 'SELECT' ? refs[Math.floor(alea() * refs.length)] : null;
+      const confidence = ['exact', 'probable', 'ambiguous'][Math.floor(alea() * 3)];
+      decisions.push(`${decision}:${ref}:${confidence}`);
+      return { mode: 'UNDERSTAND', intent: 'ACCOUNT_FACT_ASSET', confidence: 'probable', entityHints: [], requestedFacts: [], requestedTopics: [], filters: {}, reason: 'générique',
+        semanticDecision: { decision, selectedCandidateRef: ref, confidence, reason: 'générique' } };
+    });
+    const rejouer = useRecordings; // appel répété (boucle) : pas un hook React
+    for (let i = 0; i < 8; i += 1) {
+      await rejouer([MAISON_U(['fibre'])]);
+      const r = await demander(c, 'Je paye combien pour internet à la maison ?');
+      const t = await trace(r.requestId) as Record<string, unknown>;
+      const d = decisions[decisions.length - 1];
+      if (/€/.test(r.answer)) {
+        expect(t).toMatchObject({ candidateSelectionMode: 'ai', candidateRefValidated: true });
+        expect(d).toMatch(/^SELECT:C[12]:(exact|probable)$/);
+      } else {
+        // Clarification (carte ou question en texte) ou information insuffisante — jamais un montant.
+        expect(r.clarification != null || /parlez-vous|Je n’ai trouvé aucune donnée/.test(r.answer)).toBe(true);
+      }
+    }
+    expect(new Set(decisions).size).toBeGreaterThan(1);
+    const [{ n }] = await sql<{ n: number }[]>`SELECT count(*)::int AS n FROM verebona_command_plans WHERE account_id = ${c.id}`;
+    expect(n).toBe(0);
   });
 });

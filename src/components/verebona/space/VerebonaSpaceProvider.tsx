@@ -37,6 +37,7 @@ import {
   LIVE_DEBOUNCE_MS, LIVE_MIN_CHARS, moveActive, navMatches, toLiveResults, type LiveResult,
 } from '@/lib/verebona/live-search';
 import { openDrawer } from '@/lib/drawers';
+import { openHelpFromLink } from '@/lib/help-center/open';
 import { trackAssistantUsage } from '@/lib/verebona/usage-events';
 import { suggestionsForRoute } from '@/services/verebona-assistant/registries/capability-registry';
 import { useIsDesktop, useReducedMotion } from '@/hooks/useMediaQuery';
@@ -298,7 +299,8 @@ export function VerebonaSpaceProvider({ children, onOpenHelp }: ProviderProps) {
     setDraft('');
     close();
     if (r.drawer) openDrawer(r.drawer);
-    else router.push(r.href);
+    // Lot 59 (point 3) : le Centre d'aide s'ouvre dans un nouvel onglet.
+    else if (!openHelpFromLink(null, r.href)) router.push(r.href);
   }, [close, router, setDraft]);
 
   /** Échange construit par l'interface : aucune écriture, donc aucune garde. */

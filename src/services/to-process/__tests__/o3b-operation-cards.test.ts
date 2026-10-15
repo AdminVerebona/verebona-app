@@ -15,7 +15,7 @@ vi.mock('@/db', () => ({ db: {}, pgClient: {} }));
 const cards = await import('../operation-cards');
 const { selectDisplayedProposals } = await import('../action-model');
 const { checkRulesCatalog, getRule, RULE_PRODUCERS } = await import('../rules-catalog');
-const { ActionCard, ActionRow } = await import('@/components/to-process/ActionCard');
+const { ActionCard } = await import('@/components/to-process/ActionCard');
 const { buildTodoBlock, todoTitle, MAX_TODO_ITEMS } = await import('@/services/home/mascot/todo-items');
 
 const SANS_OPERATION = /op[ée]ration/i;
@@ -119,14 +119,15 @@ describe('C19 — rendu desktop ET mobile (composants et tokens existants)', () 
     expect(html).toContain('(actuelle)');
     // Mise en page mobile (vignette réduite) puis desktop (`sm:`), boutons qui passent à la ligne (zone tactile 36 px).
     expect(html).toMatch(/flex items-start gap-3 sm:gap-4/);
-    expect(html).toMatch(/class="[^"]*h-9 max-w-full whitespace-normal/);
+    // Lot 60A (point 7) : hauteur libre (36 px au moins), libellé sur plusieurs lignes.
+    expect(html).toMatch(/class="[^"]*h-auto min-h-9 max-w-full whitespace-normal/);
     expect(html).not.toMatch(SANS_OPERATION);
   });
 
-  it('C19-08 vue Liste (densité mobile) : mêmes capacités, aucun libellé technique', () => {
-    const html = renderToStaticMarkup(h(ActionRow, { action, onChoose: noop, onOpenTarget: noop }));
+  it('C19-08 (lot 60A, point 6) : plus de vue Liste — la carte est la seule présentation, mêmes capacités', async () => {
+    expect('ActionRow' in (await import('@/components/to-process/ActionCard'))).toBe(false);
+    const html = renderToStaticMarkup(h(ActionCard, { action, onChoose: noop, onOpenTarget: noop }));
     expect(html).toContain('Non, c’est une autre intervention');
-    expect(html).toMatch(/flex flex-col gap-2[^"]*sm:flex-row/);
     expect(html).not.toMatch(SANS_OPERATION);
   });
 });

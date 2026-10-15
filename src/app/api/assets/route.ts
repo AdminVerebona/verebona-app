@@ -11,6 +11,7 @@ import { getFeatureFlags, canCreateAsset } from '@/lib/feature-flags';
 import { canCreateAsset as canCreateAssetEntitlement, canModifyAssets } from '@/services/entitlements.service';
 import { trackFunnelEvent } from '@/services/funnel-analytics.service';
 import { deleteAssetCompletely } from '@/services/assets/asset-deletion.service';
+import { effectiveThumbnailUrl, loadDefaultAssetPhotos } from '@/services/assets/default-asset-photo';
 import { isValidObjectCategory } from '@/types/domain';
 import type { PlanType } from '@/types/domain';
 import { ACCEPTED_ASSET_CATEGORY_CODES, getAssetCategories } from '@/lib/asset-taxonomy';
@@ -78,8 +79,12 @@ export async function GET(request: NextRequest) {
         FROM equipments WHERE asset_id = ${assetData.id} AND archived_at IS NULL
       `;
 
+      // Lot 59 (point 2) : vignette affichée — choisie, sinon la photo par défaut.
+      const defaultPhoto = assetData.thumbnailUrl ? null : (await loadDefaultAssetPhotos(assetData.accountId, [assetData.id])).get(assetData.id);
+
       return NextResponse.json({
         ...assetData,
+        effectiveThumbnailUrl: effectiveThumbnailUrl(assetData.thumbnailUrl, defaultPhoto),
         substructures: assetSubstructures,
         equipments: assetEquipments
       }, { status: 200 });
@@ -140,7 +145,12 @@ export async function GET(request: NextRequest) {
       .orderBy(desc(assets.id))
       .limit(limit + 1);
 
-    const paginatedResponse = buildPaginationResponse(results, limit);
+    // Lot 59 (point 2) : vignette affichée — choisie, sinon la photo par défaut.
+    const sansVignette = results.filter((a) => !a.thumbnailUrl).map((a) => a.id);
+    const photos = await loadDefaultAssetPhotos(session.currentAccountId, sansVignette);
+    const withThumbnails = results.map((a) => ({ ...a, effectiveThumbnailUrl: effectiveThumbnailUrl(a.thumbnailUrl, photos.get(a.id)) }));
+
+    const paginatedResponse = buildPaginationResponse(withThumbnails, limit);
 
     return NextResponse.json(paginatedResponse, {
       status: 200,

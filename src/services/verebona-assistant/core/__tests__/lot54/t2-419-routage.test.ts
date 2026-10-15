@@ -16,7 +16,7 @@ const unsafe = vi.fn(async (..._a: unknown[]) => [] as unknown[]);
 vi.mock('@/db', () => ({ pgClient: { unsafe: (...a: unknown[]) => unsafe(...a) }, db: {}, ensureMigrations: vi.fn(), ensureUnaccent: vi.fn() }));
 
 const H = await import('../lot29/harness');
-const { operationBusinessSource, registerBusinessSourceProvider, listBusinessSources } = await import('../../../canonical/business-sources');
+const { operationBusinessSource, registerBusinessSourceProvider, listBusinessSources, answerFromBusinessSource } = await import('../../../canonical/business-sources');
 const { routeDeterministic } = await import('../../intent-router.service');
 const S = await import('../../semantic-scope');
 const { toIntentRoute } = await import('../../classification.adapter');
@@ -99,7 +99,7 @@ function harness(assets: Array<typeof CUPRA>, ops: Op[], o: {
   if (o.arbitrate !== undefined) h.ports.arbitrateWithAI = arbitrate;
   const propose = vi.fn(async (input: import('../../../types/contracts').AssistantRequestInput, req: { fact: Fact; assetId: number | null }) => {
     const r = await P.prepareUpdateProposal(input, req, lookup);
-    return r.kind === 'plan' ? { kind: 'plan' as const, preview: r.preview, capability: r.capability } : r;
+    return r.kind === 'plan' ? { kind: 'plan' as const, preview: r.preview, capability: r.capability, proposed: r.proposed, refused: r.refused } : r;
   });
   if (o.proposals !== false) h.ports.prepareUpdateProposal = propose;
   const ask = (message: string, extraIn = {}) => h.ask(message, { planType: o.plan ?? 'PREMIUM', ...extraIn });
@@ -142,16 +142,17 @@ describe('#419 écart 1 / CC1 — sélection finale : T2 arbitre entre candidats
     expect(h.arbitrate).toHaveBeenCalledTimes(1);
     const presentes = h.arbitrate.mock.calls[0][2] as Cand[];
     // Références OPAQUES — ni identifiant, ni table, ni source non autorisée.
-    expect(presentes.map((c) => c.ref)).toEqual(['C1', 'C2']);
+    // Lot 59 (#419 R04) : candidats de TOUS les domaines qui portent la valeur (opérations ET document).
+    expect(presentes.map((c) => c.ref)).toEqual(['C1', 'C2', 'C3']);
     expect(JSON.stringify(presentes)).not.toMatch(/operation:|document:|asset_files|\bid\b/);
-    expect(presentes.map((c) => c.label).sort()).toEqual(['Contrat « Abonnement Netflix »', 'Contrat « Abonnement Orange Fibre »']);
+    expect(presentes.map((c) => c.label).sort()).toEqual(['Contrat « Abonnement Netflix »', 'Contrat « Abonnement Orange Fibre »', 'Facture Orange septembre']);
     expect(n(r.answer)).toMatch(/^Contrat « Abonnement Orange Fibre » \(Maison\) : dernier montant documenté 39,99 €/);
     expect(r.answer).not.toMatch(/Netflix|13,49/);
     expect(r.cascade?.semantic).toMatchObject({
       candidateSelectionMode: 'ai', semanticDecision: 'SELECT', semanticDecisionConfidence: 'probable', candidateRefValidated: true,
       candidateValidationFailure: null, semanticScopeResolved: true,
     });
-    expect(r.cascade?.semantic?.candidateRefsPresentedToAI).toHaveLength(2);
+    expect(r.cascade?.semantic?.candidateRefsPresentedToAI).toHaveLength(3);
     expect(r.cascade?.semantic?.candidateRefSelectedByAI).toMatch(/^operation:\d+$/);
     expect(r.cascade?.semantic?.selectedSource).toBe(r.cascade?.semantic?.candidateRefSelectedByAI);
   });
@@ -231,13 +232,15 @@ describe('#419 écart 2 / CC2 — plus de priorité absolue operation > field > 
     expect(r.cascade?.strategy).toBe('semantic.field');
   });
 
-  it('T2-419-03b — opération ET pièce du même prestataire (même réalité) : l’opération, plus structurée, la représente — sans arbitrage', async () => {
+  it('T2-419-03b — opération ET pièce RATTACHÉE (même réalité démontrée) : l’opération, qui consolide le montant, la représente — sans arbitrage (lot 59 : un même prestataire ne suffit plus, voir R03)', async () => {
+    const fibre = op({ assetIds: [3], technicalLabel: 'Abonnement Orange Fibre', provider: 'Orange', components: [cout(3999, '2026-09-02')],
+      documents: [{ fileId: 920, role: null, title: 'Facture Orange Fibre octobre', date: '2026-10-02', amountCents: 3999, documentTypeCode: null }] as never });
     const piece = extra({ ref: 'document:920', domain: 'document', label: 'Facture Orange Fibre octobre', assetId: 3, amountCents: 3999, date: '2026-10-02', provider: 'Orange' });
-    const h = harness([MAISON], [orangeFibre(), netflix()], { understand: compris('ACCOUNT_FACT_ASSET', [{ type: 'asset', value: 'maison' }], ['fibre']), extras: [piece], arbitrate: choisir(/Netflix/) });
+    const h = harness([MAISON], [fibre, netflix()], { understand: compris('ACCOUNT_FACT_ASSET', [{ type: 'asset', value: 'maison' }], ['fibre']), extras: [piece], arbitrate: choisir(/Netflix/) });
     const r = await h.ask('Je paye combien pour internet à la maison ?');
     expect(h.arbitrate).not.toHaveBeenCalled();
     expect(r.cascade?.strategy).toBe('semantic.operation');
-    expect(r.cascade?.semantic?.selectionReason).toBe('COMPLEMENTARY_SAME_REALITY');
+    expect(r.cascade?.semantic?.candidatesExcluded).toEqual([{ ref: 'document:920', reason: 'REPRESENTED_BY_OPERATION' }]);
   });
 
   it('T2-419-03c — pure : une opération pertinente reste servie quand AUCUNE source ne porte la valeur (absence dite)', () => {
@@ -582,5 +585,351 @@ describe('#419 écart 1 — version de prompt maître antérieure (action BO non
     expect(r.answer).not.toMatch(/€/);
     expect(r.clarification?.candidates).toHaveLength(2);
     expect(r.cascade?.escalationReasons).toContain('SEMANTIC:ARBITRATION_PROMPT_UNSUPPORTED');
+  });
+});
+
+// ══════════════════════════════════════════════════════════════════════════
+// LOT 59 (59B) — « Finaliser le ticket #419 » : 8 corrections (R01…R08),
+// configuration T2 effective et réponses IA non scriptées.
+// ══════════════════════════════════════════════════════════════════════════
+
+const { remainingPeriods, remainingCountUnit, memeRealite, lexicalMatchEstablished, diversifiedCandidates } = S;
+const { contextCalculationAnswer, validateContextFacts, contextFactsOf } = await import('../../interaction');
+const { t2PromptCapabilities } = await import('@/services/ai/assistant/master/t2-prompt-capabilities');
+const { aujourdhuiParis } = await import('../../query-period');
+
+const docOp = (fileId: number, title: string, amountCents: number | null = null, date: string | null = null) =>
+  ({ fileId, role: null, title, date, amountCents, documentTypeCode: null });
+const MAISON_Q = (topics: string[], o: Parameters<typeof compris>[3] = {}) => compris('ACCOUNT_FACT_ASSET', [{ type: 'asset', value: 'maison' }], topics, o);
+
+describe('#419 R01 — une Opération ne masque une pièce que si elle porte la valeur demandée', () => {
+  it('T2-419-R01 — contrat Internet SANS montant + facture 39,99 € RATTACHÉE à cette Opération : montant restitué, sans doublon ni absence affirmée', async () => {
+    const contrat = op({ assetIds: [3], technicalLabel: 'Contrat Internet', provider: 'Sosh', documents: [docOp(950, 'Contrat Sosh'), docOp(951, 'Facture Sosh octobre', 3999, '2026-10-02')] as never });
+    const facture = extra({ ref: 'document:951', domain: 'document', label: 'Facture Sosh octobre', assetId: 3, amountCents: 3999, date: '2026-10-02', provider: 'Sosh' });
+    const h = harness([MAISON], [contrat], { understand: MAISON_Q(['internet']), extras: [facture], arbitrate: () => ({ decision: 'NONE', confidence: 'exact' }) });
+    const r = await h.ask('Je paye combien pour internet à la maison ?');
+    expect(n(r.answer)).toBe('« Facture Sosh octobre » (Maison) : 39,99 € (2 octobre 2026).');
+    expect(r.answer).not.toMatch(/aucun montant|79,98/);
+    expect(h.arbitrate).not.toHaveBeenCalled();
+    expect(r.cascade?.semantic).toMatchObject({ candidateSelectionMode: 'deterministic', selectedSource: 'document:951' });
+  });
+
+  it('T2-419-R01b — pure : Opération qui CONSOLIDE déjà le montant → la pièce reste représentée (aucun double comptage, exclusion tracée)', () => {
+    const o = operationBusinessSource(op({ assetIds: [3], technicalLabel: 'Contrat Internet', provider: 'Sosh', components: [cout(3999, '2026-10-02')], documents: [docOp(951, 'Facture Sosh octobre', 3999, '2026-10-02')] as never }), 3, 'Maison');
+    const f = extra({ ref: 'document:951', domain: 'document', label: 'Facture Sosh octobre', assetId: 3, amountCents: 3999, date: '2026-10-02' });
+    const sel = S.selectInterpretations([o, f], { terms: ['internet'], facts: [], need: 'amount' });
+    expect(sel.selected).toEqual([o]);
+    expect(sel.excluded).toEqual([{ ref: 'document:951', reason: 'REPRESENTED_BY_OPERATION' }]);
+    expect(answerFromBusinessSource(sel.selected[0], 'amount', { assetName: 'Maison' }).text).not.toMatch(/79,98/);
+  });
+
+  it('T2-419-R01c — pure : tarif ANNONCÉ (prévisionnel) ≠ facture réelle rattachée ; preuve de paiement dite « réglé »', () => {
+    const o = operationBusinessSource(op({ assetIds: [3], technicalLabel: 'Contrat Internet', components: [{ ...cout(2999, '2026-01-01'), kind: 'FORECAST_COST' as const }], documents: [docOp(951, 'Facture octobre', 3999, '2026-10-02')] as never }), 3, 'Maison');
+    const f = extra({ ref: 'document:951', domain: 'document', label: 'Facture octobre', assetId: 3, amountCents: 3999, date: '2026-10-02' });
+    const sel = S.selectInterpretations([o, f], { terms: ['internet'], facts: [], need: 'amount' });
+    expect(sel.selected.map((s) => s.ref)).toEqual(['document:951']);
+    expect(sel.reason).toBe('COMPLEMENTARY_SAME_REALITY');
+    const preuve = { ...f, meta: { amountNature: 'payment' } };
+    expect(n(answerFromBusinessSource(preuve, 'amount').text)).toBe('« Facture octobre » : montant réglé 39,99 € (2 octobre 2026).');
+  });
+});
+
+describe('#419 R02 — signification métier des dates', () => {
+  it('T2-419-R02 — contrat SANS date de fin + facture datée (non rattachée) : aucune date de fin inventée', async () => {
+    const contrat = op({ assetIds: [3], technicalLabel: 'Contrat Internet', provider: 'Sosh', effectiveFrom: '2025-01-01' });
+    const facture = extra({ ref: 'document:960', domain: 'document', label: 'Facture Internet septembre', assetId: 3, amountCents: 3999, date: '2026-09-02', provider: 'Sosh' });
+    const h = harness([MAISON], [contrat], { understand: MAISON_Q(['contrat', 'internet']), extras: [facture] });
+    const r = await h.ask('Quand se termine mon contrat internet à la maison ?');
+    expect(r.answer).not.toMatch(/2 septembre 2026|2026-09-02/);
+    expect(n(r.answer)).toBe('Contrat « Contrat Internet » (Maison) : aucune date de fin n’est renseignée.');
+  });
+
+  it('T2-419-R02b — pure : document_date / date d’effet ne portent jamais une date de fin ; échéance (endDate) oui', () => {
+    const facture = extra({ ref: 'document:1', domain: 'document', label: 'Facture', assetId: 3, date: '2026-09-02' });
+    expect(S.carriesRequestedValue(facture, 'end_date')).toBe(false);
+    expect(S.carriesRequestedValue(facture, 'date')).toBe(true);
+    expect(n(answerFromBusinessSource(facture, 'end_date').text)).toBe('« Facture » : aucune date de fin n’est renseignée.');
+    expect(S.carriesRequestedValue(operationBusinessSource(lld(null), 7, 'Cupra'), 'end_date')).toBe(false);
+    expect(S.carriesRequestedValue(extra({ ref: 'agenda:1', domain: 'agenda', label: 'Échéance', assetId: 3, endDate: '2027-01-01' }), 'end_date')).toBe(true);
+  });
+});
+
+describe('#419 R03 — même réalité métier : preuve explicite exigée', () => {
+  it('T2-419-R03 — deux contrats différents chez le même fournisseur, même bien : aucune fusion, T2 arbitre', async () => {
+    const fibre = op({ assetIds: [3], technicalLabel: 'Orange Fibre', provider: 'Orange', components: [cout(3999, '2026-09-02')] });
+    const mobile = extra({ ref: 'document:970', domain: 'document', label: 'Facture Orange Mobile', assetId: 3, amountCents: 1999, date: '2026-09-05', provider: 'Orange' });
+    const h = harness([MAISON], [fibre], { understand: MAISON_Q(['orange']), extras: [mobile], arbitrate: choisir(/Mobile/) });
+    const r = await h.ask('Je paye combien chez orange à la maison ?');
+    expect(h.arbitrate).toHaveBeenCalledTimes(1);
+    expect((h.arbitrate.mock.calls[0][2] as Cand[]).map((c) => c.label).sort()).toEqual(['Contrat « Orange Fibre »', 'Facture Orange Mobile']);
+    expect(n(r.answer)).toBe('« Facture Orange Mobile » (Maison) : 19,99 € (5 septembre 2026).');
+    expect(r.cascade?.semantic?.selectionReason).toBe('MULTIPLE_PLAUSIBLE');
+  });
+
+  it('T2-419-R03b — pure : prestataire + bien insuffisants ; rattachement, référence contractuelle : preuves', () => {
+    const o = operationBusinessSource(op({ assetIds: [3], technicalLabel: 'Box', provider: 'Orange', contractReference: 'C-123', documents: [docOp(5, 'Facture')] as never }), 3, 'Maison');
+    expect(memeRealite(o, extra({ ref: 'document:9', domain: 'document', label: 'Autre', assetId: 3, provider: 'Orange' }))).toBe(false);
+    expect(memeRealite(o, extra({ ref: 'document:5', domain: 'document', label: 'Facture', assetId: 3 }))).toBe(true);
+    expect(memeRealite(o, { ...extra({ ref: 'agenda:2', domain: 'agenda', label: 'Échéance', assetId: 3 }), meta: { contractReference: 'c-123' } })).toBe(true);
+    const deux = [o, operationBusinessSource(op({ assetIds: [3], technicalLabel: 'Box 2', provider: 'Orange', components: [cout(100, '2026-01-01')] }), 3, 'Maison')];
+    expect(S.selectInterpretations([{ ...deux[0], amountCents: 5 }, deux[1]], { terms: ['box'], facts: [], need: 'amount' }).selected).toHaveLength(2);
+  });
+});
+
+describe('#419 R04 — T2 arbitre entre TOUS les domaines pertinents', () => {
+  it('T2-419-R04 — formulation différente des libellés : candidats de plusieurs domaines exposés à T2 (opérations ET documents)', async () => {
+    const sosh = op({ assetIds: [3], technicalLabel: 'Abonnement Sosh', provider: 'Sosh', components: [cout(2999, '2026-09-02')] });
+    const releve = extra({ ref: 'document:980', domain: 'document', label: 'Relevé box', assetId: 3, amountCents: 3500, date: '2026-09-20' });
+    const h = harness([MAISON], [sosh, netflix()], { understand: MAISON_Q(['connexion']), extras: [releve], arbitrate: choisir(/Relevé/) });
+    const r = await h.ask('Combien me coûte ma connexion à la maison ?');
+    const kinds = (h.arbitrate.mock.calls[0][2] as Cand[]).map((c) => c.kind);
+    expect(kinds).toContain('document');
+    expect(kinds).toContain('contrat');
+    expect(n(r.answer)).toBe('« Relevé box » (Maison) : 35,00 € (20 septembre 2026).');
+    expect(r.cascade?.semantic?.candidateSelectionMode).toBe('ai');
+  });
+
+  it('T2-419-R04b — correspondance lexicale TROMPEUSE (« box » ≠ box internet) : pas de sélection directe, T2 arbitre', async () => {
+    const rangement = op({ assetIds: [3], typeCode: 'ACQUISITION', technicalLabel: 'Box de rangement', components: [cout(4500, '2026-03-01')] });
+    const sosh = op({ assetIds: [3], technicalLabel: 'Abonnement Sosh', provider: 'Sosh', components: [cout(2999, '2026-09-02')] });
+    const h = harness([MAISON], [rangement, sosh], { understand: MAISON_Q(['box internet']), arbitrate: choisir(/Sosh/) });
+    const r = await h.ask('Combien je paye pour la box internet à la maison ?');
+    expect(h.arbitrate).toHaveBeenCalledTimes(1);
+    expect(r.answer).not.toMatch(/45,00/);
+    expect(n(r.answer)).toMatch(/^Contrat « Abonnement Sosh » \(Maison\) : dernier montant documenté 29,99 €/);
+    expect(r.cascade?.semantic?.lexicalMatchEstablished).toBe(false);
+    // Sans arbitrage possible : clarification, jamais la box de rangement.
+    const sans = await harness([MAISON], [rangement, sosh], { understand: MAISON_Q(['box internet']) }).ask('Combien je paye pour la box internet à la maison ?');
+    expect(sans.answer).not.toMatch(/€/);
+    expect(sans.clarification?.candidates.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('T2-419-R04c — pure : correspondance établie (tous les sujets) vs partielle ; candidats répartis par domaine et bornés', () => {
+    const s = extra({ ref: 'operation:1', domain: 'operation', label: 'Box internet', assetId: 3 });
+    expect(lexicalMatchEstablished(s, { terms: ['box', 'internet'], facts: [], need: 'amount' }, ['box internet'])).toBe(true);
+    // Sujets ALTERNATIFS : un sujet entièrement retrouvé suffit (« fibre » parmi internet / fibre / box internet).
+    expect(lexicalMatchEstablished(extra({ ref: 'operation:3', domain: 'operation', label: 'Orange Fibre', assetId: 3 }), { terms: ['internet', 'fibre'], facts: [], need: 'amount' }, ['internet', 'fibre', 'box internet'])).toBe(true);
+    expect(lexicalMatchEstablished(extra({ ref: 'operation:2', domain: 'operation', label: 'Box de rangement', assetId: 3 }), { terms: ['box', 'internet'], facts: [], need: 'amount' }, ['box internet'])).toBe(false);
+    const ops = Array.from({ length: 20 }, (_, i) => extra({ ref: `operation:${i}`, domain: 'operation', label: `Op ${i}`, assetId: 3 }));
+    const docs = Array.from({ length: 5 }, (_, i) => extra({ ref: `document:${i}`, domain: 'document', label: `Doc ${i}`, assetId: 3 }));
+    const d = diversifiedCandidates([...ops, ...docs], 12);
+    expect(d).toHaveLength(12);
+    expect(d.filter((x) => x.domain === 'document')).toHaveLength(5);
+  });
+});
+
+describe('#419 R05 — ambiguïté reconnue par T2 strictement respectée', () => {
+  const AMBIGU = compris('ACCOUNT_FACT_ASSET', [{ type: 'asset', value: 'Cupra' }], ['formentor'], { confidence: 'ambiguous' });
+  it('T2-419-R05 — T2 « ambiguous », une seule source correspond lexicalement, aucun concurrent : pas de réponse arbitraire', async () => {
+    const h = harness([CUPRA], [lld('2027-06-30')], { understand: AMBIGU });
+    const r = await h.ask('Quand finit la Formentor de la Cupra ?');
+    expect(r.answer).not.toMatch(/se termine le/);
+    expect(r.clarification?.question).toMatch(/votre question porte-t-elle sur Contrat « LLD Cupra Formentor »/);
+    expect(r.cascade?.semantic?.clarificationReason).toBe('SEMANTIC_UNDERSTANDING_AMBIGUOUS');
+  });
+  it('T2-419-R05b — arbitrage IA validé (« exact ») lève l’ambiguïté ; « probable » : clarification ; référence revalidée', async () => {
+    const exact = await harness([CUPRA], [lld('2027-06-30')], { understand: AMBIGU, arbitrate: choisir(/LLD/, 'exact') }).ask('Quand finit la Formentor de la Cupra ?');
+    expect(exact.answer).toBe('Contrat « LLD Cupra Formentor » (Cupra) se termine le 30 juin 2027.');
+    const probable = await harness([CUPRA], [lld('2027-06-30')], { understand: AMBIGU, arbitrate: choisir(/LLD/, 'probable') }).ask('Quand finit la Formentor de la Cupra ?');
+    expect(probable.answer).not.toMatch(/se termine le/);
+    expect(probable.cascade?.semantic?.candidateValidationFailure).toBe('INSUFFICIENT_CONFIDENCE');
+  });
+});
+
+describe('#419 R06 — protection généralisée contre l’élargissement du périmètre', () => {
+  it('T2-419-R06 — « Combien m’a coûté Internet au total pour la maison ? » ne devient JAMAIS le TCO de la maison (parcours orchestrateur)', async () => {
+    const h = harness([MAISON], [orangeFibre(), netflix()], { understand: MAISON_Q(['internet']), arbitrate: choisir(/Orange/) });
+    const readOwnershipCost = vi.fn(async () => ({ status: 'COMPLETE', totalCents: 999999 }));
+    const port = {
+      today: () => '2026-10-14',
+      listAssets: async () => [{ id: 3, name: 'Maison', category: 'IMMOBILIER', subtype: 'Maison' }],
+      findAssets: async (_a: number, w: string[]) => (w.some((x) => /maison/i.test(x)) ? [{ id: 3, name: 'Maison', category: 'IMMOBILIER', subtype: 'Maison' }] : []),
+      readOwnershipCost,
+      sumQualifiedExpenses: vi.fn(async () => ({ qualifiedSumCents: 5348, byTheme: [], unqualified: { count: 0 }, excluded: { count: 0 }, complete: true })),
+    } as never;
+    h.ports.answerFromData = (route, input, thresholds) => answerFromData({ port, accountId: 1, message: input.message, thresholds, intent: route.intent });
+    const r = await h.ask('Combien m’a coûté Internet au total pour la maison ?');
+    expect(readOwnershipCost).not.toHaveBeenCalled();
+    expect(r.answer).not.toMatch(/9 999,99|possession|53,48/);
+    expect(r.cascade?.strategy).not.toBe('structured.ownership_cost');
+    expect(n(r.answer)).toMatch(/Orange Fibre/);
+  });
+
+  it('T2-419-R06b — stratégies « désignées » (coût d’une intervention, échéances) : un sujet non porté par les données servies bloque la réponse', async () => {
+    expect(STRATEGY_SCOPE['structured.operation_cost'].scope).toBe('designated');
+    expect(structuredScopeBarrier('structured.operation_cost', 'Combien a coûté la réparation du toit de la véranda ?', ['Maison'], ['Coût de la réparation du toit : 1 200,00 €.'])
+      .unresolvedSemanticTerms).toEqual(['veranda']);
+    expect(structuredScopeBarrier('structured.operation_cost', 'Combien a coûté la réparation du toit ?', ['Maison'], ['Coût de la réparation du toit : 1 200,00 €.']).semanticScopeResolved).toBe(true);
+    expect(structuredScopeBarrier('structured.upcoming_agenda', 'Quelles sont mes échéances ?', [], []).semanticScopeResolved).toBe(true);
+    const port = {
+      today: () => '2026-10-14',
+      listAssets: async () => [{ id: 3, name: 'Maison', category: 'IMMOBILIER', subtype: 'Maison' }],
+      listUpcomingAgenda: async () => [{ id: 1, title: 'Ramonage', date: '2026-11-02', forecast: false, assetNames: ['Maison'] }],
+    } as never;
+    const scope = async () => ({ assets: [{ id: 3, name: 'Maison', category: 'IMMOBILIER', subtype: 'Maison' }], ambiguous: false, unresolved: false, label: 'Maison' });
+    const r = await tryCanonicalStructured({ port, accountId: 1, message: 'Quelles sont mes prochaines échéances internet pour la Maison ?', resolveScope: scope as never });
+    expect(r).toMatchObject({ scopeUnresolved: { strategyCandidate: 'structured.upcoming_agenda', terms: ['internet'] } });
+  });
+});
+
+describe('#419 R07 — informations de contexte (MIXED) exploitées sans enregistrement', () => {
+  const MIXED = (fact: Partial<Fact>) => compris('ACCOUNT_FACT_ASSET', [{ type: 'asset', value: 'Cupra' }], ['mensualités'], {
+    mode: 'MIXED', supplied: [{ targetHint: 'Cupra', fieldKey: 'leaseEndDate', normalizedValue: '2027-05-21', role: 'context', ...fact }],
+  });
+  const Q = 'La LLD de la Cupra finit le 21/05/2027, combien de mensualités me reste-t-il ?';
+
+  it('T2-419-R07 — date de fin apportée en contexte : calcul serveur, aucune proposition, aucune écriture', async () => {
+    const h = harness([CUPRA], [lld(null)], { understand: MIXED({}) });
+    const r = await h.ask(Q);
+    const attendu = remainingPeriods(aujourdhuiParis(), '2027-05-21', 'month');
+    expect(n(r.answer)).toContain(`il reste ${attendu} mois`);
+    expect(r.answer).toMatch(/n’a pas été enregistrée/);
+    expect(h.propose).not.toHaveBeenCalled();
+    expect(r.commandPlan ?? null).toBeNull();
+    expect(ecritures()).toEqual([]);
+    expect(r.cascade?.semantic).toMatchObject({ interactionMode: 'MIXED', contextFactsUsed: ['leaseEndDate'], calculation: 'remaining_periods', confirmationPlanCreated: false });
+  });
+
+  it('T2-419-R07b — contradiction avec la donnée enregistrée : signalée, jamais tranchée, aucun calcul', async () => {
+    const champ = extra({ ref: 'field:7:leaseEndDate', domain: 'field', label: 'Fin de bail / location', assetId: 7, fieldKey: 'leaseEndDate', date: '2027-06-30', endDate: '2027-06-30' });
+    const h = harness([CUPRA], [], { understand: MIXED({}), extras: [champ] });
+    const r = await h.ask(Q);
+    expect(r.answer).toMatch(/Je ne tranche pas/);
+    expect(r.answer).not.toMatch(/il reste/);
+    expect(r.cascade?.semantic).toMatchObject({ contextContradiction: true, calculation: 'remaining_periods:contradiction' });
+    expect(ecritures()).toEqual([]);
+  });
+
+  it('T2-419-R07c — valeur absente du message (inventée) ou information manquante : ce qui manque est expliqué, aucun calcul', async () => {
+    const h = harness([CUPRA], [], { understand: MIXED({ normalizedValue: '2027-09-30' }) });
+    const r = await h.ask(Q);
+    expect(r.answer).toMatch(/il me manque une date de fin fiable/);
+    expect(r.cascade?.semantic).toMatchObject({ contextFactsIgnored: 1, calculation: 'remaining_periods:missing' });
+  });
+
+  it('T2-419-R07d — pure : décompte, unité, rôle des informations', () => {
+    expect(remainingPeriods('2026-10-15', '2027-05-21', 'month')).toBe(7);
+    expect(remainingPeriods('2026-10-15', '2026-10-01', 'month')).toBe(0);
+    expect(remainingPeriods('2026-01-31', '2026-03-01', 'month')).toBe(1);
+    expect(remainingCountUnit(Q)).toBe('month');
+    expect(remainingCountUnit('Combien de mensualités ai-je payées ?')).toBeNull();
+    const f = { targetHint: 'Cupra', fieldKey: 'leaseEndDate', topic: null, value: null, normalizedValue: '2027-05-21', unit: null, confidence: 'exact' as const };
+    expect(contextFactsOf({ mode: 'MIXED', suppliedFacts: [{ ...f, role: 'context' }, { ...f, role: 'update' }] })).toHaveLength(1);
+    expect(validateContextFacts([{ ...f, role: 'context' }], Q, '2026-10-15').valid[0]).toMatchObject({ fieldKey: 'leaseEndDate', endDate: '2027-05-21' });
+    expect(contextCalculationAnswer({ message: Q, today: '2026-10-15', facts: [], stored: [], assetName: null }).calculation).toBe('remaining_periods:missing');
+  });
+});
+
+describe('#419 R08 — toutes les informations d’une proposition multiple', () => {
+  const DEUX = (second: Partial<Fact>) => compris('ACCOUNT_FACT_ASSET', [{ type: 'asset', value: 'Polo' }], [], {
+    mode: 'UPDATE_PROPOSAL', supplied: [
+      { targetHint: 'Polo', fieldKey: 'mileage', value: '45 000 km', normalizedValue: '45000', unit: 'km', role: 'update' },
+      { targetHint: 'Polo', role: 'update', ...second },
+    ],
+  });
+
+  it('T2-419-R08 — deux modifications sur un même bien : UN plan avec les DEUX modifications, confirmation unique, rien écrit', async () => {
+    const h = harness([POLO], [], { understand: DEUX({ fieldKey: 'estimatedValue', value: '12 000 €', normalizedValue: '12000' }) });
+    const r = await h.ask('Le kilométrage de la Polo est de 45 000 km et sa valeur est de 12 000 €');
+    expect(h.propose).toHaveBeenCalledTimes(1);
+    expect(r.commandPlan?.actions).toHaveLength(2);
+    expect(n(r.commandPlan?.summary)).toMatch(/^Je vais effectuer 2 modifications : Modifier « Kilométrage » de Polo : 80 000 km → 45 000 km ; Modifier « [^»]+ » de Polo : non renseigné → 12 000/);
+    expect(r.commandPlan?.summary).toMatch(/Confirmez-vous l’ensemble \?$/);
+    expect(ecritures()).toEqual([]);
+    expect(r.cascade?.semantic).toMatchObject({ updateFactsProposed: 2, updateFactsRefused: [], confirmationPlanCreated: true });
+  });
+
+  it('T2-419-R08b — une information non modifiable : refus EXPLICITE du traitement multiple, aucun plan partiel', async () => {
+    const h = harness([POLO], [], { understand: DEUX({ fieldKey: 'vin', value: 'VSSZZZ5FZRR000001' }) });
+    const r = await h.ask('Le kilométrage de la Polo est de 45 000 km et son VIN est VSSZZZ5FZRR000001');
+    expect(r.commandPlan ?? null).toBeNull();
+    expect(r.answer).toMatch(/contient 2 informations ; je ne peux pas toutes les proposer/);
+    expect(r.answer).toMatch(/séparément/);
+    expect(r.cascade?.semantic).toMatchObject({ updateFactsProposed: 0, confirmationPlanCreated: false });
+    expect(r.cascade?.semantic?.updateFactsRefused).toEqual([{ fieldKey: 'vin', reason: 'FIELD_NOT_WRITABLE' }]);
+    expect(ecritures()).toEqual([]);
+  });
+
+  it('T2-419-R08c — deux valeurs différentes pour la même information : refus, aucun choix arbitraire', async () => {
+    const h = harness([POLO], [], { understand: DEUX({ fieldKey: 'mileage', value: '46 000 km', normalizedValue: '46000', unit: 'km' }) });
+    const r = await h.ask('Le kilométrage de la Polo est de 45 000 km, non 46 000 km');
+    expect(r.commandPlan ?? null).toBeNull();
+    expect(r.cascade?.semantic?.updateFactsRefused).toEqual([{ fieldKey: 'mileage', reason: 'CONFLICTING_VALUES' }]);
+  });
+});
+
+describe('#419 — prompt T2 EFFECTIF (BO) contrôlé', () => {
+  it('T2-419-R09 — texte livré : A7–A9, interactionMode, suppliedFacts, {{BUSINESS_CANDIDATES}} présents ; version antérieure : arbitrage impossible signalé', () => {
+    const texte = readFileSync(join(process.cwd(), 'src/services/ai/prompts/assistant/t2_master_v1.txt'), 'utf8');
+    const c = t2PromptCapabilities(texte);
+    expect(c).toMatchObject({ arbitration: true, interaction: true, message: null });
+    expect(c.checks.every((x) => x.present)).toBe(true);
+    const ancien = t2PromptCapabilities(texte.replace(/\{\{BUSINESS_CANDIDATES\}\}/g, '').replace(/\nA9 —[^\n]*/, ''));
+    expect(ancien.arbitration).toBe(false);
+    expect(ancien.interaction).toBe(true);
+    expect(ancien.message).toMatch(/Arbitrage sémantique IMPOSSIBLE/);
+    expect(t2PromptCapabilities(texte.replace(/\nA7 —[^\n]*/, '')).interaction).toBe(false);
+  });
+
+  it('T2-419-R09b — version active sans A9 : aucun appel d’arbitrage, motif et version tracés', async () => {
+    const h = harness([MAISON], [orangeFibre(), netflix()], { understand: MAISON_Q(['internet']), arbitrate: choisir(/Orange/) });
+    h.ports.t2PromptCapabilities = async () => ({ arbitration: false, interaction: true, version: 'v3' });
+    const r = await h.ask('Je paye combien pour internet à la maison ?');
+    expect(h.arbitrate).not.toHaveBeenCalled();
+    expect(r.answer).not.toMatch(/€/);
+    expect(r.cascade?.semantic).toMatchObject({ arbitrationUnavailableReason: 'PROMPT_UNSUPPORTED', t2PromptCapabilities: { arbitration: false, version: 'v3' } });
+  });
+});
+
+describe('#419 — réponses IA NON scriptées : la validation serveur tient', () => {
+  /** Générateur pseudo-aléatoire déterministe (reproductible). */
+  const alea = (graine: number) => () => ((graine = (graine * 1103515245 + 12345) % 2147483648) / 2147483648);
+
+  it('T2-419-R10 — 60 décisions T2 génériques (références au hasard, confiances variées, NONE/CLARIFY) : jamais de référence non présentée servie, jamais de confiance insuffisante servie', async () => {
+    const r = alea(59);
+    const decisions: Array<'SELECT' | 'CLARIFY' | 'NONE'> = ['SELECT', 'SELECT', 'CLARIFY', 'NONE'];
+    const confiances: Array<'exact' | 'probable' | 'ambiguous'> = ['exact', 'probable', 'ambiguous'];
+    for (let i = 0; i < 60; i += 1) {
+      const ambigu = r() < 0.3;
+      const generique = (c: Cand[]): Decision => {
+        const d = decisions[Math.floor(r() * decisions.length)];
+        const refs = [...c.map((x) => x.ref), 'C9', 'operation:1', ''];
+        return { decision: d, selectedCandidateRef: d === 'SELECT' ? refs[Math.floor(r() * refs.length)] : null, confidence: confiances[Math.floor(r() * 3)], reason: 'générique' };
+      };
+      const h = harness([MAISON], [orangeFibre(), freeFibre(), netflix()], { understand: MAISON_Q(['fibre'], { confidence: ambigu ? 'ambiguous' : 'probable' }), arbitrate: generique });
+      const res = await h.ask('Je paye combien pour internet à la maison ?');
+      const sem = res.cascade!.semantic!;
+      const brut = await h.arbitrate.mock.results[0]?.value as Decision | undefined;
+      if (/€/.test(res.answer)) {
+        // Servi : uniquement une référence PRÉSENTÉE, confiance suffisante, jamais un contrat non présenté.
+        expect(sem.candidateSelectionMode).toBe('ai');
+        expect(sem.candidateRefValidated).toBe(true);
+        expect(['C1', 'C2']).toContain(brut?.selectedCandidateRef);
+        expect(brut?.confidence).not.toBe('ambiguous');
+        if (ambigu) expect(brut?.confidence).toBe('exact');
+        expect(res.answer).not.toMatch(/Netflix/);
+      } else {
+        expect(res.clarification != null || /Je n’ai trouvé aucune donnée/.test(res.answer)).toBe(true);
+      }
+      expect(ecritures()).toEqual([]);
+    }
+  });
+
+  it('T2-419-R10b — UNDERSTAND générique (modes et informations au hasard, valeurs parfois absentes du message) : aucune écriture, aucun plan sur valeur non relue', async () => {
+    const r = alea(419);
+    const modes = ['QUERY', 'UPDATE_PROPOSAL', 'CONTEXT_ONLY', 'ACTION_REQUEST', 'MIXED', 'AMBIGUOUS'] as const;
+    const roles = ['update', 'context', 'unknown'] as const;
+    for (let i = 0; i < 30; i += 1) {
+      const valeur = r() < 0.5 ? '45000' : String(10000 + Math.floor(r() * 90000));
+      const h = harness([POLO], [], {
+        understand: compris('ACCOUNT_FACT_ASSET', [{ type: 'asset', value: 'Polo' }], [], {
+          mode: modes[Math.floor(r() * modes.length)],
+          supplied: [{ targetHint: 'Polo', fieldKey: 'mileage', value: `${valeur} km`, normalizedValue: valeur, unit: 'km', role: roles[Math.floor(r() * 3)] }],
+        }),
+      });
+      const res = await h.ask('Le kilométrage de la Polo est de 45 000 km');
+      if (res.commandPlan) expect(n(res.commandPlan.summary)).toMatch(/→ 45 000 km/);
+      expect(ecritures()).toEqual([]);
+    }
   });
 });

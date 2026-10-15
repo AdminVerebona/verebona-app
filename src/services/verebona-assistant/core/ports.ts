@@ -435,13 +435,25 @@ export function buildOrchestratorPorts(): OrchestratorPorts {
       const texte = await effectiveMasterPromptText('T2');
       return texte == null || texte.includes('{{BUSINESS_CANDIDATES}}');
     },
+    // Lot 59 (#419) : capacités du prompt maître T2 EFFECTIF (BO), tracées par demande.
+    t2PromptCapabilities: async () => {
+      const { effectiveMasterPromptInfo } = await import('@/services/ai/config/config-resolver');
+      const { t2PromptCapabilities } = await import('@/services/ai/assistant/master/t2-prompt-capabilities');
+      const { readMasterFileFromRepo } = await import('@/services/ai/governance/master-corpus/cases');
+      const info = await effectiveMasterPromptInfo('T2');
+      let texte = info.text;
+      if (texte == null) { try { texte = readMasterFileFromRepo('t2_master_v1'); } catch { texte = null; } }
+      if (texte == null) return null;
+      const c = t2PromptCapabilities(texte);
+      return { arbitration: c.arbitration, interaction: c.interaction, version: info.version };
+    },
     // Lot 54E (#419 §15) : information apportée → plan PENDING_CONFIRMATION
     // (même interrupteur que les commandes : coupé, aucune proposition).
     prepareUpdateProposal: async (input, req) => {
       if (!areWriteCommandsEnabled()) return null;
       const { prepareUpdateProposal } = await import('../commands/plan.service');
       const r = await prepareUpdateProposal(input, req);
-      return r.kind === 'plan' ? { kind: 'plan' as const, preview: r.preview, capability: r.capability } : r;
+      return r.kind === 'plan' ? { kind: 'plan' as const, preview: r.preview, capability: r.capability, proposed: r.proposed, refused: r.refused } : r;
     },
 
     buildSynthesisContext: async (route, input) => {

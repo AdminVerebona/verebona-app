@@ -8,6 +8,9 @@ import { SessionService } from '@/lib/session-service';
 import { s3Client, S3_BUCKET } from '@/lib/s3-client';
 import sharp from 'sharp';
 import { refuserSiModificationBiensSuspendue } from '@/lib/asset-quota-guard';
+import { loadDefaultAssetPhotos } from '@/services/assets/default-asset-photo';
+import { decideThumbnail } from '@/services/documents/thumbnails/thumbnail-spec';
+import { enqueueThumbnail, getThumbnailRow } from '@/services/documents/thumbnails/thumbnail.service';
 
 // Server-side signed URL cache — 55 min TTL (S3 URLs expire after 60 min)
 const THUMB_CACHE = new Map<string, { url: string; exp: number }>();
@@ -75,17 +78,32 @@ export async function GET(
     if (asset.accountId !== session.currentAccountId) {
       return NextResponse.json({ error: 'FORBIDDEN' }, { status: 403 });
     }
-    if (!asset.thumbnailUrl) {
-      return NextResponse.json({ error: 'NO_THUMBNAIL' }, { status: 404 });
-    }
-
     const bucket = S3_BUCKET!;
-    const s3Key = extractS3Key(asset.thumbnailUrl, bucket);
-    if (!s3Key) {
-      return NextResponse.json({ error: 'INVALID_URL' }, { status: 500 });
+    let s3Key: string | null;
+    if (asset.thumbnailUrl) {
+      s3Key = extractS3Key(asset.thumbnailUrl, bucket);
+      if (!s3Key) {
+        return NextResponse.json({ error: 'INVALID_URL' }, { status: 500 });
+      }
+    } else {
+      // Lot 59 (point 2) : sans vignette choisie, la première photo rattachée
+      // au bien (même règle que les listes, `default-asset-photo`) — sa
+      // miniature serveur si elle est prête, sinon l'original.
+      const photo = (await loadDefaultAssetPhotos(session.currentAccountId, [assetId])).get(assetId);
+      if (!photo) {
+        return NextResponse.json({ error: 'NO_THUMBNAIL' }, { status: 404 });
+      }
+      s3Key = photo.s3Key;
+      try {
+        const decision = decideThumbnail(await getThumbnailRow(photo.fileId), photo.s3Key);
+        if (decision.action === 'serve') s3Key = decision.s3Key;
+        else if (decision.action === 'generate') enqueueThumbnail(photo.fileId);
+      } catch { /* miniature indisponible : l'original */ }
     }
 
-    const cacheKey = `${session.currentAccountId}-${assetId}`;
+    // La clé résolue fait partie du cache : une vignette changée (ou une
+    // photo par défaut remplacée) n'est jamais resservie pendant 55 min.
+    const cacheKey = `${session.currentAccountId}-${assetId}-${s3Key}`;
     const cached = THUMB_CACHE.get(cacheKey);
     if (cached && Date.now() < cached.exp) {
       return NextResponse.json({ url: cached.url, expiresIn: 3600 }, {

@@ -1,5 +1,6 @@
 "use client";
 
+import { T6ReminderSettings } from "@/components/home/T6ReminderControls";
 import { useState, useCallback, useEffect } from "react";
 import {
   Sheet,
@@ -573,6 +574,9 @@ export function AgendaItemDrawer({ item, open, onClose, onMutated, onOpenDocumen
                 </div>
               </div>
             )}
+
+            {/* Lot 60 (T6) : rappels de l'accueil pour cette échéance — préférence personnelle. */}
+            {mode === "view" && !item.manualStatus && <T6ReminderSettings agendaItemId={item.id} title={item.title} />}
 
             {/* Description */}
             {mode === "view" ? (

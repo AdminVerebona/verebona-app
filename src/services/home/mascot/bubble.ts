@@ -77,6 +77,18 @@ export function tileFor(s: MascotSubject, today: string, opts: TileOptions = {})
     // prévisionnelle le reste (DAT-003).
     const label = str(f.dateLabel);
     const estimee = f.dateNature === 'prévisionnelle' ? ' (estimée)' : '';
+    // Lot 60 : échéance retenue par la décision d'interpellation T6 — elle
+    // MÉRITE l'attention (tuile ambre, phrase « … mérite votre attention »),
+    // jamais « Tout est à jour » devant une interpellation affichée.
+    if (s.interpellation && code === 'DATE-NEXT') {
+      const quoi = s.interpellation.mode === 'ANTICIPATE' ? 'À anticiper' : 'Action à prévoir';
+      return {
+        tone: 'amber', icon: 'calendar-days', attention: true, assetName: asset,
+        label: str(s.tileTitle) ?? str(f.title) ?? 'Échéance',
+        status: label ? `${quoi} · ${label}${estimee}` : quoi,
+        kind: 'action',
+      };
+    }
     const deux = code === 'DATE-NEXT-2';
     const biens = deux ? [...new Set([str(f.firstAssetName), str(f.secondAssetName)].filter((x): x is string => !!x))] : [];
     return {

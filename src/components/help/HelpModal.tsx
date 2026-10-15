@@ -17,11 +17,11 @@
  * ══════════════════════════════════════════════════════════════════════════
  */
 import { useEffect, useState } from 'react';
-import { usePathname, useRouter } from 'next/navigation';
+import { usePathname } from 'next/navigation';
 import { Search, X, ExternalLink, PlayCircle, BookOpen } from 'lucide-react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog';
 import { loadHelpShortcuts, type ResolvedShortcut } from '@/lib/help-center/catalog';
-import { helpPageUrl, integratedHelpHref, prefersIntegratedHelp } from '@/lib/help-center/open';
+import { openHelpCenter } from '@/lib/help-center/open';
 
 interface HelpModalProps {
   open: boolean;
@@ -29,7 +29,6 @@ interface HelpModalProps {
 }
 
 export function HelpModal({ open, onOpenChange }: HelpModalProps) {
-  const router = useRouter();
   const pathname = usePathname();
   const [query, setQuery] = useState('');
   const [shortcuts, setShortcuts] = useState<ResolvedShortcut[] | null>(null);
@@ -43,13 +42,12 @@ export function HelpModal({ open, onOpenChange }: HelpModalProps) {
     return () => { cancelled = true; };
   }, [open, pathname]);
 
-  /** Mobile : Centre d'aide intégré ; ordinateur : nouvel onglet isolé. */
+  /**
+   * Lot 59 (point 3) : nouvel onglet isolé (site public), sur ordinateur ET
+   * sur mobile — plus de Centre d'aide intégré à l'application.
+   */
   function openHelp(path: string) {
-    if (prefersIntegratedHelp()) {
-      router.push(integratedHelpHref(path, pathname ?? undefined));
-    } else {
-      window.open(helpPageUrl(path, false), '_blank', 'noopener,noreferrer');
-    }
+    openHelpCenter(path);
     onOpenChange(false);
   }
 

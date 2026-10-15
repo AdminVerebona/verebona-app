@@ -40,6 +40,11 @@ export const NO_DOCUMENTS_HEADLINE = 'Aucun document pour le moment.';
 /** §17.4 — microcopies d'action. */
 export const MICROCOPY = {
   complete: 'Compléter',
+  /**
+   * Lot 59 (point 4) : bouton des cartes « À traiter » qui ouvre l'objet
+   * (tiroir, sur le champ) — remplace « Compléter » sur les cartes.
+   */
+  open: 'Ouvrir',
   otherChoice: 'Autre',
   arbitrationToast: 'Valeur mise à jour — Annuler',
   missingType: 'Type à compléter',

@@ -33,7 +33,8 @@ describe('sous-ensemble critique du passage réel', () => {
     expect(await liveVariablesFor(cases.find((c) => c.id === 'P-T2-04')!)).toBeNull();
     const t6 = await liveVariablesFor(cases.find((c) => c.id === 'P-T6-01')!);
     // Lot 55A : emplacement facultatif des questions suggérées (null : bulle seule).
-    expect(Object.keys(t6!)).toEqual(['INPUT_JSON', 'SUGGESTION_CONTEXT']);
+    expect(Object.keys(t6!)).toEqual(['INPUT_JSON', 'SUGGESTION_CONTEXT', 'INTERPELLATION_CONTEXT']);
+    expect(t6!.INTERPELLATION_CONTEXT).toBeNull();
     expect(t6!.SUGGESTION_CONTEXT).toBeNull();
     const t1 = await liveVariablesFor(cases.find((c) => c.id === 'P-T1-02')!);
     expect(String(t1!.EXTRACTED_CONTENT)).toContain('DRAISIENNE BOIS');

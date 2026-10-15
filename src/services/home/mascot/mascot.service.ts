@@ -17,10 +17,19 @@ import { composeSpeech, parisDay, tileFor } from './bubble';
 import { MAX_TODO_ITEMS, buildTodoBlock } from './todo-items';
 import { readDuoInvite } from './duo-invite';
 import { loadT6SuggestionContext, suggestionSecondaries, type T6SuggestionBundle } from './t6-suggestions';
+import { prepareT6Interpellation, t6ThresholdDays, writeT6InterpellationReport, type T6Preparation } from './t6-interpellation.service';
+import { t6InterpellationAvailable } from './t6-runner';
 
+/**
+ * Lot 60 : `userId` — utilisateur qui regarde l'accueil. Ses préférences de
+ * rappel (« plus tard », « ne plus me rappeler ») s'appliquent à SA bulle
+ * seulement (Duo : jamais à celle de l'autre membre). Absent
+ * (pré-génération) : décision du compte, sans préférence personnelle.
+ */
 export async function getMascotPresentation(
   accountId: number,
   mode: T6Mode = 'display',
+  userId: number | null = null,
 ): Promise<MascotPresentation> {
   let raw;
   // Lot 49A (ticket 13) : « Inviter quelqu'un » (Premium Duo, personne
@@ -42,7 +51,16 @@ export async function getMascotPresentation(
   // CDC 15 T4-12 : échéance passée sans statut = non prouvée (à confirmer),
   // jamais « non réalisée » (toujours depuis le lot 16b-2).
   const tiles = { unprovenOverdueIsQuestion: true };
-  const candidates = buildCandidates(raw);
+  // Lot 60 : décision d'interpellation T6 de chaque échéance candidate, AVANT
+  // la composition : phrase et cartes reposent sur les MÊMES décisions.
+  const interpellation: T6Preparation = await prepareT6Interpellation({ accountId, userId, raw }, {
+    aiCapable: t6InterpellationAvailable,
+    thresholdDays: t6ThresholdDays,
+    // Nouvelles évaluations : l'accueil suivant est préparé avec elles.
+    onAssessed: () => scheduleMascotPregeneration(accountId, PREGEN_DEBOUNCE_MS, 't6-assessment'),
+  });
+  void writeT6InterpellationReport({ accountId, userId, mode, prep: interpellation });
+  const candidates = buildCandidates(raw, { interpellation: { shown: interpellation.shown } });
   const subjects = selectSubjects(candidates.candidates);
   // Lot 55A : actions secondaires seulement (onboarding, recommandations) —
   // les questions « Ou demandez-moi » ne viennent plus du catalogue
@@ -58,7 +76,8 @@ export async function getMascotPresentation(
   const contextHash = contextHashOf(subjects, baseSecondaries, candidates.degraded);
 
   // Lot 53 (D25) : échéances dépassées encore ouvertes (au-delà des sujets).
-  const overdueDeadlines = openOverdueCount(raw);
+  // Lot 60 : sans les échéances écartées ou différées par la décision T6.
+  const overdueDeadlines = openOverdueCount(raw, interpellation.notInterpellated);
   const commun = { degraded: candidates.degraded, today: raw.today, tiles, todo, duoInvite, overdueDeadlines };
   // Bulle telle qu'affichée sans reformulation (texte déterministe).
   const secours = buildPresentation({ subjects, secondaries: baseSecondaries, messages: null, ...commun });
@@ -71,17 +90,21 @@ export async function getMascotPresentation(
     const speech = composeSpeech({ presentation: secours, empty: false }).text;
     const attentionToday = (todo?.items.length ?? 0) > 0 || !!duoInvite
       || secours.paragraphs.some((x) => x.tile?.attention ?? false);
-    questions = await loadT6SuggestionContext(accountId, { speech, attentionToday, agenda: raw.agenda, today: raw.today ?? parisDay() });
+    // Lot 60 : une échéance que l'utilisateur a reportée ou refusée n'est pas
+    // proposée en question non plus.
+    const agenda = raw.agenda?.filter((r) => !interpellation.userSilenced.has(r.id)) ?? null;
+    questions = await loadT6SuggestionContext(accountId, { speech, attentionToday, agenda, today: raw.today ?? parisDay() });
   }
 
-  // RUN-013 : rien à formuler ni à suggérer — pas de T6.
-  if (subjects.length === 0 && !questions) return secours;
+  // RUN-013 : rien à formuler, à suggérer ni à évaluer — pas de T6.
+  const evaluation = interpellation.bundle;
+  if (subjects.length === 0 && !questions && !evaluation) return secours;
 
   const input = buildT6Input(subjects);
   // Nature de la tuile de chaque sujet (pose graduée) : nuances R9 du master T6.
   const kinds = subjects.map((s) => tileFor(s, raw.today ?? parisDay(), tiles).kind);
-  const outcome = await formulateWithT6({ accountId, input, contextHash, mode, kinds, suggestions: questions });
-  void logT6({ accountId, contextHash, mode, outcome, input, suggestionContext: questions?.context });
+  const outcome = await formulateWithT6({ accountId, input, contextHash, mode, kinds, suggestions: questions, interpellation: evaluation });
+  void logT6({ accountId, contextHash, mode, outcome, input, suggestionContext: questions?.context, interpellationContext: evaluation?.context });
   // Questions de la MÊME sortie que les textes : indisponibles → aucune.
   const secondaries = withSuggestedQuestions(baseSecondaries, subjects, suggestionSecondaries(outcome.suggestions ?? []));
   return buildPresentation({ subjects, secondaries, messages: outcome.messages, ...commun });

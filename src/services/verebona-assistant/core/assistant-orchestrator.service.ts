@@ -101,6 +101,7 @@ import { type ArbitrationCandidate } from './semantic-stage';
 import type { RawSemanticDecision } from './semantic-scope';
 import {
   CONTEXT_ONLY_MESSAGE, UPDATE_DISABLED_MESSAGE, UPDATE_READ_ONLY_MESSAGE, interactionHandling, updateFactsOf,
+  contextFactsOf, validateContextFacts, contextCalculationAnswer,
 } from './interaction';
 import { expenseThemeWords } from '../canonical/expense-classes';
 
@@ -253,10 +254,20 @@ export interface OrchestratorPorts {
    * APPORTÉE (UPDATE_PROPOSAL) — même table et même confirmation que les
    * commandes ; AUCUNE écriture. `null` : modifications désactivées.
    */
-  prepareUpdateProposal?(input: AssistantRequestInput, req: { fact: import('../types/contracts').SuppliedFact; assetId: number | null }): Promise<
-    | { kind: 'plan'; preview: import('../commands/catalog').CommandPlanPreview; capability: string }
-    | { kind: 'need_info'; message: string; reason: string; capability: string | null }
+  prepareUpdateProposal?(input: AssistantRequestInput, req: {
+    fact: import('../types/contracts').SuppliedFact; assetId: number | null;
+    /** Lot 59 (#419 R08) : autres informations apportées dans le même message. */
+    more?: Array<{ fact: import('../types/contracts').SuppliedFact; assetId: number | null }>;
+  }): Promise<
+    | { kind: 'plan'; preview: import('../commands/catalog').CommandPlanPreview; capability: string; proposed?: number; refused?: Array<{ fieldKey: string | null; reason: string }> }
+    | { kind: 'need_info'; message: string; reason: string; capability: string | null; proposed?: number; refused?: Array<{ fieldKey: string | null; reason: string }> }
     | null>;
+  /**
+   * Lot 59 (#419) : capacités du prompt maître T2 EFFECTIF (version active du
+   * BO) — arbitrage (A9, {{BUSINESS_CANDIDATES}}), informations apportées
+   * (A7, A8). `null` : inconnues.
+   */
+  t2PromptCapabilities?(): Promise<{ arbitration: boolean; interaction: boolean; version: string | null } | null>;
 }
 
 export async function runAssistant(
@@ -726,12 +737,27 @@ export async function runAssistant(
     // existant) ; une information de contexte n'est jamais persistée.
     // AUCUNE écriture ici. `null` : la demande suit son cours (question).
     // ══════════════════════════════════════════════════════════════════════
+    /** Cible d'une information apportée : résolue par le SERVEUR (biens disponibles), jamais un identifiant du modèle. */
+    const cibleInformation = async (hint: string | null): Promise<{ assetId: number | null; refus: string | null }> => {
+      if (!hint || !ports.resolveTargets) return { assetId: null, refus: null };
+      const r: IntentRoute = { ...routeForIntent('ACCOUNT_FACT_ASSET', input.planType, 'cible d’une information apportée'), entityHints: [{ type: 'asset', value: hint }] };
+      const cibles = await withDeadline(ports.resolveTargets(input, r), retrievalDeadline()).catch(() => null);
+      if (cibles?.asset) return { assetId: cibles.asset.id, refus: null };
+      const ambigus = cibles?.ambiguity?.kind === 'asset' ? cibles.ambiguity.candidates : [];
+      return {
+        assetId: null,
+        refus: ambigus.length >= 2
+          ? `Plusieurs biens correspondent à « ${hint} » : ${ambigus.slice(0, 5).map((c) => c.name).join(', ')}. Précisez lequel ; rien n’a été modifié.`
+          : `Je n’ai pas trouvé « ${hint} » parmi vos biens disponibles : rien n’a été modifié.`,
+      };
+    };
+
     const traiterInteraction = async (compris: IntentRoute | null): Promise<AssistantRunResult | null> => {
       const inter = compris?.understanding?.interaction;
       if (!inter || input.resume) return null;
       semTrace.interactionMode = inter.mode;
       semTrace.suppliedFactsCount = inter.suppliedFacts.length;
-      const traitement = interactionHandling(inter);
+      const traitement = interactionHandling(inter, input.message);
       if (!traitement) return null;
       const routeI = routeForIntent('UNSUPPORTED_ACTION', input.planType, `information apportée (${inter.mode})`);
       base.route = routeI;
@@ -742,31 +768,70 @@ export async function runAssistant(
         done('template', 'interaction.context_only', null, 0);
         return finalize(base, machine, 'deterministic', CONTEXT_ONLY_MESSAGE, [], [], [], ports, input);
       }
+      if (traitement === 'context_calculation') {
+        // ══════════════════════════════════════════════════════════════════
+        // LOT 59 (#419 R07) — INFORMATION DE CONTEXTE + DÉCOMPTE
+        // L'information apportée sert à CETTE réponse seulement : relue dans
+        // le message (jamais crue sur parole), comparée à la donnée
+        // enregistrée de même clé (contradiction signalée, jamais tranchée),
+        // jamais enregistrée. Le SERVEUR calcule ; sans date fiable, il dit
+        // ce qui manque.
+        // ══════════════════════════════════════════════════════════════════
+        trace.escalationReasons.push(`INTERACTION:${inter.mode}:CONTEXT_CALCULATION`);
+        trace.intent = 'ACCOUNT_FACT_ASSET';
+        const faits = contextFactsOf(inter);
+        const { valid, ignored } = validateContextFacts(faits, input.message, aujourdhuiParis());
+        semTrace.contextFactsIgnored = ignored;
+        const hint = faits.find((f) => f.targetHint)?.targetHint ?? compris?.entityHints?.find((h) => h.type === 'asset')?.value ?? null;
+        const cible = await cibleInformation(hint);
+        const assetId = cible.assetId ?? (Number(input.pageContext?.assetId) || null);
+        let nom: string | null = null;
+        const stored: Array<{ fieldKey: string; value: string; display: string }> = [];
+        if (assetId && valid.length && ports.listBusinessSources) {
+          const lus = await withDeadline(ports.listBusinessSources(input.accountId, {
+            assetIds: [assetId], need: { terms: [], facts: valid.map((v) => v.fieldKey), need: 'date' },
+          }), retrievalDeadline()).catch(() => null);
+          for (const x of lus?.sources ?? []) {
+            if (x.domain === 'field' && x.fieldKey && x.assetId === assetId && valid.some((v) => v.fieldKey === x.fieldKey)) {
+              stored.push({ fieldKey: x.fieldKey, value: String(x.endDate ?? x.date ?? ''), display: String((x.meta as { display?: unknown } | undefined)?.display ?? x.detail ?? '') });
+              nom ??= ((x.meta as { assetName?: unknown } | undefined)?.assetName as string | undefined) ?? null;
+            }
+          }
+        }
+        if (cible.assetId && !nom && hint) nom = hint;
+        const r = contextCalculationAnswer({ message: input.message, today: aujourdhuiParis(), facts: valid, stored, assetName: nom });
+        semTrace.contextFactsUsed = r.used;
+        semTrace.contextContradiction = r.contradiction;
+        semTrace.calculation = r.calculation;
+        done('template', r.calculation === 'remaining_periods' ? 'interaction.context_calculation' : 'interaction.context_missing', null, 0);
+        return finalize(base, machine, 'deterministic', r.text, [], [], [], ports, input, r.calculation === 'remaining_periods' ? undefined : 'insufficient');
+      }
       trace.escalationReasons.push(`INTERACTION:${inter.mode}`);
-      const fait = updateFactsOf(inter)[0];
       if (input.planLimit) {
         semTrace.updateCapabilityResolved = false;
         done('template', 'interaction.read_only', null, 0);
         return finalize(base, machine, 'deterministic', UPDATE_READ_ONLY_MESSAGE, [], [], [], ports, input);
       }
-      // Cible : résolue par le SERVEUR dans les biens DISPONIBLES du compte
-      // (indice littéral de T2, sinon page / fil) — jamais un identifiant du modèle.
-      let assetId: number | null = null;
-      if (fait.targetHint && ports.resolveTargets) {
-        const r: IntentRoute = { ...routeForIntent('ACCOUNT_FACT_ASSET', input.planType, 'cible d’une information apportée'), entityHints: [{ type: 'asset', value: fait.targetHint }] };
-        const cibles = await withDeadline(ports.resolveTargets(input, r), retrievalDeadline()).catch(() => null);
-        if (cibles?.asset) assetId = cibles.asset.id;
-        else {
+      // Lot 59 (#419 R08) : TOUTES les informations apportées sont traitées
+      // (jamais seulement la première). Cible de chacune résolue par le
+      // SERVEUR ; une cible introuvable ou ambiguë : rien n'est proposé.
+      const faits = updateFactsOf(inter);
+      const demandes: Array<{ fact: (typeof faits)[number]; assetId: number | null }> = [];
+      for (const fait of faits) {
+        const c = await cibleInformation(fait.targetHint);
+        if (c.refus) {
           semTrace.updateCapabilityResolved = false;
-          const ambigus = cibles?.ambiguity?.kind === 'asset' ? cibles.ambiguity.candidates : [];
-          const texte = ambigus.length >= 2
-            ? `Plusieurs biens correspondent à « ${fait.targetHint} » : ${ambigus.slice(0, 5).map((c) => c.name).join(', ')}. Précisez lequel ; rien n’a été modifié.`
-            : `Je n’ai pas trouvé « ${fait.targetHint} » parmi vos biens disponibles : rien n’a été modifié.`;
+          semTrace.updateFactsRefused = [{ fieldKey: fait.fieldKey ?? null, reason: 'TARGET_UNRESOLVED' }];
+          const texte = faits.length > 1
+            ? `${c.refus.replace(/ ?;? rien n’a été modifié\.?$/, '').replace(/\.$/, '')}. Votre message contient ${faits.length} informations : je n’ai rien préparé et rien n’a été modifié.`
+            : c.refus;
           done('template', 'interaction.target_unresolved', 'AMBIGUOUS_TARGET', 0);
           return finalize(base, machine, 'deterministic', texte, [], [], [], ports, input, 'insufficient');
         }
+        demandes.push({ fact: fait, assetId: c.assetId });
       }
-      const prep = ports.prepareUpdateProposal ? await ports.prepareUpdateProposal(input, { fact: fait, assetId }).catch((e) => {
+      const [premiere, ...autres] = demandes;
+      const prep = ports.prepareUpdateProposal ? await ports.prepareUpdateProposal(input, { ...premiere, ...(autres.length ? { more: autres } : {}) }).catch((e) => {
         console.error('[verebona] proposition de mise à jour impossible :', (e as Error).message);
         return null;
       }) : null;
@@ -778,6 +843,9 @@ export async function runAssistant(
       semTrace.updateTargetType = prep.capability;
       semTrace.updateCapabilityResolved = prep.kind === 'plan' || (prep.capability != null && prep.reason !== 'FIELD_NOT_WRITABLE');
       semTrace.confirmationPlanCreated = prep.kind === 'plan';
+      semTrace.updateFactsProposed = prep.kind === 'plan' ? prep.proposed ?? 1 : 0;
+      semTrace.updateFactsRefused = (prep.refused ?? (prep.kind === 'need_info' ? [{ fieldKey: premiere.fact.fieldKey ?? null, reason: prep.reason }] : []))
+        .map((x) => ({ fieldKey: x.fieldKey, reason: x.reason }));
       if (prep.kind === 'need_info') trace.escalationReasons.push(`INTERACTION:PROPOSAL_REFUSED:${prep.reason}`);
       done('template', prep.kind === 'plan' ? 'command.proposal_preview' : 'command.proposal_need_info', null, 0);
       const result = await finalize(base, machine, 'deterministic', prep.kind === 'plan' ? prep.preview.summary : prep.message, [], [], [], ports, input);
@@ -793,11 +861,18 @@ export async function runAssistant(
     const arbitrer = async (cands: ArbitrationCandidate[]): Promise<RawSemanticDecision | null> => {
       if (!aiActif || !ports.arbitrateWithAI || !isPlanAiEligible(input.planType) || !budget.canCall()) {
         if (ports.arbitrateWithAI && aiActif && !budget.canCall()) trace.escalationReasons.push('SEMANTIC:ARBITRATION_BUDGET_EXHAUSTED');
+        // Lot 59 : motif EXPLICITE de l'arbitrage impossible (trace, BO).
+        semTrace.arbitrationUnavailableReason = !ports.arbitrateWithAI ? 'NO_ARBITRATION_PORT' : !aiActif ? 'AI_DISABLED'
+          : !isPlanAiEligible(input.planType) ? 'PLAN_WITHOUT_AI' : 'BUDGET_EXHAUSTED';
         return null;
       }
-      if (ports.canArbitrateWithAI && !(await ports.canArbitrateWithAI().catch(() => false))) {
+      // Lot 59 (#419) : prompt maître T2 EFFECTIF contrôlé (A9, {{BUSINESS_CANDIDATES}}, semanticDecision).
+      const caps = ports.t2PromptCapabilities ? await ports.t2PromptCapabilities().catch(() => null) : null;
+      if (caps) semTrace.t2PromptCapabilities = caps;
+      if ((caps && !caps.arbitration) || (!caps && ports.canArbitrateWithAI && !(await ports.canArbitrateWithAI().catch(() => false)))) {
         // Version de prompt antérieure (action BO) : aucun appel inutile.
         trace.escalationReasons.push('SEMANTIC:ARBITRATION_PROMPT_UNSUPPORTED');
+        semTrace.arbitrationUnavailableReason = 'PROMPT_UNSUPPORTED';
         return null;
       }
       if (await avantAppelModele() === 'cancelled') return null;

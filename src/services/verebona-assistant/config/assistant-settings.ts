@@ -45,7 +45,7 @@ async function logAdminAction(e: AdminActionEntry): Promise<void> {
   await log(e);
 }
 
-export type SettingGroup = 'debits' | 'budget' | 'alertes' | 'interrupteurs' | 'historique' | 'modeles' | 'plafond_compte';
+export type SettingGroup = 'debits' | 'budget' | 'alertes' | 'interrupteurs' | 'historique' | 'modeles' | 'plafond_compte' | 'mascotte';
 export type SettingType = 'int' | 'ratio' | 'usd' | 'usd_micros' | 'bool';
 export type SettingValue = number | boolean;
 
@@ -72,6 +72,7 @@ export const SETTING_GROUP_LABELS: Readonly<Record<SettingGroup, string>> = {
   historique: 'Historique',
   modeles: 'Modèles',
   plafond_compte: 'Plafond IA mensuel par compte — toutes IA, par offre (lot 22)',
+  mascotte: 'Mascotte d’accueil — T6 (lot 60)',
 };
 
 const int = (key: string, env: string, group: SettingGroup, label: string, description: string, def: number, min: number, max: number): AssistantSettingDef =>
@@ -125,6 +126,11 @@ export const ASSISTANT_SETTINGS: readonly AssistantSettingDef[] = [
     // Même borne que la dérogation par compte (`COST_CAP_MAX_MICROS`, testé).
     type: 'usd_micros', default: 0, min: 0, max: 1_000_000_000,
   })),
+  // Lot 60 (T6) : seuil INDICATIF de la décision d'interpellation — au-delà,
+  // aucune interpellation par défaut, sauf exception motivée par l'IA.
+  int('t6_interpellation_threshold_days', 'MASCOT_T6_INTERPELLATION_THRESHOLD_DAYS', 'mascotte', 'Seuil d’interpellation des échéances (jours)',
+    'Au-delà de ce délai, une échéance ne produit aucune interpellation sur l’accueil, sauf démarche à engager avant, motivée par l’évaluation IA. En deçà, l’IA juge si une interpellation est utile.',
+    60, 7, 365),
 ];
 
 const PAR_CLE = new Map(ASSISTANT_SETTINGS.map((d) => [d.key, d]));

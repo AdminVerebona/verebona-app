@@ -308,7 +308,7 @@ function AiExecutionsScreen() {
       </div>
 
       <div className="flex flex-wrap gap-2">
-        {([['calls', 'Appels modèles'], ['t2', 'Requêtes T2 (routage)'], ['reports', 'Rapports T1/T3'], ['archives', 'Archives (> 90 j)']] as const).map(([k, label]) => (
+        {([['calls', 'Appels modèles'], ['t2', 'Requêtes T2 (routage)'], ['reports', 'Rapports T1/T3/T6'], ['archives', 'Archives (> 90 j)']] as const).map(([k, label]) => (
           <Button key={k} size="sm" variant={tab === k ? 'default' : 'outline'}
             onClick={() => { setTab(k); setOffset(0); }}>{label}</Button>
         ))}

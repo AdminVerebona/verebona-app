@@ -441,7 +441,8 @@ export const AI_OPERATIONS: Record<string, AiOperationDefinition> = {
     provider: GEMINI, primaryModel: ASSISTANT_PRIMARY, fallbackModels: ASSISTANT_FALLBACKS,
     promptCode: T6_MASTER, masterPromptCode: T6_MASTER, task: 'FORMULATE', taskField: 'none',
     // Lot 55A : questions suggérées — `SUGGESTION_CONTEXT` FACULTATIF (prompt-loader).
-    promptVariables: ['INPUT_JSON', 'SUGGESTION_CONTEXT'],
+    // Lot 60 : évaluation d'interpellation — `INTERPELLATION_CONTEXT` FACULTATIF.
+    promptVariables: ['INPUT_JSON', 'SUGGESTION_CONTEXT', 'INTERPELLATION_CONTEXT'],
     timeoutMs: 8_000, jsonResponse: true,
     outputSchema: 'T6FormulateOutput', active: true, billable: false,
   },
