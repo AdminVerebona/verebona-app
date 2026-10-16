@@ -84,6 +84,14 @@ const FORBIDDEN_FILES = [
   // Lot 63B (nettoyage PO du 16/10) : route jamais appelée, nomenclature en dur, écriture des titres sans protection.
   { path: 'src/app/api/documents/title-coherence/route.ts', fromPhase: 1, reason: 'route inutilisée, renommage sans protection (lot 63B)' },
   { path: 'src/services/document-ai/title-coherence.service.ts', fromPhase: 1, reason: 'service de la route title-coherence (lot 63B)' },
+  // Lot 64A (décision PO du 16/10) : modules IA jamais importés (graphe d'imports), supprimés.
+  { path: 'src/services/ai/index.ts', fromPhase: 1, reason: 'point d\'entrée IA jamais importé (lot 64A)' },
+  { path: 'src/services/ai/governance/index.ts', fromPhase: 1, reason: 'gouvernance IA historique jamais importée (lot 64A)' },
+  { path: 'src/services/ai/governance/types.ts', fromPhase: 1, reason: 'gouvernance IA historique jamais importée (lot 64A)' },
+  { path: 'src/services/ai/governance/state-machine.ts', fromPhase: 1, reason: 'gouvernance IA historique jamais importée (lot 64A)' },
+  { path: 'src/services/ai/governance/diff.service.ts', fromPhase: 1, reason: 'gouvernance IA historique jamais importée (lot 64A)' },
+  { path: 'src/services/ai/governance/test-runner.service.ts', fromPhase: 1, reason: 'gouvernance IA historique jamais importée (lot 64A)' },
+  { path: 'src/services/ai/governance/checks/index.ts', fromPhase: 1, reason: 'gouvernance IA historique jamais importée (lot 64A)' },
   // Lot 16b-3b (D-H1) : supprimés, interdits à toute phase (étaient de phase 3).
   { path: 'src/app/api/assets/[id]/ai-suggestions/route.ts', fromPhase: 1, reason: 'usage 3 — préremplissage IA silencieux (D-H1, lot 16b-3)' },
   { path: 'src/services/document-ai/apply-ai-suggestions.ts', fromPhase: 1, reason: 'usages 3 et 4 (D-H1, lot 16b-3)' },

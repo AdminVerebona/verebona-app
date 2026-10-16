@@ -73,7 +73,7 @@ describe('MASC50-AC04 — visibilité du traitement, générique', () => {
     'src/app/api/files/confirm/route.ts': 'USER',
     'src/app/api/documents/[id]/analyze/route.ts': 'USER',
     'src/app/api/documents/analyze-batch/route.ts': 'USER',
-    'src/app/api/billing/stripe-webhook/route.ts': 'USER',
+    // Lot 64A : `triggerRetroactiveAnalysis` (jamais appelée) retirée du webhook Stripe — plus d'appel d'analyse.
     'src/services/document-ai/retroactive-analysis.service.ts': 'USER',
     'src/app/api/documents/[id]/route.ts': 'TECHNICAL',
     'src/app/api/documents/bulk-move/route.ts': 'TECHNICAL',

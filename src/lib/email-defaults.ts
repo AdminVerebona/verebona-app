@@ -154,6 +154,27 @@ L'équipe Verebona`,
     placeholders: JSON.stringify(['firstName', 'requestDate', 'loginUrl', 'forgotPasswordUrl'])
   },
 
+  // Lot 64A (migration 0459) : fin de l'accès d'un membre à un Premium Duo.
+  // Jamais de motif (rétractation, impayé…) ni d'e-mail du titulaire.
+  DUO_MEMBERSHIP_ENDED: {
+    subject: "Votre accès à l'espace Premium Duo a pris fin",
+    body: `Bonjour {{firstName}},
+
+L'espace Premium Duo que vous partagiez avec {{ownerFirstName}} a pris fin.
+
+Ce qui change pour vous : vous n'avez plus accès à l'espace partagé, ni aux biens, documents et échéances qui y sont rattachés. Votre compte revient à votre propre offre (Standard si vous n'avez pas d'abonnement personnel).
+
+Ce qui ne change pas : votre compte et vos données personnelles sont conservés. Rien n'a été supprimé de votre propre espace.
+
+Accéder à mon compte : {{accountUrl}}
+
+Voir mon offre : {{subscriptionUrl}}
+
+Cordialement,
+L'équipe Verebona`,
+    placeholders: JSON.stringify(['firstName', 'ownerFirstName', 'accountUrl', 'subscriptionUrl'])
+  },
+
   DUO_INVITATION: {
     subject: '{{ownerFirstName}} vous invite à rejoindre son espace Verebona DUO',
     body: `<!DOCTYPE html>

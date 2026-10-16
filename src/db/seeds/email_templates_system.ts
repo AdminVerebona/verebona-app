@@ -12,7 +12,8 @@ export async function seedSystemEmailTemplates() {
         'DEADLINE_OVERDUE',
         'PREMIUM_CONFIRMATION',
         'SECURITY_SESSIONS_REVOKED',
-        'SIGNUP_EXISTING_ACCOUNT'
+        'SIGNUP_EXISTING_ACCOUNT',
+        'DUO_MEMBERSHIP_ENDED'
     ];
 
     await db.delete(emailTemplates)
@@ -25,7 +26,8 @@ export async function seedSystemEmailTemplates() {
                 eq(emailTemplates.type, 'DEADLINE_OVERDUE'),
                 eq(emailTemplates.type, 'PREMIUM_CONFIRMATION'),
                 eq(emailTemplates.type, 'SECURITY_SESSIONS_REVOKED'),
-                eq(emailTemplates.type, 'SIGNUP_EXISTING_ACCOUNT')
+                eq(emailTemplates.type, 'SIGNUP_EXISTING_ACCOUNT'),
+                eq(emailTemplates.type, 'DUO_MEMBERSHIP_ENDED')
             )
         );
 
@@ -289,6 +291,18 @@ export async function seedSystemEmailTemplates() {
             subject: DEFAULT_EMAIL_TEMPLATES.SIGNUP_EXISTING_ACCOUNT.subject,
             body: DEFAULT_EMAIL_TEMPLATES.SIGNUP_EXISTING_ACCOUNT.body,
             placeholders: DEFAULT_EMAIL_TEMPLATES.SIGNUP_EXISTING_ACCOUNT.placeholders,
+            triggerConfig: null,
+            sender: null,
+            updatedAt: new Date(),
+            updatedBy: null,
+        },
+        // Lot 64A : fin de l'accès d'un membre à un Premium Duo (migration
+        // 0459) — même texte que `lib/email-defaults.ts`.
+        {
+            type: 'DUO_MEMBERSHIP_ENDED',
+            subject: DEFAULT_EMAIL_TEMPLATES.DUO_MEMBERSHIP_ENDED.subject,
+            body: DEFAULT_EMAIL_TEMPLATES.DUO_MEMBERSHIP_ENDED.body,
+            placeholders: DEFAULT_EMAIL_TEMPLATES.DUO_MEMBERSHIP_ENDED.placeholders,
             triggerConfig: null,
             sender: null,
             updatedAt: new Date(),

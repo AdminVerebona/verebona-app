@@ -36,8 +36,8 @@
  *     ponctuel, pool propre de 2 connexions (`max: 2` : verrou consultatif
  *     de session + exécution), PENDANT que les anciens conteneurs web
  *     servent encore — à compter avec eux ;
- *   · scripts ponctuels (`src/db/run-migration.ts`, `check-*.ts`,
- *     `scalingo run …`) : 1 connexion chacun (`max: 1`) ;
+ *   · scripts ponctuels (`scalingo run …`, `scripts/*`) : 1 connexion
+ *     chacun (`max: 1`) ;
  *   · administration humaine (psql, console de l'hébergeur) : 1 à 2.
  *
  *   total = conteneurs_web × DB_POOL_MAX + 2 (postdeploy) + scripts ponctuels

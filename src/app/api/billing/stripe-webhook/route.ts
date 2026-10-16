@@ -899,54 +899,6 @@ async function performDuoDowngrade(accountId: number, ownerUserId: number) {
 
 }
 
-// ─── V4 Analyse rétroactive ────────────────────────────────────────────────────
-
-/**
- * Déclenche l'analyse IA sur tous les documents non encore analysés du compte.
- * Exécuté en fire-and-forget lors du passage Standard → Premium.
- * Séquentiellement avec 2s de délai entre chaque pour ne pas saturer l'API Gemini.
- */
-async function triggerRetroactiveAnalysis(accountId: number): Promise<void> {
-  const { assetFiles: af } = await import('@/db/schema');
-  const { isNull: drizzleIsNull } = await import('drizzle-orm');
-
-  const unanalyzed = await db.select({ id: af.id })
-    .from(af)
-    .where(
-      (await import('drizzle-orm')).and(
-        (await import('drizzle-orm')).eq(af.accountId, accountId),
-        drizzleIsNull(af.deletedAt),
-        drizzleIsNull(af.lastAnalysisAt),
-        (await import('drizzle-orm')).or(
-          (await import('drizzle-orm')).eq(af.uploadStatus, 'COMPLETED'),
-          drizzleIsNull(af.uploadStatus)
-        )
-      )
-    )
-    .limit(200);
-
-  if (unanalyzed.length === 0) {
-    console.info(`[retroactive] Account ${accountId}: no unanalyzed files`);
-    return;
-  }
-
-  console.info(`[retroactive] Account ${accountId}: scheduling ${unanalyzed.length} files`);
-
-  const { analyzeFileSources } = await import('@/services/ai/source-analysis/entrypoint');
-
-  for (const file of unanalyzed) {
-    try {
-      await analyzeFileSources([file.id], accountId, { origin: 'stripe-webhook/retroactive', processingVisibility: 'USER' });
-    } catch (err) {
-      console.error(`[retroactive] File ${file.id} failed:`, err);
-    }
-    // 2s throttle between calls to avoid rate limiting
-    await new Promise(r => setTimeout(r, 2000));
-  }
-
-  console.info(`[retroactive] Account ${accountId}: done`);
-}
-
 // enforceStandardLimits is imported from @/lib/plan-enforcement
 
 /**

@@ -8,7 +8,7 @@
  *            (BO Référentiels, sélecteurs) ; valeur ancienne normalisée vers
  *            OBJECT par `toAssetFamilyCode()`.
  */
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -50,10 +50,8 @@ describe('PO-Q13 — sélecteur de types de documents = liste du code', () => {
   it('les sélecteurs (tiroir, dialogues) n’affichent pas les codes LEGACY_SUPPORTED', () => {
     expect(read('src/components/assets/DocumentDrawer.tsx')).toContain('t.isActive && !t.hideFromPicker');
     expect(read('src/components/documents/unified-document-dialog.tsx')).toContain('dt.isActive && !dt.hideFromPicker');
-    const edition = read('src/components/document-edit-dialog.tsx');
-    expect(edition).toContain('dt.isActive && !dt.hideFromPicker');
-    // La valeur actuelle d'un document ancien reste lisible.
-    expect(edition).toContain('dt.code === document.documentType && dt.hideFromPicker');
+    // Lot 64A : `document-edit-dialog.tsx` (jamais importé) est supprimé.
+    expect(existsSync(join(process.cwd(), 'src/components/document-edit-dialog.tsx'))).toBe(false);
   });
 });
 

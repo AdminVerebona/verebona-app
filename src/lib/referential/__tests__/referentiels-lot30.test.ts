@@ -254,7 +254,7 @@ describe('lot 30 — types documentaires (§C à §G, §L)', () => {
     expect(categoryOptionsWithCurrent('IMMOBILIER', 'Garage').map((c) => c.value)).toEqual(getAssetCategories('IMMOBILIER').map((c) => c.value));
     expect(categoryOptionsWithCurrent('IMMOBILIER', 'Studio').map((c) => c.value)).toContain('Studio');
     // Sélecteurs de types : liste V1 sans formats ni codes CIL fins ; repli identique.
-    expect(lire('src/components/document-edit-dialog.tsx')).not.toMatch(/DOCUMENT_TYPE_LIST/);
+    // Lot 64A : `document-edit-dialog.tsx` (jamais importé) est supprimé.
     expect(PICKER_DOCUMENT_TYPES.every((t) => !t.hideFromPicker)).toBe(true);
     // Aucun composant ne redéclare une liste de catégories ou de types.
     const fautifs = sources('src/components').concat(sources('src/app'))

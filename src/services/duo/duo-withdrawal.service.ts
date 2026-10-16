@@ -26,8 +26,8 @@
  *      présente plus ; par prudence, un membre encore actif est retiré par
  *      la même sortie (`endMembership`), comme la suppression volontaire.
  *
- * Aucun e-mail n'est envoyé au membre : la sortie de Duo existante n'en
- * prévoit pas (signalé au PO).
+ * Lot 64A : le membre retiré reçoit l'e-mail DUO_MEMBERSHIP_ENDED, enregistré
+ * par la sortie de Duo existante (`endMembership`), sans motif de fermeture.
  *
  * Idempotente : rejouée (reprise du balayage, webhook rejoué, BO), elle ne
  * change plus rien — statut déjà CANCELED (date de sortie conservée), plus

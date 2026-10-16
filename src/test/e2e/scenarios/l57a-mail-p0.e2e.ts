@@ -94,7 +94,15 @@ scenario('L57A-MAIL', 'P0 e-mails : vérification et invitations Duo fiables', (
     process.env.RESEND_API_KEY = 're_e2e_simule';
     await sql`INSERT INTO email_settings (id, emails_enabled, sender_name, sender_email, reply_to_email)
               VALUES (1, true, 'Verebona', 'bonjour@preprod.verebona.fr', 'support@verebona.fr')
-              ON CONFLICT (id) DO UPDATE SET emails_enabled = true`;
+              ON CONFLICT (id) DO UPDATE SET emails_enabled = true, sender_name = 'Verebona',
+                sender_email = 'bonjour@preprod.verebona.fr', reply_to_email = 'support@verebona.fr'`;
+    // Lot 64A : l'ordre des fichiers n'est pas garanti (même base) — un autre
+    // scénario a pu changer l'expéditeur (L61B corrige l'expéditeur depuis le BO).
+    // Lot 64A : les sorties de Duo des fichiers précédents (même base) laissent
+    // des demandes DUO_MEMBERSHIP_ENDED ; la reprise les prendrait et
+    // consommerait les réponses Resend programmées ici.
+    await sql`UPDATE transactional_email_jobs SET status = 'cancelled'
+               WHERE kind = 'DUO_MEMBERSHIP_ENDED' AND status IN ('pending', 'sending')`;
   });
 
   async function cgvu(): Promise<string> {

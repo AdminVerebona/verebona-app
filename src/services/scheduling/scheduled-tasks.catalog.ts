@@ -520,7 +520,7 @@ export const SCHEDULED_TASKS: readonly ScheduledTaskDef[] = [
     // tentées (processus arrêté), des échecs temporaires et des tentatives
     // interrompues. Bornée (6 tentatives), sans doublon (prise atomique).
     code: 'transactional-emails-retry',
-    label: 'E-mails indispensables : vérification d’adresse et invitations Duo (reprise)',
+    label: 'E-mails indispensables : vérification d’adresse, invitations Duo et fin d’accès Duo (envoi et reprise)',
     schedule: { kind: 'interval', everyMs: MIN },
     timeoutMs: 4 * MIN,
     startupDelayMs: MIN,

@@ -124,7 +124,7 @@ function SenderForm({ c, onSaved }: { c: Config; onSaved: (c: Config) => void })
   );
 }
 
-const TYPES = ['EMAIL_VERIFICATION', 'DUO_INVITATION', 'PASSWORD_RESET', 'WELCOME', 'SIGNUP_EXISTING_ACCOUNT'];
+const TYPES = ['EMAIL_VERIFICATION', 'DUO_INVITATION', 'DUO_MEMBERSHIP_ENDED', 'PASSWORD_RESET', 'WELCOME', 'SIGNUP_EXISTING_ACCOUNT'];
 
 export function TransactionalEmailsOps() {
   const [type, setType] = useState('');

@@ -34,7 +34,8 @@ function sqlTable(file: string, table: string) {
     colonnes.set(nom, /NOT NULL|PRIMARY KEY/i.test(l));
   }
   for (const m of sql.matchAll(new RegExp(`ALTER TABLE ${table} ADD COLUMN IF NOT EXISTS (\\w+) ([^;]+);`, 'g'))) colonnes.set(m[1], /NOT NULL/i.test(m[2]));
-  const checks = [...sql.matchAll(/CONSTRAINT (\w+)\s+CHECK/g)].map((m) => m[1]).filter((n) => n.startsWith(table));
+  // Lot 64A : une contrainte remplacée (DROP puis ADD, 0459) n'est comptée qu'une fois.
+  const checks = [...new Set([...sql.matchAll(/CONSTRAINT (\w+)\s+CHECK/g)].map((m) => m[1]).filter((n) => n.startsWith(table)))];
   const supprimes = new Set([...sql.matchAll(/DROP INDEX (?:CONCURRENTLY )?IF EXISTS (\w+)/g)].map((m) => m[1]));
   const index = [...sql.matchAll(new RegExp(`CREATE (?:UNIQUE )?INDEX (?:CONCURRENTLY )?IF NOT EXISTS (\\w+)\\s+ON ${table}\\b`, 'g'))].map((m) => m[1])
     .filter((n) => !supprimes.has(n));
@@ -43,6 +44,8 @@ function sqlTable(file: string, table: string) {
 
 /** Lot 40 : migrations postérieures à la création d'une table, lues avec elle. */
 const SUITES: Readonly<Record<string, readonly string[]>> = {
+  // Lot 64A : clé d'idempotence et nouveau type (fin d'accès Duo).
+  transactional_email_jobs: ['0459_duo_membership_ended_email.sql'],
   // Lot 49B : couverture réelle de la source, état de réparation (0329).
   document_source_units: ['0329_t1_source_verification.sql'],
   document_extraction_coverage: ['0329_t1_source_verification.sql'],

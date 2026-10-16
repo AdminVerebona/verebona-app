@@ -4180,12 +4180,15 @@ export const transactionalEmailJobs = pgTable('transactional_email_jobs', {
   acceptedAt: tstzOptional('accepted_at'),
   createdAt: tstz('created_at'),
   updatedAt: tstz('updated_at'),
+  /** Lot 64A (0459) : idempotence « une fois par événement » (fin d'accès Duo). */
+  dedupeKey: text('dedupe_key'),
 }, (t) => ({
-  kindCheck: check('transactional_email_jobs_kind_check', sql`${t.kind} IN ('EMAIL_VERIFICATION', 'DUO_INVITATION')`),
+  kindCheck: check('transactional_email_jobs_kind_check', sql`${t.kind} IN ('EMAIL_VERIFICATION', 'DUO_INVITATION', 'DUO_MEMBERSHIP_ENDED')`),
   statusCheck: check('transactional_email_jobs_status_check', sql`${t.status} IN ('pending', 'sending', 'accepted', 'failed', 'cancelled')`),
   dueIdx: index('transactional_email_jobs_due_idx').on(t.nextAttemptAt).where(sql`status IN ('pending', 'sending')`),
   userIdx: index('transactional_email_jobs_user_idx').on(t.userId, t.kind),
   duoIdx: index('transactional_email_jobs_duo_idx').on(t.duoId, t.kind),
+  dedupeIdx: uniqueIndex('transactional_email_jobs_dedupe_key_idx').on(t.dedupeKey).where(sql`dedupe_key IS NOT NULL`),
 }));
 
 /** Lot 57A (0405) — événements webhook Resend (svix-id unique : rejeu sans effet). */

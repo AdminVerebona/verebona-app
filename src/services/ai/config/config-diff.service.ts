@@ -9,7 +9,7 @@
  * Le diff est donc structuré de la même façon : un résultat par traitement,
  * chacun portant ses champs modifiés.
  *
- * Un diff textuel ligne à ligne, comme celui de `governance/diff.service.ts`,
+ * Un diff textuel ligne à ligne (ancien `governance/diff.service.ts`, retiré au lot 64A),
  * ne conviendrait pas ici : il dirait qu'une accolade a bougé sans dire quel
  * modèle a changé. Le diff de prompt, lui, reste textuel — c'est le seul champ
  * dont la modification se lit ligne à ligne, et le service existant s'en charge.

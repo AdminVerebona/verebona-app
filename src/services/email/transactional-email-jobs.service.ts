@@ -33,13 +33,18 @@
  * d'invitation Duo relu dans `duo_accounts`. Une demande devenue sans objet
  * (compte vérifié entre-temps, invitation retirée ou expirée, compte suspendu)
  * est close `cancelled` sans envoi. Rien ici n'active un compte.
+ *
+ * Lot 64A : troisième type, DUO_MEMBERSHIP_ENDED (information du membre
+ * retiré d'un Duo), enregistré par la sortie de Duo
+ * (`services/duo/duo-membership-ended-email.ts`, une demande par sortie via
+ * `dedupe_key`) et envoyé par la reprise planifiée.
  * ══════════════════════════════════════════════════════════════════════════
  */
 import { pgClient } from '@/db';
 import { emailService } from '@/lib/email/email-service';
 import { buildEmailVerificationUrl, EMAIL_VERIFICATION_TTL_MS } from '@/services/auth/email-verification.service';
 
-export type EmailJobKind = 'EMAIL_VERIFICATION' | 'DUO_INVITATION';
+export type EmailJobKind = 'EMAIL_VERIFICATION' | 'DUO_INVITATION' | 'DUO_MEMBERSHIP_ENDED';
 export type EmailJobStatus = 'pending' | 'sending' | 'accepted' | 'failed' | 'cancelled';
 
 const MIN = 60_000;
@@ -182,7 +187,7 @@ export function enqueueDuoInvitationEmail(input: {
 
 type Exec = { unsafe: typeof pgClient.unsafe };
 type Built =
-  | { ok: true; templateCode: EmailJobKind; variables: Record<string, string>; recipientUserId: number | null; triggeredByUserId: number | null; onAccepted?: (now: Date, tx: Exec) => Promise<void> }
+  | { ok: true; templateCode: EmailJobKind; variables: Record<string, string>; recipientUserId: number | null; triggeredByUserId: number | null; onAccepted?: (now: Date, tx: Exec) => Promise<void>; /** Adresse actuelle du destinataire (sinon celle de la demande). */ to?: string }
   | { ok: false; reason: string };
 
 function contextOf(job: JobRow): Record<string, unknown> {
@@ -296,6 +301,49 @@ async function buildDuoInvitation(job: JobRow, now: Date): Promise<Built> {
   };
 }
 
+/** Texte inséré dans un gabarit rendu en HTML : jamais de balise injectée. */
+const escapeHtml = (v: string) => v.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
+/** Comptes qui ne reçoivent pas l'information (lot 53A : suspendu, supprimé ou en suppression). */
+const CLOSED_ACCOUNT_STATUSES = new Set(['SUSPENDED', 'PENDING_DELETION', 'DELETED']);
+
+/**
+ * Lot 64A — fin de l'accès d'un membre à un Premium Duo. Destinataire = le
+ * membre (son adresse ACTUELLE), émetteur = le titulaire. Le prénom du
+ * titulaire vient du contexte figé à la sortie (jamais son e-mail) ; aucun
+ * motif de fermeture. Sans objet si le membre a rejoint à nouveau le Duo ou
+ * si son compte est fermé.
+ */
+async function buildDuoMembershipEnded(job: JobRow): Promise<Built> {
+  if (job.user_id == null) return { ok: false, reason: 'ACCOUNT_GONE' };
+  const [user] = await pgClient.unsafe<{ id: number; email: string; first_name: string | null; status: string | null }[]>(
+    `SELECT id, email, first_name, status FROM users WHERE id = $1`, [job.user_id as never]);
+  if (!user || !user.email) return { ok: false, reason: 'ACCOUNT_GONE' };
+  if (CLOSED_ACCOUNT_STATUSES.has(String(user.status ?? '').toUpperCase())) return { ok: false, reason: 'ACCOUNT_CLOSED' };
+  const ctx = contextOf(job);
+  const membershipId = Number(ctx.membershipId);
+  if (Number.isFinite(membershipId)) {
+    const [m] = await pgClient.unsafe<{ status: string }[]>(
+      `SELECT status FROM duo_memberships WHERE id = $1 AND user_id = $2`, [membershipId, user.id] as never[]);
+    if (m?.status === 'ACTIVE') return { ok: false, reason: 'MEMBERSHIP_RESTORED' };
+  }
+  const owner = typeof ctx.ownerFirstName === 'string' && ctx.ownerFirstName.trim() ? ctx.ownerFirstName.trim() : 'le titulaire de l’abonnement';
+  const base = appBaseUrl();
+  return {
+    ok: true,
+    templateCode: 'DUO_MEMBERSHIP_ENDED',
+    variables: {
+      firstName: escapeHtml((user.first_name ?? '').trim()),
+      ownerFirstName: escapeHtml(owner),
+      accountUrl: `${base}/mon-compte`,
+      subscriptionUrl: `${base}/mon-compte/offres`,
+    },
+    recipientUserId: user.id,
+    triggeredByUserId: job.triggered_by_user_id,
+    to: user.email,
+  };
+}
+
 /**
  * Tente l'envoi d'une demande. Ne lève pas (erreur inattendue → tentative
  * comptée comme échouée). `busy` : demande non due, déjà prise ou close.
@@ -332,14 +380,16 @@ export async function processEmailJob(jobId: number, now: Date = new Date()): Pr
       await close('failed', { error: 'MAX_ATTEMPTS' });
       return { jobId: job.id, status: 'failed', error: 'MAX_ATTEMPTS' };
     }
-    const built = job.kind === 'EMAIL_VERIFICATION' ? await buildVerification(job, now) : await buildDuoInvitation(job, now);
+    const built = job.kind === 'EMAIL_VERIFICATION' ? await buildVerification(job, now)
+      : job.kind === 'DUO_MEMBERSHIP_ENDED' ? await buildDuoMembershipEnded(job)
+      : await buildDuoInvitation(job, now);
     if (!built.ok) {
       await close('cancelled', { error: built.reason });
       return { jobId: job.id, status: 'cancelled', error: built.reason };
     }
     const res = await emailService.send({
       templateCode: built.templateCode,
-      to: job.recipient_email,
+      to: built.to ?? job.recipient_email,
       variables: built.variables,
       userId: built.recipientUserId ?? undefined,
       triggeredByUserId: built.triggeredByUserId,
@@ -354,6 +404,12 @@ export async function processEmailJob(jobId: number, now: Date = new Date()): Pr
         await built.onAccepted?.(now, exec);
       });
       return { jobId: job.id, status: 'accepted' };
+    }
+    // Lot 64A : e-mail désactivable (BO › Communications) coupé par
+    // l'administrateur — décision volontaire, pas une panne : clos sans reprise.
+    if (res?.error === 'CHANNEL_DISABLED') {
+      await close('cancelled', { error: 'CHANNEL_DISABLED', logId: res.logId ?? null });
+      return { jobId: job.id, status: 'cancelled', error: 'CHANNEL_DISABLED' };
     }
     return await failed(job, res?.error ?? 'Échec d’envoi (cause inconnue)', res?.logId ?? null, now, close);
   } catch (e) {

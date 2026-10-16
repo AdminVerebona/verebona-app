@@ -136,7 +136,7 @@ export interface TransactionalEmailConfig {
   lastWebhookAt: string | null;
 }
 
-const REQUIRED_TEMPLATES = ['EMAIL_VERIFICATION', 'DUO_INVITATION', 'PASSWORD_RESET', 'WELCOME'];
+const REQUIRED_TEMPLATES = ['EMAIL_VERIFICATION', 'DUO_INVITATION', 'DUO_MEMBERSHIP_ENDED', 'PASSWORD_RESET', 'WELCOME'];
 
 /**
  * Lot 57A — ce que le diagnostic exige de vérifier SANS SQL : expéditeur

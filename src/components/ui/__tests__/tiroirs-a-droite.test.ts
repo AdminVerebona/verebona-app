@@ -17,9 +17,8 @@ function tsxFiles(dir: string): string[] {
 const files = tsxFiles(ROOT).map((f) => ({ f, src: readFileSync(f, 'utf8') }));
 
 describe('tiroirs ouverts à droite', () => {
-  it('le tiroir vaul ouvre à droite par défaut', () => {
-    expect(readFileSync(join(ROOT, 'components/ui/drawer.tsx'), 'utf8')).toContain('direction = "right"');
-  });
+  // Lot 64A : `components/ui/drawer.tsx` (vaul, jamais importé) est supprimé ;
+  // la règle ci-dessous balaye tous les tiroirs réellement employés.
 
   it('aucun tiroir ni panneau déclaré par le bas', () => {
     const fautifs = files

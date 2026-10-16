@@ -19,7 +19,9 @@
  *      l'impliquent sont annulées et les biens déverrouillés ;
  *   4. les biens, documents et échéances du Duo ne sont PAS supprimés : ils
  *      restent dans l'espace du titulaire ;
- *   5. `duo_accounts.activated_at` est recalculé (un seul membre actif).
+ *   5. `duo_accounts.activated_at` est recalculé (un seul membre actif) ;
+ *   6. (lot 64A) membre RETIRÉ : e-mail DUO_MEMBERSHIP_ENDED en file durable
+ *      (`duo-membership-ended-email.ts`) ; pas d'e-mail quand il part lui-même.
  * ══════════════════════════════════════════════════════════════════════════
  */
 import { and, eq, inArray, or } from 'drizzle-orm';
@@ -29,6 +31,7 @@ import {
   accountMemberships, accountSubscriptions, assetDeleteRequests, assetMoveRequests,
   assets, duoAccounts, duoMemberships, users,
 } from '@/db/schema';
+import { enqueueDuoMembershipEndedEmail } from './duo-membership-ended-email';
 
 export type DuoExitError =
   | 'DUO_NOT_FOUND'
@@ -93,6 +96,11 @@ export async function endMembership(p: {
   const planType = await ownPlanType(p.memberUserId);
 
   const annulees = await db.transaction(async (tx) => {
+    // Lot 64A : e-mail au membre retiré (REMOVED), enregistré dans la même
+    // transaction (point de sauvegarde, jamais bloquant), avant la mise à jour
+    // — l'état d'origine du membership rend la sortie idempotente.
+    await enqueueDuoMembershipEndedEmail(tx as never, p);
+
     await tx.update(duoMemberships)
       .set({ status: p.status, leftAt: now, updatedAt: now })
       .where(eq(duoMemberships.id, p.membershipId));
