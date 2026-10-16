@@ -17,6 +17,7 @@ const NO_STORE = { 'Cache-Control': 'no-store' } as const;
  *   200 { result: 'finished', status: 'ok' | 'error', skipped, error, durationMs, task }
  *   202 { result: 'running', task }       — se poursuit en arrière-plan
  *   404 TASK_NOT_FOUND · 409 TASK_RUNNING · 409 TASK_DISABLED (arrêt d'urgence)
+ *   · 409 TASK_ADMIN_DISABLED (suspendue depuis le BO, lot 65A)
  * L'échéance planifiée n'est pas modifiée. Journalisé dans l'audit admin
  * (AUD-001 : administrateur et son e-mail, tentative, refus, résultat).
  * Corps facultatif : `{ reason?: string }` — motif libre (500 caractères au
@@ -56,6 +57,13 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         await audit('DENIED', { reason: 'TASK_DISABLED' });
         return NextResponse.json(
           { error: 'Cette tâche est arrêtée par une variable d’environnement.', code: 'TASK_DISABLED' },
+          { status: 409, headers: NO_STORE },
+        );
+      case 'admin_disabled':
+        // Lot 65A : suspendue depuis le back-office.
+        await audit('DENIED', { reason: 'TASK_ADMIN_DISABLED' });
+        return NextResponse.json(
+          { error: 'Cette tâche est suspendue depuis le back-office : réactivez-la d’abord.', code: 'TASK_ADMIN_DISABLED' },
           { status: 409, headers: NO_STORE },
         );
       case 'busy':

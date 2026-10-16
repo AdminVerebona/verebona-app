@@ -57,7 +57,8 @@ describe('PO-Q11 — liste officielle', () => {
     expect(isReadOnlyAssetStatus('ARCHIVED')).toBe(true);
     expect(assetStatusBadgeVariant('VENDU')).toBe('sold');
     expect(assetStatusBadgeVariant('HORS_SERVICE')).toBe('active');
-    for (const f of ['src/app/(dashboard)/assets/page.tsx', 'src/app/(dashboard)/assets/[id]/page.tsx', 'src/components/dashboard/AssetCard.tsx']) {
+    // Lot 65A : `components/dashboard/AssetCard.tsx` supprimé (aucun écran ne l'utilisait).
+    for (const f of ['src/app/(dashboard)/assets/page.tsx', 'src/app/(dashboard)/assets/[id]/page.tsx']) {
       const src = read(f);
       expect(src, f).toContain("from '@/lib/asset-status'");
       expect(src, f).not.toMatch(/'EN_PANNE'|'EN_REPARATION'|'DETRUIT'|'INACTIF'|'HORS_SERVICE'|'EN_MAINTENANCE'/);

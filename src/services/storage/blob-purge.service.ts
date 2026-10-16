@@ -20,12 +20,43 @@
  *     `MAX_ATTEMPTS`, la ligne est exclue et reste pour examen ;
  *   · la purge est une tâche quotidienne interne (daily-maintenance-scheduler),
  *     la route cron restant disponible pour un déclenchement externe.
+ *
+ * LOT 65A — GARDE-FOU AVANT TOUTE SUPPRESSION
+ *   Un objet mis en file peut être encore UTILISÉ ailleurs : copie de
+ *   transmission en repli (le destinataire garde la clé source quand la copie
+ *   S3 échoue — même entre comptes), vignette de bien promue depuis un
+ *   document, version de document. La purge d'un compte (J+30, rétractation)
+ *   met en file toutes les clés de ses fichiers sans le vérifier. Désormais,
+ *   juste avant de supprimer, la file vérifie qu'aucune AUTRE référence
+ *   n'existe (`asset_files` hors la ligne d'origine de la demande,
+ *   `document_versions`, `assets.thumbnail_url`) ; sinon la demande est close
+ *   SANS suppression (`error_message` = KEPT_STILL_REFERENCED) : l'objet sera
+ *   supprimé avec sa dernière référence.
  * ══════════════════════════════════════════════════════════════════════════
  */
 
 import { db } from '@/db';
 import { pendingBlobDeletions } from '@/db/schema';
-import { and, asc, eq, isNull, lt, lte } from 'drizzle-orm';
+import { and, asc, eq, isNull, lt, lte, sql } from 'drizzle-orm';
+
+/** Motif d'une demande close sans suppression (objet encore utilisé). */
+export const KEPT_STILL_REFERENCED = 'KEPT_STILL_REFERENCED';
+
+/** Référence encore vivante à la clé, hors la ligne d'origine de la demande ? */
+export type ReferenceCheckFn = (key: string, originFileId: number | null) => Promise<boolean>;
+
+const rowsOf = <T>(r: unknown): T[] => (Array.isArray(r) ? (r as T[]) : ((r as { rows?: T[] })?.rows ?? []));
+
+export const defaultReferenceCheck: ReferenceCheckFn = async (key, originFileId) => {
+  const [r] = rowsOf<{ ref: boolean }>(await db.execute(sql`
+    SELECT (
+         EXISTS (SELECT 1 FROM asset_files WHERE s3_key = ${key} AND (${originFileId}::int IS NULL OR id <> ${originFileId}::int))
+      OR EXISTS (SELECT 1 FROM document_versions WHERE s3_key = ${key})
+      OR EXISTS (SELECT 1 FROM assets WHERE thumbnail_url = ${key}
+                                         OR right(thumbnail_url, length(${key}) + 1) = '/' || ${key})
+    ) AS ref`));
+  return r?.ref === true;
+};
 
 /** Au-delà, la ligne n'est plus tentée (exclue de la file). */
 export const MAX_ATTEMPTS = 5;
@@ -84,6 +115,8 @@ export async function deleteStorageObjects(
 export interface PurgeResult {
   processed: number;
   failed: number;
+  /** Lot 65A : demandes closes sans suppression (objet encore utilisé ailleurs) ; absent si aucune. */
+  kept?: number;
   /** Lignes ayant atteint MAX_ATTEMPTS lors de ce passage (exclues). */
   abandoned: number;
 }
@@ -94,9 +127,12 @@ export async function purgePendingBlobs(options: {
   deleteObject?: DeleteObjectFn;
   batchSize?: number;
   maxBatches?: number;
+  /** Lot 65A : garde-fou injectable (tests). */
+  isReferenced?: ReferenceCheckFn;
 } = {}): Promise<PurgeResult> {
   const now = options.now ?? new Date();
   const deleteObject = options.deleteObject ?? defaultDeleteObject;
+  const isReferenced = options.isReferenced ?? defaultReferenceCheck;
   const batchSize = options.batchSize ?? BATCH_SIZE;
   const maxBatches = options.maxBatches ?? MAX_BATCHES;
   const result: PurgeResult = { processed: 0, failed: 0, abandoned: 0 };
@@ -107,6 +143,7 @@ export async function purgePendingBlobs(options: {
         id: pendingBlobDeletions.id,
         storagePath: pendingBlobDeletions.storagePath,
         attemptCount: pendingBlobDeletions.attemptCount,
+        fileId: pendingBlobDeletions.fileId,
       })
       .from(pendingBlobDeletions)
       .where(and(
@@ -119,6 +156,15 @@ export async function purgePendingBlobs(options: {
 
     for (const item of pending) {
       try {
+        // Lot 65A : jamais d'objet encore utilisé (voir en-tête).
+        if (await isReferenced(item.storagePath, item.fileId ?? null)) {
+          await db
+            .update(pendingBlobDeletions)
+            .set({ processedAt: now, errorMessage: KEPT_STILL_REFERENCED })
+            .where(eq(pendingBlobDeletions.id, item.id));
+          result.kept = (result.kept ?? 0) + 1;
+          continue;
+        }
         await deleteObject(item.storagePath);
         await db
           .update(pendingBlobDeletions)

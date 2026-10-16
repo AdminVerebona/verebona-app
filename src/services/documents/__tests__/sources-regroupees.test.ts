@@ -34,7 +34,8 @@ describe('regroupement', () => {
 describe('cleanup et accès', () => {
   it('le cleanup physique exclut les secondaires d’un document existant', () => {
     const job = read('src/lib/cleanup-job.ts');
-    expect(job.match(/purgeEligibleCondition\(cutoffDate\)/g)?.length).toBe(2); // job + statistiques
+    // Lot 65A : sélection, relecture verrouillée par fichier, statistiques.
+    expect(job.match(/purgeEligibleCondition\(cutoff(Date)?\)/g)?.length).toBe(3);
     const helper = read('src/services/documents/grouped-sources.ts');
     const cond = helper.slice(helper.indexOf('export function purgeEligibleCondition'), helper.indexOf('export const viewableFileCondition'));
     expect(cond).toContain('IS NULL');

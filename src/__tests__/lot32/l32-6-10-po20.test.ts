@@ -18,7 +18,6 @@ vi.mock('next/navigation', () => ({
 (globalThis as { React?: typeof React }).React = React;
 
 import { TO_PROCESS_COUNT_EVENT, TO_PROCESS_REFRESH_EVENTS } from '@/hooks/useToProcessCount';
-import { AssetCard } from '@/components/dashboard/AssetCard';
 import { HomeAssets } from '@/components/home/HomeBlocks';
 import { deadlineBlockedText, deadlineExtActionText } from '@/services/home/mascot/deadline-label';
 import { buildCandidates, type MascotAgendaRow, type MascotRawData } from '@/services/home/mascot/signals';
@@ -53,12 +52,9 @@ describe('L32-6 — compteur « À traiter » du menu', () => {
 });
 
 describe('L32-10 — pastilles « action à faire » des biens', () => {
-  it('L32-10 — carte de bien (AssetCard) : plus de pastille, même avec des actions', () => {
-    const html = renderToStaticMarkup(h(AssetCard, { id: 1, name: 'Vélo Jean Fourche', category: 'VEHICULE', subtype: 'Vélo', todoCount: 3, documentCount: 2 }));
-    expect(html).toContain('Vélo Jean Fourche');
-    expect(html).not.toMatch(/actions? à faire/);
-  });
-
+  // Lot 65A : `components/dashboard/AssetCard.tsx` (utilisé par aucun écran,
+  // seulement par ce test) est supprimé ; la règle reste vérifiée sur les
+  // écrans réels ci-dessous.
   it('L32-10 — tuiles « Mes biens » de l’accueil : plus de pastille', () => {
     const html = renderToStaticMarkup(h(HomeAssets, {
       onAddAsset: () => {},
@@ -69,7 +65,7 @@ describe('L32-10 — pastilles « action à faire » des biens', () => {
   });
 
   it('L32-10 — nulle part ailleurs (liste Mes biens, fiche)', () => {
-    for (const f of ['src/app/(dashboard)/assets/page.tsx', 'src/components/home/HomeBlocks.tsx', 'src/components/dashboard/AssetCard.tsx']) {
+    for (const f of ['src/app/(dashboard)/assets/page.tsx', 'src/components/home/HomeBlocks.tsx']) {
       expect(lire(f)).not.toMatch(/'1 action à faire'|actions à faire`/);
     }
   });

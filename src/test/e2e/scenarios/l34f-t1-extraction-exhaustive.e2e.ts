@@ -297,7 +297,7 @@ scenario('L34F', 'T1 — extraction exhaustive, persistée et réexploitable (T1
     const fetches = pdf.fetched;
     // J+30 : la maison est créée.
     const maison = await make.asset(compte, { category: 'IMMOBILIER', name: 'Maison Victor Hugo' });
-    const { searchDocumentSourceUnits, loadDocumentSourceUnits } = await import('@/services/ai/source-analysis/source-units');
+    const { searchDocumentSourceUnits, loadDocumentSourceUnits } = await import('@/services/ai/source-analysis/source-units/repository');
     const hits = await searchDocumentSourceUnits(compte.id, ['12', 'rue', 'Victor', 'Hugo']);
     expect(hits).toEqual([expect.objectContaining({
       fileId: f.id, sourceUnitId: 'page:1:field:1', page: 1, coverageStatus: 'UNRESOLVED', value: '12 rue Victor Hugo, 69003 Lyon',

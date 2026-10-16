@@ -33,7 +33,7 @@ scenario('L45-O6', 'T2 Opération d’abord : coûts consolidés, mode mixte, pa
     ]);
     return answerFromData({ port: accountDataRepository, accountId, message, thresholds: DEFAULT_THRESHOLDS });
   };
-  const can = () => import('@/services/verebona-assistant/canonical');
+  const can = () => import('@/services/verebona-assistant/canonical/expenses');
 
   /** Document analysé, rattaché à un bien (colonne historique). */
   async function doc(m: Factories, c: AccountRow, assetId: number | null, v: { title: string; type: string | null; cents: number | null; date?: string | null }) {

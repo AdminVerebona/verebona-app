@@ -100,9 +100,10 @@ scenario('L57A-MAIL', 'P0 e-mails : vérification et invitations Duo fiables', (
     // scénario a pu changer l'expéditeur (L61B corrige l'expéditeur depuis le BO).
     // Lot 64A : les sorties de Duo des fichiers précédents (même base) laissent
     // des demandes DUO_MEMBERSHIP_ENDED ; la reprise les prendrait et
-    // consommerait les réponses Resend programmées ici.
+    // consommerait les réponses Resend programmées ici (lot 65A : départs
+    // volontaires, DUO_MEMBERSHIP_LEFT, de même).
     await sql`UPDATE transactional_email_jobs SET status = 'cancelled'
-               WHERE kind = 'DUO_MEMBERSHIP_ENDED' AND status IN ('pending', 'sending')`;
+               WHERE kind IN ('DUO_MEMBERSHIP_ENDED', 'DUO_MEMBERSHIP_LEFT') AND status IN ('pending', 'sending')`;
   });
 
   async function cgvu(): Promise<string> {

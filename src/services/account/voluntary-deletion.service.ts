@@ -778,7 +778,9 @@ async function detachSharingDefault(userId: number, now: Date): Promise<{ role: 
       await endMembership({ duoId: ownedDuo.id, membershipId: m.id, memberUserId: m.userId, status: 'REMOVED' });
     }
   } else {
-    const left = await leaveDuo(userId);
+    // Lot 65A : départ dû à la suppression de son propre compte — pas
+    // d'e-mail « Vous avez quitté le Duo » (l'e-mail de suppression suffit).
+    const left = await leaveDuo(userId, { notifyMember: false });
     if (left.ok) role = 'duo_member';
     else {
       const [was] = await db

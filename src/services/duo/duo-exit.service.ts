@@ -21,7 +21,10 @@
  *      restent dans l'espace du titulaire ;
  *   5. `duo_accounts.activated_at` est recalculé (un seul membre actif) ;
  *   6. (lot 64A) membre RETIRÉ : e-mail DUO_MEMBERSHIP_ENDED en file durable
- *      (`duo-membership-ended-email.ts`) ; pas d'e-mail quand il part lui-même.
+ *      (`duo-membership-ended-email.ts`) ; (lot 65A) membre qui PART
+ *      lui-même : confirmation DUO_MEMBERSHIP_LEFT, sauf quand il part en
+ *      supprimant son propre compte (`notifyMember: false` — il reçoit déjà
+ *      l'e-mail de suppression).
  * ══════════════════════════════════════════════════════════════════════════
  */
 import { and, eq, inArray, or } from 'drizzle-orm';
@@ -91,15 +94,21 @@ export async function endMembership(p: {
   membershipId: number;
   memberUserId: number;
   status: 'REMOVED' | 'LEFT';
+  /** Lot 65A : faux = aucun e-mail au membre (départ par suppression de son compte). */
+  notifyMember?: boolean;
 }): Promise<number> {
   const now = new Date();
   const planType = await ownPlanType(p.memberUserId);
 
   const annulees = await db.transaction(async (tx) => {
-    // Lot 64A : e-mail au membre retiré (REMOVED), enregistré dans la même
-    // transaction (point de sauvegarde, jamais bloquant), avant la mise à jour
-    // — l'état d'origine du membership rend la sortie idempotente.
-    await enqueueDuoMembershipEndedEmail(tx as never, p);
+    // Lot 64A / 65A : e-mail au membre (retiré : fin d'accès ; parti de
+    // lui-même : confirmation), enregistré dans la même transaction (point de
+    // sauvegarde, jamais bloquant), avant la mise à jour — l'état d'origine
+    // du membership rend la sortie idempotente.
+    await enqueueDuoMembershipEndedEmail(tx as never, {
+      duoId: p.duoId, membershipId: p.membershipId, memberUserId: p.memberUserId, status: p.status,
+      notify: p.notifyMember !== false,
+    });
 
     await tx.update(duoMemberships)
       .set({ status: p.status, leftAt: now, updatedAt: now })
@@ -171,8 +180,12 @@ export async function removeDuoMember(ownerUserId: number): Promise<DuoExitResul
   return { ok: true, duoId: duo.id, memberUserId: member.userId, status: 'REMOVED', cancelledRequests };
 }
 
-/** Le membre (non titulaire) quitte le Duo. */
-export async function leaveDuo(userId: number): Promise<DuoExitResult> {
+/**
+ * Le membre (non titulaire) quitte le Duo. `notifyMember: false` : départ
+ * provoqué par la suppression de son propre compte — pas d'e-mail de
+ * confirmation (lot 65A, il reçoit déjà l'e-mail de suppression).
+ */
+export async function leaveDuo(userId: number, opts: { notifyMember?: boolean } = {}): Promise<DuoExitResult> {
   const [row] = await db
     .select({
       membershipId: duoMemberships.id,
@@ -188,6 +201,7 @@ export async function leaveDuo(userId: number): Promise<DuoExitResult> {
 
   const cancelledRequests = await endMembership({
     duoId: row.duoId, membershipId: row.membershipId, memberUserId: userId, status: 'LEFT',
+    notifyMember: opts.notifyMember !== false,
   });
   return { ok: true, duoId: row.duoId, memberUserId: userId, status: 'LEFT', cancelledRequests };
 }

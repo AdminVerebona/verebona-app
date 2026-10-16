@@ -89,6 +89,9 @@ export type AdminActionType =
   | 'OPS_BACKFILL_RESTORE'
   // Exécution manuelle d'une tâche planifiée interne (lot 25, chantier A).
   | 'SCHEDULED_TASK_RUN'
+  // Lot 65A : suspension / réactivation d'une tâche planifiée depuis le BO.
+  | 'SCHEDULED_TASK_DISABLE'
+  | 'SCHEDULED_TASK_ENABLE'
   // Lot 33D : consultation de la sortie d'un modèle IA (données issues des
   // documents des utilisateurs) depuis « Exécutions & logs ».
   | 'AI_MODEL_OUTPUT_READ'

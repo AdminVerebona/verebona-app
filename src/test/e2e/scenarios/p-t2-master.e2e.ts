@@ -138,7 +138,7 @@ scenario('P-T2-MASTER', 'Prompt maître T2 : compréhension, réponse vérifiée
     // le seul ensemble déclaré complet pour le calcul (B4). La source de la
     // réponse structurée de X ne porte pas encore ce total (besoin signalé) :
     // elle est construite ici à partir de la même lecture.
-    const can = await import('@/services/verebona-assistant/canonical');
+    const can = await import('@/services/verebona-assistant/canonical/expenses');
     const q = await can.sumQualifiedExpenses(compte.id, { assetIds: [bien.id], theme: 'maintenance' });
     expect(q).toMatchObject({ qualifiedSumCents: 45000, complete: false, unqualified: { count: 1 } });
     const sources = [{
@@ -169,7 +169,7 @@ scenario('P-T2-MASTER', 'Prompt maître T2 : compréhension, réponse vérifiée
     const bien = await make.asset(compte, { category: 'OBJECT', name: 'Draisienne' });
     const achat = await make.agendaItem(compte, { title: 'Achat de la draisienne', startDate: '2026-04-24', assetIds: [bien.id] });
     const revision = await make.agendaItem(compte, { title: 'Révision de la draisienne', startDate: '2026-09-12', assetIds: [bien.id] });
-    const can = await import('@/services/verebona-assistant/canonical');
+    const can = await import('@/services/verebona-assistant/canonical/agenda');
     const sources = [];
     for (const it of [achat, revision]) {
       const item = await can.getCanonicalAgendaItem(compte.id, it.id);

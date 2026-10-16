@@ -16,6 +16,8 @@ const st = {
 
 vi.mock('@/db', () => ({
   db: {
+    // Lot 65A : garde-fou « clé encore référencée » — aucune référence ici.
+    execute: async () => [{ ref: false }],
     select: () => {
       const q = { where: null as unknown, orderBy: [] as unknown[], limit: 0 };
       const c: Record<string, unknown> = {

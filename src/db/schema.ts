@@ -493,6 +493,8 @@ export const assetFiles = pgTable('asset_files', {
   uploadOperationUidx: uniqueIndex('asset_files_user_upload_operation_uidx')
     .on(table.userId, table.uploadOperationId)
     .where(sql`upload_operation_id IS NOT NULL`),
+  // Lot 65A (migration 0463_idx_1) : références à un objet de stockage avant purge.
+  s3KeyIdx: index('asset_files_s3_key_idx').on(table.s3Key).where(sql`s3_key IS NOT NULL`),
   scopeCheck: check('asset_files_scope_check', sql`${table.scope} IN ('personal', 'duo')`),
 }));
 
@@ -4180,10 +4182,10 @@ export const transactionalEmailJobs = pgTable('transactional_email_jobs', {
   acceptedAt: tstzOptional('accepted_at'),
   createdAt: tstz('created_at'),
   updatedAt: tstz('updated_at'),
-  /** Lot 64A (0459) : idempotence « une fois par événement » (fin d'accès Duo). */
+  /** Lot 64A (0459) : idempotence « une fois par événement » (fin d'accès Duo ; départ volontaire, lot 65A, 0462). */
   dedupeKey: text('dedupe_key'),
 }, (t) => ({
-  kindCheck: check('transactional_email_jobs_kind_check', sql`${t.kind} IN ('EMAIL_VERIFICATION', 'DUO_INVITATION', 'DUO_MEMBERSHIP_ENDED')`),
+  kindCheck: check('transactional_email_jobs_kind_check', sql`${t.kind} IN ('EMAIL_VERIFICATION', 'DUO_INVITATION', 'DUO_MEMBERSHIP_ENDED', 'DUO_MEMBERSHIP_LEFT')`),
   statusCheck: check('transactional_email_jobs_status_check', sql`${t.status} IN ('pending', 'sending', 'accepted', 'failed', 'cancelled')`),
   dueIdx: index('transactional_email_jobs_due_idx').on(t.nextAttemptAt).where(sql`status IN ('pending', 'sending')`),
   userIdx: index('transactional_email_jobs_user_idx').on(t.userId, t.kind),

@@ -25,7 +25,7 @@ scenario('L53D', 'Retours PO D2 / Q16 / D9 / D12 : devises, contre-valeur, prêt
   afterEach(async () => {
     (await import('@/services/business-operations/events')).resetBusinessOperationEventBusForTests();
   });
-  const can = () => import('@/services/verebona-assistant/canonical');
+  const can = async () => ({ ...(await import('@/services/verebona-assistant/canonical/expenses')), ...(await import('@/services/verebona-assistant/canonical/operations')) });
   const cartes = (compte: AccountRow, rule: string) => sql<{ public_id: string; target_id: number; question: string; proposals_json: Array<{ value: string; label: string; isCurrentValue?: boolean }>; resolved_at: string | null; resolution_reason: string | null }[]>`
     SELECT public_id, target_id, question, proposals_json, resolved_at::text AS resolved_at, resolution_reason
       FROM to_process_actions WHERE account_id = ${compte.id} AND rule_code = ${rule} ORDER BY id`;

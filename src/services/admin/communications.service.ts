@@ -91,8 +91,11 @@ export const TRANSACTIONAL_EMAILS: ReadonlyArray<{ templateCode: string; label: 
   { templateCode: 'PASSWORD_RESET', label: 'Réinitialisation du mot de passe' },
   { templateCode: 'ACCOUNT_INVITATION', label: 'Invitation à rejoindre un compte (e-mail d’invitation)' },
   { templateCode: 'DUO_INVITATION', label: 'Invitation Duo (e-mail d’invitation)' },
-  // Lot 64A (migration 0459) : désactivable — information, sans lien indispensable.
+  // Lot 64A (migration 0459) ; lot 65A : NON désactivable (décision PO du
+  // 16/10, comme DUO_INVITATION — `LOCKED_TRANSACTIONAL_EMAILS`), texte modifiable.
   { templateCode: 'DUO_MEMBERSHIP_ENDED', label: 'Fin de l’accès Premium Duo (e-mail au second utilisateur)' },
+  // Lot 65A (migration 0462) : confirmation au second utilisateur qui quitte lui-même le Duo.
+  { templateCode: 'DUO_MEMBERSHIP_LEFT', label: 'Départ du Premium Duo (confirmation au second utilisateur qui quitte)' },
   { templateCode: 'TRIAL_CONFIRMATION', label: 'Confirmation de l’essai' },
   { templateCode: 'PREMIUM_CONFIRMATION', label: 'Confirmation de l’abonnement' },
   { templateCode: 'DOWNGRADE_NOTIFICATION', label: 'Passage à une offre inférieure' },
@@ -491,7 +494,7 @@ export function resolveTemplateVariables(
     incidentDate: formatSecurityIncidentDate(new Date()),
     // SIGNUP_EXISTING_ACCOUNT (lot 53A).
     requestDate: formatSecurityIncidentDate(new Date()),
-    // DUO_MEMBERSHIP_ENDED (lot 64A) : liens génériques ; le prénom du
+    // DUO_MEMBERSHIP_ENDED (lot 64A) et DUO_MEMBERSHIP_LEFT (lot 65A) : liens génériques ; le prénom du
     // titulaire n'est pas inventé (signalé manquant, COM-007).
     accountUrl: `${base}/mon-compte`,
     subscriptionUrl: `${base}/mon-compte/offres`,

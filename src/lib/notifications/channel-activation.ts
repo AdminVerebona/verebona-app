@@ -58,6 +58,11 @@ export const LOCKED_TRANSACTIONAL_EMAILS: Readonly<Record<string, string>> = {
   LEGAL_CONFIRMATION: 'Obligation légale : confirmation d’acceptation des conditions.',
   ACCOUNT_INVITATION: 'Seul vecteur du lien d’invitation au compte.',
   DUO_INVITATION: 'Seul vecteur du lien d’invitation Duo.',
+  // Lot 65A (décision PO du 16/10) : information du second utilisateur sur la
+  // fin de son accès Premium Duo, subie ou choisie — toujours envoyée, texte
+  // modifiable comme celui de DUO_INVITATION.
+  DUO_MEMBERSHIP_ENDED: 'Information obligatoire du second utilisateur : fin de son accès Premium Duo.',
+  DUO_MEMBERSHIP_LEFT: 'Information obligatoire du second utilisateur : confirmation de son départ du Premium Duo.',
   // Suppression volontaire du compte (migration 0206) : dernier message à la
   // personne, qui n'a plus d'accès pour le constater autrement.
   ACCOUNT_DELETION_COMPLETED: 'Confirmation de l’effacement demandé par l’utilisateur (droit à l’effacement).',

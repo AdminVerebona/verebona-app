@@ -1,7 +1,7 @@
 # Fixtures de prompts (CDC §17.9 / §35)
 
 Les cas de référence exécutables vivent désormais dans
-`src/services/verebona-assistant/eval/` (`cases.ts` + runner vitest), dans
+`src/services/verebona-assistant/eval/__tests__/` (`fixtures/cases.ts` + runner vitest), dans
 les tests de contrat du prompt maître T2
 (`src/services/ai/prompts/__tests__/contrat-*.test.ts`) et dans le corpus
 master (`npm run ai:corpus`).

@@ -31,7 +31,7 @@ scenario('L54D', 'Opérations V1 — écarts E01 à E09, TCO, concordance T2 / T
     (await import('@/services/business-operations/events')).resetBusinessOperationEventBusForTests();
   });
 
-  const can = () => import('@/services/verebona-assistant/canonical');
+  const can = () => import('@/services/verebona-assistant/canonical/expenses');
   const consolidator = () => import('@/services/business-operations/consolidation/consolidator');
   const tcoDe = async (compte: AccountRow, assetId: number) => (await import('@/services/business-operations/tco/service')).readAssetTco(compte.id, assetId, { today: RECETTE_TODAY });
   const job = (compte: AccountRow, id: number) => ({ id, accountId: compte.id, treatment: 'T3', targetType: 'business_operations', targetId: String(compte.id), triggerCode: null }) as never;

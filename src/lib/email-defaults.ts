@@ -175,6 +175,30 @@ L'équipe Verebona`,
     placeholders: JSON.stringify(['firstName', 'ownerFirstName', 'accountUrl', 'subscriptionUrl'])
   },
 
+  // Lot 65A (migration 0462) : confirmation au membre qui QUITTE lui-même un
+  // Premium Duo. Gabarit dédié (son action, pas une fin subie) ; mêmes
+  // variables et même discrétion que DUO_MEMBERSHIP_ENDED.
+  DUO_MEMBERSHIP_LEFT: {
+    subject: "Vous avez quitté l'espace Premium Duo",
+    body: `Bonjour {{firstName}},
+
+Vous avez quitté l'espace Premium Duo que vous partagiez avec {{ownerFirstName}}. Votre départ a bien été pris en compte.
+
+Ce qui change pour vous : vous n'avez plus accès à l'espace partagé, ni aux biens, documents et échéances qui y sont rattachés. Votre compte revient à votre propre offre (Standard si vous n'avez pas d'abonnement personnel).
+
+Ce qui ne change pas : votre compte et vos données personnelles sont conservés. Rien n'a été supprimé de votre propre espace.
+
+Pour rejoindre à nouveau cet espace, une nouvelle invitation du titulaire sera nécessaire. Si vous n'êtes pas à l'origine de ce départ, contactez notre support en répondant à cet e-mail.
+
+Accéder à mon compte : {{accountUrl}}
+
+Voir mon offre : {{subscriptionUrl}}
+
+Cordialement,
+L'équipe Verebona`,
+    placeholders: JSON.stringify(['firstName', 'ownerFirstName', 'accountUrl', 'subscriptionUrl'])
+  },
+
   DUO_INVITATION: {
     subject: '{{ownerFirstName}} vous invite à rejoindre son espace Verebona DUO',
     body: `<!DOCTYPE html>

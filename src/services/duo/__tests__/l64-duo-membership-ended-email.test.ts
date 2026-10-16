@@ -5,8 +5,9 @@
  *              conservées, liens compte / offre ; aucun motif (rétractation,
  *              impayé…), aucune adresse du titulaire. Migration 0459 = défaut du
  *              code = amorçage ; type accepté par la file (0459 + Drizzle).
- * L64-MAIL-02  Enregistrement : seulement pour une sortie REMOVED d'un membre
- *              ACTIF non titulaire ; LEFT, sortie rejouée, titulaire → rien.
+ * L64-MAIL-02  Enregistrement : seulement pour une sortie d'un membre ACTIF non
+ *              titulaire ; sortie rejouée, titulaire → rien. (Lot 65A : LEFT
+ *              donne DUO_MEMBERSHIP_LEFT, voir l65 ; `notify: false` → rien.)
  * L64-MAIL-03  Demande : destinataire = le membre, émetteur = le titulaire,
  *              clé d'idempotence membership × date d'entrée, contexte sans
  *              e-mail du titulaire ni motif ; doublon → pas de 2e demande.
@@ -76,9 +77,10 @@ describe('L64-MAIL-01 — gabarit DUO_MEMBERSHIP_ENDED', () => {
 });
 
 describe('L64-MAIL-02 — quand une demande est enregistrée', () => {
-  it('membre qui part lui-même (LEFT) : aucune requête, aucun e-mail', async () => {
+  it('départ par suppression de son propre compte (notify: false) : aucune requête, aucun e-mail', async () => {
     const { tx, seen } = fakeTx([]);
-    expect(await enqueueDuoMembershipEndedEmail(tx, { ...P, status: 'LEFT' })).toEqual({ jobId: null, skipped: 'NOT_REMOVED' });
+    expect(await enqueueDuoMembershipEndedEmail(tx, { ...P, status: 'LEFT', notify: false })).toEqual({ jobId: null, skipped: 'SILENT' });
+    expect(await enqueueDuoMembershipEndedEmail(tx, { ...P, notify: false })).toEqual({ jobId: null, skipped: 'SILENT' });
     expect(seen).toHaveLength(0);
   });
   it('sortie rejouée (membership déjà REMOVED) : rien', async () => {
@@ -132,7 +134,7 @@ describe('L64-MAIL-05 — branchement et exploitation', () => {
   it('endMembership : demande dans la transaction, AVANT la mise à jour du membership', () => {
     const src = read('src/services/duo/duo-exit.service.ts');
     const tx = src.indexOf('db.transaction(async (tx)');
-    const enq = src.indexOf('await enqueueDuoMembershipEndedEmail(tx as never, p)');
+    const enq = src.indexOf('await enqueueDuoMembershipEndedEmail(tx as never, {');
     const upd = src.indexOf('await tx.update(duoMemberships)');
     expect(tx).toBeGreaterThan(0);
     expect(enq).toBeGreaterThan(tx);
@@ -140,16 +142,17 @@ describe('L64-MAIL-05 — branchement et exploitation', () => {
   });
   it('file : construction dédiée, adresse actuelle, comptes fermés exclus, désactivation BO sans reprise', () => {
     const src = read('src/services/email/transactional-email-jobs.service.ts');
-    expect(src).toMatch(/job\.kind === 'DUO_MEMBERSHIP_ENDED' \? await buildDuoMembershipEnded\(job\)/);
+    expect(src).toMatch(/job\.kind === 'DUO_MEMBERSHIP_ENDED' \|\| job\.kind === 'DUO_MEMBERSHIP_LEFT' \? await buildDuoMembershipEnded\(job\)/);
     expect(src).toMatch(/to: built\.to \?\? job\.recipient_email/);
     expect(src).toMatch(/CLOSED_ACCOUNT_STATUSES = new Set\(\['SUSPENDED', 'PENDING_DELETION', 'DELETED'\]\)/);
     expect(src).toMatch(/res\?\.error === 'CHANNEL_DISABLED'/);
   });
-  it('BO › Communications : gabarit listé, désactivable, suivi dans les envois durables', async () => {
+  it('BO › Communications : gabarit listé, verrouillé (lot 65A), suivi dans les envois durables', async () => {
     const { TRANSACTIONAL_EMAILS } = await import('@/services/admin/communications.service');
     expect(TRANSACTIONAL_EMAILS.map((e) => e.templateCode)).toContain('DUO_MEMBERSHIP_ENDED');
     const { transactionalLockReason } = await import('@/lib/notifications/channel-activation');
-    expect(transactionalLockReason('DUO_MEMBERSHIP_ENDED')).toBeNull();
+    // Lot 65A (décision PO du 16/10) : non désactivable, comme DUO_INVITATION.
+    expect(transactionalLockReason('DUO_MEMBERSHIP_ENDED')).toMatch(/obligatoire/);
     expect(read('src/app/admin/communications/_components/TransactionalEmailsOps.tsx')).toContain("'DUO_MEMBERSHIP_ENDED'");
   });
 });

@@ -1,34 +1,32 @@
 /**
- * Point d'entrée unique des schémas T1 (CDC 15 §23, PM-T1-PRE) : `schemas.ts`
- * RÉEXPORTE le contrat maître, sans le dupliquer — et `ExtractedField` reste
- * rétrocompatible (champs enrichis optionnels).
+ * Contrat du prompt maître T1 (CDC 15 §23, PM-T1-PRE) et rétrocompatibilité
+ * de `ExtractedField` (champs enrichis optionnels).
+ *
+ * Lot 65A : le point d'entrée `source-analysis/schemas.ts`, qui ne faisait
+ * que réexporter `master/t1-contract.ts` et n'était importé que par ce test,
+ * est supprimé ; les consommateurs importent le contrat directement.
  */
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, it, expect, expectTypeOf } from 'vitest';
-import * as schemas from '../schemas';
 import * as contract from '../master/t1-contract';
 import type { ExtractedField, ProjectedFact, PersistedFactTarget } from '../types';
 
-describe('schemas.ts — réexport du contrat T1', () => {
-  it('mêmes objets que le contrat (aucune copie qui pourrait diverger)', () => {
-    for (const name of [
-      'T1GroupUploadOutput', 'T1AnalyzeDocumentOutput', 'T1MasterOutput', 't1Fact', 't1Target', 't1Recurrence',
-      't1SemanticEvent', 't1Table', 't1Evidence', 't1VisualEvidence', 't1OutputSchemaFor', 'T1_MASTER_PROMPT_CODE',
-      'T1_TASKS', 'T1_TARGET_TYPES', 'T1_VALUE_TYPES', 'T1_PROVENANCES', 'T1_EVENT_NATURES',
-    ] as const) {
-      expect(schemas[name], name).toBe(contract[name]);
-    }
+describe('contrat T1 — point d’entrée unique', () => {
+  it('L65-NET — plus de module de réexport (aucune copie qui pourrait diverger)', () => {
+    expect(existsSync(join(__dirname, '../schemas.ts'))).toBe(false);
   });
 
-  it('les schémas des étapes supprimées ne sont plus exportés (lot 16b-3)', () => {
+  it('les schémas des étapes supprimées ne sont pas exportés (lot 16b-3)', () => {
     for (const name of ['ExtractSourceOutput', 'GroupSourcesOutput', 'ClassifyDocumentOutput', 'ClassifyRubricOutput', 'IdentifyEntitiesOutput', 'ProposeLinksOutput']) {
-      expect((schemas as Record<string, unknown>)[name], name).toBeUndefined();
+      expect((contract as Record<string, unknown>)[name], name).toBeUndefined();
     }
   });
 
-  it('union discriminée par task, via le point d’entrée', () => {
-    const r = schemas.T1MasterOutput.safeParse({ task: 'GROUP_UPLOAD', groups: [[0, 1]] });
+  it('union discriminée par task', () => {
+    const r = contract.T1MasterOutput.safeParse({ task: 'GROUP_UPLOAD', groups: [[0, 1]] });
     expect(r.success).toBe(true);
-    const fact = schemas.t1Fact.parse({
+    const fact = contract.t1Fact.parse({
       canonicalKey: 'acquisitionPrice', normalizedValue: 749, confidence: 'certain',
       target: { type: 'ASSET', entityId: 10 }, evidence: { excerpt: '749 €' },
     });

@@ -44,6 +44,11 @@ export interface TaskStateRow {
   createdAt: Date | null;
   /** Bail d'exécution en cours (selon l'horloge du serveur de base). */
   running: boolean;
+  /** Lot 65A (0463) : dernier compte rendu (résumé court, sans donnée personnelle). */
+  lastNote?: string | null;
+  /** Lot 65A (0463) : tâche suspendue depuis le BO. */
+  adminDisabled?: boolean;
+  adminDisabledAt?: Date | null;
 }
 
 export interface TaskRegistration {
@@ -87,6 +92,13 @@ export interface TaskStateStore {
    */
   renew(code: string, runId: string, leaseMs: number): Promise<boolean>;
   list(): Promise<TaskStateRow[]>;
+  /**
+   * Lot 65A : compte rendu de l'exécution `runId` (au mieux : une base sans
+   * la colonne 0463 ne fait pas échouer l'exécution).
+   */
+  recordNote?(code: string, runId: string, note: string | null): Promise<void>;
+  /** Lot 65A : suspension / reprise depuis le BO. Faux si la tâche est inconnue. */
+  setAdminDisabled?(code: string, disabled: boolean, adminId: number | null): Promise<boolean>;
 }
 
 const iso = (d: Date) => d.toISOString();
@@ -113,8 +125,18 @@ function mapRow(r: RawRow): TaskStateRow {
     consecutiveFailures: Number(r.consecutive_failures ?? 0),
     createdAt: date(r.created_at),
     running: r.running === true,
+    lastNote: (r.last_note as string | null | undefined) ?? null,
+    adminDisabled: r.admin_disabled === true,
+    adminDisabledAt: date(r.admin_disabled_at),
   };
 }
+
+/**
+ * Lot 65A : « suspendue depuis le BO », lue sans dépendre de la colonne 0463
+ * (`to_jsonb(ligne)` : absente ⇒ NULL ⇒ non suspendue) — le planificateur ne
+ * s'arrête jamais parce qu'une migration n'est pas encore passée.
+ */
+const NOT_ADMIN_DISABLED = `COALESCE((to_jsonb(scheduled_task_state) ->> 'admin_disabled')::boolean, false) = false`;
 
 async function q(sql: string, params: unknown[] = []): Promise<RawRow[]> {
   return (await pgClient.unsafe(sql, params as never[])) as unknown as RawRow[];
@@ -149,7 +171,8 @@ export const pgTaskStateStore: TaskStateStore = {
     const rows = await q(
       `SELECT code, next_run_at FROM scheduled_task_state
         WHERE next_run_at IS NOT NULL AND next_run_at <= now()
-          AND (running_until IS NULL OR running_until < now())`,
+          AND (running_until IS NULL OR running_until < now())
+          AND ${NOT_ADMIN_DISABLED}`,
     );
     return rows.map((r) => ({ code: String(r.code), nextRunAt: new Date(r.next_run_at as string) }));
   },
@@ -167,6 +190,7 @@ export const pgTaskStateStore: TaskStateStore = {
         WHERE code = $1
           AND (running_until IS NULL OR running_until < now())
           AND (NOT $6::boolean OR (next_run_at IS NOT NULL AND next_run_at <= now()))
+          AND ${NOT_ADMIN_DISABLED}
         RETURNING code`,
       [code, runId, owner, Math.round(leaseMs), trigger, requireDue],
     );
@@ -225,6 +249,31 @@ export const pgTaskStateStore: TaskStateStore = {
         WHERE code = $1 AND running_run_id = $2
         RETURNING code`,
       [code, runId, Math.round(leaseMs)],
+    );
+    return rows.length > 0;
+  },
+
+  async recordNote(code, runId, note) {
+    try {
+      await q(
+        `UPDATE scheduled_task_state SET last_note = $3 WHERE code = $1 AND running_run_id = $2`,
+        [code, runId, note],
+      );
+    } catch {
+      // Colonne absente (0463 non passée) : compte rendu dans les journaux seulement.
+    }
+  },
+
+  async setAdminDisabled(code, disabled, adminId) {
+    const rows = await q(
+      `UPDATE scheduled_task_state
+          SET admin_disabled = $2,
+              admin_disabled_at = CASE WHEN $2 THEN now() ELSE NULL END,
+              admin_disabled_by = CASE WHEN $2 THEN $3::int ELSE NULL END,
+              updated_at = now()
+        WHERE code = $1
+        RETURNING code`,
+      [code, disabled, adminId],
     );
     return rows.length > 0;
   },

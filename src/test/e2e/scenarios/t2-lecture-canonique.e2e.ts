@@ -21,12 +21,23 @@ vi.mock('@/services/verebona-assistant/events/business-events', () => ({
 
 scenario('T2-L15-LECTURE', 'Lecture canonique de l’assistant', ({ sql, make }) => {
   const env = { ...process.env };
-  let can: typeof import('@/services/verebona-assistant/canonical');
+  /** Lot 65A : le point d'entrée `canonical/index.ts` est supprimé ; modules lus directement. */
+  const charger = async () => ({
+    ...(await import('@/services/verebona-assistant/canonical/field-reader')),
+    ...(await import('@/services/verebona-assistant/canonical/document-state')),
+    ...(await import('@/services/verebona-assistant/canonical/agenda')),
+    ...(await import('@/services/verebona-assistant/canonical/expenses')),
+    ...(await import('@/services/verebona-assistant/canonical/completeness')),
+    ...(await import('@/services/verebona-assistant/canonical/suppliers')),
+    ...(await import('@/services/verebona-assistant/canonical/product-rules')),
+    ...(await import('@/services/verebona-assistant/canonical/synthesis-content')),
+  });
+  let can: Awaited<ReturnType<typeof charger>>;
   let repo: typeof import('@/services/verebona-assistant/core/account-data.repository');
   let da: typeof import('@/services/verebona-assistant/core/data-answer.service');
   let thresholds: typeof import('@/services/verebona-assistant/core/sufficiency')['DEFAULT_THRESHOLDS'];
   beforeAll(async () => {
-    can = await import('@/services/verebona-assistant/canonical');
+    can = await charger();
     repo = await import('@/services/verebona-assistant/core/account-data.repository');
     da = await import('@/services/verebona-assistant/core/data-answer.service');
     ({ DEFAULT_THRESHOLDS: thresholds } = await import('@/services/verebona-assistant/core/sufficiency'));

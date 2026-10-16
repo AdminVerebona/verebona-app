@@ -21,7 +21,7 @@ import {
 } from '../datasets/operations-v1';
 
 const bus = () => import('@/services/business-operations/events');
-const can = () => import('@/services/verebona-assistant/canonical');
+const can = () => import('@/services/verebona-assistant/canonical/expenses');
 
 scenario('L48-O10', 'Recette Opérations V1 : 7 jeux C30.1, invariants C34, anomalies dures, cas C29 par jeu', ({ sql, make }) => {
   let k: OperationsKit;

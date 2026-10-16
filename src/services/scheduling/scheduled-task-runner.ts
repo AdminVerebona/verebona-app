@@ -185,6 +185,8 @@ const lazyPgStore: TaskStateStore = {
   release: async (...a) => (await import('./scheduled-task-state')).pgTaskStateStore.release(...a),
   renew: async (...a) => (await import('./scheduled-task-state')).pgTaskStateStore.renew(...a),
   list: async () => (await import('./scheduled-task-state')).pgTaskStateStore.list(),
+  recordNote: async (...a) => (await import('./scheduled-task-state')).pgTaskStateStore.recordNote!(...a),
+  setAdminDisabled: async (...a) => (await import('./scheduled-task-state')).pgTaskStateStore.setAdminDisabled!(...a),
 };
 
 export interface RunOutcome {
@@ -267,6 +269,12 @@ export async function executeClaimed(
   let nextRunAt: Date | null | 'keep';
   if (trigger === 'manual') nextRunAt = 'keep';
   else nextRunAt = computeNextRun(def.schedule, deps.now(), { again: Boolean(result?.again) || status === 'error' });
+
+  // Lot 65A : compte rendu visible dans le BO (au mieux, avant la clôture,
+  // tant que cette exécution détient la ligne). Un échec ne compte pas.
+  if (deps.store.recordNote) {
+    await deps.store.recordNote(def.code, runId, status === 'error' ? null : note).catch(() => undefined);
+  }
 
   let consecutive = 0;
   try {
@@ -400,6 +408,8 @@ export async function checkStaleCriticalTasks(deps: RunnerDeps, rows?: TaskState
 export type ManualRunResult =
   | { status: 'not_found' }
   | { status: 'disabled' }
+  /** Lot 65A : suspendue depuis le BO. */
+  | { status: 'admin_disabled' }
   | { status: 'busy' }
   | { status: 'finished'; runId: string; outcome: RunOutcome }
   | { status: 'running'; runId: string };
@@ -416,6 +426,10 @@ export async function runTaskNow(code: string, opts: { waitMs?: number } = {}, d
   if (!isTaskEnabled(def.code, deps.env)) return { status: 'disabled' };
   // Ligne absente (première exécution avant tout tour) : créée d'abord.
   await registerTasks({ ...deps, tasks: [def] }, { boot: false });
+  // Lot 65A : suspendue depuis le BO — ni planifiée ni exécutable à la main
+  // (la prise le refuse aussi, atomiquement).
+  const state = (await deps.store.list().catch(() => [] as TaskStateRow[])).find((r) => r.code === def.code);
+  if (state?.adminDisabled) return { status: 'admin_disabled' };
   const runId = randomUUID();
   if (!(await deps.store.claim(def.code, runId, deps.owner, LEASE_MS, 'manual', false))) return { status: 'busy' };
   const p = executeClaimed(def, runId, 'manual', deps);
@@ -425,6 +439,34 @@ export async function runTaskNow(code: string, opts: { waitMs?: number } = {}, d
   const outcome = await Promise.race([p, timeout]);
   if (timer) clearTimeout(timer);
   return outcome ? { status: 'finished', runId, outcome } : { status: 'running', runId };
+}
+
+// ─── Suspension depuis le BO (lot 65A) ──────────────────────────────────────
+
+export type AdminToggleResult =
+  | { status: 'not_found' }
+  /** Tâche critique : jamais suspendue depuis le BO (variable d'arrêt seulement). */
+  | { status: 'critical' }
+  | { status: 'unavailable' }
+  | { status: 'ok'; changed: boolean; adminDisabled: boolean };
+
+/**
+ * Suspend (`disabled: true`) ou reprend une tâche depuis le BO. Une
+ * exécution en cours n'est pas interrompue ; aucune nouvelle prise tant que
+ * la tâche est suspendue. Idempotente. L'appelant journalise.
+ */
+export async function setTaskAdminDisabled(
+  code: string, disabled: boolean, adminId: number | null, deps: RunnerDeps = defaultDeps(),
+): Promise<AdminToggleResult> {
+  const def = findTask(code, deps.tasks);
+  if (!def) return { status: 'not_found' };
+  if (def.critical && disabled) return { status: 'critical' };
+  if (!deps.store.setAdminDisabled) return { status: 'unavailable' };
+  await registerTasks({ ...deps, tasks: [def] }, { boot: false });
+  const before = (await deps.store.list()).find((r) => r.code === def.code)?.adminDisabled === true;
+  if (before === disabled) return { status: 'ok', changed: false, adminDisabled: before };
+  if (!(await deps.store.setAdminDisabled(def.code, disabled, adminId))) return { status: 'not_found' };
+  return { status: 'ok', changed: true, adminDisabled: disabled };
 }
 
 // ─── Lecture (BO) ───────────────────────────────────────────────────────────
@@ -439,7 +481,17 @@ export interface ScheduledTaskView {
   lastError: string | null;
   nextRunAt: string | null;
   consecutiveFailures: number;
+  /** Active : ni arrêtée par variable d'environnement, ni suspendue depuis le BO. */
   enabled: boolean;
+  /** Lot 65A : arrêtée par variable d'environnement (SCHEDULED_TASK_<CODE>=off…). */
+  envDisabled: boolean;
+  /** Lot 65A : suspendue depuis le BO, et depuis quand. */
+  adminDisabled: boolean;
+  adminDisabledAt: string | null;
+  /** Lot 65A : suspendable depuis le BO (toute tâche non critique). */
+  adminToggle: boolean;
+  /** Lot 65A : dernier compte rendu (résumé court). */
+  lastNote: string | null;
   /** Compléments (non exigés par l'écran) : instance, déclencheur, dernier succès. */
   lastInstance: string | null;
   lastTrigger: TaskTrigger | null;
@@ -448,7 +500,9 @@ export interface ScheduledTaskView {
 }
 
 export function toView(def: ScheduledTaskDef, row: TaskStateRow | undefined, env: TaskEnv): ScheduledTaskView {
-  const enabled = isTaskEnabled(def.code, env);
+  const envEnabled = isTaskEnabled(def.code, env);
+  const adminDisabled = row?.adminDisabled === true;
+  const enabled = envEnabled && !adminDisabled;
   return {
     code: def.code,
     label: def.label,
@@ -460,6 +514,11 @@ export function toView(def: ScheduledTaskDef, row: TaskStateRow | undefined, env
     nextRunAt: enabled ? row?.nextRunAt?.toISOString() ?? null : null,
     consecutiveFailures: row?.consecutiveFailures ?? 0,
     enabled,
+    envDisabled: !envEnabled,
+    adminDisabled,
+    adminDisabledAt: row?.adminDisabledAt?.toISOString() ?? null,
+    adminToggle: !def.critical,
+    lastNote: row?.lastNote ?? null,
     lastInstance: row?.lastInstance ?? null,
     lastTrigger: row?.lastTrigger ?? null,
     lastSuccessAt: row?.lastSuccessAt?.toISOString() ?? null,

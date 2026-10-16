@@ -3,8 +3,9 @@
  * neutralisation des propagations génériques dangereuses du moteur de
  * cohérence, AVANT toute Opération.
  *
- *   O0-01  seed et migration 0315 : règles génériques retirées / désactivées,
- *          seed idempotent (`IS NULL` au lieu de `= NULL`) ;
+ *   O0-01  migration 0315 : règles génériques désactivées (lot 65A : le seed
+ *          manuel `seed-dependencies.ts`, lancé par personne et importé
+ *          seulement par ce test, est supprimé avec ses tests O0-01a/b/c) ;
  *   O0-02  moteur : aucune écriture ni proposition vers l'acquisition ou la
  *          valorisation, quelle que soit la règle en base ; aucune création
  *          d'agenda générique ; aucune injection dans estimatedValue.
@@ -13,7 +14,6 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { PgDialect } from 'drizzle-orm/pg-core';
 
 const h = vi.hoisted(() => ({
   asset: { id: 3, accountId: 7, name: 'Maison', category: 'IMMOBILIER', keyCharacteristics: '{}' },
@@ -53,8 +53,7 @@ vi.mock('@/services/canonical/asset-state', async (orig) => ({
   writeCanonicalAssetField: h.write,
 }));
 
-const { processImpact, SEMANTIC_ONLY_TARGETS, isSemanticOnlyTarget } = await import('../impact-propagation.service');
-const { DEPENDENCIES, RETIRED_DEPENDENCIES, categoryClause } = await import('../seed-dependencies');
+const { processImpact, isSemanticOnlyTarget } = await import('../impact-propagation.service');
 
 const rule = (over: Record<string, unknown>) => ({
   id: 1, sourceField: 'amountCents', targetField: 'acquisitionPrice', category: null,
@@ -71,33 +70,11 @@ beforeEach(() => {
   h.write.mockResolvedValue({ notFound: false, fields: [], field: { key: 'x', requestedKey: 'x', outcome: 'written', previousValue: null, previousOrigin: null, nextValue: 1, origin: 'SYSTEM_RULE', mirrors: {} } });
 });
 
-describe('O0-01 — seed et migration 0315', () => {
+describe('O0-01 — migration 0315', () => {
   const generiques = [
     ['documentDate', 'acquisitionDate'], ['documentDate', 'estimatedValueDate'], ['documentDate', 'documentDate_agenda'],
     ['supplier', 'acquisitionLocation'], ['amountCents', 'acquisitionPrice'], ['amountCents', 'estimatedValue'],
   ];
-
-  it('O0-01a les six règles génériques sont retirées du seed et listées pour désactivation', () => {
-    for (const [src, dst] of generiques) {
-      expect(DEPENDENCIES.some((d) => d.sourceField === src && d.targetField === dst)).toBe(false);
-      expect(RETIRED_DEPENDENCIES.some((d) => d.sourceField === src && d.targetField === dst)).toBe(true);
-    }
-  });
-
-  it('O0-01b plus aucune règle du seed vers une cible d’acquisition / valorisation, ni création d’agenda', () => {
-    expect(DEPENDENCIES.filter((d) => d.impactType === 'propagation' && SEMANTIC_ONLY_TARGETS.has(d.targetField))).toEqual([]);
-    expect(DEPENDENCIES.filter((d) => d.impactType === 'agenda_creation')).toEqual([]);
-    // Ce qui sert encore est conservé (exports à régénérer, index, DPE…).
-    expect(DEPENDENCIES.some((d) => d.sourceField === 'estimatedValue' && d.targetField === '_export_stale')).toBe(true);
-  });
-
-  it('O0-01c seed idempotent : catégorie NULL comparée par IS NULL (et non « = NULL », toujours faux)', () => {
-    const dialect = new PgDialect();
-    expect(dialect.sqlToQuery(categoryClause(null)).sql).toMatch(/"category" is null/i);
-    const avec = dialect.sqlToQuery(categoryClause('VEHICULE'));
-    expect(avec.sql).toMatch(/"category" = \$1/);
-    expect(avec.params).toEqual(['VEHICULE']);
-  });
 
   it('O0-01d migration 0315 : idempotente, sans effet si la table manque, désactive (ne supprime pas)', () => {
     const sql = readFileSync(join(process.cwd(), 'src/db/migrations/0315_neutralize_generic_propagations.sql'), 'utf8');

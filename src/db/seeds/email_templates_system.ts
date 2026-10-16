@@ -13,7 +13,8 @@ export async function seedSystemEmailTemplates() {
         'PREMIUM_CONFIRMATION',
         'SECURITY_SESSIONS_REVOKED',
         'SIGNUP_EXISTING_ACCOUNT',
-        'DUO_MEMBERSHIP_ENDED'
+        'DUO_MEMBERSHIP_ENDED',
+        'DUO_MEMBERSHIP_LEFT'
     ];
 
     await db.delete(emailTemplates)
@@ -27,7 +28,8 @@ export async function seedSystemEmailTemplates() {
                 eq(emailTemplates.type, 'PREMIUM_CONFIRMATION'),
                 eq(emailTemplates.type, 'SECURITY_SESSIONS_REVOKED'),
                 eq(emailTemplates.type, 'SIGNUP_EXISTING_ACCOUNT'),
-                eq(emailTemplates.type, 'DUO_MEMBERSHIP_ENDED')
+                eq(emailTemplates.type, 'DUO_MEMBERSHIP_ENDED'),
+                eq(emailTemplates.type, 'DUO_MEMBERSHIP_LEFT')
             )
         );
 
@@ -303,6 +305,17 @@ export async function seedSystemEmailTemplates() {
             subject: DEFAULT_EMAIL_TEMPLATES.DUO_MEMBERSHIP_ENDED.subject,
             body: DEFAULT_EMAIL_TEMPLATES.DUO_MEMBERSHIP_ENDED.body,
             placeholders: DEFAULT_EMAIL_TEMPLATES.DUO_MEMBERSHIP_ENDED.placeholders,
+            triggerConfig: null,
+            sender: null,
+            updatedAt: new Date(),
+            updatedBy: null,
+        },
+        // Lot 65A : départ volontaire du second utilisateur (migration 0462).
+        {
+            type: 'DUO_MEMBERSHIP_LEFT',
+            subject: DEFAULT_EMAIL_TEMPLATES.DUO_MEMBERSHIP_LEFT.subject,
+            body: DEFAULT_EMAIL_TEMPLATES.DUO_MEMBERSHIP_LEFT.body,
+            placeholders: DEFAULT_EMAIL_TEMPLATES.DUO_MEMBERSHIP_LEFT.placeholders,
             triggerConfig: null,
             sender: null,
             updatedAt: new Date(),

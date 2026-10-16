@@ -35,6 +35,8 @@ import {
   withdrawalRequests,
 } from '@/db/schema';
 import { and, desc, eq, inArray, isNotNull, isNull, lte, or, sql } from 'drizzle-orm';
+import { getS3Bucket, isS3Configured } from '@/lib/s3-config';
+import { exportStorageKeys, thumbnailStorageKey } from '@/services/assets/asset-deletion.service';
 import {
   onDeletionCancelled,
   onDeletionExecuted,
@@ -702,6 +704,37 @@ export async function executeScheduledDeletion(
       if (archiveRows.length > 0) {
         await tx.insert(pendingBlobDeletions).values(
           archiveRows.map((a) => ({ fileId: null, storagePath: a.s3_key, scheduledFor: now, createdAt: now })),
+        );
+      }
+
+      // Lot 65A : autres objets rattachés au périmètre, que la cascade
+      // effacerait sans les confier à la file — versions de documents, dossiers
+      // d'export générés (PDF / ZIP), vignettes de biens téléversées. Clés
+      // dédoublonnées ; la file vérifie de toute façon, avant de supprimer,
+      // qu'aucune autre ligne n'utilise encore l'objet.
+      const dejaEnFile = new Set(files.map((f) => f.s3Key as string));
+      const autres = new Set<string>();
+      const ajouter = (k: string | null | undefined) => {
+        if (k && k !== 'temp' && !dejaEnFile.has(k)) autres.add(k);
+      };
+      if (accountIds.length > 0) {
+        const comptes = sql.join(accountIds.map((a) => sql`${a}`), sql`, `);
+        for (const v of asRows<{ s3_key: string | null }>(await tx.execute(sql`
+          SELECT v.s3_key FROM document_versions v JOIN asset_files f ON f.id = v.file_id
+           WHERE f.account_id IN (${comptes})`))) ajouter(v.s3_key);
+        for (const e of asRows<{ output_payload: string | null }>(await tx.execute(sql`
+          SELECT output_payload FROM export_generation WHERE account_id IN (${comptes}) AND output_payload IS NOT NULL`))) {
+          for (const k of exportStorageKeys(e.output_payload)) ajouter(k);
+        }
+        const bucket = isS3Configured() ? getS3Bucket() : null;
+        for (const a of asRows<{ thumbnail_url: string | null }>(await tx.execute(sql`
+          SELECT thumbnail_url FROM assets WHERE account_id IN (${comptes}) AND thumbnail_url IS NOT NULL`))) {
+          ajouter(thumbnailStorageKey(a.thumbnail_url, bucket));
+        }
+      }
+      if (autres.size > 0) {
+        await tx.insert(pendingBlobDeletions).values(
+          [...autres].map((storagePath) => ({ fileId: null, storagePath, scheduledFor: now, createdAt: now })),
         );
       }
 

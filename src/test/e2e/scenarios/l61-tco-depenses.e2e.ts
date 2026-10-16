@@ -110,7 +110,7 @@ scenario('L61', 'TCO — toutes les dépenses, anti-double comptage, tiroir déd
     // T3 a rattaché la béquille à l'achat du vélo (M2, cycle de possession) sans en retenir le montant : dépense distincte.
     expect(t2.lines.find((l) => l.source === 'DOCUMENT')).toMatchObject({ status: 'RETAINED_DIRECT', note: expect.stringContaining('achat du bien') });
     // T2 : même lecture (300 consolidés + 25 du justificatif).
-    const q = await (await import('@/services/verebona-assistant/canonical')).sumQualifiedExpenses(compte.id, { assetIds: [v.id] });
+    const q = await (await import('@/services/verebona-assistant/canonical/expenses')).sumQualifiedExpenses(compte.id, { assetIds: [v.id] });
     expect(q.qualifiedSumCents).toBe(32_500);
     // Facture d'achat du vélo (preuve T1 du prix) rattachée au même achat, montant différent : même fait, jamais additionnée.
     const vraie = await accessoire(compte, v, 'Facture vélo', 31_000, 'CM-VELO');
@@ -118,7 +118,7 @@ scenario('L61', 'TCO — toutes les dépenses, anti-double comptage, tiroir déd
               VALUES (${compte.id}, ${v.id}, 'acquisitionPrice', '310'::jsonb, 'document', ${vraie}, 'certain', ${`e2e-l61-${vraie}`}, 'Total 310 €')`;
     await k.passer(compte);
     expect((await tco(compte, v.id)).summary.cumulativeCostCents).toBe(32_500);
-    expect((await (await import('@/services/verebona-assistant/canonical')).sumQualifiedExpenses(compte.id, { assetIds: [v.id] })).qualifiedSumCents).toBe(32_500);
+    expect((await (await import('@/services/verebona-assistant/canonical/expenses')).sumQualifiedExpenses(compte.id, { assetIds: [v.id] })).qualifiedSumCents).toBe(32_500);
   });
 
   it('TCO-04 / TCO-06 — devis 150 € puis facture 180 € → +180 ; facture rattachée à une opération sans coût consolidé → non perdue', async () => {
@@ -151,7 +151,7 @@ scenario('L61', 'TCO — toutes les dépenses, anti-double comptage, tiroir déd
     expect(retenues180[0].fileId).toBe(facture);
     expect(t.lines.filter((l) => l.includedCents === 15_000)).toEqual([]);
     // T2 : même règle (la facture fait foi), plus d'« élément sans montant ».
-    const q = await (await import('@/services/verebona-assistant/canonical')).sumQualifiedExpenses(compte.id, { assetIds: [v.id] });
+    const q = await (await import('@/services/verebona-assistant/canonical/expenses')).sumQualifiedExpenses(compte.id, { assetIds: [v.id] });
     expect(q.operations?.withoutAmount.operationIds ?? []).not.toContain(op);
     expect(q.qualifiedSumCents).toBe(18_000 + 6_000);
   });
@@ -238,11 +238,11 @@ scenario('L61', 'TCO — toutes les dépenses, anti-double comptage, tiroir déd
     const r = ownershipCostAnswer({ id: v.id, name: 'Vélo' } as never, t) as { answer: string };
     expect(r.answer).toMatch(/360,00\s€/);
     // Dépenses documentaires de T2 (hors prix de la fiche) = dépenses complémentaires du TCO.
-    const q = await (await import('@/services/verebona-assistant/canonical')).sumQualifiedExpenses(compte.id, { assetIds: [v.id] });
+    const q = await (await import('@/services/verebona-assistant/canonical/expenses')).sumQualifiedExpenses(compte.id, { assetIds: [v.id] });
     expect(q.qualifiedSumCents).toBe(t.summary.additionalCostsCents);
     await k.passer(compte);
     const t2 = await tco(compte, v.id);
-    const q2 = await (await import('@/services/verebona-assistant/canonical')).sumQualifiedExpenses(compte.id, { assetIds: [v.id] });
+    const q2 = await (await import('@/services/verebona-assistant/canonical/expenses')).sumQualifiedExpenses(compte.id, { assetIds: [v.id] });
     expect(t2.summary.cumulativeCostCents).toBe(36_000);
     // Après T3 (accessoires consolidés) : mêmes montants des deux côtés.
     expect(q2.qualifiedSumCents).toBe(t2.summary.additionalCostsCents);

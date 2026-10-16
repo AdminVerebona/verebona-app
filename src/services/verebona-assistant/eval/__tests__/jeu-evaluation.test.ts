@@ -1,5 +1,5 @@
 /**
- * Jeu d'évaluation exécutable — CDC §35.1 à §35.4 (voir `../cases.ts`).
+ * Jeu d'évaluation exécutable — CDC §35.1 à §35.4 (voir `./fixtures/cases.ts`).
  *
  * Chaque cas traverse l'orchestrateur RÉEL (routage, cascade, budget,
  * construction et résolution des actions) avec des ports factices. Les
@@ -7,7 +7,7 @@
  * puis cas par cas pour un diagnostic lisible.
  */
 import { describe, it, expect, vi } from 'vitest';
-import { EVAL_CASES, CDC_CATEGORIES, MIN_CASES_PER_CDC_CATEGORY, MIN_EVAL_CASES, type EvalCase, type EvalPlan } from '../cases';
+import { EVAL_CASES, CDC_CATEGORIES, MIN_CASES_PER_CDC_CATEGORY, MIN_EVAL_CASES, type EvalCase, type EvalPlan } from './fixtures/cases';
 
 vi.mock('@/db', () => ({
   pgClient: { unsafe: vi.fn(async () => []) },

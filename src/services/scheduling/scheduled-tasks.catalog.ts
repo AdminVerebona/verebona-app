@@ -51,6 +51,10 @@
  *                                                                 clés d'idempotence Stripe
  *   auth-rate-limits-purge          chaque jour à 5 h 30          suppressions idempotentes
  *                                                                 (lot 37, limiteur d'authentification)
+ *   deleted-files-purge             chaque jour à 6 h 25          relecture verrouillée par fichier
+ *                                                                 (FOR UPDATE SKIP LOCKED), lots bornés ;
+ *                                                                 objets S3 des fichiers supprimés > 30 j
+ *                                                                 (lot 65A, `lib/cleanup-job.ts`)
  *   transactional-emails-retry      toutes les minutes            prise atomique par demande (UPDATE
  *                                                                 conditionnel), une demande ouverte par
  *                                                                 compte / Duo (lot 57A, 0405)
@@ -85,6 +89,12 @@
  *                                          → `_`, ex. SCHEDULED_TASK_DUO_DUNNING)
  * Aucune variable n'est obligatoire. Une tâche arrêtée n'est ni planifiée ni
  * exécutable depuis le BO ; sa route reste disponible.
+ *
+ * ── SUSPENSION DEPUIS LE BO (lot 65A, 0463) ──────────────────────────────
+ *   BO › Exploitation › Tâches planifiées › « Suspendre » / « Réactiver » :
+ *   toute tâche NON critique (confirmé, journalisé). Suspendue, elle n'est ni
+ *   planifiée ni exécutable à la main. Les tâches critiques gardent la seule
+ *   variable d'arrêt d'urgence (elles alertent la Supervision).
  * ══════════════════════════════════════════════════════════════════════════
  */
 import type { TaskSchedule } from './task-calendar';
@@ -500,6 +510,34 @@ export const SCHEDULED_TASKS: readonly ScheduledTaskDef[] = [
     },
   },
   {
+    // Lot 65A (décision PO du 16/10) : fichiers supprimés depuis plus de
+    // 30 jours — objets S3 (et miniatures, via la file de purge) puis lignes.
+    // Mode sûr : relecture verrouillée, aucun objet encore référencé effacé,
+    // échec S3 ⇒ ligne conservée et reprise (voir `lib/cleanup-job.ts`).
+    // Par lots bornés jusqu'à l'échéance ; suspendable depuis le BO.
+    code: 'deleted-files-purge',
+    label: 'Stockage : purge des fichiers supprimés depuis plus de 30 jours',
+    schedule: { kind: 'daily', at: [6, 25], graceMs: 6 * HOUR },
+    timeoutMs: 20 * MIN,
+    run: async ({ deadline }) => {
+      const { runCleanupJob, getCleanupStats, cleanupNote } = await import('@/lib/cleanup-job');
+      const r = await runCleanupJob({ deadline: Math.min(deadline, Date.now() + 18 * MIN) });
+      const reste = await getCleanupStats().catch(() => null);
+      let note = cleanupNote(r, reste);
+      // Propositions de commande de l'assistant expirées et états d'annulation
+      // périmés (purge quotidienne prévue par `expirePendingPlans`, jusqu'ici
+      // jamais lancée globalement). Au mieux : jamais un échec de la tâche.
+      try {
+        const { expirePendingPlans } = await import('@/services/verebona-assistant/commands/plan.service');
+        const n = await expirePendingPlans();
+        if (n) note += ` ; assistant : ${n} proposition(s) expirée(s)`;
+      } catch { /* non bloquant */ }
+      if (r.storageUnavailable) return { note, error: note };
+      if (r.filesRetained > 0 && r.filesDeletedFromDB === 0) return { note, error: r.errors[0] ?? note };
+      return { note };
+    },
+  },
+  {
     // Lot 37 (C4) : compteurs du limiteur d'authentification partagé
     // (`auth_rate_limits`, migration 0313) — lignes inactives depuis 48 h et
     // sans verrou en cours. Suppressions idempotentes.
@@ -520,7 +558,7 @@ export const SCHEDULED_TASKS: readonly ScheduledTaskDef[] = [
     // tentées (processus arrêté), des échecs temporaires et des tentatives
     // interrompues. Bornée (6 tentatives), sans doublon (prise atomique).
     code: 'transactional-emails-retry',
-    label: 'E-mails indispensables : vérification d’adresse, invitations Duo et fin d’accès Duo (envoi et reprise)',
+    label: 'E-mails indispensables : vérification d’adresse, invitations Duo, fin d’accès et départ du Duo (envoi et reprise)',
     schedule: { kind: 'interval', everyMs: MIN },
     timeoutMs: 4 * MIN,
     startupDelayMs: MIN,

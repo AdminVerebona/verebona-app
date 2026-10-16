@@ -38,13 +38,15 @@
  * retiré d'un Duo), enregistré par la sortie de Duo
  * (`services/duo/duo-membership-ended-email.ts`, une demande par sortie via
  * `dedupe_key`) et envoyé par la reprise planifiée.
+ * Lot 65A : quatrième type, DUO_MEMBERSHIP_LEFT (confirmation au membre qui
+ * quitte lui-même le Duo), même construction que DUO_MEMBERSHIP_ENDED.
  * ══════════════════════════════════════════════════════════════════════════
  */
 import { pgClient } from '@/db';
 import { emailService } from '@/lib/email/email-service';
 import { buildEmailVerificationUrl, EMAIL_VERIFICATION_TTL_MS } from '@/services/auth/email-verification.service';
 
-export type EmailJobKind = 'EMAIL_VERIFICATION' | 'DUO_INVITATION' | 'DUO_MEMBERSHIP_ENDED';
+export type EmailJobKind = 'EMAIL_VERIFICATION' | 'DUO_INVITATION' | 'DUO_MEMBERSHIP_ENDED' | 'DUO_MEMBERSHIP_LEFT';
 export type EmailJobStatus = 'pending' | 'sending' | 'accepted' | 'failed' | 'cancelled';
 
 const MIN = 60_000;
@@ -313,6 +315,10 @@ const CLOSED_ACCOUNT_STATUSES = new Set(['SUSPENDED', 'PENDING_DELETION', 'DELET
  * titulaire vient du contexte figé à la sortie (jamais son e-mail) ; aucun
  * motif de fermeture. Sans objet si le membre a rejoint à nouveau le Duo ou
  * si son compte est fermé.
+ *
+ * Lot 65A — même construction pour DUO_MEMBERSHIP_LEFT (le membre a quitté
+ * lui-même le Duo) : seul le gabarit change. Émetteur = le membre lui-même
+ * (c'est son action).
  */
 async function buildDuoMembershipEnded(job: JobRow): Promise<Built> {
   if (job.user_id == null) return { ok: false, reason: 'ACCOUNT_GONE' };
@@ -331,7 +337,7 @@ async function buildDuoMembershipEnded(job: JobRow): Promise<Built> {
   const base = appBaseUrl();
   return {
     ok: true,
-    templateCode: 'DUO_MEMBERSHIP_ENDED',
+    templateCode: job.kind === 'DUO_MEMBERSHIP_LEFT' ? 'DUO_MEMBERSHIP_LEFT' : 'DUO_MEMBERSHIP_ENDED',
     variables: {
       firstName: escapeHtml((user.first_name ?? '').trim()),
       ownerFirstName: escapeHtml(owner),
@@ -381,7 +387,7 @@ export async function processEmailJob(jobId: number, now: Date = new Date()): Pr
       return { jobId: job.id, status: 'failed', error: 'MAX_ATTEMPTS' };
     }
     const built = job.kind === 'EMAIL_VERIFICATION' ? await buildVerification(job, now)
-      : job.kind === 'DUO_MEMBERSHIP_ENDED' ? await buildDuoMembershipEnded(job)
+      : job.kind === 'DUO_MEMBERSHIP_ENDED' || job.kind === 'DUO_MEMBERSHIP_LEFT' ? await buildDuoMembershipEnded(job)
       : await buildDuoInvitation(job, now);
     if (!built.ok) {
       await close('cancelled', { error: built.reason });

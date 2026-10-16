@@ -27,7 +27,6 @@ import {
   ConversationNotFoundError,
   findOwnedConversation,
 } from '@/services/verebona-assistant/core/conversation.service';
-import { libelleFil } from '@/components/verebona/VerebonaThreads';
 
 const read = (p: string) => readFileSync(join(process.cwd(), p), 'utf-8');
 
@@ -107,11 +106,6 @@ describe('client', () => {
     expect(H).toMatch(/fetch\('\/api\/verebona\/conversations', \{ method: 'POST' \}\)/);
     expect(H).toMatch(/\/api\/verebona\/conversation\?conversationId=\$\{id\}/);
   });
-
-  it('libellé lisible d’un fil', () => {
-    expect(libelleFil({ id: 1, title: 'Quand expire mon assurance ?', createdAt: '2026-09-20T10:00:00Z', lastMessageAt: null, messageCount: 2 }))
-      .toBe('Quand expire mon assurance ? · 20/09');
-    expect(libelleFil({ id: 1, title: null, createdAt: '2026-09-20T10:00:00Z', lastMessageAt: null, messageCount: 0 }))
-      .toMatch(/^Nouvelle conversation/);
-  });
+  // Lot 65A : `components/verebona/VerebonaThreads.tsx` (libellé d'un fil),
+  // utilisé par aucun écran, est supprimé avec son test.
 });

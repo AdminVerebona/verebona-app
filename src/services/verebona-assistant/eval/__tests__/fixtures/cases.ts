@@ -1,6 +1,9 @@
 /**
  * Jeu d'évaluation exécutable de l'assistant — CDC §35.1 à §35.4, §17.9, DoD.
  *
+ * Lot 65A : données de test seulement (`jeu-evaluation.test.ts`) — déplacé
+ * de `eval/cases.ts` (module que rien hors des tests n'importait).
+ *
  * ══════════════════════════════════════════════════════════════════════════
  * CE QUE CE JEU EST, ET CE QU'IL N'EST PAS
  *
@@ -34,7 +37,7 @@
  * toujours : une correction du routeur oblige à retirer la mention.
  * ══════════════════════════════════════════════════════════════════════════
  */
-import type { PageContext } from '../types/contracts';
+import type { PageContext } from '../../../types/contracts';
 
 export type EvalPlan = 'STANDARD' | 'PREMIUM' | 'PREMIUM_DUO';
 

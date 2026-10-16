@@ -5,6 +5,7 @@ import {
 } from '@/db/schema';
 import { eq, and, or, isNull, ne, sql } from 'drizzle-orm';
 import { emit } from '@/lib/notifications';
+import { enqueueDuoMembershipEndedEmail } from '@/services/duo/duo-membership-ended-email';
 import { transferAssetOperationsInTx } from '@/services/business-operations/asset-lifecycle';
 import { publishBusinessOperationEvents, type BusinessOperationEvent } from '@/services/business-operations/events';
 import { afterAssetDataTransfer, transferAssetDataInTx, type AssetDataTransferResult } from '@/services/assets/asset-account-transfer.service';
@@ -481,6 +482,21 @@ export class DuoService {
     const dataTransfers: AssetDataTransferResult[] = [];
 
     const outcome = await db.transaction(async (tx) => {
+      // Lot 65A : ancienne route POST /api/duos/:id/leave — même confirmation
+      // DUO_MEMBERSHIP_LEFT que la sortie de référence (`leaveDuo`), en file
+      // durable, idempotente, jamais bloquante ; rien pour le titulaire ni
+      // pour un membership déjà sorti.
+      const [actif] = await tx
+        .select({ id: duoMemberships.id })
+        .from(duoMemberships)
+        .where(and(eq(duoMemberships.duoId, params.duoId), eq(duoMemberships.userId, params.userId), eq(duoMemberships.status, 'ACTIVE')))
+        .limit(1);
+      if (actif) {
+        await enqueueDuoMembershipEndedEmail(tx as never, {
+          duoId: params.duoId, membershipId: actif.id, memberUserId: params.userId, status: 'LEFT',
+        });
+      }
+
       await tx
         .update(duoMemberships)
         .set({

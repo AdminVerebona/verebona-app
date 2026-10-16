@@ -145,7 +145,7 @@ scenario('CORPUS-T2', 'Corpus §15 — assistant T2 (enabled / master)', ({ sql,
   it('E2E-T2-04 — informations manquantes (enabled/master) : règles de complétude réelles', async () => {
     const c = await compteDe();
     const polo = await bien(c, 'Polo');
-    const can = await import('@/services/verebona-assistant/canonical');
+    const can = await import('@/services/verebona-assistant/canonical/completeness');
     const attendu = (await can.listMissingInformation(c.id, { assetIds: [polo.id] }))[0].missing.map((m) => m.key).sort();
     expect(attendu).toEqual(['acquisitionDate', 'registrationNumber']);
 

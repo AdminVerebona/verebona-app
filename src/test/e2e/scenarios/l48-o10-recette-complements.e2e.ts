@@ -21,7 +21,7 @@ vi.mock('@/lib/auth-guards', () => ({
 }));
 
 const bus = () => import('@/services/business-operations/events');
-const can = () => import('@/services/verebona-assistant/canonical');
+const can = () => import('@/services/verebona-assistant/canonical/expenses');
 
 scenario('L48-O10b', 'Recette Opérations V1 : cas C29 complémentaires et « Reconsolider ce compte »', ({ sql, make }) => {
   let k: OperationsKit;

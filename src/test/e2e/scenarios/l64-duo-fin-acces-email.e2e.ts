@@ -15,14 +15,17 @@
  *                 changement d'offre (applyPlanChange → Standard), suppression
  *                 du compte titulaire (Duo effacé en cascade : la demande
  *                 survit et part).
- * L64-MAIL-E2E-04 Pas d'e-mail : membre qui part lui-même, invitation d'une
- *                 personne non inscrite annulée, impayé simple (Duo non fermé).
+ * L64-MAIL-E2E-04 Pas d'e-mail DE FIN D'ACCÈS : membre qui part lui-même (lot
+ *                 65A : il reçoit la confirmation DUO_MEMBERSHIP_LEFT, voir
+ *                 l65), invitation d'une personne non inscrite annulée, impayé
+ *                 simple (Duo non fermé).
  * L64-MAIL-E2E-05 Jamais bloquant : Resend en échec → sortie faite, demande
  *                 reprise puis acceptée (un seul e-mail) ; enregistrement
  *                 impossible (type refusé par la base) → sortie faite quand même.
  * L64-MAIL-E2E-06 Demande devenue sans objet : membre revenu dans le Duo,
- *                 compte du membre en suppression, e-mail désactivé dans le BO
- *                 → close sans envoi ni reprise.
+ *                 compte du membre en suppression → close sans envoi ni
+ *                 reprise. Lot 65A : e-mail VERROUILLÉ — une désactivation
+ *                 inscrite en base (avant le verrou) est ignorée, il part.
  */
 import type Stripe from 'stripe';
 import { afterAll, beforeAll, beforeEach, expect, it, vi } from 'vitest';
@@ -74,7 +77,7 @@ scenario('L64-MAIL', 'Duo : e-mail au membre quand son accès prend fin (déclen
     await sql`INSERT INTO email_settings (id, emails_enabled, sender_name, sender_email, reply_to_email)
               VALUES (1, true, 'Verebona', 'bonjour@preprod.verebona.fr', 'support@verebona.fr')
               ON CONFLICT (id) DO UPDATE SET emails_enabled = true`;
-    await sql`DELETE FROM communication_channel_settings WHERE event_code = 'email:DUO_MEMBERSHIP_ENDED'`;
+    await sql`DELETE FROM communication_channel_settings WHERE event_code IN ('email:DUO_MEMBERSHIP_ENDED', 'email:DUO_MEMBERSHIP_LEFT')`;
     // Même base pour tous les fichiers : les demandes encore ouvertes laissées
     // par les scénarios précédents ne doivent pas consommer les réponses programmées.
     await sql`UPDATE transactional_email_jobs SET status = 'cancelled' WHERE status IN ('pending', 'sending')`;
@@ -217,7 +220,8 @@ scenario('L64-MAIL', 'Duo : e-mail au membre quand son accès prend fin (déclen
   });
 
   it('L64-MAIL-E2E-04 — pas d’e-mail : départ volontaire du membre, invitation annulée, impayé simple', async () => {
-    // Le membre quitte lui-même.
+    // Le membre quitte lui-même : pas de « fin d'accès » (lot 65A : une
+    // confirmation DUO_MEMBERSHIP_LEFT, seule, voir l65-duo-depart-email).
     const a = await duoAvecMembre();
     const { leaveDuo } = await import('@/services/duo/duo-exit.service');
     expect(await leaveDuo(a.membre.id)).toMatchObject({ ok: true, status: 'LEFT' });
@@ -241,7 +245,7 @@ scenario('L64-MAIL', 'Duo : e-mail au membre quand son accès prend fin (déclen
     expect(await jobsOf(u.membre.id)).toHaveLength(0);
 
     await retry();
-    expect(mailsTo(a.membre.email)).toHaveLength(0);
+    expect(mailsTo(a.membre.email).filter((m) => /a pris fin/.test(m.subject))).toHaveLength(0);
     expect(mailsTo(inviteEmail)).toHaveLength(0);
     expect(mailsTo(u.membre.email)).toHaveLength(0);
   });
@@ -269,7 +273,7 @@ scenario('L64-MAIL', 'Duo : e-mail au membre quand son accès prend fin (déclen
       expect(await removeDuoMember(d.ownerUserId)).toMatchObject({ ok: true, status: 'REMOVED' });
     } finally {
       await sql`ALTER TABLE transactional_email_jobs DROP CONSTRAINT transactional_email_jobs_kind_check`;
-      await sql`ALTER TABLE transactional_email_jobs ADD CONSTRAINT transactional_email_jobs_kind_check CHECK (kind IN ('EMAIL_VERIFICATION', 'DUO_INVITATION', 'DUO_MEMBERSHIP_ENDED'))`;
+      await sql`ALTER TABLE transactional_email_jobs ADD CONSTRAINT transactional_email_jobs_kind_check CHECK (kind IN ('EMAIL_VERIFICATION', 'DUO_INVITATION', 'DUO_MEMBERSHIP_ENDED', 'DUO_MEMBERSHIP_LEFT'))`;
       err.mockRestore();
     }
     expect(await membershipStatus(d.membershipId)).toBe('REMOVED');
@@ -277,7 +281,7 @@ scenario('L64-MAIL', 'Duo : e-mail au membre quand son accès prend fin (déclen
     expect(await jobsOf(d.membre.id)).toHaveLength(0);
   });
 
-  it('L64-MAIL-E2E-06 — demande sans objet : membre revenu, compte en suppression, e-mail désactivé dans le BO', async () => {
+  it('L64-MAIL-E2E-06 — demande sans objet : membre revenu, compte en suppression ; désactivation BO ignorée (verrou 65A)', async () => {
     const { removeDuoMember } = await import('@/services/duo/duo-exit.service');
     const back = await duoAvecMembre();
     await removeDuoMember(back.ownerUserId);
@@ -296,10 +300,13 @@ scenario('L64-MAIL', 'Duo : e-mail au membre quand son accès prend fin (déclen
     await retry();
     expect((await jobsOf(back.membre.id))[0]).toMatchObject({ status: 'cancelled', last_error: 'MEMBERSHIP_RESTORED' });
     expect((await jobsOf(closing.membre.id))[0]).toMatchObject({ status: 'cancelled', last_error: 'ACCOUNT_CLOSED' });
-    expect((await jobsOf(off.membre.id))[0]).toMatchObject({ status: 'cancelled', last_error: 'CHANNEL_DISABLED' });
-    for (const x of [back, closing, off]) expect(mailsTo(x.membre.email)).toHaveLength(0);
+    // Lot 65A : e-mail verrouillé — la désactivation inscrite en base est ignorée.
+    expect((await jobsOf(off.membre.id))[0]).toMatchObject({ status: 'accepted' });
+    expect(mailsTo(off.membre.email)).toHaveLength(1);
+    for (const x of [back, closing]) expect(mailsTo(x.membre.email)).toHaveLength(0);
     // Close : plus reprise.
     await retry(new Date(Date.now() + 10 * MIN));
     expect((await jobsOf(off.membre.id))[0].attempts).toBe(1);
+    expect(mailsTo(off.membre.email)).toHaveLength(1);
   });
 });
