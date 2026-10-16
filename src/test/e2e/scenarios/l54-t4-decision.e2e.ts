@@ -231,13 +231,14 @@ scenario('L54-T4-BO', 'T4 v2 : brouillon depuis le texte de référence, Legacy 
     expect(svc.executionOfVersion(copie)).toMatchObject({ mode: 'LEGACY_TEMPLATE' });
     // … mais repartir du texte de référence v2 initialise le contexte structuré v2.
     const v2 = await svc.saveDraft('T4', copie.id, reference, admin);
+    // Lot 61 : le texte de référence sort en `t4_output_v3` (v2 + intervention « À traiter »).
     expect(svc.executionOfVersion(v2)).toEqual({
-      mode: 'STRUCTURED_CONTEXT', inputContractVersion: 't4_input_v2', outputContractVersion: 't4_output_v2',
+      mode: 'STRUCTURED_CONTEXT', inputContractVersion: 't4_input_v2', outputContractVersion: 't4_output_v3',
       allowedTasks: ['CLASSIFY_EVENT', 'VERIFY_COMPLETION', 'TEMPORAL_AMBIGUITY'],
     });
     const detail = await svc.getPromptDetail('T4');
-    expect(detail.draft).toMatchObject({ issues: [], execution: { mode: 'STRUCTURED_CONTEXT', outputContractVersion: 't4_output_v2' } });
-    expect(detail.structured?.defaults).toMatchObject({ inputContractVersion: 't4_input_v2', outputContractVersion: 't4_output_v2' });
+    expect(detail.draft).toMatchObject({ issues: [], execution: { mode: 'STRUCTURED_CONTEXT', outputContractVersion: 't4_output_v3' } });
+    expect(detail.structured?.defaults).toMatchObject({ inputContractVersion: 't4_input_v2', outputContractVersion: 't4_output_v3' });
     // Activable sans {{TASK}} ni emplacement.
     expect(reference).not.toMatch(/\{\{[A-Z_]+\}\}/);
     const act = await svc.activateDraft('T4', copie.id, admin);

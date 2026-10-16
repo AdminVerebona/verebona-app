@@ -10,7 +10,7 @@ import type {
   MascotDuoInvite, MascotParagraph, MascotPresentation, MascotSecondary, MascotSubject, MascotTodoBlock,
 } from './types';
 import { CLEAR_TEXT, DEGRADED_NOTICE } from './types';
-import { parisDay, tileFor, type TileOptions } from './bubble';
+import { parisDay, presentationState, tileFor, type TileOptions } from './bubble';
 
 /**
  * Empreinte du contexte métier affiché : sujets, faits, actions, secondaires
@@ -22,8 +22,12 @@ export function contextHashOf(
   subjects: MascotSubject[], secondaries: MascotSecondary[], degraded: boolean, todo?: MascotTodoBlock | null,
   /** Lot 49A (ticket 13) : l'invitation envoyée fait disparaître l'action. */
   duoInvite?: MascotDuoInvite | null,
-  /** Lot 53 (D25) : une échéance dépassée qui apparaît ou disparaît change la bulle. */
-  overdueDeadlines?: number | null,
+  /**
+   * Lot 61 : état de l'évaluation des échéances proches (`PENDING`,
+   * `UNAVAILABLE`) — la bulle change quand l'évaluation aboutit. Le compteur
+   * des échéances dépassées n'entre plus dans l'empreinte (supervision seule).
+   */
+  evaluation?: 'OK' | 'PENDING' | 'UNAVAILABLE' | null,
 ): string {
   return sha256(canonicalJson({
     subjects: subjects.map((s) => ({ id: s.subjectId, facts: s.facts, actions: s.actions, text: s.fallbackText })),
@@ -33,7 +37,7 @@ export function contextHashOf(
       ? { todo: todo ? { total: todo.total, items: todo.items.map((i) => ({ id: i.todoId, t: i.actionType, c: i.availableChoices ?? null, q: i.card.question })) } : null }
       : {}),
     ...(duoInvite ? { duoInvite: duoInvite.href } : {}),
-    ...(overdueDeadlines ? { overdue: true } : {}),
+    ...(evaluation && evaluation !== 'OK' ? { evaluation } : {}),
   })).slice(0, 32);
 }
 
@@ -51,10 +55,13 @@ export function buildPresentation(p: {
   todo?: MascotTodoBlock | null;
   /** « Inviter quelqu'un » (lot 49A, ticket 13) — première action. */
   duoInvite?: MascotDuoInvite | null;
-  /** Lot 53 (D25) : échéances dépassées encore ouvertes (voir `MascotPresentation`). */
+  /** Lot 53 (D25) : échéances dépassées encore ouvertes — supervision seulement (lot 61). */
   overdueDeadlines?: number | null;
+  /** Lot 61 : état de l'évaluation des échéances proches (`T6Preparation.evaluation`). */
+  evaluation?: 'OK' | 'PENDING' | 'UNAVAILABLE';
 }): MascotPresentation {
-  const contextHash = contextHashOf(p.subjects, p.secondaries, p.degraded, p.todo, p.duoInvite, p.overdueDeadlines);
+  const evaluation = p.evaluation ?? 'OK';
+  const contextHash = contextHashOf(p.subjects, p.secondaries, p.degraded, p.todo, p.duoInvite, evaluation);
   const computedAt = (p.now ?? new Date()).toISOString();
   const base = {
     schemaVersion: 'mascot-presentation-v1' as const,
@@ -67,18 +74,29 @@ export function buildPresentation(p: {
     ...(p.overdueDeadlines !== undefined ? { overdueDeadlines: p.overdueDeadlines } : {}),
   };
 
+  // Lot 61 : l'état de présentation est calculé ICI, à partir des décisions
+  // retenues (sujets), des statuts métier fiables (« À traiter », Duo,
+  // sources lues) et de l'état de l'évaluation — jamais du compteur brut des
+  // échéances dépassées ni d'un état « clear » pris pour une preuve.
+  const withState = (x: Omit<MascotPresentation, 'state'>): MascotPresentation => {
+    const draft = { ...x, state: { schemaVersion: 'mascot-state-v1' as const, kind: 'NOTHING_TO_REPORT' as const, actions: 0, information: 0, openNotPriority: false, evaluation, degraded: p.degraded } };
+    return { ...x, state: presentationState(draft) };
+  };
+
   if (p.subjects.length === 0) {
     // RUN-013 : rien à dire, pas de T6. Mais une source en panne n'autorise
-    // jamais « Tout est à jour » (§20, ERR-01).
-    if (p.degraded) return { ...base, status: 'degraded', source: 'deterministic', paragraphs: [] };
+    // jamais « rien à signaler » (§20, ERR-01).
+    if (p.degraded) return withState({ ...base, status: 'degraded', source: 'deterministic', paragraphs: [] });
     // Lot 32 (MASC2) : des actions « À traiter » sont présentes — le niveau 1
-    // les compte (client) ; jamais « Tout est à jour ».
-    if (p.todo && p.todo.total > 0) return { ...base, status: 'ok', source: 'deterministic', paragraphs: [] };
-    // Lot 49A (ticket 13) : « Inviter quelqu'un » proposé — jamais « Tout est à jour ».
-    if (p.duoInvite) return { ...base, status: 'ok', source: 'deterministic', paragraphs: [] };
-    // Lot 53 (D25) : une échéance dépassée reste ouverte — jamais « Tout est à jour ».
-    if ((p.overdueDeadlines ?? 0) > 0) return { ...base, status: 'ok', source: 'deterministic', paragraphs: [] };
-    return {
+    // les compte (client) ; jamais « rien à signaler ».
+    if (p.todo && p.todo.total > 0) return withState({ ...base, status: 'ok', source: 'deterministic', paragraphs: [] });
+    // Lot 49A (ticket 13) : « Inviter quelqu'un » proposé.
+    if (p.duoInvite) return withState({ ...base, status: 'ok', source: 'deterministic', paragraphs: [] });
+    // Lot 61 : échéances proches non encore (ou pas) évaluées — état
+    // explicite, jamais « rien à signaler ». Le compteur des échéances
+    // dépassées (D25) ne joue plus : une date passée n'est pas une action.
+    if (evaluation !== 'OK') return withState({ ...base, status: 'ok', source: 'deterministic', paragraphs: [] });
+    return withState({
       ...base,
       status: 'clear',
       source: 'deterministic',
@@ -86,7 +104,7 @@ export function buildPresentation(p: {
         subjectId: 'CLEAR', sourceCode: 'CLEAR', occurrenceKey: 'CLEAR',
         text: CLEAR_TEXT, highlight: null, actions: [],
       }],
-    };
+    });
   }
 
   const paragraphs: MascotParagraph[] = p.subjects.map((s, i) => {
@@ -103,10 +121,10 @@ export function buildPresentation(p: {
       ...(s.reminder ? { reminder: s.reminder } : {}),
     };
   });
-  return {
+  return withState({
     ...base,
     status: p.degraded ? 'degraded' : 'ok',
     source: p.messages ? 't6' : 'fallback',
     paragraphs,
-  };
+  });
 }

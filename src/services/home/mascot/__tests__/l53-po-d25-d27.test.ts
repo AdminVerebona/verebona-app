@@ -8,7 +8,7 @@ import { describe, expect, it } from 'vitest';
 import { buildCandidates, openOverdueCount, type MascotAgendaRow, type MascotRawData } from '../signals';
 import { selectSubjects } from '../selector';
 import { buildPresentation } from '../presentation';
-import { CLEAR_SPEECH, NOTHING_PRIORITY, composeSpeech, homePose, nothingPriorityText } from '../bubble';
+import { CLEAR_SPEECH, NOTHING_PRIORITY, composeSpeech, homePose } from '../bubble';
 import { buildT6Input, nuanceViolation } from '../t6-contract';
 import { deadlineExtActionText, deadlineNextText } from '../deadline-label';
 import { agendaDateRole } from '@/services/agenda/agenda-date-role';
@@ -38,24 +38,22 @@ function presenter(r: MascotRawData, todo?: MascotPresentation['todo']): MascotP
 const parler = (p: MascotPresentation) => composeSpeech({ presentation: p, empty: false }).text;
 
 describe('PO-D25 — « Aucun sujet à traiter en priorité » : jamais au prix de masquer', () => {
-  it('PO-D25-01 — aucun sujet, file vide, aucune échéance dépassée : « Tout est à jour » (seul cas où l’assurance est permise)', () => {
+  it('PO-D25-01 — aucun sujet, file vide : lot 61, « Rien de particulier à vous signaler » (jamais « Tout est à jour »)', () => {
     const p = presenter(raw());
     expect(p.status).toBe('clear');
     expect(parler(p)).toBe(CLEAR_SPEECH);
+    expect(parler(p)).toBe('Rien de particulier à vous signaler pour le moment.');
     expect(homePose(p, false)).toBe('success-check');
   });
 
-  it('PO-D25-02 — échéance échue hors fenêtre des sujets (> 60 j) : ni « tout est à jour », ni « aucune échéance dépassée »', () => {
+  it('PO-D25-02 (revu lot 61, T6) — échéance échue hors fenêtre des sujets : ni « tout est à jour », ni « aucune échéance dépassée », ni vérification générique', () => {
     const p = presenter(raw({ overdueAgenda: [{ id: 9, date: '2026-05-01' }] }));
-    expect(p.status).toBe('ok');
+    // Lot 61 : une date dépassée n'établit aucune action — compteur de supervision seulement.
     expect(p.overdueDeadlines).toBe(1);
     const t = parler(p);
-    expect(t).toBe(nothingPriorityText({ overdue: true }));
-    expect(t).toContain('Des échéances dépassées sont à vérifier dans l’agenda.');
+    expect(t).not.toContain('Des échéances dépassées sont à vérifier');
     expect(t).not.toMatch(/Tout est à jour|Aucune échéance dépassée|urgen/i);
-    // Jamais le nombre (MASC3), pose neutre (ni « tout est à jour », ni alerte).
     expect(t).not.toMatch(/\d/);
-    expect(homePose(p, false)).toBe('neutral');
   });
 
   it('PO-D25-03 — échéance échue récente : un vrai sujet « à confirmer », jamais « aucun sujet »', () => {
@@ -73,9 +71,9 @@ describe('PO-D25 — « Aucun sujet à traiter en priorité » : jamais au prix 
     expect(t).toBe(NOTHING_PRIORITY);
     expect(t).not.toMatch(/\d|Tout est à jour|À traiter/);
     expect(homePose(p, false)).toBe('neutral');
-    // Avec une échéance dépassée hors sujets : elle est signalée.
+    // Lot 61 : une échéance dépassée hors sujets n'ajoute plus de phrase générique.
     expect(parler(presenter(raw({ overdueAgenda: [{ id: 9, date: '2026-01-01' }] }), { items: [], total: 1 } as never)))
-      .toBe(`${NOTHING_PRIORITY} Des échéances dépassées sont à vérifier dans l’agenda.`);
+      .toBe(NOTHING_PRIORITY);
   });
 
   it('PO-D25-05 — données incomplètes (source en panne) : aucune assurance catégorique, même devant une simple information', () => {

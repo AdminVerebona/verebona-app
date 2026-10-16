@@ -285,8 +285,9 @@ export const OPTIONAL_MASTER_VARIABLES: Readonly<Record<string, readonly string[
   t2_master_v1: ['BUSINESS_CANDIDATES'],
   // T6 : contexte des questions suggérées de l'accueil, lot 55A. Absent d'une
   // version BO antérieure : aucune question suggérée (jamais le catalogue).
-  // Lot 60 : candidats d'interpellation à évaluer (R13). Absent : décision
-  // prudente sans IA (aucune interpellation au-delà du seuil).
+  // Lot 60 : candidats d'interpellation ; lot 61 : entrée du mode EVALUATE
+  // (`t6-evaluation-input-v1`), toujours null en FORMULATE. Absent d'une
+  // version BO antérieure : décision prudente sans IA.
   t6_master_v1: ['SUGGESTION_CONTEXT', 'INTERPELLATION_CONTEXT'],
 };
 
@@ -299,11 +300,35 @@ export const OPTIONAL_MASTER_VARIABLES: Readonly<Record<string, readonly string[
  * repli déterministe ; les autres branches fonctionnent normalement. Le
  * fichier du dépôt, lui, doit les contenir (`prompts:check`).
  *   · t3_master_v1 / OPERATION_MATCH : rapprochement sémantique M3 des
- *     Opérations — sans la branche, les cas restent en attente.
+ *     Opérations — sans la branche, les cas restent en attente ;
+ *   · t3_master_v1 / DOCUMENT_NAMING (lot 61) : harmonisation du nommage
+ *     documentaire — sans la branche, aucun renommage (signalé au rapport) ;
+ *   · t6_master_v1 / EVALUATE (lot 61) : pertinence des interpellations de
+ *     l'accueil — sans la branche, dégradation prudente.
  */
 export const OPTIONAL_MASTER_TASKS: Readonly<Record<string, readonly string[]>> = {
-  t3_master_v1: ['OPERATION_MATCH'],
+  t3_master_v1: ['OPERATION_MATCH', 'DOCUMENT_NAMING'],
+  // Lot 61 : mode EVALUATE de T6 (pertinence des interpellations). Sans lui
+  // (version BO antérieure), aucune échéance non évaluée n'est présentée
+  // d'office et l'accueil dit que l'examen des échéances est indisponible.
+  t6_master_v1: ['EVALUATE'],
 };
+
+/**
+ * Lot 61 — branches dont le TEXTE est livré par un ticket séparé (prompt
+ * hors périmètre du ticket de code) : leur absence du fichier du dépôt est
+ * un AVERTISSEMENT de `prompts:check`, pas une erreur. À retirer de cette
+ * liste dès que le texte de la branche est livré dans le fichier.
+ *   · t3_master_v1 / DOCUMENT_NAMING : ticket « prompt T3 — document_renames ».
+ */
+export const MASTER_TASKS_TEXT_PENDING: Readonly<Record<string, readonly string[]>> = {
+  t3_master_v1: ['DOCUMENT_NAMING'],
+};
+
+/** Texte de cette branche attendu d'un ticket séparé (`MASTER_TASKS_TEXT_PENDING`). */
+export function isMasterTaskTextPending(masterPromptCode: string, task: string): boolean {
+  return (MASTER_TASKS_TEXT_PENDING[masterPromptCode] ?? []).includes(task);
+}
 
 /** Branche optionnelle pour ce master (`OPTIONAL_MASTER_TASKS`). */
 export function isOptionalMasterTask(masterPromptCode: string, task: string): boolean {

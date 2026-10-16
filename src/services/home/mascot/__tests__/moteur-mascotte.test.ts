@@ -199,15 +199,15 @@ describe('dates (§10)', () => {
     expect(p.paragraphs[0].text).toBe('Le prochain ramonage de la maison est à prévoir autour du 15 octobre 2026 (date estimée).');
   });
 
-  it('DATE-03 — deux dates le même jour : un seul sujet composé', () => {
+  it('DATE-03 (revu lot 61, T6) — deux dates le même jour : deux sujets distincts, chacun son texte et son action', () => {
     const p = present(raw({
       agenda: [agenda({ id: 1, title: 'Ramonage' }), agenda({ id: 2, title: 'Vidange', assetName: 'Polo', assetId: 2 })],
       toProcess: [atp()],
     }));
-    expect(codes(p)).toEqual(['DATE-NEXT-2']);
-    // Lot 31 (T6) : mêmes règles que DATE-NEXT ; « Polo » sans catégorie connue → neutre.
-    expect(p.paragraphs[0].text).toBe('Deux échéances sont à prévoir pour le 15 octobre 2026 : le ramonage de la maison et la vidange (Polo).');
-    expect(p.paragraphs[0].actions.map((a) => a.label)).toEqual(['Voir « Ramonage »', 'Voir « Vidange »']);
+    expect(codes(p)).toEqual(['DATE-NEXT', 'DATE-NEXT']);
+    expect(p.paragraphs.map((x) => x.subjectId)).toEqual(['DATE-NEXT:1', 'DATE-NEXT:2']);
+    expect(p.paragraphs.map((x) => x.actions.map((a) => (a.target.kind === 'drawer' ? a.target.id : null)))).toEqual([[1], [2]]);
+    expect(p.paragraphs.map((x) => x.tile?.label)).toEqual(['Ramonage', 'Vidange']);
   });
 
   it('DATE-04 — une date réalisée ou annulée n’est jamais lue (filtrée à la source)', () => {

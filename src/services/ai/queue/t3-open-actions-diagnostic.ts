@@ -128,6 +128,21 @@ export interface DocumentRuleEvaluation {
   writeVerified: boolean | null;
   error: string | null;
   failedStep: string | null;
+  // ── Lot 61 (0444) : décision centrale, contrat de décision, trace complète ──
+  /** AUTO_RESOLVED | NO_ACTION | DEFER | CREATE_ACTION | KEEP | ERROR (null : évaluation antérieure). */
+  outcome?: string | null;
+  situation?: string | null;
+  /** Contrat de décision interne (problème, intervention, temporalité, fiabilité, motif) et intervention identifiée. */
+  decisionContract?: Record<string, unknown> | null;
+  reevaluateAt?: string | null;
+  configRef?: string | null;
+  knowledgeRev?: string | null;
+  derivation?: Record<string, unknown> | null;
+  writeResult?: Record<string, unknown> | null;
+  actionIds?: Record<string, number[]> | null;
+  /** Passages d'une évaluation dédupliquée (déclencheur, référence, date), ≤ 20. */
+  passages?: Array<{ at: string; trigger: string; runRef: string | null }> | null;
+  errorKind?: string | null;
 }
 
 export interface T3OpenActionsDiagnostic {
@@ -278,7 +293,7 @@ async function loadDocumentRules(f: ReturnType<typeof cleanFilters>): Promise<Do
       WHERE ($1::int IS NULL OR e.account_id = $1)
         AND ($2::int IS NULL OR e.file_id = $2)
         AND ($3::text IS NULL OR e.rule_code = $3)
-        AND ($4::text IS NULL OR e.decision = $4 OR e.reason_code = $4 OR e.pertinence = $4)
+        AND ($4::text IS NULL OR e.decision = $4 OR e.reason_code = $4 OR e.pertinence = $4 OR to_jsonb(e) ->> 'outcome' = $4)
       ORDER BY e.id DESC LIMIT $5`,
     [f.accountId, f.documentId, f.ruleCode, f.result, f.limit] as never[],
   ).catch(() => [])) as unknown as Array<{ e: Record<string, unknown> }>;
@@ -297,6 +312,10 @@ async function loadDocumentRules(f: ReturnType<typeof cleanFilters>): Promise<Do
       reasonCode: (e.reason_code as string) ?? null, actionId: num(e.action_id),
       writeVerified: typeof e.write_verified === 'boolean' ? e.write_verified : null, error: (e.error as string) ?? null,
       failedStep: (e.failed_step as string) ?? null,
+      outcome: (e.outcome as string) ?? null, situation: (e.situation as string) ?? null,
+      decisionContract: obj(e.decision_contract), reevaluateAt: iso(e.reevaluate_at), configRef: (e.config_ref as string) ?? null,
+      knowledgeRev: (e.knowledge_rev as string) ?? null, derivation: obj(e.derivation), writeResult: obj(e.write_result),
+      actionIds: obj(e.action_ids), passages: obj(e.passages), errorKind: (e.error_kind as string) ?? null,
     };
   });
 }

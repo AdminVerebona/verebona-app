@@ -1,0 +1,55 @@
+{
+  "case": "P-T4-V3-14",
+  "description": "Lot 61 (t4_output_v3) — « À traiter », échéance PASSÉE d'un contrat terminé sans reconduction ni démarche restante : aucune intervention (needed=no), aucune carte.",
+  "context": {
+    "candidate": {
+      "title": "Fin de contrat",
+      "date": "2025-09-10",
+      "confidence": "certain",
+      "documentType": "SERVICE_CONTRACT",
+      "excerpt": "Le présent contrat a pris fin à son terme, sans reconduction. Aucune somme ni démarche ne reste due."
+    },
+    "recurrenceCandidate": null,
+    "toProcessAssessment": {
+      "contractVersion": "atr-decision-v1",
+      "situation": "PAST_DEADLINE",
+      "dataKey": "contractEndDate",
+      "question": "Quelle est la date de fin de ce contrat ?",
+      "today": "2026-10-15",
+      "candidates": [{ "date": "2025-09-10", "source": "FACTS" }],
+      "documentDates": [],
+      "documentTitle": "Contrat de location de matériel"
+    }
+  },
+  "recording": {
+    "operationCode": "t4_classify_event",
+    "task": "CLASSIFY_EVENT",
+    "outputContract": "t4_output_v3",
+    "output": {
+      "task": "CLASSIFY_EVENT",
+      "agendaDecision": "accept",
+      "recurrenceDecision": "not_applicable",
+      "homeCategory": "information",
+      "businessType": null,
+      "confidence": "certain",
+      "reason": "fin de contrat historique, aucune démarche restante",
+      "recurrenceReason": null,
+      "intervention": {
+        "needed": "no",
+        "kind": null,
+        "action": null,
+        "justification": "Le contrat est terminé sans reconduction et aucune démarche ne reste due.",
+        "consequence": null,
+        "evidence": "sans reconduction. Aucune somme ni démarche ne reste due",
+        "timing": "NONE",
+        "actBy": null,
+        "dataNeeded": false
+      }
+    }
+  },
+  "expected": {
+    "agendaDecision": "accept",
+    "category": "information",
+    "interventionNeeded": "no"
+  }
+}

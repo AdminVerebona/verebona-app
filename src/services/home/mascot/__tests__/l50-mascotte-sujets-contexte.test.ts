@@ -44,7 +44,8 @@ describe('MASC50-AC01 — aucun « urgent » dans les textes de la mascotte', ()
   it('file non vide, aucun DO_FIRST : priorité, jamais urgence', () => {
     const p = { status: 'ok', paragraphs: [], secondaries: [], todo: { items: [], total: 4 } } as never;
     const t = composeSpeech({ presentation: p, empty: false }).text;
-    expect(t).toBe('Aucun sujet à traiter en priorité aujourd’hui.');
+    // Lot 61 : « pour le moment » — formulation proportionnée.
+    expect(t).toBe('Aucun sujet à traiter en priorité pour le moment.');
     expect(NOTHING_PRIORITY).toBe(t);
     expect(t).not.toMatch(/urgen/i);
   });
@@ -193,12 +194,13 @@ describe('MASC50-AC06 — événement réellement planifié', () => {
     expect(deadlineNextText({ title: 'Audit', assetName: 'Cupra', forecast: false, dateRole: 'SCHEDULED_EVENT' }, '18 avril 2028'))
       .toBe('Prévu le 18 avril 2028 pour Cupra : Audit.');
   });
-  it('DATE-NEXT-2 : rôles distincts transmis, phrase adaptée', () => {
+  it('deux dates le même jour (lot 61 : deux sujets) : rôle propre à chacune, phrase adaptée', () => {
     const a = row({ id: 1, dateRole: 'DEADLINE' });
     const b = row({ id: 2, title: 'Rendez-vous garage', dateRole: 'SCHEDULED_EVENT' });
-    const s = buildCandidates(raw({ agenda: [a, b] })).candidates.find((c) => c.sourceCode === 'DATE-NEXT-2')!;
-    expect(s.facts).toMatchObject({ firstDateRole: 'DEADLINE', secondDateRole: 'SCHEDULED_EVENT' });
-    expect(s.fallbackText).toMatch(/^Deux dates sont à noter le 18 avril 2028 : /);
+    const [sa, sb] = buildCandidates(raw({ agenda: [a, b] })).candidates.filter((c) => c.sourceCode === 'DATE-NEXT');
+    expect(sa.facts).toMatchObject({ dateRole: 'DEADLINE' });
+    expect(sb.facts).toMatchObject({ dateRole: 'SCHEDULED_EVENT' });
+    expect(sb.fallbackText).toMatch(/est prévu le 18 avril 2028/);
     expect(deadlinePairText({ ...b }, { ...b }, '18 avril 2028', false)).toMatch(/^Deux événements sont prévus le 18 avril 2028 : /);
   });
 });

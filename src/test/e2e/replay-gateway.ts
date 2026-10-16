@@ -46,7 +46,13 @@ export interface RecordedOutput {
    * Lot 33D — erreur fournisseur simulée (délai, 429, 400 sur le schéma…) :
    * l'appel lève au lieu de rendre `output`.
    */
-  error?: { message: string; status?: number; code?: string; recoverable?: boolean };
+  error?: {
+    message: string; status?: number; code?: string; recoverable?: boolean;
+    /** Lot 61 : `TypeError` (validation d'en-tête undici, ByteString) au lieu d'`Error`. */
+    name?: 'TypeError';
+    /** Lot 61 : étape posée par l'adaptateur (`request_build` : construction de la requête). */
+    stage?: string;
+  };
   /**
    * Lot 52B — filtre sur le structured output de l'appel : `true` ne répond
    * qu'à un appel portant un `responseSchema`, `false` qu'à un appel sans
@@ -85,7 +91,17 @@ export function t4AcceptingResponder(input: ProviderCallInput): unknown {
   const homeCategory = hint === 'information' ? 'information' : 'action';
   const base = { task: 'CLASSIFY_EVENT', businessType: null, homeCategory, confidence: hint ? 'certain' : 'probable', reason: 'T4 simulé (e2e)' };
   if (!ctx || !('recurrenceCandidate' in ec)) return base;
-  return { ...base, agendaDecision: 'accept', recurrenceDecision: ec.recurrenceCandidate ? 'accept' : 'not_applicable', recurrenceReason: ec.recurrenceCandidate ? 'T4 simulé (e2e)' : null };
+  // Lot 61 (`t4_output_v3`) : évaluation « À traiter » demandée par le serveur —
+  // réponse GÉNÉRIQUE : date inconnue d'un contrat → utile ; échéance passée ou
+  // date du seul titre → aucune intervention restante.
+  const demande = ec.toProcessAssessment as { situation?: string } | undefined;
+  const intervention = !demande ? null : demande.situation === 'UNDATED'
+    ? { needed: 'yes', kind: 'PROVIDE_INFORMATION', action: 'Indiquer la date', justification: 'T4 simulé (e2e)', consequence: null, evidence: null, timing: 'NOW', actBy: null, dataNeeded: true }
+    : { needed: 'no', kind: null, action: null, justification: 'T4 simulé (e2e)', consequence: null, evidence: null, timing: 'NONE', actBy: null, dataNeeded: false };
+  return {
+    ...base, agendaDecision: 'accept', recurrenceDecision: ec.recurrenceCandidate ? 'accept' : 'not_applicable', recurrenceReason: ec.recurrenceCandidate ? 'T4 simulé (e2e)' : null,
+    ...(demande ? { intervention } : {}),
+  };
 }
 
 export class ReplayProvider implements AiProvider {
@@ -134,7 +150,11 @@ export class ReplayProvider implements AiProvider {
         const { AiGatewayError } = await import('@/services/ai/gateway/errors');
         throw new AiGatewayError('TIMEOUT', op, r.error.message, { recoverable: r.error.recoverable ?? true });
       }
-      throw Object.assign(new Error(r.error.message), { ...(r.error.status ? { status: r.error.status } : {}), ...(r.error.code ? { code: r.error.code } : {}) });
+      const base = r.error.name === 'TypeError' ? new TypeError(r.error.message) : new Error(r.error.message);
+      throw Object.assign(base, {
+        ...(r.error.status ? { status: r.error.status } : {}), ...(r.error.code ? { code: r.error.code } : {}),
+        ...(r.error.stage ? { aiStage: r.error.stage } : {}),
+      });
     }
     const rawText = typeof r.output === 'string' ? r.output : JSON.stringify(r.output);
     return { rawText, inputTokens: r.inputTokens ?? 0, outputTokens: r.outputTokens ?? 0, ...(r.meta ? { meta: r.meta } : {}) };

@@ -55,6 +55,7 @@ import { apiClient } from '@/lib/api-client';
 import { AiEnvBanner } from '../ai-dashboard/_components/AiEnvBanner';
 import { ManualLaunch } from './_components/ManualLaunch';
 import { T3OpenActionsDiagnostic } from './_components/T3OpenActionsDiagnostic';
+import { ToProcessRelevancePanel } from './_components/ToProcessRelevancePanel';
 import {
   T3Supervision, PHASE_LABEL, formatDuration, type ExecutionPhase, type T3SupervisionData,
 } from './_components/T3Supervision';
@@ -382,6 +383,8 @@ function AiQueueScreen() {
 
       {/* Lot 57B : diagnostic des « À traiter » T3 par exécution globale et par carte (filtres, sans SQL) */}
       <T3OpenActionsDiagnostic initialJobId={Number(sp.get('t3Job')) || null} />
+      {/* Lot 61 : pertinence des « À traiter » documentaires (campagnes, recette T4 réelle). */}
+      <ToProcessRelevancePanel />
 
       {stop?.active && (
         <div className="rounded-xl border border-red-500/30 bg-red-500/5 p-4 flex items-start gap-3">
@@ -520,7 +523,8 @@ function AiQueueScreen() {
                 {job.origin === 'manual' && (
                   <span className="text-xs text-[color:var(--text-muted)]">lancé à la main</span>
                 )}
-                {job.status === 'FAILED' && (
+                {/* Lot 61 : aussi un job T1 clos en échec MÉTIER (relance sans nouvel upload). */}
+                {(job.status === 'FAILED' || (job.status === 'DONE' && job.treatment === 'T1' && job.businessResult === 'FAILED')) && (
                   <Button size="sm" variant="ghost" onClick={() => retry(job)} disabled={busy}>
                     <RotateCcw className="w-3.5 h-3.5 mr-1" /> Relancer
                   </Button>

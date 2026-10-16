@@ -297,8 +297,10 @@ scenario('L57B-T3', 'T3 : À traiter non résolus corrigés, journal et diagnost
     expect(entree(r, c)).toMatchObject({ actionEffect: 'CLOSED', aiCalled: false });
     expect(await colonne(doc.id)).toBe(v.id);
     const contrat = await make.assetFile(compte, { assetId: null });
+    // Lot 61 : échéance PROCHE (≤ 120 jours) — une échéance lointaine est différée, sans carte active.
+    const proche = new Date(Date.now() + 60 * 86_400_000).toISOString().slice(0, 10);
     await connaissance(compte, contrat.id, {
-      title: 'Contrat', type: 'SERVICE_CONTRACT', units: [{ kind: 'LABEL_VALUE', label: 'Date de fin de contrat', value: '30/06/2027' }],
+      title: 'Contrat', type: 'SERVICE_CONTRACT', units: [{ kind: 'LABEL_VALUE', label: 'Date de fin de contrat', value: proche.split('-').reverse().join('/') }],
     });
     const c2 = await finContrat(compte, contrat.id);
     const r2 = await passage(compte);
@@ -306,7 +308,7 @@ scenario('L57B-T3', 'T3 : À traiter non résolus corrigés, journal et diagnost
     const [l2] = (await journal(compte.id)).filter((x) => Number(x.action_id) === c2);
     expect(l2.knowledge_sources).toEqual({ SOURCE_UNITS: 1 });
     expect(maintenue).toContain(entree(r2, c2)!.actionEffect);
-    expect((await propositions(c2)).map((p) => p.value)).toEqual(['2027-06-30']);
+    expect((await propositions(c2)).map((p) => p.value)).toEqual([proche]);
     expect(await valeur(contrat.id, 'contractEndDate')).toBeUndefined();
   });
 

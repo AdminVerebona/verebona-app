@@ -99,20 +99,22 @@ describe('ECH-03 — date extraite en brut, absente du champ canonique : rapproc
 
 describe('ECH-05 / ECH-08 — titre : orienter sans prouver', () => {
   it('ECH-05 — une date du titre NON retrouvée dans le contenu n’est jamais une proposition (seulement un indice)', () => {
-    const c = pertinenceCandidates([], { hasExtraction: true, facts: [], sources: {}, missing: [], observations: [], titleHint: { dates: ['2026-06-20'], confirmed: [], excerpt: 't' } });
+    const c = pertinenceCandidates([], { hasExtraction: true, facts: [], sources: {}, missing: [], errors: [], observations: [], titleHint: { dates: ['2026-06-20'], confirmed: [], excerpt: 't' } });
     expect(c).toEqual([{ iso: '2026-06-20', source: 'TITLE_ONLY', excerpt: 't' }]);
   });
 });
 
 describe('Pertinence d’une échéance (T4 CLASSIFY_EVENT, branche existante)', () => {
-  it('ECH-02 — date future : question utile, AUCUN appel IA (contrat actif)', async () => {
+  it('ECH-02 — date future : AUCUN appel IA (contrat actif) ; lot 61 : question seulement si l’échéance est proche', async () => {
     const { decide, calls } = t4({});
     const r = await ev.assessDeadlinePertinence({ ...base, rule: CONTRACT, candidates: [{ iso: '2027-01-01', source: 'FACTS' }], decide });
-    expect(r).toMatchObject({ pertinence: 'FUTURE_OR_UNDATED', aiCalled: false });
+    expect(r).toMatchObject({ pertinence: 'FUTURE_SOON', outcome: 'CREATE_ACTION', aiCalled: false });
+    const loin = await ev.assessDeadlinePertinence({ ...base, rule: CONTRACT, candidates: [{ iso: '2028-01-01', source: 'FACTS' }], decide });
+    expect(loin).toMatchObject({ pertinence: 'FUTURE_DEFERRABLE', outcome: 'DEFER', aiCalled: false });
     expect(calls).toHaveLength(0);
   });
 
-  it('ECH-08 — aucune date candidate : question maintenue sans IA (contrat actif possible)', async () => {
+  it('ECH-08 — aucune date candidate, version T4 sans évaluation structurée : question maintenue sans IA (contrat actif possible)', async () => {
     const { decide, calls } = t4({});
     expect((await ev.assessDeadlinePertinence({ ...base, rule: CONTRACT, candidates: [], decide })).pertinence).toBe('FUTURE_OR_UNDATED');
     expect(calls).toHaveLength(0);
@@ -120,36 +122,45 @@ describe('Pertinence d’une échéance (T4 CLASSIFY_EVENT, branche existante)',
 
   it('ECH-01 — échéance passée jugée informative par T4 : NO_ACTION_NEEDED (contexte transmis : date, type, nature, sans règle « gardiennage »)', async () => {
     const { decide, calls } = t4({ category: 'information' });
-    const r = await ev.assessDeadlinePertinence({ ...base, rule: CONTRACT, candidates: [{ iso: '2026-06-20', source: 'TITLE_ONLY', excerpt: 'Contrat … échéance le 20:06:2026' }], decide });
-    expect(r).toMatchObject({ pertinence: 'NO_ACTION_NEEDED', aiCalled: true, aiStatus: 'OK', aiTraceId: 'trace-1' });
+    const r = await ev.assessDeadlinePertinence({ ...base, rule: CONTRACT, candidates: [{ iso: '2026-06-20', source: 'FACTS', excerpt: 'Contrat … échéance le 20:06:2026' }], decide });
+    expect(r).toMatchObject({ pertinence: 'NO_ACTION_NEEDED', outcome: 'NO_ACTION', aiCalled: true, aiStatus: 'OK', aiTraceId: 'trace-1' });
     expect(calls[0].input).toMatchObject({ originFieldKey: 'contractEndDate', nature: 'DEADLINE', businessType: 'contract' });
     expect(calls[0].input.description).toMatch(/2026-10-15/);
-    expect(calls[0].input.description).toMatch(/uniquement par le titre/);
     expect(calls[0].ctx).toMatchObject({ date: '2026-06-20', documentType: 'SERVICE_CONTRACT', recurrenceCandidate: null });
   });
 
-  it('ECH-07 — échéance passée avec action attendue (reconduction, obligation) : ACTION_REQUIRED, question maintenue', async () => {
-    const { decide } = t4({ category: 'action' });
-    expect((await ev.assessDeadlinePertinence({ ...base, rule: CONTRACT, candidates: [{ iso: '2026-06-20', source: 'FACTS' }], decide })).pertinence).toBe('ACTION_REQUIRED');
+  it('ECH-01 / lot 61 (écart 7) — date du SEUL titre : jamais « aucune intervention » sur ce seul indice, aucun appel sans évaluation structurée', async () => {
+    const { decide, calls } = t4({ category: 'information' });
+    const r = await ev.assessDeadlinePertinence({ ...base, rule: CONTRACT, candidates: [{ iso: '2026-06-20', source: 'TITLE_ONLY', excerpt: 'Contrat … échéance le 20:06:2026' }], decide });
+    expect(r).toMatchObject({ pertinence: 'TITLE_HINT_ONLY', outcome: 'DEFER', aiCalled: false });
+    expect(calls).toHaveLength(0);
   });
 
-  it('ECH-07 — abstention, refus de la date ou échec technique : variante prudente (UNDECIDED, question maintenue)', async () => {
+  it('ECH-07 — échéance passée avec action attendue : ACTION_REQUIRED ; lot 61 (écart 2) : sans intervention identifiée (version T4 v2), jamais une question de date — décision différée', async () => {
+    const { decide } = t4({ category: 'action' });
+    const r = await ev.assessDeadlinePertinence({ ...base, rule: CONTRACT, candidates: [{ iso: '2026-06-20', source: 'FACTS' }], decide });
+    expect(r).toMatchObject({ pertinence: 'ACTION_REQUIRED', outcome: 'DEFER', card: null });
+  });
+
+  it('ECH-07 — abstention, refus de la date ou échec technique : variante prudente (UNDECIDED ; lot 61 : décision différée, jamais une carte arbitraire)', async () => {
     for (const o of [{ decision: 'abstain' as const, category: 'unknown' as const }, { decision: 'reject' as const, category: 'unknown' as const }, { failure: true }]) {
       const { decide } = t4(o);
       const r = await ev.assessDeadlinePertinence({ ...base, rule: CONTRACT, candidates: [{ iso: '2026-06-20', source: 'FACTS' }], decide });
-      expect(r.pertinence).toBe('UNDECIDED');
-      if (o.failure) expect(r).toMatchObject({ aiStatus: 'ERROR', reason: 't4_failure:T4_CALL_FAILED' });
+      expect(r).toMatchObject({ pertinence: 'UNDECIDED', outcome: 'DEFER' });
+      if (o.failure) expect(r).toMatchObject({ aiStatus: 'ERROR', reason: 't4_failure:T4_CALL_FAILED', technicalFailure: true });
     }
   });
 
   it('ECH-10 — décision mémorisée pour les mêmes éléments : pas de nouvel appel IA ; élément nouveau : réévaluée', async () => {
     const { decide, calls } = t4({ category: 'information' });
     const cands = [{ iso: '2026-06-20', source: 'FACTS' }];
-    const signature = ev.pertinenceSignature('contractEndDate', 'SERVICE_CONTRACT', cands);
-    const r = await ev.assessDeadlinePertinence({ ...base, rule: CONTRACT, candidates: cands, decide, remembered: { signature, pertinence: 'NO_ACTION_NEEDED' } });
+    // Lot 61 : la signature porte aussi la situation, l'empreinte des preuves et la configuration IA.
+    const signature = ev.pertinenceSignature('contractEndDate', 'SERVICE_CONTRACT', cands, { situation: 'PAST_DEADLINE', evidence: null, config: 'unknown' });
+    const memo = { signature, pertinence: 'NO_ACTION_NEEDED', outcome: 'NO_ACTION' as const };
+    const r = await ev.assessDeadlinePertinence({ ...base, rule: CONTRACT, candidates: cands, decide, remembered: memo });
     expect(r).toMatchObject({ pertinence: 'NO_ACTION_NEEDED', cached: true, aiCalled: false });
     expect(calls).toHaveLength(0);
-    await ev.assessDeadlinePertinence({ ...base, rule: CONTRACT, candidates: [...cands, { iso: '2026-05-01', source: 'SOURCE_UNITS' }], decide, remembered: { signature, pertinence: 'NO_ACTION_NEEDED' } });
+    await ev.assessDeadlinePertinence({ ...base, rule: CONTRACT, candidates: [...cands, { iso: '2026-05-01', source: 'SOURCE_UNITS' }], decide, remembered: memo });
     expect(calls).toHaveLength(1);
   });
 

@@ -364,6 +364,24 @@ async function stampChecked(fileId: number, accountId: number, fingerprint: stri
   return rows.length > 0;
 }
 
+/**
+ * Lot 61 : le titre en place est-il le dernier nom écrit par l'harmonisation
+ * T3 (`document_rename_events`, APPLIED) ? Table absente : non.
+ */
+async function isHarmonizedTitle(sql: Sql, fileId: number, accountId: number, title: string | null): Promise<boolean> {
+  if (!title) return false;
+  try {
+    const rows = (await sql.unsafe(
+      `SELECT applied_name FROM document_rename_events
+        WHERE account_id = $1 AND file_id = $2 AND outcome = 'APPLIED' ORDER BY id DESC LIMIT 1`,
+      [accountId, fileId] as never[],
+    )) as unknown as Array<{ applied_name: string | null }>;
+    return (rows[0]?.applied_name ?? '').trim() === title.trim();
+  } catch {
+    return false;
+  }
+}
+
 /** Événement d'observabilité (ne lève jamais). */
 async function trace(accountId: number, r: EnsureTitleResult, persist: boolean): Promise<void> {
   const ligne = `[document-title] ${r.origin} fichier ${r.fileId} : ${r.outcome}${r.reason ? ` (${r.reason})` : ''}`
@@ -469,6 +487,16 @@ export async function ensureBusinessTitle(p: {
       const ecrit = await stampChecked(p.fileId, p.accountId, fp);
       if (valide) return fin('NO_CHANGE', 'NO_BETTER_TITLE', null, ecrit && contexteModifie, evaluation);
       return fin('INSUFFICIENT_DATA', 'NO_TITLE_FROM_DATA', null, ecrit, evaluation);
+    }
+
+    // Lot 61 : nom harmonisé par T3 (famille documentaire, décision IA) et
+    // toujours en place — le rattrapage déterministe ne le remplace pas
+    // (sinon les deux mécanismes se renommeraient l'un l'autre). T1 (mode
+    // `refresh`, nouvelle analyse) reste libre de nommer.
+    if (p.mode === 'repair' && valide && await isHarmonizedTitle(sql, p.fileId, p.accountId, row.retained_title)) {
+      await p.guard?.assertActive('titre du document — contrôle');
+      await stampChecked(p.fileId, p.accountId, fp);
+      return fin('NO_CHANGE', 'HARMONIZED_TITLE', null, false, evaluation);
     }
 
     // Premier titrage : titre encore égal au nom du fichier déposé.

@@ -105,7 +105,10 @@ function checkText(
 ): CoherenceFinding[] {
   const findings: CoherenceFinding[] = [];
   const disc = op.taskField === 'mode' ? 'MODE' : 'TASK';
-  const section = branchSection(text, op.task, disc) ?? text;
+  // Lot 61 : un master sans discriminant de SORTIE (T6) peut tout de même
+  // déclarer ses branches « BRANCHE MODE = X » — la section est cherchée
+  // sous les deux mots-clés avant de retomber sur le texte entier.
+  const section = branchSection(text, op.task, disc) ?? branchSection(text, op.task, disc === 'MODE' ? 'TASK' : 'MODE') ?? text;
   const field = op.taskField === 'none' ? null : (op.taskField ?? 'task');
   const exemples = jsonExamples(section).filter((e) => {
     if (!e || typeof e !== 'object' || Array.isArray(e)) return false;

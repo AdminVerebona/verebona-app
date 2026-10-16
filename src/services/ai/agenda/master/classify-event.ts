@@ -31,9 +31,9 @@ import { EVENT_CATALOG, resolveDocumentType } from '@/services/canonical/registr
 import type { AgendaClassification, AgendaClassificationInput } from '../types';
 import type { RecurrenceSpec } from '../rules/recurrence';
 import {
-  T4ClassifyEventOutput, T4ClassifyEventV2Output, closedWorldBusinessType, closedWorldBusinessTypeV2,
-  type T4ClassifyEventOutput as Out, type T4ClassifyEventV2Output as OutV2,
-  type T4AgendaDecisionValue, type T4RecurrenceDecisionValue,
+  T4ClassifyEventOutput, T4ClassifyEventV2Output, T4ClassifyEventV3Output, closedWorldBusinessType, closedWorldBusinessTypeV2,
+  type T4ClassifyEventOutput as Out, type T4ClassifyEventV2Output as OutV2, type T4ClassifyEventV3Output as OutV3,
+  type T4AgendaDecisionValue, type T4InterventionAssessment, type T4RecurrenceDecisionValue,
 } from './t4-contract';
 
 /** Récurrence ENVISAGÉE par le serveur, soumise à T4 (ticket §1, §5). */
@@ -62,6 +62,31 @@ export interface ClassifyEventContext {
   recurrenceCandidate?: T4RecurrenceCandidate | null;
   /** Lot 54 : classification déterministe existante, transmise comme INDICE (jamais décisive). */
   ruleHint?: { category: string; source: string; ruleCode: string } | null;
+  /**
+   * Lot 61 : demande d'évaluation d'une intervention « À traiter » (contrat
+   * de sortie `t4_output_v3`, bloc `intervention`). Absente : T4 ne remplit
+   * pas le bloc (null). Une version active v1 / v2 l'ignore.
+   */
+  toProcessAssessment?: ToProcessAssessmentRequest | null;
+}
+
+/** Lot 61 — ce que le serveur demande à T4 pour une carte « À traiter » (données, jamais de texte intégral). */
+export interface ToProcessAssessmentRequest {
+  /** Version du contrat de décision interne (`atr-decision-v1`). */
+  contractVersion: string;
+  /** PAST_DEADLINE · UNDATED (date inconnue) · TITLE_ONLY (date suggérée par le titre seulement). */
+  situation: string;
+  /** Donnée documentaire concernée (clé du registre) et question qui serait posée. */
+  dataKey: string;
+  question: string;
+  /** Date du jour (Europe/Paris). */
+  today: string;
+  /** Dates candidates et leur source (FACTS, SOURCE_UNITS, CALCULATED…). */
+  candidates: Array<{ date: string; source: string }>;
+  /** Autres dates fiables du document (début, date du document…), pour situer le contrat dans le temps. */
+  documentDates: Array<{ key: string; date: string }>;
+  /** Titre lu (indice, ≤ 200). */
+  documentTitle: string | null;
 }
 
 /** Catalogue fermé transmis au modèle (U6). */
@@ -98,6 +123,8 @@ export function classifyEventVariables(input: AgendaClassificationInput, ctx: Cl
       // n'en envisage aucune : null).
       recurrenceCandidate: ctx.recurrenceCandidate ?? null,
       ...(ctx.ruleHint ? { ruleHint: ctx.ruleHint } : {}),
+      // Lot 61 : présent seulement pour une évaluation « À traiter ».
+      ...(ctx.toProcessAssessment ? { toProcessAssessment: ctx.toProcessAssessment } : {}),
     },
     EVENT_CATALOG: eventCatalogForPrompt(),
     EVIDENCE: (ctx.excerpt ?? input.description ?? '').slice(0, 500) || null,
@@ -109,7 +136,7 @@ export function classifyEventVariables(input: AgendaClassificationInput, ctx: Cl
 }
 
 /** Traduction pure d'une sortie v1 (monde fermé U6). */
-export function translateClassifyEvent(out: Out | OutV2): { classification: AgendaClassification; warning: string | null } {
+export function translateClassifyEvent(out: Out | OutV2 | OutV3): { classification: AgendaClassification; warning: string | null } {
   const allowed = new Set(EVENT_CATALOG.map((e) => e.businessType as string));
   if ('agendaDecision' in out) {
     const { output, warning } = closedWorldBusinessTypeV2(out, allowed);
@@ -151,6 +178,14 @@ export interface T4EventDecision {
   error?: { code: string; message: string };
   /** Trace de l'appel (BO › Exécutions IA). */
   traceId?: string;
+  /**
+   * Lot 61 — évaluation de l'intervention « À traiter » (`t4_output_v3`),
+   * telle que rendue par le modèle ; `undefined` : contrat v1 / v2 (aucune
+   * évaluation structurée possible) ; `null` : non remplie.
+   */
+  intervention?: T4InterventionAssessment | null;
+  /** Lot 61 — version du contrat de sortie lue (1, 2 ou 3), absente en échec technique. */
+  contractVersion?: 1 | 2 | 3;
 }
 
 /**
@@ -182,14 +217,18 @@ export function checkDecisionCoherence(
 }
 
 /** Traduction pure d'une sortie (v2 ou v1) en décision appliquée par le moteur. */
-export function translateEventDecision(out: Out | OutV2, hasRecurrenceCandidate: boolean): T4EventDecision {
+export function translateEventDecision(out: Out | OutV2 | OutV3, hasRecurrenceCandidate: boolean): T4EventDecision {
   const { classification, warning } = translateClassifyEvent(out);
   const warnings = warning ? [warning] : [];
   if ('agendaDecision' in out) {
     const c = checkDecisionCoherence(out, hasRecurrenceCandidate);
+    // Lot 61 : v3 = v2 + bloc `intervention` (même décision Agenda).
+    const v3 = 'intervention' in out;
     return {
       agendaDecision: out.agendaDecision, recurrenceDecision: c.recurrenceDecision, classification,
       reason: out.reason, recurrenceReason: out.recurrenceReason ?? null, outcome: 'model_v2', warnings: [...warnings, ...c.warnings],
+      contractVersion: v3 ? 3 : 2,
+      ...(v3 ? { intervention: (out as OutV3).intervention ?? null } : {}),
     };
   }
   // Version de prompt historique (t4_output_v1) : aucune décision d'existence
@@ -200,6 +239,7 @@ export function translateEventDecision(out: Out | OutV2, hasRecurrenceCandidate:
     recurrenceDecision: hasRecurrenceCandidate ? 'abstain' : 'not_applicable',
     classification, reason: out.reason, recurrenceReason: hasRecurrenceCandidate ? 'contrat de sortie t4_output_v1 : récurrence non évaluée' : null,
     outcome: 'model_v1', warnings: [...warnings, ...(hasRecurrenceCandidate ? ['T4_OUTPUT_V1_NO_RECURRENCE_DECISION'] : [])],
+    contractVersion: 1,
   };
 }
 
@@ -215,7 +255,7 @@ export function failedEventDecision(hasRecurrenceCandidate: boolean, error: { co
 }
 
 async function callClassify(input: AgendaClassificationInput, ctx: ClassifyEventContext) {
-  return AiGateway.execute<Out | OutV2>({
+  return AiGateway.execute<Out | OutV2 | OutV3>({
     useCaseCode: 'AGENDA_INTELLIGENCE',
     operationCode: 't4_classify_event',
     accountId: ctx.accountId,
@@ -225,7 +265,8 @@ async function callClassify(input: AgendaClassificationInput, ctx: ClassifyEvent
     // Contrat de sortie choisi par la version de prompt : v1 (historique) ou
     // v2 (`t4_output_v2`). La passerelle retient le schéma de CE contrat.
     outputSchema: T4ClassifyEventOutput,
-    acceptedOutputSchemas: [T4ClassifyEventV2Output],
+    // Lot 61 : `t4_output_v3` (v2 + intervention « À traiter »).
+    acceptedOutputSchemas: [T4ClassifyEventV2Output, T4ClassifyEventV3Output],
   });
 }
 

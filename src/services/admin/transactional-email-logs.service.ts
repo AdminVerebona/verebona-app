@@ -168,3 +168,70 @@ export async function getTransactionalEmailConfig(env: Record<string, string | u
     lastWebhookAt: iso(hook?.at ?? null),
   };
 }
+
+// ── Correction de l'expéditeur depuis le BO (lot 61B) ───────────────────────
+
+/**
+ * ══════════════════════════════════════════════════════════════════════════
+ * LOT 61B — AUDIT DU TICKET P0 E-MAILS, ÉCART RÉSIDUEL §3-A
+ *
+ * « Corriger la cause établie » : quand le diagnostic (configuration d'envoi
+ * effective ci-dessus, docs/exploitation/emails-delivrabilite.md) établit que
+ * l'expéditeur n'est pas sur le domaine vérifié chez Resend, sa correction
+ * exigeait du SQL (`email_settings`, aucun écran) — interdit en exploitation.
+ * Champs modifiables : nom et adresse d'expédition, adresse de réponse,
+ * activation globale. Validés (adresse simple, aucun retour à la ligne : pas
+ * d'injection d'en-tête), adresse en minuscules ; ligne `id = 1` créée si
+ * absente (valeurs par défaut du code sinon). Aucun secret ici (clé et secret
+ * de webhook restent des variables d'environnement).
+ * ══════════════════════════════════════════════════════════════════════════
+ */
+export interface EmailSettingsPatch {
+  senderName?: string;
+  senderEmail?: string;
+  replyToEmail?: string;
+  emailsEnabled?: boolean;
+}
+
+const EMAIL_SETTINGS_FIELDS = new Set(['senderName', 'senderEmail', 'replyToEmail', 'emailsEnabled']);
+const SIMPLE_EMAIL = /^[a-z0-9._%+-]+@[a-z0-9-]+(\.[a-z0-9-]+)*\.[a-z]{2,}$/;
+
+/** Validation (pure) : corps normalisé, ou liste des champs refusés. */
+export function validateEmailSettingsPatch(body: unknown): { ok: true; patch: EmailSettingsPatch } | { ok: false; rejected: string[] } {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return { ok: false, rejected: ['body'] };
+  const b = body as Record<string, unknown>;
+  const rejected = Object.keys(b).filter((k) => !EMAIL_SETTINGS_FIELDS.has(k));
+  const patch: EmailSettingsPatch = {};
+  if ('senderName' in b) {
+    const v = typeof b.senderName === 'string' ? b.senderName.trim() : '';
+    if (!v || v.length > 100 || /[\r\n<>"]/.test(v)) rejected.push('senderName'); else patch.senderName = v;
+  }
+  for (const k of ['senderEmail', 'replyToEmail'] as const) {
+    if (!(k in b)) continue;
+    const v = typeof b[k] === 'string' ? (b[k] as string).trim().toLowerCase() : '';
+    if (v.length > 254 || !SIMPLE_EMAIL.test(v)) rejected.push(k); else patch[k] = v;
+  }
+  if ('emailsEnabled' in b) {
+    if (typeof b.emailsEnabled !== 'boolean') rejected.push('emailsEnabled'); else patch.emailsEnabled = b.emailsEnabled;
+  }
+  if (rejected.length) return { ok: false, rejected };
+  if (Object.keys(patch).length === 0) return { ok: false, rejected: ['body'] };
+  return { ok: true, patch };
+}
+
+type SettingsSnapshot = { senderName: string; senderEmail: string; replyToEmail: string; emailsEnabled: boolean };
+
+/** Applique la correction ; renvoie l'avant / après (audit). */
+export async function updateTransactionalEmailSettings(patch: EmailSettingsPatch, adminId: number): Promise<{ before: SettingsSnapshot; after: SettingsSnapshot }> {
+  const current = await getTransactionalEmailConfig();
+  const before: SettingsSnapshot = { senderName: current.senderName, senderEmail: current.senderEmail, replyToEmail: current.replyToEmail, emailsEnabled: current.emailsEnabled };
+  const after: SettingsSnapshot = { ...before, ...patch };
+  await pgClient.unsafe(
+    `INSERT INTO email_settings (id, emails_enabled, sender_name, sender_email, reply_to_email, updated_at, updated_by)
+     VALUES (1, $1, $2, $3, $4, now(), $5)
+     ON CONFLICT (id) DO UPDATE SET emails_enabled = $1, sender_name = $2, sender_email = $3, reply_to_email = $4,
+                                    updated_at = now(), updated_by = $5`,
+    [after.emailsEnabled, after.senderName, after.senderEmail, after.replyToEmail, adminId] as never[],
+  );
+  return { before, after };
+}

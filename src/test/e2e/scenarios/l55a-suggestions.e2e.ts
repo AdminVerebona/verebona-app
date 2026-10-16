@@ -41,7 +41,19 @@ function provider() {
     name: 'simule-l55a',
     isConfigured: () => true,
     async call(input: { task?: string; prompt: string }) {
-      if (/MODE = FORMULATE/.test(input.prompt)) {
+      // Lot 61 : MODE=EVALUATE (pertinence des interpellations) — rien à signaler.
+      if (/^MODE = EVALUATE$/m.test(input.prompt)) {
+        const ctx = JSON.parse(/Candidats à évaluer : (.*)\n/.exec(input.prompt)![1]) as { candidates: Array<{ subjectId: string }> };
+        return {
+          rawText: JSON.stringify({ schemaVersion: 't6-evaluation-v1', decisions: ctx.candidates.map((c) => ({
+            subjectId: c.subjectId, decision: 'SUPPRESS', category: 'INFORMATION', reasonCode: 'NO_ACTION_REQUIRED',
+            reason: 'Échéance connue et suivie dans l’agenda.', expectedAction: null, actionDeadline: null, suggestedReviewAt: null,
+            priorityHint: null, evidenceRefs: [`${c.subjectId}.title`], uncertainties: [],
+          })) }),
+          inputTokens: 100, outputTokens: 20,
+        };
+      }
+      if (/^MODE = FORMULATE$/m.test(input.prompt)) {
         if (modele.t6Down) throw new Error('T6 indisponible (simulation)');
         modele.t6Prompts.push(input.prompt);
         const entree = JSON.parse(/Entrée structurée : (.*)\n/.exec(input.prompt)![1]) as { subjects: Array<{ subjectId: string; fallbackText: string }> };

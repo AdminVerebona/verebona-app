@@ -3,6 +3,21 @@
  *
  *   Collecter → ordonner → retenir 1 ou 2 sujets → T6 formule → afficher.
  *
+ * Lot 61 — chaîne cible :
+ *   1. collecter les sujets candidats ;
+ *   2. exclusions déterministes et préférences de rappel (lot 60) ;
+ *   3. évaluation IA des échéances éligibles (MODE=EVALUATE), AVANT la
+ *      limitation aux deux sujets — décisions valides réutilisées (cache
+ *      `t6_interpellation_assessments`) ; à l'affichage, une évaluation
+ *      manquante part en arrière-plan (jamais deux appels IA synchrones) ;
+ *      en pré-génération, elle est attendue ;
+ *   4. validation des décisions IA (Zod + contrôles métier) ;
+ *   5. décision backend (`decideT6Interpellation`) ;
+ *   6. sélection des sujets autorisés ;
+ *   7. formulation des SEULS sujets retenus (MODE=FORMULATE) ;
+ *   8. résumé, cartes, pose et questions T2 construits sur cette même
+ *      sélection, via l'état de présentation explicite.
+ *
  * Le moteur décide QUOI, T6 décide COMMENT le dire, le front COMMENT
  * l'afficher, les parcours existants COMMENT modifier les données (§5).
  */
@@ -11,13 +26,19 @@ import { buildCandidates, openOverdueCount } from './signals';
 import { buildSecondaries, selectSubjects, withSuggestedQuestions } from './selector';
 import { buildPresentation, contextHashOf } from './presentation';
 import { buildT6Input } from './t6-contract';
-import { formulateWithT6, logT6, t6SuggestionsAvailable, type T6Mode } from './t6-runner';
+import {
+  evaluateWithT6, formulateWithT6, logT6, t6EvaluationDefaultDeps, t6EvaluationRecentlyFailed, t6SuggestionsAvailable,
+  T6_EVALUATION_CONTRACTS, type T6EvaluationOutcome, type T6Mode,
+} from './t6-runner';
 import type { MascotPresentation } from './types';
 import { composeSpeech, parisDay, tileFor } from './bubble';
 import { MAX_TODO_ITEMS, buildTodoBlock } from './todo-items';
 import { readDuoInvite } from './duo-invite';
 import { loadT6SuggestionContext, suggestionSecondaries, type T6SuggestionBundle } from './t6-suggestions';
-import { prepareT6Interpellation, t6ThresholdDays, writeT6InterpellationReport, type T6Preparation } from './t6-interpellation.service';
+import {
+  prepareT6Interpellation, t6ThresholdDays, writeT6EvaluationReport, writeT6InterpellationReport, type T6Preparation,
+} from './t6-interpellation.service';
+import type { MascotRawData } from './signals';
 import { t6InterpellationAvailable } from './t6-runner';
 
 /**
@@ -51,15 +72,31 @@ export async function getMascotPresentation(
   // CDC 15 T4-12 : échéance passée sans statut = non prouvée (à confirmer),
   // jamais « non réalisée » (toujours depuis le lot 16b-2).
   const tiles = { unprovenOverdueIsQuestion: true };
-  // Lot 60 : décision d'interpellation T6 de chaque échéance candidate, AVANT
-  // la composition : phrase et cartes reposent sur les MÊMES décisions.
-  const interpellation: T6Preparation = await prepareT6Interpellation({ accountId, userId, raw }, {
-    aiCapable: t6InterpellationAvailable,
-    thresholdDays: t6ThresholdDays,
-    // Nouvelles évaluations : l'accueil suivant est préparé avec elles.
-    onAssessed: () => scheduleMascotPregeneration(accountId, PREGEN_DEBOUNCE_MS, 't6-assessment'),
-  });
-  void writeT6InterpellationReport({ accountId, userId, mode, prep: interpellation });
+  // Lot 60 / 61 : décision d'interpellation de chaque échéance candidate, AVANT
+  // la composition : phrase, cartes, pose et questions reposent sur les MÊMES
+  // décisions.
+  let interpellation = await prepare(accountId, userId, raw, mode);
+  if (interpellation.bundle) {
+    const bundle = interpellation.bundle;
+    const evaluation = evaluateWithT6({ accountId, bundle, mode }, {
+      ...t6EvaluationDefaultDeps,
+      report: (o) => writeT6EvaluationReport({ accountId, mode, bundle, trace: evaluationTrace(o) }),
+    });
+    if (mode === 'pregen') {
+      // Pré-génération : l'évaluation est attendue, puis les décisions sont
+      // recalculées avec elle — la bulle préparée repose sur les décisions
+      // VALIDÉES (aucune nouvelle pré-génération demandée par ce passage).
+      // Décisions conservées, rejetées ou échec : l'état est relu (décision
+      // validée, ou état « indisponible » explicite après un échec).
+      const o = await evaluation;
+      if (o.status !== 'disabled') interpellation = await prepare(accountId, userId, raw, mode);
+    } else {
+      // Affichage : JAMAIS attendue. Les décisions valides déjà conservées
+      // servent tout de suite ; une évaluation aboutie programme une
+      // pré-génération (l'accueil suivant en profite).
+      void evaluation.then((o) => { if (o.persisted > 0) scheduleMascotPregeneration(accountId, PREGEN_DEBOUNCE_MS, 't6-assessment'); });
+    }
+  }
   const candidates = buildCandidates(raw, { interpellation: { shown: interpellation.shown } });
   const subjects = selectSubjects(candidates.candidates);
   // Lot 55A : actions secondaires seulement (onboarding, recommandations) —
@@ -75,12 +112,26 @@ export async function getMascotPresentation(
   // ne relance pas la formulation des autres sujets.
   const contextHash = contextHashOf(subjects, baseSecondaries, candidates.degraded);
 
-  // Lot 53 (D25) : échéances dépassées encore ouvertes (au-delà des sujets).
-  // Lot 60 : sans les échéances écartées ou différées par la décision T6.
+  // Lot 53 (D25) : échéances dépassées encore ouvertes — lot 61 : SUPERVISION
+  // seulement (aucune phrase, aucune pose), sans les échéances écartées.
   const overdueDeadlines = openOverdueCount(raw, interpellation.notInterpellated);
-  const commun = { degraded: candidates.degraded, today: raw.today, tiles, todo, duoInvite, overdueDeadlines };
+  const commun = {
+    degraded: candidates.degraded, today: raw.today, tiles, todo, duoInvite, overdueDeadlines,
+    // Lot 61 : évaluation des échéances proches en cours ou indisponible —
+    // dit explicitement par la bulle, jamais « rien à signaler ».
+    evaluation: interpellation.evaluation,
+  };
   // Bulle telle qu'affichée sans reformulation (texte déterministe).
   const secours = buildPresentation({ subjects, secondaries: baseSecondaries, messages: null, ...commun });
+  const rapport = (p: import('./types').MascotPresentation, status: string | null, promptVersion: string | null) =>
+    void writeT6InterpellationReport({
+      accountId, userId, mode, prep: interpellation,
+      formulate: {
+        promptVersion, contract: 't6-output-v2', transmitted: subjects.map((x) => x.subjectId),
+        displayed: p.paragraphs.filter((x) => x.sourceCode !== 'CLEAR').map((x) => x.subjectId),
+        source: p.source, status, presentation: p.state?.kind ?? null,
+      },
+    });
 
   // Lot 55A : contexte des questions suggérées — le MESSAGE AFFICHÉ, l'état
   // canonique du compte, ses biens et ses échéances. Données partielles
@@ -88,26 +139,52 @@ export async function getMascotPresentation(
   let questions: T6SuggestionBundle | null = null;
   if (!candidates.degraded && await questionsP) {
     const speech = composeSpeech({ presentation: secours, empty: false }).text;
-    const attentionToday = (todo?.items.length ?? 0) > 0 || !!duoInvite
-      || secours.paragraphs.some((x) => x.tile?.attention ?? false);
-    // Lot 60 : une échéance que l'utilisateur a reportée ou refusée n'est pas
-    // proposée en question non plus.
-    const agenda = raw.agenda?.filter((r) => !interpellation.userSilenced.has(r.id)) ?? null;
+    const attentionToday = (secours.state?.actions ?? 0) > 0;
+    // Lot 60 / 61 : questions construites sur la SÉLECTION RETENUE — une
+    // échéance écartée après évaluation (décision T6 validée non retenue) ou
+    // mise en sourdine par l'utilisateur n'est pas proposée en question (elle
+    // reste consultable librement dans T2 : seule la suggestion automatique
+    // est retirée).
+    const agenda = raw.agenda?.filter((r) => !interpellation.discarded.has(r.id) && !interpellation.userSilenced.has(r.id)) ?? null;
     questions = await loadT6SuggestionContext(accountId, { speech, attentionToday, agenda, today: raw.today ?? parisDay() });
   }
 
-  // RUN-013 : rien à formuler, à suggérer ni à évaluer — pas de T6.
-  const evaluation = interpellation.bundle;
-  if (subjects.length === 0 && !questions && !evaluation) return secours;
+  // RUN-013 : rien à formuler ni à suggérer — pas de FORMULATE.
+  if (subjects.length === 0 && !questions) {
+    rapport(secours, null, null);
+    return secours;
+  }
 
   const input = buildT6Input(subjects);
   // Nature de la tuile de chaque sujet (pose graduée) : nuances R9 du master T6.
   const kinds = subjects.map((s) => tileFor(s, raw.today ?? parisDay(), tiles).kind);
-  const outcome = await formulateWithT6({ accountId, input, contextHash, mode, kinds, suggestions: questions, interpellation: evaluation });
-  void logT6({ accountId, contextHash, mode, outcome, input, suggestionContext: questions?.context, interpellationContext: evaluation?.context });
+  const outcome = await formulateWithT6({ accountId, input, contextHash, mode, kinds, suggestions: questions });
+  void logT6({ accountId, contextHash, mode, outcome, input, suggestionContext: questions?.context });
   // Questions de la MÊME sortie que les textes : indisponibles → aucune.
   const secondaries = withSuggestedQuestions(baseSecondaries, subjects, suggestionSecondaries(outcome.suggestions ?? []));
-  return buildPresentation({ subjects, secondaries, messages: outcome.messages, ...commun });
+  const finale = buildPresentation({ subjects, secondaries, messages: outcome.messages, ...commun });
+  rapport(finale, outcome.status, outcome.promptVersion);
+  return finale;
+}
+
+/** Décision d'interpellation du passage (lot 60), état d'évaluation compris (lot 61). */
+function prepare(accountId: number, userId: number | null, raw: MascotRawData, mode: T6Mode): Promise<T6Preparation> {
+  void mode;
+  return prepareT6Interpellation({ accountId, userId, raw }, {
+    aiCapable: t6InterpellationAvailable,
+    thresholdDays: t6ThresholdDays,
+    recentEvaluationFailure: (id) => t6EvaluationRecentlyFailed(id),
+  });
+}
+
+/** Trace d'une évaluation pour le reporting (aucune donnée personnelle). */
+function evaluationTrace(o: T6EvaluationOutcome) {
+  return {
+    status: o.status, promptVersion: o.promptVersion, inputContract: T6_EVALUATION_CONTRACTS.input, outputContract: T6_EVALUATION_CONTRACTS.output,
+    traceId: o.traceId ?? null, error: o.error ?? null, persisted: o.persisted,
+    accepted: o.accepted.map((d) => ({ subjectId: d.subjectId, decision: d.decision, category: d.category, reasonCode: d.reasonCode, priorityHint: d.priorityHint, evidenceRefs: d.evidenceRefs })),
+    rejected: o.rejected.map((r) => ({ subjectId: r.subjectId, reason: r.reason })),
+  };
 }
 
 // ── Pré-génération (RUN-007 à RUN-011 ; durable depuis le lot 32, PO 6) ──────

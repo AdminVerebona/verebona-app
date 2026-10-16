@@ -70,7 +70,7 @@ export const AI_USE_CASES: Record<AiUseCaseCode, AiUseCaseDefinition> = {
   HOME_MASCOT: {
     code: 'HOME_MASCOT',
     label: "Mascotte d'accueil",
-    purpose: "Formuler naturellement les sujets choisis par le moteur de l'accueil, sans rien décider.",
+    purpose: "Évaluer la pertinence d'interpeller sur l'accueil (EVALUATE), puis formuler naturellement les seuls sujets retenus par le serveur (FORMULATE).",
     replacesLegacyUsages: [],
     active: true,
   },

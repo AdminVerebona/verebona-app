@@ -240,7 +240,8 @@ describe('bulle (MASC2)', () => {
 
   it('MASC2 — sans « À traiter » : synthèse historique inchangée (échéance seule)', () => {
     const p = present(raw([], { agenda: [{ id: 1, title: 'Ramonage', date: '2026-10-15', forecast: false, requiresQualification: false, assetId: 1, assetName: 'Maison' }] }));
-    expect(composeSpeech({ presentation: p, empty: false }).text).toMatch(/^Tout est à jour\. Le prochain .* est à prévoir pour le /);
+    // Lot 61 : l'information est dite telle quelle, sans « Tout est à jour. » devant.
+    expect(composeSpeech({ presentation: p, empty: false }).text).toMatch(/^Le prochain .* est à prévoir pour le /);
     expect(homeItems(p, false).map((i) => i.kind)).toEqual(['subject']);
   });
 });

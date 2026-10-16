@@ -1,0 +1,44 @@
+{
+  "case": "P-T4-V3-10",
+  "description": "Lot 61 (t4_output_v3, contrat de référence) — CLASSIFY_EVENT v2 — fin d'engagement explicite le 04/11/2027 sur un contrat facturé mensuellement : événement ponctuel valide, la mensualité est une facturation ⇒ accept, recurrenceDecision=reject. Sans demande « À traiter » : intervention = null.",
+  "context": {
+    "candidate": {
+      "title": "Fin d'engagement",
+      "date": "2027-11-04",
+      "confidence": "certain",
+      "documentType": "CONTRAT_ASSURANCE",
+      "excerpt": "Durée d'engagement : 12 mois, jusqu'au 04/11/2027. Prélèvement mensuel de 39,90 €."
+    },
+    "recurrenceCandidate": {
+      "mode": "EXPLICIT_SOURCE",
+      "frequency": "monthly",
+      "interval": 1,
+      "startDate": null,
+      "endDate": null,
+      "occurrenceCount": null,
+      "excerpt": "Prélèvement mensuel",
+      "history": []
+    }
+  },
+  "recording": {
+    "operationCode": "t4_classify_event",
+    "task": "CLASSIFY_EVENT",
+    "outputContract": "t4_output_v3",
+    "output": {
+      "task": "CLASSIFY_EVENT",
+      "agendaDecision": "accept",
+      "recurrenceDecision": "reject",
+      "homeCategory": "information",
+      "businessType": null,
+      "confidence": "certain",
+      "reason": "fin d'engagement explicitement datée",
+      "recurrenceReason": "le prélèvement mensuel est une modalité de paiement, pas une échéance récurrente",
+      "intervention": null
+    }
+  },
+  "expected": {
+    "agendaDecision": "accept",
+    "recurrenceDecision": "reject",
+    "category": "information"
+  }
+}

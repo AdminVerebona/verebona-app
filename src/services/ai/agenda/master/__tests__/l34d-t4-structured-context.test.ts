@@ -101,7 +101,8 @@ describe('T4C-01 — prompt sans emplacement : appel possible', () => {
   it('le prompt maître livré ne contient aucun {{…}} ; le contexte est injecté une fois (EXECUTION_CONTEXT)', async () => {
     expect(FICHIER).not.toMatch(/\{\{[A-Z_]+\}\}/);
     // Lot 54 : texte du dépôt = texte de référence v2.
-    expect(sc.executionConfigFor({ masterPromptCode: 't4_master_v1', source: 'file' })).toEqual({ mode: 'STRUCTURED_CONTEXT', inputContractVersion: 't4_input_v2', outputContractVersion: 't4_output_v2', allowedTasks: ['CLASSIFY_EVENT', 'VERIFY_COMPLETION', 'TEMPORAL_AMBIGUITY'] });
+    // Lot 61 : texte de référence en sortie `t4_output_v3` (v2 + intervention « À traiter »).
+    expect(sc.executionConfigFor({ masterPromptCode: 't4_master_v1', source: 'file' })).toEqual({ mode: 'STRUCTURED_CONTEXT', inputContractVersion: 't4_input_v2', outputContractVersion: 't4_output_v3', allowedTasks: ['CLASSIFY_EVENT', 'VERIFY_COMPLETION', 'TEMPORAL_AMBIGUITY'] });
     t4();
     fake.onAny(() => ({ rawText: classifyOut, inputTokens: 1, outputTokens: 1 }));
     const res = await execClassify();
@@ -390,14 +391,14 @@ describe('T4C-14 — éditeur BO : contexte disponible (informatif)', () => {
 describe('T4C-15 — aperçu / test : chaque étape inspectable', () => {
   it('prompt maître, TASK, contrat d’entrée, contexte construit, contrat de sortie, sortie brute, résultat validé', async () => {
     const { previewStructured } = await import('../../../master-prompts/master-prompt.service');
-    // Lot 54 : le texte du dépôt est en t4_input_v2 / t4_output_v2 — scénario v2 (P-T4-07).
-    const p = await previewStructured('T4', { versionId: 'file', task: 'CLASSIFY_EVENT', scenarioId: 'P-T4-07' });
-    expect(p).toMatchObject({ mode: 'STRUCTURED_CONTEXT', task: 'CLASSIFY_EVENT', scenario: { id: 'P-T4-07' }, contextError: null });
+    // Lot 54 : le texte du dépôt est en t4_input_v2 ; lot 61 : sortie t4_output_v3 — scénario v3 (P-T4-V3-07).
+    const p = await previewStructured('T4', { versionId: 'file', task: 'CLASSIFY_EVENT', scenarioId: 'P-T4-V3-07' });
+    expect(p).toMatchObject({ mode: 'STRUCTURED_CONTEXT', task: 'CLASSIFY_EVENT', scenario: { id: 'P-T4-V3-07' }, contextError: null });
     expect(p.inputContract.version).toBe('t4_input_v2');
     expect(p.context).toContain('31/10/2026');
     expect(p.context).toContain('recurrenceCandidate');
     expect(p.prompt).toContain('EXECUTION_CONTEXT');
-    expect(p.outputContract).toMatchObject({ version: 't4_output_v2', contractId: 'T4_CLASSIFY_EVENT', contractVersion: 2 });
+    expect(p.outputContract).toMatchObject({ version: 't4_output_v3', contractId: 'T4_CLASSIFY_EVENT', contractVersion: 3 });
     expect(p.rawOutput).toContain('reject');
     expect(p.validated).toMatchObject({ ok: true, data: { agendaDecision: 'reject', recurrenceDecision: 'reject' } });
   });

@@ -277,6 +277,36 @@ async function readToProcessAgendaIds(accountId: number): Promise<number[]> {
 }
 
 /**
+ * Lot 61 — échéances passées « réglées » par le moteur « À traiter »
+ * (voir `MascotRawData.toProcessSettledAgendaIds`). Tables absentes (0418) :
+ * aucune (comportement antérieur).
+ */
+async function readToProcessSettledAgendaIds(accountId: number, today: string): Promise<number[]> {
+  const [t] = await rows(`SELECT to_regclass('document_rule_evaluations') IS NOT NULL AS ok`, []);
+  if (!t?.ok) return [];
+  const r = await rows(
+    `SELECT DISTINCT i.id FROM agenda_items i
+      WHERE i.account_id = $1 AND i.origin_ref_type = 'asset_file' AND i.origin_ref_id IS NOT NULL
+        AND i.origin_field_key IS NOT NULL AND i.start_date < $2::date
+        AND (
+          EXISTS (SELECT 1 FROM document_rule_evaluations e
+                   WHERE e.id = (SELECT max(x.id) FROM document_rule_evaluations x
+                                  WHERE x.account_id = i.account_id AND x.file_id = i.origin_ref_id AND x.field_key = i.origin_field_key)
+                     AND e.pertinence = 'NO_ACTION_NEEDED')
+          OR (EXISTS (SELECT 1 FROM to_process_actions a
+                       WHERE a.account_id = i.account_id AND a.target_type = 'DOCUMENT' AND a.target_id = i.origin_ref_id
+                         AND a.field_key = 'intervention:' || i.origin_field_key AND a.resolved_at IS NOT NULL
+                         AND a.resolution_reason IN ('USER_ARBITRATED', 'NOT_APPLICABLE'))
+              AND NOT EXISTS (SELECT 1 FROM to_process_actions b
+                       WHERE b.account_id = i.account_id AND b.target_type = 'DOCUMENT' AND b.target_id = i.origin_ref_id
+                         AND b.field_key = 'intervention:' || i.origin_field_key AND b.resolved_at IS NULL)))
+      LIMIT ${TO_PROCESS_AGENDA_IDS_LIMIT}`,
+    [accountId, today],
+  );
+  return r.map((x) => Number(x.id));
+}
+
+/**
  * REC-005 : droits effectifs et volumes comptés comme les gardes serveur
  * (`POST /api/assets` : tous les biens du compte ; `files/presign` : documents
  * non supprimés, envoi terminé).
@@ -316,7 +346,7 @@ export async function collectMascotData(accountId: number, now: Date = new Date(
       return null;
     }
   };
-  const [processing, onboarding, toProcess, toProcessAgendaIds, agenda, acknowledgments, rights, overdueAgenda] = await Promise.all([
+  const [processing, onboarding, toProcess, toProcessAgendaIds, agenda, acknowledgments, rights, overdueAgenda, settled] = await Promise.all([
     safe('traitements', () => readProcessing(accountId)),
     safe('onboarding', () => readOnboarding(accountId)),
     // NFR-001 : tête de file seulement, dans l'ordre « Par priorité » du service.
@@ -328,6 +358,8 @@ export async function collectMascotData(accountId: number, now: Date = new Date(
     safe('acquittements', () => readAcknowledgments(accountId)),
     safe('droits', () => readRights(accountId)),
     safe('échéances dépassées', () => readOverdueAgenda(accountId, today)),
+    // Lot 61 : décisions « À traiter » que T6 ne doit pas contredire.
+    safe('à traiter (décisions)', () => readToProcessSettledAgendaIds(accountId, today)),
   ]);
   return {
     accountId, today, processing, onboarding, agenda, acknowledgments,
@@ -336,6 +368,7 @@ export async function collectMascotData(accountId: number, now: Date = new Date(
     toProcessTotal: toProcess?.total ?? null,
     // Échéances d'actions ouvertes : en échec, la file lue suffit (repli sur `toProcess`).
     toProcessAgendaIds,
+    toProcessSettledAgendaIds: settled,
     rights,
     overdueAgenda,
   };

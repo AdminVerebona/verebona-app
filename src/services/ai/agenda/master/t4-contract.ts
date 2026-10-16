@@ -79,6 +79,85 @@ export const T4ClassifyEventV2Output = z.object({
 });
 export type T4ClassifyEventV2Output = z.infer<typeof T4ClassifyEventV2Output>;
 
+// ── CLASSIFY_EVENT v3 (lot 61, tickets « À traiter » : écarts 58B et pertinence) ─
+// `t4_output_v3` = v2 + bloc `intervention`, rempli UNIQUEMENT quand le
+// serveur demande l'évaluation d'une intervention « À traiter »
+// (`event_context.toProcessAssessment`). T4 y identifie l'intervention
+// CONCRÈTE de l'utilisateur (résilier, décider d'une reconduction, payer,
+// exécuter une obligation, fournir une information…), sa justification, ses
+// preuves, sa conséquence et sa temporalité — jamais une « date à compléter »
+// par défaut. Le code CONTRÔLE ensuite la sortie (`checkInterventionCoherence`)
+// sans se fier au texte libre. v1 et v2 sont inchangés (versions actives
+// antérieures toujours lues : intervention absente).
+export const T4_INTERVENTION_NEEDS = ['yes', 'no', 'uncertain'] as const;
+export const T4_INTERVENTION_KINDS = [
+  'TERMINATE', 'RENEW_OR_DECIDE', 'PAY', 'PERFORM_OBLIGATION', 'RETURN_OR_RESTITUTE', 'PROVIDE_INFORMATION', 'VERIFY', 'OTHER',
+] as const;
+export const T4_INTERVENTION_TIMINGS = ['NOW', 'LATER', 'NONE'] as const;
+export type T4InterventionNeed = (typeof T4_INTERVENTION_NEEDS)[number];
+export type T4InterventionKind = (typeof T4_INTERVENTION_KINDS)[number];
+export type T4InterventionTiming = (typeof T4_INTERVENTION_TIMINGS)[number];
+
+export const T4InterventionAssessment = z.object({
+  /** Une intervention de l'utilisateur est-elle réellement nécessaire ? */
+  needed: z.enum(T4_INTERVENTION_NEEDS),
+  /** Nature de l'intervention (liste fermée), null si aucune. */
+  kind: z.enum(T4_INTERVENTION_KINDS).nullable(),
+  /** Intervention concrète, formulée pour l'utilisateur (≤ 160), null si aucune. */
+  action: z.string().min(1).max(160).nullable(),
+  /** Pourquoi (ou pourquoi pas) solliciter l'utilisateur. */
+  justification: z.string().min(1).max(300),
+  /** Conséquence probable de l'absence d'intervention, null si aucune. */
+  consequence: z.string().max(300).nullable(),
+  /** Passage de la preuve FOURNIE qui fonde la décision, null si aucun. */
+  evidence: z.string().max(300).nullable(),
+  /** Faut-il intervenir maintenant, plus tard, ou jamais ? */
+  timing: z.enum(T4_INTERVENTION_TIMINGS),
+  /** Date limite d'action lue dans la preuve (AAAA-MM-JJ), null si aucune. */
+  actBy: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable(),
+  /** La donnée demandée (ex. date de fin) est-elle nécessaire à un besoin réel ? */
+  dataNeeded: z.boolean().nullable(),
+}).superRefine((v, ctx) => {
+  if (v.needed === 'yes') {
+    if (!v.kind) ctx.addIssue({ code: 'custom', path: ['kind'], message: 'needed=yes exige kind' });
+    if (!v.action) ctx.addIssue({ code: 'custom', path: ['action'], message: 'needed=yes exige action' });
+    if (v.timing === 'NONE') ctx.addIssue({ code: 'custom', path: ['timing'], message: 'needed=yes exige timing=NOW|LATER' });
+  }
+  if (v.needed === 'no') {
+    if (v.kind !== null || v.action !== null) ctx.addIssue({ code: 'custom', path: ['kind'], message: 'needed=no exige kind=null et action=null' });
+    if (v.timing !== 'NONE') ctx.addIssue({ code: 'custom', path: ['timing'], message: 'needed=no exige timing=NONE' });
+  }
+});
+export type T4InterventionAssessment = z.infer<typeof T4InterventionAssessment>;
+
+export const T4ClassifyEventV3Output = z.object({
+  task: z.literal('CLASSIFY_EVENT'),
+  agendaDecision: z.enum(T4_AGENDA_DECISIONS),
+  recurrenceDecision: z.enum(T4_RECURRENCE_DECISIONS),
+  homeCategory: z.enum(['action', 'information', 'unknown']),
+  businessType: z.string().min(1).max(60).nullable().optional(),
+  confidence,
+  reason: z.string().min(1).max(300),
+  recurrenceReason: z.string().min(1).max(300).nullable().optional(),
+  /** Lot 61 : évaluation d'une intervention « À traiter » (null hors demande). */
+  intervention: T4InterventionAssessment.nullable().optional(),
+}).superRefine((v, ctx) => {
+  // Mêmes invariants que v2 (la décision Agenda reste celle de v2).
+  if (v.agendaDecision === 'accept' && v.homeCategory === 'unknown') {
+    ctx.addIssue({ code: 'custom', path: ['homeCategory'], message: 'agendaDecision=accept exige homeCategory=action|information' });
+  }
+  if (v.agendaDecision !== 'accept' && v.homeCategory !== 'unknown') {
+    ctx.addIssue({ code: 'custom', path: ['homeCategory'], message: 'agendaDecision=reject|abstain exige homeCategory=unknown' });
+  }
+  if (v.agendaDecision !== 'accept' && v.businessType != null) {
+    ctx.addIssue({ code: 'custom', path: ['businessType'], message: 'agendaDecision=reject|abstain exige businessType=null' });
+  }
+  if (v.agendaDecision === 'abstain' && v.confidence !== 'ambiguous') {
+    ctx.addIssue({ code: 'custom', path: ['confidence'], message: 'agendaDecision=abstain exige confidence=ambiguous' });
+  }
+});
+export type T4ClassifyEventV3Output = z.infer<typeof T4ClassifyEventV3Output>;
+
 // ── VERIFY_COMPLETION ───────────────────────────────────────────────────────
 export const T4_EVIDENCE_STATUSES = ['proves_completed', 'proves_not_completed', 'insufficient', 'conflictual'] as const;
 export const T4_OCCURRENCE_MATCHES = ['exact', 'probable', 'ambiguous', 'none'] as const;
@@ -130,10 +209,10 @@ export function closedWorldBusinessType(
   return { output: { ...out, businessType: null }, warning: `UNKNOWN_BUSINESS_TYPE:${bt}` };
 }
 
-/** U6 (v2) : type métier hors catalogue fourni ⇒ ignoré (null), avec avertissement. */
-export function closedWorldBusinessTypeV2(
-  out: T4ClassifyEventV2Output, allowed: ReadonlySet<string>,
-): { output: T4ClassifyEventV2Output; warning: string | null } {
+/** U6 (v2, v3) : type métier hors catalogue fourni ⇒ ignoré (null), avec avertissement. */
+export function closedWorldBusinessTypeV2<O extends T4ClassifyEventV2Output | T4ClassifyEventV3Output>(
+  out: O, allowed: ReadonlySet<string>,
+): { output: O; warning: string | null } {
   const bt = out.businessType ?? null;
   if (bt === null || allowed.has(bt)) return { output: out, warning: null };
   return { output: { ...out, businessType: null }, warning: `UNKNOWN_BUSINESS_TYPE:${bt}` };

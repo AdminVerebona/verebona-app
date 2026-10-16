@@ -481,7 +481,7 @@ async function runAccount(job: QueuedJob, p: T3AccountPayload, guard: ExecutionG
     // Lot 52A (COR-04, COR-05) : objets modifiés et appels modèle du passage
     // (0 = passage sans appel Gemini, tracé comme tel).
     objectsModified: result.objectsModified,
-    aiCalls: (result.aiCalls ?? 0) + (result.openActions?.aiCalls ?? 0),
+    aiCalls: (result.aiCalls ?? 0) + (result.openActions?.aiCalls ?? 0) + (result.documentNaming?.aiCalls ?? 0),
     openActionsExamined: result.openActions?.examined ?? 0,
     // Lot 54A (écarts 4, 5) : passage GLOBAL du compte — toutes les cartes
     // ouvertes réexaminées ; vraies tentatives distinguées du simple constat.
@@ -501,12 +501,20 @@ async function runAccount(job: QueuedJob, p: T3AccountPayload, guard: ExecutionG
     ...(result.openKnowledge ? { openKnowledge: result.openKnowledge } : {}),
     // Lot 49B : rapport des lignes « À traiter » ouvertes examinées (borné).
     ...(result.openActions ? { openActions: result.openActions } : {}),
+    // Lot 61 : harmonisation du nommage documentaire (propositions IA ≠ renommages écrits).
+    ...(result.documentNaming ? { documentNaming: {
+      status: result.documentNaming.status, promptAvailable: result.documentNaming.promptAvailable,
+      groupsDue: result.documentNaming.groupsDue, groupsExamined: result.documentNaming.groupsExamined,
+      proposals: result.documentNaming.proposals, applied: result.documentNaming.applied, refused: result.documentNaming.refused,
+      conflicts: result.documentNaming.conflicts, aiCalls: result.documentNaming.aiCalls, reportId: result.documentNaming.reportId,
+    } } : {}),
   };
   const ok = result.openKnowledge;
   if (ok && ((ok.facts?.retargeted ?? 0) > 0 || ok.documents.enqueued > 0 || ok.titles.updated > 0 || (ok.targeted?.enqueued ?? 0) > 0)) return { result: 'APPLIED', detail };
   const oa = result.openActions;
   if (oa && (oa.byEffect.CLOSED > 0 || oa.byEffect.UPDATED > 0 || oa.byEffect.SUPERSEDED > 0)) return { result: 'APPLIED', detail };
   if (result.decisionsApplied > 0) return { result: 'APPLIED', detail };
+  if ((result.documentNaming?.applied ?? 0) > 0) return { result: 'APPLIED', detail };
   if (result.conflictsCreated > 0) return { result: 'ABSTAIN', detail };
   return { result: 'NO_CHANGE', detail };
 }
@@ -644,24 +652,32 @@ export function sweepFreshSince(cycleStartedAt: string | Date, periodHours: numb
 type Sql = typeof import('@/db').pgClient;
 const db = async (): Promise<Sql> => (await import('@/db')).pgClient;
 
-async function listSweepAccountsFromDb(q: SweepAccountsQuery): Promise<number[]> {
+/** Comptes du balayage planifié (exporté pour les tests e2e, lot 61). */
+export async function listSweepAccountsFromDb(q: SweepAccountsQuery): Promise<number[]> {
   const sql = await db();
   // Même périmètre que l'ancienne planification (comptes ayant des biens,
   // sans exécution T3 réussie ou en cours sur la période), PAGINÉ par
   // identifiant croissant : curseur stable, aucun compte sauté.
-  const rows = (await sql.unsafe(
-    `SELECT a.id FROM accounts a
+  const requete = (nommage: boolean) => `SELECT a.id FROM accounts a
       WHERE a.id > $2
         AND (EXISTS (SELECT 1 FROM assets s WHERE s.account_id = a.id AND s.deleted_at IS NULL)
              -- Lot 49B : une ligne « À traiter » ouverte est un problème actif, réexaminé à chaque cycle.
-             OR EXISTS (SELECT 1 FROM to_process_actions t WHERE t.account_id = a.id AND t.resolved_at IS NULL))
+             OR EXISTS (SELECT 1 FROM to_process_actions t WHERE t.account_id = a.id AND t.resolved_at IS NULL)${nommage ? `
+             -- Lot 61 : compte à documents (sans bien) dont le nommage n'a jamais été examiné —
+             -- réconciliation initiale du stock ; ensuite, ses événements suffisent.
+             OR (EXISTS (SELECT 1 FROM asset_files f WHERE f.account_id = a.id AND f.deleted_at IS NULL AND f.retained_title IS NOT NULL)
+                 AND NOT EXISTS (SELECT 1 FROM document_naming_groups g WHERE g.account_id = a.id))` : ''})
         AND NOT EXISTS (
           SELECT 1 FROM account_reconciliation_runs r
            WHERE r.account_id = a.id AND r.status IN ('completed', 'partial', 'running')
              AND coalesce(r.finished_at, r.started_at) > $1::timestamptz)
-      ORDER BY a.id LIMIT $3`,
-    [q.since.toISOString(), q.afterAccountId, q.limit] as never[],
-  )) as unknown as Array<{ id: number }>;
+      ORDER BY a.id LIMIT $3`;
+  const params = [q.since.toISOString(), q.afterAccountId, q.limit] as never[];
+  // Table 0450 absente (déploiement partiel) : périmètre historique, jamais un balayage en échec.
+  const rows = (await sql.unsafe(requete(true), params).catch((e) => {
+    if ((e as { code?: string })?.code !== '42P01') throw e;
+    return sql.unsafe(requete(false), params);
+  })) as unknown as Array<{ id: number }>;
   return rows.map((r) => Number(r.id));
 }
 

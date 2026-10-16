@@ -1,0 +1,48 @@
+{
+  "case": "P-T4-V3-11",
+  "description": "Lot 61 (t4_output_v3, contrat de référence) — CLASSIFY_EVENT v2 — trois dates régulières détectées par le serveur (HISTORICAL_PATTERN) sans mention de périodicité : événement accepté, récurrence non démontrée ⇒ recurrenceDecision=abstain. Sans demande « À traiter » : intervention = null.",
+  "context": {
+    "candidate": {
+      "title": "Ramonage",
+      "date": "2026-10-12",
+      "confidence": "certain",
+      "documentType": "FACTURE",
+      "excerpt": "Facture ramonage conduit de cheminée — intervention du 12/10/2026."
+    },
+    "recurrenceCandidate": {
+      "mode": "HISTORICAL_PATTERN",
+      "frequency": "yearly",
+      "interval": 1,
+      "startDate": null,
+      "endDate": null,
+      "occurrenceCount": null,
+      "excerpt": null,
+      "history": [
+        "2024-10-10",
+        "2025-10-14",
+        "2026-10-12"
+      ]
+    }
+  },
+  "recording": {
+    "operationCode": "t4_classify_event",
+    "task": "CLASSIFY_EVENT",
+    "outputContract": "t4_output_v3",
+    "output": {
+      "task": "CLASSIFY_EVENT",
+      "agendaDecision": "accept",
+      "recurrenceDecision": "abstain",
+      "homeCategory": "information",
+      "businessType": null,
+      "confidence": "probable",
+      "reason": "intervention réalisée, attestée par la facture",
+      "recurrenceReason": "régularité observée mais aucune périodicité énoncée",
+      "intervention": null
+    }
+  },
+  "expected": {
+    "agendaDecision": "accept",
+    "recurrenceDecision": "abstain",
+    "category": "information"
+  }
+}

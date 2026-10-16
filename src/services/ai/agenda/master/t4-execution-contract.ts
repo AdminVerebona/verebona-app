@@ -203,16 +203,28 @@ export const T4_EXECUTION_SPEC: StructuredContextSpec = {
         TEMPORAL_AMBIGUITY: { schemaName: 'T4TemporalAmbiguityOutput', contractVersion: 1 },
       },
     },
+    // Lot 61 : CLASSIFY_EVENT évalue aussi l'intervention « À traiter »
+    // demandée par le serveur (`event_context.toProcessAssessment`).
+    t4_output_v3: {
+      version: 't4_output_v3',
+      byTask: {
+        CLASSIFY_EVENT: { schemaName: 'T4ClassifyEventV3Output', contractVersion: 3 },
+        VERIFY_COMPLETION: { schemaName: 'T4VerifyCompletionOutput', contractVersion: 1 },
+        TEMPORAL_AMBIGUITY: { schemaName: 'T4TemporalAmbiguityOutput', contractVersion: 1 },
+      },
+    },
   },
   // Fichier du dépôt (`t4_master_v1.txt`, sans emplacement — texte de
   // référence v2 depuis le lot 54) et nouvelles versions créées depuis ce
-  // texte : contexte structuré v2. Une version BO antérieure au lot 34D reste
+  // texte : contexte structuré v2 (lot 61 : sortie `t4_output_v3`). Une
+  // version BO active antérieure garde SA configuration (v2 : lue sans
+  // intervention, variante prudente). Une version BO antérieure au lot 34D reste
   // LEGACY_TEMPLATE (migration 0290, explicite) ; une version structurée v1
   // reste v1 (réactivable).
   defaults: {
     mode: 'STRUCTURED_CONTEXT',
     inputContractVersion: 't4_input_v2',
-    outputContractVersion: 't4_output_v2',
+    outputContractVersion: 't4_output_v3',
     allowedTasks: [...T4_TASKS],
   },
   errorCodes: {

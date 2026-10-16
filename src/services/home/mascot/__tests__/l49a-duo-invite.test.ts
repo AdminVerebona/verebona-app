@@ -58,7 +58,7 @@ function raw(toProcess: ToProcessActionView[] = []) {
 }
 
 // Lot 54F : Duo pris HIER (premier mois), aucune invitation envoyée.
-const DUO_NEUF = { subscriptionStatus: 'ACTIVE', pendingInviteEmail: null, memberships: 0, startedAt: new Date(Date.now() - 86_400_000), firstInviteSentAt: null };
+const DUO_NEUF = { subscriptionStatus: 'ACTIVE', pendingInviteEmail: null, memberships: 0, startedAt: new Date(Date.now() - 86_400_000), firstInviteSentAt: null, offerActive: true };
 
 beforeEach(() => {
   duoRows = [];

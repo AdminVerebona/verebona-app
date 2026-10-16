@@ -82,7 +82,8 @@ export interface ReportHeader {
   accountId: number;
   /** Lot 60 : T6 (décision d'interpellation de l'accueil, migration 0432). */
   treatment: 'T1' | 'T3' | 'T6';
-  scope: 'DOCUMENT' | 'ASSET' | 'EQUIPMENT' | 'ROOM' | 'HOME';
+  /** Lot 61 : DOCUMENT_NAMING — harmonisation documentaire du passage T3 du compte. */
+  scope: 'DOCUMENT' | 'ASSET' | 'EQUIPMENT' | 'ROOM' | 'HOME' | 'DOCUMENT_NAMING';
   jobId?: number | null;
   jobAttempt?: number | null;
   traceIds?: string[];

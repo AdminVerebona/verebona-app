@@ -73,6 +73,57 @@ function ConfigBlock({ c }: { c: Config }) {
   );
 }
 
+/**
+ * Lot 61B — correction de l'expéditeur SANS SQL (§3-A du ticket P0 e-mails :
+ * « corriger la cause établie »), quand le domaine affiché n'est pas celui
+ * vérifié chez Resend. Administrateurs ; journalisé ; mêmes composants.
+ */
+function SenderForm({ c, onSaved }: { c: Config; onSaved: (c: Config) => void }) {
+  const [open, setOpen] = useState(false);
+  const [senderName, setSenderName] = useState(c.senderName);
+  const [senderEmail, setSenderEmail] = useState(c.senderEmail);
+  const [replyToEmail, setReplyToEmail] = useState(c.replyToEmail);
+  const [emailsEnabled, setEmailsEnabled] = useState(c.emailsEnabled);
+  const [saving, setSaving] = useState(false);
+
+  if (!open) {
+    return (
+      <Button size="sm" variant="outline" onClick={() => setOpen(true)} data-testid="email-sender-edit">
+        Modifier l’expéditeur
+      </Button>
+    );
+  }
+  const enregistrer = async () => {
+    setSaving(true);
+    try {
+      const r = await apiClient.patch<{ config: Config }>('/api/admin/communications/email-settings', { senderName, senderEmail, replyToEmail, emailsEnabled });
+      onSaved(r.config);
+      setOpen(false);
+      toast.success('Expéditeur enregistré. Les demandes en attente repartiront à la prochaine reprise automatique.');
+    } catch {
+      toast.error('Réglage refusé : vérifiez les adresses (format) et le nom (sans retour à la ligne).');
+    } finally {
+      setSaving(false);
+    }
+  };
+  return (
+    <div className="flex flex-wrap items-end gap-2" data-testid="email-sender-form">
+      <Input className="w-full sm:w-40" aria-label="Nom de l’expéditeur" value={senderName} onChange={(e) => setSenderName(e.target.value)} />
+      <Input className="w-full sm:w-64" type="email" aria-label="Adresse d’expédition (domaine vérifié chez Resend)" value={senderEmail} onChange={(e) => setSenderEmail(e.target.value)} />
+      <Input className="w-full sm:w-56" type="email" aria-label="Adresse de réponse" value={replyToEmail} onChange={(e) => setReplyToEmail(e.target.value)} />
+      <label className="flex items-center gap-2 text-xs text-muted-foreground">
+        <Switch checked={emailsEnabled} onCheckedChange={setEmailsEnabled} aria-label="E-mails activés" />
+        E-mails activés
+      </label>
+      <Button size="sm" onClick={() => void enregistrer()} disabled={saving}>
+        {saving ? <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" /> : null} Enregistrer
+      </Button>
+      <Button size="sm" variant="ghost" onClick={() => setOpen(false)} disabled={saving}>Annuler</Button>
+      <span className="text-xs text-muted-foreground w-full">Action journalisée. Le domaine de l’adresse d’expédition doit être « Verified » chez Resend.</span>
+    </div>
+  );
+}
+
 const TYPES = ['EMAIL_VERIFICATION', 'DUO_INVITATION', 'PASSWORD_RESET', 'WELCOME', 'SIGNUP_EXISTING_ACCOUNT'];
 
 export function TransactionalEmailsOps() {
@@ -109,6 +160,7 @@ export function TransactionalEmailsOps() {
       <h2 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">E-mails transactionnels — envois et livraison</h2>
       <div className="rounded-xl border bg-card p-4 space-y-3">
         {config ? <ConfigBlock c={config} /> : <p className="text-xs text-muted-foreground">Configuration d’envoi indisponible.</p>}
+        {config ? <SenderForm key={`${config.senderEmail}|${config.senderName}|${config.replyToEmail}|${config.emailsEnabled}`} c={config} onSaved={setConfig} /> : null}
         <div className="flex flex-wrap items-end gap-2">
           <Input className="w-full sm:w-56" list="transactional-email-types" placeholder="Type (ex. EMAIL_VERIFICATION)" aria-label="Type de message" value={type} onChange={(e) => setType(e.target.value)} />
           <datalist id="transactional-email-types">{TYPES.map((t) => <option key={t} value={t} />)}</datalist>

@@ -328,6 +328,8 @@ export function ownershipCostAnswer(a: AssetRow, t: import('@/services/business-
     meta: {
       assetId: a.id, assetName: a.name, cumulativeCostCents: t.summary.cumulativeCostCents, netEstimatedCents: t.summary.netEstimatedCents,
       netFinalCents: t.summary.netFinalCents, status: t.status, operationCount: t.reliability.operationsCounted,
+      // Lot 61 : justificatifs comptés directement (sans Opération) — même calcul que le tiroir.
+      documentCount: t.reliability.documentsCounted ?? 0,
       includedDocuments: t.reliability.documents.slice(0, 50).map((d) => `doc-${d.fileId}`).join(' '),
     },
   };

@@ -211,12 +211,15 @@ describe('T4-V2-08 — correction historique (ordre : T4 avant la déduplication
 describe('T4-V2-09 — compatibilité', () => {
   const V1 = { mode: 'STRUCTURED_CONTEXT' as const, inputContractVersion: 't4_input_v1', outputContractVersion: 't4_output_v1', allowedTasks: ['CLASSIFY_EVENT', 'VERIFY_COMPLETION', 'TEMPORAL_AMBIGUITY'] };
   const V2 = { mode: 'STRUCTURED_CONTEXT' as const, inputContractVersion: 't4_input_v2', outputContractVersion: 't4_output_v2', allowedTasks: ['CLASSIFY_EVENT', 'VERIFY_COMPLETION', 'TEMPORAL_AMBIGUITY'] };
+  // Lot 61 : le texte de référence sort en `t4_output_v3` (v2 + intervention « À traiter ») ; v2 reste valide et réactivable.
+  const V3 = { ...V2, outputContractVersion: 't4_output_v3' };
   const existe = (n: string, v: number) => contractVersionsOf(n).includes(v);
 
   it('texte de référence v2 : contexte structuré v2 par défaut, activable sans {{TASK}} ni emplacement, aucun contrôle Legacy', () => {
-    expect(sc.executionConfigFor({ masterPromptCode: 't4_master_v1', source: 'file' })).toEqual(V2);
+    expect(sc.executionConfigFor({ masterPromptCode: 't4_master_v1', source: 'file' })).toEqual(V3);
     expect(FICHIER).not.toMatch(/\{\{[A-Z_]+\}\}/);
     expect(sc.checkExecutionConfig(T4_EXECUTION_SPEC, V2, existe)).toEqual([]);
+    expect(sc.checkExecutionConfig(T4_EXECUTION_SPEC, V3, existe)).toEqual([]);
     expect(checkMasterPromptContent('T4', FICHIER, V2)).toMatchObject({ ok: true, blocking: [] });
     // Le même texte en mode historique exige les emplacements : le mode n'est jamais déduit du texte.
     expect(checkMasterPromptContent('T4', FICHIER, sc.LEGACY_EXECUTION).ok).toBe(false);
@@ -228,7 +231,7 @@ describe('T4-V2-09 — compatibilité', () => {
   });
 
   it('nouvelle version : contrats du texte de référence (v2), jamais l’ancien mode hérité pour ce texte', () => {
-    expect(sc.draftExecutionConfig('t4_master_v1', null)).toEqual(V2);
+    expect(sc.draftExecutionConfig('t4_master_v1', null)).toEqual(V3);
   });
 
   it('passerelle : version BO v1 → sortie v1 lue comme accept, récurrence non décidée (abstain) ; fichier v2 → sortie v2', async () => {

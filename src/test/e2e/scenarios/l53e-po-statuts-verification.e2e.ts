@@ -64,7 +64,7 @@ scenario('L53E', 'Statuts réels (D17, D25, D27) et vérification T1 incomplète
     expect(await sql`SELECT manual_status FROM agenda_items WHERE id = ${reparation.id}`).toEqual([{ manual_status: null }]);
   });
 
-  it('PO-D25-E1 / PO-D27-E1 — mascotte : échéance échue ancienne jamais masquée par « Tout est à jour » ; une heure ne fait pas un rendez-vous', async () => {
+  it('PO-D25-E1 (revu lot 61) / PO-D27-E1 — mascotte : échéance échue ancienne, ni « Tout est à jour » ni vérification générique ; une heure ne fait pas un rendez-vous', async () => {
     const compte = await make.account({ plan: 'premium' });
     const maison = await make.asset(compte, { category: 'IMMOBILIER', name: 'Maison' });
     // Compte déjà amorcé (un document) : pas d'étape d'accueil.
@@ -78,12 +78,12 @@ scenario('L53E', 'Statuts réels (D17, D25, D27) et vérification T1 incomplète
     const { getMascotPresentation } = await import('@/services/home/mascot/mascot.service');
     const { composeSpeech } = await import('@/services/home/mascot/bubble');
     const p = await getMascotPresentation(compte.id, 'display');
+    // Lot 61 (T6) : le compteur reste une donnée de supervision ; une date
+    // dépassée n'établit aucune action — ni phrase générique, ni « Tout est à jour ».
     expect(p.overdueDeadlines).toBe(1);
-    expect(p.status).not.toBe('clear');
     const t = composeSpeech({ presentation: p, empty: false }).text;
-    expect(t).toContain('Aucun sujet à traiter en priorité aujourd’hui.');
-    expect(t).toContain('Des échéances dépassées sont à vérifier dans l’agenda.');
-    expect(t).not.toMatch(/Tout est à jour|urgen/i);
+    expect(t).not.toContain('Des échéances dépassées sont à vérifier');
+    expect(t).not.toMatch(/Tout est à jour|Aucune échéance dépassée|urgen/i);
 
     // D27 : échéance automatique AVEC heure → « à prévoir », jamais « prévu le ».
     const ct = await upsertAgendaItem({

@@ -1,7 +1,9 @@
 /**
  * Contrat du prompt maître T3 — CDC 15 §25, §22.2, T3-06, T3-07.
  *
- * Une seule consigne (`t3_master_v1`), trois branches imposées par le serveur :
+ * Une seule consigne (`t3_master_v1`), branches imposées par le serveur
+ * (lot 61 : quatrième branche FACULTATIVE `DOCUMENT_NAMING`, harmonisation
+ * du nommage documentaire, voir plus bas) :
  *   - `VALUE_CONFLICT` : choisir UNE preuve fournie, ou s'abstenir ;
  *   - `LINK_AMBIGUITY` : scorer des candidats fournis, liste vide possible ;
  *   - `OPERATION_MATCH` (lot 42, CDC Opérations V1 C6.1 niveau M3, C6.2) :
@@ -20,7 +22,7 @@
 import { z } from 'zod';
 
 export const T3_MASTER_PROMPT_CODE = 't3_master_v1';
-export const T3_TASKS = ['VALUE_CONFLICT', 'LINK_AMBIGUITY', 'OPERATION_MATCH'] as const;
+export const T3_TASKS = ['VALUE_CONFLICT', 'LINK_AMBIGUITY', 'OPERATION_MATCH', 'DOCUMENT_NAMING'] as const;
 export type T3Task = (typeof T3_TASKS)[number];
 
 const confidence = z.enum(['certain', 'probable', 'conflictual']);
@@ -109,8 +111,51 @@ export const T3OperationMatchOutput = z.object({
 });
 export type T3OperationMatchOutput = z.infer<typeof T3OperationMatchOutput>;
 
+// ── Branche DOCUMENT_NAMING (lot 61, ticket « T3 — Harmonisation intelligente du nommage documentaire ») ──
+/**
+ * Une proposition de renommage (section `document_renames`). Noms de champs
+ * imposés par le ticket (snake_case). Le serveur ne fait JAMAIS confiance à
+ * la proposition : monde fermé (document et références fournis), nom attendu
+ * comparé au nom envoyé, garde-fous déterministes, puis écriture en
+ * compare-and-swap (`document-naming/`).
+ */
+export const t3DocumentRename = z.object({
+  document_id: z.number().int().positive(),
+  /** Nom actuel tel que le modèle l'a lu : sert au compare-and-swap (nom attendu). */
+  expected_current_name: z.string().min(1).max(500),
+  proposed_name: z.string().min(1).max(500),
+  /** Documents de la famille sur lesquels la convention s'appuie (fournis dans l'appel). */
+  reference_document_ids: z.array(z.number().int().positive()).max(50).optional(),
+  reason: z.string().min(1).max(400),
+  confidence,
+});
+export type T3DocumentRename = z.infer<typeof t3DocumentRename>;
+
+/** Famille identifiée par le modèle dans le lot de comparaison (facultatif : reporting, mémoire de convention). */
+export const t3NamingFamily = z.object({
+  label: z.string().min(1).max(200),
+  document_ids: z.array(z.number().int().positive()).max(200),
+  /** Convention retenue, décrite librement par le modèle (jamais un gabarit appliqué par le code). */
+  convention: z.string().max(400).nullable().optional(),
+  /** Le modèle a-t-il constaté des intitulés incohérents dans cette famille ? */
+  inconsistent: z.boolean().optional(),
+});
+export type T3NamingFamily = z.infer<typeof t3NamingFamily>;
+
+/**
+ * Sortie de la branche DOCUMENT_NAMING. `document_renames` est FACULTATIVE
+ * (rétrocompatibilité) : absente = aucune proposition, jamais une erreur ;
+ * plusieurs renommages possibles dans une même exécution.
+ */
+export const T3DocumentNamingOutput = z.object({
+  task: z.literal('DOCUMENT_NAMING'),
+  families: z.array(t3NamingFamily).max(100).optional(),
+  document_renames: z.array(t3DocumentRename).max(200).optional(),
+});
+export type T3DocumentNamingOutput = z.infer<typeof T3DocumentNamingOutput>;
+
 /** Union discriminée par `task` (CDC 15 §22.2). */
-export const T3MasterOutput = z.discriminatedUnion('task', [T3ValueConflictOutput, T3LinkAmbiguityOutput, T3OperationMatchOutput]);
+export const T3MasterOutput = z.discriminatedUnion('task', [T3ValueConflictOutput, T3LinkAmbiguityOutput, T3OperationMatchOutput, T3DocumentNamingOutput]);
 export type T3MasterOutput = z.infer<typeof T3MasterOutput>;
 
 // ── Monde fermé (U1), contrôlé par le serveur ──────────────────────────────

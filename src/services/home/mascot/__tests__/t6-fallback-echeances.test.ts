@@ -98,23 +98,23 @@ describe('T6FB-AC3 : date prévisionnelle toujours signalée', () => {
   });
 });
 
-describe('T6FB-AC4 : DATE-NEXT-2, mêmes règles', () => {
+describe('T6FB-AC4 (revu lot 61, T6) : deux échéances le même jour, deux sujets — mêmes règles', () => {
   const chaudiere = row({ id: 2, title: 'Entretien chaudière — Maison', assetId: 2, assetName: 'Maison', assetCategory: 'IMMOBILIER', assetSubtype: 'Maison' });
 
-  it('deux échéances le même jour : libellés naturels, jamais les titres bruts', () => {
-    const s = subjectsOf([row({}), chaudiere])[0];
-    expect(s.sourceCode).toBe('DATE-NEXT-2');
-    expect(s.fallbackText).toBe('Deux échéances sont à prévoir pour le 18 avril 2028 : le contrôle technique de la Cupra et l’entretien chaudière de la maison.');
-    expect(s.fallbackText).not.toMatch(/CUPRA LEON|[«»]|Prochain/);
-    expect(s.actions.map((a) => a.label)).toEqual(['Voir « Contrôle technique »', 'Voir « Entretien chaudière »']);
-    // Lot 55A : intitulé métier (la carte porte déjà « Voir → »).
-    expect(s.secondaryLabel).toBe('Contrôle technique');
-    expect(s.tileTitle).toBe('Contrôle technique et entretien chaudière');
+  it('deux échéances le même jour : libellés naturels, jamais les titres bruts ni concaténés', () => {
+    const [a, b] = subjectsOf([row({}), chaudiere]);
+    expect([a.sourceCode, b.sourceCode]).toEqual(['DATE-NEXT', 'DATE-NEXT']);
+    expect(a.fallbackText).toBe('Le prochain contrôle technique de la Cupra est à prévoir pour le 18 avril 2028.');
+    expect(b.fallbackText).not.toMatch(/CUPRA LEON|[«»]|Prochain/);
+    expect([a.tileTitle, b.tileTitle]).toEqual(['Contrôle technique', 'Entretien chaudière']);
+    for (const s of [a, b]) expect(s.tileTitle).not.toMatch(/ et /);
   });
 
   it('prévisionnelle : estimée ; bien sans genre certain : neutre', () => {
-    const s = subjectsOf([row({ forecast: true }), row({ id: 2, title: 'Ramonage', assetId: 3, assetName: 'Chez Mamie', assetCategory: 'IMMOBILIER', assetSubtype: 'Maison' })])[0];
-    expect(s.fallbackText).toBe('Deux échéances sont à prévoir autour du 18 avril 2028 (date estimée) : le contrôle technique de la Cupra et le ramonage (Chez Mamie).');
+    const [a, b] = subjectsOf([row({ forecast: true }), row({ id: 2, title: 'Ramonage', assetId: 3, assetName: 'Chez Mamie', assetCategory: 'IMMOBILIER', assetSubtype: 'Maison' })]);
+    expect(a.fallbackText).toBe('Le prochain contrôle technique de la Cupra est à prévoir autour du 18 avril 2028 (date estimée).');
+    // Bien sans genre certain : formulation neutre (jamais d'article deviné).
+    expect(b.fallbackText).toBe('Votre prochaine échéance concerne Chez Mamie : ramonage, à prévoir pour le 18 avril 2028.');
   });
 });
 
@@ -218,13 +218,10 @@ describe('T6FB-AC9 : contrat T6', () => {
     expect(s.allowedHighlight).toBe('18 avril 2028');
   });
 
-  it('DATE-NEXT-2 : faits structurés inchangés', () => {
-    const [s] = buildT6Input(subjectsOf([row({}), row({ id: 2, title: 'Ramonage', assetId: 2, assetName: 'Maison', assetCategory: 'IMMOBILIER', assetSubtype: 'Maison' })])).subjects;
-    expect(s.facts).toEqual({
-      date: '2028-04-18', dateLabel: '18 avril 2028', dateNature: 'confirmée',
-      firstDateRole: 'DEADLINE', secondDateRole: 'DEADLINE',
-      firstTitle: CUPRA_TITLE, firstAssetName: 'Cupra', secondTitle: 'Ramonage', secondAssetName: 'Maison',
-    });
+  it('deux échéances le même jour (lot 61) : faits structurés propres à chacune', () => {
+    const [a, b] = buildT6Input(subjectsOf([row({}), row({ id: 2, title: 'Ramonage', assetId: 2, assetName: 'Maison', assetCategory: 'IMMOBILIER', assetSubtype: 'Maison' })])).subjects;
+    expect(a.facts).toMatchObject({ title: CUPRA_TITLE, assetName: 'Cupra', date: '2028-04-18', dateRole: 'DEADLINE' });
+    expect(b.facts).toMatchObject({ title: 'Ramonage', assetName: 'Maison', date: '2028-04-18', dateRole: 'DEADLINE' });
   });
 
   it('prompt maître T6 inchangé (empreinte de référence)', () => {
@@ -250,7 +247,8 @@ describe('T6FB-AC10 : taxonomie et fixtures', () => {
 
   it('fixtures P-T6 : nouvelle formulation, toujours conformes au corpus', () => {
     const dir = join(process.cwd(), 'src/services/home/mascot/__fixtures__');
-    const fichiers = readdirSync(dir).filter((f) => /^p-t6-.*\.json$/.test(f));
+    // Lot 61 : les cas EVALUATE (`p-t6-ev-*`) ont leur propre contrat.
+    const fichiers = readdirSync(dir).filter((f) => /^p-t6-\d.*\.json$/.test(f));
     expect(fichiers.length).toBeGreaterThan(0);
     for (const f of fichiers) {
       const brut = readFileSync(join(dir, f), 'utf8');

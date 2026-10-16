@@ -313,6 +313,25 @@ export const AI_OPERATIONS: Record<string, AiOperationDefinition> = {
     timeoutMs: 30_000, jsonResponse: true,
     outputSchema: 'T3OperationMatchOutput', active: true, billable: false,
   },
+  // Lot 61 (ticket « T3 — Harmonisation intelligente du nommage documentaire ») :
+  // l'IA compare les intitulés d'un lot de documents comparables du compte
+  // (familles, conventions) et propose des renommages (`document_renames`).
+  // Appelée par la phase DOCUMENT_NAMING du passage T3 du compte
+  // (`reconciliation/document-naming/`), une fois par empreinte de lot, sous
+  // plafonds par passage et par jour. Réutilise SUBJECT_CONTEXT, CANDIDATES et
+  // RELATION_TYPE : aucun nouvel emplacement. Branche FACULTATIVE
+  // (`OPTIONAL_MASTER_TASKS`) : sans la section « BRANCHE TASK =
+  // DOCUMENT_NAMING » dans la version ACTIVE du prompt maître T3, aucun appel,
+  // aucun renommage — signalé dans le rapport d'exécution. Non facturée
+  // (traitement de fond).
+  t3_document_naming: {
+    operationCode: 't3_document_naming', useCaseCode: 'DATA_RECONCILIATION',
+    label: 'T3 master — harmonisation du nommage d’une famille de documents (TASK=DOCUMENT_NAMING)',
+    provider: GEMINI, primaryModel: DOC_PRIMARY, fallbackModels: DOC_FALLBACKS,
+    promptCode: T3_MASTER, masterPromptCode: T3_MASTER, task: 'DOCUMENT_NAMING', promptVariables: T3_MASTER_VARIABLES,
+    timeoutMs: 45_000, jsonResponse: true,
+    outputSchema: 'T3DocumentNamingOutput', active: true, billable: false,
+  },
 
   // ── Usage 3 — Assistant (CDC §4.3.4) ──────────────────────────────────────
   retrieve_data: {
@@ -434,7 +453,8 @@ export const AI_OPERATIONS: Record<string, AiOperationDefinition> = {
   // T6 — prompt maître (CDC 15 §28), `T6_MASTER_OPERATION_SPEC` de
   // `home/mascot/t6-contract.ts`. Sortie sans discriminant (`taskField:
   // 'none'`) : `schemaVersion` t6-output-v2 strict. Seul moteur de T6 depuis
-  // le lot 16b (`formulate_mascot` et `mascot_t6_v1` retirés).
+  // le lot 16b (`formulate_mascot` et `mascot_t6_v1` retirés) ; deux branches
+  // depuis le lot 61 (EVALUATE, FORMULATE).
   t6_formulate: {
     operationCode: 't6_formulate', useCaseCode: 'HOME_MASCOT',
     label: 'T6 master — formulation de la mascotte (MODE=FORMULATE)',
@@ -445,6 +465,20 @@ export const AI_OPERATIONS: Record<string, AiOperationDefinition> = {
     promptVariables: ['INPUT_JSON', 'SUGGESTION_CONTEXT', 'INTERPELLATION_CONTEXT'],
     timeoutMs: 8_000, jsonResponse: true,
     outputSchema: 'T6FormulateOutput', active: true, billable: false,
+  },
+  // Lot 61 — MODE=EVALUATE du même master (`T6_EVALUATE_OPERATION_SPEC`) :
+  // pertinence des interpellations de l'accueil, contrat `t6-evaluation-v1`.
+  // Hors du chemin d'affichage (arrière-plan / pré-génération) : délai plus
+  // long que FORMULATE. Une version BO sans branche EVALUATE la laisse
+  // inactive (`OPTIONAL_MASTER_TASKS`) : décision prudente, sans erreur.
+  t6_evaluate: {
+    operationCode: 't6_evaluate', useCaseCode: 'HOME_MASCOT',
+    label: 'T6 master — pertinence des interpellations de l’accueil (MODE=EVALUATE)',
+    provider: GEMINI, primaryModel: ASSISTANT_PRIMARY, fallbackModels: ASSISTANT_FALLBACKS,
+    promptCode: T6_MASTER, masterPromptCode: T6_MASTER, task: 'EVALUATE', taskField: 'none',
+    promptVariables: ['INPUT_JSON', 'SUGGESTION_CONTEXT', 'INTERPELLATION_CONTEXT'],
+    timeoutMs: 15_000, jsonResponse: true,
+    outputSchema: 'T6EvaluateOutput', active: true, billable: false,
   },
 
   // Lot 16b (retrait de l'ancien moteur) : les relais `legacy_*` des modules

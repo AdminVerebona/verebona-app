@@ -6,6 +6,7 @@
 import { db } from '@/db';
 import { accounts, users, accountMemberships, duoAccounts, duoMemberships, subscriptionHistory } from '@/db/schema';
 import { eq, and } from 'drizzle-orm';
+import { duoStatusForAccountStatus, fillDuoStart, isDuoInOffer, openingStart, pickDuoStartDate } from '@/services/duo/duo-period';
 import {
   sendDowngradeToStandardEmail,
   sendMemberRemovedDueToDowngradeEmail,
@@ -32,6 +33,12 @@ interface PlanChangeOptions {
    * en double dans `subscription_history`.
    */
   recordHistory?: boolean;
+  /**
+   * Lot 61B (D) : prise d'effet du passage à Premium Duo — marqueur posé sur
+   * l'abonnement Stripe par le changement BO, sinon l'instant de
+   * l'application locale (aucune facturation Stripe à attendre).
+   */
+  duoEffectiveAt?: Date | null;
 }
 
 // ─── Main entry point ─────────────────────────────────────────────────────────
@@ -86,16 +93,40 @@ export async function applyPlanChange(opts: PlanChangeOptions): Promise<void> {
   }
 
   // 3. duo_accounts sync
-  const [duo] = await db.select({ id: duoAccounts.id, status: duoAccounts.subscriptionStatus })
+  const [duo] = await db.select({
+    id: duoAccounts.id,
+    status: duoAccounts.subscriptionStatus,
+    startedAt: duoAccounts.duoSubscriptionStartedAt,
+    endedAt: duoAccounts.duoSubscriptionEndedAt,
+  })
     .from(duoAccounts)
     .where(eq(duoAccounts.billingOwnerUserId, ownerUserId))
     .limit(1);
 
   if (newPlanType === 'PREMIUM_DUO') {
-    // Ensure duo_accounts is ACTIVE
+    // ══════════════════════════════════════════════════════════════════
+    // LOT 61B (F) — PLUS D'ACTIVATION DUO FORCÉE
+    //
+    // Le Duo passait ACTIVE quel que soit `newSubStatus` : un compte impayé
+    // ou sans droits devenait « Duo actif » (suggestion d'invitation,
+    // adhésion ouverte). Le statut Duo suit désormais le statut du compte
+    // (`duoStatusForAccountStatus`), comme la synchronisation Stripe : BO,
+    // Stripe et webhooks convergent quel que soit leur ordre.
+    // Ouverture d'une souscription : date = prise d'effet (D), jamais une
+    // date antérieure à la dernière sortie.
+    // ══════════════════════════════════════════════════════════════════
+    const duoStatus = duoStatusForAccountStatus(newSubStatus);
+    const effectiveAt = opts.duoEffectiveAt === undefined ? new Date() : opts.duoEffectiveAt;
     if (duo) {
-      await db.update(duoAccounts).set({ subscriptionStatus: 'ACTIVE', updatedAt: new Date() })
+      const opens = duoStatus === 'ACTIVE' && !isDuoInOffer(duo.status);
+      const start = duoStatus === 'ACTIVE' && effectiveAt ? pickDuoStartDate([effectiveAt], duo.endedAt) : null;
+      await db.update(duoAccounts).set({
+        subscriptionStatus: duoStatus,
+        ...(opens ? { duoSubscriptionStartedAt: openingStart(start) } : {}),
+        updatedAt: new Date(),
+      })
         .where(eq(duoAccounts.id, duo.id));
+      if (start) await fillDuoStart(db, duo.id, start);
       // Ensure owner is in duo_memberships as slot 0
       const existing = await db.select({ id: duoMemberships.id })
         .from(duoMemberships)
@@ -112,7 +143,8 @@ export async function applyPlanChange(opts: PlanChangeOptions): Promise<void> {
     } else {
       const [newDuo] = await db.insert(duoAccounts).values({
         billingOwnerUserId: ownerUserId,
-        subscriptionStatus: 'ACTIVE',
+        subscriptionStatus: duoStatus,
+        duoSubscriptionStartedAt: duoStatus === 'ACTIVE' ? effectiveAt ?? null : null,
         activatedAt: new Date(),
         createdAt: new Date(),
         updatedAt: new Date(),

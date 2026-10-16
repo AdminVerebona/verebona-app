@@ -72,8 +72,8 @@ function routeFiles(dir: string): string[] {
 describe('O9-R02 / F-182 / INV-032 : aucune écriture possible via ces routes', () => {
   const root = join(process.cwd(), 'src/app/api/admin/operations');
   const files = routeFiles(root);
-  it('quatre routes, GET seulement, garde admin, aucun import d’écriture', () => {
-    expect(files.map((f) => relative(root, f).split(sep).join('/')).sort()).toEqual(['[id]/route.ts', 'holds/route.ts', 'indicators/route.ts', 'route.ts']);
+  it('cinq routes (lot 61 : diagnostic TCO), GET seulement, garde admin, aucun import d’écriture', () => {
+    expect(files.map((f) => relative(root, f).split(sep).join('/')).sort()).toEqual(['[id]/route.ts', 'holds/route.ts', 'indicators/route.ts', 'route.ts', 'tco/route.ts']);
     for (const f of files) {
       const src = readFileSync(f, 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
       const methods = [...src.matchAll(/export\s+(?:async\s+)?function\s+(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\b/g)].map((m) => m[1]);

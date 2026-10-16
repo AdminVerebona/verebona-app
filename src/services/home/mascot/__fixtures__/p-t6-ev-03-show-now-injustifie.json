@@ -1,0 +1,140 @@
+{
+  "case": "P-T6-EV-03",
+  "description": "T6 / EVALUATE — SHOW_NOW sans action ni preuve et référence inventée : décisions rejetées une à une, jamais acceptées en silence (lot 61).",
+  "context": {
+    "input": {
+      "schemaVersion": "t6-evaluation-input-v1",
+      "today": "2026-10-15",
+      "thresholdDays": 60,
+      "candidates": [
+        {
+          "subjectId": "C1",
+          "title": "Échéance contrat habitation",
+          "description": null,
+          "assetName": "Maison",
+          "assetCategory": "LOGEMENT",
+          "dueDate": "2027-01-01",
+          "dateLabel": "1er janvier 2027",
+          "daysUntilDue": 78,
+          "dateNature": "confirmée",
+          "dateRole": "DEADLINE",
+          "overdue": false,
+          "requiresQualification": false,
+          "recurring": false,
+          "documents": [
+            "Contrat habitation"
+          ],
+          "recentlyShownDays": 0,
+          "evidence": [
+            {
+              "ref": "C1.title",
+              "kind": "TITLE"
+            },
+            {
+              "ref": "C1.dueDate",
+              "kind": "DUE_DATE"
+            },
+            {
+              "ref": "C1.doc1",
+              "kind": "DOCUMENT"
+            },
+            {
+              "ref": "C1.asset",
+              "kind": "ASSET"
+            }
+          ]
+        },
+        {
+          "subjectId": "C2",
+          "title": "Ramonage cheminée",
+          "description": "Ramonage annuel obligatoire avant l'hiver.",
+          "assetName": "Maison",
+          "assetCategory": "LOGEMENT",
+          "dueDate": "2026-11-04",
+          "dateLabel": "4 novembre 2026",
+          "daysUntilDue": 20,
+          "dateNature": "confirmée",
+          "dateRole": "DEADLINE",
+          "overdue": false,
+          "requiresQualification": false,
+          "recurring": true,
+          "documents": [],
+          "recentlyShownDays": 0,
+          "evidence": [
+            {
+              "ref": "C2.title",
+              "kind": "TITLE"
+            },
+            {
+              "ref": "C2.dueDate",
+              "kind": "DUE_DATE"
+            },
+            {
+              "ref": "C2.description",
+              "kind": "DESCRIPTION"
+            },
+            {
+              "ref": "C2.asset",
+              "kind": "ASSET"
+            },
+            {
+              "ref": "C2.series",
+              "kind": "SERIES"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "recording": {
+    "operationCode": "t6_evaluate",
+    "task": "EVALUATE",
+    "output": {
+      "schemaVersion": "t6-evaluation-v1",
+      "decisions": [
+        {
+          "subjectId": "C1",
+          "decision": "SHOW_NOW",
+          "category": "ACTION_NOW",
+          "reasonCode": "ACTION_REQUIRED_SOON",
+          "reason": "Renouvellement connu et suivi dans l’agenda, aucune démarche à engager pour le moment.",
+          "expectedAction": null,
+          "actionDeadline": null,
+          "suggestedReviewAt": "2026-11-02",
+          "priorityHint": "LOW",
+          "evidenceRefs": [],
+          "uncertainties": []
+        },
+        {
+          "subjectId": "C2",
+          "decision": "SHOW_NOW",
+          "category": "ACTION_NOW",
+          "reasonCode": "ACTION_REQUIRED_SOON",
+          "reason": "Le ramonage doit être réalisé avant le 4 novembre 2026 et demande de prendre rendez-vous.",
+          "expectedAction": "Prendre rendez-vous pour le ramonage",
+          "actionDeadline": "2026-11-04",
+          "suggestedReviewAt": null,
+          "priorityHint": "MEDIUM",
+          "evidenceRefs": [
+            "C2.contrat-inexistant"
+          ],
+          "uncertainties": []
+        }
+      ]
+    }
+  },
+  "expected": {
+    "valid": true,
+    "accepted": [],
+    "rejected": [
+      {
+        "subjectId": "C1",
+        "reason": "show_now_without_action"
+      },
+      {
+        "subjectId": "C2",
+        "reason": "unknown_evidence"
+      }
+    ]
+  }
+}

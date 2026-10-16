@@ -216,10 +216,14 @@ const CONTRACTS: readonly OutputContract[] = [
   { name: 'T3ValueConflictOutput', label: 't3_value_conflict', version: 1, adapters: [] },
   { name: 'T3LinkAmbiguityOutput', label: 't3_link_ambiguity', version: 1, adapters: [] },
   { name: 'T3OperationMatchOutput', label: 't3_operation_match', version: 1, adapters: [] },
+  // Lot 61 : `document_renames` facultative (absente = aucune proposition).
+  { name: 'T3DocumentNamingOutput', label: 't3_document_naming', version: 1, adapters: [] },
   { name: 'T4ClassifyEventOutput', label: 't4_classify_event', version: 1, adapters: [] },
   // Lot 54 : même contrat (T4_CLASSIFY_EVENT), version 2 — schéma distinct,
   // choisi par le contrat de sortie `t4_output_v2` de la version de prompt.
   { name: 'T4ClassifyEventV2Output', label: 't4_classify_event', version: 2, adapters: [] },
+  // Lot 61 : version 3 — v2 + bloc `intervention` (« À traiter »), contrat `t4_output_v3`.
+  { name: 'T4ClassifyEventV3Output', label: 't4_classify_event', version: 3, adapters: [] },
   { name: 'T4VerifyCompletionOutput', label: 't4_verify_completion', version: 1, adapters: [] },
   { name: 'T4TemporalAmbiguityOutput', label: 't4_temporal_ambiguity', version: 1, adapters: [] },
   { name: 'T2UnderstandOutput', label: 't2_understand', version: 1, adapters: [] },
@@ -227,6 +231,8 @@ const CONTRACTS: readonly OutputContract[] = [
   { name: 'T2RevalidateOutput', label: 't2_revalidate', version: 1, adapters: [] },
   // T6 : `schemaVersion: "t6-output-v2"` dans la sortie même.
   { name: 'T6FormulateOutput', label: 't6_formulate', version: 2, adapters: [] },
+  // Lot 61 : `schemaVersion: "t6-evaluation-v1"` dans la sortie même.
+  { name: 'T6EvaluateOutput', label: 't6_evaluate', version: 1, adapters: [] },
 ];
 
 export function contractFor(name: string | null | undefined): OutputContract | null {

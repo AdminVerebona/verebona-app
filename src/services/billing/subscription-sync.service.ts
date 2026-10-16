@@ -44,6 +44,7 @@ import { markTrialConverted } from '@/services/trial.service';
 import { sendDowngradeToStandardEmail, sendPremiumConfirmationEmail } from '@/lib/email/billing-emails';
 import { endDuoSharing, enforceStandardLimits } from '@/lib/plan-enforcement';
 import { unpaidDeadline } from '@/services/billing/unpaid-cycle.rules';
+import { duoStartCandidates, fillDuoStart, isDuoActive, isDuoInOffer, openingStart, pickDuoStartDate } from '@/services/duo/duo-period';
 
 // ─── Lecture des objets Stripe (API 2025-08-27.basil) ─────────────────────────
 
@@ -159,6 +160,11 @@ export interface SubscriptionSyncInput {
   paidAt?: Date | null;
   /** Emails client lors d'un changement d'offre (faux pour l'admin). */
   notify?: boolean;
+  /**
+   * Lot 61B : prise d'effet du passage À Premium Duo prouvée par l'événement
+   * Stripe (`duoEntryFromEvent`), source de la date de début Duo.
+   */
+  duoEnteredAt?: Date | null;
 }
 
 export interface SubscriptionSyncResult {
@@ -388,6 +394,52 @@ async function synchroniserAbonnement(
     : existingRow?.contractConcludedAt ?? null;
   const firstBilledAt = existingRow?.firstBilledAt ?? (isPaid ? (input.paidAt ?? now) : null);
 
+  // ══════════════════════════════════════════════════════════════════════
+  // PREMIUM DUO : ENTRÉE, SORTIE, DATE RÉELLE DE DÉBUT (lot 61B, A et D)
+  //
+  // Le statut Duo n'était écrit que lorsque l'abonnement synchronisé était
+  // Duo : une sortie vers Premium ou Standard laissait le Duo ACTIVE.
+  // Désormais, toute synchronisation écrite (jamais un abonnement périmé :
+  // voir les retours anticipés plus haut) aligne le Duo du titulaire :
+  //   · Duo payé à jour → ACTIVE ; impayé → UNPAID_RECOVERY ; terminé →
+  //     CANCELED (rétractation : inchangé, le compte WITHDRAWN suffit à
+  //     retirer la suggestion — vérification croisée de `readDuoInvite`) ;
+  //   · autre offre (Premium, Standard) → le Duo ACTIVE/TRIALING du
+  //     titulaire passe CANCELED (un Duo en impayé garde son mode de
+  //     récupération, AID-DUO-005) ;
+  //   · ouverture d'une souscription (statut hors offre → ACTIVE) : date de
+  //     début = prise d'effet Stripe (`duo-period.ts`), sinon NULL ;
+  //     souscription continue sans date : complétée une seule fois par une
+  //     source fiable postérieure à la dernière sortie.
+  // ══════════════════════════════════════════════════════════════════════
+  const ownDuoId = planTier === 'premium_duo' ? duoAccountId : account.duoAccountId;
+  const [duoBefore] = ownDuoId
+    ? await db
+        .select({
+          id: duoAccounts.id,
+          billingOwnerUserId: duoAccounts.billingOwnerUserId,
+          status: duoAccounts.subscriptionStatus,
+          startedAt: duoAccounts.duoSubscriptionStartedAt,
+          endedAt: duoAccounts.duoSubscriptionEndedAt,
+        })
+        .from(duoAccounts)
+        .where(eq(duoAccounts.id, ownDuoId))
+        .limit(1)
+    : [];
+  const duoStatusAfter: string | null = planTier === 'premium_duo'
+    ? (isPaid ? (status === 'past_due' ? 'UNPAID_RECOVERY' : 'ACTIVE') : 'CANCELED')
+    : null;
+  const duoStart = planTier === 'premium_duo' && duoStatusAfter === 'ACTIVE'
+    ? pickDuoStartDate(
+        duoStartCandidates({ subscription, accountSubscriptionIdBefore: account.stripeSubscriptionId, duoEnteredAt: input.duoEnteredAt }),
+        duoBefore?.endedAt ?? null,
+        now,
+      )
+    : null;
+  const duoOpens = !!duoBefore && duoStatusAfter === 'ACTIVE' && !isDuoInOffer(duoBefore.status);
+  const duoLeaves = !!duoBefore && planTier !== 'premium_duo'
+    && duoBefore.billingOwnerUserId === account.ownerUserId && isDuoActive(duoBefore.status);
+
   await db.transaction(async (tx) => {
     await tx
       .update(accounts)
@@ -455,12 +507,25 @@ async function synchroniserAbonnement(
         .set({
           stripeSubscriptionId: subscription.id,
           stripeCustomerId: customerId,
-          subscriptionStatus: isPaid ? (status === 'past_due' ? 'UNPAID_RECOVERY' : 'ACTIVE') : 'CANCELED',
+          subscriptionStatus: duoStatusAfter ?? 'CANCELED',
+          // Ouverture : date Stripe fiable, sinon NULL (déclencheur 0438).
+          // Décidé sur l'état COURANT de la ligne (deux synchronisations
+          // concurrentes : la seconde ne remet jamais à vide la date posée).
+          ...(duoOpens ? { duoSubscriptionStartedAt: openingStart(duoStart) } : {}),
           ...(isPaid && status !== 'past_due' ? { firstPaymentFailedAt: null, unpaidRecoveryEndsAt: null } : {}),
           ...(status === 'past_due' ? { unpaidRecoveryEndsAt: cycleEndsAt } : {}),
           updatedAt: now,
         })
         .where(eq(duoAccounts.id, duoAccountId));
+      // Souscription en cours sans date connue : complétée une seule fois,
+      // jamais avec une date antérieure à la dernière sortie.
+      if (duoStart) await fillDuoStart(tx, duoAccountId, duoStart);
+    } else if (duoLeaves && duoBefore) {
+      // Sortie effective de Premium Duo vers une autre offre.
+      await tx
+        .update(duoAccounts)
+        .set({ subscriptionStatus: 'CANCELED', updatedAt: now })
+        .where(eq(duoAccounts.id, duoBefore.id));
     }
   });
 

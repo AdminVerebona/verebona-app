@@ -109,3 +109,86 @@ export function classifyExpenseDocument(documentTypeCode: string | null, legacyT
   }
   return { kind: 'unqualified' };
 }
+
+// ── Doublons documentaires (extraits de `expenses.ts`, lot 61 : purs, partagés T2 / TCO) ──
+
+/** Ligne de document utile au dédoublonnage. */
+export interface ExpenseRow {
+  id: number;
+  v2: string | null;
+  legacy: string | null;
+  date: string | null;
+  hash: string | null;
+  title: string | null;
+  assetId: number | null;
+  supplier: string | null;
+  state: string | null;
+  ignored: number[] | null;
+}
+
+/** Nombre d'informations qualifiantes d'un document (départage des doublons). */
+export function expenseInfoScore(r: ExpenseRow): number {
+  return [r.v2, r.legacy, r.date, r.supplier, r.title].filter((x) => x != null && String(x).trim() !== '').length;
+}
+
+/**
+ * Doublons « fusion possible » comptés une seule fois (pure, testée).
+ *
+ * Lot 61 (TCO §3.3 « deux copies d'une facture : un seul coût ») : deux
+ * documents de MÊME empreinte `sha256_hash` sont une copie l'un de l'autre,
+ * signalés ou non (preuve exacte), sauf fusion IGNORÉE par l'utilisateur.
+ *
+ * Deux documents du résultat forment aussi un doublon si l'un au moins est signalé
+ * `FUSION_SUGGESTED`, si la fusion n'a pas été IGNORÉE entre eux
+ * (`fusion_ignored_with`, choix de l'utilisateur) et s'ils répondent aux
+ * critères du détecteur : même empreinte `sha256_hash` (doublon exact), ou
+ * même titre retenu + même bien + même date (doublon probable). Les
+ * groupes sont transitifs.
+ *
+ * Règle de conservation (documentée, CDC 15 T2-24) : dans chaque groupe, on
+ * garde le document qui porte le PLUS D'INFORMATIONS (type V2, type
+ * historique, date, fournisseur, titre retenu — `expenseInfoScore`) ; à
+ * égalité, le PLUS ANCIEN (plus petit identifiant, antérieur au
+ * téléversement du doublon). Les autres sont écartés du total et déclarés.
+ */
+export function dedupePossibleMerges<R extends ExpenseRow>(rows: R[]): { kept: R[]; removed: number[] } {
+  const parent = new Map<number, number>(rows.map((r) => [r.id, r.id]));
+  const find = (x: number): number => {
+    let r = x;
+    while (parent.get(r) !== r) r = parent.get(r)!;
+    parent.set(x, r);
+    return r;
+  };
+  const ignores = (a: R, b: R) => (a.ignored ?? []).map(Number).includes(b.id) || (b.ignored ?? []).map(Number).includes(a.id);
+  // Copie exacte (même empreinte) : preuve suffisante, sans signalement (lot 61).
+  const parHash = new Map<string, R[]>();
+  for (const r of rows) if (r.hash) parHash.set(r.hash, [...(parHash.get(r.hash) ?? []), r]);
+  for (const g of parHash.values()) {
+    for (let i = 1; i < g.length; i++) {
+      for (let j = 0; j < i; j++) if (!ignores(g[i], g[j])) parent.set(find(g[i].id), find(g[j].id));
+    }
+  }
+  const signales = rows.filter((r) => r.state === 'FUSION_SUGGESTED');
+  for (const a of signales) {
+    for (const b of rows) {
+      if (a.id === b.id || ignores(a, b)) continue;
+      const exact = !!a.hash && a.hash === b.hash;
+      const probable = !!a.title && a.title === b.title && a.assetId != null && a.assetId === b.assetId
+        && (a.date ?? null) === (b.date ?? null);
+      if (exact || probable) parent.set(find(a.id), find(b.id));
+    }
+  }
+  const groupes = new Map<number, R[]>();
+  for (const r of rows) {
+    const g = find(r.id);
+    groupes.set(g, [...(groupes.get(g) ?? []), r]);
+  }
+  const garde = new Set<number>();
+  const removed: number[] = [];
+  for (const g of groupes.values()) {
+    const [meilleur] = [...g].sort((x, y) => expenseInfoScore(y) - expenseInfoScore(x) || x.id - y.id);
+    garde.add(meilleur.id);
+    for (const r of g) if (r.id !== meilleur.id) removed.push(r.id);
+  }
+  return { kept: rows.filter((r) => garde.has(r.id)), removed: removed.sort((a, b) => a - b) };
+}

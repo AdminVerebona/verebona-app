@@ -255,6 +255,10 @@ export function classifyCallError(err: unknown): ClassifiedFailure {
   // Étape posée par l'adaptateur (préparation des pièces jointes, blocage).
   const declaredStage = typeof e.aiStage === 'string' ? (e.aiStage as AiFailureStage) : null;
 
+  // Lot 61 : construction locale impossible (en-tête invalide…) — avant toute
+  // autre règle : le message d'origine peut contenir des nombres ou des mots
+  // qui ressemblent à un statut fournisseur.
+  if (code === 'REQUEST_BUILD_FAILED') return out('INTERNAL_ERROR', 'request_build');
   if (code === 'TIMEOUT' || e.name === 'AbortError' || status === 408 || status === 504 || pStatus === 'DEADLINE_EXCEEDED') {
     return out('TIMEOUT', 'provider_generation');
   }

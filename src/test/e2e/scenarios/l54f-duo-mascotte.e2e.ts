@@ -46,11 +46,14 @@ const PREMIUM_PRICE = 'price_e2e_premium_m1_monthly';
 const NOW = Math.floor(Date.now() / 1000);
 const MOIS = 30 * 86400;
 
-function sub(o: { id: string; customer: string; status: Stripe.Subscription.Status; price: string; accountId: number; duoId?: number; periodStart?: number; interval?: 'month' | 'year' }): Stripe.Subscription {
+function sub(o: { id: string; customer: string; status: Stripe.Subscription.Status; price: string; accountId: number; duoId?: number; periodStart?: number; interval?: 'month' | 'year'; startDate?: number }): Stripe.Subscription {
   const ps = o.periodStart ?? NOW;
   return {
     id: o.id, object: 'subscription', customer: o.customer, status: o.status, cancel_at_period_end: false,
-    start_date: NOW - 90 * 86400, // début Stripe ANTÉRIEUR : jamais pris pour la date Duo
+    // Lot 61B : `start_date` d'un abonnement Duo NOUVEAU (Checkout) = sa prise
+    // d'effet réelle (données cohérentes) ; pour un abonnement Premium
+    // existant passé en Duo, il n'est jamais retenu (DUO-M1-E2E-03).
+    start_date: o.startDate ?? NOW - 90 * 86400,
     metadata: { accountId: String(o.accountId), ...(o.duoId ? { duoId: String(o.duoId) } : {}) }, discounts: [], schedule: null,
     items: { data: [{
       id: `si_${o.id}`, quantity: 1,
@@ -115,13 +118,13 @@ scenario('L54F-DUO-M1', 'Duo : « Inviter quelqu’un » limité au premier mois
     expect(await sync(sub({ id: c.subId, customer: c.customer, status: 'incomplete', price: DUO_PRICE, accountId: c.id, duoId: c.duoId }))).toMatchObject({ skipped: 'INCOMPLETE' });
     expect((await duoRow(c.duoId)).started).toBeNull();
 
-    const avant = Date.now();
-    const r = await sync(sub({ id: c.subId, customer: c.customer, status: 'active', price: DUO_PRICE, accountId: c.id, duoId: c.duoId }));
+    const paiement = Math.floor(Date.now() / 1000);
+    const r = await sync(sub({ id: c.subId, customer: c.customer, status: 'active', price: DUO_PRICE, accountId: c.id, duoId: c.duoId, startDate: paiement }));
     expect(r).toMatchObject({ planTier: 'premium_duo', newPlanType: 'PREMIUM_DUO', isPaid: true });
     const d = await duoRow(c.duoId);
     expect(d.status).toBe('ACTIVE');
-    expect(d.started!.getTime()).toBeGreaterThanOrEqual(avant - 2000);
-    // Ni le début Stripe (90 j plus tôt) ni la création technique.
+    // Lot 61B : prise d'effet Stripe de l'abonnement Duo, pas la création technique.
+    expect(d.started!.getTime()).toBe(paiement * 1000);
     const fin = await echeance(d.started!);
     expect(await lire(c.id, d.started!)).toMatchObject({ title: 'Inviter quelqu’un', href: '/mon-compte#duo-invitation' });
     expect(await lire(c.id, new Date(fin.getTime() - 1))).not.toBeNull();
@@ -130,7 +133,7 @@ scenario('L54F-DUO-M1', 'Duo : « Inviter quelqu’un » limité au premier mois
 
   it('DUO-M1-E2E-02 — rejeu du webhook, renouvellement, resynchronisation, impayé régularisé, changement de périodicité : aucun décalage', async () => {
     const c = await titulaire();
-    const actif = (o: Partial<Parameters<typeof sub>[0]> = {}) => sub({ id: c.subId, customer: c.customer, status: 'active', price: DUO_PRICE, accountId: c.id, duoId: c.duoId, ...o });
+    const actif = (o: Partial<Parameters<typeof sub>[0]> = {}) => sub({ id: c.subId, customer: c.customer, status: 'active', price: DUO_PRICE, accountId: c.id, duoId: c.duoId, startDate: NOW, ...o });
     await sync(actif());
     const d0 = (await duoRow(c.duoId)).started!.getTime();
     await new Promise((r) => setTimeout(r, 20));
@@ -162,20 +165,28 @@ scenario('L54F-DUO-M1', 'Duo : « Inviter quelqu’un » limité au premier mois
       INSERT INTO duo_accounts (billing_owner_user_id, subscription_status, stripe_customer_id) VALUES (${c.ownerUserId}, 'CANCELED', ${c.customer}) RETURNING id`;
     await sql`INSERT INTO duo_memberships (duo_id, user_id, status, slot, joined_at) VALUES (${duoId}, ${c.ownerUserId}, 'ACTIVE', 0, now())`;
     await sql`UPDATE accounts SET duo_account_id = ${duoId} WHERE id = ${c.id}`;
-    const avant = Date.now();
-    await sync(sub({ id: c.subId, customer: c.customer, status: 'active', price: DUO_PRICE, accountId: c.id, duoId }));
+    // Lot 61B : la date vient de la preuve Stripe du passage à Duo (webhook
+    // `customer.subscription.updated`, `previous_attributes`), jamais de
+    // l'heure de synchronisation ni du début de Premium (voir DUO-R-03).
+    const passage = new Date(Math.floor(Date.now() / 1000) * 1000 - 60_000);
+    const { syncSubscriptionFromStripe } = await import('@/services/billing/subscription-sync.service');
+    await syncSubscriptionFromStripe({ subscription: sub({ id: c.subId, customer: c.customer, status: 'active', price: DUO_PRICE, accountId: c.id, duoId }), source: 'e2e', notify: false, duoEnteredAt: passage });
     const d = await duoRow(duoId);
-    expect(d.started!.getTime()).toBeGreaterThanOrEqual(avant - 2000);
+    expect(d.started!.getTime()).toBe(passage.getTime());
     expect(await lire(c.id, new Date())).not.toBeNull();
   });
 
   it('DUO-M1-E2E-04 — changement d’offre BO : date posée une fois ; sortie puis nouvelle souscription : nouvelle période', async () => {
     const { applyPlanChange } = await import('@/lib/plan-enforcement');
     const c = await titulaire({ duo: false });
-    const chg = (oldPlanType: string, newPlanType: string) => applyPlanChange({
-      accountId: c.id, ownerUserId: c.ownerUserId, oldPlanType, newPlanType, newSubStatus: 'ACTIVE',
-      newPremiumUntil: null, newMaxMembers: newPlanType === 'PREMIUM_DUO' ? 2 : 1, source: 'admin:e2e', sendEmails: false,
-    } as Parameters<typeof applyPlanChange>[0]);
+    const chg = async (oldPlanType: string, newPlanType: string) => {
+      await applyPlanChange({
+        accountId: c.id, ownerUserId: c.ownerUserId, oldPlanType, newPlanType, newSubStatus: 'ACTIVE',
+        newPremiumUntil: null, newMaxMembers: newPlanType === 'PREMIUM_DUO' ? 2 : 1, source: 'admin:e2e', sendEmails: false,
+      } as Parameters<typeof applyPlanChange>[0]);
+      // Comme le service BO (`applyLocalPlanChange`) : l'offre lue par les droits suit.
+      await sql`UPDATE account_subscriptions SET plan_code = ${newPlanType.toLowerCase()} WHERE account_id = ${c.id}`;
+    };
     await chg('PREMIUM', 'PREMIUM_DUO');
     const [{ duo_account_id: duoId }] = await sql<{ duo_account_id: number }[]>`SELECT duo_account_id FROM accounts WHERE id = ${c.id}`;
     const d1 = (await duoRow(duoId)).started!;
@@ -199,7 +210,7 @@ scenario('L54F-DUO-M1', 'Duo : « Inviter quelqu’un » limité au premier mois
 
   it('DUO-M1-E2E-05 — route réelle : envoi → absente ; annulation / lien expiré → aucune réapparition ; invitation manuelle après le mois', async () => {
     const c = await titulaire();
-    await sync(sub({ id: c.subId, customer: c.customer, status: 'active', price: DUO_PRICE, accountId: c.id, duoId: c.duoId }));
+    await sync(sub({ id: c.subId, customer: c.customer, status: 'active', price: DUO_PRICE, accountId: c.id, duoId: c.duoId, startDate: NOW }));
     const { POST, DELETE, GET } = await import('@/app/api/duo/invitation/route');
     etat.session = { userId: c.ownerUserId, currentAccountId: c.id };
     const req = (method: string, body?: unknown) => new NextRequest(`${APP}/api/duo/invitation`, {
@@ -227,7 +238,7 @@ scenario('L54F-DUO-M1', 'Duo : « Inviter quelqu’un » limité au premier mois
 
     // Après expiration du mois, sans invitation : mascotte muette, invitation manuelle possible.
     const c2 = await titulaire();
-    await sync(sub({ id: c2.subId, customer: c2.customer, status: 'active', price: DUO_PRICE, accountId: c2.id, duoId: c2.duoId }));
+    await sync(sub({ id: c2.subId, customer: c2.customer, status: 'active', price: DUO_PRICE, accountId: c2.id, duoId: c2.duoId, startDate: NOW }));
     await sql`UPDATE duo_accounts SET duo_subscription_started_at = now() - interval '2 months' WHERE id = ${c2.duoId}`;
     expect(await lire(c2.id, new Date())).toBeNull();
     etat.session = { userId: c2.ownerUserId, currentAccountId: c2.id };
@@ -237,7 +248,7 @@ scenario('L54F-DUO-M1', 'Duo : « Inviter quelqu’un » limité au premier mois
 
   it('DUO-M1-E2E-06 — Duo impayé, résilié, membre (invité ou actif) : absente', async () => {
     const c = await titulaire();
-    await sync(sub({ id: c.subId, customer: c.customer, status: 'active', price: DUO_PRICE, accountId: c.id, duoId: c.duoId }));
+    await sync(sub({ id: c.subId, customer: c.customer, status: 'active', price: DUO_PRICE, accountId: c.id, duoId: c.duoId, startDate: NOW }));
     const t = (await duoRow(c.duoId)).started!;
     const membre = await make.account();
     await sql`INSERT INTO duo_memberships (duo_id, user_id, status, slot, invited_at) VALUES (${c.duoId}, ${membre.ownerUserId}, 'INVITED', 1, now())`;
@@ -255,6 +266,7 @@ scenario('L54F-DUO-M1', 'Duo : « Inviter quelqu’un » limité au premier mois
     const mig = readFileSync(join(process.cwd(), 'src/db/migrations/0385_duo_subscription_started_at.sql'), 'utf8');
     const existant = async (statut = 'ACTIVE') => {
       const acc = await make.account({ plan: 'premium_duo' });
+      await sql`UPDATE accounts SET plan_type = 'PREMIUM_DUO', subscription_status = 'ACTIVE' WHERE id = ${acc.id}`;
       const [{ id }] = await sql<{ id: number }[]>`INSERT INTO duo_accounts (billing_owner_user_id, subscription_status) VALUES (${acc.ownerUserId}, ${statut}) RETURNING id`;
       await sql`UPDATE accounts SET duo_account_id = ${id} WHERE id = ${acc.id}`;
       // Comme avant le lot 54F : aucune date (l'UPDATE ne touche pas le statut).
@@ -282,6 +294,9 @@ scenario('L54F-DUO-M1', 'Duo : « Inviter quelqu’un » limité au premier mois
 
     await sql.begin((tx) => tx.unsafe(mig));
     await sql.begin((tx) => tx.unsafe(mig)); // rejouable sans effet
+    // Ordre de production : 0438 (lot 61B) suit 0385 et remplace son déclencheur.
+    const m0438 = readFileSync(join(process.cwd(), 'src/db/migrations/0438_duo_invite_period_fix.sql'), 'utf8');
+    await sql.begin((tx) => tx.unsafe(m0438));
 
     const ra = await duoRow(a.duoId);
     expect(Math.round((Date.now() - ra.started!.getTime()) / 86_400_000)).toBe(10);

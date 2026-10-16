@@ -15,20 +15,24 @@
  * sur les MÊMES décisions — un sujet écarté n'apparaît ni dans le texte, ni
  * dans les cartes.
  *
- *   · L'IA (T6, R13 du prompt maître, `{{INTERPELLATION_CONTEXT}}`) évalue
- *     chaque candidat : action réellement nécessaire, nature, pourquoi
- *     maintenant, conséquence, date pertinente pour agir, priorité,
- *     incertitudes — ou « aucune interpellation nécessaire ». Aucune règle
- *     par catégorie d'échéance (assurance, garantie, entretien…) n'existe ici.
+ *   · L'IA évalue chaque candidat — lot 61 : dans un MODE DISTINCT du prompt
+ *     maître (`t6_evaluate`, MODE=EVALUATE, contrat `t6-evaluation-v1`,
+ *     `t6-contract.ts`) : décision SHOW_NOW / DEFER / SUPPRESS, catégorie,
+ *     motif d'un référentiel fermé, justification, action attendue, dates,
+ *     priorité INDICATIVE, preuves, incertitudes. Aucune règle par catégorie
+ *     d'échéance (assurance, garantie, entretien…) n'existe ici.
  *   · Le code applique le DÉTERMINISTE : sujet clos, refus et reports de
  *     l'utilisateur, seuil indicatif (60 jours, réglable dans le BO) avec
  *     exception MOTIVÉE par l'IA, réévaluation après un report, anti-
  *     répétition, aucun délai inventé, trace de chaque décision.
  *
  * DÉGRADATION PRUDENTE (`aiCapable = false` : T6 coupé dans le BO, ou version
- * active du prompt antérieure au lot 60, sans `{{INTERPELLATION_CONTEXT}}`) :
- * jamais d'interpellation au-delà du seuil ; en deçà, le comportement
- * historique (échéance proche, échéance arrivée à date) est conservé.
+ * active du prompt antérieure au lot 61, sans branche EVALUATE) — lot 61 :
+ * aucune échéance NON ÉVALUÉE n'est présentée d'office (ni proche, ni
+ * dépassée : l'absence de confirmation n'est pas une action à faire) ; seule
+ * l'action métier ÉTABLIE est conservée — échéance dépassée « à préciser »
+ * (`requiresQualification`, constatée par T4). L'accueil dit alors que
+ * l'examen des échéances est indisponible, jamais que tout va bien.
  * ══════════════════════════════════════════════════════════════════════════
  */
 
@@ -51,8 +55,8 @@ export type T6DecisionCode =
   | 'AWAITING_REEVALUATION_AFTER_SNOOZE'
   | 'AI_ASSESSMENT_PENDING'
   | 'NO_AI_BEYOND_THRESHOLD'
-  | 'NO_AI_WITHIN_THRESHOLD'
-  | 'NO_AI_OVERDUE'
+  | 'NO_AI_QUALIFICATION_REQUIRED'
+  | 'EVALUATION_UNAVAILABLE'
   | 'AI_NO_INTERPELLATION'
   | 'AI_LATER'
   | 'BEYOND_THRESHOLD'
@@ -62,8 +66,21 @@ export type T6DecisionCode =
   | 'AI_ACT_NOW'
   | 'AI_ANTICIPATE';
 
-/** Évaluation structurée rendue par l'IA pour UN candidat (validée). */
+/**
+ * Évaluation d'UN candidat, validée. Lot 61 : issue du contrat
+ * `t6-evaluation-v1` (champs `decision` … `evidenceRefs`) ; les champs
+ * historiques (`interpellation`, `actionNeeded`, `exceptionReason`…) en sont
+ * DÉRIVÉS (`assessmentFromDecision`) pour la fonction de décision.
+ */
 export interface T6Assessment {
+  /** Décision de l'IA (indicative : le serveur décide de l'affichage). */
+  decision?: T6Decision;
+  category?: 'ACTION_NOW' | 'TO_ANTICIPATE' | 'INFORMATION';
+  /** Motif du référentiel fermé (`T6_REASON_CODES`). */
+  reasonCode?: string | null;
+  /** Références justificatives (sous-ensemble de celles transmises). */
+  evidenceRefs?: string[];
+  uncertainties?: string[];
   interpellation: T6AiInterpellation;
   actionNeeded: boolean;
   /** Démarche attendue, courte (« comparer les offres avant le renouvellement »). */
@@ -90,6 +107,8 @@ export interface T6StoredAssessment extends T6Assessment {
   assessedOn: string;
   promptVersion?: string | null;
   traceId?: string | null;
+  /** Contrat de l'évaluation (`t6-evaluation-v1`) ; autre / absent : lot 60, caduque. */
+  contractVersion?: string | null;
 }
 
 export type T6SubjectState = 'ACTIVE' | 'RESOLVED' | 'OBSOLETE';
@@ -110,6 +129,8 @@ export interface T6Candidate {
   state: T6SubjectState;
   /** Empreinte des champs significatifs (titre, date, nature, qualification). */
   fingerprint: string;
+  /** Lot 61 : échéance « à préciser » (T4) — seule action établie sans évaluation IA. */
+  requiresQualification?: boolean;
 }
 
 export type T6PreferenceScope = 'OCCURRENCE' | 'SERIES';
@@ -133,7 +154,7 @@ export interface T6DecisionInput {
   /** AAAA-MM-JJ (Europe/Paris). */
   today: string;
   thresholdDays: number;
-  /** T6 disponible ET prompt actif porteur de `{{INTERPELLATION_CONTEXT}}`. */
+  /** T6 disponible ET prompt actif porteur de la branche EVALUATE (lot 61). */
   aiCapable: boolean;
   assessment: T6StoredAssessment | null;
   /** Préférences de l'utilisateur courant applicables au candidat (occurrence + série). */
@@ -168,6 +189,12 @@ export interface T6DecisionResult {
   actionDate: string | null;
   /** L'évaluation utilisée était encore valable (même contexte, pas échue). */
   assessmentFresh: boolean;
+  /**
+   * Lot 61 : décision de l'IA prise en compte (null : aucune évaluation
+   * utilisable). Différente de `decision` : écart IA / règles du serveur
+   * (seuil, préférence, anti-répétition…), tracé au reporting.
+   */
+  aiDecision: T6Decision | null;
 }
 
 // ── Réglages (constantes ; le seuil est réglable dans le BO) ─────────────────
@@ -224,7 +251,10 @@ export function agendaFingerprintParts(p: { title: string; date: string | null; 
 
 // ── Fraîcheur d'une évaluation ──────────────────────────────────────────────
 
-export type T6AssessmentStatus = 'FRESH' | 'AGED' | 'CONTEXT_CHANGED' | 'NONE';
+export type T6AssessmentStatus = 'FRESH' | 'AGED' | 'CONTEXT_CHANGED' | 'CONTRACT_CHANGED' | 'NONE';
+
+/** Contrat des évaluations utilisables (lot 61) — même valeur que `T6_EVALUATION_OUTPUT_SCHEMA_VERSION`. */
+export const T6_ASSESSMENT_CONTRACT = 't6-evaluation-v1';
 
 /**
  * Une évaluation est :
@@ -236,6 +266,9 @@ export type T6AssessmentStatus = 'FRESH' | 'AGED' | 'CONTEXT_CHANGED' | 'NONE';
  */
 export function assessmentStatus(a: T6StoredAssessment | null, c: T6Candidate, today: string, thresholdDays: number): T6AssessmentStatus {
   if (!a) return 'NONE';
+  // Lot 61 : une évaluation d'un autre contrat (R13 du lot 60) n'est jamais
+  // réutilisée — le candidat est réévalué par EVALUATE.
+  if (a.contractVersion !== T6_ASSESSMENT_CONTRACT) return 'CONTRACT_CHANGED';
   if (a.fingerprint !== c.fingerprint) return 'CONTEXT_CHANGED';
   if (c.dueDate) {
     const avant = daysBetween(a.assessedOn, c.dueDate);
@@ -255,7 +288,7 @@ const PRIORITY_DEFAULT: T6Priority = 'MEDIUM';
 function result(c: T6Candidate, base: Partial<T6DecisionResult> & Pick<T6DecisionResult, 'decision' | 'code' | 'explanation'>, daysUntilDue: number | null): T6DecisionResult {
   return {
     nextReevaluationAt: null, priority: PRIORITY_DEFAULT, deferredBy: null, thresholdApplied: false, thresholdException: false,
-    userPreference: null, needsAssessment: false, mode: null, action: null, actionDate: null, assessmentFresh: false,
+    userPreference: null, needsAssessment: false, mode: null, action: null, actionDate: null, assessmentFresh: false, aiDecision: null,
     ...base,
     subjectKey: c.subjectKey, occurrenceKey: c.occurrenceKey, daysUntilDue,
   };
@@ -312,12 +345,13 @@ export function decideT6Interpellation(input: T6DecisionInput): T6DecisionResult
         decision: 'SHOW_NOW', code: 'SNOOZE_OVERRIDDEN_SIGNIFICANT_CHANGE',
         explanation: 'Rappel anticipé : l’échéance a changé depuis le report et l’évaluation du nouveau contexte demande une action prioritaire.',
         priority: 'HIGH', mode: 'ACT_NOW', action: a.action, actionDate: a.actionDate, userPreference: prefOut(report), assessmentFresh: true,
+        aiDecision: 'SHOW_NOW',
       });
     }
     return r({
       decision: 'DEFER', code: 'USER_SNOOZED', deferredBy: 'USER', nextReevaluationAt: report.remindAt,
       explanation: 'Rappel reporté par l’utilisateur : masqué jusqu’à la date choisie, puis réévalué avant tout affichage.',
-      userPreference: prefOut(report), needsAssessment: change && veutEvaluation,
+      userPreference: prefOut(report), needsAssessment: change && veutEvaluation, aiDecision: a?.decision ?? null,
     });
   }
   // Report échu : le sujet est RÉÉVALUÉ avant d'être réaffiché — une
@@ -332,7 +366,9 @@ export function decideT6Interpellation(input: T6DecisionInput): T6DecisionResult
   const userPreference = report ? prefOut(report) : null;
   const auDela = jours != null && jours > thresholdDays;
 
-  // 4. Sans IA : dégradation prudente.
+  // 4. Sans IA : dégradation prudente (lot 61). Aucune échéance non évaluée
+  //    n'est réintroduite ; seule l'action métier établie (échéance dépassée
+  //    « à préciser », T4) reste présentée.
   if (!aiCapable) {
     if (auDela) {
       return r({
@@ -344,11 +380,15 @@ export function decideT6Interpellation(input: T6DecisionInput): T6DecisionResult
     if (jours == null) {
       return r({ decision: 'SUPPRESS', code: 'INSUFFICIENT_CONTEXT', userPreference, explanation: 'Échéance sans date et évaluation IA indisponible : aucun délai n’est supposé.' });
     }
+    if (jours <= 0 && c.requiresQualification) {
+      return r({
+        decision: 'SHOW_NOW', code: 'NO_AI_QUALIFICATION_REQUIRED', mode: 'LEGACY', userPreference,
+        explanation: 'Échéance dépassée à préciser (action établie par l’agenda) : présentée sans évaluation IA.',
+      });
+    }
     return r({
-      decision: 'SHOW_NOW', code: jours <= 0 ? 'NO_AI_OVERDUE' : 'NO_AI_WITHIN_THRESHOLD', mode: 'LEGACY', userPreference,
-      explanation: jours <= 0
-        ? 'Échéance arrivée à date, évaluation IA indisponible : rappel historique conservé (à confirmer).'
-        : `Échéance dans le seuil de ${thresholdDays} jours, évaluation IA indisponible : rappel historique conservé.`,
+      decision: 'DEFER', code: 'EVALUATION_UNAVAILABLE', deferredBy: 'SYSTEM', userPreference, nextReevaluationAt: today,
+      explanation: 'Évaluation IA indisponible : l’échéance n’est pas présentée d’office (elle reste dans l’agenda) ; l’accueil le signale.',
     });
   }
 
@@ -363,7 +403,10 @@ export function decideT6Interpellation(input: T6DecisionInput): T6DecisionResult
     });
   }
 
-  const base = { userPreference, needsAssessment: veutEvaluation, assessmentFresh: fresh, actionDate: a.actionDate, action: a.action };
+  const base = {
+    userPreference, needsAssessment: veutEvaluation, assessmentFresh: fresh, actionDate: a.actionDate, action: a.action,
+    aiDecision: a.decision ?? (a.interpellation === 'NONE' ? 'SUPPRESS' as const : a.interpellation === 'LATER' ? 'DEFER' as const : 'SHOW_NOW' as const),
+  };
 
   // 6. L'IA conclut qu'aucune interpellation n'est nécessaire.
   if (a.interpellation === 'NONE' || !a.actionNeeded) {
@@ -453,92 +496,59 @@ export function suggestReminderDate(p: { today: string; dueDate: string | null; 
   return borne(addDays(p.today, 7));
 }
 
-// ── Contexte transmis à l'IA (R13) et validation de sa sortie ────────────────
+// ── Contexte transmis à EVALUATE et conservation des décisions (lot 61) ─────
 
-export const T6_INTERPELLATION_CONTEXT_SCHEMA = 't6-interpellation-v1';
-const TEXT_MAX = 400;
+export interface T6CandidateRef { subjectKey: string; agendaItemId: number; fingerprint: string; daysUntilDue: number | null }
 
-export interface T6InterpellationCandidateContext {
-  /** Référence opaque (C1…Cn) : aucun identifiant de base transmis. */
-  ref: string;
-  title: string;
-  description: string | null;
-  assetName: string | null;
-  assetCategory: string | null;
-  dueDate: string | null;
-  dateLabel: string | null;
-  daysUntilDue: number | null;
-  dateNature: 'confirmée' | 'prévisionnelle';
-  dateRole: string | null;
-  overdue: boolean;
-  requiresQualification: boolean;
-  recurring: boolean;
-  /** Titres des documents liés (3 au plus). */
-  documents: string[];
-  /** Jours où ce sujet a déjà été présenté récemment. */
-  recentlyShownDays: number;
-}
-
-export interface T6InterpellationContext {
-  schemaVersion: typeof T6_INTERPELLATION_CONTEXT_SCHEMA;
-  today: string;
-  thresholdDays: number;
-  candidates: T6InterpellationCandidateContext[];
-}
-
-/** Contexte complet : la correspondance référence → candidat reste côté serveur. */
+/**
+ * Candidats à évaluer : contrat d'entrée `t6-evaluation-input-v1`
+ * (`t6-contract.ts`) ; la correspondance `subjectId` (C1…Cn) → échéance
+ * reste côté serveur.
+ */
 export interface T6InterpellationBundle {
-  context: T6InterpellationContext;
-  refs: ReadonlyMap<string, { subjectKey: string; agendaItemId: number; fingerprint: string }>;
-  /** Persistance des évaluations validées (injectée : base, tests). */
-  persist: (list: Array<T6Assessment & { ref: string }>, meta: { promptVersion: string; traceId: string | null }) => Promise<number>;
+  context: import('./t6-contract').T6EvaluationInput;
+  refs: ReadonlyMap<string, T6CandidateRef>;
+  /** Persistance des décisions validées (injectée : base, tests). */
+  persist: (list: import('./t6-contract').T6ValidatedDecision[], meta: { promptVersion: string; traceId: string | null }) => Promise<number>;
 }
 
-const texte = (v: unknown, max = TEXT_MAX): string | null => {
+const PRIORITE_DEFAUT: Record<T6Decision, T6Priority> = { SHOW_NOW: 'MEDIUM', DEFER: 'LOW', SUPPRESS: 'LOW' };
+
+/**
+ * Décision validée (`t6-evaluation-v1`) → évaluation conservée (pure,
+ * testée). Les champs historiques en sont DÉRIVÉS, sans rien ajouter :
+ *   · `interpellation` : SHOW_NOW + ACTION_NOW → ACT_NOW, SHOW_NOW +
+ *     TO_ANTICIPATE → ANTICIPATE, DEFER → LATER, SUPPRESS → NONE ;
+ *   · `exceptionReason` (franchissement du seuil) : la justification, SEULEMENT
+ *     si une preuve CONCRÈTE est citée (description ou document) — jamais le
+ *     titre ou la date seuls ;
+ *   · `priority` : la priorité INDICATIVE de l'IA, à défaut selon la décision.
+ * `suggestedReviewAt` ne devient qu'une date de RÉÉVALUATION système, jamais
+ * un rappel utilisateur (aucune préférence n'est écrite).
+ */
+export function assessmentFromDecision(d: import('./t6-contract').T6ValidatedDecision): T6Assessment {
+  const interpellation: T6AiInterpellation = d.decision === 'SUPPRESS' ? 'NONE'
+    : d.decision === 'DEFER' ? 'LATER'
+      : d.category === 'TO_ANTICIPATE' ? 'ANTICIPATE' : 'ACT_NOW';
+  const concrete = d.evidenceRefs.some((r) => /\.(description|doc\d+)$/.test(r));
+  return {
+    decision: d.decision, category: d.category, reasonCode: d.reasonCode, evidenceRefs: d.evidenceRefs, uncertainties: d.uncertainties,
+    interpellation,
+    // DEFER : une démarche sera utile plus tard (réévaluée), jamais « rien à faire ».
+    actionNeeded: d.decision !== 'SUPPRESS',
+    action: d.expectedAction, reason: d.reason, consequence: null,
+    actionDate: d.actionDeadline, priority: d.priorityHint ?? PRIORITE_DEFAUT[d.decision],
+    uncertainty: d.uncertainties.length ? d.uncertainties.join(' ; ').slice(0, 400) : null,
+    exceptionReason: d.decision === 'SHOW_NOW' && concrete ? d.reason : null,
+    reevaluateOn: d.suggestedReviewAt,
+  };
+}
+
+const texte = (v: unknown, max = 400): string | null => {
   if (typeof v !== 'string') return null;
   const t = v.replace(/\s+/g, ' ').trim();
   return t ? t.slice(0, max) : null;
 };
-const enumOf = <T extends string>(v: unknown, list: readonly T[]): T | null =>
-  typeof v === 'string' && (list as readonly string[]).includes(v.trim().toUpperCase()) ? (v.trim().toUpperCase() as T) : null;
-
-/**
- * Validation STRUCTURELLE des évaluations rendues par T6 (pure, testée) : un
- * élément douteux est abandonné (le candidat reste « en attente »), jamais
- * corrigé. Une date pour agir ou de réévaluation mal formée est ignorée ;
- * une réévaluation dans le passé aussi.
- */
-export function validateT6Assessments(raw: unknown, refs: ReadonlySet<string>, today: string): Array<T6Assessment & { ref: string }> {
-  if (!Array.isArray(raw)) return [];
-  const out: Array<T6Assessment & { ref: string }> = [];
-  const vus = new Set<string>();
-  for (const item of raw) {
-    if (!item || typeof item !== 'object') continue;
-    const o = item as Record<string, unknown>;
-    const ref = typeof o.ref === 'string' ? o.ref.trim() : '';
-    if (!refs.has(ref) || vus.has(ref)) continue;
-    const interpellation = enumOf(o.interpellation, T6_AI_INTERPELLATIONS);
-    const priority = enumOf(o.priority, T6_PRIORITIES) ?? 'MEDIUM';
-    const reason = texte(o.reason);
-    if (!interpellation || !reason) continue;
-    const actionNeeded = typeof o.actionNeeded === 'boolean' ? o.actionNeeded : interpellation !== 'NONE';
-    const reevaluateOn = isDay(o.reevaluateOn) && o.reevaluateOn > today ? o.reevaluateOn : null;
-    vus.add(ref);
-    out.push({
-      ref, interpellation, actionNeeded, priority, reason,
-      action: texte(o.action, 160), consequence: texte(o.consequence), uncertainty: texte(o.uncertainty),
-      exceptionReason: texte(o.exceptionReason),
-      actionDate: isDay(o.actionDate) ? o.actionDate : null,
-      reevaluateOn,
-    });
-  }
-  return out;
-}
-
-/** Le texte master effectif porte-t-il l'emplacement R13 ? `null` : fichier du dépôt. */
-export function promptSupportsInterpellation(effectiveText: string | null | undefined): boolean {
-  return effectiveText == null || effectiveText.includes('{{INTERPELLATION_CONTEXT}}');
-}
 
 /** Démarche IA présentable dans un texte déterministe (une ligne, sans emoji). */
 export function actionSentence(action: string | null): string | null {

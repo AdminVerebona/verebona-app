@@ -294,22 +294,45 @@ async function closeObsolete(
  * sans date de fin…). C'est aussi le rattrapage automatique des documents
  * déposés avant le lot 28 — borné par passage, repris au suivant.
  */
-export async function produceDocumentActions(accountId: number, limit = 200): Promise<ProducerReport> {
+/**
+ * Lot 61 (écart 5) : bilan documentaire d'un passage — réussites ET échecs
+ * partiels. Chaque erreur d'une règle porte compte, document, règle, étape
+ * et cause ; elle remonte au bilan du balayage (trace `to_process_scan_runs`,
+ * BO › Tâches planifiées) et au diagnostic par règle (0418).
+ */
+export interface DocumentProducerReport extends ProducerReport {
+  documents: number;
+  /** Règles en erreur (le document est repris au passage suivant ; aucune fermeture). */
+  ruleErrors: Array<{ accountId: number; fileId: number; ruleCode: string; step: string; cause: string }>;
+  /** Issues centrales (AUTO_RESOLVED, NO_ACTION, DEFER, CREATE_ACTION, KEEP, ERROR). */
+  outcomes: Record<string, number>;
+}
+
+export async function produceDocumentActions(accountId: number, limit = 200): Promise<DocumentProducerReport> {
   const { documentsToReevaluate, syncDocumentRulesFromState } = await import('./document-rule-bridge');
-  const report = { ...EMPTY };
+  const report: DocumentProducerReport = { ...EMPTY, documents: 0, ruleErrors: [], outcomes: {} };
   for (const fileId of await documentsToReevaluate(accountId, limit)) {
     const r = await syncDocumentRulesFromState(accountId, fileId, { reason: 'OBSOLETE', create: true });
+    report.documents += 1;
     report.created += r.created;
     report.updated += r.updated;
     report.closed += r.closed;
+    report.ruleErrors.push(...r.errorDetails);
+    for (const o of Object.values(r.outcomes)) report.outcomes[o] = (report.outcomes[o] ?? 0) + 1;
   }
   return report;
 }
 
 export interface AccountProductionReport extends ProducerReport {
-  /** Familles en échec pour ce compte (le balayage continue). */
+  /** Familles (ou règles documentaires, lot 61) en échec pour ce compte (le balayage continue). */
   errors: string[];
+  /** Lot 61 : règles documentaires en erreur (détail), succès partiel du compte. */
+  documentRuleErrors?: DocumentProducerReport['ruleErrors'];
 }
+
+/** Libellé d'une erreur de règle documentaire (sans donnée personnelle). */
+export const documentRuleErrorLabel = (e: DocumentProducerReport['ruleErrors'][number]) =>
+  `documents : compte ${e.accountId} · document ${e.fileId} · règle ${e.ruleCode} · étape ${e.step} — ${e.cause}`.slice(0, 300);
 
 /** Balaye les familles nées d'un état de la base, pour un compte. */
 export async function produceAccountActions(accountId: number): Promise<AccountProductionReport> {
@@ -318,13 +341,18 @@ export async function produceAccountActions(accountId: number): Promise<AccountP
     produceAgendaActions(accountId).catch(reportError('agenda', accountId, errors)),
     produceEquipmentActions(accountId).catch(reportError('équipements', accountId, errors)),
     produceSupplierActions(accountId).catch(reportError('fournisseurs', accountId, errors)),
-    produceDocumentActions(accountId).catch(reportError('documents', accountId, errors)),
+    produceDocumentActions(accountId).catch((e: Error): DocumentProducerReport => ({
+      ...reportError('documents', accountId, errors)(e), documents: 0, ruleErrors: [], outcomes: {},
+    })),
     // Lot 32C : incohérences de rattachement devenues sans objet.
     import('./document-asset-conflict')
       .then(async ({ closeObsoleteAssetConflicts }) => ({ ...EMPTY, closed: await closeObsoleteAssetConflicts(accountId) }))
       .catch(reportError('incohérences de rattachement', accountId, errors)),
   ]);
-  return { ...merge(agenda, equipements, fournisseurs, documents, incoherences), errors };
+  // Lot 61 (écart 5) : les erreurs des règles documentaires remontent au bilan.
+  for (const e of documents.ruleErrors.slice(0, 20)) errors.push(documentRuleErrorLabel(e));
+  if (documents.ruleErrors.length > 20) errors.push(`documents : ${documents.ruleErrors.length - 20} autre(s) règle(s) en erreur`);
+  return { ...merge(agenda, equipements, fournisseurs, documents, incoherences), errors, documentRuleErrors: documents.ruleErrors };
 }
 
 /**

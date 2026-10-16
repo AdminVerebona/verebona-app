@@ -69,6 +69,10 @@
  *   cross-account-relations-check   chaque jour à 7 h 05          lecture seule (READ ONLY) ; alerte de
  *                                                                 Supervision par type (lot 49, SEC-P0) ;
  *                                                                 jamais de correction
+ *   to-process-relevance-reevaluation toutes les heures (rien à    curseur en base par campagne (0445) ;
+ *                                   faire : deux requêtes)        une issue par carte (unique) ; réévalue
+ *                                                                 les cartes « À traiter » documentaires
+ *                                                                 existantes (lot 61, bilan avant / après)
  *
  * Créneaux fixes hors de la fenêtre de sauvegarde de nuit (1 h – 5 h) et de
  * la plage ambiguë des changements d'heure (2 h – 3 h).
@@ -632,6 +636,33 @@ export const SCHEDULED_TASKS: readonly ScheduledTaskDef[] = [
         + `${r.reported} signalée(s), ${r.resolved} résolue(s)${erreurs.length ? ` ; contrôles non exécutés : ${erreurs.join(', ')}` : ''}`;
       // Lot 54 (SEC-07) : un seul contrôle non exécuté = échec global du diagnostic.
       return { note: note.slice(0, 1500), ...(r.status === 'INCOMPLET' ? { error: note.slice(0, 500) } : {}) };
+    },
+  },
+  {
+    // Lot 61 (tickets « À traiter » : écarts 58B, pertinence des cartes §6) :
+    // réévaluation RÉTROACTIVE des cartes documentaires existantes par la
+    // décision centrale (résolution automatique, pertinence, intervention
+    // réelle, report). Lots bornés, curseur en base, bilan avant / après lu
+    // par le BO (File d'attente IA › Pertinence « À traiter ») — qui permet
+    // aussi de relancer une campagne. Aucun appel IA sans élément nouveau
+    // (mémoire de décision) ; une panne ne ferme jamais une carte.
+    code: 'to-process-relevance-reevaluation',
+    label: '« À traiter » : réévaluation de la pertinence des cartes existantes',
+    // Toutes les heures (une requête quand il n'y a rien à faire) : une
+    // campagne relancée depuis le BO est poursuivie sans redémarrage.
+    schedule: { kind: 'interval', everyMs: HOUR },
+    startupDelayMs: 9 * MIN,
+    timeoutMs: 10 * MIN,
+    run: async ({ deadline, trigger }) => {
+      const { runRelevanceCampaign } = await import('@/services/to-process/relevance-campaign.service');
+      const r = await runRelevanceCampaign({ deadline: Math.min(deadline, Date.now() + 8 * MIN), trigger });
+      if (r.disabled) return { note: 'migration 0445 absente : rien à faire' };
+      if (r.done && r.examined === 0 && !r.campaignId) return { note: 'aucune campagne en cours' };
+      return {
+        note: `campagne ${r.code ?? '?'} : ${r.examined} carte(s) examinée(s) — ${JSON.stringify(r.outcomes)}${r.done ? ' — terminée' : ''}`.slice(0, 1500),
+        again: r.more,
+        ...(r.errors > 0 && r.examined > 0 && r.errors >= r.examined ? { error: `${r.errors} carte(s) en erreur` } : {}),
+      };
     },
   },
 ];

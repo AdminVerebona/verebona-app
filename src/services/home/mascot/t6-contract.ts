@@ -2,9 +2,14 @@
  * T6 — contrat d'entrée et de sortie, validation (CDC Mascotte §13, annexe C).
  *
  * ══════════════════════════════════════════════════════════════════════════
- * T6 FORMULE, IL NE DÉCIDE RIEN
+ * T6 FORMULE (MODE=FORMULATE), IL NE DÉCIDE RIEN DANS CE MODE
  *
- * Il reçoit les sujets déjà choisis, dans l'ordre, et rend un paragraphe par
+ * Lot 61 : la pertinence d'interpeller est jugée dans un mode DISTINCT
+ * (MODE=EVALUATE, contrat `t6-evaluation-v1`, fin de ce fichier) ; le
+ * serveur applique ensuite sa décision (`decideT6Interpellation`) et ne
+ * transmet à FORMULATE que les sujets retenus.
+ *
+ * En FORMULATE, il reçoit les sujets déjà choisis, dans l'ordre, et rend un paragraphe par
  * sujet. Tout ce qui ne respecte pas ce contrat est rejeté et remplacé par le
  * texte déterministe (T6-011) :
  *   · autant de messages que de sujets, mêmes identifiants, même ordre ;
@@ -127,7 +132,8 @@ export function validateT6Output(input: T6Input, raw: unknown): T6Validation {
 // ══════════════════════════════════════════════════════════════════════════
 // PROMPT MAÎTRE T6 — CDC 15 §28, `t6_master_v1`, contrat `t6-output-v2`
 //
-// Le master est une branche unique, MODE=FORMULATE, imposée par le serveur.
+// Le master porte deux branches imposées par le serveur (lot 61) : EVALUATE
+// (`t6_evaluate`, plus bas) et FORMULATE (`t6_formulate`, ci-dessous).
 // La sortie porte `schemaVersion: "t6-output-v2"` (strict). Le serveur
 // applique, EN PLUS de `validateT6Output` (R1–R6, R10) :
 //
@@ -163,13 +169,9 @@ export const T6FormulateOutput = z.object({
    * par élément (`validateT6Suggestions`), et abandonnée au moindre doute.
    */
   suggestions: z.unknown().optional(),
-  /**
-   * Lot 60 : évaluations d'interpellation, FACULTATIVES (R13 du master,
-   * `{{INTERPELLATION_CONTEXT}}`). Non typées ici pour la même raison que
-   * `suggestions` : validées élément par élément (`validateT6Assessments`) ;
-   * un élément douteux laisse son candidat « en attente », jamais affiché.
-   */
-  assessments: z.unknown().optional(),
+  // Lot 61 : plus d'`assessments` (R13 du lot 60) — l'évaluation est un MODE
+  // distinct (`t6_evaluate`, contrat `t6-evaluation-v1`). Un champ en trop
+  // d'une version BO antérieure est retiré par le schéma, jamais lu.
 });
 export type T6FormulateOutput = z.infer<typeof T6FormulateOutput>;
 
@@ -407,8 +409,8 @@ export function evaluateT6CorpusCase(
 /**
  * Déclaration de l'opération master T6 au registre (`ai/registry/operations.ts`) :
  * sortie master sans champ discriminant (§28 : `{schemaVersion, messages}`,
- * sans `mode`), délai 8 s, non facturée. Seule opération de T6 depuis le lot
- * 16b (`formulate_mascot` retirée). Un test vérifie la cohérence avec le registre.
+ * sans `mode`), délai 8 s, non facturée (`formulate_mascot` retirée au lot
+ * 16b ; lot 61 : `t6_evaluate` à côté). Un test vérifie la cohérence avec le registre.
  */
 export const T6_MASTER_OPERATION_SPEC = {
   operationCode: 't6_formulate',
@@ -419,11 +421,266 @@ export const T6_MASTER_OPERATION_SPEC = {
   taskField: 'none',
   // Lot 55A : `SUGGESTION_CONTEXT` FACULTATIF (`OPTIONAL_MASTER_VARIABLES`) —
   // une version BO antérieure qui ne le porte pas reste valable (aucune question).
-  // Lot 60 : `INTERPELLATION_CONTEXT` FACULTATIF de même (R13, évaluation
-  // d'interpellation) — absent d'une version BO antérieure : décision prudente.
+  // `INTERPELLATION_CONTEXT` FACULTATIF de même : toujours null en FORMULATE
+  // (lot 61) — fourni pour qu'une version BO du lot 60 qui le porte se rende.
   promptVariables: ['INPUT_JSON', 'SUGGESTION_CONTEXT', 'INTERPELLATION_CONTEXT'],
   outputSchema: 'T6FormulateOutput',
   timeoutMs: 8_000,
+  jsonResponse: true,
+  billable: false,
+} as const;
+
+// ══════════════════════════════════════════════════════════════════════════
+// MODE EVALUATE — lot 61 (ticket « [P2] T6 — Implémenter le nouveau contrat
+// de décision IA et fiabiliser la composition de la bulle d'accueil »)
+//
+// Deux contrats COEXISTENT sur le même prompt maître :
+//   · `t6_evaluate` (MODE=EVALUATE) : entrée `t6-evaluation-input-v1`,
+//     sortie `t6-evaluation-v1` — l'IA juge la PERTINENCE d'interpeller sur
+//     chaque candidat (décision, catégorie, motif fermé, preuves) ;
+//   · `t6_formulate` (MODE=FORMULATE) : `t6-output-v2`, INCHANGÉ — l'IA
+//     rédige seulement les sujets retenus par le serveur.
+//
+// La sortie EVALUATE est contrôlée en deux temps :
+//   1. Zod strict (`T6EvaluateOutput`) : schéma, énumérations, dates ISO
+//      réelles — un écart rejette TOUTE la sortie ;
+//   2. contrôles métier (`validateT6Evaluation`) : exactement une décision
+//      par candidat, mêmes identifiants, même ordre (sinon rejet complet) ;
+//      puis, décision par décision, motif compatible avec la décision,
+//      justification, action identifiable et preuve pour SHOW_NOW, preuves
+//      connues, dates cohérentes. Une décision fautive est REJETÉE (motif
+//      tracé) : son candidat reste « en attente », jamais affiché d'office.
+// Jamais d'acceptation silencieuse : chaque rejet porte son motif.
+// ══════════════════════════════════════════════════════════════════════════
+
+export const T6_EVALUATE_MODE = 'EVALUATE';
+export const T6_EVALUATION_INPUT_SCHEMA_VERSION = 't6-evaluation-input-v1';
+export const T6_EVALUATION_OUTPUT_SCHEMA_VERSION = 't6-evaluation-v1';
+
+export const T6_EVAL_DECISIONS = ['SHOW_NOW', 'DEFER', 'SUPPRESS'] as const;
+export const T6_EVAL_CATEGORIES = ['ACTION_NOW', 'TO_ANTICIPATE', 'INFORMATION'] as const;
+export const T6_EVAL_PRIORITIES = ['HIGH', 'MEDIUM', 'LOW'] as const;
+export type T6EvalDecision = (typeof T6_EVAL_DECISIONS)[number];
+export type T6EvalCategory = (typeof T6_EVAL_CATEGORIES)[number];
+export type T6EvalPriority = (typeof T6_EVAL_PRIORITIES)[number];
+
+/**
+ * Référentiel FERMÉ des motifs (`reasonCode`), recopié dans le prompt maître
+ * (section EVALUATE) — chaque motif n'est admis qu'avec sa décision.
+ */
+export const T6_REASON_CODES = {
+  // SHOW_NOW — une action ou une vérification identifiable justifie d'interpeller.
+  ACTION_REQUIRED_SOON: 'SHOW_NOW',
+  PREPARATION_NEEDED_NOW: 'SHOW_NOW',
+  NOTICE_PERIOD_RUNNING: 'SHOW_NOW',
+  OVERDUE_ACTION_PENDING: 'SHOW_NOW',
+  VERIFICATION_REQUIRED: 'SHOW_NOW',
+  QUALIFICATION_REQUIRED: 'SHOW_NOW',
+  // DEFER — démarche utile plus tard, solliciter maintenant serait prématuré.
+  TOO_EARLY: 'DEFER',
+  AWAITING_INFORMATION: 'DEFER',
+  // SUPPRESS — aucune interpellation (l'information reste dans l'agenda).
+  NO_ACTION_REQUIRED: 'SUPPRESS',
+  ALREADY_HANDLED: 'SUPPRESS',
+  OVERDUE_NO_ACTION_IDENTIFIED: 'SUPPRESS',
+  INSUFFICIENT_CONTEXT: 'SUPPRESS',
+  RECENTLY_SHOWN_NO_CHANGE: 'SUPPRESS',
+} as const satisfies Record<string, T6EvalDecision>;
+export type T6ReasonCode = keyof typeof T6_REASON_CODES;
+export const T6_REASON_CODE_LIST = Object.keys(T6_REASON_CODES) as T6ReasonCode[];
+
+/** Nature d'une référence justificative transmise (suffixe de `evidence[].ref`). */
+export type T6EvidenceKind = 'TITLE' | 'DUE_DATE' | 'DESCRIPTION' | 'DOCUMENT' | 'ASSET' | 'SERIES' | 'HISTORY';
+
+export interface T6EvidenceRef { ref: string; kind: T6EvidenceKind }
+
+/** Candidat transmis à EVALUATE (`subjectId` opaque C1…Cn : aucun identifiant de base). */
+export interface T6EvaluationCandidate {
+  subjectId: string;
+  title: string;
+  description: string | null;
+  assetName: string | null;
+  assetCategory: string | null;
+  dueDate: string | null;
+  dateLabel: string | null;
+  daysUntilDue: number | null;
+  dateNature: 'confirmée' | 'prévisionnelle';
+  dateRole: string | null;
+  overdue: boolean;
+  requiresQualification: boolean;
+  recurring: boolean;
+  /** Titres des documents liés (3 au plus). */
+  documents: string[];
+  /** Jours où ce sujet a déjà été présenté récemment. */
+  recentlyShownDays: number;
+  /** Références justificatives AUTORISÉES pour ce candidat (`evidenceRefs` ⊆). */
+  evidence: T6EvidenceRef[];
+}
+
+/** Contrat d'entrée `t6-evaluation-input-v1`. */
+export interface T6EvaluationInput {
+  schemaVersion: typeof T6_EVALUATION_INPUT_SCHEMA_VERSION;
+  today: string;
+  thresholdDays: number;
+  candidates: T6EvaluationCandidate[];
+}
+
+/** Date ISO RÉELLE (AAAA-MM-JJ, jour existant). */
+export function isIsoDay(v: unknown): v is string {
+  if (typeof v !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(v)) return false;
+  const t = Date.parse(`${v}T00:00:00Z`);
+  return !Number.isNaN(t) && new Date(t).toISOString().slice(0, 10) === v;
+}
+const isoDay = z.string().refine(isIsoDay, { message: 'date ISO AAAA-MM-JJ réelle attendue' });
+
+/** Contrat de sortie `t6-evaluation-v1` (Zod strict : énumérations et dates contrôlées). */
+export const T6EvaluateOutput = z.object({
+  schemaVersion: z.literal(T6_EVALUATION_OUTPUT_SCHEMA_VERSION),
+  decisions: z.array(z.object({
+    subjectId: z.string().min(1),
+    decision: z.enum(T6_EVAL_DECISIONS),
+    category: z.enum(T6_EVAL_CATEGORIES),
+    reasonCode: z.enum(T6_REASON_CODE_LIST as [T6ReasonCode, ...T6ReasonCode[]]),
+    reason: z.string(),
+    expectedAction: z.string().nullable(),
+    actionDeadline: isoDay.nullable(),
+    suggestedReviewAt: isoDay.nullable(),
+    priorityHint: z.enum(T6_EVAL_PRIORITIES).nullable(),
+    evidenceRefs: z.array(z.string()),
+    uncertainties: z.array(z.string()),
+  })),
+});
+export type T6EvaluateOutput = z.infer<typeof T6EvaluateOutput>;
+
+/** Décision validée (contrôles métier passés), prête à être conservée. */
+export interface T6ValidatedDecision {
+  subjectId: string;
+  decision: T6EvalDecision;
+  category: T6EvalCategory;
+  reasonCode: T6ReasonCode;
+  reason: string;
+  expectedAction: string | null;
+  actionDeadline: string | null;
+  suggestedReviewAt: string | null;
+  priorityHint: T6EvalPriority | null;
+  evidenceRefs: string[];
+  uncertainties: string[];
+}
+
+export interface T6EvaluationRejection { subjectId: string; index: number; reason: string }
+
+export type T6EvaluationValidation =
+  | { ok: true; accepted: T6ValidatedDecision[]; rejected: T6EvaluationRejection[] }
+  | { ok: false; reason: string };
+
+export const T6_EVAL_REASON_MIN = 10;
+export const T6_EVAL_REASON_MAX = 400;
+export const T6_EVAL_ACTION_MAX = 160;
+export const T6_EVAL_REVIEW_MAX_DAYS = 366;
+const UNCERTAINTIES_MAX = 5;
+
+const clean = (v: string | null | undefined, max: number): string | null => {
+  const t = (v ?? '').replace(/\s+/g, ' ').trim();
+  return t ? t.slice(0, max) : null;
+};
+const jours = (a: string, b: string) => Math.round((Date.parse(`${b}T00:00:00Z`) - Date.parse(`${a}T00:00:00Z`)) / 86_400_000);
+
+/** Contrôles métier d'UNE décision (pure) : motif du rejet, ou null. */
+export function evaluationDecisionViolation(d: T6EvaluateOutput['decisions'][number], c: T6EvaluationCandidate, today: string): string | null {
+  if (T6_REASON_CODES[d.reasonCode] !== d.decision) return 'reason_code_mismatch';
+  const reason = clean(d.reason, T6_EVAL_REASON_MAX);
+  if (!reason || reason.length < T6_EVAL_REASON_MIN) return 'reason_missing';
+  const autorisees = new Set(c.evidence.map((e) => e.ref));
+  if (d.evidenceRefs.some((r) => !autorisees.has(r.trim()))) return 'unknown_evidence';
+  const action = clean(d.expectedAction, T6_EVAL_ACTION_MAX);
+  if (action && (EMOJI.test(action) || TUTOIEMENT.test(action))) return 'action_wording';
+  if (d.decision === 'SHOW_NOW') {
+    if (d.category === 'INFORMATION') return 'show_now_information';
+    if (!action) return 'show_now_without_action';
+    if (d.evidenceRefs.length === 0) return 'show_now_without_evidence';
+  }
+  if (d.actionDeadline) {
+    if (d.actionDeadline < today) return 'action_deadline_past';
+    if (c.dueDate && c.dueDate > today && d.actionDeadline > c.dueDate) return 'action_deadline_after_due';
+  }
+  if (d.suggestedReviewAt) {
+    if (d.suggestedReviewAt <= today) return 'review_not_future';
+    if (jours(today, d.suggestedReviewAt) > T6_EVAL_REVIEW_MAX_DAYS) return 'review_too_far';
+  }
+  return null;
+}
+
+/**
+ * Validation de la sortie EVALUATE contre l'entrée transmise (pure, testée
+ * T6-EV-01 à T6-EV-05). Structure, nombre, identifiants ou ordre faux :
+ * rejet COMPLET. Sinon, décision par décision : acceptée ou rejetée (motif).
+ */
+export function validateT6Evaluation(input: T6EvaluationInput, raw: unknown): T6EvaluationValidation {
+  const parsed = T6EvaluateOutput.safeParse(raw);
+  if (!parsed.success) {
+    const i = parsed.error.issues[0];
+    return { ok: false, reason: `schema:${i ? i.path.join('.') || '$' : '$'}` };
+  }
+  const { decisions } = parsed.data;
+  if (decisions.length !== input.candidates.length) return { ok: false, reason: 'count' };
+  for (let i = 0; i < decisions.length; i++) {
+    if (decisions[i].subjectId !== input.candidates[i].subjectId) return { ok: false, reason: `order:${i}` };
+  }
+  const accepted: T6ValidatedDecision[] = [];
+  const rejected: T6EvaluationRejection[] = [];
+  decisions.forEach((d, i) => {
+    const c = input.candidates[i];
+    const motif = evaluationDecisionViolation(d, c, input.today);
+    if (motif) { rejected.push({ subjectId: c.subjectId, index: i, reason: motif }); return; }
+    accepted.push({
+      subjectId: c.subjectId, decision: d.decision, category: d.category, reasonCode: d.reasonCode,
+      reason: clean(d.reason, T6_EVAL_REASON_MAX)!,
+      expectedAction: clean(d.expectedAction, T6_EVAL_ACTION_MAX),
+      actionDeadline: d.actionDeadline, suggestedReviewAt: d.suggestedReviewAt, priorityHint: d.priorityHint,
+      evidenceRefs: [...new Set(d.evidenceRefs.map((r) => r.trim()))],
+      uncertainties: d.uncertainties.map((u) => clean(u, 200)).filter((u): u is string => !!u).slice(0, UNCERTAINTIES_MAX),
+    });
+  });
+  return { ok: true, accepted, rejected };
+}
+
+/**
+ * Corpus P-T6-EV (CDC 15 §30) : contrôle serveur complet d'une sortie
+ * EVALUATE enregistrée. Rend la liste des écarts (vide si conforme).
+ */
+export function evaluateT6EvaluationCorpusCase(
+  context: { input: T6EvaluationInput },
+  output: unknown,
+  expected: { valid?: boolean; reason?: string; accepted?: string[]; rejected?: Array<{ subjectId: string; reason: string }> } | null,
+): string[] {
+  const r = validateT6Evaluation(context.input, output);
+  const errors: string[] = [];
+  const attendu = expected?.valid ?? true;
+  if (r.ok !== attendu) errors.push(`validation ${r.ok ? 'acceptée' : `rejetée (${(r as { reason: string }).reason})`}, attendu ${attendu ? 'acceptée' : 'rejetée'}`);
+  if (!r.ok && expected?.reason && !r.reason.startsWith(expected.reason)) errors.push(`motif ${r.reason} ≠ ${expected.reason}`);
+  if (r.ok && expected?.accepted && JSON.stringify(r.accepted.map((d) => d.subjectId)) !== JSON.stringify(expected.accepted)) {
+    errors.push(`décisions acceptées ${JSON.stringify(r.accepted.map((d) => d.subjectId))} ≠ ${JSON.stringify(expected.accepted)}`);
+  }
+  if (r.ok && expected?.rejected && JSON.stringify(r.rejected.map((x) => ({ subjectId: x.subjectId, reason: x.reason }))) !== JSON.stringify(expected.rejected)) {
+    errors.push(`rejets ${JSON.stringify(r.rejected)} ≠ ${JSON.stringify(expected.rejected)}`);
+  }
+  return errors;
+}
+
+/** Déclaration de l'opération EVALUATE au registre (cohérence testée). */
+export const T6_EVALUATE_OPERATION_SPEC = {
+  operationCode: 't6_evaluate',
+  useCaseCode: 'HOME_MASCOT',
+  promptCode: T6_MASTER_PROMPT_CODE,
+  masterPromptCode: T6_MASTER_PROMPT_CODE,
+  task: T6_EVALUATE_MODE,
+  taskField: 'none',
+  // Mêmes emplacements que FORMULATE : en EVALUATE, les candidats passent par
+  // `{{INTERPELLATION_CONTEXT}}` (contrat t6-evaluation-input-v1), les deux
+  // autres valent null.
+  promptVariables: ['INPUT_JSON', 'SUGGESTION_CONTEXT', 'INTERPELLATION_CONTEXT'],
+  outputSchema: 'T6EvaluateOutput',
+  timeoutMs: 15_000,
   jsonResponse: true,
   billable: false,
 } as const;

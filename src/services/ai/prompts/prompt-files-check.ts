@@ -24,7 +24,7 @@ import { existsSync, readFileSync } from 'fs';
 import { sep } from 'path';
 import type { AiOperationDefinition } from '../registry/operations';
 import {
-  promptFileCandidates, inspectMasterTemplate, checkMasterTemplate, MASTER_TASK_PLACEHOLDER,
+  promptFileCandidates, inspectMasterTemplate, checkMasterTemplate, MASTER_TASK_PLACEHOLDER, isMasterTaskTextPending,
 } from './prompt-loader';
 import { structuredSpecFor, checkExecutionConfig, type StructuredContextSpec } from '../master-prompts/structured-context';
 import { contractVersionsOf } from '../gateway/output-resolution/runtime-contract';
@@ -130,7 +130,14 @@ export function checkPromptFiles(input: PromptFilesCheckInput): PromptFilesRepor
         report.infos.push(`master « ${op.masterPromptCode} » : contexte structuré (${d.inputContractVersion} / ${d.outputContractVersion}), aucun emplacement exigé`);
       } else if (text !== null) {
         const taches = [...(tachesParMaster.get(op.masterPromptCode) ?? [])];
-        for (const a of checkMasterTemplate(text, taches)) {
+        // Lot 61 : branche dont le texte est livré par un ticket séparé —
+        // absente du fichier : avertissement (la fonction reste inactive).
+        const presentes = inspectMasterTemplate(text).branches;
+        const enAttente = taches.filter((t) => !presentes.includes(t) && isMasterTaskTextPending(op.masterPromptCode!, t));
+        for (const t of enAttente) {
+          report.warnings.push(`master « ${op.masterPromptCode} » : branche ${t} absente du fichier — texte attendu d’un ticket séparé (fonction inactive tant qu’aucune version active ne la porte)`);
+        }
+        for (const a of checkMasterTemplate(text, taches.filter((t) => !enAttente.includes(t)))) {
           report.errors.push(`master « ${op.masterPromptCode} » : ${a}`);
         }
         const inconnues = inspectMasterTemplate(text).branches.filter((b) => !taches.includes(b));

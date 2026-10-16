@@ -32,6 +32,7 @@ import { writeExecutionReport } from './repository';
 import type { DocumentKnowledge } from '../knowledge/document-knowledge';
 import type { ProjectedFact } from '../source-analysis/master/t1-contract';
 import type { PersistProjectedFactsResult } from '../source-analysis/steps/persist-evidence.step';
+import type { RawExtractSummary } from '../source-analysis/raw-extract/raw-extract.service';
 
 type Row = Record<string, unknown>;
 
@@ -48,12 +49,14 @@ export class T1ExecutionRecorder {
   traceIds: string[] = [];
   /** Échec bloquant du groupe (master, persistance du run, preuves). */
   failure: string | null = null;
+  /** Lot 61 : extracts bruts déterministes du groupe (phase EXTRACTION). */
+  rawExtracts: RawExtractSummary[] = [];
 
   ok(step: string, detail?: Record<string, unknown>): void {
     this.steps.push({ step, status: 'OK', error: null, detail: detail ?? null });
   }
-  fail(step: string, e: unknown): void {
-    this.steps.push({ step, status: 'FAILED', error: errorText(e) });
+  fail(step: string, e: unknown, detail?: Record<string, unknown>): void {
+    this.steps.push({ step, status: 'FAILED', error: errorText(e), ...(detail ? { detail } : {}) });
   }
   skip(step: string, why: string): void {
     this.steps.push({ step, status: 'SKIPPED', error: null, detail: { why } });
@@ -73,12 +76,61 @@ export class T1ExecutionRecorder {
 
 const n = (v: unknown) => (v == null ? null : Number(v));
 
+export type T1PhaseState = 'SUCCEEDED' | 'PARTIAL' | 'FAILED' | 'NOT_RUN';
+export interface T1Phase { state: T1PhaseState; detail: Record<string, unknown> }
+
+/**
+ * Lot 61 (ticket T1 §6, §7 D) — statut SÉPARÉ des trois phases (pur) :
+ *   · extraction   : extract brut déterministe (réutilisé ou non, pages sans
+ *     couche texte → OCR par le modèle, troncature) ;
+ *   · structuration : appel master (code et étape de l'erreur) ;
+ *   · persistance  : écritures bloquantes / secondaires.
+ * Écrit dans `sources.phases` du rapport : n'altère pas le statut métier.
+ */
+export function t1Phases(rec: Pick<T1ExecutionRecorder, 'steps' | 'rawExtracts' | 'failure'>): { extraction: T1Phase; structuring: T1Phase; persistence: T1Phase } {
+  const step = (name: string) => rec.steps.find((s) => s.step === name);
+  const raws = rec.rawExtracts;
+  const extraction: T1Phase = raws.length === 0
+    ? { state: 'NOT_RUN', detail: { reason: 'aucun extract brut (source non fichier ou table absente)' } }
+    : {
+        state: raws.some((r) => r.status === 'FAILED') ? 'FAILED'
+          : raws.some((r) => r.status !== 'COMPLETE') ? 'PARTIAL' : 'SUCCEEDED',
+        detail: { files: raws.map((r) => ({
+          fileId: r.fileId, status: r.status, method: r.method, pageCount: r.pageCount, pagesWithText: r.pagesWithText,
+          pagesWithoutText: r.pagesWithoutText, truncated: r.truncated, truncationReason: r.truncationReason, chars: r.chars,
+          reused: r.reused, error: r.error,
+        })) },
+      };
+  const m = step('MASTER');
+  const structuring: T1Phase = !m ? { state: 'NOT_RUN', detail: {} }
+    : m.status === 'OK' ? { state: 'SUCCEEDED', detail: m.detail ?? {} }
+      : { state: 'FAILED', detail: { error: m.error ?? null, ...(m.detail ?? {}) } };
+  let persistence: T1Phase;
+  if (structuring.state !== 'SUCCEEDED') persistence = { state: 'NOT_RUN', detail: { reason: 'structuration non aboutie' } };
+  else {
+    const bloquantes = ['ANALYSIS_RUN', 'KNOWLEDGE', 'EVIDENCE', 'RULES', 'PERSISTENCE'];
+    const ko = rec.steps.filter((s) => s.status === 'FAILED' && bloquantes.includes(s.step));
+    const secondaires = rec.steps.filter((s) => s.status === 'FAILED' && ['LINKS', 'PRIMARY_ASSET'].includes(s.step));
+    persistence = ko.length || rec.failure
+      ? { state: 'FAILED', detail: { failedSteps: ko.map((s) => ({ step: s.step, error: s.error ?? null })), failure: rec.failure } }
+      : secondaires.length ? { state: 'PARTIAL', detail: { failedSteps: secondaires.map((s) => ({ step: s.step, error: s.error ?? null })) } }
+        : { state: 'SUCCEEDED', detail: {} };
+  }
+  return { extraction, structuring, persistence };
+}
+
 /** Colonnes de `document_extractions` rapportées une à une (emplacement exact). */
 const EXTRACTION_COLUMNS = [
   'title', 'description', 'document_date', 'supplier_name', 'supplier_siret', 'amount_cents', 'currency',
   'document_type_code', 'rubric_code', 'has_exploitable_content', 'multi_asset', 'fact_count',
   'full_text', 'full_text_chars', 'visual_summary', 'visual_observations', 'structural_evidence', 'metadata',
   'source_type', 'source_version', 'asset_id_at_analysis', 'provider', 'model', 'prompt_version', 'operation_trace_id',
+] as const;
+
+/** Lot 61 : colonnes de `document_raw_extracts` rapportées (extract brut). */
+const RAW_EXTRACT_COLUMNS = [
+  'extraction_status', 'method', 'page_count', 'pages_with_text', 'pages_without_text', 'truncated', 'truncation_reason',
+  'full_text', 'full_text_chars', 'pages', 'extraction_error', 'source_sha256', 'extractor_version',
 ] as const;
 
 const DOCUMENT_COLUMNS = [
@@ -114,6 +166,22 @@ export async function buildT1Entries(rec: T1ExecutionRecorder, p: { accountId: n
   const ac = p.accountId; const f = p.fileId;
   const c: Record<string, number> = {};
   const inc = (k: string, by = 1) => { c[k] = (c[k] ?? 0) + by; };
+
+  // ── 0. Lot 61 : extract brut déterministe (phase EXTRACTION), relu en base ──
+  if (rec.rawExtracts.length > 0) {
+    const ids = rec.rawExtracts.map((r) => r.fileId);
+    const raws = await safeRows(readSteps, 'RAW_EXTRACT', `SELECT id, file_id, ${RAW_EXTRACT_COLUMNS.join(', ')} FROM document_raw_extracts WHERE file_id = ANY($1::int[]) AND account_id = $2 ORDER BY file_id`, [ids, ac]);
+    for (const r of raws ?? []) {
+      const resume = rec.rawExtracts.find((x) => x.fileId === Number(r.file_id));
+      const base: Partial<ReportEntry> = resume?.reused
+        ? { writeResult: 'OBSERVED', reasonCode: 'RAW_EXTRACT_REUSED', reason: 'Extract brut réutilisé (même fichier, même extracteur) : aucune ré-extraction', links: { fileId: Number(r.file_id) } }
+        : { links: { fileId: Number(r.file_id) } };
+      for (const col of RAW_EXTRACT_COLUMNS) entries.push(columnEntry('RAW_EXTRACT', 'document_raw_extracts', r.id, col, r[col], base));
+      inc('rawExtractPages', Number(r.page_count ?? 0));
+      inc('rawExtractChars', Number(r.full_text_chars ?? 0));
+      if (resume?.reused) inc('rawExtractReused');
+    }
+  }
 
   // ── 1. Run d'analyse et propositions ──────────────────────────────────────
   if (rec.analysisRunId != null) {
@@ -353,7 +421,7 @@ export async function writeT1Report(rec: T1ExecutionRecorder, p: { accountId: nu
       triggerCode: ctx?.triggerCode ?? null,
       status: reportStatus({ failed: rec.failure !== null, entries: built.entries, steps, treatment: 'T1' }),
       counters, steps, startedAt: rec.startedAt,
-      sources: { groupSourceIds: p.groupSourceIds, deduplicatedRun: rec.deduplicated },
+      sources: { groupSourceIds: p.groupSourceIds, deduplicatedRun: rec.deduplicated, phases: t1Phases(rec) },
     }, built.entries);
   } catch (e) {
     console.error(`[execution-report] rapport T1 du fichier ${p.fileId} non écrit :`, errorText(e));

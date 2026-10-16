@@ -24,7 +24,17 @@
  *
  * ── UN SEUL MOTEUR : LE PROMPT MAÎTRE (CDC 15 §28, lot 16b) ──────────────
  *
- * T6 s'exécute par `t6_formulate` (`t6_master_v1`, sortie `t6-output-v2`).
+ * Lot 61 : deux modes du MÊME prompt maître, deux opérations :
+ *   · `t6_evaluate` (MODE=EVALUATE, `t6-evaluation-v1`) — pertinence des
+ *     interpellations, hors du chemin d'affichage : lancé en arrière-plan à
+ *     l'affichage, attendu en pré-génération ; les décisions valides sont
+ *     conservées (`t6_interpellation_assessments`) et réutilisées tant que
+ *     l'échéance ne change pas — jamais deux appels IA synchrones à chaque
+ *     affichage ;
+ *   · `t6_formulate` (MODE=FORMULATE, `t6-output-v2` inchangé) — rédaction
+ *     des seuls sujets retenus.
+ *
+ * T6 formule par `t6_formulate` (`t6_master_v1`, sortie `t6-output-v2`).
  * L'opération d'étapes `formulate_mascot` (`mascot_t6_v1`) et le drapeau
  * AI_HOME_MASCOT sont retirés : la mascotte formule toujours par T6, et le
  * texte déterministe reste le secours de toute issue défavorable.
@@ -46,10 +56,16 @@ import {
   promptSupportsSuggestions, validateT6Suggestions,
   type T6Suggestion, type T6SuggestionBundle,
 } from './t6-suggestions';
-import { promptSupportsInterpellation, validateT6Assessments, type T6InterpellationBundle } from './t6-interpellation';
+import type { T6InterpellationBundle } from './t6-interpellation';
+import {
+  T6EvaluateOutput, T6_EVALUATION_INPUT_SCHEMA_VERSION, T6_EVALUATION_OUTPUT_SCHEMA_VERSION, validateT6Evaluation,
+  type T6EvaluationRejection, type T6ValidatedDecision,
+} from './t6-contract';
 
-/** Branche FORMULATE du prompt maître T6 (CDC 15 §28) — seule opération de T6. */
+/** Branche FORMULATE du prompt maître T6 (CDC 15 §28). */
 export const T6_MASTER_OPERATION = 't6_formulate';
+/** Lot 61 : branche EVALUATE du prompt maître T6 (pertinence des interpellations). */
+export const T6_EVALUATE_OPERATION = 't6_evaluate';
 /**
  * Plafond de l'attente à l'affichage (RUN-001, RUN-002) — borne de
  * `MASCOT_T6_DISPLAY_WAIT_MS`.
@@ -126,9 +142,9 @@ export function t6CacheKey(p: {
    */
   suggestionContext?: unknown;
   /**
-   * Lot 60 : candidats à évaluer (R13). Présent, il fait partie de la clé :
-   * une génération sans évaluation n'est jamais servie à une demande qui en
-   * attend une. Absent : clé historique inchangée.
+   * Lot 60 (R13) — lot 61 : plus transmis par FORMULATE (l'évaluation est le
+   * mode EVALUATE). Conservé pour la compatibilité des appelants : absent,
+   * clé historique inchangée.
    */
   interpellationContext?: unknown;
 }): string {
@@ -180,16 +196,28 @@ export async function t6SuggestionsAvailable(): Promise<boolean> {
 }
 
 /**
- * Lot 60 — T6 peut-il JUGER l'interpellation (R13) ? Il faut T6 disponible
- * (ni coupé, ni suspendu, ni arrêt d'urgence) ET un prompt maître effectif
- * porteur de `{{INTERPELLATION_CONTEXT}}`. Non : version BO antérieure en
- * service ou T6 indisponible — dégradation prudente de la décision (aucune
- * interpellation au-delà du seuil). Ne lève jamais.
+ * Lot 61 — le texte master EFFECTIF porte-t-il la branche EVALUATE ? `null` :
+ * fichier du dépôt (qui la porte). Une version BO antérieure (lot 60 : R13
+ * dans FORMULATE, sans branche EVALUATE) ne la porte pas.
+ */
+export async function promptSupportsEvaluation(effectiveText: string | null | undefined): Promise<boolean> {
+  if (effectiveText == null) return true;
+  const { inspectMasterTemplate } = await import('@/services/ai/prompts/prompt-loader');
+  return inspectMasterTemplate(effectiveText).branches.includes('EVALUATE');
+}
+
+/**
+ * Lot 60, revu au lot 61 — T6 peut-il JUGER l'interpellation ? Il faut T6
+ * disponible (ni coupé, ni suspendu, ni arrêt d'urgence) ET un prompt maître
+ * effectif porteur de la branche EVALUATE. Non : version BO antérieure en
+ * service ou T6 indisponible — dégradation prudente (aucune échéance non
+ * évaluée présentée d'office ; l'accueil dit que l'examen est indisponible).
+ * Ne lève jamais.
  */
 export async function t6InterpellationAvailable(): Promise<boolean> {
   try {
-    const [config, ok] = await Promise.all([resolveOperationConfig(T6_MASTER_OPERATION), canStart('T6')]);
-    return ok && promptSupportsInterpellation(config.promptArchitecture === 'master' ? config.masterPromptText : null);
+    const [config, ok] = await Promise.all([resolveOperationConfig(T6_EVALUATE_OPERATION), canStart('T6')]);
+    return ok && await promptSupportsEvaluation(config.promptArchitecture === 'master' ? config.masterPromptText : null);
   } catch {
     return false;
   }
@@ -286,7 +314,7 @@ export async function logT6(p: {
   accountId: number; contextHash: string; mode: T6Mode; outcome: T6Outcome; input: T6Input | null;
   /** Lot 55A : contexte des questions, transmis à T6 (LOG-005 : ni plus, ni moins). */
   suggestionContext?: unknown;
-  /** Lot 60 : candidats d'interpellation transmis à T6 (R13). */
+  /** Lot 60 (R13) — lot 61 : jamais transmis par FORMULATE ; conservé pour compatibilité. */
   interpellationContext?: unknown;
 }): Promise<void> {
   const o = p.outcome;
@@ -387,28 +415,10 @@ export function previousWording(
   return { reuse: null, pinned };
 }
 
-/**
- * Lot 60 : évaluations R13 de la sortie, validées et persistées — même si
- * les textes sont rejetés (l'évaluation est un résultat distinct). Ne lève
- * jamais ; rend le nombre d'évaluations enregistrées.
- */
-async function persistAssessments(bundle: T6InterpellationBundle | null | undefined, data: unknown, meta: { promptVersion: string; traceId: string | null }): Promise<number> {
-  if (!bundle) return 0;
-  try {
-    const raw = data && typeof data === 'object' ? (data as { assessments?: unknown }).assessments : undefined;
-    const list = validateT6Assessments(raw, new Set(bundle.refs.keys()), bundle.context.today);
-    return list.length ? await bundle.persist(list, meta) : 0;
-  } catch (e) {
-    console.error('[mascotte] évaluations T6 non enregistrées :', (e as Error).message);
-    return 0;
-  }
-}
-
 async function generateMaster(p: {
   accountId: number; input: T6Input; cacheKey: string; contextHash: string; promptVersion: string; mode: T6Mode;
   kinds?: Array<T6SubjectKind | undefined>; pinned: Map<number, T6Message>;
   suggestions?: T6SuggestionBundle | null;
-  interpellation?: T6InterpellationBundle | null;
 }, execute: T6Dependencies['execute']): Promise<T6Outcome> {
   const startedAt = Date.now();
   try {
@@ -422,8 +432,9 @@ async function generateMaster(p: {
       promptVariables: {
         INPUT_JSON: JSON.stringify(p.input),
         SUGGESTION_CONTEXT: p.suggestions ? JSON.stringify(p.suggestions.context) : null,
-        // Lot 60 (R13) : candidats à évaluer, `null` sans évaluation demandée.
-        INTERPELLATION_CONTEXT: p.interpellation ? JSON.stringify(p.interpellation.context) : null,
+        // Lot 61 : toujours null en FORMULATE (l'évaluation est le mode
+        // EVALUATE) — fourni pour qu'une version BO du lot 60 se rende.
+        INTERPELLATION_CONTEXT: null,
       },
       outputSchema: T6FormulateOutput,
       idempotencyKey: `mascot:${p.cacheKey}:${randomUUID()}`,
@@ -434,7 +445,6 @@ async function generateMaster(p: {
       latencyMs: Date.now() - startedAt, costMicros: res.fromCache ? 0 : res.costMicros, traceId: res.traceId,
       output: res.data, architecture: 'master' as const,
     };
-    await persistAssessments(p.interpellation, res.data, { promptVersion: p.promptVersion, traceId: res.traceId ?? null });
     // Sujets figés (R8 dans le temps) recollés AVANT la validation ; repli
     // sujet par sujet (R8, R9, R11) ; rejet complet seulement si la sortie
     // est structurellement invalide ou si tous les sujets sont fautifs.
@@ -505,12 +515,6 @@ export async function formulateWithT6(
      * dans la clé du cache. Absent : comportement historique.
      */
     suggestions?: T6SuggestionBundle | null;
-    /**
-     * Lot 60 : candidats d'interpellation à évaluer (R13), dans le même
-     * appel ; persistés à l'issue de la génération (y compris en arrière-
-     * plan). Absent : comportement historique.
-     */
-    interpellation?: T6InterpellationBundle | null;
   },
   deps: T6Dependencies = defaultDeps,
 ): Promise<T6Outcome> {
@@ -527,10 +531,9 @@ export async function formulateWithT6(
   }
 
   const bundle = p.suggestions ?? null;
-  const evaluation = p.interpellation ?? null;
   const cacheKey = t6CacheKey({
     accountId: p.accountId, input: p.input, promptVersion, outputSchema: T6_OUTPUT_SCHEMA_VERSION_V2,
-    suggestionContext: bundle?.context, interpellationContext: evaluation?.context,
+    suggestionContext: bundle?.context,
   });
   // Cache du compte et bulles précédentes (R8) lus ensemble : un aller-retour
   // en base de moins sur le chemin de l'affichage.
@@ -555,8 +558,7 @@ export async function formulateWithT6(
   let pinned = new Map<number, T6Message>();
   if (prev) {
     const w = previousWording(p.input, prev, p.kinds);
-    // Lot 60 : une évaluation à produire impose l'appel, textes figés.
-    if (w.reuse && (bundle || evaluation)) {
+    if (w.reuse && bundle) {
       w.reuse.forEach((m, i) => pinned.set(i, m));
     } else if (w.reuse) {
       await writeT6Cache({
@@ -574,13 +576,13 @@ export async function formulateWithT6(
 
   let run = inflight.get(cacheKey);
   if (!run) {
-    run = generateMaster({ accountId: p.accountId, input: p.input, cacheKey, contextHash: p.contextHash, promptVersion, mode: p.mode, kinds: p.kinds, pinned, suggestions: bundle, interpellation: evaluation }, deps.execute)
+    run = generateMaster({ accountId: p.accountId, input: p.input, cacheKey, contextHash: p.contextHash, promptVersion, mode: p.mode, kinds: p.kinds, pinned, suggestions: bundle }, deps.execute)
       .finally(() => inflight.delete(cacheKey));
     inflight.set(cacheKey, run);
     // La génération qui s'achève après le délai d'affichage est journalisée
     // en pré-génération : elle n'a pas été vue (RUN-011).
     if (p.mode === 'display') {
-      void run.then((o) => { if (tardive.has(run!)) void logT6({ accountId: p.accountId, contextHash: p.contextHash, mode: 'pregen', outcome: o, input: p.input, suggestionContext: bundle?.context, interpellationContext: evaluation?.context }); });
+      void run.then((o) => { if (tardive.has(run!)) void logT6({ accountId: p.accountId, contextHash: p.contextHash, mode: 'pregen', outcome: o, input: p.input, suggestionContext: bundle?.context }); });
     }
   }
 
@@ -605,3 +607,144 @@ export async function formulateWithT6(
 
 /** Générations dont l'affichage n'a pas attendu la fin. */
 const tardive = new WeakSet<Promise<T6Outcome>>();
+
+// ══════════════════════════════════════════════════════════════════════════
+// MODE EVALUATE (lot 61) — pertinence des interpellations
+// ══════════════════════════════════════════════════════════════════════════
+
+export type T6EvaluationStatus = 'generated' | 'validation_failed' | 'error' | 'disabled' | 'skipped';
+
+export interface T6EvaluationOutcome {
+  status: T6EvaluationStatus;
+  promptVersion: string | null;
+  accepted: T6ValidatedDecision[];
+  rejected: T6EvaluationRejection[];
+  /** Décisions conservées (cache des évaluations). */
+  persisted: number;
+  error?: string | null;
+  traceId?: string | null;
+  model?: string | null;
+  latencyMs?: number;
+}
+
+/** Disjoncteur PROPRE à EVALUATE : ses échecs ne coupent jamais la formulation. */
+const evalBreaker = { failures: 0, openUntil: 0 };
+/** Échecs récents par compte et par entrée : pas de nouvel appel avant ce délai. */
+export const T6_EVALUATION_RETRY_MS = 10 * 60_000;
+const evalFailures = new Map<string, number>();
+const evalFailuresByAccount = new Map<number, number>();
+const evalInflight = new Map<string, Promise<T6EvaluationOutcome>>();
+
+/** Réservé aux tests. */
+export function resetT6EvaluationState(): void {
+  evalBreaker.failures = 0; evalBreaker.openUntil = 0;
+  evalFailures.clear(); evalFailuresByAccount.clear(); evalInflight.clear();
+}
+
+/** Une évaluation de ce compte a échoué récemment (mode dégradé explicite à l'accueil). */
+export function t6EvaluationRecentlyFailed(accountId: number, now = Date.now()): boolean {
+  const t = evalFailuresByAccount.get(accountId);
+  return t != null && now - t < T6_EVALUATION_RETRY_MS;
+}
+
+function evalRecord(ok: boolean, key: string, accountId: number, now = Date.now()): void {
+  if (ok) {
+    evalBreaker.failures = 0; evalBreaker.openUntil = 0;
+    evalFailures.delete(key); evalFailuresByAccount.delete(accountId);
+    return;
+  }
+  evalFailures.set(key, now);
+  evalFailuresByAccount.set(accountId, now);
+  evalBreaker.failures += 1;
+  if (evalBreaker.failures >= BREAKER_THRESHOLD) { evalBreaker.openUntil = now + BREAKER_OPEN_MS; evalBreaker.failures = 0; }
+}
+
+export interface T6EvaluationDependencies {
+  /** T6 disponible et prompt effectif porteur de la branche EVALUATE. */
+  available: () => Promise<boolean>;
+  promptVersion: () => Promise<string>;
+  execute: (req: Parameters<typeof AiGateway.execute>[0]) => ReturnType<typeof AiGateway.execute>;
+  /** Trace du passage (reporting T6, BO › Exécutions IA › Rapports). */
+  report?: (o: T6EvaluationOutcome) => Promise<unknown> | void;
+}
+
+export const t6EvaluationDefaultDeps: T6EvaluationDependencies = {
+  available: t6InterpellationAvailable,
+  promptVersion: getT6MasterPromptVersion,
+  execute: (req) => AiGateway.execute(req),
+};
+
+/**
+ * Évalue les candidats (MODE=EVALUATE, contrat `t6-evaluation-input-v1` →
+ * `t6-evaluation-v1`), valide la sortie (Zod strict + contrôles métier) et
+ * CONSERVE les seules décisions valides. Une sortie invalide n'est jamais
+ * acceptée silencieusement : statut, motif et rejets sont rendus et tracés.
+ * Ne lève jamais. Une même entrée n'est évaluée qu'une fois à la fois ; après
+ * un échec, pas de nouvel appel avant `T6_EVALUATION_RETRY_MS` (plafond de
+ * coût, mode dégradé explicite).
+ */
+export async function evaluateWithT6(
+  p: { accountId: number; bundle: T6InterpellationBundle; mode: T6Mode },
+  deps: T6EvaluationDependencies = t6EvaluationDefaultDeps,
+): Promise<T6EvaluationOutcome> {
+  const vide = (status: T6EvaluationStatus, error: string | null, promptVersion: string | null = null): T6EvaluationOutcome =>
+    ({ status, promptVersion, accepted: [], rejected: [], persisted: 0, error });
+  let promptVersion: string;
+  try {
+    const [ok, v] = await Promise.all([deps.available(), deps.promptVersion()]);
+    if (!ok) return vide('disabled', 'T6 indisponible ou version du prompt sans branche EVALUATE');
+    promptVersion = v;
+  } catch (e) {
+    return vide('error', (e as Error).message);
+  }
+  const key = sha256(canonicalJson({ accountId: p.accountId, input: p.bundle.context, promptVersion, out: T6_EVALUATION_OUTPUT_SCHEMA_VERSION }));
+  const echec = evalFailures.get(key);
+  if (echec != null && Date.now() - echec < T6_EVALUATION_RETRY_MS) return vide('skipped', 'échec récent : nouvel essai différé', promptVersion);
+  if (Date.now() < evalBreaker.openUntil) return vide('skipped', 'disjoncteur EVALUATE ouvert', promptVersion);
+
+  const existing = evalInflight.get(key);
+  if (existing) return existing;
+  const run = (async (): Promise<T6EvaluationOutcome> => {
+    const startedAt = Date.now();
+    let outcome: T6EvaluationOutcome;
+    try {
+      const res = await deps.execute({
+        useCaseCode: 'HOME_MASCOT',
+        operationCode: T6_EVALUATE_OPERATION,
+        accountId: p.accountId,
+        // MODE=EVALUATE est imposé par la passerelle (branche de l'opération).
+        promptVariables: { INPUT_JSON: null, SUGGESTION_CONTEXT: null, INTERPELLATION_CONTEXT: JSON.stringify(p.bundle.context) },
+        outputSchema: T6EvaluateOutput,
+        idempotencyKey: `mascot-eval:${key}:${randomUUID()}`,
+      });
+      const base = { promptVersion, traceId: res.traceId ?? null, model: res.model, latencyMs: Date.now() - startedAt };
+      const v = validateT6Evaluation(p.bundle.context, res.data);
+      if (!v.ok) {
+        evalRecord(false, key, p.accountId);
+        outcome = { ...base, status: 'validation_failed', accepted: [], rejected: [], persisted: 0, error: v.reason };
+      } else {
+        evalRecord(v.accepted.length > 0 || v.rejected.length === 0, key, p.accountId);
+        const persisted = v.accepted.length ? await p.bundle.persist(v.accepted, { promptVersion, traceId: res.traceId ?? null }).catch((e) => {
+          console.error('[mascotte] décisions EVALUATE non enregistrées :', (e as Error).message);
+          return 0;
+        }) : 0;
+        outcome = {
+          ...base, status: 'generated', accepted: v.accepted, rejected: v.rejected, persisted,
+          error: v.rejected.length ? `${v.rejected.length} décision(s) rejetée(s)` : null,
+        };
+      }
+    } catch (e) {
+      // Plafond IA du mois : pas d'échec du disjoncteur partagé.
+      if (!isCostCapReached(e)) evalRecord(false, key, p.accountId);
+      outcome = vide('error', isCostCapReached(e) ? 'plafond IA du mois du compte atteint' : (e as Error).message?.slice(0, 500) ?? 'erreur', promptVersion);
+      outcome.latencyMs = Date.now() - startedAt;
+    }
+    try { await deps.report?.(outcome); } catch { /* le reporting ne bloque jamais */ }
+    return outcome;
+  })().finally(() => evalInflight.delete(key));
+  evalInflight.set(key, run);
+  return run;
+}
+
+/** Contrats de l'opération EVALUATE (trace). */
+export const T6_EVALUATION_CONTRACTS = { input: T6_EVALUATION_INPUT_SCHEMA_VERSION, output: T6_EVALUATION_OUTPUT_SCHEMA_VERSION } as const;

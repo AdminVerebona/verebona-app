@@ -26,7 +26,7 @@
  */
 import { pgClient } from '@/db';
 import {
-  EXPENSE_THEME_LABELS, classifyExpenseDocument, isCreditNoteTitle, type ExpenseClass, type ExpenseTheme,
+  EXPENSE_THEME_LABELS, classifyExpenseDocument, dedupePossibleMerges, isCreditNoteTitle, type ExpenseClass, type ExpenseRow, type ExpenseTheme,
 } from './expense-classes';
 import {
   emptyOperationPart, formatMinorAmount, loadScopeOperationsRead, operationCostLines, operationCountLabel, operationLabel, operationReader,
@@ -34,8 +34,8 @@ import {
 } from './operations';
 
 // Vocabulaire des thèmes : `expense-classes.ts` (partagé avec les Opérations).
-export { EXPENSE_THEME_LABELS, expenseThemeOf, classifyExpenseDocument, isPaymentProofType, isCreditNoteTitle } from './expense-classes';
-export type { ExpenseTheme, ExpenseClass } from './expense-classes';
+export { EXPENSE_THEME_LABELS, expenseThemeOf, classifyExpenseDocument, isPaymentProofType, isCreditNoteTitle, dedupePossibleMerges, expenseInfoScore } from './expense-classes';
+export type { ExpenseTheme, ExpenseClass, ExpenseRow } from './expense-classes';
 
 export interface QualifiedExpenses {
   theme: ExpenseTheme | null;
@@ -167,9 +167,14 @@ export async function sumQualifiedExpenses(accountId: number, opts: {
   let opEntries: ReturnType<typeof summarizeOperationCosts>['entries'] = [];
   let scopeOps = new Set<number>();
   let represented = new Map<number, number[]>();
+  let sansComposante = new Set<number>();
+  let achats = new Map<number, number>();
+  let achatsDistincts = new Set<number>();
   try {
     const lu = await loadScopeOperationsRead(accountId, ids ?? []);
     const ops = lu.operations;
+    // Lot 61 (TCO §3.3) : Opérations du périmètre SANS composante financière exploitable (aucune hors prévision).
+    sansComposante = new Set(ops.filter((o) => o.status !== 'CANCELLED' && !o.components.some((c) => c.kind !== 'FORECAST_COST')).map((o) => o.id));
     if (!lu.complete) lectureComplete = false;
     const lus = summarizeOperationCosts(operationCostLines(ops, { assetIds: ids ?? [], year: opts.year ?? null }), theme);
     const rep = await operationReader().representedDocuments(accountId, docs.map((d) => d.id));
@@ -177,11 +182,17 @@ export async function sumQualifiedExpenses(accountId: number, opts: {
     opEntries = lus.entries;
     scopeOps = new Set(ops.map((o) => o.id));
     represented = rep;
+    // Lot 61 (cohérence T2 / TCO) : justificatifs rattachés à l'ACHAT du bien sans en porter le prix
+    // (accessoire rattaché par T3 à l'acquisition unique du cycle) — dépenses distinctes, comme au TCO.
+    achats = new Map(operationCostLines(ops.filter((o) => o.typeCode === 'ACQUISITION' && o.status !== 'CANCELLED'), { assetIds: ids ?? [], year: null })
+      .map((l) => [l.operationId, l.costCents]));
+    const surAchat = docs.filter((d) => (rep.get(d.id) ?? []).some((o) => achats.has(o))).map((d) => d.id);
+    if (surAchat.length) achatsDistincts = await (await import('@/services/business-operations/tco/service')).documentsDistinctFromAcquisition(accountId, surAchat);
   } catch (e) {
     degradee = true;
     console.warn('[verebona] dépenses : lecture des coûts consolidés impossible, repli documentaire seul :', (e as Error).message);
   }
-  return finishQualifiedExpenses(accountId, { ids, theme, year: opts.year ?? null, docs, part, opEntries, scopeOps, represented, lectureComplete, degradee });
+  return finishQualifiedExpenses(accountId, { ids, theme, year: opts.year ?? null, docs, part, opEntries, scopeOps, represented, sansComposante, achats, achatsDistincts, lectureComplete, degradee });
 }
 
 const EXPENSE_DOCS_PAGE = 2000;
@@ -228,9 +239,15 @@ type DocLine = DocRow & { id: number; linked: number[] };
 async function finishQualifiedExpenses(accountId: number, x: {
   ids: number[] | null; theme: ExpenseTheme | null; year: number | null; docs: DocLine[];
   part: OperationExpensePart; opEntries: ReturnType<typeof summarizeOperationCosts>['entries'];
-  scopeOps: Set<number>; represented: Map<number, number[]>; lectureComplete: boolean; degradee: boolean;
+  scopeOps: Set<number>; represented: Map<number, number[]>; sansComposante?: Set<number>;
+  /** Lot 61 : achats du périmètre (coût consolidé) et justificatifs distincts de l'achat. */
+  achats?: Map<number, number>; achatsDistincts?: Set<number>;
+  lectureComplete: boolean; degradee: boolean;
 }): Promise<QualifiedExpenses> {
-  const { ids, theme, docs, part, opEntries, scopeOps, represented } = x;
+  const { ids, theme, docs, opEntries, scopeOps, represented } = x;
+  const sansComposante = x.sansComposante ?? new Set<number>();
+  /** Lot 61 : Opérations sans montant dont la facture rattachée porte le coût (elles ne rendent plus le total incomplet). */
+  const couvertesParDocument = new Set<number>();
   const opts = { year: x.year ?? undefined };
 
   // ── Repli documentaire dédupliqué (C15.1 §30-31, C10) ────────────────────
@@ -244,7 +261,13 @@ async function finishQualifiedExpenses(accountId: number, x: {
   const entries: ExpenseEntry[] = [];
   for (const r of kept) {
     const ops = represented.get(r.id);
-    if (ops?.length) {
+    // Lot 61 (TCO §3.3, cohérence T2 / TCO) : un document rattaché SEULEMENT à des
+    // Opérations du périmètre sans composante financière exploitable n'est pas
+    // « représenté » : la facture qualifiée fait foi (jamais perdue).
+    const achats = x.achats ?? new Map<number, number>();
+    const distinctDeLAchat = (o: number) => achats.has(o) && !!x.achatsDistincts?.has(r.id) && Number(r.amountCents) !== achats.get(o);
+    const factureFaitFoi = !!ops?.length && ops.every((o) => scopeOps.has(o) && (sansComposante.has(o) || distinctDeLAchat(o)));
+    if (ops?.length && !factureFaitFoi) {
       const cible = ops.some((o) => scopeOps.has(o)) ? fallback.represented : fallback.representedElsewhere;
       cible.count += 1; cible.fileIds.push(r.id);
       if (cible === fallback.representedElsewhere) ailleurs.set(r.id, ops);
@@ -268,7 +291,15 @@ async function finishQualifiedExpenses(accountId: number, x: {
     const amount = avoir ? -Math.abs(Number(r.amountCents)) : Number(r.amountCents);
     if (avoir && pertinent) { fallback.creditNotes.count += 1; fallback.creditNotes.sumCents += amount; }
     entries.push({ fileId: r.id, amountCents: amount, cls, undated: opts.year != null && !r.date });
+    if (factureFaitFoi && cls.kind !== 'excluded') for (const o of ops!) if (sansComposante.has(o)) couvertesParDocument.add(o);
   }
+  const part: OperationExpensePart = couvertesParDocument.size ? {
+    ...x.part,
+    withoutAmount: (() => {
+      const keep = x.part.withoutAmount.operationIds.map((id, i) => ({ id, label: x.part.withoutAmount.labels[i] })).filter((o) => !couvertesParDocument.has(o.id));
+      return { count: keep.length, operationIds: keep.map((o) => o.id), labels: keep.map((o) => o.label) };
+    })(),
+  } : x.part;
   // Lot 53D (D12) : documents du périmètre rattachés à une dépense hors
   // périmètre — dépense sans bien confirmé (lien probable : ce document) ou
   // dépense attribuée à d'autres biens. Lecture en échec : forme du lot 45.
@@ -337,75 +368,6 @@ export function expenseCoverageComplete(part: OperationExpensePart, docs: Docume
     && (docs.foreign?.length ?? 0) === 0;
 }
 
-
-/** Ligne de document utile au dédoublonnage. */
-export interface ExpenseRow {
-  id: number;
-  v2: string | null;
-  legacy: string | null;
-  date: string | null;
-  hash: string | null;
-  title: string | null;
-  assetId: number | null;
-  supplier: string | null;
-  state: string | null;
-  ignored: number[] | null;
-}
-
-/** Nombre d'informations qualifiantes d'un document (départage des doublons). */
-export function expenseInfoScore(r: ExpenseRow): number {
-  return [r.v2, r.legacy, r.date, r.supplier, r.title].filter((x) => x != null && String(x).trim() !== '').length;
-}
-
-/**
- * Doublons « fusion possible » comptés une seule fois (pure, testée).
- *
- * Deux documents du résultat forment un doublon si l'un au moins est signalé
- * `FUSION_SUGGESTED`, si la fusion n'a pas été IGNORÉE entre eux
- * (`fusion_ignored_with`, choix de l'utilisateur) et s'ils répondent aux
- * critères du détecteur : même empreinte `sha256_hash` (doublon exact), ou
- * même titre retenu + même bien + même date (doublon probable). Les
- * groupes sont transitifs.
- *
- * Règle de conservation (documentée, CDC 15 T2-24) : dans chaque groupe, on
- * garde le document qui porte le PLUS D'INFORMATIONS (type V2, type
- * historique, date, fournisseur, titre retenu — `expenseInfoScore`) ; à
- * égalité, le PLUS ANCIEN (plus petit identifiant, antérieur au
- * téléversement du doublon). Les autres sont écartés du total et déclarés.
- */
-export function dedupePossibleMerges<R extends ExpenseRow>(rows: R[]): { kept: R[]; removed: number[] } {
-  const parent = new Map<number, number>(rows.map((r) => [r.id, r.id]));
-  const find = (x: number): number => {
-    let r = x;
-    while (parent.get(r) !== r) r = parent.get(r)!;
-    parent.set(x, r);
-    return r;
-  };
-  const ignores = (a: R, b: R) => (a.ignored ?? []).map(Number).includes(b.id) || (b.ignored ?? []).map(Number).includes(a.id);
-  const signales = rows.filter((r) => r.state === 'FUSION_SUGGESTED');
-  for (const a of signales) {
-    for (const b of rows) {
-      if (a.id === b.id || ignores(a, b)) continue;
-      const exact = !!a.hash && a.hash === b.hash;
-      const probable = !!a.title && a.title === b.title && a.assetId != null && a.assetId === b.assetId
-        && (a.date ?? null) === (b.date ?? null);
-      if (exact || probable) parent.set(find(a.id), find(b.id));
-    }
-  }
-  const groupes = new Map<number, R[]>();
-  for (const r of rows) {
-    const g = find(r.id);
-    groupes.set(g, [...(groupes.get(g) ?? []), r]);
-  }
-  const garde = new Set<number>();
-  const removed: number[] = [];
-  for (const g of groupes.values()) {
-    const [meilleur] = [...g].sort((x, y) => expenseInfoScore(y) - expenseInfoScore(x) || x.id - y.id);
-    garde.add(meilleur.id);
-    for (const r of g) if (r.id !== meilleur.id) removed.push(r.id);
-  }
-  return { kept: rows.filter((r) => garde.has(r.id)), removed: removed.sort((a, b) => a - b) };
-}
 
 /** Document à montant classé (entrée de l'agrégat). */
 export interface ExpenseEntry { fileId: number; amountCents: number; cls: ExpenseClass; undated?: boolean }

@@ -1,0 +1,57 @@
+{
+  "case": "P-T4-V3-13",
+  "description": "Lot 61 (t4_output_v3) — « À traiter », échéance PASSÉE d'un contrat de location qui impose la restitution du matériel sous 30 jours : intervention réelle identifiée (RETURN_OR_RESTITUTE), preuve citée, jamais une question de date.",
+  "context": {
+    "candidate": {
+      "title": "Fin de contrat",
+      "date": "2026-10-05",
+      "confidence": "certain",
+      "documentType": "SERVICE_CONTRACT",
+      "excerpt": "À la fin du contrat, le locataire doit restituer le matériel loué dans un délai de 30 jours, à défaut de quoi il sera facturé."
+    },
+    "recurrenceCandidate": null,
+    "toProcessAssessment": {
+      "contractVersion": "atr-decision-v1",
+      "situation": "PAST_DEADLINE",
+      "dataKey": "contractEndDate",
+      "question": "Quelle est la date de fin de ce contrat ?",
+      "today": "2026-10-15",
+      "candidates": [{ "date": "2026-10-05", "source": "FACTS" }],
+      "documentDates": [],
+      "documentTitle": "Contrat de location — box"
+    }
+  },
+  "recording": {
+    "operationCode": "t4_classify_event",
+    "task": "CLASSIFY_EVENT",
+    "outputContract": "t4_output_v3",
+    "output": {
+      "task": "CLASSIFY_EVENT",
+      "agendaDecision": "accept",
+      "recurrenceDecision": "not_applicable",
+      "homeCategory": "action",
+      "businessType": null,
+      "confidence": "certain",
+      "reason": "fin de contrat suivie d'une obligation de restitution",
+      "recurrenceReason": null,
+      "intervention": {
+        "needed": "yes",
+        "kind": "RETURN_OR_RESTITUTE",
+        "action": "Restituer le matériel loué",
+        "justification": "Le contrat impose la restitution du matériel dans les 30 jours suivant sa fin.",
+        "consequence": "Le matériel non restitué sera facturé.",
+        "evidence": "le locataire doit restituer le matériel loué dans un délai de 30 jours",
+        "timing": "NOW",
+        "actBy": "2026-11-04",
+        "dataNeeded": false
+      }
+    }
+  },
+  "expected": {
+    "agendaDecision": "accept",
+    "recurrenceDecision": "not_applicable",
+    "category": "action",
+    "interventionNeeded": "yes",
+    "interventionKind": "RETURN_OR_RESTITUTE"
+  }
+}

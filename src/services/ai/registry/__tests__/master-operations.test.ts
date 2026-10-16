@@ -46,14 +46,15 @@ describe('opérations T1 master (seules depuis le lot 16b-3)', () => {
     expect(listMasterTasks(T1_MASTER_PROMPT_CODE).sort()).toEqual([...T1_TASKS].sort());
     expect(listMasterPrompts()).toEqual([
       { masterPromptCode: T1_MASTER_PROMPT_CODE, useCaseCode: 'SOURCE_ANALYSIS', tasks: ['GROUP_UPLOAD', 'ANALYZE_DOCUMENT'] },
-      { masterPromptCode: 't3_master_v1', useCaseCode: 'DATA_RECONCILIATION', tasks: ['VALUE_CONFLICT', 'LINK_AMBIGUITY', 'OPERATION_MATCH'] },
+      { masterPromptCode: 't3_master_v1', useCaseCode: 'DATA_RECONCILIATION', tasks: ['VALUE_CONFLICT', 'LINK_AMBIGUITY', 'OPERATION_MATCH', 'DOCUMENT_NAMING'] },
       // Lot 15 : T2, discriminant MODE (§24).
       { masterPromptCode: 't2_master_v1', useCaseCode: 'INTELLIGENT_ASSISTANT', tasks: ['UNDERSTAND', 'ANSWER', 'REVALIDATE'] },
       // TEMPORAL_AMBIGUITY : active depuis le lot 18 (R5).
       { masterPromptCode: 't4_master_v1', useCaseCode: 'AGENDA_INTELLIGENCE', tasks: ['CLASSIFY_EVENT', 'VERIFY_COMPLETION', 'TEMPORAL_AMBIGUITY'] },
       // Lot 49 (ticket 12) : t5_master_v1 (T5 Prompt Control) supprimé.
       // Lot 16 (C) : T6 (§28), MODE FORMULATE, sortie sans discriminant.
-      { masterPromptCode: 't6_master_v1', useCaseCode: 'HOME_MASCOT', tasks: ['FORMULATE'] },
+      // Lot 61 : branche EVALUATE (pertinence des interpellations, t6-evaluation-v1).
+      { masterPromptCode: 't6_master_v1', useCaseCode: 'HOME_MASCOT', tasks: ['FORMULATE', 'EVALUATE'] },
     ]);
   });
 
@@ -116,7 +117,8 @@ describe('opérations T3 master (CDC 15 §25, lot 13 ; seules depuis le lot 16b-
       expect(AI_OPERATIONS[c], c).toBeUndefined();
     }
     const actives = listOperationsByUseCase('DATA_RECONCILIATION').filter((o) => o.active && o.provider !== 'none');
-    expect(actives.map((o) => o.operationCode)).toEqual(['t3_value_conflict', 't3_link_ambiguity', 't3_operation_match']);
+    // Lot 61 : harmonisation du nommage documentaire (branche facultative).
+    expect(actives.map((o) => o.operationCode)).toEqual(['t3_value_conflict', 't3_link_ambiguity', 't3_operation_match', 't3_document_naming']);
     for (const op of actives) expect(isMasterOperation(op), op.operationCode).toBe(true);
   });
 });

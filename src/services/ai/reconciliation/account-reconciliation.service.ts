@@ -92,6 +92,8 @@ export interface AccountRunResult {
   openKnowledge?: import('./continuous/open-knowledge.service').OpenKnowledgeResult;
   /** Lot 49B : lignes « À traiter » ouvertes examinées ; absente si la phase n'a pas tourné. */
   openActions?: import('./continuous/open-actions.service').OpenActionsResult;
+  /** Lot 61 : harmonisation du nommage documentaire ; absente si la phase n'a pas tourné. */
+  documentNaming?: import('./document-naming/phase').DocumentNamingPhaseResult;
   /** Lot 57B : état de CHAQUE phase obligatoire (jamais « non exécutée » présentée comme « zéro résultat »). */
   phases?: RunPhases;
   /** Lot 57B : réussite complète, partielle, abstention métier ou échec technique. */
@@ -108,7 +110,12 @@ export interface AccountRunResult {
 export type PhaseStatus = 'DONE' | 'PARTIAL' | 'FAILED' | 'NOT_RUN' | 'NOT_CONFIGURED';
 export interface PhaseReport { status: PhaseStatus; error: string | null; counts?: Record<string, number> }
 export type RunPhaseName = 'ASSETS' | 'OPEN_KNOWLEDGE' | 'OPEN_ACTIONS' | 'JOURNAL';
-export type RunPhases = Record<RunPhaseName, PhaseReport>;
+/**
+ * Lot 61 : phase FACULTATIVE `DOCUMENT_NAMING` (harmonisation du nommage
+ * documentaire) — jamais obligatoire : son échec rend le passage partiel,
+ * jamais en échec technique, et n'interrompt aucune autre mission.
+ */
+export type RunPhases = Record<RunPhaseName, PhaseReport> & { DOCUMENT_NAMING?: PhaseReport };
 export type RunOutcome = 'SUCCESS' | 'PARTIAL_SUCCESS' | 'BUSINESS_ABSTENTION' | 'TECHNICAL_FAILURE';
 
 /**
@@ -127,12 +134,13 @@ export function runOutcome(phases: RunPhases, p: { changes: number; keptOpen: nu
 }
 
 /** Phases mises à jour par l'orchestrateur (pure). */
-export function initialPhases(deps: Pick<AccountReconciliationDeps, 'reconcileOpenKnowledge' | 'reconcileOpenActions'>): RunPhases {
+export function initialPhases(deps: Pick<AccountReconciliationDeps, 'reconcileOpenKnowledge' | 'reconcileOpenActions' | 'reconcileDocumentNaming'>): RunPhases {
   return {
     ASSETS: { status: 'NOT_RUN', error: null },
     OPEN_KNOWLEDGE: { status: deps.reconcileOpenKnowledge ? 'NOT_RUN' : 'NOT_CONFIGURED', error: null },
     OPEN_ACTIONS: { status: deps.reconcileOpenActions ? 'NOT_RUN' : 'NOT_CONFIGURED', error: null },
     JOURNAL: { status: deps.reconcileOpenActions ? 'NOT_RUN' : 'NOT_CONFIGURED', error: null },
+    ...(deps.reconcileDocumentNaming ? { DOCUMENT_NAMING: { status: 'NOT_RUN' as const, error: null } } : {}),
   };
 }
 
@@ -152,6 +160,8 @@ export interface AccountReconciliationDeps {
   reconcileOpenKnowledge?: typeof import('./continuous/open-knowledge.service').reconcileOpenKnowledge;
   /** Lot 49B : phase « open actions ». Absente : phase omise (tests de l'orchestrateur). */
   reconcileOpenActions?: typeof import('./continuous/open-actions.service').reconcileOpenToProcessActions;
+  /** Lot 61 : harmonisation du nommage documentaire. Absente : phase omise (tests de l'orchestrateur). */
+  reconcileDocumentNaming?: typeof import('./document-naming/phase').runDocumentNamingPhase;
 }
 
 const defaultDeps: AccountReconciliationDeps = {
@@ -166,6 +176,10 @@ const defaultDeps: AccountReconciliationDeps = {
   async reconcileOpenActions(accountId, opts) {
     const { reconcileOpenToProcessActions } = await import('./continuous/open-actions.service');
     return reconcileOpenToProcessActions(accountId, opts);
+  },
+  async reconcileDocumentNaming(accountId, opts) {
+    const { runDocumentNamingPhase } = await import('./document-naming/phase');
+    return runDocumentNamingPhase(accountId, opts);
   },
 };
 
@@ -371,6 +385,7 @@ export async function reconcileAccount(
   const details: ObjectResult[] = [];
   let openKnowledge: AccountRunResult['openKnowledge'];
   let openActions: AccountRunResult['openActions'];
+  let documentNaming: AccountRunResult['documentNaming'];
   const debutPassage = new Date();
   const phases = initialPhases(deps);
   // Lot 31C : une exécution INTERROMPUE (jeton révoqué, garde) ou arrêtée par
@@ -462,6 +477,33 @@ export async function reconcileAccount(
         console.error(`[t3] « À traiter » ouverts du compte ${accountId} non réexaminés :`, (e as Error).message);
       }
     }
+    // Lot 61 : harmonisation du nommage documentaire — EN DERNIER et isolée :
+    // les autres missions sont faites quoi qu'il arrive ici ; une erreur rend
+    // le passage partiel (jamais un échec technique, jamais une interruption).
+    if (deps.reconcileDocumentNaming) {
+      if (options.guard) await options.guard.assertActive('harmonisation documentaire du compte');
+      try {
+        const dn = await deps.reconcileDocumentNaming(accountId, {
+          guard: options.guard, accountRunId: runId, triggerCode: options.triggerCode ?? null,
+        });
+        documentNaming = dn;
+        phases.DOCUMENT_NAMING = {
+          status: dn.status === 'DISABLED' ? 'NOT_CONFIGURED' : dn.status === 'NOT_READY' ? 'NOT_RUN'
+            : dn.errors > 0 || dn.failed > 0 ? 'PARTIAL' : 'DONE',
+          error: dn.status === 'NOT_READY' ? 'migration 0450 absente : harmonisation non exécutée'
+            : dn.errors > 0 || dn.failed > 0 ? `${dn.errors} lot(s) en erreur, ${dn.failed} écriture(s) en échec` : null,
+          counts: {
+            groupsDue: dn.groupsDue, groupsExamined: dn.groupsExamined, proposals: dn.proposals, applied: dn.applied,
+            refused: dn.refused, conflicts: dn.conflicts, failed: dn.failed, aiCalls: dn.aiCalls, deferred: dn.deferred,
+            promptUnavailable: dn.promptAvailable === false ? 1 : 0,
+          },
+        };
+      } catch (e) {
+        if (isExecutionCancelled(e)) throw e;
+        phases.DOCUMENT_NAMING = { status: 'FAILED', error: (e as Error).message.slice(0, 300) };
+        console.error(`[t3] harmonisation documentaire du compte ${accountId} en échec :`, (e as Error).message);
+      }
+    }
   } catch (e) {
     interrompue = true;
     throw e;
@@ -491,6 +533,7 @@ export async function reconcileAccount(
     details, ...totals, status: statutDu(details, totals, outcome),
     ...(openKnowledge ? { openKnowledge } : {}),
     ...(openActions ? { openActions } : {}),
+    ...(documentNaming ? { documentNaming } : {}),
     phases, outcome,
   };
 }

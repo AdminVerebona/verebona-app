@@ -78,7 +78,42 @@ const SECTION_LABEL: Record<string, string> = {
   RULE: 'Règles « À traiter »', FIELD: 'Champs examinés', NOT_EXAMINED: 'Données non examinées',
   // Lot 60 (T6) : chaque échéance candidate, affichée OU écartée, et la justification IA référencée.
   INTERPELLATION: 'Interpellations T6 (affichées, différées, écartées)', INTERPELLATION_AI: 'Évaluations IA (justification)',
+  // Lot 61 : extract brut déterministe (couche texte par page), écrit avant le modèle.
+  RAW_EXTRACT: 'Extract brut (lecture déterministe)',
+  // Lot 61 : section « Harmonisation documentaire » (T3) — propositions IA et renommages confirmés distincts.
+  NAMING_RENAME: 'Harmonisation documentaire — renommages (proposition IA → issue en base)',
+  NAMING_FAMILY: 'Harmonisation documentaire — familles (analyse IA)',
+  NAMING_GROUP: 'Harmonisation documentaire — lots non examinés',
 };
+
+/** Lot 61 : phases T1 séparées (extraction, structuration, persistance). */
+const PHASE_LABEL: Record<string, string> = { extraction: 'Extraction', structuring: 'Structuration', persistence: 'Persistance' };
+const PHASE_STATE: Record<string, { label: string; tone: string }> = {
+  SUCCEEDED: { label: 'réussie', tone: RESULT_TONE.WRITTEN },
+  PARTIAL: { label: 'partielle', tone: RESULT_TONE.NOT_EXAMINED },
+  FAILED: { label: 'en échec', tone: RESULT_TONE.FAILED },
+  NOT_RUN: { label: 'non exécutée', tone: RESULT_TONE.OBSERVED },
+};
+
+/** Statut séparé des trois phases T1 (`sources.phases` du rapport), desktop et mobile. */
+export function T1PhasesLine({ phases }: { phases: unknown }) {
+  if (!phases || typeof phases !== 'object') return null;
+  const p = phases as Record<string, { state?: string; detail?: Record<string, unknown> } | undefined>;
+  return (
+    <div className="space-y-1" data-testid="execution-report-phases">
+      <p className="font-medium text-[color:var(--text-primary)]">Phases</p>
+      <div className="flex flex-wrap gap-1">
+        {(['extraction', 'structuring', 'persistence'] as const).map((k) => {
+          const st = PHASE_STATE[p[k]?.state ?? 'NOT_RUN'] ?? PHASE_STATE.NOT_RUN;
+          return <span key={k} className={pill(st.tone)} data-testid={`execution-report-phase-${k}`}>{PHASE_LABEL[k]} · {st.label}</span>;
+        })}
+      </div>
+      {(['extraction', 'structuring', 'persistence'] as const).map((k) => p[k]?.detail && Object.keys(p[k]!.detail!).length > 0 ? (
+        <p key={k} className="text-[color:var(--text-muted)] break-all">{PHASE_LABEL[k]} : {JSON.stringify(p[k]!.detail)}</p>
+      ) : null)}
+    </div>
+  );
+}
 
 const pill = (tone: string) => `text-xs px-2 py-0.5 rounded-full border ${tone}`;
 const fmt = (v: unknown) => (v === null || v === undefined ? '∅' : typeof v === 'string' ? v : JSON.stringify(v, null, 2));
@@ -86,6 +121,8 @@ export const reportTitle = (r: Pick<ReportSummaryDto, 'id' | 'treatment' | 'scop
   `${r.treatment} #${r.id} · ${r.treatment === 'T1' ? `document ${r.fileId ?? '—'}`
     // Lot 60 : décision d'interpellation de l'accueil, pour un utilisateur (ou le compte en pré-génération).
     : r.treatment === 'T6' ? `accueil · ${r.targetId != null ? `utilisateur ${r.targetId}` : 'compte (pré-génération)'}`
+    // Lot 61 : harmonisation documentaire du passage T3 du compte.
+    : r.scope === 'DOCUMENT_NAMING' ? `harmonisation documentaire · compte ${r.targetId ?? '—'}`
     : `${r.scope === 'ASSET' ? 'bien' : r.scope === 'EQUIPMENT' ? 'équipement' : 'pièce'} ${r.targetId ?? r.assetId ?? '—'}`}`;
 
 /** En-tête compact d'un rapport (liste, corrélations). */
@@ -95,6 +132,8 @@ export function ReportHeaderLine({ r, onOpen }: { r: ReportSummaryDto; onOpen?: 
     ? `${c.factsPersisted ?? 0}/${c.factsDeclared ?? 0} fait(s) enregistré(s) · ${c.evidenceWritten ?? 0} preuve(s) · ${c.factsNotPersisted ?? 0} non enregistré(s)`
     : r.treatment === 'T6'
       ? `${c.candidates ?? 0} échéance(s) évaluée(s) · ${c.shown ?? 0} affichée(s) · ${c.deferred ?? 0} différée(s) · ${c.suppressed ?? 0} écartée(s) · seuil ${c.thresholdDays ?? '—'} j`
+    : r.scope === 'DOCUMENT_NAMING'
+      ? `${c.groupsExamined ?? 0} lot(s) examiné(s) · ${c.documentsExamined ?? 0} document(s) · ${c.families ?? 0} famille(s) (${c.inconsistentFamilies ?? 0} incohérente(s)) · ${c.proposals ?? 0} proposition(s) IA · ${c.written ?? 0} renommage(s) écrit(s) confirmé(s) · ${c.refused ?? 0} refusé(s) · ${c.conflicts ?? 0} conflit(s)${c.promptUnavailable ? ' · prompt T3 sans branche DOCUMENT_NAMING' : ''}`
     : `${c.examined ?? 0} champ(s) examiné(s) · ${c.written ?? 0} écrit(s) confirmé(s) · ${c.failed ?? 0} échec(s) · ${c.notExamined ?? 0} non examiné(s)`;
   return (
     <div className="flex flex-wrap items-center gap-2 text-xs">
@@ -203,6 +242,7 @@ export function ExecutionReportView({ reportId: initialId }: { reportId: number 
         </div>
       )}
 
+      {r.treatment === 'T1' && <T1PhasesLine phases={(r.sources ?? {}).phases} />}
       <div>
         <p className="font-medium text-[color:var(--text-primary)]">Étapes</p>
         <ul className="space-y-0.5">
@@ -294,7 +334,7 @@ function EntryRow({ e, reportId, onOpenReport }: { e: EntryDto; reportId: number
         </div>
       ) : e.value !== null && e.value !== undefined ? (
         <div className="flex items-start gap-1 text-[color:var(--text-secondary)]">
-          <pre className="min-w-0 flex-1 whitespace-pre-wrap break-all">{e.section === 'FIELD' && e.writeResult !== 'WRITTEN' ? `Valeur proposée (non écrite) : ${fmt(e.value)}` : fmt(e.value)}</pre>
+          <pre className="min-w-0 flex-1 whitespace-pre-wrap break-all">{(e.section === 'FIELD' || e.section === 'NAMING_RENAME') && e.writeResult !== 'WRITTEN' ? `Valeur proposée (non écrite) : ${fmt(e.value)}` : fmt(e.value)}</pre>
           <CopyBlockButton value={e.value} label="la valeur" />
         </div>
       ) : null}

@@ -13,6 +13,17 @@
  * transmise évoque une démarche (reconduction, résiliation, renouvellement),
  * « information » sinon — comme le prompt maître (C1, C2) le lui demande.
  * Aucune règle propre au gardiennage dans le code testé.
+ *
+ * Lot 61 (tickets « À traiter » : écarts 58B, pertinence) : le texte de
+ * référence T4 sort en `t4_output_v3` — le simulateur rend aussi le bloc
+ * `intervention` quand le serveur le demande (`toProcessAssessment`), de
+ * façon GÉNÉRIQUE (démarche évoquée dans le contexte transmis → intervention
+ * citant ce passage ; date inconnue d'un contrat récent → date utile ;
+ * sinon aucune intervention). Comportements révisés par le lot 61, intention
+ * des cas conservée : date du SEUL titre → décision différée (jamais
+ * « aucune intervention » sur ce seul indice) ; action attendue → carte
+ * d'INTERVENTION (jamais une question de date) ; échéance future lointaine
+ * → interpellation différée (les cas d'arbitrage utilisent une date proche).
  */
 import { afterAll, beforeAll, expect, it, vi } from 'vitest';
 import { scenario } from '../scenario';
@@ -35,6 +46,9 @@ const jour = (decalage: number) => {
 const PASSE = jour(-117);
 const FUTUR = jour(250);
 const FUTUR2 = jour(400);
+/** Lot 61 : échéances proches (≤ 120 jours) — la date compte maintenant. */
+const PROCHE = jour(60);
+const PROCHE2 = jour(90);
 
 let t4Mode: 'model' | 'failure' = 'model';
 /** Modèle T4 simulé, GÉNÉRIQUE (voir l'en-tête). */
@@ -43,12 +57,22 @@ function t4Simule(input: { prompt: string }): unknown {
   // Seul le contexte d'exécution (événement, preuve) est lu — jamais le texte du prompt maître.
   const i = input.prompt.indexOf('\nEXECUTION_CONTEXT\n');
   const contexte = i >= 0 ? input.prompt.slice(i) : '';
+  const ctx = i >= 0 ? JSON.parse(input.prompt.slice(i + '\nEXECUTION_CONTEXT\n'.length).split('\n')[0]) as { event_context?: Record<string, any>; evidence?: string | null } : {};
   const action = /reconduction|résiliation|renouvel/i.test(contexte);
-  return {
+  const demande = ctx.event_context?.toProcessAssessment as { situation: string; documentTitle: string | null } | undefined;
+  const base = {
     task: 'CLASSIFY_EVENT', agendaDecision: 'accept', recurrenceDecision: 'not_applicable',
     homeCategory: action ? 'action' : 'information', businessType: null, confidence: 'certain',
     reason: action ? 'démarche attendue (simulé)' : 'échéance historique sans démarche (simulé)', recurrenceReason: null,
   };
+  if (!demande) return { ...base, intervention: null };
+  const preuve = [ctx.evidence ?? '', demande.documentTitle ?? ''].find((t) => /reconduction|résiliation|renouvel/i.test(t)) ?? null;
+  const intervention = demande.situation === 'UNDATED'
+    ? { needed: 'yes', kind: 'PROVIDE_INFORMATION', action: 'Indiquer la date de fin du contrat', justification: 'contrat en cours (simulé)', consequence: null, evidence: null, timing: 'NOW', actBy: null, dataNeeded: true }
+    : demande.situation === 'PAST_DEADLINE' && preuve
+      ? { needed: 'yes', kind: 'RENEW_OR_DECIDE', action: 'Décider de la reconduction ou de la résiliation du contrat', justification: 'démarche évoquée (simulé)', consequence: null, evidence: preuve.slice(0, 120), timing: 'NOW', actBy: null, dataNeeded: false }
+      : { needed: 'no', kind: null, action: null, justification: 'aucune démarche restante (simulé)', consequence: null, evidence: null, timing: 'NONE', actBy: null, dataNeeded: false };
+  return { ...base, intervention };
 }
 
 scenario('L58B-ECH', 'À traiter : échéances passées et données déjà connues (ECH-01 à ECH-16)', ({ sql, make, useRecordings: rejouer }) => {
@@ -108,7 +132,7 @@ scenario('L58B-ECH', 'À traiter : échéances passées et données déjà connu
   const appelsT4 = (replay: { calls: Array<{ operationCode?: string }> }) => replay.calls.filter((c) => c.operationCode === 't4_classify_event');
   const props = (p: unknown) => ((typeof p === 'string' ? JSON.parse(p) : p) ?? []) as Array<{ value: unknown }>;
 
-  it('ECH-01 — cas constaté : échéance passée suggérée par le nom « …le JJ:MM:AAAA.pdf », sans action : AUCUNE carte, IA consultée une fois, diagnostic complet', async () => {
+  it('ECH-01 — cas constaté : échéance passée suggérée par le nom « …le JJ:MM:AAAA.pdf », sans action : AUCUNE carte, IA consultée une fois, diagnostic complet (lot 61 : titre = indice, décision différée)', async () => {
     const compte = await make.account();
     const nom = `Votre contrat de gardiennage de pneus arrive à échéance le ${PASSE.deuxPoints}.pdf`;
     const f = await doc(compte, { title: nom.replace('.pdf', ''), filename: nom });
@@ -119,8 +143,8 @@ scenario('L58B-ECH', 'À traiter : échéances passées et données déjà connu
     expect(appelsT4(replay)).toHaveLength(1);
     const [d] = await diag(f);
     expect(d).toMatchObject({
-      account_id: compte.id, trigger_code: 'SWEEP', engine_version: 'l58b-1', target_present: false, decision: 'NONE',
-      reason_code: 'NO_ACTION_NEEDED', pertinence: 'NO_ACTION_NEEDED', ai_operation: 't4_classify_event', ai_status: 'OK',
+      account_id: compte.id, trigger_code: 'SWEEP', engine_version: 'l61-1', target_present: false, decision: 'NONE',
+      reason_code: 'DEFERRED', pertinence: 'TITLE_HINT_ONLY', ai_operation: 't4_classify_event', ai_status: 'OK', outcome: 'DEFER', situation: 'TITLE_ONLY',
     });
     expect(d.title_hint).toMatchObject({ dates: [PASSE.iso], confirmed: [] });
     expect(d.sources).toMatchObject({ TITLE_HINT: 1 });
@@ -161,12 +185,12 @@ scenario('L58B-ECH', 'À traiter : échéances passées et données déjà connu
 
   it('ECH-04 — « JJ.MM.AAAA » lue dans une unité « libellé : valeur » : proposition normalisée (À arbitrer, jamais écrite seule) ; forme ambiguë rejetée et tracée', async () => {
     const compte = await make.account();
-    const f = await doc(compte, { title: 'Contrat', units: [{ kind: 'LABEL_VALUE', label: 'Date de fin de contrat', value: FUTUR.point }] });
+    const f = await doc(compte, { title: 'Contrat', units: [{ kind: 'LABEL_VALUE', label: 'Date de fin de contrat', value: PROCHE.point }] });
     const g = await doc(compte, { title: 'Contrat', units: [{ kind: 'LABEL_VALUE', label: 'Date de fin de contrat', value: '20/06/26' }] });
     await balayage(compte);
     const [c] = await ouvertes(f);
     expect(c.kind).toBe('ARBITRATE');
-    expect(props(c.p).map((x) => x.value)).toEqual([FUTUR.iso]);
+    expect(props(c.p).map((x) => x.value)).toEqual([PROCHE.iso]);
     expect(await valeur(f)).toBeNull();
     const [dg] = await diag(g);
     expect(dg.observations).toEqual([expect.objectContaining({ raw: '20/06/26', normalized: null, status: 'REFUSED_AMBIGUOUS' })]);
@@ -176,25 +200,25 @@ scenario('L58B-ECH', 'À traiter : échéances passées et données déjà connu
   it('ECH-05 — date suggérée par le titre ET retrouvée dans le contenu : proposée (preuve vérifiée), jamais écrite sans validation', async () => {
     const compte = await make.account();
     const f = await doc(compte, {
-      title: `Contrat de maintenance — reconduction tacite, échéance ${FUTUR.slash}`,
-      fullText: `Le présent contrat prend fin le ${FUTUR.slash}.`,
+      title: `Contrat de maintenance — reconduction tacite, échéance ${PROCHE.slash}`,
+      fullText: `Le présent contrat prend fin le ${PROCHE.slash}.`,
     });
     await balayage(compte);
     expect(await valeur(f)).toBeNull();
     const [c] = await ouvertes(f);
     expect(c.kind).toBe('ARBITRATE');
-    expect(props(c.p).map((x) => x.value)).toEqual([FUTUR.iso]);
-    expect((await diag(f))[0].title_hint).toMatchObject({ dates: [FUTUR.iso], confirmed: [FUTUR.iso] });
+    expect(props(c.p).map((x) => x.value)).toEqual([PROCHE.iso]);
+    expect((await diag(f))[0].title_hint).toMatchObject({ dates: [PROCHE.iso], confirmed: [PROCHE.iso] });
   });
 
   it('ECH-06 — dates contradictoires : arbitrage justifié sans écriture ; validation utilisateur jamais écrasée ; retrait utilisateur respecté', async () => {
     const compte = await make.account();
-    const f = await doc(compte, { title: 'Contrat', facts: [{ key: 'contractEndDate', value: FUTUR.iso }, { key: null, raw: 'finContrat', value: FUTUR2.slash, norm: null }] });
+    const f = await doc(compte, { title: 'Contrat', facts: [{ key: 'contractEndDate', value: PROCHE.iso }, { key: null, raw: 'finContrat', value: PROCHE2.slash, norm: null }] });
     await balayage(compte);
     expect(await valeur(f)).toBeNull();
     const [c] = await ouvertes(f);
     expect(c.kind).toBe('ARBITRATE');
-    expect(props(c.p).map((x) => x.value).sort()).toEqual([FUTUR.iso, FUTUR2.iso].sort());
+    expect(props(c.p).map((x) => x.value).sort()).toEqual([PROCHE.iso, PROCHE2.iso].sort());
 
     const u = await doc(compte, { title: 'Contrat', facts: [{ key: 'contractEndDate', value: FUTUR2.iso }] });
     await sql`INSERT INTO document_field_values (account_id, file_id, field_key, value_text, origin, user_validated)
@@ -213,7 +237,7 @@ scenario('L58B-ECH', 'À traiter : échéances passées et données déjà connu
     expect((await cartes(r)).find((x) => x.id === c2)?.open).toBe(true);
   });
 
-  it('ECH-07 — contrat reconductible, échéance passée (date probable) : la question reste (T4 : action attendue)', async () => {
+  it('ECH-07 — contrat reconductible, échéance passée (date probable), T4 : action attendue → lot 61 : carte décrivant l’ACTION réelle, jamais une question de date', async () => {
     const compte = await make.account();
     const f = await doc(compte, {
       title: 'Contrat d’abonnement — reconduction tacite sauf résiliation',
@@ -221,25 +245,29 @@ scenario('L58B-ECH', 'À traiter : échéances passées et données déjà connu
     });
     const replay = await rejouer([]);
     await balayage(compte);
-    const [c] = await ouvertes(f);
+    expect(await ouvertes(f)).toHaveLength(0);
+    const [c] = await ouvertes(f, 'intervention:contractEndDate');
     expect(c.kind).toBe('ARBITRATE');
-    expect(props(c.p).map((x) => x.value)).toEqual([PASSE.iso]);
+    expect(props(c.p).map((x) => x.value)).toEqual(['DONE', 'NOT_NEEDED']);
     expect(appelsT4(replay)).toHaveLength(1);
-    expect((await diag(f))[0]).toMatchObject({ decision: 'CREATE', pertinence: 'ACTION_REQUIRED' });
+    expect((await diag(f))[0]).toMatchObject({ decision: 'NONE', reason_code: 'REPLACED_BY_INTERVENTION', pertinence: 'ACTION_REQUIRED', outcome: 'CREATE_ACTION' });
   });
 
-  it('ECH-07 — T4 indisponible : variante prudente (question maintenue, pertinence UNDECIDED, erreur IA tracée), retentée ensuite', async () => {
+  it('ECH-07 — T4 indisponible : variante prudente (lot 61 : aucune carte arbitraire, pertinence UNDECIDED, erreur IA tracée, reprise planifiée), retentée ensuite', async () => {
     const compte = await make.account();
     const f = await doc(compte, { title: `Contrat — échéance ${PASSE.slash}`, filename: `Contrat ${PASSE.deuxPoints}.pdf` });
     t4Mode = 'failure';
     try {
       await balayage(compte);
     } finally { t4Mode = 'model'; }
-    expect((await ouvertes(f))[0].kind).toBe('COMPLETE');
-    expect((await diag(f))[0]).toMatchObject({ pertinence: 'UNDECIDED', ai_status: 'ERROR', decision: 'CREATE' });
-    // Passage suivant, T4 rétabli : la carte devenue sans objet est fermée.
+    expect(await ouvertes(f)).toHaveLength(0);
+    expect((await diag(f))[0]).toMatchObject({ pertinence: 'UNDECIDED', ai_status: 'ERROR', decision: 'NONE', outcome: 'DEFER', reason_code: 'DEFERRED_TECHNICAL_FAILURE' });
+    expect(new Date((await diag(f))[0].reevaluate_at).getTime()).toBeLessThanOrEqual(Date.now() + 61 * 60_000);
+    // Reprise : la date de reprise est atteinte, T4 rétabli → décision réelle (titre seul : différée), aucune carte.
+    await sql`UPDATE document_rule_evaluations SET reevaluate_at = now() - interval '1 minute' WHERE file_id = ${f}`;
     await balayage(compte);
     expect(await ouvertes(f)).toHaveLength(0);
+    expect((await diag(f)).at(-1)).toMatchObject({ ai_status: 'OK', outcome: 'DEFER', pertinence: 'TITLE_HINT_ONLY' });
   });
 
   it('ECH-08 — échéance historique sans date fiable et sans besoin métier : pas de complétion systématique (création initiale par l’analyse T1)', async () => {
@@ -248,7 +276,8 @@ scenario('L58B-ECH', 'À traiter : échéances passées et données déjà connu
     const f = await doc(compte, { title: 'Contrat de gardiennage', filename: nom });
     const { syncDocumentRulesFromAnalysis } = await import('@/services/to-process/document-rule-bridge');
     const r = await syncDocumentRulesFromAnalysis({ accountId: compte.id, fileId: f, observations: { facts: [], assetCandidates: [], documentAssetId: null, deferAssetLinkToT3: true }, runRef: 'analysis_run:e2e' });
-    expect(r.reasons['DATA-CONTRACT-END']).toBe('NO_ACTION_NEEDED');
+    // Lot 61 (écart 7) : une date du seul nom de fichier n'éteint rien — décision différée, aucune carte.
+    expect(r.reasons['DATA-CONTRACT-END']).toBe('DEFERRED');
     expect(await cartes(f)).toHaveLength(0);
     expect((await diag(f))[0]).toMatchObject({ trigger_code: 'ANALYSIS', run_ref: 'analysis_run:e2e', decision: 'NONE' });
   });
@@ -272,8 +301,9 @@ scenario('L58B-ECH', 'À traiter : échéances passées et données déjà connu
     await balayage(compte);
     expect(await cartes(f)).toEqual([expect.objectContaining({ id: c, open: false, reason: 'OBSOLETE' })]);
     const [ev] = await sql<Array<{ details: any }>>`SELECT details FROM to_process_action_events WHERE action_id = ${c}`;
-    expect(ev.details).toMatchObject({ ruleCode: 'DATA-CONTRACT-END', reason: 'NO_ACTION_NEEDED', pertinence: 'NO_ACTION_NEEDED', trigger: 'SWEEP' });
-    expect((await diag(f)).at(-1)).toMatchObject({ decision: 'CLOSE', reason_code: 'NO_ACTION_NEEDED', action_id: null });
+    // Lot 61 (écart 7) : la date du seul nom de fichier ne prouve rien — carte retirée car DIFFÉRÉE (motif tracé).
+    expect(ev.details).toMatchObject({ ruleCode: 'DATA-CONTRACT-END', reason: 'DEFERRED', pertinence: 'TITLE_HINT_ONLY', trigger: 'SWEEP' });
+    expect((await diag(f)).at(-1)).toMatchObject({ decision: 'CLOSE', reason_code: 'DEFERRED', action_id: null, outcome: 'DEFER' });
 
     // Passage T3 global (57B) : même décision, journal par carte enrichi.
     const g = await doc(compte, { title: 'Contrat', filename: `Contrat échu ${PASSE.deuxPoints}.pdf` });
@@ -307,24 +337,23 @@ scenario('L58B-ECH', 'À traiter : échéances passées et données déjà connu
     expect(Number(lignes[0].seen_count)).toBe(1);
     const { documentsToReevaluate } = await import('@/services/to-process/document-rule-bridge');
     expect(await documentsToReevaluate(compte.id)).not.toContain(f);
-    // Élément nouveau (document modifié, date future lue) : réévalué.
-    await sql`UPDATE asset_files SET updated_at = now() + interval '1 second' WHERE id = ${f}`;
+    // Élément nouveau (date proche lue) : réévalué — lot 61 (écart 4) : SANS changement de asset_files.updated_at.
     await sql`INSERT INTO document_source_units (account_id, file_id, extraction_id, source_unit_id, kind, ordinal, label, value_text, coverage_status)
-              SELECT ${compte.id}, ${f}, id, 'u-new', 'LABEL_VALUE', 99, 'Date de fin de contrat', ${FUTUR.slash}, 'COVERED' FROM document_extractions WHERE file_id = ${f}`;
+              SELECT ${compte.id}, ${f}, id, 'u-new', 'LABEL_VALUE', 99, 'Date de fin de contrat', ${PROCHE.slash}, 'COVERED' FROM document_extractions WHERE file_id = ${f}`;
     expect(await documentsToReevaluate(compte.id)).toContain(f);
     await balayage(compte);
     expect((await ouvertes(f))[0]?.kind).toBe('ARBITRATE');
   });
 
-  it('ECH-11 — contrats actifs : sans aucune date, DATA-CONTRACT-END demande toujours la date (non désactivée), sans IA ; « Non applicable » respecté', async () => {
+  it('ECH-11 — contrats actifs : sans aucune date, DATA-CONTRACT-END demande la date quand elle est utile (non désactivée) ; lot 61 : utilité évaluée une fois ; « Non applicable » respecté', async () => {
     const compte = await make.account();
     const f = await doc(compte, { title: 'Contrat de télésurveillance' });
     const replay = await rejouer([]);
     await balayage(compte);
     const [c] = await ouvertes(f);
     expect(c.kind).toBe('COMPLETE');
-    expect(appelsT4(replay)).toHaveLength(0);
-    expect((await diag(f))[0]).toMatchObject({ decision: 'CREATE', pertinence: 'FUTURE_OR_UNDATED' });
+    expect(appelsT4(replay)).toHaveLength(1);
+    expect((await diag(f))[0]).toMatchObject({ decision: 'CREATE', pertinence: 'UNDATED_NEEDED', outcome: 'CREATE_ACTION' });
     await sql`UPDATE to_process_actions SET resolved_at = now(), resolution_reason = 'NOT_APPLICABLE' WHERE id = ${c.id}`;
     await balayage(compte);
     expect(await ouvertes(f)).toHaveLength(0);

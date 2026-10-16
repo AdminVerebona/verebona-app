@@ -55,6 +55,14 @@ export type AiErrorCode =
    */
   | 'RUNTIME_CONTRACT_MISMATCH'
   /**
+   * Lot 61 (incident fileId=98) : requête IMPOSSIBLE À CONSTRUIRE localement
+   * (en-tête HTTP invalide — nom de fichier Unicode NFD —, paramètre non
+   * encodable). Rien n'a été envoyé au fournisseur ; l'erreur est identique
+   * sur tous les modèles : jamais récupérable, aucun repli. Défaut interne,
+   * jamais exposé tel quel à l'utilisateur final.
+   */
+  | 'REQUEST_BUILD_FAILED'
+  /**
    * Lot 34D (T4, contexte d'exécution structuré) : contrat d'entrée T4 violé
    * ou introuvable, refusé AVANT tout appel fournisseur (0 appel). Erreurs de
    * configuration ou d'appelant, jamais récupérables.
@@ -72,7 +80,7 @@ export type AiErrorCode =
  * utilisateur montre un message générique, le BO (Exécutions IA) le détail.
  */
 export const INTERNAL_AI_ERROR_CODES: ReadonlySet<AiErrorCode> = new Set<AiErrorCode>([
-  'RUNTIME_CONTRACT_MISMATCH',
+  'RUNTIME_CONTRACT_MISMATCH', 'REQUEST_BUILD_FAILED',
   'T4_INPUT_CONTRACT_MISSING_FIELD', 'T4_INPUT_CONTRACT_INVALID_TYPE', 'T4_TASK_NOT_ALLOWED',
   'T4_OUTPUT_CONTRACT_MISSING', 'T4_CONTRACT_VERSION_NOT_FOUND', 'T4_EXECUTION_CONTEXT_BUILD_FAILED',
 ]);
@@ -80,6 +88,27 @@ export const INTERNAL_AI_ERROR_CODES: ReadonlySet<AiErrorCode> = new Set<AiError
 /** Code interne au moteur (jamais exposé à l'utilisateur final) ? */
 export function isInternalAiErrorCode(code: unknown): boolean {
   return typeof code === 'string' && INTERNAL_AI_ERROR_CODES.has(code as AiErrorCode);
+}
+
+/**
+ * Lot 61 — erreur LOCALE et DÉTERMINISTE levée pendant la construction de la
+ * requête (étape `request_build`), avant tout envoi : réessayer sur un autre
+ * modèle reproduirait exactement la même erreur.
+ *
+ *   · erreur marquée `deterministic: true` par l'adaptateur
+ *     (`AttachmentRequestBuildError`) ;
+ *   · `TypeError` de validation d'en-tête de `fetch`/`Request` (undici :
+ *     « Cannot convert argument to a ByteString », « Invalid header … »).
+ *
+ * JAMAIS déterministes (repli conservé) : erreurs réseau (`fetch failed`),
+ * HTTP 4xx/5xx du stockage ou de la Files API, délai d'activation d'un
+ * fichier, erreurs du SDK.
+ */
+export function isDeterministicLocalError(e: unknown): boolean {
+  if (!e || typeof e !== 'object') return false;
+  if ((e as { deterministic?: unknown }).deterministic === true) return true;
+  if (!(e instanceof TypeError)) return false;
+  return /ByteString|Invalid header (name|value)|is an invalid header value|Headers\.(append|set)/i.test(e.message);
 }
 
 export class AiGatewayError extends Error {

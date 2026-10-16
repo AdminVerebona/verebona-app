@@ -92,10 +92,16 @@ async function enqueue(
     // Sérialise les demandes concurrentes pour la même cible (double clic,
     // deux onglets, renvoi pendant l'inscription) : jamais deux demandes ouvertes.
     await tx.unsafe(`SELECT pg_advisory_xact_lock(hashtext($1))`, [`email-job:${kind}:${key.col}:${key.value}`]);
+    // Lot 61B (E) : une invitation Duo n'est jamais fusionnée dans une
+    // tentative EN COURS (`sending`) — elle a pu être construite avec
+    // l'ancien lien ou l'ancienne adresse et se clore `accepted` sans que la
+    // nouvelle invitation (remplacement, nouveau lien) parte. Une nouvelle
+    // demande est ouverte ; l'ancienne se termine (sa trace d'envoi reste).
+    const openStatuses = kind === 'DUO_INVITATION' ? `('pending')` : `('pending', 'sending')`;
     const [open] = await tx.unsafe<{ id: number; status: EmailJobStatus }[]>(
       `SELECT id, status FROM transactional_email_jobs
         WHERE kind = $1 AND ${key.col === 'recipient_email' ? 'lower(recipient_email) = lower($2)' : 'duo_id = $2'}
-          AND status IN ('pending', 'sending')
+          AND status IN ${openStatuses}
         ORDER BY id DESC LIMIT 1`,
       [kind, key.value] as never[],
     );
@@ -174,8 +180,9 @@ export function enqueueDuoInvitationEmail(input: {
 
 // ── Tentative ────────────────────────────────────────────────────────────────
 
+type Exec = { unsafe: typeof pgClient.unsafe };
 type Built =
-  | { ok: true; templateCode: EmailJobKind; variables: Record<string, string>; recipientUserId: number | null; triggeredByUserId: number | null; onAccepted?: (now: Date) => Promise<void> }
+  | { ok: true; templateCode: EmailJobKind; variables: Record<string, string>; recipientUserId: number | null; triggeredByUserId: number | null; onAccepted?: (now: Date, tx: Exec) => Promise<void> }
   | { ok: false; reason: string };
 
 function contextOf(job: JobRow): Record<string, unknown> {
@@ -219,9 +226,11 @@ async function buildDuoInvitation(job: JobRow, now: Date): Promise<Built> {
   const [duo] = await pgClient.unsafe<{
     id: number; billing_owner_user_id: number; pending_invite_email: string | null; pending_invite_token: string | null;
     pending_invite_token_expires_at: string | null; first_name: string | null; last_name: string | null;
+    /** Période de souscription, en texte (précision microseconde conservée). */
+    period: string | null;
   }[]>(
     `SELECT d.id, d.billing_owner_user_id, d.pending_invite_email, d.pending_invite_token, d.pending_invite_token_expires_at,
-            u.first_name, u.last_name
+            u.first_name, u.last_name, d.duo_subscription_started_at::text AS period
        FROM duo_accounts d LEFT JOIN users u ON u.id = d.billing_owner_user_id
       WHERE d.id = $1`,
     [job.duo_id as never],
@@ -252,14 +261,34 @@ async function buildDuoInvitation(job: JobRow, now: Date): Promise<Built> {
     },
     recipientUserId: invitee?.id ?? null,
     triggeredByUserId: duo.billing_owner_user_id,
-    // Date d'expédition CONFIRMÉE (acceptation par Resend) seulement — et
-    // seulement si l'invitation envoyée est toujours celle en cours.
-    onAccepted: async (at: Date) => {
-      await pgClient.unsafe(
+    // ══════════════════════════════════════════════════════════════════
+    // ACCEPTATION PAR RESEND (lot 61B, écart E)
+    //
+    // La trace du premier envoi dépendait du jeton courant : une annulation
+    // ou un remplacement pendant l'expédition l'effaçait de fait (UPDATE sans
+    // ligne), et la mascotte reproposait l'invitation alors qu'un e-mail
+    // était parti. Désormais :
+    //   · trace du premier envoi : posée dès qu'une expédition est
+    //     ACCEPTÉE, quel que soit le jeton courant (annulation, expiration,
+    //     remplacement ne l'effacent pas), sans écraser la première
+    //     (COALESCE, idempotent), et SEULEMENT pour la souscription de la
+    //     tentative (`duo_subscription_started_at` relu à la construction) :
+    //     une ancienne expédition ne pollue jamais une nouvelle souscription ;
+    //   · date d'envoi affichée au titulaire : seulement si l'invitation
+    //     envoyée est toujours celle en cours (inchangé) ;
+    //   · écrites dans la MÊME transaction que la clôture `accepted` de la
+    //     demande. Un échec n'écrit rien (jamais présenté comme accepté).
+    // ══════════════════════════════════════════════════════════════════
+    onAccepted: async (at: Date, tx: Exec) => {
+      await tx.unsafe(
         `UPDATE duo_accounts
-            SET pending_invite_sent_at = $3::timestamptz,
-                duo_first_invite_sent_at = COALESCE(duo_first_invite_sent_at, $3::timestamptz),
-                updated_at = $3::timestamptz
+            SET duo_first_invite_sent_at = COALESCE(duo_first_invite_sent_at, $3::timestamptz)
+          WHERE id = $1 AND duo_subscription_started_at IS NOT DISTINCT FROM $2::timestamptz`,
+        [duo.id, duo.period ?? null, iso(at)] as never[],
+      );
+      await tx.unsafe(
+        `UPDATE duo_accounts
+            SET pending_invite_sent_at = $3::timestamptz, updated_at = $3::timestamptz
           WHERE id = $1 AND pending_invite_token = $2`,
         [duo.id, token, iso(at)] as never[],
       );
@@ -284,8 +313,8 @@ export async function processEmailJob(jobId: number, now: Date = new Date()): Pr
   );
   if (!job) return { jobId, status: 'busy' };
 
-  const close = async (status: EmailJobStatus, fields: { error?: string | null; logId?: number | null; messageId?: string | null; next?: Date | null } = {}) => {
-    await pgClient.unsafe(
+  const close = async (status: EmailJobStatus, fields: { error?: string | null; logId?: number | null; messageId?: string | null; next?: Date | null } = {}, exec: Exec = pgClient) => {
+    await exec.unsafe(
       `UPDATE transactional_email_jobs
           SET status = $2, locked_until = NULL, last_error = $3,
               last_email_log_id = COALESCE($4, last_email_log_id),
@@ -318,8 +347,12 @@ export async function processEmailJob(jobId: number, now: Date = new Date()): Pr
       emailJobId: job.id,
     });
     if (res?.success) {
-      await close('accepted', { logId: res.logId ?? null, messageId: res.providerMessageId ?? null });
-      await built.onAccepted?.(now);
+      // Clôture et effets de l'acceptation : une seule transaction (61B).
+      await pgClient.begin(async (tx) => {
+        const exec = tx as unknown as Exec;
+        await close('accepted', { logId: res.logId ?? null, messageId: res.providerMessageId ?? null }, exec);
+        await built.onAccepted?.(now, exec);
+      });
       return { jobId: job.id, status: 'accepted' };
     }
     return await failed(job, res?.error ?? 'Échec d’envoi (cause inconnue)', res?.logId ?? null, now, close);

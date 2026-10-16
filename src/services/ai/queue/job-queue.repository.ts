@@ -856,13 +856,19 @@ export async function cancelJob(jobId: number, userId: number): Promise<boolean>
  * produirait une seconde exécution du même travail.
  */
 export async function retryFailedJob(jobId: number): Promise<boolean> {
+  // Lot 61 (ticket T1 §2) : un job T1 clos DONE avec un résultat MÉTIER en
+  // échec (échec définitif après reprise, lot 33D — p. ex. requête impossible
+  // à construire avant le correctif) est relançable comme un FAILED : sinon le
+  // document ne pourrait plus être relancé depuis le BO sans nouvel upload.
   const rows = await pgClient.unsafe(
     `UPDATE ai_job_queue
         SET status = 'PENDING', attempts = 0, origin = 'manual',
             available_at = NOW(), finished_at = NULL, started_at = NULL,
             last_error = NULL, execution_id = NULL, worker_id = NULL,
-            lease_expires_at = NULL, config_version_id = NULL
-      WHERE id = $1 AND status = 'FAILED'
+            lease_expires_at = NULL, config_version_id = NULL,
+            business_result = NULL, business_result_detail = NULL
+      WHERE id = $1
+        AND (status = 'FAILED' OR (status = 'DONE' AND treatment = 'T1' AND business_result = 'FAILED'))
       RETURNING id`,
     [jobId] as never[],
   );

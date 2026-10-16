@@ -19,7 +19,7 @@ import type { ToProcessActionView } from '@/services/to-process/to-process-query
 import type { MascotAction, MascotFamily, MascotInterpellation, MascotPriority, MascotReminderRef, MascotSubject } from './types';
 import { MAX_ACTIONS_PER_SUBJECT } from './types';
 import type { AgendaDateRole } from '@/services/agenda/agenda-date-role';
-import { deadlineBlockedText, deadlineButtonLabel, deadlineExtActionText, deadlineNextText, deadlinePairText, deadlinePhraseLabel } from './deadline-label';
+import { deadlineBlockedText, deadlineButtonLabel, deadlineExtActionText, deadlineNextText } from './deadline-label';
 import { actionSentence } from './t6-interpellation';
 
 export interface MascotDocRow { id: number; title: string; at: string }
@@ -81,6 +81,16 @@ export interface MascotRawData {
    * `toProcess`.
    */
   toProcessAgendaIds?: number[] | null;
+  /**
+   * Lot 61 (cohérence T6 / « À traiter ») : échéances PASSÉES issues d'un
+   * document dont le moteur « À traiter » a décidé qu'aucune intervention
+   * n'est attendue (information historique), ou dont l'intervention a été
+   * tranchée par l'utilisateur (« C'est fait », « Pas nécessaire »). T6 ne
+   * les relance pas (sujet clos) : jamais une relance qui contredit une
+   * décision « À traiter ». Une échéance FUTURE n'est jamais concernée (un
+   * report de carte n'est pas un rappel).
+   */
+  toProcessSettledAgendaIds?: number[] | null;
   /**
    * Offre et droits du compte (REC-005). Absent ou `null` (lecture en échec) :
    * aucune restriction n'est présumée — le parcours cible reste gardé côté
@@ -352,50 +362,15 @@ function dateSubjects(raw: MascotRawData): MascotSubject[] {
     .sort((a, b) => a.date!.localeCompare(b.date!) || a.id - b.id);
   if (futures.length === 0) return [];
 
+  // Lot 61 : plus de sujet composé DATE-NEXT-2 (DAT-004) — deux échéances
+  // du même jour gardent chacune leur identifiant, leur intitulé, leur date,
+  // leur action « Voir » et leur décision de rappel : deux cartes distinctes
+  // (au plus deux, la place des sujets restant bornée par le sélecteur).
   const premiere = futures[0];
   const memeJour = futures.filter((i) => i.date === premiere.date).slice(0, 2);
-  const date = formatDateFr(premiere.date!);
-  const out: MascotSubject[] = [];
-
-  const voir = (i: MascotAgendaRow, label: string) => action(`DATE:${i.id}:open`, label, {
-    kind: 'drawer', drawer: 'echeance', id: i.id, mode: 'view',
-  });
-
-  if (memeJour.length === 2) {
-    // DATE-NEXT-2 (DAT-004) : un seul sujet composé, qui ne consomme qu'une place.
-    const [a, b] = memeJour;
-    const prevision = a.forecast || b.forecast;
-    // Lot 31 (T6) : mêmes libellés naturels que DATE-NEXT, jamais les titres bruts.
-    const voirA = `Voir ${q(deadlineButtonLabel(a))}`;
-    const voirB = `Voir ${q(deadlineButtonLabel(b))}`;
-    out.push(subject('DATE', {
-      subjectId: `DATE-NEXT-2:${a.id}:${b.id}`,
-      sourceCode: 'DATE-NEXT-2',
-      accountId: raw.accountId,
-      priority: null, requiresAttention: false, intent: 'deadline',
-      facts: {
-        date: premiere.date!, dateLabel: date,
-        dateNature: prevision ? 'prévisionnelle' : 'confirmée',
-        // Lot 50 : rôle de chaque date (à prévoir / planifié), distinct de sa certitude.
-        firstDateRole: roleOf(a), secondDateRole: roleOf(b),
-        firstTitle: a.title, firstAssetName: a.assetName,
-        secondTitle: b.title, secondAssetName: b.assetName,
-      },
-      actions: [voir(a, voirA), voir(b, voirB)],
-      fallbackText: deadlinePairText({ ...a, dateRole: roleOf(a) }, { ...b, dateRole: roleOf(b) }, date, prevision),
-      allowedHighlight: date,
-      occurrenceKey: `DATE-NEXT-2:${a.id}:${b.id}`,
-      dedupeKeys: [`agenda:${a.id}`, `agenda:${b.id}`, 'date-next'],
-      // Lot 55A : intitulés métier, jamais « Voir les échéances ».
-      secondaryLabel: deadlineButtonLabel(a),
-      tileTitle: `${deadlineButtonLabel(a)} et ${deadlinePhraseLabel(b)}`,
-      assetId: a.assetId && a.assetId === b.assetId ? a.assetId : null,
-      assetName: a.assetId && a.assetId === b.assetId ? a.assetName : null,
-    }));
-  } else {
-    out.push(dateNextSubject(raw, premiere));
-  }
-  return out;
+  return memeJour.length === 2
+    ? memeJour.map((i) => dateNextSubject(raw, i, { dedupeDateNext: false }))
+    : [dateNextSubject(raw, premiere)];
 }
 
 // ── 5. Recommandations propres à la mascotte (§11, annexe A) ─────────────────
@@ -461,6 +436,9 @@ function extActionSubject(raw: MascotRawData, i: MascotAgendaRow): MascotSubject
     occurrenceKey,
     dedupeKeys: [`agenda:${i.id}`],
     secondaryLabel: `${deadlineButtonLabel(i)} : c’est fait ?`,
+    // Lot 61 : intitulé métier de la carte quand l'échéance est retenue par
+    // une décision IA (« Ramonage », jamais « Confirmer ou reporter »).
+    tileTitle: deadlineButtonLabel(i),
     assetId: i.assetId, assetName: i.assetName,
   });
 }
@@ -494,6 +472,7 @@ function mascotRuleSubjects(raw: MascotRawData): MascotSubject[] {
 
 /**
  * Lot 53 (D25) : nombre d'échéances dépassées encore ouvertes — hors celles
+ * (lot 61 : donnée de SUPERVISION ; elle ne déclenche plus aucune phrase)
  * que l'utilisateur a déclarées faites (« C'est fait », même cycle). `null` :
  * inconnu (lecture absente ou en échec). Pure.
  */
@@ -503,7 +482,9 @@ export function openOverdueCount(raw: MascotRawData, notInterpellated?: Readonly
   // Lot 60 : une échéance dépassée ÉCARTÉE ou DIFFÉRÉE par la décision T6
   // (aucune action restante, report ou refus de l'utilisateur) ne réapparaît
   // pas dans le texte libre (« Des échéances dépassées sont à vérifier »).
-  return raw.overdueAgenda.filter((i) => !acquittes.has(`${extActionOccurrenceKey(i.id)}|${i.date}`) && !notInterpellated?.has(i.id)).length;
+  // Lot 61 : échéance passée réglée par « À traiter » (aucune intervention attendue, ou tranchée).
+  const regles = new Set(raw.toProcessSettledAgendaIds ?? []);
+  return raw.overdueAgenda.filter((i) => !acquittes.has(`${extActionOccurrenceKey(i.id)}|${i.date}`) && !notInterpellated?.has(i.id) && !regles.has(i.id)).length;
 }
 
 // ── Lot 60 : échéances DÉCIDÉES par T6 ───────────────────────────────────────

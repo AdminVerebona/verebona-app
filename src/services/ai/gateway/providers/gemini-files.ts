@@ -14,6 +14,48 @@ const INLINE_IMAGE_MIMES = new Set([
   'image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/bmp',
 ]);
 
+/** Longueur maximale d'une valeur d'en-tête dérivée d'un nom (octets ASCII). */
+const HEADER_VALUE_MAX = 512;
+
+/**
+ * Lot 61 — valeur d'en-tête HTTP sûre pour un nom fourni par l'utilisateur.
+ *
+ * Un en-tête n'accepte que des octets (ByteString ≤ 255) : un nom en forme
+ * décomposée (NFD, macOS : « e » + U+0301) faisait échouer `fetch` AVANT tout
+ * envoi (« Cannot convert argument to a ByteString … value of 768 »). Le nom
+ * est normalisé NFC puis encodé en pourcent (RFC 3986, ASCII pur, réversible
+ * par `decodeURIComponent`), borné sans couper une séquence `%XX`. Jamais
+ * vide : `source`. Fonction pure — l'original n'est pas modifié.
+ */
+export function encodeHeaderValue(name: string | null | undefined): string {
+  const nfc = (name ?? '').normalize('NFC').trim();
+  if (!nfc) return 'source';
+  let out = '';
+  for (const ch of nfc) {
+    const enc = encodeURIComponent(ch);
+    if (out.length + enc.length > HEADER_VALUE_MAX) break;
+    out += enc;
+  }
+  return out || 'source';
+}
+
+/**
+ * Lot 61 — échec LOCAL et DÉTERMINISTE de construction d'une requête
+ * fournisseur (en-tête invalide, paramètre impossible à encoder) : rien n'a
+ * été envoyé, et réessayer avec un autre modèle donnerait la même erreur.
+ * La passerelle le convertit en `REQUEST_BUILD_FAILED` non récupérable
+ * (aucun repli). Les vraies erreurs récupérables (réseau, HTTP 5xx du
+ * stockage ou de la Files API, délai d'activation) ne passent pas par ici.
+ */
+export class AttachmentRequestBuildError extends Error {
+  readonly deterministic = true as const;
+  readonly aiStage = 'request_build' as const;
+  constructor(message: string, readonly cause?: unknown) {
+    super(message);
+    this.name = 'AttachmentRequestBuildError';
+  }
+}
+
 /** URI accessible nativement par Gemini (reprise de l'ancien `gemini-client`). */
 export function isProviderNativeUri(url: string): boolean {
   return url.startsWith('gs://') || url.startsWith('https://generativelanguage.googleapis.com/');
@@ -118,15 +160,27 @@ async function uploadToFilesApi(att: AiAttachment, apiKey: string): Promise<stri
   if (!res.ok) throw new Error(`Téléchargement échoué (HTTP ${res.status}) : ${att.displayName ?? att.url}`);
   const buffer = Buffer.from(await res.arrayBuffer());
 
-  const upload = await fetch(`${FILES_API}?key=${apiKey}`, {
-    method: 'POST',
-    headers: {
-      'X-Goog-Upload-Protocol': 'raw',
-      'Content-Type': att.mimeType,
-      'X-Goog-Upload-File-Name': att.displayName ?? 'source',
-    },
-    body: new Uint8Array(buffer),
-  });
+  // Lot 61 (incident fileId=98) : la requête est CONSTRUITE à part, avant
+  // tout envoi. Un échec ici (en-tête invalide…) est local et déterministe :
+  // identique sur tous les modèles, il ne doit déclencher aucun repli.
+  let request: Request;
+  try {
+    request = new Request(`${FILES_API}?key=${apiKey}`, {
+      method: 'POST',
+      headers: {
+        'X-Goog-Upload-Protocol': 'raw',
+        'Content-Type': att.mimeType,
+        // Nom d'origine (Unicode, NFD compris) encodé en ASCII pour l'en-tête
+        // uniquement : le nom enregistré en base n'est jamais modifié.
+        'X-Goog-Upload-File-Name': encodeHeaderValue(att.displayName),
+      },
+      body: new Uint8Array(buffer),
+    });
+  } catch (e) {
+    throw new AttachmentRequestBuildError(
+      `Construction de la requête Files API impossible : ${e instanceof Error ? e.message : String(e)}`, e);
+  }
+  const upload = await fetch(request);
   if (!upload.ok) throw new Error(`Upload Files API échoué : HTTP ${upload.status}`);
 
   const json = (await upload.json()) as { file?: { uri?: string; name?: string; state?: string } };

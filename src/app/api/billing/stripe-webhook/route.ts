@@ -39,6 +39,7 @@ import {
 } from '@/services/billing/promo-redemption.service';
 import { isPaymentFailureCurrent, startUnpaidCycle } from '@/services/billing/unpaid-cycle.service';
 import { unpaidDeadline } from '@/services/billing/unpaid-cycle.rules';
+import { duoEntryFromEvent } from '@/services/duo/duo-period';
 
 // ─── Init ──────────────────────────────────────────────────────────────────────
 
@@ -132,7 +133,7 @@ export async function POST(request: NextRequest) {
         break;
       case 'customer.subscription.created':
       case 'customer.subscription.updated':
-        await handleSubscriptionUpdated(event.data.object as Stripe.Subscription, event.type);
+        await handleSubscriptionUpdated(event.data.object as Stripe.Subscription, event.type, event);
         break;
       case 'customer.subscription.deleted':
         await handleSubscriptionDeleted(event.data.object as Stripe.Subscription);
@@ -298,14 +299,20 @@ async function handleCheckoutCompleted(session: Stripe.Checkout.Session) {
 
 async function handleSubscriptionUpdated(
   subscription: Stripe.Subscription,
-  eventType: string
+  eventType: string,
+  event?: Pick<Stripe.Event, 'type' | 'created' | 'data'>,
 ) {
+  // Lot 61B (D) : un événement qui PROUVE le passage à Premium Duo
+  // (`previous_attributes`) date la prise d'effet du Duo — jamais l'heure de
+  // traitement. Lecture non bloquante : sans preuve, la date reste inconnue.
+  const duoEnteredAt = event ? await duoEntryFromEvent(event).catch(() => null) : null;
   // État complet (offre, statut, périodicité, dates, identifiants) et effets
   // du changement d'offre (historique, emails, limites) : service commun.
   // État COURANT relu chez Stripe : un événement ancien ou rejoué ne rouvre
   // jamais les droits d'un compte en impayé (APP-FUNC-31, CA-17).
   const result = await syncSubscriptionFromEvent(subscription, {
     source: `webhook:${eventType}`,
+    duoEnteredAt,
   });
 
   if (!result || result.skipped) return;

@@ -126,3 +126,28 @@ Scénarios financiers FIN-A à FIN-H : `src/services/business-operations/finance
 10. Agenda : supprimer un événement issu d'une intervention → il ne revient pas ; un événement disparu sans suppression utilisateur est restauré au passage horaire suivant.
 
 Un planificateur présent dans le code ne prouve pas son exécution : les points 8 à 10 se constatent dans le BO (File IA, Opérations) sur la préprod.
+
+## 10. Lot 61 — TCO : toutes les dépenses, anti-double comptage, section dédiée
+
+**Principe** : les dépenses alimentent le TCO, les Opérations en améliorent la consolidation. Une facture qualifiée compte sans Opération ; le prix d'achat de la fiche compte tant qu'aucun achat consolidé ne le représente.
+
+**Architecture** (pas de second moteur) : `finance/economic-lines.ts` (pur) qualifie les documents du bien à partir des données PERSISTÉES par T1 (candidats établis et actifs : nature, portée, date, cible, devise ; repli : montant du document seulement si son type est une dépense qualifiée, règles T2-24) et applique la hiérarchie (composante consolidée qui cite le document > dépense documentaire ; Opération sans composante exploitable → la facture fait foi ; copies, même référence, acompte / solde compris dans le total, devis, preuve de paiement, capital, échéance future, multi-biens non ventilé). Chaque ligne retenue passe ensuite par `evaluateComponent` (moteur partagé : devise, attribution, cession, prorata). `tco/model.ts` restitue toutes les lignes examinées (`lines` : identifiant stable, source, provenance T1 / T3 / utilisateur, montant, catégorie, Opération, montant retenu, statut, motif).
+
+**Interface** : Bien › Informations › section dépliable autonome **« Coût total de possession »**, juste après « Valorisation » (toutes familles, desktop et mobile, même composant). Le bouton TCO de « Valorisation » est supprimé.
+
+**Diagnostic BO** : BO › Opérations › onglet **« Coût de possession »** (compte + n° de bien) — chaque ligne retenue ou écartée et son motif, lecture seule.
+
+**Tests** : `src/services/business-operations/tco/__tests__/l61-tco-depenses.test.ts` (TCO-01 à TCO-30) et `src/test/e2e/scenarios/l61-tco-depenses.e2e.ts` (PostgreSQL réel).
+
+### RP-08 — recette préprod (aucune commande, aucun SQL)
+
+1. Compte Premium : créer un objet « Vélo », saisir le prix d'achat 300 € (sans date). Informations › « Coût total de possession » : 300 €.
+2. Déposer une facture de béquille de 25 € puis d'antivol de 35 € (aucune action « À traiter » attendue) : 325 € puis 360 € dès l'analyse, sans attendre T3 ; chaque ligne ouvre son justificatif.
+3. Déposer un devis de réparation de 150 € puis la facture de 180 € : +180 € ; le devis apparaît dans « non retenues » (Prévision).
+4. Après le passage T3 (horaire, ou BO › Reconsolider ce compte) : le total ne change pas ; les factures reprises montrent « Reprise dans une dépense consolidée ».
+5. Déposer deux fois le même PDF : compté une fois (« Copie d'un autre justificatif »). Facture 100 € + avoir 20 € : 80 €. Facture 200 € + acompte 50 € + solde 150 € du même fournisseur : 200 €.
+6. Facture liée à deux biens : non comptée, « Commun à plusieurs biens, non ventilé ». Facture en CHF : exclue, motif « Devise ».
+7. Déplacer une facture vers un autre bien, la supprimer puis la restaurer : les deux sections se recalculent à l'ouverture.
+8. Assistant : « Quel est le coût de possession de mon vélo ? » → 360 € ; « Combien ai-je dépensé pour mon vélo ? » → 60 € (dépenses documentées, hors prix de la fiche).
+9. Compte Standard : section verrouillée, aucun montant. Premium Duo : le second membre voit les mêmes montants. Lecture seule : aucun bouton d'écriture.
+10. BO › Opérations › « Coût de possession » (compte + bien) : chaque euro retenu ou exclu, avec sa source et son motif.

@@ -10,7 +10,9 @@
  *   · « En attente T3 » : candidats T1 en HOLD / arbitrage avec leur motif
  *     (global ou d'un compte) ;
  *   · « Indicateurs » : les 13 indicateurs C26.2 (global ou d'un compte,
- *     période) et les anomalies dures en alerte, avec la procédure.
+ *     période) et les anomalies dures en alerte, avec la procédure ;
+ *   · « Coût de possession » (lot 61) : diagnostic du TCO d'un bien du
+ *     compte — chaque ligne retenue ou écartée et son motif (lecture seule).
  *
  * LECTURE SEULE : aucun bouton d'action sur une Opération (INV-032, F-182).
  * Lot 48 (O10) : filtré sur un compte, « Reconsolider ce compte » met en
@@ -37,11 +39,13 @@ import { AdminPagination } from '../subscriptions/_components/list-controls';
 import type { HoldListResult, IndicatorsReport, OperationListResult } from '@/services/business-operations/diagnostics/service';
 import { HoldsTable, IndicatorsView, OperationsTable, ReadOnlyNotice, t3QueueHref } from './_components/views';
 import { ReconsolidateAccountButton } from './_components/ReconsolidateAccountButton';
+import { TcoDiagnosticView, type TcoDiagnosticResponse } from './_components/TcoDiagnostic';
 
 const TABS = [
   { key: 'liste', label: 'Opérations' },
   { key: 'attente', label: 'En attente T3' },
   { key: 'indicateurs', label: 'Indicateurs' },
+  { key: 'tco', label: 'Coût de possession' },
 ] as const;
 type TabKey = (typeof TABS)[number]['key'];
 
@@ -86,6 +90,9 @@ function Operations() {
   const accountId = /^\d+$/.test(sp.get('accountId') ?? '') ? sp.get('accountId')! : '';
   const [accountInput, setAccountInput] = useState(accountId);
   useEffect(() => { setAccountInput(accountId); }, [accountId]);
+  const assetId = /^\d+$/.test(sp.get('assetId') ?? '') ? sp.get('assetId')! : '';
+  const [assetInput, setAssetInput] = useState(assetId);
+  useEffect(() => { setAssetInput(assetId); }, [assetId]);
 
   const setQuery = useCallback((next: Record<string, string | null>) => {
     const qs = new URLSearchParams(sp.toString());
@@ -104,10 +111,12 @@ function Operations() {
   const listUrl = tab === 'liste' ? `/api/admin/operations?${keep(['accountId', 'type', 'status', 'state', 'withoutAsset', 'withoutSource', 'from', 'to', 'page'])}` : null;
   const holdsUrl = tab === 'attente' ? `/api/admin/operations/holds?${keep(['accountId', 'outcome', 'reason', 'page'])}` : null;
   const indicatorsUrl = tab === 'indicateurs' ? `/api/admin/operations/indicators?${keep(['accountId', 'from', 'to'])}` : null;
+  const tcoUrl = tab === 'tco' && accountId && assetId ? `/api/admin/operations/tco?${keep(['accountId', 'assetId'])}` : null;
+  const tco = useAdminJson<TcoDiagnosticResponse>(tcoUrl);
   const list = useAdminJson<OperationListResult>(listUrl);
   const holds = useAdminJson<HoldListResult>(holdsUrl);
   const indicators = useAdminJson<IndicatorsReport>(indicatorsUrl);
-  const current = tab === 'liste' ? list : tab === 'attente' ? holds : indicators;
+  const current = tab === 'liste' ? list : tab === 'attente' ? holds : tab === 'tco' ? tco : indicators;
 
   return (
     <div className="space-y-6">
@@ -244,6 +253,22 @@ function Operations() {
           {indicators.error ? <EcranEnErreur titre="Calcul des indicateurs impossible" message={indicators.error} onRetry={indicators.reload} />
             : !indicators.data ? <Spinner />
               : <div className={indicators.loading ? 'opacity-60' : ''}><IndicatorsView report={indicators.data} /></div>}
+        </TabsContent>
+
+        <TabsContent value="tco" className="pt-4 space-y-3">
+          <form
+            className="flex flex-col sm:flex-row gap-2 sm:items-center"
+            onSubmit={(e) => { e.preventDefault(); setQuery({ assetId: /^\d+$/.test(assetInput.trim()) ? assetInput.trim() : null }); }}
+          >
+            <Input aria-label="Identifiant du bien" placeholder="N° de bien" inputMode="numeric" value={assetInput}
+              onChange={(e) => setAssetInput(e.target.value)} className="w-40" />
+            <Button type="submit" variant="outline" size="sm">Diagnostiquer</Button>
+            <p className="text-xs text-muted-foreground">Compte et bien requis. Même calcul que l’application (tiroir et assistant), recalculé à la demande.</p>
+          </form>
+          {!accountId || !assetId ? <p className="text-sm text-muted-foreground">Renseignez le compte puis le bien.</p>
+            : tco.error ? <EcranEnErreur titre="Diagnostic du coût de possession impossible" message={tco.error} onRetry={tco.reload} />
+              : !tco.data ? <Spinner />
+                : <div className={tco.loading ? 'opacity-60' : ''}><TcoDiagnosticView data={tco.data} /></div>}
         </TabsContent>
       </Tabs>
     </div>

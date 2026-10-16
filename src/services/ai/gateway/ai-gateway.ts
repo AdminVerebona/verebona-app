@@ -12,7 +12,7 @@
  */
 import { randomUUID } from 'crypto';
 import type { AiGatewayRequest, AiGatewayResponse } from './types';
-import { AiGatewayError, isAiGatewayError, type AiErrorCode } from './errors';
+import { AiGatewayError, isAiGatewayError, isDeterministicLocalError, type AiErrorCode } from './errors';
 import { getOperation, isMasterOperation } from '../registry/operations';
 import { calcCostMicros } from './cost-catalog';
 import { errorOf } from './output-validator';
@@ -557,8 +557,15 @@ export class AiGateway {
           // Lot 52B : 400 INVALID_ARGUMENT générique → essai diagnostique.
           { trail, providerSchemaHash: psHash, diagnosticRetry: true });
           if (soStatus === 'requested_schema' && !sendSchema) soStatus = 'schema_skipped_recent_rejection';
-        } catch (e) {
+        } catch (raw) {
           // ── Échec AVANT toute sortie exploitable (fournisseur, réseau, délai) ──
+          // Lot 61 : erreur locale déterministe (construction de la requête) →
+          // REQUEST_BUILD_FAILED non récupérable : aucun repli, jamais
+          // PROVIDER_UNAVAILABLE (incident fileId=98, appels 3738-3740).
+          const e = !isAiGatewayError(raw) && isDeterministicLocalError(raw)
+            ? Object.assign(new AiGatewayError('REQUEST_BUILD_FAILED', operationCode,
+              raw instanceof Error ? raw.message : String(raw), { recoverable: false, cause: raw }), { aiStage: 'request_build' })
+            : raw;
           const message = e instanceof Error ? e.message : String(e);
           const c = classifyCallError(e);
           const blockedMeta = (e as { providerMeta?: ProviderResponseMeta })?.providerMeta;
@@ -1067,6 +1074,8 @@ function providerMetaOf(
  */
 export function gatewayCodeOf(e: unknown, c: Pick<ClassifiedFailure, 'family' | 'subtype'>): AiErrorCode {
   if (isAiGatewayError(e)) return e.code;
+  // Lot 61 : erreur locale déterministe — jamais une indisponibilité fournisseur.
+  if (isDeterministicLocalError(e)) return 'REQUEST_BUILD_FAILED';
   const cat = providerFailureCategory(c.family, c.subtype);
   return cat === 'REQUEST_REJECTED' || cat === 'STRUCTURED_OUTPUT_REJECTED' ? 'PROVIDER_REQUEST_REJECTED' : 'PROVIDER_UNAVAILABLE';
 }

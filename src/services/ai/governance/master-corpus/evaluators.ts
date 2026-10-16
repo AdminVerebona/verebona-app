@@ -162,6 +162,33 @@ export const MASTER_CORPUS_EVALUATORS: Readonly<Record<string, Evaluator>> = {
       ...ecart(!(exp<string[]>(c, 'neverOutcomes') ?? []).includes(d.outcome), `issue interdite ${d.outcome}`),
     ];
   },
+  // Lot 61 — DOCUMENT_NAMING : garde-fous serveur réels (`judgeProposal`,
+  // `collidingProposals`) sur les propositions du modèle. Attendus :
+  // `applied` (identifiant → nom retenu), `refused` (identifiant → motif).
+  async t3_document_naming(c, output) {
+    const { judgeProposal, collidingProposals } = await import('../../reconciliation/document-naming/guards');
+    const { documentFingerprint } = await import('../../reconciliation/document-naming/context');
+    const x = (c.context as { documentNaming: { docs: Array<Record<string, unknown>>; origins?: Record<string, string>; known?: Record<string, unknown> } }).documentNaming;
+    const docs = new Map(x.docs.map((d) => [Number(d.id), {
+      id: Number(d.id), name: String(d.name), origin: (x.origins?.[String(d.id)] ?? 'UNKNOWN') as never, fingerprint: documentFingerprint(d as never),
+    }]));
+    const o = output as { document_renames?: Array<Record<string, unknown>> };
+    const seen = new Set<number>();
+    const verdicts = (o.document_renames ?? []).map((p) => ({ p, v: judgeProposal(p as never, {
+      docs, seen, known: (x.known?.[String(p.document_id)] as never) ?? { dates: [], periods: [], amountsCents: [], texts: [] }, now: new Date(), cooldownDays: 30,
+    }) }));
+    const collisions = collidingProposals(verdicts.flatMap(({ p, v }) => (v.accept ? [{ documentId: Number(p.document_id), name: v.name }] : [])), docs);
+    const appliques: Record<string, string> = {};
+    const refuses: Record<string, string> = {};
+    for (const { p, v } of verdicts) {
+      if (v.accept && !collisions.has(Number(p.document_id))) appliques[String(p.document_id)] = v.name;
+      else refuses[String(p.document_id)] = v.accept ? 'NAME_COLLISION' : v.code;
+    }
+    return [
+      ...ecart(JSON.stringify(appliques) === JSON.stringify(exp(c, 'applied') ?? {}), `renommages retenus ${JSON.stringify(appliques)}`),
+      ...ecart(exp(c, 'refused') === undefined || JSON.stringify(refuses) === JSON.stringify(exp(c, 'refused')), `refus ${JSON.stringify(refuses)}`),
+    ];
+  },
   // ── T4 ─────────────────────────────────────────────────────────────────────
   async t4_classify_event(c, output) {
     const { translateClassifyEvent, translateEventDecision } = await import('../../agenda/master/classify-event');
@@ -176,6 +203,20 @@ export const MASTER_CORPUS_EVALUATORS: Readonly<Record<string, Evaluator>> = {
       errs.push(
         ...ecart(exp(c, 'agendaDecision') === undefined || d.agendaDecision === exp(c, 'agendaDecision'), `agendaDecision ${d.agendaDecision} ≠ ${String(exp(c, 'agendaDecision'))}`),
         ...ecart(exp(c, 'recurrenceDecision') === undefined || d.recurrenceDecision === exp(c, 'recurrenceDecision'), `recurrenceDecision ${d.recurrenceDecision} ≠ ${String(exp(c, 'recurrenceDecision'))}`),
+      );
+    }
+    // Lot 61 (t4_output_v3) : évaluation de l'intervention « À traiter »,
+    // contrôlée par le serveur (preuve retrouvée dans le contexte fourni).
+    if (exp(c, 'interventionNeeded') !== undefined || exp(c, 'interventionKind') !== undefined) {
+      const { checkInterventionCoherence } = await import('../../../to-process/intervention-check');
+      const ctx = c.context as { candidate?: { excerpt?: string; title?: string }; toProcessAssessment?: { documentTitle?: string | null } };
+      const iv = checkInterventionCoherence((output as { intervention?: never }).intervention, {
+        requested: !!ctx.toProcessAssessment,
+        providedText: [ctx.candidate?.excerpt ?? '', ctx.candidate?.title ?? '', ctx.toProcessAssessment?.documentTitle ?? ''].join(' '),
+      });
+      errs.push(
+        ...ecart(exp(c, 'interventionNeeded') === undefined || iv?.needed === exp(c, 'interventionNeeded'), `intervention ${iv?.needed ?? 'absente'} ≠ ${String(exp(c, 'interventionNeeded'))}`),
+        ...ecart(exp(c, 'interventionKind') === undefined || iv?.kind === exp(c, 'interventionKind'), `nature ${iv?.kind ?? 'aucune'} ≠ ${String(exp(c, 'interventionKind'))}`),
       );
     }
     return errs;
@@ -252,6 +293,12 @@ export const MASTER_CORPUS_EVALUATORS: Readonly<Record<string, Evaluator>> = {
   async t6_formulate(c, output) {
     const { evaluateT6CorpusCase } = await import('@/services/home/mascot/t6-contract');
     return evaluateT6CorpusCase(c.context as never, output, c.expected as never);
+  },
+  // Lot 61 — MODE=EVALUATE : contrat `t6-evaluation-v1` (Zod strict) et
+  // contrôles métier (une décision par candidat, ordre, motifs, preuves, dates).
+  async t6_evaluate(c, output) {
+    const { evaluateT6EvaluationCorpusCase } = await import('@/services/home/mascot/t6-contract');
+    return evaluateT6EvaluationCorpusCase(c.context as never, output, c.expected as never);
   },
 };
 

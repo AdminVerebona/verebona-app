@@ -11,9 +11,14 @@ scenario('L49A-T13', 'Duo : « Inviter quelqu’un » proposé en premier, jusqu
   it('AC13-1 / AC13-4 / AC13-5 — lecture réelle : proposé, puis retiré à l’envoi et à l’acceptation ; jamais pour le membre', async () => {
     const { readDuoInvite } = await import('@/services/home/mascot/duo-invite');
     const compte = await make.account({ plan: 'premium_duo' });
+    // Lot 61B : données cohérentes — compte Premium Duo à jour (vérification
+    // croisée de l'offre) et date de début écrite par la synchronisation
+    // (le déclencheur 0438 ne fabrique plus de date).
+    await sql`UPDATE accounts SET plan_type = 'PREMIUM_DUO', subscription_status = 'ACTIVE' WHERE id = ${compte.id}`;
     // Souscription Duo : Duo du payeur, son adhésion (slot 0), compte rattaché.
     const [duo] = await sql<{ id: number }[]>`
-      INSERT INTO duo_accounts (billing_owner_user_id, subscription_status) VALUES (${compte.ownerUserId}, 'ACTIVE') RETURNING id`;
+      INSERT INTO duo_accounts (billing_owner_user_id, subscription_status, duo_subscription_started_at)
+      VALUES (${compte.ownerUserId}, 'ACTIVE', now()) RETURNING id`;
     await sql`INSERT INTO duo_memberships (duo_id, user_id, status, slot, joined_at) VALUES (${duo.id}, ${compte.ownerUserId}, 'ACTIVE', 0, now())`;
     await sql`UPDATE accounts SET duo_account_id = ${duo.id} WHERE id = ${compte.id}`;
 
@@ -22,7 +27,7 @@ scenario('L49A-T13', 'Duo : « Inviter quelqu’un » proposé en premier, jusqu
     // Abonnement Duo pas encore activé par le paiement : rien.
     await sql`UPDATE duo_accounts SET subscription_status = 'CANCELED' WHERE id = ${duo.id}`;
     expect(await readDuoInvite(compte.id)).toBeNull();
-    await sql`UPDATE duo_accounts SET subscription_status = 'ACTIVE' WHERE id = ${duo.id}`;
+    await sql`UPDATE duo_accounts SET subscription_status = 'ACTIVE', duo_subscription_started_at = now() WHERE id = ${duo.id}`;
 
     // Invitation envoyée : retirée.
     await sql`UPDATE duo_accounts SET pending_invite_email = 'ami@test.invalid', pending_invite_sent_at = now() WHERE id = ${duo.id}`;

@@ -22,9 +22,10 @@
  *  T6-INT-16  aucun libellé concaténé « X et Y »
  *  T6-INT-17  reporting : sujets affichés ET écartés, motif, seuil, rappel ; aucune donnée personnelle recopiée
  * Contrat IA
- *  T6-INT-19  R13 : prompt livré, variable facultative, version BO antérieure → décision prudente
+ *  T6-INT-19  prompt livré (lot 61 : modes EVALUATE / FORMULATE), version BO antérieure → décision prudente
  *  T6-INT-20  anti-répétition sans évolution du contexte
- *  T6-INT-22  évaluations du même appel T6 validées et persistées (y compris si les textes sont rejetés)
+ *  (T6-INT-22 — évaluation dans le MÊME appel que la formulation — remplacé au
+ *   lot 61 par le mode EVALUATE distinct : voir `l61-t6-evaluate.test.ts`, T6-EV-xx.)
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { readFileSync } from 'fs';
@@ -44,7 +45,7 @@ const R = await import('../t6-runner');
 const { buildCandidates, decidedAgendaSubjects } = await import('../signals');
 const { selectSubjects, buildSecondaries } = await import('../selector');
 const { buildPresentation } = await import('../presentation');
-const { buildT6Input, T6FormulateOutput, T6_MASTER_OPERATION_SPEC } = await import('../t6-contract');
+const { T6FormulateOutput, T6_MASTER_OPERATION_SPEC } = await import('../t6-contract');
 const { composeSpeech, homeItems, NOTHING_PRIORITY } = await import('../bubble');
 const { t6ReportEntries, t6Candidates, agendaFingerprint, preferencesFor } = await import('../t6-interpellation.service');
 const { renderMasterPrompt, isOptionalMasterVariable } = await import('@/services/ai/prompts/prompt-loader');
@@ -64,7 +65,8 @@ const cand = (o: Partial<Cand> = {}): Cand => ({
 const ia = (o: Partial<Assess> = {}): Assess => ({
   interpellation: 'NONE', actionNeeded: false, action: null, reason: 'Information suivie.', consequence: null,
   actionDate: null, priority: 'LOW', uncertainty: null, exceptionReason: null, reevaluateOn: null,
-  fingerprint: 'fp1', assessedOn: TODAY, ...o,
+  // Lot 61 : seules les évaluations du contrat `t6-evaluation-v1` sont réutilisées.
+  fingerprint: 'fp1', assessedOn: TODAY, contractVersion: 't6-evaluation-v1', ...o,
 });
 const decide = (o: Partial<Parameters<typeof I.decideT6Interpellation>[0]> = {}) => I.decideT6Interpellation({
   candidate: cand(), today: TODAY, thresholdDays: SEUIL, aiCapable: true, assessment: null, preferences: [], ...o,
@@ -99,6 +101,8 @@ describe('Sélection intelligente', () => {
     expect(decide({ candidate: c })).toMatchObject({ decision: 'DEFER', code: 'AI_ASSESSMENT_PENDING', needsAssessment: true, deferredBy: 'SYSTEM' });
     // Sans IA (T6 coupé, prompt BO antérieur) : jamais d'interpellation lointaine.
     expect(decide({ candidate: c, aiCapable: false })).toMatchObject({ decision: 'SUPPRESS', code: 'NO_AI_BEYOND_THRESHOLD' });
+    // Lot 61 : une évaluation R13 du lot 60 (sans contrat) n'est jamais réutilisée.
+    expect(decide({ candidate: c, assessment: ia({ contractVersion: null }) })).toMatchObject({ decision: 'DEFER', code: 'AI_ASSESSMENT_PENDING' });
   });
 
   it('T6-INT-02 — au-delà de 60 jours, démarche à engager avant (motif concret, date dans le seuil) : interpellation justifiée', () => {
@@ -143,9 +147,7 @@ describe('Sélection intelligente', () => {
     expect(decide({ candidate: c, assessment: ia({ interpellation: 'ACT_NOW', actionNeeded: true, priority: 'HIGH' }) }))
       .toMatchObject({ decision: 'SUPPRESS', code: 'INSUFFICIENT_CONTEXT', priority: 'LOW' });
     expect(decide({ candidate: c, aiCapable: false })).toMatchObject({ decision: 'SUPPRESS', code: 'INSUFFICIENT_CONTEXT' });
-    // Une date pour agir mal formée rendue par l'IA est ignorée (jamais une date supposée).
-    const [v] = I.validateT6Assessments([{ ref: 'C1', interpellation: 'act_now', reason: 'x', actionDate: '1er janvier', priority: 'HIGH' }], new Set(['C1']), TODAY);
-    expect(v).toMatchObject({ interpellation: 'ACT_NOW', actionDate: null });
+    // Lot 61 : une date pour agir mal formée rejette la sortie EVALUATE (jamais une date supposée) — T6-EV-01.
   });
 });
 
@@ -252,9 +254,8 @@ describe('Affichage et supervision', () => {
 
   it('T6-INT-15 / T6-INT-16 — deux échéances du même jour : deux cartes, deux rappels distincts, aucun libellé « X et Y »', () => {
     const r = raw([assurance(1, '2026-11-20', { title: 'Échéance assurance habitation' }), assurance(2, '2026-11-20', { title: 'Échéance assurance auto', assetName: 'Clio', assetId: 2 })]);
-    // Chemin historique : sujet composé, titre concaténé (le constat).
-    const avant = buildCandidates(r).candidates.find((s) => s.sourceCode === 'DATE-NEXT-2');
-    expect(avant?.tileTitle).toMatch(/ et /);
+    // Lot 61 : le chemin historique ne compose plus de DATE-NEXT-2 (titre concaténé).
+    expect(buildCandidates(r).candidates.map((s) => s.sourceCode)).toEqual(['DATE-NEXT', 'DATE-NEXT']);
     const p = presentation(r, [1, 2].map((id) => ({ agendaItemId: id, interpellation: { mode: 'ACT_NOW' as const, priority: 'MEDIUM' as const, code: 'AI_ACT_NOW' }, action: null, reminder: rappel(id) })));
     expect(p.paragraphs.map((x) => x.sourceCode)).toEqual(['DATE-NEXT', 'DATE-NEXT']);
     const items = homeItems(p, false).filter((x) => x.kind === 'subject');
@@ -314,66 +315,26 @@ describe('Candidats', () => {
 describe('Contrat IA', () => {
   const MASTER = readFileSync(join(process.cwd(), 'src/services/ai/prompts/mascot/t6_master_v1.txt'), 'utf-8');
 
-  it('T6-INT-19 — prompt maître livré : R13, emplacement FACULTATIF ; version BO antérieure ou T6 coupé → décision prudente', async () => {
+  it('T6-INT-19 (revu lot 61) — prompt maître livré : modes EVALUATE et FORMULATE ; version BO antérieure ou T6 coupé → décision prudente', async () => {
     expect(MASTER).toContain('{{INTERPELLATION_CONTEXT}}');
-    expect(MASTER).toContain('R13 — Évaluation d’interpellation.');
-    expect(MASTER).toContain('"assessments":[');
+    expect(MASTER).toContain('BRANCHE MODE = EVALUATE');
+    expect(MASTER).toContain('BRANCHE MODE = FORMULATE');
+    expect(MASTER).not.toContain('R13');
     expect(MASTER).toMatch(/N’invente jamais de délai contractuel, réglementaire ou administratif/);
     expect(MASTER).not.toMatch(/assurance|garantie|entretien/i);
     expect(isOptionalMasterVariable('t6_master_v1', 'INTERPELLATION_CONTEXT')).toBe(true);
     expect(T6_MASTER_OPERATION_SPEC.promptVariables).toContain('INTERPELLATION_CONTEXT');
     expect(getOperation('t6_formulate').promptVariables).toContain('INTERPELLATION_CONTEXT');
-    const ancien = MASTER.replace(/\nCandidats d’interpellation à évaluer : \{\{INTERPELLATION_CONTEXT\}\}\n/, '\n');
-    expect(renderMasterPrompt(ancien, { masterPromptCode: 't6_master_v1', task: 'FORMULATE', allowedTasks: ['FORMULATE'], variables: { INPUT_JSON: '{}', SUGGESTION_CONTEXT: null, INTERPELLATION_CONTEXT: '{"zz":1}' } }))
-      .not.toContain('{"zz":1}');
-    configText = 'MODE = {{MODE}} {{INPUT_JSON}} {{SUGGESTION_CONTEXT}}';
+    // Version BO du lot 60 (R13, sans branche EVALUATE) : évaluation indisponible.
+    configText = 'MODE = {{MODE}}\n\nValeurs autorisées : FORMULATE\n{{INPUT_JSON}} {{SUGGESTION_CONTEXT}} {{INTERPELLATION_CONTEXT}}';
     expect(await R.t6InterpellationAvailable()).toBe(false);
     configText = null;
     expect(await R.t6InterpellationAvailable()).toBe(true);
     t6Ouvert = false;
     expect(await R.t6InterpellationAvailable()).toBe(false);
-    // La sortie conserve `assessments` (non retirée par le schéma).
+    // FORMULATE (t6-output-v2) : un `assessments` d'une version antérieure est retiré, jamais lu.
     const out = T6FormulateOutput.parse({ schemaVersion: 't6-output-v2', messages: [], assessments: [{ ref: 'C1' }] });
-    expect(out.assessments).toEqual([{ ref: 'C1' }]);
-  });
-
-  it('validation structurelle des évaluations : référence connue, une par candidat, valeurs fermées, textes bornés', () => {
-    const refs = new Set(['C1', 'C2']);
-    const v = I.validateT6Assessments([
-      { ref: 'C1', interpellation: 'NONE', reason: 'Simple information.', priority: 'low' },
-      { ref: 'C1', interpellation: 'ACT_NOW', reason: 'doublon' },
-      { ref: 'C9', interpellation: 'ACT_NOW', reason: 'inconnu' },
-      { ref: 'C2', interpellation: 'PEUT-ÊTRE', reason: 'x' },
-      { ref: 'C2', interpellation: 'ANTICIPATE', reason: '', priority: 'HIGH' },
-    ], refs, TODAY);
-    expect(v).toEqual([expect.objectContaining({ ref: 'C1', interpellation: 'NONE', actionNeeded: false, priority: 'LOW' })]);
-    expect(I.validateT6Assessments('pas une liste', refs, TODAY)).toEqual([]);
-    const [r] = I.validateT6Assessments([{ ref: 'C2', interpellation: 'LATER', reason: 'r', reevaluateOn: '2026-10-01' }], refs, TODAY);
-    expect(r.reevaluateOn).toBeNull(); // dans le passé : ignorée
-  });
-
-  it('T6-INT-22 — évaluations du MÊME appel T6 : contexte transmis, clé de cache distincte, persistées même si les textes sont rejetés', async () => {
-    R.resetT6Breaker();
-    const persist = vi.fn(async (l: unknown[], _m: unknown) => l.length);
-    const bundle: import('../t6-interpellation').T6InterpellationBundle = {
-      context: { schemaVersion: I.T6_INTERPELLATION_CONTEXT_SCHEMA, today: TODAY, thresholdDays: 60, candidates: [{ ref: 'C1' } as never] },
-      refs: new Map([['C1', { subjectKey: 'agenda:1', agendaItemId: 1, fingerprint: 'fp1' }]]),
-      persist,
-    };
-    const execute = vi.fn(async (_r: unknown) => ({
-      data: { schemaVersion: 't6-output-v2', messages: [{ subjectId: 'x', text: 'invalide' }], assessments: [{ ref: 'C1', interpellation: 'NONE', reason: 'Rien à faire.' }] },
-      model: 'm', usedFallback: false, fromCache: false, costMicros: 1, traceId: 'trace-1',
-    }));
-    const input = buildT6Input([]);
-    const o = await R.formulateWithT6({ accountId: 7, input, contextHash: 'h', mode: 'pregen', interpellation: bundle }, {
-      treatmentAvailable: async () => true, promptVersion: async () => 'v', previousBubbles: async () => [], execute: execute as never, displayWaitMs: () => 6_000,
-    });
-    const req = execute.mock.calls[0][0] as { promptVariables: Record<string, unknown> };
-    expect(JSON.parse(String(req.promptVariables.INTERPELLATION_CONTEXT))).toMatchObject({ today: TODAY, thresholdDays: 60 });
-    expect(o.status).toBe('validation_failed');
-    expect(persist).toHaveBeenCalledWith([expect.objectContaining({ ref: 'C1', interpellation: 'NONE' })], { promptVersion: 'v', traceId: 'trace-1' });
-    const sans = R.t6CacheKey({ accountId: 7, input, promptVersion: 'v', outputSchema: 't6-output-v2' });
-    const avec = R.t6CacheKey({ accountId: 7, input, promptVersion: 'v', outputSchema: 't6-output-v2', interpellationContext: bundle.context });
-    expect(avec).not.toBe(sans);
+    expect('assessments' in out).toBe(false);
+    void renderMasterPrompt;
   });
 });

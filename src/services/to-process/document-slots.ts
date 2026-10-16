@@ -31,7 +31,7 @@
  * ══════════════════════════════════════════════════════════════════════════
  */
 import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
-import { db } from '@/db';
+import { db, pgClient } from '@/db';
 import { assetFiles, assets, documentAssetLinks, documentFieldValues, documentSuppliers, suppliers } from '@/db/schema';
 import { getField } from '@/services/canonical/registry';
 import type { ActionProposal, ValueOrigin } from './action-model';
@@ -54,6 +54,45 @@ export interface AutoWriteMeta {
   origin: ValueOrigin;
   confidence?: number | null;
   evidenceIds?: string[];
+  /**
+   * Lot 61 : nature de la valeur — EXPLICIT (lue), CALCULATED (échéance
+   * théorique calculée) — et sa provenance (`derivation`). Colonnes 0444.
+   */
+  valueKind?: 'EXPLICIT' | 'CALCULATED' | 'ESTIMATED';
+  derivation?: unknown;
+}
+
+let colonnesNature: { at: number; ok: boolean } | null = null;
+
+/** Colonnes `value_kind` / `derivation` (0444) présentes ? (relu toutes les 5 min). */
+export async function valueKindColumnsReady(): Promise<boolean> {
+  if (colonnesNature && (colonnesNature.ok || Date.now() - colonnesNature.at < 300_000)) return colonnesNature.ok;
+  let ok = false;
+  try {
+    const [r] = (await pgClient.unsafe(
+      `SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema()
+                       AND table_name = 'document_field_values' AND column_name = 'value_kind') AS ok`,
+    )) as unknown as Array<{ ok: boolean }>;
+    ok = r?.ok === true;
+  } catch { ok = false; }
+  colonnesNature = { at: Date.now(), ok };
+  return ok;
+}
+
+type ExecClient = { execute: (q: ReturnType<typeof sql>) => Promise<unknown> };
+const canExecute = (c: unknown): c is ExecClient => typeof (c as ExecClient)?.execute === 'function';
+
+/**
+ * Pose la nature et la provenance d'une valeur (0444), dans le client fourni
+ * (transaction) — jamais sur une valeur de l'utilisateur. Sans les colonnes :
+ * sans effet.
+ */
+async function poserNature(client: unknown, accountId: number, fileId: number, key: string, kind: string | null, derivation: unknown, userOnly = false): Promise<void> {
+  if (!(await valueKindColumnsReady())) return;
+  const q = sql`UPDATE document_field_values SET value_kind = ${kind}, derivation = ${derivation == null ? null : JSON.stringify(derivation)}::jsonb
+                 WHERE account_id = ${accountId} AND file_id = ${fileId} AND field_key = ${key} AND user_validated = ${userOnly}`;
+  if (canExecute(client)) await client.execute(q);
+  else await db.execute(q);
 }
 
 export interface DocumentSlot {
@@ -165,6 +204,8 @@ export function valueStoreSlot(key: string): DocumentSlot {
           setWhere: eq(documentFieldValues.userValidated, false),
         })
         .returning({ id: documentFieldValues.id });
+      // Lot 61 : nature (lue / calculée) et provenance, dans la même transaction.
+      if (rows.length > 0) await poserNature(client, accountId, fileId, key, meta.valueKind ?? 'EXPLICIT', meta.derivation ?? null);
       return rows.length > 0;
     },
     async writeUser(client, accountId, fileId, value) {
@@ -176,6 +217,8 @@ export function valueStoreSlot(key: string): DocumentSlot {
           target: [documentFieldValues.fileId, documentFieldValues.fieldKey],
           set: { valueText: v === null ? null : String(v), origin: 'USER', userValidated: true, confidence: null, evidenceIds: [], updatedAt: new Date() },
         });
+      // Lot 61 : une saisie de l'utilisateur n'est jamais « calculée ».
+      await poserNature(client, accountId, fileId, key, null, null, true);
     },
   };
 }
@@ -363,4 +406,29 @@ const OVERRIDES: Record<string, DocumentSlot> = {
 /** Emplacement d'une donnée documentaire (`fieldKey` / `relationKey` d'une règle). */
 export function documentSlotFor(key: string): DocumentSlot {
   return OVERRIDES[key] ?? valueStoreSlot(key);
+}
+
+// ── Lot 61 : nature d'une valeur retenue ────────────────────────────────────
+
+/** Nature (EXPLICIT / CALCULATED / ESTIMATED, null = antérieure) et provenance d'une valeur retenue. */
+export async function readValueKind(accountId: number, fileId: number, key: string): Promise<{ kind: string | null; derivation: unknown }> {
+  const [r] = (await pgClient.unsafe(
+    `SELECT to_jsonb(v) ->> 'value_kind' AS kind, to_jsonb(v) -> 'derivation' AS derivation
+       FROM document_field_values v WHERE v.account_id = $1 AND v.file_id = $2 AND v.field_key = $3`,
+    [accountId, fileId, key] as never[],
+  )) as unknown as Array<{ kind: string | null; derivation: unknown }>;
+  return { kind: r?.kind ?? null, derivation: r?.derivation ?? null };
+}
+
+/**
+ * Retire une valeur CALCULÉE dont les sources ont disparu ou changé (jamais
+ * une valeur lue ni une valeur de l'utilisateur). Rend vrai si retirée.
+ */
+export async function withdrawCalculatedValue(client: unknown, accountId: number, fileId: number, key: string): Promise<boolean> {
+  if (!(await valueKindColumnsReady())) return false;
+  const q = sql`DELETE FROM document_field_values
+                 WHERE account_id = ${accountId} AND file_id = ${fileId} AND field_key = ${key}
+                   AND user_validated = false AND value_kind = 'CALCULATED' RETURNING id`;
+  const r = canExecute(client) ? await client.execute(q) : await db.execute(q);
+  return Array.isArray(r) ? r.length > 0 : ((r as { length?: number; rowCount?: number })?.length ?? (r as { rowCount?: number })?.rowCount ?? 0) > 0;
 }

@@ -109,6 +109,12 @@ export interface MascotInterpellation {
   priority: 'HIGH' | 'MEDIUM' | 'LOW';
   /** Code de justification (`T6DecisionCode`). */
   code: string;
+  /**
+   * Lot 61 : motif VALIDÉ de l'IA (`T6_REASON_CODES`) et catégorie — nature
+   * de la carte (vérification, action, anticipation). Null : sans IA.
+   */
+  reasonCode?: string | null;
+  category?: 'ACTION_NOW' | 'TO_ANTICIPATE' | 'INFORMATION' | null;
 }
 
 /**
@@ -172,7 +178,33 @@ export interface MascotTile {
   kind?: 'overdue' | 'verify' | 'action' | 'info';
 }
 
+/**
+ * `clear` (lot 61) : AUCUNE INTERPELLATION PERTINENTE établie — jamais une
+ * preuve que tous les événements ou documents sont résolus.
+ */
 export type MascotStatus = 'ok' | 'clear' | 'degraded';
+
+/**
+ * Lot 61 — ÉTAT DE PRÉSENTATION EXPLICITE, calculé côté serveur à partir des
+ * décisions validées et des statuts métier fiables. La bulle (texte, cartes,
+ * pose) l'assemble sans rien réinterpréter : ni le nombre de paragraphes, ni
+ * le total « À traiter », ni le compteur brut des échéances passées.
+ */
+export interface MascotPresentationState {
+  schemaVersion: 'mascot-state-v1';
+  /** Synthèse : actions retenues > informations > dégradé > ouverts non prioritaires > rien à signaler. */
+  kind: 'ACTIONS' | 'INFORMATION' | 'DEGRADED' | 'OPEN_NOT_PRIORITY' | 'NOTHING_TO_REPORT';
+  /** Actions prioritaires retenues (sujets d'attention, « À faire en premier », invitation Duo). */
+  actions: number;
+  /** Informations utiles autorisées (analyse, export, information retenue). */
+  information: number;
+  /** Éléments ouverts NON prioritaires (« À traiter » sans DO_FIRST) : jamais comptés ni répétés. */
+  openNotPriority: boolean;
+  /** Évaluation des échéances proches : faite, en cours, indisponible. */
+  evaluation: 'OK' | 'PENDING' | 'UNAVAILABLE';
+  /** Une source au moins n'a pas pu être lue. */
+  degraded: boolean;
+}
 
 // ── « À traiter » de la mascotte (lot 32, MASC2) ─────────────────────────────
 
@@ -288,11 +320,17 @@ export interface MascotPresentation {
   duoInvite?: MascotDuoInvite | null;
   /**
    * Lot 53 (retour PO D25) : échéances dépassées encore ouvertes, au-delà
-   * des sujets affichés. La bulle n'en dit jamais le nombre, mais ne dit
-   * jamais « aucune échéance dépassée » ni « tout est à jour » s'il en
-   * reste. Absent ou `null` : inconnu (présentation ancienne, lecture en échec).
+   * des sujets affichés. Lot 61 : donnée de SUPERVISION seulement — une date
+   * dépassée n'établit ni un événement non résolu, ni une action nécessaire :
+   * elle ne déclenche plus aucune phrase et n'empêche pas un accueil neutre.
+   * Absent ou `null` : inconnu.
    */
   overdueDeadlines?: number | null;
+  /**
+   * Lot 61 : état de présentation explicite (voir `MascotPresentationState`).
+   * Absent (présentation ancienne) : déduit prudemment par la bulle.
+   */
+  state?: MascotPresentationState;
 }
 
 /** Plafonds UX (UX-007, SEC-001). */
@@ -301,5 +339,6 @@ export const MAX_ACTIONS_TOTAL = 5;
 export const MAX_SECONDARIES = 3;
 export const MAX_ACTIONS_PER_SUBJECT = 2;
 
-export const CLEAR_TEXT = 'Tout est à jour pour le moment.';
+/** Lot 61 : aucune interpellation pertinente — jamais « Tout est à jour ». */
+export const CLEAR_TEXT = 'Rien de particulier à vous signaler pour le moment.';
 export const DEGRADED_NOTICE = 'Certaines informations n’ont pas pu être actualisées.';

@@ -66,7 +66,16 @@ export interface LedgerComponent {
   targetAssetId: number | null;
   targetEquipmentId?: number | null;
   label?: string | null;
+  /**
+   * Lot 61 (TCO) : identifiant STABLE de la ligne économique quand elle ne
+   * vient pas d'une composante consolidée (`doc:<fichier>…`, `asset:<bien>:…`).
+   * Absent : composante d'Opération, identifiée par `id`.
+   */
+  lineId?: string;
 }
+
+/** Clé d'unicité d'une ligne : `lineId` (dépense documentaire, fiche) ou la composante (lot 61). */
+export const ledgerKey = (e: { lineId?: string; componentId: number }): string => e.lineId ?? `c:${e.componentId}`;
 
 // ── Conversion EUR (C12.3) ─────────────────────────────────────────────────
 
@@ -174,6 +183,8 @@ export interface LedgerEntry {
   attribution: Attribution;
   date: string | null;
   prorata?: { days: number; totalDays: number } | null;
+  /** Lot 61 : identifiant stable d'une ligne non consolidée (voir `LedgerComponent.lineId`). */
+  lineId?: string;
 }
 
 export interface EvaluateContext {
@@ -200,6 +211,7 @@ export function evaluateComponent(c: LedgerComponent, ctx: EvaluateContext): Led
   const base: LedgerEntry = {
     componentId: c.id, operationId: c.operationId, kind: c.kind, effect, amountMinor: c.amountMinor, currency: String(c.currency).trim().toUpperCase(),
     eurMinor: eur, includedEurMinor: 0, included: false, exclusion: null, attribution, date,
+    ...(c.lineId ? { lineId: c.lineId } : {}),
   };
   const exclu = (r: ExclusionReason): LedgerEntry => ({ ...base, exclusion: r });
   if (attribution === 'OUT') return exclu('OUT_OF_SCOPE');
@@ -245,15 +257,16 @@ export interface LedgerTotals {
 
 /** Totaux d'un ensemble d'entrées (une composante = une fois, même citée deux fois). */
 export function summarizeLedger(entries: readonly LedgerEntry[]): LedgerTotals {
-  const vus = new Set<number>();
+  const vus = new Set<string>();
   const t: LedgerTotals = {
     costsEurMinor: 0, reductionsEurMinor: 0, refundsEurMinor: 0, indemnitiesEurMinor: 0, proceedsEurMinor: 0, netCostEurMinor: 0,
     forecastEurMinor: 0, unconverted: [], unallocated: { count: 0, eurMinor: 0 }, complete: true,
   };
   const devises = new Map<string, { currency: string; amountMinor: number; kind: FinancialComponentKind }>();
   for (const e of entries) {
-    if (vus.has(e.componentId)) continue;
-    vus.add(e.componentId);
+    const cle = ledgerKey(e);
+    if (vus.has(cle)) continue;
+    vus.add(cle);
     if (e.exclusion === 'FORECAST') { if (e.eurMinor != null && e.attribution === 'IN') t.forecastEurMinor += e.eurMinor; continue; }
     if (e.exclusion === 'UNCONVERTED_CURRENCY') {
       const k = `${e.currency}:${e.kind}`;
@@ -302,16 +315,25 @@ export interface LedgerAnomaly { code: LedgerAnomalyCode; componentIds: number[]
  */
 export function checkLedger(entries: readonly LedgerEntry[], posts?: { totalEurMinor: number; postsEurMinor: readonly number[] }): LedgerAnomaly[] {
   const out: LedgerAnomaly[] = [];
-  const parId = new Map<number, number>();
-  for (const e of entries) parId.set(e.componentId, (parId.get(e.componentId) ?? 0) + 1);
-  const doublons = [...parId.entries()].filter(([, n]) => n > 1).map(([id]) => id);
-  if (doublons.length) out.push({ code: 'DUPLICATE_COMPONENT', componentIds: doublons });
+  const parId = new Map<string, { n: number; componentId: number }>();
+  for (const e of entries) {
+    const k = ledgerKey(e);
+    parId.set(k, { n: (parId.get(k)?.n ?? 0) + 1, componentId: e.componentId });
+  }
+  const doublons = [...parId.entries()].filter(([, v]) => v.n > 1);
+  if (doublons.length) {
+    out.push({
+      code: 'DUPLICATE_COMPONENT', componentIds: doublons.map(([, v]) => v.componentId),
+      // Lot 61 : lignes documentaires dupliquées désignées par leur identifiant stable.
+      ...(doublons.some(([k]) => !k.startsWith('c:')) ? { detail: doublons.map(([k]) => k).join(' ') } : {}),
+    });
+  }
   const zero = entries.filter((e) => e.included && e.eurMinor === null);
   if (zero.length) out.push({ code: 'UNKNOWN_CURRENCY_AS_ZERO', componentIds: zero.map((e) => e.componentId) });
   const nv = entries.filter((e) => e.included && e.attribution === 'UNALLOCATED');
   if (nv.length) out.push({ code: 'UNALLOCATED_COUNTED', componentIds: nv.map((e) => e.componentId) });
   const indemnites = new Map<string, number[]>();
-  for (const e of entries.filter((x) => x.effect === 'INDEMNITY' && x.included)) {
+  for (const e of entries.filter((x) => x.effect === 'INDEMNITY' && x.included && !x.lineId)) {
     const k = `${e.operationId}:${e.currency}:${e.amountMinor}`;
     indemnites.set(k, [...(indemnites.get(k) ?? []), e.componentId]);
   }

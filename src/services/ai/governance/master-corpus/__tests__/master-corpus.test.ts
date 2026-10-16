@@ -58,19 +58,19 @@ describe('le corpus détecte les régressions', () => {
   });
 
   it('sortie enregistrée contraire au comportement attendu : rouge (contrôle serveur)', async () => {
-    // Lot 54 : texte du dépôt en t4_output_v2 — cas v2 P-T4-09 (attendu : action).
-    const cases = loadMasterCorpusCases(read).map((c) => (c.id === 'P-T4-09'
+    // Lot 61 : texte du dépôt en t4_output_v3 — cas v3 P-T4-V3-09 (attendu : action).
+    const cases = loadMasterCorpusCases(read).map((c) => (c.id === 'P-T4-V3-09'
       ? { ...c, output: { ...(c.output as object), homeCategory: 'information' } } : c));
     const [t4] = await runMasterCorpus({ readMasterFile: read, treatments: ['T4'], cases });
     expect(t4.status).toBe('FAILED');
-    expect(t4.failures.join()).toMatch(/P-T4-09.*catégorie information/);
+    expect(t4.failures.join()).toMatch(/P-T4-V3-09.*catégorie information/);
   });
 
   it('sortie d’une autre branche : rejetée comme par la passerelle', async () => {
-    const cases = loadMasterCorpusCases(read).map((c) => (c.id === 'P-T4-09'
+    const cases = loadMasterCorpusCases(read).map((c) => (c.id === 'P-T4-V3-09'
       ? { ...c, output: { ...(c.output as object), task: 'VERIFY_COMPLETION' } } : c));
     const [t4] = await runMasterCorpus({ readMasterFile: read, treatments: ['T4'], cases });
-    expect(t4.failures.join()).toMatch(/P-T4-09.*CLASSIFY_EVENT/);
+    expect(t4.failures.join()).toMatch(/P-T4-V3-09.*CLASSIFY_EVENT/);
   });
 
   it('branche sans cas : rouge, jamais « non testée donc acceptée »', async () => {

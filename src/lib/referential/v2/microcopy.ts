@@ -59,6 +59,13 @@ export const ACTION_KIND_LABELS = {
 } as const;
 
 /**
+ * Lot 61 — carte d'INTERVENTION réelle sur un document (résilier, décider
+ * d'une reconduction, restituer…) : jamais présentée comme une question à
+ * compléter ou à arbitrer.
+ */
+export const INTERVENTION_CARD_LABEL = 'Action à mener';
+
+/**
  * Vocabulaire interdit dans toute microcopie destinée à l'utilisateur
  * (§17.1). Exporté pour que le test puisse balayer les textes ci-dessus.
  */

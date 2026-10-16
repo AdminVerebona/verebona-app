@@ -47,6 +47,10 @@ interface RuleEval {
   proposals: Array<{ value: string | null; confidence: number }>; titleHint: { dates: string[]; confirmed: string[] } | null;
   pertinence: string | null; pertinenceReason: string | null; aiOperation: string | null; aiTraceId: string | null; aiStatus: string | null;
   decision: string; reasonCode: string | null; actionId: number | null; writeVerified: boolean | null; error: string | null; failedStep: string | null;
+  // Lot 61 (0444) : décision centrale et trace complète.
+  outcome?: string | null; situation?: string | null; decisionContract?: Record<string, unknown> | null; reevaluateAt?: string | null;
+  configRef?: string | null; derivation?: Record<string, unknown> | null; writeResult?: Record<string, unknown> | null;
+  actionIds?: Record<string, number[]> | null; passages?: Array<{ at: string; trigger: string; runRef: string | null }> | null; errorKind?: string | null;
 }
 interface Data {
   migrations: { journal0371: boolean; diagnostic0410: boolean; documentRules0418?: boolean };
@@ -61,7 +65,19 @@ const PERTINENCE_LABEL: Record<string, string> = {
   NOT_EVALUATED: 'non évaluée (règle sans échéance)', FUTURE_OR_UNDATED: 'date future ou inconnue : question utile',
   ACTION_REQUIRED: 'échéance passée, action attendue', NO_ACTION_NEEDED: 'échéance historique, aucune intervention', UNDECIDED: 'indécise (question maintenue)',
 };
-const TRIGGER_LABEL: Record<string, string> = { ANALYSIS: 'analyse T1', SWEEP: 'balayage', T3: 'passage T3', USER: 'correction utilisateur' };
+const TRIGGER_LABEL: Record<string, string> = { ANALYSIS: 'analyse T1', SWEEP: 'balayage', T3: 'passage T3', USER: 'correction utilisateur', BACKFILL: 'réévaluation rétroactive' };
+/** Lot 61 — décision centrale « À traiter ». */
+const OUTCOME_RULE_LABEL: Record<string, string> = {
+  AUTO_RESOLVED: 'résolue automatiquement', NO_ACTION: 'aucune intervention (pas de carte)', DEFER: 'différée (sans carte active)',
+  CREATE_ACTION: 'carte créée ou maintenue', KEEP: 'carte maintenue', ERROR: 'EN ERREUR (aucune fermeture)',
+};
+Object.assign(PERTINENCE_LABEL, {
+  FUTURE_SOON: 'échéance proche : question utile', FUTURE_DEFERRABLE: 'échéance lointaine : interpellation différée',
+  UNDATED_HISTORICAL: 'sans date, document historique', UNDATED_NEEDED: 'sans date, date nécessaire', UNDATED_NOT_NEEDED: 'sans date, date non nécessaire',
+  TITLE_HINT_ONLY: 'date du seul titre (indice, jamais preuve)', UNDECIDED: 'indécise : décision différée',
+  CONTRADICTION: 'valeurs fiables contradictoires : arbitrage',
+});
+const j = (v: unknown) => (v == null ? '—' : JSON.stringify(v));
 
 const OUTCOME_LABEL: Record<string, string> = {
   SUCCESS: 'Réussite complète', PARTIAL_SUCCESS: 'Réussite partielle', BUSINESS_ABSTENTION: 'Abstention métier (cartes à arbitrer)',
@@ -180,6 +196,7 @@ function RuleRow({ r }: { r: RuleEval }) {
           <span className="font-medium text-[color:var(--text-primary)]">Document {r.fileId}</span> · {r.ruleCode}
           {' · '}<span className={decisionTone}>{DECISION_LABEL[r.decision] ?? r.decision}</span>
           {r.reasonCode ? <span className="text-[color:var(--text-secondary)]"> — {r.reasonCode}</span> : null}
+          {r.outcome ? <span className={r.outcome === 'ERROR' ? 'text-red-400' : 'text-[color:var(--text-secondary)]'}> · {OUTCOME_RULE_LABEL[r.outcome] ?? r.outcome}</span> : null}
           <span className="text-[color:var(--text-muted)]"> · {TRIGGER_LABEL[r.trigger] ?? r.trigger} · {dt(r.lastSeenAt)}{r.seenCount > 1 ? ` (×${r.seenCount})` : ''}</span>
         </span>
       </button>
@@ -198,6 +215,14 @@ function RuleRow({ r }: { r: RuleEval }) {
             ['Décision', `${DECISION_LABEL[r.decision] ?? r.decision}${r.actionId ? ` · action #${r.actionId}` : ''}${r.writeVerified == null ? '' : r.writeVerified ? ' · vérifiée en base' : ' · NON vérifiée'}`],
             ['Erreur', r.error ? `${r.error}${r.failedStep ? ` (étape ${r.failedStep})` : ''}` : '—'],
             ['Première / dernière évaluation', `${dt(r.createdAt)} → ${dt(r.lastSeenAt)}`],
+            ['Décision centrale (lot 61)', r.outcome ? `${OUTCOME_RULE_LABEL[r.outcome] ?? r.outcome}${r.situation ? ` · ${r.situation}` : ''}${r.reevaluateAt ? ` · réévaluation ${dt(r.reevaluateAt)}` : ''}` : '—'],
+            ['Contrat de décision', j(r.decisionContract)],
+            ['Calcul déterministe', j(r.derivation)],
+            ['Écriture', j(r.writeResult)],
+            ['Cartes (créées, maintenues, fermées, intervention)', j(r.actionIds)],
+            ['Configuration IA', r.configRef ?? '—'],
+            ['Type d’erreur', r.errorKind ?? '—'],
+            ['Passages', r.passages?.length ? r.passages.map((p) => `${TRIGGER_LABEL[p.trigger] ?? p.trigger} ${dt(p.at)}${p.runRef ? ` (${p.runRef})` : ''}`).join(' ; ') : '—'],
           ] as Array<[string, string]>).map(([k, v]) => (
             <div key={k} className="min-w-0">
               <dt className="text-[color:var(--text-secondary)]">{k}</dt>

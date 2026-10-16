@@ -14,13 +14,13 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { Button } from '@/components/ui/button';
 import { AssetDetailSection, type FieldDef } from './AssetDetailSection';
 import { ValuationHistoryDrawer } from './ValuationHistoryDrawer';
-import { TcoDrawer } from './TcoDrawer';
+import { TcoSection } from './TcoSection';
 import { AssetAdditionalInfosSection } from './AssetAdditionalInfosSection';
 import { AssetClaimsSection } from './claims/AssetClaimsSection';
 import { OCCUPANCY_USAGE_OPTIONS } from '@/lib/assets/occupancy';
 import { apiClient } from '@/lib/api-client';
 import type { AssetDetail } from '@/types/asset-detail';
-import { Calculator, ChevronDown, ChevronUp, TrendingUp } from 'lucide-react';
+import { ChevronDown, ChevronUp, TrendingUp } from 'lucide-react';
 import { toast } from 'sonner';
 import { displayDocumentTitle } from '@/lib/documents/document-title-rules';
 import { TENURE_END_LABEL, TENURE_META_KEY, tenureEndKey, tenureSourceLabel, type TenureEndMeta } from '@/lib/assets/tenure-end';
@@ -471,8 +471,6 @@ export function AssetDetailsTab({ asset, onRefresh, planType, readOnly = false, 
     return map[highlightField] ?? null;
   });
   const [valuationDrawerOpen, setValuationDrawerOpen] = useState(false);
-  // Lot 54D (TCO §3.6) : tiroir « Coût de possession » (desktop et mobile : même composant).
-  const [tcoDrawerOpen, setTcoDrawerOpen] = useState(false);
   const highlightAppliedRef = useRef(false);
 
   const load = useCallback(async () => {
@@ -568,13 +566,6 @@ export function AssetDetailsTab({ asset, onRefresh, planType, readOnly = false, 
         assetName={asset.name}
         onSaved={onRefresh}
       />
-      <TcoDrawer
-        open={tcoDrawerOpen}
-        onClose={() => setTcoDrawerOpen(false)}
-        assetId={asset.id}
-        assetName={asset.name}
-        readOnly={readOnly}
-      />
 
       {/* ── Sections ──────────────────────────────────────────────────────────── */}
       {sectionEntries.map(([key, data]) => {
@@ -605,32 +596,33 @@ export function AssetDetailsTab({ asset, onRefresh, planType, readOnly = false, 
               onDismissAlert={handleDismissAlert}
               onApplyAlert={handleApplyAlert}
               headerActions={key === 'valuation' ? (
-                <div className="flex flex-wrap items-center gap-1">
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => setValuationDrawerOpen(true)}
-                    title="Historique de valorisation"
-                  >
-                    <TrendingUp className="w-3.5 h-3.5 mr-1" />
-                    Valorisation
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => setTcoDrawerOpen(true)}
-                    title="Coût de possession"
-                    data-tco-open
-                  >
-                    <Calculator className="w-3.5 h-3.5 mr-1" />
-                    Coût de possession
-                  </Button>
-                </div>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setValuationDrawerOpen(true)}
+                  title="Historique de valorisation"
+                >
+                  <TrendingUp className="w-3.5 h-3.5 mr-1" />
+                  Valorisation
+                </Button>
               ) : undefined}
             />
+            {/* Lot 61 (TCO §5.1) : section autonome « Coût total de possession », au même
+                niveau que « Valorisation » et placée juste après elle — toutes familles,
+                desktop et mobile (même composant). Plus aucun bouton TCO dans « Valorisation ». */}
+            {key === 'valuation' && (
+              <div className="mt-3">
+                <TcoSection assetId={asset.id} readOnly={readOnly} defaultOpen={highlightField === 'tco'} />
+              </div>
+            )}
           </div>
         );
       })}
+
+      {/* Lot 61 : la section TCO existe pour toutes les familles, même si « Valorisation » n'est pas servie. */}
+      {!sectionEntries.some(([k]) => k === 'valuation') && (
+        <TcoSection assetId={asset.id} readOnly={readOnly} defaultOpen={highlightField === 'tco'} />
+      )}
 
       {/* ── Sinistres (lot 44, O5 — CDC Opérations V1 ch. 15) ────────────────
           Plusieurs sinistres par bien, un sinistre pouvant concerner plusieurs

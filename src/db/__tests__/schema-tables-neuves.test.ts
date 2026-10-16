@@ -14,7 +14,7 @@ import { agendaItemRemovals, aiMasterCorpusRuns, documentFieldValues, cdc15Migra
   businessOperationContractDetails, businessOperationFinancingDetails, businessOperationClaimDetails, businessOperationClaimDamages,
   businessOperationClaimDamageDocuments, businessOperationClaimDamagePhotos, businessOperationClaimActions, businessOperationClaimExchanges,
   businessOperationAssetDataMarks, businessOperationClaimMigrationMarks, stripeCatalogRecoveries,
-  transactionalEmailJobs, emailProviderEvents,
+  transactionalEmailJobs, emailProviderEvents, documentRawExtracts,
 } from '../schema';
 
 const MIG = join(process.cwd(), 'src/db/migrations');
@@ -101,6 +101,8 @@ const CAS: Array<[PgTable, string, string]> = [
   // Lot 57A : e-mails indispensables durables et événements Resend.
   [transactionalEmailJobs, '0405_transactional_email_reliability.sql', 'transactional_email_jobs'],
   [emailProviderEvents, '0405_transactional_email_reliability.sql', 'email_provider_events'],
+  // Lot 61 : extract brut déterministe T1 et états de phases.
+  [documentRawExtracts, '0435_t1_raw_extract.sql', 'document_raw_extracts'],
 ];
 
 describe('tables neuves : Drizzle = SQL', () => {

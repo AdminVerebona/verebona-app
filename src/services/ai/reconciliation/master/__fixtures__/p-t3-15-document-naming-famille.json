@@ -1,0 +1,36 @@
+{
+  "case": "P-T3-15",
+  "description": "DOCUMENT_NAMING (lot 61) — famille de factures aux intitulés incohérents : deux renommages conformes retenus, un renommage qui supprime la période refusé par le serveur (information discriminante), nom utilisateur protégé.",
+  "context": {
+    "documentNaming": {
+      "docs": [
+        { "id": 1, "name": "Facture_Orange_03-2024.pdf", "originalName": "Facture_Orange_03-2024.pdf", "filename": null, "s3Key": null, "publicId": null, "titleSource": "SYSTEM", "legacyUserEdit": false, "typeCode": "INVOICE", "supplier": "Orange", "documentDate": "2024-03-12", "assetId": 1, "assetName": "Maison", "extractionId": 1, "extractedAt": "2024-03-15T00:00:00.000Z", "extractionTitle": null, "amountCents": null },
+        { "id": 2, "name": "Orange facture avril 2024", "originalName": null, "filename": null, "s3Key": null, "publicId": null, "titleSource": "SYSTEM", "legacyUserEdit": false, "typeCode": "INVOICE", "supplier": "Orange", "documentDate": "2024-04-12", "assetId": 1, "assetName": "Maison", "extractionId": 2, "extractedAt": "2024-04-15T00:00:00.000Z", "extractionTitle": null, "amountCents": null },
+        { "id": 3, "name": "Facture Orange mai 2024", "originalName": null, "filename": null, "s3Key": null, "publicId": null, "titleSource": "SYSTEM", "legacyUserEdit": false, "typeCode": "INVOICE", "supplier": "Orange", "documentDate": "2024-05-12", "assetId": 1, "assetName": "Maison", "extractionId": 3, "extractedAt": "2024-05-15T00:00:00.000Z", "extractionTitle": null, "amountCents": null },
+        { "id": 4, "name": "Ma box — facture préférée", "originalName": null, "filename": null, "s3Key": null, "publicId": null, "titleSource": "USER", "legacyUserEdit": false, "typeCode": "INVOICE", "supplier": "Orange", "documentDate": "2024-06-12", "assetId": 1, "assetName": "Maison", "extractionId": 4, "extractedAt": "2024-06-15T00:00:00.000Z", "extractionTitle": null, "amountCents": null }
+      ],
+      "origins": { "1": "UPLOAD", "2": "T1", "3": "T1", "4": "USER" },
+      "conventions": []
+    }
+  },
+  "recording": {
+    "operationCode": "t3_document_naming",
+    "task": "DOCUMENT_NAMING",
+    "output": {
+      "task": "DOCUMENT_NAMING",
+      "families": [
+        { "label": "Factures Internet Orange", "document_ids": [1, 2, 3, 4], "convention": "Facture Orange — <mois> <année>", "inconsistent": true }
+      ],
+      "document_renames": [
+        { "document_id": 1, "expected_current_name": "Facture_Orange_03-2024.pdf", "proposed_name": "Facture Orange — mars 2024", "reference_document_ids": [3], "reason": "Convention majoritaire de la famille", "confidence": "certain" },
+        { "document_id": 2, "expected_current_name": "Orange facture avril 2024", "proposed_name": "Facture Orange — avril 2024", "reference_document_ids": [3], "reason": "Convention majoritaire de la famille", "confidence": "probable" },
+        { "document_id": 3, "expected_current_name": "Facture Orange mai 2024", "proposed_name": "Facture Orange", "reference_document_ids": [1], "reason": "Nom simplifié", "confidence": "probable" },
+        { "document_id": 4, "expected_current_name": "Ma box — facture préférée", "proposed_name": "Facture Orange — juin 2024", "reference_document_ids": [1], "reason": "Alignement", "confidence": "certain" }
+      ]
+    }
+  },
+  "expected": {
+    "applied": { "1": "Facture Orange — mars 2024", "2": "Facture Orange — avril 2024" },
+    "refused": { "3": "DISCRIMINANT_REMOVED", "4": "USER_NAME_PROTECTED" }
+  }
+}

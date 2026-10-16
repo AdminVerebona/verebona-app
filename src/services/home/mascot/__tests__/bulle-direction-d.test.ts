@@ -55,9 +55,9 @@ describe('phrase en langage naturel (§3.2)', () => {
     expect(composeSpeech({ empty: false, presentation: clear }).text).toBe(CLEAR_SPEECH);
   });
 
-  it('un sujet seulement informatif suit « Tout est à jour. »', () => {
+  it('un sujet seulement informatif est dit tel quel (lot 61 : plus de « Tout est à jour. » devant)', () => {
     const s = composeSpeech({ empty: false, presentation: presentationOf({ paragraphs: [para('Votre prochaine échéance concerne Ferrari : CT, le 12 octobre 2026.', info)] }) });
-    expect(s.text).toBe('Tout est à jour. Votre prochaine échéance concerne Ferrari : CT, le 12 octobre 2026.');
+    expect(s.text).toBe('Votre prochaine échéance concerne Ferrari : CT, le 12 octobre 2026.');
   });
 
   it('textes de plusieurs phrases : juxtaposés, jamais enchaînés après « : »', () => {
@@ -154,13 +154,14 @@ describe('pose et suggestions', () => {
     expect(homePose(presentationOf({ paragraphs: [para('a.', verifier), para('b.', retard)] }), false)).toBe('alert-folder');
     expect(homePose(presentationOf({ paragraphs: [para('a.', completer), para('b.', verifier)] }), false)).toBe('questioning');
     expect(homePose(presentationOf({ paragraphs: [para('a.', completer), para('b.', echeance)] }), false)).toBe('reminder-bell');
-    expect(homePose(presentationOf({ paragraphs: [para('a.', echeance)] }), false)).toBe('success-check');
+    // Lot 61 : une simple information donne une pose neutre (jamais une réussite).
+    expect(homePose(presentationOf({ paragraphs: [para('a.', echeance)] }), false)).toBe('neutral');
     expect(homePose(presentationOf({ status: 'degraded', paragraphs: [] }), false)).toBe('neutral');
     expect(homePose(presentationOf({ paragraphs: [para('a.', verifier)] }), true)).toBe('welcome-wave');
     // Présentation sans « kind » (cache ancien) : la couleur suffit.
     expect(homePose(presentationOf({ paragraphs: [para('a.', rouge)] }), false)).toBe('alert-folder');
     expect(homePose(presentationOf({ paragraphs: [para('a.', ambre)] }), false)).toBe('reminder-bell');
-    expect(homePose(presentationOf({ paragraphs: [para('a.', info)] }), false)).toBe('success-check');
+    expect(homePose(presentationOf({ paragraphs: [para('a.', info)] }), false)).toBe('neutral');
     expect(homePose(presentationOf({ status: 'clear', paragraphs: [] }), false)).toBe('success-check');
     expect(homePose(null, true)).toBe('welcome-wave');
     expect(homePose(null, false, true)).toBe('neutral');

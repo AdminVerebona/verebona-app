@@ -22,12 +22,14 @@
  *               présent, mois écoulé, offre perdue — relu à chaque calcul
  *               de la prise de parole, aucun état propre à la mascotte ni
  *               traitement planifié ;
- *   date        `duo_subscription_started_at` est posée par la base
- *               (déclencheur 0385) au passage effectif de l'abonnement Duo
- *               à ACTIVE/TRIALING depuis un état hors offre : Checkout,
- *               Premium → Duo, synchronisation Stripe, webhooks, BO. Les
- *               renouvellements, rejeux, resynchronisations, impayés
- *               régularisés et changements de périodicité ne la décalent pas ;
+ *   date        `duo_subscription_started_at` = prise d'effet réelle du
+ *               Duo, d'après Stripe (lot 61B, `services/duo/duo-period.ts`) :
+ *               Checkout, Premium → Duo, synchronisation, webhooks, BO ;
+ *               NULL sans source fiable. Les renouvellements, rejeux,
+ *               resynchronisations, impayés régularisés et changements de
+ *               périodicité ne la décalent pas ;
+ *   offre       vérification croisée de l'offre effective du compte (lot
+ *               61B) : Premium Duo à jour, sans résiliation programmée ;
  *   hiérarchie  compte comme une action « À faire en premier » : avec elle,
  *               au plus UNE action DO_FIRST de la file (MASC3 : deux au
  *               plus au total) ;
@@ -59,6 +61,12 @@ export interface DuoInviteRow {
   startedAt: Date | string | null;
   /** Premier envoi d'invitation de cette souscription (lot 54F). */
   firstInviteSentAt: Date | string | null;
+  /**
+   * Lot 61B (A, C) : offre EFFECTIVE du compte payeur vérifiée à côté du
+   * statut Duo — Premium Duo en cours (compte et ligne d'abonnement), à
+   * jour, sans résiliation programmée. Absent ou faux : rien à proposer.
+   */
+  offerActive?: boolean | null;
 }
 
 function parisParts(d: Date): number[] {
@@ -102,6 +110,9 @@ function toDate(v: Date | string | null | undefined): Date | null {
 export function duoInviteFrom(row: DuoInviteRow | null | undefined, now: Date = new Date()): MascotDuoInvite | null {
   if (!row) return null;
   if (!INVITABLE_STATUSES.has(String(row.subscriptionStatus ?? '').toUpperCase())) return null;
+  // Lot 61B : le statut Duo seul ne suffit pas (sortie non synchronisée,
+  // résiliation programmée, impayé, BO).
+  if (row.offerActive !== true) return null;
   if (row.pendingInviteEmail && row.pendingInviteEmail.trim() !== '') return null;
   if (toDate(row.firstInviteSentAt)) return null;
   if (row.memberships > 0) return null;
@@ -127,8 +138,21 @@ export async function readDuoInvite(accountId: number, now: Date = new Date()): 
     // comptent celles d'un AUTRE utilisateur — invité ou actif, ou sorti
     // pendant la souscription en cours (un membre d'un Duo précédent, sorti
     // avant son début, ne compte plus).
+    // Lot 61B (A, C) — vérification croisée de l'offre effective : compte
+    // Premium Duo à jour (ni impayé, ni résilié, ni rétracté), ligne
+    // d'abonnement Premium Duo active SANS résiliation programmée (les droits
+    // restent ouverts jusqu'à l'échéance — invitation manuelle possible dans
+    // « Mon compte » — mais la suggestion disparaît), même abonnement Stripe
+    // que le Duo lorsqu'ils sont connus.
     `SELECT d.subscription_status AS "subscriptionStatus", d.pending_invite_email AS "pendingInviteEmail",
             d.duo_subscription_started_at AS "startedAt", d.duo_first_invite_sent_at AS "firstInviteSentAt",
+            (upper(coalesce(a.plan_type, '')) = 'PREMIUM_DUO'
+             AND upper(coalesce(a.subscription_status, '')) = 'ACTIVE'
+             AND (a.stripe_subscription_id IS NULL OR d.stripe_subscription_id IS NULL
+                  OR a.stripe_subscription_id = d.stripe_subscription_id)
+             AND EXISTS (SELECT 1 FROM account_subscriptions s
+                          WHERE s.account_id = a.id AND s.plan_code = 'premium_duo'
+                            AND s.status = 'active' AND s.cancel_at_period_end IS NOT TRUE)) AS "offerActive",
             (SELECT COUNT(*) FROM duo_memberships m
               WHERE m.duo_id = d.id AND m.user_id <> d.billing_owner_user_id
                 AND (m.status IN ('INVITED', 'ACTIVE') OR m.left_at IS NULL
@@ -138,7 +162,7 @@ export async function readDuoInvite(accountId: number, now: Date = new Date()): 
       WHERE a.id = $1
       LIMIT 1`,
     [accountId],
-  )) as unknown as Array<{ subscriptionStatus: string; pendingInviteEmail: string | null; memberships: number; startedAt: Date | string | null; firstInviteSentAt: Date | string | null }>;
+  )) as unknown as Array<{ subscriptionStatus: string; pendingInviteEmail: string | null; memberships: number; startedAt: Date | string | null; firstInviteSentAt: Date | string | null; offerActive: boolean | null }>;
   const r = rows[0];
   return duoInviteFrom(r ? {
     subscriptionStatus: r.subscriptionStatus,
@@ -146,5 +170,6 @@ export async function readDuoInvite(accountId: number, now: Date = new Date()): 
     memberships: Number(r.memberships ?? 0),
     startedAt: r.startedAt ?? null,
     firstInviteSentAt: r.firstInviteSentAt ?? null,
+    offerActive: r.offerActive === true,
   } : null, now);
 }

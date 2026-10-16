@@ -29,7 +29,7 @@
  * tests et du corpus, jamais d'une recherche de chaînes dans le texte.
  */
 import {
-  inspectMasterTemplate, isOptionalMasterTask, isOptionalMasterVariable, masterBranchMarker, renderMasterPrompt, MasterPromptError,
+  inspectMasterTemplate, isMasterTaskTextPending, isOptionalMasterTask, isOptionalMasterVariable, masterBranchMarker, renderMasterPrompt, MasterPromptError,
 } from '../prompts/prompt-loader';
 import { declaredMasterVariables, masterPromptForTreatment } from '../config/prompt-architecture';
 import type { Treatment } from '../config/treatments';
@@ -140,7 +140,10 @@ export function checkMasterPromptContent(
       warnings.push({
         code: 'OPTIONAL_BRANCH_MISSING', blocking: false,
         message: `La section « ${masterBranchMarker(t, cle)} » est absente : la fonction correspondante restera inactive (aucune erreur). `
-          + 'Pour l’activer, repartez du texte livré avec l’application puis activez la version.',
+          + (isMasterTaskTextPending(master.masterPromptCode, t)
+            // Lot 61 : texte de la branche livré par un ticket séparé (le texte livré ne la contient pas encore).
+            ? 'Son texte est attendu d’une évolution séparée du prompt : ajoutez la section à cette version puis activez-la.'
+            : 'Pour l’activer, repartez du texte livré avec l’application puis activez la version.'),
       });
       continue;
     }

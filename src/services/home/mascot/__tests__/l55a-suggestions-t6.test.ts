@@ -265,8 +265,8 @@ describe('L55A-06 — configuration IA pilotable par le BO', () => {
     expect(isOptionalMasterVariable('t6_master_v1', 'SUGGESTION_CONTEXT')).toBe(true);
     // Une version BO antérieure (sans l'emplacement) reste rendable : la variable est ignorée.
     const ancien = master.replace(/\nContexte des questions suggérées : \{\{SUGGESTION_CONTEXT\}\}\n/, '\n')
-      // Lot 60 : emplacement R13, facultatif lui aussi (absent d'une version antérieure).
-      .replace(/\nCandidats d’interpellation à évaluer : \{\{INTERPELLATION_CONTEXT\}\}\n/, '\n');
+      // Lot 60 / 61 : emplacement des candidats (EVALUATE), facultatif lui aussi.
+      .replace(/\nCandidats à évaluer : \{\{INTERPELLATION_CONTEXT\}\}\n/, '\n');
     expect(renderMasterPrompt(ancien, { masterPromptCode: 't6_master_v1', task: 'FORMULATE', allowedTasks: ['FORMULATE'], variables: { INPUT_JSON: '{}', SUGGESTION_CONTEXT: '{"a":1}' } }))
       .not.toContain('{"a":1}');
   });
@@ -301,9 +301,10 @@ describe('L55A-07 — cartes d’échéance : intitulé métier, bien · date co
       .toMatchObject({ title: 'Rendez-vous garage', sub: 'Cupra · 18 avril 2028' });
   });
 
-  it('DATE-NEXT-2 et autres cartes du même composant : aucun titre « Voir … » (document, export)', () => {
+  it('deux échéances le même jour (lot 61 : deux cartes, plus de DATE-NEXT-2) et autres cartes : aucun titre « Voir … » (document, export)', () => {
     const deux = homeItems(presentationOf(raw({ agenda: [cupra, { ...cupra, id: 12, title: 'Assurance', assetId: 2, assetName: 'Maison', assetCategory: 'IMMOBILIER', assetSubtype: 'Maison' }] })), false);
-    expect(deux[0]).toMatchObject({ title: 'Contrôle technique et assurance', sub: 'Cupra et Maison · 18 avril 2028', cta: 'Voir' });
+    // Échéances non retenues par une décision : informations, sans carte d'action.
+    expect(deux.every((x) => !/ et /.test(x.title))).toBe(true);
     const doc = homeItems(presentationOf(raw({ agenda: [], processing: { uploads: [], analyses: [{ id: 5, title: 'Facture garage', at: '2026-10-14T08:00:00Z' }], exports: [] } } as never)), false);
     expect(doc[0]).toMatchObject({ title: 'Facture garage', sub: 'En analyse', cta: 'Voir' });
     const exp = homeItems(presentationOf(raw({ agenda: [], processing: { uploads: [], analyses: [], exports: [{ id: 3, exportType: 'ASSET_SHEET', assetId: 1, assetName: 'Cupra', at: '2026-10-14T08:00:00Z' }] } } as never)), false);

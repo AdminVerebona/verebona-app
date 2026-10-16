@@ -60,8 +60,11 @@ describe('doublons « fusion possible »', () => {
     expect(kept.map((r) => r.id)).toEqual([1, 4]);
     expect(removed).toEqual([2, 3]);
   });
-  it('non signalé, ou fusion ignorée par l’utilisateur : rien d’écarté', () => {
-    expect(dedupePossibleMerges([row(1, { hash: 'h' }), row(2, { hash: 'h' })]).removed).toEqual([]);
+  it('fusion ignorée par l’utilisateur : rien d’écarté ; lot 61 (TCO §3.3) : copie exacte non signalée écartée', () => {
+    // Lot 61 : même empreinte = deux copies d'une facture → un seul coût, signalement ou non (T2 et TCO).
+    expect(dedupePossibleMerges([row(1, { hash: 'h' }), row(2, { hash: 'h' })]).removed).toEqual([2]);
+    // Non signalé et empreintes différentes : rien d'écarté (jamais de fusion sans preuve).
+    expect(dedupePossibleMerges([row(1, { hash: 'h' }), row(2, { hash: 'k' })]).removed).toEqual([]);
     expect(dedupePossibleMerges([
       row(1, { hash: 'h' }), row(2, { hash: 'h', state: 'FUSION_SUGGESTED', ignored: [1] }),
     ]).removed).toEqual([]);

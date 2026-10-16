@@ -340,6 +340,13 @@ export async function resolveArbitration(
       return resolveAgendaProjectionMatch(tx, action, value, accountId, options);
     }
 
+    // Intervention réelle sur un document (lot 61) : « C'est fait » /
+    // « Pas nécessaire » — aucune donnée documentaire modifiée.
+    if (action.ruleCode === 'DOC-INTERVENTION') {
+      const { resolveDocumentIntervention } = await import('./document-intervention');
+      return resolveDocumentIntervention(tx, action, value, accountId, options);
+    }
+
     // Ambiguïtés de consolidation des Opérations (lot 42, ch. 20, C19) :
     // décision durable (C6.3, B19) puis reconsolidation après commit.
     {
@@ -472,6 +479,11 @@ export async function undoArbitration(
   if (action.ruleCode === 'AGENDA-PROJECTION-MATCH') {
     const { undoAgendaProjectionMatch } = await import('./agenda-projection-cards');
     return undoAgendaProjectionMatch(action, accountId);
+  }
+
+  if (action.ruleCode === 'DOC-INTERVENTION') {
+    const { undoDocumentIntervention } = await import('./document-intervention');
+    return undoDocumentIntervention(action, accountId);
   }
 
   {

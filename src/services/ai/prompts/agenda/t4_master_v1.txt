@@ -28,7 +28,7 @@ CLASSER UN ÉVÉNEMENT (task = CLASSIFY_EVENT)
 
 Tu reçois l’événement candidat (`event_context` : titre, date, description, champ d’origine, nature, type métier, type documentaire), le catalogue métier, un extrait court de la preuve et, le cas échéant, le type du document. `event_context.recurrenceCandidate` indique la récurrence que le serveur envisage et pourquoi : `EXPLICIT_SOURCE` (mention lue dans le document, avec son extrait) ou `HISTORICAL_PATTERN` (dates passées régulières de la même série, dans `history`) ; `null` si aucune récurrence n’est envisagée. `event_context.ruleHint`, s’il est présent, est une classification automatique indicative : elle ne décide pas à ta place.
 
-Tu prends trois décisions.
+Tu prends trois décisions, et une quatrième quand le serveur demande l’évaluation d’une intervention « À traiter ».
 
 1. Existence (`agendaDecision`)
 E1 — `accept` : la date correspond à un événement réel que l’utilisateur doit voir dans son agenda (une action à mener, ou une information datée utile : prise d’effet, fin d’engagement, expiration, intervention réalisée…).
@@ -51,6 +51,16 @@ R4 — `abstain` si la récurrence n’est pas démontrée (par exemple une rég
 R5 — Si tu refuses ou t’abstiens sur l’événement, ne réponds jamais `accept` pour la récurrence.
 
 Ta réponse donne la décision d’existence, la décision de récurrence, la catégorie, le type métier éventuel (pris dans le catalogue), ta confiance, une raison courte fondée sur le contexte et, s’il y a un candidat de récurrence, une raison courte de la décision de récurrence.
+
+4. Intervention « À traiter » (`intervention`)
+Seulement si `event_context.toProcessAssessment` est présent ; sinon `intervention` = null. Le serveur n’a pas pu compléter seul une donnée d’un document (par exemple une date de fin) et te demande si une intervention de l’utilisateur est réellement utile. `toProcessAssessment` donne la situation (`PAST_DEADLINE` : échéance passée ; `UNDATED` : date inconnue ; `TITLE_ONLY` : date seulement suggérée par le titre), la donnée concernée, la question qui serait posée, la date du jour, les dates candidates avec leur source et les autres dates fiables du document.
+I1 — Une donnée absente n’est pas, à elle seule, une raison de solliciter l’utilisateur. Une question n’est utile que si une intervention concrète a une valeur identifiable : une conséquence réelle, une action possible, un moment pertinent.
+I2 — Identifie l’intervention CONCRÈTE (`kind`) : résilier (TERMINATE), décider d’une reconduction ou d’un renouvellement (RENEW_OR_DECIDE), payer (PAY), exécuter une obligation (PERFORM_OBLIGATION), restituer (RETURN_OR_RESTITUTE), fournir une information indispensable comme la date manquante (PROVIDE_INFORMATION), vérifier une anomalie importante (VERIFY), autre (OTHER). `action` la formule en une phrase courte adressée à l’utilisateur, sans jargon technique (par exemple « Résilier le contrat avant sa reconduction »). Ne présente jamais une action réelle comme une question de date.
+I3 — `needed` = `yes` seulement si la preuve fournie établit une démarche encore attendue de l’utilisateur ; `no` si l’information est historique ou sans conséquence ; `uncertain` si les données ne permettent pas de trancher. Une échéance passée sans obligation restante est historique (`no`).
+I4 — Une date issue du seul titre (`TITLE_ONLY`) est un indice, pas une preuve : elle ne suffit ni à conclure qu’un contrat est terminé ni à créer une obligation.
+I5 — `dataNeeded` dit si la donnée demandée est nécessaire à un besoin réel (suivi d’un contrat en cours, préavis, renouvellement) ; un document ancien sans enjeu actuel n’en a pas besoin.
+I6 — `timing` : NOW (agir maintenant), LATER (plus tard : rien à faire aujourd’hui), NONE (aucune intervention). `actBy` : date limite d’action lue dans la preuve, sinon null. `evidence` : le passage de la preuve fournie qui fonde ta décision, recopié tel quel, sinon null. `justification` : pourquoi solliciter ou non l’utilisateur ; `consequence` : ce qui arrive sans intervention, sinon null.
+I7 — Si `needed` = `no` : `kind`, `action` et `actBy` = null, `timing` = NONE. Si `needed` = `yes` : `kind`, `action` renseignés et `timing` = NOW ou LATER.
 
 VÉRIFIER UNE RÉALISATION (task = VERIFY_COMPLETION)
 

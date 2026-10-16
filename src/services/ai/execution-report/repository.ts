@@ -274,6 +274,8 @@ export async function reportBreakdown(s: ReportSummary): Promise<Array<{ section
 /** Colonnes relisibles en direct (liste fermée : aucune table ni colonne arbitraire). */
 const RESOLVABLE: Readonly<Record<string, readonly string[]>> = {
   document_extractions: ['full_text', 'metadata', 'structural_evidence', 'visual_observations', 'description', 'visual_summary'],
+  // Lot 61 : extract brut déterministe (texte intégral par page).
+  document_raw_extracts: ['full_text', 'pages'],
   document_source_units: ['content_text', 'value_text', 'label', 'payload', 'location'],
   document_unresolved_facts: ['original_payload', 'raw_value', 'detail'],
   document_facts: ['value_json', 'value_text', 'excerpt', 'location', 'visual_evidence'],

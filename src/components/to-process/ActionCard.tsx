@@ -34,7 +34,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { FileText, Image as ImageIcon, Home, Package, Calendar, Wrench, LayoutGrid } from 'lucide-react';
-import { ACTION_KIND_LABELS, MICROCOPY } from '@/lib/referential/v2/microcopy';
+import { ACTION_KIND_LABELS, INTERVENTION_CARD_LABEL, MICROCOPY } from '@/lib/referential/v2/microcopy';
 import { PRIORITY_LABELS } from '@/services/to-process/priority';
 import type { ActionKind, ActionPriority } from '@/services/to-process/action-model';
 
@@ -137,11 +137,19 @@ export function CardVisual({ action }: { action: ActionView }) {
   );
 }
 
+/**
+ * Lot 61 : carte d'intervention réelle (règle DOC-INTERVENTION) — libellé de
+ * nature « Action à mener », choix « C'est fait » / « Pas nécessaire », et
+ * « Ouvrir » (le document) au lieu de « Autre ». Même composant sur mobile et
+ * sur ordinateur.
+ */
+export const isInterventionCard = (action: Pick<ActionView, 'ruleCode'>) => action.ruleCode === 'DOC-INTERVENTION';
+
 function Badges({ action }: { action: ActionView }) {
   return (
     <div className="flex flex-wrap items-center gap-1.5">
       <Badge variant="outline" className="text-[11px] font-normal">
-        {ACTION_KIND_LABELS[action.actionKind]}
+        {isInterventionCard(action) ? INTERVENTION_CARD_LABEL : ACTION_KIND_LABELS[action.actionKind]}
       </Badge>
       <Badge variant="secondary" className="text-[11px] font-normal">
         {PRIORITY_LABELS[action.priority]}
@@ -210,7 +218,7 @@ function Controls({ action, onChoose, onOpenTarget, busy }: { action: ActionView
         onClick={() => onOpenTarget(action)}
         className="h-9"
       >
-        {MICROCOPY.otherChoice}
+        {isInterventionCard(action) ? MICROCOPY.open : MICROCOPY.otherChoice}
       </Button>
     </div>
   );

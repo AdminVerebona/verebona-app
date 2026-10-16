@@ -97,6 +97,19 @@ const BUILDERS: Record<string, Builder> = {
     const { operationMatchVariables } = await import('../../reconciliation/master/operation-match');
     return operationMatchVariables(x.subject as never, x.candidates as never);
   },
+  async t3_document_naming(c) {
+    // Lot 61 : variables construites par le constructeur de production (`namingVariables`).
+    const x = ctx<{ documentNaming?: { docs?: unknown[]; origins?: Record<string, string>; conventions?: unknown[] } }>(c).documentNaming;
+    if (!x?.docs?.length) return null;
+    const { namingVariables, planChunks, groupKeyOf } = await import('../../reconciliation/document-naming/context');
+    const docs = x.docs as never as import('../../reconciliation/document-naming/context').NamingDoc[];
+    const group = { key: groupKeyOf(docs[0]) ?? 'corpus', docs };
+    return namingVariables({
+      group, chunk: planChunks(docs, docs, 40)[0], conventions: x.conventions ?? [],
+      states: new Map(docs.map((d) => [d.id, { origin: (x.origins?.[String(d.id)] ?? 'UNKNOWN') as never, lastRenamedAt: null }])),
+      details: new Map(), maxLength: 120,
+    });
+  },
   async t3_link_ambiguity(c) {
     // Lot 31B — relation DOCUMENT_ASSET : même constructeur que la production.
     const da = ctx<{ documentAsset?: { subject: unknown; candidates: unknown[] } }>(c).documentAsset;
@@ -122,13 +135,16 @@ const BUILDERS: Record<string, Builder> = {
       field?: { title: string; originFieldKey?: string; date?: string };
       /** Lot 54 : récurrence envisagée par le serveur (t4_input_v2). */
       recurrenceCandidate?: import('../../agenda/master/classify-event').T4RecurrenceCandidate | null;
+      /** Lot 61 : demande d'évaluation « À traiter » (t4_output_v3). */
+      toProcessAssessment?: import('../../agenda/master/classify-event').ToProcessAssessmentRequest | null;
     }>(c);
     const src = x.field ?? x.candidate;
     if (!src) return null;
     const { classifyEventVariables } = await import('../../agenda/master/classify-event');
     return classifyEventVariables(
       { title: src.title, originFieldKey: x.field?.originFieldKey ?? null, description: x.candidate?.excerpt ?? null } as never,
-      { accountId: 0, date: src.date ?? null, excerpt: x.candidate?.excerpt, documentType: x.candidate?.documentType ?? null, recurrenceCandidate: x.recurrenceCandidate ?? null },
+      { accountId: 0, date: src.date ?? null, excerpt: x.candidate?.excerpt, documentType: x.candidate?.documentType ?? null, recurrenceCandidate: x.recurrenceCandidate ?? null,
+        toProcessAssessment: x.toProcessAssessment ?? null },
     );
   },
   async t4_temporal_ambiguity(c) {
@@ -149,13 +165,17 @@ const BUILDERS: Record<string, Builder> = {
     const input = ctx<{ input?: unknown }>(c).input;
     // Lot 55A : emplacement facultatif des questions suggérées — `null` (bulle seule).
     const suggestions = ctx<{ suggestionContext?: unknown }>(c).suggestionContext ?? null;
-    // Lot 60 : emplacement facultatif des candidats d'interpellation (R13).
-    const candidats = ctx<{ interpellationContext?: unknown }>(c).interpellationContext ?? null;
+    // Lot 61 : candidats jamais transmis en FORMULATE (mode EVALUATE distinct).
     return input ? {
       INPUT_JSON: JSON.stringify(input),
       SUGGESTION_CONTEXT: suggestions ? JSON.stringify(suggestions) : null,
-      INTERPELLATION_CONTEXT: candidats ? JSON.stringify(candidats) : null,
+      INTERPELLATION_CONTEXT: null,
     } : null;
+  },
+  // Lot 61 : MODE=EVALUATE — entrée `t6-evaluation-input-v1` du cas.
+  async t6_evaluate(c) {
+    const input = ctx<{ input?: unknown }>(c).input;
+    return input ? { INPUT_JSON: null, SUGGESTION_CONTEXT: null, INTERPELLATION_CONTEXT: JSON.stringify(input) } : null;
   },
 };
 

@@ -27,7 +27,7 @@
  * ══════════════════════════════════════════════════════════════════════════
  */
 import { listMasterPrompts, AI_OPERATIONS } from '../registry/operations';
-import { checkMasterTemplate, inspectMasterTemplate, isOptionalMasterTask, isOptionalMasterVariable } from '../prompts/prompt-loader';
+import { checkMasterTemplate, inspectMasterTemplate, isMasterTaskTextPending, isOptionalMasterTask, isOptionalMasterVariable } from '../prompts/prompt-loader';
 import { treatmentOfUseCase, isMasterOnlyTreatment, type Treatment } from './treatments';
 import { retiredVariablesSet } from './retired-variables';
 import {
@@ -236,7 +236,11 @@ export function masterConfigIssues(
       out.push({
         field: 'masterPrompt',
         message: `Section(s) ${branches.map((b) => `« BRANCHE TASK = ${b} »`).join(', ')} absente(s) du texte master : la fonction `
-          + `correspondante reste inactive (aucune erreur). Reprenez le texte du dépôt (${master.masterPromptCode}) pour l’activer.`,
+          + `correspondante reste inactive (aucune erreur). `
+          + (branches.every((b) => isMasterTaskTextPending(master.masterPromptCode, b))
+            // Lot 61 : texte attendu d'une évolution séparée du prompt (le dépôt ne le contient pas encore).
+            ? 'Son texte est attendu d’une évolution séparée du prompt : ajoutez la section pour l’activer.'
+            : `Reprenez le texte du dépôt (${master.masterPromptCode}) pour l’activer.`),
         blocking: false,
       });
     }

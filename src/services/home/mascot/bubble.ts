@@ -14,11 +14,19 @@
  *     « bien · statut » ;
  *   · la pose de la mascotte selon la situation.
  *
+ * Lot 61 : la bulle ASSEMBLE un état de présentation explicite
+ * (`MascotPresentationState`, calculé côté serveur à partir des décisions
+ * validées) — elle ne recrée aucune décision et n'affirme rien qu'il
+ * n'établisse : ni « Tout est à jour », ni « aucun document en attente »,
+ * ni « des échéances dépassées sont à vérifier » sur un simple compteur.
+ *
  * `tileFor` tourne côté serveur (il lit les faits du sujet, jamais exposés
  * tels quels) ; le reste côté client, à partir de `MascotPresentation`.
  * ══════════════════════════════════════════════════════════════════════════
  */
-import type { MascotDuoInvite, MascotParagraph, MascotPresentation, MascotSecondary, MascotSubject, MascotTile, MascotTodoItem } from './types';
+import type {
+  MascotDuoInvite, MascotParagraph, MascotPresentation, MascotPresentationState, MascotSecondary, MascotSubject, MascotTile, MascotTodoItem,
+} from './types';
 import { emptyAccountSuggestions } from '@/services/verebona-assistant/registries/capability-registry';
 
 // ── Tuiles (serveur) ────────────────────────────────────────────────────────
@@ -57,6 +65,22 @@ export function tileFor(s: MascotSubject, today: string, opts: TileOptions = {})
       kind: arbitrage ? 'verify' : 'action',
     };
   }
+  // Lot 61 : échéance retenue par une décision IA VALIDÉE — la carte dit la
+  // nature réellement retenue (vérification justifiée, action, anticipation),
+  // jamais un retard ni une vérification génériques déduits de la date.
+  const decided = s.interpellation && s.interpellation.mode !== 'LEGACY' ? s.interpellation : null;
+  if (decided && (code === 'DATE-NEXT' || code === 'MASC-EXT-ACTION')) {
+    const label = str(f.dateLabel);
+    const estimee = f.dateNature === 'prévisionnelle' ? ' (estimée)' : '';
+    const verifier = decided.reasonCode === 'VERIFICATION_REQUIRED';
+    const quoi = verifier ? 'À vérifier' : decided.mode === 'ANTICIPATE' || decided.category === 'TO_ANTICIPATE' ? 'À anticiper' : 'Action à prévoir';
+    return {
+      tone: 'amber', icon: code === 'DATE-NEXT' ? 'calendar-days' : 'clock', attention: true, assetName: asset,
+      label: str(s.tileTitle) ?? str(f.title) ?? 'Échéance',
+      status: label ? `${quoi} · ${label}${estimee}` : quoi,
+      kind: verifier ? 'verify' : 'action',
+    };
+  }
   if (code === 'MASC-EXT-ACTION') {
     const date = str(f.date);
     const retard = date ? daysBetween(date, today) : 0;
@@ -70,33 +94,17 @@ export function tileFor(s: MascotSubject, today: string, opts: TileOptions = {})
   if (code === 'MASC-BLOCKED') {
     return { tone: 'amber', icon: 'circle-alert', attention: true, assetName: asset, label: 'Préciser l’échéance', status: 'À préciser', kind: 'action' };
   }
-  if (code === 'DATE-NEXT' || code === 'DATE-NEXT-2') {
+  if (code === 'DATE-NEXT') {
     // Lot 55A (T6 / T2) : intitulé MÉTIER (« Contrôle technique »), bien et
     // date complète (« Cupra · 18 avril 2028 ») — l'action « Voir → » est
     // portée par la carte, jamais répétée dans le titre. Une date
-    // prévisionnelle le reste (DAT-003).
+    // prévisionnelle le reste (DAT-003). Lot 61 : plus de sujet composé
+    // DATE-NEXT-2 (titres concaténés « X et Y ») — une échéance, une carte.
     const label = str(f.dateLabel);
     const estimee = f.dateNature === 'prévisionnelle' ? ' (estimée)' : '';
-    // Lot 60 : échéance retenue par la décision d'interpellation T6 — elle
-    // MÉRITE l'attention (tuile ambre, phrase « … mérite votre attention »),
-    // jamais « Tout est à jour » devant une interpellation affichée.
-    if (s.interpellation && code === 'DATE-NEXT') {
-      const quoi = s.interpellation.mode === 'ANTICIPATE' ? 'À anticiper' : 'Action à prévoir';
-      return {
-        tone: 'amber', icon: 'calendar-days', attention: true, assetName: asset,
-        label: str(s.tileTitle) ?? str(f.title) ?? 'Échéance',
-        status: label ? `${quoi} · ${label}${estimee}` : quoi,
-        kind: 'action',
-      };
-    }
-    const deux = code === 'DATE-NEXT-2';
-    const biens = deux ? [...new Set([str(f.firstAssetName), str(f.secondAssetName)].filter((x): x is string => !!x))] : [];
     return {
-      tone: 'blue', icon: 'calendar-days', attention: false,
-      assetName: asset ?? (biens.length ? biens.join(' et ') : null),
-      label: str(s.tileTitle) ?? (deux
-        ? [str(f.firstTitle), str(f.secondTitle)].filter(Boolean).join(' et ') || 'Prochaines échéances'
-        : str(f.title) ?? 'Prochaine échéance'),
+      tone: 'blue', icon: 'calendar-days', attention: false, assetName: asset,
+      label: str(s.tileTitle) ?? str(f.title) ?? 'Prochaine échéance',
       status: label ? `${label}${estimee}` : 'À venir',
       kind: 'info',
     };
@@ -131,7 +139,18 @@ export function parisDay(now: Date = new Date()): string {
 
 // ── Phrase (client) ─────────────────────────────────────────────────────────
 
-export const CLEAR_SPEECH = 'Tout est à jour. Aucune échéance dépassée, aucun document en attente : je vous préviens dès que quelque chose change.';
+/**
+ * Lot 61 : aucune interpellation pertinente — formulation PROPORTIONNÉE.
+ * Jamais « Tout est à jour », « aucune échéance dépassée » ni « aucun
+ * document en attente » : l'absence de sujet retenu n'établit rien de tel.
+ */
+export const NOTHING_TO_REPORT_SPEECH = 'Rien de particulier à vous signaler pour le moment.';
+/** @deprecated lot 61 — conservé pour compatibilité : même texte que `NOTHING_TO_REPORT_SPEECH`. */
+export const CLEAR_SPEECH = NOTHING_TO_REPORT_SPEECH;
+/** Lot 61 : échéances proches en cours d'évaluation (première visite, changement). */
+export const EVALUATION_PENDING_SPEECH = 'J’examine encore vos prochaines échéances : elles restent consultables dans l’agenda.';
+/** Lot 61 : évaluation des échéances indisponible (T6 coupé, panne) — jamais présenté comme un compte sans problème. */
+export const EVALUATION_UNAVAILABLE_SPEECH = 'Je ne peux pas examiner vos échéances pour le moment : elles restent consultables dans l’agenda.';
 export const EMPTY_ACCOUNT_SPEECH = 'Je suis Verebona. Votre espace est prêt, mais encore vide. Ajoutez un premier bien ou déposez un document : je le lis, je range les informations au bon endroit et je vous préviens avant chaque échéance importante.';
 export const DEGRADED_SPEECH = 'Certaines informations n’ont pas pu être actualisées. Je réessaie dans un instant.';
 
@@ -182,22 +201,16 @@ export function todoSummary(n: number): string {
  * Lot 50 : les sujets Verebona sont PRIORISÉS, jamais qualifiés
  * d'« urgents » (même règle que le validateur T6) : formulation en priorité.
  */
-export const NOTHING_PRIORITY = 'Aucun sujet à traiter en priorité aujourd’hui.';
+export const NOTHING_PRIORITY = 'Aucun sujet à traiter en priorité pour le moment.';
 
 /**
- * Lot 53 (retour PO D25, harmonisé avec T2 — Q25) : « aucun sujet prioritaire »
- * ne masque jamais une échéance dépassée encore ouverte (hors sujets : plus
- * de 60 jours, au-delà des deux sujets) — signalée sans en dire le nombre —
- * et n'est jamais une assurance catégorique sur des données incomplètes
- * (source en panne : on le dit). Les « À traiter » non prioritaires restent
- * comptés par la pastille du menu et la page « À traiter » ; la bulle n'en
- * parle pas (règle MASC3 du lot 34, maintenue).
+ * Lot 53 (retour PO D25) : une source en panne n'autorise jamais une
+ * assurance catégorique — on le dit. Lot 61 : la phrase « Des échéances
+ * dépassées sont à vérifier dans l'agenda », ajoutée dès qu'un compteur de
+ * dates passées était positif, est SUPPRIMÉE (`nothingPriorityText`) : une
+ * date dépassée n'établit ni un événement non résolu, ni une action à faire.
  */
 export const PARTIAL_DATA_SPEECH = 'Certaines informations n’ont pas pu être actualisées.';
-
-export function nothingPriorityText(p: { overdue: boolean }): string {
-  return p.overdue ? `${NOTHING_PRIORITY} Des échéances dépassées sont à vérifier dans l’agenda.` : NOTHING_PRIORITY;
-}
 
 export interface Speech {
   text: string;
@@ -212,63 +225,99 @@ export interface SpeechInput {
   failed?: boolean;
 }
 
-/** Sujets réels (hors « tout est à jour »). */
+/** Sujets réels (hors paragraphe « rien à signaler »). */
 export function realParagraphs(p: MascotPresentation | null): MascotParagraph[] {
   return (p?.paragraphs ?? []).filter((x) => x.sourceCode !== 'CLEAR');
 }
 
+/** Le paragraphe mérite-t-il l'attention (carte d'action) ? */
+const isAttention = (p: MascotParagraph) => p.tile?.attention ?? true;
+
 /**
- * Phrase de la bulle (§3.2) :
- *   · 2 sujets : « Deux sujets méritent votre attention aujourd'hui : a, et b. »
- *   · 1 sujet  : « Un sujet mérite votre attention aujourd'hui : a. »
- *   · 0 sujet  : « Tout est à jour. … »
- * Un sujet seulement informatif (échéance à venir, analyse en cours) ne
- * « mérite pas l'attention » : il suit « Tout est à jour. ». Des textes de
- * plusieurs phrases sont juxtaposés plutôt qu'enchaînés après « : ».
+ * Lot 61 — état de présentation EXPLICITE (pur, partagé serveur / client).
+ * Les compteurs viennent des sujets RETENUS encore affichés (le client retire
+ * aussitôt un sujet reporté), des « À faire en premier » et de l'invitation
+ * Duo ; l'évaluation et le dégradé viennent du serveur (`p.state`). Jamais du
+ * total « À traiter », du nombre de paragraphes seul ni du compteur des
+ * échéances dépassées.
+ */
+export function presentationState(p: MascotPresentation | null): MascotPresentationState {
+  const paras = realParagraphs(p);
+  const todoShown = (p?.todo?.items.length ?? 0) + (p?.duoInvite ? 1 : 0);
+  const actions = paras.filter(isAttention).length + todoShown;
+  const information = paras.filter((x) => !isAttention(x)).length;
+  const openNotPriority = (p?.todo?.total ?? 0) > (p?.todo?.items.length ?? 0);
+  const evaluation = p?.state?.evaluation ?? 'OK';
+  const degraded = p?.status === 'degraded' || (p?.state?.degraded ?? false);
+  const kind: MascotPresentationState['kind'] = actions > 0 ? 'ACTIONS'
+    : information > 0 ? 'INFORMATION'
+      : degraded || evaluation !== 'OK' ? 'DEGRADED'
+        : openNotPriority ? 'OPEN_NOT_PRIORITY' : 'NOTHING_TO_REPORT';
+  return { schemaVersion: 'mascot-state-v1', kind, actions, information, openNotPriority, evaluation, degraded };
+}
+
+/** Phrase sur l'évaluation des échéances proches, ou null. */
+function evaluationNote(st: MascotPresentationState): string | null {
+  if (st.evaluation === 'PENDING') return EVALUATION_PENDING_SPEECH;
+  if (st.evaluation === 'UNAVAILABLE') return EVALUATION_UNAVAILABLE_SPEECH;
+  return null;
+}
+
+/**
+ * Phrase de la bulle (§3.2), ASSEMBLÉE à partir de l'état de présentation
+ * (lot 61) — mêmes sujets que les cartes, rien d'autre :
+ *   · « À faire en premier » : « Deux sujets nécessitent votre attention
+ *     aujourd'hui. » puis les textes des sujets retenus ;
+ *   · sujets d'attention : « Un sujet mérite votre attention aujourd'hui : a. » ;
+ *   · informations seules (analyse en cours, export) : leurs textes, précédés
+ *     de « Aucun sujet à traiter en priorité pour le moment. » si des
+ *     éléments non prioritaires sont ouverts — jamais « Tout est à jour » ;
+ *   · rien de retenu : « Aucun sujet à traiter en priorité… » (éléments
+ *     ouverts), sinon « Rien de particulier à vous signaler pour le moment. » ;
+ *   · évaluation des échéances en cours / indisponible : dit explicitement ;
+ *   · source en panne : dit explicitement.
  */
 export function composeSpeech({ presentation, empty, failed }: SpeechInput): Speech {
   if (empty) return { text: EMPTY_ACCOUNT_SPEECH, highlights: [] };
   if (!presentation) return { text: failed ? DEGRADED_SPEECH : '', highlights: [] };
   const paras = realParagraphs(presentation);
+  const st = presentationState(presentation);
   const highlights = paras.map((p) => p.highlight).filter((h): h is string => !!h);
+  const texts = (list: MascotParagraph[]) => list.map((p) => p.text.trim()).filter(Boolean);
+  const note = evaluationNote(st);
+  const attention = paras.filter(isAttention);
+  const info = paras.filter((p) => !isAttention(p));
+  const join = (parts: Array<string | null>) => parts.filter((x): x is string => !!x).join(' ');
+
   // Lot 32 (MASC2) / lot 34 (MASC3) — niveau 1 : une phrase qui COMPTE les
-  // « À traiter » AFFICHÉS (DO_FIRST, au plus deux), sans les répéter ; les
-  // autres sujets (échéances, analyses, recommandations) gardent leur phrase.
-  // Lot 49A (ticket 13) : « Inviter quelqu'un » est une action affichée.
+  // « À traiter » AFFICHÉS (DO_FIRST, au plus deux) — lot 49A : et
+  // l'invitation Duo —, sans les répéter ; puis les sujets retenus.
   const todoShown = (presentation.todo?.items.length ?? 0) + (presentation.duoInvite ? 1 : 0);
   if (todoShown > 0) {
-    const autres = paras.map((p) => p.text.trim()).filter(Boolean);
-    return { text: [todoSummary(todoShown), ...autres].join(' '), highlights };
+    return { text: join([todoSummary(todoShown), ...texts(attention), ...texts(info), note]), highlights };
   }
-  // File non vide sans DO_FIRST : ni son total, ni « Tout est à jour ».
-  const fileNonVide = (presentation.todo?.total ?? 0) > 0;
-  // Lot 53 (D25) : échéances dépassées encore ouvertes hors sujets.
-  const overdue = (presentation.overdueDeadlines ?? 0) > 0;
-  const rienDePrioritaire = fileNonVide || overdue ? nothingPriorityText({ overdue }) : null;
-  if (paras.length === 0) {
-    if (presentation.status === 'degraded') return { text: DEGRADED_SPEECH, highlights: [] };
-    return { text: rienDePrioritaire ?? CLEAR_SPEECH, highlights: [] };
+  if (attention.length > 0) {
+    const n = attention.length;
+    const intro = `${NOMBRES[n] ?? n} ${n > 1 ? 'sujets méritent' : 'sujet mérite'} votre attention aujourd’hui`;
+    const at = texts(attention);
+    let phrase: string;
+    if (at.every(isSingleSentence)) {
+      const clauses = at.map((t) => lowerFirst(t.replace(/[.!]$/, '')));
+      phrase = `${intro} : ${clauses.length > 1 ? `${clauses.slice(0, -1).join(', ')}, et ${clauses[clauses.length - 1]}` : clauses[0]}.`;
+    } else {
+      phrase = `${intro}. ${at.join(' ')}`;
+    }
+    return { text: join([phrase, ...texts(info), note]), highlights };
   }
-  const attention = paras.filter((p) => p.tile?.attention ?? true);
-  const info = paras.filter((p) => !(p.tile?.attention ?? true));
-  const texts = (list: MascotParagraph[]) => list.map((p) => p.text.trim()).filter(Boolean);
-
-  if (attention.length === 0) {
-    // Source en panne : jamais « Tout est à jour » devant les sujets informatifs (D25).
-    const tete = presentation.status === 'degraded' ? PARTIAL_DATA_SPEECH : rienDePrioritaire ?? 'Tout est à jour.';
-    return { text: [tete, ...texts(info)].join(' '), highlights };
+  if (info.length > 0) {
+    // Information seule (document en analyse…) : elle est dite, sans
+    // annoncer au préalable que tout est à jour (D25 : source en panne → dit).
+    const tete = st.degraded ? PARTIAL_DATA_SPEECH : st.openNotPriority ? NOTHING_PRIORITY : null;
+    return { text: join([tete, ...texts(info), note]), highlights };
   }
-  const n = attention.length;
-  const intro = `${NOMBRES[n] ?? n} ${n > 1 ? 'sujets méritent' : 'sujet mérite'} votre attention aujourd’hui`;
-  const at = texts(attention);
-  let phrase: string;
-  if (at.every(isSingleSentence)) {
-    const clauses = at.map((t) => lowerFirst(t.replace(/[.!]$/, '')));
-    phrase = `${intro} : ${clauses.length > 1 ? `${clauses.slice(0, -1).join(', ')}, et ${clauses[clauses.length - 1]}` : clauses[0]}.`;
-  } else {
-    phrase = `${intro}. ${at.join(' ')}`;
-  }
-  return { text: [phrase, ...texts(info)].join(' '), highlights };
+  if (presentation.status === 'degraded') return { text: join([DEGRADED_SPEECH, note]), highlights: [] };
+  const parts = [st.openNotPriority ? NOTHING_PRIORITY : null, note];
+  return { text: parts.some(Boolean) ? join(parts) : NOTHING_TO_REPORT_SPEECH, highlights: [] };
 }
 
 /**
@@ -430,8 +479,10 @@ function kindOf(x: MascotParagraph): NonNullable<MascotTile['kind']> {
  *   au moins une action en retard → `alert-folder` ;
  *   sinon une information à vérifier (incohérence) → `questioning` ;
  *   sinon un autre sujet d'attention (rappel, à compléter) → `reminder-bell` ;
- *   rien à traiter → `success-check` ;
- *   discours indisponible → `neutral` (jamais « tout est à jour » sur une panne).
+ *   aucune interpellation pertinente établie → `success-check` ;
+ *   information seule, éléments ouverts non prioritaires, évaluation en cours
+ *   ou indisponible, discours indisponible → `neutral` (lot 61 : jamais une
+ *   réussite trompeuse).
  *
  * Cohérence avec les 4 statuts de T4 (CDC 15 T4-12) :
  *   · completed     → l'élément est réalisé, il ne remonte plus ;
@@ -446,7 +497,9 @@ function kindOf(x: MascotParagraph): NonNullable<MascotTile['kind']> {
  */
 export function homePose(p: MascotPresentation | null, empty: boolean, failed = false): HomePose {
   if (empty) return 'welcome-wave';
-  if (!p) return failed ? 'neutral' : 'success-check';
+  // Chargement ou panne : jamais une réussite (lot 61).
+  if (!p) return 'neutral';
+  void failed;
   const kinds = realParagraphs(p).map(kindOf);
   // Lot 32 (MASC2) : les « À traiter » ne sont plus des paragraphes — leur
   // nature compte toujours pour la pose (arbitrage → vérifier, sinon action).
@@ -456,11 +509,11 @@ export function homePose(p: MascotPresentation | null, empty: boolean, failed = 
   if (kinds.includes('overdue')) return 'alert-folder';
   if (kinds.includes('verify')) return 'questioning';
   if (kinds.includes('action')) return 'reminder-bell';
-  if (p.status === 'degraded' && kinds.length === 0) return 'neutral';
-  // Lot 53 (D25) : il reste des éléments ou des échéances dépassées — ni
-  // « tout est à jour », ni alerte : pose neutre.
-  if (kinds.length === 0 && ((p.todo?.total ?? 0) > 0 || (p.overdueDeadlines ?? 0) > 0)) return 'neutral';
-  return 'success-check';
+  // Lot 61 : la pose suit l'état de présentation — information seule,
+  // éléments ouverts non prioritaires, évaluation en cours ou indisponible,
+  // source en panne : pose neutre. Seule l'absence établie d'interpellation
+  // pertinente donne la pose positive (sans affirmer que tout est résolu).
+  return presentationState(p).kind === 'NOTHING_TO_REPORT' ? 'success-check' : 'neutral';
 }
 
 /** Texte alternatif de la mascotte d'accueil, selon sa pose. */
@@ -470,7 +523,7 @@ export function homePoseLabel(pose: HomePose): string {
     case 'alert-folder': return 'Verebona vous signale une échéance en retard';
     case 'questioning': return 'Verebona vous demande de vérifier une information';
     case 'reminder-bell': return 'Verebona vous rappelle un sujet à traiter';
-    case 'success-check': return 'Verebona : tout est à jour';
+    case 'success-check': return 'Verebona : rien de particulier à signaler';
     default: return 'Verebona';
   }
 }

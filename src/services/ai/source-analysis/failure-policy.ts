@@ -37,7 +37,9 @@ export const MAX_ANALYSIS_RETRIES = 10;
 /** Codes de passerelle d'un échec définitif du master T1. */
 const DEFINITIVE_CODES = new Set(['INVALID_OUTPUT', 'MASTER_PROMPT_INVALID',
   // Lot 34D : contrat runtime incohérent (défaut interne, identique à chaque essai).
-  'RUNTIME_CONTRACT_MISMATCH']);
+  'RUNTIME_CONTRACT_MISMATCH',
+  // Lot 61 : requête impossible à construire localement (identique à chaque essai).
+  'REQUEST_BUILD_FAILED']);
 
 /**
  * L'échec de la passerelle est-il définitif ? `ALL_MODELS_FAILED` : code du

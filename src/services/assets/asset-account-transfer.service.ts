@@ -115,6 +115,12 @@ export const FILE_SCOPED_TABLES: ReadonlyArray<readonly [table: string, column: 
   ['ai_field_updates', 'asset_file_id'],
   // Lot 58B : diagnostic et mémoire de pertinence des règles documentaires (0418).
   ['document_rule_evaluations', 'file_id'],
+  // Lot 61 : extract brut déterministe et états de phases T1 (0435).
+  ['document_raw_extracts', 'file_id'],
+  // Lot 61 : issue de chaque carte documentaire examinée par une campagne de réévaluation (0445).
+  ['to_process_relevance_campaign_items', 'file_id'],
+  // Lot 61 : historique des renommages (harmonisation T3) — suit le document (0450).
+  ['document_rename_events', 'file_id'],
 ];
 
 /** Tables des données du BIEN (colonne `asset_id`) qui suivent le bien. */

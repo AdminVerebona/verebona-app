@@ -318,6 +318,55 @@ export const documentExtractionCoverage = pgTable('document_extraction_coverage'
   originChk: check('document_extraction_coverage_origin_chk', sql`${t.origin} IN ('ANALYSIS', 'BACKFILL', 'RETRY')`),
 }));
 
+/**
+ * Lot 61 (0435) — extract BRUT déterministe d'un document (couche texte PDF par
+ * page), écrit avant le modèle et conservé quel que soit le sort de la
+ * structuration ; états séparés extraction / structuration / persistance.
+ * Lu et écrit en SQL (`raw-extract.service`) ; déclaré ici contre `db:push`.
+ */
+export const documentRawExtracts = pgTable('document_raw_extracts', {
+  id: bigserial('id', { mode: 'number' }).primaryKey(),
+  accountId: integer('account_id').notNull(),
+  fileId: integer('file_id').notNull(),
+  sourceRef: text('source_ref'),
+  sourceSha256: text('source_sha256'),
+  sourceBytes: bigint('source_bytes', { mode: 'number' }),
+  mimeType: text('mime_type'),
+  method: text('method').notNull(),
+  extractorVersion: smallint('extractor_version').notNull().default(1),
+  extractionStatus: text('extraction_status').notNull(),
+  pageCount: integer('page_count'),
+  pagesWithText: integer('pages_with_text').notNull().default(0),
+  pagesWithoutText: integer('pages_without_text').array().notNull().default(sql`'{}'::int[]`),
+  truncated: boolean('truncated').notNull().default(false),
+  truncationReason: text('truncation_reason'),
+  fullText: text('full_text'),
+  fullTextChars: integer('full_text_chars').notNull().default(0),
+  fullTextSha256: text('full_text_sha256'),
+  pages: jsonb('pages').notNull().default([]),
+  extractionError: text('extraction_error'),
+  extractionMs: integer('extraction_ms'),
+  extractedAt: pgTimestamp('extracted_at', { withTimezone: true }),
+  reuseCount: integer('reuse_count').notNull().default(0),
+  structuringStatus: text('structuring_status'),
+  structuringErrorCode: text('structuring_error_code'),
+  structuringError: text('structuring_error'),
+  structuringAt: pgTimestamp('structuring_at', { withTimezone: true }),
+  persistenceStatus: text('persistence_status'),
+  persistenceError: text('persistence_error'),
+  persistenceAt: pgTimestamp('persistence_at', { withTimezone: true }),
+  lastJobId: integer('last_job_id'),
+  createdAt: tstz('created_at'),
+  updatedAt: tstz('updated_at'),
+}, (t) => ({
+  fileUidx: uniqueIndex('document_raw_extracts_file_uidx').on(t.fileId),
+  accountIdx: index('document_raw_extracts_account_idx').on(t.accountId, t.updatedAt),
+  methodChk: check('document_raw_extracts_method_chk', sql`${t.method} IN ('PDF_TEXT_LAYER', 'PLAIN_TEXT', 'NONE')`),
+  extractionChk: check('document_raw_extracts_extraction_chk', sql`${t.extractionStatus} IN ('COMPLETE', 'PARTIAL_OCR_REQUIRED', 'OCR_REQUIRED', 'TRUNCATED', 'FAILED', 'NOT_SUPPORTED')`),
+  structuringChk: check('document_raw_extracts_structuring_chk', sql`${t.structuringStatus} IS NULL OR ${t.structuringStatus} IN ('RUNNING', 'SUCCEEDED', 'FAILED')`),
+  persistenceChk: check('document_raw_extracts_persistence_chk', sql`${t.persistenceStatus} IS NULL OR ${t.persistenceStatus} IN ('SUCCEEDED', 'PARTIAL', 'FAILED')`),
+}));
+
 /** Lot 34F (0296) — faits rendus par T1 mais non intégrés tels quels : conservés, jamais supprimés. */
 export const documentUnresolvedFacts = pgTable('document_unresolved_facts', {
   id: bigserial('id', { mode: 'number' }).primaryKey(),

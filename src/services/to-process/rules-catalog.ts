@@ -60,7 +60,8 @@ export type RuleProducer =
   | 'MIGRATION_REVIEW'
   | 'T3_ASSET_CONFLICT'
   | 'T3_OPERATIONS'
-  | 'T4_PROJECTION_MATCH';
+  | 'T4_PROJECTION_MATCH'
+  | 'DOCUMENT_INTERVENTION';
 
 /** Où vit chaque producteur, et par quelle(s) fonction(s) il est appelé. */
 export const RULE_PRODUCERS: Readonly<Record<RuleProducer, {
@@ -87,6 +88,12 @@ export const RULE_PRODUCERS: Readonly<Record<RuleProducer, {
   // Lot 53 (retour PO D14) : rapprochement agenda incertain de la projection
   // des Opérations (appelé par `business-operations/agenda-projection/service.ts`).
   T4_PROJECTION_MATCH: { module: 'src/services/to-process/agenda-projection-cards.ts', entries: ['syncAgendaProjectionCards'], generic: false },
+  // Lot 61 : intervention réelle identifiée sur un document (écart 2 du 58B),
+  // créée par le pont documentaire, résolue depuis la carte.
+  DOCUMENT_INTERVENTION: {
+    module: 'src/services/to-process/document-intervention.ts',
+    entries: ['upsertDocumentIntervention', 'resolveDocumentIntervention'], generic: false,
+  },
 };
 
 export interface ProcessingRule {
@@ -255,6 +262,22 @@ export const PROCESSING_RULES: readonly ProcessingRule[] = [
     businessImpact: 65,
     producer: 'DOCUMENT_BRIDGE',
     relevantDocumentTypes: WARRANTY_END_DOCUMENT_TYPES,
+  },
+  // ── Lot 61 : intervention réelle de l'utilisateur sur un document ──────
+  // (résilier, décider d'une reconduction, payer, exécuter une obligation…)
+  // identifiée par T4 (`t4_output_v3`) et contrôlée par le code — distincte
+  // de la DONNÉE (date de fin…), qui garde sa propre règle. Clé
+  // `intervention:<donnée>`, choix « C'est fait » / « Pas nécessaire ».
+  {
+    code: 'DOC-INTERVENTION',
+    targetType: 'DOCUMENT',
+    fieldKey: 'intervention',
+    arbitratePriority: 'DO_NEXT',
+    completePriority: null,
+    allowNotApplicable: true,
+    question: 'Une démarche est attendue pour ce document',
+    businessImpact: 78,
+    producer: 'DOCUMENT_INTERVENTION',
   },
   {
     code: 'DATA-AGENDA-DATE',

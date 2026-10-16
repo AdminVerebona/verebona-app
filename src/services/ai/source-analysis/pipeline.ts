@@ -24,6 +24,8 @@ import { isDefinitiveGatewayFailure, userFacingFailReason, MAX_ANALYSIS_RETRIES 
 import { buildKnowledgeFromSourceAnalysis } from '../knowledge/document-knowledge';
 import { persistDocumentKnowledge } from '../knowledge/document-knowledge.service';
 import { T1ExecutionRecorder, writeT1Report } from '../execution-report/t1-report';
+import { ensureRawExtract, markPersistence, markStructuring, persistenceOutcome } from './raw-extract/raw-extract.service';
+import { currentJobContext } from '../queue/job-context';
 import { db } from '@/db';
 import { assetFiles, assets, substructures, equipments, documentLots, documentLotItems } from '@/db/schema';
 import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
@@ -243,6 +245,20 @@ export async function runSourceAnalysis(
 
     // Lot 58C : rapport d'exécution du document (étapes, déclaré, écritures relues).
     const rec = new T1ExecutionRecorder();
+    // Lot 61 (ticket T1 §3, §6) : phase EXTRACTION — extract brut déterministe
+    // de chaque fichier du groupe, écrit AVANT le modèle et conservé quel que
+    // soit le sort de la structuration ; réutilisé à la reprise (aucune
+    // ré-extraction). Ne lève jamais.
+    if (input.sourceType === 'file') {
+      const jobId = currentJobContext()?.jobId ?? null;
+      for (const i of groupIndices) {
+        const r = await ensureRawExtract({
+          accountId: input.accountId, fileId: input.sourceIds[i], url: input.contentUrls?.[i], mimeType: input.mimeTypes[i] ?? null, jobId,
+        });
+        if (r) rec.rawExtracts.push(r);
+      }
+      await markStructuring(groupSourceIds, input.accountId, 'RUNNING');
+    }
     try {
       let master: MasterGroupAnalysis;
       try {
@@ -250,7 +266,9 @@ export async function runSourceAnalysis(
       } catch (e) {
         // Lot 22 : un refus pour plafond n'est jamais un échec du master.
         if (isExecutionCancelled(e) || isCostCapReached(e)) throw e;
-        rec.fail('MASTER', e);
+        rec.fail('MASTER', e, structuringFailureDetail(e));
+        // Lot 61 : l'extract brut reste écrit ; la structuration est en échec, explicitement.
+        await markStructuring(groupSourceIds, input.accountId, 'FAILED', e);
         throw new T1MasterAnalysisError((e as Error).message, {
           // Revue 3a : le code de la passerelle n'est plus écrasé — il
           // distingue une sortie invalide (définitif) d'une panne (transitoire).
@@ -261,6 +279,7 @@ export async function runSourceAnalysis(
       }
       const result = master.result;
       rec.ok('MASTER', { facts: master.facts.length, promptVersion: master.promptVersion });
+      await markStructuring(groupSourceIds, input.accountId, 'SUCCEEDED');
       rec.traceIds = result.operationTrace?.traceIds ?? [];
       rec.masterFacts = master.facts;
 
@@ -512,6 +531,20 @@ export async function runSourceAnalysis(
         },
       }));
 
+      // ══════════════════════════════════════════════════════════════════
+      // Lot 61 (ticket T1 §6, §8) — PHASE PERSISTANCE : jamais de faux succès.
+      // La base de connaissance (extract, faits, couverture) est une écriture
+      // BLOQUANTE : son échec n'arrête pas les écritures suivantes (preuves,
+      // liens, règles : tout ce qui peut l'être est écrit), mais le document
+      // n'est jamais déclaré analysé — échec TRANSITOIRE explicite, reprise
+      // idempotente par la file durable (faits, preuves, unités remplacés).
+      // ══════════════════════════════════════════════════════════════════
+      const persistance = persistenceOutcome(rec.steps);
+      if (input.sourceType === 'file') await markPersistence(groupSourceIds, input.accountId, persistance.status, persistance.error);
+      if (persistance.status === 'FAILED') {
+        throw new T1PersistenceIncompleteError(persistance.error ?? 'écriture bloquante en échec');
+      }
+
       // ⚠️ CORRECTION §4.1.7 — la suppression des fichiers secondaires
       // n'intervient qu'ici, après persistance ET preuves réussies.
       await guard?.assertActive('finalisation');
@@ -612,7 +645,16 @@ export async function runSourceAnalysis(
       console.warn(`[source-analysis] analyse T1 en échec pour la source ${leadSourceId} :`, (e as Error).message);
       const definitif = e instanceof T1MasterAnalysisError && e.definitive;
       await failSources(groupSourceIds, failReason(e), lotId, { definitive: definitif });
-      rec.failure = failReason(e);
+      // Lot 61 : une étape bloquante de persistance en échec APRÈS le master
+      // (run, preuves, règles) est aussi un échec de la phase persistance.
+      if (input.sourceType === 'file' && !(e instanceof T1MasterAnalysisError) && !(e instanceof T1PersistenceIncompleteError)
+        && rec.steps.some((x) => x.step === 'MASTER' && x.status === 'OK')) {
+        await markPersistence(groupSourceIds, input.accountId, 'FAILED', persistenceOutcome(rec.steps).error ?? (e as Error).message);
+      }
+      // Persistance incomplète : des données sont écrites — rapport PARTIAL
+      // (lignes NOT_PERSISTED motivées), document en échec, jamais en succès.
+      if (e instanceof T1PersistenceIncompleteError) rec.fail('PERSISTENCE', e);
+      else rec.failure = failReason(e);
       await writeT1Report(rec, { accountId: req.accountId, fileId: leadSourceId, groupSourceIds });
       failedSourceIds.push(...groupSourceIds);
       if (definitif) definitiveFailedSourceIds.push(...groupSourceIds);
@@ -691,6 +733,30 @@ export class T1MasterAnalysisError extends Error {
     this.lastFailureCode = opts.lastFailureCode ?? null;
     this.definitive = opts.definitive ?? false;
   }
+}
+
+/**
+ * Lot 61 (ticket T1 §6) — structuration réussie mais écriture BLOQUANTE en
+ * échec (base de connaissance) : le document n'est jamais déclaré analysé.
+ * Échec TRANSITOIRE (la file durable reprend ; écritures idempotentes).
+ */
+export class T1PersistenceIncompleteError extends Error {
+  readonly code = 'T1_PERSISTENCE_INCOMPLETE';
+  constructor(detail: string) {
+    super(`Persistance incomplète : ${detail}`.slice(0, 1_000));
+    this.name = 'T1PersistenceIncompleteError';
+  }
+}
+
+/** Code, code du dernier modèle et étape d'un échec de structuration (rapport, BO). */
+function structuringFailureDetail(e: unknown): Record<string, unknown> {
+  const x = (e ?? {}) as { code?: unknown; lastFailureCode?: unknown; recoverable?: unknown; aiStage?: unknown; cause?: { aiStage?: unknown } };
+  return {
+    code: typeof x.code === 'string' ? x.code : null,
+    lastFailureCode: typeof x.lastFailureCode === 'string' ? x.lastFailureCode : null,
+    recoverable: typeof x.recoverable === 'boolean' ? x.recoverable : null,
+    stage: typeof x.aiStage === 'string' ? x.aiStage : typeof x.cause?.aiStage === 'string' ? x.cause.aiStage : null,
+  };
 }
 
 /**

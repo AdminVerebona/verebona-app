@@ -181,7 +181,8 @@ interface AccountSnapshot {
 export interface AdminPlanChangeDeps {
   loadAccount(accountId: number): Promise<AccountSnapshot | null>;
   stripe(): Pick<Stripe, 'subscriptions'>;
-  applyLocal(snapshot: AccountSnapshot, newPlan: AdminAssignablePlan): Promise<void>;
+  /** `effectiveAt` : prise d'effet du changement (marqueur Stripe), lot 61B. */
+  applyLocal(snapshot: AccountSnapshot, newPlan: AdminAssignablePlan, opts?: { effectiveAt?: Date }): Promise<void>;
   /** Prix courant vérifié (relu chez Stripe) — asynchrone (LK-61). */
   resolvePrice(planCode: PlanCode, period: BillingPeriod): Promise<ResolvedPrice>;
   /** Abonnés : remplace une revalorisation planifiée (EX-024). */
@@ -227,7 +228,7 @@ async function loadAccountSnapshot(accountId: number): Promise<AccountSnapshot |
  * plus l'offre portée par `account_subscriptions`, que lisent les droits.
  * Statut d’abonnement et échéance conservés : seule l’offre change.
  */
-async function applyLocalPlanChange(snapshot: AccountSnapshot, newPlan: AdminAssignablePlan): Promise<void> {
+async function applyLocalPlanChange(snapshot: AccountSnapshot, newPlan: AdminAssignablePlan, opts: { effectiveAt?: Date } = {}): Promise<void> {
   // ══════════════════════════════════════════════════════════════════════
   // IDEMPOTENT FACE AU WEBHOOK
   //
@@ -261,6 +262,9 @@ async function applyLocalPlanChange(snapshot: AccountSnapshot, newPlan: AdminAss
     // ACC-A05 / A17 esprit : pas de courriel automatique sur action admin.
     sendEmails: false,
     recordHistory: !alreadyApplied,
+    // Lot 61B (D) : date du marqueur posé sur l'abonnement Stripe, sinon
+    // l'instant de l'application locale (aucun abonnement Stripe).
+    duoEffectiveAt: opts.effectiveAt ?? new Date(),
   });
   await db
     .update(accountSubscriptions)
@@ -296,6 +300,8 @@ export async function changePlanAsAdmin(
 
   // ── 1. Stripe ─────────────────────────────────────────────────────────
   let stripeUpdated = false;
+  // Instant du changement : marqueur Stripe ET date d'effet locale (61B).
+  const changeAt = new Date();
   let applied: NonNullable<Extract<AdminPlanChangeResult, { ok: true }>['price']> | undefined;
   let billingPeriod: BillingPeriod | null =
     snapshot.billingPeriod === 'monthly' || snapshot.billingPeriod === 'yearly' ? snapshot.billingPeriod : null;
@@ -364,7 +370,7 @@ export async function changePlanAsAdmin(
       try {
         await deps.stripe().subscriptions.update(
           subscription.id,
-          buildStripeUpdateParams(item.id, price.priceId, PLAN_CODE_OF[input.newPlan]),
+          buildStripeUpdateParams(item.id, price.priceId, PLAN_CODE_OF[input.newPlan], changeAt),
         );
         stripeUpdated = true;
         const previousPriceId = (item.price as { id?: string })?.id ?? null;
@@ -387,7 +393,7 @@ export async function changePlanAsAdmin(
 
   // ── 2. Verebona ───────────────────────────────────────────────────────
   try {
-    await deps.applyLocal(snapshot, input.newPlan);
+    await deps.applyLocal(snapshot, input.newPlan, stripeUpdated ? { effectiveAt: changeAt } : {});
   } catch (error) {
     return {
       ok: false,

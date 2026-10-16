@@ -67,7 +67,7 @@ const src = (p: string) => readFileSync(join(ROOT, p), 'utf8').replace(/\r\n?/g,
 
 const DEBUT = new Date('2026-10-14T08:30:00.000Z'); // 10 h 30 à Paris
 const ECHEANCE = new Date('2026-11-14T09:30:00.000Z'); // 10 h 30 à Paris (heure d'hiver)
-const DUO = { subscriptionStatus: 'ACTIVE', pendingInviteEmail: null, memberships: 0, startedAt: DEBUT, firstInviteSentAt: null };
+const DUO = { subscriptionStatus: 'ACTIVE', pendingInviteEmail: null, memberships: 0, startedAt: DEBUT, firstInviteSentAt: null, offerActive: true };
 
 let n = 0;
 function atp(priority: 'DO_FIRST' | 'DO_NEXT' = 'DO_FIRST'): ToProcessActionView {

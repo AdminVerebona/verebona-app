@@ -1181,16 +1181,21 @@ export const duoAccounts = pgTable('duo_accounts', {
   pendingInviteToken: text('pending_invite_token').unique(),
   pendingInviteTokenExpiresAt: tstzOptional('pending_invite_token_expires_at'),
   pendingInviteSentAt: tstzOptional('pending_invite_sent_at'),
-  // Lot 54F (0385) : début EFFECTIF de l'abonnement Duo en cours — posé par
-  // le déclencheur `duo_accounts_subscription_period` au passage à
-  // ACTIVE/TRIALING depuis un état hors offre (jamais par l'application,
-  // jamais décalé par un renouvellement, un rejeu ou une resynchronisation).
-  // Distinct de `activated_at` (partage entre membres). NULL : inconnu.
+  // Lot 54F (0385), lot 61B (0438) : début EFFECTIF de l'abonnement Duo en
+  // cours, d'après une source Stripe fiable (`duo-period.ts`) ou l'action BO
+  // locale, écrit à l'ouverture de la souscription ; le déclencheur ne
+  // fabrique plus de date (NULL si aucune source fiable) et la remet à NULL
+  // à l'ouverture d'une souscription sans date. Jamais décalé par un
+  // renouvellement, un rejeu ou une resynchronisation. NULL : inconnu.
   duoSubscriptionStartedAt: tstzOptional('duo_subscription_started_at'),
   // Lot 54F (0385) : premier envoi d'invitation de cette souscription — trace
   // durable, que l'annulation ou l'expiration du lien n'effacent pas ;
   // remise à NULL par le déclencheur à l'ouverture d'une nouvelle souscription.
   duoFirstInviteSentAt: tstzOptional('duo_first_invite_sent_at'),
+  // Lot 61B (0438) : sortie locale de l'offre Duo (posée par le déclencheur).
+  // Borne basse des dates de début acceptées : une date Stripe antérieure
+  // (webhook ancien ou rejoué) n'ouvre jamais la souscription en cours.
+  duoSubscriptionEndedAt: tstzOptional('duo_subscription_ended_at'),
   // Lot 57A (0405) : empreinte SHA-256 du dernier jeton consommé (« invitation
   // déjà utilisée ») — jamais le jeton lui-même.
   lastUsedInviteTokenHash: text('last_used_invite_token_hash'),

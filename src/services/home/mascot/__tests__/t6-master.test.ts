@@ -19,7 +19,9 @@ type Input = import('../t6-contract').T6Input;
 const read = (p: string) => readFileSync(join(process.cwd(), p), 'utf-8');
 const MASTER = read('src/services/ai/prompts/mascot/t6_master_v1.txt');
 const FIX = join(process.cwd(), 'src/services/home/mascot/__fixtures__');
-const fixtures = readdirSync(FIX).filter((f) => f.endsWith('.json')).map((f) => JSON.parse(readFileSync(join(FIX, f), 'utf8')));
+// Lot 61 : seuls les cas FORMULATE (les cas EVALUATE ont leur contrat, `l61-t6-evaluate.test.ts`).
+const fixtures = readdirSync(FIX).filter((f) => f.endsWith('.json')).map((f) => JSON.parse(readFileSync(join(FIX, f), 'utf8')))
+  .filter((c) => c.recording?.operationCode === 't6_formulate');
 const P = fixtures.find((f) => f.case === 'P-T6-01');
 const INPUT: Input = P.context.input;
 const KINDS = P.context.kinds;

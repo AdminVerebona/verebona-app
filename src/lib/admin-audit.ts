@@ -104,13 +104,16 @@ export type AdminActionType =
   // Lot 57A : recherche dans le suivi des e-mails transactionnels (BO ›
   // Communications) — critères sans adresse complète.
   | 'EMAIL_LOG_SEARCH'
+  // Lot 61B : correction de l'expéditeur des e-mails (BO › Communications ›
+  // E-mails transactionnels) — avant / après, jamais de secret.
+  | 'EMAIL_SETTINGS_UPDATE'
   // Lot 58C : consultation / export d'un rapport d'exécution T1 / T3 (valeurs
   // issues des documents des utilisateurs) depuis « Exécutions & logs ».
   | 'AI_EXECUTION_REPORT_READ';
 
 export type AdminTargetType = 'ACCOUNT' | 'USER' | 'EXPORT_TEMPLATE' | 'COMMUNICATION_CHANNEL' | 'ANOMALY' | 'GDPR_REQUEST'
   | 'ASSISTANT_SETTING' | 'ASSISTANT_REQUEST' | 'NOTIFICATION' | 'AI_CACHE' | 'AI_METRICS'
-  | 'OPS_BACKFILL' | 'SCHEDULED_TASK' | 'AI_EXECUTION' | 'STRIPE_CATALOG' | 'EMAIL_LOG' | 'AI_EXECUTION_REPORT';
+  | 'OPS_BACKFILL' | 'SCHEDULED_TASK' | 'AI_EXECUTION' | 'STRIPE_CATALOG' | 'EMAIL_LOG' | 'AI_EXECUTION_REPORT' | 'EMAIL_SETTINGS';
 
 type Executor = Pick<typeof db, 'insert' | 'select'>;
 

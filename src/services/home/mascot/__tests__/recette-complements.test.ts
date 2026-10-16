@@ -64,6 +64,9 @@ async function unsafe(sql: string, p: unknown[] = []): Promise<unknown[]> {
       context_fingerprint: empreinte!({ title: i.title, date: i.date, forecast: false, requiresQualification: false }),
       reason: 'Évaluation simulée (test).', action_date: null, reevaluate_on: null, action: null, consequence: null,
       uncertainty: null, exception_reason: null, prompt_version: null, trace_id: null,
+      // Lot 61 : décision du contrat `t6-evaluation-v1` (seule réutilisée).
+      contract_version: 't6-evaluation-v1', decision: 'SHOW_NOW', category: 'ACTION_NOW', reason_code: 'ACTION_REQUIRED_SOON',
+      evidence_refs: ['C1.title'], uncertainties: [],
     }));
   }
   if (/to_char\(start_date, 'YYYY-MM-DD'\) AS date/.test(sql)) {

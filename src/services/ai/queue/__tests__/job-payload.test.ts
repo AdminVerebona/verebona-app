@@ -102,7 +102,10 @@ describe('prélèvement et relance', () => {
     expect(await retryFailedJob(9)).toBe(true);
     const upd = calls[calls.length - 1];
     expect(upd.sql).toMatch(/attempts = 0, origin = 'manual'/);
-    expect(upd.sql).toMatch(/WHERE id = \$1 AND status = 'FAILED'/);
+    expect(upd.sql).toMatch(/WHERE id = \$1\s+AND \(status = 'FAILED' OR/);
+    // Lot 61 (T1-GEM-09) : job T1 clos en échec MÉTIER relançable ; aucun autre DONE.
+    expect(upd.sql).toMatch(/status = 'DONE' AND treatment = 'T1' AND business_result = 'FAILED'/);
+    expect(upd.sql).toMatch(/business_result = NULL, business_result_detail = NULL/);
     respond = () => [];
     expect(await retryFailedJob(10)).toBe(false);
   });

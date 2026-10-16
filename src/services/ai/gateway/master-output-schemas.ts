@@ -12,15 +12,15 @@ import {
   T1AnalyzeDocumentOutput, T1GroupUploadOutput, T1MasterOutput,
 } from '../source-analysis/master/t1-contract';
 import {
-  T3LinkAmbiguityOutput, T3MasterOutput, T3OperationMatchOutput, T3ValueConflictOutput,
+  T3DocumentNamingOutput, T3LinkAmbiguityOutput, T3MasterOutput, T3OperationMatchOutput, T3ValueConflictOutput,
 } from '../reconciliation/master/t3-contract';
 import {
-  T4ClassifyEventOutput, T4ClassifyEventV2Output, T4MasterOutput, T4TemporalAmbiguityOutput, T4VerifyCompletionOutput,
+  T4ClassifyEventOutput, T4ClassifyEventV2Output, T4ClassifyEventV3Output, T4MasterOutput, T4TemporalAmbiguityOutput, T4VerifyCompletionOutput,
 } from '../agenda/master/t4-contract';
 import {
   T2AnswerOutput, T2MasterOutput, T2RevalidateOutput, T2UnderstandOutput,
 } from '../assistant/master/t2-contract';
-import { T6FormulateOutput } from '@/services/home/mascot/t6-contract';
+import { T6EvaluateOutput, T6FormulateOutput } from '@/services/home/mascot/t6-contract';
 
 export const MASTER_OUTPUT_SCHEMAS: Readonly<Record<string, ZodType>> = {
   T1GroupUploadOutput,
@@ -29,10 +29,14 @@ export const MASTER_OUTPUT_SCHEMAS: Readonly<Record<string, ZodType>> = {
   T3ValueConflictOutput,
   T3LinkAmbiguityOutput,
   T3OperationMatchOutput,
+  // Lot 61 : harmonisation du nommage documentaire (branche facultative).
+  T3DocumentNamingOutput,
   T3MasterOutput,
   T4ClassifyEventOutput,
   // Lot 54 : contrat de sortie `t4_output_v2` de CLASSIFY_EVENT (décision Agenda + récurrence).
   T4ClassifyEventV2Output,
+  // Lot 61 : contrat `t4_output_v3` (v2 + évaluation d'une intervention « À traiter »).
+  T4ClassifyEventV3Output,
   T4VerifyCompletionOutput,
   T4TemporalAmbiguityOutput,
   T4MasterOutput,
@@ -42,6 +46,8 @@ export const MASTER_OUTPUT_SCHEMAS: Readonly<Record<string, ZodType>> = {
   T2MasterOutput,
   // T6 (§28) : pas de discriminant de sortie, `schemaVersion` strict (t6-output-v2).
   T6FormulateOutput,
+  // Lot 61 (MODE=EVALUATE) : `schemaVersion` t6-evaluation-v1 strict.
+  T6EvaluateOutput,
 };
 
 export function masterOutputSchemaFor(name: string): ZodType | null {

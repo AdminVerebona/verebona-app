@@ -3,9 +3,10 @@
  * implémenter la gestion intelligente des rappels » — de bout en bout sur
  * PostgreSQL 16 réel : vrai collecteur, vraie décision, vraie mascotte
  * (`getMascotPresentation`), vraie passerelle IA, vraies routes. Modèle
- * SIMULÉ (aucun réseau) : T6 recopie les textes de secours et rend, pour
- * chaque candidat d'interpellation (R13), l'évaluation que le scénario lui
- * confie — le JUGEMENT reste celui de l'IA simulée, jamais une règle du code.
+ * SIMULÉ (aucun réseau) : en MODE=FORMULATE, T6 recopie les textes de
+ * secours ; en MODE=EVALUATE (lot 61, contrat `t6-evaluation-v1`), il rend
+ * pour chaque candidat la décision que le scénario lui confie — le JUGEMENT
+ * reste celui de l'IA simulée, jamais une règle du code.
  *
  *  T6-INT-01/03/14  assurances à 78 jours et échéance à 20 jours sans démarche :
  *                   aucune interpellation, ni dans le texte ni dans les cartes ;
@@ -20,7 +21,7 @@
  *  T6-INT-17        reporting T6 : affichés ET écartés, motif, seuil, rappel ;
  *                   pas de rapport recopié à chaque affichage ;
  *  T6-INT-18        aucun doublon (traitements simultanés ou répétés) ;
- *  T6-INT-19        version BO antérieure du prompt : décision prudente ;
+ *  T6-INT-19        version BO antérieure du prompt (lot 61 : sans EVALUATE) : décision prudente ;
  *  T6-INT-21        agenda, documents et traitements T1/T3 intacts ; nettoyage ;
  *                   migration 0432 rejouable.
  */
@@ -40,7 +41,7 @@ vi.mock('@/lib/session-service', () => ({
 }));
 
 type Eval = Record<string, unknown> | null;
-interface Candidat { ref: string; title: string; description: string | null; daysUntilDue: number | null; overdue: boolean; recurring: boolean }
+interface Candidat { subjectId: string; title: string; description: string | null; daysUntilDue: number | null; overdue: boolean; recurring: boolean; evidence: Array<{ ref: string }> }
 
 /** IA simulée : le scénario dit ce qu'elle juge, candidat par candidat. */
 const modele = vi.hoisted(() => ({
@@ -53,17 +54,32 @@ function provider() {
     name: 'simule-l60b',
     isConfigured: () => true,
     async call(input: { prompt: string }) {
-      if (!/MODE = FORMULATE/.test(input.prompt)) throw new Error('appel inattendu');
+      const mode = /^MODE = (\w+)$/m.exec(input.prompt)?.[1];
+      if (mode === 'EVALUATE') {
+        // Lot 61 : décision par candidat (contrat t6-evaluation-v1), même ordre.
+        const ctx = JSON.parse(/Candidats à évaluer : (.*)\n/.exec(input.prompt)![1]) as { candidates: Candidat[] };
+        modele.candidats.push(ctx.candidates);
+        const decisions = ctx.candidates.map((c) => {
+          const e = modele.juger(c);
+          if (!e) return null;
+          const { preuve, ...reste } = e as { preuve?: string };
+          const refs = c.evidence.map((x) => x.ref);
+          return {
+            subjectId: c.subjectId, expectedAction: null, actionDeadline: null, suggestedReviewAt: null, priorityHint: null, uncertainties: [],
+            evidenceRefs: [refs.find((r) => r.endsWith(`.${preuve ?? 'dueDate'}`)) ?? refs[0]],
+            ...reste,
+          };
+        });
+        // Un candidat sans jugement : sortie incomplète (rejetée en entier par le serveur).
+        return { rawText: JSON.stringify({ schemaVersion: 't6-evaluation-v1', decisions: decisions.filter(Boolean) }), inputTokens: 200, outputTokens: 60 };
+      }
+      if (mode !== 'FORMULATE') throw new Error('appel inattendu');
       const entree = JSON.parse(/Entrée structurée : (.*)\n/.exec(input.prompt)![1]) as { subjects: Array<{ subjectId: string; fallbackText: string }> };
-      const ctx = JSON.parse(/Candidats d’interpellation à évaluer : (.*)\n/.exec(input.prompt)?.[1] ?? 'null') as { candidates: Candidat[] } | null;
-      if (ctx) modele.candidats.push(ctx.candidates);
-      const assessments = (ctx?.candidates ?? []).map((c) => { const e = modele.juger(c); return e ? { ref: c.ref, ...e } : null; }).filter(Boolean);
       return {
         rawText: JSON.stringify({
           schemaVersion: 't6-output-v2',
           messages: entree.subjects.map((s) => ({ subjectId: s.subjectId, text: s.fallbackText, highlight: null })),
           suggestions: [],
-          assessments,
         }),
         inputTokens: 200, outputTokens: 60,
       };
@@ -71,8 +87,15 @@ function provider() {
   };
 }
 
-const AUCUNE = { interpellation: 'NONE', actionNeeded: false, reason: 'Échéance connue et suivie : aucune démarche à engager.', priority: 'LOW' };
-const AGIR = (o: Record<string, unknown> = {}) => ({ interpellation: 'ACT_NOW', actionNeeded: true, reason: 'Une démarche est nécessaire.', priority: 'MEDIUM', action: 'Prendre rendez-vous', ...o });
+/** Lot 61 : décisions du contrat `t6-evaluation-v1`. */
+const AUCUNE = { decision: 'SUPPRESS', category: 'INFORMATION', reasonCode: 'NO_ACTION_REQUIRED', reason: 'Échéance connue et suivie : aucune démarche à engager.', priorityHint: 'LOW', preuve: 'title' };
+const AGIR = (o: { priority?: string; action?: string; exceptionReason?: string; actionDate?: string } = {}) => ({
+  decision: 'SHOW_NOW', category: 'ACTION_NOW',
+  reasonCode: o.exceptionReason ? 'NOTICE_PERIOD_RUNNING' : 'ACTION_REQUIRED_SOON',
+  reason: o.exceptionReason ?? 'Une démarche est nécessaire à court terme.',
+  expectedAction: o.action ?? 'Prendre rendez-vous', priorityHint: o.priority ?? 'MEDIUM',
+  actionDeadline: o.actionDate ?? null, preuve: o.exceptionReason ? 'description' : 'dueDate',
+});
 
 scenario('L60B-T6', 'Lot 60 — décision d’interpellation T6 et rappels de l’accueil', ({ sql, make }) => {
   useTargetState({}, { masters: ['T1', 'T2'] });
@@ -128,9 +151,10 @@ scenario('L60B-T6', 'Lot 60 — décision d’interpellation T6 et rappels de l�
     const p1 = await passer(c.id);
     expect(sujets(p1)).toEqual([]);
     expect(modele.candidats.flat().map((x) => x.title).sort()).toEqual(['Vérification extincteur', 'Échéance assurance auto', 'Échéance assurance habitation'].sort());
-    const evals = await sql<Array<{ agenda_item_id: number; interpellation: string }>>`
-      SELECT agenda_item_id, interpellation FROM t6_interpellation_assessments WHERE account_id = ${c.id} ORDER BY agenda_item_id`;
-    expect(evals.map((e) => [e.agenda_item_id, e.interpellation])).toEqual([[a1, 'NONE'], [a2, 'NONE'], [v, 'NONE']]);
+    const evals = await sql<Array<{ agenda_item_id: number; interpellation: string; decision: string; contract_version: string }>>`
+      SELECT agenda_item_id, interpellation, decision, contract_version FROM t6_interpellation_assessments WHERE account_id = ${c.id} ORDER BY agenda_item_id`;
+    expect(evals.map((e) => [e.agenda_item_id, e.interpellation, e.decision, e.contract_version])).toEqual([
+      [a1, 'NONE', 'SUPPRESS', 't6-evaluation-v1'], [a2, 'NONE', 'SUPPRESS', 't6-evaluation-v1'], [v, 'NONE', 'SUPPRESS', 't6-evaluation-v1']]);
     // 2e passage : décisions SUPPRESS — ni carte ni mention ; aucun nouvel appel d'évaluation.
     modele.candidats.length = 0;
     const p2 = await passer(c.id);
@@ -335,11 +359,11 @@ scenario('L60B-T6', 'Lot 60 — décision d’interpellation T6 et rappels de l�
     expect(apres).toBe(avant);
   });
 
-  it('T6-INT-19 — version BO active antérieure (sans R13) : aucune interpellation lointaine, rappel historique en deçà du seuil', async () => {
+  it('T6-INT-19 (revu lot 61) — version BO active antérieure (sans EVALUATE) : aucune échéance non évaluée présentée, état dit explicitement', async () => {
     const cfg = await import('@/services/ai/config/config-resolver');
     const { emptyTreatmentConfig } = await import('@/services/ai/config/config-types');
     const master = readFileSync(join(process.cwd(), 'src/services/ai/prompts/mascot/t6_master_v1.txt'), 'utf8')
-      .replace(/\nCandidats d’interpellation à évaluer : \{\{INTERPELLATION_CONTEXT\}\}\n/, '\n');
+      .replace(/BRANCHE MODE = EVALUATE[\s\S]*?(?=BRANCHE MODE = FORMULATE)/, '');
     const [v] = await sql<[{ id: number }]>`INSERT INTO ai_config_versions (environment, status, label) VALUES ('local', 'DRAFT', 'l60b ancien T6') RETURNING id`;
     const entries = [
       ...(['T1', 'T2'] as const).map((t) => ({ ...emptyTreatmentConfig(t), promptArchitecture: 'master' as const })),
@@ -352,8 +376,12 @@ scenario('L60B-T6', 'Lot 60 — décision d’interpellation T6 et rappels de l�
       const loin = await echeance(c, 'Échéance assurance habitation', await plus(78));
       const proche = await echeance(c, 'Révision chaudière', await plus(15));
       const p = await passer(c.id);
-      expect(ids(p)).toEqual([proche]);
+      // Lot 61 : sans évaluation possible, ni l'échéance lointaine ni la proche ne sont présentées d'office.
+      expect(ids(p)).toEqual([]);
       expect(ids(p)).not.toContain(loin);
+      expect(ids(p)).not.toContain(proche);
+      expect(p.state).toMatchObject({ evaluation: 'UNAVAILABLE' });
+      expect(await texte(p)).toBe('Je ne peux pas examiner vos échéances pour le moment : elles restent consultables dans l’agenda.');
       expect(modele.candidats).toEqual([]);
     } finally {
       const repo = await import('@/services/ai/config/config-resolver');

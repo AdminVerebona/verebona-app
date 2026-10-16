@@ -10,7 +10,7 @@ import { describe, expect, it } from 'vitest';
 import { checkMasterPromptContent } from '../master-prompt-checks';
 import { masterConfigIssues, missingOptionalMasterTasks } from '../../config/prompt-architecture';
 import { emptyTreatmentConfig } from '../../config/config-types';
-import { checkMasterTemplate, isOptionalMasterTask, renderMasterPrompt, MasterPromptError } from '../../prompts/prompt-loader';
+import { checkMasterTemplate, isMasterTaskTextPending, isOptionalMasterTask, renderMasterPrompt, MasterPromptError } from '../../prompts/prompt-loader';
 import { listMasterTasks } from '../../registry/operations';
 import { runMasterCorpus } from '../../governance/master-corpus/runner';
 import { readMasterFileFromRepo } from '../../governance/master-corpus/cases';
@@ -22,20 +22,26 @@ const VARS = { FIELD: null, CURRENT_STATE: null, EVIDENCES: null, SUBJECT_CONTEX
 
 describe('C6-3x — gouvernance des versions du prompt maître T3', () => {
   it('C6-30 la branche est déclarée au registre et optionnelle pour T3 seulement ; le fichier du dépôt la contient', () => {
-    expect(listMasterTasks('t3_master_v1')).toEqual(['VALUE_CONFLICT', 'LINK_AMBIGUITY', 'OPERATION_MATCH']);
+    // Lot 61 : DOCUMENT_NAMING, également facultative ; son texte est livré par un ticket séparé.
+    expect(listMasterTasks('t3_master_v1')).toEqual(['VALUE_CONFLICT', 'LINK_AMBIGUITY', 'OPERATION_MATCH', 'DOCUMENT_NAMING']);
     expect(isOptionalMasterTask('t3_master_v1', 'OPERATION_MATCH')).toBe(true);
     expect(isOptionalMasterTask('t3_master_v1', 'VALUE_CONFLICT')).toBe(false);
-    expect(checkMasterTemplate(livre, listMasterTasks('t3_master_v1'))).toEqual([]);
-    expect(checkMasterTemplate(ancien, listMasterTasks('t3_master_v1'))).toEqual(['section « BRANCHE TASK = OPERATION_MATCH » absente']);
+    const livrees = listMasterTasks('t3_master_v1').filter((t) => !isMasterTaskTextPending('t3_master_v1', t));
+    expect(checkMasterTemplate(livre, livrees)).toEqual([]);
+    expect(checkMasterTemplate(ancien, livrees)).toEqual(['section « BRANCHE TASK = OPERATION_MATCH » absente']);
   });
 
   it('C6-31 version BO antérieure : activable (aucun blocage), avertissement explicite ; texte livré : rien à signaler', () => {
     const r = checkMasterPromptContent('T3', ancien);
     expect(r.ok).toBe(true);
     expect(r.blocking).toEqual([]);
-    expect(r.warnings).toEqual([expect.objectContaining({ code: 'OPTIONAL_BRANCH_MISSING', blocking: false })]);
-    expect(r.warnings[0].message).toMatch(/repartez du texte livré avec l’application puis activez la version/);
-    expect(checkMasterPromptContent('T3', livre)).toMatchObject({ ok: true, blocking: [], warnings: [] });
+    expect(r.warnings).toEqual([
+      expect.objectContaining({ code: 'OPTIONAL_BRANCH_MISSING', blocking: false }), expect.objectContaining({ code: 'OPTIONAL_BRANCH_MISSING', blocking: false }),
+    ]);
+    expect(r.warnings[0].message).toMatch(/OPERATION_MATCH[\s\S]*repartez du texte livré avec l’application puis activez la version/);
+    // Lot 61 : DOCUMENT_NAMING — texte attendu d'une évolution séparée (le texte livré ne la porte pas encore).
+    expect(r.warnings[1].message).toMatch(/DOCUMENT_NAMING[\s\S]*évolution séparée du prompt/);
+    expect(checkMasterPromptContent('T3', livre)).toMatchObject({ ok: true, blocking: [], warnings: [expect.objectContaining({ code: 'OPTIONAL_BRANCH_MISSING', message: expect.stringMatching(/DOCUMENT_NAMING/) })] });
   });
 
   it('C6-32 version de configuration portant l’ancien texte : promotion non bloquée, signalement non bloquant', () => {
@@ -43,8 +49,8 @@ describe('C6-3x — gouvernance des versions du prompt maître T3', () => {
     const issues = masterConfigIssues(c);
     expect(issues.filter((i) => i.blocking)).toEqual([]);
     expect(issues).toContainEqual(expect.objectContaining({ field: 'masterPrompt', blocking: false, message: expect.stringMatching(/OPERATION_MATCH/) }));
-    expect(missingOptionalMasterTasks('T3', ancien)).toEqual(['OPERATION_MATCH']);
-    expect(missingOptionalMasterTasks('T3', livre)).toEqual([]);
+    expect(missingOptionalMasterTasks('T3', ancien)).toEqual(['OPERATION_MATCH', 'DOCUMENT_NAMING']);
+    expect(missingOptionalMasterTasks('T3', livre)).toEqual(['DOCUMENT_NAMING']);
   });
 
   it('C6-33 à l’exécution : les branches existantes rendent ; OPERATION_MATCH est refusée AVANT tout appel (TASK_BRANCH_MISSING)', () => {

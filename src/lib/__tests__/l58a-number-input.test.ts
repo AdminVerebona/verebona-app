@@ -143,7 +143,7 @@ describe('L58A — composant et formulaires', () => {
       'src/components/AssetFormDialog.tsx',
       'src/components/assets/ValuationHistoryDrawer.tsx',
       'src/components/assets/SaleDetailsDialog.tsx',
-      'src/components/assets/TcoDrawer.tsx',
+      'src/components/assets/TcoSection.tsx',
       'src/components/assets/DocumentDrawer.tsx',
       'src/components/documents/unified-document-dialog.tsx',
     ];

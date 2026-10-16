@@ -35,6 +35,9 @@ const all = ZONES.flatMap((z) => routes(join(ROOT, z))).map((full) => ({
 const ALLOWED_MUTATIONS: Record<string, string[]> = {
   'communications/channels/route.ts': ['PATCH'],
   'communications/test/route.ts': ['POST'],
+  // Lot 61B (ticket P0 e-mails §3-A) : correction de l'expéditeur sans SQL,
+  // administrateurs, journalisée (EMAIL_SETTINGS_UPDATE).
+  'communications/email-settings/route.ts': ['PATCH'],
 };
 
 describe('routes de consultation BO (§7 à §10)', () => {
