@@ -103,7 +103,7 @@ describe('contrat de navigation (MASC2)', () => {
   it('MASC2-CONTRAT — libellés homogènes (exemples du ticket)', () => {
     expect(todoItemFrom(immat())).toMatchObject({ title: 'Numéro d’immatriculation à vérifier', subtitle: 'Vélo Jean Fourche', cta: 'Vérifier' });
     expect(todoItemFrom(rattacher())).toMatchObject({ title: 'Document à rattacher à un bien', subtitle: 'Offre client véhicule neuf – Cupra' });
-    expect(todoItemFrom(completer())).toMatchObject({ title: 'Date de fin de contrat à compléter', cta: 'Compléter' });
+    expect(todoItemFrom(completer())).toMatchObject({ title: 'Date de fin de contrat à compléter', cta: 'Ouvrir' }); // lot 63 : ex-« Compléter »
     expect(todoTitle('REGLE-INCONNUE', 'COMPLETE')).toBe('Information à compléter');
   });
 });

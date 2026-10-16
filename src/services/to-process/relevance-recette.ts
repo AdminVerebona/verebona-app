@@ -28,11 +28,12 @@
  */
 import { pgClient } from '@/db';
 import {
-  assessDeadlinePertinence, DOCUMENT_RULE_ENGINE_VERSION, t4AssessmentConfig, todayParis,
+  assessDeadlinePertinence, DOCUMENT_RULE_ENGINE_VERSION, t4AssessmentConfig, todayParis, withThresholds,
   type PertinenceCandidate, type PertinenceResult, type RelevanceOutcome, type T4AssessmentConfig,
 } from './document-field-evidence';
 import { computeDerivation, derivationFor } from './document-derivations';
 import { getRule } from './rules-catalog';
+import { DEFAULT_TO_PROCESS_THRESHOLDS } from './relevance-thresholds';
 
 export interface RecetteCase {
   id: string;
@@ -201,6 +202,11 @@ export async function runRecetteCase(c: RecetteCase, p: { accountId: number; tod
   return { ...base, ok: problems.length === 0, obtained, aiCalled: r.aiCalled, aiStatus: r.aiStatus, traceId: r.aiTraceId, reason: r.reason, problems };
 }
 
+/** Configuration de la recette : IA effective, seuils par défaut (lot 63) — pure. */
+export function recetteConfig(c: T4AssessmentConfig): T4AssessmentConfig {
+  return withThresholds({ ...c, ref: c.aiRef ?? c.ref, thresholds: undefined }, { ...DEFAULT_TO_PROCESS_THRESHOLDS });
+}
+
 export async function recetteTableReady(): Promise<boolean> {
   try {
     const [r] = (await pgClient.unsafe(`SELECT to_regclass('to_process_relevance_recette_runs') IS NOT NULL AS ok`)) as unknown as Array<{ ok: boolean }>;
@@ -214,7 +220,10 @@ export async function recetteTableReady(): Promise<boolean> {
  */
 export async function startRelevanceRecette(p: { accountId: number; userId: number | null; decide?: DecideFn; config?: T4AssessmentConfig; cases?: readonly RecetteCase[] }): Promise<{ runId: number | null; done: Promise<void> }> {
   if (!(await recetteTableReady())) return { runId: null, done: Promise.resolve() };
-  const config = p.config ?? await t4AssessmentConfig();
+  // Lot 63 : la recette rejoue un corpus de référence dont les dates sont
+  // calées sur les seuils PAR DÉFAUT (lot 61) — elle les impose, quels que
+  // soient les seuils réglés dans le BO (sinon ses attentes seraient fausses).
+  const config = recetteConfig(p.config ?? await t4AssessmentConfig());
   const cases = p.cases ?? RELEVANCE_RECETTE_CASES;
   const [r] = (await pgClient.unsafe(
     `INSERT INTO to_process_relevance_recette_runs (requested_by, account_id, config_ref, engine_version, total)

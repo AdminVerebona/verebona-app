@@ -143,8 +143,9 @@ function buildHref(
     case 'OPEN_PRICING':
       return ROUTES.OFFRES;
     // Lien profond vers l'ARTICLE (audit P2 « lien d'aide vers l'article
-    // précis ») : le Centre d'aide intégré lit `?page=/aide/<slug>`
-    // (`integratedHelpHref`). L'ancien commentaire (« pas de lien profond »)
+    // précis ») : `?page=/aide/<slug>` (`integratedHelpHref`), ouvert sur
+    // le site public — clic intercepté, ou redirection `/aide` (lot 63B).
+    // L'ancien commentaire (« pas de lien profond »)
     // était devenu faux. `path` est posé par le serveur depuis le corpus,
     // jamais par le modèle, et revalidé ici (`isHelpPath`).
     case 'OPEN_HELP': {

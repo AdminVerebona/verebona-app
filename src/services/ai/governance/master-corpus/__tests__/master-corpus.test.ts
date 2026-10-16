@@ -46,7 +46,8 @@ describe('le corpus détecte les régressions', () => {
     const casse = read('t3_master_v1').replace(/BRANCHE TASK = LINK_AMBIGUITY/g, 'SECTION RETIRÉE');
     const [t3] = await runMasterCorpus({ readMasterFile: read, treatments: ['T3'], texts: { t3_master_v1: { text: casse, source: 'config' } } });
     expect(t3.status).toBe('FAILED');
-    expect(t3.branchesPassed).toEqual(['VALUE_CONFLICT', 'OPERATION_MATCH']);
+    // Lot 63 : DOCUMENT_NAMING livrée dans le texte du dépôt — branche verte elle aussi.
+    expect(t3.branchesPassed).toEqual(['VALUE_CONFLICT', 'OPERATION_MATCH', 'DOCUMENT_NAMING']);
     expect(t3.failures.join()).toMatch(/P-T3-02.*rendu/);
     expect(t3.textSource).toBe('config');
   });

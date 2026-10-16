@@ -184,9 +184,15 @@ export const MASTER_CORPUS_EVALUATORS: Readonly<Record<string, Evaluator>> = {
       if (v.accept && !collisions.has(Number(p.document_id))) appliques[String(p.document_id)] = v.name;
       else refuses[String(p.document_id)] = v.accept ? 'NAME_COLLISION' : v.code;
     }
+    // Lot 63 : familles attendues (facultatif) — regroupement des documents,
+    // indépendamment des libellés et de l'ordre (le jugement reste celui de l'IA).
+    const familles = exp<number[][]>(c, 'families');
+    const cle = (l: number[][]) => JSON.stringify(l.map((f) => [...f].map(Number).sort((a, b) => a - b)).sort((a, b) => a[0] - b[0]));
+    const obtenues = ((output as { families?: Array<{ document_ids?: number[] }> }).families ?? []).map((f) => f.document_ids ?? []);
     return [
       ...ecart(JSON.stringify(appliques) === JSON.stringify(exp(c, 'applied') ?? {}), `renommages retenus ${JSON.stringify(appliques)}`),
       ...ecart(exp(c, 'refused') === undefined || JSON.stringify(refuses) === JSON.stringify(exp(c, 'refused')), `refus ${JSON.stringify(refuses)}`),
+      ...ecart(familles === undefined || cle(obtenues) === cle(familles), `familles ${cle(obtenues)} ≠ ${familles ? cle(familles) : ''}`),
     ];
   },
   // ── T4 ─────────────────────────────────────────────────────────────────────

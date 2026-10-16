@@ -45,6 +45,7 @@ import { sendDowngradeToStandardEmail, sendPremiumConfirmationEmail } from '@/li
 import { endDuoSharing, enforceStandardLimits } from '@/lib/plan-enforcement';
 import { unpaidDeadline } from '@/services/billing/unpaid-cycle.rules';
 import { duoStartCandidates, fillDuoStart, isDuoActive, isDuoInOffer, openingStart, pickDuoStartDate } from '@/services/duo/duo-period';
+import { closeDuoForWithdrawal } from '@/services/duo/duo-withdrawal.service';
 
 // ─── Lecture des objets Stripe (API 2025-08-27.basil) ─────────────────────────
 
@@ -402,8 +403,12 @@ async function synchroniserAbonnement(
   // Désormais, toute synchronisation écrite (jamais un abonnement périmé :
   // voir les retours anticipés plus haut) aligne le Duo du titulaire :
   //   · Duo payé à jour → ACTIVE ; impayé → UNPAID_RECOVERY ; terminé →
-  //     CANCELED (rétractation : inchangé, le compte WITHDRAWN suffit à
-  //     retirer la suggestion — vérification croisée de `readDuoInvite`) ;
+  //     CANCELED ;
+  //   · RÉTRACTATION exercée sur cet abonnement (lot 63B, décision PO du
+  //     16/10) → CANCELED quel que soit l'état Stripe (abonnement encore
+  //     « actif » tant que l'annulation n'a pas abouti, webhook ancien ou
+  //     rejoué) : jamais de réouverture ni de date de début ; fin du partage
+  //     par la sortie de Duo existante (`closeDuoForWithdrawal`) ;
   //   · autre offre (Premium, Standard) → le Duo ACTIVE/TRIALING du
   //     titulaire passe CANCELED (un Duo en impayé garde son mode de
   //     récupération, AID-DUO-005) ;
@@ -427,7 +432,7 @@ async function synchroniserAbonnement(
         .limit(1)
     : [];
   const duoStatusAfter: string | null = planTier === 'premium_duo'
-    ? (isPaid ? (status === 'past_due' ? 'UNPAID_RECOVERY' : 'ACTIVE') : 'CANCELED')
+    ? (withdrawn ? 'CANCELED' : isPaid ? (status === 'past_due' ? 'UNPAID_RECOVERY' : 'ACTIVE') : 'CANCELED')
     : null;
   const duoStart = planTier === 'premium_duo' && duoStatusAfter === 'ACTIVE'
     ? pickDuoStartDate(
@@ -512,8 +517,8 @@ async function synchroniserAbonnement(
           // Décidé sur l'état COURANT de la ligne (deux synchronisations
           // concurrentes : la seconde ne remet jamais à vide la date posée).
           ...(duoOpens ? { duoSubscriptionStartedAt: openingStart(duoStart) } : {}),
-          ...(isPaid && status !== 'past_due' ? { firstPaymentFailedAt: null, unpaidRecoveryEndsAt: null } : {}),
-          ...(status === 'past_due' ? { unpaidRecoveryEndsAt: cycleEndsAt } : {}),
+          ...(isPaid && status !== 'past_due' && !withdrawn ? { firstPaymentFailedAt: null, unpaidRecoveryEndsAt: null } : {}),
+          ...(status === 'past_due' && !withdrawn ? { unpaidRecoveryEndsAt: cycleEndsAt } : {}),
           updatedAt: now,
         })
         .where(eq(duoAccounts.id, duoAccountId));
@@ -528,6 +533,14 @@ async function synchroniserAbonnement(
         .where(eq(duoAccounts.id, duoBefore.id));
     }
   });
+
+  // Rétractation (lot 63B) : sortie de Duo complète — second utilisateur,
+  // invitation. Idempotente ; jamais bloquante pour la synchronisation.
+  if (withdrawn && (duoBefore || duoAccountId)) {
+    await closeDuoForWithdrawal(account.id).catch((e: Error) =>
+      console.error('[subscription-sync] fermeture du Duo (rétractation) non appliquée :', e.message),
+    );
+  }
 
   if (activated) {
     const [owner] = await db

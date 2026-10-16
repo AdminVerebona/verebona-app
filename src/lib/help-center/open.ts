@@ -1,16 +1,14 @@
 /**
  * Ouvrir le Centre d'aide depuis l'application — CDC §1.1, GAP-09, MOB-01.
  *
- * · Sur ordinateur : l'article s'ouvre sur le site public, dans un nouvel
- *   onglet isolé (§1.1 « raccourcis vers les articles publics »).
- * · Sur mobile (petit écran ou application installée) : dans le Centre d'aide
- *   intégré de l'application (`/aide`), avec « Retour à Verebona », sans
- *   quitter l'application (MOB-01, MOB-03).
+ * Depuis le lot 59 (point 3), le Centre d'aide s'ouvre TOUJOURS sur le site
+ * public, dans un nouvel onglet du navigateur (ordinateur ET mobile). Le
+ * Centre d'aide intégré de l'application (page `/aide` en cadre) a été
+ * supprimé au lot 63B : `/aide…` n'est plus qu'une REDIRECTION vers la page
+ * publique correspondante (`src/app/aide/[[...slug]]/route.ts`), pour les
+ * anciens liens, favoris, e-mails et réponses enregistrées de l'assistant.
  */
 import { publicSiteUrl } from '@/lib/external-urls';
-import { safeInternalPath } from '@/lib/safe-redirect';
-
-export const EMBED_QUERY = 'integre=app';
 
 /**
  * Formulaire de contact du site public — CDC Centre d'aide §5 (« si le corpus
@@ -27,56 +25,31 @@ export function isHelpPath(path: string): boolean {
   return /^\/aide(\/(theme\/)?[a-z0-9-]+)?(\?q=[^#]*)?$/.test(path) || path === HELP_CONTACT_PATH;
 }
 
-export function helpPageUrl(path: string, embedded: boolean): string {
-  const safe = isHelpPath(path) ? path : '/aide';
-  if (!embedded) return publicSiteUrl(safe);
-  return publicSiteUrl(`${safe}${safe.includes('?') ? '&' : '?'}${EMBED_QUERY}`);
+/** Adresse publique d'une page d'aide sûre (`/aide` à défaut). */
+export function helpPageUrl(path: string): string {
+  return publicSiteUrl(isHelpPath(path) ? path : '/aide');
 }
 
 /**
- * Page de l'application où revenir : chemin interne, jamais `/aide` lui-même
- * ni une adresse d'un autre site (`//hôte`).
+ * Lien interne vers une page d'aide, tel que l'assistant l'écrit dans ses
+ * réponses (format historique, conservé : réponses enregistrées) :
+ * `/aide?page=<chemin>`. Un clic est intercepté (`openHelpFromLink`) ; une
+ * navigation directe passe par la redirection `/aide` → site public.
  */
-export function safeReturnPath(raw: string | null | undefined): string {
-  // Même règle « chemin interne » que les pages d'authentification
-  // (`safe-redirect.ts`) : une seule implémentation à tenir juste.
-  const path = safeInternalPath(raw, '/accueil');
-  return /^\/aide(\/|\?|$)/.test(path) ? '/accueil' : path;
-}
-
-/**
- * Route interne du Centre d'aide intégré.
- *
- * `returnTo` : où « Retour à Verebona » ramène. Fixé à l'ouverture, parce que
- * l'historique du navigateur ne suffit pas : il contient aussi les pages lues
- * DANS le cadre, et reculer d'un pas ramènerait à l'article précédent.
- */
-export function integratedHelpHref(path: string, returnTo?: string): string {
+export function integratedHelpHref(path: string): string {
   const safe = isHelpPath(path) ? path : '/aide';
-  const params = new URLSearchParams();
-  if (safe !== '/aide') params.set('page', safe);
-  if (returnTo) params.set('retour', safeReturnPath(returnTo));
-  const q = params.toString();
-  return q ? `/aide?${q}` : '/aide';
-}
-
-export function prefersIntegratedHelp(): boolean {
-  if (typeof window === 'undefined') return false;
-  return window.matchMedia('(max-width: 767px)').matches
-    || window.matchMedia('(display-mode: standalone)').matches;
+  return safe === '/aide' ? '/aide' : `/aide?${new URLSearchParams({ page: safe }).toString()}`;
 }
 
 /**
  * Lot 59, point 3 — le Centre d'aide s'ouvre TOUJOURS dans un nouvel onglet
  * du navigateur, sur le site public, jamais dans l'application (ordinateur
  * ET mobile ; dans l'application installée, l'adresse externe part dans le
- * navigateur du téléphone). Le Centre d'aide intégré (`/aide`) reste
- * joignable par son adresse (anciens liens, réponses enregistrées), mais
- * plus aucune entrée de l'application n'y mène.
+ * navigateur du téléphone).
  */
 export function openHelpCenter(path: string = '/aide'): void {
   if (typeof window === 'undefined') return;
-  window.open(helpPageUrl(path, false), '_blank', 'noopener,noreferrer');
+  window.open(helpPageUrl(path), '_blank', 'noopener,noreferrer');
 }
 
 /**
@@ -109,4 +82,13 @@ export function openHelpFromLink(
   e?.preventDefault();
   openHelpCenter(path);
   return true;
+}
+
+/**
+ * Destination publique d'une adresse `/aide…` de l'application (lot 63B,
+ * redirection `src/app/aide/[[...slug]]/route.ts`) : la page d'aide désignée,
+ * sinon l'accueil du Centre d'aide. Jamais une adresse arbitraire.
+ */
+export function helpRedirectTarget(pathname: string, search: string = ''): string {
+  return helpPageUrl(helpPathFromAppHref(`${pathname}${search}`) ?? '/aide');
 }

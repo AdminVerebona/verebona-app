@@ -474,6 +474,11 @@ export async function deleteAccountNow(
       .where(eq(accounts.id, request.accountId))
       .limit(1);
     if (!acc) return 'already_deleted';
+    // Lot 63B : le Duo est fermé et le second utilisateur sorti AVANT la
+    // cascade (qui emporterait le Duo sans ramener l'offre du membre à la
+    // sienne ni déverrouiller ses demandes). Échec → suppression reportée.
+    const { closeDuoForWithdrawal } = await import('@/services/duo/duo-withdrawal.service');
+    await closeDuoForWithdrawal(acc.id);
     const userId = request.userId ?? acc.owner;
     const schedule = await scheduleDeletion({
       accountId: acc.id,
@@ -571,6 +576,13 @@ export async function enterRecoveryMode(accountId: number): Promise<boolean> {
   // l'accueil et les compteurs reflètent tout de suite la récupération.
   const { invalidateAccountReadCache } = await import('@/lib/server-cache');
   invalidateAccountReadCache(accountId);
+
+  // Premium Duo (lot 63B, décision PO du 16/10) : la rétractation ferme le
+  // Duo comme une sortie d'offre — statut CANCELED, date de sortie, fin du
+  // partage pour le second utilisateur. Idempotente ; une erreur remonte au
+  // traitement (demande en échec, reprise par le balayage).
+  const { closeDuoForWithdrawal } = await import('@/services/duo/duo-withdrawal.service');
+  await closeDuoForWithdrawal(accountId);
 
   return before?.s !== 'WITHDRAWN';
 }

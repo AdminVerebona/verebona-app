@@ -125,7 +125,8 @@ describe('L62-AIDE — fenêtre « Besoin d’aide ? » (même composant ordinat
   it('L62-AIDE-09 — lot 59/60 : l’ouverture en nouvel onglet est conservée et ne touche pas au chargement', () => {
     const src = lire('src/components/help/HelpModal.tsx');
     expect(src).toContain('openHelpCenter(path)');
-    expect(lire('src/lib/help-center/open.ts')).toContain("window.open(helpPageUrl(path, false), '_blank', 'noopener,noreferrer')");
+    // Lot 63B : plus de mode intégré, `helpPageUrl` ne prend que le chemin.
+    expect(lire('src/lib/help-center/open.ts')).toContain("window.open(helpPageUrl(path), '_blank', 'noopener,noreferrer')");
   });
 });
 

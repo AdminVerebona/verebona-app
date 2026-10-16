@@ -6,9 +6,10 @@
  * scénario dit ce que l'IA propose — le JUGEMENT (familles, convention,
  * noms) reste celui de l'IA simulée, jamais une règle du code.
  *
- * Le texte du prompt T3 ne porte pas encore la branche DOCUMENT_NAMING
- * (ticket séparé) : une version BO de TEST la lui ajoute (texte minimal),
- * sauf pour T3-NOM-15 (version sans la branche).
+ * Lot 63 : le texte LIVRÉ du prompt T3 porte la branche DOCUMENT_NAMING —
+ * la version BO de test est ce texte (le modèle simulé lit les emplacements
+ * réels « Objet à rattacher » / « Candidats ») ; T3-NOM-15 active une
+ * version antérieure, sans la branche (texte livré amputé de sa section).
  */
 import { afterAll, afterEach, beforeAll, beforeEach, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
@@ -35,8 +36,9 @@ function fournisseur() {
     isConfigured: () => true,
     async call(input: { prompt: string; operationCode?: string }) {
       if (input.operationCode !== 't3_document_naming') throw new Error(`appel inattendu : ${input.operationCode}`);
-      const lot = JSON.parse(/^Lot : (.*)$/m.exec(input.prompt)![1]) as Lot;
-      const docs = JSON.parse(/^Documents : (.*)$/m.exec(input.prompt)![1]) as DocIA[];
+      // Emplacements du texte livré (branche LINK_AMBIGUITY, réutilisés par DOCUMENT_NAMING).
+      const lot = JSON.parse(/^Objet à rattacher : (.*)$/m.exec(input.prompt)![1]) as Lot;
+      const docs = JSON.parse(/^Candidats : (.*)$/m.exec(input.prompt)![1]) as DocIA[];
       modele.appels.push({ accountId: null, lot, docs });
       const d = await modele.decider(lot, docs);
       if (d instanceof Error) throw Object.assign(d, { status: 500 });
@@ -56,13 +58,16 @@ const proposer = (noms: Record<number, string>, o: { confidence?: string; famili
   })),
 });
 
-const BRANCHE = '\n\nBRANCHE TASK = DOCUMENT_NAMING\n\nLot : {{SUBJECT_CONTEXT}}\nDocuments : {{CANDIDATES}}\nTâche : {{RELATION_TYPE}}\n';
 
 scenario('L61F-T3-NOM', 'Lot 61 — T3 : harmonisation intelligente du nommage documentaire', ({ sql, make }) => {
   const fichier = readFileSync(join(process.cwd(), 'src/services/ai/prompts/reconciliation/t3_master_v1.txt'), 'utf8');
+  // Version BO antérieure au lot 63 : texte livré sans la section DOCUMENT_NAMING.
+  const sansBranche = fichier.slice(0, fichier.indexOf('BRANCHE TASK = DOCUMENT_NAMING')).replace(' | DOCUMENT_NAMING', '')
+    + 'Réponds uniquement par le JSON correspondant au TASK demandé.\n';
+  if (!fichier.includes('BRANCHE TASK = DOCUMENT_NAMING') || sansBranche.includes('DOCUMENT_NAMING')) throw new Error('texte T3 livré inattendu');
   const avecBranche = async (on: boolean) => {
     const { __setActiveMasterPromptsForTests } = await import('@/services/ai/master-prompts/master-prompt-runtime');
-    __setActiveMasterPromptsForTests([{ id: on ? 9611 : 9610, treatment: 'T3', versionNumber: on ? 11 : 10, content: on ? fichier + BRANCHE : fichier }]);
+    __setActiveMasterPromptsForTests([{ id: on ? 9611 : 9610, treatment: 'T3', versionNumber: on ? 11 : 10, content: on ? fichier : sansBranche }]);
   };
   const env0 = { ...process.env };
   beforeAll(async () => {

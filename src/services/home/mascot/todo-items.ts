@@ -40,6 +40,7 @@
  */
 import type { ToProcessActionView } from '@/services/to-process/to-process-query.service';
 import type { MascotTodoBlock, MascotTodoItem } from './types';
+import { MICROCOPY } from '@/lib/referential/v2/microcopy';
 
 /**
  * Lot 34 (MASC3) : la mascotte n'affiche QUE les actions « À faire en
@@ -102,12 +103,19 @@ export function todoActionType(a: Pick<ToProcessActionView, 'actionKind' | 'prop
   return a.actionKind === 'ARBITRATE' && exploitables.length >= 2 ? 'OPEN_CHOICES' : 'OPEN_TODO_CARD';
 }
 
+/** Appel à l'action d'une saisie (carte de la file ouverte et ciblée) : même microcopie que la page. */
+export const TODO_OPEN_CTA: string = MICROCOPY.open;
+
 function cta(a: ToProcessActionView, type: MascotTodoItem['actionType']): string {
   if (type === 'OPEN_CHOICES') {
     if (a.ruleCode === 'LINK-ASSET' || a.ruleCode === 'LINK-EQUIP-ASSET') return 'Choisir le bien';
     return 'Vérifier';
   }
-  return a.actionKind === 'ARBITRATE' ? 'Vérifier' : 'Compléter';
+  // Lot 63 (décision PO du 16/10) : « Ouvrir », comme le bouton de la carte
+  // de la page « À traiter » (lot 59) — le clic ouvre la carte ciblée, il ne
+  // complète rien par lui-même. Même libellé sur mobile et sur ordinateur
+  // (un seul composant, `MascotSpeaks` › `ItemButton`).
+  return a.actionKind === 'ARBITRATE' ? 'Vérifier' : TODO_OPEN_CTA;
 }
 
 /** Élément de niveau 2, à partir d'une ligne du service de la file (pure). */

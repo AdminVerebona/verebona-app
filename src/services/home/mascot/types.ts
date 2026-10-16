@@ -260,7 +260,7 @@ export interface MascotTodoItem {
   title: string;
   /** « Vélo Jean Fourche » */
   subtitle: string | null;
-  /** « Vérifier », « Choisir le bien », « Compléter » */
+  /** « Vérifier », « Choisir le bien », « Ouvrir » (lot 63 : ex-« Compléter ») */
   cta: string;
   /** Vue de l'action (file) : la carte et la résolution d'« À traiter » sont réutilisées. */
   card: MascotTodoCard;

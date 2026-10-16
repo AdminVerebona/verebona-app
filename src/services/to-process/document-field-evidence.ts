@@ -63,6 +63,9 @@ import { pgClient } from '@/db';
 import { getField, resolveAlias } from '@/services/canonical/registry';
 import { documentBridgeRules, type ProcessingRule } from './rules-catalog';
 import { checkInterventionCoherence, type InterventionDecision } from './intervention-check';
+import {
+  DEFAULT_TO_PROCESS_THRESHOLDS, composeConfigRef, deferThresholdsRef, loadToProcessThresholds, type ToProcessThresholds,
+} from './relevance-thresholds';
 
 /** Version du traitement (diagnostic, BO). */
 export const DOCUMENT_RULE_ENGINE_VERSION = 'l61-1';
@@ -505,6 +508,8 @@ export interface DecisionContract {
   reliability: { level: 'HIGH' | 'MEDIUM' | 'LOW'; sources: string[]; evidence: string | null };
   decision: RelevanceOutcome | null;
   motive: string;
+  /** Lot 63 — seuils « À traiter » utilisés (BO › Configuration IA, défaut lot 61). */
+  thresholds?: ToProcessThresholds;
 }
 
 export interface PertinenceResult {
@@ -538,14 +543,16 @@ export function todayParis(now: Date = new Date()): string {
   return new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Paris', year: 'numeric', month: '2-digit', day: '2-digit' }).format(now);
 }
 
-/** Horizon au-delà duquel une échéance future n'appelle pas encore de question (jours). */
-export const FUTURE_HORIZON_DAYS = 120;
-/** Document dont toutes les dates fiables ont plus de N années : historique. */
-export const HISTORICAL_YEARS = 5;
-/** Réévaluation d'une décision incertaine (jours) / sans date (jours) / titre seul (jours). */
-export const DEFER_UNCERTAIN_DAYS = 30;
-export const DEFER_UNDATED_DAYS = 90;
-export const DEFER_TITLE_ONLY_DAYS = 180;
+/**
+ * Seuils par DÉFAUT (lot 61). Lot 63 : réglables dans le BO (`relevance-thresholds`,
+ * BO › Configuration IA › Réglages › « À traiter ») ; la décision lit les
+ * seuils EFFECTIFS portés par la configuration (`T4AssessmentConfig.thresholds`).
+ */
+export const FUTURE_HORIZON_DAYS = DEFAULT_TO_PROCESS_THRESHOLDS.futureHorizonDays;
+export const HISTORICAL_YEARS = DEFAULT_TO_PROCESS_THRESHOLDS.historicalYears;
+export const DEFER_UNCERTAIN_DAYS = DEFAULT_TO_PROCESS_THRESHOLDS.deferUncertainDays;
+export const DEFER_UNDATED_DAYS = DEFAULT_TO_PROCESS_THRESHOLDS.deferUndatedDays;
+export const DEFER_TITLE_ONLY_DAYS = DEFAULT_TO_PROCESS_THRESHOLDS.deferTitleOnlyDays;
 /** Reprise après un échec technique (minutes). */
 export const RETRY_AFTER_FAILURE_MIN = 60;
 
@@ -567,10 +574,35 @@ export { checkInterventionCoherence } from './intervention-check';
 
 /** Configuration T4 effective, pour la décision et la mémoire (écart 4). */
 export interface T4AssessmentConfig {
-  /** Référence de la configuration (version BO + contrat de sortie, ou défaut du dépôt). */
+  /**
+   * Référence de la configuration (version BO + contrat de sortie, ou défaut
+   * du dépôt) ; lot 63 : suivie des seuils « À traiter » MODIFIÉS
+   * (`|seuils:h=150`), absente aux valeurs par défaut. Écrite dans `config_ref`.
+   */
   ref: string;
   /** Contrat de sortie `t4_output_v3` (ou suivant) : évaluation structurée d'une intervention possible. */
   interventionCapable: boolean;
+  /** Lot 63 — référence de la seule configuration IA (sans les seuils) ; défaut : `ref`. */
+  aiRef?: string;
+  /** Lot 63 — seuils effectifs (BO) ; absents : valeurs par défaut du lot 61. */
+  thresholds?: ToProcessThresholds;
+}
+
+/** Seuils effectifs d'une configuration (pure). */
+export function thresholdsOf(config: Pick<T4AssessmentConfig, 'thresholds'> | null | undefined): ToProcessThresholds {
+  return config?.thresholds ?? { ...DEFAULT_TO_PROCESS_THRESHOLDS };
+}
+
+/**
+ * Part « configuration » de la signature d'une décision IA mémorisée (pure) :
+ * configuration IA + délais de réévaluation MODIFIÉS (seuls seuils qui
+ * changent une décision rendue par T4). Aux valeurs par défaut : `ref`,
+ * comme au lot 61 (aucune décision mémorisée invalidée au déploiement).
+ */
+export function pertinenceConfigKey(config: T4AssessmentConfig): string {
+  const ia = config.aiRef ?? config.ref;
+  const d = deferThresholdsRef(config.thresholds);
+  return d ? `${ia}|${d}` : ia;
 }
 
 /** Éléments documentaires de la décision (preuves déjà lues). */
@@ -624,6 +656,9 @@ export interface RelevanceInput {
 export async function assessDeadlinePertinence(p: RelevanceInput): Promise<PertinenceResult> {
   const vide = { aiCalled: false, cached: false, aiStatus: null, aiTraceId: null, intervention: null, technicalFailure: false } as const;
   const config: T4AssessmentConfig = p.config ?? { ref: 'unknown', interventionCapable: false };
+  // Lot 63 : seuils réglables (BO), portés par la configuration effective.
+  const { futureHorizonDays: FUTURE_HORIZON_DAYS, historicalYears: HISTORICAL_YEARS, deferUncertainDays: DEFER_UNCERTAIN_DAYS,
+    deferUndatedDays: DEFER_UNDATED_DAYS, deferTitleOnlyDays: DEFER_TITLE_ONLY_DAYS } = thresholdsOf(config);
   const key = p.rule.fieldKey ?? '';
   const res = (r: Omit<PertinenceResult, 'contract' | keyof typeof vide> & Partial<Pick<PertinenceResult, keyof typeof vide>>): PertinenceResult => {
     const full = { ...vide, ...r } as PertinenceResult;
@@ -681,7 +716,7 @@ export async function assessDeadlinePertinence(p: RelevanceInput): Promise<Perti
   }
 
   // ── Décision mémorisée pour les mêmes éléments ────────────────────────────
-  const signature = pertinenceSignature(key, p.documentType, cands, { situation, evidence: p.evidenceFingerprint ?? null, config: config.ref });
+  const signature = pertinenceSignature(key, p.documentType, cands, { situation, evidence: p.evidenceFingerprint ?? null, config: pertinenceConfigKey(config) });
   const m = p.remembered;
   if (m && m.signature === signature && m.outcome && m.pertinence && m.aiStatus !== 'ERROR') {
     return res({
@@ -785,7 +820,7 @@ export async function assessDeadlinePertinence(p: RelevanceInput): Promise<Perti
 }
 
 /** Contrat de décision interne (§5) — pur. */
-export function decisionContractOf(p: Pick<RelevanceInput, 'rule' | 'fileId' | 'documentType' | 'today' | 'candidates'>, r: Omit<PertinenceResult, 'contract'>): DecisionContract {
+export function decisionContractOf(p: Pick<RelevanceInput, 'rule' | 'fileId' | 'documentType' | 'today' | 'candidates'> & { config?: T4AssessmentConfig }, r: Omit<PertinenceResult, 'contract'>): DecisionContract {
   const iso = p.candidates.map((c) => c.iso).sort();
   const future = iso.filter((d) => d >= p.today)[0] ?? null;
   const sources = [...new Set(p.candidates.map((c) => c.source))];
@@ -804,6 +839,8 @@ export function decisionContractOf(p: Pick<RelevanceInput, 'rule' | 'fileId' | '
       sources, evidence: r.intervention?.evidence ?? null,
     },
     decision: r.outcome, motive: r.reason,
+    // Lot 63 : seuils utilisés pour cette décision (traçage, diagnostic BO).
+    thresholds: thresholdsOf(p.config),
   };
 }
 
@@ -812,6 +849,17 @@ export function decisionContractOf(p: Pick<RelevanceInput, 'rule' | 'fileId' | '
 // ══════════════════════════════════════════════════════════════════════════
 
 let configCache: { at: number; value: T4AssessmentConfig } | null = null;
+
+/**
+ * Lot 63 — configuration complétée des seuils effectifs (pure) : `aiRef`
+ * garde la référence IA, `ref` (écrite dans `config_ref`) y ajoute les seuils
+ * modifiés — un réglage changé invalide les décisions NO_ACTION / DEFER
+ * mémorisées (`documentsToReevaluate`).
+ */
+export function withThresholds(c: T4AssessmentConfig, thresholds: ToProcessThresholds): T4AssessmentConfig {
+  const aiRef = c.aiRef ?? c.ref;
+  return { ...c, aiRef, ref: composeConfigRef(aiRef, thresholds), thresholds };
+}
 
 /** Réservé aux tests : configuration T4 imposée (`null` : lecture réelle). */
 let configOverride: T4AssessmentConfig | null = null;
@@ -827,6 +875,8 @@ export async function t4AssessmentConfig(): Promise<T4AssessmentConfig> {
   if (configOverride) return configOverride;
   if (configCache && Date.now() - configCache.at < 60_000) return configCache.value;
   let value: T4AssessmentConfig = { ref: 'unknown', interventionCapable: false };
+  // Lot 63 : seuils « À traiter » effectifs (BO > environnement > défaut ; ne lève jamais).
+  const thresholds = await loadToProcessThresholds();
   try {
     const [{ loadActiveMasterPrompts }, { getAiEnvironment }, { structuredSpecFor, normalizeExecutionConfig }] = await Promise.all([
       import('@/services/ai/master-prompts/master-prompt-runtime'), import('@/services/ai/config/environment'),
@@ -842,6 +892,7 @@ export async function t4AssessmentConfig(): Promise<T4AssessmentConfig> {
   } catch (e) {
     console.warn('[to-process] configuration T4 illisible (décision prudente) :', errMsg(e));
   }
+  value = withThresholds(value, thresholds);
   configCache = { at: Date.now(), value };
   return value;
 }

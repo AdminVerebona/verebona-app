@@ -1,0 +1,118 @@
+{
+  "case": "P-T3-17",
+  "description": "DOCUMENT_NAMING (lot 63) — noms personnalisés par l’utilisateur (protégés) qui font référence, documents examinés déjà conformes : rien à renommer, document_renames vide (abstention), aucun renommage retenu ni refusé.",
+  "context": {
+    "documentNaming": {
+      "docs": [
+        {
+          "id": 11,
+          "name": "Assurance auto — attestation 2024",
+          "originalName": null,
+          "filename": null,
+          "s3Key": null,
+          "publicId": null,
+          "titleSource": "USER",
+          "legacyUserEdit": false,
+          "typeCode": "INSURANCE_CERTIFICATE",
+          "supplier": "Mutuelle des Routes",
+          "documentDate": "2024-01-05",
+          "assetId": 2,
+          "assetName": "Voiture",
+          "extractionId": 11,
+          "extractedAt": "2024-01-05T08:00:00.000Z",
+          "extractionTitle": null,
+          "amountCents": null
+        },
+        {
+          "id": 12,
+          "name": "Assurance auto — attestation 2025",
+          "originalName": null,
+          "filename": null,
+          "s3Key": null,
+          "publicId": null,
+          "titleSource": "SYSTEM",
+          "legacyUserEdit": false,
+          "typeCode": "INSURANCE_CERTIFICATE",
+          "supplier": "Mutuelle des Routes",
+          "documentDate": "2025-01-06",
+          "assetId": 2,
+          "assetName": "Voiture",
+          "extractionId": 12,
+          "extractedAt": "2025-01-06T08:00:00.000Z",
+          "extractionTitle": null,
+          "amountCents": null
+        },
+        {
+          "id": 13,
+          "name": "Mon avis d’échéance préféré",
+          "originalName": null,
+          "filename": null,
+          "s3Key": null,
+          "publicId": null,
+          "titleSource": "USER",
+          "legacyUserEdit": false,
+          "typeCode": "INSURANCE_DUE_NOTICE",
+          "supplier": "Mutuelle des Routes",
+          "documentDate": "2025-11-20",
+          "assetId": 2,
+          "assetName": "Voiture",
+          "extractionId": 13,
+          "extractedAt": "2025-11-20T08:00:00.000Z",
+          "extractionTitle": null,
+          "amountCents": null
+        }
+      ],
+      "origins": {
+        "11": "USER",
+        "12": "T1",
+        "13": "USER"
+      },
+      "conventions": [
+        {
+          "label": "Attestations d’assurance auto",
+          "convention": "Assurance auto — attestation <année>"
+        }
+      ]
+    }
+  },
+  "recording": {
+    "operationCode": "t3_document_naming",
+    "task": "DOCUMENT_NAMING",
+    "output": {
+      "task": "DOCUMENT_NAMING",
+      "families": [
+        {
+          "label": "Attestations d’assurance auto",
+          "document_ids": [
+            11,
+            12
+          ],
+          "convention": "Assurance auto — attestation <année>",
+          "inconsistent": false
+        },
+        {
+          "label": "Avis d’échéance",
+          "document_ids": [
+            13
+          ],
+          "convention": null,
+          "inconsistent": false
+        }
+      ],
+      "document_renames": []
+    }
+  },
+  "expected": {
+    "applied": {},
+    "refused": {},
+    "families": [
+      [
+        11,
+        12
+      ],
+      [
+        13
+      ]
+    ]
+  }
+}

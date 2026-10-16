@@ -38,6 +38,7 @@
 import type { AdminActionEntry } from '@/lib/admin-audit';
 import { isPreviewModel as isPreviewDeclare } from '@/services/ai/registry/models';
 import { providerLifecycle } from '@/services/ai/registry/model-lifecycle';
+import { DEFAULT_TO_PROCESS_THRESHOLDS, TO_PROCESS_THRESHOLD_SETTINGS } from '@/services/to-process/relevance-thresholds';
 
 /** Journal admin, chargé à la demande (module lu par tout l'assistant). */
 async function logAdminAction(e: AdminActionEntry): Promise<void> {
@@ -45,7 +46,7 @@ async function logAdminAction(e: AdminActionEntry): Promise<void> {
   await log(e);
 }
 
-export type SettingGroup = 'debits' | 'budget' | 'alertes' | 'interrupteurs' | 'historique' | 'modeles' | 'plafond_compte' | 'mascotte';
+export type SettingGroup = 'debits' | 'budget' | 'alertes' | 'interrupteurs' | 'historique' | 'modeles' | 'plafond_compte' | 'mascotte' | 'a_traiter';
 export type SettingType = 'int' | 'ratio' | 'usd' | 'usd_micros' | 'bool';
 export type SettingValue = number | boolean;
 
@@ -73,6 +74,7 @@ export const SETTING_GROUP_LABELS: Readonly<Record<SettingGroup, string>> = {
   modeles: 'Modèles',
   plafond_compte: 'Plafond IA mensuel par compte — toutes IA, par offre (lot 22)',
   mascotte: 'Mascotte d’accueil — T6 (lot 60)',
+  a_traiter: 'À traiter — pertinence des questions sur les échéances (lot 63)',
 };
 
 const int = (key: string, env: string, group: SettingGroup, label: string, description: string, def: number, min: number, max: number): AssistantSettingDef =>
@@ -131,6 +133,25 @@ export const ASSISTANT_SETTINGS: readonly AssistantSettingDef[] = [
   int('t6_interpellation_threshold_days', 'MASCOT_T6_INTERPELLATION_THRESHOLD_DAYS', 'mascotte', 'Seuil d’interpellation des échéances (jours)',
     'Au-delà de ce délai, une échéance ne produit aucune interpellation sur l’accueil, sauf démarche à engager avant, motivée par l’évaluation IA. En deçà, l’IA juge si une interpellation est utile.',
     60, 7, 365),
+  // Lot 63 (décision PO du 16/10) : seuils de la pertinence « À traiter »
+  // (lot 61, ex-constantes de `document-field-evidence`). Défauts = valeurs
+  // du lot 61. Un réglage modifié invalide les décisions concernées
+  // (référence de configuration, `relevance-thresholds`).
+  ...(([
+    ['futureHorizonDays', 'Horizon de report d’une échéance future (jours)',
+      'Une échéance future plus lointaine ne crée pas encore de question : elle est reportée jusqu’à ce délai avant la date. En deçà, la question est posée.'],
+    ['historicalYears', 'Document historique (années)',
+      'Un document sans date d’échéance dont toutes les dates fiables ont plus de ce nombre d’années est considéré comme historique : aucune question (la donnée manquante reste conservée).'],
+    ['deferUncertainDays', 'Réévaluation d’une décision incertaine (jours)',
+      'Délai avant de réexaminer une échéance passée dont la décision est restée incertaine (et marge avant une démarche à prévoir plus tard).'],
+    ['deferUndatedDays', 'Réévaluation d’un document sans date (jours)',
+      'Délai avant de réexaminer un document dont la date d’échéance est inconnue et la décision incertaine.'],
+    ['deferTitleOnlyDays', 'Réévaluation d’une date lue dans le seul titre (jours)',
+      'Délai avant de réexaminer une échéance suggérée uniquement par le titre ou le nom du document (jamais une preuve).'],
+  ] as const).map(([k, label, description]): AssistantSettingDef => {
+    const r = TO_PROCESS_THRESHOLD_SETTINGS[k];
+    return int(r.key, r.env, 'a_traiter', label, description, DEFAULT_TO_PROCESS_THRESHOLDS[k], r.min, r.max);
+  })),
 ];
 
 const PAR_CLE = new Map(ASSISTANT_SETTINGS.map((d) => [d.key, d]));

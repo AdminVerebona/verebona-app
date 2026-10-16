@@ -49,10 +49,11 @@ const nextConfig = {
               "style-src 'self' 'unsafe-inline'",
               "img-src 'self' data: blob: https:",
               "font-src 'self' data:",
-              // Site public : catalogue du Centre d'aide (« Besoin d'aide ») et
-              // Centre d'aide intégré dans /aide (CDC Centre d'aide §13, GAP-09).
+              // Site public : catalogue du Centre d'aide (« Besoin d'aide »).
+              // Plus de cadre du site public (Centre d'aide intégré /aide
+              // supprimé au lot 63B : /aide redirige vers le site public).
               `connect-src 'self' https://api.stripe.com ${PUBLIC_SITE_ORIGIN}`,
-              `frame-src 'self' https://js.stripe.com https://hooks.stripe.com ${PUBLIC_SITE_ORIGIN}`,
+              "frame-src 'self' https://js.stripe.com https://hooks.stripe.com",
               // Anti-clickjacking : remplace X-Frame-Options et reste
               // compatible avec l'integration en iframe de meme origine.
               "frame-ancestors 'self'",

@@ -31,6 +31,7 @@
   },
   "expected": {
     "applied": { "1": "Facture Orange — mars 2024", "2": "Facture Orange — avril 2024" },
-    "refused": { "3": "DISCRIMINANT_REMOVED", "4": "USER_NAME_PROTECTED" }
+    "refused": { "3": "DISCRIMINANT_REMOVED", "4": "USER_NAME_PROTECTED" },
+    "families": [[1, 2, 3, 4]]
   }
 }

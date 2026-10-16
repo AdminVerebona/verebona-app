@@ -1,0 +1,177 @@
+{
+  "case": "P-T3-16",
+  "description": "DOCUMENT_NAMING (lot 63) — lot hétérogène d’un même émetteur : une famille de factures aux intitulés incohérents (nom de fichier technique, abréviations) harmonisée sur la convention majoritaire, sans rien inventer (mois justifié par la date du document) ; le contrat du même émetteur forme une AUTRE famille et n’est pas renommé.",
+  "context": {
+    "documentNaming": {
+      "docs": [
+        {
+          "id": 1,
+          "name": "facture_ES_2024-01.pdf",
+          "originalName": "facture_ES_2024-01.pdf",
+          "filename": null,
+          "s3Key": null,
+          "publicId": null,
+          "titleSource": "SYSTEM",
+          "legacyUserEdit": false,
+          "typeCode": "INVOICE",
+          "supplier": "Énergies du Sud",
+          "documentDate": "2024-01-10",
+          "assetId": 1,
+          "assetName": "Maison",
+          "extractionId": 1,
+          "extractedAt": "2024-01-10T08:00:00.000Z",
+          "extractionTitle": null,
+          "amountCents": null
+        },
+        {
+          "id": 2,
+          "name": "Facture électricité — février 2024",
+          "originalName": null,
+          "filename": null,
+          "s3Key": null,
+          "publicId": null,
+          "titleSource": "SYSTEM",
+          "legacyUserEdit": false,
+          "typeCode": "INVOICE",
+          "supplier": "Énergies du Sud",
+          "documentDate": "2024-02-09",
+          "assetId": 1,
+          "assetName": "Maison",
+          "extractionId": 2,
+          "extractedAt": "2024-02-09T08:00:00.000Z",
+          "extractionTitle": null,
+          "amountCents": null
+        },
+        {
+          "id": 3,
+          "name": "ES elec mars 24",
+          "originalName": null,
+          "filename": null,
+          "s3Key": null,
+          "publicId": null,
+          "titleSource": "SYSTEM",
+          "legacyUserEdit": false,
+          "typeCode": "INVOICE",
+          "supplier": "Énergies du Sud",
+          "documentDate": "2024-03-11",
+          "assetId": 1,
+          "assetName": "Maison",
+          "extractionId": 3,
+          "extractedAt": "2024-03-11T08:00:00.000Z",
+          "extractionTitle": null,
+          "amountCents": null
+        },
+        {
+          "id": 4,
+          "name": "Contrat électricité — offre Base n° C-55821",
+          "originalName": null,
+          "filename": null,
+          "s3Key": null,
+          "publicId": null,
+          "titleSource": "SYSTEM",
+          "legacyUserEdit": false,
+          "typeCode": "CONTRACT",
+          "supplier": "Énergies du Sud",
+          "documentDate": "2023-12-01",
+          "assetId": 1,
+          "assetName": "Maison",
+          "extractionId": 4,
+          "extractedAt": "2023-12-01T08:00:00.000Z",
+          "extractionTitle": null,
+          "amountCents": null
+        }
+      ],
+      "origins": {
+        "1": "UPLOAD",
+        "2": "T1",
+        "3": "T1",
+        "4": "T1"
+      },
+      "known": {
+        "3": {
+          "dates": [
+            "2024-03-11"
+          ],
+          "periods": [
+            {
+              "start": "2024-02-01",
+              "end": "2024-02-29"
+            }
+          ],
+          "amountsCents": [],
+          "texts": [
+            "Énergies du Sud",
+            "Facture d’électricité"
+          ]
+        }
+      },
+      "conventions": []
+    }
+  },
+  "recording": {
+    "operationCode": "t3_document_naming",
+    "task": "DOCUMENT_NAMING",
+    "output": {
+      "task": "DOCUMENT_NAMING",
+      "families": [
+        {
+          "label": "Factures d’électricité",
+          "document_ids": [
+            1,
+            2,
+            3
+          ],
+          "convention": "Facture électricité — <mois> <année>",
+          "inconsistent": true
+        },
+        {
+          "label": "Contrat d’électricité",
+          "document_ids": [
+            4
+          ],
+          "convention": "Contrat électricité — <offre> n° <référence>",
+          "inconsistent": false
+        }
+      ],
+      "document_renames": [
+        {
+          "document_id": 1,
+          "expected_current_name": "facture_ES_2024-01.pdf",
+          "proposed_name": "Facture électricité — janvier 2024",
+          "reference_document_ids": [
+            2
+          ],
+          "reason": "Nom de fichier technique ; convention de la famille (nature, mois et année du nom actuel)",
+          "confidence": "certain"
+        },
+        {
+          "document_id": 3,
+          "expected_current_name": "ES elec mars 24",
+          "proposed_name": "Facture électricité — mars 2024",
+          "reference_document_ids": [
+            2
+          ],
+          "reason": "Abréviations ; convention de la famille, année lue dans la date du document",
+          "confidence": "probable"
+        }
+      ]
+    }
+  },
+  "expected": {
+    "applied": {
+      "1": "Facture électricité — janvier 2024",
+      "3": "Facture électricité — mars 2024"
+    },
+    "refused": {},
+    "families": [
+      [
+        1,
+        2,
+        3
+      ],
+      [
+        4
+      ]
+    ]
+  }
+}

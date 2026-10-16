@@ -40,6 +40,7 @@ import {
 import { isPaymentFailureCurrent, startUnpaidCycle } from '@/services/billing/unpaid-cycle.service';
 import { unpaidDeadline } from '@/services/billing/unpaid-cycle.rules';
 import { duoEntryFromEvent } from '@/services/duo/duo-period';
+import { closeDuoForWithdrawal } from '@/services/duo/duo-withdrawal.service';
 
 // ─── Init ──────────────────────────────────────────────────────────────────────
 
@@ -368,6 +369,15 @@ async function handleSubscriptionDeleted(subscription: Stripe.Subscription) {
       .set({ subscriptionStatus: 'CANCELED', updatedAt: new Date() })
       .where(eq(duoAccounts.id, duoAccount.id));
 
+    // Lot 63B : abonnement Duo annulé par une RÉTRACTATION (compte encore
+    // présent, suppression en reprise) — sortie de Duo, sans repasser le
+    // compte en EXPIRED (il reste WITHDRAWN) ni e-mail « passage à Standard ».
+    const withdrawnAccountId = await withdrawnAccountOfDuo(duoAccount.id, duoAccount.billingOwnerUserId);
+    if (withdrawnAccountId) {
+      await closeDuoForWithdrawal(withdrawnAccountId);
+      return;
+    }
+
     // Downgrade le compte lié en STANDARD
     await downgradeDuoAccount(duoAccount.id);
     return;
@@ -695,6 +705,21 @@ async function handlePaymentFailed(invoice: Stripe.Invoice) {
  * Set accounts.planType = 'PREMIUM_DUO', users.planType = 'PREMIUM_DUO', maxMembers = 2 when a PREMIUM_DUO sub becomes active.
  * Uses accounts.duoAccountId to find the linked account.
  */
+/** Compte rétracté (WITHDRAWN) payeur de ce Duo, sinon null (lot 63B). */
+async function withdrawnAccountOfDuo(duoAccountId: number, billingOwnerUserId: number): Promise<number | null> {
+  const [linked] = await db
+    .select({ id: accounts.id, status: accounts.subscriptionStatus })
+    .from(accounts)
+    .where(eq(accounts.duoAccountId, duoAccountId))
+    .limit(1);
+  const account = linked ?? (await db
+    .select({ id: accounts.id, status: accounts.subscriptionStatus })
+    .from(accounts)
+    .where(eq(accounts.ownerUserId, billingOwnerUserId))
+    .limit(1))[0];
+  return account && account.status === 'WITHDRAWN' ? account.id : null;
+}
+
 async function activateDuoOnAccount(duoAccountId: number) {
   const [duo] = await db
     .select({
@@ -716,6 +741,10 @@ async function activateDuoOnAccount(duoAccountId: number) {
   const account = linked ?? (billingOwnerUserId
     ? (await db.select({ id: accounts.id, planType: accounts.planType, subscriptionStatus: accounts.subscriptionStatus }).from(accounts).where(eq(accounts.ownerUserId, billingOwnerUserId)).limit(1))[0]
     : null);
+
+  // Lot 63B : compte rétracté — aucune réactivation (événement de Checkout
+  // ou de passage à Duo rejoué / reçu après la rétractation).
+  if (account?.subscriptionStatus === 'WITHDRAWN') return;
 
   if (account) {
     if (account.planType !== 'PREMIUM_DUO') {

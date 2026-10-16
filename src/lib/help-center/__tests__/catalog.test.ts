@@ -9,7 +9,7 @@ import {
   HELP_SHORTCUT_IDS, parseCatalog, resolveShortcuts, unresolvedShortcuts,
   fetchHelpCatalog, resetHelpCatalogCache, catalogMatchesEnvironment, type HelpCatalog,
 } from '../catalog';
-import { helpPageUrl, integratedHelpHref, isHelpPath, safeReturnPath } from '../open';
+import { helpPageUrl, integratedHelpHref, isHelpPath } from '../open';
 
 const entry = (id: string, over: Partial<HelpCatalog['articles'][number]> = {}) => ({
   id, title: `Titre ${id}`, slug: id.toLowerCase(), path: `/aide/${id.toLowerCase()}`,
@@ -88,21 +88,16 @@ describe('ouverture (GAP-09, MOB-01)', () => {
     expect(isHelpPath('https://evil.example')).toBe(false);
     expect(isHelpPath('//evil.example/aide')).toBe(false);
     expect(isHelpPath('/aide/../mon-compte')).toBe(false);
-    expect(helpPageUrl('javascript:alert(1)', false)).toMatch(/\/aide$/);
+    expect(helpPageUrl('javascript:alert(1)')).toMatch(/\/aide$/);
   });
 
-  it('ajoute le mode intégré pour la vue de l’application', () => {
-    expect(helpPageUrl('/aide/creer-un-bien', true)).toMatch(/\/aide\/creer-un-bien\?integre=app$/);
-    expect(helpPageUrl('/aide?q=agenda', true)).toMatch(/\/aide\?q=agenda&integre=app$/);
+  // Lot 63B : Centre d'aide intégré supprimé — plus de mode `integre=app` ni
+  // de retour fixé à l'ouverture ; le lien interne historique est conservé.
+  it('L63-NET-04 — adresse publique sans mode intégré ; lien interne historique `/aide?page=`', () => {
+    expect(helpPageUrl('/aide/creer-un-bien')).toMatch(/\/aide\/creer-un-bien$/);
+    expect(helpPageUrl('/aide?q=agenda')).toMatch(/\/aide\?q=agenda$/);
     expect(integratedHelpHref('/aide/creer-un-bien')).toBe('/aide?page=%2Faide%2Fcreer-un-bien');
-  });
-
-  it('fixe le retour à l’ouverture, sur une page de l’application seulement (MOB-03)', () => {
-    expect(integratedHelpHref('/aide/creer-un-bien', '/biens/12')).toBe('/aide?page=%2Faide%2Fcreer-un-bien&retour=%2Fbiens%2F12');
-    expect(safeReturnPath('/documents?filtre=x')).toBe('/documents?filtre=x');
-    for (const bad of [null, '', 'https://evil.example', '//evil.example', '/aide', '/aide?page=x', '/\\evil']) {
-      expect(safeReturnPath(bad), String(bad)).toBe('/accueil');
-    }
+    expect(integratedHelpHref('javascript:alert(1)')).toBe('/aide');
   });
 });
 

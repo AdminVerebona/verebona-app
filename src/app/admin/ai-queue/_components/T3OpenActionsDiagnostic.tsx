@@ -22,6 +22,13 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { apiClient } from '@/lib/api-client';
 
+/** Lot 63 — seuils utilisés (contrat de décision), lisibles. */
+function thresholdsLabel(c: Record<string, unknown> | null | undefined): string {
+  const t = c?.thresholds as Record<string, number> | undefined;
+  if (!t) return '—';
+  return `horizon ${t.futureHorizonDays} j · historique ${t.historicalYears} ans · réévaluation ${t.deferUncertainDays} / ${t.deferUndatedDays} / ${t.deferTitleOnlyDays} j`;
+}
+
 interface Phase { status: string; error: string | null; counts?: Record<string, number> }
 interface Run {
   runId: number; accountId: number; jobId: number | null; jobStatus: string | null; businessResult: string | null;
@@ -221,6 +228,8 @@ function RuleRow({ r }: { r: RuleEval }) {
             ['Écriture', j(r.writeResult)],
             ['Cartes (créées, maintenues, fermées, intervention)', j(r.actionIds)],
             ['Configuration IA', r.configRef ?? '—'],
+            // Lot 63 : seuils « À traiter » utilisés pour cette décision.
+            ['Seuils « À traiter »', thresholdsLabel(r.decisionContract)],
             ['Type d’erreur', r.errorKind ?? '—'],
             ['Passages', r.passages?.length ? r.passages.map((p) => `${TRIGGER_LABEL[p.trigger] ?? p.trigger} ${dt(p.at)}${p.runRef ? ` (${p.runRef})` : ''}`).join(' ; ') : '—'],
           ] as Array<[string, string]>).map(([k, v]) => (

@@ -64,7 +64,7 @@ export function resolveSourcesForDisplay(sources: RetrievedSource[]): ResolvedSo
  */
 function ouvertureDeSource(source: RetrievedSource): VerebonaAction | null {
   // Article du Centre d'aide : « sources cliquables » (CDC Centre d'aide §5).
-  // Ouvert dans le Centre d'aide intégré de l'application.
+  // Ouvert sur le site public, nouvel onglet (`openHelpFromLink`, lot 59).
   if (source.type === 'help_entry' && typeof source.meta?.path === 'string') {
     const path = source.meta.path.split('#')[0];
     return {

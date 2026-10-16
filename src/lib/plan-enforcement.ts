@@ -127,6 +127,9 @@ export async function applyPlanChange(opts: PlanChangeOptions): Promise<void> {
       })
         .where(eq(duoAccounts.id, duo.id));
       if (start) await fillDuoStart(db, duo.id, start);
+      // Lot 63B (décision PO du 16/10) : compte rétracté → Duo CANCELED
+      // (ci-dessus) ET fin du partage, comme toute sortie de l'offre.
+      if (isWithdrawnStatus(newSubStatus)) await endDuoSharing(ownerUserId);
       // Ensure owner is in duo_memberships as slot 0
       const existing = await db.select({ id: duoMemberships.id })
         .from(duoMemberships)
@@ -240,6 +243,9 @@ export async function enforceStandardLimits(
   // choisit lui-même quoi supprimer, ou reprend une offre suffisante.
   // ══════════════════════════════════════════════════════════════════════
 }
+
+/** Statut de compte « rétractation exercée » (lot 63B). */
+const isWithdrawnStatus = (s: string | null | undefined): boolean => String(s ?? '').toUpperCase() === 'WITHDRAWN';
 
 // ─── endDuoSharing ────────────────────────────────────────────────────────────
 

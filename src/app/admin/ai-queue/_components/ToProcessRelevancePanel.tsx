@@ -38,7 +38,11 @@ interface RecetteRun {
   results: RecetteResult[]; error: string | null; startedAt: string; finishedAt: string | null;
 }
 interface Data {
-  config: { ref: string; interventionCapable: boolean };
+  config: {
+    ref: string; interventionCapable: boolean;
+    /** Lot 63 : seuils « À traiter » effectifs (BO › Configuration IA › Réglages). */
+    thresholds?: { futureHorizonDays: number; historicalYears: number; deferUncertainDays: number; deferUndatedDays: number; deferTitleOnlyDays: number };
+  };
   engineVersion: string;
   migrations: { decisions0444: boolean; campaigns0445: boolean; recette0446: boolean };
   campaigns: Campaign[]; items: Item[];
@@ -164,6 +168,15 @@ export function ToProcessRelevancePanel() {
                 : 'version active SANS t4_output_v3 : décision prudente (actions non identifiées différées). Activer la version de référence dans Prompts maîtres › T4.'}
             </span>
           </p>
+          {data.config.thresholds && (
+            <p className="text-xs break-words" data-testid="to-process-thresholds">
+              <span className="text-[color:var(--text-secondary)]">Seuils (Configuration IA › Réglages) : </span>
+              <span className="text-[color:var(--text-muted)]">
+                horizon {data.config.thresholds.futureHorizonDays} j · historique {data.config.thresholds.historicalYears} ans · réévaluation
+                {' '}incertaine {data.config.thresholds.deferUncertainDays} j / sans date {data.config.thresholds.deferUndatedDays} j / titre seul {data.config.thresholds.deferTitleOnlyDays} j
+              </span>
+            </p>
+          )}
           {(!data.migrations.decisions0444 || !data.migrations.campaigns0445 || !data.migrations.recette0446) && (
             <p className="text-xs text-amber-500 break-words">
               Migrations : décisions {data.migrations.decisions0444 ? 'présentes' : 'ABSENTES (0444)'} · campagnes {data.migrations.campaigns0445 ? 'présentes' : 'ABSENTES (0445)'} · recette {data.migrations.recette0446 ? 'présente' : 'ABSENTE (0446)'}.

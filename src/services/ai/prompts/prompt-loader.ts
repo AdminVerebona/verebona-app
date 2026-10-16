@@ -301,8 +301,9 @@ export const OPTIONAL_MASTER_VARIABLES: Readonly<Record<string, readonly string[
  * fichier du dépôt, lui, doit les contenir (`prompts:check`).
  *   · t3_master_v1 / OPERATION_MATCH : rapprochement sémantique M3 des
  *     Opérations — sans la branche, les cas restent en attente ;
- *   · t3_master_v1 / DOCUMENT_NAMING (lot 61) : harmonisation du nommage
- *     documentaire — sans la branche, aucun renommage (signalé au rapport) ;
+ *   · t3_master_v1 / DOCUMENT_NAMING (lot 61, texte livré au lot 63) :
+ *     harmonisation du nommage documentaire — sans la branche (version BO
+ *     antérieure), aucun renommage (signalé au rapport) ;
  *   · t6_master_v1 / EVALUATE (lot 61) : pertinence des interpellations de
  *     l'accueil — sans la branche, dégradation prudente.
  */
@@ -319,11 +320,12 @@ export const OPTIONAL_MASTER_TASKS: Readonly<Record<string, readonly string[]>> 
  * hors périmètre du ticket de code) : leur absence du fichier du dépôt est
  * un AVERTISSEMENT de `prompts:check`, pas une erreur. À retirer de cette
  * liste dès que le texte de la branche est livré dans le fichier.
- *   · t3_master_v1 / DOCUMENT_NAMING : ticket « prompt T3 — document_renames ».
+ *   · lot 63 : t3_master_v1 / DOCUMENT_NAMING livré dans le fichier du dépôt
+ *     (retiré de la liste ; la branche reste FACULTATIVE pour les versions
+ *     BO antérieures, `OPTIONAL_MASTER_TASKS`). Liste vide : toute branche
+ *     déclarée absente du fichier du dépôt est une ERREUR de `prompts:check`.
  */
-export const MASTER_TASKS_TEXT_PENDING: Readonly<Record<string, readonly string[]>> = {
-  t3_master_v1: ['DOCUMENT_NAMING'],
-};
+export const MASTER_TASKS_TEXT_PENDING: Readonly<Record<string, readonly string[]>> = {};
 
 /** Texte de cette branche attendu d'un ticket séparé (`MASTER_TASKS_TEXT_PENDING`). */
 export function isMasterTaskTextPending(masterPromptCode: string, task: string): boolean {

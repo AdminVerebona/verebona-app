@@ -22,6 +22,10 @@
  *               ACTIVE, invitation manuelle toujours possible ; impayé : absente.
  * DUO-R-07 (A)  Vérification croisée : Duo ACTIVE mais offre du compte
  *               perdue (sortie historique non synchronisée) : absente.
+ *               Lot 63B (décision PO du 16/10) : la rétractation FERME le
+ *               Duo (CANCELED, date de sortie) au lieu de le laisser
+ *               inchangé ; la vérification croisée reste le filet des états
+ *               historiques (Duo ACTIVE sur un compte WITHDRAWN).
  * DUO-R-08 (F)  BO `applyPlanChange` : depuis un impayé → UNPAID_RECOVERY,
  *               sans droits → CANCELED, jamais ACTIVE ; à jour → ACTIVE avec la
  *               date de prise d'effet ; BO puis webhook (et l'inverse) convergent.
@@ -320,9 +324,24 @@ scenario('L61B-DUO-R', 'Duo : écarts résiduels de « Inviter quelqu’un » (t
     await sql`UPDATE account_subscriptions SET plan_code = 'premium' WHERE account_id = ${c.id}`;
     expect(await duoRow(c.duoId)).toMatchObject({ status: 'ACTIVE' });
     expect(await lire(c.id)).toBeNull();
-    // Compte rétracté.
+    // Compte rétracté, état HISTORIQUE (antérieur au lot 63B : Duo resté ACTIVE) : filet de la vérification croisée.
     await sql`UPDATE accounts SET plan_type = 'PREMIUM_DUO', subscription_status = 'WITHDRAWN' WHERE id = ${c.id}`;
     await sql`UPDATE account_subscriptions SET plan_code = 'premium_duo', status = 'readonly' WHERE account_id = ${c.id}`;
+    expect(await duoRow(c.duoId)).toMatchObject({ status: 'ACTIVE' });
+    expect(await lire(c.id)).toBeNull();
+    // Lot 63B : la rétractation (coupure locale du parcours) FERME le Duo — sortie d'offre datée.
+    const { enterRecoveryMode } = await import('@/services/withdrawal/withdrawal-processor.service');
+    await enterRecoveryMode(c.id);
+    const d = await duoRow(c.duoId);
+    expect(d.status).toBe('CANCELED');
+    expect(d.ended).not.toBeNull();
+    expect(await lire(c.id)).toBeNull();
+    // Synchronisation ultérieure de l'abonnement rétracté (webhook ancien « actif ») : aucune réactivation.
+    await sql`INSERT INTO withdrawal_requests (public_reference, account_id, user_id, stripe_subscription_id, status, cancellation_status)
+              VALUES (${`RET-R07-${c.id}`}, ${c.id}, ${c.ownerUserId}, ${c.subId}, 'received', 'pending')`;
+    await sync(sub({ id: c.subId, customer: c.customer, status: 'active', price: DUO_M, accountId: c.id, duoId: c.duoId, startDate: NOW - JOUR }));
+    expect(await duoRow(c.duoId)).toMatchObject({ status: 'CANCELED' });
+    expect((await duoRow(c.duoId)).ended!.getTime()).toBe(d.ended!.getTime());
     expect(await lire(c.id)).toBeNull();
   });
 

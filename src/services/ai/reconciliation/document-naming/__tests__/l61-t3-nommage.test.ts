@@ -234,10 +234,10 @@ describe('T3-NOM-18 — Contrat de sortie T3 : section document_renames facultat
     expect(() => T3DocumentNamingOutput.parse({ task: 'DOCUMENT_NAMING', document_renames: [{ document_id: 1, proposed_name: 'b', reason: 'r', confidence: 'certain' }] })).toThrow();
     expect(T3MasterOutput.parse({ task: 'DOCUMENT_NAMING' })).toEqual({ task: 'DOCUMENT_NAMING' });
   });
-  it('branche FACULTATIVE du master T3, opération déclarée, schéma relié ; texte attendu d’un ticket séparé', () => {
+  it('branche FACULTATIVE du master T3, opération déclarée, schéma relié ; texte livré au lot 63', () => {
     expect(T3_TASKS).toContain('DOCUMENT_NAMING');
     expect(OPTIONAL_MASTER_TASKS.t3_master_v1).toEqual(['OPERATION_MATCH', 'DOCUMENT_NAMING']);
-    expect(isMasterTaskTextPending('t3_master_v1', 'DOCUMENT_NAMING')).toBe(true);
+    expect(isMasterTaskTextPending('t3_master_v1', 'DOCUMENT_NAMING')).toBe(false);
     expect(isMasterTaskTextPending('t3_master_v1', 'OPERATION_MATCH')).toBe(false);
     const op = getOperation('t3_document_naming');
     expect(op).toMatchObject({ task: 'DOCUMENT_NAMING', masterPromptCode: 't3_master_v1', outputSchema: 'T3DocumentNamingOutput', billable: false, active: true });
@@ -255,8 +255,10 @@ describe('T3-NOM-19 — corpus du prompt maître : cas DOCUMENT_NAMING rejoué d
     const [r] = await runMasterCorpus({ readMasterFile: readMasterFileFromRepo, treatments: ['T3'], texts: { t3_master_v1: { text: avec, source: 'config' } } });
     expect(r.branchesPassed).toContain('DOCUMENT_NAMING');
     expect(r.cases.find((c) => c.id === 'P-T3-15')).toMatchObject({ passed: true, errors: [] });
+    // Lot 63 : le fichier du dépôt porte la branche — P-T3-15 rejoué sur le texte livré.
     const [f] = await runMasterCorpus({ readMasterFile: readMasterFileFromRepo, treatments: ['T3'] });
     expect(f.status).toBe('PASSED');
-    expect(f.skipped).toContain('P-T3-15');
+    expect(f.skipped).not.toContain('P-T3-15');
+    expect(f.cases.find((c) => c.id === 'P-T3-15')).toMatchObject({ passed: true });
   });
 });

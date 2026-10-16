@@ -69,7 +69,12 @@ describe('câblage', () => {
     expect(src).not.toMatch(/rawReturn/);
   });
 
-  it('le Centre d’aide partage la même règle', () => {
-    expect(read('src/lib/help-center/open.ts')).toMatch(/safeInternalPath\(raw, '\/accueil'\)/);
+  // Lot 63B : Centre d'aide intégré supprimé — plus de « Retour à Verebona »
+  // ni de chemin de retour (`retour=`) à valider ; `/aide` redirige vers le
+  // site public, sur un chemin d'aide validé (`isHelpPath`), jamais ailleurs.
+  it('le Centre d’aide n’accepte plus de chemin de retour (redirection vers le site public seulement)', () => {
+    const src = read('src/lib/help-center/open.ts');
+    expect(src).not.toMatch(/safeReturnPath|params\.set\('retour'/);
+    expect(src).toContain("return publicSiteUrl(isHelpPath(path) ? path : '/aide');");
   });
 });
