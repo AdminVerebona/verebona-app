@@ -30,6 +30,9 @@
  * « Notifications » (doublon de la cloche, gardée en en-tête) disparaît.
  * La carte d'identité redevient un en-tête non cliquable, comme sur
  * ordinateur : l'accès à Mon compte est l'entrée explicite.
+ *
+ * Lot 62 (L62-DECO) : « Se déconnecter » ferme le panneau PUIS ouvre la
+ * confirmation — jamais les deux à la fois (voir le pied du panneau).
  */
 import { useState } from 'react';
 import Link from 'next/link';
@@ -151,13 +154,18 @@ export function MobileAccountPanel({
               })}
             </nav>
 
-            {/* Isolé en bas, et confirmé : une déconnexion s'atteint vite par mégarde. */}
+            {/* Isolé en bas, et confirmé : une déconnexion s'atteint vite par mégarde.
+                Lot 62 (L62-DECO) : le panneau se FERME avant d'ouvrir la
+                confirmation. Ouverte panneau ouvert, elle passait DESSOUS
+                (fenêtre Radix en z-50, panneau en z-[60]) tout en rendant le
+                reste de la page inerte (pointer-events: none sur <body>,
+                piège du focus) : « le clic ne fait rien et l'app freeze ». */}
             <div className="border-t border-[color:var(--border-subtle)] p-3 pb-[max(12px,env(safe-area-inset-bottom))]">
               {entries.filter((e) => e.id === 'logout').map((e) => (
                 <button
                   key={e.id}
                   type="button"
-                  onClick={() => setLogoutConfirm(true)}
+                  onClick={() => { onClose(); setLogoutConfirm(true); }}
                   className="flex min-h-12 w-full items-center gap-3 rounded-xl px-3 text-sm text-[color:var(--text-muted)] transition-colors hover:bg-[color:var(--accent-soft)] hover:text-[color:var(--text-primary)]"
                 >
                   <e.icon className="h-5 w-5 flex-shrink-0" aria-hidden />
@@ -171,7 +179,7 @@ export function MobileAccountPanel({
       <ConfirmLogoutDialog
         open={logoutConfirm}
         onOpenChange={setLogoutConfirm}
-        onConfirm={() => { onClose(); onLogout(); }}
+        onConfirm={() => onLogout()}
       />
     </>
   );

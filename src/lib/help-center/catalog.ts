@@ -167,15 +167,17 @@ export function helpCatalogUrl(base: string = PUBLIC_SITE_URL): string {
  * d'aide » affiche alors seulement l'ouverture du Centre d'aide, sans
  * raccourci plutôt qu'avec des liens incertains.
  */
-export async function fetchHelpCatalog(): Promise<HelpCatalog | null> {
+export async function fetchHelpCatalog(base?: string): Promise<HelpCatalog | null> {
   if (cache && Date.now() - cache.at < TTL_MS) return cache.value;
   pending ??= (async () => {
+    // Lot 62 (L62-AIDE) : le délai couvre aussi la lecture du corps — un
+    // site qui envoie ses en-têtes puis se tait ne retient plus la réponse.
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
     try {
-      const ctrl = new AbortController();
-      const timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
-      const res = await fetch(helpCatalogUrl(), { signal: ctrl.signal, credentials: 'omit' })
-        .finally(() => clearTimeout(timer));
+      const res = await fetch(helpCatalogUrl(base), { signal: ctrl.signal, credentials: 'omit' });
       let value = res.ok ? parseCatalog(await res.json()) : null;
+      if (!res.ok || !value) console.warn(`[aide] Catalogue du Centre d’aide illisible (${res.ok ? 'format inattendu' : `HTTP ${res.status}`}) : accès rapides indisponibles.`);
       if (value && !catalogMatchesEnvironment(value.environment, process.env.NEXT_PUBLIC_APP_ENV)) {
         console.error(`[aide] Catalogue refusé : environnement « ${value.environment} » ≠ application « ${process.env.NEXT_PUBLIC_APP_ENV} » (ENV-02).`);
         value = null;
@@ -187,6 +189,7 @@ export async function fetchHelpCatalog(): Promise<HelpCatalog | null> {
       cache = { at: Date.now() - TTL_MS + 30_000, value: null };
       return null;
     } finally {
+      clearTimeout(timer);
       pending = null;
     }
   })();
@@ -219,4 +222,46 @@ export async function loadHelpShortcuts(
     }
   } catch { /* lecture directe ci-dessous */ }
   return resolveShortcuts(await fetchHelpCatalog(), shortcutIdsForRoute(route));
+}
+
+// ── État affiché par « Besoin d'aide ? » — lot 62 (L62-AIDE) ───────────────
+//
+// « Besoin d'aide sans les exemples encore (chargement ?) » : la fenêtre
+// n'affichait les accès rapides qu'une fois une liste NON VIDE reçue. Tant
+// que la lecture n'aboutissait pas (aucun délai sur l'appel à la route) ou
+// si elle aboutissait à « rien », la section restait absente — une fenêtre
+// silencieusement vide, sans chargement ni explication.
+//
+// Désormais : chargement BORNÉ (au plus `HELP_SHORTCUTS_DEADLINE_MS`), puis
+// soit les exemples, soit un repli explicite (« indisponibles » + Réessayer).
+
+/** Délai maximal d'affichage du chargement des accès rapides. */
+export const HELP_SHORTCUTS_DEADLINE_MS = 8_000;
+
+export type HelpShortcutsState =
+  | { status: 'loading' }
+  | { status: 'ready'; shortcuts: ResolvedShortcut[] }
+  | { status: 'unavailable' };
+
+/**
+ * Accès rapides, bornés dans le temps. Ne lève jamais ; une liste vide vaut
+ * « indisponible » (jamais une section vide sans explication).
+ */
+export async function loadHelpShortcutsState(
+  route: string | null | undefined,
+  fetchImpl: typeof fetch = fetch,
+  deadlineMs: number = HELP_SHORTCUTS_DEADLINE_MS,
+): Promise<Exclude<HelpShortcutsState, { status: 'loading' }>> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), deadlineMs); });
+  try {
+    const shortcuts = await Promise.race([loadHelpShortcuts(route, fetchImpl).catch(() => [] as ResolvedShortcut[]), deadline]);
+    if (shortcuts === null) {
+      console.warn(`[aide] Accès rapides non reçus en ${deadlineMs} ms : repli affiché.`);
+      return { status: 'unavailable' };
+    }
+    return shortcuts.length > 0 ? { status: 'ready', shortcuts } : { status: 'unavailable' };
+  } finally {
+    clearTimeout(timer);
+  }
 }

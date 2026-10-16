@@ -18,10 +18,69 @@
  */
 import { useEffect, useState } from 'react';
 import { usePathname } from 'next/navigation';
-import { Search, X, ExternalLink, PlayCircle, BookOpen } from 'lucide-react';
+import { Search, X, ExternalLink, PlayCircle, BookOpen, RotateCw } from 'lucide-react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog';
-import { loadHelpShortcuts, type ResolvedShortcut } from '@/lib/help-center/catalog';
+import { loadHelpShortcutsState, type HelpShortcutsState } from '@/lib/help-center/catalog';
 import { openHelpCenter } from '@/lib/help-center/open';
+
+/**
+ * Accès rapides — lot 62 (L62-AIDE) : TOUJOURS une section visible.
+ *
+ * · chargement : trois lignes d'attente (borné, `HELP_SHORTCUTS_DEADLINE_MS`) ;
+ * · prêts : les exemples du Centre d'aide ;
+ * · indisponibles : un message explicite et « Réessayer » — jamais une
+ *   fenêtre silencieusement vide.
+ *
+ * Même composant sur ordinateur et sur mobile (application installée comprise).
+ */
+export function HelpShortcutsSection({ state, onOpen, onRetry }: {
+  state: HelpShortcutsState;
+  onOpen: (path: string) => void;
+  onRetry: () => void;
+}) {
+  return (
+    <div data-testid="help-shortcuts" data-state={state.status}>
+      <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide mb-2">Accès rapides</p>
+      {state.status === 'loading' && (
+        <div role="status" aria-live="polite" className="space-y-1">
+          <span className="sr-only">Chargement des exemples du Centre d’aide…</span>
+          {[0, 1, 2].map((i) => (
+            <div key={i} aria-hidden="true" className="h-9 rounded-md bg-muted animate-pulse" />
+          ))}
+        </div>
+      )}
+      {state.status === 'ready' && (
+        <ul className="space-y-1">
+          {state.shortcuts.map((s) => (
+            <li key={s.id}>
+              <button
+                type="button"
+                onClick={() => onOpen(s.path)}
+                className="flex w-full items-center justify-between rounded-md px-3 py-2 text-sm hover:bg-muted transition-colors text-left"
+              >
+                <span>{s.title}</span>
+                <ExternalLink className="h-3.5 w-3.5 text-muted-foreground flex-shrink-0" aria-hidden="true" />
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+      {state.status === 'unavailable' && (
+        <div role="status" className="rounded-md border border-dashed px-3 py-2.5 text-sm text-muted-foreground">
+          <p>Les exemples du Centre d’aide ne sont pas disponibles pour le moment. Recherchez ci-dessus ou ouvrez le Centre d’aide.</p>
+          <button
+            type="button"
+            onClick={onRetry}
+            className="mt-1.5 inline-flex items-center gap-1.5 text-sm font-medium text-primary hover:underline"
+          >
+            <RotateCw className="h-3.5 w-3.5" aria-hidden="true" />
+            Réessayer
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
 
 interface HelpModalProps {
   open: boolean;
@@ -31,16 +90,20 @@ interface HelpModalProps {
 export function HelpModal({ open, onOpenChange }: HelpModalProps) {
   const pathname = usePathname();
   const [query, setQuery] = useState('');
-  const [shortcuts, setShortcuts] = useState<ResolvedShortcut[] | null>(null);
+  const [shortcuts, setShortcuts] = useState<HelpShortcutsState>({ status: 'loading' });
+  const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
     if (!open) { setQuery(''); return; }
     let cancelled = false;
-    // Lot 35 (L35-1) : lus par la route de l'application, dans l'ordre de la
-    // page — mêmes exemples sur ordinateur et sur mobile (même composant).
-    loadHelpShortcuts(pathname).then((s) => { if (!cancelled) setShortcuts(s); });
+    // Lot 35 (L35-1) : lus par la route de l'application (loadHelpShortcuts(pathname)),
+    // dans l'ordre de la page — mêmes exemples sur ordinateur et sur mobile
+    // (même composant). Lot 62 (L62-AIDE) : chargement borné, repli explicite.
+    // Exemples déjà affichés : gardés pendant la relecture (pas de clignotement).
+    setShortcuts((prev) => (prev.status === 'ready' ? prev : { status: 'loading' }));
+    loadHelpShortcutsState(pathname).then((s) => { if (!cancelled) setShortcuts(s); });
     return () => { cancelled = true; };
-  }, [open, pathname]);
+  }, [open, pathname, attempt]);
 
   /**
    * Lot 59 (point 3) : nouvel onglet isolé (site public), sur ordinateur ET
@@ -92,26 +155,8 @@ export function HelpModal({ open, onOpenChange }: HelpModalProps) {
           )}
         </form>
 
-        {/* Accès rapides — masqués tant que le catalogue n'a pas répondu, ou s'il est indisponible. */}
-        {shortcuts && shortcuts.length > 0 && (
-          <div>
-            <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide mb-2">Accès rapides</p>
-            <ul className="space-y-1">
-              {shortcuts.map((s) => (
-                <li key={s.id}>
-                  <button
-                    type="button"
-                    onClick={() => openHelp(s.path)}
-                    className="flex w-full items-center justify-between rounded-md px-3 py-2 text-sm hover:bg-muted transition-colors text-left"
-                  >
-                    <span>{s.title}</span>
-                    <ExternalLink className="h-3.5 w-3.5 text-muted-foreground flex-shrink-0" aria-hidden="true" />
-                  </button>
-                </li>
-              ))}
-            </ul>
-          </div>
-        )}
+        {/* Accès rapides — chargement, exemples ou repli explicite (L62-AIDE). */}
+        <HelpShortcutsSection state={shortcuts} onOpen={openHelp} onRetry={() => setAttempt((n) => n + 1)} />
 
         <div className="border-t pt-3 space-y-2">
           <button

@@ -16,7 +16,7 @@ const DocumentDrawer = dynamic(
   () => import('@/components/assets/DocumentDrawer').then(m => ({ default: m.DocumentDrawer })),
   { ssr: false }
 );
-import { publicSiteUrl } from '@/lib/external-urls';
+import { leaveAfterLogout } from '@/lib/shell/logout-exit';
 import { TrialBanner } from '@/components/subscription/TrialBanner';
 import { isUnpaid } from '@/lib/trial-status';
 import { formatUserDisplayName, formatUserInitials } from '@/lib/user-display-name';
@@ -204,8 +204,11 @@ export function DashboardLayout({ children, user: userProp }: DashboardLayoutPro
   // ══════════════════════════════════════════════════════════════════════
   const [logoutState, setLogoutState] = useState<'idle' | 'pending' | 'failed'>('idle');
   const quitterVersSite = useCallback(() => {
-    // Deconnexion : retour au site vitrine (cross-domain)
-    window.location.href = publicSiteUrl('/');
+    // Deconnexion : retour au site vitrine (cross-domain) ; dans
+    // l'application installée, retour à la connexion DANS l'application —
+    // la coquille native annule la navigation vers un autre domaine et
+    // laissait l'écran « Déconnexion… » figé (lot 62, L62-DECO).
+    leaveAfterLogout();
   }, []);
   const handleLogout = useCallback(async () => {
     setLogoutState('pending');
