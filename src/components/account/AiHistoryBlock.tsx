@@ -74,7 +74,7 @@ export function AiHistoryBlock({ locked = false }: { locked?: boolean }) {
             <div className="divide-y divide-border -mx-2 blur-[3px] pointer-events-none select-none">
               {LOCKED_EXAMPLES.map(ex => (
                 <div key={ex.id} className="flex items-start gap-3 px-2 py-3">
-                  <div className="w-1.5 h-1.5 rounded-full bg-violet-400 mt-2 flex-shrink-0" />
+                  <div className="w-1.5 h-1.5 rounded-full bg-[color:var(--accent)] mt-2 flex-shrink-0" />
                   <div className="flex-1 min-w-0">
                     <p className="text-sm leading-snug">
                       <span className="font-medium">{ex.fieldLabel}</span> {ex.action} sur <span className="underline">{ex.assetName}</span>
@@ -87,13 +87,13 @@ export function AiHistoryBlock({ locked = false }: { locked?: boolean }) {
             </div>
             <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-background/60">
               <div className="flex flex-col items-center gap-2 text-center px-4">
-                <Lock className="w-4 h-4 text-blue-400" />
+                <Lock className="w-4 h-4 text-[color:var(--accent)]" />
                 <p className="text-sm font-medium">Disponible en Premium</p>
                 <p className="text-xs text-muted-foreground">Suivez toutes les modifications effectuées automatiquement sur vos biens.</p>
               </div>
               <Button
                 size="sm" variant="outline"
-                className="border-blue-500/40 text-blue-400 hover:bg-blue-500/10 gap-1.5 rounded-full"
+                className="border-[color:var(--border-info)] text-[color:var(--accent)] hover:bg-[color:var(--accent-soft)] gap-1.5 rounded-full"
                 onClick={() => router.push('/mon-compte/offres')}
               >
                 <Crown className="w-3.5 h-3.5" />
@@ -118,7 +118,7 @@ export function AiHistoryBlock({ locked = false }: { locked?: boolean }) {
         <div>
           {/* Dernière entrée */}
           <div className="flex items-start gap-3 px-2 py-2">
-            <div className="w-1.5 h-1.5 rounded-full bg-violet-400 mt-2 flex-shrink-0" />
+            <div className="w-1.5 h-1.5 rounded-full bg-[color:var(--accent)] mt-2 flex-shrink-0" />
             <div className="flex-1 min-w-0">
               <div className="flex items-start justify-between gap-2">
                 <p className="text-sm leading-snug">

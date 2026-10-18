@@ -45,16 +45,24 @@ describe('les couleurs sémantiques atteignent le seuil AA', () => {
   const roles = ['text-warning', 'text-warning-soft', 'text-danger', 'text-danger-soft',
                  'text-success', 'text-success-soft', 'text-info', 'text-info-soft'];
 
+  // Lot 66 (charte « Sérénité » 2026) : fonds de page ET de carte de chaque
+  // thème — ivoire #F8F6F1 / blanc #FFFFFF ; encre #1B2529 / carte #26353B.
+  // Blocs de thème : `html[data-theme="beige"]` (clair) et
+  // `html[data-theme="blue"]` (sombre), voir globals.css.
   for (const role of roles) {
     it(`${role} : lisible sur fond clair`, () => {
       // 4,5:1 est le seuil AA pour le texte courant.
-      expect(contraste(valeur(role, 'data-theme="beige"'), '#FFFFFF'))
-        .toBeGreaterThanOrEqual(4.5);
+      for (const fond of ['#FFFFFF', '#F8F6F1']) {
+        expect(contraste(valeur(role, 'html[data-theme="beige"]'), fond))
+          .toBeGreaterThanOrEqual(4.5);
+      }
     });
 
     it(`${role} : lisible sur fond sombre`, () => {
-      expect(contraste(valeur(role, ':root'), '#020617'))
-        .toBeGreaterThanOrEqual(4.5);
+      for (const fond of ['#1B2529', '#26353B']) {
+        expect(contraste(valeur(role, 'html[data-theme="blue"]'), fond))
+          .toBeGreaterThanOrEqual(4.5);
+      }
     });
   }
 });

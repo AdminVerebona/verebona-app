@@ -130,7 +130,7 @@ function Ventilation({ title, rows, hint, hrefFor }: {
             <p className="text-xs text-[color:var(--text-muted)]">
               {r.calls} appel{r.calls > 1 ? 's' : ''}
               {r.technicalMicros > 0 && ` · dont ${usd(r.technicalMicros)} technique`}
-              {r.unpricedCalls > 0 && <span className="text-amber-500"> · {r.unpricedCalls} sans tarif</span>}
+              {r.unpricedCalls > 0 && <span className="text-[color:var(--text-warning-soft)]"> · {r.unpricedCalls} sans tarif</span>}
             </p>
           </>
         );
@@ -280,14 +280,14 @@ function AiCostsScreen() {
       </div>
 
       {alerts.length > 0 && (
-        <div className="rounded-xl border border-amber-500/30 bg-amber-500/5 p-4 space-y-2">
+        <div className="rounded-xl border border-[color:var(--border-warning)] bg-[color:var(--bg-warning)] p-4 space-y-2">
           <h2 className="text-sm font-semibold text-[color:var(--text-primary)] flex items-center gap-2">
-            <Bell className="w-4 h-4 text-amber-500" /> Alertes de coût
+            <Bell className="w-4 h-4 text-[color:var(--text-warning-soft)]" /> Alertes de coût
           </h2>
           <p className="text-xs text-[color:var(--text-muted)]">Une alerte de coût n&apos;interrompt jamais un traitement (COST-013).</p>
           {alerts.map((a) => (
             <div key={a.id} className="flex flex-wrap items-center gap-2 text-sm text-[color:var(--text-secondary)]">
-              <span className="text-xs px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-500">{a.kind === 'budget' ? 'Budget' : 'Anomalie'}</span>
+              <span className="text-xs px-1.5 py-0.5 rounded bg-[color:var(--bg-warning)] text-[color:var(--text-warning-soft)]">{a.kind === 'budget' ? 'Budget' : 'Anomalie'}</span>
               <span className="flex-1">{a.message}</span>
               {a.drilldownHref && <Link href={a.drilldownHref} className="text-xs text-[color:var(--accent)] hover:underline">Voir</Link>}
               <Button size="sm" variant="ghost" onClick={() => acknowledge(a.id)}>Acquitter</Button>
@@ -303,8 +303,8 @@ function AiCostsScreen() {
       ) : (
         <>
           {report.warning && (
-            <div className="rounded-xl border border-amber-500/30 bg-amber-500/5 p-4 flex items-start gap-3">
-              <AlertTriangle className="w-4 h-4 text-amber-500 shrink-0 mt-0.5" />
+            <div className="rounded-xl border border-[color:var(--border-warning)] bg-[color:var(--bg-warning)] p-4 flex items-start gap-3">
+              <AlertTriangle className="w-4 h-4 text-[color:var(--text-warning-soft)] shrink-0 mt-0.5" />
               <div>
                 <p className="text-sm text-[color:var(--text-primary)]">{report.warning}</p>
                 <p className="text-xs text-[color:var(--text-muted)]">

@@ -26,9 +26,9 @@ export function EcranEnErreur({
   titre, message, onRetry,
 }: { titre: string; message?: string | null; onRetry: () => void }) {
   return (
-    <div className="max-w-xl rounded-xl border border-red-500/30 bg-red-500/5 p-6 space-y-3">
+    <div className="max-w-xl rounded-xl border border-[color:var(--border-danger)] bg-[color:var(--bg-danger)] p-6 space-y-3">
       <div className="flex items-start gap-3">
-        <AlertTriangle className="w-5 h-5 text-red-400 shrink-0 mt-0.5" />
+        <AlertTriangle className="w-5 h-5 text-[color:var(--text-danger)] shrink-0 mt-0.5" />
         <div className="space-y-1">
           <h2 className="text-sm font-semibold text-[color:var(--text-primary)]">{titre}</h2>
           <p className="text-sm text-[color:var(--text-secondary)]">

@@ -71,8 +71,8 @@ export function FusionSuggestionModal({ open, onOpenChange, newFileId, newFilena
       <AlertDialogContent className="max-w-lg">
         <AlertDialogHeader>
           <div className="flex items-center gap-2 mb-1">
-            <div className="w-8 h-8 rounded-lg bg-amber-500/10 flex items-center justify-center">
-              <Copy className="w-4 h-4 text-amber-600" />
+            <div className="w-8 h-8 rounded-lg bg-[color:var(--attention-soft)] flex items-center justify-center">
+              <Copy className="w-4 h-4 text-[color:var(--attention-on-soft)]" />
             </div>
             <AlertDialogTitle className="text-base">Document potentiellement en doublon</AlertDialogTitle>
           </div>
@@ -82,7 +82,7 @@ export function FusionSuggestionModal({ open, onOpenChange, newFileId, newFilena
         </AlertDialogHeader>
 
         <div className="space-y-3 py-2">
-          <Badge variant="outline" className="text-amber-600 border-amber-500/40 bg-amber-500/5">
+          <Badge variant="outline" className="text-[color:var(--attention-on-soft)] border-[color:var(--attention-edge)] bg-[color:var(--attention-soft)]">
             {reasonLabel}
           </Badge>
 

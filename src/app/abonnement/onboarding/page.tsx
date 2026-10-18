@@ -84,14 +84,14 @@ function OnboardingContent() {
 
       <main className="flex-1 flex items-center justify-center p-4">
         <div className="w-full max-w-lg bg-[color:var(--bg-card)] border border-[color:var(--border-subtle)] rounded-2xl shadow-2xl overflow-hidden">
-          <div className="h-1.5 w-full bg-gradient-to-r from-[#3b82f6] to-[#10b981]" />
+          <div className="h-1.5 w-full bg-[color:var(--accent)]" />
 
           <div className="p-8 space-y-6">
             <div className="text-center space-y-2">
-              <span className="inline-flex items-center gap-1.5 px-3 py-1 text-xs font-semibold text-emerald-400 bg-emerald-950/40 border border-emerald-800/40 rounded-full">
+              <span className="inline-flex items-center gap-1.5 px-3 py-1 text-xs font-semibold text-[color:var(--text-success)] bg-[color:var(--bg-success)] border border-[color:var(--border-success)] rounded-full">
                 <Gift className="w-3.5 h-3.5" /> Offre de bienvenue
               </span>
-              <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-white mt-3">
+              <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-[color:var(--text-primary)] mt-3">
                 Activez vos 2 mois offerts
               </h1>
               <p className="text-[color:var(--text-muted)] text-sm sm:text-base max-w-md mx-auto">
@@ -100,11 +100,11 @@ function OnboardingContent() {
             </div>
 
             {cancelled && (
-              <div className="flex items-start gap-3 p-4 bg-blue-950/30 border border-blue-900/50 rounded-xl text-[color:var(--text-info)] text-sm">
-                <AlertCircle className="w-5 h-5 flex-shrink-0 text-blue-400 mt-0.5" />
+              <div className="flex items-start gap-3 p-4 bg-[color:var(--accent-soft)] border border-[color:var(--border-info)] rounded-xl text-[color:var(--text-info)] text-sm">
+                <AlertCircle className="w-5 h-5 flex-shrink-0 text-[color:var(--accent)] mt-0.5" />
                 <div className="space-y-1">
                   <p className="font-semibold text-[color:var(--text-info-soft)]">Paiement annulé</p>
-                  <p className="text-xs text-blue-400">
+                  <p className="text-xs text-[color:var(--accent)]">
                     Pas d'inquiétude, aucune somme n'a été débitée. Vous pouvez reprendre votre inscription à tout moment ci-dessous.
                   </p>
                 </div>
@@ -112,22 +112,22 @@ function OnboardingContent() {
             )}
 
             {error && (
-              <div className="flex items-start gap-3 p-4 bg-red-950/30 border border-red-900/50 rounded-xl text-[color:var(--text-danger)] text-sm animate-shake">
-                <AlertCircle className="w-5 h-5 flex-shrink-0 text-red-400 mt-0.5" />
+              <div className="flex items-start gap-3 p-4 bg-[color:var(--danger-soft)] border border-[color:var(--danger-edge)] rounded-xl text-[color:var(--text-danger)] text-sm animate-shake">
+                <AlertCircle className="w-5 h-5 flex-shrink-0 text-[color:var(--danger)] mt-0.5" />
                 <div className="space-y-1">
                   <p className="font-semibold text-[color:var(--text-danger-soft)]">Une erreur s'est produite</p>
-                  <p className="text-xs text-red-400">{error}</p>
+                  <p className="text-xs text-[color:var(--danger)]">{error}</p>
                 </div>
               </div>
             )}
 
             <div className="space-y-4 py-2 border-y border-[color:var(--border-subtle)]">
               <div className="flex items-start gap-3">
-                <div className="p-2 bg-blue-950/50 border border-blue-900/30 rounded-lg text-[#3b82f6]">
+                <div className="p-2 bg-[color:var(--accent-soft)] border border-[color:var(--border-info)] rounded-lg text-[color:var(--accent)]">
                   <Gift className="w-5 h-5" />
                 </div>
                 <div>
-                  <p className="font-semibold text-white text-sm">2 mois gratuits (60 jours d'essai)</p>
+                  <p className="font-semibold text-[color:var(--text-primary)] text-sm">2 mois gratuits (60 jours d'essai)</p>
                   <p className="text-xs text-[color:var(--text-muted)]">
                     Découvrez sans engagement l'ensemble des outils conçus pour vos documents et biens.
                   </p>
@@ -135,11 +135,11 @@ function OnboardingContent() {
               </div>
 
               <div className="flex items-start gap-3">
-                <div className="p-2 bg-blue-950/50 border border-blue-900/30 rounded-lg text-[#3b82f6]">
+                <div className="p-2 bg-[color:var(--accent-soft)] border border-[color:var(--border-info)] rounded-lg text-[color:var(--accent)]">
                   <Calendar className="w-5 h-5" />
                 </div>
                 <div>
-                  <p className="font-semibold text-white text-sm">Libre et sans engagement</p>
+                  <p className="font-semibold text-[color:var(--text-primary)] text-sm">Libre et sans engagement</p>
                   <p className="text-xs text-[color:var(--text-muted)]">
                     Annulez en un clic à tout moment depuis votre compte. Vous ne payez rien aujourd'hui.
                   </p>
@@ -147,11 +147,11 @@ function OnboardingContent() {
               </div>
 
               <div className="flex items-start gap-3">
-                <div className="p-2 bg-blue-950/50 border border-blue-900/30 rounded-lg text-[#3b82f6]">
+                <div className="p-2 bg-[color:var(--accent-soft)] border border-[color:var(--border-info)] rounded-lg text-[color:var(--accent)]">
                   <ShieldCheck className="w-5 h-5" />
                 </div>
                 <div>
-                  <p className="font-semibold text-white text-sm">Sécurisé par Stripe</p>
+                  <p className="font-semibold text-[color:var(--text-primary)] text-sm">Sécurisé par Stripe</p>
                   <p className="text-xs text-[color:var(--text-muted)]">
                     Vos informations de paiement sont cryptées et gérées par Stripe, leader mondial des paiements en ligne.
                   </p>
@@ -163,7 +163,7 @@ function OnboardingContent() {
               <button
                 onClick={handleStartTrial}
                 disabled={loading}
-                className="w-full flex items-center justify-center gap-2 py-3.5 px-4 bg-[#3b82f6] hover:bg-[#2563eb] text-white font-semibold rounded-xl shadow-lg shadow-blue-500/10 hover:shadow-blue-500/20 transition-all disabled:opacity-50 disabled:cursor-not-allowed group cursor-pointer"
+                className="w-full flex items-center justify-center gap-2 py-3.5 px-4 bg-[color:var(--accent)] hover:bg-[color:var(--accent-hover)] text-[color:var(--on-accent)] font-bold rounded-[12px] transition-colors disabled:opacity-50 disabled:cursor-not-allowed group cursor-pointer"
               >
                 {loading ? (
                   <>
@@ -173,7 +173,7 @@ function OnboardingContent() {
                 ) : (
                   <>
                     Commencer mes 2 mois offerts
-                    <ArrowRight className="w-5 h-5 transition-transform group-hover:translate-x-1" />
+                    <ArrowRight className="w-5 h-5" />
                   </>
                 )}
               </button>
@@ -185,7 +185,7 @@ function OnboardingContent() {
                     {billingMention(shownOffer) ? ` (${billingMention(shownOffer)})` : ''}
                   </p>
                   {priceChanged && (
-                    <p className="text-xs text-amber-500 mt-1">
+                    <p className="text-xs text-[color:var(--attention-on-soft)] mt-1">
                       Le tarif a changé depuis l&apos;affichage de cette page. Vérifiez le nouveau montant avant de continuer.
                     </p>
                   )}
@@ -210,7 +210,7 @@ export default function OnboardingPage() {
     <Suspense fallback={
       <div className="public-page min-h-screen flex items-center justify-center bg-[color:var(--bg-page)]">
         <ForceTheme theme="blue" />
-        <Loader2 className="w-8 h-8 text-[#3b82f6] animate-spin" />
+        <Loader2 className="w-8 h-8 text-[color:var(--accent)] animate-spin" />
       </div>
     }>
       <OnboardingContent />

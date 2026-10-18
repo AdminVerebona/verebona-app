@@ -1,6 +1,7 @@
 /*
  * Verebona — composants documentaires print (CDC §19.2), d'après les maquettes
- * Claude Design « design-v12 ». Voir _system/README.md pour la correspondance
+ * Claude Design « design-v12 », habillage charte « Sérénité » 2026 (§8, lot 66C :
+ * couleurs, Figtree et décor uniquement — géométrie et HTML inchangés). Voir _system/README.md pour la correspondance
  * composant ↔ maquette et les règles de pagination.
  *
  * Mise en page : flux continu paginé par Chromium. Les pages intérieures ont des
@@ -25,6 +26,7 @@ body {
 img { display: block; }
 h1, h2, h3, p, figure { margin: 0; }
 .mono { font-family: var(--font-mono); }
+h1, h2 { font-weight: 700; }
 .num { font-variant-numeric: tabular-nums; }
 
 /* Groupe de pages : reproduit le découpage des feuilles de la maquette ; le
@@ -42,7 +44,8 @@ h1, h2, h3, p, figure { margin: 0; }
   font-size: var(--fs-eyebrow);
   letter-spacing: var(--ls-eyebrow);
   text-transform: uppercase;
-  color: var(--ink-3);
+  font-weight: 700;
+  color: var(--eyebrow);
 }
 .sec { margin-top: var(--gap-section); }
 .sec.gap-md { margin-top: 34px; }
@@ -53,7 +56,8 @@ h1, h2, h3, p, figure { margin: 0; }
   margin: 6px 0 18px;
   font-family: var(--font-display);
   font-size: var(--fs-h2);
-  font-weight: 600;
+  font-weight: 700;
+  color: var(--heading);
   letter-spacing: var(--ls-display);
   line-height: 1.1;
 }
@@ -71,10 +75,10 @@ h1, h2, h3, p, figure { margin: 0; }
 .blk { margin-top: var(--gap-section); }
 .pg > .blk:first-child { margin-top: 0; }
 .blk-head { display: flex; align-items: center; gap: 12px; }
-.blk-code { font-family: var(--font-mono); font-size: 11px; color: var(--blue-600); font-weight: 700; }
+.blk-code { font-family: var(--font-mono); font-size: 11px; color: var(--blue-600); font-weight: 700; letter-spacing: .02em; }
 .blk-title {
   margin: 0; flex: 1;
-  font-family: var(--font-display); font-size: var(--fs-h2-sm); font-weight: 600;
+  font-family: var(--font-display); font-size: var(--fs-h2-sm); font-weight: 700; color: var(--heading);
   letter-spacing: var(--ls-display); line-height: 1.1;
 }
 .blk-body { margin-top: 14px; }
@@ -104,6 +108,8 @@ h1, h2, h3, p, figure { margin: 0; }
   break-after: page;
 }
 .cover > * { position: relative; }
+/* Charte : fonds en aplat — halo et trame de la maquette 2025 masqués (balises conservées). */
+.cover .halo, .cover .dots { display: none; }
 .cover .halo { position: absolute; inset: 0; background: radial-gradient(600px 400px at 12% -8%, var(--navy-halo), transparent 70%); }
 .cover .halo.premium { background: radial-gradient(600px 400px at 12% -8%, var(--navy-halo-strong), transparent 70%), radial-gradient(500px 300px at 100% 0%, var(--navy-halo-teal), transparent 70%); }
 .cover .dots {
@@ -116,18 +122,20 @@ h1, h2, h3, p, figure { margin: 0; }
 .cover .dots.premium { -webkit-mask-image: linear-gradient(#000 40%, transparent 80%); mask-image: linear-gradient(#000 40%, transparent 80%); }
 .cover-top { padding: 48px var(--cover-x) 0; display: flex; align-items: center; justify-content: space-between; }
 .brand { display: flex; align-items: center; gap: 12px; }
-.brand img { height: 32px; width: auto; }
-.brand span { font-size: 21px; font-weight: 600; letter-spacing: -.01em; }
-.cover-kind { font-family: var(--font-mono); font-size: var(--fs-eyebrow); letter-spacing: var(--ls-eyebrow); text-transform: uppercase; color: var(--on-navy-accent); }
-.cover-kicker { font-family: var(--font-mono); font-size: var(--fs-eyebrow); letter-spacing: var(--ls-eyebrow); text-transform: uppercase; color: var(--on-navy-kicker); margin-bottom: 14px; }
+.brand { gap: 10px; }
+.brand img { height: 26px; width: auto; }
+.brand span { font-size: 18px; font-weight: 700; letter-spacing: -.02em; color: var(--on-navy); }
+.cover-kind { font-family: var(--font-mono); font-size: var(--fs-eyebrow); letter-spacing: var(--ls-eyebrow); text-transform: uppercase; font-weight: 700; color: var(--on-navy-accent); }
+.cover-top .cover-kind { font-size: 11px; font-weight: 600; letter-spacing: .08em; color: var(--on-navy); border: 1px solid rgba(248,246,241,.35); padding: 6px 12px; border-radius: var(--r-pill); }
+.cover-kicker { font-family: var(--font-mono); font-size: 12px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--on-navy-kicker); margin-bottom: 14px; }
 .cover h1 {
   margin: 0 0 20px;
-  font-family: var(--font-display); font-size: var(--fs-h1-cover); font-weight: 600;
-  letter-spacing: var(--ls-cover); line-height: 1.04;
+  font-family: var(--font-display); font-size: var(--fs-h1-cover); font-weight: 800;
+  letter-spacing: var(--ls-cover); line-height: 1.04; color: var(--on-navy);
 }
 .cover-body { padding: 170px var(--cover-x) 0; flex: 1; }
 .cover-address { font-size: 16px; line-height: 1.5; color: var(--on-navy-addr); }
-.cover-lead { font-size: var(--fs-lead-cover); line-height: 1.6; color: var(--on-navy-lead); max-width: 440px; }
+.cover-lead { font-size: var(--fs-lead-cover); line-height: 1.55; color: var(--on-navy-lead); max-width: 440px; }
 .cover-note {
   margin-top: 44px; padding: 20px 22px; max-width: 520px;
   border-radius: var(--r-panel); background: var(--navy-card); border: 1px solid var(--navy-card-line);
@@ -135,50 +143,61 @@ h1, h2, h3, p, figure { margin: 0; }
 .cover-note .cover-kind { margin-bottom: 8px; }
 .cover-note p { font-size: 13.5px; line-height: 1.6; color: var(--on-navy-body); }
 .cover-meta { padding: 0 var(--cover-x) 44px; display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 24px; }
-.cover-meta .k { font-family: var(--font-mono); font-size: var(--fs-eyebrow); letter-spacing: var(--ls-eyebrow); text-transform: uppercase; color: var(--on-navy-label); margin-bottom: 6px; }
+.cover-meta .k { font-family: var(--font-mono); font-size: var(--fs-chrome); font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--on-navy-label); margin-bottom: 6px; }
 .cover-meta .v { font-size: 14px; font-weight: 600; }
 .cover-foot { display: flex; justify-content: space-between; padding: 0 var(--cover-x) 30px; font-size: var(--fs-chrome); color: var(--on-navy-label); }
 
 /* Variante « premium » (dossier complet) : panneau photo arrondi */
-.cover.premium .cover-body { padding-top: 150px; flex: none; }
+.cover.premium .cover-body { padding-top: 32px; flex: none; }
 .cover.premium h1 { font-size: 56px; margin-bottom: 18px; }
-.cover-photo { margin: 56px var(--cover-x) 0; flex: 1; min-height: 0; overflow: hidden; border-radius: 16px; }
-.cover-photo img { width: 100%; height: 100%; object-fit: cover; opacity: .9; }
-.cover.premium .cover-meta { padding-top: 32px; }
-.cover.premium.no-photo .cover-body { flex: 1; }
+/* Couverture documentaire (charte §8) : vignette 260 × 180 puis titre, méta en compteurs. */
+.cover.premium .cover-top { order: 0; }
+.cover-photo { order: 1; margin: auto var(--cover-x) 0; width: 260px; height: 180px; flex: none; overflow: hidden; border-radius: 16px; }
+.cover-photo img { width: 100%; height: 100%; object-fit: cover; }
+.cover.premium .cover-body { order: 2; }
+.cover.premium .cover-meta { order: 3; padding-top: 32px; gap: 12px; }
+.cover.premium .cover-foot { order: 4; }
+.cover.premium.no-photo .cover-body { margin-top: auto; }
+.cover.premium .cover-meta > div, .cover:not(.band):not(.marketing) .cover-meta > div { padding: 16px; border-radius: var(--r-card); background: var(--navy-card); border: 1px solid var(--navy-card-line); }
 
 /* Variante « bandeau » (assurances) : fond papier, bandeau marine */
-.cover.band { background: var(--paper); color: var(--ink); }
-.cover-band { background: var(--navy); color: var(--on-navy); padding: 48px var(--cover-x) 44px; }
+/* Assurances : couverture entièrement pétrole (charte §8), la fiche factuelle reste sur un encadré ivoire. */
+.cover.band { background: var(--navy); color: var(--on-navy); }
+.cover-band { background: var(--navy); color: var(--on-navy); padding: 48px var(--cover-x) 32px; }
 .cover-band .cover-top { padding: 0; }
 .cover-band .cover-kicker { margin-top: 96px; }
 .cover.band h1 { font-size: 50px; margin-bottom: 18px; }
 .cover-band .cover-lead { max-width: 500px; }
-.cover-sheet { padding: 40px var(--cover-x) 0; flex: 1; }
+.cover-sheet { margin: 0 var(--cover-x) 24px; padding: 26px 28px; flex: 0 1 auto; min-height: 0; overflow: hidden; background: var(--ivoire); color: var(--ink); border-radius: 16px; }
+.cover.band .cover-foot { margin-top: auto; }
+.cover-sheet:empty { display: none; }
 .cover-sheet .eyebrow { margin-bottom: 12px; }
 .cover-sheet .kv { max-width: 620px; }
 .cover-request {
   padding: 20px 24px; max-width: 600px; border-radius: var(--r-panel);
-  background: var(--panel); border: 1px solid var(--line); font-size: 14px; line-height: 1.6;
+  background: var(--paper); border: 1px solid var(--line-card); font-size: 14px; line-height: 1.6;
 }
 .cover-request + .kv { margin-top: 32px; max-width: 600px; }
 .cover-sheet .kv + .note { margin-top: 32px; max-width: 620px; }
-.cover.band .cover-foot { color: var(--ink-3); }
+.cover.band .cover-foot { color: var(--on-navy-label); }
 
 /* Variante marketing : photo plein cadre + dégradé */
-.cover.photo .shot { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
-.cover.photo .scrim { position: absolute; inset: 0; background: linear-gradient(180deg, rgba(0,0,0,.72) 0%, rgba(0,0,0,.2) 32%, rgba(0,0,0,.1) 55%, rgba(2,11,26,.92) 100%); }
+/* Photo plein cadre sur 62 % de la hauteur, fondue dans le pétrole ; voile noir léger
+   sous la marque (seul dégradé admis par la charte : protection du texte sur photo). */
+.cover.photo .shot { position: absolute; left: 0; top: 0; width: 100%; height: 62%; object-fit: cover; }
+.cover.photo .scrim { position: absolute; inset: 0; background: linear-gradient(180deg, rgba(0,0,0,.55) 0%, rgba(0,0,0,.08) 20%, rgba(23,71,77,.35) 38%, var(--navy) 62%); }
+.cover.photo .cover-top .cover-kind { background: rgba(23,71,77,.6); }
 .cover.photo .cover-kind, .cover.photo .cover-kicker { color: var(--on-photo-accent); }
 .cover-bottom { margin-top: auto; padding: 0 var(--cover-x) 44px; }
 .cover.photo h1, .cover.marketing h1 { font-size: 56px; margin-bottom: 16px; }
 .cover-bottom .cover-lead { color: var(--on-navy-addr); max-width: 480px; margin-bottom: 30px; }
-.cover-bottom .cover-meta { padding: 24px 0 0; border-top: 1px solid rgba(255,255,255,.18); }
+.cover-bottom .cover-meta { padding: 24px 0 0; border-top: 1px solid var(--navy-rule); }
 .cover.marketing .cover-meta .k, .cover.marketing .cover-foot { color: var(--on-navy-muted); }
 
 /* ───────────── SummaryCard ───────────── */
 .summary {
   padding: 22px 26px; border-radius: var(--r-panel);
-  background: var(--panel); border: 1px solid var(--line);
+  background: var(--panel); border: 1px solid var(--panel);
   font-size: var(--fs-kv); line-height: 1.55; color: var(--ink);
   break-inside: avoid;
 }
@@ -207,17 +226,18 @@ h1, h2, h3, p, figure { margin: 0; }
 /* Chiffres clés */
 .figures { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; break-inside: avoid; }
 .figures.tight { gap: 10px; }
-.figure { padding: 18px 20px; border-radius: var(--r-card); border: 1px solid var(--line); background: var(--card); }
+.figure { padding: 18px 20px; border-radius: var(--r-card); border: 1px solid var(--line-card); background: var(--card); }
 .figures.tight .figure { padding: 16px 18px; }
 .figure .eyebrow { margin-bottom: 8px; }
 .figures.tight .figure .eyebrow { margin-bottom: 6px; }
-.figure .val { font-family: var(--font-display); font-size: var(--fs-figure); font-weight: 600; letter-spacing: var(--ls-display); line-height: normal; }
+.figure .val { font-family: var(--font-display); font-size: var(--fs-figure); font-weight: 800; color: var(--heading); letter-spacing: var(--ls-display); line-height: normal; }
 .figure .val.lg { font-size: 28px; }
 .figure .sub { font-size: var(--fs-meta); color: var(--ink-2); margin-top: 4px; }
 .figures.tight .figure .sub { margin-top: 2px; }
 .figure.primary { background: var(--navy); color: var(--on-navy); border-color: var(--navy); }
-.figure.primary .eyebrow { color: var(--on-navy-accent); }
-.figure.primary .sub { color: var(--on-navy-muted); }
+.figure.primary .eyebrow { color: var(--on-navy-label); font-size: var(--fs-chrome); font-weight: 600; letter-spacing: .06em; }
+.figure.primary .val { color: var(--on-navy); }
+.figure.primary .sub { color: var(--on-navy-body); }
 .figure.price .val { font-size: 32px; }
 .price-block { display: grid; grid-template-columns: 200px 1fr; gap: 12px; align-items: start; break-inside: avoid; }
 .figures + .kv.stack { margin-top: 14px; }
@@ -226,8 +246,8 @@ h1, h2, h3, p, figure { margin: 0; }
 
 /* Compteurs de statut (CIL) */
 .counters { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 24px; }
-.counter { padding: 14px 16px; border-radius: var(--r-card); background: var(--panel); border: 1px solid var(--line); color: var(--ink-2); }
-.counter .n { font-family: var(--font-display); font-size: 28px; font-weight: 600; letter-spacing: var(--ls-display); line-height: normal; }
+.counter { padding: 14px 16px; border-radius: var(--r-card); background: var(--panel); border: 1px solid var(--panel); color: var(--ink-2); }
+.counter .n { font-family: var(--font-display); font-size: 28px; font-weight: 800; letter-spacing: var(--ls-display); line-height: normal; }
 .counter .l { font-size: var(--fs-meta); font-weight: 600; margin-top: 2px; }
 .counter.ok { background: var(--ok-card); border-color: var(--ok-line); color: var(--ok); }
 .counter.warn { background: var(--warn-card); border-color: var(--warn-line); color: var(--warn); }
@@ -236,13 +256,13 @@ h1, h2, h3, p, figure { margin: 0; }
 /* Étiquettes énergie (CIL B8) */
 .energy { display: grid; grid-template-columns: auto 1fr; gap: 20px; align-items: center; }
 .energy-tiles { display: flex; gap: 6px; }
-.energy-tile { width: 44px; height: 44px; border-radius: 10px; background: var(--panel); border: 1px solid var(--line); display: flex; flex-direction: column; align-items: center; justify-content: center; }
+.energy-tile { width: 44px; height: 44px; border-radius: 10px; background: var(--panel); border: 1px solid var(--line-card); display: flex; flex-direction: column; align-items: center; justify-content: center; }
 .energy-tile .t { font-size: 9px; color: var(--ink-3); letter-spacing: .06em; }
-.energy-tile .c { font-family: var(--font-display); font-size: 20px; font-weight: 600; color: var(--ink); line-height: normal; }
+.energy-tile .c { font-family: var(--font-display); font-size: 20px; font-weight: 800; color: var(--heading); line-height: normal; }
 
 /* Pastilles d'équipement */
 .chips { display: flex; gap: 8px; flex-wrap: wrap; }
-.chip { display: inline-flex; padding: 4px 12px; border-radius: var(--r-pill); background: var(--blue-wash); border: 1px solid var(--blue-wash-line); color: var(--blue-700); font-size: var(--fs-meta); font-weight: 600; }
+.chip { display: inline-flex; padding: 4px 12px; border-radius: var(--r-pill); background: var(--brume); border: 1px solid var(--brume); color: var(--petrole); font-size: var(--fs-meta); font-weight: 600; }
 .chips.lg .chip { padding: 5px 12px; font-size: 12px; }
 .kv + .chips { margin-top: 20px; }
 
@@ -253,7 +273,7 @@ h1, h2, h3, p, figure { margin: 0; }
 /* Note encadrée */
 .note {
   padding: 14px 16px; border-radius: var(--r-card);
-  background: var(--panel); border: 1px solid var(--line);
+  background: var(--panel); border: 1px solid var(--panel);
   font-size: var(--fs-body); line-height: 1.6; color: var(--ink-2); break-inside: avoid;
 }
 .note.lg { padding: 16px 20px; }
@@ -261,8 +281,8 @@ h1, h2, h3, p, figure { margin: 0; }
 
 /* ───────────── Cartes (points forts, protections, actions, garanties) ───────────── */
 .cards { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-.card { padding: 16px 18px; border-radius: var(--r-card); border: 1px solid var(--line); background: var(--card); break-inside: avoid; }
-.card .t { font-size: 13.5px; font-weight: 600; }
+.card { padding: 16px 18px; border-radius: var(--r-card); border: 1px solid var(--line-card); background: var(--card); break-inside: avoid; }
+.card .t { font-size: 13.5px; font-weight: 700; color: var(--heading); }
 .card .d { font-size: var(--fs-body); color: var(--ink-2); margin-top: 4px; line-height: 1.5; }
 .cards.sm .card { padding: 14px 16px; }
 .cards.sm .card .t { font-size: var(--fs-table); }
@@ -274,7 +294,7 @@ h1, h2, h3, p, figure { margin: 0; }
 /* ───────────── Lignes (suivi, échanges, échéances) ───────────── */
 .rows { display: grid; gap: 8px; }
 .rows.tight { gap: 7px; }
-.line-row { display: flex; align-items: center; gap: 14px; padding: 11px 16px; border-radius: var(--r-row); border: 1px solid var(--line); break-inside: avoid; }
+.line-row { display: flex; align-items: center; gap: 14px; padding: 11px 16px; border-radius: var(--r-row); border: 1px solid var(--line-card); break-inside: avoid; }
 .line-row .when { width: 88px; flex-shrink: 0; font-size: var(--fs-body); color: var(--ink-2); }
 .line-row .t { flex: 1; font-size: var(--fs-table); font-weight: 600; }
 .line-row .aside { font-size: 12px; color: var(--ink-2); }
@@ -288,7 +308,7 @@ h1, h2, h3, p, figure { margin: 0; }
 .table th {
   text-align: left; padding: 8px 0;
   font-family: var(--font-mono); font-size: var(--fs-eyebrow); letter-spacing: var(--ls-eyebrow);
-  text-transform: uppercase; color: var(--ink-3); font-weight: 400; white-space: nowrap;
+  text-transform: uppercase; color: var(--ink-2); font-weight: 700; white-space: nowrap;
 }
 .table td { padding: 10px 0; vertical-align: middle; }
 /* La maquette n'a pas de gouttière entre colonnes ; .gapped en ajoute une (tableaux denses). */
@@ -305,19 +325,19 @@ h1, h2, h3, p, figure { margin: 0; }
 .table .warn-text { color: var(--warn); font-weight: 600; }
 .table .cell-t { display: block; font-weight: 600; }
 .table .cell-s { color: var(--ink-2); font-size: 12px; }
-.table .cell-path { font-family: var(--font-mono); font-size: 10.5px; color: var(--ink-3); }
+.table .cell-path { font-family: var(--font-mono); font-size: 10.5px; color: var(--ink-2); }
 .table .nowrap { white-space: nowrap; }
 
 /* ───────────── DocumentList ───────────── */
 .docs { display: grid; gap: 8px; }
-.doc { display: flex; align-items: center; gap: 14px; padding: 12px 16px; border-radius: var(--r-row); border: 1px solid var(--line); background: var(--card); break-inside: avoid; }
-.doc .fmt { width: 34px; height: 34px; border-radius: var(--r-badge); display: flex; align-items: center; justify-content: center; font-size: 10.5px; font-weight: 700; flex-shrink: 0; background: var(--blue-wash); color: var(--blue-600); }
+.doc { display: flex; align-items: center; gap: 14px; padding: 12px 16px; border-radius: var(--r-row); border: 1px solid var(--line-card); background: var(--card); break-inside: avoid; }
+.doc .fmt { width: 34px; height: 34px; border-radius: var(--r-badge); display: flex; align-items: center; justify-content: center; font-size: 10.5px; font-weight: 700; flex-shrink: 0; background: var(--brume); color: var(--petrole); }
 .doc .fmt.amber { background: var(--warn-badge); color: var(--warn); }
 .doc .fmt.green { background: var(--ok-badge); color: var(--ok-icon); }
 .doc .fmt.neutral { background: var(--neutral-wash); color: var(--neutral); }
 .doc .body { flex: 1; min-width: 0; }
 .doc .t { display: block; font-size: var(--fs-table); font-weight: 600; }
-.doc .m { display: block; font-size: var(--fs-meta); color: var(--ink-3); margin-top: 2px; }
+.doc .m { display: block; font-size: var(--fs-meta); color: var(--ink-2); margin-top: 2px; }
 * + .docs { margin-top: 14px; }
 .sec-lead + .docs, .sec-title + .docs { margin-top: 0; }
 .zip-note { margin: 12px 0 0; font-size: 12px; color: var(--ink-2); }
@@ -328,7 +348,7 @@ h1, h2, h3, p, figure { margin: 0; }
 .annex-index .row { display: flex; align-items: baseline; gap: 14px; padding: 12px 0; border-bottom: 1px solid var(--line); break-inside: avoid; }
 .annex-index.tight .row { padding: 10px 0; }
 .annex-index.mid .row { padding: 11px 0; }
-.annex-index .ref { font-family: var(--font-mono); font-size: 12px; color: var(--blue-600); width: 32px; }
+.annex-index .ref { font-family: var(--font-mono); font-size: 12px; font-weight: 700; color: var(--blue-600); width: 32px; }
 .annex-index .t { flex: 1; font-weight: 600; }
 .annex-index .m, .annex-index .p { color: var(--ink-2); font-size: var(--fs-body); }
 .annex-index .p { width: 70px; text-align: right; }
@@ -340,11 +360,11 @@ h1, h2, h3, p, figure { margin: 0; }
   height: calc(297mm - var(--margin-bottom) - 1px);
   display: flex; flex-direction: column;
 }
-.annex-banner { display: flex; align-items: center; gap: 14px; padding: 14px var(--margin-x); background: var(--panel); border-bottom: 1px solid var(--line); font-size: 12px; }
+.annex-banner { display: flex; align-items: center; gap: 14px; padding: 14px var(--margin-x); background: var(--panel); border-bottom: 1px solid var(--line-card); font-size: 12px; }
 .annex-banner .ref { font-family: var(--font-mono); font-size: 11px; color: var(--blue-600); font-weight: 700; }
-.annex-banner .t { font-weight: 600; flex: 1; }
+.annex-banner .t { font-weight: 700; color: var(--heading); flex: 1; }
 .annex-banner .m { color: var(--ink-2); }
-.annex-banner .p { color: var(--ink-3); white-space: nowrap; }
+.annex-banner .p { color: var(--ink-2); white-space: nowrap; }
 .annex-frame {
   flex: 1; min-height: 0; margin: 24px var(--margin-x) 0;
   border: 1px dashed var(--line-dashed); border-radius: var(--r-badge); background: var(--frame);
@@ -361,7 +381,7 @@ h1, h2, h3, p, figure { margin: 0; }
 .gallery figure { margin: 0; break-inside: avoid; }
 .gallery img { width: 100%; object-fit: cover; border-radius: var(--r-card); }
 .gallery figcaption { font-size: var(--fs-meta); color: var(--ink-2); margin-top: 7px; }
-.gallery figcaption b { color: var(--ink); font-weight: 700; }
+.gallery figcaption b { color: var(--blue-600); font-weight: 700; }
 .gallery.g2 { grid-template-columns: 1fr 1fr; }
 .gallery.g3 { grid-template-columns: repeat(3, 1fr); gap: 12px; }
 .gallery.g3 img, .gallery.g4 img { border-radius: var(--r-row); }
@@ -390,7 +410,7 @@ h1, h2, h3, p, figure { margin: 0; }
 .tl-rail .bar { position: absolute; left: 50%; top: 23px; bottom: 0; width: 1px; margin-left: -.5px; background: var(--line); }
 .tl-row.past .dot { background: var(--dot-past); }
 .tl-row.open .dot { background: var(--dot-open); }
-.tl-row.key .dot { width: 11px; height: 11px; margin-left: -5.5px; background: var(--dot-key); box-shadow: 0 0 0 3px rgba(239,68,68,.18); }
+.tl-row.key .dot { width: 11px; height: 11px; margin-left: -5.5px; background: var(--dot-key); box-shadow: 0 0 0 3px rgba(214,107,83,.20); }
 .tl-row.key .bar { top: 25px; }
 .tl-row:last-child .bar { display: none; }
 .tl-body { padding: 10px 0 14px; border-bottom: 1px solid var(--line); }
@@ -404,17 +424,22 @@ h1, h2, h3, p, figure { margin: 0; }
   break-before: page;
   height: calc(297mm - var(--margin-top) - var(--margin-bottom) - 2px);
   display: flex; flex-direction: column;
+  /* Dernière page sur ivoire (charte §8) : les marges via `@page refs`, la zone de contenu ici. */
+  background: var(--ivoire); box-shadow: 0 0 0 4px var(--ivoire);
 }
 .refs .kv { margin-bottom: 0; }
+.refs .kv .row { border-bottom-color: var(--line-card); }
 .refs-text { margin-top: 26px; font-size: var(--fs-table); line-height: 1.65; color: var(--ink-2); max-width: 620px; }
 .refs-text.list { display: grid; gap: 12px; margin-top: 28px; max-width: 640px; }
-.refs-text strong { color: var(--ink); }
+.refs-text { color: var(--ink); }
+.refs-text strong { color: var(--heading); }
 .mascot-card {
   margin-top: auto;
   display: flex; align-items: center; gap: 16px; padding: 16px 18px;
-  border-radius: var(--r-panel); background: var(--panel); border: 1px solid var(--line);
+  border-radius: var(--r-panel); background: var(--paper); border: 1px solid var(--line-card);
 }
-.mascot-card img { width: 58px; height: auto; flex-shrink: 0; }
+/* Mascotte recolorée cyan : filtre provisoire de la charte (§4) en attendant les fichiers source. */
+.mascot-card img { width: 58px; height: auto; flex-shrink: 0; filter: hue-rotate(-30deg) saturate(1.1) brightness(1.02) contrast(1.08); }
 .mascot-card p { font-size: var(--fs-meta); line-height: 1.6; color: var(--ink-2); }
 .blk.first { margin-top: 0; }
 .sub-eyebrow.due-eyebrow { margin-top: 36px; }

@@ -33,7 +33,7 @@ function SegmentedControl<T extends string>({
     <div
       role="group"
       aria-label={label}
-      className="inline-flex shrink-0 gap-1 rounded-full border border-[rgba(148,163,184,.25)] bg-[rgba(15,23,42,.5)] p-[3px] [.theme-beige_&]:bg-black/[.03]"
+      className="inline-flex shrink-0 gap-0.5 rounded-[10px] border border-[color:var(--border)] bg-[color:var(--bg-card)] p-[3px]"
     >
       {options.map((o) => {
         const on = o.value === value;
@@ -43,8 +43,8 @@ function SegmentedControl<T extends string>({
             type="button"
             aria-pressed={on}
             onClick={() => onChange(o.value)}
-            className={`h-[24px] rounded-full px-3.5 text-[13px] font-semibold transition-all duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
-              on ? 'bg-primary text-white' : 'text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)]'
+            className={`h-[26px] rounded-[8px] px-3.5 text-[13px] font-semibold transition-colors duration-[180ms] ${
+              on ? 'bg-[color:var(--accent)] text-[color:var(--on-accent)]' : 'text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)]'
             }`}
           >
             {o.label}
@@ -117,7 +117,7 @@ export function DocumentsToolbar({
             aria-label="Trier par"
             value={sort}
             onChange={(e) => onSortChange(e.target.value as SortKey)}
-            className="h-8 w-[140px] cursor-pointer sm:w-[170px] appearance-none rounded-lg border border-border bg-[rgba(30,41,59,.6)] pl-3 pr-8 text-sm text-[color:var(--text-primary)] outline-none transition-all focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/50 [.theme-beige_&]:bg-[#F9FAFB]"
+            className="h-8 w-[140px] cursor-pointer sm:w-[170px] appearance-none rounded-[10px] border border-border bg-[color:var(--field-bg)] pl-3 pr-8 text-sm text-[color:var(--text-primary)] transition-colors focus-visible:border-[color:var(--accent)]"
           >
             {sortOptions.map((o) => (
               <option key={o.value} value={o.value}>{o.label}</option>
@@ -130,7 +130,7 @@ export function DocumentsToolbar({
           onClick={onDirToggle}
           aria-label={`${sensLabel} — inverser`}
           title={sensLabel}
-          className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-xl text-[color:var(--text-muted)] transition-all hover:bg-[color:var(--accent-soft)] hover:text-[color:var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-xl text-[color:var(--text-muted)] transition-all hover:bg-[color:var(--accent-soft)] hover:text-[color:var(--text-primary)]"
         >
           <ChevronDown
             className={`h-4 w-4 transition-transform duration-200 ${dir === 'desc' ? '' : 'rotate-180'}`}

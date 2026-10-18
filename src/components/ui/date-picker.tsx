@@ -117,14 +117,14 @@ export function DatePicker({
           disabled={disabled}
           onClick={() => !disabled && setOpen(true)}
           className={cn(
-            "flex items-center gap-2 w-full rounded-md border border-input input-field px-3 py-2 text-sm ring-offset-background",
-            "hover:bg-input/40 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
+            "flex items-center gap-2 w-full rounded-[12px] border border-input input-field px-3 py-2 text-sm text-foreground",
+            "hover:border-[color:var(--accent)] focus:outline-none",
             "transition-colors cursor-pointer text-left",
             disabled && "opacity-50 cursor-not-allowed pointer-events-none",
             className
           )}
         >
-          <CalendarIcon className="h-4 w-4 text-foreground/70 flex-shrink-0" />
+          <CalendarIcon className="h-4 w-4 text-muted-foreground flex-shrink-0" />
           <span className={cn("flex-1", !displayValue && "text-muted-foreground")}>
             {displayValue || placeholder}
           </span>

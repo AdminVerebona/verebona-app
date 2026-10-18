@@ -44,7 +44,7 @@ export function EmptyStateCard({
   className,
 }: EmptyStateCardProps) {
   return (
-    <Card className={cn('border border-[color:var(--border-subtle)] bg-[color:var(--bg-card)] rounded-2xl shadow-sm', className)}>
+    <Card className={cn('border border-[color:var(--border)] bg-[color:var(--bg-card)] rounded-[16px]', className)}>
       <CardContent className="flex flex-col gap-3 py-4 px-5 sm:flex-row sm:items-center sm:gap-4">
         <div className="flex items-center gap-4 min-w-0 sm:flex-1">
           <div className={cn('w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0', iconClassName)}>

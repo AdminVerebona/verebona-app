@@ -4,8 +4,10 @@
  * Graphiques du Dashboard (CDC BO §4.2.2, §4.3).
  *
  * Une série par graphique (un seul axe, jamais de double échelle), couleurs
- * catégorielles en ordre fixe : série 1 bleu, série 2 orange (palette
- * validée daltonisme, variantes claire / sombre). Info-bulle au survol.
+ * catégorielles en ordre fixe, jetons de la charte « Sérénité » (lot 66B2) :
+ * série 1 pétrole (`--chart-1`, pétrole clair en sombre), série 2 cuivre doux
+ * (`--chart-2`, cuivre clair en sombre) — deux teintes opposées (bleu-vert /
+ * orangé), distinctes aussi pour les daltoniens. Info-bulle au survol.
  */
 import type { ReactNode } from 'react';
 import {
@@ -13,8 +15,7 @@ import {
 } from 'recharts';
 
 export const VIZ_STYLE = `
-.viz-root { --viz-1: #2a78d6; --viz-2: #eb6834; }
-.dark .viz-root { --viz-1: #3987e5; --viz-2: #d95926; }
+.viz-root { --viz-1: var(--chart-1); --viz-2: var(--chart-2); }
 `;
 
 const tooltipStyle = {

@@ -59,7 +59,7 @@ export function YearPicker({
           variant="outline"
           disabled={disabled}
           className={cn(
-            "w-full justify-start text-left font-normal",
+            "w-full justify-start text-left font-normal rounded-[12px] input-field text-foreground hover:text-foreground hover:bg-[color:var(--field-bg)]",
             !value && "text-muted-foreground",
             className
           )}

@@ -26,7 +26,7 @@ const SOURCE: Record<string, string> = { OPERATION: 'Composante', DOCUMENT: 'Jus
 function Badge({ l, labels }: { l: TcoEconomicLine; labels: TcoDiagnosticResponse['labels'] }) {
   const ok = RETENUE.has(l.status);
   return (
-    <span className={`inline-block rounded px-1.5 py-0.5 text-[11px] font-medium ${ok ? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400' : 'bg-muted text-muted-foreground'}`}>
+    <span className={`inline-block rounded px-1.5 py-0.5 text-[11px] font-medium ${ok ? 'bg-[color:var(--bg-success)] text-[color:var(--text-success)]' : 'bg-muted text-muted-foreground'}`}>
       {labels.status[l.status] ?? l.status}
     </span>
   );
@@ -44,12 +44,12 @@ export function TcoDiagnosticView({ data }: { data: TcoDiagnosticResponse }) {
         <div className="rounded-lg border p-3"><p className="text-xs text-muted-foreground">Lignes examinées</p><p>{t.lines.length} ({t.reliability.operationsCounted} opération(s), {t.reliability.documentsCounted} justificatif(s) direct(s) comptés)</p></div>
       </div>
       {t.reliability.warnings.length > 0 && (
-        <ul className="text-xs text-amber-700 dark:text-amber-300 list-disc pl-5 space-y-0.5">
+        <ul className="text-xs text-[color:var(--text-warning-soft)] list-disc pl-5 space-y-0.5">
           {t.reliability.warnings.map((w) => <li key={w}>{labels.warning[w] ?? w}</li>)}
         </ul>
       )}
       {t.reliability.anomalies.length > 0 && (
-        <p className="text-xs text-red-600">Anomalies de contrôle : {t.reliability.anomalies.map((a) => `${a.code}${a.detail ? ` (${a.detail})` : ''}`).join(', ')}</p>
+        <p className="text-xs text-[color:var(--text-danger)]">Anomalies de contrôle : {t.reliability.anomalies.map((a) => `${a.code}${a.detail ? ` (${a.detail})` : ''}`).join(', ')}</p>
       )}
 
       {/* Mobile : cartes */}

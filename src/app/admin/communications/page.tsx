@@ -311,7 +311,7 @@ export default function AdminCommunicationsPage() {
                                     onCheckedChange={() => setPending({ event, channel: c })}
                                     aria-label={`${c.active ? 'Désactiver' : 'Activer'} ${Meta.label} — ${event.label}`}
                                   />
-                                  <span className={c.active ? 'text-emerald-500' : 'text-muted-foreground'}>
+                                  <span className={c.active ? 'text-[color:var(--text-success)]' : 'text-muted-foreground'}>
                                     {c.active ? 'Actif' : 'Inactif'}
                                   </span>
                                   {c.locked && (
@@ -386,14 +386,14 @@ export default function AdminCommunicationsPage() {
               Contexte utilisé (facultatif) — uniquement parmi les éléments de votre propre compte :
             </p>
             {ctxError ? (
-              <p className="text-xs text-red-500">
+              <p className="text-xs text-[color:var(--text-danger)]">
                 Contexte indisponible : {ctxError}{' '}
                 <button type="button" className="underline" onClick={() => loadContextOptions()}>Réessayer</button>
               </p>
             ) : !ctxOptions ? (
               <p className="text-xs text-muted-foreground">Chargement…</p>
             ) : !ctxOptions.hasAccount ? (
-              <p className="text-xs text-amber-600">Aucun compte Verebona n’est rattaché à votre utilisateur : aucun contexte disponible.</p>
+              <p className="text-xs text-[color:var(--text-warning-soft)]">Aucun compte Verebona n’est rattaché à votre utilisateur : aucun contexte disponible.</p>
             ) : (
               <div className="grid gap-2 sm:grid-cols-3">
                 <select aria-label="Bien" className="rounded-md border bg-background px-2 py-1.5 text-xs" value={selection.assetId} onChange={(e) => changeSelection({ assetId: e.target.value })}>
@@ -437,7 +437,7 @@ export default function AdminCommunicationsPage() {
           ) : (
             <div className="space-y-3">
               {preview.data.incomplete && (
-                <p className="text-xs rounded border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-amber-600">
+                <p className="text-xs rounded border border-[color:var(--border-warning)] bg-[color:var(--bg-warning)] px-3 py-2 text-[color:var(--text-warning-soft)]">
                   Prévisualisation incomplète : certaines données nécessaires sont absentes de votre compte et sont signalées « [donnée indisponible] ».
                 </p>
               )}
@@ -447,7 +447,7 @@ export default function AdminCommunicationsPage() {
                 </p>
               )}
               {preview.data.rejected && preview.data.rejected.length > 0 && (
-                <p className="text-xs text-red-500">Sélection ignorée (hors de votre compte) : {preview.data.rejected.join(', ')}.</p>
+                <p className="text-xs text-[color:var(--text-danger)]">Sélection ignorée (hors de votre compte) : {preview.data.rejected.join(', ')}.</p>
               )}
               {preview.data.channel === 'email' ? (
                 <>
@@ -457,7 +457,7 @@ export default function AdminCommunicationsPage() {
                       title="Prévisualisation e-mail"
                       sandbox=""
                       srcDoc={preview.data.body}
-                      className="w-full h-[60vh] rounded border bg-white"
+                      className="w-full h-[60vh] rounded border bg-[color:var(--vb-blanc)]"
                     />
                   ) : (
                     <pre className="whitespace-pre-wrap text-sm rounded border p-3 max-h-[60vh] overflow-auto">{preview.data.body}</pre>

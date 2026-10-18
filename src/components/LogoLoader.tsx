@@ -5,7 +5,7 @@ interface LogoLoaderProps {
 }
 
 /**
- * Loader Verebona — le carré bleu orbite autour de la grille 3×3
+ * Loader Verebona — le carré cuivre (charte 2026) orbite autour de la grille 3×3
  */
 export function LogoLoader({ size = 48 }: LogoLoaderProps) {
   const unit = size / 3.5;
@@ -32,18 +32,18 @@ export function LogoLoader({ size = 48 }: LogoLoaderProps) {
       >
         {/* Grille 3×3 — carrés gris/blanc selon le thème */}
         {/* Rangée 1 */}
-        <rect x={0}          y={0}          width={unit} height={unit} rx={r} className="fill-[color:var(--text-muted)] opacity-20" />
-        <rect x={unit + gap} y={0}          width={unit} height={unit} rx={r} className="fill-[color:var(--text-muted)] opacity-20" />
+        <rect x={0}          y={0}          width={unit} height={unit} rx={r} className="fill-[color:var(--vb-logo-cells)] opacity-25" />
+        <rect x={unit + gap} y={0}          width={unit} height={unit} rx={r} className="fill-[color:var(--vb-logo-cells)] opacity-25" />
         {/* Rangée 2 */}
-        <rect x={0}                y={unit + gap} width={unit} height={unit} rx={r} className="fill-[color:var(--text-muted)] opacity-20" />
-        <rect x={unit + gap}       y={unit + gap} width={unit} height={unit} rx={r} className="fill-[color:var(--text-muted)] opacity-20" />
-        <rect x={(unit + gap) * 2} y={unit + gap} width={unit} height={unit} rx={r} className="fill-[color:var(--text-muted)] opacity-20" />
+        <rect x={0}                y={unit + gap} width={unit} height={unit} rx={r} className="fill-[color:var(--vb-logo-cells)] opacity-25" />
+        <rect x={unit + gap}       y={unit + gap} width={unit} height={unit} rx={r} className="fill-[color:var(--vb-logo-cells)] opacity-25" />
+        <rect x={(unit + gap) * 2} y={unit + gap} width={unit} height={unit} rx={r} className="fill-[color:var(--vb-logo-cells)] opacity-25" />
         {/* Rangée 3 */}
-        <rect x={0}                y={(unit + gap) * 2} width={unit} height={unit} rx={r} className="fill-[color:var(--text-muted)] opacity-20" />
-        <rect x={unit + gap}       y={(unit + gap) * 2} width={unit} height={unit} rx={r} className="fill-[color:var(--text-muted)] opacity-20" />
-        <rect x={(unit + gap) * 2} y={(unit + gap) * 2} width={unit} height={unit} rx={r} className="fill-[color:var(--text-muted)] opacity-20" />
+        <rect x={0}                y={(unit + gap) * 2} width={unit} height={unit} rx={r} className="fill-[color:var(--vb-logo-cells)] opacity-25" />
+        <rect x={unit + gap}       y={(unit + gap) * 2} width={unit} height={unit} rx={r} className="fill-[color:var(--vb-logo-cells)] opacity-25" />
+        <rect x={(unit + gap) * 2} y={(unit + gap) * 2} width={unit} height={unit} rx={r} className="fill-[color:var(--vb-logo-cells)] opacity-25" />
 
-        {/* Carré bleu en orbite */}
+        {/* Carré cuivre doux en orbite */}
         <g style={{ transformOrigin: `${cx}px ${cy}px`, animation: 'verebona-orbit 1.4s linear infinite' }}>
           {/* Positionné au "12h" de l'orbite, décalé du centre */}
           <rect
@@ -52,7 +52,7 @@ export function LogoLoader({ size = 48 }: LogoLoaderProps) {
             width={unit}
             height={unit}
             rx={r}
-            fill="#3B82F6"
+            fill="#D66B53"
             style={{ transformOrigin: `${cx}px ${cy - orbitR}px`, animation: 'verebona-square-spin 1.4s linear infinite' }}
           />
         </g>

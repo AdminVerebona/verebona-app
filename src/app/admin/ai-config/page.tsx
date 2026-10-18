@@ -213,7 +213,7 @@ function StateBadge({ v, environment }: { v: Pick<Version, 'active' | 'stateLabe
   const label = v.stateLabel ?? (v.active ? (environment === 'production' ? 'Active en production' : 'Active en préproduction') : 'Non active');
   return (
     <span className={`shrink-0 text-xs px-2 py-0.5 rounded-full border ${v.active
-      ? 'bg-emerald-500/10 text-emerald-500 border-emerald-500/20'
+      ? 'bg-[color:var(--bg-success)] text-[color:var(--text-success)] border-[color:var(--border-success)]'
       : 'bg-[color:var(--bg-page)] text-[color:var(--text-muted)] border-[color:var(--border-subtle)]'}`}>
       {label}
     </span>
@@ -317,7 +317,7 @@ function TreatmentEditor({
       </p>
 
       {invalides.length > 0 ? (
-        <p role="status" className="text-xs text-amber-500">
+        <p role="status" className="text-xs text-[color:var(--text-warning-soft)]">
           {readOnly
             ? `Modèle(s) devenu(s) indisponible(s) pour ${entry.treatment} : `
             : `Modèle(s) non utilisable(s) pour ${entry.treatment} — à remplacer avant l’activation : `}
@@ -325,7 +325,7 @@ function TreatmentEditor({
         </p>
       ) : null}
       {usable.length === 0 ? (
-        <p role="status" className="text-xs text-amber-500">
+        <p role="status" className="text-xs text-[color:var(--text-warning-soft)]">
           Aucun modèle n’est actuellement utilisable pour {entry.treatment}. Actualisez le catalogue dans « Fournisseur IA »
           (qualification automatique des modèles disponibles avec la clé active).
         </p>
@@ -496,7 +496,7 @@ function TreatmentEditor({
           onChange={(next) => set('triggers', next)}
         />
       ) : (
-        <div role="alert" className="space-y-2 rounded-lg border border-red-500/30 bg-red-500/5 p-3">
+        <div role="alert" className="space-y-2 rounded-lg border border-[color:var(--border-danger)] bg-[color:var(--bg-danger)] p-3">
           <p className="text-sm font-medium text-[color:var(--text-primary)]">Déclencheurs</p>
           <p className="text-sm text-[color:var(--text-secondary)]">
             Le catalogue des déclencheurs n&apos;a pas pu être chargé : les déclencheurs ne sont pas modifiables pour
@@ -953,7 +953,7 @@ export default function AiConfigPage() {
                 {exportState.active.name ? ` — ${exportState.active.name}` : ''} · révision {exportState.active.revisionNumber}
               </p>
             ) : (
-              <p className="text-sm text-amber-500">
+              <p className="text-sm text-[color:var(--text-warning-soft)]">
                 Aucune version active : l’export est indisponible. Activez une version pour pouvoir l’exporter.
               </p>
             )}
@@ -963,8 +963,8 @@ export default function AiConfigPage() {
                 {exportState.lastExport.exportedByEmail ? ` par ${exportState.lastExport.exportedByEmail}` : ''}
                 {` · v${exportState.lastExport.versionNumber} r${exportState.lastExport.revisionNumber}`}
                 {exportState.changedSinceLastExport
-                  ? <span className="text-amber-500"> · configuration modifiée depuis cet export</span>
-                  : <span className="text-emerald-500"> · aucune modification depuis cet export</span>}
+                  ? <span className="text-[color:var(--text-warning-soft)]"> · configuration modifiée depuis cet export</span>
+                  : <span className="text-[color:var(--text-success)]"> · aucune modification depuis cet export</span>}
               </p>
             ) : exportState?.active ? (
               <p className="text-xs text-[color:var(--text-muted)]">Jamais exportée.</p>
@@ -976,7 +976,7 @@ export default function AiConfigPage() {
           </Button>
         </div>
         {hasUnsaved && exportState?.active && (
-          <p role="status" className="text-xs text-amber-500">
+          <p role="status" className="text-xs text-[color:var(--text-warning-soft)]">
             Des modifications ne sont pas enregistrées : seuls les paramètres enregistrés seront exportés.
           </p>
         )}
@@ -1105,7 +1105,7 @@ export default function AiConfigPage() {
               )}
             </div>
             {current.active && (
-              <p className="text-xs text-emerald-500">
+              <p className="text-xs text-[color:var(--text-success)]">
                 Version active : chaque enregistrement crée une révision appliquée aux prochaines exécutions, sans réactivation.
               </p>
             )}
@@ -1134,7 +1134,7 @@ export default function AiConfigPage() {
                   <GitCompare className="w-3.5 h-3.5 mr-1.5" /> Comparer à la version active
                 </Button>
               )}
-              {hasUnsaved && <span className="text-xs text-amber-500">• modifications non enregistrées</span>}
+              {hasUnsaved && <span className="text-xs text-[color:var(--text-warning-soft)]">• modifications non enregistrées</span>}
             </div>
           </div>
 
@@ -1161,8 +1161,8 @@ export default function AiConfigPage() {
                 >
                   <summary className="cursor-pointer px-4 py-3 flex flex-wrap items-center gap-2 text-sm text-[color:var(--text-primary)]">
                     <span className="font-medium">{t.code} · {t.label}</span>
-                    {(dirty.has(t.code) || choix !== undefined) && <span className="text-amber-500 text-xs">• non enregistré</span>}
-                    {issuesFor(t.code).some((i) => i.blocking) && <span className="text-red-400 text-xs">• contrôle à revoir</span>}
+                    {(dirty.has(t.code) || choix !== undefined) && <span className="text-[color:var(--text-warning-soft)] text-xs">• non enregistré</span>}
+                    {issuesFor(t.code).some((i) => i.blocking) && <span className="text-[color:var(--text-danger)] text-xs">• contrôle à revoir</span>}
                   </summary>
                   <div className="px-4 pb-4 space-y-4">
                     <TreatmentStateControl
@@ -1200,10 +1200,10 @@ export default function AiConfigPage() {
                     )}
 
                     {issuesFor(t.code).length > 0 && (
-                      <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-3 space-y-1">
+                      <div className="rounded-lg border border-[color:var(--border-warning)] bg-[color:var(--bg-warning)] p-3 space-y-1">
                         {issuesFor(t.code).map((i, k) => (
                           <p key={k} className="text-sm text-[color:var(--text-secondary)]">
-                            <span className={i.blocking ? 'text-red-400' : 'text-amber-500'}>
+                            <span className={i.blocking ? 'text-[color:var(--text-danger)]' : 'text-[color:var(--text-warning-soft)]'}>
                               {i.blocking ? 'À corriger' : 'À vérifier'}
                             </span>
                             {' · '}{i.label} : {i.message}
@@ -1281,7 +1281,7 @@ export default function AiConfigPage() {
                 <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm">
                   <span className="font-medium text-[color:var(--text-primary)]">Révision {r.revisionNumber}</span>
                   {r.revisionNumber === (history.version.currentRevisionNumber ?? -1) && (
-                    <span className="text-xs text-emerald-500">courante</span>
+                    <span className="text-xs text-[color:var(--text-success)]">courante</span>
                   )}
                   <span className="text-xs text-[color:var(--text-muted)]">
                     {KIND_LABEL[r.kind] ?? r.kind}{r.restoredFromRevisionNumber ? ` de la révision ${r.restoredFromRevisionNumber}` : ''}
@@ -1359,7 +1359,7 @@ export default function AiConfigPage() {
             <DialogDescription>
               {confirm?.text}
               {confirm?.kind === 'activate' && current && (current.unavailableModels?.length ?? 0) > 0 && (
-                <span className="block mt-2 text-amber-500">
+                <span className="block mt-2 text-[color:var(--text-warning-soft)]">
                   Attention : {current.unavailableModels.map((m) => `${m.treatment} utilise « ${m.model} » (${m.rank})`).join(', ')} — modèle(s)
                   que le fournisseur ne sert plus.
                 </span>
@@ -1368,7 +1368,7 @@ export default function AiConfigPage() {
           </DialogHeader>
           {isProduction && confirm?.kind === 'activate' && (
             <label className="block space-y-1.5">
-              <span className="text-sm text-red-400">
+              <span className="text-sm text-[color:var(--text-danger)]">
                 Environnement de PRODUCTION. Saisissez « production » pour confirmer.
               </span>
               <input value={saisieEnv} onChange={(e) => setSaisieEnv(e.target.value)} autoComplete="off"

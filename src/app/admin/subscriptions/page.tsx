@@ -66,8 +66,8 @@ const PLAN_LABELS: Record<string, string> = {
 };
 
 const PAYMENT_CLS: Record<string, string> = {
-  failed: 'text-red-500', up_to_date: 'text-emerald-500', none: 'text-muted-foreground',
-  paid: 'text-emerald-500', pending: 'text-amber-500', void: 'text-muted-foreground',
+  failed: 'text-[color:var(--text-danger)]', up_to_date: 'text-[color:var(--text-success)]', none: 'text-muted-foreground',
+  paid: 'text-[color:var(--text-success)]', pending: 'text-[color:var(--text-warning-soft)]', void: 'text-muted-foreground',
 };
 
 function StripeLink({ href }: { href: string | null }) {
@@ -162,10 +162,10 @@ function SubscriptionsScreen() {
       {tab === 'subscriptions' && summary && (
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
           {[
-            { label: 'Abonnements actifs', value: summary.active, cls: 'text-emerald-500' },
-            { label: 'Essais en cours', value: summary.trials, cls: 'text-blue-500' },
-            { label: 'Fins programmées', value: summary.scheduledEnds, cls: 'text-amber-500' },
-            { label: 'Paiements échoués', value: summary.failedPayments, cls: 'text-red-500' },
+            { label: 'Abonnements actifs', value: summary.active, cls: 'text-[color:var(--text-success)]' },
+            { label: 'Essais en cours', value: summary.trials, cls: 'text-[color:var(--text-primary)]' },
+            { label: 'Fins programmées', value: summary.scheduledEnds, cls: 'text-[color:var(--text-warning-soft)]' },
+            { label: 'Paiements échoués', value: summary.failedPayments, cls: 'text-[color:var(--text-danger)]' },
           ].map((k) => (
             <div key={k.label} className="rounded-xl border bg-card p-4 text-center">
               <p className={`text-2xl font-bold ${k.cls}`}>{k.value}</p>

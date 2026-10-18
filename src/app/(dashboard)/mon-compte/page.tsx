@@ -20,7 +20,7 @@ export default function MonComptePage() {
   return (
     <div className="space-y-6 w-full max-w-full overflow-x-hidden">
       <div>
-        <h1 className="text-3xl font-bold">Mon compte</h1>
+        <h1 className="vb-app-title">Mon compte</h1>
         <p className="text-muted-foreground mt-1">Gérez vos informations personnelles et votre abonnement</p>
       </div>
       {/* Récapitulatif d'abonnement — déplacé depuis `/mon-compte/offres`.

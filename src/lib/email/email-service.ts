@@ -3,9 +3,7 @@ import { db } from '@/db';
 import { emailTemplates, emailSettings, emailLogs } from '@/db/schema';
 import { eq, sql } from 'drizzle-orm';
 import { isTransactionalEmailActive } from '@/lib/notifications/channel-activation';
-
-// Couleur Verebona fixe
-const VEREBONA_PRIMARY_COLOR = '#3B82F6';
+import { EMAIL_COLORS, EMAIL_STYLES, emailButton, emailDocument, emailLogoHtml } from './email-layout';
 
 /**
  * Logo de repli des emails (APP-PERF-38) : ressource MAÎTRISÉE servie par
@@ -169,6 +167,9 @@ class EmailService {
     return html.replace(
       /(<img\b[^>]*(?:verebona-logo|\/brand\/|generated_images|\{\{logoUrl\}\})[^>]*>)/gi,
       (imgTag) => {
+        // Lot 66C : logo de la charte 2026 (`emailLogoHtml`), déjà dimensionné (160 × 40) et
+        // doublé d'une version sombre masquée — ne pas le recalibrer.
+        if (/\bdata-vb-logo=/i.test(imgTag)) return imgTag;
         // Rewrite the entire style attribute to enforce proper sizing
         let fixed = imgTag;
 
@@ -246,43 +247,21 @@ class EmailService {
    * avec tous les clients email, sans dépendre d'une URL externe.
    */
   private async getVerebonaEmailLogo(): Promise<LogoResult> {
-    const html = `
-      <table cellpadding="0" cellspacing="0" border="0" style="margin: 0 auto; border-collapse: collapse;">
-        <tr>
-          <td valign="middle" style="padding-right: 10px;">
-            <!-- Sigle Verebona : grille 3x3 de carrés avec le carré haut-droite en bleu -->
-            <table cellpadding="0" cellspacing="2" border="0" style="border-collapse: separate; border-spacing: 2px;">
-              <tr>
-                <td style="width:10px;height:10px;background-color:#2D3748;border-radius:2px;"></td>
-                <td style="width:10px;height:10px;background-color:#2D3748;border-radius:2px;"></td>
-                <td style="width:10px;height:10px;background-color:#3B82F6;border-radius:2px;"></td>
-              </tr>
-              <tr>
-                <td style="width:10px;height:10px;background-color:#2D3748;border-radius:2px;"></td>
-                <td style="width:10px;height:10px;background-color:#2D3748;border-radius:2px;"></td>
-                <td style="width:10px;height:10px;background-color:#2D3748;border-radius:2px;"></td>
-              </tr>
-              <tr>
-                <td style="width:10px;height:10px;background-color:#2D3748;border-radius:2px;"></td>
-                <td style="width:10px;height:10px;background-color:#2D3748;border-radius:2px;"></td>
-                <td style="width:10px;height:10px;background-color:#2D3748;border-radius:2px;"></td>
-              </tr>
-            </table>
-          </td>
-          <td valign="middle">
-            <span style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif; font-size: 26px; font-weight: 700; color: #2D3748; letter-spacing: -0.5px;">Verebona</span>
-          </td>
-        </tr>
-      </table>
-    `;
-    return { content: html, type: 'html' };
+    // Lot 66C : logo de la charte 2026 en IMAGES HÉBERGÉES par l'application (PNG opaques
+    // clair / sombre, texte alternatif « Verebona »), à la place du sigle dessiné en
+    // tableau (gris et bleu 2025). Remplace aussi `<img src="{{logoUrl}}">` des gabarits
+    // HTML en base, personnalisés compris (`replaceVariables`).
+    const base = (this.makeAbsoluteUrl('/') ?? 'https://app.verebona.fr/').replace(/\/+$/, '');
+    return { content: emailLogoHtml(base), type: 'html' };
   }
-  
+
   /**
    * Wrapper HTML premium Verebona pour les emails
    */
   private async wrapInHTML(bodyText: string, settings: any, computedLogo: LogoResult): Promise<string> {
-    // Convertir les sauts de ligne en paragraphes
+    // Lot 66C : mise en page commune « Sérénité » (`email-layout.ts`). La découpe en
+    // paragraphes et la détection des liens d'action sont INCHANGÉES (mêmes textes,
+    // mêmes libellés, mêmes liens) ; seule la présentation change.
     const lines = bodyText.split('\n').map(line => {
       const trimmed = line.trim();
       if (!trimmed) return '';
@@ -294,120 +273,38 @@ class EmailService {
       const url = labelled ? labelled[2] : (trimmed.startsWith('http://') || trimmed.startsWith('https://')) ? trimmed : null;
       if (url) {
         const label = labelled ? labelled[1].trim() : 'Cliquez ici';
-        return `<p style="margin: 0 0 16px 0; text-align: center;">
-          <a href="${url}" style="display: inline-block; background-color: ${VEREBONA_PRIMARY_COLOR}; color: #ffffff; padding: 12px 24px; text-decoration: none; border-radius: 6px; font-weight: 600;">
-            ${label}
-          </a>
-        </p>`;
+        return emailButton(url, label);
       }
       
-      return `<p style="margin: 0 0 16px 0; color: #374151; line-height: 1.6;">${trimmed}</p>`;
+      return `<p style="${EMAIL_STYLES.p}">${trimmed}</p>`;
     });
     
     const currentYear = new Date().getFullYear();
     const footerContent = settings.footerText || `© ${currentYear} Verebona. Tous droits réservés.`;
     const appName = settings.senderName || 'Verebona';
+    const base = (this.makeAbsoluteUrl('/') ?? 'https://app.verebona.fr/').replace(/\/+$/, '');
 
     // Génération du Header Logo
-    let headerLogoHtml = '';
+    let headerLogoHtml: string;
     
     if (computedLogo.type === 'html') {
-      // Utiliser directement le bloc HTML (tableau centré)
-      headerLogoHtml = `
-        <div style="text-align: center; width: 100%;">
-          <center>
-            ${computedLogo.content}
-          </center>
-        </div>
-      `;
+      headerLogoHtml = computedLogo.content;
     } else {
       const logoUrl = resolveEmailLogoUrl(
         this.makeAbsoluteUrl(computedLogo.content || settings.logoUrlLight || settings.logoUrl),
         this.makeAbsoluteUrl(EMAIL_LOGO_FALLBACK_PATH)!,
       );
-
-      headerLogoHtml = `
-        <div style="text-align: center; width: 100%;">
-          <center>
-            <table cellpadding="0" cellspacing="0" border="0" style="margin: 0 auto;">
-              <tr>
-                <td align="center" style="text-align: center;">
-                  <img 
-                    src="${logoUrl}" 
-                    alt="${appName}" 
-                    width="400"
-                    style="display: block; width: 400px; max-width: 100%; height: auto; border: 0; outline: none; margin-left: auto; margin-right: auto;"
-                  />
-                </td>
-              </tr>
-            </table>
-          </center>
-        </div>
-      `;
+      headerLogoHtml = `<img src="${logoUrl}" alt="${appName}" width="160" style="display:block;width:160px;max-width:100%;height:auto;border:0;outline:none;" />`;
     }
 
     if (computedLogo.type === 'none' && !settings.logoUrl) {
-      headerLogoHtml = `
-        <div style="text-align: center; width: 100%;">
-          <center>
-            <h1 style="margin: 0; color: ${VEREBONA_PRIMARY_COLOR}; font-size: 28px; font-weight: 700; letter-spacing: -0.5px;">
-              ${appName}
-            </h1>
-          </center>
-        </div>
-      `;
+      headerLogoHtml = `<p class="vb-wordmark" style="margin:0;font-size:22px;font-weight:700;letter-spacing:-0.02em;color:${EMAIL_COLORS.petrole};">${appName}</p>`;
     }
-    
-    return `<!DOCTYPE html>
-<html lang="fr">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta http-equiv="X-UA-Compatible" content="IE=edge">
-  <title>Email Verebona</title>
-</head>
-<body style="margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif; background-color: #f5f5f5;">
-  <center>
-    <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color: #f5f5f5; padding: 40px 20px;">
-      <tr>
-        <td align="center">
-          <table width="600" cellpadding="0" cellspacing="0" border="0" style="background-color: #ffffff; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); max-width: 600px; margin: 0 auto;">
-            
-            <!-- Header -->
-            <tr>
-              <td align="center" style="padding: 30px 20px 20px 20px; border-bottom: 2px solid ${VEREBONA_PRIMARY_COLOR}; text-align: center;">
-                ${headerLogoHtml}
-              </td>
-            </tr>
-            
-            <!-- Body -->
-            <tr>
-              <td style="padding: 40px; font-size: 16px;">
-                ${lines.join('')}
-              </td>
-            </tr>
-            
-            <!-- Footer -->
-            <tr>
-              <td style="padding: 30px 40px; text-align: center; border-top: 1px solid #e5e7eb; background-color: #f9fafb;">
-                <p style="margin: 0 0 8px 0; font-size: 13px; color: #6b7280; line-height: 1.5;">
-                  ${footerContent}
-                </p>
-                <p style="margin: 0; font-size: 12px; color: #9ca3af;">
-                  <a href="mailto:${settings.replyToEmail}" style="color: ${VEREBONA_PRIMARY_COLOR}; text-decoration: none;">
-                    ${settings.replyToEmail}
-                  </a>
-                </p>
-              </td>
-            </tr>
-            
-          </table>
-        </td>
-      </tr>
-    </table>
-  </center>
-</body>
-</html>`;
+
+    const footer = `<p class="vb-foot" style="margin:0 0 8px 0;${EMAIL_STYLES.small}">${footerContent}</p>
+              <p class="vb-foot" style="margin:0;${EMAIL_STYLES.small}"><a class="vb-link" href="mailto:${settings.replyToEmail}" style="${EMAIL_STYLES.link}">${settings.replyToEmail}</a></p>`;
+
+    return emailDocument({ title: 'Email Verebona', content: lines.join(''), footer, logo: headerLogoHtml, baseUrl: base });
   }
   
   async send(options: {

@@ -123,7 +123,7 @@ function MiniPage({ document, size }: { document: DocumentItem; size: 'row' | 't
       {lines.map((w, i) => (
         <span
           key={i}
-          className={`block bg-[#CBD5E1] ${tile ? 'h-[3px] rounded-sm' : 'h-[1.5px] rounded-[1px]'}`}
+          className={`block bg-[color:var(--vb-filet)] ${tile ? 'h-[3px] rounded-sm' : 'h-[1.5px] rounded-[1px]'}`}
           style={{ width: `${w}%` }}
         />
       ))}
@@ -135,8 +135,9 @@ function ToClassifyBadge({ onPreview = false }: { onPreview?: boolean }) {
   return (
     <Badge
       variant="pending"
-      // Sur un aperçu (page blanche, photo), un fond opaque garde le badge lisible.
-      className={`px-2 py-0.5 text-[11px] leading-4 ${onPreview ? 'bg-[#2A1F08] backdrop-blur-sm' : ''}`}
+      // Pastille « attention » opaque (cuivre-soft) : lisible sur un aperçu (page blanche, photo).
+      data-on-preview={onPreview || undefined}
+      className="px-2 py-0.5 text-[11px] leading-4"
     >
       À classer
     </Badge>
@@ -173,9 +174,9 @@ function DocumentRow({
       <button
         type="button"
         onClick={() => onOpen(document)}
-        className="flex w-full items-center gap-3.5 rounded-xl border border-transparent px-3 py-[9px] text-left transition-all duration-150 hover:border-[rgba(148,163,184,.3)] hover:bg-[color:var(--accent-soft)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        className="flex w-full items-center gap-3.5 rounded-xl border border-transparent px-3 py-[9px] text-left transition-all duration-150 hover:border-[color:var(--border-info)] hover:bg-[color:var(--accent-soft)]"
       >
-        <span className="relative h-[38px] w-[30px] shrink-0 overflow-hidden rounded bg-white shadow-[0_1px_3px_rgba(0,0,0,.5)]">
+        <span className="relative h-[38px] w-[30px] shrink-0 overflow-hidden rounded border border-[color:var(--border)] bg-[color:var(--vb-blanc)]">
           {isImage && !imageKo ? (
             // eslint-disable-next-line @next/next/no-img-element -- miniature autorisée (APP-PERF-06), placeholder si absente
             <img
@@ -237,9 +238,9 @@ function DocumentTile({
       <button
         type="button"
         onClick={() => onOpen(document)}
-        className="group flex w-full flex-col gap-[9px] rounded-xl text-left transition-transform duration-150 hover:-translate-y-[3px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-[color:var(--bg-page)]"
+        className="group flex w-full flex-col gap-[9px] rounded-xl text-left transition-colors duration-[180ms]"
       >
-        <span className="relative flex aspect-[4/3] w-full items-end justify-center overflow-hidden rounded-xl border border-[rgba(148,163,184,.3)] bg-[color:var(--bg-card)] px-[18px] pt-3.5 [.theme-beige_&]:bg-[#F1F5F9]">
+        <span className="relative flex aspect-[4/3] w-full items-end justify-center overflow-hidden rounded-xl border border-[color:var(--border)] bg-[color:var(--bg-subtle)] px-[18px] pt-3.5">
           {isImage && !imageKo ? (
             // eslint-disable-next-line @next/next/no-img-element -- miniature autorisée (APP-PERF-06), placeholder si absente
             <img
@@ -251,7 +252,7 @@ function DocumentTile({
               className="absolute inset-0 h-full w-full object-cover"
             />
           ) : (
-            <span className="relative block h-full w-full overflow-hidden rounded-t bg-white shadow-[0_-2px_12px_rgba(0,0,0,.4)]">
+            <span className="relative block h-full w-full overflow-hidden rounded-t border border-b-0 border-[color:var(--border)] bg-[color:var(--vb-blanc)]">
               {isPdf ? (
                 <PdfThumbnail
                   fileId={String(document.id)}
@@ -262,7 +263,7 @@ function DocumentTile({
                 <>
                   <MiniPage document={document} size="tile" />
                   {extension && (
-                    <span className="absolute bottom-2 right-2.5 text-[9px] font-bold tracking-wider text-slate-400">
+                    <span className="absolute bottom-2 right-2.5 text-[9px] font-bold tracking-wider text-[color:var(--vb-gris)]">
                       {extension}
                     </span>
                   )}
@@ -550,7 +551,7 @@ export function DocumentsByRubric({
           la fiche porte déjà le nom du bien et ses onglets. */}
       {!assetId && (
         <div className="mb-[18px] flex items-center gap-3">
-          <h1 className="m-0 text-2xl font-semibold tracking-[-.02em]">Mes documents</h1>
+          <h1 className="vb-app-title m-0">Mes documents</h1>
         </div>
       )}
 
@@ -642,7 +643,7 @@ export function DocumentsByRubric({
                     onClick={() => toggleGroup(group.code)}
                     aria-expanded={ouvert}
                     aria-controls={listId}
-                    className="flex w-full select-none items-center gap-2.5 rounded py-1 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    className="flex w-full select-none items-center gap-2.5 rounded py-1 text-left"
                   >
                     <ChevronDown
                       className={`h-3.5 w-3.5 shrink-0 text-[color:var(--text-muted)] transition-transform duration-200 ${ouvert ? '' : '-rotate-90'}`}

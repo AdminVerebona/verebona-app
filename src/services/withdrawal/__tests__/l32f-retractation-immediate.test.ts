@@ -120,15 +120,22 @@ describe('PO-Q2 — traitement immédiat, plus de suivi ni d’examen manuel', (
   });
 
   it('e-mail d’au revoir : modèle sans lien de suivi ni délai d’export, migré sans commande (0279)', () => {
-    const seed = read('src/db/seeds/withdrawal/email_template_withdrawal.ts');
-    const html = seed.slice(seed.indexOf('export const WITHDRAWAL_RECEIPT_HTML = `') + 'export const WITHDRAWAL_RECEIPT_HTML = `'.length);
-    const corps = html.slice(0, html.indexOf('`;'));
+    // Lot 66C : le corps courant (charte 2026) vit dans `lib/email/email-html-templates.ts`
+    // et passe en base par la migration 0465 ; 0279 garde le corps du lot 32, qui est
+    // celui relevé au lot 65 (fixture L66C).
+    const mod = read('src/lib/email/email-html-templates.ts');
+    const corps = mod.slice(mod.indexOf('export const WITHDRAWAL_RECEIPT_HTML'), mod.indexOf('export const EMAIL_HTML_TEMPLATES_L66'));
     expect(corps).not.toContain('{{trackingUrl}}');
     expect(corps).not.toContain('{{dataExportDeadlineLabel}}');
-    expect(corps).toContain('sont <strong>supprimés</strong>');
+    expect(corps).toMatch(/sont \$\{strong\('supprimés'\)\}/);
+    expect(read('src/lib/email/email-html-templates.ts')).toContain('const strong = (html: string) => `<strong>${html}</strong>`;');
     expect(corps).toContain('Au revoir');
+    expect(read('src/db/seeds/withdrawal/email_template_withdrawal.ts')).toContain('export const WITHDRAWAL_RECEIPT_HTML = WITHDRAWAL_RECEIPT_HTML_2026;');
+    const lot32 = JSON.parse(read('src/lib/email/__tests__/fixtures/l66c-email-lot65.json')).db.WITHDRAWAL_RECEIPT.body as string;
+    expect(lot32).toContain('sont <strong>supprimés</strong>');
     const migration = read('src/db/migrations/0279_lot32_withdrawal_immediate.sql');
-    expect(migration).toContain(`$tpl$${corps}$tpl$`);
+    expect(migration).toContain(`$tpl$${lot32}$tpl$`);
+    expect(read('src/db/migrations/0465_l66c_emails_charte_2026.sql')).toContain("WHERE upper(type) = 'WITHDRAWAL_RECEIPT'");
     expect(migration).toContain('ON CONFLICT (type) DO UPDATE');
   });
 

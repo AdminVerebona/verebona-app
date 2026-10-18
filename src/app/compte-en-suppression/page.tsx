@@ -106,11 +106,11 @@ export default function AccountPendingDeletionPage() {
   return (
     <main className="min-h-screen bg-[color:var(--bg-page)] px-4 py-10">
       <div className="mx-auto w-full max-w-2xl space-y-6">
-        <Card className="border-red-500/30">
+        <Card className="border-[color:var(--danger-edge)]">
           <CardHeader>
             <div className="flex items-center gap-2">
-              <AlertTriangle className="h-5 w-5 text-red-500" />
-              <CardTitle className="text-red-500">Votre compte est en cours de suppression</CardTitle>
+              <AlertTriangle className="h-5 w-5 text-[color:var(--danger)]" />
+              <CardTitle className="text-[color:var(--danger)]">Votre compte est en cours de suppression</CardTitle>
             </div>
             <CardDescription>
               {email ? <>Connecté en tant que <strong>{email}</strong>. </> : null}
@@ -129,8 +129,8 @@ export default function AccountPendingDeletionPage() {
               </div>
             ) : (
               <>
-                <div className="flex items-start gap-3 rounded-lg border border-red-500/30 bg-red-950/10 px-4 py-3">
-                  <CalendarClock className="mt-0.5 h-5 w-5 flex-shrink-0 text-red-400" />
+                <div className="flex items-start gap-3 rounded-lg border border-[color:var(--danger-edge)] bg-[color:var(--danger-soft)] px-4 py-3">
+                  <CalendarClock className="mt-0.5 h-5 w-5 flex-shrink-0 text-[color:var(--danger)]" />
                   <div>
                     <p className="font-semibold">
                       {state.status === 'closed' || state.daysLeft === 0

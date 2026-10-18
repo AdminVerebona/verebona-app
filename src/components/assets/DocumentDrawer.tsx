@@ -1248,9 +1248,9 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
                   {/* Icon + label */}
                   <div className="flex flex-col items-center gap-3 text-center">
                     <div className="relative w-14 h-14">
-                      <div className="absolute inset-0 rounded-full bg-[#8b5cf6]/10 animate-pulse" />
+                      <div className="absolute inset-0 rounded-full bg-[color:var(--accent-soft)] animate-pulse" />
                       <div className="absolute inset-0 flex items-center justify-center">
-                        <Wand2 className="w-6 h-6 text-[#8b5cf6]" />
+                        <Wand2 className="w-6 h-6 text-[color:var(--accent)]" />
                       </div>
                     </div>
                     <div>
@@ -1263,7 +1263,7 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
                   <div className="space-y-1.5">
                     <div className="h-1.5 rounded-full bg-muted overflow-hidden">
                       <div
-                        className="h-full rounded-full bg-[#8b5cf6] transition-all duration-[2000ms] ease-out"
+                        className="h-full rounded-full bg-[color:var(--accent)] transition-all duration-[2000ms] ease-out"
                         style={{ width: `${stage.pct}%` }}
                       />
                     </div>
@@ -1278,13 +1278,13 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
                     {STAGES.map((s, i) => (
                       <div key={i} className="flex items-center gap-2.5">
                         <div className={`w-4 h-4 rounded-full flex items-center justify-center shrink-0 transition-all ${
-                          i < analyzeStage ? 'bg-[#8b5cf6]' : i === analyzeStage ? 'border-2 border-[#8b5cf6]' : 'border border-muted-foreground/30'
+                          i < analyzeStage ? 'bg-[color:var(--accent)]' : i === analyzeStage ? 'border-2 border-[color:var(--accent)]' : 'border border-muted-foreground/30'
                         }`}>
-                          {i < analyzeStage && <Check className="w-2.5 h-2.5 text-white" />}
-                          {i === analyzeStage && <div className="w-1.5 h-1.5 rounded-full bg-[#8b5cf6] animate-pulse" />}
+                          {i < analyzeStage && <Check className="w-2.5 h-2.5 text-[color:var(--on-accent)]" />}
+                          {i === analyzeStage && <div className="w-1.5 h-1.5 rounded-full bg-[color:var(--accent)] animate-pulse" />}
                         </div>
                         <span className={`text-xs transition-all ${
-                          i < analyzeStage ? 'text-[#8b5cf6]' : i === analyzeStage ? 'text-foreground font-medium' : 'text-muted-foreground/50'
+                          i < analyzeStage ? 'text-[color:var(--accent)]' : i === analyzeStage ? 'text-foreground font-medium' : 'text-muted-foreground/50'
                         }`}>{s.label.replace('…', '')}</span>
                       </div>
                     ))}
@@ -1305,38 +1305,38 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
                 UPLOADED: {
                   label: 'En file d\u2019attente',
                   icon: <Loader2 className="w-3.5 h-3.5 animate-spin" />,
-                  color: 'text-[#8b5cf6]',
-                  bg: 'bg-[#8b5cf6]/10 border-[#8b5cf6]/20',
+                  color: 'text-[color:var(--accent)]',
+                  bg: 'bg-[color:var(--accent-soft)] border-[color:var(--border-info)]',
                 },
                 ANALYZING: {
                   label: 'Analyse en cours…',
                   icon: <Loader2 className="w-3.5 h-3.5 animate-spin" />,
-                  color: 'text-[#8b5cf6]',
-                  bg: 'bg-[#8b5cf6]/10 border-[#8b5cf6]/20',
+                  color: 'text-[color:var(--accent)]',
+                  bg: 'bg-[color:var(--accent-soft)] border-[color:var(--border-info)]',
                 },
                 ANALYZED: {
                   label: 'Analysé',
                   icon: <CheckCircle2 className="w-3.5 h-3.5" />,
-                  color: 'text-green-600 dark:text-green-400',
-                  bg: 'bg-green-500/10 border-green-500/20',
+                  color: 'text-[color:var(--text-success)]',
+                  bg: 'bg-[color:var(--bg-success)] border-[color:var(--border-success)]',
                 },
                 VALIDATION_REQUIRED: {
                   label: 'Validation suggérée',
                   icon: <Sparkles className="w-3.5 h-3.5" />,
-                  color: 'text-[#8b5cf6]',
-                  bg: 'bg-[#8b5cf6]/10 border-[#8b5cf6]/20',
+                  color: 'text-[color:var(--accent)]',
+                  bg: 'bg-[color:var(--accent-soft)] border-[color:var(--border-info)]',
                 },
                 CONFLICT_DETECTED: {
                   label: 'Conflit détecté',
                   icon: <AlertCircle className="w-3.5 h-3.5" />,
-                  color: 'text-red-600 dark:text-red-400',
-                  bg: 'bg-red-500/10 border-red-500/20',
+                  color: 'text-[color:var(--danger)]',
+                  bg: 'bg-[color:var(--danger-soft)] border-[color:var(--danger-edge)]',
                 },
                 FUSION_SUGGESTED: {
                   label: 'Doublon possible',
                   icon: <AlertCircle className="w-3.5 h-3.5" />,
-                  color: 'text-amber-600 dark:text-amber-400',
-                  bg: 'bg-amber-500/10 border-amber-500/20',
+                  color: 'text-[color:var(--attention-on-soft)]',
+                  bg: 'bg-[color:var(--attention-soft)] border-[color:var(--attention-edge)]',
                 },
                 ANALYSIS_FAILED: {
                   label: fullData?.processingStatus === 'NEEDS_USER_ACTION' ? 'Action requise' : 'Analyse non finalisée',
@@ -1369,7 +1369,7 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
                       {/* Bouton d'action direct quand validation requise, visible même replié */}
                       {analysisState === 'VALIDATION_REQUIRED' && (
                         <Button size="sm" variant="outline"
-                          className="h-6 px-2 text-[10px] border-[#8b5cf6]/30 text-[#8b5cf6] hover:bg-[#8b5cf6]/10 shrink-0"
+                          className="h-6 px-2 text-[10px] border-[color:var(--border-info)] text-[color:var(--accent)] hover:bg-[color:var(--accent-soft)] shrink-0"
                           onClick={enterEditMode}>
                           <Check className="w-3 h-3 mr-1" />Appliquer
                         </Button>
@@ -1397,7 +1397,7 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
 
                     {!showDetectedInfo && analysisState === 'VALIDATION_REQUIRED' && (
                       <p className="text-[10px] text-muted-foreground/70 pl-1">
-                        Cliquez sur <span className="font-medium text-[#8b5cf6]">Appliquer</span> pour enregistrer les informations détectées automatiquement.
+                        Cliquez sur <span className="font-medium text-[color:var(--accent)]">Appliquer</span> pour enregistrer les informations détectées automatiquement.
                       </p>
                     )}
 
@@ -1417,7 +1417,7 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
                       return (
                         <div className="pl-1 pt-1 space-y-2">
                           <div className="flex items-center gap-2">
-                            <Loader2 className="w-3.5 h-3.5 animate-spin text-[#8b5cf6] shrink-0" />
+                            <Loader2 className="w-3.5 h-3.5 animate-spin text-[color:var(--accent)] shrink-0" />
                             <span className="text-[11px] text-muted-foreground">{hint}</span>
                             {elapsedStr && (
                               <span className="ml-auto text-[10px] text-muted-foreground/40 tabular-nums shrink-0">{elapsedStr}</span>
@@ -1427,14 +1427,14 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
                             <div className="flex items-center gap-1">
                               {STAGES_ORDER.map((s, i) => (
                                 <div key={s} className={`h-0.5 flex-1 rounded-full transition-all duration-700 ${
-                                  i < stepIdx ? 'bg-[#8b5cf6]' : i === stepIdx ? 'bg-[#8b5cf6]/50' : 'bg-muted/30'
+                                  i < stepIdx ? 'bg-[color:var(--accent)]' : i === stepIdx ? 'bg-[color:var(--accent)]/50' : 'bg-muted/30'
                                 }`} />
                               ))}
                             </div>
                             <div className="flex items-center justify-between">
                               {STAGE_LABELS.map((lbl, i) => (
                                 <span key={lbl} className={`text-[9px] transition-colors duration-500 ${
-                                  i < stepIdx ? 'text-[#8b5cf6]/70' : i === stepIdx ? 'text-[#8b5cf6] font-medium' : 'text-muted-foreground/30'
+                                  i < stepIdx ? 'text-[color:var(--accent)]' : i === stepIdx ? 'text-[color:var(--accent)] font-medium' : 'text-muted-foreground/30'
                                 }`}>{lbl}</span>
                               ))}
                             </div>
@@ -1469,7 +1469,7 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
                                 <div className="flex items-center gap-1.5 min-w-0 text-right">
                                   <span className="font-medium truncate max-w-[160px]">{String(displayVal)}</span>
                                   {!isEdited && (
-                                    <Sparkles className="w-2.5 h-2.5 text-[#8b5cf6]/60 shrink-0" aria-label="Détecté automatiquement" />
+                                    <Sparkles className="w-2.5 h-2.5 text-[color:var(--accent)] shrink-0" aria-label="Détecté automatiquement" />
                                   )}
                                 </div>
                               </div>
@@ -1507,7 +1507,7 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
                         )}
                         {analysisState === 'VALIDATION_REQUIRED' && (
                           <div className="pt-1">
-                            <Button size="sm" variant="outline" className="w-full h-7 text-xs border-[#8b5cf6]/30 text-[#8b5cf6] hover:bg-[#8b5cf6]/10"
+                            <Button size="sm" variant="outline" className="w-full h-7 text-xs border-[color:var(--border-info)] text-[color:var(--accent)] hover:bg-[color:var(--accent-soft)]"
                               onClick={enterEditMode}>
                               <Check className="w-3 h-3 mr-1" />Valider et appliquer les informations
                             </Button>
@@ -1527,24 +1527,24 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
             {/* Standard : bloc Premium verrouillé */}
             {!isEditing && !isAnalyzing && !isPremium && !analysisState && fullData && (
               <div className="px-5 pb-4">
-                <div className="rounded-xl border border-[#8b5cf6]/20 bg-gradient-to-br from-[#8b5cf6]/5 to-[#7c3aed]/5 p-4 space-y-3">
+                <div className="rounded-xl border border-[color:var(--border-info)] bg-[color:var(--accent-soft)] p-4 space-y-3">
                   <div className="flex items-center gap-2">
-                    <div className="w-7 h-7 rounded-lg bg-[#8b5cf6]/15 flex items-center justify-center shrink-0">
-                      <Lock className="w-3.5 h-3.5 text-[#8b5cf6]" />
+                    <div className="w-7 h-7 rounded-lg bg-[color:var(--accent-soft)] flex items-center justify-center shrink-0">
+                      <Lock className="w-3.5 h-3.5 text-[color:var(--accent)]" />
                     </div>
                     <p className="text-sm font-semibold text-foreground">Analyse automatique</p>
                   </div>
                   <ul className="space-y-1.5 text-xs text-muted-foreground">
                     {['Détection automatique du type, date, fournisseur', 'Suggestions agenda et équipements', 'Indicateurs de confiance sur chaque champ', 'Détection des doublons lors de l\'upload'].map(f => (
                       <li key={f} className="flex items-center gap-2">
-                        <Sparkles className="w-3 h-3 text-[#8b5cf6] shrink-0" />
+                        <Sparkles className="w-3 h-3 text-[color:var(--accent)] shrink-0" />
                         {f}
                       </li>
                     ))}
                   </ul>
                   <a
                     href="/mon-compte/offres"
-                    className="flex items-center justify-center gap-2 w-full py-2 rounded-lg bg-gradient-to-br from-[#8b5cf6] to-[#7c3aed] text-white text-xs font-semibold hover:opacity-90 transition-opacity"
+                    className="flex items-center justify-center gap-2 w-full py-2 rounded-[12px] bg-[color:var(--accent)] text-[color:var(--on-accent)] text-xs font-bold hover:bg-[color:var(--accent-hover)] transition-colors"
                   >
                     <Sparkles className="w-3.5 h-3.5" />
                     Passer Premium
@@ -1678,7 +1678,7 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
                         <div className="flex items-center gap-1">
                           <span className="font-medium text-right text-xs">{fullData.retainedTitle}</span>
                           {fullData.lastAnalysisAt && !fullData.userEditedFields?.retainedTitle && (
-                            <Sparkles className="w-2.5 h-2.5 text-[#8b5cf6]/60 shrink-0" aria-label="Détecté automatiquement" />
+                            <Sparkles className="w-2.5 h-2.5 text-[color:var(--accent)] shrink-0" aria-label="Détecté automatiquement" />
                           )}
                         </div>
                       </div>
@@ -1704,7 +1704,7 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
                             {getTypeLabel(fullData?.retainedFunctionCode ?? fullData?.documentType ?? '')}
                           </span>
                           {fullData?.lastAnalysisAt && !fullData?.userEditedFields?.retainedFunctionCode && (
-                            <Sparkles className="w-2.5 h-2.5 text-[#8b5cf6]/60 shrink-0" aria-label="Détecté automatiquement" />
+                            <Sparkles className="w-2.5 h-2.5 text-[color:var(--accent)] shrink-0" aria-label="Détecté automatiquement" />
                           )}
                         </div>
                       </div>
@@ -1716,7 +1716,7 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
                         <div className="flex items-center gap-1">
                           <span className="font-medium">{fmt(fullData?.documentDate ?? doc.documentDate)}</span>
                           {fullData?.lastAnalysisAt && !fullData?.userEditedFields?.documentDate && (
-                            <Sparkles className="w-2.5 h-2.5 text-[#8b5cf6]/60 shrink-0" aria-label="Détecté automatiquement" />
+                            <Sparkles className="w-2.5 h-2.5 text-[color:var(--accent)] shrink-0" aria-label="Détecté automatiquement" />
                           )}
                         </div>
                       </div>
@@ -1727,7 +1727,7 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
                       {fullData?.supplier ? (
                         <div className="flex items-center gap-1">
                           <button
-                            className="font-medium text-[#3b82f6] hover:underline text-sm"
+                            className="font-medium text-[color:var(--accent)] hover:underline text-sm"
                             onClick={async () => {
                               try {
                                 const data = await apiClient.get<{ suppliers: { id: number; name: string }[] }>(
@@ -1753,7 +1753,7 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
                             {fullData.supplier}
                           </button>
                           {fullData.lastAnalysisAt && !fullData.userEditedFields?.supplier && (
-                            <Sparkles className="w-2.5 h-2.5 text-[#8b5cf6]/60 shrink-0" aria-label="Détecté automatiquement" />
+                            <Sparkles className="w-2.5 h-2.5 text-[color:var(--accent)] shrink-0" aria-label="Détecté automatiquement" />
                           )}
                         </div>
                       ) : (
@@ -1767,7 +1767,7 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
                         <div className="flex items-center gap-1">
                           <span className="font-medium">{fmtAmount(fullData.amountCents)}</span>
                           {fullData.lastAnalysisAt && !fullData.userEditedFields?.amountCents && (
-                            <Sparkles className="w-2.5 h-2.5 text-[#8b5cf6]/60 shrink-0" aria-label="Détecté automatiquement" />
+                            <Sparkles className="w-2.5 h-2.5 text-[color:var(--accent)] shrink-0" aria-label="Détecté automatiquement" />
                           )}
                         </div>
                       </div>
@@ -1864,10 +1864,10 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
                               <Loader2 className="w-3 h-3 animate-spin shrink-0 text-muted-foreground" />
                             ) : (
                             <span className={`shrink-0 text-[10px] font-semibold px-1.5 py-0.5 rounded-full ${
-                              item.effectiveStatus === 'realise' ? 'bg-green-500/15 text-green-500' :
+                              item.effectiveStatus === 'realise' ? 'bg-[color:var(--bg-success)] text-[color:var(--text-success)]' :
                               item.effectiveStatus === 'annule' ? 'bg-muted text-muted-foreground' :
-                              item.effectiveStatus === 'en_retard' ? 'bg-red-500/15 text-red-500' :
-                              item.effectiveStatus === 'a_confirmer' ? 'bg-amber-500/15 text-amber-500' :
+                              item.effectiveStatus === 'en_retard' ? 'bg-[color:var(--danger-soft)] text-[color:var(--danger)]' :
+                              item.effectiveStatus === 'a_confirmer' ? 'bg-[color:var(--attention-soft)] text-[color:var(--attention-on-soft)]' :
                               'bg-primary/10 text-primary'
                             }`}>
                               {item.effectiveStatus === 'aujourd_hui' ? "Aujourd'hui" : effectiveStatusLabel(item.effectiveStatus || 'a_venir')}

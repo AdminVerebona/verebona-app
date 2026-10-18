@@ -24,6 +24,8 @@ import { inArray } from 'drizzle-orm';
  * Réexécutable : le modèle est remplacé à chaque passage.
  */
 
+import { LEGAL_CONFIRMATION_HTML } from '@/lib/email/email-html-templates';
+
 const TYPE = 'LEGAL_CONFIRMATION';
 
 /**
@@ -44,79 +46,8 @@ export const LEGAL_CONFIRMATION_VARIABLES = [
 
 const SUBJECT = 'Confirmation — vos conditions générales Verebona';
 
-const HTML = `<!DOCTYPE html>
-<html lang="fr">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Confirmation Verebona</title>
-  </head>
-  <body style="margin:0; padding:0; background-color:#F5F5F5; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;">
-    <center>
-      <table width="100%" cellpadding="0" cellspacing="0" style="background-color:#F5F5F5; padding:40px 0;">
-        <tr>
-          <td align="center">
-            <table width="600" cellpadding="0" cellspacing="0" style="background-color:#FFFFFF; border-radius:12px; overflow:hidden;">
-
-              <tr>
-                <td style="padding:32px 40px 8px;">
-                  <h1 style="margin:0; font-size:20px; color:#1a1a1a;">Verebona</h1>
-                </td>
-              </tr>
-
-              <tr>
-                <td style="padding:8px 40px 24px; color:#333333; font-size:15px; line-height:1.6;">
-                  <p style="margin:0 0 16px;">Bonjour {{firstName}},</p>
-
-                  {{subscriptionBlockHtml}}
-
-                  <p style="margin:0 0 8px;">
-                    <strong>Conditions générales applicables :</strong>
-                    version {{legalVersionCode}}.
-                  </p>
-                  <p style="margin:0 0 24px;">
-                    Vous pouvez les consulter, les enregistrer ou les imprimer à tout
-                    moment :
-                  </p>
-
-                  <p style="margin:0 0 24px;">
-                    <a href="{{legalPermalinkUrl}}"
-                       style="display:inline-block; padding:12px 20px; background-color:#0b5fff; color:#ffffff; text-decoration:none; border-radius:6px; font-size:15px;">
-                      Consulter la version {{legalVersionCode}}
-                    </a>
-                  </p>
-
-                  <p style="margin:0 0 24px; font-size:13px; color:#555555;">
-                    Ce lien pointe vers la version exacte que vous avez acceptée. Elle
-                    ne sera jamais modifiée et restera accessible, y compris si vous
-                    fermez votre compte.
-                  </p>
-
-                  {{withdrawalBlockHtml}}
-
-                  <p style="margin:0 0 8px; font-size:13px; color:#555555;">
-                    Vous pouvez gérer votre abonnement depuis votre compte.
-                  </p>
-                  <p style="margin:0; font-size:13px; color:#555555;">
-                    Une question ? Écrivez-nous à
-                    <a href="mailto:{{contactEmail}}" style="color:#0b5fff;">{{contactEmail}}</a>.
-                  </p>
-                </td>
-              </tr>
-
-              <tr>
-                <td style="padding:16px 40px 32px; border-top:1px solid #eeeeee; font-size:12px; color:#888888;">
-                  Verebona — {{year}}
-                </td>
-              </tr>
-
-            </table>
-          </td>
-        </tr>
-      </table>
-    </center>
-  </body>
-</html>`;
+/** Lot 66C : corps à la charte « Sérénité » (lib/email/email-html-templates.ts, migration 0465). */
+const HTML = LEGAL_CONFIRMATION_HTML;
 
 export async function seedLegalEmailTemplate(): Promise<void> {
   // Script hors serveur Next : les migrations ne sont pas appliquées seules.

@@ -1,7 +1,7 @@
 "use client"
 
 import { useState, useEffect, useCallback } from 'react';
-import { EFFECTIVE_STATUS_LABELS, type AgendaEffectiveStatus } from '@/lib/agenda/effective-status';
+import { EFFECTIVE_STATUS_LABELS, attentionFlagLabel, visibleAttentionFlags, type AgendaEffectiveStatus } from '@/lib/agenda/effective-status';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -29,11 +29,11 @@ type EffectiveStatus = AgendaEffectiveStatus;
 const STATUS_LABELS: Record<EffectiveStatus, string> = EFFECTIVE_STATUS_LABELS;
 
 const STATUS_COLORS: Record<EffectiveStatus, string> = {
-  a_venir: 'bg-blue-100 text-blue-800',
-  en_retard: 'bg-red-100 text-red-800',
-  a_confirmer: 'bg-orange-100 text-orange-800',
-  realise: 'bg-green-100 text-green-800',
-  annule: 'bg-gray-100 text-gray-600',
+  a_venir: 'bg-[color:var(--accent-soft)] text-[color:var(--accent)]',
+  en_retard: 'bg-[color:var(--danger-soft)] text-[color:var(--danger)]',
+  a_confirmer: 'bg-[color:var(--attention-soft)] text-[color:var(--attention-on-soft)]',
+  realise: 'bg-[color:var(--bg-success)] text-[color:var(--text-success)]',
+  annule: 'bg-[color:var(--bg-subtle)] text-[color:var(--text-secondary)]',
 };
 
 function formatShortDate(d: string | null): string {
@@ -169,8 +169,8 @@ export function AssetAgendaTab({ assetId }: Props) {
         <CalendarView items={items} month={month} onItemClick={setSelectedItem} onNew={ouvrirCreation} />
       ) : items.length === 0 ? (
         <EmptyStateCard
-          icon={<CalendarDays className="w-4 h-4 text-emerald-500" />}
-          iconClassName="bg-emerald-500/10"
+          icon={<CalendarDays className="w-4 h-4 text-[color:var(--text-success)]" />}
+          iconClassName="bg-[color:var(--bg-success)]"
           title="Aucun élément pour le moment"
           description="Créez votre premier élément d'agenda"
           actionLabel="Ajouter un élément"
@@ -193,10 +193,10 @@ export function AssetAgendaTab({ assetId }: Props) {
                 </div>
                 <div className="flex items-center gap-2 mt-0.5">
                   <span className="text-xs text-muted-foreground">{item.occurrenceNature === 'FORECAST' ? `prévu le ${formatShortDate(item.startDate)}` : formatShortDate(item.startDate)}</span>
-                  {item.attentionFlags.map(f => (
-                    <span key={f} className="inline-flex items-center rounded-full px-1.5 py-0.5 text-xs bg-orange-100 text-orange-800">
+                  {visibleAttentionFlags(item.attentionFlags).map(f => (
+                    <span key={f} className="inline-flex items-center rounded-full px-1.5 py-0.5 text-xs bg-[color:var(--attention-soft)] text-[color:var(--attention-on-soft)]">
                       <AlertCircle className="h-2.5 w-2.5 mr-0.5" />
-                      {f === 'sans_bien' ? 'Sans bien' : f === 'donnee_distincte_a_qualifier' ? 'À qualifier' : f}
+                      {attentionFlagLabel(f)}
                     </span>
                   ))}
                 </div>

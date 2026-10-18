@@ -65,12 +65,12 @@ export interface DiagnosisView {
 interface ModelOutput { diagnosticId: number; model: string | null; callIndex: number; raw: string | null; extracted: string | null; parsed: unknown }
 
 const STATE: Record<ControlState, { mark: string; label: string; tone: string }> = {
-  passed: { mark: '✓', label: 'valide', tone: 'text-emerald-500' },
-  repaired: { mark: '✓', label: 'corrigé automatiquement', tone: 'text-amber-500' },
-  failed: { mark: '✗', label: 'invalide', tone: 'text-red-400' },
+  passed: { mark: '✓', label: 'valide', tone: 'text-[color:var(--text-success)]' },
+  repaired: { mark: '✓', label: 'corrigé automatiquement', tone: 'text-[color:var(--text-warning-soft)]' },
+  failed: { mark: '✗', label: 'invalide', tone: 'text-[color:var(--text-danger)]' },
   not_run: { mark: '·', label: 'non exécuté', tone: 'text-[color:var(--text-muted)]' },
   not_applicable: { mark: '·', label: 'sans objet', tone: 'text-[color:var(--text-muted)]' },
-  absent: { mark: '✗', label: 'absent', tone: 'text-red-400' },
+  absent: { mark: '✗', label: 'absent', tone: 'text-[color:var(--text-danger)]' },
 };
 
 const STATUS_LABEL: Record<CallReportView['status'], string> = {
@@ -111,7 +111,7 @@ function ProviderAttempts({ attempts, model }: { attempts: ProviderAttemptTrace[
           <span className="text-[color:var(--text-muted)]">{a.step}. {ATTEMPT_KIND[a.kind] ?? a.kind} · </span>
           {model ?? 'modèle'} · structured {a.responseSchemaSent ? `oui${a.providerSchemaHash ? ` (schéma ${a.providerSchemaHash})` : ''}` : 'non'}
           {' → '}
-          <span className={a.outcome === 'SUCCESS' ? 'text-emerald-500' : 'text-red-400'}>
+          <span className={a.outcome === 'SUCCESS' ? 'text-[color:var(--text-success)]' : 'text-[color:var(--text-danger)]'}>
             {a.outcome === 'SUCCESS' ? 'SUCCESS' : `${a.httpStatus ? `HTTP ${a.httpStatus} ` : ''}${a.providerErrorCode && a.providerErrorCode !== String(a.httpStatus) ? a.providerErrorCode : a.family ?? 'échec'}`}
           </span>
           <span className="text-[color:var(--text-muted)]"> · {fmtDuration(a.durationMs)}</span>
@@ -171,7 +171,7 @@ function CallCard({ r }: { r: CallReportView }) {
       </p>
       <dl className="grid grid-cols-[auto,1fr] gap-x-3 gap-y-0.5">
         <dt className="text-[color:var(--text-muted)]">Statut</dt>
-        <dd className={r.status === 'FAILED' ? 'text-red-400' : r.status === 'REPAIRED' ? 'text-amber-500' : 'text-emerald-500'}>
+        <dd className={r.status === 'FAILED' ? 'text-[color:var(--text-danger)]' : r.status === 'REPAIRED' ? 'text-[color:var(--text-warning-soft)]' : 'text-[color:var(--text-success)]'}>
           {STATUS_LABEL[r.status]}
         </dd>
         {r.cause && (<><dt className="text-[color:var(--text-muted)]">Cause</dt><dd>{r.cause}{causeLabel(d) ? ` (${causeLabel(d)})` : ''}</dd></>)}
@@ -194,7 +194,7 @@ function CallCard({ r }: { r: CallReportView }) {
 
       {first && (
         <div className="space-y-0.5" data-testid="execution-call-error">
-          <p className="text-red-400">
+          <p className="text-[color:var(--text-danger)]">
             Erreur : {first.subtype} — {first.path}
             {first.expected ? ` · attendu ${first.expected}` : ''}{first.received ? ` · reçu ${first.received}` : ''}
           </p>
@@ -214,8 +214,8 @@ function CallCard({ r }: { r: CallReportView }) {
           )}
         </div>
       )}
-      {!first && d?.error?.message && r.status === 'FAILED' && <p className="text-red-400 break-all">Erreur : {d.error.message}</p>}
-      {!d && r.errorMessage && <p className="text-red-400 break-all">{r.errorCode ? `${r.errorCode} — ` : ''}{r.errorMessage}</p>}
+      {!first && d?.error?.message && r.status === 'FAILED' && <p className="text-[color:var(--text-danger)] break-all">Erreur : {d.error.message}</p>}
+      {!d && r.errorMessage && <p className="text-[color:var(--text-danger)] break-all">{r.errorCode ? `${r.errorCode} — ` : ''}{r.errorMessage}</p>}
       {d?.error?.stack && (
         <details><summary className="cursor-pointer text-[color:var(--text-muted)]">Pile technique</summary><pre className="whitespace-pre-wrap break-all">{d.error.exception ? `${d.error.exception}\n` : ''}{d.error.stack}</pre></details>
       )}
@@ -313,19 +313,19 @@ export function ExecutionDiagnosisPanel({ callId, diagnosis }: { callId: number;
     <>
       <section className="space-y-1" data-testid="execution-final-diagnosis">
         <h3 className="text-sm font-semibold text-[color:var(--text-primary)]">Diagnostic final</h3>
-        <div className={`rounded-lg border p-3 text-xs space-y-0.5 ${failed ? 'border-red-500/30 bg-red-500/5' : 'border-[color:var(--border-subtle)]'}`}>
+        <div className={`rounded-lg border p-3 text-xs space-y-0.5 ${failed ? 'border-[color:var(--border-danger)] bg-[color:var(--bg-danger)]' : 'border-[color:var(--border-subtle)]'}`}>
           {diagnosis.finalDiagnosis.map((l, i) => <p key={i} className={i === 0 ? 'font-medium text-[color:var(--text-primary)]' : 'text-[color:var(--text-secondary)]'}>{l}</p>)}
         </div>
         <dl className="grid grid-cols-[auto,1fr] gap-x-3 gap-y-0.5 text-xs" data-testid="execution-result">
           {result.jobStatus && (<><dt className="text-[color:var(--text-muted)]">Job</dt><dd className="text-[color:var(--text-secondary)]">{result.jobStatus}</dd></>)}
           <dt className="text-[color:var(--text-muted)]">Résultat métier</dt>
-          <dd className={failed ? 'text-red-400 font-medium' : 'text-[color:var(--text-secondary)]'}>
+          <dd className={failed ? 'text-[color:var(--text-danger)] font-medium' : 'text-[color:var(--text-secondary)]'}>
             {result.businessResult ? `${result.businessResult}${BUSINESS_LABEL[result.businessResult] ? ` (${BUSINESS_LABEL[result.businessResult]})` : ''}` : '—'}
           </dd>
           {result.cause && (<><dt className="text-[color:var(--text-muted)]">Cause</dt><dd className="text-[color:var(--text-secondary)]">{result.cause}</dd></>)}
         </dl>
         {result.doneButFailed && (
-          <p className="text-xs text-red-400">Le job est terminé techniquement (DONE) mais la tâche métier a échoué : ce n’est pas une réussite.</p>
+          <p className="text-xs text-[color:var(--text-danger)]">Le job est terminé techniquement (DONE) mais la tâche métier a échoué : ce n’est pas une réussite.</p>
         )}
         <p className="text-xs text-[color:var(--text-secondary)]" data-testid="execution-counters">
           {counters.jobAttempts !== null && <>Tentatives du job : {counters.jobAttempts} · </>}
@@ -336,7 +336,7 @@ export function ExecutionDiagnosisPanel({ callId, diagnosis }: { callId: number;
       </section>
 
       {cascade.identical && (
-        <section className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-3 text-xs space-y-0.5" data-testid="execution-cascade">
+        <section className="rounded-lg border border-[color:var(--border-warning)] bg-[color:var(--bg-warning)] p-3 text-xs space-y-0.5" data-testid="execution-cascade">
           <p className="font-medium text-[color:var(--text-primary)]">Diagnostic de cascade</p>
           <p className="text-[color:var(--text-secondary)]">{cascade.failedCalls}/{cascade.analysisCalls} modèles ont échoué sur : {cascade.cause}</p>
           {cascade.path && <p className="text-[color:var(--text-secondary)]">Même chemin : {cascade.path}</p>}

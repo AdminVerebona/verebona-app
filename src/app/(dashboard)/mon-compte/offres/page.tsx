@@ -481,7 +481,7 @@ export default function OffresPage() {
       <div className="space-y-5 w-full max-w-full">
 
         <div>
-          <h1 className="text-xl md:text-3xl font-bold">
+          <h1 className="vb-app-title">
             {essaiTermine ? 'Votre essai gratuit est terminé' : 'Choisissez votre abonnement'}
           </h1>
           <p className="text-sm text-muted-foreground mt-1">
@@ -517,8 +517,8 @@ export default function OffresPage() {
 
         {/* Bandeau parrainage filleul */}
         {referralValid && referralCode && (
-          <div className="flex items-start gap-3 bg-blue-950/30 border border-blue-500/30 rounded-lg px-4 py-3">
-            <Gift className="w-5 h-5 text-blue-400 flex-shrink-0 mt-0.5" />
+          <div className="flex items-start gap-3 bg-[color:var(--accent-soft)] border border-[color:var(--border-info)] rounded-lg px-4 py-3">
+            <Gift className="w-5 h-5 text-[color:var(--accent)] flex-shrink-0 mt-0.5" />
             <div>
               <p className="text-sm font-semibold text-[color:var(--text-info-soft)]">Offre parrainage active — code <span className="font-mono">{referralCode}</span></p>
               {/* ⚠️ Promettait « 3 mois d'essai offerts » AU FILLEUL. L'avantage
@@ -531,14 +531,14 @@ export default function OffresPage() {
         )}
 
         {referralCode && referralValid === false && (
-          <div className="flex items-start gap-3 bg-amber-950/30 border border-amber-500/30 rounded-lg px-4 py-3">
-            <Gift className="w-5 h-5 text-amber-400 flex-shrink-0 mt-0.5" />
+          <div className="flex items-start gap-3 bg-[color:var(--attention-soft)] border border-[color:var(--attention-edge)] rounded-lg px-4 py-3">
+            <Gift className="w-5 h-5 text-[color:var(--attention-on-soft)] flex-shrink-0 mt-0.5" />
             <p className="text-sm text-[color:var(--text-warning-soft)]">Le code de parrainage <span className="font-mono font-semibold">{referralCode}</span> n'est pas valide ou a expiré.</p>
           </div>
         )}
 
         {isDuoMember && (
-          <div className="bg-amber-950/30 border border-amber-500/30 rounded-lg px-4 py-3 text-sm text-[color:var(--text-warning-soft)]">
+          <div className="bg-[color:var(--attention-soft)] border border-[color:var(--attention-edge)] rounded-lg px-4 py-3 text-sm text-[color:var(--text-warning-soft)]">
             {"Seul le titulaire de l'abonnement peut modifier l'offre et gérer le paiement."}
           </div>
         )}
@@ -549,16 +549,16 @@ export default function OffresPage() {
         <div className="mb-5 flex flex-wrap items-center gap-3">
           <div
             role="group"
-            aria-label="Periodicite de facturation"
-            className="inline-flex gap-1 rounded-full border border-[color:var(--border)] bg-[color:var(--bg-subtle)] p-1"
+            aria-label="Périodicité de facturation"
+            className="inline-flex gap-0.5 rounded-[10px] border border-[color:var(--border)] bg-[color:var(--bg-card)] p-[3px]"
           >
             <button
               type="button"
               onClick={() => setBillingPeriod('monthly')}
               className={
                 billingPeriod === 'monthly'
-                  ? 'rounded-full bg-[color:var(--bg-page)] px-4 py-1.5 text-sm font-medium text-[color:var(--text-primary)] shadow-sm'
-                  : 'rounded-full px-4 py-1.5 text-sm font-medium text-[color:var(--text-muted)]'
+                  ? 'rounded-[8px] bg-[color:var(--accent)] px-3.5 py-1.5 text-[13px] font-semibold text-[color:var(--on-accent)]'
+                  : 'rounded-[8px] px-3.5 py-1.5 text-[13px] font-semibold text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)]'
               }
             >
               Mensuel
@@ -568,15 +568,15 @@ export default function OffresPage() {
               onClick={() => setBillingPeriod('yearly')}
               className={
                 billingPeriod === 'yearly'
-                  ? 'rounded-full bg-[color:var(--bg-page)] px-4 py-1.5 text-sm font-medium text-[color:var(--text-primary)] shadow-sm'
-                  : 'rounded-full px-4 py-1.5 text-sm font-medium text-[color:var(--text-muted)]'
+                  ? 'rounded-[8px] bg-[color:var(--accent)] px-3.5 py-1.5 text-[13px] font-semibold text-[color:var(--on-accent)]'
+                  : 'rounded-[8px] px-3.5 py-1.5 text-[13px] font-semibold text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)]'
               }
             >
               Annuel
             </button>
           </div>
           {billingPeriod === 'yearly' && (
-            <span className="text-sm text-[color:var(--text-muted)]">
+            <span className="text-[13px] font-semibold text-[color:var(--attention)]">
               En annuel, vous economisez l&apos;equivalent de 2 mois.
             </span>
           )}
@@ -592,11 +592,11 @@ export default function OffresPage() {
             return (
               <div
                 key={offer.id}
-                className={`relative flex flex-col rounded-xl border p-5 bg-[color:var(--bg-card)] ${isCurrentPlan ? (offer.id === 'PREMIUM' ? 'border-blue-500/50 ring-2 ring-blue-500/40' : offer.id === 'PREMIUM_DUO' ? 'border-emerald-500/50 ring-2 ring-emerald-500/40' : 'border-slate-400/50 ring-2 ring-slate-400/40') : theme.colors.border} ${offer.comingSoon ? 'opacity-60' : ''}`}
+                className={`relative flex flex-col rounded-2xl border p-5 sm:p-6 bg-[color:var(--bg-card)] ${isCurrentPlan ? 'border-[color:var(--accent)] ring-1 ring-[color:var(--accent)]' : 'border-[color:var(--border)]'} ${offer.comingSoon ? 'opacity-60' : ''}`}
               >
                 {isCurrentPlan && (
                   <div className="absolute -top-3 left-1/2 -translate-x-1/2 z-10">
-                    <span className={`text-xs font-semibold px-3 py-1.5 rounded-full backdrop-blur-sm ${offer.id === 'PREMIUM' ? 'bg-blue-600/90 text-white border border-blue-500' : offer.id === 'PREMIUM_DUO' ? 'bg-emerald-600/90 text-white border border-emerald-500' : 'bg-slate-500/90 text-white border border-slate-400'}`}>
+                    <span className="text-xs font-semibold px-3 py-1 rounded-full bg-[color:var(--accent)] text-[color:var(--on-accent)] border border-[color:var(--accent)]">
                       Offre actuelle
                     </span>
                   </div>
@@ -604,7 +604,7 @@ export default function OffresPage() {
 
                 <div className="flex items-center gap-2 mb-3">
                   <Icon className={`w-5 h-5 ${theme.colors.icon}`} />
-                  <span className="font-semibold text-[color:var(--text-primary)]">{theme.label}</span>
+                  <span className="text-lg sm:text-xl font-bold tracking-[-.01em] text-[color:var(--text-primary)]">{theme.label}</span>
                 </div>
 
                 <div className="mb-4">
@@ -621,7 +621,7 @@ export default function OffresPage() {
                       }
                       return (
                         <>
-                          <span className="text-2xl font-bold text-[color:var(--text-primary)]" data-testid={`tarif-${offer.id.toLowerCase()}`}>
+                          <span className="text-[28px] sm:text-[32px] font-extrabold tracking-[-.02em] vb-tabular text-[color:var(--text-primary)]" data-testid={`tarif-${offer.id.toLowerCase()}`}>
                             {offerAmount(tarif)}
                           </span>
                           <span className="text-sm text-[color:var(--text-muted)] ml-1">
@@ -654,8 +654,8 @@ export default function OffresPage() {
 
                 <ul className="space-y-1.5 mb-5 flex-1">
                   {offer.features.map((feature) => (
-                    <li key={feature} className="flex items-start gap-2 text-sm text-[color:var(--text-muted)]">
-                      <Check className={`w-3.5 h-3.5 mt-0.5 ${offer.id === 'PREMIUM' ? 'text-blue-400' : offer.id === 'PREMIUM_DUO' ? 'text-emerald-400' : 'text-slate-400'} flex-shrink-0`} />
+                    <li key={feature} className="flex items-start gap-2 text-[13.5px] text-[color:var(--text-primary)]">
+                      <Check className="w-3.5 h-3.5 mt-0.5 text-[color:var(--accent)] flex-shrink-0" aria-hidden />
                       {feature}
                     </li>
                   ))}
@@ -665,7 +665,7 @@ export default function OffresPage() {
                   variant={btn.variant}
                   disabled={btn.disabled || checkoutLoading === offer.id}
                   onClick={btn.action || undefined}
-                  className={`w-full text-sm ${btn.variant === 'default' ? (offer.id === 'PREMIUM' ? '!bg-blue-600 hover:!bg-blue-700' : offer.id === 'PREMIUM_DUO' ? '!bg-emerald-600 hover:!bg-emerald-700 !border-emerald-600' : offer.id === 'STANDARD' ? '!bg-slate-600 hover:!bg-slate-700' : '') : ''}`}
+                  className="w-full h-11 text-sm"
                   size="sm"
                 >
                   {checkoutLoading === offer.id ? (

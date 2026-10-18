@@ -50,7 +50,7 @@ export default function SuppliersPage() {
   return (
     <div className="space-y-6 p-4 md:p-6">
       <div>
-        <h1 className="text-2xl font-bold">Fournisseurs</h1>
+        <h1 className="vb-app-title">Fournisseurs</h1>
         <p className="mt-1 text-sm text-muted-foreground">
           Les entreprises et artisans repérés dans vos documents ou ajoutés par vous.
         </p>
@@ -84,8 +84,8 @@ export default function SuppliersPage() {
               {visibles.map((s) => (
                 <li key={s.id}>
                   <Link href={supplierHref(s.id)} className="flex items-center gap-3 rounded-md px-1 py-3 hover:bg-muted/40">
-                    <div className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-md bg-blue-500/10">
-                      <Building2 className="h-4 w-4 text-blue-400" aria-hidden />
+                    <div className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-md bg-[color:var(--accent-soft)]">
+                      <Building2 className="h-4 w-4 text-[color:var(--accent)]" aria-hidden />
                     </div>
                     <div className="min-w-0 flex-1">
                       <p className="truncate text-sm font-medium">{s.name}</p>

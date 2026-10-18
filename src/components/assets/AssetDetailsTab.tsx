@@ -371,7 +371,7 @@ function CilChecklist({ assetId, naRubrics = new Set<string>() }: { assetId: num
         <div className="flex items-center gap-2 min-w-0">
           <span className="font-medium text-sm">Checklist CIL</span>
           {loaded && (
-            <span className="text-[10px] font-medium text-sky-400 bg-sky-500/10 rounded px-1.5 py-0.5 shrink-0">
+            <span className="text-[10px] font-medium text-[color:var(--accent)] bg-[color:var(--accent-soft)] rounded px-1.5 py-0.5 shrink-0">
               {available} / {total}
             </span>
           )}
@@ -407,9 +407,9 @@ function CilChecklist({ assetId, naRubrics = new Set<string>() }: { assetId: num
                           )}
                           <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${
                             isAvailable
-                              ? 'bg-emerald-500/15 text-emerald-400'
+                              ? 'bg-[color:var(--bg-success)] text-[color:var(--text-success)]'
                               : isNa
-                              ? 'bg-slate-500/10 text-slate-400'
+                              ? 'bg-[color:var(--bg-subtle)] text-[color:var(--text-muted)]'
                               : 'bg-muted/50 text-muted-foreground'
                           }`}>
                             {isAvailable ? 'Disponible' : isNa ? 'Non applicable' : 'Non renseigné'}

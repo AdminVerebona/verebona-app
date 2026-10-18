@@ -260,7 +260,7 @@ export function ReferralBlock({ withHeading = true }: { withHeading?: boolean } 
             className="flex-shrink-0 gap-1.5"
           >
             {codeCopied ? (
-              <CheckCheck className="w-3.5 h-3.5 text-green-600" />
+              <CheckCheck className="w-3.5 h-3.5 text-[color:var(--text-success)]" />
             ) : (
               <Copy className="w-3.5 h-3.5" />
             )}
@@ -286,7 +286,7 @@ export function ReferralBlock({ withHeading = true }: { withHeading?: boolean } 
             className="flex-shrink-0 gap-1.5"
           >
             {linkCopied ? (
-              <CheckCheck className="w-3.5 h-3.5 text-green-600" />
+              <CheckCheck className="w-3.5 h-3.5 text-[color:var(--text-success)]" />
             ) : (
               <Copy className="w-3.5 h-3.5" />
             )}

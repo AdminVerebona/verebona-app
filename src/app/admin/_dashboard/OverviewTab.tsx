@@ -48,7 +48,7 @@ export function OverviewTab({ query }: { query: string }) {
         </KpiCard>
         <KpiCard label="MRR" hint="Abonnements actifs au prix contractuel de chacun (TTC, hors remises), annuel ramené au mois" kpi={kpis.mrr} prevLabel={prev}>
           {data.mrrUnknownSubscriptions > 0 && (
-            <p className="text-xs text-amber-500">
+            <p className="text-xs text-[color:var(--text-warning-soft)]">
               {int(data.mrrUnknownSubscriptions)} abonnement(s) au prix contractuel inconnu, non valorisé(s).
             </p>
           )}

@@ -53,9 +53,9 @@ const RAIL: Record<ReturnType<typeof railTone>, string> = {
 export function pillClass(primary: boolean, variant: SpaceVariant): string {
   const size = variant === 'mobile' ? 'h-10 px-4 text-[13px]' : 'h-8 px-3.5 text-[12.5px]';
   const look = primary
-    ? 'bg-[color:var(--accent)] text-white font-semibold hover:bg-[#2563EB]'
+    ? 'bg-[color:var(--accent)] text-[color:var(--on-accent)] font-semibold hover:bg-[color:var(--accent-hover)]'
     : 'border border-[color:var(--border)] text-[color:var(--text-primary)] font-medium hover:bg-[color:var(--accent-soft)] hover:border-[color:var(--accent)]';
-  return `inline-flex items-center justify-center rounded-full whitespace-nowrap transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--accent)] focus-visible:ring-offset-1 focus-visible:ring-offset-[color:var(--bg-page)] disabled:opacity-50 ${size} ${look}`;
+  return `inline-flex items-center justify-center rounded-full whitespace-nowrap transition-colors duration-150 disabled:opacity-50 ${size} ${look}`;
 }
 
 const SECTION_LABEL = 'text-[11px] font-semibold uppercase tracking-[.05em] text-[color:var(--text-muted)] px-0.5 pb-1';
@@ -80,7 +80,7 @@ function ObjectRow({ o, variant, onLocal, onLeave }: { o: SpaceObject; variant: 
         : <span className="whitespace-nowrap text-[12px] font-semibold text-[color:var(--accent)]">{o.cta}</span>}
     </>
   );
-  const cls = `flex w-full items-center gap-2.5 rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--row-muted)] px-2.5 py-[9px] ${variant === 'mobile' ? 'min-h-[54px]' : ''} transition-colors hover:border-[color:var(--border)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--accent)]`;
+  const cls = `flex w-full items-center gap-2.5 rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--row-muted)] px-2.5 py-[9px] ${variant === 'mobile' ? 'min-h-[54px]' : ''} transition-colors hover:border-[color:var(--border)] `;
   if (o.actionId) {
     return <button type="button" className={cls} onClick={() => onLocal(o.actionId!)}>{inner}</button>;
   }
@@ -142,7 +142,7 @@ function Answer({ msg, variant, api }: { msg: VerebonaMessage; variant: SpaceVar
               {e.href ? (
                 <a
                   href={e.href}
-                  className="min-w-0 break-words text-[color:var(--text-primary)] underline decoration-[color:var(--border)] underline-offset-2 hover:decoration-[color:var(--accent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--accent)]"
+                  className="min-w-0 break-words text-[color:var(--text-primary)] underline decoration-[color:var(--border)] underline-offset-2 hover:decoration-[color:var(--accent)]"
                   onClick={(ev) => { api.leaveForOverlay(); openDrawerFromLink(ev, e.href!); }}
                 >
                   {e.text}
@@ -279,7 +279,7 @@ function RecentRow({ title, first, onResume, onDelete }: { title: string; first:
       <button
         type="button"
         onClick={onResume}
-        className="flex min-h-10 min-w-0 flex-1 items-center gap-2.5 px-3 py-2 text-left transition-colors hover:bg-[color:var(--accent-soft)] focus-visible:bg-[color:var(--accent-soft)] focus-visible:outline-none"
+        className="flex min-h-10 min-w-0 flex-1 items-center gap-2.5 px-3 py-2 text-left transition-colors hover:bg-[color:var(--accent-soft)] focus-visible:bg-[color:var(--accent-soft)]"
       >
         <Clock className="h-[15px] w-[15px] flex-shrink-0 text-[color:var(--text-muted)]" aria-hidden />
         <span className="min-w-0 flex-1 truncate text-[13.5px] text-[color:var(--text-primary)]">{title}</span>
@@ -289,7 +289,7 @@ function RecentRow({ title, first, onResume, onDelete }: { title: string; first:
         onClick={onDelete}
         aria-label={`Supprimer « ${title} »`}
         title="Supprimer"
-        className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg text-[color:var(--text-muted)] hover:bg-[color:var(--wash-red)] hover:text-[color:var(--on-red)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--accent)]"
+        className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg text-[color:var(--text-muted)] hover:bg-[color:var(--wash-red)] hover:text-[color:var(--on-red)]"
       >
         <Trash2 className="h-3.5 w-3.5" aria-hidden />
       </button>
@@ -312,7 +312,7 @@ function InitialState({ variant, api }: { variant: SpaceVariant; api: VerebonaSp
           key={s.id}
           type="button"
           onClick={() => { void api.ask(s.label); }}
-          className={`flex items-center gap-2.5 rounded-xl border border-[color:var(--border-subtle)] text-left text-[color:var(--text-primary)] transition-colors hover:bg-[color:var(--accent-soft)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--accent)] ${mobile ? 'min-h-11 bg-[color:var(--bg-card)] px-3.5 text-[13.5px]' : 'min-h-10 px-3 text-[13px]'}`}
+          className={`flex items-center gap-2.5 rounded-xl border border-[color:var(--border-subtle)] text-left text-[color:var(--text-primary)] transition-colors hover:bg-[color:var(--accent-soft)] ${mobile ? 'min-h-11 bg-[color:var(--bg-card)] px-3.5 text-[13.5px]' : 'min-h-10 px-3 text-[13px]'}`}
         >
           <span className="font-semibold text-[color:var(--accent)]" aria-hidden>›</span>{s.label}
         </button>

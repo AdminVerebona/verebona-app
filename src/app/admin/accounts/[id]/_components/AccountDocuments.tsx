@@ -96,7 +96,7 @@ export function AccountDocuments({ accountId }: { accountId: string | number }) 
           </p>
         </div>
         {error ? (
-          <div className="px-5 py-4 text-sm text-red-500">
+          <div className="px-5 py-4 text-sm text-[color:var(--text-danger)]">
             {error}{' '}
             <button type="button" className="underline" onClick={() => load()}>Réessayer</button>
           </div>
@@ -130,7 +130,7 @@ export function AccountDocuments({ accountId }: { accountId: string | number }) 
                       <td className="px-4 py-2 whitespace-nowrap">{formatDateTime(d.uploadedAt)}</td>
                       <td className="px-4 py-2 whitespace-nowrap">{formatDate(d.documentDate)}</td>
                       <td className="px-4 py-2">
-                        <span className={ERROR_STATUSES.has(d.status) ? 'text-red-500 font-medium' : ''}>{d.statusLabel}</span>
+                        <span className={ERROR_STATUSES.has(d.status) ? 'text-[color:var(--text-danger)] font-medium' : ''}>{d.statusLabel}</span>
                         {d.error && <div className="text-[10px] text-muted-foreground max-w-[18rem] truncate" title={d.error}>{d.error}</div>}
                       </td>
                       <td className="px-4 py-2 text-right tabular-nums">{d.linkedDeadlines}</td>
@@ -160,7 +160,7 @@ export function AccountDocuments({ accountId }: { accountId: string | number }) 
           </h2>
         </div>
         {error ? (
-          <p className="px-5 py-4 text-sm text-red-500">Indisponible : {error}</p>
+          <p className="px-5 py-4 text-sm text-[color:var(--text-danger)]">Indisponible : {error}</p>
         ) : !data ? (
           <p className="px-5 py-4 text-xs text-muted-foreground">Chargement…</p>
         ) : data.exports.length === 0 ? (
@@ -183,7 +183,7 @@ export function AccountDocuments({ accountId }: { accountId: string | number }) 
                     <td className="px-4 py-2">{e.kind === 'export' ? `Export — ${exportLabel(e.type)}` : e.type}</td>
                     <td className="px-4 py-2">{e.assetName ?? '—'}</td>
                     <td className="px-4 py-2">
-                      <span className={e.error ? 'text-red-500 font-medium' : ''}>{e.status}</span>
+                      <span className={e.error ? 'text-[color:var(--text-danger)] font-medium' : ''}>{e.status}</span>
                       {e.error && <div className="text-[10px] text-muted-foreground max-w-[18rem] truncate" title={e.error}>{e.error}</div>}
                     </td>
                   </tr>

@@ -19,6 +19,7 @@ import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { EcranEnErreur } from '@/components/admin/EcranEnErreur';
 import { AdminPagination, SortHeader, nextSort } from '../subscriptions/_components/list-controls';
 import { formatBytes, formatDate, formatDateTime } from '@/lib/admin/format';
+import { getPlanTheme } from '@/lib/plan-theme';
 
 type AccountStatus = 'active' | 'suspended' | 'deletion_pending';
 
@@ -45,24 +46,24 @@ interface Summary {
   deletionPending: number;
 }
 
+/**
+ * Pastille d'offre : mêmes jetons que l'application (`@/lib/plan-theme`,
+ * source unique — lot 66B2). L'offre se lit à son libellé.
+ */
 function PlanBadge({ plan }: { plan: string }) {
-  const variants: Record<string, { cls: string; label: string }> = {
-    STANDARD:    { cls: 'bg-zinc-500/15 text-zinc-400 border-zinc-500/30',    label: 'Standard' },
-    PREMIUM:     { cls: 'bg-blue-500/15 text-blue-400 border-blue-500/30',    label: 'Premium' },
-    PREMIUM_DUO: { cls: 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30', label: 'Premium Duo' },
-  };
-  const v = variants[plan] ?? variants.STANDARD;
+  const labels: Record<string, string> = { STANDARD: 'Standard', PREMIUM: 'Premium', PREMIUM_DUO: 'Premium Duo' };
+  const c = getPlanTheme(plan in labels ? plan : 'STANDARD').colors;
   return (
-    <span className={`inline-flex items-center px-2 py-0.5 rounded text-[11px] font-semibold border ${v.cls}`}>
-      {v.label}
+    <span className={`inline-flex items-center px-2 py-0.5 rounded text-[11px] font-semibold border ${c.bg} ${c.text} ${c.border}`}>
+      {labels[plan] ?? labels.STANDARD}
     </span>
   );
 }
 
 const STATUS_LABEL: Record<AccountStatus, { label: string; cls: string }> = {
-  active: { label: 'Actif', cls: 'text-emerald-400' },
-  suspended: { label: 'Suspendu', cls: 'text-red-400' },
-  deletion_pending: { label: 'Suppression en cours', cls: 'text-amber-400' },
+  active: { label: 'Actif', cls: 'text-[color:var(--text-success)]' },
+  suspended: { label: 'Suspendu', cls: 'text-[color:var(--text-danger)]' },
+  deletion_pending: { label: 'Suppression en cours', cls: 'text-[color:var(--text-warning-soft)]' },
 };
 
 function AccountsScreen() {
@@ -162,15 +163,15 @@ function AccountsScreen() {
             <p className="text-xs text-muted-foreground mt-0.5">Comptes totaux</p>
           </div>
           <div className="rounded-xl border bg-card p-4 text-center">
-            <p className="text-2xl font-bold text-emerald-400">{summary.active}</p>
+            <p className="text-2xl font-bold text-[color:var(--text-success)]">{summary.active}</p>
             <p className="text-xs text-muted-foreground mt-0.5">Actifs</p>
           </div>
           <div className="rounded-xl border bg-card p-4 text-center">
-            <p className="text-2xl font-bold text-red-400">{summary.suspended}</p>
+            <p className="text-2xl font-bold text-[color:var(--text-danger)]">{summary.suspended}</p>
             <p className="text-xs text-muted-foreground mt-0.5">Suspendus</p>
           </div>
           <div className="rounded-xl border bg-card p-4 text-center">
-            <p className="text-2xl font-bold text-amber-400">{summary.deletionPending}</p>
+            <p className="text-2xl font-bold text-[color:var(--text-warning-soft)]">{summary.deletionPending}</p>
             <p className="text-xs text-muted-foreground mt-0.5">Suppression en cours</p>
           </div>
         </div>

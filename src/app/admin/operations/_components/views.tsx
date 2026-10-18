@@ -97,13 +97,13 @@ export function OperationsTable({ items }: { items: OperationListItem[] }) {
               <td className="px-3 py-2"><Link href={`/admin/operations/${o.id}`} className="hover:underline">{o.label ?? '—'}</Link></td>
               <td className="px-3 py-2 text-xs">
                 {o.assets.length === 0 && o.equipments.length === 0
-                  ? <span className="text-amber-500">sans bien</span>
+                  ? <span className="text-[color:var(--text-warning-soft)]">sans bien</span>
                   : [...o.assets.map((a) => a.name ?? `bien #${a.id}`), ...o.equipments.map((e) => e.name ?? `équipement #${e.id}`)].join(', ')}
               </td>
               <td className="px-3 py-2 whitespace-nowrap">{o.parentOperationId ? <Link href={`/admin/operations/${o.parentOperationId}`} className="hover:underline">#{o.parentOperationId}</Link> : '—'}</td>
               <td className="px-3 py-2 whitespace-nowrap">{formatDate(o.principalDate)}</td>
               <td className="px-3 py-2 text-right tabular-nums whitespace-nowrap">{money(o.netCents, o.netPartial)}</td>
-              <td className={`px-3 py-2 text-right tabular-nums ${o.activeSourceCount === 0 && !o.invalidatedAt ? 'text-red-500 font-semibold' : ''}`}>
+              <td className={`px-3 py-2 text-right tabular-nums ${o.activeSourceCount === 0 && !o.invalidatedAt ? 'text-[color:var(--text-danger)] font-semibold' : ''}`}>
                 {o.activeSourceCount}{o.sourceCount !== o.activeSourceCount ? ` / ${o.sourceCount}` : ''}
               </td>
               <td className="px-3 py-2 text-right tabular-nums">{o.componentCount}</td>
@@ -243,14 +243,14 @@ export function IndicatorCards({ indicators }: { indicators: IndicatorResult[] }
       {indicators.map((ind) => {
         const alerte = ind.hard && Number(ind.value.count ?? 0) > 0;
         return (
-          <div key={ind.key} data-indicator={ind.key} className={`rounded-xl border bg-card p-4 space-y-2 ${alerte ? 'border-red-500/50' : ''}`}>
+          <div key={ind.key} data-indicator={ind.key} className={`rounded-xl border bg-card p-4 space-y-2 ${alerte ? 'border-[color:var(--border-danger)]' : ''}`}>
             <div className="flex items-start justify-between gap-2">
               <p className="text-sm font-medium">{ind.label}</p>
               <Badge variant={ind.hard ? (alerte ? 'destructive' : 'outline') : 'secondary'}>
                 {ind.hard ? 'Anomalie dure' : ind.scope === 'period' ? 'Période' : 'État actuel'}
               </Badge>
             </div>
-            <p className={`text-xl font-bold tabular-nums ${alerte ? 'text-red-500' : ''}`}>{indicatorHeadline(ind)}</p>
+            <p className={`text-xl font-bold tabular-nums ${alerte ? 'text-[color:var(--text-danger)]' : ''}`}>{indicatorHeadline(ind)}</p>
             <IndicatorDetail ind={ind} />
             <p className="text-xs text-muted-foreground italic">{ind.reading}</p>
           </div>
@@ -271,11 +271,11 @@ export function HardAnomalyAlerts({ anomalies, procedure, accountId }: { anomali
     );
   }
   return (
-    <div role="alert" className="rounded-xl border border-red-500/40 bg-red-500/5 p-4 space-y-3">
+    <div role="alert" className="rounded-xl border border-[color:var(--border-danger)] bg-[color:var(--bg-danger)] p-4 space-y-3">
       <div className="flex items-start gap-2">
-        <AlertTriangle className="h-5 w-5 text-red-500 shrink-0" />
+        <AlertTriangle className="h-5 w-5 text-[color:var(--text-danger)] shrink-0" />
         <div>
-          <p className="font-semibold text-red-500">Anomalies dures détectées ({actives.reduce((t, a) => t + a.count, 0)})</p>
+          <p className="font-semibold text-[color:var(--text-danger)]">Anomalies dures détectées ({actives.reduce((t, a) => t + a.count, 0)})</p>
           <p className="text-xs text-muted-foreground mt-1">{procedure}</p>
         </div>
       </div>
@@ -363,7 +363,7 @@ function Table({ cols, rows, empty }: { cols: string[]; rows: ReactNode[][]; emp
   );
 }
 
-const Active = ({ v }: { v: unknown }) => (yes(v) ? <span className="text-emerald-500">active</span> : <span className="text-muted-foreground">inactive</span>);
+const Active = ({ v }: { v: unknown }) => (yes(v) ? <span className="text-[color:var(--text-success)]">active</span> : <span className="text-muted-foreground">inactive</span>);
 const json = (v: unknown) => (v === null || v === undefined ? '—' : <code className="text-[10px] break-all">{JSON.stringify(v)}</code>);
 const opLink = (id: unknown) => (id === null || id === undefined ? '—' : <Link href={`/admin/operations/${String(id)}`} className="hover:underline">#{String(id)}</Link>);
 const amount = (minor: unknown, cur: unknown) => (minor === null || minor === undefined ? '—' : formatMoney(n(minor), String(cur ?? 'EUR')));
@@ -375,7 +375,7 @@ export function OperationDetailView({ d }: { d: OperationDetail }) {
     <div className="space-y-4">
       <ReadOnlyNotice />
       {d.canonicalOperationId && d.canonicalOperationId !== o.id && (
-        <div className="rounded-xl border border-amber-500/40 bg-amber-500/5 p-3 text-sm">
+        <div className="rounded-xl border border-[color:var(--border-warning)] bg-[color:var(--bg-warning)] p-3 text-sm">
           Opération fusionnée : l’Opération canonique est {opLink(d.canonicalOperationId)}.
         </div>
       )}
@@ -396,7 +396,7 @@ export function OperationDetailView({ d }: { d: OperationDetail }) {
           ['Net indicatif', money(o.netCents, o.netPartial)],
           ['Créée le', formatDateTime(o.createdAt)],
           ['Dernière réconciliation', formatDateTime(o.lastReconciledAt)],
-          ['État de réconciliation', <span key="r" className={d.reconciliation.state === 'A_JOUR' ? '' : 'text-amber-600'}>{d.reconciliation.label}</span>],
+          ['État de réconciliation', <span key="r" className={d.reconciliation.state === 'A_JOUR' ? '' : 'text-[color:var(--text-warning-soft)]'}>{d.reconciliation.label}</span>],
           ['Version', String(o.version)],
         ]} />
       </Section>
@@ -435,7 +435,7 @@ export function OperationDetailView({ d }: { d: OperationDetail }) {
             s(c.id), s(c.kind), amount(c.amount_minor, c.currency), c.amount_eur_cents == null ? '—' : formatMoney(n(c.amount_eur_cents), 'EUR'),
             formatDate((c.economic_date ?? c.period_start) as string | null),
             c.target_asset_id ? `bien #${s(c.target_asset_id)}` : c.target_equipment_id ? `équipement #${s(c.target_equipment_id)}` : 'non allouée',
-            ((c.sources ?? []) as Row[]).map((x) => `#${s(x.sourceId)} ${s(x.evidenceRole)}${yes(x.isPrimary) ? ' (principale)' : ''}${yes(x.sourceActive) ? '' : ' — inactive'}`).join(', ') || <span key="z" className="text-red-500">aucune</span>,
+            ((c.sources ?? []) as Row[]).map((x) => `#${s(x.sourceId)} ${s(x.evidenceRole)}${yes(x.isPrimary) ? ' (principale)' : ''}${yes(x.sourceActive) ? '' : ' — inactive'}`).join(', ') || <span key="z" className="text-[color:var(--text-danger)]">aucune</span>,
             <Active key="e" v={c.active} />,
           ])} />
       </Section>
@@ -506,7 +506,7 @@ export function OperationDetailView({ d }: { d: OperationDetail }) {
           ]} />
         ) : <p className="text-xs text-muted-foreground">Aucun travail T3 Opérations pour ce compte.</p>}
         {d.operationMatchBranch && (
-          <p className={`text-xs mt-3 ${d.operationMatchBranch.available ? 'text-muted-foreground' : 'text-amber-600'}`}>
+          <p className={`text-xs mt-3 ${d.operationMatchBranch.available ? 'text-muted-foreground' : 'text-[color:var(--text-warning-soft)]'}`}>
             Rapprochement IA (OPERATION_MATCH) : {d.operationMatchBranch.available
               ? `disponible dans la configuration active${d.operationMatchBranch.version ? ` (${d.operationMatchBranch.version})` : ''}`
               : 'ABSENT de la configuration active — BO › Configuration IA › Prompts maîtres › T3 : « Repartir du texte livré avec l’application » puis « Activer »'}

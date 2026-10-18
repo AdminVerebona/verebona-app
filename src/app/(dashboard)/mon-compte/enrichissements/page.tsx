@@ -126,8 +126,8 @@ export default function EnrichissementsPage() {
       <div className="flex items-start justify-between gap-4 flex-wrap">
         <div>
           <div className="flex items-center gap-2">
-            <Bot className="h-5 w-5 text-[#3b82f6]" />
-            <h1 className="text-2xl font-bold">Historique des enrichissements</h1>
+            <Bot className="h-5 w-5 text-[color:var(--accent)]" />
+            <h1 className="vb-app-title">Historique des enrichissements</h1>
           </div>
           <p className="text-muted-foreground mt-1 text-sm">
             Champs complétés ou modifiés automatiquement par Verebona lors de l'analyse de vos documents.
@@ -142,7 +142,7 @@ export default function EnrichissementsPage() {
           <SlidersHorizontal className="w-3.5 h-3.5" />
           Filtres
           {hasActiveFilters && (
-            <span className="ml-1 w-1.5 h-1.5 rounded-full bg-blue-400 inline-block" />
+            <span className="ml-1 w-1.5 h-1.5 rounded-full bg-[color:var(--accent)] inline-block" />
           )}
         </Button>
       </div>

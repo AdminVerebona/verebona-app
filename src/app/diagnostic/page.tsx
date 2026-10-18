@@ -139,9 +139,9 @@ export default function DiagnosticPage() {
 
   const getStatusIcon = (ok: boolean) => {
     return ok ? (
-      <CheckCircle2 className="w-5 h-5 text-green-500" />
+      <CheckCircle2 className="w-5 h-5 text-[color:var(--text-success)]" />
     ) : (
-      <XCircle className="w-5 h-5 text-red-500" />
+      <XCircle className="w-5 h-5 text-[color:var(--danger)]" />
     );
   };
 
@@ -247,8 +247,8 @@ export default function DiagnosticPage() {
                   </div>
                 )}
                 {diagnostics.apis.usersMe?.data && (
-                  <div className="p-3 bg-green-500/10 rounded-md text-sm">
-                    <p className="font-semibold text-green-700 dark:text-green-400 mb-1">Session valide ✓</p>
+                  <div className="p-3 bg-[color:var(--bg-success)] rounded-md text-sm">
+                    <p className="font-semibold text-[color:var(--text-success)] mb-1">Session valide ✓</p>
                     <p className="text-xs text-muted-foreground">
                       Utilisateur: {diagnostics.apis.usersMe.data.email}
                     </p>
@@ -288,7 +288,7 @@ export default function DiagnosticPage() {
               <Card>
                 <CardHeader>
                   <CardTitle className="flex items-center gap-2">
-                    <AlertCircle className="w-5 h-5 text-blue-500" />
+                    <AlertCircle className="w-5 h-5 text-[color:var(--accent)]" />
                     Données retournées par l'API
                   </CardTitle>
                 </CardHeader>
@@ -318,8 +318,8 @@ export default function DiagnosticPage() {
                   </div>
 
                   {typeof diagnostics.data.dbAssetsCount !== 'undefined' && (
-                    <div className="p-3 bg-blue-500/10 rounded-md">
-                      <p className="font-semibold text-blue-700 dark:text-blue-400 mb-2">
+                    <div className="p-3 bg-[color:var(--accent-soft)] rounded-md">
+                      <p className="font-semibold text-[color:var(--accent)] mb-2">
                         Vérification directe base de données:
                       </p>
                       <div className="space-y-1 text-sm">
@@ -333,13 +333,13 @@ export default function DiagnosticPage() {
             )}
 
             {/* Résumé */}
-            <Card className={diagnostics.apis.usersMe?.ok && diagnostics.apis.dashboard?.ok ? "border-green-500" : "border-red-500"}>
+            <Card className={diagnostics.apis.usersMe?.ok && diagnostics.apis.dashboard?.ok ? "border-[color:var(--accent)]" : "border-[color:var(--danger)]"}>
               <CardHeader>
                 <CardTitle className="flex items-center gap-2">
                   {diagnostics.apis.usersMe?.ok && diagnostics.apis.dashboard?.ok ? (
-                    <CheckCircle2 className="w-5 h-5 text-green-500" />
+                    <CheckCircle2 className="w-5 h-5 text-[color:var(--text-success)]" />
                   ) : (
-                    <XCircle className="w-5 h-5 text-red-500" />
+                    <XCircle className="w-5 h-5 text-[color:var(--danger)]" />
                   )}
                   Diagnostic
                 </CardTitle>
@@ -347,21 +347,21 @@ export default function DiagnosticPage() {
               <CardContent>
                 {diagnostics.apis.usersMe?.ok && diagnostics.apis.dashboard?.ok ? (
                   <div className="space-y-2">
-                    <p className="text-green-700 dark:text-green-400 font-semibold">
+                    <p className="text-[color:var(--text-success)] font-semibold">
                       ✅ Tout fonctionne correctement
                     </p>
                     <p className="text-sm text-muted-foreground">
                       Votre session est valide et l'API retourne vos données ({diagnostics.data.totalAssets} biens, {diagnostics.data.totalFiles} documents).
                     </p>
                     {diagnostics.data.totalAssets === 0 && diagnostics.data.totalFiles === 0 && (
-                      <p className="text-sm text-yellow-600 dark:text-yellow-400 mt-2">
+                      <p className="text-sm text-[color:var(--attention-on-soft)] mt-2">
                         ⚠️ Votre compte ne contient aucune donnée actuellement.
                       </p>
                     )}
                   </div>
                 ) : (
                   <div className="space-y-2">
-                    <p className="text-red-700 dark:text-red-400 font-semibold">
+                    <p className="text-[color:var(--danger)] font-semibold">
                       ❌ Problème détecté
                     </p>
                     {!diagnostics.localStorage.bearerToken && (

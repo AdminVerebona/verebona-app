@@ -108,10 +108,12 @@ const AssetCardWithThumbnail = React.memo(function AssetCardWithThumbnail({
   const statusVariant = assetStatusBadgeVariant(asset.status);
 
   const cardContent = (
-    <div className={`relative rounded-2xl overflow-hidden h-64 transform-gpu transition-all duration-300 ${
+    // Charte 2026 (lot 66) : la carte ne bouge pas au survol (ni échelle, ni
+    // translation, ni ombre) ; seule sa bordure passe à l'accent.
+    <div className={`relative rounded-[16px] overflow-hidden h-64 border border-[color:var(--border-subtle)] transition-[border-color] duration-[180ms] ${
       isBlocked
         ? 'opacity-60 grayscale cursor-default'
-        : 'cursor-pointer hover:scale-[1.02] hover:-translate-y-1 hover:shadow-[0_20px_48px_rgba(0,0,0,0.4)]'
+        : 'cursor-pointer hover:border-[color:var(--accent)]'
     }`} onMouseEnter={handleMouseEnter}>
       {/* Background: photo or gradient */}
       {thumbnailLoading ? (
@@ -125,8 +127,8 @@ const AssetCardWithThumbnail = React.memo(function AssetCardWithThumbnail({
           className="absolute inset-0 w-full h-full object-cover"
         />
       ) : (
-        <div className="absolute inset-0 bg-gradient-to-br from-muted to-muted/60 flex items-center justify-center">
-          <Icon className="w-20 h-20 text-muted-foreground/20" />
+        <div className="absolute inset-0 flex items-center justify-center" style={{ background: 'var(--tile-empty)' }}>
+          <Icon className="w-20 h-20 text-white/25" />
         </div>
       )}
 
@@ -437,16 +439,16 @@ function AssetsPageContent() {
       <div className="space-y-6 w-full max-w-full overflow-x-hidden">
         {/* Warning banner si limite dépassée (cas expiration Premium) */}
         {limiteAtteinte && !isRestricted && (
-          <Card className="border-amber-500/30 bg-amber-500/10">
+          <Card className="border-[color:var(--attention-edge)] bg-[color:var(--attention-soft)]">
             <CardContent className="py-4">
               <div className="flex flex-col sm:flex-row items-start gap-3">
-                <AlertCircle className="w-5 h-5 text-amber-500 flex-shrink-0 mt-0.5" />
+                <AlertCircle className="w-5 h-5 text-[color:var(--attention)] flex-shrink-0 mt-0.5" />
                 <div className="flex-1 min-w-0">
                   <p className="text-sm text-[color:var(--text-primary)] break-words">
                     {limitMessage}
                   </p>
                 </div>
-                <Button asChild size="sm" variant="outline" className="w-full sm:w-auto flex-shrink-0 border-amber-500/40">
+                <Button asChild size="sm" variant="outline" className="w-full sm:w-auto flex-shrink-0">
                   <Link href="/mon-compte/offres">
                     Choisir une offre
                   </Link>
@@ -458,7 +460,7 @@ function AssetsPageContent() {
 
         <div className="flex items-center justify-between gap-4">
           <div className="min-w-0">
-            <h1 className="text-xl md:text-3xl font-bold whitespace-nowrap">Mes biens</h1>
+            <h1 className="vb-app-title whitespace-nowrap">Mes biens</h1>
             <p className="text-muted-foreground mt-1">
               {activeAssets.length} {activeAssets.length > 1 ? 'biens' : 'bien'}
             </p>
@@ -477,7 +479,7 @@ function AssetsPageContent() {
                 <SlidersHorizontal className="btn-filter-sliders-icon w-4 h-4" />
                 Filtres
                 {showArchived && (
-                  <span className="absolute -top-1.5 -right-1.5 w-4 h-4 rounded-full bg-[#3b82f6] text-white text-[9px] font-bold flex items-center justify-center">
+                  <span className="absolute -top-1.5 -right-1.5 w-4 h-4 rounded-full bg-[color:var(--accent)] text-[color:var(--on-accent)] text-[9px] font-bold flex items-center justify-center">
                     1
                   </span>
                 )}
@@ -503,9 +505,9 @@ function AssetsPageContent() {
                   type="button"
                   aria-pressed={active}
                   onClick={() => setCategoryFilter(f.code)}
-                  className={`shrink-0 rounded-full border px-3 py-1 text-xs font-medium transition-colors focus-visible:ring-2 focus-visible:ring-ring ${
+                  className={`shrink-0 rounded-full border px-3 py-1 text-xs font-medium transition-colors ${
                     active
-                      ? 'border-[#3b82f6]/40 bg-[#3b82f6]/15 text-[color:var(--text-primary)]'
+                      ? 'border-[color:var(--accent)] bg-[color:var(--accent-soft)] text-[color:var(--text-primary)]'
                       : 'border-border text-muted-foreground hover:bg-accent hover:text-foreground'
                   }`}
                 >
@@ -603,12 +605,12 @@ function AssetsPageContent() {
                   <div
                     className={[
                       'w-4 h-4 rounded border flex items-center justify-center shrink-0 transition-colors',
-                      pendingShowArchived ? 'bg-[#3b82f6] border-[#3b82f6]' : 'border-muted-foreground/40 group-hover:border-[#3b82f6]/60',
+                      pendingShowArchived ? 'bg-[color:var(--accent)] border-[color:var(--accent)]' : 'border-muted-foreground/40 group-hover:border-[color:var(--accent)]',
                     ].join(' ')}
                     onClick={() => setPendingShowArchived(!pendingShowArchived)}
                   >
                     {pendingShowArchived && (
-                      <svg className="w-2.5 h-2.5 text-white" fill="none" stroke="currentColor" strokeWidth={3} viewBox="0 0 24 24">
+                      <svg className="w-2.5 h-2.5 text-[color:var(--on-accent)]" fill="none" stroke="currentColor" strokeWidth={3} viewBox="0 0 24 24">
                         <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
                       </svg>
                     )}

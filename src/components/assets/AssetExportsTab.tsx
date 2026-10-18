@@ -136,10 +136,10 @@ function getCompletenessLevel(pct: number): CompletenessLevel {
 }
 
 const COMPLETENESS_CONFIG: Record<CompletenessLevel, { label: string; color: string; bg: string; border: string }> = {
-  eleve:  { label: 'Élevé',  color: 'text-emerald-600 dark:text-emerald-400', bg: 'bg-emerald-50 dark:bg-emerald-950/30', border: 'border-emerald-200 dark:border-emerald-800' },
-  bon:    { label: 'Bon',    color: 'text-blue-600 dark:text-blue-400',       bg: 'bg-blue-50 dark:bg-blue-950/30',       border: 'border-blue-200 dark:border-blue-800' },
-  moyen:  { label: 'Moyen', color: 'text-amber-600 dark:text-amber-400',     bg: 'bg-amber-50 dark:bg-amber-950/30',     border: 'border-amber-200 dark:border-amber-800' },
-  faible: { label: 'Faible', color: 'text-rose-600 dark:text-rose-400',      bg: 'bg-rose-50 dark:bg-rose-950/30',       border: 'border-rose-200 dark:border-rose-800' },
+  eleve:  { label: 'Élevé',  color: 'text-[color:var(--text-success)]', bg: 'bg-[color:var(--bg-success)]', border: 'border-[color:var(--border-success)]' },
+  bon:    { label: 'Bon',    color: 'text-[color:var(--accent)]',       bg: 'bg-[color:var(--accent-soft)]',       border: 'border-[color:var(--border-info)]' },
+  moyen:  { label: 'Moyen', color: 'text-[color:var(--attention-on-soft)]',     bg: 'bg-[color:var(--attention-soft)]',     border: 'border-[color:var(--attention-edge)]' },
+  faible: { label: 'Faible', color: 'text-[color:var(--danger)]',      bg: 'bg-[color:var(--danger-soft)]',       border: 'border-[color:var(--danger-edge)]' },
 };
 
 interface Props {
@@ -159,14 +159,14 @@ function v12Status(exp: ExportRecord): string {
 }
 
 function StatusIcon({ status }: { status: string }) {
-  if (status === 'ready') return <CheckCircle2 className="w-4 h-4 text-green-500 flex-shrink-0" />;
+  if (status === 'ready') return <CheckCircle2 className="w-4 h-4 text-[color:var(--text-success)] flex-shrink-0" />;
   if (status === 'partial') return <AlertTriangle className="w-4 h-4 text-[color:var(--text-warning)] flex-shrink-0" />;
-  if (status === 'failed') return <AlertCircle className="w-4 h-4 text-red-500 flex-shrink-0" />;
+  if (status === 'failed') return <AlertCircle className="w-4 h-4 text-[color:var(--danger)] flex-shrink-0" />;
   // DRH-004 : fichier supprimé, entrée conservée dans l'historique.
   if (status === 'deleted') return <Trash2 className="w-4 h-4 text-muted-foreground flex-shrink-0" />;
   // DRH-006 : expiré, téléchargement impossible.
   if (status === 'expired') return <Hourglass className="w-4 h-4 text-muted-foreground flex-shrink-0" />;
-  return <Clock className="w-4 h-4 text-blue-400 flex-shrink-0 animate-pulse" />;
+  return <Clock className="w-4 h-4 text-[color:var(--accent)] flex-shrink-0 animate-pulse" />;
 }
 
 /**
@@ -450,15 +450,15 @@ export function AssetExportsTab({ assetId, assetCategory, assetTypeId, planType,
                 onClick={() => ouvrirExport(usage.type, usage.premiumOnly)}
                 className={`flex items-start gap-3 p-4 rounded-lg border text-left transition-colors w-full ${
                   locked
-                    ? `border-blue-500/30 bg-blue-500/5 ${premiumTheme.colors.bgDark} hover:bg-blue-500/10`
+                    ? `border-[color:var(--border-info)] bg-[color:var(--accent-soft)] hover:border-[color:var(--accent)]`
                     : 'hover:bg-accent/50'
                 }`}
               >
-                <Icon className={`w-5 h-5 mt-0.5 flex-shrink-0 ${locked ? 'text-blue-400/60 dark:text-blue-300/60' : 'text-muted-foreground'}`} />
+                <Icon className={`w-5 h-5 mt-0.5 flex-shrink-0 ${locked ? 'text-[color:var(--accent)]' : 'text-muted-foreground'}`} />
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2">
                     <span className="text-sm font-medium">{usage.label}</span>
-                    {locked && <Crown className="w-3 h-3 text-blue-400 dark:text-blue-300" />}
+                    {locked && <Crown className="w-3 h-3 text-[color:var(--accent)]" />}
                   </div>
                   <p className="text-xs text-muted-foreground mt-0.5 leading-snug">{usage.description}</p>
 
@@ -484,7 +484,7 @@ export function AssetExportsTab({ assetId, assetCategory, assetTypeId, planType,
                   )}
 
                   {hint && (
-                    <p className="mt-2 flex items-start gap-1 text-[11px] leading-snug text-amber-400">
+                    <p className="mt-2 flex items-start gap-1 text-[11px] leading-snug text-[color:var(--attention-on-soft)]">
                       <AlertCircle className="w-3 h-3 mt-px shrink-0" />
                       {hint.message}
                     </p>
@@ -498,7 +498,7 @@ export function AssetExportsTab({ assetId, assetCategory, assetTypeId, planType,
 
                   {locked && (
                     <Badge
-                      className="mt-1.5 text-[10px] px-1.5 py-0 bg-blue-500/15 text-blue-400 dark:text-blue-300 border border-blue-500/30 dark:border-blue-500/20 hover:bg-blue-500/20"
+                      className="mt-1.5 text-[10px] px-1.5 py-0 bg-[color:var(--accent-soft)] text-[color:var(--accent)] border border-[color:var(--border-info)] hover:border-[color:var(--accent)]"
                       title={entry?.lockReason?.message}
                     >
                       Premium
@@ -528,19 +528,19 @@ export function AssetExportsTab({ assetId, assetCategory, assetTypeId, planType,
                 onClick={() => ouvrirExport(usage.type, usage.premiumOnly)}
                 className={`flex items-start gap-3 p-4 rounded-lg border text-left transition-colors w-full ${
                   locked
-                    ? `border-blue-500/30 bg-blue-500/5 ${premiumTheme.colors.bgDark} hover:bg-blue-500/10`
+                    ? `border-[color:var(--border-info)] bg-[color:var(--accent-soft)] hover:border-[color:var(--accent)]`
                     : 'hover:bg-accent/50'
                 }`}
               >
-                <Icon className={`w-5 h-5 mt-0.5 flex-shrink-0 ${locked ? 'text-blue-400/60 dark:text-blue-300/60' : 'text-muted-foreground'}`} />
+                <Icon className={`w-5 h-5 mt-0.5 flex-shrink-0 ${locked ? 'text-[color:var(--accent)]' : 'text-muted-foreground'}`} />
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2">
                     <span className="text-sm font-medium">{usage.label}</span>
-                    {locked && <Crown className="w-3 h-3 text-blue-400 dark:text-blue-300" />}
+                    {locked && <Crown className="w-3 h-3 text-[color:var(--accent)]" />}
                   </div>
                   <p className="text-xs text-muted-foreground mt-0.5 leading-snug">{usage.description}</p>
                   {locked && (
-                    <Badge className="mt-1.5 text-[10px] px-1.5 py-0 bg-blue-500/15 text-blue-400 dark:text-blue-300 border border-blue-500/30 dark:border-blue-500/20 hover:bg-blue-500/20">
+                    <Badge className="mt-1.5 text-[10px] px-1.5 py-0 bg-[color:var(--accent-soft)] text-[color:var(--accent)] border border-[color:var(--border-info)] hover:border-[color:var(--accent)]">
                       Premium
                     </Badge>
                   )}
@@ -567,9 +567,9 @@ export function AssetExportsTab({ assetId, assetCategory, assetTypeId, planType,
             <div className="space-y-2">
               {transmissions.map(tr => {
                 const statusConfig = {
-                  pending:   { label: 'En attente',  icon: Clock,         color: 'text-blue-400' },
-                  accepted:  { label: 'Acceptée',    icon: CheckCircle2,  color: 'text-green-500' },
-                  refused:   { label: 'Refusée',     icon: XCircle,       color: 'text-red-400' },
+                  pending:   { label: 'En attente',  icon: Clock,         color: 'text-[color:var(--accent)]' },
+                  accepted:  { label: 'Acceptée',    icon: CheckCircle2,  color: 'text-[color:var(--text-success)]' },
+                  refused:   { label: 'Refusée',     icon: XCircle,       color: 'text-[color:var(--danger)]' },
                   cancelled: { label: 'Annulée',     icon: X,             color: 'text-muted-foreground' },
                 }[tr.status] ?? { label: tr.status, icon: Clock, color: 'text-muted-foreground' };
                 const StatusIco = statusConfig.icon;
@@ -644,7 +644,7 @@ export function AssetExportsTab({ assetId, assetCategory, assetTypeId, planType,
                       {exp.createdBy && <> · par {exp.createdBy.name ?? `l’utilisateur n° ${exp.createdBy.userId}`}</>}
                     </p>
                     {st === 'failed' && exp.errorMessage && (
-                      <p className="text-xs text-red-500 truncate mt-0.5">{exp.errorMessage}</p>
+                      <p className="text-xs text-[color:var(--danger)] truncate mt-0.5">{exp.errorMessage}</p>
                     )}
                     {st === 'partial' && (
                       <p className="text-xs text-[color:var(--text-warning)] mt-0.5">
@@ -724,7 +724,7 @@ export function AssetExportsTab({ assetId, assetCategory, assetTypeId, planType,
           <AlertDialogFooter>
             <AlertDialogCancel disabled={deleting !== null}>Annuler</AlertDialogCancel>
             <AlertDialogAction
-              className="bg-destructive hover:bg-destructive/90 text-white"
+              className="bg-destructive hover:bg-destructive/90 text-[color:var(--bg-card)]"
               onClick={() => deleteConfirm && handleDelete(deleteConfirm.id)}
               disabled={deleting !== null}
             >

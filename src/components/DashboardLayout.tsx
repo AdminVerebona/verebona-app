@@ -370,7 +370,7 @@ export function DashboardLayout({ children, user: userProp }: DashboardLayoutPro
           <button
             onClick={() => setIsMobileMenuOpen(true)}
             aria-label="Compte et réglages"
-            className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full bg-[color:var(--accent)] text-[12px] font-semibold text-white"
+            className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full bg-[color:var(--accent)] text-[12px] font-bold text-[color:var(--on-accent)]"
           >
             {getUserInitials}
           </button>

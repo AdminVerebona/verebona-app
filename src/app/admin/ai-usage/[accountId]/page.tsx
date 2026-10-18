@@ -40,17 +40,17 @@ function fmtDate(v: any) {
 
 function BusinessResultBadge({ result }: { result: string }) {
   const colors: Record<string, string> = {
-    success: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20',
-    success_with_warning: 'bg-yellow-500/10 text-yellow-400 border-yellow-500/20',
-    error: 'bg-red-500/10 text-red-400 border-red-500/20',
-    refused_quota: 'bg-amber-500/10 text-amber-400 border-amber-500/20',
-    refused_security: 'bg-red-500/10 text-red-400 border-red-500/20',
-    incomplete: 'bg-slate-500/10 text-slate-400 border-slate-500/20',
-    cancelled: 'bg-slate-500/10 text-slate-400 border-slate-500/20',
-    pending: 'bg-blue-500/10 text-blue-400 border-blue-500/20',
+    success: 'bg-[color:var(--bg-success)] text-[color:var(--text-success)] border-[color:var(--border-success)]',
+    success_with_warning: 'bg-[color:var(--bg-warning)] text-[color:var(--text-warning-soft)] border-[color:var(--border-warning)]',
+    error: 'bg-[color:var(--bg-danger)] text-[color:var(--text-danger)] border-[color:var(--border-danger)]',
+    refused_quota: 'bg-[color:var(--bg-warning)] text-[color:var(--text-warning-soft)] border-[color:var(--border-warning)]',
+    refused_security: 'bg-[color:var(--bg-danger)] text-[color:var(--text-danger)] border-[color:var(--border-danger)]',
+    incomplete: 'bg-[color:var(--bg-subtle)] text-[color:var(--text-muted)] border-[color:var(--border)]',
+    cancelled: 'bg-[color:var(--bg-subtle)] text-[color:var(--text-muted)] border-[color:var(--border)]',
+    pending: 'bg-[color:var(--bg-subtle)] text-[color:var(--text-secondary)] border-[color:var(--border)]',
   };
   return (
-    <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold border ${colors[result] ?? 'bg-slate-500/10 text-slate-400 border-slate-500/20'}`}>
+    <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold border ${colors[result] ?? 'bg-[color:var(--bg-subtle)] text-[color:var(--text-muted)] border-[color:var(--border)]'}`}>
       {AI_BUSINESS_RESULT_LABELS[result as keyof typeof AI_BUSINESS_RESULT_LABELS] ?? result}
     </span>
   );
@@ -59,12 +59,12 @@ function BusinessResultBadge({ result }: { result: string }) {
 function SearchLogRow({ log }: { log: any }) {
   const [expanded, setExpanded] = useState(false);
   const modeColors: Record<string, string> = {
-    answer: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20',
-    sources_only: 'bg-blue-500/10 text-blue-400 border-blue-500/20',
-    upgrade_hint: 'bg-amber-500/10 text-amber-400 border-amber-500/20',
-    no_result: 'bg-slate-500/10 text-slate-400 border-slate-500/20',
-    error: 'bg-red-500/10 text-red-400 border-red-500/20',
-    blocked: 'bg-red-500/10 text-red-400 border-red-500/20',
+    answer: 'bg-[color:var(--bg-success)] text-[color:var(--text-success)] border-[color:var(--border-success)]',
+    sources_only: 'bg-[color:var(--bg-subtle)] text-[color:var(--text-secondary)] border-[color:var(--border)]',
+    upgrade_hint: 'bg-[color:var(--bg-warning)] text-[color:var(--text-warning-soft)] border-[color:var(--border-warning)]',
+    no_result: 'bg-[color:var(--bg-subtle)] text-[color:var(--text-muted)] border-[color:var(--border)]',
+    error: 'bg-[color:var(--bg-danger)] text-[color:var(--text-danger)] border-[color:var(--border-danger)]',
+    blocked: 'bg-[color:var(--bg-danger)] text-[color:var(--text-danger)] border-[color:var(--border-danger)]',
   };
   return (
     <div className="overflow-hidden">
@@ -88,7 +88,7 @@ function SearchLogRow({ log }: { log: any }) {
             {log.durationMs && <p className="text-[10px] text-[color:var(--text-muted)]">{log.durationMs}ms</p>}
           </div>
           <div className="text-right">
-            <p className="text-xs font-semibold text-amber-400">{formatCostMicros(log.costMicros)}</p>
+            <p className="text-xs font-semibold text-[color:var(--text-primary)] tabular-nums">{formatCostMicros(log.costMicros)}</p>
             <p className="text-[10px] text-[color:var(--text-muted)]">{log.sourcesCount} source{log.sourcesCount !== 1 ? 's' : ''}</p>
           </div>
         </div>
@@ -108,8 +108,8 @@ function SearchLogRow({ log }: { log: any }) {
             </div>
           )}
           {log.blockReason && (
-            <div className="flex items-start gap-2 px-3 py-2 rounded-lg bg-red-500/5 border border-red-500/20">
-              <AlertTriangle className="w-3.5 h-3.5 text-red-400 shrink-0 mt-0.5" />
+            <div className="flex items-start gap-2 px-3 py-2 rounded-lg bg-[color:var(--bg-danger)] border border-[color:var(--border-danger)]">
+              <AlertTriangle className="w-3.5 h-3.5 text-[color:var(--text-danger)] shrink-0 mt-0.5" />
               <p className="text-xs text-[color:var(--text-danger)]">{log.blockReason}</p>
             </div>
           )}
@@ -157,10 +157,10 @@ function OperationRow({ op }: { op: any }) {
           </div>
           <div>
             <p className="text-xs text-[color:var(--text-secondary)]">{op.providerPrimary ?? '—'}</p>
-            {op.usedFallback && <span className="text-[10px] text-amber-400">+ fallback</span>}
+            {op.usedFallback && <span className="text-[10px] text-[color:var(--text-warning-soft)]">+ fallback</span>}
           </div>
           <div className="text-right">
-            <p className="text-xs font-semibold text-amber-400">{formatCostMicros(op.totalCostMicros)}</p>
+            <p className="text-xs font-semibold text-[color:var(--text-primary)] tabular-nums">{formatCostMicros(op.totalCostMicros)}</p>
             {op.durationMs && <p className="text-[10px] text-[color:var(--text-muted)]">{op.durationMs}ms</p>}
           </div>
         </div>
@@ -201,30 +201,30 @@ function OperationRow({ op }: { op: any }) {
               {/* Analyse détaillée */}
               <div className="flex flex-wrap gap-2">
                 {op.origin && (
-                  <span className="text-[10px] px-2 py-0.5 rounded bg-sky-500/10 text-sky-400 border border-sky-500/20">
+                  <span className="text-[10px] px-2 py-0.5 rounded bg-[color:var(--bg-subtle)] text-[color:var(--text-secondary)] border border-[color:var(--border)]">
                     Origine : {op.origin}
                   </span>
                 )}
                 {op.environment && (
-                  <span className="text-[10px] px-2 py-0.5 rounded bg-slate-500/10 text-slate-400 border border-slate-500/20">
+                  <span className="text-[10px] px-2 py-0.5 rounded bg-[color:var(--bg-subtle)] text-[color:var(--text-muted)] border border-[color:var(--border)]">
                     {op.environment}
                   </span>
                 )}
                 {op.isReanalysis && (
-                  <span className="text-[10px] px-2 py-0.5 rounded bg-amber-500/10 text-amber-400 border border-amber-500/20">
+                  <span className="text-[10px] px-2 py-0.5 rounded bg-[color:var(--bg-warning)] text-[color:var(--text-warning-soft)] border border-[color:var(--border-warning)]">
                     Re‑analyse
                   </span>
                 )}
                 {op.completedAt && (
-                  <span className="text-[10px] px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                  <span className="text-[10px] px-2 py-0.5 rounded bg-[color:var(--bg-success)] text-[color:var(--text-success)] border border-[color:var(--border-success)]">
                     Terminé {fmtDate(op.completedAt)}
                   </span>
                 )}
               </div>
               {op.usedFallback && (
-                <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-amber-500/5 border border-amber-500/20">
-                  <AlertTriangle className="w-3.5 h-3.5 text-amber-400 shrink-0" />
-                  <p className="text-xs text-[color:var(--text-warning)]">Fallback utilisé — le modèle nominal n'a pas répondu correctement</p>
+                <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-[color:var(--bg-warning)] border border-[color:var(--border-warning)]">
+                  <AlertTriangle className="w-3.5 h-3.5 text-[color:var(--text-warning-soft)] shrink-0" />
+                  <p className="text-xs text-[color:var(--text-warning-soft)]">Fallback utilisé — le modèle nominal n'a pas répondu correctement</p>
                 </div>
               )}
               {opDetail?.fileName && (
@@ -238,9 +238,9 @@ function OperationRow({ op }: { op: any }) {
                   <p className="text-[10px] font-semibold text-[color:var(--text-muted)] uppercase tracking-wider">Versions d'analyse</p>
                   {opDetail.analysisVersions.map((av: any) => (
                     <div key={av.id} className="flex items-center gap-3 px-3 py-2 rounded-lg bg-[color:var(--bg-card)] border border-[color:var(--border-subtle)]">
-                      <span className="text-[10px] font-mono text-violet-400">v{av.versionNumber}</span>
+                      <span className="text-[10px] font-mono text-[color:var(--accent)]">v{av.versionNumber}</span>
                       <span className="text-xs text-[color:var(--text-secondary)] flex-1">{av.modelProvider ?? '—'}</span>
-                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400">{av.status}</span>
+                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-[color:var(--bg-success)] text-[color:var(--text-success)]">{av.status}</span>
                       {av.durationMs != null && (
                         <span className="text-[10px] text-[color:var(--text-muted)]">{av.durationMs}ms</span>
                       )}
@@ -256,15 +256,15 @@ function OperationRow({ op }: { op: any }) {
                   <span className="text-[10px] font-mono text-[color:var(--text-muted)] w-6 text-right">{step.stepOrder}</span>
                   <span className="text-xs text-[color:var(--text-secondary)] flex-1">{step.stepName}</span>
                   <span className={`text-[10px] px-1.5 py-0.5 rounded ${
-                    step.status === 'done' ? 'bg-emerald-500/10 text-emerald-400' :
-                    step.status === 'error' ? 'bg-red-500/10 text-red-400' :
+                    step.status === 'done' ? 'bg-[color:var(--bg-success)] text-[color:var(--text-success)]' :
+                    step.status === 'error' ? 'bg-[color:var(--bg-danger)] text-[color:var(--text-danger)]' :
                     'bg-[color:var(--border-subtle)] text-[color:var(--text-muted)]'
                   }`}>
                     {AI_PIPELINE_STEP_LABELS[step.status as keyof typeof AI_PIPELINE_STEP_LABELS] ?? step.status}
                   </span>
                   <span className="text-[10px] text-[color:var(--text-muted)]">{step.provider ?? '—'}</span>
-                  {step.isFallback && <span className="text-[10px] text-amber-400">fallback</span>}
-                  <span className="text-[10px] text-amber-400/70">{step.costMicros ? formatCostMicros(step.costMicros) : '—'}</span>
+                  {step.isFallback && <span className="text-[10px] text-[color:var(--text-warning-soft)]">fallback</span>}
+                  <span className="text-[10px] text-[color:var(--text-primary)] tabular-nums">{step.costMicros ? formatCostMicros(step.costMicros) : '—'}</span>
                   {step.durationMs && <span className="text-[10px] text-[color:var(--text-muted)]">{step.durationMs}ms</span>}
                 </div>
               ))}
@@ -274,15 +274,15 @@ function OperationRow({ op }: { op: any }) {
           {(op.errorMessage || op.warningMessage) && (
             <div className="mt-3 space-y-1.5">
               {op.errorMessage && (
-                <div className="flex items-start gap-2 px-3 py-2 rounded-lg bg-red-500/5 border border-red-500/20">
-                  <AlertTriangle className="w-3.5 h-3.5 text-red-400 shrink-0 mt-0.5" />
+                <div className="flex items-start gap-2 px-3 py-2 rounded-lg bg-[color:var(--bg-danger)] border border-[color:var(--border-danger)]">
+                  <AlertTriangle className="w-3.5 h-3.5 text-[color:var(--text-danger)] shrink-0 mt-0.5" />
                   <p className="text-xs text-[color:var(--text-danger)] font-mono break-all">{op.errorMessage}</p>
                 </div>
               )}
               {op.warningMessage && (
-                <div className="flex items-start gap-2 px-3 py-2 rounded-lg bg-amber-500/5 border border-amber-500/20">
-                  <AlertTriangle className="w-3.5 h-3.5 text-amber-400 shrink-0 mt-0.5" />
-                  <p className="text-xs text-[color:var(--text-warning)]">{op.warningMessage}</p>
+                <div className="flex items-start gap-2 px-3 py-2 rounded-lg bg-[color:var(--bg-warning)] border border-[color:var(--border-warning)]">
+                  <AlertTriangle className="w-3.5 h-3.5 text-[color:var(--text-warning-soft)] shrink-0 mt-0.5" />
+                  <p className="text-xs text-[color:var(--text-warning-soft)]">{op.warningMessage}</p>
                 </div>
               )}
             </div>
@@ -344,7 +344,7 @@ export default function AdminAiUsageAccountPage() {
   if (loading) {
     return (
       <div className="flex justify-center items-center py-24">
-        <Loader2 className="w-8 h-8 animate-spin text-violet-400" />
+        <Loader2 className="w-8 h-8 animate-spin text-[color:var(--accent)]" />
       </div>
     );
   }
@@ -374,7 +374,7 @@ export default function AdminAiUsageAccountPage() {
           <Button
             size="sm"
             variant="outline"
-            className="border-red-500/30 text-[color:var(--text-danger)] hover:bg-red-500/10 shrink-0"
+            className="border-[color:var(--border-danger)] text-[color:var(--text-danger)] hover:bg-[color:var(--bg-danger)] shrink-0"
             onClick={() => setUnlockDialog({ open: true, reason: '' })}
           >
             <Unlock className="w-3.5 h-3.5 mr-1.5" />Débloquer ({activeLocks.length})
@@ -392,7 +392,7 @@ export default function AdminAiUsageAccountPage() {
           </p>
           <div className="h-1.5 rounded-full bg-[color:var(--border-subtle)] overflow-hidden">
             <div
-              className={`h-full rounded-full ${docsPct >= 100 ? 'bg-red-500' : docsPct >= 90 ? 'bg-amber-500' : 'bg-violet-500'}`}
+              className={`h-full rounded-full ${docsPct >= 100 ? 'bg-[color:var(--danger)]' : docsPct >= 90 ? 'bg-[color:var(--attention)]' : 'bg-[color:var(--accent)]'}`}
               style={{ width: `${docsPct}%` }}
             />
           </div>
@@ -403,7 +403,7 @@ export default function AdminAiUsageAccountPage() {
               <p className="text-xs text-[color:var(--text-muted)]">Plafond IA ({cap.periodKey})</p>
               <button
                 type="button"
-                className="text-[10px] text-violet-400 hover:underline"
+                className="text-[10px] text-[color:var(--accent)] hover:underline"
                 onClick={() => setCapDialog({ open: true, value: cap.overrideMicros != null ? String(cap.overrideMicros / 1_000_000) : '', reason: '' })}
               >
                 Modifier
@@ -416,7 +416,7 @@ export default function AdminAiUsageAccountPage() {
             {cap.capMicros ? (
               <div className="h-1.5 rounded-full bg-[color:var(--border-subtle)] overflow-hidden">
                 <div
-                  className={`h-full rounded-full ${capPct >= 100 ? 'bg-red-500' : capPct >= 80 ? 'bg-amber-500' : 'bg-violet-500'}`}
+                  className={`h-full rounded-full ${capPct >= 100 ? 'bg-[color:var(--danger)]' : capPct >= 80 ? 'bg-[color:var(--attention)]' : 'bg-[color:var(--accent)]'}`}
                   style={{ width: `${capPct}%` }}
                 />
               </div>
@@ -427,11 +427,11 @@ export default function AdminAiUsageAccountPage() {
             </p>
           </div>
         )}
-        <div className="rounded-xl border border-amber-500/30 bg-amber-500/5 p-3">
+        <div className="rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--bg-card)] p-3">
           <p className="text-xs text-[color:var(--text-muted)]">Coût total (année)</p>
-          <p className="text-xl font-bold text-[color:var(--text-warning)]">{formatCostMicros(data.totalCostMicrosThisYear)}</p>
+          <p className="text-xl font-bold text-[color:var(--text-primary)] tabular-nums">{formatCostMicros(data.totalCostMicrosThisYear)}</p>
         </div>
-        <div className={`rounded-xl border p-3 ${activeLocks.length > 0 ? 'border-red-500/30 bg-red-500/5' : 'border-emerald-500/30 bg-emerald-500/5'}`}>
+        <div className={`rounded-xl border p-3 ${activeLocks.length > 0 ? 'border-[color:var(--border-danger)] bg-[color:var(--bg-danger)]' : 'border-[color:var(--border-success)] bg-[color:var(--bg-success)]'}`}>
           <p className="text-xs text-[color:var(--text-muted)]">Blocages sécurité</p>
           <p className={`text-xl font-bold ${activeLocks.length > 0 ? 'text-[color:var(--text-danger)]' : 'text-[color:var(--text-success)]'}`}>{activeLocks.length}</p>
         </div>
@@ -465,14 +465,14 @@ export default function AdminAiUsageAccountPage() {
                       <p className="text-xs font-medium text-[color:var(--text-primary)]">{label}</p>
                       <div className="flex items-center gap-2 mt-1">
                         <div className="h-1 rounded-full bg-[color:var(--border-subtle)] flex-1 max-w-[120px] overflow-hidden">
-                          <div className="h-full rounded-full bg-violet-500/60" style={{ width: `${pct}%` }} />
+                          <div className="h-full rounded-full bg-[color:var(--accent)]" style={{ width: `${pct}%` }} />
                         </div>
-                        <span className={`text-[10px] ${r.successCount < r.opsCount ? 'text-amber-400' : 'text-[color:var(--text-muted)]'}`}>
+                        <span className={`text-[10px] ${r.successCount < r.opsCount ? 'text-[color:var(--text-warning-soft)]' : 'text-[color:var(--text-muted)]'}`}>
                           {r.successCount < r.opsCount ? `${r.successCount} / ${r.opsCount} ops` : `${r.opsCount} ops`}
                         </span>
                       </div>
                     </div>
-                    <span className="text-xs font-semibold text-amber-400 tabular-nums">{formatCostMicros(r.totalCostMicros)}</span>
+                    <span className="text-xs font-semibold text-[color:var(--text-primary)] tabular-nums">{formatCostMicros(r.totalCostMicros)}</span>
                   </div>
                 );
               })}
@@ -482,20 +482,20 @@ export default function AdminAiUsageAccountPage() {
       })()}
 
       <Tabs defaultValue="operations">
-        <TabsList className="bg-[rgba(15,23,42,0.5)] border border-[color:var(--border-subtle)] p-1 rounded-xl w-fit">
-          <TabsTrigger value="operations" className="rounded-lg data-[state=active]:bg-violet-500 data-[state=active]:text-white">
+        <TabsList className="h-auto flex-wrap justify-start">
+          <TabsTrigger value="operations" className="rounded-lg">
             <Activity className="w-3.5 h-3.5 mr-1.5" />Analyses
           </TabsTrigger>
-          <TabsTrigger value="search" className="rounded-lg data-[state=active]:bg-sky-500 data-[state=active]:text-white">
+          <TabsTrigger value="search" className="rounded-lg">
             <Search className="w-3.5 h-3.5 mr-1.5" />Recherches
           </TabsTrigger>
-          <TabsTrigger value="security" className="rounded-lg data-[state=active]:bg-red-500 data-[state=active]:text-white">
+          <TabsTrigger value="security" className="rounded-lg">
             <Shield className="w-3.5 h-3.5 mr-1.5" />Sécurité
           </TabsTrigger>
-          <TabsTrigger value="costs" className="rounded-lg data-[state=active]:bg-amber-500 data-[state=active]:text-white">
+          <TabsTrigger value="costs" className="rounded-lg">
             <Euro className="w-3.5 h-3.5 mr-1.5" />Coûts
           </TabsTrigger>
-          <TabsTrigger value="audit" className="rounded-lg data-[state=active]:bg-slate-500 data-[state=active]:text-white">
+          <TabsTrigger value="audit" className="rounded-lg">
             <Database className="w-3.5 h-3.5 mr-1.5" />Audit
           </TabsTrigger>
         </TabsList>
@@ -504,7 +504,7 @@ export default function AdminAiUsageAccountPage() {
         <TabsContent value="operations" className="mt-4 space-y-2">
           {(data.recentOperations ?? []).length === 0 ? (
             <div className="flex flex-col items-center justify-center py-12 gap-3">
-              <CheckCircle2 className="w-8 h-8 text-emerald-500" />
+              <CheckCircle2 className="w-8 h-8 text-[color:var(--text-success)]" />
               <p className="text-sm text-[color:var(--text-muted)]">Aucune opération enregistrée.</p>
             </div>
           ) : (
@@ -518,19 +518,19 @@ export default function AdminAiUsageAccountPage() {
         <TabsContent value="security" className="mt-4 space-y-3">
           {(data.activeSecurityLocks ?? []).length === 0 ? (
             <div className="flex flex-col items-center justify-center py-12 gap-3">
-              <CheckCircle2 className="w-8 h-8 text-emerald-500" />
+              <CheckCircle2 className="w-8 h-8 text-[color:var(--text-success)]" />
               <p className="text-sm text-[color:var(--text-muted)]">Aucun blocage sécurité.</p>
             </div>
           ) : (
             (data.activeSecurityLocks ?? []).map((lock: any) => (
-              <div key={lock.id} className={`rounded-xl border p-4 space-y-2 ${lock.isResolved ? 'border-[color:var(--border-subtle)] opacity-60' : 'border-red-500/30 bg-red-500/5'}`}>
+              <div key={lock.id} className={`rounded-xl border p-4 space-y-2 ${lock.isResolved ? 'border-[color:var(--border-subtle)] opacity-60' : 'border-[color:var(--border-danger)] bg-[color:var(--bg-danger)]'}`}>
                 <div className="flex items-start justify-between gap-3">
                   <div className="flex items-center gap-2">
-                    {lock.isResolved ? <CheckCircle2 className="w-4 h-4 text-emerald-500" /> : <Lock className="w-4 h-4 text-red-400" />}
+                    {lock.isResolved ? <CheckCircle2 className="w-4 h-4 text-[color:var(--text-success)]" /> : <Lock className="w-4 h-4 text-[color:var(--text-danger)]" />}
                     <span className="text-sm font-medium text-[color:var(--text-primary)]">
                       {AI_SECURITY_LOCK_LABELS[lock.lockType as keyof typeof AI_SECURITY_LOCK_LABELS] ?? lock.lockType}
                     </span>
-                    {lock.isResolved && <span className="text-[10px] text-emerald-400 bg-emerald-500/10 px-1.5 py-0.5 rounded-full">Résolu</span>}
+                    {lock.isResolved && <span className="text-[10px] text-[color:var(--text-success)] bg-[color:var(--bg-success)] px-1.5 py-0.5 rounded-full">Résolu</span>}
                   </div>
                   <p className="text-xs text-[color:var(--text-muted)]">{fmtDate(lock.triggeredAt)}</p>
                 </div>
@@ -573,9 +573,9 @@ export default function AdminAiUsageAccountPage() {
             return (
               <>
                 <div className="rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--bg-card)] overflow-hidden">
-                  <div className="flex items-center justify-between px-4 py-3 border-b border-[color:var(--border-subtle)] bg-violet-500/5">
+                  <div className="flex items-center justify-between px-4 py-3 border-b border-[color:var(--border-subtle)] bg-[color:var(--accent-soft)]">
                     <h3 className="text-sm font-semibold text-[color:var(--text-primary)]">Usage client (opérations utilisateur)</h3>
-                    <span className="text-sm font-bold text-[color:var(--text-warning)]">{formatCostMicros(total)}</span>
+                    <span className="text-sm font-bold text-[color:var(--text-primary)] tabular-nums">{formatCostMicros(total)}</span>
                   </div>
                   {allRows.length === 0 ? (
                     <p className="text-xs text-[color:var(--text-muted)] px-4 py-3">Aucune opération cette année.</p>
@@ -589,12 +589,12 @@ export default function AdminAiUsageAccountPage() {
                             </p>
                           </div>
                           <div className="text-right">
-                            <p className={`text-xs ${r.successCount < r.opsCount ? 'text-amber-400' : 'text-[color:var(--text-secondary)]'}`}>
+                            <p className={`text-xs ${r.successCount < r.opsCount ? 'text-[color:var(--text-warning-soft)]' : 'text-[color:var(--text-secondary)]'}`}>
                               {r.successCount < r.opsCount ? `${r.successCount} / ${r.opsCount} ops` : `${r.opsCount} ops`}
                             </p>
                           </div>
                           <div className="text-right">
-                            <p className="text-xs font-semibold text-amber-400">{formatCostMicros(r.totalCostMicros)}</p>
+                            <p className="text-xs font-semibold text-[color:var(--text-primary)] tabular-nums">{formatCostMicros(r.totalCostMicros)}</p>
                           </div>
                         </div>
                       ))}
@@ -615,7 +615,7 @@ export default function AdminAiUsageAccountPage() {
                         .map(([provider, cost]: any) => (
                           <div key={provider} className="flex items-center justify-between px-4 py-2.5 hover:bg-[color:var(--bg-hover)] transition-colors">
                             <span className="text-xs text-[color:var(--text-secondary)]">{provider}</span>
-                            <span className="text-xs font-semibold text-amber-400">{formatCostMicros(cost)}</span>
+                            <span className="text-xs font-semibold text-[color:var(--text-primary)] tabular-nums">{formatCostMicros(cost)}</span>
                           </div>
                         ))}
                     </div>
@@ -640,9 +640,9 @@ export default function AdminAiUsageAccountPage() {
                       <p className="text-xs text-[color:var(--text-muted)]">Recherches ({data.periodYear})</p>
                       <p className="text-xl font-bold text-[color:var(--text-primary)]">{ss.count}</p>
                     </div>
-                    <div className="rounded-xl border border-amber-500/30 bg-amber-500/5 p-3">
+                    <div className="rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--bg-card)] p-3">
                       <p className="text-xs text-[color:var(--text-muted)]">Coût total</p>
-                      <p className="text-xl font-bold text-[color:var(--text-warning)]">{formatCostMicros(ss.costMicros)}</p>
+                      <p className="text-xl font-bold text-[color:var(--text-primary)] tabular-nums">{formatCostMicros(ss.costMicros)}</p>
                     </div>
                     <div className="rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--bg-card)] p-3">
                       <p className="text-xs text-[color:var(--text-muted)]">Avec réponse IA</p>
@@ -678,7 +678,7 @@ export default function AdminAiUsageAccountPage() {
         <TabsContent value="audit" className="mt-4 space-y-2">
           {(data.auditLogs ?? []).length === 0 ? (
             <div className="flex flex-col items-center justify-center py-12 gap-3">
-              <CheckCircle2 className="w-8 h-8 text-emerald-500" />
+              <CheckCircle2 className="w-8 h-8 text-[color:var(--text-success)]" />
               <p className="text-sm text-[color:var(--text-muted)]">Aucune action admin enregistrée.</p>
             </div>
           ) : (
@@ -747,7 +747,7 @@ export default function AdminAiUsageAccountPage() {
       <Dialog open={unlockDialog.open} onOpenChange={o => setUnlockDialog(p => ({ ...p, open: o }))}>
         <DialogContent className="max-w-md">
           <DialogHeader>
-            <DialogTitle className="flex items-center gap-2"><Unlock className="w-4 h-4 text-emerald-400" />Lever les blocages</DialogTitle>
+            <DialogTitle className="flex items-center gap-2"><Unlock className="w-4 h-4 text-[color:var(--text-success)]" />Lever les blocages</DialogTitle>
             <DialogDescription>Débloquer tous les locks sécurité IA actifs de ce compte. Cette action est auditée.</DialogDescription>
           </DialogHeader>
           <Textarea
@@ -761,7 +761,6 @@ export default function AdminAiUsageAccountPage() {
             <Button
               onClick={handleUnlock}
               disabled={actionLoading || !unlockDialog.reason.trim()}
-              className="bg-emerald-600 hover:bg-emerald-700 text-white"
             >
               {actionLoading && <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" />}Débloquer
             </Button>

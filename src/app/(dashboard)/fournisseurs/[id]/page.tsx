@@ -156,8 +156,8 @@ export default function SupplierPage() {
         <CardContent className="pt-6">
           <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
             <div className="flex min-w-0 items-start gap-3">
-              <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-lg bg-blue-500/10">
-                <Building2 className="h-5 w-5 text-blue-400" aria-hidden />
+              <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-lg bg-[color:var(--accent-soft)]">
+                <Building2 className="h-5 w-5 text-[color:var(--accent)]" aria-hidden />
               </div>
               <div className="min-w-0">
                 <h1 className="truncate text-2xl font-bold">{s.name}</h1>
@@ -165,7 +165,7 @@ export default function SupplierPage() {
                   {s.status === 'archived' && <Badge variant="secondary">Archivé</Badge>}
                   <Badge variant="outline">{CONTACT_STATUS[s.contactStatus] ?? 'Coordonnées'}</Badge>
                   {data.openReviewCount > 0 && (
-                    <Badge variant="outline" className="border-orange-500/40 text-orange-400">
+                    <Badge variant="outline" className="border-[color:var(--attention-edge)] text-[color:var(--attention-on-soft)]">
                       {data.openReviewCount} information{data.openReviewCount > 1 ? 's' : ''} à vérifier
                     </Badge>
                   )}

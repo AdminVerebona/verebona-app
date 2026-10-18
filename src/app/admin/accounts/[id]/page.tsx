@@ -165,13 +165,13 @@ const PLAN_LABEL: Record<string, string> = {
 };
 
 const PAYMENT_STATUS: Record<string, { label: string; cls: string }> = {
-  paid: { label: 'Payé', cls: 'text-emerald-400' },
-  open: { label: 'En attente', cls: 'text-amber-400' },
-  draft: { label: 'Brouillon', cls: 'text-zinc-400' },
+  paid: { label: 'Payé', cls: 'text-[color:var(--text-success)]' },
+  open: { label: 'En attente', cls: 'text-[color:var(--text-warning-soft)]' },
+  draft: { label: 'Brouillon', cls: 'text-[color:var(--text-muted)]' },
   // SUB-010 : l'échec est identifié, sans motif technique.
-  uncollectible: { label: 'Échec', cls: 'text-red-400' },
-  void: { label: 'Annulé', cls: 'text-zinc-400' },
-  failed: { label: 'Échec', cls: 'text-red-400' },
+  uncollectible: { label: 'Échec', cls: 'text-[color:var(--text-danger)]' },
+  void: { label: 'Annulé', cls: 'text-[color:var(--text-muted)]' },
+  failed: { label: 'Échec', cls: 'text-[color:var(--text-danger)]' },
 };
 
 function PlanBadge({ plan }: { plan: string }) {
@@ -404,7 +404,7 @@ export default function AccountDetailPage() {
             <div className="px-5 py-4 border-b flex items-start justify-between gap-3">
               <div>
                 <h2 className="font-semibold flex items-center gap-2">
-                  <Crown className="h-4 w-4 text-amber-400" />
+                  <Crown className="h-4 w-4 text-[color:var(--accent)]" />
                   Abonnement et paiement
                 </h2>
                 <p className="text-xs text-muted-foreground mt-0.5">Consultation — les opérations financières se font dans Stripe</p>
@@ -465,7 +465,7 @@ export default function AccountDetailPage() {
               <div className="flex items-center gap-2 text-xs text-muted-foreground">
                 <span>{activeMembers.length} actif{activeMembers.length !== 1 ? 's' : ''}</span>
                 {pendingMembers.length > 0 && (
-                  <span className="text-amber-500">· {pendingMembers.length} invitation{pendingMembers.length !== 1 ? 's' : ''} en attente</span>
+                  <span className="text-[color:var(--text-warning-soft)]">· {pendingMembers.length} invitation{pendingMembers.length !== 1 ? 's' : ''} en attente</span>
                 )}
               </div>
             </div>
@@ -485,13 +485,13 @@ export default function AccountDetailPage() {
                     <div className="flex items-center gap-2 shrink-0 text-xs">
                       {/* ACC-D02 : titulaire / second utilisateur explicites. */}
                       <span className={`px-2 py-0.5 rounded-full font-medium ${
-                        m.role === 'owner' ? 'bg-amber-500/15 text-amber-400' : 'bg-zinc-500/15 text-zinc-400'
+                        m.role === 'owner' ? 'bg-[color:var(--accent-soft)] text-[color:var(--accent)]' : 'bg-[color:var(--bg-subtle)] text-[color:var(--text-muted)]'
                       }`}>
                         {m.role === 'owner' ? 'Titulaire' : 'Second utilisateur'}
                       </span>
                       <span className={
-                        m.status === 'active' ? 'text-emerald-500' :
-                        m.status === 'pending' ? 'text-amber-500' : 'text-zinc-500'
+                        m.status === 'active' ? 'text-[color:var(--text-success)]' :
+                        m.status === 'pending' ? 'text-[color:var(--text-warning-soft)]' : 'text-[color:var(--text-muted)]'
                       }>
                         {m.status === 'pending' ? 'Invitation en attente' : m.status === 'active' ? 'Actif' : m.status}
                       </span>
@@ -564,10 +564,10 @@ export default function AccountDetailPage() {
           <AccountWithdrawals accountId={account.id} />
 
           {/* ── Changement exceptionnel d'offre (ACC-A06) ── */}
-          <section className="rounded-xl border border-amber-500/30 bg-amber-500/5 overflow-hidden">
-            <div className="px-5 py-4 border-b border-amber-500/20">
+          <section className="rounded-xl border border-[color:var(--border-warning)] bg-[color:var(--bg-warning)] overflow-hidden">
+            <div className="px-5 py-4 border-b border-[color:var(--border-warning)]">
               <h2 className="font-semibold flex items-center gap-2">
-                <CreditCard className="h-4 w-4 text-amber-400" />
+                <CreditCard className="h-4 w-4 text-[color:var(--text-warning-soft)]" />
                 Changement exceptionnel d’offre
               </h2>
               <p className="text-xs text-muted-foreground mt-1">
@@ -803,7 +803,7 @@ export default function AccountDetailPage() {
                       variant="outline"
                       size="sm"
                       disabled={suspending}
-                      className={`gap-1.5 text-xs shrink-0 ${account.isActive ? 'border-destructive/40 text-destructive hover:bg-destructive/10' : 'border-emerald-500/40 text-emerald-500 hover:bg-emerald-500/10'}`}
+                      className={`gap-1.5 text-xs shrink-0 ${account.isActive ? 'border-destructive/40 text-destructive hover:bg-destructive/10' : 'border-[color:var(--border-success)] text-[color:var(--text-success)] hover:bg-[color:var(--bg-success)]'}`}
                     >
                       {suspending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : account.isActive ? <Ban className="h-3.5 w-3.5" /> : <Power className="h-3.5 w-3.5" />}
                       {account.isActive ? 'Suspendre' : 'Réactiver'}

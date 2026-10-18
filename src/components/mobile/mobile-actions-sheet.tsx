@@ -60,24 +60,24 @@ const ACTIONS = [
   {
     id: 'file' as const,
     icon: FileText,
-    iconBg: 'bg-blue-500/15',
-    iconColor: 'text-blue-400',
+    iconBg: 'bg-[color:var(--accent-soft)]',
+    iconColor: 'text-[color:var(--accent)]',
     label: 'Ajouter un document',
     sub: 'Photo, vidéo, PDF, scan ou fichier',
   },
   {
     id: 'agenda' as const,
     icon: CalendarDays,
-    iconBg: 'bg-violet-500/15',
-    iconColor: 'text-violet-400',
+    iconBg: 'bg-[color:var(--attention-soft)]',
+    iconColor: 'text-[color:var(--attention)]',
     label: 'Ajouter à l\'agenda',
     sub: 'Échéance, renouvellement ou rappel',
   },
   {
     id: 'asset' as const,
     icon: Package,
-    iconBg: 'bg-emerald-500/15',
-    iconColor: 'text-emerald-400',
+    iconBg: 'bg-[color:var(--accent-soft)]',
+    iconColor: 'text-[color:var(--accent)]',
     label: 'Ajouter un bien',
     sub: 'Logement, véhicule, matériel…',
   },
@@ -176,12 +176,12 @@ export function MobileActionsSheet({ open, onOpenChange, allViewports = false, a
               role="menu"
               aria-label="Ajouter"
               onKeyDown={naviguerClavier}
-              initial={{ opacity: 0, scale: 0.96, y: decalage }}
-              animate={{ opacity: 1, scale: 1, y: 0 }}
-              exit={{ opacity: 0, scale: 0.96, y: decalage }}
-              transition={{ duration: 0.14, ease: 'easeOut' }}
+              initial={{ opacity: 0, y: decalage }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: decalage }}
+              transition={{ duration: 0.18, ease: [0.2, 0.7, 0.2, 1] }}
               style={{ left: pos.left, top: pos.top, bottom: pos.bottom, width: Math.min(ADD_MENU_WIDTH, vw - 32), transformOrigin: pos.origin === 'bottom' ? 'bottom center' : pos.origin === 'top' ? 'top left' : 'left top' }}
-              className={`fixed z-50 rounded-2xl border border-[color:var(--border-subtle)] bg-[color:var(--bg-card)] p-1.5 shadow-2xl${viewport}`}
+              className={`fixed z-50 rounded-[16px] border border-[color:var(--border)] bg-[color:var(--bg-card)] p-1.5 shadow-[var(--vb-shadow-card)]${viewport}`}
             >
               {ACTIONS.map((action) => (
                 <button
@@ -196,9 +196,9 @@ export function MobileActionsSheet({ open, onOpenChange, allViewports = false, a
                   onPointerEnter={() => preloadAddForm(action.id)}
                   onTouchStart={() => preloadAddForm(action.id)}
                   onFocus={() => preloadAddForm(action.id)}
-                  className="flex w-full items-center gap-3 rounded-xl px-2.5 py-2.5 text-left transition-colors hover:bg-[color:var(--accent-soft)] focus-visible:bg-[color:var(--accent-soft)] focus-visible:outline-none active:scale-[0.98]"
+                  className="flex w-full items-center gap-3 rounded-[12px] px-2.5 py-2.5 text-left transition-colors duration-[180ms] hover:bg-[color:var(--accent-soft)] focus-visible:bg-[color:var(--accent-soft)]"
                 >
-                  <span className={`flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-lg ${action.iconBg}`}>
+                  <span className={`flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-[10px] ${action.iconBg}`}>
                     <action.icon className={`h-[18px] w-[18px] ${action.iconColor}`} aria-hidden />
                   </span>
                   <span className="min-w-0 flex-1">

@@ -76,7 +76,7 @@ export function AdditionalInfoFieldInput({ def, inputId, value, error, readOnly 
         </div>
       )}
       {error ? (
-        <p className="text-[11px] text-red-400">{error}</p>
+        <p className="text-[11px] text-[color:var(--danger)]">{error}</p>
       ) : def.help ? (
         <p className="text-[11px] text-muted-foreground/80 leading-snug">{def.help}</p>
       ) : null}
@@ -95,14 +95,14 @@ export function SaveIndicator({ state, onRetry }: { state: AutosaveState; onRetr
   }
   if (state === 'saved') {
     return (
-      <span className="inline-flex items-center gap-1 text-[11px] text-emerald-400" aria-live="polite">
+      <span className="inline-flex items-center gap-1 text-[11px] text-[color:var(--text-success)]" aria-live="polite">
         <Check className="w-3 h-3" />Enregistré
       </span>
     );
   }
   if (state === 'error') {
     return (
-      <span className="inline-flex items-center gap-1.5 text-[11px] text-red-400" aria-live="assertive">
+      <span className="inline-flex items-center gap-1.5 text-[11px] text-[color:var(--danger)]" aria-live="assertive">
         <AlertCircle className="w-3 h-3" />Échec de l&apos;enregistrement
         <button type="button" onClick={onRetry} className="inline-flex items-center gap-0.5 underline underline-offset-2 hover:text-foreground">
           <RefreshCw className="w-3 h-3" />Réessayer

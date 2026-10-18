@@ -20,8 +20,8 @@ function CancelContent() {
   return (
     <div className="min-h-screen flex items-center justify-center bg-[color:var(--bg-page)] p-4">
       <div className="w-full max-w-md space-y-4">
-        <div className="w-full bg-amber-950/50 border border-amber-500/30 rounded-lg px-4 py-3 flex items-start gap-3">
-          <AlertCircle className="w-4 h-4 text-amber-400 mt-0.5 flex-shrink-0" />
+        <div className="w-full bg-[color:var(--attention-soft)] border border-[color:var(--attention-edge)] rounded-lg px-4 py-3 flex items-start gap-3">
+          <AlertCircle className="w-4 h-4 text-[color:var(--attention-on-soft)] mt-0.5 flex-shrink-0" />
           <p className="text-sm text-[color:var(--text-warning-soft)]">
             La souscription n'a pas été finalisée.
           </p>

@@ -16,7 +16,7 @@ export function ConfirmLogoutDialog({ open, onOpenChange, onConfirm }: ConfirmLo
   return (
     <AlertDialog open={open} onOpenChange={onOpenChange}>
       <AlertDialogContent className="max-w-[380px] rounded-[18px] p-6">
-        <div className="w-11 h-11 rounded-[14px] mx-auto mb-3.5 flex items-center justify-center bg-[color:var(--accent-soft)] border border-blue-500/30 text-[color:var(--accent)]">
+        <div className="w-11 h-11 rounded-[14px] mx-auto mb-3.5 flex items-center justify-center bg-[color:var(--accent-soft)] border border-[color:var(--bubble-edge)] text-[color:var(--accent)]">
           <LogOut className="w-5 h-5" />
         </div>
         <p className="text-[15.5px] font-semibold text-center text-[color:var(--text-primary)] mb-1.5">Se déconnecter ?</p>
@@ -26,7 +26,7 @@ export function ConfirmLogoutDialog({ open, onOpenChange, onConfirm }: ConfirmLo
         <SegmentedActionBar
           items={[
             { icon: X, label: 'Annuler', onClick: () => onOpenChange(false) },
-            { icon: LogOut, label: 'Se déconnecter', tone: 'danger', onClick: async () => { onOpenChange(false); await onConfirm(); } },
+            { icon: LogOut, label: 'Se déconnecter', tone: 'accent', onClick: async () => { onOpenChange(false); await onConfirm(); } },
           ]}
         />
       </AlertDialogContent>

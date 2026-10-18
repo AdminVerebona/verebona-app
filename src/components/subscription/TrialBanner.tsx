@@ -90,8 +90,8 @@ export function TrialBanner() {
   // croire à un incident.
   if (trial.status === 'none' && trial.dejaConsomme && isRestricted) {
     return (
-      <div className="flex flex-wrap items-center gap-3 border-b border-amber-500/30 bg-amber-500/10 px-4 py-3">
-        <AlertTriangle className="h-4 w-4 shrink-0 text-amber-500" aria-hidden />
+      <div className="flex flex-wrap items-center gap-3 border-b border-[color:var(--attention-edge)] bg-[color:var(--attention-soft)] px-4 py-3">
+        <AlertTriangle className="h-4 w-4 shrink-0 text-[color:var(--attention-on-soft)]" aria-hidden />
         <p className="flex-1 text-sm text-[color:var(--text-primary)]">
           <span className="font-medium">
             L&apos;essai gratuit a déjà été utilisé avec cette adresse.
@@ -111,8 +111,8 @@ export function TrialBanner() {
   // Essai jamais ouvert sans trace d'usage : anomalie d'attribution.
   if (trial.status === 'none' && isRestricted) {
     return (
-      <div className="flex flex-wrap items-center gap-3 border-b border-amber-500/30 bg-amber-500/10 px-4 py-3">
-        <AlertTriangle className="h-4 w-4 shrink-0 text-amber-500" />
+      <div className="flex flex-wrap items-center gap-3 border-b border-[color:var(--attention-edge)] bg-[color:var(--attention-soft)] px-4 py-3">
+        <AlertTriangle className="h-4 w-4 shrink-0 text-[color:var(--attention-on-soft)]" />
         <p className="flex-1 text-sm text-[color:var(--text-primary)]">
           <span className="font-medium">Votre essai gratuit n&apos;a pas pu être activé.</span>{' '}
           <span className="text-[color:var(--text-muted)]">
@@ -137,8 +137,8 @@ export function TrialBanner() {
   // cette ligne sans mettre l'écran à jour.
   if (trial.status === 'expired' || isRestricted) {
     return (
-      <div className="flex flex-wrap items-center gap-3 border-b border-amber-500/30 bg-amber-500/10 px-4 py-3">
-        <AlertTriangle className="h-4 w-4 shrink-0 text-amber-500" />
+      <div className="flex flex-wrap items-center gap-3 border-b border-[color:var(--attention-edge)] bg-[color:var(--attention-soft)] px-4 py-3">
+        <AlertTriangle className="h-4 w-4 shrink-0 text-[color:var(--attention-on-soft)]" />
         <p className="flex-1 text-sm text-[color:var(--text-primary)]">
           <span className="font-medium">Votre essai gratuit est terminé.</span>{' '}
           <span className="text-[color:var(--text-muted)]">
@@ -160,11 +160,11 @@ export function TrialBanner() {
       <div
         className={
           urgent
-            ? 'flex flex-wrap items-center gap-3 border-b border-amber-500/30 bg-amber-500/10 px-4 py-3'
+            ? 'flex flex-wrap items-center gap-3 border-b border-[color:var(--attention-edge)] bg-[color:var(--attention-soft)] px-4 py-3'
             : 'flex flex-wrap items-center gap-3 border-b border-[color:var(--border)] bg-[color:var(--bg-subtle)] px-4 py-2.5'
         }
       >
-        <Clock className={urgent ? 'h-4 w-4 shrink-0 text-amber-500' : 'h-4 w-4 shrink-0 text-[color:var(--text-muted)]'} />
+        <Clock className={urgent ? 'h-4 w-4 shrink-0 text-[color:var(--attention-on-soft)]' : 'h-4 w-4 shrink-0 text-[color:var(--text-muted)]'} />
         <p className="flex-1 text-sm text-[color:var(--text-primary)]">
           <span className="font-medium">
             {libelleEssai(trial.daysRemaining)}

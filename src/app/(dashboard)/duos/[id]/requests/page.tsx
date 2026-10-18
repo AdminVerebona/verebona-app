@@ -97,7 +97,7 @@ export default function DuoInboxPage() {
       <div className="max-w-4xl mx-auto space-y-6">
         <div className="flex items-center justify-between">
           <div>
-            <h1 className="text-3xl font-bold tracking-tight">Inbox Duo</h1>
+            <h1 className="vb-app-title">Inbox Duo</h1>
             <p className="text-[color:var(--text-muted)] mt-1">
               Validez les actions importantes effectuées par l'autre membre.
             </p>
@@ -126,18 +126,18 @@ export default function DuoInboxPage() {
                 <CardContent className="p-0">
                   <div className="flex flex-col md:flex-row">
                     {/* Header coloré selon type */}
-                    <div className={`w-full md:w-2 ${req.type === 'MOVE' ? 'bg-blue-500' : 'bg-red-500'}`} />
+                    <div className={`w-full md:w-2 ${req.type === 'MOVE' ? 'bg-[color:var(--accent)]' : 'bg-[color:var(--danger)]'}`} />
                     
                     <div className="flex-1 p-5 space-y-4">
                       <div className="flex items-start justify-between gap-4">
                         <div className="flex items-center gap-3">
                           <div className={`w-10 h-10 rounded-xl flex items-center justify-center shadow-relief-sm ${
-                            req.type === 'MOVE' ? 'bg-blue-500/10' : 'bg-red-500/10'
+                            req.type === 'MOVE' ? 'bg-[color:var(--accent-soft)]' : 'bg-[color:var(--danger-soft)]'
                           }`}>
                             {req.type === 'MOVE' ? (
-                              <ArrowRight className={`w-5 h-5 ${req.type === 'MOVE' ? 'text-blue-500' : 'text-red-500'}`} />
+                              <ArrowRight className={`w-5 h-5 ${req.type === 'MOVE' ? 'text-[color:var(--accent)]' : 'text-[color:var(--danger)]'}`} />
                             ) : (
-                              <Trash2 className="w-5 h-5 text-red-500" />
+                              <Trash2 className="w-5 h-5 text-[color:var(--danger)]" />
                             )}
                           </div>
                           <div>
@@ -180,7 +180,7 @@ export default function DuoInboxPage() {
                             size="sm"
                             disabled={isProcessing === req.request_id}
                             onClick={() => handleRespond(req.request_id, 'REFUSE', req.type)}
-                            className="rounded-full px-4 gap-2 border-red-200 text-red-600 hover:bg-red-50 hover:text-red-700 dark:border-red-900/30 dark:hover:bg-red-900/20"
+                            className="rounded-full px-4 gap-2 border-[color:var(--danger-edge)] text-[color:var(--danger)] hover:bg-[color:var(--danger-soft)] hover:text-[color:var(--danger)]"
                           >
                             <XCircle className="w-4 h-4" />
                             Refuser
@@ -191,8 +191,8 @@ export default function DuoInboxPage() {
                             size="sm"
                             disabled={isProcessing === req.request_id}
                             onClick={() => handleRespond(req.request_id, 'ACCEPT', req.type)}
-                            className={`rounded-full px-6 gap-2 shadow-lg transition-all hover:scale-105 ${
-                              req.type === 'MOVE' ? 'bg-blue-600 hover:bg-blue-700' : 'bg-red-600 hover:bg-red-700'
+                            className={`rounded-[12px] px-6 gap-2 transition-colors ${
+                              req.type === 'MOVE' ? 'bg-[color:var(--accent)] hover:bg-[color:var(--accent-hover)] text-[color:var(--on-accent)]' : 'bg-[color:var(--danger)] hover:bg-[color:var(--danger)]/90 text-[color:var(--bg-card)]'
                             }`}
                           >
                             {isProcessing === req.request_id ? (

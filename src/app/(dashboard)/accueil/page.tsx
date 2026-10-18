@@ -281,7 +281,7 @@ export default function DashboardPage() {
             <button
               type="button"
               onClick={retry}
-              className="rounded-full bg-[color:var(--accent)] px-4 py-2 text-sm font-medium text-white"
+              className="rounded-full bg-[color:var(--accent)] px-4 py-2 text-sm font-medium text-[color:var(--on-accent)]"
             >
               Réessayer
             </button>

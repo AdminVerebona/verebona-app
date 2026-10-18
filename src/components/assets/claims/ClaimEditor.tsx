@@ -336,7 +336,7 @@ export function ClaimEditor({ assetId, claimId, category, assetOptions, readOnly
   if (loadError) {
     return (
       <div className="text-sm text-muted-foreground flex items-center gap-2">
-        <AlertCircle className="w-4 h-4 text-red-400" />
+        <AlertCircle className="w-4 h-4 text-[color:var(--danger)]" />
         Ce sinistre n&apos;a pas pu être chargé.
         <button type="button" className="underline underline-offset-2 hover:text-foreground" onClick={() => void load()}>Réessayer</button>
       </div>

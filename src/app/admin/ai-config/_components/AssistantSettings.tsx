@@ -123,8 +123,8 @@ export function AssistantSettings() {
     <details className="rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--bg-card)]" data-testid="assistant-settings">
       <summary className="cursor-pointer px-4 py-3 text-sm font-medium text-[color:var(--text-primary)]">
         Assistant · seuils et interrupteurs · plafond IA par compte
-        {enAttente.length > 0 && <span className="ml-2 text-xs text-amber-500">• {enAttente.length} demande(s) à valider</span>}
-        {data?.rateLimiter.degraded && <span className="ml-2 text-xs text-red-400">• limiteur de débit en repli mémoire</span>}
+        {enAttente.length > 0 && <span className="ml-2 text-xs text-[color:var(--text-warning-soft)]">• {enAttente.length} demande(s) à valider</span>}
+        {data?.rateLimiter.degraded && <span className="ml-2 text-xs text-[color:var(--text-danger)]">• limiteur de débit en repli mémoire</span>}
       </summary>
       {!data ? (
         <p className="px-4 pb-4 text-sm text-[color:var(--text-muted)]">Chargement…</p>
@@ -136,8 +136,8 @@ export function AssistantSettings() {
           </p>
 
           {enAttente.length > 0 && (
-            <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-3 space-y-2">
-              <p className="text-sm font-medium text-amber-500">Double validation en attente</p>
+            <div className="rounded-lg border border-[color:var(--border-warning)] bg-[color:var(--bg-warning)] p-3 space-y-2">
+              <p className="text-sm font-medium text-[color:var(--text-warning-soft)]">Double validation en attente</p>
               {enAttente.map((r) => {
                 const s = data.settings.find((x) => x.key === r.key);
                 const moi = r.requestedBy === data.adminUserId;
@@ -169,7 +169,7 @@ export function AssistantSettings() {
                   <div className="flex-1 min-w-[220px]">
                     <p className="text-sm text-[color:var(--text-primary)]">
                       {s.label}
-                      {s.doubleValidation && <span className="ml-2 text-[10px] rounded border border-amber-500/40 px-1.5 py-0.5 text-amber-500">double validation</span>}
+                      {s.doubleValidation && <span className="ml-2 text-[10px] rounded border border-[color:var(--border-warning)] px-1.5 py-0.5 text-[color:var(--text-warning-soft)]">double validation</span>}
                     </p>
                     <p className="text-xs text-[color:var(--text-muted)]">
                       {s.description} · {SOURCE[s.source]}{s.updatedAt ? ` (${formatDateTime(s.updatedAt)})` : ''} · <span className="font-mono">{s.env}</span>

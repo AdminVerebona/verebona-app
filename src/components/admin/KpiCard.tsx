@@ -35,8 +35,8 @@ const DIRECTION = {
 } as const;
 
 const TONE_CLASS: Record<KpiValue['tone'], string> = {
-  favorable: 'text-emerald-600 dark:text-emerald-400',
-  unfavorable: 'text-red-600 dark:text-red-400',
+  favorable: 'text-[color:var(--text-success)]',
+  unfavorable: 'text-[color:var(--text-danger)]',
   neutral: 'text-muted-foreground',
 };
 

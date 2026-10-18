@@ -10,6 +10,9 @@
  * En tête de la navigation, le bouton « + Ajouter » (document, échéance, bien),
  * qui ouvre le même panneau que le « + » de la barre basse mobile.
  * Élément actif : fond `accent-soft`, texte accent, bordure gauche 2 px.
+ * Charte « Sérénité » 2026 (lot 66) : fond `--sidebar` (#F2F0EA / #161F23),
+ * « + Ajouter » en bouton primaire pétrole plein (sans dégradé), pastille
+ * « À traiter » cuivre texte (#AA4E38 ; sombre #D66B53, chiffre encre).
  * Pas de pied de compte (bouton bas-gauche retiré le 5 oct. 2026, doublon de
  * l'avatar du header) : le compte s'ouvre par l'avatar du header.
  */
@@ -72,7 +75,7 @@ export function AppSidebar({ pathname, collapsed, onToggle, toProcessCount, foot
   return (
     <aside
       aria-label="Navigation principale"
-      className="hidden flex-shrink-0 flex-col overflow-hidden border-r border-[color:var(--border-subtle)] bg-[color:var(--sidebar)] transition-[width] duration-300 md:flex"
+      className="hidden flex-shrink-0 flex-col overflow-hidden border-r border-[color:var(--border-subtle)] bg-[color:var(--sidebar)] transition-[width] duration-[180ms] ease-[cubic-bezier(.2,.7,.2,1)] md:flex"
       style={{ width: sidebarWidth(collapsed) }}
     >
       <div className={`flex h-[60px] flex-shrink-0 items-center gap-2 ${collapsed ? 'justify-center px-2.5' : 'pl-[18px] pr-2.5'}`}>
@@ -88,7 +91,7 @@ export function AppSidebar({ pathname, collapsed, onToggle, toProcessCount, foot
               onClick={onToggle}
               aria-label={label}
               aria-expanded={!collapsed}
-              className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-[10px] text-[color:var(--text-muted)] transition-colors hover:bg-[color:var(--accent-soft)] hover:text-[color:var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--accent)]"
+              className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-[10px] text-[color:var(--text-muted)] transition-colors duration-[180ms] hover:bg-[color:var(--accent-soft)] hover:text-[color:var(--text-primary)]"
             >
               <PanelIcon />
             </button>
@@ -105,8 +108,7 @@ export function AppSidebar({ pathname, collapsed, onToggle, toProcessCount, foot
                 type="button"
                 onClick={onAdd}
                 aria-label={collapsed ? 'Ajouter un document, une échéance ou un bien' : undefined}
-                className={`flex h-10 w-full items-center gap-2 whitespace-nowrap rounded-xl text-[14px] font-semibold text-white shadow-sm transition-[filter] hover:brightness-110 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--accent)] focus-visible:ring-offset-2 focus-visible:ring-offset-[color:var(--sidebar)] ${collapsed ? 'justify-center px-0' : 'justify-center px-3'}`}
-                style={{ background: 'linear-gradient(135deg, var(--vb-blue-500), var(--vb-blue-700))' }}
+                className={`flex h-10 w-full items-center gap-2 whitespace-nowrap rounded-[12px] bg-[color:var(--accent)] text-[14px] font-bold text-[color:var(--on-accent)] transition-colors duration-[180ms] hover:bg-[color:var(--accent-hover)] ${collapsed ? 'justify-center px-0' : 'justify-center px-3'}`}
               >
                 <Plus className="h-[18px] w-[18px] flex-shrink-0" strokeWidth={2.4} aria-hidden />
                 {!collapsed && <span>Ajouter</span>}
@@ -117,7 +119,7 @@ export function AppSidebar({ pathname, collapsed, onToggle, toProcessCount, foot
         </div>
       )}
 
-      <nav className="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto overflow-x-hidden px-2.5">
+      <nav className="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto overflow-x-hidden px-2.5 py-1">
         {NAV_ENTRIES.map((item) => {
           const active = isNavActive(item, pathname);
           const itemBadge = item.href === '/accueil/a-traiter' ? badge : null;
@@ -128,19 +130,20 @@ export function AppSidebar({ pathname, collapsed, onToggle, toProcessCount, foot
               aria-current={active ? 'page' : undefined}
               aria-label={collapsed ? (itemBadge ? `${item.name}, ${itemBadge}` : item.name) : undefined}
               {...(item.dataGuide ? { 'data-guide': item.dataGuide } : {})}
-              className={`relative flex h-10 items-center gap-3 whitespace-nowrap rounded-xl border-l-2 px-3 text-[14px] font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--accent)] ${
+              className={`relative flex h-10 items-center gap-3 whitespace-nowrap rounded-[12px] border-l-2 px-3 text-[14px] transition-colors duration-[180ms] ${
                 collapsed ? 'justify-center px-0' : ''
               } ${
                 active
-                  ? 'border-[color:var(--accent)] bg-[color:var(--accent-soft)] text-[color:var(--accent)]'
-                  : 'border-transparent text-[color:var(--text-muted)] hover:bg-[color:var(--accent-soft)] hover:text-[color:var(--text-primary)]'
+                  ? 'border-[color:var(--accent)] bg-[color:var(--accent-soft)] font-semibold text-[color:var(--accent)]'
+                  : 'border-transparent font-medium text-[color:var(--text-muted)] hover:bg-[color:var(--accent-soft)] hover:text-[color:var(--text-primary)]'
               }`}
             >
               <item.icon className="h-4 w-4 flex-shrink-0" aria-hidden />
               {!collapsed && <span className="flex-1">{item.name}</span>}
               {itemBadge && (
                 <span
-                  className={`inline-flex h-[18px] min-w-[18px] items-center justify-center rounded-full bg-[color:var(--vb-red-500)] px-[5px] text-[10px] font-bold text-white ${collapsed ? 'absolute right-1 top-1' : ''}`}
+                  data-badge="a-traiter"
+                  className={`inline-flex h-[18px] min-w-[18px] items-center justify-center rounded-full bg-[color:var(--badge-todo)] px-[5px] text-[10px] font-bold tabular-nums text-[color:var(--on-badge-todo)] ${collapsed ? 'absolute right-1 top-1' : ''}`}
                   aria-hidden={collapsed ? true : undefined}
                 >
                   {itemBadge}

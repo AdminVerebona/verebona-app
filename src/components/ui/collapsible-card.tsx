@@ -72,10 +72,10 @@ export function CollapsibleCard({
       <Card ref={ref} id={anchorId} className={cn("gap-0", anchorId && "scroll-mt-24", className)}>
         <div className="px-6">
           <CollapsibleTrigger
-            className="group flex w-full items-start gap-3 rounded-md text-left outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+            className="group flex w-full items-start gap-3 rounded-[10px] text-left outline-none"
           >
             <div className="min-w-0 flex-1 space-y-1.5">
-              <div className={cn("flex items-center gap-2 font-semibold leading-none", titleClassName)}>
+              <div className={cn("flex items-center gap-2 font-bold leading-tight tracking-[-.01em]", titleClassName)}>
                 {icon}
                 {title}
               </div>

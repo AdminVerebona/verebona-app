@@ -59,7 +59,7 @@ export function EmergencyStopControl({
     <>
       {stop.active ? (
         <Button size="sm" variant="outline" onClick={() => setReleasing(true)} disabled={busy}>
-          <OctagonX className="w-3.5 h-3.5 mr-1.5 text-red-400" /> Relâcher l&apos;arrêt
+          <OctagonX className="w-3.5 h-3.5 mr-1.5 text-[color:var(--text-danger)]" /> Relâcher l&apos;arrêt
         </Button>
       ) : (
         <Button size="sm" variant="outline" onClick={() => setEngaging(true)} disabled={busy}>
@@ -145,23 +145,23 @@ export function AiEnvBanner({
     <div
       role="status"
       className={`rounded-xl border px-4 py-2.5 flex flex-wrap items-center gap-3 text-sm ${prod
-        ? 'border-red-500/40 bg-red-500/5'
+        ? 'border-[color:var(--border-danger)] bg-[color:var(--bg-danger)]'
         : 'border-[color:var(--border-subtle)] bg-[color:var(--bg-card)]'}`}
     >
-      <span className={`font-semibold ${prod ? 'text-red-400' : 'text-[color:var(--text-primary)]'}`}>
+      <span className={`font-semibold ${prod ? 'text-[color:var(--text-danger)]' : 'text-[color:var(--text-primary)]'}`}>
         {prod ? 'PRODUCTION' : `Environnement : ${environment ?? '—'}`}
       </span>
       <span className="flex items-center gap-1.5 flex-1 min-w-0">
         {stop?.active ? (
           <>
-            <OctagonX className="w-3.5 h-3.5 text-red-400 shrink-0" />
-            <span className="text-red-400 truncate">
+            <OctagonX className="w-3.5 h-3.5 text-[color:var(--text-danger)] shrink-0" />
+            <span className="text-[color:var(--text-danger)] truncate">
               Arrêt d&apos;urgence{stop.reason ? ` — ${stop.reason}` : ''}
             </span>
           </>
         ) : (
           <>
-            <ShieldCheck className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
+            <ShieldCheck className="w-3.5 h-3.5 text-[color:var(--text-success)] shrink-0" />
             <span className="text-[color:var(--text-secondary)]">Opérationnel</span>
           </>
         )}

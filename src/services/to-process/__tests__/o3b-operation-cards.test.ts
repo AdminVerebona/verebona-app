@@ -112,7 +112,8 @@ describe('C19 — rendu desktop ET mobile (composants et tokens existants)', () 
 
   it('C19-07 vue Cartes (desktop et mobile : mêmes classes adaptatives `sm:`) : question dominante, tous les choix cliquables, état actuel signalé', () => {
     const html = renderToStaticMarkup(h(ActionCard, { action, onChoose: noop, onOpenTarget: noop, visual: true }));
-    expect(html).toContain('<h3 class="text-sm font-medium leading-snug">Ce document concerne-t-il la même intervention que');
+    // Lot 66 (charte 2026) : titre de carte 14,5 px / 600 — la question reste le titre dominant.
+    expect(html).toContain('<h3 class="text-[14.5px] font-semibold leading-snug">Ce document concerne-t-il la même intervention que');
     expect(html).toContain('Oui, « Devis freinage du 03/06/2026 »');
     expect(html).toContain('Oui, « Facture vidange du 10/04/2026 »');
     expect(html).toContain('Non, c’est une autre intervention');

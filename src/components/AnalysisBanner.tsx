@@ -76,7 +76,7 @@ export function MobileAnalysisBanner() {
   };
 
   return (
-    <div data-mobile-analysis-banner className="md:hidden flex flex-shrink-0 items-center justify-center gap-2 px-4 py-1.5 bg-[color:var(--bg-page)]/90 backdrop-blur-sm border-b border-[color:var(--border-subtle)] animate-in slide-in-from-top-1 fade-in duration-300">
+    <div data-mobile-analysis-banner className="md:hidden flex flex-shrink-0 items-center justify-center gap-2 px-4 py-1.5 bg-[color:var(--bg-page)] border-b border-[color:var(--border-subtle)] animate-in slide-in-from-top-1 fade-in duration-300">
       <span className="relative flex h-1.5 w-1.5 flex-shrink-0">
         <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-[color:var(--accent)] opacity-60" />
         <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-[color:var(--accent)] opacity-80" />

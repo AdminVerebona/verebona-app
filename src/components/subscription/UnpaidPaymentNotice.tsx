@@ -50,12 +50,12 @@ export function UnpaidPaymentNotice({ unpaid, variant = 'card' }: Props) {
 
   const conteneur =
     variant === 'banner'
-      ? 'flex flex-wrap items-center gap-3 border-b border-red-500/30 bg-red-500/10 px-4 py-3'
-      : 'mb-5 flex flex-wrap items-start gap-3 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-3';
+      ? 'flex flex-wrap items-center gap-3 border-b border-[color:var(--danger-edge)] bg-[color:var(--danger-soft)] px-4 py-3'
+      : 'mb-5 flex flex-wrap items-start gap-3 rounded-lg border border-[color:var(--danger-edge)] bg-[color:var(--danger-soft)] px-3 py-3';
 
   return (
     <div className={conteneur} role="alert">
-      <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-red-500" aria-hidden />
+      <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-[color:var(--danger)]" aria-hidden />
       <div className="min-w-0 flex-1 space-y-1 text-sm text-[color:var(--text-primary)]">
         <p>
           <span className="font-medium">Votre dernier paiement a échoué.</span>{' '}

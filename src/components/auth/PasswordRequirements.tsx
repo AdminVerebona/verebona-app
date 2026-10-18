@@ -22,12 +22,12 @@ export function PasswordRequirements({
       : false;
 
   const baseClass = "flex items-center text-sm gap-2";
-  const okClass = "text-emerald-600";
-  const koClass = "text-gray-500";
+  const okClass = "text-[color:var(--text-success)]";
+  const koClass = "text-[color:var(--text-muted)]";
 
   return (
     <div className="mt-2 space-y-1" aria-live="polite">
-      <p className="text-xs text-gray-500 font-medium">
+      <p className="text-xs text-[color:var(--text-muted)] font-medium">
         Exigences du mot de passe :
       </p>
 

@@ -318,9 +318,9 @@ function AiExecutionsScreen() {
       {tab === 't2' && <UnansweredHelpQuestions />}
 
       {tab === 'calls' && errors.length > 0 && (
-        <div className="rounded-xl border border-amber-500/30 bg-amber-500/5 p-4 space-y-2">
+        <div className="rounded-xl border border-[color:var(--border-warning)] bg-[color:var(--bg-warning)] p-4 space-y-2">
           <h2 className="text-sm font-semibold text-[color:var(--text-primary)] flex items-center gap-2">
-            <AlertTriangle className="w-4 h-4 text-amber-500" />
+            <AlertTriangle className="w-4 h-4 text-[color:var(--text-warning-soft)]" />
             Échecs des sept derniers jours
           </h2>
           <div className="space-y-1">
@@ -431,13 +431,13 @@ function AiExecutionsScreen() {
             <div key={r.id} className="px-4 py-3 space-y-1">
               <div className="flex flex-wrap items-center gap-2.5">
                 <span className={`text-xs px-2 py-0.5 rounded-full border ${r.aiCalls === 0
-                  ? 'bg-emerald-500/10 text-emerald-500 border-emerald-500/20'
-                  : 'bg-sky-500/10 text-sky-400 border-sky-500/20'}`}>
+                  ? 'bg-[color:var(--bg-success)] text-[color:var(--text-success)] border-[color:var(--border-success)]'
+                  : 'bg-[color:var(--bg-subtle)] text-[color:var(--text-secondary)] border-[color:var(--border)]'}`}>
                   {r.aiCalls === 0 ? 'Sans IA' : `${r.aiCalls} appel${r.aiCalls > 1 ? 's' : ''} IA`}
                 </span>
                 <span className="text-sm font-medium text-[color:var(--text-primary)]">{r.intent ?? '—'}</span>
                 <span className="text-sm text-[color:var(--text-secondary)]">mode {r.mode ?? '—'}</span>
-                {r.fallbackUsed && <span className="text-xs px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-500">repli</span>}
+                {r.fallbackUsed && <span className="text-xs px-1.5 py-0.5 rounded bg-[color:var(--bg-warning)] text-[color:var(--text-warning-soft)]">repli</span>}
                 <span className="flex-1" />
                 <span className="text-xs text-[color:var(--text-muted)]">{new Date(r.createdAt).toLocaleString('fr-FR')}</span>
               </div>
@@ -475,8 +475,8 @@ function AiExecutionsScreen() {
               <div className="flex flex-wrap items-center gap-2.5">
                 <span className={`text-xs px-2 py-0.5 rounded-full border ${
                   r.status === 'error'
-                    ? 'bg-red-500/10 text-red-400 border-red-500/20'
-                    : 'bg-emerald-500/10 text-emerald-500 border-emerald-500/20'}`}>
+                    ? 'bg-[color:var(--bg-danger)] text-[color:var(--text-danger)] border-[color:var(--border-danger)]'
+                    : 'bg-[color:var(--bg-success)] text-[color:var(--text-success)] border-[color:var(--border-success)]'}`}>
                   {r.status === 'error' ? 'Échec' : 'Succès'}
                 </span>
                 <span className="text-sm font-medium text-[color:var(--text-primary)]">{executionScopeLabel(r)}</span>
@@ -488,7 +488,7 @@ function AiExecutionsScreen() {
                 <span className="text-sm text-[color:var(--text-secondary)]">{r.operationCode}</span>
                 <span className="text-sm text-[color:var(--text-muted)]">{r.model}</span>
                 <span className={`text-xs px-1.5 py-0.5 rounded ${r.modelRank && r.modelRank !== 'primary'
-                  ? 'bg-amber-500/10 text-amber-500' : 'bg-[color:var(--bg-input)] text-[color:var(--text-muted)]'}`}>
+                  ? 'bg-[color:var(--bg-warning)] text-[color:var(--text-warning-soft)]' : 'bg-[color:var(--bg-input)] text-[color:var(--text-muted)]'}`}>
                   {r.modelRank ? RANK_LABEL[r.modelRank] ?? r.modelRank : 'rang inconnu'}
                 </span>
                 <span className="flex-1" />
@@ -506,14 +506,14 @@ function AiExecutionsScreen() {
                 {r.appVersion && ` · code ${r.appVersion.slice(0, 8)}`}
               </p>
               {r.errorMessage && (
-                <p className="text-xs text-red-400">{causeOf(r) ? `${causeOf(r)} — ` : ''}{r.errorMessage}</p>
+                <p className="text-xs text-[color:var(--text-danger)]">{causeOf(r) ? `${causeOf(r)} — ` : ''}{r.errorMessage}</p>
               )}
               {!r.errorMessage && r.repaired && (
-                <p className="text-xs text-amber-500">Sortie acceptée après correction automatique{r.failure?.subtype ? ` (${r.failure.subtype})` : ''}</p>
+                <p className="text-xs text-[color:var(--text-warning-soft)]">Sortie acceptée après correction automatique{r.failure?.subtype ? ` (${r.failure.subtype})` : ''}</p>
               )}
               {r.callKind === 'repair' && <p className="text-xs text-[color:var(--text-muted)]">Passe de réparation ciblée (sans relecture du document)</p>}
               {(r.providerAttempts ?? []).some((a) => a.kind !== 'initial') && (
-                <p className="text-xs text-amber-500" data-testid="execution-row-structured-retry">
+                <p className="text-xs text-[color:var(--text-warning-soft)]" data-testid="execution-row-structured-retry">
                   Structured output : {(() => {
                     const [a1, a2] = [r.providerAttempts!.find((a) => a.kind === 'initial'), r.providerAttempts!.find((a) => a.kind !== 'initial')];
                     return `${a1?.httpStatus ? `HTTP ${a1.httpStatus} ` : ''}${a1?.providerErrorCode && a1.providerErrorCode !== String(a1.httpStatus) ? a1.providerErrorCode : 'refus'} → même modèle sans schéma : ${a2?.outcome ?? '—'}`;
@@ -548,7 +548,7 @@ function AiExecutionsScreen() {
 function ExecutionDetailPanel({ detail, onClose }: { detail: Detail; onClose: () => void }) {
   const { job } = detail;
   return (
-    <div role="dialog" aria-modal="true" className="fixed inset-0 z-50 flex justify-end bg-black/40" onClick={onClose}>
+    <div role="dialog" aria-modal="true" className="fixed inset-0 z-50 flex justify-end bg-[color:var(--veil)]" onClick={onClose}>
       <div className="w-full max-w-xl h-full overflow-y-auto bg-[color:var(--bg-card)] p-5 space-y-4" onClick={(e) => e.stopPropagation()}>
         <div className="flex items-center justify-between">
           <h2 className="text-lg font-semibold text-[color:var(--text-primary)]">Exécution — appel {detail.call.id}</h2>
@@ -623,7 +623,7 @@ function ExecutionDetailPanel({ detail, onClose }: { detail: Detail; onClose: ()
               <div key={i} className="text-xs text-[color:var(--text-secondary)]">
                 <p>
                   {s.stepName} · {s.status} · {s.model ?? '—'} · {duration(s.durationMs)}
-                  {s.errorMessage && <span className="text-red-400"> — {s.errorCode ? `${s.errorCode} — ` : ''}{s.errorMessage}</span>}
+                  {s.errorMessage && <span className="text-[color:var(--text-danger)]"> — {s.errorCode ? `${s.errorCode} — ` : ''}{s.errorMessage}</span>}
                 </p>
                 {s.outputPreview && (
                   <div className="mt-0.5">
@@ -681,7 +681,7 @@ function ExecutionDetailPanel({ detail, onClose }: { detail: Detail; onClose: ()
               {job.triggerCode && ` · déclencheur ${job.triggerCode}`} · Tentatives du job (exécutions) : {job.attempts}
               {job.configVersionId && ` · version figée #${job.configVersionId}`}
               {job.targetType && ` · cible ${job.targetType} ${job.targetId}`}
-              {job.lastError && <span className="text-red-400"> — {job.lastError}</span>}
+              {job.lastError && <span className="text-[color:var(--text-danger)]"> — {job.lastError}</span>}
             </p>
           ) : (
             <p className="text-xs text-[color:var(--text-muted)]">Appel synchrone (hors file).</p>
@@ -701,7 +701,7 @@ function SourcesList({ sources }: { sources: T2Source[] }) {
         <li key={`${s.messageId}-${s.sourceId}-${i}`}>
           {s.rank !== null && `#${s.rank} `}{s.sourceType} · {s.sourceId}{s.title && ` — ${s.title}`}
           {s.relevanceScore !== null && ` · pertinence ${s.relevanceScore.toFixed(2)}`}
-          {!s.isAvailable && <span className="text-amber-500"> · plus disponible</span>}
+          {!s.isAvailable && <span className="text-[color:var(--text-warning-soft)]"> · plus disponible</span>}
         </li>
       ))}
     </ul>
@@ -744,10 +744,10 @@ function T2RequestExtras({ requestId }: { requestId: string }) {
         <button type="button" className="text-[color:var(--accent)] hover:underline" onClick={loadContent}>Contenu (accès restreint)</button>
       </div>
       {sources && <SourcesList sources={sources} />}
-      {msg && <p className="text-amber-500">{msg}</p>}
+      {msg && <p className="text-[color:var(--text-warning-soft)]">{msg}</p>}
       {content && (
-        <div className="rounded border border-amber-500/30 bg-amber-500/5 p-2 space-y-1">
-          <p className="text-amber-500">Contenu confidentiel — consultation tracée, disparaît à la purge (3 mois).</p>
+        <div className="rounded border border-[color:var(--border-warning)] bg-[color:var(--bg-warning)] p-2 space-y-1">
+          <p className="text-[color:var(--text-warning-soft)]">Contenu confidentiel — consultation tracée, disparaît à la purge (3 mois).</p>
           {content.map((m, i) => (
             <p key={i} className="text-[color:var(--text-secondary)] whitespace-pre-wrap">
               <span className="font-medium">{m.role === 'user' ? 'Utilisateur' : 'Assistant'} :</span> {m.content ?? '—'}

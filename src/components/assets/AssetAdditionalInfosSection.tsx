@@ -412,14 +412,14 @@ export function AssetAdditionalInfosSection({
     </div>
   ) : loadError ? (
     <div className="p-4 text-sm text-muted-foreground flex items-center gap-2">
-      <AlertCircle className="w-4 h-4 text-red-400" />
+      <AlertCircle className="w-4 h-4 text-[color:var(--danger)]" />
       Les informations de préparation des dossiers n&apos;ont pas pu être chargées.
       <button type="button" className="underline underline-offset-2 hover:text-foreground" onClick={() => void load()}>Réessayer</button>
     </div>
   ) : (
     <div className={variant === 'embedded' ? 'space-y-5' : 'p-4 space-y-6'}>
       {notice && (
-        <div role="status" className="flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-800 dark:text-amber-200">
+        <div role="status" className="flex items-start gap-2 rounded-lg border border-[color:var(--attention-edge)] bg-[color:var(--attention-soft)] px-3 py-2 text-xs text-[color:var(--attention-on-soft)]">
           <Info className="w-3.5 h-3.5 mt-0.5 shrink-0" />
           <span className="flex-1">{notice}</span>
           <button type="button" onClick={() => setNotice(null)} className="underline underline-offset-2 hover:text-foreground">Compris</button>

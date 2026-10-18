@@ -117,8 +117,8 @@ export function DowngradeConfirmDialog({
               </ul>
 
               {depassementPrevu && (
-                <div className="flex items-start gap-2.5 rounded-md border border-amber-500/30 bg-amber-500/10 p-3">
-                  <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-500" />
+                <div className="flex items-start gap-2.5 rounded-md border border-[color:var(--attention-edge)] bg-[color:var(--attention-soft)] p-3">
+                  <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-[color:var(--attention-on-soft)]" />
                   <p className="text-[color:var(--text-primary)]">
                     À la prochaine échéance, votre compte contiendra{' '}
                     <span className="font-medium">{biensActuels} biens</span> pour une limite de{' '}

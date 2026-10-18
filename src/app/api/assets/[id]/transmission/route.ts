@@ -17,6 +17,7 @@ import { emit } from '@/lib/notifications';
 import { buildExportAssetSnapshot } from '@/services/exports/export-snapshot-source';
 import { randomUUID } from 'crypto';
 import { Resend } from 'resend';
+import { buildTransmissionHtml } from '@/lib/email/transmission-email';
 
 // ─── Email helper ────────────────────────────────────────────────────────────
 
@@ -71,110 +72,7 @@ async function sendTransmissionEmail(opts: {
   }
 }
 
-function buildTransmissionHtml(senderName: string, assetName: string, shareUrl: string, year: string): string {
-  return `<!DOCTYPE html>
-<html lang="fr">
-<head>
-  <meta charset="UTF-8"/>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>Transmission de bien — Verebona</title>
-</head>
-<body style="margin:0;padding:0;background-color:#F5F5F5;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;">
-  <center>
-    <table width="100%" cellpadding="0" cellspacing="0" style="background-color:#F5F5F5;padding:40px 20px;">
-      <tr><td align="center">
-        <table width="600" cellpadding="0" cellspacing="0" style="background-color:#ffffff;border-radius:8px;box-shadow:0 2px 8px rgba(0,0,0,.1);max-width:600px;margin:0 auto;">
-
-          <!-- Header -->
-          <tr>
-            <td align="center" style="padding:28px 24px 20px;border-bottom:2px solid #3B82F6;">
-              <table cellpadding="0" cellspacing="0" border="0" style="margin:0 auto;border-collapse:collapse;">
-                <tr>
-                  <!-- Logo mark : 3×3 grid (table-based, works in all clients incl. Outlook) -->
-                  <td valign="middle" style="padding-right:10px;">
-                    <table cellpadding="0" cellspacing="3" border="0" style="border-collapse:separate;border-spacing:3px;">
-                      <tr>
-                        <td style="width:11px;height:11px;background-color:#2D3748;border-radius:2px;font-size:0;line-height:0;">&nbsp;</td>
-                        <td style="width:11px;height:11px;background-color:#2D3748;border-radius:2px;font-size:0;line-height:0;">&nbsp;</td>
-                        <td style="width:11px;height:11px;background-color:#3B82F6;border-radius:2px;font-size:0;line-height:0;">&nbsp;</td>
-                      </tr>
-                      <tr>
-                        <td style="width:11px;height:11px;background-color:#2D3748;border-radius:2px;font-size:0;line-height:0;">&nbsp;</td>
-                        <td style="width:11px;height:11px;background-color:#2D3748;border-radius:2px;font-size:0;line-height:0;">&nbsp;</td>
-                        <td style="width:11px;height:11px;background-color:#2D3748;border-radius:2px;font-size:0;line-height:0;">&nbsp;</td>
-                      </tr>
-                      <tr>
-                        <td style="width:11px;height:11px;background-color:#2D3748;border-radius:2px;font-size:0;line-height:0;">&nbsp;</td>
-                        <td style="width:11px;height:11px;background-color:#2D3748;border-radius:2px;font-size:0;line-height:0;">&nbsp;</td>
-                        <td style="width:11px;height:11px;background-color:#2D3748;border-radius:2px;font-size:0;line-height:0;">&nbsp;</td>
-                      </tr>
-                    </table>
-                  </td>
-                  <td valign="middle">
-                    <span style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;font-size:26px;font-weight:700;color:#2D3748;letter-spacing:-0.5px;">Verebona</span>
-                  </td>
-                </tr>
-              </table>
-            </td>
-          </tr>
-
-          <!-- Body -->
-          <tr>
-            <td style="padding:36px 40px 28px;font-size:16px;color:#374151;line-height:1.6;">
-              <p style="margin:0 0 16px 0;">Bonjour,</p>
-              <p style="margin:0 0 16px 0;">
-                <strong>${senderName}</strong> vous invite à recevoir un bien dans votre portefeuille Verebona :
-              </p>
-
-              <!-- Asset box -->
-              <table width="100%" cellpadding="0" cellspacing="0" style="background-color:#F3F4F6;border-radius:8px;margin:20px 0;">
-                <tr>
-                  <td style="padding:20px;">
-                    <p style="margin:0;font-size:13px;color:#6B7280;text-transform:uppercase;letter-spacing:.05em;font-weight:600;">Bien transmis</p>
-                    <p style="margin:8px 0 0;font-size:18px;font-weight:700;color:#111827;">${assetName}</p>
-                  </td>
-                </tr>
-              </table>
-
-              <p style="margin:0 0 24px 0;">
-                Pour accepter ou refuser cette transmission, cliquez sur le bouton ci-dessous.
-              </p>
-
-              <!-- CTA -->
-              <p style="text-align:center;margin:28px 0;">
-                <a href="${shareUrl}" style="background-color:#3B82F6;padding:13px 28px;border-radius:6px;color:#ffffff;font-size:16px;font-weight:600;text-decoration:none;display:inline-block;">
-                  Voir l'invitation
-                </a>
-              </p>
-
-              <p style="margin:24px 0 0;font-size:13px;color:#6B7280;">
-                Ou copiez ce lien dans votre navigateur :<br/>
-                <a href="${shareUrl}" style="color:#3B82F6;word-break:break-all;">${shareUrl}</a>
-              </p>
-
-              <p style="margin:20px 0 0;font-size:13px;color:#9CA3AF;">
-                Si vous n'attendiez pas cette invitation, vous pouvez l'ignorer.
-              </p>
-            </td>
-          </tr>
-
-          <!-- Footer -->
-          <tr>
-            <td style="padding:20px 40px;text-align:center;border-top:1px solid #E5E7EB;background-color:#F9FAFB;">
-              <p style="margin:0 0 4px;font-size:12px;color:#9CA3AF;">© ${year} Verebona — One place. Higher value.</p>
-              <p style="margin:0;font-size:11px;color:#9CA3AF;">
-                <a href="mailto:support@verebona.com" style="color:#6B7280;text-decoration:none;">support@verebona.com</a>
-              </p>
-            </td>
-          </tr>
-
-        </table>
-      </td></tr>
-    </table>
-  </center>
-</body>
-</html>`;
-}
+// Corps HTML de repli : `buildTransmissionHtml` (lib/email/transmission-email.ts, charte 2026 — lot 66C).
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 

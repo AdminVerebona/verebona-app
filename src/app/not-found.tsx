@@ -20,18 +20,13 @@ export default function NotFound() {
 
   return (
     <main className="flex min-h-[100dvh] flex-col items-center justify-center bg-[color:var(--bg-page)] px-4 pb-[max(24px,env(safe-area-inset-bottom))] pt-[max(24px,env(safe-area-inset-top))] text-center">
-      <div className="flex w-full max-w-[420px] flex-col items-center gap-5 rounded-[24px] border border-[color:var(--border-subtle)] bg-[color:var(--bg-card)] px-6 pb-7 pt-8 shadow-[var(--shadow-lg)] md:px-8">
+      <div className="flex w-full max-w-[420px] flex-col items-center gap-5 rounded-[16px] border border-[color:var(--border)] bg-[color:var(--bg-card)] px-6 pb-7 pt-8 md:px-8">
         <span className="relative flex items-center justify-center">
-          <span
-            className="absolute h-[124px] w-[124px] rounded-full"
-            style={{ background: 'radial-gradient(circle, color-mix(in srgb, var(--accent) 22%, transparent), transparent 70%)' }}
-            aria-hidden
-          />
-          <MascotPose pose="questioning" size={112} priority className="relative" style={{ filter: 'drop-shadow(0 10px 16px rgba(4,10,26,.35))' }} />
+          <MascotPose pose="questioning" size={112} priority className="relative" />
         </span>
         <div className="flex flex-col items-center gap-2">
-          <span className="font-display text-[44px] font-semibold leading-none tracking-[-.03em] text-[color:var(--accent)]">404</span>
-          <h1 className="m-0 font-display text-[20px] font-semibold tracking-[-.02em] text-[color:var(--text-primary)]">Page introuvable</h1>
+          <span className="font-display text-[44px] font-extrabold leading-none tracking-[-.03em] text-[color:var(--accent-display)]">404</span>
+          <h1 className="m-0 font-display text-[20px] font-bold tracking-[-.01em] text-[color:var(--text-primary)]">Page introuvable</h1>
           <p className="m-0 max-w-[320px] text-[14px] leading-normal text-[color:var(--muted-foreground)]">
             J’ai cherché partout : cette page n’existe pas ou a été déplacée.
           </p>
@@ -41,7 +36,7 @@ export default function NotFound() {
         <a
           href="/accueil"
           data-testid="not-found-home"
-          className="inline-flex h-10 w-full items-center justify-center rounded-full bg-[color:var(--accent)] px-6 text-[13.5px] font-semibold text-white transition-colors hover:bg-[#2563EB] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--accent)] focus-visible:ring-offset-2 focus-visible:ring-offset-[color:var(--bg-card)] sm:w-auto"
+          className="inline-flex h-10 w-full items-center justify-center rounded-[12px] bg-[color:var(--accent)] px-6 text-[14px] font-bold text-[color:var(--on-accent)] transition-colors duration-[180ms] hover:bg-[color:var(--accent-hover)] sm:w-auto"
         >
           Accueil
         </a>

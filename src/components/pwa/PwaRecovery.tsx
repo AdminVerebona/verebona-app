@@ -64,7 +64,7 @@ export function PwaRecovery() {
             <button
               type="button"
               onClick={manualReload}
-              className="rounded-full bg-[color:var(--accent)] px-4 py-2 text-sm font-medium text-white"
+              className="rounded-full bg-[color:var(--accent)] px-4 py-2 text-sm font-medium text-[color:var(--on-accent)]"
             >
               {msg.button}
             </button>

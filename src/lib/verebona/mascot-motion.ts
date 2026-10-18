@@ -34,3 +34,17 @@ export function poseAnimation(state: PoseMotionState, reducedMotion: boolean): s
 export function mascotSrc(pose: string): string {
   return `/mascot/${pose}.webp`;
 }
+
+/**
+ * Filtre CSS de la mascotte — charte « Sérénité » 2026 §4 (lot 66).
+ *
+ * Recoloration cyan PROVISOIRE (`--vb-mascotte-filtre`, globals.css) en
+ * attendant les fichiers recolorés à la source. Un filtre de l'appelant est
+ * ajouté APRÈS, jamais à la place : aucune occurrence n'échappe à la teinte.
+ */
+export const MASCOT_FILTER_VAR = 'var(--vb-mascotte-filtre)';
+
+export function mascotFilter(extra?: string | number | null): string {
+  const e = extra == null ? '' : String(extra).trim();
+  return e && e !== 'none' ? `${MASCOT_FILTER_VAR} ${e}` : MASCOT_FILTER_VAR;
+}

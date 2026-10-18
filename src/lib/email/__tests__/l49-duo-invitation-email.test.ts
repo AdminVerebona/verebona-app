@@ -55,6 +55,8 @@ describe('L49-DUO-MAIL — invitation Duo', () => {
   it('DUO-MAIL-06 : « Libellé : URL » devient un bouton portant le libellé', () => {
     const src = read('src/lib/email/email-service.ts');
     expect(src).toContain('const labelled = ');
-    expect(src).toContain('${label}');
+    // Lot 66C : le bouton est produit par la mise en page commune (`emailButton`) ; le
+    // rendu (libellé porté par le bouton) est vérifié par L66C-MAIL-01.
+    expect(src).toContain('emailButton(url, label)');
   });
 });

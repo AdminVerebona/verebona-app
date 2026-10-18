@@ -139,7 +139,7 @@ export function ObservabilityPanel({ days, versions, environment }: {
         </div>
       </div>
 
-      {erreur && <p className="text-xs text-red-400">{erreur}</p>}
+      {erreur && <p className="text-xs text-[color:var(--text-danger)]">{erreur}</p>}
       {loading && !report && (
         <p className="flex items-center text-xs text-[color:var(--text-muted)]">
           <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" /> Chargement…

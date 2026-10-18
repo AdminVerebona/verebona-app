@@ -160,7 +160,11 @@ const safeFocus = (v: unknown): string => {
  * hexadécimal) : il ne peut ni sortir de la chaîne ni fermer la balise <style>.
  */
 export function pageSetup({ headerLabel }: { headerLabel: string }): string {
-  const chrome = 'font-family:Inter,sans-serif;font-size:10.5px;color:#8A93A6;';
+  // Charte « Sérénité » (§8) : chrome 10,5 px Figtree #52636A, marque pétrole, filet #D5DEDC
+  // sous l'en-tête, dernière page sur ivoire. Valeurs littérales : les boîtes de marge
+  // @page ne résolvent pas les variables CSS des jetons.
+  const chrome = "font-family:'Figtree','Inter',sans-serif;font-size:10.5px;color:#52636A;";
+  const rule = 'border-bottom:1px solid #D5DEDC;';
   const footer = `
     @bottom-left { content: "Ce dossier a été préparé avec Verebona."; ${chrome} vertical-align: bottom; padding-bottom: 26px; }
     @bottom-right { content: "Page " counter(page) " / " counter(pages); ${chrome} vertical-align: bottom; padding-bottom: 26px; text-align: right; }`;
@@ -168,9 +172,9 @@ export function pageSetup({ headerLabel }: { headerLabel: string }): string {
   @page {
     size: A4;
     margin: 70px 44px 64px 44px;
-    @top-left { content: "Verebona"; font-family: Inter, sans-serif; font-size: 10.5px; font-weight: 600; color: #0F1B33;
-      vertical-align: top; padding: 22px 0 0 22px; background: url(${markDataUriOnce()}) no-repeat 0 21.5px / 14px 14px; }
-    @top-right { content: ${cssString(clip(headerLabel, TEXT_BOUNDS.header))}; ${chrome} vertical-align: top; padding-top: 22px; text-align: right; }
+    @top-left { content: "Verebona"; font-family: 'Figtree', 'Inter', sans-serif; font-size: 10.5px; font-weight: 700; color: #17474D;
+      vertical-align: top; padding: 22px 0 0 22px; background: url(${markDataUriOnce()}) no-repeat 0 21px / 15px 15px; ${rule} margin-bottom: 24px; }
+    @top-right { content: ${cssString(clip(headerLabel, TEXT_BOUNDS.header))}; ${chrome} vertical-align: top; padding-top: 22px; text-align: right; ${rule} margin-bottom: 24px; }
     ${footer}
   }
   @page cover { margin: 0; @top-left { content: none; } @top-right { content: none; } @bottom-left { content: none; } @bottom-right { content: none; } }
@@ -180,6 +184,7 @@ export function pageSetup({ headerLabel }: { headerLabel: string }): string {
     @bottom-left { padding-left: 44px; } @bottom-right { padding-right: 44px; }
   }
   @page refs {
+    background: #F8F6F1;
     @bottom-left { padding-bottom: 34px; } @bottom-right { padding-bottom: 34px; }
     @bottom-center { content: "verebona.fr"; ${chrome} vertical-align: bottom; padding-bottom: 34px; text-align: center; }
   }

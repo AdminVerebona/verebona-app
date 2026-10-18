@@ -130,10 +130,10 @@ const STATUS_LABEL: Record<JobStatus, string> = {
 };
 
 const STATUS_STYLE: Record<JobStatus, string> = {
-  PENDING: 'bg-slate-500/10 text-slate-400 border-slate-500/20',
-  RUNNING: 'bg-sky-500/10 text-sky-500 border-sky-500/20',
-  DONE: 'bg-emerald-500/10 text-emerald-500 border-emerald-500/20',
-  FAILED: 'bg-red-500/10 text-red-400 border-red-500/20',
+  PENDING: 'bg-[color:var(--bg-subtle)] text-[color:var(--text-muted)] border-[color:var(--border)]',
+  RUNNING: 'bg-[color:var(--bg-subtle)] text-[color:var(--text-secondary)] border-[color:var(--border)]',
+  DONE: 'bg-[color:var(--bg-success)] text-[color:var(--text-success)] border-[color:var(--border-success)]',
+  FAILED: 'bg-[color:var(--bg-danger)] text-[color:var(--text-danger)] border-[color:var(--border-danger)]',
   CANCELLED: 'bg-[color:var(--bg-page)] text-[color:var(--text-muted)] border-[color:var(--border-subtle)]',
 };
 
@@ -387,10 +387,10 @@ function AiQueueScreen() {
       <ToProcessRelevancePanel />
 
       {stop?.active && (
-        <div className="rounded-xl border border-red-500/30 bg-red-500/5 p-4 flex items-start gap-3">
-          <OctagonX className="w-5 h-5 text-red-400 shrink-0 mt-0.5" />
+        <div className="rounded-xl border border-[color:var(--border-danger)] bg-[color:var(--bg-danger)] p-4 flex items-start gap-3">
+          <OctagonX className="w-5 h-5 text-[color:var(--text-danger)] shrink-0 mt-0.5" />
           <div className="flex-1 min-w-0">
-            <p className="text-sm font-semibold text-red-400">Arrêt d&apos;urgence engagé</p>
+            <p className="text-sm font-semibold text-[color:var(--text-danger)]">Arrêt d&apos;urgence engagé</p>
             <p className="text-sm text-[color:var(--text-secondary)]">
               {stop.reason ?? 'Aucun motif renseigné.'}
               {stop.engagedAt && ` — depuis le ${new Date(stop.engagedAt).toLocaleString('fr-FR')}`}
@@ -414,8 +414,8 @@ function AiQueueScreen() {
               className="rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--bg-card)] p-4 space-y-2">
               <div className="flex items-center justify-between">
                 <span className="text-sm font-semibold text-[color:var(--text-primary)]">{s.treatment}</span>
-                <span className={`text-xs ${s.state === 'ENABLED' ? 'text-emerald-500'
-                  : s.state === 'SUSPENDED' ? 'text-amber-500' : 'text-[color:var(--text-muted)]'}`}>
+                <span className={`text-xs ${s.state === 'ENABLED' ? 'text-[color:var(--text-success)]'
+                  : s.state === 'SUSPENDED' ? 'text-[color:var(--text-warning-soft)]' : 'text-[color:var(--text-muted)]'}`}>
                   {STATE_LABEL[s.state]}
                 </span>
               </div>
@@ -423,7 +423,7 @@ function AiQueueScreen() {
                 {sum?.pending ?? 0} en attente · {sum?.running ?? 0} en cours · {sum?.failed ?? 0} en échec
               </p>
               {s.state === 'SUSPENDED' && s.suspendedReason && (
-                <p className="text-xs text-amber-500">{s.suspendedReason}</p>
+                <p className="text-xs text-[color:var(--text-warning-soft)]">{s.suspendedReason}</p>
               )}
               {s.state === 'SUSPENDED' ? (
                 // OPS-027 : réactivation forcée — remet le disjoncteur à zéro,
@@ -510,7 +510,7 @@ function AiQueueScreen() {
             <div key={job.id} className="px-4 py-3 space-y-1.5">
               <div className="flex items-center gap-3">
                 {job.headPriority && (
-                  <ArrowUp className="w-3.5 h-3.5 text-amber-500 shrink-0" aria-label="remis en tête" />
+                  <ArrowUp className="w-3.5 h-3.5 text-[color:var(--text-warning-soft)] shrink-0" aria-label="remis en tête" />
                 )}
                 <span className="text-xs text-[color:var(--text-muted)]">#{job.id}</span>
                 <span className={`text-xs px-2 py-0.5 rounded-full border ${STATUS_STYLE[job.status]}`}>
@@ -551,7 +551,7 @@ function AiQueueScreen() {
               </p>
 
               {reason && (
-                <p className="text-xs text-amber-500 flex items-start gap-1.5">
+                <p className="text-xs text-[color:var(--text-warning-soft)] flex items-start gap-1.5">
                   <Clock className="w-3 h-3 mt-0.5 shrink-0" /> {reason}
                 </p>
               )}

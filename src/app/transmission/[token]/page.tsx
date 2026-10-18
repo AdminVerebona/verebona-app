@@ -115,7 +115,7 @@ export default function TransmissionPage() {
   const asset = transmission?.asset;
 
   return (
-    <div className="public-page min-h-screen flex items-center justify-center p-4" style={{ backgroundColor: '#020B1A' }}>
+    <div className="public-page min-h-screen flex items-center justify-center p-4 bg-[color:var(--bg-page)]">
       <div className="w-full max-w-md">
         {/* Logo */}
         <div className="flex justify-center mb-8">
@@ -214,7 +214,7 @@ export default function TransmissionPage() {
             {/* Accepted */}
             {pageState === 'accepted' && (
               <div className="text-center py-6 space-y-3">
-                <CheckCircle2 className="w-10 h-10 text-green-500 mx-auto" />
+                <CheckCircle2 className="w-10 h-10 text-[color:var(--text-success)] mx-auto" />
                 <p className="font-semibold">Bien reçu !</p>
                 {recipientHasAccount ? (
                   <>
@@ -255,11 +255,11 @@ export default function TransmissionPage() {
             {/* Conflict */}
             {pageState === 'conflict' && conflictData && (
               <div className="space-y-4">
-                <div className="rounded-lg border border-amber-200 bg-amber-50 dark:bg-amber-950/20 p-4">
-                  <p className="text-sm font-medium text-amber-800 dark:text-amber-400 mb-1">
+                <div className="rounded-lg border border-[color:var(--attention-edge)] bg-[color:var(--attention-soft)] p-4">
+                  <p className="text-sm font-medium text-[color:var(--attention-on-soft)] mb-1">
                     Doublon détecté
                   </p>
-                  <p className="text-xs text-amber-700 dark:text-amber-500">
+                  <p className="text-xs text-[color:var(--attention-on-soft)]">
                     {conflictData.message}
                   </p>
                 </div>
@@ -284,7 +284,7 @@ export default function TransmissionPage() {
             {/* Error */}
             {pageState === 'error' && (
               <div className="text-center py-6">
-                <XCircle className="w-10 h-10 text-red-500 mx-auto mb-3" />
+                <XCircle className="w-10 h-10 text-[color:var(--danger)] mx-auto mb-3" />
                 <p className="text-sm text-muted-foreground">
                   {errorMessage ?? 'Une erreur est survenue.'}
                 </p>
@@ -293,7 +293,7 @@ export default function TransmissionPage() {
           </CardContent>
         </Card>
 
-        <p className="text-center text-xs mt-6" style={{ color: '#6B7280' }}>
+        <p className="text-center text-xs mt-6 text-[color:var(--text-muted)]">
           Verebona — One place. Higher value.
         </p>
       </div>

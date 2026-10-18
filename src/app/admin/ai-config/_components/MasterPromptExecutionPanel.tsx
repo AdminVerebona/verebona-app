@@ -244,7 +244,7 @@ export function MasterPromptExecutionPanel({
             </p>
             <Volet titre="Prompt maître envoyé">
               {apercu.promptError
-                ? <p className="mt-1 text-xs text-red-400">{apercu.promptError}</p>
+                ? <p className="mt-1 text-xs text-[color:var(--text-danger)]">{apercu.promptError}</p>
                 : <pre className={pre}>{apercu.prompt ?? '—'}</pre>}
             </Volet>
             <Volet titre={`Contrat d’entrée${apercu.inputContract.version ? ` (${apercu.inputContract.version})` : ''}`}>
@@ -257,7 +257,7 @@ export function MasterPromptExecutionPanel({
             </Volet>
             <Volet titre="Contexte d’exécution construit" ouvert={Boolean(apercu.contextError)}>
               {apercu.contextError
-                ? <p className="mt-1 text-xs text-red-400">{apercu.contextError.code} — {apercu.contextError.message} (étape {apercu.contextError.step}{apercu.contextError.field ? `, champ ${apercu.contextError.field}` : ''})</p>
+                ? <p className="mt-1 text-xs text-[color:var(--text-danger)]">{apercu.contextError.code} — {apercu.contextError.message} (étape {apercu.contextError.step}{apercu.contextError.field ? `, champ ${apercu.contextError.field}` : ''})</p>
                 : <pre className={pre}>{apercu.context ?? '— (mode legacy)'}</pre>}
             </Volet>
             <Volet titre={`Contrat de sortie${apercu.outputContract ? ` (${apercu.outputContract.contractId} v${apercu.outputContract.contractVersion} · ${apercu.outputContract.schemaHash})` : ''}`}>
@@ -270,7 +270,7 @@ export function MasterPromptExecutionPanel({
               {!apercu.validated ? <p className="mt-1 text-xs text-[color:var(--text-muted)]">—</p>
                 : apercu.validated.ok
                   ? <pre className={pre}>{JSON.stringify(apercu.validated.data, null, 2)}{apercu.validated.transformations.length ? `\n\nTransformations : ${apercu.validated.transformations.join(' ; ')}` : ''}</pre>
-                  : <p className="mt-1 text-xs text-red-400">{apercu.validated.message}</p>}
+                  : <p className="mt-1 text-xs text-[color:var(--text-danger)]">{apercu.validated.message}</p>}
             </Volet>
           </div>
         )}

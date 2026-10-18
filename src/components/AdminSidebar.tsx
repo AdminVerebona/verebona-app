@@ -85,12 +85,12 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
   };
 
   return (
-    <div className="flex h-full flex-col bg-card border-r">
+    <div className="flex h-full flex-col border-r border-[color:var(--border-subtle)] bg-[color:var(--sidebar)]">
       {/* Logo/Header */}
-      <div className="flex h-16 items-center border-b px-6 flex-shrink-0">
+      <div className="flex h-16 items-center border-b border-[color:var(--border-subtle)] px-6 flex-shrink-0">
         <div className="flex flex-col">
           <Logo size={32} withText={true} />
-          <p className="text-xs text-muted-foreground ml-11">Administration</p>
+          <p className="text-xs text-[color:var(--text-muted)] ml-11">Administration</p>
         </div>
       </div>
 
@@ -105,10 +105,11 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
                 key={item.name}
                 href={item.href}
                 onClick={onNavigate}
-                className={`flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors ${
+                aria-current={isActive ? 'page' : undefined}
+                className={`flex items-center gap-3 rounded-[12px] border-l-2 px-3 py-2.5 text-sm transition-colors duration-[180ms] ${
                   isActive
-                    ? 'bg-primary text-primary-foreground'
-                    : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground'
+                    ? 'border-[color:var(--accent)] bg-[color:var(--accent-soft)] font-semibold text-[color:var(--accent)]'
+                    : 'border-transparent font-medium text-[color:var(--text-muted)] hover:bg-[color:var(--accent-soft)] hover:text-[color:var(--text-primary)]'
                 }`}
               >
                 <item.icon className="h-5 w-5 flex-shrink-0" />
@@ -119,7 +120,7 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
         </nav>
 
         {/* Footer Actions */}
-        <div className="border-t p-3 space-y-2 mt-auto flex-shrink-0">
+        <div className="border-t border-[color:var(--border-subtle)] p-3 space-y-2 mt-auto flex-shrink-0">
           <Button
             variant="outline"
             className="w-full justify-start"
@@ -130,7 +131,7 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
           </Button>
           <Button
             variant="ghost"
-            className="w-full justify-start text-destructive hover:text-destructive"
+            className="w-full justify-start text-[color:var(--danger)] hover:bg-[color:var(--danger-soft)] hover:text-[color:var(--danger)]"
             onClick={handleLogout}
           >
             <LogOut className="h-4 w-4 mr-2" />
@@ -156,14 +157,14 @@ export function AdminMobileHeader() {
   return (
     <>
       {/* Mobile top bar */}
-      <div className="flex items-center justify-between h-14 px-4 border-b bg-card md:hidden flex-shrink-0">
+      <div className="flex items-center justify-between h-14 px-4 border-b border-[color:var(--border-subtle)] bg-[color:var(--sidebar)] md:hidden flex-shrink-0">
         <div className="flex flex-col">
           <Logo size={24} withText={true} />
-          <p className="text-[10px] text-muted-foreground ml-9">Administration</p>
+          <p className="text-[11px] text-[color:var(--text-muted)] ml-9">Administration</p>
         </div>
         <button
           onClick={() => setOpen(true)}
-          className="p-2 rounded-lg hover:bg-accent transition-colors"
+          className="p-2 rounded-[10px] text-[color:var(--text-muted)] hover:bg-[color:var(--accent-soft)] hover:text-[color:var(--text-primary)] transition-colors"
           aria-label="Ouvrir le menu"
         >
           <Menu className="h-5 w-5" />
@@ -174,14 +175,14 @@ export function AdminMobileHeader() {
       {open && (
         <>
           <div
-            className="fixed inset-0 z-40 bg-black/50 md:hidden"
+            className="fixed inset-0 z-40 bg-[color:var(--veil)] md:hidden"
             onClick={() => setOpen(false)}
           />
           <div className="fixed inset-y-0 left-0 z-50 w-72 md:hidden">
             <div className="relative h-full">
               <button
                 onClick={() => setOpen(false)}
-                className="absolute top-3 right-3 z-10 p-1.5 rounded-lg hover:bg-accent transition-colors"
+                className="absolute top-3 right-3 z-10 p-1.5 rounded-[10px] text-[color:var(--text-muted)] hover:bg-[color:var(--accent-soft)] hover:text-[color:var(--text-primary)] transition-colors"
                 aria-label="Fermer le menu"
               >
                 <X className="h-4 w-4" />

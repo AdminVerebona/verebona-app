@@ -192,7 +192,7 @@ function WithdrawalContent() {
           </CardHeader>
           <CardContent className="space-y-5">
             {/* §7.1 : distinguer explicitement rétractation et résiliation. */}
-            <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-3 text-sm">
+            <div className="rounded-lg border border-[color:var(--attention-edge)] bg-[color:var(--attention-soft)] p-3 text-sm">
               <p className="font-medium mb-1">Rétractation, et non résiliation</p>
               <p className="text-muted-foreground">
                 La rétractation annule le contrat comme s&apos;il n&apos;avait jamais existé et
@@ -268,7 +268,7 @@ function WithdrawalContent() {
       {step === 'sent' && (
         <>
           <CardHeader className="text-center space-y-3">
-            <MailCheck className="w-12 h-12 mx-auto text-blue-400" />
+            <MailCheck className="w-12 h-12 mx-auto text-[color:var(--accent)]" />
             <CardTitle>Vérifiez votre boîte mail</CardTitle>
             <CardDescription>
               Si un compte Verebona est associé à cette adresse, vous allez recevoir
@@ -349,7 +349,7 @@ function WithdrawalContent() {
       {step === 'blocked' && (
         <>
           <CardHeader className="text-center space-y-3">
-            <ShieldAlert className="w-12 h-12 mx-auto text-amber-500" />
+            <ShieldAlert className="w-12 h-12 mx-auto text-[color:var(--attention-on-soft)]" />
             <CardTitle>Demande impossible en ligne</CardTitle>
             <CardDescription>{blockedMessage}</CardDescription>
           </CardHeader>
@@ -368,7 +368,7 @@ function WithdrawalContent() {
       {step === 'done' && result && (
         <>
           <CardHeader className="text-center space-y-3">
-            <CheckCircle className="w-12 h-12 mx-auto text-emerald-500" />
+            <CheckCircle className="w-12 h-12 mx-auto text-[color:var(--text-success)]" />
             <CardTitle>Rétractation enregistrée</CardTitle>
             <CardDescription>
               Votre déclaration est reçue et traitée. Un e-mail de confirmation vient de vous être envoyé.

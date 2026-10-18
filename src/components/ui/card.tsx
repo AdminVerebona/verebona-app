@@ -7,7 +7,7 @@ const Card = React.memo(({ className, ...props }: React.ComponentProps<"div">) =
     <div
       data-slot="card"
       className={cn(
-        "bg-card text-card-foreground flex flex-col gap-6 rounded-xl border py-6 shadow-relief-md hover:shadow-relief-lg transition-all",
+        "bg-card text-card-foreground flex flex-col gap-6 rounded-[16px] border border-[color:var(--border)] py-6 transition-[border-color] duration-[180ms]",
         className
       )}
       {...props}
@@ -33,7 +33,7 @@ function CardTitle({ className, ...props }: React.ComponentProps<"div">) {
   return (
     <div
       data-slot="card-title"
-      className={cn("leading-none font-semibold", className)}
+      className={cn("leading-tight font-bold tracking-[-.01em]", className)}
       {...props}
     />
   )

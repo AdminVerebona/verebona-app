@@ -140,7 +140,7 @@ export function HelpModal({ open, onOpenChange }: HelpModalProps) {
             onChange={(e) => setQuery(e.target.value)}
             placeholder="Rechercher dans le Centre d’aide…"
             maxLength={200}
-            className="w-full rounded-md border border-input bg-background pl-9 pr-9 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+            className="w-full rounded-md border border-input bg-background pl-9 pr-9 py-2 text-sm"
             autoFocus
           />
           {query && (
@@ -175,7 +175,7 @@ export function HelpModal({ open, onOpenChange }: HelpModalProps) {
             }}
             className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-sm hover:bg-muted transition-colors text-left text-[color:var(--text-primary)]"
           >
-            <PlayCircle className="h-4 w-4 text-blue-500 flex-shrink-0" aria-hidden="true" />
+            <PlayCircle className="h-4 w-4 text-[color:var(--accent)] flex-shrink-0" aria-hidden="true" />
             <span>Revoir le guide de bienvenue</span>
           </button>
         </div>

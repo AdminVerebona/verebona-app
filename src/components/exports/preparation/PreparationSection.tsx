@@ -43,7 +43,7 @@ interface Props {
   emptyAction?: ReactNode;
 }
 
-const TOOL = 'rounded-full px-2.5 py-1 text-[11px] font-medium text-muted-foreground outline-none transition-colors hover:bg-[var(--accent-soft)] hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/60 disabled:pointer-events-none disabled:opacity-40';
+const TOOL = 'rounded-full px-2.5 py-1 text-[11px] font-medium text-muted-foreground outline-none transition-colors hover:bg-[var(--accent-soft)] hover:text-foreground disabled:pointer-events-none disabled:opacity-40';
 
 export function PreparationSection({ section, no, state, editable, expanded, photoCap, onExpand, onEnable, onAll, onNone, onRestore, onToggle, onMode, onSelectLinked, viewUrl, children, emptyAction }: Props) {
   const enabled = section.required || state.sections[section.id] !== false;
@@ -62,7 +62,7 @@ export function PreparationSection({ section, no, state, editable, expanded, pho
           aria-expanded={hasContent ? expanded : undefined}
           aria-controls={hasContent ? bodyId : undefined}
           disabled={!hasContent}
-          className="group flex min-w-0 flex-1 items-start gap-3 rounded-lg text-left outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
+          className="group flex min-w-0 flex-1 items-start gap-3 rounded-lg text-left outline-none"
         >
           <span className="mt-0.5 w-7 shrink-0 font-mono text-[11px] text-muted-foreground">{no ?? '—'}</span>
           <span className="min-w-0 flex-1">

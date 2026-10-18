@@ -23,11 +23,13 @@ import { displayThumbnailKey } from '@/lib/assets/display-thumbnail';
 import { openDrawer } from '@/lib/drawers';
 import { relativeAgo, type HomeRecentDocument, type HomeUpcomingItem, type VerebonaWorkItem } from '@/services/home/home-blocks';
 import type { HomeAsset } from '@/services/home/HomeSummaryService';
+import { DateChip, DATE_CHIP_LABEL_TONE, type DateChipTone } from '@/components/ui/date-chip';
 
 /** Biens montrés dans le carrousel de l'accueil (au-delà : « Tous les biens »). */
 export const HOME_ASSETS_MAX = 12;
 
-const FOCUS_RING = 'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--accent)]';
+/** Focus : anneau global de la charte (3 px cuivre texte décalé, globals.css). */
+const FOCUS_RING = '';
 
 // ── Carte de section ────────────────────────────────────────────────────────
 
@@ -36,7 +38,8 @@ export interface SectionLink { href: string; label: string; short?: string }
 
 /**
  * Carte bordée d'une section (maquette 2a) : fond carte, bordure, rayon
- * 14 px ; en-tête = titre h2 en petites capitales espacées + lien.
+ * 14 px ; en-tête = titre h2 (charte 2026 : 17 px / 700, casse naturelle,
+ * plus de petites capitales) + lien.
  */
 export function HomeSection({ id, title, link, children, className = '', bodyClassName = '' }: {
   id: string; title: string; link?: SectionLink | null; children: ReactNode; className?: string; bodyClassName?: string;
@@ -48,9 +51,9 @@ export function HomeSection({ id, title, link, children, className = '', bodyCla
       className={`flex min-w-0 flex-col rounded-[14px] border border-[color:var(--border)] bg-[color:var(--bg-card)] p-4 md:px-6 md:pb-6 md:pt-5 ${className}`}
     >
       <div className="flex items-baseline justify-between gap-3">
-        <h2 id={id} className="m-0 text-[11px] font-semibold uppercase tracking-[.05em] text-[color:var(--text-muted)]">{title}</h2>
+        <h2 id={id} className="m-0 text-[17px] font-bold leading-[1.3] tracking-[-.01em] text-[color:var(--text-primary)]">{title}</h2>
         {link && (
-          <Link href={link.href} className={`flex-shrink-0 rounded text-[13px] font-medium text-[color:var(--accent)] hover:underline underline-offset-2 ${FOCUS_RING}`}>
+          <Link href={link.href} className={`flex-shrink-0 rounded text-[13px] font-semibold text-[color:var(--accent)] hover:text-[color:var(--accent-hover)] hover:underline underline-offset-2 ${FOCUS_RING}`}>
             {link.short && link.short !== link.label
               ? <><span className="md:hidden">{link.short}</span><span className="hidden md:inline">{link.label}</span></>
               : link.label}
@@ -106,7 +109,7 @@ export function HomeCarousel({ label, children, className = '' }: { label: strin
   };
 
   const overflow = edges.prev || edges.next;
-  const arrow = `absolute top-1/2 z-[2] hidden h-8 w-8 -translate-y-1/2 items-center justify-center rounded-full border border-[color:var(--border)] bg-[color:var(--bg-card)] text-[color:var(--text-primary)] shadow-relief-md backdrop-blur-sm transition-opacity disabled:pointer-events-none disabled:opacity-0 ${FOCUS_RING} ${overflow ? 'md:flex' : ''}`;
+  const arrow = `absolute top-1/2 z-[2] hidden h-8 w-8 -translate-y-1/2 items-center justify-center rounded-full border border-[color:var(--border)] bg-[color:var(--bg-card)] text-[color:var(--text-primary)] transition-opacity disabled:pointer-events-none disabled:opacity-0 ${FOCUS_RING} ${overflow ? 'md:flex' : ''}`;
 
   return (
     <div className={`relative ${className}`} data-carousel={label}>
@@ -148,12 +151,12 @@ export function HomeAssetCard({ asset, className = '', priority = false }: { ass
     <Link
       href={`/assets/${asset.id}`}
       aria-label={`${asset.name}, ${docs}`}
-      className={`group relative block overflow-hidden rounded-xl border border-[color:var(--border-subtle)] transition-shadow duration-200 hover:shadow-relief-lg ${FOCUS_RING} ${className}`}
+      className={`group relative block overflow-hidden rounded-xl border border-[color:var(--border-subtle)] transition-[border-color] duration-[180ms] hover:border-[color:var(--accent)] ${FOCUS_RING} ${className}`}
       style={{ background: 'var(--tile-empty)' }}
     >
       {photo ? (
         // eslint-disable-next-line @next/next/no-img-element -- URL signée S3, dimension libre
-        <img src={photo} alt="" loading={priority ? 'eager' : 'lazy'} className="absolute inset-0 h-full w-full object-cover transition-transform duration-300 group-hover:scale-[1.03]" />
+        <img src={photo} alt="" loading={priority ? 'eager' : 'lazy'} className="absolute inset-0 h-full w-full object-cover" />
       ) : (
         <span className="absolute inset-0 flex items-center justify-center pb-6">
           <Icon className="h-8 w-8 text-white/25" aria-hidden />
@@ -229,11 +232,15 @@ export function HomeAssets({ assets, onAddAsset, className = '' }: { assets: Hom
 
 // ── Prochaines échéances ────────────────────────────────────────────────────
 
-/** Urgence (calculée par le résumé) : rouge en retard, amber proche, vert plus tard. */
-const UPCOMING_TONES: Record<HomeUpcomingItem['tone'], { bg: string; fg: string; edge: string }> = {
-  red: { bg: 'var(--wash-red)', fg: 'var(--on-red)', edge: 'color-mix(in srgb, var(--vb-red-500) 30%, transparent)' },
-  amber: { bg: 'var(--wash-amber)', fg: 'var(--on-amber)', edge: 'var(--edge-amber)' },
-  green: { bg: 'var(--wash-green)', fg: 'var(--on-green)', edge: 'color-mix(in srgb, var(--vb-green-500) 30%, transparent)' },
+/**
+ * Urgence (calculée par le résumé) → ton de la pastille (charte 2026, lot 66) :
+ * retard strict en rouge accessible (décision PO), proche en cuivre
+ * (attention), plus tard en brume / pétrole. Le délai reste écrit à droite.
+ */
+export const UPCOMING_CHIP_TONE: Record<HomeUpcomingItem['tone'], DateChipTone> = {
+  red: 'late',
+  amber: 'attention',
+  green: 'default',
 };
 
 /**
@@ -251,7 +258,7 @@ export function UpcomingEvents({ items, className = '' }: { items: HomeUpcomingI
       ) : (
         <ul className="m-0 -mx-2 flex list-none flex-col p-0">
           {items.slice(0, 3).map((e, i) => {
-            const tone = UPCOMING_TONES[e.tone];
+            const tone = UPCOMING_CHIP_TONE[e.tone];
             return (
               <li key={e.id} className={i >= 2 ? 'hidden md:block' : ''}>
                 <button
@@ -259,19 +266,12 @@ export function UpcomingEvents({ items, className = '' }: { items: HomeUpcomingI
                   onClick={() => openDrawer({ kind: 'echeance', id: e.id })}
                   className={`flex w-full items-center gap-3 rounded-xl px-2 py-1.5 text-left transition-colors duration-150 hover:bg-[color:var(--accent-soft)] md:gap-3.5 md:py-2 ${FOCUS_RING}`}
                 >
-                  <span
-                    className="flex h-11 w-11 flex-shrink-0 flex-col items-center justify-center rounded-[10px] border leading-none md:h-12 md:w-12"
-                    style={{ background: tone.bg, color: tone.fg, borderColor: tone.edge }}
-                    aria-hidden
-                  >
-                    <span className="text-[15px] font-bold md:text-[17px]">{e.day}</span>
-                    <span className="mt-[3px] text-[9px] font-bold uppercase tracking-[.05em]">{e.month}</span>
-                  </span>
+                  <DateChip day={e.day} month={e.month} tone={tone} />
                   <span className="flex min-w-0 flex-1 flex-col gap-[3px]">
                     <span className="line-clamp-2 text-[13px] font-semibold leading-[1.35] text-[color:var(--text-primary)] md:text-[14px]">{e.title}</span>
                     {e.assetName && <span className="truncate text-[12px] text-[color:var(--text-muted)]">{e.assetName}</span>}
                   </span>
-                  <span className="flex-shrink-0 whitespace-nowrap text-[12px] font-semibold" style={{ color: tone.fg }}>{e.rel}</span>
+                  <span className={`flex-shrink-0 whitespace-nowrap text-[12px] font-bold ${DATE_CHIP_LABEL_TONE[tone]}`}>{e.rel}</span>
                 </button>
               </li>
             );
@@ -365,8 +365,8 @@ const formatDay = (iso: string | null) => {
 
 function StatusBadge({ label }: { label: string }) {
   return (
-    // Fond opaque (lavis amber sur le fond de page) : lisible sur une miniature.
-    <span className="whitespace-nowrap rounded-full border px-2 py-[3px] text-[10px] font-semibold" style={{ background: 'color-mix(in srgb, var(--vb-amber-500) 16%, var(--bg-page))', color: 'var(--on-amber)', borderColor: 'var(--edge-amber)' }}>
+    // Fond opaque (cuivre-soft) : lisible sur une miniature.
+    <span className="whitespace-nowrap rounded-full border px-2 py-[3px] text-[11px] font-semibold" style={{ background: 'var(--attention-soft)', color: 'var(--attention-on-soft)', borderColor: 'var(--attention-edge)' }}>
       {label}
     </span>
   );
@@ -390,7 +390,7 @@ export function RecentDocPreview({ doc }: { doc: HomeRecentDocument }) {
   const tone = DOC_TONES[doc.tone];
   const src = !doc.previewUrl ? null : step === 0 ? doc.previewUrl : step === 1 ? `/api/files/${doc.id}/thumbnail` : null;
   return (
-    <span className="absolute inset-0 flex items-start justify-center" style={{ background: src ? '#fff' : tone.bg }}>
+    <span className="absolute inset-0 flex items-start justify-center" style={{ background: src ? 'var(--vb-blanc)' : tone.bg }}>
       {src ? (
         // eslint-disable-next-line @next/next/no-img-element -- miniature autorisée (APP-PERF-06), icône si absente
         <img src={src} alt="" loading="lazy" decoding="async" onError={() => setStep((x) => (x === 0 ? 1 : 2))} className="absolute inset-0 h-full w-full object-cover object-top" />
@@ -423,7 +423,7 @@ export function RecentDocuments({ docs, onUpload, className = '' }: { docs: Home
           type="button"
           onClick={onUpload}
           className={`flex min-h-[76px] items-center gap-3.5 rounded-xl border-[1.5px] border-dashed border-[color:var(--border)] px-4 py-3.5 text-left text-[color:var(--text-primary)] transition-colors hover:border-[color:var(--accent)] md:gap-5 md:px-5 md:py-[18px] ${FOCUS_RING}`}
-          style={{ background: 'color-mix(in srgb, var(--accent) 4%, transparent)' }}
+          style={{ background: 'var(--bg-subtle)' }}
         >
           <span className="flex h-11 w-11 flex-shrink-0 items-center justify-center rounded-[14px] bg-[color:var(--accent-soft)] text-[color:var(--accent)] md:h-[52px] md:w-[52px] md:rounded-2xl">
             <Download className="h-5 w-5 md:h-[22px] md:w-[22px]" aria-hidden />
@@ -438,7 +438,7 @@ export function RecentDocuments({ docs, onUpload, className = '' }: { docs: Home
               <span className="hidden md:inline">Je la lis, j’en extrais les informations utiles et je la rattache au bon bien.</span>
             </span>
           </span>
-          <span className="hidden h-9 items-center whitespace-nowrap rounded-full bg-[color:var(--accent)] px-4 text-[13px] font-semibold text-white md:inline-flex">
+          <span className="hidden h-9 items-center whitespace-nowrap rounded-full bg-[color:var(--accent)] px-4 text-[13px] font-semibold text-[color:var(--on-accent)] md:inline-flex">
             Déposer un document
           </span>
         </button>
@@ -455,7 +455,7 @@ export function RecentDocuments({ docs, onUpload, className = '' }: { docs: Home
                   onClick={() => open(d)}
                   aria-label={`${d.title}${d.assetName ? ` — ${d.assetName}` : ''}`}
                   title={[d.title, d.typeLabel].filter(Boolean).join(' · ')}
-                  className={`relative block h-[104px] w-full overflow-hidden rounded-xl border border-[color:var(--border-subtle)] text-left transition-shadow hover:shadow-relief-lg md:h-[120px] ${FOCUS_RING}`}
+                  className={`relative block h-[104px] w-full overflow-hidden rounded-xl border border-[color:var(--border-subtle)] text-left transition-[border-color] duration-[180ms] hover:border-[color:var(--accent)] md:h-[120px] ${FOCUS_RING}`}
                 >
                   <RecentDocPreview doc={d} />
                   <span className="absolute inset-0" style={{ background: 'linear-gradient(to bottom, rgba(0,0,0,.1), rgba(0,0,0,.25) 50%, rgba(0,0,0,.85))' }} aria-hidden />

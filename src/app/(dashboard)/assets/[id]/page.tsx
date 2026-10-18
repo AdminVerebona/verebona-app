@@ -335,7 +335,7 @@ export default function AssetDetailPage() {
           <button
             type="button"
             onClick={isReadOnly ? undefined : () => setThumbnailDrawerOpen(true)}
-            className={`group flex-shrink-0 w-16 h-16 rounded-lg overflow-hidden bg-muted flex items-center justify-center relative focus:outline-none ${isReadOnly ? 'cursor-default' : 'cursor-pointer focus-visible:ring-2 focus-visible:ring-primary'}`}
+            className={`group flex-shrink-0 w-16 h-16 rounded-lg overflow-hidden bg-muted flex items-center justify-center relative ${isReadOnly ? 'cursor-default' : 'cursor-pointer'}`}
             title={isReadOnly ? undefined : "Modifier la vignette"}
           >
             {thumbnailLoading && !overrideSignedThumbnail ? (

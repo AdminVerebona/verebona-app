@@ -46,8 +46,8 @@ export interface JobExecutionViewDto {
 export interface UserViewDto { processingStatus: string; userMessageCode: string | null; retryScheduled: boolean }
 
 const TONE: Record<string, string> = {
-  FAILED: 'text-red-400', ABANDONED: 'text-red-400', SUCCESS: 'text-emerald-500',
-  RUNNING: 'text-[color:var(--accent)]', QUEUED: 'text-amber-500', INTERRUPTED: 'text-amber-500', DEFERRED: 'text-amber-500',
+  FAILED: 'text-[color:var(--text-danger)]', ABANDONED: 'text-[color:var(--text-danger)]', SUCCESS: 'text-[color:var(--text-success)]',
+  RUNNING: 'text-[color:var(--text-secondary)]', QUEUED: 'text-[color:var(--text-muted)]', INTERRUPTED: 'text-[color:var(--text-warning-soft)]', DEFERRED: 'text-[color:var(--text-warning-soft)]',
 };
 const CALL_STATUS: Record<CallReportView['status'], string> = { SUCCEEDED: 'SUCCESS', REPAIRED: 'SUCCESS (corrigé)', FAILED: 'FAILED' };
 
@@ -61,11 +61,11 @@ function CallLine({ c }: { c: CallReportView }) {
     <li className="grid grid-cols-[7rem,1fr] gap-x-2" data-testid="job-attempt-call">
       <span className="text-[color:var(--text-muted)]">{cap(c.label)}</span>
       <span>
-        {c.model ?? 'modèle inconnu'} · <span className={c.status === 'FAILED' ? 'text-red-400' : 'text-emerald-500'}>{CALL_STATUS[c.status]}</span>
+        {c.model ?? 'modèle inconnu'} · <span className={c.status === 'FAILED' ? 'text-[color:var(--text-danger)]' : 'text-[color:var(--text-success)]'}>{CALL_STATUS[c.status]}</span>
         {c.cause && <> · {c.cause}</>}
         {/* Lot 52B : essai interne du même modèle sans structured output (ni fallback, ni retry du job). */}
         {(c.providerAttempts ?? []).some((a) => a.kind !== 'initial') && (
-          <> · <span className="text-amber-500">structured output refusé → même modèle sans schéma : {(c.providerAttempts ?? []).filter((a) => a.kind !== 'initial').map((a) => a.outcome).join(', ')}</span></>
+          <> · <span className="text-[color:var(--text-warning-soft)]">structured output refusé → même modèle sans schéma : {(c.providerAttempts ?? []).filter((a) => a.kind !== 'initial').map((a) => a.outcome).join(', ')}</span></>
         )}
         {' · '}{fmtDuration(c.durationMs)}
         {(c.inputTokens !== null || c.outputTokens !== null) && <> · {fmtInt(c.inputTokens)} + {fmtInt(c.outputTokens)} tokens</>}
@@ -85,7 +85,7 @@ export function JobAttemptsPanel({ view, userView, treatment }: { view: JobExecu
         <dt className="text-[color:var(--text-muted)]">Statut du job</dt>
         <dd>{view.jobStatus}{view.jobStatus === 'DONE' && <span className="text-[color:var(--text-muted)]"> (traitement technique terminé — pas une preuve de réussite)</span>}</dd>
         <dt className="text-[color:var(--text-muted)]">Résultat {treatment}</dt>
-        <dd className={failed ? 'text-red-400 font-medium' : ''}>{view.businessResult ?? '—'}</dd>
+        <dd className={failed ? 'text-[color:var(--text-danger)] font-medium' : ''}>{view.businessResult ?? '—'}</dd>
         <dt className="text-[color:var(--text-muted)]">Tentative du job</dt>
         <dd>{retry.currentAttempt}{retry.maxAttempts ? ` / ${retry.maxAttempts}` : ''} <span className="text-[color:var(--text-muted)]">(tentatives exécutées : {view.attemptsCount})</span></dd>
         <dt className="text-[color:var(--text-muted)]">Retry automatique</dt>
@@ -123,7 +123,7 @@ export function JobAttemptsPanel({ view, userView, treatment }: { view: JobExecu
                 {a.runningCall && (
                   <li className="grid grid-cols-[7rem,1fr] gap-x-2" data-testid="job-attempt-running-call">
                     <span className="text-[color:var(--text-muted)]">{cap(a.runningCall.label)}</span>
-                    <span className="text-[color:var(--accent)]">RUNNING (appel en cours)</span>
+                    <span className="text-[color:var(--text-secondary)]">RUNNING (appel en cours)</span>
                   </li>
                 )}
               </ul>

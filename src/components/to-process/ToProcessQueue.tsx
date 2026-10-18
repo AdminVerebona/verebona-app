@@ -203,7 +203,7 @@ export function ToProcessQueue() {
           droite (cf. « Mon agenda », « Mes biens »). */}
       <div className="flex items-center justify-between mb-6">
         <div className="min-w-0">
-          <h1 className="text-xl md:text-3xl font-bold whitespace-nowrap">À traiter</h1>
+          <h1 className="vb-app-title whitespace-nowrap">À traiter</h1>
           <p className="text-muted-foreground mt-1">
             {loading && !page
               ? '\u00a0'

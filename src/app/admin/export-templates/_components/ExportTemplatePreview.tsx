@@ -142,7 +142,7 @@ export function ExportTemplatePreview({ code }: { code: string }) {
               {ctx.templateActive === false && ' Ce modèle est inactif : le rendu est affiché pour contrôle, sans effet pour les utilisateurs.'}
             </p>
             {ctx.assets.length === 0 ? (
-              <p className="text-sm text-amber-600 flex items-center gap-2">
+              <p className="text-sm text-[color:var(--text-warning-soft)] flex items-center gap-2">
                 <AlertTriangle className="h-4 w-4" />
                 Votre compte ne contient aucun bien : prévisualisation impossible. Créez un bien dans votre propre
                 compte pour contrôler ce modèle.
@@ -175,20 +175,20 @@ export function ExportTemplatePreview({ code }: { code: string }) {
               </div>
             )}
             {ctx.assets.length > 0 && ctx.assets.every((a) => a.ineligibleReason) && (
-              <p className="text-sm text-amber-600">Aucun bien de votre compte n’est compatible avec ce modèle.</p>
+              <p className="text-sm text-[color:var(--text-warning-soft)]">Aucun bien de votre compte n’est compatible avec ce modèle.</p>
             )}
             {renderError && (
-              <div className="rounded-md border border-red-500/30 bg-red-500/5 p-3 text-sm flex items-center justify-between gap-3">
-                <span className="text-red-600">{renderError}</span>
+              <div className="rounded-md border border-[color:var(--border-danger)] bg-[color:var(--bg-danger)] p-3 text-sm flex items-center justify-between gap-3">
+                <span className="text-[color:var(--text-danger)]">{renderError}</span>
                 <Button size="sm" variant="outline" onClick={render} disabled={rendering}>Réessayer</Button>
               </div>
             )}
             {preview && (
               <div className="space-y-3">
                 {preview.missing.length > 0 ? (
-                  <div className="rounded-md border border-amber-500/30 bg-amber-500/5 p-3 text-sm space-y-1">
+                  <div className="rounded-md border border-[color:var(--border-warning)] bg-[color:var(--bg-warning)] p-3 text-sm space-y-1">
                     <p className="font-medium flex items-center gap-2">
-                      <AlertTriangle className="h-4 w-4 text-amber-600" /> Prévisualisation partielle : données manquantes
+                      <AlertTriangle className="h-4 w-4 text-[color:var(--text-warning-soft)]" /> Prévisualisation partielle : données manquantes
                     </p>
                     <ul className="list-disc pl-6 text-muted-foreground">
                       {preview.missing.map((m) => <li key={m}>{m}</li>)}

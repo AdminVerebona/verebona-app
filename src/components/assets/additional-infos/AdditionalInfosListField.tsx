@@ -246,7 +246,7 @@ export function AdditionalInfosListField({
                       className="p-1.5 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted/60 disabled:opacity-30"
                       aria-label={`Descendre ${list.itemLabel.toLowerCase()} ${index + 1}`}><ArrowDown className="w-3.5 h-3.5" /></button>
                     <button type="button" onClick={() => remove(row.id)}
-                      className="p-1.5 rounded-md text-muted-foreground hover:text-red-400 hover:bg-red-500/10"
+                      className="p-1.5 rounded-md text-muted-foreground hover:text-[color:var(--danger)] hover:bg-[color:var(--danger-soft)]"
                       aria-label={`Supprimer ${list.itemLabel.toLowerCase()} ${index + 1}`}><Trash2 className="w-3.5 h-3.5" /></button>
                   </div>
                 )}
@@ -261,7 +261,7 @@ export function AdditionalInfosListField({
                         {col.label}{col.required && <span className="text-primary/80" aria-hidden> *</span>}
                       </Label>
                       {cellInput(row, col, inputId, error)}
-                      {error ? <p className="text-[11px] text-red-400">{error}</p>
+                      {error ? <p className="text-[11px] text-[color:var(--danger)]">{error}</p>
                         : col.help ? <p className="text-[11px] text-muted-foreground/80 leading-snug">{col.help}</p> : null}
                     </div>
                   );
@@ -272,7 +272,7 @@ export function AdditionalInfosListField({
         })}
       </ol>
 
-      {listError && <p className="text-[11px] text-red-400">{listError}</p>}
+      {listError && <p className="text-[11px] text-[color:var(--danger)]">{listError}</p>}
 
       {!readOnly && (
         <button type="button" onClick={add} disabled={full}

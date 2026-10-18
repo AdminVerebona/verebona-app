@@ -412,10 +412,10 @@ export function AssetOverviewTab({ assetId, onTabChange, readOnly = false }: Pro
                 const dotColor = isOverdue
                   ? 'bg-destructive'
                   : item.toConfirm
-                  ? 'bg-amber-500'
+                  ? 'bg-[color:var(--badge-todo)]'
                   : isDone
-                  ? 'bg-green-500'
-                  : 'bg-[#3b82f6]';
+                  ? 'bg-[color:var(--accent)]'
+                  : 'bg-[color:var(--text-muted)]';
                 return (
                   <div key={`${item.itemType}-${item.id}`} className="relative flex gap-3 pb-5">
                     {/* Dot */}
@@ -428,7 +428,7 @@ export function AssetOverviewTab({ assetId, onTabChange, readOnly = false }: Pro
                       {item.effectiveDate && (
                         <p className="text-[10px] text-muted-foreground leading-none mb-0.5">
                           {formatDate(item.effectiveDate)}
-                          {item.toConfirm && <span className="text-amber-500"> · statut à confirmer</span>}
+                          {item.toConfirm && <span className="text-[color:var(--attention-on-soft)]"> · statut à confirmer</span>}
                         </p>
                       )}
                       <p className={`text-xs font-medium leading-snug truncate ${isDone ? 'text-muted-foreground' : 'text-foreground'}`}>
@@ -457,18 +457,19 @@ export function AssetOverviewTab({ assetId, onTabChange, readOnly = false }: Pro
         {/* Counters — Documents & Agenda first, then Pièces/Équipements */}
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2">
           {([
-            { label: 'Documents', count: data.counters.documents, tab: 'documents', icon: FileText,     color: '#a78bfa', bg: 'rgba(167,139,250,0.12)' },
-            { label: 'Agenda',    count: data.counters.agenda ?? 0, tab: 'agenda',  icon: CalendarDays, color: '#22c55e', bg: 'rgba(34,197,94,0.12)'   },
-            ...(data.counters.rooms > 0       ? [{ label: 'Pièces',       count: data.counters.rooms,       tab: 'rooms',       icon: LayoutGrid, color: '#3b82f6', bg: 'rgba(59,130,246,0.12)'  }] : []),
-            ...(data.counters.equipments > 0  ? [{ label: 'Équipements',  count: data.counters.equipments,  tab: 'equipments',  icon: Wrench,     color: '#f59e0b', bg: 'rgba(245,158,11,0.12)'  }] : []),
-          ] as { label: string; count: number; tab: string; icon: React.ElementType; color: string; bg: string }[]).map(c => (
+            { label: 'Documents', count: data.counters.documents, tab: 'documents', icon: FileText },
+            { label: 'Agenda',    count: data.counters.agenda ?? 0, tab: 'agenda',  icon: CalendarDays },
+            ...(data.counters.rooms > 0       ? [{ label: 'Pièces',       count: data.counters.rooms,       tab: 'rooms',       icon: LayoutGrid }] : []),
+            ...(data.counters.equipments > 0  ? [{ label: 'Équipements',  count: data.counters.equipments,  tab: 'equipments',  icon: Wrench }] : []),
+          ] as { label: string; count: number; tab: string; icon: React.ElementType }[]).map(c => (
             <button
               key={c.tab}
               onClick={readOnly ? undefined : () => onTabChange(c.tab)}
-              className={`rounded-lg bg-card border border-border px-2 py-2 flex flex-row items-center gap-2 transition-all ${readOnly ? 'cursor-default' : 'hover:brightness-110'}`}
+              className={`rounded-[12px] bg-card border border-border px-2 py-2 flex flex-row items-center gap-2 transition-colors ${readOnly ? 'cursor-default' : 'hover:border-[color:var(--accent)]'}`}
             >
-              <div className="w-7 h-7 rounded-md flex items-center justify-center shrink-0" style={{ background: c.bg }}>
-                <c.icon className="w-3.5 h-3.5" style={{ color: c.color }} />
+              {/* Charte : pictogramme pétrole dans une tuile brume (même ton pour tous les compteurs). */}
+              <div className="w-7 h-7 rounded-md flex items-center justify-center shrink-0 bg-[color:var(--accent-soft)]">
+                <c.icon className="w-3.5 h-3.5 text-[color:var(--accent)]" />
               </div>
               <div className="flex flex-col items-start min-w-0">
                 <span className="text-[9px] font-semibold uppercase tracking-widest text-muted-foreground leading-none mb-0.5">{c.label}</span>
@@ -509,10 +510,10 @@ export function AssetOverviewTab({ assetId, onTabChange, readOnly = false }: Pro
                     const dotColor = item.isOverdue
                       ? 'bg-destructive'
                       : item.toConfirm
-                      ? 'bg-amber-500'
+                      ? 'bg-[color:var(--badge-todo)]'
                       : item.isDone
-                      ? 'bg-green-500'
-                      : 'bg-[#3b82f6]';
+                      ? 'bg-[color:var(--accent)]'
+                      : 'bg-[color:var(--text-muted)]';
                     const isLoadingDot = loadingItem === item.id;
                     return (
                       <div key={`mob-${item.itemType}-${item.id}`} className="relative flex gap-3 pb-4">
@@ -525,7 +526,7 @@ export function AssetOverviewTab({ assetId, onTabChange, readOnly = false }: Pro
                           {item.effectiveDate && (
                             <p className="text-[10px] text-muted-foreground leading-none mb-0.5">
                               {formatDate(item.effectiveDate)}
-                              {item.toConfirm && <span className="text-amber-500"> · statut à confirmer</span>}
+                              {item.toConfirm && <span className="text-[color:var(--attention-on-soft)]"> · statut à confirmer</span>}
                             </p>
                           )}
                           <p className={`text-xs font-medium leading-snug ${item.isDone ? 'text-muted-foreground' : 'text-foreground'}`}>
@@ -612,10 +613,10 @@ export function AssetOverviewTab({ assetId, onTabChange, readOnly = false }: Pro
               {recentExports.map(exp => (
                 <div key={exp.id} className="flex items-center gap-2 text-sm py-1">
                   {exp.status === 'ready'
-                    ? <CheckCircle2 className="w-3.5 h-3.5 text-green-500 flex-shrink-0" />
+                    ? <CheckCircle2 className="w-3.5 h-3.5 text-[color:var(--text-success)] flex-shrink-0" />
                     : exp.status === 'error'
-                    ? <AlertCircle className="w-3.5 h-3.5 text-red-500 flex-shrink-0" />
-                    : <Clock className="w-3.5 h-3.5 text-blue-400 flex-shrink-0 animate-pulse" />}
+                    ? <AlertCircle className="w-3.5 h-3.5 text-[color:var(--danger)] flex-shrink-0" />
+                    : <Clock className="w-3.5 h-3.5 text-[color:var(--accent)] flex-shrink-0 animate-pulse" />}
                   <span className="flex-1 truncate text-xs">
                     {exportCodeLabel(exp.exportType)}
                   </span>
@@ -691,9 +692,9 @@ function TimelineRow({ item, muted }: { item: TimelineItem; muted?: boolean }) {
   const stateIcon = item.isOverdue
     ? <AlertCircle className="w-3 h-3 text-destructive" />
     : item.toConfirm
-    ? <Clock className="w-3 h-3 text-amber-500" />
+    ? <Clock className="w-3 h-3 text-[color:var(--attention-on-soft)]" />
     : item.isDone
-    ? <CheckCircle2 className="w-3 h-3 text-green-500" />
+    ? <CheckCircle2 className="w-3 h-3 text-[color:var(--text-success)]" />
     : <Clock className="w-3 h-3 text-muted-foreground" />;
 
   return (

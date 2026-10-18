@@ -117,13 +117,13 @@ export function NotificationsOps() {
           <p className="text-sm text-muted-foreground">Santé indisponible.</p>
         ) : (
           <>
-            <p className={`text-sm ${health.sain ? 'text-emerald-500' : 'text-amber-500'}`}>
+            <p className={`text-sm ${health.sain ? 'text-[color:var(--text-success)]' : 'text-[color:var(--text-warning-soft)]'}`}>
               {health.sain ? 'File saine sur 24 h.' : 'À surveiller sur 24 h.'}
               <span className="text-muted-foreground">
                 {' '}· {health.outbox.enAttente} en attente · {health.outbox.enErreur} en erreur · {health.outbox.bloquesDepuisSeuil} bloquée(s) depuis plus d’une heure
               </span>
             </p>
-            {health.alertes.map((a, i) => <p key={i} className="text-xs text-amber-500">{a}</p>)}
+            {health.alertes.map((a, i) => <p key={i} className="text-xs text-[color:var(--text-warning-soft)]">{a}</p>)}
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
                 <thead>
@@ -182,7 +182,7 @@ export function NotificationsOps() {
                     <td className="px-2 py-1 text-xs">{formatDateTime(e.createdAt)}</td>
                     <td className="px-2 py-1">{e.eventType}</td>
                     <td className="px-2 py-1 tabular-nums">{e.recipientUserId ?? '—'}</td>
-                    <td className="px-2 py-1">{e.status}{e.lastError ? <span className="block text-xs text-red-500">{e.lastError}</span> : null}</td>
+                    <td className="px-2 py-1">{e.status}{e.lastError ? <span className="block text-xs text-[color:var(--text-danger)]">{e.lastError}</span> : null}</td>
                     <td className="px-2 py-1 text-xs">{e.deliveries.map((d) => `${d.channel} ${d.status} (${d.count})`).join(' · ') || '—'}</td>
                     <td className="px-2 py-1 text-right">
                       <Button size="sm" variant="ghost" onClick={() => void ouvrir(e)}>Réémettre…</Button>

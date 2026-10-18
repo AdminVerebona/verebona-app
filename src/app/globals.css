@@ -1,30 +1,33 @@
-/* Updated: 1767563581894 */
-/* Updated: 2025-12-28T21:34:08.665Z */
-/* Updated: 2025-12-28T15:23:55.378Z */
-/* Updated: 2025-12-28T13:53:31.939Z */
-/* Updated: 2025-12-24T00:25:46.147Z */
-/* Updated: 2025-12-23T16:15:00.734Z */
-/* Updated: 2025-12-23T15:29:19.976Z */
-/* Updated: 2025-12-23T09:59:13.273Z */
-/* Updated: 2025-12-22T11:36:56.611Z */
-/* Updated: 2025-12-22T11:09:18.005Z */
-/* Updated: 2025-12-22T10:17:51.790Z */
-/* Updated: 2025-12-22T10:10:17.311Z */
-/* Updated: 2025-12-22T09:58:02.907Z */
-/* Updated: 2025-12-21T22:28:11.348Z */
-/* Updated: 2025-12-21T11:40:29.890Z */
 @import "tailwindcss";
 @import "tw-animate-css";
 
 @custom-variant dark (&:is(.dark *));
 
-/* ── Scroll Reveal (disabled: was causing blank scroll areas) ── */
+/* ══════════════════════════════════════════════════════════════════════════
+   VEREBONA — CHARTE « SÉRÉNITÉ » 2026 (v1.1, 14 octobre 2026) — lot 66
+
+   Pétrole minéral, cuivre doux, ivoire, encre ; Figtree seule.
+   Référence : Verebona_Charte_2026_v1.1.md (§1 couleurs, §2 typographie,
+   §5 composants) et jetons `verebona-2026.tokens.css`.
+
+   Les NOMS de variables existants sont conservés (shadcn : --background,
+   --primary, --muted… ; application : --bg-page, --accent, --text-muted… ;
+   rôles : --text-warning, --on-red…) : seules leurs VALEURS changent. Les
+   alias de la charte sont exposés en --vb-*.
+
+   Mécanisme de thème inchangé : `data-theme` sur <html> — « beige » = clair
+   (ivoire), « blue » = sombre (encre). Valeurs historiques conservées : elles
+   sont enregistrées dans `localStorage` (« verebona-theme ») chez les
+   utilisateurs. Sans choix enregistré, la préférence du système décide
+   (src/lib/theme.ts). `:root` porte le thème CLAIR : c'est le rendu par
+   défaut, y compris si le script de thème ne s'exécute pas.
+   ══════════════════════════════════════════════════════════════════════════ */
 
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  --font-sans: var(--vb-font);
+  --font-mono: var(--vb-font-mono);
   --color-sidebar-ring: var(--sidebar-ring);
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
@@ -60,246 +63,386 @@
   --radius-xl: calc(var(--radius) + 4px);
 }
 
+/* ── Figtree (OFL, auto-hébergée : la CSP n'autorise que font-src 'self') ── */
+@font-face { font-family: 'Figtree'; font-style: normal; font-weight: 400; font-display: swap; src: url('/fonts/figtree-latin-400-normal.woff2') format('woff2'); }
+@font-face { font-family: 'Figtree'; font-style: normal; font-weight: 500; font-display: swap; src: url('/fonts/figtree-latin-500-normal.woff2') format('woff2'); }
+@font-face { font-family: 'Figtree'; font-style: normal; font-weight: 600; font-display: swap; src: url('/fonts/figtree-latin-600-normal.woff2') format('woff2'); }
+@font-face { font-family: 'Figtree'; font-style: normal; font-weight: 700; font-display: swap; src: url('/fonts/figtree-latin-700-normal.woff2') format('woff2'); }
+@font-face { font-family: 'Figtree'; font-style: normal; font-weight: 800; font-display: swap; src: url('/fonts/figtree-latin-800-normal.woff2') format('woff2'); }
+
+/* ══════════════════════════════════════════════════════════════════════════
+   JETONS INDÉPENDANTS DU THÈME (marque, typographie, rayons, mouvement)
+   ══════════════════════════════════════════════════════════════════════════ */
 :root {
-  --radius: 0.5rem;
-  --background: #020B1A;
-  --foreground: #E5E7EB;
-  --card: rgba(15, 23, 42, 0.9);
-  --card-foreground: #E5E7EB;
-  --popover: rgba(15, 23, 42, 0.95);
-  --popover-foreground: #E5E7EB;
-  --primary: #3B82F6;
-  --primary-foreground: #FFFFFF;
-  --secondary: rgba(59, 130, 246, 0.15);
-  --secondary-foreground: #E5E7EB;
-  --muted: rgba(59, 130, 246, 0.15);
-  --muted-foreground: #9CA3AF;
-  --accent: #3B82F6;
-  --accent-foreground: #FFFFFF;
-  --destructive: #EF4444;
-  --border: rgba(148, 163, 184, 0.3);
-  --input: rgba(148, 163, 184, 0.3);
-  --ring: #3B82F6;
-  --sidebar: rgba(15, 23, 42, 0.9);
-  --sidebar-foreground: #E5E7EB;
-  --sidebar-primary: #3B82F6;
-  --sidebar-primary-foreground: #FFFFFF;
-  --sidebar-accent: rgba(59, 130, 246, 0.15);
-  --sidebar-accent-foreground: #E5E7EB;
-  --sidebar-border: rgba(148, 163, 184, 0.3);
-  --sidebar-ring: #3B82F6;
+  /* Marque (§1.1) */
+  --vb-petrole: #17474D;
+  --vb-petrole-hover: #10383E;
+  --vb-petrole-clair: #9FD3CC;
+  --vb-cuivre: #D66B53;
+  --vb-cuivre-texte: #AA4E38;
+  --vb-cuivre-sombre: #E2896F;
+  --vb-ivoire: #F8F6F1;
+  --vb-ivoire-2: #F2F0EA;
+  --vb-brume: #E2EBE9;
+  --vb-blanc: #FFFFFF;
+  --vb-encre: #26353B;
+  --vb-encre-2: #1B2529;
+  --vb-encre-3: #161F23;
+  --vb-gris: #52636A;
+  --vb-filet: #D5DEDC;
+  --vb-filet-2: #E2E8E6;
+  --vb-cuivre-soft: #F6E4DE;
+  --vb-cuivre-edge: #E8C4B9;
+  --vb-bulle: #ECF1EF;
+  --vb-bulle-edge: #BBD0CC;
+  /* Mascotte (§4) : recoloration cyan PROVISOIRE, par filtre CSS. */
+  --vb-mascotte-lumiere: #18B8E8;
+  --vb-mascotte-face: #08A8D8;
+  --vb-mascotte-ombre: #0878A8;
+  --vb-mascotte-filtre: hue-rotate(-30deg) saturate(1.1) brightness(1.02) contrast(1.08);
 
-  /* Custom shadows for relief */
-  --shadow-sm: 0 1px 3px 0 rgba(0, 0, 0, 0.5), 0 1px 2px -1px rgba(0, 0, 0, 0.5);
-  --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.6), 0 2px 4px -2px rgba(0, 0, 0, 0.6);
-  --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.7), 0 4px 6px -4px rgba(0, 0, 0, 0.7);
-  --shadow-xl: 0 20px 25px -5px rgba(0, 0, 0, 0.8), 0 8px 10px -6px rgba(0, 0, 0, 0.8);
-  --shadow-2xl: 0 25px 50px -12px rgba(0, 0, 0, 0.9);
-  --shadow-inner: inset 0 2px 4px 0 rgba(0, 0, 0, 0.4);
-  --shadow-glow: 0 0 15px rgba(59, 130, 246, 0.3);
+  /* Typographie (§2) — application */
+  --vb-font: 'Figtree', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  --vb-font-mono: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  --font-display: var(--vb-font);
+  --fs-app-title: 34px;
+  --fs-app-greeting: 32px;
+  --fs-app-section: 17px;
+  --fs-app-body: 14px;
+  --fs-app-meta: 12.5px;
 
-  /* Theme variables used in codebase */
-  --bg-page: #020617;
-  --bg-card: rgba(15, 23, 42, 0.9);
-  --border-subtle: rgba(31, 41, 55, 0.9);
-  --accent-soft: rgba(59, 130, 246, 0.1);
-  --text-primary: #F9FAFB;
-  --text-muted: #94A3B8;
+  /* Rayons et ombre (§5) */
+  --radius: 0.75rem;              /* 12 px : boutons et champs */
+  --vb-radius-control: 12px;
+  --vb-radius-card: 16px;
+  --vb-radius-tile: 22px;
+  --vb-radius-pill: 999px;
 
-  /* ══════════════════════════════════════════════════════════════════════
-     COULEURS SÉMANTIQUES — thème sombre
+  /* Mouvement : 180 ms, sans rebond (fond et couleur seulement). */
+  --vb-ease: cubic-bezier(.2,.7,.2,1);
+  --vb-dur: 180ms;
 
-     Le code employait des teintes Tailwind écrites à la main :
-     `text-amber-200`, `text-red-300`, `text-emerald-200`… Ces valeurs claires
-     sont pensées pour un fond foncé. Sur blanc, elles tombent sous le seuil
-     de contraste : le texte est visible, pas lisible.
-
-     73 occurrences dans 21 fichiers étaient dans ce cas.
-
-     Ces variables portent le RÔLE — avertissement, danger, succès — et
-     chaque thème leur donne la valeur qui convient. Une seule écriture,
-     `text-[color:var(--text-warning)]`, lisible dans les deux modes.
-
-     Contrastes visés : AA (4,5:1) pour le texte courant, atteint ou dépassé
-     sur les fonds de ce thème.
-     ══════════════════════════════════════════════════════════════════════ */
-  --text-warning: #FCD34D;
-  --text-warning-soft: #FDE68A;
-  --text-danger: #FCA5A5;
-  --text-danger-soft: #FECACA;
-  --text-success: #6EE7B7;
-  --text-success-soft: #A7F3D0;
-  --text-info: #93C5FD;
-  --text-info-soft: #BFDBFE;
-
-  --bg-warning: rgba(245, 158, 11, 0.12);
-  --bg-danger: rgba(239, 68, 68, 0.12);
-  --bg-success: rgba(16, 185, 129, 0.12);
-  --bg-info: rgba(59, 130, 246, 0.12);
-
-  --border-warning: rgba(245, 158, 11, 0.35);
-  --border-danger: rgba(239, 68, 68, 0.35);
-  --border-success: rgba(16, 185, 129, 0.35);
-  --border-info: rgba(59, 130, 246, 0.35);
+  /* Coquille (§5) */
+  --app-sidebar: 240px;
+  --app-sidebar-collapsed: 64px;
+  --app-header: 60px;
 }
 
-html[data-theme="beige"] body, body.theme-beige {
-  --background: #FDFCFB;
-  --foreground: #111827;
-  --card: #FFFFFF;
-  --card-foreground: #111827;
-  --popover: #FFFFFF;
-  --popover-foreground: #111827;
-  --primary: #3B82F6;
-  --primary-foreground: #FFFFFF;
-  --secondary: #F3F4F6;
-  --secondary-foreground: #111827;
-  --muted: #F9FAFB;
-  --muted-foreground: #6B7280;
-  --accent: #3B82F6;
-  --accent-foreground: #FFFFFF;
-  --destructive: #EF4444;
-  --border: #E5E7EB;
-  --input: #E5E7EB;
-  --ring: #3B82F6;
-  --sidebar: #FFFFFF;
-  --sidebar-foreground: #111827;
-  --sidebar-primary: #3B82F6;
-  --sidebar-primary-foreground: #FFFFFF;
-  --sidebar-accent: #F3F4F6;
-  --sidebar-accent-foreground: #111827;
-  --sidebar-border: #E5E7EB;
-  --sidebar-ring: #3B82F6;
+/* ══════════════════════════════════════════════════════════════════════════
+   THÈME CLAIR — ivoire / pétrole / cuivre (défaut, data-theme="beige")
+   ══════════════════════════════════════════════════════════════════════════ */
+:root,
+html[data-theme="beige"] {
+  color-scheme: light;
 
-  /* Beige custom theme variables - RESTORED LIGHT THEME */
-  --bg-page: #FDFCFB;
+  /* Application (charte §1.2, colonne « Clair ») */
+  --bg-page: #F8F6F1;
   --bg-card: #FFFFFF;
-  --border-subtle: #E5E7EB;
-  --accent-soft: rgba(59, 130, 246, 0.08);
-  --text-primary: #111827;
-  --text-muted: #6B7280;
+  --bg-section: #E2EBE9;
+  --bg-subtle: #F2F0EA;
+  --bg-hover: #E2EBE9;
+  --bg-input: #FFFFFF;
+  --border-subtle: #E2E8E6;
+  --text-primary: #26353B;
+  --text-heading: #17474D;
+  --text-secondary: #3F4F55;
+  --text-muted: #52636A;
+  --accent: #17474D;
+  --accent-hover: #10383E;
+  --on-accent: #FFFFFF;
+  --accent-soft: #E2EBE9;
+  --accent-display: #D66B53;
+  --attention: #AA4E38;
+  /* Texte cuivre posé sur cuivre-soft : #AA4E38 n'y fait que 4,43:1 —
+     teinte assombrie pour atteindre 4,5:1 (écart documenté, lot 66). */
+  --attention-on-soft: #9E4733;
+  --attention-soft: #F6E4DE;
+  --attention-edge: #E8C4B9;
+  --badge-todo: #AA4E38;
+  --on-badge-todo: #FFFFFF;
+  --bubble: #ECF1EF;
+  --bubble-edge: #BBD0CC;
+  --focus-ring-color: #AA4E38;
+  --vb-logo-cells: #17474D;
+  --vb-logo-text: #17474D;
+  --vb-shadow-card: 0 12px 32px rgba(38, 53, 59, .08);
 
-  /* Couleurs sémantiques — thème clair.
-     Teintes 700/800 : sur fond blanc, les 200/300 du thème sombre seraient
-     illisibles. Même rôle, valeur adaptée au fond. */
-  --text-warning: #92400E;
-  --text-warning-soft: #B45309;
-  --text-danger: #991B1B;
-  --text-danger-soft: #B91C1C;
-  --text-success: #065F46;
-  --text-success-soft: #047857;
-  --text-info: #1E40AF;
-  --text-info-soft: #1D4ED8;
+  /* Rouge accessible — retards stricts et erreurs bloquantes (décision PO
+     du lot 66). Distinct du cuivre (attention) ; libellé toujours écrit. */
+  --danger: #B42318;
+  --danger-soft: #FBE9E7;
+  --danger-edge: #F0BDB6;
 
-  --bg-warning: rgba(245, 158, 11, 0.10);
-  --bg-danger: rgba(239, 68, 68, 0.08);
-  --bg-success: rgba(16, 185, 129, 0.08);
-  --bg-info: rgba(59, 130, 246, 0.08);
-
-  --border-warning: rgba(180, 83, 9, 0.30);
-  --border-danger: rgba(185, 28, 28, 0.30);
-  --border-success: rgba(4, 120, 87, 0.30);
-  --border-info: rgba(29, 78, 216, 0.30);
-
-  /* Shadows for relief - Light theme */
-  --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
-  --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.07), 0 2px 4px -1px rgba(0, 0, 0, 0.04);
-  --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.08), 0 4px 6px -2px rgba(0, 0, 0, 0.03);
-  --shadow-xl: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.02);
-  --shadow-2xl: 0 25px 50px -12px rgba(0, 0, 0, 0.12);
-  --shadow-inner: inset 0 2px 4px 0 rgba(0, 0, 0, 0.05);
-  --shadow-glow: 0 0 15px rgba(59, 130, 246, 0.1);
-}
-
-/* ============================================================
-   PUBLIC PAGES — always dark regardless of user theme preference
-   Applied via className="public-page" on the page wrapper div.
-   CSS custom properties are inherited by all DOM descendants,
-   including fixed-position elements (Header), overriding any
-   beige values set on <body> by the theme system.
-   ============================================================ */
-html .public-page, html[data-theme="beige"] .public-page {
-  --background: #020B1A;
-  --foreground: #E5E7EB;
-  --card: rgba(15, 23, 42, 0.9);
-  --card-foreground: #E5E7EB;
-  --popover: rgba(15, 23, 42, 0.95);
-  --popover-foreground: #E5E7EB;
-  --primary: #3B82F6;
+  /* shadcn */
+  --background: #F8F6F1;
+  --foreground: #26353B;
+  --card: #FFFFFF;
+  --card-foreground: #26353B;
+  --popover: #FFFFFF;
+  --popover-foreground: #26353B;
+  --primary: #17474D;
   --primary-foreground: #FFFFFF;
-  --secondary: rgba(59, 130, 246, 0.15);
-  --secondary-foreground: #E5E7EB;
-  --muted: rgba(59, 130, 246, 0.15);
-  --muted-foreground: #9CA3AF;
-  --accent: #3B82F6;
+  --secondary: #E2EBE9;
+  --secondary-foreground: #17474D;
+  --muted: #E2EBE9;
+  --muted-foreground: #52636A;
   --accent-foreground: #FFFFFF;
-  --destructive: #EF4444;
-  --border: rgba(148, 163, 184, 0.3);
-  --input: rgba(148, 163, 184, 0.3);
-  --ring: #3B82F6;
-  --bg-page: #020617;
-  --bg-card: rgba(15, 23, 42, 0.9);
-  --border-subtle: rgba(31, 41, 55, 0.9);
-  --accent-soft: rgba(59, 130, 246, 0.1);
-  --text-primary: #F9FAFB;
-  --text-muted: #94A3B8;
-  --shadow-sm: 0 1px 3px 0 rgba(0,0,0,0.5), 0 1px 2px -1px rgba(0,0,0,0.5);
-  --shadow-md: 0 4px 6px -1px rgba(0,0,0,0.6), 0 2px 4px -2px rgba(0,0,0,0.6);
-  --shadow-lg: 0 10px 15px -3px rgba(0,0,0,0.7), 0 4px 6px -4px rgba(0,0,0,0.7);
-  --shadow-xl: 0 20px 25px -5px rgba(0,0,0,0.8), 0 8px 10px -6px rgba(0,0,0,0.8);
-  --shadow-2xl: 0 25px 50px -12px rgba(0,0,0,0.9);
-  --shadow-inner: inset 0 2px 4px 0 rgba(0,0,0,0.4);
-  --shadow-glow: 0 0 15px rgba(59,130,246,0.3);
+  --destructive: #B42318;
+  --border: #D5DEDC;
+  --input: #D5DEDC;
+  --ring: #AA4E38;
+  --chart-1: #17474D;
+  --chart-2: #D66B53;
+  --chart-3: #6FA8A1;
+  --chart-4: #52636A;
+  --chart-5: #BBD0CC;
+  --sidebar: #F2F0EA;
+  --sidebar-foreground: #26353B;
+  --sidebar-primary: #17474D;
+  --sidebar-primary-foreground: #FFFFFF;
+  --sidebar-accent: #E2EBE9;
+  --sidebar-accent-foreground: #17474D;
+  --sidebar-border: #E2E8E6;
+  --sidebar-ring: #AA4E38;
+
+  /* Ombres « relief » : neutralisées — une seule ombre dans la charte,
+     réservée aux cartes flottantes (menus, fenêtres, panneaux). */
+  --shadow-sm: none;
+  --shadow-md: none;
+  --shadow-lg: 0 12px 32px rgba(38, 53, 59, .08);
+  --shadow-xl: 0 12px 32px rgba(38, 53, 59, .08);
+  --shadow-2xl: 0 12px 32px rgba(38, 53, 59, .10);
+  --shadow-inner: none;
+  --shadow-glow: none;
+
+  /* Rôles sémantiques (noms historiques). Le cuivre signale, le pétrole
+     confirme ; le rouge est réservé aux retards stricts / erreurs. */
+  --text-warning: #AA4E38;
+  --text-warning-soft: #9E4733;
+  --text-danger: #B42318;
+  --text-danger-soft: #B42318;
+  --text-success: #17474D;
+  --text-success-soft: #17474D;
+  --text-info: #17474D;
+  --text-info-soft: #17474D;
+
+  --bg-warning: #F6E4DE;
+  --bg-danger: #FBE9E7;
+  --bg-success: #E2EBE9;
+  --bg-info: #E2EBE9;
+
+  --border-warning: #E8C4B9;
+  --border-danger: #F0BDB6;
+  --border-success: #BBD0CC;
+  --border-info: #BBD0CC;
+
+  /* Direction D v2 (noms historiques, valeurs « Sérénité ») */
+  --field-bg: #FFFFFF;
+  --row-muted: #F8F6F1;
+  --veil: rgba(38, 53, 59, .28);
+  --vb-red-500: #B42318;
+  --vb-amber-500: #D66B53;
+  --vb-green-500: #17474D;
+  --vb-violet-500: #52636A;
+  --vb-blue-500: #17474D;
+  --vb-blue-700: #10383E;
+  --wash-red: #FBE9E7;
+  --wash-amber: #F6E4DE;
+  --wash-green: #E2EBE9;
+  --wash-violet: #ECF1EF;
+  --wash-blue: #E2EBE9;
+  --wash-slate: #EEF1EF;
+  --edge-amber: #E8C4B9;
+  --on-red: #B42318;
+  --on-amber: #9E4733;
+  --on-green: #17474D;
+  --on-violet: #3E5F63;
+  --on-blue: #17474D;
+  --on-slate: #52636A;
+  --tile-empty: #17474D;
+  --vb-shadow-panel: 0 12px 32px rgba(38, 53, 59, .08);
 }
 
-.dark {
-  --background: oklch(0.145 0 0);
-  --foreground: oklch(0.985 0 0);
-  --card: oklch(0.205 0 0);
-  --card-foreground: oklch(0.985 0 0);
-  --popover: oklch(0.205 0 0);
-  --popover-foreground: oklch(0.985 0 0);
-  --primary: oklch(0.922 0 0);
-  --primary-foreground: oklch(0.205 0 0);
-  --secondary: oklch(0.269 0 0);
-  --secondary-foreground: oklch(0.985 0 0);
-  --muted: oklch(0.269 0 0);
-  --muted-foreground: oklch(0.708 0 0);
-  --accent: oklch(0.269 0 0);
-  --accent-foreground: oklch(0.985 0 0);
-  --destructive: oklch(0.704 0.191 22.216);
-  --border: oklch(1 0 0 / 10%);
-  --input: oklch(1 0 0 / 15%);
-  --ring: oklch(0.556 0 0);
-  --chart-1: oklch(0.488 0.243 264.376);
-  --chart-2: oklch(0.696 0.17 162.48);
-  --chart-3: oklch(0.769 0.188 70.08);
-  --chart-4: oklch(0.627 0.265 303.9);
-  --chart-5: oklch(0.645 0.246 16.439);
-  --sidebar: oklch(0.205 0 0);
-  --sidebar-foreground: oklch(0.985 0 0);
-  --sidebar-primary: oklch(0.488 0.243 264.376);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.269 0 0);
-  --sidebar-accent-foreground: oklch(0.985 0 0);
-  --sidebar-border: oklch(1 0 0 / 10%);
-  --sidebar-ring: oklch(0.556 0 0);
+/* ══════════════════════════════════════════════════════════════════════════
+   THÈME SOMBRE — encre neutre (data-theme="blue"), jamais pétrole sur pétrole
+   `.public-page` : pages publiques, toujours sombres (comportement conservé).
+   ══════════════════════════════════════════════════════════════════════════ */
+html[data-theme="blue"],
+html .public-page,
+html[data-theme="beige"] .public-page {
+  color-scheme: dark;
+
+  --bg-page: #1B2529;
+  --bg-card: #26353B;
+  --bg-section: #1F2D32;
+  --bg-subtle: #1F2D32;
+  --bg-hover: #2A4347;
+  --bg-input: #1F2D32;
+  --border-subtle: #304046;
+  --text-primary: #F3F1EB;
+  --text-heading: #F3F1EB;
+  --text-secondary: #C9D3D5;
+  --text-muted: #A7B6B9;
+  --accent: #9FD3CC;
+  --accent-hover: #B8E0DA;
+  --on-accent: #1B2529;
+  --accent-soft: #2A4347;
+  --accent-display: #E2896F;
+  --attention: #E2896F;
+  --attention-on-soft: #E2896F;
+  --attention-soft: #3D302C;
+  --attention-edge: #6A4337;
+  --badge-todo: #D66B53;
+  /* Pas de texte blanc sur cuivre doux (3,45:1, charte §1.3) : encre (4,53:1). */
+  --on-badge-todo: #1B2529;
+  --bubble: #243C40;
+  --bubble-edge: #3E5F63;
+  --focus-ring-color: #E2896F;
+  --vb-logo-cells: #F8F6F1;
+  --vb-logo-text: #F3F1EB;
+  --vb-shadow-card: 0 12px 32px rgba(0, 0, 0, .28);
+
+  --danger: #F5A3A3;
+  --danger-soft: #3D2629;
+  --danger-edge: #7A3A3A;
+
+  --background: #1B2529;
+  --foreground: #F3F1EB;
+  --card: #26353B;
+  --card-foreground: #F3F1EB;
+  --popover: #26353B;
+  --popover-foreground: #F3F1EB;
+  --primary: #9FD3CC;
+  --primary-foreground: #1B2529;
+  --secondary: #2A4347;
+  --secondary-foreground: #F3F1EB;
+  --muted: #2A4347;
+  --muted-foreground: #A7B6B9;
+  --accent-foreground: #1B2529;
+  --destructive: #F5A3A3;
+  --border: #3A4A51;
+  --input: #3A4A51;
+  --ring: #E2896F;
+  --chart-1: #9FD3CC;
+  --chart-2: #E2896F;
+  --chart-3: #5E9E97;
+  --chart-4: #A7B6B9;
+  --chart-5: #3E5F63;
+  --sidebar: #161F23;
+  --sidebar-foreground: #F3F1EB;
+  --sidebar-primary: #9FD3CC;
+  --sidebar-primary-foreground: #1B2529;
+  --sidebar-accent: #2A4347;
+  --sidebar-accent-foreground: #F3F1EB;
+  --sidebar-border: #304046;
+  --sidebar-ring: #E2896F;
+
+  --shadow-sm: none;
+  --shadow-md: none;
+  --shadow-lg: 0 12px 32px rgba(0, 0, 0, .28);
+  --shadow-xl: 0 12px 32px rgba(0, 0, 0, .28);
+  --shadow-2xl: 0 12px 32px rgba(0, 0, 0, .32);
+  --shadow-inner: none;
+  --shadow-glow: none;
+
+  --text-warning: #E2896F;
+  --text-warning-soft: #E2896F;
+  --text-danger: #F5A3A3;
+  --text-danger-soft: #F5A3A3;
+  --text-success: #9FD3CC;
+  --text-success-soft: #9FD3CC;
+  --text-info: #9FD3CC;
+  --text-info-soft: #9FD3CC;
+
+  --bg-warning: #3D302C;
+  --bg-danger: #3D2629;
+  --bg-success: #2A4347;
+  --bg-info: #2A4347;
+
+  --border-warning: #6A4337;
+  --border-danger: #7A3A3A;
+  --border-success: #3E5F63;
+  --border-info: #3E5F63;
+
+  --field-bg: #1F2D32;
+  --row-muted: #1F2D32;
+  --veil: rgba(10, 15, 18, .55);
+  --vb-red-500: #F5A3A3;
+  --vb-amber-500: #E2896F;
+  --vb-green-500: #9FD3CC;
+  --vb-violet-500: #A7B6B9;
+  --vb-blue-500: #9FD3CC;
+  --vb-blue-700: #B8E0DA;
+  --wash-red: #3D2629;
+  --wash-amber: #3D302C;
+  --wash-green: #2A4347;
+  --wash-violet: #243C40;
+  --wash-blue: #2A4347;
+  --wash-slate: #1F2D32;
+  --edge-amber: #6A4337;
+  --on-red: #F5A3A3;
+  --on-amber: #E2896F;
+  --on-green: #9FD3CC;
+  --on-violet: #C9D3D5;
+  --on-blue: #9FD3CC;
+  --on-slate: #A7B6B9;
+  --tile-empty: #2A4347;
+  --vb-shadow-panel: 0 12px 32px rgba(0, 0, 0, .28);
 }
 
 @layer base {
   * {
     @apply border-border outline-ring/50;
   }
+  html {
+    background-color: var(--bg-page);
+  }
   body {
     @apply bg-[color:var(--bg-page)] text-[color:var(--text-primary)];
-    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    font-family: var(--vb-font);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
   }
   button, [role="button"], a[href], label[for], select {
     cursor: pointer;
   }
+  /* Montants et tableaux : chiffres tabulaires (Figtree « tnum »). */
+  table, td, th, input[type="number"], input[inputmode="decimal"], input[inputmode="numeric"], time {
+    font-variant-numeric: tabular-nums;
+  }
 }
 
-/* Utilities for relief shadows */
+/* ══════════════════════════════════════════════════════════════════════════
+   FOCUS — anneau 3 px cuivre texte, décalé de 3 px (charte §5)
+
+   Hors couche : l'emporte sur les `outline-none` des utilitaires. Les
+   entrées de menu / d'options ont leur propre surbrillance (fond brume) ;
+   un élément peut s'exclure avec `data-focus-ring="off"` quand son
+   conteneur porte l'indicateur (pilule du champ Verebona).
+   ══════════════════════════════════════════════════════════════════════════ */
+:where(a[href], button, input, select, textarea, summary,
+  [role="button"], [role="tab"], [role="switch"], [role="checkbox"], [role="radio"], [role="combobox"],
+  [tabindex]:not([tabindex="-1"])):focus-visible:not([data-focus-ring="off"]) {
+  outline: 3px solid var(--focus-ring-color);
+  outline-offset: 3px;
+}
+:where([role="menuitem"], [role="menuitemradio"], [role="menuitemcheckbox"], [role="option"]):focus-visible {
+  outline: none;
+}
+
+/* Utilitaires de la charte */
+.vb-tabular { font-variant-numeric: tabular-nums; }
+.vb-mascotte { filter: var(--vb-mascotte-filtre); }
+.vb-app-title { font-size: var(--fs-app-title); font-weight: 800; letter-spacing: -.03em; line-height: 1.1; color: var(--text-primary); }
+.vb-app-greeting { font-size: var(--fs-app-greeting); font-weight: 800; letter-spacing: -.03em; line-height: 1.1; color: var(--text-primary); }
+.vb-app-section { font-size: var(--fs-app-section); font-weight: 700; letter-spacing: -.01em; line-height: 1.3; color: var(--text-primary); }
+.vb-meta { font-size: var(--fs-app-meta); color: var(--text-muted); }
+@media (max-width: 767px) {
+  .vb-app-title { font-size: 26px; }
+  .vb-app-greeting { font-size: 26px; }
+}
+
+/* Ombres « relief » (noms historiques) : voir --shadow-* ci-dessus. */
 .shadow-relief-sm { box-shadow: var(--shadow-sm); }
 .shadow-relief-md { box-shadow: var(--shadow-md); }
 .shadow-relief-lg { box-shadow: var(--shadow-lg); }
@@ -308,12 +451,12 @@ html .public-page, html[data-theme="beige"] .public-page {
 .shadow-relief-inner { box-shadow: var(--shadow-inner); }
 .shadow-relief-glow { box-shadow: var(--shadow-glow); }
 
-/* Hover lift effect */
+/* Survol des cartes : elles ne bougent pas, aucune ombre ajoutée (charte). */
 .hover-lift {
-  transition: box-shadow 0.2s ease-in-out;
+  transition: border-color var(--vb-dur) var(--vb-ease);
 }
 .hover-lift:hover {
-  box-shadow: var(--shadow-lg);
+  border-color: var(--accent);
 }
 
 /* Logo & Ticker Animations */
@@ -351,19 +494,20 @@ html .public-page, html[data-theme="beige"] .public-page {
 }
 .animate-cube-3d { animation: cube-3d 12s linear infinite; }
 
-/* VB Logo components */
+/* Logo historique en CSS (`.vb-logo`, page publique) : couleurs de la
+   charte — cases pétrole (ivoire sur fond sombre), cube cuivre doux. */
 .vb-logo {
   --vb-symbol-size: 1.6rem;
   --vb-cell-gap: calc(var(--vb-symbol-size) / 12);
   --vb-cell-size: calc((var(--vb-symbol-size) - 2 * var(--vb-cell-gap)) / 3);
   --vb-cube-depth: calc(var(--vb-cell-size) / 2);
-  --vb-blue-front:  #4A7FE5;
-  --vb-blue-back:   #2E5BC0;
-  --vb-blue-right:  #5A8FF0;
-  --vb-blue-left:   #2447A8;
-  --vb-blue-top:    #6BA3FF;
-  --vb-blue-bottom: #1F3A8A;
-  --vb-dark: #2F3941;
+  --vb-blue-front:  #D66B53;
+  --vb-blue-back:   #B85A45;
+  --vb-blue-right:  #E2896F;
+  --vb-blue-left:   #AA4E38;
+  --vb-blue-top:    #E9A08B;
+  --vb-blue-bottom: #8F3F2D;
+  --vb-dark: var(--vb-logo-cells);
   display: inline-flex;
   align-items: center;
   gap: 0.75rem;
@@ -393,7 +537,7 @@ html .public-page, html[data-theme="beige"] .public-page {
 .vb-logo-symbol-grid-square.is-empty { background: transparent; }
 
 .vb-logo--on-dark .vb-logo-symbol-grid-square {
-  background: rgba(255, 255, 255, 0.92);
+  background: #F8F6F1;
 }
 
 .vb-logo-cube-container {
@@ -437,11 +581,12 @@ html .public-page, html[data-theme="beige"] .public-page {
 .vb-logo-text-main {
   font-weight: 700;
   font-size: 1.05rem;
-  color: #111827;
+  letter-spacing: -.02em;
+  color: var(--vb-logo-text);
   line-height: 1.05;
 }
 
-.vb-logo--on-dark .vb-logo-text-main { color: #f9fafb; }
+.vb-logo--on-dark .vb-logo-text-main { color: #F3F1EB; }
 
 /* Hide Next.js error overlay portal */
 nextjs-portal {
@@ -450,21 +595,13 @@ nextjs-portal {
 
 /* ── Bouton Ajouter / Créer unifié ─────────────────────────────────────── */
 /*
- * ⚠️ LE BOUTON « AJOUTER » EST BLEU, PARTOUT.
+ * L'action principale de chaque page a UNE apparence, posée ICI sur
+ * `.btn-add` (une vingtaine d'appelants n'ont rien à changer). Les variantes
+ * `outline` du composant Button sont volontairement écrasées.
  *
- * Il était gris et sans fond : la même action apparaissait tantôt en bleu —
- * quand un appelant oubliait la classe et laissait la variante par défaut du
- * composant Button — tantôt en contour discret. L'action principale de chaque
- * page se lisait donc différemment d'une page à l'autre.
- *
- * La couleur est posée ICI, sur `.btn-add`, et nulle part ailleurs : c'est le
- * seul point à modifier pour la faire évoluer, et les quelque vingt appelants
- * n'ont rien à changer. Les variantes `outline` du composant Button sont
- * volontairement écrasées — la classe l'emporte sur la variante.
- *
- * Le bleu est écrit en dur (#3b82f6) plutôt que `var(--accent)` : cette
- * variable vaut un gris neutre dans le thème shadcn de repli, ce qui rendrait
- * le bouton invisible là où il compte le plus.
+ * Charte « Sérénité » (lot 66) : bouton primaire pétrole (pétrole clair en
+ * thème sombre), texte blanc (encre en sombre), survol #10383E, sans
+ * dégradé ni réduction d'échelle à la pression.
  */
 .btn-add {
   display: inline-flex;
@@ -473,70 +610,31 @@ nextjs-portal {
   padding: 0.5rem 1rem;
   font-size: 0.875rem;
   white-space: nowrap;
-  background-color: #3b82f6;
-  color: #ffffff;
+  background-color: var(--accent);
+  color: var(--on-accent);
   border: 1px solid transparent;
-  border-radius: 0.75rem;
-  font-weight: 500;
-  letter-spacing: 0.01em;
-  transition: background-color 0.2s ease, border-color 0.2s ease;
+  border-radius: 12px;
+  font-weight: 700;
+  letter-spacing: 0;
+  transition: background-color var(--vb-dur) var(--vb-ease), color var(--vb-dur) var(--vb-ease);
 }
 .btn-add:hover {
-  background-color: #2563eb;
+  background-color: var(--accent-hover);
   border-color: transparent;
-  color: #ffffff;
+  color: var(--on-accent);
 }
 
-/* Thème clair (beige) — même bleu, le contraste sur blanc reste suffisant. */
-html[data-theme="light"] .btn-add {
-  background-color: #3b82f6;
-  color: #ffffff;
-  border-color: transparent;
-}
-html[data-theme="light"] .btn-add:hover {
-  background-color: #2563eb;
-  border-color: transparent;
-}
-
-.btn-add:active {
-  opacity: 0.9;
-}
-
-/* ── Rotation des icônes sur boutons Ajouter ────────────────────────────────── */
-.btn-add .btn-add-plus-icon {
-  transition: transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
-}
-.btn-add:hover .btn-add-plus-icon {
-  transform: rotate(90deg);
-}
-
-/* ── Rotation des icônes Trash2 (Supprimer) ────────────────────────────────── */
-.btn-delete .btn-delete-trash-icon {
-  transition: transform 0.2s ease;
-}
-.btn-delete:hover .btn-delete-trash-icon {
-  transform: scale(1.1);
-}
-
-/* ── Rotation des icônes SlidersHorizontal (Filtres) ────────────────────────────────── */
-.btn-filter .btn-filter-sliders-icon {
-  transition: none;
-}
-.btn-filter:hover .btn-filter-sliders-icon {
-  transform: none;
-}
-
-/* ── Animation des icônes Download ────────────────────────────────────── */
+/* ── Icônes des boutons : aucun mouvement (charte : pas de rebond) ──────── */
+.btn-add .btn-add-plus-icon,
+.btn-delete .btn-delete-trash-icon,
+.btn-filter .btn-filter-sliders-icon,
 .btn-download .btn-download-icon {
-  transition: transform 0.2s ease;
-}
-.btn-download:hover .btn-download-icon {
-  transform: translateY(2px);
+  transition: none;
 }
 
 /* ── Astérisque champs obligatoires ────────────────────────────────────── */
 .required-star {
-  color: hsl(var(--destructive));
+  color: var(--danger);
   margin-left: 2px;
 }
 
@@ -548,42 +646,36 @@ html[data-theme="light"] .btn-add:hover {
   max-width: 100%;
 }
 
-/* ── Mode édition : champs réduits pour meilleure aériation ─────────────── */
 [data-slot="dialog-body"] .form-field,
 form .form-field {
   max-width: 100%;
 }
 
-/* ── Conteneur d'édition en 2 colonnes ──────────────────────────────────── */
 form.form-2col {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
   gap: 1.5rem;
 }
 
-/* ── Champs de formulaire en mode édition : padding et contraste ────────── */
 .form-field input,
 .form-field textarea,
 .form-field select,
 .form-field [role="combobox"] {
-  background-color: var(--card);
-  color: var(--card-foreground);
-  border: 1px solid var(--border);
+  background-color: var(--field-bg);
+  color: var(--text-primary);
+  border: 1px solid var(--input);
   padding: 0.625rem 0.75rem;
-  border-radius: 0.5rem;
-  transition: all 0.2s ease;
+  border-radius: 12px;
+  transition: border-color var(--vb-dur) var(--vb-ease), background-color var(--vb-dur) var(--vb-ease);
 }
 
 .form-field input:focus,
 .form-field textarea:focus,
 .form-field select:focus,
 .form-field [role="combobox"]:focus {
-  border-color: var(--primary);
-  background-color: rgba(59, 130, 246, 0.05);
-  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+  border-color: var(--accent);
 }
 
-/* ── Layout 2 colonnes pour formulaires ─────────────────────────────────── */
 .form-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
@@ -593,11 +685,11 @@ form.form-2col {
 /* ── Dialog avec DialogBody : header et footer ont leur propre padding ───── */
 [data-slot="dialog-content"]:has([data-slot="dialog-body"]) [data-slot="dialog-header"] {
   padding: 1.5rem 1.5rem 1rem 1.5rem;
-  border-bottom: 1px solid var(--border-subtle, hsl(var(--border)));
+  border-bottom: 1px solid var(--border-subtle);
 }
 [data-slot="dialog-content"]:has([data-slot="dialog-body"]) [data-slot="dialog-footer"] {
   padding: 1rem 1.5rem 1.5rem 1.5rem;
-  border-top: 1px solid var(--border-subtle, hsl(var(--border)));
+  border-top: 1px solid var(--border-subtle);
 }
 
 /* ── Scrollbar hide ─────────────────────────────────────────────────────── */
@@ -622,28 +714,6 @@ form.form-2col {
   opacity: 1 !important;
 }
 
-/* ── Beige theme: improved input contrast ───────────────────────────────── */
-html[data-theme="beige"] input[type="text"],
-html[data-theme="beige"] input[type="number"],
-html[data-theme="beige"] input[type="email"],
-html[data-theme="beige"] input[type="password"],
-html[data-theme="beige"] input[type="search"],
-html[data-theme="beige"] input[type="url"],
-html[data-theme="beige"] textarea,
-html[data-theme="beige"] select {
-  background-color: #FFFFFF !important;
-  border-color: #D1D5DB !important;
-  color: #111827 !important;
-}
-
-html[data-theme="beige"] input:focus,
-html[data-theme="beige"] textarea:focus,
-html[data-theme="beige"] select:focus {
-  border-color: #3B82F6 !important;
-  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.12) !important;
-  outline: none;
-}
-
 /* ── Hide number input spinners (all themes) ────────────────────────────── */
 input[type="number"]::-webkit-outer-spin-button,
 input[type="number"]::-webkit-inner-spin-button {
@@ -656,22 +726,20 @@ input[type="number"] {
   -moz-appearance: textfield !important;
 }
 
-/* ── Input field common styling ────────────────────────────────────────── */
-/* Common input field styling class - use for all input-like components */
+/* ══════════════════════════════════════════════════════════════════════════
+   CHAMPS — fond « champ » des deux thèmes (blanc / encre profonde), bordure
+   1 px, rayon 12 (composants). Les règles `!important` historiques sont
+   conservées (elles l'emportaient sur des fonds écrits à la main dans les
+   pages) mais lisent désormais les jetons.
+   ══════════════════════════════════════════════════════════════════════════ */
 .input-field {
   height: 2.25rem; /* h-9 */
-  background-color: rgba(30, 41, 59, 0.6) !important;
-  border-color: rgba(148, 163, 184, 0.3) !important;
+  background-color: var(--field-bg) !important;
+  border-color: var(--input) !important;
   border-width: 1px;
   border-style: solid;
 }
 
-html[data-theme="beige"] .input-field {
-  background-color: #F9FAFB !important;
-  border-color: #D1D5DB !important;
-}
-
-/* Dark theme - lighter input background for all inputs */
 input[data-slot="input"],
 input[type="text"],
 input[type="number"],
@@ -684,123 +752,60 @@ input[type="time"],
 textarea,
 select,
 [role="combobox"] {
-  background-color: rgba(30, 41, 59, 0.6) !important;
+  background-color: var(--field-bg) !important;
 }
 
-/* Beige theme - very light input background */
-html[data-theme="beige"] input[data-slot="input"],
-html[data-theme="beige"] input[type="text"],
-html[data-theme="beige"] input[type="number"],
-html[data-theme="beige"] input[type="email"],
-html[data-theme="beige"] input[type="password"],
-html[data-theme="beige"] input[type="search"],
-html[data-theme="beige"] input[type="url"],
-html[data-theme="beige"] input[type="date"],
-html[data-theme="beige"] input[type="time"],
-html[data-theme="beige"] textarea,
-html[data-theme="beige"] select,
-html[data-theme="beige"] [role="combobox"] {
-  background-color: #F9FAFB !important;
+/* Champs intégrés à une pilule (champ Verebona) : transparents. */
+input[data-field-bare],
+[data-field-bare] input {
+  background-color: transparent !important;
 }
 
-/* DatePicker trigger button - dark theme */
-button[class*="flex"][class*="items-center"][class*="gap-2"][class*="w-full"][class*="rounded-md"][class*="border"][class*="bg-background"] {
-  background-color: rgba(30, 41, 59, 0.6) !important;
-}
-
-/* DatePicker trigger button - beige theme */
-html[data-theme="beige"] button[class*="flex"][class*="items-center"][class*="gap-2"][class*="w-full"][class*="rounded-md"][class*="border"][class*="bg-background"] {
-  background-color: #F9FAFB !important;
-}
-
-/* Select trigger styling - ensure consistency */
+/* DatePicker / TimePicker / Select : même fond que les champs. */
+button[class*="flex"][class*="items-center"][class*="gap-2"][class*="w-full"][class*="rounded-md"][class*="border"][class*="bg-background"],
 [data-slot="select-trigger"],
-[data-slot="select-trigger"]:hover {
-  background-color: rgba(30, 41, 59, 0.6) !important;
-  border-color: rgba(148, 163, 184, 0.3) !important;
-}
-
-html[data-theme="beige"] [data-slot="select-trigger"],
-html[data-theme="beige"] [data-slot="select-trigger"]:hover {
-  background-color: #F9FAFB !important;
-  border-color: #D1D5DB !important;
-}
-
-/* TimePicker button - ensure consistency */
+[data-slot="select-trigger"]:hover,
 button[class*="Clock"] {
-  background-color: rgba(30, 41, 59, 0.6) !important;
-  border-color: rgba(148, 163, 184, 0.3) !important;
-}
-
-html[data-theme="beige"] button[class*="Clock"] {
-  background-color: #F9FAFB !important;
-  border-color: #D1D5DB !important;
+  background-color: var(--field-bg) !important;
+  border-color: var(--input) !important;
 }
 
 /* ══════════════════════════════════════════════════════════════════════════
-   DIRECTION D v2 « LA MASCOTTE » — jetons, polices, mouvement
-   (Verebona - Direction D v2 - Specification §12, §12bis)
-
-   Polices auto-hébergées (`public/fonts`, licence OFL) : la CSP n'autorise
-   que `font-src 'self'`. Inter pour l'interface, Bricolage Grotesque pour
-   « Bonjour, … » et les titres de section de l'accueil.
+   NOTIFICATIONS (sonner) — couleurs de la charte dans les deux thèmes.
+   Le pétrole confirme (succès, information), le cuivre signale
+   (avertissement), le rouge reste réservé aux erreurs bloquantes.
    ══════════════════════════════════════════════════════════════════════════ */
-@font-face { font-family: 'Inter'; font-style: normal; font-weight: 400; font-display: swap; src: url('/fonts/inter-latin-400-normal.woff2') format('woff2'); }
-@font-face { font-family: 'Inter'; font-style: normal; font-weight: 500; font-display: swap; src: url('/fonts/inter-latin-500-normal.woff2') format('woff2'); }
-@font-face { font-family: 'Inter'; font-style: normal; font-weight: 600; font-display: swap; src: url('/fonts/inter-latin-600-normal.woff2') format('woff2'); }
-@font-face { font-family: 'Inter'; font-style: normal; font-weight: 700; font-display: swap; src: url('/fonts/inter-latin-700-normal.woff2') format('woff2'); }
-@font-face { font-family: 'Bricolage Grotesque'; font-style: normal; font-weight: 600; font-display: swap; src: url('/fonts/bricolage-grotesque-latin-600-normal.woff2') format('woff2'); }
-
-:root {
-  --font-display: 'Bricolage Grotesque', 'Inter', system-ui, sans-serif;
-  /* Surfaces : des lavis sur le fond, jamais des aplats. */
-  --field-bg: rgba(30, 41, 59, 0.6);
-  --row-muted: rgba(15, 23, 42, 0.5);
-  --veil: rgba(2, 6, 23, 0.55);
-  /* Trio sémantique lavis / bordure / texte (§12). */
-  --vb-red-500: #EF4444;
-  --vb-amber-500: #F59E0B;
-  --vb-green-500: #22C55E;
-  --vb-violet-500: #8B5CF6;
-  --vb-blue-500: #3B82F6;
-  --vb-blue-700: #1D4ED8;
-  --wash-red: rgba(239, 68, 68, 0.14);
-  --wash-amber: rgba(245, 158, 11, 0.14);
-  --wash-green: rgba(34, 197, 94, 0.14);
-  --wash-violet: rgba(139, 92, 246, 0.14);
-  --wash-blue: rgba(59, 130, 246, 0.14);
-  --wash-slate: rgba(59, 130, 246, 0.15);
-  --edge-amber: rgba(245, 158, 11, 0.3);
-  --on-red: #FCA5A5;
-  --on-amber: #FCD34D;
-  --on-green: #6EE7A3;
-  --on-violet: #B49BFF;
-  --on-blue: #BFDBFE;
-  --on-slate: #94A3B8;
-  --tile-empty: linear-gradient(135deg, #1E293B, #0B1428);
-  --vb-shadow-panel: 0 40px 100px rgba(0, 0, 0, 0.7), 0 0 0 1px rgba(59, 130, 246, 0.06);
+html [data-sonner-toaster][data-sonner-theme] {
+  font-family: var(--vb-font);
+  --border-radius: 14px;
+  --normal-bg: var(--bg-card);
+  --normal-bg-hover: var(--bg-hover);
+  --normal-border: var(--border);
+  --normal-border-hover: var(--border);
+  --normal-text: var(--text-primary);
+  --success-bg: var(--bg-success);
+  --success-border: var(--border-success);
+  --success-text: var(--text-success);
+  --info-bg: var(--bg-info);
+  --info-border: var(--border-info);
+  --info-text: var(--text-info);
+  --warning-bg: var(--bg-warning);
+  --warning-border: var(--border-warning);
+  --warning-text: var(--text-warning-soft);
+  --error-bg: var(--bg-danger);
+  --error-border: var(--border-danger);
+  --error-text: var(--text-danger);
 }
 
-html[data-theme="beige"] body, body.theme-beige {
-  --field-bg: #F9FAFB;
-  --row-muted: #F9FAFB;
-  --veil: rgba(15, 23, 42, 0.28);
-  --wash-slate: #F1F5F9;
-  --on-red: #B91C1C;
-  --on-amber: #92400E;
-  --on-green: #15803D;
-  --on-violet: #6D28D9;
-  --on-blue: #1D4ED8;
-  --on-slate: #475569;
-  --tile-empty: linear-gradient(135deg, #334155, #0F172A);
-  --vb-shadow-panel: 0 30px 80px rgba(15, 23, 42, 0.18), 0 0 0 1px rgba(59, 130, 246, 0.08);
-}
-
+/* ══════════════════════════════════════════════════════════════════════════
+   MOUVEMENT ET ANIMATIONS (Direction D v2 §12bis, charte §5 : sans rebond)
+   ══════════════════════════════════════════════════════════════════════════ */
 .font-display { font-family: var(--font-display); }
 
-/* Mascotte : arrivée, puis une seule fois par changement de pose (§12bis). */
-@keyframes vb-pose-a { 0% { opacity: 0; transform: translateY(10px) scale(.9); } 60% { opacity: 1; transform: translateY(-3px) scale(1.03); } 100% { opacity: 1; transform: none; } }
-@keyframes vb-pose-b { 0% { opacity: 0; transform: translateY(10px) scale(.9); } 60% { opacity: 1; transform: translateY(-3px) scale(1.03); } 100% { opacity: 1; transform: none; } }
+/* Mascotte : arrivée, puis une seule fois par changement de pose (§12bis).
+   Fondu et léger glissement, sans dépassement d'échelle (pas de rebond). */
+@keyframes vb-pose-a { 0% { opacity: 0; transform: translateY(8px); } 100% { opacity: 1; transform: none; } }
+@keyframes vb-pose-b { 0% { opacity: 0; transform: translateY(8px); } 100% { opacity: 1; transform: none; } }
 /* Traitement en cours : trois points (§6.4). */
 @keyframes vb-dot { 0%, 80%, 100% { opacity: .25; transform: translateY(0); } 40% { opacity: 1; transform: translateY(-3px); } }
 /* Apparition du panneau sous le champ (§6.2). */
@@ -829,11 +834,9 @@ html[data-theme="beige"] body, body.theme-beige {
   }
 }
 
-/* Accueil Direction D : halo radial très léger en haut à gauche (§3.2). */
-.vb-home-halo { background: radial-gradient(420px 260px at 10% 0%, rgba(59, 130, 246, .12), transparent 70%); }
-@media (min-width: 768px) {
-  .vb-home-halo { background: radial-gradient(900px 420px at 8% -10%, rgba(59, 130, 246, .10), transparent 70%); }
-}
+/* Accueil : fond en aplat (charte : pas de dégradé de fond). La classe est
+   conservée pour ne pas toucher la page. */
+.vb-home-halo { background: none; }
 
 /* Écran plein écran sur mobile (préparation d'un dossier, CDC exports §5.1) :
    la barre de navigation basse est masquée tant qu'il est ouvert, ses propres

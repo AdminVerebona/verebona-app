@@ -14,7 +14,7 @@ import dynamic from 'next/dynamic';
 import { apiClient } from '@/lib/api-client';
 import { toast } from 'sonner';
 import type { AgendaItemFull } from '@/services/agenda/AgendaQueryService';
-import { EFFECTIVE_STATUS_LABELS, type AgendaEffectiveStatus } from '@/lib/agenda/effective-status';
+import { EFFECTIVE_STATUS_LABELS, attentionFlagLabel, visibleAttentionFlags, type AgendaEffectiveStatus } from '@/lib/agenda/effective-status';
 import { useSession } from '@/hooks/useSession';
 
 const AgendaItemDrawer = dynamic(
@@ -56,7 +56,7 @@ function AgendaItemRow({ item, onClick }: { item: AgendaItemFull; onClick: () =>
       onClick={onClick}
     >
       {/* Date block */}
-      <DateBlock dateStr={item.startDate ?? null} />
+      <DateBlock dateStr={item.startDate ?? null} status={item.effectiveStatus} />
 
       {/* Content */}
       <div className="flex-1 min-w-0">
@@ -79,10 +79,10 @@ function AgendaItemRow({ item, onClick }: { item: AgendaItemFull; onClick: () =>
               +{extraAssets}
             </span>
           )}
-          {item.attentionFlags.map(f => (
-            <span key={f} className="inline-flex items-center gap-0.5 rounded-md px-1.5 py-0.5 text-xs bg-orange-500/10 text-orange-400 border border-orange-500/20">
+          {visibleAttentionFlags(item.attentionFlags).map(f => (
+            <span key={f} className="inline-flex items-center gap-0.5 rounded-md px-1.5 py-0.5 text-xs bg-[color:var(--attention-soft)] text-[color:var(--attention-on-soft)] border border-[color:var(--attention-edge)]">
               <AlertCircle className="h-2.5 w-2.5" />
-              {f === 'sans_bien' ? 'Sans bien' : f === 'donnee_distincte_a_qualifier' ? 'À qualifier' : f === 'date_incoherente' ? 'Date?' : f}
+              {attentionFlagLabel(f)}
             </span>
           ))}
         </div>
@@ -219,7 +219,7 @@ function AgendaPageInner() {
         {/* Header */}
         <div className="flex items-center justify-between mb-6">
           <div className="min-w-0">
-            <h1 className="text-xl md:text-3xl font-bold whitespace-nowrap">Mon agenda</h1>
+            <h1 className="vb-app-title whitespace-nowrap">Mon agenda</h1>
             {/* Même en-tête que « Mes biens » : titre puis décompte. */}
             <p className="text-muted-foreground mt-1">
               {loading ? '\u00a0' : `${items.length} ${items.length > 1 ? 'éléments' : 'élément'}`}
@@ -241,7 +241,7 @@ function AgendaPageInner() {
               <SlidersHorizontal className="btn-filter-sliders-icon h-4 w-4" />
               Filtres
               {activeFiltersCount > 0 && (
-                <span className="absolute -top-1.5 -right-1.5 w-4 h-4 rounded-full bg-[#3b82f6] text-white text-[9px] font-bold flex items-center justify-center">
+                <span className="absolute -top-1.5 -right-1.5 w-4 h-4 rounded-full bg-[color:var(--accent)] text-[color:var(--on-accent)] text-[9px] font-bold flex items-center justify-center">
                   {activeFiltersCount}
                 </span>
               )}

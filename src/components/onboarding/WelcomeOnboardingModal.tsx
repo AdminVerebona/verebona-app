@@ -17,7 +17,7 @@ interface OnboardingStep {
 
 function getSteps(_plan: PlanType, _duoRole?: 'BILLING_OWNER' | 'MEMBER'): OnboardingStep[] {
   const stepIntro: OnboardingStep = {
-    icon: <ShieldCheck className="w-10 h-10 text-blue-500" />,
+    icon: <ShieldCheck className="w-10 h-10 text-[color:var(--accent)]" />,
     title: 'Soyez prêt avant d\'en avoir besoin.',
     body: (
       <p className="text-[color:var(--text-muted)] text-sm leading-relaxed">
@@ -27,7 +27,7 @@ function getSteps(_plan: PlanType, _duoRole?: 'BILLING_OWNER' | 'MEMBER'): Onboa
   };
 
   const stepBien: OnboardingStep = {
-    icon: <Package className="w-10 h-10 text-blue-500" />,
+    icon: <Package className="w-10 h-10 text-[color:var(--accent)]" />,
     title: 'Ajoutez votre premier bien',
     body: (
       <p className="text-[color:var(--text-muted)] text-sm leading-relaxed">
@@ -35,12 +35,12 @@ function getSteps(_plan: PlanType, _duoRole?: 'BILLING_OWNER' | 'MEMBER'): Onboa
         Cliquez sur le bouton{' '}
         <strong className="text-[color:var(--text-primary)]">Ajouter</strong>{' '}
         {/* L'icône reproduit le bouton réel de la barre latérale : « Ajouter »
-            seul se cherche, un rond bleu au « + » se reconnaît. */}
+            seul se cherche, un rond pétrole au « + » se reconnaît. */}
         <span
           aria-hidden
-          className="inline-flex items-center justify-center align-middle w-5 h-5 rounded-full bg-gradient-to-br from-[#3b82f6] to-[#1d4ed8]"
+          className="inline-flex items-center justify-center align-middle w-5 h-5 rounded-full bg-[color:var(--accent)]"
         >
-          <Plus className="w-3 h-3 text-white" />
+          <Plus className="w-3 h-3 text-[color:var(--on-accent)]" />
         </span>{' '}
         dans la barre latérale pour commencer.
       </p>
@@ -48,7 +48,7 @@ function getSteps(_plan: PlanType, _duoRole?: 'BILLING_OWNER' | 'MEMBER'): Onboa
   };
 
   const stepDocument: OnboardingStep = {
-    icon: <FileText className="w-10 h-10 text-violet-500" />,
+    icon: <FileText className="w-10 h-10 text-[color:var(--accent)]" />,
     title: 'Ajoutez vos documents',
     body: (
       <p className="text-[color:var(--text-muted)] text-sm leading-relaxed">
@@ -59,7 +59,7 @@ function getSteps(_plan: PlanType, _duoRole?: 'BILLING_OWNER' | 'MEMBER'): Onboa
   };
 
   const stepAgendaNew: OnboardingStep = {
-    icon: <CalendarDays className="w-10 h-10 text-emerald-500" />,
+    icon: <CalendarDays className="w-10 h-10 text-[color:var(--text-success)]" />,
     title: 'Agenda',
     body: (
       <p className="text-[color:var(--text-muted)] text-sm leading-relaxed">
@@ -69,7 +69,7 @@ function getSteps(_plan: PlanType, _duoRole?: 'BILLING_OWNER' | 'MEMBER'): Onboa
   };
 
   const stepRetrouve: OnboardingStep = {
-    icon: <Search className="w-10 h-10 text-violet-500" />,
+    icon: <Search className="w-10 h-10 text-[color:var(--accent)]" />,
     title: 'Retrouvez l\'information sans fouiller.',
     body: (
       <p className="text-[color:var(--text-muted)] text-sm leading-relaxed">
@@ -80,7 +80,7 @@ function getSteps(_plan: PlanType, _duoRole?: 'BILLING_OWNER' | 'MEMBER'): Onboa
   };
 
   const stepDossiers: OnboardingStep = {
-    icon: <FolderOutput className="w-10 h-10 text-emerald-500" />,
+    icon: <FolderOutput className="w-10 h-10 text-[color:var(--text-success)]" />,
     title: 'Générez des dossiers prêts à partager.',
     body: (
       <p className="text-[color:var(--text-muted)] text-sm leading-relaxed">
@@ -90,7 +90,7 @@ function getSteps(_plan: PlanType, _duoRole?: 'BILLING_OWNER' | 'MEMBER'): Onboa
   };
 
   const stepDuo: OnboardingStep = {
-    icon: <Users className="w-10 h-10 text-emerald-500" />,
+    icon: <Users className="w-10 h-10 text-[color:var(--text-success)]" />,
     title: 'Premium Duo',
     body: (
       <p className="text-[color:var(--text-muted)] text-sm leading-relaxed">
@@ -205,7 +205,7 @@ export function WelcomeOnboardingModal({
               key={i}
               className={`block rounded-full transition-all duration-300 ${
                 i === stepIndex
-                  ? 'w-5 h-2 bg-blue-500'
+                  ? 'w-5 h-2 bg-[color:var(--accent)]'
                   : 'w-2 h-2 bg-[color:var(--border-subtle)]'
               }`}
             />

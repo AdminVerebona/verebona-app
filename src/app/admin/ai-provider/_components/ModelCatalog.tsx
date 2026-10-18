@@ -35,9 +35,9 @@ interface CatalogState {
 }
 
 const CYCLE: Record<string, { label: string; className: string }> = {
-  preview: { label: 'preview', className: 'text-amber-500' },
-  experimental: { label: 'expérimental — non sélectionnable', className: 'text-red-400' },
-  deprecated: { label: 'déprécié', className: 'text-red-400' },
+  preview: { label: 'preview', className: 'text-[color:var(--text-warning-soft)]' },
+  experimental: { label: 'expérimental — non sélectionnable', className: 'text-[color:var(--text-danger)]' },
+  deprecated: { label: 'déprécié', className: 'text-[color:var(--text-danger)]' },
 };
 
 export function ModelCatalog() {
@@ -89,7 +89,7 @@ export function ModelCatalog() {
       </div>
 
       {state?.stale && (
-        <p className="text-xs text-amber-500 flex items-start gap-1.5">
+        <p className="text-xs text-[color:var(--text-warning-soft)] flex items-start gap-1.5">
           <AlertTriangle className="w-3.5 h-3.5 mt-0.5 shrink-0" />
           Dernière tentative en échec ({state.lastError ?? 'cause inconnue'}) : le catalogue affiché est le précédent.
         </p>
@@ -100,7 +100,7 @@ export function ModelCatalog() {
           {state.models.map((m) => (
             <div key={m.model} className="py-1.5 flex flex-wrap items-center gap-2 text-sm">
               <span className={`min-w-0 break-all ${m.available ? 'text-[color:var(--text-primary)]' : 'text-[color:var(--text-muted)] line-through'}`}>{m.model}</span>
-              {!m.available && <span className="text-xs text-red-400">indisponible</span>}
+              {!m.available && <span className="text-xs text-[color:var(--text-danger)]">indisponible</span>}
               {m.lifecycle && CYCLE[m.lifecycle] && <span className={`text-xs ${CYCLE[m.lifecycle].className}`}>{CYCLE[m.lifecycle].label}</span>}
               <span className="flex-1" />
               <span className="text-xs text-[color:var(--text-muted)]">

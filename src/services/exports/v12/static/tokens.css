@@ -1,81 +1,100 @@
 /*
- * Verebona — jetons des dossiers PDF (CDC Exports V12 §19).
+ * Verebona — jetons des dossiers PDF (CDC Exports V12 §19), charte « Sérénité » 2026
+ * (Verebona_Charte_2026_v1.1 §1, §2 ligne PDF, §3, §8 — lot 66C).
  *
- * Source : maquettes Claude Design « design-v12 » (*.dc.html), valeurs relevées
- * telles quelles dans les feuilles 794 × 1123 px (A4 à 96 dpi). Les noms suivent
- * le design system Verebona (_ds/tokens/colors.css) quand la valeur y existe.
+ * Les NOMS des jetons historiques (--navy, --blue-600, --ink…) sont conservés pour ne pas
+ * toucher au HTML des composants : seules leurs VALEURS changent (--navy = pétrole, etc.).
+ * La géométrie (page A4, marges 44 / 70 / 64, rayons, gouttières) est inchangée : la
+ * pagination et les contrôles de mise en page (`render/render-pdf.ts`) restent valides.
  *
  * Unités : px CSS (1 px = 1/96 in). La page A4 fait 794 × 1123 px.
  */
 
-/* ── Polices auto-hébergées (licence OFL, voir fonts/LICENSE*.txt) : instances statiques fusionnées (latin + latin-ext) tirées des paquets Fontsource
-   5.3.0 — une seule face par graisse, nom PostScript unique. Avec les sous-ensembles séparés
-   (même nom « Inter-Regular »), Skia confondait les faces et omettait du texte dans le PDF.
-   Bricolage Grotesque reste variable (axe opsz automatique selon la taille). */
+/* ── Polices auto-hébergées (licence OFL, voir fonts/LICENSE.txt).
+   Figtree : une face STATIQUE par graisse (400 à 800), sous-ensembles latin + latin-ext
+   fusionnés, nom PostScript unique (Figtree-Regular…) — même règle que pour Inter : avec
+   deux sous-ensembles portant le même nom, Skia confondait les faces et omettait du texte.
+   Inter reste déclarée en REPLI de glyphes (ᵉ, №, →, ≤, espace fine…) absents de Figtree. */
+@font-face { font-family: 'Figtree'; src: url('fonts/figtree-400.woff2') format('woff2'); font-weight: 400; }
+@font-face { font-family: 'Figtree'; src: url('fonts/figtree-500.woff2') format('woff2'); font-weight: 500; }
+@font-face { font-family: 'Figtree'; src: url('fonts/figtree-600.woff2') format('woff2'); font-weight: 600; }
+@font-face { font-family: 'Figtree'; src: url('fonts/figtree-700.woff2') format('woff2'); font-weight: 700; }
+@font-face { font-family: 'Figtree'; src: url('fonts/figtree-800.woff2') format('woff2'); font-weight: 800; }
 @font-face { font-family: 'Inter'; src: url('fonts/inter-400.woff2') format('woff2'); font-weight: 400; }
 @font-face { font-family: 'Inter'; src: url('fonts/inter-500.woff2') format('woff2'); font-weight: 500; }
 @font-face { font-family: 'Inter'; src: url('fonts/inter-600.woff2') format('woff2'); font-weight: 600; }
-@font-face { font-family: 'Inter'; src: url('fonts/inter-700.woff2') format('woff2'); font-weight: 700; }
-@font-face { font-family: 'Bricolage Grotesque'; src: url('fonts/bricolage-grotesque-latin-opsz-5.3.0.woff2') format('woff2'); font-weight: 200 800; }
-@font-face { font-family: 'Space Mono'; src: url('fonts/space-mono-400.woff2') format('woff2'); font-weight: 400; }
-@font-face { font-family: 'Space Mono'; src: url('fonts/space-mono-700.woff2') format('woff2'); font-weight: 700; }
+@font-face { font-family: 'Inter'; src: url('fonts/inter-700.woff2') format('woff2'); font-weight: 700 800; }
 
 :root {
-  /* ── Familles ─────────────────────────────────────────────────────────── */
-  --font-body: 'Inter', system-ui, sans-serif;          /* texte courant, valeurs, tableaux */
-  --font-display: 'Bricolage Grotesque', sans-serif;    /* h1 couverture, h2 sections, chiffres clés */
-  --font-mono: 'Space Mono', monospace;                 /* sur-titres, libellés de colonnes, codes B1/A1 */
+  /* ── Familles : Figtree seule (charte §2) ─────────────────────────────── */
+  --font-body: 'Figtree', 'Inter', system-ui, sans-serif;
+  --font-display: 'Figtree', 'Inter', system-ui, sans-serif;
+  --font-mono: 'Figtree', 'Inter', system-ui, sans-serif; /* ancienne police à chasse fixe : sur-titres désormais en Figtree 700 capitales */
+
+  /* ── Marque ───────────────────────────────────────────────────────────── */
+  --petrole: #17474D;      /* brand.primary : titres, carte prix, couvertures */
+  --cuivre: #D66B53;       /* brand.accent : décoration uniquement (cube, repères) */
+  --cuivre-texte: #AA4E38; /* text.accent : sur-titres, codes A1/B1, attention */
+  --cuivre-sombre: #E2896F;/* sur-titres sur fond pétrole (charte §1.3) */
+  --ivoire: #F8F6F1;       /* surface.base : encadrés, dernière page */
+  --brume: #E2EBE9;        /* surface.subtle */
+  --cuivre-soft: #F6E4DE;
 
   /* ── Encre (texte sur papier) ─────────────────────────────────────────── */
-  --ink: #0F1B33;          /* --vb-ink-light : texte principal, titres, valeurs */
-  --ink-2: #5B6577;        /* --vb-ink-light-2 : libellés, texte secondaire */
-  --ink-3: #8A93A6;        /* --vb-ink-light-3 : sur-titres, en-tête/pied, méta */
-  --line: #E6EBF3;         /* --vb-paper-300 : filets, bordures de cartes */
-  --line-strong: #0F1B33;  /* filet 2 px sous les en-têtes de tableau */
-  --line-dashed: #C9D3E3;  /* cadre des pages intégrées */
-  --paper: #FFFFFF;
-  --panel: #F5F8FD;        /* --vb-paper-100 : encadrés (synthèse, notes, bannière annexe) */
-  --card: #F9FBFE;         /* cartes document / chiffres / points forts */
-  --frame: #FAFBFD;        /* fond du cadre « contenu source » */
-  --frame-rule: #F3F6FB;   /* réglure du cadre (pages PDF) */
+  --ink: #26353B;          /* text.default */
+  --ink-2: #52636A;        /* text.muted : libellés, texte secondaire */
+  --ink-3: #52636A;        /* méta, en-tête/pied (l’ancien gris clair manquait de contraste) */
+  --heading: #17474D;      /* titres h2 en pétrole */
+  --eyebrow: #AA4E38;      /* sur-titres 10 px / 700 capitales, cuivre texte */
+  --line: #E2EBE9;         /* filets de grilles et de tableaux */
+  --line-card: #D5DEDC;    /* border.subtle : bordures de cartes, en-tête */
+  --line-strong: #17474D;  /* filet 2 px sous les en-têtes de tableau */
+  --line-dashed: #D5DEDC;  /* cadre des pages intégrées */
+  --paper: #FFFFFF;        /* pages intérieures blanches */
+  --panel: #F8F6F1;        /* encadrés ivoire (synthèse, notes, bannière annexe) */
+  --card: #FFFFFF;         /* cartes document / chiffres / points forts : blanc + filet */
+  --frame: #F8F6F1;        /* fond du cadre « contenu source » */
+  --frame-rule: #EEEBE3;   /* réglure du cadre (pages PDF) */
 
-  /* ── Marine (couvertures, carte « chiffre principal ») ────────────────── */
-  --navy: #020B1A;         /* --vb-ink-850 */
-  --on-navy: #FFFFFF;
-  --on-navy-lead: #B9C4D8; /* chapô de couverture */
-  --on-navy-body: #C7D0E0; /* --vb-text-mid : texte de carte sur marine */
-  --on-navy-addr: #D5DDEB; /* adresse / chapô sur photo */
-  --on-navy-kicker: #94A3B8; /* --vb-slate-400 : sur-titre de couverture */
-  --on-navy-label: #7C8AA5; /* libellés méta + pied de couverture documentaire */
-  --on-navy-muted: #9BA6BC; /* --vb-text-muted : méta + pied sur couverture photo */
-  --on-navy-accent: #7EB0FF; /* --vb-blue-nav : sur-titres accent sur marine */
-  --on-photo-accent: #BFDBFE; /* --vb-blue-200 : sur-titres sur photo */
-  --navy-card: rgba(15, 23, 42, .5);
-  --navy-card-line: rgba(148, 163, 184, .14);
-  --navy-halo: rgba(59, 130, 246, .22);
-  --navy-halo-strong: rgba(59, 130, 246, .28);
-  --navy-halo-teal: rgba(35, 196, 168, .12);
-  --navy-dot: rgba(148, 163, 184, .09);
+  /* ── Pétrole (couvertures, carte « chiffre principal ») ───────────────── */
+  --navy: #17474D;
+  --on-navy: #F8F6F1;
+  --on-navy-lead: #D5DEDC;
+  --on-navy-body: #D5DEDC;
+  --on-navy-addr: #E2EBE9;
+  --on-navy-kicker: #E2896F;  /* sur-titres sur pétrole */
+  --on-navy-label: #A7B6B9;   /* libellés méta, pied de couverture */
+  --on-navy-muted: #A7B6B9;
+  --on-navy-accent: #E2896F;
+  --on-photo-accent: #E2896F;
+  --navy-card: rgba(248, 246, 241, .08);
+  --navy-card-line: rgba(248, 246, 241, .14);
+  --navy-rule: rgba(248, 246, 241, .25); /* filets à 25 % sur pétrole (charte, Transparence) */
+  --navy-halo: transparent;   /* fonds en aplat : plus de halo ni de trame */
+  --navy-halo-strong: transparent;
+  --navy-halo-teal: transparent;
+  --navy-dot: transparent;
 
-  /* ── Accent unique ────────────────────────────────────────────────────── */
-  --blue: #3B82F6;         /* --vb-blue-500 */
-  --blue-600: #2563EB;     /* codes B1/A1, liens */
-  --blue-700: #1D4ED8;     /* texte des pastilles bleues */
-  --blue-wash: rgba(59, 130, 246, .10);
-  --blue-wash-line: rgba(59, 130, 246, .30);
+  /* ── Accent (ex-bleu) : pétrole pour la structure, cuivre texte pour les codes ── */
+  --blue: #17474D;
+  --blue-600: #AA4E38;     /* codes B1 / A1 (annexes, blocs CIL) */
+  --blue-700: #17474D;     /* texte des pastilles neutres d'accent */
+  --blue-wash: #E2EBE9;
+  --blue-wash-line: #E2EBE9;
 
-  /* ── Statuts (pastilles, compteurs, badges de format) ─────────────────── */
-  --ok: #15803D;    --ok-wash: rgba(34, 197, 94, .12);   --ok-card: rgba(34, 197, 94, .08);  --ok-line: rgba(34, 197, 94, .30);  --ok-icon: #16A34A; --ok-badge: rgba(34, 197, 94, .10);
-  --warn: #B45309;  --warn-wash: rgba(245, 158, 11, .14); --warn-card: rgba(245, 158, 11, .10); --warn-line: rgba(245, 158, 11, .35); --warn-badge: rgba(245, 158, 11, .10);
-  --bad: #B91C1C;   --bad-wash: rgba(239, 68, 68, .12);  --bad-card: rgba(239, 68, 68, .08);  --bad-line: rgba(239, 68, 68, .30);
-  --neutral: #5B6577; --neutral-wash: rgba(148, 163, 184, .14);
-  --dot-past: #94A3B8; --dot-event: #3B82F6; --dot-key: #EF4444; --dot-open: #F59E0B;
+  /* ── Statuts : le pétrole confirme, le cuivre signale ; rouge accessible conservé
+       pour les retards stricts et les éléments bloquants (décision PO lot 66). ── */
+  --ok: #17474D;    --ok-wash: #E2EBE9;   --ok-card: #EEF4F3; --ok-line: #C9DAD7; --ok-icon: #17474D; --ok-badge: #E2EBE9;
+  --warn: #AA4E38;  --warn-wash: #F6E4DE; --warn-card: #FBF1EE; --warn-line: #E8C4B9; --warn-badge: #F6E4DE;
+  --bad: #B42318;   --bad-wash: rgba(180, 35, 24, .10); --bad-card: rgba(180, 35, 24, .06); --bad-line: rgba(180, 35, 24, .30);
+  --neutral: #52636A; --neutral-wash: #EEF1F0;
+  --dot-past: #A7B6B9; --dot-event: #17474D; --dot-key: #D66B53; --dot-open: #E2896F;
 
-  /* ── Échelle typographique (px) ───────────────────────────────────────── */
-  --fs-h1-cover: 52px;     /* CIL ; 56 px dossier complet / marketing ; 50 px bandeau assurance */
-  --fs-h2: 26px;           /* titre de section */
+  /* ── Échelle typographique (px, charte §2 ligne PDF) ──────────────────── */
+  --fs-h1-cover: 56px;     /* h1 couverture 56 / 800 */
+  --fs-h2: 26px;           /* titre de section 26 / 700 */
   --fs-h2-sm: 22px;        /* titre de bloc CIL, « suite », sous-section */
-  --fs-figure: 26px;       /* chiffres clés (28 px compteurs CIL / location, 32 px prix vente) */
+  --fs-figure: 26px;       /* chiffres clés des grilles (28 compteurs, 32 prix) */
   --fs-lead-cover: 15px;
   --fs-kv: 13.5px;         /* grille libellé / valeur, synthèse */
   --fs-table: 13px;        /* tableaux, cartes, titres de documents */
@@ -83,25 +102,25 @@
   --fs-meta: 11.5px;       /* méta document, légendes, sous-libellés */
   --fs-pill: 11px;
   --fs-chrome: 10.5px;     /* en-tête et pied de page */
-  --fs-eyebrow: 10px;      /* Space Mono capitales */
+  --fs-eyebrow: 10px;      /* sur-titres 700 capitales 0,09 em */
   --ls-eyebrow: .09em;
   --ls-display: -.02em;
   --ls-cover: -.03em;
 
   /* ── Rayons ───────────────────────────────────────────────────────────── */
   --r-pill: 999px;
-  --r-panel: 14px;         /* synthèse, note de couverture, carte mascotte */
-  --r-card: 12px;          /* chiffres clés, points forts, photos */
-  --r-row: 10px;           /* cartes document, lignes de suivi, petites photos */
-  --r-badge: 8px;          /* badge de format 34 × 34, cadre annexe */
+  --r-panel: 14px;
+  --r-card: 12px;
+  --r-row: 10px;
+  --r-badge: 8px;
 
-  /* ── Mise en page A4 (px CSS) ─────────────────────────────────────────── */
+  /* ── Mise en page A4 (px CSS) — inchangée ─────────────────────────────── */
   --page-w: 794px;
   --page-h: 1123px;
-  --margin-x: 44px;        /* pages intérieures */
-  --margin-top: 70px;      /* 22 (en-tête) + 14 (ligne) + 34 (respiration) */
-  --margin-bottom: 64px;   /* pied à 26 px du bord + respiration */
-  --cover-x: 56px;         /* couvertures */
-  --gap-section: 38px;     /* entre deux sections d'une même page */
-  --gap-col: 36px;         /* gouttière des grilles libellé / valeur */
+  --margin-x: 44px;
+  --margin-top: 70px;
+  --margin-bottom: 64px;
+  --cover-x: 56px;
+  --gap-section: 38px;
+  --gap-col: 36px;
 }

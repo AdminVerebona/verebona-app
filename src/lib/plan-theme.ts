@@ -7,21 +7,21 @@ import { PlanType } from '@/types/domain';
 import { Zap, Crown, Users } from 'lucide-react';
 
 export interface PlanColors {
-  /** Couleur de l'icône (ex: text-blue-400) */
+  /** Couleur de l'icône (ex: text-[color:var(--accent)]) */
   icon: string;
-  /** Couleur de la bordure (ex: border-blue-500/40) */
+  /** Couleur de la bordure (ex: border-[color:var(--border-info)]) */
   border: string;
-  /** Couleur du badge/background (ex: bg-blue-600) */
+  /** Couleur du badge/background (ex: bg-[color:var(--accent)]) */
   badge: string;
-  /** Couleur du background semi-transparent (ex: bg-blue-500/15) */
+  /** Couleur du background semi-transparent (ex: bg-[color:var(--accent-soft)]) */
   bg: string;
-  /** Couleur du texte (ex: text-blue-400) */
+  /** Couleur du texte (ex: text-[color:var(--accent)]) */
   text: string;
-  /** Couleur du ring/focus (ex: ring-blue-500/40) */
+  /** Couleur du ring/focus (ex: ring-[color:var(--border-info)]) */
   ring: string;
-  /** Couleur du background semi-transparent pour dark mode (ex: dark:bg-blue-900/30) */
+  /** Historique (variante sombre) : vide — les jetons suivent le thème. */
   bgDark: string;
-  /** Couleur du texte pour dark mode (ex: dark:text-blue-400) */
+  /** Historique (variante sombre) : vide — les jetons suivent le thème. */
   textDark: string;
 }
 
@@ -33,24 +33,23 @@ export interface PlanTheme {
 }
 
 /**
- * Palette de couleurs cohérente par plan
- * - STANDARD : Gris (slate)
- * - PREMIUM : Bleu
- * - PREMIUM_DUO : Vert (emerald)
- * - PREMIUM_PRO : Bleu (idem Premium)
- * Note : le violet est réservé aux fonctionnalités IA
+ * Couleurs par plan — charte « Sérénité » 2026 (lot 66B1) : jetons du thème
+ * (clair / sombre automatiques), plus de palette brute.
+ * - STANDARD : neutre (texte secondaire, fond discret)
+ * - PREMIUM, PREMIUM_PRO, PREMIUM_DUO : pétrole (brume + pétrole). Le plan se
+ *   distingue par son LIBELLÉ et son icône, jamais par la seule couleur.
  */
 export const PLAN_THEMES: Record<PlanType, PlanTheme> = {
   STANDARD: {
     colors: {
-      icon: 'text-slate-400',
+      icon: 'text-[color:var(--text-muted)]',
       border: 'border-border',
       badge: '',
-      bg: 'bg-slate-500/5',
-      text: 'text-slate-400',
-      ring: 'ring-slate-500/40',
-      bgDark: 'dark:bg-slate-900/20',
-      textDark: 'dark:text-slate-400',
+      bg: 'bg-[color:var(--bg-subtle)]',
+      text: 'text-[color:var(--text-muted)]',
+      ring: 'ring-[color:var(--border)]',
+      bgDark: '',
+      textDark: '',
     },
     icon: Zap,
     label: 'Standard',
@@ -58,14 +57,14 @@ export const PLAN_THEMES: Record<PlanType, PlanTheme> = {
   },
   PREMIUM: {
     colors: {
-      icon: 'text-blue-400',
-      border: 'border-blue-500/40',
-      badge: 'bg-blue-600',
-      bg: 'bg-blue-500/15',
-      text: 'text-blue-400',
-      ring: 'ring-blue-500/40',
-      bgDark: 'dark:bg-blue-900/30',
-      textDark: 'dark:text-blue-400',
+      icon: 'text-[color:var(--accent)]',
+      border: 'border-[color:var(--border-info)]',
+      badge: 'bg-[color:var(--accent)]',
+      bg: 'bg-[color:var(--accent-soft)]',
+      text: 'text-[color:var(--accent)]',
+      ring: 'ring-[color:var(--border-info)]',
+      bgDark: '',
+      textDark: '',
     },
     icon: Crown,
     label: 'Premium',
@@ -73,14 +72,14 @@ export const PLAN_THEMES: Record<PlanType, PlanTheme> = {
   },
   PREMIUM_DUO: {
     colors: {
-      icon: 'text-emerald-400',
-      border: 'border-emerald-500/40',
-      badge: 'bg-emerald-600',
-      bg: 'bg-emerald-500/15',
-      text: 'text-emerald-400',
-      ring: 'ring-emerald-500/40',
-      bgDark: 'dark:bg-emerald-900/40',
-      textDark: 'dark:text-emerald-300',
+      icon: 'text-[color:var(--text-success)]',
+      border: 'border-[color:var(--border-success)]',
+      badge: 'bg-[color:var(--accent)]',
+      bg: 'bg-[color:var(--bg-success)]',
+      text: 'text-[color:var(--text-success)]',
+      ring: 'ring-[color:var(--border-success)]',
+      bgDark: '',
+      textDark: '',
     },
     icon: Users,
     label: 'Premium Duo',
@@ -88,14 +87,14 @@ export const PLAN_THEMES: Record<PlanType, PlanTheme> = {
   },
   PREMIUM_PRO: {
     colors: {
-      icon: 'text-blue-400',
-      border: 'border-blue-500/40',
-      badge: 'bg-blue-600',
-      bg: 'bg-blue-500/15',
-      text: 'text-blue-400',
-      ring: 'ring-blue-500/40',
-      bgDark: 'dark:bg-blue-900/30',
-      textDark: 'dark:text-blue-400',
+      icon: 'text-[color:var(--accent)]',
+      border: 'border-[color:var(--border-info)]',
+      badge: 'bg-[color:var(--accent)]',
+      bg: 'bg-[color:var(--accent-soft)]',
+      text: 'text-[color:var(--accent)]',
+      ring: 'ring-[color:var(--border-info)]',
+      bgDark: '',
+      textDark: '',
     },
     icon: Crown,
     label: 'Premium Pro',

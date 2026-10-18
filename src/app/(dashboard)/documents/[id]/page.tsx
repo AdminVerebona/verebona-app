@@ -222,13 +222,13 @@ export default function DocumentDetailPage() {
 
   const getFileIcon = () => {
     if (document.mimeType.startsWith('image/')) {
-      return <File className="w-8 h-8 text-blue-500" />;
+      return <File className="w-8 h-8 text-[color:var(--accent)]" />;
     }
     if (document.mimeType === 'application/pdf') {
-      return <FileText className="w-8 h-8 text-red-500" />;
+      return <FileText className="w-8 h-8 text-[color:var(--danger)]" />;
     }
     if (document.mimeType.includes('document') || document.mimeType.includes('word')) {
-      return <FileText className="w-8 h-8 text-blue-600" />;
+      return <FileText className="w-8 h-8 text-[color:var(--accent)]" />;
     }
     return <File className="w-8 h-8 text-muted-foreground" />;
   };

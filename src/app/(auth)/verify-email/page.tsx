@@ -81,9 +81,9 @@ function DuoJoinAfterVerification() {
   }, []);
 
   return (
-    <div className="bg-emerald-950/30 border border-emerald-500/25 rounded-lg p-3 space-y-3" data-testid="duo-join-after-verification">
+    <div className="bg-[color:var(--bg-success)] border border-[color:var(--border-success)] rounded-lg p-3 space-y-3" data-testid="duo-join-after-verification">
       <div className="flex items-start gap-3 text-sm">
-        <Users className="w-5 h-5 text-emerald-400 flex-shrink-0 mt-0.5" />
+        <Users className="w-5 h-5 text-[color:var(--text-success)] flex-shrink-0 mt-0.5" />
         <p className="text-[color:var(--text-muted)]">
           {state === 'done'
             ? 'Vous avez rejoint l’espace Premium Duo. Redirection vers l’accueil…'
@@ -200,7 +200,7 @@ function VerifyEmailContent() {
             <LogoWithBaseline size={50} />
           </div>
           <div className="flex justify-center">
-            <CheckCircle className="w-14 h-14 text-emerald-500" />
+            <CheckCircle className="w-14 h-14 text-[color:var(--text-success)]" />
           </div>
           <CardTitle className="text-center text-[color:var(--text-primary)]">
             {alreadyVerified ? 'Adresse déjà vérifiée' : 'Adresse vérifiée'}
@@ -215,7 +215,7 @@ function VerifyEmailContent() {
         </CardHeader>
         <CardContent className="space-y-4">
           {!alreadyVerified && (
-            <div className="bg-blue-950/30 border border-blue-500/25 rounded-lg p-3 text-sm text-[color:var(--text-muted)]">
+            <div className="bg-[color:var(--accent-soft)] border border-[color:var(--border-info)] rounded-lg p-3 text-sm text-[color:var(--text-muted)]">
               Pendant 7 jours, toutes les fonctions Premium sont accessibles, dans la
               limite de 2 biens et 30 documents. Aucune carte bancaire n&apos;a été
               enregistrée et aucun prélèvement n&apos;aura lieu à la fin de l&apos;essai.
@@ -244,7 +244,7 @@ function VerifyEmailContent() {
             <LogoWithBaseline size={50} />
           </div>
           <div className="flex justify-center">
-            <AlertCircle className="w-14 h-14 text-amber-500" />
+            <AlertCircle className="w-14 h-14 text-[color:var(--attention-on-soft)]" />
           </div>
           <CardTitle className="text-center text-[color:var(--text-primary)]">{content.title}</CardTitle>
           <CardDescription className="text-center text-[color:var(--text-muted)]">
@@ -280,7 +280,7 @@ function VerifyEmailContent() {
           <LogoWithBaseline size={50} />
         </div>
         <div className="flex justify-center">
-          <MailCheck className="w-14 h-14 text-blue-400" />
+          <MailCheck className="w-14 h-14 text-[color:var(--accent)]" />
         </div>
         <CardTitle className="text-center text-[color:var(--text-primary)]">
           Vérifiez votre boîte mail
@@ -353,7 +353,7 @@ function ResendBlock({
 }) {
   if (state === 'sent') {
     return (
-      <div className="bg-emerald-950/30 border border-emerald-500/25 rounded-lg p-3 text-sm text-[color:var(--text-muted)]">
+      <div className="bg-[color:var(--bg-success)] border border-[color:var(--border-success)] rounded-lg p-3 text-sm text-[color:var(--text-muted)]">
         Demande enregistrée. Si un compte non vérifié correspond à cette adresse, un nouveau lien va lui
         être envoyé dans quelques instants. L&apos;ancien lien reste valable s&apos;il n&apos;a pas expiré.
       </div>

@@ -509,7 +509,7 @@ export function NotificationBell() {
           {/* Header */}
           <div className="flex items-center justify-between px-4 py-3 border-b border-[color:var(--border-subtle)]">
             <span className="text-sm font-semibold text-[color:var(--text-primary)]">
-              Notifications {unreadCount > 0 && <span className="text-red-500">({unreadCount})</span>}
+              Notifications {unreadCount > 0 && <span className="tabular-nums text-[color:var(--attention)]">({unreadCount})</span>}
             </span>
             <div className="flex items-center gap-2">
               {unreadCount > 0 && (
@@ -588,7 +588,7 @@ export function NotificationBell() {
       >
         <Bell className="w-5 h-5 text-[color:var(--text-primary)]" />
         {unreadCount > 0 && (
-          <span className="absolute top-1.5 right-1.5 w-[7px] h-[7px] rounded-full bg-red-500 shadow" />
+          <span className="absolute top-1.5 right-1.5 w-[7px] h-[7px] rounded-full bg-[color:var(--badge-todo)]" />
         )}
       </button>
 
@@ -604,7 +604,7 @@ export function NotificationBell() {
           ══════════════════════════════════════════════════════════════════ */}
       {open && isMobile && typeof document !== 'undefined' && createPortal(
         <>
-          <div className="fixed inset-0 z-[60] bg-black/40" aria-hidden="true" onClick={() => setOpen(false)} />
+          <div className="fixed inset-0 z-[60] bg-[color:var(--veil)]" aria-hidden="true" onClick={() => setOpen(false)} />
           <div
             ref={panelRef}
             role="dialog"

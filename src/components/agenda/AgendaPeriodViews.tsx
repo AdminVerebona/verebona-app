@@ -22,6 +22,7 @@
  */
 import { useState } from 'react';
 import { Button } from '@/components/ui/button';
+import { DateChip, type DateChipTone } from '@/components/ui/date-chip';
 import { Calendar, List, CalendarRange, ChevronLeft, ChevronRight } from 'lucide-react';
 import type { AgendaItemFull } from '@/services/agenda/AgendaQueryService';
 import { EFFECTIVE_STATUS_LABELS, type AgendaEffectiveStatus } from '@/lib/agenda/effective-status';
@@ -51,54 +52,60 @@ export function currentMonth(now: Date = new Date()): string {
   return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
 }
 
+/**
+ * Tons des statuts (charte « Sérénité », décision PO lot 66) — libellé
+ * TOUJOURS écrit : neutre brume / pétrole (à venir), pétrole (réalisé),
+ * cuivre (statut à confirmer = attention), rouge (date échue = retard strict).
+ */
 export const STATUS_COLORS: Record<EffectiveStatus, string> = {
-  a_venir: 'bg-amber-500/10 text-amber-400',
-  en_retard: 'bg-red-500/10 text-red-400',
-  a_confirmer: 'bg-orange-500/10 text-orange-400',
-  realise: 'bg-teal-500/10 text-teal-400',
-  annule: 'bg-muted text-muted-foreground',
+  a_venir: 'bg-[color:var(--accent-soft)] text-[color:var(--accent)]',
+  en_retard: 'bg-[color:var(--danger-soft)] text-[color:var(--danger)]',
+  a_confirmer: 'bg-[color:var(--attention-soft)] text-[color:var(--attention-on-soft)]',
+  realise: 'bg-[color:var(--bg-success)] text-[color:var(--text-success)]',
+  annule: 'bg-[color:var(--bg-subtle)] text-[color:var(--text-secondary)]',
 };
 
 export const STATUS_BORDER: Record<EffectiveStatus, string> = {
-  a_venir: 'border-amber-500/20',
-  en_retard: 'border-red-500/20',
-  a_confirmer: 'border-orange-500/20',
-  realise: 'border-teal-500/20',
-  annule: 'border-border/40',
+  a_venir: 'border-[color:var(--border-info)]',
+  en_retard: 'border-[color:var(--danger-edge)]',
+  a_confirmer: 'border-[color:var(--attention-edge)]',
+  realise: 'border-[color:var(--border-success)]',
+  annule: 'border-[color:var(--border)]',
 };
 
-export function DateBlock({ dateStr }: { dateStr: string | null }) {
+/**
+ * Pastille de date d'une échéance (charte §5, composant DateChip) : brume /
+ * pétrole par défaut, rouge pour une date échue (retard strict), cuivre pour
+ * un statut à confirmer. Décorative : le statut est écrit à côté.
+ */
+export function DateBlock({ dateStr, status }: { dateStr: string | null; status?: EffectiveStatus }) {
   if (!dateStr) {
     return (
-      <div className="flex-shrink-0 w-14 flex flex-col items-center justify-center rounded-xl bg-muted/60 border border-border/40 py-2.5 gap-0.5">
-        <span className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground leading-none">TBD</span>
-        <span className="text-[10px] text-muted-foreground/60 leading-none mt-0.5">—</span>
-      </div>
+      <span aria-hidden className="flex h-11 w-11 md:h-12 md:w-12 flex-shrink-0 flex-col items-center justify-center rounded-[10px] border border-[color:var(--border)] bg-[color:var(--bg-subtle)] leading-none text-[color:var(--text-muted)]">
+        <span className="text-[15px] md:text-[17px] font-bold">—</span>
+        <span className="mt-[3px] text-[9px] font-bold uppercase tracking-[.05em]">Date</span>
+      </span>
     );
   }
   const d = new Date(dateStr + 'T12:00:00');
   const day = d.getDate();
   const month = d.toLocaleDateString('fr-FR', { month: 'short' }).toUpperCase().replace('.', '');
-  return (
-    <div className="flex-shrink-0 w-14 flex flex-col items-center justify-center rounded-xl bg-primary/10 border border-primary/20 py-2.5 gap-0">
-      <span className="text-[10px] font-bold uppercase tracking-widest text-primary leading-none">{month}</span>
-      <span className="text-2xl font-extrabold text-primary leading-none mt-0.5">{String(day).padStart(2, '0')}</span>
-    </div>
-  );
+  const tone: DateChipTone = status === 'en_retard' ? 'late' : status === 'a_confirmer' ? 'attention' : 'default';
+  return <DateChip day={String(day).padStart(2, '0')} month={month} tone={tone} />;
 }
 
-// Colors assigned per asset — avoids brand colors (blue=Premium, green=PremiumDuo, violet=AI)
+// Repère par bien (vue Mois / Année) — lot 66B1 : la couleur par bien n'est
+// pas arbitrée par la charte ; pastille neutre (brume, texte encre) et point
+// de couleur pris dans la série « graphiques » de la charte. Le NOM du bien
+// reste écrit : la couleur n'est jamais la seule information. Ni rouge ni
+// cuivre (réservés au retard et à l'attention).
 const ASSET_PALETTE = [
-  { pill: 'bg-amber-500/15 text-[color:var(--text-warning)]',   dot: 'bg-amber-400' },
-  { pill: 'bg-orange-500/15 text-orange-300', dot: 'bg-orange-400' },
-  { pill: 'bg-rose-500/15 text-[color:var(--text-danger)]',     dot: 'bg-rose-400' },
-  { pill: 'bg-pink-500/15 text-pink-300',     dot: 'bg-pink-400' },
-  { pill: 'bg-fuchsia-500/15 text-fuchsia-300', dot: 'bg-fuchsia-400' },
-  { pill: 'bg-cyan-500/15 text-cyan-300',     dot: 'bg-cyan-400' },
-  { pill: 'bg-red-500/15 text-[color:var(--text-danger)]',       dot: 'bg-red-400' },
-  { pill: 'bg-indigo-500/15 text-indigo-300', dot: 'bg-indigo-400' },
+  { pill: 'bg-[color:var(--accent-soft)] text-[color:var(--text-primary)] border-l-2 border-[color:var(--chart-1)]', dot: 'bg-[color:var(--chart-1)]' },
+  { pill: 'bg-[color:var(--accent-soft)] text-[color:var(--text-primary)] border-l-2 border-[color:var(--chart-3)]', dot: 'bg-[color:var(--chart-3)]' },
+  { pill: 'bg-[color:var(--accent-soft)] text-[color:var(--text-primary)] border-l-2 border-[color:var(--chart-4)]', dot: 'bg-[color:var(--chart-4)]' },
+  { pill: 'bg-[color:var(--accent-soft)] text-[color:var(--text-primary)] border-l-2 border-[color:var(--chart-5)]', dot: 'bg-[color:var(--chart-5)]' },
 ];
-const NO_ASSET = { pill: 'bg-muted/60 text-muted-foreground', dot: 'bg-muted-foreground/40' };
+const NO_ASSET = { pill: 'bg-[color:var(--bg-subtle)] text-[color:var(--text-muted)]', dot: 'bg-[color:var(--text-muted)]' };
 
 function assetColor(assetId: number | undefined) {
   if (assetId == null) return NO_ASSET;
@@ -107,6 +114,12 @@ function assetColor(assetId: number | undefined) {
 
 export function itemColor(item: AgendaItemFull) {
   return assetColor(item.assetLinks[0]?.assetId);
+}
+
+/** Infobulle d'une échéance compacte : titre, bien, statut écrit. */
+function itemTooltip(item: AgendaItemFull): string {
+  const bien = item.assetLinks[0]?.assetName;
+  return [item.title, bien, STATUS_LABELS[item.effectiveStatus]].filter(Boolean).join(' · ');
 }
 
 export function CalendarView({ items, month, onItemClick, onNew }: { items: AgendaItemFull[]; month: string; onItemClick: (item: AgendaItemFull) => void; onNew: () => void }) {
@@ -175,9 +188,11 @@ export function CalendarView({ items, month, onItemClick, onNew }: { items: Agen
                   <button
                     key={item.id}
                     onClick={() => onItemClick(item)}
-                    className={`w-full text-left text-xs rounded px-1.5 py-0.5 truncate font-medium hover:opacity-80 transition-opacity ${itemColor(item).pill}`}
+                    title={itemTooltip(item)}
+                    className={`w-full text-left text-xs rounded px-1.5 py-0.5 truncate font-medium hover:opacity-80 transition-opacity ${item.effectiveStatus === 'en_retard' ? 'bg-[color:var(--danger-soft)] text-[color:var(--danger)]' : itemColor(item).pill}`}
                   >
                     {item.startTime ? `${item.startTime.slice(0, 5)} ` : ''}{item.title}
+                    {item.effectiveStatus === 'en_retard' && <span className="sr-only"> — {STATUS_LABELS.en_retard}</span>}
                   </button>
                 ))}
                 {dayItems.length > 3 && (
@@ -255,13 +270,14 @@ function MonthCard({ monthLabel, monthItems, isCurrentMonth, onItemClick }: {
       {/* Body */}
       <div className="px-3 py-3 flex-1 space-y-0.5">
         {!hasItems ? (
-          <p className="text-xs text-muted-foreground/50 italic text-center py-4">Rien ce mois-ci</p>
+          <p className="text-xs text-muted-foreground text-center py-4">Rien ce mois-ci</p>
         ) : (
           <>
             {visibleItems.map(item => (
               <button
                 key={item.id}
                 onClick={() => onItemClick(item)}
+                title={itemTooltip(item)}
                 className="w-full text-left flex items-start gap-2 group py-1 px-1.5 rounded-lg hover:bg-muted/50 transition-colors"
               >
                 <span className={`mt-[5px] h-1.5 w-1.5 flex-shrink-0 rounded-full ${itemColor(item).dot}`} />
@@ -287,7 +303,7 @@ function MonthCard({ monthLabel, monthItems, isCurrentMonth, onItemClick }: {
               </button>
             )}
             {overdue > 0 && (
-              <p className="text-[10px] font-medium text-red-400 pl-4 pt-1">
+              <p className="text-[10px] font-medium text-[color:var(--danger)] pl-4 pt-1">
                 {overdue} en retard
               </p>
             )}

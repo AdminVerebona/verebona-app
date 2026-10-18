@@ -85,20 +85,20 @@ interface T2Capabilities { checks: Array<{ code: string; label: string; present:
 function T2CapabilitiesPanel({ caps, titre }: { caps: T2Capabilities; titre: string }) {
   const ok = caps.arbitration && caps.interaction;
   return (
-    <div className={`rounded border p-2 text-xs space-y-1 ${ok ? 'border-emerald-500/20 bg-emerald-500/5' : 'border-amber-500/30 bg-amber-500/10'}`}
+    <div className={`rounded border p-2 text-xs space-y-1 ${ok ? 'border-[color:var(--border-success)] bg-[color:var(--bg-success)]' : 'border-[color:var(--border-warning)] bg-[color:var(--bg-warning)]'}`}
       data-testid="t2-capabilities">
       <p className="font-medium flex items-center gap-1.5 text-[color:var(--text-primary)]">
-        {ok ? <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500" /> : <AlertTriangle className="w-3.5 h-3.5 text-amber-500" />}
+        {ok ? <CheckCircle2 className="w-3.5 h-3.5 text-[color:var(--text-success)]" /> : <AlertTriangle className="w-3.5 h-3.5 text-[color:var(--text-warning-soft)]" />}
         {titre} : arbitrage sémantique {caps.arbitration ? 'disponible' : 'IMPOSSIBLE'} · informations apportées {caps.interaction ? 'comprises' : 'non comprises'}
       </p>
       <ul className="flex flex-wrap gap-x-3 gap-y-0.5 text-[color:var(--text-muted)]">
         {caps.checks.map((c) => (
           <li key={c.code} className="flex items-center gap-1">
-            {c.present ? <CheckCircle2 className="w-3 h-3 text-emerald-500" /> : <XCircle className="w-3 h-3 text-red-400" />}{c.label}
+            {c.present ? <CheckCircle2 className="w-3 h-3 text-[color:var(--text-success)]" /> : <XCircle className="w-3 h-3 text-[color:var(--text-danger)]" />}{c.label}
           </li>
         ))}
       </ul>
-      {caps.message && <p className="text-amber-500">{caps.message}</p>}
+      {caps.message && <p className="text-[color:var(--text-warning-soft)]">{caps.message}</p>}
     </div>
   );
 }
@@ -122,18 +122,18 @@ const errMessage = (e: unknown, defaut: string) => (e as { message?: string })?.
 /** Badge léger, jamais bloquant. */
 function TestBadge({ test }: { test: TestState }) {
   const style = test.state === 'done' && test.run.failed === 0
-    ? 'bg-emerald-500/10 text-emerald-500 border-emerald-500/20'
+    ? 'bg-[color:var(--bg-success)] text-[color:var(--text-success)] border-[color:var(--border-success)]'
     : test.state === 'done' || test.state === 'error'
-      ? 'bg-amber-500/10 text-amber-500 border-amber-500/20'
-      : 'bg-slate-500/10 text-slate-400 border-slate-500/20';
+      ? 'bg-[color:var(--bg-warning)] text-[color:var(--text-warning-soft)] border-[color:var(--border-warning)]'
+      : 'bg-[color:var(--bg-subtle)] text-[color:var(--text-muted)] border-[color:var(--border)]';
   return <span className={`text-xs px-2 py-0.5 rounded-full border ${style}`}>{test.label}</span>;
 }
 
 function StatusPill({ status, label }: { status: VersionView['status']; label: string }) {
   const style = status === 'ACTIVE'
-    ? 'bg-emerald-500/10 text-emerald-500 border-emerald-500/20'
+    ? 'bg-[color:var(--bg-success)] text-[color:var(--text-success)] border-[color:var(--border-success)]'
     : status === 'DRAFT'
-      ? 'bg-slate-500/10 text-slate-400 border-slate-500/20'
+      ? 'bg-[color:var(--bg-subtle)] text-[color:var(--text-muted)] border-[color:var(--border)]'
       : 'bg-[color:var(--bg-page)] text-[color:var(--text-muted)] border-[color:var(--border-subtle)]';
   return <span className={`text-xs px-2 py-0.5 rounded-full border ${style}`}>{label}</span>;
 }
@@ -149,7 +149,7 @@ function FailureList({ failures }: { failures: TestFailure[] }) {
           </p>
           {f.description && <p className="text-[color:var(--text-muted)]">{f.description}</p>}
           <p><span className="text-[color:var(--text-secondary)]">Résultat attendu :</span> {f.expected}</p>
-          <p><span className="text-[color:var(--text-secondary)]">Résultat obtenu :</span> <span className="text-red-400">{f.obtained}</span></p>
+          <p><span className="text-[color:var(--text-secondary)]">Résultat obtenu :</span> <span className="text-[color:var(--text-danger)]">{f.obtained}</span></p>
         </li>
       ))}
     </ul>
@@ -190,10 +190,10 @@ function TestPanel({ test, versionLabel, busy, onRun }: {
           {test.state === 'done' && (
             <p className="text-sm text-[color:var(--text-secondary)]">
               Résultat : {test.run.passed}/{test.run.total} scénarios réussis
-              {test.run.failed > 0 && <span className="text-amber-500"> · {test.run.failed} échec{test.run.failed > 1 ? 's' : ''}</span>}
+              {test.run.failed > 0 && <span className="text-[color:var(--text-danger)]"> · {test.run.failed} échec{test.run.failed > 1 ? 's' : ''}</span>}
             </p>
           )}
-          {test.state !== 'done' && <p className="text-sm text-amber-500">{test.message}</p>}
+          {test.state !== 'done' && <p className="text-sm text-[color:var(--text-warning-soft)]">{test.message}</p>}
         </>
       )}
       <div className="flex flex-wrap gap-2">
@@ -271,7 +271,7 @@ function MasterPromptEditor({ treatment, onChanged }: { treatment: string; onCha
   if (erreur) {
     return (
       <div role="alert" className="space-y-2">
-        <p className="text-sm text-red-400">{erreur}</p>
+        <p className="text-sm text-[color:var(--text-danger)]">{erreur}</p>
         <Button size="sm" variant="outline" onClick={() => void charger()}><RotateCcw className="w-3.5 h-3.5 mr-1.5" /> Réessayer</Button>
       </div>
     );
@@ -438,7 +438,7 @@ function MasterPromptEditor({ treatment, onChanged }: { treatment: string; onCha
           <div className="flex flex-wrap items-center gap-2">
             <StatusPill status="DRAFT" label={`Brouillon v${draft.versionNumber}`} />
             <TestBadge test={dirty ? { state: 'never', label: 'Non testé', message: '', previous: null } : draft.test} />
-            {dirty && <span className="text-xs text-amber-500">• non enregistré</span>}
+            {dirty && <span className="text-xs text-[color:var(--text-warning-soft)]">• non enregistré</span>}
             <span className="text-xs text-[color:var(--text-muted)]">
               {draft.basedOnVersionNumber ? `à partir de v${draft.basedOnVersionNumber} · ` : ''}modifié le {dateHeure(draft.updatedAt)}
             </span>
@@ -454,7 +454,7 @@ function MasterPromptEditor({ treatment, onChanged }: { treatment: string; onCha
             onChange={(e) => { setTexte(e.target.value); setDirty(true); }}
             className="min-h-[260px] font-mono text-xs bg-[color:var(--bg-input)]"
           />
-          <p className={`text-xs ${tropLong ? 'text-red-400' : 'text-[color:var(--text-muted)]'}`}>
+          <p className={`text-xs ${tropLong ? 'text-[color:var(--text-danger)]' : 'text-[color:var(--text-muted)]'}`}>
             {texte.length.toLocaleString('fr-FR')} / {detail.limits.maxChars.toLocaleString('fr-FR')} caractères
           </p>
           {/* Lot 34D : texte livré avec l'application (nouvelle version du dépôt). */}
@@ -474,20 +474,20 @@ function MasterPromptEditor({ treatment, onChanged }: { treatment: string; onCha
           )}
 
           {bloquants.length > 0 && (
-            <div role="alert" className="rounded-lg border border-red-500/30 bg-red-500/5 p-3 space-y-1">
+            <div role="alert" className="rounded-lg border border-[color:var(--border-danger)] bg-[color:var(--bg-danger)] p-3 space-y-1">
               <p className="text-sm font-medium text-[color:var(--text-primary)]">À corriger avant activation</p>
               {bloquants.map((i, k) => (
                 <p key={k} className="text-xs text-[color:var(--text-secondary)] flex items-start gap-1.5">
-                  <XCircle className="w-3.5 h-3.5 text-red-400 mt-0.5 shrink-0" /> {i.message}
+                  <XCircle className="w-3.5 h-3.5 text-[color:var(--text-danger)] mt-0.5 shrink-0" /> {i.message}
                 </p>
               ))}
             </div>
           )}
           {!dirty && draft.warnings.length > 0 && (
-            <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-3 space-y-1">
+            <div className="rounded-lg border border-[color:var(--border-warning)] bg-[color:var(--bg-warning)] p-3 space-y-1">
               {draft.warnings.map((i, k) => (
                 <p key={k} className="text-xs text-[color:var(--text-secondary)] flex items-start gap-1.5">
-                  <AlertTriangle className="w-3.5 h-3.5 text-amber-500 mt-0.5 shrink-0" /> {i.message}
+                  <AlertTriangle className="w-3.5 h-3.5 text-[color:var(--text-warning-soft)] mt-0.5 shrink-0" /> {i.message}
                 </p>
               ))}
             </div>
@@ -612,10 +612,10 @@ function MasterPromptEditor({ treatment, onChanged }: { treatment: string; onCha
                   ? `Cette version redevient active immédiatement. La ${nomActive} reste dans l’historique.`
                   : 'Le texte du brouillon sera supprimé. La version active n’est pas modifiée.'}
               {confirm?.kind === 'activate' && draft?.test.state === 'never' && (
-                <span className="block mt-2 text-amber-500">Cette version n’a pas encore été testée avec le corpus.</span>
+                <span className="block mt-2 text-[color:var(--text-warning-soft)]">Cette version n’a pas encore été testée avec le corpus.</span>
               )}
               {confirm?.kind === 'activate' && draft?.test.state === 'done' && draft.test.run.failed > 0 && (
-                <span className="block mt-2 text-amber-500">{draft.test.message}</span>
+                <span className="block mt-2 text-[color:var(--text-warning-soft)]">{draft.test.message}</span>
               )}
             </DialogDescription>
           </DialogHeader>
@@ -713,7 +713,7 @@ export function MasterPrompts({ refreshKey, onChanged }: {
       </div>
       {erreur && (
         <div role="alert" className="space-y-2">
-          <p className="text-sm text-red-400">{erreur}</p>
+          <p className="text-sm text-[color:var(--text-danger)]">{erreur}</p>
           <Button size="sm" variant="outline" onClick={() => void charger()}><RotateCcw className="w-3.5 h-3.5 mr-1.5" /> Réessayer</Button>
         </div>
       )}

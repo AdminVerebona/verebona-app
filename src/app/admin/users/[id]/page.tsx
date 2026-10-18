@@ -706,7 +706,6 @@ export default function UserDetailPage() {
             <AlertDialogAction
               onClick={handleForceLogout}
               disabled={actionLoading}
-              className="bg-orange-600 hover:bg-orange-700"
             >
               {actionLoading ? 'Déconnexion...' : 'Déconnecter'}
             </AlertDialogAction>

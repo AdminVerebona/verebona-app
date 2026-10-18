@@ -135,18 +135,24 @@ export const RUBRICS: readonly RubricDefinition[] = [
  * ══════════════════════════════════════════════════════════════════════════
  */
 export const RUBRIC_COLORS: Readonly<Record<RubricCode, { dot: string; accent: string }>> = {
-  PROPERTY_MANAGEMENT: { dot: '#60A5FA', accent: '#3B82F6' },
-  CONTRACTS_WARRANTIES_DOCS: { dot: '#A78BFA', accent: '#7C3AED' },
-  MAINTENANCE_WORKS: { dot: '#FBBF24', accent: '#D97706' },
-  INSURANCE_CLAIMS: { dot: '#34D399', accent: '#059669' },
-  COMPLIANCE_CONTROLS: { dot: '#F472B6', accent: '#DB2777' },
-  MEDIA: { dot: '#94A3B8', accent: '#475569' },
-  RENTAL_MANAGEMENT: { dot: '#2DD4BF', accent: '#0D9488' },
-  OTHER_DOCUMENTS: { dot: '#64748B', accent: '#64748B' },
+  // Lot 66B1 — charte « Sérénité » 2026 : plus de palette brute. Couleurs
+  // tirées des jetons de MARQUE (indépendants du thème : le trait est posé
+  // sur la mini-page BLANCHE du document, identique en clair et en sombre),
+  // nuancées par color-mix vers le blanc. Huit valeurs distinctes, chacune
+  // ≥ 3:1 sur le papier blanc (contraste non textuel) ; la Rubrique reste
+  // toujours écrite. Ni rouge (retard) ni cuivre (réservé à « À classer »).
+  PROPERTY_MANAGEMENT: { dot: 'var(--vb-petrole)', accent: 'var(--vb-petrole)' },
+  CONTRACTS_WARRANTIES_DOCS: { dot: 'var(--vb-mascotte-ombre)', accent: 'var(--vb-mascotte-ombre)' },
+  MAINTENANCE_WORKS: { dot: 'var(--vb-gris)', accent: 'var(--vb-gris)' },
+  INSURANCE_CLAIMS: { dot: 'color-mix(in srgb, var(--vb-petrole) 60%, var(--vb-blanc))', accent: 'color-mix(in srgb, var(--vb-petrole) 60%, var(--vb-blanc))' },
+  COMPLIANCE_CONTROLS: { dot: 'var(--vb-encre)', accent: 'var(--vb-encre)' },
+  MEDIA: { dot: 'color-mix(in srgb, var(--vb-mascotte-ombre) 80%, var(--vb-blanc))', accent: 'color-mix(in srgb, var(--vb-mascotte-ombre) 80%, var(--vb-blanc))' },
+  RENTAL_MANAGEMENT: { dot: 'color-mix(in srgb, var(--vb-petrole) 80%, var(--vb-blanc))', accent: 'color-mix(in srgb, var(--vb-petrole) 80%, var(--vb-blanc))' },
+  OTHER_DOCUMENTS: { dot: 'color-mix(in srgb, var(--vb-gris) 70%, var(--vb-blanc))', accent: 'color-mix(in srgb, var(--vb-gris) 70%, var(--vb-blanc))' },
 };
 
-/** Zone « Sans rubrique » (documents à classer) : ambre, comme le badge « À classer ». */
-export const UNFILED_COLORS = { dot: '#F59E0B', accent: '#F59E0B' } as const;
+/** Zone « Sans rubrique » (documents à classer) : cuivre doux, comme le badge « À classer ». */
+export const UNFILED_COLORS = { dot: 'var(--vb-cuivre)', accent: 'var(--vb-cuivre)' } as const;
 
 /** Couleurs d'un code de Rubrique quelconque ; « Sans rubrique » si inconnu ou absent. */
 export function rubricColors(code: string | null | undefined): { dot: string; accent: string } {

@@ -46,9 +46,9 @@ const LABEL: Record<RuntimeState, string> = {
 };
 
 const STYLE: Record<RuntimeState, string> = {
-  ENABLED: 'bg-emerald-500/10 text-emerald-500 border-emerald-500/20',
-  DISABLED: 'bg-slate-500/10 text-slate-400 border-slate-500/20',
-  SUSPENDED: 'bg-amber-500/10 text-amber-500 border-amber-500/20',
+  ENABLED: 'bg-[color:var(--bg-success)] text-[color:var(--text-success)] border-[color:var(--border-success)]',
+  DISABLED: 'bg-[color:var(--bg-subtle)] text-[color:var(--text-muted)] border-[color:var(--border)]',
+  SUSPENDED: 'bg-[color:var(--bg-warning)] text-[color:var(--text-warning-soft)] border-[color:var(--border-warning)]',
 };
 
 export function TreatmentStateControl({
@@ -107,7 +107,7 @@ export function TreatmentStateControl({
       <span className="text-sm font-medium text-[color:var(--text-primary)]">État opérationnel</span>
       <span className={`text-xs px-2 py-0.5 rounded-full border ${STYLE[current]}`}>{LABEL[current]}</span>
       {emergencyStop && (
-        <span className="text-xs text-red-400">· arrêt d&apos;urgence engagé (prime sur cet état)</span>
+        <span className="text-xs text-[color:var(--text-danger)]">· arrêt d&apos;urgence engagé (prime sur cet état)</span>
       )}
       <span className="flex-1" />
       <Button size="sm" variant={enabling ? 'default' : 'outline'} disabled={busy}
@@ -116,7 +116,7 @@ export function TreatmentStateControl({
         {current === 'SUSPENDED' ? 'Forcer la réactivation' : enabling ? 'Activer' : 'Désactiver'}
       </Button>
       {current === 'SUSPENDED' && (state?.suspendedReason || state?.nextProbeAt) && (
-        <p className="basis-full text-xs text-amber-500">
+        <p className="basis-full text-xs text-[color:var(--text-warning-soft)]">
           {state?.suspendedReason}
           {state?.nextProbeAt && ` — prochaine sonde : ${new Date(state.nextProbeAt).toLocaleTimeString('fr-FR')}`}
         </p>

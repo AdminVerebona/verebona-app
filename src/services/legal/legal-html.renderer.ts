@@ -64,6 +64,13 @@ export function buildDownloadFilename(versionCode: string): string {
  * Aucune ressource externe : le fichier doit rester lisible hors ligne (§13).
  * Les tailles sont en unités relatives pour que le zoom fonctionne (§16.4), et
  * la règle `@media print` retire la navigation pour une impression propre.
+ *
+ * Charte « Sérénité » 2026 (lot 66B2) : encre #26353B sur blanc (12,7:1, AAA),
+ * métadonnées #52636A (6,3:1), filets #D5DEDC, encadré ivoire, focus cuivre
+ * texte #AA4E38. Famille Figtree si elle est installée, sinon la sans-serif
+ * du système (aucune police téléchargée : le fichier reste autonome). Ne
+ * concerne que les versions publiées APRÈS ce lot : un fichier déjà publié
+ * est figé (empreinte SHA-256) et n'est jamais re-rendu.
  */
 const STYLESHEET = `
   :root { color-scheme: light; }
@@ -71,30 +78,30 @@ const STYLESHEET = `
   body {
     margin: 0;
     padding: 2rem 1rem 4rem;
-    font-family: Georgia, 'Times New Roman', serif;
-    /* Contraste 13,6:1 sur blanc — au-delà du niveau AAA (§16.4). */
-    color: #1a1a1a;
-    background: #ffffff;
+    font-family: 'Figtree', system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif;
+    /* Encre sur blanc : contraste 12,7:1 — au-delà du niveau AAA (§16.4). */
+    color: #26353B;
+    background: #FFFFFF;
     line-height: 1.65;
     font-size: 1rem;
   }
   main { max-width: 46rem; margin: 0 auto; }
   header.doc-header {
-    border-bottom: 2px solid #1a1a1a;
+    border-bottom: 2px solid #17474D;
     padding-bottom: 1rem;
     margin-bottom: 2rem;
   }
-  h1 { font-size: 1.75rem; line-height: 1.25; margin: 0 0 0.5rem; }
+  h1 { font-size: 1.75rem; line-height: 1.25; margin: 0 0 0.5rem; color: #17474D; font-weight: 800; letter-spacing: -0.02em; }
   h2 { font-size: 1.25rem; margin: 2rem 0 0.75rem; }
   h3 { font-size: 1.05rem; margin: 1.5rem 0 0.5rem; }
   p, li { margin: 0 0 0.75rem; }
   ul, ol { padding-left: 1.5rem; }
-  .doc-meta { font-size: 0.9rem; color: #40454d; margin: 0; }
+  .doc-meta { font-size: 0.9rem; color: #52636A; margin: 0; }
   .doc-meta dt { font-weight: bold; display: inline; }
   .doc-meta dd { display: inline; margin: 0 1rem 0 0.25rem; }
   .doc-summary {
-    background: #f4f6f8;
-    border-left: 4px solid #40454d;
+    background: #F8F6F1;
+    border-left: 4px solid #17474D;
     padding: 0.75rem 1rem;
     margin: 1.5rem 0;
     font-size: 0.95rem;
@@ -104,17 +111,18 @@ const STYLESHEET = `
     font: inherit;
     font-size: 0.95rem;
     padding: 0.5rem 1rem;
-    border: 1px solid #1a1a1a;
-    background: #ffffff;
-    color: #1a1a1a;
+    border: 1px solid #17474D;
+    background: #FFFFFF;
+    color: #17474D;
+    font-weight: 600;
     cursor: pointer;
-    border-radius: 4px;
+    border-radius: 12px;
   }
-  .doc-actions button:focus-visible { outline: 3px solid #0b5fff; outline-offset: 2px; }
+  .doc-actions button:focus-visible { outline: 3px solid #AA4E38; outline-offset: 3px; }
   footer.doc-footer {
     margin-top: 3rem; padding-top: 1rem;
-    border-top: 1px solid #c3c8ce;
-    font-size: 0.85rem; color: #40454d;
+    border-top: 1px solid #D5DEDC;
+    font-size: 0.85rem; color: #52636A;
   }
   @media print {
     body { padding: 0; font-size: 11pt; }

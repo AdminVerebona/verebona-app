@@ -140,7 +140,7 @@ function DismissDialog({ open, onOpenChange, hasSeries, subject, onConfirm }: {
   );
 }
 
-const LINK = 'inline-flex min-h-[32px] items-center gap-1.5 rounded-full px-2 text-[12.5px] font-medium text-[color:var(--text-muted)] transition-colors duration-150 hover:text-[color:var(--accent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--accent)]';
+const LINK = 'inline-flex min-h-[32px] items-center gap-1.5 rounded-full px-2 text-[12.5px] font-medium text-[color:var(--text-muted)] transition-colors duration-150 hover:text-[color:var(--accent)]';
 
 /**
  * Commandes de rappel d'une carte T6 de l'accueil. `subject` : intitulé de la
@@ -238,7 +238,7 @@ export function T6ReminderSettings({ agendaItemId, title }: { agendaItemId: numb
   const actif = !state?.occurrence && !state?.series;
   return (
     <div className="flex items-start gap-3" data-testid="t6-reminder-settings">
-      <div className="w-8 h-8 rounded-lg bg-[rgba(148,163,184,0.1)] flex items-center justify-center shrink-0 mt-0.5">
+      <div className="w-8 h-8 rounded-lg bg-[color:var(--accent-soft)] flex items-center justify-center shrink-0 mt-0.5">
         {actif ? <BellRing className="h-4 w-4 text-[color:var(--text-muted)]" /> : <BellOff className="h-4 w-4 text-[color:var(--text-muted)]" />}
       </div>
       <div className="flex-1 min-w-0">

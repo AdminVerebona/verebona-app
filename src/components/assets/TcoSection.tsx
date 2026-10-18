@@ -234,7 +234,7 @@ export function TcoSection({ assetId, readOnly = false, defaultOpen = false }: P
             </div>
           ) : error || !t ? (
             <div className="text-sm text-muted-foreground flex flex-wrap items-center gap-2" data-tco-error>
-              <AlertCircle className="w-4 h-4 text-red-400" />
+              <AlertCircle className="w-4 h-4 text-[color:var(--danger)]" />
               Le coût total de possession n’a pas pu être calculé.
               <button type="button" className="underline underline-offset-2 hover:text-foreground" onClick={() => void load()}>Réessayer</button>
             </div>
@@ -257,7 +257,7 @@ export function TcoSection({ assetId, readOnly = false, defaultOpen = false }: P
                   {!t.disposed && <Ligne label="Coût net estimé (après valeur actuelle)" value={t.summary.netEstimatedCents != null ? eur(t.summary.netEstimatedCents) : 'non calculable'} strong />}
                   {t.disposed && <Ligne label="Coût net final (après cession)" value={t.summary.netFinalCents != null ? eur(t.summary.netFinalCents) : 'non établi'} strong />}
                 </div>
-                <p className={`text-xs mt-2 ${t.status === 'COMPLETE' ? 'text-muted-foreground' : 'text-amber-600 dark:text-amber-400'}`} data-tco-completeness={t.status}>
+                <p className={`text-xs mt-2 ${t.status === 'COMPLETE' ? 'text-muted-foreground' : 'text-[color:var(--attention-on-soft)]'}`} data-tco-completeness={t.status}>
                   {t.status === 'COMPLETE' ? `Calcul complet : ${t.reliability.operationsCounted + t.reliability.documentsCounted} élément(s) documenté(s).`
                     : t.status === 'PARTIAL' ? 'Résultat partiel : seule une partie des éléments a pu être lue.'
                       : 'Couverture incomplète : voir les alertes ci-dessous.'}
@@ -386,7 +386,7 @@ export function TcoSection({ assetId, readOnly = false, defaultOpen = false }: P
               {/* ── Alertes ── */}
               {(t.warningLabels.length > 0 || t.reliability.unconverted.length > 0) && (
                 <Bloc title="Alertes de couverture" data-tco-warnings>
-                  {t.warningLabels.map((w) => <p key={w} className="text-xs text-amber-600 dark:text-amber-400">{w}</p>)}
+                  {t.warningLabels.map((w) => <p key={w} className="text-xs text-[color:var(--attention-on-soft)]">{w}</p>)}
                   {t.reliability.unconverted.length > 0 && (
                     <p className="text-xs text-muted-foreground">Non converti : {t.reliability.unconverted.map((u) => minor(u.amountMinor, u.currency)).join(', ')}.</p>
                   )}

@@ -200,7 +200,7 @@ function GdprPageContent() {
       {loading && !data ? (
         <div className="flex justify-center py-12"><Loader2 className="h-7 w-7 animate-spin text-muted-foreground" /></div>
       ) : fetchError ? (
-        <div className="rounded-xl border border-red-500/30 bg-red-950/20 p-6 text-center text-red-400">
+        <div className="rounded-xl border border-[color:var(--border-danger)] bg-[color:var(--bg-danger)] p-6 text-center text-[color:var(--text-danger)]">
           <p className="font-medium mb-2">Erreur de chargement</p>
           <p className="text-sm">{fetchError}</p>
           <button onClick={() => fetchList()} className="mt-3 text-sm underline">Réessayer</button>
@@ -246,7 +246,7 @@ function GdprPageContent() {
                         <TableCell className="text-sm">
                           {STATUS_LABELS[r.status]}
                           {deletionLabel(r.deletion) && <span className="block text-xs text-muted-foreground">{deletionLabel(r.deletion)}</span>}
-                          {r.lastError && <span className="block text-xs text-red-400">Erreur de traitement</span>}
+                          {r.lastError && <span className="block text-xs text-[color:var(--text-danger)]">Erreur de traitement</span>}
                         </TableCell>
                         <TableCell className="text-xs">{ORIGIN_LABELS[r.origin]}</TableCell>
                       </>

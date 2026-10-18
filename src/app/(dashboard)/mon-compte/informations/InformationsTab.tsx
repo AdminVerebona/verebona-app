@@ -443,15 +443,15 @@ export default function InformationsTab({ beforeDangerZone }: { beforeDangerZone
         {subscription?.plan_type === 'STANDARD' ? (() => {
           const premiumTheme = getPlanTheme('PREMIUM');
           return (
-            <div className={`flex flex-col sm:flex-row sm:items-start gap-3 rounded-lg border border-dashed ${premiumTheme.colors.border} bg-blue-500/5 px-3 py-3`}>
+            <div className={`flex flex-col sm:flex-row sm:items-start gap-3 rounded-lg border border-dashed ${premiumTheme.colors.border} bg-[color:var(--accent-soft)] px-3 py-3`}>
               <div className="flex items-start gap-3 flex-1 min-w-0">
-                <Lock className={`w-4 h-4 ${premiumTheme.colors.text}/60 mt-0.5 flex-shrink-0`} />
+                <Lock className={`w-4 h-4 ${premiumTheme.colors.text} mt-0.5 flex-shrink-0`} />
                 <div className="flex-1 min-w-0">
                   <p className="text-sm font-medium">Disponible en Premium</p>
                   <p className="text-xs text-muted-foreground mt-0.5">Synchronisez vos événements avec Google Agenda, Apple Agenda ou Outlook.</p>
                 </div>
               </div>
-              <Button size="sm" variant="outline" className="w-full sm:w-auto sm:shrink-0 border-blue-500/40 text-blue-400 hover:bg-blue-500/10 gap-1 rounded-full" onClick={() => router.push('/mon-compte/offres')}>
+              <Button size="sm" variant="outline" className="w-full sm:w-auto sm:shrink-0 border-[color:var(--border-info)] text-[color:var(--accent)] hover:bg-[color:var(--accent-soft)] gap-1 rounded-full" onClick={() => router.push('/mon-compte/offres')}>
                 <Crown className="w-3.5 h-3.5" />Passer Premium
               </Button>
             </div>
@@ -579,9 +579,9 @@ function DeleteAccountCard({ duoRole, hasPaidSubscription }: {
 
   return (
     <CollapsibleCard
-      className="border-red-500/30 bg-red-950/10"
-      titleClassName="text-red-500"
-      icon={<Trash2 className="w-5 h-5 text-red-500" />}
+      className="border-[color:var(--danger-edge)] bg-[color:var(--danger-soft)]"
+      titleClassName="text-[color:var(--danger)]"
+      icon={<Trash2 className="w-5 h-5 text-[color:var(--danger)]" />}
       title="Zone dangereuse"
       description="Clôturer votre compte, puis le supprimer définitivement."
       contentClassName="space-y-4"
@@ -592,7 +592,7 @@ function DeleteAccountCard({ duoRole, hasPaidSubscription }: {
       </p>
         <Dialog open={open} onOpenChange={handleOpenChange}>
           <DialogTrigger asChild>
-            <Button variant="outline" className="border-red-500/40 text-red-500 hover:bg-red-500/10 hover:border-red-500 gap-2 btn-delete">
+            <Button variant="outline" className="border-[color:var(--danger-edge)] text-[color:var(--danger)] hover:bg-[color:var(--danger-soft)] hover:border-[color:var(--danger)] gap-2 btn-delete">
               <Trash2 className="w-4 h-4 btn-delete-trash-icon" />
               Supprimer mon compte
             </Button>
@@ -603,14 +603,14 @@ function DeleteAccountCard({ duoRole, hasPaidSubscription }: {
             {step === 1 && (
               <>
                 <DialogHeader>
-                  <DialogTitle className="flex items-center gap-2 text-red-500">
+                  <DialogTitle className="flex items-center gap-2 text-[color:var(--danger)]">
                     <AlertTriangle className="w-5 h-5" />
                     Supprimer votre compte
                   </DialogTitle>
                   <DialogDescription className="sr-only">Conséquences de la suppression du compte</DialogDescription>
                 </DialogHeader>
                 <div className="space-y-4 py-2 text-sm">
-                  <div className="rounded-lg border border-amber-500/30 bg-amber-950/20 px-4 py-3 space-y-1.5">
+                  <div className="rounded-lg border border-[color:var(--attention-edge)] bg-[color:var(--attention-soft)] px-4 py-3 space-y-1.5">
                     <p className="font-semibold text-[color:var(--text-warning)]">Ce qui se passe dès votre confirmation</p>
                     <ul className="text-[color:var(--text-secondary)] space-y-1 list-disc list-inside">
                       <li>Votre compte est <strong>clôturé</strong> : vos autres appareils sont déconnectés et vous ne pouvez plus utiliser Verebona normalement.</li>
@@ -626,8 +626,8 @@ function DeleteAccountCard({ duoRole, hasPaidSubscription }: {
                     </ul>
                   </div>
 
-                  <div className="rounded-lg border border-red-500/30 bg-red-950/20 px-4 py-3 space-y-1.5">
-                    <p className="font-semibold text-red-400">Le {plannedDate}, suppression définitive de :</p>
+                  <div className="rounded-lg border border-[color:var(--danger-edge)] bg-[color:var(--danger-soft)] px-4 py-3 space-y-1.5">
+                    <p className="font-semibold text-[color:var(--danger)]">Le {plannedDate}, suppression définitive de :</p>
                     <ul className="text-[color:var(--text-secondary)] space-y-1 list-disc list-inside">
                       <li>vos <strong>biens</strong> et toutes leurs informations ;</li>
                       <li>vos <strong>documents, photos et fichiers</strong> stockés ;</li>
@@ -657,7 +657,7 @@ function DeleteAccountCard({ duoRole, hasPaidSubscription }: {
                   <Button variant="ghost" onClick={() => setOpen(false)}>Annuler</Button>
                   <Button
                     variant="outline"
-                    className="border-red-500/40 text-red-500 hover:bg-red-500/10"
+                    className="border-[color:var(--danger-edge)] text-[color:var(--danger)] hover:bg-[color:var(--danger-soft)]"
                     onClick={() => setStep(2)}
                   >
                     Je comprends, continuer
@@ -670,7 +670,7 @@ function DeleteAccountCard({ duoRole, hasPaidSubscription }: {
             {step === 2 && (
               <>
                 <DialogHeader>
-                  <DialogTitle className="flex items-center gap-2 text-red-500">
+                  <DialogTitle className="flex items-center gap-2 text-[color:var(--danger)]">
                     <Trash2 className="w-5 h-5" />
                     Confirmation
                   </DialogTitle>
@@ -681,14 +681,14 @@ function DeleteAccountCard({ duoRole, hasPaidSubscription }: {
                     Pour confirmer, recopiez exactement le texte ci-dessous&nbsp;:
                   </p>
                   <div className="rounded-md bg-[color:var(--bg-page)] border border-[color:var(--border-subtle)] px-3 py-2 text-center">
-                    <code className="text-sm font-mono font-bold text-red-400 select-all">{REQUIRED_TEXT}</code>
+                    <code className="text-sm font-mono font-bold text-[color:var(--danger)] select-all">{REQUIRED_TEXT}</code>
                   </div>
                   <Input
                     aria-label="Texte de confirmation"
                     placeholder={REQUIRED_TEXT}
                     value={confirmation}
                     onChange={e => setConfirmation(e.target.value)}
-                    className={`font-mono ${confirmation === REQUIRED_TEXT ? 'border-red-500 focus-visible:ring-red-500/30' : ''}`}
+                    className={`font-mono ${confirmation === REQUIRED_TEXT ? 'border-[color:var(--danger)]' : ''}`}
                     disabled={deleting}
                     autoFocus
                   />
@@ -705,7 +705,7 @@ function DeleteAccountCard({ duoRole, hasPaidSubscription }: {
                   <p className="text-xs text-[color:var(--text-muted)]">
                     Votre compte sera clôturé immédiatement et supprimé définitivement le {plannedDate}.
                   </p>
-                  {error && <p className="text-sm text-red-400" role="alert">{error}</p>}
+                  {error && <p className="text-sm text-[color:var(--danger)]" role="alert">{error}</p>}
                 </div>
                 <DialogFooter className="gap-2">
                   <Button variant="ghost" onClick={() => setOpen(false)} disabled={deleting}>Annuler</Button>

@@ -46,15 +46,16 @@ export function renderLegalErrorPage(input: LegalErrorPageInput): string {
   <style>
     body {
       margin: 0; padding: 3rem 1rem;
-      font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
-      color: #1a1a1a; background: #ffffff; line-height: 1.6;
+      /* Charte « Sérénité » 2026 (lot 66B2) : page autonome, couleurs écrites. */
+      font-family: 'Figtree', system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif;
+      color: #26353B; background: #F8F6F1; line-height: 1.6;
     }
     main { max-width: 34rem; margin: 0 auto; }
-    h1 { font-size: 1.5rem; margin: 0 0 1rem; }
-    code { background: #f4f6f8; padding: 0.1rem 0.35rem; border-radius: 3px; }
-    .warn { font-size: 0.9rem; color: #7a4a00; }
-    .requested { font-size: 0.95rem; color: #40454d; }
-    a { color: #0b5fff; }
+    h1 { font-size: 1.5rem; margin: 0 0 1rem; color: #17474D; font-weight: 800; }
+    code { background: #E2EBE9; padding: 0.1rem 0.35rem; border-radius: 4px; }
+    .warn { font-size: 0.9rem; color: #AA4E38; }
+    .requested { font-size: 0.95rem; color: #52636A; }
+    a { color: #17474D; font-weight: 600; }
   </style>
 </head>
 <body>

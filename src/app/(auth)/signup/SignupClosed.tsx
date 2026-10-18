@@ -47,8 +47,8 @@ export function SignupClosed({ invitationError }: { invitationError?: Invitation
                 {INVITATION_MESSAGES[invitationError]}
               </div>
             )}
-            <div className="bg-blue-950/40 border border-blue-500/30 rounded-lg p-3 flex items-start gap-3">
-              <Sparkles className="w-5 h-5 text-blue-400 flex-shrink-0 mt-0.5" />
+            <div className="bg-[color:var(--accent-soft)] border border-[color:var(--border-info)] rounded-lg p-3 flex items-start gap-3">
+              <Sparkles className="w-5 h-5 text-[color:var(--accent)] flex-shrink-0 mt-0.5" />
               <p className="text-sm text-[color:var(--text-muted)]">
                 Découvrez Verebona sur notre site en attendant l&apos;ouverture.
               </p>

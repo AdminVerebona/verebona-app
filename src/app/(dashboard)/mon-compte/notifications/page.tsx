@@ -172,7 +172,7 @@ export default function NotificationsSettingsPage() {
   return (
     <div className="w-full max-w-3xl space-y-6">
       <div>
-        <h1 className="text-3xl font-bold">Notifications</h1>
+        <h1 className="vb-app-title">Notifications</h1>
         <p className="mt-1 text-muted-foreground">
           Choisissez ce que vous recevez par notification sur vos appareils et par email.
         </p>
@@ -205,7 +205,7 @@ export default function NotificationsSettingsPage() {
             </p>
           ) : permission === 'denied' ? (
             <div className="space-y-2">
-              <p className="flex items-center gap-2 text-sm font-medium text-amber-600 dark:text-amber-500">
+              <p className="flex items-center gap-2 text-sm font-medium text-[color:var(--attention-on-soft)]">
                 <BellOff className="h-4 w-4" /> Notifications bloquées
               </p>
               <p className="text-sm text-muted-foreground">
@@ -216,7 +216,7 @@ export default function NotificationsSettingsPage() {
           ) : permission === 'granted' && matrix && matrix.push.activeDeviceCount > 0 ? (
             <div className="flex items-center justify-between gap-4">
               <p className="flex items-center gap-2 text-sm">
-                <Bell className="h-4 w-4 text-emerald-600 dark:text-emerald-500" />
+                <Bell className="h-4 w-4 text-[color:var(--text-success)]" />
                 Activées sur cet appareil.
               </p>
               <Button variant="outline" onClick={deactivateDevice} disabled={busy}>
@@ -258,8 +258,8 @@ export default function NotificationsSettingsPage() {
                 arriver, et rien dans l'écran ne le lui expliquait.
                 ══════════════════════════════════════════════════════════ */}
             {matrix && matrix.push.supported && matrix.push.activeDeviceCount === 0 && pushDemande && (
-              <div className="mb-2 flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 p-3">
-                <BellOff className="mt-0.5 h-4 w-4 shrink-0 text-amber-600 dark:text-amber-500" />
+              <div className="mb-2 flex items-start gap-2 rounded-md border border-[color:var(--attention-edge)] bg-[color:var(--attention-soft)] p-3">
+                <BellOff className="mt-0.5 h-4 w-4 shrink-0 text-[color:var(--attention-on-soft)]" />
                 <p className="text-sm text-[color:var(--text-primary)]">
                   Vous avez activé le push pour au moins une catégorie, mais{' '}
                   <span className="font-medium">aucun appareil n&apos;est autorisé</span> :

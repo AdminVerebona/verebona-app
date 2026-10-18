@@ -267,7 +267,7 @@ export function LinkedEventsSection({
                   <DropdownMenuTrigger asChild>
                     <Button
                       size="sm"
-                      className="gap-2 bg-gradient-to-br from-[#3b82f6] to-[#1d4ed8]"
+                      className="gap-2"
                     >
                       <Plus className="w-4 h-4" />
                       Ajouter un événement
@@ -340,7 +340,7 @@ export function LinkedEventsSection({
                     onClick={() => requestUnlinkEvent(event.id)}
                     className="flex-shrink-0"
                   >
-                    <Trash2 className="w-4 h-4 text-red-500" />
+                    <Trash2 className="w-4 h-4 text-[color:var(--danger)]" />
                   </Button>
                 </div>
               ))}
@@ -429,7 +429,6 @@ export function LinkedEventsSection({
                 <Button
                   onClick={handleLinkEvents}
                   disabled={selectedEventIds.length === 0 || isLinking}
-                  className="bg-gradient-to-br from-[#3b82f6] to-[#1d4ed8]"
                 >
                   {isLinking ? (
                     <>

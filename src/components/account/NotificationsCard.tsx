@@ -35,7 +35,7 @@ export function NotificationsCard() {
     return { label: 'Non activé sur cet appareil', tone: 'muted' as const };
   })();
 
-  const dot = status.tone === 'ok' ? 'bg-emerald-500' : status.tone === 'warn' ? 'bg-amber-500' : 'bg-muted-foreground/40';
+  const dot = status.tone === 'ok' ? 'bg-[color:var(--accent)]' : status.tone === 'warn' ? 'bg-[color:var(--badge-todo)]' : 'bg-muted-foreground/40';
 
   return (
     // Tiroir fermé par défaut : titre, une ligne, chevron (modèle « Informations légales »).

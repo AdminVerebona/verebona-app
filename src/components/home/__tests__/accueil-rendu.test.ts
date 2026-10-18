@@ -82,7 +82,10 @@ describe('Ce que j’ai fait', () => {
     // retiré de l'ordre de tabulation, focus visible.
     expect(html).toContain('<button type="button"');
     expect(html).not.toContain('tabindex="-1"');
-    expect(html).toMatch(/focus-visible:ring-2 focus-visible:ring-\[color:var\(--accent\)\]/);
+    // Lot 66 (charte 2026) : focus visible par la règle globale (anneau
+    // 3 px cuivre texte décalé, globals.css) — aucun `outline-none` local
+    // ne doit l'annuler sur ce bouton.
+    expect(html).not.toMatch(/<button[^>]*focus-visible:outline-none/);
     expect(html).toContain('Aujourd’hui');
   });
 
@@ -188,7 +191,8 @@ describe('champ Verebona', () => {
     expect(html).toContain('aria-keyshortcuts="Meta+K Control+K"');
     expect(html).toContain('aria-label="Envoyer"');
     expect(html).toContain('/mascot/welcome-wave.webp');
-    expect(html).toContain('width:min(420px');
+    // Lot 66 (charte 2026 §5) : pilule centrée 560 px au repos.
+    expect(html).toContain('width:min(560px');
   });
 
   it('mobile : pilule « Demander à Verebona »', () => {

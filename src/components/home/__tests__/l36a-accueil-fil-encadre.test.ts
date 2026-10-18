@@ -4,8 +4,9 @@
  *
  *   AC36A-1 : ordre unique Mascotte → Mes biens → Prochaines échéances →
  *             Ce que j'ai fait → Documents récents, sans paire côte à côte ;
- *   AC36A-2 : chaque section dans une carte bordée, titre h2 en petites
- *             capitales, lien à droite (libellé long desktop / court mobile) ;
+ *   AC36A-2 : chaque section dans une carte bordée, titre h2 (lot 66,
+ *             charte 2026 : 17 px / 700, casse naturelle — plus de petites
+ *             capitales), lien à droite (libellé long desktop / court mobile) ;
  *   AC36A-3 : carrousels (biens, documents) : liste focalisable, flèches
  *             gauche / droite, boutons précédent / suivant nommés ;
  *   AC36A-4 : en-tête mascotte : date du jour, « Bonjour, <nom> » (h1),
@@ -93,10 +94,11 @@ describe('AC36A-2 — sections en cartes bordées', () => {
     'home-docs': renderToStaticMarkup(h(RecentDocuments, { docs: [doc(1)], onUpload: noop })),
   } as Record<string, string>;
 
-  it.each(cases)('AC36A-2 — %s : carte bordée, h2 en petites capitales, lien long / court', (id, title, long, short) => {
+  it.each(cases)('AC36A-2 — %s : carte bordée, h2 17 px / 700 (charte 2026), lien long / court', (id, title, long, short) => {
     const s = html[id];
     expect(s).toMatch(new RegExp(`^<section aria-labelledby="${id}" data-home-section="${id}" class="[^"]*rounded-\\[14px\\] border border-\\[color:var\\(--border\\)\\] bg-\\[color:var\\(--bg-card\\)\\]`));
-    expect(s).toContain(`<h2 id="${id}" class="m-0 text-[11px] font-semibold uppercase tracking-[.05em] text-[color:var(--text-muted)]">${title}</h2>`);
+    expect(s).toContain(`<h2 id="${id}" class="m-0 text-[17px] font-bold leading-[1.3] tracking-[-.01em] text-[color:var(--text-primary)]">${title}</h2>`);
+    expect(s).not.toMatch(/<h2[^>]*uppercase/);
     if (short) expect(s).toContain(`<span class="md:hidden">${short}</span><span class="hidden md:inline">${long}</span>`);
     else expect(s).toMatch(new RegExp(`>${long}</a>`));
   });
@@ -216,14 +218,18 @@ describe('AC36A-4 — en-tête mascotte', () => {
 });
 
 describe('AC36A-5 — échéances et activité', () => {
-  it('AC36A-5 — pastille jour + mois, couleur d’urgence (vert lointain, amber proche, rouge en retard), délai coloré', () => {
+  it('AC36A-5 — pastille jour + mois, couleur d’urgence (lot 66 : brume/pétrole lointain, cuivre proche, rouge en retard strict), délai coloré', () => {
     const s = renderToStaticMarkup(h(UpcomingEvents, { items: [up(1, 'green', 'Dans 2 ans'), up(2, 'amber', 'Dans 3 semaines'), up(3, 'red', 'En retard (2 j)')] }));
     expect(s).toContain('>18</span>');
     expect(s).toContain('>avr.</span>');
-    expect(s).toMatch(/background:var\(--wash-green\);color:var\(--on-green\)/);
-    expect(s).toMatch(/background:var\(--wash-amber\);color:var\(--on-amber\);border-color:var\(--edge-amber\)/);
-    expect(s).toMatch(/background:var\(--wash-red\);color:var\(--on-red\)/);
-    expect(s).toMatch(/style="color:var\(--on-green\)">Dans 2 ans</);
+    // Pastille partagée `DateChip` (charte 2026 §5) : ton porté par data-tone.
+    expect(s).toMatch(/data-tone="default"[^>]*bg-\[color:var\(--accent-soft\)\] text-\[color:var\(--accent\)\]/);
+    expect(s).toMatch(/data-tone="attention"[^>]*bg-\[color:var\(--attention-soft\)\]/);
+    expect(s).toMatch(/data-tone="late"[^>]*bg-\[color:var\(--danger-soft\)\] text-\[color:var\(--danger\)\]/);
+    // Le délai reste ÉCRIT, dans la couleur du ton.
+    expect(s).toMatch(/text-\[color:var\(--accent\)\]">Dans 2 ans</);
+    expect(s).toMatch(/text-\[color:var\(--attention\)\]">Dans 3 semaines</);
+    expect(s).toMatch(/text-\[color:var\(--danger\)\]">En retard \(2 j\)</);
     // 3 lignes desktop, 2 mobile.
     expect(s.match(/class="hidden md:block"/g)).toHaveLength(1);
   });
@@ -246,7 +252,9 @@ describe('AC36A-6 — thèmes, squelettes, erreurs', () => {
       expect(src, f).not.toContain('.theme-beige_&');
     }
     const ms = read('src/components/home/MascotSpeaks.tsx');
-    expect(ms).toContain("color-mix(in srgb, var(--accent) 9%, var(--bg-page))");
+    // Lot 66 : bulle aux jetons de la charte (#ECF1EF / #243C40 selon le thème).
+    expect(ms).toContain("const BUBBLE_BG = 'var(--bubble)'");
+    expect(ms).toContain("const BUBBLE_EDGE = 'var(--bubble-edge)'");
   });
 
   it('AC36A-6 — squelettes adaptés (en-tête et quatre cartes), erreur / réessayer et « Actualisation impossible » conservés', () => {

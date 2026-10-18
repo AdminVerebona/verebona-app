@@ -112,7 +112,7 @@ function AbonnementSuccessContent() {
       <div className="w-full max-w-md space-y-4 text-center">
         {etat === 'verification' && (
           <div className="space-y-4">
-            <Loader2 className="w-12 h-12 text-blue-400 animate-spin mx-auto" />
+            <Loader2 className="w-12 h-12 text-[color:var(--accent)] animate-spin mx-auto" />
             <p className="text-[color:var(--text-primary)] font-medium">Paiement reçu</p>
             <p className="text-[color:var(--text-muted)] text-sm">Activation de votre abonnement…</p>
           </div>
@@ -120,9 +120,9 @@ function AbonnementSuccessContent() {
 
         {etat === 'active' && (
           <div className="space-y-4 animate-in fade-in duration-300">
-            <CheckCircle2 className="w-14 h-14 text-green-400 mx-auto" />
+            <CheckCircle2 className="w-14 h-14 text-[color:var(--text-success)] mx-auto" />
             <p className="text-lg font-semibold text-[color:var(--text-primary)] flex items-center justify-center gap-2">
-              <Sparkles className="w-5 h-5 text-blue-400" />
+              <Sparkles className="w-5 h-5 text-[color:var(--accent)]" />
               Abonnement {plan} activé
             </p>
             {(periodicite || renouvellement) && (
@@ -139,8 +139,8 @@ function AbonnementSuccessContent() {
 
         {etat === 'en_attente' && (
           <div className="space-y-4">
-            <div className="w-full bg-amber-950/50 border border-amber-500/30 rounded-lg px-4 py-3 flex items-start gap-3 text-left">
-              <AlertCircle className="w-4 h-4 text-amber-400 mt-0.5 flex-shrink-0" />
+            <div className="w-full bg-[color:var(--attention-soft)] border border-[color:var(--attention-edge)] rounded-lg px-4 py-3 flex items-start gap-3 text-left">
+              <AlertCircle className="w-4 h-4 text-[color:var(--attention-on-soft)] mt-0.5 flex-shrink-0" />
               <p className="text-sm text-[color:var(--text-warning-soft)]">
                 Votre paiement est bien enregistré par notre prestataire, mais l&apos;activation
                 prend plus de temps que prévu. Elle se fera automatiquement : vous pouvez
@@ -164,7 +164,7 @@ export default function AbonnementSuccessPage() {
   return (
     <Suspense fallback={
       <div className="min-h-screen flex items-center justify-center">
-        <Loader2 className="w-10 h-10 animate-spin text-blue-400" />
+        <Loader2 className="w-10 h-10 animate-spin text-[color:var(--accent)]" />
       </div>
     }>
       <AbonnementSuccessContent />

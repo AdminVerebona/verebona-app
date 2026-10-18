@@ -1,0 +1,149 @@
+{
+  "$comment": "L66C : empreintes SHA-256 du CONTENU des dossiers au tag lot65 (avant la charte Sérénité) — `text` = texte visible (balises et <style> retirés, espaces normalisés), `body` = HTML sans le <style> @page de pageSetup. La migration graphique ne doit modifier ni l'un ni l'autre.",
+  "hashes": {
+    "cil/minimal/1": {
+      "text": "de62c7adc104049acfbd23ac53745c216cc830cda5cff307d15b8257c20d90d2",
+      "body": "c8be530f9a5396c9536658e6cc1858e2857760641e78b7e705cca8abfd9310a0"
+    },
+    "cil/minimal/2": {
+      "text": "6b984a6642b3b332e7a7855847ac25b3b70d3cc5c27d98b224dd6164edae56bb",
+      "body": "6cd9eebc6714bf00007d20a92893b495f5012cb6ed19cbb27ffb32f11ff7814b"
+    },
+    "cil/nominal/1": {
+      "text": "054af2ee97f95d75ffc691311966867d630626db1bc951a65b1bda95b9864053",
+      "body": "bc801f30918d9512e3349d1d509bc9225c126738365febc5eab54e2656314715"
+    },
+    "cil/nominal/2": {
+      "text": "f506c3dd7ec5b059bdd997e8f8ca0ec8d23b7013ba3a4693323e373a89bfd017",
+      "body": "0e4e31ef34474ff2fbd23dfdcae60f976eec96e74c1e6251d6be0c5bff16d1fe"
+    },
+    "cil/riche/1": {
+      "text": "374247f11c92bbc9e589b149bbff3b4d38fba9f3230579cfaa1b52bd939373ba",
+      "body": "4c610981ba56ae376dc198b5208da3e1e81d26bb755221065b509499530a72cd"
+    },
+    "cil/riche/2": {
+      "text": "660b3c33de268511f22b23898f8904ffdd944f78e6e4dacfcb78ca4ee3b0f4a3",
+      "body": "e883a3fafc0f5f36cf313537c12160886a9362d83f1730ea5933a1a599d7767b"
+    },
+    "dossier-complet/minimal/1": {
+      "text": "99570fd596c7a490b7e4e862c45805a70aa3b15654e7a55d4ccb05a792a4e0aa",
+      "body": "27297418570bfa8be4a20d3e9c3eb01b09f57bb8be05296bfcfb0654d28989de"
+    },
+    "dossier-complet/minimal/2": {
+      "text": "7264f9f97fb044effc4496c815d0ac3ed62c12e3e44975d8d22f5e8c2bd21da9",
+      "body": "80f419ef379743c28d2b2c90e16ee353f7accad2f9164fbc268a0e52672f6807"
+    },
+    "dossier-complet/nominal/1": {
+      "text": "ac4c21d761eaad96380632bccd125d2afcfb2b5fc82925c7bb5051bf3a264592",
+      "body": "6bb10c6c4424b73756085cfcec69c21c92ff04121a8deca7f4ca9c467f4cb8bb"
+    },
+    "dossier-complet/nominal/2": {
+      "text": "7333b5b2d9fa01986de8d439855b403236c72185c9bfd4044961d1e222381a2e",
+      "body": "14da7570e16bfa3b105bb3c3fd5806b116c23b1eac5e117f995d27c204d07aa5"
+    },
+    "dossier-complet/riche/1": {
+      "text": "00fb6468de89715de21304f127b9272cb6773a4d45c4f7f6d3364028147e2a05",
+      "body": "2ab8fab95d3f246d813eb0829112f69e0cd057e294d32e585b1953962ae80c5c"
+    },
+    "dossier-complet/riche/2": {
+      "text": "6a9b061ce270aec89af623ad6ab890538c44a27c7a75301945df14486a151423",
+      "body": "dd0cf6f12c558dd8b156368a71a54e48487adfaaa3daffb51a51b28387a317c3"
+    },
+    "vente/minimal/1": {
+      "text": "2bd5bd248e79436174c3adc5c37c35726fa0b94dd3e5b0c6398160ea6e454e13",
+      "body": "5e2732fadef3fcbc630a3c3b2273fce2c193e8bfb929d6afc1484fef78109a42"
+    },
+    "vente/minimal/2": {
+      "text": "9ab423655a4306fcf3bdf1c232d128affbbb0fc6da2438ebf4039fa3e5f4e268",
+      "body": "8147a5b0150a091357b31fd8c7dcb6a6f3b5951e159fb7daeab85b97df5726d1"
+    },
+    "vente/nominal/1": {
+      "text": "85f93fc96706a1904bcdfb20f39b48192647ba7c272c019ee7f5c991e86986d5",
+      "body": "a710ce6c1bb3fc5e52814ee78e63bc3313220b8553c96b365fe4658413aea837"
+    },
+    "vente/nominal/2": {
+      "text": "5502766bd6d34e293dfb7b5db467535b052bd2a1a46c5b23e8b835e03910283f",
+      "body": "35eb01294a45fdbc6dcea01a0fdfface78b11c38459f41b510d16dc1e1b22f7f"
+    },
+    "vente/riche/1": {
+      "text": "6c4e2698d9fce9270c1a6f56d321cfc16940bcde03b5aea9138459a5acef235e",
+      "body": "a346502dc9d3e75cf6270388e195a77f4cde40c526b1e2886ac723469639270f"
+    },
+    "vente/riche/2": {
+      "text": "b117ca651ed29ada8abd68695bcd48cb591fb19b1171531f6ef407b5fae8eacd",
+      "body": "f4841dd73ffb176a2d312a3ff09f550f410280167b4eebfa1e88414d973af4c2"
+    },
+    "location/minimal/1": {
+      "text": "2798e8d69eb0e7ff35ae88410859a5d4fcd41ec36e2c339a07ab492ed31deaba",
+      "body": "d7f02c3f1dc25a9dd71b7e88edf76b9520a18405a6605f1c23d634e31a5329da"
+    },
+    "location/minimal/2": {
+      "text": "7708a123759c830b81c164a206494570aabb6c09597832dc50761d86d4e3590b",
+      "body": "834668e6f4f6809a77fc2f135df0c3ef5e281016ca2b8f4214db7c6df7a834b1"
+    },
+    "location/nominal/1": {
+      "text": "4e9f9481fb7eaf8f4b1008a603fd79eb27b2c4782a5d3f811facba779f6ad514",
+      "body": "c5c00ac3757e64cafe994418f892688682510b89f1b429ff6f195b63d7b57a02"
+    },
+    "location/nominal/2": {
+      "text": "dec9b669782d8cf4af35e5c7f0dbd6ad84200d5df27b30c8d68630196f320440",
+      "body": "55d754f1cb22f41d54d0a32577a79bf0e955247a6484c9157eff9b11f20abf89"
+    },
+    "location/riche/1": {
+      "text": "c14cf92db2c1330e0f3a29c2b5a61ca025da8063342f04d8d11fa78b8ee7b4f4",
+      "body": "d7920c1be39925d0ee28e2cf3734fde182cce4f24c6333b8f74eeab31899f077"
+    },
+    "location/riche/2": {
+      "text": "9b610765f646443a5b415f6ced3cb916aebb8cb95b53a51d779df2d7ea26b325",
+      "body": "ddae0bb4cf58367be662470dbcbbf9849328693730b505f187edc6e40550ab45"
+    },
+    "assurance-souscription/minimal/1": {
+      "text": "2013e8c524abd678f833fd53c65df812ded58c5796ba7b68e2f8e21951aa360c",
+      "body": "5ec243ec10d51a2a4d9e2ed76ab62aa732fa0b2fe78615555e96da051911628f"
+    },
+    "assurance-souscription/minimal/2": {
+      "text": "448fdc575dc8a5dba1f6fd4490f67af91fa46ea7d14827877faa8affa8e1c37e",
+      "body": "1a63539f1a6228a47d016aed1fcf6df1f13af4ae2b5362faa5bcb40d627c580a"
+    },
+    "assurance-souscription/nominal/1": {
+      "text": "8e2b3265bb35f9d58e3647d843d394d83605c69b2b1ffd247bd247f6cbe0ea50",
+      "body": "8b4d0bed3e890ecac23ea79c3ccae17d2d0b5275303341a1dd95bc36a54e3e3a"
+    },
+    "assurance-souscription/nominal/2": {
+      "text": "51805a3b528889efdcec816c5056c464435bcf7e2b637c32572a56da388e2da1",
+      "body": "1a8084832cdcd16cc8519f5951c67317b45d010d7a2a37b8d5e5142662c0b368"
+    },
+    "assurance-souscription/riche/1": {
+      "text": "0d9f4dd36d32b4b888f03d8b52696f229156965b4061f4ce6c34a69061b5a605",
+      "body": "a5371620c7400b01c1677da1bb08d556c3a02b4f5e744e2e6802347dffd0d9a5"
+    },
+    "assurance-souscription/riche/2": {
+      "text": "7cbbc6f405c43c2b005ecab081c41ca2ea984d63386e0ce8ad24da7411a321bf",
+      "body": "dc8e669d8a121aeee0d44a4547df86a72cdcfdb62ae3fd05f2c3954f50fc5c31"
+    },
+    "assurance-sinistre/minimal/1": {
+      "text": "a64821274b71209af36cfe3cc57d9ec7da9b4b3bb3d24adc4d6e23dd5564547f",
+      "body": "46ff30243632a4e5c0e48e0317a018dd8a0f9aacb7e3a346fe70985c694aee74"
+    },
+    "assurance-sinistre/minimal/2": {
+      "text": "8414264517e3839f458dcf8d2da9165d4cc28c2af8255d99f10df8accb1217ef",
+      "body": "e73f08b1774ac65f5b78e9632f8e4e765589ddc4817d00d0ae3b70b3143f7423"
+    },
+    "assurance-sinistre/nominal/1": {
+      "text": "4aeb4f84cf73b309642d9a743d469adaa75c84790cd267232460e8e3d388e9e0",
+      "body": "05010e8184264c765641590a773b5dcce87a2a679df2aa9effbb4c312f41b740"
+    },
+    "assurance-sinistre/nominal/2": {
+      "text": "a2f414d11642da13c26ddaab4f3515961455bbdf1490e6e696083276b9b2ab02",
+      "body": "45f099b809e7ebbc75c42cd3c182520a2bb677b083e3d4e9b96d56674a568a2e"
+    },
+    "assurance-sinistre/riche/1": {
+      "text": "80ee255a9d5abfc59e95b9ce5223d4464be05af223b86dcc0093bcf2523bc74d",
+      "body": "1c8c4c0e3580c056a1b0da86916edc665a0d6f1f6009ad9aa623ddfc81f434d3"
+    },
+    "assurance-sinistre/riche/2": {
+      "text": "c261f891e970e06b53d1464bf316a5dec931075c67ee0a3e674acc1d162439a5",
+      "body": "a303695af58b2c6e12d30026f7a5901d9892c64676eb6cff00ec7dda232b0e07"
+    }
+  }
+}

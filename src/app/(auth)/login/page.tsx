@@ -182,7 +182,7 @@ function LoginForm() {
               </div>
 
               {error && (
-                <div className="flex items-start gap-2 text-sm bg-red-500/15 border border-red-500/30 text-red-400 p-3 rounded-md">
+                <div className="flex items-start gap-2 text-sm bg-[color:var(--danger-soft)] border border-[color:var(--danger-edge)] text-[color:var(--danger)] p-3 rounded-md">
                   <span className="shrink-0 mt-0.5">⚠</span>
                   <p>{error}</p>
                 </div>
@@ -210,7 +210,7 @@ function LoginForm() {
                     </Button>
                   )}
                   {resendState === 'failed' && (
-                    <p className="text-red-400">L’envoi n’a pas pu être demandé. Réessayez dans quelques minutes.</p>
+                    <p className="text-[color:var(--danger)]">L’envoi n’a pas pu être demandé. Réessayez dans quelques minutes.</p>
                   )}
                 </div>
               )}
@@ -244,8 +244,8 @@ function LoginForm() {
 export default function LoginPage() {
   return (
     <Suspense fallback={
-      <div className="min-h-screen flex items-center justify-center bg-[#020617]">
-        <div className="text-slate-400">Chargement...</div>
+      <div className="min-h-screen flex items-center justify-center bg-[color:var(--bg-page)]">
+        <div className="text-[color:var(--text-muted)]">Chargement...</div>
       </div>
     }>
       <LoginForm />

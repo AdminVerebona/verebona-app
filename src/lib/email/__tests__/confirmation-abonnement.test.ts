@@ -26,9 +26,13 @@ describe('email « Confirmation de votre abonnement Verebona Premium »', () => 
   });
 
   it('gabarit : nouveau texte, sans bascule Standard ni bouton « Gérer mon abonnement »', () => {
-    for (const f of ['src/db/seeds/email_templates_system.ts', 'src/lib/email-defaults.ts']) {
-      const src = read(f);
-      const tpl = src.slice(src.indexOf('PREMIUM_CONFIRMATION'), src.indexOf('placeholders', src.indexOf("'Confirmation de votre abonnement Verebona Premium'")));
+    // Lot 66C : les corps HTML de l'amorçage et des défauts vivent dans le module partagé
+    // `lib/email/email-html-templates.ts` (charte 2026), référencé par ces deux fichiers.
+    expect(read('src/db/seeds/email_templates_system.ts')).toContain('body: PREMIUM_CONFIRMATION_HTML,');
+    expect(read('src/lib/email-defaults.ts')).toContain('body: PREMIUM_CONFIRMATION_DEFAULT_HTML,');
+    const mod = read('src/lib/email/email-html-templates.ts');
+    for (const [debut, fin] of [['export const PREMIUM_CONFIRMATION_HTML', 'export const PREMIUM_CONFIRMATION_DEFAULT_HTML'], ['export const PREMIUM_CONFIRMATION_DEFAULT_HTML', 'export const TRIAL_CONFIRMATION_DEFAULT_HTML']]) {
+      const tpl = mod.slice(mod.indexOf(debut), mod.indexOf(fin));
       expect(tpl).toContain('Vous pouvez gérer ou résilier votre abonnement à tout moment depuis votre compte.');
       expect(tpl).not.toContain('portail Stripe');
       expect(tpl).not.toContain('À défaut de renouvellement');

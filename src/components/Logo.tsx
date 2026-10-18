@@ -8,82 +8,68 @@ interface LogoProps {
 }
 
 /**
- * Logo Verebona — fidèle au SVG officiel /public/brand/verebona-logo.svg
- * Grille 3x3 de carrés anthracite (avec trou en haut à droite)
- * + carré bleu légèrement relevé avec rotation +18°
+ * Logo Verebona — charte « Sérénité » 2026 §3 (lot 66).
+ *
+ * Géométrie du header public (`viewBox 0 0 32 32`, cases 9,14, rayon 1,6, pas
+ * 11,43) : grille 3 × 3 de 8 cases fixes + la case d'accent, cuivre doux
+ * `#D66B53`, tournée de 18° en haut à droite. Cases et mot-symbole pétrole
+ * `#17474D` sur fond clair, ivoire `#F8F6F1` / `#F3F1EB` sur fond sombre :
+ * la couleur suit le thème par les jetons `--vb-logo-cells` et
+ * `--vb-logo-text` (globals.css), y compris sur les pages publiques
+ * (`.public-page`, toujours sombres). Mot-symbole Figtree 700, −0,02 em.
+ *
+ * Même rendu que `assets/logo-petrole.svg` / `logo-ivoire.svg` du design
+ * system. Taille : 24 px dans l'application, 34 px sur le site.
  */
+const CELLS: Array<[number, number]> = [
+  [0, 0], [11.43, 0],
+  [0, 11.43], [11.43, 11.43], [22.86, 11.43],
+  [0, 22.86], [11.43, 22.86], [22.86, 22.86],
+];
+
+export const LOGO_CUBE_COLOR = '#D66B53';
+
 export function Logo({
   size = 40,
   withText = true,
   withBaseline = false,
   className = '',
 }: LogoProps) {
-  const unit = size / 3.5;     // taille d'un carré
-  const gap = unit * 0.25;     // espace entre carrés
-  const r = unit * 0.17;       // border-radius relatif
-  const gridTotal = unit * 3 + gap * 2;
-
-  const textSize = size * 0.9;
+  const textSize = Math.round(size * 0.8 * 10) / 10;
   const baselineSize = size * 0.35;
 
-  // Offset du carré bleu : légèrement relevé (vers le haut) et à la même colonne 3
-  const blueX = (unit + gap) * 2;
-  const blueY = -(unit * 0.17);   // légèrement au-dessus de la rangée 1
-  const cx = blueX + unit / 2;
-  const cy = blueY + unit / 2;
-
   return (
-    <div className={`flex items-center gap-3 ${className}`}>
-      {/* Symbole SVG */}
+    <div className={`flex items-center ${className}`} style={{ gap: Math.round(size * 0.42) }} data-logo="verebona">
       <svg
-        width={gridTotal}
-        height={gridTotal}
-        viewBox={`0 0 ${gridTotal} ${gridTotal}`}
+        width={size}
+        height={size}
+        viewBox="0 0 32 32"
         fill="none"
         xmlns="http://www.w3.org/2000/svg"
         style={{ overflow: 'visible', flexShrink: 0 }}
+        aria-hidden="true"
       >
-        {/* Rangée 1 — col 1 & 2 (col 3 = trou pour le carré bleu) */}
-        <rect x={0}           y={0}           width={unit} height={unit} rx={r} className="fill-white [.theme-beige_&]:fill-[#2F3941] [.public-page_&]:fill-white" />
-        <rect x={unit + gap}  y={0}           width={unit} height={unit} rx={r} className="fill-white [.theme-beige_&]:fill-[#2F3941] [.public-page_&]:fill-white" />
-
-        {/* Rangée 2 — toutes les colonnes */}
-        <rect x={0}                   y={unit + gap} width={unit} height={unit} rx={r} className="fill-white [.theme-beige_&]:fill-[#2F3941] [.public-page_&]:fill-white" />
-        <rect x={unit + gap}          y={unit + gap} width={unit} height={unit} rx={r} className="fill-white [.theme-beige_&]:fill-[#2F3941] [.public-page_&]:fill-white" />
-        <rect x={(unit + gap) * 2}    y={unit + gap} width={unit} height={unit} rx={r} className="fill-white [.theme-beige_&]:fill-[#2F3941] [.public-page_&]:fill-white" />
-
-        {/* Rangée 3 — toutes les colonnes */}
-        <rect x={0}                   y={(unit + gap) * 2} width={unit} height={unit} rx={r} className="fill-white [.theme-beige_&]:fill-[#2F3941] [.public-page_&]:fill-white" />
-        <rect x={unit + gap}          y={(unit + gap) * 2} width={unit} height={unit} rx={r} className="fill-white [.theme-beige_&]:fill-[#2F3941] [.public-page_&]:fill-white" />
-        <rect x={(unit + gap) * 2}    y={(unit + gap) * 2} width={unit} height={unit} rx={r} className="fill-white [.theme-beige_&]:fill-[#2F3941] [.public-page_&]:fill-white" />
-
-        {/* Carré bleu — légèrement relevé, rotation +18° autour de son centre */}
-        <rect
-          x={blueX}
-          y={blueY}
-          width={unit}
-          height={unit}
-          rx={r}
-          fill="#3B82F6"
-          transform={`rotate(18, ${cx}, ${cy})`}
-        />
+        {CELLS.map(([x, y]) => (
+          <rect key={`${x}-${y}`} x={x} y={y} width="9.14" height="9.14" rx="1.6" style={{ fill: 'var(--vb-logo-cells, #17474D)' }} />
+        ))}
+        {/* Case d'accent : cuivre doux, tournée de 18° (jamais animée). */}
+        <rect x="22.86" y="-1.55" width="9.14" height="9.14" rx="1.6" fill={LOGO_CUBE_COLOR} transform="rotate(18 27.43 3.02)" />
       </svg>
 
-      {/* Texte */}
       <div
-        className={`flex flex-col transition-all duration-700 ease-in-out ${
-          withText ? 'opacity-100 translate-x-0' : 'opacity-0 -translate-x-8 w-0 pointer-events-none'
+        className={`flex flex-col transition-opacity duration-[180ms] ${
+          withText ? 'opacity-100' : 'opacity-0 w-0 pointer-events-none'
         }`}
       >
         <span
-          className="font-semibold text-white [.theme-beige_&]:text-[#2F3941] [.public-page_&]:text-white leading-none whitespace-nowrap"
-          style={{ fontSize: `${textSize}px` }}
+          className="leading-none whitespace-nowrap"
+          style={{ fontSize: `${textSize}px`, fontWeight: 700, letterSpacing: '-.02em', color: 'var(--vb-logo-text, #17474D)' }}
         >
           Verebona
         </span>
         {withBaseline && (
           <span
-            className="text-[#9CA3AF] [.theme-beige_&]:text-[#4B5563] [.public-page_&]:text-[#9CA3AF] mt-1 whitespace-nowrap"
+            className="mt-1 whitespace-nowrap text-[color:var(--text-muted)]"
             style={{ fontSize: `${baselineSize}px` }}
           >
             One place. Higher value.

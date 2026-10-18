@@ -193,7 +193,7 @@ export function AssetFormDialog({
       <SheetContent className="sm:max-w-[560px] flex flex-col overflow-hidden p-0">
         <SheetHeader className="px-6 pt-6 pb-4 border-b border-[color:var(--border-subtle)] flex-shrink-0">
           <SheetTitle className="flex items-center gap-2 text-lg font-semibold">
-            <Package className="w-5 h-5 text-[#3b82f6]" />
+            <Package className="w-5 h-5 text-[color:var(--accent)]" />
             Ajouter un bien
           </SheetTitle>
         </SheetHeader>
@@ -314,8 +314,8 @@ export function AssetFormDialog({
         </div>
 
         <div className="border-t border-[color:var(--border-subtle)] px-6 py-4 flex-shrink-0 space-y-4">
-          <div className="flex items-start gap-2.5 rounded-md bg-blue-500/10 border border-blue-500/20 p-3">
-            <Info className="w-4 h-4 text-blue-600 flex-shrink-0 mt-0.5" />
+          <div className="flex items-start gap-2.5 rounded-md bg-[color:var(--accent-soft)] border border-[color:var(--border-info)] p-3">
+            <Info className="w-4 h-4 text-[color:var(--accent)] flex-shrink-0 mt-0.5" />
             <p className="text-xs text-muted-foreground leading-relaxed">
               Vous pourrez compléter les informations détaillées du bien après sa création.
             </p>

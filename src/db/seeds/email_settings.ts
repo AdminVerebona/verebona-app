@@ -8,7 +8,7 @@ export async function seedEmailSettings() {
         senderName: 'Verebona',
         senderEmail: 'noreply@verebona.com',
         replyToEmail: 'support@verebona.com',
-        primaryColor: '#3B82F6',
+        primaryColor: '#17474D', // lot 66C : pétrole (charte 2026) — valeur non lue par l'envoi
         footerText: null,
         updatedAt: new Date(),
         updatedBy: null,

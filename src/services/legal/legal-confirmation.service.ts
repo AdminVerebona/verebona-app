@@ -62,9 +62,9 @@ ${renewal}
 
 function renderWithdrawalBlock(input: LegalConfirmationInput): string {
   if (!input.withdrawalUrl) return '';
-  return `<p style="margin:0 0 16px; font-size:13px; color:#555555;">
+  return `<p class="vb-muted" style="margin:0 0 16px; font-size:13px; color:#52636A;">
   Vous disposez d'un droit de rétractation :
-  <a href="${input.withdrawalUrl}" style="color:#0b5fff;">renoncer au contrat</a>.
+  <a href="${input.withdrawalUrl}" class="vb-link" style="color:#17474D; text-decoration:underline; font-weight:600;">renoncer au contrat</a>.
 </p>`;
 }
 

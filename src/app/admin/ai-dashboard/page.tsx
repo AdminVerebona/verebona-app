@@ -137,9 +137,9 @@ function versionLine(v: VersionRef, dateLabel: string, date: string | null | und
 }
 
 const STATE_STYLE: Record<State, string> = {
-  ENABLED: 'text-emerald-500',
+  ENABLED: 'text-[color:var(--text-success)]',
   DISABLED: 'text-[color:var(--text-muted)]',
-  SUSPENDED: 'text-amber-500',
+  SUSPENDED: 'text-[color:var(--text-warning-soft)]',
 };
 
 const STATE_LABEL: Record<State, string> = {
@@ -147,8 +147,8 @@ const STATE_LABEL: Record<State, string> = {
 };
 
 const SEVERITY_STYLE = {
-  critical: 'border-red-500/30 bg-red-500/5 text-red-400',
-  warning: 'border-amber-500/30 bg-amber-500/5 text-amber-500',
+  critical: 'border-[color:var(--border-danger)] bg-[color:var(--bg-danger)] text-[color:var(--text-danger)]',
+  warning: 'border-[color:var(--border-warning)] bg-[color:var(--bg-warning)] text-[color:var(--text-warning-soft)]',
   info: 'border-[color:var(--border-subtle)] bg-[color:var(--bg-card)] text-[color:var(--text-secondary)]',
 };
 
@@ -222,7 +222,7 @@ export default function AiDashboardPage() {
     <div className="space-y-6 max-w-5xl">
       {/* Bandeau environnement — production non masquable */}
       <div className={`rounded-xl border p-4 ${data.isProduction
-        ? 'border-red-500/40 bg-red-500/5'
+        ? 'border-[color:var(--border-danger)] bg-[color:var(--bg-danger)]'
         : 'border-[color:var(--border-subtle)] bg-[color:var(--bg-card)]'}`}>
         <div className="flex flex-wrap items-center gap-3">
           <div className="flex-1 min-w-0">
@@ -236,10 +236,10 @@ export default function AiDashboardPage() {
                 data-testid="ai-global-status"
                 className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-xs font-medium ${
                   status.key === 'emergency_stop'
-                    ? 'border-red-500/40 bg-red-500/10 text-red-400'
-                    : 'border-emerald-500/40 bg-emerald-500/10 text-emerald-500'}`}
+                    ? 'border-[color:var(--border-danger)] bg-[color:var(--bg-danger)] text-[color:var(--text-danger)]'
+                    : 'border-[color:var(--border-success)] bg-[color:var(--bg-success)] text-[color:var(--text-success)]'}`}
               >
-                <span className={`h-1.5 w-1.5 rounded-full ${status.key === 'emergency_stop' ? 'bg-red-400' : 'bg-emerald-500'}`} />
+                <span className={`h-1.5 w-1.5 rounded-full ${status.key === 'emergency_stop' ? 'bg-[color:var(--danger)]' : 'bg-[color:var(--accent)]'}`} />
                 {status.label}
               </span>
             </div>
@@ -250,7 +250,7 @@ export default function AiDashboardPage() {
                 : 'Aucune version active.'}
             </p>
             {data.effectiveVersion && (
-              <p className="text-sm text-amber-500">
+              <p className="text-sm text-[color:var(--text-warning-soft)]">
                 Version effective (à l&apos;essai) :{' '}
                 {versionLine(data.effectiveVersion, 'validée le', data.effectiveVersion.validatedAt)}
               </p>
@@ -269,7 +269,7 @@ export default function AiDashboardPage() {
         </div>
 
         {data.isProduction && (
-          <p className="text-xs text-red-400 mt-2">
+          <p className="text-xs text-[color:var(--text-danger)] mt-2">
             Environnement de production. Toute activation s&apos;applique aux comptes réels.
           </p>
         )}
@@ -278,8 +278,8 @@ export default function AiDashboardPage() {
       {/* Sources indisponibles — nommées, pas tues : sans cela, des zéros se
           liraient comme des mesures. */}
       {(data.degraded?.length ?? 0) > 0 && (
-        <div className="rounded-xl border border-amber-500/30 bg-amber-500/5 p-3 space-y-1">
-          <p className="text-sm font-medium text-amber-500">
+        <div className="rounded-xl border border-[color:var(--border-warning)] bg-[color:var(--bg-warning)] p-3 space-y-1">
+          <p className="text-sm font-medium text-[color:var(--text-warning-soft)]">
             Tableau de bord partiel
           </p>
           {data.degraded!.map((d, i) => (
@@ -347,7 +347,7 @@ export default function AiDashboardPage() {
             {h.batch ? (
               <p className="text-xs text-[color:var(--text-secondary)]">
                 {h.pending} en attente · {h.running} en cours
-                {h.failed > 0 && <span className="text-red-400"> · {h.failed} en échec</span>}
+                {h.failed > 0 && <span className="text-[color:var(--text-danger)]"> · {h.failed} en échec</span>}
               </p>
             ) : (
               <p className="text-xs text-[color:var(--text-muted)]">Répond en direct</p>
@@ -362,9 +362,9 @@ export default function AiDashboardPage() {
                   return (
                     <>
                       Appels {windowLabel} : {w.calls}
-                      {w.failed > 0 && <span className="text-red-400"> · {w.failed} en échec</span>}
+                      {w.failed > 0 && <span className="text-[color:var(--text-danger)]"> · {w.failed} en échec</span>}
                       {w.successRate !== null && (
-                        <span className={w.successRate < 0.9 ? ' text-amber-500' : ''}>
+                        <span className={w.successRate < 0.9 ? ' text-[color:var(--text-warning-soft)]' : ''}>
                           {' '}· succès {Math.round(w.successRate * 100)} %
                         </span>
                       )}
@@ -379,7 +379,7 @@ export default function AiDashboardPage() {
               </Link>
             )}
             {h.suspendedReason && (
-              <p className="text-xs text-amber-500 line-clamp-2">{h.suspendedReason}</p>
+              <p className="text-xs text-[color:var(--text-warning-soft)] line-clamp-2">{h.suspendedReason}</p>
             )}
             {/* WF-09 étape 53 : prochaine tentative de recovery (sonde). */}
             {h.state === 'SUSPENDED' && h.nextProbeAt && (
@@ -389,7 +389,7 @@ export default function AiDashboardPage() {
             )}
             {/* MOD-008 / OPS-019 : alerte modèle informationnelle, sans arrêt. */}
             {(h.alertingModels ?? []).map((m) => (
-              <p key={m.model} className="text-xs text-amber-500 flex items-center gap-1" title="Alerte modèle (MOD-008) : se résout au premier succès de ce modèle.">
+              <p key={m.model} className="text-xs text-[color:var(--text-warning-soft)] flex items-center gap-1" title="Alerte modèle (MOD-008) : se résout au premier succès de ce modèle.">
                 <AlertTriangle className="w-3 h-3 shrink-0" />
                 <span className="font-mono truncate">{m.model}</span>
                 <span className="shrink-0">· {m.consecutiveFailures} échecs</span>
@@ -465,7 +465,7 @@ export default function AiDashboardPage() {
         )}
 
         {!data.activeVersion && (
-          <p className="text-sm text-amber-500">
+          <p className="text-sm text-[color:var(--text-warning-soft)]">
             Aucune configuration active : les traitements utilisent les valeurs du code.
             Créez une version, puis activez-la en préproduction.
           </p>

@@ -2,8 +2,9 @@
 /**
  * Le champ Verebona — Direction D v2 §4.1, §5, §6.2, §6.3.
  *
- * Desktop : pilule centrée dans le header, 420 px au repos, 640 px quand
- * l'espace est ouvert ; le panneau de réponse est accroché dessous.
+ * Desktop : pilule centrée dans le header, 560 px au repos (charte 2026 :
+ * pilule 38 px, fond carte, bordure, mascotte « neutral » 26 px), 640 px
+ * quand l'espace est ouvert ; le panneau de réponse est accroché dessous.
  * Mobile : pilule de 46 px dans la barre haute ; un tap ouvre l'espace en
  * plein écran, champ EN HAUT et panneau dessous, comme desktop (lot 34).
  *
@@ -86,7 +87,7 @@ function SendButton({ api, canSend, onSend, size }: { api: VerebonaSpaceApi; can
       aria-label="Envoyer"
       aria-disabled={!canSend}
       className="flex flex-shrink-0 items-center justify-center rounded-full transition-colors duration-150"
-      style={{ width: size, height: size, background: canSend ? 'var(--accent)' : 'var(--muted)', color: canSend ? '#fff' : 'var(--text-muted)' }}
+      style={{ width: size, height: size, background: canSend ? 'var(--accent)' : 'var(--muted)', color: canSend ? 'var(--on-accent)' : 'var(--text-muted)' }}
     >
       <ArrowRight className="h-[15px] w-[15px]" strokeWidth={2.2} aria-hidden />
     </button>
@@ -106,20 +107,24 @@ export function VerebonaHeaderField() {
 
   return (
     <div
-      className="absolute left-1/2 top-[9px] z-[32] flex h-[42px] -translate-x-1/2 items-center gap-2 rounded-full border pl-3 pr-[5px] transition-all duration-[250ms]"
+      data-verebona-field="header"
+      className="absolute left-1/2 top-[11px] z-[32] flex h-[38px] -translate-x-1/2 items-center gap-2.5 rounded-full border pl-2 pr-1 transition-[width,border-color,outline-color] duration-[180ms] ease-[cubic-bezier(.2,.7,.2,1)]"
       title={etat.notice ?? undefined}
       style={{
-        width: api.isOpen ? 'min(640px, calc(100% - 150px))' : 'min(420px, calc(100% - 170px))',
-        background: 'var(--field-bg)',
+        width: api.isOpen ? 'min(640px, calc(100% - 150px))' : 'min(560px, calc(100% - 170px))',
+        background: 'var(--bg-card)',
         borderColor: actif ? 'var(--accent)' : 'var(--border)',
-        boxShadow: actif ? '0 0 0 3px rgba(59,130,246,.22)' : '0 0 0 0 transparent',
+        // Focus de la pilule (le champ intérieur n'a pas d'anneau propre) :
+        // anneau 3 px cuivre texte décalé, comme les autres commandes.
+        outline: focused ? '3px solid var(--focus-ring-color)' : '3px solid transparent',
+        outlineOffset: 3,
       }}
     >
       <button
         type="button"
         onClick={api.toggle}
         aria-label={api.isOpen ? 'Fermer l’espace Verebona' : 'Ouvrir l’espace Verebona'}
-        className="flex flex-shrink-0 rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--accent)]"
+        className="flex flex-shrink-0 rounded-full"
       >
         <MascotPose pose={api.pose} size={26} priority />
       </button>
@@ -142,9 +147,11 @@ export function VerebonaHeaderField() {
         onBlur={() => setFocused(false)}
         onKeyDown={onKeyDown}
         placeholder={fieldPlaceholder(n)}
+        data-focus-ring="off"
+        data-field-bare
         className="h-full min-w-0 flex-1 border-0 bg-transparent text-[14px] text-[color:var(--text-primary)] outline-none placeholder:text-[color:var(--text-muted)]"
       />
-      <SendButton api={api} canSend={etat.canSend} onSend={submit} size={34} />
+      <SendButton api={api} canSend={etat.canSend} onSend={submit} size={30} />
     </div>
   );
 }
@@ -171,17 +178,17 @@ export function VerebonaDesktopPanel() {
         role="dialog"
         aria-modal="false"
         aria-label="Verebona"
-        className="absolute left-1/2 top-[66px] z-[31] flex w-[min(640px,calc(100%-32px))] -translate-x-1/2 flex-col rounded-[24px] border [animation:vb-rise_.3s_cubic-bezier(.16,1,.3,1)]"
-        // Lavis de carte posé sur le fond de page : le panneau reste opaque
-        // (la page assombrie ne doit pas transparaître sous le texte).
-        style={{ maxHeight: 'calc(100% - 100px)', borderColor: 'rgba(59,130,246,.28)', boxShadow: 'var(--vb-shadow-panel)', background: 'linear-gradient(var(--bg-card), var(--bg-card)), var(--bg-page)' }}
+        className="absolute left-1/2 top-[66px] z-[31] flex w-[min(640px,calc(100%-32px))] -translate-x-1/2 flex-col rounded-[16px] border [animation:vb-rise_.18s_cubic-bezier(.2,.7,.2,1)]"
+        // Carte flottante opaque (la page voilée ne transparaît pas) : la
+        // seule ombre de la charte, bordure 1 px.
+        style={{ maxHeight: 'calc(100% - 100px)', borderColor: 'var(--border)', boxShadow: 'var(--vb-shadow-panel)', background: 'var(--bg-card)' }}
       >
         <header className="flex flex-shrink-0 items-center gap-2.5 border-b border-[color:var(--border-subtle)] py-2.5 pl-[18px] pr-3">
           <span className="text-[13px] font-semibold text-[color:var(--text-primary)]">Verebona</span>
           <span className="text-[12px] text-[color:var(--text-muted)]">{exchangeCountLabel(n)}</span>
           <div className="ml-auto flex items-center gap-1">
             {n > 0 && (
-              <button type="button" onClick={api.newRequest} className="h-8 whitespace-nowrap rounded-full px-2.5 text-[12.5px] font-medium text-[color:var(--accent)] hover:bg-[color:var(--accent-soft)]">
+              <button type="button" onClick={api.newRequest} className="h-8 whitespace-nowrap rounded-full px-2.5 text-[12.5px] font-semibold text-[color:var(--accent)] hover:bg-[color:var(--accent-soft)]">
                 Nouvelle demande
               </button>
             )}
@@ -196,7 +203,7 @@ export function VerebonaDesktopPanel() {
           </div>
         </header>
         {notice && (
-          <p role="status" className="m-0 flex-shrink-0 border-b border-[color:var(--border-subtle)] px-[18px] py-2 text-[12px] text-[color:var(--on-amber)]">{notice}</p>
+          <p role="status" className="m-0 flex-shrink-0 border-b border-[color:var(--border-subtle)] px-[18px] py-2 text-[12px] text-[color:var(--attention)]">{notice}</p>
         )}
         <div ref={scrollRef} className="flex min-h-0 flex-1 flex-col gap-3.5 overflow-y-auto px-[18px] pb-5 pt-4">
           <SpaceBody variant="desktop" scrollRef={scrollRef} />
@@ -220,9 +227,10 @@ export function VerebonaMobileField() {
       aria-controls={PANEL_ID}
       aria-expanded={api.isOpen}
       aria-haspopup="dialog"
-      className="flex h-[46px] min-w-0 flex-1 items-center gap-2 rounded-full border border-[color:var(--border)] bg-[color:var(--field-bg)] pl-2.5 pr-1.5 text-left text-[14px] text-[color:var(--text-muted)]"
+      data-verebona-field="mobile"
+      className="flex h-[44px] min-w-0 flex-1 items-center gap-2 rounded-full border border-[color:var(--border)] bg-[color:var(--bg-card)] pl-2 pr-1.5 text-left text-[14px] text-[color:var(--text-muted)]"
     >
-      <MascotPose pose={api.pose} size={28} priority />
+      <MascotPose pose={api.pose} size={26} priority />
       <span className="min-w-0 flex-1 truncate">Demander à Verebona</span>
       <span className="flex h-[34px] w-[34px] flex-shrink-0 items-center justify-center rounded-full bg-[color:var(--muted)] text-[color:var(--text-primary)]">
         <ArrowRight className="h-4 w-4" strokeWidth={2.2} aria-hidden />
@@ -264,7 +272,7 @@ export function VerebonaMobileSpace() {
           <div className="flex items-center gap-2">
             <div
               className="flex h-12 min-w-0 flex-1 items-center gap-2 rounded-full border pl-2.5 pr-1.5"
-              style={{ background: 'var(--field-bg)', borderColor: 'var(--accent)', boxShadow: '0 0 0 3px rgba(59,130,246,.2)' }}
+              style={{ background: 'var(--bg-card)', borderColor: 'var(--accent)' }}
             >
               <MascotPose pose={api.pose} size={28} priority />
               <input
@@ -283,6 +291,8 @@ export function VerebonaMobileSpace() {
                 onChange={(e) => api.setDraft(e.target.value)}
                 onKeyDown={onKeyDown}
                 placeholder={fieldPlaceholder(n)}
+                data-focus-ring="off"
+                data-field-bare
                 className="h-full min-w-0 flex-1 border-0 bg-transparent text-[16px] text-[color:var(--text-primary)] outline-none placeholder:text-[color:var(--text-muted)]"
               />
               <SendButton api={api} canSend={etat.canSend} onSend={submit} size={38} />
@@ -291,12 +301,12 @@ export function VerebonaMobileSpace() {
               <X className="h-5 w-5" aria-hidden />
             </button>
           </div>
-          {etat.notice && <p role="status" className="m-0 px-1 text-[12px] text-[color:var(--on-amber)]">{etat.notice}</p>}
+          {etat.notice && <p role="status" className="m-0 px-1 text-[12px] text-[color:var(--attention)]">{etat.notice}</p>}
           {n > 0 && (
             <div className="flex items-center gap-2.5 pl-1">
               <span className="text-[13px] font-semibold text-[color:var(--text-primary)]">Verebona</span>
               <span className="text-[12px] text-[color:var(--text-muted)]">{exchangeCountLabel(n)}</span>
-              <button type="button" onClick={api.newRequest} className="ml-auto h-9 whitespace-nowrap rounded-full px-2.5 text-[12.5px] font-medium text-[color:var(--accent)]">
+              <button type="button" onClick={api.newRequest} className="ml-auto h-9 whitespace-nowrap rounded-full px-2.5 text-[12.5px] font-semibold text-[color:var(--accent)]">
                 Nouvelle demande
               </button>
             </div>

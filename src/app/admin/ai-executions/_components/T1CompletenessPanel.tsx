@@ -164,9 +164,9 @@ export function T1CompletenessPanel({ days = 7 }: { days?: number }) {
   if (anomalies.length === 0 && !anomaly) return null;
 
   return (
-    <div className="rounded-xl border border-amber-500/30 bg-amber-500/5 p-4 space-y-2" data-testid="t1-completeness-panel">
+    <div className="rounded-xl border border-[color:var(--border-warning)] bg-[color:var(--bg-warning)] p-4 space-y-2" data-testid="t1-completeness-panel">
       <h2 className="text-sm font-semibold text-[color:var(--text-primary)] flex items-center gap-2">
-        <AlertTriangle className="w-4 h-4 text-amber-500" />
+        <AlertTriangle className="w-4 h-4 text-[color:var(--text-warning-soft)]" />
         Complétude des analyses T1 ({data.days} derniers jours)
       </h2>
       <p className="text-xs text-[color:var(--text-muted)]">
@@ -185,7 +185,7 @@ export function T1CompletenessPanel({ days = 7 }: { days?: number }) {
         {anomalies.map(([code, n]) => (
           <button key={code} type="button" onClick={() => setAnomaly(anomaly === code ? '' : code)}
             className={`text-xs rounded border px-2 py-0.5 ${anomaly === code
-              ? 'border-amber-500/60 text-[color:var(--text-primary)]'
+              ? 'border-[color:var(--border-warning)] text-[color:var(--text-primary)]'
               : 'border-[color:var(--border-subtle)] text-[color:var(--text-secondary)]'}`}>
             {ANOMALY_LABEL[code] ?? code} <span className="font-medium text-[color:var(--text-primary)] tabular-nums">{n}</span>
           </button>

@@ -118,10 +118,10 @@ export function AssetClaimsSection({ assetId, category, readOnly = false, defaul
       </button>
       {open && (
         <div className="p-4 space-y-3">
-          {message && <p className="text-xs text-amber-700 dark:text-amber-200" role="status">{message}</p>}
+          {message && <p className="text-xs text-[color:var(--attention-on-soft)]" role="status">{message}</p>}
           {loadError ? (
             <div className="text-sm text-muted-foreground flex items-center gap-2">
-              <AlertCircle className="w-4 h-4 text-red-400" />
+              <AlertCircle className="w-4 h-4 text-[color:var(--danger)]" />
               Les sinistres n&apos;ont pas pu être chargés.
               <button type="button" className="underline underline-offset-2 hover:text-foreground" onClick={() => void load()}>Réessayer</button>
             </div>

@@ -35,6 +35,8 @@ import {
   prefsStorageKey,
   savePrefs,
 } from '../view-prefs';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { RUBRICS, RUBRIC_COLORS, UNFILED_COLORS, rubricColors } from '@/lib/referential/v2/rubrics';
 
 const RUBRIQUES: RubricRef[] = [
@@ -237,8 +239,31 @@ describe('textes', () => {
 describe('couleurs des rubriques', () => {
   it('une couleur par Rubrique du référentiel, conforme au design system', () => {
     expect(Object.keys(RUBRIC_COLORS).sort()).toEqual(RUBRICS.map((r) => r.code).sort());
-    expect(RUBRIC_COLORS.PROPERTY_MANAGEMENT).toEqual({ dot: '#60A5FA', accent: '#3B82F6' });
-    expect(RUBRIC_COLORS.RENTAL_MANAGEMENT).toEqual({ dot: '#2DD4BF', accent: '#0D9488' });
+    // Lot 66B1 (charte « Sérénité ») : jetons de marque (éventuellement
+    // nuancés vers le blanc), plus de palette brute ; couleurs DISTINCTES et
+    // lisibles (≥ 3:1) sur la mini-page blanche, la même en clair et en sombre.
+    expect(RUBRIC_COLORS.PROPERTY_MANAGEMENT).toEqual({ dot: 'var(--vb-petrole)', accent: 'var(--vb-petrole)' });
+    const css = readFileSync(join(process.cwd(), 'src/app/globals.css'), 'utf8');
+    const jeton = (n: string) => css.match(new RegExp(`--vb-${n}:\\s*(#[0-9A-Fa-f]{6})`))![1];
+    const rgb = (x: string) => [1, 3, 5].map((i) => parseInt(x.slice(i, i + 2), 16));
+    const resoudre = (v: string): number[] => {
+      const m = v.match(/^color-mix\(in srgb, var\(--vb-([a-z-]+)\) (\d+)%, var\(--vb-blanc\)\)$/);
+      if (m) return rgb(jeton(m[1])).map((c) => Math.round(c * (+m[2] / 100) + 255 * (1 - +m[2] / 100)));
+      const t = v.match(/^var\(--vb-([a-z-]+)\)$/);
+      expect(t, v).not.toBeNull();
+      return rgb(jeton(t![1]));
+    };
+    const lum = (c: number[]) => {
+      const [r, g, b] = c.map((u) => u / 255).map((u) => (u <= 0.03928 ? u / 12.92 : ((u + 0.055) / 1.055) ** 2.4));
+      return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    };
+    const valeurs = [...Object.values(RUBRIC_COLORS), UNFILED_COLORS].map((c) => {
+      expect(c.dot).toBe(c.accent);
+      const v = resoudre(c.accent);
+      expect(1.05 / (lum(v) + 0.05), c.accent).toBeGreaterThanOrEqual(3);
+      return v.join(',');
+    });
+    expect(new Set(valeurs).size).toBe(valeurs.length);
     expect(rubricColors(null)).toBe(UNFILED_COLORS);
     expect(rubricColors('INCONNU')).toBe(UNFILED_COLORS);
   });

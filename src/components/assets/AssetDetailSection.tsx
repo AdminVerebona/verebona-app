@@ -47,7 +47,7 @@ export interface FieldDef {
 function FieldBadge({ text }: { text: string | null }) {
   if (!text) return null;
   return (
-    <span data-field-badge className="inline-flex items-center ml-1 text-[9px] font-semibold text-sky-400 bg-sky-500/10 rounded px-1.5 py-0.5">
+    <span data-field-badge className="inline-flex items-center ml-1 text-[9px] font-semibold text-[color:var(--accent)] bg-[color:var(--accent-soft)] rounded px-1.5 py-0.5">
       {text}
     </span>
   );
@@ -248,12 +248,12 @@ export function AssetDetailSection({
 
   return (
     <>
-      <div ref={sectionRef} className={`border rounded-lg overflow-hidden transition-colors ${justSaved ? 'border-emerald-500 bg-emerald-500/5' : 'border-border'}`}>
+      <div ref={sectionRef} className={`border rounded-lg overflow-hidden transition-colors ${justSaved ? 'border-[color:var(--accent)] bg-[color:var(--bg-success)]' : 'border-border'}`}>
         {/* Header */}
         <button
           className={`w-full flex items-center justify-between px-4 py-3 transition-colors text-left ${
             justSaved
-              ? 'bg-emerald-500/10 hover:bg-emerald-500/15'
+              ? 'bg-[color:var(--bg-success)]'
               : 'bg-muted/30 hover:bg-muted/50'
           }`}
           onClick={() => setOpen(v => !v)}
@@ -262,7 +262,7 @@ export function AssetDetailSection({
           <div className="flex items-center gap-2 min-w-0">
             <span className="font-medium text-sm">{title}</span>
             {coherenceAlerts.length > 0 && (
-              <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-amber-400 bg-amber-400/10 rounded px-1.5 py-0.5 shrink-0">
+              <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-[color:var(--attention-on-soft)] bg-[color:var(--attention-soft)] rounded px-1.5 py-0.5 shrink-0">
                 <AlertTriangle className="w-2.5 h-2.5" />
                 {coherenceAlerts.length} incohérence{coherenceAlerts.length > 1 ? 's' : ''}
               </span>
@@ -320,7 +320,7 @@ export function AssetDetailSection({
                         />
                       ) : field.options ? (
                         <select
-                          className="w-full border rounded-md px-3 py-2 text-sm bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary transition-colors border-input"
+                          className="w-full border rounded-md px-3 py-2 text-sm bg-background text-foreground focus:border-primary transition-colors border-input"
                           value={String(form[field.key] ?? '')}
                           onChange={e => setField(field.key, e.target.value)}
                         >
@@ -394,9 +394,9 @@ export function AssetDetailSection({
                       key={field.key}
                       id={`asset-field-${field.key}`}
                       className={isHighlighted
-                        ? 'rounded-lg px-2 py-1.5 -mx-2 ring-2 ring-violet-400/60 bg-violet-500/5 transition-all'
+                        ? 'rounded-lg px-2 py-1.5 -mx-2 ring-2 ring-[color:var(--accent)] bg-[color:var(--accent-soft)] transition-all'
                         : alert
-                        ? 'rounded-lg px-2 py-1.5 -mx-2 ring-1 ring-amber-400/40 bg-amber-400/5'
+                        ? 'rounded-lg px-2 py-1.5 -mx-2 ring-1 ring-[color:var(--attention-edge)] bg-[color:var(--attention-soft)]'
                         : undefined
                       }
                     >
@@ -408,25 +408,25 @@ export function AssetDetailSection({
                             <TooltipProvider>
                               <Tooltip>
                                 <TooltipTrigger asChild>
-                                  <span className="inline-flex items-center gap-0.5 ml-1 text-[9px] font-semibold text-amber-400 bg-amber-400/10 rounded px-1.5 py-0.5 cursor-help">
+                                  <span className="inline-flex items-center gap-0.5 ml-1 text-[9px] font-semibold text-[color:var(--attention-on-soft)] bg-[color:var(--attention-soft)] rounded px-1.5 py-0.5 cursor-help">
                                     <AlertTriangle className="w-2.5 h-2.5" />
                                     Incohérence
                                   </span>
                                 </TooltipTrigger>
                                 <TooltipContent side="top" className="max-w-sm text-xs space-y-1.5">
                                   <div className="flex items-start gap-1.5">
-                                    <AlertTriangle className="w-3 h-3 text-amber-400 shrink-0 mt-0.5" />
+                                    <AlertTriangle className="w-3 h-3 text-[color:var(--attention-on-soft)] shrink-0 mt-0.5" />
                                     <p className="text-[color:var(--text-warning)] font-medium leading-snug">{alert.issue}</p>
                                   </div>
                                   {alert.suggestedValue && (
-                                    <div className="bg-amber-400/5 border border-amber-400/15 rounded px-2 py-1">
-                                      <p className="text-[10px] text-amber-400/70 uppercase tracking-wider font-semibold">Valeur suggérée</p>
+                                    <div className="bg-[color:var(--attention-soft)] border border-[color:var(--attention-edge)] rounded px-2 py-1">
+                                      <p className="text-[10px] text-[color:var(--attention-on-soft)] uppercase tracking-wider font-semibold">Valeur suggérée</p>
                                       <p className="text-xs font-semibold text-[color:var(--text-warning)]">{alert.suggestedValue}</p>
                                     </div>
                                   )}
                                   {alert.sourceDocument && (
                                     <p className="text-[10px] text-muted-foreground">
-                                      <span className="font-medium text-amber-400/70">Document :</span> {alert.sourceDocument}
+                                      <span className="font-medium text-[color:var(--attention-on-soft)]">Document :</span> {alert.sourceDocument}
                                     </p>
                                   )}
                                 </TooltipContent>
@@ -435,7 +435,7 @@ export function AssetDetailSection({
                             {alert.suggestedValue && (
                               <button
                                 onClick={(e) => { e.stopPropagation(); onApplyAlert?.(alert.field, alert.suggestedValue!); }}
-                                className="inline-flex items-center ml-1 text-[9px] font-semibold text-emerald-400 bg-emerald-400/10 hover:bg-emerald-400/20 hover:text-[color:var(--text-success)] rounded px-1.5 py-0.5 transition-colors"
+                                className="inline-flex items-center ml-1 text-[9px] font-semibold text-[color:var(--text-success)] bg-[color:var(--bg-success)] hover:text-[color:var(--text-success)] rounded px-1.5 py-0.5 transition-colors"
                                 title="Appliquer la valeur suggérée"
                               >
                                 Appliquer
@@ -443,7 +443,7 @@ export function AssetDetailSection({
                             )}
                             <button
                               onClick={(e) => { e.stopPropagation(); onDismissAlert?.(alert.field); }}
-                              className="inline-flex items-center ml-1 text-[9px] font-semibold text-amber-400 bg-amber-400/10 hover:bg-amber-400/20 hover:text-[color:var(--text-warning)] rounded px-1.5 py-0.5 transition-colors"
+                              className="inline-flex items-center ml-1 text-[9px] font-semibold text-[color:var(--attention-on-soft)] bg-[color:var(--attention-soft)] hover:text-[color:var(--text-warning)] rounded px-1.5 py-0.5 transition-colors"
                               title="Conserver ma valeur et ignorer cette incohérence"
                             >
                               Conserver

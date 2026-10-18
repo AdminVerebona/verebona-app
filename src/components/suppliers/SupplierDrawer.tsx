@@ -86,15 +86,15 @@ interface Props {
 }
 
 const CONTACT_STATUS_CONFIG: Record<string, { label: string; color: string; icon: React.ReactNode }> = {
-  unverified: { label: 'Non vérifié', color: 'text-[#f59e0b] bg-[#f59e0b]/10 border-[#f59e0b]/30', icon: <HelpCircle className="w-3 h-3" /> },
-  partially_verified: { label: 'Partiellement vérifié', color: 'text-[#3b82f6] bg-[#3b82f6]/10 border-[#3b82f6]/30', icon: <CheckCircle2 className="w-3 h-3" /> },
-  verified: { label: 'Vérifié', color: 'text-[#22c55e] bg-[#22c55e]/10 border-[#22c55e]/30', icon: <CheckCircle2 className="w-3 h-3" /> },
+  unverified: { label: 'Non vérifié', color: 'text-[color:var(--attention-on-soft)] bg-[color:var(--attention-soft)] border-[color:var(--attention-edge)]', icon: <HelpCircle className="w-3 h-3" /> },
+  partially_verified: { label: 'Partiellement vérifié', color: 'text-[color:var(--accent)] bg-[color:var(--accent-soft)] border-[color:var(--border-info)]', icon: <CheckCircle2 className="w-3 h-3" /> },
+  verified: { label: 'Vérifié', color: 'text-[color:var(--text-success)] bg-[color:var(--bg-success)] border-[color:var(--border-success)]', icon: <CheckCircle2 className="w-3 h-3" /> },
 };
 
 const SOURCE_CONFIG: Record<string, { label: string; color: string }> = {
-  manual: { label: 'Saisie manuelle', color: 'text-[color:var(--text-muted)] bg-[rgba(255,255,255,0.05)] border-[color:var(--border-subtle)]' },
-  document_extraction: { label: 'Extraction IA', color: 'text-[#8b5cf6] bg-[#8b5cf6]/10 border-[#8b5cf6]/30' },
-  imported: { label: 'Importé', color: 'text-[#3b82f6] bg-[#3b82f6]/10 border-[#3b82f6]/30' },
+  manual: { label: 'Saisie manuelle', color: 'text-[color:var(--text-muted)] bg-[color:var(--bg-subtle)] border-[color:var(--border-subtle)]' },
+  document_extraction: { label: 'Extraction IA', color: 'text-[color:var(--accent)] bg-[color:var(--accent-soft)] border-[color:var(--border-info)]' },
+  imported: { label: 'Importé', color: 'text-[color:var(--accent)] bg-[color:var(--accent-soft)] border-[color:var(--border-info)]' },
 };
 
 const CONFLICT_FIELD_LABELS: Record<string, string> = {
@@ -262,8 +262,8 @@ export function SupplierDrawer({ supplierId, open, onOpenChange, onUpdated, hide
         <SheetContent className="w-full sm:max-w-lg p-0 flex flex-col" side="right">
           <SheetHeader className="px-5 pt-5 pb-3 flex-shrink-0">
             <div className="flex items-start gap-3">
-              <div className="w-9 h-9 rounded-lg bg-[#3b82f6]/10 flex items-center justify-center flex-shrink-0 mt-0.5">
-                <Building2 className="w-4 h-4 text-[#3b82f6]" />
+              <div className="w-9 h-9 rounded-lg bg-[color:var(--accent-soft)] flex items-center justify-center flex-shrink-0 mt-0.5">
+                <Building2 className="w-4 h-4 text-[color:var(--accent)]" />
               </div>
               <div className="flex-1 min-w-0">
                 <SheetTitle className="text-sm font-semibold leading-tight truncate text-left">
@@ -274,7 +274,7 @@ export function SupplierDrawer({ supplierId, open, onOpenChange, onUpdated, hide
                   <Link
                     href={supplierHref(supplier.id)}
                     onClick={() => onOpenChange(false)}
-                    className="mt-1 inline-flex items-center gap-0.5 text-xs text-[#3b82f6] hover:underline"
+                    className="mt-1 inline-flex items-center gap-0.5 text-xs text-[color:var(--accent)] hover:underline"
                   >
                     Voir la fiche du fournisseur <ChevronRight className="w-3 h-3" />
                   </Link>
@@ -300,7 +300,7 @@ export function SupplierDrawer({ supplierId, open, onOpenChange, onUpdated, hide
                     </span>
                   )}
                   {supplier.status === 'archived' && (
-                    <span className="inline-flex items-center gap-1 text-[11px] font-medium px-2 py-0.5 rounded border text-[#ef4444] bg-[#ef4444]/10 border-[#ef4444]/30">
+                    <span className="inline-flex items-center gap-1 text-[11px] font-medium px-2 py-0.5 rounded border text-[color:var(--danger)] bg-[color:var(--danger-soft)] border-[color:var(--danger-edge)]">
                       Archivé
                     </span>
                   )}
@@ -311,10 +311,10 @@ export function SupplierDrawer({ supplierId, open, onOpenChange, onUpdated, hide
                   const fieldLabel = CONFLICT_FIELD_LABELS[item.conflictingField ?? ''] ?? item.conflictingField ?? 'Champ';
                   const isIban = item.conflictingField === 'iban';
                   return (
-                    <div key={item.id} className="rounded-xl border border-[#f59e0b]/30 bg-[#f59e0b]/5 overflow-hidden">
+                    <div key={item.id} className="rounded-xl border border-[color:var(--attention-edge)] bg-[color:var(--attention-soft)] overflow-hidden">
                       <div className="flex items-center gap-2 px-3 pt-3 pb-2">
-                        <AlertTriangle className="w-3.5 h-3.5 text-[#f59e0b] shrink-0" />
-                        <p className="text-xs font-semibold text-[#f59e0b]">
+                        <AlertTriangle className="w-3.5 h-3.5 text-[color:var(--attention-on-soft)] shrink-0" />
+                        <p className="text-xs font-semibold text-[color:var(--attention-on-soft)]">
                           Nouvelle valeur détectée — {fieldLabel}
                         </p>
                       </div>
@@ -327,7 +327,7 @@ export function SupplierDrawer({ supplierId, open, onOpenChange, onUpdated, hide
                           {/* Valeur actuelle */}
                           <button
                             onClick={() => handleResolveConflict(item.id, 'keep_current')}
-                            className="w-full flex items-center justify-between gap-2 px-3 py-2 rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--bg-card)] hover:border-slate-400/50 hover:bg-slate-400/5 transition-all group text-left"
+                            className="w-full flex items-center justify-between gap-2 px-3 py-2 rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--bg-card)] hover:border-[color:var(--border)] hover:bg-[color:var(--bg-subtle)] transition-all group text-left"
                           >
                             <div className="min-w-0">
                               <p className="text-[10px] text-[color:var(--text-muted)] mb-0.5">Valeur actuelle</p>
@@ -340,15 +340,15 @@ export function SupplierDrawer({ supplierId, open, onOpenChange, onUpdated, hide
                           {/* Valeur détectée */}
                           <button
                             onClick={() => handleResolveConflict(item.id, 'use_detected')}
-                            className="w-full flex items-center justify-between gap-2 px-3 py-2 rounded-lg border border-[#f59e0b]/30 bg-[#f59e0b]/5 hover:border-[#f59e0b]/60 hover:bg-[#f59e0b]/10 transition-all group text-left"
+                            className="w-full flex items-center justify-between gap-2 px-3 py-2 rounded-lg border border-[color:var(--attention-edge)] bg-[color:var(--attention-soft)] hover:border-[color:var(--attention)] transition-all group text-left"
                           >
                             <div className="min-w-0">
-                              <p className="text-[10px] text-[#f59e0b] mb-0.5">Valeur détectée par l&apos;IA</p>
+                              <p className="text-[10px] text-[color:var(--attention-on-soft)] mb-0.5">Valeur détectée par l&apos;IA</p>
                               <p className="text-xs font-semibold text-[color:var(--text-primary)] truncate">
                                 {item.detectedValue ?? <span className="italic text-[color:var(--text-muted)]">Inconnue</span>}
                               </p>
                             </div>
-                            <span className="text-[10px] font-semibold text-[#f59e0b] group-hover:text-[#fbbf24] shrink-0 transition-colors">Utiliser</span>
+                            <span className="text-[10px] font-semibold text-[color:var(--attention-on-soft)] group-hover:text-[color:var(--attention-on-soft)] shrink-0 transition-colors">Utiliser</span>
                           </button>
                         </div>
                       )}
@@ -441,7 +441,7 @@ export function SupplierDrawer({ supplierId, open, onOpenChange, onUpdated, hide
                       {supplier.email && (
                         <div className="flex items-center gap-2 text-sm">
                           <Mail className="w-3.5 h-3.5 text-[color:var(--text-muted)] shrink-0" />
-                          <a href={`mailto:${supplier.email}`} className="text-[#3b82f6] hover:underline truncate">
+                          <a href={`mailto:${supplier.email}`} className="text-[color:var(--accent)] hover:underline truncate">
                             {supplier.email}
                           </a>
                         </div>
@@ -455,7 +455,7 @@ export function SupplierDrawer({ supplierId, open, onOpenChange, onUpdated, hide
                       {supplier.website && (
                         <div className="flex items-center gap-2 text-sm">
                           <Globe className="w-3.5 h-3.5 text-[color:var(--text-muted)] shrink-0" />
-                          <a href={supplier.website} target="_blank" rel="noopener noreferrer" className="text-[#3b82f6] hover:underline truncate">
+                          <a href={supplier.website} target="_blank" rel="noopener noreferrer" className="text-[color:var(--accent)] hover:underline truncate">
                             {supplier.website}
                           </a>
                         </div>
@@ -515,7 +515,7 @@ export function SupplierDrawer({ supplierId, open, onOpenChange, onUpdated, hide
                           <button
                             key={doc.documentId}
                             type="button"
-                            className="w-full flex items-center gap-2 text-sm p-2 rounded-lg bg-[rgba(255,255,255,0.03)] border border-[color:var(--border-subtle)] hover:bg-[rgba(255,255,255,0.07)] hover:border-[#3b82f6]/40 transition-colors text-left group"
+                            className="w-full flex items-center gap-2 text-sm p-2 rounded-lg bg-[color:var(--bg-subtle)] border border-[color:var(--border-subtle)] hover:border-[color:var(--border-info)] transition-colors text-left group"
                             onClick={() => {
                               setDocDrawerItem({
                                 id: doc.documentId,
@@ -528,7 +528,7 @@ export function SupplierDrawer({ supplierId, open, onOpenChange, onUpdated, hide
                               setDocDrawerOpen(true);
                             }}
                           >
-                            <FileText className="w-3.5 h-3.5 text-[#3b82f6] shrink-0" />
+                            <FileText className="w-3.5 h-3.5 text-[color:var(--accent)] shrink-0" />
                             <span className="flex-1 truncate text-[color:var(--text-primary)]">
                               {doc.filename ?? `Document #${doc.documentId}`}
                             </span>
@@ -622,7 +622,7 @@ export function SupplierDrawer({ supplierId, open, onOpenChange, onUpdated, hide
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>Annuler</AlertDialogCancel>
-            <AlertDialogAction onClick={handleArchive} className="bg-[#ef4444] hover:bg-[#dc2626]">
+            <AlertDialogAction onClick={handleArchive} className="bg-[color:var(--danger)] hover:bg-[color:var(--danger)]/90">
               Archiver
             </AlertDialogAction>
           </AlertDialogFooter>

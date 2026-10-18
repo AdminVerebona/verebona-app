@@ -63,7 +63,7 @@ const NumberInput = React.forwardRef<HTMLInputElement, NumberInputProps>(
             aria-invalid={error ? true : undefined}
             aria-describedby={error ? errorId : undefined}
             className={cn(
-              "text-right",
+              "text-right tabular-nums",
               prefix && "pl-8",
               showButtons ? "pr-20" : (suffix ? "pr-12" : "pr-10")
             )}

@@ -108,28 +108,31 @@ const STATUS_LABELS: Record<string, string> = {
 };
 
 const STATUS_COLORS: Record<string, string> = {
-  EN_SERVICE: 'bg-green-500/10 text-green-600 border-green-500/30',
-  EN_PANNE: 'bg-red-500/10 text-red-500 border-red-500/30',
-  EN_REPARATION: 'bg-orange-500/10 text-orange-500 border-orange-500/30',
+  EN_SERVICE: 'bg-[color:var(--bg-success)] text-[color:var(--text-success)] border-[color:var(--border-success)]',
+  EN_PANNE: 'bg-[color:var(--danger-soft)] text-[color:var(--danger)] border-[color:var(--danger-edge)]',
+  EN_REPARATION: 'bg-[color:var(--attention-soft)] text-[color:var(--attention-on-soft)] border-[color:var(--attention-edge)]',
   INACTIF: 'bg-muted text-muted-foreground border-border',
 };
 
+// Type de document : étiquette NEUTRE (brume + pétrole), le type est écrit.
+// Le cuivre et le rouge restent réservés à l'attention et aux retards.
+const DOC_TYPE_NEUTRE = 'bg-[color:var(--accent-soft)] text-[color:var(--accent)] border-[color:var(--border-info)]';
 const DOC_TYPE_COLORS: Record<string, string> = {
-  FACTURE: 'bg-blue-500/10 text-blue-400 border-blue-500/20',
-  GARANTIE: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20',
-  MANUEL: 'bg-purple-500/10 text-purple-400 border-purple-500/20',
-  CONTRAT: 'bg-amber-500/10 text-amber-400 border-amber-500/20',
-  CERTIFICAT: 'bg-teal-500/10 text-teal-400 border-teal-500/20',
-  AUTRE: 'bg-muted/60 text-muted-foreground border-border',
+  FACTURE: DOC_TYPE_NEUTRE,
+  GARANTIE: DOC_TYPE_NEUTRE,
+  MANUEL: DOC_TYPE_NEUTRE,
+  CONTRAT: DOC_TYPE_NEUTRE,
+  CERTIFICAT: DOC_TYPE_NEUTRE,
+  AUTRE: 'bg-[color:var(--bg-subtle)] text-[color:var(--text-secondary)] border-[color:var(--border)]',
 };
 
 function AgendaStatusIcon({ status }: { status: string }) {
-  if (status === 'realise') return <CheckCircle2 className="w-3.5 h-3.5 text-green-500 flex-shrink-0" />;
+  if (status === 'realise') return <CheckCircle2 className="w-3.5 h-3.5 text-[color:var(--text-success)] flex-shrink-0" />;
   if (status === 'annule') return <X className="w-3.5 h-3.5 text-muted-foreground flex-shrink-0" />;
-  if (status === 'en_retard') return <AlertCircle className="w-3.5 h-3.5 text-red-500 flex-shrink-0" />;
+  if (status === 'en_retard') return <AlertCircle className="w-3.5 h-3.5 text-[color:var(--danger)] flex-shrink-0" />;
   // Lot 53 (D17) : fait passé sans preuve de réalisation — à confirmer, jamais coché « réalisé ».
-  if (status === 'a_confirmer') return <Clock className="w-3.5 h-3.5 text-amber-400 flex-shrink-0" />;
-  if (status === 'aujourd_hui') return <Clock className="w-3.5 h-3.5 text-amber-400 flex-shrink-0" />;
+  if (status === 'a_confirmer') return <Clock className="w-3.5 h-3.5 text-[color:var(--attention-on-soft)] flex-shrink-0" />;
+  if (status === 'aujourd_hui') return <Clock className="w-3.5 h-3.5 text-[color:var(--attention-on-soft)] flex-shrink-0" />;
   return <Circle className="w-3.5 h-3.5 text-muted-foreground flex-shrink-0" />;
 }
 
@@ -498,22 +501,22 @@ export function EquipmentDrawer({ open, onOpenChange, assetId, equipment: eq, su
             {equipmentSuppliers.map(s => (
               <button
                 key={s.supplierId}
-                className="w-full flex items-center gap-2 text-sm p-2.5 rounded-lg bg-[rgba(255,255,255,0.03)] border border-border/60 hover:border-blue-500/40 hover:bg-blue-500/5 transition-colors text-left group"
+                className="w-full flex items-center gap-2 text-sm p-2.5 rounded-lg bg-[color:var(--bg-subtle)] border border-border/60 hover:border-[color:var(--border-info)] hover:bg-[color:var(--accent-soft)] transition-colors text-left group"
                 onClick={() => { setSupplierDrawerId(s.supplierId); setSupplierDrawerOpen(true); }}
               >
-                <div className="w-6 h-6 rounded-md bg-blue-500/10 flex items-center justify-center flex-shrink-0">
-                  <Building2 className="w-3.5 h-3.5 text-blue-400" />
+                <div className="w-6 h-6 rounded-md bg-[color:var(--accent-soft)] flex items-center justify-center flex-shrink-0">
+                  <Building2 className="w-3.5 h-3.5 text-[color:var(--accent)]" />
                 </div>
                 <div className="flex-1 min-w-0">
-                  <p className="font-medium text-blue-400 truncate text-xs">{s.name}</p>
+                  <p className="font-medium text-[color:var(--accent)] truncate text-xs">{s.name}</p>
                   {s.email && <p className="text-[10px] text-muted-foreground truncate">{s.email}</p>}
                 </div>
                 {s.isPrimary && (
-                  <span className="text-[9px] font-semibold uppercase tracking-wider px-1.5 py-0.5 rounded bg-blue-500/10 text-blue-400 border border-blue-500/20 flex-shrink-0">
+                  <span className="text-[9px] font-semibold uppercase tracking-wider px-1.5 py-0.5 rounded bg-[color:var(--accent-soft)] text-[color:var(--accent)] border border-[color:var(--border-info)] flex-shrink-0">
                     Principal
                   </span>
                 )}
-                <ChevronRight className="w-3.5 h-3.5 text-muted-foreground group-hover:text-blue-400 transition-colors flex-shrink-0" />
+                <ChevronRight className="w-3.5 h-3.5 text-muted-foreground group-hover:text-[color:var(--accent)] transition-colors flex-shrink-0" />
               </button>
             ))}
           </div>
@@ -542,7 +545,7 @@ export function EquipmentDrawer({ open, onOpenChange, assetId, equipment: eq, su
               return (
                 <div
                   key={doc.id}
-                  className="flex items-start gap-2.5 p-2.5 rounded-lg bg-[rgba(255,255,255,0.03)] border border-border/60 text-sm"
+                  className="flex items-start gap-2.5 p-2.5 rounded-lg bg-[color:var(--bg-subtle)] border border-border/60 text-sm"
                 >
                   <div className="w-6 h-6 rounded-md bg-muted/40 flex items-center justify-center flex-shrink-0 mt-0.5">
                     <FileText className="w-3.5 h-3.5 text-muted-foreground" />
@@ -588,7 +591,7 @@ export function EquipmentDrawer({ open, onOpenChange, assetId, equipment: eq, su
             {equipmentAgenda.map(item => (
               <div
                 key={item.id}
-                className="flex items-start gap-2.5 p-2.5 rounded-lg bg-[rgba(255,255,255,0.03)] border border-border/60 text-sm"
+                className="flex items-start gap-2.5 p-2.5 rounded-lg bg-[color:var(--bg-subtle)] border border-border/60 text-sm"
               >
                 <AgendaStatusIcon status={item.effectiveStatus} />
                 <div className="flex-1 min-w-0">
@@ -604,17 +607,17 @@ export function EquipmentDrawer({ open, onOpenChange, assetId, equipment: eq, su
                   )}
                 </div>
                 {item.manualStatus === 'realise' && (
-                  <span className="text-[9px] font-semibold uppercase tracking-wider px-1.5 py-0.5 rounded bg-green-500/10 text-green-500 border border-green-500/20 flex-shrink-0">
+                  <span className="text-[9px] font-semibold uppercase tracking-wider px-1.5 py-0.5 rounded bg-[color:var(--bg-success)] text-[color:var(--text-success)] border border-[color:var(--border-success)] flex-shrink-0">
                     Réalisé
                   </span>
                 )}
                 {item.effectiveStatus === 'en_retard' && item.manualStatus !== 'realise' && (
-                  <span className="text-[9px] font-semibold uppercase tracking-wider px-1.5 py-0.5 rounded bg-red-500/10 text-red-400 border border-red-500/20 flex-shrink-0">
+                  <span className="text-[9px] font-semibold uppercase tracking-wider px-1.5 py-0.5 rounded bg-[color:var(--danger-soft)] text-[color:var(--danger)] border border-[color:var(--danger-edge)] flex-shrink-0">
                     {EFFECTIVE_STATUS_LABELS.en_retard}
                   </span>
                 )}
                 {item.effectiveStatus === 'a_confirmer' && (
-                  <span className="text-[9px] font-semibold uppercase tracking-wider px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-400 border border-amber-500/20 flex-shrink-0">
+                  <span className="text-[9px] font-semibold uppercase tracking-wider px-1.5 py-0.5 rounded bg-[color:var(--attention-soft)] text-[color:var(--attention-on-soft)] border border-[color:var(--attention-edge)] flex-shrink-0">
                     {EFFECTIVE_STATUS_LABELS.a_confirmer}
                   </span>
                 )}

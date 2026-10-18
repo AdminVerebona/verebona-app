@@ -2,6 +2,7 @@ import './globals.css';
 import { ReactNode } from 'react';
 import { Viewport, Metadata } from 'next';
 import { ClientShell } from '@/components/ClientShell';
+import { THEME_PAGE_COLOR, themeBootScript } from '@/lib/theme';
 
 export const metadata: Metadata = {
   metadataBase: new URL('https://verebona.app'),
@@ -38,7 +39,8 @@ export const metadata: Metadata = {
     // iOS 26 affiche la page sous la barre d'état SANS renseigner l'encart :
     // le champ « Demander à Verebona » et l'avatar passaient sous l'heure et
     // la batterie (préprod, 4 oct. 2026). La barre d'état prend la couleur
-    // du fond de la barre haute (`--bg-page`).
+    // du fond de la barre haute (`--bg-page`) : ivoire en thème clair, encre
+    // en thème sombre (lot 66).
     statusBarStyle: 'black-translucent',
     title: 'Verebona',
   },
@@ -53,7 +55,13 @@ export const metadata: Metadata = {
 };
 
 export const viewport: Viewport = {
-  themeColor: '#020617',
+  // Charte « Sérénité » (lot 66) : fond de page de chaque thème. Variantes
+  // selon la préférence du système ; le thème choisi dans l'application
+  // remplace ensuite leur valeur (src/lib/theme.ts, applyThemeToDocument).
+  themeColor: [
+    { media: '(prefers-color-scheme: light)', color: THEME_PAGE_COLOR.beige },
+    { media: '(prefers-color-scheme: dark)', color: THEME_PAGE_COLOR.blue },
+  ],
   width: 'device-width',
   initialScale: 1,
   maximumScale: 1,
@@ -65,12 +73,11 @@ export default function RootLayout({ children }: { children: ReactNode }) {
   return (
     <html lang="fr" suppressHydrationWarning>
       <head>
-        {/* Script bloquant avant tout rendu : lit le thème dans localStorage et l'applique immédiatement */}
+        {/* Script bloquant avant tout rendu : thème enregistré, sinon préférence
+            du système (lot 66) — même règle que `useThemeToggle` (src/lib/theme.ts). */}
         <script
           suppressHydrationWarning
-          dangerouslySetInnerHTML={{
-            __html: `(function(){try{var t=localStorage.getItem('verebona-theme');if(t==='beige'||t==='blue'){document.documentElement.setAttribute('data-theme',t);}else{document.documentElement.setAttribute('data-theme','blue');}}catch(e){}})();`,
-          }}
+          dangerouslySetInnerHTML={{ __html: themeBootScript() }}
         />
       </head>
       <body suppressHydrationWarning>

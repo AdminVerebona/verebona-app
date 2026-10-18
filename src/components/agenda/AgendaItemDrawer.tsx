@@ -54,7 +54,7 @@ import { apiClient } from "@/lib/api-client";
 import { toast } from "sonner";
 import { assetSupportsStructuralFeatures } from "@/types/domain";
 import type { AgendaItemFull } from "@/services/agenda/AgendaQueryService";
-import { EFFECTIVE_STATUS_LABELS, type AgendaEffectiveStatus } from '@/lib/agenda/effective-status';
+import { EFFECTIVE_STATUS_LABELS, attentionFlagLabel, visibleAttentionFlags, type AgendaEffectiveStatus } from '@/lib/agenda/effective-status';
 import { RoomDrawer } from "@/components/assets/RoomDrawer";
 import type { RoomDrawerItem } from "@/components/assets/RoomDrawer";
 import { EquipmentDrawer } from "@/components/assets/EquipmentDrawer";
@@ -69,23 +69,27 @@ const STATUS_LABELS: Record<EffectiveStatus, string> = EFFECTIVE_STATUS_LABELS;
 
 const STATUS_STYLES: Record<EffectiveStatus, string> = {
   a_venir:
-    "bg-[rgba(59,130,246,0.15)] text-[#93c5fd] border border-[rgba(59,130,246,0.25)]",
+    "bg-[color:var(--accent-soft)] text-[color:var(--accent)] border border-[color:var(--border-info)]",
   en_retard:
-    "bg-[rgba(239,68,68,0.15)] text-[#fca5a5] border border-[rgba(239,68,68,0.25)]",
+    "bg-[color:var(--danger-soft)] text-[color:var(--danger)] border border-[color:var(--danger-edge)]",
   a_confirmer:
-    "bg-[rgba(245,158,11,0.15)] text-[#fcd34d] border border-[rgba(245,158,11,0.25)]",
+    "bg-[color:var(--attention-soft)] text-[color:var(--attention-on-soft)] border border-[color:var(--attention-edge)]",
   realise:
-    "bg-[rgba(34,197,94,0.15)] text-[#86efac] border border-[rgba(34,197,94,0.25)]",
+    "bg-[color:var(--bg-success)] text-[color:var(--text-success)] border border-[color:var(--border-success)]",
   annule:
-    "bg-[rgba(148,163,184,0.12)] text-[#94a3b8] border border-[rgba(148,163,184,0.2)]",
+    "bg-[color:var(--bg-subtle)] text-[color:var(--text-secondary)] border border-[color:var(--border)]",
 };
 
-const ATTENTION_LABELS: Record<string, string> = {
-  sans_bien: "Sans bien associé",
-  en_retard: "Date échue",
-  date_incoherente: "Date incohérente",
-  donnee_distincte_a_qualifier: "Donnée à qualifier",
+// Pastille de date du héros : même ton que le statut (charte §5 — brume /
+// pétrole par défaut, rouge en retard strict, cuivre à confirmer).
+const HERO_DATE_TONE: Record<EffectiveStatus, string> = {
+  a_venir: "bg-[color:var(--accent-soft)] border-[color:var(--border)] text-[color:var(--accent)]",
+  en_retard: "bg-[color:var(--danger-soft)] border-[color:var(--danger-edge)] text-[color:var(--danger)]",
+  a_confirmer: "bg-[color:var(--attention-soft)] border-[color:var(--attention-edge)] text-[color:var(--attention-on-soft)]",
+  realise: "bg-[color:var(--accent-soft)] border-[color:var(--border)] text-[color:var(--accent)]",
+  annule: "bg-[color:var(--bg-subtle)] border-[color:var(--border)] text-[color:var(--text-secondary)]",
 };
+
 
 function formatDateRange(item: AgendaItemFull): string {
   if (!item.startDate) return "Sans date";
@@ -442,7 +446,7 @@ export function AgendaItemDrawer({ item, open, onClose, onMutated, onOpenDocumen
         <SheetContent className="w-full sm:max-w-[520px] overflow-y-auto p-0 flex flex-col">
           {/* ── HERO (view) or compact header (edit) ── */}
           {mode === "view" ? (
-            <div className="relative px-7 pt-10 pb-8 border-b border-[color:var(--border-subtle)] bg-gradient-to-b from-[rgba(59,130,246,0.06)] to-transparent">
+            <div className="relative px-7 pt-10 pb-8 border-b border-[color:var(--border-subtle)] bg-[color:var(--bg-card)]">
               {/* Close button is injected by SheetContent – leave room */}
               {/* Status + flags row */}
               <div className="flex items-center gap-2 mb-5 flex-wrap">
@@ -453,26 +457,25 @@ export function AgendaItemDrawer({ item, open, onClose, onMutated, onOpenDocumen
                 </span>
                 {item.occurrenceNature === "FORECAST" && (
                   <span
-                    className="inline-flex items-center rounded-full px-3 py-1 text-xs font-medium bg-[rgba(59,130,246,0.12)] text-[#93c5fd] border border-[rgba(59,130,246,0.25)]"
+                    className="inline-flex items-center rounded-full px-3 py-1 text-xs font-medium bg-[color:var(--accent-soft)] text-[color:var(--accent)] border border-[color:var(--border-info)]"
                     title={item.recurrenceRule ? `Date estimée à partir de la récurrence (${item.recurrenceRule})` : "Date estimée à partir de la récurrence"}
                   >
                     Prévisionnelle
                   </span>
                 )}
                 {item.isAutomatic && !item.isAutomaticModified && (
-                  <span className="inline-flex items-center rounded-full px-3 py-1 text-xs font-medium bg-[rgba(139,92,246,0.15)] text-[#c4b5fd] border border-[rgba(139,92,246,0.25)]">
+                  <span className="inline-flex items-center rounded-full px-3 py-1 text-xs font-medium bg-[color:var(--accent-soft)] text-[color:var(--accent)] border border-[color:var(--border-info)]">
                     <Zap className="h-3 w-3 mr-1" /> Automatique
                   </span>
                 )}
-                {item.attentionFlags
-                  .filter((f) => f !== "en_retard")
+                {visibleAttentionFlags(item.attentionFlags)
                   .map((f) => (
                     <span
                       key={f}
-                      className="inline-flex items-center rounded-full px-3 py-1 text-xs font-medium bg-[rgba(245,158,11,0.15)] text-[#fcd34d] border border-[rgba(245,158,11,0.25)]"
+                      className="inline-flex items-center rounded-full px-3 py-1 text-xs font-medium bg-[color:var(--attention-soft)] text-[color:var(--attention-on-soft)] border border-[color:var(--attention-edge)]"
                     >
                       <AlertCircle className="h-3 w-3 mr-1" />
-                      {ATTENTION_LABELS[f]}
+                      {attentionFlagLabel(f)}
                     </span>
                   ))}
               </div>
@@ -485,11 +488,11 @@ export function AgendaItemDrawer({ item, open, onClose, onMutated, onOpenDocumen
               {/* Date hero block */}
               {heroDate ? (
                 <div className="flex items-center gap-4">
-                  <div className="w-14 h-14 rounded-xl bg-[rgba(59,130,246,0.15)] border border-[rgba(59,130,246,0.25)] flex flex-col items-center justify-center shrink-0">
-                    <span className="text-xl font-bold text-[#93c5fd] leading-none">
+                  <div aria-hidden className={`w-14 h-14 rounded-[10px] border flex flex-col items-center justify-center shrink-0 ${HERO_DATE_TONE[item.effectiveStatus] ?? HERO_DATE_TONE.a_venir}`}>
+                    <span className="text-xl font-bold tabular-nums leading-none">
                       {heroDate.day}
                     </span>
-                    <span className="text-[10px] font-semibold text-[#93c5fd]/70 uppercase tracking-wide mt-0.5">
+                    <span className="text-[10px] font-bold uppercase tracking-[.05em] mt-0.5">
                       {heroDate.month}
                     </span>
                   </div>
@@ -503,7 +506,7 @@ export function AgendaItemDrawer({ item, open, onClose, onMutated, onOpenDocumen
                     {item.occurrenceNature === "FORECAST" && (
                       <p className="text-xs text-[color:var(--text-muted)] mt-1">
                         Date estimée à partir de la récurrence{item.recurrenceRule ? ` (${item.recurrenceRule})` : ""}.{" "}
-                        <button type="button" onClick={handleConfirmForecast} className="underline text-[#93c5fd]">
+                        <button type="button" onClick={handleConfirmForecast} className="underline text-[color:var(--accent)]">
                           Confirmer cette date
                         </button>
                       </p>
@@ -517,9 +520,9 @@ export function AgendaItemDrawer({ item, open, onClose, onMutated, onOpenDocumen
                 </div>
               ) : (
                 <div className="flex items-center gap-3">
-                  <div className="w-14 h-14 rounded-xl bg-[rgba(59,130,246,0.10)] border border-[rgba(59,130,246,0.18)] flex flex-col items-center justify-center shrink-0">
-                    <span className="text-xs font-bold text-[#93c5fd]/70">
-                      TBD
+                  <div aria-hidden className="w-14 h-14 rounded-[10px] bg-[color:var(--accent-soft)] border border-[color:var(--border)] flex flex-col items-center justify-center shrink-0">
+                    <span className="text-base font-bold text-[color:var(--accent)]">
+                      —
                     </span>
                   </div>
                   <p className="text-sm text-[color:var(--text-muted)]">
@@ -540,7 +543,7 @@ export function AgendaItemDrawer({ item, open, onClose, onMutated, onOpenDocumen
                   setEditTitle(e.target.value);
                   setDirty(true);
                 }}
-                className="text-lg font-semibold bg-transparent border-0 border-b border-[color:var(--border-subtle)] rounded-none px-0 focus-visible:ring-0 focus-visible:border-[#3b82f6]"
+                className="text-lg font-semibold bg-transparent border-0 border-b border-[color:var(--border-subtle)] rounded-none px-0 focus-visible:border-[color:var(--accent)]"
                 placeholder="Titre *"
               />
             </div>
@@ -551,7 +554,7 @@ export function AgendaItemDrawer({ item, open, onClose, onMutated, onOpenDocumen
             {/* Status changer (view mode only inline) */}
             {mode === "view" && (
               <div className="flex items-center gap-3">
-                <div className="w-8 h-8 rounded-lg bg-[rgba(148,163,184,0.1)] flex items-center justify-center shrink-0">
+                <div className="w-8 h-8 rounded-lg bg-[color:var(--accent-soft)] flex items-center justify-center shrink-0">
                   <Clock className="h-4 w-4 text-[color:var(--text-muted)]" />
                 </div>
                 <div className="flex-1">
@@ -582,7 +585,7 @@ export function AgendaItemDrawer({ item, open, onClose, onMutated, onOpenDocumen
             {mode === "view" ? (
               item.description ? (
                 <div className="flex items-start gap-3">
-                  <div className="w-8 h-8 rounded-lg bg-[rgba(148,163,184,0.1)] flex items-center justify-center shrink-0 mt-0.5">
+                  <div className="w-8 h-8 rounded-lg bg-[color:var(--accent-soft)] flex items-center justify-center shrink-0 mt-0.5">
                     <FileText className="h-4 w-4 text-[color:var(--text-muted)]" />
                   </div>
                   <div className="flex-1">
@@ -674,7 +677,7 @@ export function AgendaItemDrawer({ item, open, onClose, onMutated, onOpenDocumen
                   </div>
                 </div>
                 {temporalError && (
-                  <p className="text-xs text-red-500 mt-1">{temporalError}</p>
+                  <p className="text-xs text-[color:var(--danger)] mt-1">{temporalError}</p>
                 )}
               </div>
             )}
@@ -708,8 +711,8 @@ export function AgendaItemDrawer({ item, open, onClose, onMutated, onOpenDocumen
             {mode === "view" ? (
               item.assetLinks.length > 0 && (
                 <div className="flex items-start gap-3">
-                  <div className="w-8 h-8 rounded-lg bg-[rgba(59,130,246,0.1)] flex items-center justify-center shrink-0 mt-0.5">
-                    <Building2 className="h-4 w-4 text-[#60a5fa]" />
+                  <div className="w-8 h-8 rounded-lg bg-[color:var(--accent-soft)] flex items-center justify-center shrink-0 mt-0.5">
+                    <Building2 className="h-4 w-4 text-[color:var(--accent)]" />
                   </div>
                   <div className="flex-1">
                     <p className="text-[10px] font-semibold uppercase tracking-widest text-[color:var(--text-muted)] mb-2">
@@ -722,7 +725,7 @@ export function AgendaItemDrawer({ item, open, onClose, onMutated, onOpenDocumen
                         <a
                           key={l.assetId}
                           href={`/assets/${l.assetId}`}
-                          className="inline-flex items-center px-3 py-1 rounded-lg text-xs font-medium bg-[rgba(59,130,246,0.12)] text-[#93c5fd] border border-[rgba(59,130,246,0.2)] hover:bg-[rgba(59,130,246,0.22)] hover:border-[rgba(59,130,246,0.4)] transition-colors"
+                          className="inline-flex items-center px-3 py-1 rounded-lg text-xs font-medium bg-[color:var(--accent-soft)] text-[color:var(--accent)] border border-[color:var(--border-info)] hover:border-[color:var(--border-info)] transition-colors"
                         >
                           {l.assetName}
                         </a>
@@ -793,7 +796,7 @@ export function AgendaItemDrawer({ item, open, onClose, onMutated, onOpenDocumen
             {mode === "view"
               ? item.roomLinks.length > 0 && (
                   <div className="flex items-start gap-3">
-                    <div className="w-8 h-8 rounded-lg bg-[rgba(148,163,184,0.1)] flex items-center justify-center shrink-0 mt-0.5">
+                    <div className="w-8 h-8 rounded-lg bg-[color:var(--accent-soft)] flex items-center justify-center shrink-0 mt-0.5">
                       <Grid2X2 className="h-4 w-4 text-[color:var(--text-muted)]" />
                     </div>
                     <div className="flex-1">
@@ -810,7 +813,7 @@ export function AgendaItemDrawer({ item, open, onClose, onMutated, onOpenDocumen
                                 assetId: l.resolvedAssetId!,
                                 room: { id: l.substructureId, name: l.name },
                               })}
-                              className="inline-flex items-center px-3 py-1 rounded-lg text-xs font-medium bg-[color:var(--bg-page)] text-[color:var(--text-primary)] border border-[color:var(--border-subtle)] hover:border-[rgba(148,163,184,0.4)] hover:bg-[rgba(148,163,184,0.08)] transition-colors cursor-pointer"
+                              className="inline-flex items-center px-3 py-1 rounded-lg text-xs font-medium bg-[color:var(--bg-page)] text-[color:var(--text-primary)] border border-[color:var(--border-subtle)] hover:border-[color:var(--border-info)] hover:bg-[color:var(--accent-soft)] transition-colors cursor-pointer"
                             >
                               {l.name}
                             </button>
@@ -883,7 +886,7 @@ export function AgendaItemDrawer({ item, open, onClose, onMutated, onOpenDocumen
             {mode === "view"
               ? item.equipmentLinks.length > 0 && (
                   <div className="flex items-start gap-3">
-                    <div className="w-8 h-8 rounded-lg bg-[rgba(148,163,184,0.1)] flex items-center justify-center shrink-0 mt-0.5">
+                    <div className="w-8 h-8 rounded-lg bg-[color:var(--accent-soft)] flex items-center justify-center shrink-0 mt-0.5">
                       <Wrench className="h-4 w-4 text-[color:var(--text-muted)]" />
                     </div>
                     <div className="flex-1">
@@ -900,7 +903,7 @@ export function AgendaItemDrawer({ item, open, onClose, onMutated, onOpenDocumen
                                 assetId: l.resolvedAssetId!,
                                 equipment: { id: l.equipmentId, assetId: l.resolvedAssetId!, name: l.name, status: 'EN_SERVICE' },
                               })}
-                              className="inline-flex items-center px-3 py-1 rounded-lg text-xs font-medium bg-[color:var(--bg-page)] text-[color:var(--text-primary)] border border-[color:var(--border-subtle)] hover:border-[rgba(148,163,184,0.4)] hover:bg-[rgba(148,163,184,0.08)] transition-colors cursor-pointer"
+                              className="inline-flex items-center px-3 py-1 rounded-lg text-xs font-medium bg-[color:var(--bg-page)] text-[color:var(--text-primary)] border border-[color:var(--border-subtle)] hover:border-[color:var(--border-info)] hover:bg-[color:var(--accent-soft)] transition-colors cursor-pointer"
                             >
                               {l.name}
                             </button>
@@ -974,7 +977,7 @@ export function AgendaItemDrawer({ item, open, onClose, onMutated, onOpenDocumen
                 bien sur ce sinistre. Desktop et mobile : même tiroir. */}
             {mode === "view" && item.claimSource && (
               <div className="flex items-start gap-3">
-                <div className="w-8 h-8 rounded-lg bg-[rgba(148,163,184,0.1)] flex items-center justify-center shrink-0 mt-0.5">
+                <div className="w-8 h-8 rounded-lg bg-[color:var(--accent-soft)] flex items-center justify-center shrink-0 mt-0.5">
                   <AlertCircle className="h-4 w-4 text-[color:var(--text-muted)]" />
                 </div>
                 <div className="flex-1">
@@ -983,7 +986,7 @@ export function AgendaItemDrawer({ item, open, onClose, onMutated, onOpenDocumen
                   </p>
                   <a
                     href={`/assets/${item.claimSource.assetId}?tab=details&highlight=claims&claim=${item.claimSource.claimId}`}
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-[color:var(--bg-page)] text-[color:var(--text-primary)] border border-[color:var(--border-subtle)] hover:border-[#3b82f6]/50 hover:text-[#3b82f6] transition-colors"
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-[color:var(--bg-page)] text-[color:var(--text-primary)] border border-[color:var(--border-subtle)] hover:border-[color:var(--border-info)] hover:text-[color:var(--accent)] transition-colors"
                   >
                     <AlertCircle className="w-3 h-3 shrink-0" />
                     <span className="truncate max-w-[160px]">Voir le sinistre</span>
@@ -995,7 +998,7 @@ export function AgendaItemDrawer({ item, open, onClose, onMutated, onOpenDocumen
             {/* Documents (view only) */}
             {item.fileLinks.length > 0 && (
               <div className="flex items-start gap-3">
-                <div className="w-8 h-8 rounded-lg bg-[rgba(148,163,184,0.1)] flex items-center justify-center shrink-0 mt-0.5">
+                <div className="w-8 h-8 rounded-lg bg-[color:var(--accent-soft)] flex items-center justify-center shrink-0 mt-0.5">
                   <FileText className="h-4 w-4 text-[color:var(--text-muted)]" />
                 </div>
                 <div className="flex-1">
@@ -1009,7 +1012,7 @@ export function AgendaItemDrawer({ item, open, onClose, onMutated, onOpenDocumen
                         <button
                           key={l.assetFileId}
                           onClick={() => onOpenDocument(l.assetFileId)}
-                          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-[color:var(--bg-page)] text-[color:var(--text-primary)] border border-[color:var(--border-subtle)] hover:border-[#3b82f6]/50 hover:text-[#3b82f6] transition-colors cursor-pointer"
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-[color:var(--bg-page)] text-[color:var(--text-primary)] border border-[color:var(--border-subtle)] hover:border-[color:var(--border-info)] hover:text-[color:var(--accent)] transition-colors cursor-pointer"
                         >
                           <FileText className="w-3 h-3 shrink-0" />
                           <span className="truncate max-w-[160px]">{displayName}</span>
@@ -1030,7 +1033,7 @@ export function AgendaItemDrawer({ item, open, onClose, onMutated, onOpenDocumen
             )}
 
             {saveError && !temporalError && (
-              <p className="text-sm text-red-500 mt-2">{saveError}</p>
+              <p className="text-sm text-[color:var(--danger)] mt-2">{saveError}</p>
             )}
           </div>
 
@@ -1095,7 +1098,7 @@ export function AgendaItemDrawer({ item, open, onClose, onMutated, onOpenDocumen
             <AlertDialogAction
               onClick={handleDelete}
               disabled={deleting}
-              className="bg-red-600 hover:bg-red-700"
+              className="bg-[color:var(--danger)] hover:bg-[color:var(--danger)]/90"
             >
               {deleting ? 'Suppression…' : 'Supprimer définitivement'}
             </AlertDialogAction>

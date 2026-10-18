@@ -99,7 +99,7 @@ const shortCommit = (c: string | null | undefined) => (c ? c.slice(0, 12) : 'inc
 function CreationBlock({ data, onOpen }: { data: T3SupervisionData; onOpen: (id: number) => void }) {
   if (!data.creation) {
     return (
-      <p className="text-xs text-amber-500 break-words">
+      <p className="text-xs text-[color:var(--text-warning-soft)] break-words">
         Diagnostic de création indisponible : le serveur qui répond exécute un code antérieur au lot 54.
       </p>
     );
@@ -111,7 +111,7 @@ function CreationBlock({ data, onOpen }: { data: T3SupervisionData; onOpen: (id:
       <p className="text-xs font-semibold text-[color:var(--text-primary)]">Création des jobs T3 (demande → File IA)</p>
       <ul className="space-y-1">
         {data.creation.map((f) => (
-          <li key={f.code} className={`text-xs flex items-start gap-1.5 ${f.level === 'ok' ? 'text-emerald-500' : f.level === 'error' ? 'text-red-400' : 'text-amber-500'}`}>
+          <li key={f.code} className={`text-xs flex items-start gap-1.5 ${f.level === 'ok' ? 'text-[color:var(--text-success)]' : f.level === 'error' ? 'text-[color:var(--text-danger)]' : 'text-[color:var(--text-warning-soft)]'}`}>
             {f.level === 'ok' ? <CheckCircle2 className="w-3.5 h-3.5 mt-0.5 shrink-0" /> : <AlertTriangle className="w-3.5 h-3.5 mt-0.5 shrink-0" />}
             <span className="break-words"><span className="font-medium">{f.code}</span> — {f.message}</span>
           </li>
@@ -137,7 +137,7 @@ function CreationBlock({ data, onOpen }: { data: T3SupervisionData; onOpen: (id:
               <li key={r.id} className="text-xs text-[color:var(--text-muted)] break-words">
                 {dt(r.createdAt)} · {r.origin === 'manual' ? 'manuel' : r.triggerCode ?? 'automatique'}
                 {r.accountId ? ` · compte ${r.accountId}` : ''}
-                {' · '}<span className={r.decision === 'create' ? 'text-emerald-500' : 'text-amber-500'}>{DECISION_LABEL[r.decision] ?? r.decision}</span>
+                {' · '}<span className={r.decision === 'create' ? 'text-[color:var(--text-success)]' : 'text-[color:var(--text-warning-soft)]'}>{DECISION_LABEL[r.decision] ?? r.decision}</span>
                 {r.reasonCode ? ` (${r.reasonCode}${r.reasonLabel ? ` — ${r.reasonLabel}` : ''})` : ''}
                 {r.jobId ? <> · <button type="button" className="text-[color:var(--accent)] hover:underline" onClick={() => onOpen(r.jobId!)}>#{r.jobId}</button></> : ''}
                 {r.error ? ` · ${r.error}` : ''}
@@ -186,7 +186,7 @@ function JobBlock({ titre, job, onOpen }: { titre: string; job: T3JobSummary | n
               {job.aiCalls != null && (job.aiCalls === 0 ? ' · sans appel au modèle' : ` · ${job.aiCalls} appel(s) au modèle`)}
             </p>
           )}
-          {job.reason && <p className="text-xs text-amber-500 break-words">{job.reason}</p>}
+          {job.reason && <p className="text-xs text-[color:var(--text-warning-soft)] break-words">{job.reason}</p>}
         </>
       )}
     </div>
@@ -199,7 +199,7 @@ export function T3Supervision({ data, error, onOpenJob }: { data: T3SupervisionD
     if (!error) return null;
     return (
       <div className="rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--bg-card)] p-4">
-        <p className="text-xs text-amber-500 break-words flex items-start gap-1.5">
+        <p className="text-xs text-[color:var(--text-warning-soft)] break-words flex items-start gap-1.5">
           <AlertTriangle className="w-3.5 h-3.5 mt-0.5 shrink-0" />
           <span>Supervision T3 indisponible : {error}</span>
         </p>
@@ -222,7 +222,7 @@ export function T3Supervision({ data, error, onOpenJob }: { data: T3SupervisionD
           <p className="text-xs text-[color:var(--text-muted)] break-words">
             Dernier tour {dt(w.lastTickAt)} · dernier prélèvement {dt(w.lastClaimAt)}
           </p>
-          <p className={`text-xs flex items-start gap-1.5 ${data.executor.available ? 'text-emerald-500' : 'text-amber-500'}`}>
+          <p className={`text-xs flex items-start gap-1.5 ${data.executor.available ? 'text-[color:var(--text-success)]' : 'text-[color:var(--text-warning-soft)]'}`}>
             {data.executor.available
               ? <CheckCircle2 className="w-3.5 h-3.5 mt-0.5 shrink-0" />
               : <AlertTriangle className="w-3.5 h-3.5 mt-0.5 shrink-0" />}

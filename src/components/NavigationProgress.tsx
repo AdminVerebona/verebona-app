@@ -63,10 +63,10 @@ export function NavigationProgress() {
       <div
         style={{
           height: '100%',
-          background: 'linear-gradient(90deg, #3b82f6, #60a5fa)',
+          // Charte « Sérénité » : aplat accent (pétrole / pétrole clair en sombre), ni dégradé ni halo.
+          background: 'var(--accent)',
           width: `${width}%`,
           transition: width === 100 ? 'width 150ms ease' : 'width 300ms ease',
-          boxShadow: '0 0 8px rgba(59,130,246,0.6)',
         }}
       />
     </div>

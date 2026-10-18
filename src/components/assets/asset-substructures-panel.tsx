@@ -78,8 +78,8 @@ export function AssetSubstructuresPanel({
 
         {sorted.length === 0 ? (
           <EmptyStateCard
-            icon={<Home className="w-4 h-4 text-blue-500" />}
-            iconClassName="bg-blue-500/10"
+            icon={<Home className="w-4 h-4 text-[color:var(--accent)]" />}
+            iconClassName="bg-[color:var(--accent-soft)]"
             title="Aucune pièce définie"
             description="Ex: Salon, Chambre 1, Cuisine, Salle de bain…"
             actionLabel="Ajouter une pièce"

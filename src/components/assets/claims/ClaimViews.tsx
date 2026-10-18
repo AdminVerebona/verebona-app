@@ -83,8 +83,8 @@ export function ClaimsListView({
   return (
     <div className="space-y-3" data-claims-list>
       {legacy && (
-        <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-xs space-y-2" role="status">
-          <p className="flex items-start gap-2 text-amber-800 dark:text-amber-200">
+        <div className="rounded-lg border border-[color:var(--attention-edge)] bg-[color:var(--attention-soft)] p-3 text-xs space-y-2" role="status">
+          <p className="flex items-start gap-2 text-[color:var(--attention-on-soft)]">
             <Info className="w-3.5 h-3.5 mt-0.5 shrink-0" />
             <span>
               <span className="font-semibold">Saisie précédente : {legacy.label}.</span>{' '}
@@ -116,7 +116,7 @@ export function ClaimsListView({
                   className="w-full flex items-start gap-3 px-3 py-3 text-left hover:bg-muted/40 focus-visible:bg-muted/40 outline-none"
                   data-claim-id={c.id}
                 >
-                  <AlertCircle className="w-4 h-4 mt-0.5 shrink-0 text-red-400" aria-hidden />
+                  <AlertCircle className="w-4 h-4 mt-0.5 shrink-0 text-[color:var(--danger)]" aria-hidden />
                   <span className="min-w-0 flex-1">
                     <span className="block text-sm font-medium break-words sm:truncate">{c.label}</span>
                     {meta && <span className="block text-xs text-muted-foreground break-words sm:truncate">{meta}</span>}
@@ -212,7 +212,7 @@ export function ClaimFormView(p: ClaimFormViewProps) {
       </div>
 
       {p.notice && (
-        <div role="status" className="flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-800 dark:text-amber-200">
+        <div role="status" className="flex items-start gap-2 rounded-lg border border-[color:var(--attention-edge)] bg-[color:var(--attention-soft)] px-3 py-2 text-xs text-[color:var(--attention-on-soft)]">
           <Info className="w-3.5 h-3.5 mt-0.5 shrink-0" />
           <span className="flex-1">{p.notice}</span>
           <button type="button" onClick={p.onDismissNotice} className="underline underline-offset-2 hover:text-foreground">Compris</button>
@@ -264,7 +264,7 @@ export function ClaimFormView(p: ClaimFormViewProps) {
               </SelectContent>
             </Select>
             {p.errors['claim.claimEventKey']
-              ? <p className="text-[11px] text-red-400">{p.errors['claim.claimEventKey']}</p>
+              ? <p className="text-[11px] text-[color:var(--danger)]">{p.errors['claim.claimEventKey']}</p>
               : <p className="text-[11px] text-muted-foreground/80 leading-snug">Facultatif : relie ce sinistre à l’événement déjà présent dans votre agenda, sans le dupliquer.</p>}
           </div>
         )}
@@ -327,7 +327,7 @@ export function ClaimFormView(p: ClaimFormViewProps) {
 
       {p.onDelete && !p.readOnly && (
         <div className="pt-2 border-t border-border">
-          <Button type="button" variant="ghost" size="sm" onClick={p.onDelete} className="text-red-400 hover:text-red-500">
+          <Button type="button" variant="ghost" size="sm" onClick={p.onDelete} className="text-[color:var(--danger)] hover:text-[color:var(--danger)]">
             <Trash2 className="w-3.5 h-3.5 mr-1" />{p.draft ? 'Abandonner ce brouillon' : 'Supprimer ce sinistre'}
           </Button>
         </div>

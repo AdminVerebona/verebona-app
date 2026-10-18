@@ -322,9 +322,9 @@ export function SignupForm(props: { invitation?: SignupFormInvitation | null }) 
             {isDuoInvite ? (
               <div
                 data-testid="duo-invite-signup-context"
-                className="bg-gradient-to-r from-emerald-950/40 to-emerald-900/20 border border-emerald-500/30 rounded-lg p-3 flex items-start gap-3"
+                className="bg-[color:var(--bg-success)] border border-[color:var(--border-success)] rounded-lg p-3 flex items-start gap-3"
               >
-                <Users className="w-5 h-5 text-emerald-400 flex-shrink-0 mt-0.5" />
+                <Users className="w-5 h-5 text-[color:var(--text-success)] flex-shrink-0 mt-0.5" />
                 <div className="text-sm">
                   <p className="font-medium text-[color:var(--text-success)]">{DUO_INVITE_SIGNUP_TEXT}</p>
                   {invitation?.kind === 'duo' && invitation.ownerName && (
@@ -346,8 +346,8 @@ export function SignupForm(props: { invitation?: SignupFormInvitation | null }) 
                 mentions rassurantes sont explicitement demandées au §14 :
                 aucune carte, aucun prélèvement, données conservées. */}
             {!inviteToken && (
-              <div className="bg-gradient-to-r from-blue-950/40 to-emerald-950/40 border border-blue-500/30 rounded-lg p-3 flex items-start gap-3">
-                <Crown className="w-5 h-5 text-blue-400 flex-shrink-0 mt-0.5" />
+              <div className="bg-[color:var(--accent-soft)] border border-[color:var(--border-info)] rounded-lg p-3 flex items-start gap-3">
+                <Crown className="w-5 h-5 text-[color:var(--accent)] flex-shrink-0 mt-0.5" />
                 <div className="text-sm">
                   <span className="font-medium text-[color:var(--text-info)]">7 jours d&apos;essai, toutes les fonctions Premium</span>
                   <p className="text-[color:var(--text-muted)] text-xs mt-0.5">
@@ -363,8 +363,8 @@ export function SignupForm(props: { invitation?: SignupFormInvitation | null }) 
             )}
 
             {inviteToken && !isDuoInvite && (
-              <div className="bg-gradient-to-r from-emerald-950/40 to-emerald-900/20 border border-emerald-500/30 rounded-lg p-3 flex items-start gap-3">
-                <Users className="w-5 h-5 text-emerald-400 flex-shrink-0 mt-0.5" />
+              <div className="bg-[color:var(--bg-success)] border border-[color:var(--border-success)] rounded-lg p-3 flex items-start gap-3">
+                <Users className="w-5 h-5 text-[color:var(--text-success)] flex-shrink-0 mt-0.5" />
                 <div className="text-sm">
                   <span className="font-medium text-[color:var(--text-success)]">Invitation à un compte partagé</span>
                   <p className="text-[color:var(--text-muted)] text-xs mt-0.5">
@@ -374,7 +374,7 @@ export function SignupForm(props: { invitation?: SignupFormInvitation | null }) 
               </div>
             )}
             {referralCode && !isDuoInvite && (
-              <div className="bg-blue-950/40 border border-blue-500/30 rounded-lg p-3 flex items-start gap-3">
+              <div className="bg-[color:var(--accent-soft)] border border-[color:var(--border-info)] rounded-lg p-3 flex items-start gap-3">
                 <span className="text-xl flex-shrink-0">🎁</span>
                 <div className="text-sm">
                   {/* L'avantage revient au parrain, jamais au filleul.
@@ -383,7 +383,7 @@ export function SignupForm(props: { invitation?: SignupFormInvitation | null }) 
                       décide de payer. */}
                   <span className="font-medium text-[color:var(--text-info)]">Code de parrainage appliqué</span>
                   <p className="text-[color:var(--text-muted)] text-xs mt-0.5">
-                    Code <span className="font-mono font-semibold text-blue-400">{referralCode}</span> enregistré.
+                    Code <span className="font-mono font-semibold text-[color:var(--accent)]">{referralCode}</span> enregistré.
                     Votre parrain bénéficiera d&apos;un mois offert lorsque vous souscrirez un
                     abonnement annuel.
                   </p>

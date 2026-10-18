@@ -66,16 +66,16 @@ export function UploadQueuePanel({ elements, mobile, onAnnuler, onReprendre, onC
                 {enCours
                   ? <Loader2 className="w-3.5 h-3.5 animate-spin flex-shrink-0 text-[color:var(--text-muted)]" />
                   : e.etape === 'termine'
-                    ? <Check className="w-3.5 h-3.5 flex-shrink-0 text-emerald-500" />
+                    ? <Check className="w-3.5 h-3.5 flex-shrink-0 text-[color:var(--text-success)]" />
                     : e.etape === 'annule'
                       ? <X className="w-3.5 h-3.5 flex-shrink-0 text-[color:var(--text-muted)]" />
-                      : <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0 text-amber-500" />}
+                      : <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0 text-[color:var(--attention-on-soft)]" />}
                 <span className="text-xs font-medium truncate flex-1 text-[color:var(--text-primary)]">{e.nom}</span>
                 <span className="text-[10px] text-[color:var(--text-muted)] flex-shrink-0">{libelleEtape(e)}</span>
               </div>
               {(e.etape === 'preparation' || e.etape === 'transfert') && (
-                <div className="h-1 rounded-full bg-[#7c3aed]/20 overflow-hidden">
-                  <div className="h-full rounded-full bg-[#7c3aed] transition-all duration-300" style={{ width: `${Math.round(e.progression * 100)}%` }} />
+                <div className="h-1 rounded-full bg-[color:var(--accent-soft)] overflow-hidden">
+                  <div className="h-full rounded-full bg-[color:var(--accent)] transition-all duration-300" style={{ width: `${Math.round(e.progression * 100)}%` }} />
                 </div>
               )}
               {e.erreur && (e.etape === 'echec' || e.etape === 'interrompu') && (
@@ -149,7 +149,7 @@ export function UploadResumeSection({ lotSuivi, mobile }: { lotSuivi: string | n
   const restants = envoisAReprendre(aReprendre, lotSuivi).length;
   const enCours = aReprendre.some(estActif);
   return (
-    <div data-upload-resume role="alert" className="flex flex-col gap-2 rounded-xl border border-amber-500/30 bg-amber-500/5 px-3 py-2.5">
+    <div data-upload-resume role="alert" className="flex flex-col gap-2 rounded-xl border border-[color:var(--attention-edge)] bg-[color:var(--attention-soft)] px-3 py-2.5">
       <input
         ref={inputRef}
         type="file"
@@ -165,10 +165,10 @@ export function UploadResumeSection({ lotSuivi, mobile }: { lotSuivi: string | n
       />
       <div className="flex items-center gap-2 text-sm">
         {restants > 0
-          ? <AlertTriangle className="w-4 h-4 flex-shrink-0 text-amber-500" />
+          ? <AlertTriangle className="w-4 h-4 flex-shrink-0 text-[color:var(--attention-on-soft)]" />
           : enCours
             ? <Loader2 className="w-4 h-4 flex-shrink-0 animate-spin text-[color:var(--text-muted)]" />
-            : <Check className="w-4 h-4 flex-shrink-0 text-emerald-500" />}
+            : <Check className="w-4 h-4 flex-shrink-0 text-[color:var(--text-success)]" />}
         <span className="font-medium text-[color:var(--text-primary)]">
           {restants > 1 ? `${restants} envois à reprendre` : restants === 1 ? '1 envoi à reprendre' : enCours ? 'Reprise en cours…' : 'Reprise terminée'}
         </span>

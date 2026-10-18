@@ -71,7 +71,7 @@ export function SignupInvitationInvalid({
               <LogoWithBaseline size={50} />
             </div>
             <div className="flex justify-center">
-              <AlertCircle className="w-12 h-12 text-amber-400" />
+              <AlertCircle className="w-12 h-12 text-[color:var(--attention-on-soft)]" />
             </div>
             <CardTitle className="text-center text-[color:var(--text-primary)]" data-testid="signup-invitation-invalid">{title}</CardTitle>
             <CardDescription className="text-center text-[color:var(--text-muted)]">{message}</CardDescription>

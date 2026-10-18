@@ -108,7 +108,7 @@ export function Supervision({
               {formatMetric(m)}
             </p>
             {m.value === null && m.missingReason && (
-              <p className="text-xs text-amber-500 leading-snug">{m.missingReason}</p>
+              <p className="text-xs text-[color:var(--text-warning-soft)] leading-snug">{m.missingReason}</p>
             )}
           </div>
         ))}

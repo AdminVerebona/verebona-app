@@ -53,21 +53,21 @@ export const WRITE_RESULT_LABEL: Record<string, string> = {
   OBSERVED: 'Valeur en place relue',
 };
 const RESULT_TONE: Record<string, string> = {
-  WRITTEN: 'bg-emerald-500/10 text-emerald-500 border-emerald-500/20',
-  NOT_PERSISTED: 'bg-red-500/10 text-red-400 border-red-500/20',
-  FAILED: 'bg-red-500/10 text-red-400 border-red-500/20',
-  DECIDED_NOT_CONFIRMED: 'bg-red-500/10 text-red-400 border-red-500/20',
+  WRITTEN: 'bg-[color:var(--bg-success)] text-[color:var(--text-success)] border-[color:var(--border-success)]',
+  NOT_PERSISTED: 'bg-[color:var(--bg-danger)] text-[color:var(--text-danger)] border-[color:var(--border-danger)]',
+  FAILED: 'bg-[color:var(--bg-danger)] text-[color:var(--text-danger)] border-[color:var(--border-danger)]',
+  DECIDED_NOT_CONFIRMED: 'bg-[color:var(--bg-danger)] text-[color:var(--text-danger)] border-[color:var(--border-danger)]',
   NOT_WRITTEN: 'bg-[color:var(--bg-input)] text-[color:var(--text-secondary)] border-[color:var(--border-subtle)]',
-  NOT_EXAMINED: 'bg-amber-500/10 text-amber-500 border-amber-500/20',
+  NOT_EXAMINED: 'bg-[color:var(--bg-warning)] text-[color:var(--text-warning-soft)] border-[color:var(--border-warning)]',
   OBSERVED: 'bg-[color:var(--bg-input)] text-[color:var(--text-muted)] border-[color:var(--border-subtle)]',
 };
 export const STATUS_LABEL: Record<string, string> = {
   SUCCESS: 'Réussi', PARTIAL: 'Partiel — anomalies', FAILED: 'Échec', NO_CHANGE: 'Sans modification',
 };
 const STATUS_TONE: Record<string, string> = {
-  SUCCESS: 'bg-emerald-500/10 text-emerald-500 border-emerald-500/20',
-  PARTIAL: 'bg-amber-500/10 text-amber-500 border-amber-500/20',
-  FAILED: 'bg-red-500/10 text-red-400 border-red-500/20',
+  SUCCESS: 'bg-[color:var(--bg-success)] text-[color:var(--text-success)] border-[color:var(--border-success)]',
+  PARTIAL: 'bg-[color:var(--bg-warning)] text-[color:var(--text-warning-soft)] border-[color:var(--border-warning)]',
+  FAILED: 'bg-[color:var(--bg-danger)] text-[color:var(--text-danger)] border-[color:var(--border-danger)]',
   NO_CHANGE: 'bg-[color:var(--bg-input)] text-[color:var(--text-muted)] border-[color:var(--border-subtle)]',
 };
 const SECTION_LABEL: Record<string, string> = {
@@ -142,7 +142,7 @@ export function ReportHeaderLine({ r, onOpen }: { r: ReportSummaryDto; onOpen?: 
         <button type="button" className="font-medium text-[color:var(--accent)] hover:underline" onClick={() => onOpen(r.id)}>{reportTitle(r)}</button>
       ) : <span className="font-medium text-[color:var(--text-primary)]">{reportTitle(r)}</span>}
       <span className="text-[color:var(--text-muted)]">{resume}</span>
-      {!r.reportComplete && <span className="text-red-400">rapport incomplet : {r.reportError ?? 'motif inconnu'}</span>}
+      {!r.reportComplete && <span className="text-[color:var(--text-danger)]">rapport incomplet : {r.reportError ?? 'motif inconnu'}</span>}
       <span className="text-[color:var(--text-muted)]">{new Date(r.createdAt).toLocaleString('fr-FR')}</span>
     </div>
   );
@@ -166,7 +166,7 @@ export function LinkedExecutionReports({ callId, treatment }: { callId: number; 
       {!data ? (
         <p className="text-xs text-[color:var(--text-muted)] flex items-center gap-1.5"><Loader2 className="w-3.5 h-3.5 animate-spin" /> Chargement…</p>
       ) : data.reports.length === 0 ? (
-        <p className="text-xs text-amber-500" data-testid="execution-report-not-traced">
+        <p className="text-xs text-[color:var(--text-warning-soft)]" data-testid="execution-report-not-traced">
           Non tracé : aucun rapport n&apos;a été enregistré pour cette exécution (exécution antérieure au lot 58C, ou rapport non écrit).
           Rien n&apos;est reconstitué.
         </p>
@@ -247,7 +247,7 @@ export function ExecutionReportView({ reportId: initialId }: { reportId: number 
         <p className="font-medium text-[color:var(--text-primary)]">Étapes</p>
         <ul className="space-y-0.5">
           {r.steps.map((s, i) => (
-            <li key={i} className={s.status === 'FAILED' ? 'text-red-400' : 'text-[color:var(--text-secondary)]'}>
+            <li key={i} className={s.status === 'FAILED' ? 'text-[color:var(--text-danger)]' : 'text-[color:var(--text-secondary)]'}>
               {s.status === 'FAILED' ? <AlertTriangle className="inline w-3 h-3 mr-1" /> : null}
               {s.step} · {s.status === 'OK' ? 'OK' : s.status === 'FAILED' ? 'ÉCHEC' : 'ignorée'}{s.error ? ` — ${s.error}` : ''}
               {s.detail ? <span className="text-[color:var(--text-muted)]"> {JSON.stringify(s.detail)}</span> : null}
@@ -266,7 +266,7 @@ export function ExecutionReportView({ reportId: initialId }: { reportId: number 
       )}
 
       {anomalies.length > 0 && (
-        <p className="text-red-400" data-testid="execution-report-anomalies">
+        <p className="text-[color:var(--text-danger)]" data-testid="execution-report-anomalies">
           Anomalies : {anomalies.map((a) => `${a.count} × ${SECTION_LABEL[a.section] ?? a.section} — ${WRITE_RESULT_LABEL[a.writeResult] ?? a.writeResult}`).join(' · ')}
         </p>
       )}
@@ -330,7 +330,7 @@ function EntryRow({ e, reportId, onOpenReport }: { e: EntryDto; reportId: number
           {' '}<button type="button" className="text-[color:var(--accent)] hover:underline" onClick={charger}>Afficher le contenu complet</button>
           {content && (content.state === 'TRACED'
             ? <div className="mt-1 flex items-start gap-1"><pre className="min-w-0 flex-1 whitespace-pre-wrap break-all max-h-80 overflow-y-auto">{fmt(content.content)}</pre><CopyBlockButton value={content.content} label="le contenu" /></div>
-            : <p className="text-amber-500">Non tracé : {content.reason}</p>)}
+            : <p className="text-[color:var(--text-warning-soft)]">Non tracé : {content.reason}</p>)}
         </div>
       ) : e.value !== null && e.value !== undefined ? (
         <div className="flex items-start gap-1 text-[color:var(--text-secondary)]">
@@ -339,7 +339,7 @@ function EntryRow({ e, reportId, onOpenReport }: { e: EntryDto; reportId: number
         </div>
       ) : null}
       {(e.reasonCode || e.reason) && (
-        <p className={['FAILED', 'NOT_PERSISTED', 'DECIDED_NOT_CONFIRMED'].includes(e.writeResult) ? 'text-red-400' : 'text-[color:var(--text-secondary)]'}>
+        <p className={['FAILED', 'NOT_PERSISTED', 'DECIDED_NOT_CONFIRMED'].includes(e.writeResult) ? 'text-[color:var(--text-danger)]' : 'text-[color:var(--text-secondary)]'}>
           Motif : {e.reasonCode ?? ''}{e.reason ? ` — ${e.reason}` : ''}
         </p>
       )}
@@ -388,7 +388,7 @@ export function ExecutionReportsTab({ accountId }: { accountId: string }) {
         </select>
         <span className="text-sm text-[color:var(--text-muted)] ml-auto">{data?.total ?? 0} rapport(s)</span>
       </div>
-      {data && !data.available && <p className="text-sm text-amber-500">Migration 0421 non appliquée : aucun rapport.</p>}
+      {data && !data.available && <p className="text-sm text-[color:var(--text-warning-soft)]">Migration 0421 non appliquée : aucun rapport.</p>}
       <div className="rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--bg-card)] divide-y divide-[color:var(--border-subtle)]">
         {data?.rows.length === 0 && <p className="p-4 text-sm text-[color:var(--text-muted)]">Aucun rapport. Les exécutions antérieures au lot 58C sont « non tracées ».</p>}
         {data?.rows.map((r) => (

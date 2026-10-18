@@ -48,7 +48,7 @@ interface Config {
   lastWebhookAt: string | null;
 }
 
-const ok = (v: boolean) => (v ? 'text-emerald-500' : 'text-red-500');
+const ok = (v: boolean) => (v ? 'text-[color:var(--text-success)]' : 'text-[color:var(--text-danger)]');
 
 /** Configuration d'envoi effective : ce que le diagnostic doit vérifier (docs/exploitation/emails-delivrabilite.md). */
 function ConfigBlock({ c }: { c: Config }) {
@@ -57,7 +57,7 @@ function ConfigBlock({ c }: { c: Config }) {
       <p>
         Expéditeur : <span className="font-medium">{c.senderName} &lt;{c.senderEmail}&gt;</span>
         {' '}— domaine <span className="font-mono">{c.senderDomain}</span> (doit être « Verified » chez Resend)
-        {c.source === 'defaut' ? <span className="text-amber-500"> · valeurs par défaut du code (aucun réglage en base)</span> : null}
+        {c.source === 'defaut' ? <span className="text-[color:var(--text-warning-soft)]"> · valeurs par défaut du code (aucun réglage en base)</span> : null}
       </p>
       <p>
         Réponse à : {c.replyToEmail} · <span className={ok(c.emailsEnabled)}>{c.emailsEnabled ? 'e-mails activés' : 'e-mails DÉSACTIVÉS'}</span>
@@ -195,7 +195,7 @@ export function TransactionalEmailsOps() {
                       <td className="px-2 py-1 break-all">{p.recipientEmail}</td>
                       <td className="px-2 py-1 tabular-nums">{p.attempts}/{p.maxAttempts}</td>
                       <td className="px-2 py-1 text-xs">{p.nextAttemptAt ? formatDateTime(p.nextAttemptAt) : '—'}</td>
-                      <td className="px-2 py-1 text-xs text-red-500">{p.lastError ?? '—'}</td>
+                      <td className="px-2 py-1 text-xs text-[color:var(--text-danger)]">{p.lastError ?? '—'}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -231,12 +231,12 @@ export function TransactionalEmailsOps() {
                     </td>
                     <td className="px-2 py-1">
                       {SEND_STATUS_LABELS[l.status] ?? l.status}
-                      {l.errorMessage ? <span className="block text-xs text-red-500 break-words">{l.errorMessage}</span> : null}
+                      {l.errorMessage ? <span className="block text-xs text-[color:var(--text-danger)] break-words">{l.errorMessage}</span> : null}
                     </td>
                     <td className="px-2 py-1">
                       {l.deliveryStatus ? DELIVERY_STATUS_LABELS[l.deliveryStatus] ?? l.deliveryStatus : '—'}
                       {l.deliveryStatusAt ? <span className="block text-xs text-muted-foreground">{formatDateTime(l.deliveryStatusAt)}</span> : null}
-                      {l.deliveryError ? <span className="block text-xs text-red-500 break-words">{l.deliveryError}</span> : null}
+                      {l.deliveryError ? <span className="block text-xs text-[color:var(--text-danger)] break-words">{l.deliveryError}</span> : null}
                     </td>
                     <td className="px-2 py-1 font-mono text-xs break-all">{l.providerMessageId ?? '—'}</td>
                     <td className="px-2 py-1 text-xs">

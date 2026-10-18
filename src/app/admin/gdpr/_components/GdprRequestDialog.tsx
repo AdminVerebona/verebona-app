@@ -189,14 +189,14 @@ export function GdprRequestDialog({
           {loading ? (
             <div className="flex justify-center py-8"><Loader2 className="h-6 w-6 animate-spin text-muted-foreground" /></div>
           ) : loadError ? (
-            <div className="text-sm text-red-400">
+            <div className="text-sm text-[color:var(--text-danger)]">
               {loadError}{' '}
               <button type="button" className="underline" onClick={() => requestId && load(requestId)}>Réessayer</button>
             </div>
           ) : (
             <>
               {detail?.origin === 'system' && (
-                <div className="flex gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 p-3 text-sm">
+                <div className="flex gap-2 rounded-md border border-[color:var(--border-warning)] bg-[color:var(--bg-warning)] p-3 text-sm">
                   <Lock className="h-4 w-4 mt-0.5 shrink-0" />
                   <p>
                     Demande générée par le système : son statut est piloté automatiquement. Elle ne peut être ni
@@ -265,8 +265,8 @@ export function GdprRequestDialog({
               ) : null}
 
               {detail && editable && <Meta detail={detail} />}
-              {error && <p className="text-sm text-red-400">{error}</p>}
-              {notice && <p className="text-sm text-emerald-400">{notice}</p>}
+              {error && <p className="text-sm text-[color:var(--text-danger)]">{error}</p>}
+              {notice && <p className="text-sm text-[color:var(--text-success)]">{notice}</p>}
             </>
           )}
         </DialogBody>
@@ -323,7 +323,7 @@ function ReadOnly({ detail }: { detail: GdprRequestDetail }) {
       )}
       {detail.processedAt && <Row label="Traitée le">{formatDateTime(detail.processedAt)}</Row>}
       <Row label="Résultat">{detail.result ?? '—'}</Row>
-      {detail.lastError && <Row label="Erreur"><span className="text-red-400">{detail.lastError}</span></Row>}
+      {detail.lastError && <Row label="Erreur"><span className="text-[color:var(--text-danger)]">{detail.lastError}</span></Row>}
       {detail.origin === 'manual' && <Row label="Commentaire interne">{detail.internalComment ?? '—'}</Row>}
       <MetaRows detail={detail} />
     </dl>

@@ -714,12 +714,12 @@ export function UnifiedDocumentDialog({
 
       {/* Progression du dépôt lancé depuis ce panneau (file globale) */}
       {(isUploading || elementsLot.length > 0) && (
-        <div className="flex flex-col gap-2 px-3 py-2.5 rounded-xl bg-white/5 border border-white/10">
+        <div className="flex flex-col gap-2 px-3 py-2.5 rounded-xl bg-[color:var(--bg-subtle)] border border-[color:var(--border-subtle)]">
           <div className="flex items-center gap-2 text-sm">
             {isUploading
-              ? <Loader2 className="w-4 h-4 text-white/60 animate-spin flex-shrink-0" />
-              : <Check className="w-4 h-4 text-white/60 flex-shrink-0" />}
-            <span className="text-white/80 font-medium">
+              ? <Loader2 className="w-4 h-4 text-[color:var(--text-muted)] animate-spin flex-shrink-0" />
+              : <Check className="w-4 h-4 text-[color:var(--text-success)] flex-shrink-0" />}
+            <span className="text-[color:var(--text-primary)] font-medium">
               {isSubmittingLink
                 ? 'Envoi en cours…'
                 : uploadProgress && uploadProgress.total > 1
@@ -736,7 +736,7 @@ export function UnifiedDocumentDialog({
             />
           )}
           {isUploading && !isSubmittingLink && (
-            <p className="text-[11px] text-white/50">Vous pouvez fermer ce panneau : l’envoi continue. En cas d’échec, vous serez prévenu.</p>
+            <p className="text-[11px] text-[color:var(--text-muted)]">Vous pouvez fermer ce panneau : l’envoi continue. En cas d’échec, vous serez prévenu.</p>
           )}
         </div>
       )}

@@ -140,7 +140,7 @@ export function AdditionalInfosRefPicker({ kind, value, onChange, documents, pho
                     <span className="block truncate">{o.title}</span>
                     {(o.meta || o.flag) && (
                       <span className="block truncate text-[11px] text-muted-foreground">
-                        {o.flag ? <span className="inline-flex items-center gap-1 text-amber-400"><ShieldAlert className="w-3 h-3" />{o.flag}</span> : o.meta}
+                        {o.flag ? <span className="inline-flex items-center gap-1 text-[color:var(--attention-on-soft)]"><ShieldAlert className="w-3 h-3" />{o.flag}</span> : o.meta}
                       </span>
                     )}
                   </span>

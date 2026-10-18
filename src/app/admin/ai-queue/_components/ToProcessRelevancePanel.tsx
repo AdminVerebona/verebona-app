@@ -78,7 +78,7 @@ function CampaignBlock({ c }: { c: Campaign }) {
         <span className="text-[color:var(--text-secondary)]">Issues : </span>
         <span className="text-[color:var(--text-muted)]">{kv(c.outcomes, ISSUE_LABEL)}</span>
       </p>
-      {c.errorSample && <p className="text-xs text-red-400 break-words">Exemple d’erreur : {c.errorSample}</p>}
+      {c.errorSample && <p className="text-xs text-[color:var(--text-danger)] break-words">Exemple d’erreur : {c.errorSample}</p>}
     </div>
   );
 }
@@ -90,7 +90,7 @@ function RecetteRow({ r }: { r: RecetteResult }) {
       <button type="button" className="w-full text-left flex items-start gap-2" onClick={() => setOpen((o) => !o)} aria-expanded={open}>
         <ChevronDown className={`w-3.5 h-3.5 mt-0.5 shrink-0 transition-transform ${open ? '' : '-rotate-90'}`} />
         <span className="text-xs break-words min-w-0">
-          <span className={r.ok ? 'text-emerald-500' : 'text-red-400'}>{r.ok ? 'Conforme' : 'NON CONFORME'}</span>
+          <span className={r.ok ? 'text-[color:var(--text-success)]' : 'text-[color:var(--text-danger)]'}>{r.ok ? 'Conforme' : 'NON CONFORME'}</span>
           {' · '}<span className="font-medium text-[color:var(--text-primary)]">{r.caseId}</span> · {r.label}
         </span>
       </button>
@@ -156,13 +156,13 @@ export function ToProcessRelevancePanel() {
           <RefreshCw className="w-3.5 h-3.5 mr-1" />Actualiser
         </Button>
       </div>
-      {error && <p className="text-xs text-red-400 break-words flex items-start gap-1.5"><AlertTriangle className="w-3.5 h-3.5 mt-0.5 shrink-0" />{error}</p>}
+      {error && <p className="text-xs text-[color:var(--text-danger)] break-words flex items-start gap-1.5"><AlertTriangle className="w-3.5 h-3.5 mt-0.5 shrink-0" />{error}</p>}
       {data && (
         <>
           <p className="text-xs break-words">
             <span className="text-[color:var(--text-secondary)]">Configuration T4 : </span>
             <span className="text-[color:var(--text-muted)]">{data.config.ref} · moteur {data.engineVersion} · </span>
-            <span className={data.config.interventionCapable ? 'text-emerald-500' : 'text-amber-500'}>
+            <span className={data.config.interventionCapable ? 'text-[color:var(--text-success)]' : 'text-[color:var(--text-warning-soft)]'}>
               {data.config.interventionCapable
                 ? 'évaluation structurée de l’intervention active (t4_output_v3)'
                 : 'version active SANS t4_output_v3 : décision prudente (actions non identifiées différées). Activer la version de référence dans Prompts maîtres › T4.'}
@@ -178,7 +178,7 @@ export function ToProcessRelevancePanel() {
             </p>
           )}
           {(!data.migrations.decisions0444 || !data.migrations.campaigns0445 || !data.migrations.recette0446) && (
-            <p className="text-xs text-amber-500 break-words">
+            <p className="text-xs text-[color:var(--text-warning-soft)] break-words">
               Migrations : décisions {data.migrations.decisions0444 ? 'présentes' : 'ABSENTES (0444)'} · campagnes {data.migrations.campaigns0445 ? 'présentes' : 'ABSENTES (0445)'} · recette {data.migrations.recette0446 ? 'présente' : 'ABSENTE (0446)'}.
             </p>
           )}
@@ -204,7 +204,7 @@ export function ToProcessRelevancePanel() {
                 {data.items.map((i) => (
                   <li key={i.actionId} className="text-xs break-words rounded border border-[color:var(--border-subtle)] px-2 py-1">
                     <span className="text-[color:var(--text-primary)]">Action #{i.actionId}</span> · compte {i.accountId} · document {i.fileId} · {i.ruleCode}
-                    {' · '}<span className={i.outcome === 'ERROR' ? 'text-red-400' : 'text-[color:var(--text-secondary)]'}>{ISSUE_LABEL[i.outcome] ?? i.outcome}</span>
+                    {' · '}<span className={i.outcome === 'ERROR' ? 'text-[color:var(--text-danger)]' : 'text-[color:var(--text-secondary)]'}>{ISSUE_LABEL[i.outcome] ?? i.outcome}</span>
                     {i.reason ? <span className="text-[color:var(--text-muted)]"> — {i.reason}</span> : null}
                   </li>
                 ))}
@@ -223,14 +223,14 @@ export function ToProcessRelevancePanel() {
             {recette && (
               <>
                 <p className="text-xs break-words">
-                  <span className={recette.failed === 0 && recette.status === 'DONE' ? 'text-emerald-500' : recette.status === 'RUNNING' ? 'text-amber-500' : 'text-red-400'}>
+                  <span className={recette.failed === 0 && recette.status === 'DONE' ? 'text-[color:var(--text-success)]' : recette.status === 'RUNNING' ? 'text-[color:var(--text-secondary)]' : 'text-[color:var(--text-danger)]'}>
                     {recette.status === 'RUNNING' ? 'En cours' : recette.status === 'DONE' ? 'Terminée' : 'En erreur'}
                   </span>
                   <span className="text-[color:var(--text-muted)]">
                     {' · '}{recette.passed}/{recette.total} conformes · {recette.failed} non conformes · {recette.aiCalls} appel(s) IA · {recette.configRef ?? '—'} · {dt(recette.startedAt)}
                   </span>
                 </p>
-                {recette.error && <p className="text-xs text-amber-500 break-words">{recette.error}</p>}
+                {recette.error && <p className="text-xs text-[color:var(--text-danger)] break-words">{recette.error}</p>}
                 <ul className="space-y-1.5">{recette.results.map((r) => <RecetteRow key={r.caseId} r={r} />)}</ul>
               </>
             )}

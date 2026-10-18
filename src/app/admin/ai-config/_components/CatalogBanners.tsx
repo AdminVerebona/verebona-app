@@ -78,7 +78,7 @@ export function UnavailableModelCard({ group }: { group: UnavailableModelGroupVi
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
         <code className="text-xs font-semibold text-[color:var(--text-primary)] break-all">{group.model}</code>
         <span className={`text-[11px] px-1.5 py-0.5 rounded-full border ${group.severity === 'critical'
-          ? 'border-red-500/30 text-red-400' : 'border-amber-500/30 text-amber-500'}`}>
+          ? 'border-[color:var(--border-danger)] text-[color:var(--text-danger)]' : 'border-[color:var(--border-warning)] text-[color:var(--text-warning-soft)]'}`}>
           {group.severity === 'critical' ? 'critique' : 'avertissement'}
         </span>
         <span className="text-xs text-[color:var(--text-muted)]">
@@ -156,7 +156,7 @@ export function CatalogBanners({ refreshKey = 0 }: { refreshKey?: number }) {
             <p className="text-sm font-semibold text-[color:var(--text-primary)]">{data.banner.title}</p>
             <p className="text-sm text-[color:var(--text-muted)] break-words">{data.banner.body}</p>
             {data.newModels.some((m) => m.status === 'preview') && (
-              <p className="text-xs text-amber-500">
+              <p className="text-xs text-[color:var(--text-warning-soft)]">
                 Preview : {data.newModels.filter((m) => m.status === 'preview').map((m) => m.displayName || m.model).join(', ')} — statut visible dans le registre des modèles.
               </p>
             )}
@@ -175,8 +175,8 @@ export function CatalogBanners({ refreshKey = 0 }: { refreshKey?: number }) {
       )}
 
       {data.anomalies.length > 0 && (
-        <div role="alert" data-testid="active-model-anomalies" className="rounded-xl border border-amber-500/30 bg-amber-500/5 p-3 sm:p-4 space-y-2">
-          <p className="text-sm font-semibold text-amber-500 flex items-start gap-1.5">
+        <div role="alert" data-testid="active-model-anomalies" className="rounded-xl border border-[color:var(--border-warning)] bg-[color:var(--bg-warning)] p-3 sm:p-4 space-y-2">
+          <p className="text-sm font-semibold text-[color:var(--text-warning-soft)] flex items-start gap-1.5">
             <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" aria-hidden />
             <span className="break-words">
               {data.unavailableTitle

@@ -137,7 +137,7 @@ export default function AnomalyTreatmentPage({ params }: { params: Promise<{ id:
       <div>
         <p className="text-xs text-muted-foreground">{anomaly.domainLabel} · anomalie #{anomaly.id}</p>
         <h1 className="text-2xl font-bold">{anomaly.title}</h1>
-        <p className={`text-sm mt-1 ${open ? 'text-amber-600 dark:text-amber-400' : 'text-emerald-600 dark:text-emerald-400'}`}>
+        <p className={`text-sm mt-1 ${open ? 'text-[color:var(--text-warning-soft)]' : 'text-[color:var(--text-success)]'}`}>
           {open
             ? 'Ouverte'
             : `Résolue le ${formatDateTime(anomaly.resolvedAt)} — ${anomaly.resolutionSource === 'auto' ? 'automatiquement' : `manuellement${anomaly.resolvedByEmail ? ` par ${anomaly.resolvedByEmail}` : ''}`}`}
@@ -207,8 +207,8 @@ export default function AnomalyTreatmentPage({ params }: { params: Promise<{ id:
             )}
           </div>
         ))}
-        {actionError && <p className="text-sm text-red-600 dark:text-red-400">{actionError}</p>}
-        {message && <p className="text-sm text-emerald-600 dark:text-emerald-400">{message}</p>}
+        {actionError && <p className="text-sm text-[color:var(--text-danger)]">{actionError}</p>}
+        {message && <p className="text-sm text-[color:var(--text-success)]">{message}</p>}
         {open && (
           <div className="flex flex-wrap gap-2">
             <Button variant="outline" onClick={() => send('save')} disabled={busy !== null}>

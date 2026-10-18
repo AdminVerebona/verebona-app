@@ -87,8 +87,8 @@ export function missingStaticFiles(): string[] {
   const dir = staticDir();
   const expected = [
     'tokens.css', 'components.css',
+    'fonts/figtree-400.woff2', 'fonts/figtree-500.woff2', 'fonts/figtree-600.woff2', 'fonts/figtree-700.woff2', 'fonts/figtree-800.woff2',
     'fonts/inter-400.woff2', 'fonts/inter-500.woff2', 'fonts/inter-600.woff2', 'fonts/inter-700.woff2',
-    'fonts/bricolage-grotesque-latin-opsz-5.3.0.woff2', 'fonts/space-mono-400.woff2', 'fonts/space-mono-700.woff2',
     'assets/brand/verebona-mark.svg', 'assets/brand/verebona-mark-on-dark.svg', 'assets/brand/info-card.webp',
   ];
   return expected.filter((f) => !fs.existsSync(path.join(dir, f)));

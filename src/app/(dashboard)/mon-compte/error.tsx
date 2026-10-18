@@ -15,15 +15,15 @@ export default function MonCompteError({
 
   return (
     <div className="p-8 space-y-4">
-      <h2 className="text-xl font-bold text-red-500">Erreur sur Mon Compte</h2>
-      <pre className="text-xs bg-black/50 text-[color:var(--text-danger)] p-4 rounded overflow-auto max-h-64">
+      <h2 className="vb-app-section text-xl text-[color:var(--danger)]">Erreur sur Mon Compte</h2>
+      <pre className="text-xs bg-[color:var(--danger-soft)] border border-[color:var(--danger-edge)] text-[color:var(--danger)] p-4 rounded-[12px] overflow-auto max-h-64">
         {error.message}
         {'\n\n'}
         {error.stack}
       </pre>
       <button
         onClick={reset}
-        className="px-4 py-2 bg-blue-600 text-white rounded"
+        className="h-9 px-5 bg-[color:var(--accent)] hover:bg-[color:var(--accent-hover)] text-[color:var(--on-accent)] font-bold text-sm rounded-[12px] transition-colors"
       >
         Réessayer
       </button>

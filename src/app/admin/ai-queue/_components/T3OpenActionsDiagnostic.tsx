@@ -107,8 +107,8 @@ const EFFECT_LABEL: Record<string, string> = {
 
 const dt = (v: string | null) => (v ? new Date(v).toLocaleString('fr-FR') : '—');
 const kv = (o: Record<string, number> | null | undefined) => (o && Object.keys(o).length ? Object.entries(o).map(([k, v]) => `${k} ${v}`).join(', ') : '—');
-const tone = (s: string) => (s === 'DONE' || s === 'SUCCESS' || s === 'CLOSED' ? 'text-emerald-500'
-  : s === 'FAILED' || s === 'NOT_RUN' || s === 'TECHNICAL_FAILURE' || s === 'ERROR' ? 'text-red-400' : 'text-amber-500');
+const tone = (s: string) => (s === 'DONE' || s === 'SUCCESS' || s === 'CLOSED' ? 'text-[color:var(--text-success)]'
+  : s === 'FAILED' || s === 'NOT_RUN' || s === 'TECHNICAL_FAILURE' || s === 'ERROR' ? 'text-[color:var(--text-danger)]' : 'text-[color:var(--text-warning-soft)]');
 
 const FILTERS: Array<[keyof Filters, string]> = [
   ['accountId', 'Compte'], ['jobId', 'Job'], ['runId', 'Passage'], ['documentId', 'Document'], ['ruleCode', 'Règle'], ['actionId', 'Action'],
@@ -137,7 +137,7 @@ function RunBlock({ run, onFilter }: { run: Run; onFilter: (f: Partial<Filters>)
             </li>
           ))}
         </ul>
-      ) : <p className="text-xs text-amber-500">Phases non tracées (migration 0410 absente ou passage antérieur).</p>}
+      ) : <p className="text-xs text-[color:var(--text-warning-soft)]">Phases non tracées (migration 0410 absente ou passage antérieur).</p>}
       <p className="text-xs text-[color:var(--text-muted)] break-words">
         {COUNTERS.map(([k, l]) => `${run.counters[k] ?? '—'} ${l}`).join(' · ')}
       </p>
@@ -194,7 +194,7 @@ function CardRow({ c }: { c: Card }) {
 
 function RuleRow({ r }: { r: RuleEval }) {
   const [open, setOpen] = useState(false);
-  const decisionTone = r.decision === 'ERROR' ? 'text-red-400' : r.decision === 'CLOSE' || r.decision === 'WRITE' || r.decision === 'NONE' ? 'text-emerald-500' : 'text-amber-500';
+  const decisionTone = r.decision === 'ERROR' ? 'text-[color:var(--text-danger)]' : r.decision === 'CLOSE' || r.decision === 'WRITE' || r.decision === 'NONE' ? 'text-[color:var(--text-success)]' : 'text-[color:var(--text-warning-soft)]';
   return (
     <li className="rounded-lg border border-[color:var(--border-subtle)] p-2 min-w-0">
       <button type="button" className="w-full text-left flex items-start gap-2" onClick={() => setOpen((o) => !o)} aria-expanded={open}>
@@ -203,7 +203,7 @@ function RuleRow({ r }: { r: RuleEval }) {
           <span className="font-medium text-[color:var(--text-primary)]">Document {r.fileId}</span> · {r.ruleCode}
           {' · '}<span className={decisionTone}>{DECISION_LABEL[r.decision] ?? r.decision}</span>
           {r.reasonCode ? <span className="text-[color:var(--text-secondary)]"> — {r.reasonCode}</span> : null}
-          {r.outcome ? <span className={r.outcome === 'ERROR' ? 'text-red-400' : 'text-[color:var(--text-secondary)]'}> · {OUTCOME_RULE_LABEL[r.outcome] ?? r.outcome}</span> : null}
+          {r.outcome ? <span className={r.outcome === 'ERROR' ? 'text-[color:var(--text-danger)]' : 'text-[color:var(--text-secondary)]'}> · {OUTCOME_RULE_LABEL[r.outcome] ?? r.outcome}</span> : null}
           <span className="text-[color:var(--text-muted)]"> · {TRIGGER_LABEL[r.trigger] ?? r.trigger} · {dt(r.lastSeenAt)}{r.seenCount > 1 ? ` (×${r.seenCount})` : ''}</span>
         </span>
       </button>
@@ -280,11 +280,11 @@ export function T3OpenActionsDiagnostic({ initialJobId }: { initialJobId?: numbe
         ))}
         <Button type="submit" size="sm" disabled={loading}>{loading ? 'Recherche…' : 'Rechercher'}</Button>
       </form>
-      {error && <p className="text-xs text-red-400 break-words flex items-start gap-1.5"><AlertTriangle className="w-3.5 h-3.5 mt-0.5 shrink-0" />{error}</p>}
+      {error && <p className="text-xs text-[color:var(--text-danger)] break-words flex items-start gap-1.5"><AlertTriangle className="w-3.5 h-3.5 mt-0.5 shrink-0" />{error}</p>}
       {data && (
         <>
           {(!data.migrations.journal0371 || !data.migrations.diagnostic0410) && (
-            <p className="text-xs text-amber-500 break-words">
+            <p className="text-xs text-[color:var(--text-warning-soft)] break-words">
               Journal par carte {data.migrations.journal0371 ? 'présent' : 'ABSENT (migration 0371)'} · détail du parcours {data.migrations.diagnostic0410 ? 'présent' : 'ABSENT (migration 0410)'}.
             </p>
           )}
@@ -302,7 +302,7 @@ export function T3OpenActionsDiagnostic({ initialJobId }: { initialJobId?: numbe
             )}
           </div>
           {data.migrations.documentRules0418 === false && (
-            <p className="text-xs text-amber-500 break-words">Diagnostic des règles documentaires ABSENT (migration 0418).</p>
+            <p className="text-xs text-[color:var(--text-warning-soft)] break-words">Diagnostic des règles documentaires ABSENT (migration 0418).</p>
           )}
           {data.documentRules && data.documentRules.length > 0 && (
             <div className="space-y-2">

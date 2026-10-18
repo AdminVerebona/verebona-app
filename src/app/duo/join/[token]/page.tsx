@@ -112,7 +112,7 @@ function DuoJoinContent() {
     if (pageState === 'loading') {
       return (
         <div className="text-center space-y-4">
-          <Loader2 className="w-10 h-10 animate-spin text-blue-400 mx-auto" />
+          <Loader2 className="w-10 h-10 animate-spin text-[color:var(--accent)] mx-auto" />
           <p className="text-sm text-[color:var(--text-muted)]">Vérification de l'invitation…</p>
         </div>
       );
@@ -121,7 +121,7 @@ function DuoJoinContent() {
     if (pageState === 'joining') {
       return (
         <div className="text-center space-y-4">
-          <Loader2 className="w-10 h-10 animate-spin text-blue-400 mx-auto" />
+          <Loader2 className="w-10 h-10 animate-spin text-[color:var(--accent)] mx-auto" />
           <p className="text-sm text-[color:var(--text-muted)]">Rattachement en cours…</p>
         </div>
       );
@@ -130,7 +130,7 @@ function DuoJoinContent() {
     if (pageState === 'success') {
       return (
         <div className="text-center space-y-4 animate-in fade-in duration-300">
-          <CheckCircle2 className="w-14 h-14 text-green-400 mx-auto" />
+          <CheckCircle2 className="w-14 h-14 text-[color:var(--text-success)] mx-auto" />
           <div>
             <p className="text-lg font-semibold text-[color:var(--text-primary)]">
               Vous avez rejoint l'espace Premium Duo !
@@ -214,8 +214,8 @@ function DuoJoinContent() {
     // pageState === 'valid'
     return (
       <div className="space-y-6">
-        <div className="bg-emerald-950/40 border border-emerald-500/30 rounded-xl p-5 flex items-start gap-4">
-          <Users className="w-8 h-8 text-emerald-400 flex-shrink-0 mt-0.5" />
+        <div className="bg-[color:var(--bg-success)] border border-[color:var(--border-success)] rounded-xl p-5 flex items-start gap-4">
+          <Users className="w-8 h-8 text-[color:var(--text-success)] flex-shrink-0 mt-0.5" />
           <div className="space-y-2">
             <p className="text-base font-semibold text-[color:var(--text-primary)]">
               {tokenInfo?.ownerName
@@ -229,7 +229,7 @@ function DuoJoinContent() {
         </div>
 
         {!sessionLoading && !user && (
-          <div className="bg-blue-950/40 border border-blue-500/30 rounded-lg px-4 py-3 text-sm text-[color:var(--text-info-soft)]">
+          <div className="bg-[color:var(--accent-soft)] border border-[color:var(--border-info)] rounded-lg px-4 py-3 text-sm text-[color:var(--text-info-soft)]">
             Vous devez être connecté pour rejoindre cet espace. Créez un compte ou connectez-vous pour continuer.
           </div>
         )}
@@ -291,7 +291,7 @@ function ErrorBlock({
 }) {
   return (
     <div className="text-center space-y-4">
-      <AlertCircle className="w-12 h-12 text-amber-400 mx-auto" />
+      <AlertCircle className="w-12 h-12 text-[color:var(--attention-on-soft)] mx-auto" />
       <div>
         <p className="text-lg font-semibold text-[color:var(--text-primary)]">{title}</p>
         <p className="text-sm text-[color:var(--text-muted)] mt-1 leading-relaxed">{message}</p>
@@ -309,7 +309,7 @@ export default function DuoJoinPage() {
   return (
     <Suspense fallback={
       <div className="min-h-screen flex items-center justify-center">
-        <Loader2 className="w-10 h-10 animate-spin text-blue-400" />
+        <Loader2 className="w-10 h-10 animate-spin text-[color:var(--accent)]" />
       </div>
     }>
       <DuoJoinContent />

@@ -117,7 +117,7 @@ export function CardVisual({ action }: { action: ActionView }) {
   const src = !url ? null : step === 0 ? url : step === 1 ? `/api/files/${action.targetId}/thumbnail` : null;
   if (src) {
     return (
-      <span data-card-visual="thumbnail" className="relative block h-14 w-11 shrink-0 overflow-hidden rounded border bg-white shadow-sm sm:h-[88px] sm:w-[68px]">
+      <span data-card-visual="thumbnail" className="relative block h-14 w-11 shrink-0 overflow-hidden rounded-[8px] border bg-[color:var(--vb-blanc)] sm:h-[88px] sm:w-[68px]">
         {/* eslint-disable-next-line @next/next/no-img-element -- miniature autorisée (APP-PERF-06), icône si absente */}
         <img
           src={src}
@@ -131,8 +131,8 @@ export function CardVisual({ action }: { action: ActionView }) {
     );
   }
   return (
-    <span data-card-visual="icon" className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg border bg-muted/40 sm:h-14 sm:w-14">
-      <TargetIcon action={action} className="h-5 w-5 text-muted-foreground sm:h-6 sm:w-6" />
+    <span data-card-visual="icon" className="flex h-11 w-11 shrink-0 items-center justify-center rounded-[12px] bg-[color:var(--accent-soft)] sm:h-14 sm:w-14">
+      <TargetIcon action={action} className="h-5 w-5 text-[color:var(--accent)] sm:h-6 sm:w-6" />
     </span>
   );
 }
@@ -283,7 +283,7 @@ export function ActionCard({ action, focused, visual = false, ...handlers }: { a
       id={todoCardDomId(action.publicId)}
       data-todo-id={action.publicId}
       aria-current={focused ? 'true' : undefined}
-      className={`scroll-mt-24 rounded-lg border bg-card p-4 shadow-sm focus-within:ring-2 focus-within:ring-ring ${visual ? 'flex items-start gap-3 sm:gap-4' : ''} ${focused ? 'ring-2 ring-primary' : ''}`}
+      className={`scroll-mt-24 rounded-[16px] border border-[color:var(--border)] bg-card p-4 transition-[border-color] duration-[180ms] focus-within:border-[color:var(--accent)] ${visual ? 'flex items-start gap-3 sm:gap-4' : ''} ${focused ? 'border-[color:var(--accent)] ring-1 ring-[color:var(--accent)]' : ''}`}
     >
       {visual ? (
         <>
@@ -302,7 +302,7 @@ function CardBody({ action, ...handlers }: { action: ActionView } & Handlers) {
   return (
     <>
       {/* §8.4 : la question est l'élément dominant. */}
-      <h3 className="text-sm font-medium leading-snug">{action.question}</h3>
+      <h3 className="text-[14.5px] font-semibold leading-snug">{action.question}</h3>
 
       <div className="mt-2 flex items-center gap-2 text-xs text-muted-foreground">
         <TargetIcon action={action} />

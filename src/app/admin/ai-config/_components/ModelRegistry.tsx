@@ -47,7 +47,7 @@ interface Data {
 }
 
 const STATUT: Record<string, string> = {
-  stable: 'text-emerald-500', preview: 'text-amber-500', experimental: 'text-red-400', deprecated: 'text-red-400', unknown: 'text-[color:var(--text-muted)]',
+  stable: 'text-[color:var(--text-success)]', preview: 'text-[color:var(--text-warning-soft)]', experimental: 'text-[color:var(--text-warning-soft)]', deprecated: 'text-[color:var(--text-danger)]', unknown: 'text-[color:var(--text-muted)]',
 };
 const LIBELLE: Record<string, string> = {
   stable: 'Stable', preview: 'Preview', experimental: 'Expérimental (exclu)', deprecated: 'Déprécié', unknown: 'Non communiqué',
@@ -95,8 +95,8 @@ export function ModelRegistry() {
     >
       <summary className="cursor-pointer px-4 py-3 text-sm font-medium text-[color:var(--text-primary)]">
         Registre des modèles · alias, statuts, dépréciations
-        {erreurs.length > 0 && <span className="ml-2 text-xs text-red-400">• {erreurs.length} incohérence(s)</span>}
-        {verdict && !verdict.ok && <span className="ml-2 text-xs text-red-400">• contrôle de démarrage en échec</span>}
+        {erreurs.length > 0 && <span className="ml-2 text-xs text-[color:var(--text-danger)]">• {erreurs.length} incohérence(s)</span>}
+        {verdict && !verdict.ok && <span className="ml-2 text-xs text-[color:var(--text-danger)]">• contrôle de démarrage en échec</span>}
       </summary>
       {!data ? (
         <p className="px-4 pb-4 text-sm text-[color:var(--text-muted)]">Chargement…</p>
@@ -110,7 +110,7 @@ export function ModelRegistry() {
           </p>
 
           {verdict && (
-            <p className={`text-xs ${verdict.ok ? 'text-emerald-500' : 'text-red-400'}`}>
+            <p className={`text-xs ${verdict.ok ? 'text-[color:var(--text-success)]' : 'text-[color:var(--text-danger)]'}`}>
               Contrôle de démarrage : {verdict.ok ? 'conforme' : verdict.error}
               {data.startup.lastValid && (
                 <span className="text-[color:var(--text-muted)]">
@@ -123,8 +123,8 @@ export function ModelRegistry() {
 
           {(erreurs.length > 0 || avertissements.length > 0) && (
             <div className="space-y-1">
-              {erreurs.map((i, k) => <p key={`e${k}`} className="text-xs text-red-400">{i.message}</p>)}
-              {avertissements.map((i, k) => <p key={`w${k}`} className="text-xs text-amber-500">{i.message}</p>)}
+              {erreurs.map((i, k) => <p key={`e${k}`} className="text-xs text-[color:var(--text-danger)]">{i.message}</p>)}
+              {avertissements.map((i, k) => <p key={`w${k}`} className="text-xs text-[color:var(--text-warning-soft)]">{i.message}</p>)}
             </div>
           )}
 
@@ -181,12 +181,12 @@ export function ModelRegistry() {
                       <td className={`${TD} font-mono`} title={[m.displayName, m.note].filter(Boolean).join(' — ') || undefined}>{m.model}</td>
                       <td className={`${TD} ${STATUT[m.status] ?? ''}`}>{LIBELLE[m.status] ?? m.status}</td>
                       <td className={TD}>
-                        {m.available == null ? 'jamais listé' : m.available ? 'listé' : <span className="text-red-400">retiré</span>}
+                        {m.available == null ? 'jamais listé' : m.available ? 'listé' : <span className="text-[color:var(--text-danger)]">retiré</span>}
                         {m.firstSeenAt ? <span className="text-[color:var(--text-muted)]"> · vu le {formatDateTime(m.firstSeenAt)}</span> : null}
                       </td>
                       <td className={TD}>{date(m.retiresOn)}</td>
                       <td className={TD}>{qualif(m.qualification)}</td>
-                      <td className={m.pricing?.status === 'UNKNOWN' ? `${TD} text-amber-500` : TD}>{tarif(m)}</td>
+                      <td className={m.pricing?.status === 'UNKNOWN' ? `${TD} text-[color:var(--text-warning-soft)]` : TD}>{tarif(m)}</td>
                       <td className={TD}>{nb(m.contextWindowTokens)} · {nb(m.maxOutputTokens)}</td>
                       <td className={TD}>{m.exclusion ?? (m.declared ? (m.capabilities.map((c) => CAP[c] ?? c).join(', ') || '—') : '—')}</td>
                       <td className={`${TD} font-mono`}>{m.rollbackModel ?? '—'}</td>

@@ -33,12 +33,12 @@ export function PendingCheckoutModal({ plan, onDismiss }: PendingCheckoutModalPr
           <div className="flex justify-center">
             <div className={`w-14 h-14 rounded-2xl flex items-center justify-center ${
               isDuo
-                ? 'bg-emerald-500/15 border border-emerald-500/30'
-                : 'bg-blue-500/15 border border-blue-500/30'
+                ? 'bg-[color:var(--bg-success)] border border-[color:var(--border-success)]'
+                : 'bg-[color:var(--accent-soft)] border border-[color:var(--border-info)]'
             }`}>
               {isDuo
-                ? <Users className="w-7 h-7 text-emerald-400" />
-                : <Crown className="w-7 h-7 text-blue-400" />
+                ? <Users className="w-7 h-7 text-[color:var(--text-success)]" />
+                : <Crown className="w-7 h-7 text-[color:var(--accent)]" />
               }
             </div>
           </div>
@@ -48,7 +48,7 @@ export function PendingCheckoutModal({ plan, onDismiss }: PendingCheckoutModalPr
           <DialogDescription className="text-center text-[color:var(--text-muted)] leading-relaxed">
             Votre compte est actuellement en <span className="font-medium text-[color:var(--text-primary)]">Standard</span>.
             {' '}Vous pouvez finaliser votre passage à{' '}
-            <span className={`font-medium ${isDuo ? 'text-emerald-400' : 'text-blue-400'}`}>
+            <span className={`font-medium ${isDuo ? 'text-[color:var(--text-success)]' : 'text-[color:var(--accent)]'}`}>
               {isDuo ? 'Premium Duo' : 'Premium'}
             </span>{' '}
             à tout moment — aucun paiement n'a été prélevé.
@@ -59,8 +59,8 @@ export function PendingCheckoutModal({ plan, onDismiss }: PendingCheckoutModalPr
           <Button
             className={`w-full font-semibold ${
               isDuo
-                ? 'bg-emerald-600 hover:bg-emerald-700 text-white'
-                : 'bg-blue-600 hover:bg-blue-700 text-white'
+                ? 'bg-[color:var(--accent)] hover:bg-[color:var(--accent-hover)] text-[color:var(--on-accent)]'
+                : 'bg-[color:var(--accent)] hover:bg-[color:var(--accent-hover)] text-[color:var(--on-accent)]'
             }`}
             onClick={handleCheckout}
           >

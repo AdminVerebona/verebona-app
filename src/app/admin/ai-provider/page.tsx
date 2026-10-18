@@ -83,7 +83,7 @@ function TestReport({ c }: { c: Credential }) {
 
   return (
     <div className="space-y-1">
-      <p className={`text-xs flex items-center gap-1.5 ${c.lastTestOk ? 'text-emerald-500' : 'text-red-400'}`}>
+      <p className={`text-xs flex items-center gap-1.5 ${c.lastTestOk ? 'text-[color:var(--text-success)]' : 'text-[color:var(--text-danger)]'}`}>
         {c.lastTestOk ? <CheckCircle2 className="w-3 h-3" /> : <XCircle className="w-3 h-3" />}
         Test du {quand}
       </p>
@@ -99,7 +99,7 @@ function TestReport({ c }: { c: Credential }) {
           </li>
         </ul>
       )}
-      {d?.error && <p className="text-xs text-red-400 pl-4">{d.error}</p>}
+      {d?.error && <p className="text-xs text-[color:var(--text-danger)] pl-4">{d.error}</p>}
     </div>
   );
 }
@@ -217,7 +217,7 @@ export default function AiProviderPage() {
       {/* Clé active */}
       <div className="rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--bg-card)] p-4 space-y-3">
         <h2 className="text-sm font-semibold text-[color:var(--text-primary)] flex items-center gap-2">
-          <ShieldCheck className="w-4 h-4 text-emerald-500" /> Clé en service
+          <ShieldCheck className="w-4 h-4 text-[color:var(--text-success)]" /> Clé en service
         </h2>
 
         {!active ? (
@@ -275,9 +275,9 @@ export default function AiProviderPage() {
       {/* Candidates — saisir, tester, activer */}
       {candidates.map((c) => (
         <div key={c.id}
-          className="rounded-xl border border-amber-500/30 bg-amber-500/5 p-4 space-y-3">
+          className="rounded-xl border border-[color:var(--border-warning)] bg-[color:var(--bg-warning)] p-4 space-y-3">
           <div className="flex items-center gap-3">
-            <span className="text-xs px-2 py-0.5 rounded-full border border-amber-500/20 bg-amber-500/10 text-amber-500">
+            <span className="text-xs px-2 py-0.5 rounded-full border border-[color:var(--border-warning)] bg-[color:var(--bg-warning)] text-[color:var(--text-warning-soft)]">
               Candidate
             </span>
             <code className="text-sm font-mono text-[color:var(--text-primary)]">
@@ -333,7 +333,7 @@ export default function AiProviderPage() {
                   {m.inputPerMillion} / {m.outputPerMillion} $ par million
                 </span>
               ) : (
-                <span className="text-xs text-amber-500 max-w-full truncate" title={m.reason ?? undefined}>
+                <span className="text-xs text-[color:var(--text-warning-soft)] max-w-full truncate" title={m.reason ?? undefined}>
                   tarif UNKNOWN{m.reason ? ` — ${m.reason}` : ''}
                 </span>
               )}

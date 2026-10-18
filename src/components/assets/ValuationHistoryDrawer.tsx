@@ -123,7 +123,7 @@ export function ValuationHistoryDrawer({ open, onClose, assetId, assetName, onSa
                 {latest.mode && <span>·</span>}
                 {latest.mode && <span>{MODE_LABELS[latest.mode] ?? latest.mode}</span>}
                 {latest.source === 'AI' && (
-                  <span className="inline-flex items-center gap-0.5 text-[10px] font-semibold bg-violet-500/15 text-violet-400 px-1.5 py-0.5 rounded">
+                  <span className="inline-flex items-center gap-0.5 text-[10px] font-semibold bg-[color:var(--accent-soft)] text-[color:var(--accent)] px-1.5 py-0.5 rounded">
                     <Sparkles className="w-2.5 h-2.5" />
                     Auto
                   </span>
@@ -206,7 +206,7 @@ export function ValuationHistoryDrawer({ open, onClose, assetId, assetName, onSa
                           </span>
                         )}
                         {entry.source === 'AI' && (
-                          <span className="inline-flex items-center gap-0.5 text-[10px] font-semibold bg-violet-500/10 text-violet-400 px-1 py-0.5 rounded">
+                          <span className="inline-flex items-center gap-0.5 text-[10px] font-semibold bg-[color:var(--accent-soft)] text-[color:var(--accent)] px-1 py-0.5 rounded">
                             <Sparkles className="w-2.5 h-2.5" />
                             Auto
                           </span>

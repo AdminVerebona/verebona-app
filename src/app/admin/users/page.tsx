@@ -168,7 +168,7 @@ function UsersScreen() {
                     </thead>
                     <tbody className={loading ? 'opacity-60' : ''}>
                       {data.items.map((u) => (
-                        <tr key={u.id} className="border-b last:border-0 hover:bg-accent/50">
+                        <tr key={u.id} className="border-b last:border-0 hover:bg-[color:var(--bg-hover)]">
                           <td className="py-2 pr-3">
                             <Link href={`/admin/users/${u.id}`} className="font-medium hover:underline">
                               {`${u.firstName} ${u.lastName}`.trim() || '—'}

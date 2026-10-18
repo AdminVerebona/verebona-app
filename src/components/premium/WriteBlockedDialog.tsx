@@ -76,32 +76,29 @@ export function WriteBlockedDialog({ open, onOpenChange, info }: WriteBlockedDia
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="p-0 overflow-hidden sm:max-w-md border-0">
-        {/* En-tête — inchangé : il était déjà juste. */}
+        {/* En-tête — charte 2026 (lot 66) : aplat pétrole (comme le CTA
+            final du site), texte ivoire, tuile d'icône ivoire. */}
         <div
           className="relative px-6 pt-8 pb-6 text-center"
-          style={{ background: 'linear-gradient(135deg, #1e1b4b 0%, #312e81 50%, #1e3a5f 100%)' }}
+          style={{ background: 'var(--vb-petrole)' }}
         >
-          <div
-            className="absolute inset-0 opacity-20"
-            style={{ backgroundImage: 'radial-gradient(circle at 30% 20%, #6366f1 0%, transparent 50%), radial-gradient(circle at 70% 80%, #3b82f6 0%, transparent 50%)' }}
-          />
           <div className="relative z-10">
             <div
-              className="w-14 h-14 rounded-2xl mx-auto mb-4 flex items-center justify-center"
-              style={{ background: 'linear-gradient(135deg, #6366f1, #3b82f6)' }}
+              className="w-14 h-14 rounded-[12px] mx-auto mb-4 flex items-center justify-center text-[color:var(--vb-petrole)]"
+              style={{ background: 'var(--vb-ivoire)' }}
             >
               {impaye ? (
-                <CreditCard className="w-7 h-7 text-white" />
+                <CreditCard className="w-7 h-7" />
               ) : finEssai ? (
-                <Sparkles className="w-7 h-7 text-white" />
+                <Sparkles className="w-7 h-7" />
               ) : (
-                <Crown className="w-7 h-7 text-white" />
+                <Crown className="w-7 h-7" />
               )}
             </div>
-            <h2 className="text-xl font-bold text-white mb-1">
+            <h2 className="text-xl font-bold text-[color:var(--vb-ivoire)] mb-1">
               {impaye ? UNPAID_BLOCKED_TITLE : info ? writeBlockedTitle(info.code) : 'Limite atteinte'}
             </h2>
-            <p className="text-sm text-white/70">
+            <p className="text-sm text-[color:var(--vb-ivoire)]/85">
               {/* Le message vient du serveur : il connaît l'offre, le quota
                   et l'état de l'essai. */}
               {info ? info.message : 'Vous avez atteint la limite de votre offre.'}
@@ -121,8 +118,8 @@ export function WriteBlockedDialog({ open, onOpenChange, info }: WriteBlockedDia
                   'Vous pouvez toujours transmettre un bien',
                 ].map((texte) => (
                   <div key={texte} className="flex items-center gap-3 text-sm">
-                    <div className="w-6 h-6 rounded-full bg-blue-500/10 flex items-center justify-center flex-shrink-0">
-                      <Check className="w-3.5 h-3.5 text-blue-500" />
+                    <div className="w-6 h-6 rounded-full bg-[color:var(--accent-soft)] flex items-center justify-center flex-shrink-0">
+                      <Check className="w-3.5 h-3.5 text-[color:var(--accent)]" />
                     </div>
                     <span className="text-foreground/80">{texte}</span>
                   </div>
@@ -149,8 +146,8 @@ export function WriteBlockedDialog({ open, onOpenChange, info }: WriteBlockedDia
                   'Aucun prélèvement n\u2019a été effectué',
                 ].map((texte) => (
                   <div key={texte} className="flex items-center gap-3 text-sm">
-                    <div className="w-6 h-6 rounded-full bg-blue-500/10 flex items-center justify-center flex-shrink-0">
-                      <Check className="w-3.5 h-3.5 text-blue-500" />
+                    <div className="w-6 h-6 rounded-full bg-[color:var(--accent-soft)] flex items-center justify-center flex-shrink-0">
+                      <Check className="w-3.5 h-3.5 text-[color:var(--accent)]" />
                     </div>
                     <span className="text-foreground/80">{texte}</span>
                   </div>
@@ -181,8 +178,8 @@ export function WriteBlockedDialog({ open, onOpenChange, info }: WriteBlockedDia
                   'Dossiers prêts à l\u2019emploi',
                 ].map((texte) => (
                   <div key={texte} className="flex items-center gap-3 text-sm">
-                    <div className="w-6 h-6 rounded-full bg-blue-500/10 flex items-center justify-center flex-shrink-0">
-                      <Check className="w-3.5 h-3.5 text-blue-500" />
+                    <div className="w-6 h-6 rounded-full bg-[color:var(--accent-soft)] flex items-center justify-center flex-shrink-0">
+                      <Check className="w-3.5 h-3.5 text-[color:var(--accent)]" />
                     </div>
                     <span className="text-foreground/80">{texte}</span>
                   </div>
@@ -204,8 +201,7 @@ export function WriteBlockedDialog({ open, onOpenChange, info }: WriteBlockedDia
                     setPortailEnCours(false);
                   }
                 }}
-                className="flex items-center justify-center gap-2 w-full py-3 rounded-xl text-sm font-semibold text-white transition-all hover:opacity-90 active:scale-[0.98] disabled:opacity-60"
-                style={{ background: 'linear-gradient(135deg, #6366f1, #3b82f6)' }}
+                className="flex items-center justify-center gap-2 w-full py-3 rounded-[12px] bg-[color:var(--accent)] text-sm font-bold text-[color:var(--on-accent)] transition-colors duration-[180ms] hover:bg-[color:var(--accent-hover)] disabled:opacity-60"
               >
                 <CreditCard className="w-4 h-4" />
                 {UPDATE_PAYMENT_METHOD_LABEL}
@@ -214,8 +210,7 @@ export function WriteBlockedDialog({ open, onOpenChange, info }: WriteBlockedDia
               <Link
                 href={OFFERS_PATH}
                 onClick={fermer}
-                className="flex items-center justify-center gap-2 w-full py-3 rounded-xl text-sm font-semibold text-white transition-all hover:opacity-90 active:scale-[0.98]"
-                style={{ background: 'linear-gradient(135deg, #6366f1, #3b82f6)' }}
+                className="flex items-center justify-center gap-2 w-full py-3 rounded-[12px] bg-[color:var(--accent)] text-sm font-bold text-[color:var(--on-accent)] transition-colors duration-[180ms] hover:bg-[color:var(--accent-hover)]"
               >
                 {/* « Choisir une offre » plutôt que « Passer à Premium » : sans
                     offre en cours, il n'y a pas de montée en gamme. Même

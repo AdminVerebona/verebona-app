@@ -4,31 +4,50 @@ import { cva, type VariantProps } from "class-variance-authority"
 
 import { cn } from "../../lib/utils"
 
+/**
+ * Pastille — charte « Sérénité » 2026 §5 (lot 66).
+ *
+ * Rayon 999, 12 px, 600, libellé TOUJOURS écrit (jamais une couleur seule).
+ *   - neutre (défaut, `secondary`, `active`, `premium`) : brume + pétrole ;
+ *   - attention (`pending`) : cuivre-soft + cuivre texte ;
+ *   - retard strict / erreur (`destructive`, `inactive`) : rouge accessible ;
+ *   - `recommended` : cuivre doux + texte blanc, uniquement « Recommandé »
+ *     (12 px gras minimum) ;
+ *   - `outline`, `sold` : contour, texte secondaire.
+ * Les noms de variantes historiques sont conservés (appelants inchangés).
+ */
 const badgeVariants = cva(
-  "inline-flex items-center justify-center rounded-md border px-2 py-0.5 text-xs font-medium w-fit whitespace-nowrap shrink-0 [&>svg]:size-3 gap-1 [&>svg]:pointer-events-none focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px] aria-invalid:ring-destructive/20 dark:aria-invalid:ring-destructive/40 aria-invalid:border-destructive transition-[color,box-shadow] overflow-hidden",
+  "inline-flex items-center justify-center rounded-full border px-[9px] py-[3px] text-xs leading-[1.4] font-semibold w-fit whitespace-nowrap shrink-0 [&>svg]:size-3 gap-1 [&>svg]:pointer-events-none aria-invalid:border-destructive transition-[color,background-color] duration-[180ms] overflow-hidden",
   {
     variants: {
       variant: {
         default:
-          "border-transparent bg-primary text-primary-foreground [a&]:hover:bg-primary/90",
+          "border-transparent bg-[color:var(--accent-soft)] text-[color:var(--accent)]",
+        neutral:
+          "border-transparent bg-[color:var(--accent-soft)] text-[color:var(--accent)]",
         secondary:
-          "border-transparent bg-secondary text-secondary-foreground [a&]:hover:bg-secondary/90",
+          "border-transparent bg-[color:var(--accent-soft)] text-[color:var(--accent)]",
+        attention:
+          "border-[color:var(--attention-edge)] bg-[color:var(--attention-soft)] text-[color:var(--attention-on-soft)]",
         destructive:
-          "border-transparent bg-destructive text-white [a&]:hover:bg-destructive/90 focus-visible:ring-destructive/20 dark:focus-visible:ring-destructive/40 dark:bg-destructive/60",
+          "border-[color:var(--danger-edge)] bg-[color:var(--danger-soft)] text-[color:var(--danger)]",
         outline:
-          "text-foreground [a&]:hover:bg-accent [a&]:hover:text-accent-foreground",
+          "border-[color:var(--border)] bg-transparent text-[color:var(--text-muted)]",
+        recommended:
+          "border-transparent bg-[color:var(--vb-cuivre)] text-white font-bold",
+        // Historiques — mêmes rôles, couleurs de la charte (le pétrole confirme).
         success:
-          "border-transparent bg-emerald-500 text-white [a&]:hover:bg-emerald-600 rounded-full px-3 py-1 font-semibold shadow-sm",
-          active:
-            "border-transparent bg-gradient-to-br from-[#10b981] to-[#14b8a6] text-white rounded-full px-3 py-1 font-semibold shadow-[0_2px_8px_rgba(16,185,129,0.3)]",
-          sold:
-            "bg-[rgba(148,163,184,0.15)] text-[#94a3b8] border border-[rgba(148,163,184,0.3)] rounded-full px-3 py-1 font-medium shadow-sm",
-          premium:
-            "bg-[rgba(37,99,235,0.15)] text-[#bfdbfe] border border-[rgba(59,130,246,0.3)] rounded-full px-3 py-1 font-medium shadow-sm",
-          inactive:
-            "bg-[rgba(239,68,68,0.15)] text-[#fca5a5] border border-[rgba(239,68,68,0.3)] rounded-full px-3 py-1 font-medium shadow-sm",
-          pending:
-            "bg-[rgba(245,158,11,0.15)] text-[#fcd34d] border border-[rgba(245,158,11,0.3)] rounded-full px-3 py-1 font-medium shadow-sm",
+          "border-transparent bg-[color:var(--accent-soft)] text-[color:var(--accent)] px-3 py-1",
+        active:
+          "border-transparent bg-[color:var(--accent-soft)] text-[color:var(--accent)] px-3 py-1",
+        sold:
+          "border-[color:var(--border)] bg-transparent text-[color:var(--text-muted)] px-3 py-1 font-medium",
+        premium:
+          "border-[color:var(--bubble-edge)] bg-[color:var(--accent-soft)] text-[color:var(--accent)] px-3 py-1 font-medium",
+        inactive:
+          "border-[color:var(--danger-edge)] bg-[color:var(--danger-soft)] text-[color:var(--danger)] px-3 py-1 font-medium",
+        pending:
+          "border-[color:var(--attention-edge)] bg-[color:var(--attention-soft)] text-[color:var(--attention-on-soft)] px-3 py-1 font-medium",
       },
     },
     defaultVariants: {

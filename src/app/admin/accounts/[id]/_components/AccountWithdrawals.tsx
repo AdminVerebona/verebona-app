@@ -49,7 +49,7 @@ export function AccountWithdrawals({ accountId }: { accountId: string | number }
         </h2>
       </div>
       {error ? (
-        <div className="px-5 py-4 text-sm text-red-500">
+        <div className="px-5 py-4 text-sm text-[color:var(--text-danger)]">
           {error}{' '}
           <button type="button" className="underline" onClick={() => load()}>Réessayer</button>
         </div>

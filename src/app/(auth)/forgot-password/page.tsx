@@ -52,7 +52,7 @@ export default function ForgotPasswordPage() {
           <Card className="w-full max-w-md bg-[color:var(--bg-card)] border-[color:var(--border-subtle)] shadow-xl">
             <CardHeader className="space-y-4">
               <div className="flex justify-center">
-                <CheckCircle className="w-16 h-16 text-green-500" />
+                <CheckCircle className="w-16 h-16 text-[color:var(--text-success)]" />
               </div>
               <CardTitle className="text-center text-[color:var(--text-primary)]">Email envoyé</CardTitle>
               <CardDescription className="text-center text-[color:var(--text-muted)]">

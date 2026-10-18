@@ -59,7 +59,7 @@ export function SubjectPicker({ value, onChange }: { value: Subject | null; onCh
         />
         {loading && <Loader2 className="absolute right-3 top-1/2 -translate-y-1/2 h-4 w-4 animate-spin text-muted-foreground" />}
       </div>
-      {error && <p className="text-xs text-red-400">{error}</p>}
+      {error && <p className="text-xs text-[color:var(--text-danger)]">{error}</p>}
       {results.length > 0 && (
         <ul className="max-h-48 overflow-y-auto rounded-md border divide-y text-sm">
           {results.map((s) => (

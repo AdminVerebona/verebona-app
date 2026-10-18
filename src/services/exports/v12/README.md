@@ -43,7 +43,7 @@ tâche quotidienne daily-exports-expiry (5 h-8 h)  > 30 jours → expired, objet
 
 | Chemin | Rôle |
 |---|---|
-| `src/services/exports/v12/static/` | `tokens.css`, `components.css`, polices OFL (Inter, Bricolage Grotesque, Space Mono + licences), marque et carte mascotte — copie de `maquettes/_system` |
+| `src/services/exports/v12/static/` | `tokens.css`, `components.css`, polices OFL (Figtree 400–800, Inter en repli de glyphes ; licences dans `fonts/LICENSE.txt`), marque et carte mascotte — charte « Sérénité » 2026 depuis le lot 66C |
 | `src/services/exports/v12/html/` | composants §19.2, sélection/plan des pièces, assemblage — portage TypeScript fidèle des `.mjs` |
 | `src/services/exports/v12/templates/` | un template versionné par dossier (`cil-v1.0.0`…) |
 | `src/services/exports/v12/types.ts` | contrats de données des templates (README des maquettes) |

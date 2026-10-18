@@ -79,20 +79,20 @@ export default function RecoveryPage() {
   return (
     <>
       <div className="max-w-4xl mx-auto space-y-6">
-        <div className="bg-amber-500/10 border border-amber-500/20 rounded-2xl p-6 flex flex-col md:flex-row gap-6 items-start md:items-center">
-          <div className="w-12 h-12 rounded-full bg-amber-500/20 flex items-center justify-center flex-shrink-0">
-            <AlertCircle className="w-6 h-6 text-amber-600 dark:text-amber-400" />
+        <div className="bg-[color:var(--attention-soft)] border border-[color:var(--attention-edge)] rounded-2xl p-6 flex flex-col md:flex-row gap-6 items-start md:items-center">
+          <div className="w-12 h-12 rounded-[12px] bg-[color:var(--bg-card)] flex items-center justify-center flex-shrink-0">
+            <AlertCircle className="w-6 h-6 text-[color:var(--attention-on-soft)]" />
           </div>
           <div className="flex-1 space-y-2">
-            <h1 className="text-xl font-semibold text-amber-700 dark:text-amber-400">
+            <h1 className="text-xl font-semibold text-[color:var(--attention-on-soft)]">
               Espace Duo en mode Récupération
             </h1>
-            <p className="text-sm text-amber-600 dark:text-amber-300/80 leading-relaxed">
+            <p className="text-sm text-[color:var(--text-primary)] leading-relaxed">
               L'abonnement Duo est suspendu suite à un défaut de paiement. Vous ne pouvez plus accéder aux documents mais vous pouvez demander le déplacement de vos biens vers votre compte personnel.
             </p>
           </div>
           <Link href="/mon-compte/offres">
-            <Button className="bg-amber-600 hover:bg-amber-700 text-white gap-2 rounded-full shadow-lg transition-all hover:scale-105">
+            <Button className="gap-2">
               <CreditCard className="w-4 h-4" />
               Régulariser l'abonnement
             </Button>

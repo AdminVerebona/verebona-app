@@ -117,7 +117,7 @@ export function RuntimeContractPanel({ calls }: { calls: ContractCallView[] }) {
         <Ligne label="Même contrat sur tous les appels">{identiques ? 'oui' : 'NON'}</Ligne>
       </dl>
       {mismatch && (
-        <p role="alert" className="text-xs text-red-400">
+        <p role="alert" className="text-xs text-[color:var(--text-danger)]">
           RUNTIME_CONTRACT_MISMATCH — défaut interne du moteur (non affiché à l’utilisateur) :
           {mismatch.runtimeContract?.mismatch
             ? ` schéma transmis ${ref.schemaHash} ≠ schéma de validation ${mismatch.runtimeContract.mismatch.validationHash} (${mismatch.runtimeContract.mismatch.validationVersion}).`
@@ -153,7 +153,7 @@ export function RuntimeContractPanel({ calls }: { calls: ContractCallView[] }) {
         </dl>
       )}
       {contrat && (
-        <p role="alert" className="text-xs text-red-400">
+        <p role="alert" className="text-xs text-[color:var(--text-danger)]">
           {contrat.errorCode} — contrat T4 refusé avant tout appel fournisseur (aucun coût).
         </p>
       )}
@@ -174,7 +174,7 @@ export function RuntimeContractPanel({ calls }: { calls: ContractCallView[] }) {
               </p>
               {t?.normalizations.length ? <p className="text-[color:var(--text-muted)]">Normalisation : {t.normalizations.join(' ; ')}</p> : null}
               {t?.compatMappings.length ? <p className="text-[color:var(--text-muted)]">Compatibility mapping : {t.compatMappings.join(' ; ')}</p> : null}
-              {t?.repair ? <p className={t.repair === 'SUCCESS' ? 'text-[color:var(--text-muted)]' : 'text-amber-500'}>Repair pass : {t.repair}</p> : null}
+              {t?.repair ? <p className={t.repair === 'SUCCESS' ? 'text-[color:var(--text-muted)]' : 'text-[color:var(--text-warning-soft)]'}>Repair pass : {t.repair}</p> : null}
               {t?.pruned.length ? <p className="text-[color:var(--text-muted)]">Champs retirés : {t.pruned.join(' ; ')}</p> : null}
             </li>
           );

@@ -72,7 +72,7 @@ export function TriggersEditor({
                   )}
                 </div>
                 {setting && videLaListe(def.code) && (
-                  <p className="mt-2 text-xs text-amber-500">{videLaListe(def.code)}</p>
+                  <p className="mt-2 text-xs text-[color:var(--text-warning-soft)]">{videLaListe(def.code)}</p>
                 )}
               </li>
             ))}
@@ -85,7 +85,7 @@ export function TriggersEditor({
       ) : null}
 
       {incompatible.length > 0 && (
-        <div className="space-y-2 rounded-lg border border-red-500/30 bg-red-500/5 p-3">
+        <div className="space-y-2 rounded-lg border border-[color:var(--border-danger)] bg-[color:var(--bg-danger)] p-3">
           <p className="text-sm font-medium text-[color:var(--text-primary)]">Déclencheurs enregistrés incompatibles</p>
           <ul className="space-y-2" aria-label="Déclencheurs enregistrés incompatibles">
             {incompatible.map(({ setting, label, reason }) => (
@@ -102,7 +102,7 @@ export function TriggersEditor({
                     </span>
                   )}
                   {videLaListe(setting.code) && (
-                    <span className="block text-xs text-amber-500">{videLaListe(setting.code)}</span>
+                    <span className="block text-xs text-[color:var(--text-warning-soft)]">{videLaListe(setting.code)}</span>
                   )}
                 </span>
                 <Button size="sm" variant="outline" disabled={readOnly}

@@ -80,20 +80,20 @@ export function TopBar({ user, theme, onToggleTheme, onLogout, isAdmin, onOpenHe
           <DropdownMenuTrigger asChild>
             <button
               aria-label="Mon compte"
-              className="flex h-[30px] w-[30px] items-center justify-center rounded-full bg-[color:var(--accent)] text-[12px] font-semibold text-white transition-shadow hover:ring-2 hover:ring-[color:var(--accent-soft)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--accent)]"
+              className="flex h-[30px] w-[30px] items-center justify-center rounded-full bg-[color:var(--accent)] text-[12px] font-bold text-[color:var(--on-accent)] transition-colors duration-[180ms] hover:bg-[color:var(--accent-hover)]"
             >
               {initials}
             </button>
           </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" className="w-60 shadow-relief-lg">
+          <DropdownMenuContent align="end" className="w-60">
             <div className="flex items-center gap-3 px-3 py-2.5">
-              <span className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-full bg-[color:var(--accent)] text-sm font-semibold text-white">
+              <span className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-full bg-[color:var(--accent)] text-sm font-bold text-[color:var(--on-accent)]">
                 {initials}
               </span>
               <div className="min-w-0">
                 <p className="truncate text-sm font-semibold">{displayName}</p>
                 <p className="truncate text-xs text-[color:var(--text-muted)]">{user.email}</p>
-                <p className="mt-0.5 text-xs font-medium text-[color:var(--accent)]">
+                <p className="mt-0.5 text-xs font-semibold text-[color:var(--accent)]">
                   {getPlanLabel({
                     plan,
                     duoRole: user.duoRole,
@@ -116,7 +116,9 @@ export function TopBar({ user, theme, onToggleTheme, onLogout, isAdmin, onOpenHe
               ) : (
                 <DropdownMenuItem
                   onClick={e.id === 'help' ? onOpenHelp : e.id === 'theme' ? onToggleTheme : () => setLogoutConfirm(true)}
-                  className={e.id === 'logout' ? 'cursor-pointer text-red-500 focus:text-red-500' : 'cursor-pointer'}
+                  // Charte 2026 : le rouge est réservé aux retards stricts et aux erreurs
+                  // bloquantes ; la déconnexion (confirmée) reste neutre.
+                  className="cursor-pointer"
                 >
                   <Icon className="mr-2 h-4 w-4" /><span>{e.label}</span>
                 </DropdownMenuItem>

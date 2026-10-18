@@ -143,8 +143,9 @@ const TILE_TONES: Record<MascotTile['tone'], { bg: string; fg: string }> = {
 };
 
 /** Fond et bord de la bulle (maquette 2a/2b) : lavis d'accent sur le fond de page, dans les deux thèmes. */
-const BUBBLE_BG = 'color-mix(in srgb, var(--accent) 9%, var(--bg-page))';
-const BUBBLE_EDGE = 'color-mix(in srgb, var(--accent) 30%, transparent)';
+/** Bulle mascotte (charte 2026 §1.2) : #ECF1EF bord #BBD0CC / sombre #243C40 bord #3E5F63. */
+const BUBBLE_BG = 'var(--bubble)';
+const BUBBLE_EDGE = 'var(--bubble-edge)';
 
 /** Nature de la réponse locale, pour la pose de la mascotte du champ. */
 function kindOf(p: MascotParagraph): AnswerKind {
@@ -315,15 +316,17 @@ export function MascotSpeaks({ greetingName, empty, onCreateAsset, onUploadDocum
   // pleine largeur dessous. Une seule grille pour les deux.
   return (
     <section aria-label="Message de Verebona" className="grid grid-cols-[72px_minmax(0,1fr)] items-center gap-x-3.5 gap-y-3 md:grid-cols-[112px_minmax(0,1fr)] md:items-start md:gap-x-7 md:gap-y-3.5">
-      {/* Mascotte immobile (§12bis), ombre portée de la maquette */}
+      {/* Mascotte immobile (§12bis), sans ombre portée (charte 2026 : une
+          seule ombre, réservée aux cartes flottantes) ; recoloration cyan
+          appliquée par MascotPose. 112 px desktop, 72 px mobile. */}
       <div className="flex-shrink-0 self-start md:row-span-3">
-        <MascotPose pose={pose} size={112} alt={homePoseLabel(pose)} priority className="hidden md:block" style={{ filter: 'drop-shadow(0 20px 36px rgba(4,10,26,.45))' }} />
-        <MascotPose pose={pose} size={72} alt={homePoseLabel(pose)} priority className="md:hidden" style={{ filter: 'drop-shadow(0 14px 24px rgba(4,10,26,.45))' }} />
+        <MascotPose pose={pose} size={112} alt={homePoseLabel(pose)} priority className="hidden md:block" />
+        <MascotPose pose={pose} size={72} alt={homePoseLabel(pose)} priority className="md:hidden" />
       </div>
 
       <div className="flex min-w-0 flex-col gap-1 md:gap-3.5 md:pt-1.5">
         <span className="text-[12px] text-[color:var(--text-muted)] md:text-[13px]">{greetingDateLong(now)}</span>
-        <h1 className="m-0 text-[22px] font-semibold leading-tight tracking-[-.02em] text-[color:var(--text-primary)] md:text-[26px]">
+        <h1 className="m-0 text-[26px] font-extrabold leading-[1.1] tracking-[-.03em] text-[color:var(--text-primary)] md:text-[32px]">
           {greetingWord(now)}, {greetingName}
         </h1>
       </div>
@@ -416,7 +419,7 @@ export function MascotSpeaks({ greetingName, empty, onCreateAsset, onUploadDocum
                 if (s.secondary) { void run(s.secondary.action, s.secondary, 'secondary'); return; }
                 void space?.ask(s.label);
               }}
-              className="h-8 flex-shrink-0 whitespace-nowrap rounded-full border border-[color:var(--border)] px-3.5 text-[13px] text-[color:var(--text-primary)] transition-colors duration-150 hover:border-[color:var(--accent)] hover:text-[color:var(--accent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--accent)]"
+              className="h-8 flex-shrink-0 whitespace-nowrap rounded-full border border-[color:var(--border)] px-3.5 text-[13px] text-[color:var(--text-primary)] transition-colors duration-[180ms] hover:border-[color:var(--accent)] hover:text-[color:var(--accent)]"
             >
               {s.label}
             </button>
@@ -451,7 +454,7 @@ function ItemButton({ title, sub, cta, tone, icon, onClick, dataTodoId, dataActi
       onClick={onClick}
       data-todo-id={dataTodoId}
       data-action-type={dataActionType}
-      className="group flex min-h-[60px] items-center gap-3 rounded-2xl border border-[color:var(--border-subtle)] bg-[color:var(--row-muted)] px-3 py-2.5 text-left text-[color:var(--text-primary)] transition-all duration-150 hover:border-[color:var(--accent)] hover:bg-[color:var(--accent-soft)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--accent)] md:gap-3.5 md:rounded-[18px] md:px-4 md:py-3.5"
+      className="group flex min-h-[60px] items-center gap-3 rounded-2xl border border-[color:var(--border-subtle)] bg-[color:var(--bg-card)] px-3 py-2.5 text-left text-[color:var(--text-primary)] transition-colors duration-[180ms] hover:border-[color:var(--accent)] md:gap-3.5 md:rounded-[18px] md:px-4 md:py-3.5"
     >
       <span className="flex h-[38px] w-[38px] flex-shrink-0 items-center justify-center rounded-xl md:h-[42px] md:w-[42px] md:rounded-[13px]" style={{ background: t.bg, color: t.fg }}>
         <Icon className="h-[18px] w-[18px]" aria-hidden />
@@ -461,7 +464,7 @@ function ItemButton({ title, sub, cta, tone, icon, onClick, dataTodoId, dataActi
         {/* Lot 55A : bien · date complète, sur deux lignes si besoin — jamais tronqués (mobile comme desktop). */}
         {sub && <span data-item-sub className="break-words text-[12px] text-[color:var(--muted-foreground)] md:text-[12.5px]">{sub}</span>}
       </span>
-      {cta && <span className="flex-shrink-0 text-[12.5px] font-medium text-[color:var(--accent)] md:text-[13px]">{cta}</span>}
+      {cta && <span className="flex-shrink-0 text-[12.5px] font-semibold text-[color:var(--accent)] md:text-[13px]">{cta}</span>}
       <ArrowRight className="h-4 w-4 flex-shrink-0 text-[color:var(--accent)]" strokeWidth={2.2} aria-hidden />
     </button>
   );

@@ -129,8 +129,8 @@ export function AssetEquipmentsPanel({
 
         {equipments.length === 0 ? (
           <EmptyStateCard
-            icon={<Settings className="w-4 h-4 text-blue-500" />}
-            iconClassName="bg-blue-500/10"
+            icon={<Settings className="w-4 h-4 text-[color:var(--accent)]" />}
+            iconClassName="bg-[color:var(--accent-soft)]"
             title="Aucun équipement répertorié"
             description="Ex: Chaudière, Moteur, Pompe à chaleur, Alarme…"
             actionLabel="Ajouter un équipement"

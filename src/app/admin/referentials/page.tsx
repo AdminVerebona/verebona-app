@@ -87,7 +87,7 @@ function RowsTable({ rows, detailLabel, sort, dir, onSort, withStatus, wrapDetai
               {detailLabel && <TableCell className={`text-xs text-muted-foreground${wrapDetails ? ' whitespace-normal min-w-[16rem] max-w-xl' : ''}`}>{r.details ?? '—'}</TableCell>}
               {withStatus && (
                 <TableCell className="text-sm">
-                  {r.active === null ? '—' : r.active ? <span className="text-emerald-500">Actif</span> : <span className="text-muted-foreground">Inactif</span>}
+                  {r.active === null ? '—' : r.active ? <span className="text-[color:var(--text-success)]">Actif</span> : <span className="text-muted-foreground">Inactif</span>}
                 </TableCell>
               )}
               <TableCell className="text-right tabular-nums">{r.usage ?? '—'}</TableCell>

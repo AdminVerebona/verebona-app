@@ -72,11 +72,11 @@ function InvitationEmailLine({ email, sentAt }: { email: InvitationEmailState | 
   const muted = 'text-xs text-[color:var(--text-muted)]';
   switch (email.state) {
     case 'queued':
-      return <p className="text-xs text-amber-500" data-testid="duo-invite-email-state">Invitation créée — e-mail pas encore expédié, nouvelle tentative automatique en cours.</p>;
+      return <p className="text-xs text-[color:var(--attention-on-soft)]" data-testid="duo-invite-email-state">Invitation créée — e-mail pas encore expédié, nouvelle tentative automatique en cours.</p>;
     case 'accepted':
       return <p className={muted} data-testid="duo-invite-email-state">E-mail expédié le {dateFr(email.acceptedAt ?? sentAt ?? new Date().toISOString())} (livraison non encore confirmée).</p>;
     case 'delayed':
-      return <p className="text-xs text-amber-500" data-testid="duo-invite-email-state">E-mail expédié ; livraison retardée par la messagerie du destinataire.</p>;
+      return <p className="text-xs text-[color:var(--attention-on-soft)]" data-testid="duo-invite-email-state">E-mail expédié ; livraison retardée par la messagerie du destinataire.</p>;
     case 'delivered':
       return <p className={muted} data-testid="duo-invite-email-state">E-mail remis à la messagerie du destinataire le {dateFr(email.deliveredAt ?? email.acceptedAt ?? new Date().toISOString())}.</p>;
     default:
@@ -216,8 +216,8 @@ export function DuoInvitationPanel() {
   if (data.status === 'ACTIVE_MEMBER') {
     return (
       <div className="space-y-3">
-        <div className="flex items-center gap-3 bg-green-950/30 border border-green-500/30 rounded-lg px-4 py-3">
-          <UserCheck className="w-4 h-4 text-green-400 flex-shrink-0" />
+        <div className="flex items-center gap-3 bg-[color:var(--bg-success)] border border-[color:var(--border-success)] rounded-lg px-4 py-3">
+          <UserCheck className="w-4 h-4 text-[color:var(--text-success)] flex-shrink-0" />
           <div className="text-sm flex-1 min-w-0">
             <p className="text-[color:var(--text-success)] font-medium">2e utilisateur actif</p>
             {data.memberEmail && (
@@ -296,7 +296,7 @@ export function DuoInvitationPanel() {
               onClick={handleCopyLink}
               className="gap-1"
             >
-              {copied ? <Check className="w-3.5 h-3.5 text-green-400" /> : <Copy className="w-3.5 h-3.5" />}
+              {copied ? <Check className="w-3.5 h-3.5 text-[color:var(--text-success)]" /> : <Copy className="w-3.5 h-3.5" />}
               Copier le lien
             </Button>
           )}

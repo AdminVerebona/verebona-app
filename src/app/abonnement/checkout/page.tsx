@@ -75,13 +75,13 @@ function CheckoutRedirect() {
       </header>
       <div className="flex-1 flex items-center justify-center p-4">
         <div className="w-full max-w-sm bg-[color:var(--bg-card)] border border-[color:var(--border-subtle)] rounded-2xl shadow-2xl overflow-hidden">
-          <div className="h-1 w-full bg-gradient-to-r from-[#3b82f6] to-[#22c55e]" />
+          <div className="h-1 w-full bg-[color:var(--accent)]" />
           <div className="p-8 text-center space-y-4">
             {!plan ? (
-              <p className="text-red-400 text-sm">Offre inconnue.</p>
+              <p className="text-[color:var(--danger)] text-sm">Offre inconnue.</p>
             ) : loading ? (
               <>
-                <Loader2 className="w-10 h-10 text-[#3b82f6] animate-spin mx-auto" />
+                <Loader2 className="w-10 h-10 text-[color:var(--accent)] animate-spin mx-auto" />
                 <p className="text-[color:var(--text-primary)] font-medium">Chargement du tarif…</p>
               </>
             ) : !offer ? (
@@ -94,7 +94,7 @@ function CheckoutRedirect() {
                 </p>
                 {billingMention(offer) && <p className="text-xs text-[color:var(--text-muted)]">{billingMention(offer)}</p>}
                 {changed && (
-                  <p className="text-sm text-amber-500">
+                  <p className="text-sm text-[color:var(--attention-on-soft)]">
                     Le tarif a changé depuis l&apos;affichage de cette page. Vérifiez le nouveau montant avant de continuer.
                   </p>
                 )}
@@ -107,8 +107,8 @@ function CheckoutRedirect() {
             )}
             {error && (
               <>
-                <p className="text-red-400 text-sm">{error}</p>
-                <Link href="/mon-compte/offres" className="text-[#3b82f6] text-sm underline">
+                <p className="text-[color:var(--danger)] text-sm">{error}</p>
+                <Link href="/mon-compte/offres" className="text-[color:var(--accent)] text-sm underline">
                   Réessayer depuis votre espace
                 </Link>
               </>
@@ -125,7 +125,7 @@ export default function CheckoutPage() {
     <Suspense fallback={
       <div className="public-page min-h-screen flex items-center justify-center bg-[color:var(--bg-page)]">
         <ForceTheme theme="blue" />
-        <Loader2 className="w-8 h-8 text-[#3b82f6] animate-spin" />
+        <Loader2 className="w-8 h-8 text-[color:var(--accent)] animate-spin" />
       </div>
     }>
       <CheckoutRedirect />

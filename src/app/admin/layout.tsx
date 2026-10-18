@@ -15,7 +15,7 @@ export default function AdminLayout({
   if (isLoading) {
     return (
       <div className="flex h-screen overflow-hidden bg-background">
-        <aside className="hidden md:block w-64 flex-shrink-0 border-r bg-muted/20 animate-pulse">
+        <aside className="hidden md:block w-64 flex-shrink-0 border-r border-[color:var(--border-subtle)] bg-[color:var(--sidebar)] animate-pulse">
           <div className="p-6 space-y-4">
             <div className="h-8 w-32 bg-muted rounded" />
             <div className="space-y-2 pt-4">

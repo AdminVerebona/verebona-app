@@ -123,7 +123,7 @@ function Contenu() {
     return cadre(
       <>
         <CardHeader className="text-center">
-          <AlertTriangle className="w-10 h-10 text-amber-500 mx-auto mb-2" aria-hidden />
+          <AlertTriangle className="w-10 h-10 text-[color:var(--attention-on-soft)] mx-auto mb-2" aria-hidden />
           <CardTitle>Lien incomplet</CardTitle>
           <CardDescription>
             Ce lien ne contient pas de jeton de réinitialisation. Il a peut-être été
@@ -143,7 +143,7 @@ function Contenu() {
     return cadre(
       <>
         <CardHeader className="text-center">
-          <AlertTriangle className="w-10 h-10 text-amber-500 mx-auto mb-2" aria-hidden />
+          <AlertTriangle className="w-10 h-10 text-[color:var(--attention-on-soft)] mx-auto mb-2" aria-hidden />
           <CardTitle>Ce lien n&apos;est plus valable</CardTitle>
           <CardDescription>
             Les liens de réinitialisation expirent au bout d&apos;une heure, pour votre
@@ -163,7 +163,7 @@ function Contenu() {
     return cadre(
       <>
         <CardHeader className="text-center">
-          <CheckCircle className="w-10 h-10 text-emerald-500 mx-auto mb-2" aria-hidden />
+          <CheckCircle className="w-10 h-10 text-[color:var(--text-success)] mx-auto mb-2" aria-hidden />
           <CardTitle>Mot de passe modifié</CardTitle>
           <CardDescription>
             Vous allez être redirigé vers la page de connexion.

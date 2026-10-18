@@ -365,7 +365,7 @@ export function ExportPreparationScreen({ assetId, exportType, onClose, api: api
       className="fixed inset-0 z-50 flex flex-col bg-background lg:static lg:z-auto lg:block lg:bg-transparent"
     >
       {/* ── En-tête (PREP-HEADER, PREP-HEA-001 à 010) ── */}
-      <header className="sticky top-0 z-10 shrink-0 border-b border-border bg-background/95 px-4 py-3 backdrop-blur lg:-mx-8 lg:-mt-8 lg:mb-6 lg:px-8 lg:py-4">
+      <header className="sticky top-0 z-10 shrink-0 border-b border-border bg-background px-4 py-3 lg:-mx-8 lg:-mt-8 lg:mb-6 lg:px-8 lg:py-4">
         <div className="flex items-start gap-3">
           <Button type="button" variant="ghost" size="icon" onClick={requestClose} className="-ml-2 shrink-0 lg:hidden" aria-label="Fermer la préparation"><X aria-hidden /></Button>
           <div className="min-w-0 flex-1">
@@ -428,7 +428,7 @@ export function ExportPreparationScreen({ assetId, exportType, onClose, api: api
                 const on = s.required || state.sections[s.id] !== false;
                 const c = sectionCounts(state, s);
                 return (
-                  <button key={s.id} type="button" onClick={() => scrollTo(s.id)} className={cn('inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] outline-none transition-colors hover:border-[color:var(--border-info)] focus-visible:ring-2 focus-visible:ring-ring/60', on ? 'border-border text-foreground' : 'border-border/50 text-muted-foreground line-through decoration-muted-foreground/40')}>
+                  <button key={s.id} type="button" onClick={() => scrollTo(s.id)} className={cn('inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] outline-none transition-colors hover:border-[color:var(--border-info)]', on ? 'border-border text-foreground' : 'border-border/50 text-muted-foreground line-through decoration-muted-foreground/40')}>
                     <span className={cn('size-1.5 rounded-full', on ? 'bg-primary' : 'bg-muted-foreground/40')} aria-hidden />
                     {s.label}{c.total > 0 && <span className="tabular-nums text-muted-foreground">{c.selected}/{c.total}</span>}
                     <span className="sr-only">{on ? ' (incluse)' : ' (non incluse)'}</span>
@@ -503,7 +503,7 @@ export function ExportPreparationScreen({ assetId, exportType, onClose, api: api
 
       {/* ── Actions fixes (mobile, PREP-MOB-004) ── */}
       {!['generating', 'generated_pdf', 'generated_zip', 'generated_partial', 'expired', 'file_deleted'].includes(state.status) && (
-        <div className="fixed inset-x-0 bottom-0 z-20 border-t border-border bg-background/95 px-4 pb-[max(12px,env(safe-area-inset-bottom))] pt-3 backdrop-blur lg:hidden">
+        <div className="fixed inset-x-0 bottom-0 z-20 border-t border-border bg-background px-4 pb-[max(12px,env(safe-area-inset-bottom))] pt-3 lg:hidden">
           <GenerateButtons state={state} onGenerate={onGenerate} onCancel={requestClose} layout="bar" />
         </div>
       )}

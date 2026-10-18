@@ -50,8 +50,7 @@ export function ScrollToTop() {
             "shadow-relief-md hover:shadow-relief-lg",
             "flex items-center justify-center",
             "text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)]",
-            "hover:-translate-y-px",
-            "transition-all duration-200",
+            "transition-colors duration-[180ms]",
             visible ? "opacity-100 pointer-events-auto" : "opacity-0 pointer-events-none",
           ].join(" ")}
         >

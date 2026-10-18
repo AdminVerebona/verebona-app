@@ -118,9 +118,9 @@ function formatDate(iso: string | null): string {
 /** Barre de consommation d'un quota (CDC §9.4 : alerte a partir de 80 %). */
 function QuotaBar({ label, quota, fullHint }: { label: string; quota: QuotaUsage | StorageQuotaUsage; fullHint?: string }) {
   const color = quota.isFull
-    ? 'bg-red-500'
+    ? 'bg-[color:var(--danger)]'
     : quota.shouldWarn
-      ? 'bg-amber-500'
+      ? 'bg-[color:var(--badge-todo)]'
       : 'bg-[color:var(--accent)]';
 
   return (
@@ -133,9 +133,9 @@ function QuotaBar({ label, quota, fullHint }: { label: string; quota: QuotaUsage
         <div className={`h-full rounded-full ${color}`} style={{ width: `${Math.min(quota.ratio, 100)}%` }} />
       </div>
       {quota.shouldWarn && !quota.isFull && (
-        <p className="mt-1 text-xs text-amber-600">Vous approchez de la limite de votre offre.</p>
+        <p className="mt-1 text-xs text-[color:var(--attention-on-soft)]">Vous approchez de la limite de votre offre.</p>
       )}
-      {quota.isFull && fullHint && <p className="mt-1 text-xs text-red-500">{fullHint}</p>}
+      {quota.isFull && fullHint && <p className="mt-1 text-xs text-[color:var(--danger)]">{fullHint}</p>}
     </div>
   );
 }
@@ -233,8 +233,8 @@ export function SubscriptionSummary() {
   // l'offre et des factures (l'ancien bloc « Abonnement » a été retiré).
   const actions = isDuoMember ? (
     <div className="space-y-3">
-      <div className="flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-950/30 px-3 py-2.5 text-sm text-[color:var(--text-warning-soft)]">
-        <ShieldAlert className="mt-0.5 h-4 w-4 flex-shrink-0 text-amber-400" />
+      <div className="flex items-start gap-2 rounded-lg border border-[color:var(--attention-edge)] bg-[color:var(--attention-soft)] px-3 py-2.5 text-sm text-[color:var(--text-warning-soft)]">
+        <ShieldAlert className="mt-0.5 h-4 w-4 flex-shrink-0 text-[color:var(--attention-on-soft)]" />
         <p>Seul le titulaire de l&apos;abonnement peut modifier l&apos;offre et gérer le paiement.</p>
       </div>
       {/* Départ volontaire du second utilisateur (AID-DUO-006). */}
@@ -370,8 +370,8 @@ export function SubscriptionSummary() {
 
       {/* Essai expiré (ou restriction sans impayé) */}
       {data.isRestricted && !isUnpaid(data) && (
-        <div className="mb-5 flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2">
-          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-500" />
+        <div className="mb-5 flex items-start gap-2 rounded-lg border border-[color:var(--attention-edge)] bg-[color:var(--attention-soft)] px-3 py-2">
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-[color:var(--attention-on-soft)]" />
           <p className="text-sm text-[color:var(--text-primary)]">
             Votre essai est terminé et aucun prélèvement n&apos;a été effectué. Vos données sont
             conservées : choisissez une offre pour reprendre l&apos;ajout et la modification.
@@ -397,7 +397,7 @@ export function SubscriptionSummary() {
               : ''}
             .
             {subscription.scheduledChange.state === 'release_failed' && (
-              <span className="mt-1 block text-xs text-amber-600">
+              <span className="mt-1 block text-xs text-[color:var(--attention-on-soft)]">
                 La dernière demande d&apos;annulation n&apos;a pas pu être confirmée : ce changement reste programmé.
               </span>
             )}
@@ -439,7 +439,7 @@ export function SubscriptionSummary() {
         // d'accueil), amenée à l'écran par `DuoInvitationPanel`.
         <div id={DUO_INVITATION_PANEL_ID} className="mt-5 scroll-mt-24 border-t border-[color:var(--border)] pt-4">
           <div className="mb-3 flex items-center gap-2">
-            <Users className="h-4 w-4 text-emerald-400" />
+            <Users className="h-4 w-4 text-[color:var(--text-success)]" />
             <span className="text-sm font-medium text-[color:var(--text-primary)]">2e utilisateur Duo</span>
           </div>
           <DuoInvitationPanel />
@@ -447,9 +447,9 @@ export function SubscriptionSummary() {
       )}
       {!isDuoMember && data.plan !== 'premium_duo' && (
         <div className="mt-5 border-t border-[color:var(--border)] pt-4">
-          <div className="flex flex-col gap-3 rounded-lg border border-dashed border-emerald-500/30 bg-emerald-500/5 px-3 py-3 sm:flex-row sm:items-start">
+          <div className="flex flex-col gap-3 rounded-lg border border-dashed border-[color:var(--border-success)] bg-[color:var(--bg-success)] px-3 py-3 sm:flex-row sm:items-start">
             <div className="flex min-w-0 flex-1 items-start gap-3">
-              <Lock className="mt-0.5 h-4 w-4 flex-shrink-0 text-emerald-400/60" />
+              <Lock className="mt-0.5 h-4 w-4 flex-shrink-0 text-[color:var(--text-success)]" />
               <div className="min-w-0 flex-1">
                 <p className="text-sm font-medium text-[color:var(--text-primary)]">2e utilisateur — Offre Duo</p>
                 <p className="mt-0.5 text-xs text-[color:var(--text-muted)]">Partagez votre espace avec une 2e personne.</p>
@@ -458,7 +458,7 @@ export function SubscriptionSummary() {
             <Button
               size="sm"
               variant="outline"
-              className="w-full gap-1 rounded-full border-emerald-500/40 text-emerald-400 hover:bg-emerald-500/10 sm:w-auto sm:shrink-0"
+              className="w-full gap-1 rounded-full border-[color:var(--border-success)] text-[color:var(--text-success)] hover:bg-[color:var(--bg-success)] sm:w-auto sm:shrink-0"
               onClick={() => router.push('/mon-compte/offres')}
             >
               <Users className="h-3.5 w-3.5" />Passer au Duo

@@ -75,7 +75,7 @@ export function ModeToggle({ item, mode, disabled, onMode, compact = false }: { 
             onClick={() => onMode(m)}
             title={m === 'PDF' ? 'Intégrée au PDF, dans les annexes' : 'Jointe au ZIP, dossier /documents ou /photos'}
             className={cn(
-              'rounded-full font-semibold transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring/60 disabled:cursor-not-allowed disabled:opacity-50',
+              'rounded-full font-semibold transition-colors outline-none disabled:cursor-not-allowed disabled:opacity-50',
               compact ? 'px-2 py-0.5 text-[10px]' : 'px-2.5 py-1 text-[11px]',
               checked ? 'bg-primary text-primary-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground',
             )}
@@ -133,7 +133,7 @@ function ViewButton({ item, viewUrl }: { item: PrepItem; viewUrl: ItemProps['vie
         setBusy(false);
         if (url && w) w.location.href = url; else w?.close();
       }}
-      className="inline-flex items-center gap-1 rounded-full px-2 py-1 text-[11px] font-medium text-muted-foreground outline-none hover:bg-[var(--accent-soft)] hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/60"
+      className="inline-flex items-center gap-1 rounded-full px-2 py-1 text-[11px] font-medium text-muted-foreground outline-none hover:bg-[var(--accent-soft)] hover:text-foreground"
     >
       <Eye className="size-3.5" aria-hidden />Voir<span className="sr-only"> « {item.label} »</span>
     </button>
@@ -199,10 +199,10 @@ export const PhotoTile = memo(function PhotoTile({ item, state, disabled, onTogg
     <li className={cn('group relative overflow-hidden rounded-xl border bg-card transition-shadow', selected ? 'border-primary/70 ring-1 ring-primary/60' : 'border-border')}>
       <label htmlFor={id} className="block cursor-pointer">
         <FileThumb fileId={item.fileId} alt={item.label} viewUrl={viewUrl} className="aspect-[4/3] w-full" />
-        <span className="absolute left-2 top-2 rounded-md bg-black/55 p-1 backdrop-blur-sm">
+        <span className="absolute left-2 top-2 rounded-md bg-black/55 p-1">
           <Checkbox id={id} checked={selected} disabled={disabled || !item.selectable} onCheckedChange={(v) => onToggle(item.key, v === true)} aria-describedby={`${id}-meta`} />
         </span>
-        {item.detail && <span className="absolute right-2 top-2 rounded-full bg-black/55 px-2 py-0.5 text-[10px] font-medium text-white backdrop-blur-sm">{item.detail}</span>}
+        {item.detail && <span className="absolute right-2 top-2 rounded-full bg-black/55 px-2 py-0.5 text-[10px] font-medium text-white">{item.detail}</span>}
       </label>
       <div className="space-y-1.5 px-2.5 py-2">
         <p className="truncate text-xs font-medium" title={item.label}>{item.label}</p>

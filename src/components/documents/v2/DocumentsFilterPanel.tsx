@@ -41,9 +41,9 @@ function FilterPill({ option, onClick }: { option: FilterOption; onClick: () => 
       type="button"
       onClick={onClick}
       aria-pressed={option.active}
-      className={`max-w-full truncate whitespace-nowrap rounded-full border px-3 py-1 text-xs font-medium transition-all duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
+      className={`max-w-full truncate whitespace-nowrap rounded-full border px-3 py-1 text-xs font-medium transition-colors duration-[180ms] ${
         option.active
-          ? 'border-[rgba(59,130,246,.3)] bg-[rgba(59,130,246,.2)] text-[color:var(--text-info-soft)]'
+          ? 'border-[color:var(--accent)] bg-[color:var(--accent-soft)] font-semibold text-[color:var(--text-primary)]'
           : 'border-border text-[color:var(--text-muted)] hover:bg-[color:var(--accent-soft)] hover:text-[color:var(--text-primary)]'
       }`}
     >
@@ -130,7 +130,7 @@ export function ActiveFilterChips({
           type="button"
           onClick={() => onRemove(c.dim, c.value)}
           aria-label={`Retirer le filtre ${c.label}`}
-          className="flex items-center gap-[5px] rounded-full bg-[color:var(--accent-soft)] py-[3px] pl-2.5 pr-1.5 font-medium text-[color:var(--text-info)] transition-colors hover:bg-[rgba(59,130,246,.2)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          className="flex items-center gap-[5px] rounded-full bg-[color:var(--accent-soft)] py-[3px] pl-2.5 pr-1.5 font-medium text-[color:var(--text-info)] transition-colors "
         >
           {c.label}
           <X className="h-3 w-3" aria-hidden />
@@ -139,7 +139,7 @@ export function ActiveFilterChips({
       <button
         type="button"
         onClick={onClear}
-        className="ml-1.5 underline transition-colors hover:text-[color:var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded"
+        className="ml-1.5 underline transition-colors hover:text-[color:var(--text-primary)] rounded"
       >
         Tout effacer
       </button>
