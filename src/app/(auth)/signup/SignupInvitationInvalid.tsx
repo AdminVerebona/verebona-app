@@ -4,7 +4,7 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { LogoWithBaseline } from '@/components/Logo';
 import { LandingFooter } from '@/components/LandingFooter';
-import { ForceTheme } from '@/components/ForceTheme';
+import { FollowTheme } from '@/components/FollowTheme';
 import { publicSiteUrl } from '@/lib/external-urls';
 import type { SignupInvitationContext } from '@/lib/prelaunch-invitations';
 
@@ -56,7 +56,7 @@ export function SignupInvitationInvalid({
   const { title, message } = invitationInvalidContent(context);
   return (
     <div className="public-page min-h-screen flex flex-col bg-[color:var(--bg-page)]">
-      <ForceTheme theme="blue" />
+      <FollowTheme />
       <div className="flex-1 flex items-center justify-center p-4">
         <Card className="w-full max-w-lg bg-[color:var(--bg-card)] border-[color:var(--border-subtle)] shadow-xl">
           <CardHeader className="space-y-4">
@@ -73,7 +73,7 @@ export function SignupInvitationInvalid({
             <div className="flex justify-center">
               <AlertCircle className="w-12 h-12 text-[color:var(--attention-on-soft)]" />
             </div>
-            <CardTitle className="text-center text-[color:var(--text-primary)]" data-testid="signup-invitation-invalid">{title}</CardTitle>
+            <CardTitle role="heading" aria-level={1} className="text-center text-[26px] font-extrabold tracking-[-.02em] text-[color:var(--text-primary)]" data-testid="signup-invitation-invalid">{title}</CardTitle>
             <CardDescription className="text-center text-[color:var(--text-muted)]">{message}</CardDescription>
           </CardHeader>
           <CardContent className="space-y-3">

@@ -214,7 +214,7 @@ export function T3Supervision({ data, error, onOpenJob }: { data: T3SupervisionD
     <div className="rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--bg-card)] p-4 space-y-3">
       <div className="flex items-center gap-2">
         <Activity className="w-4 h-4 text-[color:var(--text-muted)] shrink-0" />
-        <h2 className="text-sm font-semibold text-[color:var(--text-primary)]">Supervision T3</h2>
+        <h2 className="vb-app-section">Supervision T3</h2>
       </div>
       <div className="grid gap-3 sm:grid-cols-2">
         <div className="space-y-1 min-w-0">

@@ -155,11 +155,11 @@ function ReferentialsScreen() {
         return (
           <div className="space-y-6">
             <section className="space-y-2">
-              <h2 className="text-sm font-semibold">Applicabilité par famille de biens</h2>
+              <h2 className="vb-app-section">Applicabilité par famille de biens</h2>
               <RowsTable rows={data.applicability} withStatus={false} {...props} />
             </section>
             <section className="space-y-2">
-              <h2 className="text-sm font-semibold">Mappings de taxonomie documentaire</h2>
+              <h2 className="vb-app-section">Mappings de taxonomie documentaire</h2>
               <RowsTable rows={data.mappings} withStatus {...props} detailLabel="Type de mapping" />
             </section>
           </div>
@@ -171,7 +171,7 @@ function ReferentialsScreen() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold flex items-center gap-2"><Library className="h-6 w-6" /> Référentiels</h1>
+          <h1 className="vb-app-title flex items-center gap-2"><Library className="h-6 w-6" /> Référentiels</h1>
           <p className="text-sm text-muted-foreground mt-0.5">
             Consultation et utilisations actuelles. Les référentiels sont versionnés dans le code{data ? ` (version ${data.version})` : ''} et ne sont pas modifiables ici.
           </p>

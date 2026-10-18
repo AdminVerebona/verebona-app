@@ -113,7 +113,8 @@ export function VerebonaHeaderField() {
       style={{
         width: api.isOpen ? 'min(640px, calc(100% - 150px))' : 'min(560px, calc(100% - 170px))',
         background: 'var(--bg-card)',
-        borderColor: actif ? 'var(--accent)' : 'var(--border)',
+        // Bordure « champ » (--input, ≥ 3:1, lot 67), pétrole quand actif.
+        borderColor: actif ? 'var(--accent)' : 'var(--input)',
         // Focus de la pilule (le champ intérieur n'a pas d'anneau propre) :
         // anneau 3 px cuivre texte décalé, comme les autres commandes.
         outline: focused ? '3px solid var(--focus-ring-color)' : '3px solid transparent',
@@ -228,7 +229,7 @@ export function VerebonaMobileField() {
       aria-expanded={api.isOpen}
       aria-haspopup="dialog"
       data-verebona-field="mobile"
-      className="flex h-[44px] min-w-0 flex-1 items-center gap-2 rounded-full border border-[color:var(--border)] bg-[color:var(--bg-card)] pl-2 pr-1.5 text-left text-[14px] text-[color:var(--text-muted)]"
+      className="flex h-[44px] min-w-0 flex-1 items-center gap-2 rounded-full border border-[color:var(--input)] bg-[color:var(--bg-card)] pl-2 pr-1.5 text-left text-[14px] text-[color:var(--text-muted)]"
     >
       <MascotPose pose={api.pose} size={26} priority />
       <span className="min-w-0 flex-1 truncate">Demander à Verebona</span>

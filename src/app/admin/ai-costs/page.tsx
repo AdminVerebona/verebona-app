@@ -111,7 +111,7 @@ function Ventilation({ title, rows, hint, hrefFor }: {
   return (
     <div className="rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--bg-card)] p-4 space-y-3">
       <div>
-        <h2 className="text-sm font-semibold text-[color:var(--text-primary)]">{title}</h2>
+        <h2 className="vb-app-section">{title}</h2>
         {hint && <p className="text-xs text-[color:var(--text-muted)]">{hint}</p>}
       </div>
       {rows.length === 0 && <p className="text-sm text-[color:var(--text-muted)]">Aucune dépense sur la période.</p>}
@@ -242,7 +242,7 @@ function AiCostsScreen() {
       <AiEnvBanner />
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-bold text-[color:var(--text-primary)]">Coûts IA</h1>
+          <h1 className="vb-app-title">Coûts IA</h1>
           <p className="text-sm text-[color:var(--text-muted)]">
             {report ? <>Du {new Date(report.since).toLocaleDateString('fr-FR')} au {new Date(report.until).toLocaleDateString('fr-FR')}</> : '…'}
             {report?.environment && ` · environnement ${report.environment}`}
@@ -266,12 +266,12 @@ function AiCostsScreen() {
           </>
         )}
         <select value={treatment} onChange={(e) => setTreatment(e.target.value)}
-          className="rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--bg-input)] px-3 py-2 text-sm text-[color:var(--text-primary)]">
+          className="rounded-lg border border-[color:var(--input)] bg-[color:var(--bg-input)] px-3 py-2 text-sm text-[color:var(--text-primary)]">
           <option value="">Tous les traitements</option>
           {['T1', 'T2', 'T3', 'T4', 'T6'].map((t) => <option key={t} value={t}>{t}</option>)}
         </select>
         <select value={t6Mode} onChange={(e) => setT6Mode(e.target.value)} aria-label="Mode de génération T6"
-          className="rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--bg-input)] px-3 py-2 text-sm text-[color:var(--text-primary)]">
+          className="rounded-lg border border-[color:var(--input)] bg-[color:var(--bg-input)] px-3 py-2 text-sm text-[color:var(--text-primary)]">
           <option value="">Tous les modes T6</option>
           {T6_MODES.map((m) => <option key={m} value={m}>{T6_MODE_LABELS[m]}</option>)}
         </select>
@@ -281,7 +281,7 @@ function AiCostsScreen() {
 
       {alerts.length > 0 && (
         <div className="rounded-xl border border-[color:var(--border-warning)] bg-[color:var(--bg-warning)] p-4 space-y-2">
-          <h2 className="text-sm font-semibold text-[color:var(--text-primary)] flex items-center gap-2">
+          <h2 className="vb-app-section flex items-center gap-2">
             <Bell className="w-4 h-4 text-[color:var(--text-warning-soft)]" /> Alertes de coût
           </h2>
           <p className="text-xs text-[color:var(--text-muted)]">Une alerte de coût n&apos;interrompt jamais un traitement (COST-013).</p>
@@ -355,7 +355,7 @@ function AiCostsScreen() {
       {settings && (
         <div className="rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--bg-card)] p-4 space-y-4">
           <div>
-            <h2 className="text-sm font-semibold text-[color:var(--text-primary)]">Budgets mensuels et anomalies</h2>
+            <h2 className="vb-app-section">Budgets mensuels et anomalies</h2>
             <p className="text-xs text-[color:var(--text-muted)]">
               Paramètres de cet environnement, hors configuration versionnée. Mois calendaire, dépense métier,
               en $ (devise de la grille tarifaire). Un dépassement crée une alerte, jamais une suspension.

@@ -151,7 +151,7 @@ export function ToProcessRelevancePanel() {
     <div className="rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--bg-card)] p-4 space-y-3">
       <div className="flex flex-wrap items-center gap-2">
         <ListChecks className="w-4 h-4 text-[color:var(--text-muted)] shrink-0" />
-        <h2 className="text-sm font-semibold text-[color:var(--text-primary)]">Pertinence des « À traiter » documentaires</h2>
+        <h2 className="vb-app-section">Pertinence des « À traiter » documentaires</h2>
         <Button type="button" size="sm" variant="outline" className="ml-auto h-8" onClick={() => void charger()} disabled={busy}>
           <RefreshCw className="w-3.5 h-3.5 mr-1" />Actualiser
         </Button>

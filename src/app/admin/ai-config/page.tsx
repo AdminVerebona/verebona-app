@@ -233,7 +233,7 @@ function Field({ label, hint, children }: { label: string; hint?: string; childr
 }
 
 const selectClass =
-  'w-full rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--bg-input)] '
+  'w-full rounded-lg border border-[color:var(--input)] bg-[color:var(--bg-input)] '
   + 'px-3 py-2 text-sm text-[color:var(--text-primary)] disabled:opacity-50';
 
 // ─── Éditeur d'un traitement ──────────────────────────────────────────────────
@@ -932,7 +932,7 @@ export default function AiConfigPage() {
       <CatalogBanners />
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div className="min-w-0">
-          <h1 className="text-2xl font-bold text-[color:var(--text-primary)]">Configuration IA</h1>
+          <h1 className="vb-app-title">Configuration IA</h1>
           <p className="text-sm text-[color:var(--text-muted)]">
             Une version couvre tous les traitements (T1, T2, T3, T4, T6). Environnement : {environment}.
           </p>
@@ -946,7 +946,7 @@ export default function AiConfigPage() {
       <section data-testid="config-export" className="rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--bg-card)] p-4 space-y-3">
         <div className="flex flex-col sm:flex-row sm:items-center gap-3">
           <div className="flex-1 min-w-0 space-y-1">
-            <h2 className="text-sm font-semibold text-[color:var(--text-primary)]">Configuration active</h2>
+            <h2 className="vb-app-section">Configuration active</h2>
             {exportState?.active ? (
               <p className="text-sm text-[color:var(--text-secondary)] break-words">
                 v{exportState.active.versionNumber ?? exportState.active.versionId}
@@ -1014,7 +1014,7 @@ export default function AiConfigPage() {
 
       {/* Liste des versions */}
       <section className="space-y-2">
-        <h2 className="text-sm font-semibold text-[color:var(--text-primary)]">Versions</h2>
+        <h2 className="vb-app-section">Versions</h2>
         <div data-testid="config-versions" className="rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--bg-card)] divide-y divide-[color:var(--border-subtle)]">
           {versions.length === 0 && (
             <p className="p-6 text-sm text-[color:var(--text-muted)]">
@@ -1143,7 +1143,7 @@ export default function AiConfigPage() {
             replis, garde-fous, déclencheurs (T1, T2, T3, T4, T6).
           */}
           <div className="space-y-2">
-            <h2 className="text-sm font-semibold text-[color:var(--text-primary)]">Réglages par traitement</h2>
+            <h2 className="vb-app-section">Réglages par traitement</h2>
             {catalogs.treatments.map((t) => {
               const fige = current.masterPrompts?.[t.code] ?? null;
               const choix = promptChoices[t.code];
@@ -1255,7 +1255,7 @@ export default function AiConfigPage() {
 
           {diff && (
             <div className="rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--bg-card)] p-4 space-y-2">
-              <h2 className="text-sm font-semibold text-[color:var(--text-primary)]">Écarts avec la version active</h2>
+              <h2 className="vb-app-section">Écarts avec la version active</h2>
               {diff.diff.identical ? (
                 <p className="text-sm text-[color:var(--text-muted)]">Cette version est identique à la version active.</p>
               ) : (
@@ -1372,7 +1372,7 @@ export default function AiConfigPage() {
                 Environnement de PRODUCTION. Saisissez « production » pour confirmer.
               </span>
               <input value={saisieEnv} onChange={(e) => setSaisieEnv(e.target.value)} autoComplete="off"
-                className="w-full rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--bg-input)] px-3 py-2 text-sm" />
+                className="w-full rounded-lg border border-[color:var(--input)] bg-[color:var(--bg-input)] px-3 py-2 text-sm" />
             </label>
           )}
           <DialogFooter className="gap-2">

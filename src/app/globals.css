@@ -21,6 +21,10 @@
    utilisateurs. Sans choix enregistré, la préférence du système décide
    (src/lib/theme.ts). `:root` porte le thème CLAIR : c'est le rendu par
    défaut, y compris si le script de thème ne s'exécute pas.
+
+   Lot 67 : les pages publiques de l'application (connexion, inscription,
+   onboarding, `.public-page`) ne forcent plus le sombre — elles suivent le
+   même thème que le reste de l'application.
    ══════════════════════════════════════════════════════════════════════════ */
 
 @theme inline {
@@ -110,6 +114,7 @@
   --fs-app-section: 17px;
   --fs-app-body: 14px;
   --fs-app-meta: 12.5px;
+  --fs-eyebrow: 14px;
 
   /* Rayons et ombre (§5) */
   --radius: 0.75rem;              /* 12 px : boutons et champs */
@@ -160,6 +165,10 @@ html[data-theme="beige"] {
   --attention-edge: #E8C4B9;
   --badge-todo: #AA4E38;
   --on-badge-todo: #FFFFFF;
+  /* Pastille « Recommandé » (lot 67) : blanc sur cuivre TEXTE, 5,45:1
+     (pas sur le cuivre doux #D66B53 : 3,45:1, charte §1.3). */
+  --badge-recommended: #AA4E38;
+  --on-badge-recommended: #FFFFFF;
   --bubble: #ECF1EF;
   --bubble-edge: #BBD0CC;
   --focus-ring-color: #AA4E38;
@@ -189,7 +198,12 @@ html[data-theme="beige"] {
   --accent-foreground: #FFFFFF;
   --destructive: #B42318;
   --border: #D5DEDC;
-  --input: #D5DEDC;
+  /* Bordure des CHAMPS de saisie (lot 67, WCAG 1.4.11 ≥ 3:1) — distincte du
+     filet des cartes et séparateurs (--border, #D5DEDC, inchangé).
+     #76878D : 3,74:1 sur blanc (fond du champ), 3,46:1 sur ivoire (page),
+     3,28:1 sur ivoire 2 (menu), 3,08:1 sur brume. */
+  --input: #76878D;
+  --vb-field-border: #76878D;
   --ring: #AA4E38;
   --chart-1: #17474D;
   --chart-2: #D66B53;
@@ -265,11 +279,10 @@ html[data-theme="beige"] {
 
 /* ══════════════════════════════════════════════════════════════════════════
    THÈME SOMBRE — encre neutre (data-theme="blue"), jamais pétrole sur pétrole
-   `.public-page` : pages publiques, toujours sombres (comportement conservé).
+   Lot 67 : `.public-page` n'est plus forcée en sombre (décision PO 18/10) —
+   connexion, inscription, onboarding et pages publiques suivent le thème.
    ══════════════════════════════════════════════════════════════════════════ */
-html[data-theme="blue"],
-html .public-page,
-html[data-theme="beige"] .public-page {
+html[data-theme="blue"] {
   color-scheme: dark;
 
   --bg-page: #1B2529;
@@ -295,6 +308,10 @@ html[data-theme="beige"] .public-page {
   --badge-todo: #D66B53;
   /* Pas de texte blanc sur cuivre doux (3,45:1, charte §1.3) : encre (4,53:1). */
   --on-badge-todo: #1B2529;
+  /* « Recommandé » en sombre : encre #1B2529 sur cuivre sombre #E2896F,
+     5,99:1 (le cuivre de la charte sur fond sombre, §1.3). */
+  --badge-recommended: #E2896F;
+  --on-badge-recommended: #1B2529;
   --bubble: #243C40;
   --bubble-edge: #3E5F63;
   --focus-ring-color: #E2896F;
@@ -321,7 +338,10 @@ html[data-theme="beige"] .public-page {
   --accent-foreground: #1B2529;
   --destructive: #F5A3A3;
   --border: #3A4A51;
-  --input: #3A4A51;
+  /* #7C8F95 : 4,20:1 sur le fond du champ (#1F2D32), 3,76:1 sur carte,
+     4,63:1 sur page, 4,96:1 sur menu, 3,12:1 sur accent-soft (lot 67). */
+  --input: #7C8F95;
+  --vb-field-border: #7C8F95;
   --ring: #E2896F;
   --chart-1: #9FD3CC;
   --chart-2: #E2896F;
@@ -410,6 +430,39 @@ html[data-theme="beige"] .public-page {
   table, td, th, input[type="number"], input[inputmode="decimal"], input[inputmode="numeric"], time {
     font-variant-numeric: tabular-nums;
   }
+  /* Champs de saisie natifs (lot 67) : bordure « champ » ≥ 3:1 par défaut,
+     y compris les champs écrits à la main avec une simple classe `border`.
+     En couche de base : un utilitaire explicite (focus, erreur) l'emporte. */
+  input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"]):not([type="color"]),
+  textarea,
+  select {
+    border-color: var(--input);
+  }
+  /* Échelle typographique de l'application (charte §2). En couche de base
+     (lot 67) : un utilitaire posé à côté (couleur d'erreur, marge, taille
+     particulière) l'emporte, au lieu d'être écrasé silencieusement. */
+  .vb-app-title { font-size: var(--fs-app-title); font-weight: 800; letter-spacing: -.03em; line-height: 1.1; color: var(--text-primary); }
+  .vb-app-greeting { font-size: var(--fs-app-greeting); font-weight: 800; letter-spacing: -.03em; line-height: 1.1; color: var(--text-primary); }
+  .vb-app-section { font-size: var(--fs-app-section); font-weight: 700; letter-spacing: -.01em; line-height: 1.3; color: var(--text-primary); }
+  .vb-meta { font-size: var(--fs-app-meta); color: var(--text-muted); }
+  /* Lot 67 — échelle de la charte pour les titres secondaires (casse
+     naturelle, plus de petites capitales) :
+     - .vb-app-subsection : titre d'un bloc dans un tiroir, une carte ou un
+       onglet (15 / 700, comme les titres de carte des maquettes) ;
+     - .vb-app-label : intitulé de groupe de champs / de métadonnées
+       (13 / 600, texte secondaire) ;
+     - .vb-group-label : séparateur de groupe de liste, en capitales comme sur
+       la maquette Agenda (12 / 700, 0,04 em, texte secondaire) ;
+     - .vb-eyebrow : sur-titre de la charte (14 / 700, capitales 0,06 em,
+       cuivre texte), uniquement là où la charte en prévoit. */
+  .vb-app-subsection { font-size: 15px; font-weight: 700; letter-spacing: -.01em; line-height: 1.3; color: var(--text-primary); }
+  .vb-app-label { font-size: 13px; font-weight: 600; line-height: 1.4; letter-spacing: 0; color: var(--text-muted); }
+  .vb-group-label { font-size: 12px; font-weight: 700; line-height: 1.4; letter-spacing: .04em; text-transform: uppercase; color: var(--text-muted); }
+  .vb-eyebrow { font-size: var(--fs-eyebrow); font-weight: 700; line-height: 1.3; letter-spacing: .06em; text-transform: uppercase; color: var(--attention); }
+  @media (max-width: 767px) {
+    .vb-app-title { font-size: 26px; }
+    .vb-app-greeting { font-size: 26px; }
+  }
 }
 
 /* ══════════════════════════════════════════════════════════════════════════
@@ -433,15 +486,6 @@ html[data-theme="beige"] .public-page {
 /* Utilitaires de la charte */
 .vb-tabular { font-variant-numeric: tabular-nums; }
 .vb-mascotte { filter: var(--vb-mascotte-filtre); }
-.vb-app-title { font-size: var(--fs-app-title); font-weight: 800; letter-spacing: -.03em; line-height: 1.1; color: var(--text-primary); }
-.vb-app-greeting { font-size: var(--fs-app-greeting); font-weight: 800; letter-spacing: -.03em; line-height: 1.1; color: var(--text-primary); }
-.vb-app-section { font-size: var(--fs-app-section); font-weight: 700; letter-spacing: -.01em; line-height: 1.3; color: var(--text-primary); }
-.vb-meta { font-size: var(--fs-app-meta); color: var(--text-muted); }
-@media (max-width: 767px) {
-  .vb-app-title { font-size: 26px; }
-  .vb-app-greeting { font-size: 26px; }
-}
-
 /* Ombres « relief » (noms historiques) : voir --shadow-* ci-dessus. */
 .shadow-relief-sm { box-shadow: var(--shadow-sm); }
 .shadow-relief-md { box-shadow: var(--shadow-md); }

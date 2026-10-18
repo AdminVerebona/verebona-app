@@ -427,7 +427,7 @@ export function AssetExportsTab({ assetId, assetCategory, assetTypeId, planType,
     <div className="space-y-8">
       {/* ── Dossiers prêts à l'usage ── */}
       <div>
-        <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3">
+        <h3 className="vb-app-section mb-3">
           Dossiers prêts à l&apos;usage
         </h3>
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
@@ -514,7 +514,7 @@ export function AssetExportsTab({ assetId, assetCategory, assetTypeId, planType,
 
       {/* ── Transfert et récupération ── */}
       <div>
-        <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3">
+        <h3 className="vb-app-section mb-3">
           Transfert et récupération
         </h3>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -555,7 +555,7 @@ export function AssetExportsTab({ assetId, assetCategory, assetTypeId, planType,
       {/* ── Historique des transmissions ── */}
       {(loadingTransmissions || transmissions.length > 0) && (
         <div>
-          <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3">
+          <h3 className="vb-app-section mb-3">
             Transmissions
           </h3>
 
@@ -608,7 +608,7 @@ export function AssetExportsTab({ assetId, assetCategory, assetTypeId, planType,
 
       {/* ── Historique des exports (DRH-002 à 010, ALT-005, ALT-006) ── */}
       <div id="historique" className="scroll-mt-24">
-        <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3">
+        <h3 className="vb-app-section mb-3">
           Historique des exports
         </h3>
 

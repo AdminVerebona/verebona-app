@@ -103,7 +103,7 @@ export default function RecoveryPage() {
           <CardHeader className="border-b border-[color:var(--border-subtle)] bg-[color:var(--bg-card)]">
             <div className="flex items-center justify-between">
               <div>
-                <CardTitle className="text-lg">Biens du Duo</CardTitle>
+                <CardTitle>Biens du Duo</CardTitle>
                 <CardDescription>
                   Sélectionnez les biens que vous souhaitez récupérer dans votre espace personnel.
                 </CardDescription>
@@ -131,7 +131,7 @@ export default function RecoveryPage() {
                           {asset.label}
                         </div>
                         {asset.lock_state !== 'NONE' && (
-                          <Badge variant="secondary" className="mt-1 text-[10px] uppercase tracking-wider h-4">
+                          <Badge variant="secondary" className="mt-1 text-[11px] h-5">
                             {asset.lock_state === 'PENDING_MOVE' ? 'Déplacement en cours' : 'Suppression en cours'}
                           </Badge>
                         )}

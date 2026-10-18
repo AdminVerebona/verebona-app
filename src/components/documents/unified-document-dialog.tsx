@@ -948,7 +948,7 @@ export function UnifiedDocumentDialog({
             disabled={!canSubmit || isUploading}
           >
             {isUploading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
-            <span className="text-[10px] font-semibold uppercase tracking-wider">
+            <span className="text-[12px] font-semibold">
               {isUploading
                 ? (uploadProgress && uploadProgress.total > 1 ? `Envoi ${uploadProgress.current}/${uploadProgress.total}…` : 'Envoi…')
                 : mode === 'weblink' ? 'Ajouter'

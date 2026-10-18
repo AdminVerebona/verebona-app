@@ -157,7 +157,7 @@ export function TransactionalEmailsOps() {
 
   return (
     <section className="space-y-3" data-testid="transactional-emails-ops">
-      <h2 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">E-mails transactionnels — envois et livraison</h2>
+      <h2 className="vb-app-section">E-mails transactionnels — envois et livraison</h2>
       <div className="rounded-xl border bg-card p-4 space-y-3">
         {config ? <ConfigBlock c={config} /> : <p className="text-xs text-muted-foreground">Configuration d’envoi indisponible.</p>}
         {config ? <SenderForm key={`${config.senderEmail}|${config.senderName}|${config.replyToEmail}|${config.emailsEnabled}`} c={config} onSaved={setConfig} /> : null}

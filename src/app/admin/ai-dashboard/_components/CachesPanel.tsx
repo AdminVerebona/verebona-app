@@ -139,7 +139,7 @@ export function CachesPanel() {
         <div className="space-y-5 pt-3">
           <section className="space-y-2">
             <div className="flex items-center justify-between gap-2">
-              <h3 className="text-xs font-semibold uppercase tracking-wide text-[color:var(--text-muted)]">État des caches</h3>
+              <h3 className="vb-app-subsection">État des caches</h3>
               <Button size="sm" variant="outline" onClick={load} disabled={loading}>
                 {loading && <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" />} Actualiser
               </Button>
@@ -201,7 +201,7 @@ export function CachesPanel() {
           </section>
 
           <section className="space-y-2 border-t border-[color:var(--border-subtle)] pt-3">
-            <h3 className="text-xs font-semibold uppercase tracking-wide text-[color:var(--text-muted)]">Export des métriques agrégées (CSV)</h3>
+            <h3 className="vb-app-subsection">Export des métriques agrégées (CSV)</h3>
             <p className="text-xs text-[color:var(--text-muted)]">
               Demandes de l’assistant (intention, mode, statut), appels modèle (alias, modèle, version de prompt), usage IA par
               traitement et par offre — par jour. Aucun identifiant ni contenu de conversation ; chaque export est journalisé.

@@ -264,7 +264,7 @@ export default function DocumentDetailPage() {
               <div className="flex-1 min-w-0">
                 <div className="flex items-start justify-between mb-4">
                   <div className="flex-1 min-w-0">
-                    <h1 className="text-2xl font-bold truncate">{document.originalFilename}</h1>
+                    <h1 className="vb-app-title truncate">{document.originalFilename}</h1>
                     {document.asset && (
                       <p className="text-muted-foreground mt-1">
                         Bien : <Link href={`/assets/${document.asset.id}`} className="hover:underline">{document.asset.name}</Link>

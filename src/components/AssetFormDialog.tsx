@@ -192,7 +192,7 @@ export function AssetFormDialog({
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent className="sm:max-w-[560px] flex flex-col overflow-hidden p-0">
         <SheetHeader className="px-6 pt-6 pb-4 border-b border-[color:var(--border-subtle)] flex-shrink-0">
-          <SheetTitle className="flex items-center gap-2 text-lg font-semibold">
+          <SheetTitle className="flex items-center gap-2">
             <Package className="w-5 h-5 text-[color:var(--accent)]" />
             Ajouter un bien
           </SheetTitle>
@@ -328,7 +328,7 @@ export function AssetFormDialog({
               disabled={isSubmitting}
             >
               <X className="w-4 h-4" />
-              <span className="text-[10px] font-semibold uppercase tracking-wider">Annuler</span>
+              <span className="text-[12px] font-semibold">Annuler</span>
             </button>
             <div className="w-px bg-border" />
             <button
@@ -338,7 +338,7 @@ export function AssetFormDialog({
               disabled={isSubmitting}
             >
               {isSubmitting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
-              <span className="text-[10px] font-semibold uppercase tracking-wider">{isSubmitting ? 'Création…' : 'Créer le bien'}</span>
+              <span className="text-[12px] font-semibold">{isSubmitting ? 'Création…' : 'Créer le bien'}</span>
             </button>
           </div>
         </div>

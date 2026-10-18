@@ -2,7 +2,7 @@
 
 import { useEffect, useState, Suspense } from 'react';
 import { useSearchParams } from 'next/navigation';
-import { ForceTheme } from '@/components/ForceTheme';
+import { FollowTheme } from '@/components/FollowTheme';
 import { LogoWithBaseline } from '@/components/Logo';
 import { Loader2 } from 'lucide-react';
 import { apiClient } from '@/lib/api-client';
@@ -69,7 +69,7 @@ function CheckoutRedirect() {
 
   return (
     <div className="public-page min-h-screen flex flex-col bg-[color:var(--bg-page)]">
-      <ForceTheme theme="blue" />
+      <FollowTheme />
       <header className="flex items-center justify-center py-6 px-4">
         <Link href="/"><LogoWithBaseline size={40} /></Link>
       </header>
@@ -124,7 +124,7 @@ export default function CheckoutPage() {
   return (
     <Suspense fallback={
       <div className="public-page min-h-screen flex items-center justify-center bg-[color:var(--bg-page)]">
-        <ForceTheme theme="blue" />
+        <FollowTheme />
         <Loader2 className="w-8 h-8 text-[color:var(--accent)] animate-spin" />
       </div>
     }>

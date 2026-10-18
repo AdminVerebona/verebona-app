@@ -201,7 +201,7 @@ export default function AiProviderPage() {
       <AiEnvBanner />
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-bold text-[color:var(--text-primary)]">Fournisseur IA</h1>
+          <h1 className="vb-app-title">Fournisseur IA</h1>
           <p className="text-sm text-[color:var(--text-muted)]">
             Connexion Gemini de cet environnement et modèles utilisables.
           </p>
@@ -216,7 +216,7 @@ export default function AiProviderPage() {
 
       {/* Clé active */}
       <div className="rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--bg-card)] p-4 space-y-3">
-        <h2 className="text-sm font-semibold text-[color:var(--text-primary)] flex items-center gap-2">
+        <h2 className="vb-app-section flex items-center gap-2">
           <ShieldCheck className="w-4 h-4 text-[color:var(--text-success)]" /> Clé en service
         </h2>
 
@@ -251,7 +251,7 @@ export default function AiProviderPage() {
 
       {/* Nouvelle clé */}
       <div className="rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--bg-card)] p-4 space-y-3">
-        <h2 className="text-sm font-semibold text-[color:var(--text-primary)] flex items-center gap-2">
+        <h2 className="vb-app-section flex items-center gap-2">
           <KeyRound className="w-4 h-4" /> Remplacer la clé
         </h2>
         <p className="text-xs text-[color:var(--text-muted)]">
@@ -313,7 +313,7 @@ export default function AiProviderPage() {
       {/* Catalogue */}
       <div className="rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--bg-card)] p-4 space-y-3">
         <div className="flex items-baseline justify-between gap-3">
-          <h2 className="text-sm font-semibold text-[color:var(--text-primary)]">Modèles</h2>
+          <h2 className="vb-app-section">Modèles</h2>
           <span className="text-xs text-[color:var(--text-muted)]">
             {data.catalogLoadedAt
               ? `dernière actualisation le ${new Date(data.catalogLoadedAt).toLocaleString('fr-FR')}`

@@ -29,9 +29,15 @@ export function Pill({ tone = 'neutral', children, className, title }: { tone?: 
   );
 }
 
-/** Sur-titre (« DOSSIER PRÊT À L'EMPLOI »). */
+/** Sur-titre de la charte (« DOSSIER PRÊT À L'EMPLOI ») : 14 px, capitales
+ *  0,06 em, cuivre texte — uniquement au-dessus du titre de l'écran. */
 export function Eyebrow({ children, className }: { children: ReactNode; className?: string }) {
-  return <p className={cn('text-[10px] font-semibold uppercase tracking-[.08em] text-muted-foreground', className)}>{children}</p>;
+  return <p className={cn('vb-eyebrow', className)}>{children}</p>;
+}
+
+/** Titre de bloc (lot 67) : 15 / 700, casse naturelle (plus de petites capitales). */
+export function SectionLabel({ children, className }: { children: ReactNode; className?: string }) {
+  return <h3 className={cn('vb-app-subsection m-0', className)}>{children}</h3>;
 }
 
 /** Encadré de message (alerte, information). */

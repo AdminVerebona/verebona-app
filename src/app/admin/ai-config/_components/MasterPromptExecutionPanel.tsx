@@ -133,7 +133,7 @@ export function MasterPromptExecutionPanel({
             <label className="text-[color:var(--text-muted)]" htmlFor={`mode-${treatment}`}>Mode</label>
             <select
               id={`mode-${treatment}`}
-              className="rounded border border-[color:var(--border-subtle)] bg-[color:var(--bg-input)] px-2 py-1 text-[color:var(--text-primary)]"
+              className="rounded border border-[color:var(--input)] bg-[color:var(--bg-input)] px-2 py-1 text-[color:var(--text-primary)]"
               value={cfg.mode} disabled={disabled}
               onChange={(e) => changer({ mode: e.target.value as ExecutionMode })}
             >
@@ -144,7 +144,7 @@ export function MasterPromptExecutionPanel({
                 <label className="text-[color:var(--text-muted)]" htmlFor={`in-${treatment}`}>Contrat d’entrée</label>
                 <select
                   id={`in-${treatment}`}
-                  className="rounded border border-[color:var(--border-subtle)] bg-[color:var(--bg-input)] px-2 py-1 text-[color:var(--text-primary)]"
+                  className="rounded border border-[color:var(--input)] bg-[color:var(--bg-input)] px-2 py-1 text-[color:var(--text-primary)]"
                   value={cfg.inputContractVersion ?? ''} disabled={disabled}
                   onChange={(e) => changer({ inputContractVersion: e.target.value })}
                 >
@@ -153,7 +153,7 @@ export function MasterPromptExecutionPanel({
                 <label className="text-[color:var(--text-muted)]" htmlFor={`out-${treatment}`}>Contrat de sortie</label>
                 <select
                   id={`out-${treatment}`}
-                  className="rounded border border-[color:var(--border-subtle)] bg-[color:var(--bg-input)] px-2 py-1 text-[color:var(--text-primary)]"
+                  className="rounded border border-[color:var(--input)] bg-[color:var(--bg-input)] px-2 py-1 text-[color:var(--text-primary)]"
                   value={cfg.outputContractVersion ?? ''} disabled={disabled}
                   onChange={(e) => changer({ outputContractVersion: e.target.value })}
                 >
@@ -215,14 +215,14 @@ export function MasterPromptExecutionPanel({
           <span className="text-[color:var(--text-muted)]">Aperçu</span>
           <select
             aria-label="TASK de l’aperçu"
-            className="rounded border border-[color:var(--border-subtle)] bg-[color:var(--bg-input)] px-2 py-1 text-[color:var(--text-primary)]"
+            className="rounded border border-[color:var(--input)] bg-[color:var(--bg-input)] px-2 py-1 text-[color:var(--text-primary)]"
             value={task} onChange={(e) => { setTask(e.target.value); setScenario(''); }}
           >
             {info.knownTasks.map((t) => <option key={t} value={t}>{t}</option>)}
           </select>
           <select
             aria-label="Scénario de l’aperçu"
-            className="rounded border border-[color:var(--border-subtle)] bg-[color:var(--bg-input)] px-2 py-1 text-[color:var(--text-primary)] max-w-xs"
+            className="rounded border border-[color:var(--input)] bg-[color:var(--bg-input)] px-2 py-1 text-[color:var(--text-primary)] max-w-xs"
             value={scenario} onChange={(e) => setScenario(e.target.value)}
           >
             <option value="">Premier scénario</option>

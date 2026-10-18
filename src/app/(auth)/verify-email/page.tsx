@@ -28,7 +28,7 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { LogoWithBaseline } from '@/components/Logo';
 import { LandingFooter } from '@/components/LandingFooter';
-import { ForceTheme } from '@/components/ForceTheme';
+import { FollowTheme } from '@/components/FollowTheme';
 import { MailCheck, CheckCircle, AlertCircle, Loader2, Users } from 'lucide-react';
 import { publicSiteUrl } from '@/lib/external-urls';
 import { duoJoinErrorMessage, joinDuo, peekPendingDuoJoin, settlePendingDuoJoin } from '@/lib/duo/pending-duo-join';
@@ -202,7 +202,7 @@ function VerifyEmailContent() {
           <div className="flex justify-center">
             <CheckCircle className="w-14 h-14 text-[color:var(--text-success)]" />
           </div>
-          <CardTitle className="text-center text-[color:var(--text-primary)]">
+          <CardTitle role="heading" aria-level={1} className="text-center text-[26px] font-extrabold tracking-[-.02em] text-[color:var(--text-primary)]">
             {alreadyVerified ? 'Adresse déjà vérifiée' : 'Adresse vérifiée'}
           </CardTitle>
           <CardDescription className="text-center text-[color:var(--text-muted)]">
@@ -246,7 +246,7 @@ function VerifyEmailContent() {
           <div className="flex justify-center">
             <AlertCircle className="w-14 h-14 text-[color:var(--attention-on-soft)]" />
           </div>
-          <CardTitle className="text-center text-[color:var(--text-primary)]">{content.title}</CardTitle>
+          <CardTitle role="heading" aria-level={1} className="text-center text-[26px] font-extrabold tracking-[-.02em] text-[color:var(--text-primary)]">{content.title}</CardTitle>
           <CardDescription className="text-center text-[color:var(--text-muted)]">
             {content.message}
           </CardDescription>
@@ -282,7 +282,7 @@ function VerifyEmailContent() {
         <div className="flex justify-center">
           <MailCheck className="w-14 h-14 text-[color:var(--accent)]" />
         </div>
-        <CardTitle className="text-center text-[color:var(--text-primary)]">
+        <CardTitle role="heading" aria-level={1} className="text-center text-[26px] font-extrabold tracking-[-.02em] text-[color:var(--text-primary)]">
           Vérifiez votre boîte mail
         </CardTitle>
         <CardDescription className="text-center text-[color:var(--text-muted)]">
@@ -401,7 +401,7 @@ function ResendBlock({
 function Shell({ children }: { children: React.ReactNode }) {
   return (
     <div className="public-page min-h-screen flex flex-col bg-[color:var(--bg-page)]">
-      <ForceTheme theme="blue" />
+      <FollowTheme />
       <div className="flex-1 flex items-center justify-center p-4">
         <Card className="w-full max-w-md bg-[color:var(--bg-card)] border-[color:var(--border-subtle)] shadow-xl">
           {children}

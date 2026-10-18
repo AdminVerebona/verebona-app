@@ -75,7 +75,7 @@ export function ModelCatalog() {
     <div className="rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--bg-card)] p-4 space-y-3">
       <div className="flex flex-wrap items-center gap-3">
         <div className="flex-1 min-w-0">
-          <h2 className="text-sm font-semibold text-[color:var(--text-primary)]">Catalogue des modèles</h2>
+          <h2 className="vb-app-section">Catalogue des modèles</h2>
           <p className="text-xs text-[color:var(--text-muted)]">
             {state?.refreshedAt
               ? `Dernier rafraîchissement : ${new Date(state.refreshedAt).toLocaleString('fr-FR')}. Synchronisation automatique toutes les 6 h.`

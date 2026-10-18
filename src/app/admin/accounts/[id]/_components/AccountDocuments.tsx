@@ -87,7 +87,7 @@ export function AccountDocuments({ accountId }: { accountId: string | number }) 
     <>
       <section className="rounded-xl border bg-card overflow-hidden">
         <div className="px-5 py-4 border-b">
-          <h2 className="font-semibold flex items-center gap-2">
+          <h2 className="vb-app-section flex items-center gap-2">
             <FileText className="h-4 w-4 text-muted-foreground" />
             Documents {data ? `(${data.documents.total})` : ''}
           </h2>
@@ -108,7 +108,7 @@ export function AccountDocuments({ accountId }: { accountId: string | number }) 
           <div className="space-y-3 pb-3">
             <div className={`overflow-x-auto ${loading ? 'opacity-60' : ''}`}>
               <table className="w-full text-xs">
-                <thead className="text-[11px] text-muted-foreground uppercase bg-muted/30">
+                <thead className="text-[12.5px] font-semibold text-muted-foreground bg-muted/30">
                   <tr>
                     <th className="px-4 py-2 text-left font-medium">N°</th>
                     <th className="px-4 py-2 text-left"><SortHeader label="Type" sortKey="type" current={sort} dir={dir} onSort={onSort} /></th>
@@ -154,7 +154,7 @@ export function AccountDocuments({ accountId }: { accountId: string | number }) 
 
       <section className="rounded-xl border bg-card overflow-hidden">
         <div className="px-5 py-4 border-b">
-          <h2 className="font-semibold flex items-center gap-2">
+          <h2 className="vb-app-section flex items-center gap-2">
             <Send className="h-4 w-4 text-muted-foreground" />
             Exports et transmissions
           </h2>
@@ -168,7 +168,7 @@ export function AccountDocuments({ accountId }: { accountId: string | number }) 
         ) : (
           <div className="overflow-x-auto max-h-80 overflow-y-auto">
             <table className="w-full text-xs">
-              <thead className="text-[11px] text-muted-foreground uppercase bg-muted/30">
+              <thead className="text-[12.5px] font-semibold text-muted-foreground bg-muted/30">
                 <tr>
                   <th className="px-4 py-2 text-left font-medium">Date</th>
                   <th className="px-4 py-2 text-left font-medium">Nature</th>

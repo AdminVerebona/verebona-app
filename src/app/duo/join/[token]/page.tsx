@@ -5,7 +5,7 @@ import { useParams, useRouter } from 'next/navigation';
 import { Button } from '@/components/ui/button';
 import { Loader2, Users, AlertCircle, CheckCircle2 } from 'lucide-react';
 import { useSession } from '@/hooks/useSession';
-import { ForceTheme } from '@/components/ForceTheme';
+import { FollowTheme } from '@/components/FollowTheme';
 import { LogoWithBaseline } from '@/components/Logo';
 import {
   duoJoinErrorMessage,
@@ -263,7 +263,7 @@ function DuoJoinContent() {
 
   return (
     <div className="public-page min-h-screen flex flex-col items-center justify-center bg-[color:var(--bg-page)] p-4">
-      <ForceTheme theme="blue" />
+      <FollowTheme />
       <div className="w-full max-w-md space-y-6">
         <div className="flex justify-center">
           <LogoWithBaseline size={44} />

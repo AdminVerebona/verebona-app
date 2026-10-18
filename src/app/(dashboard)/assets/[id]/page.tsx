@@ -361,7 +361,7 @@ export default function AssetDetailPage() {
 
           {/* Name + meta */}
           <div className="flex-1 min-w-0">
-            <h1 className="text-2xl font-bold leading-tight">{asset.name}</h1>
+            <h1 className="vb-app-title">{asset.name}</h1>
             <div className="flex items-center gap-2 mt-1 flex-wrap">
               <span className="text-sm text-muted-foreground">
                 {CATEGORY_LABELS[asset.category] || asset.category}

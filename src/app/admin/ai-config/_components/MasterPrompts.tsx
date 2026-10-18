@@ -705,7 +705,7 @@ export function MasterPrompts({ refreshKey, onChanged }: {
   return (
     <section className="rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--bg-card)] p-4 space-y-3">
       <div>
-        <h2 className="text-base font-semibold text-[color:var(--text-primary)]">Prompts maîtres</h2>
+        <h2 className="vb-app-section">Prompts maîtres</h2>
         <p className="text-xs text-[color:var(--text-muted)]">
           Modifier → Enregistrer → (éventuellement Tester) → Activer. Chaque prompt s’administre indépendamment ;
           activer (ou réactiver) un prompt l’applique à la configuration active, dont une nouvelle révision est enregistrée.

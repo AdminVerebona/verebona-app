@@ -68,7 +68,7 @@ const VIDE: BudgetForm = { id: null, category: 'FUEL', label: '', amount: '', pe
 function Bloc({ title, children, ...rest }: { title: string; children: React.ReactNode } & Record<`data-${string}`, boolean | string>) {
   return (
     <section className="space-y-2" {...rest}>
-      <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">{title}</p>
+      <h3 className="vb-app-subsection m-0">{title}</h3>
       {children}
     </section>
   );
@@ -242,7 +242,7 @@ export function TcoSection({ assetId, readOnly = false, defaultOpen = false }: P
             <>
               {/* ── Synthèse ── */}
               <div className="rounded-lg border border-primary/20 bg-primary/5 p-4" data-tco-summary>
-                <p className="text-[10px] font-semibold uppercase tracking-widest text-primary mb-1">Coût cumulé documenté</p>
+                <p className="text-[13px] font-semibold text-primary mb-1">Coût cumulé documenté</p>
                 <p className="text-2xl font-bold text-[color:var(--text-primary)] tabular-nums">{eur(t.summary.cumulativeCostCents)}</p>
                 <p className="text-xs text-muted-foreground mt-1">
                   {t.period.start ? `Du ${dateFr(t.period.start)} ` : 'Date d’acquisition non renseignée — '}

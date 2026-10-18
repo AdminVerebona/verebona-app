@@ -649,7 +649,7 @@ export function DocumentsByRubric({
                       className={`h-3.5 w-3.5 shrink-0 text-[color:var(--text-muted)] transition-transform duration-200 ${ouvert ? '' : '-rotate-90'}`}
                       aria-hidden
                     />
-                    <span className="text-[11px] font-semibold uppercase tracking-[.05em] text-[color:var(--text-muted)]">
+                    <span className="vb-app-label">
                       {group.label}
                     </span>
                     <span className="text-[11px] text-[color:var(--text-muted)] opacity-70">

@@ -481,7 +481,7 @@ export function AgendaItemDrawer({ item, open, onClose, onMutated, onOpenDocumen
               </div>
 
               {/* Title */}
-              <SheetTitle className="text-2xl font-bold text-[color:var(--text-primary)] leading-tight mb-5 pr-6">
+              <SheetTitle className="text-2xl font-extrabold tracking-[-.02em] text-[color:var(--text-primary)] leading-tight mb-5 pr-6">
                 {item.title}
               </SheetTitle>
 
@@ -534,7 +534,7 @@ export function AgendaItemDrawer({ item, open, onClose, onMutated, onOpenDocumen
           ) : (
             <div className="px-7 pt-8 pb-5 border-b border-[color:var(--border-subtle)]">
               <SheetTitle className="sr-only">Modifier l'élément</SheetTitle>
-              <p className="text-xs font-semibold uppercase tracking-widest text-[color:var(--text-muted)] mb-2">
+              <p className="vb-app-label mb-2">
                 Titre
               </p>
               <Input
@@ -543,7 +543,7 @@ export function AgendaItemDrawer({ item, open, onClose, onMutated, onOpenDocumen
                   setEditTitle(e.target.value);
                   setDirty(true);
                 }}
-                className="text-lg font-semibold bg-transparent border-0 border-b border-[color:var(--border-subtle)] rounded-none px-0 focus-visible:border-[color:var(--accent)]"
+                className="text-lg font-semibold bg-transparent border-0 border-b border-input rounded-none px-0 focus-visible:border-[color:var(--accent)]"
                 placeholder="Titre *"
               />
             </div>
@@ -558,7 +558,7 @@ export function AgendaItemDrawer({ item, open, onClose, onMutated, onOpenDocumen
                   <Clock className="h-4 w-4 text-[color:var(--text-muted)]" />
                 </div>
                 <div className="flex-1">
-                  <p className="text-[10px] font-semibold uppercase tracking-widest text-[color:var(--text-muted)] mb-1">
+                  <p className="vb-app-label mb-1">
                     Statut
                   </p>
                   <Select
@@ -589,7 +589,7 @@ export function AgendaItemDrawer({ item, open, onClose, onMutated, onOpenDocumen
                     <FileText className="h-4 w-4 text-[color:var(--text-muted)]" />
                   </div>
                   <div className="flex-1">
-                    <p className="text-[10px] font-semibold uppercase tracking-widest text-[color:var(--text-muted)] mb-1">
+                    <p className="vb-app-label mb-1">
                       Description
                     </p>
                     <p className="text-sm text-[color:var(--text-primary)] whitespace-pre-wrap leading-relaxed">
@@ -600,7 +600,7 @@ export function AgendaItemDrawer({ item, open, onClose, onMutated, onOpenDocumen
               ) : null
             ) : (
               <div>
-                <Label className="text-xs font-semibold uppercase tracking-widest text-[color:var(--text-muted)]">
+                <Label className="text-[13px] font-semibold text-[color:var(--text-muted)]">
                   Description
                 </Label>
                 <Textarea
@@ -619,7 +619,7 @@ export function AgendaItemDrawer({ item, open, onClose, onMutated, onOpenDocumen
             {/* Dates (edit mode) */}
             {mode === "edit" && (
               <div>
-                <Label className="text-xs font-semibold uppercase tracking-widest text-[color:var(--text-muted)]">
+                <Label className="text-[13px] font-semibold text-[color:var(--text-muted)]">
                   Dates
                 </Label>
                 <div className="grid grid-cols-2 gap-3 mt-2">
@@ -685,7 +685,7 @@ export function AgendaItemDrawer({ item, open, onClose, onMutated, onOpenDocumen
             {/* Edit: status */}
             {mode === "edit" && (
               <div>
-                <Label className="text-xs font-semibold uppercase tracking-widest text-[color:var(--text-muted)]">
+                <Label className="text-[13px] font-semibold text-[color:var(--text-muted)]">
                   Statut
                 </Label>
                 <Select
@@ -715,7 +715,7 @@ export function AgendaItemDrawer({ item, open, onClose, onMutated, onOpenDocumen
                     <Building2 className="h-4 w-4 text-[color:var(--accent)]" />
                   </div>
                   <div className="flex-1">
-                    <p className="text-[10px] font-semibold uppercase tracking-widest text-[color:var(--text-muted)] mb-2">
+                    <p className="vb-app-label mb-2">
                       {item.assetLinks.length > 1
                         ? "Biens associés"
                         : "Bien associé"}
@@ -736,7 +736,7 @@ export function AgendaItemDrawer({ item, open, onClose, onMutated, onOpenDocumen
               )
             ) : (
               <div className="space-y-1.5">
-                <Label className="text-xs font-semibold uppercase tracking-widest text-[color:var(--text-muted)]">
+                <Label className="text-[13px] font-semibold text-[color:var(--text-muted)]">
                   Bien(s) associé(s)
                 </Label>
                 <Popover>
@@ -800,7 +800,7 @@ export function AgendaItemDrawer({ item, open, onClose, onMutated, onOpenDocumen
                       <Grid2X2 className="h-4 w-4 text-[color:var(--text-muted)]" />
                     </div>
                     <div className="flex-1">
-                      <p className="text-[10px] font-semibold uppercase tracking-widest text-[color:var(--text-muted)] mb-2">
+                      <p className="vb-app-label mb-2">
                         Pièces
                       </p>
                       <div className="flex flex-wrap gap-2">
@@ -832,7 +832,7 @@ export function AgendaItemDrawer({ item, open, onClose, onMutated, onOpenDocumen
                 )
               : showStructural && (
                   <div className="space-y-1.5">
-                    <Label className="text-xs font-semibold uppercase tracking-widest text-[color:var(--text-muted)]">
+                    <Label className="text-[13px] font-semibold text-[color:var(--text-muted)]">
                       Pièce(s) associée(s)
                     </Label>
                     <Popover>
@@ -890,7 +890,7 @@ export function AgendaItemDrawer({ item, open, onClose, onMutated, onOpenDocumen
                       <Wrench className="h-4 w-4 text-[color:var(--text-muted)]" />
                     </div>
                     <div className="flex-1">
-                      <p className="text-[10px] font-semibold uppercase tracking-widest text-[color:var(--text-muted)] mb-2">
+                      <p className="vb-app-label mb-2">
                         Équipements
                       </p>
                       <div className="flex flex-wrap gap-2">
@@ -922,7 +922,7 @@ export function AgendaItemDrawer({ item, open, onClose, onMutated, onOpenDocumen
                 )
               : showStructural && (
                   <div className="space-y-1.5">
-                    <Label className="text-xs font-semibold uppercase tracking-widest text-[color:var(--text-muted)]">
+                    <Label className="text-[13px] font-semibold text-[color:var(--text-muted)]">
                       Équipement(s) associé(s)
                     </Label>
                     <Popover>
@@ -981,7 +981,7 @@ export function AgendaItemDrawer({ item, open, onClose, onMutated, onOpenDocumen
                   <AlertCircle className="h-4 w-4 text-[color:var(--text-muted)]" />
                 </div>
                 <div className="flex-1">
-                  <p className="text-[10px] font-semibold uppercase tracking-widest text-[color:var(--text-muted)] mb-2">
+                  <p className="vb-app-label mb-2">
                     Sinistre
                   </p>
                   <a
@@ -1002,7 +1002,7 @@ export function AgendaItemDrawer({ item, open, onClose, onMutated, onOpenDocumen
                   <FileText className="h-4 w-4 text-[color:var(--text-muted)]" />
                 </div>
                 <div className="flex-1">
-                  <p className="text-[10px] font-semibold uppercase tracking-widest text-[color:var(--text-muted)] mb-2">
+                  <p className="vb-app-label mb-2">
                     Documents
                   </p>
                   <div className="flex flex-wrap gap-2">
@@ -1047,7 +1047,7 @@ export function AgendaItemDrawer({ item, open, onClose, onMutated, onOpenDocumen
                   onClick={startEdit}
                 >
                   <Edit className="w-4 h-4" />
-                  <span className="text-[10px] font-semibold uppercase tracking-wider">Modifier</span>
+                  <span className="text-[12px] font-semibold">Modifier</span>
                 </button>
                 <div className="w-px bg-[color:var(--border-subtle)]" />
                 <button
@@ -1056,7 +1056,7 @@ export function AgendaItemDrawer({ item, open, onClose, onMutated, onOpenDocumen
                   onClick={() => setShowDeleteConfirm(true)}
                 >
                   <Trash2 className="w-4 h-4" />
-                  <span className="text-[10px] font-semibold uppercase tracking-wider">Supprimer</span>
+                  <span className="text-[12px] font-semibold">Supprimer</span>
                 </button>
               </div>
             ) : (
@@ -1067,7 +1067,7 @@ export function AgendaItemDrawer({ item, open, onClose, onMutated, onOpenDocumen
                   onClick={() => { setMode("view"); setDirty(false); setSaveError(null); }}
                 >
                   <X className="w-4 h-4" />
-                  <span className="text-[10px] font-semibold uppercase tracking-wider">Annuler</span>
+                  <span className="text-[12px] font-semibold">Annuler</span>
                 </button>
                 <div className="w-px bg-[color:var(--border-subtle)]" />
                 <button
@@ -1077,7 +1077,7 @@ export function AgendaItemDrawer({ item, open, onClose, onMutated, onOpenDocumen
                   disabled={saving || !editTitle.trim() || !!temporalError}
                 >
                   {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
-                  <span className="text-[10px] font-semibold uppercase tracking-wider">{saving ? "Sauvegarde…" : "Enregistrer"}</span>
+                  <span className="text-[12px] font-semibold">{saving ? "Sauvegarde…" : "Enregistrer"}</span>
                 </button>
               </div>
             )}

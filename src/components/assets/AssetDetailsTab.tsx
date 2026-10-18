@@ -388,7 +388,7 @@ function CilChecklist({ assetId, naRubrics = new Set<string>() }: { assetId: num
           ) : (
             sections.map(sec => (
               <div key={sec.key}>
-                <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground mb-2">{sec.label}</p>
+                <p className="vb-app-label mb-2">{sec.label}</p>
                 <div className="space-y-1">
                   {CIL_RUBRICS.filter(r => r.section === sec.key).map(rubric => {
                     const doc = docs.find(d => d.code === rubric.code);

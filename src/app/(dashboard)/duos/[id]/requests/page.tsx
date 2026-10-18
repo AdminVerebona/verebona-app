@@ -113,7 +113,7 @@ export default function DuoInboxPage() {
               <div className="w-16 h-16 rounded-full bg-[color:var(--bg-card)] flex items-center justify-center mx-auto mb-4 shadow-relief-sm">
                 <CheckCircle2 className="w-8 h-8 text-[color:var(--text-muted)]" />
               </div>
-              <h3 className="text-lg font-medium text-[color:var(--text-primary)]">Tout est à jour !</h3>
+              <h3 className="vb-app-subsection">Tout est à jour !</h3>
               <p className="text-[color:var(--text-muted)] mt-1">
                 Aucune demande en attente de validation pour le moment.
               </p>
@@ -142,7 +142,7 @@ export default function DuoInboxPage() {
                           </div>
                           <div>
                             <div className="flex items-center gap-2">
-                              <h3 className="font-semibold text-[color:var(--text-primary)]">
+                              <h3 className="vb-app-subsection">
                                 {req.type === 'MOVE' ? 'Demande de déplacement' : 'Demande de suppression'}
                               </h3>
                               <Badge variant="secondary" className="text-[10px] h-4">PENDING</Badge>

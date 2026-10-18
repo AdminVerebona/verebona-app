@@ -283,7 +283,7 @@ export function ThumbnailEditDrawer({ open, onClose, assetId, currentThumbnailUr
               disabled={saving || uploading}
             >
               <X className="w-4 h-4" />
-              <span className="text-[10px] font-semibold uppercase tracking-wider">Annuler</span>
+              <span className="text-[12px] font-semibold">Annuler</span>
             </button>
             <div className="w-px bg-border" />
             <button
@@ -293,7 +293,7 @@ export function ThumbnailEditDrawer({ open, onClose, assetId, currentThumbnailUr
               disabled={!selectedFileId || saving || uploading}
             >
               {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
-              <span className="text-[10px] font-semibold uppercase tracking-wider">{saving ? 'Sauvegarde…' : 'Utiliser'}</span>
+              <span className="text-[12px] font-semibold">{saving ? 'Sauvegarde…' : 'Utiliser'}</span>
             </button>
           </div>
         </div>

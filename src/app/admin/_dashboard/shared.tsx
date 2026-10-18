@@ -32,5 +32,5 @@ export function PeriodNote({ period }: { period: PeriodInfo }) {
 }
 
 export function SectionTitle({ children }: { children: React.ReactNode }) {
-  return <h2 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground pt-2">{children}</h2>;
+  return <h2 className="vb-app-section pt-2">{children}</h2>;
 }

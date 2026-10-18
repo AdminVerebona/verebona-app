@@ -117,7 +117,7 @@ export function DocumentsToolbar({
             aria-label="Trier par"
             value={sort}
             onChange={(e) => onSortChange(e.target.value as SortKey)}
-            className="h-8 w-[140px] cursor-pointer sm:w-[170px] appearance-none rounded-[10px] border border-border bg-[color:var(--field-bg)] pl-3 pr-8 text-sm text-[color:var(--text-primary)] transition-colors focus-visible:border-[color:var(--accent)]"
+            className="h-8 w-[140px] cursor-pointer sm:w-[170px] appearance-none rounded-[10px] border border-input bg-[color:var(--field-bg)] pl-3 pr-8 text-sm text-[color:var(--text-primary)] transition-colors focus-visible:border-[color:var(--accent)]"
           >
             {sortOptions.map((o) => (
               <option key={o.value} value={o.value}>{o.label}</option>

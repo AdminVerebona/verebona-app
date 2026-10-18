@@ -235,7 +235,7 @@ function OperationRow({ op }: { op: any }) {
               )}
               {(opDetail?.analysisVersions ?? []).length > 0 && (
                 <div className="space-y-1">
-                  <p className="text-[10px] font-semibold text-[color:var(--text-muted)] uppercase tracking-wider">Versions d'analyse</p>
+                  <p className="vb-app-label">Versions d'analyse</p>
                   {opDetail.analysisVersions.map((av: any) => (
                     <div key={av.id} className="flex items-center gap-3 px-3 py-2 rounded-lg bg-[color:var(--bg-card)] border border-[color:var(--border-subtle)]">
                       <span className="text-[10px] font-mono text-[color:var(--accent)]">v{av.versionNumber}</span>
@@ -367,7 +367,7 @@ export default function AdminAiUsageAccountPage() {
           <ArrowLeft className="w-4 h-4 mr-1" />Retour
         </Button>
         <div className="flex-1 min-w-0">
-          <h1 className="text-xl font-bold text-[color:var(--text-primary)] truncate">{data.accountName}</h1>
+          <h1 className="vb-app-title truncate">{data.accountName}</h1>
           <p className="text-sm text-[color:var(--text-muted)]">#{data.accountId} · {data.planCode} · {data.ownerEmail}</p>
         </div>
         {activeLocks.length > 0 && (
@@ -453,7 +453,7 @@ export default function AdminAiUsageAccountPage() {
         return (
           <div className="rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--bg-card)] overflow-hidden">
             <div className="px-4 py-3 border-b border-[color:var(--border-subtle)]">
-              <h3 className="text-sm font-semibold text-[color:var(--text-primary)]">Usage IA par type d'opération ({data.periodYear})</h3>
+              <h3 className="vb-app-subsection">Usage IA par type d'opération ({data.periodYear})</h3>
             </div>
             <div className="divide-y divide-[color:var(--border-subtle)]">
               {sorted.map((r: any) => {
@@ -574,7 +574,7 @@ export default function AdminAiUsageAccountPage() {
               <>
                 <div className="rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--bg-card)] overflow-hidden">
                   <div className="flex items-center justify-between px-4 py-3 border-b border-[color:var(--border-subtle)] bg-[color:var(--accent-soft)]">
-                    <h3 className="text-sm font-semibold text-[color:var(--text-primary)]">Usage client (opérations utilisateur)</h3>
+                    <h3 className="vb-app-subsection">Usage client (opérations utilisateur)</h3>
                     <span className="text-sm font-bold text-[color:var(--text-primary)] tabular-nums">{formatCostMicros(total)}</span>
                   </div>
                   {allRows.length === 0 ? (
@@ -604,7 +604,7 @@ export default function AdminAiUsageAccountPage() {
                 {/* Coût par provider */}
                 <div className="rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--bg-card)] overflow-hidden">
                   <div className="flex items-center justify-between px-4 py-3 border-b border-[color:var(--border-subtle)]">
-                    <h3 className="text-sm font-semibold text-[color:var(--text-primary)]">Répartition par provider</h3>
+                    <h3 className="vb-app-subsection">Répartition par provider</h3>
                   </div>
                   {Object.keys(providerMap).length === 0 ? (
                     <p className="text-xs text-[color:var(--text-muted)] px-4 py-3">Aucune donnée.</p>

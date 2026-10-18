@@ -181,7 +181,7 @@ export function TransferExportDrawer({ assetId, usage, planType, assetCategory, 
         <div className="flex items-center gap-3 border-b px-6 py-5">
           <div className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-primary/10"><Icon className="size-4 text-primary" aria-hidden /></div>
           <div className="min-w-0 flex-1">
-            <SheetTitle className="text-base">{isTransmission ? 'Transmission du bien' : 'Export données brutes'}</SheetTitle>
+            <SheetTitle>{isTransmission ? 'Transmission du bien' : 'Export données brutes'}</SheetTitle>
             <SheetDescription className="text-xs">
               {isTransmission ? 'Transférez une copie du bien vers un autre compte Verebona.' : 'Vos fichiers et données en un ZIP téléchargeable.'}
             </SheetDescription>
@@ -194,7 +194,7 @@ export function TransferExportDrawer({ assetId, usage, planType, assetCategory, 
               <div className="flex items-center gap-2 py-8 text-sm text-muted-foreground"><Loader2 className="size-4 animate-spin" aria-hidden />Chargement du contenu du bien…</div>
             ) : (
               <div className="space-y-2">
-                <p className="mb-3 text-xs font-semibold uppercase tracking-wider text-muted-foreground">Contenu à inclure</p>
+                <p className="mb-3 vb-app-subsection">Contenu à inclure</p>
                 <Group icon={FileText} label="Documents" rows={docs} selected={selDocs} emptyLabel="Aucun document"
                   onToggle={(id) => setSelDocs((s) => toggleIn(s, id))} onToggleAll={() => setSelDocs((s) => (s.size === docs.length ? new Set() : new Set(docs.map((x) => x.id))))} />
                 <Group icon={Image} label="Photos" rows={photos} selected={selPhotos} emptyLabel="Aucune photo"

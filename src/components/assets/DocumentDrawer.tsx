@@ -1183,7 +1183,7 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
                 <FileText className="w-4 h-4 text-primary" />
               </div>
               <div className="flex-1 min-w-0">
-                <SheetTitle className="text-sm font-semibold leading-tight line-clamp-2 text-left">
+                <SheetTitle className="leading-tight line-clamp-2 text-left">
                   {isEditing ? editFilename || filename : filename}
                 </SheetTitle>
                 <Badge variant="outline" className="mt-1.5 text-xs">{typeLabel}</Badge>
@@ -1363,7 +1363,7 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
                         onClick={() => setShowDetectedInfo(v => !v)}
                       >
                         {cfg.icon}
-                        <span className="text-[10px] font-medium tracking-wide uppercase">Automatique — {cfg.label}</span>
+                        <span className="text-[12px] font-semibold">Automatique — {cfg.label}</span>
                         {showDetectedInfo ? <ChevronUp className="w-3 h-3 ml-0.5" /> : <ChevronDown className="w-3 h-3 ml-0.5" />}
                       </button>
                       {/* Bouton d'action direct quand validation requise, visible même replié */}
@@ -1478,7 +1478,7 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
                         {/* Agenda suggestions */}
                         {proposals.filter((p: any) => p.proposalType === 'agenda_suggestion' && p.status !== 'rejected').length > 0 && (
                           <div className="pt-1 border-t border-current/10">
-                            <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider mb-1.5">Suggestions agenda</p>
+                            <p className="vb-app-label mb-1.5">Suggestions agenda</p>
                             <div className="space-y-1">
                               {proposals
                                 .filter((p: any) => p.proposalType === 'agenda_suggestion' && p.status !== 'rejected')
@@ -1555,7 +1555,7 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
 
             {isEditing ? (
               <div className="px-5 py-4 space-y-4">
-                <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Modifier le document</p>
+                <p className="vb-app-subsection">Modifier le document</p>
 
                 {/* Rattachement */}
                 <div className="space-y-3 pb-2 border-b">
@@ -1636,7 +1636,7 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
                 {/* Agenda suggestions from AI — visible in edit mode too */}
                 {agendaSuggestions.length > 0 && (
                   <div className="pt-2 border-t">
-                    <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground mb-2 flex items-center gap-1">
+                    <p className="vb-app-label mb-2 flex items-center gap-1">
                       <CalendarPlus className="w-3 h-3" />Suggestions agenda
                     </p>
                     <div className="space-y-1.5">
@@ -1668,7 +1668,7 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
               <>
                 {/* Metadata */}
                 <div className="px-5 py-4 space-y-4">
-                  <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Informations</p>
+                  <p className="vb-app-subsection">Informations</p>
 
                   <div className="space-y-2 text-sm">
                     {/* Titre retenu */}
@@ -1818,7 +1818,7 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
                   {/* Description — courte, 2 lignes max */}
                   {fullData?.description && (
                     <div className="pt-1">
-                      <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground mb-1">Description</p>
+                      <p className="vb-app-label mb-1">Description</p>
                       <p className="text-sm text-muted-foreground leading-relaxed line-clamp-2">{fullData.description}</p>
                     </div>
                   )}
@@ -1826,7 +1826,7 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
                   {/* Notes */}
                   {fullData?.notes && (
                     <div className="pt-1">
-                      <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground mb-1">Notes</p>
+                      <p className="vb-app-label mb-1">Notes</p>
                       <p className="text-sm text-muted-foreground leading-relaxed line-clamp-2">{fullData.notes}</p>
                     </div>
                   )}
@@ -1834,7 +1834,7 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
                   {/* Linked agenda items */}
                   {linkedAgendaItems.length > 0 && (
                     <div className="pt-2 border-t">
-                      <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground mb-2 flex items-center gap-1">
+                      <p className="vb-app-label mb-2 flex items-center gap-1">
                         <Calendar className="w-3 h-3" />Éléments agenda
                       </p>
                       <div className="space-y-1.5">
@@ -1882,7 +1882,7 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
                   {/* Agenda suggestions from AI */}
                   {agendaSuggestions.length > 0 && (
                     <div className="pt-2">
-                      <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground mb-2 flex items-center gap-1">
+                      <p className="vb-app-label mb-2 flex items-center gap-1">
                         <CalendarPlus className="w-3 h-3" />Suggestions agenda
                       </p>
                       <div className="space-y-1.5">
@@ -1922,7 +1922,7 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
                       disabled={!viewUrl || isLoadingPreview}
                     >
                       <ExternalLink className="w-4 h-4" />
-                      <span className="text-[10px] font-semibold uppercase tracking-wider">Ouvrir</span>
+                      <span className="text-[12px] font-semibold">Ouvrir</span>
                     </button>
                     <div className="w-px bg-border" />
                     <button
@@ -1931,7 +1931,7 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
                       disabled={isLoadingPreview || !fullData}
                     >
                       <Pencil className="w-4 h-4" />
-                      <span className="text-[10px] font-semibold uppercase tracking-wider">Modifier</span>
+                      <span className="text-[12px] font-semibold">Modifier</span>
                     </button>
                     <div className="w-px bg-border" />
                     <button
@@ -1939,7 +1939,7 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
                       onClick={handleDownload}
                     >
                       <Download className="w-4 h-4" />
-                      <span className="text-[10px] font-semibold uppercase tracking-wider">Télécharger</span>
+                      <span className="text-[12px] font-semibold">Télécharger</span>
                     </button>
                     <div className="w-px bg-border" />
                     <button
@@ -1948,7 +1948,7 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
                       disabled={isDeleting}
                     >
                       <Trash2 className="w-4 h-4" />
-                      <span className="text-[10px] font-semibold uppercase tracking-wider">Supprimer</span>
+                      <span className="text-[12px] font-semibold">Supprimer</span>
                     </button>
                   </div>
                 </div>
@@ -1967,7 +1967,7 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
                   disabled={isSaving}
                 >
                   <X className="w-4 h-4" />
-                  <span className="text-[10px] font-semibold uppercase tracking-wider">Annuler</span>
+                  <span className="text-[12px] font-semibold">Annuler</span>
                 </button>
                 <div className="w-px bg-border" />
                 <button
@@ -1977,7 +1977,7 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
                   disabled={isSaving}
                 >
                   {isSaving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
-                  <span className="text-[10px] font-semibold uppercase tracking-wider">{isSaving ? 'Sauvegarde…' : 'Enregistrer'}</span>
+                  <span className="text-[12px] font-semibold">{isSaving ? 'Sauvegarde…' : 'Enregistrer'}</span>
                 </button>
               </div>
             </div>

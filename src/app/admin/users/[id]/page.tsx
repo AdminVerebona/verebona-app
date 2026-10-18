@@ -327,7 +327,7 @@ export default function UserDetailPage() {
             Retour
           </Button>
           <div className="min-w-0">
-            <h1 className="text-2xl md:text-3xl font-bold truncate">
+            <h1 className="vb-app-title truncate">
               {user.firstName} {user.lastName}
             </h1>
             <p className="text-muted-foreground text-sm truncate">{user.email}</p>
@@ -449,7 +449,7 @@ export default function UserDetailPage() {
 
       <Card>
         <CardHeader>
-          <CardTitle className="text-base">Désactivations et réactivations</CardTitle>
+          <CardTitle>Désactivations et réactivations</CardTitle>
         </CardHeader>
         <CardContent>
           {statusChanges.length === 0 ? (
@@ -475,7 +475,7 @@ export default function UserDetailPage() {
 
       <Card>
         <CardHeader>
-          <CardTitle className="text-base">Préférences de notifications (lecture seule)</CardTitle>
+          <CardTitle>Préférences de notifications (lecture seule)</CardTitle>
         </CardHeader>
         <CardContent className="space-y-3">
           <div className="overflow-x-auto">
@@ -508,7 +508,7 @@ export default function UserDetailPage() {
 
       <Card>
         <CardHeader>
-          <CardTitle className="text-base">Invitations liées</CardTitle>
+          <CardTitle>Invitations liées</CardTitle>
         </CardHeader>
         <CardContent>
           {invitations.length === 0 ? (
@@ -539,7 +539,7 @@ export default function UserDetailPage() {
 
       <Card>
         <CardHeader>
-          <CardTitle className="text-base">Historique des communications</CardTitle>
+          <CardTitle>Historique des communications</CardTitle>
         </CardHeader>
         <CardContent>
           {communications.length === 0 ? (
@@ -569,7 +569,7 @@ export default function UserDetailPage() {
 
       <Card>
         <CardHeader>
-          <CardTitle className="text-base">Connexions et tentatives des {loginHistory.days} derniers jours</CardTitle>
+          <CardTitle>Connexions et tentatives des {loginHistory.days} derniers jours</CardTitle>
         </CardHeader>
         <CardContent>
           {loginHistory.entries.length === 0 ? (

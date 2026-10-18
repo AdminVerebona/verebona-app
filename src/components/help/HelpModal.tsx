@@ -40,7 +40,7 @@ export function HelpShortcutsSection({ state, onOpen, onRetry }: {
 }) {
   return (
     <div data-testid="help-shortcuts" data-state={state.status}>
-      <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide mb-2">Accès rapides</p>
+      <p className="vb-app-label mb-2">Accès rapides</p>
       {state.status === 'loading' && (
         <div role="status" aria-live="polite" className="space-y-1">
           <span className="sr-only">Chargement des exemples du Centre d’aide…</span>

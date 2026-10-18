@@ -21,7 +21,7 @@ import {
 } from '@/lib/exports/preparation-state';
 import { PREP_MESSAGES } from '@/services/exports/v12/preparation/messages';
 import type { OutputFormat } from '@/services/exports/v12/preparation/types';
-import { Callout, Eyebrow, Pill, formatDateTime } from './ui';
+import { Callout, SectionLabel, Pill, formatDateTime } from './ui';
 
 /** Génération longue (MSG-PREP-008) au-delà de ce délai. */
 export const LONG_GENERATION_MS = 20_000;
@@ -29,7 +29,7 @@ export const LONG_GENERATION_MS = 20_000;
 function Stat({ label, value, hint }: { label: string; value: string; hint?: string }) {
   return (
     <div className="min-w-0">
-      <dt className="text-[10px] font-semibold uppercase tracking-[.06em] text-muted-foreground">{label}</dt>
+      <dt className="text-[12px] font-semibold text-muted-foreground">{label}</dt>
       <dd className="mt-0.5 truncate text-sm font-semibold tabular-nums">{value}{hint && <span className="ml-1 text-[11px] font-normal text-muted-foreground">{hint}</span>}</dd>
     </div>
   );
@@ -128,7 +128,7 @@ function GenerationPanel({ state, assetId, now, onBackToEdit, onRetry, onClose }
         </Callout>
         {partial && (g?.excludedFiles.length ?? 0) > 0 && (
           <div>
-            <Eyebrow>Fichiers exclus</Eyebrow>
+            <SectionLabel>Fichiers exclus</SectionLabel>
             <ul className="mt-1.5 space-y-1">
               {g!.excludedFiles.map((f, i) => (
                 <li key={i} className="flex items-start gap-2 text-xs"><XCircle className="mt-px size-3.5 shrink-0 text-[color:var(--text-danger)]" aria-hidden /><span className="min-w-0"><span className="font-medium">{f.label}</span> — <span className="text-muted-foreground">{f.reasonLabel}</span></span></li>
@@ -187,7 +187,7 @@ export function PreparationSummary({ state, assetId, now, onGenerate, onCancel, 
   return (
     <div className="space-y-5">
       <div className="flex items-center justify-between gap-2">
-        <Eyebrow>Résumé du dossier</Eyebrow>
+        <SectionLabel>Résumé du dossier</SectionLabel>
         {state.status === 'estimating'
           ? <span className="inline-flex items-center gap-1 text-[11px] text-muted-foreground" aria-live="polite"><Loader2 className="size-3 animate-spin" aria-hidden />Recalcul…</span>
           : state.status === 'ready_modified' || state.status === 'estimation_ready' || state.status === 'blocked_threshold'
@@ -228,7 +228,7 @@ export function PreparationSummary({ state, assetId, now, onGenerate, onCancel, 
 
       {!inGeneration && (
         <div>
-          <Eyebrow>Plan du dossier</Eyebrow>
+          <SectionLabel>Plan du dossier</SectionLabel>
           <ol className="mt-2 space-y-1.5">
             {outline.map((o, i) => (
               <li key={`${o.label}-${i}`} className="flex items-baseline gap-2.5 text-[13px]">

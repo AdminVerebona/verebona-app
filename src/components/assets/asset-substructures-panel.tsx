@@ -63,7 +63,7 @@ export function AssetSubstructuresPanel({
       <div>
         <div className="flex items-center justify-between mb-4">
           <div>
-            <h2 className="text-base font-semibold text-[color:var(--text-primary)]">Pièces</h2>
+            <h2 className="vb-app-section">Pièces</h2>
             <p className="text-sm text-[color:var(--text-muted)] mt-1">
               {sorted.length} pièce{sorted.length !== 1 ? 's' : ''}
             </p>

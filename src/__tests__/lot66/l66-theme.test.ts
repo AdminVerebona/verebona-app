@@ -47,7 +47,8 @@ function bloc(selecteur: string): string {
   return CSS.slice(debut + 1, fin);
 }
 const CLAIR = bloc('html[data-theme="beige"] {');
-const SOMBRE = bloc('html[data-theme="beige"] .public-page {');
+// Lot 67 : le bloc sombre ne porte plus `.public-page` (pages publiques au thème de l'utilisateur).
+const SOMBRE = bloc('html[data-theme="blue"] {');
 
 function v(b: string, nom: string): string {
   const m = b.match(new RegExp(`--${nom}:\\s*(#[0-9A-Fa-f]{6})\\b`));
@@ -245,12 +246,14 @@ describe('L66-THEME-05 — logo selon le thème', () => {
     expect(html).not.toMatch(/#3B82F6|theme-beige/i);
   });
 
-  it('L66-THEME-05 — pétrole sur clair, ivoire sur sombre (et sur les pages publiques)', () => {
+  it('L66-THEME-05 — pétrole sur clair, ivoire sur sombre (pages publiques comprises, selon le thème)', () => {
     expect(v(CLAIR, 'vb-logo-cells')).toBe('#17474D');
     expect(v(CLAIR, 'vb-logo-text')).toBe('#17474D');
     expect(v(SOMBRE, 'vb-logo-cells')).toBe('#F8F6F1');
     expect(v(SOMBRE, 'vb-logo-text')).toBe('#F3F1EB');
-    expect(CSS).toMatch(/html\[data-theme="blue"\],\s*html \.public-page,/);
+    // Lot 67 : les pages publiques suivent le thème — plus de forçage `.public-page`.
+    expect(CSS).toMatch(/^html\[data-theme="blue"\] \{/m);
+    expect(CSS).not.toMatch(/\.public-page\s*[,{]/);
   });
 });
 
@@ -424,11 +427,12 @@ describe('L66-THEME-10 — composants ui', () => {
     expect(SOMBRE).toContain('--shadow-md: none;');
   });
 
-  it('L66-THEME-10 — pastilles : libellé écrit, attention cuivre, retard rouge, « Recommandé » cuivre doux', async () => {
+  it('L66-THEME-10 — pastilles : libellé écrit, attention cuivre, retard rouge, « Recommandé » cuivre (texte ≥ 4,5:1, lot 67)', async () => {
     const { Badge } = await import('@/components/ui/badge');
     expect(renderToStaticMarkup(h(Badge, { variant: 'attention' }, 'À traiter'))).toContain('text-[color:var(--attention-on-soft)]');
     expect(renderToStaticMarkup(h(Badge, { variant: 'destructive' }, 'En retard de 2 j'))).toContain('text-[color:var(--danger)]');
-    expect(renderToStaticMarkup(h(Badge, { variant: 'recommended' }, 'Recommandé'))).toContain('bg-[color:var(--vb-cuivre)] text-white font-bold');
+    // Lot 67 : plus de blanc sur cuivre doux (3,45:1) — jetons dédiés, voir L67-RECO.
+    expect(renderToStaticMarkup(h(Badge, { variant: 'recommended' }, 'Recommandé'))).toContain('bg-[color:var(--badge-recommended)] text-[color:var(--on-badge-recommended)] font-bold');
     expect(renderToStaticMarkup(h(Badge, { variant: 'success' }, 'Actif'))).not.toMatch(/emerald|#10b981/);
   });
 });

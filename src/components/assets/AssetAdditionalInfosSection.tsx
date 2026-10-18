@@ -428,7 +428,7 @@ export function AssetAdditionalInfosSection({
       {visible.map((section) => (
         <fieldset key={section} className="space-y-3" disabled={readOnly}>
           <div>
-            <legend className="text-[11px] font-semibold uppercase tracking-[0.05em] text-muted-foreground">
+            <legend className="vb-app-label">
               {ADDITIONAL_INFO_SECTION_LABELS[section]}
             </legend>
             <p className="text-xs text-muted-foreground/80 mt-0.5">{ADDITIONAL_INFO_SECTION_DESCRIPTIONS[section]}</p>
@@ -481,7 +481,7 @@ export function AssetAdditionalInfosSection({
     return (
       <div className="space-y-3" id={`asset-additional-infos-${assetId}`}>
         <div className="flex items-center justify-between gap-2">
-          <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">{DOSSIER_PREPARATION_TITLE}</p>
+          <p className="vb-app-subsection">{DOSSIER_PREPARATION_TITLE}</p>
           <SaveIndicator state={saveState} onRetry={() => void queueRef.current?.retry()} />
         </div>
         <p className="text-[11px] text-muted-foreground leading-snug">

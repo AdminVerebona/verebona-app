@@ -94,7 +94,7 @@ export function FusionSuggestionModal({ open, onOpenChange, newFileId, newFilena
                 <FileText className="w-3.5 h-3.5 text-primary" />
               </div>
               <div className="flex-1 min-w-0">
-                <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground mb-0.5">Nouveau fichier uploadé</p>
+                <p className="vb-app-label mb-0.5">Nouveau fichier uploadé</p>
                 <p className="text-sm font-medium truncate">{newFilename}</p>
               </div>
             </div>
@@ -111,7 +111,7 @@ export function FusionSuggestionModal({ open, onOpenChange, newFileId, newFilena
                 <FileText className="w-3.5 h-3.5 text-muted-foreground" />
               </div>
               <div className="flex-1 min-w-0">
-                <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground mb-0.5">Document existant</p>
+                <p className="vb-app-label mb-0.5">Document existant</p>
                 <p className="text-sm font-medium truncate">
                   {displayDocumentTitle(candidate, `Document #${candidate.fileId}`)}
                 </p>

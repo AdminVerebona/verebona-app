@@ -165,7 +165,7 @@ export function T1CompletenessPanel({ days = 7 }: { days?: number }) {
 
   return (
     <div className="rounded-xl border border-[color:var(--border-warning)] bg-[color:var(--bg-warning)] p-4 space-y-2" data-testid="t1-completeness-panel">
-      <h2 className="text-sm font-semibold text-[color:var(--text-primary)] flex items-center gap-2">
+      <h2 className="vb-app-section flex items-center gap-2">
         <AlertTriangle className="w-4 h-4 text-[color:var(--text-warning-soft)]" />
         Complétude des analyses T1 ({data.days} derniers jours)
       </h2>

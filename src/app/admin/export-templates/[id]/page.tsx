@@ -81,7 +81,7 @@ export default function ExportTemplateDetailPage() {
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex items-center gap-4">
           {back}
-          <h1 className="text-2xl md:text-3xl font-bold flex items-center gap-2">
+          <h1 className="vb-app-title flex items-center gap-2">
             <FileType className="h-8 w-8" />
             {model.label}
           </h1>

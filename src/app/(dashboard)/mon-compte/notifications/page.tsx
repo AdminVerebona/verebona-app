@@ -181,7 +181,7 @@ export default function NotificationsSettingsPage() {
       {/* ── Bloc 1 — Notifications sur cet appareil ─────────────────────────── */}
       <Card>
         <CardHeader>
-          <CardTitle className="text-lg">Notifications sur cet appareil</CardTitle>
+          <CardTitle>Notifications sur cet appareil</CardTitle>
           <CardDescription>Les push apparaissent même lorsque Verebona est fermé.</CardDescription>
         </CardHeader>
         <CardContent>
@@ -242,7 +242,7 @@ export default function NotificationsSettingsPage() {
       <TooltipProvider delayDuration={150}>
         <Card>
           <CardHeader>
-            <CardTitle className="text-lg">Mes préférences</CardTitle>
+            <CardTitle>Mes préférences</CardTitle>
             <CardDescription>Par catégorie, choisissez de recevoir un push et/ou un email.</CardDescription>
           </CardHeader>
           <CardContent className="space-y-1">
@@ -341,7 +341,7 @@ export default function NotificationsSettingsPage() {
       {devices.length > 0 && (
         <Card>
           <CardHeader>
-            <CardTitle className="text-lg">Appareils autorisés</CardTitle>
+            <CardTitle>Appareils autorisés</CardTitle>
             <CardDescription>Appareils qui reçoivent vos notifications push.</CardDescription>
           </CardHeader>
           <CardContent className="space-y-2">

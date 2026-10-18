@@ -1,10 +1,10 @@
 import { ReactNode } from 'react';
-import { ForceTheme } from '@/components/ForceTheme';
+import { FollowTheme } from '@/components/FollowTheme';
 
 export default function AuthLayout({ children }: { children: ReactNode }) {
   return (
     <div className="public-page">
-      <ForceTheme theme="blue" />
+      <FollowTheme />
       {children}
     </div>
   );

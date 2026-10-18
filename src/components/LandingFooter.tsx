@@ -70,9 +70,9 @@ export function AuthFooter() {
 }
 
 export function LandingFooter() {
-  // Charte « Sérénité » : pied des pages publiques sur le fond du thème
-  // sombre (`.public-page`, comme les pages d'authentification), filet du
-  // thème, textes aux jetons (plus de blanc translucide).
+  // Charte « Sérénité » : pied des pages publiques sur le fond du menu du
+  // thème courant (`.public-page` suit le thème depuis le lot 67, comme les
+  // pages d'authentification), filet du thème, textes aux jetons.
   return (
     <footer className="public-page bg-[color:var(--sidebar)] border-t border-[color:var(--border-subtle)]">
       <div className="container mx-auto px-6 md:px-10 py-7">
@@ -91,7 +91,7 @@ export function LandingFooter() {
           {/* Colonnes liens */}
           {COLUMNS.map((col) => (
             <div key={col.title} className="md:pl-8">
-              <p className="text-xs font-bold tracking-[.06em] uppercase text-[color:var(--text-primary)] mb-3">
+              <p className="text-[13px] font-bold text-[color:var(--text-primary)] mb-3">
                 {col.title}
               </p>
               <ul className="space-y-1.5">

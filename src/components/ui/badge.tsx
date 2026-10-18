@@ -11,8 +11,10 @@ import { cn } from "../../lib/utils"
  *   - neutre (défaut, `secondary`, `active`, `premium`) : brume + pétrole ;
  *   - attention (`pending`) : cuivre-soft + cuivre texte ;
  *   - retard strict / erreur (`destructive`, `inactive`) : rouge accessible ;
- *   - `recommended` : cuivre doux + texte blanc, uniquement « Recommandé »
- *     (12 px gras minimum) ;
+ *   - `recommended` : uniquement « Recommandé » (12 px gras minimum) —
+ *     blanc sur cuivre TEXTE #AA4E38 en clair (5,45:1 ; jamais sur le cuivre
+ *     doux, 3,45:1), encre #1B2529 sur cuivre sombre #E2896F en sombre
+ *     (5,99:1) : jetons --badge-recommended / --on-badge-recommended (lot 67) ;
  *   - `outline`, `sold` : contour, texte secondaire.
  * Les noms de variantes historiques sont conservés (appelants inchangés).
  */
@@ -34,7 +36,7 @@ const badgeVariants = cva(
         outline:
           "border-[color:var(--border)] bg-transparent text-[color:var(--text-muted)]",
         recommended:
-          "border-transparent bg-[color:var(--vb-cuivre)] text-white font-bold",
+          "border-transparent bg-[color:var(--badge-recommended)] text-[color:var(--on-badge-recommended)] font-bold",
         // Historiques — mêmes rôles, couleurs de la charte (le pétrole confirme).
         success:
           "border-transparent bg-[color:var(--accent-soft)] text-[color:var(--accent)] px-3 py-1",

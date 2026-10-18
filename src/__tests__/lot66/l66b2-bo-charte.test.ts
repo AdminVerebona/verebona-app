@@ -53,7 +53,7 @@ function bloc(selecteur: string): string {
   const debut = CSS.indexOf('{', i);
   return CSS.slice(debut + 1, CSS.indexOf('\n}', debut));
 }
-const THEMES = { clair: bloc('html[data-theme="beige"] {'), sombre: bloc('html[data-theme="beige"] .public-page {') } as const;
+const THEMES = { clair: bloc('html[data-theme="beige"] {'), sombre: bloc('html[data-theme="blue"] {') } as const;
 function v(b: string, nom: string): string {
   const m = b.match(new RegExp(`--${nom}:\\s*(#[0-9A-Fa-f]{6})\\b`));
   expect(m, `--${nom} absent`).not.toBeNull();

@@ -242,7 +242,7 @@ export function T6ReminderSettings({ agendaItemId, title }: { agendaItemId: numb
         {actif ? <BellRing className="h-4 w-4 text-[color:var(--text-muted)]" /> : <BellOff className="h-4 w-4 text-[color:var(--text-muted)]" />}
       </div>
       <div className="flex-1 min-w-0">
-        <p className="text-[10px] font-semibold uppercase tracking-widest text-[color:var(--text-muted)] mb-1">Rappels sur l’accueil</p>
+        <p className="vb-app-label mb-1">Rappels sur l’accueil</p>
         <p className="text-sm text-[color:var(--text-primary)]">{reminderStatusLabel(state)}</p>
         {state && (
           <div className="mt-1 flex flex-wrap items-center gap-x-1 gap-y-0.5 -ml-2">

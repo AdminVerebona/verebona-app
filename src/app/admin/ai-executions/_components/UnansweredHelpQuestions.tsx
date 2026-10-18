@@ -44,7 +44,7 @@ export function UnansweredHelpQuestions() {
           intention — compteurs seulement, aucun texte. */}
       {motifs && (
         <div className="space-y-2" data-testid="unanswered-motives">
-          <h2 className="text-sm font-semibold text-[color:var(--text-primary)]">
+          <h2 className="vb-app-section">
             Demandes non résolues par motif (30 derniers jours) · {motifs.total}
           </h2>
           <div className="flex flex-wrap gap-2">
@@ -69,7 +69,7 @@ export function UnansweredHelpQuestions() {
           )}
         </div>
       )}
-      <h2 className="text-sm font-semibold text-[color:var(--text-primary)]">Questions d’aide sans réponse (30 derniers jours)</h2>
+      <h2 className="vb-app-section">Questions d’aide sans réponse (30 derniers jours)</h2>
       <p className="text-xs text-[color:var(--text-muted)]">
         Demandes d’aide pour lesquelles aucun article du Centre d’aide n’a été trouvé. Texte expurgé.
       </p>

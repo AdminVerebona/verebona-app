@@ -97,7 +97,7 @@ export function LegalInformationCard() {
           <>
             {/* ── Version acceptée ─────────────────────────────────────── */}
             <section className="space-y-2">
-              <h3 className="text-sm font-medium">Conditions que vous avez acceptées</h3>
+              <h3 className="vb-app-subsection">Conditions que vous avez acceptées</h3>
 
               {latest ? (
                 <div className="rounded-lg border border-[color:var(--border-subtle)] p-3 space-y-2">
@@ -170,7 +170,7 @@ export function LegalInformationCard() {
 
             {/* ── Version en vigueur ───────────────────────────────────── */}
             <section className="space-y-2">
-              <h3 className="text-sm font-medium">Conditions actuellement en vigueur</h3>
+              <h3 className="vb-app-subsection">Conditions actuellement en vigueur</h3>
               {current ? (
                 <p className="text-sm text-muted-foreground">
                   {/* Le numéro de version disparaît ici : il n'apprend rien à

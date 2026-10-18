@@ -49,7 +49,7 @@ export default function AdminOperationDetailPage() {
           <Link href={op ? `/admin/operations?accountId=${op.accountId}` : '/admin/operations'} className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground">
             <ArrowLeft className="h-3 w-3" /> {op ? `Opérations du compte #${op.accountId}` : 'Opérations'}
           </Link>
-          <h1 className="text-2xl font-bold flex flex-wrap items-center gap-2 mt-1">
+          <h1 className="vb-app-title flex flex-wrap items-center gap-2 mt-1">
             <Layers className="h-6 w-6" />
             Opération #{id}
             {op && <span className="text-base font-normal text-muted-foreground">{op.typeLabel}</span>}

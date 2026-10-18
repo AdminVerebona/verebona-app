@@ -365,7 +365,7 @@ export default function AccountDetailPage() {
             <ArrowLeft className="h-4 w-4" />
           </Button>
           <div>
-            <h1 className="text-2xl font-bold flex items-center gap-2">
+            <h1 className="vb-app-title flex items-center gap-2">
               <Building2 className="h-5 w-5 text-muted-foreground" />
               {account.name}
             </h1>
@@ -403,7 +403,7 @@ export default function AccountDetailPage() {
           <section className="rounded-xl border bg-card overflow-hidden">
             <div className="px-5 py-4 border-b flex items-start justify-between gap-3">
               <div>
-                <h2 className="font-semibold flex items-center gap-2">
+                <h2 className="vb-app-section flex items-center gap-2">
                   <Crown className="h-4 w-4 text-[color:var(--accent)]" />
                   Abonnement et paiement
                 </h2>
@@ -448,7 +448,7 @@ export default function AccountDetailPage() {
                 },
               ].map(({ label, value }) => (
                 <div key={label} className="rounded-lg border bg-muted/30 px-3 py-2.5">
-                  <p className="text-[10px] font-medium text-muted-foreground uppercase tracking-wide mb-0.5">{label}</p>
+                  <p className="vb-app-label mb-0.5">{label}</p>
                   <span className="text-xs">{value || '—'}</span>
                 </div>
               ))}
@@ -458,7 +458,7 @@ export default function AccountDetailPage() {
           {/* ── Utilisateurs rattachés (§5.2.2) ── */}
           <section className="rounded-xl border bg-card overflow-hidden">
             <div className="flex items-center justify-between px-5 py-4 border-b">
-              <h2 className="font-semibold flex items-center gap-2">
+              <h2 className="vb-app-section flex items-center gap-2">
                 <Users className="h-4 w-4 text-muted-foreground" />
                 Utilisateurs rattachés
               </h2>
@@ -513,14 +513,14 @@ export default function AccountDetailPage() {
           {/* ── Paiements (§7.3) ── */}
           <section className="rounded-xl border bg-card overflow-hidden">
             <div className="px-5 py-4 border-b">
-              <h2 className="font-semibold flex items-center gap-2">
+              <h2 className="vb-app-section flex items-center gap-2">
                 <Receipt className="h-4 w-4 text-muted-foreground" />
                 Paiements
               </h2>
             </div>
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
-                <thead className="text-[11px] text-muted-foreground uppercase bg-muted/30">
+                <thead className="text-[12.5px] font-semibold text-muted-foreground bg-muted/30">
                   <tr>
                     <th className="px-5 py-2.5 font-medium text-left">Date</th>
                     <th className="px-5 py-2.5 font-medium text-right">Montant</th>
@@ -566,7 +566,7 @@ export default function AccountDetailPage() {
           {/* ── Changement exceptionnel d'offre (ACC-A06) ── */}
           <section className="rounded-xl border border-[color:var(--border-warning)] bg-[color:var(--bg-warning)] overflow-hidden">
             <div className="px-5 py-4 border-b border-[color:var(--border-warning)]">
-              <h2 className="font-semibold flex items-center gap-2">
+              <h2 className="vb-app-section flex items-center gap-2">
                 <CreditCard className="h-4 w-4 text-[color:var(--text-warning-soft)]" />
                 Changement exceptionnel d’offre
               </h2>
@@ -623,7 +623,7 @@ export default function AccountDetailPage() {
           {/* ── Lot 47A (O9) : Opérations du compte (BO diagnostic, lecture seule) ── */}
           <section className="rounded-xl border bg-card p-5 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
             <div>
-              <h2 className="font-semibold flex items-center gap-2">
+              <h2 className="vb-app-section flex items-center gap-2">
                 <Layers className="h-4 w-4 text-muted-foreground" />
                 Opérations du compte
               </h2>
@@ -644,14 +644,14 @@ export default function AccountDetailPage() {
           {/* ── Historique du compte (ACC-D09 à ACC-D11) ── */}
           <section className="rounded-xl border bg-card overflow-hidden">
             <div className="px-5 py-4 border-b">
-              <h2 className="font-semibold flex items-center gap-2">
+              <h2 className="vb-app-section flex items-center gap-2">
                 <Activity className="h-4 w-4 text-muted-foreground" />
                 Historique du compte
               </h2>
             </div>
             <div className="overflow-x-auto max-h-[28rem] overflow-y-auto">
               <table className="w-full text-sm">
-                <thead className="text-[11px] text-muted-foreground uppercase bg-muted/30">
+                <thead className="text-[12.5px] font-semibold text-muted-foreground bg-muted/30">
                   <tr>
                     <th className="px-5 py-2.5 font-medium text-left">Date</th>
                     <th className="px-5 py-2.5 font-medium text-left">Événement</th>
@@ -687,7 +687,7 @@ export default function AccountDetailPage() {
           {/* ── CGSU acceptées (LEG-003) ── */}
           <section className="rounded-xl border bg-card overflow-hidden">
             <div className="px-5 py-4 border-b">
-              <h2 className="font-semibold text-sm">Conditions générales acceptées</h2>
+              <h2 className="vb-app-section">Conditions générales acceptées</h2>
             </div>
             {legalAcceptances.length === 0 ? (
               <p className="px-5 py-4 text-xs text-muted-foreground italic">Aucune acceptation enregistrée</p>
@@ -710,7 +710,7 @@ export default function AccountDetailPage() {
           {/* Consommations et quotas (§5.2.3, ACC-D04/D05 : lecture seule, sans alerte) */}
           <section className="rounded-xl border bg-card overflow-hidden">
             <div className="px-5 py-4 border-b">
-              <h2 className="font-semibold text-sm flex items-center gap-2">
+              <h2 className="vb-app-section flex items-center gap-2">
                 <Gauge className="h-4 w-4 text-muted-foreground" />
                 Consommations et quotas
               </h2>
@@ -730,7 +730,7 @@ export default function AccountDetailPage() {
           {/* Titulaire */}
           <section className="rounded-xl border bg-card overflow-hidden">
             <div className="px-5 py-4 border-b">
-              <h2 className="font-semibold text-sm flex items-center gap-2">
+              <h2 className="vb-app-section flex items-center gap-2">
                 <User className="h-4 w-4 text-muted-foreground" />
                 Titulaire
               </h2>
@@ -754,7 +754,7 @@ export default function AccountDetailPage() {
           {/* Biens (ACC-D06 : diagnostic, sans modification) */}
           <section className="rounded-xl border bg-card overflow-hidden">
             <div className="px-5 py-4 border-b flex items-center justify-between">
-              <h2 className="font-semibold text-sm flex items-center gap-2">
+              <h2 className="vb-app-section flex items-center gap-2">
                 <Package className="h-4 w-4 text-muted-foreground" />
                 Biens ({assets.length})
               </h2>
@@ -782,7 +782,7 @@ export default function AccountDetailPage() {
           {/* Actions sensibles */}
           <section className="rounded-xl border border-destructive/30 bg-destructive/5 overflow-hidden">
             <div className="px-5 py-4 border-b border-destructive/20">
-              <h2 className="font-semibold text-sm flex items-center gap-2 text-destructive">
+              <h2 className="vb-app-section flex items-center gap-2 text-destructive">
                 <AlertTriangle className="h-4 w-4" />
                 Zone dangereuse
               </h2>

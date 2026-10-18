@@ -133,7 +133,7 @@ function GdprPageContent() {
     <div className="space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-bold flex items-center gap-2">
+          <h1 className="vb-app-title flex items-center gap-2">
             <ShieldCheck className="h-6 w-6" />
             RGPD
           </h1>

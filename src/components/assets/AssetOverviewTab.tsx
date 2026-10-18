@@ -472,7 +472,7 @@ export function AssetOverviewTab({ assetId, onTabChange, readOnly = false }: Pro
                 <c.icon className="w-3.5 h-3.5 text-[color:var(--accent)]" />
               </div>
               <div className="flex flex-col items-start min-w-0">
-                <span className="text-[9px] font-semibold uppercase tracking-widest text-muted-foreground leading-none mb-0.5">{c.label}</span>
+                <span className="text-[12px] font-semibold text-muted-foreground leading-none mb-1">{c.label}</span>
                 <span className="text-lg font-bold tabular-nums leading-none">{c.count}</span>
               </div>
             </button>
@@ -483,7 +483,7 @@ export function AssetOverviewTab({ assetId, onTabChange, readOnly = false }: Pro
         {hasFamily && (
           <Card>
             <CardHeader className="pb-3">
-              <CardTitle className="text-base">
+              <CardTitle>
                 {'Caractéristiques'}
               </CardTitle>
             </CardHeader>
@@ -497,7 +497,7 @@ export function AssetOverviewTab({ assetId, onTabChange, readOnly = false }: Pro
         {sortedTimeline.length > 0 && (
           <Card className="lg:hidden">
             <CardHeader className="pb-3">
-              <CardTitle className="text-base flex items-center gap-2">
+              <CardTitle className="flex items-center gap-2">
                 <CalendarDays className="w-4 h-4 text-muted-foreground" />
                 Timeline
               </CardTitle>
@@ -555,7 +555,7 @@ export function AssetOverviewTab({ assetId, onTabChange, readOnly = false }: Pro
         {!readOnly && (
           <Card>
             <CardHeader className="pb-3 flex flex-row items-center justify-between">
-              <CardTitle className="text-base">Documents récents</CardTitle>
+              <CardTitle>Documents récents</CardTitle>
               <Button variant="ghost" size="sm" onClick={() => onTabChange('documents')}>
                 Voir tout <ChevronRight className="w-3 h-3 ml-1" />
               </Button>
@@ -598,7 +598,7 @@ export function AssetOverviewTab({ assetId, onTabChange, readOnly = false }: Pro
         {recentExports.length > 0 && !readOnly && (
         <Card>
           <CardHeader className="pb-2 flex flex-row items-center justify-between">
-            <CardTitle className="text-sm font-semibold">Exports récents</CardTitle>
+            <CardTitle>Exports récents</CardTitle>
             <Button
               variant="ghost"
               size="sm"

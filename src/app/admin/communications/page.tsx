@@ -237,7 +237,7 @@ export default function AdminCommunicationsPage() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold flex items-center gap-2">
+          <h1 className="vb-app-title flex items-center gap-2">
             <MessageSquare className="h-6 w-6" />
             Communications
           </h1>
@@ -262,7 +262,7 @@ export default function AdminCommunicationsPage() {
       ) : (
         groups.map((group) => (
           <section key={group.key} className="space-y-3">
-            <h2 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">{group.label}</h2>
+            <h2 className="vb-app-section">{group.label}</h2>
             <div className="grid gap-3">
               {group.events.map((event) => (
                 <div key={event.code} className="rounded-xl border bg-card">

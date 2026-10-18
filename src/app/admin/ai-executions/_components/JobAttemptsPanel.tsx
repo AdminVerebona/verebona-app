@@ -79,7 +79,7 @@ export function JobAttemptsPanel({ view, userView, treatment }: { view: JobExecu
   const failed = view.businessResult === 'FAILED';
   return (
     <section className="space-y-2" data-testid="job-attempts">
-      <h3 className="text-sm font-semibold text-[color:var(--text-primary)]">Tentatives du job et retry</h3>
+      <h3 className="vb-app-subsection">Tentatives du job et retry</h3>
 
       <dl className="grid grid-cols-[auto,1fr] gap-x-3 gap-y-0.5 text-xs text-[color:var(--text-secondary)]" data-testid="job-retry">
         <dt className="text-[color:var(--text-muted)]">Statut du job</dt>

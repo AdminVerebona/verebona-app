@@ -75,7 +75,7 @@ export function CollapsibleCard({
             className="group flex w-full items-start gap-3 rounded-[10px] text-left outline-none"
           >
             <div className="min-w-0 flex-1 space-y-1.5">
-              <div className={cn("flex items-center gap-2 font-bold leading-tight tracking-[-.01em]", titleClassName)}>
+              <div className={cn("flex items-center gap-2 text-[17px] font-bold leading-tight tracking-[-.01em]", titleClassName)}>
                 {icon}
                 {title}
               </div>

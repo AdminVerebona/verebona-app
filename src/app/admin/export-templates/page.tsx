@@ -68,7 +68,7 @@ export default function ExportTemplatesPage() {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-2xl md:text-3xl font-bold flex items-center gap-2">
+        <h1 className="vb-app-title flex items-center gap-2">
           <FileType className="h-8 w-8" />
           Modèles d’export
         </h1>
@@ -85,7 +85,7 @@ export default function ExportTemplatesPage() {
               <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
                 <div className="min-w-0 flex-1 space-y-2">
                   <div className="flex flex-wrap items-center gap-2">
-                    <h3 className="text-lg font-semibold">{m.label}</h3>
+                    <h3 className="vb-app-subsection">{m.label}</h3>
                     <Badge variant={m.isActive ? 'active' : 'secondary'}>
                       {m.isActive
                         ? <><CheckCircle className="h-3 w-3 mr-1" /> Actif</>

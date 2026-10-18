@@ -187,7 +187,7 @@ const RANK_LABEL: Record<string, string> = {
   primary: 'principal', fallback_1: 'repli 1', fallback_2: 'repli 2', fallback: 'tout repli',
 };
 
-const SELECT = 'rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--bg-input)] px-3 py-2 text-sm text-[color:var(--text-primary)]';
+const SELECT = 'rounded-lg border border-[color:var(--input)] bg-[color:var(--bg-input)] px-3 py-2 text-sm text-[color:var(--text-primary)]';
 
 function cost(micros: number | null): string {
   if (micros === null) return 'non calculable';
@@ -292,7 +292,7 @@ function AiExecutionsScreen() {
       <AiEnvBanner />
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-bold text-[color:var(--text-primary)]">Exécutions &amp; logs</h1>
+          <h1 className="vb-app-title">Exécutions &amp; logs</h1>
           <p className="text-sm text-[color:var(--text-muted)]">
             Appels modèles de tous les traitements, et routage des requêtes de l&apos;assistant.
           </p>
@@ -319,7 +319,7 @@ function AiExecutionsScreen() {
 
       {tab === 'calls' && errors.length > 0 && (
         <div className="rounded-xl border border-[color:var(--border-warning)] bg-[color:var(--bg-warning)] p-4 space-y-2">
-          <h2 className="text-sm font-semibold text-[color:var(--text-primary)] flex items-center gap-2">
+          <h2 className="vb-app-section flex items-center gap-2">
             <AlertTriangle className="w-4 h-4 text-[color:var(--text-warning-soft)]" />
             Échecs des sept derniers jours
           </h2>
@@ -551,7 +551,7 @@ function ExecutionDetailPanel({ detail, onClose }: { detail: Detail; onClose: ()
     <div role="dialog" aria-modal="true" className="fixed inset-0 z-50 flex justify-end bg-[color:var(--veil)]" onClick={onClose}>
       <div className="w-full max-w-xl h-full overflow-y-auto bg-[color:var(--bg-card)] p-5 space-y-4" onClick={(e) => e.stopPropagation()}>
         <div className="flex items-center justify-between">
-          <h2 className="text-lg font-semibold text-[color:var(--text-primary)]">Exécution — appel {detail.call.id}</h2>
+          <h2 className="vb-app-section">Exécution — appel {detail.call.id}</h2>
           <div className="flex items-center gap-1.5">
             {/* Lot 32 : l'exécution complète, copiable ou téléchargeable pour l'analyser ailleurs. */}
             <ExecutionExportButtons callId={detail.call.id} />
@@ -567,7 +567,7 @@ function ExecutionDetailPanel({ detail, onClose }: { detail: Detail; onClose: ()
 
         {/* CDC 15 CFG-02, CFG-05, DP-05, OBS-CFG : ce qui a réellement été appliqué. */}
         <section className="space-y-1" data-testid="execution-applied-config">
-          <h3 className="text-sm font-semibold text-[color:var(--text-primary)]">Configuration appliquée</h3>
+          <h3 className="vb-app-subsection">Configuration appliquée</h3>
           <dl className="grid grid-cols-[auto,1fr] gap-x-3 gap-y-0.5 text-xs">
             <dt className="text-[color:var(--text-muted)]">Moteur</dt>
             <dd className="text-[color:var(--text-secondary)]">
@@ -605,7 +605,7 @@ function ExecutionDetailPanel({ detail, onClose }: { detail: Detail; onClose: ()
           <ExecutionDiagnosisPanel callId={detail.call.id} diagnosis={detail.diagnosis} />
         ) : (
           <section className="space-y-1">
-            <h3 className="text-sm font-semibold text-[color:var(--text-primary)]">Appels de la chaîne de modèles</h3>
+            <h3 className="vb-app-subsection">Appels de la chaîne de modèles</h3>
             {detail.calls.map((c) => (
               <p key={c.id} className="text-xs text-[color:var(--text-secondary)]">
                 {RANK_LABEL[c.modelRank ?? ''] ?? 'rang inconnu'} · {c.model} · {c.status === 'error' ? `échec ${displayErrorCode(c.errorCode, c.failure?.family, c.failure?.subtype) ?? ''}` : 'succès'}
@@ -618,7 +618,7 @@ function ExecutionDetailPanel({ detail, onClose }: { detail: Detail; onClose: ()
 
         {detail.steps.length > 0 && (
           <section className="space-y-1">
-            <h3 className="text-sm font-semibold text-[color:var(--text-primary)]">Étapes</h3>
+            <h3 className="vb-app-subsection">Étapes</h3>
             {detail.steps.map((s, i) => (
               <div key={i} className="text-xs text-[color:var(--text-secondary)]">
                 <p>
@@ -640,7 +640,7 @@ function ExecutionDetailPanel({ detail, onClose }: { detail: Detail; onClose: ()
         )}
 
         <section className="space-y-1">
-          <h3 className="text-sm font-semibold text-[color:var(--text-primary)]">Instantanés d&apos;entrée</h3>
+          <h3 className="vb-app-subsection">Instantanés d&apos;entrée</h3>
           {detail.inputs.filter((i) => i.value != null && i.value !== '').map((i) => (
             <div key={i.label} className="text-xs text-[color:var(--text-secondary)]">
               <span className="text-[color:var(--text-muted)]">{i.label} : </span>
@@ -655,7 +655,7 @@ function ExecutionDetailPanel({ detail, onClose }: { detail: Detail; onClose: ()
         </section>
 
         <section className="space-y-1">
-          <h3 className="text-sm font-semibold text-[color:var(--text-primary)]">Modifications produites</h3>
+          <h3 className="vb-app-subsection">Modifications produites</h3>
           {detail.modifications.length === 0 ? (
             <p className="text-xs text-[color:var(--text-muted)]">Aucune modification rattachée à cette exécution.</p>
           ) : detail.modifications.map((m, i) => (
@@ -668,13 +668,13 @@ function ExecutionDetailPanel({ detail, onClose }: { detail: Detail; onClose: ()
 
         {detail.t2 && (
           <section className="space-y-1">
-            <h3 className="text-sm font-semibold text-[color:var(--text-primary)]">Sources T2 utilisées (requête {detail.t2.requestId})</h3>
+            <h3 className="vb-app-subsection">Sources T2 utilisées (requête {detail.t2.requestId})</h3>
             <SourcesList sources={detail.t2.sources} />
           </section>
         )}
 
         <section className="space-y-1">
-          <h3 className="text-sm font-semibold text-[color:var(--text-primary)]">Exécution de file</h3>
+          <h3 className="vb-app-subsection">Exécution de file</h3>
           {job ? (
             <p className="text-xs text-[color:var(--text-secondary)]">
               Job {job.id} · {job.treatment} · {job.status} · origine {job.origin}

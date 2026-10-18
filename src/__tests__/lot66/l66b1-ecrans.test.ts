@@ -218,7 +218,7 @@ describe('L66B1-07 — contrastes calculés des paires introduites (WCAG AA)', (
     return CSS.slice(d + 1, CSS.indexOf('\n}', d));
   };
   const RACINE = bloc(':root {');
-  const THEMES = { clair: bloc('html[data-theme="beige"] {'), sombre: bloc('html[data-theme="beige"] .public-page {') };
+  const THEMES = { clair: bloc('html[data-theme="beige"] {'), sombre: bloc('html[data-theme="blue"] {') };
   const v = (b: string, n: string) => {
     const m = b.match(new RegExp(`--${n}:\\s*(#[0-9A-Fa-f]{6})\\b`)) ?? RACINE.match(new RegExp(`--${n}:\\s*(#[0-9A-Fa-f]{6})\\b`));
     expect(m, `--${n}`).not.toBeNull();

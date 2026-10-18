@@ -88,7 +88,7 @@ export function ManualLaunch({ onLaunched }: { onLaunched: (jobIds: number[]) =>
 
   return (
     <div className="rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--bg-card)] p-4 space-y-3">
-      <h2 className="text-sm font-semibold text-[color:var(--text-primary)]">Lancement manuel</h2>
+      <h2 className="vb-app-section">Lancement manuel</h2>
       <div className="flex flex-col sm:flex-row gap-2 sm:items-center">
         <select
           value={treatment}

@@ -106,7 +106,7 @@ export function NotificationsOps() {
   return (
     <section className="space-y-3" data-testid="notifications-ops">
       <div className="flex items-center justify-between gap-3">
-        <h2 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">Notifications — santé et réémission</h2>
+        <h2 className="vb-app-section">Notifications — santé et réémission</h2>
         <Button size="sm" variant="ghost" onClick={() => void load()} aria-label="Actualiser la santé des notifications">
           <RefreshCw className="h-3.5 w-3.5" />
         </Button>

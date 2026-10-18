@@ -162,7 +162,7 @@ export function LinkedExecutionReports({ callId, treatment }: { callId: number; 
   if (treatment !== 'T1' && treatment !== 'T3' && treatment !== 'T6') return null;
   return (
     <section className="space-y-2" data-testid="execution-reports">
-      <h3 className="text-sm font-semibold text-[color:var(--text-primary)]">Rapport d&apos;exécution {treatment} (données BDD)</h3>
+      <h3 className="vb-app-subsection">Rapport d&apos;exécution {treatment} (données BDD)</h3>
       {!data ? (
         <p className="text-xs text-[color:var(--text-muted)] flex items-center gap-1.5"><Loader2 className="w-3.5 h-3.5 animate-spin" /> Chargement…</p>
       ) : data.reports.length === 0 ? (
@@ -374,7 +374,7 @@ export function ExecutionReportsTab({ accountId }: { accountId: string }) {
     apiClient.get<{ rows: ReportSummaryDto[]; total: number; available: boolean }>(`/api/admin/ai/execution-reports?${q}`)
       .then(setData).catch(() => toast.error('Rapports indisponibles.'));
   }, [treatment, status, offset, accountId]);
-  const SELECT = 'rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--bg-input)] px-3 py-2 text-sm text-[color:var(--text-primary)]';
+  const SELECT = 'rounded-lg border border-[color:var(--input)] bg-[color:var(--bg-input)] px-3 py-2 text-sm text-[color:var(--text-primary)]';
   return (
     <div className="space-y-3" data-testid="execution-reports-tab">
       <div className="flex flex-wrap gap-2">

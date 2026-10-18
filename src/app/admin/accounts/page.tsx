@@ -142,7 +142,7 @@ function AccountsScreen() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold flex items-center gap-2">
+          <h1 className="vb-app-title flex items-center gap-2">
             <Building2 className="h-6 w-6" />
             Comptes
           </h1>

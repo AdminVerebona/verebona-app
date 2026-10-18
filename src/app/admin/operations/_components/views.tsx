@@ -330,7 +330,7 @@ function Section({ title, count, children }: { title: string; count?: number; ch
   return (
     <section className="rounded-xl border bg-card overflow-hidden">
       <div className="px-4 py-3 border-b flex items-center justify-between gap-2">
-        <h2 className="font-semibold text-sm">{title}</h2>
+        <h2 className="vb-app-section">{title}</h2>
         {count !== undefined && <span className="text-xs text-muted-foreground tabular-nums">{count}</span>}
       </div>
       <div className="p-4 text-sm">{children}</div>

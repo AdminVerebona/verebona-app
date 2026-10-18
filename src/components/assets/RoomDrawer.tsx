@@ -204,7 +204,7 @@ export function RoomDrawer({ open, onOpenChange, assetId, room, onRefresh }: Pro
                     onClick={enterEditMode}
                   >
                     <Pencil className="w-4 h-4" />
-                    <span className="text-[10px] font-semibold uppercase tracking-wider">Modifier</span>
+                    <span className="text-[12px] font-semibold">Modifier</span>
                   </button>
                   <div className="w-px bg-border" />
                   <button
@@ -213,7 +213,7 @@ export function RoomDrawer({ open, onOpenChange, assetId, room, onRefresh }: Pro
                     disabled={isDeleting}
                   >
                     <Trash2 className="w-4 h-4" />
-                    <span className="text-[10px] font-semibold uppercase tracking-wider">Supprimer</span>
+                    <span className="text-[12px] font-semibold">Supprimer</span>
                   </button>
                 </div>
               </div>
@@ -230,7 +230,7 @@ export function RoomDrawer({ open, onOpenChange, assetId, room, onRefresh }: Pro
                   disabled={isSaving}
                 >
                   <X className="w-4 h-4" />
-                  <span className="text-[10px] font-semibold uppercase tracking-wider">Annuler</span>
+                  <span className="text-[12px] font-semibold">Annuler</span>
                 </button>
                 <div className="w-px bg-border" />
                 <button
@@ -240,7 +240,7 @@ export function RoomDrawer({ open, onOpenChange, assetId, room, onRefresh }: Pro
                   disabled={isSaving || !name.trim()}
                 >
                   {isSaving ? <Loader2 className="w-4 h-4 animate-spin" /> : isCreateMode ? <Plus className="w-4 h-4" /> : <Save className="w-4 h-4" />}
-                  <span className="text-[10px] font-semibold uppercase tracking-wider">{isSaving ? 'Sauvegarde…' : isCreateMode ? 'Ajouter' : 'Enregistrer'}</span>
+                  <span className="text-[12px] font-semibold">{isSaving ? 'Sauvegarde…' : isCreateMode ? 'Ajouter' : 'Enregistrer'}</span>
                 </button>
               </div>
             </div>

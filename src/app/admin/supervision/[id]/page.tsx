@@ -136,7 +136,7 @@ export default function AnomalyTreatmentPage({ params }: { params: Promise<{ id:
       {back}
       <div>
         <p className="text-xs text-muted-foreground">{anomaly.domainLabel} · anomalie #{anomaly.id}</p>
-        <h1 className="text-2xl font-bold">{anomaly.title}</h1>
+        <h1 className="vb-app-title">{anomaly.title}</h1>
         <p className={`text-sm mt-1 ${open ? 'text-[color:var(--text-warning-soft)]' : 'text-[color:var(--text-success)]'}`}>
           {open
             ? 'Ouverte'

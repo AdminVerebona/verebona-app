@@ -135,7 +135,7 @@ export function TreatmentStateControl({
             <label className="block space-y-1.5">
               <span className="text-sm text-[color:var(--text-secondary)]">Motif (conseillé)</span>
               <input value={reason} onChange={(e) => setReason(e.target.value)} maxLength={500}
-                className="w-full rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--bg-input)] px-3 py-2 text-sm" />
+                className="w-full rounded-lg border border-[color:var(--input)] bg-[color:var(--bg-input)] px-3 py-2 text-sm" />
             </label>
           )}
           <DialogFooter className="gap-2">

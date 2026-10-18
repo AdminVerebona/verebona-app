@@ -163,7 +163,7 @@ export function AssistantSettings() {
 
           {groupes.map((g) => (
             <section key={g} className="space-y-2">
-              <h3 className="text-xs font-semibold uppercase tracking-wide text-[color:var(--text-muted)]">{data.groups[g] ?? g}</h3>
+              <h3 className="vb-app-subsection">{data.groups[g] ?? g}</h3>
               {data.settings.filter((s) => s.group === g).map((s) => (
                 <div key={s.key} className="flex flex-wrap items-center gap-3 border-t border-[color:var(--border-subtle)] pt-2">
                   <div className="flex-1 min-w-[220px]">
@@ -210,7 +210,7 @@ export function AssistantSettings() {
           ))}
 
           <section className="space-y-1.5">
-            <h3 className="text-xs font-semibold uppercase tracking-wide text-[color:var(--text-muted)]">Historique des modifications</h3>
+            <h3 className="vb-app-subsection">Historique des modifications</h3>
             {data.history.length === 0 ? (
               <p className="text-xs text-[color:var(--text-muted)]">Aucune modification enregistrée.</p>
             ) : (
@@ -240,7 +240,7 @@ export function AssistantSettings() {
           </section>
 
           <section className="space-y-1.5">
-            <h3 className="text-xs font-semibold uppercase tracking-wide text-[color:var(--text-muted)]">Consultations sensibles (contenu des conversations)</h3>
+            <h3 className="vb-app-subsection">Consultations sensibles (contenu des conversations)</h3>
             {data.contentReads.length === 0 ? (
               <p className="text-xs text-[color:var(--text-muted)]">Aucune consultation.</p>
             ) : (

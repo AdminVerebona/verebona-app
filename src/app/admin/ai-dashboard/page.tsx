@@ -227,7 +227,7 @@ export default function AiDashboardPage() {
         <div className="flex flex-wrap items-center gap-3">
           <div className="flex-1 min-w-0">
             <div className="flex flex-wrap items-center gap-2">
-              <h1 className="text-2xl font-bold text-[color:var(--text-primary)]">
+              <h1 className="vb-app-title">
                 Configuration IA — {data.environment}
               </h1>
               {/* GST-01 : état global, deux valeurs seulement. */}
@@ -311,7 +311,7 @@ export default function AiDashboardPage() {
 
       {/* PER-01 : fenêtre de supervision — lecture seule des métriques */}
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <h2 className="text-sm font-semibold text-[color:var(--text-primary)]">Santé des traitements</h2>
+        <h2 className="vb-app-section">Santé des traitements</h2>
         <div role="group" aria-label="Fenêtre de supervision" className="inline-flex rounded-lg border border-[color:var(--border-subtle)] p-0.5">
           {DASHBOARD_WINDOWS.map((w) => (
             <button
@@ -411,7 +411,7 @@ export default function AiDashboardPage() {
       {/* Versions */}
       <div className="rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--bg-card)] p-4 space-y-3">
         <div className="flex items-center justify-between gap-3">
-          <h2 className="text-sm font-semibold text-[color:var(--text-primary)]">Versions</h2>
+          <h2 className="vb-app-section">Versions</h2>
           <div className="flex gap-2">
             <Button size="sm" variant="outline" onClick={createDraft} disabled={busy}>
               <Plus className="w-3.5 h-3.5 mr-1.5" /> Nouvelle version
@@ -475,7 +475,7 @@ export default function AiDashboardPage() {
       {/* Lot 54 : plus de mise en production depuis le BO — export du fichier
           de configuration (Configuration IA), packages antérieurs en historique. */}
       <div className="rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--bg-card)] p-4 space-y-2">
-        <h2 className="text-sm font-semibold text-[color:var(--text-primary)]">
+        <h2 className="vb-app-section">
           Export de la configuration
         </h2>
         <p className="text-sm text-[color:var(--text-muted)]">
@@ -495,7 +495,7 @@ export default function AiDashboardPage() {
       <Link href="/admin/ai-costs"
         className="block rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--bg-card)] p-4 hover:opacity-80 transition-opacity">
         <div className="flex items-baseline justify-between gap-3">
-          <h2 className="text-sm font-semibold text-[color:var(--text-primary)]">
+          <h2 className="vb-app-section">
             Dépense — {windowLabel === '24 h' ? 'dernières 24 h' : `${windowLabel.replace(' j', '')} derniers jours`}
           </h2>
           <ArrowRight className="w-3.5 h-3.5 text-[color:var(--text-muted)]" />

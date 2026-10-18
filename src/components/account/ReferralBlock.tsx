@@ -152,7 +152,7 @@ export function ReferralBlock({ withHeading = true }: { withHeading?: boolean } 
     return (
       <div className="border border-dashed border-[color:var(--border-subtle)] rounded-lg p-4 space-y-2">
         {withHeading && (
-        <h4 className="text-sm font-medium flex items-center gap-2">
+        <h4 className="vb-app-subsection flex items-center gap-2">
           <Gift className="w-4 h-4 text-muted-foreground" />
           Parrainage
         </h4>
@@ -173,7 +173,7 @@ export function ReferralBlock({ withHeading = true }: { withHeading?: boolean } 
     return (
       <div className="space-y-3">
         {withHeading && (
-        <h4 className="text-sm font-medium flex items-center gap-2">
+        <h4 className="vb-app-subsection flex items-center gap-2">
           <Gift className="w-4 h-4 text-primary" />
           Parrainage
         </h4>
@@ -204,7 +204,7 @@ export function ReferralBlock({ withHeading = true }: { withHeading?: boolean } 
       <div className="flex items-start justify-between gap-2">
         <div>
           {withHeading && (
-          <h4 className="text-sm font-medium flex items-center gap-2">
+          <h4 className="vb-app-subsection flex items-center gap-2">
             <Gift className="w-4 h-4 text-primary" />
             Parrainage
           </h4>

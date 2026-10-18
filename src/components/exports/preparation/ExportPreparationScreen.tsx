@@ -370,7 +370,7 @@ export function ExportPreparationScreen({ assetId, exportType, onClose, api: api
           <Button type="button" variant="ghost" size="icon" onClick={requestClose} className="-ml-2 shrink-0 lg:hidden" aria-label="Fermer la préparation"><X aria-hidden /></Button>
           <div className="min-w-0 flex-1">
             <Eyebrow>Dossier prêt à l’emploi · préparation</Eyebrow>
-            <h1 id="prep-title" ref={titleRef} tabIndex={-1} className="mt-0.5 truncate text-lg font-semibold tracking-tight outline-none lg:text-2xl">{prep.dossier.label}</h1>
+            <h1 id="prep-title" ref={titleRef} tabIndex={-1} className="vb-app-title mt-0.5 truncate outline-none">{prep.dossier.label}</h1>
             <p className="mt-0.5 truncate text-[13px] text-muted-foreground">
               <span className="font-medium text-foreground">{prep.asset.name}</span>
               {' · '}{prep.asset.familyLabel}{prep.asset.categoryLabel ? ` · ${prep.asset.categoryLabel}` : ''}

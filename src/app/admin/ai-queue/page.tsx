@@ -365,7 +365,7 @@ function AiQueueScreen() {
       <AiEnvBanner showControl={false} />
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-bold text-[color:var(--text-primary)]">File d&apos;attente IA</h1>
+          <h1 className="vb-app-title">File d&apos;attente IA</h1>
           <p className="text-sm text-[color:var(--text-muted)]">
             Travaux par lots des traitements T1, T3 et T4.
           </p>
@@ -471,12 +471,12 @@ function AiQueueScreen() {
       {/* Filtres — SCR-08, NFR-001 */}
       <div className="flex flex-wrap gap-2">
         <select value={filterTreatment} onChange={(e) => setFilterTreatment(e.target.value)}
-          className="rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--bg-input)] px-3 py-2 text-sm text-[color:var(--text-primary)]">
+          className="rounded-lg border border-[color:var(--input)] bg-[color:var(--bg-input)] px-3 py-2 text-sm text-[color:var(--text-primary)]">
           <option value="">Tous les traitements</option>
           {['T1', 'T3', 'T4'].map((t) => <option key={t} value={t}>{t}</option>)}
         </select>
         <select value={filterStatus} onChange={(e) => setFilterStatus(e.target.value)}
-          className="rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--bg-input)] px-3 py-2 text-sm text-[color:var(--text-primary)]">
+          className="rounded-lg border border-[color:var(--input)] bg-[color:var(--bg-input)] px-3 py-2 text-sm text-[color:var(--text-primary)]">
           <option value="">Tous les statuts</option>
           {(Object.keys(STATUS_LABEL) as JobStatus[]).map((s) => (
             <option key={s} value={s}>{STATUS_LABEL[s]}</option>
@@ -486,7 +486,7 @@ function AiQueueScreen() {
           onChange={(e) => setFilterAccount(e.target.value)}
           className="max-w-[140px] bg-[color:var(--bg-input)]" />
         <select value={filterOrigin} onChange={(e) => setFilterOrigin(e.target.value)}
-          className="rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--bg-input)] px-3 py-2 text-sm text-[color:var(--text-primary)]">
+          className="rounded-lg border border-[color:var(--input)] bg-[color:var(--bg-input)] px-3 py-2 text-sm text-[color:var(--text-primary)]">
           <option value="">Toutes origines</option>
           <option value="automatic">Automatique</option>
           <option value="manual">Manuelle</option>

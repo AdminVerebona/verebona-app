@@ -79,7 +79,7 @@ function Dashboard() {
     <div className="space-y-6">
       <style>{VIZ_STYLE}</style>
       <div>
-        <h1 className="text-2xl font-bold flex items-center gap-2">
+        <h1 className="vb-app-title flex items-center gap-2">
           <LayoutDashboard className="h-6 w-6" />
           Dashboard
         </h1>

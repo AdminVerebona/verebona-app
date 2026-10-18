@@ -172,7 +172,7 @@ function ReferralsScreen() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold flex items-center gap-2"><Gift className="h-6 w-6" /> Parrainages & promotions</h1>
+          <h1 className="vb-app-title flex items-center gap-2"><Gift className="h-6 w-6" /> Parrainages & promotions</h1>
           <p className="text-sm text-muted-foreground mt-0.5">Suivi des codes et des conversions — consultation uniquement.</p>
         </div>
         <Button variant="outline" size="sm" onClick={() => load()} disabled={loading}>

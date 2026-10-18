@@ -182,7 +182,7 @@ export function WelcomeOnboardingModal({
       <DialogContent className="max-w-md p-0 overflow-hidden gap-0">
         {/* Header */}
         <div className="px-6 pt-5 pb-0">
-          <span className="text-xs font-medium text-[color:var(--text-muted)] uppercase tracking-wide">
+          <span className="vb-app-label">
             Bienvenue sur Verebona
           </span>
         </div>
@@ -192,7 +192,7 @@ export function WelcomeOnboardingModal({
           <div className="p-3 rounded-2xl bg-[color:var(--bg-card)] shadow-sm">
             {currentStep.icon}
           </div>
-          <h2 className="text-lg font-semibold text-[color:var(--text-primary)] leading-snug">
+          <h2 className="vb-app-section">
             {currentStep.title}
           </h2>
           <div>{currentStep.body}</div>

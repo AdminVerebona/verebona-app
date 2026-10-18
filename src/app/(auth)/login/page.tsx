@@ -11,7 +11,7 @@ import { LogoWithBaseline } from '@/components/Logo';
 import { PasswordInput } from '@/components/ui/password-input';
 import { AuthFooter } from '@/components/LandingFooter';
 import { ArrowLeft } from 'lucide-react';
-import { ForceTheme } from '@/components/ForceTheme';
+import { FollowTheme } from '@/components/FollowTheme';
 import { publicSiteUrl } from '@/lib/external-urls';
 import { runAuthStorageMigration } from '@/lib/auth-migration';
 import { safeReturnUrl } from '@/lib/safe-redirect';
@@ -134,7 +134,7 @@ function LoginForm() {
 
   return (
     <div className="public-page min-h-screen flex flex-col bg-[color:var(--bg-page)]">
-      <ForceTheme theme="blue" />
+      <FollowTheme />
       <div className="flex-1 flex items-center justify-center p-4">
         <Card className="w-full max-w-md bg-[color:var(--bg-card)] border-[color:var(--border-subtle)] shadow-xl">
           <CardHeader className="space-y-4">
@@ -148,7 +148,7 @@ function LoginForm() {
             <div className="flex justify-center">
               <LogoWithBaseline size={50} />
             </div>
-            <CardTitle className="text-center text-[color:var(--text-primary)]">Connexion</CardTitle>
+            <CardTitle role="heading" aria-level={1} className="text-center text-[26px] font-extrabold tracking-[-.02em] text-[color:var(--text-primary)]">Connexion</CardTitle>
             <CardDescription className="text-center text-[color:var(--text-muted)]">
               Connectez-vous à votre compte Verebona
             </CardDescription>

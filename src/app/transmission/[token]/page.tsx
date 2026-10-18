@@ -124,7 +124,7 @@ export default function TransmissionPage() {
 
         <Card>
           <CardHeader>
-            <CardTitle className="text-lg">Invitation de transmission</CardTitle>
+            <CardTitle>Invitation de transmission</CardTitle>
           </CardHeader>
           <CardContent>
             {/* Loading */}

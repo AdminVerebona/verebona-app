@@ -107,7 +107,7 @@ export function ValuationHistoryDrawer({ open, onClose, assetId, assetName, onSa
         <SheetHeader className="px-6 py-5 border-b border-border">
           <div className="flex items-center gap-2">
             <TrendingUp className="w-4 h-4 text-primary" />
-            <SheetTitle className="text-base font-semibold">Historique de valorisation</SheetTitle>
+            <SheetTitle>Historique de valorisation</SheetTitle>
           </div>
           <p className="text-sm text-muted-foreground mt-0.5">{assetName}</p>
         </SheetHeader>
@@ -116,8 +116,8 @@ export function ValuationHistoryDrawer({ open, onClose, assetId, assetName, onSa
           {/* Current value summary */}
           {latest && (
             <div className="rounded-xl border border-primary/20 bg-primary/5 p-4">
-              <p className="text-xs font-semibold uppercase tracking-widest text-primary mb-2">Dernière estimation</p>
-              <p className="text-2xl font-bold text-[color:var(--text-primary)]">{formatCurrency(latest.value)}</p>
+              <p className="vb-app-subsection mb-2">Dernière estimation</p>
+              <p className="text-2xl font-extrabold tracking-[-.02em] vb-tabular text-[color:var(--text-primary)]">{formatCurrency(latest.value)}</p>
               <div className="flex items-center gap-3 mt-1 text-sm text-muted-foreground">
                 {latest.date && <span>{formatDate(latest.date)}</span>}
                 {latest.mode && <span>·</span>}
@@ -191,13 +191,13 @@ export function ValuationHistoryDrawer({ open, onClose, assetId, assetName, onSa
             <p className="text-sm text-muted-foreground text-center py-8">Aucune estimation enregistrée</p>
           ) : (
             <div className="space-y-1">
-              <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground mb-3">Toutes les estimations</p>
+              <p className="vb-app-subsection mb-3">Toutes les estimations</p>
               <div className="divide-y divide-border">
                 {sorted.map((entry, i) => (
                   <div key={entry.id} className="py-3 flex items-start justify-between gap-3">
                     <div className="min-w-0">
                       <div className="flex items-center gap-2">
-                        <span className="font-semibold text-sm text-[color:var(--text-primary)]">
+                        <span className="font-semibold text-sm vb-tabular text-[color:var(--text-primary)]">
                           {formatCurrency(entry.value)}
                         </span>
                         {i === 0 && (

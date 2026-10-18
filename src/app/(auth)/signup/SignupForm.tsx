@@ -15,7 +15,7 @@ import { PasswordRequirements } from '@/components/auth/PasswordRequirements';
 import { PasswordInput } from '@/components/ui/password-input';
 import { LandingFooter } from '@/components/LandingFooter';
 import { ArrowLeft, Crown, Users } from 'lucide-react';
-import { ForceTheme } from '@/components/ForceTheme';
+import { FollowTheme } from '@/components/FollowTheme';
 import { publicSiteUrl } from '@/lib/external-urls';
 import { z } from 'zod';
 import { MIN_PASSWORD_LENGTH, checkPassword } from '@/lib/auth/password-rules';
@@ -304,7 +304,7 @@ export function SignupForm(props: { invitation?: SignupFormInvitation | null }) 
 
   return (
     <div className="public-page min-h-screen flex flex-col bg-[color:var(--bg-page)]">
-      <ForceTheme theme="blue" />
+      <FollowTheme />
       <div className="flex-1 flex items-center justify-center p-4">
         <Card className="w-full max-w-lg bg-[color:var(--bg-card)] border-[color:var(--border-subtle)] shadow-xl">
           <CardHeader className="space-y-4">
@@ -318,7 +318,7 @@ export function SignupForm(props: { invitation?: SignupFormInvitation | null }) 
             <div className="flex justify-center">
               <LogoWithBaseline size={50} />
             </div>
-            <CardTitle className="text-center text-[color:var(--text-primary)]">Créer un compte</CardTitle>
+            <CardTitle role="heading" aria-level={1} className="text-center text-[26px] font-extrabold tracking-[-.02em] text-[color:var(--text-primary)]">Créer un compte</CardTitle>
             {isDuoInvite ? (
               <div
                 data-testid="duo-invite-signup-context"

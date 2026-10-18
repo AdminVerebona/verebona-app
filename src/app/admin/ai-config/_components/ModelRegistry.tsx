@@ -129,7 +129,7 @@ export function ModelRegistry() {
           )}
 
           <section className="space-y-1.5">
-            <h3 className="text-xs font-semibold uppercase tracking-wide text-[color:var(--text-muted)]">Alias de l’assistant (§15.11, §15.12)</h3>
+            <h3 className="vb-app-subsection">Alias de l’assistant (§15.11, §15.12)</h3>
             <div className="overflow-x-auto">
               <table className="w-full text-xs">
                 <thead>
@@ -164,7 +164,7 @@ export function ModelRegistry() {
           </section>
 
           <section className="space-y-1.5">
-            <h3 className="text-xs font-semibold uppercase tracking-wide text-[color:var(--text-muted)]">Modèles connus : exceptions Verebona, catalogue Google, usage effectif</h3>
+            <h3 className="vb-app-subsection">Modèles connus : exceptions Verebona, catalogue Google, usage effectif</h3>
             <div className="overflow-x-auto">
               <table className="w-full text-xs">
                 <thead>

@@ -70,7 +70,7 @@ export function Supervision({
   return (
     <div className="rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--bg-card)] p-4 space-y-3">
       <div className="flex flex-wrap items-baseline justify-between gap-3">
-        <h3 className="text-sm font-semibold text-[color:var(--text-primary)]">{title}</h3>
+        <h3 className="vb-app-subsection">{title}</h3>
         {/*
           Fenêtre réglable plutôt que compteurs remis à zéro. Ces indicateurs
           comptent des traces réelles : les effacer pour assainir l'écran

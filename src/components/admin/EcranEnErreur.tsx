@@ -30,7 +30,7 @@ export function EcranEnErreur({
       <div className="flex items-start gap-3">
         <AlertTriangle className="w-5 h-5 text-[color:var(--text-danger)] shrink-0 mt-0.5" />
         <div className="space-y-1">
-          <h2 className="text-sm font-semibold text-[color:var(--text-primary)]">{titre}</h2>
+          <h2 className="vb-app-section">{titre}</h2>
           <p className="text-sm text-[color:var(--text-secondary)]">
             {message ?? "Le serveur n'a pas répondu comme attendu."}
           </p>

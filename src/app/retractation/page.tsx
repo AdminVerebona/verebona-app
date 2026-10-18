@@ -39,7 +39,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { LogoWithBaseline } from '@/components/Logo';
-import { ForceTheme } from '@/components/ForceTheme';
+import { FollowTheme } from '@/components/FollowTheme';
 import { AlertTriangle, ArrowLeft, CheckCircle, Loader2, MailCheck, ShieldAlert } from 'lucide-react';
 import { publicSiteUrl } from '@/lib/external-urls';
 import { resolveWithdrawalBackTarget } from '@/lib/withdrawal-back-target';
@@ -478,7 +478,7 @@ function BackLink({ authenticated }: { authenticated: boolean | null }) {
 function Shell({ children, back }: { children: React.ReactNode; back?: React.ReactNode }) {
   return (
     <div className="public-page min-h-screen flex flex-col bg-[color:var(--bg-page)]">
-      <ForceTheme theme="blue" />
+      <FollowTheme />
       <div className="flex-1 flex items-center justify-center p-4">
         <div className="w-full max-w-lg space-y-6">
           <div className="flex justify-center">

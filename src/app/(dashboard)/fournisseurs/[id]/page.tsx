@@ -49,7 +49,7 @@ function Section({ icon: Icon, title, count, children, empty }: {
   return (
     <Card>
       <CardHeader className="pb-3">
-        <CardTitle className="flex items-center gap-2 text-base">
+        <CardTitle className="flex items-center gap-2">
           <Icon className="w-4 h-4 text-muted-foreground" aria-hidden />
           {title}
           <span className="text-sm font-normal text-muted-foreground">({count})</span>
@@ -160,7 +160,7 @@ export default function SupplierPage() {
                 <Building2 className="h-5 w-5 text-[color:var(--accent)]" aria-hidden />
               </div>
               <div className="min-w-0">
-                <h1 className="truncate text-2xl font-bold">{s.name}</h1>
+                <h1 className="vb-app-title truncate">{s.name}</h1>
                 <div className="mt-2 flex flex-wrap gap-2">
                   {s.status === 'archived' && <Badge variant="secondary">Archivé</Badge>}
                   <Badge variant="outline">{CONTACT_STATUS[s.contactStatus] ?? 'Coordonnées'}</Badge>

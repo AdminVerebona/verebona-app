@@ -33,7 +33,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { LogoWithBaseline } from '@/components/Logo';
 import { Footer } from '@/components/Footer';
 import { CheckCircle, AlertTriangle } from 'lucide-react';
-import { ForceTheme } from '@/components/ForceTheme';
+import { FollowTheme } from '@/components/FollowTheme';
 import { MIN_PASSWORD_LENGTH } from '@/lib/auth/password-rules';
 
 /**
@@ -107,7 +107,7 @@ function Contenu() {
 
   const cadre = (contenu: React.ReactNode) => (
     <div className="public-page min-h-screen flex flex-col bg-[color:var(--bg-page)]">
-      <ForceTheme theme="blue" />
+      <FollowTheme />
       <div className="flex-1 flex flex-col items-center justify-center px-4 py-12">
         <div className="mb-8">
           <LogoWithBaseline />

@@ -9,7 +9,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { LogoWithBaseline } from '@/components/Logo';
 import { Footer } from '@/components/Footer';
 import { CheckCircle } from 'lucide-react';
-import { ForceTheme } from '@/components/ForceTheme';
+import { FollowTheme } from '@/components/FollowTheme';
 
 export default function ForgotPasswordPage() {
   const [email, setEmail] = useState('');
@@ -47,14 +47,14 @@ export default function ForgotPasswordPage() {
   if (isSubmitted) {
     return (
       <div className="public-page min-h-screen flex flex-col bg-[color:var(--bg-page)]">
-        <ForceTheme theme="blue" />
+        <FollowTheme />
         <div className="flex-1 flex items-center justify-center p-4">
           <Card className="w-full max-w-md bg-[color:var(--bg-card)] border-[color:var(--border-subtle)] shadow-xl">
             <CardHeader className="space-y-4">
               <div className="flex justify-center">
                 <CheckCircle className="w-16 h-16 text-[color:var(--text-success)]" />
               </div>
-              <CardTitle className="text-center text-[color:var(--text-primary)]">Email envoyé</CardTitle>
+              <CardTitle role="heading" aria-level={1} className="text-center text-[26px] font-extrabold tracking-[-.02em] text-[color:var(--text-primary)]">Email envoyé</CardTitle>
               <CardDescription className="text-center text-[color:var(--text-muted)]">
                 Si un compte existe avec cet email, un lien de réinitialisation vous a été envoyé.
                 Vérifiez votre boîte de réception.
@@ -76,14 +76,14 @@ export default function ForgotPasswordPage() {
 
   return (
     <div className="public-page min-h-screen flex flex-col bg-[color:var(--bg-page)]">
-      <ForceTheme theme="blue" />
+      <FollowTheme />
       <div className="flex-1 flex items-center justify-center p-4">
         <Card className="w-full max-w-md bg-[color:var(--bg-card)] border-[color:var(--border-subtle)] shadow-xl">
           <CardHeader className="space-y-4">
             <div className="flex justify-center">
               <LogoWithBaseline size={50} />
             </div>
-            <CardTitle className="text-center text-[color:var(--text-primary)]">Mot de passe oublié</CardTitle>
+            <CardTitle role="heading" aria-level={1} className="text-center text-[26px] font-extrabold tracking-[-.02em] text-[color:var(--text-primary)]">Mot de passe oublié</CardTitle>
             <CardDescription className="text-center text-[color:var(--text-muted)]">
               Entrez votre email pour recevoir un lien de réinitialisation
             </CardDescription>

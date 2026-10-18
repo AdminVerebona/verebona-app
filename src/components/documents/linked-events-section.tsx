@@ -259,7 +259,7 @@ export function LinkedEventsSection({
       <Card className="border border-[color:var(--border-subtle)] bg-[color:var(--bg-card)]">
         <CardHeader>
           <div className="flex items-center justify-between">
-            <CardTitle className="text-lg">Événements liés</CardTitle>
+            <CardTitle>Événements liés</CardTitle>
             {assetId && (
               <div className="flex items-center gap-2">
                 {/* Un seul bouton avec menu d'actions */}

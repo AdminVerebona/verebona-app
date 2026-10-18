@@ -107,7 +107,7 @@ export function RuntimeContractPanel({ calls }: { calls: ContractCallView[] }) {
 
   return (
     <section className="space-y-2" data-testid="execution-runtime-contract">
-      <h3 className="text-sm font-semibold text-[color:var(--text-primary)]">Contrat runtime</h3>
+      <h3 className="vb-app-subsection">Contrat runtime</h3>
       <dl className="grid grid-cols-[auto,1fr] gap-x-3 gap-y-0.5 text-xs">
         <Ligne label="Contract ID">{ref.contractId}</Ligne>
         <Ligne label="Contract version">{ref.contractVersion}</Ligne>

@@ -6,6 +6,7 @@ import { useSession } from '@/hooks/useSession';
 import { useEntitlements } from '@/hooks/useEntitlements';
 import { useBreadcrumb } from '@/contexts/BreadcrumbContext';
 import { Button } from '@/components/ui/button';
+import { Badge } from '@/components/ui/badge';
 import { apiClient } from '@/lib/api-client';
 import { toast } from 'sonner';
 import { Check, Loader2, Gift, CreditCard, Database, ShieldCheck } from 'lucide-react';
@@ -59,6 +60,11 @@ const offers = [
   },
   {
     id: 'PREMIUM',
+    // Offre mise en avant (pastille « Recommandé »), comme sur la maquette
+    // et le site public (PricingSection.vue, `badge: 'Recommandé'`). Aucune
+    // configuration du catalogue ne la porte : elle est déclarée ici, avec
+    // les listes de fonctions qui doivent rester alignées sur le site.
+    recommended: true,
     features: [
       'Tout Standard +',
       "Jusqu'à 10 biens",
@@ -602,9 +608,14 @@ export default function OffresPage() {
                   </div>
                 )}
 
-                <div className="flex items-center gap-2 mb-3">
-                  <Icon className={`w-5 h-5 ${theme.colors.icon}`} />
-                  <span className="text-lg sm:text-xl font-bold tracking-[-.01em] text-[color:var(--text-primary)]">{theme.label}</span>
+                <div className="flex items-start gap-2 mb-3">
+                  <Icon className={`w-5 h-5 mt-[3px] flex-shrink-0 ${theme.colors.icon}`} />
+                  <h2 className="flex-1 min-w-0 text-lg sm:text-xl font-bold tracking-[-.01em] leading-tight text-[color:var(--text-primary)]">{theme.label}</h2>
+                  {/* Pastille « Recommandé » (charte §5) : rayon 999, 12 px gras,
+                      blanc sur cuivre texte (clair) / encre sur cuivre sombre. */}
+                  {'recommended' in offer && offer.recommended && !offer.comingSoon && (
+                    <Badge variant="recommended" data-testid={`recommande-${offer.id.toLowerCase()}`}>Recommandé</Badge>
+                  )}
                 </div>
 
                 <div className="mb-4">

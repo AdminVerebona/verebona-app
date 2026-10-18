@@ -215,7 +215,7 @@ export default function EnrichissementsPage() {
       {/* Table */}
       <div className="rounded-xl border border-border overflow-hidden">
         {/* Header row */}
-        <div className="hidden sm:grid grid-cols-[1fr_1fr_1fr_auto] gap-4 px-4 py-2.5 bg-muted/40 border-b border-border text-xs font-medium text-muted-foreground uppercase tracking-wide">
+        <div className="hidden sm:grid grid-cols-[1fr_1fr_1fr_auto] gap-4 px-4 py-2.5 bg-muted/40 border-b border-border vb-app-label">
           <span>Champ</span>
           <span>Bien</span>
           <span>Nouvelle valeur</span>

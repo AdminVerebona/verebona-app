@@ -271,7 +271,7 @@ export function T3OpenActionsDiagnostic({ initialJobId }: { initialJobId?: numbe
     <div className="rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--bg-card)] p-4 space-y-3">
       <div className="flex items-center gap-2">
         <Search className="w-4 h-4 text-[color:var(--text-muted)] shrink-0" />
-        <h2 className="text-sm font-semibold text-[color:var(--text-primary)]">Diagnostic des « À traiter » T3</h2>
+        <h2 className="vb-app-section">Diagnostic des « À traiter » T3</h2>
       </div>
       <form className="grid gap-2 grid-cols-2 sm:grid-cols-4" onSubmit={(e) => { e.preventDefault(); void charger(filters); }}>
         {FILTERS.map(([k, label]) => (

@@ -266,7 +266,7 @@ export function SupplierDrawer({ supplierId, open, onOpenChange, onUpdated, hide
                 <Building2 className="w-4 h-4 text-[color:var(--accent)]" />
               </div>
               <div className="flex-1 min-w-0">
-                <SheetTitle className="text-sm font-semibold leading-tight truncate text-left">
+                <SheetTitle className="leading-tight truncate text-left">
                   {loading ? 'Chargement…' : (supplier?.name ?? 'Fournisseur')}
                 </SheetTitle>
                 {/* Fiche complète : biens, documents, équipements et échéances liés. */}
@@ -366,7 +366,7 @@ export function SupplierDrawer({ supplierId, open, onOpenChange, onUpdated, hide
 
                 {/* Section 1: Coordonnées */}
                 <div>
-                  <h3 className="text-xs font-semibold text-[color:var(--text-muted)] uppercase tracking-wide mb-3">
+                  <h3 className="vb-app-subsection mb-3">
                     Coordonnées
                   </h3>
 
@@ -507,7 +507,7 @@ export function SupplierDrawer({ supplierId, open, onOpenChange, onUpdated, hide
                   <>
                     <Separator />
                     <div>
-                      <h3 className="text-xs font-semibold text-[color:var(--text-muted)] uppercase tracking-wide mb-3">
+                      <h3 className="vb-app-subsection mb-3">
                         Documents associés ({documents.length})
                       </h3>
                       <div className="space-y-2">
@@ -564,7 +564,7 @@ export function SupplierDrawer({ supplierId, open, onOpenChange, onUpdated, hide
                   onClick={enterEdit}
                 >
                   <Pencil className="w-4 h-4" />
-                  <span className="text-[10px] font-semibold uppercase tracking-wider">Modifier</span>
+                  <span className="text-[12px] font-semibold">Modifier</span>
                 </button>
                 <div className="w-px bg-border" />
                 <button
@@ -573,7 +573,7 @@ export function SupplierDrawer({ supplierId, open, onOpenChange, onUpdated, hide
                   onClick={() => setShowArchiveConfirm(true)}
                 >
                   <Archive className="w-4 h-4" />
-                  <span className="text-[10px] font-semibold uppercase tracking-wider">Archiver</span>
+                  <span className="text-[12px] font-semibold">Archiver</span>
                 </button>
               </div>
             </div>
@@ -593,7 +593,7 @@ export function SupplierDrawer({ supplierId, open, onOpenChange, onUpdated, hide
                   disabled={saving}
                 >
                   <X className="w-4 h-4" />
-                  <span className="text-[10px] font-semibold uppercase tracking-wider">Annuler</span>
+                  <span className="text-[12px] font-semibold">Annuler</span>
                 </button>
                 <div className="w-px bg-border" />
                 <button
@@ -603,7 +603,7 @@ export function SupplierDrawer({ supplierId, open, onOpenChange, onUpdated, hide
                   disabled={saving || !editName.trim()}
                 >
                   {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
-                  <span className="text-[10px] font-semibold uppercase tracking-wider">{saving ? 'Sauvegarde…' : 'Enregistrer'}</span>
+                  <span className="text-[12px] font-semibold">{saving ? 'Sauvegarde…' : 'Enregistrer'}</span>
                 </button>
               </div>
             </div>

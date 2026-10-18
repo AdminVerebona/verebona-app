@@ -119,7 +119,7 @@ function UsersScreen() {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-2xl md:text-3xl font-bold">Utilisateurs</h1>
+        <h1 className="vb-app-title">Utilisateurs</h1>
         <p className="text-muted-foreground mt-1">Administration et support au niveau utilisateur</p>
       </div>
 

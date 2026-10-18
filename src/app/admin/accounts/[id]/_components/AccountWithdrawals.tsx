@@ -43,7 +43,7 @@ export function AccountWithdrawals({ accountId }: { accountId: string | number }
   return (
     <section className="rounded-xl border bg-card overflow-hidden">
       <div className="px-5 py-4 border-b">
-        <h2 className="font-semibold flex items-center gap-2">
+        <h2 className="vb-app-section flex items-center gap-2">
           <Undo2 className="h-4 w-4 text-muted-foreground" />
           Rétractations
         </h2>
@@ -60,7 +60,7 @@ export function AccountWithdrawals({ accountId }: { accountId: string | number }
       ) : (
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
-            <thead className="text-[11px] text-muted-foreground uppercase bg-muted/30">
+            <thead className="text-[12.5px] font-semibold text-muted-foreground bg-muted/30">
               <tr>
                 <th className="px-5 py-2.5 font-medium text-left">Référence</th>
                 <th className="px-5 py-2.5 font-medium text-left">Demande</th>

@@ -16,7 +16,8 @@ interface LogoProps {
  * `#17474D` sur fond clair, ivoire `#F8F6F1` / `#F3F1EB` sur fond sombre :
  * la couleur suit le thème par les jetons `--vb-logo-cells` et
  * `--vb-logo-text` (globals.css), y compris sur les pages publiques
- * (`.public-page`, toujours sombres). Mot-symbole Figtree 700, −0,02 em.
+ * (`.public-page`, qui suivent le thème depuis le lot 67). Mot-symbole
+ * Figtree 700, −0,02 em.
  *
  * Même rendu que `assets/logo-petrole.svg` / `logo-ivoire.svg` du design
  * system. Taille : 24 px dans l'application, 34 px sur le site.

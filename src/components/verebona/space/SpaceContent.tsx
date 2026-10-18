@@ -58,7 +58,7 @@ export function pillClass(primary: boolean, variant: SpaceVariant): string {
   return `inline-flex items-center justify-center rounded-full whitespace-nowrap transition-colors duration-150 disabled:opacity-50 ${size} ${look}`;
 }
 
-const SECTION_LABEL = 'text-[11px] font-semibold uppercase tracking-[.05em] text-[color:var(--text-muted)] px-0.5 pb-1';
+const SECTION_LABEL = 'vb-app-label px-0.5 pb-1';
 
 // ── Objet ───────────────────────────────────────────────────────────────────
 

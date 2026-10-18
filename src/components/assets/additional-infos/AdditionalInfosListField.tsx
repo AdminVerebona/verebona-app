@@ -236,7 +236,7 @@ export function AdditionalInfosListField({
           return (
             <li key={row.id} className="rounded-lg border border-border bg-muted/20 p-3 space-y-2.5">
               <div className="flex items-center justify-between gap-2">
-                <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-muted-foreground">{list.itemLabel} {index + 1}</span>
+                <span className="vb-app-label">{list.itemLabel} {index + 1}</span>
                 {!readOnly && (
                   <div className="flex items-center gap-0.5">
                     <button type="button" onClick={() => move(index, -1)} disabled={index === 0}

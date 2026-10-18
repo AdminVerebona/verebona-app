@@ -450,7 +450,7 @@ export function EquipmentDrawer({ open, onOpenChange, assetId, equipment: eq, su
   const viewSection = eq ? (
     <div className="px-5 py-4 space-y-0">
       {/* ── Informations ── */}
-      <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-3">Informations</p>
+      <p className="vb-app-subsection mb-3">Informations</p>
       <div className="space-y-2 text-sm">
         {(assetName || (availableAssets && eq.assetId && eq.assetId > 0)) && (
           <div className="flex items-center justify-between">
@@ -491,7 +491,7 @@ export function EquipmentDrawer({ open, onOpenChange, assetId, equipment: eq, su
       <div className="mt-5 pt-5 border-t border-border/50">
         <div className="flex items-center gap-2 mb-3">
           <Building2 className="w-3.5 h-3.5 text-muted-foreground" />
-          <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Fournisseurs</p>
+          <p className="vb-app-subsection">Fournisseurs</p>
           {loadingSuppliers && <Loader2 className="w-3 h-3 animate-spin text-muted-foreground" />}
         </div>
         {!loadingSuppliers && equipmentSuppliers.length === 0 ? (
@@ -512,7 +512,7 @@ export function EquipmentDrawer({ open, onOpenChange, assetId, equipment: eq, su
                   {s.email && <p className="text-[10px] text-muted-foreground truncate">{s.email}</p>}
                 </div>
                 {s.isPrimary && (
-                  <span className="text-[9px] font-semibold uppercase tracking-wider px-1.5 py-0.5 rounded bg-[color:var(--accent-soft)] text-[color:var(--accent)] border border-[color:var(--border-info)] flex-shrink-0">
+                  <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full bg-[color:var(--accent-soft)] text-[color:var(--accent)] border border-[color:var(--border-info)] flex-shrink-0">
                     Principal
                   </span>
                 )}
@@ -527,7 +527,7 @@ export function EquipmentDrawer({ open, onOpenChange, assetId, equipment: eq, su
       <div className="mt-5 pt-5 border-t border-border/50">
         <div className="flex items-center gap-2 mb-3">
           <FileText className="w-3.5 h-3.5 text-muted-foreground" />
-          <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Documents associés</p>
+          <p className="vb-app-subsection">Documents associés</p>
           {loadingDocuments && <Loader2 className="w-3 h-3 animate-spin text-muted-foreground" />}
           {!loadingDocuments && equipmentDocuments.length > 0 && (
             <span className="ml-auto text-[10px] font-semibold text-muted-foreground bg-muted/60 px-1.5 py-0.5 rounded-full">
@@ -554,7 +554,7 @@ export function EquipmentDrawer({ open, onOpenChange, assetId, equipment: eq, su
                     <p className="font-medium text-foreground truncate text-xs leading-tight">{doc.title}</p>
                     <div className="flex items-center gap-1.5 mt-1 flex-wrap">
                       {doc.documentTypeLabel && (
-                        <span className={`text-[9px] font-semibold uppercase tracking-wider px-1.5 py-0.5 rounded border ${typeColor}`}>
+                        <span className={`text-[11px] font-semibold px-2 py-0.5 rounded-full border ${typeColor}`}>
                           {doc.documentTypeLabel}
                         </span>
                       )}
@@ -576,7 +576,7 @@ export function EquipmentDrawer({ open, onOpenChange, assetId, equipment: eq, su
       <div className="mt-5 pt-5 border-t border-border/50 pb-2">
         <div className="flex items-center gap-2 mb-3">
           <CalendarDays className="w-3.5 h-3.5 text-muted-foreground" />
-          <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Agenda associé</p>
+          <p className="vb-app-subsection">Agenda associé</p>
           {loadingAgenda && <Loader2 className="w-3 h-3 animate-spin text-muted-foreground" />}
           {!loadingAgenda && equipmentAgenda.length > 0 && (
             <span className="ml-auto text-[10px] font-semibold text-muted-foreground bg-muted/60 px-1.5 py-0.5 rounded-full">
@@ -607,17 +607,17 @@ export function EquipmentDrawer({ open, onOpenChange, assetId, equipment: eq, su
                   )}
                 </div>
                 {item.manualStatus === 'realise' && (
-                  <span className="text-[9px] font-semibold uppercase tracking-wider px-1.5 py-0.5 rounded bg-[color:var(--bg-success)] text-[color:var(--text-success)] border border-[color:var(--border-success)] flex-shrink-0">
+                  <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full bg-[color:var(--bg-success)] text-[color:var(--text-success)] border border-[color:var(--border-success)] flex-shrink-0">
                     Réalisé
                   </span>
                 )}
                 {item.effectiveStatus === 'en_retard' && item.manualStatus !== 'realise' && (
-                  <span className="text-[9px] font-semibold uppercase tracking-wider px-1.5 py-0.5 rounded bg-[color:var(--danger-soft)] text-[color:var(--danger)] border border-[color:var(--danger-edge)] flex-shrink-0">
+                  <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full bg-[color:var(--danger-soft)] text-[color:var(--danger)] border border-[color:var(--danger-edge)] flex-shrink-0">
                     {EFFECTIVE_STATUS_LABELS.en_retard}
                   </span>
                 )}
                 {item.effectiveStatus === 'a_confirmer' && (
-                  <span className="text-[9px] font-semibold uppercase tracking-wider px-1.5 py-0.5 rounded bg-[color:var(--attention-soft)] text-[color:var(--attention-on-soft)] border border-[color:var(--attention-edge)] flex-shrink-0">
+                  <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full bg-[color:var(--attention-soft)] text-[color:var(--attention-on-soft)] border border-[color:var(--attention-edge)] flex-shrink-0">
                     {EFFECTIVE_STATUS_LABELS.a_confirmer}
                   </span>
                 )}
@@ -657,7 +657,7 @@ export function EquipmentDrawer({ open, onOpenChange, assetId, equipment: eq, su
                   disabled={isSaving}
                 >
                   <X className="w-4 h-4" />
-                  <span className="text-[10px] font-semibold uppercase tracking-wider">Annuler</span>
+                  <span className="text-[12px] font-semibold">Annuler</span>
                 </button>
                 <div className="w-px bg-border" />
                 <button
@@ -667,7 +667,7 @@ export function EquipmentDrawer({ open, onOpenChange, assetId, equipment: eq, su
                   disabled={isSaving || !name.trim()}
                 >
                   {isSaving ? <Loader2 className="w-4 h-4 animate-spin" /> : isCreateMode ? <Plus className="w-4 h-4" /> : <Save className="w-4 h-4" />}
-                  <span className="text-[10px] font-semibold uppercase tracking-wider">{isSaving ? 'Sauvegarde…' : isCreateMode ? 'Ajouter' : 'Enregistrer'}</span>
+                  <span className="text-[12px] font-semibold">{isSaving ? 'Sauvegarde…' : isCreateMode ? 'Ajouter' : 'Enregistrer'}</span>
                 </button>
               </div>
             </div>
@@ -679,7 +679,7 @@ export function EquipmentDrawer({ open, onOpenChange, assetId, equipment: eq, su
                   onClick={() => onOpenChange(false)}
                 >
                   <X className="w-4 h-4" />
-                  <span className="text-[10px] font-semibold uppercase tracking-wider">Fermer</span>
+                  <span className="text-[12px] font-semibold">Fermer</span>
                 </button>
                 <div className="w-px bg-border" />
                 <button
@@ -687,7 +687,7 @@ export function EquipmentDrawer({ open, onOpenChange, assetId, equipment: eq, su
                   onClick={enterEditMode}
                 >
                   <Pencil className="w-4 h-4" />
-                  <span className="text-[10px] font-semibold uppercase tracking-wider">Modifier</span>
+                  <span className="text-[12px] font-semibold">Modifier</span>
                 </button>
                 <div className="w-px bg-border" />
                 <button
@@ -696,7 +696,7 @@ export function EquipmentDrawer({ open, onOpenChange, assetId, equipment: eq, su
                   disabled={isArchiving}
                 >
                   <Trash2 className="w-4 h-4" />
-                  <span className="text-[10px] font-semibold uppercase tracking-wider">Supprimer</span>
+                  <span className="text-[12px] font-semibold">Supprimer</span>
                 </button>
               </div>
             </div>

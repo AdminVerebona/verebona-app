@@ -312,7 +312,7 @@ export function ExecutionDiagnosisPanel({ callId, diagnosis }: { callId: number;
   return (
     <>
       <section className="space-y-1" data-testid="execution-final-diagnosis">
-        <h3 className="text-sm font-semibold text-[color:var(--text-primary)]">Diagnostic final</h3>
+        <h3 className="vb-app-subsection">Diagnostic final</h3>
         <div className={`rounded-lg border p-3 text-xs space-y-0.5 ${failed ? 'border-[color:var(--border-danger)] bg-[color:var(--bg-danger)]' : 'border-[color:var(--border-subtle)]'}`}>
           {diagnosis.finalDiagnosis.map((l, i) => <p key={i} className={i === 0 ? 'font-medium text-[color:var(--text-primary)]' : 'text-[color:var(--text-secondary)]'}>{l}</p>)}
         </div>
@@ -349,7 +349,7 @@ export function ExecutionDiagnosisPanel({ callId, diagnosis }: { callId: number;
 
       <section className="space-y-2">
         <div className="flex items-center justify-between gap-2">
-          <h3 className="text-sm font-semibold text-[color:var(--text-primary)]">Appels de la chaîne de modèles</h3>
+          <h3 className="vb-app-subsection">Appels de la chaîne de modèles</h3>
           {diagnosis.calls.some((c) => c.hasModelOutput) && <ModelOutputs callId={callId} />}
         </div>
         {diagnosis.calls.map((r) => <CallCard key={r.callId} r={r} />)}

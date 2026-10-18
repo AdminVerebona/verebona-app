@@ -420,7 +420,7 @@ export function AssetDetailSection({
                                   </div>
                                   {alert.suggestedValue && (
                                     <div className="bg-[color:var(--attention-soft)] border border-[color:var(--attention-edge)] rounded px-2 py-1">
-                                      <p className="text-[10px] text-[color:var(--attention-on-soft)] uppercase tracking-wider font-semibold">Valeur suggérée</p>
+                                      <p className="text-[12px] text-[color:var(--attention-on-soft)] font-semibold">Valeur suggérée</p>
                                       <p className="text-xs font-semibold text-[color:var(--text-warning)]">{alert.suggestedValue}</p>
                                     </div>
                                   )}

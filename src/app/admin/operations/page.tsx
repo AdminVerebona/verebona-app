@@ -125,7 +125,7 @@ function Operations() {
           <Link href={accountId ? `/admin/accounts/${accountId}` : '/admin?tab=supervision'} className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground">
             <ArrowLeft className="h-3 w-3" /> {accountId ? `Compte #${accountId}` : 'Dashboard › Supervision'}
           </Link>
-          <h1 className="text-2xl font-bold flex items-center gap-2 mt-1">
+          <h1 className="vb-app-title flex items-center gap-2 mt-1">
             <Layers className="h-6 w-6" />
             Opérations{accountId ? ` du compte #${accountId}` : ''}
           </h1>

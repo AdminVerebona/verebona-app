@@ -207,7 +207,7 @@ export function CalendarView({ items, month, onItemClick, onNew }: { items: Agen
       {/* Sans date block */}
       {undated.length > 0 && (
         <div className="space-y-2">
-          <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide px-1">Sans date · {undated.length}</p>
+          <p className="vb-group-label px-1">Sans date · {undated.length}</p>
           {undated.map(item => (
             <button
               key={item.id}

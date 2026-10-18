@@ -31,7 +31,7 @@ type Domain = (typeof DOMAINS)[number]['code'];
 
 const ENVIRONMENTS = ['local', 'preprod', 'production'] as const;
 
-const SELECT = 'rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--bg-input)] px-2 py-1 text-xs text-[color:var(--text-primary)]';
+const SELECT = 'rounded-lg border border-[color:var(--input)] bg-[color:var(--bg-input)] px-2 py-1 text-xs text-[color:var(--text-primary)]';
 
 interface Report {
   windowDays: number;

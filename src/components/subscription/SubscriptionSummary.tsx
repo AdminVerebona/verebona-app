@@ -296,17 +296,17 @@ export function SubscriptionSummary() {
       {/* Etat du compte */}
       <div className="mb-5 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <div>
-          <p className="text-xs uppercase tracking-wide text-[color:var(--text-muted)]">Offre</p>
+          <p className="vb-app-label">Offre</p>
           <p className="text-sm font-medium text-[color:var(--text-primary)]">{planLabel}</p>
         </div>
 
         <div>
-          <p className="text-xs uppercase tracking-wide text-[color:var(--text-muted)]">Périodicité</p>
+          <p className="vb-app-label">Périodicité</p>
           <p className="text-sm font-medium text-[color:var(--text-primary)]">{periodLabel}</p>
         </div>
 
         <div>
-          <p className="text-xs uppercase tracking-wide text-[color:var(--text-muted)]">
+          <p className="vb-app-label">
             {trial.status === 'active' ? 'Fin de l\'essai' : 'Prochaine échéance'}
           </p>
           <p className="text-sm font-medium text-[color:var(--text-primary)]">
@@ -317,7 +317,7 @@ export function SubscriptionSummary() {
         </div>
 
         <div>
-          <p className="text-xs uppercase tracking-wide text-[color:var(--text-muted)]">Reconduction</p>
+          <p className="vb-app-label">Reconduction</p>
           <p className="text-sm font-medium text-[color:var(--text-primary)]">
             {!subscription.hasStripeSubscription
               ? '—'
@@ -334,16 +334,16 @@ export function SubscriptionSummary() {
       {subscription.currentPrice && (
         <div className="mb-5 grid gap-4 sm:grid-cols-2" data-testid="tarif-contractuel">
           <div>
-            <p className="text-xs uppercase tracking-wide text-[color:var(--text-muted)]">Tarif de la période en cours</p>
-            <p className="text-sm font-medium text-[color:var(--text-primary)]">
+            <p className="vb-app-label">Tarif de la période en cours</p>
+            <p className="text-sm font-medium vb-tabular text-[color:var(--text-primary)]">
               {formatEuroCents(subscription.currentPrice.unitAmountCents)}
               {subscription.billingPeriod === 'yearly' ? ' par an' : subscription.billingPeriod === 'monthly' ? ' par mois' : ''}
             </p>
           </div>
           {subscription.nextRenewalPrice && (
             <div>
-              <p className="text-xs uppercase tracking-wide text-[color:var(--text-muted)]">Au prochain renouvellement</p>
-              <p className="text-sm font-medium text-[color:var(--text-primary)]">
+              <p className="vb-app-label">Au prochain renouvellement</p>
+              <p className="text-sm font-medium vb-tabular text-[color:var(--text-primary)]">
                 {formatEuroCents(subscription.nextRenewalPrice.unitAmountCents)}
                 {subscription.billingPeriod === 'yearly' ? ' par an' : subscription.billingPeriod === 'monthly' ? ' par mois' : ''}
                 {subscription.nextRenewalPrice.effectiveAt ? ` à partir du ${formatDate(subscription.nextRenewalPrice.effectiveAt)}` : ''}

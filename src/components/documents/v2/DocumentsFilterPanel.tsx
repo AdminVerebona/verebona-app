@@ -65,7 +65,7 @@ function Section({
 }) {
   return (
     <div role="group" aria-labelledby={id} className="flex min-w-0 flex-col gap-2.5">
-      <p id={id} className="text-[11px] font-semibold uppercase tracking-[.05em] text-[color:var(--text-muted)]">
+      <p id={id} className="vb-app-label">
         {title}
       </p>
       {options.length === 0 ? (

@@ -2,7 +2,7 @@
 
 import { useEffect, useState, Suspense } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
-import { ForceTheme } from '@/components/ForceTheme';
+import { FollowTheme } from '@/components/FollowTheme';
 import { LogoWithBaseline } from '@/components/Logo';
 import { Loader2, ShieldCheck, Gift, Calendar, ArrowRight, AlertCircle } from 'lucide-react';
 import { apiClient } from '@/lib/api-client';
@@ -76,7 +76,7 @@ function OnboardingContent() {
 
   return (
     <div className="public-page min-h-screen flex flex-col bg-[color:var(--bg-page)] text-[color:var(--text-primary)]">
-      <ForceTheme theme="blue" />
+      <FollowTheme />
 
       <header className="flex items-center justify-center py-8 px-4">
         <LogoWithBaseline size={48} />
@@ -91,7 +91,7 @@ function OnboardingContent() {
               <span className="inline-flex items-center gap-1.5 px-3 py-1 text-xs font-semibold text-[color:var(--text-success)] bg-[color:var(--bg-success)] border border-[color:var(--border-success)] rounded-full">
                 <Gift className="w-3.5 h-3.5" /> Offre de bienvenue
               </span>
-              <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-[color:var(--text-primary)] mt-3">
+              <h1 className="vb-app-title mt-3">
                 Activez vos 2 mois offerts
               </h1>
               <p className="text-[color:var(--text-muted)] text-sm sm:text-base max-w-md mx-auto">
@@ -209,7 +209,7 @@ export default function OnboardingPage() {
   return (
     <Suspense fallback={
       <div className="public-page min-h-screen flex items-center justify-center bg-[color:var(--bg-page)]">
-        <ForceTheme theme="blue" />
+        <FollowTheme />
         <Loader2 className="w-8 h-8 text-[color:var(--accent)] animate-spin" />
       </div>
     }>

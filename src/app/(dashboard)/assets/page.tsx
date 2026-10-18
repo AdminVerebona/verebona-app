@@ -158,7 +158,7 @@ const AssetCardWithThumbnail = React.memo(function AssetCardWithThumbnail({
           <div className="w-7 h-7 rounded-lg bg-white/15 backdrop-blur-sm flex items-center justify-center">
             <Icon className="w-3.5 h-3.5 text-white" />
           </div>
-          <span className="text-white/80 text-xs font-medium uppercase tracking-wider drop-shadow">
+          <span className="text-white/80 text-xs font-semibold uppercase tracking-[.06em] drop-shadow">
             {/* Famille · Catégorie de bien (lib/asset-taxonomy) */}
             {assetFamilyLabel(asset.category)}
             {assetCategoryLabel(asset) && ` · ${assetCategoryLabel(asset)}`}
