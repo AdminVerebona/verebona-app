@@ -20,21 +20,21 @@ Les candidats suivent le contrat `t6-evaluation-input-v1` : `today`, `thresholdD
 E1 — Une décision par candidat, dans le même ordre, avec le même `subjectId` recopié tel quel. Jamais de candidat ajouté, fusionné ou supprimé.
 
 E2 — `decision` :
-- "SHOW_NOW" : une action, une décision ou une vérification précise de l’utilisateur est utile dès maintenant ;
+- "SHOW_NOW" : une action, une décision ou une vérification précise de l’utilisateur est utile dès maintenant, ou le simple rappel d’un événement à venir est utile maintenant (rappel informatif, E3) ;
 - "DEFER" : une démarche sera utile plus tard, solliciter maintenant serait prématuré ;
 - "SUPPRESS" : aucune sollicitation n’est utile ; l’information reste suivie dans l’agenda.
 Conclure "SUPPRESS" ou "DEFER" est une réponse normale et fréquente : l’existence d’une échéance ne justifie pas à elle seule une interpellation. Une échéance dépassée n’appelle une interpellation que si une action reste réellement nécessaire ; l’absence de confirmation n’est pas la preuve qu’une action n’a pas été faite.
 
-E3 — `category` : "ACTION_NOW" (agir ou décider à court terme), "TO_ANTICIPATE" (préparer dès maintenant une action future), "INFORMATION" (simple information). "SHOW_NOW" n’est jamais associé à "INFORMATION".
+E3 — `category` : "ACTION_NOW" (agir ou décider à court terme), "TO_ANTICIPATE" (préparer dès maintenant une action future), "INFORMATION" (simple information). "SHOW_NOW" n’est associé à "INFORMATION" que pour un rappel informatif : un événement à venir (`dueDate` postérieure à `today`) dont le rappel est réellement utile maintenant alors qu’aucune action n’est attendue, avec le motif "INFORMATIVE_REMINDER", `expectedAction` et `actionDeadline` à null. Jamais pour une échéance passée ou du jour, jamais par défaut parce qu’aucune action n’est identifiée : sans utilité établie du rappel, conclus "SUPPRESS" ou "DEFER". N’invente pas de préparation pour justifier une action.
 
 E4 — `reasonCode`, choisi dans cette liste fermée, compatible avec la décision :
-- avec "SHOW_NOW" : "ACTION_REQUIRED_SOON" (action à mener à court terme), "PREPARATION_NEEDED_NOW" (préparation à engager dès maintenant), "NOTICE_PERIOD_RUNNING" (délai ou préavis mentionné dans les informations fournies), "OVERDUE_ACTION_PENDING" (échéance passée, action établie restant à faire), "VERIFICATION_REQUIRED" (vérification précise justifiée par un élément fourni), "QUALIFICATION_REQUIRED" (échéance à préciser pour pouvoir être suivie) ;
+- avec "SHOW_NOW" : "ACTION_REQUIRED_SOON" (action à mener à court terme), "PREPARATION_NEEDED_NOW" (préparation à engager dès maintenant), "NOTICE_PERIOD_RUNNING" (délai ou préavis mentionné dans les informations fournies), "OVERDUE_ACTION_PENDING" (échéance passée, action établie restant à faire), "VERIFICATION_REQUIRED" (vérification précise justifiée par un élément fourni), "QUALIFICATION_REQUIRED" (échéance à préciser pour pouvoir être suivie), "INFORMATIVE_REMINDER" (rappel informatif d’un événement à venir, sans action, seulement avec "INFORMATION") ;
 - avec "DEFER" : "TOO_EARLY", "AWAITING_INFORMATION" ;
 - avec "SUPPRESS" : "NO_ACTION_REQUIRED", "ALREADY_HANDLED", "OVERDUE_NO_ACTION_IDENTIFIED", "INSUFFICIENT_CONTEXT", "RECENTLY_SHOWN_NO_CHANGE".
 
 E5 — `reason` : une phrase explicite qui dit pourquoi solliciter, ou non, maintenant. Toujours renseignée.
 
-E6 — `expectedAction` : l’action ou la vérification concrète attendue, courte, à l’infinitif (moins de 120 caractères), ou null. Obligatoire avec "SHOW_NOW".
+E6 — `expectedAction` : l’action ou la vérification concrète attendue, courte, à l’infinitif (moins de 120 caractères), ou null. Obligatoire avec "SHOW_NOW" et "ACTION_NOW" ou "TO_ANTICIPATE" ; null pour un rappel informatif.
 
 E7 — `evidenceRefs` : les références de `evidence` du candidat qui fondent ta décision, recopiées exactement ; jamais une référence absente de la liste. Au moins une avec "SHOW_NOW".
 

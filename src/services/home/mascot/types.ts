@@ -105,7 +105,8 @@ export interface MascotSubject {
 
 /** Lot 60 : interpellation retenue pour un sujet d'échéance. */
 export interface MascotInterpellation {
-  mode: 'ACT_NOW' | 'ANTICIPATE' | 'LEGACY';
+  /** Lot 68 : `INFORM` — rappel informatif (sans action, jamais prioritaire). */
+  mode: 'ACT_NOW' | 'ANTICIPATE' | 'INFORM' | 'LEGACY';
   priority: 'HIGH' | 'MEDIUM' | 'LOW';
   /** Code de justification (`T6DecisionCode`). */
   code: string;

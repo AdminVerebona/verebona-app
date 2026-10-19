@@ -22,7 +22,7 @@ import { EXT_ACTION_LOOKBACK_DAYS, extActionOccurrenceKey, formatDateFr, roleOf 
 import { canonicalJson, sha256 } from './hash';
 import { entriesFingerprint, serializeForHash, sha256 as reportSha256, type ReportEntry } from '@/services/ai/execution-report/model';
 import {
-  DEFAULT_T6_THRESHOLD_DAYS, T6_ASSESSMENT_CONTRACT, T6_MAX_ASSESSMENTS_PER_CALL, T6_REPEAT_WINDOW_DAYS,
+  DEFAULT_T6_THRESHOLD_DAYS, T6_ASSESSMENT_CONTRACT, T6_ASSESSMENT_REVISION_REMINDER, T6_MAX_ASSESSMENTS_PER_CALL, T6_REPEAT_WINDOW_DAYS,
   addDays, agendaFingerprintParts, agendaOccurrenceKey, agendaSubjectKey, assessmentFromDecision, assessmentHorizonDays, compareShown,
   daysBetween, decideT6Interpellation, suggestReminderDate,
   type T6Assessment, type T6Candidate, type T6CandidateRef, type T6DecisionResult, type T6InterpellationBundle, type T6ReminderPreference,
@@ -95,7 +95,8 @@ export async function loadAssessments(accountId: number, agendaIds: number[]): P
             a.interpellation, a.action_needed, a.priority, to_char(a.action_date, 'YYYY-MM-DD') AS action_date,
             to_char(a.reevaluate_on, 'YYYY-MM-DD') AS reevaluate_on, a.reason, a.action, a.consequence, a.uncertainty,
             a.exception_reason, a.prompt_version, a.trace_id,
-            a.contract_version, a.decision, a.category, a.reason_code, a.evidence_refs, a.uncertainties
+            a.contract_version, a.decision, a.category, a.reason_code, a.evidence_refs, a.uncertainties,
+            to_jsonb(a) -> 'contract_revision' AS contract_revision
        FROM t6_interpellation_assessments a
        JOIN agenda_items i ON i.id = a.agenda_item_id AND i.account_id = a.account_id
       WHERE a.account_id = $1 AND a.agenda_item_id = ANY($2::int[])`,
@@ -125,6 +126,8 @@ export async function loadAssessments(accountId: number, agendaIds: number[]): P
       reasonCode: (x.reason_code as string | null) ?? null,
       evidenceRefs: Array.isArray(x.evidence_refs) ? (x.evidence_refs as string[]) : [],
       uncertainties: Array.isArray(x.uncertainties) ? (x.uncertainties as string[]) : [],
+      // Lot 68 (migration 0474) : lue sans dépendre de la colonne (déploiement avant migration : révision 1).
+      contractRevision: x.contract_revision == null ? 1 : Number(x.contract_revision),
     });
   }
   return out;
@@ -201,9 +204,13 @@ export async function persistT6Assessments(
   accountId: number, today: string,
   refs: T6InterpellationBundle['refs'],
   list: readonly T6ValidatedDecision[],
-  meta: { promptVersion: string; traceId: string | null },
+  meta: { promptVersion: string; traceId: string | null; contractRevision?: number },
 ): Promise<number> {
   let n = 0;
+  // Lot 68 : révision 2 seulement si la version du prompt qui a évalué connaît
+  // le rappel informatif (sinon l'évaluation sera renouvelée après activation).
+  const revision = meta.contractRevision === T6_ASSESSMENT_REVISION_REMINDER ? T6_ASSESSMENT_REVISION_REMINDER : 1;
+  const avecRevision = await hasContractRevision();
   for (const d of list) {
     const c = refs.get(d.subjectId);
     if (!c) continue;
@@ -212,9 +219,9 @@ export async function persistT6Assessments(
       `INSERT INTO t6_interpellation_assessments
          (account_id, agenda_item_id, subject_key, context_fingerprint, assessed_on, interpellation, action_needed, priority,
           action_date, reevaluate_on, reason, action, consequence, uncertainty, exception_reason, prompt_version, trace_id,
-          contract_version, decision, category, reason_code, evidence_refs, uncertainties)
+          contract_version, decision, category, reason_code, evidence_refs, uncertainties${avecRevision ? ', contract_revision' : ''})
        SELECT $1, i.id, $3, $4, $5::date, $6, $7, $8, $9::date, $10::date, $11, $12, $13, $14, $15, $16, $17,
-              $18, $19, $20, $21, $22::jsonb, $23::jsonb
+              $18, $19, $20, $21, $22::jsonb, $23::jsonb${avecRevision ? ', $24::smallint' : ''}
          FROM agenda_items i WHERE i.id = $2 AND i.account_id = $1
        ON CONFLICT (account_id, subject_key) DO UPDATE SET
          agenda_item_id = EXCLUDED.agenda_item_id, context_fingerprint = EXCLUDED.context_fingerprint,
@@ -225,17 +232,34 @@ export async function persistT6Assessments(
          prompt_version = EXCLUDED.prompt_version, trace_id = EXCLUDED.trace_id,
          contract_version = EXCLUDED.contract_version, decision = EXCLUDED.decision, category = EXCLUDED.category,
          reason_code = EXCLUDED.reason_code, evidence_refs = EXCLUDED.evidence_refs, uncertainties = EXCLUDED.uncertainties,
+         ${avecRevision ? 'contract_revision = EXCLUDED.contract_revision,' : ''}
          updated_at = now()
        RETURNING id`,
       [accountId, c.agendaItemId, c.subjectKey, c.fingerprint, today, a.interpellation, a.actionNeeded, a.priority,
         a.actionDate, a.reevaluateOn, a.reason, a.action, a.consequence, a.uncertainty, a.exceptionReason,
         meta.promptVersion, meta.traceId,
-        T6_ASSESSMENT_CONTRACT, d.decision, d.category, d.reasonCode, JSON.stringify(d.evidenceRefs), JSON.stringify(d.uncertainties)],
+        T6_ASSESSMENT_CONTRACT, d.decision, d.category, d.reasonCode, JSON.stringify(d.evidenceRefs), JSON.stringify(d.uncertainties),
+        ...(avecRevision ? [revision] : [])],
     );
     n += r.length;
   }
   return n;
 }
+
+/**
+ * Lot 68 : la colonne `contract_revision` (migration 0474) existe-t-elle ?
+ * Lue une fois par processus ; en échec ou absente (fenêtre de déploiement),
+ * l'enregistrement se fait sans elle — jamais de décision perdue.
+ */
+let revisionColumn: Promise<boolean> | null = null;
+export function hasContractRevision(): Promise<boolean> {
+  revisionColumn ??= rows(
+    `SELECT 1 FROM information_schema.columns WHERE table_name = 't6_interpellation_assessments' AND column_name = 'contract_revision' LIMIT 1`, [],
+  ).then((r) => r.length > 0).catch(() => { revisionColumn = null; return false; });
+  return revisionColumn;
+}
+/** Réservé aux tests. */
+export function resetContractRevisionProbe(): void { revisionColumn = null; }
 
 // ── Candidats ────────────────────────────────────────────────────────────────
 
@@ -336,6 +360,8 @@ export function evaluationStateOf(decisions: readonly T6DecisionResult[], opts: 
 
 export interface PrepareDeps {
   aiCapable: () => Promise<boolean>;
+  /** Lot 68 : le prompt effectif connaît le rappel informatif (renouvellement ciblé des évaluations). */
+  reminderCapable?: () => Promise<boolean>;
   thresholdDays: () => Promise<number>;
   /** Lot 61 : une évaluation EVALUATE de ce compte a échoué récemment (mode dégradé). */
   recentEvaluationFailure?: (accountId: number) => boolean;
@@ -354,9 +380,10 @@ export async function prepareT6Interpellation(
 ): Promise<T6Preparation> {
   const today = p.raw.today;
   const candidats = t6Candidates(p.raw);
-  const [thresholdDays, aiCapableBrut] = await Promise.all([
+  const [thresholdDays, aiCapableBrut, reminderCapable] = await Promise.all([
     deps.thresholdDays().catch(() => DEFAULT_T6_THRESHOLD_DAYS),
     deps.aiCapable().catch(() => false),
+    deps.reminderCapable ? deps.reminderCapable().catch(() => false) : Promise.resolve(false),
   ]);
   let degraded = false;
   let prefs: T6ReminderPreference[] = [];
@@ -391,7 +418,7 @@ export async function prepareT6Interpellation(
     const d = decideT6Interpellation({
       candidate: c, today, thresholdDays, aiCapable, assessment,
       preferences: preferencesFor(prefs, c.agendaItemId, c.seriesKey),
-      history: { displayedDays },
+      history: { displayedDays }, reminderCapable,
     });
     return { ...d, agendaItemId: c.agendaItemId, dueDate: c.dueDate, seriesKey: c.seriesKey, assessment, displayedDays };
   });
@@ -482,6 +509,26 @@ export async function prepareT6Interpellation(
  * description ; la justification de l'IA est RÉFÉRENCÉE (empreinte) dans
  * `t6_interpellation_assessments`, relue en direct par le BO.
  */
+/**
+ * Lot 68 — issue d'une décision pour les rapports et compteurs : rappel
+ * informatif, action, report ou refus de l'utilisateur, différé, écarté
+ * (pure). Un rappel informatif n'est JAMAIS compté comme une action.
+ */
+export type T6DecisionOutcome = 'INFORMATIVE_REMINDER' | 'ACTION' | 'USER_SNOOZED' | 'USER_DISMISSED' | 'DEFERRED' | 'SUPPRESSED';
+export function t6OutcomeOf(d: Pick<T6DecisionResult, 'decision' | 'mode' | 'code'>): T6DecisionOutcome {
+  if (d.decision === 'SHOW_NOW') return d.mode === 'INFORM' ? 'INFORMATIVE_REMINDER' : 'ACTION';
+  if (d.code === 'USER_SNOOZED') return 'USER_SNOOZED';
+  if (d.code === 'USER_DISMISSED_OCCURRENCE' || d.code === 'USER_DISMISSED_SERIES') return 'USER_DISMISSED';
+  return d.decision === 'DEFER' ? 'DEFERRED' : 'SUPPRESSED';
+}
+
+/** Lot 68 : compteurs par issue (rapport T6). */
+export function t6OutcomeCounters(decisions: readonly Pick<T6DecisionResult, 'decision' | 'mode' | 'code'>[]): Record<T6DecisionOutcome, number> {
+  const c: Record<T6DecisionOutcome, number> = { INFORMATIVE_REMINDER: 0, ACTION: 0, USER_SNOOZED: 0, USER_DISMISSED: 0, DEFERRED: 0, SUPPRESSED: 0 };
+  for (const d of decisions) c[t6OutcomeOf(d)] += 1;
+  return c;
+}
+
 export function t6ReportEntries(decisions: readonly T6DecisionTrace[], thresholdDays: number): ReportEntry[] {
   const out: ReportEntry[] = [];
   for (const d of decisions) {
@@ -492,6 +539,8 @@ export function t6ReportEntries(decisions: readonly T6DecisionTrace[], threshold
       label: `Échéance #${d.agendaItemId}`, entityType: 'AGENDA_ITEM', entityId: d.agendaItemId,
       value: {
         decision: d.decision, code: d.code, priority: d.priority, deferredBy: d.deferredBy,
+        // Lot 68 : rappel informatif / action / report / refus / différé / écarté.
+        outcome: t6OutcomeOf(d), mode: d.mode,
         nextReevaluationAt: d.nextReevaluationAt,
         // Lot 61 : décision de l'IA et écart avec la décision du serveur.
         aiDecision: d.aiDecision, divergence: d.aiDecision != null && d.aiDecision !== d.decision,
@@ -499,7 +548,7 @@ export function t6ReportEntries(decisions: readonly T6DecisionTrace[], threshold
         threshold: { days: thresholdDays, applied: d.thresholdApplied, exception: d.thresholdException },
         userPreference: d.userPreference,
         assessment: a ? {
-          contract: a.contractVersion ?? null, decision: a.decision ?? null, category: a.category ?? null,
+          contract: a.contractVersion ?? null, revision: a.contractRevision ?? 1, decision: a.decision ?? null, category: a.category ?? null,
           reasonCode: a.reasonCode ?? null, evidenceRefs: a.evidenceRefs ?? [], uncertainties: (a.uncertainties ?? []).length,
           interpellation: a.interpellation, actionNeeded: a.actionNeeded, priority: a.priority,
           assessedOn: a.assessedOn, reevaluateOn: a.reevaluateOn, fresh: d.assessmentFresh,
@@ -590,6 +639,7 @@ export async function writeT6InterpellationReport(p: {
     );
     if (prev && prev.entries_fingerprint === empreinte) return null;
     const compte = (k: string) => p.prep.decisions.filter((d) => d.decision === k).length;
+    const issues = t6OutcomeCounters(p.prep.decisions);
     const traces = [...new Set(p.prep.decisions.map((d) => d.assessment?.traceId).filter((x): x is string => !!x))].slice(0, 50);
     return await repo.writeExecutionReport({
       accountId: p.accountId, treatment: 'T6', scope: 'HOME',
@@ -597,6 +647,9 @@ export async function writeT6InterpellationReport(p: {
       triggerCode: p.mode, traceIds: traces, status: 'NO_CHANGE',
       counters: {
         candidates: p.prep.decisions.length, shown: compte('SHOW_NOW'), deferred: compte('DEFER'), suppressed: compte('SUPPRESS'),
+        // Lot 68 : rappels informatifs et actions distingués, reports et refus de l'utilisateur.
+        shownActions: issues.ACTION, shownInformativeReminders: issues.INFORMATIVE_REMINDER,
+        userSnoozed: issues.USER_SNOOZED, userDismissed: issues.USER_DISMISSED,
         assessmentRequested: p.prep.bundle?.refs.size ?? 0, thresholdDays: p.prep.thresholdDays,
         // Lot 61 : écarts IA / serveur, sujets transmis à FORMULATE et affichés.
         divergences: p.prep.decisions.filter((d) => d.aiDecision != null && d.aiDecision !== d.decision).length,
@@ -648,7 +701,10 @@ export function t6EvaluationEntries(t: T6EvaluationTrace, refs: T6Interpellation
       section: 'EVALUATE',
       tableName: 'agenda_items', recordId: c.agendaItemId, fieldKey: c.subjectKey,
       label: `Échéance #${c.agendaItemId} (${subjectId})`, entityType: 'AGENDA_ITEM', entityId: c.agendaItemId,
-      value: a ? { subjectId, decision: a.decision, category: a.category, reasonCode: a.reasonCode, priorityHint: a.priorityHint, evidenceRefs: a.evidenceRefs }
+      value: a ? {
+        subjectId, decision: a.decision, category: a.category, reasonCode: a.reasonCode, priorityHint: a.priorityHint, evidenceRefs: a.evidenceRefs,
+        informativeReminder: a.decision === 'SHOW_NOW' && a.category === 'INFORMATION',
+      }
         : { subjectId, rejected: r?.reason ?? t.error ?? t.status },
       recordStatus: a ? a.decision : 'REJECTED',
       // Écriture confirmée seulement si toutes les décisions acceptées ont été conservées.
@@ -678,6 +734,8 @@ export async function writeT6EvaluationReport(p: {
       counters: {
         evaluated: p.bundle.refs.size, accepted: t.accepted.length, rejected: t.rejected.length, persisted: t.persisted,
         showNow: compte('SHOW_NOW'), defer: compte('DEFER'), suppress: compte('SUPPRESS'),
+        // Lot 68 : SHOW_NOW + INFORMATION (rappel informatif), jamais compté comme action.
+        showNowInformation: t.accepted.filter((d) => d.decision === 'SHOW_NOW' && d.category === 'INFORMATION').length,
       },
       steps: [{
         step: 'evaluate', status: t.status === 'generated' ? 'OK' : 'FAILED', error: t.error,

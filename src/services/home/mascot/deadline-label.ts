@@ -273,6 +273,32 @@ export function deadlineNextText(i: DeadlineWordingItem & { forecast: boolean },
   return `Votre prochaine échéance : ${p.label}, à prévoir ${quand}.`;
 }
 
+/**
+ * Lot 68 — RAPPEL INFORMATIF (SHOW_NOW + INFORMATION) : le fait, une seule
+ * fois, sans préparation artificielle ni « à prévoir » (pure, testée T6-RAP).
+ * Événement planifié : même phrase que DATE-NEXT (« La visite expert bois de
+ * la maison est prévue le 22 octobre 2026. »). Date à respecter : « … est
+ * fixée au 22 octobre 2026. » (prévisionnelle : « … est estimée autour du … »).
+ * Repli neutre : « Votre prochaine échéance concerne Maison : visite expert
+ * bois, le 22 octobre 2026. »
+ */
+export function deadlineReminderText(i: DeadlineWordingItem & { forecast: boolean }, dateLabel: string): string {
+  const p = parts(i);
+  const role: AgendaDateRole = i.forecast ? 'DEADLINE' : i.dateRole ?? 'DEADLINE';
+  if (role === 'SCHEDULED_EVENT') return deadlineNextText(i, dateLabel);
+  if (p.art && p.gender && (p.bien || !p.assetName)) {
+    const tetePro = TERMES[tete(p.label)] ? p.art : prochain(p.gender) ?? p.art;
+    const sujet = majuscule(`${tetePro}${p.label}${p.bien ? ` ${p.bien.de}` : ''}`);
+    const f = p.gender === 'f';
+    return i.forecast
+      ? `${sujet} est ${f ? 'estimée' : 'estimé'} autour du ${dateLabel}.`
+      : `${sujet} est ${f ? 'fixée' : 'fixé'} au ${dateLabel}.`;
+  }
+  const quand = i.forecast ? `autour du ${dateLabel} (date estimée)` : `le ${dateLabel}`;
+  if (p.assetName) return `Votre prochaine échéance concerne ${p.bien ? p.bien.ref : p.assetName} : ${p.label}, ${quand}.`;
+  return `Votre prochaine échéance : ${p.label}, ${quand}.`;
+}
+
 /** Élément d'une énumération : « le contrôle technique de la Cupra », « ramonage (Maison) ». */
 function element(i: DeadlineWordingItem): string {
   const p = parts(i);

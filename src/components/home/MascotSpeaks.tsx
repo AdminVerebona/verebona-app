@@ -37,10 +37,19 @@
  *   positionnée. Après résolution, l'élément disparaît aussitôt, puis la
  *   bulle, la file et la pastille se relisent (`refresh-a-traiter`).
  *   « Ou demandez-moi » reste séparé, sous les actions, secondaire.
+ *
+ * ── LOT 68 : UN BLOC PAR SUJET ─────────────────────────────────────────────
+ *
+ *   Plus d'introduction de comptage ni de carte imbriquée qui répète le
+ *   message : chaque sujet retenu est UN bloc — sa formulation (objet, bien
+ *   et date une seule fois), « Voir » (détail) et, pour une échéance décidée,
+ *   le menu « Rappels » (« Me le rappeler plus tard », « Ne plus me
+ *   rappeler »). Un rappel informatif garde la tonalité d'une information,
+ *   jamais celle d'une action. Desktop et mobile : même composant.
  * ══════════════════════════════════════════════════════════════════════════
  */
 import { useRouter } from 'next/navigation';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { toast } from 'sonner';
 import { ArrowRight, CalendarDays, CircleAlert, Clock, Download, FileText, Plus } from 'lucide-react';
 import { apiClient } from '@/lib/api-client';
@@ -51,15 +60,15 @@ import { useWriteGuard } from '@/contexts/WriteGuardContext';
 import { preloadAddForm } from '@/components/mobile/add-forms';
 import type { MascotAction, MascotParagraph, MascotPresentation, MascotTile, MascotTodoItem } from '@/services/home/mascot/types';
 import {
-  composeSpeech, displayedSecondaries, duoInviteHomeItem, homeItems, homePose, homePoseLabel, homeSuggestions, splitHighlights,
-  type ActionTile, type HomeItem,
+  bubbleLead, displayedSecondaries, duoInviteHomeItem, homeItems, homePose, homePoseLabel, homeSuggestions, splitHighlights, subjectBlocks,
+  type HomeItem, type SubjectBlock,
 } from '@/services/home/mascot/bubble';
-import type { AnswerKind } from '@/lib/verebona/space';
 import { MascotPose } from '@/components/verebona/space/MascotPose';
 import { useVerebonaSpace } from '@/components/verebona/space/VerebonaSpaceProvider';
 import { useMascotPresentation } from './useMascotPresentation';
 import { TodoChoicesDialog } from './TodoChoicesDialog';
 import { T6ReminderActions } from './T6ReminderControls';
+import { BLOCK_ACTION_PRIMARY } from './bubble-actions';
 
 /** Page « À traiter » sur une carte précise (OPEN_TODO_CARD) — ciblage par ID. */
 export function todoCardHref(todoId: string): string {
@@ -147,13 +156,6 @@ const TILE_TONES: Record<MascotTile['tone'], { bg: string; fg: string }> = {
 const BUBBLE_BG = 'var(--bubble)';
 const BUBBLE_EDGE = 'var(--bubble-edge)';
 
-/** Nature de la réponse locale, pour la pose de la mascotte du champ. */
-function kindOf(p: MascotParagraph): AnswerKind {
-  if (p.sourceCode.startsWith('DATE')) return 'event';
-  if (p.sourceCode.startsWith('PROC')) return 'doc';
-  return 'action';
-}
-
 export function MascotSpeaks({ greetingName, empty, onCreateAsset, onUploadDocument, pageSuggestions }: MascotSpeaksProps) {
   const router = useRouter();
   const space = useVerebonaSpace();
@@ -173,7 +175,10 @@ export function MascotSpeaks({ greetingName, empty, onCreateAsset, onUploadDocum
   const presentation = useMemo(() => withoutSubjects(withoutTodos(brute, hidden), hiddenSubjects), [brute, hidden, hiddenSubjects]);
   const [choices, setChoices] = useState<MascotTodoItem | null>(null);
 
-  const speech = composeSpeech({ presentation, empty, failed });
+  // Lot 68 : en-tête seul (« À traiter », évaluation, panne…) ; chaque sujet
+  // est dit UNE fois, dans son bloc.
+  const speech = bubbleLead({ presentation, empty, failed });
+  const blocks = empty ? [] : subjectBlocks(presentation);
   const pose = homePose(presentation, empty, failed);
   const loading = !empty && !presentation && !failed;
 
@@ -268,28 +273,15 @@ export function MascotSpeaks({ greetingName, empty, onCreateAsset, onUploadDocum
       return;
     }
     if (it.kind === 'todo') { openTodo(it.todo); return; }
-    if (it.kind === 'subject') { openTile(it.tile); return; }
+    if (it.kind === 'subject') { const a = it.tile.paragraph.actions[0]; if (a) void run(a, it.tile.paragraph, 'subject'); return; }
     void run(it.secondary.action, it.secondary, 'secondary');
   };
 
-  /**
-   * Clic sur une tuile (§3.2) : l'espace de réponse s'ouvre et reçoit la
-   * demande correspondante — le sujet, dit par Verebona, et ses actions.
-   * Une question (cible `ask`) part directement au moteur de l'assistant.
-   */
-  const openTile = (tile: ActionTile) => {
-    const p = tile.paragraph;
-    const first = p.actions[0];
-    if (first?.target.kind === 'ask') { void run(first, p, 'subject'); return; }
-    if (!space) { if (first) void run(first, p, 'subject'); return; }
-    const question = tile.sub ? `${tile.label} · ${tile.sub.split(' · ')[0]}` : tile.label;
-    space.askLocal({
-      question,
-      content: p.text,
-      kind: kindOf(p),
-      summary: tile.label,
-      actions: p.actions.map((a, i) => ({ label: a.label, primary: i === 0, run: () => { void run(a, p, 'subject'); } })),
-    });
+  /** Lot 68 : sujet reporté / refusé depuis son menu « Rappels » — retiré aussitôt. */
+  const onReminderDone = (occurrenceKey: string) => (kind: 'snoozed' | 'dismissed' | 'cleared') => {
+    if (kind === 'cleared') { setHiddenSubjects((h) => { const n = new Set(h); n.delete(occurrenceKey); return n; }); }
+    else setHiddenSubjects((h) => new Set(h).add(occurrenceKey));
+    void refresh();
   };
 
   /**
@@ -305,6 +297,24 @@ export function MascotSpeaks({ greetingName, empty, onCreateAsset, onUploadDocum
   });
 
   const items = homeItems(presentation, empty);
+  // Lot 68 : « Inviter quelqu'un » et « À traiter » sous l'en-tête qui les
+  // compte, puis les blocs de sujet, puis l'étape d'accueil / recommandations.
+  const itemsTete = items.filter((it) => it.kind === 'duo-invite' || it.kind === 'todo');
+  const itemsSuite = items.filter((it) => it.kind !== 'duo-invite' && it.kind !== 'todo');
+  /** Élément de niveau 2 (« À traiter », Duo, accueil, recommandation) : même composant. */
+  const renderItem = (it: HomeItem) => (
+    <ItemButton
+      key={it.key}
+      title={it.title}
+      sub={it.sub}
+      cta={it.cta}
+      tone={it.tone}
+      icon={it.icon}
+      onClick={() => openItem(it)}
+      dataTodoId={it.kind === 'todo' ? it.todo.todoId : undefined}
+      dataActionType={it.kind === 'todo' ? it.todo.actionType : it.kind === 'duo-invite' ? 'DUO_INVITE' : undefined}
+    />
+  );
   // Compte encore vide : « Inviter quelqu'un » avant les tuiles d'amorce (lot 49A).
   const emptyInvite = empty ? duoInviteHomeItem(presentation) : null;
   const suggestions = homeSuggestions(presentation, empty, pageSuggestions);
@@ -334,7 +344,7 @@ export function MascotSpeaks({ greetingName, empty, onCreateAsset, onUploadDocum
       {/* Bulle : coin resserré et pointe vers la mascotte (gauche desktop, haut mobile) */}
       <div
         data-mascot-bubble
-        className="relative col-span-2 mt-1 flex min-w-0 flex-col gap-3 rounded-[20px] rounded-tl-[6px] border px-4 py-3.5 md:col-span-1 md:col-start-2 md:mt-0 md:px-[22px] md:py-[18px]"
+        className="relative col-span-2 mt-1 flex min-w-0 flex-col gap-2.5 rounded-[20px] rounded-tl-[6px] border px-4 py-3 md:col-span-1 md:col-start-2 md:mt-0 md:gap-3 md:px-[22px] md:py-4"
         style={{ background: BUBBLE_BG, borderColor: BUBBLE_EDGE }}
       >
         <span
@@ -342,20 +352,22 @@ export function MascotSpeaks({ greetingName, empty, onCreateAsset, onUploadDocum
           className="absolute left-7 top-[-7px] h-3 w-3 rotate-45 border-l border-t md:left-[-7px] md:top-[26px] md:border-b md:border-t-0"
           style={{ background: BUBBLE_BG, borderColor: BUBBLE_EDGE }}
         />
-        <div aria-live="polite" aria-busy={loading}>
-          {loading ? (
-            <div className="space-y-2 py-1" role="status" aria-label="Chargement du message">
-              <div className="h-3.5 w-11/12 animate-pulse rounded bg-[color:var(--border-subtle)]" />
-              <div className="h-3.5 w-8/12 animate-pulse rounded bg-[color:var(--border-subtle)]" />
-            </div>
-          ) : (
-            <p className="m-0 text-[15px] leading-[1.55] text-[color:var(--text-primary)] [text-wrap:pretty] md:text-[16px] md:leading-[1.6]">
-              {splitHighlights(speech.text, speech.highlights).map((part, i) => (part.strong
-                ? <strong key={i} className="font-semibold">{part.text}</strong>
-                : <span key={i}>{part.text}</span>))}
-            </p>
-          )}
-        </div>
+        {(loading || speech.text) && (
+          <div aria-live="polite" aria-busy={loading}>
+            {loading ? (
+              <div className="space-y-2 py-1" role="status" aria-label="Chargement du message">
+                <div className="h-3.5 w-11/12 animate-pulse rounded bg-[color:var(--border-subtle)]" />
+                <div className="h-3.5 w-8/12 animate-pulse rounded bg-[color:var(--border-subtle)]" />
+              </div>
+            ) : (
+              <p className="m-0 text-[15px] leading-[1.55] text-[color:var(--text-primary)] [text-wrap:pretty] md:text-[16px] md:leading-[1.6]">
+                {splitHighlights(speech.text, speech.highlights).map((part, i) => (part.strong
+                  ? <strong key={i} className="font-semibold">{part.text}</strong>
+                  : <span key={i}>{part.text}</span>))}
+              </p>
+            )}
+          </div>
+        )}
 
         {/* Niveau 2 : un seul composant pour toutes les actions (MASC2). */}
         {empty ? (
@@ -367,43 +379,33 @@ export function MascotSpeaks({ greetingName, empty, onCreateAsset, onUploadDocum
               <ItemButton key={t.key} title={t.label} sub={t.sub} cta={null} tone={t.tone} icon={t.icon} onClick={t.go} />
             ))}
           </div>
-        ) : items.length > 0 && (
-          <div className="flex flex-col gap-2 md:grid md:grid-cols-2 md:gap-2.5" aria-label="Sujets à traiter">
-            {items.map((it) => {
-              const bouton = (
-                <ItemButton
-                  key={it.key}
-                  title={it.title}
-                  sub={it.sub}
-                  cta={it.cta}
-                  tone={it.tone}
-                  icon={it.icon}
-                  onClick={() => openItem(it)}
-                  dataTodoId={it.kind === 'todo' ? it.todo.todoId : undefined}
-                  dataActionType={it.kind === 'todo' ? it.todo.actionType : it.kind === 'duo-invite' ? 'DUO_INVITE' : undefined}
-                />
-              );
-              // Lot 60 : carte T6 d'une échéance décidée — commandes de rappel
-              // sous la carte, visant cette seule échéance.
-              const rappel = it.kind === 'subject' ? it.tile.paragraph.reminder : null;
-              if (!rappel || it.kind !== 'subject') return bouton;
-              const occurrenceKey = it.tile.paragraph.occurrenceKey;
-              return (
-                <div key={it.key} className="flex min-w-0 flex-col gap-0.5">
-                  {bouton}
-                  <T6ReminderActions
-                    reminder={rappel}
-                    subject={it.sub ? `${it.title} · ${it.sub}` : it.title}
-                    onDone={(kind) => {
-                      if (kind === 'cleared') { setHiddenSubjects((h) => { const n = new Set(h); n.delete(occurrenceKey); return n; }); }
-                      else setHiddenSubjects((h) => new Set(h).add(occurrenceKey));
-                      void refresh();
-                    }}
+        ) : (
+          <>
+            {itemsTete.length > 0 && (
+              <div className="flex flex-col gap-2 md:grid md:grid-cols-2 md:gap-2.5" aria-label="Sujets à traiter">
+                {itemsTete.map(renderItem)}
+              </div>
+            )}
+            {/* Lot 68 : un bloc par sujet retenu — texte, « Voir », « Rappels ». */}
+            {!loading && blocks.length > 0 && (
+              <ul className="m-0 flex list-none flex-col p-0" aria-label="Sujets du jour" aria-live="polite">
+                {blocks.map((b, i) => (
+                  <SubjectBlockView
+                    key={b.key}
+                    block={b}
+                    first={i === 0}
+                    onAction={(a) => { void run(a, b.paragraph, 'subject'); }}
+                    onReminderDone={onReminderDone(b.key)}
                   />
-                </div>
-              );
-            })}
-          </div>
+                ))}
+              </ul>
+            )}
+            {itemsSuite.length > 0 && (
+              <div className="flex flex-col gap-2 md:grid md:grid-cols-2 md:gap-2.5" aria-label="Pour continuer">
+                {itemsSuite.map(renderItem)}
+              </div>
+            )}
+          </>
         )}
       </div>
 
@@ -434,6 +436,66 @@ export function MascotSpeaks({ greetingName, empty, onCreateAsset, onUploadDocum
         onRestored={(id) => setHidden((h) => { const n = new Set(h); n.delete(id); return n; })}
       />
     </section>
+  );
+}
+
+/** Intitulé du sujet dans les fenêtres de rappel : on sait toujours QUELLE échéance est visée. */
+function reminderSubject(p: MascotParagraph): string {
+  const t = p.tile;
+  if (!t) return p.text;
+  const date = t.status.split(' · ').pop() ?? '';
+  return [t.label, t.assetName, /\d{4}/.test(date) ? date : null].filter(Boolean).join(' · ');
+}
+
+/**
+ * Lot 68 — bloc d'un sujet : pictogramme de nature (information bleue ou
+ * action), nature d'une action le cas échéant (jamais « Action à prévoir »
+ * pour un rappel informatif), la formulation UNE fois, puis « Voir » (accès
+ * au détail), les autres actions réelles (« C’est fait ») et « Rappels ».
+ * Zones tactiles : 44 px sur mobile, 36 px sur ordinateur ; aucun texte tronqué.
+ */
+function SubjectBlockView({ block, first, onAction, onReminderDone }: {
+  block: SubjectBlock; first: boolean; onAction: (a: MascotAction) => void;
+  onReminderDone: (kind: 'snoozed' | 'dismissed' | 'cleared') => void;
+}) {
+  const Icon = TILE_ICONS[block.icon] ?? CircleAlert;
+  const t = TILE_TONES[block.tone] ?? TILE_TONES.blue;
+  const textId = useId();
+  return (
+    <li
+      data-subject-block={block.key}
+      data-subject-nature={block.informative ? 'information' : 'action'}
+      className={`flex min-w-0 gap-3 ${first ? '' : 'mt-2.5 border-t border-[color:var(--bubble-edge)] pt-2.5'}`}
+    >
+      <span aria-hidden className="mt-0.5 flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-[10px]" style={{ background: t.bg, color: t.fg }}>
+        <Icon className="h-4 w-4" />
+      </span>
+      <div className="flex min-w-0 flex-1 flex-col gap-1">
+        {block.badge && (
+          <span data-subject-badge className="self-start rounded-full px-2 py-0.5 text-[11.5px] font-semibold leading-[1.4]" style={{ background: t.bg, color: t.fg }}>
+            {block.badge}
+          </span>
+        )}
+        <p id={textId} className="m-0 break-words text-[15px] leading-[1.55] text-[color:var(--text-primary)] [text-wrap:pretty] md:text-[16px] md:leading-[1.6]">
+          {splitHighlights(block.text, block.highlights).map((part, i) => (part.strong
+            ? <strong key={i} className="font-semibold">{part.text}</strong>
+            : <span key={i}>{part.text}</span>))}
+        </p>
+        {(block.actions.length > 0 || block.reminder) && (
+          <div className="-ml-1 flex flex-wrap items-center gap-x-1.5 gap-y-1">
+            {block.actions.map((a) => (
+              <button key={a.action.actionId} type="button" className={BLOCK_ACTION_PRIMARY} onClick={() => onAction(a.action)} data-block-action={a.action.actionId}>
+                {a.label}
+                {a.primary && <ArrowRight className="h-3.5 w-3.5" strokeWidth={2.2} aria-hidden />}
+              </button>
+            ))}
+            {block.reminder && (
+              <T6ReminderActions reminder={block.reminder} subject={reminderSubject(block.paragraph)} onDone={onReminderDone} describedBy={textId} />
+            )}
+          </div>
+        )}
+      </div>
+    </li>
   );
 }
 

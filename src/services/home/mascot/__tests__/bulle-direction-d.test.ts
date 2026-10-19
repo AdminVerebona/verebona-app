@@ -34,7 +34,8 @@ const rouge = { tone: 'red' as const, icon: 'clock' as const, label: 'Reporter o
 const info = { tone: 'blue' as const, icon: 'calendar-days' as const, label: 'Voir l’échéance', assetName: 'Ferrari Testarossa', status: 'Le 12 octobre 2026', attention: false };
 
 describe('phrase en langage naturel (§3.2)', () => {
-  it('deux sujets : « Deux sujets méritent… : a, et b. »', () => {
+  // Lot 68 (T6-RAP) : plus d'introduction de comptage — les textes des sujets, tels quels.
+  it('deux sujets : leurs textes, tels quels, sans « Deux sujets méritent… » (lot 68)', () => {
     const s = composeSpeech({
       empty: false,
       presentation: presentationOf({ paragraphs: [
@@ -42,12 +43,12 @@ describe('phrase en langage naturel (§3.2)', () => {
         para('La révision annuelle du Vélo Cargo est en retard de 2 jours.', rouge),
       ] }),
     });
-    expect(s.text).toBe('Deux sujets méritent votre attention aujourd’hui : deux documents indiquent des immatriculations différentes pour votre Ferrari Testarossa, et la révision annuelle du Vélo Cargo est en retard de 2 jours.');
+    expect(s.text).toBe('Deux documents indiquent des immatriculations différentes pour votre Ferrari Testarossa. La révision annuelle du Vélo Cargo est en retard de 2 jours.');
   });
 
-  it('un sujet : « Un sujet mérite… : a. »', () => {
+  it('un sujet : son texte seul, sans « Un sujet mérite… » (lot 68)', () => {
     const s = composeSpeech({ empty: false, presentation: presentationOf({ paragraphs: [para('Votre assurance expire demain.', ambre)] }) });
-    expect(s.text).toBe('Un sujet mérite votre attention aujourd’hui : votre assurance expire demain.');
+    expect(s.text).toBe('Votre assurance expire demain.');
   });
 
   it('zéro sujet : « Tout est à jour. … »', () => {
@@ -60,9 +61,9 @@ describe('phrase en langage naturel (§3.2)', () => {
     expect(s.text).toBe('Votre prochaine échéance concerne Ferrari : CT, le 12 octobre 2026.');
   });
 
-  it('textes de plusieurs phrases : juxtaposés, jamais enchaînés après « : »', () => {
+  it('textes de plusieurs phrases : repris tels quels, jamais enchaînés après « : »', () => {
     const s = composeSpeech({ empty: false, presentation: presentationOf({ paragraphs: [para('Quelle date retenir ? Cela concerne « Bail » (Maison).', ambre)] }) });
-    expect(s.text).toBe('Un sujet mérite votre attention aujourd’hui. Quelle date retenir ? Cela concerne « Bail » (Maison).');
+    expect(s.text).toBe('Quelle date retenir ? Cela concerne « Bail » (Maison).');
   });
 
   it('compte vide et discours indisponible', () => {
@@ -141,7 +142,8 @@ describe('tuiles d’action (§3.2)', () => {
     const [tile] = actionTiles(p);
     expect(tile).toMatchObject({ tone: 'red', label: 'Reporter ou marquer fait', sub: 'Vélo Cargo · En retard (2 j)' });
     expect(homePose(p, false)).toBe('alert-folder'); // révision en retard réelle
-    expect(composeSpeech({ presentation: p, empty: false }).text).toMatch(/^Un sujet mérite votre attention aujourd’hui/);
+    expect(composeSpeech({ presentation: p, empty: false }).text).not.toMatch(/mérite votre attention/);
+    expect(composeSpeech({ presentation: p, empty: false }).text).toMatch(/^Votre échéance du 19 septembre 2026/);
   });
 });
 

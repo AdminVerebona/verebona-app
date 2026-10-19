@@ -142,6 +142,17 @@ export async function seedSystemEmailTemplates() {
             updatedAt: new Date(),
             updatedBy: null,
         },
+        // Lot 68C : rappel J−7 avant renouvellement annuel (migration 0477).
+        {
+            type: 'SUBSCRIPTION_ANNUAL_RENEWAL_REMINDER',
+            subject: DEFAULT_EMAIL_TEMPLATES.SUBSCRIPTION_ANNUAL_RENEWAL_REMINDER.subject,
+            body: DEFAULT_EMAIL_TEMPLATES.SUBSCRIPTION_ANNUAL_RENEWAL_REMINDER.body,
+            placeholders: DEFAULT_EMAIL_TEMPLATES.SUBSCRIPTION_ANNUAL_RENEWAL_REMINDER.placeholders,
+            triggerConfig: null,
+            sender: null,
+            updatedAt: new Date(),
+            updatedBy: null,
+        },
     ];
 
     await db.insert(emailTemplates).values(sampleTemplates);

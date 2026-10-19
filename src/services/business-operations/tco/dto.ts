@@ -8,7 +8,7 @@ import {
 } from '../finance/economic-lines';
 import {
   TCO_CATEGORY_LABELS, USAGE_BUDGET_CATEGORY_LABELS, USAGE_BUDGET_PERIODICITY_LABELS, validateUsageBudget, type TcoCategory,
-  type TcoResult, type TcoWarning, type UsageBudget,
+  type TcoEconomicLine, type TcoResult, type TcoWarning, type UsageBudget,
 } from './model';
 
 export const TCO_PREMIUM_MESSAGE = 'Le coût de possession est disponible avec Premium et Premium Duo.';
@@ -34,13 +34,68 @@ export const ECONOMIC_LINE_REASON_LABELS: Readonly<Record<EconomicLineReason, st
 /** Lignes transmises à l'interface (les plus utiles d'abord) — la trace complète reste côté serveur et BO. */
 export const TCO_DTO_MAX_LINES = 400;
 
-export type TcoDto = Omit<TcoResult, 'entries'> & {
+/**
+ * Lot 68 (68A) — motif pour lequel une ligne examinée n'est PAS montrée sur
+ * la fiche du bien (elle reste au diagnostic BO, avec son motif) :
+ *   · OTHER_ASSET : dépense (ou composante) attribuée à un autre bien — sans
+ *     intérêt pour CE bien ;
+ *   · CONSOLIDATED_SHOWN : justificatif repris par une dépense consolidée déjà
+ *     affichée — le justificatif est ouvrable depuis cette ligne.
+ */
+export type TcoHiddenReason = 'OTHER_ASSET' | 'CONSOLIDATED_SHOWN';
+
+export const TCO_HIDDEN_REASON_LABELS: Readonly<Record<TcoHiddenReason, string>> = {
+  OTHER_ASSET: 'Masquée sur la fiche : attribuée à un autre bien',
+  CONSOLIDATED_SHOWN: 'Masquée sur la fiche : justificatif ouvrable depuis la dépense consolidée',
+};
+
+/** Ligne montrée sur la fiche : justificatifs repris par la dépense consolidée (en plus de `fileId`). */
+export type TcoUserLine = TcoEconomicLine & { supportingDocuments?: Array<{ fileId: number; title: string }> };
+
+const RETENUE = (s: EconomicLineStatus) => s === 'RETAINED_DIRECT' || s === 'RETAINED_CONSOLIDATED';
+
+/**
+ * Lot 68 (68A) — vue utilisateur des lignes examinées (pure, testée L68-TCO-1x).
+ * Ne change AUCUN montant : seules des lignes à 0 € retenu sont masquées.
+ *   1. ligne `OUT_OF_SCOPE` (autre bien) : masquée ;
+ *   2. justificatif `CONSOLIDATED_ELSEWHERE` dont l'Opération a une ligne
+ *      montrée : masqué, et ajouté aux justificatifs de cette ligne (la
+ *      retenue de préférence) ; sans ligne montrée, il reste expliqué.
+ * Les autres motifs (non qualifiée, devise, non ventilée, prévision, doublon…) restent visibles.
+ */
+export function tcoUserView(lines: readonly TcoEconomicLine[]): { lines: TcoUserLine[]; hidden: Record<string, TcoHiddenReason> } {
+  const hidden: Record<string, TcoHiddenReason> = {};
+  for (const l of lines) if (l.status === 'OUT_OF_SCOPE') hidden[l.id] = 'OTHER_ASSET';
+  const out: TcoUserLine[] = lines.filter((l) => !hidden[l.id]).map((l) => ({ ...l }));
+  const porteuses = new Map<number, TcoUserLine>();
+  for (const l of out) {
+    if (l.source !== 'OPERATION' || l.operationId == null) continue;
+    const cur = porteuses.get(l.operationId);
+    if (!cur || (!RETENUE(cur.status) && RETENUE(l.status))) porteuses.set(l.operationId, l);
+  }
+  for (const l of out) {
+    if (l.source !== 'DOCUMENT' || l.status !== 'CONSOLIDATED_ELSEWHERE' || l.operationId == null) continue;
+    const p = porteuses.get(l.operationId);
+    if (!p) continue;
+    hidden[l.id] = 'CONSOLIDATED_SHOWN';
+    if (l.fileId != null && l.fileId !== p.fileId && !(p.supportingDocuments ?? []).some((d) => d.fileId === l.fileId)) {
+      p.supportingDocuments = [...(p.supportingDocuments ?? []), { fileId: l.fileId, title: l.label }];
+    }
+  }
+  return { lines: out.filter((l) => !hidden[l.id]), hidden };
+}
+
+export type TcoDto = Omit<TcoResult, 'entries' | 'lines' | 'citedOnlyDocuments'> & {
+  /** Lot 68 : lignes utiles à l'utilisateur pour CE bien (`tcoUserView`), les plus utiles d'abord. */
+  lines: TcoUserLine[];
+  /** Lot 68 : lignes examinées non montrées sur la fiche (autre bien, justificatif déjà porté) — visibles au BO. */
+  hiddenLinesCount: number;
   excludedLabels: Record<ExclusionReason, string>;
   /** Lot 61 : libellés des statuts et motifs des lignes économiques. */
   lineStatusLabels: Record<EconomicLineStatus, string>;
   lineReasonLabels: Record<EconomicLineReason, string>;
   categoryLabels: Record<TcoCategory, string>;
-  /** Lot 61 : nombre total de lignes examinées (la liste peut être tronquée à `TCO_DTO_MAX_LINES`). */
+  /** Nombre de lignes montrables (la liste peut être tronquée à `TCO_DTO_MAX_LINES`). */
   linesTotal: number;
   warningLabels: string[];
   usageLabels: { categories: typeof USAGE_BUDGET_CATEGORY_LABELS; periodicities: typeof USAGE_BUDGET_PERIODICITY_LABELS };
@@ -49,14 +104,18 @@ export type TcoDto = Omit<TcoResult, 'entries'> & {
 };
 
 export function toTcoDto(t: TcoResult): TcoDto {
-  const { entries, lines, ...rest } = t;
+  // `citedOnlyDocuments` : diagnostic BO seulement (lot 68), jamais transmis à la fiche.
+  const { entries, lines: toutes, citedOnlyDocuments: _bo, ...rest } = t;
+  const vue = tcoUserView(toutes);
+  const lines = vue.lines;
   // Retenues d'abord, puis écartées : la liste d'un bien très documenté reste lisible.
-  const rang = (s: EconomicLineStatus) => (s === 'RETAINED_DIRECT' || s === 'RETAINED_CONSOLIDATED' ? 0 : s === 'OUT_OF_SCOPE' ? 2 : 1);
+  const rang = (s: EconomicLineStatus) => (RETENUE(s) ? 0 : 1);
   const tri = [...lines].sort((a, b) => rang(a.status) - rang(b.status) || (b.date ?? '').localeCompare(a.date ?? ''));
   return {
     ...rest,
     lines: tri.slice(0, TCO_DTO_MAX_LINES),
     linesTotal: lines.length,
+    hiddenLinesCount: Object.keys(vue.hidden).length,
     categoryLabels: { ...TCO_CATEGORY_LABELS },
     lineStatusLabels: { ...ECONOMIC_LINE_STATUS_LABELS },
     lineReasonLabels: { ...ECONOMIC_LINE_REASON_LABELS },

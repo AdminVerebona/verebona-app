@@ -29,6 +29,10 @@ import { computeTco, type TcoAssetPrice, type TcoOperation, type TcoResult, type
 import type { LedgerComponent } from '../finance/engine';
 import type { EconomicDocumentInput, EconomicHint } from '../finance/economic-lines';
 import { readCanonicalValue, type AssetRowJson } from '@/services/canonical/asset-state/canonical-asset-view';
+import { ASSET_LIST_LINK_ROLES_SQL } from '@/services/documents/asset-document-scope';
+
+/** Lot 68 : rôles de lien qui RATTACHENT un document à un bien (PRIMARY, SECONDARY) — jamais MENTIONED. */
+const ROLES = sql.raw(ASSET_LIST_LINK_ROLES_SQL);
 
 type Row = Record<string, unknown>;
 interface Runner { execute: (q: SQL) => Promise<unknown> }
@@ -144,12 +148,38 @@ export async function readAssetTco(accountId: number, assetId: number, opts: { t
     value: kc.estimatedValue, date: txt(kc.estimatedValueDate), mode: txt(kc.estimatedValueMode), source: null, currency: txt(kc.estimatedValueCurrency),
   }] : []);
 
-  return computeTco({
+  const result = computeTco({
     assetId, today: opts.today ?? todayUtc(), operations, equipmentAssets,
     assetAcquisitionDate: txt(kc.acquisitionDate), assetSaleDate: txt(kc.saleDate), assetStatus: txt(asset.status),
     valuationHistory, desiredSalePriceCents: desired, budgets, readComplete: readComplete && doc.complete,
     documents: doc.documents, assetPrice,
   });
+  // Lot 68 : diagnostic BO — justificatifs qui CITENT seulement le bien (exclus des sources, expliqués).
+  return { ...result, citedOnlyDocuments: await readCitedOnlyDocuments(r, accountId, assetId) };
+}
+
+const CITED_MAX = 200;
+
+/**
+ * Lot 68 (68A) — documents qui CITENT seulement le bien (lien MENTIONED
+ * actif, sans colonne historique ni lien PRIMARY / SECONDARY vers lui)
+ * portant un montant ou un candidat T1 établi : jamais une source du TCO du
+ * bien ; listés au diagnostic BO pour expliquer leur absence. Plafonné.
+ */
+export async function readCitedOnlyDocuments(r: Runner, accountId: number, assetId: number): Promise<Array<{ fileId: number; title: string }>> {
+  const x = await rows<{ id: number; title: string }>(r, sql`
+    SELECT f.id, coalesce(nullif(f.retained_title, ''), f.original_filename, 'Document') AS title
+      FROM asset_files f
+     WHERE f.account_id = ${accountId} AND f.deleted_at IS NULL
+       AND f.asset_id IS DISTINCT FROM ${assetId} AND f.linked_asset_id IS DISTINCT FROM ${assetId}
+       AND EXISTS (SELECT 1 FROM document_asset_links l WHERE l.account_id = f.account_id AND l.file_id = f.id AND l.status = 'ACTIVE'
+                     AND l.link_role = 'MENTIONED' AND l.asset_id = ${assetId})
+       AND NOT EXISTS (SELECT 1 FROM document_asset_links l WHERE l.account_id = f.account_id AND l.file_id = f.id AND l.status = 'ACTIVE'
+                         AND l.link_role IN ${ROLES} AND l.asset_id = ${assetId})
+       AND (f.amount_cents IS NOT NULL
+            OR EXISTS (SELECT 1 FROM document_operation_candidates c WHERE c.file_id = f.id AND c.account_id = f.account_id AND c.status = 'ACTIVE' AND c.established))
+     ORDER BY f.id LIMIT ${CITED_MAX}`);
+  return x.map((d) => ({ fileId: Number(d.id), title: String(d.title ?? 'Document') }));
 }
 
 // ── Lot 61 : dépenses documentaires du bien (données persistées) ───────────
@@ -165,9 +195,15 @@ const asArray = (v: unknown): Array<Record<string, unknown>> => (Array.isArray(v
 const n = (v: unknown): number | null => (v === null || v === undefined || v === '' || !Number.isFinite(Number(v)) ? null : Number(v));
 
 /**
- * Documents liés au bien (liens actifs, colonnes historiques) portant un
+ * Documents RATTACHÉS au bien (colonnes historiques, liens N-N actifs de
+ * rôle PRIMARY ou SECONDARY — même périmètre que la liste des documents du
+ * bien, `asset-document-scope`) portant un
  * montant ou un candidat T1 établi ; leurs candidats ACTIFS établis ; leurs
- * Opérations ACTIVES (non invalidées, non fusionnées). Pages sur curseur
+ * Opérations ACTIVES (non invalidées, non fusionnées). Lot 68 (68A) : un
+ * bien seulement CITÉ par l'analyse (lien MENTIONED, ex. adresse du client
+ * sur une facture de garage) n'est ni une source du TCO de ce bien, ni un bien
+ * d'attribution du document (la facture de la Polo citant la maison n'est
+ * plus candidate pour la maison, ni « non ventilée » pour la Polo). Pages sur curseur
  * stable ; garde-fou de volume → lecture PARTIELLE signalée, jamais un total
  * présenté comme complet.
  */
@@ -184,7 +220,7 @@ export async function readAssetDocuments(r: Runner, accountId: number, assetId: 
              e.currency, COALESCE(e.multi_asset, false) AS multi_asset,
              ARRAY(SELECT DISTINCT u.x FROM (
                      SELECT l.asset_id AS x FROM document_asset_links l
-                      WHERE l.account_id = f.account_id AND l.file_id = f.id AND l.status = 'ACTIVE'
+                      WHERE l.account_id = f.account_id AND l.file_id = f.id AND l.status = 'ACTIVE' AND l.link_role IN ${ROLES}
                      UNION SELECT f.asset_id UNION SELECT f.linked_asset_id) u
                     WHERE u.x IS NOT NULL
                       AND EXISTS (SELECT 1 FROM assets a WHERE a.id = u.x AND a.account_id = f.account_id AND a.deleted_at IS NULL)) AS linked
@@ -192,7 +228,8 @@ export async function readAssetDocuments(r: Runner, accountId: number, assetId: 
         LEFT JOIN LATERAL (SELECT upper(trim(x.currency)) AS currency, x.multi_asset FROM document_extractions x
                             WHERE x.file_id = f.id AND x.account_id = f.account_id ORDER BY x.id DESC LIMIT 1) e ON TRUE
        WHERE f.account_id = ${accountId} AND f.deleted_at IS NULL AND f.id > ${curseur}
-         AND (EXISTS (SELECT 1 FROM document_asset_links l WHERE l.account_id = f.account_id AND l.file_id = f.id AND l.status = 'ACTIVE' AND l.asset_id = ${assetId})
+         AND (EXISTS (SELECT 1 FROM document_asset_links l WHERE l.account_id = f.account_id AND l.file_id = f.id AND l.status = 'ACTIVE'
+                       AND l.link_role IN ${ROLES} AND l.asset_id = ${assetId})
               OR f.asset_id = ${assetId} OR f.linked_asset_id = ${assetId})
          AND (f.amount_cents IS NOT NULL
               OR EXISTS (SELECT 1 FROM document_operation_candidates c WHERE c.file_id = f.id AND c.account_id = f.account_id AND c.status = 'ACTIVE' AND c.established))

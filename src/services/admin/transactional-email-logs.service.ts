@@ -61,7 +61,23 @@ export function normalizeEmailSearch(q: TransactionalEmailSearch): { type: strin
   return { type, like, problemsOnly: !!q.problemsOnly, limit };
 }
 
-export async function searchTransactionalEmails(q: TransactionalEmailSearch): Promise<{ logs: TransactionalEmailLogRow[]; pendingRequests: PendingEmailRequestRow[] }> {
+/**
+ * Lot 68C — demandes CLOSES SANS ENVOI (annulées avec motif, ou échouées) des
+ * 30 derniers jours : un rappel annulé (abonnement résilié entre-temps, date
+ * changée, e-mail désactivé…) n'a parfois aucune ligne d'envoi ; son motif
+ * doit rester consultable depuis le BO, jamais présenté comme envoyé.
+ */
+export interface ClosedEmailRequestRow {
+  jobId: number;
+  kind: string;
+  recipientEmail: string;
+  status: 'failed' | 'cancelled';
+  attempts: number;
+  reason: string | null;
+  updatedAt: string | null;
+}
+
+export async function searchTransactionalEmails(q: TransactionalEmailSearch): Promise<{ logs: TransactionalEmailLogRow[]; pendingRequests: PendingEmailRequestRow[]; closedRequests: ClosedEmailRequestRow[] }> {
   const f = normalizeEmailSearch(q);
   const rows = await pgClient.unsafe<Record<string, unknown>[]>(
     `SELECT l.id, l.sent_at, l.template_code, l.recipient_email, l.recipient_user_id, l.triggered_by_user_id, l.status,
@@ -85,7 +101,26 @@ export async function searchTransactionalEmails(q: TransactionalEmailSearch): Pr
       ORDER BY next_attempt_at LIMIT 50`,
     [f.type, f.like] as never[],
   );
+  const closed = await pgClient.unsafe<Record<string, unknown>[]>(
+    `SELECT id, kind, recipient_email, status, attempts, last_error, updated_at
+       FROM transactional_email_jobs
+      WHERE status IN ('failed', 'cancelled')
+        AND updated_at > now() - interval '30 days'
+        AND ($1::text IS NULL OR kind = $1)
+        AND ($2::text IS NULL OR lower(recipient_email) LIKE $2)
+      ORDER BY updated_at DESC LIMIT 50`,
+    [f.type, f.like] as never[],
+  );
   return {
+    closedRequests: closed.map((r) => ({
+      jobId: Number(r.id),
+      kind: String(r.kind),
+      recipientEmail: String(r.recipient_email),
+      status: String(r.status) as 'failed' | 'cancelled',
+      attempts: Number(r.attempts),
+      reason: (r.last_error as string | null) ?? null,
+      updatedAt: iso(r.updated_at as string | null),
+    })),
     logs: rows.map((r) => ({
       id: Number(r.id),
       at: iso(r.sent_at as string | null),
@@ -136,7 +171,7 @@ export interface TransactionalEmailConfig {
   lastWebhookAt: string | null;
 }
 
-const REQUIRED_TEMPLATES = ['EMAIL_VERIFICATION', 'DUO_INVITATION', 'DUO_MEMBERSHIP_ENDED', 'DUO_MEMBERSHIP_LEFT', 'PASSWORD_RESET', 'WELCOME'];
+const REQUIRED_TEMPLATES = ['EMAIL_VERIFICATION', 'DUO_INVITATION', 'DUO_MEMBERSHIP_ENDED', 'DUO_MEMBERSHIP_LEFT', 'PASSWORD_RESET', 'WELCOME', 'SUBSCRIPTION_ANNUAL_RENEWAL_REMINDER'];
 
 /**
  * Lot 57A — ce que le diagnostic exige de vérifier SANS SQL : expéditeur

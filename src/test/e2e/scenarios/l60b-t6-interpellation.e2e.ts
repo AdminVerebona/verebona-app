@@ -179,10 +179,12 @@ scenario('L60B-T6', 'Lot 60 — décision d’interpellation T6 et rappels de l�
     const p = await passer(c.id);
     expect(ids(p)).toEqual([preavis, ramonage]); // HIGH d'abord
     expect(sujets(p).map((x) => x.sourceCode)).toEqual(['DATE-NEXT', 'MASC-EXT-ACTION']);
-    expect(sujets(p)[0].text).toContain('À prévoir : envoyer la demande de résiliation.');
+    // Lot 68 : action distincte gardée, sans préfixe « À prévoir : ».
+    expect(sujets(p)[0].text).toContain('Envoyer la demande de résiliation.');
+    expect(sujets(p)[0].text).not.toContain('À prévoir :');
     expect(sujets(p)[0].tile).toMatchObject({ attention: true, tone: 'amber' });
     const t = await texte(p);
-    expect(t).toMatch(/^Deux sujets méritent votre attention aujourd’hui/);
+    expect(t).not.toMatch(/méritent votre attention/);
     // L'échéance dépassée sans action restante n'est ni dite ni comptée (« dépassées à
     // vérifier ») : seule celle qui est présentée (ramonage) reste comptée.
     expect(p.overdueDeadlines).toBe(1);

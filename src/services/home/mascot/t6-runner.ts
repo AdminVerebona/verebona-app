@@ -48,7 +48,7 @@ import { isCostCapReached } from '@/services/ai/gateway/errors';
 import { resolveOperationConfig } from '@/services/ai/config/config-resolver';
 import { canStart } from '@/services/ai/queue/job-queue.repository';
 import {
-  T6_OUTPUT_SCHEMA_VERSION, validateT6Output,
+  T6_OUTPUT_SCHEMA_VERSION, validateT6Output, mechanicalWording, T6_INFORMATIVE_REMINDER_CODE,
   T6FormulateOutput, T6_MASTER_PROMPT_CODE, T6_OUTPUT_SCHEMA_VERSION_V2, validateT6MasterOutput,
   type T6Input, type T6Message, type T6SubjectKind,
 } from './t6-contract';
@@ -56,7 +56,7 @@ import {
   promptSupportsSuggestions, validateT6Suggestions,
   type T6Suggestion, type T6SuggestionBundle,
 } from './t6-suggestions';
-import type { T6InterpellationBundle } from './t6-interpellation';
+import { T6_ASSESSMENT_REVISION_REMINDER, type T6InterpellationBundle } from './t6-interpellation';
 import {
   T6EvaluateOutput, T6_EVALUATION_INPUT_SCHEMA_VERSION, T6_EVALUATION_OUTPUT_SCHEMA_VERSION, validateT6Evaluation,
   type T6EvaluationRejection, type T6ValidatedDecision,
@@ -223,6 +223,28 @@ export async function t6InterpellationAvailable(): Promise<boolean> {
   }
 }
 
+/**
+ * Lot 68 — le texte master EFFECTIF connaît-il le rappel informatif (motif
+ * `INFORMATIVE_REMINDER`) ? `null` : fichier du dépôt (qui le porte). Une
+ * version BO antérieure ne le porte pas : aucun rappel informatif ne peut
+ * être proposé (contrat inchangé pour elle) et les évaluations ne sont pas
+ * renouvelées inutilement.
+ */
+export function promptSupportsInformativeReminder(effectiveText: string | null | undefined): boolean {
+  if (effectiveText == null) return true;
+  return effectiveText.includes(`"${T6_INFORMATIVE_REMINDER_CODE}"`);
+}
+
+/** Lot 68 : règle du rappel informatif dans le prompt effectif. Ne lève jamais. */
+export async function t6ReminderAvailable(): Promise<boolean> {
+  try {
+    const config = await resolveOperationConfig(T6_EVALUATE_OPERATION);
+    return promptSupportsInformativeReminder(config.promptArchitecture === 'master' ? config.masterPromptText : null);
+  } catch {
+    return false;
+  }
+}
+
 // ── Disjoncteur (BO-007) ─────────────────────────────────────────────────────
 
 const BREAKER_THRESHOLD = 3;
@@ -267,6 +289,9 @@ export async function readT6CacheEntry(
     // Cache illisible ou désaccordé : ignoré, jamais servi (§20).
     const v = validateT6Output(input, { messages: r[0].messages });
     if (!v.ok) return null;
+    // Lot 68 : formulation antérieure portant une formule mécanique
+    // (« À prévoir : », introduction de comptage) — ignorée, donc renouvelée.
+    if (v.messages.some((m) => mechanicalWording(m.text))) return null;
     // Questions revalidées contre le contexte COURANT (références de biens).
     const suggestions = bundle && Array.isArray(r[0].suggestions) ? validateT6Suggestions(r[0].suggestions, bundle.assetIds) : null;
     return { messages: v.messages, suggestions };
@@ -662,6 +687,8 @@ function evalRecord(ok: boolean, key: string, accountId: number, now = Date.now(
 export interface T6EvaluationDependencies {
   /** T6 disponible et prompt effectif porteur de la branche EVALUATE. */
   available: () => Promise<boolean>;
+  /** Lot 68 : prompt effectif porteur du rappel informatif (révision conservée avec les décisions). */
+  reminderCapable?: () => Promise<boolean>;
   promptVersion: () => Promise<string>;
   execute: (req: Parameters<typeof AiGateway.execute>[0]) => ReturnType<typeof AiGateway.execute>;
   /** Trace du passage (reporting T6, BO › Exécutions IA › Rapports). */
@@ -670,6 +697,7 @@ export interface T6EvaluationDependencies {
 
 export const t6EvaluationDefaultDeps: T6EvaluationDependencies = {
   available: t6InterpellationAvailable,
+  reminderCapable: t6ReminderAvailable,
   promptVersion: getT6MasterPromptVersion,
   execute: (req) => AiGateway.execute(req),
 };
@@ -690,10 +718,14 @@ export async function evaluateWithT6(
   const vide = (status: T6EvaluationStatus, error: string | null, promptVersion: string | null = null): T6EvaluationOutcome =>
     ({ status, promptVersion, accepted: [], rejected: [], persisted: 0, error });
   let promptVersion: string;
+  let reminder = false;
   try {
-    const [ok, v] = await Promise.all([deps.available(), deps.promptVersion()]);
+    const [ok, v, r] = await Promise.all([
+      deps.available(), deps.promptVersion(), deps.reminderCapable ? deps.reminderCapable().catch(() => false) : Promise.resolve(false),
+    ]);
     if (!ok) return vide('disabled', 'T6 indisponible ou version du prompt sans branche EVALUATE');
     promptVersion = v;
+    reminder = r;
   } catch (e) {
     return vide('error', (e as Error).message);
   }
@@ -724,7 +756,9 @@ export async function evaluateWithT6(
         outcome = { ...base, status: 'validation_failed', accepted: [], rejected: [], persisted: 0, error: v.reason };
       } else {
         evalRecord(v.accepted.length > 0 || v.rejected.length === 0, key, p.accountId);
-        const persisted = v.accepted.length ? await p.bundle.persist(v.accepted, { promptVersion, traceId: res.traceId ?? null }).catch((e) => {
+        const persisted = v.accepted.length ? await p.bundle.persist(v.accepted, {
+          promptVersion, traceId: res.traceId ?? null, contractRevision: reminder ? T6_ASSESSMENT_REVISION_REMINDER : 1,
+        }).catch((e) => {
           console.error('[mascotte] décisions EVALUATE non enregistrées :', (e as Error).message);
           return 0;
         }) : 0;

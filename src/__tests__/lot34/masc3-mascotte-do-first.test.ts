@@ -16,7 +16,7 @@ import { buildTodoBlock, MAX_TODO_ITEMS } from '@/services/home/mascot/todo-item
 import { buildCandidates, type MascotRawData } from '@/services/home/mascot/signals';
 import { buildSecondaries, selectSubjects } from '@/services/home/mascot/selector';
 import { buildPresentation } from '@/services/home/mascot/presentation';
-import { composeSpeech, homeItems, NOTHING_PRIORITY } from '@/services/home/mascot/bubble';
+import { composeSpeech, homeItems, NOTHING_PRIORITY, subjectBlocks } from '@/services/home/mascot/bubble';
 import type { MascotPresentation } from '@/services/home/mascot/types';
 
 let n = 0;
@@ -96,7 +96,9 @@ describe('Mascotte — DO_FIRST seulement, au plus deux (MASC3)', () => {
     const p = present(raw(many(5, 'DO_FIRST'), {
       agenda: [{ id: 1, title: 'Ramonage', date: '2026-10-15', forecast: false, requiresQualification: false, assetId: 1, assetName: 'Maison' }],
     }));
-    expect(homeItems(p, false).map((i) => i.kind)).toEqual(['todo', 'todo', 'subject']);
+    // Lot 68 : l'échéance a son bloc (subjectBlocks), plus de carte qui la répète.
+    expect(homeItems(p, false).map((i) => i.kind)).toEqual(['todo', 'todo']);
+    expect(subjectBlocks(p)).toHaveLength(1);
     const t = speech(p);
     expect(t.startsWith('Deux sujets nécessitent votre attention aujourd’hui.')).toBe(true);
     // Lot 50 : une date à respecter est « à prévoir ».

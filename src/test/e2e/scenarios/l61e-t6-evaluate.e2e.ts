@@ -179,13 +179,14 @@ scenario('L61E-T6EV', 'Lot 61 — contrat de décision T6 (EVALUATE) et composit
     expect(ids(p)).not.toContain(assurance);
     expect(p.state).toMatchObject({ kind: 'ACTIONS', actions: 2 });
     const texte = await parler(p);
-    expect(texte).toMatch(/^Deux sujets méritent votre attention aujourd’hui/);
-    expect(texte).toContain('À prévoir : envoyer la demande de résiliation');
+    // Lot 68 : plus d'introduction de comptage ; action distincte gardée, sans « À prévoir : ».
+    expect(texte).not.toMatch(/méritent votre attention|À prévoir :/);
+    expect(texte).toContain('Envoyer la demande de résiliation.');
     expect(texte).not.toMatch(INTERDITS);
-    const cartes = (await B()).homeItems(p, false).filter((x) => x.kind === 'subject');
-    expect(cartes.map((x) => x.title)).toEqual(['Fin du contrat de gaz', 'Ramonage cheminée']);
-    expect(cartes.map((x) => x.sub)).toEqual([expect.stringContaining('Action à prévoir'), expect.stringContaining('À vérifier')]);
-    expect(cartes.map((x) => (x.kind === 'subject' ? x.tile.paragraph.actions[0].target : null))).toEqual([
+    expect((await B()).actionTiles(p).map((x) => x.label)).toEqual(['Fin du contrat de gaz', 'Ramonage cheminée']);
+    const cartes = (await B()).subjectBlocks(p);
+    expect(cartes.map((x) => x.badge)).toEqual(['Action à prévoir', 'À vérifier']);
+    expect(cartes.map((x) => x.actions[0].action.target)).toEqual([
       expect.objectContaining({ kind: 'drawer', id: gaz }), expect.objectContaining({ kind: 'drawer', id: ramonage })]);
     expect((await B()).homePose(p, false)).toBe('questioning');
     // Rapport d'affichage : l'écart IA (SHOW_NOW) / serveur (seuil) est tracé pour l'assurance.
@@ -276,7 +277,9 @@ scenario('L61E-T6EV', 'Lot 61 — contrat de décision T6 (EVALUATE) et composit
               VALUES (${c.id}, 'ASSET', ${c.maison}, 'purchasePriceCents', 'COMPLETE', 'DATA-ACQUISITION-PRICE', 'Prix d’achat ?', 'DO_FIRST')`;
     const q = await pregen(c.id);
     expect(await parler(q)).toMatch(/^Un sujet nécessite votre attention aujourd’hui\. Le document « Contrat habitation »/);
-    expect((await B()).homeItems(q, false).map((x) => x.kind)).toEqual(['todo', 'subject']);
+    // Lot 68 : « À traiter » en carte, le document dans son bloc.
+    expect((await B()).homeItems(q, false).map((x) => x.kind)).toEqual(['todo']);
+    expect((await B()).subjectBlocks(q).map((x) => x.paragraph.sourceCode)).toEqual(['PROC-DOC-ANALYSIS']);
     expect((await B()).homePose(q, false)).toBe('reminder-bell');
   });
 

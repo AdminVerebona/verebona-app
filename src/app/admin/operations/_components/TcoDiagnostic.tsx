@@ -15,7 +15,16 @@ export interface TcoDiagnosticResponse {
   assetId: number;
   tco: Omit<TcoResult, 'entries'>;
   componentsExamined: number;
-  labels: { status: Record<string, string>; reason: Record<string, string>; warning: Record<string, string> };
+  /** Lot 68 : lignes non montrées sur la fiche du bien (motif). Absent : réponse antérieure. */
+  userView?: { hidden: Record<string, string> };
+  labels: { status: Record<string, string>; reason: Record<string, string>; warning: Record<string, string>; hidden?: Record<string, string> };
+}
+
+/** Lot 68 : mention « masquée sur la fiche » d'une ligne (toutes les lignes restent listées ici). */
+function Masquee({ id, data }: { id: string; data: TcoDiagnosticResponse }) {
+  const m = data.userView?.hidden[id];
+  if (!m) return null;
+  return <p className="text-xs text-muted-foreground italic" data-bo-tco-hidden={m}>{data.labels.hidden?.[m] ?? m}</p>;
 }
 
 const eur = (c: number | null | undefined) => (c == null ? '—' : (c / 100).toLocaleString('fr-FR', { style: 'currency', currency: 'EUR' }));
@@ -52,6 +61,15 @@ export function TcoDiagnosticView({ data }: { data: TcoDiagnosticResponse }) {
         <p className="text-xs text-[color:var(--text-danger)]">Anomalies de contrôle : {t.reliability.anomalies.map((a) => `${a.code}${a.detail ? ` (${a.detail})` : ''}`).join(', ')}</p>
       )}
 
+      {(t.citedOnlyDocuments?.length ?? 0) > 0 && (
+        <div className="rounded-lg border p-3 text-xs space-y-1" data-bo-tco-cited>
+          <p className="font-medium text-sm">Justificatifs qui citent seulement ce bien (non rattachés, exclus du calcul)</p>
+          <ul className="list-disc pl-5 space-y-0.5">
+            {t.citedOnlyDocuments!.map((d) => <li key={d.fileId} className="break-words">#{d.fileId} · {d.title}</li>)}
+          </ul>
+        </div>
+      )}
+
       {/* Mobile : cartes */}
       <div className="space-y-2 md:hidden">
         {t.lines.map((l) => (
@@ -61,6 +79,7 @@ export function TcoDiagnosticView({ data }: { data: TcoDiagnosticResponse }) {
             <p className="text-xs tabular-nums">{minor(l.amountMinor, l.currency)} → retenu {eur(l.includedCents)}</p>
             {l.reason && <p className="text-xs text-muted-foreground">{labels.reason[l.reason] ?? l.reason}</p>}
             {l.note && <p className="text-xs text-muted-foreground">{l.note}</p>}
+            <Masquee id={l.id} data={data} />
             <p className="text-xs">
               {l.fileId ? <span>doc #{l.fileId}</span> : null}
               {l.operationId ? <> · <Link className="underline" href={`/admin/operations/${l.operationId}?accountId=${data.accountId}`}>Opération #{l.operationId}</Link></> : null}
@@ -88,7 +107,7 @@ export function TcoDiagnosticView({ data }: { data: TcoDiagnosticResponse }) {
                 <td className="p-2 text-xs">{l.category ?? '—'}</td>
                 <td className="p-2 text-right tabular-nums text-xs">{minor(l.amountMinor, l.currency)}</td>
                 <td className="p-2 text-right tabular-nums">{eur(l.includedCents)}</td>
-                <td className="p-2 text-xs"><Badge l={l} labels={labels} />{l.reason && <p className="mt-1 text-muted-foreground">{labels.reason[l.reason] ?? l.reason}</p>}{l.note && <p className="text-muted-foreground">{l.note}</p>}</td>
+                <td className="p-2 text-xs"><Badge l={l} labels={labels} />{l.reason && <p className="mt-1 text-muted-foreground">{labels.reason[l.reason] ?? l.reason}</p>}{l.note && <p className="text-muted-foreground">{l.note}</p>}<Masquee id={l.id} data={data} /></td>
               </tr>
             ))}
           </tbody>

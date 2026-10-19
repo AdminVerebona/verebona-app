@@ -41,7 +41,9 @@ describe('L53-ACTION-LINK — lien d’action des e-mails d’invitation', () =>
   });
 
   it('LINK-06 : blocage limité aux invitations (les e-mails critiques ne sont jamais retenus)', () => {
-    expect([...LINK_REQUIRED_TEMPLATES].sort()).toEqual(['ACCOUNT_INVITATION', 'DUO_INVITATION']);
+    // Lot 68C : le rappel J−7 avant renouvellement annuel n'a de sens qu'avec son bouton
+    // (désactivation du renouvellement) — information commerciale, pas un e-mail critique.
+    expect([...LINK_REQUIRED_TEMPLATES].sort()).toEqual(['ACCOUNT_INVITATION', 'DUO_INVITATION', 'SUBSCRIPTION_ANNUAL_RENEWAL_REMINDER']);
     expect(LINK_REQUIRED_TEMPLATES.has('PASSWORD_RESET')).toBe(false);
   });
 });

@@ -59,7 +59,9 @@ describe('PO-D25 — « Aucun sujet à traiter en priorité » : jamais au prix 
   it('PO-D25-03 — échéance échue récente : un vrai sujet « à confirmer », jamais « aucun sujet »', () => {
     const r = raw({ agenda: [row({ id: 4, date: '2026-10-01', dateRole: 'DEADLINE' })], overdueAgenda: [{ id: 4, date: '2026-10-01' }] });
     const t = parler(presenter(r));
-    expect(t).toMatch(/^Un sujet mérite votre attention aujourd’hui/);
+    // Lot 68 : le sujet est dit directement (plus d'introduction de comptage).
+    expect(t).toMatch(/^Le contrôle technique de la Cupra était à prévoir/);
+    expect(t).not.toMatch(/mérite votre attention/);
     expect(t).not.toContain(NOTHING_PRIORITY);
   });
 

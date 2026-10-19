@@ -77,6 +77,9 @@
  *                                   faire : deux requêtes)        une issue par carte (unique) ; réévalue
  *                                                                 les cartes « À traiter » documentaires
  *                                                                 existantes (lot 61, bilan avant / après)
+ *   subscription-annual-renewal-reminders  /h de 8 h 30 à 20 h    dedupe_key par abonnement × échéance
+ *                                   (créée suspendue, lot 68C)    + verrou consultatif ; revalidation
+ *                                                                 Stripe avant l'envoi (file lot 57A)
  *
  * Créneaux fixes hors de la fenêtre de sauvegarde de nuit (1 h – 5 h) et de
  * la plage ambiguë des changements d'heure (2 h – 3 h).
@@ -558,7 +561,7 @@ export const SCHEDULED_TASKS: readonly ScheduledTaskDef[] = [
     // tentées (processus arrêté), des échecs temporaires et des tentatives
     // interrompues. Bornée (6 tentatives), sans doublon (prise atomique).
     code: 'transactional-emails-retry',
-    label: 'E-mails indispensables : vérification d’adresse, invitations Duo, fin d’accès et départ du Duo (envoi et reprise)',
+    label: 'E-mails indispensables : vérification d’adresse, invitations Duo, fin d’accès et départ du Duo, rappel de renouvellement annuel (envoi et reprise)',
     schedule: { kind: 'interval', everyMs: MIN },
     timeoutMs: 4 * MIN,
     startupDelayMs: MIN,
@@ -701,6 +704,34 @@ export const SCHEDULED_TASKS: readonly ScheduledTaskDef[] = [
         again: r.more,
         ...(r.errors > 0 && r.examined > 0 && r.errors >= r.examined ? { error: `${r.errors} carte(s) en erreur` } : {}),
       };
+    },
+  },
+  {
+    // Lot 68C (ticket P1) : e-mail SUBSCRIPTION_ANNUAL_RENEWAL_REMINDER à J−7
+    // avant le renouvellement d'un abonnement ANNUEL (Stripe = source). Pré-
+    // filtre local puis vérification Stripe des seuls candidats ; demande dans
+    // la file durable (envoi et revalidation par `transactional-emails-retry`).
+    // Toutes les heures de 8 h 30 à 20 h : premier passage à 8 h 30, les
+    // suivants reprennent un échec temporaire (Stripe indisponible). Rattrapage
+    // avant l'échéance, jamais après. Créée SUSPENDUE par la migration 0477 :
+    // « Réactiver » dans le BO au moment de la bascule depuis Stripe.
+    code: 'subscription-annual-renewal-reminders',
+    label: 'Abonnements annuels : rappel à J−7 avant le renouvellement',
+    schedule: { kind: 'interval', everyMs: HOUR, window: { from: [8, 30], to: [20, 0] } },
+    timeoutMs: 10 * MIN,
+    startupDelayMs: 4 * MIN,
+    run: async ({ deadline }) => {
+      const { runAnnualRenewalReminders } = await import('@/services/billing/annual-renewal-reminder.service');
+      const r = await runAnnualRenewalReminders({ deadline: Math.min(deadline, Date.now() + 8 * MIN) });
+      if (r.skipped === 'PORTAL_CANCEL_DISABLED') {
+        return { note: `${r.candidates} candidat(s) — aucun rappel préparé`, error: 'Le portail Stripe par défaut ne permet pas de désactiver le renouvellement : rappels suspendus (voir docs/exploitation/rappel-renouvellement-annuel.md).' };
+      }
+      if (r.skipped) return { note: r.skipped };
+      const note = `${r.candidates} candidat(s), ${r.enqueued} rappel(s) préparé(s), ${r.revived} relancé(s), exclus : ${JSON.stringify(r.excluded)}, `
+        + `erreurs Stripe : ${r.stripeErrors} — couverture depuis le ${r.coverageFrom ?? '?'}`;
+      // Toutes les vérifications en échec : la tâche est en échec (reprise au passage suivant).
+      if (r.stripeErrors > 0 && r.stripeErrors >= r.candidates) return { note, error: `${r.stripeErrors} vérification(s) Stripe en échec` };
+      return { note: note.slice(0, 1500) };
     },
   },
 ];

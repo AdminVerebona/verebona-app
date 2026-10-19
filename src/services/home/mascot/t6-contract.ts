@@ -206,6 +206,20 @@ const CONFIRMATION = /\b(confirme|confirmee|confirmes|confirmees|reserve|reserve
 /** R5 : interface et navigation. */
 const INTERFACE = /\b(bouton|boutons|cliquez|cliquer|clic|menu|onglet|ecran|lien ci|ci-dessous|ci-dessus)\b/;
 
+/**
+ * Lot 68 : formules MÉCANIQUES retirées de la bulle — introductions de
+ * comptage (« Un sujet mérite votre attention aujourd'hui », « Deux sujets
+ * méritent… », « … nécessitent votre attention ») et préfixe « À prévoir : »
+ * concaténé au texte. Un message IA, de secours ou EN CACHE qui les porte
+ * n'est jamais affiché tel quel (texte de secours du sujet, entrée de cache
+ * ignorée puis renouvelée).
+ */
+const MECANIQUE = /(^|[\s.;:])(a prevoir\s*:|(un|une|deux|trois|quatre|\d+|plusieurs)\s+sujets?\s+(merite|meritent|necessite|necessitent)\s+votre attention)/;
+/** Lot 68 : le texte porte-t-il une formule mécanique de la bulle ? (pure, testée T6-RAP) */
+export function mechanicalWording(text: string): boolean {
+  return MECANIQUE.test(plainT6(text));
+}
+
 /** Mots d'ouverture normalisés (R8). */
 function ouverture(text: string, n = 4): string {
   return plainT6(text).replace(/[^a-z0-9' ]+/g, ' ').split(/\s+/).filter(Boolean).slice(0, n).join(' ');
@@ -271,11 +285,13 @@ export function nuanceViolation(text: string, s: T6InputSubject, kind: T6Subject
   // Un mot repris des faits (titre « Contrôle urgence gaz ») n'est pas un ajout.
   const faits = plainT6(`${JSON.stringify(s.facts)} ${s.fallbackText}`);
   const horsFaits = (re: RegExp) => [...t.matchAll(new RegExp(re.source, 'g'))].some((m) => !faits.includes(m[0]));
+  if (mechanicalWording(text)) return 'mechanical_wording';
   if (horsFaits(ALARME)) return 'alarmist';
   if (horsFaits(INTERFACE)) return 'interface';
   if (kind !== 'overdue' && horsFaits(RETARD)) return 'overdue_wording';
   if (s.intent === 'inform' && horsFaits(INJONCTION)) return 'inform_injunction';
-  if (s.intent === 'deadline' && s.facts.dateNature === 'confirmée' && horsFaits(ESTIMATION)) return 'confirmed_as_forecast';
+  // Lot 68 : un rappel informatif (`inform`, daté) garde aussi la nature de sa date.
+  if ((s.intent === 'deadline' || s.intent === 'inform') && s.facts.dateNature === 'confirmée' && horsFaits(ESTIMATION)) return 'confirmed_as_forecast';
   if (onlyDeadlines(s) && horsFaits(ORGANISE)) return 'deadline_as_appointment';
   if (hasDateRole(s)) {
     const { dateNature: _n, ...sansNature } = s.facts as Record<string, unknown>;
@@ -448,7 +464,11 @@ export const T6_MASTER_OPERATION_SPEC = {
 //      par candidat, mêmes identifiants, même ordre (sinon rejet complet) ;
 //      puis, décision par décision, motif compatible avec la décision,
 //      justification, action identifiable et preuve pour SHOW_NOW, preuves
-//      connues, dates cohérentes. Une décision fautive est REJETÉE (motif
+//      connues, dates cohérentes.
+//      Lot 68 : SHOW_NOW + INFORMATION est admis pour un RAPPEL INFORMATIF
+//      (motif `INFORMATIVE_REMINDER`, `expectedAction` et `actionDeadline`
+//      null, preuve citée, événement à venir) ; SHOW_NOW + ACTION_NOW /
+//      TO_ANTICIPATE exige toujours son action (aucune conversion). Une décision fautive est REJETÉE (motif
 //      tracé) : son candidat reste « en attente », jamais affiché d'office.
 // Jamais d'acceptation silencieuse : chaque rejet porte son motif.
 // ══════════════════════════════════════════════════════════════════════════
@@ -476,6 +496,10 @@ export const T6_REASON_CODES = {
   OVERDUE_ACTION_PENDING: 'SHOW_NOW',
   VERIFICATION_REQUIRED: 'SHOW_NOW',
   QUALIFICATION_REQUIRED: 'SHOW_NOW',
+  // Lot 68 : SHOW_NOW + INFORMATION — rappel PERTINENT d'un événement à venir,
+  // sans action attendue (`expectedAction` null). Jamais déduit de l'absence
+  // d'action : l'IA doit l'évaluer et le justifier (preuve obligatoire).
+  INFORMATIVE_REMINDER: 'SHOW_NOW',
   // DEFER — démarche utile plus tard, solliciter maintenant serait prématuré.
   TOO_EARLY: 'DEFER',
   AWAITING_INFORMATION: 'DEFER',
@@ -488,6 +512,8 @@ export const T6_REASON_CODES = {
 } as const satisfies Record<string, T6EvalDecision>;
 export type T6ReasonCode = keyof typeof T6_REASON_CODES;
 export const T6_REASON_CODE_LIST = Object.keys(T6_REASON_CODES) as T6ReasonCode[];
+/** Lot 68 : motif dédié du rappel informatif (SHOW_NOW + INFORMATION, sans action). */
+export const T6_INFORMATIVE_REMINDER_CODE = 'INFORMATIVE_REMINDER' as const satisfies T6ReasonCode;
 
 /** Nature d'une référence justificative transmise (suffixe de `evidence[].ref`). */
 export type T6EvidenceKind = 'TITLE' | 'DUE_DATE' | 'DESCRIPTION' | 'DOCUMENT' | 'ASSET' | 'SERIES' | 'HISTORY';
@@ -594,8 +620,18 @@ export function evaluationDecisionViolation(d: T6EvaluateOutput['decisions'][num
   if (d.evidenceRefs.some((r) => !autorisees.has(r.trim()))) return 'unknown_evidence';
   const action = clean(d.expectedAction, T6_EVAL_ACTION_MAX);
   if (action && (EMOJI.test(action) || TUTOIEMENT.test(action))) return 'action_wording';
-  if (d.decision === 'SHOW_NOW') {
-    if (d.category === 'INFORMATION') return 'show_now_information';
+  if (d.decision === 'SHOW_NOW' && d.category === 'INFORMATION') {
+    // Lot 68 — rappel informatif : motif dédié, aucune action ni date pour
+    // agir, preuve citée, événement À VENIR (jamais une échéance passée ou du
+    // jour réintroduite comme « information »).
+    if (d.reasonCode !== T6_INFORMATIVE_REMINDER_CODE) return 'show_now_information';
+    if (action || d.actionDeadline) return 'information_with_action';
+    if (d.evidenceRefs.length === 0) return 'show_now_without_evidence';
+    if (!c.dueDate || c.dueDate <= today || c.requiresQualification) return 'information_not_upcoming';
+  } else if (d.decision === 'SHOW_NOW') {
+    // ACTION_NOW / TO_ANTICIPATE : action concrète TOUJOURS obligatoire — son
+    // absence rejette la décision, jamais convertie en rappel informatif.
+    if (d.reasonCode === T6_INFORMATIVE_REMINDER_CODE) return 'reminder_category_mismatch';
     if (!action) return 'show_now_without_action';
     if (d.evidenceRefs.length === 0) return 'show_now_without_evidence';
   }

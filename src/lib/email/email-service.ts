@@ -61,7 +61,11 @@ export function withActionLinkAliases(variables: Record<string, string>): Record
  * dans le journal (lot 49) sans bloquer l'envoi — un e-mail de sécurité ou
  * de facturation ne doit jamais être retenu.
  */
-export const LINK_REQUIRED_TEMPLATES: ReadonlySet<string> = new Set(['DUO_INVITATION', 'ACCOUNT_INVITATION']);
+export const LINK_REQUIRED_TEMPLATES: ReadonlySet<string> = new Set([
+  'DUO_INVITATION', 'ACCOUNT_INVITATION',
+  // Lot 68C : le rappel J−7 n'a de sens qu'avec son bouton « Gérer mon abonnement sur Stripe ».
+  'SUBSCRIPTION_ANNUAL_RENEWAL_REMINDER',
+]);
 
 /** Lien d'action resté non remplacé (`{{…Url}}`, `{{…Link}}`, hors logo). */
 export function missingActionLinks(text: string): string[] {

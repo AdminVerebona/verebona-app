@@ -217,6 +217,11 @@ export interface TcoResult {
   };
   /** Lot 61 : lignes économiques examinées (retenues et écartées, motif). */
   lines: TcoEconomicLine[];
+  /**
+   * Lot 68 (diagnostic BO seulement, jamais transmis à la fiche) : documents
+   * qui CITENT seulement le bien (lien MENTIONED) — exclus des sources.
+   */
+  citedOnlyDocuments?: Array<{ fileId: number; title: string }>;
   /** Trace complète (justification de chaque total, §4.4). */
   entries: Array<LedgerEntry & { category: TcoCategory | null }>;
 }

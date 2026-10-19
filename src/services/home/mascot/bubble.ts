@@ -8,10 +8,13 @@
  * 2 sujets au plus) et formulés par T6 ou leur texte de secours. Ce module,
  * pur et lisible côté client, en fait la bulle de la Direction D :
  *
- *   · UNE phrase en langage naturel à partir des sujets (« Deux sujets
- *     méritent votre attention aujourd'hui : …, et … ») ;
- *   · au plus 2 tuiles d'action : icône colorée par sévérité, libellé,
- *     « bien · statut » ;
+ *   · lot 68 : UN BLOC PAR SUJET (`subjectBlocks`) — sa formulation
+ *     courte (objet, bien et date une seule fois), ses actions (« Voir »,
+ *     « Rappels ») ; plus d'introduction de comptage (« Un sujet mérite
+ *     votre attention… »), plus de carte imbriquée qui répète le message ;
+ *   · une phrase d'en-tête (`bubbleLead`) seulement quand elle dit autre
+ *     chose que les sujets : « À traiter » affichés, évaluation en cours ou
+ *     indisponible, source en panne, rien à signaler ;
  *   · la pose de la mascotte selon la situation.
  *
  * Lot 61 : la bulle ASSEMBLE un état de présentation explicite
@@ -25,7 +28,8 @@
  * ══════════════════════════════════════════════════════════════════════════
  */
 import type {
-  MascotDuoInvite, MascotParagraph, MascotPresentation, MascotPresentationState, MascotSecondary, MascotSubject, MascotTile, MascotTodoItem,
+  MascotAction, MascotDuoInvite, MascotParagraph, MascotPresentation, MascotPresentationState, MascotReminderRef, MascotSecondary, MascotSubject,
+  MascotTile, MascotTodoItem,
 } from './types';
 import { emptyAccountSuggestions } from '@/services/verebona-assistant/registries/capability-registry';
 
@@ -69,6 +73,19 @@ export function tileFor(s: MascotSubject, today: string, opts: TileOptions = {})
   // nature réellement retenue (vérification justifiée, action, anticipation),
   // jamais un retard ni une vérification génériques déduits de la date.
   const decided = s.interpellation && s.interpellation.mode !== 'LEGACY' ? s.interpellation : null;
+  // Lot 68 : rappel informatif — tuile d'INFORMATION (bleue, sans « Action à
+  // prévoir », sans attention prioritaire) : il ne porte pas le statut visuel
+  // d'une action et ne compte pas parmi les actions retenues.
+  if (decided?.mode === 'INFORM') {
+    const label = str(f.dateLabel);
+    const estimee = f.dateNature === 'prévisionnelle' ? ' (estimée)' : '';
+    return {
+      tone: 'blue', icon: 'calendar-days', attention: false, assetName: asset,
+      label: str(s.tileTitle) ?? str(f.title) ?? 'Échéance',
+      status: label ? `${label}${estimee}` : 'À venir',
+      kind: 'info',
+    };
+  }
   if (decided && (code === 'DATE-NEXT' || code === 'MASC-EXT-ACTION')) {
     const label = str(f.dateLabel);
     const estimee = f.dateNature === 'prévisionnelle' ? ' (estimée)' : '';
@@ -173,13 +190,6 @@ export function lowerFirst(text: string): string {
   return text.charAt(0).toLowerCase() + text.slice(1);
 }
 
-/** Une seule phrase, terminée par un point, sans autre fin de phrase. */
-function isSingleSentence(t: string): boolean {
-  const s = t.trim();
-  return /[.!]$/.test(s) && !/[.!?…]\s+\S/.test(s.slice(0, -1));
-}
-
-const NOMBRES = ['Aucun', 'Un', 'Deux', 'Trois'];
 const NOMBRES_TODO = ['Aucun', 'Un', 'Deux', 'Trois', 'Quatre', 'Cinq', 'Six', 'Sept', 'Huit', 'Neuf', 'Dix'];
 
 /**
@@ -265,25 +275,31 @@ function evaluationNote(st: MascotPresentationState): string | null {
 
 /**
  * Phrase de la bulle (§3.2), ASSEMBLÉE à partir de l'état de présentation
- * (lot 61) — mêmes sujets que les cartes, rien d'autre :
+ * (lot 61) — mêmes sujets que les blocs, rien d'autre :
  *   · « À faire en premier » : « Deux sujets nécessitent votre attention
- *     aujourd'hui. » puis les textes des sujets retenus ;
- *   · sujets d'attention : « Un sujet mérite votre attention aujourd'hui : a. » ;
- *   · informations seules (analyse en cours, export) : leurs textes, précédés
- *     de « Aucun sujet à traiter en priorité pour le moment. » si des
- *     éléments non prioritaires sont ouverts — jamais « Tout est à jour » ;
+ *     aujourd'hui. » (lot 34, MASC3 : les « À traiter » affichés) puis les
+ *     textes des sujets retenus ;
+ *   · sujets retenus : leurs textes, tels quels — lot 68 : PLUS
+ *     d'introduction de comptage (« Un sujet mérite votre attention
+ *     aujourd'hui : … ») ni de clause reformulée ;
+ *   · informations seules (analyse en cours, export, rappel informatif) :
+ *     leurs textes, précédés de « Aucun sujet à traiter en priorité pour le
+ *     moment. » si des éléments non prioritaires sont ouverts — jamais
+ *     « Tout est à jour » ;
  *   · rien de retenu : « Aucun sujet à traiter en priorité… » (éléments
  *     ouverts), sinon « Rien de particulier à vous signaler pour le moment. » ;
  *   · évaluation des échéances en cours / indisponible : dit explicitement ;
  *   · source en panne : dit explicitement.
+ * `composeSpeech` rend le message COMPLET (questions suggérées, trace) ;
+ * l'accueil affiche `bubbleLead` puis un bloc par sujet (`subjectBlocks`).
  */
-export function composeSpeech({ presentation, empty, failed }: SpeechInput): Speech {
+function compose({ presentation, empty, failed }: SpeechInput, withSubjects: boolean): Speech {
   if (empty) return { text: EMPTY_ACCOUNT_SPEECH, highlights: [] };
   if (!presentation) return { text: failed ? DEGRADED_SPEECH : '', highlights: [] };
   const paras = realParagraphs(presentation);
   const st = presentationState(presentation);
-  const highlights = paras.map((p) => p.highlight).filter((h): h is string => !!h);
-  const texts = (list: MascotParagraph[]) => list.map((p) => p.text.trim()).filter(Boolean);
+  const highlights = withSubjects ? paras.map((p) => p.highlight).filter((h): h is string => !!h) : [];
+  const texts = (list: MascotParagraph[]) => (withSubjects ? list.map((p) => p.text.trim()).filter(Boolean) : []);
   const note = evaluationNote(st);
   const attention = paras.filter(isAttention);
   const info = paras.filter((p) => !isAttention(p));
@@ -297,27 +313,35 @@ export function composeSpeech({ presentation, empty, failed }: SpeechInput): Spe
     return { text: join([todoSummary(todoShown), ...texts(attention), ...texts(info), note]), highlights };
   }
   if (attention.length > 0) {
-    const n = attention.length;
-    const intro = `${NOMBRES[n] ?? n} ${n > 1 ? 'sujets méritent' : 'sujet mérite'} votre attention aujourd’hui`;
-    const at = texts(attention);
-    let phrase: string;
-    if (at.every(isSingleSentence)) {
-      const clauses = at.map((t) => lowerFirst(t.replace(/[.!]$/, '')));
-      phrase = `${intro} : ${clauses.length > 1 ? `${clauses.slice(0, -1).join(', ')}, et ${clauses[clauses.length - 1]}` : clauses[0]}.`;
-    } else {
-      phrase = `${intro}. ${at.join(' ')}`;
-    }
-    return { text: join([phrase, ...texts(info), note]), highlights };
+    // Lot 68 : le fait utile, une seule fois — aucune introduction de comptage.
+    return { text: join([...texts(attention), ...texts(info), note]), highlights };
   }
   if (info.length > 0) {
-    // Information seule (document en analyse…) : elle est dite, sans
-    // annoncer au préalable que tout est à jour (D25 : source en panne → dit).
+    // Information seule (document en analyse, rappel informatif…) : elle est
+    // dite, sans annoncer au préalable que tout est à jour (D25 : source en
+    // panne → dit).
     const tete = st.degraded ? PARTIAL_DATA_SPEECH : st.openNotPriority ? NOTHING_PRIORITY : null;
     return { text: join([tete, ...texts(info), note]), highlights };
   }
   if (presentation.status === 'degraded') return { text: join([DEGRADED_SPEECH, note]), highlights: [] };
   const parts = [st.openNotPriority ? NOTHING_PRIORITY : null, note];
   return { text: parts.some(Boolean) ? join(parts) : NOTHING_TO_REPORT_SPEECH, highlights: [] };
+}
+
+/** Message complet de la bulle (en-tête et textes des sujets), pur. */
+export function composeSpeech(input: SpeechInput): Speech {
+  return compose(input, true);
+}
+
+/**
+ * Lot 68 — phrase d'EN-TÊTE de la bulle, sans les textes des sujets (dits
+ * une seule fois, dans leur bloc) : « À traiter » affichés, évaluation en
+ * cours ou indisponible, source en panne, éléments non prioritaires,
+ * rien à signaler. Vide quand les sujets suffisent. Jamais « rien à
+ * signaler » si un sujet est affiché. Pure.
+ */
+export function bubbleLead(input: SpeechInput): Speech {
+  return compose(input, false);
 }
 
 /**
@@ -341,6 +365,64 @@ export function splitHighlights(text: string, highlights: string[]): Array<{ tex
     restants.splice(restants.indexOf(best.h), 1);
   }
   return out;
+}
+
+// ── Blocs de sujet (lot 68) ─────────────────────────────────────────────────
+
+/** Action d'un bloc : libellé court (« Voir »), action réelle du moteur. */
+export interface SubjectBlockAction { action: MascotAction; label: string; primary: boolean }
+
+/**
+ * Lot 68 — UN bloc par sujet retenu : sa formulation (objet, bien et date
+ * une seule fois), ses actions (« Voir » ouvre le détail ; « C’est fait »…)
+ * et, pour une échéance décidée, le menu « Rappels ». Plus de carte qui
+ * répète intitulé, bien et date sous le message.
+ */
+export interface SubjectBlock {
+  key: string;
+  paragraph: MascotParagraph;
+  text: string;
+  highlights: string[];
+  actions: SubjectBlockAction[];
+  reminder: MascotReminderRef | null;
+  /** Rappel informatif / information : jamais le statut visuel d'une action. */
+  informative: boolean;
+  /**
+   * Nature d'une ACTION retenue (« Action à prévoir », « À vérifier »,
+   * « À anticiper », « En retard (2 j) »…), sans la date déjà dite ; null
+   * pour une information (jamais « Action à prévoir » sur un rappel).
+   */
+  badge: string | null;
+  tone: MascotTile['tone'];
+  icon: MascotTile['icon'];
+}
+
+/** Libellé court d'une action de bloc : « Voir l’échéance » → « Voir ». */
+export function blockActionLabel(a: MascotAction): string {
+  return /^Voir\b/.test(a.label) ? 'Voir' : a.label;
+}
+
+const CODES_ECHEANCE = new Set(['DATE-NEXT', 'MASC-EXT-ACTION', 'MASC-BLOCKED']);
+
+/** Blocs de sujet de la bulle, dans l'ordre des sujets retenus (pure). */
+export function subjectBlocks(p: MascotPresentation | null): SubjectBlock[] {
+  return realParagraphs(p).slice(0, MAX_TILES).map((x) => {
+    const t = x.tile;
+    const informative = !(t?.attention ?? true);
+    const statut = (t?.status ?? '').split(' · ')[0].trim();
+    return {
+      key: x.occurrenceKey,
+      paragraph: x,
+      text: x.text.trim(),
+      highlights: x.highlight ? [x.highlight] : [],
+      actions: x.actions.map((a, i) => ({ action: a, label: blockActionLabel(a), primary: i === 0 })),
+      reminder: x.reminder ?? null,
+      informative,
+      badge: !informative && CODES_ECHEANCE.has(x.sourceCode) && statut ? statut : null,
+      tone: t?.tone ?? 'blue',
+      icon: t?.icon ?? 'circle-alert',
+    };
+  });
 }
 
 // ── Tuiles (client) ─────────────────────────────────────────────────────────
@@ -436,20 +518,15 @@ export function duoInviteHomeItem(p: MascotPresentation | null): HomeItem | null
 
 /**
  * Niveau 2 de la bulle : « Inviter quelqu'un » (lot 49A) puis « À traiter » d'abord (ordre de la file), puis les
- * sujets portant une action, puis les recommandations et l'étape d'accueil —
- * même composant, au plus `MAX_HOME_ITEMS`. Compte vide : rien (tuiles
- * d'amorce côté écran).
+ * recommandations et l'étape d'accueil — même composant, au plus
+ * `MAX_HOME_ITEMS`. Lot 68 : les sujets retenus n'y sont PLUS (carte qui
+ * répétait le message) — ils ont chacun leur bloc (`subjectBlocks`).
+ * Compte vide : rien (tuiles d'amorce côté écran).
  */
 export function homeItems(p: MascotPresentation | null, empty: boolean): HomeItem[] {
   if (empty || !p) return [];
   const invite = duoInviteHomeItem(p);
   const out: HomeItem[] = [...(invite ? [invite] : []), ...(p.todo?.items ?? []).map(todoHomeItem)];
-  for (const t of actionTiles(p)) {
-    out.push({
-      kind: 'subject', key: `subject:${t.key}`, tile: t, title: t.label,
-      sub: t.sub || null, cta: 'Voir', tone: t.tone, icon: t.icon,
-    });
-  }
   for (const s of secondaryActions(p, empty)) {
     const onboarding = s.kind === 'onboarding';
     out.push({

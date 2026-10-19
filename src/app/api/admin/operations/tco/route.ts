@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireAdmin } from '@/lib/auth-guards';
 import { AssetNotFoundForTcoError, readAssetTco } from '@/services/business-operations/tco/service';
-import { ECONOMIC_LINE_REASON_LABELS, TCO_WARNING_LABELS } from '@/services/business-operations/tco/dto';
+import { ECONOMIC_LINE_REASON_LABELS, TCO_HIDDEN_REASON_LABELS, TCO_WARNING_LABELS, tcoUserView } from '@/services/business-operations/tco/dto';
 import { ECONOMIC_LINE_STATUS_LABELS } from '@/services/business-operations/finance/economic-lines';
 import { diagnosticsError, guardAdmin, NO_STORE } from '../_shared';
 
@@ -18,6 +18,11 @@ const id = (v: string | null): number | null => (v && /^\d{1,10}$/.test(v) && Nu
  * le motif d'inclusion ou d'exclusion. Même calcul que le tiroir et que T2
  * (`readAssetTco`), recalculé à la demande — aucune écriture, aucune
  * Opération créée, aucun accès SQL requis pour l'exploitant.
+ *
+ * Lot 68 (68A) : TOUTES les lignes restent listées ; `userView.hidden` indique
+ * celles que la fiche ne montre pas (autre bien, justificatif porté par une
+ * dépense consolidée affichée) et `tco.citedOnlyDocuments` les justificatifs
+ * qui citent seulement le bien (lien MENTIONED), exclus des sources.
  */
 export async function GET(request: NextRequest) {
   const g = await guardAdmin(() => requireAdmin(request));
@@ -31,7 +36,8 @@ export async function GET(request: NextRequest) {
     const { entries, ...tco } = await readAssetTco(accountId, assetId);
     return NextResponse.json({
       accountId, assetId, tco, componentsExamined: entries.length,
-      labels: { status: ECONOMIC_LINE_STATUS_LABELS, reason: ECONOMIC_LINE_REASON_LABELS, warning: TCO_WARNING_LABELS },
+      userView: { hidden: tcoUserView(tco.lines).hidden },
+      labels: { status: ECONOMIC_LINE_STATUS_LABELS, reason: ECONOMIC_LINE_REASON_LABELS, warning: TCO_WARNING_LABELS, hidden: TCO_HIDDEN_REASON_LABELS },
     }, { headers: NO_STORE });
   } catch (e) {
     if (e instanceof AssetNotFoundForTcoError) {

@@ -1,0 +1,181 @@
+{
+  "case": "P-T6-EV-04",
+  "description": "T6 / EVALUATE — rappel informatif (lot 68) : SHOW_NOW + INFORMATION + INFORMATIVE_REMINDER sans action, justifié et prouvé, accepté ; une échéance sans action en ACTION_NOW n'est jamais convertie en rappel ; un rappel qui porte une action est rejeté.",
+  "context": {
+    "input": {
+      "schemaVersion": "t6-evaluation-input-v1",
+      "today": "2026-10-18",
+      "thresholdDays": 60,
+      "candidates": [
+        {
+          "subjectId": "C1",
+          "title": "Visite expert bois",
+          "description": null,
+          "assetName": "Maison",
+          "assetCategory": "LOGEMENT",
+          "dueDate": "2026-10-22",
+          "dateLabel": "22 octobre 2026",
+          "daysUntilDue": 4,
+          "dateNature": "confirmée",
+          "dateRole": "SCHEDULED_EVENT",
+          "overdue": false,
+          "requiresQualification": false,
+          "recurring": false,
+          "documents": [],
+          "recentlyShownDays": 0,
+          "evidence": [
+            {
+              "ref": "C1.title",
+              "kind": "TITLE"
+            },
+            {
+              "ref": "C1.dueDate",
+              "kind": "DUE_DATE"
+            },
+            {
+              "ref": "C1.asset",
+              "kind": "ASSET"
+            }
+          ]
+        },
+        {
+          "subjectId": "C2",
+          "title": "Ramonage cheminée",
+          "description": "Ramonage annuel obligatoire avant l'hiver.",
+          "assetName": "Maison",
+          "assetCategory": "LOGEMENT",
+          "dueDate": "2026-11-04",
+          "dateLabel": "4 novembre 2026",
+          "daysUntilDue": 17,
+          "dateNature": "confirmée",
+          "dateRole": "DEADLINE",
+          "overdue": false,
+          "requiresQualification": false,
+          "recurring": false,
+          "documents": [],
+          "recentlyShownDays": 0,
+          "evidence": [
+            {
+              "ref": "C2.title",
+              "kind": "TITLE"
+            },
+            {
+              "ref": "C2.dueDate",
+              "kind": "DUE_DATE"
+            },
+            {
+              "ref": "C2.asset",
+              "kind": "ASSET"
+            },
+            {
+              "ref": "C2.description",
+              "kind": "DESCRIPTION"
+            }
+          ]
+        },
+        {
+          "subjectId": "C3",
+          "title": "Passage du technicien fibre",
+          "description": null,
+          "assetName": "Maison",
+          "assetCategory": "LOGEMENT",
+          "dueDate": "2026-10-25",
+          "dateLabel": "25 octobre 2026",
+          "daysUntilDue": 7,
+          "dateNature": "confirmée",
+          "dateRole": "SCHEDULED_EVENT",
+          "overdue": false,
+          "requiresQualification": false,
+          "recurring": false,
+          "documents": [],
+          "recentlyShownDays": 0,
+          "evidence": [
+            {
+              "ref": "C3.title",
+              "kind": "TITLE"
+            },
+            {
+              "ref": "C3.dueDate",
+              "kind": "DUE_DATE"
+            },
+            {
+              "ref": "C3.asset",
+              "kind": "ASSET"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "recording": {
+    "operationCode": "t6_evaluate",
+    "task": "EVALUATE",
+    "output": {
+      "schemaVersion": "t6-evaluation-v1",
+      "decisions": [
+        {
+          "subjectId": "C1",
+          "decision": "SHOW_NOW",
+          "category": "INFORMATION",
+          "reasonCode": "INFORMATIVE_REMINDER",
+          "reason": "La visite de l’expert est prévue dans quelques jours : le rappel est utile, aucune démarche n’est attendue.",
+          "expectedAction": null,
+          "actionDeadline": null,
+          "suggestedReviewAt": null,
+          "priorityHint": "LOW",
+          "evidenceRefs": [
+            "C1.title",
+            "C1.dueDate"
+          ],
+          "uncertainties": []
+        },
+        {
+          "subjectId": "C2",
+          "decision": "SHOW_NOW",
+          "category": "ACTION_NOW",
+          "reasonCode": "ACTION_REQUIRED_SOON",
+          "reason": "Le ramonage doit être réalisé avant le 4 novembre 2026.",
+          "expectedAction": null,
+          "actionDeadline": null,
+          "suggestedReviewAt": null,
+          "priorityHint": "MEDIUM",
+          "evidenceRefs": [
+            "C2.description"
+          ],
+          "uncertainties": []
+        },
+        {
+          "subjectId": "C3",
+          "decision": "SHOW_NOW",
+          "category": "INFORMATION",
+          "reasonCode": "INFORMATIVE_REMINDER",
+          "reason": "Le passage du technicien est prévu prochainement et mérite d’être rappelé.",
+          "expectedAction": "Préparer le passage du technicien",
+          "actionDeadline": null,
+          "suggestedReviewAt": null,
+          "priorityHint": "LOW",
+          "evidenceRefs": [
+            "C3.title"
+          ],
+          "uncertainties": []
+        }
+      ]
+    }
+  },
+  "expected": {
+    "valid": true,
+    "accepted": [
+      "C1"
+    ],
+    "rejected": [
+      {
+        "subjectId": "C2",
+        "reason": "show_now_without_action"
+      },
+      {
+        "subjectId": "C3",
+        "reason": "information_with_action"
+      }
+    ]
+  }
+}

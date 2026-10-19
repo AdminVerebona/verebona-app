@@ -5,8 +5,12 @@
  * me rappeler »). Même composant sur desktop et mobile ; composants et
  * jetons existants uniquement (Dialog, DatePicker, RadioGroup, Button).
  *
- *   · `T6ReminderActions` : deux commandes discrètes sous une carte T6 de
- *     l'accueil — elles visent TOUJOURS l'échéance de cette carte ;
+ *   · `T6ReminderActions` : lot 68 — un bouton « Rappels » dans le bloc du
+ *     sujet, qui ouvre un menu (clavier : Entrée / Espace / flèches /
+ *     Échap ; mobile : toucher) avec « Me le rappeler plus tard » et « Ne
+ *     plus me rappeler ». Les commandes visent TOUJOURS l'échéance de ce
+ *     bloc ; fenêtres de date, de portée (occurrence / série), confirmations
+ *     et erreurs inchangées ;
  *   · `T6ReminderSettings` : l'état et les mêmes commandes dans le détail de
  *     l'échéance (agenda), pour modifier ou annuler un choix.
  *
@@ -15,12 +19,14 @@
  */
 import { useCallback, useEffect, useState } from 'react';
 import { toast } from 'sonner';
-import { BellOff, BellRing } from 'lucide-react';
+import { BellOff, BellRing, ChevronDown } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { DatePicker } from '@/components/ui/date-picker';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import { Label } from '@/components/ui/label';
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
+import { BLOCK_ACTION_SECONDARY } from './bubble-actions';
 import { apiClient } from '@/lib/api-client';
 import type { MascotReminderRef } from '@/services/home/mascot/types';
 
@@ -142,12 +148,20 @@ function DismissDialog({ open, onOpenChange, hasSeries, subject, onConfirm }: {
 
 const LINK = 'inline-flex min-h-[32px] items-center gap-1.5 rounded-full px-2 text-[12.5px] font-medium text-[color:var(--text-muted)] transition-colors duration-150 hover:text-[color:var(--accent)]';
 
+const MENU_ITEM = 'min-h-[44px] gap-2.5 px-3 text-[14px] md:min-h-[36px]';
+
 /**
- * Commandes de rappel d'une carte T6 de l'accueil. `subject` : intitulé de la
- * carte (affiché dans la fenêtre : on sait toujours QUELLE échéance est visée).
+ * Commandes de rappel d'un sujet T6 de l'accueil, regroupées sous « Rappels »
+ * (lot 68). `subject` : intitulé du sujet (affiché dans le nom accessible du
+ * bouton et dans la fenêtre : on sait toujours QUELLE échéance est visée).
  */
-export function T6ReminderActions({ reminder, subject, onDone }: {
+export function T6ReminderActions({ reminder, subject, onDone, describedBy }: {
   reminder: MascotReminderRef; subject: string; onDone: (kind: Done) => void;
+  /**
+   * Lot 68 : identifiant du texte du sujet — le bouton « Rappels » y renvoie
+   * (`aria-describedby`) au lieu de répéter intitulé, bien et date.
+   */
+  describedBy?: string;
 }) {
   const [snooze, setSnooze] = useState(false);
   const [dismiss, setDismiss] = useState(false);
@@ -162,13 +176,23 @@ export function T6ReminderActions({ reminder, subject, onDone }: {
   };
 
   return (
-    <div className="flex flex-wrap items-center gap-x-1 gap-y-0.5 px-1" data-t6-reminder={reminder.agendaItemId}>
-      <button type="button" className={LINK} onClick={() => setSnooze(true)}>
-        <BellRing className="h-3.5 w-3.5" aria-hidden /> Me le rappeler plus tard
-      </button>
-      <button type="button" className={LINK} onClick={() => setDismiss(true)}>
-        <BellOff className="h-3.5 w-3.5" aria-hidden /> Ne plus me rappeler
-      </button>
+    <div className="inline-flex" data-t6-reminder={reminder.agendaItemId}>
+      {/* Menu non modal : la fenêtre ouverte depuis un choix reçoit le focus normalement. */}
+      <DropdownMenu modal={false}>
+        <DropdownMenuTrigger asChild>
+          <button type="button" className={BLOCK_ACTION_SECONDARY} {...(describedBy ? { 'aria-describedby': describedBy } : { 'aria-label': `Rappels : ${subject}` })} data-t6-reminder-menu>
+            <BellRing className="h-3.5 w-3.5" aria-hidden /> Rappels <ChevronDown className="h-3.5 w-3.5" aria-hidden />
+          </button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="start" className="w-[min(18rem,calc(100vw-2rem))]">
+          <DropdownMenuItem className={MENU_ITEM} onSelect={() => setSnooze(true)} data-t6-reminder-choice="snooze">
+            <BellRing aria-hidden /> Me le rappeler plus tard
+          </DropdownMenuItem>
+          <DropdownMenuItem className={MENU_ITEM} onSelect={() => setDismiss(true)} data-t6-reminder-choice="dismiss">
+            <BellOff aria-hidden /> Ne plus me rappeler
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
       <SnoozeDialog
         open={snooze} onOpenChange={setSnooze} suggestedDate={reminder.suggestedDate} subject={subject}
         onConfirm={async (day) => {

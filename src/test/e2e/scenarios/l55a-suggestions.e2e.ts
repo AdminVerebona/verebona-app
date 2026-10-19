@@ -209,8 +209,9 @@ scenario('L55A-SUGG', 'Lot 55A — questions suggérées par T6, cohérentes ave
     expect(p.status).toBe('ok');
     expect(p.paragraphs.length).toBeGreaterThan(0);
     expect(questionsDe(p)).toEqual([]);
-    const { homeItems } = await import('@/services/home/mascot/bubble');
-    expect(homeItems(p, false).length).toBeGreaterThan(0);
+    // Lot 68 : le sujet est présenté dans son bloc (texte de secours + « Voir »).
+    const { subjectBlocks } = await import('@/services/home/mascot/bubble');
+    expect(subjectBlocks(p).length).toBeGreaterThan(0);
   });
 
   it('L55A-E2E-05 — isolation : contexte, cache et biens propres au compte ; référence inconnue écartée', async () => {
@@ -243,10 +244,12 @@ scenario('L55A-SUGG', 'Lot 55A — questions suggérées par T6, cohérentes ave
     await sql`UPDATE agenda_items SET start_date = ${date} WHERE id = ${echeance}`;
     await evaluerEcheance(sql, echeance);
     const p = await (await svc()).getMascotPresentation(c.id, 'pregen');
-    const { homeItems } = await import('@/services/home/mascot/bubble');
+    // Lot 68 : métadonnées de tuile conservées (nature, fenêtre de rappel) ; l'accueil affiche un bloc « Voir ».
+    const { actionTiles, subjectBlocks } = await import('@/services/home/mascot/bubble');
     const { formatDateFr } = await import('@/services/home/mascot/signals');
-    const carte = homeItems(p, false).find((x) => x.kind === 'subject');
-    expect(carte).toMatchObject({ title: 'Contrôle technique', sub: `Cupra · Action à prévoir · ${formatDateFr(date)}`, cta: 'Voir' });
-    expect(carte?.kind === 'subject' && carte.tile.paragraph.actions[0].target).toEqual({ kind: 'drawer', drawer: 'echeance', id: echeance, mode: 'view' });
+    expect(actionTiles(p)[0]).toMatchObject({ label: 'Contrôle technique', sub: `Cupra · Action à prévoir · ${formatDateFr(date)}` });
+    const [bloc] = subjectBlocks(p);
+    expect(bloc.actions.map((a) => a.label)).toEqual(['Voir']);
+    expect(bloc.actions[0].action.target).toEqual({ kind: 'drawer', drawer: 'echeance', id: echeance, mode: 'view' });
   });
 });

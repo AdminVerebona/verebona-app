@@ -53,12 +53,16 @@ const rendu = (p: MascotPresentation) => {
 };
 
 describe('Cartes T6 de l’accueil — commandes de rappel', () => {
-  it('T6-INT-15 / T6-INT-16 — une carte par échéance, chacune avec SES deux commandes ; intitulés distincts', () => {
+  it('T6-INT-15 / T6-INT-16 — un bloc par échéance, chacun avec SON menu « Rappels » (lot 68) ; intitulés distincts', () => {
     const html = rendu(pres([para(1, 'Révision chaudière'), para(2, 'Entretien pompe à chaleur')]));
     expect(html.match(/data-t6-reminder="1"/g)).toHaveLength(1);
     expect(html.match(/data-t6-reminder="2"/g)).toHaveLength(1);
-    expect(html.match(/Me le rappeler plus tard/g)).toHaveLength(2);
-    expect(html.match(/Ne plus me rappeler/g)).toHaveLength(2);
+    // Lot 68 : les deux choix sont regroupés dans le menu (rendu à l'ouverture).
+    expect(html.match(/data-t6-reminder-menu/g)).toHaveLength(2);
+    expect(html.match(/aria-haspopup="menu"/g)).toHaveLength(2);
+    const src = read('src/components/home/T6ReminderControls.tsx');
+    expect(src).toContain('Me le rappeler plus tard');
+    expect(src).toContain('Ne plus me rappeler');
     expect(html).toContain('Révision chaudière');
     expect(html).not.toMatch(/Révision chaudière et /);
   });
@@ -67,6 +71,7 @@ describe('Cartes T6 de l’accueil — commandes de rappel', () => {
     const html = rendu(pres([para(3, 'Document en analyse', false)]));
     expect(html).not.toContain('Me le rappeler plus tard');
     expect(html).not.toContain('data-t6-reminder');
+    expect(html).not.toContain('>Rappels<');
   });
 
   it('retrait immédiat d’une carte reportée ou refusée : texte et carte disparaissent ensemble', () => {

@@ -35,7 +35,7 @@ const { buildCandidates } = await import('../signals');
 const { selectSubjects, buildSecondaries, withSuggestedQuestions } = await import('../selector');
 const { buildPresentation } = await import('../presentation');
 const { buildT6Input } = await import('../t6-contract');
-const { composeSpeech, homeItems, homeSuggestions, tileFor, NOTHING_PRIORITY } = await import('../bubble');
+const { composeSpeech, homeItems, homeSuggestions, tileFor, NOTHING_PRIORITY, actionTiles, subjectBlocks } = await import('../bubble');
 const { suggestionsForRoute } = await import('@/services/verebona-assistant/registries/capability-registry');
 const { renderMasterPrompt, isOptionalMasterVariable } = await import('@/services/ai/prompts/prompt-loader');
 type Raw = import('../signals').MascotRawData;
@@ -281,6 +281,9 @@ describe('L55A-06 — configuration IA pilotable par le BO', () => {
   });
 });
 
+// Lot 68 : les métadonnées de tuile restent calculées côté serveur (nature,
+// intitulé de la fenêtre de rappel) ; l'accueil n'affiche plus de carte qui
+// répète le message — un bloc par sujet, action « Voir ».
 describe('L55A-07 — cartes d’échéance : intitulé métier, bien · date complète, une seule action « Voir »', () => {
   const presentationOf = (r: Raw) => {
     const c = buildCandidates(r);
@@ -289,27 +292,30 @@ describe('L55A-07 — cartes d’échéance : intitulé métier, bien · date co
   };
 
   it('DATE-NEXT : « Contrôle technique » / « Cupra · 18 avril 2028 » / « Voir → », même cible (tiroir échéance)', () => {
-    const items = homeItems(presentationOf(raw()), false);
-    expect(items[0]).toMatchObject({ kind: 'subject', title: 'Contrôle technique', sub: 'Cupra · 18 avril 2028', cta: 'Voir' });
-    expect(items[0].title).not.toMatch(/^Voir/);
-    expect(items[0].kind === 'subject' && items[0].tile.paragraph.actions[0].target).toEqual({ kind: 'drawer', drawer: 'echeance', id: 11, mode: 'view' });
+    const p = presentationOf(raw());
+    const [t] = actionTiles(p);
+    expect(t).toMatchObject({ label: 'Contrôle technique', sub: 'Cupra · 18 avril 2028' });
+    expect(t.label).not.toMatch(/^Voir/);
+    const [b] = subjectBlocks(p);
+    expect(b.actions.map((a) => a.label)).toEqual(['Voir']);
+    expect(b.actions[0].action.target).toEqual({ kind: 'drawer', drawer: 'echeance', id: 11, mode: 'view' });
+    expect(homeItems(p, false).some((x) => x.kind === 'subject')).toBe(false);
   });
 
   it('date prévisionnelle : toujours « estimée » ; événement planifié : date seule, jamais « à prévoir »', () => {
-    expect(homeItems(presentationOf(raw({ agenda: [{ ...cupra, forecast: true }] })), false)[0].sub).toBe('Cupra · 18 avril 2028 (estimée)');
-    expect(homeItems(presentationOf(raw({ agenda: [{ ...cupra, title: 'Rendez-vous garage', dateRole: 'SCHEDULED_EVENT' }] })), false)[0])
-      .toMatchObject({ title: 'Rendez-vous garage', sub: 'Cupra · 18 avril 2028' });
+    expect(actionTiles(presentationOf(raw({ agenda: [{ ...cupra, forecast: true }] })))[0].sub).toBe('Cupra · 18 avril 2028 (estimée)');
+    expect(actionTiles(presentationOf(raw({ agenda: [{ ...cupra, title: 'Rendez-vous garage', dateRole: 'SCHEDULED_EVENT' }] })))[0])
+      .toMatchObject({ label: 'Rendez-vous garage', sub: 'Cupra · 18 avril 2028' });
   });
 
   it('deux échéances le même jour (lot 61 : deux cartes, plus de DATE-NEXT-2) et autres cartes : aucun titre « Voir … » (document, export)', () => {
-    const deux = homeItems(presentationOf(raw({ agenda: [cupra, { ...cupra, id: 12, title: 'Assurance', assetId: 2, assetName: 'Maison', assetCategory: 'IMMOBILIER', assetSubtype: 'Maison' }] })), false);
-    // Échéances non retenues par une décision : informations, sans carte d'action.
-    expect(deux.every((x) => !/ et /.test(x.title))).toBe(true);
-    const doc = homeItems(presentationOf(raw({ agenda: [], processing: { uploads: [], analyses: [{ id: 5, title: 'Facture garage', at: '2026-10-14T08:00:00Z' }], exports: [] } } as never)), false);
-    expect(doc[0]).toMatchObject({ title: 'Facture garage', sub: 'En analyse', cta: 'Voir' });
-    const exp = homeItems(presentationOf(raw({ agenda: [], processing: { uploads: [], analyses: [], exports: [{ id: 3, exportType: 'ASSET_SHEET', assetId: 1, assetName: 'Cupra', at: '2026-10-14T08:00:00Z' }] } } as never)), false);
-    expect(exp[0]).toMatchObject({ title: 'Fiche du bien', sub: 'Cupra · En préparation', cta: 'Voir' });
-    for (const it of [...deux, ...doc, ...exp]) expect(it.title).not.toMatch(/^Voir\b/);
+    const deux = actionTiles(presentationOf(raw({ agenda: [cupra, { ...cupra, id: 12, title: 'Assurance', assetId: 2, assetName: 'Maison', assetCategory: 'IMMOBILIER', assetSubtype: 'Maison' }] })));
+    expect(deux.every((x) => !/ et /.test(x.label))).toBe(true);
+    const doc = actionTiles(presentationOf(raw({ agenda: [], processing: { uploads: [], analyses: [{ id: 5, title: 'Facture garage', at: '2026-10-14T08:00:00Z' }], exports: [] } } as never)));
+    expect(doc[0]).toMatchObject({ label: 'Facture garage', sub: 'En analyse' });
+    const exp = actionTiles(presentationOf(raw({ agenda: [], processing: { uploads: [], analyses: [], exports: [{ id: 3, exportType: 'ASSET_SHEET', assetId: 1, assetName: 'Cupra', at: '2026-10-14T08:00:00Z' }] } } as never)));
+    expect(exp[0]).toMatchObject({ label: 'Fiche du bien', sub: 'Cupra · En préparation' });
+    for (const it of [...deux, ...doc, ...exp]) expect(it.label).not.toMatch(/^Voir\b/);
   });
 
   it('aucun appel IA pour la mise en page : tuile calculée à partir des données structurées', () => {

@@ -22,7 +22,7 @@ import { buildSecondaries, selectSubjects } from '@/services/home/mascot/selecto
 import { buildPresentation } from '@/services/home/mascot/presentation';
 import { EMPTY_ACCOUNT_STATE, suggestionsForRoute } from '@/services/verebona-assistant/registries/capability-registry';
 import {
-  composeSpeech, homeItems, homePose, homeSuggestions, secondaryActions, todoSummary,
+  composeSpeech, homeItems, homePose, homeSuggestions, secondaryActions, subjectBlocks, todoSummary,
 } from '@/services/home/mascot/bubble';
 import type { MascotPresentation } from '@/services/home/mascot/types';
 
@@ -242,6 +242,8 @@ describe('bulle (MASC2)', () => {
     const p = present(raw([], { agenda: [{ id: 1, title: 'Ramonage', date: '2026-10-15', forecast: false, requiresQualification: false, assetId: 1, assetName: 'Maison' }] }));
     // Lot 61 : l'information est dite telle quelle, sans « Tout est à jour. » devant.
     expect(composeSpeech({ presentation: p, empty: false }).text).toMatch(/^Le prochain .* est à prévoir pour le /);
-    expect(homeItems(p, false).map((i) => i.kind)).toEqual(['subject']);
+    // Lot 68 : le sujet a son bloc (texte + « Voir ») — plus de carte qui le répète.
+    expect(homeItems(p, false).map((i) => i.kind)).toEqual([]);
+    expect(subjectBlocks(p).map((b) => b.actions.map((a) => a.label))).toEqual([['Voir']]);
   });
 });

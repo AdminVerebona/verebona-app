@@ -4,6 +4,8 @@
  * Query : ?type=<gabarit>&recipient=<adresse ou partie>&problems=1&limit=
  *         ?config=1 : configuration d'envoi effective (expéditeur, clé et
  *         secret de webhook PRÉSENTS ou non — jamais leur valeur, gabarits).
+ *         ?annualRenewal=1 : état du rappel J−7 des abonnements annuels (lot
+ *         68C) — début de couverture, demandes par statut, décisions du jour.
  * Réservé aux administrateurs ; recherche journalisée ; aucun jeton renvoyé.
  */
 import { NextRequest, NextResponse } from 'next/server';
@@ -26,6 +28,15 @@ export async function GET(request: NextRequest) {
     } catch (error) {
       console.error('[admin/communications/email-logs] config :', error);
       return NextResponse.json({ code: 'EMAIL_CONFIG_LOAD_FAILED', message: 'Configuration d’envoi illisible.' }, { status: 500 });
+    }
+  }
+  if (url.searchParams.get('annualRenewal') === '1') {
+    try {
+      const { getAnnualRenewalOverview } = await import('@/services/billing/annual-renewal-reminder.service');
+      return NextResponse.json({ annualRenewal: await getAnnualRenewalOverview() });
+    } catch (error) {
+      console.error('[admin/communications/email-logs] annualRenewal :', error);
+      return NextResponse.json({ code: 'ANNUAL_RENEWAL_LOAD_FAILED', message: 'État du rappel de renouvellement illisible.' }, { status: 500 });
     }
   }
   const query = {

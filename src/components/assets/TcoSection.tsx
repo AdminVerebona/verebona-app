@@ -15,6 +15,9 @@
  *     consolidée éventuelle), avoirs / remboursements / indemnités ;
  *   · Valeur et cession, budget d'usage (estimation, séparé du réalisé) ;
  *   · Dépenses non retenues ou non attribuées, avec leur motif ; alertes.
+ *     Lot 68 : seulement ce qui est utile pour CE bien (non qualifiée, devise,
+ *     non ventilée, prévision…) ; les justificatifs repris par une dépense
+ *     consolidée s'ouvrent depuis la ligne retenue.
  *
  * Aucun bouton « Modifier » du total : les corrections se font sur les
  * sources (fiche, document). Standard : présentation verrouillée, AUCUN
@@ -84,11 +87,11 @@ function Ligne({ label, value, muted, strong }: { label: string; value: string; 
 }
 
 /** Lien vers le justificatif source d'une ligne (même page document sur desktop et mobile). */
-function Justificatif({ fileId }: { fileId: number | null }) {
+function Justificatif({ fileId, title }: { fileId: number | null; title?: string }) {
   if (!fileId) return null;
   return (
-    <Link href={`/documents/${fileId}`} className="inline-flex items-center gap-1 text-xs text-primary hover:underline" data-tco-doc-link={fileId}>
-      <FileText className="w-3 h-3 shrink-0" /> Justificatif
+    <Link href={`/documents/${fileId}`} className="inline-flex min-w-0 items-center gap-1 text-xs text-primary hover:underline" data-tco-doc-link={fileId} title={title}>
+      <FileText className="w-3 h-3 shrink-0" /> <span className="truncate max-w-[16rem]">{title ? `Justificatif : ${title}` : 'Justificatif'}</span>
     </Link>
   );
 }
@@ -116,7 +119,11 @@ function LigneDepense({ l, t }: { l: Line; t: TcoDto }) {
         </p>
       )}
       {l.note && <p className="text-xs text-muted-foreground mt-0.5">{l.note}</p>}
-      <div className="mt-0.5"><Justificatif fileId={l.fileId} /></div>
+      <div className="mt-0.5 flex flex-wrap gap-x-3 gap-y-0.5">
+        <Justificatif fileId={l.fileId} />
+        {/* Lot 68 : justificatifs repris par cette dépense consolidée (plus listés dans les non retenues). */}
+        {(l.supportingDocuments ?? []).map((d) => <Justificatif key={d.fileId} fileId={d.fileId} title={d.title} />)}
+      </div>
     </div>
   );
 }
@@ -201,8 +208,9 @@ export function TcoSection({ assetId, readOnly = false, defaultOpen = false }: P
   const retenues = t ? t.lines.filter((l) => RETENUE.has(l.status)) : [];
   const ajustements = retenues.filter((l) => l.kind && NEGATIVE.has(l.kind));
   const depenses = retenues.filter((l) => !(l.kind && NEGATIVE.has(l.kind)) && l.kind !== 'PROCEED');
-  // Composantes d'un autre bien : bruit pour l'utilisateur (visibles au diagnostic BO) ; un justificatif d'un autre bien reste expliqué.
-  const ecartees = t ? t.lines.filter((l) => !RETENUE.has(l.status) && !(l.source === 'OPERATION' && l.status === 'OUT_OF_SCOPE')) : [];
+  // Lot 68 : le serveur ne transmet que les lignes utiles pour CE bien (`tcoUserView`) — ni « autre bien », ni
+  // justificatif déjà porté par une dépense consolidée affichée (tous restent au diagnostic BO). Garde défensive.
+  const ecartees = t ? t.lines.filter((l) => !RETENUE.has(l.status) && l.status !== 'OUT_OF_SCOPE') : [];
 
   return (
     <div id="asset-section-tco" className="border border-border rounded-lg overflow-hidden" data-asset-tco>

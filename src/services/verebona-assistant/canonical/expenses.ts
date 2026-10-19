@@ -25,6 +25,7 @@
  *     date) : comptés UNE SEULE FOIS — voir `dedupePossibleMerges`.
  */
 import { pgClient } from '@/db';
+import { ASSET_LIST_LINK_ROLES_SQL } from '@/services/documents/asset-document-scope';
 import {
   EXPENSE_THEME_LABELS, classifyExpenseDocument, dedupePossibleMerges, isCreditNoteTitle, type ExpenseClass, type ExpenseRow, type ExpenseTheme,
 } from './expense-classes';
@@ -198,7 +199,13 @@ export async function sumQualifiedExpenses(accountId: number, opts: {
 const EXPENSE_DOCS_PAGE = 2000;
 const EXPENSE_DOCS_MAX = 200_000;
 
-/** Lot 54D (E02) : documents à montant du périmètre, pages sur curseur `f.id` jusqu'à épuisement. */
+/**
+ * Lot 54D (E02) : documents à montant du périmètre, pages sur curseur `f.id` jusqu'à épuisement.
+ * Lot 68 (68A, cohérence TCO) : même rattachement que le TCO et la liste des documents du bien —
+ * colonnes historiques et liens PRIMARY / SECONDARY ; un bien seulement CITÉ (MENTIONED) n'est ni
+ * dans le périmètre ni un bien d'attribution (sinon la facture de la Polo citant la maison était
+ * « non ventilée » pour la Polo).
+ */
 async function readExpenseDocuments(accountId: number, o: { year: number | null; assetIds: number[] | null }): Promise<{ rows: DocRow[]; complete: boolean }> {
   const out: DocRow[] = [];
   let curseur = 0;
@@ -213,7 +220,7 @@ async function readExpenseDocuments(accountId: number, o: { year: number | null;
                         ORDER BY e.id DESC LIMIT 1) END AS "currency",
             ARRAY(SELECT DISTINCT u.x FROM (
                     SELECT l.asset_id AS x FROM document_asset_links l
-                     WHERE l.account_id = f.account_id AND l.file_id = f.id AND l.status = 'ACTIVE'
+                     WHERE l.account_id = f.account_id AND l.file_id = f.id AND l.status = 'ACTIVE' AND l.link_role IN ${ASSET_LIST_LINK_ROLES_SQL}
                     UNION SELECT f.asset_id UNION SELECT f.linked_asset_id) u
                    WHERE u.x IS NOT NULL
                      AND EXISTS (SELECT 1 FROM assets a WHERE a.id = u.x AND a.account_id = f.account_id AND a.deleted_at IS NULL)) AS "linked"
@@ -222,7 +229,7 @@ async function readExpenseDocuments(accountId: number, o: { year: number | null;
         AND ($2::int IS NULL OR f.document_date IS NULL OR extract(year FROM f.document_date) = $2)
         AND ($3::int[] IS NULL
              OR EXISTS (SELECT 1 FROM document_asset_links l WHERE l.account_id = f.account_id AND l.file_id = f.id
-                         AND l.status = 'ACTIVE' AND l.asset_id = ANY($3::int[]))
+                         AND l.status = 'ACTIVE' AND l.link_role IN ${ASSET_LIST_LINK_ROLES_SQL} AND l.asset_id = ANY($3::int[]))
              OR f.asset_id = ANY($3::int[]) OR f.linked_asset_id = ANY($3::int[]))
       ORDER BY f.id LIMIT $5`,
       [accountId, o.year, o.assetIds, curseur, EXPENSE_DOCS_PAGE] as never[],

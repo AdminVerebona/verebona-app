@@ -46,7 +46,7 @@ const { buildCandidates, decidedAgendaSubjects } = await import('../signals');
 const { selectSubjects, buildSecondaries } = await import('../selector');
 const { buildPresentation } = await import('../presentation');
 const { T6FormulateOutput, T6_MASTER_OPERATION_SPEC } = await import('../t6-contract');
-const { composeSpeech, homeItems, NOTHING_PRIORITY } = await import('../bubble');
+const { composeSpeech, homeItems, NOTHING_PRIORITY, subjectBlocks, actionTiles } = await import('../bubble');
 const { t6ReportEntries, t6Candidates, agendaFingerprint, preferencesFor } = await import('../t6-interpellation.service');
 const { renderMasterPrompt, isOptionalMasterVariable } = await import('@/services/ai/prompts/prompt-loader');
 const { getOperation } = await import('@/services/ai/registry/operations');
@@ -137,7 +137,9 @@ describe('Sélection intelligente', () => {
     const r = raw([assurance(5, '2026-10-01', { title: 'Ramonage cheminée' })]);
     const [s] = decidedAgendaSubjects(r, [{ agendaItemId: 5, interpellation: { mode: 'ACT_NOW', priority: 'MEDIUM', code: 'AI_ACT_NOW' }, action: d.action, reminder: { agendaItemId: 5, suggestedDate: '2026-10-22', hasSeries: false } }]);
     expect(s.sourceCode).toBe('MASC-EXT-ACTION');
-    expect(s.fallbackText).toContain('À prévoir : prendre rendez-vous pour le ramonage.');
+    // Lot 68 : action DISTINCTE conservée, sans préfixe « À prévoir : ».
+    expect(s.fallbackText).toContain('Prendre rendez-vous pour le ramonage.');
+    expect(s.fallbackText).not.toContain('À prévoir :');
     expect(s.facts.expectedAction).toBe('Prendre rendez-vous pour le ramonage');
     expect(s.actions.map((a) => a.label)).toEqual(['Voir', 'C’est fait']);
   });
@@ -242,12 +244,15 @@ describe('Affichage et supervision', () => {
     // Un sujet retenu (chaudière) : il est dit ET montré, comme sujet d'attention.
     const un = presentation(r, [{ agendaItemId: 3, interpellation: { mode: 'ANTICIPATE', priority: 'MEDIUM', code: 'AI_ANTICIPATE' }, action: 'Prendre rendez-vous', reminder: rappel(3) }]);
     const t1 = composeSpeech({ presentation: un, empty: false }).text;
-    expect(t1).toMatch(/^Un sujet mérite votre attention aujourd’hui/);
+    // Lot 68 : dit directement, sans introduction de comptage ; un bloc (plus de carte qui répète).
+    expect(t1).toMatch(/^La prochaine révision chaudière/);
+    expect(t1).not.toMatch(/mérite votre attention/);
     expect(t1).not.toContain(NOTHING_PRIORITY);
     expect(t1).not.toMatch(/assurance/i);
-    const items = homeItems(un, false);
-    expect(items.map((x) => x.kind)).toEqual(['subject']);
-    expect(items[0].sub).toContain('À anticiper');
+    expect(homeItems(un, false)).toEqual([]);
+    const blocs = subjectBlocks(un);
+    expect(blocs).toHaveLength(1);
+    expect(blocs[0].badge).toBe('À anticiper');
     // Pas de « Tout est à jour » devant une interpellation affichée.
     expect(t1).not.toMatch(/Tout est à jour/);
   });
@@ -258,13 +263,12 @@ describe('Affichage et supervision', () => {
     expect(buildCandidates(r).candidates.map((s) => s.sourceCode)).toEqual(['DATE-NEXT', 'DATE-NEXT']);
     const p = presentation(r, [1, 2].map((id) => ({ agendaItemId: id, interpellation: { mode: 'ACT_NOW' as const, priority: 'MEDIUM' as const, code: 'AI_ACT_NOW' }, action: null, reminder: rappel(id) })));
     expect(p.paragraphs.map((x) => x.sourceCode)).toEqual(['DATE-NEXT', 'DATE-NEXT']);
-    const items = homeItems(p, false).filter((x) => x.kind === 'subject');
-    expect(items).toHaveLength(2);
-    for (const it of items) expect(it.title).not.toMatch(/ et /);
-    const cibles = items.map((it) => (it.kind === 'subject' ? it.tile.paragraph.reminder?.agendaItemId : null));
-    expect(cibles).toEqual([1, 2]);
-    const voir = items.map((it) => (it.kind === 'subject' ? it.tile.paragraph.actions.map((a) => (a.target.kind === 'drawer' ? a.target.id : null)) : []));
-    expect(voir).toEqual([[1], [2]]);
+    // Lot 68 : un bloc par échéance, chacun avec SES actions et SON rappel.
+    const blocs = subjectBlocks(p);
+    expect(blocs).toHaveLength(2);
+    for (const t of actionTiles(p)) expect(t.label).not.toMatch(/ et /);
+    expect(blocs.map((b) => b.reminder?.agendaItemId)).toEqual([1, 2]);
+    expect(blocs.map((b) => b.actions.map((a) => (a.action.target.kind === 'drawer' ? a.action.target.id : null)))).toEqual([[1], [2]]);
   });
 
   it('T6-INT-14 — « échéances dépassées à vérifier » ne réintroduit jamais une échéance écartée par la décision', async () => {

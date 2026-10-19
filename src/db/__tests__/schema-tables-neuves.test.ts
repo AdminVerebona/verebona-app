@@ -15,6 +15,7 @@ import { agendaItemRemovals, aiMasterCorpusRuns, documentFieldValues, cdc15Migra
   businessOperationClaimDamageDocuments, businessOperationClaimDamagePhotos, businessOperationClaimActions, businessOperationClaimExchanges,
   businessOperationAssetDataMarks, businessOperationClaimMigrationMarks, stripeCatalogRecoveries,
   transactionalEmailJobs, emailProviderEvents, documentRawExtracts,
+  annualRenewalReminderState, annualRenewalReminderChecks,
 } from '../schema';
 
 const MIG = join(process.cwd(), 'src/db/migrations');
@@ -46,6 +47,7 @@ function sqlTable(file: string, table: string) {
 const SUITES: Readonly<Record<string, readonly string[]>> = {
   // Lot 64A : clé d'idempotence et nouveau type (fin d'accès Duo).
   transactional_email_jobs: ['0459_duo_membership_ended_email.sql'],
+  // (0462 et 0477 ne font que remplacer la contrainte de type, même nom.)
   // Lot 49B : couverture réelle de la source, état de réparation (0329).
   document_source_units: ['0329_t1_source_verification.sql'],
   document_extraction_coverage: ['0329_t1_source_verification.sql'],
@@ -106,6 +108,9 @@ const CAS: Array<[PgTable, string, string]> = [
   [emailProviderEvents, '0405_transactional_email_reliability.sql', 'email_provider_events'],
   // Lot 61 : extract brut déterministe T1 et états de phases.
   [documentRawExtracts, '0435_t1_raw_extract.sql', 'document_raw_extracts'],
+  // Lot 68C : rappel J−7 avant renouvellement annuel (couverture, décisions).
+  [annualRenewalReminderState, '0477_annual_renewal_reminder.sql', 'annual_renewal_reminder_state'],
+  [annualRenewalReminderChecks, '0477_annual_renewal_reminder.sql', 'annual_renewal_reminder_checks'],
 ];
 
 describe('tables neuves : Drizzle = SQL', () => {

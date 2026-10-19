@@ -114,6 +114,14 @@ export const TRANSACTIONAL_EMAILS: ReadonlyArray<{ templateCode: string; label: 
   // Lot 53A (migration 0342) : inscription demandée avec une adresse déjà
   // inscrite — aucun compte créé (inscription non énumérable, CDC 18 §7.1).
   { templateCode: 'SIGNUP_EXISTING_ACCOUNT', label: 'Inscription — adresse déjà associée à un compte' },
+  // Lot 68C (migration 0477) : rappel J−7 avant le renouvellement automatique
+  // d'un abonnement ANNUEL (tâche `subscription-annual-renewal-reminders`).
+  // Désactivable : une désactivation annule les rappels en file (jamais
+  // comptés comme envoyés) — à ne faire qu'en réactivant l'option Stripe.
+  { templateCode: 'SUBSCRIPTION_ANNUAL_RENEWAL_REMINDER', label: 'Abonnement annuel — rappel 7 jours avant le renouvellement automatique' },
+  // Ancien modèle : déclenché par aucun code (il évoquait une expiration et un
+  // renouvellement manuel). Conservé en base, signalé comme non utilisé.
+  { templateCode: 'SUBSCRIPTION_EXPIRING', label: 'Ancien rappel d’expiration — NON UTILISÉ (remplacé par le rappel de renouvellement annuel)' },
 ];
 
 export const CHANNEL_LABELS: Record<CommunicationChannel, string> = {
@@ -498,6 +506,12 @@ export function resolveTemplateVariables(
     // titulaire n'est pas inventé (signalé manquant, COM-007).
     accountUrl: `${base}/mon-compte`,
     subscriptionUrl: `${base}/mon-compte/offres`,
+    // SUBSCRIPTION_ANNUAL_RENEWAL_REMINDER (lot 68C) : lien permanent réel (la
+    // session Stripe est créée au clic), délai nominal ; date et montant
+    // viennent du contexte choisi (abonnement, paiement) ou sont signalés manquants.
+    manageSubscriptionUrl: `${base}/mon-compte/abonnement/gerer`,
+    renewalDelayLabel: 'dans 7 jours',
+    planLabel: ctx.planLabel ? (planLabelOf({ planCode: ctx.planLabel }) ?? '') : '',
     appUrl: base,
     year: String(new Date().getFullYear()),
     ...(ctx.extra ?? {}),

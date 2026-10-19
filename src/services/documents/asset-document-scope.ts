@@ -23,6 +23,13 @@ export const ASSET_LIST_LINK_ROLES = ['PRIMARY', 'SECONDARY'] as const;
 
 const ROLES_SQL = `('PRIMARY', 'SECONDARY')`;
 
+/**
+ * Lot 68 (68A) : même liste en SQL brut, pour les requêtes `pgClient.unsafe`
+ * ou `sql.raw` des lectures financières (TCO, dépenses T2) — un document
+ * seulement CITÉ (MENTIONED) n'est rattaché ni à la liste ni aux coûts d'un bien.
+ */
+export const ASSET_LIST_LINK_ROLES_SQL = ROLES_SQL;
+
 /** Condition Drizzle (table `asset_files` non aliasée) : document de l'un de ces biens. */
 export function documentInAssetsCondition(assetIds: readonly number[]): SQL {
   const ids = [...new Set(assetIds.filter((id) => Number.isInteger(id) && id > 0))];

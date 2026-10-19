@@ -19,8 +19,8 @@ import type { ToProcessActionView } from '@/services/to-process/to-process-query
 import type { MascotAction, MascotFamily, MascotInterpellation, MascotPriority, MascotReminderRef, MascotSubject } from './types';
 import { MAX_ACTIONS_PER_SUBJECT } from './types';
 import type { AgendaDateRole } from '@/services/agenda/agenda-date-role';
-import { deadlineBlockedText, deadlineButtonLabel, deadlineExtActionText, deadlineNextText } from './deadline-label';
-import { actionSentence } from './t6-interpellation';
+import { deadlineBlockedText, deadlineButtonLabel, deadlineExtActionText, deadlineNextText, deadlineReminderText } from './deadline-label';
+import { actionIsDistinct, actionSentence } from './t6-interpellation';
 
 export interface MascotDocRow { id: number; title: string; at: string }
 export interface MascotExportRow { id: number; exportType: string; assetId: number; assetName: string; at: string }
@@ -523,7 +523,28 @@ export function decidedAgendaSubjects(raw: MascotRawData, shown: readonly Mascot
       ? dateNextSubject(raw, i, { dedupeDateNext: false })
       : i.requiresQualification ? blockedSubject(raw, i) : extActionSubject(raw, i);
     const ia = d.interpellation.mode !== 'LEGACY';
-    const phrase = ia ? actionSentence(d.action) : null;
+    // Lot 68 — rappel informatif (SHOW_NOW + INFORMATION) : le fait seul, une
+    // fois ; ni action, ni attention prioritaire, ni « à prévoir ». Toujours
+    // une échéance À VENIR (le contrat refuse un rappel d'échéance passée).
+    if (d.interpellation.mode === 'INFORM') {
+      if (i.date <= raw.today) continue;
+      out.push({
+        ...base,
+        requiresAttention: false,
+        priority: 'CAN_WAIT',
+        intent: 'inform',
+        facts: { ...base.facts, interpellation: 'rappel informatif' },
+        fallbackText: deadlineReminderText({ ...i, dateRole: roleOf(i) }, formatDateFr(i.date)),
+        interpellation: d.interpellation,
+        reminder: d.reminder,
+      });
+      continue;
+    }
+    // Lot 68 : l'action attendue n'est conservée que si elle apporte une
+    // information DISTINCTE du sujet (jamais « préparer la visite … » quand
+    // le texte dit déjà la visite, le bien et la date) — et sans préfixe.
+    const distincte = ia && actionIsDistinct(d.action, { title: i.title, assetName: i.assetName, dateLabel: formatDateFr(i.date) });
+    const phrase = distincte ? actionSentence(d.action) : null;
     out.push({
       ...base,
       // Interpellation décidée : le sujet mérite l'attention (tuile, phrase).

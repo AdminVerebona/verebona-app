@@ -39,10 +39,13 @@
 // ── Contrat ─────────────────────────────────────────────────────────────────
 
 export type T6Decision = 'SHOW_NOW' | 'DEFER' | 'SUPPRESS';
-/** Conclusion de l'IA : à traiter maintenant, à anticiper, plus tard, aucune. */
-export type T6AiInterpellation = 'ACT_NOW' | 'ANTICIPATE' | 'LATER' | 'NONE';
+/**
+ * Conclusion de l'IA : à traiter maintenant, à anticiper, rappel informatif
+ * (lot 68 : SHOW_NOW + INFORMATION, aucune action attendue), plus tard, aucune.
+ */
+export type T6AiInterpellation = 'ACT_NOW' | 'ANTICIPATE' | 'INFORM' | 'LATER' | 'NONE';
 export type T6Priority = 'HIGH' | 'MEDIUM' | 'LOW';
-export const T6_AI_INTERPELLATIONS: readonly T6AiInterpellation[] = ['ACT_NOW', 'ANTICIPATE', 'LATER', 'NONE'];
+export const T6_AI_INTERPELLATIONS: readonly T6AiInterpellation[] = ['ACT_NOW', 'ANTICIPATE', 'INFORM', 'LATER', 'NONE'];
 export const T6_PRIORITIES: readonly T6Priority[] = ['HIGH', 'MEDIUM', 'LOW'];
 
 /** Codes de justification (liste fermée, affichée dans le reporting T6). */
@@ -64,7 +67,9 @@ export type T6DecisionCode =
   | 'INSUFFICIENT_CONTEXT'
   | 'REPEAT_COOLDOWN'
   | 'AI_ACT_NOW'
-  | 'AI_ANTICIPATE';
+  | 'AI_ANTICIPATE'
+  /** Lot 68 : rappel informatif pertinent (SHOW_NOW + INFORMATION), sans action. */
+  | 'AI_INFORM';
 
 /**
  * Évaluation d'UN candidat, validée. Lot 61 : issue du contrat
@@ -109,6 +114,12 @@ export interface T6StoredAssessment extends T6Assessment {
   traceId?: string | null;
   /** Contrat de l'évaluation (`t6-evaluation-v1`) ; autre / absent : lot 60, caduque. */
   contractVersion?: string | null;
+  /**
+   * Lot 68 (migration 0474) : révision du contrat. 1 (ou absent) : évaluée
+   * par une version du prompt qui ne connaît pas le rappel informatif ;
+   * 2 : version porteuse de la règle (`INFORMATIVE_REMINDER`).
+   */
+  contractRevision?: number | null;
 }
 
 export type T6SubjectState = 'ACTIVE' | 'RESOLVED' | 'OBSOLETE';
@@ -161,6 +172,13 @@ export interface T6DecisionInput {
   preferences: T6ReminderPreference[];
   /** Historique des interpellations : jours distincts d'affichage récents (même contexte). */
   history?: { displayedDays: number } | null;
+  /**
+   * Lot 68 : le prompt effectif connaît le rappel informatif — les évaluations
+   * antérieures susceptibles de changer (SHOW_NOW, SUPPRESS « aucune action »)
+   * sont alors réévaluées en arrière-plan (renouvellement ciblé), sans être
+   * retirées de l'accueil entre-temps.
+   */
+  reminderCapable?: boolean;
 }
 
 export interface T6DecisionResult {
@@ -182,8 +200,8 @@ export interface T6DecisionResult {
   userPreference: { decision: T6PreferenceDecision; scope: T6PreferenceScope; remindAt: string | null } | null;
   /** Une (nouvelle) évaluation IA est attendue pour ce candidat. */
   needsAssessment: boolean;
-  /** Mode d'interpellation retenu (SHOW_NOW seulement). */
-  mode: 'ACT_NOW' | 'ANTICIPATE' | 'LEGACY' | null;
+  /** Mode d'interpellation retenu (SHOW_NOW seulement) ; `INFORM` : rappel informatif (lot 68). */
+  mode: 'ACT_NOW' | 'ANTICIPATE' | 'INFORM' | 'LEGACY' | null;
   /** Démarche attendue (IA), pour la formulation. */
   action: string | null;
   actionDate: string | null;
@@ -255,6 +273,20 @@ export type T6AssessmentStatus = 'FRESH' | 'AGED' | 'CONTEXT_CHANGED' | 'CONTRAC
 
 /** Contrat des évaluations utilisables (lot 61) — même valeur que `T6_EVALUATION_OUTPUT_SCHEMA_VERSION`. */
 export const T6_ASSESSMENT_CONTRACT = 't6-evaluation-v1';
+/** Lot 68 : révision du contrat porteuse du rappel informatif (`contract_revision`, 0474). */
+export const T6_ASSESSMENT_REVISION_REMINDER = 2;
+
+/**
+ * Lot 68 — renouvellement CIBLÉ : une évaluation d'une révision antérieure
+ * dont la conclusion pourrait devenir un rappel informatif (SHOW_NOW : action
+ * peut-être artificielle ; SUPPRESS « aucune action ») est à revoir quand le
+ * prompt effectif connaît la règle. Les autres (DEFER, suppressions motivées
+ * autrement) restent valables. Pure.
+ */
+export function assessmentNeedsReminderRenewal(a: Pick<T6StoredAssessment, 'contractRevision' | 'decision' | 'reasonCode'>): boolean {
+  if ((a.contractRevision ?? 1) >= T6_ASSESSMENT_REVISION_REMINDER) return false;
+  return a.decision === 'SHOW_NOW' || (a.decision === 'SUPPRESS' && a.reasonCode === 'NO_ACTION_REQUIRED');
+}
 
 /**
  * Une évaluation est :
@@ -264,7 +296,10 @@ export const T6_ASSESSMENT_CONTRACT = 't6-evaluation-v1';
  *     la date de réévaluation proposée par l'IA est atteinte ;
  *   · `FRESH` sinon.
  */
-export function assessmentStatus(a: T6StoredAssessment | null, c: T6Candidate, today: string, thresholdDays: number): T6AssessmentStatus {
+export function assessmentStatus(
+  a: T6StoredAssessment | null, c: T6Candidate, today: string, thresholdDays: number,
+  opts: { reminderCapable?: boolean } = {},
+): T6AssessmentStatus {
   if (!a) return 'NONE';
   // Lot 61 : une évaluation d'un autre contrat (R13 du lot 60) n'est jamais
   // réutilisée — le candidat est réévalué par EVALUATE.
@@ -278,6 +313,8 @@ export function assessmentStatus(a: T6StoredAssessment | null, c: T6Candidate, t
   }
   if (daysBetween(a.assessedOn, today) > T6_ASSESSMENT_MAX_AGE_DAYS) return 'AGED';
   if (a.reevaluateOn && today >= a.reevaluateOn) return 'AGED';
+  // Lot 68 : renouvellement ciblé (utilisable, réévaluée en arrière-plan).
+  if (opts.reminderCapable && assessmentNeedsReminderRenewal(a)) return 'AGED';
   return 'FRESH';
 }
 
@@ -326,7 +363,7 @@ export function decideT6Interpellation(input: T6DecisionInput): T6DecisionResult
     });
   }
 
-  const status = assessmentStatus(input.assessment, c, today, thresholdDays);
+  const status = assessmentStatus(input.assessment, c, today, thresholdDays, { reminderCapable: input.reminderCapable });
   const a = status === 'FRESH' || status === 'AGED' ? input.assessment : null;
   const fresh = status === 'FRESH';
   const veutEvaluation = aiCapable && status !== 'FRESH';
@@ -408,8 +445,11 @@ export function decideT6Interpellation(input: T6DecisionInput): T6DecisionResult
     aiDecision: a.decision ?? (a.interpellation === 'NONE' ? 'SUPPRESS' as const : a.interpellation === 'LATER' ? 'DEFER' as const : 'SHOW_NOW' as const),
   };
 
-  // 6. L'IA conclut qu'aucune interpellation n'est nécessaire.
-  if (a.interpellation === 'NONE' || !a.actionNeeded) {
+  // 6. L'IA conclut qu'aucune interpellation n'est nécessaire. Lot 68 : un
+  //    rappel informatif VALIDÉ (INFORM) n'a pas d'action, mais n'est pas
+  //    supprimé pour autant — son utilité a été explicitement évaluée.
+  const informe = a.interpellation === 'INFORM';
+  if (a.interpellation === 'NONE' || (!a.actionNeeded && !informe)) {
     return r({
       ...base, decision: 'SUPPRESS', code: 'AI_NO_INTERPELLATION', priority: a.priority, thresholdApplied: auDela,
       nextReevaluationAt: minDay(a.reevaluateOn, due && jours! > thresholdDays ? addDays(due, -thresholdDays) : null),
@@ -459,6 +499,15 @@ export function decideT6Interpellation(input: T6DecisionInput): T6DecisionResult
     });
   }
 
+  // Lot 68 : rappel informatif — jamais ACT_NOW par défaut, aucune action.
+  if (informe) {
+    return r({
+      ...base, decision: 'SHOW_NOW', code: 'AI_INFORM', priority: a.priority, mode: 'INFORM', action: null, actionDate: null,
+      nextReevaluationAt: a.reevaluateOn,
+      explanation: 'Évaluation IA : rappel informatif utile maintenant, sans action attendue (ne compte pas comme une action prioritaire).',
+    });
+  }
+
   const anticipe = a.interpellation === 'ANTICIPATE';
   return r({
     ...base, decision: 'SHOW_NOW', code: exception ? 'THRESHOLD_EXCEPTION' : anticipe ? 'AI_ANTICIPATE' : 'AI_ACT_NOW',
@@ -472,10 +521,15 @@ export function decideT6Interpellation(input: T6DecisionInput): T6DecisionResult
   });
 }
 
-/** Ordre d'affichage des sujets retenus : priorité, puis date (pure). */
+/**
+ * Ordre d'affichage des sujets retenus (pure) : les actions avant les rappels
+ * informatifs (lot 68 : une action établie garde sa priorité), puis priorité,
+ * puis date.
+ */
 export function compareShown(a: T6DecisionResult & { dueDate: string | null }, b: T6DecisionResult & { dueDate: string | null }): number {
   const rang = { HIGH: 0, MEDIUM: 1, LOW: 2 } as const;
-  return rang[a.priority] - rang[b.priority] || (a.dueDate ?? '9999').localeCompare(b.dueDate ?? '9999') || a.subjectKey.localeCompare(b.subjectKey);
+  const info = (x: T6DecisionResult) => (x.mode === 'INFORM' ? 1 : 0);
+  return info(a) - info(b) || rang[a.priority] - rang[b.priority] || (a.dueDate ?? '9999').localeCompare(b.dueDate ?? '9999') || a.subjectKey.localeCompare(b.subjectKey);
 }
 
 /**
@@ -509,7 +563,7 @@ export interface T6InterpellationBundle {
   context: import('./t6-contract').T6EvaluationInput;
   refs: ReadonlyMap<string, T6CandidateRef>;
   /** Persistance des décisions validées (injectée : base, tests). */
-  persist: (list: import('./t6-contract').T6ValidatedDecision[], meta: { promptVersion: string; traceId: string | null }) => Promise<number>;
+  persist: (list: import('./t6-contract').T6ValidatedDecision[], meta: { promptVersion: string; traceId: string | null; contractRevision?: number }) => Promise<number>;
 }
 
 const PRIORITE_DEFAUT: Record<T6Decision, T6Priority> = { SHOW_NOW: 'MEDIUM', DEFER: 'LOW', SUPPRESS: 'LOW' };
@@ -527,19 +581,24 @@ const PRIORITE_DEFAUT: Record<T6Decision, T6Priority> = { SHOW_NOW: 'MEDIUM', DE
  * un rappel utilisateur (aucune préférence n'est écrite).
  */
 export function assessmentFromDecision(d: import('./t6-contract').T6ValidatedDecision): T6Assessment {
+  // Lot 68 : SHOW_NOW + INFORMATION (validé : motif dédié, sans action) → INFORM.
+  const informe = d.decision === 'SHOW_NOW' && d.category === 'INFORMATION';
   const interpellation: T6AiInterpellation = d.decision === 'SUPPRESS' ? 'NONE'
     : d.decision === 'DEFER' ? 'LATER'
-      : d.category === 'TO_ANTICIPATE' ? 'ANTICIPATE' : 'ACT_NOW';
+      : informe ? 'INFORM'
+        : d.category === 'TO_ANTICIPATE' ? 'ANTICIPATE' : 'ACT_NOW';
   const concrete = d.evidenceRefs.some((r) => /\.(description|doc\d+)$/.test(r));
   return {
     decision: d.decision, category: d.category, reasonCode: d.reasonCode, evidenceRefs: d.evidenceRefs, uncertainties: d.uncertainties,
     interpellation,
     // DEFER : une démarche sera utile plus tard (réévaluée), jamais « rien à faire ».
-    actionNeeded: d.decision !== 'SUPPRESS',
-    action: d.expectedAction, reason: d.reason, consequence: null,
-    actionDate: d.actionDeadline, priority: d.priorityHint ?? PRIORITE_DEFAUT[d.decision],
+    // INFORM : aucune action attendue (le rappel n'est pas une action prioritaire).
+    actionNeeded: d.decision !== 'SUPPRESS' && !informe,
+    action: informe ? null : d.expectedAction, reason: d.reason, consequence: null,
+    actionDate: informe ? null : d.actionDeadline, priority: d.priorityHint ?? (informe ? 'LOW' : PRIORITE_DEFAUT[d.decision]),
     uncertainty: d.uncertainties.length ? d.uncertainties.join(' ; ').slice(0, 400) : null,
-    exceptionReason: d.decision === 'SHOW_NOW' && concrete ? d.reason : null,
+    // Un rappel informatif ne franchit jamais le seuil (aucune démarche à engager avant).
+    exceptionReason: d.decision === 'SHOW_NOW' && !informe && concrete ? d.reason : null,
     reevaluateOn: d.suggestedReviewAt,
   };
 }
@@ -550,12 +609,36 @@ const texte = (v: unknown, max = 400): string | null => {
   return t ? t.slice(0, max) : null;
 };
 
-/** Démarche IA présentable dans un texte déterministe (une ligne, sans emoji). */
+const plainA = (s: string) => s.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[’]/g, "'");
+/** Verbes de préparation GÉNÉRIQUES : seuls, ils n'apportent aucune information. */
+const VERBES_GENERIQUES = new Set(['preparer', 'prevoir', 'anticiper', 'penser', 'noter', 'retenir', 'suivre', 'organiser', 'planifier', 'surveiller', 'garder', 'tete', 'esprit', 'occuper', 'gerer', 'rappeler']);
+const MOTS_VIDES = new Set(['de', 'du', 'des', 'la', 'le', 'les', 'l', 'd', 'et', 'en', 'pour', 'au', 'aux', 'a', 'un', 'une', 'votre', 'vos', 'son', 'sa', 'ses', 'ce', 'cet', 'cette', 'se', 'sur', 'avant', 'date', 'echeance', 'prochain', 'prochaine', 'bien']);
+
+/**
+ * Lot 68 — l'action attendue apporte-t-elle une information DISTINCTE du
+ * sujet (pure, testée T6-RAP) ? « Préparer la visite expert bois pour la
+ * maison » (verbe générique + objet + bien déjà dits) : non. « Prendre
+ * rendez-vous pour le ramonage », « Envoyer la demande de résiliation » : oui.
+ */
+export function actionIsDistinct(action: string | null, subject: { title?: string | null; assetName?: string | null; dateLabel?: string | null }): boolean {
+  const t = texte(action, 160);
+  if (!t) return false;
+  const dejaDits = new Set(plainA(`${subject.title ?? ''} ${subject.assetName ?? ''} ${subject.dateLabel ?? ''}`).split(/[^a-z0-9]+/).filter(Boolean));
+  const mots = plainA(t).split(/[^a-z0-9]+/).filter((w) => w && !MOTS_VIDES.has(w));
+  return mots.some((w) => !VERBES_GENERIQUES.has(w) && !dejaDits.has(w) && !(w.length > 4 && [...dejaDits].some((d) => d.length > 4 && (d.startsWith(w.slice(0, 5)) || w.startsWith(d.slice(0, 5))))));
+}
+
+/**
+ * Démarche IA présentable dans un texte déterministe (une ligne, sans emoji).
+ * Lot 68 : plus de préfixe « À prévoir : » concaténé — une phrase à
+ * l'infinitif, avec sa majuscule (« Prendre rendez-vous pour le ramonage. »).
+ * L'appelant ne l'ajoute que si elle apporte une information distincte
+ * (`actionIsDistinct`).
+ */
 export function actionSentence(action: string | null): string | null {
   const t = texte(action, 160);
   if (!t || /\p{Extended_Pictographic}/u.test(t)) return null;
-  const s = t.replace(/[.!?…]+$/, '');
-  // Minuscule initiale seulement devant un mot courant (« Comparer »), jamais un sigle (« EDF »).
-  const debut = /^[A-ZÀ-Ý][a-zà-ÿ]/.test(s) ? s.charAt(0).toLocaleLowerCase('fr') + s.slice(1) : s;
-  return `À prévoir : ${debut}.`;
+  const s = t.replace(/^(?:à|a)\s+pr[ée]voir\s*:\s*/i, '').replace(/[.!?…]+$/, '');
+  if (!s) return null;
+  return `${s.charAt(0).toLocaleUpperCase('fr')}${s.slice(1)}.`;
 }

@@ -4185,12 +4185,43 @@ export const transactionalEmailJobs = pgTable('transactional_email_jobs', {
   /** Lot 64A (0459) : idempotence « une fois par événement » (fin d'accès Duo ; départ volontaire, lot 65A, 0462). */
   dedupeKey: text('dedupe_key'),
 }, (t) => ({
-  kindCheck: check('transactional_email_jobs_kind_check', sql`${t.kind} IN ('EMAIL_VERIFICATION', 'DUO_INVITATION', 'DUO_MEMBERSHIP_ENDED', 'DUO_MEMBERSHIP_LEFT')`),
+  kindCheck: check('transactional_email_jobs_kind_check', sql`${t.kind} IN ('EMAIL_VERIFICATION', 'DUO_INVITATION', 'DUO_MEMBERSHIP_ENDED', 'DUO_MEMBERSHIP_LEFT', 'SUBSCRIPTION_ANNUAL_RENEWAL_REMINDER')`),
   statusCheck: check('transactional_email_jobs_status_check', sql`${t.status} IN ('pending', 'sending', 'accepted', 'failed', 'cancelled')`),
   dueIdx: index('transactional_email_jobs_due_idx').on(t.nextAttemptAt).where(sql`status IN ('pending', 'sending')`),
   userIdx: index('transactional_email_jobs_user_idx').on(t.userId, t.kind),
   duoIdx: index('transactional_email_jobs_duo_idx').on(t.duoId, t.kind),
   dedupeIdx: uniqueIndex('transactional_email_jobs_dedupe_key_idx').on(t.dedupeKey).where(sql`dedupe_key IS NOT NULL`),
+}));
+
+/**
+ * Lot 68C (0477) — rappel J−7 avant renouvellement annuel : début de couverture
+ * (première exécution du traitement, ligne unique) et journal des décisions
+ * (une ligne par abonnement Stripe × échéance). SQL brut
+ * (`services/billing/annual-renewal-reminder.service.ts`) ; déclarées ici pour
+ * protéger les tables d'un `db:push`.
+ */
+export const annualRenewalReminderState = pgTable('annual_renewal_reminder_state', {
+  id: integer('id').primaryKey().default(1),
+  coverageFrom: pgDate('coverage_from'),
+  updatedAt: tstz('updated_at'),
+}, (t) => ({
+  singletonCheck: check('annual_renewal_reminder_state_singleton_check', sql`${t.id} = 1`),
+}));
+
+export const annualRenewalReminderChecks = pgTable('annual_renewal_reminder_checks', {
+  candidateKey: text('candidate_key').primaryKey(),
+  accountId: integer('account_id').notNull(),
+  stripeSubscriptionId: text('stripe_subscription_id').notNull(),
+  renewalDate: pgDate('renewal_date').notNull(),
+  checkedOn: pgDate('checked_on').notNull(),
+  outcome: text('outcome').notNull(),
+  reason: text('reason'),
+  jobId: integer('job_id'),
+  checks: integer('checks').notNull().default(1),
+  createdAt: tstz('created_at'),
+  updatedAt: tstz('updated_at'),
+}, (t) => ({
+  outcomeCheck: check('annual_renewal_reminder_checks_outcome_check', sql`${t.outcome} IN ('ENQUEUED', 'REVIVED', 'DUPLICATE', 'WAITING', 'EXCLUDED', 'NO_RECIPIENT')`),
 }));
 
 /** Lot 57A (0405) — événements webhook Resend (svix-id unique : rejeu sans effet). */

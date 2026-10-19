@@ -26,6 +26,12 @@ interface LogRow {
   deliveryStatus: string | null; deliveryStatusAt: string | null; deliveredAt: string | null; deliveryError: string | null;
   job: { id: number; status: string; attempts: number; maxAttempts: number; nextAttemptAt: string | null } | null;
 }
+interface ClosedRow {
+  jobId: number; kind: string; recipientEmail: string; status: 'failed' | 'cancelled'; attempts: number; reason: string | null; updatedAt: string | null;
+}
+interface AnnualRenewal {
+  coverageFrom: string | null; jobs: Record<string, number>; checksToday: Array<{ outcome: string; reason: string | null; count: number }>;
+}
 interface PendingRow {
   jobId: number; kind: string; recipientEmail: string; status: string; attempts: number; maxAttempts: number;
   nextAttemptAt: string | null; lastError: string | null; createdAt: string | null;
@@ -124,20 +130,51 @@ function SenderForm({ c, onSaved }: { c: Config; onSaved: (c: Config) => void })
   );
 }
 
-const TYPES = ['EMAIL_VERIFICATION', 'DUO_INVITATION', 'DUO_MEMBERSHIP_ENDED', 'DUO_MEMBERSHIP_LEFT', 'PASSWORD_RESET', 'WELCOME', 'SIGNUP_EXISTING_ACCOUNT'];
+const TYPES = ['EMAIL_VERIFICATION', 'DUO_INVITATION', 'DUO_MEMBERSHIP_ENDED', 'DUO_MEMBERSHIP_LEFT', 'PASSWORD_RESET', 'WELCOME', 'SIGNUP_EXISTING_ACCOUNT', 'SUBSCRIPTION_ANNUAL_RENEWAL_REMINDER'];
+
+/** Lot 68C : statut d'une demande (préparé / accepté / échoué / annulé). */
+const JOB_STATUS_LABELS: Record<string, string> = {
+  pending: 'préparé', sending: 'en cours d’envoi', accepted: 'accepté par Resend', failed: 'échoué', cancelled: 'annulé',
+};
+
+/**
+ * Lot 68C — rappel J−7 des abonnements annuels : début de couverture, demandes
+ * des 30 derniers jours par statut, décisions du jour (motifs d'exclusion).
+ * L'état de la tâche (dernier passage, suspension) est dans Exploitation ›
+ * Tâches planifiées (`subscription-annual-renewal-reminders`).
+ */
+function AnnualRenewalBlock({ a }: { a: AnnualRenewal }) {
+  const jobs = Object.entries(a.jobs);
+  return (
+    <div className="text-xs space-y-1" data-testid="annual-renewal-overview">
+      <p className="font-medium">Rappel J−7 des abonnements annuels</p>
+      <p>
+        Couverture depuis le {a.coverageFrom ?? '— (traitement jamais exécuté : à réactiver dans Exploitation › Tâches planifiées)'}
+        {' '}· demandes (30 j) : {jobs.length ? jobs.map(([k, n]) => `${JOB_STATUS_LABELS[k] ?? k} ${n}`).join(', ') : 'aucune'}
+      </p>
+      {a.checksToday.length > 0 && (
+        <p>Décisions du jour : {a.checksToday.map((c) => `${c.outcome}${c.reason ? ` (${c.reason})` : ''} ${c.count}`).join(', ')}</p>
+      )}
+    </div>
+  );
+}
 
 export function TransactionalEmailsOps() {
   const [type, setType] = useState('');
   const [recipient, setRecipient] = useState('');
   const [problems, setProblems] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [data, setData] = useState<{ logs: LogRow[]; pendingRequests: PendingRow[] } | null>(null);
+  const [data, setData] = useState<{ logs: LogRow[]; pendingRequests: PendingRow[]; closedRequests?: ClosedRow[] } | null>(null);
   const [config, setConfig] = useState<Config | null>(null);
+  const [annual, setAnnual] = useState<AnnualRenewal | null>(null);
 
   useEffect(() => {
     apiClient.get<{ config: Config }>('/api/admin/communications/email-logs?config=1')
       .then((r) => setConfig(r.config))
       .catch(() => setConfig(null));
+    apiClient.get<{ annualRenewal: AnnualRenewal }>('/api/admin/communications/email-logs?annualRenewal=1')
+      .then((r) => setAnnual(r.annualRenewal))
+      .catch(() => setAnnual(null));
   }, []);
 
   const rechercher = async () => {
@@ -160,6 +197,7 @@ export function TransactionalEmailsOps() {
       <h2 className="vb-app-section">E-mails transactionnels — envois et livraison</h2>
       <div className="rounded-xl border bg-card p-4 space-y-3">
         {config ? <ConfigBlock c={config} /> : <p className="text-xs text-muted-foreground">Configuration d’envoi indisponible.</p>}
+        {annual ? <AnnualRenewalBlock a={annual} /> : null}
         {config ? <SenderForm key={`${config.senderEmail}|${config.senderName}|${config.replyToEmail}|${config.emailsEnabled}`} c={config} onSaved={setConfig} /> : null}
         <div className="flex flex-wrap items-end gap-2">
           <Input className="w-full sm:w-56" list="transactional-email-types" placeholder="Type (ex. EMAIL_VERIFICATION)" aria-label="Type de message" value={type} onChange={(e) => setType(e.target.value)} />
@@ -196,6 +234,35 @@ export function TransactionalEmailsOps() {
                       <td className="px-2 py-1 tabular-nums">{p.attempts}/{p.maxAttempts}</td>
                       <td className="px-2 py-1 text-xs">{p.nextAttemptAt ? formatDateTime(p.nextAttemptAt) : '—'}</td>
                       <td className="px-2 py-1 text-xs text-[color:var(--text-danger)]">{p.lastError ?? '—'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
+        {data && (data.closedRequests?.length ?? 0) > 0 && (
+          <div className="space-y-1" data-testid="closed-email-requests">
+            <p className="text-xs font-medium text-muted-foreground">Demandes closes sans envoi accepté (30 derniers jours) — jamais comptées comme envoyées</p>
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-left text-xs text-muted-foreground">
+                    <th className="px-2 py-1 font-medium">Close</th><th className="px-2 py-1 font-medium">Type</th>
+                    <th className="px-2 py-1 font-medium">Destinataire</th><th className="px-2 py-1 font-medium">Statut</th>
+                    <th className="px-2 py-1 font-medium">Tentatives</th><th className="px-2 py-1 font-medium">Motif</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {data.closedRequests!.map((c) => (
+                    <tr key={c.jobId} className="border-t">
+                      <td className="px-2 py-1 text-xs">{c.updatedAt ? formatDateTime(c.updatedAt) : '—'}</td>
+                      <td className="px-2 py-1">{c.kind}</td>
+                      <td className="px-2 py-1 break-all">{c.recipientEmail}</td>
+                      <td className="px-2 py-1">{JOB_STATUS_LABELS[c.status] ?? c.status}</td>
+                      <td className="px-2 py-1 tabular-nums">{c.attempts}</td>
+                      <td className="px-2 py-1 text-xs text-[color:var(--text-danger)] break-words">{c.reason ?? '—'}</td>
                     </tr>
                   ))}
                 </tbody>

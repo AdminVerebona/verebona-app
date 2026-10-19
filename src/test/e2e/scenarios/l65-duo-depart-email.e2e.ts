@@ -200,7 +200,7 @@ scenario('L65-MAIL', 'Duo : confirmation au membre qui quitte, pas de doublon à
       expect(await leaveDuo(d.membre.id)).toMatchObject({ ok: true, status: 'LEFT' });
     } finally {
       await sql`ALTER TABLE transactional_email_jobs DROP CONSTRAINT transactional_email_jobs_kind_check`;
-      await sql`ALTER TABLE transactional_email_jobs ADD CONSTRAINT transactional_email_jobs_kind_check CHECK (kind IN ('EMAIL_VERIFICATION', 'DUO_INVITATION', 'DUO_MEMBERSHIP_ENDED', 'DUO_MEMBERSHIP_LEFT'))`;
+      await sql`ALTER TABLE transactional_email_jobs ADD CONSTRAINT transactional_email_jobs_kind_check CHECK (kind IN ('EMAIL_VERIFICATION', 'DUO_INVITATION', 'DUO_MEMBERSHIP_ENDED', 'DUO_MEMBERSHIP_LEFT', 'SUBSCRIPTION_ANNUAL_RENEWAL_REMINDER'))`;
       err.mockRestore();
     }
     expect(await membershipStatus(d.membershipId)).toBe('LEFT');

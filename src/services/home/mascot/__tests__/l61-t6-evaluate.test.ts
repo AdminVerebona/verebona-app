@@ -209,7 +209,8 @@ describe('Contrats', () => {
     const formulate = cas.filter((c) => c.recording.operationCode === 't6_formulate');
     const evaluate = cas.filter((c) => c.recording.operationCode === 't6_evaluate');
     expect(formulate.length).toBeGreaterThanOrEqual(5);
-    expect(evaluate.map((c) => c.case)).toEqual(['P-T6-EV-01', 'P-T6-EV-02', 'P-T6-EV-03']);
+    // Lot 68 : P-T6-EV-04 (rappel informatif) s'ajoute aux cas du lot 61.
+    expect(evaluate.map((c) => c.case)).toEqual(['P-T6-EV-01', 'P-T6-EV-02', 'P-T6-EV-03', 'P-T6-EV-04']);
     for (const c of formulate) expect(C.evaluateT6CorpusCase(c.context, c.recording.output, c.expected ?? null)).toEqual([]);
     for (const c of evaluate) expect(C.evaluateT6EvaluationCorpusCase(c.context, c.recording.output, c.expected ?? null)).toEqual([]);
     // Contrôles historiques de FORMULATE : tutoiement, date relative, nombre inventé.
@@ -246,8 +247,10 @@ describe('Décision et affichage', () => {
     expect(C.evaluationDecisionViolation(d, candidat({ description: 'Préavis de deux mois.', evidence: [{ ref: 'C1.description', kind: 'DESCRIPTION' }] }), TODAY)).toBeNull();
     expect(decide({ assessment: stocke(d, 'fp1') })).toMatchObject({ decision: 'SHOW_NOW', code: 'THRESHOLD_EXCEPTION', thresholdException: true });
     const p = accueil(raw([row(1, '2027-01-01')]), [montre(1, { code: 'THRESHOLD_EXCEPTION', reasonCode: 'NOTICE_PERIOD_RUNNING' }, 'Envoyer la lettre de résiliation')]);
-    expect(parler(p)).toMatch(/^Un sujet mérite votre attention aujourd’hui/);
-    expect(B.homeItems(p, false).map((x) => x.kind)).toEqual(['subject']);
+    // Lot 68 : sujet dit directement, un bloc (plus d'introduction ni de carte qui répète).
+    expect(parler(p)).not.toMatch(/mérite votre attention/);
+    expect(B.subjectBlocks(p)).toHaveLength(1);
+    expect(B.homeItems(p, false)).toEqual([]);
   });
 
   it('T6-EV-08 — échéance passée sans action identifiée : aucune vérification générique (IA, sans IA, compteur)', () => {
@@ -282,7 +285,9 @@ describe('Décision et affichage', () => {
     expect(parler(p)).toBe('Le document « Facture garage » est en cours d’analyse.');
     expect(p.state).toMatchObject({ kind: 'INFORMATION', information: 1, actions: 0 });
     expect(B.homePose(p, false)).toBe('neutral');
-    expect(B.homeItems(p, false)[0]).toMatchObject({ title: 'Facture garage', sub: 'En analyse', cta: 'Voir' });
+    // Lot 68 : bloc du document (texte + « Voir »), plus de carte qui le répète.
+    expect(B.subjectBlocks(p)[0]).toMatchObject({ informative: true, badge: null });
+    expect(B.subjectBlocks(p)[0].actions.map((a) => a.label)).toEqual(['Voir']);
     // Avec des éléments non prioritaires ouverts.
     const q = accueil(raw([], { processing: { uploads: [], analyses: [{ id: 5, title: 'Facture garage', at: '2026-10-15T08:00:00Z' }], exports: [] } }), [], { todo: { total: 1, items: [] } });
     expect(parler(q)).toBe('Aucun sujet à traiter en priorité pour le moment. Le document « Facture garage » est en cours d’analyse.');
@@ -331,7 +336,7 @@ describe('Décision et affichage', () => {
     const p = accueil(r, [montre(1)]);
     expect(p.paragraphs.map((x) => x.subjectId)).toEqual(['DATE-NEXT:1']);
     expect(parler(p)).not.toMatch(/assurance|Ramonage|janvier 2027/i);
-    expect(B.homeItems(p, false).map((x) => x.title)).toEqual(['Révision chaudière']);
+    expect(B.actionTiles(p).map((x) => x.label)).toEqual(['Révision chaudière']);
     // Questions : contexte construit sur la sélection retenue (échéances écartées retirées).
     const retenues = r.agenda!.filter((x) => x.id === 1);
     const q = buildT6SuggestionContext({
@@ -349,11 +354,13 @@ describe('Bulle et UX', () => {
   it('T6-EV-13 — résumé, cartes, actions et pose cohérents ; même sujet jamais compté deux fois', () => {
     const r = raw([row(1, '2026-11-04', { title: 'Révision chaudière' }), row(2, '2026-10-01', { title: 'Ramonage' })]);
     const p = accueil(r, [montre(1), montre(2, { reasonCode: 'VERIFICATION_REQUIRED' }, 'Vérifier la date du dernier passage')]);
-    const cartes = B.homeItems(p, false).filter((x) => x.kind === 'subject');
+    const cartes = B.subjectBlocks(p);
     expect(p.state).toMatchObject({ kind: 'ACTIONS', actions: 2, information: 0 });
     expect(cartes).toHaveLength(p.state!.actions);
-    expect(parler(p)).toMatch(/^Deux sujets méritent votre attention aujourd’hui/);
-    expect(cartes.map((x) => x.sub)).toEqual([expect.stringMatching(/^Bien 1 · Action à prévoir · 4 novembre 2026$/), expect.stringMatching(/À vérifier · 1er octobre 2026$/)]);
+    // Lot 68 : plus d'introduction de comptage ; la nature de l'action reste dite (badge), sans la date répétée.
+    expect(parler(p)).not.toMatch(/méritent votre attention/);
+    expect(cartes.map((x) => x.badge)).toEqual(['Action à prévoir', 'À vérifier']);
+    expect(B.actionTiles(p).map((x) => x.sub)).toEqual([expect.stringMatching(/^Bien 1 · Action à prévoir · 4 novembre 2026$/), expect.stringMatching(/À vérifier · 1er octobre 2026$/)]);
     expect(p.paragraphs.map((x) => x.tile?.kind)).toEqual(['action', 'verify']);
     expect(B.homePose(p, false)).toBe('questioning');
     expect(parler(p)).not.toMatch(INTERDITS);
@@ -371,17 +378,17 @@ describe('Bulle et UX', () => {
       expect(sujets.map((s) => s.sourceCode)).toEqual(['DATE-NEXT', 'DATE-NEXT']);
     }
     const p = accueil(r, [montre(1), montre(2)]);
-    for (const it of B.homeItems(p, false)) expect(it.title).not.toMatch(/ et /);
+    for (const it of B.actionTiles(p)) expect(it.label).not.toMatch(/ et /);
     expect(JSON.stringify(p)).not.toMatch(/DATE-NEXT-2/);
   });
 
   it('T6-EV-15 — deux événements indépendants : identifiants, dates, actions et rappels distincts', () => {
     const r = raw([row(1, '2027-01-01'), row(2, '2027-01-01', { assetName: 'Clio', assetId: 2 })]);
     const p = accueil(r, [montre(1), montre(2)]);
-    const cartes = B.homeItems(p, false).filter((x) => x.kind === 'subject');
-    expect(cartes.map((x) => (x.kind === 'subject' ? x.tile.paragraph.reminder?.agendaItemId : null))).toEqual([1, 2]);
-    expect(cartes.map((x) => (x.kind === 'subject' ? x.tile.paragraph.actions.map((a) => (a.target.kind === 'drawer' ? a.target.id : null)) : null))).toEqual([[1], [2]]);
-    expect(cartes.map((x) => x.cta)).toEqual(['Voir', 'Voir']);
+    const cartes = B.subjectBlocks(p);
+    expect(cartes.map((x) => x.reminder?.agendaItemId)).toEqual([1, 2]);
+    expect(cartes.map((x) => x.actions.map((a) => (a.action.target.kind === 'drawer' ? a.action.target.id : null)))).toEqual([[1], [2]]);
+    expect(cartes.map((x) => x.actions[0].label)).toEqual(['Voir', 'Voir']);
   });
 
   it('T6-EV-16 — questions T2 : règle du prompt (aucune sollicitation artificielle), consultation libre conservée', () => {
@@ -396,14 +403,15 @@ describe('Bulle et UX', () => {
     const item = { todoId: 't1', actionKind: 'ARBITRATE', priority: 'DO_FIRST', title: 'Date à vérifier', subtitle: null, cta: 'Vérifier', entityType: 'AGENDA_ITEM', actionType: 'OPEN_TODO_CARD', todoType: 'DATA', card: { question: 'Date ?' } } as never;
     const p = accueil(raw([row(1, '2026-11-04')], { onboarding: { activeAssets: [{ id: 1, name: 'Maison' }], activeAssetCount: 1, documentCount: 0 } }), [montre(1)], { duoInvite: duo, todo: { total: 1, items: [item] } });
     // Duo d'abord, puis « À traiter », puis les sujets retenus (onboarding : étape d'accueil, échéance décidée).
-    expect(B.homeItems(p, false).map((x) => x.kind)).toEqual(['duo-invite', 'todo', 'subject', 'subject']);
-    expect(B.homeItems(p, false).map((x) => x.title)).toEqual(['Inviter quelqu’un', 'Date à vérifier', 'Déposer un document', 'Échéance assurance 1']);
+    // Lot 68 : Duo et « À traiter » en cartes ; les sujets retenus en blocs.
+    expect(B.homeItems(p, false).map((x) => x.kind)).toEqual(['duo-invite', 'todo']);
+    expect(B.homeItems(p, false).map((x) => x.title)).toEqual(['Inviter quelqu’un', 'Date à vérifier']);
     expect(parler(p)).toMatch(/^Deux sujets nécessitent votre attention aujourd’hui\./);
     expect(B.homePose(p, false)).toBe('questioning');
-    const [onb, voir] = B.homeItems(p, false).filter((x) => x.kind === 'subject');
-    expect(onb.kind === 'subject' && onb.tile.paragraph.actions[0].target).toMatchObject({ kind: 'upload_document' });
-    expect(voir.kind === 'subject' && voir.tile.paragraph.actions[0].target).toMatchObject({ kind: 'drawer', drawer: 'echeance', id: 1 });
-    expect(voir.cta).toBe('Voir');
+    const [onb, voir] = B.subjectBlocks(p);
+    expect(onb.actions[0].action.target).toMatchObject({ kind: 'upload_document' });
+    expect(voir.actions[0].action.target).toMatchObject({ kind: 'drawer', drawer: 'echeance', id: 1 });
+    expect(voir.actions[0].label).toBe('Voir');
     // Compte vide : accueil d'amorce inchangé.
     expect(B.composeSpeech({ presentation: null, empty: true }).text).toBe(B.EMPTY_ACCOUNT_SPEECH);
     expect(B.homePose(null, true)).toBe('welcome-wave');
@@ -425,9 +433,11 @@ describe('Bulle et UX', () => {
     await S.persistT6Assessments(7, TODAY, refs, v.ok ? v.accepted : [], { promptVersion: 'v', traceId: null });
     const sqls = unsafe.mock.calls.map((c) => c[0]);
     expect(sqls.every((q) => !/t6_reminder_preferences/.test(q))).toBe(true);
-    expect(sqls[0]).toMatch(/INSERT INTO t6_interpellation_assessments/);
-    expect(sqls[0]).toMatch(/FROM agenda_items i WHERE i\.id = \$2 AND i\.account_id = \$1/);
-    expect(unsafe.mock.calls[0][1]).toEqual(expect.arrayContaining(['t6-evaluation-v1', 'DEFER', 'INFORMATION', 'TOO_EARLY']));
+    // Lot 68 : une sonde de la colonne `contract_revision` (0474) peut précéder l'insertion.
+    const k = sqls.findIndex((q) => /INSERT INTO t6_interpellation_assessments/.test(q));
+    expect(k).toBeGreaterThanOrEqual(0);
+    expect(sqls[k]).toMatch(/FROM agenda_items i WHERE i\.id = \$2 AND i\.account_id = \$1/);
+    expect(unsafe.mock.calls[k][1]).toEqual(expect.arrayContaining(['t6-evaluation-v1', 'DEFER', 'INFORMATION', 'TOO_EARLY']));
   });
 });
 

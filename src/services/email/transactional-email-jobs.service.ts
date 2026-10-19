@@ -40,13 +40,19 @@
  * `dedupe_key`) et envoyé par la reprise planifiée.
  * Lot 65A : quatrième type, DUO_MEMBERSHIP_LEFT (confirmation au membre qui
  * quitte lui-même le Duo), même construction que DUO_MEMBERSHIP_ENDED.
+ * Lot 68C : cinquième type, SUBSCRIPTION_ANNUAL_RENEWAL_REMINDER (rappel J−7
+ * avant le renouvellement d'un abonnement annuel), enregistré par la tâche
+ * `subscription-annual-renewal-reminders` (`dedupe_key` par abonnement Stripe ×
+ * échéance) ; la construction REVALIDE l'abonnement chez Stripe juste avant
+ * l'envoi (`services/billing/annual-renewal-reminder.service.ts`). Un montant
+ * indisponible est un échec TEMPORAIRE (`temporary`), jamais une annulation.
  * ══════════════════════════════════════════════════════════════════════════
  */
 import { pgClient } from '@/db';
 import { emailService } from '@/lib/email/email-service';
 import { buildEmailVerificationUrl, EMAIL_VERIFICATION_TTL_MS } from '@/services/auth/email-verification.service';
 
-export type EmailJobKind = 'EMAIL_VERIFICATION' | 'DUO_INVITATION' | 'DUO_MEMBERSHIP_ENDED' | 'DUO_MEMBERSHIP_LEFT';
+export type EmailJobKind = 'EMAIL_VERIFICATION' | 'DUO_INVITATION' | 'DUO_MEMBERSHIP_ENDED' | 'DUO_MEMBERSHIP_LEFT' | 'SUBSCRIPTION_ANNUAL_RENEWAL_REMINDER';
 export type EmailJobStatus = 'pending' | 'sending' | 'accepted' | 'failed' | 'cancelled';
 
 const MIN = 60_000;
@@ -190,7 +196,7 @@ export function enqueueDuoInvitationEmail(input: {
 type Exec = { unsafe: typeof pgClient.unsafe };
 type Built =
   | { ok: true; templateCode: EmailJobKind; variables: Record<string, string>; recipientUserId: number | null; triggeredByUserId: number | null; onAccepted?: (now: Date, tx: Exec) => Promise<void>; /** Adresse actuelle du destinataire (sinon celle de la demande). */ to?: string }
-  | { ok: false; reason: string };
+  | { ok: false; reason: string; /** Lot 68C : échec temporaire (reprise), pas une annulation. */ temporary?: boolean };
 
 function contextOf(job: JobRow): Record<string, unknown> {
   if (!job.context) return {};
@@ -351,6 +357,25 @@ async function buildDuoMembershipEnded(job: JobRow): Promise<Built> {
 }
 
 /**
+ * Lot 68C — rappel J−7 avant renouvellement annuel : revalidation Stripe et
+ * variables (montant de l'aperçu de facture, date, lien permanent). Une
+ * erreur Stripe lève : échec temporaire, repris par la file.
+ */
+async function buildAnnualRenewal(job: JobRow, now: Date): Promise<Built> {
+  const { buildAnnualRenewalReminder } = await import('@/services/billing/annual-renewal-reminder.service');
+  const r = await buildAnnualRenewalReminder({ user_id: job.user_id, context: contextOf(job) }, now);
+  if (!r.ok) return { ok: false, reason: r.reason, temporary: r.temporary };
+  return {
+    ok: true,
+    templateCode: 'SUBSCRIPTION_ANNUAL_RENEWAL_REMINDER',
+    variables: r.variables,
+    recipientUserId: r.recipientUserId,
+    triggeredByUserId: null,
+    to: r.to,
+  };
+}
+
+/**
  * Tente l'envoi d'une demande. Ne lève pas (erreur inattendue → tentative
  * comptée comme échouée). `busy` : demande non due, déjà prise ou close.
  */
@@ -388,7 +413,12 @@ export async function processEmailJob(jobId: number, now: Date = new Date()): Pr
     }
     const built = job.kind === 'EMAIL_VERIFICATION' ? await buildVerification(job, now)
       : job.kind === 'DUO_MEMBERSHIP_ENDED' || job.kind === 'DUO_MEMBERSHIP_LEFT' ? await buildDuoMembershipEnded(job)
-      : await buildDuoInvitation(job, now);
+      : job.kind === 'SUBSCRIPTION_ANNUAL_RENEWAL_REMINDER' ? await buildAnnualRenewal(job, now)
+      : job.kind === 'DUO_INVITATION' ? await buildDuoInvitation(job, now)
+      : ({ ok: false, reason: 'UNKNOWN_KIND' } as Built);
+    if (!built.ok && built.temporary) {
+      return await failed(job, built.reason, null, now, close);
+    }
     if (!built.ok) {
       await close('cancelled', { error: built.reason });
       return { jobId: job.id, status: 'cancelled', error: built.reason };

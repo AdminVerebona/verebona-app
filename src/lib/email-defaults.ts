@@ -156,6 +156,34 @@ L'équipe Verebona`,
     placeholders: JSON.stringify(['firstName', 'planType', 'expiryDate', 'renewUrl', 'feature1', 'feature2', 'feature3'])
   },
 
+  // Lot 68C (ticket P1, migration 0477) : rappel J−7 avant le renouvellement
+  // automatique d'un abonnement ANNUEL. Gabarit TEXTE : la mise en page de la
+  // charte « Sérénité » est l'enveloppe du code (`wrapInHTML`) ; la ligne
+  // « Gérer mon abonnement sur Stripe : {{manageSubscriptionUrl}} » devient le
+  // bouton. Variantes portées par les variables : `{{renewalDelayLabel}}`
+  // (« dans 7 jours », ou « dans 3 jours » / « demain » en rattrapage) et
+  // `{{amountLabel}}` (« 0,00 € (aucun prélèvement n’est prévu) » à 0 €).
+  // Remplace l'ancien SUBSCRIPTION_EXPIRING (jamais déclenché, inadapté).
+  SUBSCRIPTION_ANNUAL_RENEWAL_REMINDER: {
+    subject: 'Votre abonnement annuel Verebona sera renouvelé le {{renewalDate}}',
+    body: `Bonjour {{firstName}},
+
+Votre abonnement annuel {{planLabel}} sera renouvelé automatiquement le {{renewalDate}}, {{renewalDelayLabel}}.
+
+Le renouvellement automatique est activé par défaut. Sans action de votre part, votre abonnement sera reconduit pour une nouvelle année.
+
+Montant prévu pour ce renouvellement : {{amountLabel}}.
+
+Si vous ne souhaitez pas renouveler votre abonnement, vous pouvez désactiver son renouvellement automatique avant cette date depuis votre espace de gestion Stripe.
+
+Gérer mon abonnement sur Stripe : {{manageSubscriptionUrl}}
+
+Vous pouvez également y consulter vos informations de facturation et vos moyens de paiement.
+
+L’équipe Verebona`,
+    placeholders: JSON.stringify(['firstName', 'planLabel', 'renewalDate', 'renewalDelayLabel', 'amountLabel', 'manageSubscriptionUrl'])
+  },
+
   TRIAL_CONFIRMATION: {
     subject: "Activation de votre période d'essai de 2 mois sur Verebona Premium",
     body: TRIAL_CONFIRMATION_DEFAULT_HTML,

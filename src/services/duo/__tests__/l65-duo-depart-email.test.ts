@@ -81,7 +81,8 @@ describe('L65-MAIL-01 — gabarit DUO_MEMBERSHIP_LEFT', () => {
     expect(mig).toMatch(/WHERE NOT EXISTS \(SELECT 1 FROM email_templates WHERE upper\(type\) = 'DUO_MEMBERSHIP_LEFT'\)/);
     expect(mig).toMatch(/CHECK \(kind IN \('EMAIL_VERIFICATION', 'DUO_INVITATION', 'DUO_MEMBERSHIP_ENDED', 'DUO_MEMBERSHIP_LEFT'\)\)/);
     expect(mig).toMatch(/SET LOCAL lock_timeout/);
-    expect(read('src/db/schema.ts')).toMatch(/'DUO_MEMBERSHIP_ENDED', 'DUO_MEMBERSHIP_LEFT'\)/);
+    // Lot 68C : d'autres types peuvent suivre (SUBSCRIPTION_ANNUAL_RENEWAL_REMINDER, 0477).
+    expect(read('src/db/schema.ts')).toMatch(/'DUO_MEMBERSHIP_ENDED', 'DUO_MEMBERSHIP_LEFT'(, '[A-Z_]+')*\)/);
     expect(read('src/db/seeds/email_templates_system.ts')).toMatch(/DEFAULT_EMAIL_TEMPLATES\.DUO_MEMBERSHIP_LEFT\.body/);
   });
 });

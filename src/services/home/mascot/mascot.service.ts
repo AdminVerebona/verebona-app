@@ -39,7 +39,7 @@ import {
   prepareT6Interpellation, t6ThresholdDays, writeT6EvaluationReport, writeT6InterpellationReport, type T6Preparation,
 } from './t6-interpellation.service';
 import type { MascotRawData } from './signals';
-import { t6InterpellationAvailable } from './t6-runner';
+import { t6InterpellationAvailable, t6ReminderAvailable } from './t6-runner';
 
 /**
  * Lot 60 : `userId` — utilisateur qui regarde l'accueil. Ses préférences de
@@ -172,6 +172,8 @@ function prepare(accountId: number, userId: number | null, raw: MascotRawData, m
   void mode;
   return prepareT6Interpellation({ accountId, userId, raw }, {
     aiCapable: t6InterpellationAvailable,
+    // Lot 68 : renouvellement ciblé des évaluations quand le prompt effectif connaît le rappel informatif.
+    reminderCapable: t6ReminderAvailable,
     thresholdDays: t6ThresholdDays,
     recentEvaluationFailure: (id) => t6EvaluationRecentlyFailed(id),
   });
