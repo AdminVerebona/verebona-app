@@ -79,6 +79,25 @@ export function tenureEndKey(family: string, data: Record<string, unknown>): Ten
   return OBJECT_LIMITED.test(plain(data.acquisitionMode)) ? 'contractEndDate' : null;
 }
 
+/**
+ * Pourquoi une date de fin de contrat ne s'applique pas au bien (lot 69) :
+ * le champ de SITUATION de sa famille (statut de détention du véhicule,
+ * statut d'occupation du logement, mode d'acquisition de l'objet) est-il
+ * vide — « à compléter » — ou renseigné avec une situation sans cette
+ * échéance ? Avant : « statut de détention ou d'occupation à compléter »
+ * pour tout bien, même renseigné.
+ */
+export function tenureSituationHint(family: string, data: Record<string, unknown>): string {
+  const champ = family === 'VEHICULE' ? { key: 'vehicleOwnershipStatus', label: 'statut de détention' }
+    : family === 'IMMOBILIER' ? { key: 'occupancyStatus', label: 'statut d’occupation' }
+      : { key: 'acquisitionMode', label: 'mode d’acquisition' };
+  const v = data[champ.key];
+  const vide = v === undefined || v === null || String(v).trim() === '';
+  return vide
+    ? `${champ.label} à compléter sur la fiche`
+    : `d’après le ${champ.label} renseigné sur la fiche`;
+}
+
 export function isLimitedTenure(family: string, data: Record<string, unknown>): boolean {
   return tenureEndKey(family, data) !== null;
 }

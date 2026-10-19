@@ -70,6 +70,26 @@ export function assetIneligibilityReason(
 const toEngineType = (code: ExportCode): ExportType => code as unknown as ExportType;
 
 /**
+ * Composants d'adresse RÉELLEMENT absents (lot 69) : « Ville du bien non
+ * renseignée. », « Adresse et code postal du bien non renseignés. » ; null
+ * si l'adresse est complète. Un composant présent n'est jamais cité.
+ */
+export function missingAddressMessage(a: { address?: string | null; postalCode?: string | null; city?: string | null }): string | null {
+  const blank = (v: string | null | undefined) => !v || !v.trim();
+  const parts: Array<{ label: string; feminine: boolean }> = [];
+  if (blank(a.address)) parts.push({ label: 'adresse', feminine: true });
+  if (blank(a.postalCode)) parts.push({ label: 'code postal', feminine: false });
+  if (blank(a.city)) parts.push({ label: 'ville', feminine: true });
+  if (!parts.length) return null;
+  const labels = parts.map((p) => p.label);
+  const list = labels.length === 1 ? labels[0] : `${labels.slice(0, -1).join(', ')} et ${labels[labels.length - 1]}`;
+  const accord = parts.length > 1
+    ? (parts.every((p) => p.feminine) ? 'non renseignées' : 'non renseignés')
+    : (parts[0].feminine ? 'non renseignée' : 'non renseigné');
+  return `${list.charAt(0).toUpperCase()}${list.slice(1)} du bien ${accord}.`;
+}
+
+/**
  * Données manquantes pour le rendu (EXP-011). Liste lisible, vide si rien ne
  * manque. Pure : testée sans base.
  */
@@ -81,8 +101,9 @@ export function listMissingPreviewData(
   const wants = (key: string) => manifest.sections.some((s) => s.key === key && s.include);
   const realDocs = snapshot.documents.filter((d) => !d.isWebLink);
 
-  if (snapshot.category === 'IMMOBILIER' && (!snapshot.address || !snapshot.city || !snapshot.postalCode)) {
-    missing.push('Adresse complète du bien (adresse, code postal, ville).');
+  if (snapshot.category === 'IMMOBILIER') {
+    const address = missingAddressMessage(snapshot);
+    if (address) missing.push(address);
   }
   if (!snapshot.purchaseDate) missing.push('Date d’acquisition du bien.');
   if (snapshot.purchasePriceCents == null && snapshot.estimatedValueCents == null) {

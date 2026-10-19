@@ -8,6 +8,7 @@
  * primitive refuse (`SCHEMA_NOT_READY`), T3 n'applique rien aux entités, et
  * l'absence est signalée une fois par processus. Ne lève jamais.
  */
+import { schemaNotReadyMessage } from '@/lib/schema-readiness-log';
 const RECONTROLE_MS = 5 * 60_000;
 let etat: { ready: boolean; checkedAt: number } | null = null;
 let signale = false;
@@ -23,6 +24,8 @@ const ATTENDUES: ReadonlyArray<[string, string]> = [
 export async function entityCanonicalColumnsReady(): Promise<boolean> {
   if (etat && (etat.ready || Date.now() - etat.checkedAt < RECONTROLE_MS)) return etat.ready;
   let ready = false;
+  let absentes: string[] | null = null;
+  let erreur: unknown;
   try {
     const { pgClient } = await import('@/db');
     const rows = (await pgClient.unsafe(
@@ -32,17 +35,21 @@ export async function entityCanonicalColumnsReady(): Promise<boolean> {
           AND column_name IN ('key_characteristics', 'area', 'target_type', 'target_id')`,
     )) as unknown as Array<{ t: string; c: string }>;
     const vues = new Set(rows.map((r) => `${r.t}.${r.c}`));
-    ready = ATTENDUES.every(([t, c]) => vues.has(`${t}.${c}`));
-  } catch {
+    absentes = ATTENDUES.map(([t, c]) => `${t}.${c}`).filter((k) => !vues.has(k));
+    ready = absentes.length === 0;
+  } catch (e) {
     ready = false;
+    erreur = e;
   }
   etat = { ready, checkedAt: Date.now() };
   if (!ready && !signale) {
     signale = true;
-    console.error(
-      '[canonical] ⚠️ MIGRATION 0227 / 0229 NON APPLIQUÉE : fiche canonique des équipements et pièces absente. '
-      + 'Aucune valeur lue pour un équipement ou une pièce n’est appliquée. Voir /api/health.',
-    );
+    // Lot 69 : les colonnes réellement absentes, pas « la fiche » entière.
+    console.error(schemaNotReadyMessage({
+      scope: '[canonical]', migration: '0227 / 0229', expected: ATTENDUES.map(([t, c]) => `${t}.${c}`),
+      missing: absentes, error: erreur,
+      consequence: 'Aucune valeur lue pour un équipement ou une pièce n’est appliquée.',
+    }));
   }
   return ready;
 }

@@ -127,7 +127,7 @@ export interface CilBlockDto {
   label: string;
   status: 'complete' | 'missing' | 'invalid' | 'unknown' | 'not_applicable';
   blocking: boolean;
-  /** Bloc qui empêche la génération (B1, B3, B8 à compléter). */
+  /** Ce bloc empêche RÉELLEMENT la génération (bloc de la règle CIL-RULE-002 à compléter). */
   blocksGeneration: boolean;
   missingItems: Array<{ id: string; label: string; actionLabel: string; target: { type: string; filter?: string } }>;
   /** Le bloc peut être marqué non applicable (§20 : B3 à B7, B9). */
@@ -147,7 +147,11 @@ export interface PreparationDto {
   /** Plafond de photos pré-cochées (§6.2). */
   photoCap: number;
   additionalInfo: { sections: AdditionalInfoSectionKey[]; updatedAt: string | null };
-  cil: { globalStatus: 'ready' | 'action_required'; percentage: number; blocks: CilBlockDto[] } | null;
+  /**
+   * `blockingBlocks` (lot 69) : blocs RÉELLEMENT bloquants, seule source du
+   * message de blocage (`cilBlockingMessage`) — jamais la liste de la règle.
+   */
+  cil: { globalStatus: 'ready' | 'action_required'; percentage: number; blocks: CilBlockDto[]; blockingBlocks: Array<{ id: string; label: string }> } | null;
   estimate: EstimateDto;
   actions: { canGeneratePdf: boolean; canGenerateZip: boolean };
   messages: PrepMessage[];

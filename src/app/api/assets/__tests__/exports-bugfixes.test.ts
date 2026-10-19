@@ -503,7 +503,9 @@ describe('Interface', () => {
   it('préparation CIL : génération désactivée tant que les blocs bloquants sont à compléter', () => {
     // Règle testée dans `lib/exports/__tests__/preparation-state.test.ts` ; ici, le message affiché.
     expect(state).toContain("if (!s.actions.canGeneratePdf");
-    expect(cil).toContain('Complétez les blocs bloquants du CIL (B1, B3, B8) pour générer.');
+    // Lot 69 (DIAG) : message construit sur les blocs RÉELLEMENT bloquants, jamais la liste fixe de la règle.
+    expect(cil).not.toContain('(B1, B3, B8)');
+    expect(cil).toContain('cilBlockingMessage(blocking)');
   });
 });
 

@@ -31,6 +31,7 @@
  *   · une erreur à n'importe quelle étape annule tout (aucune configuration
  *     partielle).
  */
+import { schemaNotReadyMessage } from '@/lib/schema-readiness-log';
 import { pgClient } from '@/db';
 import { getAiEnvironment, type AiEnvironment } from './environment';
 import { TREATMENTS, isTreatment, isRetiredTreatment, type Treatment } from './treatments';
@@ -880,6 +881,8 @@ export async function hasPromptArchitectureColumn(sql: SqlLike = pgClient as unk
   const e = architectureColumn;
   if (e && (e.ready || Date.now() - e.checkedAt < RECONTROLE_MS)) return e.ready;
   let ready = false;
+  let trouvees: number | null = null;
+  let erreur: unknown;
   try {
     const rows = (await sql.unsafe(
       `SELECT COUNT(*)::int AS n FROM information_schema.columns
@@ -887,18 +890,20 @@ export async function hasPromptArchitectureColumn(sql: SqlLike = pgClient as unk
           AND table_name = 'ai_config_entries' AND column_name = ANY($1::text[])`,
       [[...CONFIG_MASTER_COLUMNS]] as never[],
     )) as Array<{ n: number }>;
-    ready = Number(rows[0]?.n ?? 0) === CONFIG_MASTER_COLUMNS.length;
-  } catch {
+    trouvees = Number(rows[0]?.n ?? 0);
+    ready = trouvees === CONFIG_MASTER_COLUMNS.length;
+  } catch (e) {
     ready = false;
+    erreur = e;
   }
   architectureColumn = { ready, checkedAt: Date.now() };
   if (!ready && !absenceSignalee) {
     absenceSignalee = true;
-    console.error(
-      '[config] ⚠️ MIGRATION 0220 NON APPLIQUÉE : colonnes ai_config_entries.prompt_architecture / master_prompt absentes. '
-      + 'Toutes les lignes sont lues en « steps » sans texte master ; bascule et texte master refusés (CDC 15 D-03, D-04). '
-      + 'Voir /api/health (migrations) et appliquer src/db/migrations/0220_*.sql.',
-    );
+    console.error(schemaNotReadyMessage({
+      scope: '[config]', migration: '0220', expected: CONFIG_MASTER_COLUMNS.map((c) => `ai_config_entries.${c}`),
+      found: trouvees, error: erreur,
+      consequence: 'Toutes les lignes sont lues en « steps » sans texte master ; bascule et texte master refusés (CDC 15 D-03, D-04) ; appliquer src/db/migrations/0220_*.sql.',
+    }));
   }
   return ready;
 }

@@ -14,6 +14,7 @@
  *     ou passé hors du compte perd son lien (`href: null`, `unavailable`) —
  *     la ligne reste, l'historique n'est pas réécrit.
  */
+import { schemaNotReadyMessage } from '@/lib/schema-readiness-log';
 import type { AssistantTimelineEvent } from '../types/contracts';
 import { identifiantsIndisponibles, type Requeteur } from './source-availability.service';
 
@@ -25,20 +26,27 @@ let signale = false;
 export async function timelineColumnReady(): Promise<boolean> {
   if (etat && (etat.ready || Date.now() - etat.checkedAt < RECONTROLE_MS)) return etat.ready;
   let ready = false;
+  let trouvees: number | null = null;
+  let erreur: unknown;
   try {
     const { pgClient } = await import('@/db');
     const rows = (await pgClient.unsafe(
       `SELECT COUNT(*)::int AS n FROM information_schema.columns
         WHERE table_schema = current_schema() AND table_name = 'verebona_messages' AND column_name = 'timeline_events_json'`,
     )) as unknown as Array<{ n: number }>;
-    ready = Number(rows[0]?.n ?? 0) === 1;
-  } catch {
+    trouvees = Number(rows[0]?.n ?? 0);
+    ready = trouvees === 1;
+  } catch (e) {
     ready = false;
+    erreur = e;
   }
   etat = { ready, checkedAt: Date.now() };
   if (!ready && !signale) {
     signale = true;
-    console.error('[verebona] ⚠️ MIGRATION 0228 NON APPLIQUÉE : chronologie des réponses non conservée (relue en texte). Voir /api/health.');
+    console.error(schemaNotReadyMessage({
+      scope: '[verebona]', migration: '0228', expected: ['verebona_messages.timeline_events_json'], found: trouvees, error: erreur,
+      consequence: 'Chronologie des réponses non conservée (relue en texte).',
+    }));
   }
   return ready;
 }

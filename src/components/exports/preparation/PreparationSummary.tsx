@@ -20,6 +20,7 @@ import {
   dossierOutline, formatBytes, generateDecision, progressSteps, type PrepState,
 } from '@/lib/exports/preparation-state';
 import { PREP_MESSAGES } from '@/services/exports/v12/preparation/messages';
+import { cilBlockingMessage, CIL_ACTION_REQUIRED_GENERIC_MESSAGE } from '@/lib/exports/cil-blocking';
 import type { OutputFormat } from '@/services/exports/v12/preparation/types';
 import { Callout, SectionLabel, Pill, formatDateTime } from './ui';
 
@@ -40,7 +41,11 @@ export function blockedReason(s: PrepState): string | null {
   if (!s.prep) return null;
   if (s.autosave === 'error') return PREP_MESSAGES['MSG-PREP-006'];
   if (s.autosave === 'saving') return 'Enregistrement des informations en cours…';
-  if (s.prep.cil?.globalStatus === 'action_required') return 'Complétez les blocs bloquants du CIL (B1, B3, B8) pour générer.';
+  if (s.prep.cil?.globalStatus === 'action_required') {
+    // Lot 69 : blocs RÉELLEMENT bloquants (jamais la liste B1, B3, B8 de la règle).
+    const blocking = s.prep.cil.blockingBlocks ?? s.prep.cil.blocks.filter((b) => b.blocksGeneration);
+    return cilBlockingMessage(blocking) ?? CIL_ACTION_REQUIRED_GENERIC_MESSAGE;
+  }
   if (s.estimate?.blocking.length) return 'Seuil dépassé : réduisez la sélection ou passez des pièces en ZIP.';
   if (s.status === 'estimating' || s.status === 'ready_modified') return 'Estimation en cours…';
   if (s.status === 'estimate_failed') return 'Estimation indisponible : recalculez-la pour générer.';

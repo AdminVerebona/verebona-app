@@ -26,6 +26,8 @@ import { db } from '@/db';
 import { assetFiles, exportGenerations } from '@/db/schema';
 import { documentInAssetsCondition } from '@/services/documents/asset-document-scope';
 import { isCilEligible } from '@/lib/asset-capabilities';
+import { cilBlockingMessage, CIL_ACTION_REQUIRED_GENERIC_MESSAGE } from '@/lib/exports/cil-blocking';
+import { claimMissingKeyFields, claimMissingKeyFieldsMessage } from '@/services/business-operations/claims/model';
 import { canUsePremiumFeature } from '@/services/entitlements.service';
 import {
   DOSSIER_ADDITIONAL_SECTIONS, DOSSIER_CODES, DOSSIER_DESCRIPTIONS, DOSSIER_FAMILIES, DOSSIER_LABELS,
@@ -92,7 +94,8 @@ export interface CatalogInput {
   /** Lot 44 : nombre de sinistres du bien (absent : inconnu, règle historique). */
   claims?: number;
   /** Préparation CIL, si le bien y est éligible. */
-  cil: { globalStatus: 'ready' | 'action_required'; percentage: number; blockingLabels: string[] } | null;
+  /** `blockingBlocks` : blocs RÉELLEMENT bloquants (lot 69), seule source du message. */
+  cil: { globalStatus: 'ready' | 'action_required'; percentage: number; blockingBlocks: Array<{ id: string; label: string }> } | null;
   /** Dossiers désactivés depuis le back-office : non proposés. */
   unavailable?: ReadonlySet<DossierCode>;
   /** Générations du bien, les plus récentes d'abord. */
@@ -113,7 +116,7 @@ function readinessHints(code: DossierCode, input: CatalogInput): ReadinessHint[]
       if (input.cil?.globalStatus === 'action_required') {
         hints.push({
           code: 'CIL_ACTION_REQUIRED', severity: 'blocking', target: 'cil-preparation',
-          message: `Blocs à compléter avant génération : ${input.cil.blockingLabels.join(', ') || 'voir la préparation'}.`,
+          message: cilBlockingMessage(input.cil.blockingBlocks) ?? CIL_ACTION_REQUIRED_GENERIC_MESSAGE,
         });
       }
       break;
@@ -136,8 +139,10 @@ function readinessHints(code: DossierCode, input: CatalogInput): ReadinessHint[]
       // Lot 44 (O5) : sinistres de la fiche (Opérations CLAIM) ; le plus récent est proposé par défaut.
       if (input.claims === 0 && Object.keys(a.claim ?? {}).length === 0) {
         hints.push({ code: 'CLAIM_MISSING', severity: 'warning', target: 'additional-infos:claim', message: 'Aucun sinistre renseigné : ajoutez-le dans la rubrique « Sinistres » de la fiche du bien.' });
-      } else if (!has(a.claim, 'claimType') || !has(a.claim, 'occurredOn')) {
-        hints.push({ code: 'CLAIM_MISSING', severity: 'warning', target: 'additional-infos:claim', message: 'Type et date du sinistre à renseigner pour une synthèse complète.' });
+      } else {
+        // Lot 69 : seuls les champs RÉELLEMENT absents sont demandés (règle du domaine Sinistre).
+        const message = claimMissingKeyFieldsMessage(claimMissingKeyFields(a.claim), ' pour une synthèse complète');
+        if (message) hints.push({ code: 'CLAIM_MISSING', severity: 'warning', target: 'additional-infos:claim', message });
       }
       break;
     default:
@@ -262,7 +267,7 @@ export async function loadExportCatalog(asset: {
     try {
       const { evaluateCilReadiness } = await import('./cil-preparation.service');
       const r = await evaluateCilReadiness(asset);
-      cil = { globalStatus: r.globalStatus, percentage: r.completion.percentage, blockingLabels: r.blockingBlocks.map((b) => b.label) };
+      cil = { globalStatus: r.globalStatus, percentage: r.completion.percentage, blockingBlocks: r.blockingBlocks.map((b) => ({ id: b.id, label: b.label })) };
     } catch (err) {
       // Indice informatif : son échec ne doit pas priver l'utilisateur du catalogue.
       console.error('[export-catalog] préparation CIL indisponible :', (err as Error).message);

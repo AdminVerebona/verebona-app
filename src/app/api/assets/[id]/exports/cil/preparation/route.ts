@@ -44,7 +44,7 @@ export async function GET(
       });
     }
 
-    const { globalStatus, completion, blocks } = await evaluateCilReadiness(asset);
+    const { globalStatus, completion, blocks, blockingBlocks } = await evaluateCilReadiness(asset);
 
     // Last export_generation CIL
     // Code V12 « CIL » (migration 0213) et ancien code encore possible.
@@ -66,6 +66,8 @@ export async function GET(
       globalStatus,
       completion,
       blocks,
+      // Lot 69 : blocs RÉELLEMENT bloquants (seule source d'un message de blocage).
+      blockingBlocks: blockingBlocks.map((b) => ({ id: b.id, label: b.label })),
       lastGeneration: lastGen
         ? {
             id: lastGen.id,

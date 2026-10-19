@@ -22,6 +22,7 @@
  * fichier. Migrations absentes : rien n'est écrit, signalé une fois.
  * ══════════════════════════════════════════════════════════════════════════
  */
+import { schemaNotReadyMessage } from '@/lib/schema-readiness-log';
 import { wordStartPattern } from '@/lib/search/match-engine';
 import { needsSourceRetryDue, verificationAutoRetryDue } from './verification-followup';
 import type { CoverageStatus, SourceLayer, SourceUnitKind, T1CompletenessReport, T1QualityState, UnresolvedFactRecord } from './types';
@@ -37,6 +38,7 @@ let signale = false;
 export async function sourceLayerReady(): Promise<boolean> {
   if (etat && (etat.ready || Date.now() - etat.checkedAt < RECONTROLE_MS)) return etat.ready;
   let ready = false;
+  let erreur: unknown;
   try {
     const { pgClient } = await import('@/db');
     const r = (await pgClient.unsafe(
@@ -47,14 +49,18 @@ export async function sourceLayerReady(): Promise<boolean> {
                        AND table_name = 'document_facts' AND column_name = 'source_unit_ids') AS ok`,
     )) as unknown as Array<{ ok: boolean }>;
     ready = Boolean(r[0]?.ok);
-  } catch {
+  } catch (e) {
     ready = false;
+    erreur = e;
   }
   etat = { ready, checkedAt: Date.now() };
   if (!ready && !signale) {
     signale = true;
-    console.error('[t1-source-units] ⚠️ MIGRATIONS 0295-0297 NON APPLIQUÉES : couche A de T1 (unités de la source, couverture) non écrite. '
-      + 'Les faits restent écrits comme avant. Voir /api/health (migrations).');
+    console.error(schemaNotReadyMessage({
+      scope: '[t1-source-units]', migration: '0295-0297', error: erreur,
+      expected: ['document_source_units', 'document_extraction_coverage', 'document_unresolved_facts', 'document_facts.source_unit_ids'],
+      consequence: 'Couche A de T1 (unités de la source, couverture) non écrite ; les faits restent écrits comme avant.',
+    }));
   }
   return ready;
 }

@@ -8,6 +8,7 @@
  * ne sont ni écrits ni lus, et l'absence est signalée une fois par
  * processus. Ne lève jamais.
  */
+import { schemaNotReadyMessage } from '@/lib/schema-readiness-log';
 const RECONTROLE_MS = 5 * 60_000;
 let etat: { ready: boolean; checkedAt: number } | null = null;
 let signale = false;
@@ -17,6 +18,8 @@ export const AGENDA_0223_COLUMNS = ['functional_key', 'event_nature', 'business_
 export async function agendaFunctionalColumnsReady(): Promise<boolean> {
   if (etat && (etat.ready || Date.now() - etat.checkedAt < RECONTROLE_MS)) return etat.ready;
   let ready = false;
+  let trouvees: number | null = null;
+  let erreur: unknown;
   try {
     const { pgClient } = await import('@/db');
     const rows = (await pgClient.unsafe(
@@ -24,17 +27,21 @@ export async function agendaFunctionalColumnsReady(): Promise<boolean> {
         WHERE table_schema = current_schema() AND table_name = 'agenda_items' AND column_name = ANY($1::text[])`,
       [[...AGENDA_0223_COLUMNS]] as never[],
     )) as unknown as Array<{ n: number }>;
-    ready = Number(rows[0]?.n ?? 0) === AGENDA_0223_COLUMNS.length;
-  } catch {
+    trouvees = Number(rows[0]?.n ?? 0);
+    ready = trouvees === AGENDA_0223_COLUMNS.length;
+  } catch (e) {
     ready = false;
+    erreur = e;
   }
   etat = { ready, checkedAt: Date.now() };
   if (!ready && !signale) {
     signale = true;
-    console.error(
-      '[agenda] ⚠️ MIGRATION 0223 NON APPLIQUÉE : clé fonctionnelle et nature absentes de agenda_items. '
-      + 'Effets T4 inopérants (clé, nature, liens source, synchronisation par source). Voir /api/health.',
-    );
+    // Lot 69 : seules les colonnes constatées absentes sont dites absentes.
+    console.error(schemaNotReadyMessage({
+      scope: '[agenda]', migration: '0223', expected: AGENDA_0223_COLUMNS.map((c) => `agenda_items.${c}`),
+      found: trouvees, error: erreur,
+      consequence: 'Effets T4 inopérants (clé, nature, liens source, synchronisation par source).',
+    }));
   }
   return ready;
 }
@@ -58,6 +65,7 @@ let signaleSources = false;
 export async function agendaSourcesColumnsReady(): Promise<boolean> {
   if (etatSources && (etatSources.ready || Date.now() - etatSources.checkedAt < RECONTROLE_MS)) return etatSources.ready;
   let ready = false;
+  let erreur: unknown;
   try {
     const { pgClient } = await import('@/db');
     const rows = (await pgClient.unsafe(
@@ -67,13 +75,17 @@ export async function agendaSourcesColumnsReady(): Promise<boolean> {
         WHERE table_schema = current_schema() AND table_name = 'agenda_item_sources'`,
     )) as unknown as Array<{ n: number; r: number }>;
     ready = Number(rows[0]?.n ?? 0) === 2 && Number(rows[0]?.r ?? 0) === 1;
-  } catch {
+  } catch (e) {
     ready = false;
+    erreur = e;
   }
   etatSources = { ready, checkedAt: Date.now() };
   if (!ready && !signaleSources) {
     signaleSources = true;
-    console.error('[agenda] ⚠️ MIGRATION 0223 (agenda_item_sources) NON APPLIQUÉE : liens source ↔ agenda limités à agenda_file_links.');
+    console.error(schemaNotReadyMessage({
+      scope: '[agenda]', migration: '0223 (agenda_item_sources)', expected: ['source_role', 'evidence_id', 'run_id facultatif'], error: erreur,
+      consequence: 'Liens source ↔ agenda limités à agenda_file_links.',
+    }));
   }
   return ready;
 }

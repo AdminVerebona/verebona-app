@@ -267,6 +267,32 @@ export function meetsClaimMigrationThreshold(s: AdditionalInfoSectionData, linke
     || int(s.estimatedDamageCents) !== null || int(s.compensationCents) !== null);
 }
 
+// ── Champs clés à compléter (lot 69) ───────────────────────────────────────
+
+/** Champ clé d'une synthèse de sinistre complète. */
+export type ClaimKeyField = 'claimType' | 'occurredOn';
+
+/**
+ * Champs clés RÉELLEMENT absents (type, date de survenue), dans cet ordre.
+ * Une seule règle pour tout message « à renseigner » : jamais « type et
+ * date » quand un seul manque (lot 69, ticket diagnostics codés en dur).
+ */
+export function claimMissingKeyFields(s: Pick<AdditionalInfoSectionData, string> | null | undefined): ClaimKeyField[] {
+  const present = (v: unknown) => v !== undefined && v !== null && String(v).trim() !== '';
+  const out: ClaimKeyField[] = [];
+  if (!present(s?.claimType)) out.push('claimType');
+  if (!present(s?.occurredOn)) out.push('occurredOn');
+  return out;
+}
+
+/** « Type du sinistre à renseigner », « Date du sinistre… », « Type et date du sinistre… » ; null si rien ne manque. */
+export function claimMissingKeyFieldsMessage(missing: readonly ClaimKeyField[], suffix = ''): string | null {
+  const t = missing.includes('claimType');
+  const d = missing.includes('occurredOn');
+  const head = t && d ? 'Type et date du sinistre' : t ? 'Type du sinistre' : d ? 'Date du sinistre' : null;
+  return head ? `${head} à renseigner${suffix}.` : null;
+}
+
 /** Une ancienne saisie a-t-elle un contenu quelconque ? */
 export function hasClaimContent(s: AdditionalInfoSectionData): boolean {
   return Object.keys(s).length > 0;

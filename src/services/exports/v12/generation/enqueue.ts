@@ -16,7 +16,8 @@ import { and, desc, eq, gt, inArray, sql } from 'drizzle-orm';
 import { isCilEligible, CIL_NOT_ELIGIBLE_MESSAGE } from '@/lib/asset-capabilities';
 import { canUsePremiumFeature } from '@/services/entitlements.service';
 import { familyIneligibilityMessage, isDossierEligibleForFamily, type DossierCode } from '@/services/exports/catalog';
-import { evaluateCilReadiness, CIL_ACTION_REQUIRED_CODE, CIL_ACTION_REQUIRED_MESSAGE } from '@/services/exports/cil-preparation.service';
+import { evaluateCilReadiness, CIL_ACTION_REQUIRED_CODE } from '@/services/exports/cil-preparation.service';
+import { cilActionRequiredMessage } from '@/lib/exports/cil-blocking';
 import { EXPORT_ERROR_MESSAGES } from '@/services/exports/export-errors';
 import type { AccessibleAsset } from '@/services/exports/export-access';
 import { loadExportSource } from '../data/source';
@@ -97,9 +98,10 @@ export async function enqueueGeneration(params: {
   if (code === 'CIL') {
     const readiness = await evaluateCilReadiness(asset);
     if (readiness.globalStatus === 'action_required') {
+      const blockingBlocks = readiness.blockingBlocks.map((b) => ({ id: b.id, label: b.label }));
       return {
-        ok: false, status: 422, code: CIL_ACTION_REQUIRED_CODE, message: CIL_ACTION_REQUIRED_MESSAGE,
-        extra: { blockingBlocks: readiness.blockingBlocks.map((b) => ({ id: b.id, label: b.label })) },
+        ok: false, status: 422, code: CIL_ACTION_REQUIRED_CODE, message: cilActionRequiredMessage(blockingBlocks),
+        extra: { blockingBlocks },
       };
     }
   }

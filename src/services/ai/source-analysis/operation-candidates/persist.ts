@@ -36,6 +36,7 @@
  * ni ne modifie aucun candidat.
  * ══════════════════════════════════════════════════════════════════════════
  */
+import { schemaNotReadyMessage } from '@/lib/schema-readiness-log';
 import type { AnchoredOperationCandidate } from './prepare';
 
 type Tx = { unsafe: (q: string, p?: never[]) => Promise<unknown> };
@@ -66,6 +67,7 @@ let signale = false;
 export async function operationCandidatesReady(): Promise<boolean> {
   if (etat && (etat.ready || Date.now() - etat.checkedAt < RECONTROLE_MS)) return etat.ready;
   let ready = false;
+  let erreur: unknown;
   try {
     const { pgClient } = await import('@/db');
     const r = (await pgClient.unsafe(
@@ -74,14 +76,18 @@ export async function operationCandidatesReady(): Promise<boolean> {
                        AND table_name = 'document_operation_candidates' AND column_name = 't3_pending') AS ok`,
     )) as unknown as Array<{ ok: boolean }>;
     ready = Boolean(r[0]?.ok);
-  } catch {
+  } catch (e) {
     ready = false;
+    erreur = e;
   }
   etat = { ready, checkedAt: Date.now() };
   if (!ready && !signale) {
     signale = true;
-    console.error('[t1-operation-candidates] ⚠️ MIGRATIONS 0317 / 0320 NON APPLIQUÉES : candidats Opération de T1 non écrits. '
-      + 'Les faits restent écrits comme avant.');
+    console.error(schemaNotReadyMessage({
+      scope: '[t1-operation-candidates]', migration: '0317 / 0320', error: erreur,
+      expected: ['document_operation_candidates', 'document_operation_candidates.t3_pending'],
+      consequence: 'Candidats Opération de T1 non écrits ; les faits restent écrits comme avant.',
+    }));
   }
   return ready;
 }

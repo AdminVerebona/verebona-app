@@ -33,12 +33,14 @@ const SCHEMA_CODES: Record<string, { hint: string; explanation: string }> = {
     explanation:
       "Une colonne n'existe pas. Le schéma est plus ancien que le code déployé.",
   },
+  // Lot 69 : générique. 42883 dit seulement qu'une fonction ou un opérateur
+  // attendu est introuvable pour ces types d'arguments ; l'objet n'est cité
+  // que s'il est lu de façon fiable dans le message (`undefinedObject`).
   '42883': {
     hint: 'MISSING_FUNCTION',
     explanation:
-      "Une fonction PostgreSQL est absente. `gen_random_uuid()` par exemple " +
-      "n'est native qu'à partir de la version 13 ; en deçà, l'extension " +
-      'pgcrypto est nécessaire.',
+      'Une fonction ou un opérateur PostgreSQL requis est introuvable ou ' +
+      'incompatible avec les arguments transmis.',
   },
   '23514': { hint: 'CHECK_CONSTRAINT', explanation: 'Une contrainte refuse la valeur écrite.' },
   '23505': { hint: 'UNIQUE_VIOLATION', explanation: 'Une valeur en double viole un index unique.' },
@@ -46,8 +48,7 @@ const SCHEMA_CODES: Record<string, { hint: string; explanation: string }> = {
   '28P01': {
     hint: 'AUTH_FAILED',
     explanation:
-      "Authentification refusée. Souvent DATABASE_URL absente : le pilote se " +
-      'rabat alors sur le compte système courant.',
+      'Authentification refusée par PostgreSQL (identifiant ou mot de passe).',
   },
 };
 
@@ -77,6 +78,26 @@ export interface DatabaseDiagnostic {
   column?: string;
   /** Ligne de détail du pilote, souvent la valeur refusée. */
   detail?: string;
+  /**
+   * 42883 : fonction ou opérateur introuvable, LU dans le message de
+   * PostgreSQL (`function foo(integer) does not exist`, `operator does not
+   * exist: integer = text`). Absent si le message ne le dit pas clairement.
+   */
+  undefinedObject?: { kind: 'function' | 'operator'; signature: string };
+}
+
+/**
+ * Objet introuvable d'une erreur 42883, extrait du message SEULEMENT s'il
+ * suit l'un des formats exacts de PostgreSQL (anglais ou français) ; sinon
+ * `undefined` — jamais de nom supposé (lot 69).
+ */
+export function extractUndefinedObject(message: string | null | undefined): DatabaseDiagnostic['undefinedObject'] {
+  const m = String(message ?? '').trim();
+  const fn = /^(?:function|la fonction)\s+([A-Za-z_][\w$]*(?:\.[A-Za-z_][\w$]*)?\([^()]*\))\s+(?:does not exist|n'existe pas)/i.exec(m);
+  if (fn) return { kind: 'function', signature: fn[1] };
+  const op = /^(?:operator does not exist|l'opérateur n'existe pas)\s*:\s*(.{1,120}?)\s*$/i.exec(m.split('\n')[0]);
+  if (op) return { kind: 'operator', signature: op[1] };
+  return undefined;
 }
 
 /**
@@ -129,6 +150,19 @@ export function diagnoseDatabaseError(error: unknown): DatabaseDiagnostic {
   const localisation = Object.fromEntries(
     Object.entries(lieu).filter(([, v]) => v !== undefined && v !== null),
   );
+  if (known && pgCode === '42883') {
+    const undefinedObject = extractUndefinedObject(extractPgMessage(error));
+    const explanation = undefinedObject
+      ? `${undefinedObject.kind === 'function' ? 'Fonction' : 'Opérateur'} PostgreSQL introuvable ou incompatible avec les arguments transmis : ${undefinedObject.signature}.`
+      : known.explanation;
+    return { schemaHint: known.hint, explanation, pgCode, ...localisation, ...(undefinedObject ? { undefinedObject } : {}) };
+  }
+  if (known && pgCode === '28P01') {
+    // DATABASE_URL absente : cité seulement si c'est CONSTATÉ (lot 69), jamais présumé.
+    const explanation = process.env.DATABASE_URL ? known.explanation
+      : `${known.explanation} DATABASE_URL n'est pas définie : le pilote se rabat sur le compte système courant.`;
+    return { schemaHint: known.hint, explanation, pgCode, ...localisation };
+  }
   return known
     ? { schemaHint: known.hint, explanation: known.explanation, pgCode, ...localisation }
     : { pgCode, ...localisation };

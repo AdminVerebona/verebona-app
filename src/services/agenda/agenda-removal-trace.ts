@@ -14,6 +14,7 @@
  * Table de trace absente : AUCUN retrait (signalé) — on ne supprime pas sans
  * pouvoir rattraper.
  */
+import { schemaNotReadyMessage } from '@/lib/schema-readiness-log';
 import type postgres from 'postgres';
 
 type Sql = postgres.Sql;
@@ -27,14 +28,20 @@ let pret: { ready: boolean; at: number } | null = null;
 export async function agendaRemovalTraceReady(sql: Sql): Promise<boolean> {
   if (pret && (pret.ready || Date.now() - pret.at < 5 * 60_000)) return pret.ready;
   let ready = false;
+  let trouvees: number | null = null;
+  let erreur: unknown;
   try {
     const [r] = await sql<{ n: number }[]>`
       SELECT COUNT(*)::int AS n FROM information_schema.tables
        WHERE table_schema = current_schema() AND table_name = 'agenda_item_removals'`;
-    ready = Number(r?.n ?? 0) === 1;
-  } catch { ready = false; }
+    trouvees = Number(r?.n ?? 0);
+    ready = trouvees === 1;
+  } catch (e) { ready = false; erreur = e; }
   if (!ready && (!pret || pret.ready)) {
-    console.error('[agenda] ⚠️ MIGRATION 0223 (agenda_item_removals) NON APPLIQUÉE : aucun retrait automatique d’élément d’agenda.');
+    console.error(schemaNotReadyMessage({
+      scope: '[agenda]', migration: '0223 (agenda_item_removals)', expected: ['table agenda_item_removals'], found: trouvees, error: erreur,
+      consequence: 'Aucun retrait automatique d’élément d’agenda.',
+    }));
   }
   pret = { ready, at: Date.now() };
   return ready;

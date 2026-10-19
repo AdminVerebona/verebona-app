@@ -27,8 +27,9 @@ import { exportRouteError, EXPORT_ERROR_MESSAGES } from '@/services/exports/expo
 import { normalizeExportCode, EXPORT_BRUT_CODE } from '@/services/exports/catalog';
 import { canUsePremiumFeature } from '@/services/entitlements.service';
 import {
-  evaluateCilReadiness, CIL_ACTION_REQUIRED_CODE, CIL_ACTION_REQUIRED_MESSAGE,
+  evaluateCilReadiness, CIL_ACTION_REQUIRED_CODE,
 } from '@/services/exports/cil-preparation.service';
+import { cilActionRequiredMessage } from '@/lib/exports/cil-blocking';
 import { toGenerationDto } from '@/services/exports/v12/generation/status';
 import { nudgeExportWorker } from '@/services/exports/v12/generation/worker';
 import { exportRateLimitResponse } from '@/services/exports/v12/generation/rate-limit';
@@ -87,9 +88,10 @@ export async function POST(
     if (code === 'CIL') {
       const readiness = await evaluateCilReadiness(asset);
       if (readiness.globalStatus === 'action_required') {
+        const blockingBlocks = readiness.blockingBlocks.map((b) => ({ id: b.id, label: b.label }));
         return NextResponse.json({
-          error: CIL_ACTION_REQUIRED_CODE, code: CIL_ACTION_REQUIRED_CODE, message: CIL_ACTION_REQUIRED_MESSAGE,
-          blockingBlocks: readiness.blockingBlocks.map((b) => ({ id: b.id, label: b.label })),
+          error: CIL_ACTION_REQUIRED_CODE, code: CIL_ACTION_REQUIRED_CODE, message: cilActionRequiredMessage(blockingBlocks),
+          blockingBlocks,
         }, { status: 422 });
       }
     }

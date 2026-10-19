@@ -81,6 +81,17 @@ const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
  * du modèle et des traces (`assetFieldSource`), pas la réponse déterministe.
  * Vocabulaire : `field-vocabulary.ts` (registre canonique seul).
  */
+/**
+ * Invitation à compléter les documents non comptés, construite sur les
+ * motifs RÉELS (lot 69) : la nature seule, la date seule, ou les deux —
+ * jamais « (type, date du document) » quand un seul manque.
+ */
+export function expenseCompletionHint(sansNature: number, sansDate: number): string {
+  const champs = [sansNature > 0 ? 'leur type' : null, sansDate > 0 ? 'leur date' : null].filter(Boolean) as string[];
+  if (!champs.length) return 'Complétez-les pour obtenir un total fiable.';
+  return `Précisez ${champs.join(' et ')} pour obtenir un total fiable.`;
+}
+
 export function findReadableField(message: string): { def: CanonicalFieldDef; phrase: string } | null {
   const toutes = findReadableFields(message).filter((x) => listFields().some((d) => d.key === x.def.key));
   const best = [...toutes].sort((a, b) => b.phrase.length - a.phrase.length)[0];
@@ -719,7 +730,7 @@ async function tryCanonicalStructuredInner(p: {
         kind = 'no_result';
         answer = (q.unqualified.count > 0
           // Couverture incomplète : aucun total affirmé (T2-24).
-          ? `Je ne peux pas isoler vos dépenses de ${EXPENSE_THEME_LABELS[theme]}${pour} : ${motifs}. Complétez-les (type, date du document) pour obtenir un total fiable.`
+          ? `Je ne peux pas isoler vos dépenses de ${EXPENSE_THEME_LABELS[theme]}${pour} : ${motifs}. ${expenseCompletionHint(sansNature, sansDate)}`
           : formatNoResult(`aucune dépense de ${EXPENSE_THEME_LABELS[theme]} documentée`, pour.trim() || undefined)) + mixte;
       } else {
         answer = `Dépenses de ${t.label} documentées${pour} : ${formatAmountCents(t.sumCents)} (${expenseItemsLabel(t, q.operations)}).${incomplet}${mixte}${doublons}${exclus}`;

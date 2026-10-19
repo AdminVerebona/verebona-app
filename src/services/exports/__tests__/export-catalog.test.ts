@@ -20,7 +20,7 @@ const base = (over: Partial<Input> = {}): Input => ({
   premium: { allowed: true },
   counts: { documents: 3, photos: 4 },
   additional: { commercial: {}, rental: {}, insurance: {}, claim: {} },
-  cil: { globalStatus: 'ready', percentage: 80, blockingLabels: [] },
+  cil: { globalStatus: 'ready', percentage: 80, blockingBlocks: [] },
   generations: [],
   ...over,
 });
@@ -95,10 +95,11 @@ describe('indices de préparation', () => {
   });
 
   it('CIL avec blocs bloquants : blocked', () => {
-    const c = buildExportCatalog(base({ cil: { globalStatus: 'action_required', percentage: 40, blockingLabels: ['B1 Identification', 'B3 Plans'] } }));
+    const c = buildExportCatalog(base({ cil: { globalStatus: 'action_required', percentage: 40, blockingBlocks: [{ id: 'B1', label: 'Identification du logement' }, { id: 'B3', label: 'Plans et coupes' }] } }));
     const cil = c.dossiers.find((d) => d.code === 'CIL')!;
     expect(cil.readiness.status).toBe('blocked');
-    expect(cil.readiness.hints[0].message).toContain('B1 Identification, B3 Plans');
+    // Lot 69 : blocs réellement bloquants seulement (B8 absent de l'état → non cité).
+    expect(cil.readiness.hints[0].message).toBe('Identification du logement et Plans et coupes sont à compléter avant de générer le CIL.');
   });
 
   it('sans photo ni document : indices informatifs, statut inchangé', () => {

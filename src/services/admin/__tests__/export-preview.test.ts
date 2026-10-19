@@ -94,13 +94,15 @@ describe('listMissingPreviewData (EXP-011)', () => {
   it('liste les données absentes sans bloquer le rendu', () => {
     const missing = listMissingPreviewData(base, snap as never);
     expect(missing).toEqual(expect.arrayContaining([
-      expect.stringMatching(/Adresse complète/),
+      // Lot 69 (DIAG-A01) : seule l'adresse manque (ville et code postal présents) → seule l'adresse est citée.
+      'Adresse du bien non renseignée.',
       expect.stringMatching(/Date d’acquisition/),
       expect.stringMatching(/Prix d’achat/),
       expect.stringMatching(/Aucun document/),
       expect.stringMatching(/entretien/),
       expect.stringMatching(/photo/),
     ]));
+    expect(missing.join(' ')).not.toMatch(/code postal|ville/i);
   });
 
   it('rien ne manque pour un bien complet', () => {

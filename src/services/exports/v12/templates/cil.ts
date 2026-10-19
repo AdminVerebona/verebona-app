@@ -12,6 +12,7 @@ import {
 import { planAttachments } from '../html/selection';
 import { assemble, coverPageLabel } from '../html/layout';
 import type { CilData, RenderContext, RenderedHtml, ToneLabel } from '../types';
+import { isCilBlockingRuleBlock } from '@/lib/exports/cil-blocking';
 
 export const TEMPLATE_VERSION = 'cil-v1.0.0';
 export const TEMPLATE_LABEL = 'cil · v1.0';
@@ -29,7 +30,6 @@ const BLOCKS: Record<string, string> = {
 };
 /** Titres de bloc dans les sections quand ils diffèrent du libellé de l'état (maquette). */
 const SECTION_TITLES: Record<string, string> = { B8: 'Performance énergétique' };
-const BLOCKING = ['B1', 'B3', 'B8']; // CIL-RULE-002
 const UNKNOWN_TEXT = 'Aucune donnée ni aucun document dans Verebona pour ce bloc à la date de génération.';
 
 type Block = CilData['cil']['blocks'][number];
@@ -50,7 +50,8 @@ export function render(c: CilData, ctx: RenderContext): RenderedHtml {
   const nOk = count('complete');
   const nTodo = count('unknown') + count('invalid');
   const nNa = count('not_applicable');
-  const nBlocking = shown.filter((b) => BLOCKING.includes(b.code) && b.status === 'missing').length;
+  // CIL-RULE-002 (règle partagée) : seuls les blocs RÉELLEMENT manquants sont comptés.
+  const nBlocking = shown.filter((b) => isCilBlockingRuleBlock(b.code) && b.status === 'missing').length;
   const blocksSummary = dot(
     `${nOk} sur ${shown.length}`,
     nTodo ? `${nTodo} à compléter` : '',

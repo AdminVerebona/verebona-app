@@ -35,6 +35,7 @@
  * traitement est considéré USER (comportement antérieur). Ne lève jamais.
  * ══════════════════════════════════════════════════════════════════════════
  */
+import { schemaNotReadyMessage } from '@/lib/schema-readiness-log';
 export type ProcessingVisibility = 'USER' | 'TECHNICAL';
 
 export const PROCESSING_VISIBILITIES: readonly ProcessingVisibility[] = ['USER', 'TECHNICAL'];
@@ -55,23 +56,27 @@ let signale = false;
 export async function analysisVisibilityColumnReady(): Promise<boolean> {
   if (etat && (etat.ready || Date.now() - etat.checkedAt < RECONTROLE_MS)) return etat.ready;
   let ready = false;
+  let trouvees: number | null = null;
+  let erreur: unknown;
   try {
     const { pgClient } = await import('@/db');
     const rows = (await pgClient.unsafe(
       `SELECT COUNT(*)::int AS n FROM information_schema.columns
         WHERE table_schema = current_schema() AND table_name = 'asset_files' AND column_name = 'analysis_visibility'`,
     )) as unknown as Array<{ n: number }>;
-    ready = Number(rows[0]?.n ?? 0) === 1;
-  } catch {
+    trouvees = Number(rows[0]?.n ?? 0);
+    ready = trouvees === 1;
+  } catch (e) {
     ready = false;
+    erreur = e;
   }
   etat = { ready, checkedAt: Date.now() };
   if (!ready && !signale) {
     signale = true;
-    console.error(
-      '[processing-visibility] ⚠️ MIGRATION 0337 NON APPLIQUÉE : asset_files.analysis_visibility absente — '
-      + 'toute analyse en cours reste présentée par la mascotte (comportement antérieur).',
-    );
+    console.error(schemaNotReadyMessage({
+      scope: '[processing-visibility]', migration: '0337', expected: ['asset_files.analysis_visibility'], found: trouvees, error: erreur,
+      consequence: 'Toute analyse en cours reste présentée par la mascotte (comportement antérieur).',
+    }));
   }
   return ready;
 }

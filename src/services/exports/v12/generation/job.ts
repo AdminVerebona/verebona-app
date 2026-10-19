@@ -161,7 +161,9 @@ export async function runGeneration(row: GenerationRow, workerId: string, opts: 
       throw asGenerationError(e, current);
     }
     if (code === 'CIL' && source.cil?.readiness.globalStatus === 'action_required') {
-      throw new ExportGenerationError('NOT_ELIGIBLE', current, 'CIL-RULE-002 : B1, B3 ou B8 à compléter');
+      // Blocs RÉELLEMENT bloquants (lot 69), pas la liste de la règle.
+      const ids = source.cil.readiness.blockingBlocks.map((b) => b.id);
+      throw new ExportGenerationError('NOT_ELIGIBLE', current, `CIL-RULE-002 : ${ids.length ? `${ids.join(', ')} à compléter` : 'bloc bloquant à compléter'}`);
     }
     const choices = effectiveChoices(code, source, req, today);
     await updateOwnedGeneration(row.id, workerId, {

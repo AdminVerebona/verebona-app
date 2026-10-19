@@ -33,7 +33,7 @@ import { ASSISTANT_ASSET_FIELDS, familyOf, formatFieldValue, type AssetFieldDefi
 import { parseDateFr } from './parser';
 import type { SuppliedFact } from '../types/contracts';
 import { getField } from '@/services/canonical/registry';
-import { tenureEndKey, TENURE_END_LABEL } from '@/lib/assets/tenure-end';
+import { tenureEndKey, tenureSituationHint, TENURE_END_LABEL } from '@/lib/assets/tenure-end';
 import { validateDetailChanges } from '@/lib/asset-detail-rules';
 
 /** Validité d'un plan non confirmé. */
@@ -532,7 +532,7 @@ export async function prepareUpdateProposal(
     };
     const applicable = cap.type === 'asset_tenure_end'
       ? (a: AssetState) => (tenureEndKey(familyOf(a.category), a.characteristics) === cap.def.key ? null
-        : `« ${cap.def.label} » ne s’applique pas à la situation actuelle de ${nomBien(a)} (statut de détention ou d’occupation à compléter sur la fiche) : rien n’a été modifié.`)
+        : `« ${cap.def.label} » ne s’applique pas à la situation actuelle de ${nomBien(a)} (${tenureSituationHint(familyOf(a.category), a.characteristics)}) : rien n’a été modifié.`)
       : undefined;
     const r = await resolveAssetFieldUpdate(draft, input, lookup, `a${i + 1}`, { def: cap.def, assetId: d.assetId, applicable });
     if ('needInfo' in r) { refuser(cap.def.key, 'RESOLUTION', r.needInfo, cap.type); continue; }

@@ -10,6 +10,7 @@
 import { dot, fmt } from '../../html/components';
 import type { CilData, CilBlockStatus } from '../../types';
 import type { SourceDocument } from '../source';
+import { cilEnergyEquipments } from '@/lib/cil/energy-equipment';
 import {
   type MapInput, exportInfo, kc, kcNum, str, humanize, categoryName, categoryLabel, titleLines,
   toDocItem, sortedDocuments, docRef, equipmentSpecs, energyConsumptionLabel,
@@ -34,8 +35,6 @@ const NETWORKS: Array<{ code: string; label: string }> = [
   { code: 'RESEAU_GAZ', label: 'Gaz' },
   { code: 'RESEAU_AERATION', label: 'Aération' },
 ];
-
-const ENERGY_EQUIPMENT = /chauff|chaudi|pompe [àa] chaleur|pac\b|ecs|eau chaude|ballon|ventil|vmc|climati|refroidiss|po[eê]le|radiateur|insert|solaire/i;
 
 /** Bloc CIL du document retenu (carte dans le bloc, bannière « type · bloc · date »). */
 export function cilSection(d: SourceDocument): string {
@@ -64,8 +63,12 @@ export function mapCil(m: MapInput): CilData {
   const networkDocs = allDocs.filter((d) => cilSection(d) === 'B4');
   const planDocs = allDocs.filter((d) => d.kind === 'PLAN_CONSTRUCTION');
   const dpeDoc = allDocs.filter((d) => d.kind === 'DPE').sort((a, b) => String(b.date ?? '').localeCompare(String(a.date ?? '')))[0];
-  const energyEquip = s.equipments.filter((e) => ENERGY_EQUIPMENT.test(`${e.name} ${e.type ?? ''} ${e.category ?? ''} ${e.energyType ?? ''}`));
-  const b6List = energyEquip.length ? energyEquip : s.equipments;
+  // B6 (lot 69) : EXACTEMENT les équipements retenus par l'évaluation CIL
+  // (règle partagée `classifyCilEnergyEquipment`, données structurées) ;
+  // état antérieur sans la liste : même règle réappliquée. Plus de liste de
+  // mots sur le nom, plus de repli « tous les équipements ».
+  const b6Ids = cil?.readiness.energyEquipmentIds;
+  const b6List = b6Ids ? s.equipments.filter((e) => b6Ids.includes(e.id)) : cilEnergyEquipments(s.equipments);
   const b9Docs = allDocs.filter((d) => cilSection(d) === 'B9' && d.kind !== 'AUTRE');
 
   const blocks: CilData['cil']['blocks'] = [
@@ -74,7 +77,7 @@ export function mapCil(m: MapInput): CilData {
     { code: 'B3', status: status('B3'), source: planDocs.length ? plural(planDocs.length, 'plan') : null, resolution: resolution('B3') },
     { code: 'B4', status: status('B4'), source: networkDocs.length ? plural(networkDocs.length, 'schéma réseau', 'schémas réseaux') : null, resolution: resolution('B4') },
     { code: 'B5', status: status('B5'), source: cil?.materials.length ? plural(cil.materials.length, 'matériau', 'matériaux') : null, resolution: resolution('B5') },
-    { code: 'B6', status: status('B6'), source: s.equipments.length ? plural(b6List.length, 'équipement') : null, resolution: resolution('B6') },
+    { code: 'B6', status: status('B6'), source: b6List.length ? plural(b6List.length, 'équipement') : null, resolution: resolution('B6') },
     { code: 'B7', status: status('B7'), source: cil?.works.length ? plural(cil.works.length, 'travail', 'travaux') : null, resolution: resolution('B7') },
     { code: 'B8', status: status('B8'), source: dpeDoc ? dot('DPE', dpeDoc.date ? `du ${fmt.date(dpeDoc.date)}` : '') : null },
     { code: 'B9', status: status('B9'), source: b9Docs.length ? plural(b9Docs.length, 'document') : null, resolution: resolution('B9') },

@@ -147,6 +147,21 @@ describe('runGeneration', () => {
     expect(renderMock).not.toHaveBeenCalled();
   });
 
+  it('DIAG-AU07 (lot 69) : CIL bloqué — le motif cite les blocs RÉELLEMENT bloquants, pas « B1, B3 ou B8 »', async () => {
+    const base = await loadSource();
+    const b3 = { id: 'B3', label: 'Plans et coupes', status: 'missing', blocking: true, missingItems: [] };
+    loadSource.mockResolvedValueOnce({
+      ...base, exportType: 'CIL',
+      cil: { readiness: { globalStatus: 'action_required', completion: { resolvedBlocks: 7, applicableBlocks: 8, totalBlocks: 8, percentage: 88 }, blocks: [b3], blockingBlocks: [b3] }, profile: null, materials: [], works: [], resolutions: [] },
+    } as never);
+    expect(await runGeneration(row({ exportType: 'CIL', generationAttemptCount: 3 }), 'w1', { deps })).toBe('failed');
+    const last = state.updates.at(-1)!;
+    expect(last).toMatchObject({ status: 'failed', errorCode: 'NOT_ELIGIBLE' });
+    const payload = JSON.parse(String(last.errorPayload));
+    expect(payload.technicalMessage).toBe('CIL-RULE-002 : B3 à compléter');
+    expect(renderMock).not.toHaveBeenCalled();
+  });
+
   it('ancien code accepté ; bien supprimé → ASSET_NOT_FOUND', async () => {
     state.asset = null;
     expect(await runGeneration(row({ exportType: 'DOSSIER_VENTE' }), 'w1', { deps })).toBe('failed');

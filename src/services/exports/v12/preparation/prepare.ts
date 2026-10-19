@@ -22,7 +22,8 @@ import {
   DOSSIER_DESCRIPTIONS, DOSSIER_LABELS, DOSSIER_SHORT_LABELS, DOSSIER_ADDITIONAL_SECTIONS, EXPORT_FAMILY_LABELS,
   type DossierCode,
 } from '@/services/exports/catalog';
-import { CIL_ACTION_REQUIRED_MESSAGE, isBlockBlocking } from '@/services/exports/cil-preparation.service';
+import { isBlockBlocking } from '@/services/exports/cil-preparation.service';
+import { cilActionRequiredMessage, isCilBlockingRuleBlock } from '@/lib/exports/cil-blocking';
 import type { ExportSource, SourceDocument, SourceEvent, SourcePhoto } from '../data/source';
 import {
   buildDefaultChoices, DEFAULT_SECTIONS, PHOTO_CAPS, eventKind, eventSection, isPhotoIntegrable, isUpcoming, isUnconfirmedPastDeadline, planSelection,
@@ -253,7 +254,7 @@ function cilBlocks(source: ExportSource): PreparationDto['cil'] {
     id: b.id,
     label: b.label,
     status: b.status,
-    blocking: b.blocking || b.id === 'B1' || b.id === 'B3' || b.id === 'B8',
+    blocking: b.blocking || isCilBlockingRuleBlock(b.id),
     blocksGeneration: isBlockBlocking(b),
     missingItems: b.missingItems,
     canMarkNotApplicable: CIL_NOT_APPLICABLE_ALLOWED.has(b.id),
@@ -265,7 +266,8 @@ function cilBlocks(source: ExportSource): PreparationDto['cil'] {
   };
   const at = blocks.findIndex((b) => b.id === 'B3');
   blocks.splice(at < 0 ? 1 : at, 0, b2);
-  return { globalStatus: cil.readiness.globalStatus, percentage: cil.readiness.completion.percentage, blocks };
+  const blockingBlocks = cil.readiness.blockingBlocks.map((b) => ({ id: b.id, label: b.label }));
+  return { globalStatus: cil.readiness.globalStatus, percentage: cil.readiness.completion.percentage, blocks, blockingBlocks };
 }
 
 /** Choix normalisés depuis l'état des sections (ce que l'écran enverra). */
@@ -378,7 +380,7 @@ export function buildPreparation(code: DossierCode, source: ExportSource, ctx: P
     dossier: { code, label: DOSSIER_LABELS[code], shortLabel: DOSSIER_SHORT_LABELS[code], description: DOSSIER_DESCRIPTIONS[code], templateVersion: templateVersion(code) },
     asset: { id: source.asset.id, name: source.asset.name, family: source.family, familyLabel: EXPORT_FAMILY_LABELS[source.family], categoryLabel: categoryName(source) },
     eligibility: cilBlocked
-      ? { status: 'partial', message: CIL_ACTION_REQUIRED_MESSAGE }
+      ? { status: 'partial', message: cilActionRequiredMessage(cil?.blockingBlocks) }
       : { status: 'ready', message: null },
     lastGeneration: ctx.lastGeneration,
     sections,

@@ -24,6 +24,7 @@
  * l'échec de migration exposé par `/api/health`.
  * ══════════════════════════════════════════════════════════════════════════
  */
+import { schemaNotReadyMessage } from '@/lib/schema-readiness-log';
 const RECONTROLE_MS = 5 * 60_000;
 
 /** Colonnes attendues de la 0218 sur `document_facts`. */
@@ -56,6 +57,8 @@ async function colonnesPresentes(
   const etat = etats.get(table);
   if (etat && (etat.ready || Date.now() - etat.checkedAt < RECONTROLE_MS)) return etat.ready;
   let ready = false;
+  let trouvees: number | null = null;
+  let erreur: unknown;
   try {
     const { pgClient } = await import('@/db');
     const rows = (await pgClient.unsafe(
@@ -63,18 +66,19 @@ async function colonnesPresentes(
         WHERE table_schema = current_schema() AND table_name = $1 AND column_name = ANY($2::text[])`,
       [table, [...colonnes]] as never[],
     )) as unknown as Array<{ n: number }>;
-    ready = Number(rows[0]?.n ?? 0) === colonnes.length;
-  } catch {
+    trouvees = Number(rows[0]?.n ?? 0);
+    ready = trouvees === colonnes.length;
+  } catch (e) {
     ready = false;
+    erreur = e;
   }
   etats.set(table, { ready, checkedAt: Date.now() });
   if (!ready && !signales.has(table)) {
     signales.add(table);
-    console.error(
-      `[evidence] ⚠️ MIGRATION ${migration} NON APPLIQUÉE : colonnes canoniques/cible absentes de ${table}. `
-      + 'Écriture repliée sur les colonnes historiques ; faits ciblés équipement/pièce non projetés en preuves (CDC 15 T1-04). '
-      + `Voir /api/health (migrations) et appliquer src/db/migrations/${migration}_*.sql.`,
-    );
+    console.error(schemaNotReadyMessage({
+      scope: '[evidence]', migration, expected: colonnes.map((c) => `${table}.${c}`), found: trouvees, error: erreur,
+      consequence: `Écriture repliée sur les colonnes historiques ; faits ciblés équipement/pièce non projetés en preuves (CDC 15 T1-04) ; appliquer src/db/migrations/${migration}_*.sql.`,
+    }));
   }
   return ready;
 }

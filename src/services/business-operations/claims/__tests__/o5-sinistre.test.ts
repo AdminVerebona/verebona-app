@@ -219,7 +219,8 @@ describe('O5-U08 — alerte CLAIM_MISSING adaptée', () => {
     expect(await hint({}, 0)).toMatch(/Aucun sinistre renseigné/);
   });
   it('sinistre sans type ou sans date → à compléter ; complet → aucune alerte', async () => {
-    expect(await hint({ claimType: 'VOL' }, 1)).toMatch(/Type et date du sinistre/);
+    // Lot 69 : seul le champ réellement absent est demandé (DIAG-S02).
+    expect(await hint({ claimType: 'VOL' }, 1)).toBe('Date du sinistre à renseigner pour une synthèse complète.');
     expect(await hint({ claimType: 'VOL', occurredOn: '2026-01-01' }, 1)).toBeNull();
   });
 });

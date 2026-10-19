@@ -17,6 +17,7 @@
  * de migration déjà exposé par `/api/health`.
  * ══════════════════════════════════════════════════════════════════════════
  */
+import { schemaNotReadyMessage } from '@/lib/schema-readiness-log';
 const RECONTROLE_MS = 5 * 60_000;
 let etat: { ready: boolean; checkedAt: number } | null = null;
 let signale = false;
@@ -32,6 +33,8 @@ export const TRACE_MASTER_COLUMNS = ['task', 'master_prompt_code', 'master_promp
 export async function traceMasterColumnsReady(): Promise<boolean> {
   if (etat && (etat.ready || Date.now() - etat.checkedAt < RECONTROLE_MS)) return etat.ready;
   let ready = false;
+  let trouvees: number | null = null;
+  let erreur: unknown;
   try {
     const { pgClient } = await import('@/db');
     const rows = (await pgClient.unsafe(
@@ -41,18 +44,21 @@ export async function traceMasterColumnsReady(): Promise<boolean> {
           AND column_name = ANY($1::text[])`,
       [[...TRACE_MASTER_COLUMNS]] as never[],
     )) as unknown as Array<{ n: number }>;
-    ready = Number(rows[0]?.n ?? 0) === TRACE_MASTER_COLUMNS.length * 2;
-  } catch {
+    trouvees = Number(rows[0]?.n ?? 0);
+    ready = trouvees === TRACE_MASTER_COLUMNS.length * 2;
+  } catch (e) {
     ready = false;
+    erreur = e;
   }
   etat = { ready, checkedAt: Date.now() };
   if (!ready && !signale) {
     signale = true;
-    console.error(
-      '[ai-trace] ⚠️ MIGRATION 0217 NON APPLIQUÉE : colonnes task / master_prompt_code / '
-      + 'master_prompt_version absentes. Les traces IA continuent SANS ces champs (CDC 15 DP-05). '
-      + 'Voir /api/health (migrations) et appliquer src/db/migrations/0217_*.sql.',
-    );
+    console.error(schemaNotReadyMessage({
+      scope: '[ai-trace]', migration: '0217',
+      expected: ['ai_usage_event', 'ai_pipeline_step'].flatMap((t) => TRACE_MASTER_COLUMNS.map((c) => `${t}.${c}`)),
+      found: trouvees, error: erreur,
+      consequence: 'Les traces IA continuent SANS ces champs (CDC 15 DP-05) ; appliquer src/db/migrations/0217_*.sql.',
+    }));
   }
   return ready;
 }
