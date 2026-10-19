@@ -29,120 +29,81 @@
  * ── LES FILTRES NE SONT PAS MÉMORISÉS ─────────────────────────────────────
  *
  * Voir `view-prefs.ts` : seules les manières de regarder le sont.
+ *
+ * ── LOT 71 : COMPOSANTS PARTAGÉS AVEC « MON AGENDA », FILTRE ÉQUIPEMENT ───
+ *
+ * Pastilles, sections, panneau et ligne « Filtré par … » vivent désormais
+ * dans `components/filters/FilterControls.tsx`, montés à l'identique par
+ * « Mon agenda » (dont le tiroir de filtres a disparu). La section
+ * « Équipement » apparaît dès qu'un bien retenu (filtre Bien, ou l'onglet
+ * d'un bien) porte au moins un équipement.
  * ══════════════════════════════════════════════════════════════════════════
  */
-import { X } from 'lucide-react';
-import type { DocumentsContext, FilterOption, ViewFilters } from './documents-view';
-
-/** Pastille de filtre — FilterPill du design system. */
-function FilterPill({ option, onClick }: { option: FilterOption; onClick: () => void }) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      aria-pressed={option.active}
-      className={`max-w-full truncate whitespace-nowrap rounded-full border px-3 py-1 text-xs font-medium transition-colors duration-[180ms] ${
-        option.active
-          ? 'border-[color:var(--accent)] bg-[color:var(--accent-soft)] font-semibold text-[color:var(--text-primary)]'
-          : 'border-border text-[color:var(--text-muted)] hover:bg-[color:var(--accent-soft)] hover:text-[color:var(--text-primary)]'
-      }`}
-    >
-      {option.label} · {option.count}
-    </button>
-  );
-}
-
-function Section({
-  id,
-  title,
-  options,
-  onToggle,
-}: {
-  id: string;
-  title: string;
-  options: FilterOption[];
-  onToggle: (value: string) => void;
-}) {
-  return (
-    <div role="group" aria-labelledby={id} className="flex min-w-0 flex-col gap-2.5">
-      <p id={id} className="vb-app-label">
-        {title}
-      </p>
-      {options.length === 0 ? (
-        <p className="text-xs text-[color:var(--text-muted)]">Rien à filtrer ici pour le moment.</p>
-      ) : (
-        <div className="flex flex-wrap gap-1.5">
-          {options.map((o) => (
-            <FilterPill key={o.value} option={o} onClick={() => onToggle(o.value)} />
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
+import type { EquipmentFilterModel } from '@/lib/filters/equipment-filter';
+import { ActiveFilterChips as SharedActiveFilterChips, FilterPanel, FilterPillSection } from '@/components/filters/FilterControls';
+import { EquipmentFilterSection } from '@/components/filters/EquipmentFilterSection';
+import type { DocumentsContext, FilterDim, FilterOption } from './documents-view';
 
 export function DocumentsFilterPanel({
   id,
   context,
   options,
   onToggle,
+  equipment,
+  onEquipment,
 }: {
   id: string;
   context: DocumentsContext;
   options: { biens: FilterOption[]; rubrics: FilterOption[]; types: FilterOption[] };
-  onToggle: (dim: keyof ViewFilters, value: string) => void;
+  onToggle: (dim: FilterDim, value: string) => void;
+  /** Lot 71 : modèle du filtre Équipement (masqué si `visible` est faux). */
+  equipment?: EquipmentFilterModel;
+  onEquipment?: (value: string) => void;
 }) {
   // Dans l'onglet d'un bien, le périmètre est déjà le bien : pas de filtre Bien.
   const avecBien = context === 'mes-documents';
   return (
-    <div
+    <FilterPanel
       id={id}
-      className={`mb-[22px] -mt-1.5 grid grid-cols-1 gap-[22px] rounded-xl border border-border bg-[color:var(--bg-card)] px-[18px] py-4 ${
-        avecBien ? 'md:grid-cols-[.8fr_1fr_1.4fr]' : 'md:grid-cols-[1fr_1.4fr]'
-      }`}
+      testId="documents-filtres"
+      columns={avecBien ? 'md:grid-cols-[.8fr_1fr_1.4fr]' : 'md:grid-cols-[1fr_1.4fr]'}
     >
       {avecBien && (
-        <Section id={`${id}-bien`} title="Bien" options={options.biens} onToggle={(v) => onToggle('biens', v)} />
+        <FilterPillSection id={`${id}-bien`} title="Bien" options={options.biens} onToggle={(v) => onToggle('biens', v)} />
       )}
-      <Section id={`${id}-rubrique`} title="Rubrique" options={options.rubrics} onToggle={(v) => onToggle('rubrics', v)} />
-      <Section id={`${id}-type`} title="Type" options={options.types} onToggle={(v) => onToggle('types', v)} />
-    </div>
+      <FilterPillSection id={`${id}-rubrique`} title="Rubrique" options={options.rubrics} onToggle={(v) => onToggle('rubrics', v)} />
+      <FilterPillSection id={`${id}-type`} title="Type" options={options.types} onToggle={(v) => onToggle('types', v)} />
+      {/* Dernière ligne, sur toute la largeur : la liste d'équipements peut être longue. */}
+      {equipment && onEquipment && (
+        <EquipmentFilterSection
+          id={`${id}-equipement`}
+          model={equipment}
+          onSelect={onEquipment}
+          className="border-t border-[color:var(--border-subtle)] pt-4 md:col-span-full"
+        />
+      )}
+    </FilterPanel>
   );
 }
 
-/** Ligne « Filtré par … » : un filtre actif = une pastille retirable. */
+/** Ligne « Filtré par … » (composant partagé), adaptée aux dimensions des documents. */
 export function ActiveFilterChips({
   chips,
   onRemove,
   onClear,
 }: {
-  chips: Array<{ dim: keyof ViewFilters; value: string; label: string }>;
-  onRemove: (dim: keyof ViewFilters, value: string) => void;
+  chips: Array<{ dim: FilterDim | 'equipment'; value: string; label: string }>;
+  onRemove: (dim: FilterDim | 'equipment', value: string) => void;
   onClear: () => void;
 }) {
-  if (chips.length === 0) return null;
   return (
-    <div className="-mt-2 mb-5 flex flex-wrap items-center gap-1.5 text-xs text-[color:var(--text-muted)]">
-      <span className="mr-1">Filtré par</span>
-      {chips.map((c) => (
-        <button
-          key={`${c.dim}:${c.value}`}
-          type="button"
-          onClick={() => onRemove(c.dim, c.value)}
-          aria-label={`Retirer le filtre ${c.label}`}
-          className="flex items-center gap-[5px] rounded-full bg-[color:var(--accent-soft)] py-[3px] pl-2.5 pr-1.5 font-medium text-[color:var(--text-info)] transition-colors "
-        >
-          {c.label}
-          <X className="h-3 w-3" aria-hidden />
-        </button>
-      ))}
-      <button
-        type="button"
-        onClick={onClear}
-        className="ml-1.5 underline transition-colors hover:text-[color:var(--text-primary)] rounded"
-      >
-        Tout effacer
-      </button>
-    </div>
+    <SharedActiveFilterChips
+      chips={chips.map((c) => ({ key: `${c.dim}:${c.value}`, label: c.label }))}
+      onRemove={(key) => {
+        const c = chips.find((x) => `${x.dim}:${x.value}` === key);
+        if (c) onRemove(c.dim, c.value);
+      }}
+      onClear={onClear}
+    />
   );
 }

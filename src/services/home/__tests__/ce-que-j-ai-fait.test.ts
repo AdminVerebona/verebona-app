@@ -68,7 +68,7 @@ describe('frise à la 1re personne', () => {
     });
   });
 
-  it('documents : analysé, en analyse, à valider ; un échec n’est pas « fait »', () => {
+  it('documents : analysé, en analyse ; ancien « à valider » lu « analysé » (VALID-08, lot 71B) ; un échec n’est pas « fait »', () => {
     const w = deriveVerebonaWork({
       ...vide,
       documents: [
@@ -79,7 +79,7 @@ describe('frise à la 1re personne', () => {
     });
     expect(w.map((x) => x.text)).toEqual([
       'J’analyse « Carte grise », rattaché à Ferrari.',
-      'J’ai analysé « Bail » : des informations attendent votre validation.',
+      'J’ai analysé « Bail », rattaché à Maison.',
     ]);
     expect(w[0].target).toEqual({ kind: 'document', id: 1 });
     // Aucune trace ne dit qui a rattaché le document : jamais « j'ai rattaché ».

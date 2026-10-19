@@ -15,13 +15,11 @@ export async function evaluerEcheance(
   agendaItemId: number,
   o: { interpellation?: 'ACT_NOW' | 'ANTICIPATE' | 'LATER' | 'NONE'; priority?: 'HIGH' | 'MEDIUM' | 'LOW'; action?: string | null } = {},
 ): Promise<void> {
-  const [i] = await sql<Array<{ account_id: number; title: string; date: string | null; forecast: boolean; rq: boolean }>>`
-    SELECT account_id, title, to_char(start_date, 'YYYY-MM-DD') AS date, occurrence_nature = 'FORECAST' AS forecast,
-           requires_qualification AS rq
-      FROM agenda_items WHERE id = ${agendaItemId}`;
-  const { agendaFingerprint } = await import('@/services/home/mascot/t6-interpellation.service');
+  const [i] = await sql<Array<{ account_id: number }>>`SELECT account_id FROM agenda_items WHERE id = ${agendaItemId}`;
+  // Lot 71G : empreinte ENRICHIE courante (description, documents, faits), même calcul que la décision.
+  const { currentT6Fingerprints } = await import('@/services/home/mascot/t6-interpellation.service');
   const { todayParis } = await import('@/services/home/mascot/collector');
-  const fp = agendaFingerprint({ title: i.title, date: i.date, forecast: i.forecast, requiresQualification: i.rq });
+  const fp = (await currentT6Fingerprints(i.account_id, [agendaItemId])).get(agendaItemId)!;
   const interpellation = o.interpellation ?? 'ACT_NOW';
   // Lot 61 : décision du contrat `t6-evaluation-v1` (seule réutilisée par la décision).
   const decision = interpellation === 'NONE' ? 'SUPPRESS' : interpellation === 'LATER' ? 'DEFER' : 'SHOW_NOW';

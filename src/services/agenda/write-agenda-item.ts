@@ -396,10 +396,27 @@ export async function syncPurchaseDate(p: {
 
   const links = await db.select({ assetId: agendaAssetLinks.assetId })
     .from(agendaAssetLinks).where(eq(agendaAssetLinks.agendaItemId, p.itemId));
+  // Lot 71A (BUG P1 bien / équipement) : équipements liés à l'événement, bornés au compte.
+  const equipementsLies = await db.select({ id: equipments.id, assetId: equipments.assetId })
+    .from(agendaEquipmentLinks)
+    .innerJoin(equipments, eq(equipments.id, agendaEquipmentLinks.equipmentId))
+    .innerJoin(assets, and(eq(assets.id, equipments.assetId), eq(assets.accountId, p.accountId)))
+    .where(eq(agendaEquipmentLinks.agendaItemId, p.itemId));
 
   if (!purchaseSyncAllowed(item, p.businessType ?? null)) return;
+  const cibles = purchaseSyncTargets(links.map((l) => l.assetId), equipementsLies);
+  if (cibles.equipmentIds.length) {
+    // Achat d'un ÉQUIPEMENT : sa date d'achat (vide seulement), jamais celle du bien.
+    const { writeCanonicalEntityField } = await import('@/services/canonical/entity-state');
+    for (const id of cibles.equipmentIds) {
+      await writeCanonicalEntityField({
+        target: { type: 'EQUIPMENT', id }, accountId: p.accountId, key: 'acquisitionDate', value: item.startDate, origin: 'USER',
+        expectedCurrent: null, actorUserId: p.actorUserId, source: { type: 'agenda_item', id: p.itemId },
+      }).catch((e: Error) => console.error('[agenda] recopie « achat » (équipement) :', e.message));
+    }
+  }
   const { writeCanonicalAssetField } = await import('@/services/canonical/asset-state');
-  for (const { assetId } of links) {
+  for (const assetId of cibles.assetIds) {
     // Valeur attendue vide : si une date d'acquisition existe (fiche,
     // colonne ou alias), rien n'est écrit (conflit optimiste).
     const ecrit = await writeCanonicalAssetField({
@@ -415,6 +432,23 @@ export async function syncPurchaseDate(p: {
       notifyOperationsEvent(p.accountId, { trigger: 'asset_updated', assetId });
     }
   }
+}
+
+/**
+ * Lot 71A (BUG P1) — cibles de la recopie « achat » (pure) : un événement lié
+ * à un ou plusieurs ÉQUIPEMENTS d'un bien est l'achat de ces équipements —
+ * leur date d'achat, JAMAIS celle du bien porteur ; un bien lié sans aucun de
+ * ses équipements reçoit la date (règle D-13 inchangée).
+ */
+export function purchaseSyncTargets(
+  assetIds: readonly number[],
+  linkedEquipments: ReadonlyArray<{ id: number; assetId: number }>,
+): { assetIds: number[]; equipmentIds: number[] } {
+  const biensDesEquipements = new Set(linkedEquipments.map((e) => e.assetId));
+  return {
+    assetIds: [...new Set(assetIds)].filter((a) => !biensDesEquipements.has(a)),
+    equipmentIds: [...new Set(linkedEquipments.map((e) => e.id))],
+  };
 }
 
 /** D-13 : événement manuel, d'achat, réalisé (statut, ou date passée sans statut). */

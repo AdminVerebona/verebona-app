@@ -20,9 +20,12 @@
  *     catégorie, repli `action` ambigu en cas d'échec.
  *
  * Une version de prompt restée en `t4_output_v1` (Legacy réactivée, ou
- * structurée v1) répond sans décision d'existence ni de récurrence : la
- * sortie est lue comme `accept` (v1 ne sait pas refuser) et la récurrence
- * comme `abstain` — aucune série créée sans décision explicite de T4.
+ * structurée v1) répond sans décision d'existence ni de récurrence. Lot 71E
+ * (ticket T4 fiabilisation, §D) : cette absence n'est PLUS lue comme une
+ * acceptation dans le flux automatique — la décision appliquée est une
+ * ABSTENTION (`T4_OUTPUT_V1_NO_AGENDA_DECISION`) : aucune création, aucune
+ * série, aucun retrait. La catégorie lue reste tracée ; le parcours manuel
+ * (`classifyEventMaster`) et les données historiques sont inchangés.
  * ══════════════════════════════════════════════════════════════════════════
  */
 import { AiGateway } from '../../gateway/ai-gateway';
@@ -232,25 +235,33 @@ export function translateEventDecision(out: Out | OutV2 | OutV3, hasRecurrenceCa
     };
   }
   // Version de prompt historique (t4_output_v1) : aucune décision d'existence
-  // ni de récurrence. L'événement est lu comme accepté (v1 ne sait pas
-  // refuser) ; la récurrence, jamais décidée, n'est PAS créée.
+  // ni de récurrence. Lot 71E (§D) : jamais d'acceptation IMPLICITE dans le
+  // flux automatique — abstention conservatrice (aucune création, aucune
+  // série, aucun retrait fondé sur cette sortie). La catégorie lue est
+  // conservée pour la trace BO ; le parcours manuel ne passe pas par ici.
   return {
-    agendaDecision: 'accept',
+    agendaDecision: 'abstain',
     recurrenceDecision: hasRecurrenceCandidate ? 'abstain' : 'not_applicable',
-    classification, reason: out.reason, recurrenceReason: hasRecurrenceCandidate ? 'contrat de sortie t4_output_v1 : récurrence non évaluée' : null,
-    outcome: 'model_v1', warnings: [...warnings, ...(hasRecurrenceCandidate ? ['T4_OUTPUT_V1_NO_RECURRENCE_DECISION'] : [])],
+    classification, reason: `contrat de sortie t4_output_v1 : existence non évaluée par le modèle (${out.reason})`.slice(0, 500),
+    recurrenceReason: hasRecurrenceCandidate ? 'contrat de sortie t4_output_v1 : récurrence non évaluée' : null,
+    outcome: 'model_v1',
+    warnings: [...warnings, 'T4_OUTPUT_V1_NO_AGENDA_DECISION', ...(hasRecurrenceCandidate ? ['T4_OUTPUT_V1_NO_RECURRENCE_DECISION'] : [])],
     contractVersion: 1,
   };
 }
 
 /** Décision d'abstention sur échec technique (ticket §9). */
-export function failedEventDecision(hasRecurrenceCandidate: boolean, error: { code: string; message: string }): T4EventDecision {
+export function failedEventDecision(
+  hasRecurrenceCandidate: boolean, error: { code: string; message: string }, traceId?: string | null,
+): T4EventDecision {
   return {
     agendaDecision: 'abstain',
     recurrenceDecision: hasRecurrenceCandidate ? 'abstain' : 'not_applicable',
     classification: { category: 'unknown', confidence: 'ambiguous', source: 'fallback', reason: 'échec technique T4' },
     reason: 'échec technique T4 : aucune décision du modèle', recurrenceReason: null,
     outcome: 'technical_failure', warnings: [], error,
+    // Lot 71E (§E) : trace de l'exécution en échec (passerelle), pour y rattacher la décision.
+    ...(traceId ? { traceId } : {}),
   };
 }
 
@@ -286,8 +297,12 @@ export async function decideAgendaEvent(
     d = { ...translateEventDecision(res.data, hasCandidate), traceId: res.traceId };
   } catch (e) {
     if (isExecutionCancelled(e)) throw e;
-    const err = e as { code?: string; message?: string };
-    d = failedEventDecision(hasCandidate, { code: typeof err.code === 'string' ? err.code : 'T4_CALL_FAILED', message: String(err.message ?? e).slice(0, 300) });
+    const err = e as { code?: string; message?: string; traceId?: string };
+    d = failedEventDecision(
+      hasCandidate,
+      { code: typeof err.code === 'string' ? err.code : 'T4_CALL_FAILED', message: String(err.message ?? e).slice(0, 300) },
+      typeof err.traceId === 'string' ? err.traceId : null,
+    );
   }
   if (d.warnings.length) console.warn(`[t4_classify_event] ${d.warnings.join(', ')}`);
   return d;

@@ -322,13 +322,6 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
   const [liveProposals, setLiveProposals] = useState<any[]>([]);
   const [showDetectedInfo, setShowDetectedInfo] = useState(false);
 
-  // Afficher les propositions automatiquement quand l'IA demande validation
-  useEffect(() => {
-    if (analysisState === 'VALIDATION_REQUIRED') {
-      setShowDetectedInfo(true);
-    }
-  }, [analysisState]);
-
   const sseAbortRef = useRef<AbortController | null>(null);
   // Timestamp auquel l'état ANALYZING a été observé pour la première fois dans ce drawer
   const analyzingStartRef = useRef<number | null>(null);
@@ -362,13 +355,10 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
   interface LinkedAgendaItem { id: number; title: string; startDate: string | null; effectiveStatus: string; }
   const [linkedAgendaItems, setLinkedAgendaItems] = useState<LinkedAgendaItem[]>([]);
 
-  // Field proposals from AI — stored after analysis, applied in useEffect once fullData is ready
+  // Propositions de l'analyse (lecture seule : suggestions d'agenda). Lot 71B :
+  // plus de validation sur la fiche — les données fiables sont déjà écrites par
+  // les moteurs, les autres sont des cartes « À traiter ».
   interface AiFieldProposal { id: number; targetKey: string; proposedValueJson: string; status: string; proposalType: string; }
-  const [fieldProposals, setFieldProposals] = useState<{ id: number }[]>([]);
-  const [pendingAiProposals, setPendingAiProposals] = useState<AiFieldProposal[] | null>(null);
-  // Pending room/equipment text references — matched once substructures/equipments are loaded
-  const [pendingRoomRef, setPendingRoomRef] = useState<string | null>(null);
-  const [pendingEquipmentRef, setPendingEquipmentRef] = useState<string | null>(null);
 
   // Sub-drawers
   const [roomDrawerItem, setRoomDrawerItem] = useState<{ assetId: number; room: RoomDrawerItem } | null>(null);
@@ -404,7 +394,7 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
             if (!line.startsWith('data: ')) continue;
             try {
               const evt = JSON.parse(line.slice(6));
-              if (evt.analysisState) setAnalysisState(evt.analysisState);
+              if (evt.analysisState) setAnalysisState(displayAnalysisState(evt.analysisState, null));
               if (evt.proposals) setLiveProposals(evt.proposals);
               if (evt.type === 'progress' && evt.stage) setSseStage(evt.stage);
               if (evt.type === 'done' || evt.type === 'error' || evt.type === 'timeout') {
@@ -460,8 +450,6 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
       setAnalyzeStage(0);
       setAgendaSuggestions([]);
       setLinkedAgendaItems([]);
-      setFieldProposals([]);
-      setPendingAiProposals(null);
       setAnalysisState(null);
       setLiveProposals([]);
       setShowDetectedInfo(false);
@@ -561,17 +549,9 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
               .filter(s => !existingAgendaTitles.has(s.label.toLowerCase().trim()));
             if (!cancelled) setAgendaSuggestions(suggestions);
 
-            // If opened from a notification, pre-fill edit form with all field proposals
-            if (showAnalysisResults && allProposals.length > 0) {
-              const fieldPropList = allProposals
-                .filter(p => p.status !== 'rejected' && p.proposalType !== 'agenda_suggestion')
-                .map(p => ({ id: p.id }));
-              if (!cancelled) {
-                setFieldProposals(fieldPropList);
-                setPendingAiProposals(allProposals);
-                setAnalyzeSuccess(true);
-              }
-            }
+            // Ouvert depuis une notification d'analyse : le bloc « Automatique »
+            // est déplié (lecture seule — lot 71B, plus de validation).
+            if (showAnalysisResults && !cancelled) setShowDetectedInfo(true);
           }
         }
 
@@ -618,93 +598,6 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
     };
   }, [open, doc?.id]);
 
-  // Apply AI proposals to edit form once fullData is ready
-  useEffect(() => {
-    if (!pendingAiProposals || !fullData) return;
-
-    // Pre-fill form with current DB values
-    // Lot 33C : le champ part du titre AFFICHÉ (titre métier), plus du nom
-    // de fichier — réenregistrer écrasait le titre par « <uuid>.pdf ».
-    setEditFilename(displayDocumentTitle(fullData, ''));
-    setEditDocType(fullData.documentType ?? 'AUTRE');
-    setEditClassement({ rubricCode: fullData.rubricCode, documentTypeCode: fullData.documentTypeCode });
-    setEditDocDate(fullData.documentDate ?? '');
-    setEditSupplier(fullData.supplier ?? '');
-    setEditAmount(fullData.amountCents != null ? formatNumberForInput(fullData.amountCents / 100) : '');
-    setEditAmountError(false);
-    setEditDescription(fullData.description ?? '');
-    setEditNotes(fullData.notes ?? '');
-    setEditAssetId(fullData.assetId ?? null);
-    setEditSubstructureId(fullData.substructureId ?? null);
-    setEditEquipmentId(fullData.equipmentId ?? null);
-
-    // Override with AI-extracted values
-    let aiMatchedAssetId: number | null = null;
-    let aiRoomRef: string | null = null;
-    let aiEquipmentRef: string | null = null;
-    for (const p of pendingAiProposals) {
-      if (p.proposalType === 'agenda_suggestion' || p.status === 'rejected') continue;
-      try {
-        const val = p.proposedValueJson ? JSON.parse(p.proposedValueJson) : null;
-        if (!val) continue;
-        if (p.targetKey === 'retainedTitle') setEditFilename(String(val));
-        if (p.targetKey === 'retainedFunctionCode') setEditDocType(resolveDocumentTypeCode(String(val)));
-        if (p.targetKey === 'documentDate') setEditDocDate(String(val).substring(0, 10));
-        if (p.targetKey === 'supplier') setEditSupplier(String(val));
-        if (p.targetKey === 'amountCents') setEditAmount(formatNumberForInput(Number(val) / 100));
-        if (p.targetKey === 'description') setEditDescription(String(val));
-        if (p.targetKey === 'matchedAssetId') {
-          const id = Number(val);
-          if (!isNaN(id) && assetsList.find(a => a.id === id)) aiMatchedAssetId = id;
-        }
-        if (p.targetKey === 'roomReference') aiRoomRef = String(val);
-        if (p.targetKey === 'equipmentReference') aiEquipmentRef = String(val);
-      } catch { /* ignore */ }
-    }
-
-    // Apply matched asset — if different from current, trigger substructures/equipments reload
-    if (aiMatchedAssetId && aiMatchedAssetId !== fullData.assetId) {
-      setEditAssetId(aiMatchedAssetId);
-      setEditSubstructureId(null);
-      setEditEquipmentId(null);
-      // Load substructures/equipments for newly matched asset
-      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-      Promise.all([
-        fetch(`/api/assets/${aiMatchedAssetId}/substructures`, { credentials: 'include', headers }).then(r => r.ok ? r.json() : []),
-        fetch(`/api/assets/${aiMatchedAssetId}/equipments`, { credentials: 'include', headers }).then(r => r.ok ? r.json() : []),
-      ]).then(([subs, eqs]) => {
-        setSubstructuresList(Array.isArray(subs) ? subs : (subs?.data ?? []));
-        setEquipmentsList(Array.isArray(eqs) ? eqs : (eqs?.data ?? []));
-      }).catch(() => {});
-    }
-
-    // Store pending room/equipment refs — matched via useEffect once lists are loaded
-    if (aiRoomRef) setPendingRoomRef(aiRoomRef);
-    if (aiEquipmentRef) setPendingEquipmentRef(aiEquipmentRef);
-
-    setIsEditing(true);
-    setPendingAiProposals(null);
-  }, [pendingAiProposals, fullData, assetsList]);
-
-  // Apply pending AI room/equipment references once substructures/equipments are loaded
-  useEffect(() => {
-    if (pendingRoomRef && substructuresList.length > 0) {
-      const ref = pendingRoomRef.toLowerCase();
-      const match = substructuresList.find(s => s.name.toLowerCase().includes(ref) || ref.includes(s.name.toLowerCase()));
-      if (match) setEditSubstructureId(match.id);
-      setPendingRoomRef(null);
-    }
-  }, [substructuresList, pendingRoomRef]);
-
-  useEffect(() => {
-    if (pendingEquipmentRef && equipmentsList.length > 0) {
-      const ref = pendingEquipmentRef.toLowerCase();
-      const match = equipmentsList.find(e => e.name.toLowerCase().includes(ref) || ref.includes(e.name.toLowerCase()));
-      if (match) setEditEquipmentId(match.id);
-      setPendingEquipmentRef(null);
-    }
-  }, [equipmentsList, pendingEquipmentRef]);
-
   // Timer + stage cycling while analyzing (analyse lancée depuis le drawer)
   useEffect(() => {
     if (!isAnalyzing) return;
@@ -726,7 +619,7 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
   const { garder, estBloque } = useWriteGuard();
 
   // Filet de sécurité : QUEL QUE SOIT le chemin qui passe le tiroir en
-  // édition (bouton « Modifier », « Appliquer » une proposition, mode
+  // édition (bouton « Modifier », mode
   // d'ouverture), un compte sans droit d'écriture en ressort aussitôt et
   // voit la fenêtre de fin d'essai.
   useEffect(() => {
@@ -864,19 +757,6 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
         });
       }
 
-      // Sauvegarder = valider : commit les proposals en attente si l'état est VALIDATION_REQUIRED
-      // ou s'il existe des proposals field non encore commitées
-      const needsCommit = fieldProposals.length > 0 || analysisState === 'VALIDATION_REQUIRED';
-      if (needsCommit) {
-        await fetch(`/api/documents/${doc.id}/commit`, {
-      credentials: 'include',
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json'},
-          body: JSON.stringify({ agendaEffects: [] }),
-        }).catch(() => {});
-        setFieldProposals([]);
-      }
-
       setFullData(prev => prev ? {
         ...prev,
         retainedTitle: editFilename.trim(),
@@ -889,8 +769,6 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
         rubricCode: effectiveRubric(editClassement),
         documentTypeCode: editClassement.documentTypeCode,
       } : prev);
-      // Mettre à jour l'état d'analyse localement
-      if (needsCommit) setAnalysisState('ANALYZED');
       // Lot 28 : un rattachement ou une donnée corrigés ici ferment l'action
       // « À traiter » correspondante — page et pastille relues.
       window.dispatchEvent(new CustomEvent('refresh-a-traiter'));
@@ -902,7 +780,7 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
     } finally {
       setIsSaving(false);
     }
-  }, [doc, fullData, editFilename, editDocType, editClassement, editDocDate, editSupplier, editAmount, editDescription, editNotes, editAssetId, editSubstructureId, editEquipmentId, fieldProposals, analysisState, onRefresh]);
+  }, [doc, fullData, editFilename, editDocType, editClassement, editDocDate, editSupplier, editAmount, editDescription, editNotes, editAssetId, editSubstructureId, editEquipmentId, onRefresh]);
 
   const handleAnalyze = useCallback(async () => {
     if (!doc) return;
@@ -910,9 +788,7 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
     setIsAnalyzing(true);
     setAnalyzeError('');
     setAnalyzeSuccess(false);
-    setFieldProposals([]);
     setAgendaSuggestions([]);
-    setPendingAiProposals(null);
     window.dispatchEvent(new CustomEvent('document-analysis-start', { detail: { fileId: doc.id } }));
 
     try {
@@ -993,7 +869,7 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
         return;
       }
 
-      // Reload fullData completely so the useEffect below has fresh data to pre-fill the form
+      // Relecture complète : les informations détectées sont déjà enregistrées (lot 71B).
       const [refreshedFile, propRes] = await Promise.all([
         apiClient.get<any>(`/api/files/${doc.id}`).catch(() => null),
         fetch(`/api/documents/${doc.id}/analysis-proposals`, {
@@ -1049,22 +925,11 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
           .filter(s => !existingTitlesNow.has(s.label.toLowerCase().trim()));
         setAgendaSuggestions(suggestions);
 
-        // Store proposal ids for commit on save
-        const fieldPropList = allProposals
-          .filter(p => p.status !== 'rejected' && p.proposalType !== 'agenda_suggestion')
-          .map(p => ({ id: p.id }));
-        setFieldProposals(fieldPropList);
-
-        // Trigger edit mode via useEffect (avoids stale closure issues)
-        setPendingAiProposals(allProposals);
-
         setIsAnalyzing(false);
         setAnalyzeSuccess(true);
         window.dispatchEvent(new CustomEvent('document-analysis-complete', { detail: { fileId: doc.id } }));
 
-        const completionMsg = fieldPropList.length > 0 || suggestions.length > 0
-          ? `Analyse terminée — ${fieldPropList.length + suggestions.length} suggestion(s) disponible(s)`
-          : 'Analyse terminée — aucune suggestion';
+        const completionMsg = 'Analyse terminée — informations enregistrées';
 
         const drawerWasClosed = bgToastIdRef.current !== null;
         if (drawerWasClosed) {
@@ -1081,8 +946,7 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
         }
 
       } else {
-        // Proposals fetch failed — still enter edit mode with current data
-        setPendingAiProposals([]);
+        // Propositions illisibles : l'analyse est terminée, rien à valider.
         setIsAnalyzing(false);
         setAnalyzeSuccess(true);
         window.dispatchEvent(new CustomEvent('document-analysis-complete', { detail: { fileId: doc.id } }));
@@ -1320,12 +1184,6 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
                   color: 'text-[color:var(--text-success)]',
                   bg: 'bg-[color:var(--bg-success)] border-[color:var(--border-success)]',
                 },
-                VALIDATION_REQUIRED: {
-                  label: 'Validation suggérée',
-                  icon: <Sparkles className="w-3.5 h-3.5" />,
-                  color: 'text-[color:var(--accent)]',
-                  bg: 'bg-[color:var(--accent-soft)] border-[color:var(--border-info)]',
-                },
                 CONFLICT_DETECTED: {
                   label: 'Conflit détecté',
                   icon: <AlertCircle className="w-3.5 h-3.5" />,
@@ -1366,14 +1224,6 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
                         <span className="text-[12px] font-semibold">Automatique — {cfg.label}</span>
                         {showDetectedInfo ? <ChevronUp className="w-3 h-3 ml-0.5" /> : <ChevronDown className="w-3 h-3 ml-0.5" />}
                       </button>
-                      {/* Bouton d'action direct quand validation requise, visible même replié */}
-                      {analysisState === 'VALIDATION_REQUIRED' && (
-                        <Button size="sm" variant="outline"
-                          className="h-6 px-2 text-[10px] border-[color:var(--border-info)] text-[color:var(--accent)] hover:bg-[color:var(--accent-soft)] shrink-0"
-                          onClick={enterEditMode}>
-                          <Check className="w-3 h-3 mr-1" />Appliquer
-                        </Button>
-                      )}
                       {/* Bouton relancer sur échec uniquement */}
                       {(analysisState === 'ANALYSIS_FAILED' && retryCount < 2) ? (
                         <Button size="sm" variant="outline"
@@ -1392,12 +1242,6 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
                     {analysisState === 'UPLOADED' && fullData?.userMessageCode === 'ANALYSIS_DEFERRED_COST_CAP' && (
                       <p className="text-[10px] text-muted-foreground/70 leading-relaxed pl-1">
                         {userMessageText(fullData.userMessageCode, { resumeAt: fullData.processingResumeAt })}
-                      </p>
-                    )}
-
-                    {!showDetectedInfo && analysisState === 'VALIDATION_REQUIRED' && (
-                      <p className="text-[10px] text-muted-foreground/70 pl-1">
-                        Cliquez sur <span className="font-medium text-[color:var(--accent)]">Appliquer</span> pour enregistrer les informations détectées automatiquement.
                       </p>
                     )}
 
@@ -1503,14 +1347,6 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
                                   );
                                 })}
                             </div>
-                          </div>
-                        )}
-                        {analysisState === 'VALIDATION_REQUIRED' && (
-                          <div className="pt-1">
-                            <Button size="sm" variant="outline" className="w-full h-7 text-xs border-[color:var(--border-info)] text-[color:var(--accent)] hover:bg-[color:var(--accent-soft)]"
-                              onClick={enterEditMode}>
-                              <Check className="w-3 h-3 mr-1" />Valider et appliquer les informations
-                            </Button>
                           </div>
                         )}
                       </div>

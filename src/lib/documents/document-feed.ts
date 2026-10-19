@@ -22,6 +22,8 @@
  * ══════════════════════════════════════════════════════════════════════════
  */
 
+import { equipmentFilterParam, parseEquipmentFilter, type EquipmentFacet } from '@/lib/filters/equipment-filter';
+
 /** Taille d'un lot (valeur indicative du ticket, ajustable après mesure). */
 export const FEED_DEFAULT_LIMIT = 50;
 /** Plafond serveur, quoi que demande le client. */
@@ -44,6 +46,13 @@ export interface FeedFilters {
   rubrics: string[];
   /** Codes de Type ou `FEED_NO_TYPE`. */
   types: string[];
+  /**
+   * Lot 71 (71C) — filtre « Équipement » : `asset` (bien uniquement) ou
+   * identifiant d'équipement ; absent ou `all` = tous. Sans effet sans bien
+   * retenu (`assetIds` ou `biens`) ou si ces biens n'ont aucun équipement.
+   * Voir `lib/filters/equipment-filter.ts`.
+   */
+  equipment?: string;
 }
 
 export interface FeedParams {
@@ -111,6 +120,12 @@ export interface FeedMeta {
   unfiledCount: number;
   /** Options de filtre, comptées sur le périmètre (pas sur le résultat filtré). */
   facets: { biens: FeedFacet[]; rubrics: FeedFacet[]; types: FeedFacet[] };
+  /**
+   * Lot 71 (71C) : équipements des biens retenus et leurs compteurs (biens
+   * retenus, Rubrique et Type ignorés). Absent sans bien retenu ou sans
+   * équipement : le filtre est alors masqué.
+   */
+  equipmentFacet?: EquipmentFacet;
 }
 
 export interface FeedResponse {
@@ -159,6 +174,7 @@ export function parseFeedParams(p: URLSearchParams): FeedParams {
       rubrics: list(p.get('rubrics')),
       // `types` : ancien nom du filtre Type, conservé.
       types: list(p.get('types')),
+      ...(equipmentFilterParam(p.get('equipment')) ? { equipment: parseEquipmentFilter(p.get('equipment')) } : {}),
     },
     ids: idsRaw === null ? null : idsRaw === 'none' ? [] : positiveIds(list(idsRaw)),
     limit,
@@ -180,6 +196,8 @@ export function buildFeedQuery(params: Omit<FeedParams, 'cursor' | 'limit'> & { 
   if (params.filters.biens.length) q.set('biens', join(params.filters.biens));
   if (params.filters.rubrics.length) q.set('rubrics', join(params.filters.rubrics));
   if (params.filters.types.length) q.set('types', join(params.filters.types));
+  const equipment = equipmentFilterParam(params.filters.equipment);
+  if (equipment) q.set('equipment', equipment);
   if (params.ids) q.set('ids', params.ids.length ? [...params.ids].sort((a, b) => a - b).join(',') : 'none');
   q.set('limit', String(params.limit ?? FEED_DEFAULT_LIMIT));
   if (params.cursor) q.set('cursor', params.cursor);

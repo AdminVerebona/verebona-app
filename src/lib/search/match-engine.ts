@@ -49,8 +49,10 @@
  *     sous le seuil ne suffit jamais seule.
  *
  * Module PUR (aucun accès base) : utilisé par la barre de recherche
- * (`services/search/global-search.service.ts`) et par l'assistant
- * (`registries/retrieval-adapters.ts`).
+ * (`services/search/global-search.service.ts` — biens, documents, échéances,
+ * et depuis le lot 71 équipements et pièces), par l'assistant
+ * (`registries/retrieval-adapters.ts`) et par la résolution nominative de T2
+ * avant toute IA (`findNamedEntities`, même service).
  */
 import { assetDesignationsIn, isAssetVocabularyWord, assetSearchSynonyms, subtypeMatchesCategory, toAssetFamilyCode } from '@/lib/asset-taxonomy';
 import { DOCUMENT_TYPE_QUERY_WORDS, documentCodeLabel } from '@/lib/referential/document-codes';
@@ -323,6 +325,23 @@ export function parseSearchQuery(q: string): ParsedQuery {
     tokens: kept,
     categoryQuery: kept.length > 0 && kept.every((t) => t.category),
   };
+}
+
+/**
+ * Lot 71 (T2 — équipements et pièces sans IA) : la valeur d'un champ NOM
+ * est-elle EXACTEMENT la requête, à la normalisation près (casse, accents,
+ * ponctuation, mots outils, pluriel simple) ? « pompe a chaleur » =
+ * « Pompe à chaleur », « la cuisine » = « Cuisine » ; « pompe » ≠ « Pompe à
+ * chaleur ». Sert la priorité des correspondances exactes (suggestions) et la
+ * résolution CERTAINE d'une saisie nominative soumise à T2. Pure.
+ */
+export function isExactNameMatch(query: ParsedQuery, value: unknown): boolean {
+  const v = normalizeSearchText(value);
+  if (!v || !query.normalized) return false;
+  if (v === query.normalized) return true;
+  const cle = (q: ParsedQuery) => q.tokens.map((t) => t.stem).join(' ');
+  const attendu = cle(query);
+  return attendu !== '' && cle(parseSearchQuery(String(value))) === attendu;
 }
 
 /**

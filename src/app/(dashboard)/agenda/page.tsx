@@ -1,12 +1,12 @@
 "use client"
 
-import { useState, useEffect, useMemo, Suspense } from 'react';
+import { useState, useEffect, useId, useMemo, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useBreadcrumb } from '@/contexts/BreadcrumbContext';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { EmptyStateCard } from '@/components/ui/empty-state-card';
-import { Calendar, SlidersHorizontal, Plus, AlertCircle, CalendarDays } from 'lucide-react';
+import { Calendar, Plus, AlertCircle, CalendarDays } from 'lucide-react';
 import {
   AgendaViewControls, CalendarView, DateBlock, STATUS_BORDER, STATUS_COLORS, YearView, currentMonth, parseAgendaView,
 } from '@/components/agenda/AgendaPeriodViews';
@@ -16,6 +16,14 @@ import { toast } from 'sonner';
 import type { AgendaItemFull } from '@/services/agenda/AgendaQueryService';
 import { EFFECTIVE_STATUS_LABELS, attentionFlagLabel, visibleAttentionFlags, type AgendaEffectiveStatus } from '@/lib/agenda/effective-status';
 import { useSession } from '@/hooks/useSession';
+import {
+  ActiveFilterChips, FilterChoiceSection, FilterPanel, FilterPillSection, FiltersToggleButton,
+} from '@/components/filters/FilterControls';
+import { EquipmentFilterSection } from '@/components/filters/EquipmentFilterSection';
+import {
+  buildEquipmentFilterModel, equipmentFilterParam, type EquipmentFacet,
+} from '@/lib/filters/equipment-filter';
+import { AGENDA_PERIOD_OPTIONS, agendaFilterChips, parseAgendaPeriod } from '@/lib/agenda/agenda-filters';
 
 const AgendaItemDrawer = dynamic(
   () => import('@/components/agenda/AgendaItemDrawer').then(m => ({ default: m.AgendaItemDrawer })),
@@ -23,10 +31,6 @@ const AgendaItemDrawer = dynamic(
 );
 const CreateAgendaItemDrawer = dynamic(
   () => import('@/components/agenda/CreateAgendaItemDrawer').then(m => ({ default: m.CreateAgendaItemDrawer })),
-  { ssr: false }
-);
-const AgendaFiltersDrawer = dynamic(
-  () => import('@/components/agenda/AgendaFiltersDrawer').then(m => ({ default: m.AgendaFiltersDrawer })),
   { ssr: false }
 );
 const DocumentDrawer = dynamic(
@@ -108,7 +112,7 @@ function AgendaPageInner() {
 
   const isPremium = user?.subscription?.plan === 'PREMIUM' || user?.subscription?.plan === 'PREMIUM_DUO' || user?.subscription?.plan === 'PREMIUM_PRO';
 
-  const period = (searchParams.get('period') as 'all' | 'past' | 'today' | 'upcoming') ?? 'all';
+  const period = parseAgendaPeriod(searchParams.get('period'));
   const view = parseAgendaView(searchParams.get('view'));
   const month = searchParams.get('month') ?? currentMonth();
   const yearParam = searchParams.get('year');
@@ -117,13 +121,21 @@ function AgendaPageInner() {
   const includeCancelled = searchParams.get('includeCancelled') === 'true';
   const assetIdsParam = searchParams.get('assetIds');
   const assetIds = assetIdsParam ? assetIdsParam.split(',').map(Number).filter(Boolean) : [];
+  // Lot 71 (71C) : filtre Équipement, dans l'URL comme les autres filtres de l'agenda.
+  const equipment = equipmentFilterParam(searchParams.get('equipment'));
 
   const [items, setItems] = useState<AgendaItemFull[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadedOnce, setLoadedOnce] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
   const [selectedItem, setSelectedItem] = useState<AgendaItemFull | null>(null);
   const [showCreate, setShowCreate] = useState(false);
-  const [showFilters, setShowFilters] = useState(false);
+  // Lot 71 : panneau de filtres intégré à la page (le tiroir a disparu,
+  // téléphone compris), replié par défaut comme sur « Mes documents ».
+  const [filtersOpen, setFiltersOpen] = useState(false);
+  const filtersPanelId = `${useId()}-filtres`;
+  const [assetOptions, setAssetOptions] = useState<Array<{ id: number; name: string }>>([]);
+  const [equipmentFacet, setEquipmentFacet] = useState<EquipmentFacet | null>(null);
   const [docDrawerFileId, setDocDrawerFileId] = useState<number | null>(null);
 
   const updateURL = (updates: Record<string, string | null>) => {
@@ -142,13 +154,32 @@ function AgendaPageInner() {
     params.set('includeCancelled', String(includeCancelled));
     if (view === 'calendar') params.set('month', month);
     if (view === 'year') { params.set('year', String(year)); params.set('period', 'all'); }
-    if (assetIds.length > 0) params.set('assetIds', assetIds.join(','));
+    if (assetIds.length > 0) {
+      params.set('assetIds', assetIds.join(','));
+      // Équipements des biens retenus (options et compteurs du filtre).
+      params.set('equipmentFacet', '1');
+      if (equipment) params.set('equipment', equipment);
+    }
 
-    apiClient.get<{ items: AgendaItemFull[] }>(`/api/agenda?${params}`)
-      .then(data => setItems(data.items ?? []))
-      .catch(() => toast.error('Erreur lors du chargement'))
-      .finally(() => setLoading(false));
-  }, [period, view, month, year, includeCancelled, assetIdsParam, refreshKey]);
+    // Filtres enchaînés au clavier : seule la DERNIÈRE réponse est appliquée.
+    let actuel = true;
+    apiClient.get<{ items: AgendaItemFull[]; equipmentFacet?: EquipmentFacet | null }>(`/api/agenda?${params}`)
+      .then(data => {
+        if (!actuel) return;
+        setItems(data.items ?? []);
+        setEquipmentFacet(data.equipmentFacet ?? null);
+      })
+      .catch(() => { if (actuel) toast.error('Erreur lors du chargement'); })
+      .finally(() => { if (actuel) { setLoading(false); setLoadedOnce(true); } });
+    return () => { actuel = false; };
+  }, [period, view, month, year, includeCancelled, assetIdsParam, equipment, refreshKey]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Biens proposés au filtre (et libellés des pastilles « Filtré par … »).
+  useEffect(() => {
+    apiClient.get<{ data: Array<{ id: number; name: string }> }>('/api/assets?limit=100')
+      .then(d => setAssetOptions(d.data ?? []))
+      .catch(() => setAssetOptions([]));
+  }, []);
 
   const onMutated = () => {
     setRefreshKey(k => k + 1);
@@ -162,7 +193,24 @@ function AgendaPageInner() {
     return () => window.removeEventListener('agenda-mutated', handler);
   }, []);
 
-  const activeFiltersCount = (assetIds.length > 0 ? 1 : 0) + (includeCancelled ? 1 : 0) + (period !== 'all' ? 1 : 0);
+  const equipmentModel = buildEquipmentFilterModel(equipmentFacet, equipment, assetIds.length);
+  const chips = agendaFilterChips({
+    period, assetIds, includeCancelled, assetOptions,
+    equipmentChipLabel: equipment ? (equipmentModel.chipLabel ?? (loading ? null : 'Équipement indisponible')) : null,
+  });
+  const activeFiltersCount = chips.length;
+  // Changer de bien réinitialise toujours le filtre Équipement (« Tous »).
+  const toggleAsset = (id: number) => {
+    const next = assetIds.includes(id) ? assetIds.filter(a => a !== id) : [...assetIds, id];
+    updateURL({ assetIds: next.length > 0 ? next.join(',') : null, equipment: null });
+  };
+  const removeChip = (key: string) => {
+    if (key === 'period') updateURL({ period: null });
+    else if (key === 'cancelled') updateURL({ includeCancelled: null });
+    else if (key === 'equipment') updateURL({ equipment: null });
+    else if (key.startsWith('bien:')) toggleAsset(Number(key.slice(5)));
+  };
+  const clearFilters = () => updateURL({ period: null, assetIds: null, equipment: null, includeCancelled: null });
 
   // ══════════════════════════════════════════════════════════════════════════
   // « AGENDA VIDE » N'EST PAS « AUCUN RÉSULTAT »
@@ -178,9 +226,12 @@ function AgendaPageInner() {
   // ══════════════════════════════════════════════════════════════════════════
   const agendaVide = !loading && items.length === 0 && activeFiltersCount === 0 && view === 'list';
 
-  // Pendant le chargement, on ne sait pas encore : on n'affiche pas des
-  // commandes pour les retirer une seconde plus tard.
-  const masquerCommandes = loading || agendaVide;
+  // Pendant le PREMIER chargement, on ne sait pas encore : on n'affiche pas
+  // des commandes pour les retirer une seconde plus tard. Lot 71 : les
+  // rechargements suivants (changement de filtre) ne les masquent plus — le
+  // panneau de filtres resterait sinon à éclipses, et le focus clavier
+  // serait perdu à chaque pastille.
+  const masquerCommandes = (loading && !loadedOnce) || agendaVide;
 
   // Group items by date for list view
   const grouped = useMemo(() => {
@@ -237,21 +288,52 @@ function AgendaPageInner() {
                 Ajouter à mon agenda personnel
               </Button>
             )}
-            <Button variant="outline" size="sm" onClick={() => setShowFilters(true)} className="btn-filter relative">
-              <SlidersHorizontal className="btn-filter-sliders-icon h-4 w-4" />
-              Filtres
-              {activeFiltersCount > 0 && (
-                <span className="absolute -top-1.5 -right-1.5 w-4 h-4 rounded-full bg-[color:var(--accent)] text-[color:var(--on-accent)] text-[9px] font-bold flex items-center justify-center">
-                  {activeFiltersCount}
-                </span>
-              )}
-            </Button>
+            {/* Lot 71 : même bouton que « Mes documents » ; il déplie le panneau
+                ci-dessous, jamais un tiroir. */}
+            <FiltersToggleButton
+              count={activeFiltersCount}
+              open={filtersOpen}
+              panelId={filtersPanelId}
+              onToggle={() => setFiltersOpen(v => !v)}
+            />
             <Button variant="outline" size="sm" onClick={() => setShowCreate(true)} className="btn-add">
               <Plus className="btn-add-plus-icon h-4 w-4" />
               <span className="hidden sm:inline">Ajouter</span>
             </Button>
           </div>
         </div>
+
+        {/* Filtres dans la page (lot 71) : mêmes composants, mêmes conventions
+            que « Mes documents ». Période et statut restent propres à l'agenda. */}
+        {filtersOpen && !masquerCommandes && (
+          <FilterPanel id={filtersPanelId} testId="agenda-filtres" columns="md:grid-cols-2 lg:grid-cols-[1fr_1.4fr_.8fr]">
+            <FilterChoiceSection
+              id={`${filtersPanelId}-periode`}
+              title="Période"
+              options={AGENDA_PERIOD_OPTIONS.map(o => ({ ...o, active: o.value === period }))}
+              onSelect={(v) => updateURL({ period: v === 'all' ? null : v })}
+            />
+            <FilterPillSection
+              id={`${filtersPanelId}-bien`}
+              title="Bien"
+              options={assetOptions.map(a => ({ value: String(a.id), label: a.name, active: assetIds.includes(a.id) }))}
+              onToggle={(v) => toggleAsset(Number(v))}
+            />
+            <FilterPillSection
+              id={`${filtersPanelId}-statut`}
+              title="Statut"
+              options={[{ value: 'cancelled', label: 'Afficher les annulés', active: includeCancelled }]}
+              onToggle={() => updateURL({ includeCancelled: includeCancelled ? null : 'true' })}
+            />
+            <EquipmentFilterSection
+              id={`${filtersPanelId}-equipement`}
+              model={equipmentModel}
+              onSelect={(v) => updateURL({ equipment: equipmentFilterParam(v) })}
+              className="border-t border-[color:var(--border-subtle)] pt-4 md:col-span-full"
+            />
+          </FilterPanel>
+        )}
+        {!masquerCommandes && <ActiveFilterChips chips={chips} onRemove={removeChip} onClear={clearFilters} />}
 
         {/* Sélecteur Liste / Mensuel / Annuel et navigation de période —
             inutile tant qu'il n'y a rien à voir. Composant partagé avec
@@ -334,17 +416,6 @@ function AgendaPageInner() {
         open={showCreate}
         onClose={() => setShowCreate(false)}
         onMutated={() => setRefreshKey(k => k + 1)}
-      />
-
-      <AgendaFiltersDrawer
-        open={showFilters}
-        onClose={() => setShowFilters(false)}
-        filters={{ assetIds, period, includeCancelled }}
-        onApply={f => updateURL({
-          assetIds: f.assetIds.length > 0 ? f.assetIds.join(',') : null,
-          period: f.period,
-          includeCancelled: f.includeCancelled ? 'true' : null,
-        })}
       />
     </>
   );

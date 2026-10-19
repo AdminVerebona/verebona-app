@@ -148,9 +148,27 @@ export class AiGateway {
     req: AiGatewayRequest<T>,
     operationCode: string,
   ): Promise<AiGatewayResponse<T>> {
+    const traceId = randomUUID();
+    try {
+      return await this.callTraced<T>(req, operationCode, traceId);
+    } catch (e) {
+      // Lot 71E (T4 fiabilisation, §E) : l'appelant d'un appel EN ÉCHEC
+      // retrouve l'exécution tracée (mêmes `metadata.traceId`) pour y
+      // rattacher sa décision — même quand tous les modèles ont échoué.
+      if (e && typeof e === 'object' && !Object.prototype.hasOwnProperty.call(e, 'traceId')) {
+        try { Object.defineProperty(e, 'traceId', { value: traceId, enumerable: false, configurable: true }); } catch { /* objet gelé : sans trace */ }
+      }
+      throw e;
+    }
+  }
+
+  private static async callTraced<T>(
+    req: AiGatewayRequest<T>,
+    operationCode: string,
+    traceId: string,
+  ): Promise<AiGatewayResponse<T>> {
     const op = getOperation(operationCode);
     const provider = getAiProvider();
-    const traceId = randomUUID();
     const startedAt = Date.now();
 
     // ── Plafond mensuel de coût IA du compte (lot 22) ──────────────────────

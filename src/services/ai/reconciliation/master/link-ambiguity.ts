@@ -80,6 +80,15 @@ export interface LinkCandidate {
   description: string;
 }
 
+/**
+ * Longueur maximale de la description d'un candidat. Lot 71A (ticket P1
+ * « contexte T3 équipements ») : 400 → 1000 caractères — les candidats
+ * enrichis (bien parent, marque, modèle, n° de série, caractéristiques) sont
+ * formatés identifiants D'ABORD (`document-equipment-matching`), la borne ne
+ * retire que la fin.
+ */
+export const CANDIDATE_DESCRIPTION_MAX = 1000;
+
 /** Lit les candidats `[id:N] …` d'une liste historique ; triés par identifiant. */
 export function parseCandidates(list: unknown): LinkCandidate[] {
   if (typeof list !== 'string') return [];
@@ -88,7 +97,7 @@ export function parseCandidates(list: unknown): LinkCandidate[] {
     const m = /^\s*\[id:(\d+)\]\s*(.*)$/.exec(line);
     if (!m) continue;
     const id = Number(m[1]);
-    if (id > 0 && !out.has(id)) out.set(id, { candidateId: id, description: m[2].trim().slice(0, 400) });
+    if (id > 0 && !out.has(id)) out.set(id, { candidateId: id, description: m[2].trim().slice(0, CANDIDATE_DESCRIPTION_MAX) });
   }
   return [...out.values()].sort((a, b) => a.candidateId - b.candidateId);
 }

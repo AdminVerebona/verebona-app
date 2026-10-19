@@ -123,6 +123,24 @@ export interface TcoInput {
   documents?: readonly EconomicDocumentInput[];
   /** Lot 61 : prix d'achat de la fiche. */
   assetPrice?: TcoAssetPrice | null;
+  /**
+   * Lot 71A : prix d'achat des ÉQUIPEMENTS du bien (fiche de chaque
+   * équipement) — dépenses du bien, JAMAIS son prix d'achat.
+   */
+  equipmentPrices?: readonly TcoEquipmentPrice[];
+}
+
+/** Lot 71A : prix d'achat de la fiche d'un équipement du bien. */
+export interface TcoEquipmentPrice {
+  equipmentId: number;
+  name: string;
+  amountMinor: number;
+  currency: string;
+  /** Date d'achat de l'équipement (jamais celle du bien), si connue. */
+  date: string | null;
+  origin: string | null;
+  /** Documents preuves actives du prix de CET équipement (sa facture : même fait). */
+  evidenceFileIds: readonly number[];
 }
 
 // ── Sortie ─────────────────────────────────────────────────────────────────
@@ -286,6 +304,9 @@ function documentCategory(l: Pick<DocumentLineDraft, 'typeHint' | 'theme'>): Tco
   }
 }
 
+/** Justificatif principal d'une Opération (facture, sinon premier document). */
+const fichierPrincipalOp = (o: TcoOperation): number | null => (o.documents.find((d) => d.role === 'INVOICE') ?? o.documents[0])?.fileId ?? null;
+
 /** Statut d'une ligne évaluée par le moteur (pure). */
 function statusOfEntry(e: LedgerEntry, retained: EconomicLineStatus): EconomicLineStatus {
   if (e.included) return retained;
@@ -412,6 +433,43 @@ export function computeTco(input: TcoInput): TcoResult {
     docEntries.push({ draft: d, entry: x });
     lines.push({ ...ligne, eurCents: e.eurMinor, includedCents: e.includedEurMinor, status: statusOfEntry(e, 'RETAINED_DIRECT'), reason: e.exclusion });
   }
+  // ── Prix d'achat des équipements (lot 71A) : dépense du bien, sans doublon ─
+  // Jamais additionné à sa facture (preuve du prix, ou justificatif rattaché à
+  // l'équipement de même montant) ni à une composante consolidée de même
+  // montant ciblant l'équipement ; jamais confondu avec l'achat du bien.
+  for (const ep of input.equipmentPrices ?? []) {
+    if (!(ep.amountMinor > 0)) continue;
+    const eur = componentEurMinor({ amountMinor: ep.amountMinor, currency: ep.currency, amountEurCents: null });
+    const lineId = `equipment:${ep.equipmentId}:acquisitionPrice`;
+    const base = {
+      id: lineId, source: 'EQUIPMENT_DATA' as const,
+      provenance: (ep.origin && ep.origin !== 'USER' && ep.origin !== 'ADMIN' ? 'T1' : 'USER') as EconomicLineProvenance,
+      label: `Prix d’achat — ${ep.name} (fiche de l’équipement)`, kind: 'REALIZED_COST' as const, amountMinor: ep.amountMinor, currency: ep.currency,
+      eurCents: eur, category: 'ACCESSORIES' as const, date: isIsoDate(ep.date) ? ep.date.slice(0, 10) : null, note: null, relatedFileId: null,
+    };
+    const preuvesEq = new Set(ep.evidenceFileIds);
+    const docEquipement = (input.documents ?? []).filter((d) => (d.linkedEquipmentIds ?? []).includes(ep.equipmentId)).map((d) => d.fileId);
+    const facture = docEntries.find((x) => x.draft.kind === 'REALIZED_COST' && (preuvesEq.has(x.draft.fileId)
+      || (docEquipement.includes(x.draft.fileId) && eur != null && x.entry.eurMinor === eur)));
+    if (facture) {
+      lines.push({ ...base, includedCents: 0, fileId: facture.draft.fileId, operationId: null, operationLabel: null, status: 'DUPLICATE', reason: 'SAME_AS_EQUIPMENT_DOCUMENT' });
+      continue;
+    }
+    const opCouvrante = ops.find((o) => o.status !== 'CANCELLED' && o.components.some((c) => c.targetEquipmentId === ep.equipmentId && c.kind === 'REALIZED_COST'
+      && eur != null && componentEurMinor(c) === eur));
+    if (opCouvrante) {
+      lines.push({ ...base, includedCents: 0, fileId: fichierPrincipalOp(opCouvrante), operationId: opCouvrante.id, operationLabel: opCouvrante.label, status: 'CONSOLIDATED_ELSEWHERE', reason: 'EQUIPMENT_PRICE_CONSOLIDATED' });
+      continue;
+    }
+    const e = evaluateComponent({
+      id: 0, lineId, operationId: 0, kind: 'REALIZED_COST', amountMinor: ep.amountMinor, currency: ep.currency, amountEurCents: null,
+      economicDate: base.date ?? start, targetAssetId: input.assetId,
+    }, { scope, operationAssetIds: [input.assetId], disposalDate: dateCession, fallbackDate: base.date ?? start });
+    const x = { ...e, category: e.effect === 'COST' ? ('ACCESSORIES' as const) : null };
+    entries.push(x);
+    lines.push({ ...base, includedCents: e.includedEurMinor, fileId: null, operationId: null, operationLabel: null, status: statusOfEntry(e, 'RETAINED_DIRECT'), reason: e.exclusion });
+  }
+
   if (drafts.some((d) => d.status === 'NOT_QUALIFIED')) warnings.add('DOCUMENTS_NOT_QUALIFIED');
   if (drafts.some((d) => d.status === 'UNCONFIRMED_ASSET')) warnings.add('UNCONFIRMED_ASSET_EXPENSES');
 

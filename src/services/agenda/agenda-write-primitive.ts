@@ -355,6 +355,12 @@ export async function removeAgendaItemsFromSource(p: {
   keepIds?: number[];
   assetId?: number | null;
   analysisComplete?: boolean;
+  /**
+   * Lot 71E (§A) — retrait CIBLÉ : seuls ces éléments peuvent être retirés
+   * (rejets explicites de T4 rapprochés de façon fiable), toutes les autres
+   * protections restant appliquées.
+   */
+  onlyIds?: number[];
 }): Promise<RemoveFromSourceResult> {
   if (!(await agendaFunctionalColumnsReady())) return { removed: [], dryRun: true, skipped: 'COLUMNS_MISSING' };
   const rows = (await pgClient.unsafe(
@@ -383,10 +389,43 @@ export async function removeAgendaItemsFromSource(p: {
 
   const cles = new Set(p.keepKeys);
   const ids = new Set(p.keepIds ?? []);
-  const retires = rows
+  const seuls = p.onlyIds ? new Set(p.onlyIds) : null;
+  let retires = rows
     .map((r) => ({ ...r, id: Number(r.id) }))
     .filter((r) => !isUserTouched(r) && !ids.has(r.id) && !(r.functionalKey && cles.has(r.functionalKey)))
+    .filter((r) => !seuls || seuls.has(r.id))
     .map((r) => r.id);
+
+  // Lot 71E (§A) : un élément encore JUSTIFIÉ par une autre source
+  // documentaire n'est jamais retiré — lien SOURCE vers un autre document
+  // (service de liaison), origine dans un autre document, ou consolidation
+  // d'un doublon exact venu d'un autre document (`DUPLICATE_CONSOLIDATED`).
+  if (retires.length) {
+    const justifies = new Set(((await pgClient.unsafe(
+      `SELECT i.id FROM agenda_items i
+        WHERE i.id = ANY($1::int[]) AND i.account_id = $2
+          AND ((i.origin_ref_type = 'asset_file' AND i.origin_ref_id IS NOT NULL AND i.origin_ref_id <> $3)
+               OR EXISTS (SELECT 1 FROM agenda_item_sources s
+                           WHERE s.agenda_item_id = i.id AND s.asset_file_id <> $3 AND s.effect_type = 'linked'
+                             AND s.source_role = 'SOURCE')
+               OR EXISTS (SELECT 1 FROM agenda_occurrence_events e
+                           WHERE e.agenda_item_id = i.id AND e.event_type = 'DUPLICATE_CONSOLIDATED'
+                             AND e.detail_json ->> 'sourceFileId' IS NOT NULL
+                             AND e.detail_json ->> 'sourceFileId' <> $3::text
+                             AND EXISTS (SELECT 1 FROM asset_files f WHERE f.id::text = e.detail_json ->> 'sourceFileId' AND f.account_id = $2)))`,
+      [retires, p.accountId, p.sourceFileId] as never[],
+    ).catch((e: Error) => {
+      // Colonne `source_role` absente (0223) : prudence — aucun retrait.
+      console.error('[agenda] contrôle des autres sources impossible — aucun retrait :', e.message);
+      return retires.map((id) => ({ id }));
+    })) as unknown as Array<{ id: number }>).map((r) => Number(r.id)));
+    if (justifies.size) {
+      console.info(JSON.stringify({
+        event: 't4.source_remove_kept_other_source', accountId: p.accountId, sourceFileId: p.sourceFileId, kept: [...justifies],
+      }));
+      retires = retires.filter((id) => !justifies.has(id));
+    }
+  }
 
   const journal = (extra: Record<string, unknown>) => console.info(JSON.stringify({
     event: 't4.source_remove', accountId: p.accountId, sourceFileId: p.sourceFileId, assetId: p.assetId ?? null, ...extra,

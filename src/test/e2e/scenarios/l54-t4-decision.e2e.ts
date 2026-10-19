@@ -164,13 +164,16 @@ scenario('L54-T4', 'T4 décisionnaire de l’existence et de la récurrence d’
   it('T4-V2-07 — modèle indisponible : aucune création, aucune récurrence, erreur technique visible au BO', async () => {
     await useRecordings([]); // aucune sortie : le rejeu échoue comme un modèle indisponible
     const { compte, bien, doc } = await contexte();
-    await job(compte, bien.id, doc.id, [homiris()]);
+    // Lot 71E (§E) : le travail n'est plus « réussi » — reprise demandée à la file (T4-FIX-11).
+    await expect(job(compte, bien.id, doc.id, [homiris()])).rejects.toThrow(/T4_INCOMPLETE/);
     expect(await items(bien.id)).toEqual([]);
     expect(await cartes(compte.id)).toEqual([]);
     const bo = await decisionsBo(compte.id);
     expect(bo.length).toBeGreaterThan(0);
     expect(bo.every((x) => x.status !== 'success')).toBe(true);
     expect(bo[0].error).toBeTruthy();
+    // Lot 71E (§E) : la décision (TECHNICAL_FAILURE) est rattachée à l'exécution en échec.
+    expect(bo.some((x) => x.d?.verdict === 'TECHNICAL_FAILURE')).toBe(true);
   });
 
   it('T4-V2-08 — réanalyse rejetée : ancien automatique retiré ; modifié ou confirmé par l’utilisateur conservé', async () => {
@@ -260,7 +263,8 @@ scenario('L54-T4-BO', 'T4 v2 : brouillon depuis le texte de référence, Legacy 
     const [ligne] = await sql<{ m: string }[]>`SELECT execution_mode AS m FROM ai_master_prompt_versions WHERE treatment = 'T4' AND status = 'ACTIVE'`;
     expect(ligne.m).toBe('LEGACY_TEMPLATE');
     await useRecordings([{ operationCode: 't4_classify_event', task: 'CLASSIFY_EVENT', output: { task: 'CLASSIFY_EVENT', homeCategory: 'action', confidence: 'certain', reason: 'v1' } }]);
+    // Lot 71E (§D) : exécutée, mais plus d'acceptation IMPLICITE — abstention conservatrice (T4-FIX-10).
     expect(await decideAgendaEvent({ title: 'X', originType: 'document' }, { accountId: compte.id, date: '2027-01-31' }))
-      .toMatchObject({ agendaDecision: 'accept', recurrenceDecision: 'not_applicable', outcome: 'model_v1' });
+      .toMatchObject({ agendaDecision: 'abstain', recurrenceDecision: 'not_applicable', outcome: 'model_v1', contractVersion: 1, classification: { category: 'action' } });
   });
 });

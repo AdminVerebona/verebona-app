@@ -25,6 +25,7 @@
  */
 import { z } from 'zod';
 import type { MascotFacts, MascotIntent, MascotSubject } from './types';
+import { hasCountingIntro } from './counting-intro';
 
 export const T6_INPUT_SCHEMA_VERSION = 't6-input-v1';
 export const T6_OUTPUT_SCHEMA_VERSION = 't6-output-v1';
@@ -215,9 +216,15 @@ const INTERFACE = /\b(bouton|boutons|cliquez|cliquer|clic|menu|onglet|ecran|lien
  * ignorée puis renouvelée).
  */
 const MECANIQUE = /(^|[\s.;:])(a prevoir\s*:|(un|une|deux|trois|quatre|\d+|plusieurs)\s+sujets?\s+(merite|meritent|necessite|necessitent)\s+votre attention)/;
-/** Lot 68 : le texte porte-t-il une formule mécanique de la bulle ? (pure, testée T6-RAP) */
+/**
+ * Lot 68 : le texte porte-t-il une formule mécanique de la bulle ? (pure, testée T6-RAP)
+ * Lot 71F : toute introduction de comptage (`hasCountingIntro` : nombres,
+ * « points », « éléments », « demandent / requièrent… », « Voici deux
+ * sujets »), accents, apostrophes et pluriel indifférents — sans dépendre
+ * du prompt T6 en service.
+ */
 export function mechanicalWording(text: string): boolean {
-  return MECANIQUE.test(plainT6(text));
+  return MECANIQUE.test(plainT6(text)) || hasCountingIntro(text);
 }
 
 /** Mots d'ouverture normalisés (R8). */
@@ -515,8 +522,31 @@ export const T6_REASON_CODE_LIST = Object.keys(T6_REASON_CODES) as T6ReasonCode[
 /** Lot 68 : motif dédié du rappel informatif (SHOW_NOW + INFORMATION, sans action). */
 export const T6_INFORMATIVE_REMINDER_CODE = 'INFORMATIVE_REMINDER' as const satisfies T6ReasonCode;
 
-/** Nature d'une référence justificative transmise (suffixe de `evidence[].ref`). */
-export type T6EvidenceKind = 'TITLE' | 'DUE_DATE' | 'DESCRIPTION' | 'DOCUMENT' | 'ASSET' | 'SERIES' | 'HISTORY';
+/**
+ * Nature d'une référence justificative transmise (suffixe de `evidence[].ref`).
+ * Lot 71G (T6-04) : `DOCUMENT_FACT` — fait réellement extrait d'un document
+ * (T1/T3 : préavis, renouvellement, obligation, intervention…), `Cn.factN`.
+ */
+export type T6EvidenceKind = 'TITLE' | 'DUE_DATE' | 'DESCRIPTION' | 'DOCUMENT' | 'DOCUMENT_FACT' | 'ASSET' | 'SERIES' | 'HISTORY';
+
+/**
+ * Lot 71G (T6-04) — fait documentaire transmis à EVALUATE : extrait
+ * justificatif, document source (`Cn.docM`), provenance et statut —
+ * `PROVEN` (information prouvée par l'extrait), `DEDUCED` (déduction de
+ * l'extraction), `UNCERTAIN` (sources en conflit). Ajout de contexte
+ * COMPATIBLE avec `t6-evaluation-input-v1` : une version du prompt qui ne le
+ * mentionne pas le reçoit comme une preuve référencée parmi d'autres.
+ */
+export interface T6EvaluationFact {
+  ref: string;
+  /** Référence du document source (`Cn.docM`), ou null. */
+  document: string | null;
+  label: string;
+  value: string | null;
+  excerpt: string | null;
+  status: 'PROVEN' | 'DEDUCED' | 'UNCERTAIN';
+  provenance: string;
+}
 
 export interface T6EvidenceRef { ref: string; kind: T6EvidenceKind }
 
@@ -535,8 +565,14 @@ export interface T6EvaluationCandidate {
   overdue: boolean;
   requiresQualification: boolean;
   recurring: boolean;
-  /** Titres des documents liés (3 au plus). */
+  /**
+   * Titres des documents liés — lot 71G : choisis selon leur pertinence
+   * métier (document d'origine, documents porteurs de faits), 5 au plus ;
+   * l'intitulé seul ne fonde jamais une obligation.
+   */
   documents: string[];
+  /** Lot 71G (T6-04) : faits documentaires pertinents (8 au plus), absents s'il n'y en a pas. */
+  facts?: T6EvaluationFact[];
   /** Jours où ce sujet a déjà été présenté récemment. */
   recentlyShownDays: number;
   /** Références justificatives AUTORISÉES pour ce candidat (`evidenceRefs` ⊆). */

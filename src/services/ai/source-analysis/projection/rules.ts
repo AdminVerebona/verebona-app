@@ -81,6 +81,25 @@ export const PROJECTION_RULES = {
    * échéance à venir (T1-06, U15, U16).
    */
   DEADLINE_NOT_AFTER_EVENT: 'DEADLINE_NOT_AFTER_EVENT',
+  /**
+   * Lot 71A (BUG P1 bien / équipement) : le document établit l'achat d'un
+   * ÉQUIPEMENT (fait d'acquisition ciblant un équipement vérifié) — la règle
+   * « justificatif d'achat du bien » ne déduit ni la date ni le prix d'achat
+   * du BIEN depuis la date / le montant du document.
+   */
+  EQUIPMENT_PURCHASE_NO_ASSET_ACQUISITION: 'EQUIPMENT_PURCHASE_NO_ASSET_ACQUISITION',
+  /**
+   * Lot 71A : même preuve (valeur ET extrait) pour l'acquisition du bien et
+   * celle d'un équipement, sur un ACTE authentique — la valeur est celle du
+   * bien ; le fait d'équipement devient connaissance générique.
+   */
+  ENTITY_ACQUISITION_SAME_EVIDENCE_AS_ASSET: 'ENTITY_ACQUISITION_SAME_EVIDENCE_AS_ASSET',
+  /**
+   * Lot 71A : même preuve pour le bien et un équipement, sur un justificatif
+   * NON authentique (facture, ticket) — la valeur est celle de l'équipement
+   * identifié ; le fait du bien devient connaissance générique.
+   */
+  ASSET_ACQUISITION_SAME_EVIDENCE_AS_EQUIPMENT: 'ASSET_ACQUISITION_SAME_EVIDENCE_AS_EQUIPMENT',
 } as const;
 export type ProjectionRuleCode = (typeof PROJECTION_RULES)[keyof typeof PROJECTION_RULES];
 

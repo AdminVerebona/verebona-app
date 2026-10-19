@@ -3,7 +3,7 @@
  * directe ou recherche d'un objet par son nom).
  *
  * Un seul champ pour chercher ET demander : taper affiche les biens,
- * documents, échéances et pages qui correspondent (recherche SQL `/api/search`
+ * documents, échéances, équipements, pièces (lot 71) et pages qui correspondent (recherche SQL `/api/search`
  * en mode `instant`, sans appel modèle) ; « Entrée » sans suggestion choisie
  * envoie la demande complète à Verebona.
  */
@@ -11,11 +11,13 @@ import type { DrawerTarget } from '@/lib/drawers';
 
 export interface LiveResult {
   id: string;
-  kind: 'nav' | 'asset' | 'document' | 'agenda';
+  kind: 'nav' | 'asset' | 'document' | 'agenda' | 'equipment' | 'room';
   title: string;
   sub: string | null;
   href: string;
   drawer?: DrawerTarget;
+  /** Lot 71 : le nom EST la requête (normalisée) — présenté avant les rapprochements. */
+  exact?: boolean;
 }
 
 /** Pages de l'application, proposées par leur nom. */
@@ -47,19 +49,48 @@ interface ApiSearchRow {
   sublabel?: string;
   href?: string;
   drawer?: DrawerTarget;
+  /** Lot 71 : libellé = requête normalisée (prioritaire, jamais masqué par le plafond). */
+  exact?: boolean;
 }
 
-const KIND: Record<string, LiveResult['kind']> = { Bien: 'asset', Document: 'document', Agenda: 'agenda' };
+const KIND: Record<string, LiveResult['kind']> = {
+  Bien: 'asset', Document: 'document', Agenda: 'agenda', 'Équipement': 'equipment', 'Pièce': 'room',
+};
 
-/** Réponse de `/api/search` → suggestions (pages d'abord, bornées). */
+/** Tiroirs qu'une suggestion peut ouvrir (lien profond validé, jamais une valeur libre). */
+const TIROIRS = new Set<DrawerTarget['kind']>(['document', 'echeance', 'equipement', 'piece']);
+const tiroirValide = (d: DrawerTarget | undefined): d is DrawerTarget =>
+  !!d && TIROIRS.has(d.kind) && Number.isSafeInteger(d.id) && d.id > 0;
+
+/**
+ * Réponse de `/api/search` → suggestions bornées : pages d'abord, puis les
+ * correspondances EXACTES (lot 71, AC12 — le plafond de six ne masque jamais
+ * un élément dont le nom est la requête), puis les autres dans l'ordre servi.
+ */
 export function toLiveResults(q: string, rows: ApiSearchRow[] | null | undefined): LiveResult[] {
   const api = (rows ?? [])
     .filter((r) => r && r.label && r.href && KIND[r.category ?? ''])
     .map((r) => ({
       id: String(r.id), kind: KIND[r.category!], title: r.label!, sub: r.sublabel ?? null, href: r.href!,
-      ...(r.drawer ? { drawer: r.drawer } : {}),
+      ...(tiroirValide(r.drawer) ? { drawer: { kind: r.drawer.kind, id: r.drawer.id } } : {}),
+      ...(r.exact === true ? { exact: true } : {}),
     }));
-  return [...navMatches(q), ...api].slice(0, LIVE_MAX_RESULTS);
+  const exacts = api.filter((r) => r.exact);
+  const autres = api.filter((r) => !r.exact);
+  const nav = navMatches(q);
+  // Pages bornées pour laisser toujours la place aux correspondances exactes.
+  const pages = nav.slice(0, Math.max(0, LIVE_MAX_RESULTS - Math.min(exacts.length, LIVE_MAX_RESULTS)));
+  return [...pages, ...exacts, ...autres].slice(0, LIVE_MAX_RESULTS);
+}
+
+/** Nature affichée de chaque suggestion. */
+export const LIVE_KIND_LABELS: Readonly<Record<LiveResult['kind'], string>> = {
+  nav: 'Page', asset: 'Bien', document: 'Document', agenda: 'Échéance', equipment: 'Équipement', room: 'Pièce',
+};
+
+/** Sous-titre : nature puis contexte (« Équipement · Maison Lyon »). */
+export function liveSubtitle(r: Pick<LiveResult, 'kind' | 'sub'>): string {
+  return [LIVE_KIND_LABELS[r.kind], r.sub].filter(Boolean).join(' · ');
 }
 
 /** Flèches haut/bas : -1 = aucune suggestion choisie (Entrée demande à Verebona). */

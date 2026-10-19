@@ -34,6 +34,7 @@ import {
   type EntityKind, type EntityRef, type OngletBien,
 } from './entity-ref';
 import { supplierHref } from '@/lib/supplier-routes';
+import { drawerHref, parseDrawerParam } from '@/lib/drawers';
 import { isPlanAiEligible } from '../registries/capability-registry';
 import { createCommandFor } from '@/lib/verebona/assistant-actions';
 
@@ -102,6 +103,12 @@ const ONGLET_PAR_ACTION: Readonly<Partial<Record<VerebonaActionType, OngletBien>
   OPEN_EXPORT_AREA: 'exports',
 };
 
+/** Lot 71 (71D) : tiroir d'équipement / de pièce demandé par une action OPEN_ASSET. */
+function tiroirEntite(params?: Record<string, unknown>): { kind: 'equipement' | 'piece'; id: number } | null {
+  const t = typeof params?.drawer === 'string' ? parseDrawerParam(params.drawer) : null;
+  return t && (t.kind === 'equipement' || t.kind === 'piece') ? { kind: t.kind, id: t.id } : null;
+}
+
 /**
  * Construit les href internes à partir des routes réelles (§22.7).
  *
@@ -119,7 +126,12 @@ function buildHref(
       // `tab` est posé par le serveur uniquement (équipement ou pièce ouverts
       // sur l'onglet du bien parent) ; une valeur inconnue est ignorée.
       const onglet = typeof params?.tab === 'string' ? (params.tab as OngletBien) : undefined;
-      return hrefBien(ref.id, onglet);
+      // Lot 71 (71D) : équipement / pièce trouvé par son nom → son tiroir,
+      // sur l'onglet du bien parent. `drawer` est posé par le serveur
+      // (`construireActionIntents`) et revalidé ici (`parseDrawerParam`) ;
+      // l'API du tiroir revérifie compte et archivage à l'ouverture.
+      const tiroir = tiroirEntite(params);
+      return tiroir ? drawerHref(tiroir, hrefBien(ref.id, onglet)) : hrefBien(ref.id, onglet);
     }
     case 'OPEN_DOCUMENT':
       return ref ? `${ROUTES.DOCUMENTS}/${ref.id}` : null;
@@ -288,8 +300,10 @@ export async function resolveActions(input: ResolveActionsInput): Promise<Verebo
     // pas l'identifiant de source (`asset_field:12:address` ≠
     // `asset_field:12:city` désignent le même bien). « Ouvrir le bien » :
     // un bouton par bien, quel que soit l'onglet.
+    // Lot 71 : deux équipements (tiroirs) d'un même bien restent deux boutons.
+    const tiroirCle = ai.type === 'OPEN_ASSET' ? tiroirEntite(ai.params) : null;
     const cle = ref
-      ? `${ai.type}:${ref.kind}:${ref.id}${ai.type === 'OPEN_ASSET' ? '' : `:${ai.params?.tab ?? ''}`}`
+      ? `${ai.type}:${ref.kind}:${ref.id}${ai.type === 'OPEN_ASSET' ? (tiroirCle ? `:${tiroirCle.kind}:${tiroirCle.id}` : '') : `:${ai.params?.tab ?? ''}`}`
       : `${ai.type}:${ai.targetId ?? ''}:${ai.params?.tab ?? ''}`;
     if (vues.has(cle)) continue;
 
@@ -321,7 +335,8 @@ export async function resolveActions(input: ResolveActionsInput): Promise<Verebo
       // l'accueil ou la recherche du Centre d'aide (§10.6, D-J4).
       label: ai.type === 'OPEN_HELP'
         ? (ai.params?.search === true || !href || href === ROUTES.AIDE ? 'Ouvrir l’aide' : 'Lire l’article')
-        : LABELS[ai.type],
+        : tiroirCle ? (tiroirCle.kind === 'piece' ? 'Ouvrir la pièce' : 'Ouvrir l’équipement')
+          : LABELS[ai.type],
       href,
       token,
       requiresConfirmation: false, // aucune action destructrice en V1 (§22.10)
@@ -350,6 +365,12 @@ export function libelleOuvrirBien(nom: string): string {
   return `Ouvrir « ${n.length > NOM_BOUTON_MAX ? `${n.slice(0, NOM_BOUTON_MAX - 1).trimEnd()}…` : n} »`;
 }
 
+/** Lot 71 : bouton d'entité (tiroir) précisé par son bien parent. */
+export function libelleOuvrirEntite(base: string, nomBien: string): string {
+  const n = nomBien.trim().replace(/\s+/g, ' ');
+  return `${base} · ${n.length > NOM_BOUTON_MAX ? `${n.slice(0, NOM_BOUTON_MAX - 1).trimEnd()}…` : n}`;
+}
+
 /**
  * Lot 33 : réponse qui concerne PLUSIEURS biens → un bouton par bien,
  * libellé « Ouvrir « <nom du bien> » » (nom lu en base, borné au compte).
@@ -363,7 +384,10 @@ async function libellerBiensMultiples(out: VerebonaAction[], input: ResolveActio
   return out.map((a) => {
     if (!biens.includes(a)) return a;
     const nom = noms.get(Number(a.targetRef!.slice('asset:'.length)));
-    return nom && nom.trim() ? { ...a, label: libelleOuvrirBien(nom) } : a;
+    if (!nom || !nom.trim()) return a;
+    // Lot 71 : homonymes sur plusieurs biens — « Ouvrir l’équipement · Maison Lyon ».
+    if (tiroirEntite(a.payload as Record<string, unknown> | undefined)) return { ...a, label: libelleOuvrirEntite(a.label, nom) };
+    return { ...a, label: libelleOuvrirBien(nom) };
   });
 }
 

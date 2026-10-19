@@ -286,12 +286,21 @@ export async function readT6CacheEntry(
       [accountId, cacheKey] as never[],
     )) as unknown as Array<{ messages: unknown; suggestions?: unknown }>;
     if (!r[0]) return null;
+    // Lot 68 : formulation antérieure portant une formule mécanique
+    // (« À prévoir : », introduction de comptage) — ignorée, donc renouvelée.
+    // Lot 71F : et SUPPRIMÉE, avant toute autre validation (une ancienne
+    // introduction « … aujourd'hui » est aussi une date relative) —
+    // l'écriture du cache ne remplace jamais une ligne existante (ON
+    // CONFLICT DO NOTHING) : sans cela, l'entrée fautive survivait et chaque
+    // affichage relançait une génération.
+    const textes = Array.isArray(r[0].messages) ? (r[0].messages as Array<{ text?: unknown }>).map((m) => m?.text) : [];
+    if (textes.some((t) => typeof t === 'string' && mechanicalWording(t))) {
+      await pgClient.unsafe(`DELETE FROM home_mascot_cache WHERE account_id = $1 AND cache_key = $2`, [accountId, cacheKey] as never[]);
+      return null;
+    }
     // Cache illisible ou désaccordé : ignoré, jamais servi (§20).
     const v = validateT6Output(input, { messages: r[0].messages });
     if (!v.ok) return null;
-    // Lot 68 : formulation antérieure portant une formule mécanique
-    // (« À prévoir : », introduction de comptage) — ignorée, donc renouvelée.
-    if (v.messages.some((m) => mechanicalWording(m.text))) return null;
     // Questions revalidées contre le contexte COURANT (références de biens).
     const suggestions = bundle && Array.isArray(r[0].suggestions) ? validateT6Suggestions(r[0].suggestions, bundle.assetIds) : null;
     return { messages: v.messages, suggestions };

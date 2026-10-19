@@ -93,6 +93,29 @@ interface Job {
   phase?: ExecutionPhase;
 }
 
+/**
+ * Lot 71E (T4 fiabilisation, §E) : décisions T4 d'un passage (DONE) et
+ * reprise programmée d'un passage incomplet (PENDING après échec technique
+ * T4 ou écriture en échec) — sans contenu documentaire.
+ */
+function t4Counters(job: Pick<Job, 'treatment' | 'status' | 'lastError' | 'businessResultDetail'>): string | null {
+  if (job.treatment !== 'T4') return null;
+  if (job.status === 'PENDING' && job.lastError && /^T4_(INCOMPLETE|PERSIST_PARTIAL)/.test(job.lastError)) {
+    return `Reprise programmée — ${job.lastError}`;
+  }
+  const d = job.businessResultDetail;
+  if (!d) return null;
+  const n = (v: unknown) => (typeof v === 'number' ? v : 0);
+  const parts = [
+    `${n(d.candidates)} candidat(s)`, `${n(d.accepted)} accepté(s)`, `${n(d.eventRejected)} rejeté(s)`,
+    `${n(d.recurrenceRejected)} récurrence(s) rejetée(s)`, `${n(d.abstained)} abstention(s)`, `${n(d.technicalFailures)} échec(s) technique(s)`,
+  ];
+  if (n(d.reused)) parts.push(`${n(d.reused)} décision(s) réutilisée(s) à la reprise`);
+  if (n(d.corrected)) parts.push(`${n(d.corrected)} classement(s) corrigé(s)`);
+  if (d.removal === 'TARGETED_ONLY') parts.push('retraits limités aux rejets explicites (décision indéterminée)');
+  return parts.join(' · ');
+}
+
 /** Lot 52A (COR-05) : objets examinés / modifiés et appels modèle d'un passage T3. */
 function t3Counters(job: Job): string | null {
   const d = job.businessResultDetail;
@@ -575,6 +598,9 @@ function AiQueueScreen() {
               )}
               {t3Counters(job) && (
                 <p className="text-xs text-[color:var(--text-muted)]">{t3Counters(job)}</p>
+              )}
+              {t4Counters(job) && (
+                <p className="text-xs text-[color:var(--text-muted)]" data-testid={`t4-counters-${job.id}`}>{t4Counters(job)}</p>
               )}
               {job.attempts > 1 && (
                 <p className="text-xs text-[color:var(--text-muted)]">

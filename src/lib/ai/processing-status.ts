@@ -199,6 +199,10 @@ export function isSettledProcessingStatus(s: unknown): boolean {
  * mais ne les choisit plus sur l'état brut du document.
  */
 export function displayAnalysisState(analysisState: string | null | undefined, status: ProcessingStatus | null | undefined): string | null {
+  // Lot 71B : plus de validation sur les fiches — l'ancien état « à valider »
+  // (document pas encore repris par `document-validation-reprise`) s'affiche
+  // « analysé » : ni bandeau, ni bouton « Appliquer ».
+  if (analysisState === 'VALIDATION_REQUIRED') analysisState = 'ANALYZED';
   switch (status) {
     case 'PENDING': return 'UPLOADED';
     case 'PROCESSING': case 'RETRYING': return 'ANALYZING';

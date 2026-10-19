@@ -25,7 +25,7 @@
 import { sql, type SQL } from 'drizzle-orm';
 import { db } from '@/db';
 import { BusinessOperationReadService, type AssistantOperationRead } from '../read-service';
-import { computeTco, type TcoAssetPrice, type TcoOperation, type TcoResult, type UsageBudget } from './model';
+import { computeTco, type TcoAssetPrice, type TcoEquipmentPrice, type TcoOperation, type TcoResult, type UsageBudget } from './model';
 import type { LedgerComponent } from '../finance/engine';
 import type { EconomicDocumentInput, EconomicHint } from '../finance/economic-lines';
 import { readCanonicalValue, type AssetRowJson } from '@/services/canonical/asset-state/canonical-asset-view';
@@ -128,6 +128,8 @@ export async function readAssetTco(accountId: number, assetId: number, opts: { t
   // Lot 61 : dépenses documentaires et prix d'achat de la fiche (sans Opération requise).
   const doc = await readAssetDocuments(r, accountId, assetId);
   const assetPrice = await readAssetPrice(r, accountId, assetId);
+  // Lot 71A : prix d'achat des équipements du bien (dépenses, jamais le prix du bien).
+  const equipmentPrices = await readEquipmentPrices(r, accountId, assetId);
   // Équipements ciblés par les indices T1 : bien porteur (attribution, comme pour les composantes).
   const equipIds = [...new Set(doc.documents.flatMap((d) => d.candidates.flatMap((c) => c.targets.filter((t) => t.type === 'EQUIPMENT' && t.entityId != null).map((t) => t.entityId!))))]
     .filter((id) => !equipmentAssets.has(id));
@@ -152,7 +154,7 @@ export async function readAssetTco(accountId: number, assetId: number, opts: { t
     assetId, today: opts.today ?? todayUtc(), operations, equipmentAssets,
     assetAcquisitionDate: txt(kc.acquisitionDate), assetSaleDate: txt(kc.saleDate), assetStatus: txt(asset.status),
     valuationHistory, desiredSalePriceCents: desired, budgets, readComplete: readComplete && doc.complete,
-    documents: doc.documents, assetPrice,
+    documents: doc.documents, assetPrice, equipmentPrices,
   });
   // Lot 68 : diagnostic BO — justificatifs qui CITENT seulement le bien (exclus des sources, expliqués).
   return { ...result, citedOnlyDocuments: await readCitedOnlyDocuments(r, accountId, assetId) };
@@ -223,7 +225,11 @@ export async function readAssetDocuments(r: Runner, accountId: number, assetId: 
                       WHERE l.account_id = f.account_id AND l.file_id = f.id AND l.status = 'ACTIVE' AND l.link_role IN ${ROLES}
                      UNION SELECT f.asset_id UNION SELECT f.linked_asset_id) u
                     WHERE u.x IS NOT NULL
-                      AND EXISTS (SELECT 1 FROM assets a WHERE a.id = u.x AND a.account_id = f.account_id AND a.deleted_at IS NULL)) AS linked
+                      AND EXISTS (SELECT 1 FROM assets a WHERE a.id = u.x AND a.account_id = f.account_id AND a.deleted_at IS NULL)) AS linked,
+             ARRAY(SELECT DISTINCT q.x FROM (
+                     SELECT l.equipment_id AS x FROM document_asset_links l
+                      WHERE l.account_id = f.account_id AND l.file_id = f.id AND l.status = 'ACTIVE' AND l.link_role IN ${ROLES}
+                     UNION SELECT f.equipment_id) q WHERE q.x IS NOT NULL) AS equipments
         FROM asset_files f
         LEFT JOIN LATERAL (SELECT upper(trim(x.currency)) AS currency, x.multi_asset FROM document_extractions x
                             WHERE x.file_id = f.id AND x.account_id = f.account_id ORDER BY x.id DESC LIMIT 1) e ON TRUE
@@ -296,6 +302,7 @@ export async function readAssetDocuments(r: Runner, accountId: number, assetId: 
       ignoredWith: Array.isArray(ignored) ? ignored.map(Number) : null,
       linkedAssetIds: (Array.isArray(d.linked) ? d.linked : String(d.linked ?? '').replace(/[{}]/g, '').split(',').filter(Boolean)).map(Number),
       multiAsset: Boolean(d.multi_asset),
+      linkedEquipmentIds: (Array.isArray(d.equipments) ? d.equipments : String(d.equipments ?? '').replace(/[{}]/g, '').split(',').filter(Boolean)).map(Number),
       candidates: candidats.get(id) ?? [], operations: operations.get(id) ?? [], acquisitionEvidence: preuves.has(id),
     };
   });
@@ -308,6 +315,8 @@ const ACQUISITION_PRICE_KEYS = ['acquisitionPrice', 'purchasePrice', 'prixAchat'
 /**
  * Documents (parmi `fileIds`) preuves ACTIVES du prix d'achat d'un bien du
  * compte (T1 a lu sur le document le prix d'acquisition du bien). Lot 61.
+ * Lot 71A : preuves du BIEN seulement (cible NULL ou ASSET = le bien) — le
+ * prix lu pour un équipement n'en fait pas la facture d'achat du bien.
  */
 export async function acquisitionEvidenceFiles(r: Runner, accountId: number, fileIds: readonly number[]): Promise<Set<number>> {
   const out = new Set<number>();
@@ -316,7 +325,8 @@ export async function acquisitionEvidenceFiles(r: Runner, accountId: number, fil
     for (const x of await rows<{ id: number }>(r, sql`
       SELECT DISTINCT source_id AS id FROM field_evidence
        WHERE account_id = ${accountId} AND status = 'active' AND source_type = 'document'
-         AND source_id = ANY(${intArray(page)}::int[]) AND field_key = ANY(${`{${ACQUISITION_PRICE_KEYS.join(',')}}`}::text[])`)) out.add(Number(x.id));
+         AND source_id = ANY(${intArray(page)}::int[]) AND field_key = ANY(${`{${ACQUISITION_PRICE_KEYS.join(',')}}`}::text[])
+         AND (target_type IS NULL OR (target_type = 'ASSET' AND (target_entity_id IS NULL OR target_entity_id = asset_id)))`)) out.add(Number(x.id));
   }
   return out;
 }
@@ -370,8 +380,47 @@ export async function readAssetPrice(r: Runner, accountId: number, assetId: numb
   const preuves = await rows<{ id: number }>(r, sql`
     SELECT DISTINCT source_id AS id FROM field_evidence
      WHERE account_id = ${accountId} AND asset_id = ${assetId} AND status = 'active' AND source_type = 'document'
-       AND field_key = ANY(${`{${ACQUISITION_PRICE_KEYS.join(',')}}`}::text[])`);
+       AND field_key = ANY(${`{${ACQUISITION_PRICE_KEYS.join(',')}}`}::text[])
+       -- Lot 71A : preuves du BIEN lui-même — la facture d'un équipement (preuve
+       -- ciblant l'équipement, portée par le bien) n'est jamais la preuve du prix du bien.
+       AND (target_type IS NULL OR (target_type = 'ASSET' AND (target_entity_id IS NULL OR target_entity_id = asset_id)))`);
   return { amountMinor: Math.round(eur * 100), currency, origin: st.origin ?? null, evidenceFileIds: preuves.map((p) => Number(p.id)) };
+}
+
+/**
+ * Lot 71A — prix d'achat de la fiche de chaque équipement ACTUEL du bien
+ * (vue canonique de l'équipement : fiche puis colonne miroir), sa date
+ * d'achat propre (jamais celle du bien) et ses preuves documentaires actives
+ * (preuves CIBLANT l'équipement). Euro (le registre porte le prix en euros).
+ */
+export async function readEquipmentPrices(r: Runner, accountId: number, assetId: number): Promise<TcoEquipmentPrice[]> {
+  const eqs = await rows<{ id: number; name: string; kc: unknown; ppc: number | null; evc: number | null }>(r, sql`
+    SELECT e.id, e.name, to_jsonb(e)->'key_characteristics' AS kc, e.purchase_price_cents AS ppc, e.estimated_value_cents AS evc
+      FROM equipments e JOIN assets a ON a.id = e.asset_id AND a.account_id = ${accountId} AND a.deleted_at IS NULL
+     WHERE e.asset_id = ${assetId} AND e.archived_at IS NULL ORDER BY e.id LIMIT 500`);
+  if (!eqs.length) return [];
+  const { buildCanonicalEntityState } = await import('@/services/canonical/entity-state/entity-view');
+  const out: TcoEquipmentPrice[] = [];
+  for (const e of eqs) {
+    const kc = (asJson(e.kc) ?? {}) as Record<string, unknown>;
+    const st = buildCanonicalEntityState({
+      target: { type: 'EQUIPMENT', id: Number(e.id) }, assetId, accountId, name: e.name, archived: false, kc,
+      columns: { 'equipments.purchase_price_cents': e.ppc ?? null, 'equipments.estimated_value_cents': e.evc ?? null },
+    });
+    const prix = Number(st.fields.acquisitionPrice?.value);
+    if (!Number.isFinite(prix) || prix <= 0) continue;
+    const date = txt(st.fields.acquisitionDate?.value);
+    out.push({ equipmentId: Number(e.id), name: String(e.name ?? 'Équipement'), amountMinor: Math.round(prix * 100), currency: 'EUR',
+      date, origin: st.fields.acquisitionPrice?.origin ?? null, evidenceFileIds: [] });
+  }
+  if (!out.length) return out;
+  const preuves = await rows<{ id: number; source_id: number }>(r, sql`
+    SELECT DISTINCT target_entity_id AS id, source_id FROM field_evidence
+     WHERE account_id = ${accountId} AND status = 'active' AND source_type = 'document' AND target_type = 'EQUIPMENT'
+       AND (lifecycle_status IS NULL OR lifecycle_status = 'ACTIVE')
+       AND target_entity_id = ANY(${intArray(out.map((x) => x.equipmentId))}::int[])
+       AND field_key = ANY(${`{${ACQUISITION_PRICE_KEYS.join(',')}}`}::text[])`);
+  return out.map((x) => ({ ...x, evidenceFileIds: preuves.filter((p) => Number(p.id) === x.equipmentId).map((p) => Number(p.source_id)) }));
 }
 
 // ── Forfaits d'usage (§3.5) ────────────────────────────────────────────────

@@ -67,6 +67,7 @@ import {
   isToClassify,
   libelleResultats,
   parseSearchResults,
+  setEquipmentFilter,
   sortOptionsFor,
   toggleFilter,
   type DocumentItem,
@@ -78,6 +79,7 @@ import {
 import { DEFAULT_PREFS, loadPrefs, savePrefs, type ViewPrefs } from './view-prefs';
 import { saveListSnapshot, takeListSnapshot, type ListSnapshot } from './list-restore';
 import { useDocumentsFeed, type FeedQuery } from './useDocumentsFeed';
+import { buildEquipmentFilterModel } from '@/lib/filters/equipment-filter';
 
 /**
  * Le téléversement RÉUTILISE le dialogue existant, il n'est pas réécrit.
@@ -497,7 +499,19 @@ export function DocumentsByRubric({
   }, [meta]);
   const filtered = hasActiveFilters(filters);
   const options = useMemo(() => filterOptionsFromFacets(meta?.facets, filters, rubrics), [meta, filters, rubrics]);
-  const chips = activeFilterChips(filters, options);
+  // Lot 71 : filtre Équipement — équipements des biens retenus (onglet d'un
+  // bien, ou filtre Bien), fournis par le serveur avec leurs compteurs.
+  const equipmentAssetCount = assetId ? 1 : filters.biens.filter((b) => /^\d+$/.test(b)).length;
+  const equipmentModel = useMemo(
+    () => buildEquipmentFilterModel(meta?.equipmentFacet, filters.equipment, equipmentAssetCount),
+    [meta, filters.equipment, equipmentAssetCount],
+  );
+  // Filtre Équipement devenu sans objet (instantané d'un bien sans
+  // équipement) : retiré, plutôt que de compter un filtre invisible.
+  useEffect(() => {
+    if (meta && !equipmentModel.visible && filters.equipment) setFilters((f) => setEquipmentFilter(f, null));
+  }, [meta, equipmentModel.visible, filters.equipment]);
+  const chips = activeFilterChips(filters, options, equipmentModel.chipLabel);
   // Les documents arrivent triés et filtrés par le serveur, sur tout le
   // périmètre : l'écran ne retrie jamais un lot, il le découpe en sections.
   const { groups: allGroups } = useMemo(
@@ -579,6 +593,8 @@ export function DocumentsByRubric({
           context={context}
           options={options}
           onToggle={(dim, value) => changeFilters(toggleFilter(filters, dim, value))}
+          equipment={equipmentModel}
+          onEquipment={(value) => changeFilters(setEquipmentFilter(filters, value))}
         />
       )}
       {resultIds && (
@@ -593,7 +609,9 @@ export function DocumentsByRubric({
       )}
       <ActiveFilterChips
         chips={chips}
-        onRemove={(dim, value) => changeFilters(toggleFilter(filters, dim, value))}
+        onRemove={(dim, value) => changeFilters(
+          dim === 'equipment' ? setEquipmentFilter(filters, null) : toggleFilter(filters, dim, value),
+        )}
         onClear={() => changeFilters(EMPTY_FILTERS)}
       />
 

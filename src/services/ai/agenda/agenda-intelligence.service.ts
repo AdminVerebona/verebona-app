@@ -28,7 +28,8 @@ import {
   classifyEventMaster, decideAgendaEvent, recurrenceCandidateOf,
   type ClassifyEventContext, type T4EventDecision,
 } from './master/classify-event';
-import { DOCUMENT_CATALOG, documentMayCreateEvent, resolveDocumentType } from '@/services/canonical/registry';
+import { DOCUMENT_CATALOG, EVENT_CATALOG, documentMayCreateEvent, resolveDocumentType } from '@/services/canonical/registry';
+import { resolveEventSemantics } from '@/services/agenda/agenda-functional-key';
 import { interpretDate, detectTemporalAmbiguity } from './rules/date-interpreter';
 import { findDuplicate, titleSimilarity, containmentSimilarity } from './dedupe.service';
 import {
@@ -61,6 +62,70 @@ export interface AgendaIntelligenceInput {
    * tests) ; défaut : `decideAgendaEvent` (passerelle IA).
    */
   decide?: (input: AgendaClassificationInput, ctx: ClassifyEventContext) => Promise<T4EventDecision>;
+  /**
+   * Lot 71E (§E) — décisions T4 déjà APPLIQUÉES par un passage précédent du
+   * même travail (reprise par la file), indexées par empreinte du contexte
+   * soumis à T4 : réutilisées telles quelles, sans nouvel appel modèle. Un
+   * contexte qui a changé (nouvelle analyse, historique différent) n'a pas la
+   * même empreinte : il est redemandé.
+   */
+  resolvedDecisions?: Record<string, StoredT4Decision>;
+}
+
+/** Lot 71E (§E) — décision T4 conservée pour une reprise (aucun contenu documentaire, motifs tronqués). */
+export type StoredT4Decision = Pick<T4EventDecision,
+  'agendaDecision' | 'recurrenceDecision' | 'classification' | 'reason' | 'recurrenceReason' | 'outcome' | 'warnings' | 'contractVersion' | 'traceId'>;
+
+/** Décision T4 à conserver pour une reprise ; jamais un échec technique (il doit être redemandé). */
+export function storableT4Decision(d: T4EventDecision): StoredT4Decision | null {
+  if (d.outcome === 'technical_failure') return null;
+  return {
+    agendaDecision: d.agendaDecision, recurrenceDecision: d.recurrenceDecision,
+    classification: { ...d.classification, reason: d.classification.reason?.slice(0, 300) },
+    reason: d.reason.slice(0, 300), recurrenceReason: d.recurrenceReason ? d.recurrenceReason.slice(0, 300) : null,
+    outcome: d.outcome, warnings: [...d.warnings], ...(d.contractVersion ? { contractVersion: d.contractVersion } : {}),
+    ...(d.traceId ? { traceId: d.traceId } : {}),
+  };
+}
+
+const EVENT_TYPES: ReadonlySet<string> = new Set(EVENT_CATALOG.map((e) => e.businessType as string));
+
+/**
+ * Lot 71E (§B) — type métier APPLIQUÉ d'un candidat accepté.
+ *
+ *   · T4 a désigné un type du catalogue fermé (`closedWorldBusinessTypeV2`
+ *     l'a déjà vérifié) : c'est la référence (persistance, occurrences, clé
+ *     fonctionnelle, trace) ;
+ *   · T4 n'en désigne aucun (null explicite, ou valeur hors catalogue
+ *     ramenée à null) : AUCUNE valeur n'est inventée — le type du candidat
+ *     (T1, registre) est conservé tel quel, et l'écart est SIGNALÉ
+ *     (`T4_BUSINESS_TYPE_NULL`, provenance CANDIDATE), jamais en silence ;
+ *   · type du candidat hors catalogue : ignoré (`CANDIDATE_BUSINESS_TYPE_OUT_OF_CATALOG`).
+ * Pure.
+ */
+export function appliedBusinessType(
+  candidate: { businessType?: string | null; originFieldKey?: string | null; nature?: 'HISTORICAL' | 'DEADLINE' | null },
+  t4: Pick<T4EventDecision, 'agendaDecision' | 'classification' | 'outcome'>,
+): {
+  /** Valeur portée par la décision (`AgendaDecision.businessType`). */
+  value: string | null;
+  /** Valeur effectivement écrite (registre du champ d'origine à défaut de `value`). */
+  applied: string | null;
+  source: 'T4' | 'CANDIDATE' | 'NONE'; t4Designated: string | null; warnings: string[];
+} {
+  const warnings: string[] = [];
+  const decided = t4.agendaDecision === 'accept' && t4.classification.businessType && EVENT_TYPES.has(t4.classification.businessType)
+    ? t4.classification.businessType : null;
+  if (decided) return { value: decided, applied: decided, source: 'T4', t4Designated: decided, warnings };
+  let candidat = candidate.businessType ?? null;
+  if (candidat && !EVENT_TYPES.has(candidat)) {
+    warnings.push(`CANDIDATE_BUSINESS_TYPE_OUT_OF_CATALOG:${candidat}`);
+    candidat = null;
+  }
+  if (t4.agendaDecision === 'accept') warnings.push('T4_BUSINESS_TYPE_NULL');
+  // Valeur réellement écrite : celle du candidat, sinon le registre (champ d'origine).
+  const ecrit = resolveEventSemantics({ originFieldKey: candidate.originFieldKey ?? null, businessType: candidat, nature: candidate.nature ?? null }).businessType;
+  return { value: candidat, applied: ecrit, source: ecrit ? 'CANDIDATE' : 'NONE', t4Designated: null, warnings };
 }
 
 /**
@@ -176,10 +241,14 @@ export async function processAgendaCandidates(
     // ── Préparation du candidat de récurrence (le code ne décide pas) ─────
     const recurrence = prepareRecurrenceCandidate(candidate, input.assetId, planned);
     // ── Décision T4 : existence, catégorie, récurrence ─────────────────────
-    const t4 = await decideCandidate(candidate, recurrence, input);
-    const trace = t4Trace(t4, recurrence);
+    const { decision: t4, fingerprint, reused } = await decideCandidate(candidate, recurrence, input);
+    // Lot 71E (§B) : type métier décidé par T4 = référence de la décision finale.
+    const bt = appliedBusinessType(candidate as T4AgendaCandidate, t4);
+    const trace = t4Trace(t4, recurrence, { businessType: bt, fingerprint, reused });
     if (t4.agendaDecision !== 'accept') {
       // reject / abstain / échec technique : aucun Agenda, aucune proposition.
+      // Lot 71E (§A) : les trois issues restent DISTINCTES jusqu'à la
+      // persistance (motif) — seul un rejet explicite autorise un retrait.
       decisions.push({
         ...t4Semantics(candidate as T4AgendaCandidate, input.sourceFileId),
         action: 'ignore', title: candidate.title, date: candidate.date, category: 'information',
@@ -191,7 +260,7 @@ export async function processAgendaCandidates(
       continue;
     }
     await logT4Decision(input, candidate, trace);
-    const base = await processOne(candidate, { ...input, existing: planned, today }, t4.classification);
+    const base = await processOne(candidate, { ...input, existing: planned, today }, t4.classification, bt.t4Designated);
     base.t4 = trace;
     decisions.push(base);
     // Récurrence : seule une acceptation EXPLICITE de T4 produit une série
@@ -210,8 +279,12 @@ export async function processAgendaCandidates(
     // CDC 15 T4-07/T4-08 (lot 14) : la sémantique du candidat accompagne
     // chaque décision jusqu'à la persistance (clé fonctionnelle, liens
     // source). L'occurrence d'une récurrence porte SA date.
-    Object.assign(base, t4Semantics(candidate as T4AgendaCandidate, input.sourceFileId));
-    recurrent = recurrent.map((d) => ({ ...d, ...t4Semantics(candidate as T4AgendaCandidate, input.sourceFileId), occurrenceIndex: d.date }));
+    // Lot 71E (§B) : le type métier APPLIQUÉ (T4, sinon candidat) remplace
+    // celui du candidat — occurrences de la récurrence comprises.
+    const semantique: Partial<AgendaDecision> = { ...t4Semantics(candidate as T4AgendaCandidate, input.sourceFileId), businessType: bt.value };
+    if (!bt.value) delete semantique.businessType;
+    Object.assign(base, semantique);
+    recurrent = recurrent.map((d) => ({ ...d, ...semantique, occurrenceIndex: d.date }));
     for (const d of recurrent) {
       decisions.push(d);
       if (d.action === 'create' || d.action === 'propose') planned.push(asPlanned(d, planned.length));
@@ -273,25 +346,44 @@ export function prepareRecurrenceCandidate(
   return spec ? { spec, history, seriesKey, serie } : null;
 }
 
+/**
+ * Lot 71E (§E) — empreinte du contexte soumis à T4 (entrée + contexte, hors
+ * compte et utilisateur) : deux passages d'un même travail avec le même
+ * contexte reçoivent la même empreinte. Aucun contenu documentaire n'est
+ * conservé (hachage).
+ */
+export function t4ContextFingerprint(ci: AgendaClassificationInput, ctx: ClassifyEventContext): string {
+  const { accountId: _a, userId: _u, ...reste } = ctx;
+  return createHash('sha256').update(JSON.stringify({ ci, ctx: reste })).digest('hex').slice(0, 32);
+}
+
 /** Décision T4 d'un candidat automatique (contexte : candidat, récurrence, indice déterministe). */
 async function decideCandidate(
   candidate: AgendaCandidate, recurrence: RecurrencePlan | null, input: AgendaIntelligenceInput,
-): Promise<T4EventDecision> {
+): Promise<{ decision: T4EventDecision; fingerprint: string; reused: boolean }> {
   const ci = toClassificationInput(candidate);
   // Indice seulement (ticket §4) : la classification déterministe existante
   // n'empêche plus l'appel et ne tranche pas l'existence de l'événement.
   const regle = classifyByRulesDetailed(ci);
-  return (input.decide ?? decideAgendaEvent)(ci, {
+  const ctx: ClassifyEventContext = {
     accountId: input.accountId, userId: input.userId, sourceFileId: input.sourceFileId,
     excerpt: candidate.excerpt, date: candidate.date,
     documentType: (candidate as T4AgendaCandidate).documentType ?? null,
     recurrenceCandidate: recurrence ? recurrenceCandidateOf(recurrence.spec, recurrence.history) : null,
     ruleHint: regle ? { category: regle.category, source: regle.source, ruleCode: regle.ruleCode } : null,
-  });
+  };
+  const fingerprint = t4ContextFingerprint(ci, ctx);
+  // Reprise (§E) : décision déjà appliquée pour ce même contexte → aucun nouvel appel.
+  const deja = input.resolvedDecisions?.[fingerprint];
+  if (deja && deja.outcome !== 'technical_failure') return { decision: { ...deja, warnings: [...(deja.warnings ?? [])] }, fingerprint, reused: true };
+  return { decision: await (input.decide ?? decideAgendaEvent)(ci, ctx), fingerprint, reused: false };
 }
 
 /** Trace BO de la décision T4 (ticket §12) — sans contenu documentaire brut. */
-export function t4Trace(t4: T4EventDecision, recurrence: RecurrencePlan | null): T4DecisionTrace {
+export function t4Trace(
+  t4: T4EventDecision, recurrence: RecurrencePlan | null,
+  extra: { businessType?: ReturnType<typeof appliedBusinessType>; fingerprint?: string; reused?: boolean } = {},
+): T4DecisionTrace {
   const c = recurrence ? recurrenceCandidateOf(recurrence.spec, recurrence.history) : null;
   const verdict: T4DecisionTrace['verdict'] = t4.outcome === 'technical_failure' ? 'TECHNICAL_FAILURE'
     : t4.agendaDecision === 'reject' ? 'EVENT_REJECTED'
@@ -303,9 +395,17 @@ export function t4Trace(t4: T4EventDecision, recurrence: RecurrencePlan | null):
       mode: c.mode, frequency: c.frequency, interval: c.interval, startDate: c.startDate, endDate: c.endDate,
       occurrenceCount: c.occurrenceCount, history: c.history,
     } : null,
-    homeCategory: t4.classification.category, businessType: t4.classification.businessType ?? null,
+    homeCategory: t4.classification.category,
+    // Lot 71E (§B) : type métier APPLIQUÉ (celui de l'Agenda) et sa provenance.
+    businessType: extra.businessType ? (t4.agendaDecision === 'accept' ? extra.businessType.applied : null) : t4.classification.businessType ?? null,
+    ...(extra.businessType && t4.agendaDecision === 'accept' ? { businessTypeSource: extra.businessType.source } : {}),
     confidence: t4.classification.confidence, reason: t4.reason, recurrenceReason: t4.recurrenceReason,
-    outcome: t4.outcome, verdict, warnings: t4.warnings, errorCode: t4.error?.code ?? null, traceId: t4.traceId ?? null,
+    outcome: t4.outcome, verdict,
+    warnings: [...t4.warnings, ...(extra.businessType && t4.agendaDecision === 'accept' ? extra.businessType.warnings : [])],
+    errorCode: t4.error?.code ?? null, traceId: t4.traceId ?? null,
+    contractVersion: t4.contractVersion ?? null,
+    ...(extra.fingerprint ? { fingerprint: extra.fingerprint } : {}),
+    ...(extra.reused ? { reused: true } : {}),
   };
 }
 
@@ -315,8 +415,10 @@ async function logT4Decision(input: AgendaIntelligenceInput, candidate: AgendaCa
     event: 't4.event_decision', accountId: input.accountId, sourceFileId: input.sourceFileId ?? null,
     originFieldKey: candidate.originFieldKey ?? null, verdict: trace.verdict, agendaDecision: trace.agendaDecision,
     recurrenceDecision: trace.recurrenceDecision, outcome: trace.outcome, errorCode: trace.errorCode ?? null,
+    businessType: trace.businessType, businessTypeSource: trace.businessTypeSource ?? null, reused: trace.reused ?? false,
   }));
-  if (trace.traceId && !input.decide) {
+  // Décision réutilisée (reprise) : déjà rattachée à son exécution au passage précédent.
+  if (trace.traceId && !input.decide && !trace.reused) {
     try {
       await (await import('./master/t4-decision-trace')).attachT4DecisionToTrace(trace.traceId, trace);
     } catch (e) {
@@ -543,6 +645,8 @@ async function processOne(
   input: AgendaIntelligenceInput,
   /** Lot 54 : classification issue de la décision T4 (null : date invalide, aucun appel). */
   t4Classification: AgendaClassification | null,
+  /** Lot 71E (§B, §C) : type métier DÉSIGNÉ par T4 (catalogue fermé), ou null. */
+  t4BusinessType: string | null = null,
 ): Promise<AgendaDecision> {
   const base = {
     title: candidate.title,
@@ -596,11 +700,19 @@ async function processOne(
 
   if (duplicate.kind === 'exact') {
     // Un doublon certain n'est jamais recréé (§4.4.4).
+    // Lot 71E (§C) : il peut en revanche voir sa CLASSIFICATION corrigée
+    // quand T4 l'a décidée de façon fiable — la persistance n'applique la
+    // correction qu'à un événement automatique intact (même identifiant,
+    // aucun autre champ réécrit).
+    const fiable = t4Classification && t4Classification.source === 'model'
+      && t4Classification.category !== 'unknown' && t4Classification.confidence !== 'ambiguous';
     return {
       ...base, action: 'skip_duplicate',
       category: duplicate.item?.category ?? 'information',
       reasonCode: 'EXACT_DUPLICATE', existingItemId: duplicate.item?.id,
       deterministic: true,
+      ...(fiable && duplicate.item && duplicate.item.id > 0 && !duplicate.item.manual
+        ? { classificationCorrection: { category: t4Classification!.category as HomeCategory, businessType: t4BusinessType } } : {}),
     };
   }
 

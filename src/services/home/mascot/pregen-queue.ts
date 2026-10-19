@@ -129,7 +129,7 @@ async function pregenGeneratedToday(accountId: number): Promise<number> {
   return Number(r?.n ?? 0);
 }
 
-export type PregenOutcome = 'formulated' | 'nothing_to_say' | 'fallback' | 'capped' | 'error';
+export type PregenOutcome = 'formulated' | 'nothing_to_say' | 'fallback' | 'capped' | 'error' | 'resumed';
 
 /**
  * Clôture d'une demande : `processed_at` = l'instant de la demande TRAITÉE —
@@ -157,9 +157,11 @@ async function processClaim(c: Claim): Promise<PregenOutcome> {
       return 'capped';
     }
     const { getMascotPresentation } = await import('./mascot.service');
-    const p = await getMascotPresentation(c.accountId, 'pregen');
+    let reprise = false;
+    const p = await getMascotPresentation(c.accountId, 'pregen', null, { onResume: () => { reprise = true; } });
     const formulable = p.paragraphs.some((x) => x.sourceCode !== 'CLEAR');
-    const outcome: PregenOutcome = !formulable ? 'nothing_to_say' : p.source === 't6' ? 'formulated' : 'fallback';
+    // Lot 71G (T6-03) : évaluation partielle, reprise déjà redemandée — demande close normalement.
+    const outcome: PregenOutcome = reprise ? 'resumed' : !formulable ? 'nothing_to_say' : p.source === 't6' ? 'formulated' : 'fallback';
     // T6 n'a pas formulé (panne passagère, disjoncteur) : nouvel essai borné.
     await close(c, outcome, p.contextHash, outcome === 'fallback');
     return outcome;
@@ -189,6 +191,8 @@ export async function processMascotPregenerationFor(accountId: number): Promise<
 export interface PregenRunResult {
   claimed: number;
   formulated: number;
+  /** Lot 71G : passages d'évaluation partielle (reprise demandée). */
+  resumed?: number;
   fallback: number;
   capped: number;
   nothing: number;
@@ -211,6 +215,7 @@ export async function runMascotPregeneration(opts: { deadline?: number; batch?: 
     else if (o === 'fallback') out.fallback += 1;
     else if (o === 'capped') out.capped += 1;
     else if (o === 'nothing_to_say') out.nothing += 1;
+    else if (o === 'resumed') out.resumed = (out.resumed ?? 0) + 1;
     else out.errors += 1;
   }
   return out;
@@ -227,22 +232,95 @@ export async function enqueueDeadlineSituations(today: string, lookbackDays: num
     const { t6ThresholdDays } = await import('./t6-interpellation.service');
     thresholdDays = await t6ThresholdDays();
   }
+  // Lot 71G : DISTINCT sur le compte SEUL — avec clock_timestamp() dans la
+  // liste, deux échéances du même compte donnaient deux lignes et l'upsert
+  // échouait (« ON CONFLICT DO UPDATE command cannot affect row a second time »).
   const r = await rows(
     `INSERT INTO home_mascot_pregen_requests (account_id, requested_at, reason)
-     SELECT DISTINCT i.account_id, clock_timestamp(), 'deadline'
-       FROM agenda_items i
-       JOIN accounts a ON a.id = i.account_id
-      WHERE (i.manual_status IS NULL OR trim(i.manual_status) = '')
-        AND (i.start_date IN ($1::date, $1::date - 1, $1::date - ($2::int + 1))
-             -- Lot 60 (T6) : le seuil d'interpellation est franchi aujourd'hui
-             -- (60 jours par défaut) — l'échéance est réévaluée.
-             OR i.start_date = $1::date + $4::int)
-      LIMIT $3
+     SELECT d.account_id, clock_timestamp(), 'deadline' FROM (
+       SELECT DISTINCT i.account_id
+         FROM agenda_items i
+         JOIN accounts a ON a.id = i.account_id
+        WHERE (i.manual_status IS NULL OR trim(i.manual_status) = '')
+          AND (i.start_date IN ($1::date, $1::date - 1, $1::date - ($2::int + 1))
+               -- Lot 60 (T6) : le seuil d'interpellation est franchi aujourd'hui
+               -- (60 jours par défaut) — l'échéance est réévaluée.
+               OR i.start_date = $1::date + $4::int)
+        LIMIT $3) d
      ON CONFLICT (account_id) DO UPDATE SET requested_at = clock_timestamp(), reason = 'deadline', attempts = 0
      RETURNING account_id`,
     [today, lookbackDays, limit, thresholdDays],
   );
   return r.length;
+}
+
+/** Lot 71G : une même demande n'est pas relancée plus d'une fois par heure (aucune boucle de coût). */
+const T6_DUE_REQUEST_MIN_INTERVAL = '50 minutes';
+/** Lot 71G : un report échu depuis plus longtemps est retiré par le nettoyage (90 jours). */
+const T6_DUE_LOOKBACK_DAYS = 90;
+
+export interface T6DueReevaluationResult {
+  /** Comptes dont un report de l'utilisateur est arrivé à sa date, sans réévaluation depuis. */
+  snoozeDue: number;
+  /** Comptes dont une date de réévaluation système (IA) est atteinte. */
+  reviewDue: number;
+  /** Demandes de pré-génération enregistrées ou relancées. */
+  requested: number;
+}
+
+/**
+ * Lot 71G (T6-05) — planification DURABLE des réévaluations T6 : un rappel
+ * demandé pour le 12 novembre est réexaminé à partir du 12 novembre, SANS
+ * visite préalable de l'accueil. Comptes signalés :
+ *   · report utilisateur (`remind_at`) atteint, et aucune évaluation du
+ *     sujet depuis cette date (rappel utilisateur) ;
+ *   · date de réévaluation système (`reevaluate_on`, démarche jugée
+ *     prématurée dont la date d'action est arrivée) atteinte depuis la
+ *     dernière évaluation (réévaluation automatique) — distinction tracée.
+ * La pré-génération du compte réévalue alors ces sujets (MODE=EVALUATE)
+ * AVANT toute réapparition ; un sujet devenu sans objet n'est pas réaffiché.
+ * Idempotente (une ligne par compte, critère « non réévalué depuis » : un
+ * passage manqué est rattrapé au suivant), bornée, sans doublon.
+ */
+export async function enqueueT6DueReevaluations(today: string, limit = 5_000): Promise<T6DueReevaluationResult> {
+  const [ok] = await rows(`SELECT to_regclass('t6_reminder_preferences') IS NOT NULL AND to_regclass('t6_interpellation_assessments') IS NOT NULL AS ok`);
+  if (!ok?.ok) return { snoozeDue: 0, reviewDue: 0, requested: 0 };
+  const actif = `trim(coalesce(i.manual_status, '')) = ''`;
+  const dus = await rows(
+    `SELECT account_id, bool_or(kind = 'snooze') AS snooze, bool_or(kind = 'review') AS review FROM (
+       SELECT p.account_id, 'snooze' AS kind
+         FROM t6_reminder_preferences p
+         JOIN agenda_items i ON i.id = p.agenda_item_id AND i.account_id = p.account_id
+         LEFT JOIN t6_interpellation_assessments a ON a.account_id = p.account_id AND a.agenda_item_id = p.agenda_item_id
+        WHERE p.decision = 'SNOOZED' AND p.remind_at <= $1::date AND p.remind_at >= $1::date - $2::int AND ${actif}
+          AND (a.id IS NULL OR a.assessed_on < p.remind_at)
+       UNION ALL
+       SELECT a.account_id, 'review'
+         FROM t6_interpellation_assessments a
+         JOIN agenda_items i ON i.id = a.agenda_item_id AND i.account_id = a.account_id
+        WHERE ${actif} AND a.contract_version IS NOT NULL
+          AND ((a.reevaluate_on <= $1::date AND a.assessed_on < a.reevaluate_on)
+               OR (a.interpellation = 'LATER' AND a.action_date <= $1::date AND a.assessed_on < a.action_date))
+     ) d
+     GROUP BY account_id
+     LIMIT $3`,
+    [today, T6_DUE_LOOKBACK_DAYS, limit],
+  );
+  if (dus.length === 0) return { snoozeDue: 0, reviewDue: 0, requested: 0 };
+  const comptes = dus.map((x) => Number(x.account_id));
+  const r = await rows(
+    `INSERT INTO home_mascot_pregen_requests (account_id, requested_at, reason)
+     SELECT a.id, clock_timestamp(), 't6-due' FROM accounts a WHERE a.id = ANY($1::int[])
+     ON CONFLICT (account_id) DO UPDATE SET requested_at = clock_timestamp(), reason = 't6-due', attempts = 0
+       WHERE home_mascot_pregen_requests.requested_at < clock_timestamp() - INTERVAL '${T6_DUE_REQUEST_MIN_INTERVAL}'
+     RETURNING account_id`,
+    [comptes],
+  );
+  return {
+    snoozeDue: dus.filter((x) => x.snooze === true).length,
+    reviewDue: dus.filter((x) => x.review === true).length,
+    requested: r.length,
+  };
 }
 
 let abonne = false;

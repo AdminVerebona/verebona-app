@@ -32,7 +32,7 @@ export const PROCESSING_LABELS: Record<ProcessingStatus, string> = {
   stored: 'Déposé',
   analyzing: 'Analyse en cours',
   analyzed: 'Analysé',
-  validation_required: 'Validation requise',
+  validation_required: 'Ancien « à valider » (reprise automatique)',
   conflict: 'Conflit détecté',
   analysis_failed: 'Échec de l’analyse',
 };

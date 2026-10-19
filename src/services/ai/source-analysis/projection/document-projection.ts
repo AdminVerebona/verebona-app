@@ -454,6 +454,9 @@ export function projectDocumentFacts(
   // ── 4 bis : dernier événement ≠ prochaine échéance ; DPE ≠ expiration ────
   applyTemporalRules(facts, analysis.document.documentDate?.value ?? null, warnings, noteRule);
 
+  // ── 4 ter (lot 71A) : une même preuve d'achat n'appartient qu'à UNE entité ─
+  separateEntityAcquisitions(facts, analysis, warnings, noteRule);
+
   // ── 5 : finalité et règles d'acquisition ─────────────────────────────────
   const purpose = classifyPurpose({
     entry: documentEntryOf(analysis.document.classification),
@@ -605,6 +608,69 @@ const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 const DEADLINES_COUPLEES = new Set([...LAST_VS_DEADLINE.map((p) => p.deadline), 'dpeExpiryDate']);
 const ACQUISITION = new Set(['acquisitionDate', 'acquisitionPrice']);
 
+/** Fait d'acquisition ciblant un ÉQUIPEMENT identifié (lot 71A). */
+const acquisitionEquipement = (f: ProjectedFact) =>
+  ACQUISITION.has(f.canonicalKey ?? '') && f.target.targetType === 'EQUIPMENT' && f.target.targetEntityId !== null;
+const acquisitionBien = (f: ProjectedFact) =>
+  ACQUISITION.has(f.canonicalKey ?? '') && f.target.targetType === 'ASSET' && f.target.targetEntityId !== null;
+const extraitNormalise = (f: ProjectedFact) => (f.evidence.excerpt ?? '').replace(/\s+/g, ' ').trim().toLowerCase();
+
+/** Fait requalifié en connaissance générique (jamais perdu, jamais une preuve de champ). */
+function versGenerique(f: ProjectedFact, rule: ProjectionRuleCode): ProjectedFact {
+  return {
+    ...f, canonicalKey: null, rawKey: f.rawKey ?? f.canonicalKey, semanticEvent: null,
+    origin: 'GENERIC' as const, ruleCode: rule,
+  };
+}
+
+/**
+ * Lot 71A (BUG P1 bien / équipement) — une même PREUVE d'achat (même clé,
+ * même valeur, même extrait littéral) annoncée à la fois pour le bien et
+ * pour un équipement ne peut appartenir qu'à l'un des deux : la valeur
+ * proviendrait sinon de l'autre entité (date d'achat de la maison recopiée
+ * sur la chaudière, ou l'inverse). Une valeur seulement IDENTIQUE avec un
+ * extrait différent ne prouve rien : deux acquisitions distinctes, rien
+ * n'est touché.
+ *   · acte authentique (autorité AUTHORITATIVE : il porte la transaction du
+ *     bien) → la valeur est celle du BIEN ;
+ *   · justificatif (facture, ticket) → celle de l'ÉQUIPEMENT identifié.
+ * Le fait écarté devient connaissance générique (consultable, jamais une
+ * preuve de champ). Modifie `facts` en place.
+ */
+function separateEntityAcquisitions(
+  facts: ProjectedFact[],
+  analysis: ProjectableAnalysis,
+  warnings: ProjectionWarning[],
+  noteRule: (c: ProjectionRuleCode) => void,
+): void {
+  const equipements = facts.filter(acquisitionEquipement);
+  if (equipements.length === 0) return;
+  const acte = documentEntryOf(analysis.document.classification)?.authority === 'AUTHORITATIVE';
+  for (let i = 0; i < facts.length; i++) {
+    const a = facts[i];
+    if (!acquisitionBien(a) || !extraitNormalise(a)) continue;
+    const jumeaux = facts.filter((e) => acquisitionEquipement(e) && e.canonicalKey === a.canonicalKey
+      && String(e.value) === String(a.value) && extraitNormalise(e) === extraitNormalise(a));
+    if (jumeaux.length === 0) continue;
+    if (acte) {
+      for (const e of jumeaux) {
+        const j = facts.indexOf(e);
+        facts[j] = versGenerique(e, PROJECTION_RULES.ENTITY_ACQUISITION_SAME_EVIDENCE_AS_ASSET);
+      }
+      noteRule(PROJECTION_RULES.ENTITY_ACQUISITION_SAME_EVIDENCE_AS_ASSET);
+      warnings.push({ code: 'FACT_REQUALIFIED_BY_RULE', target: a.canonicalKey ?? undefined,
+        ruleCode: PROJECTION_RULES.ENTITY_ACQUISITION_SAME_EVIDENCE_AS_ASSET,
+        message: `« ${a.canonicalKey} » : même preuve que l’acquisition du bien (acte) — valeur du bien, jamais recopiée sur l’équipement.` });
+    } else {
+      facts[i] = versGenerique(a, PROJECTION_RULES.ASSET_ACQUISITION_SAME_EVIDENCE_AS_EQUIPMENT);
+      noteRule(PROJECTION_RULES.ASSET_ACQUISITION_SAME_EVIDENCE_AS_EQUIPMENT);
+      warnings.push({ code: 'FACT_REQUALIFIED_BY_RULE', target: a.canonicalKey ?? undefined,
+        ruleCode: PROJECTION_RULES.ASSET_ACQUISITION_SAME_EVIDENCE_AS_EQUIPMENT,
+        message: `« ${a.canonicalKey} » : même preuve que l’acquisition de l’équipement identifié — valeur de l’équipement, jamais reportée sur le bien.` });
+    }
+  }
+}
+
 /** T1-02 : trois finalités, trois effets. */
 function applyPurposeRules(
   facts: ProjectedFact[],
@@ -642,7 +708,12 @@ function applyPurposeRules(
   }
   if (doc.purpose === 'PART_PURCHASE') {
     // L'achat de la pièce (cible non-bien) garde son événement purchase.
-    return retirer((f) => ACQUISITION.has(f.canonicalKey ?? ''), PROJECTION_RULES.PART_PURCHASE_NO_ASSET_ACQUISITION,
+    // Lot 71A : l'achat d'un ÉQUIPEMENT identifié (ligne d'achat ciblant CET
+    // équipement) garde sa date et son prix d'achat — jamais ceux du bien.
+    const achetes = new Set(facts.filter((f) => f.semanticEvent?.type === 'purchase' && !ACQUISITION.has(f.canonicalKey ?? '')
+      && f.target.targetType === 'EQUIPMENT' && f.target.targetEntityId !== null).map((f) => f.target.targetEntityId as number));
+    return retirer((f) => ACQUISITION.has(f.canonicalKey ?? '')
+      && !(acquisitionEquipement(f) && achetes.has(f.target.targetEntityId as number)), PROJECTION_RULES.PART_PURCHASE_NO_ASSET_ACQUISITION,
       'Achat d’une pièce ou d’un accessoire : pas d’acquisition du bien (T1-02).');
   }
   if (doc.purpose === 'OTHER') {
@@ -683,6 +754,15 @@ function applyPurposeRules(
   if (assetId === null ? doc.autreBienMentionne !== false : !isVerified(ctx, 'ASSET', assetId)) return facts;
   const surLeBien = (f: ProjectedFact) => f.target.targetType === 'ASSET' && f.target.targetEntityId === assetId;
   if (facts.some((f) => f.semanticEvent?.type === 'purchase' && f.target.targetType === 'ASSET' && !surLeBien(f))) return facts;
+  // Lot 71A (BUG P1) : le justificatif établit l'achat d'un ÉQUIPEMENT
+  // identifié (facture du robot déposée sur la maison) — la date et le
+  // montant du document sont ceux de l'équipement, jamais ceux du bien.
+  if (facts.some(acquisitionEquipement) && !facts.some(acquisitionBien)) {
+    noteRule(PROJECTION_RULES.EQUIPMENT_PURCHASE_NO_ASSET_ACQUISITION);
+    warnings.push({ code: 'RULE_APPLIED', ruleCode: PROJECTION_RULES.EQUIPMENT_PURCHASE_NO_ASSET_ACQUISITION,
+      message: 'Justificatif d’achat d’un équipement : ni date ni prix d’achat du bien déduits du document.' });
+    return facts;
+  }
 
   const purchase: T1SemanticEvent = { type: 'purchase', nature: 'HISTORICAL' };
   const classificationConfidence = analysis.document.classification?.confidence ?? 0;

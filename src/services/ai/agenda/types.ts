@@ -38,9 +38,11 @@ export type AgendaDecisionAction =
    * Lot 54 — T4 a refusé l'événement (`MODEL_REJECTED_NOT_AGENDA`), s'est
    * abstenu (`MODEL_ABSTAINED`) ou a échoué techniquement
    * (`T4_TECHNICAL_FAILURE`) : aucun Agenda, aucune proposition. Action NON
-   * créatrice de clé : une réanalyse complète retire l'ancien élément
-   * automatique de la source (synchronisation T4-08), jamais un élément
-   * modifié ou confirmé par l'utilisateur.
+   * créatrice de clé. Lot 71E (§A) : seul un REJET explicite peut retirer
+   * l'ancien élément automatique intact rapproché de façon fiable (analyse
+   * complète) ; une abstention ou un échec technique le conserve et suspend
+   * tout retrait global de la source. Jamais un élément modifié ou confirmé
+   * par l'utilisateur, ni un élément encore justifié par une autre source.
    */
   | 'ignore';
 
@@ -68,6 +70,19 @@ export interface T4DecisionTrace {
   warnings: string[];
   errorCode?: string | null;
   traceId?: string | null;
+  /** Lot 71E — version du contrat de sortie lue (1, 2, 3) ; null en échec technique. */
+  contractVersion?: 1 | 2 | 3 | null;
+  /**
+   * Lot 71E (§B) — provenance du type métier APPLIQUÉ (`businessType`) :
+   * T4 (valeur décidée, catalogue fermé) ; CANDIDATE (T4 n'a désigné aucun
+   * type — null explicite, signalé `T4_BUSINESS_TYPE_NULL` — : type du
+   * candidat conservé) ; NONE (aucun type).
+   */
+  businessTypeSource?: 'T4' | 'CANDIDATE' | 'NONE';
+  /** Lot 71E (§E) — empreinte du contexte soumis à T4 (aucun contenu documentaire). */
+  fingerprint?: string | null;
+  /** Lot 71E (§E) — décision RÉUTILISÉE d'un passage précédent du même travail (reprise), sans appel modèle. */
+  reused?: boolean;
 }
 
 export interface AgendaDecision {
@@ -146,6 +161,14 @@ export interface AgendaDecision {
   recurrence?: import('./rules/recurrence').RecurrenceSpec | null;
   /** Lot 54 — décision T4 CLASSIFY_EVENT ayant gouverné ce candidat (BO). */
   t4?: T4DecisionTrace;
+  /**
+   * Lot 71E (§C) — doublon exact d'un événement existant : classification
+   * FIABLE décidée par T4 (catégorie non `unknown`, confiance non ambiguë ;
+   * type métier s'il a été désigné). La persistance corrige l'événement
+   * existant s'il est automatique et intact — même identifiant, ni titre ni
+   * date réécrits.
+   */
+  classificationCorrection?: { category: HomeCategory; businessType: string | null };
   /** Rapprochement incertain : ce qui a fait penser au même événement. */
   duplicate?: {
     similarity: number;

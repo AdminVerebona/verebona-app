@@ -15,14 +15,20 @@
  *   7. Sinistres : reprise de l'ancien formulaire (lot 44, C14.3 — aussi lancé
  *      automatiquement par `operations-claim-migration`) ;
  *   8. Relations intercomptes : correction contrôlée par famille (lot 53,
- *      retour PO D23 — jamais automatique, journalisée et restaurable).
+ *      retour PO D23 — jamais automatique, journalisée et restaurable) ;
+ *   9. Séparation bien / équipement (lot 71A, BUG P1) : valeurs héritées
+ *      corrigées après vérification de provenance, documents rattachés
+ *      rétroactivement aux équipements — jamais automatique, journalisé ;
+ *  10. Documents « à valider » (lot 71B, décision PO du 19/10 : plus de
+ *      validation sur les fiches) — aussi lancé automatiquement par
+ *      `document-validation-reprise`.
  *
  * Chaque bloc n'offre que ce que le script permet (simulation, application,
  * restauration). Les scripts CLI restent utilisables et appellent les mêmes
  * services.
  */
 
-export type BackfillScript = 'merge-rooms' | 'document-asset-links' | 'agenda' | 'cdc15' | 'asset-account' | 'operations-structured' | 'operations-claims' | 'cross-account';
+export type BackfillScript = 'merge-rooms' | 'document-asset-links' | 'agenda' | 'cdc15' | 'asset-account' | 'operations-structured' | 'operations-claims' | 'cross-account' | 'equipment-separation' | 'document-validation';
 export type BackfillAction = 'simulate' | 'apply' | 'restore';
 export type BackfillStatus = 'running' | 'succeeded' | 'failed' | 'interrupted';
 
@@ -153,6 +159,38 @@ export const BACKFILL_DEFINITIONS: readonly BackfillDefinition[] = [
     ],
     accountFilter: true,
     warning: 'Correction de sécurité (D23) : à lancer après lecture de la simulation. Le Duo (D3) reste ouvert : ses relations ne sont jamais modifiées ici.',
+  },
+  {
+    script: 'equipment-separation',
+    order: 9,
+    label: 'Séparation bien / équipement',
+    command: 'BO uniquement (aucune commande)',
+    description: 'Corrige les données échangées à tort entre un bien et ses équipements (date et prix d’achat), APRÈS vérification de leur '
+      + 'provenance : une date identique ne prouve rien. Sont corrigées : la date / le prix d’achat du bien déduits du justificatif d’achat '
+      + 'd’un équipement ; la même preuve attribuée au bien ET à un équipement (acte : valeur du bien ; facture : valeur de l’équipement) ; '
+      + 'la date d’achat du bien recopiée depuis un événement « achat » lié à un équipement (déplacée sur l’équipement). La preuve erronée '
+      + 'est retirée puis la fiche réconciliée : la bonne valeur est restaurée quand elle est connue, sinon le champ reste vide ; une valeur '
+      + 'saisie ou validée par l’utilisateur n’est jamais modifiée (comptée « préservée »). Les documents sont ensuite rapprochés '
+      + 'rétroactivement des équipements de leur bien (n° de série, modèle, désignation, cible T1) — un cas ambigu reste rattaché au bien '
+      + '(carte « À traiter » à l’application). La simulation n’écrit rien ; l’application est tracée ligne à ligne avec le motif. '
+      + 'Rejoué, il ne change rien.',
+    actions: ['simulate', 'apply'],
+    accountFilter: true,
+  },
+  {
+    script: 'document-validation',
+    order: 10,
+    label: 'Documents « à valider » : reprise',
+    command: 'tâche planifiée « document-validation-reprise » (automatique)',
+    description: 'Plus de validation sur les fiches (décision PO du 19/10) : les documents restés « à valider » (ancien bandeau '
+      + '« Automatique — Validation suggérée » et bouton « Appliquer ») sont repassés « analysés », puis leurs données sont réévaluées '
+      + 'par les moteurs existants : une valeur fiable, sans conflit, est écrite directement (tracée, valeur automatique) ; une valeur '
+      + 'incertaine ou contradictoire devient une carte « À traiter » (jamais en double) ; une valeur saisie par l’utilisateur n’est '
+      + 'jamais modifiée ; les équipements désignés sans ambiguïté sont rattachés (sinon carte « À traiter »), sans appel IA. '
+      + 'Chaque document repris est tracé avec le motif. La simulation n’écrit rien. Lancé automatiquement au démarrage puis toutes '
+      + 'les heures tant qu’il reste des documents ; rejoué, il ne change rien.',
+    actions: ['simulate', 'apply'],
+    accountFilter: true,
   },
 ];
 

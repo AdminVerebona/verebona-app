@@ -124,11 +124,18 @@ export interface EconomicDocumentInput {
    * prix d'acquisition du bien) : c'est la facture de l'achat, même fait.
    */
   acquisitionEvidence?: boolean;
+  /**
+   * Lot 71A : équipements du bien auxquels le document est rattaché
+   * (colonne `equipment_id`, liens N-N actifs) — déduplication avec le prix
+   * d'achat de la fiche de l'équipement.
+   */
+  linkedEquipmentIds?: number[];
 }
 
 // ── Sortie : ligne économique ──────────────────────────────────────────────
 
-export type EconomicLineSource = 'OPERATION' | 'DOCUMENT' | 'ASSET_DATA';
+/** Lot 71A : EQUIPMENT_DATA — prix d'achat de la fiche d'un équipement du bien. */
+export type EconomicLineSource = 'OPERATION' | 'DOCUMENT' | 'ASSET_DATA' | 'EQUIPMENT_DATA';
 /** Provenance de la donnée : T1 (analyse), T3 (consolidation), USER (saisie / correction), DOCUMENT (montant du document). */
 export type EconomicLineProvenance = 'T1' | 'T3' | 'USER' | 'DOCUMENT';
 
@@ -168,7 +175,8 @@ export type DocumentLineReason =
   | 'DUPLICATE_COPY' | 'DUPLICATE_REFERENCE' | 'INCLUDED_IN_TOTAL_SAME_DOCUMENT' | 'INCLUDED_IN_TOTAL_INVOICE'
   | 'COVERED_BY_OPERATION' | 'COUNTED_FOR_OTHER_ASSET' | 'UNCONFIRMED_ASSET' | 'PAYMENT_PROOF' | 'LOAN_PRINCIPAL'
   | 'FUTURE_INSTALLMENT' | 'QUOTE' | 'NOT_EXPENSE_DOCUMENT' | 'THEME_UNKNOWN' | 'AMOUNT_UNKNOWN'
-  | 'SAME_AS_ASSET_PRICE' | 'ASSET_PRICE_CONSOLIDATED' | 'CANDIDATE_CANCELLED' | 'OPERATION_CANCELLED_SOURCE';
+  | 'SAME_AS_ASSET_PRICE' | 'ASSET_PRICE_CONSOLIDATED' | 'CANDIDATE_CANCELLED' | 'OPERATION_CANCELLED_SOURCE'
+  | 'SAME_AS_EQUIPMENT_DOCUMENT' | 'EQUIPMENT_PRICE_CONSOLIDATED';
 
 export type EconomicLineReason = ExclusionReason | DocumentLineReason;
 
@@ -191,6 +199,8 @@ export const DOCUMENT_LINE_REASON_LABELS: Readonly<Record<DocumentLineReason, st
   ASSET_PRICE_CONSOLIDATED: 'Prix d’achat repris par l’achat consolidé',
   CANDIDATE_CANCELLED: 'Dépense annulée',
   OPERATION_CANCELLED_SOURCE: 'Rattaché à une dépense annulée',
+  SAME_AS_EQUIPMENT_DOCUMENT: 'Prix d’achat de l’équipement : déjà compté par sa facture',
+  EQUIPMENT_PRICE_CONSOLIDATED: 'Prix d’achat de l’équipement repris par une dépense consolidée',
 };
 
 /** Ligne documentaire qualifiée, avant le moteur (`status` null : à évaluer par `evaluateComponent`). */

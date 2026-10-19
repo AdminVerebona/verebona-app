@@ -14,12 +14,18 @@
  *
  * Toute cible est revalidée dans le compte de la session (aucun identifiant
  * cru sur parole) : un rappel d'un autre compte n'est ni lisible ni modifiable.
+ *
+ * Lot 71G (T6-07, T6-08) : une préférence d'occurrence retient la date de
+ * l'occurrence choisie — une replanification la conserve, un nouveau cycle
+ * (identifiant réutilisé par T4) ne l'hérite pas ; un refus de série survit
+ * à une absence temporaire d'occurrence ; les dates sont des dates civiles
+ * RÉELLES, bornées en Europe/Paris (demain → deux ans).
  */
 import { pgClient } from '@/db';
 import { todayParis } from './collector';
-import { agendaFingerprint } from './t6-interpellation.service';
+import { agendaFingerprint, currentT6Fingerprints } from './t6-interpellation.service';
 import {
-  addDays, agendaSubjectKey, seriesSubjectKey, suggestReminderDate, isDay,
+  T6_MAX_SNOOZE_DAYS, T6_NEW_CYCLE_MIN_DAYS, agendaSubjectKey, preferenceAppliesToCycle, seriesSubjectKey, snoozeDateError, suggestReminderDate,
   type T6PreferenceDecision, type T6PreferenceScope,
 } from './t6-interpellation';
 
@@ -28,7 +34,20 @@ const rows = async (sql: string, params: unknown[]): Promise<Row[]> =>
   (await pgClient.unsafe(sql, params as never[])) as unknown as Row[];
 
 /** Report au plus loin (jours). */
-export const MAX_SNOOZE_DAYS = 730;
+export const MAX_SNOOZE_DAYS = T6_MAX_SNOOZE_DAYS;
+/** Lot 71G (T6-07) : un refus de série sans aucune occurrence pendant ce délai est retiré. */
+export const SERIES_ORPHAN_RETENTION_DAYS = 365;
+/** Lot 71G (T6-08) : contrôle partagé avec l'interface (`t6-interpellation`). */
+export { snoozeDateError };
+
+/** Lot 71G : colonnes `occurrence_date` / `orphaned_since` (0507) présentes ? Lue une fois. */
+let colonnes0507: Promise<boolean> | null = null;
+function hasPreferenceCycleColumns(): Promise<boolean> {
+  colonnes0507 ??= rows(
+    `SELECT 1 FROM information_schema.columns WHERE table_name = 't6_reminder_preferences' AND column_name = 'orphaned_since' LIMIT 1`, [],
+  ).then((r) => r.length > 0).catch(() => { colonnes0507 = null; return false; });
+  return colonnes0507;
+}
 
 export interface T6ReminderPrefView {
   scope: T6PreferenceScope;
@@ -82,12 +101,15 @@ export async function getT6ReminderState(p: { accountId: number; userId: number;
   const today = p.today ?? todayParis();
   const cles = [agendaSubjectKey(t.id), ...(t.seriesKey ? [seriesSubjectKey(t.seriesKey)] : [])];
   const r = await rows(
-    `SELECT subject_key, scope, decision, to_char(remind_at, 'YYYY-MM-DD') AS remind_at, updated_at
-       FROM t6_reminder_preferences
+    `SELECT subject_key, scope, decision, to_char(remind_at, 'YYYY-MM-DD') AS remind_at, updated_at,
+            to_jsonb(p) ->> 'occurrence_date' AS occurrence_date
+       FROM t6_reminder_preferences p
       WHERE account_id = $1 AND user_id = $2 AND subject_key = ANY($3::text[])`,
     [p.accountId, p.userId, cles],
   );
-  const occ = r.find((x) => x.subject_key === agendaSubjectKey(t.id));
+  // Lot 71G (T6-07) : la préférence d'un cycle précédent n'est ni appliquée ni présentée.
+  const occ = r.find((x) => x.subject_key === agendaSubjectKey(t.id)
+    && preferenceAppliesToCycle({ scope: 'OCCURRENCE', occurrenceDate: typeof x.occurrence_date === 'string' ? x.occurrence_date.slice(0, 10) : null }, t.date));
   const ser = t.seriesKey ? r.find((x) => x.subject_key === seriesSubjectKey(t.seriesKey!)) : undefined;
   const [a] = await rows(
     `SELECT to_char(action_date, 'YYYY-MM-DD') AS action_date, to_char(reevaluate_on, 'YYYY-MM-DD') AS reevaluate_on
@@ -122,28 +144,34 @@ export async function setT6Reminder(p: {
   const scope: T6PreferenceScope = p.scope === 'SERIES' ? 'SERIES' : 'OCCURRENCE';
   if (p.action === 'SNOOZE') {
     if (scope !== 'OCCURRENCE') return { ok: false, code: 'INVALID_INPUT', message: 'Un rappel se reporte échéance par échéance.' };
-    if (!isDay(p.remindAt) || p.remindAt <= today || p.remindAt > addDays(today, MAX_SNOOZE_DAYS)) {
-      return { ok: false, code: 'INVALID_DATE', message: 'Choisissez une date à venir, dans les deux prochaines années.' };
-    }
+    const erreur = snoozeDateError(p.remindAt, today);
+    if (erreur) return { ok: false, code: 'INVALID_DATE', message: erreur };
   }
   if (scope === 'SERIES' && !t.seriesKey) {
     return { ok: false, code: 'NO_SERIES', message: 'Cette échéance n’appartient à aucune série.' };
   }
-  const fingerprint = agendaFingerprint({ title: t.title, date: t.date, forecast: t.forecast, requiresQualification: t.requiresQualification });
+  // Lot 71G (T6-01) : empreinte ENRICHIE (même calcul que la décision) ; à
+  // défaut de pouvoir lire les preuves, empreinte historique (relue comme telle).
+  const fingerprint = await currentT6Fingerprints(p.accountId, [t.id]).then((m) => m.get(t.id) ?? null).catch(() => null)
+    ?? agendaFingerprint({ title: t.title, date: t.date, forecast: t.forecast, requiresQualification: t.requiresQualification });
   const subjectKey = scope === 'SERIES' ? seriesSubjectKey(t.seriesKey!) : agendaSubjectKey(t.id);
+  const cycle = await hasPreferenceCycleColumns();
   await rows(
     `INSERT INTO t6_reminder_preferences
-       (account_id, user_id, subject_key, scope, agenda_item_id, series_key, decision, remind_at, context_fingerprint)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8::date, $9)
+       (account_id, user_id, subject_key, scope, agenda_item_id, series_key, decision, remind_at, context_fingerprint${cycle ? ', occurrence_date, orphaned_since' : ''})
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8::date, $9${cycle ? ', $10::date, NULL' : ''})
      ON CONFLICT (account_id, user_id, subject_key) DO UPDATE SET
        scope = EXCLUDED.scope, agenda_item_id = EXCLUDED.agenda_item_id, series_key = EXCLUDED.series_key,
        decision = EXCLUDED.decision, remind_at = EXCLUDED.remind_at, context_fingerprint = EXCLUDED.context_fingerprint,
+       ${cycle ? 'occurrence_date = EXCLUDED.occurrence_date, orphaned_since = NULL,' : ''}
        updated_at = now()`,
     [p.accountId, p.userId, subjectKey, scope,
       // Une préférence de SÉRIE ne dépend d'aucune occurrence : elle survit à
       // la suppression de celle d'où elle a été posée.
       scope === 'SERIES' ? null : t.id, scope === 'SERIES' ? t.seriesKey : null,
-      p.action === 'SNOOZE' ? 'SNOOZED' : 'DISMISSED', p.action === 'SNOOZE' ? p.remindAt : null, fingerprint],
+      p.action === 'SNOOZE' ? 'SNOOZED' : 'DISMISSED', p.action === 'SNOOZE' ? p.remindAt : null, fingerprint,
+      // Lot 71G (T6-07) : cycle de l'occurrence choisie (replanification ≠ nouveau cycle).
+      ...(cycle ? [scope === 'SERIES' ? null : t.date] : [])],
   );
   const state = await getT6ReminderState({ accountId: p.accountId, userId: p.userId, agendaItemId: t.id, today });
   return 'ok' in state ? state : { ok: true, state };
@@ -171,15 +199,36 @@ export async function clearT6Reminder(p: {
  *     réalisées ou annulées (ils n'ont plus d'objet) ;
  *   · préférences et évaluations rattachées à une échéance passée dans un
  *     AUTRE compte (déplacement de bien) — jamais appliquées, retirées ;
- *   · préférences de série dont plus aucune échéance du compte ne porte la clé ;
+ *   · lot 71G (T6-07) : refus « cette échéance » d'un cycle PRÉCÉDENT
+ *     (identifiant réutilisé par T4, date décalée d'un cycle) — sans objet ;
+ *   · préférences de série dont plus aucune échéance du compte ne porte la
+ *     clé — lot 71G : seulement après `SERIES_ORPHAN_RETENTION_DAYS` jours
+ *     d'absence continue (une régénération T4 ne supprime jamais un refus
+ *     de série encore valable) ;
  *   · évaluations d'échéances réalisées ou annulées, ou de plus de 180 jours.
- * Un REFUS sur une échéance encore présente n'est jamais retiré (il ne doit
- * pas être annulé automatiquement). Les préférences d'une échéance
- * supprimée disparaissent avec elle (ON DELETE CASCADE).
+ * Un REFUS sur une échéance encore présente (même cycle) n'est jamais retiré.
+ * Les préférences d'une échéance supprimée disparaissent avec elle (ON
+ * DELETE CASCADE).
  */
-export async function cleanupT6Reminders(today: string): Promise<{ preferences: number; assessments: number }> {
+export async function cleanupT6Reminders(today: string): Promise<{ preferences: number; assessments: number; orphanedSeries?: number }> {
   const [ok] = await rows(`SELECT to_regclass('t6_reminder_preferences') IS NOT NULL AND to_regclass('t6_interpellation_assessments') IS NOT NULL AS ok`, []);
   if (!ok?.ok) return { preferences: 0, assessments: 0 };
+  const cycle = await hasPreferenceCycleColumns();
+  const sansSerie = `NOT EXISTS (SELECT 1 FROM agenda_items i WHERE i.account_id = p.account_id AND i.series_key = p.series_key)`;
+  let orphelines = 0;
+  if (cycle) {
+    // Absence d'occurrence : datée (première constatation), effacée au retour d'une occurrence.
+    orphelines = (await rows(
+      `UPDATE t6_reminder_preferences p SET orphaned_since = $1::date
+        WHERE p.scope = 'SERIES' AND p.orphaned_since IS NULL AND ${sansSerie} RETURNING p.id`,
+      [today],
+    )).length;
+    await rows(
+      `UPDATE t6_reminder_preferences p SET orphaned_since = NULL
+        WHERE p.scope = 'SERIES' AND p.orphaned_since IS NOT NULL AND NOT (${sansSerie})`,
+      [],
+    );
+  }
   const prefs = await rows(
     `DELETE FROM t6_reminder_preferences p
       WHERE (p.decision = 'SNOOZED' AND p.remind_at < $1::date - 90)
@@ -187,8 +236,12 @@ export async function cleanupT6Reminders(today: string): Promise<{ preferences: 
                SELECT 1 FROM agenda_items i WHERE i.id = p.agenda_item_id AND trim(coalesce(i.manual_status, '')) <> ''))
          OR (p.agenda_item_id IS NOT NULL AND EXISTS (
                SELECT 1 FROM agenda_items i WHERE i.id = p.agenda_item_id AND i.account_id <> p.account_id))
-         OR (p.scope = 'SERIES' AND NOT EXISTS (
-               SELECT 1 FROM agenda_items i WHERE i.account_id = p.account_id AND i.series_key = p.series_key))
+         ${cycle ? `OR (p.scope = 'SERIES' AND p.orphaned_since < $1::date - ${SERIES_ORPHAN_RETENTION_DAYS} AND ${sansSerie})
+         OR (p.scope = 'OCCURRENCE' AND p.decision = 'DISMISSED' AND p.occurrence_date IS NOT NULL AND EXISTS (
+               SELECT 1 FROM agenda_items i WHERE i.id = p.agenda_item_id AND i.start_date IS NOT NULL
+                  AND abs(i.start_date - p.occurrence_date) >= ${T6_NEW_CYCLE_MIN_DAYS}))`
+           // Colonnes absentes (déploiement) : règle historique.
+           : `OR (p.scope = 'SERIES' AND ${sansSerie})`}
       RETURNING p.id`,
     [today],
   );
@@ -200,5 +253,5 @@ export async function cleanupT6Reminders(today: string): Promise<{ preferences: 
       RETURNING a.id`,
     [today],
   );
-  return { preferences: prefs.length, assessments: evals.length };
+  return { preferences: prefs.length, assessments: evals.length, orphanedSeries: orphelines };
 }

@@ -138,8 +138,9 @@ describe('L68A — même règle de rattachement (TCO, T2, liste des documents) e
     const tco = lire('src/services/business-operations/tco/service.ts');
     const lecture = tco.slice(tco.indexOf('export async function readAssetDocuments'), tco.indexOf('const ids = lus.map'));
     // Chaque lecture de document_asset_links (sélection ET biens d'attribution) filtre le rôle.
-    expect(lecture.match(/FROM document_asset_links l/g)?.length).toBe(2);
-    expect(lecture.match(/l\.link_role IN \$\{ROLES\}/g)?.length).toBe(2);
+    // Lot 71A : + équipements rattachés (dédoublonnage du prix d'équipement) — même filtre de rôle.
+    expect(lecture.match(/FROM document_asset_links l/g)?.length).toBe(3);
+    expect(lecture.match(/l\.link_role IN \$\{ROLES\}/g)?.length).toBe(3);
     const t2 = lire('src/services/verebona-assistant/canonical/expenses.ts');
     const l2 = t2.slice(t2.indexOf('async function readExpenseDocuments'), t2.indexOf('type DocLine'));
     expect(l2.match(/FROM document_asset_links l/g)?.length).toBe(2);

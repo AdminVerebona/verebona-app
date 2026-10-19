@@ -218,6 +218,14 @@ export async function PUT(
       }
     }
 
+    // Lot 71A (point B) : nom, type ou bien modifiés → les documents du bien
+    // sont rapprochés de nouveau (déterministe seul, aucun appel IA ici).
+    if (name !== undefined || type !== undefined || newAssetId !== undefined) {
+      void import('@/services/equipment/document-equipment-link.service')
+        .then(({ syncEquipmentDocumentLinks }) => syncEquipmentDocumentLinks({ accountId: session.currentAccountId!, equipmentId, allowAi: false }))
+        .catch((e: Error) => console.error('[equipments] rapprochement des documents (non bloquant) :', e.message));
+    }
+
     // CDC Assistant §25.7, §31.7 : équipement modifié.
     await emitBusinessEvent({ type: 'ASSET_UPDATED', accountId: session.currentAccountId!, entityId: effectiveAssetId });
     // Lot 34E : équipement modifié (nom, n° de série…) → réconciliation continue T3.

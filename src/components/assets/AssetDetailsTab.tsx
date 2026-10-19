@@ -21,7 +21,6 @@ import { OCCUPANCY_USAGE_OPTIONS } from '@/lib/assets/occupancy';
 import { apiClient } from '@/lib/api-client';
 import type { AssetDetail } from '@/types/asset-detail';
 import { ChevronDown, ChevronUp, TrendingUp } from 'lucide-react';
-import { toast } from 'sonner';
 import { displayDocumentTitle } from '@/lib/documents/document-title-rules';
 import { TENURE_END_LABEL, TENURE_META_KEY, tenureEndKey, tenureSourceLabel, type TenureEndMeta } from '@/lib/assets/tenure-end';
 
@@ -448,10 +447,8 @@ function buildFieldToSectionMap(category: string): Record<string, string> {
   return map;
 }
 
-type CoherenceAlert = { field: string; section: string; currentValue: string; issue: string; suggestedValue: string | null; sourceDocument: string; detectedAt: string };
-
 export function AssetDetailsTab({ asset, onRefresh, planType, readOnly = false, highlightField, highlightClaimId = null }: Props) {
-  const [detailData, setDetailData] = useState<{ family: string; sections: Record<string, Record<string, unknown>>; coherenceAlerts?: CoherenceAlert[] } | null>(null);
+  const [detailData, setDetailData] = useState<{ family: string; sections: Record<string, Record<string, unknown>> } | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshTrigger, setRefreshTrigger] = useState(0);
 
@@ -495,38 +492,11 @@ export function AssetDetailsTab({ asset, onRefresh, planType, readOnly = false, 
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [refreshTrigger]);
 
-  const handleDismissAlert = useCallback(async (field: string) => {
-    try {
-      await apiClient.post(`/api/assets/${asset.id}/dismiss-coherence-alert`, { field });
-      setRefreshTrigger(prev => prev + 1);
-      toast.success('Incohérence ignorée');
-    } catch {
-      toast.error("Erreur lors de l'ignorance de l'incohérence");
-    }
-  }, [asset.id]);
-
   // Scroll to the highlighted section as soon as sections are rendered (detailData available)
   const fieldToSection = useMemo(() => buildFieldToSectionMap(asset.category), [asset.category]);
 
-  const handleApplyAlert = useCallback(async (field: string, suggestedValue: string) => {
-    const sectionKey = fieldToSection[field];
-    if (!sectionKey) {
-      toast.error("Impossible d'appliquer la suggestion : section inconnue");
-      return;
-    }
-    try {
-      // Retirer l'alerte de coherence (la PATCH le ferait aussi, mais en doublon c'est safe)
-      await apiClient.post(`/api/assets/${asset.id}/dismiss-coherence-alert`, { field });
-      // Appliquer la valeur suggérée
-      await apiClient.patch(`/api/assets/${asset.id}/details/${sectionKey}`, {
-        fields: { [field]: suggestedValue },
-      });
-      setRefreshTrigger(prev => prev + 1);
-      toast.success('Valeur suggérée appliquée');
-    } catch {
-      toast.error("Erreur lors de l'application de la suggestion");
-    }
-  }, [asset.id, fieldToSection]);
+  // Lot 71B (décision PO du 19/10) : plus de « Appliquer la valeur suggérée »
+  // ni « Conserver » sur la fiche — une contradiction est une carte « À traiter ».
 
   useEffect(() => {
     if (!highlightField || !detailData || highlightAppliedRef.current) return;
@@ -573,7 +543,6 @@ export function AssetDetailsTab({ asset, onRefresh, planType, readOnly = false, 
           .filter((f) => !REGISTRATION_FIELD_KEYS.has(f.key) || assetHasRegistration({ category: asset.category, subtype: asset.subtype }));
         const sectionData = key === 'common' ? { ...data, status: asset.status } : data;
         const isForced = forcedOpenSection === key;
-        const sectionAlerts = (detailData?.coherenceAlerts ?? []).filter(a => a.section === key);
 
         return (
           <div
@@ -592,9 +561,6 @@ export function AssetDetailsTab({ asset, onRefresh, planType, readOnly = false, 
               forceOpen={isForced}
               highlightField={isForced ? (highlightField ?? undefined) : undefined}
               readOnly={readOnly}
-              coherenceAlerts={sectionAlerts}
-              onDismissAlert={handleDismissAlert}
-              onApplyAlert={handleApplyAlert}
               headerActions={key === 'valuation' ? (
                 <Button
                   variant="ghost"

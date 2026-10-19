@@ -91,6 +91,13 @@ export interface SyncDecision {
   occurrenceIndex?: string | null;
   /** Cible fine du candidat (équipement, pièce) : fait partie de la clé. */
   target?: { type: string; id: number | null } | null;
+  /**
+   * Lot 71E (§A) — issue T4 d'un candidat NON créateur (`ignore`) :
+   * `reject` (décision explicite : retrait ciblé possible), `abstain` ou
+   * `technical_failure` (indéterminé : l'élément rapproché est conservé et
+   * aucun retrait global n'a lieu). Absent : décision créatrice ou sans T4.
+   */
+  t4Outcome?: 'reject' | 'abstain' | 'technical_failure' | null;
 }
 
 /** Élément existant de la source, rattaché au bien. */
@@ -120,7 +127,18 @@ export interface SourceSyncPlan {
   remove: number[];
   /** Éléments conservés (produits, confirmés, ou modifiés à la main). */
   keep: number[];
+  /**
+   * Lot 71E (§A) — retraits CIBLÉS : éléments automatiques intacts
+   * rapprochés de façon FIABLE (même clé, ou même champ d'origine / date /
+   * intitulé) d'un candidat que T4 a explicitement REJETÉ. Seuls retraits
+   * permis quand une décision reste indéterminée.
+   */
+  targetedRemove: number[];
+  /** Lot 71E (§A) — candidats dont la décision T4 reste indéterminée (abstention, échec technique). */
+  undetermined: number;
 }
+
+const normTitre = (s: string) => s.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
 
 /** Cible de la clé : équipement ou pièce du candidat s'il est identifié, sinon le bien. */
 export function keyTarget(target: { type: string; id: number | null } | null | undefined, assetId: number): { type: string; id: number } {
@@ -154,40 +172,84 @@ export function planSourceSync(p: {
   const pris = new Set<number>();
   const vus = new Map<string, number>();
   const parCle = new Map(p.items.filter((i) => i.functionalKey).map((i) => [i.functionalKey!, i]));
+  const targeted = new Set<number>();
+  let undetermined = 0;
 
+  // Clé de chaque décision (créatrice, ou rejet / indécision de T4 : même calcul).
+  const cles = new Map<number, { key: string; semantics: EventSemantics; occurrenceDate: boolean }>();
   for (const d of p.decisions) {
+    const t4 = d.action === 'ignore' ? d.t4Outcome ?? null : null;
+    if (t4 === 'abstain' || t4 === 'technical_failure') undetermined++;
     if (d.existingItemId && !KEYED_ACTIONS.has(d.action)) keep.add(d.existingItemId);
-    if (!KEYED_ACTIONS.has(d.action)) continue;
+    if (!KEYED_ACTIONS.has(d.action) && !t4) continue;
     if (d.sourceFileId != null && d.sourceFileId !== p.sourceFileId) continue;
     const semantics = resolveEventSemantics({ originFieldKey: d.originFieldKey, businessType: d.businessType, nature: d.nature });
     // Occurrence : celle du candidat (T4, enabled), sinon la règle par défaut.
     const occurrence = d.occurrenceIndex ?? (d.seriesKey || !d.originFieldKey ? d.date : 'single');
-    const occurrenceDate = occurrence !== 'single';
     const base = computeAgendaFunctionalKey({
       sourceFileId: p.sourceFileId, target: keyTarget(d.target, p.assetId),
       businessType: semantics.businessType, originFieldKey: d.originFieldKey ?? null,
       occurrence,
     });
-    const rang = (vus.get(base) ?? 0) + 1;
-    vus.set(base, rang);
-    const key = rang === 1 ? base : `${base}#${rang}`;
-
-    let item = parCle.get(key);
-    let adopted = false;
-    if (!item) {
-      item = p.items.find((i) => !i.functionalKey && !pris.has(i.id) && i.isAutomatic
-        && (i.originFieldKey ?? null) === (d.originFieldKey ?? null)
-        && (!occurrenceDate || i.startDate === d.date));
-      adopted = !!item;
+    // Rang : seules les décisions créatrices le consomment (un rejet vise la clé produite à l'origine).
+    let key = base;
+    if (KEYED_ACTIONS.has(d.action)) {
+      const rang = (vus.get(base) ?? 0) + 1;
+      vus.set(base, rang);
+      key = rang === 1 ? base : `${base}#${rang}`;
     }
-    if (!item) { steps.push({ kind: 'create', index: d.index, key, semantics }); continue; }
-    pris.add(item.id);
-    keep.add(item.id);
-    if (isUserTouched(item)) steps.push({ kind: 'protected', index: d.index, key, itemId: item.id });
-    else steps.push({ kind: 'update', index: d.index, key, itemId: item.id, semantics, adopted });
+    cles.set(d.index, { key, semantics, occurrenceDate: occurrence !== 'single' });
+  }
+  const produites = new Set([...cles.entries()].filter(([i]) => KEYED_ACTIONS.has(p.decisions.find((d) => d.index === i)!.action)).map(([, c]) => c.key));
+
+  /**
+   * Rapprochement FIABLE d'une décision avec un élément de la source :
+   *  1. même clé fonctionnelle ;
+   *  2. élément antérieur à 0223 (sans clé) de même champ d'origine — et même
+   *     date si l'occurrence est une date (adoption historique) ;
+   *  3. lot 71E (§B) — élément dont la clé n'est plus produite (type métier
+   *     reclassé par T4) : même champ d'origine, même date si l'occurrence est
+   *     une date, et même intitulé normalisé sans champ d'origine. Identifiant
+   *     et rattachements conservés : jamais « retrait + recréation ».
+   */
+  const rapprocher = (d: SyncDecision, c: { key: string; occurrenceDate: boolean }): { item: SourceItem; adopted: boolean } | null => {
+    const parClef = parCle.get(c.key);
+    if (parClef && !pris.has(parClef.id)) return { item: parClef, adopted: false };
+    const memeChamp = (i: SourceItem) => !pris.has(i.id) && i.isAutomatic
+      && (i.originFieldKey ?? null) === (d.originFieldKey ?? null) && (!c.occurrenceDate || i.startDate === d.date);
+    const ancien = p.items.find((i) => !i.functionalKey && memeChamp(i));
+    if (ancien) return { item: ancien, adopted: true };
+    const reclasse = p.items.find((i) => i.functionalKey && !produites.has(i.functionalKey) && memeChamp(i)
+      && (d.originFieldKey ? true : normTitre(i.title) === normTitre(d.title)));
+    return reclasse ? { item: reclasse, adopted: true } : null;
+  };
+
+  for (const d of p.decisions) {
+    const c = cles.get(d.index);
+    if (!c || !KEYED_ACTIONS.has(d.action)) continue;
+    const r = rapprocher(d, c);
+    if (!r) { steps.push({ kind: 'create', index: d.index, key: c.key, semantics: c.semantics }); continue; }
+    pris.add(r.item.id);
+    keep.add(r.item.id);
+    if (isUserTouched(r.item)) steps.push({ kind: 'protected', index: d.index, key: c.key, itemId: r.item.id });
+    else steps.push({ kind: 'update', index: d.index, key: c.key, itemId: r.item.id, semantics: c.semantics, adopted: r.adopted });
+  }
+  // Indécision (abstention, échec technique) : l'élément rapproché est conservé.
+  for (const d of p.decisions) {
+    const c = cles.get(d.index);
+    if (!c || d.action !== 'ignore' || d.t4Outcome === 'reject') continue;
+    const r = rapprocher(d, c);
+    if (r) { pris.add(r.item.id); keep.add(r.item.id); }
+  }
+  // Rejet explicite : retrait CIBLÉ de l'élément rapproché, s'il est automatique et intact.
+  for (const d of p.decisions) {
+    const c = cles.get(d.index);
+    if (!c || d.action !== 'ignore' || d.t4Outcome !== 'reject') continue;
+    const r = rapprocher(d, c);
+    if (r && !keep.has(r.item.id) && !isUserTouched(r.item)) { pris.add(r.item.id); targeted.add(r.item.id); }
   }
 
   const remove = p.items.filter((i) => !keep.has(i.id) && !isUserTouched(i)).map((i) => i.id);
   for (const i of p.items) if (isUserTouched(i)) keep.add(i.id);
-  return { sourceFileId: p.sourceFileId, steps, remove, keep: [...keep] };
+  return { sourceFileId: p.sourceFileId, steps, remove, keep: [...keep], targetedRemove: [...targeted], undetermined };
 }

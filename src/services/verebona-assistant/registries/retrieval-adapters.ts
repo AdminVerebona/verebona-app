@@ -574,8 +574,9 @@ export function documentTypeCodesFor(stem: string): string[] {
 const ETATS_ANALYSE: Record<Exclude<DocumentAnalysisFilter, 'NOT_ANALYZED'>, string[]> = {
   IN_ANALYSIS: ['UPLOADING', 'UPLOADED', 'ANALYZING'],
   ANALYSIS_FAILED: ['ANALYSIS_FAILED'],
-  TO_VALIDATE: ['VALIDATION_REQUIRED', 'CONFLICT_DETECTED'],
-  ANALYZED: ['ANALYZED'],
+  TO_VALIDATE: ['CONFLICT_DETECTED'],
+  // Lot 71B : l'ancien état « à valider » (en cours de reprise) est un document analysé.
+  ANALYZED: ['ANALYZED', 'VALIDATION_REQUIRED'],
 };
 const TOUS_ETATS = Object.values(ETATS_ANALYSE).flat();
 

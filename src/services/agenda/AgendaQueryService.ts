@@ -11,6 +11,10 @@ import { alias } from 'drizzle-orm/pg-core';
 import { computeEffectiveStatus, computeAttentionFlags, type EffectiveStatus, type AttentionFlag } from './AgendaDomainService';
 import { agendaFunctionalColumnsReady } from './agenda-columns';
 import { listAgendaItemIdsForSource, SOURCE_LINK_EFFECTS } from './agenda-source-links';
+import {
+  countItemsByEquipment, filterItemsByEquipment, listEquipmentsOfAssets,
+} from '@/services/equipments/equipment-filter-scope';
+import { isEquipmentFilterActive, type EquipmentFacet } from '@/lib/filters/equipment-filter';
 
 export interface AgendaQueryParams {
   accountId: number;
@@ -21,6 +25,12 @@ export interface AgendaQueryParams {
   month?: string; // 'YYYY-MM'
   year?: string;  // 'YYYY'
   includeUndated?: boolean;
+  /**
+   * Lot 71 (71C) — filtre « Équipement » (`asset` | identifiant ; absent ou
+   * `all` = tous). Sans effet sans `assetIds` ou si ces biens n'ont aucun
+   * équipement. Voir `lib/filters/equipment-filter.ts`.
+   */
+  equipment?: string;
 }
 
 export interface AgendaItemFull {
@@ -391,6 +401,43 @@ export async function getUpcomingDeadlines(
 }
 
 export async function getAgendaItems(params: AgendaQueryParams): Promise<AgendaItemFull[]> {
+  const items = await getAgendaItemsInScope(params);
+  if (!params.assetIds?.length || !isEquipmentFilterActive(params.equipment)) return items;
+  const equipmentIds = (await listEquipmentsOfAssets(params.accountId, params.assetIds)).map((e) => e.id);
+  return filterItemsByEquipment(items, params.equipment, equipmentIds);
+}
+
+/**
+ * Lot 71 (71C) — « Mon agenda » : éléments ET options du filtre Équipement
+ * (équipements des biens retenus, comptés sur les éléments retenus par les
+ * AUTRES filtres — période, dates, annulés). Facette absente sans bien
+ * retenu ou sans équipement : le filtre est alors masqué.
+ */
+export async function getAgendaItemsWithEquipmentFacet(
+  params: AgendaQueryParams,
+): Promise<{ items: AgendaItemFull[]; equipmentFacet: EquipmentFacet | null }> {
+  if (!params.assetIds?.length || params.fileId) {
+    return { items: await getAgendaItems(params), equipmentFacet: null };
+  }
+  const [inScope, assetEquipments] = await Promise.all([
+    getAgendaItemsInScope(params),
+    listEquipmentsOfAssets(params.accountId, params.assetIds),
+  ]);
+  if (assetEquipments.length === 0) return { items: inScope, equipmentFacet: null };
+  const ids = assetEquipments.map((e) => e.id);
+  const counts = countItemsByEquipment(inScope, ids);
+  return {
+    items: filterItemsByEquipment(inScope, params.equipment, ids),
+    equipmentFacet: {
+      all: counts.all,
+      assetOnly: counts.assetOnly,
+      items: assetEquipments.map((e) => ({ ...e, count: counts.byEquipment.get(e.id) ?? 0 })),
+    },
+  };
+}
+
+/** Éléments retenus par tous les filtres SAUF le filtre Équipement. */
+async function getAgendaItemsInScope(params: AgendaQueryParams): Promise<AgendaItemFull[]> {
   const { accountId, assetIds, fileId, period, includeCancelled = false, month, year, includeUndated } = params;
   const now = new Date();
   const today = now.toISOString().slice(0, 10);
@@ -410,11 +457,24 @@ export async function getAgendaItems(params: AgendaQueryParams): Promise<AgendaI
   } else if (assetIds && assetIds.length > 0) {
     // Get item ids that have links to the requested assets
     // Lot 49 : biens du compte seulement.
-    const linkedIds = await db.selectDistinct({ id: agendaAssetLinks.agendaItemId })
-      .from(agendaAssetLinks)
-      .innerJoin(assets, and(eq(assets.id, agendaAssetLinks.assetId), eq(assets.accountId, accountId)))
-      .where(inArray(agendaAssetLinks.assetId, assetIds));
-    const ids = linkedIds.map(r => r.id);
+    //
+    // Lot 71 (71C) — évolution EXPLICITE du rattachement : un élément lié à
+    // un ÉQUIPEMENT du bien (`agenda_equipment_links`) figure aussi dans les
+    // résultats du bien parent, même sans lien direct au bien (cohérence
+    // avec les documents, ticket « filtres Documents / Agenda » §4). Les
+    // règles de statut, de période et d'attention ne changent pas.
+    const [linkedIds, equipmentLinkedIds] = await Promise.all([
+      db.selectDistinct({ id: agendaAssetLinks.agendaItemId })
+        .from(agendaAssetLinks)
+        .innerJoin(assets, and(eq(assets.id, agendaAssetLinks.assetId), eq(assets.accountId, accountId)))
+        .where(inArray(agendaAssetLinks.assetId, assetIds)),
+      db.selectDistinct({ id: agendaEquipmentLinks.agendaItemId })
+        .from(agendaEquipmentLinks)
+        .innerJoin(equipments, eq(equipments.id, agendaEquipmentLinks.equipmentId))
+        .innerJoin(assets, and(eq(assets.id, equipments.assetId), eq(assets.accountId, accountId)))
+        .where(inArray(equipments.assetId, assetIds)),
+    ]);
+    const ids = [...new Set([...linkedIds, ...equipmentLinkedIds].map(r => r.id))];
     if (ids.length === 0) return [];
     rows = await db.select().from(agendaItems).where(
       and(eq(agendaItems.accountId, accountId), inArray(agendaItems.id, ids))

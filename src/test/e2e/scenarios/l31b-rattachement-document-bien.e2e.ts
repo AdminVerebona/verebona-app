@@ -161,12 +161,13 @@ scenario('L31B', 'Rattachement document → bien : identifiants canoniques (T1) 
     await syncDocumentRulesFromState(compte.id, doc.id, { create: true });
     expect(await actionsLink(doc.id)).toEqual([]);
 
-    // T3 s'abstient → UNE question, avec les candidats ; document « à valider ».
+    // T3 s'abstient → UNE question, avec les candidats. Lot 71B (VALID-04) :
+    // la carte suffit, le document reste « analysé » (plus de validation sur la fiche).
     await drainQueues();
     const [a] = await actionsLink(doc.id);
     expect(a).toMatchObject({ action_kind: 'ARBITRATE', active: true, question: 'À quel bien rattacher ce document ?' });
     expect(a.proposals.map((p) => Number(p.value)).sort()).toEqual([maison.id, studio.id].sort());
-    expect((await fichier(doc.id)).analysis_state).toBe('VALIDATION_REQUIRED');
+    expect((await fichier(doc.id)).analysis_state).toBe('ANALYZED');
     expect(await resolution(doc.id)).toMatchObject({ status: 'ABSTAINED', reason_code: 'INSUFFICIENT_EVIDENCE' });
   });
 
@@ -267,7 +268,7 @@ scenario('L31B', 'Rattachement document → bien : identifiants canoniques (T1) 
     expect(await actionsLink(doc.id)).toEqual([]);
   });
 
-  it('T3DOC-05 — T3 trouve un vainqueur clair : PRIMARY par le service canonique, document_linked émis, VALIDATION_REQUIRED levé', async () => {
+  it('T3DOC-05 — T3 trouve un vainqueur clair : PRIMARY par le service canonique, document_linked émis, document « analysé »', async () => {
     const compte = await make.account();
     const maison = await make.asset(compte, { category: 'IMMOBILIER', name: 'Maison' });
     const studio = await make.asset(compte, { category: 'IMMOBILIER', name: 'Studio' });

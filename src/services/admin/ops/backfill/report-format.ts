@@ -16,6 +16,8 @@ import type { AssetAccountBackfillReport } from '@/services/assets/asset-account
 import type { StructuredMigrationReport } from '@/services/business-operations/consolidation/asset-data-consolidator';
 import type { ClaimMigrationReport } from '@/services/business-operations/consolidation/claim-migration';
 import type { RemediationReport, RemediationRestoreReport } from '@/services/security/cross-account/remediation';
+import type { DataSeparationReport } from '@/services/equipment/data-separation-backfill';
+import type { ValidationRepriseReport } from '@/services/documents/validation-reprise';
 import type { BackfillAction, BackfillScript } from './definitions';
 
 export interface BackfillSummary {
@@ -366,6 +368,68 @@ function crossAccount(action: BackfillAction, out: RawBackfillOutput): BackfillS
   };
 }
 
+/** Lot 71A : séparation bien / équipement. */
+function equipmentSeparation(out: RawBackfillOutput): BackfillSummary {
+  const r = out.result as DataSeparationReport;
+  const simulation = r.mode === 'simulate';
+  const n = (k: string) => r.cases.filter((c) => c.kind === k).length;
+  return {
+    headline: `${simulation ? 'Simulation' : 'Application'} : ${r.cases.length} valeur(s) d’origine erronée démontrée ${simulation ? 'à corriger' : 'traitée(s)'}, `
+      + `${r.preserved.length} valeur(s) utilisateur préservée(s), ${r.documents.linked} document(s) ${simulation ? 'à rattacher' : 'rattaché(s)'} à un équipement, `
+      + `${r.documents.ambiguous} ambigu(s), ${r.failed.length} échec(s).`,
+    scriptRunId: simulation ? null : r.runId,
+    restorable: false,
+    counters: [
+      { label: 'Comptes examinés', value: r.accountsScanned },
+      { label: 'Bien : date / prix déduits d’un achat d’équipement ou même preuve', value: n('ASSET_EVIDENCE_WITHDRAWN') },
+      { label: 'Équipement : valeur du bien recopiée (même preuve, acte)', value: n('EQUIPMENT_EVIDENCE_WITHDRAWN') },
+      { label: 'Bien : date d’achat recopiée d’un événement d’équipement', value: n('AGENDA_PURCHASE_MOVED') },
+      { label: 'Champs corrigés sur les fiches', value: r.fieldsCorrected.length },
+      { label: 'Valeurs utilisateur préservées', value: r.preserved.length },
+      { label: 'Documents examinés', value: r.documents.examined },
+      { label: `Documents ${simulation ? 'à rattacher' : 'rattachés'} à un équipement`, value: r.documents.linked },
+      { label: `Liens document ↔ équipement ${simulation ? 'à créer' : 'créés'}`, value: r.documents.linksCreated },
+    ],
+    ambiguous: { count: r.documents.ambiguous, samples: [] },
+    conflicts: { count: r.failed.length, samples: echantillon(r.failed, (f) => `${f.ref} — ${f.error}`) },
+    warnings: [
+      ...r.cases.slice(0, SAMPLE_LIMIT).map((c) => `${c.kind} · compte ${c.accountId} · bien ${c.assetId}${c.equipmentId ? ` · équipement ${c.equipmentId}` : ''} · ${c.fieldKey} : ${c.motive}`),
+      ...r.documents.samples.slice(0, 5),
+    ],
+  };
+}
+
+/** Lot 71B : reprise des documents « à valider ». */
+function documentValidation(out: RawBackfillOutput): BackfillSummary {
+  const r = out.result as ValidationRepriseReport;
+  const simulation = r.mode === 'simulate';
+  return {
+    headline: simulation
+      ? `Simulation : ${r.scanned} document(s) « à valider » à reprendre, ${r.pendingProposals} proposition(s) en attente, `
+        + `${r.openCards} carte(s) « À traiter » déjà ouverte(s), ${r.equipment.linksCreated} lien(s) équipement à poser.`
+      : `Application : ${r.processed} document(s) repris, ${r.rules.written} donnée(s) écrite(s), ${r.rules.created} carte(s) « À traiter » créée(s), `
+        + `${r.equipment.linksCreated} lien(s) équipement posé(s), ${r.failed.length} échec(s).`,
+    scriptRunId: simulation ? null : r.runId,
+    restorable: false,
+    counters: [
+      { label: 'Documents « à valider » examinés', value: r.scanned },
+      { label: simulation ? 'Documents à reprendre' : 'Documents repris', value: simulation ? r.scanned : r.processed },
+      { label: 'Ignorés (état changé entre-temps)', value: r.skipped },
+      { label: 'Propositions en attente', value: r.pendingProposals },
+      { label: 'Cartes « À traiter » déjà ouvertes', value: r.openCards },
+      { label: 'Données fiables écrites', value: r.rules.written },
+      { label: 'Cartes « À traiter » créées', value: r.rules.created },
+      { label: 'Cartes « À traiter » mises à jour', value: r.rules.updated },
+      { label: 'Cartes « À traiter » fermées (résolues)', value: r.rules.closed },
+      { label: `Liens équipement ${simulation ? 'à poser' : 'posés'}`, value: r.equipment.linksCreated },
+      { label: 'Cartes équipement (ambiguïté)', value: r.equipment.cards },
+    ],
+    ambiguous: { count: r.equipment.ambiguous, samples: [] },
+    conflicts: { count: r.failed.length, samples: echantillon(r.failed, (f) => `document ${f.fileId} · compte ${f.accountId} — ${f.error}`) },
+    warnings: [...r.samples.slice(0, SAMPLE_LIMIT), ...(r.more ? ['Il reste des documents : relancez ou laissez la tâche planifiée poursuivre.'] : [])],
+  };
+}
+
 /** Synthèse lisible d'une exécution terminée (pure). */
 export function summarizeBackfill(script: BackfillScript, action: BackfillAction, step: string | null, out: RawBackfillOutput): BackfillSummary {
   switch (script) {
@@ -377,6 +441,8 @@ export function summarizeBackfill(script: BackfillScript, action: BackfillAction
     case 'operations-structured': return operationsStructured(out);
     case 'operations-claims': return operationsClaims(out);
     case 'cross-account': return crossAccount(action, out);
+    case 'equipment-separation': return equipmentSeparation(out);
+    case 'document-validation': return documentValidation(out);
   }
 }
 

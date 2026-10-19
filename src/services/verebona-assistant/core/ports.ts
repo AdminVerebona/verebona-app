@@ -201,7 +201,12 @@ export function construireActionIntents(
           intents.push({
             type: 'OPEN_ASSET',
             targetId: `asset_${assetId}`,
-            params: { tab: ref.kind === 'room' ? 'rooms' : 'equipments' },
+            params: {
+              tab: ref.kind === 'room' ? 'rooms' : 'equipments',
+              // Lot 71 (71D) : entité trouvée par son nom → son TIROIR, sur
+              // l'onglet du bien parent (jamais la seule fiche du bien).
+              ...(source.meta?.openDrawer === true ? { drawer: `${ref.kind === 'room' ? 'piece' : 'equipement'}:${ref.id}` } : {}),
+            },
           });
         }
         break;
@@ -412,6 +417,12 @@ export function buildOrchestratorPorts(): OrchestratorPorts {
     resolveTargets: async (input, route) => {
       const { resolveAssistantTargets } = await import('./assistant-targets');
       return resolveAssistantTargets(input, route);
+    },
+    // Lot 71 (71D) : saisie nominative (équipement / pièce) résolue AVANT
+    // toute IA — même moteur que la barre de recherche, lecture seule.
+    findNamedEntities: async (input, opts) => {
+      const { findNamedEntities } = await import('@/services/search/global-search.service');
+      return findNamedEntities(input.accountId, input.message, opts ?? {});
     },
     // CDC 15 T2-10, T2-33, T2-34 (lecture canonique) : planificateurs dédiés.
     // Lot 33 : cascade du Centre d'aide (corpus, contexte et rôles lus une fois).

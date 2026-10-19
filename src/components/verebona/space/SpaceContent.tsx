@@ -8,9 +8,9 @@
  */
 import { useEffect, useState } from 'react';
 import {
-  ArrowRight, Building2, CalendarDays, CircleAlert, Clock, FileText, Info, Package, Trash2,
+  ArrowRight, Building2, CalendarDays, CircleAlert, Clock, FileText, Home, Info, Package, Settings, Trash2,
 } from 'lucide-react';
-import type { LiveResult } from '@/lib/verebona/live-search';
+import { liveSubtitle, type LiveResult } from '@/lib/verebona/live-search';
 import type { VerebonaAction, VerebonaMessage } from '@/lib/verebona/useVerebona';
 import { OFFLINE_PENDING_LABEL } from '@/lib/verebona/offline';
 import { processingStatus, visibleResultGroups } from '@/lib/verebona/assistant-ui';
@@ -381,10 +381,11 @@ function OlderDrawer({ older, api, variant }: { older: SpaceTurn[]; api: Verebon
 
 export const LIVE_OPTION_ID = (i: number) => `verebona-suggestion-${i}`;
 
+// Lot 71 : équipement et pièce — mêmes pictogrammes que leurs panneaux de la
+// fiche du bien (`asset-equipments-panel`, `asset-substructures-panel`).
 const LIVE_ICONS: Record<LiveResult['kind'], typeof Package> = {
-  nav: ArrowRight, asset: Package, document: FileText, agenda: CalendarDays,
+  nav: ArrowRight, asset: Package, document: FileText, agenda: CalendarDays, equipment: Settings, room: Home,
 };
-const LIVE_LABELS: Record<LiveResult['kind'], string> = { nav: 'Page', asset: 'Bien', document: 'Document', agenda: 'Échéance' };
 
 function LiveResults({ api }: { api: VerebonaSpaceApi }) {
   if (api.live.length === 0 && !api.liveLoading) return null;
@@ -410,7 +411,7 @@ function LiveResults({ api }: { api: VerebonaSpaceApi }) {
               </span>
               <span className="flex min-w-0 flex-1 flex-col">
                 <span className="truncate text-[13.5px] font-medium text-[color:var(--text-primary)]">{r.title}</span>
-                <span className="truncate text-[11.5px] text-[color:var(--text-muted)]">{[LIVE_LABELS[r.kind], r.sub].filter(Boolean).join(' · ')}</span>
+                <span className="truncate text-[11.5px] text-[color:var(--text-muted)]">{liveSubtitle(r)}</span>
               </span>
             </li>
           );

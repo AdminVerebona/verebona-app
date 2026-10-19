@@ -276,7 +276,9 @@ scenario('L61E-T6EV', 'Lot 61 — contrat de décision T6 (EVALUATE) et composit
     await sql`INSERT INTO to_process_actions (account_id, target_type, target_id, field_key, action_kind, rule_code, question, priority)
               VALUES (${c.id}, 'ASSET', ${c.maison}, 'purchasePriceCents', 'COMPLETE', 'DATA-ACQUISITION-PRICE', 'Prix d’achat ?', 'DO_FIRST')`;
     const q = await pregen(c.id);
-    expect(await parler(q)).toMatch(/^Un sujet nécessite votre attention aujourd’hui\. Le document « Contrat habitation »/);
+    // Lot 71F : plus d'introduction de comptage — le document directement, la carte « À traiter » à part.
+    expect(await parler(q)).toMatch(/^Le document « Contrat habitation »/);
+    expect(await parler(q)).not.toMatch(/votre attention/);
     // Lot 68 : « À traiter » en carte, le document dans son bloc.
     expect((await B()).homeItems(q, false).map((x) => x.kind)).toEqual(['todo']);
     expect((await B()).subjectBlocks(q).map((x) => x.paragraph.sourceCode)).toEqual(['PROC-DOC-ANALYSIS']);

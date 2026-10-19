@@ -256,10 +256,9 @@ export async function GET(
     }
     const sections = buildSections(family, kc, assetRow as unknown as Record<string, unknown>, adresse);
 
-    // Include coherence alerts for UI display
-    const coherenceAlerts = Array.isArray(kc.coherenceAlerts) ? kc.coherenceAlerts : [];
-
-    return NextResponse.json({ family, sections, coherenceAlerts });
+    // Lot 71B : plus d'alertes « Incohérence » à appliquer sur la fiche (ancien
+    // blob `coherenceAlerts`, repris en cartes « À traiter » par 0109).
+    return NextResponse.json({ family, sections });
   } catch (error) {
     console.error('GET /details error:', error);
     return apiError(500, 'INTERNAL_ERROR', 'Internal server error');

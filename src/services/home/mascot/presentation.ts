@@ -11,6 +11,7 @@ import type {
 } from './types';
 import { CLEAR_TEXT, DEGRADED_NOTICE } from './types';
 import { parisDay, presentationState, tileFor, type TileOptions } from './bubble';
+import { hasCountingIntro, stripCountingIntro } from './counting-intro';
 
 /**
  * Empreinte du contexte métier affiché : sujets, faits, actions, secondaires
@@ -108,12 +109,17 @@ export function buildPresentation(p: {
   }
 
   const paragraphs: MascotParagraph[] = p.subjects.map((s, i) => {
-    const m = p.messages?.[i];
+    // Lot 71F : un texte formulé qui porte une introduction de comptage
+    // (« Un sujet mérite votre attention aujourd'hui : … »), quelle que soit
+    // sa provenance, n'est jamais servi : le sujet reprend son texte de
+    // secours (lui-même débarrassé de toute introduction).
+    const m0 = p.messages?.[i];
+    const m = m0 && !hasCountingIntro(m0.text) ? m0 : undefined;
     return {
       subjectId: s.subjectId,
       sourceCode: s.sourceCode,
       occurrenceKey: s.occurrenceKey,
-      text: m ? m.text : s.fallbackText,
+      text: m ? m.text : stripCountingIntro(s.fallbackText),
       highlight: m ? m.highlight : (s.allowedHighlight && s.fallbackText.includes(s.allowedHighlight) ? s.allowedHighlight : null),
       actions: s.actions,
       tile: tileFor(s, p.today ?? parisDay(p.now), p.tiles),

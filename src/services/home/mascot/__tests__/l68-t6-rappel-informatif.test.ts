@@ -420,8 +420,8 @@ describe('Composition de la bulle', () => {
     const p = accueil(r, [informe(1)], { todo: { total: 3, items: [item] }, duoInvite: duo });
     expect(B.homeItems(p, false).map((x) => x.kind)).toEqual(['duo-invite', 'todo']);
     expect(B.subjectBlocks(p).map((b) => b.paragraph.sourceCode)).toEqual(['PROC-DOC-ANALYSIS', 'DATE-NEXT']);
-    // L'en-tête compte les « À traiter » affichés (MASC3), jamais le rappel.
-    expect(entete(p)).toBe('Deux sujets nécessitent votre attention aujourd’hui.');
+    // Lot 71F : plus d'en-tête qui compte les « À traiter » affichés (ex-MASC3).
+    expect(entete(p)).toBe('');
     expect(p.state).toMatchObject({ kind: 'ACTIONS', actions: 2, information: 2 });
     expect(B.homePose(p, false)).toBe('reminder-bell');
     // Document en cours : bloc « Voir » (tiroir du document).

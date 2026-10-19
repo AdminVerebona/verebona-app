@@ -149,10 +149,3 @@ export interface AnalyzeDocumentOutput {
   equipmentCandidates?: Array<{ name: string; type: string | null; category: string | null; confidence: number; reason: string }>;
 }
 
-// ─── Commit output ────────────────────────────────────────────────────────────
-
-export interface CommitResult {
-  committed: boolean;
-  appliedFields: string[];
-  agendaEffectsProcessed: number;
-}

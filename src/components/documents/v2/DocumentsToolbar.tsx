@@ -12,9 +12,10 @@
  * `role="switch"` pour le regroupement, `aria-expanded` pour le panneau de
  * filtres.
  */
-import { ChevronDown, Plus, SlidersHorizontal } from 'lucide-react';
+import { ChevronDown, Plus } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Switch } from '@/components/ui/switch';
+import { FiltersToggleButton } from '@/components/filters/FilterControls';
 import type { SortDir, SortKey, ViewMode } from './documents-view';
 
 /** Contrôle segmenté du design system (pilule, segment actif en bleu plein). */
@@ -139,17 +140,8 @@ export function DocumentsToolbar({
         </button>
       </div>
 
-      <Button
-        size="sm"
-        variant={filterCount > 0 ? 'secondary' : 'outline'}
-        onClick={onFiltersToggle}
-        aria-expanded={filtersOpen}
-        aria-controls={filtersPanelId}
-        className={`btn-filter ${filterCount > 0 ? 'bg-[color:var(--accent-soft)]' : ''}`}
-      >
-        <SlidersHorizontal className="btn-filter-sliders-icon h-4 w-4" aria-hidden />
-        {filterCount > 0 ? `Filtres · ${filterCount}` : 'Filtres'}
-      </Button>
+      {/* Lot 71 : bouton partagé avec « Mon agenda ». */}
+      <FiltersToggleButton count={filterCount} open={filtersOpen} panelId={filtersPanelId} onToggle={onFiltersToggle} />
 
       {/* Téléphone : icône seule (la barre mobile a aussi son « + »), nom accessible conservé. */}
       <Button size="sm" onClick={onAdd} className="btn-add" aria-label="Ajouter un document">

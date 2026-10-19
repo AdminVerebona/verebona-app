@@ -2,7 +2,8 @@ import { refuserSiLectureSeule } from '@/lib/write-access-guard';
 import { emitBusinessEvent } from '@/services/verebona-assistant/events/business-events';
 import { NextRequest, NextResponse } from 'next/server';
 import { SessionService } from '@/lib/session-service';
-import { getAgendaItems } from '@/services/agenda/AgendaQueryService';
+import { getAgendaItems, getAgendaItemsWithEquipmentFacet } from '@/services/agenda/AgendaQueryService';
+import { equipmentFilterParam } from '@/lib/filters/equipment-filter';
 import { createAgendaItem } from '@/services/agenda/AgendaWriteService';
 
 export async function GET(req: NextRequest) {
@@ -27,7 +28,16 @@ export async function GET(req: NextRequest) {
     const year = searchParams.get('year') ?? undefined;
     const includeUndated = searchParams.get('includeUndated') !== 'false';
 
-    const items = await getAgendaItems({ accountId, assetIds, fileId, period, includeCancelled, month, year, includeUndated });
+    // Lot 71 (71C) : filtre Équipement (`?equipment=asset|<id>`, avec
+    // `assetIds`) et, sur demande (`?equipmentFacet=1`, « Mon agenda »), les
+    // équipements des biens retenus avec leurs compteurs.
+    const equipment = equipmentFilterParam(searchParams.get('equipment')) ?? undefined;
+    const query = { accountId, assetIds, fileId, period, includeCancelled, month, year, includeUndated, equipment };
+    if (searchParams.get('equipmentFacet') === '1') {
+      const { items, equipmentFacet } = await getAgendaItemsWithEquipmentFacet(query);
+      return NextResponse.json({ items, equipmentFacet }, { headers: { 'Cache-Control': 'private, no-cache' } });
+    }
+    const items = await getAgendaItems(query);
     return NextResponse.json({ items }, {
       // APP-PERF-22 : pas de réutilisation par le cache HTTP du navigateur
       // (non cloisonné par compte, non invalidé par les écritures).

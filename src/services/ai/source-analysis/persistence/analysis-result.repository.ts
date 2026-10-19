@@ -37,10 +37,8 @@ export interface PersistedRun {
    * Nombre de propositions écrites pour ce run — CDC §4.2.4, « preuve probable
    * ou ambiguë → proposition ou revue IA ciblée ».
    *
-   * Compte réel, jamais estimé : `computeFinalState` s'en sert pour décider si
-   * le document doit être présenté à valider. Un document marqué à valider sans
-   * proposition serait une impasse pour l'utilisateur — il verrait « décision
-   * attendue » sans rien à décider.
+   * Compte réel, jamais estimé (diagnostic). Lot 71B : il ne décide plus
+   * d'aucun état « à valider » — plus de validation sur les fiches.
    *
    * Vaut 0 sur un run dédupliqué : les propositions du run d'origine sont
    * toujours en base, aucune n'est réécrite (§4.1.7).

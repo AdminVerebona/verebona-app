@@ -32,6 +32,8 @@
  *                                   que des demandes subsistent
  *   mascot-pregeneration            toutes les minutes            FOR UPDATE SKIP LOCKED + bail par compte
  *   mascot-pregeneration-deadlines  chaque jour à 5 h 40          une ligne par compte (upsert) ; nettoyage rappels T6 (lot 60)
+ *   mascot-t6-reevaluations         toutes les heures             une ligne par compte (upsert), critère « non
+ *                                                                 réévalué depuis » (lot 71G, T6-05)
  *   t1-invalid-output-replay        au démarrage, puis /h tant    contrainte unique (document,
  *                                   qu'il reste des rejeux        version de résolution) — 0285
  *   ai-call-diagnostics-purge       chaque jour à 5 h 50          suppressions idempotentes
@@ -77,6 +79,11 @@
  *                                   faire : deux requêtes)        une issue par carte (unique) ; réévalue
  *                                                                 les cartes « À traiter » documentaires
  *                                                                 existantes (lot 61, bilan avant / après)
+ *   document-validation-reprise     au démarrage, puis toutes      transition d'état conditionnelle ;
+ *                                   les heures (rien à faire :     une ligne de trace par document
+ *                                   une seule requête)             (0495, unique) ; cartes « À traiter »
+ *                                                                  uniques (lot 71B : plus de validation
+ *                                                                  sur les fiches)
  *   subscription-annual-renewal-reminders  /h de 8 h 30 à 20 h    dedupe_key par abonnement × échéance
  *                                   (créée suspendue, lot 68C)    + verrou consultatif ; revalidation
  *                                                                 Stripe avant l'envoi (file lot 57A)
@@ -371,6 +378,25 @@ export const SCHEDULED_TASKS: readonly ScheduledTaskDef[] = [
       const { cleanupT6Reminders } = await import('@/services/home/mascot/t6-reminders.service');
       const c = await cleanupT6Reminders(todayParis()).catch((e) => ({ error: (e as Error).message }));
       return { note: `${n} compte(s) signalé(s) ; rappels T6 : ${JSON.stringify(c)}` };
+    },
+  },
+  {
+    // Lot 71G (T6-05) : reports utilisateur arrivés à leur date et dates de
+    // réévaluation système atteintes — réévalués SANS visite de l'accueil, par
+    // la pré-génération durable (critère « non réévalué depuis » : un passage
+    // manqué est rattrapé au suivant ; une demande par compte, sans doublon).
+    code: 'mascot-t6-reevaluations',
+    label: 'Mascotte : rappels T6 arrivés à leur date (réévaluation)',
+    schedule: { kind: 'interval', everyMs: HOUR },
+    timeoutMs: 5 * MIN,
+    startupDelayMs: 3 * MIN,
+    run: async () => {
+      const [{ enqueueT6DueReevaluations }, { todayParis }] = await Promise.all([
+        import('@/services/home/mascot/pregen-queue'),
+        import('@/services/home/mascot/collector'),
+      ]);
+      const r = await enqueueT6DueReevaluations(todayParis());
+      if (r.requested > 0) return { note: JSON.stringify(r) };
     },
   },
   {
@@ -704,6 +730,27 @@ export const SCHEDULED_TASKS: readonly ScheduledTaskDef[] = [
         again: r.more,
         ...(r.errors > 0 && r.examined > 0 && r.errors >= r.examined ? { error: `${r.errors} carte(s) en erreur` } : {}),
       };
+    },
+  },
+  {
+    // Lot 71B (décision PO du 19/10 : « pas de système de validation sur les
+    // fiches ») : reprise des documents restés dans l'ancien état « à
+    // valider » — état remis à « analysé », données réévaluées par les
+    // moteurs existants (valeur fiable écrite, incertaine ou en conflit →
+    // carte « À traiter », valeur utilisateur jamais touchée), équipements
+    // rattachés sans IA. Même service que le rattrapage BO (Exploitation ›
+    // Rattrapages). Rien à faire : une seule requête.
+    code: 'document-validation-reprise',
+    label: 'Documents « à valider » : reprise (plus de validation sur les fiches)',
+    schedule: { kind: 'interval', everyMs: HOUR },
+    startupDelayMs: 7 * MIN,
+    timeoutMs: 10 * MIN,
+    run: async ({ deadline }) => {
+      const { runValidationReprise, formatValidationReprise } = await import('@/services/documents/validation-reprise');
+      const r = await runValidationReprise({ apply: true, origin: 'SCHEDULED', deadline: Math.min(deadline, Date.now() + 8 * MIN) });
+      if (r.scanned === 0) return { note: 'aucun document « à valider »' };
+      const note = formatValidationReprise(r).slice(0, 1500);
+      return { note, again: r.more, ...(r.processed === 0 && r.failed.length > 0 ? { error: note } : {}) };
     },
   },
   {

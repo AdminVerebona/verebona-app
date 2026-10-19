@@ -8,8 +8,10 @@
  * `asset_files.analysis_state` (pipeline d'analyse V4) est la source :
  *   UPLOADING | UPLOADED | ANALYZING        → en cours d'analyse
  *   ANALYSIS_FAILED                         → échec d'analyse
- *   VALIDATION_REQUIRED | CONFLICT_DETECTED → analysé, à vérifier
- *   ANALYZED                                → analysé
+ *   CONFLICT_DETECTED                       → analysé, à vérifier
+ *   ANALYZED | VALIDATION_REQUIRED          → analysé (lot 71B : plus de
+ *                                             validation sur les fiches ;
+ *                                             ancien état en cours de reprise)
  *   NULL                                    → pas d'analyse (offre Standard)
  */
 export type DocumentAnalysisStatus = 'IN_ANALYSIS' | 'ANALYSIS_FAILED' | 'TO_VALIDATE' | 'ANALYZED' | 'NOT_ANALYZED';
@@ -18,8 +20,8 @@ export function documentAnalysisStatus(state: string | null | undefined): Docume
   switch ((state ?? '').toUpperCase()) {
     case 'UPLOADING': case 'UPLOADED': case 'ANALYZING': return 'IN_ANALYSIS';
     case 'ANALYSIS_FAILED': return 'ANALYSIS_FAILED';
-    case 'VALIDATION_REQUIRED': case 'CONFLICT_DETECTED': return 'TO_VALIDATE';
-    case 'ANALYZED': return 'ANALYZED';
+    case 'CONFLICT_DETECTED': return 'TO_VALIDATE';
+    case 'ANALYZED': case 'VALIDATION_REQUIRED': return 'ANALYZED';
     default: return 'NOT_ANALYZED';
   }
 }

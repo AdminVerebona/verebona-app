@@ -104,6 +104,10 @@ import {
   contextFactsOf, validateContextFacts, contextCalculationAnswer,
 } from './interaction';
 import { expenseThemeWords } from '../canonical/expense-classes';
+import {
+  decideNamedEntity, isNamedEntityQuery, namedEntityAnswer, namedEntityChoiceQuestion, namedEntitySource,
+  type NamedEntityLookupResult,
+} from './named-entity-stage';
 
 /** Ports injectés (implémentés par les autres services / le repo). */
 export interface OrchestratorPorts {
@@ -268,6 +272,13 @@ export interface OrchestratorPorts {
    * (A7, A8). `null` : inconnues.
    */
   t2PromptCapabilities?(): Promise<{ arbitration: boolean; interaction: boolean; version: string | null } | null>;
+  /**
+   * Lot 71 (71D) : équipements / pièces du compte dont le nom EST la saisie
+   * (correspondance exacte normalisée, même moteur que la barre de recherche :
+   * `findNamedEntities`). Lecture seule, bornée au compte ; `assetIds`
+   * restreint au bien parent (revalidation d'un choix). Absent : étape sautée.
+   */
+  findNamedEntities?(input: AssistantRequestInput, opts?: { assetIds?: number[] | null }): Promise<NamedEntityLookupResult>;
 }
 
 export async function runAssistant(
@@ -633,6 +644,69 @@ export async function runAssistant(
           pageRoute: input.pageContext?.route,
           pageContext: input.pageContext,
         });
+
+    // ══════════════════════════════════════════════════════════════════════
+    // LOT 71 (71D) — SAISIE NOMINATIVE : ÉQUIPEMENT OU PIÈCE, AVANT TOUTE IA
+    //
+    // « Pompe à chaleur », « Cuisine » soumis seuls : aucune règle n'a
+    // tranché (`needs_classification`). Le nom est d'abord cherché dans les
+    // équipements et pièces DU COMPTE (même moteur que la barre de recherche,
+    // correspondance exacte normalisée) : unique → proposé sans modèle ;
+    // homonymes → choix avec le bien parent ; rien (ou un bien du même nom)
+    // → la cascade suit son cours, inchangée. La reprise d'un choix est
+    // revalidée par le même nom, restreinte au bien parent.
+    // ══════════════════════════════════════════════════════════════════════
+    if (ports.findNamedEntities) {
+      const choisie = input.resume?.entity && input.resume.intent === 'NAVIGATION_OPEN' && !input.resume.semanticSource
+        ? input.resume.entity : null;
+      const tenter = choisie != null
+        || (!input.resume && outcome.kind === 'needs_classification' && isNamedEntityQuery(input.message));
+      if (tenter) {
+        const lookup = await withDeadline(
+          ports.findNamedEntities(input, choisie?.assetId ? { assetIds: [choisie.assetId] } : {}), retrievalDeadline(),
+        ).catch(() => null);
+        const decision = decideNamedEntity(lookup, choisie);
+        if (decision.kind === 'none') {
+          if (decision.reason === 'ASSET_HOMONYM') trace.escalationReasons.push('NAMED_ENTITY:ASSET_HOMONYM');
+        } else {
+          const routeNom = routeForIntent('NAVIGATION_OPEN', input.planType, 'nom d’un équipement ou d’une pièce');
+          base.route = routeNom;
+          trace.intent = routeNom.intent;
+          if (decision.kind === 'choice') {
+            const memeType = decision.entities.every((e) => e.kind === decision.entities[0].kind);
+            if (memeType && ports.saveClarification) {
+              const kind = decision.entities[0].kind;
+              const state = buildTargetClarification({
+                ambiguity: { kind, reason: kind === 'room' ? 'ROOM_MULTIPLE_CANDIDATES' : 'EQUIPMENT_MULTIPLE_CANDIDATES', candidates: decision.entities },
+                question: namedEntityChoiceQuestion(decision.entities),
+                accountId: input.accountId, userId: input.userId, conversationId: input.conversationId,
+                originalMessage: input.message, originalMessageId: messageId, originalIntent: 'NAVIGATION_OPEN',
+                pageAssetId: null, chainDepth: 1,
+              });
+              if (await ports.saveClarification(state).catch(() => false)) {
+                trace.escalationReasons.push('CLARIFICATION:NAMED_ENTITY_HOMONYMS');
+                done('template', 'named_entity.clarification', 'AMBIGUOUS_TARGET', state.candidates.length);
+                return finalizeClarification(base, machine, state, ports, input);
+              }
+            }
+            // Types mêlés (un équipement et une pièce du même nom) ou fil
+            // indisponible : la liste, chaque élément ouvrable — aucun choix
+            // fait à la place de l'utilisateur.
+            const sourcesNom = decision.entities.map(namedEntitySource);
+            const actionsNom = await ports.resolveActions(routeNom, input, sourcesNom);
+            done('structured', 'named_entity.candidates', 'AMBIGUOUS_TARGET', sourcesNom.length);
+            const resolvedNom = await ports.resolveSources(sourcesNom, input.accountId);
+            return finalize(base, machine, 'deterministic', namedEntityChoiceQuestion(decision.entities), [], resolvedNom, actionsNom, ports, input);
+          }
+          const sourceNom = namedEntitySource(decision.entity);
+          const reponse = namedEntityAnswer(decision.entity);
+          const actionsNom = await ports.resolveActions(routeNom, input, [sourceNom]);
+          done('structured', 'named_entity.exact', 'SUFFICIENT_STRUCTURED', 1);
+          const resolvedNom = await ports.resolveSources([sourceNom], input.accountId);
+          return finalize(base, machine, 'deterministic', reponse.text, reponse.claims, resolvedNom, actionsNom, ports, input, 'supported');
+        }
+      }
+    }
 
     // ══════════════════════════════════════════════════════════════════════
     // BASE D'AIDE — §9.4 étape 7, AVANT toute classification par modèle

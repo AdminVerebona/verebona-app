@@ -5,7 +5,9 @@
  *
  * PATCH /api/documents/[id]/analysis-proposals
  * Actions : modify | reject | restore_original
- * JAMAIS : kept (posé uniquement au commit)
+ * JAMAIS : kept. Lot 71B : plus de validation sur les fiches — la route de
+ * validation (`/commit`) qui posait `kept` est supprimée ; une proposition
+ * `pending` est la trace de ce que l'analyse a lu, pas une attente.
  */
 
 import { NextRequest, NextResponse } from 'next/server';
@@ -83,7 +85,7 @@ export async function PATCH(
     // Validate action — kept is NEVER allowed via PATCH
     if (!['modify', 'reject', 'restore_original'].includes(action)) {
       return NextResponse.json(
-        { error: 'INVALID_ACTION', message: 'Actions autorisées : modify, reject, restore_original. kept est posé uniquement au commit.' },
+        { error: 'INVALID_ACTION', message: 'Actions autorisées : modify, reject, restore_original.' },
         { status: 400 }
       );
     }

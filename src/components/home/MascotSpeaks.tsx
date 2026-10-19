@@ -21,11 +21,11 @@
  *
  * ── LOT 32 (ticket MASC2) : DEUX NIVEAUX ───────────────────────────────────
  *
- *   1. synthèse : « Deux sujets nécessitent votre attention aujourd’hui. »
- *      Lot 34 (MASC3) : seuls les « À traiter » DO_FIRST sont affichés, au
- *      plus deux ; la phrase compte les éléments AFFICHÉS, jamais le total
- *      de la file (la pastille du menu le garde) ; plus de « N autres
- *      sujets dans « À traiter » » ;
+ *   1. synthèse — lot 71F : SUPPRIMÉE (« Deux sujets nécessitent votre
+ *      attention aujourd’hui. ») ; les cartes présentent directement les
+ *      « À traiter » DO_FIRST (au plus deux, lot 34) et l'invitation Duo ;
+ *      sans phrase d'en-tête, la bulle commence par les cartes — aucun
+ *      paragraphe vide ;
  *   2. éléments d'action homogènes (`homeItems`) : « À traiter » d'abord,
  *      puis échéances et recommandations — un seul composant. Les pastilles
  *      « Compléter “…” » / « Choisir “…” » (3e niveau) sont supprimées.
@@ -175,8 +175,9 @@ export function MascotSpeaks({ greetingName, empty, onCreateAsset, onUploadDocum
   const presentation = useMemo(() => withoutSubjects(withoutTodos(brute, hidden), hiddenSubjects), [brute, hidden, hiddenSubjects]);
   const [choices, setChoices] = useState<MascotTodoItem | null>(null);
 
-  // Lot 68 : en-tête seul (« À traiter », évaluation, panne…) ; chaque sujet
-  // est dit UNE fois, dans son bloc.
+  // Lot 68 : en-tête seul (évaluation, panne, rien à signaler…) ; chaque
+  // sujet est dit UNE fois, dans son bloc. Lot 71F : jamais d'introduction
+  // de comptage — en-tête vide le plus souvent, et alors non rendu.
   const speech = bubbleLead({ presentation, empty, failed });
   const blocks = empty ? [] : subjectBlocks(presentation);
   const pose = homePose(presentation, empty, failed);
@@ -297,8 +298,9 @@ export function MascotSpeaks({ greetingName, empty, onCreateAsset, onUploadDocum
   });
 
   const items = homeItems(presentation, empty);
-  // Lot 68 : « Inviter quelqu'un » et « À traiter » sous l'en-tête qui les
-  // compte, puis les blocs de sujet, puis l'étape d'accueil / recommandations.
+  // Lot 68 / 71F : « Inviter quelqu'un » et « À traiter » d'abord, présentés
+  // directement (aucune phrase qui les compte), puis les blocs de sujet, puis
+  // l'étape d'accueil / recommandations.
   const itemsTete = items.filter((it) => it.kind === 'duo-invite' || it.kind === 'todo');
   const itemsSuite = items.filter((it) => it.kind !== 'duo-invite' && it.kind !== 'todo');
   /** Élément de niveau 2 (« À traiter », Duo, accueil, recommandation) : même composant. */

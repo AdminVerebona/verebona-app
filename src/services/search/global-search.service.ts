@@ -1,6 +1,8 @@
 /**
  * Recherche globale T2 (barre de recherche, « Correspondances ») — lot 33,
- * ticket « T2 Recherche : empêcher les faux positifs ».
+ * ticket « T2 Recherche : empêcher les faux positifs » ; lot 71 : équipements
+ * et pièces (sous-structures), avec leur bien parent, et résolution
+ * nominative de T2 sans IA (`findNamedEntities`).
  *
  * Trois étapes STRICTEMENT séparées (`lib/search/match-engine.ts`) :
  *   1. GÉNÉRATION DE CANDIDATS — SQL large, borné au compte : un mot (ou son
@@ -25,15 +27,17 @@ import { parseKc } from '@/services/canonical/asset-state';
 import { vehicleIdentifiersIn } from '@/services/verebona-assistant/core/vehicle-identifiers';
 import { findVehiclesByIdentifier } from '@/services/verebona-assistant/core/target-lookup.repository';
 import { normalizedText, searchExprMode } from '@/services/verebona-assistant/core/search-sql';
+import { hrefEntite } from '@/services/verebona-assistant/core/entity-ref';
+import { assistantAssetAvailability } from '@/services/verebona-assistant/core/asset-availability';
 import {
-  candidatePatterns, parseSearchQuery, runSearchPipeline,
+  candidatePatterns, isExactNameMatch, parseSearchQuery, runSearchPipeline,
   type ParsedQuery, type RankedResult, type SearchCandidate, type SearchPolicy, type SearchTraceEntry,
 } from '@/lib/search/match-engine';
 
 /** Barre de recherche : TOUS les mots de la requête doivent être retrouvés. */
 export const GLOBAL_SEARCH_POLICY: SearchPolicy = { requireAllTokens: true, allowSemantic: false };
 
-const LIMITES = { asset: 5, document: 8, agenda_item: 5 } as const;
+const LIMITES = { asset: 5, document: 8, agenda_item: 5, equipment: 5, room: 5 } as const;
 const CANDIDATS_MAX = 100;
 
 export interface SearchMatchInfo {
@@ -50,13 +54,22 @@ export interface SearchMatchInfo {
 
 export interface GlobalSearchRow {
   id: string;
-  category: 'Bien' | 'Document' | 'Agenda';
+  /** Lot 71 : « Équipement » et « Pièce » (sous-structure), bien parent en `sublabel`. */
+  category: 'Bien' | 'Document' | 'Agenda' | 'Équipement' | 'Pièce';
   label: string;
   sublabel?: string;
   href: string;
   docId?: number;
-  drawer?: { kind: 'document' | 'echeance'; id: number };
+  drawer?: { kind: 'document' | 'echeance' | 'equipement' | 'piece'; id: number };
+  /** Équipement / pièce : bien PARENT (contexte, homonymes) — jamais substitué à l'entité. */
+  assetId?: number;
   mimeType?: string;
+  /**
+   * Lot 71 : le libellé EST la requête, à la normalisation près
+   * (`isExactNameMatch`) — prioritaire dans les suggestions, jamais masqué
+   * par le plafond d'affichage.
+   */
+  exact?: true;
   match: SearchMatchInfo;
 }
 
@@ -257,7 +270,82 @@ async function agendaCandidates(accountId: number, q: ParsedQuery, mode: Awaited
   });
 }
 
+/**
+ * Lot 71 — équipements et pièces (ticket « T2 : rechercher et proposer les
+ * équipements et les pièces sans IA »). Ils ne portent pas `account_id` : la
+ * JOINTURE sur le bien parent est le contrôle de périmètre (compte courant),
+ * avec la règle UNIQUE de disponibilité (`asset-availability` : bien ni
+ * supprimé, ni archivé, ni transmis, ni vendu) et, pour un équipement, la
+ * fiche non archivée — mêmes règles que la résolution des cibles T2
+ * (`target-lookup.repository`). Chaque ligne est recontrôlée (compte) avant
+ * d'être servie. Pièce = sous-structure (D-G, lot 20).
+ *
+ * Champs autorisés (`SEARCH_FIELDS`) : nom, type d'équipement (catégorie :
+ * complément seulement), bien parent (relation : jamais un match seul — un
+ * équipement ne remonte pas parce que son bien porte le mot, et
+ * réciproquement un bien ne remonte jamais par ses équipements).
+ */
+type NestedKind = 'equipment' | 'room';
+
+async function nestedCandidates(
+  kind: NestedKind, accountId: number, q: ParsedQuery, mode: Awaited<ReturnType<typeof searchExprMode>>,
+  opts: { assetIds?: number[] | null } = {},
+): Promise<SearchCandidate[]> {
+  const p = new Params();
+  const acc = p.add(accountId);
+  const ids = p.add(opts.assetIds?.length ? opts.assetIds : null);
+  const dispo = assistantAssetAvailability.sql('a');
+  // AC12 : le plafond SQL ne coupe jamais un nom EXACTEMENT égal à la requête
+  // (même normalisation que `normalizeSearchText`, à la ponctuation près).
+  const norm = p.add(q.normalized);
+  const exactEnTete = (col: string) => `(trim(regexp_replace(${normalizedText(mode, col)}, '[^a-z0-9]+', ' ', 'g')) = ${norm}) DESC`;
+  const sqlText = kind === 'equipment'
+    ? (() => {
+        const cond = anyTokenLike(mode, p, q, ['e.name', 'e.type'], ['e.name']);
+        return `SELECT e.id, e.name, e.type, e.asset_id AS "assetId", a.name AS "assetName", a.account_id AS "accountId"
+           FROM equipments e
+           JOIN assets a ON a.id = e.asset_id
+          WHERE a.account_id = ${acc} AND ${dispo} AND e.archived_at IS NULL
+            AND (${ids}::int[] IS NULL OR e.asset_id = ANY(${ids}::int[]))
+            AND ${cond}
+          ORDER BY ${exactEnTete('e.name')}, e.name, e.id
+          LIMIT ${CANDIDATS_MAX}`;
+      })()
+    : (() => {
+        const cond = anyTokenLike(mode, p, q, ['x.name'], ['x.name']);
+        return `SELECT x.id, x.name, NULL::text AS type, x.asset_id AS "assetId", a.name AS "assetName", a.account_id AS "accountId"
+           FROM substructures x
+           JOIN assets a ON a.id = x.asset_id
+          WHERE a.account_id = ${acc} AND ${dispo}
+            AND (${ids}::int[] IS NULL OR x.asset_id = ANY(${ids}::int[]))
+            AND ${cond}
+          ORDER BY ${exactEnTete('x.name')}, x.name, x.id
+          LIMIT ${CANDIDATS_MAX}`;
+      })();
+  const rows = (await pgClient.unsafe(sqlText, p.values as never[])) as unknown as Row[];
+  return rows
+    // Défense en profondeur : une ligne d'un autre compte n'est jamais servie.
+    .filter((r) => Number(r.accountId) === accountId && str(r.name))
+    .map((r) => ({
+      entityType: kind,
+      entityId: Number(r.id),
+      displayName: String(r.name),
+      fields: kind === 'equipment'
+        ? { name: str(r.name), type: str(r.type), assetName: str(r.assetName) }
+        : { name: str(r.name), assetName: str(r.assetName) },
+      retrievalStrategy: 'sql.token_like',
+      _assetId: Number(r.assetId),
+      _assetName: str(r.assetName),
+    } as SearchCandidate & { _assetId: number; _assetName: string | null }));
+}
+
 // ── Pipeline ─────────────────────────────────────────────────────────────
+
+/** Classement stable : correspondances EXACTES du nom d'abord (AC12), puis l'ordre du moteur. */
+function exactsDabord(q: ParsedQuery, liste: RankedResult[]): RankedResult[] {
+  const exacts = liste.filter((r) => isExactNameMatch(q, r.candidate.displayName));
+  return exacts.length ? [...exacts, ...liste.filter((r) => !exacts.includes(r))] : liste;
+}
 
 function matchInfo(r: RankedResult): SearchMatchInfo {
   return {
@@ -267,27 +355,46 @@ function matchInfo(r: RankedResult): SearchMatchInfo {
   };
 }
 
-/** Recherche globale du compte (biens, documents, échéances). */
+/**
+ * Lien profond (tiroir) d'un équipement / d'une pièce, sur l'onglet de son bien
+ * parent — convention UNIQUE de `core/entity-ref` (`hrefEntite`).
+ */
+function nestedHref(kind: NestedKind, id: number, assetId: number | null): string {
+  return hrefEntite({ kind, id, sourceId: `${kind}:${id}` }, assetId ? { assetId } : null)
+    ?? drawerHref({ kind: kind === 'room' ? 'piece' : 'equipement', id });
+}
+
+/** Recherche globale du compte (biens, documents, échéances, équipements, pièces). */
 export async function globalSearch(accountId: number, rawQuery: string, opts: { debug?: boolean } = {}): Promise<GlobalSearchOutput> {
   const q = parseSearchQuery(rawQuery);
   if (q.tokens.length === 0) return { results: [], ...(opts.debug ? { trace: [] } : {}) };
   const mode = await searchExprMode();
-  const [assets, docs, agenda] = await Promise.all([
+  const [assets, docs, agenda, equips, rooms] = await Promise.all([
     assetCandidates(accountId, q, mode),
     documentCandidates(accountId, q, mode),
     agendaCandidates(accountId, q, mode),
+    nestedCandidates('equipment', accountId, q, mode),
+    nestedCandidates('room', accountId, q, mode),
   ]);
   const ra = runSearchPipeline(q, assets, GLOBAL_SEARCH_POLICY);
   const rd = runSearchPipeline(q, docs, GLOBAL_SEARCH_POLICY);
   const rg = runSearchPipeline(q, agenda, GLOBAL_SEARCH_POLICY);
-  const retenus = { asset: ra.results.slice(0, LIMITES.asset), document: rd.results.slice(0, LIMITES.document), agenda: rg.results.slice(0, LIMITES.agenda_item) };
+  const re = runSearchPipeline(q, equips, GLOBAL_SEARCH_POLICY);
+  const rr = runSearchPipeline(q, rooms, GLOBAL_SEARCH_POLICY);
+  const retenus = {
+    asset: ra.results.slice(0, LIMITES.asset), document: rd.results.slice(0, LIMITES.document), agenda: rg.results.slice(0, LIMITES.agenda_item),
+    equipment: exactsDabord(q, re.results).slice(0, LIMITES.equipment), room: exactsDabord(q, rr.results).slice(0, LIMITES.room),
+  };
+  // Correspondance EXACTE (libellé = requête normalisée) : marquée pour être
+  // présentée en premier par les suggestions (lot 71, AC12).
+  const exact = (label: string) => (isExactNameMatch(q, label) ? { exact: true as const } : {});
 
   const results: GlobalSearchRow[] = [
     ...retenus.asset.map((r) => {
       const c = r.candidate as SearchCandidate & { _sub?: string; _subExact?: string };
       const id = Number(c.entityId);
       const sub = c.retrievalStrategy === 'sql.vehicle_identifier_exact' ? c._subExact : c._sub;
-      return { id: `asset-${id}`, category: 'Bien' as const, label: c.displayName, ...(sub ? { sublabel: sub } : {}), href: `/assets/${id}`, match: matchInfo(r) };
+      return { id: `asset-${id}`, category: 'Bien' as const, label: c.displayName, ...(sub ? { sublabel: sub } : {}), href: `/assets/${id}`, ...exact(c.displayName), match: matchInfo(r) };
     }),
     ...retenus.document.map((r) => {
       const c = r.candidate as SearchCandidate & { _label: string; _sub?: string; _mime?: string };
@@ -296,7 +403,7 @@ export async function globalSearch(accountId: number, rawQuery: string, opts: { 
         id: `doc-${id}`, category: 'Document' as const, label: c._label, ...(c._sub ? { sublabel: c._sub } : {}),
         // Lien profond : le document s'ouvre en tiroir (src/lib/drawers.ts).
         href: drawerHref({ kind: 'document', id }, '/documents'),
-        docId: id, drawer: { kind: 'document' as const, id }, ...(c._mime ? { mimeType: c._mime } : {}), match: matchInfo(r),
+        docId: id, drawer: { kind: 'document' as const, id }, ...(c._mime ? { mimeType: c._mime } : {}), ...exact(c._label), match: matchInfo(r),
       };
     }),
     ...retenus.agenda.map((r) => {
@@ -306,15 +413,73 @@ export async function globalSearch(accountId: number, rawQuery: string, opts: { 
       const parts = [c._assets || null, dateLabel].filter(Boolean);
       return {
         id: `agenda-${id}`, category: 'Agenda' as const, label: c.displayName, ...(parts.length ? { sublabel: parts.join(' · ') } : {}),
-        href: drawerHref({ kind: 'echeance', id }, '/agenda'), drawer: { kind: 'echeance' as const, id }, match: matchInfo(r),
+        href: drawerHref({ kind: 'echeance', id }, '/agenda'), drawer: { kind: 'echeance' as const, id }, ...exact(c.displayName), match: matchInfo(r),
       };
     }),
+    // Lot 71 : équipements et pièces — libellé réel, bien parent en sous-titre
+    // (« Pompe à chaleur » / « Équipement · Maison Lyon »), ouverture en tiroir.
+    ...([['equipment', retenus.equipment], ['room', retenus.room]] as const).flatMap(([kind, liste]) => liste.map((r) => {
+      const c = r.candidate as SearchCandidate & { _assetId: number; _assetName: string | null };
+      const id = Number(c.entityId);
+      return {
+        id: `${kind}-${id}`, category: kind === 'equipment' ? 'Équipement' as const : 'Pièce' as const, label: c.displayName,
+        ...(c._assetName ? { sublabel: c._assetName } : {}),
+        href: nestedHref(kind, id, c._assetId), drawer: { kind: kind === 'room' ? 'piece' as const : 'equipement' as const, id },
+        assetId: c._assetId, ...exact(c.displayName), match: matchInfo(r),
+      };
+    })),
   ];
 
-  const trace = [...ra.trace, ...rd.trace, ...rg.trace];
+  const trace = [...ra.trace, ...rd.trace, ...rg.trace, ...re.trace, ...rr.trace];
   if (process.env.SEARCH_TRACE === '1') {
     console.info('[search] trace', JSON.stringify({ query: q.raw, accountId, entries: trace }));
   }
   return { results, ...(opts.debug ? { trace } : {}) };
 }
 
+// ── Résolution nominative de T2, AVANT toute IA (lot 71) ─────────────────
+
+/** Équipement / pièce dont le nom EST la saisie (normalisée), bien parent compris. */
+export interface NamedEntityMatch {
+  kind: NestedKind;
+  id: number;
+  name: string;
+  assetId: number;
+  assetName: string | null;
+}
+
+export interface NamedEntityLookup {
+  /** Correspondances EXACTES (≤ 6), équipements puis pièces, dans l'ordre du classement. */
+  entities: NamedEntityMatch[];
+  /** Un bien (non supprimé) du compte porte aussi exactement ce nom. */
+  assetHomonym: boolean;
+}
+
+/**
+ * Saisie nominative soumise à T2 (« Pompe à chaleur », « Cuisine ») : MÊME
+ * génération de candidats et MÊME éligibilité que la barre de recherche
+ * (`runSearchPipeline`, politique globale), puis seules les correspondances
+ * EXACTES du nom (`isExactNameMatch`) sont retenues — un rapprochement
+ * approximatif (« pompe » → « Pompe à chaleur ») n'est jamais une cible
+ * certaine. Lecture seule, bornée au compte. `assetIds` : restreint au(x)
+ * bien(s) donné(s) (contexte de page, revalidation d'un choix).
+ */
+export async function findNamedEntities(
+  accountId: number, rawQuery: string, opts: { assetIds?: number[] | null } = {},
+): Promise<NamedEntityLookup> {
+  const q = parseSearchQuery(rawQuery);
+  if (q.tokens.length === 0 || q.tokens.length > 6) return { entities: [], assetHomonym: false };
+  const mode = await searchExprMode();
+  const [equips, rooms, assets] = await Promise.all([
+    nestedCandidates('equipment', accountId, q, mode, opts),
+    nestedCandidates('room', accountId, q, mode, opts),
+    opts.assetIds?.length ? Promise.resolve([] as SearchCandidate[]) : assetCandidates(accountId, q, mode),
+  ]);
+  const exacts = (cands: SearchCandidate[]) => runSearchPipeline(q, cands, GLOBAL_SEARCH_POLICY).results
+    .filter((r) => isExactNameMatch(q, r.candidate.displayName));
+  const entities = [...exacts(equips), ...exacts(rooms)].map((r) => {
+    const c = r.candidate as SearchCandidate & { _assetId: number; _assetName: string | null };
+    return { kind: c.entityType as NestedKind, id: Number(c.entityId), name: c.displayName, assetId: c._assetId, assetName: c._assetName };
+  });
+  return { entities: entities.slice(0, 6), assetHomonym: exacts(assets).length > 0 };
+}

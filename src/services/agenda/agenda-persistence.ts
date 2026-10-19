@@ -93,6 +93,39 @@ export interface PersistAgendaOptions {
 }
 
 /**
+ * Lot 71E (§A, §E) — bilan d'une persistance : écritures en échec et sort
+ * des retraits de la source. Le travail T4 s'en sert pour ne jamais se
+ * déclarer réussi après une écriture en échec.
+ */
+export interface PersistAgendaSummary {
+  /** Décisions dont l'écriture a échoué (aucune n'interrompt les autres). */
+  writeFailures: number;
+  /** Candidats dont la décision T4 reste indéterminée (abstention, échec technique). */
+  undetermined: number;
+  /**
+   * Retraits de la source :
+   *  · NONE — rien à retirer (ou pas de synchronisation) ;
+   *  · GLOBAL — synchronisation complète (T4-08) ;
+   *  · TARGETED_ONLY — décision indéterminée : seuls les rejets explicites rapprochés de façon fiable ;
+   *  · BLOCKED_WRITE_FAILURE — écriture préalable en échec : aucun retrait.
+   */
+  removal: 'NONE' | 'GLOBAL' | 'TARGETED_ONLY' | 'BLOCKED_WRITE_FAILURE';
+  /** Éléments effectivement retirés. */
+  removed: number[];
+  /** Lot 71E (§C) — classifications corrigées sur des doublons exacts. */
+  corrected: number;
+}
+
+/** Issue T4 d'une décision non créatrice (lot 71E, §A). */
+export function t4OutcomeOf(d: Pick<AgendaDecision, 'action' | 'reasonCode'>): 'reject' | 'abstain' | 'technical_failure' | null {
+  if (d.action !== 'ignore') return null;
+  if (d.reasonCode === 'MODEL_REJECTED_NOT_AGENDA') return 'reject';
+  if (d.reasonCode === 'T4_TECHNICAL_FAILURE') return 'technical_failure';
+  // MODEL_ABSTAINED, et tout motif inconnu : indéterminé (jamais un retrait).
+  return 'abstain';
+}
+
+/**
  * Événements existants d'un bien, dans le format attendu par le moteur.
  *
  * Le filtre porte sur `account_id` ET sur la liaison au bien : un événement
@@ -163,7 +196,11 @@ export async function persistAgendaDecisions(
   accountId: number,
   assetId: number,
   opts: PersistAgendaOptions = {},
-): Promise<void> {
+): Promise<PersistAgendaSummary> {
+  const bilan: PersistAgendaSummary = {
+    writeFailures: 0, undetermined: decisions.filter((d) => { const o = t4OutcomeOf(d); return o === 'abstain' || o === 'technical_failure'; }).length,
+    removal: 'NONE', removed: [], corrected: 0,
+  };
   // ══════════════════════════════════════════════════════════════════════
   // SYNCHRONISATION DE LA SOURCE (CDC 15 T4-08) — toujours active depuis le
   // lot 16b-2 (AI_T4_EFFECTS retiré) : une décision créatrice met à jour
@@ -227,6 +264,8 @@ export async function persistAgendaDecisions(
           // est tracée sur l'échéance existante : c'est l'indicateur
           // « consolidées » de l'écran T4 (T4-UI-06, SCR-05).
           await recordConsolidation(decision, accountId);
+          // Lot 71E (§C) : correction de classification d'un doublon exact.
+          if (decision.classificationCorrection && await correctClassification(decision, accountId, assetId)) bilan.corrected++;
           break;
 
         case 'retire_forecast':
@@ -239,10 +278,10 @@ export async function persistAgendaDecisions(
 
         case 'ignore':
           // Lot 54 : T4 a refusé l'événement, s'est abstenu ou a échoué —
-          // aucun Agenda, aucune proposition. Action non créatrice de clé :
-          // l'ancien élément automatique de la source, s'il existe et n'a
-          // pas été touché par l'utilisateur, est retiré par la
-          // synchronisation ci-dessous (analyse complète).
+          // aucun Agenda, aucune proposition. Lot 71E (§A) : seul un REJET
+          // explicite peut retirer l'ancien élément automatique intact de la
+          // source (rapprochement fiable, analyse complète) ; une abstention
+          // ou un échec technique le conserve et suspend tout retrait global.
           console.info(JSON.stringify({
             event: 't4.candidate_ignored', accountId, assetId, sourceFileId: opts.sourceFileId ?? decision.sourceFileId ?? null,
             reasonCode: decision.reasonCode, verdict: decision.t4?.verdict ?? null,
@@ -250,6 +289,7 @@ export async function persistAgendaDecisions(
           break;
       }
     } catch (e) {
+      bilan.writeFailures++;
       console.error(
         `[agenda-persistence] décision « ${decision.action} » sur « ${decision.title} » :`,
         (e as Error).message,
@@ -257,24 +297,104 @@ export async function persistAgendaDecisions(
     }
   }
 
-  // Retraits : éléments automatiques intacts de la source que plus rien ne produit.
-  if (actif && actif.remove.length) {
-    try {
-      await removeAgendaItemsFromSource({
-        accountId, sourceFileId: actif.sourceFileId, assetId,
-        keepKeys: actif.steps.map((x) => x.key), keepIds: actif.keep,
-        analysisComplete: opts.analysisComplete === true,
-      });
-      if (opts.analysisComplete !== true) {
-        console.info(JSON.stringify({
-          event: 't4.source_sync_no_removal', accountId, assetId, sourceFileId: actif.sourceFileId,
-          reasons: opts.incompleteReasons ?? ['UNKNOWN'], wouldRemove: actif.remove,
-        }));
+  // ══════════════════════════════════════════════════════════════════════
+  // RETRAITS — lot 71E (§A). Une panne IA, une abstention ou une écriture en
+  // échec ne fait JAMAIS disparaître une échéance préexistante :
+  //   · écriture préalable en échec → aucun retrait ;
+  //   · décision T4 indéterminée (abstention, échec technique) → aucun retrait
+  //     GLOBAL ; seuls les rejets EXPLICITES rapprochés de façon fiable
+  //     (retraits ciblés) ;
+  //   · sinon, synchronisation complète (T4-08) : éléments automatiques
+  //     intacts que plus rien ne produit.
+  // Toujours : jamais un élément touché par l'utilisateur, jamais un élément
+  // encore justifié par une autre source (`removeAgendaItemsFromSource`), et
+  // seulement sur analyse complète.
+  // ══════════════════════════════════════════════════════════════════════
+  if (actif) {
+    const cibles = bilan.writeFailures > 0 ? [] : bilan.undetermined > 0 ? actif.targetedRemove : null;
+    const aRetirer = cibles ?? actif.remove;
+    bilan.removal = bilan.writeFailures > 0 ? 'BLOCKED_WRITE_FAILURE' : bilan.undetermined > 0 ? 'TARGETED_ONLY' : 'GLOBAL';
+    if (cibles !== null && (actif.remove.length || actif.targetedRemove.length)) {
+      console.info(JSON.stringify({
+        event: 't4.source_sync_removal_restricted', accountId, assetId, sourceFileId: actif.sourceFileId,
+        reason: bilan.removal, undetermined: bilan.undetermined, writeFailures: bilan.writeFailures,
+        preserved: actif.remove.filter((id) => !aRetirer.includes(id)), targeted: aRetirer,
+      }));
+    }
+    if (aRetirer.length) {
+      try {
+        const r = await removeAgendaItemsFromSource({
+          accountId, sourceFileId: actif.sourceFileId, assetId,
+          keepKeys: actif.steps.map((x) => x.key), keepIds: actif.keep,
+          analysisComplete: opts.analysisComplete === true,
+          ...(cibles !== null ? { onlyIds: cibles } : {}),
+        });
+        if (!r.dryRun) bilan.removed = r.removed;
+        if (opts.analysisComplete !== true) {
+          console.info(JSON.stringify({
+            event: 't4.source_sync_no_removal', accountId, assetId, sourceFileId: actif.sourceFileId,
+            reasons: opts.incompleteReasons ?? ['UNKNOWN'], wouldRemove: aRetirer,
+          }));
+        }
+      } catch (e) {
+        console.error(`[agenda-persistence] retrait des éléments de la source ${actif.sourceFileId} :`, (e as Error).message);
       }
-    } catch (e) {
-      console.error(`[agenda-persistence] retrait des éléments de la source ${actif.sourceFileId} :`, (e as Error).message);
     }
   }
+  return bilan;
+}
+
+/**
+ * Lot 71E (§C) — corrige la classification (catégorie action / information,
+ * type métier désigné par T4) d'un événement existant reconnu comme doublon
+ * EXACT, quand la décision T4 est fiable et l'événement automatique INTACT :
+ * même identifiant, mêmes liens documentaires ; ni titre, ni date, ni autre
+ * propriété réécrits. Jamais un élément créé, modifié ou confirmé par
+ * l'utilisateur, ni un élément projeté depuis une Opération (relecture de
+ * sécurité + écriture gardée). Rend `true` si une correction a été écrite.
+ */
+export async function correctClassification(decision: AgendaDecision, accountId: number, assetId: number | null): Promise<boolean> {
+  const corr = decision.classificationCorrection;
+  const id = decision.existingItemId;
+  if (!corr || !id || id <= 0) return false;
+  const colonnes = await agendaFunctionalColumnsReady();
+  const [cur] = (await pgClient.unsafe(
+    `SELECT home_category AS "category", is_automatic AS "isAutomatic", is_automatic_modified AS "isAutomaticModified",
+            manual_status AS "manualStatus", projection_origin AS "projectionOrigin",
+            origin_ref_type AS "originRefType", origin_ref_id AS "originRefId"
+            ${colonnes ? ', business_type AS "businessType"' : ''}
+       FROM agenda_items WHERE id = $1 AND account_id = $2`,
+    [id, accountId] as never[],
+  )) as unknown as Array<{
+    category: string | null; isAutomatic: boolean; isAutomaticModified: boolean; manualStatus: string | null;
+    projectionOrigin: string | null; originRefType: string | null; originRefId: number | null; businessType?: string | null;
+  }>;
+  if (!cur || !cur.isAutomatic || cur.isAutomaticModified || (cur.manualStatus ?? '') !== '' || cur.projectionOrigin) return false;
+  const categorie = cur.category !== corr.category ? corr.category : undefined;
+  const type = colonnes && corr.businessType && cur.businessType !== corr.businessType ? corr.businessType : undefined;
+  if (!categorie && !type) return false;
+  // Clé fonctionnelle : recalculée (nouveau type métier) pour un élément de CETTE source.
+  let functionalKey: string | undefined;
+  const source = sourceOf(decision);
+  if (type && assetId && source && cur.originRefType === 'asset_file' && Number(cur.originRefId) === source) {
+    const occurrenceIndex = decision.occurrenceIndex ?? (decision.occurrence?.seriesKey || !decision.originFieldKey ? decision.date : 'single');
+    const k = functionalKeyFor({ ...t4UpsertInput({ ...decision, businessType: type, occurrenceIndex }, accountId, assetId, false, null) });
+    if (k) functionalKey = k;
+  }
+  const res = await upsertAgendaItem({
+    itemId: id, accountId, assetId: null, origin: 'AUTOMATIC',
+    ...(categorie ? { category: categorie } : {}),
+    ...(type ? { businessType: type } : {}),
+    ...(functionalKey ? { functionalKey } : {}),
+  }, { onlyIfUntouched: true });
+  if (res.protected) return false;
+  await recordOccurrenceEvent(id, accountId, 'CLASSIFICATION_CORRECTED', {
+    from: { category: cur.category, businessType: cur.businessType ?? null },
+    to: { category: categorie ?? cur.category, businessType: type ?? cur.businessType ?? null },
+    sourceFileId: decision.sourceFileId ?? null, reasonCode: 'T4_RECLASSIFICATION', traceId: decision.t4?.traceId ?? null,
+  });
+  console.info(JSON.stringify({ event: 't4.classification_corrected', accountId, itemId: id, category: categorie ?? null, businessType: type ?? null }));
+  return true;
 }
 
 /** Plan de synchronisation (T4-08), ou null si pas de source unique / 0223 absente. */
@@ -293,7 +413,7 @@ async function planForSource(
     const plan = planSourceSync({
       sourceFileId, assetId, items,
       decisions: decisions.map((d, index) => ({
-        index, action: d.action, title: d.title, date: d.date, sourceFileId: sourceOf(d),
+        index, action: d.action, title: d.title, date: d.date, sourceFileId: sourceOf(d), t4Outcome: t4OutcomeOf(d),
         originFieldKey: d.originFieldKey ?? null, existingItemId: d.existingItemId ?? null,
         seriesKey: d.occurrence?.seriesKey ?? null, ...semanticsOf(d),
         occurrenceIndex: d.occurrenceIndex ?? null, target: d.target ?? null,

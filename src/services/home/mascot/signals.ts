@@ -51,6 +51,12 @@ export interface MascotAgendaRow {
   assetSubtype?: string | null;
   /** Lot 60 : série de l'occurrence (`agenda_items.series_key`), portée « série » des rappels. */
   seriesKey?: string | null;
+  /**
+   * Lot 71G (T6-02) : échéance dépassée depuis plus de 60 jours dont une
+   * action reste identifiable (évaluation non close, report, qualification,
+   * preuve documentaire) — candidate à l'évaluation T6 malgré son ancienneté.
+   */
+  t6LongOverdue?: boolean;
 }
 
 /**
@@ -103,6 +109,14 @@ export interface MascotRawData {
    * non lu (comportement antérieur) ; `null` : lecture en échec (dégradé).
    */
   overdueAgenda?: Array<{ id: number; date: string }> | null;
+  /**
+   * Lot 71G (T6-02, T6-03) : échéances lues POUR T6 seulement, hors de la
+   * lecture bornée `agenda` (200 lignes) — dépassées depuis plus de 60 jours
+   * avec une action identifiable, lointaines documentées, non encore
+   * évaluées (reprise). Aucun autre sujet de la mascotte ne les utilise.
+   * Absent ou `null` (lecture en échec) : aucune.
+   */
+  t6Agenda?: MascotAgendaRow[] | null;
 }
 
 /** Droits utiles aux recommandations (REC-005). */
@@ -285,10 +299,13 @@ function onboardingSubjects(raw: MascotRawData): MascotSubject[] {
     accountId: raw.accountId,
     priority: null, requiresAttention: true, intent: 'onboard',
     facts: { step: 2, stepCount: 2, goal: 'ajouter un premier document', assetName: seul?.name ?? null },
-    actions: [action('ONB-DOC:upload', 'Ajouter un document', { kind: 'upload_document', assetId: seul?.id ?? null })],
+    // Lot 71F : instruction directe (« Ajoutez votre premier document pour
+    // garage : … »), action « Déposer un document » — même libellé que la
+    // tuile d'amorce ; aucun préambule.
+    actions: [action('ONB-DOC:upload', 'Déposer un document', { kind: 'upload_document', assetId: seul?.id ?? null })],
     fallbackText: seul
-      ? `Ajoutez maintenant votre premier document pour ${seul.name} : une facture, un contrat ou une garantie.`
-      : 'Ajoutez maintenant votre premier document : une facture, un contrat ou une garantie.',
+      ? `Ajoutez votre premier document pour ${seul.name} : une facture, un contrat ou une garantie.`
+      : 'Ajoutez votre premier document : une facture, un contrat ou une garantie.',
     allowedHighlight: 'votre premier document',
     occurrenceKey: 'ONB-DOC',
     dedupeKeys: ['onboarding'],
@@ -507,17 +524,19 @@ const PRIORITE_T6: Readonly<Record<MascotInterpellation['priority'], MascotPrior
  * date : MASC-EXT-ACTION (« C'est fait ») ou MASC-BLOCKED (à préciser).
  */
 export function decidedAgendaSubjects(raw: MascotRawData, shown: readonly MascotDecidedAgenda[]): MascotSubject[] {
+  // Lot 71G : une échéance décidée peut venir de la lecture propre à T6.
+  const lignes = [...(raw.agenda ?? []), ...(raw.t6Agenda ?? [])];
   if (raw.rights && !raw.rights.canWrite) {
     // REC-005 : en lecture seule, ni « C'est fait » ni « Préciser » ; les
     // échéances à venir restent présentables (lecture).
     shown = shown.filter((d) => {
-      const i = (raw.agenda ?? []).find((x) => x.id === d.agendaItemId);
+      const i = lignes.find((x) => x.id === d.agendaItemId);
       return !!i?.date && i.date > raw.today;
     });
   }
   const out: MascotSubject[] = [];
   for (const d of shown) {
-    const i = (raw.agenda ?? []).find((x) => x.id === d.agendaItemId);
+    const i = lignes.find((x) => x.id === d.agendaItemId);
     if (!i?.date) continue;
     const base = i.date > raw.today
       ? dateNextSubject(raw, i, { dedupeDateNext: false })

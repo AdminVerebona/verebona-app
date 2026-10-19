@@ -156,12 +156,14 @@ describe('Desktop et mobile', () => {
 });
 
 describe('Cartes conservées et nombre de sujets', () => {
-  it('T6-RAP-15 — « À traiter » et Duo en cartes sous l’en-tête qui les compte ; 0, 1 et 2 sujets', () => {
+  it('T6-RAP-15 — « À traiter » et Duo en cartes, présentés directement (lot 71F : sans en-tête qui les compte) ; 0, 1 et 2 sujets', () => {
     const duo = { href: '/mon-compte?panneau=duo', title: 'Inviter quelqu’un', subtitle: 'Premium Duo', cta: 'Inviter' };
     const item = { todoId: 't1', actionKind: 'COMPLETE', priority: 'DO_FIRST', title: 'Numéro à compléter', subtitle: 'Maison', cta: 'Ouvrir', entityType: 'ASSET', actionType: 'OPEN_TODO_CARD', todoType: 'DATA', card: { question: 'Numéro ?' } } as never;
     const html = rendu(accueil(raw([VISITE]), [informe(1)], { todo: { total: 2, items: [item] }, duoInvite: duo }));
     const t = bulleVisible(html);
-    expect(t.indexOf('Deux sujets nécessitent votre attention aujourd’hui.')).toBeLessThan(t.indexOf('Inviter quelqu’un'));
+    // Lot 71F : aucune introduction de comptage ; la bulle commence par la carte Duo.
+    expect(t).not.toMatch(/sujets? (mérite|nécessite)|votre attention/);
+    expect(t.trim().startsWith('Inviter quelqu’un')).toBe(true);
     expect(t.indexOf('Numéro à compléter')).toBeLessThan(t.indexOf('La visite expert bois'));
     expect(html).toContain('data-action-type="DUO_INVITE"');
     expect(html).toContain('data-todo-id="t1"');

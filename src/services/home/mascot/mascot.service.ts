@@ -51,6 +51,12 @@ export async function getMascotPresentation(
   accountId: number,
   mode: T6Mode = 'display',
   userId: number | null = null,
+  /**
+   * Lot 71G (T6-03) : pré-génération — appelé quand des candidats restent à
+   * évaluer après ce passage (reprise durable demandée) : la formulation est
+   * alors différée au passage qui achève l'évaluation (situation stable).
+   */
+  opts: { onResume?: () => void } = {},
 ): Promise<MascotPresentation> {
   let raw;
   // Lot 49A (ticket 13) : « Inviter quelqu'un » (Premium Duo, personne
@@ -76,6 +82,7 @@ export async function getMascotPresentation(
   // la composition : phrase, cartes, pose et questions reposent sur les MÊMES
   // décisions.
   let interpellation = await prepare(accountId, userId, raw, mode);
+  let reprise = false;
   if (interpellation.bundle) {
     const bundle = interpellation.bundle;
     const evaluation = evaluateWithT6({ accountId, bundle, mode }, {
@@ -90,6 +97,14 @@ export async function getMascotPresentation(
       // validée, ou état « indisponible » explicite après un échec).
       const o = await evaluation;
       if (o.status !== 'disabled') interpellation = await prepare(accountId, userId, raw, mode);
+      // Lot 71G (T6-03) : candidats restés hors de ce passage (8 par appel) —
+      // REPRIS par une nouvelle demande durable, tant que l'évaluation progresse
+      // (jamais de relance en boucle sur un échec : plafonds de coût inchangés).
+      if (o.persisted > 0 && interpellation.pendingAssessments > 0) {
+        await (await import('./pregen-queue')).requestMascotPregeneration(accountId, 't6-resume');
+        reprise = true;
+        opts.onResume?.();
+      }
     } else {
       // Affichage : JAMAIS attendue. Les décisions valides déjà conservées
       // servent tout de suite ; une évaluation aboutie programme une
@@ -149,8 +164,10 @@ export async function getMascotPresentation(
     questions = await loadT6SuggestionContext(accountId, { speech, attentionToday, agenda, today: raw.today ?? parisDay() });
   }
 
-  // RUN-013 : rien à formuler ni à suggérer — pas de FORMULATE.
-  if (subjects.length === 0 && !questions) {
+  // RUN-013 : rien à formuler ni à suggérer — pas de FORMULATE. Lot 71G :
+  // évaluation en cours de reprise (pré-génération) — la situation n'est pas
+  // stable, la formulation attend le passage qui l'achève (aucun appel inutile).
+  if ((subjects.length === 0 && !questions) || reprise) {
     rapport(secours, null, null);
     return secours;
   }
@@ -168,7 +185,7 @@ export async function getMascotPresentation(
 }
 
 /** Décision d'interpellation du passage (lot 60), état d'évaluation compris (lot 61). */
-function prepare(accountId: number, userId: number | null, raw: MascotRawData, mode: T6Mode): Promise<T6Preparation> {
+async function prepare(accountId: number, userId: number | null, raw: MascotRawData, mode: T6Mode): Promise<T6Preparation> {
   void mode;
   return prepareT6Interpellation({ accountId, userId, raw }, {
     aiCapable: t6InterpellationAvailable,

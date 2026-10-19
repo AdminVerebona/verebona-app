@@ -228,6 +228,20 @@ export async function PUT(
     if (equipmentId !== undefined) {
       updateData.equipmentId = equipmentId === null || equipmentId === 0 ? null : parseInt(equipmentId);
     }
+    // Lot 71A (point B) : équipement choisi — ou retiré — par l'utilisateur :
+    // décision utilisateur, jamais défaite par le rapprochement automatique
+    // (`document-equipment-link.service`). Marque conservée d'un
+    // enregistrement à l'autre, comme pour le bien.
+    {
+      const avant = (oldDoc.userEditedFields ?? {}) as Record<string, boolean>;
+      const equipementModifie = equipmentId !== undefined && (updateData.equipmentId ?? null) !== (oldDoc.equipmentId ?? null);
+      if (equipementModifie || avant.equipmentId === true) {
+        updateData.userEditedFields = {
+          ...((updateData.userEditedFields ?? avant) as Record<string, boolean>),
+          equipmentId: true,
+        };
+      }
+    }
 
     if (oldDoc.isWebLink && webLinkUrl !== undefined) {
       updateData.webLinkUrl = webLinkUrl.trim();

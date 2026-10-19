@@ -148,6 +148,7 @@ export const ACCOUNT_OWNED_TABLES: Readonly<Record<string, string>> = {
   cdc15_migration_report: 'rapport de migration historique',
   room_merge_changes: 'journal de migration historique (restauration)',
   field_origin_migration_audit: 'audit de migration historique',
+  document_validation_reprise: 'journal de la reprise des documents « à valider » (lot 71B, trace d’exploitation) — jamais déplacé',
   verebona_fact_revalidations: 'revalidation T2 d’une conversation privée',
   supplier_review_items: 'déplacé seulement pour les documents qui partent (traité à part)',
   events: 'traité à part (asset_id / linked_asset_id)',

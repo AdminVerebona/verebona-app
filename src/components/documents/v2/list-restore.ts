@@ -24,6 +24,7 @@
 import type { FeedMeta } from '@/lib/documents/document-feed';
 import type { PageEnd } from './documents-feed';
 import type { DocumentItem, ViewFilters } from './documents-view';
+import { equipmentFilterParam } from '@/lib/filters/equipment-filter';
 
 export const RESTORE_MAX_DOCUMENTS = 300;
 export const RESTORE_TTL_MS = 10 * 60 * 1000;
@@ -70,7 +71,11 @@ export function parseSnapshot(raw: unknown, now: number): ListSnapshot | null {
   return {
     v: 1,
     key: o.key,
-    filters: { biens: f.biens, rubrics: f.rubrics, types: f.types },
+    filters: {
+      biens: f.biens, rubrics: f.rubrics, types: f.types,
+      // Lot 71 : filtre Équipement repris s'il est lisible (sinon « Tous »).
+      ...(typeof f.equipment === 'string' && equipmentFilterParam(f.equipment) ? { equipment: equipmentFilterParam(f.equipment)! } : {}),
+    },
     documents: o.documents as DocumentItem[],
     meta: (o.meta ?? null) as FeedMeta | null,
     nextCursor: o.nextCursor as string | null,

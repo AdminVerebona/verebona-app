@@ -45,6 +45,7 @@ import {
   type DocumentView,
 } from './document-query.contract';
 import { OTHER_ASSET_IDS_SQL, documentInAssetsCondition } from './asset-document-scope';
+import { documentOfEquipmentsCondition } from '@/services/equipments/equipment-filter-scope';
 
 /**
  * Construit les conditions communes à toutes les requêtes.
@@ -67,7 +68,10 @@ function buildConditions(query: DocumentQuery): SQL[] {
   }
 
   if (query.equipmentIds?.length) {
-    conditions.push(inArray(assetFiles.equipmentId, query.equipmentIds));
+    // Lot 71 (71C) : colonne `equipment_id` OU lien N-N ACTIF PRIMARY /
+    // SECONDARY vers l'équipement (un document peut concerner plusieurs
+    // équipements, lot 71A) — même règle que le filtre « Équipement ».
+    conditions.push(documentOfEquipmentsCondition(query.equipmentIds));
   }
 
   if (query.typeCodes?.length) {

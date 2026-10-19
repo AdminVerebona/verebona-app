@@ -656,6 +656,12 @@ export async function projectDocumentKnowledgeToAsset(p: {
     sourceFileId: p.fileId,
   }).catch((e: Error) => console.error('[knowledge] réconciliation après rattachement :', e.message));
 
+  // Lot 71A (BUG P1, point B) : document rattaché tardivement à un bien →
+  // rapprochement avec les équipements de CE bien (données persistées).
+  await import('@/services/equipment/document-equipment-link.service')
+    .then(({ syncDocumentEquipmentLinks }) => syncDocumentEquipmentLinks({ accountId: p.accountId, fileId: p.fileId, allowAi: true }))
+    .catch((e: Error) => console.error('[knowledge] rattachement aux équipements après rattachement :', e.message));
+
   // Rattachement d'un document : impact possible au-delà de ce bien (T3,
   // différé — la réconciliation locale ci-dessus traite l'immédiat).
   const { notifyCoherenceEvent } = await import('../reconciliation/account-reconciliation.service');

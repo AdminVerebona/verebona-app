@@ -166,11 +166,12 @@ function documentEvents(rows: WorkDocumentRow[]): VerebonaWorkItem[] {
     const pour = r.assetName ? `, rattaché à ${r.assetName}` : '';
     let text: string | null = null;
     let tone: WorkTone = 'violet';
-    switch (r.analysisState) {
+    // Lot 71B : plus de validation sur les fiches — l'ancien état « à valider »
+    // (repris par la tâche `document-validation-reprise`) se lit « analysé ».
+    switch (r.analysisState === 'VALIDATION_REQUIRED' ? 'ANALYZED' : r.analysisState) {
       case 'ANALYZED': text = `J’ai analysé ${q(r.title)}${pour}.`; break;
       case 'ANALYZING':
       case 'UPLOADED': text = `J’analyse ${q(r.title)}${pour}.`; break;
-      case 'VALIDATION_REQUIRED': text = `J’ai analysé ${q(r.title)} : des informations attendent votre validation.`; tone = 'amber'; break;
       case 'CONFLICT_DETECTED': text = `J’ai relevé une incohérence dans ${q(r.title)} : elle vous attend dans « À traiter ».`; tone = 'amber'; break;
       default: text = null; // échec ou document non analysé : rien que Verebona ait fait
     }
@@ -189,7 +190,7 @@ export const MAX_WORK_ITEMS = 4;
  */
 export function deriveVerebonaWork(raw: WorkRawData, max = MAX_WORK_ITEMS): VerebonaWorkItem[] {
   const dejaDits = new Set(raw.fieldUpdates.map((r) => r.assetFileId).filter((x): x is number => typeof x === 'number'));
-  const docs = raw.documents.filter((d) => !(d.analysisState === 'ANALYZED' && dejaDits.has(d.id)));
+  const docs = raw.documents.filter((d) => !((d.analysisState === 'ANALYZED' || d.analysisState === 'VALIDATION_REQUIRED') && dejaDits.has(d.id)));
   const all = [...fieldEvents(raw.fieldUpdates), ...deadlineEvents(raw.deadlines), ...documentEvents(docs)];
   return all
     .sort((a, b) => b.at.localeCompare(a.at) || a.id.localeCompare(b.id))
@@ -256,7 +257,6 @@ export function docStatus(analysisState: string | null | undefined): string | nu
     case 'UPLOADING':
     case 'UPLOADED':
     case 'ANALYZING': return 'En analyse';
-    case 'VALIDATION_REQUIRED': return 'À valider';
     case 'CONFLICT_DETECTED': return 'À vérifier';
     default: return null;
   }

@@ -88,11 +88,14 @@ describe('AC13-1 — Premium Duo pris, personne invitée : « Inviter quelqu’u
     expect(lecture.p).toEqual([7]);
   });
 
-  it('aucune autre action : la bulle compte « Un sujet… » et ne dit jamais « Tout est à jour »', async () => {
+  it('aucune autre action : proposition directe (lot 71F : plus de « Un sujet… »), jamais « Tout est à jour »', async () => {
     duoRows = [DUO_NEUF];
     const p = await getMascotPresentation(7);
     expect(p.status).toBe('ok');
-    expect(composeSpeech({ presentation: p, empty: false }).text).toBe('Un sujet nécessite votre attention aujourd’hui.');
+    // Lot 71F : la carte « Inviter quelqu’un » suffit — aucune phrase qui la
+    // qualifie de sujet nécessitant l'attention, ni « rien à signaler ».
+    expect(composeSpeech({ presentation: p, empty: false }).text).toBe('');
+    expect(homeItems(p, false)[0]).toMatchObject({ kind: 'duo-invite', title: 'Inviter quelqu’un' });
     expect(homePose(p, false)).toBe('reminder-bell');
   });
 
@@ -107,14 +110,14 @@ describe('AC13-1 — Premium Duo pris, personne invitée : « Inviter quelqu’u
 });
 
 describe('AC13-2 — hiérarchie DO_FIRST (deux au plus) respectée', () => {
-  it('3 DO_FIRST dans la file : « Inviter quelqu’un » + 1 DO_FIRST, « Deux sujets… »', async () => {
+  it('3 DO_FIRST dans la file : « Inviter quelqu’un » + 1 DO_FIRST, sans introduction de comptage (lot 71F)', async () => {
     duoRows = [DUO_NEUF];
     rawData = raw([atp(), atp(), atp(), atp('DO_NEXT')]);
     const p = await getMascotPresentation(7);
     expect(p.todo?.items).toHaveLength(1);
     expect(p.todo?.items[0].priority).toBe('DO_FIRST');
     expect(homeItems(p, false).filter((i) => i.kind === 'duo-invite' || i.kind === 'todo')).toHaveLength(2);
-    expect(composeSpeech({ presentation: p, empty: false }).text).toMatch(/^Deux sujets nécessitent votre attention aujourd’hui\./);
+    expect(composeSpeech({ presentation: p, empty: false }).text).not.toMatch(/sujets? (mérite|nécessite)|votre attention|Rien de particulier/);
   });
 
   it('sans Duo à inviter : comportement inchangé (deux DO_FIRST)', async () => {

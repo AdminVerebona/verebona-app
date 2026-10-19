@@ -282,6 +282,9 @@ export const DOCUMENT_ANALYSIS_STATES = [
   'UPLOADED',
   'ANALYZING',
   'ANALYZED',
+  // Lot 71B : ancien état « à valider » — plus jamais écrit (pas de validation
+  // sur les fiches) ; encore lu pour les documents en attente de reprise
+  // (`document-validation-reprise`), affiché comme « analysé ».
   'VALIDATION_REQUIRED',
   'CONFLICT_DETECTED',
   'ANALYSIS_FAILED',

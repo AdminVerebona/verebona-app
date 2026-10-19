@@ -328,35 +328,18 @@ export async function runEquipmentAutoLink(
 
   const assetId = equip.assetId;
 
-  // 2. Get already-linked document IDs
-  const alreadyLinkedDocs = await db
-    .select({ id: assetFiles.id })
-    .from(assetFiles)
-    .where(and(eq(assetFiles.equipmentId, equipmentId), eq(assetFiles.accountId, accountId), isNull(assetFiles.deletedAt)));
-  const linkedDocIds = alreadyLinkedDocs.map(d => d.id);
-
-  // 3. Get candidate documents (NOT yet linked)
-  const allAssetDocs = await db
-    .select({
-      id: assetFiles.id,
-      title: assetFiles.retainedTitle,
-      filename: assetFiles.originalFilename,
-      docType: assetFiles.retainedFunctionCode,
-      documentDate: assetFiles.documentDate,
-      supplier: assetFiles.supplier,
-      amountCents: assetFiles.amountCents,
-      description: assetFiles.description,
-    })
-    .from(assetFiles)
-    .where(and(
-      eq(assetFiles.assetId, assetId),
-      eq(assetFiles.accountId, accountId),
-      isNull(assetFiles.deletedAt),
-    ));
-
-  const candidateDocs = linkedDocIds.length > 0
-    ? allAssetDocs.filter(d => !linkedDocIds.includes(d.id))
-    : allAssetDocs;
+  // 2-3. Documents (lot 71A, parcours EQUIPMENT_DOCUMENT) : service commun —
+  // chaque document du bien est rapproché parmi TOUS les équipements du bien
+  // (jamais repris à un équipement similaire), T3 seulement pour les vraies
+  // ambiguïtés, avec le contexte enrichi (marque, modèle, n° de série, faits
+  // T1). Les documents ne passent plus par la liste lexicale ci-dessous.
+  const { syncEquipmentDocumentLinks } = await import('./document-equipment-link.service');
+  const { loadEquipmentProfiles } = await import('./document-equipment-link.service');
+  const { formatEquipmentSubject } = await import('./document-equipment-matching');
+  const docs = await syncEquipmentDocumentLinks({ accountId, equipmentId, allowAi: true });
+  const profils = await loadEquipmentProfiles(accountId, { assetIds: [assetId] });
+  const profil = profils.find((p) => p.id === equipmentId);
+  const candidateDocs: CandidateDoc[] = [];
 
   // 4. Get candidate agenda items (NOT yet linked)
   const alreadyLinkedAgenda = await db
@@ -439,10 +422,11 @@ export async function runEquipmentAutoLink(
   }
 
   // 6. If nothing to analyze, return empty result
+  const documentsResult = docs.linkedDocuments.map((id) => ({ id, score: 1, reason: 'Rapprochement document ↔ équipement (données structurées)' }));
   if (candidateDocs.length === 0 && candidateAgendaItems.length === 0 && candidateSuppliers.length === 0) {
     return {
-      documents: [], agendaItems: [], suppliers: [],
-      applied: { documentsLinked: 0, agendaLinked: 0, suppliersLinked: 0 },
+      documents: documentsResult, agendaItems: [], suppliers: [],
+      applied: { documentsLinked: docs.linkedDocuments.length, agendaLinked: 0, suppliersLinked: 0 },
     };
   }
 
@@ -470,8 +454,9 @@ export async function runEquipmentAutoLink(
     const linked = await reconcileLinks({
       accountId,
       variables: {
-        SUBJECT_CONTEXT: `Équipement "${equip.name}" (type: ${equip.type ?? 'non spécifié'}` +
-          `${equip.substructureId ? `, pièce #${equip.substructureId}` : ''})`,
+        SUBJECT_CONTEXT: profil
+          ? formatEquipmentSubject(profil, profils.filter((p) => p.id !== equipmentId))
+          : `Équipement "${equip.name}" (type: ${equip.type ?? 'non spécifié'}` + `${equip.substructureId ? `, pièce #${equip.substructureId}` : ''})`,
         DOCUMENTS_LIST: buildDocumentsList(ambiguous.documents),
         AGENDA_LIST: buildAgendaList(ambiguous.agendaItems),
         SUPPLIERS_LIST: buildSuppliersList(ambiguous.suppliers),
@@ -559,207 +544,35 @@ export async function runEquipmentAutoLink(
   }
 
   return {
-    documents: clear.documents,
+    documents: [...documentsResult, ...clear.documents],
     agendaItems: clear.agendaItems,
     suppliers: clear.suppliers,
-    applied: { documentsLinked, agendaLinked, suppliersLinked },
+    applied: { documentsLinked: documentsLinked + docs.linkedDocuments.length, agendaLinked, suppliersLinked },
   };
 }
 
-// ── Document → Equipment linker (called after document analysis) ──────────────
-
-function deterministicDocumentEquipmentMatch(
-  equipmentName: string,
-  equipmentType: string | null,
-  docTitle: string | null,
-  docSupplier: string | null,
-  docDescription: string | null,
-): { score: number; reason: string } | null {
-  const nameLower = equipmentName.toLowerCase();
-  const titleLower = (docTitle ?? '').toLowerCase();
-  const supplierLower = (docSupplier ?? '').toLowerCase();
-  const descLower = (docDescription ?? '').toLowerCase();
-
-  // Exact match on equipment name in document title
-  if (titleLower.includes(nameLower)) {
-    return { score: 0.95, reason: `Équipement "${equipmentName}" mentionné dans le titre` };
-  }
-
-  // Equipment name matches supplier name
-  if (supplierLower.includes(nameLower)) {
-    return { score: 0.85, reason: `Fournisseur "${docSupplier}" correspond à l'équipement "${equipmentName}"` };
-  }
-
-  // Equipment type matches document type
-  if (equipmentType) {
-    const typeLower = equipmentType.toLowerCase();
-    if (titleLower.includes(typeLower) || descLower.includes(typeLower)) {
-      return { score: 0.7, reason: `Type d'équipement "${equipmentType}" trouvé dans le document` };
-    }
-  }
-
-  // Equipment name mentioned in description
-  if (descLower.includes(nameLower)) {
-    return { score: 0.6, reason: `Équipement "${equipmentName}" mentionné dans la description` };
-  }
-
-  return null; // pas de match clair → IA
-}
+// ── Document → Equipment linker (called after document validation) ─────────────
 
 /**
- * Link a document to equipments on the same asset.
- * Uses deterministic matching first, falls back to AI only for ambiguous cases.
- *
- * @param assetFileId - The document's asset file ID
- * @param accountId   - The account ID
- * @param equipmentCandidates - Optional pre-extracted equipment names from document analysis.
- *        When provided, documents are matched against DB equipments by name first,
- *        skipping both deterministic and AI matching entirely for clear matches.
+ * Rattache un document aux équipements de son bien (parcours
+ * DOCUMENT_EQUIPMENT). Lot 71A : délègue au service commun
+ * (`document-equipment-link.service`) — données structurées d'abord (cible
+ * T1 vérifiée, n° de série exact et unique, modèle, désignation non
+ * ambiguë), T3 avec un contexte enrichi pour les seules vraies ambiguïtés,
+ * carte LINK-ELT sinon. Plus de correspondance partielle « le nom contient »
+ * ni de premier candidat retenu par défaut (choix arbitraire entre deux
+ * équipements similaires). `equipmentCandidates` (ancien contrat) : ignoré,
+ * les faits T1 persistés en tiennent lieu. Ne lève pas.
  */
 export async function linkDocumentToEquipments(
   assetFileId: number,
   accountId: number,
-  equipmentCandidates?: Array<{ name: string; type: string | null; category: string | null; confidence: number; reason: string }>,
+  _equipmentCandidates?: Array<{ name: string; type: string | null; category: string | null; confidence: number; reason: string }>,
 ): Promise<void> {
-  // Load the document
-  const [doc] = await db
-    .select({
-      id: assetFiles.id,
-      assetId: assetFiles.assetId,
-      equipmentId: assetFiles.equipmentId,
-      title: assetFiles.retainedTitle,
-      filename: assetFiles.originalFilename,
-      docType: assetFiles.retainedFunctionCode,
-      documentDate: assetFiles.documentDate,
-      supplier: assetFiles.supplier,
-      amountCents: assetFiles.amountCents,
-      description: assetFiles.description,
-    })
-    .from(assetFiles)
-    .where(and(eq(assetFiles.id, assetFileId), eq(assetFiles.accountId, accountId), isNull(assetFiles.deletedAt)))
-    .limit(1);
-
-  if (!doc || !doc.assetId) return;
-
-  // Already linked to an equipment — skip
-  if (doc.equipmentId) return;
-
-  // Load all non-archived equipments on this asset
-  // Équipements du bien DU COMPTE : un document rattaché à tort au bien
-  // d'un autre compte ne voit aucun équipement (aucune liaison intercomptes).
-  const assetEquipments = await db
-    .select({ id: equipments.id, name: equipments.name, type: equipments.type })
-    .from(equipments)
-    .innerJoin(assets, and(eq(assets.id, equipments.assetId), eq(assets.accountId, accountId)))
-    .where(and(eq(equipments.assetId, doc.assetId), isNull(equipments.archivedAt)));
-
-  if (assetEquipments.length === 0) return;
-
-  // Build document context
-  const docTitle = doc.title ?? doc.filename ?? `Document #${doc.id}`;
-
-  // ── Equipment candidates from analysis → match directly against DB ──
-  if (equipmentCandidates && equipmentCandidates.length > 0) {
-    const highConfCandidates = equipmentCandidates.filter(c => c.confidence >= 0.7);
-    for (const candidate of highConfCandidates) {
-      const nameLower = candidate.name.toLowerCase().trim();
-      // Try exact match first
-      let match = assetEquipments.find(e => e.name.toLowerCase().trim() === nameLower);
-      // Try partial match (name contains candidate or vice versa)
-      if (!match) {
-        match = assetEquipments.find(e =>
-          e.name.toLowerCase().includes(nameLower) || nameLower.includes(e.name.toLowerCase())
-        );
-      }
-      if (match) {
-        await db
-          .update(assetFiles)
-          .set({ equipmentId: match.id })
-          .where(and(eq(assetFiles.id, assetFileId), eq(assetFiles.accountId, accountId), ownedSql('equipment', match.id, accountId)));
-        return; // linked from analysis candidate — no AI needed
-      }
-    }
-    // Candidates present but none matched → skip (don't fall through to AI)
-    // The analysis already said what this document is about. If no equipment
-    // matches, it's not a viable link. No need for further AI processing.
-    return;
-  }
-
-  // ── Deterministic pass: try matching against all equipments ──
-  const deterministicMatches: { id: number; score: number; reason: string }[] = [];
-  const ambiguousEquipments: typeof assetEquipments = [];
-
-  for (const equip of assetEquipments) {
-    const match = deterministicDocumentEquipmentMatch(
-      equip.name,
-      equip.type,
-      docTitle,
-      doc.supplier,
-      doc.description,
-    );
-    if (match && match.score >= 0.7) {
-      deterministicMatches.push({ id: equip.id, score: match.score, reason: match.reason });
-    } else {
-      ambiguousEquipments.push(equip);
-    }
-  }
-
-  // If deterministic found a clear match above threshold, use it
-  if (deterministicMatches.length > 0) {
-    deterministicMatches.sort((a, b) => b.score - a.score);
-    await db
-      .update(assetFiles)
-      .set({ equipmentId: deterministicMatches[0].id })
-      .where(and(eq(assetFiles.id, assetFileId), eq(assetFiles.accountId, accountId), ownedSql('equipment', deterministicMatches[0].id, accountId)));
-    return;
-  }
-
-  // No deterministic match → try AI for remaining ambiguous equipments
-  if (ambiguousEquipments.length === 0) return;
-
-  const docParts = [`Titre: "${docTitle}"`];
-  if (doc.docType) docParts.push(`Type: ${doc.docType}`);
-  if (doc.documentDate) docParts.push(`Date: ${doc.documentDate}`);
-  if (doc.supplier) docParts.push(`Fournisseur: "${doc.supplier}"`);
-  if (doc.amountCents != null) docParts.push(`Montant: ${(doc.amountCents / 100).toFixed(2)}€`);
-  if (doc.description) docParts.push(`Description: ${doc.description.slice(0, 150)}`);
-
-  const equipmentsList = ambiguousEquipments
-    .map(e => `[id:${e.id}] "${e.name}"${e.type ? ` (type: ${e.type})` : ''}`)
-    .join('\n');
-
-  const linked = await reconcileLinks({
-    accountId,
-    variables: {
-      SUBJECT_CONTEXT: `Document — ${docParts.join(' | ')}`,
-      DOCUMENTS_LIST: '(sans objet)',
-      AGENDA_LIST: '(sans objet)',
-      SUPPLIERS_LIST: '(sans objet)',
-      EQUIPMENTS_LIST: equipmentsList,
-    },
-    sourceIds: [assetFileId],
-  });
-
-  await reportLinkAmbiguities(
-    { accountId, subject: `document #${assetFileId}`, document: { fileId: assetFileId, assetId: doc.assetId } },
-    linked.ambiguities,
-  );
-
   try {
-    const matches = retainAbove(linked.matches, LINK_SCORE_THRESHOLDS.documentToEquipment);
-    if (matches.length === 0) return;
-
-    const best = matches[0];
-    const validEquip = [...ambiguousEquipments, ...assetEquipments.filter(e =>
-      deterministicMatches.some(m => m.id === e.id)
-    )].find(e => e.id === best.id);
-    if (!validEquip) return;
-
-    await db
-      .update(assetFiles)
-      .set({ equipmentId: best.id })
-      .where(and(eq(assetFiles.id, assetFileId), eq(assetFiles.accountId, accountId), ownedSql('equipment', best.id, accountId)));
+    const { syncDocumentEquipmentLinks } = await import('./document-equipment-link.service');
+    await syncDocumentEquipmentLinks({ accountId, fileId: assetFileId, allowAi: true });
   } catch (err) {
-    console.error('[equipment-auto-link] AI match failed (non-blocking):', err);
+    console.error('[equipment-auto-link] rattachement document → équipements (non bloquant) :', (err as Error).message);
   }
 }

@@ -16,6 +16,12 @@
  *
  * Préférence PERSONNELLE : l'échéance, ses documents et l'agenda restent
  * intacts ; dans un compte Duo, l'autre membre garde ses propres rappels.
+ *
+ * Lot 71G (T6-08) : une fenêtre ne se ferme qu'APRÈS la confirmation du
+ * serveur — en cas d'échec (HTTP, réseau, date refusée), elle reste ouverte
+ * avec la date choisie et le message d'erreur ; aucun succès annoncé, aucun
+ * sujet masqué avant confirmation. Bornes de date identiques à l'API (date
+ * civile réelle, de demain à deux ans, en Europe/Paris).
  */
 import { useCallback, useEffect, useState } from 'react';
 import { toast } from 'sonner';
@@ -29,6 +35,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { BLOCK_ACTION_SECONDARY } from './bubble-actions';
 import { apiClient } from '@/lib/api-client';
 import type { MascotReminderRef } from '@/services/home/mascot/types';
+import { T6_MAX_SNOOZE_DAYS, addDays, parisDayOf, snoozeDateError } from '@/services/home/mascot/t6-interpellation';
 
 const ROUTE = '/api/home/mascot/reminders';
 
@@ -44,11 +51,14 @@ export function reminderDateLabel(day: string): string {
   return new Date(Date.UTC(y, m - 1, d, 12)).toLocaleDateString('fr-FR', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' });
 }
 
-/** Demain (AAAA-MM-JJ, heure locale) : borne basse du report. */
-function tomorrow(): string {
-  const d = new Date();
-  d.setDate(d.getDate() + 1);
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+/**
+ * Bornes du report (lot 71G, T6-08) : demain et dans deux ans, « aujourd'hui »
+ * étant celui d'Europe/Paris — les mêmes que l'API (jamais l'heure locale de
+ * l'appareil, qui peut être dans un autre fuseau).
+ */
+export function snoozeBounds(now: Date = new Date()): { min: string; max: string; today: string } {
+  const today = parisDayOf(now);
+  return { today, min: addDays(today, 1), max: addDays(today, T6_MAX_SNOOZE_DAYS) };
 }
 
 /** Libellé de l'état courant (pur) : le refus de série l'emporte, puis le refus, puis le report. */
@@ -57,7 +67,8 @@ export function reminderStatusLabel(s: Pick<T6ReminderStateView, 'occurrence' | 
   if (s.series?.decision === 'DISMISSED') return 'Désactivés pour toutes les échéances de cette série';
   if (s.occurrence?.decision === 'DISMISSED') return 'Désactivés pour cette échéance';
   if (s.occurrence?.decision === 'SNOOZED' && s.occurrence.remindAt) return `Reportés au ${reminderDateLabel(s.occurrence.remindAt)}`;
-  return 'Actifs : Verebona vous sollicite seulement si une démarche est utile';
+  // Lot 71G : depuis le lot 68, une information utile peut aussi être rappelée (sans démarche).
+  return 'Actifs : Verebona vous sollicite quand une démarche est utile ou qu’un rappel vous sera utile';
 }
 
 type Done = 'snoozed' | 'dismissed' | 'cleared';
@@ -72,16 +83,50 @@ async function send(method: 'POST' | 'DELETE', body: Record<string, unknown>): P
 
 const message = (e: unknown, fallback: string) => (e as { message?: string })?.message || fallback;
 
+/**
+ * Lot 71G (T6-08) — confirmation d'une fenêtre (pure, testée) : exécute
+ * l'enregistrement et rend `null` SEULEMENT si le serveur l'a confirmé ;
+ * sinon le message à afficher dans la fenêtre (qui reste ouverte). Une
+ * erreur levée n'est jamais absorbée en succès.
+ */
+export async function confirmReminder(run: () => Promise<unknown>, fallback: string): Promise<string | null> {
+  try {
+    await run();
+    return null;
+  } catch (e) {
+    return message(e, fallback);
+  }
+}
+
+/** Résultat d'une confirmation : `null` = enregistré (la fenêtre se ferme), sinon le message d'erreur. */
+type Confirm<T> = (v: T) => Promise<string | null>;
+
 /** Fenêtre « Me le rappeler plus tard » : date proposée, modifiable. */
 function SnoozeDialog({ open, onOpenChange, suggestedDate, subject, onConfirm }: {
   open: boolean; onOpenChange: (o: boolean) => void; suggestedDate: string; subject: string;
-  onConfirm: (day: string) => Promise<void>;
+  onConfirm: Confirm<string>;
 }) {
   const [day, setDay] = useState(suggestedDate);
   const [busy, setBusy] = useState(false);
-  useEffect(() => { if (open) setDay(suggestedDate); }, [open, suggestedDate]);
+  const [erreur, setErreur] = useState<string | null>(null);
+  const bornes = snoozeBounds();
+  useEffect(() => { if (open) { setDay(suggestedDate); setErreur(null); } }, [open, suggestedDate]);
+  const valider = async () => {
+    // Même contrôle que l'API, avant l'envoi (date réelle, bornes Europe/Paris).
+    const invalide = snoozeDateError(day, bornes.today);
+    if (invalide) { setErreur(invalide); return; }
+    setBusy(true);
+    setErreur(null);
+    try {
+      const e = await onConfirm(day);
+      if (e) setErreur(e);
+      else onOpenChange(false);
+    } finally {
+      setBusy(false);
+    }
+  };
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={(o) => { if (!busy) onOpenChange(o); }}>
       <DialogContent className="sm:max-w-md" data-testid="t6-snooze-dialog">
         <DialogHeader>
           <DialogTitle>Me le rappeler plus tard</DialogTitle>
@@ -89,13 +134,14 @@ function SnoozeDialog({ open, onOpenChange, suggestedDate, subject, onConfirm }:
         </DialogHeader>
         <div className="space-y-2">
           <Label htmlFor="t6-snooze-date" className="text-xs text-[color:var(--text-muted)]">Date du rappel</Label>
-          <DatePicker id="t6-snooze-date" value={day} min={tomorrow()} onChange={setDay} />
+          <DatePicker id="t6-snooze-date" value={day} min={bornes.min} max={bornes.max} onChange={(v) => { setDay(v); setErreur(null); }} />
+          {erreur && <p role="alert" className="text-sm text-[color:var(--danger)]" data-testid="t6-snooze-error">{erreur}</p>}
         </div>
         <DialogFooter className="gap-2">
           <Button variant="outline" onClick={() => onOpenChange(false)} disabled={busy}>Annuler</Button>
           <Button
             disabled={busy || !day}
-            onClick={async () => { setBusy(true); try { await onConfirm(day); onOpenChange(false); } finally { setBusy(false); } }}
+            onClick={() => void valider()}
           >
             Me le rappeler le {day ? reminderDateLabel(day) : '…'}
           </Button>
@@ -108,13 +154,25 @@ function SnoozeDialog({ open, onOpenChange, suggestedDate, subject, onConfirm }:
 /** Fenêtre « Ne plus me rappeler » : cette échéance, ou toute la série (récurrente). */
 function DismissDialog({ open, onOpenChange, hasSeries, subject, onConfirm }: {
   open: boolean; onOpenChange: (o: boolean) => void; hasSeries: boolean; subject: string;
-  onConfirm: (scope: 'OCCURRENCE' | 'SERIES') => Promise<void>;
+  onConfirm: Confirm<'OCCURRENCE' | 'SERIES'>;
 }) {
   const [scope, setScope] = useState<'OCCURRENCE' | 'SERIES'>('OCCURRENCE');
   const [busy, setBusy] = useState(false);
-  useEffect(() => { if (open) setScope('OCCURRENCE'); }, [open]);
+  const [erreur, setErreur] = useState<string | null>(null);
+  useEffect(() => { if (open) { setScope('OCCURRENCE'); setErreur(null); } }, [open]);
+  const valider = async () => {
+    setBusy(true);
+    setErreur(null);
+    try {
+      const e = await onConfirm(hasSeries ? scope : 'OCCURRENCE');
+      if (e) setErreur(e);
+      else onOpenChange(false);
+    } finally {
+      setBusy(false);
+    }
+  };
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={(o) => { if (!busy) onOpenChange(o); }}>
       <DialogContent className="sm:max-w-md" data-testid="t6-dismiss-dialog">
         <DialogHeader>
           <DialogTitle>Ne plus me rappeler</DialogTitle>
@@ -132,11 +190,12 @@ function DismissDialog({ open, onOpenChange, hasSeries, subject, onConfirm }: {
             </div>
           </RadioGroup>
         )}
+        {erreur && <p role="alert" className="text-sm text-[color:var(--danger)]" data-testid="t6-dismiss-error">{erreur}</p>}
         <DialogFooter className="gap-2">
           <Button variant="outline" onClick={() => onOpenChange(false)} disabled={busy}>Annuler</Button>
           <Button
             disabled={busy}
-            onClick={async () => { setBusy(true); try { await onConfirm(hasSeries ? scope : 'OCCURRENCE'); onOpenChange(false); } finally { setBusy(false); } }}
+            onClick={() => void valider()}
           >
             Ne plus me rappeler
           </Button>
@@ -196,31 +255,30 @@ export function T6ReminderActions({ reminder, subject, onDone, describedBy }: {
       <SnoozeDialog
         open={snooze} onOpenChange={setSnooze} suggestedDate={reminder.suggestedDate} subject={subject}
         onConfirm={async (day) => {
-          try {
-            await send('POST', { agendaItemId: reminder.agendaItemId, action: 'SNOOZE', remindAt: day });
-          } catch (e) {
-            toast.error(message(e, 'Votre choix n’a pas pu être enregistré. Réessayez.'));
-            return;
-          }
+          const erreur = await confirmReminder(
+            () => send('POST', { agendaItemId: reminder.agendaItemId, action: 'SNOOZE', remindAt: day }),
+            'Votre choix n’a pas pu être enregistré. Réessayez.');
+          // Échec : la fenêtre reste ouverte (date et message conservés), rien n'est masqué.
+          if (erreur) return erreur;
           onDone('snoozed');
           toast.success(`C’est noté : je vous le rappellerai le ${reminderDateLabel(day)}.`, {
             duration: 8_000, action: { label: 'Annuler', onClick: () => { void annuler('OCCURRENCE')(); } },
           });
+          return null;
         }}
       />
       <DismissDialog
         open={dismiss} onOpenChange={setDismiss} hasSeries={reminder.hasSeries} subject={subject}
         onConfirm={async (scope) => {
-          try {
-            await send('POST', { agendaItemId: reminder.agendaItemId, action: 'DISMISS', scope });
-          } catch (e) {
-            toast.error(message(e, 'Votre choix n’a pas pu être enregistré. Réessayez.'));
-            return;
-          }
+          const erreur = await confirmReminder(
+            () => send('POST', { agendaItemId: reminder.agendaItemId, action: 'DISMISS', scope }),
+            'Votre choix n’a pas pu être enregistré. Réessayez.');
+          if (erreur) return erreur;
           onDone('dismissed');
           toast.success('C’est noté : je ne vous le rappellerai plus. L’échéance reste dans l’agenda.', {
             duration: 8_000, action: { label: 'Annuler', onClick: () => { void annuler(scope)(); } },
           });
+          return null;
         }}
       />
     </div>
@@ -248,14 +306,20 @@ export function T6ReminderSettings({ agendaItemId, title }: { agendaItemId: numb
   }, [agendaItemId]);
   useEffect(() => { void load(); }, [load]);
 
-  const apply = async (method: 'POST' | 'DELETE', body: Record<string, unknown>, ok: string) => {
-    try {
-      setState(await send(method, { agendaItemId, ...body }));
-      window.dispatchEvent(new CustomEvent('verebona:data-mutated'));
-      toast.success(ok);
-    } catch (e) {
-      toast.error(message(e, 'Votre choix n’a pas pu être enregistré. Réessayez.'));
-    }
+  /** Rend `null` une fois la persistance CONFIRMÉE, sinon le message d'erreur (lot 71G). */
+  const apply = async (method: 'POST' | 'DELETE', body: Record<string, unknown>, ok: string): Promise<string | null> => {
+    let etat: T6ReminderStateView | null = null;
+    const erreur = await confirmReminder(async () => { etat = await send(method, { agendaItemId, ...body }); }, 'Votre choix n’a pas pu être enregistré. Réessayez.');
+    if (erreur) return erreur;
+    setState(etat);
+    window.dispatchEvent(new CustomEvent('verebona:data-mutated'));
+    toast.success(ok);
+    return null;
+  };
+  /** Commandes hors fenêtre (réactivation) : l'erreur est signalée, l'état reste celui du serveur. */
+  const reactiver = async (scope: 'OCCURRENCE' | 'SERIES', ok: string) => {
+    const erreur = await apply('DELETE', { scope }, ok);
+    if (erreur) toast.error(erreur);
   };
 
   if (failed) return null;
@@ -280,12 +344,12 @@ export function T6ReminderSettings({ agendaItemId, title }: { agendaItemId: numb
               <button type="button" className={LINK} onClick={() => setDismiss(true)}>Ne plus me rappeler</button>
             )}
             {state.occurrence && (
-              <button type="button" className={LINK} onClick={() => void apply('DELETE', { scope: 'OCCURRENCE' }, 'Rappels rétablis pour cette échéance.')}>
+              <button type="button" className={LINK} onClick={() => void reactiver('OCCURRENCE', 'Rappels rétablis pour cette échéance.')}>
                 Réactiver les rappels
               </button>
             )}
             {state.series && (
-              <button type="button" className={LINK} onClick={() => void apply('DELETE', { scope: 'SERIES' }, 'Rappels rétablis pour cette série.')}>
+              <button type="button" className={LINK} onClick={() => void reactiver('SERIES', 'Rappels rétablis pour cette série.')}>
                 Réactiver pour la série
               </button>
             )}

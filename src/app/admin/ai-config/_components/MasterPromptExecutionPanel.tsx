@@ -67,6 +67,21 @@ export function executionSummary(e: ExecutionConfig | null): string {
   return `Mode d’exécution : ${MODE_LABEL.STRUCTURED_CONTEXT} · entrée ${e.inputContractVersion ?? '—'} · sortie ${e.outputContractVersion ?? '—'} · TASK ${(e.allowedTasks ?? ['toutes']).join(', ')}`;
 }
 
+/**
+ * Lot 71E (T4 fiabilisation, §D) — la configuration T4 ne permet pas toutes
+ * les décisions automatiques attendues : contrat de sortie `t4_output_v1`
+ * (structuré v1, ou mode historique à emplacements dont le gabarit de
+ * référence sort en v1). Pure, testée.
+ */
+export function t4AutomaticDecisionLimitation(treatment: string, e: ExecutionConfig | null): string | null {
+  if (treatment !== 'T4' || !e) return null;
+  const v1 = e.mode === 'LEGACY_TEMPLATE' || e.outputContractVersion === 't4_output_v1';
+  if (!v1) return null;
+  return 'Contrat de sortie t4_output_v1 : T4 ne peut statuer ni sur l’existence ni sur la récurrence d’un événement. '
+    + 'Tant que cette version est active, le flux documentaire automatique s’abstient (aucune création, aucune série, aucun retrait) ; '
+    + 'le parcours manuel et les échéances existantes restent inchangés. Activer une version t4_output_v2 ou v3 pour rétablir les décisions automatiques.';
+}
+
 function Volet({ titre, children, ouvert }: { titre: string; children: React.ReactNode; ouvert?: boolean }) {
   return (
     <details className="rounded-md border border-[color:var(--border-subtle)] p-2" open={ouvert}>
@@ -164,6 +179,11 @@ export function MasterPromptExecutionPanel({
           </div>
         ) : (
           <p className="text-xs text-[color:var(--text-secondary)] break-words">{executionSummary(cfg)}</p>
+        )}
+        {t4AutomaticDecisionLimitation(treatment, cfg) && (
+          <p role="alert" className="text-xs text-[color:var(--text-warning-soft)]" data-testid={`t4-contract-limitation-${versionTarget}`}>
+            {t4AutomaticDecisionLimitation(treatment, cfg)}
+          </p>
         )}
         {editable && structure && (
           <div className="flex flex-wrap items-center gap-3 text-xs">

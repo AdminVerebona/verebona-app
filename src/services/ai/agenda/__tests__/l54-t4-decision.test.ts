@@ -234,7 +234,7 @@ describe('T4-V2-09 — compatibilité', () => {
     expect(sc.draftExecutionConfig('t4_master_v1', null)).toEqual(V3);
   });
 
-  it('passerelle : version BO v1 → sortie v1 lue comme accept, récurrence non décidée (abstain) ; fichier v2 → sortie v2', async () => {
+  it('passerelle : version BO v1 → sortie v1 SANS acceptation implicite (abstain, lot 71E §D), récurrence non décidée ; fichier v2 → sortie v2', async () => {
     __setConfigForTests({ versionId: 54, entries: [{ ...emptyTreatmentConfig('T4'), primaryModel: 'm-a', promptArchitecture: 'master' }] });
     const fake = new FakeProvider();
     setAiProvider(fake);
@@ -243,7 +243,7 @@ describe('T4-V2-09 — compatibilité', () => {
     __setActiveMasterPromptsForTests([{ id: 900, treatment: 'T4', versionNumber: 3, content: FICHIER, execution: V1 }]);
     fake.onAny(() => ({ rawText: JSON.stringify({ task: 'CLASSIFY_EVENT', homeCategory: 'action', confidence: 'certain', reason: 'r' }), inputTokens: 1, outputTokens: 1 }));
     const v1 = await decideAgendaEvent({ title: 'X', originType: 'document' }, ctx);
-    expect(v1).toMatchObject({ agendaDecision: 'accept', recurrenceDecision: 'abstain', outcome: 'model_v1', warnings: ['T4_OUTPUT_V1_NO_RECURRENCE_DECISION'] });
+    expect(v1).toMatchObject({ agendaDecision: 'abstain', recurrenceDecision: 'abstain', outcome: 'model_v1', warnings: ['T4_OUTPUT_V1_NO_AGENDA_DECISION', 'T4_OUTPUT_V1_NO_RECURRENCE_DECISION'] });
 
     __setActiveMasterPromptsForTests(null);
     fake.onAny(() => ({ rawText: JSON.stringify({ task: 'CLASSIFY_EVENT', agendaDecision: 'reject', recurrenceDecision: 'reject', homeCategory: 'unknown', businessType: null, confidence: 'certain', reason: 'période facturée', recurrenceReason: 'facturation' }), inputTokens: 1, outputTokens: 1 }));

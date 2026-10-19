@@ -79,7 +79,7 @@ describe('computeProcessingStatus — état réel du traitement', () => {
 
   it('analyse aboutie : COMPLETED, aucun message ; statuts terminés pour le bandeau', () => {
     expect(computeProcessingStatus({ analysisState: 'VALIDATION_REQUIRED', liveJob: null }, NOW).processingStatus).toBe('COMPLETED');
-    expect(displayAnalysisState('VALIDATION_REQUIRED', 'COMPLETED')).toBe('VALIDATION_REQUIRED');
+    expect(displayAnalysisState('VALIDATION_REQUIRED', 'COMPLETED')).toBe('ANALYZED'); // lot 71B : ancien état lu « analysé »
     expect(isSettledProcessingStatus('FAILED_FINAL')).toBe(true);
     expect(isSettledProcessingStatus('PENDING')).toBe(false);
     expect(isSettledProcessingStatus('RETRYING')).toBe(false);

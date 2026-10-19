@@ -13,6 +13,8 @@
  *   operations-claims     runClaimMigration (lot 44 ; simulation = transactions annulées)
  *   cross-account         runCrossAccountRemediation / restoreCrossAccountRemediation (lot 53, D23 ;
  *                         simulation = transaction annulée par catégorie)
+ *   equipment-separation  runDataSeparationBackfill (lot 71A ; simulation = lecture seule)
+ *   document-validation   runValidationReprise (lot 71B ; simulation = lecture seule)
  *
  * Services chargés à la demande : la route reste légère.
  */
@@ -144,6 +146,22 @@ export async function executeBackfill(sql: postgres.Sql, req: BackfillRequest, h
       const r = await m.runCrossAccountRemediation(sql, {
         family: req.step as import('@/services/security/cross-account/remediation').RemediationFamily,
         apply: req.action === 'apply', accountId: req.accountId, reason: req.reason, log: hooks.log,
+      });
+      return { result: r };
+    }
+    case 'equipment-separation': {
+      // Lot 71A (BUG P1 bien / équipement) : provenance vérifiée, corrections tracées (0489).
+      const { runDataSeparationBackfill } = await import('@/services/equipment/data-separation-backfill');
+      const r = await runDataSeparationBackfill({
+        apply: req.action === 'apply', accountId: req.accountId, reason: req.reason, log: hooks.log,
+      });
+      return { result: r };
+    }
+    case 'document-validation': {
+      // Lot 71B : plus de validation sur les fiches — même service que la tâche planifiée (trace 0495).
+      const { runValidationReprise } = await import('@/services/documents/validation-reprise');
+      const r = await runValidationReprise({
+        apply: req.action === 'apply', origin: 'BO', accountId: req.accountId, reason: req.reason, log: hooks.log,
       });
       return { result: r };
     }

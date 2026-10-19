@@ -612,6 +612,26 @@ export async function failJob(
 }
 
 /**
+ * Lot 71E (T4 fiabilisation, §E) — fusionne des clés dans le contexte d'un
+ * travail EN COURS (même jeton d'exécution) : un exécutant y conserve ce qui
+ * rend sa reprise idempotente (décisions déjà appliquées). Rend `false` si
+ * l'exécution a été dépossédée (rien n'est écrit). Aucune migration.
+ */
+export async function mergeJobPayload(
+  jobId: number,
+  executionId: string | null,
+  patch: Record<string, unknown>,
+): Promise<boolean> {
+  const rows = await pgClient.unsafe(
+    `UPDATE ai_job_queue SET payload = COALESCE(payload, '{}'::jsonb) || $3::jsonb
+      WHERE id = $1 AND status = 'RUNNING' AND ($2::uuid IS NULL OR execution_id = $2::uuid)
+      RETURNING id`,
+    [jobId, executionId, JSON.stringify(patch)] as never[],
+  );
+  return (rows as unknown as Row[]).length > 0;
+}
+
+/**
  * Report d'une exécution (quota épuisé…) — voir `JobDeferredError`.
  *
  * Ni échec ni succès : la tentative est rendue (MOD-005), le job revient en

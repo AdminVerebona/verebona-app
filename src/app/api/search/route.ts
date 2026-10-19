@@ -4,7 +4,8 @@ import { ensureMigrations, ensureUnaccent } from '@/db';
 import { globalSearch } from '@/services/search/global-search.service';
 
 /**
- * Recherche LEXICALE du compte (biens, documents, échéances), toutes offres.
+ * Recherche LEXICALE du compte (biens, documents, échéances ; lot 71 :
+ * équipements et pièces, avec leur bien parent), toutes offres.
  *
  * Décision PO D-H2 (lot 16b-2) : le repli sémantique Gemini des comptes
  * Premium (`lib/gemini-search.ts`, usage historique n°6) et la recherche

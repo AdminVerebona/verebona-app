@@ -10,8 +10,7 @@ import { DatePicker } from '@/components/ui/date-picker';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
-import { ChevronDown, ChevronUp, Pencil, Check, X, Loader2, AlertTriangle } from 'lucide-react';
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
+import { ChevronDown, ChevronUp, Pencil, Check, X, Loader2 } from 'lucide-react';
 import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
@@ -74,12 +73,10 @@ interface Props {
   highlightField?: string;
   /** Extra actions rendered next to the Modifier button in read mode */
   headerActions?: React.ReactNode;
-  /** Coherence alerts for fields in this section */
-  coherenceAlerts?: { field: string; issue: string; suggestedValue: string | null; sourceDocument: string }[];
-  /** Called when user dismisses a coherence alert */
-  onDismissAlert?: (field: string) => void;
-  /** Called when user accepts a coherence alert suggestion — applies the value */
-  onApplyAlert?: (field: string, suggestedValue: string) => void;
+  // Lot 71B (décision PO du 19/10 : pas de système de validation sur les
+  // fiches) : plus d'alerte « Incohérence » avec « Appliquer » / « Conserver »
+  // sur la fiche — les contradictions sont des cartes « À traiter » (registre
+  // des incohérences, migration 0109).
 }
 
 /** Champ numérique saisi au clavier (les années passent par le sélecteur d'année). */
@@ -137,9 +134,6 @@ export function formatValue(value: unknown, field: FieldDef): string {
 export function AssetDetailSection({
   title, sectionKey, assetId, data, fields, onRefresh, defaultOpen = true, mobileOnly = false,
   forceOpen, forceEdit, readOnly = false, highlightField, headerActions,
-  coherenceAlerts = [],
-  onDismissAlert,
-  onApplyAlert,
 }: Props) {
   const fieldDefs = fields;
   const [open, setOpen] = useState(defaultOpen);
@@ -261,12 +255,6 @@ export function AssetDetailSection({
         >
           <div className="flex items-center gap-2 min-w-0">
             <span className="font-medium text-sm">{title}</span>
-            {coherenceAlerts.length > 0 && (
-              <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-[color:var(--attention-on-soft)] bg-[color:var(--attention-soft)] rounded px-1.5 py-0.5 shrink-0">
-                <AlertTriangle className="w-2.5 h-2.5" />
-                {coherenceAlerts.length} incohérence{coherenceAlerts.length > 1 ? 's' : ''}
-              </span>
-            )}
           </div>
           {open
             ? <ChevronUp className="w-4 h-4 text-muted-foreground shrink-0" />
@@ -386,7 +374,6 @@ export function AssetDetailSection({
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
                 {visibleFields(fields, displayData).map(field => {
                   const isHighlighted = highlightField === field.key;
-                  const alert = coherenceAlerts.find(a => a.field === field.key);
                   const isNa = (field.notApplicableWhen?.(displayData) ?? false)
                     && (displayData[field.key] === null || displayData[field.key] === undefined || displayData[field.key] === '');
                   return (
@@ -395,61 +382,12 @@ export function AssetDetailSection({
                       id={`asset-field-${field.key}`}
                       className={isHighlighted
                         ? 'rounded-lg px-2 py-1.5 -mx-2 ring-2 ring-[color:var(--accent)] bg-[color:var(--accent-soft)] transition-all'
-                        : alert
-                        ? 'rounded-lg px-2 py-1.5 -mx-2 ring-1 ring-[color:var(--attention-edge)] bg-[color:var(--attention-soft)]'
                         : undefined
                       }
                     >
                       <div className="flex items-center gap-0.5 flex-wrap">
                         <p className="text-xs text-muted-foreground">{field.label}</p>
                         {field.badge && <FieldBadge text={field.badge(displayData)} />}
-                        {alert && (
-                          <>
-                            <TooltipProvider>
-                              <Tooltip>
-                                <TooltipTrigger asChild>
-                                  <span className="inline-flex items-center gap-0.5 ml-1 text-[9px] font-semibold text-[color:var(--attention-on-soft)] bg-[color:var(--attention-soft)] rounded px-1.5 py-0.5 cursor-help">
-                                    <AlertTriangle className="w-2.5 h-2.5" />
-                                    Incohérence
-                                  </span>
-                                </TooltipTrigger>
-                                <TooltipContent side="top" className="max-w-sm text-xs space-y-1.5">
-                                  <div className="flex items-start gap-1.5">
-                                    <AlertTriangle className="w-3 h-3 text-[color:var(--attention-on-soft)] shrink-0 mt-0.5" />
-                                    <p className="text-[color:var(--text-warning)] font-medium leading-snug">{alert.issue}</p>
-                                  </div>
-                                  {alert.suggestedValue && (
-                                    <div className="bg-[color:var(--attention-soft)] border border-[color:var(--attention-edge)] rounded px-2 py-1">
-                                      <p className="text-[12px] text-[color:var(--attention-on-soft)] font-semibold">Valeur suggérée</p>
-                                      <p className="text-xs font-semibold text-[color:var(--text-warning)]">{alert.suggestedValue}</p>
-                                    </div>
-                                  )}
-                                  {alert.sourceDocument && (
-                                    <p className="text-[10px] text-muted-foreground">
-                                      <span className="font-medium text-[color:var(--attention-on-soft)]">Document :</span> {alert.sourceDocument}
-                                    </p>
-                                  )}
-                                </TooltipContent>
-                              </Tooltip>
-                            </TooltipProvider>
-                            {alert.suggestedValue && (
-                              <button
-                                onClick={(e) => { e.stopPropagation(); onApplyAlert?.(alert.field, alert.suggestedValue!); }}
-                                className="inline-flex items-center ml-1 text-[9px] font-semibold text-[color:var(--text-success)] bg-[color:var(--bg-success)] hover:text-[color:var(--text-success)] rounded px-1.5 py-0.5 transition-colors"
-                                title="Appliquer la valeur suggérée"
-                              >
-                                Appliquer
-                              </button>
-                            )}
-                            <button
-                              onClick={(e) => { e.stopPropagation(); onDismissAlert?.(alert.field); }}
-                              className="inline-flex items-center ml-1 text-[9px] font-semibold text-[color:var(--attention-on-soft)] bg-[color:var(--attention-soft)] hover:text-[color:var(--text-warning)] rounded px-1.5 py-0.5 transition-colors"
-                              title="Conserver ma valeur et ignorer cette incohérence"
-                            >
-                              Conserver
-                            </button>
-                          </>
-                        )}
                       </div>
                       <p className={`text-sm font-medium mt-0.5 ${isNa ? 'text-muted-foreground italic' : ''}`}>
                         {isNa ? 'N/A' : formatValue(displayData[field.key], field)}

@@ -4,16 +4,17 @@
  */
 import { describe, expect, it, vi } from 'vitest';
 
-// Le pipeline n'est importé que pour `computeFinalState` : aucun accès S3.
+// Aucun accès S3 (adaptateurs de source neutralisés).
 vi.mock('@/services/ai/source-analysis/adapters', () => ({ getSourceAdapter: () => null }));
 import { describeEntities } from '@/services/ai/source-analysis/master/prompt-context';
 import { mergeIdentifierCandidates } from '@/services/ai/source-analysis/steps/analyze-document.step';
 import { computeMasterDocumentLinks } from '@/services/ai/source-analysis/master/document-links';
-import { computeFinalState } from '@/services/ai/source-analysis/pipeline';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { planDocumentRule } from '@/services/to-process/document-rule-bridge';
 import { getRule } from '@/services/to-process/rules-catalog';
 import { resolveAssetByIdentifiers, type AssetIdentifierRecord } from '../identifiers';
-import type { AnalysisContext, SourceAnalysisResult } from '@/services/ai/source-analysis/types';
+import type { AnalysisContext } from '@/services/ai/source-analysis/types';
 
 const caps = { rooms: true, equipments: true } as never;
 
@@ -89,15 +90,19 @@ describe('liens N-N : la cardinalité ne conditionne plus le lien (ticket T1, ca
   });
 });
 
-describe('VALIDATION_REQUIRED seulement après l’échec de T3 (ticket T3 §9)', () => {
-  const ambigu = { warnings: [{ code: 'AMBIGUOUS_ASSET', message: '' }] } as unknown as SourceAnalysisResult;
-  it('T3DOC-14 — T1 ambigu, aucun bien certain : ANALYZED (T3 reprend), même avec des propositions', () => {
-    expect(computeFinalState(ambigu, 3, null)).toBe('ANALYZED');
+describe('Lot 71B — plus d’état « à valider » posé par T1 ni par T3 (décision PO du 19/10)', () => {
+  const lire = (p: string) => readFileSync(join(process.cwd(), p), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+  it('VALID-03 / T3DOC-14 — la fin d’analyse T1 pose ANALYZED (multi-biens ou ambigu), jamais VALIDATION_REQUIRED', () => {
+    const src = lire('src/services/ai/source-analysis/pipeline.ts');
+    expect(src).toMatch(/const etatFinal = 'ANALYZED';/);
+    expect(src).not.toMatch(/computeFinalState/);
+    expect(src.match(/VALIDATION_REQUIRED/g) ?? []).toHaveLength(1); // ETATS_ABOUTIS (ancien état encore lu)
   });
-  it('bien principal certain + multi-biens avec propositions : comportement historique conservé', () => {
-    const multi = { warnings: [{ code: 'MULTI_ASSET_DOCUMENT', message: '' }] } as unknown as SourceAnalysisResult;
-    expect(computeFinalState(multi, 2, 42)).toBe('VALIDATION_REQUIRED');
-    expect(computeFinalState(multi, 0, 42)).toBe('ANALYZED');
+  it('VALID-04 — l’abstention de T3 ouvre la carte LINK-ASSET sans changer l’état du document', () => {
+    const src = lire('src/services/ai/reconciliation/document-asset/resolve-document-asset.service.ts');
+    expect(src).not.toMatch(/'ANALYZED', 'VALIDATION_REQUIRED'\)/);
+    // Seule transition restante : sortie de l'ancien état après un rattachement.
+    expect(src).toMatch(/setAnalysisState\(accountId, fileId, 'VALIDATION_REQUIRED', 'ANALYZED'\)/);
   });
 });
 

@@ -26,8 +26,9 @@
  *      utilisateur concurrent retire le lien IA), projection des faits sur
  *      le bien (preuves, T3 du bien), événement `document_linked`.
  *   6. Abstention : UNE action « À traiter » LINK-ASSET (« À quel bien
- *      rattacher ce document ? ») avec les candidats de T3, document
- *      VALIDATION_REQUIRED — jamais avant cet échec.
+ *      rattacher ce document ? ») avec les candidats de T3 — jamais avant
+ *      cet échec. Lot 71B : la carte SUFFIT, le document reste « analysé »
+ *      (plus d'état « à valider » sur la fiche, décision PO du 19/10).
  *
  * Idempotence : une relance sur les mêmes entrées (empreinte) ne rappelle
  * pas le modèle ; le lien et l'action sont uniques par construction
@@ -590,7 +591,7 @@ async function applyDecision(p: {
     return { outcome: 'SUPERSEDED', status: 'USER_DECIDED' };
   }
 
-  // Le document n'attend plus de décision : « à valider » levé.
+  // Ancien état « à valider » (antérieur au lot 71B) levé s'il subsiste.
   await g('état du document');
   await setAnalysisState(accountId, fileId, 'VALIDATION_REQUIRED', 'ANALYZED');
   await g('projection et événement document_linked');
@@ -663,7 +664,8 @@ export async function refreshDocumentTitle(accountId: number, fileId: number): P
 /**
  * Abstention de T3 : UNE action « À traiter » LINK-ASSET (index unique des
  * actions actives), ARBITRATE avec les candidats de T3, ou COMPLETE sans
- * candidat. Document « à valider » si une proposition l'accompagne.
+ * candidat. Lot 71B : l'état du document n'est plus modifié — la question
+ * vit dans « À traiter », jamais comme une validation sur la fiche.
  */
 async function openUserQuestion(p: { accountId: number; fileId: number; state: AttachmentState; candidates: StoredCandidate[]; g: Garde }): Promise<ToProcessEffect> {
   if (!p.state.open) return 'NONE';
@@ -684,10 +686,6 @@ async function openUserQuestion(p: { accountId: number; fileId: number; state: A
     // `current` : même instantané que le pont documentaire (rattachement vide).
     triggerContext: { current: '', producer: 'T3_DOCUMENT_ASSET' },
   });
-  if (proposals.length > 0 && res.status !== 'SKIPPED' && p.state.analysisState === 'ANALYZED') {
-    await p.g('état du document');
-    await setAnalysisState(p.accountId, p.fileId, 'ANALYZED', 'VALIDATION_REQUIRED');
-  }
   return res.status === 'CREATED' ? 'CREATED' : res.status === 'UPDATED' ? 'UPDATED' : 'SKIPPED';
 }
 

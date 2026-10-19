@@ -13,8 +13,10 @@
  * chaque préférence ou évaluation est rejointe à une échéance DU compte.
  *
  * Une lecture en échec (table absente pendant le déploiement, base
- * indisponible) n'empêche jamais l'accueil : décision prudente, sans IA ni
- * préférence (aucune interpellation au-delà du seuil).
+ * indisponible) n'empêche jamais l'accueil : décision prudente. Lot 71G
+ * (T6-06) : chaque source est lue ISOLÉMENT — une panne des évaluations
+ * n'efface jamais les préférences, et des préférences illisibles ne sont
+ * jamais prises pour une absence de refus (aucun sujet réintroduit).
  */
 import { pgClient } from '@/db';
 import type { MascotAgendaRow, MascotDecidedAgenda, MascotRawData } from './signals';
@@ -22,24 +24,222 @@ import { EXT_ACTION_LOOKBACK_DAYS, extActionOccurrenceKey, formatDateFr, roleOf 
 import { canonicalJson, sha256 } from './hash';
 import { entriesFingerprint, serializeForHash, sha256 as reportSha256, type ReportEntry } from '@/services/ai/execution-report/model';
 import {
-  DEFAULT_T6_THRESHOLD_DAYS, T6_ASSESSMENT_CONTRACT, T6_ASSESSMENT_REVISION_REMINDER, T6_MAX_ASSESSMENTS_PER_CALL, T6_REPEAT_WINDOW_DAYS,
+  DEFAULT_T6_THRESHOLD_DAYS, T6_ASSESSMENT_CONTRACT, T6_ASSESSMENT_REVISION_REMINDER, T6_FINGERPRINT_V2, T6_MAX_ASSESSMENTS_PER_CALL,
+  T6_RELEVANT_FACT_PATTERN, T6_REPEAT_WINDOW_DAYS,
   addDays, agendaFingerprintParts, agendaOccurrenceKey, agendaSubjectKey, assessmentFromDecision, assessmentHorizonDays, compareShown,
-  daysBetween, decideT6Interpellation, suggestReminderDate,
-  type T6Assessment, type T6Candidate, type T6CandidateRef, type T6DecisionResult, type T6InterpellationBundle, type T6ReminderPreference,
-  type T6StoredAssessment,
+  daysBetween, decideT6Interpellation, evidenceSnapshotOf, isT6RelevantFact, preferenceAppliesToCycle, sameT6Context, suggestReminderDate,
+  t6FingerprintParts,
+  type T6Assessment, type T6Candidate, type T6CandidateRef, type T6DecisionResult, type T6EvidenceVersion, type T6InterpellationBundle,
+  type T6ReevaluationReason, type T6ReminderPreference, type T6StoredAssessment,
 } from './t6-interpellation';
 import {
   T6_EVALUATION_INPUT_SCHEMA_VERSION,
-  type T6EvaluationCandidate, type T6EvidenceRef, type T6ValidatedDecision,
+  type T6EvaluationCandidate, type T6EvaluationFact, type T6EvidenceRef, type T6ValidatedDecision,
 } from './t6-contract';
 
 type Row = Record<string, unknown>;
 const rows = async (sql: string, params: unknown[]): Promise<Row[]> =>
   (await pgClient.unsafe(sql, params as never[])) as unknown as Row[];
 
-/** Empreinte stable d'une échéance (champs significatifs). */
+/**
+ * Empreinte HISTORIQUE d'une échéance (lot 60 : titre, date, nature,
+ * qualification). Lot 71G : conservée pour relire les évaluations et reports
+ * antérieurs ; les nouvelles décisions portent l'empreinte enrichie
+ * (`t6Fingerprint`).
+ */
 export function agendaFingerprint(p: { title: string; date: string | null; forecast: boolean; requiresQualification: boolean }): string {
   return sha256(agendaFingerprintParts(p)).slice(0, 32);
+}
+
+/** Lot 71G (T6-01) : empreinte ENRICHIE (`v2:`) — données métier et documentaires significatives. */
+export function t6Fingerprint(p: Parameters<typeof t6FingerprintParts>[0]): string {
+  return `${T6_FINGERPRINT_V2}${sha256(t6FingerprintParts(p)).slice(0, 32)}`;
+}
+
+// ── Preuves métier et documentaires (lot 71G : T6-01, T6-04) ─────────────────
+
+/** Fait documentaire actif, pertinent pour T6, d'un document lié à l'échéance. */
+export interface T6DocumentFact {
+  id: number; fileId: number; extractionId: number; key: string; canonicalKey: string | null; label: string | null;
+  value: string | null; confidence: string | null; provenance: string; excerpt: string | null;
+}
+
+/** Données d'une échéance utiles à la décision, au-delà du titre et de la date. */
+export interface T6ItemEvidence {
+  description: string | null;
+  endDate: string | null;
+  originFieldKey: string | null;
+  /** Documents liés (lien agenda ou document d'origine), du compte, non supprimés. */
+  documents: Array<{ fileId: number; title: string; origin: boolean }>;
+  /** Faits pertinents (préavis, renouvellement, obligation…) de ces documents. */
+  facts: T6DocumentFact[];
+}
+
+/** Faits lus au plus par passage (toutes échéances confondues). */
+const T6_FACTS_READ_LIMIT = 4_000;
+
+/**
+ * Lit, pour des échéances DU compte, la description, la fin, les documents
+ * liés et leurs faits PERTINENTS (T1, revalidés T2, consolidés T3 — version
+ * active seulement). Tout est borné au compte : document et fait d'un autre
+ * compte jamais lus. Lève en cas d'échec (l'appelant décide du repli).
+ */
+export async function loadT6Evidence(accountId: number, ids: readonly number[]): Promise<Map<number, T6ItemEvidence>> {
+  const out = new Map<number, T6ItemEvidence>();
+  if (ids.length === 0) return out;
+  const items = await rows(
+    `SELECT i.id, i.description, to_char(i.end_date, 'YYYY-MM-DD') AS end_date, i.origin_field_key
+       FROM agenda_items i WHERE i.account_id = $1 AND i.id = ANY($2::int[])`,
+    [accountId, ids],
+  );
+  for (const x of items) {
+    out.set(Number(x.id), {
+      description: typeof x.description === 'string' ? x.description : null,
+      endDate: (x.end_date as string | null) ?? null,
+      originFieldKey: (x.origin_field_key as string | null) ?? null,
+      documents: [], facts: [],
+    });
+  }
+  const docs = await rows(
+    `SELECT d.agenda_item_id, f.id AS file_id, bool_or(d.origin) AS origin,
+            COALESCE(NULLIF(f.retained_title, ''), NULLIF(f.original_filename, ''), f.filename) AS title
+       FROM (SELECT l.agenda_item_id, l.asset_file_id AS file_id, FALSE AS origin
+               FROM agenda_file_links l JOIN agenda_items i ON i.id = l.agenda_item_id AND i.account_id = $1
+              WHERE l.agenda_item_id = ANY($2::int[])
+             UNION ALL
+             SELECT i.id, i.origin_ref_id, TRUE FROM agenda_items i
+              WHERE i.account_id = $1 AND i.id = ANY($2::int[]) AND i.origin_ref_type = 'asset_file' AND i.origin_ref_id IS NOT NULL) d
+       JOIN asset_files f ON f.id = d.file_id AND f.account_id = $1 AND f.deleted_at IS NULL
+      GROUP BY d.agenda_item_id, f.id, title`,
+    [accountId, ids],
+  );
+  const fichiers = new Set<number>();
+  for (const x of docs) {
+    const e = out.get(Number(x.agenda_item_id));
+    if (!e) continue;
+    e.documents.push({ fileId: Number(x.file_id), title: String(x.title ?? 'Document').slice(0, 120), origin: x.origin === true });
+    fichiers.add(Number(x.file_id));
+  }
+  if (fichiers.size === 0) return out;
+  const faits = await rows(
+    `SELECT x.id, x.file_id, x.extraction_id, x.fact_key, x.canonical_key, x.label,
+            left(COALESCE(NULLIF(x.normalized_value, ''), NULLIF(x.value_text, ''), x.value_number::text, x.value_json::text), 200) AS value,
+            x.confidence, x.provenance, left(x.excerpt, 400) AS excerpt
+       FROM document_facts x
+      WHERE x.account_id = $1 AND x.status = 'active' AND x.file_id = ANY($2::int[])
+        AND (coalesce(x.canonical_key, '') || ' ' || x.fact_key || ' ' || coalesce(x.label, '')) ~* $3
+      ORDER BY x.file_id, x.id
+      LIMIT ${T6_FACTS_READ_LIMIT}`,
+    [accountId, [...fichiers], T6_RELEVANT_FACT_PATTERN],
+  );
+  const parFichier = new Map<number, T6DocumentFact[]>();
+  for (const x of faits) {
+    const f: T6DocumentFact = {
+      id: Number(x.id), fileId: Number(x.file_id), extractionId: Number(x.extraction_id), key: String(x.fact_key),
+      canonicalKey: (x.canonical_key as string | null) ?? null, label: (x.label as string | null) ?? null,
+      value: (x.value as string | null) ?? null, confidence: (x.confidence as string | null) ?? null,
+      provenance: String(x.provenance ?? 'T1_EXTRACTION'), excerpt: (x.excerpt as string | null) ?? null,
+    };
+    if (!isT6RelevantFact(f)) continue;
+    const l = parFichier.get(f.fileId) ?? [];
+    l.push(f);
+    parFichier.set(f.fileId, l);
+  }
+  for (const e of out.values()) e.facts = e.documents.flatMap((d) => parFichier.get(d.fileId) ?? []);
+  return out;
+}
+
+/** Empreinte enrichie d'une échéance à partir de sa ligne et de ses preuves (pure). */
+export function fingerprintWithEvidence(
+  i: { title: string; date: string | null; forecast: boolean; requiresQualification: boolean }, e: T6ItemEvidence | undefined,
+): string {
+  return t6Fingerprint({
+    ...i, description: e?.description ?? null, endDate: e?.endDate ?? null,
+    documents: (e?.documents ?? []).map((d) => ({ fileId: d.fileId, title: d.title })),
+    facts: (e?.facts ?? []).map((f) => ({ fileId: f.fileId, key: f.canonicalKey ?? f.key, value: f.value, confidence: f.confidence })),
+  });
+}
+
+/**
+ * Lot 71G — empreintes enrichies COURANTES d'échéances du compte (même calcul
+ * que la décision) : reports de l'utilisateur, harnais de test. Lève en cas
+ * d'échec.
+ */
+export async function currentT6Fingerprints(accountId: number, ids: readonly number[]): Promise<Map<number, string>> {
+  const out = new Map<number, string>();
+  if (ids.length === 0) return out;
+  const [base, ev] = await Promise.all([
+    rows(
+      `SELECT id, title, to_char(start_date, 'YYYY-MM-DD') AS date, occurrence_nature, requires_qualification
+         FROM agenda_items WHERE account_id = $1 AND id = ANY($2::int[])`,
+      [accountId, ids],
+    ),
+    loadT6Evidence(accountId, ids),
+  ]);
+  for (const x of base) {
+    const id = Number(x.id);
+    out.set(id, fingerprintWithEvidence({
+      title: String(x.title ?? ''), date: (x.date as string | null) ?? null, forecast: x.occurrence_nature === 'FORECAST',
+      requiresQualification: x.requires_qualification === true,
+    }, ev.get(id)));
+  }
+  return out;
+}
+
+const STATUT_FAIT: Record<string, T6EvaluationFact['status']> = { certain: 'PROVEN', probable: 'DEDUCED', conflictual: 'UNCERTAIN' };
+const RANG_CONFIANCE: Record<string, number> = { certain: 0, probable: 1, conflictual: 2 };
+/** Faits transmis à EVALUATE par candidat, au plus. */
+export const T6_MAX_FACTS_PER_CANDIDATE = 8;
+/** Documents (intitulés) transmis à EVALUATE par candidat, au plus. */
+export const T6_MAX_DOCUMENTS_PER_CANDIDATE = 5;
+
+/**
+ * Lot 71G (T6-04) — preuves transmises à EVALUATE pour UN candidat (pure,
+ * testée) : faits pertinents choisis par pertinence métier (clé de
+ * l'échéance d'origine, puis confiance, puis document d'origine), avec leur
+ * extrait, leur document source, leur provenance et leur statut (prouvé,
+ * déduit, incertain) ; documents choisis de même (ceux des faits, l'origine,
+ * puis les autres) — jamais les trois premiers titres arbitraires. Rend
+ * aussi la version de chaque preuve (reporting, `evidence_snapshot`).
+ */
+export function evaluationEvidenceOf(subjectId: string, e: T6ItemEvidence | undefined): {
+  documents: string[]; facts: T6EvaluationFact[]; refs: T6EvidenceRef[]; versions: Map<string, T6EvidenceVersion>;
+} {
+  const versions = new Map<string, T6EvidenceVersion>();
+  if (!e) return { documents: [], facts: [], refs: [], versions };
+  const origine = new Set(e.documents.filter((d) => d.origin).map((d) => d.fileId));
+  const cleOrigine = e.originFieldKey;
+  const faits = [...e.facts].sort((a, b) =>
+    Number(!(cleOrigine && (a.key === cleOrigine || a.canonicalKey === cleOrigine))) - Number(!(cleOrigine && (b.key === cleOrigine || b.canonicalKey === cleOrigine)))
+    || (RANG_CONFIANCE[a.confidence ?? ''] ?? 3) - (RANG_CONFIANCE[b.confidence ?? ''] ?? 3)
+    || Number(!origine.has(a.fileId)) - Number(!origine.has(b.fileId))
+    || a.id - b.id).slice(0, T6_MAX_FACTS_PER_CANDIDATE);
+  const ordreDocs: number[] = [];
+  const ajouter = (id: number) => { if (!ordreDocs.includes(id)) ordreDocs.push(id); };
+  faits.forEach((f) => ajouter(f.fileId));
+  e.documents.filter((d) => d.origin).forEach((d) => ajouter(d.fileId));
+  [...e.documents].sort((a, b) => a.title.localeCompare(b.title, 'fr') || a.fileId - b.fileId).forEach((d) => ajouter(d.fileId));
+  const retenus = ordreDocs.slice(0, T6_MAX_DOCUMENTS_PER_CANDIDATE);
+  const docRef = new Map<number, string>();
+  const refs: T6EvidenceRef[] = [];
+  const documents = retenus.map((fileId, n) => {
+    const ref = `${subjectId}.doc${n + 1}`;
+    docRef.set(fileId, ref);
+    refs.push({ ref, kind: 'DOCUMENT' });
+    versions.set(ref, { ref, kind: 'DOCUMENT', fileId });
+    return e.documents.find((d) => d.fileId === fileId)!.title;
+  });
+  const facts: T6EvaluationFact[] = faits.map((f, n) => {
+    const ref = `${subjectId}.fact${n + 1}`;
+    refs.push({ ref, kind: 'DOCUMENT_FACT' });
+    versions.set(ref, { ref, kind: 'DOCUMENT_FACT', fileId: f.fileId, extractionId: f.extractionId, factId: f.id, factKey: f.canonicalKey ?? f.key, provenance: f.provenance });
+    const texte = (v: string | null, max: number) => (v ? v.replace(/\s+/g, ' ').trim().slice(0, max) || null : null);
+    return {
+      ref, document: docRef.get(f.fileId) ?? null, label: texte(f.label, 120) ?? f.key.slice(0, 80), value: texte(f.value, 160),
+      excerpt: texte(f.excerpt, 300), status: STATUT_FAIT[f.confidence ?? ''] ?? 'UNCERTAIN', provenance: f.provenance.slice(0, 40),
+    };
+  });
+  return { documents, facts, refs, versions };
 }
 
 // ── Réglage ──────────────────────────────────────────────────────────────────
@@ -62,7 +262,9 @@ export async function t6ThresholdDays(): Promise<number> {
 export async function loadUserPreferences(accountId: number, userId: number): Promise<T6ReminderPreference[]> {
   const r = await rows(
     `SELECT p.scope, p.decision, to_char(p.remind_at, 'YYYY-MM-DD') AS remind_at, p.context_fingerprint,
-            p.agenda_item_id, p.series_key, p.updated_at
+            p.agenda_item_id, p.series_key, p.updated_at,
+            -- Lot 71G (0507) : lue sans dépendre de la colonne (fenêtre de déploiement).
+            to_jsonb(p) ->> 'occurrence_date' AS occurrence_date
        FROM t6_reminder_preferences p
       WHERE p.account_id = $1 AND p.user_id = $2
         AND (p.agenda_item_id IS NULL
@@ -78,12 +280,18 @@ export async function loadUserPreferences(accountId: number, userId: number): Pr
     agendaItemId: x.agenda_item_id == null ? null : Number(x.agenda_item_id),
     seriesKey: (x.series_key as string | null) ?? null,
     updatedAt: x.updated_at ? new Date(String(x.updated_at)).toISOString() : null,
+    occurrenceDate: typeof x.occurrence_date === 'string' ? x.occurrence_date.slice(0, 10) : null,
   }));
 }
 
-/** Préférences applicables à une échéance : son occurrence, et sa série. */
-export function preferencesFor(prefs: readonly T6ReminderPreference[], agendaItemId: number, seriesKey: string | null): T6ReminderPreference[] {
-  return prefs.filter((p) => (p.scope === 'OCCURRENCE' && p.agendaItemId === agendaItemId)
+/**
+ * Préférences applicables à une échéance : son occurrence, et sa série.
+ * Lot 71G (T6-07) : une préférence d'occurrence posée sur un cycle
+ * précédent (identifiant réutilisé par T4 pour le renouvellement) ne
+ * s'applique pas au nouveau cycle ; une replanification la conserve.
+ */
+export function preferencesFor(prefs: readonly T6ReminderPreference[], agendaItemId: number, seriesKey: string | null, dueDate: string | null = null): T6ReminderPreference[] {
+  return prefs.filter((p) => (p.scope === 'OCCURRENCE' && p.agendaItemId === agendaItemId && preferenceAppliesToCycle(p, dueDate))
     || (p.scope === 'SERIES' && seriesKey != null && p.seriesKey === seriesKey));
 }
 
@@ -96,7 +304,9 @@ export async function loadAssessments(accountId: number, agendaIds: number[]): P
             to_char(a.reevaluate_on, 'YYYY-MM-DD') AS reevaluate_on, a.reason, a.action, a.consequence, a.uncertainty,
             a.exception_reason, a.prompt_version, a.trace_id,
             a.contract_version, a.decision, a.category, a.reason_code, a.evidence_refs, a.uncertainties,
-            to_jsonb(a) -> 'contract_revision' AS contract_revision
+            to_jsonb(a) -> 'contract_revision' AS contract_revision,
+            -- Lot 71G (0507) : lues sans dépendre des colonnes.
+            to_jsonb(a) -> 'evidence_snapshot' AS evidence_snapshot, to_jsonb(a) ->> 'reevaluation_reason' AS reevaluation_reason
        FROM t6_interpellation_assessments a
        JOIN agenda_items i ON i.id = a.agenda_item_id AND i.account_id = a.account_id
       WHERE a.account_id = $1 AND a.agenda_item_id = ANY($2::int[])`,
@@ -128,6 +338,8 @@ export async function loadAssessments(accountId: number, agendaIds: number[]): P
       uncertainties: Array.isArray(x.uncertainties) ? (x.uncertainties as string[]) : [],
       // Lot 68 (migration 0474) : lue sans dépendre de la colonne (déploiement avant migration : révision 1).
       contractRevision: x.contract_revision == null ? 1 : Number(x.contract_revision),
+      evidenceSnapshot: x.evidence_snapshot && typeof x.evidence_snapshot === 'object' ? x.evidence_snapshot as T6StoredAssessment['evidenceSnapshot'] : null,
+      reevaluationReason: (x.reevaluation_reason as string | null) ?? null,
     });
   }
   return out;
@@ -170,25 +382,21 @@ export async function loadDisplayHistory(
   return out;
 }
 
-/** Contexte documentaire des candidats à évaluer : description, documents liés (titres). Borné au compte. */
-async function loadCandidateDetails(accountId: number, ids: number[]): Promise<Map<number, { description: string | null; documents: string[] }>> {
-  const out = new Map<number, { description: string | null; documents: string[] }>();
-  if (ids.length === 0) return out;
+/**
+ * Lot 71G (T6-05) — reports arrivés à leur date, tous utilisateurs du compte
+ * confondus : échéance → date de rappel la plus récente déjà atteinte. La
+ * pré-génération du compte réévalue ces sujets AVANT toute réapparition,
+ * sans attendre une visite (aucune préférence n'est lue pour l'affichage).
+ */
+export async function loadDueReminders(accountId: number, today: string): Promise<Map<number, string>> {
   const r = await rows(
-    `SELECT i.id, left(i.description, 600) AS description,
-            (SELECT array_agg(t ORDER BY t) FROM (
-               SELECT COALESCE(NULLIF(f.retained_title, ''), NULLIF(f.original_filename, ''), f.filename) AS t
-                 FROM agenda_file_links l JOIN asset_files f ON f.id = l.asset_file_id AND f.account_id = i.account_id AND f.deleted_at IS NULL
-                WHERE l.agenda_item_id = i.id LIMIT 3) d) AS documents
-       FROM agenda_items i
-      WHERE i.account_id = $1 AND i.id = ANY($2::int[])`,
-    [accountId, ids],
+    `SELECT p.agenda_item_id, to_char(max(p.remind_at), 'YYYY-MM-DD') AS remind_at
+       FROM t6_reminder_preferences p JOIN agenda_items i ON i.id = p.agenda_item_id AND i.account_id = p.account_id
+      WHERE p.account_id = $1 AND p.decision = 'SNOOZED' AND p.remind_at <= $2::date
+      GROUP BY p.agenda_item_id`,
+    [accountId, today],
   );
-  for (const x of r) {
-    const desc = typeof x.description === 'string' ? x.description.replace(/\s+/g, ' ').trim().slice(0, 300) : '';
-    out.set(Number(x.id), { description: desc || null, documents: ((x.documents as string[] | null) ?? []).map((t) => String(t).slice(0, 120)) });
-  }
-  return out;
+  return new Map(r.map((x) => [Number(x.agenda_item_id), String(x.remind_at)]));
 }
 
 /**
@@ -211,17 +419,24 @@ export async function persistT6Assessments(
   // le rappel informatif (sinon l'évaluation sera renouvelée après activation).
   const revision = meta.contractRevision === T6_ASSESSMENT_REVISION_REMINDER ? T6_ASSESSMENT_REVISION_REMINDER : 1;
   const avecRevision = await hasContractRevision();
+  // Lot 71G (0507) : instantané des preuves citées et motif de la réévaluation.
+  const avecPreuves = await hasEvidenceSnapshot();
   for (const d of list) {
     const c = refs.get(d.subjectId);
     if (!c) continue;
     const a = assessmentFromDecision(d);
+    const extra = avecPreuves
+      ? [JSON.stringify(evidenceSnapshotOf(d.evidenceRefs, c.evidenceVersions, c.fingerprint)), c.reevaluationReason ?? null]
+      : [];
+    // Paramètres facultatifs après les 23 du contrat : preuves (0507), puis révision (0474).
+    const rev = avecPreuves ? 26 : 24;
     const r = await rows(
       `INSERT INTO t6_interpellation_assessments
          (account_id, agenda_item_id, subject_key, context_fingerprint, assessed_on, interpellation, action_needed, priority,
           action_date, reevaluate_on, reason, action, consequence, uncertainty, exception_reason, prompt_version, trace_id,
-          contract_version, decision, category, reason_code, evidence_refs, uncertainties${avecRevision ? ', contract_revision' : ''})
+          contract_version, decision, category, reason_code, evidence_refs, uncertainties${avecPreuves ? ', evidence_snapshot, reevaluation_reason' : ''}${avecRevision ? ', contract_revision' : ''})
        SELECT $1, i.id, $3, $4, $5::date, $6, $7, $8, $9::date, $10::date, $11, $12, $13, $14, $15, $16, $17,
-              $18, $19, $20, $21, $22::jsonb, $23::jsonb${avecRevision ? ', $24::smallint' : ''}
+              $18, $19, $20, $21, $22::jsonb, $23::jsonb${avecPreuves ? ', $24::jsonb, $25' : ''}${avecRevision ? `, $${rev}::smallint` : ''}
          FROM agenda_items i WHERE i.id = $2 AND i.account_id = $1
        ON CONFLICT (account_id, subject_key) DO UPDATE SET
          agenda_item_id = EXCLUDED.agenda_item_id, context_fingerprint = EXCLUDED.context_fingerprint,
@@ -233,13 +448,14 @@ export async function persistT6Assessments(
          contract_version = EXCLUDED.contract_version, decision = EXCLUDED.decision, category = EXCLUDED.category,
          reason_code = EXCLUDED.reason_code, evidence_refs = EXCLUDED.evidence_refs, uncertainties = EXCLUDED.uncertainties,
          ${avecRevision ? 'contract_revision = EXCLUDED.contract_revision,' : ''}
+         ${avecPreuves ? 'evidence_snapshot = EXCLUDED.evidence_snapshot, reevaluation_reason = EXCLUDED.reevaluation_reason,' : ''}
          updated_at = now()
        RETURNING id`,
       [accountId, c.agendaItemId, c.subjectKey, c.fingerprint, today, a.interpellation, a.actionNeeded, a.priority,
         a.actionDate, a.reevaluateOn, a.reason, a.action, a.consequence, a.uncertainty, a.exceptionReason,
         meta.promptVersion, meta.traceId,
         T6_ASSESSMENT_CONTRACT, d.decision, d.category, d.reasonCode, JSON.stringify(d.evidenceRefs), JSON.stringify(d.uncertainties),
-        ...(avecRevision ? [revision] : [])],
+        ...extra, ...(avecRevision ? [revision] : [])],
     );
     n += r.length;
   }
@@ -259,7 +475,16 @@ export function hasContractRevision(): Promise<boolean> {
   return revisionColumn;
 }
 /** Réservé aux tests. */
-export function resetContractRevisionProbe(): void { revisionColumn = null; }
+export function resetContractRevisionProbe(): void { revisionColumn = null; snapshotColumn = null; }
+
+/** Lot 71G : colonnes `evidence_snapshot` / `reevaluation_reason` (0507) présentes ? Même principe. */
+let snapshotColumn: Promise<boolean> | null = null;
+export function hasEvidenceSnapshot(): Promise<boolean> {
+  snapshotColumn ??= rows(
+    `SELECT 1 FROM information_schema.columns WHERE table_name = 't6_interpellation_assessments' AND column_name = 'reevaluation_reason' LIMIT 1`, [],
+  ).then((r) => r.length > 0).catch(() => { snapshotColumn = null; return false; });
+  return snapshotColumn;
+}
 
 // ── Candidats ────────────────────────────────────────────────────────────────
 
@@ -276,6 +501,11 @@ export interface T6CandidateRow { candidate: T6Candidate; row: MascotAgendaRow }
  * Échéances candidates (pur) : à venir (hors « à préciser ») et arrivées à
  * date depuis moins de 60 jours (hors prévisions) — mêmes sources et mêmes
  * exclusions que le chemin historique, une échéance = un candidat.
+ * Lot 71G : plus les échéances lues pour T6 seulement (`raw.t6Agenda`) — au-
+ * delà des 200 premières, ou dépassées depuis plus de 60 jours avec une
+ * action identifiable (T6-02 : jamais la seule ancienneté, dans un sens ou
+ * dans l'autre). L'empreinte rendue ici est l'empreinte historique ; la
+ * préparation la remplace par l'empreinte enrichie.
  */
 export function t6Candidates(raw: MascotRawData): T6CandidateRow[] {
   const exclues = agendaInToProcess(raw);
@@ -283,11 +513,13 @@ export function t6Candidates(raw: MascotRawData): T6CandidateRow[] {
   // Lot 61 : échéance passée réglée par « À traiter » (aucune intervention attendue, ou tranchée).
   const regles = new Set(raw.toProcessSettledAgendaIds ?? []);
   const out: T6CandidateRow[] = [];
-  for (const i of raw.agenda ?? []) {
-    if (!i.date || exclues.has(i.id)) continue;
+  const vus = new Set<number>();
+  for (const i of [...(raw.agenda ?? []), ...(raw.t6Agenda ?? [])]) {
+    if (!i.date || exclues.has(i.id) || vus.has(i.id)) continue;
+    vus.add(i.id);
     const future = i.date > raw.today;
     if (future && i.requiresQualification) continue;
-    if (!future && (i.forecast || daysBetween(i.date, raw.today) > EXT_ACTION_LOOKBACK_DAYS)) continue;
+    if (!future && (i.forecast || (daysBetween(i.date, raw.today) > EXT_ACTION_LOOKBACK_DAYS && !i.t6LongOverdue))) continue;
     // « C'est fait » déclaré pour ce cycle : le sujet est résolu.
     const fait = !future && !i.requiresQualification
       && (acquittes.has(`${extActionOccurrenceKey(i.id)}|${i.date}`) || regles.has(i.id));
@@ -298,6 +530,7 @@ export function t6Candidates(raw: MascotRawData): T6CandidateRow[] {
         seriesKey: i.seriesKey ?? null, accountId: raw.accountId, assetId: i.assetId, dueDate: i.date,
         state: fait ? 'RESOLVED' : 'ACTIVE', requiresQualification: i.requiresQualification,
         fingerprint: agendaFingerprint({ title: i.title, date: i.date, forecast: i.forecast, requiresQualification: i.requiresQualification }),
+        legacyFingerprint: agendaFingerprint({ title: i.title, date: i.date, forecast: i.forecast, requiresQualification: i.requiresQualification }),
       },
     });
   }
@@ -312,6 +545,8 @@ export interface T6DecisionTrace extends T6DecisionResult {
   seriesKey: string | null;
   assessment: T6StoredAssessment | null;
   displayedDays: number;
+  /** Lot 71G : empreinte du contexte courant (reporting, sans donnée personnelle). */
+  fingerprint?: string;
 }
 
 export interface T6Preparation {
@@ -333,8 +568,19 @@ export interface T6Preparation {
   discarded: Set<number>;
   /** Candidats à faire évaluer par T6 (MODE=EVALUATE, lot 61), ou null. */
   bundle: T6InterpellationBundle | null;
-  /** Une lecture a échoué : décision prudente sans préférence ni évaluation. */
+  /** Une lecture a échoué : décision prudente (lot 71G : source par source, `failedSources`). */
   degraded: boolean;
+  /**
+   * Lot 71G (T6-06) : sources illisibles — `preferences` (aucun sujet
+   * réintroduit), `assessments` (dégradation sans IA), `evidence` (aucune
+   * réévaluation sur un contexte incomplet), `history`, `dueReminders`.
+   */
+  failedSources: string[];
+  /**
+   * Lot 71G (T6-03) : candidats à évaluer restés hors de ce passage (plafond
+   * de 8 par appel) — repris par une nouvelle pré-génération durable.
+   */
+  pendingAssessments: number;
   /**
    * Lot 61 — état de l'évaluation pour la présentation : `PENDING`, une
    * échéance proche (dans le seuil) attend son évaluation ; `UNAVAILABLE`,
@@ -349,11 +595,15 @@ export type T6EvaluationState = 'OK' | 'PENDING' | 'UNAVAILABLE';
 
 /** Codes d'une échéance proche en attente d'évaluation. */
 const EN_ATTENTE = new Set(['AI_ASSESSMENT_PENDING', 'AWAITING_REEVALUATION_AFTER_SNOOZE']);
+/** Lot 71G : codes d'une décision PROVISOIRE (non évaluée, indisponible) — jamais une décision métier définitive. */
+export const T6_PROVISIONAL_CODES: ReadonlySet<string> = new Set([...EN_ATTENTE, 'EVALUATION_UNAVAILABLE', 'PREFERENCES_UNAVAILABLE']);
 
 /** État de l'évaluation des échéances proches (pure, testée T6-EV). */
 export function evaluationStateOf(decisions: readonly T6DecisionResult[], opts: { degraded?: boolean; recentFailure?: boolean } = {}): T6EvaluationState {
   const proches = decisions.filter((d) => !d.thresholdApplied);
   if (proches.some((d) => d.code === 'EVALUATION_UNAVAILABLE')) return 'UNAVAILABLE';
+  // Lot 71G (T6-06) : préférences illisibles — jamais « rien à signaler ».
+  if (decisions.some((d) => d.code === 'PREFERENCES_UNAVAILABLE')) return 'UNAVAILABLE';
   if (proches.some((d) => EN_ATTENTE.has(d.code))) return opts.recentFailure || opts.degraded ? 'UNAVAILABLE' : 'PENDING';
   return 'OK';
 }
@@ -367,6 +617,28 @@ export interface PrepareDeps {
   recentEvaluationFailure?: (accountId: number) => boolean;
   /** Après enregistrement d'évaluations (ex. : pré-génération de l'accueil). */
   onAssessed?: (count: number) => void;
+  /** Lot 71G : lectures injectables (tests de panne T6-06) ; défaut : base. */
+  loaders?: Partial<T6Loaders>;
+}
+
+/** Lot 71G : sources lues par la préparation, chacune isolément. */
+export interface T6Loaders {
+  preferences: (accountId: number, userId: number) => Promise<T6ReminderPreference[]>;
+  assessments: (accountId: number, agendaIds: number[]) => Promise<Map<number, T6StoredAssessment>>;
+  evidence: (accountId: number, agendaIds: number[]) => Promise<Map<number, T6ItemEvidence>>;
+  dueReminders: (accountId: number, today: string) => Promise<Map<number, string>>;
+}
+
+const DEFAULT_LOADERS: T6Loaders = {
+  preferences: loadUserPreferences, assessments: loadAssessments, evidence: loadT6Evidence, dueReminders: loadDueReminders,
+};
+
+/** Rang de priorité d'un candidat à évaluer (pure, T6-03) : report échu, proche, documenté, autre. */
+function rangEvaluation(d: T6DecisionTrace, thresholdDays: number, documente: boolean): number {
+  if (d.reevaluationReason === 'SNOOZE_DUE') return 0;
+  if (d.daysUntilDue != null && d.daysUntilDue <= thresholdDays) return 1;
+  if (documente) return 2;
+  return 3;
 }
 
 /**
@@ -379,37 +651,50 @@ export async function prepareT6Interpellation(
   deps: PrepareDeps,
 ): Promise<T6Preparation> {
   const today = p.raw.today;
+  const L: T6Loaders = { ...DEFAULT_LOADERS, ...deps.loaders };
   const candidats = t6Candidates(p.raw);
-  const [thresholdDays, aiCapableBrut, reminderCapable] = await Promise.all([
+  const ids = candidats.map((c) => c.candidate.agendaItemId);
+  const echecs: string[] = [];
+  // Lot 71G (T6-06) : chaque source isolément — une panne n'en vide jamais une autre.
+  const lire = async <T>(nom: string, f: () => Promise<T>, defaut: T): Promise<{ ok: boolean; v: T }> => {
+    try {
+      return { ok: true, v: await f() };
+    } catch (e) {
+      console.error(`[mascotte] décision T6 : source « ${nom} » indisponible —`, (e as Error).message);
+      echecs.push(nom);
+      return { ok: false, v: defaut };
+    }
+  };
+  const [thresholdDays, aiCapableBrut, reminderCapable, prefsR, evalsR, preuvesR, echusR] = await Promise.all([
     deps.thresholdDays().catch(() => DEFAULT_T6_THRESHOLD_DAYS),
     deps.aiCapable().catch(() => false),
     deps.reminderCapable ? deps.reminderCapable().catch(() => false) : Promise.resolve(false),
+    p.userId != null ? lire('preferences', () => L.preferences(p.accountId, p.userId!), [] as T6ReminderPreference[]) : Promise.resolve({ ok: true, v: [] as T6ReminderPreference[] }),
+    lire('assessments', () => L.assessments(p.accountId, ids), new Map<number, T6StoredAssessment>()),
+    lire('evidence', () => L.evidence(p.accountId, ids), new Map<number, T6ItemEvidence>()),
+    // Pré-génération du compte : reports arrivés à date (tous utilisateurs), réévalués sans visite.
+    p.userId == null ? lire('dueReminders', () => L.dueReminders(p.accountId, today), new Map<number, string>()) : Promise.resolve({ ok: true, v: new Map<number, string>() }),
   ]);
-  let degraded = false;
-  let prefs: T6ReminderPreference[] = [];
-  let evaluations = new Map<number, T6StoredAssessment>();
-  let aiCapable = aiCapableBrut;
-  try {
-    [prefs, evaluations] = await Promise.all([
-      p.userId != null ? loadUserPreferences(p.accountId, p.userId) : Promise.resolve([]),
-      loadAssessments(p.accountId, candidats.map((c) => c.candidate.agendaItemId)),
-    ]);
-  } catch (e) {
-    // Tables absentes (déploiement) ou base indisponible : décision prudente.
-    console.error('[mascotte] décision T6 : lectures indisponibles —', (e as Error).message);
-    degraded = true;
-    aiCapable = false;
-    prefs = [];
-    evaluations = new Map();
+  const prefs = prefsR.v;
+  const evaluations = evalsR.v;
+  // Évaluations illisibles : dégradation sans IA (préférences TOUJOURS appliquées).
+  const aiCapable = aiCapableBrut && evalsR.ok;
+  // Empreinte enrichie (T6-01) ; preuves illisibles : empreinte inconnue, aucune réévaluation.
+  for (const { candidate: c, row: i } of candidats) {
+    if (!preuvesR.ok) { c.fingerprintUnavailable = true; continue; }
+    const e = preuvesR.v.get(c.agendaItemId);
+    c.fingerprint = fingerprintWithEvidence({ title: i.title, date: i.date, forecast: i.forecast, requiresQualification: i.requiresQualification }, e);
+    c.hasDocumentaryEvidence = (e?.facts.length ?? 0) > 0 || (e?.documents.length ?? 0) > 0;
+    c.hasEvidence = c.hasDocumentaryEvidence || !!(e?.description ?? '').trim();
   }
   let historique = new Map<number, number>();
-  if (p.userId != null && !degraded) {
+  if (p.userId != null && evalsR.ok) {
     const depuis = new Map<number, string>();
     for (const c of candidats) {
       const a = evaluations.get(c.candidate.agendaItemId);
-      if (a && a.fingerprint === c.candidate.fingerprint) depuis.set(c.candidate.agendaItemId, a.assessedOn);
+      if (a && sameT6Context(a.fingerprint, c.candidate)) depuis.set(c.candidate.agendaItemId, a.assessedOn);
     }
-    historique = await loadDisplayHistory(p.accountId, p.userId, depuis, today).catch(() => new Map());
+    historique = await loadDisplayHistory(p.accountId, p.userId, depuis, today).catch(() => { echecs.push('history'); return new Map(); });
   }
 
   const decisions: T6DecisionTrace[] = candidats.map(({ candidate: c }) => {
@@ -417,10 +702,17 @@ export async function prepareT6Interpellation(
     const displayedDays = historique.get(c.agendaItemId) ?? 0;
     const d = decideT6Interpellation({
       candidate: c, today, thresholdDays, aiCapable, assessment,
-      preferences: preferencesFor(prefs, c.agendaItemId, c.seriesKey),
-      history: { displayedDays }, reminderCapable,
+      preferences: preferencesFor(prefs, c.agendaItemId, c.seriesKey, c.dueDate),
+      history: { displayedDays }, reminderCapable, preferencesUnavailable: !prefsR.ok,
     });
-    return { ...d, agendaItemId: c.agendaItemId, dueDate: c.dueDate, seriesKey: c.seriesKey, assessment, displayedDays };
+    // Lot 71G (T6-05) : report arrivé à sa date (un utilisateur du compte),
+    // sans réévaluation depuis — la pré-génération le réévalue maintenant.
+    const echu = echusR.v.get(c.agendaItemId);
+    const aRevoir = aiCapable && echu != null && c.state === 'ACTIVE' && !(assessment && assessment.assessedOn >= echu && d.assessmentFresh);
+    return {
+      ...d, ...(aRevoir ? { needsAssessment: true, reevaluationReason: 'SNOOZE_DUE' as T6ReevaluationReason } : {}),
+      agendaItemId: c.agendaItemId, dueDate: c.dueDate, seriesKey: c.seriesKey, assessment, displayedDays, fingerprint: c.fingerprint,
+    };
   });
 
   const parId = new Map(candidats.map((c) => [c.candidate.agendaItemId, c]));
@@ -446,42 +738,61 @@ export async function prepareT6Interpellation(
   const userSilenced = new Set(decisions.filter((d) => d.userPreference != null && d.decision !== 'SHOW_NOW').map((d) => d.agendaItemId));
   const discarded = new Set(decisions.filter((d) => d.decision !== 'SHOW_NOW' && (d.aiDecision != null || d.userPreference != null)).map((d) => d.agendaItemId));
 
-  // Candidats à faire évaluer : dans l'horizon d'évaluation, les plus proches d'abord.
+  // Candidats à faire évaluer (lot 71G, T6-03) : dans l'horizon d'évaluation,
+  // ou au-delà s'ils portent une preuve documentaire (préavis, délai
+  // contractuel : la démarche peut commencer bien avant l'échéance) ; par
+  // priorité (report échu, proche, documenté), puis date. Au plus 8 par
+  // appel : les autres sont REPRIS par une pré-génération suivante.
   let bundle: T6InterpellationBundle | null = null;
+  let pendingAssessments = 0;
   if (aiCapable) {
     const horizon = addDays(today, assessmentHorizonDays(thresholdDays));
-    const aEvaluer = decisions
-      .filter((d) => d.needsAssessment && d.dueDate && d.dueDate <= horizon)
-      .sort((a, b) => (a.dueDate ?? '').localeCompare(b.dueDate ?? '') || a.agendaItemId - b.agendaItemId)
-      .slice(0, T6_MAX_ASSESSMENTS_PER_CALL);
+    const eligibles = decisions
+      .filter((d) => {
+        const c = parId.get(d.agendaItemId)!.candidate;
+        return d.needsAssessment && !!d.dueDate && !c.fingerprintUnavailable && (d.dueDate <= horizon || !!c.hasDocumentaryEvidence);
+      })
+      .map((d) => ({ d, rang: rangEvaluation(d, thresholdDays, !!parId.get(d.agendaItemId)!.candidate.hasDocumentaryEvidence) }))
+      .sort((a, b) => a.rang - b.rang || (a.d.dueDate ?? '').localeCompare(b.d.dueDate ?? '') || a.d.agendaItemId - b.d.agendaItemId)
+      .map((x) => x.d);
+    const aEvaluer = eligibles.slice(0, T6_MAX_ASSESSMENTS_PER_CALL);
+    pendingAssessments = eligibles.length - aEvaluer.length;
     if (aEvaluer.length > 0) {
-      const details = await loadCandidateDetails(p.accountId, aEvaluer.map((d) => d.agendaItemId)).catch(() => new Map());
       const refs = new Map<string, T6CandidateRef>();
       const candidates: T6EvaluationCandidate[] = aEvaluer.map((d, k) => {
         const { candidate: c, row: i } = parId.get(d.agendaItemId)!;
         const subjectId = `C${k + 1}`;
-        refs.set(subjectId, { subjectKey: c.subjectKey, agendaItemId: c.agendaItemId, fingerprint: c.fingerprint, daysUntilDue: d.daysUntilDue });
-        const det = details.get(c.agendaItemId);
-        const documents = det?.documents ?? [];
-        const description = det?.description ?? null;
+        const ev = preuvesR.v.get(c.agendaItemId);
+        const desc = (ev?.description ?? '').replace(/\s+/g, ' ').trim().slice(0, 300);
+        const description = desc || null;
+        const preuves = evaluationEvidenceOf(subjectId, ev);
         // Références justificatives AUTORISÉES : seules celles-ci peuvent
         // fonder une décision (`evidenceRefs`, contrôlées à la validation).
         const evidence: T6EvidenceRef[] = [
           { ref: `${subjectId}.title`, kind: 'TITLE' },
           { ref: `${subjectId}.dueDate`, kind: 'DUE_DATE' },
           ...(description ? [{ ref: `${subjectId}.description`, kind: 'DESCRIPTION' as const }] : []),
-          ...documents.map((_t: string, n: number) => ({ ref: `${subjectId}.doc${n + 1}`, kind: 'DOCUMENT' as const })),
+          ...preuves.refs,
           ...(i.assetName ? [{ ref: `${subjectId}.asset`, kind: 'ASSET' as const }] : []),
           ...(c.seriesKey ? [{ ref: `${subjectId}.series`, kind: 'SERIES' as const }] : []),
           ...(d.displayedDays > 0 ? [{ ref: `${subjectId}.history`, kind: 'HISTORY' as const }] : []),
         ];
+        const versions = new Map(preuves.versions);
+        for (const e of evidence) if (!versions.has(e.ref)) versions.set(e.ref, { ref: e.ref, kind: e.kind });
+        refs.set(subjectId, {
+          subjectKey: c.subjectKey, agendaItemId: c.agendaItemId, fingerprint: c.fingerprint, daysUntilDue: d.daysUntilDue,
+          reevaluationReason: d.reevaluationReason ?? 'FIRST_ASSESSMENT', evidenceVersions: versions,
+        });
         return {
           subjectId, title: i.title, description,
           assetName: i.assetName, assetCategory: i.assetCategory ?? null,
           dueDate: i.date, dateLabel: i.date ? formatDateFr(i.date) : null,
           daysUntilDue: d.daysUntilDue, dateNature: i.forecast ? 'prévisionnelle' as const : 'confirmée' as const,
           dateRole: roleOf(i), overdue: !!i.date && i.date <= today, requiresQualification: i.requiresQualification,
-          recurring: !!c.seriesKey, documents, recentlyShownDays: d.displayedDays, evidence,
+          recurring: !!c.seriesKey, documents: preuves.documents,
+          // T6-04 : clauses réellement extraites (extrait, document source, provenance, statut).
+          ...(preuves.facts.length ? { facts: preuves.facts } : {}),
+          recentlyShownDays: d.displayedDays, evidence,
         };
       });
       bundle = {
@@ -496,8 +807,13 @@ export async function prepareT6Interpellation(
     }
   }
 
-  const evaluation = evaluationStateOf(decisions, { degraded, recentFailure: aiCapable && (deps.recentEvaluationFailure?.(p.accountId) ?? false) });
-  return { thresholdDays, aiCapable, shown, decisions, notInterpellated, userSilenced, discarded, bundle, degraded, evaluation };
+  const degraded = echecs.length > 0;
+  // Évaluations illisibles (T6-06) : dégradation explicite — jamais « rien à signaler ».
+  const evaluation = evaluationStateOf(decisions, { degraded: degraded && !evalsR.ok, recentFailure: aiCapable && (deps.recentEvaluationFailure?.(p.accountId) ?? false) });
+  return {
+    thresholdDays, aiCapable, shown, decisions, notInterpellated, userSilenced, discarded, bundle, degraded, evaluation,
+    failedSources: echecs, pendingAssessments,
+  };
 }
 
 // ── Reporting T6 (BO › Exécutions IA › Rapports) ─────────────────────────────
@@ -557,6 +873,18 @@ export function t6ReportEntries(decisions: readonly T6DecisionTrace[], threshold
         assessmentRequested: d.needsAssessment,
         recentlyShownDays: d.displayedDays,
         series: d.seriesKey != null,
+        // Lot 71G : décision définitive ou provisoire (non évaluée, indisponible —
+        // jamais comptée comme une décision métier), motif de réévaluation,
+        // empreinte du contexte et preuves (références et versions, sans texte).
+        final: !T6_PROVISIONAL_CODES.has(d.code),
+        reevaluationReason: d.needsAssessment ? d.reevaluationReason : null,
+        contextFingerprint: d.fingerprint ? d.fingerprint.slice(0, 16) : null,
+        evidence: a?.evidenceSnapshot?.refs ? {
+          refs: a.evidenceSnapshot.refs.map((x) => ({ ref: x.ref, kind: x.kind, fileId: x.fileId ?? null, extractionId: x.extractionId ?? null, factId: x.factId ?? null })),
+          assessedWithFingerprint: (a.evidenceSnapshot.fingerprint ?? a.fingerprint).slice(0, 16),
+          reevaluationReason: a.reevaluationReason ?? null,
+        } : null,
+        failure: d.code === 'PREFERENCES_UNAVAILABLE' ? 'preferences' : d.code === 'EVALUATION_UNAVAILABLE' ? 'evaluation' : null,
       },
       recordStatus: d.decision,
       writeResult: 'NOT_WRITTEN',
@@ -654,11 +982,17 @@ export async function writeT6InterpellationReport(p: {
         // Lot 61 : écarts IA / serveur, sujets transmis à FORMULATE et affichés.
         divergences: p.prep.decisions.filter((d) => d.aiDecision != null && d.aiDecision !== d.decision).length,
         formulateTransmitted: p.formulate?.transmitted.length ?? 0, displayed: p.formulate?.displayed.length ?? 0,
+        // Lot 71G : décisions provisoires (non évaluées, indisponibles) séparées des décisions définitives.
+        provisional: p.prep.decisions.filter((d) => T6_PROVISIONAL_CODES.has(d.code)).length,
+        finalDecisions: p.prep.decisions.filter((d) => !T6_PROVISIONAL_CODES.has(d.code)).length,
+        pendingAssessments: p.prep.pendingAssessments ?? 0,
       },
       steps: [
         { step: 'candidates', status: 'OK', detail: { count: p.prep.decisions.length } },
-        { step: 'decision', status: p.prep.degraded ? 'FAILED' : 'OK', error: p.prep.degraded ? 'lectures indisponibles : décision prudente' : null,
-          detail: { thresholdDays: p.prep.thresholdDays, aiCapable: p.prep.aiCapable, evaluation: p.prep.evaluation } },
+        { step: 'decision', status: p.prep.degraded ? 'FAILED' : 'OK',
+          // Lot 71G (T6-06) : source défaillante tracée précisément.
+          error: p.prep.degraded ? `lectures indisponibles (${(p.prep.failedSources ?? []).join(', ') || 'inconnue'}) : décision prudente` : null,
+          detail: { thresholdDays: p.prep.thresholdDays, aiCapable: p.prep.aiCapable, evaluation: p.prep.evaluation, failedSources: p.prep.failedSources ?? [], pendingAssessments: p.prep.pendingAssessments ?? 0 } },
         { step: 'assessment_request', status: p.prep.bundle ? 'OK' : 'SKIPPED', detail: { mode: 'EVALUATE', candidates: p.prep.bundle?.refs.size ?? 0 } },
         { step: 'formulate', status: p.formulate ? 'OK' : 'SKIPPED', detail: p.formulate ? {
           mode: 'FORMULATE', promptVersion: p.formulate.promptVersion, contract: p.formulate.contract, source: p.formulate.source, status: p.formulate.status,

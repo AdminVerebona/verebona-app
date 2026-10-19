@@ -72,7 +72,29 @@ export interface T4DecisionView {
   recurrenceReason?: string | null;
   outcome?: string;
   warnings?: string[];
+  /** Lot 71E : provenance du type métier appliqué (T4 | CANDIDATE | NONE). */
+  businessTypeSource?: string;
+  /** Lot 71E : version du contrat de sortie lue (1, 2, 3). */
+  contractVersion?: number | null;
+  errorCode?: string | null;
+  /** Lot 71E : décision réutilisée lors d'une reprise (aucun nouvel appel). */
+  reused?: boolean;
 }
+
+/**
+ * Lot 71E (§D) — le contrat de sortie ACTIF ne permet pas toutes les
+ * décisions automatiques attendues (t4_output_v1 : ni existence ni
+ * récurrence). Pure, testée.
+ */
+export function t4ContractLimitationNotice(p: { outputContractVersion?: string | null; outcome?: string | null }): string | null {
+  if (p.outputContractVersion !== 't4_output_v1' && p.outcome !== 'model_v1') return null;
+  return 'Contrat de sortie t4_output_v1 : T4 ne peut statuer ni sur l’existence ni sur la récurrence d’un événement. '
+    + 'Flux automatique : abstention conservatrice — aucune création, aucune série, aucun retrait. Parcours manuel et données existantes inchangés.';
+}
+
+const BT_SOURCE: Record<string, string> = {
+  T4: 'décidé par T4', CANDIDATE: 'T4 sans type (null) — type du candidat conservé', NONE: 'aucun',
+};
 
 const VERDICT: Record<string, string> = {
   ACCEPTED: 'T4 a accepté l’événement',
@@ -95,28 +117,32 @@ function Ligne({ label, children }: { label: string; children: React.ReactNode }
 
 export function RuntimeContractPanel({ calls }: { calls: ContractCallView[] }) {
   const avec = calls.filter((c) => c.runtimeContract);
-  if (avec.length === 0) return null;
-  const ref = avec[0].runtimeContract!;
+  // Lot 71E (§E) : une décision T4 (échec technique compris) s'affiche même sans contrat tracé.
+  if (avec.length === 0 && !calls.some((c) => c.t4Decision)) return null;
+  const ref = avec[0]?.runtimeContract ?? null;
   // Même contrat pour toute l'exécution (principal, réparations, replis) ?
-  const identiques = avec.every((c) => c.runtimeContract!.contractId === ref.contractId
+  const identiques = !ref || avec.every((c) => c.runtimeContract!.contractId === ref.contractId
     && c.runtimeContract!.contractVersion === ref.contractVersion && c.runtimeContract!.schemaHash === ref.schemaHash);
   const mismatch = avec.find((c) => c.runtimeContract!.mismatch || c.errorCode === 'RUNTIME_CONTRACT_MISMATCH');
   const sc = calls.find((c) => c.structuredContext)?.structuredContext ?? null;
   const contrat = calls.find((c) => c.errorCode?.startsWith('T4_'));
   const t4 = calls.find((c) => c.t4Decision)?.t4Decision ?? null;
+  const limite = t4ContractLimitationNotice({ outputContractVersion: sc?.outputContractVersion ?? null, outcome: t4?.outcome ?? null });
 
   return (
     <section className="space-y-2" data-testid="execution-runtime-contract">
       <h3 className="vb-app-subsection">Contrat runtime</h3>
-      <dl className="grid grid-cols-[auto,1fr] gap-x-3 gap-y-0.5 text-xs">
-        <Ligne label="Contract ID">{ref.contractId}</Ligne>
-        <Ligne label="Contract version">{ref.contractVersion}</Ligne>
-        <Ligne label="Schema version">{ref.schemaVersion}</Ligne>
-        <Ligne label="Schema hash">{ref.schemaHash}</Ligne>
-        <Ligne label="Table de compatibilité">v{ref.compatTableVersion}</Ligne>
-        <Ligne label="Même contrat sur tous les appels">{identiques ? 'oui' : 'NON'}</Ligne>
-      </dl>
-      {mismatch && (
+      {ref && (
+        <dl className="grid grid-cols-[auto,1fr] gap-x-3 gap-y-0.5 text-xs">
+          <Ligne label="Contract ID">{ref.contractId}</Ligne>
+          <Ligne label="Contract version">{ref.contractVersion}</Ligne>
+          <Ligne label="Schema version">{ref.schemaVersion}</Ligne>
+          <Ligne label="Schema hash">{ref.schemaHash}</Ligne>
+          <Ligne label="Table de compatibilité">v{ref.compatTableVersion}</Ligne>
+          <Ligne label="Même contrat sur tous les appels">{identiques ? 'oui' : 'NON'}</Ligne>
+        </dl>
+      )}
+      {mismatch && ref && (
         <p role="alert" className="text-xs text-[color:var(--text-danger)]">
           RUNTIME_CONTRACT_MISMATCH — défaut interne du moteur (non affiché à l’utilisateur) :
           {mismatch.runtimeContract?.mismatch
@@ -144,13 +170,18 @@ export function RuntimeContractPanel({ calls }: { calls: ContractCallView[] }) {
             : 'aucun'}</Ligne>
           <Ligne label="recurrenceDecision">{t4.recurrenceDecision ?? '—'}</Ligne>
           <Ligne label="homeCategory">{t4.homeCategory ?? '—'}</Ligne>
-          <Ligne label="businessType">{t4.businessType ?? '—'}</Ligne>
+          <Ligne label="businessType">{t4.businessType ?? '—'}{t4.businessTypeSource ? ` (${BT_SOURCE[t4.businessTypeSource] ?? t4.businessTypeSource})` : ''}</Ligne>
           <Ligne label="confidence">{t4.confidence ?? '—'}</Ligne>
           <Ligne label="reason">{t4.reason ?? '—'}</Ligne>
           <Ligne label="recurrenceReason">{t4.recurrenceReason ?? '—'}</Ligne>
-          {t4.outcome === 'model_v1' && <Ligne label="Contrat">t4_output_v1 : récurrence non évaluée par le modèle</Ligne>}
+          {t4.contractVersion ? <Ligne label="Contrat de sortie lu">{`t4_output_v${t4.contractVersion}`}</Ligne> : null}
+          {t4.outcome === 'technical_failure' && <Ligne label="Résultat technique">{`échec technique${t4.errorCode ? ` (${t4.errorCode})` : ''} — aucune création ni suppression ; reprise par la file IA`}</Ligne>}
+          {t4.reused && <Ligne label="Reprise">décision réutilisée, sans nouvel appel au modèle</Ligne>}
           {t4.warnings?.length ? <Ligne label="Contrôles serveur">{t4.warnings.join(' ; ')}</Ligne> : null}
         </dl>
+      )}
+      {limite && (
+        <p role="alert" className="text-xs text-[color:var(--text-warning-soft)]" data-testid="execution-t4-contract-limitation">{limite}</p>
       )}
       {contrat && (
         <p role="alert" className="text-xs text-[color:var(--text-danger)]">

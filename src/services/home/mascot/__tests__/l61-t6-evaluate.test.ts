@@ -270,7 +270,9 @@ describe('Décision et affichage', () => {
   it('T6-EV-09 — un « À traiter » réellement prioritaire continue d’être signalé ; non prioritaire : « aucun sujet en priorité »', () => {
     const item = { todoId: 't1', actionKind: 'COMPLETE', priority: 'DO_FIRST', title: 'Numéro à compléter', subtitle: 'Maison', cta: 'Compléter', entityType: 'ASSET', actionType: 'OPEN_TODO_CARD', todoType: 'DATA', card: { question: 'Numéro ?' } } as never;
     const p = accueil(raw([]), [], { todo: { total: 3, items: [item] } });
-    expect(parler(p)).toBe('Un sujet nécessite votre attention aujourd’hui.');
+    // Lot 71F : la carte est présentée directement — aucune introduction de
+    // comptage, jamais « aucun sujet en priorité » ni « rien à signaler ».
+    expect(parler(p)).toBe('');
     expect(p.state).toMatchObject({ kind: 'ACTIONS', actions: 1, openNotPriority: true });
     expect(B.homePose(p, false)).toBe('reminder-bell');
     expect(B.homeItems(p, false).map((x) => x.kind)).toEqual(['todo']);
@@ -406,7 +408,9 @@ describe('Bulle et UX', () => {
     // Lot 68 : Duo et « À traiter » en cartes ; les sujets retenus en blocs.
     expect(B.homeItems(p, false).map((x) => x.kind)).toEqual(['duo-invite', 'todo']);
     expect(B.homeItems(p, false).map((x) => x.title)).toEqual(['Inviter quelqu’un', 'Date à vérifier']);
-    expect(parler(p)).toMatch(/^Deux sujets nécessitent votre attention aujourd’hui\./);
+    // Lot 71F : l'étape d'accueil directement, sans introduction de comptage.
+    expect(parler(p)).toMatch(/^Ajoutez votre premier document pour Maison : une facture, un contrat ou une garantie\./);
+    expect(parler(p)).not.toMatch(/votre attention/);
     expect(B.homePose(p, false)).toBe('questioning');
     const [onb, voir] = B.subjectBlocks(p);
     expect(onb.actions[0].action.target).toMatchObject({ kind: 'upload_document' });

@@ -139,14 +139,29 @@ const pg = async (): Promise<Sql> => (await import('@/db')).pgClient;
 
 async function defaultArbitrate(p: { accountId: number; fileId: number; subject: string; candidates: ElementCandidate[] }): Promise<{ equipmentId: number | null }> {
   const { reconcileLinks, retainAbove, LINK_SCORE_THRESHOLDS } = await import('../link-reconciler');
+  // Lot 71A (ticket P1 « contexte T3 équipements ») : sujet et candidats
+  // ENRICHIS depuis les sources canoniques (bien parent, marque, modèle,
+  // n° de série, faits T1 avec cibles et preuves) ; repli : contexte historique.
+  let subject = p.subject;
+  let liste = p.candidates.map((c) => `[id:${c.equipmentId}] "${c.name}" — ${c.reason}`).join('\n');
+  try {
+    const svc = await import('@/services/equipment/document-equipment-link.service');
+    const fmt = await import('@/services/equipment/document-equipment-matching');
+    const doc = await svc.loadDocumentProfile(p.accountId, p.fileId);
+    const profils = await svc.loadEquipmentProfiles(p.accountId, { equipmentIds: p.candidates.map((c) => c.equipmentId) });
+    if (doc) subject = fmt.formatDocumentSubject(doc.profile);
+    if (profils.length === p.candidates.length) liste = profils.map(fmt.formatEquipmentCandidate).join('\n');
+  } catch (e) {
+    console.warn('[t3-open-actions] contexte enrichi LINK-ELT indisponible :', (e as Error).message);
+  }
   const linked = await reconcileLinks({
     accountId: p.accountId,
     variables: {
-      SUBJECT_CONTEXT: p.subject,
+      SUBJECT_CONTEXT: subject,
       DOCUMENTS_LIST: '(sans objet)',
       AGENDA_LIST: '(sans objet)',
       SUPPLIERS_LIST: '(sans objet)',
-      EQUIPMENTS_LIST: p.candidates.map((c) => `[id:${c.equipmentId}] "${c.name}" — ${c.reason}`).join('\n'),
+      EQUIPMENTS_LIST: liste,
     },
     sourceIds: [p.fileId],
   });

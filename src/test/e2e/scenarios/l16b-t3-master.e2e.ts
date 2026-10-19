@@ -6,15 +6,15 @@
  *     en `master`, idempotente ; valeur par défaut de la colonne alignée ;
  *     une ligne stockée `steps` est lue `master` ; `steps` demandé pour T3
  *     est refusé.
- *   · Validation d'un document (`POST /api/documents/[id]/commit`, service
- *     `validateDocumentProposals`, remplace `commit-engine`) : propositions
- *     conservées, document « analysé », fiche du bien et agenda intacts.
+ *   · Lot 71B : la validation d'un document (`POST /api/documents/[id]/commit`,
+ *     `validateDocumentProposals`) est RETIRÉE (plus de validation sur les
+ *     fiches) — voir `l71b-sans-validation.e2e.ts`.
  *   · Revue 3a : échec DÉFINITIF du master T1 (sortie invalide sur toute la
  *     chaîne) → compteur porté au plafond, la reprise serveur ne le relance
  *     plus ; un échec transitoire reste relancé.
  */
 import { expect, it, vi } from 'vitest';
-import { readFile } from 'node:fs/promises';
+import { readFile, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { scenario } from '../scenario';
 import { runMigrationSql, type SqlRunner } from '@/db/migration-index';
@@ -81,39 +81,10 @@ scenario('L16B-3B', 'T3 en master seul (migration 0234), validation de document 
     await sql`UPDATE ai_config_entries SET prompt_architecture = 'master' WHERE version_id = ${v.id}`;
   });
 
-  it('validation d’un document : propositions conservées, état ANALYZED, fiche et agenda intacts', async () => {
-    const compte = await make.account();
-    const bien = await make.asset(compte, { category: 'VEHICULE', keyCharacteristics: { mileage: 1000 } });
-    const doc = await make.assetFile(compte, { assetId: bien.id });
-    await sql`UPDATE asset_files SET analysis_state = 'VALIDATION_REQUIRED' WHERE id = ${doc.id}`;
-    const [run] = await sql<{ id: number }[]>`
-      INSERT INTO document_analysis_runs (asset_file_id, input_file_hash, prompt_version, provider, model, status, is_current_reference, account_id)
-      VALUES (${doc.id}, 'h', 't1_master_v1@file', 'replay', 'm', 'completed', true, ${compte.id}) RETURNING id`;
-    // Clés historiques que l'ancien moteur appliquait directement (asset_files, fiche).
-    for (const [type, cle, valeur] of [['link', 'matchedAssetId', bien.id], ['field', 'retainedTitle', 'Facture garage']] as const) {
-      await sql`INSERT INTO document_analysis_proposals (run_id, asset_file_id, proposal_type, target_key, proposed_value_json, account_id)
-                VALUES (${run.id}, ${doc.id}, ${type}, ${cle}, ${JSON.stringify(valeur)}, ${compte.id})`;
-    }
-    const avant = await sql<{ kc: string; updated_at: string }[]>`SELECT key_characteristics AS kc, updated_at::text FROM assets WHERE id = ${bien.id}`;
-    const [{ n: agendaAvant }] = await sql<{ n: number }[]>`SELECT count(*)::int AS n FROM agenda_items WHERE account_id = ${compte.id}`;
-
-    const { validateDocumentProposals } = await import('@/services/documents/document-validation.service');
-    expect(await validateDocumentProposals(doc.id, compte.id)).toEqual({ committed: true, appliedFields: [], agendaEffectsProcessed: 0 });
-
-    const props = await sql<{ status: string; proposed: string; final: string | null }[]>`
-      SELECT status, proposed_value_json AS proposed, final_value_json AS final FROM document_analysis_proposals WHERE run_id = ${run.id} ORDER BY id`;
-    expect(props.every((p) => p.status === 'kept' && p.final === p.proposed)).toBe(true);
-    const [f] = await sql<{ analysis_state: string; retained_title: string | null }[]>`
-      SELECT analysis_state, retained_title FROM asset_files WHERE id = ${doc.id}`;
-    expect(f.analysis_state).toBe('ANALYZED');
-    expect(f.retained_title).toBeNull(); // jamais écrit hors primitive
-    expect(await sql`SELECT key_characteristics AS kc, updated_at::text FROM assets WHERE id = ${bien.id}`).toEqual(avant);
-    const [{ n: agendaApres }] = await sql<{ n: number }[]>`SELECT count(*)::int AS n FROM agenda_items WHERE account_id = ${compte.id}`;
-    expect(agendaApres).toBe(agendaAvant);
-
-    // Autre compte : refusé (aucun run de référence visible).
-    const autre = await make.account();
-    await expect(validateDocumentProposals(doc.id, autre.id)).rejects.toThrow(/No current reference run/);
+  it('lot 71B : plus de validation d’un document — route /commit et service de validation retirés', async () => {
+    const existe = (p: string) => stat(join(process.cwd(), p)).then(() => true, () => false);
+    expect(await existe('src/app/api/documents/[id]/commit/route.ts')).toBe(false);
+    expect(await existe('src/services/documents/document-validation.service.ts')).toBe(false);
   });
 
   it('revue 3a : échec définitif au plafond, jamais relancé par la reprise serveur ; échec transitoire relancé', async () => {

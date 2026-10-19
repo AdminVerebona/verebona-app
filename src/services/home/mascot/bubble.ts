@@ -13,8 +13,9 @@
  *     « Rappels ») ; plus d'introduction de comptage (« Un sujet mérite
  *     votre attention… »), plus de carte imbriquée qui répète le message ;
  *   · une phrase d'en-tête (`bubbleLead`) seulement quand elle dit autre
- *     chose que les sujets : « À traiter » affichés, évaluation en cours ou
- *     indisponible, source en panne, rien à signaler ;
+ *     chose que les sujets : évaluation en cours ou indisponible, source en
+ *     panne, éléments non prioritaires, rien à signaler — lot 71F : jamais
+ *     de comptage des « À traiter », de l'invitation Duo ou des sujets ;
  *   · la pose de la mascotte selon la situation.
  *
  * Lot 61 : la bulle ASSEMBLE un état de présentation explicite
@@ -32,6 +33,7 @@ import type {
   MascotTile, MascotTodoItem,
 } from './types';
 import { emptyAccountSuggestions } from '@/services/verebona-assistant/registries/capability-registry';
+import { stripCountingIntro } from './counting-intro';
 
 // ── Tuiles (serveur) ────────────────────────────────────────────────────────
 
@@ -190,20 +192,13 @@ export function lowerFirst(text: string): string {
   return text.charAt(0).toLowerCase() + text.slice(1);
 }
 
-const NOMBRES_TODO = ['Aucun', 'Un', 'Deux', 'Trois', 'Quatre', 'Cinq', 'Six', 'Sept', 'Huit', 'Neuf', 'Dix'];
-
-/**
- * Niveau 1 de la bulle (MASC3, lot 34) : le nombre d'« À traiter »
- * AFFICHÉS (DO_FIRST, au plus deux) — jamais le total de la file.
- *   0 → aucune phrase ; 1 → « Un sujet nécessite… » ; 2 → « Deux sujets… ».
+/*
+ * Lot 71F : `todoSummary` (« Un sujet nécessite votre attention
+ * aujourd'hui. », « Deux sujets nécessitent… ») est SUPPRIMÉ — plus aucune
+ * introduction de comptage dans la bulle, sans phrase de remplacement : les
+ * « À traiter » et « Inviter quelqu'un » sont présentés directement par
+ * leurs cartes. Garde : `hasCountingIntro` (counting-intro.ts).
  */
-export function todoSummary(n: number): string {
-  if (n <= 0) return '';
-  const nombre = NOMBRES_TODO[n] ?? String(n);
-  return n > 1
-    ? `${nombre} sujets nécessitent votre attention aujourd’hui.`
-    : `${nombre} sujet nécessite votre attention aujourd’hui.`;
-}
 
 /**
  * MASC3 : la file contient des actions, mais aucune « À faire en premier » —
@@ -244,6 +239,16 @@ export function realParagraphs(p: MascotPresentation | null): MascotParagraph[] 
 const isAttention = (p: MascotParagraph) => p.tile?.attention ?? true;
 
 /**
+ * Lot 71F — texte d'un sujet tel qu'affiché : sans introduction de comptage
+ * (« Un sujet mérite votre attention aujourd'hui : … »), quelle que soit son
+ * origine (T6, cache, texte de secours, présentation d'une version
+ * antérieure du serveur). Dernier rempart côté écran, pur.
+ */
+export function subjectText(p: Pick<MascotParagraph, 'text'>): string {
+  return stripCountingIntro(p.text.trim());
+}
+
+/**
  * Lot 61 — état de présentation EXPLICITE (pur, partagé serveur / client).
  * Les compteurs viennent des sujets RETENUS encore affichés (le client retire
  * aussitôt un sujet reporté), des « À faire en premier » et de l'invitation
@@ -276,12 +281,14 @@ function evaluationNote(st: MascotPresentationState): string | null {
 /**
  * Phrase de la bulle (§3.2), ASSEMBLÉE à partir de l'état de présentation
  * (lot 61) — mêmes sujets que les blocs, rien d'autre :
- *   · « À faire en premier » : « Deux sujets nécessitent votre attention
- *     aujourd'hui. » (lot 34, MASC3 : les « À traiter » affichés) puis les
- *     textes des sujets retenus ;
- *   · sujets retenus : leurs textes, tels quels — lot 68 : PLUS
- *     d'introduction de comptage (« Un sujet mérite votre attention
- *     aujourd'hui : … ») ni de clause reformulée ;
+ *   · « À faire en premier » / « Inviter quelqu'un » : présentés
+ *     directement par leurs cartes — lot 71F : PLUS de « Deux sujets
+ *     nécessitent votre attention aujourd'hui. » ; puis les textes des
+ *     sujets retenus (jamais « rien à signaler ») ;
+ *   · sujets retenus : leurs textes — lot 68 : PLUS d'introduction de
+ *     comptage (« Un sujet mérite votre attention aujourd'hui : … ») ni de
+ *     clause reformulée ; lot 71F : une introduction de comptage portée par
+ *     un texte (T6, cache, secours) est retirée, sans remplacement ;
  *   · informations seules (analyse en cours, export, rappel informatif) :
  *     leurs textes, précédés de « Aucun sujet à traiter en priorité pour le
  *     moment. » si des éléments non prioritaires sont ouverts — jamais
@@ -299,18 +306,19 @@ function compose({ presentation, empty, failed }: SpeechInput, withSubjects: boo
   const paras = realParagraphs(presentation);
   const st = presentationState(presentation);
   const highlights = withSubjects ? paras.map((p) => p.highlight).filter((h): h is string => !!h) : [];
-  const texts = (list: MascotParagraph[]) => (withSubjects ? list.map((p) => p.text.trim()).filter(Boolean) : []);
+  const texts = (list: MascotParagraph[]) => (withSubjects ? list.map((p) => subjectText(p)).filter(Boolean) : []);
   const note = evaluationNote(st);
   const attention = paras.filter(isAttention);
   const info = paras.filter((p) => !isAttention(p));
   const join = (parts: Array<string | null>) => parts.filter((x): x is string => !!x).join(' ');
 
-  // Lot 32 (MASC2) / lot 34 (MASC3) — niveau 1 : une phrase qui COMPTE les
-  // « À traiter » AFFICHÉS (DO_FIRST, au plus deux) — lot 49A : et
-  // l'invitation Duo —, sans les répéter ; puis les sujets retenus.
+  // Lot 32 (MASC2) / lot 34 (MASC3) / lot 49A : « À traiter » affichés
+  // (DO_FIRST, au plus deux) et invitation Duo. Lot 71F : AUCUNE phrase qui
+  // les compte — leurs cartes les présentent directement ; puis les sujets
+  // retenus. Jamais « rien à signaler » quand une carte est affichée.
   const todoShown = (presentation.todo?.items.length ?? 0) + (presentation.duoInvite ? 1 : 0);
   if (todoShown > 0) {
-    return { text: join([todoSummary(todoShown), ...texts(attention), ...texts(info), note]), highlights };
+    return { text: join([...texts(attention), ...texts(info), note]), highlights };
   }
   if (attention.length > 0) {
     // Lot 68 : le fait utile, une seule fois — aucune introduction de comptage.
@@ -335,10 +343,11 @@ export function composeSpeech(input: SpeechInput): Speech {
 
 /**
  * Lot 68 — phrase d'EN-TÊTE de la bulle, sans les textes des sujets (dits
- * une seule fois, dans leur bloc) : « À traiter » affichés, évaluation en
- * cours ou indisponible, source en panne, éléments non prioritaires,
- * rien à signaler. Vide quand les sujets suffisent. Jamais « rien à
- * signaler » si un sujet est affiché. Pure.
+ * une seule fois, dans leur bloc) : évaluation en cours ou indisponible,
+ * source en panne, éléments non prioritaires, rien à signaler. Vide quand
+ * les sujets ou les cartes (« À traiter », Duo) suffisent — lot 71F : plus
+ * aucune phrase qui les compte. Jamais « rien à signaler » si un sujet ou
+ * une carte est affiché. Pure.
  */
 export function bubbleLead(input: SpeechInput): Speech {
   return compose(input, false);
@@ -413,7 +422,7 @@ export function subjectBlocks(p: MascotPresentation | null): SubjectBlock[] {
     return {
       key: x.occurrenceKey,
       paragraph: x,
-      text: x.text.trim(),
+      text: subjectText(x),
       highlights: x.highlight ? [x.highlight] : [],
       actions: x.actions.map((a, i) => ({ action: a, label: blockActionLabel(a), primary: i === 0 })),
       reminder: x.reminder ?? null,

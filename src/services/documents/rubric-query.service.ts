@@ -72,8 +72,16 @@ import {
   type FeedKey,
   type KeysetNode,
 } from './document-cursor';
-import { OTHER_ASSET_IDS_SQL, documentInAssetsCondition, documentWithoutAssetCondition } from './asset-document-scope';
+import { ASSET_LIST_LINK_ROLES_SQL, OTHER_ASSET_IDS_SQL, documentInAssetsCondition, documentWithoutAssetCondition } from './asset-document-scope';
 import { displayDocumentTitle } from '@/lib/documents/document-title-rules';
+import {
+  documentEquipmentFilterCondition,
+  documentOfEquipmentsCondition,
+  equipmentScopeAssetIds,
+  listEquipmentsOfAssets,
+  type AssetEquipment,
+} from '@/services/equipments/equipment-filter-scope';
+import { isEquipmentFilterActive, type EquipmentFacet } from '@/lib/filters/equipment-filter';
 
 /** Identifiant de la zone « Sans rubrique ». Jamais un code de Rubrique (§2.1). */
 export const UNFILED_GROUP = FEED_UNFILED;
@@ -194,7 +202,7 @@ function biensOf(row: Pick<ScopeCountRow, 'assetId' | 'otherAssets'>): string[] 
 
 /** Même règle que `filterConditions`, sur une ligne agrégée (compteurs). */
 export function matchesFilters(
-  row: Pick<ScopeCountRow, 'assetId' | 'otherAssets' | 'rubricCode' | 'documentTypeCode'>,
+  row: Pick<ScopeCountRow, 'assetId' | 'otherAssets' | 'rubricCode' | 'documentTypeCode' | 'equipmentMatch'>,
   f: FeedFilters,
 ): boolean {
   const biens = biensOf(row);
@@ -202,7 +210,9 @@ export function matchesFilters(
   const type = row.documentTypeCode ?? FEED_NO_TYPE;
   return (f.biens.length === 0 || biens.some((b) => f.biens.includes(b)))
     && (f.rubrics.length === 0 || f.rubrics.includes(rubric))
-    && (f.types.length === 0 || f.types.includes(type));
+    && (f.types.length === 0 || f.types.includes(type))
+    // Lot 71 : `equipmentMatch` n'est renseigné que si le filtre Équipement agit.
+    && row.equipmentMatch !== false;
 }
 
 // ── Compteurs ────────────────────────────────────────────────────────────
@@ -218,6 +228,11 @@ export interface ScopeCountRow {
   otherAssets?: Array<{ id: number; name: string | null }>;
   rubricCode: string | null;
   documentTypeCode: string | null;
+  /**
+   * Lot 71 (71C) : ces documents satisfont-ils le filtre Équipement ?
+   * Absent quand le filtre n'agit pas (« Tous », aucun bien, aucun équipement).
+   */
+  equipmentMatch?: boolean;
   count: number;
 }
 
@@ -325,7 +340,15 @@ export async function getDocumentFeed(query: DocumentFeedQuery): Promise<FeedRes
   }
 
   const scope = scopeConditions(query);
+  // Lot 71 (71C) : équipements des biens retenus — lus seulement si le filtre
+  // Équipement agit ou si les compteurs du premier lot les proposent.
+  const equipmentAssets = equipmentAssetScope(query);
+  const assetEquipments = equipmentAssets.length > 0 && (withMeta || isEquipmentFilterActive(query.filters.equipment))
+    ? await listEquipmentsOfAssets(query.accountId, equipmentAssets)
+    : [];
+  const equipmentCondition = documentEquipmentFilterCondition(query.filters.equipment, assetEquipments);
   const where = [...scope, ...filterConditions(query.filters)];
+  if (equipmentCondition) where.push(equipmentCondition);
   if (values) where.push(keysetSql(keysetCondition(components, values), keys, values));
 
   const keyColumns = Object.fromEntries(
@@ -355,7 +378,7 @@ export async function getDocumentFeed(query: DocumentFeedQuery): Promise<FeedRes
       .where(and(...where))
       .orderBy(...components.map((c) => sql`${KEY_SQL[c.key].expr} ${sql.raw(c.dir === 'asc' ? 'ASC' : 'DESC')} NULLS LAST`))
       .limit(query.limit + 1),
-    withMeta ? loadMeta(query, scope) : Promise.resolve(undefined),
+    withMeta ? loadMeta(query, scope, equipmentCondition, assetEquipments) : Promise.resolve(undefined),
   ]);
 
   const hasMore = rows.length > query.limit;
@@ -416,8 +439,13 @@ async function otherAssetNames(accountId: number, ids: number[]): Promise<Map<nu
  * (§16.3). Lot 32C (PO 9) : la clé d'agrégation porte aussi les autres biens
  * rattachés, pour que chaque bien compte ses documents liés.
  */
-async function loadMeta(query: DocumentFeedQuery, scope: SQL[]): Promise<FeedMeta> {
-  const [rows, context] = await Promise.all([
+async function loadMeta(
+  query: DocumentFeedQuery,
+  scope: SQL[],
+  equipmentCondition: SQL | null = null,
+  assetEquipments: readonly AssetEquipment[] = [],
+): Promise<FeedMeta> {
+  const [rows, context, equipmentFacet] = await Promise.all([
     db
       .select({
         assetId: assetFiles.assetId,
@@ -426,21 +454,79 @@ async function loadMeta(query: DocumentFeedQuery, scope: SQL[]): Promise<FeedMet
         rubricCode: assetFiles.rubricCode,
         documentTypeCode: assetFiles.documentTypeCode,
         count: sql<number>`COUNT(*)::int`,
+        // Lot 71 : 7e colonne, dans la clé d'agrégation (total filtré exact).
+        equipmentMatch: equipmentCondition ? sql<boolean>`(${equipmentCondition})` : sql<null>`NULL::boolean`,
       })
       .from(assetFiles)
       .leftJoin(assets, and(eq(assetFiles.assetId, assets.id), eq(assets.accountId, assetFiles.accountId)))
       .where(and(...scope))
-      .groupBy(assetFiles.assetId, assets.name, sql`3`, assetFiles.rubricCode, assetFiles.documentTypeCode),
+      .groupBy(assetFiles.assetId, assets.name, sql`3`, assetFiles.rubricCode, assetFiles.documentTypeCode, sql`7`),
     loadVisibilityContext(query.accountId, query.assetIds),
+    loadEquipmentFacet(query, scope, assetEquipments),
   ]);
   const noms = await otherAssetNames(query.accountId, rows.flatMap((r) => toIds(r.otherAssetIds)));
-  return buildFeedMeta(rows.map((r) => {
+  const meta = buildFeedMeta(rows.map((r) => {
     const autres = toIds(r.otherAssetIds).filter((id) => noms.has(id)).map((id) => ({ id, name: noms.get(id) ?? null }));
     return {
       assetId: r.assetId, assetName: r.assetName, rubricCode: r.rubricCode, documentTypeCode: r.documentTypeCode,
       count: Number(r.count), ...(autres.length ? { otherAssets: autres } : {}),
+      ...(equipmentCondition ? { equipmentMatch: r.equipmentMatch === true } : {}),
     };
   }), query.filters, context);
+  return equipmentFacet ? { ...meta, equipmentFacet } : meta;
+}
+
+/**
+ * Biens retenus pour le filtre Équipement : ceux de l'onglet (`assetIds`),
+ * sinon ceux du filtre Bien (« Sans bien » écarté). Aucun : filtre sans effet.
+ */
+export function equipmentAssetScope(query: { assetIds: number[]; filters: FeedFilters }): number[] {
+  if (query.assetIds.length > 0) return equipmentScopeAssetIds(query.assetIds);
+  return equipmentScopeAssetIds(query.filters.biens.filter((b) => b !== FEED_NO_ASSET).map(Number));
+}
+
+/**
+ * Compteurs du filtre Équipement : périmètre ∩ biens retenus (Rubrique et
+ * Type ignorés, comme les autres options). Deux requêtes agrégées, bornées
+ * par les équipements des biens retenus.
+ */
+async function loadEquipmentFacet(
+  query: DocumentFeedQuery,
+  scope: SQL[],
+  assetEquipments: readonly AssetEquipment[],
+): Promise<EquipmentFacet | undefined> {
+  if (assetEquipments.length === 0) return undefined;
+  const biens = bienDimension(query.filters.biens);
+  const base = and(...scope, ...(biens ? [biens] : []));
+  const ids = assetEquipments.map((e) => e.id);
+  const liste = sql.join(ids.map((id) => sql`${id}`), sql`, `);
+  const [totaux, parEquipement] = await Promise.all([
+    db
+      .select({
+        all: sql<number>`COUNT(*)::int`,
+        assetOnly: sql<number>`(COUNT(*) FILTER (WHERE NOT ${documentOfEquipmentsCondition(ids)}))::int`,
+      })
+      .from(assetFiles)
+      .where(base),
+    db.execute(sql`
+      SELECT assoc.equipment_id AS id, COUNT(DISTINCT ${assetFiles.id})::int AS count
+        FROM (
+          SELECT f.id AS file_id, f.equipment_id FROM asset_files f WHERE f.equipment_id IN (${liste})
+          UNION
+          SELECT dal.file_id, dal.equipment_id FROM document_asset_links dal
+           WHERE dal.equipment_id IN (${liste}) AND dal.status = 'ACTIVE'
+             AND dal.link_role IN ${sql.raw(ASSET_LIST_LINK_ROLES_SQL)}
+        ) assoc
+        JOIN asset_files ON ${assetFiles.id} = assoc.file_id
+       WHERE ${base}
+       GROUP BY assoc.equipment_id`) as unknown as Promise<Array<{ id: number; count: number }>>,
+  ]);
+  const counts = new Map((parEquipement as Array<{ id: number; count: number }>).map((r) => [Number(r.id), Number(r.count)]));
+  return {
+    all: Number(totaux[0]?.all ?? 0),
+    assetOnly: Number(totaux[0]?.assetOnly ?? 0),
+    items: assetEquipments.map((e) => ({ ...e, count: counts.get(e.id) ?? 0 })),
+  };
 }
 
 /**

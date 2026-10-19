@@ -163,7 +163,6 @@ describe('§31.7 — chaque chemin de modification émet son événement', () =>
     ['files/confirm/route.ts', ['DOCUMENT_UPLOADED']],
     ['files/[id]/route.ts', ['DOCUMENT_DELETED']],
     ['documents/[id]/route.ts', ['DOCUMENT_UPDATED']],
-    ['documents/[id]/commit/route.ts', ['DOCUMENT_UPDATED']],
     ['documents/[id]/supplier/route.ts', ['DOCUMENT_UPDATED']],
     ['documents/[id]/fusion/route.ts', ['DOCUMENT_DELETED']],
     ['documents/bulk-delete/route.ts', ['DOCUMENT_DELETED']],

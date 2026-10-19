@@ -487,7 +487,7 @@ export const assetFiles = pgTable('asset_files', {
   extractedText: text('extracted_text'),
   lastAnalysisAt: pgTimestamp('last_analysis_at', { withTimezone: true }),
   // V4 — pipeline auto-analyse
-  analysisState: text('analysis_state'), // null=Standard | UPLOADING | UPLOADED | ANALYZING | ANALYZED | VALIDATION_REQUIRED | CONFLICT_DETECTED | ANALYSIS_FAILED
+  analysisState: text('analysis_state'), // null=Standard | UPLOADING | UPLOADED | ANALYZING | ANALYZED | CONFLICT_DETECTED | ANALYSIS_FAILED (VALIDATION_REQUIRED : ancien état, plus écrit depuis le lot 71B)
   analysisFailReason: text('analysis_fail_reason'), // raison de l'échec, persistée si analysisState=ANALYSIS_FAILED
   analysisRetryCount: integer('analysis_retry_count').notNull().default(0), // nombre d'échecs successifs — notif envoyée au 10e
   fusionIgnoredWith: jsonb('fusion_ignored_with').$type<number[]>(),

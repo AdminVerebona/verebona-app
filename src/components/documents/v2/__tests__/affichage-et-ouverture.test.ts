@@ -102,10 +102,13 @@ describe('filtres — panneau dans la page', () => {
   });
 
   it('filtres actifs visibles « Filtré par … », retirables, avec « Tout effacer »', () => {
-    expect(PANNEAU).toMatch(/Filtré par/);
-    expect(PANNEAU).toMatch(/aria-label=\{`Retirer le filtre \$\{c\.label\}`\}/);
-    expect(PANNEAU).toMatch(/Tout effacer/);
-    expect(PANNEAU).toMatch(/aria-pressed=\{option\.active\}/);
+    // Lot 71 (71C) : pastilles et ligne « Filtré par … » mutualisées avec « Mon agenda ».
+    const PARTAGE = read('src/components/filters/FilterControls.tsx');
+    expect(PANNEAU).toMatch(/from '@\/components\/filters\/FilterControls'/);
+    expect(PARTAGE).toMatch(/Filtré par/);
+    expect(PARTAGE).toMatch(/aria-label=\{`Retirer le filtre \$\{c\.label\}`\}/);
+    expect(PARTAGE).toMatch(/Tout effacer/);
+    expect(PARTAGE).toMatch(/aria-pressed=\{option\.active\}/);
   });
 
   it('l’ancien tiroir « Tri & filtres » a disparu', () => {

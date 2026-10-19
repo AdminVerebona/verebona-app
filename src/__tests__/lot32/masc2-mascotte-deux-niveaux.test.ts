@@ -22,8 +22,9 @@ import { buildSecondaries, selectSubjects } from '@/services/home/mascot/selecto
 import { buildPresentation } from '@/services/home/mascot/presentation';
 import { EMPTY_ACCOUNT_STATE, suggestionsForRoute } from '@/services/verebona-assistant/registries/capability-registry';
 import {
-  composeSpeech, homeItems, homePose, homeSuggestions, secondaryActions, subjectBlocks, todoSummary,
+  composeSpeech, homeItems, homePose, homeSuggestions, secondaryActions, subjectBlocks,
 } from '@/services/home/mascot/bubble';
+import * as bulle from '@/services/home/mascot/bubble';
 import type { MascotPresentation } from '@/services/home/mascot/types';
 
 const lire = (f: string) => readFileSync(join(process.cwd(), f), 'utf8');
@@ -109,11 +110,12 @@ describe('contrat de navigation (MASC2)', () => {
 });
 
 describe('critères d’acceptation (MASC2)', () => {
-  it('MASC2-AC01 — deux niveaux seulement : une synthèse + des éléments d’action', () => {
+  it('MASC2-AC01 — éléments d’action présentés directement (lot 71F : plus de synthèse qui les compte)', () => {
     const p = present(raw([immat(), rattacher(), completer()]));
     const speech = composeSpeech({ presentation: p, empty: false });
-    // MASC3 : au plus deux DO_FIRST affichés, la phrase compte les affichés.
-    expect(speech.text).toBe('Deux sujets nécessitent votre attention aujourd’hui.');
+    // MASC3 : au plus deux DO_FIRST affichés. Lot 71F : aucune phrase qui les
+    // compte (« Deux sujets nécessitent… ») — et jamais « rien à signaler ».
+    expect(speech.text).toBe('');
     const items = homeItems(p, false);
     expect(items.map((i) => i.kind)).toEqual(['todo', 'todo']);
     // Aucune autre liste d'actions : pas de secondaire « recommandation » issu de la file.
@@ -123,11 +125,10 @@ describe('critères d’acceptation (MASC2)', () => {
   it('MASC2-AC02 — la synthèse ne répète pas les sujets (« Cela concerne… » disparu)', () => {
     const p = present(raw([immat(), rattacher()]));
     const t = composeSpeech({ presentation: p, empty: false }).text;
-    expect(t).toBe('Deux sujets nécessitent votre attention aujourd’hui.');
-    expect(t).not.toMatch(/immatriculation|rattacher|Cela concerne/);
-    expect(todoSummary(1)).toBe('Un sujet nécessite votre attention aujourd’hui.');
-    // MASC3 : 0 affiché → aucune phrase sur les « À traiter ».
-    expect(todoSummary(0)).toBe('');
+    expect(t).toBe('');
+    expect(t).not.toMatch(/immatriculation|rattacher|Cela concerne|attention|Rien de particulier/);
+    // Lot 71F : le générateur de l'introduction de comptage n'existe plus.
+    expect('todoSummary' in bulle).toBe(false);
   });
 
   it('MASC2-AC03 — les pastilles « Compléter “…” » / « Choisir “…” » (3e niveau) ont disparu', () => {

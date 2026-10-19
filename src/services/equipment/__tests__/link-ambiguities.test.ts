@@ -1,5 +1,8 @@
 /**
  * CDC 15 T3-07 (lot 13) — rattachement ambigu : aucune liaison automatique.
+ * Lot 71A : le parcours document → équipement passe par le service commun
+ * (`document-equipment-link.service`, testé à part) ; restent ici le journal
+ * et la carte des ambiguïtés T3.
  * Document → équipement : carte « À traiter » LINK-ELT
  * (`proposeDocumentEquipmentLink`), journal conservé, échec non bloquant.
  * Équipement → objets : journal seul.
@@ -31,6 +34,9 @@ vi.mock('@/services/to-process/document-equipment-link', () => ({
   proposeDocumentEquipmentLink: (p: unknown) => propose(p),
 }));
 
+const sync = vi.fn();
+vi.mock('../document-equipment-link.service', () => ({ syncDocumentEquipmentLinks: (p: unknown) => sync(p) }));
+
 const { linkDocumentToEquipments, reportLinkAmbiguities } = await import('../equipment-auto-link.service');
 
 const DOC = {
@@ -45,7 +51,7 @@ const AMBIGU = {
 let warn: ReturnType<typeof vi.spyOn>;
 
 beforeEach(() => {
-  results.length = 0; updates.length = 0; reconcileLinks.mockReset(); propose.mockReset();
+  results.length = 0; updates.length = 0; reconcileLinks.mockReset(); propose.mockReset(); sync.mockReset(); sync.mockResolvedValue({});
   propose.mockResolvedValue({ status: 'CREATED', reason: 'ok', rejected: [] });
   results.push([DOC], EQUIPS);
   warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
@@ -53,33 +59,17 @@ beforeEach(() => {
 });
 afterEach(() => vi.restoreAllMocks());
 
-describe('document → équipement, architecture T3 master', () => {
-  it('ambiguïté : aucune liaison, carte LINK-ELT avec les candidats au-dessus du seuil, journal conservé', async () => {
-    reconcileLinks.mockResolvedValue({ documents: [], agendaItems: [], suppliers: [], matches: [], ambiguities: [AMBIGU] });
+describe('document → équipement (lot 71A : service commun)', () => {
+  it('délègue au rapprochement structuré (T3 autorisé pour une vraie ambiguïté), sans écriture directe', async () => {
     await linkDocumentToEquipments(40, 1);
+    expect(sync).toHaveBeenCalledWith({ accountId: 1, fileId: 40, allowAi: true });
     expect(updates).toEqual([]);
-    expect(propose).toHaveBeenCalledWith({
-      accountId: 1, fileId: 40, assetId: 3,
-      candidates: [{ equipmentId: 9, score: 0.74, reason: 'type commun' }, { equipmentId: 12, score: 0.7, reason: 'type commun' }],
-    });
-    expect(warn).toHaveBeenCalledWith(expect.stringMatching(/document #40 .*matches LINK_MARGIN_INSUFFICIENT candidats \[9, 12\]/));
+    expect(reconcileLinks).not.toHaveBeenCalled();
   });
 
-  it('échec de la proposition : jamais bloquant', async () => {
-    reconcileLinks.mockResolvedValue({ documents: [], agendaItems: [], suppliers: [], matches: [], ambiguities: [AMBIGU] });
-    propose.mockRejectedValue(new Error('base indisponible'));
+  it('échec du service : jamais bloquant', async () => {
+    sync.mockRejectedValueOnce(new Error('base indisponible'));
     await expect(linkDocumentToEquipments(40, 1)).resolves.toBeUndefined();
-    expect(updates).toEqual([]);
-  });
-
-  it('candidat net : liaison appliquée comme avant, aucune carte', async () => {
-    reconcileLinks.mockResolvedValue({
-      documents: [], agendaItems: [], suppliers: [],
-      matches: [{ id: 12, score: 0.62, reason: 'r' }, { id: 9, score: 0.48, reason: 'r' }], ambiguities: [],
-    });
-    await linkDocumentToEquipments(40, 1);
-    expect(updates).toEqual([{ equipmentId: 12 }]);
-    expect(propose).not.toHaveBeenCalled();
   });
 });
 

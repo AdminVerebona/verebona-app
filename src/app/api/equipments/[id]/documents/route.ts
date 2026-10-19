@@ -1,13 +1,17 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/db';
 import { assetFiles, assets, documentTypes } from '@/db/schema';
-import { eq, and, isNull, or } from 'drizzle-orm';
+import { eq, and, isNull, or, sql } from 'drizzle-orm';
 import { SessionService } from '@/lib/session-service';
 import { apiError } from '@/lib/api-errors';
 import { displayDocumentTitle } from '@/lib/documents/document-title-rules';
 import { equipmentInAccount } from '@/services/security/account-ownership';
 
 // GET /api/equipments/[id]/documents — documents linked to an equipment
+// Lot 71A (point B) : colonne historique `equipment_id` OU lien N-N actif
+// (`document_asset_links`, cible équipement, rôle PRIMARY / SECONDARY —
+// rapprochement automatique, plusieurs équipements possibles). Chaque document
+// une seule fois (condition d'appartenance, pas de jointure).
 // Lot 49 (SEC-06) : équipement du compte vérifié AVANT la lecture ; documents
 // et bien joint bornés au compte.
 export async function GET(
@@ -52,7 +56,12 @@ export async function GET(
       .where(
         and(
           eq(assetFiles.accountId, accountId),
-          eq(assetFiles.equipmentId, equipmentId),
+          or(
+            eq(assetFiles.equipmentId, equipmentId),
+            sql`${assetFiles.id} IN (SELECT l.file_id FROM document_asset_links l
+                                     WHERE l.account_id = ${accountId} AND l.equipment_id = ${equipmentId}
+                                       AND l.status = 'ACTIVE' AND l.link_role IN ('PRIMARY', 'SECONDARY'))`,
+          ),
           or(eq(assetFiles.uploadStatus, 'COMPLETED'), isNull(assetFiles.uploadStatus)),
           isNull(assetFiles.deletedAt)
         )

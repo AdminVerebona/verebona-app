@@ -4,6 +4,9 @@ import { Viewport, Metadata } from 'next';
 import { ClientShell } from '@/components/ClientShell';
 import { THEME_PAGE_COLOR, themeBootScript } from '@/lib/theme';
 
+/** Version des icônes (favicon, apple-touch) : à incrémenter à chaque refonte. */
+const ICONS_VERSION = '71h';
+
 export const metadata: Metadata = {
   metadataBase: new URL('https://verebona.app'),
   title: {
@@ -12,23 +15,27 @@ export const metadata: Metadata = {
   },
   description: 'Centralisez vos biens, documents et échéances. Retrouvez, anticipez, valorisez.',
   manifest: '/api/manifest',
+  // Lot 71H — icônes à la charte Sérénité (lot 66) : tuile pétrole #17474D,
+  // cases ivoire #F8F6F1, cube cuivre #D66B53. `?v=` force le rechargement
+  // des icônes déjà en cache chez les navigateurs (noms de fichiers inchangés).
   icons: {
     icon: [
-      { url: '/favicon.ico', sizes: 'any' },
-      { url: '/favicon-16x16.png', sizes: '16x16', type: 'image/png' },
-      { url: '/favicon-32x32.png', sizes: '32x32', type: 'image/png' },
-      { url: '/favicon-48x48.png', sizes: '48x48', type: 'image/png' },
-      { url: '/favicon-64x64.png', sizes: '64x64', type: 'image/png' },
-      { url: '/favicon-96x96.png', sizes: '96x96', type: 'image/png' },
-      { url: '/favicon-128x128.png', sizes: '128x128', type: 'image/png' },
-      { url: '/favicon-256x256.png', sizes: '256x256', type: 'image/png' },
+      { url: `/favicon.ico?v=${ICONS_VERSION}`, sizes: 'any' },
+      { url: `/favicon.svg?v=${ICONS_VERSION}`, type: 'image/svg+xml' },
+      { url: `/favicon-16x16.png?v=${ICONS_VERSION}`, sizes: '16x16', type: 'image/png' },
+      { url: `/favicon-32x32.png?v=${ICONS_VERSION}`, sizes: '32x32', type: 'image/png' },
+      { url: `/favicon-48x48.png?v=${ICONS_VERSION}`, sizes: '48x48', type: 'image/png' },
+      { url: `/favicon-64x64.png?v=${ICONS_VERSION}`, sizes: '64x64', type: 'image/png' },
+      { url: `/favicon-96x96.png?v=${ICONS_VERSION}`, sizes: '96x96', type: 'image/png' },
+      { url: `/favicon-128x128.png?v=${ICONS_VERSION}`, sizes: '128x128', type: 'image/png' },
+      { url: `/favicon-256x256.png?v=${ICONS_VERSION}`, sizes: '256x256', type: 'image/png' },
     ],
     apple: [
-      { url: '/apple-touch-icon-v2.png', sizes: '180x180', type: 'image/png' },
+      { url: `/apple-touch-icon-v2.png?v=${ICONS_VERSION}`, sizes: '180x180', type: 'image/png' },
     ],
     other: [
-      { rel: 'android-chrome', url: '/android-chrome-192x192.png', sizes: '192x192' },
-      { rel: 'android-chrome', url: '/android-chrome-512x512.png', sizes: '512x512' },
+      { rel: 'android-chrome', url: `/android-chrome-192x192.png?v=${ICONS_VERSION}`, sizes: '192x192' },
+      { rel: 'android-chrome', url: `/android-chrome-512x512.png?v=${ICONS_VERSION}`, sizes: '512x512' },
     ],
   },
   appleWebApp: {

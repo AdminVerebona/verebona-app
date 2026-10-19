@@ -65,6 +65,39 @@ jobs:
       - name: Anti-réintroduction des moteurs historiques (critère n°23)
         run: node scripts/check-legacy-ai.mjs --strict
 
+  # Lot 71E (ticket « T4 v2/v3 fiabilisation », exception PO) : scénarios
+  # E2E T4 critiques sur PostgreSQL 16 réel (modèle simulé, aucun appel
+  # réseau). Le harnais crée puis supprime sa propre base (verebona_e2e_*).
+  e2e-t4:
+    name: E2E T4 critiques (PostgreSQL 16)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      E2E_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.13.0"
+          cache: npm
+      - name: Installation
+        run: npm ci
+      - name: Scénarios E2E T4 critiques (PostgreSQL 16)
+        run: npm run test:e2e:t4
+
   conformity-report:
     name: Rapport de conformité
     if: github.ref == 'refs/heads/main'

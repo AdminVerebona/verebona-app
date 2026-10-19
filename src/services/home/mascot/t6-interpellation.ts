@@ -69,7 +69,22 @@ export type T6DecisionCode =
   | 'AI_ACT_NOW'
   | 'AI_ANTICIPATE'
   /** Lot 68 : rappel informatif pertinent (SHOW_NOW + INFORMATION), sans action. */
-  | 'AI_INFORM';
+  | 'AI_INFORM'
+  /**
+   * Lot 71G (T6-06) : préférences de l'utilisateur ILLISIBLES (panne) — un
+   * refus ou un report ne pouvant être vérifié, le sujet n'est pas
+   * réintroduit (indisponibilité technique, jamais une conclusion métier).
+   */
+  | 'PREFERENCES_UNAVAILABLE';
+
+/**
+ * Lot 71G — motif d'une (ré)évaluation demandée, tracé au reporting :
+ * première évaluation, contexte métier ou documentaire changé, évaluation
+ * ancienne ou date de réévaluation atteinte, contrat changé, report arrivé à
+ * sa date, renouvellement ciblé du lot 68.
+ */
+export type T6ReevaluationReason =
+  | 'FIRST_ASSESSMENT' | 'CONTEXT_CHANGED' | 'AGED' | 'REVIEW_DATE' | 'CONTRACT_CHANGED' | 'SNOOZE_DUE' | 'LEGACY_FINGERPRINT' | 'REMINDER_RENEWAL';
 
 /**
  * Évaluation d'UN candidat, validée. Lot 61 : issue du contrat
@@ -120,6 +135,10 @@ export interface T6StoredAssessment extends T6Assessment {
    * 2 : version porteuse de la règle (`INFORMATIVE_REMINDER`).
    */
   contractRevision?: number | null;
+  /** Lot 71G (0507) : preuves citées et leurs versions (références seules). */
+  evidenceSnapshot?: { version?: number; fingerprint?: string; refs?: T6EvidenceVersion[] } | null;
+  /** Lot 71G (0507) : motif de la (ré)évaluation qui a produit cette décision. */
+  reevaluationReason?: string | null;
 }
 
 export type T6SubjectState = 'ACTIVE' | 'RESOLVED' | 'OBSOLETE';
@@ -138,8 +157,20 @@ export interface T6Candidate {
   /** Échéance (AAAA-MM-JJ) ou null. */
   dueDate: string | null;
   state: T6SubjectState;
-  /** Empreinte des champs significatifs (titre, date, nature, qualification). */
+  /**
+   * Empreinte des données SIGNIFICATIVES : titre, date, nature, qualification
+   * (lot 60) ; lot 71G (T6-01) : description normalisée, fin, documents liés
+   * et faits documentaires pertinents (T1/T3) — préfixe `v2:`.
+   */
   fingerprint: string;
+  /** Lot 71G : empreinte historique (lot 60, sans préfixe) — relecture des évaluations et reports antérieurs. */
+  legacyFingerprint?: string;
+  /** Lot 71G : description, document ou fait documentaire disponibles (au-delà du titre et de la date). */
+  hasEvidence?: boolean;
+  /** Lot 71G : faits documentaires pertinents (T1/T3) — justifient l'évaluation d'une échéance lointaine. */
+  hasDocumentaryEvidence?: boolean;
+  /** Lot 71G : les données documentaires n'ont pas pu être lues — empreinte inconnue, aucune évaluation. */
+  fingerprintUnavailable?: boolean;
   /** Lot 61 : échéance « à préciser » (T4) — seule action établie sans évaluation IA. */
   requiresQualification?: boolean;
 }
@@ -158,6 +189,11 @@ export interface T6ReminderPreference {
   agendaItemId: number | null;
   seriesKey: string | null;
   updatedAt?: string | null;
+  /**
+   * Lot 71G (T6-07) : date de l'occurrence au moment du choix (portée
+   * OCCURRENCE). Absente : préférence antérieure, appliquée (prudence).
+   */
+  occurrenceDate?: string | null;
 }
 
 export interface T6DecisionInput {
@@ -179,6 +215,8 @@ export interface T6DecisionInput {
    * retirées de l'accueil entre-temps.
    */
   reminderCapable?: boolean;
+  /** Lot 71G (T6-06) : les préférences de l'utilisateur n'ont pas pu être lues. */
+  preferencesUnavailable?: boolean;
 }
 
 export interface T6DecisionResult {
@@ -213,6 +251,8 @@ export interface T6DecisionResult {
    * (seuil, préférence, anti-répétition…), tracé au reporting.
    */
   aiDecision: T6Decision | null;
+  /** Lot 71G : motif de la réévaluation demandée (`needsAssessment`), sinon null. */
+  reevaluationReason: T6ReevaluationReason | null;
 }
 
 // ── Réglages (constantes ; le seuil est réglable dans le BO) ─────────────────
@@ -230,7 +270,20 @@ export const T6_REPEAT_WINDOW_DAYS = 10;
 export const T6_REPEAT_MAX_DAYS = 5;
 export const T6_REPEAT_COOLDOWN_DAYS = 7;
 
-/** Horizon des candidats soumis à l'IA : trois fois le seuil, 180 jours au moins. */
+/**
+ * Lot 71G (T6-07) : écart de date à partir duquel une occurrence dont T4 a
+ * RÉUTILISÉ l'identifiant est un NOUVEAU cycle (renouvellement) et non une
+ * replanification : le refus « cette échéance » du cycle précédent ne s'y
+ * applique plus. En deçà, la préférence suit l'événement replanifié.
+ */
+export const T6_NEW_CYCLE_MIN_DAYS = 183;
+
+/**
+ * Horizon des candidats soumis à l'IA : trois fois le seuil, 180 jours au
+ * moins. Lot 71G (T6-03) : au-delà, seule une échéance porteuse d'une preuve
+ * documentaire (document lié, fait extrait) est évaluée — la date d'action
+ * peut précéder de loin l'échéance (préavis, délai contractuel).
+ */
 export function assessmentHorizonDays(thresholdDays: number): number {
   return Math.max(T6_ASSESSMENT_MIN_HORIZON_DAYS, thresholdDays * 3);
 }
@@ -238,7 +291,32 @@ export function assessmentHorizonDays(thresholdDays: number): number {
 // ── Dates ───────────────────────────────────────────────────────────────────
 
 const DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
-export const isDay = (v: unknown): v is string => typeof v === 'string' && DAY_RE.test(v) && !Number.isNaN(Date.parse(`${v}T00:00:00Z`));
+/** Date civile RÉELLE (AAAA-MM-JJ) — lot 71G (T6-08) : « 2027-02-30 » est refusée. */
+export const isDay = (v: unknown): v is string => {
+  if (typeof v !== 'string' || !DAY_RE.test(v)) return false;
+  const t = Date.parse(`${v}T00:00:00Z`);
+  return !Number.isNaN(t) && new Date(t).toISOString().slice(0, 10) === v;
+};
+
+/** Lot 71G (T6-08) : report au plus loin (jours) — même borne côté interface et côté API. */
+export const T6_MAX_SNOOZE_DAYS = 730;
+
+/** Jour civil courant en Europe/Paris (AAAA-MM-JJ) — pur, sans base. */
+export function parisDayOf(now: Date = new Date()): string {
+  return new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Paris', year: 'numeric', month: '2-digit', day: '2-digit' }).format(now);
+}
+
+/**
+ * Lot 71G (T6-08) — contrôle d'une date de rappel (pure, PARTAGÉE par
+ * l'interface et l'API) : date civile réelle, de demain à deux ans, « aujourd'hui »
+ * étant celui d'Europe/Paris. Rend le message d'erreur, ou null.
+ */
+export function snoozeDateError(remindAt: unknown, today: string): string | null {
+  if (!isDay(remindAt)) return 'Cette date n’existe pas. Choisissez une date valide.';
+  if (remindAt <= today) return 'Choisissez une date à partir de demain.';
+  if (remindAt > addDays(today, T6_MAX_SNOOZE_DAYS)) return 'Choisissez une date dans les deux prochaines années.';
+  return null;
+}
 
 export function daysBetween(a: string, b: string): number {
   return Math.round((Date.parse(`${b.slice(0, 10)}T00:00:00Z`) - Date.parse(`${a.slice(0, 10)}T00:00:00Z`)) / 86_400_000);
@@ -267,9 +345,111 @@ export function agendaFingerprintParts(p: { title: string; date: string | null; 
   return JSON.stringify([p.title.trim().replace(/\s+/g, ' '), p.date ?? null, p.forecast ? 1 : 0, p.requiresQualification ? 1 : 0]);
 }
 
+/**
+ * Lot 71G (T6-01, T6-04) — faits documentaires PERTINENTS pour décider
+ * d'interpeller : préavis, résiliation, renouvellement, échéance, obligation,
+ * entretien, contrôle, intervention, garantie, délai, périodicité, durée.
+ * Motif appliqué à la clé (canonique et T1) et au libellé du fait — en SQL
+ * (`~*`) comme en TypeScript. Les autres faits (puissance, adresse…) ne
+ * changent ni l'empreinte ni la décision.
+ */
+export const T6_RELEVANT_FACT_PATTERN = 'pr[eé]avis|notice|r[eé]sili|terminat|renouvel|renewal|reconduc|[eé]ch[eé]an|expir|deadline|obligat|entretien|maintenance|r[eé]vision|contr[oô]le|inspection|intervention|visite|garantie|warranty|d[eé]lai|p[eé]riodicit|frequen|fr[eé]quence|dur[eé]e|duration|cong[eé]|end_?date|enddate|date_?fin|fin_?contrat';
+const FAIT_PERTINENT = new RegExp(T6_RELEVANT_FACT_PATTERN, 'i');
+/** Le fait est-il pertinent pour T6 (pure) ? */
+export const isT6RelevantFact = (f: { key: string; canonicalKey?: string | null; label?: string | null }) =>
+  FAIT_PERTINENT.test(`${f.canonicalKey ?? ''} ${f.key} ${f.label ?? ''}`);
+
+/** Lot 71G : préfixe des empreintes enrichies (données métier et documentaires). */
+export const T6_FINGERPRINT_V2 = 'v2:';
+
+/**
+ * Texte normalisé pour l'empreinte (pure) : casse, accents, ponctuation et
+ * espaces sont COSMÉTIQUES — ils ne provoquent aucune réévaluation.
+ */
+export function normalizeForFingerprint(v: string | null | undefined): string {
+  return (v ?? '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+}
+
+/** Fait documentaire retenu dans l'empreinte (contenu métier, jamais l'extrait ni la version). */
+export interface T6FingerprintFact { fileId: number; key: string; value: string | null; confidence: string | null }
+
+/**
+ * Lot 71G (T6-01) — parties de l'empreinte ENRICHIE (pure) : celles du lot
+ * 60, plus la description et la date de fin normalisées, les documents liés
+ * (identifiant, intitulé normalisé) et les faits documentaires pertinents
+ * (document, clé, valeur normalisée, confiance). Une réextraction T1 qui
+ * produit les mêmes faits (nouvelle version, extrait reformulé) ne change
+ * rien ; une clause nouvelle, un document ajouté ou supprimé, si.
+ */
+export function t6FingerprintParts(p: {
+  title: string; date: string | null; forecast: boolean; requiresQualification: boolean;
+  description?: string | null; endDate?: string | null;
+  documents?: ReadonlyArray<{ fileId: number; title: string | null }>;
+  facts?: readonly T6FingerprintFact[];
+}): string {
+  const docs = [...(p.documents ?? [])].map((d) => [d.fileId, normalizeForFingerprint(d.title)] as const).sort((a, b) => a[0] - b[0]);
+  const faits = [...new Set((p.facts ?? []).map((f) => JSON.stringify([f.fileId, f.key, normalizeForFingerprint(f.value), f.confidence ?? null])))].sort();
+  return JSON.stringify([agendaFingerprintParts(p), normalizeForFingerprint(p.description), p.endDate ?? null, docs, faits]);
+}
+
+/**
+ * Une empreinte conservée (évaluation, report) correspond-elle au candidat ?
+ * Empreinte enrichie : comparaison directe ; empreinte historique (lot 60,
+ * sans préfixe) : comparée à l'empreinte historique du candidat (pure).
+ */
+export function sameT6Context(stored: string | null | undefined, c: Pick<T6Candidate, 'fingerprint' | 'legacyFingerprint'>): boolean {
+  if (stored == null) return false;
+  if (stored.startsWith(T6_FINGERPRINT_V2)) return stored === c.fingerprint;
+  return stored === (c.legacyFingerprint ?? c.fingerprint);
+}
+
+/**
+ * Lot 71G (T6-07) — une préférence d'OCCURRENCE s'applique-t-elle encore au
+ * cycle présenté (pure) ? Même événement replanifié : oui ; identifiant
+ * réutilisé pour un nouveau cycle (écart ≥ `T6_NEW_CYCLE_MIN_DAYS`) : non.
+ * Une préférence de série, ou sans date d'occurrence connue, s'applique.
+ */
+export function preferenceAppliesToCycle(p: Pick<T6ReminderPreference, 'scope' | 'occurrenceDate'>, dueDate: string | null): boolean {
+  if (p.scope !== 'OCCURRENCE' || !p.occurrenceDate || !dueDate) return true;
+  return Math.abs(daysBetween(p.occurrenceDate, dueDate)) < T6_NEW_CYCLE_MIN_DAYS;
+}
+
 // ── Fraîcheur d'une évaluation ──────────────────────────────────────────────
 
 export type T6AssessmentStatus = 'FRESH' | 'AGED' | 'CONTEXT_CHANGED' | 'CONTRACT_CHANGED' | 'NONE';
+
+/**
+ * Lot 71G : motif détaillé de la fraîcheur (pure) — même règle que
+ * `assessmentStatus`, avec la raison d'une réévaluation (reporting).
+ */
+export function assessmentFreshness(
+  a: T6StoredAssessment | null, c: T6Candidate, today: string, thresholdDays: number,
+  opts: { reminderCapable?: boolean } = {},
+): { status: T6AssessmentStatus; reason: T6ReevaluationReason | null } {
+  if (!a) return { status: 'NONE', reason: 'FIRST_ASSESSMENT' };
+  // Lot 61 : une évaluation d'un autre contrat (R13 du lot 60) n'est jamais
+  // réutilisée — le candidat est réévalué par EVALUATE.
+  if (a.contractVersion !== T6_ASSESSMENT_CONTRACT) return { status: 'CONTRACT_CHANGED', reason: 'CONTRACT_CHANGED' };
+  // Lot 71G : données documentaires illisibles — l'évaluation reste utilisable
+  // (aucune réévaluation sur un contexte incomplet).
+  if (!c.fingerprintUnavailable && !sameT6Context(a.fingerprint, c)) return { status: 'CONTEXT_CHANGED', reason: 'CONTEXT_CHANGED' };
+  if (c.dueDate) {
+    const avant = daysBetween(a.assessedOn, c.dueDate);
+    const maintenant = daysBetween(today, c.dueDate);
+    if (avant > thresholdDays && maintenant <= thresholdDays) return { status: 'CONTEXT_CHANGED', reason: 'CONTEXT_CHANGED' };
+    if (avant > 0 && maintenant <= 0) return { status: 'CONTEXT_CHANGED', reason: 'CONTEXT_CHANGED' };
+  }
+  if (daysBetween(a.assessedOn, today) > T6_ASSESSMENT_MAX_AGE_DAYS) return { status: 'AGED', reason: 'AGED' };
+  if (a.reevaluateOn && today >= a.reevaluateOn) return { status: 'AGED', reason: 'REVIEW_DATE' };
+  // Lot 71G (T6-05) : démarche jugée prématurée, sa date d'action est arrivée.
+  if (a.interpellation === 'LATER' && a.actionDate && today >= a.actionDate && a.assessedOn < a.actionDate) return { status: 'AGED', reason: 'REVIEW_DATE' };
+  // Lot 71G : évaluation antérieure à l'empreinte enrichie, sur une échéance
+  // documentée — utilisable, renouvelée en arrière-plan (une fois).
+  if (!c.fingerprintUnavailable && !a.fingerprint.startsWith(T6_FINGERPRINT_V2) && c.hasEvidence) return { status: 'AGED', reason: 'LEGACY_FINGERPRINT' };
+  // Lot 68 : renouvellement ciblé (utilisable, réévaluée en arrière-plan).
+  if (opts.reminderCapable && assessmentNeedsReminderRenewal(a)) return { status: 'AGED', reason: 'REMINDER_RENEWAL' };
+  return { status: 'FRESH', reason: null };
+}
 
 /** Contrat des évaluations utilisables (lot 61) — même valeur que `T6_EVALUATION_OUTPUT_SCHEMA_VERSION`. */
 export const T6_ASSESSMENT_CONTRACT = 't6-evaluation-v1';
@@ -300,22 +480,7 @@ export function assessmentStatus(
   a: T6StoredAssessment | null, c: T6Candidate, today: string, thresholdDays: number,
   opts: { reminderCapable?: boolean } = {},
 ): T6AssessmentStatus {
-  if (!a) return 'NONE';
-  // Lot 61 : une évaluation d'un autre contrat (R13 du lot 60) n'est jamais
-  // réutilisée — le candidat est réévalué par EVALUATE.
-  if (a.contractVersion !== T6_ASSESSMENT_CONTRACT) return 'CONTRACT_CHANGED';
-  if (a.fingerprint !== c.fingerprint) return 'CONTEXT_CHANGED';
-  if (c.dueDate) {
-    const avant = daysBetween(a.assessedOn, c.dueDate);
-    const maintenant = daysBetween(today, c.dueDate);
-    if (avant > thresholdDays && maintenant <= thresholdDays) return 'CONTEXT_CHANGED';
-    if (avant > 0 && maintenant <= 0) return 'CONTEXT_CHANGED';
-  }
-  if (daysBetween(a.assessedOn, today) > T6_ASSESSMENT_MAX_AGE_DAYS) return 'AGED';
-  if (a.reevaluateOn && today >= a.reevaluateOn) return 'AGED';
-  // Lot 68 : renouvellement ciblé (utilisable, réévaluée en arrière-plan).
-  if (opts.reminderCapable && assessmentNeedsReminderRenewal(a)) return 'AGED';
-  return 'FRESH';
+  return assessmentFreshness(a, c, today, thresholdDays, opts).status;
 }
 
 // ── Décision ────────────────────────────────────────────────────────────────
@@ -326,6 +491,7 @@ function result(c: T6Candidate, base: Partial<T6DecisionResult> & Pick<T6Decisio
   return {
     nextReevaluationAt: null, priority: PRIORITY_DEFAULT, deferredBy: null, thresholdApplied: false, thresholdException: false,
     userPreference: null, needsAssessment: false, mode: null, action: null, actionDate: null, assessmentFresh: false, aiDecision: null,
+    reevaluationReason: null,
     ...base,
     subjectKey: c.subjectKey, occurrenceKey: c.occurrenceKey, daysUntilDue,
   };
@@ -363,10 +529,24 @@ export function decideT6Interpellation(input: T6DecisionInput): T6DecisionResult
     });
   }
 
-  const status = assessmentStatus(input.assessment, c, today, thresholdDays, { reminderCapable: input.reminderCapable });
+  const fraicheur = assessmentFreshness(input.assessment, c, today, thresholdDays, { reminderCapable: input.reminderCapable });
+  const status = fraicheur.status;
   const a = status === 'FRESH' || status === 'AGED' ? input.assessment : null;
   const fresh = status === 'FRESH';
   const veutEvaluation = aiCapable && status !== 'FRESH';
+  const motifEval = veutEvaluation ? fraicheur.reason : null;
+
+  // 2 bis. Lot 71G (T6-06) : préférences illisibles — un refus ou un report
+  //    ne peut être vérifié : rien n'est réintroduit (indisponibilité
+  //    technique, distincte d'une conclusion SUPPRESS). L'évaluation du
+  //    compte reste possible (elle ne dépend d'aucune préférence).
+  if (input.preferencesUnavailable) {
+    return r({
+      decision: 'DEFER', code: 'PREFERENCES_UNAVAILABLE', deferredBy: 'SYSTEM', nextReevaluationAt: today,
+      explanation: 'Préférences de rappel illisibles (panne) : le sujet n’est pas présenté tant qu’un refus ou un report ne peut être vérifié.',
+      needsAssessment: veutEvaluation, reevaluationReason: motifEval, aiDecision: a?.decision ?? null,
+    });
+  }
 
   // 3. Report de l'utilisateur.
   const report = input.preferences
@@ -376,7 +556,7 @@ export function decideT6Interpellation(input: T6DecisionInput): T6DecisionResult
     // Élément nouveau ET significatif (empreinte changée depuis le report),
     // jugé prioritaire par une évaluation IA du NOUVEAU contexte : rappel
     // anticipé, explicable et tracé.
-    const change = report.contextFingerprint != null && report.contextFingerprint !== c.fingerprint;
+    const change = report.contextFingerprint != null && !c.fingerprintUnavailable && !sameT6Context(report.contextFingerprint, c);
     if (change && a && fresh && a.interpellation === 'ACT_NOW' && a.priority === 'HIGH') {
       return r({
         decision: 'SHOW_NOW', code: 'SNOOZE_OVERRIDDEN_SIGNIFICANT_CHANGE',
@@ -389,6 +569,7 @@ export function decideT6Interpellation(input: T6DecisionInput): T6DecisionResult
       decision: 'DEFER', code: 'USER_SNOOZED', deferredBy: 'USER', nextReevaluationAt: report.remindAt,
       explanation: 'Rappel reporté par l’utilisateur : masqué jusqu’à la date choisie, puis réévalué avant tout affichage.',
       userPreference: prefOut(report), needsAssessment: change && veutEvaluation, aiDecision: a?.decision ?? null,
+      reevaluationReason: change && veutEvaluation ? motifEval : null,
     });
   }
   // Report échu : le sujet est RÉÉVALUÉ avant d'être réaffiché — une
@@ -397,7 +578,7 @@ export function decideT6Interpellation(input: T6DecisionInput): T6DecisionResult
     return r({
       decision: 'DEFER', code: 'AWAITING_REEVALUATION_AFTER_SNOOZE', deferredBy: 'SYSTEM', nextReevaluationAt: today,
       explanation: 'La date de rappel est atteinte : le sujet est réévalué avant d’être éventuellement réaffiché.',
-      userPreference: prefOut(report), needsAssessment: true,
+      userPreference: prefOut(report), needsAssessment: true, reevaluationReason: 'SNOOZE_DUE',
     });
   }
   const userPreference = report ? prefOut(report) : null;
@@ -433,7 +614,7 @@ export function decideT6Interpellation(input: T6DecisionInput): T6DecisionResult
   if (!a) {
     return r({
       decision: 'DEFER', code: 'AI_ASSESSMENT_PENDING', deferredBy: 'SYSTEM', nextReevaluationAt: today, userPreference, needsAssessment: true,
-      thresholdApplied: auDela,
+      thresholdApplied: auDela, reevaluationReason: fraicheur.reason ?? 'FIRST_ASSESSMENT',
       explanation: auDela
         ? `Échéance au-delà du seuil de ${thresholdDays} jours : aucune interpellation sans évaluation motivée.`
         : 'Évaluation IA en attente : aucun affichage automatique avant qu’elle ait jugé l’action nécessaire.',
@@ -441,7 +622,7 @@ export function decideT6Interpellation(input: T6DecisionInput): T6DecisionResult
   }
 
   const base = {
-    userPreference, needsAssessment: veutEvaluation, assessmentFresh: fresh, actionDate: a.actionDate, action: a.action,
+    userPreference, needsAssessment: veutEvaluation, reevaluationReason: motifEval, assessmentFresh: fresh, actionDate: a.actionDate, action: a.action,
     aiDecision: a.decision ?? (a.interpellation === 'NONE' ? 'SUPPRESS' as const : a.interpellation === 'LATER' ? 'DEFER' as const : 'SHOW_NOW' as const),
   };
 
@@ -552,7 +733,30 @@ export function suggestReminderDate(p: { today: string; dueDate: string | null; 
 
 // ── Contexte transmis à EVALUATE et conservation des décisions (lot 61) ─────
 
-export interface T6CandidateRef { subjectKey: string; agendaItemId: number; fingerprint: string; daysUntilDue: number | null }
+export interface T6CandidateRef {
+  subjectKey: string; agendaItemId: number; fingerprint: string; daysUntilDue: number | null;
+  /** Lot 71G : motif de la réévaluation (reporting, `reevaluation_reason`). */
+  reevaluationReason?: T6ReevaluationReason | null;
+  /** Lot 71G : référence → version de la preuve transmise (document, extraction, fait). */
+  evidenceVersions?: ReadonlyMap<string, T6EvidenceVersion>;
+}
+
+/** Lot 71G : version d'une preuve transmise à EVALUATE (aucun texte : références seules). */
+export interface T6EvidenceVersion {
+  ref: string; kind: string; fileId?: number; extractionId?: number; factId?: number; factKey?: string; provenance?: string;
+}
+
+/**
+ * Lot 71G — instantané des preuves CITÉES par une décision (pure) :
+ * référence, nature et version (document, extraction, fait) — conservé avec
+ * l'évaluation (`evidence_snapshot`) et l'empreinte du contexte.
+ */
+export function evidenceSnapshotOf(cited: readonly string[], versions: ReadonlyMap<string, T6EvidenceVersion> | undefined, fingerprint: string): {
+  version: 1; fingerprint: string; refs: T6EvidenceVersion[];
+} {
+  const refs = cited.map((r) => versions?.get(r) ?? { ref: r, kind: 'UNKNOWN' });
+  return { version: 1, fingerprint, refs };
+}
 
 /**
  * Candidats à évaluer : contrat d'entrée `t6-evaluation-input-v1`
@@ -587,7 +791,8 @@ export function assessmentFromDecision(d: import('./t6-contract').T6ValidatedDec
     : d.decision === 'DEFER' ? 'LATER'
       : informe ? 'INFORM'
         : d.category === 'TO_ANTICIPATE' ? 'ANTICIPATE' : 'ACT_NOW';
-  const concrete = d.evidenceRefs.some((r) => /\.(description|doc\d+)$/.test(r));
+  // Lot 71G (T6-04) : un fait documentaire extrait (`Cn.factN`) est une preuve concrète.
+  const concrete = d.evidenceRefs.some((r) => /\.(description|doc\d+|fact\d+)$/.test(r));
   return {
     decision: d.decision, category: d.category, reasonCode: d.reasonCode, evidenceRefs: d.evidenceRefs, uncertainties: d.uncertainties,
     interpellation,
