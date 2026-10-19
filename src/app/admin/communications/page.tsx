@@ -11,8 +11,13 @@
  * Actions : activation par canal avec confirmation (COM-011, COM-012),
  * prévisualisation par canal avec les données du compte de l'administrateur
  * (COM-006 à COM-009), e-mail de test vers l'administrateur connecté
- * uniquement (COM-010). Contenu non éditable (COM-013).
+ * uniquement (COM-010).
+ *
+ * Lot 70A (décision PO du 19/10, remplace COM-013) : l'objet et le contenu des
+ * e-mails transactionnels se modifient dans l'éditeur dédié
+ * (`/admin/communications/emails/[code]`, bouton « Modifier le texte »).
  */
+import Link from 'next/link';
 import { useCallback, useEffect, useState } from 'react';
 import { Switch } from '@/components/ui/switch';
 import { Button } from '@/components/ui/button';
@@ -33,7 +38,7 @@ import { relevantPreviewContexts } from '@/lib/admin/communication-contexts';
 import { toast } from 'sonner';
 import { NotificationsOps } from './_components/NotificationsOps';
 import { TransactionalEmailsOps } from './_components/TransactionalEmailsOps';
-import { Bell, Eye, Loader2, Lock, Mail, MessageSquare, RefreshCw, Send, Smartphone } from 'lucide-react';
+import { Bell, Eye, Loader2, Lock, Mail, MessageSquare, PenLine, RefreshCw, Send, Smartphone } from 'lucide-react';
 
 type Channel = 'email' | 'push' | 'in_app';
 
@@ -242,7 +247,7 @@ export default function AdminCommunicationsPage() {
             Communications
           </h1>
           <p className="text-sm text-muted-foreground mt-0.5">
-            Modèles par événement et par canal. Le contenu est versionné hors back-office ; l’historique individuel se consulte depuis la fiche Utilisateur.
+            Modèles par événement et par canal. L’objet et le contenu des e-mails transactionnels se modifient ici (« Modifier le texte », avec historique des versions) ; l’historique individuel se consulte depuis la fiche Utilisateur.
           </p>
         </div>
         <Button variant="outline" size="sm" onClick={() => load()} disabled={loading}>
@@ -263,11 +268,19 @@ export default function AdminCommunicationsPage() {
         groups.map((group) => (
           <section key={group.key} className="space-y-3">
             <h2 className="vb-app-section">{group.label}</h2>
-            <div className="grid gap-3">
+            <div className="grid gap-3 grid-cols-1">
               {group.events.map((event) => (
-                <div key={event.code} className="rounded-xl border bg-card">
-                  <div className="flex items-center justify-between gap-3 px-4 py-3 border-b">
-                    <p className="font-medium text-sm">{event.label}</p>
+                <div key={event.code} className="rounded-xl border bg-card min-w-0 overflow-hidden">
+                  <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-3 border-b">
+                    <p className="font-medium text-sm min-w-0 break-words">{event.label}</p>
+                    <div className="flex flex-wrap gap-2">
+                    {event.kind === 'transactional' && event.emailTemplateCode && (
+                      <Button size="sm" variant="outline" asChild>
+                        <Link href={`/admin/communications/emails/${encodeURIComponent(event.emailTemplateCode)}`} data-testid={`edit-template-${event.emailTemplateCode}`}>
+                          <PenLine className="h-3.5 w-3.5 mr-1.5" /> Modifier le texte
+                        </Link>
+                      </Button>
+                    )}
                     {event.channels.some((c) => c.channel === 'email') && (
                       <Button
                         size="sm"
@@ -280,6 +293,7 @@ export default function AdminCommunicationsPage() {
                         E-mail de test
                       </Button>
                     )}
+                    </div>
                   </div>
                   <div className="overflow-x-auto">
                     <table className="w-full text-sm">

@@ -10,7 +10,7 @@
 import { dot, fmt } from '../../html/components';
 import type { CilData, CilBlockStatus } from '../../types';
 import type { SourceDocument } from '../source';
-import { cilEnergyEquipments } from '@/lib/cil/energy-equipment';
+import { cilEnergyEquipments, equipmentEnergyUsageLabel, normalizeEquipmentEnergyUsage } from '@/lib/cil/energy-equipment';
 import {
   type MapInput, exportInfo, kc, kcNum, str, humanize, categoryName, categoryLabel, titleLines,
   toDocItem, sortedDocuments, docRef, equipmentSpecs, energyConsumptionLabel,
@@ -129,7 +129,9 @@ export function mapCil(m: MapInput): CilData {
         source: mt.documentId ? 'Document importé' : 'Saisie',
       })),
       equipments: b6List.map((e) => ({
-        usage: humanize(e.category) ?? humanize(e.type) ?? 'Équipement',
+        // Lot 70B : usage DÉCLARÉ dans le tiroir en priorité (même règle que B6).
+        usage: (normalizeEquipmentEnergyUsage(e.energyUsage) ? equipmentEnergyUsageLabel(e.energyUsage) : null)
+          ?? humanize(e.category) ?? humanize(e.type) ?? 'Équipement',
         equipment: e.name,
         // D-N : caractéristiques de la fiche de l'équipement, dans la cellule existante.
         specs: equipmentSpecs(s, e),

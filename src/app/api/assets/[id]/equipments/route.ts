@@ -9,6 +9,7 @@ import { canUsePremiumFeature } from '@/services/entitlements.service';
 import { runEquipmentAutoLink } from '@/services/equipment/equipment-auto-link.service';
 import { isValidEquipmentStatus, assetSupportsStructuralFeatures } from '@/types/domain';
 import { refuserSiModificationBiensSuspendue } from '@/lib/asset-quota-guard';
+import { parseEquipmentCategory, parseEquipmentEnergyUsage } from '@/lib/cil/energy-equipment';
 
 export async function GET(
   request: NextRequest,
@@ -44,8 +45,8 @@ export async function GET(
       return apiError(404, 'NOT_FOUND', 'Asset not found');
     }
 
-    const results = await db.$client<{ id: number; name: string; type: string | null; category: string | null; status: string; substructureId: number | null; purchasePriceCents: number | null; estimatedValueCents: number | null; archivedAt: string | null }[]>`
-      SELECT id, name, type, category, status,
+    const results = await db.$client<{ id: number; name: string; type: string | null; category: string | null; energyUsage: string | null; status: string; substructureId: number | null; purchasePriceCents: number | null; estimatedValueCents: number | null; archivedAt: string | null }[]>`
+      SELECT id, name, type, category, energy_usage AS "energyUsage", status,
              substructure_id AS "substructureId",
              purchase_price_cents AS "purchasePriceCents",
              estimated_value_cents AS "estimatedValueCents",
@@ -129,6 +130,13 @@ export async function POST(
       return apiError(400, 'INVALID_INPUT', 'Invalid equipment status');
     }
 
+    // Lot 70B : usage énergétique déclaré (choix fermé, null = non renseigné)
+    // et `category`, lue depuis toujours mais jamais écrite.
+    const energyUsage = parseEquipmentEnergyUsage(body.energyUsage);
+    if (energyUsage === 'INVALID') return apiError(400, 'INVALID_INPUT', 'Invalid energy usage');
+    const categoryValue = parseEquipmentCategory(category);
+    if (categoryValue === 'INVALID') return apiError(400, 'INVALID_INPUT', 'Invalid category');
+
     // If substructureId is provided, verify it belongs to the same asset
     if (substructureId) {
       const subRows = await db
@@ -145,8 +153,8 @@ export async function POST(
 
     // Use raw SQL to insert without specifying auto-generated columns
     await db.execute(sql`
-      INSERT INTO equipments (asset_id, substructure_id, name, type, status, created_at, updated_at)
-      VALUES (${assetId}, ${substructureId || null}, ${name.trim()}, ${type || null}, ${status || 'EN_SERVICE'}, ${now}, ${now})
+      INSERT INTO equipments (asset_id, substructure_id, name, type, category, energy_usage, status, created_at, updated_at)
+      VALUES (${assetId}, ${substructureId || null}, ${name.trim()}, ${type || null}, ${categoryValue ?? null}, ${energyUsage ?? null}, ${status || 'EN_SERVICE'}, ${now}, ${now})
     `);
 
     // Fetch the most recently created equipment for this asset
@@ -155,6 +163,7 @@ export async function POST(
         id: equipments.id,
         name: equipments.name,
         type: equipments.type,
+        energyUsage: equipments.energyUsage,
         status: equipments.status,
         substructureId: equipments.substructureId,
       })
@@ -182,6 +191,7 @@ export async function POST(
       name: newEquipment.name,
       status: newEquipment.status,
       type: newEquipment.type,
+      energyUsage: newEquipment.energyUsage,
       substructureId: newEquipment.substructureId,
       assetId
     }, { status: 201 });

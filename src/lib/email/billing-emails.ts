@@ -3,6 +3,9 @@ import { db } from '@/db';
 import { users } from '@/db/schema';
 import { eq } from 'drizzle-orm';
 
+/** Base absolue des liens (même règle que le service d'e-mail). */
+const appUrl = (): string => (process.env.NEXT_PUBLIC_APP_URL || process.env.APP_URL || 'https://app.verebona.fr').replace(/\/+$/, '');
+
 /**
  * Envoie l'email de confirmation d'abonnement (gabarit PREMIUM_CONFIRMATION,
  * objet « Confirmation de votre abonnement Verebona Premium »).
@@ -115,6 +118,9 @@ L'équipe Verebona`;
       to: user.email,
       variables: {
         firstName: user.firstName,
+        // Lot 70A : le gabarit en base affiche « Revoir mon offre : {{actionUrl}} »,
+        // variable jusqu'ici jamais fournie (lien mort).
+        actionUrl: `${appUrl()}/mon-compte/offres`,
       },
       userId: user.id,
     });
@@ -191,6 +197,10 @@ export async function sendTrialConfirmationEmail(
       variables: {
         firstName: user.firstName,
         trialEndsAt: formattedDate,
+        // Lot 70A : « Accéder à Verebona : {{actionUrl}} » (gabarit en base) et
+        // {{loginUrl}} (défaut du code) — jusqu'ici jamais fournis (lien mort).
+        actionUrl: `${appUrl()}/dashboard`,
+        loginUrl: `${appUrl()}/login`,
       },
       userId: user.id,
     });

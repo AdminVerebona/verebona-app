@@ -21,8 +21,13 @@
  * Ancien comportement corrigé : la première adhésion trouvée (`LIMIT 1` sans
  * ordre) décidait du compte et du refus.
  * ══════════════════════════════════════════════════════════════════════════
+ *
+ * Lot 70B : chaque session utilise la configuration Verebona du portail
+ * (résiliation à la fin de la période, sans annulation immédiate) — plus la
+ * configuration par défaut du compte Stripe.
  */
 import { pgClient } from '@/db';
+import type { CustomerPortalConfigStripe } from './customer-portal-configuration.service';
 
 export type PortalAccessCode = 'NO_ACCOUNT' | 'FORBIDDEN' | 'DUO_GUEST' | 'NO_STRIPE_CUSTOMER';
 
@@ -73,12 +78,61 @@ export async function resolveBillingPortalAccess(userId: number, currentAccountI
 
 /** Sous-ensemble du client Stripe (injectable dans les tests). */
 export interface PortalStripe {
-  billingPortal: { sessions: { create(p: { customer: string; return_url: string; locale?: string }): Promise<{ url: string }> } };
+  billingPortal: {
+    sessions: { create(p: { customer: string; return_url: string; locale?: string; configuration?: string }): Promise<{ url: string }> };
+    configurations: CustomerPortalConfigStripe['billingPortal']['configurations'];
+  };
 }
 
-/** Crée une session Customer Portal (URL temporaire, à utiliser tout de suite). */
-export async function createCustomerPortalSession(p: { customerId: string; returnUrl: string; stripe?: PortalStripe }): Promise<string> {
+/**
+ * Portail inaccessible : la configuration Verebona est introuvable et la
+ * configuration par défaut du compte Stripe n'impose pas la fin de période.
+ */
+export class PortalConfigurationUnavailableError extends Error {
+  readonly code = 'PORTAL_CONFIGURATION_UNAVAILABLE';
+  constructor(message: string) { super(message); this.name = 'PortalConfigurationUnavailableError'; }
+}
+
+/**
+ * Crée une session Customer Portal (URL temporaire, à utiliser tout de suite).
+ *
+ * Lot 70B : TOUJOURS avec la configuration Verebona (résiliation en fin de
+ * période imposée, `customer-portal-configuration.service.ts`). Une
+ * configuration mémorisée devenue invalide (supprimée, désactivée) est
+ * recherchée de nouveau une fois. Configuration Verebona impossible à
+ * trouver ou créer (anomalie BO déjà signalée) : repli sur la configuration
+ * par défaut UNIQUEMENT si elle impose elle aussi la fin de période ; sinon
+ * refus (`PortalConfigurationUnavailableError`) — jamais de portail qui
+ * permettrait une annulation immédiate.
+ */
+export async function createCustomerPortalSession(p: { customerId: string; returnUrl: string; stripe?: PortalStripe; env?: NodeJS.ProcessEnv }): Promise<string> {
   const stripe = p.stripe ?? ((await import('@/lib/stripe')).getStripeServer() as unknown as PortalStripe);
-  const session = await stripe.billingPortal.sessions.create({ customer: p.customerId, return_url: p.returnUrl, locale: 'fr' });
-  return session.url;
+  const cfg = await import('./customer-portal-configuration.service');
+  const open = (configuration?: string) => stripe.billingPortal.sessions.create({
+    customer: p.customerId, return_url: p.returnUrl, locale: 'fr', ...(configuration ? { configuration } : {}),
+  });
+
+  let configurationId: string | null = null;
+  try {
+    configurationId = (await cfg.ensureCustomerPortalConfiguration({ stripe, env: p.env })).configurationId;
+  } catch (e) {
+    const def = await cfg.readDefaultPortalConfiguration(stripe).catch(() => null);
+    if (!cfg.customerPortalConfigurationUsable(def)) {
+      throw new PortalConfigurationUnavailableError(`configuration Verebona du portail indisponible (${(e as Error).message}) et configuration par défaut non conforme`);
+    }
+    console.warn(JSON.stringify({ evt: 'billing.customer_portal.default_fallback', reason: (e as Error).message }));
+    return (await open()).url;
+  }
+
+  try {
+    return (await open(configurationId)).url;
+  } catch (e) {
+    // Configuration mémorisée supprimée ou désactivée entre-temps : nouvelle recherche, une fois.
+    const err = e as { type?: string; statusCode?: number; param?: string; message?: string };
+    const aboutConfiguration = err?.param === 'configuration' || /configuration/i.test(err?.message ?? '');
+    if (!aboutConfiguration || !(err?.type === 'StripeInvalidRequestError' || err?.statusCode === 400 || err?.statusCode === 404)) throw e;
+    cfg.resetCustomerPortalConfigurationCache();
+    configurationId = (await cfg.ensureCustomerPortalConfiguration({ stripe, env: p.env, force: true })).configurationId;
+    return (await open(configurationId)).url;
+  }
 }

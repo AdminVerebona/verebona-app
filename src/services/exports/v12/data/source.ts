@@ -118,6 +118,14 @@ export interface SourceEquipment {
   name: string;
   type: string | null;
   category: string | null;
+  /**
+   * Lot 70B : usage énergétique déclaré (`equipments.energy_usage`) et
+   * caractéristiques CIL lues par la règle B6 — même entrée que la
+   * préparation (`evaluateCilReadiness`). Optionnels : sources de test.
+   */
+  energyUsage?: string | null;
+  evacuationMode?: string | null;
+  heatNetworkDeliveryStation?: string | null;
   brand: string | null;
   model: string | null;
   energyType: string | null;
@@ -423,7 +431,9 @@ async function loadLegacyExportSource(params: LoadParams): Promise<{ source: Exp
       .where(and(eq(agendaAssetLinks.assetId, assetId), eq(agendaItems.accountId, accountId))),
     db.select({
       id: equipments.id, name: equipments.name, type: equipments.type, category: equipments.category,
+      energyUsage: equipments.energyUsage,
       brand: equipmentCilSpecs.brand, model: equipmentCilSpecs.model, energyType: equipmentCilSpecs.energyType,
+      evacuationMode: equipmentCilSpecs.evacuationMode, heatNetworkDeliveryStation: equipmentCilSpecs.heatNetworkDeliveryStation,
     }).from(equipments)
       .leftJoin(equipmentCilSpecs, eq(equipmentCilSpecs.equipmentId, equipments.id))
       .where(and(eq(equipments.assetId, assetId), isNull(equipments.archivedAt))),

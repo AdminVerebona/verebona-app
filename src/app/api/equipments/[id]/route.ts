@@ -13,6 +13,9 @@ import { EQUIPMENT_FICHE_FIELDS } from '@/lib/asset-detail-rules';
  * tiroir (`EQUIPMENT_FICHE_FIELDS`), lues de la fiche canonique de
  * l'équipement (repli colonnes) ; valeur `null` quand non renseignée, fiche
  * `null` quand illisible.
+ *
+ * Lot 70B : `equipment.energyUsage` (usage énergétique déclaré, `null` = non
+ * renseigné) et `equipment.category`, éditables dans le tiroir.
  */
 export async function GET(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   let session;
@@ -33,9 +36,10 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
   try {
     const [row] = await db.$client<{
       id: number; assetId: number; name: string; type: string | null;
+      category: string | null; energyUsage: string | null;
       status: string; substructureId: number | null; assetName: string;
     }[]>`
-      SELECT e.id, e.asset_id AS "assetId", e.name, e.type, e.status,
+      SELECT e.id, e.asset_id AS "assetId", e.name, e.type, e.category, e.energy_usage AS "energyUsage", e.status,
              e.substructure_id AS "substructureId", a.name AS "assetName"
       FROM equipments e
       JOIN assets a ON a.id = e.asset_id

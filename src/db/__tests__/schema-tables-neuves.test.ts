@@ -15,7 +15,7 @@ import { agendaItemRemovals, aiMasterCorpusRuns, documentFieldValues, cdc15Migra
   businessOperationClaimDamageDocuments, businessOperationClaimDamagePhotos, businessOperationClaimActions, businessOperationClaimExchanges,
   businessOperationAssetDataMarks, businessOperationClaimMigrationMarks, stripeCatalogRecoveries,
   transactionalEmailJobs, emailProviderEvents, documentRawExtracts,
-  annualRenewalReminderState, annualRenewalReminderChecks,
+  annualRenewalReminderState, annualRenewalReminderChecks, emailTemplateVersions,
 } from '../schema';
 
 const MIG = join(process.cwd(), 'src/db/migrations');
@@ -111,6 +111,8 @@ const CAS: Array<[PgTable, string, string]> = [
   // Lot 68C : rappel J−7 avant renouvellement annuel (couverture, décisions).
   [annualRenewalReminderState, '0477_annual_renewal_reminder.sql', 'annual_renewal_reminder_state'],
   [annualRenewalReminderChecks, '0477_annual_renewal_reminder.sql', 'annual_renewal_reminder_checks'],
+  // Lot 70A : historique des versions des modèles d'e-mails (éditeur du BO).
+  [emailTemplateVersions, '0483_email_template_editor.sql', 'email_template_versions'],
 ];
 
 describe('tables neuves : Drizzle = SQL', () => {

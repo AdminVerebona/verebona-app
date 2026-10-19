@@ -18,6 +18,15 @@
  * le tiroir (puissance, COP, fluide frigorigène, compteur horaire,
  * `EQUIPMENT_FICHE_FIELDS`), écrites par le même chemin (origine USER, clés
  * réellement modifiées seulement). Valeur invalide : 400 VALIDATION_ERROR.
+ *
+ * Lot 70B (décision PO 19/10) :
+ *   · `energyUsage` — usage énergétique déclaré dans le tiroir (choix fermé,
+ *     `EQUIPMENT_ENERGY_USAGE_OPTIONS` ; `null` = non renseigné), écrit dans
+ *     `equipments.energy_usage`, lu en priorité par la règle B6 du CIL.
+ *     Valeur hors liste : 400 INVALID_INPUT. Absent : inchangé.
+ *   · `category` — lue du corps depuis toujours mais JAMAIS écrite : elle
+ *     l'est désormais (texte rogné, `''` ou `null` = effacée, 100 car. max).
+ *     Absente : inchangée (aucun autre champ n'est touché).
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { emitBusinessEvent } from '@/services/verebona-assistant/events/business-events';
@@ -29,6 +38,7 @@ import { SessionService } from '@/lib/session-service';
 import { isValidEquipmentStatus } from '@/types/domain';
 import { refuserSiModificationBiensSuspendue } from '@/lib/asset-quota-guard';
 import { parseEquipmentFiche } from '@/lib/asset-detail-rules';
+import { parseEquipmentCategory, parseEquipmentEnergyUsage } from '@/lib/cil/energy-equipment';
 
 export async function PUT(
   request: NextRequest,
@@ -117,11 +127,15 @@ export async function PUT(
       );
     }
     const ficheSaisie = Object.keys(fiche.values).length > 0;
+    const energyUsage = parseEquipmentEnergyUsage(body.energyUsage);
+    if (energyUsage === 'INVALID') return apiError(400, 'INVALID_INPUT', 'Invalid energy usage');
+    const categoryValue = parseEquipmentCategory(category);
+    if (categoryValue === 'INVALID') return apiError(400, 'INVALID_INPUT', 'Invalid category');
     purchasePriceCents = ppc;
     estimatedValueCents = evc;
 
     if (type !== undefined) updateData.type = type;
-    if (category !== undefined) updateData.category = category;
+    if (categoryValue !== undefined) updateData.category = categoryValue;
     if (purchasePriceCents !== undefined) updateData.purchasePriceCents = purchasePriceCents;
     if (estimatedValueCents !== undefined) updateData.estimatedValueCents = estimatedValueCents;
     if (newAssetId !== undefined) updateData.assetId = effectiveAssetId;
@@ -158,6 +172,9 @@ export async function PUT(
 
     if (name !== undefined)          { sets.push(`name = $${p++}`);            vals.push(name.trim()); }
     if (type !== undefined)          { sets.push(`type = $${p++}`);            vals.push(type); }
+    // Lot 70B : `category` était lue sans être écrite ; usage énergétique déclaré.
+    if (categoryValue !== undefined) { sets.push(`category = $${p++}`);        vals.push(categoryValue); }
+    if (energyUsage !== undefined)   { sets.push(`energy_usage = $${p++}`);    vals.push(energyUsage); }
     if (status !== undefined)        { sets.push(`status = $${p++}`);          vals.push(status); }
     if (updateData.substructureId !== undefined) { sets.push(`substructure_id = $${p++}`); vals.push(updateData.substructureId ?? null); }
     if (newAssetId !== undefined)    { sets.push(`asset_id = $${p++}`);        vals.push(effectiveAssetId); }
@@ -170,8 +187,8 @@ export async function PUT(
     vals.push(equipmentId); // $p
     vals.push(assetId);     // $p+1
 
-    const rows = await db.$client.unsafe<{ id: number; name: string; status: string; type: string | null; substructure_id: number | null; asset_id: number }[]>(
-      `UPDATE equipments SET ${sets.join(', ')} WHERE id = $${p} AND asset_id = $${p + 1} RETURNING id, name, status, type, substructure_id, asset_id`,
+    const rows = await db.$client.unsafe<{ id: number; name: string; status: string; type: string | null; category: string | null; energy_usage: string | null; substructure_id: number | null; asset_id: number }[]>(
+      `UPDATE equipments SET ${sets.join(', ')} WHERE id = $${p} AND asset_id = $${p + 1} RETURNING id, name, status, type, category, energy_usage, substructure_id, asset_id`,
       vals as any
     );
 
@@ -211,6 +228,8 @@ export async function PUT(
       name: rows[0].name,
       status: rows[0].status,
       type: rows[0].type,
+      category: rows[0].category,
+      energyUsage: rows[0].energy_usage,
       substructureId: rows[0].substructure_id,
       assetId: rows[0].asset_id,
     });

@@ -90,6 +90,32 @@ export function redactActionLinks(variables: Record<string, string>): Record<str
   return out;
 }
 
+/**
+ * Lot 70A — aucune variable non remplacée dans l'e-mail envoyé : un `{{nom}}`
+ * resté sans valeur (appelant qui ne la fournit pas) est retiré du rendu après
+ * avoir été signalé dans le journal (lot 49) ; jamais d'accolades chez le
+ * destinataire. `{{logoUrl}}` est remplacé avant (bloc logo).
+ */
+export function stripUnresolvedPlaceholders(text: string): string {
+  return text.replace(/\{\{\s*[A-Za-z0-9_]+\s*\}\}/g, '');
+}
+
+/** Lot 70A — objet sur une seule ligne : aucune injection d'en-tête par une valeur. */
+export function sanitizeSubjectHeader(subject: string): string {
+  return subject.replace(/[\r\n\u0000-\u001f\u007f\u2028\u2029]+/g, ' ').replace(/\s{2,}/g, ' ').trim();
+}
+
+/** Rendu complet d'un gabarit (lot 70A : partagé par l'envoi, la prévisualisation et le test). */
+export interface RenderedEmail {
+  subject: string;
+  html: string;
+  text: string;
+  /** Variables restées sans valeur (retirées du rendu). */
+  unresolved: string[];
+  /** Liens d'action restés sans valeur. */
+  missingLinks: string[];
+}
+
 /** Résultat d'un envoi (lot 57A : identifiants utiles à la reprise et au suivi). */
 export interface EmailSendResult {
   success: boolean;
@@ -310,7 +336,38 @@ class EmailService {
 
     return emailDocument({ title: 'Email Verebona', content: lines.join(''), footer, logo: headerLogoHtml, baseUrl: base });
   }
-  
+
+  /**
+   * Lot 70A — rendu d'un gabarit tel qu'il part chez le destinataire : variables,
+   * enveloppe de la charte pour un gabarit texte, logo. Utilisé par `send`, par
+   * la prévisualisation et l'envoi de test de l'éditeur du BO (même chemin).
+   */
+  async renderTemplate(
+    template: { subject: string; body: string },
+    variables: Record<string, string>,
+    settingsArg?: any,
+  ): Promise<RenderedEmail> {
+    const settings = settingsArg ?? (await this.getSettings());
+    const computedLogo = await this.getVerebonaEmailLogo();
+    const variablesForReplacement = {
+      ...withActionLinkAliases(variables ?? {}),
+      year: new Date().getFullYear().toString(),
+    };
+    const subjectRaw = this.replaceVariables(template.subject, variablesForReplacement, settings, computedLogo);
+    const bodyProcessed = this.replaceVariables(template.body, variablesForReplacement, settings, computedLogo);
+    const all = `${subjectRaw}\n${bodyProcessed}`;
+    const unresolved = unresolvedPlaceholders(all);
+    const missingLinks = missingActionLinks(all);
+    const bodyClean = stripUnresolvedPlaceholders(bodyProcessed);
+    const subject = sanitizeSubjectHeader(stripUnresolvedPlaceholders(subjectRaw));
+
+    let html = this.isCompleteHTML(bodyClean) ? bodyClean : await this.wrapInHTML(bodyClean, settings, computedLogo);
+    // Normalize logo sizing so the full logo (symbol + text) is readable
+    html = this.fixLogoSizing(html);
+    const text = bodyClean.replace(/<[^>]*>/g, '').replace(/\n\n+/g, '\n\n');
+    return { subject, html, text, unresolved, missingLinks };
+  }
+
   async send(options: {
     templateCode: string;
     to: string;
@@ -328,6 +385,12 @@ class EmailService {
     idempotencyKey?: string;
     /** Lot 57A : envoi durable dont cette ligne est une tentative. */
     emailJobId?: number;
+    /**
+     * Lot 70A : objet et contenu à utiliser À LA PLACE du gabarit en base —
+     * réservé à l'envoi de test d'un brouillon de l'éditeur du BO (vers
+     * l'administrateur connecté, avec `skipChannelCheck`).
+     */
+    templateOverride?: { subject: string; body: string };
   }): Promise<EmailSendResult> {
     const logEntry: any = {
       templateCode: options.templateCode,
@@ -339,7 +402,11 @@ class EmailService {
       status: 'pending' as const,
       errorMessage: null,
       sentAt: new Date(),
-      metadata: JSON.stringify(redactActionLinks(options.variables)),
+      metadata: JSON.stringify({
+        ...redactActionLinks(options.variables),
+        // Lot 70A : test d'un brouillon de l'éditeur du BO (contenu non enregistré).
+        ...(options.templateOverride ? { _brouillonBo: 'oui' } : {}),
+      }),
     };
     const journaliser = async (): Promise<number | undefined> => {
       const [row] = await db.insert(emailLogs).values(logEntry).returning({ id: emailLogs.id });
@@ -384,12 +451,14 @@ class EmailService {
       // renommer quinze lignes : le code appelant emploie les deux
       // conventions, et forcer l'une d'elles casserait l'autre.
       // ══════════════════════════════════════════════════════════════════
-      const templates = await db
-        .select()
-        .from(emailTemplates)
-        .where(sql`upper(${emailTemplates.type}) = upper(${options.templateCode})`)
-        .limit(1);
-      
+      const templates = options.templateOverride
+        ? [options.templateOverride]
+        : await db
+          .select({ subject: emailTemplates.subject, body: emailTemplates.body })
+          .from(emailTemplates)
+          .where(sql`upper(${emailTemplates.type}) = upper(${options.templateCode})`)
+          .limit(1);
+
       if (templates.length === 0) {
         const error = `Template ${options.templateCode} not found`;
         logEntry.status = 'failed';
@@ -397,23 +466,18 @@ class EmailService {
         logEntry.subject = `[Error] Template not found`;
         return { success: false, error, logId: await journaliser() };
       }
-      
-      const template = templates[0];
-      const computedLogo = await this.getVerebonaEmailLogo();
 
-      const variablesForReplacement = {
-        ...withActionLinkAliases(options.variables ?? {}),
-        year: new Date().getFullYear().toString(),
-      };
-      
-      const subject = this.replaceVariables(template.subject, variablesForReplacement, settings, computedLogo);
-      let bodyProcessed = this.replaceVariables(template.body, variablesForReplacement, settings, computedLogo);
+      const template = templates[0];
+      // Lot 70A : rendu partagé avec la prévisualisation et le test de l'éditeur du BO.
+      const rendered = await this.renderTemplate(template, options.variables ?? {}, settings);
+      const subject = rendered.subject;
 
       // Variable attendue par le gabarit mais non fournie par l'appelant (ex.
       // bouton d'invitation Duo inopérant, 12/10/2026) : signalé dans les
       // journaux et dans le journal des e-mails (BO), sans bloquer l'envoi —
       // un e-mail critique (mot de passe, sécurité) ne doit jamais être retenu.
-      const unresolved = unresolvedPlaceholders(`${subject}\n${bodyProcessed}`);
+      // Lot 70A : la variable est retirée du rendu (aucune accolade envoyée).
+      const unresolved = rendered.unresolved;
       if (unresolved.length > 0) {
         console.error(`[EmailService] ${options.templateCode} : variables non fournies ${unresolved.join(', ')}`);
         logEntry.errorMessage = `Variables non fournies : ${unresolved.join(', ')}`;
@@ -425,7 +489,7 @@ class EmailService {
       // inutilisable (bouton « Accepter » mort) — elle n'est pas envoyée, et
       // l'échec est visible dans le journal des e-mails du BO avec son motif.
       const liensManquants = LINK_REQUIRED_TEMPLATES.has(options.templateCode.toUpperCase())
-        ? missingActionLinks(`${subject}\n${bodyProcessed}`)
+        ? rendered.missingLinks
         : [];
       if (liensManquants.length > 0) {
         const error = `Lien manquant : ${liensManquants.join(', ')} — e-mail non envoyé`;
@@ -435,15 +499,9 @@ class EmailService {
         return { success: false, error: 'MISSING_ACTION_LINK', logId: await journaliser() };
       }
 
-      let htmlBody = this.isCompleteHTML(bodyProcessed)
-        ? bodyProcessed
-        : await this.wrapInHTML(bodyProcessed, settings, computedLogo);
+      const htmlBody = rendered.html;
+      const bodyText = rendered.text;
 
-      // Normalize logo sizing so the full logo (symbol + text) is readable
-      htmlBody = this.fixLogoSizing(htmlBody);
-      
-      const bodyText = bodyProcessed.replace(/<[^>]*>/g, '').replace(/\n\n+/g, '\n\n');
-      
       if (!process.env.RESEND_API_KEY) {
         logEntry.status = 'failed';
         logEntry.errorMessage = 'Resend API key not configured';
@@ -514,6 +572,19 @@ class EmailService {
     variables: Record<string, string>,
   ): Promise<EmailSendResult> {
     return this.send({ templateCode, to: testEmail, variables, skipChannelCheck: true });
+  }
+
+  /**
+   * Lot 70A — envoi de test d'un BROUILLON de l'éditeur du BO (objet et contenu
+   * en cours d'édition, non enregistrés) vers l'administrateur connecté.
+   */
+  async sendDraftTest(
+    templateCode: string,
+    testEmail: string,
+    draft: { subject: string; body: string },
+    variables: Record<string, string>,
+  ): Promise<EmailSendResult> {
+    return this.send({ templateCode, to: testEmail, variables, skipChannelCheck: true, templateOverride: draft });
   }
 }
 

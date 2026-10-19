@@ -38,6 +38,7 @@ import type Stripe from 'stripe';
 import { afterAll, beforeAll, beforeEach, expect, it, vi } from 'vitest';
 import { scenario } from '../scenario';
 import { uid } from '../factories';
+import { createFakePortalConfigurations } from '../../fakes/stripe-portal-configurations';
 
 const APP = 'https://app.e2e.verebona.test';
 const CAPTURES = '/tmp/claude-0/-home-claude/a4861be4-8965-51fc-aa43-814f4a37e62a/scratchpad/l68/mail-68c';
@@ -72,6 +73,8 @@ vi.mock('resend', () => ({
   },
 }));
 
+// Lot 70B : configurations du portail simulées (configuration Verebona trouvée ou créée).
+const portalFake = createFakePortalConfigurations({ defaultConfiguration: { features: { invoice_history: { enabled: true }, payment_method_update: { enabled: true }, subscription_cancel: { enabled: true, mode: 'at_period_end' } } } });
 const fakeStripe = {
   subscriptions: {
     retrieve: async (id: string) => {
@@ -95,7 +98,7 @@ const fakeStripe = {
     },
   },
   billingPortal: {
-    configurations: { list: async () => ({ data: [{ features: { subscription_cancel: etat.portal } }] }) },
+    configurations: portalFake.configurations,
     sessions: {
       create: async (p: { customer: string; return_url: string }) => {
         etat.sessions.push(p);
@@ -144,6 +147,7 @@ scenario('ANN-J7', 'Abonnements annuels : e-mail automatique à J−7 avant reno
     etat.previewCalls.length = 0;
     process.env.RESEND_API_KEY = 're_e2e_simule_68';
     (await import('@/services/billing/annual-renewal-reminder.service')).resetPortalCheckCache();
+    (await import('@/services/billing/customer-portal-configuration.service')).resetCustomerPortalConfigurationCache();
     await sql`INSERT INTO email_settings (id, emails_enabled, sender_name, sender_email, reply_to_email)
               VALUES (1, true, 'Verebona', 'bonjour@preprod.verebona.fr', 'support@verebona.fr')
               ON CONFLICT (id) DO UPDATE SET emails_enabled = true`;
@@ -459,7 +463,8 @@ scenario('ANN-J7', 'Abonnements annuels : e-mail automatique à J−7 avant reno
     const ok = await POST(req('/api/billing/create-customer-portal-session', { cookie: `access_token=${await jeton(t.ownerUserId, t.email)}` }));
     expect(ok.status).toBe(200);
     expect((await ok.json()).portal_url).toMatch(/^https:\/\/billing\.stripe\.com\/p\/session\//);
-    expect(etat.sessions.slice(n)).toEqual([{ customer: t.customer, return_url: `${APP}/mon-compte`, locale: 'fr' }]);
+    // Lot 70B : toujours avec la configuration Verebona du portail (résiliation en fin de période).
+    expect(etat.sessions.slice(n)).toEqual([{ customer: t.customer, return_url: `${APP}/mon-compte`, locale: 'fr', configuration: portalFake.verebonaConfigurations()[0].id }]);
 
     // Déconnecté : la page exige la connexion, puis y revient.
     const { middleware } = await import('@/middleware');

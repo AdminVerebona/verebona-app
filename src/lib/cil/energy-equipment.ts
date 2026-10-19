@@ -25,6 +25,13 @@
  *      numéro de série et la puissance — communs à tout équipement — ne
  *      comptent PAS.
  *
+ *   0. (lot 70B, PRIORITAIRE) `energyUsage` : usage énergétique DÉCLARÉ
+ *      dans le tiroir équipement (`equipments.energy_usage`, choix fermé).
+ *      Un usage déclaré décide seul ; « Aucun usage énergétique » (`aucun`)
+ *      EXCLUT l'équipement même si sa catégorie, son type ou ses
+ *      caractéristiques CIL le suggèrent ; « Non renseigné » (NULL) laisse
+ *      jouer les critères 1 à 3 ci-dessus.
+ *
  * Le nom libre (« Chaudière », « TV salon ») n'est PAS lu : il ne suffirait
  * jamais seul (exigence du ticket), et un indice qui ne peut jamais suffire
  * seul n'ajoute rien dès qu'une donnée structurée suffit déjà. Un équipement
@@ -35,8 +42,66 @@
 
 export type CilEnergyUsage = 'chauffage' | 'refroidissement' | 'ecs' | 'ventilation' | 'enr';
 
+/** Code « Aucun usage énergétique » de `equipments.energy_usage` (exclusion explicite). */
+export const ENERGY_USAGE_NONE = 'aucun' as const;
+/** Valeur persistée de `equipments.energy_usage` ; `null` = « Non renseigné ». */
+export type EquipmentEnergyUsage = CilEnergyUsage | typeof ENERGY_USAGE_NONE;
+
+/**
+ * Choix FERMÉS du champ « Usage énergétique » du tiroir équipement (lot 70B),
+ * dans l'ordre d'affichage : les usages du référentiel CIL (ceux de la règle
+ * et de `energy_works.category`), puis l'exclusion explicite. « Non
+ * renseigné » (valeur `null`) est proposé en tête par le tiroir.
+ */
+export const EQUIPMENT_ENERGY_USAGE_OPTIONS: ReadonlyArray<{ value: EquipmentEnergyUsage; label: string }> = [
+  { value: 'chauffage', label: 'Chauffage' },
+  { value: 'ecs', label: 'Eau chaude sanitaire' },
+  { value: 'ventilation', label: 'Ventilation' },
+  { value: 'refroidissement', label: 'Climatisation / rafraîchissement' },
+  { value: 'enr', label: 'Production d’énergie (solaire…)' },
+  { value: ENERGY_USAGE_NONE, label: 'Aucun usage énergétique' },
+];
+export const ENERGY_USAGE_UNSET_LABEL = 'Non renseigné';
+
+const ENERGY_USAGE_VALUES: ReadonlySet<string> = new Set(EQUIPMENT_ENERGY_USAGE_OPTIONS.map((o) => o.value));
+
+/** Valeur persistée reconnue, sinon `null` (non renseigné). Pure. */
+export function normalizeEquipmentEnergyUsage(v: unknown): EquipmentEnergyUsage | null {
+  return typeof v === 'string' && ENERGY_USAGE_VALUES.has(v) ? v as EquipmentEnergyUsage : null;
+}
+
+/**
+ * Lecture d'un corps de requête : `undefined` (champ absent : inchangé),
+ * `null` / `''` (non renseigné), un code fermé, ou `'INVALID'`.
+ */
+export function parseEquipmentEnergyUsage(v: unknown): EquipmentEnergyUsage | null | undefined | 'INVALID' {
+  if (v === undefined) return undefined;
+  if (v === null || v === '') return null;
+  return normalizeEquipmentEnergyUsage(v) ?? 'INVALID';
+}
+
+/**
+ * `category` d'un corps de requête (routes POST / PUT des équipements) :
+ * `undefined` (absente : inchangée), `null` (effacée), texte rogné (`''` →
+ * `null`), ou `'INVALID'` (non textuel, plus de 100 caractères).
+ */
+export function parseEquipmentCategory(v: unknown): string | null | undefined | 'INVALID' {
+  if (v === undefined) return undefined;
+  if (v === null) return null;
+  if (typeof v !== 'string' || v.length > 100) return 'INVALID';
+  return v.trim() || null;
+}
+
+/** Libellé d'une valeur (« Non renseigné » pour `null`). */
+export function equipmentEnergyUsageLabel(v: unknown): string {
+  const code = normalizeEquipmentEnergyUsage(v);
+  return EQUIPMENT_ENERGY_USAGE_OPTIONS.find((o) => o.value === code)?.label ?? ENERGY_USAGE_UNSET_LABEL;
+}
+
 /** Données structurées d'un équipement lues par la règle (colonnes `equipments` + `equipment_cil_specs`). */
 export interface CilEnergyEquipmentInput {
+  /** Lot 70B : usage déclaré (`equipments.energy_usage`) — prioritaire. */
+  energyUsage?: string | null;
   type?: string | null;
   category?: string | null;
   energyType?: string | null;
@@ -48,7 +113,7 @@ export interface CilEnergyClassification {
   /** Usage du référentiel CIL ; `null` : caractérisé énergétique sans usage précis (énergie saisie seule). */
   usage: CilEnergyUsage | null;
   /** Donnée structurée qui fonde la décision. */
-  basis: 'category' | 'type' | 'cil_specs';
+  basis: 'energy_usage' | 'category' | 'type' | 'cil_specs';
 }
 
 const norm = (v: unknown): string => String(v ?? '')
@@ -101,8 +166,22 @@ function usageFromType(type: unknown): CilEnergyUsage | null {
 
 const filled = (v: unknown) => norm(v) !== '';
 
+/**
+ * Suggestion d'usage déduite du TYPE seul (référentiel ci-dessus, reconnu en
+ * tête du champ) — proposée par le tiroir quand « Usage énergétique » est
+ * non renseigné ; jamais enregistrée sans confirmation. `null` : aucune
+ * suggestion sûre.
+ */
+export function suggestEnergyUsageFromType(type: unknown): CilEnergyUsage | null {
+  return usageFromType(type);
+}
+
 /** Classification B6 d'un équipement ; `null` : hors périmètre (non classifiable compris). */
 export function classifyCilEnergyEquipment(e: CilEnergyEquipmentInput): CilEnergyClassification | null {
+  // Lot 70B : l'usage déclaré prime ; « aucun » exclut explicitement.
+  const declared = normalizeEquipmentEnergyUsage(e.energyUsage);
+  if (declared === ENERGY_USAGE_NONE) return null;
+  if (declared) return { usage: declared, basis: 'energy_usage' };
   const byCategory = CATEGORY_USAGES[norm(e.category)];
   if (byCategory) return { usage: byCategory, basis: 'category' };
   const byType = usageFromType(e.type);

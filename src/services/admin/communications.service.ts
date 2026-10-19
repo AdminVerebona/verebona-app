@@ -18,7 +18,8 @@
  * date de modification ni variables techniques (COM-005).
  *
  * Seule mutation : l'activation d'un canal (COM-011), confirmée et journalisée
- * (COM-012). Le contenu n'est pas éditable (COM-013).
+ * (COM-012). Lot 70A : l'objet et le contenu des e-mails transactionnels
+ * s'éditent dans `email-template-editor.service.ts` (remplace COM-013).
  * ══════════════════════════════════════════════════════════════════════════
  */
 import { pgClient } from '@/db';

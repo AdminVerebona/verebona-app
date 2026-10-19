@@ -45,15 +45,17 @@ import { planLabelOf } from '@/lib/notifications/subscription-messages';
 import {
   ANNUAL_RENEWAL_REMINDER, MANAGE_SUBSCRIPTION_PATH, REMINDER_WINDOW,
   amountLabelOf, annualRenewalDedupeKey, evaluateStripeEligibility, formatRenewalDate, parisDateOf,
-  portalAllowsRenewalDisable, reminderTiming, renewalAmountFromPreview, renewalDelayLabel,
+  reminderTiming, renewalAmountFromPreview, renewalDelayLabel,
   type ReminderInvoicePreview, type ReminderSchedule, type ReminderSubscription,
 } from './annual-renewal-reminder.rules';
+import type { CustomerPortalConfigStripe } from './customer-portal-configuration.service';
 
 /** Sous-ensemble du client Stripe utilisé (injectable dans les tests). */
 export interface ReminderStripe {
   subscriptions: { retrieve(id: string, params?: { expand?: string[] }): Promise<unknown> };
   invoices: { createPreview(params: { customer?: string; subscription?: string; schedule?: string }): Promise<unknown> };
-  billingPortal: { configurations: { list(params: { is_default?: boolean; limit?: number }): Promise<{ data: unknown[] }> } };
+  /** Lot 70B : configurations du portail (recherche, création, relecture de la configuration Verebona). */
+  billingPortal: { configurations: CustomerPortalConfigStripe['billingPortal']['configurations'] };
 }
 
 async function defaultStripe(): Promise<ReminderStripe> {
@@ -97,20 +99,29 @@ async function readCoverageFrom(): Promise<string | null> {
 
 // ── Portail Stripe : la désactivation du renouvellement est-elle offerte ? ───
 
-let portalCheck: { day: string; allowed: boolean | null } | null = null;
+let portalCheck: { day: string; allowed: true; configurationId: string } | null = null;
 
-/** Contrôle du portail par défaut, au plus une fois par jour et par instance. */
-async function checkPortal(stripe: ReminderStripe, today: string): Promise<boolean | null> {
-  if (portalCheck?.day === today) return portalCheck.allowed;
-  let allowed: boolean | null = null;
+/**
+ * Lot 70B : contrôle de la configuration VEREBONA du portail — celle que
+ * le bouton de l'e-mail ouvre réellement (`/mon-compte/abonnement/gerer`) —
+ * et non plus de la configuration par défaut du compte Stripe : trouvée ou
+ * créée, relue, annulation activée en fin de période. Au plus une fois par
+ * jour et par instance quand elle est conforme ; un échec n'est PAS mémorisé
+ * (nouvel essai au passage horaire suivant) et bloque les rappels (garde-fou :
+ * l'e-mail promettrait une désactivation impossible ; anomalie BO signalée
+ * par le service, tâche planifiée en échec).
+ */
+async function checkPortal(stripe: ReminderStripe, today: string): Promise<{ allowed: boolean; configurationId: string | null }> {
+  if (portalCheck?.day === today) return { allowed: true, configurationId: portalCheck.configurationId };
   try {
-    const list = await stripe.billingPortal.configurations.list({ is_default: true, limit: 1 });
-    allowed = portalAllowsRenewalDisable(list.data[0] as never);
+    const { ensureCustomerPortalConfiguration } = await import('./customer-portal-configuration.service');
+    const r = await ensureCustomerPortalConfiguration({ stripe, force: true });
+    portalCheck = { day: today, allowed: true, configurationId: r.configurationId };
+    return { allowed: true, configurationId: r.configurationId };
   } catch (e) {
-    console.warn('[annual-renewal] configuration du portail illisible :', (e as Error)?.message ?? e);
+    console.warn('[annual-renewal] configuration Verebona du portail indisponible :', (e as Error)?.message ?? e);
+    return { allowed: false, configurationId: null };
   }
-  portalCheck = { day: today, allowed };
-  return allowed;
 }
 
 /** Tests : oublie le contrôle mémorisé du portail. */
@@ -128,6 +139,8 @@ export interface AnnualRenewalRunResult {
   stripeErrors: number;
   coverageFrom: string | null;
   portalAllowsDisable: boolean | null;
+  /** Lot 70B : configuration Verebona du portail vérifiée pour ce passage. */
+  portalConfigurationId?: string | null;
 }
 
 interface Candidate {
@@ -196,7 +209,9 @@ export async function runAnnualRenewalReminders(opts: { now?: Date; stripe?: Rem
   if (candidates.length === 0) return result;
 
   const stripe = opts.stripe ?? await defaultStripe();
-  result.portalAllowsDisable = await checkPortal(stripe, today);
+  const portal = await checkPortal(stripe, today);
+  result.portalAllowsDisable = portal.allowed;
+  result.portalConfigurationId = portal.configurationId;
   if (result.portalAllowsDisable === false) {
     // L'e-mail promettrait une désactivation impossible : rien n'est préparé.
     return { ...result, skipped: 'PORTAL_CANCEL_DISABLED' };

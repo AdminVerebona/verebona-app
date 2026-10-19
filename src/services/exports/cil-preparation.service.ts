@@ -81,7 +81,7 @@ export function evaluateCilB6(equips: readonly CilEquipmentRow[], resolution: st
     status = 'unknown';
     missingItems.push(equips.length > 0
       // Des équipements existent mais aucun n'est caractérisé : on le dit (pas « aucun équipement »).
-      ? { id: 'equipments_unclassified', label: 'Aucun équipement caractérisé comme énergétique (précisez le type de l’équipement)', target: { type: 'equipments' }, actionLabel: 'Préciser le type des équipements' }
+      ? { id: 'equipments_unclassified', label: 'Aucun équipement caractérisé comme énergétique (précisez l’usage énergétique ou le type de l’équipement)', target: { type: 'equipments' }, actionLabel: 'Préciser l’usage énergétique des équipements' }
       : { id: 'equipments', label: 'Équipements énergétiques (chauffage, ECS, ventilation…)', target: { type: 'equipments' }, actionLabel: 'Ajouter des équipements' });
   }
   return { block: { id: 'B6', label: 'Équipements à incidence énergétique', status, blocking: false, missingItems }, energyEquipmentIds };
@@ -117,7 +117,7 @@ export async function evaluateCilReadiness(asset: CilAsset): Promise<CilReadines
   // existant, archivé compris, rendait B6 « renseigné »).
   const equips: CilEquipmentRow[] = await db
     .select({
-      id: equipments.id, type: equipments.type, category: equipments.category,
+      id: equipments.id, energyUsage: equipments.energyUsage, type: equipments.type, category: equipments.category,
       energyType: equipmentCilSpecs.energyType, evacuationMode: equipmentCilSpecs.evacuationMode,
       heatNetworkDeliveryStation: equipmentCilSpecs.heatNetworkDeliveryStation,
     })

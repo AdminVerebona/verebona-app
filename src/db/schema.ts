@@ -278,6 +278,10 @@ export const equipments = pgTable('equipments', {
   name: text('name').notNull(),
   type: text('type'),
   category: text('category'),
+  // Lot 70B (0486) : usage énergétique DÉCLARÉ dans le tiroir — chauffage |
+  // refroidissement | ecs | ventilation | enr | aucun ; NULL = non renseigné.
+  // Lu en priorité par la règle B6 (`lib/cil/energy-equipment.ts`).
+  energyUsage: text('energy_usage'),
   purchasePriceCents: integer('purchase_price_cents'),
   estimatedValueCents: integer('estimated_value_cents'),
   status: text('status').notNull().default('EN_SERVICE'),
@@ -291,6 +295,8 @@ export const equipments = pgTable('equipments', {
   publicIdIdx: index('equipments_public_id_idx').on(table.publicId),
   scopeIdx: index('equipments_scope_idx').on(table.scope),
   scopeCheck: check('equipments_scope_check', sql`${table.scope} IN ('personal', 'duo')`),
+  energyUsageCheck: check('equipments_energy_usage_check',
+    sql`${table.energyUsage} IS NULL OR ${table.energyUsage} IN ('chauffage', 'refroidissement', 'ecs', 'ventilation', 'enr', 'aucun')`),
 }));
 
 export const assetTypes = pgTable('asset_types', {
@@ -326,7 +332,33 @@ export const emailTemplates = pgTable('email_templates', {
   sender: text('sender'),
   updatedAt: tstz('updated_at'),
   updatedBy: integer('updated_by').references(() => users.id, { onDelete: 'set null' }),
+  /** Lot 70A (0483) : enregistré depuis l'éditeur du BO — jamais écrasé hors de l'éditeur (déclencheurs). */
+  isCustomized: boolean('is_customized').notNull().default(false),
+  customizedAt: tstzOptional('customized_at'),
+  /** Lot 70A (0483) : dernier texte LIVRÉ par l'application (amorçages, migrations). */
+  shippedSubject: text('shipped_subject'),
+  shippedBody: text('shipped_body'),
+  /** Lot 70A (0483) : texte livré plus récent reçu alors que le gabarit était personnalisé. */
+  shippedUpdatedAt: tstzOptional('shipped_updated_at'),
 });
+
+/** Lot 70A (0483) — historique des versions des modèles d'e-mails (éditeur du BO). */
+export const emailTemplateVersions = pgTable('email_template_versions', {
+  id: bigserial('id', { mode: 'number' }).primaryKey(),
+  templateType: text('template_type').notNull(),
+  versionNo: integer('version_no').notNull(),
+  subject: text('subject').notNull(),
+  body: text('body').notNull(),
+  source: text('source').notNull(),
+  createdAt: tstz('created_at'),
+  createdBy: integer('created_by').references(() => users.id, { onDelete: 'set null' }),
+  createdByEmail: text('created_by_email'),
+  restoredFromVersion: integer('restored_from_version'),
+  note: text('note'),
+}, (t) => ({
+  sourceCheck: check('email_template_versions_source_check', sql`${t.source} IN ('initial', 'admin_edit', 'restore', 'reset_shipped')`),
+  typeNoKey: unique('email_template_versions_type_no_key').on(t.templateType, t.versionNo),
+}));
 
 export const adminAuditLog = pgTable('admin_audit_log', {
   id: serial('id').primaryKey(),

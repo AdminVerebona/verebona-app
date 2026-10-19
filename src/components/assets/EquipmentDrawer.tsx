@@ -23,6 +23,15 @@ import { apiClient } from '@/lib/api-client';
 import { SupplierDrawer } from '@/components/suppliers/SupplierDrawer';
 import { useWriteGuard } from '@/contexts/WriteGuardContext';
 import { EQUIPMENT_FICHE_FIELDS, equipmentFicheChanges } from '@/lib/asset-detail-rules';
+import { Button } from '@/components/ui/button';
+import {
+  EQUIPMENT_ENERGY_USAGE_OPTIONS, ENERGY_USAGE_UNSET_LABEL, equipmentEnergyUsageLabel,
+  normalizeEquipmentEnergyUsage, suggestEnergyUsageFromType,
+} from '@/lib/cil/energy-equipment';
+
+/** Valeur du sélecteur « Usage énergétique » pour « Non renseigné » (`null` en base). */
+const ENERGY_USAGE_UNSET = 'non_renseigne';
+const energyUsageToForm = (v: unknown): string => normalizeEquipmentEnergyUsage(v) ?? ENERGY_USAGE_UNSET;
 
 /** Fiche saisie (lot 20, D-D) : valeurs du formulaire, en texte. */
 type FicheForm = Record<string, string>;
@@ -43,6 +52,11 @@ export interface EquipmentDrawerItem {
   assetId: number;
   name: string;
   type?: string | null;
+  /**
+   * Lot 70B : usage énergétique déclaré (`null` = non renseigné). Absent
+   * (`undefined`) : non transmis par l'écran appelant — relu par le tiroir.
+   */
+  energyUsage?: string | null;
   status: string;
   substructureId?: number | null;
 }
@@ -152,6 +166,10 @@ export function EquipmentDrawer({ open, onOpenChange, assetId, equipment: eq, su
   const [isEditing, setIsEditing] = useState(false);
   const [name, setName] = useState('');
   const [type, setType] = useState('');
+  // Usage énergétique (lot 70B) : valeur du formulaire, valeur connue de
+  // l'équipement (`undefined` tant qu'elle n'est pas lue : rien n'est envoyé).
+  const [energyUsage, setEnergyUsage] = useState<string>(ENERGY_USAGE_UNSET);
+  const [knownEnergyUsage, setKnownEnergyUsage] = useState<string | null | undefined>(undefined);
   const [status, setStatus] = useState('EN_SERVICE');
   const [substructureId, setSubstructureId] = useState<string>('none');
   const [selectedAssetId, setSelectedAssetId] = useState<string>(assetId && assetId > 0 ? String(assetId) : 'none');
@@ -203,6 +221,9 @@ export function EquipmentDrawer({ open, onOpenChange, assetId, equipment: eq, su
       setName(eq?.name ?? '');
       setType(eq?.type ?? '');
       setStatus(eq?.status ?? 'EN_SERVICE');
+      const known = isCreateMode ? null : eq?.energyUsage === undefined ? undefined : normalizeEquipmentEnergyUsage(eq.energyUsage);
+      setKnownEnergyUsage(known);
+      setEnergyUsage(energyUsageToForm(known));
       const aid = (eq?.assetId && eq.assetId > 0) ? eq.assetId : (assetId && assetId > 0 ? assetId : 0);
       setSelectedAssetId(aid > 0 ? String(aid) : 'none');
       setSubstructureId(eq?.substructureId ? String(eq.substructureId) : 'none');
@@ -224,8 +245,14 @@ export function EquipmentDrawer({ open, onOpenChange, assetId, equipment: eq, su
     // Load equipment linked data if equipment exists
     if (open && eq?.id) {
       // Fiche canonique
-      apiClient.get<{ fiche?: Record<string, unknown> }>(`/api/equipments/${eq.id}`)
+      apiClient.get<{ fiche?: Record<string, unknown>; equipment?: { energyUsage?: string | null } }>(`/api/equipments/${eq.id}`)
         .then(d => {
+          // Usage énergétique relu (l'écran appelant ne le transmet pas toujours).
+          if (d.equipment && d.equipment.energyUsage !== undefined) {
+            const v = normalizeEquipmentEnergyUsage(d.equipment.energyUsage);
+            setKnownEnergyUsage(v);
+            setEnergyUsage((cur) => (cur === ENERGY_USAGE_UNSET ? energyUsageToForm(v) : cur));
+          }
           if (!d.fiche) return; // réponse sans fiche : non chargée
           setFiche(d.fiche);
           setFicheForm(ficheToForm(d.fiche));
@@ -290,12 +317,13 @@ export function EquipmentDrawer({ open, onOpenChange, assetId, equipment: eq, su
     garder(() => {
       setName(eq?.name ?? '');
       setType(eq?.type ?? '');
+      setEnergyUsage(energyUsageToForm(knownEnergyUsage));
       setStatus(eq?.status ?? 'EN_SERVICE');
       setSubstructureId(eq?.substructureId ? String(eq.substructureId) : 'none');
       setFicheForm(fiche ? ficheToForm(fiche) : FICHE_VIDE);
       setIsEditing(true);
     });
-  }, [garder, eq, fiche]);
+  }, [garder, eq, fiche, knownEnergyUsage]);
 
   const handleSave = useCallback(async () => {
     if (!name.trim()) { toast.error('Le nom est obligatoire'); return; }
@@ -308,6 +336,11 @@ export function EquipmentDrawer({ open, onOpenChange, assetId, equipment: eq, su
         status,
         substructureId: substructureId === 'none' ? null : parseInt(substructureId),
       };
+      // Usage énergétique : toujours à la création ; en modification, seulement
+      // une fois la valeur de l'équipement connue (jamais d'effacement à l'aveugle).
+      if (isCreateMode || knownEnergyUsage !== undefined) {
+        payload.energyUsage = energyUsage === ENERGY_USAGE_UNSET ? null : energyUsage;
+      }
       // Fiche canonique : seules les clés modifiées par rapport à la fiche
       // CHARGÉE ; omise tant qu'elle ne l'est pas (origine USER côté serveur).
       const ficheModifiee = equipmentFicheChanges(fiche, ficheForm);
@@ -330,7 +363,7 @@ export function EquipmentDrawer({ open, onOpenChange, assetId, equipment: eq, su
     } finally {
       setIsSaving(false);
     }
-  }, [eq, assetId, selectedAssetId, name, type, status, substructureId, fiche, ficheForm, isCreateMode, onRefresh, onOpenChange]);
+  }, [eq, assetId, selectedAssetId, name, type, energyUsage, knownEnergyUsage, status, substructureId, fiche, ficheForm, isCreateMode, onRefresh, onOpenChange]);
 
   const handleArchive = useCallback(async () => {
     if (!eq) return;
@@ -368,6 +401,10 @@ export function EquipmentDrawer({ open, onOpenChange, assetId, equipment: eq, su
   const substructures = dynamicSubstructures;
   const statusColor = eq ? (STATUS_COLORS[eq.status] ?? STATUS_COLORS.INACTIF) : '';
   const room = eq ? substructures.find(s => s.id === eq.substructureId) : null;
+  // Suggestion d'usage déduite du type (référentiel, reconnu en tête du champ),
+  // proposée seulement quand l'usage n'est pas renseigné ; jamais appliquée seule.
+  const energyUsageSuggestion = energyUsage === ENERGY_USAGE_UNSET ? suggestEnergyUsageFromType(type) : null;
+  const energyUsageEditable = isCreateMode || knownEnergyUsage !== undefined;
 
   const formSection = (
     <div className="px-5 py-4 space-y-4">
@@ -398,6 +435,33 @@ export function EquipmentDrawer({ open, onOpenChange, assetId, equipment: eq, su
       <div className="space-y-1.5">
         <Label>Type</Label>
         <Input value={type} onChange={e => setType(e.target.value)} placeholder="Ex: Chaudière, Pompe à chaleur…" />
+      </div>
+      {/* Usage énergétique (lot 70B) : choix fermé, lu en priorité par le CIL (B6). */}
+      <div className="space-y-1.5" data-testid="equipment-energy-usage">
+        <Label htmlFor="equipment-energy-usage">Usage énergétique</Label>
+        <Select value={energyUsage} onValueChange={setEnergyUsage} disabled={!energyUsageEditable}>
+          <SelectTrigger id="equipment-energy-usage"><SelectValue /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value={ENERGY_USAGE_UNSET}>{ENERGY_USAGE_UNSET_LABEL}</SelectItem>
+            {EQUIPMENT_ENERGY_USAGE_OPTIONS.map((o) => (
+              <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        {energyUsageSuggestion ? (
+          <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-[color:var(--border-info)] bg-[color:var(--accent-soft)] px-3 py-2" data-testid="equipment-energy-usage-suggestion">
+            <p className="text-xs text-[color:var(--text-primary)]">
+              Suggestion d’après le type : <span className="font-semibold">{equipmentEnergyUsageLabel(energyUsageSuggestion)}</span>
+            </p>
+            <Button type="button" size="sm" variant="outline" onClick={() => setEnergyUsage(energyUsageSuggestion)}>
+              Confirmer
+            </Button>
+          </div>
+        ) : (
+          <p className="vb-meta">
+            Sert au dossier CIL (équipements à incidence énergétique). « Non renseigné » : le type décide.
+          </p>
+        )}
       </div>
       {/* Fiche (équipement existant : la création n'écrit pas la fiche canonique). */}
       {/* Saisie proposée seulement une fois la fiche chargée. */}
@@ -470,6 +534,12 @@ export function EquipmentDrawer({ open, onOpenChange, assetId, equipment: eq, su
           <div className="flex items-center justify-between">
             <span className="text-muted-foreground">Type</span>
             <span className="font-medium">{eq.type}</span>
+          </div>
+        )}
+        {knownEnergyUsage !== undefined && (
+          <div className="flex items-center justify-between gap-3">
+            <span className="text-muted-foreground">Usage énergétique</span>
+            <span className={knownEnergyUsage ? 'font-medium text-right' : 'text-muted-foreground text-right'}>{equipmentEnergyUsageLabel(knownEnergyUsage)}</span>
           </div>
         )}
         {EQUIPMENT_FICHE_FIELDS.map((f) => {

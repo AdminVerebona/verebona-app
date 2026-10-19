@@ -724,11 +724,13 @@ export const SCHEDULED_TASKS: readonly ScheduledTaskDef[] = [
       const { runAnnualRenewalReminders } = await import('@/services/billing/annual-renewal-reminder.service');
       const r = await runAnnualRenewalReminders({ deadline: Math.min(deadline, Date.now() + 8 * MIN) });
       if (r.skipped === 'PORTAL_CANCEL_DISABLED') {
-        return { note: `${r.candidates} candidat(s) — aucun rappel préparé`, error: 'Le portail Stripe par défaut ne permet pas de désactiver le renouvellement : rappels suspendus (voir docs/exploitation/rappel-renouvellement-annuel.md).' };
+        // Lot 70B : la configuration Verebona du portail (résiliation en fin de période) n'a pu être ni trouvée ni créée.
+        return { note: `${r.candidates} candidat(s) — aucun rappel préparé`, error: 'La configuration Verebona du portail Stripe (résiliation en fin de période) est introuvable ou non conforme : rappels suspendus (voir BO › Anomalies et docs/exploitation/rappel-renouvellement-annuel.md).' };
       }
       if (r.skipped) return { note: r.skipped };
       const note = `${r.candidates} candidat(s), ${r.enqueued} rappel(s) préparé(s), ${r.revived} relancé(s), exclus : ${JSON.stringify(r.excluded)}, `
-        + `erreurs Stripe : ${r.stripeErrors} — couverture depuis le ${r.coverageFrom ?? '?'}`;
+        + `erreurs Stripe : ${r.stripeErrors} — couverture depuis le ${r.coverageFrom ?? '?'}`
+        + (r.portalConfigurationId ? ` — portail Verebona ${r.portalConfigurationId}` : '');
       // Toutes les vérifications en échec : la tâche est en échec (reprise au passage suivant).
       if (r.stripeErrors > 0 && r.stripeErrors >= r.candidates) return { note, error: `${r.stripeErrors} vérification(s) Stripe en échec` };
       return { note: note.slice(0, 1500) };

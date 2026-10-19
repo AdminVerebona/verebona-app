@@ -38,6 +38,15 @@ const ALLOWED_MUTATIONS: Record<string, string[]> = {
   // Lot 61B (ticket P0 e-mails §3-A) : correction de l'expéditeur sans SQL,
   // administrateurs, journalisée (EMAIL_SETTINGS_UPDATE).
   'communications/email-settings/route.ts': ['PATCH'],
+  // Lot 70A (décision PO du 19/10, remplace COM-013) : éditeur des modèles
+  // d'e-mails transactionnels — enregistrement, aperçu et test du brouillon
+  // (lecture / envoi à l'admin seul), restauration, retour au texte livré ;
+  // administrateurs, journalisés (EMAIL_TEMPLATE_*).
+  'communications/templates/[code]/route.ts': ['PUT'],
+  'communications/templates/[code]/preview/route.ts': ['POST'],
+  'communications/templates/[code]/test/route.ts': ['POST'],
+  'communications/templates/[code]/restore/route.ts': ['POST'],
+  'communications/templates/[code]/reset/route.ts': ['POST'],
 };
 
 describe('routes de consultation BO (§7 à §10)', () => {
