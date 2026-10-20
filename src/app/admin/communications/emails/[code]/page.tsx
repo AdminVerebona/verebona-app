@@ -11,6 +11,12 @@
  * la mise en page de la charte (clair / sombre) et envoi de test du brouillon
  * AVANT enregistrement. Historique des versions : comparaison, restauration,
  * retour au texte livré. Desktop et mobile (colonnes empilées).
+ *
+ * Lot 73A (décision PO du 20/10) : même éditeur pour les e-mails des
+ * NOTIFICATIONS (`notif_*`) — encadré « E-mail de notification » (événements qui
+ * utilisent le modèle, message composé par l'application), choix de l'événement
+ * et du contexte (bien, document, échéance) pour l'aperçu et le test. Mêmes
+ * composants sur ordinateur et mobile (sélecteurs empilés sous 640 px).
  */
 import Link from 'next/link';
 import { useParams } from 'next/navigation';
@@ -40,6 +46,7 @@ interface VersionSummary {
 }
 interface EditorState {
   code: string; type: string; label: string; format: 'text' | 'html'; subject: string; body: string;
+  kind: 'transactional' | 'notification'; usedBy: Array<{ code: string; label: string; mandatoryEmail: boolean }>;
   zones: HtmlZone[] | null; baseHash: string; variables: TemplateVariable[]; required: RequiredVariableGroup[];
   declaredVariables: boolean; contentLock: string | null; limitedReason: string | null; channelLock: string | null;
   isCustomized: boolean; customizedAt: string | null; updatedAt: string | null; updatedByEmail: string | null;
@@ -52,6 +59,9 @@ interface PreviewData {
 }
 interface ContextOptions {
   hasAccount: boolean;
+  assets?: Array<{ id: number; name: string }>;
+  documents?: Array<{ id: number; title: string; assetName: string | null }>;
+  deadlines?: Array<{ id: number; title: string; date: string | null }>;
   payments?: Array<{ id: number; amount: number; currency: string; status: string; date: string | null }>;
   withdrawals?: Array<{ id: number; publicReference: string; requestedAt: string | null }>;
 }
@@ -107,6 +117,17 @@ export default function EmailTemplateEditorPage() {
   const [ctx, setCtx] = useState<ContextOptions | null>(null);
   const [paymentId, setPaymentId] = useState('');
   const [withdrawalId, setWithdrawalId] = useState('');
+  // Lot 73A : e-mail de notification — événement illustré et contexte (bien, document, échéance).
+  const [eventCode, setEventCode] = useState('');
+  const [assetId, setAssetId] = useState('');
+  const [documentId, setDocumentId] = useState('');
+  const [deadlineId, setDeadlineId] = useState('');
+  useEffect(() => {
+    try {
+      const ev = new URLSearchParams(window.location.search).get('evenement');
+      if (ev && /^[A-Z0-9_]{2,80}$/.test(ev)) setEventCode(ev);
+    } catch { /* lien sans paramètre */ }
+  }, []);
   const [compare, setCompare] = useState<Compare | null>(null);
   const [confirm, setConfirm] = useState<{ kind: 'restore'; version: VersionSummary } | { kind: 'reset' } | null>(null);
   const [busy, setBusy] = useState(false);
@@ -134,6 +155,7 @@ export default function EmailTemplateEditorPage() {
   }, []);
 
   const locked = !!state?.contentLock;
+  const isNotification = state?.kind === 'notification';
   const rel = relevantPreviewContexts(`email:${code}`, code);
 
   /** Brouillon tel qu'envoyé au serveur. */
@@ -150,16 +172,20 @@ export default function EmailTemplateEditorPage() {
     if (state.format === 'html') {
       const applied = applyHtmlZones(state.body, zones, specWithSystem);
       if (!applied.ok) return applied.issues;
-      return validateDraft({ subject, body: applied.body, format: 'html', spec: specWithSystem, htmlVariablesAllowed: true });
+      return validateDraft({ code: state.code, subject, body: applied.body, format: 'html', spec: specWithSystem, htmlVariablesAllowed: true });
     }
-    return validateDraft({ subject, body, format: 'text', spec });
+    return validateDraft({ code: state.code, subject, body, format: 'text', spec });
   }, [state, locked, subject, body, zones]);
   const issues = serverIssues.length ? serverIssues : liveIssues;
 
   const selection = useMemo(() => ({
     ...(rel.payment && paymentId ? { paymentId: Number(paymentId) } : {}),
     ...(rel.withdrawal && withdrawalId ? { withdrawalId: Number(withdrawalId) } : {}),
-  }), [rel.payment, rel.withdrawal, paymentId, withdrawalId]);
+    ...(isNotification && assetId ? { assetId: Number(assetId) } : {}),
+    ...(isNotification && documentId ? { documentId: Number(documentId) } : {}),
+    ...(isNotification && deadlineId ? { deadlineId: Number(deadlineId) } : {}),
+    ...(isNotification && eventCode ? { eventCode } : {}),
+  }), [rel.payment, rel.withdrawal, paymentId, withdrawalId, isNotification, assetId, documentId, deadlineId, eventCode]);
 
   // Aperçu : rendu serveur du brouillon (même chemin que l'envoi), différé.
   useEffect(() => {
@@ -315,7 +341,7 @@ export default function EmailTemplateEditorPage() {
     <div className="space-y-6" data-testid="email-template-editor">
       <div className="space-y-2">
         <Link href="/admin/communications" className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:underline">
-          <ArrowLeft className="h-4 w-4" /> Communications › E-mails transactionnels
+          <ArrowLeft className="h-4 w-4" /> Communications › {isNotification ? 'E-mails de notification' : 'E-mails transactionnels'}
         </Link>
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="min-w-0">
@@ -341,6 +367,20 @@ export default function EmailTemplateEditorPage() {
         <p className="text-sm rounded-xl border border-[color:var(--border-info)] bg-[color:var(--bg-info)] px-4 py-3 text-[color:var(--text-info)]">
           <strong>Édition limitée.</strong> {state.limitedReason}
         </p>
+      )}
+      {isNotification && (
+        <div className="text-sm rounded-xl border border-[color:var(--border-info)] bg-[color:var(--bg-info)] px-4 py-3 text-[color:var(--text-info)] space-y-1.5" data-testid="notification-template-info">
+          <p>
+            <strong>E-mail de notification.</strong> <span className="font-mono text-xs">{'{{title}}'}</span> et <span className="font-mono text-xs">{'{{body}}'}</span> sont
+            le titre et le message de la notification, composés par l’application pour chaque événement (les mêmes que dans la cloche) : ils ne se
+            modifient pas ici, pas plus que le texte des push et de la cloche. Vous modifiez l’objet et l’habillage de l’e-mail.
+          </p>
+          <p className="break-words">
+            {state.usedBy.length
+              ? <>Utilisé par {state.usedBy.length > 1 ? `${state.usedBy.length} événements` : 'l’événement'} : {state.usedBy.map((u) => u.label).join(', ')}.{state.usedBy.length > 1 ? ' Une modification s’applique à chacun.' : ''}</>
+              : 'Aucune notification n’envoie actuellement ce modèle par e-mail.'}
+          </p>
+        </div>
       )}
       {state.channelLock && (
         <p className="text-xs text-muted-foreground">
@@ -494,6 +534,31 @@ export default function EmailTemplateEditorPage() {
               <button type="button" aria-pressed={dark} onClick={() => setDark(true)} className={`rounded-full px-3 py-1 text-xs inline-flex items-center gap-1 ${dark ? 'bg-[color:var(--accent-soft)] text-[color:var(--accent)] font-semibold' : 'text-muted-foreground'}`}><Moon className="h-3.5 w-3.5" /> Sombre</button>
             </div>
           </div>
+          {isNotification && (state.usedBy.length > 1 || ctx?.hasAccount) && (
+            <div className="grid gap-2 sm:grid-cols-2" data-testid="notification-preview-context">
+              {state.usedBy.length > 1 && (
+                <select aria-label="Événement illustré" className="rounded-md border bg-background px-2 py-1.5 text-xs min-w-0" value={eventCode || state.usedBy[0].code} onChange={(e) => setEventCode(e.target.value)}>
+                  {state.usedBy.map((u) => <option key={u.code} value={u.code}>Événement : {u.label}</option>)}
+                </select>
+              )}
+              {ctx?.hasAccount && (
+                <>
+                  <select aria-label="Bien" className="rounded-md border bg-background px-2 py-1.5 text-xs min-w-0" value={assetId} onChange={(e) => setAssetId(e.target.value)}>
+                    <option value="">{ctx.assets?.length ? 'Bien de votre compte : aucun' : 'Aucun bien dans votre compte'}</option>
+                    {(ctx.assets ?? []).map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
+                  </select>
+                  <select aria-label="Document" className="rounded-md border bg-background px-2 py-1.5 text-xs min-w-0" value={documentId} onChange={(e) => setDocumentId(e.target.value)}>
+                    <option value="">{ctx.documents?.length ? 'Document de votre compte : aucun' : 'Aucun document dans votre compte'}</option>
+                    {(ctx.documents ?? []).map((d) => <option key={d.id} value={d.id}>{d.title}{d.assetName ? ` — ${d.assetName}` : ''}</option>)}
+                  </select>
+                  <select aria-label="Échéance" className="rounded-md border bg-background px-2 py-1.5 text-xs min-w-0" value={deadlineId} onChange={(e) => setDeadlineId(e.target.value)}>
+                    <option value="">{ctx.deadlines?.length ? 'Échéance de votre compte : aucune' : 'Aucune échéance dans votre compte'}</option>
+                    {(ctx.deadlines ?? []).map((d) => <option key={d.id} value={d.id}>{d.title}{d.date ? ` — ${formatDate(d.date)}` : ''}</option>)}
+                  </select>
+                </>
+              )}
+            </div>
+          )}
           {ctx?.hasAccount && (rel.payment || rel.withdrawal) && (
             <div className="grid gap-2 sm:grid-cols-2">
               {rel.payment && (

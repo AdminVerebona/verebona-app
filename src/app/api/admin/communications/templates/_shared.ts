@@ -1,6 +1,7 @@
 /**
  * Routes `/api/admin/communications/templates/[code]/**` — éditeur des modèles
- * d'e-mails transactionnels (lot 70A). Garde : `requireAdmin(request)` dans
+ * d'e-mails transactionnels (lot 70A) et, depuis le lot 73A, des e-mails des
+ * notifications (`notif_*`). Garde : `requireAdmin(request)` dans
  * chaque route (rôle ADMIN / SUPER_ADMIN relu en base — seuls rôles du BO) ;
  * CSRF des écritures vérifié par le middleware. Réponses jamais mises en cache.
  */
@@ -59,6 +60,12 @@ export function selectionOf(body: Record<string, unknown> | null): PreviewSelect
     assetId: idOf(s.assetId), documentId: idOf(s.documentId), deadlineId: idOf(s.deadlineId),
     paymentId: idOf(s.paymentId), withdrawalId: idOf(s.withdrawalId),
   };
+}
+
+/** Lot 73A : événement du catalogue choisi pour illustrer un e-mail de notification (validé par le service). */
+export function previewEventOf(body: Record<string, unknown> | null): string | null {
+  const v = ((body?.selection ?? {}) as Record<string, unknown>).eventCode;
+  return typeof v === 'string' && /^[A-Z0-9_]{2,80}$/.test(v) ? v : null;
 }
 
 export function draftOf(body: Record<string, unknown>): { subject: unknown; body?: unknown; zones?: unknown } {

@@ -57,6 +57,8 @@ interface NotificationPayload extends SubscriptionNotificationPayload {
   scheduledAt?: string;
   // Duo
   duoId?: number;
+  /** Lot 73B : refus de l'invitation Premium Duo (adresse saisie par le titulaire). */
+  inviteEmail?: string;
   requestId?: number;
   /** Bien concerné (anciennes demandes croisées Duo, lot 72D). */
   assetId?: number;
@@ -115,6 +117,9 @@ function getNotificationText(
       return `Votre demande de suppression de ${p.assetLabel ?? 'votre bien'} a été refusée`;
     case 'DUO_INVITATION_RECEIVED':
       return `${p.initiatorName ?? 'Quelqu\'un'} vous invite à rejoindre son compte Duo`;
+    // Lot 73B : information du titulaire.
+    case 'DUO_INVITATION_DECLINED':
+      return `${p.inviteEmail ?? 'La personne invitée'} a refusé votre invitation à rejoindre votre espace Premium Duo`;
     case 'ACCOUNT_INVITATION':
       return `${p.inviterName ?? 'Quelqu\'un'} vous a invité(e) à rejoindre ${p.accountName ?? 'un compte'}`;
     // ── Documents : une notification par lot (cf. CDC §7.2) ──────────────────
@@ -248,6 +253,8 @@ function getNotificationHref(type: string, payload: NotificationPayload | null):
   if (type === 'DUO_MOVE_REQUEST' || type === 'DUO_DELETE_REQUEST') {
     return p.assetId ? `/assets/${p.assetId}` : null;
   }
+  // Lot 73B : refus de l'invitation Premium Duo → panneau d'invitation (« Réinviter »).
+  if (type === 'DUO_INVITATION_DECLINED') return '/mon-compte#duo-invitation';
   if (type === 'TRANSMISSION_RECEIVED' && p.transmissionToken) {
     return `/transmission/${p.transmissionToken}`;
   }
@@ -283,6 +290,7 @@ function getNotificationIcon(type: string) {
     case 'DUO_DELETE_REFUSED':
       return <Trash2 className="w-4 h-4 flex-shrink-0" />;
     case 'ACCOUNT_INVITATION':
+    case 'DUO_INVITATION_DECLINED':
       return <UserPlus className="w-4 h-4 flex-shrink-0" />;
     case 'DOCUMENT_ANALYZED':
     case 'DOCUMENT_BATCH_COMPLETED':

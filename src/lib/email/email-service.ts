@@ -4,6 +4,7 @@ import { emailTemplates, emailSettings, emailLogs } from '@/db/schema';
 import { eq, sql } from 'drizzle-orm';
 import { isTransactionalEmailActive } from '@/lib/notifications/channel-activation';
 import { EMAIL_COLORS, EMAIL_STYLES, emailButton, emailDocument, emailLogoHtml } from './email-layout';
+import { safeTemplateVariables } from './variable-safety';
 
 /**
  * Logo de repli des emails (APP-PERF-38) : ressource MAÎTRISÉE servie par
@@ -98,6 +99,12 @@ export function redactActionLinks(variables: Record<string, string>): Record<str
  */
 export function stripUnresolvedPlaceholders(text: string): string {
   return text.replace(/\{\{\s*[A-Za-z0-9_]+\s*\}\}/g, '');
+}
+
+/** Lot 73A — remplace `{{nom}}` par la valeur fournie (version texte), sans motif « $ ». */
+function fillPlainText(text: string, variables: Record<string, string>): string {
+  return text.replace(/\{\{([A-Za-z0-9_]+)\}\}/g, (all, name: string) =>
+    (Object.prototype.hasOwnProperty.call(variables, name) ? variables[name] ?? '' : all));
 }
 
 /** Lot 70A — objet sur une seule ligne : aucune injection d'en-tête par une valeur. */
@@ -230,7 +237,9 @@ class EmailService {
 
     Object.entries(enrichedVariables).forEach(([key, value]) => {
       const regex = new RegExp(`\\{\\{${key}\\}\\}`,'g');
-      result = result.replace(regex, value || '');
+      // Lot 73A : remplaçant FONCTION — une valeur contenant « $& », « $` » ou
+      // « $' » était interprétée comme motif et recopiait des morceaux du gabarit.
+      result = result.replace(regex, () => value || '');
     });
     return result;
   }
@@ -408,12 +417,15 @@ class EmailService {
   ): Promise<RenderedEmail> {
     const settings = settingsArg ?? (await this.getSettings());
     const computedLogo = await this.getVerebonaEmailLogo();
-    const variablesForReplacement = {
-      ...withActionLinkAliases(variables ?? {}),
-      year: new Date().getFullYear().toString(),
-    };
-    const subjectRaw = this.replaceVariables(template.subject, variablesForReplacement, settings, computedLogo);
-    const bodyProcessed = this.replaceVariables(template.body, variablesForReplacement, settings, computedLogo);
+    const aliased = withActionLinkAliases(variables ?? {});
+    const year = new Date().getFullYear().toString();
+    // Lot 73A (point 3) : valeurs neutralisées par version — échappées pour le
+    // HTML, texte inerte pour la version texte et l'objet ; liens d'action de
+    // l'application et blocs HTML du code intacts (`variable-safety.ts`).
+    const htmlVariables = { ...safeTemplateVariables(aliased, 'html'), year };
+    const textVariables = { ...safeTemplateVariables(aliased, 'text'), year };
+    const subjectRaw = this.replaceVariables(template.subject, textVariables, settings, computedLogo);
+    const bodyProcessed = this.replaceVariables(template.body, htmlVariables, settings, computedLogo);
     const all = `${subjectRaw}\n${bodyProcessed}`;
     const unresolved = unresolvedPlaceholders(all);
     const missingLinks = missingActionLinks(all);
@@ -423,7 +435,10 @@ class EmailService {
     let html = this.isCompleteHTML(bodyClean) ? bodyClean : await this.wrapInHTML(bodyClean, settings, computedLogo);
     // Normalize logo sizing so the full logo (symbol + text) is readable
     html = this.fixLogoSizing(html);
-    const text = bodyClean.replace(/<[^>]*>/g, '').replace(/\n\n+/g, '\n\n');
+    // Version texte : balises retirées du GABARIT, puis valeurs « texte » insérées
+    // (une valeur n'est jamais réinterprétée comme balise, entité ou ligne).
+    const text = stripUnresolvedPlaceholders(fillPlainText(template.body.replace(/<[^>]*>/g, ''), textVariables))
+      .replace(/\n\n+/g, '\n\n');
     return { subject, html, text, unresolved, missingLinks };
   }
 

@@ -46,6 +46,10 @@
  * échéance) ; la construction REVALIDE l'abonnement chez Stripe juste avant
  * l'envoi (`services/billing/annual-renewal-reminder.service.ts`). Un montant
  * indisponible est un échec TEMPORAIRE (`temporary`), jamais une annulation.
+ * Lot 73B : sixième type, DUO_INVITATION_DECLINED (information du TITULAIRE :
+ * la personne invitée a refusé l'invitation), enregistré dans la transaction
+ * du refus (`services/duo/duo-invitation-decline.service.ts`, `dedupe_key`
+ * par Duo × jeton refusé).
  *
  * ══════════════════════════════════════════════════════════════════════════
  * LOT 72F — IDENTITÉ D'ENVOI STABLE ET ACCEPTATION INCERTAINE
@@ -79,7 +83,7 @@ import { pgClient } from '@/db';
 import { emailService } from '@/lib/email/email-service';
 import { buildEmailVerificationUrl, EMAIL_VERIFICATION_TTL_MS } from '@/services/auth/email-verification.service';
 
-export type EmailJobKind = 'EMAIL_VERIFICATION' | 'DUO_INVITATION' | 'DUO_MEMBERSHIP_ENDED' | 'DUO_MEMBERSHIP_LEFT' | 'SUBSCRIPTION_ANNUAL_RENEWAL_REMINDER';
+export type EmailJobKind = 'EMAIL_VERIFICATION' | 'DUO_INVITATION' | 'DUO_MEMBERSHIP_ENDED' | 'DUO_MEMBERSHIP_LEFT' | 'SUBSCRIPTION_ANNUAL_RENEWAL_REMINDER' | 'DUO_INVITATION_DECLINED';
 export type EmailJobStatus = 'pending' | 'sending' | 'accepted' | 'failed' | 'cancelled' | 'uncertain';
 
 const MIN = 60_000;
@@ -397,6 +401,46 @@ async function buildDuoMembershipEnded(job: JobRow): Promise<Built> {
       ownerFirstName: escapeHtml(owner),
       accountUrl: `${base}/mon-compte`,
       subscriptionUrl: `${base}/mon-compte/offres`,
+      // Lot 73A : rappel d'export (Mon compte › Mes données, export RGPD).
+      dataExportUrl: `${base}/mon-compte#mes-donnees`,
+    },
+    recipientUserId: user.id,
+    triggeredByUserId: job.triggered_by_user_id,
+    to: user.email,
+  };
+}
+
+/**
+ * Lot 73B — refus de l'invitation Premium Duo : information du TITULAIRE
+ * (son adresse ACTUELLE). Adresse invitée et date du refus figées dans le
+ * contexte au moment du refus (le titulaire a lui-même saisi l'adresse).
+ * Sans objet si le titulaire n'existe plus, si son compte est fermé ou s'il
+ * ne porte plus ce Duo. Valeurs utilisateur échappées (gabarit rendu en HTML).
+ */
+async function buildDuoInvitationDeclined(job: JobRow): Promise<Built> {
+  if (job.user_id == null) return { ok: false, reason: 'ACCOUNT_GONE' };
+  const [user] = await pgClient.unsafe<{ id: number; email: string; first_name: string | null; status: string | null }[]>(
+    `SELECT id, email, first_name, status FROM users WHERE id = $1`, [job.user_id as never]);
+  if (!user || !user.email) return { ok: false, reason: 'ACCOUNT_GONE' };
+  if (CLOSED_ACCOUNT_STATUSES.has(String(user.status ?? '').toUpperCase())) return { ok: false, reason: 'ACCOUNT_CLOSED' };
+  const ctx = contextOf(job);
+  const duoId = Number(ctx.duoId);
+  const [duo] = Number.isFinite(duoId)
+    ? await pgClient.unsafe<{ id: number }[]>(`SELECT id FROM duo_accounts WHERE id = $1 AND billing_owner_user_id = $2`, [duoId, user.id] as never[])
+    : [];
+  if (!duo) return { ok: false, reason: 'DUO_GONE' };
+  const declinedAt = typeof ctx.declinedAt === 'string' ? new Date(ctx.declinedAt) : null;
+  const inviteEmail = typeof ctx.inviteEmail === 'string' && ctx.inviteEmail.trim() ? ctx.inviteEmail.trim() : 'la personne invitée';
+  return {
+    ok: true,
+    templateCode: 'DUO_INVITATION_DECLINED',
+    variables: {
+      firstName: escapeHtml((user.first_name ?? '').trim()),
+      inviteEmail: escapeHtml(inviteEmail),
+      declinedAt: declinedAt && !Number.isNaN(declinedAt.getTime())
+        ? declinedAt.toLocaleDateString('fr-FR', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'Europe/Paris' })
+        : 'récemment',
+      invitationUrl: `${appBaseUrl()}/mon-compte#duo-invitation`,
     },
     recipientUserId: user.id,
     triggeredByUserId: job.triggered_by_user_id,
@@ -622,6 +666,7 @@ export async function processEmailJob(jobId: number, now: Date = new Date()): Pr
       : job.kind === 'DUO_MEMBERSHIP_ENDED' || job.kind === 'DUO_MEMBERSHIP_LEFT' ? await buildDuoMembershipEnded(job)
       : job.kind === 'SUBSCRIPTION_ANNUAL_RENEWAL_REMINDER' ? await buildAnnualRenewal(job, now, contentAt)
       : job.kind === 'DUO_INVITATION' ? await buildDuoInvitation(job, now)
+      : job.kind === 'DUO_INVITATION_DECLINED' ? await buildDuoInvitationDeclined(job)
       : ({ ok: false, reason: 'UNKNOWN_KIND' } as Built);
     if (!built.ok && built.temporary) {
       return await failed(job, built.reason, null, now, close);

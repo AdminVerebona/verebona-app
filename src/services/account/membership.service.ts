@@ -154,6 +154,7 @@ export type DuoJoinError =
   | 'MISSING_TOKEN'
   | 'INVALID_TOKEN'
   | 'USED_TOKEN'
+  | 'DECLINED_TOKEN'
   | 'EXPIRED_TOKEN'
   | 'SUBSCRIPTION_INACTIVE'
   | 'INVITE_EMAIL_MISMATCH'
@@ -166,6 +167,7 @@ export const DUO_JOIN_HTTP_STATUS: Record<DuoJoinError, number> = {
   MISSING_TOKEN: 400,
   INVALID_TOKEN: 404,
   USED_TOKEN: 410,
+  DECLINED_TOKEN: 410,
   EXPIRED_TOKEN: 410,
   SUBSCRIPTION_INACTIVE: 403,
   INVITE_EMAIL_MISMATCH: 403,
@@ -203,7 +205,15 @@ export async function joinDuoByInvitation(p: { userId: number; email: string; to
         .from(duoAccounts)
         .where(eq(duoAccounts.lastUsedInviteTokenHash, inviteTokenHash(token)))
         .limit(1);
-      if (!used) return { ok: false, error: 'INVALID_TOKEN' };
+      if (!used) {
+        // Lot 73B : invitation refusée par la personne invitée — refus définitif.
+        const [declined] = await tx
+          .select({ id: duoAccounts.id })
+          .from(duoAccounts)
+          .where(eq(duoAccounts.lastDeclinedInviteTokenHash, inviteTokenHash(token)))
+          .limit(1);
+        return { ok: false, error: declined ? 'DECLINED_TOKEN' : 'INVALID_TOKEN' };
+      }
       const accountId = await resolveDuoAccountId(used.id, tx);
       if (accountId && (await getActiveMembership(p.userId, accountId, tx))) {
         return { ok: true, accountId, duoId: used.id, alreadyMember: true };

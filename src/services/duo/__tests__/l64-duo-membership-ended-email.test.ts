@@ -59,14 +59,20 @@ describe('L64-MAIL-01 — gabarit DUO_MEMBERSHIP_ENDED', () => {
     expect(t.body).toMatch(/^Voir mon offre : \{\{subscriptionUrl\}\}$/m);
     expect(t.body).not.toMatch(/\btu\b|\bton\b|\bta\b|\btes\b/i);
     expect(`${t.subject}\n${t.body}`).not.toMatch(/rétract|impay|paiement|supprim[ée] son compte|ownerEmail|ownerLastName|ownerFullName/i);
-    expect(JSON.parse(t.placeholders)).toEqual(['firstName', 'ownerFirstName', 'accountUrl', 'subscriptionUrl']);
+    // Lot 73A : + {{dataExportUrl}} (rappel d'export, migration 0527).
+    expect(JSON.parse(t.placeholders)).toEqual(['firstName', 'ownerFirstName', 'accountUrl', 'subscriptionUrl', 'dataExportUrl']);
   });
 
   it('migration 0459 = texte du code ; amorçage aligné ; type accepté par la file (SQL + Drizzle)', () => {
     const mig = read('src/db/migrations/0459_duo_membership_ended_email.sql');
     const sqlText = (s: string) => s.replace(/'/g, "''").replace(/\n/g, '\\n');
-    expect(mig).toContain(sqlText(t.body));
+    // Lot 73A : le texte livré ACTUEL est posé par la 0527 (rappel d'export) ;
+    // la 0459 crée toujours le gabarit (texte du lot 64/65).
+    expect(mig).toMatch(/INSERT INTO email_templates/);
     expect(mig).toContain(sqlText(t.subject));
+    const l73 = read('src/db/migrations/0527_l73a_duo_rappel_export.sql');
+    expect(l73).toContain(t.body);
+    expect(l73).toContain(t.subject);
     expect(mig).toMatch(/WHERE NOT EXISTS \(SELECT 1 FROM email_templates WHERE upper\(type\) = 'DUO_MEMBERSHIP_ENDED'\)/);
     expect(mig).toMatch(/CHECK \(kind IN \('EMAIL_VERIFICATION', 'DUO_INVITATION', 'DUO_MEMBERSHIP_ENDED'\)\)/);
     expect(mig).toMatch(/ADD COLUMN IF NOT EXISTS dedupe_key text/);

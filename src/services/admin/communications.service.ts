@@ -60,6 +60,7 @@ const EVENT_LABELS: Record<string, string> = {
   DUO_MOVE_REFUSED: 'Transfert Duo refusé',
   DUO_DELETE_ACCEPTED: 'Suppression Duo acceptée',
   DUO_DELETE_REFUSED: 'Suppression Duo refusée',
+  DUO_INVITATION_DECLINED: 'Invitation Premium Duo refusée (information du titulaire)',
   TRANSMISSION_RECEIVED: 'Transmission reçue',
   TRANSMISSION_ACCEPTED: 'Transmission acceptée',
   TRANSMISSION_REFUSED: 'Transmission refusée',
@@ -97,6 +98,9 @@ export const TRANSACTIONAL_EMAILS: ReadonlyArray<{ templateCode: string; label: 
   { templateCode: 'DUO_MEMBERSHIP_ENDED', label: 'Fin de l’accès Premium Duo (e-mail au second utilisateur)' },
   // Lot 65A (migration 0462) : confirmation au second utilisateur qui quitte lui-même le Duo.
   { templateCode: 'DUO_MEMBERSHIP_LEFT', label: 'Départ du Premium Duo (confirmation au second utilisateur qui quitte)' },
+  // Lot 73B (migration 0530) : information du titulaire — l'invité a refusé
+  // l'invitation. Désactivable (la cloche, obligatoire, reste).
+  { templateCode: 'DUO_INVITATION_DECLINED', label: 'Invitation Premium Duo refusée (e-mail au titulaire)' },
   { templateCode: 'TRIAL_CONFIRMATION', label: 'Confirmation de l’essai' },
   { templateCode: 'PREMIUM_CONFIRMATION', label: 'Confirmation de l’abonnement' },
   { templateCode: 'DOWNGRADE_NOTIFICATION', label: 'Passage à une offre inférieure' },
@@ -507,6 +511,8 @@ export function resolveTemplateVariables(
     // titulaire n'est pas inventé (signalé manquant, COM-007).
     accountUrl: `${base}/mon-compte`,
     subscriptionUrl: `${base}/mon-compte/offres`,
+    // Lot 73A : rappel d'export des e-mails de fin d'accès Duo (Mon compte › Mes données).
+    dataExportUrl: `${base}/mon-compte#mes-donnees`,
     // SUBSCRIPTION_ANNUAL_RENEWAL_REMINDER (lot 68C) : lien permanent réel (la
     // session Stripe est créée au clic), délai nominal ; date et montant
     // viennent du contexte choisi (abonnement, paiement) ou sont signalés manquants.

@@ -1242,6 +1242,11 @@ export const duoAccounts = pgTable('duo_accounts', {
   // Lot 57A (0405) : empreinte SHA-256 du dernier jeton consommé (« invitation
   // déjà utilisée ») — jamais le jeton lui-même.
   lastUsedInviteTokenHash: text('last_used_invite_token_hash'),
+  // Lot 73B (0530) : dernier REFUS de l'invitation par la personne invitée —
+  // adresse, date (panneau du titulaire) et empreinte SHA-256 du jeton refusé.
+  lastDeclinedInviteEmail: text('last_declined_invite_email'),
+  lastDeclinedAt: tstzOptional('last_declined_at'),
+  lastDeclinedInviteTokenHash: text('last_declined_invite_token_hash'),
   // Lot 72D (0520) : compte partagé du Duo (adhésions des membres).
   accountId: integer('account_id'),
   createdAt: tstz('created_at'),
@@ -4234,7 +4239,7 @@ export const transactionalEmailJobs = pgTable('transactional_email_jobs', {
   providerDetail: text('provider_detail'),
   uncertainSince: tstzOptional('uncertain_since'),
 }, (t) => ({
-  kindCheck: check('transactional_email_jobs_kind_check', sql`${t.kind} IN ('EMAIL_VERIFICATION', 'DUO_INVITATION', 'DUO_MEMBERSHIP_ENDED', 'DUO_MEMBERSHIP_LEFT', 'SUBSCRIPTION_ANNUAL_RENEWAL_REMINDER')`),
+  kindCheck: check('transactional_email_jobs_kind_check', sql`${t.kind} IN ('EMAIL_VERIFICATION', 'DUO_INVITATION', 'DUO_MEMBERSHIP_ENDED', 'DUO_MEMBERSHIP_LEFT', 'SUBSCRIPTION_ANNUAL_RENEWAL_REMINDER', 'DUO_INVITATION_DECLINED')`),
   statusCheck: check('transactional_email_jobs_status_check', sql`${t.status} IN ('pending', 'sending', 'accepted', 'failed', 'cancelled', 'uncertain')`),
   dueIdx: index('transactional_email_jobs_due_idx').on(t.nextAttemptAt).where(sql`status IN ('pending', 'sending')`),
   userIdx: index('transactional_email_jobs_user_idx').on(t.userId, t.kind),

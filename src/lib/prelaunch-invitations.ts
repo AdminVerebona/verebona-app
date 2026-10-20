@@ -130,7 +130,7 @@ export async function resolveSignupInvitation(
  */
 export type SignupInvitationContext =
   | { kind: 'duo'; state: 'valid'; ownerName: string | null; inviteEmail: string | null }
-  | { kind: 'duo'; state: 'expired' | 'used' | 'inactive' }
+  | { kind: 'duo'; state: 'expired' | 'used' | 'inactive' | 'declined' }
   | { kind: 'account' | 'transmission'; state: 'valid' | 'expired' | 'used' }
   | { kind: 'unknown'; state: 'invalid' };
 
@@ -175,6 +175,13 @@ export async function describeSignupInvitation(rawToken: unknown, now: Date = ne
     .where(eq(duoAccounts.lastUsedInviteTokenHash, inviteTokenHash(token)))
     .limit(1);
   if (usedDuo) return { kind: 'duo', state: 'used' };
+  // Lot 73B : invitation refusée par la personne invitée (empreinte du jeton).
+  const [declinedDuo] = await db
+    .select({ id: duoAccounts.id })
+    .from(duoAccounts)
+    .where(eq(duoAccounts.lastDeclinedInviteTokenHash, inviteTokenHash(token)))
+    .limit(1);
+  if (declinedDuo) return { kind: 'duo', state: 'declined' };
 
   const [transmission] = await db
     .select({ status: assetTransmissions.status })

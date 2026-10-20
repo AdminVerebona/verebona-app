@@ -199,6 +199,10 @@ export async function middleware(request: NextRequest) {
       // inscrit (« public endpoint » par conception). POST exige toujours une
       // session — contrôlée par la route (`SessionService.getSession`).
       '/api/duo/join',
+      // Lot 73B : « Refuser l'invitation » — l'invité NON INSCRIT refuse
+      // depuis le lien reçu, sans compte. La route lit la session si elle
+      // existe ; le refus « de mon adresse » (écran sans espace) l'exige.
+      '/api/duo/decline',
     ];
 
     // Cron endpoints utilisent leur propre CRON_SECRET — pas de JWT

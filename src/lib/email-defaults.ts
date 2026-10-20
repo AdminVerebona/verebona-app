@@ -89,13 +89,18 @@ Ce qui change pour vous : vous n'avez plus accès à l'espace partagé, ni aux b
 
 Ce qui ne change pas : votre compte et vos données personnelles sont conservés. Rien n'a été supprimé de votre propre espace.
 
+Garder une copie : n'ayant plus accès à l'espace partagé, vous ne pouvez plus en exporter les biens vous-même. Si vous souhaitez une copie de certains d'entre eux, adressez-vous, le cas échéant, à {{ownerFirstName}}, qui peut les exporter depuis la fiche de chaque bien. Vos données personnelles restent exportables à tout moment depuis Mon compte, rubrique « Mes données ».
+
+Exporter mes données : {{dataExportUrl}}
+
 Accéder à mon compte : {{accountUrl}}
 
 Voir mon offre : {{subscriptionUrl}}
 
 Cordialement,
 L'équipe Verebona`,
-    placeholders: JSON.stringify(['firstName', 'ownerFirstName', 'accountUrl', 'subscriptionUrl'])
+    // Lot 73A (migration 0527) : rappel d'export, {{dataExportUrl}} (Mon compte › Mes données).
+    placeholders: JSON.stringify(['firstName', 'ownerFirstName', 'accountUrl', 'subscriptionUrl', 'dataExportUrl'])
   },
 
   // Lot 65A (migration 0462) : confirmation au membre qui QUITTE lui-même un
@@ -111,7 +116,11 @@ Ce qui change pour vous : vous n'avez plus accès à l'espace partagé, ni aux b
 
 Ce qui ne change pas : votre compte et vos données personnelles sont conservés. Rien n'a été supprimé de votre propre espace.
 
+Garder une copie : si vous n'avez pas exporté avant votre départ les biens de l'espace partagé dont vous souhaitiez garder une copie, vous ne pouvez plus le faire vous-même ; adressez-vous à {{ownerFirstName}}, qui peut les exporter depuis la fiche de chaque bien. Vos données personnelles restent exportables à tout moment depuis Mon compte, rubrique « Mes données ».
+
 Pour rejoindre à nouveau cet espace, une nouvelle invitation du titulaire sera nécessaire. Si vous n'êtes pas à l'origine de ce départ, contactez notre support en répondant à cet e-mail.
+
+Exporter mes données : {{dataExportUrl}}
 
 Accéder à mon compte : {{accountUrl}}
 
@@ -119,7 +128,28 @@ Voir mon offre : {{subscriptionUrl}}
 
 Cordialement,
 L'équipe Verebona`,
-    placeholders: JSON.stringify(['firstName', 'ownerFirstName', 'accountUrl', 'subscriptionUrl'])
+    // Lot 73A (migration 0527) : rappel d'export, {{dataExportUrl}} (Mon compte › Mes données).
+    placeholders: JSON.stringify(['firstName', 'ownerFirstName', 'accountUrl', 'subscriptionUrl', 'dataExportUrl'])
+  },
+
+  // Lot 73B (migration 0530, décision PO du 20/10) : information du TITULAIRE
+  // quand la personne invitée refuse l'invitation Premium Duo. Envoyée par la
+  // file durable ; désactivable dans le BO (la cloche reste).
+  DUO_INVITATION_DECLINED: {
+    subject: 'Votre invitation Premium Duo a été refusée',
+    body: `Bonjour {{firstName}},
+
+La personne que vous avez invitée à rejoindre votre espace Premium Duo ({{inviteEmail}}) a refusé l'invitation le {{declinedAt}}.
+
+Le lien d'invitation n'est plus valable. Votre espace, vos biens et vos documents ne sont pas modifiés.
+
+Vous pouvez inviter de nouveau cette personne, ou une autre, depuis Mon compte, rubrique Mon abonnement.
+
+Gérer mon invitation : {{invitationUrl}}
+
+Cordialement,
+L'équipe Verebona`,
+    placeholders: JSON.stringify(['firstName', 'inviteEmail', 'declinedAt', 'invitationUrl'])
   },
 
   DUO_INVITATION: {

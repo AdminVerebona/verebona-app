@@ -65,6 +65,15 @@ export async function GET(request: NextRequest) {
     }
 
     if (!duo.pendingInviteEmail) {
+      // Lot 73B : la personne invitée a refusé — statut visible, « Réinviter ».
+      // L'adresse est celle que le titulaire a lui-même saisie.
+      if (duo.lastDeclinedAt) {
+        return NextResponse.json({
+          status: 'DECLINED',
+          inviteEmail: duo.lastDeclinedInviteEmail,
+          declinedAt: duo.lastDeclinedAt,
+        });
+      }
       return NextResponse.json({ status: 'NONE' });
     }
 
@@ -181,6 +190,12 @@ export async function POST(request: NextRequest) {
         pendingInviteToken: token,
         pendingInviteTokenExpiresAt: expiresAt,
         pendingInviteSentAt: reuse ? duo.pendingInviteSentAt : null,
+        // Lot 73B : nouvelle invitation (réinvitation après un refus, même
+        // adresse ou une autre) — le statut « Refusée » n'est plus affiché.
+        // L'empreinte du jeton refusé est conservée : l'ancien lien reste
+        // « invitation refusée », jamais réactivé.
+        lastDeclinedInviteEmail: null,
+        lastDeclinedAt: null,
         updatedAt: new Date(),
       })
       .where(eq(duoAccounts.id, duo.id));

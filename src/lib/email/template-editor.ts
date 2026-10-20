@@ -101,12 +101,22 @@ const DECLARED: Record<string, { variables: TemplateVariable[]; required: Requir
     required: [req('lien d’invitation', 'inviteUrl', 'actionUrl', 'invitationLink')],
   },
   DUO_MEMBERSHIP_ENDED: {
-    variables: [FIRST_NAME, v('ownerFirstName', 'Prénom du titulaire'), v('accountUrl', 'Lien « Mon compte »', 'url'), v('subscriptionUrl', 'Lien vers les offres', 'url')],
+    variables: [FIRST_NAME, v('ownerFirstName', 'Prénom du titulaire'), v('accountUrl', 'Lien « Mon compte »', 'url'), v('subscriptionUrl', 'Lien vers les offres', 'url'),
+      // Lot 73A : rappel d'export (Mon compte › Mes données).
+      v('dataExportUrl', 'Lien « Mes données » (export de ses données)', 'url')],
     required: [req('lien vers le compte ou les offres', 'accountUrl', 'subscriptionUrl')],
   },
   DUO_MEMBERSHIP_LEFT: {
-    variables: [FIRST_NAME, v('ownerFirstName', 'Prénom du titulaire'), v('accountUrl', 'Lien « Mon compte »', 'url'), v('subscriptionUrl', 'Lien vers les offres', 'url')],
+    variables: [FIRST_NAME, v('ownerFirstName', 'Prénom du titulaire'), v('accountUrl', 'Lien « Mon compte »', 'url'), v('subscriptionUrl', 'Lien vers les offres', 'url'),
+      // Lot 73A : rappel d'export (Mon compte › Mes données).
+      v('dataExportUrl', 'Lien « Mes données » (export de ses données)', 'url')],
     required: [req('lien vers le compte ou les offres', 'accountUrl', 'subscriptionUrl')],
+  },
+  // Lot 73B (migration 0530) : le titulaire est informé du refus de son invitation.
+  DUO_INVITATION_DECLINED: {
+    variables: [v('firstName', 'Prénom du titulaire'), v('inviteEmail', 'Adresse de la personne invitée'), v('declinedAt', 'Date du refus'),
+      v('invitationUrl', 'Lien vers le panneau d’invitation (Mon compte)', 'url')],
+    required: [req('lien vers le panneau d’invitation', 'invitationUrl')],
   },
   TRIAL_CONFIRMATION: {
     variables: [FIRST_NAME, v('trialEndsAt', 'Date de fin de l’essai'), v('actionUrl', 'Lien vers Verebona', 'url'), v('loginUrl', 'Lien de connexion', 'url')],
@@ -169,6 +179,73 @@ const DECLARED: Record<string, { variables: TemplateVariable[]; required: Requir
   },
 };
 
+// ── Lot 73A : modèles d'e-mails des NOTIFICATIONS (`notif_*`) ─────────────────
+//
+// Les e-mails des notifications du catalogue multicanal (`lib/notifications/
+// catalog.ts`) utilisent des gabarits `email_templates` de type `notif_*`
+// (migrations 0077, 0174, 0206, 0279), remplis par l'EmailChannel
+// (`lib/notifications/channels.ts`) avec {{title}} et {{body}} — titre et message
+// de la cloche, COMPOSÉS PAR LE CODE à partir de l'événement — et {{actionUrl}}
+// (lien profond). Seul l'habillage de l'e-mail (objet, phrases autour, libellé du
+// bouton) est modifiable ; le message lui-même, le push et l'in-app restent dans
+// le code (COM-013 maintenu pour ces canaux). Un gabarit peut servir à plusieurs
+// événements (ex. `notif_subscription`) : l'éditeur les liste.
+
+export const NOTIFICATION_TEMPLATE_PREFIX = 'NOTIF_';
+
+export function isNotificationTemplate(code: string): boolean {
+  return (code ?? '').trim().toUpperCase().startsWith(NOTIFICATION_TEMPLATE_PREFIX);
+}
+
+export interface NotificationEmailTemplate {
+  label: string;
+  /** Événements du catalogue qui envoient ce gabarit (vide : gabarit non utilisé). */
+  events: readonly string[];
+}
+
+/** Clé : type en majuscules. Contrôlé contre le catalogue (test L73A-NOTIF-01). */
+export const NOTIFICATION_EMAIL_TEMPLATES: Readonly<Record<string, NotificationEmailTemplate>> = {
+  NOTIF_DEADLINE_J7: { label: 'Échéance dans 7 jours', events: ['DEADLINE_DUE_IN_7_DAYS'] },
+  NOTIF_DOCUMENT_UPLOAD: { label: 'Documents ajoutés', events: ['DOCUMENT_UPLOAD_COMPLETED'] },
+  NOTIF_DOCUMENT_BATCH_FAILED: { label: 'Analyse de documents en anomalie ou impossible', events: ['DOCUMENT_BATCH_PARTIALLY_FAILED', 'DOCUMENT_BATCH_FAILED', 'ANALYSIS_FAILED_PERSISTENT'] },
+  NOTIF_TO_PROCESS_IMMEDIATE: { label: 'Nouvel élément à traiter', events: ['TO_PROCESS_ITEM_CREATED'] },
+  NOTIF_TO_PROCESS_DIGEST: { label: 'Récapitulatif quotidien « À traiter »', events: ['TO_PROCESS_DAILY_DIGEST'] },
+  NOTIF_DUO_INVITATION: { label: 'Invitation Duo reçue', events: ['DUO_INVITATION_RECEIVED'] },
+  NOTIF_DUO_REQUEST: { label: 'Demande Duo à décider (transfert, suppression)', events: ['DUO_MOVE_REQUEST', 'DUO_DELETE_REQUEST'] },
+  NOTIF_DUO_RESULT: { label: 'Réponse à une demande Duo', events: ['DUO_MOVE_ACCEPTED', 'DUO_MOVE_REFUSED', 'DUO_DELETE_ACCEPTED', 'DUO_DELETE_REFUSED'] },
+  NOTIF_ACCOUNT_INVITATION: { label: 'Invitation à rejoindre un compte', events: ['ACCOUNT_INVITATION'] },
+  NOTIF_TRANSMISSION_RECEIVED: { label: 'Transmission reçue — NON UTILISÉ (aucune notification ne l’envoie par e-mail)', events: [] },
+  NOTIF_TRANSMISSION_RESULT: { label: 'Transmission acceptée, refusée ou expirée', events: ['TRANSMISSION_ACCEPTED', 'TRANSMISSION_REFUSED', 'TRANSMISSION_EXPIRED'] },
+  NOTIF_TRIAL_ENDING: { label: 'Fin d’essai proche', events: ['TRIAL_ENDING'] },
+  NOTIF_TRIAL_ENDED: { label: 'Fin d’essai', events: ['TRIAL_ENDED'] },
+  NOTIF_SUBSCRIPTION: {
+    label: 'Abonnement (renouvellement, activation, changement, résiliation)',
+    events: ['SUBSCRIPTION_RENEWED', 'SUBSCRIPTION_ACTIVATED', 'SUBSCRIPTION_CHANGED', 'SUBSCRIPTION_CHANGE_SCHEDULED', 'SUBSCRIPTION_CANCELLATION_SCHEDULED', 'SUBSCRIPTION_CANCELLED'],
+  },
+  NOTIF_REFERRAL_REWARD: { label: 'Avantage de parrainage attribué', events: ['REFERRAL_REWARD_GRANTED'] },
+  NOTIF_GDPR_EXPORT: { label: 'Export de données prêt', events: ['GDPR_EXPORT_READY'] },
+  NOTIF_PAYMENT_INCIDENT: { label: 'Incident de paiement', events: ['PAYMENT_FAILED', 'PAYMENT_ACTION_REQUIRED', 'SUBSCRIPTION_SUSPENDED', 'ACCOUNT_READ_ONLY'] },
+  NOTIF_ACCOUNT_DELETION: { label: 'Suppression de compte programmée (clôture, rappel J−7)', events: ['ACCOUNT_DELETION_SCHEDULED', 'ACCOUNT_DELETION_REMINDER'] },
+  NOTIF_SECURITY: { label: 'Sécurité du compte', events: ['PASSWORD_CHANGED', 'EMAIL_CHANGE_REQUESTED', 'EMAIL_CHANGED', 'PASSWORD_RESET_COMPLETED', 'NEW_DEVICE_LOGIN'] },
+  NOTIF_NEWS: { label: 'Actualités Verebona', events: ['NEWS_ANNOUNCEMENT'] },
+};
+
+/** Libellé d'un gabarit de notification (repli : son code). */
+export function notificationTemplateLabel(code: string): string {
+  const c = (code ?? '').trim().toUpperCase();
+  const d = NOTIFICATION_EMAIL_TEMPLATES[c];
+  return d ? `E-mail de notification — ${d.label}` : `E-mail de notification — ${c}`;
+}
+
+const NOTIFICATION_SPEC = {
+  variables: [
+    v('title', 'Titre de la notification (composé par l’application, identique à la cloche)'),
+    v('body', 'Message de la notification (composé par l’application, identique à la cloche)'),
+    v('actionUrl', 'Lien vers l’écran concerné', 'url'),
+  ],
+  required: [req('message de la notification', 'body', 'title'), req('lien vers l’écran concerné', 'actionUrl')],
+};
+
 const PLACEHOLDER_RE = /\{\{\s*([A-Za-z0-9_]+)\s*\}\}/g;
 
 /** Noms des variables `{{…}}` d'un texte (ordre d'apparition, sans doublon). */
@@ -193,6 +270,10 @@ export function variableSpecFor(
   const common = known.format === 'html' ? [YEAR, LOGO] : [YEAR];
   if (declared) {
     return { variables: [...declared.variables, ...common], required: declared.required, declared: true };
+  }
+  // Lot 73A : gabarits des notifications — variables fournies par l'EmailChannel.
+  if (isNotificationTemplate(type)) {
+    return { variables: [...NOTIFICATION_SPEC.variables, ...common], required: NOTIFICATION_SPEC.required, declared: true };
   }
   const names = new Set<string>();
   for (const t of [...(known.currentTexts ?? []), ...(known.shippedTexts ?? [])]) for (const n of extractVariables(t)) names.add(n);
@@ -233,7 +314,28 @@ export const LIMITED_TEMPLATES: Readonly<Record<string, string>> = {
     'Parcours légal de rétractation : le lien de confirmation et l’adresse de contact doivent rester présents.',
   PRICE_CHANGE_NOTICE:
     'Information préalable d’une évolution de tarif : le tarif actuel, le nouveau tarif et la date d’effet doivent rester présents.',
+  // Lot 73A : e-mails des notifications.
+  NOTIF_NEWS:
+    'E-mail d’actualités (prospection, consentement distinct) : la mention permettant de ne plus recevoir ces actualités (préférences de notification) doit rester présente.',
+  NOTIF_ACCOUNT_DELETION:
+    'Notification obligatoire de suppression de compte : le lien vers la page qui permet d’annuler la suppression ou d’exporter ses données doit rester présent.',
 };
+
+/**
+ * Lot 73A — mentions de TEXTE obligatoires (au-delà des variables), contrôlées
+ * sur l'objet et le texte visible du contenu.
+ */
+export const REQUIRED_MENTIONS: Readonly<Record<string, ReadonlyArray<{ label: string; pattern: RegExp }>>> = {
+  NOTIF_NEWS: [{ label: 'moyen de ne plus recevoir ces actualités (ex. « Pour ne plus recevoir ces actualités, gérez vos préférences… »)', pattern: /ne plus recevoir|d[ée]sabonn|d[ée]sinscri|pr[ée]f[ée]rences/i }],
+};
+
+export function requiredMentionIssues(code: string, subject: string, body: string): ValidationIssue[] {
+  const mentions = REQUIRED_MENTIONS[(code ?? '').trim().toUpperCase()] ?? [];
+  const visible = `${subject}\n${comparableText(body)}`;
+  return mentions
+    .filter((m) => !m.pattern.test(visible))
+    .map((m) => ({ code: 'REQUIRED_MENTION_MISSING', message: `Mention obligatoire retirée : ${m.label}.` }));
+}
 
 export function contentLockReason(type: string): string | null {
   return CONTENT_LOCKED_TEMPLATES[type.trim().toUpperCase()] ?? null;
@@ -493,6 +595,8 @@ function dedupe(issues: ValidationIssue[]): ValidationIssue[] {
  * déclaration de variables du gabarit. Renvoie la liste des refus (vide = OK).
  */
 export function validateDraft(input: {
+  /** Lot 73A : code du modèle (mentions obligatoires) ; facultatif. */
+  code?: string;
   subject: unknown;
   body: unknown;
   format: TemplateFormat;
@@ -542,6 +646,7 @@ export function validateDraft(input: {
       issues.push({ code: 'REQUIRED_VARIABLE_MISSING', message: `Variable obligatoire retirée : ${g.label} (${g.anyOf.map((n) => `{{${n}}}`).join(' ou ')}).` });
     }
   }
+  if (input.code) issues.push(...requiredMentionIssues(input.code, subject, body));
   return dedupe(issues);
 }
 
@@ -580,4 +685,6 @@ export const VERSION_SOURCE_LABELS: Readonly<Record<string, string>> = {
   admin_edit: 'Modification',
   restore: 'Restauration',
   reset_shipped: 'Retour au texte livré',
+  // Lot 73A (0527) : texte livré par une mise à jour de l'application (gabarit non personnalisé).
+  shipped_update: 'Texte livré (mise à jour de l’application)',
 };

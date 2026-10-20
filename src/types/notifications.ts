@@ -42,6 +42,8 @@ export const NOTIFICATION_TYPES = {
   DUO_MOVE_REFUSED: 'DUO_MOVE_REFUSED',
   DUO_DELETE_ACCEPTED: 'DUO_DELETE_ACCEPTED',
   DUO_DELETE_REFUSED: 'DUO_DELETE_REFUSED',
+  /** Lot 73B : la personne invitée a refusé l'invitation Premium Duo (information du titulaire). */
+  DUO_INVITATION_DECLINED: 'DUO_INVITATION_DECLINED',
 
   // ── Transmission ──────────────────────────────────────────────────────────
   TRANSMISSION_RECEIVED: 'TRANSMISSION_RECEIVED',
@@ -145,6 +147,7 @@ export interface NotificationPayloadMap {
   DUO_MOVE_REFUSED: { requestId: number; assetLabel: string };
   DUO_DELETE_ACCEPTED: { requestId: number; assetLabel: string };
   DUO_DELETE_REFUSED: { requestId: number; assetLabel: string };
+  DUO_INVITATION_DECLINED: { duoId?: number; inviteEmail?: string };
 
   TRANSMISSION_RECEIVED: { transmissionToken?: string; senderName?: string; assetName?: string };
   TRANSMISSION_ACCEPTED: { assetName?: string; recipientName?: string };

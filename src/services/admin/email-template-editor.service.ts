@@ -16,6 +16,13 @@
  *     les données du propre compte de l'administrateur (COM-007, COM-008) et le
  *     même rendu que l'envoi réel (`EmailService.renderTemplate`).
  *
+ * Lot 73A (décision PO du 20/10) : même éditeur pour les e-mails des
+ * NOTIFICATIONS du catalogue (gabarits `notif_*`, `editorTemplateScope`) — mêmes
+ * versions, validations, protections (garde 0483), aperçu, test et audit. Leurs
+ * variables {{title}} / {{body}} sont composées par le code (texte de la cloche) ;
+ * l'aperçu et le test les rendent pour un événement réel choisi
+ * (`notificationPreviewVariables`). Push et in-app restent non éditables (COM-013).
+ *
  * Écriture : réglage de transaction `verebona.email_template_edit = on` — seul
  * l'éditeur peut modifier un gabarit personnalisé (déclencheurs de la 0483).
  * Concurrence : l'empreinte du texte ouvert (`baseHash`) doit être celle du
@@ -31,7 +38,10 @@ import { DEFAULT_EMAIL_TEMPLATES } from '@/lib/email-defaults';
 import { EMAIL_HTML_TEMPLATES_L66 } from '@/lib/email/email-html-templates';
 import {
   EDITOR_LIMITS,
+  NOTIFICATION_EMAIL_TEMPLATES,
   applyHtmlZones,
+  isNotificationTemplate,
+  notificationTemplateLabel,
   contentLockReason,
   extractHtmlZones,
   extractVariables,
@@ -48,9 +58,14 @@ import {
   type TemplateVariableSpec,
   type ValidationIssue,
 } from '@/lib/email/template-editor';
+import { getCatalogEntry } from '@/lib/notifications/catalog';
+import { renderContent } from '@/lib/notifications/content-renderer';
+import { withSpaceParam } from '@/lib/shell/space-link';
 import {
   appBaseUrl,
   MISSING_DATA_MARK,
+  communicationTypeLabel,
+  contextPayload,
   contextVariables,
   listEventDefinitions,
   loadAdminPreviewContext,
@@ -59,6 +74,7 @@ import {
   resolveTemplateVariables,
   selectPreviewContext,
   type PreviewSelection,
+  type SelectedPreviewContext,
 } from './communications.service';
 
 // ── Modèle ──────────────────────────────────────────────────────────────────
@@ -101,6 +117,10 @@ export interface EditorState {
   code: string;
   type: string;
   label: string;
+  /** Lot 73A : e-mail transactionnel, ou e-mail d'une notification du catalogue (`notif_*`). */
+  kind: 'transactional' | 'notification';
+  /** Lot 73A : événements du catalogue qui envoient ce gabarit (notification). */
+  usedBy: Array<{ code: string; label: string; mandatoryEmail: boolean }>;
   format: TemplateFormat;
   subject: string;
   body: string;
@@ -173,6 +193,48 @@ export async function transactionalTemplateScope(): Promise<Map<string, string>>
   return out;
 }
 
+export interface ScopeEntry {
+  label: string;
+  kind: 'transactional' | 'notification';
+}
+
+/**
+ * Lot 73A — gabarits ouverts à l'éditeur : e-mails transactionnels (lot 70A) ET
+ * e-mails des notifications du catalogue (gabarits `notif_*` présents en base).
+ * Push et in-app n'ont pas de gabarit : leur texte reste dans le code.
+ */
+export async function editorTemplateScope(): Promise<Map<string, ScopeEntry>> {
+  const codes = await loadEmailTemplateCodes();
+  const out = new Map<string, ScopeEntry>();
+  for (const d of listEventDefinitions(codes)) {
+    if (d.kind === 'transactional' && d.emailTemplateCode) out.set(d.emailTemplateCode.toUpperCase(), { label: d.label, kind: 'transactional' });
+  }
+  for (const c of codes) {
+    const u = (c ?? '').trim().toUpperCase();
+    if (isNotificationTemplate(u) && !out.has(u)) out.set(u, { label: notificationTemplateLabel(u), kind: 'notification' });
+  }
+  return out;
+}
+
+const UNKNOWN_TEMPLATE = 'Modèle d’e-mail inconnu.';
+
+/** Événements du catalogue qui envoient un gabarit de notification. */
+export function notificationUsage(code: string): Array<{ code: string; label: string; mandatoryEmail: boolean }> {
+  return (NOTIFICATION_EMAIL_TEMPLATES[code]?.events ?? [])
+    .map((e) => ({ e, entry: getCatalogEntry(e) }))
+    .filter((x) => !!x.entry)
+    .map(({ e, entry }) => ({ code: e, label: communicationTypeLabel(e), mandatoryEmail: !!entry!.mandatoryEmail }));
+}
+
+/** Verrou d'ENVOI (pas de texte) : e-mail transactionnel verrouillé, ou notification à e-mail obligatoire. */
+function channelLockOf(code: string, kind: ScopeEntry['kind']): string | null {
+  if (kind === 'transactional') return transactionalLockReason(code);
+  const mandatory = notificationUsage(code).filter((u) => u.mandatoryEmail);
+  return mandatory.length
+    ? `Notification obligatoire du catalogue (${mandatory.map((u) => u.label).join(', ')}) : l’e-mail est toujours envoyé.`
+    : null;
+}
+
 export function normalizeCode(code: unknown): string | null {
   if (typeof code !== 'string') return null;
   const c = code.trim().toUpperCase();
@@ -229,8 +291,8 @@ async function listVersionRows(ex: Exec, code: string, limit = 50) {
 
 export async function getEditorState(rawCode: unknown): Promise<EditorResult<{ state: EditorState }>> {
   const code = normalizeCode(rawCode);
-  const scope = await transactionalTemplateScope();
-  if (!code || !scope.has(code)) return { ok: false, error: 'NOT_FOUND', message: 'Modèle d’e-mail transactionnel inconnu.' };
+  const scope = await editorTemplateScope();
+  if (!code || !scope.has(code)) return { ok: false, error: 'NOT_FOUND', message: UNKNOWN_TEMPLATE };
   const row = await loadRow(db, code);
   if (!row) return { ok: false, error: 'NOT_FOUND', message: 'Aucun gabarit e-mail n’est enregistré pour ce modèle.' };
   const format = templateFormat(row.body);
@@ -242,7 +304,9 @@ export async function getEditorState(rawCode: unknown): Promise<EditorResult<{ s
     state: {
       code,
       type: row.type,
-      label: scope.get(code) ?? code,
+      label: scope.get(code)?.label ?? code,
+      kind: scope.get(code)?.kind ?? 'transactional',
+      usedBy: scope.get(code)?.kind === 'notification' ? notificationUsage(code) : [],
       format,
       subject: row.subject,
       body: row.body,
@@ -253,7 +317,7 @@ export async function getEditorState(rawCode: unknown): Promise<EditorResult<{ s
       declaredVariables: spec.declared,
       contentLock: contentLockReason(code),
       limitedReason: limitedEditReason(code),
-      channelLock: transactionalLockReason(code),
+      channelLock: channelLockOf(code, scope.get(code)?.kind ?? 'transactional'),
       isCustomized: row.is_customized,
       customizedAt: iso(row.customized_at),
       updatedAt: iso(row.updated_at),
@@ -286,8 +350,8 @@ export async function getVersion(rawCode: unknown, versionId: unknown): Promise<
   const code = normalizeCode(rawCode);
   const id = Number(versionId);
   if (!code || !Number.isSafeInteger(id) || id <= 0) return { ok: false, error: 'VERSION_NOT_FOUND', message: 'Version introuvable.' };
-  const scope = await transactionalTemplateScope();
-  if (!scope.has(code)) return { ok: false, error: 'NOT_FOUND', message: 'Modèle d’e-mail transactionnel inconnu.' };
+  const scope = await editorTemplateScope();
+  if (!scope.has(code)) return { ok: false, error: 'NOT_FOUND', message: UNKNOWN_TEMPLATE };
   const row = await loadRow(db, code);
   const [v] = await rows<{
     id: number; version_no: number; source: string; subject: string; body: string; created_at: Date | null;
@@ -336,7 +400,7 @@ export function buildDraft(row: TemplateRow, input: DraftInput):
   } else {
     body = typeof input.body === 'string' ? input.body.replace(/\r\n?/g, '\n') : '';
   }
-  const issues = validateDraft({ subject, body, format, spec, htmlVariablesAllowed: htmlVarsAllowed(row, body) });
+  const issues = validateDraft({ code: row.type.toUpperCase(), subject, body, format, spec, htmlVariablesAllowed: htmlVarsAllowed(row, body) });
   return issues.length ? { ok: false, issues } : { ok: true, subject, body, format, changedZones };
 }
 
@@ -398,8 +462,8 @@ async function auditRefusal(action: AdminActionType, admin: AdminActor, row: Tem
 export async function saveTemplate(input: DraftInput & { code: unknown; baseHash: unknown; note?: unknown; admin: AdminActor }):
   Promise<EditorResult<{ changed: boolean; versionNo: number | null }>> {
   const code = normalizeCode(input.code);
-  const scope = await transactionalTemplateScope();
-  if (!code || !scope.has(code)) return { ok: false, error: 'NOT_FOUND', message: 'Modèle d’e-mail transactionnel inconnu.' };
+  const scope = await editorTemplateScope();
+  if (!code || !scope.has(code)) return { ok: false, error: 'NOT_FOUND', message: UNKNOWN_TEMPLATE };
   const lock = contentLockReason(code);
   if (lock) {
     await auditRefusal('EMAIL_TEMPLATE_UPDATE', input.admin, null, code, 'DENIED', { code: 'CONTENT_LOCKED' });
@@ -448,8 +512,8 @@ export async function saveTemplate(input: DraftInput & { code: unknown; baseHash
 export async function restoreVersion(input: { code: unknown; versionId: unknown; baseHash: unknown; admin: AdminActor }):
   Promise<EditorResult<{ versionNo: number }>> {
   const code = normalizeCode(input.code);
-  const scope = await transactionalTemplateScope();
-  if (!code || !scope.has(code)) return { ok: false, error: 'NOT_FOUND', message: 'Modèle d’e-mail transactionnel inconnu.' };
+  const scope = await editorTemplateScope();
+  if (!code || !scope.has(code)) return { ok: false, error: 'NOT_FOUND', message: UNKNOWN_TEMPLATE };
   const lock = contentLockReason(code);
   if (lock) {
     await auditRefusal('EMAIL_TEMPLATE_RESTORE', input.admin, null, code, 'DENIED', { code: 'CONTENT_LOCKED' });
@@ -471,7 +535,7 @@ export async function restoreVersion(input: { code: unknown; versionId: unknown;
       : [];
     if (!v) { refusal = { error: 'VERSION_NOT_FOUND', message: 'Version introuvable.', row }; return null; }
     const format = templateFormat(v.body);
-    const issues = validateDraft({ subject: v.subject, body: v.body, format, spec: specOf(row, format), htmlVariablesAllowed: htmlVarsAllowed(row, v.body) });
+    const issues = validateDraft({ code, subject: v.subject, body: v.body, format, spec: specOf(row, format), htmlVariablesAllowed: htmlVarsAllowed(row, v.body) });
     if (issues.length) { refusal = { error: 'INVALID', message: 'Cette version ne respecte plus les règles du modèle : restauration refusée.', issues, row }; return null; }
 
     await adminEdit(tx);
@@ -506,8 +570,8 @@ export async function restoreVersion(input: { code: unknown; versionId: unknown;
 export async function resetToShipped(input: { code: unknown; baseHash: unknown; admin: AdminActor }):
   Promise<EditorResult<{ versionNo: number; changed: boolean }>> {
   const code = normalizeCode(input.code);
-  const scope = await transactionalTemplateScope();
-  if (!code || !scope.has(code)) return { ok: false, error: 'NOT_FOUND', message: 'Modèle d’e-mail transactionnel inconnu.' };
+  const scope = await editorTemplateScope();
+  if (!code || !scope.has(code)) return { ok: false, error: 'NOT_FOUND', message: UNKNOWN_TEMPLATE };
   const adminEmail = await resolveAdminEmail(db, input.admin);
   let refusal: { error: EditorErrorCode; message: string; issues?: ValidationIssue[]; row: TemplateRow | null } | null = null;
   const out = await db.transaction(async (tx) => {
@@ -565,6 +629,55 @@ export function withPreviewLinks(variables: Record<string, string>, base: string
   return out;
 }
 
+/**
+ * Lot 73A — variables d'un e-mail de NOTIFICATION pour l'aperçu et le test :
+ * titre, message et lien RÉELS de l'événement choisi (parmi ceux qui utilisent
+ * le gabarit ; à défaut le premier), rendus par le catalogue avec le contexte
+ * pris dans le compte de l'administrateur (COM-007, COM-008). Un message qui
+ * dépend d'une donnée absente est laissé vide : signalé « [donnée indisponible] »
+ * et l'aperçu est déclaré incomplet (COM-009).
+ */
+export function notificationPreviewVariables(
+  code: string, eventCode: unknown, selected: SelectedPreviewContext, accountId: number | null, base: string = appBaseUrl(),
+): { variables: Record<string, string>; eventCode: string | null } {
+  const events = notificationUsage(code).map((u) => u.code);
+  const ev = typeof eventCode === 'string' && events.includes(eventCode) ? eventCode : events[0];
+  const entry = ev ? getCatalogEntry(ev) : undefined;
+  if (!ev || !entry) return { variables: {}, eventCode: null };
+  const payload = contextPayload(selected, accountId);
+  const parsed = entry.payloadSchema.safeParse(payload);
+  let rendered: ReturnType<typeof renderContent> | null = null;
+  try {
+    rendered = renderContent(entry, parsed.success ? parsed.data : payload);
+  } catch {
+    rendered = null;
+  }
+  const usable = (t: string | null | undefined) => (t && !/\b(?:undefined|null|NaN)\b/.test(t) ? t : '');
+  const root = base.replace(/\/+$/, '');
+  const href = rendered?.href ? withSpaceParam(rendered.href, accountId) ?? rendered.href : null;
+  return {
+    eventCode: ev,
+    variables: {
+      title: usable(rendered?.bellTitle),
+      body: usable(rendered?.bellBody),
+      ...(href ? { actionUrl: /^https?:\/\//i.test(href) ? href : `${root}${href.startsWith('/') ? '' : '/'}${href}` } : {}),
+    },
+  };
+}
+
+/** Contexte de l'aperçu / du test : compte de l'admin, contexte choisi, notification. */
+async function previewContextFor(code: string, kind: ScopeEntry['kind'] | undefined, adminId: number, accountId: number | null | undefined,
+  selection: PreviewSelection | undefined, eventCode: unknown) {
+  const options = await loadPreviewContextOptions(adminId, accountId ?? undefined);
+  const selected = selectPreviewContext(options, selection ?? {});
+  const notif = kind === 'notification' ? notificationPreviewVariables(code, eventCode, selected, options.accountId) : null;
+  const ctx = {
+    ...(await loadAdminPreviewContext(adminId, accountId ?? undefined)),
+    extra: { ...contextVariables(selected), ...(notif?.variables ?? {}) },
+  };
+  return { ctx, selected, eventCode: notif?.eventCode ?? null };
+}
+
 export interface DraftRender {
   subject: string;
   html: string;
@@ -573,6 +686,8 @@ export interface DraftRender {
   missingCount: number;
   rejected: string[];
   recipient: string;
+  /** Lot 73A : événement illustré (e-mail de notification). */
+  eventCode?: string | null;
 }
 
 /**
@@ -581,10 +696,12 @@ export interface DraftRender {
  */
 export async function renderDraft(input: {
   code: unknown; draft?: DraftInput | null; selection?: PreviewSelection; adminId: number; accountId?: number | null;
+  /** Lot 73A : événement du catalogue dont le message illustre un e-mail de notification. */
+  eventCode?: unknown;
 }): Promise<EditorResult<{ render: DraftRender; subject: string; body: string; valid: boolean; templateType: string; rowId: number }>> {
   const code = normalizeCode(input.code);
-  const scope = await transactionalTemplateScope();
-  if (!code || !scope.has(code)) return { ok: false, error: 'NOT_FOUND', message: 'Modèle d’e-mail transactionnel inconnu.' };
+  const scope = await editorTemplateScope();
+  if (!code || !scope.has(code)) return { ok: false, error: 'NOT_FOUND', message: UNKNOWN_TEMPLATE };
   const row = await loadRow(db, code);
   if (!row) return { ok: false, error: 'NOT_FOUND', message: 'Aucun gabarit e-mail n’est enregistré pour ce modèle.' };
 
@@ -603,9 +720,7 @@ export async function renderDraft(input: {
       }
     }
   }
-  const options = await loadPreviewContextOptions(input.adminId, input.accountId ?? undefined);
-  const selected = selectPreviewContext(options, input.selection ?? {});
-  const ctx = { ...(await loadAdminPreviewContext(input.adminId, input.accountId ?? undefined)), extra: contextVariables(selected) };
+  const { ctx, selected, eventCode } = await previewContextFor(code, scope.get(code)?.kind, input.adminId, input.accountId, input.selection, input.eventCode);
   const { variables: resolved, missingCount } = resolveTemplateVariables([subject, body], ctx, appBaseUrl());
   const variables = withPreviewLinks(resolved);
   const { emailService } = await import('@/lib/email/email-service');
@@ -625,6 +740,7 @@ export async function renderDraft(input: {
       missingCount,
       rejected: selected.rejected,
       recipient: ctx.email,
+      eventCode,
     },
   };
 }
@@ -632,17 +748,17 @@ export async function renderDraft(input: {
 /** Envoi de test du brouillon VALIDE vers l'administrateur connecté (adresse de session). */
 export async function sendDraftTest(input: {
   code: unknown; draft: DraftInput; selection?: PreviewSelection; admin: AdminActor & { email: string }; accountId?: number | null;
+  eventCode?: unknown;
 }): Promise<EditorResult<{ to: string; incomplete: boolean }>> {
-  const r = await renderDraft({ code: input.code, draft: input.draft, selection: input.selection, adminId: input.admin.id, accountId: input.accountId });
+  const r = await renderDraft({ code: input.code, draft: input.draft, selection: input.selection, adminId: input.admin.id, accountId: input.accountId, eventCode: input.eventCode });
   if (!r.ok) return r;
   const code = normalizeCode(input.code)!;
   if (!r.valid) {
     await auditRefusal('EMAIL_TEMPLATE_TEST', input.admin, { id: r.rowId } as TemplateRow, code, 'FAILURE', { code: 'INVALID', issues: r.render.issues.map((i) => i.code) });
     return { ok: false, error: 'INVALID', message: 'Test non envoyé : corrigez d’abord les points signalés.', issues: r.render.issues };
   }
-  const options = await loadPreviewContextOptions(input.admin.id, input.accountId ?? undefined);
-  const selected = selectPreviewContext(options, input.selection ?? {});
-  const ctx = { ...(await loadAdminPreviewContext(input.admin.id, input.accountId ?? undefined)), extra: contextVariables(selected) };
+  const scope = await editorTemplateScope();
+  const { ctx } = await previewContextFor(code, scope.get(code)?.kind, input.admin.id, input.accountId, input.selection, input.eventCode);
   const { variables: resolved, missingCount } = resolveTemplateVariables([r.subject, r.body], ctx, appBaseUrl());
   const variables = withPreviewLinks(resolved);
   const { emailService } = await import('@/lib/email/email-service');
@@ -651,7 +767,7 @@ export async function sendDraftTest(input: {
     adminId: input.admin.id, adminEmail: input.admin.email, action: 'EMAIL_TEMPLATE_TEST', targetType: 'EMAIL_TEMPLATE', targetId: r.rowId,
     result: sent.success ? 'SUCCESS' : 'FAILURE',
     after: { subject: r.subject, bodyHash: contentHash(r.subject, r.body) },
-    details: { templateCode: code, emailLogId: sent.logId ?? null, ...(sent.success ? {} : { error: String(sent.error ?? '').slice(0, 120) }) },
+    details: { templateCode: code, emailLogId: sent.logId ?? null, ...(r.render.eventCode ? { eventCode: r.render.eventCode } : {}), ...(sent.success ? {} : { error: String(sent.error ?? '').slice(0, 120) }) },
   });
   if (!sent.success) return { ok: false, error: 'SEND_FAILED', message: 'Échec de l’envoi de l’e-mail de test.' };
   return { ok: true, to: input.admin.email, incomplete: missingCount > 0 };

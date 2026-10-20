@@ -338,6 +338,31 @@ export const NOTIFICATION_CATALOG: { [K in NotificationType]?: CatalogEntry } = 
   [T.DUO_DELETE_ACCEPTED]: duoResult(T.DUO_DELETE_ACCEPTED, 'suppression', 'acceptée'),
   [T.DUO_DELETE_REFUSED]: duoResult(T.DUO_DELETE_REFUSED, 'suppression', 'refusée'),
 
+  // ══════════════════════════════════════════════════════════════════════════
+  // LOT 73B — LA PERSONNE INVITÉE REFUSE L'INVITATION PREMIUM DUO
+  //
+  // Information du TITULAIRE (destinataire explicite, jamais l'invité) :
+  // cloche obligatoire — c'est aussi le statut affiché dans son panneau
+  // d'invitation —, push générique (aucune adresse, §4.3). PAS d'e-mail par
+  // ce canal : l'e-mail est le gabarit transactionnel DUO_INVITATION_DECLINED
+  // (file durable, éditable et désactivable dans le BO) — jamais deux e-mails.
+  // ══════════════════════════════════════════════════════════════════════════
+  [T.DUO_INVITATION_DECLINED]: {
+    type: T.DUO_INVITATION_DECLINED,
+    category: 'duo', priority: 'normal', deliveryMode: 'immediate',
+    mandatoryBell: true, mandatoryEmail: false, neverBell: false,
+    defaults: { push: true, email: false }, retentionDays: 180,
+    render: (p) => content(
+      'Invitation refusée',
+      p?.inviteEmail
+        ? `${p.inviteEmail} a refusé votre invitation à rejoindre votre espace Premium Duo. Vous pouvez la réinviter ou inviter une autre personne.`
+        : 'La personne invitée a refusé votre invitation à rejoindre votre espace Premium Duo. Vous pouvez la réinviter ou inviter une autre personne.',
+      { body: 'Une invitation Premium Duo a été refusée.' },
+    ),
+    deepLink: () => '/mon-compte#duo-invitation',
+    payloadSchema: z.object({ duoId: z.number().optional(), inviteEmail: z.string().optional() }),
+  },
+
   [T.ACCOUNT_INVITATION]: {
     type: T.ACCOUNT_INVITATION,
     category: 'duo', priority: 'high', deliveryMode: 'immediate',

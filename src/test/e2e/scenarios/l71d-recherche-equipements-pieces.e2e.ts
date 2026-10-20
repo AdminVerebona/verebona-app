@@ -252,8 +252,9 @@ scenario('L71D-SRCH', 'Lot 71D — équipements et pièces recherchés et propos
     expect((await findNamedEntities(c.id, 'Portail motorisé')).entities).toEqual([]);
     expect((await findNamedEntities(c.id, 'Pompe à chaleur')).entities.map((e) => e.id)).toEqual([ids.pac]);
     expect((await findNamedEntities(autre.id, 'Pompe à chaleur')).entities.map((e) => e.id)).toEqual([ids.autrePac]);
-    // Aucune écriture : lecture seule (aucune ligne modifiée).
-    const [{ n }] = await sql<{ n: number }[]>`SELECT count(*)::int AS n FROM equipments WHERE updated_at > now() - interval '1 second'`;
+    // Aucune écriture : lecture seule (aucune ligne modifiée). Lot 73 : borné aux
+    // comptes du scénario (les autres fichiers e2e écrivent en parallèle).
+    const [{ n }] = await sql<{ n: number }[]>`SELECT count(*)::int AS n FROM equipments e JOIN assets a ON a.id = e.asset_id WHERE a.account_id IN (${c.id}, ${autre.id}) AND e.updated_at > now() - interval '1 second'`;
     expect(n).toBe(0);
   });
 

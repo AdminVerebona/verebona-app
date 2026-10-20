@@ -9,7 +9,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireAdmin, getSession, sessionErrorResponse } from '@/lib/auth-guards';
 import { renderDraft } from '@/services/admin/email-template-editor.service';
-import { NO_STORE, draftOf, editorError, invalidBody, readJson, selectionOf, serverError } from '../../_shared';
+import { NO_STORE, draftOf, editorError, invalidBody, previewEventOf, readJson, selectionOf, serverError } from '../../_shared';
 
 export async function POST(request: NextRequest, context: { params: Promise<{ code: string }> }) {
   let adminId: number;
@@ -30,6 +30,7 @@ export async function POST(request: NextRequest, context: { params: Promise<{ co
       selection: selectionOf(body),
       adminId,
       accountId,
+      eventCode: previewEventOf(body),
     });
     if (!r.ok) return editorError(r);
     return NextResponse.json({ ...r.render, valid: r.valid }, { headers: NO_STORE });

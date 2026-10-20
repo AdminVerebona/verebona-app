@@ -3,11 +3,22 @@
 import { Suspense, useEffect, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { Button } from '@/components/ui/button';
-import { Loader2, Users, AlertCircle, CheckCircle2 } from 'lucide-react';
+import { Loader2, Users, AlertCircle, CheckCircle2, XCircle } from 'lucide-react';
 import { useSession } from '@/hooks/useSession';
 import { FollowTheme } from '@/components/FollowTheme';
 import { LogoWithBaseline } from '@/components/Logo';
 import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
+import {
+  declineDuo,
   duoJoinErrorMessage,
   joinDuo,
   peekPendingDuoJoin,
@@ -21,9 +32,12 @@ type PageState =
   | 'invalid'
   | 'expired'
   | 'used'
+  | 'declined_link'
   | 'already_in_duo'
   | 'subscription_inactive'
   | 'joining'
+  | 'declining'
+  | 'declined'
   | 'success'
   | 'error';
 
@@ -41,6 +55,7 @@ function DuoJoinContent() {
   const [pageState, setPageState] = useState<PageState>('loading');
   const [tokenInfo, setTokenInfo] = useState<TokenInfo | null>(null);
   const [errorMessage, setErrorMessage] = useState('');
+  const [confirmDecline, setConfirmDecline] = useState(false);
 
   useEffect(() => {
     if (!token) return;
@@ -56,6 +71,8 @@ function DuoJoinContent() {
           setPageState('expired');
         } else if (data.error === 'USED_TOKEN') {
           setPageState('used');
+        } else if (data.error === 'DECLINED_TOKEN') {
+          setPageState('declined_link');
         } else if (data.error === 'SUBSCRIPTION_INACTIVE') {
           setPageState('subscription_inactive');
         } else {
@@ -88,8 +105,24 @@ function DuoJoinContent() {
       setPageState('already_in_duo');
     } else if (result.error === 'EXPIRED_TOKEN') {
       setPageState('expired');
+    } else if (result.error === 'DECLINED_TOKEN') {
+      setPageState('declined_link');
     } else {
       setErrorMessage(result.message || duoJoinErrorMessage(result.error));
+      setPageState('error');
+    }
+  };
+
+  // Lot 73B : refus, connecté ou non (aucun compte n'est créé). Le titulaire
+  // est prévenu par le serveur ; la réponse ne dit rien de plus.
+  const handleDecline = async () => {
+    setConfirmDecline(false);
+    setPageState('declining');
+    const r = await declineDuo(token);
+    if (r.ok) {
+      setPageState('declined');
+    } else {
+      setErrorMessage('Le refus n’a pas pu être enregistré. Vérifiez votre connexion et réessayez.');
       setPageState('error');
     }
   };
@@ -121,11 +154,36 @@ function DuoJoinContent() {
       );
     }
 
-    if (pageState === 'joining') {
+    if (pageState === 'joining' || pageState === 'declining') {
       return (
         <div className="text-center space-y-4">
           <Loader2 className="w-10 h-10 animate-spin text-[color:var(--accent)] mx-auto" />
-          <p className="text-sm text-[color:var(--text-muted)]">Rattachement en cours…</p>
+          <p className="text-sm text-[color:var(--text-muted)]">
+            {pageState === 'joining' ? 'Rattachement en cours…' : 'Enregistrement de votre refus…'}
+          </p>
+        </div>
+      );
+    }
+
+    if (pageState === 'declined') {
+      return (
+        <div className="text-center space-y-4 animate-in fade-in duration-300" data-testid="duo-join-declined">
+          <XCircle className="w-14 h-14 text-[color:var(--text-muted)] mx-auto" />
+          <div>
+            <p className="text-lg font-semibold text-[color:var(--text-primary)]">Invitation refusée</p>
+            <p className="text-sm text-[color:var(--text-muted)] mt-1 leading-relaxed">
+              {tokenInfo?.ownerName
+                ? `${tokenInfo.ownerName} en est informé(e). `
+                : 'La personne qui vous a invité en est informée. '}
+              {user
+                ? 'Votre espace n’est pas modifié.'
+                : 'Aucun compte n’a été créé.'}
+              {' '}Ce lien n’est plus valable.
+            </p>
+          </div>
+          <Button variant="outline" onClick={() => router.push(user ? '/accueil' : '/')} className="mt-2">
+            {user ? 'Retour à l\'accueil' : 'Fermer'}
+          </Button>
         </div>
       );
     }
@@ -176,6 +234,18 @@ function DuoJoinContent() {
           showBack
           onBack={() => router.push(user ? '/accueil' : '/login')}
           backLabel={user ? 'Retour à l\'accueil' : 'Se connecter'}
+        />
+      );
+    }
+
+    if (pageState === 'declined_link') {
+      return (
+        <ErrorBlock
+          title="Invitation refusée"
+          message="Cette invitation Premium Duo a été refusée et n'est plus valable. Pour rejoindre cet espace, demandez au titulaire une nouvelle invitation."
+          showBack
+          onBack={() => router.push(user ? '/accueil' : '/')}
+          backLabel={user ? 'Retour à l\'accueil' : 'Fermer'}
         />
       );
     }
@@ -253,7 +323,39 @@ function DuoJoinContent() {
           >
             Annuler
           </Button>
+          {/* Lot 73B : refus explicite, connecté ou non (aucun compte créé). */}
+          <Button
+            variant="ghost"
+            onClick={() => setConfirmDecline(true)}
+            className="w-full text-destructive hover:text-destructive"
+            data-testid="duo-join-decline"
+          >
+            <XCircle className="w-4 h-4 mr-2" />
+            Refuser l’invitation
+          </Button>
         </div>
+
+        <AlertDialog open={confirmDecline} onOpenChange={setConfirmDecline}>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>Refuser l’invitation ?</AlertDialogTitle>
+              <AlertDialogDescription>
+                {tokenInfo?.ownerName ? `${tokenInfo.ownerName} sera informé(e) de votre refus.` : 'La personne qui vous a invité sera informée de votre refus.'}
+                {' '}Ce lien ne sera plus valable ; {user ? 'votre espace n’est pas modifié.' : 'aucun compte ne sera créé.'}
+                {' '}Une nouvelle invitation restera possible.
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel>Retour</AlertDialogCancel>
+              <AlertDialogAction
+                onClick={(e) => { e.preventDefault(); void handleDecline(); }}
+                className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              >
+                Refuser l’invitation
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
 
         {!sessionLoading && user && (
           <p className="text-xs text-center text-[color:var(--text-muted)]">

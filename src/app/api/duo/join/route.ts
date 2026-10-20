@@ -42,6 +42,13 @@ export async function GET(request: NextRequest) {
       .where(eq(duoAccounts.lastUsedInviteTokenHash, inviteTokenHash(token)))
       .limit(1);
     if (used) return NextResponse.json({ error: 'USED_TOKEN' }, { status: 410 });
+    // Lot 73B : invitation REFUSÉE par la personne invitée (empreinte du jeton).
+    const [declined] = await db
+      .select({ id: duoAccounts.id })
+      .from(duoAccounts)
+      .where(eq(duoAccounts.lastDeclinedInviteTokenHash, inviteTokenHash(token)))
+      .limit(1);
+    if (declined) return NextResponse.json({ error: 'DECLINED_TOKEN' }, { status: 410 });
     return NextResponse.json({ error: 'INVALID_TOKEN' }, { status: 404 });
   }
 

@@ -68,7 +68,8 @@ describe('L65-MAIL-01 — gabarit DUO_MEMBERSHIP_LEFT', () => {
     // Pas de tutoiement (frontières Unicode : « êtes » n'est pas « tes »).
     expect(t.body).not.toMatch(/(?<!\p{L})(?:tu|ton|ta|tes)(?!\p{L})/iu);
     expect(`${t.subject}\n${t.body}`).not.toMatch(/rétract|impay|paiement|ownerEmail|ownerLastName|ownerFullName/i);
-    expect(JSON.parse(t.placeholders)).toEqual(['firstName', 'ownerFirstName', 'accountUrl', 'subscriptionUrl']);
+    // Lot 73A : + {{dataExportUrl}} (rappel d'export, migration 0527).
+    expect(JSON.parse(t.placeholders)).toEqual(['firstName', 'ownerFirstName', 'accountUrl', 'subscriptionUrl', 'dataExportUrl']);
     // Distinct du gabarit de fin subie.
     expect(t.subject).not.toBe(DEFAULT_EMAIL_TEMPLATES.DUO_MEMBERSHIP_ENDED.subject);
   });
@@ -76,8 +77,13 @@ describe('L65-MAIL-01 — gabarit DUO_MEMBERSHIP_LEFT', () => {
   it('migration 0462 = texte du code ; amorçage aligné ; type accepté par la file (SQL + Drizzle)', () => {
     const mig = read('src/db/migrations/0462_duo_membership_left_email.sql');
     const sqlText = (s: string) => s.replace(/'/g, "''").replace(/\n/g, '\\n');
-    expect(mig).toContain(sqlText(t.body));
+    // Lot 73A : le texte livré ACTUEL est posé par la 0527 (rappel d'export) ;
+    // la 0462 crée toujours le gabarit (texte du lot 64/65).
+    expect(mig).toMatch(/INSERT INTO email_templates/);
     expect(mig).toContain(sqlText(t.subject));
+    const l73 = read('src/db/migrations/0527_l73a_duo_rappel_export.sql');
+    expect(l73).toContain(t.body);
+    expect(l73).toContain(t.subject);
     expect(mig).toMatch(/WHERE NOT EXISTS \(SELECT 1 FROM email_templates WHERE upper\(type\) = 'DUO_MEMBERSHIP_LEFT'\)/);
     expect(mig).toMatch(/CHECK \(kind IN \('EMAIL_VERIFICATION', 'DUO_INVITATION', 'DUO_MEMBERSHIP_ENDED', 'DUO_MEMBERSHIP_LEFT'\)\)/);
     expect(mig).toMatch(/SET LOCAL lock_timeout/);

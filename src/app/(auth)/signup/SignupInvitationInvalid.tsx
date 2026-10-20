@@ -26,6 +26,12 @@ export function invitationInvalidContent(ctx: SignupInvitationContext): { title:
           ? "Cette invitation Premium Duo a déjà été acceptée. Si vous l'avez acceptée vous-même, connectez-vous pour accéder à l'espace partagé ; sinon, demandez au titulaire une nouvelle invitation."
           : "Ce lien d'invitation a déjà été utilisé. Connectez-vous si vous avez déjà créé votre compte.",
       };
+    case 'declined':
+      // Lot 73B : invitation refusée depuis le lien — aucun compte créé.
+      return {
+        title: 'Invitation Premium Duo refusée',
+        message: "Cette invitation à rejoindre un abonnement Premium Duo a été refusée et n'est plus valable. Pour rejoindre cet espace, demandez au titulaire de l'abonnement une nouvelle invitation.",
+      };
     case 'inactive':
       return {
         title: 'Abonnement Premium Duo inactif',

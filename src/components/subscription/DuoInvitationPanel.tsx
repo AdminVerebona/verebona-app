@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { Loader2, UserPlus, Copy, RefreshCw, Trash2, Check, Clock, UserCheck, UserMinus } from 'lucide-react';
+import { Loader2, UserPlus, Copy, RefreshCw, Trash2, Check, Clock, UserCheck, UserMinus, XCircle } from 'lucide-react';
 import { apiClient } from '@/lib/api-client';
 import { toast } from 'sonner';
 import {
@@ -18,7 +18,8 @@ import {
   AlertDialogAction,
 } from '@/components/ui/alert-dialog';
 
-type InvitationStatus = 'NONE' | 'PENDING' | 'EXPIRED' | 'ACTIVE_MEMBER';
+/** Lot 73B : DECLINED — la personne invitée a refusé (réinvitation possible). */
+type InvitationStatus = 'NONE' | 'PENDING' | 'EXPIRED' | 'ACTIVE_MEMBER' | 'DECLINED';
 
 /** Lot 57A : expédition et livraison de l'e-mail d'invitation (GET /api/duo/invitation). */
 interface InvitationEmailState {
@@ -37,6 +38,8 @@ interface InvitationData {
   inviteLink?: string | null;
   memberEmail?: string | null;
   memberName?: string | null;
+  /** Lot 73B : date du refus (statut DECLINED). */
+  declinedAt?: string | null;
 }
 
 /** Ancre de « Mon compte » ouvrant le tiroir « Mon abonnement » (lot 54F). */
@@ -98,6 +101,8 @@ export function DuoInvitationPanel() {
   const [copied, setCopied] = useState(false);
   const [showRemoveDialog, setShowRemoveDialog] = useState(false);
   const [removing, setRemoving] = useState(false);
+  /** Lot 73B : après un refus, « Inviter une autre personne » rouvre le formulaire. */
+  const [inviteOther, setInviteOther] = useState(false);
 
   const fetchStatus = async () => {
     setLoading(true);
@@ -138,6 +143,7 @@ export function DuoInvitationPanel() {
       const res = await apiClient.post<SendResponse>('/api/duo/invitation', { email: emailInput.trim() });
       announce(res, 'Invitation envoyée.');
       setEmailInput('');
+      setInviteOther(false);
       await fetchStatus();
     } catch (error: any) {
       if (error?.message?.includes('SLOT_ALREADY_TAKEN')) {
@@ -156,6 +162,22 @@ export function DuoInvitationPanel() {
     try {
       const res = await apiClient.post<SendResponse>('/api/duo/invitation', { email: data.inviteEmail, resend: true });
       announce(res, 'Invitation renvoyée.');
+      await fetchStatus();
+    } catch (error: any) {
+      toast.error(error?.message || 'Une erreur est survenue.');
+    } finally {
+      setSending(false);
+    }
+  };
+
+  // Lot 73B : réinviter la personne qui a refusé — nouvelle invitation, NOUVEAU
+  // lien (l'ancien reste refusé), même adresse.
+  const handleReinvite = async () => {
+    if (!data.inviteEmail) return;
+    setSending(true);
+    try {
+      const res = await apiClient.post<SendResponse>('/api/duo/invitation', { email: data.inviteEmail });
+      announce(res, 'Invitation envoyée de nouveau.');
       await fetchStatus();
     } catch (error: any) {
       toast.error(error?.message || 'Une erreur est survenue.');
@@ -333,6 +355,37 @@ export function DuoInvitationPanel() {
             </AlertDialogFooter>
           </AlertDialogContent>
         </AlertDialog>
+      </div>
+    );
+  }
+
+  // Lot 73B : invitation refusée par la personne invitée.
+  if (data.status === 'DECLINED' && !inviteOther) {
+    return (
+      <div className="space-y-3" data-testid="duo-invite-declined">
+        <div className="border border-border rounded-lg p-4 space-y-2 bg-[color:var(--bg-card)]">
+          <div className="flex items-center gap-2">
+            <XCircle className="w-4 h-4 text-[color:var(--attention-on-soft)] flex-shrink-0" />
+            <p className="text-sm font-medium text-[color:var(--text-primary)]">Invitation refusée</p>
+          </div>
+          {data.inviteEmail && <p className="text-sm text-[color:var(--text-muted)] break-all">{data.inviteEmail}</p>}
+          <p className="text-xs text-[color:var(--text-muted)]">
+            {data.declinedAt ? `Refusée le ${dateFr(data.declinedAt)}. ` : ''}Le lien d’invitation n’est plus valable. Vous pouvez inviter de nouveau cette personne ou une autre.
+          </p>
+        </div>
+
+        <div className="flex flex-wrap gap-2">
+          {data.inviteEmail && (
+            <Button size="sm" variant="outline" onClick={() => void handleReinvite()} disabled={sending} className="gap-1">
+              {sending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
+              Réinviter
+            </Button>
+          )}
+          <Button size="sm" variant="ghost" onClick={() => setInviteOther(true)} disabled={sending} className="gap-1">
+            <UserPlus className="w-3.5 h-3.5" />
+            Inviter une autre personne
+          </Button>
+        </div>
       </div>
     );
   }

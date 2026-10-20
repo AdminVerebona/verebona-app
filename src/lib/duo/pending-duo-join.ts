@@ -63,7 +63,7 @@ export function takePendingDuoJoin(): string | null {
 
 /** Refus sans reprise possible avec ce jeton : il est retiré du stockage. */
 const DEFINITIVE_ERRORS = new Set([
-  'INVALID_TOKEN', 'EXPIRED_TOKEN', 'USED_TOKEN', 'ALREADY_IN_DUO', 'SLOT_ALREADY_TAKEN', 'CANNOT_JOIN_OWN_DUO',
+  'INVALID_TOKEN', 'EXPIRED_TOKEN', 'USED_TOKEN', 'DECLINED_TOKEN', 'ALREADY_IN_DUO', 'SLOT_ALREADY_TAKEN', 'CANNOT_JOIN_OWN_DUO',
   'SUBSCRIPTION_INACTIVE', 'INVITE_EMAIL_MISMATCH', 'MISSING_TOKEN',
 ]);
 
@@ -97,6 +97,31 @@ export async function joinDuo(token: string | null): Promise<DuoJoinResult> {
   }
 }
 
+/**
+ * Lot 73B — « Refuser l'invitation » (`POST /api/duo/decline`). `token` :
+ * lien d'invitation (aucune session exigée) ; nul : invitations adressées à
+ * l'adresse vérifiée de la session (écran « sans espace »). La réponse est
+ * la même quel que soit l'état de l'invitation (anti-énumération) : `ok`
+ * signifie « demande prise en compte ». Le jeton mémorisé pour un
+ * rattachement automatique est retiré : il ne doit plus être rejoué.
+ */
+export async function declineDuo(token: string | null): Promise<{ ok: boolean }> {
+  try {
+    const res = await fetch('/api/duo/decline', {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(token ? { token } : { invitedEmail: true }),
+    });
+    if (!res.ok) return { ok: false };
+    const stored = peekPendingDuoJoin();
+    if (stored && (!token || stored === token)) takePendingDuoJoin();
+    return { ok: true };
+  } catch {
+    return { ok: false };
+  }
+}
+
 /** Message français pour un refus de rattachement. */
 export function duoJoinErrorMessage(error: string): string {
   switch (error) {
@@ -104,6 +129,7 @@ export function duoJoinErrorMessage(error: string): string {
     case 'EXPIRED_TOKEN': return 'Ce lien d’invitation a expiré. Demandez au titulaire d’en générer un nouveau.';
     case 'INVALID_TOKEN': return 'Ce lien d’invitation est invalide ou a déjà été utilisé.';
     case 'USED_TOKEN': return 'Cette invitation a déjà été utilisée.';
+    case 'DECLINED_TOKEN': return 'Cette invitation a été refusée et n’est plus valable. Demandez au titulaire une nouvelle invitation.';
     case 'NO_PENDING_INVITATION': return 'Aucune invitation Premium Duo en attente pour votre adresse. Ouvrez le lien reçu dans l’e-mail d’invitation, ou demandez au titulaire de vous en renvoyer un.';
     case 'MULTIPLE_INVITATIONS': return 'Plusieurs invitations Premium Duo vous attendent : ouvrez le lien de celle que vous souhaitez accepter, depuis l’e-mail reçu.';
     case 'SUBSCRIPTION_INACTIVE': return 'L’abonnement Premium Duo associé à cette invitation n’est plus actif.';

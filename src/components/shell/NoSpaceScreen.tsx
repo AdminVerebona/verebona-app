@@ -11,14 +11,26 @@
  * propose :
  *   · « Rejoindre l'espace Premium Duo » si une invitation valide l'attend ;
  *   · « Créer mon espace » : compte Standard, avec l'essai de 7 jours
- *     SEULEMENT si cette adresse ne l'a jamais utilisé.
+ *     SEULEMENT si cette adresse ne l'a jamais utilisé ;
+ *   · lot 73B : « Refuser l'invitation » (confirmation) — le titulaire est
+ *     prévenu, le lien ne vaut plus rien ; aucun espace n'est créé.
  * Même composant sur ordinateur et sur mobile (WebView).
  */
 import { useEffect, useState } from 'react';
-import { Loader2, Users } from 'lucide-react';
+import { Loader2, Users, XCircle } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
 import { LogoWithBaseline } from '@/components/Logo';
-import { duoJoinErrorMessage, joinDuo, peekPendingDuoJoin, settlePendingDuoJoin } from '@/lib/duo/pending-duo-join';
+import { declineDuo, duoJoinErrorMessage, joinDuo, peekPendingDuoJoin, settlePendingDuoJoin } from '@/lib/duo/pending-duo-join';
 
 const cadre = 'min-h-screen flex items-center justify-center bg-[color:var(--bg-page)] p-4 md:p-6';
 const carte = 'w-full max-w-md space-y-5 rounded-2xl border border-[color:var(--border-subtle)] bg-[color:var(--bg-card)] p-6 shadow-relief-md';
@@ -27,8 +39,10 @@ interface Options { pendingDuoInvitation: boolean; trialAvailable: boolean }
 
 export function NoSpaceScreen({ firstName, onLogout }: { firstName?: string | null; onLogout: () => void }) {
   const [options, setOptions] = useState<Options | null>(null);
-  const [busy, setBusy] = useState<'join' | 'create' | null>(null);
+  const [busy, setBusy] = useState<'join' | 'create' | 'decline' | null>(null);
   const [error, setError] = useState('');
+  const [confirmDecline, setConfirmDecline] = useState(false);
+  const [declined, setDeclined] = useState(false);
 
   useEffect(() => {
     let annule = false;
@@ -51,6 +65,22 @@ export function NoSpaceScreen({ firstName, onLogout }: { firstName?: string | nu
     settlePendingDuoJoin(token, r);
     if (r.ok) { window.location.assign('/accueil'); return; }
     setError(r.message || duoJoinErrorMessage(r.error));
+    setBusy(null);
+  };
+
+  // Lot 73B : refus des invitations adressées à l'adresse (vérifiée) de la
+  // session — celles qu'annonce cet écran ; le jeton mémorisé est oublié.
+  const refuser = async () => {
+    setConfirmDecline(false);
+    setBusy('decline');
+    setError('');
+    const r = await declineDuo(null);
+    if (r.ok) {
+      setDeclined(true);
+      setOptions((o) => (o ? { ...o, pendingDuoInvitation: false } : o));
+    } else {
+      setError('Le refus n’a pas pu être enregistré. Réessayez dans un instant.');
+    }
     setBusy(null);
   };
 
@@ -91,6 +121,23 @@ export function NoSpaceScreen({ firstName, onLogout }: { firstName?: string | nu
                 Rejoindre l’espace Premium Duo
               </Button>
             )}
+            {options.pendingDuoInvitation && (
+              <Button
+                className="w-full text-destructive hover:text-destructive"
+                variant="ghost"
+                onClick={() => setConfirmDecline(true)}
+                disabled={!!busy}
+                data-testid="no-space-decline"
+              >
+                {busy === 'decline' ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <XCircle className="mr-2 h-4 w-4" />}
+                Refuser l’invitation
+              </Button>
+            )}
+            {declined && (
+              <p role="status" className="text-center text-sm text-[color:var(--text-muted)]">
+                Invitation refusée : la personne qui vous a invité en est informée.
+              </p>
+            )}
             <Button
               className="w-full"
               variant={options.pendingDuoInvitation ? 'outline' : 'default'}
@@ -109,6 +156,27 @@ export function NoSpaceScreen({ firstName, onLogout }: { firstName?: string | nu
         )}
 
         {error && <p role="alert" className="text-center text-sm text-destructive">{error}</p>}
+
+        <AlertDialog open={confirmDecline} onOpenChange={setConfirmDecline}>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>Refuser l’invitation ?</AlertDialogTitle>
+              <AlertDialogDescription>
+                La personne qui vous a invité sera informée de votre refus et le lien ne sera plus valable.
+                Une nouvelle invitation restera possible. Vous pourrez aussi créer votre propre espace.
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel>Retour</AlertDialogCancel>
+              <AlertDialogAction
+                onClick={(e) => { e.preventDefault(); void refuser(); }}
+                className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              >
+                Refuser l’invitation
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
 
         <button
           type="button"

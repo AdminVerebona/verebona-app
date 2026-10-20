@@ -16,6 +16,9 @@
  * Lot 70A (décision PO du 19/10, remplace COM-013) : l'objet et le contenu des
  * e-mails transactionnels se modifient dans l'éditeur dédié
  * (`/admin/communications/emails/[code]`, bouton « Modifier le texte »).
+ * Lot 73A (décision PO du 20/10) : idem pour l'e-mail des notifications du
+ * catalogue (gabarits `notif_*`, bouton « Modifier le texte de l'e-mail ») ;
+ * le texte push / in-app n'est pas modifiable (COM-013 maintenu pour ces canaux).
  */
 import Link from 'next/link';
 import { useCallback, useEffect, useState } from 'react';
@@ -247,7 +250,7 @@ export default function AdminCommunicationsPage() {
             Communications
           </h1>
           <p className="text-sm text-muted-foreground mt-0.5">
-            Modèles par événement et par canal. L’objet et le contenu des e-mails transactionnels se modifient ici (« Modifier le texte », avec historique des versions) ; l’historique individuel se consulte depuis la fiche Utilisateur.
+            Modèles par événement et par canal. L’objet et le contenu des e-mails transactionnels et des e-mails de notification se modifient ici (« Modifier le texte », avec historique des versions) ; le texte des push et de la cloche (in-app) reste celui de l’application. L’historique individuel se consulte depuis la fiche Utilisateur.
           </p>
         </div>
         <Button variant="outline" size="sm" onClick={() => load()} disabled={loading}>
@@ -278,6 +281,18 @@ export default function AdminCommunicationsPage() {
                       <Button size="sm" variant="outline" asChild>
                         <Link href={`/admin/communications/emails/${encodeURIComponent(event.emailTemplateCode)}`} data-testid={`edit-template-${event.emailTemplateCode}`}>
                           <PenLine className="h-3.5 w-3.5 mr-1.5" /> Modifier le texte
+                        </Link>
+                      </Button>
+                    )}
+                    {/* Lot 73A : e-mail d'une notification (gabarit notif_*) ; push et in-app restent non modifiables (COM-013). */}
+                    {event.kind === 'notification' && event.emailTemplateCode && (
+                      <Button size="sm" variant="outline" asChild>
+                        <Link
+                          href={`/admin/communications/emails/${encodeURIComponent(event.emailTemplateCode.toUpperCase())}?evenement=${encodeURIComponent(event.code)}`}
+                          data-testid={`edit-template-${event.emailTemplateCode.toUpperCase()}`}
+                          title="Objet et habillage de l’e-mail ; le message de la notification reste celui de l’application"
+                        >
+                          <PenLine className="h-3.5 w-3.5 mr-1.5" /> Modifier le texte de l’e-mail
                         </Link>
                       </Button>
                     )}

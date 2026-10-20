@@ -659,7 +659,9 @@ scenario('L72D', 'Premium Duo en compte partagé', ({ sql, make }) => {
 
     const app = await runDuoSharedAccountBackfill(sql as never, { apply: true });
     expect(app.runId).toBeTruthy();
-    expect(app.after?.B).toBe(0);
+    // Lot 73 : compteur GLOBAL (base e2e partagée avec les autres fichiers) —
+    // il baisse ; nos membres historiques sont rattachés (vérifié ci-dessous).
+    expect(app.after!.B).toBeLessThan(sim.before.B);
     expect(await adhesion(d.acc.id, e.user.id)).toEqual({ role: 'member', status: 'active' });
     expect(await adhesion(vieux.id, vieux.owner.id)).toEqual({ role: 'owner', status: 'active' });
     expect((await sql<{ archived_reason: string }[]>`SELECT archived_reason FROM accounts WHERE id = ${e.perso}`)[0].archived_reason).toBe('duo_placeholder');
