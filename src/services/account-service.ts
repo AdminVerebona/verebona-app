@@ -12,7 +12,6 @@ import { duoOfAccount } from '@/services/account/membership.service';
 import { DUO_EXIT_MESSAGES, endMembership, isDuoUnpaid } from '@/services/duo/duo-exit.service';
 import crypto from 'crypto';
 import { emailService } from '@/lib/email/email-service';
-import { emit } from '@/lib/notifications';
 import { orderSessionAccounts, withoutArchivedAccounts, type SessionAccountCandidate } from '@/lib/auth/account-suspension';
 import { invalidateAccountReadCache, invalidateUserReadCache } from '@/lib/server-cache';
 import type { PlanType, SubscriptionTier, SubscriptionStatus, MembershipRole, MembershipStatus } from '@/types/domain';
@@ -191,7 +190,11 @@ export class AccountService {
     accountId: number,
     email: string,
     invitedBy: number
-  ): Promise<{ success: boolean; error?: string; code?: 'NOT_ACCOUNT_OWNER'; inviteToken?: string }> {
+  ): Promise<{
+    success: boolean; error?: string; code?: 'NOT_ACCOUNT_OWNER'; inviteToken?: string;
+    /** Lot 74B : faux pour une personne déjà inscrite (aucun parcours d'acceptation hors Duo). */
+    notified?: boolean; notice?: 'EXISTING_USER_ACCEPTANCE_UNAVAILABLE';
+  }> {
     // ══════════════════════════════════════════════════════════════════════
     // LOT 72D — FAILLE : INVITATION DANS LE COMPTE D'UN TIERS
     //
@@ -270,8 +273,8 @@ export class AccountService {
           .limit(1)
       : [];
 
-    const [membership] = previous
-      ? await db
+    if (previous) {
+      await db
           .update(accountMemberships)
           .set({
             invitedEmail: email,
@@ -286,12 +289,10 @@ export class AccountService {
             inviteTokenExpiresAt,
             updatedAt: now,
           })
-          .where(eq(accountMemberships.id, previous.id))
-          .returning()
-      : await db
-          .insert(accountMemberships)
-          .values(membershipValues)
-          .returning();
+          .where(eq(accountMemberships.id, previous.id));
+    } else {
+      await db.insert(accountMemberships).values(membershipValues);
+    }
 
       const [inviter] = await db
         .select()
@@ -316,11 +317,29 @@ export class AccountService {
           timestamp: now,
         });
 
+      // ══════════════════════════════════════════════════════════════════
+      // LOT 74B (point 5) — LIEN MORT `/mon-compte/partage`
+      //
+      // L'e-mail et la notification d'invitation d'un utilisateur DÉJÀ
+      // inscrit pointaient vers `/mon-compte/partage`, page qui n'a jamais
+      // existé (404) : aucun parcours d'acceptation n'existe pour lui hors
+      // Premium Duo (le Duo a le sien : `/duo/join/[token]`). L'offre actuelle
+      // ne vend aucun compte partagé hors Duo (Premium Pro « Bientôt
+      // disponible ») : variante prudente — l'invitation reste enregistrée
+      // (route conservée, réservée au titulaire, base de la future offre
+      // Pro), mais on n'envoie plus de lien qui mène nulle part. La personne
+      // déjà inscrite n'est ni écrite ni notifiée (`notified: false`) ; une
+      // personne NON inscrite reçoit toujours le lien d'inscription, qui
+      // fonctionne (`/signup?inviteToken=`, adhésion activée à la
+      // vérification de l'adresse).
+      // ══════════════════════════════════════════════════════════════════
+      if (existingUser) {
+        return { success: true, inviteToken, notified: false, notice: 'EXISTING_USER_ACCEPTANCE_UNAVAILABLE' };
+      }
+
       try {
-        const invitationLink = existingUser 
-          ? `${process.env.NEXT_PUBLIC_APP_URL || 'https://app.verebona.fr'}/mon-compte/partage?inviteToken=${inviteToken}`
-          : `${process.env.NEXT_PUBLIC_APP_URL || 'https://app.verebona.fr'}/signup?inviteToken=${inviteToken}`;
-        
+        const invitationLink = `${process.env.NEXT_PUBLIC_APP_URL || 'https://app.verebona.fr'}/signup?inviteToken=${inviteToken}`;
+
         await emailService.send({
           templateCode: 'ACCOUNT_INVITATION',
           to: email,
@@ -330,34 +349,13 @@ export class AccountService {
             role: 'Membre',
             invitationLink,
           },
-          userId: existingUser?.id ?? undefined,
         });
 
       } catch (error) {
         console.error('Failed to send invitation email:', error);
       }
 
-      if (existingUser) {
-        try {
-          await emit({
-            type: 'ACCOUNT_INVITATION',
-            recipientUserIds: [existingUser.id],
-            accountId: account.id,
-            entityType: 'account_membership',
-            entityId: membership.id,
-            payload: {
-              inviterName: `${inviter.firstName} ${inviter.lastName}`,
-              accountName: account.name,
-              inviteToken,
-            },
-            dedupeKey: `account-invitation:${membership.id}`,
-          });
-        } catch (notifError) {
-          console.error('Failed to create ACCOUNT_INVITATION notification:', notifError);
-        }
-      }
-
-      return { success: true, inviteToken };
+      return { success: true, inviteToken, notified: true };
   }
 
   static async acceptInvite(

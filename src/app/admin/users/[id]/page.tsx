@@ -77,6 +77,20 @@ interface Membership {
   joinedAt: string | null;
 }
 
+/** Lot 74B : adhésion à un Premium Duo, lue dans account_memberships. */
+interface DuoMembership {
+  accountId: number;
+  accountName: string;
+  role: 'owner' | 'member';
+  roleLabel: string;
+  status: string;
+  statusLabel: string;
+  duoStatus: string | null;
+  duoStatusLabel: string | null;
+  since: string | null;
+  endedAt: string | null;
+}
+
 interface StatusChange {
   at: string;
   action: 'deactivated' | 'reactivated';
@@ -126,6 +140,10 @@ interface UserData {
   /** Suppression volontaire en cours (GDP-008) ; null sinon. */
   pendingDeletion: { scheduledAt: string | null } | null;
   memberships: Membership[];
+  /** Lot 74B : Duo (rôle Titulaire / Membre, statut) depuis account_memberships. */
+  duoMemberships?: DuoMembership[];
+  /** Lot 74B : membre Duo historique sans adhésion (rattrapage duo-shared-account à appliquer). */
+  legacyDuoAnomaly?: boolean;
   statusChanges: StatusChange[];
   notificationPreferences: {
     categories: CategoryPreference[];
@@ -156,7 +174,8 @@ function statusLabel(status: string, pendingDeletion: UserData['pendingDeletion'
 
 const ROLE_LABELS: Record<Membership['role'], string> = {
   holder: 'Titulaire',
-  second: 'Second utilisateur',
+  // Lot 74B : libellé PO « Titulaire / Membre ».
+  second: 'Membre',
   member: 'Membre',
 };
 const PLAN_LABELS: Record<string, string> = { STANDARD: 'Standard', PREMIUM: 'Premium', PREMIUM_DUO: 'Premium Duo' };
@@ -319,6 +338,8 @@ export default function UserDetailPage() {
   const deletionPending = !!data.pendingDeletion || user.status === 'PENDING_DELETION';
   const userStatusLabel = statusLabel(user.status, data.pendingDeletion);
   const mainMembership = memberships[0] ?? null;
+  const duoMemberships = data.duoMemberships ?? [];
+  const legacyDuoAnomaly = data.legacyDuoAnomaly === true;
   const reissuable = invitations.find((i) => i.reissuable) ?? null;
   const resendReason = reissuable
     ? null
@@ -370,12 +391,34 @@ export default function UserDetailPage() {
           </Field>
           <Field label="Offre du compte">{linkedAccount ? (PLAN_LABELS[linkedAccount.planType?.toUpperCase()] ?? linkedAccount.planType) : '—'}</Field>
           <Field label="Rôle dans le compte">{mainMembership ? ROLE_LABELS[mainMembership.role] : '—'}</Field>
+          <Field label="Premium Duo">
+            {duoMemberships.length === 0 ? (
+              legacyDuoAnomaly ? 'À rattacher (ancien Duo)' : '—'
+            ) : (
+              <span className="flex flex-col gap-0.5" data-testid="bo-user-duo">
+                {duoMemberships.map((d) => (
+                  <span key={`${d.accountId}-${d.status}`}>
+                    {d.roleLabel} de{' '}
+                    <Link href={`/admin/accounts/${d.accountId}`} className="hover:underline">{d.accountName}</Link>
+                    {' — '}{d.statusLabel}
+                    {d.duoStatusLabel && <span className="font-normal text-muted-foreground"> · {d.duoStatusLabel}</span>}
+                  </span>
+                ))}
+              </span>
+            )}
+          </Field>
           <Field label="Statut administrateur">{adminStatus?.isAdmin ? 'Administrateur' : 'Non'}</Field>
           <Field label="Création">{formatDateTime(user.createdAt)}</Field>
           <Field label="Rattachement au compte">{formatDateTime(mainMembership?.joinedAt)}</Field>
           <Field label="Dernière connexion">{user.lastLoginAt ? formatDateTime(user.lastLoginAt) : 'Jamais'}</Field>
           {user.company && <Field label="Société">{user.company}</Field>}
         </CardContent>
+        {legacyDuoAnomaly && (
+          <CardContent className="pt-0 text-xs text-[color:var(--text-warning-soft)]">
+            Membre d’un Premium Duo antérieur au compte partagé, sans adhésion au compte du Duo : appliquer le rattrapage
+            « duo-shared-account » (Exploitation › Rattrapages).
+          </CardContent>
+        )}
         {memberships.length > 1 && (
           <CardContent className="pt-0 text-xs text-muted-foreground">
             Autres comptes : {memberships.slice(1).map((m) => (

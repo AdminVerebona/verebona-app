@@ -5,6 +5,7 @@ import { eq, sql } from 'drizzle-orm';
 import { isTransactionalEmailActive } from '@/lib/notifications/channel-activation';
 import { EMAIL_COLORS, EMAIL_STYLES, emailButton, emailDocument, emailLogoHtml } from './email-layout';
 import { safeTemplateVariables } from './variable-safety';
+import { buildContactEmail, type ContactInput } from './contact-message';
 
 /**
  * Logo de repli des emails (APP-PERF-38) : ressource MAÎTRISÉE servie par
@@ -701,6 +702,32 @@ class EmailService {
     }
   }
   
+  /**
+   * Lot 74A (point 1) — e-mail du formulaire de contact PUBLIC vers l'équipe.
+   * Remplace l'accès par `as any` aux méthodes privées depuis la route et
+   * l'envoi parasite du gabarit WELCOME qui l'accompagnait. Valeurs du
+   * visiteur neutralisées par `buildContactEmail` (variable-safety, lot 73A) ;
+   * enveloppe de la charte, version texte, objet sur une ligne. Expéditeur et
+   * destinataire inchangés ; « Répondre à » seulement pour une adresse valide.
+   */
+  async sendContactMessage(
+    input: ContactInput,
+    opts: { to: string; from: string },
+  ): Promise<{ id: string | null; error: { name?: string; message?: string } | null }> {
+    const built = buildContactEmail(input);
+    const settings = await this.getSettings();
+    const html = this.fixLogoSizing(await this.wrapInHTML(built.htmlBody, settings, await this.getVerebonaEmailLogo()));
+    const { data, error } = await this.resend.emails.send({
+      from: opts.from,
+      to: opts.to,
+      subject: sanitizeSubjectHeader(built.subject),
+      html,
+      text: built.text,
+      ...(built.replyTo ? { replyTo: built.replyTo } : {}),
+    });
+    return { id: data?.id ?? null, error: error ? { name: (error as { name?: string }).name, message: error.message } : null };
+  }
+
   /**
    * Envoi de test. Les variables sont OBLIGATOIRES : elles proviennent du
    * propre compte de l'administrateur connecté (CDC BO COM-007, SEC-005). Le

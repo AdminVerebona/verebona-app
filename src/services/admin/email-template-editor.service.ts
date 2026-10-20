@@ -665,6 +665,43 @@ export function notificationPreviewVariables(
   };
 }
 
+/**
+ * Lot 74A (points 2 et 3) — rendu d'un e-mail pour la LISTE BO › Communications
+ * (ancienne prévisualisation `GET …/communications/preview` et bouton « E-mail
+ * de test » `POST …/communications/test`), aligné sur l'éditeur 73A :
+ *   · e-mail d'une notification (`notif_*`) : titre, message et lien RÉELS de
+ *     l'événement de la ligne (`notificationPreviewVariables`), au lieu de
+ *     « [donnée indisponible] » ;
+ *   · lien d'action indisponible → lien neutre (`withPreviewLinks`) ;
+ *   · rendu par `EmailService.renderTemplate` : valeurs neutralisées
+ *     (variable-safety, lot 73A), objet sur une ligne, enveloppe de la charte —
+ *     exactement ce que l'envoi réel et l'e-mail de test produisent.
+ * Les variables retournées sont celles à passer à `sendTest` (même rendu).
+ */
+export async function renderListEmail(input: {
+  template: { type: string; subject: string; body: string };
+  eventCode: string;
+  eventKind: 'notification' | 'transactional';
+  selected: SelectedPreviewContext;
+  accountId: number | null;
+  adminId: number;
+  sessionAccountId?: number | null;
+}): Promise<{ variables: Record<string, string>; missingCount: number; recipient: string; rendered: { subject: string; html: string; text: string } }> {
+  const code = normalizeCode(input.template.type);
+  const notif = input.eventKind === 'notification' && code && isNotificationTemplate(code)
+    ? notificationPreviewVariables(code, input.eventCode, input.selected, input.accountId).variables
+    : {};
+  const ctx = {
+    ...(await loadAdminPreviewContext(input.adminId, input.sessionAccountId ?? undefined)),
+    extra: { ...contextVariables(input.selected), ...notif },
+  };
+  const { variables: resolved, missingCount } = resolveTemplateVariables([input.template.subject, input.template.body], ctx, appBaseUrl());
+  const variables = withPreviewLinks(resolved);
+  const { emailService } = await import('@/lib/email/email-service');
+  const r = await emailService.renderTemplate({ subject: input.template.subject, body: input.template.body }, variables);
+  return { variables, missingCount, recipient: ctx.email, rendered: { subject: r.subject, html: r.html, text: r.text } };
+}
+
 /** Contexte de l'aperçu / du test : compte de l'admin, contexte choisi, notification. */
 async function previewContextFor(code: string, kind: ScopeEntry['kind'] | undefined, adminId: number, accountId: number | null | undefined,
   selection: PreviewSelection | undefined, eventCode: unknown) {

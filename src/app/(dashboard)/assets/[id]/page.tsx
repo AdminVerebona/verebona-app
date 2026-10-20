@@ -16,6 +16,7 @@ import {
 } from '@/components/ui/dropdown-menu';
 
 import { DeleteAssetDialog } from '@/components/assets/DeleteAssetDialog';
+import { MoveToDuoSpaceButton } from '@/components/assets/MoveToDuoSpaceDialog';
 // ── Adaptive tabs bar ──────────────────────────────────────────────────────
 interface TabDef {
   value: string;
@@ -393,6 +394,8 @@ export default function AssetDetailPage() {
               activeTab={activeTab}
               onTabChange={handleTabChange}
             />
+            {/* Lot 74B : visible seulement pour un membre actif de cet espace ET d'un espace Duo. */}
+            <MoveToDuoSpaceButton assetId={asset.id} assetName={asset.name} />
             <button
               onClick={() => setShowArchiveConfirm(true)}
               className="flex-shrink-0 p-1.5 rounded-md text-muted-foreground/50 hover:text-destructive hover:bg-destructive/10 transition-colors btn-delete"

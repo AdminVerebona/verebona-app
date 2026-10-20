@@ -186,10 +186,19 @@ export function describeLoginActivity(activityType: string, rawDetails: string |
 type Row = Record<string, unknown>;
 const iso = (v: unknown): string | null => (v ? new Date(v as string).toISOString() : null);
 
+/**
+ * Comptes actifs de l'utilisateur, rôle lu dans `account_memberships`.
+ *
+ * Lot 74B (point 6) : le rôle « second utilisateur » venait de
+ * `duo_memberships` (slot 1) et s'appliquait à TOUS les comptes de
+ * l'utilisateur, y compris son espace personnel. Depuis le lot 72D,
+ * `account_memberships` est la source de vérité (double écriture
+ * `duo_memberships` inchangée) : titulaire = rôle `owner` (ou titulaire
+ * historique `owner_user_id`), sinon membre.
+ */
 export async function loadUserMemberships(userId: number): Promise<UserMembershipInfo[]> {
   const rows = await pgClient.unsafe<Row[]>(
-    `SELECT a.id AS account_id, a.name AS account_name, a.owner_user_id, m.role, m.joined_at, m.created_at,
-            EXISTS (SELECT 1 FROM duo_memberships dm WHERE dm.user_id = $1 AND dm.status = 'ACTIVE' AND dm.slot = 1) AS duo_second
+    `SELECT a.id AS account_id, a.name AS account_name, a.owner_user_id, m.role, m.joined_at, m.created_at
        FROM account_memberships m
        JOIN accounts a ON a.id = m.account_id
       WHERE m.user_id = $1 AND m.status = 'active'
@@ -202,10 +211,117 @@ export async function loadUserMemberships(userId: number): Promise<UserMembershi
     role: memberRole({
       isAccountOwner: Number(r.owner_user_id) === userId,
       membershipRole: (r.role as string) ?? null,
-      isDuoSecond: Boolean(r.duo_second),
+      isDuoSecond: false,
     }),
     joinedAt: iso(r.joined_at ?? r.created_at),
   }));
+}
+
+/** Lot 74B : adhésion à un Premium Duo, lue dans `account_memberships`. */
+export interface UserDuoMembership {
+  accountId: number;
+  accountName: string;
+  role: 'owner' | 'member';
+  /** « Titulaire » / « Membre ». */
+  roleLabel: string;
+  /** Statut de l'adhésion : active | pending | left | removed | declined. */
+  status: string;
+  statusLabel: string;
+  /** Statut de l'abonnement Duo du compte (`duo_accounts`), s'il existe. */
+  duoStatus: string | null;
+  duoStatusLabel: string | null;
+  since: string | null;
+  endedAt: string | null;
+}
+
+const MEMBERSHIP_STATUS_LABELS: Record<string, string> = {
+  active: 'Actif',
+  pending: 'Invitation en attente',
+  left: 'Parti',
+  removed: 'Retiré',
+  declined: 'Invitation refusée',
+};
+
+const DUO_STATUS_LABELS: Record<string, string> = {
+  ACTIVE: 'Abonnement actif',
+  UNPAID_RECOVERY: 'Impayé (régularisation en cours)',
+  INACTIVE: 'Abonnement inactif',
+  PENDING: 'Abonnement en attente',
+  CANCELED: 'Abonnement résilié',
+  CANCELLED: 'Abonnement résilié',
+  WITHDRAWN: 'Rétractation',
+};
+
+/** Libellés lisibles d'une adhésion Duo (pur, testé). */
+export function duoMembershipLabels(role: string, status: string, duoStatus: string | null): { roleLabel: string; statusLabel: string; duoStatusLabel: string | null } {
+  const st = status.toLowerCase();
+  const ds = duoStatus ? duoStatus.toUpperCase() : null;
+  return {
+    roleLabel: role === 'owner' ? 'Titulaire' : 'Membre',
+    statusLabel: MEMBERSHIP_STATUS_LABELS[st] ?? status,
+    duoStatusLabel: ds ? (DUO_STATUS_LABELS[ds] ?? ds) : null,
+  };
+}
+
+/**
+ * Lot 74B (point 6) : adhésions de l'utilisateur aux comptes Premium Duo
+ * (rôle titulaire / membre, statut — y compris départ ou retrait), lues
+ * dans `account_memberships`. Un compte est « Duo » s'il porte l'offre
+ * PREMIUM_DUO ou un Duo (lien 0520 `duo_accounts.account_id`, ou
+ * `accounts.duo_account_id`). Lecture seule.
+ */
+export async function loadUserDuoMemberships(userId: number): Promise<UserDuoMembership[]> {
+  const rows = await pgClient.unsafe<Row[]>(
+    `SELECT a.id AS account_id, a.name AS account_name, m.role, m.status, m.joined_at, m.invited_at, m.removed_at,
+            (SELECT d.subscription_status FROM duo_accounts d
+              WHERE d.account_id = a.id OR d.id = a.duo_account_id
+              ORDER BY (d.account_id = a.id) DESC NULLS LAST, d.id DESC LIMIT 1) AS duo_status
+       FROM account_memberships m
+       JOIN accounts a ON a.id = m.account_id
+      WHERE m.user_id = $1
+        AND m.role IN ('owner', 'member', 'admin')
+        AND m.status IN ('active', 'pending', 'left', 'removed')
+        AND (upper(coalesce(a.plan_type, '')) = 'PREMIUM_DUO'
+          OR a.duo_account_id IS NOT NULL
+          OR EXISTS (SELECT 1 FROM duo_accounts d WHERE d.account_id = a.id))
+      ORDER BY (m.status = 'active') DESC, coalesce(m.joined_at, m.invited_at) DESC NULLS LAST`,
+    [userId],
+  );
+  return rows.map((r) => {
+    const role = r.role === 'owner' ? 'owner' : 'member';
+    const status = String(r.status);
+    const duoStatus = (r.duo_status as string) ?? null;
+    return {
+      accountId: Number(r.account_id),
+      accountName: String(r.account_name ?? ''),
+      role,
+      ...duoMembershipLabels(role, status, duoStatus),
+      status,
+      duoStatus,
+      since: iso(r.joined_at ?? r.invited_at),
+      endedAt: iso(r.removed_at),
+    };
+  });
+}
+
+/**
+ * Lot 74B — diagnostic de transition : l'utilisateur est membre ACTIF d'un
+ * Duo dans l'ancienne table (`duo_memberships`, slot 1) SANS adhésion active
+ * au compte de ce Duo. Cas d'un Duo antérieur au lot 72D tant que le
+ * rattrapage BO « duo-shared-account » n'est pas appliqué : la fiche le
+ * signale au lieu de n'afficher aucun Duo.
+ */
+export async function hasLegacyDuoWithoutMembership(userId: number): Promise<boolean> {
+  const [r] = await pgClient.unsafe<Row[]>(
+    `SELECT EXISTS (
+       SELECT 1 FROM duo_memberships dm JOIN duo_accounts d ON d.id = dm.duo_id
+        WHERE dm.user_id = $1 AND dm.status = 'ACTIVE' AND d.billing_owner_user_id <> $1
+          AND NOT EXISTS (SELECT 1 FROM account_memberships am JOIN accounts a ON a.id = am.account_id
+                           WHERE am.user_id = $1 AND am.status = 'active'
+                             AND (a.id = d.account_id OR a.duo_account_id = d.id))) AS anomaly`,
+    [userId],
+  );
+  return Boolean(r?.anomaly);
 }
 
 /** Dates de désactivation / réactivation (journal technique AUD-003). */
@@ -230,7 +346,13 @@ export async function loadInvitations(userId: number, email: string, now = new D
   const duoRows = await pgClient.unsafe<Row[]>(
     `SELECT d.id, d.billing_owner_user_id, d.subscription_status, d.pending_invite_email, d.pending_invite_token,
             d.pending_invite_sent_at, d.pending_invite_token_expires_at,
-            EXISTS (SELECT 1 FROM duo_memberships dm WHERE dm.duo_id = d.id AND dm.slot = 1 AND dm.status = 'ACTIVE') AS has_second
+            -- Lot 74B : second utilisateur actif lu dans account_memberships (compte
+            -- du Duo) ; l'ancienne table reste consultée tant que le rattrapage
+            -- duo-shared-account n'est pas appliqué (jamais de réémission indue).
+            (EXISTS (SELECT 1 FROM account_memberships am JOIN accounts a2 ON a2.id = am.account_id
+                      WHERE (a2.id = d.account_id OR a2.duo_account_id = d.id)
+                        AND am.role <> 'owner' AND am.status = 'active')
+             OR EXISTS (SELECT 1 FROM duo_memberships dm WHERE dm.duo_id = d.id AND dm.slot = 1 AND dm.status = 'ACTIVE')) AS has_second
        FROM duo_accounts d
       WHERE d.pending_invite_email IS NOT NULL
         AND (d.billing_owner_user_id = $1 OR lower(d.pending_invite_email) = lower($2))`,

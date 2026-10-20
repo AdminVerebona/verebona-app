@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/db';
-import { accounts, accountSubscriptions, users, accountMemberships, assets, assetFiles, duoAccounts, duoMemberships, invoices, planLimits, subscriptionHistory } from '@/db/schema';
+import { accounts, accountSubscriptions, users, accountMemberships, assets, assetFiles, duoAccounts, invoices, planLimits, subscriptionHistory } from '@/db/schema';
 import { and, eq, sql, desc, asc, isNull } from 'drizzle-orm';
 import { requireAdmin, isSessionError, sessionErrorResponse } from '@/lib/auth-guards';
 import { SessionService } from '@/lib/session-service';
@@ -18,6 +18,7 @@ import { planAtDate } from '@/lib/admin/plan-at-date';
 import { loadAccountHistory } from '@/services/admin/account-history.service';
 import { loadAccountPendingDeletion } from '@/services/admin/account-deletion-status.service';
 import { pgClient } from '@/db';
+import { duoOfAccount } from '@/services/account/membership.service';
 
 
 export async function GET(
@@ -134,35 +135,42 @@ export async function GET(
       [accountId],
     );
 
-    // Fetch duo account for the owner of this account
-    const [duoAccount] = await db
-      .select({
-        id: duoAccounts.id,
-        subscriptionStatus: duoAccounts.subscriptionStatus,
-        activatedAt: duoAccounts.activatedAt,
-        createdAt: duoAccounts.createdAt,
-      })
-      .from(duoAccounts)
-      .where(eq(duoAccounts.billingOwnerUserId, account.ownerUserId))
-      .limit(1);
+    // Lot 74B (point 6) : Duo porté par CE compte (lien 0520, sinon
+    // `accounts.duo_account_id`) — et non « le Duo dont le titulaire du compte
+    // est payeur » (faux pour un compte partagé ou multi-comptes) ; membres
+    // lus dans account_memberships (titulaire / membre), plus dans
+    // duo_memberships (double écriture inchangée).
+    const duoId = await duoOfAccount(accountId);
+    const [duoAccount] = duoId
+      ? await db
+          .select({
+            id: duoAccounts.id,
+            subscriptionStatus: duoAccounts.subscriptionStatus,
+            activatedAt: duoAccounts.activatedAt,
+            createdAt: duoAccounts.createdAt,
+          })
+          .from(duoAccounts)
+          .where(eq(duoAccounts.id, duoId))
+          .limit(1)
+      : [];
 
-    let duoAccountData = null;
-    if (duoAccount) {
-      const members = await db
-        .select({
-          id: duoMemberships.id,
-          userId: duoMemberships.userId,
-          status: duoMemberships.status,
-          slot: duoMemberships.slot,
-          email: users.email,
-          name: sql<string>`COALESCE(${users.firstName} || ' ' || ${users.lastName}, ${users.email})`,
-        })
-        .from(duoMemberships)
-        .leftJoin(users, eq(duoMemberships.userId, users.id))
-        .where(eq(duoMemberships.duoId, duoAccount.id));
-
-      duoAccountData = { ...duoAccount, members };
-    }
+    const duoAccountData = duoAccount
+      ? {
+          ...duoAccount,
+          members: members
+            .filter((m) => ['active', 'ACTIVE', 'pending'].includes(m.status))
+            .map((m) => ({
+              id: m.id,
+              userId: m.userId,
+              status: m.status.toUpperCase(),
+              slot: m.role === 'owner' ? 0 : 1,
+              role: m.role === 'owner' ? 'owner' : 'member',
+              roleLabel: m.role === 'owner' ? 'Titulaire' : 'Membre',
+              email: m.email,
+              name: m.name?.trim() || m.email,
+            })),
+        }
+      : null;
 
     // ── Synthèse §5.2.1 : dernière connexion de n'importe quel membre ────
     const [lastLogin] = await db

@@ -15,7 +15,7 @@ function ensureConfigured(): boolean {
   if (configured !== null) return configured;
   const publicKey = process.env.VAPID_PUBLIC_KEY;
   const privateKey = process.env.VAPID_PRIVATE_KEY;
-  const subject = process.env.VAPID_SUBJECT || 'mailto:support@verebona.fr';
+  const subject = process.env.VAPID_SUBJECT || 'mailto:support@verebona.com';
   if (!publicKey || !privateKey) {
     console.warn('[web-push] VAPID_PUBLIC_KEY/VAPID_PRIVATE_KEY absents — push serveur désactivé.');
     configured = false;

@@ -10,55 +10,39 @@ function corsHeaders(request: Request): Record<string, string> {
     : {};
 }
 
+/**
+ * POST /api/contact — formulaire de contact du site vitrine (visiteur non
+ * connecté, route publique du middleware ; CORS limité à la vitrine).
+ *
+ * Lot 74A (point 1) : les valeurs saisies (nom, adresse, objet, message) sont
+ * neutralisées dans l'e-mail envoyé à l'équipe — HTML, texte et objet
+ * (`buildContactEmail`, variable-safety du lot 73A) ; le message garde ses
+ * retours à la ligne. « Répondre à » = l'adresse saisie seulement si elle est
+ * valide. L'ancien envoi du gabarit WELCOME à contact@ (loginUrl « # »), reste
+ * d'un essai de mise en page jamais utilisé (résultat ignoré), est supprimé.
+ */
+const CONTACT_TO = 'contact@verebona.com';
+const CONTACT_FROM = 'Verebona <noreply@verebona.com>';
+
+const filled = (v: unknown): v is string => typeof v === 'string' && v.trim().length > 0;
+
 export async function POST(request: NextRequest) {
   try {
-    const body = await request.json();
-    const { name, email, subject, message } = body;
+    const body = (await request.json()) as Record<string, unknown> | null;
+    const { name, email, subject, message } = body ?? {};
 
-    // Validation
-    if (!name || !email || !subject || !message) {
+    // Validation (inchangée, plus : des chaînes uniquement)
+    if (!filled(name) || !filled(email) || !filled(subject) || !filled(message)) {
       return NextResponse.json(
         { error: "Tous les champs sont requis" },
         { headers: corsHeaders(request), status: 400 }
       );
     }
 
-    // Construire le corps de l'email pour le service
-    const bodyContent = `
-Nouveau message de contact reçu depuis le site Verebona.
-
-Nom : ${name}
-Email : ${email}
-Sujet : ${subject}
-
-Message :
-${message}
-    `.trim();
-
-    // Envoyer l'email via le service centralisé (plus de logo cassé !)
-    const result = await emailService.send({
-      templateCode: 'WELCOME', // On utilise un template existant comme base si CONTACT_NOTIFICATION n'existe pas encore
-      to: "contact@verebona.com",
-      variables: {
-        firstName: "Équipe Verebona",
-        loginUrl: "#",
-        // Le corps du message sera injecté si on utilise un template simple
-        // Mais ici on veut un envoi direct avec le wrapper HTML
-      }
-    });
-
-    // Note: EmailService.send utilise des templates en DB. 
-    // Pour le contact, on va plutôt utiliser une méthode qui permet d'envoyer du contenu libre avec le logo
-    // Mais EmailService.send est plus robuste car il loggue tout.
-    
-    // Correction : j'utilise une version simplifiée qui garantit le logo
-    const { data, error } = await (emailService as any).resend.emails.send({
-      from: "Verebona <noreply@verebona.com>",
-      to: "contact@verebona.com",
-      replyTo: email,
-      subject: `[Contact Verebona] ${subject}`,
-      html: await (emailService as any).wrapInHTML(bodyContent, await (emailService as any).getSettings(), await (emailService as any).getVerebonaEmailLogo()),
-    });
+    const { error } = await emailService.sendContactMessage(
+      { name, email, subject, message },
+      { to: CONTACT_TO, from: CONTACT_FROM },
+    );
 
     if (error) {
       console.error("❌ Failed to send contact email:", error);
@@ -67,7 +51,6 @@ ${message}
         { headers: corsHeaders(request), status: 500 }
       );
     }
-
 
     return NextResponse.json({
       success: true,

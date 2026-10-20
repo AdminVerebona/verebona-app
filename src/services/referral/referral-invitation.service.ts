@@ -12,7 +12,7 @@
  * « Invitation envoyée » et rien ne partait.
  *
  * Et un refus était certain : l'expéditeur était codé en dur
- * (`RESEND_FROM_EMAIL`, à défaut `no-reply@verebona.fr`), alors que tous les
+ * (`RESEND_FROM_EMAIL`, à défaut `noreply@verebona.com`), alors que tous les
  * autres e-mails — qui arrivent — partent avec l'expéditeur réglé dans le BO
  * (`email_settings`), seul domaine vérifié chez Resend. Sans clé, la route
  * « simulait » même l'envoi et répondait succès.

@@ -19,6 +19,8 @@ import {
   loadLoginHistory,
   loadStatusChanges,
   loadUserMemberships,
+  loadUserDuoMemberships,
+  hasLegacyDuoWithoutMembership,
   LOGIN_HISTORY_DAYS,
 } from '@/services/admin/user-detail.service';
 import { communicationTypeLabel } from '@/services/admin/communications.service';
@@ -93,7 +95,9 @@ export async function GET(
             createdAt: assets.createdAt,
           })
           .from(assets)
-          .where(sql`${assets.accountId} IN (${sql.join(accountIds)})`)
+          // Lot 74B : `sql.join` sans séparateur produisait `IN ($1$2)` — fiche
+          // en erreur 500 dès DEUX comptes (membre Duo avec espace personnel).
+          .where(inArray(assets.accountId, accountIds))
       : [];
 
     // Get counts for stats
@@ -101,7 +105,7 @@ export async function GET(
       .select({ count: sql<number>`count(*)` })
       .from(assetFiles)
       .where(and(
-        accountIds.length > 0 ? sql`${assetFiles.accountId} IN (${sql.join(accountIds)})` : sql`1=0`,
+        accountIds.length > 0 ? inArray(assetFiles.accountId, accountIds) : sql`1=0`,
         isNull(assetFiles.deletedAt)
       ));
     const documentsCount = Number(documentsCountResult[0]?.count ?? 0);
@@ -181,13 +185,16 @@ export async function GET(
     // §6.2 / COM-014 / USR-D01 : données de support (lecture seule). Un échec
     // de l'une d'elles fait échouer la fiche (ERR-001 : pas de fiche partielle
     // présentée comme complète).
-    const [memberships, statusChanges, preferences, invitations, communications, logins] = await Promise.all([
+    const [memberships, statusChanges, preferences, invitations, communications, logins, duoMemberships, legacyDuoAnomaly] = await Promise.all([
       loadUserMemberships(userIdParam),
       loadStatusChanges(userIdParam),
       buildPreferenceMatrix(userIdParam),
       loadInvitations(userIdParam, user.email),
       loadCommunications(userIdParam, communicationTypeLabel),
       loadLoginHistory(userIdParam),
+      // Lot 74B (point 6) : Duo lu dans account_memberships (rôle, statut).
+      loadUserDuoMemberships(userIdParam),
+      hasLegacyDuoWithoutMembership(userIdParam),
     ]);
 
     // SUB-012 : aucun identifiant Stripe renvoyé.
@@ -200,6 +207,8 @@ export async function GET(
       },
       account: linkedAccount,
       memberships,
+      duoMemberships,
+      legacyDuoAnomaly,
       statusChanges,
       notificationPreferences: {
         categories: preferences.categories,

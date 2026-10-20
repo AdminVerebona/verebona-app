@@ -6,22 +6,21 @@
  * l'administrateur connecté, lue dans la session : aucun destinataire n'est
  * accepté du client. Les variables sont celles du propre compte de
  * l'administrateur (COM-007) ; le test part même si le canal est désactivé.
+ * Lot 74A (point 3) : e-mail d'une notification (`notif_*`) → message réel de
+ * l'événement (comme l'éditeur 73A), plus « [donnée indisponible] ».
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { requireAdmin, getSession, sessionErrorResponse } from '@/lib/auth-guards';
 import { emailService } from '@/lib/email/email-service';
 import {
-  appBaseUrl,
   findChannelDefinition,
   findEmailTemplate,
   listEventDefinitions,
-  loadAdminPreviewContext,
   loadEmailTemplateCodes,
   loadPreviewContextOptions,
-  resolveTemplateVariables,
   selectPreviewContext,
-  contextVariables,
 } from '@/services/admin/communications.service';
+import { renderListEmail } from '@/services/admin/email-template-editor.service';
 
 const idOf = (v: unknown): number | null => (typeof v === 'number' && Number.isSafeInteger(v) && v > 0 ? v : null);
 
@@ -74,8 +73,12 @@ export async function POST(request: NextRequest) {
       paymentId: idOf(body.paymentId),
       withdrawalId: idOf(body.withdrawalId),
     });
-    const ctx = { ...(await loadAdminPreviewContext(adminId, currentAccountId)), extra: contextVariables(selected) };
-    const { variables, missingCount } = resolveTemplateVariables([template.subject, template.body], ctx, appBaseUrl());
+    // Lot 74A (point 3) : variables de l'aperçu de la liste (même rendu), dont
+    // le message réel de l'événement pour un e-mail de notification (notif_*).
+    const { variables, missingCount } = await renderListEmail({
+      template, eventCode: found.event.code, eventKind: found.event.kind, selected,
+      accountId: options.accountId, adminId, sessionAccountId: currentAccountId,
+    });
     const result = await emailService.sendTest(template.type, adminEmail, variables);
     if (!result.success) {
       return NextResponse.json(

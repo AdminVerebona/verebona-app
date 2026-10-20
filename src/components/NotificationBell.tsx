@@ -245,9 +245,13 @@ function formatDate(iso: unknown): string {
 
 function getNotificationHref(type: string, payload: NotificationPayload | null): string | null {
   const p = payload ?? {};
-  if ((type === 'ACCOUNT_INVITATION' || type === 'DUO_INVITATION_RECEIVED') && p.inviteToken) {
-    return `/mon-compte/partage?inviteToken=${p.inviteToken}`;
+  // Lot 74B : `/mon-compte/partage` n'a jamais existé (lien mort). Invitation
+  // Duo → sa page réelle ; invitation à un compte partagé hors Duo → Mon
+  // compte (aucun parcours d'acceptation tant que l'offre Pro n'est pas vendue).
+  if (type === 'DUO_INVITATION_RECEIVED' && p.inviteToken) {
+    return `/duo/join/${encodeURIComponent(p.inviteToken)}`;
   }
+  if (type === 'ACCOUNT_INVITATION') return '/mon-compte';
   // Lot 72D (Q11) : les demandes croisées Duo sont retirées (même espace,
   // mêmes droits) — une ancienne notification ouvre le bien concerné.
   if (type === 'DUO_MOVE_REQUEST' || type === 'DUO_DELETE_REQUEST') {

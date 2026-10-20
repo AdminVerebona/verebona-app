@@ -57,7 +57,7 @@ export async function sendWithdrawalReceipt(input: ReceiptInput): Promise<{ sent
         contractLabel: `${input.summary.offerLabel} — facturation ${input.summary.billingPeriodLabel}`,
         amountLabel: input.summary.amountLabel,
         legalPermalinkUrl: `${base}/cgvu`,
-        contactEmail: process.env.CONTACT_EMAIL || 'contact@verebona.fr',
+        contactEmail: process.env.CONTACT_EMAIL || 'contact@verebona.com',
       },
     });
 
@@ -95,7 +95,7 @@ export async function sendVerificationLink(input: {
       variables: {
         firstName: input.firstName ?? '',
         verificationUrl: url,
-        contactEmail: process.env.CONTACT_EMAIL || 'contact@verebona.fr',
+        contactEmail: process.env.CONTACT_EMAIL || 'contact@verebona.com',
       },
     });
     return { sent: result.success };

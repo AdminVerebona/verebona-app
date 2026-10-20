@@ -65,16 +65,20 @@ class Simulation extends Error {}
 
 /**
  * Preuve d'un déplacement légitime (lot 54) : demande ACCEPTÉE du bien vers
- * son compte actuel, dans un Duo relié à l'ancien compte. SQL partagé.
+ * son compte actuel, dans un Duo relié à l'ancien compte — ou (lot 74B)
+ * déplacement volontaire journalisé dans `asset_space_moves`. SQL partagé.
  */
-export const PROVEN_MOVE_SQL = (asset: string, to: string, from: string) => `EXISTS (
+export const PROVEN_MOVE_SQL = (asset: string, to: string, from: string) => `(EXISTS (
   SELECT 1 FROM asset_move_requests m
    WHERE m.asset_id = ${asset} AND m.status = 'ACCEPTED' AND m.target_account_id = ${to}
      AND (EXISTS (SELECT 1 FROM accounts fa WHERE fa.id = ${from} AND fa.duo_account_id = m.duo_id)
        OR EXISTS (SELECT 1 FROM accounts fa JOIN duo_accounts d ON d.billing_owner_user_id = fa.owner_user_id
                    WHERE fa.id = ${from} AND d.id = m.duo_id)
        OR EXISTS (SELECT 1 FROM accounts fa JOIN duo_memberships dm ON dm.user_id = fa.owner_user_id
-                   WHERE fa.id = ${from} AND dm.duo_id = m.duo_id)))`;
+                   WHERE fa.id = ${from} AND dm.duo_id = m.duo_id)))
+  /* Lot 74B : déplacement volontaire vers l espace Duo, journalisé (0536). */
+  OR EXISTS (SELECT 1 FROM asset_space_moves v
+              WHERE v.asset_id = ${asset} AND v.to_account_id = ${to} AND v.from_account_id = ${from}))`;
 
 /** Couples (bien, ancien compte) dont des données sont restées dans l'ancien compte. */
 export async function findMisplacedAssetData(

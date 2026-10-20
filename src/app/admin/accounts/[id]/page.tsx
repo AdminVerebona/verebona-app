@@ -483,11 +483,11 @@ export default function AccountDetailPage() {
                       <p className="text-xs text-muted-foreground truncate">{m.email}</p>
                     </div>
                     <div className="flex items-center gap-2 shrink-0 text-xs">
-                      {/* ACC-D02 : titulaire / second utilisateur explicites. */}
+                      {/* ACC-D02 : titulaire / membre explicites (libellé PO lot 74B). */}
                       <span className={`px-2 py-0.5 rounded-full font-medium ${
                         m.role === 'owner' ? 'bg-[color:var(--accent-soft)] text-[color:var(--accent)]' : 'bg-[color:var(--bg-subtle)] text-[color:var(--text-muted)]'
                       }`}>
-                        {m.role === 'owner' ? 'Titulaire' : 'Second utilisateur'}
+                        {m.role === 'owner' ? 'Titulaire' : 'Membre'}
                       </span>
                       <span className={
                         m.status === 'active' ? 'text-[color:var(--text-success)]' :

@@ -57,6 +57,33 @@ function searchCondition(q: string): SQL {
   ) as SQL;
 }
 
+/** Lot 74B : compte « Duo » = offre PREMIUM_DUO ou Duo rattaché. */
+function isDuoAccount(a: { planType: string | null; duoAccountId: number | null }): boolean {
+  return (a.planType ?? '').toUpperCase() === 'PREMIUM_DUO' || a.duoAccountId !== null;
+}
+
+function duoAccountIds(rows: Array<{ id: number; planType: string | null; duoAccountId: number | null }>): number[] {
+  const ids = rows.filter(isDuoAccount).map((r) => r.id);
+  return ids.length ? ids : [-1];
+}
+
+interface DuoMemberRow { role: 'owner' | 'member'; roleLabel: string; email: string | null; status: 'active' | 'pending'; statusLabel: string }
+
+function duoMemberRow(r: { role: string; status: string; email: string | null }): DuoMemberRow {
+  const owner = r.role === 'owner';
+  const active = r.status.toLowerCase() === 'active';
+  return {
+    role: owner ? 'owner' : 'member',
+    roleLabel: owner ? 'Titulaire' : 'Membre',
+    email: r.email,
+    status: active ? 'active' : 'pending',
+    statusLabel: active ? 'Actif' : 'Invitation en attente',
+  };
+}
+
+const sortDuoMembers = (l: DuoMemberRow[]) =>
+  [...l].sort((a, b) => (a.role === b.role ? (a.status === b.status ? 0 : a.status === 'active' ? -1 : 1) : a.role === 'owner' ? -1 : 1));
+
 export async function GET(request: NextRequest) {
   try {
     await requireAdmin(request);
@@ -100,7 +127,7 @@ export async function GET(request: NextRequest) {
     const accountIds = allAccounts.map((a) => a.id);
 
     // Agrégats groupés : une requête par indicateur, jamais une par compte.
-    const [memberRows, assetRows, fileRows, loginRows, deletionRows] = accountIds.length > 0
+    const [memberRows, assetRows, fileRows, loginRows, deletionRows, duoRows] = accountIds.length > 0
       ? await Promise.all([
           db.select({ accountId: accountMemberships.accountId, cnt: count() })
             .from(accountMemberships)
@@ -147,14 +174,34 @@ export async function GET(request: NextRequest) {
                 eq(accounts.ownerUserId, scheduledAccountDeletions.userId),
               ),
             )),
+          // Lot 74B (point 6) : composition du Duo (titulaire / membre, statut)
+          // lue dans account_memberships — plus dans duo_memberships.
+          db.select({
+            accountId: accountMemberships.accountId,
+            role: accountMemberships.role,
+            status: accountMemberships.status,
+            email: sql<string | null>`COALESCE(${users.email}, ${accountMemberships.invitedEmail})`,
+          })
+            .from(accountMemberships)
+            .leftJoin(users, eq(users.id, accountMemberships.userId))
+            .where(and(
+              inArray(accountMemberships.accountId, duoAccountIds(allAccounts)),
+              inArray(accountMemberships.status, ['active', 'ACTIVE', 'pending']),
+            )),
         ])
-      : [[], [], [], [], []];
+      : [[], [], [], [], [], []];
 
     const members = new Map(memberRows.map((r) => [r.accountId, Number(r.cnt)]));
     const assetCounts = new Map(assetRows.map((r) => [r.accountId, Number(r.cnt)]));
     const files = new Map(fileRows.map((r) => [r.accountId, { cnt: Number(r.cnt), bytes: Number(r.bytes) }]));
     const logins = new Map(loginRows.map((r) => [r.accountId, r.lastLoginAt]));
     const deletionPending = new Set(deletionRows.map((r) => r.accountId));
+    const duoMembers = new Map<number, DuoMemberRow[]>();
+    for (const r of duoRows) {
+      const l = duoMembers.get(r.accountId) ?? [];
+      l.push(duoMemberRow(r));
+      duoMembers.set(r.accountId, l);
+    }
 
     const rows = allAccounts.map((account) => {
       const status: 'active' | 'suspended' | 'deletion_pending' =
@@ -168,6 +215,9 @@ export async function GET(request: NextRequest) {
         documentCount: files.get(account.id)?.cnt ?? 0,
         storageBytes: files.get(account.id)?.bytes ?? 0,
         lastLoginAt: logins.get(account.id) ?? null,
+        duo: isDuoAccount(account)
+          ? { status: account.duoStatus ?? null, members: sortDuoMembers(duoMembers.get(account.id) ?? []) }
+          : null,
       };
     });
 

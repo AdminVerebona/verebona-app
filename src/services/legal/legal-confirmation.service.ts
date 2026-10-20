@@ -92,7 +92,7 @@ export async function sendLegalConfirmationEmail(
         legalPermalinkUrl: permalinkUrl,
         subscriptionBlockHtml: renderSubscriptionBlock(input),
         withdrawalBlockHtml: renderWithdrawalBlock(input),
-        contactEmail: process.env.CONTACT_EMAIL || 'contact@verebona.fr',
+        contactEmail: process.env.CONTACT_EMAIL || 'contact@verebona.com',
       },
     });
 

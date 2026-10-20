@@ -246,16 +246,18 @@ scenario('L71D-SRCH', 'Lot 71D — équipements et pièces recherchés et propos
   });
 
   it('SRCH-AC09-E2E — T2 : archivé ou hors compte → jamais proposé par la résolution nominative', async () => {
+    // Lot 74 : instantané des équipements des deux comptes AVANT les lectures
+    // (comparaison exacte, indépendante de l'horloge et de la charge).
+    const etatEq = async () => (await sql<{ id: number; u: string }[]>`SELECT e.id, e.updated_at::text AS u FROM equipments e JOIN assets a ON a.id = e.asset_id WHERE a.account_id IN (${c.id}, ${autre.id}) ORDER BY e.id`);
+    const avant = await etatEq();
     const { findNamedEntities } = await import('@/services/search/global-search.service');
     expect((await findNamedEntities(c.id, 'Adoucisseur')).entities).toEqual([]);
     expect((await findNamedEntities(c.id, 'Climatiseur')).entities).toEqual([]);
     expect((await findNamedEntities(c.id, 'Portail motorisé')).entities).toEqual([]);
     expect((await findNamedEntities(c.id, 'Pompe à chaleur')).entities.map((e) => e.id)).toEqual([ids.pac]);
     expect((await findNamedEntities(autre.id, 'Pompe à chaleur')).entities.map((e) => e.id)).toEqual([ids.autrePac]);
-    // Aucune écriture : lecture seule (aucune ligne modifiée). Lot 73 : borné aux
-    // comptes du scénario (les autres fichiers e2e écrivent en parallèle).
-    const [{ n }] = await sql<{ n: number }[]>`SELECT count(*)::int AS n FROM equipments e JOIN assets a ON a.id = e.asset_id WHERE a.account_id IN (${c.id}, ${autre.id}) AND e.updated_at > now() - interval '1 second'`;
-    expect(n).toBe(0);
+    // Aucune écriture : lecture seule (aucune ligne modifiée).
+    expect(await etatEq()).toEqual(avant);
   });
 
   it('SRCH-PERF-E2E — EXPLAIN (ANALYZE) sur un jeu représentatif : requêtes bornées au compte, rapides', async () => {

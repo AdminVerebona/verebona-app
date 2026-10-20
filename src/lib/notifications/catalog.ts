@@ -298,7 +298,8 @@ export const NOTIFICATION_CATALOG: { [K in NotificationType]?: CatalogEntry } = 
       { body: 'Vous avez reçu une invitation Duo.' },
       'notif_duo_invitation',
     ),
-    deepLink: (p) => (p.inviteToken ? `/mon-compte/partage?inviteToken=${p.inviteToken}` : '/mon-compte/partage'),
+    // Lot 74B : `/mon-compte/partage` n'a jamais existé — page d'invitation Duo réelle.
+    deepLink: (p) => (p.inviteToken ? `/duo/join/${encodeURIComponent(p.inviteToken)}` : '/mon-compte'),
     payloadSchema: z.object({ duoId: z.number().optional(), inviteToken: z.string().optional(), initiatorName: z.string().optional() }),
   },
   [T.DUO_MOVE_REQUEST]: {
@@ -374,7 +375,9 @@ export const NOTIFICATION_CATALOG: { [K in NotificationType]?: CatalogEntry } = 
       { body: 'Vous avez reçu une invitation.' },
       'notif_account_invitation',
     ),
-    deepLink: (p) => (p.inviteToken ? `/mon-compte/partage?inviteToken=${p.inviteToken}` : '/mon-compte/partage'),
+    // Lot 74B : aucun parcours d'acceptation hors Duo (offre Pro non vendue) —
+    // plus de lien mort `/mon-compte/partage` ; plus émise (account-service).
+    deepLink: () => '/mon-compte',
     payloadSchema: z.object({ inviteToken: z.string().optional(), inviterName: z.string().optional(), accountName: z.string().optional() }),
   },
 
@@ -658,7 +661,8 @@ function duoResult(type: NotificationType, kind: 'transfert' | 'suppression', ou
       { body: `Votre demande de ${kind} a été ${outcome}.` },
       'notif_duo_result',
     ),
-    deepLink: () => '/mon-compte/partage',
+    // Lot 74B : demandes croisées retirées (72D) — plus de lien mort `/mon-compte/partage`.
+    deepLink: () => '/assets',
     payloadSchema: z.object({ requestId: z.number().optional(), assetLabel: z.string().optional() }),
   };
 }

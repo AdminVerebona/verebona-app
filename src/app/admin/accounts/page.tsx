@@ -35,6 +35,41 @@ interface Account {
   storageBytes: number;
   createdAt: string;
   lastLoginAt: string | null;
+  /** Lot 74B : composition du Duo (account_memberships) ; null hors Duo. */
+  duo?: {
+    status: string | null;
+    members: Array<{ role: 'owner' | 'member'; roleLabel: string; email: string | null; status: 'active' | 'pending'; statusLabel: string }>;
+  } | null;
+}
+
+/** Lot 74B : statut lisible de l'abonnement Duo (`duo_accounts`). */
+const DUO_STATUS_LABEL: Record<string, string> = {
+  ACTIVE: 'Duo actif',
+  UNPAID_RECOVERY: 'Duo en impayé',
+  INACTIVE: 'Duo inactif',
+  PENDING: 'Duo en attente',
+  CANCELED: 'Duo résilié',
+  CANCELLED: 'Duo résilié',
+  WITHDRAWN: 'Duo rétracté',
+};
+
+function DuoCell({ duo }: { duo: NonNullable<Account['duo']> }) {
+  const membre = duo.members.filter((m) => m.role === 'member');
+  return (
+    <div className="mt-1 space-y-0.5 text-[11px] text-muted-foreground" data-testid="bo-account-duo">
+      {duo.status && <div>{DUO_STATUS_LABEL[duo.status.toUpperCase()] ?? duo.status}</div>}
+      {duo.members.filter((m) => m.role === 'owner').map((m) => (
+        <div key={`o-${m.email}`} className="truncate max-w-[14rem]">Titulaire : {m.email ?? '—'}</div>
+      ))}
+      {membre.length === 0
+        ? <div>Membre : aucun</div>
+        : membre.map((m) => (
+          <div key={`m-${m.email}`} className="truncate max-w-[14rem]">
+            Membre : {m.email ?? '—'} <span className={m.status === 'active' ? 'text-[color:var(--text-success)]' : 'text-[color:var(--text-warning-soft)]'}>({m.statusLabel.toLowerCase()})</span>
+          </div>
+        ))}
+    </div>
+  );
 }
 
 type Sort = 'name' | 'plan' | 'status' | 'storage' | 'documents' | 'assets' | 'members' | 'created' | 'lastLogin';
@@ -242,7 +277,10 @@ function AccountsScreen() {
                         <div className="text-xs text-muted-foreground truncate max-w-[16rem]">{account.ownerEmail}</div>
                       )}
                     </TableCell>
-                    <TableCell><PlanBadge plan={account.planType} /></TableCell>
+                    <TableCell>
+                      <PlanBadge plan={account.planType} />
+                      {account.duo && <DuoCell duo={account.duo} />}
+                    </TableCell>
                     <TableCell>
                       <span className={`text-xs font-medium ${STATUS_LABEL[account.status].cls}`}>
                         {STATUS_LABEL[account.status].label}

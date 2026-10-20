@@ -13,6 +13,10 @@
  * (`GET …/preview-context`). Un identifiant hors de ce compte est ignoré et
  * signalé (`rejected`), jamais utilisé.
  *
+ * E-mail (lot 74A, point 2) : rendu par `renderListEmail` — même chemin que
+ * l'envoi réel (`EmailService.renderTemplate`, valeurs neutralisées) ; pour un
+ * e-mail de notification (`notif_*`), message réel de l'événement.
+ *
  * Push / in-app : le contenu est rendu par le catalogue avec le payload
  * construit depuis ce contexte ; s'il manque une donnée requise, la
  * prévisualisation est déclarée impossible ou incomplète (COM-009).
@@ -21,20 +25,16 @@ import { NextRequest, NextResponse } from 'next/server';
 import { requireAdmin, getSession, sessionErrorResponse } from '@/lib/auth-guards';
 import { getCatalogEntry } from '@/lib/notifications/catalog';
 import {
-  appBaseUrl,
-  fillTemplate,
   findChannelDefinition,
   findEmailTemplate,
   isCommunicationChannel,
   listEventDefinitions,
-  loadAdminPreviewContext,
   loadEmailTemplateCodes,
   loadPreviewContextOptions,
-  resolveTemplateVariables,
   selectPreviewContext,
   contextPayload,
-  contextVariables,
 } from '@/services/admin/communications.service';
+import { renderListEmail } from '@/services/admin/email-template-editor.service';
 
 function optionalId(raw: string | null): number | null {
   if (!raw) return null;
@@ -85,16 +85,20 @@ export async function GET(request: NextRequest) {
           message: 'Aucun gabarit e-mail n’est enregistré pour ce modèle : prévisualisation impossible.',
         });
       }
-      const ctx = { ...(await loadAdminPreviewContext(adminId, currentAccountId)), extra: contextVariables(selected) };
-      const { variables, missingCount } = resolveTemplateVariables([template.subject, template.body], ctx, appBaseUrl());
-      const body = fillTemplate(template.body, variables);
+      // Lot 74A (point 2) : même rendu que l'envoi réel et que l'e-mail de test
+      // (renderTemplate : valeurs neutralisées, objet sur une ligne, enveloppe
+      // de la charte) ; e-mail d'une notification : message réel de l'événement.
+      const { rendered, missingCount, recipient } = await renderListEmail({
+        template, eventCode: found.event.code, eventKind: found.event.kind, selected,
+        accountId: options.accountId, adminId, sessionAccountId: currentAccountId,
+      });
       return NextResponse.json({
         channel,
         available: true,
-        subject: fillTemplate(template.subject, variables),
-        body,
-        isHtml: /<[a-z][\s\S]*>/i.test(body),
-        recipient: ctx.email,
+        subject: rendered.subject,
+        body: rendered.html,
+        isHtml: true,
+        recipient,
         incomplete: missingCount > 0,
         missingCount,
         rejected,

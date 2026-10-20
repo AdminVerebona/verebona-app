@@ -60,6 +60,9 @@ const MEMBER_EVENTS: Record<string, string> = {
   OWNER_TRANSFERRED: 'Changement de titulaire',
   ACCOUNT_CREATED: 'Création du compte',
   ACCOUNT_UPDATED: 'Compte modifié',
+  // Lot 74B : « Déplacer vers l'espace Duo » (journal `asset_space_moves`).
+  ASSET_MOVED_OUT: 'Bien déplacé vers un autre espace',
+  ASSET_MOVED_IN: 'Bien reçu d’un autre espace',
 };
 
 /** Libellé lisible d'un `account_audit_log.action_type` (jamais le code brut seul). */
