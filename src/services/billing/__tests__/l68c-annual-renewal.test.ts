@@ -162,10 +162,12 @@ describe('ANN-J7-06 — rattrapage avant l’échéance, jamais après', () => {
     expect(reminderTiming(new Date('2026-11-09T07:00:00Z'), renewal, '2026-10-01')).toMatchObject({ send: false, reason: 'TOO_LATE' });
     expect(reminderTiming(new Date('2026-11-10T07:00:00Z'), renewal, '2026-10-01')).toMatchObject({ send: false, reason: 'TOO_LATE' });
   });
-  it('bascule : J−7 antérieur à l’activation → pas de rattrapage (rappel Stripe déjà parti)', () => {
-    expect(reminderTiming(new Date('2026-11-06T08:00:00Z'), renewal, '2026-11-05')).toMatchObject({ send: false, reason: 'BEFORE_COVERAGE' });
-    // Le J−7 nominal n'est jamais concerné.
+  it('bascule : J−7 antérieur au début de couverture → « couverture incertaine » (lot 72F : jamais présumé rappelé par Stripe)', () => {
+    expect(reminderTiming(new Date('2026-11-06T08:00:00Z'), renewal, '2026-11-05')).toMatchObject({ send: false, reason: 'COVERAGE_UNCERTAIN' });
+    // J−7 nominal le premier jour couvert : envoyé.
     expect(reminderTiming(new Date('2026-11-02T08:00:00Z'), renewal, '2026-11-02')).toMatchObject({ send: true, catchUp: false });
+    // Lot 72F : J−7 nominal AVANT le premier jour couvert (jour de la désactivation Stripe) : incertain.
+    expect(reminderTiming(new Date('2026-11-02T08:00:00Z'), renewal, '2026-11-03')).toMatchObject({ send: false, reason: 'COVERAGE_UNCERTAIN' });
   });
 });
 
@@ -247,7 +249,9 @@ describe('ANN-J7-09 — lien permanent (navigation, refus)', () => {
     expect(portalErrorView('PORTAL_SESSION_FAILED').retry).toBe(true);
   });
   it('page : session créée à l’ouverture par la route existante (aucune URL Stripe dans l’e-mail)', () => {
-    const page = read('src/app/(dashboard)/mon-compte/abonnement/gerer/page.tsx');
+    // Lot 72F : vue partagée (lien permanent et lien contextualisé au compte facturé).
+    expect(read('src/app/(dashboard)/mon-compte/abonnement/gerer/page.tsx')).toContain('ManageSubscriptionView');
+    const page = read('src/components/billing/ManageSubscriptionView.tsx');
     expect(page).toContain("'/api/billing/create-customer-portal-session'");
     const route = read('src/app/api/billing/create-customer-portal-session/route.ts');
     expect(route).toContain('resolveBillingPortalAccess');

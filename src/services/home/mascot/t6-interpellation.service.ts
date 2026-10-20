@@ -29,8 +29,8 @@ import {
   addDays, agendaFingerprintParts, agendaOccurrenceKey, agendaSubjectKey, assessmentFromDecision, assessmentHorizonDays, compareShown,
   daysBetween, decideT6Interpellation, evidenceSnapshotOf, isT6RelevantFact, preferenceAppliesToCycle, sameT6Context, suggestReminderDate,
   t6FingerprintParts,
-  type T6Assessment, type T6Candidate, type T6CandidateRef, type T6DecisionResult, type T6EvidenceVersion, type T6InterpellationBundle,
-  type T6ReevaluationReason, type T6ReminderPreference, type T6StoredAssessment,
+  type T6Assessment, type T6Candidate, type T6CandidateRef, type T6DecisionResult, type T6EvaluationConfig, type T6EvidenceVersion,
+  type T6InterpellationBundle, type T6PersistResult, type T6ReevaluationReason, type T6ReminderPreference, type T6StoredAssessment,
 } from './t6-interpellation';
 import {
   T6_EVALUATION_INPUT_SCHEMA_VERSION,
@@ -306,7 +306,9 @@ export async function loadAssessments(accountId: number, agendaIds: number[]): P
             a.contract_version, a.decision, a.category, a.reason_code, a.evidence_refs, a.uncertainties,
             to_jsonb(a) -> 'contract_revision' AS contract_revision,
             -- Lot 71G (0507) : lues sans dépendre des colonnes.
-            to_jsonb(a) -> 'evidence_snapshot' AS evidence_snapshot, to_jsonb(a) ->> 'reevaluation_reason' AS reevaluation_reason
+            to_jsonb(a) -> 'evidence_snapshot' AS evidence_snapshot, to_jsonb(a) ->> 'reevaluation_reason' AS reevaluation_reason,
+            -- Lot 72A (0510) : signature de la configuration EVALUATE, lue sans dépendre de la colonne.
+            to_jsonb(a) ->> 'evaluation_signature' AS evaluation_signature
        FROM t6_interpellation_assessments a
        JOIN agenda_items i ON i.id = a.agenda_item_id AND i.account_id = a.account_id
       WHERE a.account_id = $1 AND a.agenda_item_id = ANY($2::int[])`,
@@ -340,6 +342,7 @@ export async function loadAssessments(accountId: number, agendaIds: number[]): P
       contractRevision: x.contract_revision == null ? 1 : Number(x.contract_revision),
       evidenceSnapshot: x.evidence_snapshot && typeof x.evidence_snapshot === 'object' ? x.evidence_snapshot as T6StoredAssessment['evidenceSnapshot'] : null,
       reevaluationReason: (x.reevaluation_reason as string | null) ?? null,
+      evaluationSignature: (x.evaluation_signature as string | null) ?? null,
     });
   }
   return out;
@@ -407,59 +410,86 @@ export async function loadDueReminders(accountId: number, today: string): Promis
  * L'échéance est revérifiée DANS le compte : jamais une évaluation rattachée
  * à l'échéance d'un autre compte. Aucune préférence de rappel n'est écrite
  * (`suggestedReviewAt` reste une réévaluation système).
+ *
+ * Lot 72A (AC05) : le lot accepté est écrit dans UNE transaction — une ligne
+ * en échec annule tout (rien n'est alors présenté comme disponible dans le
+ * cache) et l'erreur remonte à l'appelant. Rend les `subjectId` réellement
+ * enregistrés (une échéance supprimée entre-temps n'est pas écrite).
  */
+export async function persistT6AssessmentsDetailed(
+  accountId: number, today: string,
+  refs: T6InterpellationBundle['refs'],
+  list: readonly T6ValidatedDecision[],
+  meta: { promptVersion: string; traceId: string | null; contractRevision?: number; evaluationSignature?: string | null },
+): Promise<{ persisted: number; persistedSubjectIds: string[] }> {
+  // Lot 68 : révision 2 seulement si la version du prompt qui a évalué connaît
+  // le rappel informatif (sinon l'évaluation sera renouvelée après activation).
+  const revision = meta.contractRevision === T6_ASSESSMENT_REVISION_REMINDER ? T6_ASSESSMENT_REVISION_REMINDER : 1;
+  // Colonnes facultatives sondées AVANT la transaction (fenêtre de déploiement).
+  const [avecRevision, avecPreuves, avecSignature] = await Promise.all([hasContractRevision(), hasEvidenceSnapshot(), hasEvaluationSignature()]);
+  const lignes = list.map((d) => ({ d, c: refs.get(d.subjectId) })).filter((x): x is { d: T6ValidatedDecision; c: T6CandidateRef } => !!x.c);
+  if (lignes.length === 0) return { persisted: 0, persistedSubjectIds: [] };
+  const ecrire = async (q: (sql: string, params: unknown[]) => Promise<Row[]>): Promise<string[]> => {
+    const ok: string[] = [];
+    for (const { d, c } of lignes) {
+      const a = assessmentFromDecision(d);
+      // Paramètres facultatifs après les 23 du contrat : preuves (0507), signature (0510), révision (0474).
+      const extra: unknown[] = [];
+      const cols: string[] = [];
+      const vals: string[] = [];
+      const add = (col: string, cast: string, v: unknown) => { extra.push(v); cols.push(col); vals.push(`$${23 + extra.length}${cast}`); };
+      if (avecPreuves) {
+        add('evidence_snapshot', '::jsonb', JSON.stringify(evidenceSnapshotOf(d.evidenceRefs, c.evidenceVersions, c.fingerprint)));
+        add('reevaluation_reason', '', c.reevaluationReason ?? null);
+      }
+      if (avecSignature) add('evaluation_signature', '', meta.evaluationSignature ?? null);
+      if (avecRevision) add('contract_revision', '::smallint', revision);
+      const r = await q(
+        `INSERT INTO t6_interpellation_assessments
+           (account_id, agenda_item_id, subject_key, context_fingerprint, assessed_on, interpellation, action_needed, priority,
+            action_date, reevaluate_on, reason, action, consequence, uncertainty, exception_reason, prompt_version, trace_id,
+            contract_version, decision, category, reason_code, evidence_refs, uncertainties${cols.map((x) => `, ${x}`).join('')})
+         SELECT $1, i.id, $3, $4, $5::date, $6, $7, $8, $9::date, $10::date, $11, $12, $13, $14, $15, $16, $17,
+                $18, $19, $20, $21, $22::jsonb, $23::jsonb${vals.map((x) => `, ${x}`).join('')}
+           FROM agenda_items i WHERE i.id = $2 AND i.account_id = $1
+         ON CONFLICT (account_id, subject_key) DO UPDATE SET
+           agenda_item_id = EXCLUDED.agenda_item_id, context_fingerprint = EXCLUDED.context_fingerprint,
+           assessed_on = EXCLUDED.assessed_on, interpellation = EXCLUDED.interpellation, action_needed = EXCLUDED.action_needed,
+           priority = EXCLUDED.priority, action_date = EXCLUDED.action_date, reevaluate_on = EXCLUDED.reevaluate_on,
+           reason = EXCLUDED.reason, action = EXCLUDED.action, consequence = EXCLUDED.consequence,
+           uncertainty = EXCLUDED.uncertainty, exception_reason = EXCLUDED.exception_reason,
+           prompt_version = EXCLUDED.prompt_version, trace_id = EXCLUDED.trace_id,
+           contract_version = EXCLUDED.contract_version, decision = EXCLUDED.decision, category = EXCLUDED.category,
+           reason_code = EXCLUDED.reason_code, evidence_refs = EXCLUDED.evidence_refs, uncertainties = EXCLUDED.uncertainties,
+           ${cols.map((x) => `${x} = EXCLUDED.${x},`).join(' ')}
+           updated_at = now()
+         RETURNING id`,
+        [accountId, c.agendaItemId, c.subjectKey, c.fingerprint, today, a.interpellation, a.actionNeeded, a.priority,
+          a.actionDate, a.reevaluateOn, a.reason, a.action, a.consequence, a.uncertainty, a.exceptionReason,
+          meta.promptVersion, meta.traceId,
+          T6_ASSESSMENT_CONTRACT, d.decision, d.category, d.reasonCode, JSON.stringify(d.evidenceRefs), JSON.stringify(d.uncertainties),
+          ...extra],
+      );
+      if (r.length > 0) ok.push(d.subjectId);
+    }
+    return ok;
+  };
+  const client = pgClient as unknown as { begin?: <T>(f: (tx: { unsafe: (s: string, p: never[]) => Promise<unknown> }) => Promise<T>) => Promise<T> };
+  const ids = typeof client.begin === 'function'
+    ? await client.begin((tx) => ecrire(async (sql, params) => (await tx.unsafe(sql, params as never[])) as unknown as Row[]))
+    // Client simulé sans transaction (tests unitaires historiques) : écriture séquentielle.
+    : await ecrire(rows);
+  return { persisted: ids.length, persistedSubjectIds: ids };
+}
+
+/** Nombre de décisions enregistrées (appelants antérieurs) — voir `persistT6AssessmentsDetailed`. */
 export async function persistT6Assessments(
   accountId: number, today: string,
   refs: T6InterpellationBundle['refs'],
   list: readonly T6ValidatedDecision[],
-  meta: { promptVersion: string; traceId: string | null; contractRevision?: number },
+  meta: { promptVersion: string; traceId: string | null; contractRevision?: number; evaluationSignature?: string | null },
 ): Promise<number> {
-  let n = 0;
-  // Lot 68 : révision 2 seulement si la version du prompt qui a évalué connaît
-  // le rappel informatif (sinon l'évaluation sera renouvelée après activation).
-  const revision = meta.contractRevision === T6_ASSESSMENT_REVISION_REMINDER ? T6_ASSESSMENT_REVISION_REMINDER : 1;
-  const avecRevision = await hasContractRevision();
-  // Lot 71G (0507) : instantané des preuves citées et motif de la réévaluation.
-  const avecPreuves = await hasEvidenceSnapshot();
-  for (const d of list) {
-    const c = refs.get(d.subjectId);
-    if (!c) continue;
-    const a = assessmentFromDecision(d);
-    const extra = avecPreuves
-      ? [JSON.stringify(evidenceSnapshotOf(d.evidenceRefs, c.evidenceVersions, c.fingerprint)), c.reevaluationReason ?? null]
-      : [];
-    // Paramètres facultatifs après les 23 du contrat : preuves (0507), puis révision (0474).
-    const rev = avecPreuves ? 26 : 24;
-    const r = await rows(
-      `INSERT INTO t6_interpellation_assessments
-         (account_id, agenda_item_id, subject_key, context_fingerprint, assessed_on, interpellation, action_needed, priority,
-          action_date, reevaluate_on, reason, action, consequence, uncertainty, exception_reason, prompt_version, trace_id,
-          contract_version, decision, category, reason_code, evidence_refs, uncertainties${avecPreuves ? ', evidence_snapshot, reevaluation_reason' : ''}${avecRevision ? ', contract_revision' : ''})
-       SELECT $1, i.id, $3, $4, $5::date, $6, $7, $8, $9::date, $10::date, $11, $12, $13, $14, $15, $16, $17,
-              $18, $19, $20, $21, $22::jsonb, $23::jsonb${avecPreuves ? ', $24::jsonb, $25' : ''}${avecRevision ? `, $${rev}::smallint` : ''}
-         FROM agenda_items i WHERE i.id = $2 AND i.account_id = $1
-       ON CONFLICT (account_id, subject_key) DO UPDATE SET
-         agenda_item_id = EXCLUDED.agenda_item_id, context_fingerprint = EXCLUDED.context_fingerprint,
-         assessed_on = EXCLUDED.assessed_on, interpellation = EXCLUDED.interpellation, action_needed = EXCLUDED.action_needed,
-         priority = EXCLUDED.priority, action_date = EXCLUDED.action_date, reevaluate_on = EXCLUDED.reevaluate_on,
-         reason = EXCLUDED.reason, action = EXCLUDED.action, consequence = EXCLUDED.consequence,
-         uncertainty = EXCLUDED.uncertainty, exception_reason = EXCLUDED.exception_reason,
-         prompt_version = EXCLUDED.prompt_version, trace_id = EXCLUDED.trace_id,
-         contract_version = EXCLUDED.contract_version, decision = EXCLUDED.decision, category = EXCLUDED.category,
-         reason_code = EXCLUDED.reason_code, evidence_refs = EXCLUDED.evidence_refs, uncertainties = EXCLUDED.uncertainties,
-         ${avecRevision ? 'contract_revision = EXCLUDED.contract_revision,' : ''}
-         ${avecPreuves ? 'evidence_snapshot = EXCLUDED.evidence_snapshot, reevaluation_reason = EXCLUDED.reevaluation_reason,' : ''}
-         updated_at = now()
-       RETURNING id`,
-      [accountId, c.agendaItemId, c.subjectKey, c.fingerprint, today, a.interpellation, a.actionNeeded, a.priority,
-        a.actionDate, a.reevaluateOn, a.reason, a.action, a.consequence, a.uncertainty, a.exceptionReason,
-        meta.promptVersion, meta.traceId,
-        T6_ASSESSMENT_CONTRACT, d.decision, d.category, d.reasonCode, JSON.stringify(d.evidenceRefs), JSON.stringify(d.uncertainties),
-        ...extra, ...(avecRevision ? [revision] : [])],
-    );
-    n += r.length;
-  }
-  return n;
+  return (await persistT6AssessmentsDetailed(accountId, today, refs, list, meta)).persisted;
 }
 
 /**
@@ -475,7 +505,7 @@ export function hasContractRevision(): Promise<boolean> {
   return revisionColumn;
 }
 /** Réservé aux tests. */
-export function resetContractRevisionProbe(): void { revisionColumn = null; snapshotColumn = null; }
+export function resetContractRevisionProbe(): void { revisionColumn = null; snapshotColumn = null; signatureColumn = null; }
 
 /** Lot 71G : colonnes `evidence_snapshot` / `reevaluation_reason` (0507) présentes ? Même principe. */
 let snapshotColumn: Promise<boolean> | null = null;
@@ -484,6 +514,15 @@ export function hasEvidenceSnapshot(): Promise<boolean> {
     `SELECT 1 FROM information_schema.columns WHERE table_name = 't6_interpellation_assessments' AND column_name = 'reevaluation_reason' LIMIT 1`, [],
   ).then((r) => r.length > 0).catch(() => { snapshotColumn = null; return false; });
   return snapshotColumn;
+}
+
+/** Lot 72A : colonne `evaluation_signature` (0510) présente ? Même principe. */
+let signatureColumn: Promise<boolean> | null = null;
+export function hasEvaluationSignature(): Promise<boolean> {
+  signatureColumn ??= rows(
+    `SELECT 1 FROM information_schema.columns WHERE table_name = 't6_interpellation_assessments' AND column_name = 'evaluation_signature' LIMIT 1`, [],
+  ).then((r) => r.length > 0).catch(() => { signatureColumn = null; return false; });
+  return signatureColumn;
 }
 
 // ── Candidats ────────────────────────────────────────────────────────────────
@@ -520,9 +559,14 @@ export function t6Candidates(raw: MascotRawData): T6CandidateRow[] {
     const future = i.date > raw.today;
     if (future && i.requiresQualification) continue;
     if (!future && (i.forecast || (daysBetween(i.date, raw.today) > EXT_ACTION_LOOKBACK_DAYS && !i.t6LongOverdue))) continue;
-    // « C'est fait » déclaré pour ce cycle : le sujet est résolu.
-    const fait = !future && !i.requiresQualification
-      && (acquittes.has(`${extActionOccurrenceKey(i.id)}|${i.date}`) || regles.has(i.id));
+    // « C'est fait » déclaré pour ce cycle : le sujet est résolu. Lot 72A
+    // (ATP-FIX-17) : une décision « À traiter » qui RÈGLE l'échéance passée
+    // (aucune intervention attendue, ou tranchée) la clôt aussi quand elle
+    // est « à préciser » — jamais de relance T6 qui la contredirait.
+    // Lot 72 (intégration 72C) : une intervention tranchée dans « À traiter »
+    // règle l'échéance quelle que soit sa date (à venir comprise).
+    const fait = regles.has(i.id)
+      || (!future && !i.requiresQualification && acquittes.has(`${extActionOccurrenceKey(i.id)}|${i.date}`));
     out.push({
       row: i,
       candidate: {
@@ -596,14 +640,15 @@ export type T6EvaluationState = 'OK' | 'PENDING' | 'UNAVAILABLE';
 /** Codes d'une échéance proche en attente d'évaluation. */
 const EN_ATTENTE = new Set(['AI_ASSESSMENT_PENDING', 'AWAITING_REEVALUATION_AFTER_SNOOZE']);
 /** Lot 71G : codes d'une décision PROVISOIRE (non évaluée, indisponible) — jamais une décision métier définitive. */
-export const T6_PROVISIONAL_CODES: ReadonlySet<string> = new Set([...EN_ATTENTE, 'EVALUATION_UNAVAILABLE', 'PREFERENCES_UNAVAILABLE']);
+export const T6_PROVISIONAL_CODES: ReadonlySet<string> = new Set([...EN_ATTENTE, 'EVALUATION_UNAVAILABLE', 'PREFERENCES_UNAVAILABLE', 'TO_PROCESS_UNAVAILABLE']);
 
 /** État de l'évaluation des échéances proches (pure, testée T6-EV). */
 export function evaluationStateOf(decisions: readonly T6DecisionResult[], opts: { degraded?: boolean; recentFailure?: boolean } = {}): T6EvaluationState {
   const proches = decisions.filter((d) => !d.thresholdApplied);
   if (proches.some((d) => d.code === 'EVALUATION_UNAVAILABLE')) return 'UNAVAILABLE';
   // Lot 71G (T6-06) : préférences illisibles — jamais « rien à signaler ».
-  if (decisions.some((d) => d.code === 'PREFERENCES_UNAVAILABLE')) return 'UNAVAILABLE';
+  // Lot 72A (ATP-FIX-17) : « À traiter » illisible, idem.
+  if (decisions.some((d) => d.code === 'PREFERENCES_UNAVAILABLE' || d.code === 'TO_PROCESS_UNAVAILABLE')) return 'UNAVAILABLE';
   if (proches.some((d) => EN_ATTENTE.has(d.code))) return opts.recentFailure || opts.degraded ? 'UNAVAILABLE' : 'PENDING';
   return 'OK';
 }
@@ -619,6 +664,12 @@ export interface PrepareDeps {
   onAssessed?: (count: number) => void;
   /** Lot 71G : lectures injectables (tests de panne T6-06) ; défaut : base. */
   loaders?: Partial<T6Loaders>;
+  /**
+   * Lot 72A (AC02) : configuration EVALUATE courante (`t6EvaluationConfig`) —
+   * invalide les décisions prises sous une autre ; conservée avec les
+   * nouvelles. Absente ou en échec : aucune invalidation.
+   */
+  evaluationConfig?: (thresholdDays: number) => Promise<T6EvaluationConfig | null>;
 }
 
 /** Lot 71G : sources lues par la préparation, chacune isolément. */
@@ -677,6 +728,14 @@ export async function prepareT6Interpellation(
   ]);
   const prefs = prefsR.v;
   const evaluations = evalsR.v;
+  // Lot 72A (AC02) : configuration EVALUATE courante (prompt, modèle, seuil).
+  const evaluationConfig = deps.evaluationConfig ? await deps.evaluationConfig(thresholdDays).catch(() => null) : null;
+  // Lot 72A (ATP-FIX-17) : « À traiter » illisible — actions ouvertes (toutes
+  // les échéances) ou décisions qui règlent une échéance passée.
+  const atpInconnu = p.raw.toProcessAgendaIds === null;
+  const regleesInconnues = p.raw.toProcessSettledAgendaIds === null;
+  if (atpInconnu) echecs.push('toProcess');
+  if (regleesInconnues) echecs.push('toProcessSettled');
   // Évaluations illisibles : dégradation sans IA (préférences TOUJOURS appliquées).
   const aiCapable = aiCapableBrut && evalsR.ok;
   // Empreinte enrichie (T6-01) ; preuves illisibles : empreinte inconnue, aucune réévaluation.
@@ -703,7 +762,8 @@ export async function prepareT6Interpellation(
     const d = decideT6Interpellation({
       candidate: c, today, thresholdDays, aiCapable, assessment,
       preferences: preferencesFor(prefs, c.agendaItemId, c.seriesKey, c.dueDate),
-      history: { displayedDays }, reminderCapable, preferencesUnavailable: !prefsR.ok,
+      history: { displayedDays }, reminderCapable, preferencesUnavailable: !prefsR.ok, evaluationConfig,
+      toProcessUnavailable: atpInconnu || (regleesInconnues && !!c.dueDate && c.dueDate <= today),
     });
     // Lot 71G (T6-05) : report arrivé à sa date (un utilisateur du compte),
     // sans réévaluation depuis — la pré-génération le réévalue maintenant.
@@ -798,10 +858,12 @@ export async function prepareT6Interpellation(
       bundle = {
         context: { schemaVersion: T6_EVALUATION_INPUT_SCHEMA_VERSION, today, thresholdDays, candidates },
         refs,
-        persist: async (list, meta) => {
-          const n = await persistT6Assessments(p.accountId, today, refs, list, meta);
-          if (n > 0) deps.onAssessed?.(n);
-          return n;
+        // Lot 72A : transaction du lot accepté ; signature de la configuration
+        // EVALUATE conservée avec chaque décision (AC02).
+        persist: async (list, meta): Promise<T6PersistResult> => {
+          const r = await persistT6AssessmentsDetailed(p.accountId, today, refs, list, { ...meta, evaluationSignature: evaluationConfig?.signature ?? null });
+          if (r.persisted > 0) deps.onAssessed?.(r.persisted);
+          return r;
         },
       };
     }
@@ -884,7 +946,8 @@ export function t6ReportEntries(decisions: readonly T6DecisionTrace[], threshold
           assessedWithFingerprint: (a.evidenceSnapshot.fingerprint ?? a.fingerprint).slice(0, 16),
           reevaluationReason: a.reevaluationReason ?? null,
         } : null,
-        failure: d.code === 'PREFERENCES_UNAVAILABLE' ? 'preferences' : d.code === 'EVALUATION_UNAVAILABLE' ? 'evaluation' : null,
+        failure: d.code === 'PREFERENCES_UNAVAILABLE' ? 'preferences' : d.code === 'EVALUATION_UNAVAILABLE' ? 'evaluation'
+          : d.code === 'TO_PROCESS_UNAVAILABLE' ? 'toProcess' : null,
       },
       recordStatus: d.decision,
       writeResult: 'NOT_WRITTEN',
@@ -1023,14 +1086,58 @@ export interface T6EvaluationTrace {
   accepted: Array<{ subjectId: string; decision: string; category: string; reasonCode: string; priorityHint: string | null; evidenceRefs: string[] }>;
   rejected: Array<{ subjectId: string; reason: string }>;
   persisted: number;
+  /**
+   * Lot 72A (AC05, AC08) : décisions acceptées RÉELLEMENT enregistrées
+   * (`null` : inconnu — persistance qui ne rend qu'un nombre) et celles qui
+   * ne l'ont pas été, avec leur motif (`write_failed`, `not_written`).
+   */
+  persistedSubjectIds?: string[] | null;
+  notPersisted?: Array<{ subjectId: string; reason: string }>;
+  /** Lot 72A (AC08) : mode d'appel déclaré à la passerelle (`displayed` / `pregeneration`). */
+  callerMode?: 'displayed' | 'pregeneration' | null;
 }
 
-/** Lignes du rapport EVALUATE (pure) : une par candidat évalué. */
+/** Lot 72A — issue du runner → trace du reporting (pure, sans donnée personnelle). */
+export function t6EvaluationTraceOf(o: import('./t6-runner').T6EvaluationOutcome): T6EvaluationTrace {
+  return {
+    status: o.status, promptVersion: o.promptVersion, inputContract: T6_EVALUATION_INPUT_SCHEMA_VERSION, outputContract: T6_ASSESSMENT_CONTRACT,
+    traceId: o.traceId ?? null, error: o.error ?? null, persisted: o.persisted,
+    accepted: o.accepted.map((d) => ({ subjectId: d.subjectId, decision: d.decision, category: d.category, reasonCode: d.reasonCode, priorityHint: d.priorityHint, evidenceRefs: d.evidenceRefs })),
+    rejected: o.rejected.map((r) => ({ subjectId: r.subjectId, reason: r.reason })),
+    persistedSubjectIds: o.persistedSubjectIds ?? null, notPersisted: o.notPersisted ?? [], callerMode: o.callerMode ?? null,
+  };
+}
+
+/** Une décision acceptée a-t-elle été enregistrée (pure) ? Détail connu, sinon le compte global. */
+function ecrite(t: T6EvaluationTrace, subjectId: string): boolean {
+  if (t.notPersisted?.some((x) => x.subjectId === subjectId)) return false;
+  if (t.persistedSubjectIds) return t.persistedSubjectIds.includes(subjectId);
+  return t.persisted >= t.accepted.length;
+}
+
+/** Statut de l'exécution EVALUATE au reporting (pure) — jamais SUCCESS sans écriture complète (AC05). */
+export function t6EvaluationReportStatus(t: T6EvaluationTrace): 'SUCCESS' | 'PARTIAL' | 'FAILED' {
+  if (t.status === 'generated') return t.rejected.length || (t.notPersisted?.length ?? 0) ? 'PARTIAL' : 'SUCCESS';
+  if (t.status === 'partially_persisted') return 'PARTIAL';
+  return 'FAILED';
+}
+
+/** Mode d'exécution lisible (AC08) : à l'affichage ou en pré-génération. */
+const executionModeOf = (callerMode: T6EvaluationTrace['callerMode'], mode: string) =>
+  (callerMode ?? (mode === 'display' ? 'displayed' : 'pregeneration')) === 'displayed' ? 'DISPLAY' as const : 'PREGENERATION' as const;
+
+/**
+ * Lignes du rapport EVALUATE (pure) : une par candidat évalué — décision
+ * validée et enregistrée, validée NON enregistrée, rejetée (motif), ou
+ * évaluation indisponible (lot 72A).
+ */
 export function t6EvaluationEntries(t: T6EvaluationTrace, refs: T6InterpellationBundle['refs']): ReportEntry[] {
   const out: ReportEntry[] = [];
   for (const [subjectId, c] of refs) {
     const a = t.accepted.find((x) => x.subjectId === subjectId);
     const r = t.rejected.find((x) => x.subjectId === subjectId);
+    const np = t.notPersisted?.find((x) => x.subjectId === subjectId);
+    const ok = !!a && ecrite(t, subjectId);
     out.push({
       section: 'EVALUATE',
       tableName: 'agenda_items', recordId: c.agendaItemId, fieldKey: c.subjectKey,
@@ -1038,13 +1145,15 @@ export function t6EvaluationEntries(t: T6EvaluationTrace, refs: T6Interpellation
       value: a ? {
         subjectId, decision: a.decision, category: a.category, reasonCode: a.reasonCode, priorityHint: a.priorityHint, evidenceRefs: a.evidenceRefs,
         informativeReminder: a.decision === 'SHOW_NOW' && a.category === 'INFORMATION',
+        persisted: ok, ...(ok ? {} : { notPersisted: np?.reason ?? 'not_written' }),
       }
         : { subjectId, rejected: r?.reason ?? t.error ?? t.status },
-      recordStatus: a ? a.decision : 'REJECTED',
-      // Écriture confirmée seulement si toutes les décisions acceptées ont été conservées.
-      writeResult: a ? (t.persisted >= t.accepted.length ? 'WRITTEN' : 'DECIDED_NOT_CONFIRMED') : 'NOT_PERSISTED',
-      reasonCode: a ? a.reasonCode : r ? `VALIDATION:${r.reason}` : t.status.toUpperCase(),
-      reason: a ? 'Décision IA validée, conservée (cache des évaluations).'
+      // Lot 72A : décision validée enregistrée / non enregistrée, rejetée, indisponible.
+      recordStatus: a ? (ok ? a.decision : 'NOT_PERSISTED') : r ? 'REJECTED' : 'UNAVAILABLE',
+      writeResult: ok ? 'WRITTEN' : 'NOT_PERSISTED',
+      reasonCode: a ? (ok ? a.reasonCode : `PERSISTENCE:${np?.reason ?? 'not_written'}`) : r ? `VALIDATION:${r.reason}` : t.status.toUpperCase(),
+      reason: a ? (ok ? 'Décision IA validée, conservée (cache des évaluations).'
+        : 'Décision IA validée mais NON enregistrée : jamais utilisée, candidat en attente (reprise différée).')
         : r ? `Décision rejetée par la validation (${r.reason}) : candidat en attente, jamais affiché d’office.`
           : `Évaluation non obtenue (${t.status}${t.error ? ` : ${t.error.slice(0, 120)}` : ''}) : candidat en attente.`,
     });
@@ -1061,21 +1170,34 @@ export async function writeT6EvaluationReport(p: {
     if (!(await repo.executionReportsReady())) return null;
     const t = p.trace;
     const compte = (k: string) => t.accepted.filter((d) => d.decision === k).length;
+    const notPersisted = t.accepted.filter((d) => !ecrite(t, d.subjectId)).length;
+    const callerMode = t.callerMode ?? (p.mode === 'display' ? 'displayed' : 'pregeneration');
+    const executionMode = executionModeOf(t.callerMode, p.mode);
+    const evalOk = ['generated', 'partially_persisted', 'persist_failed'].includes(t.status);
     return await repo.writeExecutionReport({
       accountId: p.accountId, treatment: 'T6', scope: 'HOME', targetType: null, targetId: null,
       triggerCode: `evaluate:${p.mode}`, traceIds: t.traceId ? [t.traceId] : [],
-      status: t.status !== 'generated' ? 'FAILED' : t.rejected.length ? 'PARTIAL' : 'SUCCESS',
+      // Lot 72A (AC05) : statut RÉEL — écriture comprise.
+      status: t6EvaluationReportStatus(t),
       counters: {
-        evaluated: p.bundle.refs.size, accepted: t.accepted.length, rejected: t.rejected.length, persisted: t.persisted,
+        evaluated: p.bundle.refs.size, accepted: t.accepted.length, rejected: t.rejected.length, persisted: t.persisted, notPersisted,
         showNow: compte('SHOW_NOW'), defer: compte('DEFER'), suppress: compte('SUPPRESS'),
         // Lot 68 : SHOW_NOW + INFORMATION (rappel informatif), jamais compté comme action.
         showNowInformation: t.accepted.filter((d) => d.decision === 'SHOW_NOW' && d.category === 'INFORMATION').length,
       },
-      steps: [{
-        step: 'evaluate', status: t.status === 'generated' ? 'OK' : 'FAILED', error: t.error,
-        detail: { mode: 'EVALUATE', promptVersion: t.promptVersion, inputContract: t.inputContract, outputContract: t.outputContract },
-      }],
-      sources: { mode: 'EVALUATE', promptVersion: t.promptVersion },
+      steps: [
+        {
+          step: 'evaluate', status: evalOk ? 'OK' as const : 'FAILED' as const, error: evalOk ? null : t.error,
+          detail: { mode: 'EVALUATE', promptVersion: t.promptVersion, inputContract: t.inputContract, outputContract: t.outputContract, callerMode, executionMode },
+        },
+        ...(evalOk && t.accepted.length > 0 ? [{
+          step: 'persist', status: t.status === 'persist_failed' ? 'FAILED' as const : 'OK' as const,
+          error: t.status === 'persist_failed' ? (t.error ?? 'décisions non enregistrées')
+            : notPersisted > 0 ? `écriture partielle : ${notPersisted} décision(s) non enregistrée(s)` : null,
+          detail: { persisted: t.persisted, notPersisted, transactional: true },
+        }] : []),
+      ],
+      sources: { mode: 'EVALUATE', promptVersion: t.promptVersion, callerMode, executionMode },
     }, t6EvaluationEntries(t, p.bundle.refs));
   } catch (e) {
     console.error('[mascotte] rapport EVALUATE non écrit :', (e as Error).message);

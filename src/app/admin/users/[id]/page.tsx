@@ -46,8 +46,10 @@ import {
   Shield,
   ShieldOff,
   Send,
+  RotateCcw,
 } from 'lucide-react';
 import { EcranEnErreur } from '@/components/admin/EcranEnErreur';
+import { Textarea } from '@/components/ui/textarea';
 import { formatDate, formatDateTime } from '@/lib/admin/format';
 
 interface UserDetails {
@@ -225,6 +227,9 @@ export default function UserDetailPage() {
   const [forceLogoutDialogOpen, setForceLogoutDialogOpen] = useState(false);
   const [adminRoleDialogOpen, setAdminRoleDialogOpen] = useState(false);
   const [resendDialogOpen, setResendDialogOpen] = useState(false);
+  // Lot 72D (décision PO Q4) : réattribution manuelle d'un essai consommé.
+  const [trialDialogOpen, setTrialDialogOpen] = useState(false);
+  const [trialReason, setTrialReason] = useState('');
 
   const loadUserData = useCallback(async () => {
     try {
@@ -280,6 +285,9 @@ export default function UserDetailPage() {
     return runAction(() => callAdminAction(`/api/admin/users/${userId}`, 'PUT', { isAdmin: makeAdmin }),
       makeAdmin ? 'Statut administrateur accordé' : 'Statut administrateur retiré', () => setAdminRoleDialogOpen(false));
   };
+  const handleReassignTrial = () =>
+    runAction(() => callAdminAction(`/api/admin/users/${userId}/reassign-trial`, 'POST', { reason: trialReason }),
+      'Essai réattribué : il sera accordé à la création de son espace', () => { setTrialDialogOpen(false); setTrialReason(''); }, false);
   const handleResendInvitation = () =>
     runAction(() => callAdminAction(`/api/admin/users/${userId}/resend-invitation`, 'POST', {}),
       'Invitation renvoyée', () => setResendDialogOpen(false));
@@ -428,6 +436,10 @@ export default function UserDetailPage() {
             <Button variant="outline" onClick={() => setForceLogoutDialogOpen(true)}>
               <LogOut className="h-4 w-4 mr-2" />
               Déconnecter toutes les sessions
+            </Button>
+            <Button variant="outline" onClick={() => setTrialDialogOpen(true)} data-testid="reassign-trial">
+              <RotateCcw className="h-4 w-4 mr-2" />
+              Réattribuer un essai
             </Button>
             <Button
               variant="outline"
@@ -708,6 +720,35 @@ export default function UserDetailPage() {
               disabled={actionLoading}
             >
               {actionLoading ? 'Déconnexion...' : 'Déconnecter'}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Réattribuer un essai (lot 72D, décision PO Q4) */}
+      <AlertDialog open={trialDialogOpen} onOpenChange={setTrialDialogOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Réattribuer un essai ?</AlertDialogTitle>
+            <AlertDialogDescription>
+              L&apos;adresse de <strong>{user.firstName} {user.lastName}</strong> pourra de nouveau bénéficier de
+              l&apos;essai gratuit de 7 jours, accordé à la création de son espace. La trace de l&apos;essai consommé
+              est conservée. Action manuelle, au cas par cas (ancien invité Premium Duo), journalisée avec son motif.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <Textarea
+            value={trialReason}
+            onChange={(e) => setTrialReason(e.target.value)}
+            placeholder="Motif (obligatoire)"
+            aria-label="Motif de la réattribution"
+          />
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={actionLoading}>Annuler</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={(e) => { e.preventDefault(); void handleReassignTrial(); }}
+              disabled={actionLoading || trialReason.trim().length < 5}
+            >
+              {actionLoading ? 'Réattribution...' : 'Réattribuer'}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

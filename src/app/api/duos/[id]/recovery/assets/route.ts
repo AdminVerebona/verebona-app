@@ -1,50 +1,11 @@
-import { NextRequest, NextResponse } from 'next/server';
-import { extractAccessToken } from '@/lib/auth/token-extractor';
-import { verifySessionAccessToken } from '@/lib/auth/session-guard';
-import { DuoService } from '@/services/duo.service';
+import type { NextRequest } from 'next/server';
+import { duoRouteRemoved, DUO_CROSS_VALIDATION_REMOVED } from '@/lib/duo/removed-routes';
 
-export async function GET(
-  request: NextRequest,
-  { params }: { params: Promise<{ id: string }> }
-) {
-  try {
-    const token = extractAccessToken(request);
-    if (!token) {
-      return NextResponse.json({ error: 'AUTH_REQUIRED' }, { status: 401 });
-    }
-
-    const payload = await verifySessionAccessToken(token, request);
-    if (!payload) {
-      return NextResponse.json({ error: 'INVALID_TOKEN' }, { status: 401 });
-    }
-
-    const { id } = await params;
-    const duoId = parseInt(id, 10);
-    if (isNaN(duoId)) {
-      return NextResponse.json({ error: 'INVALID_DUO_ID' }, { status: 400 });
-    }
-
-    // Lot 54 (SEC-01) : membre ACTIF seulement (invitation en attente ou départ : aucun accès).
-    const duo = await DuoService.getActiveDuoByUserId(payload.userId);
-    if (!duo || duo.id !== duoId) {
-      return NextResponse.json({ error: 'NOT_A_MEMBER' }, { status: 403 });
-    }
-
-    if (duo.subscriptionStatus !== 'UNPAID_RECOVERY') {
-      return NextResponse.json(
-        { error: 'NOT_IN_RECOVERY', message: 'Ce endpoint est réservé au mode recovery' },
-        { status: 400 }
-      );
-    }
-
-    const assets = await DuoService.getRecoveryAssets(duoId);
-
-    return NextResponse.json({ assets });
-  } catch (error) {
-    console.error('[DUO_RECOVERY_ASSETS] Error:', error);
-    return NextResponse.json(
-      { error: 'SERVER_ERROR', message: error instanceof Error ? error.message : 'Unknown error' },
-      { status: 500 }
-    );
-  }
+/**
+ * Lot 72D (ticket P0 « Premium Duo — compte partagé », décision PO Q11) :
+ * route retirée — 410 `DUO_CROSS_VALIDATION_REMOVED`. Voir `src/lib/duo/removed-routes.ts`.
+ * Tables et historique conservés jusqu'à la contraction (lot ultérieur).
+ */
+export async function GET(request: NextRequest) {
+  return duoRouteRemoved(request, DUO_CROSS_VALIDATION_REMOVED);
 }

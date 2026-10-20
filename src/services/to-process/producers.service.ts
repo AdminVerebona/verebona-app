@@ -38,18 +38,20 @@
  * ══════════════════════════════════════════════════════════════════════════
  */
 import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
-import { db } from '@/db';
+import { db, pgClient } from '@/db';
 import {
   agendaItems,
   assetFiles,
   assets,
-  equipments,
   supplierReviewItems,
   toProcessActionEvents,
   toProcessActions,
 } from '@/db/schema';
 import type { ActionProposal } from './action-model';
-import { resolveActionsForData, upsertAction } from './to-process-action.service';
+import { upsertAction } from './to-process-action.service';
+import {
+  decideAdmissibility, recordFamilyDecision, type AdmissibilityDecision, type DecisionTrigger, type FamilyDecisionRecord,
+} from './admissibility';
 
 export interface ProducerReport {
   created: number;
@@ -70,16 +72,99 @@ function merge(...reports: ProducerReport[]): ProducerReport {
   );
 }
 
+/** Options d'un passage de producteur (lot 72) : déclencheur et référence tracés. */
+export interface ProducerRunOptions { trigger?: DecisionTrigger; runRef?: string | null; only?: readonly number[] | null }
+
+/** Faits d'un événement d'agenda sans date, pour l'admissibilité (lot 72, C4). */
+export interface AgendaDateFacts {
+  homeCategory: string | null;
+  originType: string;
+  isAutomatic: boolean;
+  isAutomaticModified: boolean;
+  requiresQualification: boolean;
+  createdAt: Date | string | null;
+  /** Date retrouvée à la source de l'événement (valeur retenue du document d'origine), ISO. */
+  sourceDate: string | null;
+}
+
+/** Délai laissé à la qualification T4 d'un événement avant toute question (jours). */
+export const AGENDA_QUALIFICATION_GRACE_DAYS = 7;
+
+/**
+ * Admissibilité d'une question « date » sur un événement d'agenda (pure) :
+ *   · événement INFORMATIF (« à savoir ») : aucune date à réclamer ;
+ *   · tâche sans échéance obligatoire : seulement si l'événement le DIT
+ *     (catégorie « information ») — un événement saisi par l'utilisateur
+ *     sans catégorie garde sa question (variante prudente : aucune donnée
+ *     ne distingue aujourd'hui une tâche libre d'une échéance réelle —
+ *     décision PO signalée) ;
+ *   · date retrouvée à la source d'un événement automatique jamais modifié :
+ *     résolue automatiquement (écrite, vérifiée) ;
+ *   · qualification T4 en cours (récente) : pas maintenant ;
+ *   · sinon l'événement nécessite une date que rien ne fournit : carte.
+ */
+export function agendaDateAdmissibility(f: AgendaDateFacts, now: Date = new Date()): AdmissibilityDecision {
+  const recent = f.createdAt ? now.getTime() - new Date(f.createdAt).getTime() < AGENDA_QUALIFICATION_GRACE_DAYS * 86_400_000 : false;
+  const ecrivable = !!f.sourceDate && f.isAutomatic && !f.isAutomaticModified;
+  return decideAdmissibility({
+    ruleCode: 'DATA-AGENDA-DATE',
+    checks: {
+      realProblem: true,
+      neededForUse: f.homeCategory !== 'information',
+      autoResolvable: ecrivable,
+      userActionNeeded: true,
+      timely: !(f.requiresQualification && recent),
+      userDecided: null,
+    },
+    motives: {
+      neededForUse: 'INFORMATIONAL_EVENT',
+      autoResolvable: 'DATE_FOUND_AT_SOURCE',
+      timely: 'QUALIFICATION_PENDING',
+    },
+  });
+}
+
+/** Clés de donnée documentaire candidates pour la date d'un événement (clé d'origine et sa clé canonique). */
+async function sourceDatesOf(accountId: number, items: Array<{ id: number; originRefType: string | null; originRefId: number | null; originFieldKey: string | null }>): Promise<Map<number, string>> {
+  const out = new Map<number, string>();
+  const cibles = items.filter((i) => i.originRefType === 'asset_file' && i.originRefId && i.originFieldKey);
+  if (cibles.length === 0) return out;
+  const { documentBridgeFieldKey, parseDocumentDate } = await import('./document-field-evidence');
+  const rows = (await pgClient.unsafe(
+    `SELECT v.file_id, v.field_key, v.value_text FROM document_field_values v
+       JOIN asset_files f ON f.id = v.file_id AND f.account_id = v.account_id AND f.deleted_at IS NULL
+      WHERE v.account_id = $1 AND v.file_id = ANY($2::int[]) AND v.value_text IS NOT NULL`,
+    [accountId, [...new Set(cibles.map((c) => c.originRefId!))]] as never[],
+  )) as unknown as Array<{ file_id: number; field_key: string; value_text: string }>;
+  for (const c of cibles) {
+    const cles = new Set([c.originFieldKey!, documentBridgeFieldKey(c.originFieldKey!) ?? c.originFieldKey!]);
+    const v = rows.find((r) => Number(r.file_id) === c.originRefId && cles.has(r.field_key));
+    const iso = v ? parseDocumentDate(v.value_text) : null;
+    if (iso?.iso && (iso.status === 'ISO' || iso.status === 'NORMALIZED')) out.set(c.id, iso.iso);
+  }
+  return out;
+}
+
 /**
  * Événements d'agenda sans date — règle DATA-AGENDA-DATE.
  *
  * Les événements marqués « réalisé » ou « annulé » sont écartés : réclamer la
  * date d'un événement clos est du bruit, et c'est exactement le genre de carte
  * qui décourage de consulter la page.
+ *
+ * Lot 72 (C4) : plus « date absente → carte ». Chaque événement passe le
+ * contrôle d'admissibilité commun (`agendaDateAdmissibility`) ; une date
+ * retrouvée à la source est écrite (événement automatique jamais modifié,
+ * écriture conditionnelle relue) ; chaque décision est tracée, même sans carte.
  */
-export async function produceAgendaActions(accountId: number): Promise<ProducerReport> {
-  const sansDate = await db
-    .select({ id: agendaItems.id, title: agendaItems.title })
+export async function produceAgendaActions(accountId: number, opts: ProducerRunOptions = {}): Promise<ProducerReport> {
+  const sansDate = (await db
+    .select({
+      id: agendaItems.id, title: agendaItems.title, homeCategory: agendaItems.homeCategory, originType: agendaItems.originType,
+      originRefType: agendaItems.originRefType, originRefId: agendaItems.originRefId, originFieldKey: agendaItems.originFieldKey,
+      isAutomatic: agendaItems.isAutomatic, isAutomaticModified: agendaItems.isAutomaticModified,
+      requiresQualification: agendaItems.requiresQualification, createdAt: agendaItems.createdAt,
+    })
     .from(agendaItems)
     .where(
       and(
@@ -87,11 +172,56 @@ export async function produceAgendaActions(accountId: number): Promise<ProducerR
         isNull(agendaItems.startDate),
         isNull(agendaItems.manualStatus),
       ),
-    );
+    )).filter((i) => !opts.only || opts.only.includes(i.id));
 
   const report = { ...EMPTY };
+  const trigger = opts.trigger ?? 'SWEEP';
+  const actives = await activeTargets(accountId, 'AGENDA_ITEM', 'date');
+  const sources = await sourceDatesOf(accountId, sansDate);
 
   for (const item of sansDate) {
+    const decision = agendaDateAdmissibility({ ...item, sourceDate: sources.get(item.id) ?? null });
+    const evidence = { homeCategory: item.homeCategory, originType: item.originType, automatic: item.isAutomatic, modifiedByUser: item.isAutomaticModified,
+      requiresQualification: item.requiresQualification, sourceDate: sources.get(item.id) ?? null, sourceFileId: item.originRefType === 'asset_file' ? item.originRefId : null };
+    const trace = (effect: FamilyDecisionRecord['effect'], actionIds: FamilyDecisionRecord['actionIds'] = null, d = decision, error: string | null = null) =>
+      recordFamilyDecision({ accountId, targetType: 'AGENDA_ITEM', targetId: item.id, ruleCode: 'DATA-AGENDA-DATE', dataKey: 'date', trigger,
+        runRef: opts.runRef, decision: d, evidence, effect, actionIds, error });
+    if (decision.outcome === 'AUTO_RESOLVED') {
+      const date = sources.get(item.id)!;
+      // Écriture conditionnelle (toujours sans date, jamais modifié par l'utilisateur), relue.
+      const ecrit = (await pgClient.unsafe(
+        `UPDATE agenda_items SET start_date = $3::date, date_source = COALESCE(date_source, 'EXPLICIT_DATE'), updated_at = now()
+          WHERE id = $1 AND account_id = $2 AND start_date IS NULL AND manual_status IS NULL AND is_automatic = true AND is_automatic_modified = false
+          RETURNING to_char(start_date, 'YYYY-MM-DD') AS d`,
+        [item.id, accountId, date] as never[],
+      )) as unknown as Array<{ d: string }>;
+      if (ecrit[0]?.d === date) {
+        const fermees = await closeObsoleteTraced(accountId, 'AGENDA_ITEM', 'date', [item.id], { reason: 'AUTO_RESOLVED', source: 'DATE_FOUND_AT_SOURCE' });
+        report.closed += fermees.length;
+        await trace('WRITTEN', { closed: fermees });
+        continue;
+      }
+      // Non confirmée : la question reste possible (jamais une fausse résolution).
+      const repli = decideAdmissibility({ ruleCode: 'DATA-AGENDA-DATE', checks: { ...decision.checks, autoResolvable: false } });
+      const r = await upsertAction({ accountId, targetType: 'AGENDA_ITEM', targetId: item.id, fieldKey: 'date', actionKind: 'COMPLETE',
+        ruleCode: 'DATA-AGENDA-DATE', question: `À quelle date « ${item.title} » a-t-il lieu ?` });
+      if (r.status === 'CREATED') report.created += 1; else if (r.status === 'UPDATED') report.updated += 1;
+      await trace(r.status === 'CREATED' ? 'CREATED' : r.status === 'UPDATED' ? 'KEPT' : 'NONE', r.actionId ? { [r.status === 'CREATED' ? 'created' : 'kept']: [r.actionId] } : null, repli,
+        'écriture de la date retrouvée non confirmée');
+      continue;
+    }
+    if (decision.outcome === 'DEFER' && actives.has(item.id)) {
+      // Une carte déjà ouverte n'est pas retirée pendant une qualification (aucune fermeture sur un « pas maintenant »).
+      await trace('KEPT', { kept: [actives.get(item.id)!] });
+      continue;
+    }
+    if (decision.outcome !== 'CREATE_ACTION') {
+      const fermees = actives.has(item.id)
+        ? await closeObsoleteTraced(accountId, 'AGENDA_ITEM', 'date', [item.id], { reason: decision.reason, outcome: decision.outcome }) : [];
+      report.closed += fermees.length;
+      await trace(fermees.length ? 'CLOSED' : 'NONE', fermees.length ? { closed: fermees } : null);
+      continue;
+    }
     const result = await upsertAction({
       accountId,
       targetType: 'AGENDA_ITEM',
@@ -103,16 +233,41 @@ export async function produceAgendaActions(accountId: number): Promise<ProducerR
     });
     if (result.status === 'CREATED') report.created += 1;
     else if (result.status === 'UPDATED') report.updated += 1;
+    await trace(result.status === 'CREATED' ? 'CREATED' : result.status === 'UPDATED' ? 'KEPT' : 'NONE',
+      result.actionId ? { [result.status === 'CREATED' ? 'created' : 'kept']: [result.actionId] } : null);
   }
 
-  report.closed += await closeObsolete(
-    accountId,
-    'AGENDA_ITEM',
-    'date',
-    sansDate.map((i) => i.id),
-  );
+  // Cartes dont l'événement a désormais une date, est clos ou a disparu : le problème n'existe plus.
+  const traites = new Set(sansDate.map((i) => i.id));
+  const aFermer = [...actives.keys()].filter((id) => !traites.has(id) && (!opts.only || opts.only.includes(id)));
+  report.closed += (await closeObsoleteTraced(accountId, 'AGENDA_ITEM', 'date', aFermer, { reason: 'DATA_PRESENT_OR_EVENT_CLOSED' })).length;
 
   return report;
+}
+
+/** Faits d'un équipement rattaché à un bien supprimé (lot 72, C4). */
+export interface EquipmentLinkFacts {
+  status: string | null;
+  archivedAt: Date | string | null;
+  /** Bien VIVANT déjà connu par la pièce de l'équipement (autre que le bien supprimé). */
+  knownAssetId: number | null;
+  /** Biens vivants du compte (une réponse est-elle possible ?). */
+  liveAssets: number;
+}
+
+/**
+ * Admissibilité « à quel bien appartient cet équipement ? » (pure) :
+ *   · équipement archivé, transmis ou hors service : aucun problème réel ;
+ *   · bien déjà connu (pièce rattachée à un bien vivant) : résolu sans question ;
+ *   · aucun bien vivant dans le compte : aucune réponse possible maintenant.
+ */
+export function equipmentLinkAdmissibility(f: EquipmentLinkFacts): AdmissibilityDecision {
+  const inactif = !!f.archivedAt || (f.status !== null && ['ARCHIVED', 'TRANSMIS', 'HORS_SERVICE'].includes(f.status));
+  return decideAdmissibility({
+    ruleCode: 'LINK-EQUIP-ASSET',
+    checks: { realProblem: !inactif, neededForUse: true, autoResolvable: f.knownAssetId !== null, userActionNeeded: true, timely: f.liveAssets > 0, userDecided: null },
+    motives: { realProblem: 'EQUIPMENT_INACTIVE', autoResolvable: 'ASSET_KNOWN_FROM_ROOM', timely: 'NO_LIVE_ASSET_TO_ATTACH' },
+  });
 }
 
 /**
@@ -125,26 +280,64 @@ export async function produceAgendaActions(accountId: number): Promise<ProducerR
  * l'utilisateur ne voit plus nulle part.
  *
  * Le compte vient du bien : la table `equipments` n'en porte pas.
+ *
+ * Lot 72 (C4) : contrôle d'admissibilité commun — ni question sur un
+ * équipement inactif, ni question dont la réponse est déjà connue (pièce
+ * rattachée à un bien vivant : rattachement écrit et relu), ni question
+ * impossible (aucun bien vivant) ; chaque décision est tracée.
  */
-export async function produceEquipmentActions(accountId: number): Promise<ProducerReport> {
-  const orphelins = await db
-    .select({ id: equipments.id, name: equipments.name })
-    .from(equipments)
-    .innerJoin(assets, eq(equipments.assetId, assets.id))
-    .where(
-      and(
-        eq(assets.accountId, accountId),
-        sql`${assets.deletedAt} IS NOT NULL`,
-      ),
-    );
+export async function produceEquipmentActions(accountId: number, opts: ProducerRunOptions = {}): Promise<ProducerReport> {
+  const orphelins = (await pgClient.unsafe(
+    `SELECT e.id, e.name, e.status, e.archived_at AS "archivedAt", e.asset_id AS "deletedAssetId",
+            (SELECT s.asset_id FROM substructures s JOIN assets a2 ON a2.id = s.asset_id AND a2.account_id = $1 AND a2.deleted_at IS NULL
+              WHERE s.id = e.substructure_id AND s.asset_id <> e.asset_id) AS "knownAssetId",
+            (SELECT count(*)::int FROM assets a3 WHERE a3.account_id = $1 AND a3.deleted_at IS NULL) AS "liveAssets"
+       FROM equipments e JOIN assets a ON a.id = e.asset_id
+      WHERE a.account_id = $1 AND a.deleted_at IS NOT NULL`,
+    [accountId] as never[],
+  )) as unknown as Array<{ id: number; name: string; status: string | null; archivedAt: string | null; deletedAssetId: number; knownAssetId: number | null; liveAssets: number }>;
+  const cibles = orphelins.filter((e) => !opts.only || opts.only.includes(Number(e.id)));
 
   const report = { ...EMPTY };
+  const trigger = opts.trigger ?? 'SWEEP';
+  const actives = await activeTargets(accountId, 'EQUIPMENT', 'assetId');
 
-  for (const equip of orphelins) {
+  for (const equip of cibles) {
+    const id = Number(equip.id);
+    const decision = equipmentLinkAdmissibility({ status: equip.status, archivedAt: equip.archivedAt, knownAssetId: equip.knownAssetId === null ? null : Number(equip.knownAssetId), liveAssets: Number(equip.liveAssets) });
+    const evidence = { status: equip.status, archived: !!equip.archivedAt, deletedAssetId: Number(equip.deletedAssetId), knownAssetId: equip.knownAssetId, liveAssets: Number(equip.liveAssets) };
+    const trace = (effect: FamilyDecisionRecord['effect'], actionIds: FamilyDecisionRecord['actionIds'] = null, d = decision, error: string | null = null) =>
+      recordFamilyDecision({ accountId, targetType: 'EQUIPMENT', targetId: id, ruleCode: 'LINK-EQUIP-ASSET', dataKey: 'assetId', trigger, runRef: opts.runRef, decision: d, evidence, effect, actionIds, error });
+    if (decision.outcome === 'AUTO_RESOLVED') {
+      // Rattachement au bien de la pièce, conditionnel (toujours orphelin), relu, isolé par compte.
+      const ecrit = (await pgClient.unsafe(
+        `UPDATE equipments e SET asset_id = $3, updated_at = now()
+          WHERE e.id = $1 AND e.asset_id = $4
+            AND EXISTS (SELECT 1 FROM assets a WHERE a.id = $3 AND a.account_id = $2 AND a.deleted_at IS NULL)
+            AND EXISTS (SELECT 1 FROM assets o WHERE o.id = $4 AND o.account_id = $2 AND o.deleted_at IS NOT NULL)
+          RETURNING e.asset_id`,
+        [id, accountId, Number(equip.knownAssetId), Number(equip.deletedAssetId)] as never[],
+      )) as unknown as Array<{ asset_id: number }>;
+      if (Number(ecrit[0]?.asset_id) === Number(equip.knownAssetId)) {
+        const fermees = await closeObsoleteTraced(accountId, 'EQUIPMENT', 'assetId', [id], { reason: 'AUTO_RESOLVED', source: 'ASSET_KNOWN_FROM_ROOM' });
+        report.closed += fermees.length;
+        await trace('WRITTEN', { closed: fermees });
+        continue;
+      }
+      await trace('ERROR', null, decision, 'rattachement au bien connu non confirmé');
+      continue;
+    }
+    if (decision.outcome === 'DEFER' && actives.has(id)) { await trace('KEPT', { kept: [actives.get(id)!] }); continue; }
+    if (decision.outcome !== 'CREATE_ACTION') {
+      const fermees = actives.has(id) ? await closeObsoleteTraced(accountId, 'EQUIPMENT', 'assetId', [id], { reason: decision.reason, outcome: decision.outcome }) : [];
+      report.closed += fermees.length;
+      await trace(fermees.length ? 'CLOSED' : 'NONE', fermees.length ? { closed: fermees } : null);
+      continue;
+    }
     const result = await upsertAction({
       accountId,
       targetType: 'EQUIPMENT',
-      targetId: equip.id,
+      targetId: id,
       relationKey: 'assetId',
       actionKind: 'COMPLETE',
       ruleCode: 'LINK-EQUIP-ASSET',
@@ -152,16 +345,37 @@ export async function produceEquipmentActions(accountId: number): Promise<Produc
     });
     if (result.status === 'CREATED') report.created += 1;
     else if (result.status === 'UPDATED') report.updated += 1;
+    await trace(result.status === 'CREATED' ? 'CREATED' : result.status === 'UPDATED' ? 'KEPT' : 'NONE',
+      result.actionId ? { [result.status === 'CREATED' ? 'created' : 'kept']: [result.actionId] } : null);
   }
 
-  report.closed += await closeObsolete(
-    accountId,
-    'EQUIPMENT',
-    'assetId',
-    orphelins.map((e) => e.id),
-  );
+  const vus = new Set(cibles.map((e) => Number(e.id)));
+  const aFermer = [...actives.keys()].filter((id) => !vus.has(id) && (!opts.only || opts.only.includes(id)));
+  report.closed += (await closeObsoleteTraced(accountId, 'EQUIPMENT', 'assetId', aFermer, { reason: 'ATTACHED_ELSEWHERE' })).length;
 
   return report;
+}
+
+const normFournisseur = (v: string | null | undefined) =>
+  (v ?? '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+
+/** Faits d'une revue fournisseur ouverte (lot 72, C4). */
+export interface SupplierReviewFacts { detectedValue: string | null; currentValue: string | null }
+
+/**
+ * Admissibilité d'une confirmation de fournisseur (pure) : facultative, elle
+ * n'est demandée qu'avec une PROPOSITION EXPLOITABLE — une valeur détectée,
+ * distincte de la valeur actuelle. Valeur détectée identique : rien à
+ * confirmer ; aucune valeur détectée : rien à proposer.
+ */
+export function supplierIdentityAdmissibility(f: SupplierReviewFacts): AdmissibilityDecision {
+  const detecte = normFournisseur(f.detectedValue);
+  const identique = !!detecte && detecte === normFournisseur(f.currentValue);
+  return decideAdmissibility({
+    ruleCode: 'SUPPLIER-IDENTITY',
+    checks: { realProblem: !identique, neededForUse: null, autoResolvable: null, userActionNeeded: !!detecte, timely: true, userDecided: null },
+    motives: { realProblem: 'SAME_VALUE_AS_CURRENT', userActionNeeded: 'NO_EXPLOITABLE_PROPOSAL' },
+  });
 }
 
 /**
@@ -170,9 +384,12 @@ export async function produceEquipmentActions(accountId: number): Promise<Produc
  * Une revue ouverte devient un arbitrage dès qu'elle porte des candidats, et
  * rien du tout sinon : sans proposition, la carte serait une question à
  * laquelle l'utilisateur ne pourrait pas répondre depuis la file (ATP-05).
+ *
+ * Lot 72 (C4) : contrôle d'admissibilité commun — jamais de confirmation
+ * facultative sans proposition exploitable ; chaque décision est tracée.
  */
-export async function produceSupplierActions(accountId: number): Promise<ProducerReport> {
-  const revues = await db
+export async function produceSupplierActions(accountId: number, opts: ProducerRunOptions = {}): Promise<ProducerReport> {
+  const revues = (await db
     .select({
       id: supplierReviewItems.id,
       supplierId: supplierReviewItems.supplierId,
@@ -187,12 +404,27 @@ export async function produceSupplierActions(accountId: number): Promise<Produce
         eq(supplierReviewItems.accountId, accountId),
         eq(supplierReviewItems.status, 'open'),
       ),
-    );
+    )).filter((r) => !opts.only || opts.only.includes(r.supplierId ?? r.id));
 
   const report = { ...EMPTY };
   const traites: number[] = [];
+  const trigger = opts.trigger ?? 'SWEEP';
+  const actives = await activeTargets(accountId, 'SUPPLIER', 'identity');
 
   for (const revue of revues) {
+    const cible = revue.supplierId ?? revue.id;
+    const decision = supplierIdentityAdmissibility(revue);
+    const evidence = { reviewId: revue.id, supplierId: revue.supplierId, hasDetected: !!revue.detectedValue, hasCurrent: !!revue.currentValue,
+      candidates: Array.isArray(revue.candidateIds) ? (revue.candidateIds as unknown[]).length : 0 };
+    const trace = (effect: FamilyDecisionRecord['effect'], actionIds: FamilyDecisionRecord['actionIds'] = null) =>
+      recordFamilyDecision({ accountId, targetType: 'SUPPLIER', targetId: cible, ruleCode: 'SUPPLIER-IDENTITY', dataKey: 'identity', trigger, runRef: opts.runRef, decision, evidence, effect, actionIds });
+    if (decision.outcome !== 'CREATE_ACTION') {
+      const fermees = actives.has(cible) ? await closeObsoleteTraced(accountId, 'SUPPLIER', 'identity', [cible], { reason: decision.reason, outcome: decision.outcome }) : [];
+      report.closed += fermees.length;
+      traites.push(cible);
+      await trace(fermees.length ? 'CLOSED' : 'NONE', fermees.length ? { closed: fermees } : null);
+      continue;
+    }
     const proposals: ActionProposal[] = [];
 
     if (revue.detectedValue) {
@@ -216,7 +448,7 @@ export async function produceSupplierActions(accountId: number): Promise<Produce
     const result = await upsertAction({
       accountId,
       targetType: 'SUPPLIER',
-      targetId: revue.supplierId ?? revue.id,
+      targetId: cible,
       fieldKey: 'identity',
       actionKind: 'ARBITRATE',
       ruleCode: 'SUPPLIER-IDENTITY',
@@ -230,59 +462,57 @@ export async function produceSupplierActions(accountId: number): Promise<Produce
     // et l'identifiant ne doit donc pas figurer parmi ceux à conserver.
     if (result.status === 'CREATED') {
       report.created += 1;
-      traites.push(revue.supplierId ?? revue.id);
+      traites.push(cible);
     } else if (result.status === 'UPDATED') {
       report.updated += 1;
-      traites.push(revue.supplierId ?? revue.id);
+      traites.push(cible);
     }
+    await trace(result.status === 'CREATED' ? 'CREATED' : result.status === 'UPDATED' ? 'KEPT' : 'NONE',
+      result.actionId ? { [result.status === 'CREATED' ? 'created' : 'kept']: [result.actionId] } : null);
   }
 
-  report.closed += await closeObsolete(accountId, 'SUPPLIER', 'identity', traites);
+  const aFermer = [...actives.keys()].filter((id) => !traites.includes(id) && (!opts.only || opts.only.includes(id)));
+  report.closed += (await closeObsoleteTraced(accountId, 'SUPPLIER', 'identity', aFermer, { reason: 'NOT_RELEVANT_ANYMORE' })).length;
 
   return report;
 }
 
-/**
- * Ferme les actions d'une règle dont l'objet n'est plus concerné.
- *
- * `encoreConcernes` liste les cibles qui posent toujours problème. Toute action
- * active de cette clé portant sur une autre cible est devenue sans objet : la
- * date a été saisie, le bien rattaché, la revue close.
- */
-async function closeObsolete(
-  accountId: number,
-  targetType: 'AGENDA_ITEM' | 'EQUIPMENT' | 'SUPPLIER',
-  dataKey: string,
-  encoreConcernes: number[],
-): Promise<number> {
-  const actives = await db
-    .select({ targetId: toProcessActions.targetId })
+/** Cartes actives d'une donnée, par cible (identifiant de la carte). */
+async function activeTargets(accountId: number, targetType: 'AGENDA_ITEM' | 'EQUIPMENT' | 'SUPPLIER', dataKey: string): Promise<Map<number, number>> {
+  const rows = await db
+    .select({ id: toProcessActions.id, targetId: toProcessActions.targetId })
     .from(toProcessActions)
-    .where(
-      and(
-        eq(toProcessActions.accountId, accountId),
-        eq(toProcessActions.targetType, targetType),
-        sql`COALESCE(${toProcessActions.fieldKey}, ${toProcessActions.relationKey}) = ${dataKey}`,
-        isNull(toProcessActions.resolvedAt),
-      ),
-    );
+    .where(and(
+      eq(toProcessActions.accountId, accountId), eq(toProcessActions.targetType, targetType),
+      sql`COALESCE(${toProcessActions.fieldKey}, ${toProcessActions.relationKey}) = ${dataKey}`, isNull(toProcessActions.resolvedAt),
+    ));
+  return new Map(rows.map((r) => [r.targetId, r.id]));
+}
 
-  const concernes = new Set(encoreConcernes);
-  const aFermer = [...new Set(actives.map((a) => a.targetId))].filter(
-    (id) => !concernes.has(id),
-  );
-
-  let closed = 0;
-  for (const targetId of aFermer) {
-    closed += await resolveActionsForData(
-      accountId,
-      targetType,
-      targetId,
-      dataKey,
-      'OBSOLETE',
-    );
+/**
+ * Ferme (OBSOLETE) les cartes actives d'une donnée pour les cibles données et
+ * TRACE chaque fermeture (`to_process_action_events`, motif) — lot 72 (C7).
+ * Rend les identifiants fermés.
+ */
+async function closeObsoleteTraced(
+  accountId: number, targetType: 'AGENDA_ITEM' | 'EQUIPMENT' | 'SUPPLIER', dataKey: string, targetIds: number[], details: Record<string, unknown>,
+): Promise<number[]> {
+  if (targetIds.length === 0) return [];
+  const now = new Date();
+  const closed = await db.update(toProcessActions)
+    .set({ resolvedAt: now, resolutionReason: 'OBSOLETE', updatedAt: now })
+    .where(and(
+      eq(toProcessActions.accountId, accountId), eq(toProcessActions.targetType, targetType), inArray(toProcessActions.targetId, targetIds),
+      sql`COALESCE(${toProcessActions.fieldKey}, ${toProcessActions.relationKey}) = ${dataKey}`, isNull(toProcessActions.resolvedAt),
+    ))
+    .returning({ id: toProcessActions.id, targetId: toProcessActions.targetId, ruleCode: toProcessActions.ruleCode });
+  if (closed.length) {
+    await db.insert(toProcessActionEvents).values(closed.map((a) => ({
+      actionId: a.id, accountId, event: 'OBSOLETE', actorUserId: null, targetType, targetId: a.targetId, fieldKey: dataKey,
+      details: { ruleCode: a.ruleCode, ...details }, createdAt: now,
+    })));
   }
-  return closed;
+  return closed.map((a) => a.id);
 }
 
 /**

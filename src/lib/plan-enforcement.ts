@@ -12,6 +12,7 @@ import {
   sendMemberRemovedDueToDowngradeEmail,
 } from '@/lib/email/billing-emails';
 import { endMembership, isDuoUnpaid } from '@/services/duo/duo-exit.service';
+import { afterMembershipEnded } from '@/services/account/membership.service';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -208,8 +209,10 @@ export async function enforceStandardLimits(
 
   for (const member of members) {
     await db.update(accountMemberships)
-      .set({ status: 'removed', removedAt: new Date(), removedBy: ownerUserId })
+      .set({ status: 'removed', removedAt: new Date(), removedBy: ownerUserId, endedReason: 'offer_ended', updatedAt: new Date() })
       .where(eq(accountMemberships.id, member.id));
+    // Lot 72D : révocation effective tout de suite (caches, assistant).
+    if (member.userId != null) afterMembershipEnded(accountId, member.userId);
 
     if (sendEmails && member.userId != null) {
       sendMemberRemovedDueToDowngradeEmail(
@@ -288,6 +291,6 @@ export async function endDuoSharing(ownerUserId: number): Promise<void> {
   // pour valider la demande.
   for (const m of members) {
     if (m.userId === ownerUserId) continue;
-    await endMembership({ duoId: duo.id, membershipId: m.id, memberUserId: m.userId, status: 'REMOVED' });
+    await endMembership({ duoId: duo.id, membershipId: m.id, memberUserId: m.userId, status: 'REMOVED', reason: 'offer_ended', byUserId: ownerUserId });
   }
 }

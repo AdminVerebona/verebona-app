@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { SessionService } from '@/lib/session-service';
 import { db } from '@/db';
-import { accountMemberships, accountSubscriptions } from '@/db/schema';
+import { accountSubscriptions } from '@/db/schema';
+import { resolveOwnedSessionAccount } from '@/services/account/membership.service';
 import { eq } from 'drizzle-orm';
 import { syncSubscriptionById } from '@/services/billing/subscription-sync.service';
 
@@ -17,12 +18,10 @@ import { syncSubscriptionById } from '@/services/billing/subscription-sync.servi
 export async function POST(request: NextRequest) {
   try {
     const session = await SessionService.getSession(request);
-    const [membership] = await db
-      .select({ accountId: accountMemberships.accountId })
-      .from(accountMemberships)
-      .where(eq(accountMemberships.userId, session.userId))
-      .limit(1);
-    if (!membership) return NextResponse.json({ error: 'NO_ACCOUNT' }, { status: 404 });
+    // Lot 72D : compte de la session, titulaire seulement (retour du portail).
+    const owned = await resolveOwnedSessionAccount(session);
+    if (!owned.ok) return owned.response;
+    const membership = { accountId: owned.accountId };
 
     const [sub] = await db
       .select({ stripeSubscriptionId: accountSubscriptions.stripeSubscriptionId })

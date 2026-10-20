@@ -172,6 +172,11 @@ export const EVALUATION_PENDING_SPEECH = 'J’examine encore vos prochaines éch
 export const EVALUATION_UNAVAILABLE_SPEECH = 'Je ne peux pas examiner vos échéances pour le moment : elles restent consultables dans l’agenda.';
 export const EMPTY_ACCOUNT_SPEECH = 'Je suis Verebona. Votre espace est prêt, mais encore vide. Ajoutez un premier bien ou déposez un document : je le lis, je range les informations au bon endroit et je vous préviens avant chaque échéance importante.';
 export const DEGRADED_SPEECH = 'Certaines informations n’ont pas pu être actualisées. Je réessaie dans un instant.';
+/**
+ * Lot 72A (AC04) : la dernière lecture a échoué — la présentation affichée est
+ * celle d'un passage précédent, jamais présentée comme actualisée.
+ */
+export const STALE_SPEECH = 'Je n’ai pas pu actualiser ces informations : elles datent de mon dernier passage.';
 
 /** Mots qui peuvent perdre leur majuscule en milieu de phrase. */
 const MOTS_COURANTS = new Set([
@@ -264,11 +269,13 @@ export function presentationState(p: MascotPresentation | null): MascotPresentat
   const openNotPriority = (p?.todo?.total ?? 0) > (p?.todo?.items.length ?? 0);
   const evaluation = p?.state?.evaluation ?? 'OK';
   const degraded = p?.status === 'degraded' || (p?.state?.degraded ?? false);
+  // Lot 72A (AC03) : sources en panne distinguées (présentation antérieure : métier).
+  const degradedSources = p?.state?.degradedSources ?? (degraded ? ['business' as const] : []);
   const kind: MascotPresentationState['kind'] = actions > 0 ? 'ACTIONS'
     : information > 0 ? 'INFORMATION'
       : degraded || evaluation !== 'OK' ? 'DEGRADED'
         : openNotPriority ? 'OPEN_NOT_PRIORITY' : 'NOTHING_TO_REPORT';
-  return { schemaVersion: 'mascot-state-v1', kind, actions, information, openNotPriority, evaluation, degraded };
+  return { schemaVersion: 'mascot-state-v1', kind, actions, information, openNotPriority, evaluation, degraded, degradedSources };
 }
 
 /** Phrase sur l'évaluation des échéances proches, ou null. */
@@ -311,6 +318,12 @@ function compose({ presentation, empty, failed }: SpeechInput, withSubjects: boo
   const attention = paras.filter(isAttention);
   const info = paras.filter((p) => !isAttention(p));
   const join = (parts: Array<string | null>) => parts.filter((x): x is string => !!x).join(' ');
+  // Lot 72A (AC03, AC04) — défaillances DISTINCTES, jamais masquées par une
+  // action, un document ou Duo affichés : présentation conservée après un
+  // rafraîchissement en échec (jamais présentée comme actualisée), sinon
+  // source partiellement indisponible (métier ou décision T6) ; puis
+  // l'évaluation en cours / indisponible (`note`).
+  const alerte = failed ? STALE_SPEECH : st.degraded ? PARTIAL_DATA_SPEECH : null;
 
   // Lot 32 (MASC2) / lot 34 (MASC3) / lot 49A : « À traiter » affichés
   // (DO_FIRST, au plus deux) et invitation Duo. Lot 71F : AUCUNE phrase qui
@@ -318,21 +331,22 @@ function compose({ presentation, empty, failed }: SpeechInput, withSubjects: boo
   // retenus. Jamais « rien à signaler » quand une carte est affichée.
   const todoShown = (presentation.todo?.items.length ?? 0) + (presentation.duoInvite ? 1 : 0);
   if (todoShown > 0) {
-    return { text: join([...texts(attention), ...texts(info), note]), highlights };
+    return { text: join([...texts(attention), ...texts(info), alerte, note]), highlights };
   }
   if (attention.length > 0) {
     // Lot 68 : le fait utile, une seule fois — aucune introduction de comptage.
-    return { text: join([...texts(attention), ...texts(info), note]), highlights };
+    return { text: join([...texts(attention), ...texts(info), alerte, note]), highlights };
   }
   if (info.length > 0) {
     // Information seule (document en analyse, rappel informatif…) : elle est
     // dite, sans annoncer au préalable que tout est à jour (D25 : source en
     // panne → dit).
-    const tete = st.degraded ? PARTIAL_DATA_SPEECH : st.openNotPriority ? NOTHING_PRIORITY : null;
+    const tete = alerte ?? (st.openNotPriority ? NOTHING_PRIORITY : null);
     return { text: join([tete, ...texts(info), note]), highlights };
   }
-  if (presentation.status === 'degraded') return { text: join([DEGRADED_SPEECH, note]), highlights: [] };
-  const parts = [st.openNotPriority ? NOTHING_PRIORITY : null, note];
+  if (presentation.status === 'degraded') return { text: join([failed ? STALE_SPEECH : DEGRADED_SPEECH, note]), highlights: [] };
+  // Lot 72A : jamais « rien à signaler » quand l'examen n'a pas pu se faire.
+  const parts = [alerte, st.openNotPriority ? NOTHING_PRIORITY : null, note];
   return { text: parts.some(Boolean) ? join(parts) : NOTHING_TO_REPORT_SPEECH, highlights: [] };
 }
 
@@ -585,7 +599,6 @@ export function homePose(p: MascotPresentation | null, empty: boolean, failed = 
   if (empty) return 'welcome-wave';
   // Chargement ou panne : jamais une réussite (lot 61).
   if (!p) return 'neutral';
-  void failed;
   const kinds = realParagraphs(p).map(kindOf);
   // Lot 32 (MASC2) : les « À traiter » ne sont plus des paragraphes — leur
   // nature compte toujours pour la pose (arbitrage → vérifier, sinon action).
@@ -599,7 +612,8 @@ export function homePose(p: MascotPresentation | null, empty: boolean, failed = 
   // éléments ouverts non prioritaires, évaluation en cours ou indisponible,
   // source en panne : pose neutre. Seule l'absence établie d'interpellation
   // pertinente donne la pose positive (sans affirmer que tout est résolu).
-  return presentationState(p).kind === 'NOTHING_TO_REPORT' ? 'success-check' : 'neutral';
+  // Lot 72A (AC04) : présentation conservée après un échec de rafraîchissement : jamais la pose positive.
+  return !failed && presentationState(p).kind === 'NOTHING_TO_REPORT' ? 'success-check' : 'neutral';
 }
 
 /** Texte alternatif de la mascotte d'accueil, selon sa pose. */

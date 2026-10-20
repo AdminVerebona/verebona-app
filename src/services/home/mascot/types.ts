@@ -205,7 +205,18 @@ export interface MascotPresentationState {
   evaluation: 'OK' | 'PENDING' | 'UNAVAILABLE';
   /** Une source au moins n'a pas pu être lue. */
   degraded: boolean;
+  /**
+   * Lot 72A (AC03) : sources en panne, DISTINGUÉES — `business` (collecteur :
+   * traitements, « À traiter », agenda…), `deadlines` (lecture de la décision
+   * T6 : préférences, évaluations, preuves, « À traiter » de l'échéance). Une
+   * action, un document ou Duo affichés ne masquent jamais la panne. Absent :
+   * présentation antérieure (`degraded` seul).
+   */
+  degradedSources?: MascotDegradedSource[];
 }
+
+/** Lot 72A : source dont la lecture a échoué (voir `MascotPresentationState.degradedSources`). */
+export type MascotDegradedSource = 'business' | 'deadlines';
 
 // ── « À traiter » de la mascotte (lot 32, MASC2) ─────────────────────────────
 

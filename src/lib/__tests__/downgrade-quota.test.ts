@@ -99,7 +99,7 @@ describe('fin du partage Duo (AID-DUO-005)', () => {
     // Même sortie complète que « Retirer » (demandes annulées, biens
     // déverrouillés), pour le seul second utilisateur.
     expect(endMembership).toHaveBeenCalledTimes(1);
-    expect(endMembership).toHaveBeenCalledWith({ duoId: 3, membershipId: 11, memberUserId: 2, status: 'REMOVED' });
+    expect(endMembership).toHaveBeenCalledWith({ duoId: 3, membershipId: 11, memberUserId: 2, status: 'REMOVED', reason: 'offer_ended', byUserId: 1 }); // lot 72D : motif et auteur tracés sur l'adhésion
     expect(ops.filter((o) => o.table === 'assets')).toEqual([]);
   });
 

@@ -58,6 +58,8 @@ export async function emit<T extends NotificationType>(input: EmitInput<T>): Pro
   const recipients = await resolveRecipients({
     recipientUserIds: input.recipientUserIds,
     accountId: input.accountId ?? undefined,
+    // Lot 72D : facturation / essai → titulaire seulement (Q15).
+    type: input.type,
   });
   if (recipients.length === 0) return;
 

@@ -25,7 +25,7 @@ export async function GET(req: NextRequest) {
   try {
     const q = req.nextUrl.searchParams;
     const n = (k: string) => (q.get(k) && /^\d+$/.test(q.get(k)!) ? Number(q.get(k)) : null);
-    const [{ listRelevanceCampaigns, listCampaignItems, campaignTablesReady }, { listRecetteRuns, recetteTableReady, RELEVANCE_RECETTE_CASES }, ev] = await Promise.all([
+    const [{ listRelevanceCampaigns, listCampaignItems, campaignTablesReady, campaignMultiFamilyReady }, { listRecetteRuns, recetteTableReady, RELEVANCE_RECETTE_CASES }, ev] = await Promise.all([
       import('@/services/to-process/relevance-campaign.service'), import('@/services/to-process/relevance-recette'),
       import('@/services/to-process/document-field-evidence'),
     ]);
@@ -35,7 +35,11 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({
       config: await ev.t4AssessmentConfig(),
       engineVersion: ev.DOCUMENT_RULE_ENGINE_VERSION,
-      migrations: { decisions0444: await ev.relevanceColumnsReady(), campaigns0445: await campaignTablesReady(), recette0446: await recetteTableReady() },
+      migrations: {
+        decisions0444: await ev.relevanceColumnsReady(), campaigns0445: await campaignTablesReady(), recette0446: await recetteTableReady(),
+        // Lot 72 : traçabilité des décisions (0516), campagne multi-familles (0517).
+        ecarts0516: await ev.decisionKindColumnReady(), campagne0517: await campaignMultiFamilyReady(),
+      },
       campaigns,
       items: campaignId ? await listCampaignItems(campaignId, { accountId: n('accountId'), outcome, limit: 100 }) : [],
       recetteCases: RELEVANCE_RECETTE_CASES.map((c) => ({ id: c.id, label: c.label, deterministic: c.deterministic })),
@@ -54,7 +58,7 @@ export async function POST(req: NextRequest) {
     try { body = await req.json(); } catch { body = {}; }
     if (body.action === 'campaign') {
       const { startRelevanceCampaign, runRelevanceCampaign } = await import('@/services/to-process/relevance-campaign.service');
-      const c = await startRelevanceCampaign({ code: `l61-pertinence-${new Date().toISOString().replace(/[^0-9]/g, '').slice(0, 14)}`, trigger: 'manual', requestedBy: guard.ctx.adminUserId });
+      const c = await startRelevanceCampaign({ code: `l72-pertinence-${new Date().toISOString().replace(/[^0-9]/g, '').slice(0, 14)}`, trigger: 'manual', requestedBy: guard.ctx.adminUserId });
       if (!c) return NextResponse.json({ error: 'MIGRATION_MISSING', message: 'Migration 0445 absente : réessayez après la mise à jour de la base.' }, { status: 503 });
       // Premier lot tout de suite (borné) ; la tâche planifiée poursuit.
       const r = await runRelevanceCampaign({ deadline: Date.now() + 20_000, trigger: 'manual' });

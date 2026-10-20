@@ -77,7 +77,7 @@ export async function PUT(
       .where(
         and(
           eq(assetFiles.id, documentId),
-          eq(assetFiles.userId, userId),
+          // Lot 72D : tout membre du compte (plus seulement celui qui l'a déposé).
           eq(assetFiles.accountId, session.currentAccountId),
           isNull(assetFiles.deletedAt)
         )

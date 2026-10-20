@@ -165,7 +165,8 @@ scenario('L57A-MAIL', 'P0 e-mails : vérification et invitations Duo fiables', (
     expect(log.email_job_id).toBe(j0.id);
     expect(log.metadata).toContain('token=[masqué]');
     expect(mailsA(email)).toHaveLength(1);
-    expect(mailsA(email)[0].key).toBe(`vb-email-job-${j0.id}-1`);
+    // Lot 72F : clé STABLE entre les tentatives (génération 0 tant qu'aucun refus confirmé).
+    expect(mailsA(email)[0].key).toBe(`vb-email-job-${j0.id}-g0`);
 
     const v = await verifier(lienDe(mailsA(email)[0].html));
     expect(v.location).toContain('status=success');

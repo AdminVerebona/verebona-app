@@ -119,6 +119,8 @@ vi.mock('@/services/to-process/to-process-query.service', async (orig) => ({
   getToProcessPage: (a: number, o: unknown) => toProcessPage(a, o),
 }));
 const entitlements = vi.fn(async (_a: number) => ({ canWrite: true, quotas: { maxAssets: 10, maxDocuments: 150 } }));
+// Lot 72 (72C) : lecture commune des obligations réglées — aucune dans ces scénarios.
+vi.mock('@/services/to-process/settled-obligations', () => ({ toProcessSettledAgendaIds: async () => [], settledObligations: async () => [] }));
 vi.mock('@/services/entitlements.service', () => ({ getEntitlements: (a: number) => entitlements(a) }));
 
 const execute = vi.fn();

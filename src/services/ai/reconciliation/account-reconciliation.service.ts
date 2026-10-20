@@ -107,8 +107,14 @@ export interface AccountRunResult {
  * biens en erreur ; `NOT_CONFIGURED` : phase absente de cet orchestrateur
  * (tests), jamais obligatoire.
  */
-export type PhaseStatus = 'DONE' | 'PARTIAL' | 'FAILED' | 'NOT_RUN' | 'NOT_CONFIGURED';
-export interface PhaseReport { status: PhaseStatus; error: string | null; counts?: Record<string, number> }
+export type PhaseStatus = 'DONE' | 'PARTIAL' | 'FAILED' | 'NOT_RUN' | 'NOT_CONFIGURED' | 'DEFERRED';
+/**
+ * Lot 72B (E8) : `DEFERRED` — phase FACULTATIVE dont le travail reste dû
+ * (plafond, délai de reprise, prompt inutilisable) sans échec : jamais DONE,
+ * jamais un échec du passage. `state` : état détaillé de la phase, identique
+ * à celui du rapport d'exécution et de la synthèse du job.
+ */
+export interface PhaseReport { status: PhaseStatus; error: string | null; counts?: Record<string, number>; state?: string }
 export type RunPhaseName = 'ASSETS' | 'OPEN_KNOWLEDGE' | 'OPEN_ACTIONS' | 'JOURNAL';
 /**
  * Lot 61 : phase FACULTATIVE `DOCUMENT_NAMING` (harmonisation du nommage
@@ -141,6 +147,36 @@ export function initialPhases(deps: Pick<AccountReconciliationDeps, 'reconcileOp
     OPEN_ACTIONS: { status: deps.reconcileOpenActions ? 'NOT_RUN' : 'NOT_CONFIGURED', error: null },
     JOURNAL: { status: deps.reconcileOpenActions ? 'NOT_RUN' : 'NOT_CONFIGURED', error: null },
     ...(deps.reconcileDocumentNaming ? { DOCUMENT_NAMING: { status: 'NOT_RUN' as const, error: null } } : {}),
+  };
+}
+
+/**
+ * Lot 72B (E8) — phase DOCUMENT_NAMING du passage (pure) : jamais DONE tant
+ * qu'il reste des lots à examiner, des écritures à reprendre ou un stock non
+ * couvert ; motifs et travail restant chiffrés.
+ */
+export function documentNamingPhaseReport(dn: import('./document-naming/phase').DocumentNamingPhaseResult): PhaseReport {
+  const status: PhaseStatus = dn.status === 'DISABLED' ? 'NOT_CONFIGURED' : dn.status === 'NOT_READY' ? 'NOT_RUN' : dn.status;
+  const motifs = Object.entries(dn.remaining?.byReason ?? {}).map(([k, v]) => `${k} ${v}`).join(', ');
+  const error = dn.status === 'NOT_READY' ? 'migrations 0450 / 0513 absentes : harmonisation non exécutée'
+    : dn.status === 'DONE' || dn.status === 'DISABLED' ? null
+      : [
+        dn.errors > 0 ? `${dn.errors} lot(s) en erreur` : null,
+        dn.failed > 0 ? `${dn.failed} écriture(s) en échec` : null,
+        dn.renamesSectionMissing > 0 ? `${dn.renamesSectionMissing} sortie(s) IA incomplète(s)` : null,
+        dn.remaining?.groups ? `${dn.remaining.groups} lot(s) / ${dn.remaining.documents} document(s) restant(s)${motifs ? ` (${motifs})` : ''}` : null,
+        dn.scan && !dn.scan.complete ? 'lecture du stock en cours' : null,
+      ].filter(Boolean).join(' ; ') || null;
+  return {
+    status, state: dn.status, error,
+    counts: {
+      groupsDue: dn.groupsDue, groupsExamined: dn.groupsExamined, proposals: dn.proposals, applied: dn.applied,
+      refused: dn.refused, conflicts: dn.conflicts, failed: dn.failed, aiCalls: dn.aiCalls, deferred: dn.deferred,
+      promptUnavailable: dn.promptAvailable === false ? 1 : 0, renamesSectionMissing: dn.renamesSectionMissing,
+      pendingWrites: dn.pendingWrites ?? 0, writesRetried: dn.writesRetried ?? 0,
+      remainingGroups: dn.remaining?.groups ?? 0, remainingDocuments: dn.remaining?.documents ?? 0,
+      documents: dn.documents, scanComplete: dn.scan?.complete ? 1 : 0,
+    },
   };
 }
 
@@ -487,17 +523,7 @@ export async function reconcileAccount(
           guard: options.guard, accountRunId: runId, triggerCode: options.triggerCode ?? null,
         });
         documentNaming = dn;
-        phases.DOCUMENT_NAMING = {
-          status: dn.status === 'DISABLED' ? 'NOT_CONFIGURED' : dn.status === 'NOT_READY' ? 'NOT_RUN'
-            : dn.errors > 0 || dn.failed > 0 ? 'PARTIAL' : 'DONE',
-          error: dn.status === 'NOT_READY' ? 'migration 0450 absente : harmonisation non exécutée'
-            : dn.errors > 0 || dn.failed > 0 ? `${dn.errors} lot(s) en erreur, ${dn.failed} écriture(s) en échec` : null,
-          counts: {
-            groupsDue: dn.groupsDue, groupsExamined: dn.groupsExamined, proposals: dn.proposals, applied: dn.applied,
-            refused: dn.refused, conflicts: dn.conflicts, failed: dn.failed, aiCalls: dn.aiCalls, deferred: dn.deferred,
-            promptUnavailable: dn.promptAvailable === false ? 1 : 0,
-          },
-        };
+        phases.DOCUMENT_NAMING = documentNamingPhaseReport(dn);
       } catch (e) {
         if (isExecutionCancelled(e)) throw e;
         phases.DOCUMENT_NAMING = { status: 'FAILED', error: (e as Error).message.slice(0, 300) };

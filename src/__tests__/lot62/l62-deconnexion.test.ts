@@ -135,8 +135,9 @@ describe('L62-DECO — sortie après déconnexion (application installée / navi
     const layout = lire('src/components/DashboardLayout.tsx');
     expect(layout).toContain('leaveAfterLogout()');
     expect(layout).not.toMatch(/window\.location\.href\s*=\s*publicSiteUrl/);
-    // Une seule procédure de déconnexion pour TopBar (desktop) et le panneau mobile.
-    expect(layout.match(/onLogout=\{handleLogout\}/g)).toHaveLength(2);
+    // Une seule procédure de déconnexion pour TopBar (desktop), le panneau
+    // mobile et (lot 72D) l'écran « sans espace ».
+    expect(layout.match(/onLogout=\{handleLogout\}/g)).toHaveLength(3);
   });
 
   it('L62-DECO-08 — desktop : la confirmation est hors du menu de l’avatar et au-dessus de l’en-tête (z-[33] < z-50)', () => {

@@ -4,12 +4,16 @@ import {
   accountMemberships,
   accountAuditLog,
   users,
+  duoAccounts,
+  duoMemberships,
 } from '@/db/schema';
 import { eq, and, or } from 'drizzle-orm';
+import { duoOfAccount } from '@/services/account/membership.service';
+import { DUO_EXIT_MESSAGES, endMembership, isDuoUnpaid } from '@/services/duo/duo-exit.service';
 import crypto from 'crypto';
 import { emailService } from '@/lib/email/email-service';
 import { emit } from '@/lib/notifications';
-import { orderSessionAccounts, type SessionAccountCandidate } from '@/lib/auth/account-suspension';
+import { orderSessionAccounts, withoutArchivedAccounts, type SessionAccountCandidate } from '@/lib/auth/account-suspension';
 import { invalidateAccountReadCache, invalidateUserReadCache } from '@/lib/server-cache';
 import type { PlanType, SubscriptionTier, SubscriptionStatus, MembershipRole, MembershipStatus } from '@/types/domain';
 
@@ -164,11 +168,42 @@ export class AccountService {
     return { allowed: true };
   }
 
+  /**
+   * Lot 72D (faille de l'audit §1.4) : vrai si `userId` est TITULAIRE actif
+   * du compte. Seul le titulaire invite ou retire des membres.
+   */
+  static async isActiveOwner(accountId: number, userId: number): Promise<boolean> {
+    if (!Number.isInteger(accountId) || accountId <= 0) return false;
+    const [row] = await db
+      .select({ id: accountMemberships.id })
+      .from(accountMemberships)
+      .where(and(
+        eq(accountMemberships.accountId, accountId),
+        eq(accountMemberships.userId, userId),
+        eq(accountMemberships.role, 'owner'),
+        eq(accountMemberships.status, 'active'),
+      ))
+      .limit(1);
+    return !!row;
+  }
+
   static async inviteMember(
     accountId: number,
     email: string,
     invitedBy: number
-  ): Promise<{ success: boolean; error?: string; inviteToken?: string }> {
+  ): Promise<{ success: boolean; error?: string; code?: 'NOT_ACCOUNT_OWNER'; inviteToken?: string }> {
+    // ══════════════════════════════════════════════════════════════════════
+    // LOT 72D — FAILLE : INVITATION DANS LE COMPTE D'UN TIERS
+    //
+    // Aucun contrôle ne vérifiait que l'appelant appartenait au compte : tout
+    // utilisateur connecté pouvait s'inviter (autre adresse) dans n'importe
+    // quel compte partagé ayant une place libre, puis accéder à ses données.
+    // Seul le TITULAIRE actif invite (matrice Q14).
+    // ══════════════════════════════════════════════════════════════════════
+    if (!(await this.isActiveOwner(accountId, invitedBy))) {
+      return { success: false, code: 'NOT_ACCOUNT_OWNER', error: 'Seul le titulaire du compte peut inviter un membre.' };
+    }
+
     const canInvite = await this.canInviteMembers(accountId);
     if (!canInvite.allowed) {
       return { success: false, error: canInvite.reason };
@@ -223,10 +258,40 @@ export class AccountService {
       membershipValues.userId = existingUser.id;
     }
 
-    const [membership] = await db
-      .insert(accountMemberships)
-      .values(membershipValues)
-      .returning();
+    // Lot 72D : un ancien membre (retiré, parti, invitation refusée) a déjà
+    // une ligne pour ce compte — (account_id, user_id) est unique, tous
+    // statuts confondus : on la RÉACTIVE en invitation au lieu d'en insérer
+    // une seconde (l'insertion échouait en 500).
+    const [previous] = existingUser
+      ? await db
+          .select({ id: accountMemberships.id })
+          .from(accountMemberships)
+          .where(and(eq(accountMemberships.accountId, accountId), eq(accountMemberships.userId, existingUser.id)))
+          .limit(1)
+      : [];
+
+    const [membership] = previous
+      ? await db
+          .update(accountMemberships)
+          .set({
+            invitedEmail: email,
+            role: 'member',
+            status: 'pending',
+            invitedBy,
+            invitedAt: now,
+            joinedAt: null,
+            removedAt: null,
+            removedBy: null,
+            inviteToken,
+            inviteTokenExpiresAt,
+            updatedAt: now,
+          })
+          .where(eq(accountMemberships.id, previous.id))
+          .returning()
+      : await db
+          .insert(accountMemberships)
+          .values(membershipValues)
+          .returning();
 
       const [inviter] = await db
         .select()
@@ -397,13 +462,22 @@ export class AccountService {
       return { success: false, error: 'Cannot remove the account owner. Transfer ownership first.' };
     }
 
+    // Lot 72D : compte porteur d'un Premium Duo — même sortie que « Retirer le
+    // second utilisateur » (adhésion + ligne Duo historique, e-mail de fin
+    // d'accès, refus pendant un impayé).
+    const duoExit = await this.endDuoSideIfAny(accountId, memberUserId, 'REMOVED', removedBy);
+    if (duoExit === 'DUO_UNPAID') {
+      return { success: false, error: DUO_EXIT_MESSAGES.DUO_UNPAID };
+    }
+
     const now = new Date();
-    await db
+    if (duoExit !== 'DONE') await db
       .update(accountMemberships)
       .set({
         status: 'removed',
         removedAt: now,
         removedBy,
+        endedReason: 'removed',
         updatedAt: now,
       })
       .where(eq(accountMemberships.id, membership.id));
@@ -464,12 +538,17 @@ export class AccountService {
       return { success: false, error: 'Account owner cannot leave. Transfer ownership or delete the account.' };
     }
 
+    // Lot 72D : départ d'un compte Premium Duo — même sortie que « Quitter le
+    // Duo » (adhésion `left` + ligne Duo historique, e-mail de confirmation).
+    const duoExit = await this.endDuoSideIfAny(accountId, userId, 'LEFT', null);
+
     const now = new Date();
-    await db
+    if (duoExit !== 'DONE') await db
       .update(accountMemberships)
       .set({
-        status: 'removed',
+        status: 'left',
         removedAt: now,
+        endedReason: 'left',
         updatedAt: now,
       })
       .where(eq(accountMemberships.id, membership.id));
@@ -509,6 +588,35 @@ export class AccountService {
     return { success: true, shouldRedirect };
   }
 
+  /**
+   * Lot 72D : si le compte porte un Premium Duo dont `userId` est membre
+   * actif, la sortie passe par `duo-exit` (une seule transaction : adhésion
+   * au compte + ligne Duo historique + e-mail). 'NONE' : pas de Duo concerné.
+   */
+  private static async endDuoSideIfAny(
+    accountId: number,
+    userId: number,
+    status: 'REMOVED' | 'LEFT',
+    byUserId: number | null,
+  ): Promise<'DONE' | 'NONE' | 'DUO_UNPAID'> {
+    const duoId = await duoOfAccount(accountId);
+    if (!duoId) return 'NONE';
+    const [duo] = await db
+      .select({ status: duoAccounts.subscriptionStatus })
+      .from(duoAccounts)
+      .where(eq(duoAccounts.id, duoId))
+      .limit(1);
+    const [dm] = await db
+      .select({ id: duoMemberships.id })
+      .from(duoMemberships)
+      .where(and(eq(duoMemberships.duoId, duoId), eq(duoMemberships.userId, userId), eq(duoMemberships.status, 'ACTIVE')))
+      .limit(1);
+    if (!dm) return 'NONE';
+    if (status === 'REMOVED' && isDuoUnpaid(duo?.status)) return 'DUO_UNPAID';
+    await endMembership({ duoId, membershipId: dm.id, memberUserId: userId, status, byUserId });
+    return 'DONE';
+  }
+
   static async hasAccountAccess(
     userId: number,
     accountId: number
@@ -546,6 +654,7 @@ export class AccountService {
         membershipId: accountMemberships.id,
         joinedAt: accountMemberships.joinedAt,
         createdAt: accountMemberships.createdAt,
+        lastSelectedAt: accountMemberships.lastSelectedAt,
       })
       .from(accountMemberships)
       .innerJoin(accounts, eq(accountMemberships.accountId, accounts.id))
@@ -566,6 +675,7 @@ export class AccountService {
         membershipId: m.membershipId,
         joinedAt: m.joinedAt ?? null,
         createdAt: m.createdAt ?? null,
+        lastSelectedAt: m.lastSelectedAt ?? null,
       })),
     );
   }
@@ -579,7 +689,9 @@ export class AccountService {
   static async getUserDefaultAccount(userId: number): Promise<Account | null> {
     const ordered = await this.getUserSessionAccounts(userId);
     if (!ordered.length) return null;
-    return (ordered.find((c) => c.account.isActive !== false) ?? ordered[0]).account;
+    // Lot 72D : dernier espace choisi d'abord ; compte archivé écarté s'il y en a un autre.
+    const candidates = withoutArchivedAccounts(ordered);
+    return (candidates.find((c) => c.account.isActive !== false) ?? candidates[0]).account;
   }
 
     static async transferOwnership(

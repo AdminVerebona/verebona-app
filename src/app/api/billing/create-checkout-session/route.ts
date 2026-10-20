@@ -6,7 +6,8 @@ import {
 } from '@/services/referral-attribution.service';
 import { SessionService } from '@/lib/session-service';
 import { db } from '@/db';
-import { users, accounts, accountMemberships, referralEvents, accountSubscriptions } from '@/db/schema';
+import { users, accounts, referralEvents, accountSubscriptions } from '@/db/schema';
+import { effectiveAccountId, getSessionRole } from '@/services/account/membership.service';
 import { and, eq } from 'drizzle-orm';
 import { getStripeServer, StripeConfigError } from '@/lib/stripe';
 import { ensureStripeCustomer } from '@/lib/stripe-customer';
@@ -91,11 +92,13 @@ export async function POST(request: NextRequest) {
             return NextResponse.json({ code: 'USER_NOT_FOUND', message: 'User not found' }, { status: 404 });
         }
 
-        const memberships = await db
-            .select({ accountId: accountMemberships.accountId, role: accountMemberships.role })
-            .from(accountMemberships)
-            .where(eq(accountMemberships.userId, user.id));
-        const membership = memberships.find((m) => m.accountId === session.currentAccountId) ?? memberships[0];
+        // Lot 72D : compte de la SESSION, adhésion ACTIVE relue en base (plus
+        // de repli sur une adhésion quelconque, sans filtre de statut).
+        const courant = await effectiveAccountId(session);
+        const sessionRole = courant ? await getSessionRole({ userId: session.userId, currentAccountId: courant }) : null;
+        const membership = courant && sessionRole
+            ? { accountId: courant, role: sessionRole }
+            : null;
         if (!membership) {
             return NextResponse.json({ code: 'NO_ACCOUNT', message: 'User has no account' }, { status: 404 });
         }

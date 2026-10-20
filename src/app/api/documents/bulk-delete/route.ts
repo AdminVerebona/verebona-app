@@ -50,7 +50,7 @@ export async function POST(request: NextRequest) {
       .where(
         and(
           inArray(assetFiles.id, validIds),
-          eq(assetFiles.userId, userId),
+          // Lot 72D : tout membre du compte.
           eq(assetFiles.accountId, accountId),
           isNull(assetFiles.deletedAt)
         )

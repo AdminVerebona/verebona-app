@@ -242,45 +242,57 @@ scenario('L54B-SEC', 'SEC-P0-CORR — isolation stricte des comptes', ({ sql, ma
     expect((await GET(req(await jeton(membre.user, B.acc.id), '/api/events'))).status).toBe(401);
   });
 
-  it('SEC-01-03 — Premium Duo (invitation, adhésion, retrait, départ par les routes réelles) : deux utilisateurs autorisés, révocation effective', async () => {
+  it('SEC-01-03 — Premium Duo (invitation, adhésion, retrait, départ par les routes réelles) : compte PARTAGÉ, révocation effective (lot 72D)', async () => {
+    // Lot 72D (ticket P0 « compte partagé ») : ce scénario figeait l'ancien
+    // modèle à deux comptes séparés (« le membre ne voit pas les données du
+    // titulaire »). Le membre rejoint désormais le compte EXISTANT du
+    // titulaire : il voit ses données ; un compte étranger reste refusé ; le
+    // retrait et le départ coupent l'accès dès la requête suivante.
     const titulaire = await compte(sql, make, 'DUOT');
     const second = await compte(sql, make, 'DUOM');
-    await sql`UPDATE users SET plan_type = 'PREMIUM_DUO' WHERE id = ${titulaire.user.id}`;
-    const [duo] = await sql<{ id: number }[]>`INSERT INTO duo_accounts (billing_owner_user_id, subscription_status) VALUES (${titulaire.user.id}, 'ACTIVE') RETURNING id`;
-    await sql`INSERT INTO duo_memberships (duo_id, user_id, status, slot) VALUES (${duo.id}, ${titulaire.user.id}, 'ACTIVE', 0)`;
+    const { applyPlanChange } = await import('@/lib/plan-enforcement');
+    await applyPlanChange({
+      accountId: titulaire.acc.id, ownerUserId: titulaire.user.id, oldPlanType: 'PREMIUM', newPlanType: 'PREMIUM_DUO',
+      newSubStatus: 'ACTIVE', newPremiumUntil: null, newMaxMembers: 2, source: 'e2e:l54b', sendEmails: false,
+    });
+    const [{ duo_account_id: duoId }] = await sql<{ duo_account_id: number }[]>`SELECT duo_account_id FROM accounts WHERE id = ${titulaire.acc.id}`;
     const tokT = await jeton(titulaire.user, titulaire.acc.id, 'PREMIUM_DUO');
     const tokM = await jeton(second.user, second.acc.id);
-    const inbox = async () => (await import('@/app/api/duos/[id]/requests/inbox/route')).GET(
-      req(tokM, `/api/duos/${duo.id}/requests/inbox`), { params: Promise.resolve({ id: String(duo.id) }) });
+    const { GET } = await import('@/app/api/events/route');
 
     const cycle = async () => {
       const { POST: inviter } = await import('@/app/api/duo/invitation/route');
       expect((await inviter(req(tokT, '/api/duo/invitation', { method: 'POST', body: { email: second.user.email } }))).status).toBe(200);
-      const [d] = await sql<{ t: string }[]>`SELECT pending_invite_token AS t FROM duo_accounts WHERE id = ${duo.id}`;
-      // Invitation en attente : aucune donnée du Duo.
-      expect((await inbox()).status).toBe(403);
+      const [d] = await sql<{ t: string }[]>`SELECT pending_invite_token AS t FROM duo_accounts WHERE id = ${duoId}`;
+      // Invitation en attente : aucun accès au compte du titulaire.
+      expect((await GET(req(await jeton(second.user, titulaire.acc.id), '/api/events'))).status).toBe(401);
       const { POST: rejoindre } = await import('@/app/api/duo/join/route');
       const j = await rejoindre(req(tokM, '/api/duo/join', { method: 'POST', body: { token: d.t } }));
-      expect(j.status, await j.clone().text()).toBeLessThan(300);
-      expect((await inbox()).status).toBe(200);
+      expect(j.status, await j.clone().text()).toBe(200);
+      return (j as Response & { cookies: { get(n: string): { value: string } | undefined } }).cookies.get('access_token')!.value;
     };
-    await cycle();
-    // Deux utilisateurs autorisés, chacun dans SON espace : aucune donnée du titulaire par le Duo.
-    const { GET } = await import('@/app/api/events/route');
-    const vu = await (await GET(req(tokM, '/api/events'))).text();
-    expect(vu).toContain('DUOM-entretien');
-    expect(vu).not.toContain('DUOT-entretien');
-    expect((await GET(req(await jeton(second.user, titulaire.acc.id), '/api/events'))).status).toBe(401);
-    // Retrait par le titulaire.
+    const surDuo = await cycle();
+    // Même compte : le membre voit les données du titulaire ; les siennes restent dans SON espace.
+    const vu = await (await GET(req(surDuo, '/api/events'))).text();
+    expect(vu).toContain('DUOT-entretien');
+    expect(vu).not.toContain('DUOM-entretien');
+    const sien = await (await GET(req(tokM, '/api/events'))).text();
+    expect(sien).toContain('DUOM-entretien');
+    expect(sien).not.toContain('DUOT-entretien');
+    // Compte étranger (jamais rejoint) : refusé.
+    expect((await GET(req(await jeton(second.user, B.acc.id), '/api/events'))).status).toBe(401);
+    // Retrait par le titulaire : ancien jeton refusé tout de suite.
     const { DELETE } = await import('@/app/api/duo/member/route');
     expect((await DELETE(req(tokT, '/api/duo/member', { method: 'DELETE' }))).status).toBeLessThan(300);
-    expect((await inbox()).status).toBe(403);
+    expect((await GET(req(surDuo, '/api/events'))).status).toBe(401);
     // Nouvelle adhésion puis départ volontaire.
-    await sql`UPDATE duo_memberships SET slot = NULL WHERE duo_id = ${duo.id} AND user_id = ${second.user.id} AND status <> 'ACTIVE'`.catch(() => undefined);
-    await cycle();
+    const surDuo2 = await cycle();
+    expect((await GET(req(surDuo2, '/api/events'))).status).toBe(200);
     const { POST: partir } = await import('@/app/api/duo/leave/route');
-    expect((await partir(req(tokM, '/api/duo/leave', { method: 'POST', body: {} }))).status).toBeLessThan(300);
-    expect((await inbox()).status).toBe(403);
+    expect((await partir(req(surDuo2, '/api/duo/leave', { method: 'POST', body: {} }))).status).toBeLessThan(300);
+    expect((await GET(req(surDuo2, '/api/events'))).status).toBe(401);
+    // Données du compte partagé intactes.
+    expect(await (await GET(req(tokT, '/api/events'))).text()).toContain('DUOT-entretien');
   });
 
   // ── SEC-04 ──────────────────────────────────────────────────────────────

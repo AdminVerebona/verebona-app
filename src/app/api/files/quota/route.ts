@@ -9,9 +9,11 @@ const MAX_FILES_PER_USER = 1000;
 export async function GET(request: NextRequest) {
   try {
     // ✅ CORRECTION: Utiliser getSession() au lieu de lire x-user-id
-    const { userId } = await getSession(request);
+    const { userId, currentAccountId } = await getSession(request);
 
-    // Count total files and sum total size for user
+    // Lot 72D : quota du COMPTE de la session (commun à ses membres, jamais
+    // multiplié par le nombre d'utilisateurs) — il était compté par
+    // utilisateur, tous comptes confondus.
     const result = await db
       .select({
         totalFiles: sql<number>`COUNT(*)`,
@@ -20,7 +22,7 @@ export async function GET(request: NextRequest) {
       .from(assetFiles)
       .where(
         and(
-          eq(assetFiles.userId, userId),
+          eq(assetFiles.accountId, currentAccountId ?? -1),
           isNull(assetFiles.deletedAt),
           or(eq(assetFiles.uploadStatus, 'COMPLETED'), isNull(assetFiles.uploadStatus))
         )
@@ -34,6 +36,7 @@ export async function GET(request: NextRequest) {
     return NextResponse.json(
       {
         userId,
+        accountId: currentAccountId ?? null,
         totalFiles,
         totalSize,
         maxFiles: MAX_FILES_PER_USER,

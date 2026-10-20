@@ -95,8 +95,12 @@ scenario('L70-PORT', 'Portail Stripe : résiliation en fin de période imposée 
     await sql`INSERT INTO email_settings (id, emails_enabled, sender_name, sender_email, reply_to_email)
               VALUES (1, true, 'Verebona', 'bonjour@preprod.verebona.fr', 'support@verebona.fr')
               ON CONFLICT (id) DO UPDATE SET emails_enabled = true`;
-    await sql`INSERT INTO annual_renewal_reminder_state (id, coverage_from) VALUES (1, '2030-01-01')
-              ON CONFLICT (id) DO UPDATE SET coverage_from = '2030-01-01'`;
+    // Lot 72F : bascule DÉCLARÉE (sinon aucun rappel n'est préparé).
+    await sql`INSERT INTO annual_renewal_reminder_state (id, coverage_from, stripe_reminders_disabled_at) VALUES (1, '2030-01-01', '2029-12-31T10:00:00Z')
+              ON CONFLICT (id) DO UPDATE SET coverage_from = '2030-01-01', stripe_reminders_disabled_at = '2029-12-31T10:00:00Z'`;
+  });
+  afterAll(async () => {
+    await sql`UPDATE annual_renewal_reminder_state SET stripe_reminders_disabled_at = NULL WHERE id = 1`;
   });
 
   async function titulaire(end: Date) {

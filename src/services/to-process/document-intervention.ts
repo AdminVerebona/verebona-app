@@ -71,6 +71,12 @@ export interface InterventionUpsertResult {
   actionId: number | null;
 }
 
+/** Même intervention (nature et échéance d'action) — pure. */
+export function sameIntervention(prev: { kind?: string | null; actBy?: string | null } | null, next: Pick<InterventionDecision, 'kind' | 'actBy'>): boolean {
+  if (!prev || !prev.kind) return false;
+  return prev.kind === next.kind && (prev.actBy ?? null) === (next.actBy ?? null);
+}
+
 /**
  * Crée ou met à jour la carte d'intervention d'une donnée documentaire.
  * `signature` : signature de l'évaluation (preuves + configuration) — une
@@ -93,7 +99,12 @@ export async function upsertDocumentIntervention(p: {
     .where(and(eq(toProcessActions.accountId, p.accountId), eq(toProcessActions.targetType, 'DOCUMENT'), eq(toProcessActions.targetId, p.fileId),
       eq(toProcessActions.fieldKey, key), isNull(toProcessActions.resolvedAt))).limit(1);
   const tranche = dernier && (dernier.reason === 'USER_ARBITRATED' || dernier.reason === 'NOT_APPLICABLE' || dernier.reason === 'USER_COMPLETED');
-  if (!actif.length && tranche && (dernier.ctx as { signature?: string } | null)?.signature === p.signature) {
+  const ctx = (dernier?.ctx ?? null) as { signature?: string; intervention?: { kind?: string | null; actBy?: string | null } } | null;
+  // Lot 72 (C5) : la décision de l'utilisateur vaut pour la SITUATION, pas
+  // pour une empreinte : même nature d'intervention et même échéance d'action
+  // → respectée, même si des preuves sans incidence ont changé. Une autre
+  // nature ou une nouvelle échéance (nouvelle obligation prouvée) → nouvelle carte.
+  if (!actif.length && tranche && (ctx?.signature === p.signature || sameIntervention(ctx?.intervention ?? null, p.intervention))) {
     return { status: 'USER_DECIDED', actionId: dernier.id };
   }
   const iv = p.intervention;

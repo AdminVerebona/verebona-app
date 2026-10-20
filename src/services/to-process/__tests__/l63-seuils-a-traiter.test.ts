@@ -110,7 +110,8 @@ describe('L63-SEUIL — la décision applique les seuils réglés', () => {
     const d = await ev.assessDeadlinePertinence({ ...base, ...ctx, config: avec(V2, {}), decide });
     expect(d.pertinence).not.toBe('UNDATED_HISTORICAL');
     const r = await ev.assessDeadlinePertinence({ ...base, ...ctx, config: avec(V2, { historicalYears: 3 }), decide });
-    expect(r).toMatchObject({ outcome: 'NO_ACTION', pertinence: 'UNDATED_HISTORICAL', reason: 'all_document_dates_older_than_3y' });
+    // Lot 72 (C2) : document ancien → décision différée (l'âge n'est qu'un indice), seuil appliqué.
+    expect(r).toMatchObject({ outcome: 'DEFER', pertinence: 'UNDATED_HISTORICAL', reason: 'old_document_age_is_only_a_hint_3y' });
     expect(calls).toHaveLength(0);
   });
 

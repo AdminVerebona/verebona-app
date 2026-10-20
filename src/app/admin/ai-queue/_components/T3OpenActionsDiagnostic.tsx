@@ -58,10 +58,19 @@ interface RuleEval {
   outcome?: string | null; situation?: string | null; decisionContract?: Record<string, unknown> | null; reevaluateAt?: string | null;
   configRef?: string | null; derivation?: Record<string, unknown> | null; writeResult?: Record<string, unknown> | null;
   actionIds?: Record<string, number[]> | null; passages?: Array<{ at: string; trigger: string; runRef: string | null }> | null; errorKind?: string | null;
+  /** Lot 72 (C7) : nature de la décision. */
+  decisionKind?: string | null;
+}
+/** Lot 72 (C4, C7) : décision d'une famille agenda / équipements / fournisseurs, y compris sans carte. */
+interface FamilyDecision {
+  id: number; accountId: number; targetType: string; targetId: number; ruleCode: string; trigger: string; outcome: string;
+  decisionKind: string | null; reasonCode: string | null; decisiveCheck: string | null; checks: Record<string, boolean | null> | null;
+  evidence: Record<string, unknown> | null; effect: string; actionIds: Record<string, number[]> | null; reevaluateAt: string | null;
+  error: string | null; seenCount: number; createdAt: string | null; lastSeenAt: string | null;
 }
 interface Data {
   migrations: { journal0371: boolean; diagnostic0410: boolean; documentRules0418?: boolean };
-  runs: Run[]; cards: Card[]; nextBefore: number | null; documentRules?: RuleEval[];
+  runs: Run[]; cards: Card[]; nextBefore: number | null; documentRules?: RuleEval[]; familyDecisions?: FamilyDecision[];
 }
 
 /** Lot 58B — règles documentaires (pont « À traiter ») : décision et pertinence. */
@@ -80,11 +89,62 @@ const OUTCOME_RULE_LABEL: Record<string, string> = {
 };
 Object.assign(PERTINENCE_LABEL, {
   FUTURE_SOON: 'échéance proche : question utile', FUTURE_DEFERRABLE: 'échéance lointaine : interpellation différée',
-  UNDATED_HISTORICAL: 'sans date, document historique', UNDATED_NEEDED: 'sans date, date nécessaire', UNDATED_NOT_NEEDED: 'sans date, date non nécessaire',
+  UNDATED_HISTORICAL: 'sans date, document ancien (l’âge n’est qu’un indice : décision différée)', CONTRACT_TERMINATED: 'fin effective du contrat prouvée', UNDATED_NEEDED: 'sans date, date nécessaire', UNDATED_NOT_NEEDED: 'sans date, date non nécessaire',
   TITLE_HINT_ONLY: 'date du seul titre (indice, jamais preuve)', UNDECIDED: 'indécise : décision différée',
   CONTRADICTION: 'valeurs fiables contradictoires : arbitrage',
 });
 const j = (v: unknown) => (v == null ? '—' : JSON.stringify(v));
+/** Lot 72 (C7) : nature d'une décision — pourquoi une carte existe, ou n'existe pas. */
+const KIND_LABEL: Record<string, string> = {
+  CARD_CREATED: 'carte créée', CARD_KEPT: 'carte conservée', CARD_CLOSED: 'carte fermée', AUTO_RESOLVED: 'résolue automatiquement',
+  NOT_RELEVANT: 'non créée : absence de pertinence', MISSING_INFO_NOT_REQUIRED: 'non créée : information absente mais non nécessaire',
+  DEFERRED: 'non créée : reportée', USER_REFUSED: 'non créée : décision de l’utilisateur respectée', ALREADY_KNOWN: 'non créée : donnée déjà connue',
+  NOT_ELIGIBLE: 'non créée : document non éligible', TECHNICAL_FAILURE: 'ÉCHEC TECHNIQUE (aucune fermeture)',
+};
+const TARGET_LABEL: Record<string, string> = { AGENDA_ITEM: 'Événement', EQUIPMENT: 'Équipement', SUPPLIER: 'Fournisseur' };
+const CHECK_LABEL: Record<string, string> = {
+  realProblem: 'problème réel', neededForUse: 'nécessaire', autoResolvable: 'résoluble automatiquement', userActionNeeded: 'action utilisateur utile',
+  timely: 'pertinent maintenant', userDecided: 'déjà tranché',
+};
+const checksLabel = (c: Record<string, boolean | null> | null) => (c
+  ? Object.entries(c).filter(([, v]) => v !== null).map(([k, v]) => `${CHECK_LABEL[k] ?? k} : ${v ? 'oui' : 'non'}`).join(' · ') || '—' : '—');
+
+function FamilyRow({ d }: { d: FamilyDecision }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <li className="rounded-lg border border-[color:var(--border-subtle)] p-2 min-w-0">
+      <button type="button" className="w-full text-left flex items-start gap-2" onClick={() => setOpen((o) => !o)} aria-expanded={open}>
+        <ChevronDown className={`w-3.5 h-3.5 mt-0.5 shrink-0 transition-transform ${open ? '' : '-rotate-90'}`} />
+        <span className="text-xs break-words min-w-0">
+          <span className="font-medium text-[color:var(--text-primary)]">{TARGET_LABEL[d.targetType] ?? d.targetType} {d.targetId}</span> · {d.ruleCode}
+          {' · '}<span className={d.outcome === 'ERROR' ? 'text-[color:var(--text-danger)]' : 'text-[color:var(--text-secondary)]'}>{OUTCOME_RULE_LABEL[d.outcome] ?? d.outcome}</span>
+          {d.reasonCode ? <span className="text-[color:var(--text-secondary)]"> — {d.reasonCode}</span> : null}
+          <span className="text-[color:var(--text-muted)]"> · {TRIGGER_LABEL[d.trigger] ?? d.trigger} · {dt(d.lastSeenAt)}{d.seenCount > 1 ? ` (×${d.seenCount})` : ''}</span>
+        </span>
+      </button>
+      {open && (
+        <dl className="mt-2 grid gap-x-3 gap-y-1 text-xs sm:grid-cols-2 break-words">
+          {([
+            ['Compte', String(d.accountId)],
+            ['Nature', d.decisionKind ? KIND_LABEL[d.decisionKind] ?? d.decisionKind : '—'],
+            ['Contrôle de pertinence', checksLabel(d.checks)],
+            ['Question décisive', d.decisiveCheck ? CHECK_LABEL[d.decisiveCheck] ?? d.decisiveCheck : '—'],
+            ['Faits utilisés', j(d.evidence)],
+            ['Effet', `${d.effect}${d.actionIds ? ` · ${j(d.actionIds)}` : ''}`],
+            ['Prochaine réévaluation', d.reevaluateAt ? dt(d.reevaluateAt) : 'au balayage suivant'],
+            ['Erreur', d.error ?? '—'],
+            ['Première / dernière décision', `${dt(d.createdAt)} → ${dt(d.lastSeenAt)}`],
+          ] as Array<[string, string]>).map(([k, v]) => (
+            <div key={k} className="min-w-0">
+              <dt className="text-[color:var(--text-secondary)]">{k}</dt>
+              <dd className="text-[color:var(--text-muted)]">{v}</dd>
+            </div>
+          ))}
+        </dl>
+      )}
+    </li>
+  );
+}
 
 const OUTCOME_LABEL: Record<string, string> = {
   SUCCESS: 'Réussite complète', PARTIAL_SUCCESS: 'Réussite partielle', BUSINESS_ABSTENTION: 'Abstention métier (cartes à arbitrer)',
@@ -92,9 +152,11 @@ const OUTCOME_LABEL: Record<string, string> = {
 };
 const PHASE_LABEL: Record<string, string> = {
   ASSETS: 'Biens', OPEN_KNOWLEDGE: 'Connaissance ouverte', OPEN_ACTIONS: '« À traiter » ouverts', JOURNAL: 'Journal par carte',
+  DOCUMENT_NAMING: 'Harmonisation documentaire',
 };
 const PHASE_STATUS: Record<string, string> = {
   DONE: 'exécutée', PARTIAL: 'partielle', FAILED: 'EN ÉCHEC', NOT_RUN: 'NON EXÉCUTÉE', NOT_CONFIGURED: 'non configurée',
+  DEFERRED: 'reportée (reprise automatique)',
 };
 const COUNTERS: Array<[string, string]> = [
   ['openAtStart', 'ouvertes au début'], ['examined', 'examinées'], ['resolutionAttempted', 'résolutions tentées'],
@@ -204,6 +266,7 @@ function RuleRow({ r }: { r: RuleEval }) {
           {' · '}<span className={decisionTone}>{DECISION_LABEL[r.decision] ?? r.decision}</span>
           {r.reasonCode ? <span className="text-[color:var(--text-secondary)]"> — {r.reasonCode}</span> : null}
           {r.outcome ? <span className={r.outcome === 'ERROR' ? 'text-[color:var(--text-danger)]' : 'text-[color:var(--text-secondary)]'}> · {OUTCOME_RULE_LABEL[r.outcome] ?? r.outcome}</span> : null}
+          {r.decisionKind ? <span className="text-[color:var(--text-secondary)]"> · {KIND_LABEL[r.decisionKind] ?? r.decisionKind}</span> : null}
           <span className="text-[color:var(--text-muted)]"> · {TRIGGER_LABEL[r.trigger] ?? r.trigger} · {dt(r.lastSeenAt)}{r.seenCount > 1 ? ` (×${r.seenCount})` : ''}</span>
         </span>
       </button>
@@ -231,6 +294,7 @@ function RuleRow({ r }: { r: RuleEval }) {
             // Lot 63 : seuils « À traiter » utilisés pour cette décision.
             ['Seuils « À traiter »', thresholdsLabel(r.decisionContract)],
             ['Type d’erreur', r.errorKind ?? '—'],
+            ['Nature de la décision (lot 72)', r.decisionKind ? KIND_LABEL[r.decisionKind] ?? r.decisionKind : '—'],
             ['Passages', r.passages?.length ? r.passages.map((p) => `${TRIGGER_LABEL[p.trigger] ?? p.trigger} ${dt(p.at)}${p.runRef ? ` (${p.runRef})` : ''}`).join(' ; ') : '—'],
           ] as Array<[string, string]>).map(([k, v]) => (
             <div key={k} className="min-w-0">
@@ -308,6 +372,12 @@ export function T3OpenActionsDiagnostic({ initialJobId }: { initialJobId?: numbe
             <div className="space-y-2">
               <p className="text-xs text-[color:var(--text-secondary)]">Règles documentaires — dates, fournisseur ({data.documentRules.length})</p>
               <ul className="space-y-1.5">{data.documentRules.map((r) => <RuleRow key={r.id} r={r} />)}</ul>
+            </div>
+          )}
+          {data.familyDecisions && data.familyDecisions.length > 0 && (
+            <div className="space-y-2">
+              <p className="text-xs text-[color:var(--text-secondary)]">Décisions agenda, équipements, fournisseurs — avec ou sans carte ({data.familyDecisions.length})</p>
+              <ul className="space-y-1.5">{data.familyDecisions.map((d) => <FamilyRow key={d.id} d={d} />)}</ul>
             </div>
           )}
         </>

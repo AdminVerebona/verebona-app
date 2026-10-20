@@ -572,6 +572,19 @@ export async function markNotApplicable(
     return { ok: false, previousValue: null, error: 'FIELD_NOT_RESOLVABLE' };
   }
 
+  // Lot 72 (C5) : contexte de la décision — révision de la connaissance du
+  // document au moment du choix. Tant qu'elle ne change pas, la décision est
+  // respectée sans réévaluation (ni carte, ni IA) ; une lecture impossible
+  // n'empêche pas la décision (contexte posé au passage suivant).
+  let knowledgeRev: string | null = null;
+  if (action.targetType === 'DOCUMENT') {
+    try {
+      const { currentKnowledgeRev } = await import('./document-field-evidence');
+      knowledgeRev = await currentKnowledgeRev(accountId, action.targetId);
+    } catch (e) {
+      console.error('[to-process] contexte « Non applicable » non lu :', (e as Error).message);
+    }
+  }
   const now = new Date();
   await db.transaction(async (tx) => {
     await tx
@@ -592,7 +605,7 @@ export async function markNotApplicable(
       targetType: action.targetType,
       targetId: action.targetId,
       fieldKey: action.fieldKey ?? action.relationKey,
-      details: { ruleCode: action.ruleCode, cycleNumber: action.cycleNumber, proposals: action.proposalsJson ?? null },
+      details: { ruleCode: action.ruleCode, cycleNumber: action.cycleNumber, proposals: action.proposalsJson ?? null, ...(knowledgeRev ? { knowledgeRev } : {}) },
       createdAt: now,
     });
   });

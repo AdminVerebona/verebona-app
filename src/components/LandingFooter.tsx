@@ -6,7 +6,7 @@ import { publicSiteUrl } from '@/lib/external-urls';
  * Colonnes du pied de page public.
  *
  * ══════════════════════════════════════════════════════════════════════════
- * HUIT LIENS SUR ONZE MÈNENT À LA VITRINE
+ * HUIT LIENS SUR DIX MÈNENT À LA VITRINE
  *
  * Ce pied de page est affiché par l'APPLICATION, mais la plupart de ses liens
  * désignent des pages de la vitrine. Écrits en relatif, ils pointaient vers
@@ -25,9 +25,12 @@ const COLUMNS: Array<{
   {
     title: 'Produit',
     links: [
-      { href: '/pourquoi-verebona', label: 'Pourquoi Verebona ?', external: true },
-      { href: '/comment-ca-marche', label: 'Comment ça marche ?', external: true },
-      { href: '/#pricing',          label: 'Tarifs', external: true },
+      // Lot 72 : l'ancien lien vers la page « pourquoi » de la vitrine est
+      // retiré (page supprimée, sans équivalent) ; « Comment ça marche ? » vise la section de
+      // l'accueil (`HowItWorksSection`, id="how"). Destinations contrôlées
+      // contre l'inventaire de la vitrine (`lib/public-site/link-inventory`).
+      { href: '/#how',     label: 'Comment ça marche ?', external: true },
+      { href: '/#pricing', label: 'Tarifs', external: true },
     ],
   },
   {

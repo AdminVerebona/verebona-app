@@ -25,7 +25,7 @@ export async function GET(
     const [asset] = await db
       .select({ id: assets.id })
       .from(assets)
-      .where(and(eq(assets.id, assetId), eq(assets.userId, session.userId), eq(assets.accountId, session.currentAccountId ?? -1))) // lot 49 : compte actif
+      .where(and(eq(assets.id, assetId), eq(assets.accountId, session.currentAccountId ?? -1))) // lot 49 : compte actif ; lot 72D : tout membre du compte, plus seulement le créateur
       .limit(1);
     if (!asset) return NextResponse.json({ error: 'ASSET_NOT_FOUND' }, { status: 404 });
 
@@ -53,7 +53,7 @@ export async function POST(
     const [asset] = await db
       .select({ id: assets.id, accountId: assets.accountId })
       .from(assets)
-      .where(and(eq(assets.id, assetId), eq(assets.userId, session.userId), eq(assets.accountId, session.currentAccountId ?? -1))) // lot 49 : compte actif
+      .where(and(eq(assets.id, assetId), eq(assets.accountId, session.currentAccountId ?? -1))) // lot 49 : compte actif ; lot 72D : tout membre du compte, plus seulement le créateur
       .limit(1);
     if (!asset) return NextResponse.json({ error: 'ASSET_NOT_FOUND' }, { status: 404 });
 
@@ -104,7 +104,7 @@ export async function DELETE(
     const [asset] = await db
       .select({ id: assets.id, accountId: assets.accountId })
       .from(assets)
-      .where(and(eq(assets.id, assetId), eq(assets.userId, session.userId), eq(assets.accountId, session.currentAccountId ?? -1))) // lot 49 : compte actif
+      .where(and(eq(assets.id, assetId), eq(assets.accountId, session.currentAccountId ?? -1))) // lot 49 : compte actif ; lot 72D : tout membre du compte, plus seulement le créateur
       .limit(1);
     if (!asset) return NextResponse.json({ error: 'ASSET_NOT_FOUND' }, { status: 404 });
 

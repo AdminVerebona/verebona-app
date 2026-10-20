@@ -595,10 +595,16 @@ export function isIsoDay(v: unknown): v is string {
 }
 const isoDay = z.string().refine(isIsoDay, { message: 'date ISO AAAA-MM-JJ réelle attendue' });
 
-/** Contrat de sortie `t6-evaluation-v1` (Zod strict : énumérations et dates contrôlées). */
-export const T6EvaluateOutput = z.object({
+/**
+ * Contrat de sortie `t6-evaluation-v1` (Zod strict : énumérations et dates
+ * contrôlées). Lot 72A (AC07) : objets STRICTS — racine et décisions — une
+ * propriété non prévue rejette toute la sortie (motif
+ * `schema:unknown_property:<chemin>`), jamais retirée en silence. FORMULATE
+ * (`T6FormulateOutput`) n'est pas concerné.
+ */
+export const T6EvaluateOutput = z.strictObject({
   schemaVersion: z.literal(T6_EVALUATION_OUTPUT_SCHEMA_VERSION),
-  decisions: z.array(z.object({
+  decisions: z.array(z.strictObject({
     subjectId: z.string().min(1),
     decision: z.enum(T6_EVAL_DECISIONS),
     category: z.enum(T6_EVAL_CATEGORIES),
@@ -690,6 +696,12 @@ export function evaluationDecisionViolation(d: T6EvaluateOutput['decisions'][num
 export function validateT6Evaluation(input: T6EvaluationInput, raw: unknown): T6EvaluationValidation {
   const parsed = T6EvaluateOutput.safeParse(raw);
   if (!parsed.success) {
+    // Lot 72A (AC07) : propriété inconnue — rejet explicite, chemin JSON compris.
+    const inconnue = parsed.error.issues.find((x) => x.code === 'unrecognized_keys') as { path: PropertyKey[]; keys?: string[] } | undefined;
+    if (inconnue) {
+      const chemin = inconnue.path.reduce<string>((acc, k) => (typeof k === 'number' ? `${acc}[${k}]` : `${acc}.${String(k)}`), '$');
+      return { ok: false, reason: `schema:unknown_property:${chemin}.${inconnue.keys?.[0] ?? '?'}` };
+    }
     const i = parsed.error.issues[0];
     return { ok: false, reason: `schema:${i ? i.path.join('.') || '$' : '$'}` };
   }

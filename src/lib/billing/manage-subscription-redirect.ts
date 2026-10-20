@@ -63,6 +63,13 @@ export function portalErrorView(code: string | undefined, serverMessage?: string
       return { title: 'Gestion réservée au titulaire', message: serverMessage || 'La facturation de cet espace Premium Duo est gérée par la personne titulaire de l’abonnement. Vous n’avez pas accès à sa gestion.', retry: false };
     case 'FORBIDDEN':
       return { title: 'Gestion réservée au titulaire', message: 'Seul le titulaire du compte peut gérer l’abonnement et la facturation.', retry: false };
+    // Lot 72F : lien contextualisé (compte facturé précis) — jamais d'autre portail.
+    case 'ACCOUNT_FORBIDDEN':
+      return { title: 'Lien réservé au titulaire de cet abonnement', message: 'Ce lien concerne un abonnement que vous ne pouvez pas gérer avec ce compte Verebona. Déconnectez-vous puis connectez-vous avec le compte titulaire qui a reçu l’e-mail.', retry: false };
+    case 'BILLING_MISMATCH':
+      return { title: 'Vérification nécessaire', message: 'Les informations de facturation de ce compte doivent être vérifiées par notre équipe avant d’ouvrir l’espace de gestion. Contactez le support depuis « Mon compte ».', retry: false };
+    case 'INVALID_ACCOUNT_REF':
+      return { title: 'Lien invalide', message: 'Ce lien de gestion de l’abonnement est incomplet. Ouvrez la gestion de votre abonnement depuis « Mon compte ».', retry: false };
     case 'NO_STRIPE_CUSTOMER':
     case 'NO_ACCOUNT':
       return { title: 'Aucun abonnement à gérer', message: 'Aucun abonnement payant n’est associé à ce compte Verebona. Vérifiez que vous êtes connecté avec le compte qui a reçu l’e-mail.', retry: false };

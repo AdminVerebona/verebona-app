@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/auth";
 import { AccountService } from "@/services/account-service";
 import { db } from "@/db";
-import { accounts, accountMemberships } from "@/db/schema";
+import { accountMemberships } from "@/db/schema";
 import { eq, and } from "drizzle-orm";
 
 export async function GET(
@@ -87,52 +87,12 @@ export async function PUT(
       );
     }
 
-    const body = await req.json();
-    const { name } = body;
-
-    if (!name || typeof name !== 'string') {
-      return NextResponse.json(
-        { error: "Le nom du compte est requis" },
-        { status: 400 }
-      );
-    }
-
-    const trimmedName = name.trim();
-
-    if (trimmedName.length === 0) {
-      return NextResponse.json(
-        { error: "Le nom du compte ne peut pas être vide" },
-        { status: 400 }
-      );
-    }
-
-    if (trimmedName.length > 50) {
-      return NextResponse.json(
-        { error: "Le nom du compte ne peut pas dépasser 50 caractères" },
-        { status: 400 }
-      );
-    }
-
-    const [updatedAccount] = await db
-      .update(accounts)
-      .set({ 
-        name: trimmedName,
-        updatedAt: new Date()
-      })
-      .where(eq(accounts.id, accountId))
-      .returning();
-
-    if (!updatedAccount) {
-      return NextResponse.json(
-        { error: "Erreur lors de la mise à jour du compte" },
-        { status: 500 }
-      );
-    }
-
-    return NextResponse.json({ 
-      success: true,
-      account: updatedAccount 
-    });
+    // Lot 72D (décision PO Q6) : le nom de l'espace n'est pas modifiable
+    // (« Compte de Prénom Nom ») — aucun écran ne l'appelait ; refus explicite.
+    return NextResponse.json(
+      { error: "Le nom de l'espace n'est pas modifiable.", code: 'ACCOUNT_NAME_NOT_EDITABLE' },
+      { status: 403 }
+    );
   } catch (error) {
     console.error("Error updating account:", error);
     return NextResponse.json(

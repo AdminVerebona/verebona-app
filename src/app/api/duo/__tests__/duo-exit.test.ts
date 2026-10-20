@@ -180,6 +180,10 @@ describe('interface', () => {
   });
 
   it('une ancienne ligne REMOVED / LEFT est réactivée à la réinvitation (unicité duo, utilisateur)', () => {
-    expect(read('src/app/api/duo/join/route.ts')).toMatch(/if \(previous\)/);
+    // Lot 72D : rattachement unique dans le service d'adhésion (adhésion au
+    // compte ET ligne Duo historique, chacune réactivée si elle existe).
+    const svc = read('src/services/account/membership.service.ts');
+    expect(svc).toMatch(/if \(previous\)/);
+    expect(svc).toMatch(/if \(prevDuo\)/);
   });
 });

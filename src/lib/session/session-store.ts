@@ -44,6 +44,12 @@ export interface User {
   lastName: string;
   username?: string | null;
   accountName?: string;
+  /** Lot 72D : compte de la session (null : identité sans espace). */
+  accountId?: number | null;
+  /** Lot 72D : rôle d'adhésion sur le compte de la session. */
+  accountRole?: 'owner' | 'admin' | 'member' | null;
+  /** Nombre d'espaces accessibles (sélecteur d'espace à partir de 2). */
+  accountsCount?: number;
   role: UserRole;
   subscription: {
     plan: PlanType;

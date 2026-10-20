@@ -4,6 +4,7 @@ import { db } from '@/db';
 import { accounts } from '@/db/schema';
 import { eq } from 'drizzle-orm';
 import { getSession } from '@/lib/auth-guards';
+import { resolveOwnedSessionAccount } from '@/services/account/membership.service';
 
 // Initialize Stripe
 const getStripe = () => {
@@ -23,14 +24,16 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
-    const userId = session.userId;
+    // Lot 72D : le compte est celui de la SESSION, et la résiliation est
+    // réservée à son titulaire (avant : « premier compte possédé », au hasard
+    // pour un utilisateur à plusieurs espaces ; aucun contrôle de rôle).
+    const owned = await resolveOwnedSessionAccount(session);
+    if (!owned.ok) return owned.response;
 
-
-    // Récupérer le compte de l'utilisateur (on suppose un compte par utilisateur pour simplifier en V1)
     const [account] = await db
       .select()
       .from(accounts)
-      .where(eq(accounts.ownerUserId, userId))
+      .where(eq(accounts.id, owned.accountId))
       .limit(1);
 
     if (!account) {

@@ -3,7 +3,8 @@ import { SessionService } from '@/lib/session-service';
 import { isSessionError, sessionErrorResponse } from '@/lib/auth-guards';
 import { newRequestId } from '@/lib/auth/session-errors';
 import { db } from '@/db';
-import { accountMemberships, accounts, assets, assetFiles, accountSubscriptions } from '@/db/schema';
+import { accounts, assets, assetFiles, accountSubscriptions, users } from '@/db/schema';
+import { effectiveAccountId, getSessionRole } from '@/services/account/membership.service';
 import { eq, and, or, isNull, count } from 'drizzle-orm';
 import { getTrialState, hasUsedTrial } from '@/services/trial.service';
 import { getEntitlements, quotaUsage } from '@/services/entitlements.service';
@@ -25,24 +26,18 @@ export async function GET(request: NextRequest) {
   try {
     const session = await SessionService.getSession(request);
 
-    const [membership] = await db
-      .select({ accountId: accountMemberships.accountId })
-      .from(accountMemberships)
-      .where(eq(accountMemberships.userId, session.userId))
-      .limit(1);
-
-    if (!membership) {
+    // Lot 72D : le compte de la SESSION — celui que les routes d'écriture
+    // contrôlent. Le repli « première adhésion » (sans ordre) pouvait
+    // désigner un autre espace et afficher l'essai d'un compte qui n'est pas
+    // celui ouvert ; un jeton historique sans compte courant prend désormais
+    // l'espace par défaut (adhésion active, dernier choisi, ordre stable).
+    const accountId = await effectiveAccountId(session);
+    if (!accountId) {
       return NextResponse.json(
         { error: 'User has no account', code: 'ACCOUNT_NOT_FOUND', message: 'Aucun compte n’est rattaché à cet utilisateur.' },
         { status: 404 },
       );
     }
-
-    // Compte de la session d'abord : c'est celui que les routes d'écriture
-    // contrôlent. `LIMIT 1` sans ordre pouvait désigner un autre compte de
-    // l'utilisateur (invitation, Duo) et afficher des droits qui ne sont
-    // pas ceux appliqués.
-    const accountId = session.currentAccountId ?? membership.accountId;
 
     // ══════════════════════════════════════════════════════════════════
     // LECTURE LOCALE, SANS STRIPE (APP-PERF-18)
@@ -144,11 +139,28 @@ export async function GET(request: NextRequest) {
     // L'écran annonçait « n'a pas pu être activé » dans les deux cas, ce qui
     // laisse croire à une panne là où la règle s'applique normalement.
     // ══════════════════════════════════════════════════════════════════
+    // Lot 72D (décision PO Q16) : un MEMBRE du compte voit l'offre, le statut,
+    // le titulaire et les quotas communs — ni essai, ni prix, ni moyen de
+    // paiement, ni changement d'offre (facturation réservée au titulaire).
+    const role = await getSessionRole({ userId: session.userId, currentAccountId: accountId });
+    const isMember = role !== 'owner';
     const dejaConsomme =
-      trial.status === 'none' && (await hasUsedTrial(session.email ?? ''));
+      !isMember && trial.status === 'none' && (await hasUsedTrial(session.email ?? ''));
+    const [titulaire] = isMember
+      ? await db
+          .select({ firstName: users.firstName, lastName: users.lastName })
+          .from(accounts)
+          .innerJoin(users, eq(users.id, accounts.ownerUserId))
+          .where(eq(accounts.id, accountId))
+          .limit(1)
+      : [];
 
     return NextResponse.json({
-      trial: {
+      viewer: {
+        role: role ?? 'member',
+        ownerName: titulaire ? `${titulaire.firstName ?? ''} ${titulaire.lastName ?? ''}`.trim() || null : null,
+      },
+      trial: isMember ? { status: 'none', dejaConsomme: false, daysRemaining: 0, endsAt: null, isUrgent: false } : {
         status: trial.status,
         dejaConsomme,
         daysRemaining: trial.status === 'active' ? trial.daysRemaining : 0,
@@ -158,7 +170,16 @@ export async function GET(request: NextRequest) {
       },
       plan: entitlements.plan,
       status: entitlements.status,
-      subscription: {
+      subscription: isMember ? {
+        planCode: sub?.planCode ?? null,
+        billingPeriod: null,
+        currentPeriodEndAt: null,
+        cancelAtPeriodEnd: false,
+        scheduledChange: null,
+        currentPrice: null,
+        nextRenewalPrice: null,
+        hasStripeSubscription: false,
+      } : {
         planCode: sub?.planCode ?? null,
         billingPeriod: sub?.billingPeriod ?? null,
         currentPeriodEndAt: sub?.currentPeriodEndAt?.toISOString() ?? null,
@@ -185,7 +206,7 @@ export async function GET(request: NextRequest) {
       },
       // Paiement Checkout engagé mais pas encore constaté : affiché comme tel,
       // AUCUN droit associé tant que le paiement n'est pas appliqué.
-      pendingPayment: pending ? { since: pending.since.toISOString() } : null,
+      pendingPayment: pending && !isMember ? { since: pending.since.toISOString() } : null,
       unpaid: unpaidCycle
         ? {
             startedAt: unpaidCycle.startedAt.toISOString(),

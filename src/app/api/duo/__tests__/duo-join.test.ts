@@ -24,7 +24,9 @@ vi.mock('@/db', async () => {
     const c: Record<string, unknown> = {
       from: (t: never) => { table = getTableName(t); return c; },
       where: () => c,
-      limit: async () => (table === 'duo_accounts' ? (duoRow ? [duoRow] : []) : []),
+      limit: async () => (table === 'duo_accounts' ? (duoRow ? [duoRow] : [])
+        : table === 'users' ? [{ id: 5, email: 'invite@exemple.fr', role: 'USER', planType: 'STANDARD', status: 'ACTIVE', firstName: 'A', lastName: 'B' }]
+        : []),
     };
     return c;
   };
@@ -47,6 +49,20 @@ vi.mock('@/lib/session-service', () => ({
     handleSessionError: (e: Error) => new Response(JSON.stringify({ code: e.message }), { status: 401 }),
   },
 }));
+
+// Lot 72D : `POST` délègue au service d'adhésion unique (transaction,
+// verrou, idempotence — couverts par l'e2e L72D) puis rouvre la session sur
+// le compte partagé.
+const joinService = vi.fn();
+vi.mock('@/services/account/membership.service', () => ({
+  DUO_JOIN_HTTP_STATUS: { INVITE_EMAIL_MISMATCH: 403, INVALID_TOKEN: 404 },
+  joinDuoByInvitation: (...a: unknown[]) => joinService(...a),
+}));
+vi.mock('@/lib/auth/session-tokens', () => ({
+  issueSessionTokensOnAccount: async () => ({ accessToken: 'a', refreshToken: 'r' }),
+  setSessionCookies: (res: { headers: Headers }) => { res.headers.set('x-session-reissued', '1'); },
+}));
+vi.mock('@/services/duo/duo-exit.service', () => ({ signalerDroitsModifies: () => {} }));
 
 const { GET, POST } = await import('../join/route');
 
@@ -94,16 +110,25 @@ describe('GET /api/duo/join', () => {
 });
 
 describe('POST /api/duo/join', () => {
-  it('compte de l’adresse invitée (casse ignorée) : rattaché', async () => {
+  beforeEach(() => { joinService.mockReset(); });
+
+  it('compte de l’adresse invitée : rattaché au compte partagé, session rouverte sur ce compte', async () => {
+    joinService.mockResolvedValue({ ok: true, accountId: 42, duoId: 3, alreadyMember: false });
     const res = await POST(post('invite@exemple.fr'));
     expect(res.status).toBe(200);
-    expect(writes).toContain('insert:duo_memberships');
+    expect(joinService).toHaveBeenCalledWith({ userId: 5, email: 'invite@exemple.fr', token: 'tok' });
+    expect(await res.json()).toMatchObject({ success: true, accountId: 42 });
+    expect(res.headers.get('x-session-reissued')).toBe('1');
   });
 
-  it('autre adresse : 403 INVITE_EMAIL_MISMATCH, aucune écriture', async () => {
+  it('autre adresse : 403 INVITE_EMAIL_MISMATCH, message explicite, aucune session rouverte', async () => {
+    joinService.mockResolvedValue({ ok: false, error: 'INVITE_EMAIL_MISMATCH' });
     const res = await POST(post('intrus@exemple.fr'));
     expect(res.status).toBe(403);
-    expect((await res.json()).error).toBe('INVITE_EMAIL_MISMATCH');
+    const body = await res.json();
+    expect(body.error).toBe('INVITE_EMAIL_MISMATCH');
+    expect(body.message).toMatch(/autre adresse/);
+    expect(res.headers.get('x-session-reissued')).toBeNull();
     expect(writes).toEqual([]);
   });
 

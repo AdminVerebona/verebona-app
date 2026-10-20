@@ -1,8 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { SessionService } from '@/lib/session-service';
-import { db } from '@/db';
-import { accountMemberships } from '@/db/schema';
-import { eq } from 'drizzle-orm';
+import { effectiveAccountId, getSessionRole } from '@/services/account/membership.service';
 import { getAppBaseUrl } from '@/lib/app-url';
 import { startImmediateUpgrade } from '@/services/billing/plan-upgrade.service';
 import { CATALOG_ERROR_HTTP, CATALOG_ERROR_MESSAGES, type BillingCatalogErrorCode } from '@/services/billing/catalog-types';
@@ -38,11 +36,10 @@ const UPGRADE_MESSAGES: Record<string, string> = {
 export async function POST(request: NextRequest) {
   try {
     const session = await SessionService.getSession(request);
-    const [membership] = await db
-      .select({ accountId: accountMemberships.accountId, role: accountMemberships.role })
-      .from(accountMemberships)
-      .where(eq(accountMemberships.userId, session.userId))
-      .limit(1);
+    // Lot 72D : compte de la SESSION (et non la première adhésion, sans ordre).
+    const courant = await effectiveAccountId(session);
+    const role = courant ? await getSessionRole({ userId: session.userId, currentAccountId: courant }) : null;
+    const membership = courant && role ? { accountId: courant, role } : null;
 
     if (!membership) return NextResponse.json({ error: 'NO_ACCOUNT' }, { status: 404 });
     if (membership.role !== 'owner') {

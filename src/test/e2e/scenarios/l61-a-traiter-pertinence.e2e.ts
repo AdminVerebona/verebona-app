@@ -240,7 +240,8 @@ scenario('L61-ATR', 'À traiter : écarts 58B et pertinence des cartes (ATR-R-01
     expect(await cartes(f)).toHaveLength(0);
     expect(await valeur(f)).toBeNull();
     expect(appelsT4(replay)).toHaveLength(0);
-    expect((await diag(f))[0]).toMatchObject({ outcome: 'NO_ACTION', pertinence: 'UNDATED_HISTORICAL', reason_code: 'NO_ACTION_NEEDED' });
+    // Lot 72 (C2, ATP-FIX-05) : l'ancienneté n'est qu'un indice — décision DIFFÉRÉE sans carte, jamais « sans enjeu ».
+    expect((await diag(f))[0]).toMatchObject({ outcome: 'DEFER', pertinence: 'UNDATED_HISTORICAL', reason_code: 'DEFERRED' });
   });
 
   it('ATR-R-04 — cache invalidé : correction de clause / fait (même sans asset_files.updated_at), configuration IA activée ; sinon aucun appel', async () => {
@@ -349,7 +350,8 @@ scenario('L61-ATR', 'À traiter : écarts 58B et pertinence des cartes (ATR-R-01
     // Le diagnostic BO expose décision, contrat, cartes et passages.
     const { getT3OpenActionsDiagnostic } = await import('@/services/ai/queue/t3-open-actions-diagnostic');
     const bo = await getT3OpenActionsDiagnostic({ documentId: h, ruleCode: 'DATA-CONTRACT-END' });
-    expect(bo.documentRules![0]).toMatchObject({ outcome: 'NO_ACTION', situation: 'UNDATED', passages: expect.any(Array) });
+    // Lot 72 (C2) : document ancien sans preuve de fin → décision différée (plus « aucune intervention » sur l'âge).
+    expect(bo.documentRules![0]).toMatchObject({ outcome: 'DEFER', situation: 'UNDATED', passages: expect.any(Array) });
     expect((await getT3OpenActionsDiagnostic({ accountId: compte.id, result: 'NO_ACTION' })).documentRules!.every((r) => r.outcome === 'NO_ACTION' || r.decision === 'NO_ACTION' || r.reasonCode === 'NO_ACTION')).toBe(true);
   });
 

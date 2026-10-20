@@ -49,6 +49,11 @@ const PLAN_LABELS: Record<string, string> = {
 export function getPlanLabel(input: PlanLabelInput): string {
   const { plan, duoRole, trialStatus, trialDaysLeft } = input;
 
+  // Lot 72D (décision PO Q16) : un MEMBRE d'un Premium Duo payé voit
+  // « Premium Duo — Membre » — jamais l'essai, le compteur J-x ni la fin
+  // d'essai (qui ne concernent que le titulaire du compte).
+  if (duoRole === 'MEMBER' && (plan ?? '').toUpperCase() === 'PREMIUM_DUO') return 'Premium Duo — Membre';
+
   if (trialStatus === 'active') {
     return typeof trialDaysLeft === 'number' && trialDaysLeft >= 0
       ? `Essai gratuit · J-${trialDaysLeft}`
@@ -61,7 +66,7 @@ export function getPlanLabel(input: PlanLabelInput): string {
 
   const code = (plan ?? '').toUpperCase();
   if (code === 'PREMIUM_DUO') {
-    return duoRole === 'MEMBER' ? 'Premium Duo (membre)' : 'Premium Duo';
+    return 'Premium Duo';
   }
   return PLAN_LABELS[code] ?? (code ? code.toLowerCase() : 'Compte');
 }

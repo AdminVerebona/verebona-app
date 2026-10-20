@@ -47,6 +47,10 @@ const ALLOWED_MUTATIONS: Record<string, string[]> = {
   'communications/templates/[code]/test/route.ts': ['POST'],
   'communications/templates/[code]/restore/route.ts': ['POST'],
   'communications/templates/[code]/reset/route.ts': ['POST'],
+  // Lot 72F (ticket P1 rappel J−7) : bascule Stripe → Verebona déclarée, retour
+  // arrière, décisions sur couverture ou acceptation incertaines ;
+  // administrateurs, journalisés (ANNUAL_RENEWAL_OPERATION).
+  'communications/annual-renewal/route.ts': ['POST'],
 };
 
 describe('routes de consultation BO (§7 à §10)', () => {

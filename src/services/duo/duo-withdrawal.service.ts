@@ -88,7 +88,7 @@ export async function closeDuoForWithdrawal(accountId: number): Promise<DuoWithd
 
   // 3. Défense : un membre encore actif est retiré par la même sortie.
   for (const m of await activeMembers(duo.id, ownerUserId)) {
-    await endMembership({ duoId: duo.id, membershipId: m.id, memberUserId: m.userId, status: 'REMOVED' });
+    await endMembership({ duoId: duo.id, membershipId: m.id, memberUserId: m.userId, status: 'REMOVED', reason: 'withdrawal' });
   }
 
   return { duoId: duo.id, closed: closed.length > 0, removedMembers: activeBefore.length };

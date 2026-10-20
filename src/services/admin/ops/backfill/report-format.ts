@@ -19,6 +19,7 @@ import type { RemediationReport, RemediationRestoreReport } from '@/services/sec
 import type { DataSeparationReport } from '@/services/equipment/data-separation-backfill';
 import type { ValidationRepriseReport } from '@/services/documents/validation-reprise';
 import type { BackfillAction, BackfillScript } from './definitions';
+import type { DuoSharedAccountReport, RestoreReport as DuoRestoreReport } from '@/services/account/duo-shared-account-backfill';
 
 export interface BackfillSummary {
   headline: string;
@@ -430,6 +431,67 @@ function documentValidation(out: RawBackfillOutput): BackfillSummary {
   };
 }
 
+/** Lot 72D : Premium Duo en compte partagé. */
+function duoSharedAccount(action: BackfillAction, out: RawBackfillOutput): BackfillSummary {
+  if (action === 'restore') {
+    const r = out.result as DuoRestoreReport;
+    return {
+      headline: `Restauration : ${r.restored} écriture(s) annulée(s), ${r.conflicts.length} conflit(s).`,
+      scriptRunId: r.runId, restorable: false,
+      counters: [{ label: 'Écritures annulées', value: r.restored }, { label: 'Ignorées', value: r.skipped }],
+      ambiguous: { count: 0, samples: [] },
+      conflicts: { count: r.conflicts.length, samples: r.conflicts.slice(0, SAMPLE_LIMIT) },
+      warnings: [],
+    };
+  }
+  const r = out.result as DuoSharedAccountReport;
+  const sim = r.mode === 'simulate';
+  const a = r.actions;
+  const b = r.before;
+  const membres = a.memberMembershipsCreated + a.memberMembershipsReactivated;
+  const titulaires = a.ownerMembershipsCreated + a.ownerMembershipsReactivated;
+  return {
+    headline: sim
+      ? `Simulation : ${b.B} membre(s) Duo à rattacher au compte partagé, ${b.A} adhésion(s) titulaire à rétablir, `
+        + `${b.D1} compte(s) artificiel(s) vide(s) à archiver, ${b.C} Duo indécidable(s).`
+      : `Application : ${membres} membre(s) rattaché(s), ${titulaires} titulaire(s) rétabli(s), ${a.accountsArchived} compte(s) archivé(s), `
+        + `${a.planTypesFixed} offre(s) affichée(s) corrigée(s). Après : ${r.after?.B ?? 0} membre(s) restant à rattacher.`,
+    scriptRunId: sim ? null : r.runId,
+    restorable: !sim,
+    counters: [
+      { label: 'INV-A titulaires sans adhésion (avant)', value: b.A },
+      { label: 'INV-B membres Duo sans adhésion (avant)', value: b.B },
+      { label: 'INV-C Duo indécidables', value: b.C },
+      { label: 'INV-D1 comptes artificiels vides', value: b.D1 },
+      { label: 'INV-D2 comptes d’invité avec données (aucune action)', value: b.D2 },
+      { label: 'INV-D3 comptes d’invité avec facturation (aucune action)', value: b.D3 },
+      { label: 'INV-D4 comptes d’invité avec biens reçus (aucune action)', value: b.D4 },
+      { label: 'INV-E essais indus (rapport, aucune remise à zéro)', value: b.E },
+      { label: 'INV-F incohérences d’offre', value: b.F },
+      { label: 'INV-G demandes croisées / biens verrouillés', value: b.G },
+      { label: 'INV-H anciens membres', value: b.H },
+      { label: 'INV-I invitations à vérifier (inviteur non titulaire)', value: b.I },
+      ...(sim ? [] : [
+        { label: 'Adhésions membre créées', value: a.memberMembershipsCreated },
+        { label: 'Adhésions membre réactivées', value: a.memberMembershipsReactivated },
+        { label: 'Adhésions titulaire créées / réactivées', value: titulaires },
+        { label: 'Comptes archivés', value: a.accountsArchived },
+        { label: 'Offres affichées corrigées', value: a.planTypesFixed },
+        { label: 'INV-B après application', value: r.after?.B ?? 0 },
+      ]),
+    ],
+    ambiguous: { count: r.undecidable.length, samples: echantillon(r.undecidable, (u) => `Duo ${u.duoId} : ${u.reason}`) },
+    conflicts: {
+      count: r.seatsExceeded.length,
+      samples: echantillon(r.seatsExceeded, (x) => `Duo ${x.duoId} · compte ${x.accountId} · utilisateur ${x.userId} : places épuisées`),
+    },
+    warnings: [
+      ...r.billingMismatches.slice(0, SAMPLE_LIMIT).map((x) => `Duo ${x.duoId} : ${x.reason}`),
+      ...r.suspiciousInvitations.slice(0, SAMPLE_LIMIT).map((x) => `Compte ${x.accountId} · membre ${x.userId} invité par ${x.invitedBy ?? '?'} (non titulaire) : à vérifier`),
+    ],
+  };
+}
+
 /** Synthèse lisible d'une exécution terminée (pure). */
 export function summarizeBackfill(script: BackfillScript, action: BackfillAction, step: string | null, out: RawBackfillOutput): BackfillSummary {
   switch (script) {
@@ -443,6 +505,7 @@ export function summarizeBackfill(script: BackfillScript, action: BackfillAction
     case 'cross-account': return crossAccount(action, out);
     case 'equipment-separation': return equipmentSeparation(out);
     case 'document-validation': return documentValidation(out);
+    case 'duo-shared-account': return duoSharedAccount(action, out);
   }
 }
 

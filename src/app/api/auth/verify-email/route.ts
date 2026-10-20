@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { hasActiveSubscriptionStatus } from '@/lib/billing/subscription-status';
 import { db } from '@/db';
-import { users, duoAccounts } from '@/db/schema';
+import { users, duoAccounts, accountMemberships, accountAuditLog } from '@/db/schema';
 import { and, eq, gt, isNotNull, sql } from 'drizzle-orm';
 import { runDetached } from '@/lib/auth/anti-enumeration';
 import { emailService } from '@/lib/email/email-service';
@@ -116,8 +116,14 @@ export async function GET(request: NextRequest) {
       return redirect(`/verify-email?status=already_verified${planSuffix}`);
     }
 
+    // Lot 72D (décision PO Q10) : invitation à un compte partagé réservée à
+    // cette identité à l'inscription — l'adresse étant désormais vérifiée,
+    // l'adhésion devient active (et l'espace est ouvert par défaut).
+    const joinedAccountIds = await activateReservedAccountInvitations(user.id, user.email);
+
     // Generate auth tokens so the user is logged in immediately after verification
     try {
+      // Dernier espace choisi d'abord (lot 72D) : l'espace rejoint ci-dessus.
       const defaultAccount = await AccountService.getUserDefaultAccount(user.id);
 
       // Indication informative du jeton, jamais une source de droits : un
@@ -159,6 +165,10 @@ export async function GET(request: NextRequest) {
       // reste contrôlé par POST /api/duo/join (session, adresse invitée).
       const pendingDuo = await hasPendingDuoInvitation(user.email);
       if (pendingDuo) params.set('duo', '1');
+      // Lot 72D : identité qui rejoint un compte existant — aucun essai à
+      // annoncer ; sans espace (invitation Duo à accepter) : l'écran le dit.
+      if (joinedAccountIds.length > 0) params.set('joined', '1');
+      if (!defaultAccount) params.set('space', 'none');
 
       const targetPath = normalizedPlan && !pendingDuo ? '/abonnement/onboarding' : '/verify-email';
       const response = NextResponse.redirect(`${baseUrl()}${targetPath}?${params.toString()}`);
@@ -179,6 +189,46 @@ export async function GET(request: NextRequest) {
   } catch (error) {
     console.error('Verify email error:', error);
     return redirect('/verify-email?error=server_error');
+  }
+}
+
+/**
+ * Lot 72D : active les invitations à un compte partagé réservées à cette
+ * identité (posées par l'inscription sur invitation), encore valides et
+ * destinées à cette adresse. Jamais bloquant pour la vérification.
+ */
+async function activateReservedAccountInvitations(userId: number, email: string): Promise<number[]> {
+  try {
+    const now = new Date();
+    const rows = await db
+      .update(accountMemberships)
+      .set({
+        status: 'active',
+        joinedAt: now,
+        inviteToken: null,
+        inviteTokenExpiresAt: null,
+        lastSelectedAt: now,
+        source: 'account_invitation',
+        updatedAt: now,
+      })
+      .where(and(
+        eq(accountMemberships.userId, userId),
+        eq(accountMemberships.status, 'pending'),
+        sql`(${accountMemberships.inviteTokenExpiresAt} IS NULL OR ${accountMemberships.inviteTokenExpiresAt} > now())`,
+        sql`(${accountMemberships.invitedEmail} IS NULL OR lower(${accountMemberships.invitedEmail}) = ${email.trim().toLowerCase()})`,
+      ))
+      .returning({ accountId: accountMemberships.accountId });
+    for (const r of rows) {
+      await db.insert(accountAuditLog).values({
+        accountId: r.accountId, userId, userEmail: email, actionType: 'MEMBER_JOINED',
+        targetUserId: userId, targetUserEmail: email,
+        details: JSON.stringify({ role: 'member', source: 'account_invitation' }), timestamp: now,
+      });
+    }
+    return rows.map((r) => r.accountId);
+  } catch (e) {
+    console.error('[verify-email] activation des invitations de compte impossible:', (e as Error).message);
+    return [];
   }
 }
 

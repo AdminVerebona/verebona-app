@@ -14,6 +14,7 @@ import { SessionService } from '@/lib/session-service';
 import { ensureMigrations } from '@/db';
 import { httpRequestId, mutationRateLimited, readBoundedJson, withRequestId } from '@/lib/verebona/api-guard';
 import { normalizeUsageEvents, recordUsageEvents, usagePlan } from '@/services/verebona-assistant/core/usage-events';
+import { getEntitlements } from '@/services/entitlements.service';
 
 /** 20 événements courts tiennent largement en 8 Ko. */
 const USAGE_BODY_MAX_BYTES = 8 * 1024;
@@ -34,7 +35,10 @@ export async function POST(req: NextRequest) {
   const events = normalizeUsageEvents((lu.value as { events?: unknown } | null)?.events);
   if (events.length) {
     await ensureMigrations();
-    await recordUsageEvents(events, usagePlan(session.planType));
+    // Lot 72D : offre du COMPTE courant (entitlements), pas `users.plan_type`.
+    // L'essai se mesure comme Premium (comportement de l'assistant, §6.5).
+    const plan = await getEntitlements(accountId).then((e) => (e.plan === 'trial' ? 'premium' : e.plan)).catch(() => null);
+    await recordUsageEvents(events, usagePlan(plan));
   }
   return withRequestId(new NextResponse(null, { status: 204 }), httpId);
 }

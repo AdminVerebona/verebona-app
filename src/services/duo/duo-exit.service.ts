@@ -35,6 +35,9 @@ import {
   assets, duoAccounts, duoMemberships, users,
 } from '@/db/schema';
 import { enqueueDuoMembershipEndedEmail } from './duo-membership-ended-email';
+import {
+  afterMembershipEnded, endAccountMembershipInTx, resolveDuoAccountId,
+} from '@/services/account/membership.service';
 
 export type DuoExitError =
   | 'DUO_NOT_FOUND'
@@ -96,11 +99,37 @@ export async function endMembership(p: {
   status: 'REMOVED' | 'LEFT';
   /** Lot 65A : faux = aucun e-mail au membre (départ par suppression de son compte). */
   notifyMember?: boolean;
+  /** Lot 72D : motif de fin d'adhésion (`removed` / `left` à défaut). */
+  reason?: string;
+  /** Lot 72D : auteur d'un retrait (titulaire), si connu. */
+  byUserId?: number | null;
 }): Promise<number> {
   const now = new Date();
   const planType = await ownPlanType(p.memberUserId);
+  let sharedAccountId: number | null = null;
 
   const annulees = await db.transaction(async (tx) => {
+    // ════════════════════════════════════════════════════════════════════
+    // LOT 72D — LA SORTIE PORTE SUR L'ADHÉSION AU COMPTE PARTAGÉ
+    //
+    // Le membre accède au compte du Duo par `account_memberships` : c'est
+    // CETTE adhésion qui est révoquée (garde relue à chaque requête : ancien
+    // jeton refusé tout de suite), dans la même transaction que la ligne
+    // `duo_memberships` historique. Données du compte intactes ; identité et
+    // comptes personnels du membre intacts ; rien n'est créé.
+    // ════════════════════════════════════════════════════════════════════
+    sharedAccountId = await resolveDuoAccountId(p.duoId, tx);
+    if (sharedAccountId) {
+      await endAccountMembershipInTx(tx, {
+        accountId: sharedAccountId,
+        userId: p.memberUserId,
+        kind: p.status === 'LEFT' ? 'left' : 'removed',
+        byUserId: p.byUserId ?? null,
+        reason: p.reason ?? (p.status === 'LEFT' ? 'left' : 'removed'),
+        now,
+      });
+    }
+
     // Lot 64A / 65A : e-mail au membre (retiré : fin d'accès ; parti de
     // lui-même : confirmation), enregistré dans la même transaction (point de
     // sauvegarde, jamais bloquant), avant la mise à jour — l'état d'origine
@@ -142,6 +171,7 @@ export async function endMembership(p: {
 
     return moves.length + deletes.length;
   });
+  afterMembershipEnded(sharedAccountId, p.memberUserId);
   signalerDroitsModifies();
   return annulees;
 }
@@ -175,7 +205,7 @@ export async function removeDuoMember(ownerUserId: number): Promise<DuoExitResul
   if (!member) return fail('NO_ACTIVE_MEMBER');
 
   const cancelledRequests = await endMembership({
-    duoId: duo.id, membershipId: member.id, memberUserId: member.userId, status: 'REMOVED',
+    duoId: duo.id, membershipId: member.id, memberUserId: member.userId, status: 'REMOVED', byUserId: ownerUserId,
   });
   return { ok: true, duoId: duo.id, memberUserId: member.userId, status: 'REMOVED', cancelledRequests };
 }

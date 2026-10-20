@@ -75,7 +75,13 @@ export type T6DecisionCode =
    * refus ou un report ne pouvant être vérifié, le sujet n'est pas
    * réintroduit (indisponibilité technique, jamais une conclusion métier).
    */
-  | 'PREFERENCES_UNAVAILABLE';
+  | 'PREFERENCES_UNAVAILABLE'
+  /**
+   * Lot 72A (ATP-FIX-17) : décisions « À traiter » ILLISIBLES (panne) — une
+   * échéance portée ou réglée par « À traiter » ne pouvant être vérifiée,
+   * elle n'est pas relancée (indisponibilité technique, provisoire).
+   */
+  | 'TO_PROCESS_UNAVAILABLE';
 
 /**
  * Lot 71G — motif d'une (ré)évaluation demandée, tracé au reporting :
@@ -84,7 +90,9 @@ export type T6DecisionCode =
  * sa date, renouvellement ciblé du lot 68.
  */
 export type T6ReevaluationReason =
-  | 'FIRST_ASSESSMENT' | 'CONTEXT_CHANGED' | 'AGED' | 'REVIEW_DATE' | 'CONTRACT_CHANGED' | 'SNOOZE_DUE' | 'LEGACY_FINGERPRINT' | 'REMINDER_RENEWAL';
+  | 'FIRST_ASSESSMENT' | 'CONTEXT_CHANGED' | 'AGED' | 'REVIEW_DATE' | 'CONTRACT_CHANGED' | 'SNOOZE_DUE' | 'LEGACY_FINGERPRINT' | 'REMINDER_RENEWAL'
+  /** Lot 72A : version effective du prompt EVALUATE ou configuration déterminante changée (invalidation stricte). */
+  | 'CONFIG_CHANGED';
 
 /**
  * Évaluation d'UN candidat, validée. Lot 61 : issue du contrat
@@ -139,7 +147,25 @@ export interface T6StoredAssessment extends T6Assessment {
   evidenceSnapshot?: { version?: number; fingerprint?: string; refs?: T6EvidenceVersion[] } | null;
   /** Lot 71G (0507) : motif de la (ré)évaluation qui a produit cette décision. */
   reevaluationReason?: string | null;
+  /**
+   * Lot 72A (0510) : signature de la configuration EVALUATE qui a décidé —
+   * section EVALUATE du prompt effectif, contrats, modèle, seuil. Absente :
+   * décision antérieure (comparée par la version du master, `promptVersion`).
+   */
+  evaluationSignature?: string | null;
 }
+
+/**
+ * Lot 72A — configuration EVALUATE COURANTE (`t6EvaluationConfig`) :
+ * `signature` (section EVALUATE du prompt effectif, contrats, modèle, seuil)
+ * et `masterVersion` (version du master, sans la configuration — même forme
+ * que le début de `promptVersion` des décisions antérieures).
+ */
+export interface T6EvaluationConfig { signature: string | null; masterVersion: string | null }
+
+/** Version du master d'une décision conservée (`t6_master_v1@pv12:abc|cfg:3` → `t6_master_v1@pv12:abc`). */
+export const masterVersionOf = (promptVersion: string | null | undefined): string | null =>
+  promptVersion ? promptVersion.split('|')[0] || null : null;
 
 export type T6SubjectState = 'ACTIVE' | 'RESOLVED' | 'OBSOLETE';
 
@@ -217,6 +243,18 @@ export interface T6DecisionInput {
   reminderCapable?: boolean;
   /** Lot 71G (T6-06) : les préférences de l'utilisateur n'ont pas pu être lues. */
   preferencesUnavailable?: boolean;
+  /**
+   * Lot 72A (AC02) : configuration EVALUATE courante — une décision prise
+   * sous une autre version effective du prompt EVALUATE (ou un autre modèle,
+   * un autre seuil) est INVALIDÉE, jamais réutilisée. Absente ou illisible :
+   * aucune invalidation (jamais de réévaluation de masse sur une panne).
+   */
+  evaluationConfig?: T6EvaluationConfig | null;
+  /**
+   * Lot 72A (ATP-FIX-17) : l'appartenance du candidat à « À traiter » (action
+   * ouverte, ou décision qui règle l'échéance) n'a pas pu être vérifiée.
+   */
+  toProcessUnavailable?: boolean;
 }
 
 export interface T6DecisionResult {
@@ -416,7 +454,25 @@ export function preferenceAppliesToCycle(p: Pick<T6ReminderPreference, 'scope' |
 
 // ── Fraîcheur d'une évaluation ──────────────────────────────────────────────
 
-export type T6AssessmentStatus = 'FRESH' | 'AGED' | 'CONTEXT_CHANGED' | 'CONTRACT_CHANGED' | 'NONE';
+/**
+ * Lot 72A : `CONFIG_CHANGED` — décision prise sous une autre configuration
+ * EVALUATE (prompt, modèle, seuil) : inutilisable, comme `CONTEXT_CHANGED`
+ * (≠ `AGED`, seulement vieillissante, utilisable pendant son renouvellement).
+ */
+export type T6AssessmentStatus = 'FRESH' | 'AGED' | 'CONTEXT_CHANGED' | 'CONTRACT_CHANGED' | 'CONFIG_CHANGED' | 'NONE';
+
+/**
+ * Lot 72A (AC02) — la décision a-t-elle été prise sous une AUTRE
+ * configuration EVALUATE que la courante (pure) ? Signature conservée :
+ * comparée telle quelle ; décision antérieure sans signature : version du
+ * master comparée ; l'une ou l'autre inconnue : non (prudence de coût).
+ */
+export function evaluationConfigChanged(a: Pick<T6StoredAssessment, 'evaluationSignature' | 'promptVersion'>, cfg: T6EvaluationConfig | null | undefined): boolean {
+  if (!cfg) return false;
+  if (a.evaluationSignature) return !!cfg.signature && a.evaluationSignature !== cfg.signature;
+  const avant = masterVersionOf(a.promptVersion);
+  return !!avant && !!cfg.masterVersion && avant !== cfg.masterVersion;
+}
 
 /**
  * Lot 71G : motif détaillé de la fraîcheur (pure) — même règle que
@@ -424,12 +480,15 @@ export type T6AssessmentStatus = 'FRESH' | 'AGED' | 'CONTEXT_CHANGED' | 'CONTRAC
  */
 export function assessmentFreshness(
   a: T6StoredAssessment | null, c: T6Candidate, today: string, thresholdDays: number,
-  opts: { reminderCapable?: boolean } = {},
+  opts: { reminderCapable?: boolean; evaluation?: T6EvaluationConfig | null } = {},
 ): { status: T6AssessmentStatus; reason: T6ReevaluationReason | null } {
   if (!a) return { status: 'NONE', reason: 'FIRST_ASSESSMENT' };
   // Lot 61 : une évaluation d'un autre contrat (R13 du lot 60) n'est jamais
   // réutilisée — le candidat est réévalué par EVALUATE.
   if (a.contractVersion !== T6_ASSESSMENT_CONTRACT) return { status: 'CONTRACT_CHANGED', reason: 'CONTRACT_CHANGED' };
+  // Lot 72A (AC02) : nouvelle version effective du prompt EVALUATE, autre
+  // modèle ou autre seuil — invalidation STRICTE (jamais réutilisée).
+  if (evaluationConfigChanged(a, opts.evaluation)) return { status: 'CONFIG_CHANGED', reason: 'CONFIG_CHANGED' };
   // Lot 71G : données documentaires illisibles — l'évaluation reste utilisable
   // (aucune réévaluation sur un contexte incomplet).
   if (!c.fingerprintUnavailable && !sameT6Context(a.fingerprint, c)) return { status: 'CONTEXT_CHANGED', reason: 'CONTEXT_CHANGED' };
@@ -478,7 +537,7 @@ export function assessmentNeedsReminderRenewal(a: Pick<T6StoredAssessment, 'cont
  */
 export function assessmentStatus(
   a: T6StoredAssessment | null, c: T6Candidate, today: string, thresholdDays: number,
-  opts: { reminderCapable?: boolean } = {},
+  opts: { reminderCapable?: boolean; evaluation?: T6EvaluationConfig | null } = {},
 ): T6AssessmentStatus {
   return assessmentFreshness(a, c, today, thresholdDays, opts).status;
 }
@@ -513,6 +572,14 @@ export function decideT6Interpellation(input: T6DecisionInput): T6DecisionResult
   if (c.state !== 'ACTIVE') {
     return r({ decision: 'SUPPRESS', code: 'SUBJECT_CLOSED', explanation: 'Échéance réalisée, annulée ou devenue sans objet : aucune interpellation.' });
   }
+  // 1 bis. Lot 72A (ATP-FIX-17) : « À traiter » illisible — une échéance qu'il
+  //    porte ou a réglée ne peut être exclue avec certitude : aucune relance.
+  if (input.toProcessUnavailable) {
+    return r({
+      decision: 'DEFER', code: 'TO_PROCESS_UNAVAILABLE', deferredBy: 'SYSTEM', nextReevaluationAt: today,
+      explanation: '« À traiter » illisible (panne) : l’échéance n’est pas relancée tant qu’une action ou une décision « À traiter » ne peut être vérifiée.',
+    });
+  }
 
   // 2. Refus explicite de l'utilisateur (occurrence ou série) : durable,
   //    jamais annulé par une nouvelle exécution.
@@ -529,7 +596,7 @@ export function decideT6Interpellation(input: T6DecisionInput): T6DecisionResult
     });
   }
 
-  const fraicheur = assessmentFreshness(input.assessment, c, today, thresholdDays, { reminderCapable: input.reminderCapable });
+  const fraicheur = assessmentFreshness(input.assessment, c, today, thresholdDays, { reminderCapable: input.reminderCapable, evaluation: input.evaluationConfig });
   const status = fraicheur.status;
   const a = status === 'FRESH' || status === 'AGED' ? input.assessment : null;
   const fresh = status === 'FRESH';
@@ -766,8 +833,20 @@ export function evidenceSnapshotOf(cited: readonly string[], versions: ReadonlyM
 export interface T6InterpellationBundle {
   context: import('./t6-contract').T6EvaluationInput;
   refs: ReadonlyMap<string, T6CandidateRef>;
-  /** Persistance des décisions validées (injectée : base, tests). */
-  persist: (list: import('./t6-contract').T6ValidatedDecision[], meta: { promptVersion: string; traceId: string | null; contractRevision?: number }) => Promise<number>;
+  /**
+   * Persistance des décisions validées (injectée : base, tests). Lot 72A :
+   * rend le détail (`T6PersistResult`) — un nombre reste admis (appelants
+   * antérieurs). Lève si l'écriture échoue : RIEN n'est alors conservé
+   * (transaction du lot accepté).
+   */
+  persist: (list: import('./t6-contract').T6ValidatedDecision[], meta: { promptVersion: string; traceId: string | null; contractRevision?: number }) => Promise<number | T6PersistResult>;
+}
+
+/** Lot 72A (AC05) : issue d'une persistance — décisions réellement enregistrées. */
+export interface T6PersistResult {
+  persisted: number;
+  /** `subjectId` (C1…Cn) effectivement enregistrés ; absent : inconnu (nombre seul). */
+  persistedSubjectIds?: string[];
 }
 
 const PRIORITE_DEFAUT: Record<T6Decision, T6Priority> = { SHOW_NOW: 'MEDIUM', DEFER: 'LOW', SUPPRESS: 'LOW' };

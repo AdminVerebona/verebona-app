@@ -28,6 +28,7 @@ import { getPlanLabel } from '@/lib/plan-label'
 import { formatUserDisplayName, formatUserInitials } from '@/lib/user-display-name'
 import { VerebonaHeaderField } from './verebona/space/VerebonaField'
 import { accountMenuEntries } from '@/lib/shell/account-menu'
+import { AccountSwitcher } from './account/AccountSwitcher'
 
 interface TopBarUser {
   firstName: string
@@ -42,6 +43,8 @@ interface TopBarUser {
     trialDaysLeft?: number | null
   }
   duoRole?: 'BILLING_OWNER' | 'MEMBER'
+  /** Lot 72D : nombre d'espaces (sélecteur visible à partir de 2). */
+  accountsCount?: number
 }
 
 interface TopBarProps {
@@ -103,6 +106,14 @@ export function TopBar({ user, theme, onToggleTheme, onLogout, isAdmin, onOpenHe
                 </p>
               </div>
             </div>
+            {/* Lot 72D (Q6) : changement d'espace, dès deux espaces — même
+                composant que le panneau du compte mobile. */}
+            {(user.accountsCount ?? 1) >= 2 && (
+              <>
+                <DropdownMenuSeparator />
+                <AccountSwitcher accountsCount={user.accountsCount} variant="menu" />
+              </>
+            )}
             {/* Entrées : source unique partagée avec le panneau mobile (L35-4). */}
             {accountMenuEntries({ isAdmin, theme, withHelp: !!onOpenHelp }).map((e, i, all) => {
               const Icon = e.icon

@@ -228,7 +228,10 @@ describe('L70-PORT-05 — toute session de portail ouverte par Verebona utilise 
 
   it('points d’entrée : « Mon compte », lien permanent et e-mail J−7 passent tous par la route unique', () => {
     expect(read('src/lib/billing/open-billing-portal.ts')).toContain("'/api/billing/create-customer-portal-session'");
-    expect(read('src/app/(dashboard)/mon-compte/abonnement/gerer/page.tsx')).toContain("'/api/billing/create-customer-portal-session'");
+    // Lot 72F : vue partagée par le lien permanent et le lien contextualisé au compte facturé.
+    expect(read('src/components/billing/ManageSubscriptionView.tsx')).toContain("'/api/billing/create-customer-portal-session'");
+    expect(read('src/app/(dashboard)/mon-compte/abonnement/gerer/page.tsx')).toContain('ManageSubscriptionView');
+    expect(read('src/app/(dashboard)/mon-compte/abonnement/gerer/[compte]/page.tsx')).toContain('ManageSubscriptionView');
     const route = read('src/app/api/billing/create-customer-portal-session/route.ts');
     expect(route).toContain('createCustomerPortalSession');
     expect(route).toContain('PortalConfigurationUnavailableError');

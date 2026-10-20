@@ -11,6 +11,8 @@ import { lotNotificationText } from '@/services/ai/source-analysis/lot-notificat
 import { uploadNotificationText } from '@/lib/notifications/upload-notification-text';
 import { toast } from 'sonner';
 import { useIsMobile } from '@/hooks/use-mobile';
+import { useSession } from '@/hooks/useSession';
+import { switchToAccount } from '@/components/account/AccountSwitcher';
 import {
   isSubscriptionNotification,
   subscriptionNotificationText,
@@ -56,6 +58,8 @@ interface NotificationPayload extends SubscriptionNotificationPayload {
   // Duo
   duoId?: number;
   requestId?: number;
+  /** Bien concerné (anciennes demandes croisées Duo, lot 72D). */
+  assetId?: number;
   // Transmission
   senderName?: string;
   assetName?: string;
@@ -69,6 +73,8 @@ interface NotificationPayload extends SubscriptionNotificationPayload {
 
 interface Notification {
   id: number;
+  /** Lot 72D (Q7) : compte émetteur (null : notification personnelle). */
+  accountId?: number | null;
   type: string;
   payload: NotificationPayload | null;
   createdAt: string;
@@ -237,13 +243,10 @@ function getNotificationHref(type: string, payload: NotificationPayload | null):
   if ((type === 'ACCOUNT_INVITATION' || type === 'DUO_INVITATION_RECEIVED') && p.inviteToken) {
     return `/mon-compte/partage?inviteToken=${p.inviteToken}`;
   }
-  // Demande Duo → boîte de réception des demandes du Duo concerné (cf. CDC §17).
-  // La page réelle est /duos/{duoId}/requests (l'ancien lien /duo était mort).
+  // Lot 72D (Q11) : les demandes croisées Duo sont retirées (même espace,
+  // mêmes droits) — une ancienne notification ouvre le bien concerné.
   if (type === 'DUO_MOVE_REQUEST' || type === 'DUO_DELETE_REQUEST') {
-    if (p.duoId) {
-      return `/duos/${p.duoId}/requests${p.requestId ? `?request=${p.requestId}` : ''}`;
-    }
-    return null;
+    return p.assetId ? `/assets/${p.assetId}` : null;
   }
   if (type === 'TRANSMISSION_RECEIVED' && p.transmissionToken) {
     return `/transmission/${p.transmissionToken}`;
@@ -305,6 +308,8 @@ function getNotificationIcon(type: string) {
 }
 
 export function NotificationBell() {
+  // Lot 72D (Q7) : espace ouvert, pour reconnaître une notification d'un autre espace.
+  const currentAccountId = useSession().user?.accountId ?? null;
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [unreadCount, setUnreadCount] = useState(0);
   const [open, setOpen] = useState(false);
@@ -479,6 +484,16 @@ export function NotificationBell() {
   async function handleNotificationClick(notif: Notification) {
     if (!notif.readAt) {
       await markOneRead(notif.id);
+    }
+    // Lot 72D (Q7) : notification d'un AUTRE espace de l'utilisateur — la
+    // session bascule d'abord sur cet espace (le serveur vérifie l'adhésion),
+    // puis le lien s'ouvre ; refus → accueil de l'espace courant.
+    if (notif.accountId && currentAccountId && notif.accountId !== currentAccountId) {
+      setOpen(false);
+      const cible = getNotificationHref(notif.type, notif.payload) ?? '/accueil';
+      const r = await switchToAccount(notif.accountId, cible);
+      if (!r.ok) window.location.href = '/accueil';
+      return;
     }
     // Analyse terminée : le document s'ouvre en tiroir, sur ses résultats,
     // sur l'écran courant — plus de rechargement vers la liste des documents.

@@ -502,12 +502,7 @@ async function runAccount(job: QueuedJob, p: T3AccountPayload, guard: ExecutionG
     // Lot 49B : rapport des lignes « À traiter » ouvertes examinées (borné).
     ...(result.openActions ? { openActions: result.openActions } : {}),
     // Lot 61 : harmonisation du nommage documentaire (propositions IA ≠ renommages écrits).
-    ...(result.documentNaming ? { documentNaming: {
-      status: result.documentNaming.status, promptAvailable: result.documentNaming.promptAvailable,
-      groupsDue: result.documentNaming.groupsDue, groupsExamined: result.documentNaming.groupsExamined,
-      proposals: result.documentNaming.proposals, applied: result.documentNaming.applied, refused: result.documentNaming.refused,
-      conflicts: result.documentNaming.conflicts, aiCalls: result.documentNaming.aiCalls, reportId: result.documentNaming.reportId,
-    } } : {}),
+    ...(result.documentNaming ? { documentNaming: summarizeT3Naming(result.documentNaming) } : {}),
   };
   const ok = result.openKnowledge;
   if (ok && ((ok.facts?.retargeted ?? 0) > 0 || ok.documents.enqueued > 0 || ok.titles.updated > 0 || (ok.targeted?.enqueued ?? 0) > 0)) return { result: 'APPLIED', detail };
@@ -517,6 +512,25 @@ async function runAccount(job: QueuedJob, p: T3AccountPayload, guard: ExecutionG
   if ((result.documentNaming?.applied ?? 0) > 0) return { result: 'APPLIED', detail };
   if (result.conflictsCreated > 0) return { result: 'ABSTAIN', detail };
   return { result: 'NO_CHANGE', detail };
+}
+
+/**
+ * Synthèse T3 de l'harmonisation documentaire (lot 72B, E8) — même état que
+ * la phase du passage et le rapport détaillé (DONE / PARTIAL / DEFERRED /
+ * FAILED / DISABLED / NOT_READY) ; propositions IA, écritures confirmées,
+ * refus, conflits, échecs, reprises et travail restant distincts. Pure.
+ */
+export function summarizeT3Naming(dn: import('./document-naming/phase').DocumentNamingPhaseResult): Record<string, unknown> {
+  return {
+    status: dn.status, promptAvailable: dn.promptAvailable,
+    groupsDue: dn.groupsDue, groupsExamined: dn.groupsExamined, groupsCompleted: dn.groupsCompleted,
+    proposals: dn.proposals, applied: dn.applied, refused: dn.refused, conflicts: dn.conflicts, failed: dn.failed,
+    renamesSectionMissing: dn.renamesSectionMissing, pendingWrites: dn.pendingWrites ?? 0, writesRetried: dn.writesRetried ?? 0,
+    aiCalls: dn.aiCalls, reportId: dn.reportId,
+    remainingGroups: dn.remaining?.groups ?? 0, remainingDocuments: dn.remaining?.documents ?? 0,
+    remainingByReason: dn.remaining?.byReason ?? {}, nextRetryAt: dn.remaining?.nextRetryAt ?? null,
+    scanComplete: dn.scan?.complete ?? null, documents: dn.documents,
+  };
 }
 
 /**
@@ -663,10 +677,23 @@ export async function listSweepAccountsFromDb(q: SweepAccountsQuery): Promise<nu
         AND (EXISTS (SELECT 1 FROM assets s WHERE s.account_id = a.id AND s.deleted_at IS NULL)
              -- Lot 49B : une ligne « À traiter » ouverte est un problème actif, réexaminé à chaque cycle.
              OR EXISTS (SELECT 1 FROM to_process_actions t WHERE t.account_id = a.id AND t.resolved_at IS NULL)${nommage ? `
-             -- Lot 61 : compte à documents (sans bien) dont le nommage n'a jamais été examiné —
-             -- réconciliation initiale du stock ; ensuite, ses événements suffisent.
+             -- Lot 61 / 72B (E2) — harmonisation documentaire, même sans bien :
+             -- (a) découverte initiale : documents, aucun état de compte « * » ;
              OR (EXISTS (SELECT 1 FROM asset_files f WHERE f.account_id = a.id AND f.deleted_at IS NULL AND f.retained_title IS NOT NULL)
-                 AND NOT EXISTS (SELECT 1 FROM document_naming_groups g WHERE g.account_id = a.id))` : ''})
+                 AND NOT EXISTS (SELECT 1 FROM document_naming_groups g WHERE g.account_id = a.id AND g.group_key = '*'))
+             -- (b) traitement en cours : compte non terminé, ou lot en cours / en reprise / à réécrire,
+             --     REDEVENU EXÉCUTABLE (délai de reprise, plafond journalier, vérification quotidienne du prompt) ;
+             OR EXISTS (SELECT 1 FROM document_naming_groups g
+                         WHERE g.account_id = a.id
+                           AND ((g.group_key = '*' AND g.status <> 'DONE')
+                                OR g.status IN ('IN_PROGRESS', 'DEFERRED', 'ERROR', 'WRITE_PENDING'))
+                           AND (g.retry_after IS NULL OR g.retry_after <= now()))
+             -- (c) traitement terminé puis changement documentaire (import, analyse T1, fait) : réexamen.
+             OR EXISTS (SELECT 1 FROM document_naming_groups m
+                         WHERE m.account_id = a.id AND m.group_key = '*' AND m.status = 'DONE'
+                           AND (EXISTS (SELECT 1 FROM asset_files f WHERE f.account_id = a.id AND f.updated_at > m.updated_at)
+                                OR EXISTS (SELECT 1 FROM document_extractions e WHERE e.account_id = a.id AND e.updated_at > m.updated_at)
+                                OR EXISTS (SELECT 1 FROM document_facts d WHERE d.account_id = a.id AND d.created_at > m.updated_at)))` : ''})
         AND NOT EXISTS (
           SELECT 1 FROM account_reconciliation_runs r
            WHERE r.account_id = a.id AND r.status IN ('completed', 'partial', 'running')
@@ -674,7 +701,9 @@ export async function listSweepAccountsFromDb(q: SweepAccountsQuery): Promise<nu
       ORDER BY a.id LIMIT $3`;
   const params = [q.since.toISOString(), q.afterAccountId, q.limit] as never[];
   // Table 0450 absente (déploiement partiel) : périmètre historique, jamais un balayage en échec.
-  const rows = (await sql.unsafe(requete(true), params).catch((e) => {
+  // Harmonisation désactivée (T3_DOCUMENT_NAMING_ENABLED=0) : aucun compte réinscrit à ce seul titre.
+  const nommage = process.env.T3_DOCUMENT_NAMING_ENABLED?.trim() !== '0';
+  const rows = (await sql.unsafe(requete(nommage), params).catch((e) => {
     if ((e as { code?: string })?.code !== '42P01') throw e;
     return sql.unsafe(requete(false), params);
   })) as unknown as Array<{ id: number }>;

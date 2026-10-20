@@ -143,9 +143,14 @@ export const t3NamingFamily = z.object({
 export type T3NamingFamily = z.infer<typeof t3NamingFamily>;
 
 /**
- * Sortie de la branche DOCUMENT_NAMING. `document_renames` est FACULTATIVE
- * (rétrocompatibilité) : absente = aucune proposition, jamais une erreur ;
- * plusieurs renommages possibles dans une même exécution.
+ * Sortie de la branche DOCUMENT_NAMING. `document_renames` reste FACULTATIVE
+ * DANS LE SCHÉMA (rétrocompatibilité : versions anciennes du prompt, autres
+ * branches T3, union discriminée) — mais lot 72B (E9) : son ABSENCE n'est
+ * plus « aucune proposition ». `document_renames: []` = examen fait, aucun
+ * renommage nécessaire (lot terminé) ; section ABSENTE = réponse INCOMPLÈTE
+ * (anomalie journalisée, lot jamais clôturé, reprise bornée — voir
+ * `namingOutputComplete` et `document-naming/phase.ts`). Plusieurs
+ * renommages possibles dans une même exécution.
  */
 export const T3DocumentNamingOutput = z.object({
   task: z.literal('DOCUMENT_NAMING'),
@@ -153,6 +158,15 @@ export const T3DocumentNamingOutput = z.object({
   document_renames: z.array(t3DocumentRename).max(200).optional(),
 });
 export type T3DocumentNamingOutput = z.infer<typeof T3DocumentNamingOutput>;
+
+/**
+ * Sortie DOCUMENT_NAMING COMPLÈTE ? (pure, lot 72B — E9) : la section
+ * `document_renames` est présente (éventuellement vide). Absente : réponse
+ * incomplète, jamais assimilée à « rien à renommer ».
+ */
+export function namingOutputComplete(out: Pick<T3DocumentNamingOutput, 'document_renames'> | null | undefined): boolean {
+  return !!out && Array.isArray(out.document_renames);
+}
 
 /** Union discriminée par `task` (CDC 15 §22.2). */
 export const T3MasterOutput = z.discriminatedUnion('task', [T3ValueConflictOutput, T3LinkAmbiguityOutput, T3OperationMatchOutput, T3DocumentNamingOutput]);

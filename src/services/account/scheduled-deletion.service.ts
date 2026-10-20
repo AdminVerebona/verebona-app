@@ -944,11 +944,25 @@ async function resolveAccountPerimeter(accountId: number): Promise<Perimeter> {
     .limit(1);
   if (!account) return { kind: 'gone', reason: 'ACCOUNT_ALREADY_GONE' };
 
-  // Titulaire + tous les utilisateurs rattachés au compte.
+  // ════════════════════════════════════════════════════════════════════
+  // LOT 72D — LES MEMBRES NE SONT PLUS DANS LE PÉRIMÈTRE
+  //
+  // Un membre (invité Premium Duo, compte partagé) est désormais rattaché au
+  // compte par une adhésion `member`. Il était inclus ici et aurait été
+  // SUPPRIMÉ avec le compte du titulaire (identité, comptes personnels).
+  // Comme pour la suppression volontaire du titulaire : le membre n'est pas
+  // supprimé, il perd seulement l'accès (son adhésion disparaît avec le
+  // compte) et garde son identité et ses propres espaces (ticket §6).
+  // Seuls le titulaire et les éventuels co-titulaires sont dans le périmètre.
+  // ════════════════════════════════════════════════════════════════════
   const memberRows = await db
     .select({ userId: accountMemberships.userId })
     .from(accountMemberships)
-    .where(and(eq(accountMemberships.accountId, account.id), isNotNull(accountMemberships.userId)));
+    .where(and(
+      eq(accountMemberships.accountId, account.id),
+      isNotNull(accountMemberships.userId),
+      eq(accountMemberships.role, 'owner'),
+    ));
   const userIds = [...new Set([account.ownerUserId, ...memberRows.map((m) => m.userId as number)])];
 
   // Comptes que la cascade emportera (possédés par un utilisateur du périmètre).
@@ -960,14 +974,21 @@ async function resolveAccountPerimeter(accountId: number): Promise<Perimeter> {
 
   // Suppression collatérale ? Un compte du périmètre partagé avec quelqu'un
   // hors périmètre, ou un utilisateur membre d'un compte hors périmètre.
+  // Lot 72D : les MEMBRES (non titulaires) des comptes du périmètre en sont
+  // simplement détachés (ci-dessus) ; seule l'appartenance ACTIVE d'un
+  // utilisateur du périmètre à un compte EXTÉRIEUR (ex. le titulaire est aussi
+  // membre d'un autre Duo) reste un refus collatéral — variante prudente :
+  // son identité n'est jamais supprimée en silence (traitement manuel BO).
   const outsiders = await db
     .select({ accountId: accountMemberships.accountId, userId: accountMemberships.userId })
     .from(accountMemberships)
     .where(
       or(
         and(inArray(accountMemberships.accountId, accountIds), isNotNull(accountMemberships.userId),
+          eq(accountMemberships.role, 'owner'),
           sql`${accountMemberships.userId} NOT IN (${sql.join(userIds.map((u) => sql`${u}`), sql`, `)})`),
         and(inArray(accountMemberships.userId, userIds),
+          inArray(accountMemberships.status, ['active', 'ACTIVE', 'pending']),
           sql`${accountMemberships.accountId} NOT IN (${sql.join(accountIds.map((a) => sql`${a}`), sql`, `)})`),
       ),
     );

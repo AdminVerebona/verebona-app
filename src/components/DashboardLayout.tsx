@@ -34,6 +34,9 @@ import { useMountedOnce } from '@/hooks/useMountedOnce';
 import { useToProcessCount } from '@/hooks/useToProcessCount';
 import { useWelcomeOnboardingNeed } from '@/hooks/useWelcomeOnboardingNeed';
 import { LogoutStatusScreen, SessionUnavailableScreen } from './shell/SessionStateScreen';
+import { NoSpaceScreen } from './shell/NoSpaceScreen';
+import { switchToAccount } from './account/AccountSwitcher';
+import { readSpaceParam } from '@/lib/shell/space-link';
 const GlobalDrawerHost = dynamic(() => import('./drawers/GlobalDrawerHost').then(m => ({ default: m.GlobalDrawerHost })), { ssr: false });
 // Lot 34G : parcours de création (document, bien, échéance) ouverts depuis n'importe quel écran (src/lib/create-flows.ts).
 const GlobalCreateFlowHost = dynamic(() => import('./drawers/GlobalCreateFlowHost').then(m => ({ default: m.GlobalCreateFlowHost })), { ssr: false });
@@ -87,6 +90,27 @@ export function DashboardLayout({ children, user: userProp }: DashboardLayoutPro
     const id = assetIdFromPath(pathname);
     if (id) recordAssetView(id);
   }, [pathname]);
+
+  // ══════════════════════════════════════════════════════════════════════
+  // LOT 72D (décision PO Q7) — LIEN VERS UN AUTRE ESPACE
+  //
+  // Une notification (cloche, push web ou application mobile, même WebView)
+  // porte `space=<compte>` : si ce n'est pas l'espace ouvert, la session
+  // bascule sur lui (adhésion vérifiée par le serveur) puis la page s'ouvre ;
+  // refus (plus membre) → accueil. Sinon le paramètre est simplement retiré.
+  // ══════════════════════════════════════════════════════════════════════
+  const sessionAccountId = user?.accountId;
+  const sessionUserId = user?.id;
+  useEffect(() => {
+    if (!sessionUserId || typeof window === 'undefined') return;
+    const { accountId, cleaned } = readSpaceParam(window.location.href);
+    if (!accountId) return;
+    if (accountId === sessionAccountId) {
+      window.history.replaceState(window.history.state, '', cleaned);
+      return;
+    }
+    void switchToAccount(accountId, cleaned).then((r) => { if (!r.ok) window.location.assign('/accueil'); });
+  }, [sessionUserId, sessionAccountId]);
 
   // Dialogs states
   const [helpModalOpen, setHelpModalOpen] = useState(false);
@@ -150,7 +174,8 @@ export function DashboardLayout({ children, user: userProp }: DashboardLayoutPro
   // remplacement à l'identique (relecture de la session) ne relance plus
   // les lectures. Les rappels différés sont annulés au démontage.
   // ══════════════════════════════════════════════════════════════════════
-  const userId = user?.id ?? null;
+  // Lot 72D : identité sans espace → aucune lecture de données de compte.
+  const userId = user?.accountId === null ? null : (user?.id ?? null);
   const aTraiterCount = useToProcessCount(userId);
   const welcomeNeed = useWelcomeOnboardingNeed(userId);
 
@@ -257,6 +282,8 @@ export function DashboardLayout({ children, user: userProp }: DashboardLayoutPro
     // Droits pas encore lus : rien plutôt que « Aucune offre », qui est faux.
     if (!entitlements) return '';
     if (isUnpaid(entitlements)) return 'Paiement à régulariser';
+    // Lot 72D (Q16) : membre d'un Premium Duo — jamais d'essai ni d'offre à choisir.
+    if (user?.duoRole === 'MEMBER' && entitlements?.plan === 'premium_duo') return 'Premium Duo — Membre';
     if (entitlements?.trial.status === 'active') return 'Essai en cours';
     if (entitlements?.trial.status === 'expired') return 'Essai terminé';
     const libelles: Record<string, string> = {
@@ -267,7 +294,7 @@ export function DashboardLayout({ children, user: userProp }: DashboardLayoutPro
       none: 'Aucune offre',
     };
     return libelles[entitlements?.plan ?? 'none'] ?? 'Aucune offre';
-  }, [entitlements]);
+  }, [entitlements, user?.duoRole]);
 
   /** Le nom de l'espace ne distingue quelque chose que s'il y en a plusieurs. */
   const plusieursEspaces = (user as { accountsCount?: number } | null)?.accountsCount
@@ -323,6 +350,21 @@ export function DashboardLayout({ children, user: userProp }: DashboardLayoutPro
         <LogoLoader size={52} />
       </div>
     );
+  }
+
+  // ══════════════════════════════════════════════════════════════════════
+  // LOT 72D (décision PO Q8) — IDENTITÉ SANS ESPACE
+  //
+  // Un invité Premium Duo n'a plus de compte personnel artificiel : tant
+  // qu'il n'a pas rejoint l'espace (ou si l'invitation n'est plus valable),
+  // sa session n'a pas de compte courant. Écran dédié — rejoindre ou créer
+  // son espace — plutôt qu'un tableau de bord dont chaque lecture serait
+  // refusée. `null` strict : une identité servie sans le champ (cache
+  // antérieur) garde la coquille habituelle. Les administrateurs BO gardent
+  // l'accès au BO sans compte (règle de suspension inchangée).
+  // ══════════════════════════════════════════════════════════════════════
+  if (!userProp && user.accountId === null && user.role !== 'ADMIN' && user.role !== 'SUPER_ADMIN') {
+    return <NoSpaceScreen firstName={user.firstName} onLogout={handleLogout} />;
   }
 
   const isHome = pathname === '/accueil';
@@ -421,6 +463,7 @@ export function DashboardLayout({ children, user: userProp }: DashboardLayoutPro
       initials={getUserInitials}
       planLabel={statutAbonnement}
       accountName={plusieursEspaces ? user.accountName : null}
+      accountsCount={user.accountsCount ?? null}
       isAdmin={isAdmin}
       theme={theme}
       onToggleTheme={toggleTheme}

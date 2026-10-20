@@ -35,6 +35,8 @@ function sqlTable(file: string, table: string) {
     colonnes.set(nom, /NOT NULL|PRIMARY KEY/i.test(l));
   }
   for (const m of sql.matchAll(new RegExp(`ALTER TABLE ${table} ADD COLUMN IF NOT EXISTS (\\w+) ([^;]+);`, 'g'))) colonnes.set(m[1], /NOT NULL/i.test(m[2]));
+  // Lot 72F : colonne rendue facultative par une migration ultérieure (0524).
+  for (const m of sql.matchAll(new RegExp(`ALTER TABLE ${table} ALTER COLUMN (\\w+) DROP NOT NULL;`, 'g'))) colonnes.set(m[1], false);
   // Lot 64A : une contrainte remplacée (DROP puis ADD, 0459) n'est comptée qu'une fois.
   const checks = [...new Set([...sql.matchAll(/CONSTRAINT (\w+)\s+CHECK/g)].map((m) => m[1]).filter((n) => n.startsWith(table)))];
   const supprimes = new Set([...sql.matchAll(/DROP INDEX (?:CONCURRENTLY )?IF EXISTS (\w+)/g)].map((m) => m[1]));
@@ -46,7 +48,11 @@ function sqlTable(file: string, table: string) {
 /** Lot 40 : migrations postérieures à la création d'une table, lues avec elle. */
 const SUITES: Readonly<Record<string, readonly string[]>> = {
   // Lot 64A : clé d'idempotence et nouveau type (fin d'accès Duo).
-  transactional_email_jobs: ['0459_duo_membership_ended_email.sql'],
+  // Lot 72F : identité d'envoi stable, statut `uncertain` (0524).
+  transactional_email_jobs: ['0459_duo_membership_ended_email.sql', '0524_l72f_rappel_annuel_fiabilisation.sql'],
+  email_provider_events: ['0524_l72f_rappel_annuel_fiabilisation.sql'],
+  annual_renewal_reminder_state: ['0524_l72f_rappel_annuel_fiabilisation.sql'],
+  annual_renewal_reminder_checks: ['0524_l72f_rappel_annuel_fiabilisation.sql'],
   // (0462 et 0477 ne font que remplacer la contrainte de type, même nom.)
   // Lot 49B : couverture réelle de la source, état de réparation (0329).
   document_source_units: ['0329_t1_source_verification.sql'],

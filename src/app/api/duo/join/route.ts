@@ -3,9 +3,11 @@ import { isDuoJoinable } from '@/lib/billing/subscription-status';
 import { signalerDroitsModifies } from '@/services/duo/duo-exit.service';
 import { SessionService } from '@/lib/session-service';
 import { db } from '@/db';
-import { users, duoAccounts, duoMemberships } from '@/db/schema';
+import { users, duoAccounts } from '@/db/schema';
 import { eq, and, isNotNull, sql } from 'drizzle-orm';
 import { inviteTokenHash } from '@/lib/duo/invite-token-hash';
+import { DUO_JOIN_HTTP_STATUS, joinDuoByInvitation } from '@/services/account/membership.service';
+import { issueSessionTokensOnAccount, setSessionCookies } from '@/lib/auth/session-tokens';
 
 /**
  * GET /api/duo/join?token=xxx
@@ -106,120 +108,38 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'MISSING_TOKEN' }, { status: 400 });
     }
 
-    const [duo] = await db
-      .select()
-      .from(duoAccounts)
-      .where(eq(duoAccounts.pendingInviteToken, token))
-      .limit(1);
-
-    if (!duo) {
-      return NextResponse.json({ error: 'INVALID_TOKEN' }, { status: 404 });
+    // ════════════════════════════════════════════════════════════════════
+    // LOT 72D — L'INVITÉ REJOINT LE COMPTE EXISTANT DU TITULAIRE
+    //
+    // Avant : seule une ligne `duo_memberships` était écrite — l'invité
+    // restait dans son compte personnel (créé à l'inscription, avec un essai)
+    // et ne voyait JAMAIS les données du Duo. Désormais (service unique,
+    // transaction, compte verrouillé, idempotent) : adhésion `member` au
+    // compte partagé + double écriture historique, puis la session est
+    // RÉÉMISE sur ce compte (cookies) : accès immédiat aux biens, documents,
+    // échéances et agenda existants.
+    // ════════════════════════════════════════════════════════════════════
+    const result = await joinDuoByInvitation({ userId: session.userId, email: String(session.email ?? ''), token });
+    if (!result.ok) {
+      const body: Record<string, string> = { error: result.error };
+      if (result.error === 'INVITE_EMAIL_MISMATCH') {
+        body.message = 'Cette invitation a été envoyée à une autre adresse e-mail. Connectez-vous avec l’adresse invitée.';
+      }
+      return NextResponse.json(body, { status: DUO_JOIN_HTTP_STATUS[result.error] });
     }
-
-    if (duo.pendingInviteTokenExpiresAt && new Date(duo.pendingInviteTokenExpiresAt) < new Date()) {
-      return NextResponse.json({ error: 'EXPIRED_TOKEN' }, { status: 410 });
-    }
-
-    if (!isDuoJoinable(duo.subscriptionStatus)) {
-      return NextResponse.json({ error: 'SUBSCRIPTION_INACTIVE' }, { status: 403 });
-    }
-
-    // Invitation nominative : si elle désigne une adresse, seul le compte de
-    // cette adresse peut l'utiliser (même règle que l'inscription sur
-    // invitation, `lib/prelaunch-invitations.ts`). Sans ce contrôle, toute
-    // personne à qui le lien est transféré rejoignait le Duo — et accédait à
-    // l'espace partagé du titulaire.
-    if (
-      duo.pendingInviteEmail
-      && duo.pendingInviteEmail.trim().toLowerCase() !== String(session.email ?? '').trim().toLowerCase()
-    ) {
-      return NextResponse.json(
-        {
-          error: 'INVITE_EMAIL_MISMATCH',
-          message: 'Cette invitation a été envoyée à une autre adresse e-mail. Connectez-vous avec l’adresse invitée.',
-        },
-        { status: 403 },
-      );
-    }
-
-    // Cannot join your own duo
-    if (duo.billingOwnerUserId === session.userId) {
-      return NextResponse.json({ error: 'CANNOT_JOIN_OWN_DUO' }, { status: 409 });
-    }
-
-    // Check if slot 1 is already taken
-    const [existingSlot1] = await db
-      .select({ id: duoMemberships.id })
-      .from(duoMemberships)
-      .where(and(eq(duoMemberships.duoId, duo.id), eq(duoMemberships.slot, 1), eq(duoMemberships.status, 'ACTIVE')))
-      .limit(1);
-
-    if (existingSlot1) {
-      return NextResponse.json({ error: 'SLOT_ALREADY_TAKEN' }, { status: 409 });
-    }
-
-    // Check if this user is already in another duo
-    const [existingMembership] = await db
-      .select({ id: duoMemberships.id })
-      .from(duoMemberships)
-      .where(and(eq(duoMemberships.userId, session.userId), eq(duoMemberships.status, 'ACTIVE')))
-      .limit(1);
-
-    if (existingMembership) {
-      return NextResponse.json({ error: 'ALREADY_IN_DUO' }, { status: 409 });
-    }
-
-    const now = new Date();
-
-    // Slot 1. Un ancien membre retiré ou parti (REMOVED / LEFT, GAP-13) a
-    // déjà une ligne pour ce Duo — (duo_id, user_id) est unique : on la
-    // réactive au lieu d'en insérer une seconde.
-    const [previous] = await db
-      .select({ id: duoMemberships.id })
-      .from(duoMemberships)
-      .where(and(eq(duoMemberships.duoId, duo.id), eq(duoMemberships.userId, session.userId)))
-      .limit(1);
-
-    if (previous) {
-      await db
-        .update(duoMemberships)
-        .set({ status: 'ACTIVE', slot: 1, invitedAt: now, joinedAt: now, leftAt: null, updatedAt: now })
-        .where(eq(duoMemberships.id, previous.id));
-    } else {
-      await db.insert(duoMemberships).values({
-        duoId: duo.id,
-        userId: session.userId,
-        status: 'ACTIVE',
-        slot: 1,
-        invitedAt: now,
-        joinedAt: now,
-        createdAt: now,
-        updatedAt: now,
-      });
-    }
-
-    // Clear the pending invitation
-    await db
-      .update(duoAccounts)
-      .set({
-        pendingInviteEmail: null,
-        pendingInviteToken: null,
-        pendingInviteTokenExpiresAt: null,
-        pendingInviteSentAt: null,
-        lastUsedInviteTokenHash: inviteTokenHash(token),
-        updatedAt: now,
-      })
-      .where(eq(duoAccounts.id, duo.id));
-
-    // Set member's planType = 'PREMIUM_DUO'
-    await db
-      .update(users)
-      .set({ planType: 'PREMIUM_DUO', updatedAt: now })
-      .where(eq(users.id, session.userId));
 
     // CDC Assistant §25.7 : droits du nouveau membre modifiés.
     signalerDroitsModifies();
-    return NextResponse.json({ success: true });
+
+    const response = NextResponse.json({ success: true, accountId: result.accountId, alreadyMember: result.alreadyMember });
+    const [user] = await db
+      .select({ id: users.id, email: users.email, role: users.role, planType: users.planType, status: users.status })
+      .from(users)
+      .where(eq(users.id, session.userId))
+      .limit(1);
+    const tokens = user ? await issueSessionTokensOnAccount(user, result.accountId) : null;
+    if (tokens) setSessionCookies(response, tokens);
+    return response;
   } catch (error) {
     return SessionService.handleSessionError(error);
   }

@@ -90,16 +90,22 @@ scenario('L57A-DUO-SIGNUP', 'Inscription des invités Premium Duo sans parrainag
   }
   /** Titulaire d'un Duo actif qui invite `email` ; renvoie le jeton d'invitation. */
   async function inviter(email: string) {
-    const acc = await make.account({ plan: 'premium' });
-    await sql`UPDATE users SET first_name = 'Camille', last_name = 'Durand', plan_type = 'PREMIUM_DUO', is_active = true, status = 'ACTIVE' WHERE id = ${acc.ownerUserId}`;
-    const [d] = await sql<{ id: number }[]>`
-      INSERT INTO duo_accounts (billing_owner_user_id, subscription_status) VALUES (${acc.ownerUserId}, 'ACTIVE') RETURNING id`;
+    // Lot 72D : Duo activé par le chemin réel (BO / Stripe), rattaché au COMPTE du titulaire.
+    const acc = await make.account({ plan: 'premium_duo' });
+    await sql`UPDATE users SET first_name = 'Camille', last_name = 'Durand', is_active = true, status = 'ACTIVE' WHERE id = ${acc.ownerUserId}`;
+    const { applyPlanChange } = await import('@/lib/plan-enforcement');
+    await applyPlanChange({
+      accountId: acc.id, ownerUserId: acc.ownerUserId, oldPlanType: 'STANDARD', newPlanType: 'PREMIUM_DUO',
+      newSubStatus: 'ACTIVE', newPremiumUntil: null, newMaxMembers: 2, source: 'e2e:l57a', sendEmails: false,
+    });
+    await make.asset(acc, { name: `DUO57-maison-${acc.id}` });
+    const [d] = await sql<{ id: number }[]>`SELECT duo_account_id AS id FROM accounts WHERE id = ${acc.id}`;
     const [u] = await sql<{ id: number; email: string }[]>`SELECT id, email FROM users WHERE id = ${acc.ownerUserId}`;
     const { POST } = await import('@/app/api/duo/invitation/route');
     const res = await POST(req('/api/duo/invitation', { body: { email }, cookie: `access_token=${await jeton(u, acc.id)}` }));
     expect((await res.json()).emailStatus).toBe('accepted');
     const [row] = await sql<{ t: string }[]>`SELECT pending_invite_token AS t FROM duo_accounts WHERE id = ${d.id}`;
-    return { duoId: d.id, token: row.t, ownerId: u.id };
+    return { duoId: d.id, token: row.t, ownerId: u.id, accountId: acc.id };
   }
   async function page(params: Record<string, string>) {
     const { default: SignupPage } = await import('@/app/(auth)/signup/page');
@@ -125,7 +131,7 @@ scenario('L57A-DUO-SIGNUP', 'Inscription des invités Premium Duo sans parrainag
   async function rejoindre(access: string | undefined, body: Record<string, unknown>) {
     const { POST } = await import('@/app/api/duo/join/route');
     const res = await POST(req('/api/duo/join', { body, cookie: access ? `access_token=${access}` : undefined }));
-    return { status: res.status, body: await res.json().catch(() => ({})) };
+    return { status: res.status, body: await res.json().catch(() => ({})), access: (res as WithCookies).cookies.get('access_token')?.value };
   }
   const membre = async (duoId: number, email: string) => (await sql<{ status: string }[]>`
     SELECT m.status FROM duo_memberships m JOIN users u ON u.id = m.user_id WHERE m.duo_id = ${duoId} AND u.email = ${email}`)[0]?.status;
@@ -147,8 +153,15 @@ scenario('L57A-DUO-SIGNUP', 'Inscription des invités Premium Duo sans parrainag
     const j = await rejoindre(v.access, { token: inv.token });
     expect(j.status).toBe(200);
     expect(await membre(inv.duoId, email)).toBe('ACTIVE');
-    const [u] = await sql<{ plan_type: string }[]>`SELECT plan_type FROM users WHERE email = ${email}`;
-    expect(u.plan_type).toBe('PREMIUM_DUO');
+    const [u] = await sql<{ id: number; plan_type: string }[]>`SELECT id, plan_type FROM users WHERE email = ${email}`;
+    expect(u.plan_type).toBe('PREMIUM_DUO'); // copie d'affichage historique (lot 72D : aucun droit n'en dépend)
+    // Lot 72D : accès RÉEL aux données du titulaire, sans compte personnel ni essai.
+    expect(await sql`SELECT role, status FROM account_memberships WHERE account_id = ${inv.accountId} AND user_id = ${u.id}`)
+      .toEqual([{ role: 'member', status: 'active' }]);
+    expect(await sql`SELECT 1 FROM accounts WHERE owner_user_id = ${u.id}`).toHaveLength(0);
+    const { GET: biens } = await import('@/app/api/assets/route');
+    const vus = await biens(req('/api/assets', { method: 'GET', cookie: `access_token=${j.access}` }));
+    expect(await vus.text()).toContain(`DUO57-maison-${inv.accountId}`);
     // Aucun parrainage enregistré pour l'invité.
     const ref = await sql`SELECT 1 FROM referral_events re JOIN users x ON x.id = re.referred_user_id WHERE x.email = ${email}`;
     expect(ref).toHaveLength(0);

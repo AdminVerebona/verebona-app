@@ -1,8 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { SessionService } from '@/lib/session-service';
-import { db } from '@/db';
-import { accountMemberships } from '@/db/schema';
-import { eq } from 'drizzle-orm';
+import { effectiveAccountId, getSessionRole } from '@/services/account/membership.service';
 import { scheduleChange, cancelScheduledChange } from '@/services/plan-change.service';
 import { CATALOG_ERROR_HTTP, CATALOG_ERROR_MESSAGES, type BillingCatalogErrorCode } from '@/services/billing/catalog-types';
 
@@ -19,12 +17,12 @@ import { CATALOG_ERROR_HTTP, CATALOG_ERROR_MESSAGES, type BillingCatalogErrorCod
 
 async function resolveOwnerAccount(request: NextRequest): Promise<{ accountId: number; userId: number; owner: boolean } | null> {
   const session = await SessionService.getSession(request);
-  const memberships = await db
-    .select({ accountId: accountMemberships.accountId, role: accountMemberships.role })
-    .from(accountMemberships)
-    .where(eq(accountMemberships.userId, session.userId));
-  const membership = memberships.find((m) => m.accountId === session.currentAccountId) ?? memberships[0];
-  return membership ? { accountId: membership.accountId, userId: session.userId, owner: membership.role === 'owner' } : null;
+  // Lot 72D : compte de la SESSION uniquement (plus de repli sur une autre
+  // adhésion, éventuellement inactive) ; rôle relu en base.
+  const courant = await effectiveAccountId(session);
+  if (!courant) return null;
+  const role = await getSessionRole({ userId: session.userId, currentAccountId: courant });
+  return role ? { accountId: courant, userId: session.userId, owner: role === 'owner' } : null;
 }
 
 const MESSAGES: Record<string, string> = {

@@ -14,6 +14,9 @@ vi.mock('@/lib/session-service', () => ({
   },
 }));
 
+// Lot 72D : l'offre mesurée est celle du COMPTE courant (droits effectifs),
+// plus le `planType` de l'utilisateur copié dans le jeton.
+vi.mock('@/services/entitlements.service', () => ({ getEntitlements: vi.fn(async () => ({ plan: 'premium' })) }));
 const results = await import('../search-results/route');
 const usage = await import('../usage-events/route');
 const { createSearchToken } = await import('@/services/verebona-assistant/core/search-token');

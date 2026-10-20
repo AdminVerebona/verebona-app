@@ -320,23 +320,32 @@ export async function POST(request: NextRequest) {
 
     const now = new Date();
 
-    // Invitation : validée AVANT la création de l'utilisateur (pas d'orphelin).
-    // - compte partagé : l'inscription rejoint le compte et consomme le jeton ;
-    // - Premium Duo : compte standard créé ici, rattachement au Duo ensuite par
-    //   POST /api/duo/join (jeton non consommé).
-    let pendingMembership:
-      | (typeof accountMemberships.$inferSelect)
-      | undefined;
-
-    if (invitation?.valid && invitation.kind === 'account') {
-      pendingMembership = invitation.membership;
-    }
+    // ══════════════════════════════════════════════════════════════════════
+    // LOT 72D — INSCRIPTION SUR INVITATION : UNE IDENTITÉ, PAS UN COMPTE
+    //
+    // Une invitation (Premium Duo ou compte partagé) fait rejoindre un compte
+    // EXISTANT : l'inscription crée seulement l'IDENTITÉ — ni compte
+    // personnel, ni adhésion titulaire, ni essai de 7 jours, ni parrainage
+    // (avant : compte personnel + essai artificiels pour l'invité Duo, ce qui
+    // doublait les quotas et déclenchait « fin d'essai » à J+7).
+    //   · Duo : l'invitation reste en attente ; elle est acceptée, une fois
+    //     l'adresse vérifiée, par POST /api/duo/join (adhésion `member` au
+    //     compte du titulaire, session ouverte sur ce compte).
+    //   · compte partagé : l'invitation est réservée à cette identité
+    //     (`user_id`), toujours EN ATTENTE ; la vérification de l'adresse
+    //     l'active (décision PO Q10 : plus d'identité active sans
+    //     vérification, aucun accès avant validation effective).
+    // Toutes les branches enregistrent la preuve d'acceptation des CGU.
+    // Écritures en UNE transaction : plus d'utilisateur sans compte ni
+    // d'invitation à moitié prise si une étape échoue.
+    // ══════════════════════════════════════════════════════════════════════
+    const joinsExistingAccount = !!invitation?.valid && (invitation.kind === 'account' || invitation.kind === 'duo');
+    const pendingMembership = invitation?.valid && invitation.kind === 'account' ? invitation.membership : undefined;
 
     // Hash password
     const passwordHash = await bcrypt.hash(password, 10);
 
-      // Prepare user data
-      // isActive = false until email is verified (unless joining via invite)
+      // isActive = false jusqu'à la vérification de l'adresse, dans TOUS les cas.
       const userData = {
         email: sanitizedEmail,
         passwordHash,
@@ -349,7 +358,7 @@ export async function POST(request: NextRequest) {
         // direct pouvait créer un compte PREMIUM_PRO sans paiement.
         // L'offre ne change que par Stripe ou l'administration.
         planType: 'STANDARD',
-        isActive: pendingMembership ? true : false,
+        isActive: false,
         locale: locale || 'fr-FR',
         acceptedTermsAt: now,
         termsVersion: acceptedVersionCode,
@@ -358,66 +367,61 @@ export async function POST(request: NextRequest) {
       };
 
     try {
-      const insertedUsers = await db.insert(users).values(userData).returning();
-      const newUser = insertedUsers[0];
+      const created = await db.transaction(async (tx) => {
+        const [newUser] = await tx.insert(users).values(userData).returning();
+        if (!newUser) return null;
 
-      if (!newUser) {
-        return NextResponse.json({ error: 'User creation failed', code: 'USER_CREATION_FAILED' }, { status: 500 });
-      }
+        if (pendingMembership) {
+          // Réservée à cette identité, encore en attente (activée à la vérification).
+          await tx
+            .update(accountMemberships)
+            .set({ userId: newUser.id, source: 'account_invitation', updatedAt: now })
+            .where(and(eq(accountMemberships.id, pendingMembership.id), eq(accountMemberships.status, 'pending')));
+          return { newUser, newAccount: null };
+        }
+        if (joinsExistingAccount) return { newUser, newAccount: null };
 
-      if (pendingMembership) {
-        await db
-          .update(accountMemberships)
-          .set({
-            userId: newUser.id,
-            status: 'active',
-            joinedAt: now,
-            inviteToken: null,
-            inviteTokenExpiresAt: null,
-            updatedAt: now,
-          })
-          .where(eq(accountMemberships.id, pendingMembership.id));
-      } else {
-        // Create account + owner membership
-        const accountName = `Compte de ${sanitizedFirstName} ${sanitizedLastName}`;
-
-        // Accounts table has a different planType enum; keep it consistent.
-        // Même règle que l'utilisateur : jamais l'offre fournie par le client.
-        const accountPlanType = 'STANDARD';
-
-        const insertedAccounts = await db
+        // Inscription classique : compte personnel + adhésion titulaire.
+        const [newAccount] = await tx
           .insert(accounts)
           .values({
-            name: accountName,
+            name: `Compte de ${sanitizedFirstName} ${sanitizedLastName}`,
             ownerUserId: newUser.id,
-            planType: accountPlanType,
+            // Même règle que l'utilisateur : jamais l'offre fournie par le client.
+            planType: 'STANDARD',
             subscriptionTier: 'free',
             subscriptionStatus: 'NONE',
             createdAt: now,
             updatedAt: now,
           })
           .returning();
+        if (!newAccount) throw new Error('ACCOUNT_CREATION_FAILED');
 
-        const newAccount = insertedAccounts[0];
-
-        if (!newAccount) {
-          return NextResponse.json({ error: 'Account creation failed', code: 'ACCOUNT_CREATION_FAILED' }, { status: 500 });
-        }
-
-        await db.insert(accountMemberships).values({
+        await tx.insert(accountMemberships).values({
           accountId: newAccount.id,
           userId: newUser.id,
           role: 'owner',
           status: 'active',
+          source: 'signup',
           invitedAt: now,
           joinedAt: now,
+          lastSelectedAt: now,
           createdAt: now,
           updatedAt: now,
         });
+        return { newUser, newAccount };
+      });
 
+      if (!created) {
+        return NextResponse.json({ error: 'User creation failed', code: 'USER_CREATION_FAILED' }, { status: 500 });
+      }
+      const { newUser, newAccount } = created;
+
+      if (newAccount) {
         // Essai gratuit de 7 jours (CDC §3) : automatique, sans carte bancaire
         // et sans objet Stripe. Refuse silencieusement si l'email a deja
-        // consomme son essai (anti-fraude via trial_grants).
+        // consomme son essai (anti-fraude via trial_grants). Jamais pour une
+        // identité qui rejoint un compte existant (lot 72D).
         try {
           const trial = await grantTrial({ accountId: newAccount.id, email: newUser.email, now });
           if (!trial.granted) {
@@ -427,36 +431,34 @@ export async function POST(request: NextRequest) {
           // Un echec d'attribution ne doit pas bloquer la creation du compte.
           console.error('[signup] echec attribution essai:', trialError);
         }
+      }
 
-        // Parrainage : l'attribution est memorisee ici, a la creation effective
-        // du compte (CDC parrainage §4.5). L'AVANTAGE, lui, reste acquis a la
-        // souscription d'un abonnement annuel (CDC tarification §13) : ce sont
-        // deux moments distincts.
-        //
-        // Sans cette memorisation, le code etait perdu entre l'inscription et
-        // la souscription — separees par une verification d'email et jusqu'a
-        // sept jours d'essai.
-        // Preuve d'acceptation (§9). Volontairement APRÈS la création du
-        // compte : elle référence l'utilisateur. Un échec ici ne doit pas
-        // annuler un compte déjà créé — il est journalisé et rattrapable,
-        // `users.terms_version` portant déjà le code accepté.
-        try {
-          await recordAcceptance({
-            userId: newUser.id,
-            versionCode: acceptedVersionCode,
-            context: 'ACCOUNT_CREATION',
-            ipAddress: request.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ?? null,
-            userAgent: request.headers.get('user-agent'),
-            acceptedAt: now,
-          });
-        } catch (acceptanceError) {
-          console.error(
-            `[signup] preuve d'acceptation non enregistrée pour l'utilisateur ${newUser.id} ` +
-            `(version ${acceptedVersionCode}) :`,
-            (acceptanceError as Error).message,
-          );
-        }
+      // Preuve d'acceptation (§9), DANS TOUTES LES BRANCHES (lot 72D : elle
+      // manquait pour les inscriptions sur invitation). Un échec ici ne doit
+      // pas annuler une identité déjà créée — il est journalisé et
+      // rattrapable, `users.terms_version` portant déjà le code accepté.
+      try {
+        await recordAcceptance({
+          userId: newUser.id,
+          versionCode: acceptedVersionCode,
+          context: 'ACCOUNT_CREATION',
+          ipAddress: request.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ?? null,
+          userAgent: request.headers.get('user-agent'),
+          acceptedAt: now,
+        });
+      } catch (acceptanceError) {
+        console.error(
+          `[signup] preuve d'acceptation non enregistrée pour l'utilisateur ${newUser.id} ` +
+          `(version ${acceptedVersionCode}) :`,
+          (acceptanceError as Error).message,
+        );
+      }
 
+      // Parrainage : l'attribution est memorisee a la creation effective du
+      // COMPTE (CDC parrainage §4.5) ; l'avantage reste acquis a la
+      // souscription d'un abonnement annuel (CDC tarification §13). Une
+      // identité qui rejoint un compte existant n'a pas de compte à parrainer.
+      if (newAccount) {
         const attributed = await recordSignupReferral({
           userId: newUser.id,
           accountId: newAccount.id,
@@ -472,7 +474,6 @@ export async function POST(request: NextRequest) {
       }
 
       const plan = signupPlan && ['standard', 'premium', 'premium_duo', 'premium_pro'].includes(signupPlan) ? signupPlan : null;
-      if (newUser.isActive) return neutralSignupResponse(); // compte partagé : actif par l'invitation
 
       // ══════════════════════════════════════════════════════════════════
       // LOT 57A (P0-A) — DEMANDE D'E-MAIL DE VÉRIFICATION DURABLE
@@ -589,6 +590,16 @@ async function releaseUnverifiedEmail(email: string): Promise<void> {
     .where(and(eq(users.email, email), eq(users.isActive, false)));
 
   if (stale.length === 0) return;
+
+  // Lot 72D : une invitation à un compte partagé réservée à l'identité non
+  // vérifiée (`user_id`) redevient une invitation par adresse — la
+  // suppression de l'utilisateur l'effacerait en cascade.
+  for (const row of stale) {
+    await db
+      .update(accountMemberships)
+      .set({ userId: null, updatedAt: new Date() })
+      .where(and(eq(accountMemberships.userId, row.id), eq(accountMemberships.status, 'pending')));
+  }
 
   try {
     await db.delete(users).where(and(eq(users.email, email), eq(users.isActive, false)));

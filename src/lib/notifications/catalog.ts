@@ -312,7 +312,8 @@ export const NOTIFICATION_CATALOG: { [K in NotificationType]?: CatalogEntry } = 
       { body: 'Une demande nécessite votre décision.' },
       'notif_duo_request',
     ),
-    deepLink: (p) => `/duos/${p.duoId}/requests?request=${p.requestId}`,
+    // Lot 72D (Q11) : validations croisées retirées — l'ancien lien ouvre le bien.
+    deepLink: (p) => `/assets/${p.assetId}`,
     payloadSchema: z.object({ requestId: z.number(), duoId: z.number(), assetId: z.number(), assetLabel: z.string(), initiatorName: z.string() }),
   },
   [T.DUO_DELETE_REQUEST]: {
@@ -326,7 +327,8 @@ export const NOTIFICATION_CATALOG: { [K in NotificationType]?: CatalogEntry } = 
       { body: 'Une demande nécessite votre décision.' },
       'notif_duo_request',
     ),
-    deepLink: (p) => `/duos/${p.duoId}/requests?request=${p.requestId}`,
+    // Lot 72D (Q11) : validations croisées retirées — l'ancien lien ouvre le bien.
+    deepLink: (p) => `/assets/${p.assetId}`,
     payloadSchema: z.object({ requestId: z.number(), duoId: z.number(), assetId: z.number(), assetLabel: z.string(), initiatorName: z.string() }),
   },
 

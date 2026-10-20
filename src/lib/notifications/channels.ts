@@ -16,6 +16,7 @@ import { emailService } from '@/lib/email/email-service';
 import { sendWebPush } from './web-push-sender';
 import type { CatalogEntry } from './catalog';
 import type { RenderResult } from './content-renderer';
+import { withSpaceParam } from '@/lib/shell/space-link';
 
 export type DeliveryStatus = 'sent' | 'failed' | 'skipped_preference' | 'skipped_unavailable' | 'expired';
 
@@ -36,6 +37,8 @@ export interface DeliveryContext {
   mustDeliverBell: boolean;
   /** Réémission : seuls ces appareils push sont visés (ceux en échec). */
   pushSubscriptionIds?: string[];
+  /** Lot 72D (Q7) : compte émetteur — le lien push rouvre cet espace. */
+  accountId?: number | null;
 }
 
 export interface BellOutcome extends DeliveryOutcome {
@@ -98,7 +101,8 @@ export async function deliverEmail(
     title: rendered.bellTitle,
     body: rendered.bellBody,
     // Lien absolu HTTPS (§15.3).
-    actionUrl: rendered.href ? absoluteUrl(rendered.href) : '',
+    // Lot 72D (Q7) : le lien de l'e-mail rouvre l'espace émetteur.
+    actionUrl: rendered.href ? absoluteUrl(withSpaceParam(rendered.href, ctx.accountId ?? null) ?? rendered.href) : '',
   };
 
   // L'activation du canal a déjà été contrôlée par le dispatcher, par type
@@ -151,7 +155,8 @@ export async function deliverWebPush(
     notificationId: notificationId ?? null,
     title: rendered.pushTitle,
     body: rendered.pushBody,
-    href: rendered.href,
+    // Lot 72D (Q7) : le lien désigne l'espace émetteur (bascule à l'ouverture).
+    href: withSpaceParam(rendered.href, ctx.accountId ?? null),
     tag: ctx.dedupeKey,
     category: ctx.category,
   };

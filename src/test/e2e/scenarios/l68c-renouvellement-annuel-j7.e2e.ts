@@ -110,6 +110,8 @@ const fakeStripe = {
 vi.mock('@/lib/stripe', async (orig) => ({ ...(await orig<object>()), getStripeServer: () => fakeStripe }));
 
 const YEARLY = 'price_e2e_l68_premium_yearly';
+/** Lot 72F : le libellé suit l'offre du prix Stripe (Premium Duo annuel). */
+const DUO_YEARLY = 'price_e2e_l68_duo_yearly';
 const MONTHLY = 'price_e2e_l68_premium_monthly';
 const DAY = 86_400;
 const tsOf = (d: Date) => Math.floor(d.getTime() / 1000);
@@ -131,10 +133,10 @@ scenario('ANN-J7', 'Abonnements annuels : e-mail automatique à J−7 avant reno
     const ctx = getStripeCatalogContext().catalogContext;
     const { pgCatalogStore } = await import('@/services/billing/catalog-store');
     const { versionRowFrom } = await import('@/services/billing/price-history.service');
-    for (const [id, interval, period] of [[YEARLY, 'year', 'yearly'], [MONTHLY, 'month', 'monthly']] as const) {
+    for (const [id, interval, period, plan] of [[YEARLY, 'year', 'yearly', 'premium'], [MONTHLY, 'month', 'monthly', 'premium'], [DUO_YEARLY, 'year', 'yearly', 'premium_duo']] as const) {
       await pgCatalogStore.upsertPriceVersion(versionRowFrom(
         { id, livemode: false, product: 'prod_e2e_l68', lookup_key: null, unit_amount: interval === 'year' ? 5900 : 590, currency: 'eur', tax_behavior: 'unspecified', active: true, recurring: { interval, interval_count: 1 } } as unknown as Stripe.Price,
-        'premium', period, { catalogContext: ctx }, 'e2e',
+        plan, period, { catalogContext: ctx }, 'e2e',
       ));
     }
     mkdirSync(CAPTURES, { recursive: true });
@@ -152,12 +154,19 @@ scenario('ANN-J7', 'Abonnements annuels : e-mail automatique à J−7 avant reno
               VALUES (1, true, 'Verebona', 'bonjour@preprod.verebona.fr', 'support@verebona.fr')
               ON CONFLICT (id) DO UPDATE SET emails_enabled = true`;
     await sql`DELETE FROM communication_channel_settings WHERE event_code = 'email:SUBSCRIPTION_ANNUAL_RENEWAL_REMINDER'`;
-    // Couverture déterministe : traitement actif depuis 2030.
-    await sql`INSERT INTO annual_renewal_reminder_state (id, coverage_from) VALUES (1, '2030-01-01')
-              ON CONFLICT (id) DO UPDATE SET coverage_from = '2030-01-01'`;
+    // Couverture déterministe : traitement actif depuis 2030. Lot 72F : bascule
+    // DÉCLARÉE et tâche active (la suspension bloque aussi l'envoi).
+    await sql`INSERT INTO annual_renewal_reminder_state (id, coverage_from, stripe_reminders_disabled_at) VALUES (1, '2030-01-01', '2029-12-31T10:00:00Z')
+              ON CONFLICT (id) DO UPDATE SET coverage_from = '2030-01-01', stripe_reminders_disabled_at = '2029-12-31T10:00:00Z'`;
+    await sql`UPDATE scheduled_task_state SET admin_disabled = false WHERE code = 'subscription-annual-renewal-reminders'`;
   });
 
-  function stripeSub(o: { id: string; customer: string; end: Date; interval?: 'year' | 'month'; status?: string; cancel?: boolean; trialEnd?: number | null; schedule?: unknown }) {
+  afterAll(async () => {
+    await sql`UPDATE scheduled_task_state SET admin_disabled = true WHERE code = 'subscription-annual-renewal-reminders'`;
+    await sql`UPDATE annual_renewal_reminder_state SET stripe_reminders_disabled_at = NULL WHERE id = 1`;
+  });
+
+  function stripeSub(o: { id: string; customer: string; end: Date; interval?: 'year' | 'month'; status?: string; cancel?: boolean; trialEnd?: number | null; schedule?: unknown; duo?: boolean }) {
     const end = tsOf(o.end);
     const interval = o.interval ?? 'year';
     return {
@@ -165,7 +174,7 @@ scenario('ANN-J7', 'Abonnements annuels : e-mail automatique à J−7 avant reno
       trial_end: o.trialEnd ?? null, schedule: o.schedule ?? null, metadata: {}, start_date: end - 365 * DAY, created: end - 365 * DAY,
       items: { data: [{
         id: `si_${o.id}`, quantity: 1, current_period_start: end - (interval === 'year' ? 365 : 30) * DAY, current_period_end: end,
-        price: { id: interval === 'year' ? YEARLY : MONTHLY, object: 'price', product: 'prod_e2e_l68', unit_amount: interval === 'year' ? 5900 : 590, currency: 'eur', tax_behavior: 'unspecified', active: true, lookup_key: null, livemode: false, recurring: { interval, interval_count: 1 } },
+        price: { id: interval === 'year' ? (o.duo ? DUO_YEARLY : YEARLY) : MONTHLY, object: 'price', product: 'prod_e2e_l68', unit_amount: interval === 'year' ? 5900 : 590, currency: 'eur', tax_behavior: 'unspecified', active: true, lookup_key: null, livemode: false, recurring: { interval, interval_count: 1 } },
       }] },
     };
   }
@@ -184,7 +193,7 @@ scenario('ANN-J7', 'Abonnements annuels : e-mail automatique à J−7 avant reno
     await sql`UPDATE account_subscriptions SET stripe_customer_id = ${customer}, stripe_subscription_id = ${subId}, billing_period = ${period},
                      current_period_end_at = ${o.end.toISOString()}, cancel_at_period_end = ${o.cancel ?? false}, status = ${o.status ?? 'active'}
                WHERE account_id = ${acc.id}`;
-    etat.subs.set(subId, stripeSub({ id: subId, customer, end: o.end, interval: o.stripeInterval ?? (period === 'yearly' ? 'year' : 'month'), cancel: o.cancel, status: o.status === 'trialing' ? 'trialing' : 'active', trialEnd: o.trialEnd }));
+    etat.subs.set(subId, stripeSub({ id: subId, customer, end: o.end, interval: o.stripeInterval ?? (period === 'yearly' ? 'year' : 'month'), cancel: o.cancel, status: o.status === 'trialing' ? 'trialing' : 'active', trialEnd: o.trialEnd, duo: o.plan === 'premium_duo' }));
     return { ...acc, email, customer, subId };
   }
 
@@ -224,7 +233,8 @@ scenario('ANN-J7', 'Abonnements annuels : e-mail automatique à J−7 avant reno
     expect(m.html).toContain('Votre abonnement annuel Premium sera renouvelé automatiquement le 10 mars 2031, dans 7 jours.');
     expect(m.html).toContain('Le renouvellement automatique est activé par défaut. Sans action de votre part, votre abonnement sera reconduit pour une nouvelle année.');
     expect(m.html).toContain('Montant prévu pour ce renouvellement : 59,00 €.');
-    expect(m.html).toContain(`href="${APP}/mon-compte/abonnement/gerer"`);
+    // Lot 72F : lien permanent CONTEXTUALISÉ au compte facturé.
+    expect(m.html).toContain(`href="${APP}/mon-compte/abonnement/gerer/${t.id}"`);
     expect(m.html).toMatch(/class="vb-btn"[^>]*>Gérer mon abonnement sur Stripe</);
     expect(m.html).toContain('Vous pouvez également y consulter vos informations de facturation et vos moyens de paiement.');
     // Jamais d'URL de session Stripe (temporaire) dans l'e-mail.
@@ -373,7 +383,7 @@ scenario('ANN-J7', 'Abonnements annuels : e-mail automatique à J−7 avant reno
   });
 
   it('ANN-J7-E2E-09 — pannes : reprise, rattrapage avant échéance jamais après, montant jamais inventé, bascule', async () => {
-    // Stripe indisponible à 8 h 30 : rien de consigné, repris à 9 h 30.
+    // Stripe indisponible à 8 h 30 : erreur journalisée (lot 72F), repris à 9 h 30.
     const a = await titulaire({ end: paris('2031-10-10', 10) });
     etat.stripeDown = true;
     const r1 = await run(paris('2031-10-03', 8, 30));
@@ -426,7 +436,8 @@ scenario('ANN-J7', 'Abonnements annuels : e-mail automatique à J−7 avant reno
     expect(await send(jf2.id, paris('2031-10-25', 8, 31))).toMatchObject({ status: 'accepted' });
     expect(mailsTo(f.email)[0].html).toContain('dans 6 jours.');
 
-    // Bascule : activation le 2031-11-03 ; échéance du 2031-11-05 (J−7 le 29/10, rappel Stripe déjà parti) non rattrapée.
+    // Bascule : couverture à partir du 2031-11-03 ; échéance du 2031-11-05 (J−7 le 29/10, Stripe encore actif) :
+    // lot 72F — jamais présumée rappelée par Stripe, « couverture incertaine » signalée, sans envoi automatique.
     await sql`UPDATE annual_renewal_reminder_state SET coverage_from = '2031-11-03' WHERE id = 1`;
     const g = await titulaire({ end: paris('2031-11-05', 10) });
     const h = await titulaire({ end: paris('2031-11-10', 10) });
@@ -434,7 +445,7 @@ scenario('ANN-J7', 'Abonnements annuels : e-mail automatique à J−7 avant reno
     expect(await jobsOf(g.subId)).toHaveLength(0);
     expect(await jobsOf(h.subId)).toHaveLength(1); // J−7 le jour de l'activation : couvert
     const [motif] = await sql<{ reason: string }[]>`SELECT reason FROM annual_renewal_reminder_checks WHERE stripe_subscription_id = ${g.subId}`;
-    expect(motif.reason).toBe('BEFORE_COVERAGE');
+    expect(motif.reason).toBe('COVERAGE_UNCERTAIN');
   });
 
   it('ANN-J7-E2E-10 — e-mail désactivé dans le BO : annulé, jamais compté envoyé, pas relancé', async () => {

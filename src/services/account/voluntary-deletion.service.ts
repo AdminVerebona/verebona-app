@@ -775,7 +775,7 @@ async function detachSharingDefault(userId: number, now: Date): Promise<{ role: 
       .from(duoMemberships)
       .where(and(eq(duoMemberships.duoId, ownedDuo.id), eq(duoMemberships.status, 'ACTIVE'), ne(duoMemberships.userId, userId)));
     for (const m of remaining) {
-      await endMembership({ duoId: ownedDuo.id, membershipId: m.id, memberUserId: m.userId, status: 'REMOVED' });
+      await endMembership({ duoId: ownedDuo.id, membershipId: m.id, memberUserId: m.userId, status: 'REMOVED', reason: 'owner_account_deleted' });
     }
   } else {
     // Lot 65A : départ dû à la suppression de son propre compte — pas

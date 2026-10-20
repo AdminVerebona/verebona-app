@@ -26,8 +26,14 @@ interface Campaign {
   id: number; code: string; status: string; trigger: string; engineVersion: string; startedAt: string; finishedAt: string | null;
   lastRunAt: string | null; runs: number; before: Record<string, number>; after: Record<string, number> | null;
   outcomes: Record<string, number>; errorSample: string | null;
+  /** Lot 72 (C6) : bilan par règle, familles, phase, éléments restants, erreurs. */
+  outcomesByRule?: Record<string, Record<string, number>>; families?: Record<string, string>; phase?: string | null;
+  remaining?: { cards: number; decisions: number } | null; errorItems?: number;
 }
-interface Item { actionId: number; accountId: number; fileId: number; ruleCode: string; kindBefore: string | null; outcome: string; reason: string | null; createdAt: string }
+interface Item {
+  actionId: number | null; accountId: number; fileId: number | null; ruleCode: string; kindBefore: string | null; outcome: string; reason: string | null; createdAt: string;
+  targetType?: string; targetId?: number; phase?: string;
+}
 interface RecetteResult {
   caseId: string; label: string; ok: boolean; expected: { outcomes: string[]; card?: string | null; kinds?: string[]; never?: string[] };
   obtained: { outcome: string | null; card: string | null; kind: string | null; pertinence: string | null; derivation?: string | null; action?: string | null };
@@ -40,11 +46,13 @@ interface RecetteRun {
 interface Data {
   config: {
     ref: string; interventionCapable: boolean;
+    /** Lot 72 (C3) : suivi des révisions sauvegardées de la version T4 active. */
+    revisionTracked?: boolean; contentHash?: string | null;
     /** Lot 63 : seuils « À traiter » effectifs (BO › Configuration IA › Réglages). */
     thresholds?: { futureHorizonDays: number; historicalYears: number; deferUncertainDays: number; deferUndatedDays: number; deferTitleOnlyDays: number };
   };
   engineVersion: string;
-  migrations: { decisions0444: boolean; campaigns0445: boolean; recette0446: boolean };
+  migrations: { decisions0444: boolean; campaigns0445: boolean; recette0446: boolean; ecarts0516?: boolean; campagne0517?: boolean };
   campaigns: Campaign[]; items: Item[];
   recetteCases: Array<{ id: string; label: string; deterministic: boolean }>;
   recetteRuns: RecetteRun[];
@@ -53,7 +61,10 @@ interface Data {
 const ISSUE_LABEL: Record<string, string> = {
   KEPT: 'conservées', AUTO_RESOLVED: 'résolues automatiquement', DEFERRED: 'différées', REMOVED: 'retirées (sans pertinence)',
   REPLACED_BY_INTERVENTION: 'remplacées par l’action réelle', RESOLVED_ELSEWHERE: 'résolues ailleurs', ERROR: 'en erreur', examined: 'examinées',
+  NO_CARD: 'décision sans carte confirmée', CREATED: 'carte devenue justifiée',
 };
+const FAMILY_LABEL: Record<string, string> = { DOCUMENT: 'Documents', AGENDA_ITEM: 'Agenda', EQUIPMENT: 'Équipements', SUPPLIER: 'Fournisseurs' };
+const TARGET_LABEL: Record<string, string> = { DOCUMENT: 'document', AGENDA_ITEM: 'événement', EQUIPMENT: 'équipement', SUPPLIER: 'fournisseur' };
 const dt = (v: string | null) => (v ? new Date(v).toLocaleString('fr-FR') : '—');
 const kv = (o: Record<string, number> | null | undefined, labels: Record<string, string> = {}) =>
   (o && Object.keys(o).length ? Object.entries(o).map(([k, v]) => `${labels[k] ?? k} ${v}`).join(' · ') : '—');
@@ -78,6 +89,25 @@ function CampaignBlock({ c }: { c: Campaign }) {
         <span className="text-[color:var(--text-secondary)]">Issues : </span>
         <span className="text-[color:var(--text-muted)]">{kv(c.outcomes, ISSUE_LABEL)}</span>
       </p>
+      {c.outcomesByRule && Object.keys(c.outcomesByRule).length > 0 && (
+        <ul className="grid gap-1 sm:grid-cols-2">
+          {Object.entries(c.outcomesByRule).map(([regle, issues]) => (
+            <li key={regle} className="text-xs break-words">
+              <span className="text-[color:var(--text-secondary)]">{FAMILY_LABEL[c.families?.[regle] ?? ''] ?? c.families?.[regle] ?? '—'} · {regle} : </span>
+              <span className="text-[color:var(--text-muted)]">{kv(issues, ISSUE_LABEL)}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+      {(c.remaining || (c.errorItems ?? 0) > 0) && (
+        <p className="text-xs break-words">
+          <span className="text-[color:var(--text-secondary)]">Reste à traiter : </span>
+          <span className="text-[color:var(--text-muted)]">
+            {c.remaining ? `${c.remaining.cards} carte(s)${c.phase === 'DECISIONS' ? ' · phase décisions sans carte en cours' : ''}` : 'rien'}
+          </span>
+          {(c.errorItems ?? 0) > 0 && <span className="text-[color:var(--text-danger)]"> · {c.errorItems} élément(s) en erreur (filtrer l’issue ERROR)</span>}
+        </p>
+      )}
       {c.errorSample && <p className="text-xs text-[color:var(--text-danger)] break-words">Exemple d’erreur : {c.errorSample}</p>}
     </div>
   );
@@ -151,7 +181,7 @@ export function ToProcessRelevancePanel() {
     <div className="rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--bg-card)] p-4 space-y-3">
       <div className="flex flex-wrap items-center gap-2">
         <ListChecks className="w-4 h-4 text-[color:var(--text-muted)] shrink-0" />
-        <h2 className="vb-app-section">Pertinence des « À traiter » documentaires</h2>
+        <h2 className="vb-app-section">Pertinence des « À traiter »</h2>
         <Button type="button" size="sm" variant="outline" className="ml-auto h-8" onClick={() => void charger()} disabled={busy}>
           <RefreshCw className="w-3.5 h-3.5 mr-1" />Actualiser
         </Button>
@@ -167,6 +197,9 @@ export function ToProcessRelevancePanel() {
                 ? 'évaluation structurée de l’intervention active (t4_output_v3)'
                 : 'version active SANS t4_output_v3 : décision prudente (actions non identifiées différées). Activer la version de référence dans Prompts maîtres › T4.'}
             </span>
+            {data.config.revisionTracked === false && (
+              <span className="text-[color:var(--text-warning-soft)]"> · révisions sauvegardées de la version active NON suivies (migration 0516 absente) : seul un changement de version invalide les décisions IA.</span>
+            )}
           </p>
           {data.config.thresholds && (
             <p className="text-xs break-words" data-testid="to-process-thresholds">
@@ -177,15 +210,16 @@ export function ToProcessRelevancePanel() {
               </span>
             </p>
           )}
-          {(!data.migrations.decisions0444 || !data.migrations.campaigns0445 || !data.migrations.recette0446) && (
+          {(!data.migrations.decisions0444 || !data.migrations.campaigns0445 || !data.migrations.recette0446 || data.migrations.ecarts0516 === false || data.migrations.campagne0517 === false) && (
             <p className="text-xs text-[color:var(--text-warning-soft)] break-words">
-              Migrations : décisions {data.migrations.decisions0444 ? 'présentes' : 'ABSENTES (0444)'} · campagnes {data.migrations.campaigns0445 ? 'présentes' : 'ABSENTES (0445)'} · recette {data.migrations.recette0446 ? 'présente' : 'ABSENTE (0446)'}.
+              Migrations : décisions {data.migrations.decisions0444 ? 'présentes' : 'ABSENTES (0444)'} · campagnes {data.migrations.campaigns0445 ? 'présentes' : 'ABSENTES (0445)'} · recette {data.migrations.recette0446 ? 'présente' : 'ABSENTE (0446)'}
+              {' · '}traçabilité lot 72 {data.migrations.ecarts0516 === false ? 'ABSENTE (0516)' : 'présente'} · campagne multi-familles {data.migrations.campagne0517 === false ? 'ABSENTE (0517) : cartes documentaires seules' : 'présente'}.
             </p>
           )}
 
           <div className="space-y-2">
             <div className="flex flex-wrap items-center gap-2">
-              <p className="text-xs text-[color:var(--text-secondary)]">Réévaluation rétroactive des cartes existantes</p>
+              <p className="text-xs text-[color:var(--text-secondary)]">Réévaluation rétroactive des cartes existantes (documents, agenda, équipements, fournisseurs) et des décisions sans carte</p>
               <Button type="button" size="sm" className="h-8" disabled={busy} onClick={() => void lancer('campaign')}>
                 <Play className="w-3.5 h-3.5 mr-1" />Relancer une campagne
               </Button>
@@ -202,8 +236,8 @@ export function ToProcessRelevancePanel() {
             {data.items.length > 0 && (
               <ul className="space-y-1">
                 {data.items.map((i) => (
-                  <li key={i.actionId} className="text-xs break-words rounded border border-[color:var(--border-subtle)] px-2 py-1">
-                    <span className="text-[color:var(--text-primary)]">Action #{i.actionId}</span> · compte {i.accountId} · document {i.fileId} · {i.ruleCode}
+                  <li key={`${i.actionId ?? 'd'}-${i.targetType ?? 'DOCUMENT'}-${i.targetId ?? i.fileId}-${i.ruleCode}`} className="text-xs break-words rounded border border-[color:var(--border-subtle)] px-2 py-1">
+                    <span className="text-[color:var(--text-primary)]">{i.actionId ? `Action #${i.actionId}` : 'Décision sans carte'}</span> · compte {i.accountId} · {TARGET_LABEL[i.targetType ?? 'DOCUMENT'] ?? i.targetType} {i.targetId ?? i.fileId} · {i.ruleCode}
                     {' · '}<span className={i.outcome === 'ERROR' ? 'text-[color:var(--text-danger)]' : 'text-[color:var(--text-secondary)]'}>{ISSUE_LABEL[i.outcome] ?? i.outcome}</span>
                     {i.reason ? <span className="text-[color:var(--text-muted)]"> — {i.reason}</span> : null}
                   </li>

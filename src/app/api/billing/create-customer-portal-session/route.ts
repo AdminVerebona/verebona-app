@@ -1,7 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { SessionService } from '@/lib/session-service';
 import { getAppBaseUrl } from '@/lib/app-url';
-import { PortalConfigurationUnavailableError, createCustomerPortalSession, resolveBillingPortalAccess } from '@/services/billing/customer-portal.service';
+import {
+  PortalConfigurationUnavailableError, createCustomerPortalSession, parseAccountRef, resolveBillingPortalAccess, resolveBillingPortalAccessForAccount,
+} from '@/services/billing/customer-portal.service';
 
 /**
  * POST /api/billing/create-customer-portal-session
@@ -18,11 +20,34 @@ import { PortalConfigurationUnavailableError, createCustomerPortalSession, resol
  * (résiliation à la fin de la période). Configuration indisponible et
  * configuration par défaut non conforme : 503 `PORTAL_SESSION_FAILED`
  * (« Réessayer » proposé ; anomalie BO signalée par le service).
+ *
+ * Lot 72F : corps facultatif `{ accountRef }` — référence durable du compte
+ * facturé portée par le lien permanent de l'e-mail
+ * (`/mon-compte/abonnement/gerer/<compte>`). Le portail ouvert est alors
+ * EXCLUSIVEMENT celui de ce compte, après contrôle serveur (titulaire payeur,
+ * cohérence compte / abonnement / client Stripe) — jamais de repli sur le
+ * compte courant ni sur un autre compte du titulaire. Référence illisible :
+ * 400 ; compte d'autrui ou inexistant : 403 uniforme ; invité Duo : 403
+ * `DUO_GUEST` ; incohérence : 409 `BILLING_MISMATCH`. La session Stripe n'est
+ * créée qu'après autorisation. Sans `accountRef` : comportement inchangé.
  */
 export async function POST(request: NextRequest) {
   try {
     const session = await SessionService.getSession(request);
-    const access = await resolveBillingPortalAccess(session.userId, session.currentAccountId);
+    let body: { accountRef?: unknown } = {};
+    try {
+      const raw = await request.text();
+      body = raw ? JSON.parse(raw) as { accountRef?: unknown } : {};
+    } catch {
+      body = {};
+    }
+    const ref = parseAccountRef(body?.accountRef);
+    if (ref === 'INVALID') {
+      return NextResponse.json({ code: 'INVALID_ACCOUNT_REF', message: 'Lien de gestion de l’abonnement invalide.' }, { status: 400 });
+    }
+    const access = ref === null
+      ? await resolveBillingPortalAccess(session.userId, session.currentAccountId)
+      : await resolveBillingPortalAccessForAccount(session.userId, ref);
     if (!access.ok) {
       return NextResponse.json({ code: access.code, message: access.message }, { status: access.status });
     }

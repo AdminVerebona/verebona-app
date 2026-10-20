@@ -11,8 +11,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { SessionService } from '@/lib/session-service';
 import { db } from '@/db';
-import { assets, assetTransmissions, accountMemberships, users, emailTemplates } from '@/db/schema';
-import { eq, and, or } from 'drizzle-orm';
+import { assets, assetTransmissions, users, emailTemplates } from '@/db/schema';
+import { eq, and } from 'drizzle-orm';
 import { emit } from '@/lib/notifications';
 import { buildExportAssetSnapshot } from '@/services/exports/export-snapshot-source';
 import { randomUUID } from 'crypto';
@@ -87,17 +87,6 @@ interface SelectedPayload {
   selectedEventIds: number[];
 }
 
-async function resolveAccountId(userId: number): Promise<number | null> {
-  const [m] = await db
-    .select({ accountId: accountMemberships.accountId })
-    .from(accountMemberships)
-    .where(and(
-      eq(accountMemberships.userId, userId),
-      or(eq(accountMemberships.status, 'active'), eq(accountMemberships.status, 'ACTIVE')),
-    ))
-    .limit(1);
-  return m?.accountId ?? null;
-}
 
 export async function POST(
   request: NextRequest,
@@ -112,7 +101,7 @@ export async function POST(
     const [asset] = await db
       .select({ id: assets.id, name: assets.name, category: assets.category })
       .from(assets)
-      .where(and(eq(assets.id, assetId), eq(assets.userId, session.userId), eq(assets.accountId, session.currentAccountId ?? -1))) // lot 49 : compte actif
+      .where(and(eq(assets.id, assetId), eq(assets.accountId, session.currentAccountId ?? -1))) // lot 49 : compte actif ; lot 72D : tout membre du compte, plus seulement le créateur
       .limit(1);
     if (!asset) return NextResponse.json({ error: 'ASSET_NOT_FOUND' }, { status: 404 });
 
@@ -141,13 +130,15 @@ export async function POST(
       selectedEventIds: body.selectedPayload?.selectedEventIds ?? [],
     };
 
-    const accountId = await resolveAccountId(session.userId);
+    // Lot 72D : compte de la SESSION (le bien vient d'y être vérifié), et non
+    // la première adhésion de l'utilisateur, sans ordre.
+    const accountId = session.currentAccountId ?? null;
     if (!accountId) return NextResponse.json({ error: 'NO_ACCOUNT' }, { status: 400 });
 
     // Build snapshot at transmission time
     // X-02 (lot 16) : source canonique ; `snapshot.dataSource` est figé dans
     // `snapshotPayload`.
-    const snapshot = await buildExportAssetSnapshot(assetId, session.userId, undefined, 'TRANSMISSION');
+    const snapshot = await buildExportAssetSnapshot(assetId, session.userId, { accountId }, 'TRANSMISSION') /* lot 72D : accès par compte (bien d'un autre membre) */;
     const token = randomUUID();
     const now = new Date();
 
@@ -227,6 +218,16 @@ export async function GET(
     const assetId = parseInt(id);
     if (isNaN(assetId)) return NextResponse.json({ error: 'INVALID_ID' }, { status: 400 });
 
+    // Lot 72D : bien du compte de la session ; ses transmissions sont visibles
+    // de tout membre du compte (titulaire et membre, matrice Q14), plus
+    // seulement de celui qui les a lancées.
+    const [bien] = await db
+      .select({ id: assets.id })
+      .from(assets)
+      .where(and(eq(assets.id, assetId), eq(assets.accountId, session.currentAccountId ?? -1)))
+      .limit(1);
+    if (!bien) return NextResponse.json({ error: 'ASSET_NOT_FOUND' }, { status: 404 });
+
     const rows = await db
       .select({
         id: assetTransmissions.id,
@@ -241,10 +242,7 @@ export async function GET(
         createdAt: assetTransmissions.createdAt,
       })
       .from(assetTransmissions)
-      .where(and(
-        eq(assetTransmissions.assetId, assetId),
-        eq(assetTransmissions.initiatorUserId, session.userId),
-      ));
+      .where(eq(assetTransmissions.assetId, assetId));
 
     const baseUrl = process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000';
     const transmissions = rows.map(r => ({

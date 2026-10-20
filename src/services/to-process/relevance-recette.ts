@@ -47,12 +47,14 @@ export interface RecetteCase {
   contextDates?: Array<{ key: string; days: number }>;
   /** Calcul déterministe : début effectif (décalage) et durée lue. */
   derivation?: { startDays: number | null; duration: string | null; certain: boolean };
+  /** Lot 72 (C2) : signaux de cycle de vie lus dans le document (reconduction, fin effective, obligation résiduelle). */
+  lifecycle?: { renewal: boolean; terminated: boolean; residual: boolean };
   expected: {
     outcomes: Array<RelevanceOutcome | 'AUTO_RESOLVED'>;
     card?: 'INTERVENTION' | 'DATA_QUESTION' | null;
     kinds?: string[];
     never?: Array<RelevanceOutcome | 'DATA_QUESTION'>;
-    derivation?: 'CALCULATED_RELIABLE' | 'CALCULATED_PROBABLE' | 'NOT_DERIVABLE';
+    derivation?: 'CALCULATED_RELIABLE' | 'CALCULATED_PROBABLE' | 'NOT_DERIVABLE' | 'AMBIGUOUS';
   };
   /** Aucun appel IA attendu (décision du code). */
   deterministic: boolean;
@@ -72,10 +74,11 @@ export const RELEVANCE_RECETTE_CASES: readonly RecetteCase[] = [
     expected: { outcomes: ['AUTO_RESOLVED', 'CREATE_ACTION', 'DEFER', 'NO_ACTION'], derivation: 'NOT_DERIVABLE', never: ['AUTO_RESOLVED'] }, deterministic: true,
   },
   {
-    id: 'ATR-REC-03', label: 'Ancien contrat sans date de fin, sans enjeu actuel → pas de carte',
+    // Lot 72 (C2) : l'ancienneté n'est qu'un indice — décision différée, jamais « sans enjeu ».
+    id: 'ATR-REC-03', label: 'Ancien contrat sans date de fin, rien de probant → pas de carte, décision différée (jamais « sans enjeu » sur l’âge)',
     rule: 'DATA-CONTRACT-END', documentType: 'SERVICE_CONTRACT', title: 'Contrat d’entretien chaudière',
     contextDates: [{ key: 'documentDate', days: -3400 }, { key: 'contractStartDate', days: -3400 }],
-    expected: { outcomes: ['NO_ACTION'] }, deterministic: true,
+    expected: { outcomes: ['DEFER'], never: ['NO_ACTION', 'CREATE_ACTION'] }, deterministic: true,
   },
   {
     id: 'ATR-REC-04', label: 'Échéance future lointaine → interpellation différée',
@@ -137,6 +140,37 @@ export const RELEVANCE_RECETTE_CASES: readonly RecetteCase[] = [
     contextDates: [{ key: 'contractStartDate', days: -60 }],
     expected: { outcomes: ['CREATE_ACTION', 'DEFER', 'NO_ACTION'], never: [] }, deterministic: false,
   },
+  // ── Lot 72 (C1, C2) : calculs composites, contrats anciens ────────────────
+  {
+    id: 'ATR-REC-14', label: 'Contrat signé il y a six ans, reconductible tacitement, sans date de fin → jamais « sans enjeu » sur l’âge',
+    rule: 'DATA-CONTRACT-END', documentType: 'MAINTENANCE_CONTRACT', title: 'Contrat d’entretien — reconduction tacite annuelle',
+    contextDates: [{ key: 'contractStartDate', days: -2200 }], lifecycle: { renewal: true, terminated: false, residual: false },
+    expected: { outcomes: ['CREATE_ACTION', 'DEFER'], never: ['NO_ACTION'] }, deterministic: false,
+  },
+  {
+    id: 'ATR-REC-15', label: 'Contrat ancien dont la fin effective est prouvée (résilié, sans obligation) → aucune carte',
+    rule: 'DATA-CONTRACT-END', documentType: 'SUBSCRIPTION_CONTRACT', title: 'Abonnement résilié',
+    contextDates: [{ key: 'contractStartDate', days: -3000 }], lifecycle: { renewal: false, terminated: true, residual: false },
+    expected: { outcomes: ['NO_ACTION'], never: ['CREATE_ACTION'] }, deterministic: true,
+  },
+  {
+    id: 'ATR-REC-16', label: 'Prêt de 240 mois « dont 12 mois de différé » → 240 mois (jamais 252)',
+    rule: 'DATA-CONTRACT-END', documentType: 'FINANCING_CONTRACT', title: 'Offre de prêt avec différé',
+    derivation: { startDays: -400, duration: '240 mois, dont 12 mois de différé', certain: true },
+    expected: { outcomes: ['AUTO_RESOLVED'], derivation: 'CALCULATED_RELIABLE' }, deterministic: true,
+  },
+  {
+    id: 'ATR-REC-17', label: 'Location de 12 mois renouvelable pour 12 mois → aucune durée de 24 mois, aucun calcul fiable',
+    rule: 'DATA-CONTRACT-END', documentType: 'SERVICE_CONTRACT', title: 'Contrat de location de matériel',
+    derivation: { startDays: -100, duration: '12 mois renouvelables pour 12 mois', certain: true },
+    expected: { outcomes: [], derivation: 'CALCULATED_PROBABLE', never: ['AUTO_RESOLVED'] }, deterministic: true,
+  },
+  {
+    id: 'ATR-REC-18', label: 'Abonnement « 36 ou 48 mois » (durée composite ambiguë) → aucun calcul',
+    rule: 'DATA-CONTRACT-END', documentType: 'SUBSCRIPTION_CONTRACT', title: 'Contrat d’abonnement',
+    derivation: { startDays: -30, duration: '36 ou 48 mois', certain: true },
+    expected: { outcomes: [], derivation: 'AMBIGUOUS', never: ['AUTO_RESOLVED'] }, deterministic: true,
+  },
 ];
 
 const decale = (today: string, days: number) => new Date(Date.parse(`${today}T00:00:00Z`) + days * 86_400_000).toISOString().slice(0, 10);
@@ -190,6 +224,7 @@ export async function runRecetteCase(c: RecetteCase, p: { accountId: number; tod
     r = await assessDeadlinePertinence({
       accountId: p.accountId, fileId: 0, rule, documentType: c.documentType, candidates, today: p.today, decide: p.decide,
       documentTitle: c.title, contextDates: (c.contextDates ?? []).map((d) => ({ key: d.key, iso: decale(p.today, d.days) })),
+      lifecycle: c.lifecycle ? { ...c.lifecycle, signals: [] } : null,
       evidenceFingerprint: `recette:${c.id}`, config: p.config, remembered: null,
     });
   } catch (e) {

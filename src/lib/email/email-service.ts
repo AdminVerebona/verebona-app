@@ -124,6 +124,65 @@ export interface EmailSendResult {
   logId?: number;
   /** Identifiant du message chez Resend (accepté). */
   providerMessageId?: string | null;
+  /** Lot 72F : la demande a-t-elle été transmise au prestataire ? */
+  providerCalled?: boolean;
+  /**
+   * Lot 72F : acceptation INCERTAINE — la demande a pu être acceptée par
+   * Resend sans que la réponse soit connue (réseau, délai, 5xx, clé
+   * d'idempotence déjà utilisée ou en cours). Jamais un échec confirmé.
+   */
+  uncertain?: boolean;
+  /** Lot 72F : code et statut HTTP du prestataire (cause technique, sans donnée personnelle). */
+  providerCode?: string | null;
+  providerStatus?: number | null;
+}
+
+/** Erreur renvoyée par le SDK Resend (sous-ensemble). */
+export interface ProviderErrorShape { name?: string | null; statusCode?: number | null; message?: string | null }
+
+/**
+ * Lot 72F — une réponse d'erreur du prestataire prouve-t-elle que l'e-mail
+ * n'a PAS été accepté ? Non pour : réseau / délai (aucun statut), 5xx (le
+ * prestataire a pu l'accepter avant d'échouer), 409 d'idempotence (requête
+ * identique en cours, ou clé déjà utilisée : la demande d'origine a été reçue).
+ * Oui pour les autres 4xx (validation, quota, limite de débit, clé invalide).
+ */
+export function classifyProviderError(e: ProviderErrorShape | null | undefined): 'rejected' | 'uncertain' {
+  if (!e) return 'uncertain';
+  const status = typeof e.statusCode === 'number' ? e.statusCode : null;
+  if (e.name === 'concurrent_idempotent_requests' || e.name === 'invalid_idempotent_request') return 'uncertain';
+  if (status !== null && status >= 500) return 'uncertain';
+  if (e.name === 'application_error' || e.name === 'internal_server_error') return 'uncertain';
+  // Refus explicites de l'API (le code suffit, même sans statut HTTP).
+  if (e.name && DEFINITIVE_PROVIDER_ERRORS.has(e.name)) return 'rejected';
+  if (status === null) return 'uncertain';
+  return 'rejected';
+}
+
+/** Codes Resend d'une demande REFUSÉE (jamais acceptée). */
+const DEFINITIVE_PROVIDER_ERRORS: ReadonlySet<string> = new Set([
+  'validation_error', 'invalid_from_address', 'invalid_parameter', 'missing_required_field', 'invalid_attachment', 'invalid_access',
+  'invalid_region', 'invalid_idempotency_key', 'missing_api_key', 'restricted_api_key', 'invalid_api_key', 'not_found', 'method_not_allowed',
+  'rate_limit_exceeded', 'daily_quota_exceeded', 'monthly_quota_exceeded', 'security_error',
+]);
+
+/** Lot 72F — e-mail consulté chez le prestataire (sans contenu). */
+export interface ProviderEmailInfo {
+  id: string;
+  to: string[];
+  createdAt: string | null;
+  lastEvent: string | null;
+  tags: Array<{ name: string; value: string }>;
+}
+
+export type ProviderLookup<T> = { ok: true; value: T } | { ok: false; code: string; status: number | null };
+
+const toList = (v: string[] | string | null | undefined): string[] => (Array.isArray(v) ? v : v ? [v] : []);
+/** Étiquettes Resend : tableau (API) ou objet (webhook). */
+export function tagList(v: Array<{ name: string; value: string }> | Record<string, string> | null | undefined): Array<{ name: string; value: string }> {
+  if (!v) return [];
+  if (Array.isArray(v)) return v.filter((t) => t && typeof t.name === 'string').map((t) => ({ name: t.name, value: String(t.value) }));
+  return Object.entries(v).map(([name, value]) => ({ name, value: String(value) }));
 }
 
 class EmailService {
@@ -381,8 +440,12 @@ class EmailService {
     skipChannelCheck?: boolean;
     /** Lot 57A : utilisateur à l'origine de l'envoi (titulaire Duo), distinct du destinataire. */
     triggeredByUserId?: number | null;
-    /** Lot 57A : clé d'idempotence transmise à Resend (une par tentative). */
+    /** Lot 57A : clé d'idempotence transmise à Resend. Lot 72F : STABLE entre les tentatives d'une même demande. */
     idempotencyKey?: string;
+    /** Lot 72F : étiquettes Resend (demande d'origine) — réconciliation par webhook ou consultation. */
+    tags?: Array<{ name: string; value: string }>;
+    /** Lot 72F : appelé juste avant la transmission au prestataire (marque persistante de l'appel). */
+    beforeProviderCall?: () => Promise<void>;
     /** Lot 57A : envoi durable dont cette ligne est une tentative. */
     emailJobId?: number;
     /**
@@ -412,6 +475,9 @@ class EmailService {
       const [row] = await db.insert(emailLogs).values(logEntry).returning({ id: emailLogs.id });
       return row?.id;
     };
+    // Lot 72F : l'issue d'un appel au prestataire survit à une erreur ultérieure.
+    let providerCalled = false;
+    let acceptedId: string | null = null;
     
     try {
       const settings = await this.getSettings();
@@ -508,6 +574,9 @@ class EmailService {
         return { success: false, error: 'Email provider not configured', logId: await journaliser() };
       }
       
+      // Lot 72F : marque persistante AVANT la transmission (reprise après arrêt).
+      if (options.beforeProviderCall) await options.beforeProviderCall();
+      providerCalled = true;
       const { data, error } = await this.resend.emails.send({
         from: `${settings.senderName} <${settings.senderEmail}>`,
         to: options.to,
@@ -515,6 +584,7 @@ class EmailService {
         html: htmlBody,
         text: bodyText,
         replyTo: settings.replyToEmail,
+        ...(options.tags && options.tags.length ? { tags: options.tags } : {}),
       }, options.idempotencyKey ? { idempotencyKey: options.idempotencyKey } : undefined);
       
       if (error) {
@@ -522,18 +592,31 @@ class EmailService {
         // Lot 57A : le CODE Resend (validation_error, invalid_from_address,
         // rate_limit_exceeded…) précède le message — cause lisible dans le BO.
         const code = (error as { name?: string }).name;
-        logEntry.errorMessage = `${code ? `[${code}] ` : ''}${error.message || JSON.stringify(error)}`;
-        return { success: false, error: error.message, logId: await journaliser() };
+        const providerStatus = (error as { statusCode?: number | null }).statusCode ?? null;
+        const verdict = classifyProviderError(error as ProviderErrorShape);
+        logEntry.errorMessage = `${verdict === 'uncertain' ? '[acceptation incertaine] ' : ''}${code ? `[${code}] ` : ''}${error.message || JSON.stringify(error)}`;
+        return {
+          success: false, error: error.message, logId: await journaliser(),
+          providerCalled: true, uncertain: verdict === 'uncertain', providerCode: code ?? null, providerStatus,
+        };
       }
       
       // `sent` = ACCEPTÉ par Resend (sens inchangé). La livraison est suivie à
       // part (`delivery_status`, webhooks Resend — lot 57A).
       logEntry.status = 'sent';
       const providerMessageId = (data as { id?: string } | null)?.id ?? null;
+      acceptedId = providerMessageId;
       logEntry.providerMessageId = providerMessageId;
       logEntry.deliveryStatus = 'accepted';
       logEntry.deliveryStatusAt = new Date();
-      const logId = await journaliser();
+      // Lot 72F : un échec d'écriture du journal APRÈS l'acceptation ne la
+      // transforme jamais en échec (sinon : reprise et second envoi).
+      let logId: number | undefined;
+      try {
+        logId = await journaliser();
+      } catch (e) {
+        console.error('[EmailService] journal de l’envoi accepté impossible :', (e as Error)?.message ?? e);
+      }
       if (providerMessageId) {
         // Webhook arrivé AVANT cette écriture (ordre indifférent) : rejoué ici.
         try {
@@ -544,20 +627,62 @@ class EmailService {
         }
       }
       
-      return { success: true, logId, providerMessageId };
+      return { success: true, logId, providerMessageId, providerCalled: true };
       
     } catch (err) {
       console.error('❌ EmailService error:', err);
+      if (acceptedId) return { success: true, providerMessageId: acceptedId, providerCalled: true };
       const errorMessage = err instanceof Error ? err.message : 'Unknown error';
       logEntry.status = 'failed';
-      logEntry.errorMessage = errorMessage;
+      logEntry.errorMessage = providerCalled ? `[acceptation incertaine] ${errorMessage}` : errorMessage;
       
       let logId: number | undefined;
       try {
         logId = await journaliser();
       } catch (logError) {}
       
-      return { success: false, error: errorMessage, logId };
+      // Lot 72F : exception pendant l'appel au prestataire = issue inconnue.
+      return { success: false, error: errorMessage, logId, providerCalled, uncertain: providerCalled };
+    }
+  }
+
+  /**
+   * Lot 72F — consultation d'un e-mail chez Resend par son identifiant
+   * (réconciliation d'une acceptation incertaine). Jamais le contenu.
+   * Une clé API limitée à l'envoi renvoie `restricted_api_key`.
+   */
+  async getProviderEmail(id: string): Promise<ProviderLookup<ProviderEmailInfo | null>> {
+    if (!process.env.RESEND_API_KEY) return { ok: false, code: 'NOT_CONFIGURED', status: null };
+    try {
+      const { data, error } = await this.resend.emails.get(id);
+      if (error) {
+        if ((error as ProviderErrorShape).statusCode === 404 || (error as ProviderErrorShape).name === 'not_found') return { ok: true, value: null };
+        return { ok: false, code: String((error as ProviderErrorShape).name ?? 'error'), status: (error as ProviderErrorShape).statusCode ?? null };
+      }
+      const d = data as unknown as { id: string; to?: string[] | string; created_at?: string; last_event?: string; tags?: Array<{ name: string; value: string }> | Record<string, string> } | null;
+      if (!d) return { ok: true, value: null };
+      return { ok: true, value: { id: d.id, to: toList(d.to), createdAt: d.created_at ?? null, lastEvent: d.last_event ?? null, tags: tagList(d.tags) } };
+    } catch {
+      return { ok: false, code: 'NETWORK', status: null };
+    }
+  }
+
+  /** Lot 72F — page de la liste des e-mails envoyés (plus récents d'abord). */
+  async listProviderEmails(opts: { after?: string; limit?: number } = {}): Promise<ProviderLookup<{ items: ProviderEmailInfo[]; hasMore: boolean }>> {
+    if (!process.env.RESEND_API_KEY) return { ok: false, code: 'NOT_CONFIGURED', status: null };
+    try {
+      const { data, error } = await this.resend.emails.list({ limit: opts.limit ?? 100, ...(opts.after ? { after: opts.after } : {}) });
+      if (error) return { ok: false, code: String((error as ProviderErrorShape).name ?? 'error'), status: (error as ProviderErrorShape).statusCode ?? null };
+      const d = data as unknown as { has_more?: boolean; data?: Array<{ id: string; to?: string[] | string; created_at?: string; last_event?: string }> } | null;
+      return {
+        ok: true,
+        value: {
+          hasMore: !!d?.has_more,
+          items: (d?.data ?? []).map((x) => ({ id: x.id, to: toList(x.to), createdAt: x.created_at ?? null, lastEvent: x.last_event ?? null, tags: [] })),
+        },
+      };
+    } catch {
+      return { ok: false, code: 'NETWORK', status: null };
     }
   }
   

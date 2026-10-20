@@ -179,12 +179,18 @@ scenario('L65-MAIL', 'Duo : confirmation au membre qui quitte, pas de doublon à
     expect(mailsTo(c.membre.email).filter((m) => m.subject === SUJET_DEPART)).toHaveLength(0);
   });
 
-  it('L65-MAIL-E2E-04 — ancienne route /api/duos/:id/leave : même confirmation, une fois ; jamais bloquant', async () => {
+  it('L65-MAIL-E2E-04 — ancienne route /api/duos/:id/leave retirée (lot 72D, 410) ; « Quitter » : même confirmation, une fois ; jamais bloquant', async () => {
     const c = await duoAvecMembre();
-    const { POST } = await import('@/app/api/duos/[id]/leave/route');
     const tok = await jeton(c.membre.id, c.membre.email, 'USER');
-    const appel = () => POST(req(`/api/duos/${c.duoId}/leave`, { body: {}, cookie: `access_token=${tok}` }), { params: Promise.resolve({ id: String(c.duoId) }) });
-    expect((await appel()).status).toBe(200);
+    // Lot 72D : l'ancienne route (départ avec transfert de biens) ne fait plus rien.
+    const { POST: ancienne } = await import('@/app/api/duos/[id]/leave/route');
+    const r410 = await ancienne(req(`/api/duos/${c.duoId}/leave`, { body: {}, cookie: `access_token=${tok}` }));
+    expect(r410.status).toBe(410);
+    expect((await r410.json()).code).toBe('DUO_TRANSFER_LEAVE_REMOVED');
+    expect(await membershipStatus(c.membershipId)).toBe('ACTIVE');
+    expect(await jobsOf(c.membre.id)).toHaveLength(0);
+    const { POST } = await import('@/app/api/duo/leave/route');
+    expect((await POST(req('/api/duo/leave', { body: {}, cookie: `access_token=${tok}` }))).status).toBe(200);
     expect(await membershipStatus(c.membershipId)).toBe('LEFT');
     expect(await jobsOf(c.membre.id)).toHaveLength(1);
     await retry();

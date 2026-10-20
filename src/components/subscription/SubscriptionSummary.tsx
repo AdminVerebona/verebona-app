@@ -169,10 +169,32 @@ function useStorageQuota(): StorageQuotaUsage | null {
   return quota;
 }
 
+/**
+ * Lot 72D (décision PO Q5) : titulaire de son propre espace ET membre d'un
+ * Premium Duo — mention neutre, aucune action (les deux abonnements sont
+ * conservés, l'utilisateur choisit son espace).
+ */
+function useAlsoDuoMember(enabled: boolean): boolean {
+  const [also, setAlso] = useState(false);
+  useEffect(() => {
+    if (!enabled) return;
+    let annule = false;
+    fetch('/api/accounts', { credentials: 'include' })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d: { accounts?: Array<{ role: string; plan: string; current: boolean }> } | null) => {
+        if (!annule) setAlso(!!d?.accounts?.some((a) => !a.current && a.role === 'member' && a.plan.startsWith('Premium Duo')));
+      })
+      .catch(() => {});
+    return () => { annule = true; };
+  }, [enabled]);
+  return also;
+}
+
 export function SubscriptionSummary() {
   const router = useRouter();
   const { user } = useSession();
   const isDuoMember = user?.duoRole === 'MEMBER';
+  const alsoDuoMember = useAlsoDuoMember(!isDuoMember && (user?.accountsCount ?? 1) >= 2);
   // État du compte : celui de l'`EntitlementsProvider` (une lecture de
   // `/api/billing/trial-status` partagée par la garde, le layout et cette
   // page — APP-PERF-12), plus de lecture propre au montage. La réponse porte
@@ -270,7 +292,10 @@ export function SubscriptionSummary() {
 
   const { trial, subscription, quotas } = data;
   const showDuoInvitation = !isDuoMember && data.plan === 'premium_duo' && user?.duoRole === 'BILLING_OWNER';
-  const planLabel = PLAN_LABELS[data.plan] ?? data.plan;
+  // Lot 72D (Q16) : le membre voit « Premium Duo — Membre », le titulaire,
+  // le statut et les quotas communs — ni prix, ni paiement, ni offre.
+  const planLabel = isDuoMember && data.plan === 'premium_duo' ? 'Premium Duo — Membre' : (PLAN_LABELS[data.plan] ?? data.plan);
+  const ownerName = (data as { viewer?: { ownerName?: string | null } }).viewer?.ownerName ?? null;
   const periodLabel =
     subscription.billingPeriod === 'monthly'
       ? 'Mensuelle'
@@ -300,10 +325,17 @@ export function SubscriptionSummary() {
           <p className="text-sm font-medium text-[color:var(--text-primary)]">{planLabel}</p>
         </div>
 
-        <div>
-          <p className="vb-app-label">Périodicité</p>
-          <p className="text-sm font-medium text-[color:var(--text-primary)]">{periodLabel}</p>
-        </div>
+        {isDuoMember ? (
+          <div>
+            <p className="vb-app-label">Titulaire</p>
+            <p className="text-sm font-medium text-[color:var(--text-primary)]">{ownerName ?? '—'}</p>
+          </div>
+        ) : (
+          <div>
+            <p className="vb-app-label">Périodicité</p>
+            <p className="text-sm font-medium text-[color:var(--text-primary)]">{periodLabel}</p>
+          </div>
+        )}
 
         <div>
           <p className="vb-app-label">
@@ -351,6 +383,12 @@ export function SubscriptionSummary() {
             </div>
           )}
         </div>
+      )}
+
+      {alsoDuoMember && (
+        <p className="mb-5 text-sm text-[color:var(--text-muted)]" data-testid="also-duo-member">
+          Vous êtes aussi membre d&apos;un espace Premium Duo. Pour l&apos;ouvrir, changez d&apos;espace depuis le menu de votre compte.
+        </p>
       )}
 
       {/* Essai en cours */}

@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useId } from 'react';
 import { EFFECTIVE_STATUS_LABELS, attentionFlagLabel, visibleAttentionFlags, type AgendaEffectiveStatus } from '@/lib/agenda/effective-status';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -13,6 +13,13 @@ import { toast } from 'sonner';
 import type { AgendaItemFull } from '@/services/agenda/AgendaQueryService';
 import { useWriteGuard } from '@/contexts/WriteGuardContext';
 import { AgendaViewControls, CalendarView, YearView, currentMonth, type AgendaView } from '@/components/agenda/AgendaPeriodViews';
+import { ActiveFilterChips, FiltersToggleButton } from '@/components/filters/FilterControls';
+import { AssetAgendaFilterPanel } from '@/components/assets/AssetAgendaFilters';
+import {
+  buildEquipmentFilterModel, equipmentFilterParam, type EquipmentFacet,
+} from '@/lib/filters/equipment-filter';
+import type { AgendaPeriod } from '@/lib/agenda/agenda-filters';
+import { assetAgendaChips, isAssetAgendaEmpty } from '@/lib/agenda/asset-agenda-filters';
 
 const AgendaItemDrawer = dynamic(
   () => import('@/components/agenda/AgendaItemDrawer').then(m => ({ default: m.AgendaItemDrawer })),
@@ -45,12 +52,16 @@ interface Props {
   assetId: number;
 }
 
-type PeriodFilter = 'all' | 'upcoming' | 'past';
-
 /**
  * Onglet Agenda d'un bien. Lot 59 (point 5) : mêmes vues que « Mon agenda »
  * — Liste / Mensuel / Annuel, même sélecteur, même grille (composants
  * partagés `AgendaPeriodViews`), desktop et mobile —, limitées au bien.
+ *
+ * Lot 72 (72E, décision PO du 19/10/2026) : filtre « Équipement » du lot
+ * 71C, avec les conventions de « Mon agenda » — bouton « Filtres », panneau
+ * dans la page (un seul pour tous les écrans), pastilles « Filtré par … ».
+ * Le bien est fixé par la fiche ; la section Équipement n'apparaît que s'il
+ * porte des équipements (facette `equipmentFacet=1` de `/api/agenda`).
  */
 export function AssetAgendaTab({ assetId }: Props) {
   const [items, setItems] = useState<AgendaItemFull[]>([]);
@@ -60,8 +71,13 @@ export function AssetAgendaTab({ assetId }: Props) {
   const [month, setMonth] = useState<string>(() => currentMonth());
   const [year, setYear] = useState<number>(() => new Date().getFullYear());
   const [refreshKey, setRefreshKey] = useState(0);
-  const [period, setPeriod] = useState<PeriodFilter>('all');
+  const [period, setPeriod] = useState<AgendaPeriod>('all');
   const [includeCancelled, setIncludeCancelled] = useState(false);
+  // Lot 72 (72E) : `null` = « Tous (bien et équipements) », jamais transmis.
+  const [equipment, setEquipment] = useState<string | null>(null);
+  const [equipmentFacet, setEquipmentFacet] = useState<EquipmentFacet | null>(null);
+  const [filtersOpen, setFiltersOpen] = useState(false);
+  const filtersPanelId = `${useId()}-filtres-agenda-bien`;
   const [selectedItem, setSelectedItem] = useState<AgendaItemFull | null>(null);
   const [showCreate, setShowCreate] = useState(false);
   // Garde au clic (en plus de celle du tiroir) : le chargement dynamique du
@@ -69,30 +85,38 @@ export function AssetAgendaTab({ assetId }: Props) {
   const { garder } = useWriteGuard();
   const ouvrirCreation = () => garder(() => setShowCreate(true));
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    try {
-      // Mêmes paramètres que « Mon agenda » : le mois pour la vue mensuelle,
-      // l'année (toutes périodes) pour la vue annuelle.
-      const params = new URLSearchParams({
-        assetIds: String(assetId),
-        period: view === 'year' ? 'all' : period,
-        includeCancelled: String(includeCancelled),
-        includeUndated: 'true',
-      });
-      if (view === 'calendar') params.set('month', month);
-      if (view === 'year') params.set('year', String(year));
-      const data = await apiClient.get<{ items: AgendaItemFull[] }>(`/api/agenda?${params}`);
-      setItems(data.items ?? []);
-    } catch {
-      toast.error('Erreur lors du chargement');
-    } finally {
-      setLoading(false);
-      setLoadedOnce(true);
-    }
-  }, [assetId, period, includeCancelled, refreshKey, view, month, year]);
+  // Autre bien (navigation d'une fiche à l'autre sans démontage) : le
+  // filtre Équipement revient à « Tous ».
+  useEffect(() => { setEquipment(null); }, [assetId]);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    setLoading(true);
+    // Mêmes paramètres que « Mon agenda » : le mois pour la vue mensuelle,
+    // l'année (toutes périodes) pour la vue annuelle.
+    const params = new URLSearchParams({
+      assetIds: String(assetId),
+      period: view === 'year' ? 'all' : period,
+      includeCancelled: String(includeCancelled),
+      includeUndated: 'true',
+    });
+    if (view === 'calendar') params.set('month', month);
+    if (view === 'year') params.set('year', String(year));
+    // Équipements du bien (options et compteurs du filtre), et filtre actif.
+    params.set('equipmentFacet', '1');
+    if (equipment) params.set('equipment', equipment);
+
+    // Filtres enchaînés au clavier : seule la DERNIÈRE réponse est appliquée.
+    let actuel = true;
+    apiClient.get<{ items: AgendaItemFull[]; equipmentFacet?: EquipmentFacet | null }>(`/api/agenda?${params}`)
+      .then(data => {
+        if (!actuel) return;
+        setItems(data.items ?? []);
+        setEquipmentFacet(data.equipmentFacet ?? null);
+      })
+      .catch(() => { if (actuel) toast.error('Erreur lors du chargement'); })
+      .finally(() => { if (actuel) { setLoading(false); setLoadedOnce(true); } });
+    return () => { actuel = false; };
+  }, [assetId, period, includeCancelled, equipment, refreshKey, view, month, year]);
 
   const onMutated = () => {
     setRefreshKey(k => k + 1);
@@ -106,39 +130,64 @@ export function AssetAgendaTab({ assetId }: Props) {
     return () => window.removeEventListener('agenda-mutated', handler);
   }, []);
 
-  // Comme « Mon agenda » : sélecteur masqué seulement si l'agenda du bien est
-  // RÉELLEMENT vide (vue Liste, aucun filtre) — un mois vide n'est pas un
-  // agenda vide.
-  const agendaVide = !loading && items.length === 0 && view === 'list' && period === 'all' && !includeCancelled;
+  // Bien fixé par la fiche : un seul bien retenu pour le modèle.
+  const equipmentModel = buildEquipmentFilterModel(equipmentFacet, equipment, 1);
+  // Le bien n'a (plus) aucun équipement proposé : un filtre resté actif
+  // n'aurait plus de commande pour le retirer — il est abandonné.
+  useEffect(() => {
+    if (loadedOnce && !loading && equipment && !equipmentModel.visible) setEquipment(null);
+  }, [loadedOnce, loading, equipment, equipmentModel.visible]);
+  const chips = assetAgendaChips({
+    view, period, includeCancelled,
+    equipmentChipLabel: equipment ? (equipmentModel.chipLabel ?? (loading ? null : 'Équipement indisponible')) : null,
+  });
+  const activeFiltersCount = chips.length;
+  const removeChip = (key: string) => {
+    if (key === 'period') setPeriod('all');
+    else if (key === 'cancelled') setIncludeCancelled(false);
+    else if (key === 'equipment') setEquipment(null);
+  };
+  const clearFilters = () => { setPeriod('all'); setIncludeCancelled(false); setEquipment(null); };
+
+  // Comme « Mon agenda » : commandes masquées seulement si l'agenda du bien
+  // est RÉELLEMENT vide (vue Liste, aucun filtre) — un mois vide n'est pas un
+  // agenda vide, et un filtre trop restrictif doit rester retirable.
+  const agendaVide = isAssetAgendaEmpty({ loading, itemCount: items.length, view, activeFilters: activeFiltersCount });
+  const masquerFiltres = !loadedOnce || agendaVide;
 
   return (
     <div className="space-y-4">
-      {/* Toolbar */}
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="flex flex-wrap items-center gap-2">
-          {/* Vue annuelle : toute l'année, comme « Mon agenda » — pas de filtre de période. */}
-          {view !== 'year' && (['all', 'upcoming', 'past'] as PeriodFilter[]).map(p => (
-            <button
-              key={p}
-              className={`text-xs px-2.5 py-1 rounded-full border transition-colors ${period === p ? 'bg-primary text-primary-foreground border-primary' : 'border-border hover:bg-muted'}`}
-              onClick={() => setPeriod(p)}
-            >
-              {p === 'all' ? 'Tout' : p === 'upcoming' ? 'À venir' : 'Passés'}
-            </button>
-          ))}
-          <button
-            className={`text-xs px-2.5 py-1 rounded-full border transition-colors ${includeCancelled ? 'bg-primary text-primary-foreground border-primary' : 'border-border hover:bg-muted'}`}
-            onClick={() => setIncludeCancelled(v => !v)}
-          >
-            Annulés
-          </button>
-        </div>
-        {(items.length > 0 || view !== 'list') && (
+      {/* Toolbar — lot 72 (72E) : bouton « Filtres » de « Mon agenda » ; il
+          déplie le panneau ci-dessous, jamais un tiroir (téléphone compris). */}
+      <div className="flex flex-wrap items-center justify-end gap-2">
+        {!masquerFiltres && (
+          <FiltersToggleButton
+            count={activeFiltersCount}
+            open={filtersOpen}
+            panelId={filtersPanelId}
+            onToggle={() => setFiltersOpen(v => !v)}
+          />
+        )}
+        {(items.length > 0 || view !== 'list' || activeFiltersCount > 0) && (
           <Button variant="secondary" size="sm" onClick={ouvrirCreation} className="btn-add">
             <Plus className="h-4 w-4 btn-add-plus-icon" /> Ajouter
           </Button>
         )}
       </div>
+
+      {filtersOpen && !masquerFiltres && (
+        <AssetAgendaFilterPanel
+          id={filtersPanelId}
+          view={view}
+          period={period}
+          includeCancelled={includeCancelled}
+          equipment={equipmentModel}
+          onPeriod={setPeriod}
+          onToggleCancelled={() => setIncludeCancelled(v => !v)}
+          onEquipment={(v) => setEquipment(equipmentFilterParam(v))}
+        />
+      )}
+      {!masquerFiltres && <ActiveFilterChips chips={chips} onRemove={removeChip} onClear={clearFilters} />}
 
       {/* Lot 59 (point 5) : Liste / Mensuel / Annuel, comme « Mon agenda ». */}
       <AgendaViewControls
@@ -167,6 +216,12 @@ export function AssetAgendaTab({ assetId }: Props) {
         <YearView items={items} year={year} onItemClick={setSelectedItem} />
       ) : view === 'calendar' ? (
         <CalendarView items={items} month={month} onItemClick={setSelectedItem} onNew={ouvrirCreation} />
+      ) : items.length === 0 && activeFiltersCount > 0 ? (
+        <div className="text-center py-12 text-muted-foreground">
+          <CalendarDays className="h-10 w-10 mx-auto mb-3 opacity-30" />
+          <p className="font-medium">Aucun élément</p>
+          <p className="text-sm mt-1">Aucun résultat avec ces filtres.</p>
+        </div>
       ) : items.length === 0 ? (
         <EmptyStateCard
           icon={<CalendarDays className="w-4 h-4 text-[color:var(--text-success)]" />}

@@ -11,7 +11,8 @@
  *   L66-THEME-04 : mascotte recolorée (filtre CSS) à TOUTES les occurrences ;
  *   L66-THEME-05 : logo selon le thème (pétrole / ivoire), cube cuivre 18° ;
  *   L66-THEME-06 : mécanisme de thème (choix enregistré, sinon système ;
- *                  barre d'état / theme-color ; manifeste) ;
+ *                  barre d'état / theme-color ; manifeste — lot 72G :
+ *                  écran de démarrage Android en Pétrole #17474D) ;
  *   L66-THEME-07 : Figtree auto-hébergée, seule famille de l'application ;
  *   L66-THEME-08 : coquille — pastille « À traiter », « + » pétrole, champ
  *                  Verebona 560 px, navigation basse sans flou ;
@@ -313,8 +314,18 @@ describe('L66-THEME-06 — mécanisme de thème', () => {
     expect(layout).toMatch(/media: '\(prefers-color-scheme: dark\)', color: THEME_PAGE_COLOR\.blue/);
     const manifeste = read('src/app/api/manifest/route.ts');
     expect(manifeste).not.toMatch(/#020B1A|#3B82F6/);
-    expect(manifeste).toContain("background_color: '#F8F6F1'");
-    expect(JSON.parse(read('public/manifest.json')).background_color).toBe('#F8F6F1');
+    // Lot 72G (décision PO du 19/10) : écran de démarrage Android de l'app
+    // installée en Pétrole #17474D (background_color), et theme_color
+    // Pétrole aussi : la barre d'état du splash est de la même couleur que
+    // l'écran (pas de bande ivoire au-dessus d'un fond pétrole). Une fois la
+    // page chargée, la balise theme-color par thème (ivoire / sombre)
+    // ci-dessus prend le relais.
+    expect(manifeste).not.toContain('#F8F6F1');
+    expect(manifeste.match(/background_color: '#17474D'/g)).toHaveLength(2);
+    expect(manifeste.match(/theme_color: '#17474D'/g)).toHaveLength(2);
+    const statique = JSON.parse(read('public/manifest.json'));
+    expect(statique.background_color).toBe('#17474D');
+    expect(statique.theme_color).toBe('#17474D');
   });
 
   it('L66-THEME-06 — le hook suit la préférence système tant qu’aucun choix n’est enregistré', () => {

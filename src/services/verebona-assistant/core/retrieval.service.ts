@@ -122,17 +122,23 @@ export function helpRolesFromSituation(s: HelpRoleSituation): HelpArticleRole[] 
 export async function helpRolesFor(accountId: number, userId: number): Promise<HelpArticleRole[]> {
   const rows = (await pgClient.unsafe(
     `SELECT
-        (a.owner_user_id = $2) AS account_owner,
+        -- Lot 72D : rôles dérivés de l'ADHÉSION au compte courant (titulaire
+        -- ou membre du Premium Duo partagé), plus des lignes Duo de
+        -- l'utilisateur, quel que soit l'espace ouvert.
+        (a.owner_user_id = $2 OR EXISTS (SELECT 1 FROM account_memberships m
+                 WHERE m.account_id = a.id AND m.user_id = $2
+                   AND lower(m.status) = 'active' AND m.role = 'owner')) AS account_owner,
         EXISTS (SELECT 1 FROM account_memberships m
                  WHERE m.account_id = a.id AND m.user_id = $2
                    AND lower(m.status) = 'active' AND m.role <> 'owner') AS account_member,
         EXISTS (SELECT 1 FROM duo_accounts d
-                 WHERE d.billing_owner_user_id = $2
+                 WHERE (d.id = a.duo_account_id OR d.account_id = a.id)
+                   AND d.billing_owner_user_id = $2
                    AND d.subscription_status NOT IN ('CANCELED', 'EXPIRED')) AS duo_holder,
-        EXISTS (SELECT 1 FROM duo_memberships dm
-                  JOIN duo_accounts d ON d.id = dm.duo_id
-                 WHERE dm.user_id = $2 AND dm.status = 'ACTIVE'
-                   AND d.billing_owner_user_id <> $2) AS duo_member,
+        EXISTS (SELECT 1 FROM duo_accounts d
+                  JOIN account_memberships m ON m.account_id = a.id AND m.user_id = $2
+                   AND lower(m.status) = 'active' AND m.role <> 'owner'
+                 WHERE (d.id = a.duo_account_id OR d.account_id = a.id)) AS duo_member,
         (a.stripe_customer_id IS NOT NULL
           OR EXISTS (SELECT 1 FROM account_subscriptions s
                       WHERE s.account_id = a.id AND s.stripe_customer_id IS NOT NULL)) AS pays_subscription,

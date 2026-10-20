@@ -143,7 +143,12 @@ export interface DocumentRuleEvaluation {
   /** Passages d'une évaluation dédupliquée (déclencheur, référence, date), ≤ 20. */
   passages?: Array<{ at: string; trigger: string; runRef: string | null }> | null;
   errorKind?: string | null;
+  /** Lot 72 (C7) : nature de la décision (carte créée / conservée / fermée / non créée et pourquoi). */
+  decisionKind?: string | null;
 }
+
+/** Lot 72 (C4, C7) : décision d'une famille « état » (agenda, équipements, fournisseurs), y compris sans carte. */
+export type FamilyDecisionView = Awaited<ReturnType<typeof import('@/services/to-process/admissibility').listFamilyDecisions>>[number];
 
 export interface T3OpenActionsDiagnostic {
   generatedAt: string;
@@ -152,6 +157,8 @@ export interface T3OpenActionsDiagnostic {
   cards: T3CardEvaluation[];
   /** Lot 58B : évaluations des règles documentaires (filtres compte, document, règle, résultat). */
   documentRules?: DocumentRuleEvaluation[];
+  /** Lot 72 : décisions des familles agenda / équipements / fournisseurs (filtres compte, règle, résultat). */
+  familyDecisions?: FamilyDecisionView[];
   /** Pagination : identifiant à passer en `before` pour la page suivante. */
   nextBefore: number | null;
 }
@@ -193,8 +200,12 @@ export async function getT3OpenActionsDiagnostic(input: T3DiagnosticFilters, now
   // affichées quand le filtre vise un compte, un document ou une règle.
   const documentRules = mig.documentRules0418 && (f.accountId || f.documentId || f.ruleCode) && !f.jobId && !f.runId && !f.actionId
     ? await loadDocumentRules(f) : [];
+  // Lot 72 (C7) : décisions des autres familles (agenda, équipements, fournisseurs), y compris sans carte.
+  const familyDecisions = (f.accountId || f.ruleCode) && !f.jobId && !f.runId && !f.documentId
+    ? await (await import('@/services/to-process/admissibility')).listFamilyDecisions({ accountId: f.accountId, ruleCode: f.ruleCode, result: f.result, limit: f.limit })
+    : [];
   return {
-    generatedAt: now.toISOString(), migrations: mig, runs, cards, documentRules,
+    generatedAt: now.toISOString(), migrations: mig, runs, cards, documentRules, familyDecisions,
     nextBefore: cards.length === f.limit ? cards[cards.length - 1].id : null,
   };
 }
@@ -293,7 +304,8 @@ async function loadDocumentRules(f: ReturnType<typeof cleanFilters>): Promise<Do
       WHERE ($1::int IS NULL OR e.account_id = $1)
         AND ($2::int IS NULL OR e.file_id = $2)
         AND ($3::text IS NULL OR e.rule_code = $3)
-        AND ($4::text IS NULL OR e.decision = $4 OR e.reason_code = $4 OR e.pertinence = $4 OR to_jsonb(e) ->> 'outcome' = $4)
+        AND ($4::text IS NULL OR e.decision = $4 OR e.reason_code = $4 OR e.pertinence = $4 OR to_jsonb(e) ->> 'outcome' = $4
+             OR to_jsonb(e) ->> 'decision_kind' = $4)
       ORDER BY e.id DESC LIMIT $5`,
     [f.accountId, f.documentId, f.ruleCode, f.result, f.limit] as never[],
   ).catch(() => [])) as unknown as Array<{ e: Record<string, unknown> }>;
@@ -316,6 +328,7 @@ async function loadDocumentRules(f: ReturnType<typeof cleanFilters>): Promise<Do
       decisionContract: obj(e.decision_contract), reevaluateAt: iso(e.reevaluate_at), configRef: (e.config_ref as string) ?? null,
       knowledgeRev: (e.knowledge_rev as string) ?? null, derivation: obj(e.derivation), writeResult: obj(e.write_result),
       actionIds: obj(e.action_ids), passages: obj(e.passages), errorKind: (e.error_kind as string) ?? null,
+      decisionKind: (e.decision_kind as string) ?? null,
     };
   });
 }

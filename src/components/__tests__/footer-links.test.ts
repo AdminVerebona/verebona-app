@@ -26,11 +26,13 @@ const LANDING = readFileSync(join(process.cwd(), 'src/components/LandingFooter.t
 /** Chemins que l'application sert vraiment. */
 const SERVIS_PAR_LAPP = ['/cgvu', '/retractation'];
 
-/** Chemins qui n'existent que sur la vitrine. */
-const PAGES_VITRINE = [
-  '/mentions-legales', '/confidentialite', '/contact', '/aide',
-  '/pourquoi-verebona', '/comment-ca-marche',
-];
+/**
+ * Chemins de la vitrine liés par les pieds de page. Lot 72 : `/pourquoi-verebona`
+ * et `/comment-ca-marche` retirés (routes supprimées de la vitrine). Leur
+ * EXISTENCE est vérifiée contre l'inventaire généré par la vitrine (plus
+ * de liste tenue à la main qui garantirait une page disparue).
+ */
+const PAGES_VITRINE = ['/mentions-legales', '/confidentialite', '/contact', '/aide'];
 
 describe('les pages servies par l’application existent', () => {
   it('chaque chemin interne correspond à une route', () => {
@@ -64,6 +66,30 @@ describe('les pages de la vitrine ne sont pas liées en relatif', () => {
       expect(source).toContain('external: true');
       expect(source).toContain('resolveHref');
     }
+  });
+});
+
+describe('lot 72 — destinations réelles de la vitrine (inventaire généré)', () => {
+  it('chaque page de la vitrine listée ici existe vraiment', async () => {
+    const { checkPublicHref } = await import('@/lib/public-site/link-inventory');
+    for (const page of PAGES_VITRINE) expect({ page, v: checkPublicHref(page) }).toEqual({ page, v: { status: 'ok' } });
+    // Les anciennes routes ne sont plus des pages : redirection ou 404.
+    expect(checkPublicHref('/comment-ca-marche').status).toBe('redirect');
+    expect(checkPublicHref('/pourquoi-verebona').status).toBe('retired');
+  });
+
+  it('« Comment ça marche ? » vise la section #how de l’accueil, via publicSiteUrl', () => {
+    expect(LANDING).toMatch(/\{ href: '\/#how',\s+label: 'Comment ça marche \?', external: true \}/);
+    expect(LANDING).not.toContain('/comment-ca-marche');
+  });
+
+  it('« Pourquoi Verebona ? » a disparu', () => {
+    expect(LANDING).not.toContain('Pourquoi Verebona');
+    expect(LANDING).not.toContain('/pourquoi-verebona');
+  });
+
+  it('« Tarifs » vise toujours #pricing', () => {
+    expect(LANDING).toMatch(/\{ href: '\/#pricing',\s+label: 'Tarifs', external: true \}/);
   });
 });
 

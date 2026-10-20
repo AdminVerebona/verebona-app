@@ -361,7 +361,8 @@ scenario('L61F-T3-NOM', 'Lot 61 — T3 : harmonisation intelligente du nommage d
       expect(run.documentNaming?.deferred).toBeGreaterThan(0);
     }
     expect(passages).toBeGreaterThan(0);
-    expect((await evenements(c.id)).filter((e) => e.reason_code === 'RECENTLY_HARMONIZED').length).toBeGreaterThan(0);
+    // Lot 72B (E7) : un document fourni en RÉFÉRENCE n'est jamais renommé — motif explicite, avant même le délai de stabilité.
+    expect((await evenements(c.id)).filter((e) => e.reason_code === 'REFERENCE_NOT_RENAMABLE').length).toBeGreaterThan(0);
     expect(examines.sort((a, b) => a - b)).toEqual(docs.map((x) => x.id).sort((a, b) => a - b));
     for (const x of docs) expect(await nom(x.id)).toBe(attendu[x.id]);
     const [g] = await sql<Array<{ status: string; progress: unknown }>>`SELECT status, progress FROM document_naming_groups WHERE account_id = ${c.id} AND group_key = 's:orange'`;
@@ -382,7 +383,8 @@ scenario('L61F-T3-NOM', 'Lot 61 — T3 : harmonisation intelligente du nommage d
     modele.decider = proposer({ [d.mars.id]: 'Facture Orange — mars 2024' });
     const run = await passer(c.id);
     expect(modele.appels).toHaveLength(0);
-    expect(run.phases?.DOCUMENT_NAMING).toMatchObject({ status: 'DONE', counts: { promptUnavailable: 1, applied: 0 } });
+    // Lot 72B (E8) : travail non fait = DEFERRED, jamais DONE.
+    expect(run.phases?.DOCUMENT_NAMING).toMatchObject({ status: 'DEFERRED', counts: { promptUnavailable: 1, applied: 0 } });
     expect(await nom(d.mars.id)).toBe('Facture_Orange_03-2024.pdf');
     const { r, lignes } = await rapport(c.id);
     expect(r.counters).toMatchObject({ promptUnavailable: 1, written: 0 });
@@ -396,9 +398,13 @@ scenario('L61F-T3-NOM', 'Lot 61 — T3 : harmonisation intelligente du nommage d
     const run2 = await passer(c.id);
     expect(run2.documentNaming).toMatchObject({ aiCalls: 1, renamesSectionMissing: 1, applied: 0 });
     expect((await rapport(c.id)).r.counters).toMatchObject({ renamesSectionMissing: 1, written: 0 });
-    // Puis une sortie complète sur un nouveau document : harmonisé.
+    // Lot 72B (E9) : sortie incomplète = anomalie, lot NON clôturé, reprise bornée (délai).
+    expect(run2.documentNaming?.status).not.toBe('DONE');
+    expect((await sql<Array<{ status: string }>>`SELECT status FROM document_naming_groups WHERE account_id = ${c.id} AND group_key = 's:orange'`)[0].status).toBe('ERROR');
+    // Puis, délai de reprise échu, une sortie complète sur un nouveau document : harmonisé.
     const neuf = await document(c, { nom: 'orange_juillet.pdf', original: 'orange_juillet.pdf', date: '2024-07-12' });
     modele.decider = proposer({ [neuf.id]: 'Facture Orange — juillet 2024' });
+    await sql`UPDATE document_naming_groups SET retry_after = now() - interval '1 minute' WHERE account_id = ${c.id} AND group_key = 's:orange'`;
     await passer(c.id);
     expect(await nom(neuf.id)).toBe('Facture Orange — juillet 2024');
   }, 120_000);
@@ -408,7 +414,8 @@ scenario('L61F-T3-NOM', 'Lot 61 — T3 : harmonisation intelligente du nommage d
     modele.decider = () => new Error('fournisseur indisponible (e2e)');
     const run = await passer(c.id);
     expect(run.phases).toMatchObject({ ASSETS: { status: 'DONE' }, OPEN_KNOWLEDGE: { status: 'DONE' }, OPEN_ACTIONS: { status: 'DONE' }, JOURNAL: { status: 'DONE' } });
-    expect(run.phases?.DOCUMENT_NAMING?.status).toBe('PARTIAL');
+    // Lot 72B (E8) : lot en erreur sans aucun progrès = FAILED (le passage reste PARTIAL_SUCCESS : phase facultative).
+    expect(run.phases?.DOCUMENT_NAMING?.status).toBe('FAILED');
     expect(run.outcome).toBe('PARTIAL_SUCCESS');
     expect(await nom(d.mars.id)).toBe('Facture_Orange_03-2024.pdf');
     const [g] = await sql<Array<{ status: string; retry_after: Date | null }>>`SELECT status, retry_after FROM document_naming_groups WHERE account_id = ${c.id} AND group_key = 's:orange'`;

@@ -80,8 +80,24 @@ export function signSvixPayload(secret: string, id: string, timestamp: number, r
 interface ResendEvent {
   type?: string;
   created_at?: string;
-  data?: { email_id?: string; created_at?: string; bounce?: { message?: string; type?: string; subType?: string }; failed?: { reason?: string } };
+  data?: {
+    email_id?: string; created_at?: string; bounce?: { message?: string; type?: string; subType?: string }; failed?: { reason?: string };
+    /** Lot 72F : étiquettes posées à l'envoi (objet dans les webhooks, tableau dans l'API). */
+    tags?: Record<string, string> | Array<{ name: string; value: string }>;
+  };
 }
+
+/** Lot 72F — étiquette de la demande d'origine (`vb_email_job`), ou null. */
+export function emailJobIdFromTags(tags: Record<string, string> | Array<{ name: string; value: string }> | null | undefined): number | null {
+  if (!tags) return null;
+  const list = Array.isArray(tags) ? tags : Object.entries(tags).map(([name, value]) => ({ name, value }));
+  const v = list.find((t) => t?.name === EMAIL_JOB_TAG)?.value;
+  const n = Number(v);
+  return Number.isInteger(n) && n > 0 ? n : null;
+}
+
+/** Lot 72F — nom de l'étiquette Resend portant l'identifiant de la demande. */
+export const EMAIL_JOB_TAG = 'vb_email_job';
 
 /** Motif technique sans donnée personnelle (pas de destinataire, pas d'objet). */
 function detailOf(evt: ResendEvent): string | null {
@@ -125,11 +141,12 @@ export async function recordResendEvent(eventId: string, evt: ResendEvent, now: 
   const occurredAt = new Date(evt.created_at ?? evt.data?.created_at ?? now.toISOString());
   const occurred = Number.isNaN(occurredAt.getTime()) ? now.toISOString() : occurredAt.toISOString();
   const detail = detailOf(evt);
+  const jobId = emailJobIdFromTags(evt.data?.tags);
   const [row] = await pgClient.unsafe<{ id: number }[]>(
-    `INSERT INTO email_provider_events (provider, event_id, event_type, provider_message_id, occurred_at, detail, received_at)
-     VALUES ('resend', $1, $2, $3, $4::timestamptz, $5, $6::timestamptz)
+    `INSERT INTO email_provider_events (provider, event_id, event_type, provider_message_id, occurred_at, detail, received_at, email_job_id)
+     VALUES ('resend', $1, $2, $3, $4::timestamptz, $5, $6::timestamptz, $7)
      ON CONFLICT (provider, event_id) DO NOTHING RETURNING id`,
-    [eventId, type, messageId, occurred, detail, now.toISOString()] as never[],
+    [eventId, type, messageId, occurred, detail, now.toISOString(), jobId] as never[],
   );
   if (!row) return { duplicate: true };
   const applied = messageId ? await apply(messageId, type, occurred, detail) : false;

@@ -66,9 +66,11 @@ describe('SEC-01 — révocation effective des droits', () => {
     expect(src).not.toMatch(/serverCacheSet|serverCacheGet/);
     const svc = lire('src/services/account-service.ts');
     expect(svc.match(/invalidateAccountReadCache\(accountId\)/g)?.length).toBe(2);
-    // Duo : données du Duo lues par un membre ACTIF seulement.
+    // Lot 72D : le membre d'un Duo accède au compte partagé par son ADHÉSION
+    // (garde commune ci-dessus) ; les anciennes routes Duo de récupération et
+    // de demandes croisées sont retirées (410).
     for (const r of ['src/app/api/duos/[id]/recovery/assets/route.ts', 'src/app/api/duos/[id]/requests/inbox/route.ts']) {
-      expect(lire(r), r).toContain('getActiveDuoByUserId');
+      expect(lire(r), r).toContain('duoRouteRemoved');
     }
   });
 });

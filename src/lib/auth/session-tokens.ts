@@ -39,6 +39,32 @@ export async function issueSessionTokens(user: SessionUser): Promise<{ accessTok
 }
 
 /**
+ * Lot 72D — session ouverte sur un ESPACE PRÉCIS (acceptation d'une
+ * invitation, changement d'espace). Le compte n'est retenu que si
+ * l'utilisateur y a une adhésion ACTIVE et qu'il n'est pas suspendu : un
+ * identifiant fourni par le client n'accorde jamais de droit. `null` : refus.
+ * Nouvelle famille de session (`sid`), comme une connexion.
+ */
+export async function issueSessionTokensOnAccount(
+  user: SessionUser,
+  accountId: number,
+): Promise<{ accessToken: string; refreshToken: string } | null> {
+  const candidates = await AccountService.getUserSessionAccounts(user.id);
+  const target = candidates.find((c) => c.account.id === accountId)?.account;
+  if (!target || target.isActive === false) return null;
+  const { accessToken, refreshToken } = await generateSessionTokens({
+    id: user.id,
+    email: user.email,
+    role: user.role as UserRole,
+    planType: user.planType as PlanType,
+    status: user.status as UserStatus,
+    currentAccountId: target.id,
+    hasActiveAccount: hasActiveSubscriptionStatus(target.subscriptionStatus),
+  });
+  return { accessToken, refreshToken };
+}
+
+/**
  * Dépôt des deux cookies de session. SEUL point d'écriture (connexion,
  * renouvellement, vérification d'adresse, changement de mot de passe,
  * clôture) : durées = celles des JWT (`token-lifetimes`), aucune divergence

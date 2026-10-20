@@ -70,9 +70,9 @@ import { assets, toProcessActionEvents, toProcessActions } from '@/db/schema';
 import { AI_CONFIDENCE_THRESHOLD } from '@/lib/referential/v2';
 import type { ActionKind, ActionProposal, ResolutionReason } from './action-model';
 import {
-  assessDeadlinePertinence, currentKnowledgeRev, documentBridgeFieldKey, gatherFieldEvidence, gatherRelatedDocumentValues,
+  assessDeadlinePertinence, currentKnowledgeRev, deterministicConfigRef, documentBridgeFieldKey, gatherFieldEvidence, gatherRelatedDocumentValues,
   isDeadlineRule, knowledgeRevSql, parseDocumentDate, recordRuleEvaluation, relevanceColumnsReady, rememberedPertinence,
-  ruleEvaluationsReady, t1KeyDesignates, t4AssessmentConfig, todayParis,
+  ruleEvaluationsReady, t1KeyDesignates, t4AssessmentConfig, todayParis, DOCUMENT_RULE_ENGINE_VERSION,
   type FieldEvidence, type PertinenceCandidate, type PertinenceResult, type RuleDecision, type RuleOutcome, type RuleTrigger,
   type T4AssessmentConfig,
 } from './document-field-evidence';
@@ -428,10 +428,18 @@ async function activeActions(accountId: number, fileId: number): Promise<Map<str
   }));
 }
 
-/** Dernière résolution « Non applicable » d'une donnée : pas de retour sans élément nouveau (§7.4). */
-async function declaredNotApplicable(accountId: number, fileId: number, key: string): Promise<boolean> {
+/**
+ * Lot 72 (C5) — décision « Non applicable » de l'utilisateur sur une donnée,
+ * avec son CONTEXTE : valeurs que la carte proposait et révision de la
+ * connaissance au moment du choix (`markNotApplicable`, ou base posée au
+ * premier passage pour une décision antérieure au lot 72). Null : la
+ * dernière décision n'est pas « Non applicable ».
+ */
+export interface UserNotApplicable { actionId: number; values: string[]; knowledgeRev: string | null }
+
+export async function userNotApplicableDecision(accountId: number, fileId: number, key: string): Promise<UserNotApplicable | null> {
   const [last] = await db
-    .select({ reason: toProcessActions.resolutionReason })
+    .select({ id: toProcessActions.id, reason: toProcessActions.resolutionReason, proposals: toProcessActions.proposalsJson })
     .from(toProcessActions)
     .where(and(
       eq(toProcessActions.accountId, accountId), eq(toProcessActions.targetType, 'DOCUMENT'),
@@ -441,7 +449,37 @@ async function declaredNotApplicable(accountId: number, fileId: number, key: str
     ))
     .orderBy(desc(toProcessActions.resolvedAt))
     .limit(1);
-  return last?.reason === 'NOT_APPLICABLE';
+  if (last?.reason !== 'NOT_APPLICABLE') return null;
+  const [ev] = (await pgClient.unsafe(
+    `SELECT details ->> 'knowledgeRev' AS rev FROM to_process_action_events
+      WHERE action_id = $1 AND account_id = $2 AND details ? 'knowledgeRev' ORDER BY id DESC LIMIT 1`,
+    [last.id, accountId] as never[],
+  )) as unknown as Array<{ rev: string | null }>;
+  const values = ((last.proposals as ActionProposal[] | null) ?? []).filter((p) => !p.isCurrentValue).map((p) => String(p.value));
+  return { actionId: last.id, values, knowledgeRev: ev?.rev ?? null };
+}
+
+/**
+ * Lot 72 (C5) — contexte d'une décision « Non applicable » antérieure au
+ * lot 72 (aucune révision mémorisée) : la révision ACTUELLE devient la base —
+ * la décision reste respectée jusqu'au prochain changement réel. Tracé.
+ */
+async function recordNotApplicableBaseline(accountId: number, fileId: number, key: string, na: UserNotApplicable, rev: string | null): Promise<void> {
+  await db.insert(toProcessActionEvents).values({
+    actionId: na.actionId, accountId, event: 'USER_DECISION_CONTEXT', actorUserId: null, targetType: 'DOCUMENT', targetId: fileId,
+    fieldKey: key, details: { reason: 'NOT_APPLICABLE_BASELINE', knowledgeRev: rev, engineVersion: DOCUMENT_RULE_ENGINE_VERSION }, createdAt: new Date(),
+  });
+}
+
+/**
+ * Lot 72 (C5) — une carte déclarée « Non applicable » ne revient que pour un
+ * NOUVEAU problème démontré : une valeur candidate que la carte refusée ne
+ * proposait pas. Une complétion sans proposition, ou les mêmes valeurs,
+ * restent la même situation. Pure.
+ */
+export function newProblemSinceNotApplicable(plan: RulePlan, na: Pick<UserNotApplicable, 'values'> | null): boolean {
+  if (!na || plan.kind !== 'UPSERT') return true;
+  return plan.proposals.some((p) => !p.isCurrentValue && !na.values.includes(String(p.value)));
 }
 
 type TxClient = Pick<typeof db, 'select' | 'update' | 'insert'>;
@@ -649,6 +687,8 @@ interface FieldRuleInput {
   runRef?: string | null;
   deps?: FieldRuleDeps;
   report: DocumentRulesReport;
+  /** Lot 72 (C5) : dernière décision « Non applicable » de l'utilisateur sur la donnée, avec son contexte. */
+  userNotApplicable?: UserNotApplicable | null;
 }
 
 export interface FieldRuleOutcome {
@@ -838,7 +878,11 @@ async function evaluateFieldRule(i: FieldRuleInput): Promise<FieldRuleOutcome> {
           contextDates: evidence.contextDates, evidenceFingerprint: evidence.fingerprint ?? null, config: cfg,
           contradictory: new Set(proposals.filter((x) => x.confidence >= AI_CONFIDENCE_THRESHOLD).map((x) => String(x.value))).size >= 2,
           remembered: await rememberedPertinence(accountId, fileId, rule.code),
+          // Lot 72 (C2) : cycle de vie lu (reconduction, fin effective, obligation résiduelle) — jamais l'âge seul.
+          lifecycle: evidence.lifecycle ?? null,
         });
+        // Lot 72 (C3) : une décision prise SANS l'IA ne dépend pas du texte ni du modèle T4.
+        if (!pertinence.aiCalled && !pertinence.cached) configRef = deterministicConfigRef(cfg);
         const motive = { pertinence: pertinence.pertinence, pertinenceReason: pertinence.reason, aiTraceId: pertinence.aiTraceId, trigger: i.trigger, situation: pertinence.situation };
         // Justification STABLE (jamais la date du jour ni un texte libre) :
         // elle entre dans l'empreinte « Non applicable » (§7.4) sans la faire varier.
@@ -896,11 +940,20 @@ async function evaluateFieldRule(i: FieldRuleInput): Promise<FieldRuleOutcome> {
         plan = { kind: 'NONE', reason: 'STILL_OPEN' };
         if (outcome === 'CREATE_ACTION') outcome = 'KEEP';
       }
+      if (configRef === cfg.ref && !pertinence && outcome !== 'CREATE_ACTION') configRef = deterministicConfigRef(cfg);
+    }
+    // Lot 72 (C5) : « Non applicable » respecté tant qu'aucun NOUVEAU problème n'est démontré.
+    if (!active && plan.kind === 'UPSERT' && !newProblemSinceNotApplicable(plan, i.userNotApplicable ?? null)) {
+      plan = { kind: 'NONE', reason: 'USER_NOT_APPLICABLE_UNCHANGED' };
+      outcome = 'NO_ACTION';
     }
     failedStep = plan.kind === 'WRITE' ? 'WRITE' : 'EXECUTE';
     const motive = (extra as { motive?: Record<string, unknown> }).motive ?? {};
     const exec = await executePlan(accountId, fileId, rule, slot, plan, state, report, i.closeReason, motive, extra);
     const verified: boolean | null = plan.kind === 'WRITE' ? exec.write?.confirmed === true : null;
+    // Lot 72 (C3) : la décision est tracée avec la révision APRÈS sa propre écriture (sinon
+    // la valeur écrite rendrait la décision « périmée » au balayage suivant).
+    if (verified && knowledgeRev !== null) knowledgeRev = await currentKnowledgeRev(accountId, fileId);
     if (plan.kind === 'WRITE' && exec.write?.status === 'REFUSED_PROTECTED_VALUE') outcome = 'KEEP';
     const refusEcriture = plan.kind === 'WRITE' && exec.write?.status === 'NOT_CONFIRMED';
     if (refusEcriture) outcome = 'ERROR';
@@ -956,14 +1009,16 @@ async function recordRuleError(accountId: number, fileId: number, rule: Processi
  * Lot 61 (écart 6) : trace d'une décision du CHEMIN ANTÉRIEUR (relations,
  * réévaluation d'état, fermeture d'une donnée renseignée ailleurs) — toute
  * création, maintien, modification et fermeture est tracée, comme une
- * décision sur un champ. Une évaluation sans carte ni effet (`NONE` sans carte
- * active) n'est pas tracée : aucune information.
+ * décision sur un champ. Lot 72 (C7) : une évaluation SANS carte (`NONE`)
+ * est tracée elle aussi — donnée déjà connue, hors pertinence, document non
+ * éligible, confiée à T3, décision utilisateur respectée — pour que le
+ * diagnostic explique chaque non-création (déduplication par signature :
+ * une ligne tant que rien ne change).
  */
 async function traceClassic(p: {
   accountId: number; fileId: number; rule: ProcessingRule; trigger: RuleTrigger; runRef?: string | null; plan: RulePlan; exec: ExecOutcome;
   active: ActiveCard | null; state: DocumentSlotState; report: DocumentRulesReport; before: DocumentRulesReport;
 }): Promise<void> {
-  if (p.plan.kind === 'NONE' && !p.active) return;
   const verified = p.plan.kind === 'WRITE' ? p.exec.write?.confirmed === true : null;
   const outcome: RuleOutcome = p.plan.kind === 'WRITE' && p.exec.write?.status === 'NOT_CONFIRMED' ? 'ERROR' : classicOutcome(p.plan, !!p.active);
   p.report.outcomes[p.rule.code] = outcome;
@@ -1019,6 +1074,8 @@ export async function syncDocumentRulesFromAnalysis(input: {
             activeIntervention: actives.get(interventionKey(key)) ?? null,
             relevant: isRuleRelevantForDocument(rule, ctx.documentTypeCode), trigger: 'ANALYSIS', mayCreate: ctx.open,
             closeReason: 'OBSOLETE', obsProposals: proposals, runRef: input.runRef ?? null, deps: input.deps, report,
+            // Lot 72 (C5) : une réanalyse ne rouvre pas une carte « Non applicable » sans nouveau problème.
+            userNotApplicable: actives.has(key) ? null : await userNotApplicableDecision(input.accountId, input.fileId, key),
           });
           continue;
         }
@@ -1102,7 +1159,32 @@ export async function syncDocumentRulesFromState(
         const activeIntervention = actives.get(interventionKey(key)) ?? null;
         const relevant = isRuleRelevantForDocument(rule, ctx.documentTypeCode);
         const wantsCreation = !active && opts.create !== false && ctx.eligible && relevant && rule.completePriority !== null;
-        const mayCreate = wantsCreation && !(await declaredNotApplicable(accountId, fileId, key))
+        // Lot 72 (C5) : « Non applicable » — décision MÉMORISÉE avec son contexte ;
+        // réévaluée seulement si la connaissance a réellement changé depuis
+        // (jamais d'appel IA ni de carte sur la même situation).
+        const na = wantsCreation && slot.kind === 'field' ? await userNotApplicableDecision(accountId, fileId, key) : null;
+        let naInchange = false;
+        if (na) {
+          const rev = await currentKnowledgeRev(accountId, fileId);
+          if (na.knowledgeRev === null) {
+            await recordNotApplicableBaseline(accountId, fileId, key, na, rev);
+            naInchange = true;
+          } else naInchange = na.knowledgeRev === rev;
+          if (naInchange) {
+            report.plans[rule.code] = 'NONE';
+            report.reasons[rule.code] = 'USER_NOT_APPLICABLE_UNCHANGED';
+            report.outcomes[rule.code] = 'NO_ACTION';
+            await recordRuleEvaluation({
+              accountId, fileId, ruleCode: rule.code, fieldKey: key, trigger, runRef: opts.runRef ?? null, targetPresent: !isEmpty(state.value),
+              userValidated: state.userValidated, decision: 'NONE', reasonCode: 'USER_NOT_APPLICABLE_UNCHANGED', outcome: 'NO_ACTION',
+              knowledgeRev: rev, actionIds: { closed: [na.actionId] }, decisionKind: 'USER_REFUSED',
+            });
+            continue;
+          }
+        }
+        // Relation déclarée « Non applicable » (aucune aujourd'hui) : comportement antérieur, jamais reproposée.
+        const naRelation = wantsCreation && slot.kind !== 'field' && (await userNotApplicableDecision(accountId, fileId, key)) !== null;
+        const mayCreate = wantsCreation && !naInchange && !naRelation
           // Lot 31B (ticket T3, §9) : rattachement d'un document analysé —
           // la question attend l'échec ou l'abstention de T3 DOCUMENT_ASSET.
           && (key !== 'assetIds' || (await assetLinkQuestionAllowed(accountId, fileId)));
@@ -1117,6 +1199,7 @@ export async function syncDocumentRulesFromState(
             accountId, fileId, rule, slot, ctx, state, active, activeIntervention, relevant, trigger,
             // Carte active : la mettre à jour reste possible (document ouvert).
             mayCreate: active ? ctx.open : mayCreate, closeReason: reason, runRef: opts.runRef ?? null, deps: opts.deps, report,
+            userNotApplicable: na,
           });
           continue;
         }
@@ -1163,6 +1246,11 @@ export function onDocumentEditedByUser(accountId: number, fileId: number): Promi
  * (révision : faits, unités, valeurs, type — même sans changement de
  * `asset_files.updated_at`) et la configuration IA T4 n'ont pas changé, ni
  * la date de réévaluation n'est atteinte : ni carte recréée, ni IA rappelée.
+ *
+ * Lot 72 : révision = empreinte du CONTENU (C3) ; une décision prise sans
+ * l'IA n'est pas invalidée par une révision T4 (C3) ; une valeur CALCULÉE
+ * par une version antérieure du moteur est revue (C1) ; un « Non
+ * applicable » est revu quand la connaissance a changé depuis le choix (C5).
  */
 export async function documentsToReevaluate(accountId: number, limit = 200): Promise<number[]> {
   const rules = documentBridgeRules();
@@ -1180,7 +1268,10 @@ export async function documentsToReevaluate(accountId: number, limit = 200): Pro
   const memoire = await ruleEvaluationsReady();
   const l61 = memoire && await relevanceColumnsReady();
   const rev = l61 ? await knowledgeRevSql('f') : '';
-  const cfg = l61 ? (await t4AssessmentConfig()).ref : null;
+  const cfgFull = l61 ? await t4AssessmentConfig() : null;
+  const cfg = cfgFull?.ref ?? null;
+  // Lot 72 (C3) : décision prise sans l'IA — seule compte la configuration déterministe.
+  const cfgDet = cfgFull ? deterministicConfigRef(cfgFull) : null;
   let budget = limit;
   for (const rule of rules) {
     // Seules les règles qui justifient une complétion peuvent naître d'un état.
@@ -1202,11 +1293,17 @@ export async function documentsToReevaluate(accountId: number, limit = 200): Pro
         ? `AND NOT EXISTS (SELECT 1 FROM document_rule_evaluations e WHERE ${derniere}
              AND (e.outcome IN ('NO_ACTION', 'DEFER')
                   OR (e.outcome IS NULL AND e.reason_code = 'NO_ACTION_NEEDED' AND e.last_seen_at >= f.updated_at))
-             AND (e.outcome IS NULL OR (e.knowledge_rev = ${rev} AND e.config_ref = $6))
+             AND (e.outcome IS NULL OR (e.knowledge_rev = ${rev} AND e.config_ref IN ($6, $7)))
              AND (e.reevaluate_at IS NULL OR e.reevaluate_at > now()))`
         : `AND NOT EXISTS (SELECT 1 FROM document_rule_evaluations e WHERE ${derniere}
              AND e.reason_code = 'NO_ACTION_NEEDED' AND e.last_seen_at >= f.updated_at)`;
-    const params = !memoire || !rule.fieldKey ? [accountId, types, budget, key] : l61 ? [accountId, types, budget, key, rule.code, cfg] : [accountId, types, budget, key, rule.code];
+    const params = !memoire || !rule.fieldKey ? [accountId, types, budget, key] : l61 ? [accountId, types, budget, key, rule.code, cfg, cfgDet] : [accountId, types, budget, key, rule.code];
+    // Lot 72 (C5) : « Non applicable » exclu tant que la connaissance n'a pas changé depuis la décision
+    // (révision mémorisée à la décision ; décision antérieure : reprise UNE fois pour poser sa base).
+    const naInchange = l61 && rule.fieldKey
+      ? `AND COALESCE((SELECT ev.details ->> 'knowledgeRev' FROM to_process_action_events ev
+                        WHERE ev.action_id = a.id AND ev.details ? 'knowledgeRev' ORDER BY ev.id DESC LIMIT 1), '') = ${rev}`
+      : '';
     const selection = (avecMemoire: boolean) => pgClient.unsafe(
       `SELECT f.id FROM asset_files f
         WHERE f.account_id = $1 AND ${ELIGIBLE_SQL}
@@ -1219,7 +1316,7 @@ export async function documentsToReevaluate(accountId: number, limit = 200): Pro
                AND (a.resolved_at IS NULL OR (a.resolution_reason = 'NOT_APPLICABLE' AND NOT EXISTS (
                  SELECT 1 FROM to_process_actions b WHERE b.account_id = a.account_id AND b.target_type = 'DOCUMENT'
                     AND b.target_id = a.target_id AND COALESCE(b.field_key, b.relation_key) = $4
-                    AND b.resolved_at > a.resolved_at))))
+                    AND b.resolved_at > a.resolved_at) ${avecMemoire ? naInchange : ''})))
         ORDER BY f.id
         LIMIT $3`,
       (avecMemoire ? params : params.slice(0, 4)) as never[],
@@ -1248,9 +1345,9 @@ export async function documentsToReevaluate(accountId: number, limit = 200): Pro
             AND NOT EXISTS (SELECT 1 FROM document_rule_evaluations e
                              WHERE e.id = (SELECT max(x.id) FROM document_rule_evaluations x
                                             WHERE x.account_id = f.account_id AND x.file_id = f.id AND x.rule_code = $3)
-                               AND e.knowledge_rev = ${rev})
+                               AND e.knowledge_rev = ${rev} AND e.engine_version = $5)
           ORDER BY f.id LIMIT $4`,
-        [accountId, key, rule.code, budget] as never[],
+        [accountId, key, rule.code, budget, DOCUMENT_RULE_ENGINE_VERSION] as never[],
       ).catch((e: Error) => {
         console.error(`[to-process] valeurs calculées à revoir illisibles (compte ${accountId}) :`, e.message);
         return [];

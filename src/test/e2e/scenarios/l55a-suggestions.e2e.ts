@@ -138,7 +138,8 @@ scenario('L55A-SUGG', 'Lot 55A — questions suggérées par T6, cohérentes ave
     expect(ctx.bubble.attentionToday).toBe(false);
     expect(ctx.account).toMatchObject({ hasDocuments: true, hasPendingToProcess: true, hasUpcomingDeadlines: true });
     expect(ctx.assets).toEqual([{ ref: 'A1', name: 'Cupra', hasDocuments: true, hasDeadlinesNext30Days: false }]);
-    expect(ctx.nextDeadlines).toEqual([{ label: 'Contrôle technique', assetRef: 'A1', dateLabel: '18 avril 2028', dateNature: 'confirmée' }]);
+    // Lot 72A (R12 v2, texte livré) : référence opaque et statut « signalé » de l'échéance.
+    expect(ctx.nextDeadlines).toEqual([{ ref: 'D1', label: 'Contrôle technique', assetRef: 'A1', dateLabel: '18 avril 2028', dateNature: 'confirmée', signaled: false }]);
 
     expect(questionsDe(p)).toEqual(['Quelle est ma prochaine échéance ?', 'Quels sont les documents de Cupra ?']);
     expect(questionsDe(p)).not.toContain('Que dois-je traiter en priorité ?');
@@ -150,7 +151,11 @@ scenario('L55A-SUGG', 'Lot 55A — questions suggérées par T6, cohérentes ave
     expect(questionsDe(d)).toEqual(questionsDe(p));
     expect(d.contextHash).toBe(p.contextHash);
     const [cache] = await sql<{ s: unknown }[]>`SELECT suggestions AS s FROM home_mascot_cache WHERE account_id = ${c.id}`;
-    expect(cache.s).toEqual([{ question: 'Quelle est ma prochaine échéance ?', assetRef: null }, { question: 'Quels sont les documents de Cupra ?', assetRef: 'A1' }]);
+    // Lot 72A : références d'échéance conservées avec les questions (revalidées à la relecture).
+    expect(cache.s).toEqual([
+      { question: 'Quelle est ma prochaine échéance ?', assetRef: null, deadlineRef: null, purpose: null },
+      { question: 'Quels sont les documents de Cupra ?', assetRef: 'A1', deadlineRef: null, purpose: null },
+    ]);
   });
 
   it('L55A-E2E-02 — questions cliquées : T2 les exécute comme aujourd’hui (bien revalidé, sources du compte, aucun repli)', async () => {

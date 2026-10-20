@@ -23,9 +23,12 @@ export async function POST(
 
     const { accountId: rawAccountId } = await params;
     const accountId = parseInt(rawAccountId);
+    // Lot 72D : l'identifiant de compte de l'URL n'accorde aucun droit —
+    // `inviteMember` exige que l'appelant en soit le titulaire actif.
     const result = await AccountService.inviteMember(accountId, email, user.id);
 
-    return NextResponse.json(result, { status: result.success ? 200 : 400 });
+    const status = result.success ? 200 : result.code === 'NOT_ACCOUNT_OWNER' ? 403 : 400;
+    return NextResponse.json(result, { status });
   } catch (error) {
     console.error("Error inviting member:", error);
     return NextResponse.json(

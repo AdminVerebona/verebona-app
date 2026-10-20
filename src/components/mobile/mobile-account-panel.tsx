@@ -40,6 +40,7 @@ import { X } from 'lucide-react';
 import { NotificationBell } from '@/components/NotificationBell';
 import { ConfirmLogoutDialog } from '@/components/ConfirmLogoutDialog';
 import { accountMenuEntries } from '@/lib/shell/account-menu';
+import { AccountSwitcher } from '@/components/account/AccountSwitcher';
 
 export interface MobileAccountPanelProps {
   open: boolean;
@@ -69,11 +70,13 @@ export interface MobileAccountPanelProps {
   onLogout: () => void;
   /** Cloche des notifications (désactivable pour un aperçu sans session). */
   showBell?: boolean;
+  /** Lot 72D : nombre d'espaces (sélecteur visible à partir de 2, Q6). */
+  accountsCount?: number | null;
 }
 
 export function MobileAccountPanel({
   open, onClose, pathname, personName, email, initials, planLabel, accountName, isAdmin,
-  theme, onToggleTheme, onOpenHelp, onLogout, showBell = true,
+  theme, onToggleTheme, onOpenHelp, onLogout, showBell = true, accountsCount = null,
 }: MobileAccountPanelProps) {
   const [logoutConfirm, setLogoutConfirm] = useState(false);
   const entries = accountMenuEntries({ isAdmin, theme });
@@ -128,6 +131,10 @@ export function MobileAccountPanel({
                 )}
               </span>
             </div>
+
+            {/* Lot 72D (Q6) : changement d'espace, même composant que le menu
+                de l'avatar sur ordinateur. */}
+            <AccountSwitcher accountsCount={accountsCount} variant="panel" />
 
             {/* Entrées : même source et même ordre que le menu desktop (L35-4).
                 La déconnexion, dernière entrée, reste isolée en bas. */}

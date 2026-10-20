@@ -109,6 +109,19 @@ export const MASCOT_REFRESH_EVENTS = [
 
 type EventType = 'displayed' | 'clicked' | 'disappeared';
 
+/**
+ * Lot 72A (AC04) — état de la prise de parole affichée (pur) : `loading`
+ * (première lecture), `fresh` (dernière lecture réussie), `stale` (la
+ * dernière lecture a échoué : la présentation montrée est celle d'un passage
+ * précédent — la bulle le dit, jamais présentée comme actualisée), `failed`
+ * (rien à montrer).
+ */
+export type MascotRefreshState = 'loading' | 'fresh' | 'stale' | 'failed';
+export function mascotRefreshState(presentation: MascotPresentation | null, failed: boolean): MascotRefreshState {
+  if (presentation) return failed ? 'stale' : 'fresh';
+  return failed ? 'failed' : 'loading';
+}
+
 function newVisitId(): string {
   try {
     return crypto.randomUUID();
@@ -182,6 +195,9 @@ export function useMascotPresentation(visibleSecondaries?: (p: MascotPresentatio
     } catch {
       if (mine !== seq.current) return;
       // Erreur globale : état dégradé explicite, jamais « Tout est à jour » (§20).
+      // Lot 72A (AC04) : une présentation déjà affichée (ou en mémoire) reste
+      // visible, mais `failed` la signale comme NON actualisée (`stale`) :
+      // la bulle le dit (`STALE_SPEECH`), la pose n'est jamais positive.
       setFailed(true);
     }
   }, [trackDisplay]);
@@ -217,5 +233,5 @@ export function useMascotPresentation(visibleSecondaries?: (p: MascotPresentatio
   }, [send]);
 
   const refresh = useCallback(() => load(), [load]);
-  return { presentation, failed, refresh, trackClick };
+  return { presentation, failed, refresh, trackClick, refreshState: mascotRefreshState(presentation, failed) };
 }

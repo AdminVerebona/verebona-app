@@ -1,9 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { SessionService } from '@/lib/session-service';
+import { effectiveAccountId, getSessionRole, resolveOwnedSessionAccount } from '@/services/account/membership.service';
 import { db } from '@/db';
 import {
   accounts,
-  accountMemberships,
   referralLinks,
   referralEvents,
 } from '@/db/schema';
@@ -59,14 +59,15 @@ export async function GET(request: NextRequest) {
   try {
     const session = await SessionService.getSession(request);
 
-    const [membership] = await db
-      .select({ accountId: accountMemberships.accountId, role: accountMemberships.role })
-      .from(accountMemberships)
-      .where(eq(accountMemberships.userId, session.userId))
-      .limit(1);
-
-    if (!membership) {
+    // Lot 72D : compte de la SESSION (et non « la première adhésion », sans
+    // ordre) ; le parrainage au nom du compte est réservé au titulaire (Q14).
+    const courant = await effectiveAccountId(session);
+    if (!courant) {
       return NextResponse.json({ code: 'NO_ACCOUNT' }, { status: 404 });
+    }
+    const membership = { accountId: courant };
+    if ((await getSessionRole(session)) !== 'owner') {
+      return NextResponse.json({ eligible: false, link: null, stats: null, reason: 'NOT_ACCOUNT_OWNER' });
     }
 
     const eligible = await isReferralEligible(membership.accountId);
@@ -146,15 +147,10 @@ export async function POST(request: NextRequest) {
   try {
     const session = await SessionService.getSession(request);
 
-    const [membership] = await db
-      .select({ accountId: accountMemberships.accountId })
-      .from(accountMemberships)
-      .where(eq(accountMemberships.userId, session.userId))
-      .limit(1);
-
-    if (!membership) {
-      return NextResponse.json({ code: 'NO_ACCOUNT' }, { status: 404 });
-    }
+    // Lot 72D : compte de la session, titulaire seulement (Q14).
+    const owned = await resolveOwnedSessionAccount(session);
+    if (!owned.ok) return owned.response;
+    const membership = { accountId: owned.accountId };
 
     const eligible = await isReferralEligible(membership.accountId);
     if (!eligible) {

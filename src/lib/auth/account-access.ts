@@ -18,11 +18,12 @@
  *   · ou titulaire du compte (`accounts.owner_user_id`) — repli pour les
  *     comptes historiques sans ligne d'adhésion.
  *
- * Premium Duo (`duo_memberships`) ne donne AUCUN accès aux données d'un
- * autre compte (D3, voir `d3-duo-modele`) : chaque membre du Duo travaille
- * dans SON compte ; les routes `/api/duo*` contrôlent elles-mêmes le statut
- * ACTIVE de l'adhésion Duo. Aucune hypothèse supplémentaire n'est faite sur
- * le modèle Duo (D3 ouvert côté PO).
+ * Premium Duo (lot 72D) : les deux membres partagent le MÊME compte — le
+ * titulaire par son adhésion `owner`, l'invité par son adhésion `member`
+ * (`services/account/membership.service`). `duo_memberships` seul n'ouvre
+ * aucun accès : c'est l'adhésion au compte, relue ici, qui fait foi ; sa
+ * révocation (retrait, départ, fin d'offre) coupe l'accès dès la requête
+ * suivante.
  *
  * Droit absent → `INVALID_TOKEN` (401) : le client tente UN renouvellement ;
  * `/api/auth/refresh` recalcule le compte de session parmi les adhésions

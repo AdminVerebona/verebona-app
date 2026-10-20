@@ -20,11 +20,16 @@
  *     période vit sur les items).
  *
  * J−7 = SEPT JOURS CALENDAIRES de Paris entre aujourd'hui et la date locale de
- * l'échéance. Rattrapage (J−6 … J−1) seulement si le J−7 de cette échéance est
- * postérieur ou égal au début de couverture (première exécution du
- * traitement) : à la bascule depuis Stripe, les échéances déjà rappelées par
- * Stripe ne reçoivent pas un second e-mail. Jamais le jour de l'échéance ni
- * après (décision prudente : le prélèvement peut avoir lieu dans l'heure).
+ * l'échéance. Rattrapage (J−6 … J−1) avant l'échéance. Jamais le jour de
+ * l'échéance ni après (décision prudente : le prélèvement peut avoir lieu dans
+ * l'heure).
+ *
+ * Lot 72F — COUVERTURE : début = lendemain (Paris) de la désactivation DÉCLARÉE
+ * des rappels Stripe (BO). Une échéance dont le J−7 tombe avant (Stripe encore
+ * actif ce jour-là, au moins en partie) n'est JAMAIS présumée rappelée par
+ * Stripe : « couverture incertaine », signalée dans le BO, sans envoi
+ * automatique (décision de l'administrateur) — ni doublon, ni omission
+ * silencieuse. Le J−7 nominal y est soumis aussi.
  * ══════════════════════════════════════════════════════════════════════════
  */
 import { addDaysToDateStr, parisNow } from '@/lib/notifications/time-paris';
@@ -102,7 +107,22 @@ export const REMINDER_REASON_LABELS: Readonly<Record<string, string>> = {
   SCHEDULE_UNREADABLE: 'Échéancier Stripe illisible (envoi suspendu par prudence)',
   TOO_EARLY: 'Échéance à plus de 7 jours',
   TOO_LATE: 'Échéance atteinte ou dépassée : plus de rappel',
-  BEFORE_COVERAGE: 'J−7 antérieur à l’activation du traitement (rappel Stripe déjà parti)',
+  BEFORE_COVERAGE: 'J−7 antérieur à l’activation du traitement (ancien motif, lot 68C)',
+  COVERAGE_UNCERTAIN: 'J−7 au plus tard le jour de la désactivation des rappels Stripe : envoi Stripe non prouvé — décision BO',
+  STRIPE_REMINDER_CONFIRMED: 'Rappel Stripe constaté par un administrateur',
+  BO_DECISION: 'Rappel Verebona demandé par un administrateur',
+  ROLLBACK_NEUTRALIZED: 'Retour aux rappels Stripe : demande neutralisée avant l’envoi',
+  ADMIN_ABANDONED: 'Abandonnée par un administrateur',
+  TASK_SUSPENDED: 'Tâche du rappel annuel suspendue : envoi retenu',
+  SWITCH_NOT_DECLARED: 'Bascule Stripe → Verebona non déclarée : envoi retenu',
+  SEND_STATE_UNREADABLE: 'État du rappel annuel illisible : envoi retenu par prudence',
+  PLAN_UNAVAILABLE: 'Offre du prochain renouvellement non identifiable chez Stripe (nouvelle tentative)',
+  BILLING_MISMATCH: 'Compte, abonnement et client Stripe incohérents',
+  UNCERTAIN_ACCEPTANCE: 'Acceptation par Resend incertaine : réémission bloquée, décision BO',
+  STRIPE_ERROR: 'Vérification Stripe impossible (nouvelle tentative)',
+  DESYNC_RESYNCED: 'Données locales désynchronisées, resynchronisées depuis Stripe',
+  DESYNC_UNRESOLVED: 'Données locales désynchronisées, resynchronisation impossible',
+  STRIPE_ONLY: 'Abonnement annuel Stripe sans compte Verebona correspondant',
   RENEWAL_DATE_CHANGED: 'Date d’échéance modifiée depuis la préparation',
   SUBSCRIPTION_REPLACED: 'Abonnement remplacé sur le compte',
   ACCOUNT_CLOSED: 'Compte du titulaire fermé ou en suppression',
@@ -185,19 +205,40 @@ export function daysBetween(fromDateStr: string, toDateStr: string): number {
 
 export type ReminderTiming =
   | { send: true; days: number; catchUp: boolean }
-  | { send: false; days: number; reason: 'TOO_EARLY' | 'TOO_LATE' | 'BEFORE_COVERAGE' };
+  | { send: false; days: number; reason: 'TOO_EARLY' | 'TOO_LATE' | 'COVERAGE_UNCERTAIN' };
 
-/** Décision de calendrier (J−7, rattrapage, trop tôt / trop tard). */
+/**
+ * Décision de calendrier (J−7, rattrapage, trop tôt / trop tard, couverture).
+ * `coverageFrom` : premier J−7 entièrement couvert par Verebona (lendemain de
+ * la désactivation déclarée des rappels Stripe) ; `null` : aucun contrôle
+ * (revalidation juste avant l'envoi d'une demande déjà décidée).
+ */
 export function reminderTiming(now: Date, renewalAt: Date, coverageFrom: string | null): ReminderTiming {
   const today = parisDateOf(now);
   const renewalDate = parisDateOf(renewalAt);
   const days = daysBetween(today, renewalDate);
   if (days > REMINDER_DAYS_BEFORE) return { send: false, days, reason: 'TOO_EARLY' };
   if (days < 1 || renewalAt.getTime() <= now.getTime()) return { send: false, days, reason: 'TOO_LATE' };
-  if (days === REMINDER_DAYS_BEFORE) return { send: true, days, catchUp: false };
   const j7 = addDaysToDateStr(renewalDate, -REMINDER_DAYS_BEFORE);
-  if (coverageFrom && j7 < coverageFrom) return { send: false, days, reason: 'BEFORE_COVERAGE' };
-  return { send: true, days, catchUp: true };
+  if (coverageFrom && j7 < coverageFrom) return { send: false, days, reason: 'COVERAGE_UNCERTAIN' };
+  return { send: true, days, catchUp: days !== REMINDER_DAYS_BEFORE };
+}
+
+/** Lot 72F : premier J−7 couvert = lendemain (Paris) de la désactivation des rappels Stripe. */
+export function coverageFromSwitch(stripeRemindersDisabledAt: Date): string {
+  return addDaysToDateStr(parisDateOf(stripeRemindersDisabledAt), 1);
+}
+
+/**
+ * Lot 72F — texte d'erreur journalisable : jamais de clé ni de secret (Stripe
+ * « Invalid API Key provided: sk_live_…», secrets de webhook, clé Resend).
+ */
+export function redactSecrets(text: string): string {
+  return text
+    .replace(/\b(sk|rk|pk)_(live|test)_[A-Za-z0-9*]+/g, '[clé masquée]')
+    .replace(/\bwhsec_[A-Za-z0-9+/=*]+/g, '[secret masqué]')
+    .replace(/\bre_[A-Za-z0-9_*]{8,}/g, '[clé masquée]')
+    .replace(/https:\/\/billing\.stripe\.com\/\S+/g, '[lien Stripe masqué]');
 }
 
 /** « dans 7 jours » ; rattrapage : « dans 3 jours », « demain ». */
@@ -239,10 +280,44 @@ export function annualRenewalDedupeKey(subscriptionId: string, renewalDate: stri
 
 // ── Montant prévisionnel (aperçu de la prochaine facture Stripe) ─────────────
 
+export interface ReminderInvoiceLine {
+  period?: { start?: number | null; end?: number | null } | null;
+  /** API basil : prix de la ligne. */
+  pricing?: { type?: string | null; price_details?: { price?: string | { id: string } | null } | null } | null;
+  /** Anciennes versions de l'API. */
+  price?: string | { id: string } | null;
+}
 export interface ReminderInvoicePreview {
   amount_due?: number | null;
   currency?: string | null;
-  lines?: { data?: Array<{ period?: { start?: number | null; end?: number | null } | null }> } | null;
+  lines?: { data?: ReminderInvoiceLine[] } | null;
+}
+
+/**
+ * Lot 72F — prix facturés au RENOUVELLEMENT (lignes de l'aperçu Stripe dont la
+ * période commence à l'échéance) : changement d'offre programmé compris.
+ */
+export function renewalPriceIdsFromPreview(preview: ReminderInvoicePreview | null | undefined, renewalTs: number): string[] {
+  const ids = new Set<string>();
+  for (const l of preview?.lines?.data ?? []) {
+    if (l.period?.start == null || Math.abs((l.period.start as number) - renewalTs) > 60) continue;
+    const p = l.pricing?.price_details?.price ?? l.price ?? null;
+    const id = !p ? null : typeof p === 'string' ? p : p.id;
+    if (id) ids.add(id);
+  }
+  return [...ids];
+}
+
+/** Lot 72F — prix de la phase d'échéancier qui couvre l'échéance (à défaut de l'aperçu). */
+export function renewalPriceIdsFromSubscription(sub: ReminderSubscription, schedule: ReminderSchedule | null, renewalTs: number): string[] {
+  if (schedule && Array.isArray(schedule.phases) && (!schedule.status || ['active', 'not_started'].includes(schedule.status))) {
+    const next = schedule.phases.find((p) => p.start_date <= renewalTs && (p.end_date == null || p.end_date > renewalTs))
+      ?? schedule.phases.find((p) => p.start_date >= renewalTs);
+    if (next) {
+      return [...new Set(next.items.map((i) => (typeof i.price === 'string' ? i.price : i.price?.id ?? null)).filter((v): v is string => !!v))];
+    }
+  }
+  return [...new Set((sub.items?.data ?? []).filter((i) => i.price?.recurring).map((i) => i.price?.id ?? null).filter((v): v is string => !!v))];
 }
 
 /**

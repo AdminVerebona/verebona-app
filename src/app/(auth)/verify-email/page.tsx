@@ -66,7 +66,10 @@ function DuoJoinAfterVerification() {
     settlePendingDuoJoin(token, result);
     if (result.ok) {
       setState('done');
-      setTimeout(() => router.push('/accueil'), 1500);
+      // Lot 72D : la session vient d'être rouverte sur l'espace du Duo
+      // (cookies réémis) — rechargement complet pour repartir de ce compte
+      // (identité, offre, caches du navigateur).
+      setTimeout(() => window.location.assign('/accueil'), 1500);
     } else {
       setMessage(result.message || duoJoinErrorMessage(result.error));
       setState('error');
@@ -166,6 +169,9 @@ function VerifyEmailContent() {
   // et par la route de vérification (invitation en attente pour l'adresse).
   // Indication d'affichage seulement : le rattachement est contrôlé côté serveur.
   const duoContext = params.get('duo') === '1';
+  // Lot 72D : identité qui rejoint un compte existant (Duo ou compte
+  // partagé) — aucun essai n'est attribué, il ne doit pas être annoncé.
+  const joinsSharedSpace = duoContext || params.get('joined') === '1' || params.get('space') === 'none';
 
   const error = (rawError && rawError in ERROR_CONTENT ? rawError : null) as VerificationError | null;
 
@@ -210,11 +216,13 @@ function VerifyEmailContent() {
                 d'où l'invitation à se connecter, pas à « accéder ». */}
             {alreadyVerified
               ? 'Votre adresse email était déjà confirmée. Vous pouvez vous connecter.'
-              : 'Votre compte est actif. Votre essai gratuit de 7 jours a commencé.'}
+              : joinsSharedSpace
+                ? 'Votre identité Verebona est active.'
+                : 'Votre compte est actif. Votre essai gratuit de 7 jours a commencé.'}
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
-          {!alreadyVerified && (
+          {!alreadyVerified && !joinsSharedSpace && (
             <div className="bg-[color:var(--accent-soft)] border border-[color:var(--border-info)] rounded-lg p-3 text-sm text-[color:var(--text-muted)]">
               Pendant 7 jours, toutes les fonctions Premium sont accessibles, dans la
               limite de 2 biens et 30 documents. Aucune carte bancaire n&apos;a été
@@ -296,13 +304,13 @@ function VerifyEmailContent() {
               Votre demande est enregistrée : un e-mail va être envoyé à{' '}
               <span className="font-medium text-[color:var(--text-primary)]">{emailFromUrl}</span>{' '}
               dans quelques instants. Cliquez sur le lien qu&apos;il contient pour activer votre compte
-              {duoContext ? '.' : ' et démarrer votre essai.'}
+              {joinsSharedSpace ? '.' : ' et démarrer votre essai.'}
             </>
           ) : (
             <>
               Votre demande est enregistrée : un e-mail va vous être envoyé dans quelques instants.
               Cliquez sur le lien qu&apos;il contient pour activer votre compte
-              {duoContext ? '.' : ' et démarrer votre essai.'}
+              {joinsSharedSpace ? '.' : ' et démarrer votre essai.'}
             </>
           )}
         </CardDescription>

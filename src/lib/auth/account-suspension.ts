@@ -84,6 +84,8 @@ export interface SessionAccountCandidate<A extends { id: number; isActive?: bool
   role: string;
   joinedAt?: Date | null;
   createdAt?: Date | null;
+  /** Lot 72D : dernier choix de cet espace par l'utilisateur. */
+  lastSelectedAt?: Date | null;
 }
 
 const ROLE_RANK: Record<string, number> = { owner: 0, admin: 1, member: 2 };
@@ -92,18 +94,45 @@ function time(d: Date | null | undefined): number {
   return d instanceof Date && !Number.isNaN(d.getTime()) ? d.getTime() : Number.POSITIVE_INFINITY;
 }
 
+/** Dernier choix : plus récent d'abord ; jamais choisi = après tous les autres. */
+function recency(d: Date | null | undefined): number {
+  return d instanceof Date && !Number.isNaN(d.getTime()) ? -d.getTime() : Number.POSITIVE_INFINITY;
+}
+
+/** Lot 72D : compte artificiel neutralisé (rattrapage duo-shared-account). */
+function isArchived(account: { archivedAt?: Date | string | null }): boolean {
+  return account.archivedAt != null;
+}
+
 /**
- * Ordre stable : titulaire, puis administrateur, puis membre ; à rôle égal,
- * adhésion la plus ancienne ; en dernier recours l'id d'adhésion — le
- * comparateur est total, le résultat ne dépend donc plus de l'ordre SQL.
+ * Ordre stable :
+ *   1. (lot 72D) DERNIER ESPACE CHOISI d'abord (`last_selected_at`, posé par
+ *      le changement d'espace et par l'acceptation d'une invitation) — à la
+ *      reconnexion, l'utilisateur retrouve le dernier compte encore
+ *      accessible ;
+ *   2. puis titulaire, administrateur, membre ; à rôle égal, adhésion la plus
+ *      ancienne ; en dernier recours l'id d'adhésion — le comparateur est
+ *      total, le résultat ne dépend donc pas de l'ordre SQL.
  */
 export function orderSessionAccounts<A extends { id: number; isActive?: boolean | null }>(
   candidates: SessionAccountCandidate<A>[],
 ): SessionAccountCandidate<A>[] {
   return [...candidates].sort((a, b) =>
-    (ROLE_RANK[a.role] ?? 9) - (ROLE_RANK[b.role] ?? 9)
+    (recency(a.lastSelectedAt) === recency(b.lastSelectedAt) ? 0 : recency(a.lastSelectedAt) < recency(b.lastSelectedAt) ? -1 : 1)
+    || (ROLE_RANK[a.role] ?? 9) - (ROLE_RANK[b.role] ?? 9)
     || time(a.joinedAt ?? a.createdAt) - time(b.joinedAt ?? b.createdAt)
     || a.membershipId - b.membershipId);
+}
+
+/**
+ * Lot 72D (décision PO Q9) : un compte archivé n'est plus proposé — sauf s'il
+ * est le seul espace de l'utilisateur (il garde alors l'accès à ses données).
+ */
+export function withoutArchivedAccounts<A extends { id: number; isActive?: boolean | null; archivedAt?: Date | string | null }>(
+  candidates: SessionAccountCandidate<A>[],
+): SessionAccountCandidate<A>[] {
+  const visibles = candidates.filter((c) => !isArchived(c.account));
+  return visibles.length > 0 ? visibles : candidates;
 }
 
 export type SessionAccountResolution<A> =
@@ -122,6 +151,9 @@ export function resolveSessionAccount<A extends { id: number; isActive?: boolean
 ): SessionAccountResolution<A> {
   const backOffice = isBackOfficeRole(opts.role);
   const ordered = orderSessionAccounts(candidates);
+  // Lot 72D : un compte archivé n'est pas choisi par défaut (il reste le
+  // compte de la session si le jeton le désigne déjà).
+  const defaults = withoutArchivedAccounts(ordered);
 
   if (opts.preferredAccountId != null) {
     const current = ordered.find((c) => c.account.id === opts.preferredAccountId);
@@ -137,7 +169,7 @@ export function resolveSessionAccount<A extends { id: number; isActive?: boolean
     // Adhésion disparue depuis l'émission du jeton : règle du login.
   }
 
-  const firstActive = ordered.find((c) => !isAccountSuspended(c.account));
+  const firstActive = defaults.find((c) => !isAccountSuspended(c.account)) ?? ordered.find((c) => !isAccountSuspended(c.account));
   if (firstActive) return { allowed: true, account: firstActive.account, reason: 'ACTIVE_ACCOUNT' };
   if (ordered.length === 0) return { allowed: true, account: null, reason: 'NO_ACCOUNT' };
   if (backOffice) return { allowed: true, account: null, reason: 'BACK_OFFICE_ONLY' };

@@ -92,10 +92,11 @@ export async function searchTransactionalEmails(q: TransactionalEmailSearch): Pr
       LIMIT $5`,
     [f.type, f.like, f.problemsOnly, PROBLEM_DELIVERY, f.limit] as never[],
   );
+  // Lot 72F : acceptations incertaines (bloquées) listées avec les demandes non acceptées.
   const pending = await pgClient.unsafe<Record<string, unknown>[]>(
     `SELECT id, kind, recipient_email, status, attempts, max_attempts, next_attempt_at, last_error, created_at
        FROM transactional_email_jobs
-      WHERE status IN ('pending', 'sending')
+      WHERE status IN ('pending', 'sending', 'uncertain')
         AND ($1::text IS NULL OR kind = $1)
         AND ($2::text IS NULL OR lower(recipient_email) LIKE $2)
       ORDER BY next_attempt_at LIMIT 50`,

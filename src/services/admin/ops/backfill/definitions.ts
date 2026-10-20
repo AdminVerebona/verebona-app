@@ -21,14 +21,17 @@
  *      rétroactivement aux équipements — jamais automatique, journalisé ;
  *  10. Documents « à valider » (lot 71B, décision PO du 19/10 : plus de
  *      validation sur les fiches) — aussi lancé automatiquement par
- *      `document-validation-reprise`.
+ *      `document-validation-reprise` ;
+ *  11. Premium Duo en compte partagé (lot 72D, ticket P0) : adhésions des
+ *      membres Duo au compte du titulaire, comptes artificiels vides
+ *      archivés — jamais automatique, journalisé et restaurable.
  *
  * Chaque bloc n'offre que ce que le script permet (simulation, application,
  * restauration). Les scripts CLI restent utilisables et appellent les mêmes
  * services.
  */
 
-export type BackfillScript = 'merge-rooms' | 'document-asset-links' | 'agenda' | 'cdc15' | 'asset-account' | 'operations-structured' | 'operations-claims' | 'cross-account' | 'equipment-separation' | 'document-validation';
+export type BackfillScript = 'merge-rooms' | 'document-asset-links' | 'agenda' | 'cdc15' | 'asset-account' | 'operations-structured' | 'operations-claims' | 'cross-account' | 'equipment-separation' | 'document-validation' | 'duo-shared-account';
 export type BackfillAction = 'simulate' | 'apply' | 'restore';
 export type BackfillStatus = 'running' | 'succeeded' | 'failed' | 'interrupted';
 
@@ -191,6 +194,23 @@ export const BACKFILL_DEFINITIONS: readonly BackfillDefinition[] = [
       + 'les heures tant qu’il reste des documents ; rejoué, il ne change rien.',
     actions: ['simulate', 'apply'],
     accountFilter: true,
+  },
+  {
+    script: 'duo-shared-account',
+    order: 11,
+    label: 'Premium Duo : compte partagé',
+    command: 'BO uniquement (aucune commande)',
+    description: 'Lot 72D : rattache chaque membre actif d’un Premium Duo au compte EXISTANT du titulaire (adhésion « membre »), '
+      + 'rétablit l’adhésion « titulaire » manquante des comptes, et archive — sans rien effacer, de façon réversible — les comptes '
+      + 'personnels artificiels VIDES créés aux invités (aucune donnée, aucun autre membre, aucune facturation). Un compte personnel '
+      + 'avec des données, un abonnement propre ou des biens reçus n’est jamais touché (rapport seul) ; aucun compte n’est fusionné, '
+      + 'aucun bien déplacé, aucun essai réinitialisé, rien n’est envoyé à Stripe. Rapport avant / après (catégories INV-A à INV-I). '
+      + 'La simulation n’écrit rien ; l’application est journalisée ligne à ligne et se restaure par son identifiant d’exécution. '
+      + 'Rejouée, elle ne fait rien. Jamais lancée automatiquement.',
+    actions: ['simulate', 'apply', 'restore'],
+    accountFilter: true,
+    warning: 'À lancer après lecture de la simulation. Les Duo « indécidables » (compte introuvable ou ambigu) et les places '
+      + 'épuisées sont seulement signalés.',
   },
 ];
 

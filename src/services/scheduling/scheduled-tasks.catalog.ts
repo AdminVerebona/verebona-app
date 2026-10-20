@@ -86,7 +86,11 @@
  *                                                                  sur les fiches)
  *   subscription-annual-renewal-reminders  /h de 8 h 30 à 20 h    dedupe_key par abonnement × échéance
  *                                   (créée suspendue, lot 68C)    + verrou consultatif ; revalidation
- *                                                                 Stripe avant l'envoi (file lot 57A)
+ *                                                                 Stripe avant l'envoi (file lot 57A) ;
+ *                                                                 bascule déclarée exigée (lot 72F)
+ *   subscription-annual-renewal-reconcile  chaque jour à 7 h 40   lecture Stripe ; resynchronisation par
+ *                                   (créée suspendue, lot 72F)    subscription-sync (idempotente) ;
+ *                                                                 journal par abonnement × échéance
  *
  * Créneaux fixes hors de la fenêtre de sauvegarde de nuit (1 h – 5 h) et de
  * la plage ambiguë des changements d'heure (2 h – 3 h).
@@ -706,8 +710,10 @@ export const SCHEDULED_TASKS: readonly ScheduledTaskDef[] = [
     },
   },
   {
-    // Lot 61 (tickets « À traiter » : écarts 58B, pertinence des cartes §6) :
-    // réévaluation RÉTROACTIVE des cartes documentaires existantes par la
+    // Lot 61 (tickets « À traiter » : écarts 58B, pertinence des cartes §6) —
+    // lot 72 (C6) : toutes les familles concernées (documents, agenda,
+    // équipements, fournisseurs) puis les décisions sans carte prises par une
+    // version antérieure du moteur — réévaluation RÉTROACTIVE par la
     // décision centrale (résolution automatique, pertinence, intervention
     // réelle, report). Lots bornés, curseur en base, bilan avant / après lu
     // par le BO (File d'attente IA › Pertinence « À traiter ») — qui permet
@@ -722,11 +728,17 @@ export const SCHEDULED_TASKS: readonly ScheduledTaskDef[] = [
     timeoutMs: 10 * MIN,
     run: async ({ deadline, trigger }) => {
       const { runRelevanceCampaign } = await import('@/services/to-process/relevance-campaign.service');
+      // Lot 72 (C7) : rétention des traces de décision REMPLACÉES (> 400 jours ;
+      // la dernière décision de chaque cible est toujours conservée), bornée.
+      const { purgeSupersededDecisionTraces } = await import('@/services/to-process/admissibility');
+      const purge = await purgeSupersededDecisionTraces({ limit: 2_000 });
+      const purgeNote = purge.familyDecisions + purge.documentRuleEvaluations > 0
+        ? ` — rétention : ${purge.documentRuleEvaluations + purge.familyDecisions} trace(s) remplacée(s) purgée(s)` : '';
       const r = await runRelevanceCampaign({ deadline: Math.min(deadline, Date.now() + 8 * MIN), trigger });
-      if (r.disabled) return { note: 'migration 0445 absente : rien à faire' };
-      if (r.done && r.examined === 0 && !r.campaignId) return { note: 'aucune campagne en cours' };
+      if (r.disabled) return { note: `migration 0445 absente : rien à faire${purgeNote}` };
+      if (r.done && r.examined === 0 && !r.campaignId) return { note: `aucune campagne en cours${purgeNote}` };
       return {
-        note: `campagne ${r.code ?? '?'} : ${r.examined} carte(s) examinée(s) — ${JSON.stringify(r.outcomes)}${r.done ? ' — terminée' : ''}`.slice(0, 1500),
+        note: `campagne ${r.code ?? '?'}${r.phase ? ` (phase ${r.phase})` : ''} : ${r.examined} élément(s) examiné(s) — ${JSON.stringify(r.outcomes)}${r.done ? ' — terminée' : ''}${purgeNote}`.slice(0, 1500),
         again: r.more,
         ...(r.errors > 0 && r.examined > 0 && r.errors >= r.examined ? { error: `${r.errors} carte(s) en erreur` } : {}),
       };
@@ -774,13 +786,40 @@ export const SCHEDULED_TASKS: readonly ScheduledTaskDef[] = [
         // Lot 70B : la configuration Verebona du portail (résiliation en fin de période) n'a pu être ni trouvée ni créée.
         return { note: `${r.candidates} candidat(s) — aucun rappel préparé`, error: 'La configuration Verebona du portail Stripe (résiliation en fin de période) est introuvable ou non conforme : rappels suspendus (voir BO › Anomalies et docs/exploitation/rappel-renouvellement-annuel.md).' };
       }
+      if (r.skipped === 'SWITCH_NOT_DECLARED') {
+        // Lot 72F : tâche réactivée sans bascule déclarée (ou après un retour arrière) — rien n'est préparé ni envoyé.
+        return { note: 'aucun rappel préparé', error: 'Bascule des rappels Stripe vers Verebona non déclarée : BO › Communications › Rappel J−7 › « Déclarer la désactivation des rappels Stripe » (docs/exploitation/rappel-renouvellement-annuel.md).' };
+      }
       if (r.skipped) return { note: r.skipped };
       const note = `${r.candidates} candidat(s), ${r.enqueued} rappel(s) préparé(s), ${r.revived} relancé(s), exclus : ${JSON.stringify(r.excluded)}, `
+        + (r.coverageUncertain ? `${r.coverageUncertain} couverture(s) incertaine(s) à décider dans le BO, ` : '')
         + `erreurs Stripe : ${r.stripeErrors} — couverture depuis le ${r.coverageFrom ?? '?'}`
         + (r.portalConfigurationId ? ` — portail Verebona ${r.portalConfigurationId}` : '');
       // Toutes les vérifications en échec : la tâche est en échec (reprise au passage suivant).
       if (r.stripeErrors > 0 && r.stripeErrors >= r.candidates) return { note, error: `${r.stripeErrors} vérification(s) Stripe en échec` };
       return { note: note.slice(0, 1500) };
+    },
+  },
+  {
+    // Lot 72F (ticket P1, §5) : réconciliation INDÉPENDANTE avec Stripe — un
+    // webhook manqué (copie locale mensuelle, résiliée, échéance périmée,
+    // abonnement absent) ne doit jamais écarter silencieusement un rappel.
+    // Abonnements actifs Stripe annuels à échéance ≤ 9 jours comparés à la
+    // copie locale ; écart → resynchronisation (subscription-sync) ; écart
+    // persistant → anomalie (BO › Communications › Rappel J−7). Avant la
+    // fenêtre d'envoi (8 h 30). Créée SUSPENDUE (0524) : activée à la bascule.
+    code: 'subscription-annual-renewal-reconcile',
+    label: 'Abonnements annuels : réconciliation avec Stripe avant le rappel J−7',
+    schedule: { kind: 'daily', at: [7, 40], graceMs: 6 * HOUR },
+    timeoutMs: 10 * MIN,
+    run: async ({ deadline }) => {
+      const { runAnnualRenewalReconciliation } = await import('@/services/billing/annual-renewal-reconcile.service');
+      const r = await runAnnualRenewalReconciliation({ deadline: Math.min(deadline, Date.now() + 8 * MIN) });
+      const note = `${r.scanned} abonnement(s) actifs lus, ${r.inWindow} annuel(s) à échéance proche, ${r.resynced} resynchronisé(s), `
+        + `${r.unresolved} non résolu(s), ${r.stripeOnly} absent(s) localement, ${r.localOnlyChecked} local(aux) relu(s), ${r.errors} erreur(s)`;
+      if (!r.complete) return { note, error: 'Liste des abonnements Stripe incomplète (délai ou erreur Stripe) : nouvel essai demain ; voir BO › Communications › Rappel J−7.' };
+      if (r.unresolved > 0 || r.stripeOnly > 0) return { note, error: `${r.unresolved + r.stripeOnly} désynchronisation(s) non résolue(s) : voir BO › Communications › Rappel J−7.` };
+      return { note };
     },
   },
 ];

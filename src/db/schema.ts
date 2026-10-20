@@ -1136,6 +1136,9 @@ export const accounts = pgTable('accounts', {
   // Paiement en attente : réconciliation durable (0251, APP-PERF-18).
   checkoutCheckAttempts: integer('checkout_check_attempts').notNull().default(0),
   checkoutNextCheckAt: tstzOptional('checkout_next_check_at'),
+  // Lot 72D (0519) : neutralisation réversible d'un compte artificiel vide.
+  archivedAt: tstzOptional('archived_at'),
+  archivedReason: text('archived_reason'),
   createdAt: tstz('created_at'),
   updatedAt: tstz('updated_at'),
 }, (table) => ({
@@ -1164,6 +1167,12 @@ export const accountMemberships = pgTable('account_memberships', {
   removedBy: integer('removed_by').references(() => users.id, { onDelete: 'set null' }),
   inviteToken: text('invite_token').unique(),
   inviteTokenExpiresAt: tstzOptional('invite_token_expires_at'),
+  // Lot 72D (0519) : dernier choix de cet espace, origine, motif de fin,
+  // permissions (réservé à l'offre Pro, non lu).
+  lastSelectedAt: tstzOptional('last_selected_at'),
+  source: text('source'),
+  endedReason: text('ended_reason'),
+  permissions: jsonb('permissions'),
   createdAt: tstz('created_at'),
   updatedAt: tstz('updated_at'),
 }, (table) => ({
@@ -1176,7 +1185,7 @@ export const accountMemberships = pgTable('account_memberships', {
     .on(table.accountId, table.userId)
     .where(sql`user_id IS NOT NULL`),
   roleCheck: check('account_memberships_role_check', sql`${table.role} IN ('owner', 'member', 'admin')`),
-  statusCheck: check('account_memberships_status_check', sql`${table.status} IN ('pending', 'active', 'removed', 'declined')`),
+  statusCheck: check('account_memberships_status_check', sql`${table.status} IN ('pending', 'active', 'removed', 'declined', 'left')`),
 }));
 
 export const accountAuditLog = pgTable('account_audit_log', {
@@ -1233,6 +1242,8 @@ export const duoAccounts = pgTable('duo_accounts', {
   // Lot 57A (0405) : empreinte SHA-256 du dernier jeton consommé (« invitation
   // déjà utilisée ») — jamais le jeton lui-même.
   lastUsedInviteTokenHash: text('last_used_invite_token_hash'),
+  // Lot 72D (0520) : compte partagé du Duo (adhésions des membres).
+  accountId: integer('account_id'),
   createdAt: tstz('created_at'),
   updatedAt: tstz('updated_at'),
 }, (table) => ({
@@ -4216,9 +4227,15 @@ export const transactionalEmailJobs = pgTable('transactional_email_jobs', {
   updatedAt: tstz('updated_at'),
   /** Lot 64A (0459) : idempotence « une fois par événement » (fin d'accès Duo ; départ volontaire, lot 65A, 0462). */
   dedupeKey: text('dedupe_key'),
+  /** Lot 72F (0524) : identité d'envoi stable (clé Resend `vb-email-job-<id>-g<génération>`). */
+  sendGeneration: integer('send_generation').notNull().default(0),
+  providerCallStartedAt: tstzOptional('provider_call_started_at'),
+  providerOutcome: text('provider_outcome'),
+  providerDetail: text('provider_detail'),
+  uncertainSince: tstzOptional('uncertain_since'),
 }, (t) => ({
   kindCheck: check('transactional_email_jobs_kind_check', sql`${t.kind} IN ('EMAIL_VERIFICATION', 'DUO_INVITATION', 'DUO_MEMBERSHIP_ENDED', 'DUO_MEMBERSHIP_LEFT', 'SUBSCRIPTION_ANNUAL_RENEWAL_REMINDER')`),
-  statusCheck: check('transactional_email_jobs_status_check', sql`${t.status} IN ('pending', 'sending', 'accepted', 'failed', 'cancelled')`),
+  statusCheck: check('transactional_email_jobs_status_check', sql`${t.status} IN ('pending', 'sending', 'accepted', 'failed', 'cancelled', 'uncertain')`),
   dueIdx: index('transactional_email_jobs_due_idx').on(t.nextAttemptAt).where(sql`status IN ('pending', 'sending')`),
   userIdx: index('transactional_email_jobs_user_idx').on(t.userId, t.kind),
   duoIdx: index('transactional_email_jobs_duo_idx').on(t.duoId, t.kind),
@@ -4236,13 +4253,22 @@ export const annualRenewalReminderState = pgTable('annual_renewal_reminder_state
   id: integer('id').primaryKey().default(1),
   coverageFrom: pgDate('coverage_from'),
   updatedAt: tstz('updated_at'),
+  /** Lot 72F (0524) : bascule Stripe → Verebona déclarée, retour arrière, réconciliation. */
+  stripeRemindersDisabledAt: tstzOptional('stripe_reminders_disabled_at'),
+  switchDeclaredAt: tstzOptional('switch_declared_at'),
+  switchDeclaredBy: integer('switch_declared_by'),
+  rollbackAt: tstzOptional('rollback_at'),
+  rollbackBy: integer('rollback_by'),
+  lastReconcileAt: tstzOptional('last_reconcile_at'),
+  lastReconcileNote: text('last_reconcile_note'),
 }, (t) => ({
   singletonCheck: check('annual_renewal_reminder_state_singleton_check', sql`${t.id} = 1`),
 }));
 
 export const annualRenewalReminderChecks = pgTable('annual_renewal_reminder_checks', {
   candidateKey: text('candidate_key').primaryKey(),
-  accountId: integer('account_id').notNull(),
+  /** Lot 72F : NULL pour un abonnement Stripe absent localement (STRIPE_ONLY). */
+  accountId: integer('account_id'),
   stripeSubscriptionId: text('stripe_subscription_id').notNull(),
   renewalDate: pgDate('renewal_date').notNull(),
   checkedOn: pgDate('checked_on').notNull(),
@@ -4252,8 +4278,13 @@ export const annualRenewalReminderChecks = pgTable('annual_renewal_reminder_chec
   checks: integer('checks').notNull().default(1),
   createdAt: tstz('created_at'),
   updatedAt: tstz('updated_at'),
+  /** Lot 72F (0524) : journal par vérification (étape, dernier contrôle, prochaine vérification, historique borné). */
+  step: text('step'),
+  lastCheckedAt: tstzOptional('last_checked_at'),
+  nextCheckAt: tstzOptional('next_check_at'),
+  history: jsonb('history').notNull().default([]),
 }, (t) => ({
-  outcomeCheck: check('annual_renewal_reminder_checks_outcome_check', sql`${t.outcome} IN ('ENQUEUED', 'REVIVED', 'DUPLICATE', 'WAITING', 'EXCLUDED', 'NO_RECIPIENT')`),
+  outcomeCheck: check('annual_renewal_reminder_checks_outcome_check', sql`${t.outcome} IN ('ENQUEUED', 'REVIVED', 'DUPLICATE', 'WAITING', 'EXCLUDED', 'NO_RECIPIENT', 'STRIPE_ERROR', 'COVERAGE_UNCERTAIN', 'DESYNC_RESYNCED', 'DESYNC_UNRESOLVED', 'STRIPE_ONLY')`),
 }));
 
 /** Lot 57A (0405) — événements webhook Resend (svix-id unique : rejeu sans effet). */
@@ -4267,7 +4298,10 @@ export const emailProviderEvents = pgTable('email_provider_events', {
   detail: text('detail'),
   appliedAt: tstzOptional('applied_at'),
   receivedAt: tstz('received_at'),
+  /** Lot 72F (0524) : demande d'origine (étiquette `vb_email_job` du webhook Resend). */
+  emailJobId: integer('email_job_id'),
 }, (t) => ({
   eventUnique: unique('email_provider_events_event_unique').on(t.provider, t.eventId),
   messageIdx: index('email_provider_events_message_idx').on(t.providerMessageId),
+  emailJobIdx: index('email_provider_events_email_job_idx').on(t.emailJobId).where(sql`email_job_id IS NOT NULL`),
 }));

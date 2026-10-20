@@ -4,6 +4,8 @@ import { db } from '@/db';
 import { accounts } from '@/db/schema';
 import { eq } from 'drizzle-orm';
 import { randomBytes } from 'crypto';
+import { getEntitlements } from '@/services/entitlements.service';
+import { getSessionRole, requireAccountOwner } from '@/services/account/membership.service';
 
 export async function GET(req: NextRequest) {
   try {
@@ -16,8 +18,9 @@ export async function GET(req: NextRequest) {
     const accountId = session.currentAccountId;
     if (!accountId) return NextResponse.json({ error: 'No account selected' }, { status: 400 });
 
-    const isPremium = session.planType === 'PREMIUM' || session.planType === 'PREMIUM_DUO' || session.planType === 'PREMIUM_PRO';
-    if (!isPremium) {
+    // Lot 72D : droits du COMPTE courant (entitlements), plus le `planType`
+    // de l'utilisateur copié dans le jeton.
+    if (!(await getEntitlements(accountId)).premiumFeatures) {
       return NextResponse.json({ error: 'Premium subscription required', code: 'PREMIUM_REQUIRED' }, { status: 403 });
     }
 
@@ -31,6 +34,8 @@ export async function GET(req: NextRequest) {
       token: account?.calendarShareToken ?? null,
       active: account?.calendarShareTokenActive ?? false,
       createdAt: account?.calendarShareTokenCreatedAt ?? null,
+      // Lot 72D : seul le titulaire génère ou coupe le lien (Q14).
+      canManage: (await getSessionRole(session)) === 'owner',
     });
   } catch (err) {
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
@@ -49,10 +54,14 @@ export async function POST(req: NextRequest) {
     const accountId = session.currentAccountId;
     if (!accountId) return NextResponse.json({ error: 'No account selected' }, { status: 400 });
 
-    const isPremium = session.planType === 'PREMIUM' || session.planType === 'PREMIUM_DUO' || session.planType === 'PREMIUM_PRO';
-    if (!isPremium) {
+    // Lot 72D : droits du COMPTE courant (entitlements), plus le `planType`
+    // de l'utilisateur copié dans le jeton.
+    if (!(await getEntitlements(accountId)).premiumFeatures) {
       return NextResponse.json({ error: 'Premium subscription required', code: 'PREMIUM_REQUIRED' }, { status: 403 });
     }
+    // Jeton de partage du calendrier : réservé au titulaire (matrice Q14).
+    const notOwner = await requireAccountOwner(session);
+    if (notOwner) return notOwner;
 
     const token = randomBytes(32).toString('hex');
     const createdAt = new Date();

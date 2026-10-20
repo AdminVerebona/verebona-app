@@ -15,6 +15,8 @@
  *                         simulation = transaction annulée par catégorie)
  *   equipment-separation  runDataSeparationBackfill (lot 71A ; simulation = lecture seule)
  *   document-validation   runValidationReprise (lot 71B ; simulation = lecture seule)
+ *   duo-shared-account    runDuoSharedAccountBackfill / restoreDuoSharedAccountRun (lot 72D ;
+ *                         simulation = lecture seule ; journal 0521)
  *
  * Services chargés à la demande : la route reste légère.
  */
@@ -163,6 +165,17 @@ export async function executeBackfill(sql: postgres.Sql, req: BackfillRequest, h
       const r = await runValidationReprise({
         apply: req.action === 'apply', origin: 'BO', accountId: req.accountId, reason: req.reason, log: hooks.log,
       });
+      return { result: r };
+    }
+    case 'duo-shared-account': {
+      // Lot 72D : membres Duo rattachés au compte partagé, comptes artificiels archivés (journal 0521).
+      const m = await import('@/services/account/duo-shared-account-backfill');
+      if (req.action === 'restore') {
+        const r = await m.restoreDuoSharedAccountRun(sql, req.runId!);
+        hooks.log(`restauration ${req.runId} : ${r.restored} écriture(s), ${r.conflicts.length} conflit(s)`);
+        return { result: r };
+      }
+      const r = await m.runDuoSharedAccountBackfill(sql, { apply: req.action === 'apply', accountId: req.accountId, log: hooks.log });
       return { result: r };
     }
   }

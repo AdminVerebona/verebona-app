@@ -1,13 +1,20 @@
 import { NextRequest, NextResponse } from 'next/server';
 
+// Lot 72G (décision PO du 19/10) : écran de démarrage Android de l'app
+// installée en Pétrole #17474D (background_color). theme_color Pétrole aussi :
+// sur le splash, la barre d'état est de la même couleur que l'écran (icônes
+// claires, lisibles) ; l'icône maskable a déjà un fond Pétrole plein cadre,
+// seul le logo ivoire apparaît. Une fois la page chargée, la balise
+// `theme-color` par thème (ivoire / sombre, src/app/layout.tsx et
+// src/lib/theme.ts) prend le relais pour la barre d'état.
 const MOBILE_MANIFEST = {
   name: 'Verebona — One place. Higher value.',
   short_name: 'Verebona',
   description: 'Tous vos biens et tous leurs documents, au même endroit. One place. Higher value.',
   start_url: '/accueil',
   display: 'standalone',
-  background_color: '#F8F6F1',
-  theme_color: '#F8F6F1',
+  background_color: '#17474D',
+  theme_color: '#17474D',
   orientation: 'portrait-primary',
   scope: '/',
   handle_links: 'preferred',
@@ -33,8 +40,8 @@ const DESKTOP_MANIFEST = {
   name: 'Verebona — One place. Higher value.',
   short_name: 'Verebona',
   display: 'browser',
-  background_color: '#F8F6F1',
-  theme_color: '#F8F6F1',
+  background_color: '#17474D',
+  theme_color: '#17474D',
   icons: [
     { src: '/android-chrome-192x192.png', sizes: '192x192', type: 'image/png', purpose: 'any' },
     { src: '/android-chrome-512x512.png', sizes: '512x512', type: 'image/png', purpose: 'any maskable' },

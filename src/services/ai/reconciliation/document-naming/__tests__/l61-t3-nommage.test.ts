@@ -17,7 +17,7 @@ import {
 } from '../context';
 import { deriveNameOrigin } from '../repository';
 import { dueRank, groupDue } from '../phase';
-import { T3DocumentNamingOutput, T3MasterOutput, T3_TASKS } from '../../master/t3-contract';
+import { namingOutputComplete, T3DocumentNamingOutput, T3MasterOutput, T3_TASKS } from '../../master/t3-contract';
 import { OPTIONAL_MASTER_TASKS, isMasterTaskTextPending } from '@/services/ai/prompts/prompt-loader';
 import { getOperation } from '@/services/ai/registry/operations';
 import { masterOutputSchemaFor } from '@/services/ai/gateway/master-output-schemas';
@@ -191,7 +191,9 @@ describe('T3-NOM-03 / T3-NOM-06 — Aucune nomenclature fixe ; familles décidé
     expect(Object.keys(v).sort()).toEqual(['CANDIDATES', 'CURRENT_STATE', 'EVIDENCES', 'FIELD', 'RELATION_TYPE', 'SUBJECT_CONTEXT']);
     const c = v.CANDIDATES as Array<Record<string, unknown>>;
     expect(c.map((x) => [x.documentId, x.role, x.nameOrigin])).toEqual([[1, 'REFERENCE', 'T3_HARMONIZATION'], [2, 'TO_EXAMINE', 'T1']]);
-    expect(c[0]).toMatchObject({ currentName: 'Facture Orange 03/2024', originalName: 'fact.pdf', renameAllowed: true });
+    // Lot 72B (E7) : un document de RÉFÉRENCE n'est jamais renommable (renameAllowed = false).
+    expect(c[0]).toMatchObject({ currentName: 'Facture Orange 03/2024', originalName: 'fact.pdf', renameAllowed: false });
+    expect(c[1]).toMatchObject({ renameAllowed: true });
     expect(c[1]).toMatchObject({ facts: [{ key: 'contractNumber', value: '778899' }], excerpt: 'Votre facture' });
     expect(JSON.parse(String(v.SUBJECT_CONTEXT)).previousConventions).toHaveLength(1);
   });
@@ -220,7 +222,7 @@ describe('T3-NOM-11 — Historique : lots volumineux examinés en plusieurs appe
 });
 
 describe('T3-NOM-18 — Contrat de sortie T3 : section document_renames facultative, rétrocompatible', () => {
-  it('plusieurs renommages possibles ; section absente = aucune proposition (jamais une erreur)', () => {
+  it('plusieurs renommages possibles ; section absente : schéma rétrocompatible (jamais une erreur de validation), mais réponse INCOMPLÈTE (lot 72B, E9)', () => {
     const ok = T3DocumentNamingOutput.parse({
       task: 'DOCUMENT_NAMING',
       families: [{ label: 'Factures box', document_ids: [1, 2], convention: 'Facture Orange — mois année', inconsistent: true }],
@@ -233,6 +235,8 @@ describe('T3-NOM-18 — Contrat de sortie T3 : section document_renames facultat
     expect(T3DocumentNamingOutput.parse({ task: 'DOCUMENT_NAMING' }).document_renames).toBeUndefined();
     expect(() => T3DocumentNamingOutput.parse({ task: 'DOCUMENT_NAMING', document_renames: [{ document_id: 1, proposed_name: 'b', reason: 'r', confidence: 'certain' }] })).toThrow();
     expect(T3MasterOutput.parse({ task: 'DOCUMENT_NAMING' })).toEqual({ task: 'DOCUMENT_NAMING' });
+    expect(namingOutputComplete(T3DocumentNamingOutput.parse({ task: 'DOCUMENT_NAMING' }))).toBe(false);
+    expect(namingOutputComplete(T3DocumentNamingOutput.parse({ task: 'DOCUMENT_NAMING', document_renames: [] }))).toBe(true);
   });
   it('branche FACULTATIVE du master T3, opération déclarée, schéma relié ; texte livré au lot 63', () => {
     expect(T3_TASKS).toContain('DOCUMENT_NAMING');

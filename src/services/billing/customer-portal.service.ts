@@ -29,26 +29,124 @@
 import { pgClient } from '@/db';
 import type { CustomerPortalConfigStripe } from './customer-portal-configuration.service';
 
-export type PortalAccessCode = 'NO_ACCOUNT' | 'FORBIDDEN' | 'DUO_GUEST' | 'NO_STRIPE_CUSTOMER';
+export type PortalAccessCode = 'NO_ACCOUNT' | 'FORBIDDEN' | 'DUO_GUEST' | 'NO_STRIPE_CUSTOMER' | 'ACCOUNT_FORBIDDEN' | 'BILLING_MISMATCH' | 'INVALID_ACCOUNT_REF';
 
 export type PortalAccess =
   | { ok: true; accountId: number; customerId: string }
-  | { ok: false; code: PortalAccessCode; status: 403 | 404; message: string };
+  | { ok: false; code: PortalAccessCode; status: 400 | 403 | 404 | 409; message: string };
 
 export const PORTAL_ACCESS_MESSAGES: Readonly<Record<PortalAccessCode, string>> = {
   NO_ACCOUNT: 'Aucun compte Verebona n’est associé à votre connexion.',
   FORBIDDEN: 'Seul le propriétaire du compte peut accéder à la facturation.',
   DUO_GUEST: 'La facturation de cet espace Premium Duo est gérée par la personne titulaire de l’abonnement. Vous n’avez pas accès à sa gestion.',
   NO_STRIPE_CUSTOMER: 'Aucun compte de facturation n\'est associé à ce compte.',
+  // Lot 72F : réponse UNIFORME (compte d'autrui ou inexistant : aucune information).
+  ACCOUNT_FORBIDDEN: 'Ce lien concerne un abonnement que vous ne pouvez pas gérer avec ce compte Verebona. Connectez-vous avec le compte titulaire qui a reçu l’e-mail.',
+  BILLING_MISMATCH: 'Les informations de facturation de ce compte doivent être vérifiées par notre équipe avant d’ouvrir l’espace de gestion. Contactez le support.',
+  INVALID_ACCOUNT_REF: 'Lien de gestion de l’abonnement invalide.',
 };
 
-const deny = (code: PortalAccessCode, status: 403 | 404): PortalAccess => ({ ok: false, code, status, message: PORTAL_ACCESS_MESSAGES[code] });
+const deny = (code: PortalAccessCode, status: 400 | 403 | 404 | 409): PortalAccess => ({ ok: false, code, status, message: PORTAL_ACCESS_MESSAGES[code] });
+
+/** Lot 72F : référence durable du compte facturé portée par le lien permanent (identifiant du compte). */
+export function parseAccountRef(raw: unknown): number | null | 'INVALID' {
+  if (raw === undefined || raw === null || raw === '') return null;
+  const v = typeof raw === 'number' ? String(raw) : typeof raw === 'string' ? raw.trim() : '';
+  if (!/^[1-9][0-9]{0,9}$/.test(v)) return 'INVALID';
+  const n = Number(v);
+  return n <= 2_147_483_647 ? n : 'INVALID';
+}
+
+/** Sous-ensemble Stripe pour le contrôle de cohérence abonnement / client. */
+export interface PortalSubscriptionReader {
+  subscriptions: { retrieve(id: string): Promise<unknown> };
+}
+
+/**
+ * Lot 72F — accès au portail d'UN compte facturé précis (lien permanent de
+ * l'e-mail J−7). Contrôles serveur, jamais de repli vers un autre compte :
+ *   · titulaire : adhésion `owner` active ET propriétaire (`owner_user_id`)
+ *     du compte ; Premium Duo : payeur du Duo (`billing_owner_user_id`) ;
+ *   · invité Duo de ce compte → DUO_GUEST ; tout autre cas (compte d'autrui,
+ *     inexistant, adhésion close) → ACCOUNT_FORBIDDEN, réponse uniforme ;
+ *   · cohérence compte / abonnement / client Stripe : client du compte et de
+ *     l'abonnement local identiques, et client de l'abonnement Stripe relu
+ *     identique → sinon BILLING_MISMATCH (aucune session créée).
+ * Une erreur Stripe à la relecture LÈVE (portail indisponible, « Réessayer »).
+ */
+export async function resolveBillingPortalAccessForAccount(userId: number, accountId: number, opts: { stripe?: PortalSubscriptionReader } = {}): Promise<PortalAccess> {
+  const [acc] = await pgClient.unsafe<{
+    id: number; owner_user_id: number; account_customer: string | null; row_customer: string | null; account_sub: string | null; row_sub: string | null;
+    owner_member: boolean; duo_billing_owner: number | null; any_member: boolean; duo_guest: boolean;
+  }[]>(
+    `SELECT a.id, a.owner_user_id, a.stripe_customer_id AS account_customer, s.stripe_customer_id AS row_customer,
+            a.stripe_subscription_id AS account_sub, s.stripe_subscription_id AS row_sub,
+            EXISTS (SELECT 1 FROM account_memberships m WHERE m.account_id = a.id AND m.user_id = $1 AND m.role = 'owner'
+                       AND lower(COALESCE(m.status, 'active')) NOT IN ${ENDED_MEMBERSHIP}) AS owner_member,
+            d.billing_owner_user_id AS duo_billing_owner,
+            EXISTS (SELECT 1 FROM account_memberships m WHERE m.account_id = a.id AND m.user_id = $1
+                       AND lower(COALESCE(m.status, 'active')) NOT IN ${ENDED_MEMBERSHIP}) AS any_member,
+            EXISTS (SELECT 1 FROM duo_memberships dm WHERE dm.duo_id = a.duo_account_id AND dm.user_id = $1 AND dm.status = 'ACTIVE'
+                       AND d.billing_owner_user_id IS DISTINCT FROM $1) AS duo_guest
+       FROM accounts a
+       LEFT JOIN account_subscriptions s ON s.account_id = a.id
+       LEFT JOIN duo_accounts d ON d.id = a.duo_account_id
+      WHERE a.id = $2`,
+    [userId, accountId] as never[],
+  );
+  if (!acc) return deny('ACCOUNT_FORBIDDEN', 403);
+  const holder = acc.owner_member && Number(acc.owner_user_id) === Number(userId)
+    && (acc.duo_billing_owner == null || Number(acc.duo_billing_owner) === Number(userId));
+  if (!holder) {
+    // Invité du Duo de ce compte : refus dédié (sans donnée du titulaire).
+    if (acc.duo_guest || (acc.any_member && acc.duo_billing_owner != null)) return deny('DUO_GUEST', 403);
+    return deny('ACCOUNT_FORBIDDEN', 403);
+  }
+  const customers = [acc.account_customer, acc.row_customer].filter((c): c is string => !!c);
+  if (customers.length === 0) return deny('NO_STRIPE_CUSTOMER', 404);
+  if (new Set(customers).size > 1) return mismatch(accountId, 'LOCAL_CUSTOMERS_DIFFER');
+  const customerId = customers[0];
+  const subscriptionId = acc.row_sub ?? acc.account_sub;
+  if (acc.row_sub && acc.account_sub && acc.row_sub !== acc.account_sub) return mismatch(accountId, 'LOCAL_SUBSCRIPTIONS_DIFFER');
+  if (subscriptionId) {
+    const stripe = opts.stripe ?? ((await import('@/lib/stripe')).getStripeServer() as unknown as PortalSubscriptionReader);
+    let sub: { customer?: string | { id: string } | null } | null = null;
+    try {
+      sub = await stripe.subscriptions.retrieve(subscriptionId) as { customer?: string | { id: string } | null };
+    } catch (e) {
+      const err = e as { code?: string; statusCode?: number };
+      // Abonnement supprimé chez Stripe : le client reste celui du compte (portail : factures, moyens de paiement).
+      if (!(err?.code === 'resource_missing' || err?.statusCode === 404)) throw e;
+    }
+    const subCustomer = !sub?.customer ? null : typeof sub.customer === 'string' ? sub.customer : sub.customer.id;
+    if (sub && subCustomer !== customerId) return mismatch(accountId, 'STRIPE_CUSTOMER_DIFFERS');
+  }
+  return { ok: true, accountId, customerId };
+}
+
+/** Incohérence de facturation : refus + journal technique (sans identifiant Stripe). */
+function mismatch(accountId: number, detail: string): PortalAccess {
+  console.warn(JSON.stringify({ evt: 'billing.customer_portal.billing_mismatch', accountId, detail }));
+  return deny('BILLING_MISMATCH', 409);
+}
 
 /** Statuts d'adhésion qui ne donnent plus aucun droit. */
 const ENDED_MEMBERSHIP = `('removed', 'left', 'revoked', 'declined')`;
 
 /** Compte de facturation que l'utilisateur peut gérer, ou motif de refus. */
 export async function resolveBillingPortalAccess(userId: number, currentAccountId?: number | null): Promise<PortalAccess> {
+  // Lot 72D : rôle d'adhésion sur l'ESPACE OUVERT. Un membre (non titulaire)
+  // n'accède pas à la facturation de cet espace — ni, par repli, à celle d'un
+  // autre de ses espaces : il change d'espace pour gérer sa propre offre.
+  if (currentAccountId) {
+    const [m] = await pgClient.unsafe<{ role: string; duo: boolean }[]>(
+      `SELECT m.role, (a.duo_account_id IS NOT NULL OR a.plan_type = 'PREMIUM_DUO') AS duo
+         FROM account_memberships m JOIN accounts a ON a.id = m.account_id
+        WHERE m.user_id = $1 AND m.account_id = $2 AND lower(m.status) = 'active' LIMIT 1`,
+      [userId, currentAccountId] as never[],
+    );
+    if (m && m.role !== 'owner') return deny(m.duo ? 'DUO_GUEST' : 'FORBIDDEN', 403);
+  }
   const owned = await pgClient.unsafe<{ id: number; customer: string | null }[]>(
     `SELECT a.id, COALESCE(a.stripe_customer_id, s.stripe_customer_id) AS customer
        FROM account_memberships m

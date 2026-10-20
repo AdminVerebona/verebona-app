@@ -1,8 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { SessionService } from '@/lib/session-service';
 import { db } from '@/db';
-import { users, duoAccounts, duoMemberships } from '@/db/schema';
-import { eq, and } from 'drizzle-orm';
+import { users, duoAccounts, duoMemberships, accounts } from '@/db/schema';
+import { eq, and, sql } from 'drizzle-orm';
+import { accountCapacity, activeMemberUserIds, resolveDuoAccountId } from '@/services/account/membership.service';
 import crypto from 'crypto';
 import { getAppBaseUrl } from '@/lib/app-url';
 import {
@@ -122,6 +123,29 @@ export async function POST(request: NextRequest) {
 
     if (activeMember) {
       return NextResponse.json({ error: 'SLOT_ALREADY_TAKEN' }, { status: 409 });
+    }
+
+    // Lot 72D : limite GÉNÉRIQUE (adhésions actives du compte partagé contre
+    // `max_members`) et adresse déjà membre active du compte → refus explicite.
+    const sharedAccountId = await resolveDuoAccountId(duo.id);
+    if (sharedAccountId) {
+      const [acc] = await db
+        .select({ planType: accounts.planType, maxMembers: accounts.maxMembers })
+        .from(accounts)
+        .where(eq(accounts.id, sharedAccountId))
+        .limit(1);
+      const membres = await activeMemberUserIds(sharedAccountId);
+      const [deja] = await db
+        .select({ id: users.id })
+        .from(users)
+        .where(sql`lower(${users.email}) = ${email.trim().toLowerCase()}`)
+        .limit(1);
+      if (deja && membres.includes(deja.id)) {
+        return NextResponse.json({ error: 'ALREADY_MEMBER', message: 'Cette personne a déjà accès à votre espace.' }, { status: 409 });
+      }
+      if (acc && membres.length >= accountCapacity(acc)) {
+        return NextResponse.json({ error: 'SLOT_ALREADY_TAKEN' }, { status: 409 });
+      }
     }
 
     // Generate new token or reuse existing if resend

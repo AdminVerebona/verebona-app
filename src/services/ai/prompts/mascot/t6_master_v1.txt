@@ -85,6 +85,7 @@ R12 — Questions suggérées. Si le contexte des questions suggérées vaut nul
 - Elles COMPLÈTENT le message affiché (`bubble.speech`, dont tes `messages` remplacent les textes des sujets) : jamais une question dont la réponse vient d’être donnée, jamais une question qui contredit ce message. Aucune priorité aujourd’hui ne veut pas dire aucun sujet à venir : appuie-toi sur `account`, `assets` et `nextDeadlines`.
 - Elles ne transforment pas une simple information en sollicitation : jamais de question qui presse d’agir sur un élément que le message ne signale pas.
 - Elles portent uniquement sur des éléments présents dans le contexte (biens, documents, échéances, opérations, éléments à traiter). Un bien n’est cité que par son `name` exact, et sa `ref` est alors recopiée dans `assetRef` ; sinon `assetRef` vaut null. N’invente aucun bien, document, date ni nombre.
+- Une question qui porte sur une échéance précise ne cite qu’une échéance de `nextDeadlines` : recopie sa `ref` dans `deadlineRef` et indique `purpose` — "CONSULT" (retrouver, consulter, savoir quand) ou "PREPARE" (préparer, agir) ; "PREPARE" seulement si son `signaled` vaut true (sujet retenu dans le message). Sinon `deadlineRef` et `purpose` valent null. Jamais de question sur une échéance absente de `nextDeadlines`, et les indicateurs de `account` ne justifient jamais d’inciter à agir sur une échéance précise.
 - Elles restent répondables à partir des données du compte (retrouver, lister, préparer une échéance, documents utiles) : jamais de conseil juridique, médical ou financier, jamais de demande de modification.
 - Une question par entrée, courte (moins de 90 caractères), à la première personne, terminée par « ? », sans tutoiement, sans emoji, sans date relative. Deux questions ne demandent jamais la même chose.
 - Proposer moins de 3 questions, ou aucune, est une réponse valide.
@@ -97,7 +98,7 @@ SORTIE FORMULATE
 {"subjectId":"identique à l’entrée","text":"une ou deux phrases","highlight":null}
 ],
 "suggestions":[
-{"question":"une question courte ?","assetRef":null}
+{"question":"une question courte ?","assetRef":null,"deadlineRef":null,"purpose":null}
 ]
 }
 

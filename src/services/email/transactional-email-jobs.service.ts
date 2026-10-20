@@ -46,6 +46,33 @@
  * échéance) ; la construction REVALIDE l'abonnement chez Stripe juste avant
  * l'envoi (`services/billing/annual-renewal-reminder.service.ts`). Un montant
  * indisponible est un échec TEMPORAIRE (`temporary`), jamais une annulation.
+ *
+ * ══════════════════════════════════════════════════════════════════════════
+ * LOT 72F — IDENTITÉ D'ENVOI STABLE ET ACCEPTATION INCERTAINE
+ *
+ * La clé d'idempotence Resend était `vb-email-job-<id>-<tentative>` : elle
+ * changeait à chaque tentative. Si Resend acceptait l'e-mail mais que la
+ * réponse était perdue (réseau, délai, 5xx, arrêt du processus avant
+ * l'enregistrement), la reprise envoyait un SECOND e-mail. Désormais :
+ *   · clé STABLE `vb-email-job-<id>-g<génération>` ; la génération ne change
+ *     qu'après un refus CONFIRMÉ du prestataire (4xx hors idempotence) pour un
+ *     premier appel avec cette clé, ou une décision explicite du BO ;
+ *   · l'appel est marqué AVANT la transmission (`provider_call_started_at`) ;
+ *     réponse perdue / 5xx / 409 d'idempotence : « acceptation incertaine »
+ *     (`provider_outcome = uncertain`), jamais un échec confirmé ;
+ *   · une demande dont un appel est incertain est RÉCONCILIÉE avant toute
+ *     nouvelle émission : journal des envois (`email_logs`), webhooks Resend
+ *     étiquetés (`vb_email_job`), puis — dans la fenêtre d'idempotence Resend
+ *     (24 h, marge : 23 h) — réémission avec la MÊME clé et le même contenu
+ *     (Resend renvoie la réponse d'origine sans second e-mail) ; au-delà, ou si
+ *     la clé a déjà servi avec un autre contenu : consultation de l'e-mail chez
+ *     Resend (liste + identifiant, étiquette de la demande) ;
+ *   · incertitude non résolue : statut `uncertain`, AUCUNE réémission
+ *     automatique, anomalie BO (Communications) avec décision manuelle ;
+ *   · rappel annuel : la suspension de la tâche (BO ou variable d'arrêt) et la
+ *     bascule non déclarée bloquent l'envoi au moment même de l'envoi, demandes
+ *     déjà préparées comprises — sans consommer de tentative ni bloquer les
+ *     autres e-mails de la file.
  * ══════════════════════════════════════════════════════════════════════════
  */
 import { pgClient } from '@/db';
@@ -53,7 +80,7 @@ import { emailService } from '@/lib/email/email-service';
 import { buildEmailVerificationUrl, EMAIL_VERIFICATION_TTL_MS } from '@/services/auth/email-verification.service';
 
 export type EmailJobKind = 'EMAIL_VERIFICATION' | 'DUO_INVITATION' | 'DUO_MEMBERSHIP_ENDED' | 'DUO_MEMBERSHIP_LEFT' | 'SUBSCRIPTION_ANNUAL_RENEWAL_REMINDER';
-export type EmailJobStatus = 'pending' | 'sending' | 'accepted' | 'failed' | 'cancelled';
+export type EmailJobStatus = 'pending' | 'sending' | 'accepted' | 'failed' | 'cancelled' | 'uncertain';
 
 const MIN = 60_000;
 export const EMAIL_JOB_MAX_ATTEMPTS = 6;
@@ -63,6 +90,21 @@ export const EMAIL_JOB_BACKOFF_MS: readonly number[] = [MIN, 5 * MIN, 15 * MIN, 
 export const EMAIL_JOB_LOCK_MS = 2 * MIN;
 /** Durée de validité de l'invitation Duo (même valeur que la route et le BO). */
 export const DUO_INVITE_TTL_DAYS = 7;
+/** Lot 72F : fenêtre d'idempotence Resend (24 h) — réémission avec la même clé jusqu'à 23 h (marge). */
+export const PROVIDER_IDEMPOTENCY_WINDOW_MS = 24 * 60 * MIN;
+export const PROVIDER_REPLAY_WINDOW_MS = 23 * 60 * MIN;
+/** Lot 72F : délai minimal avant de conclure à l'absence d'un e-mail dans la liste Resend. */
+export const PROVIDER_LISTING_GRACE_MS = 10 * MIN;
+/** Lot 72F : consultation bornée de la liste Resend (pages de 100). */
+export const PROVIDER_LIST_MAX_PAGES = 10;
+/** Lot 72F : étiquettes Resend de la demande d'origine. */
+export const EMAIL_JOB_TAG = 'vb_email_job';
+export const EMAIL_JOB_GENERATION_TAG = 'vb_send_gen';
+
+/** Lot 72F : identité d'envoi STABLE (une génération = une clé, toutes tentatives confondues). */
+export function emailJobIdempotencyKey(jobId: number, generation: number): string {
+  return `vb-email-job-${jobId}-g${generation}`;
+}
 
 export function emailJobBackoffMs(attempts: number): number {
   const i = Math.max(0, Math.min(attempts - 1, EMAIL_JOB_BACKOFF_MS.length - 1));
@@ -88,6 +130,11 @@ interface JobRow {
   attempts: number;
   max_attempts: number;
   created_at: string | Date;
+  /** Lot 72F (0524). */
+  send_generation: number;
+  provider_call_started_at: string | Date | null;
+  provider_outcome: string | null;
+  provider_detail: string | null;
 }
 
 const iso = (d: Date) => d.toISOString();
@@ -206,7 +253,7 @@ function contextOf(job: JobRow): Record<string, unknown> {
   return job.context;
 }
 
-async function buildVerification(job: JobRow, now: Date): Promise<Built> {
+async function buildVerification(job: JobRow, now: Date, contentAt: Date = now): Promise<Built> {
   const [user] = job.user_id != null
     ? await pgClient.unsafe<{ id: number; email: string; first_name: string; is_active: boolean; status: string | null }[]>(
         `SELECT id, email, first_name, is_active, status FROM users WHERE id = $1`, [job.user_id as never])
@@ -229,7 +276,8 @@ async function buildVerification(job: JobRow, now: Date): Promise<Built> {
     ok: true,
     templateCode: 'EMAIL_VERIFICATION',
     // Lien SIGNÉ neuf, valable 24 h à compter de CETTE tentative.
-    variables: { firstName: user.first_name, verificationUrl: buildEmailVerificationUrl(appBaseUrl(), { id: user.id, email: user.email }, plan, now.getTime()) },
+    // Lot 72F : réémission d'un appel incertain → lien signé À L'INSTANT de cet appel (contenu identique).
+    variables: { firstName: user.first_name, verificationUrl: buildEmailVerificationUrl(appBaseUrl(), { id: user.id, email: user.email }, plan, contentAt.getTime()) },
     recipientUserId: user.id,
     triggeredByUserId: null,
   };
@@ -361,9 +409,9 @@ async function buildDuoMembershipEnded(job: JobRow): Promise<Built> {
  * variables (montant de l'aperçu de facture, date, lien permanent). Une
  * erreur Stripe lève : échec temporaire, repris par la file.
  */
-async function buildAnnualRenewal(job: JobRow, now: Date): Promise<Built> {
+async function buildAnnualRenewal(job: JobRow, now: Date, contentAt: Date = now): Promise<Built> {
   const { buildAnnualRenewalReminder } = await import('@/services/billing/annual-renewal-reminder.service');
-  const r = await buildAnnualRenewalReminder({ user_id: job.user_id, context: contextOf(job) }, now);
+  const r = await buildAnnualRenewalReminder({ user_id: job.user_id, context: contextOf(job) }, now, undefined, contentAt);
   if (!r.ok) return { ok: false, reason: r.reason, temporary: r.temporary };
   return {
     ok: true,
@@ -373,6 +421,125 @@ async function buildAnnualRenewal(job: JobRow, now: Date): Promise<Built> {
     triggeredByUserId: null,
     to: r.to,
   };
+}
+
+/** Mise à jour de clôture / report d'une tentative (lot 72F : état du prestataire). */
+interface CloseFields {
+  error?: string | null;
+  logId?: number | null;
+  messageId?: string | null;
+  next?: Date | null;
+  /** Dernier résultat du prestataire (inchangé si absent). */
+  providerOutcome?: 'accepted' | 'rejected' | 'uncertain' | 'reconciled' | 'reconciled_absent' | null;
+  providerDetail?: string | null;
+  /** Refus confirmé d'un premier appel : nouvelle génération de clé. */
+  newGeneration?: boolean;
+}
+
+/** Ne lève pas : un retour de l'appel garde la trace de l'issue. */
+type Close = (status: EmailJobStatus, fields?: CloseFields, exec?: Exec) => Promise<void>;
+
+function closerFor(job: JobRow, now: Date): Close {
+  return async (status, fields = {}, exec = pgClient) => {
+    await exec.unsafe(
+      `UPDATE transactional_email_jobs
+          SET status = $2, locked_until = NULL, last_error = $3,
+              last_email_log_id = COALESCE($4, last_email_log_id),
+              provider_message_id = COALESCE($5, provider_message_id),
+              accepted_at = CASE WHEN $2 = 'accepted' THEN $6::timestamptz ELSE accepted_at END,
+              next_attempt_at = COALESCE($7::timestamptz, next_attempt_at),
+              updated_at = $6::timestamptz,
+              provider_outcome = COALESCE($8, provider_outcome),
+              provider_detail = CASE WHEN $8::text IS NULL THEN provider_detail ELSE $9 END,
+              uncertain_since = CASE WHEN $8 = 'uncertain' THEN COALESCE(uncertain_since, $6::timestamptz)
+                                     WHEN $8 IS NULL THEN uncertain_since ELSE NULL END,
+              send_generation = send_generation + CASE WHEN $10::boolean THEN 1 ELSE 0 END,
+              provider_call_started_at = CASE WHEN $10::boolean THEN NULL ELSE provider_call_started_at END
+        WHERE id = $1`,
+      [job.id, status, fields.error ?? null, fields.logId ?? null, fields.messageId ?? null, iso(now), fields.next ? iso(fields.next) : null,
+        fields.providerOutcome ?? null, fields.providerDetail ?? null, !!fields.newGeneration] as never[],
+    );
+  };
+}
+
+/**
+ * Lot 72F : envoi annuel bloqué (tâche suspendue, bascule non déclarée) ?
+ * État illisible (migration non passée, base indisponible) : les rappels
+ * annuels sont RETENUS, les autres e-mails de la file continuent.
+ */
+async function annualBlock(): Promise<string | null> {
+  try {
+    const { annualRemindersSendBlock } = await import('@/services/billing/annual-renewal-reminder.service');
+    return await annualRemindersSendBlock();
+  } catch (e) {
+    console.error('[transactional-email] état du rappel annuel illisible — rappels annuels retenus :', (e as Error)?.message ?? e);
+    return 'SEND_STATE_UNREADABLE';
+  }
+}
+
+export type ProviderReconciliation =
+  | { kind: 'accepted'; messageId: string; via: 'journal' | 'webhook' | 'provider' }
+  | { kind: 'absent' }
+  | { kind: 'unknown'; detail: string };
+
+/**
+ * Lot 72F — issue d'un appel au prestataire resté sans réponse connue.
+ * Sources, dans l'ordre : journal des envois (réponse reçue mais clôture non
+ * écrite), webhooks Resend étiquetés, puis (si `providerLookup`) consultation
+ * de la liste des e-mails Resend et de chaque e-mail candidat par son
+ * identifiant (étiquette `vb_email_job` = cette demande). Jamais d'envoi ici.
+ */
+export async function reconcileProviderCall(
+  job: Pick<JobRow, 'id' | 'recipient_email' | 'send_generation' | 'provider_call_started_at'>,
+  now: Date,
+  opts: { providerLookup: boolean },
+): Promise<ProviderReconciliation> {
+  const started = job.provider_call_started_at ? new Date(job.provider_call_started_at) : now;
+  const [log] = await pgClient.unsafe<{ provider_message_id: string }[]>(
+    `SELECT provider_message_id FROM email_logs
+      WHERE email_job_id = $1 AND status = 'sent' AND provider_message_id IS NOT NULL
+      ORDER BY id DESC LIMIT 1`,
+    [job.id as never],
+  );
+  if (log) return { kind: 'accepted', messageId: log.provider_message_id, via: 'journal' };
+  const [ev] = await pgClient.unsafe<{ provider_message_id: string }[]>(
+    `SELECT provider_message_id FROM email_provider_events
+      WHERE email_job_id = $1 AND provider_message_id IS NOT NULL
+        AND occurred_at >= $2::timestamptz - interval '5 minutes'
+      ORDER BY id LIMIT 1`,
+    [job.id, iso(started)] as never[],
+  );
+  if (ev) return { kind: 'accepted', messageId: ev.provider_message_id, via: 'webhook' };
+  if (!opts.providerLookup) return { kind: 'unknown', detail: 'NO_EVIDENCE' };
+
+  const recipient = job.recipient_email.trim().toLowerCase();
+  const floor = started.getTime() - 5 * MIN;
+  const candidates: string[] = [];
+  let after: string | undefined;
+  let complete = false;
+  for (let page = 0; page < PROVIDER_LIST_MAX_PAGES; page += 1) {
+    const r = await emailService.listProviderEmails({ after, limit: 100 });
+    if (!r.ok) return { kind: 'unknown', detail: `RESEND_LOOKUP_${r.code}`.slice(0, 120) };
+    for (const item of r.value.items) {
+      const created = item.createdAt ? new Date(item.createdAt).getTime() : NaN;
+      if (Number.isFinite(created) && created < floor) { complete = true; break; }
+      if (item.to.some((t) => t.trim().toLowerCase() === recipient)) candidates.push(item.id);
+    }
+    if (complete || !r.value.hasMore || r.value.items.length === 0) { complete = true; break; }
+    after = r.value.items[r.value.items.length - 1].id;
+  }
+  for (const id of candidates.slice(0, 20)) {
+    const g = await emailService.getProviderEmail(id);
+    if (!g.ok) return { kind: 'unknown', detail: `RESEND_LOOKUP_${g.code}`.slice(0, 120) };
+    const tags = g.value?.tags ?? [];
+    const jobTag = tags.find((t) => t.name === EMAIL_JOB_TAG)?.value;
+    const genTag = tags.find((t) => t.name === EMAIL_JOB_GENERATION_TAG)?.value;
+    if (jobTag === String(job.id) && (genTag == null || genTag === String(job.send_generation))) {
+      return { kind: 'accepted', messageId: id, via: 'provider' };
+    }
+  }
+  if (complete && now.getTime() - started.getTime() >= PROVIDER_LISTING_GRACE_MS) return { kind: 'absent' };
+  return { kind: 'unknown', detail: complete ? 'RESEND_LISTING_TOO_RECENT' : 'RESEND_LISTING_INCOMPLETE' };
 }
 
 /**
@@ -387,56 +554,112 @@ export async function processEmailJob(jobId: number, now: Date = new Date()): Pr
       WHERE id = $1
         AND ((status = 'pending' AND next_attempt_at <= $3::timestamptz)
           OR (status = 'sending' AND locked_until < $3::timestamptz))
-      RETURNING id, kind, user_id, duo_id, triggered_by_user_id, recipient_email, context, status, attempts, max_attempts, created_at`,
+      RETURNING id, kind, user_id, duo_id, triggered_by_user_id, recipient_email, context, status, attempts, max_attempts, created_at,
+                send_generation, provider_call_started_at, provider_outcome, provider_detail`,
     [jobId, iso(new Date(now.getTime() + EMAIL_JOB_LOCK_MS)), iso(now)] as never[],
   );
   if (!job) return { jobId, status: 'busy' };
+  const close = closerFor(job, now);
 
-  const close = async (status: EmailJobStatus, fields: { error?: string | null; logId?: number | null; messageId?: string | null; next?: Date | null } = {}, exec: Exec = pgClient) => {
-    await exec.unsafe(
+  // Lot 72F : rappel annuel suspendu (ou bascule non déclarée) — jamais envoyé,
+  // demande conservée telle quelle (tentative non consommée).
+  const holdAnnual = async (reason: string): Promise<EmailJobOutcome> => {
+    const next = new Date(now.getTime() + 5 * MIN);
+    await pgClient.unsafe(
       `UPDATE transactional_email_jobs
-          SET status = $2, locked_until = NULL, last_error = $3,
-              last_email_log_id = COALESCE($4, last_email_log_id),
-              provider_message_id = COALESCE($5, provider_message_id),
-              accepted_at = CASE WHEN $2 = 'accepted' THEN $6::timestamptz ELSE accepted_at END,
-              next_attempt_at = COALESCE($7::timestamptz, next_attempt_at),
-              updated_at = $6::timestamptz
+          SET status = 'pending', attempts = GREATEST(attempts - 1, 0), locked_until = NULL, last_error = $2,
+              next_attempt_at = $3::timestamptz, updated_at = $4::timestamptz
         WHERE id = $1`,
-      [job.id, status, fields.error ?? null, fields.logId ?? null, fields.messageId ?? null, iso(now), fields.next ? iso(fields.next) : null] as never[],
+      [job.id, reason, iso(next), iso(now)] as never[],
     );
+    return { jobId: job.id, status: 'pending', error: reason, nextAttemptAt: iso(next) };
   };
 
   try {
+    if (job.kind === 'SUBSCRIPTION_ANNUAL_RENEWAL_REMINDER') {
+      const block = await annualBlock();
+      if (block) return await holdAnnual(block);
+    }
+
+    // ── Réconciliation d'un appel précédent sans réponse connue ───────────
+    let started = job.provider_call_started_at ? new Date(job.provider_call_started_at) : null;
+    let replay = false;
+    if (started) {
+      const withinWindow = now.getTime() - started.getTime() < PROVIDER_REPLAY_WINDOW_MS;
+      const keyUsed = job.provider_detail === 'IDEMPOTENT_KEY_USED';
+      const rec = await reconcileProviderCall(job, now, { providerLookup: !withinWindow || keyUsed });
+      if (rec.kind === 'accepted') return await acceptReconciled(job, rec, now, close);
+      if (rec.kind === 'absent') {
+        // Absence constatée chez le prestataire : nouvelle clé, envoi normal.
+        await pgClient.unsafe(
+          `UPDATE transactional_email_jobs
+              SET send_generation = send_generation + 1, provider_call_started_at = NULL,
+                  provider_outcome = 'reconciled_absent', provider_detail = NULL, uncertain_since = NULL
+            WHERE id = $1`, [job.id as never]);
+        job.send_generation += 1;
+        job.provider_call_started_at = null;
+        started = null;
+      } else if (withinWindow && !keyUsed) {
+        replay = true; // même clé, même contenu : Resend renvoie la réponse d'origine
+      } else {
+        await close('uncertain', { error: 'UNCERTAIN_ACCEPTANCE', providerOutcome: 'uncertain', providerDetail: rec.detail });
+        console.error(`[transactional-email] ${job.kind} #${job.id} : acceptation incertaine non résolue (${rec.detail}) — réémission bloquée, décision BO requise`);
+        return { jobId: job.id, status: 'uncertain', error: 'UNCERTAIN_ACCEPTANCE' };
+      }
+    }
+
     if (job.attempts > job.max_attempts) {
+      if (replay) {
+        await close('uncertain', { error: 'UNCERTAIN_ACCEPTANCE', providerOutcome: 'uncertain', providerDetail: job.provider_detail });
+        return { jobId: job.id, status: 'uncertain', error: 'UNCERTAIN_ACCEPTANCE' };
+      }
       await close('failed', { error: 'MAX_ATTEMPTS' });
       return { jobId: job.id, status: 'failed', error: 'MAX_ATTEMPTS' };
     }
-    const built = job.kind === 'EMAIL_VERIFICATION' ? await buildVerification(job, now)
+    // Réémission d'un appel incertain : contenu figé à l'instant de cet appel.
+    const contentAt = replay && started ? started : now;
+    const built = job.kind === 'EMAIL_VERIFICATION' ? await buildVerification(job, now, contentAt)
       : job.kind === 'DUO_MEMBERSHIP_ENDED' || job.kind === 'DUO_MEMBERSHIP_LEFT' ? await buildDuoMembershipEnded(job)
-      : job.kind === 'SUBSCRIPTION_ANNUAL_RENEWAL_REMINDER' ? await buildAnnualRenewal(job, now)
+      : job.kind === 'SUBSCRIPTION_ANNUAL_RENEWAL_REMINDER' ? await buildAnnualRenewal(job, now, contentAt)
       : job.kind === 'DUO_INVITATION' ? await buildDuoInvitation(job, now)
       : ({ ok: false, reason: 'UNKNOWN_KIND' } as Built);
     if (!built.ok && built.temporary) {
       return await failed(job, built.reason, null, now, close);
     }
     if (!built.ok) {
+      // Un appel antérieur incertain reste signalé (provider_outcome) : jamais compté envoyé.
       await close('cancelled', { error: built.reason });
       return { jobId: job.id, status: 'cancelled', error: built.reason };
     }
+    // Dernier contrôle de la suspension, juste avant l'envoi.
+    if (job.kind === 'SUBSCRIPTION_ANNUAL_RENEWAL_REMINDER') {
+      const block = await annualBlock();
+      if (block) return await holdAnnual(block);
+    }
+    const to = built.to ?? job.recipient_email;
     const res = await emailService.send({
       templateCode: built.templateCode,
       to: built.to ?? job.recipient_email,
       variables: built.variables,
       userId: built.recipientUserId ?? undefined,
       triggeredByUserId: built.triggeredByUserId,
-      idempotencyKey: `vb-email-job-${job.id}-${job.attempts}`,
+      idempotencyKey: emailJobIdempotencyKey(job.id, job.send_generation),
+      tags: [{ name: EMAIL_JOB_TAG, value: String(job.id) }, { name: EMAIL_JOB_GENERATION_TAG, value: String(job.send_generation) }],
       emailJobId: job.id,
+      beforeProviderCall: async () => {
+        await pgClient.unsafe(
+          `UPDATE transactional_email_jobs
+              SET provider_call_started_at = COALESCE(provider_call_started_at, $2::timestamptz), recipient_email = $3
+            WHERE id = $1`,
+          [job.id, iso(now), to] as never[],
+        );
+      },
     });
     if (res?.success) {
       // Clôture et effets de l'acceptation : une seule transaction (61B).
       await pgClient.begin(async (tx) => {
         const exec = tx as unknown as Exec;
-        await close('accepted', { logId: res.logId ?? null, messageId: res.providerMessageId ?? null }, exec);
+        await close('accepted', { logId: res.logId ?? null, messageId: res.providerMessageId ?? null, providerOutcome: 'accepted' }, exec);
         await built.onAccepted?.(now, exec);
       });
       return { jobId: job.id, status: 'accepted' };
@@ -447,10 +670,60 @@ export async function processEmailJob(jobId: number, now: Date = new Date()): Pr
       await close('cancelled', { error: 'CHANNEL_DISABLED', logId: res.logId ?? null });
       return { jobId: job.id, status: 'cancelled', error: 'CHANNEL_DISABLED' };
     }
-    return await failed(job, res?.error ?? 'Échec d’envoi (cause inconnue)', res?.logId ?? null, now, close);
+    const detail = res?.providerCode === 'invalid_idempotent_request' ? 'IDEMPOTENT_KEY_USED'
+      : `${res?.providerCode ?? (res?.providerCalled ? 'NETWORK' : 'LOCAL')}${res?.providerStatus ? `:${res.providerStatus}` : ''}`.slice(0, 120);
+    // Lot 72F : réponse perdue, 5xx, 409 d'idempotence — ou refus d'une RÉÉMISSION
+    // (n'efface pas l'incertitude de l'appel d'origine) : incertain, même clé.
+    if (res?.uncertain || (res?.providerCalled && replay)) {
+      return await uncertainAttempt(job, res?.error ?? 'réponse inconnue', detail, res?.logId ?? null, now, close);
+    }
+    // Refus CONFIRMÉ d'un premier appel avec cette clé : génération suivante.
+    return await failed(job, res?.error ?? 'Échec d’envoi (cause inconnue)', res?.logId ?? null, now, close,
+      res?.providerCalled ? { providerOutcome: 'rejected', providerDetail: detail, newGeneration: true } : {});
   } catch (e) {
     return failed(job, (e as Error)?.message ?? String(e), null, now, close);
   }
+}
+
+/** Lot 72F : acceptation établie par réconciliation (jamais d'envoi). */
+async function acceptReconciled(job: JobRow, rec: Extract<ProviderReconciliation, { kind: 'accepted' }>, now: Date, close: Close): Promise<EmailJobOutcome> {
+  let logId: number | null = null;
+  if (rec.via !== 'journal') {
+    // Ligne d'envoi « accepté » : suivi de livraison (webhooks) et BO.
+    const [row] = await pgClient.unsafe<{ id: number }[]>(
+      `INSERT INTO email_logs (template_code, recipient_email, recipient_user_id, email_job_id, subject, status, error_message, sent_at,
+                               provider_message_id, delivery_status, delivery_status_at)
+       SELECT $1, $2, $3, $4, $5, 'sent', $6, $7::timestamptz, $8, 'accepted', $7::timestamptz
+        WHERE NOT EXISTS (SELECT 1 FROM email_logs WHERE provider_message_id = $8)
+       RETURNING id`,
+      [job.kind, job.recipient_email, job.user_id, job.id, `[Réconcilié] ${job.kind}`,
+        `Acceptation établie par réconciliation (${rec.via === 'webhook' ? 'webhook Resend' : 'consultation Resend'})`, iso(now), rec.messageId] as never[],
+    );
+    logId = row?.id ?? null;
+    try {
+      const { replayStoredProviderEvents } = await import('@/services/email/email-provider-events.service');
+      await replayStoredProviderEvents(rec.messageId);
+    } catch { /* suivi de livraison seulement */ }
+  }
+  const onAccepted = job.kind === 'DUO_INVITATION' ? (await buildDuoInvitation(job, now).catch(() => null)) : null;
+  await pgClient.begin(async (tx) => {
+    const exec = tx as unknown as Exec;
+    await close('accepted', { logId, messageId: rec.messageId, providerOutcome: 'reconciled', providerDetail: rec.via }, exec);
+    if (onAccepted?.ok) await onAccepted.onAccepted?.(now, exec);
+  });
+  return { jobId: job.id, status: 'accepted' };
+}
+
+/** Lot 72F : acceptation incertaine — même clé à la tentative suivante, jamais « échec confirmé ». */
+async function uncertainAttempt(job: JobRow, error: string, detail: string, logId: number | null, now: Date, close: Close): Promise<EmailJobOutcome> {
+  console.error(`[transactional-email] ${job.kind} #${job.id} tentative ${job.attempts}/${job.max_attempts} : acceptation incertaine (${detail})`);
+  if (job.attempts >= job.max_attempts) {
+    await close('uncertain', { error: 'UNCERTAIN_ACCEPTANCE', logId, providerOutcome: 'uncertain', providerDetail: detail });
+    return { jobId: job.id, status: 'uncertain', error: 'UNCERTAIN_ACCEPTANCE' };
+  }
+  const next = new Date(now.getTime() + emailJobBackoffMs(job.attempts));
+  await close('pending', { error: `UNCERTAIN: ${error}`.slice(0, 500), logId, next, providerOutcome: 'uncertain', providerDetail: detail });
+  return { jobId: job.id, status: 'pending', error: `UNCERTAIN: ${error}`.slice(0, 500), nextAttemptAt: iso(next) };
 }
 
 async function failed(
@@ -458,15 +731,16 @@ async function failed(
   error: string,
   logId: number | null,
   now: Date,
-  close: (s: EmailJobStatus, f: { error?: string | null; logId?: number | null; next?: Date | null }) => Promise<void>,
+  close: Close,
+  provider: Pick<CloseFields, 'providerOutcome' | 'providerDetail' | 'newGeneration'> = {},
 ): Promise<EmailJobOutcome> {
   console.error(`[transactional-email] ${job.kind} #${job.id} tentative ${job.attempts}/${job.max_attempts} échouée : ${error}`);
   if (job.attempts >= job.max_attempts) {
-    await close('failed', { error, logId });
+    await close('failed', { error, logId, ...provider });
     return { jobId: job.id, status: 'failed', error };
   }
   const next = new Date(now.getTime() + emailJobBackoffMs(job.attempts));
-  await close('pending', { error, logId, next });
+  await close('pending', { error, logId, next, ...provider });
   return { jobId: job.id, status: 'pending', error, nextAttemptAt: iso(next) };
 }
 
@@ -474,18 +748,22 @@ async function failed(
  * Tâche planifiée `transactional-emails-retry` : demandes dues ou
  * interrompues, par lots, jusqu'à l'échéance. Idempotente (prise atomique).
  */
-export async function runTransactionalEmailRetry(opts: { deadline?: number; now?: () => Date; limit?: number } = {}): Promise<{ processed: number; accepted: number; pending: number; failed: number; cancelled: number }> {
+export async function runTransactionalEmailRetry(opts: { deadline?: number; now?: () => Date; limit?: number } = {}): Promise<{ processed: number; accepted: number; pending: number; failed: number; cancelled: number; uncertain: number }> {
   const clock = opts.now ?? (() => new Date());
   const deadline = opts.deadline ?? Date.now() + 50_000;
   const at = clock();
+  // Lot 72F : rappels annuels suspendus écartés de la sélection — ils ne
+  // prennent jamais la place des autres e-mails de la file.
+  const annualBlocked = (await annualBlock()) !== null;
   const due = await pgClient.unsafe<{ id: number }[]>(
     `SELECT id FROM transactional_email_jobs
-      WHERE (status = 'pending' AND next_attempt_at <= $1::timestamptz)
-         OR (status = 'sending' AND locked_until < $1::timestamptz)
+      WHERE ((status = 'pending' AND next_attempt_at <= $1::timestamptz)
+          OR (status = 'sending' AND locked_until < $1::timestamptz))
+        AND NOT ($3::boolean AND kind = 'SUBSCRIPTION_ANNUAL_RENEWAL_REMINDER')
       ORDER BY next_attempt_at, id LIMIT $2`,
-    [iso(at), opts.limit ?? 50] as never[],
+    [iso(at), opts.limit ?? 50, annualBlocked] as never[],
   );
-  const total = { processed: 0, accepted: 0, pending: 0, failed: 0, cancelled: 0 };
+  const total = { processed: 0, accepted: 0, pending: 0, failed: 0, cancelled: 0, uncertain: 0 };
   // Rétention : demandes closes depuis plus de 30 jours (le détail des
   // envois reste dans `email_logs`). Lot borné, idempotent.
   await pgClient.unsafe(
@@ -499,9 +777,77 @@ export async function runTransactionalEmailRetry(opts: { deadline?: number; now?
     const r = await processEmailJob(id, clock());
     if (r.status === 'busy') continue;
     total.processed += 1;
-    if (r.status === 'accepted' || r.status === 'pending' || r.status === 'failed' || r.status === 'cancelled') total[r.status] += 1;
+    if (r.status === 'accepted' || r.status === 'pending' || r.status === 'failed' || r.status === 'cancelled' || r.status === 'uncertain') total[r.status] += 1;
   }
   return total;
+}
+
+// ── Lot 72F : acceptations incertaines non résolues (BO) ────────────────────
+
+export type EmailJobDecision = 'RECHECK' | 'CONFIRM_SENT' | 'REISSUE' | 'ABANDON';
+export const EMAIL_JOB_DECISIONS: readonly EmailJobDecision[] = ['RECHECK', 'CONFIRM_SENT', 'REISSUE', 'ABANDON'];
+
+/**
+ * Décision d'un administrateur sur une demande `uncertain` (après examen du
+ * tableau de bord Resend) :
+ *   · RECHECK      nouvelle réconciliation (jamais d'envoi sans preuve d'absence
+ *                  ou dans la fenêtre d'idempotence avec la même clé) ;
+ *   · CONFIRM_SENT e-mail trouvé chez Resend : clos « accepté » (confirmé par
+ *                  l'administrateur — jamais « livré ») ;
+ *   · REISSUE      e-mail absent chez Resend : nouvelle clé, nouvel envoi ;
+ *   · ABANDON      clos sans envoi (définitif).
+ */
+export async function decideUncertainEmailJob(jobId: number, decision: EmailJobDecision, now: Date = new Date()): Promise<{ ok: true; status: EmailJobStatus } | { ok: false; code: 'NOT_FOUND' | 'NOT_UNCERTAIN' }> {
+  const [row] = await pgClient.unsafe<{ status: string }[]>(`SELECT status FROM transactional_email_jobs WHERE id = $1`, [jobId as never]);
+  if (!row) return { ok: false, code: 'NOT_FOUND' };
+  if (row.status !== 'uncertain') return { ok: false, code: 'NOT_UNCERTAIN' };
+  const sets: Record<EmailJobDecision, { status: EmailJobStatus; sql: string }> = {
+    RECHECK: { status: 'pending', sql: `status = 'pending', attempts = 0, next_attempt_at = $2::timestamptz, last_error = 'ADMIN_RECHECK'` },
+    CONFIRM_SENT: { status: 'accepted', sql: `status = 'accepted', accepted_at = $2::timestamptz, provider_outcome = 'admin_confirmed', last_error = 'ADMIN_CONFIRMED_SENT', uncertain_since = NULL` },
+    REISSUE: { status: 'pending', sql: `status = 'pending', attempts = 0, next_attempt_at = $2::timestamptz, send_generation = send_generation + 1,
+                                        provider_call_started_at = NULL, provider_outcome = 'admin_reissue', provider_detail = NULL,
+                                        uncertain_since = NULL, last_error = 'ADMIN_REISSUE'` },
+    ABANDON: { status: 'cancelled', sql: `status = 'cancelled', last_error = 'ADMIN_ABANDONED'` },
+  };
+  const d = sets[decision];
+  const done = await pgClient.unsafe<{ id: number }[]>(
+    `UPDATE transactional_email_jobs SET ${d.sql}, locked_until = NULL, updated_at = $2::timestamptz
+      WHERE id = $1 AND status = 'uncertain' RETURNING id`,
+    [jobId, iso(now)] as never[],
+  );
+  return done.length ? { ok: true, status: d.status } : { ok: false, code: 'NOT_UNCERTAIN' };
+}
+
+export interface UncertainEmailJobRow {
+  jobId: number;
+  kind: string;
+  recipientEmail: string;
+  status: string;
+  attempts: number;
+  /** Cause technique (code du prestataire), jamais de secret. */
+  detail: string | null;
+  uncertainSince: string | null;
+  providerCallStartedAt: string | null;
+  lastError: string | null;
+}
+
+/** Demandes dont l'acceptation est incertaine (bloquées, ou en cours de réconciliation). */
+export async function listUncertainEmailJobs(limit = 100): Promise<UncertainEmailJobRow[]> {
+  const rows = await pgClient.unsafe<Record<string, unknown>[]>(
+    `SELECT id, kind, recipient_email, status, attempts, provider_detail, uncertain_since, provider_call_started_at, last_error
+       FROM transactional_email_jobs
+      WHERE status = 'uncertain'
+         OR (provider_outcome = 'uncertain' AND status IN ('pending', 'sending', 'failed', 'cancelled') AND updated_at > now() - interval '30 days')
+      ORDER BY (status = 'uncertain') DESC, uncertain_since NULLS LAST, id
+      LIMIT $1`,
+    [limit as never],
+  );
+  const isoOrNull = (v: unknown) => (v ? new Date(v as string).toISOString() : null);
+  return rows.map((r) => ({
+    jobId: Number(r.id), kind: String(r.kind), recipientEmail: String(r.recipient_email), status: String(r.status),
+    attempts: Number(r.attempts), detail: (r.provider_detail as string | null) ?? null,
+    uncertainSince: isoOrNull(r.uncertain_since), providerCallStartedAt: isoOrNull(r.provider_call_started_at), lastError: (r.last_error as string | null) ?? null,
+  }));
 }
 
 // ── Lecture (titulaire Duo, BO) ──────────────────────────────────────────────

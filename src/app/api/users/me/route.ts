@@ -4,7 +4,8 @@ import { verifySessionAccessToken } from '@/lib/auth/session-guard';
 import { SessionService } from '@/lib/session-service';
 import { isSessionError, sessionErrorResponse } from '@/lib/auth-guards';
 import { db, pgClient } from '@/db';
-import { users, accounts, accountMemberships, duoAccounts, duoMemberships } from '@/db/schema';
+import { users, accounts, accountMemberships, duoAccounts } from '@/db/schema';
+import { duoOfAccount } from '@/services/account/membership.service';
 import { eq, and, or } from 'drizzle-orm';
 import { serverCacheGet, serverCacheSet, userCacheKey, wantsFreshRead } from '@/lib/server-cache';
 import { getTrialState } from '@/services/trial.service';
@@ -50,7 +51,20 @@ export async function GET(request: NextRequest) {
       return meResponse;
     }
 
-    const [userRows, duoMembershipData] = await Promise.all([
+    // ══════════════════════════════════════════════════════════════════════
+    // LOT 72D — L'OFFRE AFFICHÉE EST CELLE DU COMPTE DE LA SESSION
+    //
+    // Avant : le compte était la « première adhésion active » (sans ordre),
+    // l'offre `users.plan_type`, le rôle Duo pris de `duo_memberships` quel
+    // que soit l'espace ouvert. Un invité Duo voyait donc « Essai gratuit ·
+    // J-x » (essai de son compte personnel artificiel) au lieu de « Premium
+    // Duo — Membre ». Désormais tout dérive du compte COURANT
+    // (`currentAccountId`, adhésion vérifiée par la garde) : offre, statut,
+    // essai (titulaire seulement — l'essai et la facturation ne concernent
+    // pas un membre), rôle d'adhésion. `users.plan_type` n'est plus lu.
+    // ══════════════════════════════════════════════════════════════════════
+    const currentAccountId = payload.currentAccountId ?? null;
+    const [userRows, accountRows] = await Promise.all([
       db
         .select({
           id: users.id,
@@ -60,43 +74,30 @@ export async function GET(request: NextRequest) {
           username: users.username,
           company: users.company,
           role: users.role,
-          planType: users.planType,
           status: users.status,
           hasSeenUploadNotice: users.hasSeenUploadNotice,
-          accountName: accounts.name,
-          accountId: accounts.id,
-          subscriptionStatus: accounts.subscriptionStatus,
         })
         .from(users)
-        .leftJoin(accountMemberships, and(
-          eq(accountMemberships.userId, users.id),
-          or(eq(accountMemberships.status, 'active'), eq(accountMemberships.status, 'ACTIVE'))
-        ))
-        .leftJoin(accounts, eq(accounts.id, accountMemberships.accountId))
         .where(eq(users.id, payload.userId))
         .limit(1),
-      db
-        .select({
-          duoId: duoMemberships.duoId,
-          membershipStatus: duoMemberships.status,
-          slot: duoMemberships.slot,
-          duoSubscriptionStatus: duoAccounts.subscriptionStatus,
-          duoActivatedAt: duoAccounts.activatedAt,
-          unpaidRecoveryEndsAt: duoAccounts.unpaidRecoveryEndsAt,
-          billingOwnerUserId: duoAccounts.billingOwnerUserId,
-        })
-        .from(duoMemberships)
-        .innerJoin(duoAccounts, eq(duoAccounts.id, duoMemberships.duoId))
-        .where(
-          and(
-            eq(duoMemberships.userId, payload.userId),
-            or(
-              eq(duoMemberships.status, 'ACTIVE'),
-              eq(duoMemberships.status, 'INVITED')
-            )
-          )
-        )
-        .limit(1),
+      currentAccountId
+        ? db
+            .select({
+              accountId: accounts.id,
+              accountName: accounts.name,
+              planType: accounts.planType,
+              subscriptionStatus: accounts.subscriptionStatus,
+              membershipRole: accountMemberships.role,
+            })
+            .from(accounts)
+            .leftJoin(accountMemberships, and(
+              eq(accountMemberships.accountId, accounts.id),
+              eq(accountMemberships.userId, payload.userId),
+              or(eq(accountMemberships.status, 'active'), eq(accountMemberships.status, 'ACTIVE')),
+            ))
+            .where(eq(accounts.id, currentAccountId))
+            .limit(1)
+        : Promise.resolve([]),
     ]);
 
     const [userData] = userRows;
@@ -108,64 +109,47 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    const duoInfo = duoMembershipData[0] || null;
+    const account = accountRows[0] ?? null;
+    // Compte historique sans ligne d'adhésion : la garde admet le titulaire
+    // `owner_user_id` — rôle titulaire.
+    const accountRole: 'owner' | 'admin' | 'member' | null = account
+      ? ((account.membershipRole as 'owner' | 'admin' | 'member' | null) ?? 'owner')
+      : null;
 
-    // users.planType est la source de vérité : STANDARD | PREMIUM | PREMIUM_DUO | PREMIUM_PRO
-    const effectivePlan = userData.planType ? userData.planType.toUpperCase() : 'STANDARD';
+    const duoId = account ? await duoOfAccount(account.accountId) : null;
+    const [duoInfo] = duoId
+      ? await db
+          .select({
+            duoSubscriptionStatus: duoAccounts.subscriptionStatus,
+            duoActivatedAt: duoAccounts.activatedAt,
+            unpaidRecoveryEndsAt: duoAccounts.unpaidRecoveryEndsAt,
+          })
+          .from(duoAccounts)
+          .where(eq(duoAccounts.id, duoId))
+          .limit(1)
+      : [];
 
+    const effectivePlan = account?.planType ? account.planType.toUpperCase() : 'STANDARD';
     const duoEntitlement = effectivePlan === 'PREMIUM_DUO';
-
-    const isDuoGuest = duoInfo && duoInfo.billingOwnerUserId !== payload.userId;
-    const rawSubscriptionStatus = isDuoGuest
-      ? duoInfo.duoSubscriptionStatus
-      : userData.subscriptionStatus;
+    const isDuoSpace = !!duoInfo && duoEntitlement;
 
     // Statut AFFICHÉ, jamais une source de droits (entitlements). Aucune
     // écriture ici : la fin du délai de régularisation d'un impayé est
-    // traitée par le balayage `billing-unpaid` (APP-FUNC-31), plus par une
-    // lecture de profil qui passait le compte en EXPIRED.
-    const finalSubscriptionStatus = rawSubscriptionStatus || 'NONE';
+    // traitée par le balayage `billing-unpaid` (APP-FUNC-31).
+    const finalSubscriptionStatus = account?.subscriptionStatus || 'NONE';
 
     // ══════════════════════════════════════════════════════════════════════
     // LE CORPS EST CONSTRUIT AVANT LA RÉPONSE, PAS RELU DEPUIS ELLE
-    //
-    // Le code d'origine construisait la réponse, puis appelait
-    // `await meResponse.json()` pour alimenter le cache — et renvoyait la
-    // même réponse.
-    //
-    // Or lire une réponse CONSOMME son flux. La réponse renvoyée était donc
-    // vide et verrouillée :
-    //
-    //   Error: failed to pipe response
-    //     [cause]: TypeError: Invalid state: The ReadableStream is locked
-    //
-    // `/api/users/me` répondait 500. Comme elle porte l'identité, tout ce qui
-    // suivait tombait en 401 : accueil, biens, à-traiter, statut d'essai. Un
-    // import de document paraissait « rester en cours » alors que le
-    // navigateur n'était simplement plus authentifié.
+    // (lire une réponse consomme son flux : `/api/users/me` répondait 500).
     // ══════════════════════════════════════════════════════════════════════
-    // ══════════════════════════════════════════════════════════════════════
-    // ⚠️ L'ÉTAT D'ESSAI MANQUAIT DANS LA SESSION
-    //
-    // `subscription.plan` vient de `users.plan_type`, que l'attribution
-    // d'essai ne touche pas : l'essai vit dans `account_subscriptions`
-    // (`plan_code = 'premium'`, `status = 'trialing'`). Un compte en essai
-    // porte donc `STANDARD` dans la colonne lue par le menu, qui affichait
-    // « Standard » à un utilisateur en essai gratuit.
-    //
-    // Le même manque rendait `SidebarPlanCard` inerte : `DashboardLayout`
-    // lui passe `subscription?.trialDaysLeft`, une propriété que cette
-    // route n'a jamais servie. La carte « Essai gratuit · J-x » ne
-    // s'affichait donc jamais.
-    //
-    // On sert l'état, on ne change pas le plan : les droits restent ceux de
-    // `plan_type` (cf. `@/lib/plan-label`).
-    // ══════════════════════════════════════════════════════════════════════
+    // État d'essai (`account_subscriptions`) du compte COURANT, servi au
+    // titulaire seulement : il sert le libellé et la carte de la barre
+    // latérale, n'accorde aucun droit (cf. `@/lib/plan-label`).
     let trialStatus: 'none' | 'active' | 'expired' | 'converted' = 'none';
     let trialDaysLeft: number | null = null;
-    if (userData.accountId) {
+    if (account && accountRole === 'owner') {
       try {
-        const etat = await getTrialState(userData.accountId);
+        const etat = await getTrialState(account.accountId);
         trialStatus = etat.status;
         if (etat.status === 'active') trialDaysLeft = etat.daysRemaining;
       } catch (err) {
@@ -175,11 +159,14 @@ export async function GET(request: NextRequest) {
     }
 
     // Un seul espace : le nom n'a rien à distinguer. Plusieurs : il devient
-    // utile de savoir dans lequel on se trouve.
+    // utile de savoir dans lequel on se trouve (sélecteur d'espace, lot 72D :
+    // les comptes archivés ne comptent pas, sauf l'espace ouvert).
     const [espaces] = await pgClient<{ total: number }[]>`
-      SELECT count(DISTINCT account_id)::int AS total
-      FROM account_memberships
-      WHERE user_id = ${userData.id} AND status = 'active'
+      SELECT count(DISTINCT m.account_id)::int AS total
+      FROM account_memberships m
+      JOIN accounts a ON a.id = m.account_id
+      WHERE m.user_id = ${userData.id} AND m.status = 'active'
+        AND (a.archived_at IS NULL OR a.id = ${currentAccountId ?? 0})
     `;
     const nombreEspaces = espaces?.total ?? 1;
 
@@ -190,14 +177,16 @@ export async function GET(request: NextRequest) {
       lastName: userData.lastName,
       username: userData.username ?? null,
       company: userData.company ?? null,
-      accountName: userData.accountName,
+      accountName: account?.accountName ?? null,
+      /** Lot 72D : compte de la session (null : identité sans espace, écran dédié). */
+      accountId: account?.accountId ?? null,
+      /** Lot 72D : rôle d'adhésion sur le compte de la session. */
+      accountRole,
       /**
        * Nombre d'espaces auxquels l'utilisateur a accès.
        *
        * Le panneau de compte n'affiche le nom de l'espace partagé que s'il y
-       * en a plusieurs à distinguer. Sans ce décompte, la condition ne peut
-       * pas être évaluée côté client — et afficher « Compte de Geoffroy
-       * Maupilier » à quelqu'un qui n'a qu'un espace n'apprend rien.
+       * en a plusieurs à distinguer ; le sélecteur d'espace aussi (Q6).
        */
       accountsCount: nombreEspaces,
       role: userData.role,
@@ -213,12 +202,12 @@ export async function GET(request: NextRequest) {
         isTrial: trialStatus === 'active',
       },
       subscription_status: finalSubscriptionStatus,
-      duoId: duoInfo?.duoId ?? null,
-      duoStatus: duoInfo?.duoSubscriptionStatus ?? null,
-      duoRole: duoInfo ? (duoInfo.billingOwnerUserId === payload.userId ? 'BILLING_OWNER' : 'MEMBER') : null,
-      duoActivatedAt: duoInfo?.duoActivatedAt ?? null,
-      unpaidRecoveryEndsAt: duoInfo?.unpaidRecoveryEndsAt ?? null,
-      isInRecovery: duoInfo?.duoSubscriptionStatus === 'UNPAID_RECOVERY',
+      duoId: isDuoSpace ? duoId : null,
+      duoStatus: isDuoSpace ? duoInfo.duoSubscriptionStatus : null,
+      duoRole: isDuoSpace ? (accountRole === 'owner' ? 'BILLING_OWNER' : 'MEMBER') : null,
+      duoActivatedAt: isDuoSpace ? duoInfo.duoActivatedAt : null,
+      unpaidRecoveryEndsAt: isDuoSpace ? duoInfo.unpaidRecoveryEndsAt : null,
+      isInRecovery: isDuoSpace && duoInfo.duoSubscriptionStatus === 'UNPAID_RECOVERY',
       duoEntitlement,
       effectivePlan,
     };

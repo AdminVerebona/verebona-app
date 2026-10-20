@@ -294,7 +294,9 @@ export function SignupForm(props: { invitation?: SignupFormInvitation | null }) 
         // Lot 57A (P2) : le contexte Duo suit l'utilisateur jusqu'à la page
         // d'attente (rafraîchissement compris) ; aucun parrainage pour lui.
         const refParam = referralCode && !isDuoInvite ? `&ref=${referralCode}` : '';
-        const duoParam = isDuoInvite ? '&duo=1' : '';
+        // Lot 72D : invitation à un compte partagé — même page d'attente
+        // sans annonce d'essai (`joined=1`), l'identité rejoignant un compte.
+        const duoParam = isDuoInvite ? '&duo=1' : invitation?.kind === 'account' ? '&joined=1' : '';
         router.push(`/verify-email?email=${encodeURIComponent(formData.email)}${refParam}${duoParam}`);
     } catch (err) {
       setError('Une erreur est survenue. Veuillez réessayer.');

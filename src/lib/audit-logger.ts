@@ -10,7 +10,9 @@ type ActivityType = 'LOGIN_SUCCESS' | 'LOGIN_FAILED' | 'EMAIL_CHANGE' | 'PROFILE
   // Lot 53A (retour PO D1 / Q21, CDC 18 §23.1) : pause anti-force brute
   // déclenchée (connexion ou réauthentification), réinitialisation terminée,
   // inscription demandée sur une adresse déjà inscrite (aucun compte créé).
-  'AUTH_LOGIN_THROTTLED' | 'AUTH_REAUTH_THROTTLED' | 'PASSWORD_RESET_COMPLETED' | 'SIGNUP_EXISTING_EMAIL';
+  'AUTH_LOGIN_THROTTLED' | 'AUTH_REAUTH_THROTTLED' | 'PASSWORD_RESET_COMPLETED' | 'SIGNUP_EXISTING_EMAIL' |
+  // Lot 72D : changement d'espace (compte courant de la session).
+  'ACCOUNT_SWITCHED';
 
 interface LogActivityParams {
   activityType: ActivityType;

@@ -189,7 +189,9 @@ export default function DashboardPage() {
       settlePendingDuoJoin(duoToken, result);
       if (result.ok) {
         toast.success('Vous avez rejoint l’espace Premium Duo.');
-        refreshSummary();
+        // Lot 72D : la session vient d'être rouverte sur l'espace du Duo —
+        // rechargement complet pour en afficher les données.
+        window.location.assign('/accueil');
       } else {
         toast.error(duoJoinErrorMessage(result.error));
       }

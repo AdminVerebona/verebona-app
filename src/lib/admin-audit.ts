@@ -49,6 +49,8 @@ export type AdminActionType =
   | 'USER_SUSPEND'
   | 'USER_REACTIVATE'
   | 'USER_FORCE_LOGOUT'
+  // Lot 72D (décision PO Q4) : réattribution manuelle d'un essai consommé.
+  | 'USER_TRIAL_REASSIGNED'
   | 'USER_PASSWORD_RESET'
   | 'USER_ADMIN_ROLE_CHANGE'
   // Renvoi d'une invitation réémissible (CDC BO USR-A01).
@@ -120,12 +122,16 @@ export type AdminActionType =
   | 'EMAIL_TEMPLATE_TEST'
   // Lot 58C : consultation / export d'un rapport d'exécution T1 / T3 (valeurs
   // issues des documents des utilisateurs) depuis « Exécutions & logs ».
-  | 'AI_EXECUTION_REPORT_READ';
+  | 'AI_EXECUTION_REPORT_READ'
+  // Lot 72F : rappel J−7 des abonnements annuels (BO › Communications) —
+  // déclaration de bascule, retour arrière, décisions sur une couverture
+  // incertaine ou une acceptation Resend incertaine.
+  | 'ANNUAL_RENEWAL_OPERATION';
 
 export type AdminTargetType = 'ACCOUNT' | 'USER' | 'EXPORT_TEMPLATE' | 'COMMUNICATION_CHANNEL' | 'ANOMALY' | 'GDPR_REQUEST'
   | 'ASSISTANT_SETTING' | 'ASSISTANT_REQUEST' | 'NOTIFICATION' | 'AI_CACHE' | 'AI_METRICS'
   | 'OPS_BACKFILL' | 'SCHEDULED_TASK' | 'AI_EXECUTION' | 'STRIPE_CATALOG' | 'EMAIL_LOG' | 'AI_EXECUTION_REPORT' | 'EMAIL_SETTINGS'
-  | 'EMAIL_TEMPLATE';
+  | 'EMAIL_TEMPLATE' | 'ANNUAL_RENEWAL';
 
 type Executor = Pick<typeof db, 'insert' | 'select'>;
 

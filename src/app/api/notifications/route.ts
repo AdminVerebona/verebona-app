@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { extractAccessToken } from '@/lib/auth/token-extractor';
 import { verifySessionAccessToken } from '@/lib/auth/session-guard';
 import { db } from '@/db';
-import { notifications } from '@/db/schema';
+import { notifications, notificationOutbox } from '@/db/schema';
 import { eq, and, isNull, desc, sql, inArray } from 'drizzle-orm';
 
 export async function GET(request: NextRequest) {
@@ -26,8 +26,10 @@ export async function GET(request: NextRequest) {
     // l'une après l'autre (index composites : migration 0165).
     const [notifs, unreadCountResult] = await Promise.all([
       db
-        .select()
+        .select({ n: notifications, accountId: notificationOutbox.accountId })
         .from(notifications)
+        // Lot 72D (Q7) : compte émetteur, pour rouvrir le bon espace au clic.
+        .leftJoin(notificationOutbox, eq(notificationOutbox.id, notifications.outboxId))
         .where(
           unreadOnly
             ? and(eq(notifications.userId, payload.userId), isNull(notifications.readAt))
@@ -44,8 +46,9 @@ export async function GET(request: NextRequest) {
     const unreadCount = Number(unreadCountResult[0]?.count ?? 0);
 
     return NextResponse.json({ 
-      notifications: notifs.map(n => ({
+      notifications: notifs.map(({ n, accountId }) => ({
         id: n.id,
+        accountId: accountId ?? null,
         type: n.type,
         // Lot 34C : le motif technique d'un échec d'analyse (`errorReason`,
         // lignes historiques) ne quitte jamais le serveur.

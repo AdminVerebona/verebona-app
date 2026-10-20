@@ -80,7 +80,10 @@ function DuoJoinContent() {
     settlePendingDuoJoin(token, result);
     if (result.ok) {
       setPageState('success');
-      setTimeout(() => router.push('/accueil'), 2000);
+      // Lot 72D : session rouverte sur l'espace du Duo par la réponse
+      // (cookies) — rechargement complet : identité, offre et caches repartent
+      // de ce compte (desktop et application mobile, même WebView).
+      setTimeout(() => window.location.assign('/accueil'), 2000);
     } else if (result.error === 'ALREADY_IN_DUO') {
       setPageState('already_in_duo');
     } else if (result.error === 'EXPIRED_TOKEN') {

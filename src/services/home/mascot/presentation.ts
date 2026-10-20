@@ -7,7 +7,7 @@
 import { canonicalJson, sha256 } from './hash';
 import type { T6Message } from './t6-contract';
 import type {
-  MascotDuoInvite, MascotParagraph, MascotPresentation, MascotSecondary, MascotSubject, MascotTodoBlock,
+  MascotDegradedSource, MascotDuoInvite, MascotParagraph, MascotPresentation, MascotSecondary, MascotSubject, MascotTodoBlock,
 } from './types';
 import { CLEAR_TEXT, DEGRADED_NOTICE } from './types';
 import { parisDay, presentationState, tileFor, type TileOptions } from './bubble';
@@ -29,6 +29,8 @@ export function contextHashOf(
    * des échéances dépassées n'entre plus dans l'empreinte (supervision seule).
    */
   evaluation?: 'OK' | 'PENDING' | 'UNAVAILABLE' | null,
+  /** Lot 72A : lecture de la décision T6 en panne — la bulle change quand elle est rétablie. */
+  deadlinesDegraded?: boolean,
 ): string {
   return sha256(canonicalJson({
     subjects: subjects.map((s) => ({ id: s.subjectId, facts: s.facts, actions: s.actions, text: s.fallbackText })),
@@ -39,6 +41,7 @@ export function contextHashOf(
       : {}),
     ...(duoInvite ? { duoInvite: duoInvite.href } : {}),
     ...(evaluation && evaluation !== 'OK' ? { evaluation } : {}),
+    ...(deadlinesDegraded ? { deadlinesDegraded: true } : {}),
   })).slice(0, 32);
 }
 
@@ -60,15 +63,22 @@ export function buildPresentation(p: {
   overdueDeadlines?: number | null;
   /** Lot 61 : état de l'évaluation des échéances proches (`T6Preparation.evaluation`). */
   evaluation?: 'OK' | 'PENDING' | 'UNAVAILABLE';
+  /**
+   * Lot 72A (AC03) : lecture de la décision T6 en panne (`T6Preparation.degraded`),
+   * INDÉPENDANTE de `degraded` (sources métier du collecteur).
+   */
+  deadlinesDegraded?: boolean;
 }): MascotPresentation {
   const evaluation = p.evaluation ?? 'OK';
-  const contextHash = contextHashOf(p.subjects, p.secondaries, p.degraded, p.todo, p.duoInvite, evaluation);
+  const deadlinesDegraded = p.deadlinesDegraded === true;
+  const degradedSources: MascotDegradedSource[] = [...(p.degraded ? ['business' as const] : []), ...(deadlinesDegraded ? ['deadlines' as const] : [])];
+  const contextHash = contextHashOf(p.subjects, p.secondaries, p.degraded, p.todo, p.duoInvite, evaluation, deadlinesDegraded);
   const computedAt = (p.now ?? new Date()).toISOString();
   const base = {
     schemaVersion: 'mascot-presentation-v1' as const,
     contextHash,
     secondaries: p.secondaries,
-    degradedNotice: p.degraded ? DEGRADED_NOTICE : null,
+    degradedNotice: degradedSources.length > 0 ? DEGRADED_NOTICE : null,
     computedAt,
     ...(p.todo !== undefined ? { todo: p.todo } : {}),
     ...(p.duoInvite ? { duoInvite: p.duoInvite } : {}),
@@ -80,7 +90,7 @@ export function buildPresentation(p: {
   // sources lues) et de l'état de l'évaluation — jamais du compteur brut des
   // échéances dépassées ni d'un état « clear » pris pour une preuve.
   const withState = (x: Omit<MascotPresentation, 'state'>): MascotPresentation => {
-    const draft = { ...x, state: { schemaVersion: 'mascot-state-v1' as const, kind: 'NOTHING_TO_REPORT' as const, actions: 0, information: 0, openNotPriority: false, evaluation, degraded: p.degraded } };
+    const draft = { ...x, state: { schemaVersion: 'mascot-state-v1' as const, kind: 'NOTHING_TO_REPORT' as const, actions: 0, information: 0, openNotPriority: false, evaluation, degraded: degradedSources.length > 0, degradedSources } };
     return { ...x, state: presentationState(draft) };
   };
 
@@ -97,6 +107,9 @@ export function buildPresentation(p: {
     // explicite, jamais « rien à signaler ». Le compteur des échéances
     // dépassées (D25) ne joue plus : une date passée n'est pas une action.
     if (evaluation !== 'OK') return withState({ ...base, status: 'ok', source: 'deterministic', paragraphs: [] });
+    // Lot 72A (AC03) : décision T6 illisible — l'examen n'a pas pu se faire :
+    // jamais « rien à signaler ».
+    if (deadlinesDegraded) return withState({ ...base, status: 'ok', source: 'deterministic', paragraphs: [] });
     return withState({
       ...base,
       status: 'clear',

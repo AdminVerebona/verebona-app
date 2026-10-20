@@ -19,6 +19,7 @@ import { Input } from '@/components/ui/input';
 import { Switch } from '@/components/ui/switch';
 import { apiClient } from '@/lib/api-client';
 import { formatDateTime } from '@/lib/admin/format';
+import { AnnualRenewalOps, JOB_STATUS_LABELS, type AnnualRenewal } from './AnnualRenewalOps';
 
 interface LogRow {
   id: number; at: string | null; templateCode: string; recipientEmail: string; recipientUserId: number | null;
@@ -28,9 +29,6 @@ interface LogRow {
 }
 interface ClosedRow {
   jobId: number; kind: string; recipientEmail: string; status: 'failed' | 'cancelled'; attempts: number; reason: string | null; updatedAt: string | null;
-}
-interface AnnualRenewal {
-  coverageFrom: string | null; jobs: Record<string, number>; checksToday: Array<{ outcome: string; reason: string | null; count: number }>;
 }
 interface PendingRow {
   jobId: number; kind: string; recipientEmail: string; status: string; attempts: number; maxAttempts: number;
@@ -132,33 +130,11 @@ function SenderForm({ c, onSaved }: { c: Config; onSaved: (c: Config) => void })
 
 const TYPES = ['EMAIL_VERIFICATION', 'DUO_INVITATION', 'DUO_MEMBERSHIP_ENDED', 'DUO_MEMBERSHIP_LEFT', 'PASSWORD_RESET', 'WELCOME', 'SIGNUP_EXISTING_ACCOUNT', 'SUBSCRIPTION_ANNUAL_RENEWAL_REMINDER'];
 
-/** Lot 68C : statut d'une demande (préparé / accepté / échoué / annulé). */
-const JOB_STATUS_LABELS: Record<string, string> = {
-  pending: 'préparé', sending: 'en cours d’envoi', accepted: 'accepté par Resend', failed: 'échoué', cancelled: 'annulé',
-};
-
 /**
- * Lot 68C — rappel J−7 des abonnements annuels : début de couverture, demandes
- * des 30 derniers jours par statut, décisions du jour (motifs d'exclusion).
- * L'état de la tâche (dernier passage, suspension) est dans Exploitation ›
- * Tâches planifiées (`subscription-annual-renewal-reminders`).
+ * Lot 68C — rappel J−7 des abonnements annuels ; lot 72F : état réel des
+ * tâches, bascule et retour arrière, anomalies et décisions, états distincts
+ * (`AnnualRenewalOps`).
  */
-function AnnualRenewalBlock({ a }: { a: AnnualRenewal }) {
-  const jobs = Object.entries(a.jobs);
-  return (
-    <div className="text-xs space-y-1" data-testid="annual-renewal-overview">
-      <p className="font-medium">Rappel J−7 des abonnements annuels</p>
-      <p>
-        Couverture depuis le {a.coverageFrom ?? '— (traitement jamais exécuté : à réactiver dans Exploitation › Tâches planifiées)'}
-        {' '}· demandes (30 j) : {jobs.length ? jobs.map(([k, n]) => `${JOB_STATUS_LABELS[k] ?? k} ${n}`).join(', ') : 'aucune'}
-      </p>
-      {a.checksToday.length > 0 && (
-        <p>Décisions du jour : {a.checksToday.map((c) => `${c.outcome}${c.reason ? ` (${c.reason})` : ''} ${c.count}`).join(', ')}</p>
-      )}
-    </div>
-  );
-}
-
 export function TransactionalEmailsOps() {
   const [type, setType] = useState('');
   const [recipient, setRecipient] = useState('');
@@ -168,13 +144,16 @@ export function TransactionalEmailsOps() {
   const [config, setConfig] = useState<Config | null>(null);
   const [annual, setAnnual] = useState<AnnualRenewal | null>(null);
 
+  const loadAnnual = () => {
+    apiClient.get<{ annualRenewal: AnnualRenewal }>('/api/admin/communications/email-logs?annualRenewal=1')
+      .then((r) => setAnnual(r.annualRenewal))
+      .catch(() => setAnnual(null));
+  };
   useEffect(() => {
     apiClient.get<{ config: Config }>('/api/admin/communications/email-logs?config=1')
       .then((r) => setConfig(r.config))
       .catch(() => setConfig(null));
-    apiClient.get<{ annualRenewal: AnnualRenewal }>('/api/admin/communications/email-logs?annualRenewal=1')
-      .then((r) => setAnnual(r.annualRenewal))
-      .catch(() => setAnnual(null));
+    loadAnnual();
   }, []);
 
   const rechercher = async () => {
@@ -197,7 +176,7 @@ export function TransactionalEmailsOps() {
       <h2 className="vb-app-section">E-mails transactionnels — envois et livraison</h2>
       <div className="rounded-xl border bg-card p-4 space-y-3">
         {config ? <ConfigBlock c={config} /> : <p className="text-xs text-muted-foreground">Configuration d’envoi indisponible.</p>}
-        {annual ? <AnnualRenewalBlock a={annual} /> : null}
+        {annual ? <AnnualRenewalOps a={annual} onChanged={loadAnnual} /> : null}
         {config ? <SenderForm key={`${config.senderEmail}|${config.senderName}|${config.replyToEmail}|${config.emailsEnabled}`} c={config} onSaved={setConfig} /> : null}
         <div className="flex flex-wrap items-end gap-2">
           <Input className="w-full sm:w-56" list="transactional-email-types" placeholder="Type (ex. EMAIL_VERIFICATION)" aria-label="Type de message" value={type} onChange={(e) => setType(e.target.value)} />
@@ -229,7 +208,7 @@ export function TransactionalEmailsOps() {
                   {data.pendingRequests.map((p) => (
                     <tr key={p.jobId} className="border-t">
                       <td className="px-2 py-1 text-xs">{p.createdAt ? formatDateTime(p.createdAt) : '—'}</td>
-                      <td className="px-2 py-1">{p.kind}</td>
+                      <td className="px-2 py-1">{p.kind}{p.status !== 'pending' ? <span className="block text-xs text-muted-foreground">{JOB_STATUS_LABELS[p.status] ?? p.status}</span> : null}</td>
                       <td className="px-2 py-1 break-all">{p.recipientEmail}</td>
                       <td className="px-2 py-1 tabular-nums">{p.attempts}/{p.maxAttempts}</td>
                       <td className="px-2 py-1 text-xs">{p.nextAttemptAt ? formatDateTime(p.nextAttemptAt) : '—'}</td>

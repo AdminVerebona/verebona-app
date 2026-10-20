@@ -27,16 +27,16 @@ import { buildSecondaries, selectSubjects, withSuggestedQuestions } from './sele
 import { buildPresentation, contextHashOf } from './presentation';
 import { buildT6Input } from './t6-contract';
 import {
-  evaluateWithT6, formulateWithT6, logT6, t6EvaluationDefaultDeps, t6EvaluationRecentlyFailed, t6SuggestionsAvailable,
-  T6_EVALUATION_CONTRACTS, type T6EvaluationOutcome, type T6Mode,
+  evaluateWithT6, formulateWithT6, logT6, t6EvaluationConfig, t6EvaluationDefaultDeps, t6EvaluationRecentlyFailed,
+  t6SuggestionRefsAvailable, t6SuggestionsAvailable, type T6Mode,
 } from './t6-runner';
 import type { MascotPresentation } from './types';
 import { composeSpeech, parisDay, tileFor } from './bubble';
 import { MAX_TODO_ITEMS, buildTodoBlock } from './todo-items';
 import { readDuoInvite } from './duo-invite';
-import { loadT6SuggestionContext, suggestionSecondaries, type T6SuggestionBundle } from './t6-suggestions';
+import { loadT6SuggestionContext, suggestionAgendaOf, suggestionSecondaries, type T6SuggestionBundle } from './t6-suggestions';
 import {
-  prepareT6Interpellation, t6ThresholdDays, writeT6EvaluationReport, writeT6InterpellationReport, type T6Preparation,
+  prepareT6Interpellation, t6EvaluationTraceOf, t6ThresholdDays, writeT6EvaluationReport, writeT6InterpellationReport, type T6Preparation,
 } from './t6-interpellation.service';
 import type { MascotRawData } from './signals';
 import { t6InterpellationAvailable, t6ReminderAvailable } from './t6-runner';
@@ -67,6 +67,8 @@ export async function getMascotPresentation(
   });
   // Lot 55A : le prompt T6 en service sait-il rédiger les questions (R12) ?
   const questionsP = t6SuggestionsAvailable();
+  // Lot 72A (AC06) : … avec des références d'échéance (R12 v2, activée dans le BO) ?
+  const refsP = t6SuggestionRefsAvailable();
   try {
     raw = await collectMascotData(accountId);
   } catch (e) {
@@ -87,7 +89,8 @@ export async function getMascotPresentation(
     const bundle = interpellation.bundle;
     const evaluation = evaluateWithT6({ accountId, bundle, mode }, {
       ...t6EvaluationDefaultDeps,
-      report: (o) => writeT6EvaluationReport({ accountId, mode, bundle, trace: evaluationTrace(o) }),
+      // Lot 72A (AC08) : trace RÉELLE (statut, décisions enregistrées, mode d'appel).
+      report: (o) => writeT6EvaluationReport({ accountId, mode, bundle, trace: t6EvaluationTraceOf(o) }),
     });
     if (mode === 'pregen') {
       // Pré-génération : l'évaluation est attendue, puis les décisions sont
@@ -135,6 +138,9 @@ export async function getMascotPresentation(
     // Lot 61 : évaluation des échéances proches en cours ou indisponible —
     // dit explicitement par la bulle, jamais « rien à signaler ».
     evaluation: interpellation.evaluation,
+    // Lot 72A (AC03) : lecture T6 en panne (préférences, évaluations, preuves,
+    // « À traiter »…), propagée INDÉPENDAMMENT des sources métier.
+    deadlinesDegraded: interpellation.degraded,
   };
   // Bulle telle qu'affichée sans reformulation (texte déterministe).
   const secours = buildPresentation({ subjects, secondaries: baseSecondaries, messages: null, ...commun });
@@ -160,8 +166,15 @@ export async function getMascotPresentation(
     // mise en sourdine par l'utilisateur n'est pas proposée en question (elle
     // reste consultable librement dans T2 : seule la suggestion automatique
     // est retirée).
-    const agenda = raw.agenda?.filter((r) => !interpellation.discarded.has(r.id) && !interpellation.userSilenced.has(r.id)) ?? null;
-    questions = await loadT6SuggestionContext(accountId, { speech, attentionToday, agenda, today: raw.today ?? parisDay() });
+    // Lot 72A (AC06) : les écartées ne sont jamais transmises ni citées ; les
+    // agrégats ne reposent que sur les éligibles ; les retenues sont signalées.
+    const sel = suggestionAgendaOf(raw.agenda ?? [], interpellation);
+    // Échéances lues pour T6 seulement (lointaines, anciennes) : jamais transmises, mais écartées = jamais citées.
+    const ecarteesT6 = suggestionAgendaOf(raw.t6Agenda ?? [], interpellation).excluded;
+    questions = await loadT6SuggestionContext(accountId, {
+      speech, attentionToday, agenda: raw.agenda ? sel.agenda : null, today: raw.today ?? parisDay(),
+      excluded: [...sel.excluded, ...ecarteesT6], signaledIds: sel.signaledIds, structuredRefs: await refsP,
+    });
   }
 
   // RUN-013 : rien à formuler ni à suggérer — pas de FORMULATE. Lot 71G :
@@ -193,17 +206,9 @@ async function prepare(accountId: number, userId: number | null, raw: MascotRawD
     reminderCapable: t6ReminderAvailable,
     thresholdDays: t6ThresholdDays,
     recentEvaluationFailure: (id) => t6EvaluationRecentlyFailed(id),
+    // Lot 72A (AC02) : version effective du prompt EVALUATE et configuration déterminante.
+    evaluationConfig: t6EvaluationConfig,
   });
-}
-
-/** Trace d'une évaluation pour le reporting (aucune donnée personnelle). */
-function evaluationTrace(o: T6EvaluationOutcome) {
-  return {
-    status: o.status, promptVersion: o.promptVersion, inputContract: T6_EVALUATION_CONTRACTS.input, outputContract: T6_EVALUATION_CONTRACTS.output,
-    traceId: o.traceId ?? null, error: o.error ?? null, persisted: o.persisted,
-    accepted: o.accepted.map((d) => ({ subjectId: d.subjectId, decision: d.decision, category: d.category, reasonCode: d.reasonCode, priorityHint: d.priorityHint, evidenceRefs: d.evidenceRefs })),
-    rejected: o.rejected.map((r) => ({ subjectId: r.subjectId, reason: r.reason })),
-  };
 }
 
 // ── Pré-génération (RUN-007 à RUN-011 ; durable depuis le lot 32, PO 6) ──────

@@ -33,6 +33,8 @@ vi.mock('@/db', async () => {
     },
     update: (table: never) => { writes.push(`update:${getTableName(table)}`); return chain([]); },
     delete: (table: never) => { writes.push(`delete:${getTableName(table)}`); return chain([]); },
+    // Lot 72D : écritures de l'inscription en une transaction.
+    transaction: async (fn: (tx: unknown) => unknown) => fn(db),
   };
   return { db };
 });
@@ -44,7 +46,8 @@ vi.mock('@/services/email/transactional-email-jobs.service', () => ({
   enqueueVerificationEmail: async () => ({ jobId: 1, created: true }),
   processEmailJob: async () => ({ jobId: 1, status: 'accepted' }),
 }));
-vi.mock('@/services/trial.service', () => ({ grantTrial: async () => ({ granted: true }) }));
+const grantTrial = vi.fn(async () => ({ granted: true }));
+vi.mock('@/services/trial.service', () => ({ grantTrial: (...a: unknown[]) => grantTrial(...(a as [])) }));
 vi.mock('@/services/referral-attribution.service', () => ({ recordSignupReferral: async () => null }));
 vi.mock('@/services/legal', () => ({ getCurrentVersion: async () => ({ versionCode: 'CGVU-2026-01' }) }));
 vi.mock('@/services/legal/legal-acceptances.service', () => ({ recordAcceptance: async () => undefined }));
@@ -115,24 +118,30 @@ describe('SIGNUP_MODE=prelaunch', () => {
     expect(writes).toEqual([]);
   });
 
-  it('accepte une invitation valide à un compte partagé et la consomme', async () => {
+  it('accepte une invitation valide à un compte partagé : réservée à l’identité, activée à la vérification (Q10)', async () => {
     resolveSignupInvitation.mockResolvedValue(accountInvitation);
     const res = await POST(signup({ inviteToken: 'tok-compte' }));
     expect(res.status).toBe(201);
     expect(writes).toContain('insert:users');
     expect(writes).toContain('update:account_memberships');
     expect(writes).not.toContain('insert:accounts');
+    // Lot 72D : identité inactive jusqu'à la vérification de l'adresse.
+    expect(insertedValues.users?.isActive).toBe(false);
     // Résolue une seule fois (garde + parcours).
     expect(resolveSignupInvitation).toHaveBeenCalledTimes(1);
   });
 
-  it('accepte une invitation Premium Duo valide (compte créé, rattachement ensuite par /api/duo/join)', async () => {
+  it('accepte une invitation Premium Duo valide : identité seule — ni compte, ni essai (lot 72D), rattachement par /api/duo/join', async () => {
+    grantTrial.mockClear();
     resolveSignupInvitation.mockResolvedValue({ valid: true, kind: 'duo', duoId: 9 });
     const res = await POST(signup({ inviteToken: 'tok-duo' }));
     expect(res.status).toBe(201);
     expect(writes).toContain('insert:users');
-    expect(writes).toContain('insert:accounts');
+    expect(writes).not.toContain('insert:accounts');
+    expect(writes).not.toContain('insert:account_memberships');
     expect(writes).not.toContain('update:account_memberships');
+    expect(grantTrial).not.toHaveBeenCalled();
+    expect(insertedValues.users?.isActive).toBe(false);
   });
 
   // Destinataire d'une transmission de bien sans compte : le jeton de

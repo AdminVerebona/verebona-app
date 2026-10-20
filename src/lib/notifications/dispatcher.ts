@@ -87,6 +87,7 @@ async function processRow(row: OutboxRow): Promise<'sent' | 'partial' | 'failed'
     payload,
     dedupeKey: row.dedupe_key,
     mustDeliverBell: !!row.mandatory_bell || entry.mandatoryBell,
+    accountId: typeof row.account_id === 'number' ? row.account_id : null,
     ...(restriction?.pushSubscriptionIds ? { pushSubscriptionIds: restriction.pushSubscriptionIds } : {}),
   };
 

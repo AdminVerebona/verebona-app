@@ -109,7 +109,8 @@ describe('ATR-R-03 — date absente : contexte examiné avant toute demande', ()
   it('ATR-R-03 — document historique (toutes ses dates > 5 ans) : aucune question, aucun appel IA, contrat jamais déclaré terminé', async () => {
     const { decide, calls } = t4({});
     const r = await ev.assessDeadlinePertinence({ ...base, rule: CONTRACT, candidates: [], decide, config: V3, contextDates: [{ key: 'documentDate', iso: '2016-03-01' }] });
-    expect(r).toMatchObject({ outcome: 'NO_ACTION', pertinence: 'UNDATED_HISTORICAL', aiCalled: false });
+    // Lot 72 (C2, ATP-FIX-05) : l'ancienneté n'est qu'un indice — DEFER sans carte (jamais NO_ACTION sur l'âge).
+    expect(r).toMatchObject({ outcome: 'DEFER', pertinence: 'UNDATED_HISTORICAL', aiCalled: false, card: null });
     expect(calls).toHaveLength(0);
   });
 
@@ -340,7 +341,7 @@ describe('ATR-P-11 — catalogue et présentation', () => {
 });
 
 describe('ATR-P-10 — T6 : jamais une relance qui contredit une décision « À traiter »', () => {
-  it('ATR-P-10 — échéance passée réglée par « À traiter » : sujet clos pour T6 (SUBJECT_CLOSED), hors décompte des dépassées ; une échéance future reste rappelable', async () => {
+  it('ATR-P-10 — échéance passée réglée par « À traiter » : sujet clos pour T6 (SUBJECT_CLOSED), hors décompte des dépassées ; une échéance future réglée (intervention tranchée) n’est plus relancée (lot 72, ATP-FIX-17)', async () => {
     const { t6Candidates } = await import('@/services/home/mascot/t6-interpellation.service');
     const { decideT6Interpellation } = await import('@/services/home/mascot/t6-interpellation');
     const { openOverdueCount } = await import('@/services/home/mascot/signals');
@@ -353,7 +354,9 @@ describe('ATR-P-10 — T6 : jamais une relance qui contredit une décision « À
     } as never;
     const c = t6Candidates(raw);
     expect(c.find((x) => x.candidate.agendaItemId === 10)!.candidate.state).toBe('RESOLVED');
-    expect(c.find((x) => x.candidate.agendaItemId === 11)!.candidate.state).toBe('ACTIVE');
+    // Lot 72 (ATP-FIX-17) : la lecture commune ne renvoie une échéance future
+    // que si l'utilisateur a tranché son intervention — T6 ne la relance plus.
+    expect(c.find((x) => x.candidate.agendaItemId === 11)!.candidate.state).toBe('RESOLVED');
     expect(c.find((x) => x.candidate.agendaItemId === 12)!.candidate.state).toBe('ACTIVE');
     const d = decideT6Interpellation({ candidate: c.find((x) => x.candidate.agendaItemId === 10)!.candidate, today: TODAY, thresholdDays: 60, aiCapable: true, assessment: null, preferences: [] });
     expect(d).toMatchObject({ decision: 'SUPPRESS', code: 'SUBJECT_CLOSED' });

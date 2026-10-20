@@ -10,6 +10,8 @@
  * code se contente de REFUSER une proposition dangereuse :
  *   · monde fermé (document et références fournis dans l'appel) ;
  *   · nom protégé (renommage manuel) ;
+ *   · document fourni en RÉFÉRENCE (lot 72B, E7) : seuls les documents
+ *     TO_EXAMINE de l'appel peuvent être renommés ;
  *   · nom attendu différent du nom envoyé (compare-and-swap côté modèle) ;
  *   · nom équivalent (casse, accents, ponctuation) → aucune écriture ;
  *   · format (longueur, nom technique, retour à la ligne, masquage) ;
@@ -37,6 +39,7 @@ export type RenameRefusal =
   | 'DUPLICATE_PROPOSAL'
   | 'UNKNOWN_REFERENCE'
   | 'USER_NAME_PROTECTED'
+  | 'REFERENCE_NOT_RENAMABLE'
   | 'EXPECTED_NAME_MISMATCH'
   | 'EQUIVALENT_NAME'
   | 'INVALID_NAME'
@@ -54,6 +57,7 @@ export const RENAME_REFUSAL_LABEL: Record<RenameRefusal, string> = {
   DUPLICATE_PROPOSAL: 'Proposition en double pour ce document',
   UNKNOWN_REFERENCE: 'Document de référence hors du lot fourni à l’IA',
   USER_NAME_PROTECTED: 'Nom personnalisé par l’utilisateur : protégé',
+  REFERENCE_NOT_RENAMABLE: 'Document fourni en RÉFÉRENCE dans cet appel (rôle autre que TO_EXAMINE) : jamais renommé',
   EXPECTED_NAME_MISMATCH: 'Nom attendu par l’IA différent du nom en place',
   EQUIVALENT_NAME: 'Nom proposé équivalent au nom en place : aucune écriture',
   INVALID_NAME: 'Nom proposé non conforme (technique, vide ou masqué)',
@@ -284,6 +288,8 @@ export interface NamingSnapshotDoc {
   harmonizedFingerprint?: string | null;
   /** Empreinte actuelle des données du document. */
   fingerprint: string;
+  /** Rôle dans l'appel (lot 72B, E7) : seul TO_EXAMINE est renommable. Absent : TO_EXAMINE (compatibilité). */
+  role?: 'TO_EXAMINE' | 'REFERENCE';
 }
 
 export interface NamingProposal {
@@ -317,6 +323,7 @@ export function judgeProposal(p: NamingProposal, ctx: {
   const inconnues = (p.reference_document_ids ?? []).filter((r) => !ctx.docs.has(r));
   if (inconnues.length) return { accept: false, code: 'UNKNOWN_REFERENCE', detail: inconnues.join(', ') };
   if (doc.origin === 'USER') return { accept: false, code: 'USER_NAME_PROTECTED' };
+  if (doc.role === 'REFERENCE') return { accept: false, code: 'REFERENCE_NOT_RENAMABLE' };
   const attendu = spaces(p.expected_current_name);
   if (attendu !== spaces(doc.name) && attendu !== spaces(doc.redactedName ?? doc.name)) {
     return { accept: false, code: 'EXPECTED_NAME_MISMATCH', detail: `attendu « ${attendu.slice(0, 120)} »` };
