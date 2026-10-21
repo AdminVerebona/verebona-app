@@ -1763,6 +1763,13 @@ export const agendaItems = pgTable('agenda_items', {
   projectionOrigin: text('projection_origin'),
   /** correlation_id de la chaîne T3 → T4 (C16.2). */
   projectionCorrelationId: text('projection_correlation_id'),
+  /**
+   * Lot 77A (migration 0600) — tâche « Sans échéance » déclarée par
+   * l'UTILISATEUR : aucune date à réclamer (« À traiter » DATA-AGENDA-DATE).
+   * Incompatible avec une date : le déclencheur `agenda_items_no_deadline_clear`
+   * la retire dès qu'une date est posée. Jamais posée par un traitement.
+   */
+  noDeadline: boolean('no_deadline').notNull().default(false),
   createdAt: tstz('created_at'),
   updatedAt: tstz('updated_at'),
 }, (table) => ({

@@ -26,6 +26,7 @@ import { DateChip, type DateChipTone } from '@/components/ui/date-chip';
 import { Calendar, List, CalendarRange, ChevronLeft, ChevronRight } from 'lucide-react';
 import type { AgendaItemFull } from '@/services/agenda/AgendaQueryService';
 import { EFFECTIVE_STATUS_LABELS, type AgendaEffectiveStatus } from '@/lib/agenda/effective-status';
+import { NO_DEADLINE_LABEL } from '@/lib/agenda/no-deadline';
 
 // Lot 53 (D17) : cinq états distincts, libellés partagés (desktop et mobile : même ligne).
 type EffectiveStatus = AgendaEffectiveStatus;
@@ -215,7 +216,11 @@ export function CalendarView({ items, month, onItemClick, onNew }: { items: Agen
               className="w-full flex items-center gap-4 px-4 py-3 rounded-xl border border-border/50 bg-card hover:bg-muted/30 transition-colors text-left"
             >
               <DateBlock dateStr={null} />
-              <span className="text-sm flex-1 truncate font-semibold">{item.title}</span>
+              <span className="flex-1 min-w-0">
+                <span className="block text-sm truncate font-semibold">{item.title}</span>
+                {/* Lot 77A : mention discrète d'une tâche « Sans échéance ». */}
+                {item.noDeadline && <span className="block text-[11px] text-muted-foreground">{NO_DEADLINE_LABEL}</span>}
+              </span>
               {item.assetLinks[0] && (
                 <span className="text-xs text-muted-foreground shrink-0 hidden sm:block">{item.assetLinks[0].assetName}</span>
               )}

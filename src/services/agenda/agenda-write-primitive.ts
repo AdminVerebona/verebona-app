@@ -65,6 +65,11 @@ export interface AgendaItemDetails {
   occurrence?: { nature?: 'FORECAST' | 'CONFIRMED'; dateSource?: string | null; seriesKey?: string | null } | null;
   /** Colonnes additionnelles d'une mise à jour (confirmation d'une prévision…). */
   extra?: Partial<AgendaItemValues>;
+  /**
+   * Lot 77A : option « Sans échéance » — posée par le chemin MANUEL seulement
+   * (geste de l'utilisateur), jamais par T4 ni la projection.
+   */
+  noDeadline?: boolean;
 }
 
 export interface AgendaUpsertInput {
@@ -160,6 +165,8 @@ export function agendaItemValues(input: AgendaUpsertInput): Partial<AgendaItemVa
         originRefId: d.originRefId ?? null,
         originFieldKey: input.originFieldKey ?? null,
         homeCategory: input.category ?? null,
+        // Lot 77A : colonne écrite seulement si l'utilisateur coche l'option (parité des valeurs sinon).
+        ...(d.noDeadline ? { noDeadline: true } : {}),
       };
     }
     return {
@@ -198,6 +205,8 @@ export function agendaItemValues(input: AgendaUpsertInput): Partial<AgendaItemVa
   if (defini(d.manualStatus)) v.manualStatus = d.manualStatus;
   if (defini(d.requiresQualification)) v.requiresQualification = d.requiresQualification;
   if (defini(d.isAutomaticModified)) v.isAutomaticModified = d.isAutomaticModified;
+  // Lot 77A : « Sans échéance » — chemin manuel seulement (un traitement automatique ne la pose jamais).
+  if (defini(d.noDeadline) && input.origin === 'MANUAL') v.noDeadline = d.noDeadline;
   if (defini(d.originRefType)) v.originRefType = d.originRefType;
   if (defini(d.originRefId)) v.originRefId = d.originRefId;
   if (!defini(d.originRefType) && input.origin === 'AUTOMATIC' && defini(input.sources) && input.sources.every((s) => s.role !== 'PROOF')) {

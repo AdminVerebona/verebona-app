@@ -35,6 +35,7 @@ import { db, pgClient } from '@/db';
 import { assetFiles, assets, documentAssetLinks, documentFieldValues, documentSuppliers, suppliers } from '@/db/schema';
 import { getField } from '@/services/canonical/registry';
 import type { ActionProposal, ValueOrigin } from './action-model';
+import { unnamedLabel } from './card-labels';
 import { parseDocumentDate } from './document-field-evidence';
 
 /** Client de base : transaction en cours ou `db` (même contrat que `resolve-action`). */
@@ -389,7 +390,7 @@ export const ASSET_LINK_SLOT: DocumentSlot = {
       .filter((r): r is typeof r & { assetId: number } => r.assetId !== null)
       .map((r) => ({
         value: r.assetId,
-        label: r.name ?? `Bien ${r.assetId}`,
+        label: r.name ?? unnamedLabel('ASSET'),
         // Réévaluation sans analyse : jamais d'écriture automatique.
         confidence: Math.min(0.89, r.confidence === null ? 0.5 : Number(r.confidence)),
       }));

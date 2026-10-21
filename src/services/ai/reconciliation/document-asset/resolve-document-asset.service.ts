@@ -84,6 +84,7 @@ import {
 import { candidateSourcesOf, computeDocumentAssetContext, type DocumentAssetContext } from './context';
 import { knowledgeSourceCounts, usedDocumentSources } from './document-sources';
 import { loadSupplierHistory, semanticCandidates, semanticPages, semanticShortlist, SEMANTIC_RELATION } from './semantic-search';
+import { unnamedLabel, userSourceLabel } from '@/services/to-process/card-labels';
 import type { RearbitrationDeferral } from './rearbitration-budget';
 import type { AccountMatchingIndex } from './matching-index';
 import { DOCUMENT_ASSET_RESOLUTION_VERSION } from './version';
@@ -545,11 +546,11 @@ async function applyDecision(p: {
 
   if (decision.kind === 'ABSTAIN') {
     const candidates: StoredCandidate[] = decision.ranked.map((r) => ({
-      assetId: r.assetId, label: ctx.labels.get(r.assetId)?.name ?? `Bien ${r.assetId}`, score: r.score, reason: r.reason,
+      assetId: r.assetId, label: ctx.labels.get(r.assetId)?.name ?? unnamedLabel('ASSET'), score: r.score, reason: r.reason,
     }));
     // Carte LINK-ASSET synchronisée sur l'état COURANT (créée, ou
     // COMPLETE → ARBITRATE, ou propositions actualisées).
-    const effet = await openUserQuestion({ accountId, fileId, state: avant, candidates, g });
+    const effet = await openUserQuestion({ accountId, fileId, state: avant, candidates, g, supplier: ctx.sources?.extraction?.supplier ?? null });
     const status = decision.reasonCode === 'NO_CANDIDATE' ? 'NO_CANDIDATE' : 'ABSTAINED';
     const evaluation = fin({ newResolution: status, toProcessAction: effet, result: status });
     await g('état de résolution');
@@ -667,14 +668,20 @@ export async function refreshDocumentTitle(accountId: number, fileId: number): P
  * candidat. Lot 71B : l'état du document n'est plus modifié — la question
  * vit dans « À traiter », jamais comme une validation sur la fiche.
  */
-async function openUserQuestion(p: { accountId: number; fileId: number; state: AttachmentState; candidates: StoredCandidate[]; g: Garde }): Promise<ToProcessEffect> {
+async function openUserQuestion(p: { accountId: number; fileId: number; state: AttachmentState; candidates: StoredCandidate[]; g: Garde; supplier?: string | null }): Promise<ToProcessEffect> {
   if (!p.state.open) return 'NONE';
   await p.g('question « À traiter »');
   const { upsertAction } = await import('@/services/to-process/to-process-action.service');
-  const proposals = p.candidates.slice(0, 5).map((c) => ({
-    value: c.assetId, label: c.label, confidence: Math.min(0.89, Math.max(0, c.score)),
-    sourceContext: { label: c.reason.slice(0, 120) },
-  }));
+  // Lot 77B : la justification (serveur ou modèle) n'est jamais affichée
+  // telle quelle — formulation utilisateur (« Déjà 3 documents de Cardif IARD
+  // sur Maison ») ou rien. Le motif brut reste au diagnostic (`candidates`).
+  const proposals = p.candidates.slice(0, 5).map((c) => {
+    const source = userSourceLabel(c.reason, { assetName: c.label, supplier: p.supplier ?? null });
+    return {
+      value: c.assetId, label: c.label, confidence: Math.min(0.89, Math.max(0, c.score)),
+      ...(source ? { sourceContext: { label: source.slice(0, 120) } } : {}),
+    };
+  });
   const res = await upsertAction({
     accountId: p.accountId,
     targetType: 'DOCUMENT',

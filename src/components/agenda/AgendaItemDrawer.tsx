@@ -58,6 +58,8 @@ import { EFFECTIVE_STATUS_LABELS, attentionFlagLabel, visibleAttentionFlags, typ
 import { openDrawer } from "@/lib/drawers";
 import { useWriteGuard } from '@/contexts/WriteGuardContext';
 import { displayDocumentTitle } from '@/lib/documents/document-title-rules';
+import { NoDeadlineField } from "@/components/agenda/NoDeadlineField";
+import { NO_DEADLINE_HELP, NO_DEADLINE_LABEL, toggleNoDeadline, undatedLabel, withDateEntry, type AgendaDateFormState } from "@/lib/agenda/no-deadline";
 
 // Lot 53 (D17) : libellés partagés des cinq états.
 type EffectiveStatus = AgendaEffectiveStatus;
@@ -89,7 +91,7 @@ const HERO_DATE_TONE: Record<EffectiveStatus, string> = {
 
 
 function formatDateRange(item: AgendaItemFull): string {
-  if (!item.startDate) return "Sans date";
+  if (!item.startDate) return undatedLabel(item);
   const fmt = (d: string) =>
     new Date(d + "T12:00:00").toLocaleDateString("fr-FR", {
       day: "numeric",
@@ -141,6 +143,20 @@ export function AgendaItemDrawer({ item, open, onClose, onMutated, onOpenDocumen
   const [editStartTime, setEditStartTime] = useState("");
   const [editEndDate, setEditEndDate] = useState("");
   const [editEndTime, setEditEndTime] = useState("");
+  // Lot 77A : option « Sans échéance » (incompatible avec une date).
+  const [editNoDeadline, setEditNoDeadline] = useState(false);
+  const editDates: AgendaDateFormState = {
+    startDate: editStartDate, startTime: editStartTime, endDate: editEndDate, endTime: editEndTime, noDeadline: editNoDeadline,
+  };
+  const applyEditDates = (s: AgendaDateFormState) => {
+    setEditStartDate(s.startDate);
+    setEditStartTime(s.startTime);
+    setEditEndDate(s.endDate);
+    setEditEndTime(s.endTime);
+    setEditNoDeadline(s.noDeadline);
+    setDirty(true);
+    setTemporalError(null);
+  };
   const [editManualStatus, setEditManualStatus] = useState<string>("null");
   const [editAssetIds, setEditAssetIds] = useState<number[]>([]);
   const [editSubstructureIds, setEditSubstructureIds] = useState<number[]>([]);
@@ -195,6 +211,7 @@ export function AgendaItemDrawer({ item, open, onClose, onMutated, onOpenDocumen
       setEditStartTime(item.startTime ?? "");
       setEditEndDate(item.endDate ?? "");
       setEditEndTime(item.endTime ?? "");
+      setEditNoDeadline(item.noDeadline === true);
       setEditManualStatus(item.manualStatus ?? "null");
       setEditAssetIds(item.assetLinks.map((l) => l.assetId));
       setEditSubstructureIds(item.roomLinks.map((l) => l.substructureId));
@@ -276,6 +293,7 @@ export function AgendaItemDrawer({ item, open, onClose, onMutated, onOpenDocumen
     setEditStartTime(item.startTime ?? "");
     setEditEndDate(item.endDate ?? "");
     setEditEndTime(item.endTime ?? "");
+    setEditNoDeadline(item.noDeadline === true);
     setEditManualStatus(item.manualStatus ?? "null");
     setEditAssetIds(item.assetLinks.map((l) => l.assetId));
     setEditSubstructureIds(item.roomLinks.map((l) => l.substructureId));
@@ -317,6 +335,7 @@ export function AgendaItemDrawer({ item, open, onClose, onMutated, onOpenDocumen
         startTime: editStartTime || null,
         endDate: editEndDate || null,
         endTime: editEndTime || null,
+        noDeadline: editNoDeadline,
         assetIds: editAssetIds,
         substructureIds: editSubstructureIds,
         equipmentIds: editEquipmentIds,
@@ -522,9 +541,16 @@ export function AgendaItemDrawer({ item, open, onClose, onMutated, onOpenDocumen
                       —
                     </span>
                   </div>
-                  <p className="text-sm text-[color:var(--text-muted)]">
-                    Sans date définie
-                  </p>
+                  {item.noDeadline ? (
+                    <div>
+                      <p className="text-sm font-semibold text-[color:var(--text-primary)]">{NO_DEADLINE_LABEL}</p>
+                      <p className="text-xs text-[color:var(--text-muted)] mt-0.5">{NO_DEADLINE_HELP}</p>
+                    </div>
+                  ) : (
+                    <p className="text-sm text-[color:var(--text-muted)]">
+                      Sans date définie
+                    </p>
+                  )}
                 </div>
               )}
             </div>
@@ -626,11 +652,7 @@ export function AgendaItemDrawer({ item, open, onClose, onMutated, onOpenDocumen
                     </Label>
                     <DatePicker
                       value={editStartDate}
-                      onChange={(v) => {
-                        setEditStartDate(v);
-                        setDirty(true);
-                        setTemporalError(null);
-                      }}
+                      onChange={(v) => applyEditDates(withDateEntry(editDates, { startDate: v }))}
                     />
                   </div>
                   <div>
@@ -639,11 +661,7 @@ export function AgendaItemDrawer({ item, open, onClose, onMutated, onOpenDocumen
                     </Label>
                     <TimePicker
                       value={editStartTime}
-                      onChange={(v) => {
-                        setEditStartTime(v);
-                        setDirty(true);
-                        setTemporalError(null);
-                      }}
+                      onChange={(v) => applyEditDates(withDateEntry(editDates, { startTime: v }))}
                     />
                   </div>
                   <div>
@@ -652,11 +670,7 @@ export function AgendaItemDrawer({ item, open, onClose, onMutated, onOpenDocumen
                     </Label>
                     <DatePicker
                       value={editEndDate}
-                      onChange={(v) => {
-                        setEditEndDate(v);
-                        setDirty(true);
-                        setTemporalError(null);
-                      }}
+                      onChange={(v) => applyEditDates(withDateEntry(editDates, { endDate: v }))}
                     />
                   </div>
                   <div>
@@ -665,13 +679,17 @@ export function AgendaItemDrawer({ item, open, onClose, onMutated, onOpenDocumen
                     </Label>
                     <TimePicker
                       value={editEndTime}
-                      onChange={(v) => {
-                        setEditEndTime(v);
-                        setDirty(true);
-                        setTemporalError(null);
-                      }}
+                      onChange={(v) => applyEditDates(withDateEntry(editDates, { endTime: v }))}
                     />
                   </div>
+                </div>
+                {/* Lot 77A : « Sans échéance » — saisir une date la décoche ; la cocher retire la date (confirmation). */}
+                <div className="mt-3">
+                  <NoDeadlineField
+                    id={`agenda-${item.id}-sans-echeance`}
+                    state={editDates}
+                    onChange={(checked) => applyEditDates(toggleNoDeadline(editDates, checked))}
+                  />
                 </div>
                 {temporalError && (
                   <p className="text-xs text-[color:var(--danger)] mt-1">{temporalError}</p>

@@ -14,9 +14,10 @@ import {
 import { eq, and } from 'drizzle-orm';
 import { getAgendaItemById, type AgendaItemFull } from './AgendaQueryService';
 import {
-  writeAgendaLinks, validateAgendaWrite, syncPurchaseDate, type AgendaItemValues,
+  writeAgendaLinks, validateAgendaWrite, syncPurchaseDate, AgendaValidationError, type AgendaItemValues,
 } from './write-agenda-item';
 import { upsertAgendaItem, agendaItemValues, type AgendaUpsertInput } from './agenda-write-primitive';
+import { resolveNoDeadlineWrite } from '@/lib/agenda/no-deadline';
 
 export interface CreateAgendaItemInput {
   title: string;
@@ -39,6 +40,13 @@ export interface CreateAgendaItemInput {
   /** Pre-classified home category from document analysis.
    * When provided, skips the AI classification call entirely. */
   homeCategory?: 'action' | 'information' | null;
+  /**
+   * Lot 77A : option « Sans échéance » — geste de l'UTILISATEUR (tiroirs de
+   * création / modification, desktop et mobile). Validée par
+   * `resolveNoDeadlineWrite` : incompatible avec une date. Jamais transmise
+   * par un traitement automatique.
+   */
+  noDeadline?: boolean;
 }
 
 export type UpdateAgendaItemInput = Partial<CreateAgendaItemInput>;
@@ -64,6 +72,12 @@ export async function createAgendaItem(
   accountId: number,
   createdByUserId: number | null
 ): Promise<AgendaItemFull> {
+  // Lot 77A : « Sans échéance » validée d'abord (incompatible avec une date).
+  const sansEcheance = resolveNoDeadlineWrite(input);
+  if (!sansEcheance.ok) throw new AgendaValidationError(sansEcheance.error);
+  if (sansEcheance.clearDates) input = { ...input, startDate: null, startTime: null, endDate: null, endTime: null };
+  input = { ...input, noDeadline: sansEcheance.noDeadline === true };
+
   // 1-2. Contrôles de dates et de cohérence des liens — AVANT la
   // classification : une demande invalide ne coûte aucun appel modèle.
   const assetIds = input.assetIds ?? [];
@@ -143,6 +157,8 @@ export function manualUpsertInput(
       originType: input.originType ?? 'manual',
       originRefType: input.originRefType ?? null,
       originRefId: input.originRefId ?? null,
+      // Lot 77A : écrite seulement si l'utilisateur a coché l'option.
+      ...(input.noDeadline ? { noDeadline: true } : {}),
     },
   };
 }
@@ -159,17 +175,27 @@ export function manualInsertValues(
 export async function updateAgendaItem(
   id: number,
   input: UpdateAgendaItemInput,
-  accountId: number
+  accountId: number,
+  actorUserId: number | null = null,
 ): Promise<AgendaItemFull> {
   const existing = await getAgendaItemById(id, accountId);
   if (!existing) throw new Error('Item not found');
+
+  // Lot 77A : « Sans échéance » — cochée, la date (et les heures) sont
+  // neutralisées ; une date saisie la retire ; les deux à la fois : refus.
+  const sansEcheance = resolveNoDeadlineWrite(input);
+  if (!sansEcheance.ok) throw new AgendaValidationError(sansEcheance.error);
+  if (sansEcheance.clearDates) input = { ...input, startDate: null, startTime: null, endDate: null, endTime: null };
+  const noDeadlineChange = sansEcheance.noDeadline !== undefined && sansEcheance.noDeadline !== (existing.noDeadline ?? false);
 
   const assetIds = input.assetIds ?? existing.assetLinks.map(l => l.assetId);
   const fileIds = input.fileIds ?? existing.fileLinks.map(l => l.assetFileId);
   const substructureIds = input.substructureIds ?? existing.roomLinks.map(l => l.substructureId);
   const equipmentIds = input.equipmentIds ?? existing.equipmentLinks.map(l => l.equipmentId);
 
-  await validateAgendaWrite({
+  await validateAgendaWrite(sansEcheance.clearDates ? {
+    startDate: null, startTime: null, endDate: null, endTime: null,
+  } : {
     startDate: input.startDate ?? existing.startDate,
     startTime: input.startTime ?? existing.startTime,
     endDate: input.endDate ?? existing.endDate,
@@ -177,10 +203,12 @@ export async function updateAgendaItem(
   }, { assetIds, fileIds, substructureIds, equipmentIds }, accountId);
 
   // Detect if automatic item has been manually modified
+  // (lot 77A : cocher / décocher « Sans échéance » est une modification de
+  // l'utilisateur — T4 ne réécrit plus l'élément).
   const isAutomaticModified = existing.isAutomatic &&
     (input.title !== undefined || input.description !== undefined ||
      input.startDate !== undefined || input.startTime !== undefined ||
-     input.endDate !== undefined || input.endTime !== undefined);
+     input.endDate !== undefined || input.endTime !== undefined || noDeadlineChange);
 
   // Occurrence PRÉVISIONNELLE dont l'utilisateur fixe la date : sa valeur est
   // protégée (isAutomaticModified) et l'occurrence devient confirmée par
@@ -206,6 +234,7 @@ export async function updateAgendaItem(
       isAutomaticModified: existing.isAutomaticModified || isAutomaticModified,
       // Check if title was the temp qualification title and is now replaced
       requiresQualification: checkQualification(existing, input.title ?? existing.title),
+      ...(sansEcheance.noDeadline !== undefined ? { noDeadline: sansEcheance.noDeadline } : {}),
       extra: confirmeParUtilisateur ? {
         occurrenceNature: 'CONFIRMED',
         dateSource: 'USER',
@@ -230,11 +259,38 @@ export async function updateAgendaItem(
   const full = await getAgendaItemById(id, accountId);
   if (!full) throw new Error('Item not found after update');
 
+  // Lot 77A : option « Sans échéance » cochée / retirée (ou retirée par une
+  // date) — tracée, puis la règle « À traiter » DATA-AGENDA-DATE est
+  // réévaluée IMMÉDIATEMENT pour cet élément (fermeture motivée, ou
+  // réouverture de la même carte), sans attendre le balayage horaire.
+  if ((existing.noDeadline ?? false) !== (full.noDeadline ?? false)) {
+    const { recordOccurrenceEvent } = await import('./agenda-persistence');
+    await recordOccurrenceEvent(id, accountId, full.noDeadline ? 'NO_DEADLINE_SET' : 'NO_DEADLINE_CLEARED', {
+      before: { date: existing.startDate, noDeadline: existing.noDeadline ?? false },
+      after: { date: full.startDate, noDeadline: full.noDeadline ?? false },
+    }, actorUserId);
+    await refreshAgendaDateCard(accountId, id);
+  }
+
   // Lot 46 (O7, C4 déclencheur Agenda) : correction utilisateur d'un élément
   // lié à une Opération → T3, seulement si un champ a réellement changé.
   await notifyLinkedOperation(accountId, id, userFieldsChanged(existing, full), undefined, full);
 
   return full;
+}
+
+/**
+ * Lot 77A : réévaluation immédiate de la règle DATA-AGENDA-DATE pour un
+ * élément (même producteur que le balayage, déclencheur USER). Ne fait
+ * jamais échouer l'écriture : le balayage horaire reste le filet.
+ */
+export async function refreshAgendaDateCard(accountId: number, id: number): Promise<void> {
+  try {
+    const { produceAgendaActions } = await import('@/services/to-process/producers.service');
+    await produceAgendaActions(accountId, { trigger: 'USER', only: [id] });
+  } catch (e) {
+    console.error(`[agenda] réévaluation « À traiter » de l'élément ${id} :`, (e as Error).message);
+  }
 }
 
 /** Un champ visible par l'utilisateur a-t-il changé (titre, description, dates, heures, liens) ? */

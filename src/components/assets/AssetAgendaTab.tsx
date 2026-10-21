@@ -21,6 +21,7 @@ import {
 import type { AgendaPeriod } from '@/lib/agenda/agenda-filters';
 import { buildRoomFilterModel, roomFilterParam, type RoomFacet } from '@/lib/filters/room-filter';
 import { assetAgendaChips, isAssetAgendaEmpty } from '@/lib/agenda/asset-agenda-filters';
+import { undatedLabel } from '@/lib/agenda/no-deadline';
 
 const AgendaItemDrawer = dynamic(
   () => import('@/components/agenda/AgendaItemDrawer').then(m => ({ default: m.AgendaItemDrawer })),
@@ -262,7 +263,7 @@ export function AssetAgendaTab({ assetId }: Props) {
                   )}
                 </div>
                 <div className="flex items-center gap-2 mt-0.5">
-                  <span className="text-xs text-muted-foreground">{item.occurrenceNature === 'FORECAST' ? `prévu le ${formatShortDate(item.startDate)}` : formatShortDate(item.startDate)}</span>
+                  <span className="text-xs text-muted-foreground">{!item.startDate ? undatedLabel(item) : item.occurrenceNature === 'FORECAST' ? `prévu le ${formatShortDate(item.startDate)}` : formatShortDate(item.startDate)}</span>
                   {visibleAttentionFlags(item.attentionFlags).map(f => (
                     <span key={f} className="inline-flex items-center rounded-full px-1.5 py-0.5 text-xs bg-[color:var(--attention-soft)] text-[color:var(--attention-on-soft)]">
                       <AlertCircle className="h-2.5 w-2.5 mr-0.5" />

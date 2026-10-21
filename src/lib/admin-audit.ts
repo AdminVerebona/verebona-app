@@ -131,12 +131,17 @@ export type AdminActionType =
   // d'une entité (consultation sensible : données persistées, preuves) et
   // téléchargement JSON / CSV / TXT (format, section, complétude, fichier).
   | 'ACCOUNT_DATA_READ'
-  | 'ACCOUNT_DATA_EXPORT';
+  | 'ACCOUNT_DATA_EXPORT'
+  // Lot 77C : BO › Supervision › « Diagnostics techniques » — génération
+  // consultée (rapport) ou archive ZIP téléchargée : périmètre, période,
+  // traitements, option renforcée, résultat, taille, identifiant de génération.
+  | 'TECH_DIAGNOSTIC_VIEW'
+  | 'TECH_DIAGNOSTIC_EXPORT';
 
 export type AdminTargetType = 'ACCOUNT' | 'USER' | 'EXPORT_TEMPLATE' | 'COMMUNICATION_CHANNEL' | 'ANOMALY' | 'GDPR_REQUEST'
   | 'ASSISTANT_SETTING' | 'ASSISTANT_REQUEST' | 'NOTIFICATION' | 'AI_CACHE' | 'AI_METRICS'
   | 'OPS_BACKFILL' | 'SCHEDULED_TASK' | 'AI_EXECUTION' | 'STRIPE_CATALOG' | 'EMAIL_LOG' | 'AI_EXECUTION_REPORT' | 'EMAIL_SETTINGS'
-  | 'EMAIL_TEMPLATE' | 'ANNUAL_RENEWAL';
+  | 'EMAIL_TEMPLATE' | 'ANNUAL_RENEWAL' | 'TECH_DIAGNOSTIC';
 
 type Executor = Pick<typeof db, 'insert' | 'select'>;
 

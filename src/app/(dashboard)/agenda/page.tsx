@@ -26,6 +26,7 @@ import {
   buildEquipmentFilterModel, equipmentFilterParam, type EquipmentFacet,
 } from '@/lib/filters/equipment-filter';
 import { AGENDA_PERIOD_OPTIONS, agendaFilterChips, parseAgendaPeriod } from '@/lib/agenda/agenda-filters';
+import { NO_DEADLINE_LABEL } from '@/lib/agenda/no-deadline';
 
 const AgendaItemDrawer = dynamic(
   () => import('@/components/agenda/AgendaItemDrawer').then(m => ({ default: m.AgendaItemDrawer })),
@@ -72,6 +73,10 @@ function AgendaItemRow({ item, onClick }: { item: AgendaItemFull; onClick: () =>
             {new Date(item.startDate + 'T12:00:00').toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}
             {item.occurrenceNature === 'FORECAST' && <span className="italic"> · date estimée</span>}
           </p>
+        )}
+        {/* Lot 77A : mention discrète d'une tâche « Sans échéance » (groupe « Sans date »). */}
+        {!item.startDate && item.noDeadline && (
+          <p className="text-[11px] text-muted-foreground mb-0.5">{NO_DEADLINE_LABEL}</p>
         )}
         <p className="text-sm font-semibold leading-snug truncate">{item.title}</p>
         <div className="flex flex-wrap items-center gap-1.5 mt-1">

@@ -27,6 +27,7 @@ import { agendaItems, assets, toProcessActionEvents, toProcessActions } from '@/
 import type { ResolutionReason } from './action-model';
 import type { DbClient, ResolveOptions, ResolveResult } from './resolve-action.service';
 import { upsertAction, type UpsertActionResult } from './to-process-action.service';
+import { humanizeIsoDates } from './card-labels';
 
 export const AGENDA_PROPOSAL_RULE = 'AGENDA-PROPOSAL';
 export const AGENDA_PROPOSAL_REASONS = new Set(['SOURCE_TYPE_NOT_AUTHORIZED', 'SOURCE_TYPE_UNKNOWN', 'TEMPORAL_AMBIGUITY']);
@@ -82,7 +83,8 @@ export async function proposeAgendaCreation(p: {
     return { status: 'SKIPPED', reason: 'Échéance déjà ajoutée à l’agenda par l’utilisateur.' };
   }
   const c = p.candidate;
-  const source = { label: `${c.title} — ${c.date}`.slice(0, 200), targetType: 'DOCUMENT' as const, targetId: p.sourceFileId };
+  // Lot 77B : dates affichées en jj/mm/aaaa (jamais la valeur ISO brute).
+  const source = { label: humanizeIsoDates(`${c.title} — ${c.date}`).slice(0, 200), targetType: 'DOCUMENT' as const, targetId: p.sourceFileId };
   const dates = [...new Set(c.alternatives ?? [])].sort();
   const evidenceIds = c.sources.filter((s) => s.evidenceId != null).map((s) => String(s.evidenceId));
   return upsertAction({
@@ -92,14 +94,14 @@ export async function proposeAgendaCreation(p: {
     relationKey,
     actionKind: 'ARBITRATE',
     ruleCode: AGENDA_PROPOSAL_RULE,
-    question: (dates.length > 1
+    question: humanizeIsoDates(dates.length > 1
       ? `Quelle date pour « ${c.title} » ? La source est ambiguë : ${dates.join(' ou ')}`
       : `Ajouter cette échéance à l’agenda ? « ${c.title} » le ${c.date}`).slice(0, 300),
     // Dates possibles (R5) : une proposition par date. Au plus deux
     // propositions affichées (§8.4) : le refus passe alors par « Non
     // applicable » (règle `allowNotApplicable`), même effet que « Non ».
     proposals: dates.length > 1
-      ? dates.slice(0, 2).map((d) => ({ value: `YES:${d}`, label: `Oui, le ${d}`, confidence: 0.5, sourceContext: { ...source, label: `${c.title} — ${d}`.slice(0, 200) }, evidenceIds }))
+      ? dates.slice(0, 2).map((d) => ({ value: `YES:${d}`, label: humanizeIsoDates(`Oui, le ${d}`), confidence: 0.5, sourceContext: { ...source, label: humanizeIsoDates(`${c.title} — ${d}`).slice(0, 200) }, evidenceIds }))
       : [
         { value: 'YES', label: 'Oui, l’ajouter à l’agenda', confidence: 0.6, sourceContext: source, evidenceIds },
         { value: 'NO', label: 'Non', confidence: 0.3 },

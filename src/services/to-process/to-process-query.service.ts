@@ -30,7 +30,7 @@ import { and, asc, eq, inArray, isNull, ne, or, sql } from 'drizzle-orm';
 import { db } from '@/db';
 import { documentSlotFor } from './document-slots';
 import {
-  assetFiles, assetFileThumbnails, assets, equipments, substructures, supplierReviewItems, suppliers, toProcessActions,
+  agendaAssetLinks, agendaItems, assetFiles, assetFileThumbnails, assets, equipments, substructures, supplierReviewItems, suppliers, toProcessActions,
 } from '@/db/schema';
 import { THUMBNAIL_VARIANT } from '@/services/documents/thumbnails/thumbnail-spec';
 import { documentPreviews, type DocumentPreviewRow } from '@/services/documents/thumbnails/document-previews';
@@ -44,6 +44,7 @@ import type {
 import { selectDisplayedProposals } from './action-model';
 import { getRule } from './rules-catalog';
 import { sortActions, type OrderMode } from './priority';
+import { presentCardLabels, targetFallbackLabel } from './card-labels';
 
 /** Contexte objet affiché sur la carte (§8.4). */
 export interface ActionTargetContext {
@@ -169,7 +170,11 @@ export async function getToProcessPage(
 
   let views: ToProcessActionView[] = rows.map((row) => {
     const proposals = (row.proposalsJson as ActionProposal[] | null) ?? [];
-    return {
+    // Lot 77B : libellés recalculés À LA LECTURE (`card-labels.ts`) — cible
+    // jamais « #id », contexte de source reformulé ou retiré, valeurs brutes
+    // formatées. Même vue pour la page, la pastille, l'accueil et la mascotte ;
+    // les lignes enregistrées ne sont pas réécrites.
+    return presentCardLabels({
       publicId: row.publicId,
       targetType: row.targetType as TargetType,
       targetId: row.targetId,
@@ -184,9 +189,9 @@ export async function getToProcessPage(
       inputType: cardInputType(row.ruleCode, row.targetType, row.fieldKey ?? row.relationKey),
       activeSince: row.activeSince.toISOString(),
       target: contexts.get(`${row.targetType}:${row.targetId}`) ?? {
-        label: `#${row.targetId}`,
+        label: targetFallbackLabel(row.targetType),
       },
-    };
+    }, getRule(row.ruleCode)?.question ?? null);
   });
 
   // Le filtre « bien » porte sur la CIBLE, pas sur l'action : une action
@@ -317,18 +322,37 @@ async function hydrateTargets(
     }
   }
 
+  // Lot 77B : bornée au compte (bien porteur) et nom du bien affiché.
   const equipmentIds = byType.get('EQUIPMENT');
   if (equipmentIds?.length) {
     const rowsEquip = await db
-      .select({ id: equipments.id, name: equipments.name, assetId: equipments.assetId })
+      .select({ id: equipments.id, name: equipments.name, assetId: equipments.assetId, assetName: assets.name })
       .from(equipments)
-      .where(inArray(equipments.id, [...new Set(equipmentIds)]));
+      .innerJoin(assets, eq(assets.id, equipments.assetId))
+      .where(and(eq(assets.accountId, accountId), inArray(equipments.id, [...new Set(equipmentIds)])));
     for (const equip of rowsEquip) {
       contexts.set(`EQUIPMENT:${equip.id}`, {
         label: equip.name,
         assetId: equip.assetId,
+        assetName: equip.assetName,
       });
     }
+  }
+
+  // Lot 77B (cas « #9 ») : événement d'agenda — son titre, et le premier bien
+  // lié (plus petit identifiant de lien, stable). Borné au compte.
+  const agendaIds = byType.get('AGENDA_ITEM');
+  if (agendaIds?.length) {
+    const rowsAgenda = await db
+      .select({
+        id: agendaItems.id, title: agendaItems.title, linkId: agendaAssetLinks.id,
+        assetId: assets.id, assetName: assets.name,
+      })
+      .from(agendaItems)
+      .leftJoin(agendaAssetLinks, eq(agendaAssetLinks.agendaItemId, agendaItems.id))
+      .leftJoin(assets, and(eq(assets.id, agendaAssetLinks.assetId), eq(assets.accountId, accountId)))
+      .where(and(eq(agendaItems.accountId, accountId), inArray(agendaItems.id, [...new Set(agendaIds)])));
+    for (const r of agendaContexts(rowsAgenda)) contexts.set(`AGENDA_ITEM:${r.id}`, r.context);
   }
 
   // Pièce (lot 19 ; SOUS-STRUCTURE depuis D-G, lot 20) : nom de la pièce, bien
@@ -358,6 +382,32 @@ async function hydrateTargets(
   }
 
   return contexts;
+}
+
+/**
+ * Lot 77B — contexte des cibles AGENDA_ITEM (pur) : titre de l'événement,
+ * bien lié de plus petit lien (les liens vers un bien d'un autre compte ou
+ * supprimé ont `assetId` nul et sont ignorés).
+ */
+export function agendaContexts(rows: Array<{
+  id: number; title: string | null; linkId: number | null; assetId: number | null; assetName: string | null;
+}>): Array<{ id: number; context: ActionTargetContext }> {
+  const parId = new Map<number, typeof rows>();
+  for (const r of rows) parId.set(r.id, [...(parId.get(r.id) ?? []), r]);
+  return [...parId.entries()].map(([id, lignes]) => {
+    const lien = lignes
+      .filter((l) => l.assetId !== null && l.linkId !== null)
+      .sort((a, b) => (a.linkId ?? 0) - (b.linkId ?? 0))[0];
+    const titre = lignes[0].title?.trim();
+    return {
+      id,
+      context: {
+        label: titre || targetFallbackLabel('AGENDA_ITEM'),
+        assetId: lien?.assetId ?? null,
+        assetName: lien?.assetName ?? null,
+      },
+    };
+  });
 }
 
 /** Ligne d'hydratation → entrée de `documentPreviews`. */

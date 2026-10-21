@@ -71,7 +71,7 @@ export async function POST(req: NextRequest) {
     if (refus) return refus;
 
     const body = await req.json();
-    const { title, description, startDate, startTime, endDate, endTime, manualStatus, assetIds, fileIds, substructureIds, equipmentIds } = body;
+    const { title, description, startDate, startTime, endDate, endTime, manualStatus, assetIds, fileIds, substructureIds, equipmentIds, noDeadline } = body;
 
     if (!title || typeof title !== 'string' || !title.trim()) {
       return NextResponse.json({ error: 'title est requis' }, { status: 400 });
@@ -80,7 +80,8 @@ export async function POST(req: NextRequest) {
     const validManualStatus = manualStatus === 'realise' || manualStatus === 'annule' ? manualStatus : null;
 
     const item = await createAgendaItem(
-      { title: title.trim(), description, startDate, startTime, endDate, endTime, manualStatus: validManualStatus, assetIds, fileIds, substructureIds, equipmentIds },
+      // Lot 77A : « Sans échéance » validée par le service (booléen, incompatible avec une date).
+      { title: title.trim(), description, startDate, startTime, endDate, endTime, manualStatus: validManualStatus, assetIds, fileIds, substructureIds, equipmentIds, noDeadline },
       accountId,
       session.userId
     );

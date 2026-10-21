@@ -31,6 +31,7 @@ import { assetFiles, assets, toProcessActionEvents, toProcessActions } from '@/d
 import type { ResolutionReason } from './action-model';
 import type { DbClient, ResolveOptions, ResolveResult } from './resolve-action.service';
 import { upsertAction, type UpsertActionResult } from './to-process-action.service';
+import { unnamedLabel } from './card-labels';
 
 export const ASSET_CONFLICT_RULE = 'LINK-ASSET-CONFLICT';
 export const ASSET_CONFLICT_RELATION = 'assetConflict';
@@ -123,7 +124,7 @@ async function assetNames(accountId: number, ids: number[]): Promise<Map<number,
     `SELECT id, name FROM assets WHERE account_id = $1 AND deleted_at IS NULL AND id = ANY($2::int[])`,
     [accountId, ids] as never[],
   )) as unknown as Array<{ id: number; name: string | null }>;
-  return new Map(rows.map((r) => [Number(r.id), r.name ?? `Bien ${r.id}`]));
+  return new Map(rows.map((r) => [Number(r.id), r.name ?? unnamedLabel('ASSET')]));
 }
 
 /**

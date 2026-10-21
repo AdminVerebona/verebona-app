@@ -90,6 +90,7 @@ import {
   type ProcessingRule,
 } from './rules-catalog';
 import { upsertAction } from './to-process-action.service';
+import { unnamedLabel } from './card-labels';
 import { ASSET_LINK_QUESTION_ALLOWED_SQL, assetLinkQuestionAllowed } from '@/services/ai/reconciliation/document-asset/question-gate';
 
 // ══════════════════════════════════════════════════════════════════════════
@@ -287,7 +288,7 @@ export function proposalsFromAnalysis(
   assetNames: Map<number, string> = new Map(),
 ): ActionProposal[] {
   if (key === 'assetIds') {
-    const label = (id: number) => assetNames.get(id) ?? `Bien ${id}`;
+    const label = (id: number) => assetNames.get(id) ?? unnamedLabel('ASSET');
     if (obs.documentAssetId !== null) {
       return [{ value: obs.documentAssetId, label: label(obs.documentAssetId), confidence: 1 }];
     }
@@ -721,7 +722,7 @@ async function assetNamesOf(accountId: number, ids: number[]): Promise<Map<numbe
     .select({ id: assets.id, name: assets.name })
     .from(assets)
     .where(and(inArray(assets.id, [...new Set(ids)]), eq(assets.accountId, accountId), isNull(assets.deletedAt)));
-  return new Map(rows.map((r) => [r.id, r.name ?? `Bien ${r.id}`]));
+  return new Map(rows.map((r) => [r.id, r.name ?? unnamedLabel('ASSET')]));
 }
 
 

@@ -52,6 +52,7 @@ export async function GET(
         manualStatus: agendaItems.manualStatus,
         originType: agendaItems.originType,
         originFieldKey: agendaItems.originFieldKey,
+        noDeadline: agendaItems.noDeadline,
       })
       .from(agendaItems)
       .where(
@@ -85,6 +86,8 @@ export async function GET(
         originFieldKey: item.originFieldKey ?? null,
       }, now),
       originType: item.originType,
+      // Lot 77A : tâche « Sans échéance » (mention dans la fiche équipement).
+      noDeadline: item.noDeadline === true,
     }));
 
     // Sort: upcoming first, then past

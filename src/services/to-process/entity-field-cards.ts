@@ -83,7 +83,8 @@ export async function syncEntityFieldCards(p: {
   for (const d of p.decisions) {
     try {
       if (d.action === 'create_conflict') {
-        const label = getField(d.fieldKey)?.label ?? d.fieldKey;
+        // Lot 77B : jamais le nom technique du champ (« energyUsage »).
+        const label = getField(d.fieldKey)?.label ?? 'cette information';
         const r = await upsertAction({
           accountId: p.accountId, targetType: type, targetId: p.target.id, fieldKey: d.fieldKey,
           actionKind: 'ARBITRATE', ruleCode,

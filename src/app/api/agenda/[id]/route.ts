@@ -61,7 +61,8 @@ export async function PUT(req: NextRequest, context: RouteContext) {
     if (refus) return refus;
 
     const body = await req.json();
-    const item = await updateAgendaItem(id, body, accountId);
+    // Lot 77A : l'auteur est tracé avec l'option « Sans échéance » (cochée / retirée).
+    const item = await updateAgendaItem(id, body, accountId, session.userId ?? null);
     // CDC Assistant §25.7 : événement métier (caches de l'assistant).
     await emitBusinessEvent({ type: 'AGENDA_ITEM_UPDATED', accountId, entityId: id });
     return NextResponse.json({ item });

@@ -121,6 +121,11 @@ export interface AgendaDateFacts {
   createdAt: Date | string | null;
   /** Date retrouvée à la source de l'événement (valeur retenue du document d'origine), ISO. */
   sourceDate: string | null;
+  /**
+   * Lot 77A : l'utilisateur a déclaré la tâche « Sans échéance » (option
+   * explicite de l'événement, jamais posée par un traitement).
+   */
+  noDeadline?: boolean;
 }
 
 /** Délai laissé à la qualification T4 d'un événement avant toute question (jours). */
@@ -144,7 +149,11 @@ const ORIGINES_UTILISATEUR = ['manual', 'legacy_event_migration'];
  *     carte existante n'est pas fermée sur ce « pas encore ») ;
  *   · date retrouvée à la source d'un événement automatique jamais modifié :
  *     résolue automatiquement (écrite, vérifiée) ;
- *   · qualification T4 en cours (récente) : pas maintenant.
+ *   · qualification T4 en cours (récente) : pas maintenant ;
+ *   · lot 77A — tâche déclarée « Sans échéance » par l'utilisateur : la date
+ *     est JUSTIFIÉE non nécessaire (NO_DEADLINE_BY_USER) — prime sur la
+ *     catégorie et sur la décision 72C ; aucune date n'est écrite depuis la
+ *     source (choix de l'utilisateur respecté).
  * La décision « Non applicable » de l'utilisateur est protégée à l'écriture
  * (empreinte de `upsertAction`) : critère sans objet ici.
  */
@@ -152,7 +161,9 @@ export function agendaDateAdmissibility(f: AgendaDateFacts, now: Date = new Date
   const recent = f.createdAt ? now.getTime() - new Date(f.createdAt).getTime() < AGENDA_QUALIFICATION_GRACE_DAYS * 86_400_000 : false;
   const ecrivable = !!f.sourceDate && f.isAutomatic && !f.isAutomaticModified;
   const saisiParUtilisateur = !f.isAutomatic && ORIGINES_UTILISATEUR.includes(f.originType);
-  const necessaire = f.homeCategory === 'information' ? false : f.homeCategory === 'action' ? true : saisiParUtilisateur ? true : null;
+  const sansEcheance = f.noDeadline === true;
+  const necessaire = sansEcheance ? false
+    : f.homeCategory === 'information' ? false : f.homeCategory === 'action' ? true : saisiParUtilisateur ? true : null;
   return decideAdmissibility({
     ruleCode: 'DATA-AGENDA-DATE',
     checks: {
@@ -166,7 +177,7 @@ export function agendaDateAdmissibility(f: AgendaDateFacts, now: Date = new Date
     },
     notApplicable: ['userDecided'],
     motives: {
-      neededForUse: f.homeCategory === 'information' ? 'INFORMATIONAL_EVENT' : 'CATEGORY_UNKNOWN',
+      neededForUse: sansEcheance ? NO_DEADLINE_REASON : f.homeCategory === 'information' ? 'INFORMATIONAL_EVENT' : 'CATEGORY_UNKNOWN',
       autoResolvable: 'DATE_FOUND_AT_SOURCE',
       timely: 'QUALIFICATION_PENDING',
     },
@@ -178,6 +189,50 @@ export function agendaDateAdmissibility(f: AgendaDateFacts, now: Date = new Date
       timely: f.requiresQualification ? 'QUALIFICATION_GRACE_ELAPSED' : 'NO_QUALIFICATION_PENDING',
     },
   });
+}
+
+/** Lot 77A : motif (tracé) de la fermeture d'une carte de date d'une tâche « Sans échéance ». */
+export const NO_DEADLINE_REASON = 'NO_DEADLINE_BY_USER';
+
+/**
+ * Lot 77A — option « Sans échéance » RETIRÉE : la carte de date fermée pour
+ * ce motif (dernière carte résolue de l'élément, fermée OBSOLETE avec le
+ * motif NO_DEADLINE_BY_USER comme dernier événement) est ROUVERTE — même
+ * ligne, même cycle (l'utilisateur s'est ravisé : ce n'est pas un problème
+ * inédit, voir `reopenAction`). Réouverture et événement d'audit dans une
+ * transaction. Rend l'identifiant rouvert, ou null (rien à rouvrir : la
+ * production ordinaire crée la carte).
+ */
+async function reopenNoDeadlineCard(accountId: number, itemId: number): Promise<number | null> {
+  const [last] = (await pgClient.unsafe(
+    `SELECT a.id, a.resolution_reason,
+            (SELECT e.details->>'reason' FROM to_process_action_events e WHERE e.action_id = a.id ORDER BY e.id DESC LIMIT 1) AS last_reason
+       FROM to_process_actions a
+      WHERE a.account_id = $1 AND a.target_type = 'AGENDA_ITEM' AND a.target_id = $2
+        AND COALESCE(a.field_key, a.relation_key) = 'date' AND a.resolved_at IS NOT NULL
+      ORDER BY a.resolved_at DESC, a.id DESC LIMIT 1`,
+    [accountId, itemId] as never[],
+  )) as unknown as Array<{ id: number; resolution_reason: string | null; last_reason: string | null }>;
+  if (!last || last.resolution_reason !== 'OBSOLETE' || last.last_reason !== NO_DEADLINE_REASON) return null;
+  try {
+    return await db.transaction(async (tx) => {
+      const now = new Date();
+      const rouverte = await tx.update(toProcessActions)
+        .set({ resolvedAt: null, resolutionReason: null, lastSeenAt: now, updatedAt: now })
+        .where(and(eq(toProcessActions.id, Number(last.id)), eq(toProcessActions.accountId, accountId), sql`${toProcessActions.resolvedAt} IS NOT NULL`))
+        .returning({ id: toProcessActions.id, ruleCode: toProcessActions.ruleCode });
+      if (!rouverte.length) return null;
+      await tx.insert(toProcessActionEvents).values({
+        actionId: rouverte[0].id, accountId, event: 'REOPENED', actorUserId: null, targetType: 'AGENDA_ITEM', targetId: itemId, fieldKey: 'date',
+        details: { ruleCode: rouverte[0].ruleCode, reason: 'NO_DEADLINE_CLEARED' }, createdAt: now,
+      });
+      return rouverte[0].id;
+    });
+  } catch (e) {
+    // Carte active déjà présente (index unique 0147) : rien à rouvrir, la production ordinaire la met à jour.
+    if ((e as { code?: string }).code === '23505' || (e as { cause?: { code?: string } }).cause?.code === '23505') return null;
+    throw e;
+  }
 }
 
 /** Clés de donnée documentaire candidates pour la date d'un événement (clé d'origine et sa clé canonique). */
@@ -220,6 +275,7 @@ export async function produceAgendaActions(accountId: number, opts: ProducerRunO
       originRefType: agendaItems.originRefType, originRefId: agendaItems.originRefId, originFieldKey: agendaItems.originFieldKey,
       isAutomatic: agendaItems.isAutomatic, isAutomaticModified: agendaItems.isAutomaticModified,
       requiresQualification: agendaItems.requiresQualification, createdAt: agendaItems.createdAt,
+      noDeadline: agendaItems.noDeadline,
     })
     .from(agendaItems)
     .where(
@@ -238,7 +294,8 @@ export async function produceAgendaActions(accountId: number, opts: ProducerRunO
   for (const item of sansDate) {
     const decision = agendaDateAdmissibility({ ...item, sourceDate: sources.get(item.id) ?? null });
     const evidence = { homeCategory: item.homeCategory, originType: item.originType, automatic: item.isAutomatic, modifiedByUser: item.isAutomaticModified,
-      requiresQualification: item.requiresQualification, sourceDate: sources.get(item.id) ?? null, sourceFileId: item.originRefType === 'asset_file' ? item.originRefId : null };
+      requiresQualification: item.requiresQualification, sourceDate: sources.get(item.id) ?? null, sourceFileId: item.originRefType === 'asset_file' ? item.originRefId : null,
+      noDeadline: item.noDeadline === true };
     const trace = async (effect: FamilyDecisionRecord['effect'], actionIds: FamilyDecisionRecord['actionIds'] = null, d = decision, error: string | null = null) =>
       traceFailure(report, accountId, 'AGENDA_ITEM', item.id, 'DATA-AGENDA-DATE', await recordFamilyDecision({ accountId, targetType: 'AGENDA_ITEM', targetId: item.id, ruleCode: 'DATA-AGENDA-DATE', dataKey: 'date', trigger,
         runRef: opts.runRef, decision: d, evidence, effect, actionIds, error }));
@@ -248,6 +305,7 @@ export async function produceAgendaActions(accountId: number, opts: ProducerRunO
       const ecrit = (await pgClient.unsafe(
         `UPDATE agenda_items SET start_date = $3::date, date_source = COALESCE(date_source, 'EXPLICIT_DATE'), updated_at = now()
           WHERE id = $1 AND account_id = $2 AND start_date IS NULL AND manual_status IS NULL AND is_automatic = true AND is_automatic_modified = false
+            AND no_deadline = false
           RETURNING to_char(start_date, 'YYYY-MM-DD') AS d`,
         [item.id, accountId, date] as never[],
       )) as unknown as Array<{ d: string }>;
@@ -281,6 +339,8 @@ export async function produceAgendaActions(accountId: number, opts: ProducerRunO
       await trace(fermees.length ? 'CLOSED' : 'NONE', fermees.length ? { closed: fermees } : null);
       continue;
     }
+    // Lot 77A : « Sans échéance » retirée — la carte fermée pour ce motif est rouverte (même carte).
+    const rouverte = actives.has(item.id) ? null : await reopenNoDeadlineCard(accountId, item.id);
     const result = await upsertAction({
       accountId,
       targetType: 'AGENDA_ITEM',
@@ -290,10 +350,11 @@ export async function produceAgendaActions(accountId: number, opts: ProducerRunO
       ruleCode: 'DATA-AGENDA-DATE',
       question: `À quelle date « ${item.title} » a-t-il lieu ?`,
     });
-    if (result.status === 'CREATED') report.created += 1;
+    if (result.status === 'CREATED' || (rouverte && result.actionId === rouverte)) report.created += 1;
     else if (result.status === 'UPDATED') report.updated += 1;
-    await trace(result.status === 'CREATED' ? 'CREATED' : result.status === 'UPDATED' ? 'KEPT' : 'NONE',
-      result.actionId ? { [result.status === 'CREATED' ? 'created' : 'kept']: [result.actionId] } : null);
+    const nouvelle = result.status === 'CREATED' || (rouverte !== null && result.actionId === rouverte);
+    await trace(nouvelle ? 'CREATED' : result.status === 'UPDATED' ? 'KEPT' : 'NONE',
+      result.actionId ? { [nouvelle ? 'created' : 'kept']: [result.actionId] } : null);
   }
 
   // Cartes dont l'événement a désormais une date, est clos ou a disparu : le problème n'existe plus.

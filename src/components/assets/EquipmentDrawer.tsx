@@ -25,6 +25,7 @@ import { EntityCard } from '@/components/drawers/EntityCard';
 import { useWriteGuard } from '@/contexts/WriteGuardContext';
 import { EQUIPMENT_FICHE_FIELDS, equipmentFicheChanges } from '@/lib/asset-detail-rules';
 import { normalizeEquipmentEnergyUsage } from '@/lib/cil/energy-equipment';
+import { undatedLabel } from '@/lib/agenda/no-deadline';
 // Lot 75A : champ « Usage énergétique » affiché selon sa pertinence (règle
 // centralisée `isEnergyUsageFieldRelevant`), même composant desktop et mobile.
 import {
@@ -98,6 +99,8 @@ interface EquipmentAgendaItem {
   manualStatus: string | null;
   effectiveStatus: string;
   originType: string;
+  /** Lot 77A : tâche « Sans échéance ». */
+  noDeadline?: boolean;
 }
 
 interface Props {
@@ -751,7 +754,7 @@ export function EquipmentDrawer({ open, onOpenChange, assetId, equipment: eq, su
                 iconStyle="plain"
                 meta={item.startDate
                   ? `${formatDate(item.startDate)}${item.startTime ? ` · ${item.startTime.slice(0, 5)}` : ''}`
-                  : 'Sans date'}
+                  : undatedLabel(item)}
                 badges={<AgendaStatusBadge item={item} />}
               />
             ))}

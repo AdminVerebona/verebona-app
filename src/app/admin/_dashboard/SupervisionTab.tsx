@@ -13,12 +13,13 @@
  *  - Aucune criticité, aucun bouton de création (SUP-012).
  *  - Lot 25 : accès à la page « Exploitation » (lien en tête d'onglet).
  *  - Lot 47A : accès au diagnostic « Opérations » (lien en tête d'onglet).
+ *  - Lot 77C : accès aux « Diagnostics techniques » (export ZIP, lien en tête d'onglet).
  *
  * Le tri et la page vivent dans l'URL : ils sont conservés au retour de
  * l'écran de traitement (UX-004).
  */
 import Link from 'next/link';
-import { ArrowDown, ArrowUp, ChevronLeft, ChevronRight, Layers, ServerCog } from 'lucide-react';
+import { ArrowDown, ArrowUp, ChevronLeft, ChevronRight, Layers, ServerCog, Stethoscope } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { formatDateTime } from '@/lib/admin/format';
 import type { AnomalyListItem, DomainCounter } from '@/services/admin/anomaly.service';
@@ -181,6 +182,14 @@ export function SupervisionTab({
         <p className="text-sm text-muted-foreground">Opérations métier : diagnostic en lecture seule, indicateurs de qualité et anomalies dures.</p>
         <Button asChild size="sm" variant="outline">
           <Link href="/admin/operations"><Layers className="h-4 w-4 mr-1.5" />Opérations</Link>
+        </Button>
+      </div>
+      {/* Lot 77C : Diagnostics techniques (rapport + ZIP JSON, traçabilité des
+          montants TCO) — lecture seule, journalisé, hors barre latérale. */}
+      <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border bg-card p-4">
+        <p className="text-sm text-muted-foreground">Diagnostics techniques : rapport et archive ZIP (global, utilisateur, bien, document, Opération) pour analyser une anomalie.</p>
+        <Button asChild size="sm" variant="outline">
+          <Link href="/admin/diagnostics"><Stethoscope className="h-4 w-4 mr-1.5" />Diagnostics techniques</Link>
         </Button>
       </div>
       <Counters />

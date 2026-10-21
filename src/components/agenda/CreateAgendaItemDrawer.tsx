@@ -31,6 +31,8 @@ import { toast } from "sonner";
 import { assetSupportsStructuralFeatures } from "@/types/domain";
 import { useWriteGuard } from "@/contexts/WriteGuardContext";
 import { isWriteBlockedCode } from "@/lib/write-blocked";
+import { NoDeadlineField } from "@/components/agenda/NoDeadlineField";
+import { toggleNoDeadline, withDateEntry, type AgendaDateFormState } from "@/lib/agenda/no-deadline";
 
 interface Asset {
   id: number;
@@ -99,6 +101,16 @@ export function CreateAgendaItemDrawer({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showEndDate, setShowEndDate] = useState(false);
+  // Lot 77A : option « Sans échéance » (incompatible avec une date).
+  const [noDeadline, setNoDeadline] = useState(false);
+  const dateState: AgendaDateFormState = { startDate, startTime, endDate, endTime, noDeadline };
+  const applyDates = (s: AgendaDateFormState) => {
+    setStartDate(s.startDate);
+    setStartTime(s.startTime);
+    setEndDate(s.endDate);
+    setEndTime(s.endTime);
+    setNoDeadline(s.noDeadline);
+  };
 
   // Asset selection — multi select
   const [assets, setAssets] = useState<Asset[]>([]);
@@ -212,6 +224,7 @@ export function CreateAgendaItemDrawer({
     setSelectedEquipmentIds(prefilledEquipmentId ? [prefilledEquipmentId] : []);
     setAssetDetails({});
     setShowEndDate(false);
+    setNoDeadline(false);
     setError(null);
   };
 
@@ -246,6 +259,7 @@ export function CreateAgendaItemDrawer({
         endDate: endDate || null,
         endTime: endTime || null,
         manualStatus: manualStatus === "null" ? null : manualStatus,
+        noDeadline,
         assetIds: selectedAssetIds,
         fileIds: prefilledFileId ? [prefilledFileId] : [],
         substructureIds: selectedSubstructureIds,
@@ -482,7 +496,7 @@ export function CreateAgendaItemDrawer({
                 <Label>Date début</Label>
                 <DatePicker
                   value={startDate}
-                  onChange={(v) => setStartDate(v)}
+                  onChange={(v) => applyDates(withDateEntry(dateState, { startDate: v }))}
                   placeholder="jj/mm/aaaa"
                 />
               </div>
@@ -490,10 +504,20 @@ export function CreateAgendaItemDrawer({
                 <Label>Heure début</Label>
                 <TimePicker
                   value={startTime}
-                  onChange={(v) => setStartTime(v)}
+                  onChange={(v) => applyDates(withDateEntry(dateState, { startTime: v }))}
                 />
               </div>
             </div>
+
+            {/* Lot 77A : « Sans échéance » — saisir une date la décoche ; la cocher retire la date (confirmation). */}
+            <NoDeadlineField
+              id="creation-agenda-sans-echeance"
+              state={dateState}
+              onChange={(checked) => {
+                applyDates(toggleNoDeadline(dateState, checked));
+                if (checked) setShowEndDate(false);
+              }}
+            />
 
             {/* End date toggle */}
             {!showEndDate ? (
@@ -510,7 +534,7 @@ export function CreateAgendaItemDrawer({
                   <Label>Date fin</Label>
                   <DatePicker
                     value={endDate}
-                    onChange={(v) => setEndDate(v)}
+                    onChange={(v) => applyDates(withDateEntry(dateState, { endDate: v }))}
                     placeholder="jj/mm/aaaa"
                     min={startDate || undefined}
                   />
@@ -519,7 +543,7 @@ export function CreateAgendaItemDrawer({
                   <Label>Heure fin</Label>
                   <TimePicker
                     value={endTime}
-                    onChange={(v) => setEndTime(v)}
+                    onChange={(v) => applyDates(withDateEntry(dateState, { endTime: v }))}
                   />
                 </div>
               </div>

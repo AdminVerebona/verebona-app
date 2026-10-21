@@ -28,6 +28,7 @@ import { db } from '@/db';
 import { assetFiles, assets, equipments } from '@/db/schema';
 import type { DbClient } from './resolve-action.service';
 import type { ActionProposal } from './action-model';
+import { unnamedLabel, userSourceLabel } from './card-labels';
 import { upsertAction, type UpsertActionResult } from './to-process-action.service';
 
 export const LINK_ELT_RULE = 'LINK-ELT';
@@ -182,12 +183,16 @@ export async function proposeDocumentEquipmentLink(p: {
   if (retenus.length < 2) {
     return { status: 'SKIPPED', reason: 'Moins de deux équipements candidats valides : pas d’ambiguïté à arbitrer.', rejected };
   }
-  const proposals: ActionProposal[] = retenus.map((c) => ({
-    value: c.equipmentId,
-    label: noms.get(c.equipmentId) ?? `Équipement ${c.equipmentId}`,
-    confidence: Math.min(1, Math.max(0, c.score)),
-    sourceContext: { label: c.reason.slice(0, 200), targetType: 'EQUIPMENT', targetId: c.equipmentId },
-  }));
+  // Lot 77B : justification affichée seulement si elle est lisible (jamais de jargon).
+  const proposals: ActionProposal[] = retenus.map((c) => {
+    const source = userSourceLabel(c.reason);
+    return {
+      value: c.equipmentId,
+      label: noms.get(c.equipmentId) ?? unnamedLabel('EQUIPMENT'),
+      confidence: Math.min(1, Math.max(0, c.score)),
+      ...(source ? { sourceContext: { label: source.slice(0, 200), targetType: 'EQUIPMENT' as const, targetId: c.equipmentId } } : {}),
+    };
+  });
   const res = await upsertAction({
     accountId: p.accountId,
     targetType: 'DOCUMENT',

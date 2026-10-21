@@ -73,6 +73,12 @@ export interface AgendaItemFull {
   confirmationMode: string | null;
   /** Règle de récurrence ayant produit la prévision (libellé). */
   recurrenceRule: string | null;
+  /**
+   * Lot 77A : tâche « Sans échéance » déclarée par l'utilisateur (aucune date
+   * à réclamer). Toujours renseignée par `enrichItems` ; optionnelle pour les
+   * objets construits ailleurs (tests, projections).
+   */
+  noDeadline?: boolean;
   createdAt: Date;
   updatedAt: Date;
   assetLinks: { id: number; assetId: number; assetName: string }[];
@@ -314,6 +320,7 @@ async function enrichItems(rows: typeof agendaItems.$inferSelect[]): Promise<Age
       confirmedAt: item.confirmedAt ?? null,
       confirmationMode: item.confirmationMode ?? null,
       recurrenceRule: (item.recurrenceJson as { rule?: string } | null)?.rule ?? null,
+      noDeadline: item.noDeadline === true,
       createdAt: item.createdAt,
       updatedAt: item.updatedAt,
       assetLinks: itemAssets.map(a => ({ id: a.id, assetId: a.assetId, assetName: a.assetName ?? '' })),
