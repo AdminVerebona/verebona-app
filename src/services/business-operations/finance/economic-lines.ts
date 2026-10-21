@@ -23,28 +23,37 @@
  *      `asset_files.amount_cents` d'office (devis, annonce, notice exclus).
  *
  * Hiérarchie et anti-double comptage (§3.3, §3.4) — UN coût par fait :
- *   · document cité par une composante d'Opération active : la composante
- *     le représente (CONSOLIDATED_ELSEWHERE) — le total ne varie pas quand T3
- *     reprend une facture d'abord comptée directement ;
+ *   · document cité par une composante d'Opération active HORS prévision
+ *     (attribuable à ce bien) : la composante le représente
+ *     (CONSOLIDATED_ELSEWHERE) — le total ne varie pas quand T3 reprend une
+ *     facture d'abord comptée directement ;
  *   · document source d'une Opération SANS composante financière exploitable
  *     (aucune hors prévision) : la dépense documentaire est CONSERVÉE ;
- *   · source d'une Opération qui porte des montants sans le citer : T3 l'a
- *     rattaché au même fait → représenté, jamais additionné — SAUF l'achat du
- *     bien (une acquisition par cycle de possession, T3 M2) : un justificatif
- *     d'achat qui n'en porte pas le prix (non cité) et n'en est pas la preuve
- *     (aucune preuve T1 du prix d'achat) est une dépense DISTINCTE (accessoire)
- *     — `isDistinctFromAcquisition` ;
+ *   · lot 75D (B) — la représentation est vérifiée au niveau du FAIT, plus de
+ *     l'Opération entière (`operationCoverage`) : une source qu'aucune
+ *     composante ne cite n'est écartée que si une composante appropriée la
+ *     couvre (saisie / donnée structurée de même nature, sans justificatif ;
+ *     acompte ou solde compris dans la facture totale consolidée) ; sinon
+ *     elle est COMPTÉE DIRECTEMENT (180 € consolidés + 40 € non consolidés =
+ *     220 €). L'achat du bien (une acquisition par cycle de possession, T3 M2) :
+ *     un justificatif d'achat qui n'en porte pas le prix (non cité) et n'en
+ *     est pas la preuve est une dépense DISTINCTE — `isDistinctFromAcquisition` ;
  *   · Opération invalidée ou fusionnée : ignorée (le document est réévalué) ;
  *     annulée : le document est écarté avec ce motif ;
  *   · copies (même empreinte, ou « fusion possible ») : une seule fois ;
  *     même référence de facture + même montant : une seule fois ;
  *   · devis : prévision ; preuve de paiement : jamais un coût ; capital
  *     emprunté : jamais un coût ; échéance FUTURE : jamais anticipée ;
- *   · acompte / solde compris dans une facture totale (même document, ou
- *     même fournisseur / référence, ou somme exacte) : compris dans le total ;
+ *   · acompte / solde compris dans une facture totale : même document, ou
+ *     lien établi (référence d'événement commune, même Opération), ou preuves
+ *     concordantes (somme exacte des parts, même bien, fournisseur
+ *     compatible) — lot 75D (C) : le fournisseur commun SEUL ne suffit plus,
+ *     le rapprochement est alors SIGNALÉ incertain, sans exclusion ;
  *   · document de plusieurs biens sans ventilation : non attribué, jamais
- *     réparti (le moteur le signale) ; deux factures distinctes de même
- *     montant restent deux coûts.
+ *     réparti (le moteur le signale) ; lot 75D (E) : sur un document que T1 dit
+ *     multi-biens, une cible unique n'est une ventilation que si T1 a établi
+ *     des parts par bien (plusieurs candidats ciblés) ; deux factures
+ *     distinctes de même montant restent deux coûts.
  * ══════════════════════════════════════════════════════════════════════════
  */
 import type { FinancialComponentKind } from '../model';
@@ -92,10 +101,27 @@ export interface EconomicDocumentOperation {
   hasAssets: boolean;
   /** Une composante active hors prévision existe. */
   exploitable: boolean;
-  /** Une composante active cite ce document. */
+  /** Une composante active HORS prévision cite ce document (lot 75D : une prévision ne couvre jamais une facture). */
   citesDocument: boolean;
   /** Type de l'Opération (ACQUISITION : règle de l'achat du bien, lot 61). */
   typeCode?: string | null;
+  /**
+   * Lot 75D (B) — couverture au niveau du FAIT. Absents (entrée antérieure) :
+   * comportement du lot 61 (une Opération qui porte des montants représente
+   * ses sources).
+   *   · `citesForOtherAssetOnly` : les composantes qui citent ce document ne
+   *     concernent qu'un AUTRE bien (part d'un autre fait pour ce bien) ;
+   *   · `citesOtherDocuments` : une composante hors prévision cite un AUTRE
+   *     justificatif de l'Opération (T3 a consolidé d'autres faits, pas celui-ci) ;
+   *   · `freeComponents` : composantes hors prévision qu'AUCUN des
+   *     justificatifs qu'elles citent n'explique (aucun montant ni indice T1
+   *     de même nature et de même montant), ou sans justificatif (fiche,
+   *     saisie de sinistre, arbitrage, migration) — elles peuvent porter le
+   *     fait d'une source non citée.
+   */
+  citesForOtherAssetOnly?: boolean;
+  citesOtherDocuments?: boolean;
+  freeComponents?: ReadonlyArray<{ kind: string; amountMinor: number; currency: string; documented: boolean }>;
 }
 
 export interface EconomicDocumentInput {
@@ -176,7 +202,9 @@ export type DocumentLineReason =
   | 'COVERED_BY_OPERATION' | 'COUNTED_FOR_OTHER_ASSET' | 'UNCONFIRMED_ASSET' | 'PAYMENT_PROOF' | 'LOAN_PRINCIPAL'
   | 'FUTURE_INSTALLMENT' | 'QUOTE' | 'NOT_EXPENSE_DOCUMENT' | 'THEME_UNKNOWN' | 'AMOUNT_UNKNOWN'
   | 'SAME_AS_ASSET_PRICE' | 'ASSET_PRICE_CONSOLIDATED' | 'CANDIDATE_CANCELLED' | 'OPERATION_CANCELLED_SOURCE'
-  | 'SAME_AS_EQUIPMENT_DOCUMENT' | 'EQUIPMENT_PRICE_CONSOLIDATED';
+  | 'SAME_AS_EQUIPMENT_DOCUMENT' | 'EQUIPMENT_PRICE_CONSOLIDATED'
+  // Lot 75D : acompte / solde compris dans le total consolidé de la même Opération.
+  | 'INCLUDED_IN_OPERATION_TOTAL';
 
 export type EconomicLineReason = ExclusionReason | DocumentLineReason;
 
@@ -194,13 +222,14 @@ export const DOCUMENT_LINE_REASON_LABELS: Readonly<Record<DocumentLineReason, st
   QUOTE: 'Devis ou commande : prévision, non réalisée',
   NOT_EXPENSE_DOCUMENT: 'Document sans valeur de dépense (notice, photo, annonce, recette…)',
   THEME_UNKNOWN: 'Nature du document non établie : montant non compté',
-  AMOUNT_UNKNOWN: 'Facture sans montant lisible',
+  AMOUNT_UNKNOWN: 'Justificatif de dépense sans montant lisible : montant inconnu, non compté (jamais 0 €)',
   SAME_AS_ASSET_PRICE: 'Facture d’achat du bien : déjà comptée par le prix d’achat',
   ASSET_PRICE_CONSOLIDATED: 'Prix d’achat repris par l’achat consolidé',
   CANDIDATE_CANCELLED: 'Dépense annulée',
   OPERATION_CANCELLED_SOURCE: 'Rattaché à une dépense annulée',
   SAME_AS_EQUIPMENT_DOCUMENT: 'Prix d’achat de l’équipement : déjà compté par sa facture',
   EQUIPMENT_PRICE_CONSOLIDATED: 'Prix d’achat de l’équipement repris par une dépense consolidée',
+  INCLUDED_IN_OPERATION_TOTAL: 'Acompte ou solde compris dans la facture totale de la même dépense consolidée',
 };
 
 /** Ligne documentaire qualifiée, avant le moteur (`status` null : à évaluer par `evaluateComponent`). */
@@ -237,6 +266,17 @@ export interface DocumentLineDraft {
   note: string | null;
   supplierKey: string | null;
   invoiceRefs: string[];
+  /** Lot 75D (C) : références d'ÉVÉNEMENT (facture, devis, commande, ordre de travaux, contrat, sinistre) — `KIND:valeur`. */
+  eventRefs?: string[];
+  /** Lot 75D (C) : Opérations actives dont le document est une source (lien explicite entre documents). */
+  linkedOperationIds?: number[];
+  /**
+   * Lot 75D (A, C) : rapprochement INCERTAIN avec un autre fait (même
+   * montant sans preuve concordante, acompte du même fournisseur sans lien) :
+   * la ligne reste comptée, l'ambiguïté est signalée (jamais une exclusion
+   * arbitraire).
+   */
+  uncertain?: { relatedFileId: number | null; note: string } | null;
 }
 
 // ── Règles ─────────────────────────────────────────────────────────────────
@@ -296,6 +336,8 @@ export function qualifyDocumentLines(docs: readonly EconomicDocumentInput[], ctx
   for (const d of docs) {
     const supplierKey = normalizeSupplier(d.supplier) ?? normalizeSupplier(d.candidates.find((c) => c.provider)?.provider);
     const invoiceRefs = [...new Set(d.candidates.flatMap((c) => c.references.filter((r) => r.kind === 'INVOICE').map((r) => normalizeRef(r.value)).filter(Boolean)))];
+    const eventRefs = eventRefsOf(d.candidates);
+    const linkedOperationIds = [...new Set(d.operations.filter((o) => !o.cancelled).map((o) => o.operationId))];
     const base = (over: Partial<DocumentLineDraft>): DocumentLineDraft => {
       const m = documentAmount(d);
       return {
@@ -303,7 +345,8 @@ export function qualifyDocumentLines(docs: readonly EconomicDocumentInput[], ctx
         amountMinor: m.amountMinor, currency: m.currency, amountEurCents: null, date: d.date, periodStart: null, periodEnd: null,
         targetAssetId: null, targetEquipmentId: null, assetIds: attributionAssets(d), typeHint: d.candidates[0]?.typeHint ?? null,
         theme: themeOf(d), scope: null, provenance: d.userEditedAmount ? 'USER' : d.candidates.length ? 'T1' : 'DOCUMENT',
-        operationId: null, operationLabel: null, status: null, reason: null, relatedFileId: null, note: null, supplierKey, invoiceRefs, ...over,
+        operationId: null, operationLabel: null, status: null, reason: null, relatedFileId: null, note: null, supplierKey, invoiceRefs,
+        eventRefs, linkedOperationIds, uncertain: null, ...over,
       };
     };
 
@@ -317,21 +360,27 @@ export function qualifyDocumentLines(docs: readonly EconomicDocumentInput[], ctx
       out.push(base({ status: 'EXCLUDED', reason: 'OPERATION_CANCELLED_SOURCE', operationId: ops[0].operationId, operationLabel: ops[0].label }));
       continue;
     }
-    const representantes = vivantes.filter((o) => (o.exploitable || o.citesDocument) && !isDistinctFromAcquisition(o, d));
-    const achatDistinct = vivantes.find((o) => isDistinctFromAcquisition(o, d)) ?? null;
+    // Lot 75D (B) : couverture vérifiée au niveau du fait (`operationCoverage`), jamais de l'Opération entière.
+    const couverture = vivantes.map((o) => ({ o, c: operationCoverage(o, d) }));
+    const representantes = couverture.filter((x) => x.c === 'COVERED' || x.c === 'INCLUDED_IN_TOTAL');
     if (representantes.length) {
-      const o = representantes.find((x) => x.citesDocument && x.inScope) ?? representantes.find((x) => x.inScope)
-        ?? representantes.find((x) => !x.hasAssets) ?? representantes[0];
-      const [status, reason]: [EconomicLineStatus, DocumentLineReason] = o.inScope ? ['CONSOLIDATED_ELSEWHERE', 'COVERED_BY_OPERATION']
+      const r = representantes.find((x) => x.o.citesDocument && x.o.inScope) ?? representantes.find((x) => x.o.inScope)
+        ?? representantes.find((x) => !x.o.hasAssets) ?? representantes[0];
+      const o = r.o;
+      const [status, reason]: [EconomicLineStatus, DocumentLineReason] = o.inScope
+        ? (r.c === 'INCLUDED_IN_TOTAL' ? ['INCLUDED_IN_TOTAL', 'INCLUDED_IN_OPERATION_TOTAL'] : ['CONSOLIDATED_ELSEWHERE', 'COVERED_BY_OPERATION'])
         : !o.hasAssets ? ['UNCONFIRMED_ASSET', 'UNCONFIRMED_ASSET'] : ['OUT_OF_SCOPE', 'COUNTED_FOR_OTHER_ASSET'];
       out.push(base({ status, reason, operationId: o.operationId, operationLabel: o.label }));
       continue;
     }
-    // Rattaché seulement à des Opérations sans composante exploitable : la dépense documentaire est conservée.
-    const sansMontant = vivantes[0] ?? null;
+    // Rattaché seulement à des Opérations qui ne couvrent pas ce fait : la dépense documentaire est conservée.
+    const achatDistinct = couverture.find((x) => x.c === 'DISTINCT_FROM_ACQUISITION')?.o ?? null;
+    const nonCouvert = couverture.find((x) => x.c === 'NOT_COVERED')?.o ?? null;
+    const sansMontant = couverture.find((x) => x.c === 'NO_AMOUNT')?.o ?? null;
     const lien = achatDistinct
       ? { operationId: achatDistinct.operationId, operationLabel: achatDistinct.label, note: 'Rattaché à l’achat du bien sans en porter le prix : dépense distincte (accessoire ou complément).' }
-      : sansMontant ? { operationId: sansMontant.operationId, operationLabel: sansMontant.label, note: 'Rattaché à une dépense sans montant consolidé : le justificatif fait foi.' } : {};
+      : nonCouvert ? { operationId: nonCouvert.operationId, operationLabel: nonCouvert.label, note: 'Rattaché à une dépense consolidée qui n’en reprend pas le montant : le justificatif est compté directement.' }
+        : sansMontant ? { operationId: sansMontant.operationId, operationLabel: sansMontant.label, note: 'Rattaché à une dépense sans montant consolidé : le justificatif fait foi.' } : {};
 
     // 3. Classe du document (barrière : notice, photo, annonce, recette ne portent aucune dépense).
     const nonMetier = !!d.typeCode && NON_EXPENSE_DOCUMENT_TYPES.has(d.typeCode);
@@ -350,12 +399,15 @@ export function qualifyDocumentLines(docs: readonly EconomicDocumentInput[], ctx
     // 4. Lignes issues des indices T1 (qualification persistée, §3.2).
     const candidats = d.userEditedAmount ? [] : d.candidates.filter((c) => c.hints.length);
     if (candidats.length) {
+      // Lot 75D (E) : document que T1 dit multi-biens — une cible unique est une cible DOCUMENTAIRE ; elle
+      // ne vaut ventilation financière que si T1 a établi des parts par bien (plusieurs candidats ciblés).
+      const ventile = !d.multiAsset || isFinanciallySplit(candidats);
       for (const c of candidats) {
         const ciblesBien = [...new Set(c.targets.filter((t) => t.type === 'ASSET' && t.entityId != null).map((t) => t.entityId!))];
         const ciblesEquip = [...new Set(c.targets.filter((t) => t.type === 'EQUIPMENT' && t.entityId != null).map((t) => t.entityId!))];
         const cible = {
-          targetAssetId: ciblesBien.length === 1 && !ciblesEquip.length ? ciblesBien[0] : null,
-          targetEquipmentId: ciblesEquip.length === 1 && ciblesBien.length <= 1 ? ciblesEquip[0] : null,
+          targetAssetId: ventile && ciblesBien.length === 1 && !ciblesEquip.length ? ciblesBien[0] : null,
+          targetEquipmentId: ventile && ciblesEquip.length === 1 && ciblesBien.length <= 1 ? ciblesEquip[0] : null,
           assetIds: ciblesBien.length > 1 ? ciblesBien : attributionAssets(d),
         };
         // Total du même document : les montants partiels de même nature y sont compris.
@@ -388,11 +440,12 @@ export function qualifyDocumentLines(docs: readonly EconomicDocumentInput[], ctx
     }
 
     // 5. Repli : montant du document, si son type est une dépense qualifiée.
+    const facture = cls.kind === 'theme' || (cls.kind === 'unqualified' && INVOICE_LIKE.test(`${d.typeCode ?? ''} ${d.legacyType ?? ''}`));
     if (d.amountCents == null) {
-      if (cls.kind === 'theme') out.push(base({ ...lien, amountMinor: 0, status: 'NOT_QUALIFIED', reason: 'AMOUNT_UNKNOWN' }));
+      // Lot 75D (D) : justificatif financier reconnu sans montant — montant INCONNU (jamais 0 € certain), signalé.
+      if (facture) out.push(base({ ...lien, amountMinor: 0, status: 'NOT_QUALIFIED', reason: 'AMOUNT_UNKNOWN' }));
       continue;
     }
-    const facture = cls.kind === 'theme' || (cls.kind === 'unqualified' && INVOICE_LIKE.test(`${d.typeCode ?? ''} ${d.legacyType ?? ''}`));
     if (cls.kind === 'excluded') {
       // Devis sans indice T1 : prévision.
       out.push(base({ ...lien, kind: 'FORECAST_COST', role: 'FORECAST_COST', currency: d.userEditedAmount ? 'EUR' : String(d.currency || 'EUR').toUpperCase() }));
@@ -409,6 +462,87 @@ export function qualifyDocumentLines(docs: readonly EconomicDocumentInput[], ctx
 
   crossDocumentRules(out);
   return out;
+}
+
+/** Lot 75D (E) : T1 a établi des parts par bien — au moins deux candidats chiffrés, chacun ciblant un bien distinct. */
+export function isFinanciallySplit(candidats: readonly EconomicDocumentCandidate[]): boolean {
+  const cibles = candidats.filter((c) => c.hints.length).map((c) => {
+    const b = [...new Set(c.targets.filter((t) => t.type === 'ASSET' && t.entityId != null).map((t) => t.entityId!))];
+    return b.length === 1 ? b[0] : null;
+  });
+  return cibles.every((x) => x !== null) && new Set(cibles).size >= 2;
+}
+
+/** Références d'ÉVÉNEMENT d'un document (jamais un numéro client, commun à des prestations indépendantes). */
+const EVENT_REF_KINDS = new Set(['INVOICE', 'QUOTE', 'ORDER', 'WORK_ORDER', 'CONTRACT', 'CLAIM']);
+function eventRefsOf(candidates: readonly EconomicDocumentCandidate[]): string[] {
+  return [...new Set(candidates.flatMap((c) => c.references.filter((r) => EVENT_REF_KINDS.has(r.kind))
+    .map((r) => { const v = normalizeRef(r.value); return v.length >= 3 ? `${r.kind}:${v}` : ''; }).filter(Boolean)))];
+}
+
+type CoverageDocument = Pick<EconomicDocumentInput, 'acquisitionEvidence' | 'userEditedAmount' | 'candidates' | 'amountCents' | 'title'>
+  & Partial<Pick<EconomicDocumentInput, 'typeCode' | 'legacyType'>>;
+
+/**
+ * Faits de coût portés par un document (nature hors prévision et montant) :
+ * indices T1, sinon montant du document (corrigé, ou sans indice) si son
+ * type est une dépense ; un devis, une preuve de paiement, une notice n'en
+ * portent aucun.
+ */
+export function documentCostFacts(d: CoverageDocument): Array<{ kind: string; amountMinor: number | null }> {
+  if (!d.userEditedAmount && d.candidates.some((c) => c.hints.length)) {
+    return d.candidates.flatMap((c) => c.hints).filter((h) => KINDS.has(String(h.role)) && h.role !== 'FORECAST_COST')
+      .map((h) => ({ kind: String(h.role), amountMinor: h.amountMinor }));
+  }
+  if (d.typeCode !== undefined || d.legacyType !== undefined) {
+    const nonMetier = !!d.typeCode && NON_EXPENSE_DOCUMENT_TYPES.has(d.typeCode);
+    if (nonMetier || classifyExpenseDocument(d.typeCode ?? null, d.legacyType ?? null).kind === 'excluded') return [];
+  }
+  if (d.amountCents == null) return [];
+  return [{ kind: isCreditNoteTitle(d.title) ? 'REDUCTION' : 'REALIZED_COST', amountMinor: Math.abs(d.amountCents) }];
+}
+
+/** Le document ne porte que des PARTS (acompte, solde) d'un coût — jamais un total. */
+function isPartsOnly(d: Pick<EconomicDocumentInput, 'userEditedAmount' | 'candidates' | 'title'>): boolean {
+  const couts = d.userEditedAmount ? [] : d.candidates.flatMap((c) => c.hints).filter((h) => h.role === 'REALIZED_COST');
+  if (couts.length) return couts.every((h) => h.amountScope === 'DEPOSIT' || h.amountScope === 'BALANCE');
+  return ACOMPTE.test(d.title) || SOLDE.test(d.title);
+}
+
+/**
+ * Lot 75D (B) — couverture d'un document par UNE Opération active dont il est
+ * source (pure ; même règle pour le TCO et T2) :
+ *   · COVERED : une composante hors prévision le cite (pour ce bien), ou il
+ *     est la preuve du prix d'un achat, ou une composante SANS justificatif
+ *     (fiche, saisie de sinistre, arbitrage, migration) porte la même nature
+ *     (lien de consolidation + nature) ;
+ *   · INCLUDED_IN_TOTAL : acompte / solde d'une Opération dont la facture
+ *     totale est consolidée (T3 ne compte jamais les parts avec le total) ;
+ *   · DISTINCT_FROM_ACQUISITION : rattaché à l'achat du bien sans en être (lot 61) ;
+ *   · NO_AMOUNT : l'Opération n'a aucune composante exploitable ;
+ *   · NOT_COVERED : l'Opération consolide d'AUTRES faits — le justificatif
+ *     est compté directement (jamais perdu).
+ */
+export type OperationCoverage = 'COVERED' | 'INCLUDED_IN_TOTAL' | 'DISTINCT_FROM_ACQUISITION' | 'NO_AMOUNT' | 'NOT_COVERED';
+
+export function operationCoverage(o: EconomicDocumentOperation, d: CoverageDocument): OperationCoverage {
+  const pourCeBien = !(o.inScope && o.citesForOtherAssetOnly);
+  if (o.citesDocument && pourCeBien) return 'COVERED';
+  if (o.typeCode === 'ACQUISITION' && o.inScope && d.acquisitionEvidence && o.exploitable) return 'COVERED';
+  if (isDistinctFromAcquisition(o, d)) return 'DISTINCT_FROM_ACQUISITION';
+  if (!o.exploitable) return 'NO_AMOUNT';
+  // Entrée antérieure au lot 75D (couverture non lue) : règle du lot 61, l'Opération représente ses sources.
+  if (o.citesOtherDocuments === undefined && o.freeComponents === undefined && o.citesForOtherAssetOnly === undefined) return 'COVERED';
+  const faits = documentCostFacts(d);
+  // Aucun fait de coût propre (devis, preuve de paiement, notice) : pièce du dossier, représentée par l'Opération.
+  if (!faits.length) return 'COVERED';
+  const libres = o.freeComponents ?? [];
+  // Composante SANS justificatif de même nature (la saisie prime sur le document, T3) : lien de consolidation + nature.
+  if (libres.some((c) => !c.documented && faits.some((f) => f.kind === c.kind))) return 'COVERED';
+  // Composante qu'aucun justificatif cité n'explique, de même nature ET de même montant : preuves concordantes.
+  if (libres.some((c) => c.documented && faits.some((f) => f.kind === c.kind && f.amountMinor === c.amountMinor))) return 'COVERED';
+  if (o.citesOtherDocuments && faits.some((f) => f.kind === 'REALIZED_COST') && isPartsOnly(d)) return 'INCLUDED_IN_TOTAL';
+  return 'NOT_COVERED';
 }
 
 /**
@@ -434,8 +568,17 @@ function themeOf(d: EconomicDocumentInput): ExpenseTheme | null {
 
 /**
  * Règles entre documents (pure) : même facture (référence + montant) et
- * acomptes / soldes compris dans une facture totale — preuve requise
- * (fournisseur, référence ou somme exacte), jamais une fusion au seul montant.
+ * acomptes / soldes compris dans une facture totale.
+ *
+ * Lot 75D (C) — un acompte ou un solde n'est compris dans une facture totale
+ * que sur preuve du MÊME événement :
+ *   · lien établi : référence d'événement commune (facture, devis, commande,
+ *     ordre de travaux, contrat, sinistre) ou même Opération active ;
+ *   · preuves concordantes : plusieurs parts dont la somme est EXACTEMENT le
+ *     total, même bien, fournisseurs compatibles ;
+ * le fournisseur commun SEUL ne suffit jamais (deux prestations
+ * indépendantes chez le même fournisseur restent deux dépenses) : la part
+ * reste comptée et le rapprochement est signalé INCERTAIN.
  */
 function crossDocumentRules(lines: DocumentLineDraft[]): void {
   const vivantes = () => lines.filter((l) => l.status === null && (l.kind === 'REALIZED_COST' || l.kind === 'REDUCTION'));
@@ -456,17 +599,26 @@ function crossDocumentRules(lines: DocumentLineDraft[]): void {
   const couts = vivantes().filter((l) => l.kind === 'REALIZED_COST');
   const parts = couts.filter((l) => l.scope === 'DEPOSIT' || l.scope === 'BALANCE');
   const totaux = couts.filter((l) => l.scope !== 'DEPOSIT' && l.scope !== 'BALANCE' && l.scope !== 'INSTALLMENT' && l.scope !== 'FEE');
-  const meme = (a: DocumentLineDraft, b: DocumentLineDraft) =>
-    a.invoiceRefs.some((r) => b.invoiceRefs.includes(r)) || (!!a.supplierKey && a.supplierKey === b.supplierKey);
+  const lien = (a: DocumentLineDraft, b: DocumentLineDraft) =>
+    (a.eventRefs ?? []).some((r) => (b.eventRefs ?? []).includes(r))
+    || (a.linkedOperationIds ?? []).some((o) => (b.linkedOperationIds ?? []).includes(o));
+  const fournisseursCompatibles = (a: DocumentLineDraft, b: DocumentLineDraft) => !a.supplierKey || !b.supplierKey || a.supplierKey === b.supplierKey;
   const pris = new Set<DocumentLineDraft>();
+  const somme = (g: DocumentLineDraft[]) => g.reduce((n, p) => n + p.amountMinor, 0);
   for (const t of [...totaux].sort((a, b) => b.amountMinor - a.amountMinor)) {
-    const lies = parts.filter((p) => !pris.has(p) && p.fileId !== t.fileId && p.currency === t.currency && meme(p, t));
-    const restants = parts.filter((p) => !pris.has(p) && p.fileId !== t.fileId && p.currency === t.currency && !lies.includes(p)
-      && p.assetIds.some((a) => t.assetIds.includes(a)));
+    const libres = parts.filter((p) => !pris.has(p) && p.fileId !== t.fileId && p.currency === t.currency);
+    const lies = libres.filter((p) => lien(p, t));
+    const concordantes = libres.filter((p) => !lies.includes(p) && fournisseursCompatibles(p, t) && p.assetIds.some((a) => t.assetIds.includes(a)));
     let groupe: DocumentLineDraft[] = [];
-    const somme = (g: DocumentLineDraft[]) => g.reduce((n, p) => n + p.amountMinor, 0);
     if (lies.length && somme(lies) <= t.amountMinor) groupe = lies;
-    else if (restants.length > 1 && somme(restants) === t.amountMinor) groupe = restants;
-    for (const p of groupe) { p.status = 'INCLUDED_IN_TOTAL'; p.reason = 'INCLUDED_IN_TOTAL_INVOICE'; p.relatedFileId = t.fileId; pris.add(p); }
+    else if (concordantes.length > 1 && somme(concordantes) === t.amountMinor) groupe = concordantes;
+    for (const p of groupe) { p.status = 'INCLUDED_IN_TOTAL'; p.reason = 'INCLUDED_IN_TOTAL_INVOICE'; p.relatedFileId = t.fileId; p.uncertain = null; pris.add(p); }
+    // Même fournisseur (connu) sans lien ni somme exacte : rapprochement INCERTAIN, signalé, jamais exclu.
+    if (!groupe.length) {
+      for (const p of libres) {
+        if (p.uncertain || !p.supplierKey || p.supplierKey !== t.supplierKey || p.amountMinor > t.amountMinor) continue;
+        p.uncertain = { relatedFileId: t.fileId, note: 'Acompte ou solde du même fournisseur qu’une facture totale, sans référence commune : vérifiez qu’il n’y est pas déjà compris.' };
+      }
+    }
   }
 }

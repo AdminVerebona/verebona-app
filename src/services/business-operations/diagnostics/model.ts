@@ -51,6 +51,10 @@ export interface OperationListFilters {
   to: string | null;
   page: number;
   pageSize: number;
+  /** Lot 75N : recherche (identifiant exact, libellé technique, prestataire) — facultative. */
+  q?: string | null;
+  /** Lot 75N : sens du tri par date de création (défaut : plus récentes d'abord). */
+  dir?: 'asc' | 'desc';
 }
 
 export interface HoldListFilters {

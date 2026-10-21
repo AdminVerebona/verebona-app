@@ -3,6 +3,13 @@
  * Marque un bloc CIL comme not_applicable ou unknown_confirmed
  * DELETE /api/assets/[id]/exports/cil/resolutions
  * Supprime la résolution d'un bloc (remet en statut calculé)
+ *
+ * Lot 75A : B6 ne peut pas être déclaré « Non applicable » quand des
+ * équipements à incidence énergétique sont identifiés (règle partagée
+ * `classifyCilEnergyEquipment`, même lecture que l'évaluation) : 409
+ * `CIL_B6_ENERGY_EQUIPMENT_PRESENT`, rien n'est écrit. Une déclaration
+ * antérieure devenue contradictoire n'est jamais supprimée ici : elle est
+ * neutralisée dans l'état effectif (`evaluateCilB6`).
  */
 
 import { NextRequest, NextResponse } from 'next/server';
@@ -11,6 +18,9 @@ import { db } from '@/db';
 import { cilBlockResolutions } from '@/db/schema';
 import { findAccessibleAssetForExport } from '@/services/exports/export-access';
 import { eq, and } from 'drizzle-orm';
+import {
+  CIL_B6_NOT_APPLICABLE_REFUSED_CODE, cilB6EnergyEquipmentIds, cilB6NotApplicableRefusedMessage,
+} from '@/services/exports/cil-preparation.service';
 
 export async function PATCH(
   request: NextRequest,
@@ -35,6 +45,18 @@ export async function PATCH(
 
     if (!blockId || !resolution) {
       return NextResponse.json({ error: 'MISSING_FIELDS' }, { status: 400 });
+    }
+
+    if (blockId === 'B6' && resolution === 'not_applicable') {
+      const ids = await cilB6EnergyEquipmentIds(assetId);
+      if (ids.length > 0) {
+        return NextResponse.json({
+          error: CIL_B6_NOT_APPLICABLE_REFUSED_CODE,
+          code: CIL_B6_NOT_APPLICABLE_REFUSED_CODE,
+          message: cilB6NotApplicableRefusedMessage(ids.length),
+          details: { energyEquipmentIds: ids },
+        }, { status: 409 });
+      }
     }
 
     // Upsert

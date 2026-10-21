@@ -62,6 +62,8 @@ export const JOB_TARGET_KINDS: Readonly<Record<string, OwnedKind>> = {
   asset_file: 'file',
   document: 'file',
   equipment: 'equipment',
+  // Lot 75G : rapprochement des documents d'un équipement (cible = l'équipement).
+  equipment_documents: 'equipment',
   // Pièce = sous-structure depuis D-G (lot 20, 0229).
   room: 'substructure',
   agenda_item: 'agenda_item',

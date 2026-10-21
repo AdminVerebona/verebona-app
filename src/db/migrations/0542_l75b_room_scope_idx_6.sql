@@ -1,0 +1,16 @@
+-- Migration 0542 (index 6/7) — lot 75B, pièces bidirectionnelles.
+-- Résolution centrale pièce → équipements → documents / échéances
+-- (`services/rooms/room-scope.service.ts`) : échéances liées à un équipement.
+-- Les lectures du tiroir Pièce et des filtres Pièce / Équipement de « Mes
+-- documents » et « Mon agenda » partent d'un identifiant de pièce ou
+-- d'équipement : sans index, chaque lecture balaierait la table entière.
+-- UNE instruction par fichier : `CREATE INDEX CONCURRENTLY` ne peut pas
+-- s'exécuter dans une transaction ; aucun verrou bloquant les écritures
+-- pendant la construction. Idempotente ; un index laissé INVALIDE est
+-- reconstruit au démarrage (`migration-index.ts`).
+--
+-- INDEX OPTIONNEL : performance seulement, aucune requête n'en dépend pour
+-- être correcte ; construction différée au déploiement sans erreur.
+-- Retour arrière : index ignoré par l'ancien code.
+-- verebona:optional-index
+CREATE INDEX CONCURRENTLY IF NOT EXISTS agenda_equipment_links_equipment_idx ON agenda_equipment_links (equipment_id, agenda_item_id);

@@ -12,6 +12,7 @@
  * module est le filtre, et il est testé sans base.
  * ══════════════════════════════════════════════════════════════════════════
  */
+import { downloadFilename, makeUniqueNamer } from '@/lib/download-filename';
 
 /**
  * Tables jamais exportées.
@@ -87,6 +88,9 @@ export interface DocumentCandidate {
   id: number;
   originalFilename: string | null;
   filename: string | null;
+  /** Nom affiché dans Verebona (lot 75L) : nom du fichier dans l'archive. */
+  retainedTitle?: string | null;
+  publicId?: string | null;
   mimeType: string | null;
   size: number | null;
   s3Key: string | null;
@@ -99,20 +103,20 @@ export interface DocumentPlan {
   includedBytes: number;
 }
 
-function safeName(name: string): string {
-  const cleaned = name.normalize('NFC').replace(/[\\/:*?"<>|\u0000-\u001f]/g, '_').trim();
-  return (cleaned || 'document').slice(0, 120);
-}
 
 /**
  * Sélection des fichiers joints à l'archive : dans l'ordre, jusqu'au plafond
  * de taille totale ; au-delà, listés comme non inclus (ils restent
- * téléchargeables dans l'application). Noms uniques, préfixés par l'id.
+ * téléchargeables dans l'application). Noms uniques (nom affiché, « (2) »).
  */
 export function planDocumentFiles(docs: DocumentCandidate[], maxTotalBytes: number): DocumentPlan {
   const plan: DocumentPlan = { include: [], skipped: [], includedBytes: 0 };
+  // Lot 75L : nom affiché dans Verebona + extension réelle (règle commune du
+  // téléchargement), doublons « (2) ». La correspondance identifiant → fichier
+  // figure dans `manifest.json` (documents.files).
+  const uniqueName = makeUniqueNamer();
   for (const d of [...docs].sort((a, b) => a.id - b.id)) {
-    const name = safeName(d.originalFilename || d.filename || `document-${d.id}`);
+    const name = downloadFilename(d);
     if (!d.s3Key) {
       plan.skipped.push({ id: d.id, name, reason: 'NO_STORED_FILE' });
       continue;
@@ -123,7 +127,7 @@ export function planDocumentFiles(docs: DocumentCandidate[], maxTotalBytes: numb
       continue;
     }
     plan.includedBytes += size;
-    plan.include.push({ ...d, path: `documents/${d.id}_${name}` });
+    plan.include.push({ ...d, path: uniqueName(name, 'documents') });
   }
   return plan;
 }
@@ -135,7 +139,7 @@ export interface ExportManifest {
   subject: { userId: number; accountIds: number[] };
   tables: Array<{ table: string; rows: number; truncated: boolean; omittedColumns: string[] }>;
   excludedTables: string[];
-  documents: { included: number; includedBytes: number; skipped: DocumentPlan['skipped'] };
+  documents: { included: number; includedBytes: number; skipped: DocumentPlan['skipped']; files: Array<{ id: number; path: string }> };
 }
 
 export interface ExportContent {
@@ -203,6 +207,7 @@ export function buildGdprExportContent(input: {
       included: input.documents.include.length,
       includedBytes: input.documents.includedBytes,
       skipped: input.documents.skipped,
+      files: input.documents.include.map((d) => ({ id: d.id, path: d.path })),
     },
   };
   textFiles['manifest.json'] = JSON.stringify(manifest, null, 2);
@@ -219,6 +224,8 @@ function readme(m: ExportManifest): string {
     'Cette archive contient les données de votre compte utilisateur et du compte',
     'Verebona auquel vous êtes rattaché, au format JSON (dossier « donnees »),',
     'ainsi que les documents que vous avez déposés (dossier « documents »).',
+    'Les documents portent le nom affiché dans Verebona ; manifest.json',
+    '(rubrique documents.files) indique l’identifiant de chacun.',
     '',
     'Chaque fichier JSON correspond à une catégorie de données (biens, documents,',
     'échéances, notifications…). Le fichier manifest.json en dresse l’inventaire.',

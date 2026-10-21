@@ -60,8 +60,31 @@ export function hasCanonicalFactData(f: DocumentFactRecord): boolean {
 
 /** Enregistre la représentation courante d'un document. Rend l'id d'extraction. */
 export async function persistDocumentKnowledge(k: DocumentKnowledge): Promise<number> {
+  return (await persistDocumentKnowledgeDetailed(k)).extractionId;
+}
+
+/**
+ * Lot 75C (ticket T1 résiduels, E) — résultat de la couche source (unités,
+ * provenance, couverture), écrite sous point de sauvegarde dans la même
+ * transaction que les faits :
+ *   · WRITTEN        : écrite ;
+ *   · NOT_APPLICABLE : aucune couche à écrire (analyse sans matière) ;
+ *   · FAILED         : couche attendue NON écrite (point de sauvegarde en
+ *                      échec, ou tables 0295-0297 absentes) — les faits
+ *                      restent écrits ; l'appelant ne déclare JAMAIS la
+ *                      persistance réussie et programme la reprise, qui la
+ *                      reconstruit (même transaction, remplacement idempotent).
+ */
+export interface PersistedKnowledge {
+  extractionId: number;
+  sourceLayer: 'WRITTEN' | 'NOT_APPLICABLE' | 'FAILED';
+  sourceLayerError: string | null;
+}
+
+export async function persistDocumentKnowledgeDetailed(k: DocumentKnowledge): Promise<PersistedKnowledge> {
   const e = k.extraction;
   let extractionId = 0;
+  let coucheErreur: string | null = null;
   // Contrôle HORS transaction (lecture du catalogue) : colonnes 0218 présentes ?
   const canonical = k.facts.some(hasCanonicalFactData) || e.multiAsset != null
     ? await documentFactsCanonicalReady() : false;
@@ -211,10 +234,12 @@ export async function persistDocumentKnowledge(k: DocumentKnowledge): Promise<nu
         .savepoint((sp) => writeSourceLayer(sp as never, { accountId: e.accountId, fileId: e.fileId, extractionId, layer, origin: 'ANALYSIS' }))
         .catch((err: Error) => {
           coucheEcrite = false;
+          coucheErreur = err.message;
           console.error(`[t1-source-units] couche A du fichier ${e.fileId} non écrite :`, err.message);
         });
     }
   });
+  if (k.sourceLayer && !couche) coucheErreur = 'tables de la couche source absentes (migrations 0295-0297)';
 
   if (k.sourceLayer) {
     // Surveillance (journal T1, anomalies BO) : jamais bloquante.
@@ -224,7 +249,11 @@ export async function persistDocumentKnowledge(k: DocumentKnowledge): Promise<nu
     }).catch((err: Error) => console.error('[t1-completeness] surveillance impossible :', err.message));
   }
 
-  return extractionId;
+  return {
+    extractionId,
+    sourceLayer: !k.sourceLayer ? 'NOT_APPLICABLE' : coucheEcrite && couche ? 'WRITTEN' : 'FAILED',
+    sourceLayerError: k.sourceLayer && !(coucheEcrite && couche) ? (coucheErreur ?? 'couche source non écrite') : null,
+  };
 }
 
 /** Transaction (ou client) SQL minimal. */

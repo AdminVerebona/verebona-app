@@ -123,8 +123,11 @@ export function CilBlocksPanel({ cil, assetId, api, disabled, onChanged }: {
     try {
       await api.setCilResolution(blockId, resolution);
       await onChanged();
-    } catch {
-      toast.error('Le bloc n’a pas pu être mis à jour.');
+    } catch (err) {
+      // Lot 75A : refus motivé (B6 avec équipement énergétique) : message du serveur, état relu.
+      const refus = (err as { code?: string })?.code === 'CIL_B6_ENERGY_EQUIPMENT_PRESENT';
+      toast.error(refus ? (err as Error).message : 'Le bloc n’a pas pu être mis à jour.');
+      if (refus) await onChanged();
     } finally {
       setBusy(null);
     }
@@ -178,6 +181,17 @@ export function CilBlocksPanel({ cil, assetId, api, disabled, onChanged }: {
                 <Pill tone={st.tone}>{st.label}</Pill>
                 {expandable && <ChevronDown className={cn('size-4 shrink-0 text-muted-foreground transition-transform', isOpen && 'rotate-180')} aria-hidden />}
               </button>
+              {/* Lot 75A : ancienne déclaration « non applicable » neutralisée par les données réelles (conservée). */}
+              {b.notice && (
+                <div className="space-y-1.5 px-3.5 pb-3 pl-[3.25rem]" data-testid={`cil-block-notice-${b.id}`}>
+                  <p className="text-xs text-muted-foreground">{b.notice}</p>
+                  {b.neutralizedResolution === 'not_applicable' && (
+                    <button type="button" disabled={disabled || busy === b.id} onClick={() => resolve(b.id, null)} className="text-xs text-muted-foreground underline-offset-2 hover:text-foreground hover:underline disabled:opacity-50">
+                      {busy === b.id ? 'Mise à jour…' : 'Retirer l’ancienne déclaration « non applicable »'}
+                    </button>
+                  )}
+                </div>
+              )}
               {isOpen && (
                 <div id={panelId} className="space-y-2 bg-[var(--accent-soft)]/50 px-3.5 pb-3.5 pt-1 pl-[3.25rem]">
                   {b.missingItems.map((m) => {

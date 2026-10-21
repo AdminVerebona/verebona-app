@@ -140,8 +140,14 @@ export interface DocumentRuleEvaluation {
   derivation?: Record<string, unknown> | null;
   writeResult?: Record<string, unknown> | null;
   actionIds?: Record<string, number[]> | null;
-  /** Passages d'une évaluation dédupliquée (déclencheur, référence, date), ≤ 20. */
+  /** Passages d'une évaluation dédupliquée (déclencheur, référence, date), aperçu ≤ 20. */
   passages?: Array<{ at: string; trigger: string; runRef: string | null }> | null;
+  /**
+   * Lot 75I (E) : passages DURABLES (`to_process_evaluation_passages`, sans
+   * limite de nombre) — total, et les 100 plus récents quand le filtre vise
+   * un document.
+   */
+  durablePassages?: { total: number; passages: Array<{ at: string; trigger: string; runRef: string | null; kind: string }> } | null;
   errorKind?: string | null;
   /** Lot 72 (C7) : nature de la décision (carte créée / conservée / fermée / non créée et pourquoi). */
   decisionKind?: string | null;
@@ -298,6 +304,31 @@ async function loadCards(f: ReturnType<typeof cleanFilters>, enrichi: boolean): 
   });
 }
 
+/** Lot 75I (E) : passages durables des évaluations listées (total ; détail si un document est visé). Table absente : aucun. */
+async function loadDurablePassages(ids: number[], detail: boolean): Promise<Map<number, NonNullable<DocumentRuleEvaluation['durablePassages']>>> {
+  const out = new Map<number, NonNullable<DocumentRuleEvaluation['durablePassages']>>();
+  if (ids.length === 0) return out;
+  try {
+    const { durablePassagesReady } = await import('@/services/to-process/admissibility');
+    if (!(await durablePassagesReady())) return out;
+    const rows = (await pgClient.unsafe(
+      `SELECT rule_evaluation_id AS id, total, seen_at, trigger_code, run_ref, kind FROM (
+         SELECT p.*, count(*) OVER (PARTITION BY rule_evaluation_id) AS total,
+                row_number() OVER (PARTITION BY rule_evaluation_id ORDER BY id DESC) AS rang
+           FROM to_process_evaluation_passages p WHERE rule_evaluation_id = ANY($1::bigint[])) z
+        WHERE rang <= $2 ORDER BY rule_evaluation_id, rang`,
+      [ids, detail ? 100 : 1] as never[],
+    )) as unknown as Array<{ id: number; total: number; seen_at: string; trigger_code: string; run_ref: string | null; kind: string }>;
+    for (const r of rows) {
+      const k = Number(r.id);
+      const v = out.get(k) ?? { total: Number(r.total), passages: [] };
+      if (detail) v.passages.push({ at: new Date(r.seen_at).toISOString(), trigger: r.trigger_code, runRef: r.run_ref, kind: r.kind });
+      out.set(k, v);
+    }
+  } catch { /* diagnostic seulement : l'aperçu `passages` reste affiché */ }
+  return out;
+}
+
 async function loadDocumentRules(f: ReturnType<typeof cleanFilters>): Promise<DocumentRuleEvaluation[]> {
   const rows = (await pgClient.unsafe(
     `SELECT to_jsonb(e) AS e FROM document_rule_evaluations e
@@ -309,9 +340,11 @@ async function loadDocumentRules(f: ReturnType<typeof cleanFilters>): Promise<Do
       ORDER BY e.id DESC LIMIT $5`,
     [f.accountId, f.documentId, f.ruleCode, f.result, f.limit] as never[],
   ).catch(() => [])) as unknown as Array<{ e: Record<string, unknown> }>;
+  const durables = await loadDurablePassages(rows.map(({ e }) => Number((obj<Record<string, unknown>>(e) ?? {}).id)).filter(Number.isFinite), !!f.documentId);
   return rows.map(({ e: brut }) => {
     const e = obj<Record<string, unknown>>(brut) ?? {};
     return {
+      durablePassages: durables.get(Number(e.id)) ?? null,
       id: Number(e.id), createdAt: iso(e.created_at) ?? '', lastSeenAt: iso(e.last_seen_at) ?? '', seenCount: Number(e.seen_count ?? 1),
       accountId: Number(e.account_id), fileId: Number(e.file_id), ruleCode: String(e.rule_code), fieldKey: (e.field_key as string) ?? null,
       trigger: String(e.trigger_code), runRef: (e.run_ref as string) ?? null, engineVersion: String(e.engine_version),

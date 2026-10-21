@@ -23,6 +23,7 @@
  */
 
 import { equipmentFilterParam, parseEquipmentFilter, type EquipmentFacet } from '@/lib/filters/equipment-filter';
+import { roomFilterParam, type RoomFacet } from '@/lib/filters/room-filter';
 
 /** Taille d'un lot (valeur indicative du ticket, ajustable après mesure). */
 export const FEED_DEFAULT_LIMIT = 50;
@@ -53,6 +54,13 @@ export interface FeedFilters {
    * Voir `lib/filters/equipment-filter.ts`.
    */
   equipment?: string;
+  /**
+   * Lot 75 (75B) — filtre « Pièce » : identifiant de pièce ; absent = toutes.
+   * Documents DIRECTS de la pièce + documents de ses équipements, une fois
+   * chacun. Sans effet sans bien retenu ou si ces biens n'ont aucune pièce.
+   * Voir `lib/filters/room-filter.ts`.
+   */
+  piece?: string;
 }
 
 export interface FeedParams {
@@ -126,6 +134,12 @@ export interface FeedMeta {
    * équipement : le filtre est alors masqué.
    */
   equipmentFacet?: EquipmentFacet;
+  /**
+   * Lot 75 (75B) : pièces des biens retenus et leurs compteurs (documents
+   * directs + indirects, dédupliqués ; Rubrique et Type ignorés). Absent sans
+   * bien retenu ou sans pièce : le filtre est alors masqué.
+   */
+  roomFacet?: RoomFacet;
 }
 
 export interface FeedResponse {
@@ -175,6 +189,7 @@ export function parseFeedParams(p: URLSearchParams): FeedParams {
       // `types` : ancien nom du filtre Type, conservé.
       types: list(p.get('types')),
       ...(equipmentFilterParam(p.get('equipment')) ? { equipment: parseEquipmentFilter(p.get('equipment')) } : {}),
+      ...(roomFilterParam(p.get('piece')) ? { piece: roomFilterParam(p.get('piece'))! } : {}),
     },
     ids: idsRaw === null ? null : idsRaw === 'none' ? [] : positiveIds(list(idsRaw)),
     limit,
@@ -198,6 +213,8 @@ export function buildFeedQuery(params: Omit<FeedParams, 'cursor' | 'limit'> & { 
   if (params.filters.types.length) q.set('types', join(params.filters.types));
   const equipment = equipmentFilterParam(params.filters.equipment);
   if (equipment) q.set('equipment', equipment);
+  const piece = roomFilterParam(params.filters.piece);
+  if (piece) q.set('piece', piece);
   if (params.ids) q.set('ids', params.ids.length ? [...params.ids].sort((a, b) => a - b).join(',') : 'none');
   q.set('limit', String(params.limit ?? FEED_DEFAULT_LIMIT));
   if (params.cursor) q.set('cursor', params.cursor);

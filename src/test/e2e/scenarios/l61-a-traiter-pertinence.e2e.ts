@@ -51,7 +51,8 @@ function t4Simule(input: { prompt: string }): unknown {
   const preuve = ctx.evidence ?? '';
   // Démarche ENCORE attendue (jamais une simple mention : « sans reconduction » n'en est pas une).
   const phrase = preuve.split(/(?<=\.)\s+/).find((p) => /restituer|reconduit tacitement|sauf résiliation/i.test(p)) ?? null;
-  const intervention = phrase && demande.situation === 'PAST_DEADLINE'
+  // Lot 75I : une échéance CONNUE (passée ou à venir) est jugée sur les mêmes clauses.
+  const intervention = phrase && (demande.situation === 'PAST_DEADLINE' || !!(demande as { knownDate?: string }).knownDate)
     ? { needed: 'yes', kind: /restituer/i.test(phrase) ? 'RETURN_OR_RESTITUTE' : 'RENEW_OR_DECIDE', action: /restituer/i.test(phrase) ? 'Restituer le matériel loué' : 'Décider de la reconduction du contrat',
       justification: 'démarche prévue par le document (simulé)', consequence: 'facturation (simulé)', evidence: phrase.slice(0, 200), timing: 'NOW', actBy: null, dataNeeded: false }
     : demande.situation === 'UNDATED'

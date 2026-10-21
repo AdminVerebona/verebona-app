@@ -268,9 +268,12 @@ export const SCHEDULED_TASKS: readonly ScheduledTaskDef[] = [
       // Trace détaillée de chaque passage : `to_process_scan_runs` (BO).
       const r = await runToProcessFullScan({ trigger, deadline });
       if (r === null) return { note: 'ignoré : balayage déjà en cours (route)', skipped: true };
-      const note = JSON.stringify(r);
-      // Tous les comptes en échec : la tâche est en échec (Supervision).
-      if (r.errors > 0 && r.accounts > 0 && r.errors >= r.accounts) return { error: `${r.errors} compte(s) en échec`, note };
+      // Lot 75I (B) : note bornée (le détail des erreurs est dans `to_process_scan_runs`, BO).
+      const { errorDetails, ...bilan } = r;
+      const note = JSON.stringify({ ...bilan, errorDetails: errorDetails.length }).slice(0, 1500);
+      // Aucun résultat exploitable (tous les comptes en échec) : la tâche est en échec (Supervision).
+      // Succès partiel : statut « partial » tracé et visible au BO (Exploitation › Tâches planifiées).
+      if (r.status === 'error') return { error: `${r.failedAccounts} compte(s) en échec sur ${r.accounts}`, note };
       return { note };
     },
   },

@@ -89,6 +89,14 @@ export interface QualifiedExpenses {
    * total consolidé complet). Absent : forme antérieure (lecture complète).
    */
   readStatus?: 'COMPLETE' | 'PARTIAL' | 'DEGRADED';
+  /**
+   * Lot 75J (point laissé par 75D) : couverture INCERTAINE, même règle que le
+   * TCO (`expenseCoverageSignals`) — dépenses comptées dont le rapprochement
+   * est incertain (acompte / solde possiblement déjà compris), justificatifs
+   * financiers au montant inconnu. Non vide : total non exhaustif, dit.
+   * Absent : signaux non lus (lecture en échec, forme antérieure).
+   */
+  coverage?: { uncertain: { count: number; fileIds: number[] }; amountUnknown: { count: number; fileIds: number[]; labels: string[] } };
 }
 
 /** Repli documentaire (C15.1 §30) : ce qui en a été compté ou écarté. */
@@ -169,8 +177,7 @@ export async function sumQualifiedExpenses(accountId: number, opts: {
   let scopeOps = new Set<number>();
   let represented = new Map<number, number[]>();
   let sansComposante = new Set<number>();
-  let achats = new Map<number, number>();
-  let achatsDistincts = new Set<number>();
+  let nonCouvrants = new Map<number, Set<number>>();
   try {
     const lu = await loadScopeOperationsRead(accountId, ids ?? []);
     const ops = lu.operations;
@@ -183,17 +190,16 @@ export async function sumQualifiedExpenses(accountId: number, opts: {
     opEntries = lus.entries;
     scopeOps = new Set(ops.map((o) => o.id));
     represented = rep;
-    // Lot 61 (cohérence T2 / TCO) : justificatifs rattachés à l'ACHAT du bien sans en porter le prix
-    // (accessoire rattaché par T3 à l'acquisition unique du cycle) — dépenses distinctes, comme au TCO.
-    achats = new Map(operationCostLines(ops.filter((o) => o.typeCode === 'ACQUISITION' && o.status !== 'CANCELLED'), { assetIds: ids ?? [], year: null })
-      .map((l) => [l.operationId, l.costCents]));
-    const surAchat = docs.filter((d) => (rep.get(d.id) ?? []).some((o) => achats.has(o))).map((d) => d.id);
-    if (surAchat.length) achatsDistincts = await (await import('@/services/business-operations/tco/service')).documentsDistinctFromAcquisition(accountId, surAchat);
+    // Lot 61 / 75D (cohérence T2 / TCO, une seule règle) : justificatif source d'une Opération qui ne reprend PAS son
+    // fait (accessoire rattaché à l'achat du bien, facture non consolidée d'une Opération partiellement consolidée)
+    // — il fait foi, comme au TCO (`operationCoverage`) ; jamais une comparaison de montants.
+    const sources = docs.filter((d) => (rep.get(d.id) ?? []).some((o) => scopeOps.has(o))).map((d) => d.id);
+    if (sources.length) nonCouvrants = await (await import('@/services/business-operations/tco/service')).documentsNotCoveredByOperations(accountId, sources);
   } catch (e) {
     degradee = true;
     console.warn('[verebona] dépenses : lecture des coûts consolidés impossible, repli documentaire seul :', (e as Error).message);
   }
-  return finishQualifiedExpenses(accountId, { ids, theme, year: opts.year ?? null, docs, part, opEntries, scopeOps, represented, sansComposante, achats, achatsDistincts, lectureComplete, degradee });
+  return finishQualifiedExpenses(accountId, { ids, theme, year: opts.year ?? null, docs, part, opEntries, scopeOps, represented, sansComposante, nonCouvrants, lectureComplete, degradee });
 }
 
 const EXPENSE_DOCS_PAGE = 2000;
@@ -247,8 +253,8 @@ async function finishQualifiedExpenses(accountId: number, x: {
   ids: number[] | null; theme: ExpenseTheme | null; year: number | null; docs: DocLine[];
   part: OperationExpensePart; opEntries: ReturnType<typeof summarizeOperationCosts>['entries'];
   scopeOps: Set<number>; represented: Map<number, number[]>; sansComposante?: Set<number>;
-  /** Lot 61 : achats du périmètre (coût consolidé) et justificatifs distincts de l'achat. */
-  achats?: Map<number, number>; achatsDistincts?: Set<number>;
+  /** Lot 75D : par document, Opérations dont il est source qui ne reprennent pas son fait (règle du TCO). */
+  nonCouvrants?: Map<number, Set<number>>;
   lectureComplete: boolean; degradee: boolean;
 }): Promise<QualifiedExpenses> {
   const { ids, theme, docs, opEntries, scopeOps, represented } = x;
@@ -271,9 +277,8 @@ async function finishQualifiedExpenses(accountId: number, x: {
     // Lot 61 (TCO §3.3, cohérence T2 / TCO) : un document rattaché SEULEMENT à des
     // Opérations du périmètre sans composante financière exploitable n'est pas
     // « représenté » : la facture qualifiée fait foi (jamais perdue).
-    const achats = x.achats ?? new Map<number, number>();
-    const distinctDeLAchat = (o: number) => achats.has(o) && !!x.achatsDistincts?.has(r.id) && Number(r.amountCents) !== achats.get(o);
-    const factureFaitFoi = !!ops?.length && ops.every((o) => scopeOps.has(o) && (sansComposante.has(o) || distinctDeLAchat(o)));
+    const nonCouvert = (o: number) => !!x.nonCouvrants?.get(r.id)?.has(o);
+    const factureFaitFoi = !!ops?.length && ops.every((o) => scopeOps.has(o) && (sansComposante.has(o) || nonCouvert(o)));
     if (ops?.length && !factureFaitFoi) {
       const cible = ops.some((o) => scopeOps.has(o)) ? fallback.represented : fallback.representedElsewhere;
       cible.count += 1; cible.fileIds.push(r.id);
@@ -351,16 +356,35 @@ async function finishQualifiedExpenses(accountId: number, x: {
     fallback.count += t.fileIds.length;
     fallback.sumCents += t.sumCents - (t.operationSumCents ?? 0);
   }
-  const readStatus: NonNullable<QualifiedExpenses['readStatus']> = x.degradee ? 'DEGRADED' : x.lectureComplete ? 'COMPLETE' : 'PARTIAL';
+  let readStatus: NonNullable<QualifiedExpenses['readStatus']> = x.degradee ? 'DEGRADED' : x.lectureComplete ? 'COMPLETE' : 'PARTIAL';
+  // ── Lot 75J : couverture incertaine — MÊME statut que le TCO (INCOMPLETE), aucune seconde logique ──
+  let coverage: QualifiedExpenses['coverage'];
+  try {
+    const comptes = q.byTheme.flatMap((t) => t.fileIds);
+    const { expenseCoverageSignals } = await import('@/services/business-operations/tco/service');
+    const sig = await expenseCoverageSignals(accountId, { fileIds: comptes, assetIds: ids, year: x.year });
+    const inconnus = sig.amountUnknown.filter((u) => !theme || u.theme == null || u.theme === theme);
+    coverage = {
+      uncertain: { count: sig.uncertain.length, fileIds: sig.uncertain },
+      amountUnknown: { count: inconnus.length, fileIds: inconnus.map((u) => u.fileId), labels: inconnus.map((u) => u.title).slice(0, 3) },
+    };
+    if (!sig.complete && readStatus === 'COMPLETE') readStatus = 'PARTIAL';
+  } catch (e) {
+    // Lecture des signaux impossible : forme antérieure (aucune affirmation de couverture ajoutée).
+    console.warn('[verebona] dépenses : couverture incertaine non évaluée :', (e as Error).message);
+  }
+  const couvertureSure = !coverage || (coverage.uncertain.count === 0 && coverage.amountUnknown.count === 0);
   return {
     ...q,
     byTheme: q.byTheme.map(({ operationSumCents: _o, ...t }) => t),
     // Lot 54D (E02) : une lecture partielle ou dégradée n'est JAMAIS un total complet.
-    complete: q.complete && expenseCoverageComplete(part, fallback) && readStatus === 'COMPLETE',
+    // Lot 75J : une couverture incertaine (rapprochement incertain, montant inconnu) non plus — comme le TCO.
+    complete: q.complete && expenseCoverageComplete(part, fallback) && readStatus === 'COMPLETE' && couvertureSure,
     operations: part,
     documents: fallback,
     ...(accountUnassigned ? { accountUnassigned } : {}),
     readStatus,
+    ...(coverage ? { coverage } : {}),
   };
 }
 
@@ -528,6 +552,11 @@ export function mixedExpenseNotes(q: QualifiedExpenses, ctx: { scopeLabel: strin
     const n = q.accountUnassigned.count;
     out.push(`Au niveau du compte, ${n} dépense${pl(n, '', 's')} sans bien identifié (${eurFr(q.accountUnassigned.sumCents)}) ${pl(n, 'n’est imputée', 'ne sont imputées')} à aucun bien${ici ? `, ni${ici.replace(/^ pour/, ' à')}` : ''}.`);
   }
+  // Lot 75J (cohérence TCO) : couverture incertaine dite — jamais un total présenté comme exhaustif.
+  const inc = q.coverage?.uncertain.count ?? 0;
+  if (inc) out.push(`${inc} dépense${pl(inc, '', 's')} (acompte ou solde) ${pl(inc, 'est comptée', 'sont comptées')} sans preuve qu’${pl(inc, 'elle ne soit', 'elles ne soient')} pas déjà comprise${pl(inc, '', 's')} dans une facture totale du même fournisseur : à vérifier, le total peut être incomplet ou surestimé.`);
+  const inconnu = q.coverage?.amountUnknown.count ?? 0;
+  if (inconnu) out.push(`${inconnu} justificatif${pl(inconnu, '', 's')} de dépense sans montant lisible (${q.coverage!.amountUnknown.labels.join(', ')}) : montant inconnu, non compté — le total peut être incomplet.`);
   if (docs?.creditNotes.count) out.push(`Avoir${pl(docs.creditNotes.count, '', 's')} déduit${pl(docs.creditNotes.count, '', 's')} : ${eurFr(Math.abs(docs.creditNotes.sumCents))}.`);
   const preuves = q.excluded?.byType?.PAYMENT_PROOF ?? 0;
   if (preuves) out.push(`${preuves} preuve${pl(preuves, '', 's')} de paiement : ${pl(preuves, 'elle confirme', 'elles confirment')} un règlement et ne s’ajoute${pl(preuves, '', 'nt')} pas au coût.`);

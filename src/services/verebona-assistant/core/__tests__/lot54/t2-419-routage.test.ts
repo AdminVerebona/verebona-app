@@ -372,12 +372,14 @@ describe('#419 écarts 3–5 / CC3–CC5 — UPDATE_PROPOSAL, CONTEXT_ONLY, MIXE
   it('T2-419-06c — pure : la nature vient de T2, jamais de la forme de la phrase (QUERY + information = aucune proposition)', () => {
     const f = { targetHint: 'Cupra', fieldKey: 'leaseEndDate', topic: null, value: '21/05/2027', normalizedValue: '2027-05-21', unit: null, confidence: 'exact' as const };
     expect(interactionHandling({ mode: 'QUERY', suppliedFacts: [{ ...f, role: 'update' }] })).toBeNull();
-    expect(interactionHandling({ mode: 'MIXED', suppliedFacts: [{ ...f, role: 'context' }] })).toBeNull();
+    // Lot 75J (#419 R07) : une question MIXED avec information de CONTEXTE l'exploite (jamais une proposition).
+    expect(interactionHandling({ mode: 'MIXED', suppliedFacts: [{ ...f, role: 'context' }] })).toBe('context_question');
     expect(interactionHandling({ mode: 'UPDATE_PROPOSAL', suppliedFacts: [{ ...f, role: 'unknown' }] })).toBe('proposal');
     expect(interactionHandling({ mode: 'UPDATE_PROPOSAL', suppliedFacts: [{ ...f, role: 'context' }] })).toBeNull();
     expect(interactionHandling({ mode: 'AMBIGUOUS', suppliedFacts: [{ ...f, role: 'update' }] })).toBe('proposal');
     expect(interactionHandling({ mode: 'CONTEXT_ONLY', suppliedFacts: [] })).toBe('context_only');
-    expect(updateFactsOf({ mode: 'ACTION_REQUEST', suppliedFacts: [{ ...f, role: 'update', value: null, normalizedValue: null }] })).toEqual([]);
+    // Lot 75J (#419 R08) : une information à enregistrer SANS valeur n'est plus éliminée — le serveur la refuse explicitement.
+    expect(updateFactsOf({ mode: 'ACTION_REQUEST', suppliedFacts: [{ ...f, role: 'update', value: null, normalizedValue: null }] })).toHaveLength(1);
   });
 
   it('T2-419-06d (CC5) — modifications désactivées ou compte en lecture seule : aucune proposition, aucune écriture', async () => {
@@ -931,5 +933,385 @@ describe('#419 — réponses IA NON scriptées : la validation serveur tient', (
       if (res.commandPlan) expect(n(res.commandPlan.summary)).toMatch(/→ 45 000 km/);
       expect(ecritures()).toEqual([]);
     }
+  });
+});
+
+// ══════════════════════════════════════════════════════════════════════════
+// LOT 75J — « T2 : corriger les écarts résiduels du ticket #419 après le
+// lot 59 » : R01, R02, R04, R06, R07, R08 (R03, R05 préservés ci-dessus),
+// prompt T2 actif (compatibilité, version tracée) et cohérence T2 / TCO
+// (couverture incertaine, point laissé par 75D).
+// ══════════════════════════════════════════════════════════════════════════
+
+const { agendaBusinessSource, eventDateMeaning } = await import('../../../canonical/business-sources');
+const { wantsAggregate, aggregateSameReality, operationCarriesValue } = S;
+const { classifySuppliedFacts, countsPayments } = await import('../../interaction');
+const { t2PromptCompatibility } = await import('@/services/ai/assistant/master/t2-prompt-capabilities');
+const { mixedExpenseNotes } = await import('../../../canonical/expenses');
+
+const T2_FICHIER = readFileSync(join(process.cwd(), 'src/services/ai/prompts/assistant/t2_master_v1.txt'), 'utf8');
+/** Composante réalisée SANS montant EUR exploitable (devise non convertie). */
+const coutNonExploitable = (date: string) => ({ ...cout(5000, date), currency: 'USD' });
+const docExtra = (id: number, label: string, cents: number | null, date: string, o: Partial<Extra> & { nature?: 'documented' | 'payment' | 'forecast' } = {}): Source => ({
+  ...extra({ ref: `document:${id}`, domain: 'document', label, assetId: 3, amountCents: cents, date, ...o }),
+  amountNature: o.nature ?? 'documented', meta: { dateKind: 'document_date', amountNature: o.nature ?? 'documented' },
+});
+
+describe('#419 R01 (75J) — montants : valeur exploitable, nature, période, total', () => {
+  it('T2-419-75J-R01a — composante réalisée SANS montant exploitable + facture rattachée : la facture répond (jamais « aucun montant »)', async () => {
+    const contrat = op({ assetIds: [3], technicalLabel: 'Contrat Internet', provider: 'Sosh', components: [coutNonExploitable('2026-10-02')], documents: [docOp(990, 'Facture Sosh octobre', 3999, '2026-10-02')] as never });
+    const src = operationBusinessSource(contrat, 3, 'Maison');
+    expect(operationCarriesValue(src, 'amount')).toBe(false);
+    expect((src.meta as { realizedComponents: number }).realizedComponents).toBe(1);
+    const facture = docExtra(990, 'Facture Sosh octobre', 3999, '2026-10-02', { provider: 'Sosh' });
+    const h = harness([MAISON], [contrat], { understand: MAISON_Q(['internet']), extras: [facture], arbitrate: () => ({ decision: 'NONE', confidence: 'exact' }) });
+    const r = await h.ask('Je paye combien pour internet à la maison ?');
+    expect(n(r.answer)).toBe('« Facture Sosh octobre » (Maison) : 39,99 € (2 octobre 2026).');
+    expect(r.answer).not.toMatch(/aucun montant/);
+    expect(r.cascade?.semantic?.candidatesExcluded).toEqual([]);
+  });
+
+  it('T2-419-75J-R01b — facture et preuve de paiement du même montant : la facture répond, jamais « réglé » à sa place, jamais 79,98 €', async () => {
+    const facture = docExtra(991, 'Facture Internet Sosh', 3999, '2026-10-02', { provider: 'Sosh', text: 'Facture Internet Sosh' });
+    const preuve = docExtra(992, 'Prélèvement Internet Sosh', 3999, '2026-10-05', { provider: 'Sosh', text: 'Prélèvement Internet Sosh', nature: 'payment' });
+    const h = harness([MAISON], [], { understand: MAISON_Q(['internet']), extras: [facture, preuve], arbitrate: choisir(/Prélèvement/) });
+    const r = await h.ask('Je paye combien pour internet à la maison ?');
+    expect(n(r.answer)).toBe('« Facture Internet Sosh » (Maison) : 39,99 € (2 octobre 2026).');
+    expect(r.answer).not.toMatch(/réglé|79,98/);
+    expect(h.arbitrate).not.toHaveBeenCalled();
+    expect(r.cascade?.semantic).toMatchObject({ selectionReason: 'PRIMARY_AMOUNT_NATURE', candidatesExcluded: [{ ref: 'document:992', reason: 'PAYMENT_NOT_INVOICE' }] });
+    // Seule la preuve existe : elle répond, en le disant (« montant réglé »).
+    const seule = await harness([MAISON], [], { understand: MAISON_Q(['internet']), extras: [preuve] }).ask('Je paye combien pour internet à la maison ?');
+    expect(n(seule.answer)).toBe('« Prélèvement Internet Sosh » (Maison) : montant réglé 39,99 € (5 octobre 2026).');
+  });
+
+  it('T2-419-75J-R01c — plusieurs factures mensuelles rattachées : un TOTAL demandé n’est jamais la dernière facture ; le montant courant reste la dernière', async () => {
+    const mois = [['2026-08-02', 993], ['2026-09-02', 994], ['2026-10-02', 995]] as const;
+    const contrat = () => op({ assetIds: [3], technicalLabel: 'Contrat Internet', provider: 'Sosh', documents: mois.map(([d, id]) => docOp(id, `Facture Sosh ${d}`, 3999, d)) as never });
+    const factures = mois.map(([d, id]) => docExtra(id, `Facture Sosh ${d}`, 3999, d, { provider: 'Sosh' }));
+    const total = await harness([MAISON], [contrat()], { understand: MAISON_Q(['internet']), extras: factures }).ask('Combien m’a coûté internet au total pour la maison ?');
+    expect(n(total.answer)).toBe('Contrat « Contrat Internet » (Maison) : total documenté 119,97 € sur 3 montants (dernier 39,99 € le 2 octobre 2026).');
+    expect(total.sources?.length ?? 0).toBeGreaterThanOrEqual(1);
+    const courant = await harness([MAISON], [contrat()], { understand: MAISON_Q(['internet']), extras: factures }).ask('Je paye combien pour internet à la maison ?');
+    expect(n(courant.answer)).toBe('« Facture Sosh 2026-10-02 » (Maison) : 39,99 € (2 octobre 2026).');
+    // Pure : total serveur, une fois chacun (copie même montant / même date comptée une fois), règlements exclus.
+    const pivot = operationBusinessSource(contrat(), 3, 'Maison');
+    const agr = aggregateSameReality(pivot, [...factures, { ...factures[2], ref: 'document:999' }, docExtra(998, 'Prélèvement', 3999, '2026-10-05', { nature: 'payment' })]);
+    expect((agr.meta as { totalCents: number }).totalCents).toBe(3 * 3999);
+    expect(wantsAggregate('Combien m’a coûté internet au total ?')).toBe(true);
+    expect(wantsAggregate('Je paye combien pour internet ?')).toBe(false);
+  });
+
+  it('T2-419-75J-R01d — période demandée : seules les factures rattachées DE la période sont totalisées', async () => {
+    const contrat = op({ assetIds: [3], technicalLabel: 'Contrat Internet', provider: 'Sosh', documents: [docOp(1001, 'Facture déc. 2025', 3999, '2025-12-02'), docOp(1002, 'Facture janv.', 3999, '2026-01-02'), docOp(1003, 'Facture févr.', 2999, '2026-02-02')] as never });
+    const factures = [docExtra(1001, 'Facture déc. 2025', 3999, '2025-12-02'), docExtra(1002, 'Facture janv.', 3999, '2026-01-02'), docExtra(1003, 'Facture févr.', 2999, '2026-02-02')];
+    const r = await harness([MAISON], [contrat], { understand: MAISON_Q(['internet']), extras: factures }).ask('Combien ai-je payé pour internet en 2026 à la maison ?');
+    expect(n(r.answer)).toMatch(/69,98 € sur l’année 2026|total documenté 69,98 €/);
+    expect(r.answer).not.toMatch(/109,97|39,99 € documenté sur/);
+  });
+
+  it('T2-419-75J-R01e — devis et facture réelle : la facture répond ; devis seul : « montant prévisionnel (devis) »', async () => {
+    const devis = docExtra(1010, 'Devis ravalement', 900000, '2026-03-01', { nature: 'forecast', text: 'Devis ravalement façade' });
+    const facture = docExtra(1011, 'Facture ravalement', 950000, '2026-06-01', { text: 'Facture ravalement façade' });
+    const h = harness([MAISON], [], { understand: MAISON_Q(['ravalement']), extras: [devis, facture], arbitrate: choisir(/Devis/) });
+    const r = await h.ask('Combien a coûté le ravalement de la maison ?');
+    expect(n(r.answer)).toBe('« Facture ravalement » (Maison) : 9 500,00 € (1 juin 2026).');
+    expect(h.arbitrate).not.toHaveBeenCalled();
+    expect(r.cascade?.semantic?.candidatesExcluded).toEqual([{ ref: 'document:1010', reason: 'FORECAST_NOT_REALIZED' }]);
+    const seul = await harness([MAISON], [], { understand: MAISON_Q(['ravalement']), extras: [devis] }).ask('Combien a coûté le ravalement de la maison ?');
+    expect(n(seul.answer)).toMatch(/montant prévisionnel \(devis\) 9 000,00 €/);
+  });
+});
+
+describe('#419 R02 (75J) — signification métier des dates (registre, agenda)', () => {
+  it('T2-419-75J-R02a — pure : fin contractuelle seulement quand la donnée la justifie (registre / catalogue, jamais le titre)', () => {
+    expect(eventDateMeaning({ nature: 'DEADLINE', businessType: 'contract' })).toBe('contract_end');
+    expect(eventDateMeaning({ originFieldKey: 'leaseEndDate' })).toBe('contract_end');
+    expect(eventDateMeaning({ originFieldKey: 'warrantyEndDate' })).toBe('contract_end');
+    expect(eventDateMeaning({ originFieldKey: 'maintenanceDueDate' })).toBe('next_due');
+    expect(eventDateMeaning({ originFieldKey: 'insuranceExpiry' })).toBe('next_due');
+    expect(eventDateMeaning({ originFieldKey: 'lastRevision' })).toBe('event_date');
+    expect(eventDateMeaning({ nature: null, businessType: null })).toBe('unknown');
+    const facturation = agendaBusinessSource({ id: 1, title: 'Fin de contrat Sosh — prochaine facturation', date: '2026-11-02', forecast: true }, 3);
+    expect(facturation.endDate).toBeNull();
+    expect(S.carriesRequestedValue(facturation, 'end_date')).toBe(false);
+    const fin = agendaBusinessSource({ id: 2, title: 'Échéance Sosh', date: '2027-01-31', forecast: true, nature: 'DEADLINE', businessType: 'contract' }, 3);
+    expect(fin.endDate).toBe('2027-01-31');
+    const entretien = agendaBusinessSource({ id: 3, title: 'Entretien chaudière', date: '2026-12-01', nature: 'DEADLINE', businessType: 'maintenance' }, 3);
+    expect(entretien.endDate).toBeNull();
+    expect(n(answerFromBusinessSource(entretien, 'date').text)).toBe('« Entretien chaudière » : prochaine échéance le 1 décembre 2026.');
+  });
+
+  it('T2-419-75J-R02b — contrat sans fin + prochaine facturation à l’agenda : aucune date de fin inventée, information manquante dite', async () => {
+    const contrat = op({ assetIds: [3], technicalLabel: 'Contrat Internet', provider: 'Sosh', effectiveFrom: '2025-01-01' });
+    const facturation = agendaBusinessSource({ id: 40, title: 'Prochaine facturation internet Sosh', date: '2026-11-02', forecast: true }, 3);
+    const h = harness([MAISON], [contrat], { understand: MAISON_Q(['contrat', 'internet']), extras: [facturation] });
+    const r = await h.ask('Quand se termine mon contrat internet à la maison ?');
+    expect(r.answer).not.toMatch(/2 novembre 2026/);
+    expect(n(r.answer)).toBe('Contrat « Contrat Internet » (Maison) : aucune date de fin n’est renseignée.');
+  });
+
+  it('T2-419-75J-R02c — contrat avec fin EXPLICITE (échéance « contrat » de l’agenda) : servie', async () => {
+    const contrat = op({ assetIds: [3], technicalLabel: 'Contrat Internet', provider: 'Sosh', effectiveFrom: '2025-01-01' });
+    const fin = agendaBusinessSource({ id: 41, title: 'Fin du contrat internet Sosh', date: '2027-01-31', nature: 'DEADLINE', businessType: 'contract' }, 3);
+    const h = harness([MAISON], [contrat], { understand: MAISON_Q(['contrat', 'internet']), extras: [fin], arbitrate: choisir(/Fin du contrat/) });
+    const r = await h.ask('Quand se termine mon contrat internet à la maison ?');
+    expect(n(r.answer)).toMatch(/31 janvier 2027/);
+  });
+});
+
+describe('#419 R04 (75J) — candidats de tous les domaines, sélection directe réservée aux correspondances démontrées', () => {
+  /** Harnais : les sources SANS bien sont rendues seulement si le serveur les demande (`includeUntargeted`). */
+  const sansBien = (h: ReturnType<typeof harness>, extras: Source[], ops: Op[] = []) => {
+    h.ports.listBusinessSources = vi.fn(async (_a: number, req: { assetIds: number[]; includeUntargeted?: boolean }) => ({
+      sources: [
+        ...ops.map((x) => operationBusinessSource(x, x.assetIds[0] ?? null, null)),
+        ...extras.filter((d) => (d.assetId == null ? Boolean(req.includeUntargeted) : req.assetIds.includes(d.assetId))),
+      ],
+      domains: ['operation', 'document'],
+    }));
+  };
+
+  it('T2-419-75J-R04a — question sans bien nommé, réponse uniquement dans un document du compte sans bien', async () => {
+    const spotify = { ...docExtra(1020, 'Facture Spotify', 1199, '2026-10-01', { provider: 'Spotify', text: 'Facture Spotify Premium' }), assetId: null };
+    const h = harness([MAISON, POLO], [], { understand: compris('ACCOUNT_FACT_ASSET', [], ['spotify']) });
+    sansBien(h, [spotify]);
+    const r = await h.ask('Combien je paye pour Spotify ?');
+    expect(n(r.answer)).toBe('« Facture Spotify » : 11,99 € (1 octobre 2026).');
+    expect((h.ports.listBusinessSources as ReturnType<typeof vi.fn>).mock.calls[0][1]).toMatchObject({ includeUntargeted: true });
+  });
+
+  it('T2-419-75J-R04b — correspondance trompeuse UNIQUE (« box internet » / seule « box de rangement ») : jamais servie sans T2', async () => {
+    const rangement = op({ assetIds: [3], typeCode: 'ACQUISITION', technicalLabel: 'Box de rangement', components: [cout(4500, '2026-03-01')] });
+    const h = harness([MAISON], [rangement], { understand: MAISON_Q(['box internet']), arbitrate: () => ({ decision: 'NONE', confidence: 'exact' }) });
+    const r = await h.ask('Combien je paye pour la box internet à la maison ?');
+    expect(r.answer).not.toMatch(/45,00/);
+    expect(h.arbitrate).toHaveBeenCalledTimes(1);
+    expect(r.cascade?.semantic).toMatchObject({ lexicalMatchEstablished: false, semanticDecision: 'NONE' });
+    // Sans arbitrage possible : confirmation demandée, jamais la box de rangement servie.
+    const sans = await harness([MAISON], [rangement], { understand: MAISON_Q(['box internet']) }).ask('Combien je paye pour la box internet à la maison ?');
+    expect(sans.answer).not.toMatch(/45,00/);
+    expect(sans.clarification?.question).toMatch(/Pour être sûr/);
+  });
+
+  it('T2-419-75J-R04c — plusieurs domaines pertinents : opération, échéance et document présentés ensemble à T2', async () => {
+    const contrat = op({ assetIds: [3], technicalLabel: 'Assurance habitation', provider: 'MAIF', effectiveFrom: '2026-01-01', effectiveTo: '2026-12-31' });
+    const ech = agendaBusinessSource({ id: 42, title: 'Fin assurance habitation MAIF', date: '2026-12-31', nature: 'DEADLINE', businessType: 'contract' }, 3);
+    const h = harness([MAISON], [contrat], { understand: MAISON_Q(['maif']), extras: [ech], arbitrate: choisir(/Assurance habitation/) });
+    const r = await h.ask('Quand se termine mon contrat MAIF à la maison ?');
+    const kinds = (h.arbitrate.mock.calls[0]?.[2] as Cand[] | undefined)?.map((c) => c.kind) ?? [];
+    expect(kinds).toEqual(expect.arrayContaining(['contrat', 'échéance']));
+    expect(n(r.answer)).toMatch(/31 décembre 2026/);
+  });
+
+  it('T2-419-75J-R04d — aucun candidat lexical, sans bien nommé : candidats contextuels de TOUS les domaines (plus seulement des opérations)', async () => {
+    const abo = op({ assetIds: [3], technicalLabel: 'Abonnement Sosh', provider: 'Sosh', components: [cout(2999, '2026-09-02')] });
+    const releve = docExtra(1030, 'Relevé mensuel', 3500, '2026-09-20');
+    const h = harness([MAISON, POLO], [abo], { understand: compris('ACCOUNT_FACT_ASSET', [], ['connexion']), extras: [releve], arbitrate: choisir(/Relevé/) });
+    const r = await h.ask('Combien me coûte ma connexion ?');
+    const kinds = (h.arbitrate.mock.calls[0]?.[2] as Cand[] | undefined)?.map((c) => c.kind) ?? [];
+    expect(kinds).toEqual(expect.arrayContaining(['contrat', 'document']));
+    expect(n(r.answer)).toMatch(/35,00 €/);
+    expect(r.cascade?.semantic?.candidateSelectionMode).toBe('ai');
+  });
+
+  it('T2-419-75J-R04e — plus de candidats que la limite : 12 présentés au plus, répartis par domaine, le reste jamais choisi (tracé)', async () => {
+    const ops = Array.from({ length: 20 }, (_, i) => op({ assetIds: [3], technicalLabel: `Prestation ${i}`, components: [cout(1000 + i, '2026-01-01')] }));
+    const docs = Array.from({ length: 5 }, (_, i) => docExtra(1040 + i, `Pièce ${i}`, 500 + i, '2026-02-01'));
+    const h = harness([MAISON], ops, { understand: MAISON_Q(['connexion']), extras: docs, arbitrate: () => ({ decision: 'SELECT', selectedCandidateRef: 'C13', confidence: 'exact' }) });
+    const r = await h.ask('Combien me coûte ma connexion à la maison ?');
+    const presentes = h.arbitrate.mock.calls[0][2] as Cand[];
+    expect(presentes).toHaveLength(12);
+    expect(presentes.filter((c) => c.kind === 'document').length).toBeGreaterThanOrEqual(5);
+    expect(r.cascade?.semantic?.candidatesNotPresented).toBe(13);
+    expect(r.cascade?.semantic?.candidateValidationFailure).toBe('UNKNOWN_CANDIDATE_REF');
+    expect(r.answer).not.toMatch(/€/);
+  });
+});
+
+describe('#419 R06 (75J) — périmètre évalué avant les lectures ; structural ≠ résolu d’office', () => {
+  const MAISON_A = { id: 3, name: 'Maison', category: 'IMMOBILIER', subtype: 'Maison' };
+  const POLO_A = { id: 12, name: 'Polo', category: 'VEHICULE', subtype: 'Voiture' };
+  const scope = (a: typeof MAISON_A) => async () => ({ assets: [a], ambiguous: false, unresolved: false, label: a.name });
+
+  it('T2-419-75J-R06a — sinistre précis non consommé : aucune lecture des sinistres, T2 reprend (même verdict que la barrière finale)', async () => {
+    const readClaims = vi.fn(async () => [{ operationId: 1, label: 'dégât des eaux', status: 'OPEN', occurredOn: '2026-01-01', assetIds: [3] }]);
+    const port = { today: () => '2026-10-14', listAssets: async () => [MAISON_A], readClaims } as never;
+    const r = await tryCanonicalStructured({ port, accountId: 1, message: 'Où en est le sinistre dégât des eaux de la maison ?', resolveScope: scope(MAISON_A) as never });
+    expect(readClaims).not.toHaveBeenCalled();
+    expect(r).toMatchObject({ scopeUnresolved: { strategyCandidate: 'structured.claim_status', terms: ['degat', 'eaux'] } });
+  });
+
+  it('T2-419-75J-R06b — coût d’une intervention précise absente ≠ total des interventions : aucun calcul d’agrégat', async () => {
+    const sumQualifiedExpenses = vi.fn(async () => ({ qualifiedSumCents: 999999, byTheme: [], unqualified: { count: 0 }, excluded: { count: 0 }, complete: true }));
+    const port = { today: () => '2026-10-14', listAssets: async () => [MAISON_A], readOperationCosts: vi.fn(async () => []), sumQualifiedExpenses } as never;
+    const r = await tryCanonicalStructured({ port, accountId: 1, message: 'Combien a coûté la réparation de la véranda de la maison ?', resolveScope: scope(MAISON_A) as never });
+    expect(sumQualifiedExpenses).not.toHaveBeenCalled();
+    expect(r).toMatchObject({ scopeUnresolved: { terms: ['veranda'] } });
+  });
+
+  it('T2-419-75J-R06c — champ canonique + sujet supplémentaire non résolu : ni lecture ni réponse, T2 résout ; champ exact : lecture déterministe conservée', async () => {
+    const readAssetField = vi.fn(async () => ({ key: 'mileage', label: 'Kilométrage', value: 45000, display: '45 000 km', assetName: 'Polo' }));
+    const port = { today: () => '2026-10-14', listAssets: async () => [POLO_A], readAssetField } as never;
+    const r = await tryCanonicalStructured({ port, accountId: 1, message: 'Quel est le kilométrage de la Polo pour le contrat Leasys ?', resolveScope: scope(POLO_A) as never });
+    expect(readAssetField).not.toHaveBeenCalled();
+    expect(r).toMatchObject({ scopeUnresolved: { strategyCandidate: 'structured.asset_field' } });
+    expect((r as { scopeUnresolved: { terms: string[] } }).scopeUnresolved.terms).toEqual(expect.arrayContaining(['contrat', 'leasys']));
+    const exact = await tryCanonicalStructured({ port, accountId: 1, message: 'Quel est le kilométrage de la Polo ?', resolveScope: scope(POLO_A) as never });
+    expect(readAssetField).toHaveBeenCalledTimes(1);
+    expect(exact).toMatchObject({ strategy: 'structured.asset_field' });
+    expect(structuredScopeBarrier('structured.asset_field', 'Quel est le kilométrage de la Polo pour le contrat Leasys ?', ['Polo'], ['Kilométrage de Polo : 45 000 km.']).semanticScopeResolved).toBe(false);
+  });
+});
+
+describe('#419 R07 (75J) — informations de contexte MIXED au-delà du décompte', () => {
+  const MIXED_Q = (supplied: Partial<Fact>[], topics: string[], facts: string[] = [], hints = [{ type: 'asset', value: 'Cupra' }]) =>
+    compris('ACCOUNT_FACT_ASSET', hints, topics, { mode: 'MIXED', facts, supplied });
+  const FIN = { targetHint: 'Cupra', fieldKey: 'leaseEndDate', value: '21/05/2027', normalizedValue: '2027-05-21', role: 'context' as const };
+
+  it('T2-419-75J-R07a — autre question MIXED : la valeur de contexte répond, dite non enregistrée ; aucune proposition, aucune écriture', async () => {
+    const h = harness([CUPRA], [lld(null)], { understand: MIXED_Q([FIN], ['fin de location'], ['leaseEndDate']) });
+    const r = await h.ask('Ma location de la Cupra finit le 21/05/2027, à quelle date dois-je rendre la voiture ?');
+    expect(n(r.answer)).toMatch(/Fin de bail \/ location \(Cupra\) : 21 mai 2027 — valeur indiquée dans votre message, utilisée pour cette réponse seulement : elle n’a pas été enregistrée\./);
+    expect(h.propose).not.toHaveBeenCalled();
+    expect(r.commandPlan ?? null).toBeNull();
+    expect(ecritures()).toEqual([]);
+    expect(r.cascade?.semantic).toMatchObject({ interactionMode: 'MIXED', contextFactsUsed: ['leaseEndDate'], selectedSource: 'context:7:leaseEndDate' });
+  });
+
+  it('T2-419-75J-R07b — contradiction avec la donnée enregistrée (question non décomptée) : signalée, jamais tranchée ni remplacée', async () => {
+    const champ = extra({ ref: 'field:7:leaseEndDate', domain: 'field', label: 'Fin de bail / location', assetId: 7, fieldKey: 'leaseEndDate', date: '2027-06-30', endDate: '2027-06-30' });
+    const h = harness([CUPRA], [], { understand: MIXED_Q([FIN], ['fin de location'], ['leaseEndDate']), extras: [champ] });
+    const r = await h.ask('Ma location de la Cupra finit le 21/05/2027, à quelle date dois-je rendre la voiture ?');
+    expect(r.answer).toMatch(/Je ne tranche pas/);
+    expect(r.answer).toMatch(/Rien n’a été modifié/);
+    expect(r.cascade?.semantic?.contextContradiction).toBe(true);
+    expect(ecritures()).toEqual([]);
+  });
+
+  it('T2-419-75J-R07c — cible ambiguë : l’information n’est attribuée à aucun bien, ni utilisée ni enregistrée', async () => {
+    const h = harness([CUPRA, POLO], [], { understand: MIXED_Q([{ ...FIN, targetHint: 'voiture' }], ['fin de location'], ['leaseEndDate'], []) });
+    const r = await h.ask('La location de la voiture finit le 21/05/2027, à quelle date dois-je la rendre ?');
+    expect(r.answer).toMatch(/je ne peux pas utiliser l’information indiquée/);
+    expect(r.answer).toMatch(/Rien n’a été modifié/);
+    expect(r.cascade?.semantic?.contextFactsRejected).toEqual([{ fieldKey: 'leaseEndDate', reason: 'TARGET_UNRESOLVED' }]);
+    expect(ecritures()).toEqual([]);
+  });
+
+  it('T2-419-75J-R07d — information non utilisée par la réponse : dite, jamais ignorée en silence', async () => {
+    const h = harness([CUPRA], [assurance()], {
+      understand: MIXED_Q([{ targetHint: 'Cupra', fieldKey: 'mileage', value: '45 000 km', normalizedValue: '45000', role: 'context' }], ['maaf']),
+    });
+    const r = await h.ask('La Cupra a 45 000 km, quand se termine son contrat MAAF ?');
+    expect(n(r.answer)).toMatch(/31 décembre 2026/);
+    expect(n(r.answer)).toMatch(/L’information indiquée dans votre message \(« Kilométrage » : 45000\) n’a pas servi à cette réponse ; elle n’a pas été enregistrée\./);
+    expect(ecritures()).toEqual([]);
+  });
+
+  it('T2-419-75J-R07e — mensualités : mois calendaires ≠ paiements ; calendrier de paiement inconnu dit (n ou n + 1), aucune écriture', async () => {
+    const h = harness([CUPRA], [lld(null)], { understand: MIXED_Q([FIN], ['mensualités']) });
+    const r = await h.ask('La LLD de la Cupra finit le 21/05/2027, combien de mensualités me reste-t-il ?');
+    const k = remainingPeriods(aujourdhuiParis(), '2027-05-21', 'month');
+    expect(n(r.answer)).toContain(`il reste ${k} mois entiers`);
+    expect(n(r.answer)).toContain(`dépend du calendrier des échéances (jour de paiement, paiement en début ou en fin de période), que je ne connais pas : ce sera ${k} ou ${k + 1}`);
+    expect(countsPayments('combien de mois reste-t-il ?')).toBe(false);
+    expect(ecritures()).toEqual([]);
+  });
+
+  it('T2-419-75J-R07f — pure : valeur numérique relue dans le message ; inventée → écartée avec motif', () => {
+    const f = { targetHint: 'Polo', fieldKey: 'mileage', topic: null, value: '45 000 km', normalizedValue: '45000', unit: 'km', confidence: 'exact' as const, role: 'context' as const };
+    expect(validateContextFacts([f], 'La Polo a 45 000 km', '2026-10-15').valid[0]).toMatchObject({ fieldKey: 'mileage', value: '45000' });
+    expect(validateContextFacts([{ ...f, normalizedValue: '46000' }], 'La Polo a 45 000 km', '2026-10-15').rejected).toEqual([{ fieldKey: 'mileage', reason: 'VALUE_NOT_IN_MESSAGE' }]);
+    expect(validateContextFacts([{ ...f, fieldKey: 'inconnu' }], 'La Polo a 45 000 km', '2026-10-15').rejected).toEqual([{ fieldKey: 'inconnu', reason: 'FIELD_UNKNOWN' }]);
+  });
+});
+
+describe('#419 R08 (75J) — aucune information ignorée dans une proposition multiple', () => {
+  const DEUX = (second: Partial<Fact>, mode: import('../../../types/contracts').InteractionMode = 'UPDATE_PROPOSAL') => compris('ACCOUNT_FACT_ASSET', [{ type: 'asset', value: 'Polo' }], [], {
+    mode, supplied: [
+      { targetHint: 'Polo', fieldKey: 'mileage', value: '45 000 km', normalizedValue: '45000', unit: 'km', role: 'update' },
+      ...(Object.keys(second).length ? [{ targetHint: 'Polo', role: 'update' as const, ...second }] : []),
+    ],
+  });
+
+  it('T2-419-75J-R08a — une modification valide + une SANS valeur : aucun plan partiel, la valeur manquante est demandée', async () => {
+    const h = harness([POLO], [], { understand: DEUX({ fieldKey: 'estimatedValue', value: null, normalizedValue: null }) });
+    const r = await h.ask('Le kilométrage de la Polo est de 45 000 km et mets aussi sa valeur à jour');
+    expect(r.commandPlan ?? null).toBeNull();
+    expect(r.answer).toMatch(/contient 2 informations ; je ne peux pas toutes les proposer/);
+    expect(r.answer).toMatch(/Il me manque la valeur de « [^»]+ »/);
+    expect(r.cascade?.semantic?.updateFactsRefused).toEqual([{ fieldKey: 'estimatedValue', reason: 'VALUE_MISSING' }]);
+    expect(ecritures()).toEqual([]);
+  });
+
+  it('T2-419-75J-R08b — champ inconnu : refus explicite (« je n’ai pas identifié quelle information modifier »), aucun plan', async () => {
+    const h = harness([POLO], [], { understand: DEUX({ fieldKey: null, topic: 'couleur', value: 'rouge', normalizedValue: 'rouge' }) });
+    const r = await h.ask('Le kilométrage de la Polo est de 45 000 km et elle est rouge');
+    expect(r.commandPlan ?? null).toBeNull();
+    expect(r.answer).toMatch(/Je n’ai pas identifié quelle information modifier \(« couleur »\)/);
+    expect(r.cascade?.semantic?.updateFactsRefused).toEqual([{ fieldKey: null, reason: 'NO_FIELD' }]);
+  });
+
+  it('T2-419-75J-R08c — rôles mixtes (MIXED : question + modification explicite) : plan à confirmer, la question est dite, rien écrit', async () => {
+    const h = harness([POLO], [], { understand: DEUX({}, 'MIXED') });
+    const r = await h.ask('Mets le kilométrage de la Polo à 45 000 km, et c’est quand son prochain contrôle ?');
+    expect(r.commandPlan?.actions).toHaveLength(1);
+    expect(r.answer).toMatch(/Votre message contient aussi une question : je n’y réponds pas dans cette proposition/);
+    expect(ecritures()).toEqual([]);
+    expect(r.cascade?.escalationReasons).toContain('INTERACTION:MIXED_QUESTION_DEFERRED');
+  });
+
+  it('T2-419-75J-R08d — pure : classement des informations (valide, contexte, valeur ou champ manquant)', () => {
+    const base = { targetHint: 'Polo', topic: null, unit: null, confidence: 'exact' as const };
+    const c = classifySuppliedFacts({ mode: 'MIXED', suppliedFacts: [
+      { ...base, fieldKey: 'mileage', value: '45000', normalizedValue: '45000', role: 'update' },
+      { ...base, fieldKey: 'estimatedValue', value: null, normalizedValue: null, role: 'update' },
+      { ...base, fieldKey: null, value: 'rouge', normalizedValue: 'rouge', role: 'update' },
+      { ...base, fieldKey: 'leaseEndDate', value: '2027-05-21', normalizedValue: '2027-05-21', role: 'context' },
+    ] }).map((x) => x.category);
+    expect(c).toEqual(['update_valid', 'incomplete_value', 'incomplete_field', 'context']);
+  });
+});
+
+describe('#419 §3 (75J) — prompt T2 actif : compatibilité serveur, version tracée', () => {
+  it('T2-419-75J-P1 — pure : texte livré compatible ; emplacement inconnu, variable injectée sans emplacement → INCOMPATIBLE, aucun arbitrage', () => {
+    expect(t2PromptCompatibility(T2_FICHIER)).toEqual({ compatible: true, missingVariables: [], unknownPlaceholders: [], missingBranches: [] });
+    const inconnu = t2PromptCompatibility(`${T2_FICHIER}\n{{BUDGET_SECRET}}`);
+    expect(inconnu).toMatchObject({ compatible: false, unknownPlaceholders: ['BUDGET_SECRET'] });
+    const sansCatalogue = t2PromptCapabilities(T2_FICHIER.replace('{{FIELD_CATALOG}}', ''));
+    expect(sansCatalogue.compatibility.missingVariables).toEqual(['FIELD_CATALOG']);
+    expect(sansCatalogue.arbitration).toBe(false);
+    expect(sansCatalogue.message).toMatch(/INCOMPATIBLE avec le serveur/);
+    // {{BUSINESS_CANDIDATES}} reste FACULTATIF (version antérieure compatible, arbitrage impossible).
+    const ancien = t2PromptCapabilities(T2_FICHIER.replace('{{BUSINESS_CANDIDATES}}', ''));
+    expect(ancien.compatibility.compatible).toBe(true);
+    expect(ancien.arbitration).toBe(false);
+  });
+
+  it('T2-419-75J-P2 — version T2 effective tracée à la COMPRÉHENSION ; version incompatible : aucun appel d’arbitrage, motif tracé', async () => {
+    const h = harness([MAISON], [orangeFibre(), netflix()], { understand: MAISON_Q(['internet']), arbitrate: choisir(/Orange/) });
+    h.ports.t2PromptCapabilities = async () => ({ arbitration: true, interaction: true, version: 'v7', compatible: false });
+    const r = await h.ask('Je paye combien pour internet à la maison ?');
+    expect(h.arbitrate).not.toHaveBeenCalled();
+    expect(r.cascade?.semantic).toMatchObject({
+      t2PromptAtUnderstand: { version: 'v7', compatible: false }, arbitrationUnavailableReason: 'PROMPT_UNSUPPORTED',
+    });
+    const ok = harness([MAISON], [orangeFibre(), netflix()], { understand: MAISON_Q(['internet']), arbitrate: choisir(/Orange/) });
+    ok.ports.t2PromptCapabilities = async () => ({ arbitration: true, interaction: false, version: 'v8', compatible: true });
+    const r2 = await ok.ask('Je paye combien pour internet à la maison ?');
+    expect(r2.cascade?.semantic).toMatchObject({ t2PromptAtUnderstand: { version: 'v8', interaction: false }, interactionUnavailableReason: 'PROMPT_UNSUPPORTED', candidateRefValidated: true });
+  });
+});
+
+describe('Cohérence T2 / TCO (75J, point laissé par 75D) — couverture incertaine', () => {
+  it('T2-419-75J-T1 — rapprochement incertain ou montant inconnu : la réponse T2 dit « le total peut être incomplet » (même statut que le TCO)', () => {
+    const q = {
+      theme: null, byTheme: [], qualifiedSumCents: 0, qualifiedCount: 0, unqualified: { count: 0, sumCents: 0, fileIds: [], undatedCount: 0 },
+      duplicates: { count: 0, fileIds: [] }, excluded: { count: 0, byType: {} }, complete: false,
+      coverage: { uncertain: { count: 1, fileIds: [5] }, amountUnknown: { count: 1, fileIds: [6], labels: ['Révision (illisible)'] } },
+    };
+    const notes = mixedExpenseNotes(q as never, { scopeLabel: 'Vélo' }).join(' ');
+    expect(notes).toMatch(/1 dépense \(acompte ou solde\) est comptée sans preuve .* le total peut être incomplet/);
+    expect(notes).toMatch(/1 justificatif de dépense sans montant lisible \(Révision \(illisible\)\) : montant inconnu, non compté — le total peut être incomplet\./);
   });
 });

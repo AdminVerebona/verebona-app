@@ -36,6 +36,7 @@
  */
 import { withoutAssetDesignations, isAssetVocabularyWord } from '@/lib/asset-taxonomy';
 import { findReadableFields } from '../canonical/field-vocabulary';
+import { getField, getEventEntry } from '@/services/canonical/registry';
 
 export type DeterministicConfidence = 'STRONG' | 'WEAK';
 
@@ -57,6 +58,17 @@ export function tokensOf(text: string): string[] {
 const END_DATE = /\b(fin|finit|finissent|finira|termine\w*|expire\w*|expiration|echeance|echu\w*|jusqu'?a quand|arrive a (son )?terme)\b/;
 const DATE = /\b(quand|date|dates|depuis quand|a quelle date)\b/;
 const AMOUNT = /\b(combien|montant|montants|prix|tarif|tarifs|cout|couts|coute|coutent|coutait|paye|payes|payee|payees|payer|payons|payez|depense\w*|regle|reglee|verse|facture combien|mensualite\w*|cotisation\w*)\b/;
+
+/**
+ * Lot 75J (#419 R01) — la question demande-t-elle un TOTAL (cumul sur
+ * plusieurs montants ou plusieurs périodes) plutôt qu'un montant unitaire
+ * (pure) ? Signal générique de besoin, jamais un sujet métier : une demande
+ * de total n'est jamais servie par la seule dernière pièce.
+ */
+const TOTAL = /\b(au total|en tout|total|totaux|cumul\w*|somme|depuis le debut|depuis l'achat|depuis le depart)\b/;
+export function wantsAggregate(message: string): boolean {
+  return TOTAL.test(plain(message ?? ''));
+}
 
 /** Besoin de valeur (pure, testée) : fin, date, montant ; `null` : aucun. */
 export function detectValueNeed(message: string): ValueNeed | null {
@@ -174,6 +186,38 @@ function consumedByStem(w: string, consommes: ReadonlySet<string>): boolean {
   return false;
 }
 
+// ══════════════════════════════════════════════════════════════════════════
+// LOT 75J (#419 R02) — SIGNIFICATION MÉTIER D'UNE DATE
+//
+// Une date n'est une FIN que si la donnée le dit. Signification lue sur les
+// métadonnées EXISTANTES (registre canonique `agendaEffect`, catalogue des
+// événements), jamais sur un titre :
+//   · `contract_end` — échéance TERMINALE : le type d'événement n'a pour seule
+//     nature que DEADLINE et n'est pas récurrent (fin de contrat, de bail,
+//     de garantie, de validité) ;
+//   · `next_due`     — prochaine échéance d'une activité récurrente ou
+//     répétée (entretien, contrôle, échéance annuelle d'assurance) ;
+//   · `event_date`   — fait daté (historique) ;
+//   · `unknown`      — rien ne qualifie la date (événement libre, prévision
+//     sans type métier) : jamais une fin.
+// Côté documents : `document_date` ; côté opérations : date d'effet / de
+// réalisation, et fin explicite (`effectiveTo`, `endDate`) seulement.
+// ══════════════════════════════════════════════════════════════════════════
+export type DateMeaning = 'contract_end' | 'next_due' | 'event_date' | 'document_date' | 'effective_date' | 'unknown';
+
+/** Signification d'une date d'événement (pure, testée) — registre et catalogue, jamais le titre. */
+export function eventDateMeaning(e: { nature?: string | null; businessType?: string | null; originFieldKey?: string | null }): DateMeaning {
+  const effet = e.originFieldKey ? getField(e.originFieldKey)?.agendaEffect : undefined;
+  const nature = e.nature ?? effet?.nature ?? null;
+  const type = e.businessType ?? effet?.businessType ?? null;
+  if (nature === 'HISTORICAL') return 'event_date';
+  const entree = type ? getEventEntry(type) : undefined;
+  if (nature !== 'DEADLINE' && !(entree && entree.natures.length === 1 && entree.natures[0] === 'DEADLINE')) return 'unknown';
+  if (!entree) return 'next_due';
+  const terminale = entree.natures.length === 1 && entree.natures[0] === 'DEADLINE' && !effet?.recurrence;
+  return terminale ? 'contract_end' : 'next_due';
+}
+
 // ── Sources métier exposées par le serveur (abstraction, ticket §2) ───────
 
 /**
@@ -207,6 +251,8 @@ const DOMAINES = new Map<string, SourceDomainDescriptor>([
   ['field', { domain: 'field', authority: 3, structured: true, noun: 'information' }],
   ['agenda', { domain: 'agenda', authority: 2, structured: true, noun: 'échéance' }],
   ['document', { domain: 'document', authority: 1, structured: false, noun: 'document' }],
+  // Lot 75J (#419 R07) : information de CONTEXTE apportée dans le message (temporaire, jamais enregistrée).
+  ['context', { domain: 'context', authority: 3, structured: true, noun: 'information' }],
 ]);
 
 /** Déclare (ou remplace) un domaine de sources — extensibilité (#419 écart 8). */
@@ -243,6 +289,14 @@ export interface BusinessSource {
   provider?: string | null;
   /** Montant (centimes EUR) porté par la source, s'il y en a un. */
   amountCents?: number | null;
+  /**
+   * Lot 75J (#419 R01) — NATURE du montant porté : coût réalisé consolidé
+   * (`realized`), montant facturé / documenté (`documented`), tarif ou devis
+   * PRÉVISIONNEL (`forecast`), preuve de RÈGLEMENT (`payment`). Absent :
+   * documenté. Un règlement ou une prévision ne se substitue jamais
+   * automatiquement à une facture.
+   */
+  amountNature?: AmountNature | null;
   /** Date de fin (contrat, échéance) ou date significative. */
   endDate?: string | null;
   date?: string | null;
@@ -254,6 +308,22 @@ export interface BusinessSource {
   meta?: Record<string, unknown>;
 }
 
+/** Nature d'un montant (lot 75J, #419 R01). */
+export type AmountNature = 'realized' | 'documented' | 'forecast' | 'payment';
+
+/** Nature du montant d'une source (pure) : celle déclarée, sinon documenté. */
+export function amountNatureOf(s: Pick<BusinessSource, 'amountNature' | 'meta'>): AmountNature {
+  const m = (s.meta ?? {}) as { amountNature?: unknown };
+  const n = s.amountNature ?? (typeof m.amountNature === 'string' ? m.amountNature : null);
+  return n === 'realized' || n === 'forecast' || n === 'payment' ? n : 'documented';
+}
+
+/** Montant PRINCIPAL (coût réalisé ou facturé) — jamais un règlement ni une prévision (pure). */
+export function isPrimaryAmount(s: Pick<BusinessSource, 'amountNature' | 'meta'>): boolean {
+  const n = amountNatureOf(s);
+  return n === 'realized' || n === 'documented';
+}
+
 /** Besoin sémantique compris : termes, faits du registre, besoin de valeur. */
 export interface SemanticNeed {
   /** Résidu déterministe + sujets UNDERSTAND + fournisseur filtré. */
@@ -261,6 +331,8 @@ export interface SemanticNeed {
   /** Clés du FIELD_CATALOG demandées par UNDERSTAND. */
   facts: string[];
   need: ValueNeed | null;
+  /** Lot 75J (#419 R01) : un TOTAL est demandé (jamais la seule dernière pièce). */
+  aggregate?: boolean;
 }
 
 /** Termes de correspondance (pure) : sujets UNDERSTAND découpés, sans mots non significatifs. */
@@ -322,8 +394,13 @@ export function carriesRequestedValue(s: BusinessSource, need: ValueNeed | null)
 export function operationCarriesValue(op: BusinessSource, need: ValueNeed | null): boolean {
   if (!need) return true;
   if (need === 'amount') {
-    const n = (op.meta as { realizedCount?: unknown } | undefined)?.realizedCount;
-    return typeof n === 'number' ? n > 0 : op.amountCents != null;
+    // Lot 75J (#419 R01) : capacité évaluée sur les montants réalisés EXPLOITABLES
+    // (montant EUR établi), jamais sur le seul nombre de composantes : une
+    // composante réalisée sans montant EUR (devise non convertie, montant absent)
+    // ne fait pas de l'Opération une source qui porte le montant.
+    const m = (op.meta ?? {}) as { realized?: unknown; realizedCount?: unknown };
+    if (Array.isArray(m.realized)) return m.realized.some((r) => typeof (r as { cents?: unknown })?.cents === 'number');
+    return typeof m.realizedCount === 'number' ? m.realizedCount > 0 : op.amountCents != null;
   }
   return carriesRequestedValue(op, need);
 }
@@ -375,13 +452,46 @@ export interface SemanticSelection {
   /** Domaine de l'interprétation unique, ou `null`. */
   domain: BusinessSourceDomain | null;
   /** Candidats examinés : pertinence (> 0 = plausible), capacité (trace). */
-  scored: Array<{ ref: string; domain: BusinessSourceDomain; score: number; capable?: boolean }>;
+  scored: Array<{ ref: string; domain: BusinessSourceDomain; score: number; capable?: boolean; via?: string }>;
   /** Sources éligibles (compte, période, non représentées), ordonnées — réservoir d'arbitrage. */
   eligible: BusinessSource[];
   /** Lot 59 : candidats ÉCARTÉS avant la sélection, et pourquoi (trace, références seulement). */
-  excluded: Array<{ ref: string; reason: 'REPRESENTED_BY_OPERATION' | 'OUT_OF_PERIOD' }>;
+  excluded: Array<{ ref: string; reason: 'REPRESENTED_BY_OPERATION' | 'OUT_OF_PERIOD' | 'PAYMENT_NOT_INVOICE' | 'FORECAST_NOT_REALIZED' }>;
   /** Raison de la décision (trace). */
-  reason: 'SINGLE_CAPABLE' | 'SINGLE_PLAUSIBLE' | 'COMPLEMENTARY_SAME_REALITY' | 'MULTIPLE_PLAUSIBLE' | 'PLAUSIBLE_WITHOUT_VALUE' | 'NO_PLAUSIBLE';
+  reason: 'SINGLE_CAPABLE' | 'SINGLE_PLAUSIBLE' | 'COMPLEMENTARY_SAME_REALITY' | 'MULTIPLE_PLAUSIBLE' | 'PLAUSIBLE_WITHOUT_VALUE' | 'NO_PLAUSIBLE'
+    | 'PRIMARY_AMOUNT_NATURE';
+}
+
+/**
+ * Lot 75J (#419 R01) — TOTAL d'une même réalité démontrée (pure) : l'Opération
+ * qui ne porte pas le montant et ses pièces RATTACHÉES qui le portent. Seuls
+ * les montants principaux (facturés / réalisés) sont comptés, une fois chacun
+ * (même montant à la même date : une seule fois) ; un règlement ou un devis
+ * n'est jamais additionné. Le serveur calcule ; la réponse dit le total, le
+ * nombre de montants et le dernier.
+ */
+export function aggregateSameReality(pivot: BusinessSource, pieces: readonly BusinessSource[]): BusinessSource {
+  const vus = new Set<string>();
+  const realized: Array<{ cents: number; date: string | null; ref: string }> = [];
+  for (const p of pieces) {
+    if (p.amountCents == null || !isPrimaryAmount(p)) continue;
+    const cle = `${p.amountCents}|${String(p.date ?? '').slice(0, 10)}`;
+    if (vus.has(cle)) continue;
+    vus.add(cle);
+    realized.push({ cents: p.amountCents, date: p.date ? String(p.date).slice(0, 10) : null, ref: p.ref });
+  }
+  realized.sort((a, b) => String(b.date ?? '').localeCompare(String(a.date ?? '')));
+  const total = realized.reduce((n, r) => n + r.cents, 0);
+  return {
+    ...pivot,
+    amountCents: realized[0]?.cents ?? null,
+    amountNature: 'documented',
+    meta: {
+      ...(pivot.meta ?? {}), totalCents: total, realizedCount: realized.length, lastDate: realized[0]?.date ?? null,
+      realized: realized.map(({ cents, date }) => ({ cents, date })), aggregatedFrom: realized.map((r) => r.ref),
+      pieceSources: pieces.map((p) => p.source).filter(Boolean),
+    },
+  };
 }
 
 /**
@@ -439,9 +549,10 @@ export function selectInterpretations(
   const scored = utiles.map((s) => {
     const o = rattachee(s);
     const herite = o && (lexical.get(o) ?? 0) > 0 ? 1 : 0;
-    return { s, score: Math.max(lexical.get(s) ?? 0, herite), capable: capable(s) };
+    return { s, score: Math.max(lexical.get(s) ?? 0, herite), capable: capable(s), via: herite && !(lexical.get(s) ?? 0) ? o!.ref : undefined };
   });
-  const trace = scored.map((x) => ({ ref: x.s.ref, domain: x.s.domain, score: x.score, capable: x.capable }));
+  // Lot 75J : `via` — pièce pertinente par son RATTACHEMENT à une opération pertinente (lien structuré).
+  const trace = scored.map((x) => ({ ref: x.s.ref, domain: x.s.domain, score: x.score, capable: x.capable, ...(x.via ? { via: x.via } : {}) }));
   const eligible = [...utiles].sort((a, b) => rang(b, need.need) - rang(a, need.need));
   const fin = (selected: BusinessSource[], reason: SemanticSelection['reason']): SemanticSelection => ({
     selected, domain: selected.length === 1 ? selected[0].domain : null, scored: trace, eligible, excluded, reason,
@@ -458,6 +569,8 @@ export function selectInterpretations(
     return fin(etats, 'PLAUSIBLE_WITHOUT_VALUE');
   }
   if (capables.length === 1) return fin(capables, plausibles.length === 1 ? 'SINGLE_PLAUSIBLE' : 'SINGLE_CAPABLE');
+  /** Lot 75J (#419 R01) : un TOTAL est demandé (explicitement ou sur une période). */
+  const total = need.need === 'amount' && (Boolean(need.aggregate) || Boolean(opts.period));
   // Réalité unique DÉMONTRÉE (rattachement, référence) : UNE opération et ses
   // pièces / échéances. L'opération la représente si elle porte la valeur ;
   // sinon la pièce rattachée la plus récente qui la porte (jamais une somme :
@@ -470,8 +583,27 @@ export function selectInterpretations(
     })() : null;
   if (pivot && capables.every((s) => s === pivot || (sourceDomain(s.domain).authority < sourceDomain('operation').authority && memeRealite(pivot, s)))) {
     if (capables.includes(pivot) && operationCarriesValue(pivot, need.need)) return fin([pivot], 'COMPLEMENTARY_SAME_REALITY');
-    const pieces = capables.filter((s) => s !== pivot).sort((a, b) => String(b.date ?? '').localeCompare(String(a.date ?? '')));
+    // Lot 75J (#419 R01) : montant principal (facture) avant règlement ou devis, puis le plus récent.
+    const pieces = capables.filter((s) => s !== pivot)
+      .sort((a, b) => Number(isPrimaryAmount(b)) - Number(isPrimaryAmount(a)) || String(b.date ?? '').localeCompare(String(a.date ?? '')));
+    const principales = pieces.filter((s) => s.amountCents != null && isPrimaryAmount(s));
+    // Demande de TOTAL : jamais la seule dernière pièce — total serveur des pièces de cette réalité.
+    if (total && principales.length > 1) return fin([aggregateSameReality(pivot, principales)], 'COMPLEMENTARY_SAME_REALITY');
     if (pieces.length) return fin([pieces[0]], 'COMPLEMENTARY_SAME_REALITY');
+  }
+  // Lot 75J (#419 R01) : NATURE du montant demandé (montant). Une preuve de
+  // règlement ou un tarif / devis prévisionnel ne se substitue jamais
+  // automatiquement à un montant facturé ou réalisé : présents ensemble, seuls
+  // les montants principaux restent des interprétations (écart tracé).
+  if (need.need === 'amount') {
+    const principaux = capables.filter((s) => isPrimaryAmount(s));
+    if (principaux.length && principaux.length < capables.length) {
+      for (const s of capables) {
+        if (!principaux.includes(s)) excluded.push({ ref: s.ref, reason: amountNatureOf(s) === 'payment' ? 'PAYMENT_NOT_INVOICE' : 'FORECAST_NOT_REALIZED' });
+      }
+      if (principaux.length === 1) return fin(principaux, 'PRIMARY_AMOUNT_NATURE');
+      return fin([...principaux].sort((a, b) => rang(b, need.need) - rang(a, need.need)), 'MULTIPLE_PLAUSIBLE');
+    }
   }
   return fin([...capables].sort((a, b) => rang(b, need.need) - rang(a, need.need)), 'MULTIPLE_PLAUSIBLE');
 }
@@ -632,7 +764,8 @@ export interface SemanticTrace {
   semanticAmbiguity: boolean;
   /** Termes non résolus (résidu) — « internet ». */
   semanticResidue: string[];
-  semanticCandidates: Array<{ ref: string; domain: string; score: number }>;
+  /** Sources envisagées : pertinence (score > 0) et CAPACITÉ à répondre (lot 75J). */
+  semanticCandidates: Array<{ ref: string; domain: string; score: number; capable?: boolean }>;
   sourceDomainsAvailable: string[];
   operationCandidates: number[];
   selectedOperationId: number | null;
@@ -672,7 +805,7 @@ export interface SemanticTrace {
   /** Arbitrage IA impossible : motif (`PROMPT_UNSUPPORTED`, `BUDGET`, `AI_UNAVAILABLE`…). */
   arbitrationUnavailableReason: string | null;
   /** Capacités du prompt maître T2 EFFECTIF (BO) constatées pour cette demande. */
-  t2PromptCapabilities: { arbitration: boolean; interaction: boolean; version: string | null } | null;
+  t2PromptCapabilities: { arbitration: boolean; interaction: boolean; version: string | null; compatible?: boolean | null } | null;
   /** Informations de CONTEXTE (clés du registre) exploitées pour cette seule demande — jamais enregistrées. */
   contextFactsUsed: string[];
   /** Informations de contexte écartées (valeur non relue dans le message, clé inconnue). */
@@ -685,6 +818,15 @@ export interface SemanticTrace {
   updateFactsProposed: number;
   /** Informations NON proposées et motif (aucun abandon silencieux). */
   updateFactsRefused: Array<{ fieldKey: string | null; reason: string }>;
+  // ── Lot 75J (#419 résiduels) : reconstitution complète ──────────────────
+  /** Candidats éligibles NON présentés à T2 (limite de volume) — jamais choisis. */
+  candidatesNotPresented: number;
+  /** Informations de contexte écartées, avec leur motif (jamais silencieusement). */
+  contextFactsRejected: Array<{ fieldKey: string | null; reason: string }>;
+  /** Prompt maître T2 effectif constaté à la COMPRÉHENSION (version, capacités, compatibilité). */
+  t2PromptAtUnderstand: { version: string | null; arbitration: boolean; interaction: boolean; compatible: boolean | null } | null;
+  /** Informations apportées non comprises faute de prompt compatible (`PROMPT_UNSUPPORTED`). */
+  interactionUnavailableReason: string | null;
 }
 
 export function emptySemanticTrace(p: Pick<SemanticTrace, 'trigger' | 'deterministicMatch' | 'deterministicConfidence'>): SemanticTrace {
@@ -699,5 +841,6 @@ export function emptySemanticTrace(p: Pick<SemanticTrace, 'trigger' | 'determini
     interactionMode: null, suppliedFactsCount: 0, updateCapabilityResolved: null, updateTargetType: null, confirmationPlanCreated: false,
     candidatesExcluded: [], lexicalMatchEstablished: null, arbitrationUnavailableReason: null, t2PromptCapabilities: null,
     contextFactsUsed: [], contextFactsIgnored: 0, contextContradiction: false, calculation: null, updateFactsProposed: 0, updateFactsRefused: [],
+    candidatesNotPresented: 0, contextFactsRejected: [], t2PromptAtUnderstand: null, interactionUnavailableReason: null,
   };
 }

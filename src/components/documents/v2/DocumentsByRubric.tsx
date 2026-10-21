@@ -68,6 +68,7 @@ import {
   libelleResultats,
   parseSearchResults,
   setEquipmentFilter,
+  setRoomFilter,
   sortOptionsFor,
   toggleFilter,
   type DocumentItem,
@@ -80,6 +81,8 @@ import { DEFAULT_PREFS, loadPrefs, savePrefs, type ViewPrefs } from './view-pref
 import { saveListSnapshot, takeListSnapshot, type ListSnapshot } from './list-restore';
 import { useDocumentsFeed, type FeedQuery } from './useDocumentsFeed';
 import { buildEquipmentFilterModel } from '@/lib/filters/equipment-filter';
+import { buildRoomFilterModel } from '@/lib/filters/room-filter';
+import { ROOM_ASSOCIATIONS_CHANGED } from '@/lib/rooms/room-associations';
 
 /**
  * Le téléversement RÉUTILISE le dialogue existant, il n'est pas réécrit.
@@ -384,7 +387,13 @@ export function DocumentsByRubric({
   useEffect(() => {
     const recharger = () => { void load(); };
     window.addEventListener('document-added', recharger);
-    return () => window.removeEventListener('document-added', recharger);
+    // Lot 75B : association pièce ↔ équipement ↔ document modifiée (tiroir
+    // Pièce) : résultats et compteurs du filtre Pièce relus.
+    window.addEventListener(ROOM_ASSOCIATIONS_CHANGED, recharger);
+    return () => {
+      window.removeEventListener('document-added', recharger);
+      window.removeEventListener(ROOM_ASSOCIATIONS_CHANGED, recharger);
+    };
   }, [load]);
 
   // Suppression (tiroir) : le document disparaît tout de suite, les compteurs
@@ -511,7 +520,16 @@ export function DocumentsByRubric({
   useEffect(() => {
     if (meta && !equipmentModel.visible && filters.equipment) setFilters((f) => setEquipmentFilter(f, null));
   }, [meta, equipmentModel.visible, filters.equipment]);
-  const chips = activeFilterChips(filters, options, equipmentModel.chipLabel);
+  // Lot 75B : filtre Pièce — mêmes biens retenus ; une pièce inconnue des
+  // biens retenus (supprimée, autre bien) est retirée plutôt que filtrée à vide.
+  const roomModel = useMemo(
+    () => buildRoomFilterModel(meta?.roomFacet, filters.piece, equipmentAssetCount),
+    [meta, filters.piece, equipmentAssetCount],
+  );
+  useEffect(() => {
+    if (meta && filters.piece && roomModel.chipLabel === null) setFilters((f) => setRoomFilter(f, null));
+  }, [meta, roomModel.chipLabel, filters.piece]);
+  const chips = activeFilterChips(filters, options, equipmentModel.chipLabel, roomModel.chipLabel);
   // Les documents arrivent triés et filtrés par le serveur, sur tout le
   // périmètre : l'écran ne retrie jamais un lot, il le découpe en sections.
   const { groups: allGroups } = useMemo(
@@ -595,6 +613,8 @@ export function DocumentsByRubric({
           onToggle={(dim, value) => changeFilters(toggleFilter(filters, dim, value))}
           equipment={equipmentModel}
           onEquipment={(value) => changeFilters(setEquipmentFilter(filters, value))}
+          room={roomModel}
+          onRoom={(value) => changeFilters(setRoomFilter(filters, value))}
         />
       )}
       {resultIds && (
@@ -610,7 +630,9 @@ export function DocumentsByRubric({
       <ActiveFilterChips
         chips={chips}
         onRemove={(dim, value) => changeFilters(
-          dim === 'equipment' ? setEquipmentFilter(filters, null) : toggleFilter(filters, dim, value),
+          dim === 'equipment' ? setEquipmentFilter(filters, null)
+            : dim === 'piece' ? setRoomFilter(filters, null)
+              : toggleFilter(filters, dim, value),
         )}
         onClear={() => changeFilters(EMPTY_FILTERS)}
       />

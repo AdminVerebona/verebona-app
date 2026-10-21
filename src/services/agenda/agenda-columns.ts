@@ -8,7 +8,7 @@
  * ne sont ni écrits ni lus, et l'absence est signalée une fois par
  * processus. Ne lève jamais.
  */
-import { schemaNotReadyMessage } from '@/lib/schema-readiness-log';
+import { missingFromPresenceFlags, probeCount, schemaNotReadyMessage } from '@/lib/schema-readiness-log';
 const RECONTROLE_MS = 5 * 60_000;
 let etat: { ready: boolean; checkedAt: number } | null = null;
 let signale = false;
@@ -27,7 +27,7 @@ export async function agendaFunctionalColumnsReady(): Promise<boolean> {
         WHERE table_schema = current_schema() AND table_name = 'agenda_items' AND column_name = ANY($1::text[])`,
       [[...AGENDA_0223_COLUMNS]] as never[],
     )) as unknown as Array<{ n: number }>;
-    trouvees = Number(rows[0]?.n ?? 0);
+    trouvees = probeCount(rows); // lot 75A : résultat inexploitable = inconnu, pas 0
     ready = trouvees === AGENDA_0223_COLUMNS.length;
   } catch (e) {
     ready = false;
@@ -56,6 +56,7 @@ export function __resetAgendaColumnsForTests(ready: boolean | null = null): void
 
 let etatSources: { ready: boolean; checkedAt: number } | null = null;
 let signaleSources = false;
+const AGENDA_SOURCES_EXPECTED = ['agenda_item_sources.source_role', 'agenda_item_sources.evidence_id', 'agenda_item_sources.run_id (facultatif)'] as const;
 
 /**
  * Colonnes `source_role`, `evidence_id` présentes et `run_id` facultatif sur
@@ -65,16 +66,20 @@ let signaleSources = false;
 export async function agendaSourcesColumnsReady(): Promise<boolean> {
   if (etatSources && (etatSources.ready || Date.now() - etatSources.checkedAt < RECONTROLE_MS)) return etatSources.ready;
   let ready = false;
+  let absents: string[] | null = null;
   let erreur: unknown;
   try {
     const { pgClient } = await import('@/db');
+    // Lot 75A : un drapeau par élément attendu (liste exacte des absents).
     const rows = (await pgClient.unsafe(
-      `SELECT COUNT(*) FILTER (WHERE column_name IN ('source_role', 'evidence_id'))::int AS n,
-              COUNT(*) FILTER (WHERE column_name = 'run_id' AND is_nullable = 'YES')::int AS r
+      `SELECT COALESCE(bool_or(column_name = 'source_role'), false) AS a,
+              COALESCE(bool_or(column_name = 'evidence_id'), false) AS b,
+              COALESCE(bool_or(column_name = 'run_id' AND is_nullable = 'YES'), false) AS c
          FROM information_schema.columns
         WHERE table_schema = current_schema() AND table_name = 'agenda_item_sources'`,
-    )) as unknown as Array<{ n: number; r: number }>;
-    ready = Number(rows[0]?.n ?? 0) === 2 && Number(rows[0]?.r ?? 0) === 1;
+    )) as unknown as Array<{ a: boolean; b: boolean; c: boolean }>;
+    absents = rows[0] ? missingFromPresenceFlags(AGENDA_SOURCES_EXPECTED, [rows[0].a, rows[0].b, rows[0].c]) : null;
+    ready = absents !== null && absents.length === 0;
   } catch (e) {
     ready = false;
     erreur = e;
@@ -83,7 +88,7 @@ export async function agendaSourcesColumnsReady(): Promise<boolean> {
   if (!ready && !signaleSources) {
     signaleSources = true;
     console.error(schemaNotReadyMessage({
-      scope: '[agenda]', migration: '0223 (agenda_item_sources)', expected: ['source_role', 'evidence_id', 'run_id facultatif'], error: erreur,
+      scope: '[agenda]', migration: '0223 (agenda_item_sources)', expected: AGENDA_SOURCES_EXPECTED, missing: absents, error: erreur,
       consequence: 'Liens source ↔ agenda limités à agenda_file_links.',
     }));
   }

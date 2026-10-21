@@ -22,7 +22,7 @@
  * fichier. Migrations absentes : rien n'est écrit, signalé une fois.
  * ══════════════════════════════════════════════════════════════════════════
  */
-import { schemaNotReadyMessage } from '@/lib/schema-readiness-log';
+import { missingFromPresenceFlags, schemaNotReadyMessage } from '@/lib/schema-readiness-log';
 import { wordStartPattern } from '@/lib/search/match-engine';
 import { needsSourceRetryDue, verificationAutoRetryDue } from './verification-followup';
 import type { CoverageStatus, SourceLayer, SourceUnitKind, T1CompletenessReport, T1QualityState, UnresolvedFactRecord } from './types';
@@ -30,6 +30,7 @@ import type { CoverageStatus, SourceLayer, SourceUnitKind, T1CompletenessReport,
 type Tx = { unsafe: (q: string, p?: never[]) => Promise<unknown> };
 const json = (v: unknown) => JSON.stringify(v ?? null);
 
+const SOURCE_LAYER_EXPECTED = ['document_source_units', 'document_extraction_coverage', 'document_unresolved_facts', 'document_facts.source_unit_ids'] as const;
 const RECONTROLE_MS = 5 * 60_000;
 let etat: { ready: boolean; checkedAt: number } | null = null;
 let signale = false;
@@ -38,17 +39,20 @@ let signale = false;
 export async function sourceLayerReady(): Promise<boolean> {
   if (etat && (etat.ready || Date.now() - etat.checkedAt < RECONTROLE_MS)) return etat.ready;
   let ready = false;
+  let absents: string[] | null = null;
   let erreur: unknown;
   try {
     const { pgClient } = await import('@/db');
+    // Lot 75A : un drapeau par élément attendu (liste exacte des absents).
     const r = (await pgClient.unsafe(
-      `SELECT to_regclass('document_source_units') IS NOT NULL
-          AND to_regclass('document_extraction_coverage') IS NOT NULL
-          AND to_regclass('document_unresolved_facts') IS NOT NULL
-          AND EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema()
-                       AND table_name = 'document_facts' AND column_name = 'source_unit_ids') AS ok`,
-    )) as unknown as Array<{ ok: boolean }>;
-    ready = Boolean(r[0]?.ok);
+      `SELECT to_regclass('document_source_units') IS NOT NULL AS a,
+              to_regclass('document_extraction_coverage') IS NOT NULL AS b,
+              to_regclass('document_unresolved_facts') IS NOT NULL AS c,
+              EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema()
+                       AND table_name = 'document_facts' AND column_name = 'source_unit_ids') AS d`,
+    )) as unknown as Array<{ a: boolean; b: boolean; c: boolean; d: boolean }>;
+    absents = r[0] ? missingFromPresenceFlags(SOURCE_LAYER_EXPECTED, [r[0].a, r[0].b, r[0].c, r[0].d]) : null;
+    ready = absents !== null && absents.length === 0;
   } catch (e) {
     ready = false;
     erreur = e;
@@ -57,8 +61,8 @@ export async function sourceLayerReady(): Promise<boolean> {
   if (!ready && !signale) {
     signale = true;
     console.error(schemaNotReadyMessage({
-      scope: '[t1-source-units]', migration: '0295-0297', error: erreur,
-      expected: ['document_source_units', 'document_extraction_coverage', 'document_unresolved_facts', 'document_facts.source_unit_ids'],
+      scope: '[t1-source-units]', migration: '0295-0297', error: erreur, missing: absents,
+      expected: SOURCE_LAYER_EXPECTED,
       consequence: 'Couche A de T1 (unités de la source, couverture) non écrite ; les faits restent écrits comme avant.',
     }));
   }

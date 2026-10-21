@@ -24,7 +24,7 @@
  * l'échec de migration exposé par `/api/health`.
  * ══════════════════════════════════════════════════════════════════════════
  */
-import { schemaNotReadyMessage } from '@/lib/schema-readiness-log';
+import { probeCount, schemaNotReadyMessage } from '@/lib/schema-readiness-log';
 const RECONTROLE_MS = 5 * 60_000;
 
 /** Colonnes attendues de la 0218 sur `document_facts`. */
@@ -66,7 +66,7 @@ async function colonnesPresentes(
         WHERE table_schema = current_schema() AND table_name = $1 AND column_name = ANY($2::text[])`,
       [table, [...colonnes]] as never[],
     )) as unknown as Array<{ n: number }>;
-    trouvees = Number(rows[0]?.n ?? 0);
+    trouvees = probeCount(rows); // lot 75A : résultat inexploitable = inconnu, pas 0
     ready = trouvees === colonnes.length;
   } catch (e) {
     ready = false;

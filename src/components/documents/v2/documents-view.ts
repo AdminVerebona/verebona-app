@@ -19,6 +19,7 @@
 import { MICROCOPY } from '@/lib/referential/v2/microcopy';
 import { UNFILED_COLORS, rubricColors } from '@/lib/referential/v2/rubrics';
 import { equipmentFilterParam, isEquipmentFilterActive } from '@/lib/filters/equipment-filter';
+import { isRoomFilterActive, roomFilterParam } from '@/lib/filters/room-filter';
 
 /** Identifiant de la zone « Sans rubrique » — le même que côté serveur. */
 export const UNFILED = '__UNFILED__';
@@ -67,6 +68,12 @@ export interface ViewFilters {
    * « Tous (bien et équipements) ». Réinitialisé à chaque changement de bien.
    */
   equipment?: string;
+  /**
+   * Lot 75 (75B) — filtre « Pièce » : identifiant ; absent = toutes. Rend les
+   * documents directs de la pièce ET ceux de ses équipements. Réinitialisé à
+   * chaque changement de bien.
+   */
+  piece?: string;
 }
 
 /** Dimensions à choix multiples (pastilles à bascule). */
@@ -125,7 +132,8 @@ export function hasActiveFilters(f: ViewFilters): boolean {
 }
 
 export function activeFilterCount(f: ViewFilters): number {
-  return f.biens.length + f.rubrics.length + f.types.length + (isEquipmentFilterActive(f.equipment) ? 1 : 0);
+  return f.biens.length + f.rubrics.length + f.types.length + (isEquipmentFilterActive(f.equipment) ? 1 : 0)
+    + (isRoomFilterActive(f.piece) ? 1 : 0);
 }
 
 /** Filtres combinés : ET entre dimensions, OU à l'intérieur d'une dimension. */
@@ -141,8 +149,17 @@ export function filterDocuments(docs: readonly DocumentItem[], f: ViewFilters): 
 export function toggleFilter(f: ViewFilters, dim: FilterDim, value: string): ViewFilters {
   const list = f[dim];
   const next: ViewFilters = { ...f, [dim]: list.includes(value) ? list.filter((v) => v !== value) : [...list, value] };
-  // Lot 71 : changer de bien réinitialise le filtre Équipement (« Tous »).
-  if (dim === 'biens') delete next.equipment;
+  // Lot 71 : changer de bien réinitialise le filtre Équipement (« Tous ») ;
+  // lot 75B : et le filtre Pièce (« Toutes les pièces »).
+  if (dim === 'biens') { delete next.equipment; delete next.piece; }
+  return next;
+}
+
+/** Filtre Pièce (lot 75B) : `all` (ou valeur illisible) le retire. */
+export function setRoomFilter(f: ViewFilters, value: string | null | undefined): ViewFilters {
+  const next: ViewFilters = { ...f };
+  const param = roomFilterParam(value);
+  if (param) next.piece = param; else delete next.piece;
   return next;
 }
 
@@ -250,16 +267,19 @@ export function buildFilterOptions(
   return filterOptionsFromFacets(facetsFromDocuments(scope), f, rubrics);
 }
 
-/** Pastilles « Filtré par … », dans l'ordre Bien, Équipement, Rubrique, Type. */
+/** Pastilles « Filtré par … », dans l'ordre Bien, Pièce, Équipement, Rubrique, Type. */
 export function activeFilterChips(
   f: ViewFilters,
   options: ReturnType<typeof buildFilterOptions>,
   equipmentChipLabel: string | null = null,
-): Array<{ dim: FilterDim | 'equipment'; value: string; label: string }> {
+  roomChipLabel: string | null = null,
+): Array<{ dim: FilterDim | 'equipment' | 'piece'; value: string; label: string }> {
   const libelle = (list: FilterOption[], v: string) => list.find((o) => o.value === v)?.label ?? v;
   const equipment = equipmentFilterParam(f.equipment);
+  const piece = roomFilterParam(f.piece);
   return [
     ...f.biens.map((v) => ({ dim: 'biens' as const, value: v, label: libelle(options.biens, v) })),
+    ...(piece && roomChipLabel ? [{ dim: 'piece' as const, value: piece, label: roomChipLabel }] : []),
     ...(equipment && equipmentChipLabel ? [{ dim: 'equipment' as const, value: equipment, label: equipmentChipLabel }] : []),
     ...f.rubrics.map((v) => ({ dim: 'rubrics' as const, value: v, label: libelle(options.rubrics, v) })),
     ...f.types.map((v) => ({ dim: 'types' as const, value: v, label: libelle(options.types, v) })),

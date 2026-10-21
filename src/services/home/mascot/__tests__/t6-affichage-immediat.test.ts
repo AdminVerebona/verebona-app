@@ -124,6 +124,7 @@ describe('affichage immédiat de la mascotte (lot 26, point 17)', () => {
     expect(hook).toMatch(/getSessionEpoch\(\)/);
     expect(hook).toMatch(/verebona:session-changed', purgeMascotPresentationMemory/);
     expect(hook).not.toMatch(/localStorage\.setItem|sessionStorage/);
-    expect(hook).toMatch(/prev && prev\.contextHash === data\.contextHash \? prev : data/);
+    // Lot 75E (§5) : même contexte ET même révision du contrat de présentation.
+    expect(hook).toMatch(/keepDisplayedPresentation\(prev, data\) \? prev : data/);
   });
 });

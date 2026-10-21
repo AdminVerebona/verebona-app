@@ -217,6 +217,29 @@ export interface PersistProjectedFactsResult {
   affectedTargets: Array<{ type: 'EQUIPMENT' | 'ROOM'; id: number; assetId: number }>;
   /** Preuves antérieures de la source passées SUPERSEDED, dont reliées à une remplaçante. */
   superseded: { count: number; linked: number };
+  /**
+   * Lot 75C (ticket T1 résiduels, C) — écritures OBLIGATOIRES réellement
+   * échouées : preuve éligible non écrite (`RECORD`), remplacement des
+   * preuves antérieures impossible (`SUPERSEDE` : anciennes et nouvelles
+   * resteraient actives ensemble), cibles remplacées illisibles (`TARGETS` :
+   * leur réconciliation ne serait pas programmée). Jamais confondues avec un
+   * fait volontairement non projeté (`skipped`) : l'appelant refuse le
+   * succès de la persistance et programme la reprise (idempotente).
+   */
+  writeErrors: PersistEvidenceWriteError[];
+}
+
+export interface PersistEvidenceWriteError {
+  stage: 'RECORD' | 'SUPERSEDE' | 'TARGETS';
+  /** `canonicalKey@TYPE:id` pour une preuve, null pour une opération de source. */
+  key: string | null;
+  message: string;
+}
+
+/** Résumé lisible des écritures en échec (étape EVIDENCE du rapport). Pure. */
+export function describeEvidenceWriteErrors(errors: readonly PersistEvidenceWriteError[]): string {
+  const parts = errors.slice(0, 5).map((e) => `${e.stage}${e.key ? ` ${e.key}` : ''} : ${e.message}`);
+  return `${errors.length} écriture(s) de preuve en échec — ${parts.join(' · ')}${errors.length > 5 ? ' …' : ''}`.slice(0, 1_000);
 }
 
 /** Clé d'indexation d'une preuve ciblée. */
@@ -233,11 +256,15 @@ const scalarToString = (v: string | number | boolean | null): string | null =>
  * Ne lève pas pour un fait isolé (journalisé, rendu dans `skipped`). Le
  * supersede n'est complet que si toutes les écritures ont réussi ; sinon,
  * seules les anciennes preuves AYANT une remplaçante sont remplacées.
+ * Lot 75C : toute écriture réellement échouée est AUSSI rendue dans
+ * `writeErrors` — l'appelant ne déclare jamais l'étape réussie.
  */
 export async function persistProjectedFacts(p: PersistProjectedFactsInput): Promise<PersistProjectedFactsResult> {
   const result: PersistProjectedFactsResult = {
-    evidenceIds: new Map(), skipped: [], affectedAssetIds: [], affectedTargets: [], superseded: { count: 0, linked: 0 },
+    evidenceIds: new Map(), skipped: [], affectedAssetIds: [], affectedTargets: [], superseded: { count: 0, linked: 0 }, writeErrors: [],
   };
+  const erreur = (stage: PersistEvidenceWriteError['stage'], key: string | null, e: unknown) =>
+    result.writeErrors.push({ stage, key, message: ((e as Error)?.message ?? String(e)).slice(0, 300) });
   const skip = (fact: ProjectedFact, reason: ProjectedFactSkipReason) => result.skipped.push({ fact, reason });
 
   // 1. Tri : seuls les faits canoniques, ciblés sur une entité, avec preuve.
@@ -334,7 +361,10 @@ export async function persistProjectedFacts(p: PersistProjectedFactsInput): Prom
       result.evidenceIds.set(projectedEvidenceKey(key, type, entityId), id);
     } catch (e) {
       failures += 1;
-      skip(fact, e instanceof EvidenceSchemaNotReadyError ? 'SCHEMA_NOT_READY' : 'WRITE_FAILED');
+      const schema = e instanceof EvidenceSchemaNotReadyError;
+      skip(fact, schema ? 'SCHEMA_NOT_READY' : 'WRITE_FAILED');
+      // Lot 75C (C) : une écriture réellement échouée remonte à l'appelant (statut métier).
+      if (!schema) erreur('RECORD', projectedEvidenceKey(key, type, entityId), e);
       console.error(`[persist-evidence] fait ${key} (${type}#${entityId}) :`, (e as Error).message);
     }
   }
@@ -349,6 +379,7 @@ export async function persistProjectedFacts(p: PersistProjectedFactsInput): Prom
       cibles.set(`${c.type}:${c.id}`, c);
     }
   } catch (e) {
+    erreur('TARGETS', null, e);
     console.error(`[persist-evidence] cibles remplacées de la source ${p.leadSourceId} :`, (e as Error).message);
   }
 
@@ -364,6 +395,7 @@ export async function persistProjectedFacts(p: PersistProjectedFactsInput): Prom
     result.superseded = { count: s.superseded, linked: s.linked };
     for (const a of s.assetIds) touched.add(a);
   } catch (e) {
+    erreur('SUPERSEDE', null, e);
     console.error(`[persist-evidence] supersede de la source ${p.leadSourceId} :`, (e as Error).message);
   }
 

@@ -116,7 +116,7 @@ describe.skipIf(!enabled)('Préparation → génération réelle (kit de vente)'
     expect(text).toContain('CONTENU DPE');
     // Jointes au ZIP : listées, jamais intégrées.
     expect(text).not.toContain('CONTENU ACTE');
-    expect(r.zipEntries.map((z) => z.path).sort()).toEqual(['documents/acte-de-vente-2019.pdf', 'documents/devis-cuisine.docx']);
+    expect(r.zipEntries.map((z) => z.path).sort()).toEqual(['documents/Acte de vente 2019.pdf', 'documents/Devis cuisine.docx']); // L75L : nom affiché
     // Non cochée : absente partout (SEL-GEN-001).
     expect(text).not.toContain('Facture non retenue');
     expect(r.zipEntries.some((z) => z.path.includes('facture'))).toBe(false);

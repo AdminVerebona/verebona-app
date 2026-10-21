@@ -60,8 +60,8 @@ import { useWriteGuard } from '@/contexts/WriteGuardContext';
 import { preloadAddForm } from '@/components/mobile/add-forms';
 import type { MascotAction, MascotParagraph, MascotPresentation, MascotTile, MascotTodoItem } from '@/services/home/mascot/types';
 import {
-  bubbleLead, displayedSecondaries, duoInviteHomeItem, homeItems, homePose, homePoseLabel, homeSuggestions, splitHighlights, subjectBlocks,
-  type HomeItem, type SubjectBlock,
+  bubbleLead, displayedSecondaries, duoInviteHomeItem, homeItems, homePose, homePoseLabel, homeSuggestions, splitHighlights, structuredSubjectText,
+  subjectBlocks, subjectText, type HomeItem, type SubjectBlock,
 } from '@/services/home/mascot/bubble';
 import { MascotPose } from '@/components/verebona/space/MascotPose';
 import { useVerebonaSpace } from '@/components/verebona/space/VerebonaSpaceProvider';
@@ -443,10 +443,9 @@ export function MascotSpeaks({ greetingName, empty, onCreateAsset, onUploadDocum
 
 /** Intitulé du sujet dans les fenêtres de rappel : on sait toujours QUELLE échéance est visée. */
 function reminderSubject(p: MascotParagraph): string {
-  const t = p.tile;
-  if (!t) return p.text;
-  const date = t.status.split(' · ').pop() ?? '';
-  return [t.label, t.assetName, /\d{4}/.test(date) ? date : null].filter(Boolean).join(' · ');
+  // Lot 75E : même composition que le repli structuré des blocs ; sans
+  // tuile, le texte AFFICHÉ du sujet (jamais une introduction de comptage).
+  return p.tile ? structuredSubjectText(p) : subjectText(p);
 }
 
 /**
@@ -478,21 +477,26 @@ function SubjectBlockView({ block, first, onAction, onReminderDone }: {
             {block.badge}
           </span>
         )}
-        <p id={textId} className="m-0 break-words text-[15px] leading-[1.55] text-[color:var(--text-primary)] [text-wrap:pretty] md:text-[16px] md:leading-[1.6]">
-          {splitHighlights(block.text, block.highlights).map((part, i) => (part.strong
-            ? <strong key={i} className="font-semibold">{part.text}</strong>
-            : <span key={i}>{part.text}</span>))}
-        </p>
+        {/* Lot 75E : jamais de paragraphe vide (texte garanti par `subjectBlocks`). */}
+        {block.text && (
+          <p id={textId} className="m-0 break-words text-[15px] leading-[1.55] text-[color:var(--text-primary)] [text-wrap:pretty] md:text-[16px] md:leading-[1.6]">
+            {splitHighlights(block.text, block.highlights).map((part, i) => (part.strong
+              ? <strong key={i} className="font-semibold">{part.text}</strong>
+              : <span key={i}>{part.text}</span>))}
+          </p>
+        )}
         {(block.actions.length > 0 || block.reminder) && (
           <div className="-ml-1 flex flex-wrap items-center gap-x-1.5 gap-y-1">
             {block.actions.map((a) => (
-              <button key={a.action.actionId} type="button" className={BLOCK_ACTION_PRIMARY} onClick={() => onAction(a.action)} data-block-action={a.action.actionId}>
+              // Lot 75E : « Voir » est décrit par le texte du sujet (nom accessible complet).
+              <button key={a.action.actionId} type="button" className={BLOCK_ACTION_PRIMARY} onClick={() => onAction(a.action)} data-block-action={a.action.actionId}
+                aria-describedby={block.text && block.text !== a.label ? textId : undefined}>
                 {a.label}
                 {a.primary && <ArrowRight className="h-3.5 w-3.5" strokeWidth={2.2} aria-hidden />}
               </button>
             ))}
             {block.reminder && (
-              <T6ReminderActions reminder={block.reminder} subject={reminderSubject(block.paragraph)} onDone={onReminderDone} describedBy={textId} />
+              <T6ReminderActions reminder={block.reminder} subject={reminderSubject(block.paragraph)} onDone={onReminderDone} describedBy={block.text ? textId : undefined} />
             )}
           </div>
         )}

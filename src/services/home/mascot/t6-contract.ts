@@ -215,13 +215,16 @@ const INTERFACE = /\b(bouton|boutons|cliquez|cliquer|clic|menu|onglet|ecran|lien
  * n'est jamais affiché tel quel (texte de secours du sujet, entrée de cache
  * ignorée puis renouvelée).
  */
-const MECANIQUE = /(^|[\s.;:])(a prevoir\s*:|(un|une|deux|trois|quatre|\d+|plusieurs)\s+sujets?\s+(merite|meritent|necessite|necessitent)\s+votre attention)/;
+const MECANIQUE = /(^|[\s.;:])a prevoir\s*:/;
 /**
  * Lot 68 : le texte porte-t-il une formule mécanique de la bulle ? (pure, testée T6-RAP)
  * Lot 71F : toute introduction de comptage (`hasCountingIntro` : nombres,
  * « points », « éléments », « demandent / requièrent… », « Voici deux
  * sujets »), accents, apostrophes et pluriel indifférents — sans dépendre
  * du prompt T6 en service.
+ * Lot 75E : le comptage n'a plus de motif propre ici — classificateur UNIQUE
+ * (`counting-intro.ts`), partagé avec la bulle et le cache ; ce module ne
+ * garde que le préfixe « À prévoir : ».
  */
 export function mechanicalWording(text: string): boolean {
   return MECANIQUE.test(plainT6(text)) || hasCountingIntro(text);
@@ -653,6 +656,19 @@ const clean = (v: string | null | undefined, max: number): string | null => {
 };
 const jours = (a: string, b: string) => Math.round((Date.parse(`${b}T00:00:00Z`) - Date.parse(`${a}T00:00:00Z`)) / 86_400_000);
 
+/**
+ * Lot 75E (C) — les preuves CONCRÈTES citées (description, faits extraits)
+ * se réduisent-elles à des faits INCERTAINS (pure) ? Titre, date, bien,
+ * série, historique et intitulés de document ne sont pas des preuves
+ * concrètes (ni comptés, ni suffisants).
+ */
+function uncertainFactsOnly(refs: readonly string[], c: T6EvaluationCandidate): boolean {
+  const nature = new Map(c.evidence.map((e) => [e.ref, e.kind]));
+  const statut = new Map((c.facts ?? []).map((f) => [f.ref, f.status]));
+  const concretes = refs.map((r) => r.trim()).filter((r) => nature.get(r) === 'DESCRIPTION' || nature.get(r) === 'DOCUMENT_FACT');
+  return concretes.length > 0 && concretes.every((r) => nature.get(r) === 'DOCUMENT_FACT' && statut.get(r) === 'UNCERTAIN');
+}
+
 /** Contrôles métier d'UNE décision (pure) : motif du rejet, ou null. */
 export function evaluationDecisionViolation(d: T6EvaluateOutput['decisions'][number], c: T6EvaluationCandidate, today: string): string | null {
   if (T6_REASON_CODES[d.reasonCode] !== d.decision) return 'reason_code_mismatch';
@@ -676,6 +692,10 @@ export function evaluationDecisionViolation(d: T6EvaluateOutput['decisions'][num
     if (d.reasonCode === T6_INFORMATIVE_REMINDER_CODE) return 'reminder_category_mismatch';
     if (!action) return 'show_now_without_action';
     if (d.evidenceRefs.length === 0) return 'show_now_without_evidence';
+    // Lot 75E (C) : un fait INCERTAIN n'est jamais l'unique fondement d'une
+    // démarche présentée comme certaine — si les seules preuves documentaires
+    // citées sont incertaines, l'incertitude doit être déclarée.
+    if (uncertainFactsOnly(d.evidenceRefs, c) && d.uncertainties.every((u) => !clean(u, 200))) return 'uncertain_evidence_as_certain';
   }
   if (d.actionDeadline) {
     if (d.actionDeadline < today) return 'action_deadline_past';

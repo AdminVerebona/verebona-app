@@ -18,6 +18,7 @@
 
 import type { DocItem, PhotoItem, PageMap, Nullable } from '../types';
 import type { PlannedDoc, GalleryPhoto } from './components';
+import { makeUniqueNamer, realExtension, withExtension } from '@/lib/download-filename';
 
 export const INTEGRABLE_FORMATS = new Set(['PDF', 'JPG', 'JPEG', 'PNG', 'WEBP']);
 
@@ -27,23 +28,27 @@ interface SelectableLike { selected?: boolean; corrupted?: boolean; occupantData
 export const selected = <T extends SelectableLike>(list: Nullable<Array<Nullable<T>>>): T[] =>
   (list ?? []).filter((x): x is T => !!x && x.selected === true && !x.corrupted && !x.occupantData);
 
-/** Nom de fichier normalisé (ZIP-007) avec suffixes de collision (ZIP-006). */
+/** Extensions d'origine compatibles avec le format détecté (`fileFormatOf`). */
+const SAME_FORMAT: Record<string, string[]> = {
+  jpg: ['jpg', 'jpeg', 'jpe'], heic: ['heic', 'heif'], docx: ['docx', 'doc', 'odt', 'rtf'],
+  xlsx: ['xlsx', 'xls', 'ods', 'csv'], pptx: ['pptx', 'ppt', 'odp'], txt: ['txt', 'csv', 'md', 'html', 'htm', 'xml', 'json', 'ics'],
+};
+
+/**
+ * Nom d'une pièce dans l'archive (ZIP-006/007) — règle COMMUNE du
+ * téléchargement (lot 75L, `src/lib/download-filename.ts`) : nom affiché
+ * (`title`) + extension du format réel, accents conservés, seuls les
+ * caractères interdits retirés ; doublons suffixés « (2) », « (3) »… sans
+ * écrasement. Repli : nom d'origine, puis « document ».
+ */
 export function makeZipNamer(): (doc: { id: string | number; fileName?: Nullable<string>; title?: Nullable<string>; format?: Nullable<string> }, folder?: string) => string {
-  const used = new Set<string>();
+  const unique = makeUniqueNamer();
   return (doc, folder = 'documents') => {
-    const raw = doc.fileName ?? doc.title ?? `document-${doc.id}`;
-    const dotIdx = raw.lastIndexOf('.');
-    const ext = dotIdx > 0 ? raw.slice(dotIdx).toLowerCase() : `.${String(doc.format ?? 'pdf').toLowerCase()}`;
-    let base = (dotIdx > 0 ? raw.slice(0, dotIdx) : raw)
-      .normalize('NFD').replace(/[̀-ͯ]/g, '')
-      .replace(/[’']/g, '-').replace(/[^a-zA-Z0-9]+/g, '-').replace(/^-+|-+$/g, '').toLowerCase();
-    // Garde-fou (hors maquette) : un titre sans caractère latin ne donne pas un nom vide.
-    if (!base) base = `document-${String(doc.id).replace(/[^a-zA-Z0-9]+/g, '-')}`;
-    let name = `${base}${ext}`;
-    let n = 2;
-    while (used.has(`${folder}/${name}`)) name = `${base}_${n++}${ext}`;
-    used.add(`${folder}/${name}`);
-    return `${folder}/${name}`;
+    const fmt = doc.format ? String(doc.format).toLowerCase() : null;
+    const orig = realExtension({ originalFilename: doc.fileName ?? null, mimeType: null });
+    const ext = orig && (!fmt || orig === fmt || SAME_FORMAT[fmt]?.includes(orig)) ? orig : (fmt ?? orig);
+    const name = withExtension(doc.title ?? '', ext) || withExtension(doc.fileName ?? '', ext) || (ext ? `document.${ext}` : 'document');
+    return unique(name, folder);
   };
 }
 

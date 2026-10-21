@@ -220,6 +220,8 @@ function agendaRowsOf(r: Row[]): MascotAgendaRow[] {
       assetSubtype: (i.assetSubtype as string | null) ?? null,
       seriesKey: (i.seriesKey as string | null) ?? null,
       ...(i.longOverdue === true ? { t6LongOverdue: true } : {}),
+      // Lot 75E (B) : curseur d'examen de la lecture complémentaire T6.
+      ...(typeof i.selectionSignature === 'string' ? { t6SelectionSignature: i.selectionSignature, t6Due: i.due === true } : {}),
     }));
 }
 
@@ -250,8 +252,22 @@ async function readAgenda(accountId: number, today: string): Promise<MascotAgend
 
 /** Lot 71G : échéances lues pour T6 au-delà de la lecture principale (bornées). */
 export const T6_AGENDA_EXTRA_LIMIT = 120;
+/** Lot 75E (B) : échéances déjà décidées « à présenter » relues hors file d'examen (affichage). */
+export const T6_AGENDA_SHOWN_LIMIT = 40;
 /** Lot 71G (T6-02) : ancienneté maximale d'une échéance dépassée encore examinée. */
 export const T6_OVERDUE_MAX_LOOKBACK_DAYS = 730;
+
+/** Lot 75E (B) : table du curseur d'examen (0551) présente ? Lue une fois par processus. */
+let examinations: Promise<boolean> | null = null;
+export function t6ExaminationsReady(): Promise<boolean> {
+  examinations ??= rows(`SELECT to_regclass('t6_candidate_examinations') IS NOT NULL AS ok`, [])
+    // Absente (migration pas encore passée) : jamais mémorisée, relue au passage suivant.
+    .then(([r]) => { if (r?.ok !== true) examinations = null; return r?.ok === true; })
+    .catch(() => { examinations = null; return false; });
+  return examinations;
+}
+/** Réservé aux tests. */
+export function resetT6ExaminationsProbe(): void { examinations = null; }
 
 /**
  * Lot 71G (T6-02, T6-03) — échéances que la lecture principale (200 lignes,
@@ -261,16 +277,32 @@ export const T6_OVERDUE_MAX_LOOKBACK_DAYS = 730;
  *     de l'utilisateur, ou — jamais évaluée — échéance « à préciser » (T4)
  *     ou fait documentaire pertinent. Jamais la seule date dépassée ;
  *   · au-delà des 200 premières : non encore évaluées, évaluation à revoir
- *     ou non close (reprise : une échéance évaluée laisse sa place) ;
- * priorisées (ancienneté signalée, horizon d'évaluation, documents), hors
- * échéances portées par « À traiter », bornées (`T6_AGENDA_EXTRA_LIMIT`).
- * Données de T6 seulement : aucun autre sujet de la mascotte ne les lit.
+ *     ou non close.
+ * Hors échéances portées par « À traiter ». Données de T6 seulement : aucun
+ * autre sujet de la mascotte ne les lit.
+ *
+ * Lot 75E (A, B) — SÉLECTION PROGRESSIVE ET ÉQUITABLE, REPRISE PERSISTANTE :
+ *   · A : une échéance ÉCARTÉE (SUPPRESS), même dépassée depuis longtemps,
+ *     redevient lisible dès que ses données changent (signature SQL de
+ *     l'échéance, de ses documents et de ses faits pertinents ≠ celle de son
+ *     dernier examen) — jamais une ancienne décision prise pour définitive ;
+ *     inchangée, elle n'est pas relue (aucune réévaluation répétée) ;
+ *   · B : FILE D'EXAMEN — d'abord les échéances DUES (jamais examinées,
+ *     données changées, date de réexamen atteinte, report échu, évaluation à
+ *     revoir), par priorité (report échu, dépassée, proche, documentée,
+ *     autre) puis du plus anciennement examiné ; une échéance examinée
+ *     (`t6_candidate_examinations`, écrit par la pré-génération du compte)
+ *     laisse sa place à la suivante. Aucune n'occupe durablement la fenêtre ;
+ *     `backlog` signale qu'il en reste au-delà (reprise durable) ;
+ *   · à part, et bornées, les échéances non dues déjà décidées « à présenter »
+ *     (l'affichage reste possible pendant la reprise).
  */
-export async function readT6Agenda(accountId: number, today: string, horizonDays = 180): Promise<MascotAgendaRow[]> {
+export async function readT6Agenda(accountId: number, today: string, horizonDays = 180): Promise<{ rows: MascotAgendaRow[]; backlog: boolean }> {
   const [ok] = await rows(`SELECT to_regclass('t6_interpellation_assessments') IS NOT NULL AND to_regclass('t6_reminder_preferences') IS NOT NULL AS ok`, []);
-  if (!ok?.ok) return [];
+  if (!ok?.ok) return { rows: [], backlog: false };
   const filtreT4 = await upcomingDeadlinesSqlFilter('i');
   const t4 = filtreT4 !== '';
+  const ex = await t6ExaminationsReady();
   const actif = `(i.manual_status IS NULL OR trim(i.manual_status) = '')
         ${t4 ? filtreT4 : "AND (i.is_automatic = FALSE OR i.occurrence_nature = 'FORECAST')"}`;
   const documents = `(SELECT l2.asset_file_id AS file_id FROM agenda_file_links l2 WHERE l2.agenda_item_id = i.id
@@ -281,42 +313,72 @@ export async function readT6Agenda(accountId: number, today: string, horizonDays
         WHERE i.account_id = $1 AND ${actif}
           AND i.start_date >= ($2::date - $3::int) AND i.start_date <= ($2::date + $4::int)
         ORDER BY i.start_date ASC, i.id ASC LIMIT ${AGENDA_LIMIT}
-     )
-     SELECT * FROM (
+     ),
+     base AS (
        SELECT ${agendaColumns(t4)},
               (i.start_date < $2::date - $3::int) AS "longOverdue",
-              EXISTS (SELECT 1 FROM asset_files f WHERE f.account_id = i.account_id AND f.deleted_at IS NULL AND f.id IN ${documents}) AS "hasDocs",
+              (d.n > 0) AS "hasDocs", (k.faits IS NOT NULL) AS "hasFacts",
               t.id AS "assessmentId", t.decision AS "assessmentDecision",
-              (t.assessed_on < $2::date - ${T6_ASSESSMENT_MAX_AGE_DAYS} OR t.reevaluate_on <= $2::date OR t.contract_version IS NULL) AS "assessmentStale",
+              -- Lot 75E : logique à deux valeurs (une date absente n'efface jamais la ligne des deux groupes).
+              (t.id IS NOT NULL AND (t.assessed_on < $2::date - ${T6_ASSESSMENT_MAX_AGE_DAYS} OR coalesce(t.reevaluate_on <= $2::date, FALSE) OR t.contract_version IS NULL)) AS "assessmentStale",
               EXISTS (SELECT 1 FROM t6_reminder_preferences p WHERE p.account_id = i.account_id AND p.agenda_item_id = i.id AND p.decision = 'SNOOZED') AS "snoozed",
+              EXISTS (SELECT 1 FROM t6_reminder_preferences p WHERE p.account_id = i.account_id AND p.agenda_item_id = i.id AND p.decision = 'SNOOZED' AND p.remind_at <= $2::date) AS "snoozeDue",
+              md5(concat_ws('|', i.title, i.start_date::text, i.end_date::text, coalesce(i.description, ''), i.occurrence_nature,
+                            i.requires_qualification::text, coalesce(i.series_key, ''), coalesce(d.docs, ''), coalesce(k.faits, ''))) AS "selectionSignature",
+              ${ex ? 'x.examined_at AS "examinedAt", x.recheck_on AS "recheckOn", x.selection_signature AS "examinedSignature"'
+                : 'NULL::timestamptz AS "examinedAt", NULL::date AS "recheckOn", NULL::text AS "examinedSignature"'},
               i.start_date AS sd
          FROM agenda_items i
          ${AGENDA_ASSET_JOIN}
          LEFT JOIN t6_interpellation_assessments t ON t.account_id = i.account_id AND t.agenda_item_id = i.id
+         ${ex ? 'LEFT JOIN t6_candidate_examinations x ON x.account_id = i.account_id AND x.agenda_item_id = i.id' : ''}
+         LEFT JOIN LATERAL (
+           SELECT count(*)::int AS n, string_agg(f.id::text || ':' || md5(coalesce(f.retained_title, '') || '|' || coalesce(f.original_filename, '')), ',' ORDER BY f.id) AS docs
+             FROM asset_files f WHERE f.account_id = i.account_id AND f.deleted_at IS NULL AND f.id IN ${documents}
+         ) d ON TRUE
+         LEFT JOIN LATERAL (
+           SELECT string_agg(x2.id::text || ':' || x2.confidence, ',' ORDER BY x2.id) AS faits
+             FROM document_facts x2
+             JOIN asset_files f2 ON f2.id = x2.file_id AND f2.account_id = i.account_id AND f2.deleted_at IS NULL
+            WHERE x2.account_id = i.account_id AND x2.status = 'active' AND x2.file_id IN ${documents}
+              AND (coalesce(x2.canonical_key, '') || ' ' || x2.fact_key || ' ' || coalesce(x2.label, '')) ~* $6
+         ) k ON TRUE
         WHERE i.account_id = $1 AND ${actif}
           AND i.id NOT IN (SELECT id FROM principal)
           AND i.start_date >= ($2::date - $5::int) AND i.start_date <= ($2::date + $4::int)
-          AND NOT EXISTS (SELECT 1 FROM to_process_actions x WHERE x.account_id = i.account_id AND x.resolved_at IS NULL
-                           AND x.target_type = 'AGENDA_ITEM' AND x.target_id = i.id)
-     ) c
-     WHERE (c."longOverdue" AND c."occurrenceNature" IS DISTINCT FROM 'FORECAST' AND (
-              c."assessmentDecision" IN ('SHOW_NOW', 'DEFER') OR c.snoozed
-              OR (c."assessmentId" IS NULL AND (c."requiresQualification" OR EXISTS (
-                    SELECT 1 FROM document_facts x
-                     WHERE x.account_id = $1 AND x.status = 'active'
-                       AND x.file_id IN (SELECT l3.asset_file_id FROM agenda_file_links l3 WHERE l3.agenda_item_id = c.id
-                                         UNION SELECT i3.origin_ref_id FROM agenda_items i3
-                                          WHERE i3.id = c.id AND i3.origin_ref_type = 'asset_file' AND i3.origin_ref_id IS NOT NULL)
-                       AND (coalesce(x.canonical_key, '') || ' ' || x.fact_key || ' ' || coalesce(x.label, '')) ~* $6)))))
-        OR (NOT c."longOverdue" AND (c."assessmentId" IS NULL OR c."assessmentDecision" IS DISTINCT FROM 'SUPPRESS' OR c."assessmentStale" OR c.snoozed))
-     ORDER BY CASE WHEN c."longOverdue" THEN 0
-                   WHEN c.sd <= $2::date + $7::int THEN 1
-                   WHEN c."hasDocs" THEN 2 ELSE 3 END,
-              (c."assessmentId" IS NOT NULL) ASC, c.sd ASC, c.id ASC
-     LIMIT ${T6_AGENDA_EXTRA_LIMIT}`,
+          AND NOT EXISTS (SELECT 1 FROM to_process_actions x3 WHERE x3.account_id = i.account_id AND x3.resolved_at IS NULL
+                           AND x3.target_type = 'AGENDA_ITEM' AND x3.target_id = i.id)
+     ),
+     eligibles AS (
+       SELECT c.*,
+              (c."examinedSignature" IS DISTINCT FROM c."selectionSignature") AS "changed",
+              (c."examinedAt" IS NULL OR c."examinedSignature" IS DISTINCT FROM c."selectionSignature" OR coalesce(c."recheckOn" <= $2::date, FALSE) OR c."snoozeDue"
+               OR (c."assessmentStale" AND NOT (c."longOverdue" AND c."assessmentDecision" IS NOT DISTINCT FROM 'SUPPRESS'))) AS "due"
+         FROM base c
+        WHERE (c."longOverdue" AND c."occurrenceNature" IS DISTINCT FROM 'FORECAST' AND (
+                 c."assessmentDecision" IN ('SHOW_NOW', 'DEFER') OR c.snoozed
+                 OR (c."assessmentId" IS NULL AND (c."requiresQualification" OR c."hasFacts"))
+                 -- Lot 75E (A) : écartée, mais ses données ont changé depuis son dernier examen.
+                 OR (c."assessmentDecision" = 'SUPPRESS' AND c."examinedSignature" IS DISTINCT FROM c."selectionSignature")))
+           OR (NOT c."longOverdue" AND (c."assessmentId" IS NULL OR c."assessmentDecision" IS DISTINCT FROM 'SUPPRESS' OR c."assessmentStale" OR c.snoozed
+                 OR c."examinedSignature" IS DISTINCT FROM c."selectionSignature"))
+     )
+     (SELECT *, TRUE AS "inQueue" FROM eligibles WHERE "due"
+       ORDER BY CASE WHEN "snoozeDue" THEN 0
+                     WHEN "longOverdue" THEN 1
+                     WHEN sd <= $2::date + $7::int THEN 2
+                     WHEN "hasDocs" THEN 3 ELSE 4 END,
+                "examinedAt" ASC NULLS FIRST, sd ASC, id ASC
+       LIMIT ${T6_AGENDA_EXTRA_LIMIT + 1})
+     UNION ALL
+     (SELECT *, FALSE FROM eligibles WHERE NOT "due" AND "assessmentDecision" = 'SHOW_NOW'
+       ORDER BY sd ASC, id ASC LIMIT ${T6_AGENDA_SHOWN_LIMIT})`,
     [accountId, today, EXT_ACTION_LOOKBACK_DAYS, AGENDA_FORWARD_DAYS, T6_OVERDUE_MAX_LOOKBACK_DAYS, T6_RELEVANT_FACT_PATTERN, horizonDays],
   );
-  return agendaRowsOf(r);
+  const file = r.filter((x) => x.inQueue === true);
+  const backlog = file.length > T6_AGENDA_EXTRA_LIMIT;
+  const lues = backlog ? [...file.slice(0, T6_AGENDA_EXTRA_LIMIT), ...r.filter((x) => x.inQueue !== true)] : r;
+  return { rows: agendaRowsOf(lues), backlog };
 }
 
 /** Échéances dépassées lues au plus (au-delà : la présence suffit, jamais un total affiché). */
@@ -443,6 +505,8 @@ export async function collectMascotData(accountId: number, now: Date = new Date(
     toProcessSettledAgendaIds: settled,
     rights,
     overdueAgenda,
-    t6Agenda,
+    t6Agenda: t6Agenda ? t6Agenda.rows : null,
+    // Lot 75E (B) : file d'examen T6 plus longue que la lecture (reprise durable).
+    t6AgendaBacklog: t6Agenda?.backlog ?? false,
   };
 }

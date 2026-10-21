@@ -21,6 +21,7 @@ import { toast } from 'sonner';
 import { apiClient } from '@/lib/api-client';
 import Link from 'next/link';
 import { supplierHref } from '@/lib/supplier-routes';
+import { EntityCard } from '@/components/drawers/EntityCard';
 import type { DocumentDrawerItem } from '@/components/assets/DocumentDrawer';
 
 const DocumentDrawer = dynamic(
@@ -510,13 +511,16 @@ export function SupplierDrawer({ supplierId, open, onOpenChange, onUpdated, hide
                       <h3 className="vb-app-subsection mb-3">
                         Documents associés ({documents.length})
                       </h3>
-                      <div className="space-y-2">
+                      <div className="space-y-1.5">
                         {documents.slice(0, 10).map(doc => (
-                          <button
+                          <EntityCard
                             key={doc.documentId}
-                            type="button"
-                            className="w-full flex items-center gap-2 text-sm p-2 rounded-lg bg-[color:var(--bg-subtle)] border border-[color:var(--border-subtle)] hover:border-[color:var(--border-info)] transition-colors text-left group"
-                            onClick={() => {
+                            kind="document"
+                            id={doc.documentId}
+                            title={doc.filename ?? `Document #${doc.documentId}`}
+                            icon={<FileText className="w-3.5 h-3.5 text-[color:var(--accent)]" />}
+                            meta={doc.documentDate ? new Date(doc.documentDate).toLocaleDateString('fr-FR') : undefined}
+                            onOpen={() => {
                               setDocDrawerItem({
                                 id: doc.documentId,
                                 originalFilename: doc.filename ?? `Document #${doc.documentId}`,
@@ -527,18 +531,7 @@ export function SupplierDrawer({ supplierId, open, onOpenChange, onUpdated, hide
                               });
                               setDocDrawerOpen(true);
                             }}
-                          >
-                            <FileText className="w-3.5 h-3.5 text-[color:var(--accent)] shrink-0" />
-                            <span className="flex-1 truncate text-[color:var(--text-primary)]">
-                              {doc.filename ?? `Document #${doc.documentId}`}
-                            </span>
-                            {doc.documentDate && (
-                              <span className="text-[10px] text-[color:var(--text-muted)] shrink-0">
-                                {new Date(doc.documentDate).toLocaleDateString('fr-FR')}
-                              </span>
-                            )}
-                            <ChevronRight className="w-3.5 h-3.5 text-[color:var(--text-muted)] shrink-0 opacity-0 group-hover:opacity-100 transition-opacity" />
-                          </button>
+                          />
                         ))}
                         {documents.length > 10 && (
                           <p className="text-xs text-[color:var(--text-muted)] text-center">

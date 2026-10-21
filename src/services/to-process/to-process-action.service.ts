@@ -194,12 +194,23 @@ async function upsertActionOnce(input: UpsertActionInput): Promise<UpsertActionR
   // ── Problème déjà connu : mise à jour, jamais duplication (§7.3, AI-04) ──
   if (existing) {
     // Doublon historique d'une autre nature (antérieur à cette règle) :
-    // fermé au passage.
+    // fermé au passage. Lot 75I (E) : fermeture TRACÉE, dans la même
+    // transaction que son événement d'audit.
     for (const old of otherKind) {
-      await db
-        .update(toProcessActions)
-        .set({ resolvedAt: now, resolutionReason: 'OBSOLETE' satisfies ResolutionReason, updatedAt: now })
-        .where(and(eq(toProcessActions.id, old.id), isNull(toProcessActions.resolvedAt)));
+      await db.transaction(async (tx) => {
+        const fermee = await tx
+          .update(toProcessActions)
+          .set({ resolvedAt: now, resolutionReason: 'OBSOLETE' satisfies ResolutionReason, updatedAt: now })
+          .where(and(eq(toProcessActions.id, old.id), isNull(toProcessActions.resolvedAt)))
+          .returning({ id: toProcessActions.id });
+        if (fermee.length) {
+          await tx.insert(toProcessActionEvents).values({
+            actionId: old.id, accountId: input.accountId, event: 'OBSOLETE', targetType: old.targetType, targetId: old.targetId,
+            fieldKey: old.fieldKey ?? old.relationKey, details: { reason: 'DUPLICATE_OTHER_KIND', from: old.actionKind, to: input.actionKind, ruleCode: input.ruleCode },
+            createdAt: now,
+          });
+        }
+      });
     }
     await db
       .update(toProcessActions)

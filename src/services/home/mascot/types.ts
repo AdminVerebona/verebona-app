@@ -156,6 +156,13 @@ export interface MascotParagraph {
   tile?: MascotTile;
   /** Lot 60 : commandes de rappel de la carte (sujet d'échéance décidé). */
   reminder?: MascotReminderRef | null;
+  /**
+   * Lot 75E : texte de secours DÉTERMINISTE du sujet, transmis quand `text`
+   * vient de T6 — repli côté écran si la formulation se révèle inutilisable
+   * (introduction de comptage non séparable), sans nouvel appel. Absent :
+   * `text` est déjà le texte de secours (ou présentation antérieure).
+   */
+  fallbackText?: string;
 }
 
 /** Tuile d'action d'un sujet (Direction D v2 §3.2). */
@@ -343,7 +350,24 @@ export interface MascotPresentation {
    * Absent (présentation ancienne) : déduit prudemment par la bulle.
    */
   state?: MascotPresentationState;
+  /**
+   * Lot 75E : révision du CONTRAT DE PRÉSENTATION (règles d'affichage) qui a
+   * produit cette présentation. Le client ne conserve une présentation déjà
+   * affichée (même `contextHash`, RUN-001) que si elle porte la même
+   * révision que la réponse — une règle corrigée côté serveur (formulation
+   * interdite) n'est jamais masquée par un contexte métier inchangé. Absent :
+   * présentation antérieure au lot 75E.
+   */
+  presentationRevision?: string;
 }
+
+/**
+ * Lot 75E : révision courante du contrat de présentation. À INCRÉMENTER à
+ * chaque correction des règles d'affichage du texte (classificateur des
+ * introductions, repli des blocs…) — jamais pour un changement métier, qui
+ * passe par `contextHash`.
+ */
+export const MASCOT_PRESENTATION_REVISION = 'l75e-1';
 
 /** Plafonds UX (UX-007, SEC-001). */
 export const MAX_SUBJECTS = 2;

@@ -91,13 +91,38 @@ export interface T4Deps {
  * appliquées, aucun retrait n'a eu lieu, et la reprise ne redemande que ce
  * qui manque (`t4Resolved`).
  */
+export type T4IncompleteCode = 'T4_INCOMPLETE' | 'T4_PERSIST_PARTIAL' | 'T4_SYNC_FAILED';
 export class T4IncompleteJobError extends Error {
-  readonly code: 'T4_INCOMPLETE' | 'T4_PERSIST_PARTIAL';
-  constructor(code: 'T4_INCOMPLETE' | 'T4_PERSIST_PARTIAL', message: string) {
+  readonly code: T4IncompleteCode;
+  constructor(code: T4IncompleteCode, message: string) {
     super(`${code} : ${message}`);
     this.name = 'T4IncompleteJobError';
     this.code = code;
   }
+}
+
+type Bilan = void | Partial<import('@/services/agenda/agenda-persistence').PersistAgendaSummary>;
+
+/**
+ * Lot 75F (§D) — synchronisation de la source techniquement en échec
+ * (retrait SQL en échec, journal des retraits indisponible, prérequis absent,
+ * plan impossible) : motif précis, ou null. Une liste de retraits vide n'est
+ * jamais une preuve de réussite : seul `removalOutcome` fait foi.
+ */
+export function t4SyncFailure(bilan: Bilan): string | null {
+  if (!bilan || typeof bilan !== 'object' || bilan.removalOutcome !== 'FAILED') return null;
+  const f = bilan.removalFailure;
+  return f ? `${f.code} : ${f.message}` : 'REMOVAL_FAILED';
+}
+
+/** Lot 75F (§D) — sort de la synchronisation pour le résultat métier du job (compteurs seulement). */
+function t4SyncDetail(bilan: Bilan): Record<string, unknown> {
+  const b = bilan && typeof bilan === 'object' ? bilan : {};
+  return {
+    removal: b.removal ?? null, removed: b.removed?.length ?? 0, corrected: b.corrected ?? 0,
+    removalOutcome: b.removalOutcome ?? null, blockedBy: b.blockedBy ?? [], preserved: b.preserved?.length ?? 0,
+    temporalAmbiguities: b.temporalAmbiguities ?? 0, ambiguousMatches: b.ambiguousMatches ?? 0,
+  };
 }
 
 /** Lot 71E (§E) — compteurs d'un passage T4 (résultat métier du job ; aucun contenu documentaire). */
@@ -137,8 +162,17 @@ export async function runT4Job(job: QueuedJob, guard: ExecutionGuard, deps: T4De
       return;
     }
     await guard.assertActive('synchronisation des échéances de la source');
-    await deps.persist([], job.accountId, p.assetId, { sourceFileId: p.leadSourceId, analysisComplete: true });
-    return;
+    const bilanVide = await deps.persist([], job.accountId, p.assetId, { sourceFileId: p.leadSourceId, analysisComplete: true });
+    // Lot 75F (§D) : retrait attendu techniquement impossible → travail NON
+    // réussi, reprise contrôlée par la file (temporisation, MAX_ATTEMPTS).
+    const echecVide = t4SyncFailure(bilanVide);
+    if (echecVide) {
+      await saveRetryContext(job, deps, null, { writeFailures: 0, syncFailure: echecVide });
+      throw new T4IncompleteJobError('T4_SYNC_FAILED',
+        `synchronisation de la source ${p.leadSourceId} incomplète (réanalyse sans candidat) — ${echecVide} ; aucune échéance retirée ; reprise automatique par la file`);
+    }
+    const detailVide = t4SyncDetail(bilanVide);
+    return { result: Number(detailVide.removed) > 0 ? 'APPLIED' : 'NO_CHANGE', detail: { candidates: 0, writeFailures: 0, ...detailVide } };
   }
   if (!job.accountId || !p.assetId || !Array.isArray(p.candidates) || p.candidates.length === 0) {
     // Malformé ou vide : relancer ne l'améliorera pas.
@@ -167,13 +201,47 @@ export async function runT4Job(job: QueuedJob, guard: ExecutionGuard, deps: T4De
     : await deps.persist(decisions, job.accountId, p.assetId);
 
   // ── Lot 71E (§E) : un échec technique n'est jamais un traitement réussi ──
+  // Lot 75F (§D) : y compris une synchronisation (retrait) en échec technique.
   const compteurs = t4JobCounters(decisions);
   const echecsEcriture = (bilan && typeof bilan === 'object' ? bilan.writeFailures : 0) ?? 0;
-  if (compteurs.technicalFailures > 0 || echecsEcriture > 0) {
-    // Contexte de reprise : les décisions APPLIQUÉES (jamais les échecs), pour ce travail.
+  const echecSync = t4SyncFailure(bilan);
+  if (compteurs.technicalFailures > 0 || echecsEcriture > 0 || echecSync) {
+    await saveRetryContext(job, deps, { decisions, deja }, { ...compteurs, writeFailures: echecsEcriture, ...(echecSync ? { syncFailure: echecSync } : {}) });
+    console.warn(JSON.stringify({ event: 't4.job_incomplete', jobId: job.id, attempt: job.attempts ?? null, ...compteurs, writeFailures: echecsEcriture, syncFailure: echecSync }));
+    if (compteurs.technicalFailures > 0) {
+      throw new T4IncompleteJobError('T4_INCOMPLETE',
+        `${compteurs.technicalFailures} candidat(s) sans décision (échec technique T4) — décisions valides appliquées, aucun retrait ; reprise automatique par la file`);
+    }
+    if (echecsEcriture > 0) {
+      throw new T4IncompleteJobError('T4_PERSIST_PARTIAL',
+        `${echecsEcriture} écriture(s) Agenda en échec — aucun retrait ; reprise automatique par la file`);
+    }
+    throw new T4IncompleteJobError('T4_SYNC_FAILED',
+      `synchronisation de la source ${p.leadSourceId ?? '?'} incomplète — ${echecSync} ; décisions valides appliquées ; reprise automatique par la file`);
+  }
+  const sync = t4SyncDetail(bilan);
+  return {
+    // ABSTAIN : au moins un candidat sans décision métier (rien créé ni retiré pour lui).
+    result: compteurs.abstained > 0 ? 'ABSTAIN'
+      : compteurs.accepted + compteurs.recurrenceRejected + Number(sync.removed) + Number(sync.corrected) > 0 ? 'APPLIED' : 'NO_CHANGE',
+    detail: { ...compteurs, writeFailures: 0, ...sync },
+  };
+}
+
+/**
+ * Lot 71E (§E) — contexte de reprise du MÊME travail : décisions T4
+ * APPLIQUÉES (jamais les échecs techniques) et compteurs. Jamais bloquant.
+ */
+async function saveRetryContext(
+  job: QueuedJob, deps: T4Deps,
+  applied: { decisions: import('./types').AgendaDecision[]; deja?: Record<string, import('./agenda-intelligence.service').StoredT4Decision> } | null,
+  retry: Record<string, unknown>,
+): Promise<void> {
+  const patch: Record<string, unknown> = { t4Retry: { attempt: job.attempts ?? null, ...retry, at: new Date().toISOString() } };
+  if (applied) {
     const { storableT4Decision } = await import('./agenda-intelligence.service');
-    const conservees: Record<string, import('./agenda-intelligence.service').StoredT4Decision> = { ...(deja ?? {}) };
-    for (const d of decisions) {
+    const conservees: Record<string, import('./agenda-intelligence.service').StoredT4Decision> = { ...(applied.deja ?? {}) };
+    for (const d of applied.decisions) {
       const fp = d.t4?.fingerprint;
       if (!fp || !d.t4 || d.t4.outcome === 'technical_failure') continue;
       const s = storableT4Decision({
@@ -189,33 +257,15 @@ export async function runT4Job(job: QueuedJob, guard: ExecutionGuard, deps: T4De
       });
       if (s) conservees[fp] = s;
     }
-    const save = deps.savePayload ?? (await import('../queue/job-queue.repository')).mergeJobPayload;
-    try {
-      await save(job.id, job.executionId ?? null, {
-        t4Resolved: { forJob: job.id, decisions: conservees },
-        t4Retry: { attempt: job.attempts ?? null, ...compteurs, writeFailures: echecsEcriture, at: new Date().toISOString() },
-      });
-    } catch (e) {
-      // Sans contexte de reprise, la reprise redemandera tout : jamais bloquant.
-      console.error(`[agenda] travail T4 ${job.id} : contexte de reprise non conservé —`, (e as Error).message);
-    }
-    console.warn(JSON.stringify({ event: 't4.job_incomplete', jobId: job.id, attempt: job.attempts ?? null, ...compteurs, writeFailures: echecsEcriture }));
-    if (compteurs.technicalFailures > 0) {
-      throw new T4IncompleteJobError('T4_INCOMPLETE',
-        `${compteurs.technicalFailures} candidat(s) sans décision (échec technique T4) — décisions valides appliquées, aucun retrait ; reprise automatique par la file`);
-    }
-    throw new T4IncompleteJobError('T4_PERSIST_PARTIAL',
-      `${echecsEcriture} écriture(s) Agenda en échec — aucun retrait ; reprise automatique par la file`);
+    patch.t4Resolved = { forJob: job.id, decisions: conservees };
   }
-  const removal = bilan && typeof bilan === 'object' ? bilan.removal ?? null : null;
-  const corrected = bilan && typeof bilan === 'object' ? bilan.corrected ?? 0 : 0;
-  const removed = bilan && typeof bilan === 'object' ? bilan.removed?.length ?? 0 : 0;
-  return {
-    // ABSTAIN : au moins un candidat sans décision métier (rien créé ni retiré pour lui).
-    result: compteurs.abstained > 0 ? 'ABSTAIN'
-      : compteurs.accepted + compteurs.recurrenceRejected + removed + corrected > 0 ? 'APPLIED' : 'NO_CHANGE',
-    detail: { ...compteurs, writeFailures: 0, removal, removed, corrected },
-  };
+  const save = deps.savePayload ?? (await import('../queue/job-queue.repository')).mergeJobPayload;
+  try {
+    await save(job.id, job.executionId ?? null, patch);
+  } catch (e) {
+    // Sans contexte de reprise, la reprise redemandera tout : jamais bloquant.
+    console.error(`[agenda] travail T4 ${job.id} : contexte de reprise non conservé —`, (e as Error).message);
+  }
 }
 
 /**

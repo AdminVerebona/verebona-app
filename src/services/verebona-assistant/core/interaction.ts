@@ -25,17 +25,47 @@
 import type { RouteInteraction, SuppliedFact } from '../types/contracts';
 import { getField } from '@/services/canonical/registry';
 import { parseDateFr } from '../commands/parser';
-import { remainingCountUnit, remainingPeriods, type PeriodUnit } from './semantic-scope';
+import { eventDateMeaning, remainingCountUnit, remainingPeriods, type PeriodUnit } from './semantic-scope';
 
-export type InteractionHandling = 'proposal' | 'context_only' | 'context_calculation' | null;
+export type InteractionHandling = 'proposal' | 'context_only' | 'context_calculation' | 'context_question' | null;
 
-/** Informations à proposer à l'enregistrement (pure, testée). */
+const aValeur = (f: SuppliedFact) => (f.normalizedValue ?? f.value ?? '').trim() !== '';
+
+/**
+ * Informations à proposer à l'enregistrement (pure, testée).
+ *
+ * Lot 75J (#419 R08) : TOUTES les informations à enregistrer reconnues par T2
+ * sont retenues, y compris celles SANS valeur ou SANS champ résolu — le
+ * serveur les refuse alors explicitement (jamais un plan partiel présenté
+ * comme complet, jamais une information abandonnée en silence). Un message
+ * MIXED (question + modification explicite) porte aussi ses modifications.
+ */
 export function updateFactsOf(i: RouteInteraction | undefined | null): SuppliedFact[] {
   if (!i) return [];
-  const avecValeur = i.suppliedFacts.filter((f) => (f.normalizedValue ?? f.value ?? '').trim() !== '');
-  if (i.mode === 'UPDATE_PROPOSAL' || i.mode === 'ACTION_REQUEST') return avecValeur.filter((f) => f.role !== 'context');
-  if (i.mode === 'AMBIGUOUS') return avecValeur.filter((f) => f.role === 'update');
+  const pertinents = i.suppliedFacts.filter((f) => aValeur(f) || f.fieldKey || f.topic);
+  if (i.mode === 'UPDATE_PROPOSAL' || i.mode === 'ACTION_REQUEST') return pertinents.filter((f) => f.role !== 'context');
+  if (i.mode === 'AMBIGUOUS' || i.mode === 'MIXED') return pertinents.filter((f) => f.role === 'update');
   return [];
+}
+
+/** Catégorie d'une information apportée (lot 75J, #419 R08) — trace et réponse. */
+export type SuppliedFactCategory = 'update_valid' | 'context' | 'incomplete_value' | 'incomplete_field' | 'ignored';
+
+/**
+ * Classement des informations apportées (pure, testée) — distingue
+ * modification exploitable, information de contexte, donnée incomplète
+ * (valeur ou champ manquant) ; l'autorisation (droits, champ modifiable,
+ * valeur relue) reste décidée par le serveur au moment du plan.
+ */
+export function classifySuppliedFacts(i: RouteInteraction | undefined | null): Array<{ fact: SuppliedFact; category: SuppliedFactCategory }> {
+  if (!i) return [];
+  const maj = new Set(updateFactsOf(i));
+  const ctx = new Set(contextFactsOf(i));
+  return i.suppliedFacts.map((fact) => ({
+    fact,
+    category: maj.has(fact) ? (!aValeur(fact) ? 'incomplete_value' : !fact.fieldKey ? 'incomplete_field' : 'update_valid')
+      : ctx.has(fact) ? 'context' : 'ignored',
+  }));
 }
 
 /**
@@ -61,6 +91,9 @@ export function interactionHandling(i: RouteInteraction | undefined | null, mess
   if (updateFactsOf(i).length) return 'proposal';
   if (i.mode === 'CONTEXT_ONLY') return 'context_only';
   if (message != null && contextFactsOf(i).length && remainingCountUnit(message)) return 'context_calculation';
+  // Lot 75J (#419 R07) : question MIXED accompagnée d'informations de contexte — elles
+  // sont mises à disposition du traitement de CETTE question (validées, jamais enregistrées).
+  if (i.mode === 'MIXED' && contextFactsOf(i).length) return 'context_question';
   return null;
 }
 
@@ -68,9 +101,11 @@ export function interactionHandling(i: RouteInteraction | undefined | null, mess
 export interface ValidatedContextFact {
   fieldKey: string;
   label: string;
-  /** Date de fin (registre : échéance / fin) en AAAA-MM-JJ. */
+  /** Date de FIN (signification « fin » du registre, lot 75J) en AAAA-MM-JJ. */
   endDate: string | null;
   value: string;
+  /** Type de valeur du registre (date, number, money_eur, string…). */
+  valueType?: string;
 }
 
 /**
@@ -78,25 +113,46 @@ export interface ValidatedContextFact {
  * registre connue, valeur relue dans le message (le modèle ne peut pas
  * introduire une valeur que l'utilisateur n'a pas donnée), date réelle.
  */
-export function validateContextFacts(facts: readonly SuppliedFact[], message: string, today: string): { valid: ValidatedContextFact[]; ignored: number } {
+export function validateContextFacts(facts: readonly SuppliedFact[], message: string, today: string): {
+  valid: ValidatedContextFact[]; ignored: number;
+  /** Lot 75J : informations écartées et motif (jamais un abandon silencieux). */
+  rejected: Array<{ fieldKey: string | null; reason: 'FIELD_UNKNOWN' | 'VALUE_MISSING' | 'VALUE_NOT_IN_MESSAGE' }>;
+} {
   const valid: ValidatedContextFact[] = [];
+  const rejected: Array<{ fieldKey: string | null; reason: 'FIELD_UNKNOWN' | 'VALUE_MISSING' | 'VALUE_NOT_IN_MESSAGE' }> = [];
   let ignored = 0;
   for (const f of facts) {
     const def = f.fieldKey ? getField(f.fieldKey) : null;
     const brut = (f.normalizedValue ?? f.value ?? '').trim();
-    if (!def || !brut) { ignored += 1; continue; }
+    if (!def || !brut) { ignored += 1; rejected.push({ fieldKey: f.fieldKey ?? null, reason: !def ? 'FIELD_UNKNOWN' : 'VALUE_MISSING' }); continue; }
     if (def.valueType === 'date') {
       const ok = /^\d{4}-\d{2}-\d{2}$/.test(brut) && !Number.isNaN(Date.parse(`${brut}T00:00:00Z`))
         && new Date(`${brut}T00:00:00Z`).toISOString().slice(0, 10) === brut
         && (message.includes(brut) || parseDateFr(message, today) === brut);
-      if (!ok) { ignored += 1; continue; }
-      valid.push({ fieldKey: def.key, label: def.label, value: brut, endDate: def.agendaEffect?.nature === 'DEADLINE' ? brut : null });
+      if (!ok) { ignored += 1; rejected.push({ fieldKey: def.key, reason: 'VALUE_NOT_IN_MESSAGE' }); continue; }
+      // Lot 75J (#419 R02) : une FIN seulement si la signification du champ en est une.
+      valid.push({ fieldKey: def.key, label: def.label, value: brut, valueType: 'date', endDate: eventDateMeaning({ originFieldKey: def.key }) === 'contract_end' ? brut : null });
       continue;
     }
-    if (!message.toLowerCase().includes(brut.toLowerCase())) { ignored += 1; continue; }
-    valid.push({ fieldKey: def.key, label: def.label, value: brut, endDate: null });
+    if (def.valueType === 'number' || def.valueType === 'money_eur') {
+      // Nombre RELU dans le message (séparateurs de milliers, virgule décimale).
+      const n = Number(brut.replace(/[\s\u00a0\u202f]/g, '').replace(',', '.'));
+      const nombres = (message.match(/\d{1,3}(?:[ \u00a0\u202f.]\d{3})+(?:,\d+)?|\d+(?:,\d+)?/g) ?? [])
+        .map((x) => Number(x.replace(/[ \u00a0\u202f.]/g, '').replace(',', '.')));
+      if (!Number.isFinite(n) || !nombres.includes(n)) { ignored += 1; rejected.push({ fieldKey: def.key, reason: 'VALUE_NOT_IN_MESSAGE' }); continue; }
+      valid.push({ fieldKey: def.key, label: def.label, value: String(n), valueType: def.valueType, endDate: null });
+      continue;
+    }
+    if (!message.toLowerCase().includes(brut.toLowerCase())) { ignored += 1; rejected.push({ fieldKey: def.key, reason: 'VALUE_NOT_IN_MESSAGE' }); continue; }
+    valid.push({ fieldKey: def.key, label: def.label, value: brut, valueType: def.valueType, endDate: null });
   }
-  return { valid, ignored };
+  return { valid, ignored, rejected };
+}
+
+/** La question compte des PAIEMENTS (mensualités, loyers, échéances…) plutôt que des périodes (pure). */
+export function countsPayments(message: string): boolean {
+  const m = message.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+  return /\b(mensualite\w*|trimestrialite\w*|annuite\w*|echeances?|loyers?|paiements?|versements?|prelevements?|remboursements?)\b/.test(m);
 }
 
 const UNITES: Record<PeriodUnit, [string, string]> = { month: ['mois', 'mois'], quarter: ['trimestre', 'trimestres'], year: ['année', 'années'], week: ['semaine', 'semaines'] };
@@ -136,10 +192,17 @@ export function contextCalculationAnswer(p: {
   }
   const n = remainingPeriods(p.today, fin.endDate!, unit);
   const [un, plusieurs] = UNITES[unit];
+  // Lot 75J (#419 R07) : nombre de PÉRIODES calendaires ≠ nombre exact de PAIEMENTS. Ce
+  // dernier exige le calendrier des échéances (jour de paiement, terme à échoir / échu),
+  // que les données ne portent pas : il est encadré (n ou n + 1), jamais affirmé.
+  const paiements = countsPayments(p.message);
   const texte = n === 0
     ? `D’après la date que vous indiquez (${frDate(fin.endDate!)}), il ne reste aucun ${un} entier à courir${pour}.`
-    : `D’après la date que vous indiquez (${frDate(fin.endDate!)}), il reste ${n} ${n > 1 ? plusieurs : un} entier${n > 1 ? 's' : ''}${pour} à compter d’aujourd’hui (${frDate(p.today)}), soit ${n} échéance${n > 1 ? 's' : ''} si elles sont dues chaque ${un}. `
-      + 'Le nombre exact dépend du jour d’échéance.';
+      + (paiements ? ' Selon le jour de paiement, une dernière échéance peut encore être due : le calendrier des paiements m’est inconnu.' : '')
+    : `D’après la date que vous indiquez (${frDate(fin.endDate!)}), il reste ${n} ${n > 1 ? plusieurs : un} entier${n > 1 ? 's' : ''}${pour} à compter d’aujourd’hui (${frDate(p.today)}).`
+      + (paiements
+        ? ` Le nombre exact de paiements restants dépend du calendrier des échéances (jour de paiement, paiement en début ou en fin de période), que je ne connais pas : ce sera ${n} ou ${n + 1}. Indiquez le jour de prélèvement pour un décompte exact.`
+        : ` Soit ${n} échéance${n > 1 ? 's' : ''} si elles sont dues chaque ${un} ; le nombre exact dépend du jour d’échéance.`);
   return {
     text: `${texte} Cette date sert uniquement à ce calcul : elle n’a pas été enregistrée.`,
     calculation: 'remaining_periods', contradiction: false, used: [fin.fieldKey],

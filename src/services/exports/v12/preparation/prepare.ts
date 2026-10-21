@@ -257,7 +257,11 @@ function cilBlocks(source: ExportSource): PreparationDto['cil'] {
     blocking: b.blocking || isCilBlockingRuleBlock(b.id),
     blocksGeneration: isBlockBlocking(b),
     missingItems: b.missingItems,
-    canMarkNotApplicable: CIL_NOT_APPLICABLE_ALLOWED.has(b.id),
+    // Lot 75A : B6 renseigné par un équipement énergétique ne peut plus être
+    // déclaré non applicable (la route le refuse aussi).
+    canMarkNotApplicable: CIL_NOT_APPLICABLE_ALLOWED.has(b.id) && !(b.id === 'B6' && b.status === 'complete'),
+    neutralizedResolution: b.neutralizedResolution ?? null,
+    notice: b.notice ?? null,
   }));
   // B2 : contexte de constitution (profil CIL), non bloquant (§20).
   const b2: CilBlockDto = {

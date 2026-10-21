@@ -110,9 +110,9 @@ describe('C2 — ancienneté : indice, jamais preuve', () => {
     const r = await ev.assessDeadlinePertinence({ ...base, candidates: [], contextDates: ancien, config: V3, decide: aucuneIntervention, lifecycle: reconductible });
     expect(r.outcome).not.toBe('NO_ACTION');
     expect(r).toMatchObject({ outcome: 'DEFER', reason: expect.stringContaining('renewable_contract_requires_evidence'), aiCalled: true });
-    // Version T4 sans contrat structuré : la question reste (jamais écartée sur l'âge).
+    // Version T4 sans contrat structuré : jamais écartée sur l'âge — lot 75I (D) : ni question par défaut, décision prudente signalée.
     expect(await ev.assessDeadlinePertinence({ ...base, candidates: [], contextDates: ancien, config: { ref: 'bo:v2:t4_output_v2', interventionCapable: false }, lifecycle: reconductible }))
-      .toMatchObject({ outcome: 'CREATE_ACTION', card: 'DATA_QUESTION' });
+      .toMatchObject({ outcome: 'DEFER', pertinence: 'T4_INCOMPATIBLE', card: null });
     // Date contextuelle peu fiable : ne situe pas le document.
     const probable = await ev.assessDeadlinePertinence({ ...base, candidates: [], contextDates: [{ key: 'documentDate', iso: '2015-01-01', confidence: 'probable' }], config: { ref: 'x', interventionCapable: false } });
     expect(probable.pertinence).not.toBe('UNDATED_HISTORICAL');

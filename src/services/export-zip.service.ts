@@ -25,6 +25,7 @@ import type { ExportManifest } from './export-manifest.service';
 import type { AssetSnapshot, DocumentRef } from './export-snapshot.service';
 import { occupancyUsageLabel } from '@/lib/assets/occupancy';
 import { displayDocumentTitle } from '@/lib/documents/document-title-rules';
+import { downloadFilename, makeUniqueNamer } from '@/lib/download-filename';
 
 async function downloadFromS3(s3Key: string, bucket?: string | null): Promise<Buffer | null> {
   try {
@@ -48,16 +49,14 @@ function sanitizeFilename(name: string): string {
   return name.replace(/[^a-zA-Z0-9._\-àâäéèêëîïôöùûüçÀÂÄÉÈÊËÎÏÔÖÙÛÜÇ ]/g, '_').slice(0, 100);
 }
 
-function getFileExtension(doc: DocumentRef): string {
-  if (doc.mimeType) {
-    const parts = doc.mimeType.split('/');
-    if (parts[1] && parts[1] !== 'octet-stream') return parts[1].replace('jpeg', 'jpg');
-  }
-  if (doc.originalFilename) {
-    const ext = doc.originalFilename.split('.').pop();
-    if (ext) return ext;
-  }
-  return 'bin';
+/**
+ * Nom d'un document dans l'archive : règle commune du téléchargement
+ * (lot 75L, `src/lib/download-filename.ts`) — nom affiché + extension réelle,
+ * accents conservés. Les doublons sont suffixés « (2) » par `makeUniqueNamer`
+ * (auparavant : sous-type MIME comme extension, écrasement silencieux).
+ */
+function documentEntryName(doc: DocumentRef): string {
+  return downloadFilename(doc);
 }
 
 // ─── Récapitulatif lisible (premium EXPORT_BRUT uniquement) ──────────────────
@@ -268,21 +267,13 @@ function buildRecapTxt(snapshot: AssetSnapshot): string {
 
 async function buildFlatZip(snapshot: AssetSnapshot): Promise<Buffer> {
   const zip = new JSZip();
-  const usedNames = new Map<string, number>();
+  const uniqueName = makeUniqueNamer();
 
   const addFile = async (doc: DocumentRef) => {
     if (!doc.s3Key || doc.isWebLink) return;
     const buf = await downloadFromS3(doc.s3Key, doc.s3Bucket);
     if (!buf) return;
-    const base = sanitizeFilename(displayDocumentTitle(doc, `fichier_${doc.id}`));
-    const ext = getFileExtension(doc);
-    let filename = `${base}.${ext}`;
-    // Collision: suffixe numérique
-    const key = filename.toLowerCase();
-    const count = usedNames.get(key) ?? 0;
-    if (count > 0) filename = `${base}_${count}.${ext}`;
-    usedNames.set(key, count + 1);
-    zip.file(filename, buf);
+    zip.file(uniqueName(documentEntryName(doc)), buf);
   };
 
   for (const doc of snapshot.documents) {
@@ -323,15 +314,13 @@ async function buildStructuredZip(manifest: ExportManifest, fullSnapshot: AssetS
       if (!grouped[folder]) grouped[folder] = [];
       grouped[folder].push(doc);
     }
+    const uniqueName = makeUniqueNamer();
     for (const [folderName, docs] of Object.entries(grouped)) {
-      const folder = zip.folder(`documents/${folderName}`)!;
       for (const doc of docs) {
         if (!doc.s3Key) continue;
         const buf = await downloadFromS3(doc.s3Key, doc.s3Bucket);
         if (!buf) continue;
-        const base = sanitizeFilename(displayDocumentTitle(doc, `fichier_${doc.id}`));
-        const ext = getFileExtension(doc);
-        folder.file(`${base}.${ext}`, buf);
+        zip.file(uniqueName(documentEntryName(doc), `documents/${folderName}`), buf);
       }
     }
   }
@@ -388,15 +377,13 @@ export async function buildExportZip(
       if (!grouped[folder]) grouped[folder] = [];
       grouped[folder].push(doc);
     }
+    const uniqueName = makeUniqueNamer();
     for (const [folderName, docs] of Object.entries(grouped)) {
-      const folder = docsFolder.folder(folderName)!;
       for (const doc of docs) {
         if (!doc.s3Key) continue;
         const buf = await downloadFromS3(doc.s3Key, doc.s3Bucket);
         if (!buf) continue;
-        const base = sanitizeFilename(displayDocumentTitle(doc, `doc_${doc.id}`));
-        const ext = getFileExtension(doc);
-        folder.file(`${base}.${ext}`, buf);
+        docsFolder.file(uniqueName(documentEntryName(doc), folderName), buf);
       }
     }
   }

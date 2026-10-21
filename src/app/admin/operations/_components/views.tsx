@@ -365,12 +365,24 @@ function Table({ cols, rows, empty }: { cols: string[]; rows: ReactNode[][]; emp
 
 const Active = ({ v }: { v: unknown }) => (yes(v) ? <span className="text-[color:var(--text-success)]">active</span> : <span className="text-muted-foreground">inactive</span>);
 const json = (v: unknown) => (v === null || v === undefined ? '—' : <code className="text-[10px] break-all">{JSON.stringify(v)}</code>);
-const opLink = (id: unknown) => (id === null || id === undefined ? '—' : <Link href={`/admin/operations/${String(id)}`} className="hover:underline">#{String(id)}</Link>);
+const opLinkPage = (id: unknown) => (id === null || id === undefined ? '—' : <Link href={`/admin/operations/${String(id)}`} className="hover:underline">#{String(id)}</Link>);
 const amount = (minor: unknown, cur: unknown) => (minor === null || minor === undefined ? '—' : formatMoney(n(minor), String(cur ?? 'EUR')));
 
-export function OperationDetailView({ d }: { d: OperationDetail }) {
+/** Lot 75N : navigation DANS le tiroir « Données du compte » (au lieu d'un changement d'écran). */
+export type OperationDetailNavigate = (type: 'operation' | 'document' | 'asset' | 'equipment' | 'agenda', id: number) => void;
+
+export function OperationDetailView({ d, onNavigate }: { d: OperationDetail; onNavigate?: OperationDetailNavigate }) {
   const o = d.operation;
   const acc = o.accountId;
+  const navButton = (type: Parameters<OperationDetailNavigate>[0], id: number, label: ReactNode) => (
+    <button type="button" className="underline-offset-2 hover:underline text-left" onClick={() => onNavigate!(type, id)}>{label}</button>
+  );
+  // Sans `onNavigate` : liens d'écran historiques (page détail d'Opération).
+  const opLink = (id: unknown) => (id === null || id === undefined ? '—' : onNavigate ? navButton('operation', Number(id), `#${String(id)}`) : opLinkPage(id));
+  const docLink = (fileId: number, label: ReactNode, cls: string) => (onNavigate
+    ? <button type="button" className={`${cls} text-left`} onClick={() => onNavigate('document', fileId)}>{label}</button>
+    : <Link href={documentHref(acc, fileId)} className={cls}>{label}</Link>);
+  const named = (type: 'asset' | 'equipment', id: unknown, label: string) => (onNavigate && id != null ? navButton(type, Number(id), label) : label);
   return (
     <div className="space-y-4">
       <ReadOnlyNotice />
@@ -403,11 +415,11 @@ export function OperationDetailView({ d }: { d: OperationDetail }) {
 
       <Section title="Biens et équipements" count={d.assetLinks.length + d.equipmentLinks.length}>
         <Table cols={['Bien', 'Rôle', 'Autorité', 'Source', 'Lien']} empty="Aucun bien lié (cible non résolue)."
-          rows={d.assetLinks.map((l: Row) => [`${s(l.asset_name)} (#${s(l.asset_id)})${yes(l.asset_deleted) ? ' — supprimé' : ''}`, s(l.link_role), s(l.authority), s(l.source_id), <Active key="a" v={l.active} />])} />
+          rows={d.assetLinks.map((l: Row) => [named('asset', l.asset_id, `${s(l.asset_name)} (#${s(l.asset_id)})${yes(l.asset_deleted) ? ' — supprimé' : ''}`), s(l.link_role), s(l.authority), s(l.source_id), <Active key="a" v={l.active} />])} />
         {d.equipmentLinks.length > 0 && (
           <div className="mt-3">
             <Table cols={['Équipement', 'Bien', 'Autorité', 'Source', 'Lien']} empty=""
-              rows={d.equipmentLinks.map((l: Row) => [`${s(l.equipment_name)} (#${s(l.equipment_id)})`, `#${s(l.asset_id)}`, s(l.authority), s(l.source_id), <Active key="a" v={l.active} />])} />
+              rows={d.equipmentLinks.map((l: Row) => [named('equipment', l.equipment_id, `${s(l.equipment_name)} (#${s(l.equipment_id)})`), named('asset', l.asset_id, `#${s(l.asset_id)}`), s(l.authority), s(l.source_id), <Active key="a" v={l.active} />])} />
           </div>
         )}
       </Section>
@@ -418,7 +430,7 @@ export function OperationDetailView({ d }: { d: OperationDetail }) {
             s(x.id),
             s(x.source_kind),
             x.file_id
-              ? <Link key="d" href={documentHref(acc, n(x.file_id))} className="inline-flex items-center gap-1 hover:underline whitespace-nowrap">document #{s(x.file_id)}<ExternalLink className="h-3 w-3" /></Link>
+              ? <span key="d">{docLink(n(x.file_id), <>document #{s(x.file_id)}<ExternalLink className="h-3 w-3" /></>, 'inline-flex items-center gap-1 hover:underline whitespace-nowrap')}</span>
               : `${s(x.source_entity_key)}${x.source_version ? ` v${s(x.source_version)}` : ''}`,
             s(x.source_role),
             s(x.authority),
@@ -471,7 +483,7 @@ export function OperationDetailView({ d }: { d: OperationDetail }) {
         <Table cols={['#', 'Document', 'Résumé', 'Confiance', 'Indice de type', 'Issue T3', 'Motif', 'Exécution IA', 'Opération', 'État']} empty="Aucun candidat T1."
           rows={d.candidates.map((c: Row) => [
             s(c.id),
-            <Link key="d" href={documentHref(acc, n(c.file_id))} className="hover:underline whitespace-nowrap">document #{s(c.file_id)}</Link>,
+            <span key="d">{docLink(n(c.file_id), `document #${s(c.file_id)}`, 'hover:underline whitespace-nowrap')}</span>,
             s(c.summary), `${s(c.confidence)}${yes(c.established) ? '' : ' (non établi)'}`, s(c.type_hint),
             yes(c.t3_pending) ? 'en file T3' : s(c.t3_outcome),
             s(c.t3_reason_label), s(c.ai_label), opLink(c.t3_operation_id), s(c.status),
@@ -480,7 +492,7 @@ export function OperationDetailView({ d }: { d: OperationDetail }) {
 
       <Section title="Agenda (projection et suppressions)" count={d.agendaItems.length + d.projectionSuppressions.length}>
         <Table cols={['Événement', 'Date', 'Origine', 'Corrélation']} empty="Aucun événement d’agenda lié."
-          rows={d.agendaItems.map((a: Row) => [`#${s(a.id)} ${s(a.title)}`, formatDate(a.start_date as string), a.projection_origin === 'OPERATION' ? 'projeté (T4)' : 'rapproché', s(a.projection_correlation_id)])} />
+          rows={d.agendaItems.map((a: Row) => [onNavigate ? navButton('agenda', n(a.id), `#${s(a.id)} ${s(a.title)}`) : `#${s(a.id)} ${s(a.title)}`, formatDate(a.start_date as string), a.projection_origin === 'OPERATION' ? 'projeté (T4)' : 'rapproché', s(a.projection_correlation_id)])} />
         {d.projectionSuppressions.length > 0 && (
           <div className="mt-3">
             <Table cols={['Suppression durable', 'Clé', 'Utilisateur', 'Date']} empty=""

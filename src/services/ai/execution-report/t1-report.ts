@@ -16,6 +16,17 @@
  *   8. `setState` / `failSources` → asset_files.analysis_state / analysis_fail_reason
  *   9. hors pipeline : couverture (reprises `source-units/jobs`), rejeu
  *      `ai_output_replays` — tracés par leurs propres écrans (BO › Complétude T1).
+ *  10. lot 75C : `markOcr` → document_raw_extracts.ocr_* (pages sans couche
+ *      texte transcrites par la lecture du modèle) ; `applyReliableFacts` →
+ *      attributs métier (assets / equipments / substructures, même primitive
+ *      que T3) ; `finalizeRunWrites` → document_analysis_runs.writes_status.
+ *
+ * Lot 75C — le rapport distingue : données extraites ET enregistrées
+ * (`WRITTEN`), extraites mais NON persistées (`NOT_PERSISTED`, `FAILED`),
+ * non extraites ou non vérifiables (`NOT_EXAMINED` : page illisible,
+ * extract tronqué), volontairement non projetées (`NOT_WRITTEN`, motif), et
+ * échecs techniques (étapes `FAILED`, phases). Le statut n'est jamais
+ * « réussi » quand une phase est partielle ou en échec.
  *
  * Chaque ligne `WRITTEN` vient d'une RELECTURE en base après l'exécution (ou
  * d'un identifiant rendu par RETURNING). Une donnée déclarée par l'analyse et
@@ -32,7 +43,9 @@ import { writeExecutionReport } from './repository';
 import type { DocumentKnowledge } from '../knowledge/document-knowledge';
 import type { ProjectedFact } from '../source-analysis/master/t1-contract';
 import type { PersistProjectedFactsResult } from '../source-analysis/steps/persist-evidence.step';
-import type { RawExtractSummary } from '../source-analysis/raw-extract/raw-extract.service';
+import { PERSISTENCE_BLOCKING_STEPS, PERSISTENCE_SECONDARY_STEPS, type RawExtractSummary } from '../source-analysis/raw-extract/raw-extract.service';
+import { ocrGaps, type OcrResult } from '../source-analysis/raw-extract/ocr-pages';
+import type { AttributeProjection } from '../source-analysis/steps/apply-reliable-facts.step';
 
 type Row = Record<string, unknown>;
 
@@ -51,6 +64,12 @@ export class T1ExecutionRecorder {
   failure: string | null = null;
   /** Lot 61 : extracts bruts déterministes du groupe (phase EXTRACTION). */
   rawExtracts: RawExtractSummary[] = [];
+  /** Lot 75C (B) : transcription des pages sans couche texte, par fichier (null : non persistée). */
+  ocr = new Map<number, { result: OcrResult; persisted: boolean }>();
+  /** Lot 75C (D) : attributs métier alimentés directement par T1. */
+  attributes: AttributeProjection[] = [];
+  /** Lot 75C (H) : tentatives d'appel du modèle (trace, modèle, code, étape) — renseignées aussi en ÉCHEC. */
+  attempts: AttemptTrace[] = [];
 
   ok(step: string, detail?: Record<string, unknown>): void {
     this.steps.push({ step, status: 'OK', error: null, detail: detail ?? null });
@@ -76,6 +95,62 @@ export class T1ExecutionRecorder {
 
 const n = (v: unknown) => (v == null ? null : Number(v));
 
+/** Lot 75C (H) : une tentative d'appel du modèle pour ce document. */
+export interface AttemptTrace {
+  traceId: string;
+  model: string | null;
+  modelRank: string | null;
+  outcome: string | null;
+  errorCode: string | null;
+  failureFamily: string | null;
+  stage: string | null;
+  callKind: string | null;
+  operationCode: string | null;
+}
+
+/** Identifiant de trace porté par une erreur de la passerelle (ou sa cause). Pur. */
+export function traceIdsOfError(e: unknown): string[] {
+  const out: string[] = [];
+  let x: unknown = e;
+  for (let i = 0; i < 5 && x && typeof x === 'object'; i++) {
+    const t = (x as { traceId?: unknown }).traceId;
+    if (typeof t === 'string' && t) out.push(t);
+    x = (x as { cause?: unknown }).cause;
+  }
+  return out;
+}
+
+/**
+ * Lot 75C (ticket T1 résiduels, H) — tentatives d'appel du modèle pour ce
+ * document depuis `since` (diagnostics d'appel, par fichier source, joints à
+ * l'événement d'usage pour le code d'erreur) : rattachées au rapport T1 MÊME
+ * quand Gemini échoue. Ne lève jamais (rapport réduit à l'identifiant porté
+ * par l'erreur).
+ */
+export async function collectAttemptTraces(p: { accountId: number; fileIds: number[]; since: Date; error?: unknown }): Promise<{ traceIds: string[]; attempts: AttemptTrace[] }> {
+  const deLErreur = traceIdsOfError(p.error);
+  let attempts: AttemptTrace[] = [];
+  try {
+    const rows = (await pgClient.unsafe(
+      `SELECT d.trace_id, d.model, d.model_rank, d.outcome, d.failure_family, d.failure_stage, d.call_kind, d.operation_code, u.error_code
+         FROM ai_call_diagnostics d
+         LEFT JOIN ai_usage_event u ON u.id = d.usage_event_id
+        WHERE d.account_id = $1 AND d.source_ids && $2::int[] AND d.created_at >= $3
+        ORDER BY d.id LIMIT 50`,
+      [p.accountId, p.fileIds, p.since.toISOString()] as never[],
+    )) as unknown as Row[];
+    attempts = rows.map((r) => ({
+      traceId: String(r.trace_id), model: (r.model as string | null) ?? null, modelRank: (r.model_rank as string | null) ?? null,
+      outcome: (r.outcome as string | null) ?? null, errorCode: (r.error_code as string | null) ?? null,
+      failureFamily: (r.failure_family as string | null) ?? null, stage: (r.failure_stage as string | null) ?? null,
+      callKind: (r.call_kind as string | null) ?? null, operationCode: (r.operation_code as string | null) ?? null,
+    }));
+  } catch (e) {
+    console.error('[execution-report] tentatives du modèle non relues :', errorText(e));
+  }
+  return { traceIds: [...new Set([...deLErreur, ...attempts.map((a) => a.traceId)])], attempts };
+}
+
 export type T1PhaseState = 'SUCCEEDED' | 'PARTIAL' | 'FAILED' | 'NOT_RUN';
 export interface T1Phase { state: T1PhaseState; detail: Record<string, unknown> }
 
@@ -87,20 +162,13 @@ export interface T1Phase { state: T1PhaseState; detail: Record<string, unknown> 
  *   · persistance  : écritures bloquantes / secondaires.
  * Écrit dans `sources.phases` du rapport : n'altère pas le statut métier.
  */
-export function t1Phases(rec: Pick<T1ExecutionRecorder, 'steps' | 'rawExtracts' | 'failure'>): { extraction: T1Phase; structuring: T1Phase; persistence: T1Phase } {
+export function t1Phases(rec: Pick<T1ExecutionRecorder, 'steps' | 'rawExtracts' | 'failure'> & Partial<Pick<T1ExecutionRecorder, 'ocr'>>): { extraction: T1Phase; structuring: T1Phase; persistence: T1Phase } {
   const step = (name: string) => rec.steps.find((s) => s.step === name);
   const raws = rec.rawExtracts;
-  const extraction: T1Phase = raws.length === 0
-    ? { state: 'NOT_RUN', detail: { reason: 'aucun extract brut (source non fichier ou table absente)' } }
-    : {
-        state: raws.some((r) => r.status === 'FAILED') ? 'FAILED'
-          : raws.some((r) => r.status !== 'COMPLETE') ? 'PARTIAL' : 'SUCCEEDED',
-        detail: { files: raws.map((r) => ({
-          fileId: r.fileId, status: r.status, method: r.method, pageCount: r.pageCount, pagesWithText: r.pagesWithText,
-          pagesWithoutText: r.pagesWithoutText, truncated: r.truncated, truncationReason: r.truncationReason, chars: r.chars,
-          reused: r.reused, error: r.error,
-        })) },
-      };
+  const ecriture = step('RAW_EXTRACT');
+  const extraction: T1Phase = raws.length === 0 && ecriture?.status !== 'FAILED'
+    ? { state: 'NOT_RUN', detail: { reason: 'aucun extract brut (source non fichier)' } }
+    : extractionPhase(raws, rec.ocr ?? new Map(), ecriture?.status === 'FAILED' ? ecriture.error ?? 'échec' : null);
   const m = step('MASTER');
   const structuring: T1Phase = !m ? { state: 'NOT_RUN', detail: {} }
     : m.status === 'OK' ? { state: 'SUCCEEDED', detail: m.detail ?? {} }
@@ -108,15 +176,56 @@ export function t1Phases(rec: Pick<T1ExecutionRecorder, 'steps' | 'rawExtracts' 
   let persistence: T1Phase;
   if (structuring.state !== 'SUCCEEDED') persistence = { state: 'NOT_RUN', detail: { reason: 'structuration non aboutie' } };
   else {
-    const bloquantes = ['ANALYSIS_RUN', 'KNOWLEDGE', 'EVIDENCE', 'RULES', 'PERSISTENCE'];
+    const bloquantes: readonly string[] = PERSISTENCE_BLOCKING_STEPS;
     const ko = rec.steps.filter((s) => s.status === 'FAILED' && bloquantes.includes(s.step));
-    const secondaires = rec.steps.filter((s) => s.status === 'FAILED' && ['LINKS', 'PRIMARY_ASSET'].includes(s.step));
+    const secondaires = rec.steps.filter((s) => s.status === 'FAILED' && (PERSISTENCE_SECONDARY_STEPS as readonly string[]).includes(s.step));
     persistence = ko.length || rec.failure
       ? { state: 'FAILED', detail: { failedSteps: ko.map((s) => ({ step: s.step, error: s.error ?? null })), failure: rec.failure } }
       : secondaires.length ? { state: 'PARTIAL', detail: { failedSteps: secondaires.map((s) => ({ step: s.step, error: s.error ?? null })) } }
         : { state: 'SUCCEEDED', detail: {} };
   }
   return { extraction, structuring, persistence };
+}
+
+/**
+ * Lot 75C (A, B, G) — phase EXTRACTION : couche texte ET transcription des
+ * pages sans couche texte. Lacunes nommées (`gaps`) : extract absent ou en
+ * échec, tronqué, pages illisibles ou non attribuables, transcription non
+ * enregistrée, identité du contenu non vérifiée, type non lu. Pure.
+ */
+function extractionPhase(raws: RawExtractSummary[], ocr: Map<number, { result: OcrResult; persisted: boolean }>, ecriture: string | null): T1Phase {
+  const gaps: string[] = [];
+  if (ecriture) gaps.push(`extract brut non enregistré : ${ecriture}`);
+  for (const r of raws) {
+    const o = ocr.get(r.fileId);
+    if (r.status === 'FAILED') gaps.push(`fichier ${r.fileId} : lecture déterministe impossible (${r.error ?? 'échec'})`);
+    if (r.status === 'NOT_SUPPORTED') gaps.push(`fichier ${r.fileId} : type sans lecture déterministe (lecture par le modèle seule)`);
+    if (r.truncated) gaps.push(`fichier ${r.fileId} : extract tronqué — ${r.truncationReason ?? 'borne atteinte'}`);
+    if (r.identity === 'UNVERIFIED') gaps.push(`fichier ${r.fileId} : identité du contenu réutilisé non vérifiable`);
+    if (r.pagesWithoutText.length > 0) {
+      if (!o) gaps.push(`fichier ${r.fileId} : pages ${r.pagesWithoutText.join(', ')} sans couche texte, transcription non disponible`);
+      else {
+        if (!o.persisted) gaps.push(`fichier ${r.fileId} : transcription des pages sans couche texte non enregistrée`);
+        for (const g of ocrGaps(o.result)) gaps.push(`fichier ${r.fileId} : ${g}`);
+      }
+    }
+  }
+  const failed = ecriture !== null || raws.some((r) => r.status === 'FAILED' && !r.truncated);
+  return {
+    state: failed ? 'FAILED' : gaps.length ? 'PARTIAL' : 'SUCCEEDED',
+    detail: {
+      ...(gaps.length ? { gaps } : {}),
+      files: raws.map((r) => {
+        const o = ocr.get(r.fileId);
+        return {
+          fileId: r.fileId, status: r.status, method: r.method, pageCount: r.pageCount, pagesWithText: r.pagesWithText,
+          pagesWithoutText: r.pagesWithoutText, truncated: r.truncated, truncationReason: r.truncationReason, chars: r.chars,
+          reused: r.reused, identity: r.identity, error: r.error,
+          ...(o ? { ocr: { status: o.result.status, recognized: o.result.recognized, unreadable: o.result.unreadable, chars: o.result.chars, persisted: o.persisted } } : {}),
+        };
+      }),
+    },
+  };
 }
 
 /** Colonnes de `document_extractions` rapportées une à une (emplacement exact). */
@@ -180,6 +289,28 @@ export async function buildT1Entries(rec: T1ExecutionRecorder, p: { accountId: n
       inc('rawExtractPages', Number(r.page_count ?? 0));
       inc('rawExtractChars', Number(r.full_text_chars ?? 0));
       if (resume?.reused) inc('rawExtractReused');
+    }
+  }
+
+  // ── 0 bis. Lot 75C (B) : transcription des pages sans couche texte ────────
+  for (const [fileId, o] of rec.ocr) {
+    for (const pg of o.result.pages) {
+      const base = {
+        section: 'OCR_PAGE', tableName: 'document_raw_extracts', columnPath: 'ocr_pages', label: `Page ${pg.page}`,
+        links: { fileId, page: pg.page, status: pg.status, provenance: pg.provenance, chars: pg.chars, sourceUnitIds: pg.sourceUnitIds, zones: pg.zones.length },
+      };
+      if (pg.status === 'RECOGNIZED') {
+        const { value, ref } = valueOrRef(pg.text);
+        entries.push({ ...base, value, ref, valueType: ref ? 'string (référencé)' : 'string',
+          writeResult: o.persisted ? 'WRITTEN' : 'NOT_PERSISTED', reasonCode: o.persisted ? pg.provenance : 'OCR_NOT_PERSISTED',
+          reason: o.persisted ? 'Texte reconnu par la lecture du modèle, enregistré à part de la couche texte' : 'Texte reconnu, transcription non enregistrée' });
+        inc('ocrPagesRecognized');
+      } else if (pg.status === 'EMPTY') {
+        entries.push({ ...base, writeResult: 'OBSERVED', reasonCode: 'OCR_PAGE_EMPTY', reason: pg.reason });
+      } else {
+        entries.push({ ...base, writeResult: 'NOT_EXAMINED', reasonCode: pg.status === 'UNREADABLE' ? 'OCR_PAGE_UNREADABLE' : 'OCR_PAGE_UNATTRIBUTED', reason: pg.reason });
+        inc('ocrPagesUnreadable');
+      }
     }
   }
 
@@ -360,6 +491,24 @@ export async function buildT1Entries(rec: T1ExecutionRecorder, p: { accountId: n
     c.evidenceWritten = lues.size;
   }
   if (rec.projection) c.evidenceSuperseded = rec.projection.superseded.count;
+  // Lot 75C (C) : écritures de preuve réellement échouées (étape de source : supersede, cibles).
+  for (const w of rec.projection?.writeErrors ?? []) {
+    if (w.stage === 'RECORD') continue; // déjà une ligne PROJECTION / WRITE_FAILED
+    entries.push({ section: 'EVIDENCE', tableName: 'field_evidence', writeResult: 'FAILED', reasonCode: `EVIDENCE_${w.stage}_FAILED`, reason: w.message });
+  }
+
+  // ── 3 bis. Lot 75C (D) : attributs métier alimentés directement par T1 ────
+  for (const a of rec.attributes) {
+    const writeResult = a.outcome === 'WRITTEN' ? 'WRITTEN' : a.outcome === 'FAILED' ? 'FAILED'
+      : a.outcome === 'NOT_CONFIRMED' ? 'DECIDED_NOT_CONFIRMED' : 'NOT_WRITTEN';
+    entries.push({
+      section: 'ATTRIBUTE', tableName: a.targetType === 'ASSET' ? 'assets' : a.targetType === 'EQUIPMENT' ? 'equipments' : 'substructures',
+      recordId: String(a.entityId), columnPath: 'key_characteristics', fieldKey: a.fieldKey, entityType: a.targetType, entityId: a.entityId,
+      value: a.value as never, valueType: valueTypeOf(a.value), writeResult, reasonCode: a.outcome === 'WRITTEN' ? a.reasonCode : `${a.outcome}:${a.reasonCode}`,
+      reason: a.reason, links: { evidenceIds: a.evidenceIds },
+    });
+    inc(`attribute_${a.outcome}`);
+  }
 
   // ── 4. Document, titre, liens, règles « À traiter » ───────────────────────
   const doc = await safeRows(readSteps, 'DOCUMENT', `SELECT id, ${DOCUMENT_COLUMNS.join(', ')} FROM asset_files WHERE id = $1 AND account_id = $2`, [f, ac]);
@@ -415,13 +564,17 @@ export async function writeT1Report(rec: T1ExecutionRecorder, p: { accountId: nu
     const steps = [...rec.steps, ...(rec.failure ? [{ step: 'GROUPE', status: 'FAILED' as const, error: rec.failure }] : []), ...built.readSteps];
     const counters: Record<string, number> = { ...built.counters, entries: built.entries.length, groupSources: p.groupSourceIds.length };
     for (const e of built.entries) counters[`result_${e.writeResult}`] = (counters[`result_${e.writeResult}`] ?? 0) + 1;
+    const phases = t1Phases(rec);
+    let status = reportStatus({ failed: rec.failure !== null, entries: built.entries, steps, treatment: 'T1' });
+    // Lot 75C : jamais « réussi » quand une phase est partielle ou en échec (extraction tronquée, page illisible…).
+    if (status === 'SUCCESS' && Object.values(phases).some((ph) => ph.state === 'PARTIAL' || ph.state === 'FAILED')) status = 'PARTIAL';
     return await writeExecutionReport({
       accountId: p.accountId, treatment: 'T1', scope: 'DOCUMENT', jobId: ctx?.jobId ?? null, jobAttempt: ctx?.jobAttempt ?? null,
-      traceIds: [...new Set(rec.traceIds.filter(Boolean))], fileId: p.fileId, analysisRunId: rec.analysisRunId, extractionId: rec.extractionId,
+      traceIds: [...new Set([...rec.traceIds, ...rec.attempts.map((a) => a.traceId)].filter(Boolean))], fileId: p.fileId, analysisRunId: rec.analysisRunId, extractionId: rec.extractionId,
       triggerCode: ctx?.triggerCode ?? null,
-      status: reportStatus({ failed: rec.failure !== null, entries: built.entries, steps, treatment: 'T1' }),
+      status,
       counters, steps, startedAt: rec.startedAt,
-      sources: { groupSourceIds: p.groupSourceIds, deduplicatedRun: rec.deduplicated, phases: t1Phases(rec) },
+      sources: { groupSourceIds: p.groupSourceIds, deduplicatedRun: rec.deduplicated, phases },
     }, built.entries);
   } catch (e) {
     console.error(`[execution-report] rapport T1 du fichier ${p.fileId} non écrit :`, errorText(e));

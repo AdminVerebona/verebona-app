@@ -56,7 +56,10 @@ export function mapCil(m: MapInput): CilData {
   // ── Blocs (B2 calculé ici ; B1, B3-B9 : évaluation partagée avec la génération).
   const readiness = cil?.readiness.blocks ?? [];
   const status = (id: string): CilBlockStatus => (readiness.find((b) => b.id === id)?.status as CilBlockStatus) ?? 'unknown';
-  const resolution = (id: string) => str(cil?.resolutions.find((r) => r.blockId === id)?.justification);
+  // Justification d'une résolution « non applicable » : seulement si le bloc
+  // l'est EFFECTIVEMENT (lot 75A : une déclaration B6 neutralisée par un
+  // équipement énergétique retenu n'apparaît pas au PDF).
+  const resolution = (id: string) => (status(id) === 'not_applicable' ? str(cil?.resolutions.find((r) => r.blockId === id)?.justification) : null);
   const p = cil?.profile;
   const b2Complete = !!p && (p.triggerType !== 'inconnu' || !!p.triggerDate || !!p.authorizationType || !!p.voluntaryReason);
 

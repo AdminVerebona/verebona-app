@@ -284,8 +284,22 @@ export async function writeCanonicalEntityFields(
   if (out.assetId && input.emitEvent !== false && out.fields.some((f) => f.outcome === 'written')) {
     await emettre(input.accountId, out.assetId);
   }
+  // Lot 75G (rapprochement documents–équipements, écart D) : identifiant
+  // discriminant d'un ÉQUIPEMENT réellement modifié (toutes origines) →
+  // rapprochement de ses documents en file DURABLE (dédupliqué, rejouable).
+  if (input.target.type === 'EQUIPMENT' && !out.notFound) {
+    const cles = out.fields.filter((f) => f.outcome === 'written' && EQUIPMENT_LINK_KEYS.has(f.key)
+      && !sameCanonicalValue(f.key, f.previousValue ?? null, f.nextValue ?? null)).map((f) => f.key);
+    if (cles.length) {
+      const { notifyEquipmentIdentifiersChanged } = await import('@/services/equipment/equipment-document-queue');
+      await notifyEquipmentIdentifiersChanged(input.accountId, input.target.id, cles);
+    }
+  }
   return out;
 }
+
+/** Clés canoniques d'un équipement exploitées par le rapprochement documentaire. */
+const EQUIPMENT_LINK_KEYS: ReadonlySet<string> = new Set(['brand', 'modelName', 'serialNumber']);
 
 /** Écrit UNE clé canonique d'un équipement ou d'une pièce. */
 export async function writeCanonicalEntityField(

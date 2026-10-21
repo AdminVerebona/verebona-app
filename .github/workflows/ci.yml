@@ -98,6 +98,66 @@ jobs:
       - name: Scénarios E2E T4 critiques (PostgreSQL 16)
         run: npm run test:e2e:t4
 
+  e2e-cil:
+    name: E2E CIL / diagnostics B6 (PostgreSQL 16)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      E2E_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.13.0"
+          cache: npm
+      - name: Installation
+        run: npm ci
+      - name: Scénarios E2E CIL B6 et diagnostics (lots 69, 70B, 75A)
+        run: npm run test:e2e:cil
+
+  e2e-mascotte-t6:
+    name: E2E mascotte et T6 (PostgreSQL 16)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      E2E_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.13.0"
+          cache: npm
+      - name: Installation
+        run: npm ci
+      - name: Scénarios E2E mascotte et T6 (lots 71F, 71G, 72A, 75E)
+        run: npm run test:e2e:mascotte-t6
+
   conformity-report:
     name: Rapport de conformité
     if: github.ref == 'refs/heads/main'

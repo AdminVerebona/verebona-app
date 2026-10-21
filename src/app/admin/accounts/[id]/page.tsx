@@ -25,7 +25,7 @@ import { Label } from '@/components/ui/label';
 import {
   Users, User, Building2, Crown, Loader2, ArrowLeft,
   Activity, CreditCard, RefreshCw, ExternalLink, Layers,
-  Package, Trash2, AlertTriangle, Ban, Power, Gauge, Receipt,
+  Trash2, AlertTriangle, Ban, Power, Gauge, Receipt,
 } from 'lucide-react';
 import {
   AlertDialog,
@@ -47,6 +47,7 @@ import { formatBytes, formatDate, formatDateTime, formatMoney } from '@/lib/admi
 import { EcranEnErreur } from '@/components/admin/EcranEnErreur';
 import { AccountWithdrawals } from './_components/AccountWithdrawals';
 import { AccountDocuments } from './_components/AccountDocuments';
+import { AccountDataSection } from './_components/account-data/AccountDataSection';
 import { ReconsolidateAccountButton } from '../../operations/_components/ReconsolidateAccountButton';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -357,7 +358,7 @@ export default function AccountDetailPage() {
   const planUnchanged = newPlan === account.planType;
 
   return (
-    <div className="space-y-6 max-w-5xl">
+    <div className="space-y-6 max-w-6xl">
       {/* Header */}
       <div className="flex items-start justify-between gap-4">
         <div className="flex items-center gap-3">
@@ -617,7 +618,7 @@ export default function AccountDetailPage() {
             </div>
           </section>
 
-          {/* ── Documents, exports et transmissions (ACC-D07, ACC-D08) ── */}
+          {/* ── Exports et transmissions (ACC-D08). Les documents sont dans « Données du compte » (lot 75N). ── */}
           <AccountDocuments accountId={account.id} />
 
           {/* ── Lot 47A (O9) : Opérations du compte (BO diagnostic, lecture seule) ── */}
@@ -751,34 +752,6 @@ export default function AccountDetailPage() {
             </div>
           </section>
 
-          {/* Biens (ACC-D06 : diagnostic, sans modification) */}
-          <section className="rounded-xl border bg-card overflow-hidden">
-            <div className="px-5 py-4 border-b flex items-center justify-between">
-              <h2 className="vb-app-section flex items-center gap-2">
-                <Package className="h-4 w-4 text-muted-foreground" />
-                Biens ({assets.length})
-              </h2>
-            </div>
-            <div className="divide-y max-h-64 overflow-y-auto">
-              {assets.length === 0 ? (
-                <p className="px-5 py-4 text-xs text-muted-foreground italic text-center">Aucun bien</p>
-              ) : (
-                assets.map(asset => (
-                  <div
-                    key={asset.id}
-                    className="w-full text-left px-5 py-2.5"
-                  >
-                    <div className="flex items-center justify-between">
-                      <span className="text-xs font-medium truncate">{asset.name}</span>
-                      <span className="text-[10px] text-muted-foreground shrink-0 ml-2">{asset.category}</span>
-                    </div>
-                    <p className="text-[10px] text-muted-foreground mt-0.5">{formatDate(asset.createdAt)}</p>
-                  </div>
-                ))
-              )}
-            </div>
-          </section>
-
           {/* Actions sensibles */}
           <section className="rounded-xl border border-destructive/30 bg-destructive/5 overflow-hidden">
             <div className="px-5 py-4 border-b border-destructive/20">
@@ -894,6 +867,9 @@ export default function AccountDetailPage() {
         </div>
 
       </div>
+
+      {/* ── Lot 75N : Données du compte — six catégories, tiroir commun (ACC-D06, ACC-D07 adaptés) ── */}
+      <AccountDataSection accountId={account.id} />
     </div>
   );
 }

@@ -20,6 +20,21 @@
  *     composante consolidée (`finance/economic-lines.ts`) ;
  *   · le PRIX D'ACHAT de la fiche tant qu'aucun achat consolidé ne le
  *     représente (jamais additionné à la facture d'achat correspondante).
+ *
+ * Lot 75D — un fait économique n'est dédoublonné que sur IDENTITÉ établie,
+ * jamais sur la seule égalité de montant (`sameFactAs`) :
+ *   · preuve forte : preuve T1 active du prix (facture d'achat), donnée
+ *     structurée consolidée (ASSET_DATA / EQUIPMENT_DATA), citation T3 ;
+ *   · preuves concordantes : même montant ET même nature (achat) ET même
+ *     cible ET dates concordantes ;
+ *   · identité incertaine (même montant, dates inconnues) : la dépense reste
+ *     comptée, l'ambiguïté est SIGNALÉE (`uncertain`, statut INCOMPLETE).
+ * Le prix d'achat du bien et ceux de ses équipements restent séparés ; une
+ * réparation d'équipement n'est jamais son acquisition. Sans prix dans la
+ * fiche, l'achat du bien est identifié par la preuve T1, ou par l'unique
+ * facture d'achat que T1 cible sur le bien ; une facture ambiguë n'est pas
+ * classée arbitrairement. Coût d'acquisition attendu mais inconnu →
+ * INCOMPLETE (sauf location, prêt, don : `acquisitionExpected`).
  * Chaque ligne examinée (composante, document, fiche) est restituée dans
  * `lines` : identifiant stable, montant, catégorie, date, source, Opération
  * éventuelle, statut d'inclusion et motif — diagnostic BO et tiroir.
@@ -128,6 +143,12 @@ export interface TcoInput {
    * équipement) — dépenses du bien, JAMAIS son prix d'achat.
    */
   equipmentPrices?: readonly TcoEquipmentPrice[];
+  /**
+   * Lot 75D (H) : un achat du bien est attendu (faux : location, LLD / LOA,
+   * prêt, occupation gratuite, don ou succession — aucune acquisition payée).
+   * Absent : attendu.
+   */
+  acquisitionExpected?: boolean;
 }
 
 /** Lot 71A : prix d'achat de la fiche d'un équipement du bien. */
@@ -157,7 +178,12 @@ export type TcoWarning =
   | 'ACQUISITION_DATE_MISSING' | 'ACQUISITION_COST_MISSING' | 'UNCONVERTED_AMOUNTS' | 'UNALLOCATED_AMOUNTS'
   | 'NO_RELIABLE_VALUATION' | 'DISPOSAL_PRICE_MISSING' | 'DISPOSAL_DATE_MISSING' | 'PARTIAL_READ' | 'PRORATA_APPLIED'
   // Lot 61 : dépenses documentaires non qualifiées / sans montant, et dépenses dont le bien n'est pas confirmé.
-  | 'DOCUMENTS_NOT_QUALIFIED' | 'UNCONFIRMED_ASSET_EXPENSES';
+  | 'DOCUMENTS_NOT_QUALIFIED' | 'UNCONFIRMED_ASSET_EXPENSES'
+  // Lot 75D : justificatifs sans montant, rapprochements incertains, facture d'achat non identifiable.
+  | 'AMOUNTS_UNKNOWN' | 'UNCERTAIN_MATCHES' | 'ACQUISITION_AMBIGUOUS';
+
+/** Lot 75D (H) : état du coût d'acquisition (distingue absence de dépense et information manquante). */
+export type TcoAcquisitionStatus = 'DOCUMENTED' | 'MISSING' | 'NOT_APPLICABLE';
 
 /** Lot 61 (§4.1, §6) : ligne économique examinée — modèle commun composante / document / fiche. */
 export interface TcoEconomicLine {
@@ -182,6 +208,10 @@ export interface TcoEconomicLine {
   reason: EconomicLineReason | null;
   note: string | null;
   relatedFileId: number | null;
+  /** Lot 75D : rapprochement incertain avec un autre fait (ligne comptée, ambiguïté signalée). */
+  uncertain?: boolean;
+  /** Lot 75D (D) : montant inconnu (justificatif financier sans montant lisible) — jamais 0 €. */
+  amountUnknown?: boolean;
 }
 
 export interface TcoResult {
@@ -196,6 +226,8 @@ export interface TcoResult {
     acquisitionCents: number;
     /** Lot 61 : dépenses complémentaires retenues (tous les autres postes, avant avoirs et remboursements). */
     additionalCostsCents: number;
+    /** Lot 75D (H) : coût d'acquisition documenté, attendu mais inconnu, ou sans objet (location, prêt, don). */
+    acquisitionStatus: TcoAcquisitionStatus;
     currentValue: { cents: number; date: string; mode: string | null; source: string | null } | null;
     /** En possession, avec valeur fiable. */
     netEstimatedCents: number | null;
@@ -304,6 +336,17 @@ function documentCategory(l: Pick<DocumentLineDraft, 'typeHint' | 'theme'>): Tco
   }
 }
 
+/** Lot 75D : même jour ? `null` si l'une des dates est inconnue (identité non démontrable par la date). */
+function sameDay(a: string | null | undefined, b: string | null | undefined): boolean | null {
+  if (!isIsoDate(a) || !isIsoDate(b)) return null;
+  return a.slice(0, 10) === b.slice(0, 10);
+}
+const opDate = (o: Pick<TcoOperation, 'realizedDate' | 'startDate'>): string | null => {
+  const d = o.realizedDate ?? o.startDate;
+  return isIsoDate(d) ? d.slice(0, 10) : null;
+};
+const dateOfDraft = (d: Pick<DocumentLineDraft, 'date'>): string | null => (isIsoDate(d.date) ? d.date.slice(0, 10) : null);
+
 /** Justificatif principal d'une Opération (facture, sinon premier document). */
 const fichierPrincipalOp = (o: TcoOperation): number | null => (o.documents.find((d) => d.role === 'INVOICE') ?? o.documents[0])?.fileId ?? null;
 
@@ -353,24 +396,43 @@ export function computeTco(input: TcoInput): TcoResult {
     }
   }
 
-  // ── Achat du bien (lot 61, §3.1) : prix de la fiche ↔ achat consolidé ────
+  // ── Achat du bien (lot 61, §3.1 ; lot 75D A, F) : prix de la fiche ↔ achat consolidé ──
   const prix = input.assetPrice && input.assetPrice.amountMinor > 0 ? input.assetPrice : null;
   const prixEur = prix ? componentEurMinor({ amountMinor: prix.amountMinor, currency: prix.currency, amountEurCents: null }) : null;
   const preuves = new Set(prix?.evidenceFileIds ?? []);
+  const prixDate = isIsoDate(input.assetAcquisitionDate) ? input.assetAcquisitionDate.slice(0, 10) : null;
   const coutOp = (id: number) => (opEntries.get(id) ?? []).filter((e) => e.included && e.effect === 'COST').reduce((n, e) => n + e.includedEurMinor, 0);
-  const achatsCoutes = ops.filter((o) => o.typeCode === 'ACQUISITION' && o.status !== 'CANCELLED' && coutOp(o.id) > 0);
-  // Achat consolidé DU BIEN : issu de la fiche, ou de la facture preuve du prix, ou de même montant que le prix.
+  // Lot 75D (F) : achat d'un ÉQUIPEMENT (toutes ses composantes de coût le ciblent) — jamais l'achat du bien.
+  const achatEquipement = (o: TcoOperation) => {
+    const c = o.components.filter((x) => x.kind === 'REALIZED_COST');
+    return c.length > 0 && c.every((x) => x.targetEquipmentId != null);
+  };
+  const achatsCoutes = ops.filter((o) => o.typeCode === 'ACQUISITION' && o.status !== 'CANCELLED' && coutOp(o.id) > 0 && !achatEquipement(o));
+  // Lot 75D (A) : achat consolidé DU BIEN sur identité établie — donnée structurée de la fiche (ASSET_DATA), facture
+  // preuve du prix, ou preuves concordantes (même montant ET même date) ; même montant sans date : INCERTAIN, signalé.
+  const achatsIncertains = new Set<number>();
   const achatsDuBien = new Set((prix
-    ? achatsCoutes.filter((o) => (o.sourceKinds ?? []).includes('ASSET_DATA') || o.documents.some((d) => preuves.has(d.fileId)) || (prixEur != null && coutOp(o.id) === prixEur))
+    ? achatsCoutes.filter((o) => {
+      if ((o.sourceKinds ?? []).includes('ASSET_DATA') || o.documents.some((d) => preuves.has(d.fileId))) return true;
+      if (prixEur == null || coutOp(o.id) !== prixEur || preuves.size) return false;
+      const memeJour = sameDay(prixDate, opDate(o));
+      if (memeJour === null) achatsIncertains.add(o.id);
+      return memeJour === true;
+    })
     : achatsCoutes).map((o) => o.id));
   if (prix) {
     // Un autre achat (accessoire, équipement) n'est pas l'acquisition du bien.
     for (const o of achatsCoutes) if (!achatsDuBien.has(o.id)) for (const e of opEntries.get(o.id) ?? []) if (e.category === 'ACQUISITION') e.category = 'ACCESSORIES';
   }
-  const coutsAchatDuBien = new Set([...achatsDuBien].map(coutOp));
+  for (const o of ops) if (achatEquipement(o)) for (const e of opEntries.get(o.id) ?? []) if (e.category === 'ACQUISITION') e.category = 'ACCESSORIES';
+  /** Montant (EUR) et date des achats du bien établis : fiche, achats consolidés. */
+  const achatsEtablis: Array<{ eur: number; date: string | null }> = [
+    ...(prix && prixEur != null ? [{ eur: prixEur, date: prixDate }] : []),
+    ...ops.filter((o) => achatsDuBien.has(o.id)).map((o) => ({ eur: coutOp(o.id), date: opDate(o) })),
+  ];
 
   // Acquisition : date réelle (achat du bien consolidé, sinon fiche) — jamais la date d'ajout.
-  const achatsDates = ops.filter((o) => o.typeCode === 'ACQUISITION' && o.status === 'REALIZED' && (!prix || achatsDuBien.has(o.id) || !achatsDuBien.size));
+  const achatsDates = ops.filter((o) => o.typeCode === 'ACQUISITION' && o.status === 'REALIZED' && !achatEquipement(o) && (!prix || achatsDuBien.has(o.id) || !achatsDuBien.size));
   const dateAchatOp = earliest(achatsDates.map((o) => o.realizedDate ?? o.startDate));
   const start = dateAchatOp ?? (isIsoDate(input.assetAcquisitionDate) ? input.assetAcquisitionDate.slice(0, 10) : null);
   if (!start) warnings.add('ACQUISITION_DATE_MISSING');
@@ -400,24 +462,57 @@ export function computeTco(input: TcoInput): TcoResult {
 
   // ── Dépenses documentaires (lot 61, §3.3) ────────────────────────────────
   const drafts = qualifyDocumentLines(input.documents ?? [], { today: input.today });
+  const docsParId = new Map((input.documents ?? []).map((d) => [d.fileId, d]));
+  const preuvesEquipements = new Set((input.equipmentPrices ?? []).flatMap((e) => e.evidenceFileIds));
+  /** Lot 75D (F) : justificatif d'un ÉQUIPEMENT (cible, preuve de son prix, rattachement) — jamais l'achat du bien. */
+  const docEquipement = (d: DocumentLineDraft): boolean => d.targetEquipmentId != null || preuvesEquipements.has(d.fileId)
+    || (docsParId.get(d.fileId)?.linkedEquipmentIds ?? []).length > 0
+    || (docsParId.get(d.fileId)?.candidates ?? []).some((c) => c.id === d.candidateId && c.targets.some((t) => t.type === 'EQUIPMENT'));
+  // Lot 75D (G) : sans prix dans la fiche ni achat consolidé, la facture d'achat DU BIEN est identifiée par la preuve
+  // T1 du prix, sinon par l'unique facture d'achat que T1 cible sur le bien ; plusieurs candidates : ambiguïté signalée.
+  const factureAchat = new Set<number>();
+  if (!prix && !achatsDuBien.size) {
+    const achats = drafts.filter((d) => d.kind === 'REALIZED_COST' && documentCategory(d) === 'PURCHASE'
+      && (d.status === null || d.status === 'INCLUDED_IN_TOTAL'));
+    const fortes = new Set(achats.filter((d) => docsParId.get(d.fileId)?.acquisitionEvidence).map((d) => d.fileId));
+    const t1 = achats.filter((d) => d.status === null && !docEquipement(d) && d.candidateId != null && d.typeHint === 'ACQUISITION' && d.targetAssetId === input.assetId);
+    const fichiers = new Set(t1.map((d) => d.fileId));
+    if (fortes.size) for (const f of fortes) factureAchat.add(f);
+    else if (fichiers.size === 1 || (fichiers.size > 1 && t1.every((d) => d.scope === 'DEPOSIT' || d.scope === 'BALANCE'))) for (const f of fichiers) factureAchat.add(f);
+    else if (fichiers.size > 1) warnings.add('ACQUISITION_AMBIGUOUS');
+  }
   const docEntries: Array<{ draft: DocumentLineDraft; entry: LedgerEntry & { category: TcoCategory | null } }> = [];
   for (const d of drafts) {
     let category: TcoCategory | null = null;
     const cat = documentCategory(d);
     if (cat === 'PURCHASE') {
       const eur = componentEurMinor({ amountMinor: d.amountMinor, currency: d.currency, amountEurCents: d.amountEurCents });
-      // Facture d'achat du bien : même fait que le prix de la fiche ou que l'achat consolidé (jamais additionnée).
-      const memeFait = d.kind === 'REALIZED_COST' && (preuves.has(d.fileId) || (eur != null && ((prixEur != null && eur === prixEur) || coutsAchatDuBien.has(eur))));
-      if (memeFait && d.status === null && (prix || achatsDuBien.size)) { d.status = 'DUPLICATE'; d.reason = 'SAME_AS_ASSET_PRICE'; }
-      category = memeFait || (!prix && !achatsDuBien.size && preuves.has(d.fileId)) ? 'ACQUISITION' : 'ACCESSORIES';
+      category = 'ACCESSORIES';
+      if (prix || achatsDuBien.size) {
+        // Facture d'achat du bien : même fait que le prix de la fiche ou que l'achat consolidé (jamais additionnée).
+        // Lot 75D (A) : identité établie seulement — preuve T1 du prix, ou montant + date concordants ; jamais le montant seul.
+        let memeFait = d.kind === 'REALIZED_COST' && preuves.has(d.fileId);
+        if (!memeFait && d.kind === 'REALIZED_COST' && d.status === null && eur != null && !preuves.size && !docEquipement(d)) {
+          const verdicts = achatsEtablis.filter((x) => x.eur === eur).map((x) => sameDay(dateOfDraft(d), x.date));
+          if (verdicts.includes(true)) memeFait = true;
+          else if (verdicts.includes(null)) {
+            d.uncertain = { relatedFileId: null, note: 'Même montant que l’achat du bien, sans preuve qu’il s’agisse de la même dépense : comptée, à vérifier (renseignez la date d’achat de la fiche ou retirez le doublon).' };
+          }
+        }
+        if (memeFait && d.status === null) { d.status = 'DUPLICATE'; d.reason = 'SAME_AS_ASSET_PRICE'; }
+        if (memeFait) category = 'ACQUISITION';
+      } else if (factureAchat.has(d.fileId)) category = 'ACQUISITION';
     } else category = cat;
     const ligne: Omit<TcoEconomicLine, 'status' | 'reason' | 'includedCents' | 'eurCents'> = {
       id: d.lineId, source: 'DOCUMENT', provenance: d.provenance, label: d.title, kind: d.kind, amountMinor: d.amountMinor, currency: d.currency,
-      category, date: d.date, fileId: d.fileId, operationId: d.operationId, operationLabel: d.operationLabel, note: d.note, relatedFileId: d.relatedFileId,
+      category, date: d.date, fileId: d.fileId, operationId: d.operationId, operationLabel: d.operationLabel,
+      note: d.note, relatedFileId: d.relatedFileId,
     };
     if (d.status !== null || !d.kind) {
-      const eur = d.kind ? componentEurMinor({ amountMinor: d.amountMinor, currency: d.currency, amountEurCents: d.amountEurCents }) : null;
-      lines.push({ ...ligne, eurCents: eur, includedCents: 0, status: d.status ?? 'EXCLUDED', reason: d.reason });
+      // Lot 75D (D) : montant inconnu — jamais présenté comme 0 €.
+      const inconnu = d.reason === 'AMOUNT_UNKNOWN';
+      const eur = d.kind && !inconnu ? componentEurMinor({ amountMinor: d.amountMinor, currency: d.currency, amountEurCents: d.amountEurCents }) : null;
+      lines.push({ ...ligne, eurCents: eur, includedCents: 0, status: d.status ?? 'EXCLUDED', reason: d.reason, ...(inconnu ? { amountUnknown: true } : {}) });
       continue;
     }
     const e = evaluateComponent({
@@ -428,35 +523,47 @@ export function computeTco(input: TcoInput): TcoResult {
       isDisposalOperation: category === 'DISPOSAL', fallbackDate: d.date,
     });
     if (e.prorata) warnings.add('PRORATA_APPLIED');
+    if (e.included && d.uncertain) warnings.add('UNCERTAIN_MATCHES');
     const x = { ...e, category: e.effect === 'COST' ? category : null };
     entries.push(x);
     docEntries.push({ draft: d, entry: x });
-    lines.push({ ...ligne, eurCents: e.eurMinor, includedCents: e.includedEurMinor, status: statusOfEntry(e, 'RETAINED_DIRECT'), reason: e.exclusion });
+    const incertaine = e.included && d.uncertain
+      ? { uncertain: true, note: d.uncertain.note, relatedFileId: d.relatedFileId ?? d.uncertain.relatedFileId } : {};
+    lines.push({ ...ligne, eurCents: e.eurMinor, includedCents: e.includedEurMinor, status: statusOfEntry(e, 'RETAINED_DIRECT'), reason: e.exclusion, ...incertaine });
   }
-  // ── Prix d'achat des équipements (lot 71A) : dépense du bien, sans doublon ─
-  // Jamais additionné à sa facture (preuve du prix, ou justificatif rattaché à
-  // l'équipement de même montant) ni à une composante consolidée de même
-  // montant ciblant l'équipement ; jamais confondu avec l'achat du bien.
+  // ── Prix d'achat des équipements (lot 71A ; lot 75D F) : dépense du bien, sans doublon ─
+  // Jamais additionné à SA facture d'achat ni à l'achat consolidé de l'équipement — identité établie seulement
+  // (preuve T1 du prix, donnée structurée, ou rattachement à l'équipement + nature « achat » + même montant + dates
+  // concordantes) et dépense couvrante effectivement RETENUE ; une réparation ou un entretien de même montant n'est
+  // jamais l'acquisition ; jamais confondu avec l'achat du bien.
   for (const ep of input.equipmentPrices ?? []) {
     if (!(ep.amountMinor > 0)) continue;
     const eur = componentEurMinor({ amountMinor: ep.amountMinor, currency: ep.currency, amountEurCents: null });
     const lineId = `equipment:${ep.equipmentId}:acquisitionPrice`;
+    const epDate = isIsoDate(ep.date) ? ep.date.slice(0, 10) : null;
     const base = {
       id: lineId, source: 'EQUIPMENT_DATA' as const,
       provenance: (ep.origin && ep.origin !== 'USER' && ep.origin !== 'ADMIN' ? 'T1' : 'USER') as EconomicLineProvenance,
       label: `Prix d’achat — ${ep.name} (fiche de l’équipement)`, kind: 'REALIZED_COST' as const, amountMinor: ep.amountMinor, currency: ep.currency,
-      eurCents: eur, category: 'ACCESSORIES' as const, date: isIsoDate(ep.date) ? ep.date.slice(0, 10) : null, note: null, relatedFileId: null,
+      eurCents: eur, category: 'ACCESSORIES' as const, date: epDate, note: null, relatedFileId: null,
     };
     const preuvesEq = new Set(ep.evidenceFileIds);
-    const docEquipement = (input.documents ?? []).filter((d) => (d.linkedEquipmentIds ?? []).includes(ep.equipmentId)).map((d) => d.fileId);
-    const facture = docEntries.find((x) => x.draft.kind === 'REALIZED_COST' && (preuvesEq.has(x.draft.fileId)
-      || (docEquipement.includes(x.draft.fileId) && eur != null && x.entry.eurMinor === eur)));
+    const lieA = (fileId: number) => (docsParId.get(fileId)?.linkedEquipmentIds ?? []).includes(ep.equipmentId)
+      || (docsParId.get(fileId)?.candidates ?? []).some((c) => c.targets.some((t) => t.type === 'EQUIPMENT' && t.entityId === ep.equipmentId));
+    const facture = docEntries.find((x) => x.entry.included && x.draft.kind === 'REALIZED_COST' && preuvesEq.has(x.draft.fileId))
+      ?? (preuvesEq.size || eur == null ? undefined : docEntries.find((x) => x.entry.included && x.draft.kind === 'REALIZED_COST' && lieA(x.draft.fileId)
+        && documentCategory(x.draft) === 'PURCHASE' && x.entry.eurMinor === eur && sameDay(dateOfDraft(x.draft), epDate) !== false));
     if (facture) {
       lines.push({ ...base, includedCents: 0, fileId: facture.draft.fileId, operationId: null, operationLabel: null, status: 'DUPLICATE', reason: 'SAME_AS_EQUIPMENT_DOCUMENT' });
       continue;
     }
-    const opCouvrante = ops.find((o) => o.status !== 'CANCELLED' && o.components.some((c) => c.targetEquipmentId === ep.equipmentId && c.kind === 'REALIZED_COST'
-      && eur != null && componentEurMinor(c) === eur));
+    const retenue = (o: TcoOperation) => (opEntries.get(o.id) ?? []).some((e) => e.included && e.effect === 'COST');
+    const cibleEq = (o: TcoOperation, componentId: number) => o.components.find((c) => c.id === componentId)?.targetEquipmentId === ep.equipmentId;
+    const opCouvrante = ops.find((o) => o.status !== 'CANCELLED' && retenue(o) && (
+      drafts.some((dr) => preuvesEq.has(dr.fileId) && dr.status === 'CONSOLIDATED_ELSEWHERE' && dr.operationId === o.id)
+      || ((o.sourceKinds ?? []).includes('EQUIPMENT_DATA') && o.components.some((c) => c.targetEquipmentId === ep.equipmentId))
+      || (!preuvesEq.size && eur != null && o.typeCode === 'ACQUISITION' && sameDay(opDate(o), epDate) !== false
+        && (opEntries.get(o.id) ?? []).some((e) => e.included && e.kind === 'REALIZED_COST' && e.eurMinor === eur && cibleEq(o, e.componentId)))));
     if (opCouvrante) {
       lines.push({ ...base, includedCents: 0, fileId: fichierPrincipalOp(opCouvrante), operationId: opCouvrante.id, operationLabel: opCouvrante.label, status: 'CONSOLIDATED_ELSEWHERE', reason: 'EQUIPMENT_PRICE_CONSOLIDATED' });
       continue;
@@ -470,7 +577,9 @@ export function computeTco(input: TcoInput): TcoResult {
     lines.push({ ...base, includedCents: e.includedEurMinor, fileId: null, operationId: null, operationLabel: null, status: statusOfEntry(e, 'RETAINED_DIRECT'), reason: e.exclusion });
   }
 
-  if (drafts.some((d) => d.status === 'NOT_QUALIFIED')) warnings.add('DOCUMENTS_NOT_QUALIFIED');
+  if (drafts.some((d) => d.status === 'NOT_QUALIFIED' && d.reason !== 'AMOUNT_UNKNOWN')) warnings.add('DOCUMENTS_NOT_QUALIFIED');
+  if (drafts.some((d) => d.reason === 'AMOUNT_UNKNOWN')) warnings.add('AMOUNTS_UNKNOWN');
+  if (achatsIncertains.size) warnings.add('UNCERTAIN_MATCHES');
   if (drafts.some((d) => d.status === 'UNCONFIRMED_ASSET')) warnings.add('UNCONFIRMED_ASSET_EXPENSES');
 
   const totals = summarizeLedger(entries);
@@ -487,7 +596,9 @@ export function computeTco(input: TcoInput): TcoResult {
   }
   const ordre: TcoCategory[] = ['ACQUISITION', 'ACCESSORIES', 'MAINTENANCE', 'CONTRACTS', 'USAGE', 'FINANCING', 'CLAIMS', 'DISPOSAL', 'OTHER'];
   const breakdown = ordre.filter((c) => postes.has(c)).map((c) => ({ category: c, label: TCO_CATEGORY_LABELS[c], costsCents: postes.get(c)!.costsCents, count: postes.get(c)!.items.size }));
-  if (!postes.has('ACQUISITION')) warnings.add('ACQUISITION_COST_MISSING');
+  // Lot 75D (H) : coût d'acquisition attendu mais inconnu → incomplet ; sans objet (location, prêt, don) → aucune alerte.
+  const acquisitionStatus: TcoAcquisitionStatus = postes.has('ACQUISITION') ? 'DOCUMENTED' : input.acquisitionExpected === false ? 'NOT_APPLICABLE' : 'MISSING';
+  if (acquisitionStatus === 'MISSING') warnings.add('ACQUISITION_COST_MISSING');
 
   const cumul = totals.netCostEurMinor;
   const anomalies = checkLedger(entries, {
@@ -522,7 +633,9 @@ export function computeTco(input: TcoInput): TcoResult {
   const docsComptes = new Set(docEntries.filter((x) => x.entry.included).map((x) => x.draft.fileId));
   for (const x of docEntries) if (x.entry.included && !docs.has(x.draft.fileId)) docs.set(x.draft.fileId, x.draft.title);
   const opLabel = new Map(ops.map((o) => [o.id, o.label]));
-  const docIncomplet = warnings.has('DOCUMENTS_NOT_QUALIFIED') || warnings.has('UNCONFIRMED_ASSET_EXPENSES');
+  // Lot 75D (H) : toute information financière manquante ou incertaine rend le total non exhaustif.
+  const docIncomplet = (['DOCUMENTS_NOT_QUALIFIED', 'UNCONFIRMED_ASSET_EXPENSES', 'AMOUNTS_UNKNOWN', 'UNCERTAIN_MATCHES', 'ACQUISITION_AMBIGUOUS', 'ACQUISITION_COST_MISSING'] as const)
+    .some((w) => warnings.has(w));
   const status: ReadStatus = !input.readComplete ? 'PARTIAL'
     : (!totals.complete || docIncomplet || warnings.has('ACQUISITION_DATE_MISSING') || warnings.has('DISPOSAL_PRICE_MISSING') || warnings.has('DISPOSAL_DATE_MISSING')) ? 'INCOMPLETE' : 'COMPLETE';
 
@@ -536,7 +649,10 @@ export function computeTco(input: TcoInput): TcoResult {
         id: `c:${e.componentId}`, source: 'OPERATION', provenance: 'T3', label: c?.label ? `${op.label} — ${c.label}` : op.label, kind: e.kind,
         amountMinor: e.amountMinor, currency: e.currency, eurCents: e.eurMinor, includedCents: e.includedEurMinor, category: e.category, date: e.date,
         fileId: fichierPrincipal(op), operationId: op.id, operationLabel: op.label, status: statusOfEntry(e, 'RETAINED_CONSOLIDATED'), reason: e.exclusion,
-        note: null, relatedFileId: null,
+        note: achatsIncertains.has(op.id) && e.category === 'ACCESSORIES' && e.included
+          ? 'Même montant que le prix d’achat de la fiche, sans preuve qu’il s’agisse de la même dépense : comptée, à vérifier.' : null,
+        relatedFileId: null,
+        ...(achatsIncertains.has(op.id) && e.included ? { uncertain: true } : {}),
       });
     }
   }
@@ -552,7 +668,7 @@ export function computeTco(input: TcoInput): TcoResult {
       days: start ? daysInclusive(start, end) : null,
     },
     summary: {
-      cumulativeCostCents: cumul, acquisitionCents, additionalCostsCents: totals.costsEurMinor - acquisitionCents,
+      cumulativeCostCents: cumul, acquisitionCents, additionalCostsCents: totals.costsEurMinor - acquisitionCents, acquisitionStatus,
       currentValue: disposed ? null : valeur, netEstimatedCents: netEstime, netFinalCents: netFinal,
     },
     breakdown,

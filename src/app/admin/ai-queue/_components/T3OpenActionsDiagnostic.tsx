@@ -58,6 +58,7 @@ interface RuleEval {
   outcome?: string | null; situation?: string | null; decisionContract?: Record<string, unknown> | null; reevaluateAt?: string | null;
   configRef?: string | null; derivation?: Record<string, unknown> | null; writeResult?: Record<string, unknown> | null;
   actionIds?: Record<string, number[]> | null; passages?: Array<{ at: string; trigger: string; runRef: string | null }> | null; errorKind?: string | null;
+  durablePassages?: { total: number; passages: Array<{ at: string; trigger: string; runRef: string | null; kind: string }> } | null;
   /** Lot 72 (C7) : nature de la décision. */
   decisionKind?: string | null;
 }
@@ -296,6 +297,11 @@ function RuleRow({ r }: { r: RuleEval }) {
             ['Type d’erreur', r.errorKind ?? '—'],
             ['Nature de la décision (lot 72)', r.decisionKind ? KIND_LABEL[r.decisionKind] ?? r.decisionKind : '—'],
             ['Passages', r.passages?.length ? r.passages.map((p) => `${TRIGGER_LABEL[p.trigger] ?? p.trigger} ${dt(p.at)}${p.runRef ? ` (${p.runRef})` : ''}`).join(' ; ') : '—'],
+            // Lot 75I (E) : historique DURABLE (sans limite de 20) — total, et détail quand un document est filtré.
+            ['Historique complet des passages', r.durablePassages
+              ? `${r.durablePassages.total} passage(s) conservé(s)${r.durablePassages.passages.length
+                ? ` — ${r.durablePassages.passages.map((p) => `${TRIGGER_LABEL[p.trigger] ?? p.trigger} ${dt(p.at)}${p.runRef ? ` (${p.runRef})` : ''}`).join(' ; ')}` : ' (filtrer par document pour le détail)'}`
+              : '—'],
           ] as Array<[string, string]>).map(([k, v]) => (
             <div key={k} className="min-w-0">
               <dt className="text-[color:var(--text-secondary)]">{k}</dt>

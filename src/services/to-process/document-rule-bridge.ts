@@ -70,10 +70,10 @@ import { assets, toProcessActionEvents, toProcessActions } from '@/db/schema';
 import { AI_CONFIDENCE_THRESHOLD } from '@/lib/referential/v2';
 import type { ActionKind, ActionProposal, ResolutionReason } from './action-model';
 import {
-  assessDeadlinePertinence, currentKnowledgeRev, deterministicConfigRef, documentBridgeFieldKey, gatherFieldEvidence, gatherRelatedDocumentValues,
-  isDeadlineRule, knowledgeRevSql, parseDocumentDate, recordRuleEvaluation, relevanceColumnsReady, rememberedPertinence,
+  assessDeadlinePertinence, assessKnownDeadlineObligation, currentKnowledgeRev, deterministicConfigRef, documentBridgeFieldKey, gatherFieldEvidence,
+  gatherRelatedDocumentValues, isDeadlineRule, knowledgeRevSql, parseDocumentDate, recordRuleEvaluation, relevanceColumnsReady, rememberedPertinence,
   ruleEvaluationsReady, t1KeyDesignates, t4AssessmentConfig, todayParis, DOCUMENT_RULE_ENGINE_VERSION,
-  type FieldEvidence, type PertinenceCandidate, type PertinenceResult, type RuleDecision, type RuleOutcome, type RuleTrigger,
+  type FieldEvidence, type PertinenceCandidate, type PertinenceResult, type RuleDecision, type RuleEvaluationRecord, type RuleOutcome, type RuleTrigger,
   type T4AssessmentConfig,
 } from './document-field-evidence';
 import { decide } from './decision-engine';
@@ -349,15 +349,35 @@ export interface DocumentRulesReport {
   reasons: Record<string, string>;
   /** Lot 58B : règles en erreur (aussi journalisées en base, diagnostic 0418). */
   errors: Record<string, string>;
-  /** Lot 61 (écart 5) : erreurs détaillées — compte, document, règle, étape, cause. */
-  errorDetails: Array<{ accountId: number; fileId: number; ruleCode: string; step: string; cause: string }>;
+  /**
+   * Lot 61 (écart 5) : erreurs détaillées — compte, document, règle, étape, cause.
+   * Lot 75I (B) : + nature (`kind`) — écriture NON CONFIRMÉE (PERSISTENCE_FAILED),
+   * lecture, IA, calcul, journalisation (TRACE_FAILED)…
+   */
+  errorDetails: Array<{ accountId: number; fileId: number; ruleCode: string; step: string; cause: string; kind?: string }>;
   /** Lot 61 : issue centrale par règle (AUTO_RESOLVED, NO_ACTION, DEFER, CREATE_ACTION, KEEP, ERROR). */
   outcomes: Record<string, string>;
+  /** Lot 75I (B) : refus NORMAUX — écriture automatique refusée, valeur de l'utilisateur protégée (jamais une erreur). */
+  protectedRefusals: number;
 }
 
 const emptyReport = (): DocumentRulesReport => ({
-  created: 0, updated: 0, closed: 0, written: 0, plans: {}, reasons: {}, errors: {}, errorDetails: [], outcomes: {},
+  created: 0, updated: 0, closed: 0, written: 0, plans: {}, reasons: {}, errors: {}, errorDetails: [], outcomes: {}, protectedRefusals: 0,
 });
+
+/** Lot 75I (B) : erreur détaillée d'une règle (remonte au bilan du balayage et au BO). */
+function pushError(report: DocumentRulesReport, e: { accountId: number; fileId: number; ruleCode: string; step: string; kind: string; cause: string }): void {
+  report.errorDetails.push({ ...e, cause: String(e.cause).slice(0, 300) });
+}
+
+/**
+ * Lot 75I (E) : journalise une décision ; un ÉCHEC de journalisation remonte
+ * au diagnostic technique (bilan du balayage, BO), jamais en console seule.
+ */
+async function tracer(report: DocumentRulesReport, rec: RuleEvaluationRecord): Promise<void> {
+  const erreur = await recordRuleEvaluation(rec);
+  if (erreur) pushError(report, { accountId: rec.accountId, fileId: rec.fileId, ruleCode: rec.ruleCode, step: 'TRACE', kind: 'TRACE_FAILED', cause: erreur });
+}
 
 /** Contexte du document : Type, éligibilité à une nouvelle action. */
 interface DocumentContext {
@@ -492,6 +512,8 @@ type TxClient = Pick<typeof db, 'select' | 'update' | 'insert'>;
 async function closeDataActions(
   client: TxClient, accountId: number, fileId: number, key: string, reason: ResolutionReason, details: Record<string, unknown>,
 ): Promise<number[]> {
+  // Lot 75I (E) : hors transaction appelante, fermeture et événement d'audit dans UNE transaction.
+  if (client === db) return db.transaction((tx) => closeDataActions(tx, accountId, fileId, key, reason, details));
   const now = new Date();
   const closed = await client.update(toProcessActions)
     .set({ resolvedAt: now, resolutionReason: reason, updatedAt: now })
@@ -797,6 +819,8 @@ async function evaluateFieldRule(i: FieldRuleInput): Promise<FieldRuleOutcome> {
   const interventionIds: number[] = [];
   const ivClosed: number[] = [];
   const ivKept: number[] = [];
+  let exec: ExecOutcome | null = null;
+  let obligation: PertinenceResult | null = null;
 
   try {
     // Lot 61 : une valeur CALCULÉE automatiquement est reconsidérée (sources
@@ -904,6 +928,10 @@ async function evaluateFieldRule(i: FieldRuleInput): Promise<FieldRuleOutcome> {
               // Écart 5 : panne → aucune fermeture, reprise planifiée.
               plan = { kind: 'NONE', reason: active ? 'KEPT_ON_TECHNICAL_FAILURE' : 'DEFERRED_TECHNICAL_FAILURE' };
               if (active) outcome = 'KEEP';
+            } else if (pertinence.incompatible) {
+              // Lot 75I (D) : contrat T4 incompatible — état prudent : ni carte créée, ni carte fermée, ni question par défaut.
+              plan = { kind: 'NONE', reason: active ? 'KEPT_T4_INCOMPATIBLE' : 'DEFERRED_T4_INCOMPATIBLE' };
+              if (active) outcome = 'KEEP';
             } else {
               plan = active ? { kind: 'RESOLVE', reason: 'DEFERRED' } : { kind: 'NONE', reason: 'DEFERRED' };
               await fermerIntervention('DEFERRED');
@@ -949,56 +977,155 @@ async function evaluateFieldRule(i: FieldRuleInput): Promise<FieldRuleOutcome> {
     }
     failedStep = plan.kind === 'WRITE' ? 'WRITE' : 'EXECUTE';
     const motive = (extra as { motive?: Record<string, unknown> }).motive ?? {};
-    const exec = await executePlan(accountId, fileId, rule, slot, plan, state, report, i.closeReason, motive, extra);
+    exec = await executePlan(accountId, fileId, rule, slot, plan, state, report, i.closeReason, motive, extra);
     const verified: boolean | null = plan.kind === 'WRITE' ? exec.write?.confirmed === true : null;
     // Lot 72 (C3) : la décision est tracée avec la révision APRÈS sa propre écriture (sinon
     // la valeur écrite rendrait la décision « périmée » au balayage suivant).
     if (verified && knowledgeRev !== null) knowledgeRev = await currentKnowledgeRev(accountId, fileId);
-    if (plan.kind === 'WRITE' && exec.write?.status === 'REFUSED_PROTECTED_VALUE') outcome = 'KEEP';
+    if (plan.kind === 'WRITE' && exec.write?.status === 'REFUSED_PROTECTED_VALUE') {
+      outcome = 'KEEP';
+      // Lot 75I (B) : refus NORMAL (valeur de l'utilisateur protégée) — compté, jamais une erreur.
+      report.protectedRefusals += 1;
+    }
     const refusEcriture = plan.kind === 'WRITE' && exec.write?.status === 'NOT_CONFIRMED';
-    if (refusEcriture) outcome = 'ERROR';
+    if (refusEcriture) {
+      outcome = 'ERROR';
+      // Lot 75I (B) : une écriture NON CONFIRMÉE est une erreur de persistance — remontée au bilan ; la carte reste.
+      report.errors[rule.code] = 'écriture non confirmée';
+      pushError(report, { accountId, fileId, ruleCode: rule.code, step: 'VERIFY', kind: 'PERSISTENCE_FAILED', cause: `écriture non confirmée (${String(plan.kind === 'WRITE' ? plan.value : '')})` });
+    }
+
+    // ── Lot 75I (A) : OBLIGATION d'une échéance CONNUE, découplée de la complétion ──
+    // Une date connue (lue, saisie, écrite et relue, calculée) ferme la seule
+    // question de complétion ; l'existence d'une obligation (restituer,
+    // résilier…) est examinée indépendamment, jamais par une question de date.
+    const connue = knownDeadline({ rule, plan, verified, state, present, userCleared, relevant, pertinenceEvaluated: pertinence !== null, extra, reasonOverride,
+      arbitrationOpen: active?.actionKind === 'ARBITRATE' && !(exec.closed.includes(active.id)) });
+    if (connue && i.ctx.open) {
+      failedStep = 'OBLIGATION';
+      const cfg = i.deps?.config ?? await t4AssessmentConfig();
+      if (!evidence) evidence = await gatherFieldEvidence(accountId, fileId, key);
+      if (evidence.errors.length) throw new KnowledgeReadError(`lecture de la connaissance impossible : ${evidence.errors.join(' ; ')}`.slice(0, 300));
+      knowledgeRev = await currentKnowledgeRev(accountId, fileId);
+      obligation = await assessKnownDeadlineObligation({
+        accountId, fileId, rule, documentType: i.ctx.documentTypeCode, known: connue, clauses: evidence.lifecycle?.clauses ?? [],
+        dateExcerpt: evidence.facts.find((f) => String(f.value) === connue.iso)?.excerpt ?? null,
+        today: i.deps?.today ?? todayParis(), decide: i.deps?.decide, documentTitle: evidence.documentTitle ?? null, contextDates: evidence.contextDates,
+        evidenceFingerprint: evidence.fingerprint ?? null, config: cfg, remembered: await rememberedPertinence(accountId, fileId, rule.code),
+        lifecycle: evidence.lifecycle ?? null,
+      });
+      pertinence = obligation;
+      configRef = obligation.aiCalled || obligation.cached ? cfg.ref : deterministicConfigRef(cfg);
+      const motif = { pertinence: obligation.pertinence, pertinenceReason: obligation.reason, aiTraceId: obligation.aiTraceId, trigger: i.trigger, situation: obligation.situation };
+      if (obligation.outcome === 'CREATE_ACTION' && obligation.card === 'INTERVENTION' && obligation.intervention) {
+        const r = await upsertDocumentIntervention({ accountId, fileId, rule, intervention: obligation.intervention, signature: obligation.signature });
+        if (r.actionId && (r.status === 'CREATED' || r.status === 'UPDATED')) {
+          interventionIds.push(r.actionId);
+          if (r.status === 'CREATED') report.created += 1; else { report.updated += 1; ivKept.push(r.actionId); }
+          outcome = 'CREATE_ACTION';
+        } else if (r.status === 'USER_DECIDED') {
+          // Décision antérieure de l'utilisateur (« C'est fait », « Pas nécessaire ») : respectée.
+          reasonOverride = 'USER_DECISION_RESPECTED';
+          if (outcome !== 'AUTO_RESOLVED') outcome = 'NO_ACTION';
+        }
+      } else if (obligation.outcome === 'NO_ACTION') {
+        // Absence d'obligation DÉMONTRÉE (T4, fin effective lue) : la carte d'intervention n'a plus d'objet.
+        if (i.activeIntervention) ivClosed.push(...await closeDocumentIntervention(accountId, fileId, key, { ...motif, reason: 'NO_ACTION_NEEDED' }));
+      } else if (obligation.outcome === 'DEFER') {
+        // Report, incertitude, panne, contrat incompatible : rien n'est fermé ni créé ; réévaluation
+        // programmée (`reevaluate_at`). L'issue de la COMPLÉTION reste celle tracée (découplage).
+        if (i.activeIntervention) ivKept.push(i.activeIntervention.id);
+      }
+      if (obligation.technicalFailure) {
+        pushError(report, { accountId, fileId, ruleCode: rule.code, step: 'OBLIGATION', kind: 'AI_OR_MEMORY_FAILED', cause: obligation.reason });
+      }
+    } else if (pertinence?.technicalFailure) {
+      // Lot 75I (B) : panne T4 sur une question de donnée — décision différée ET erreur visible.
+      pushError(report, { accountId, fileId, ruleCode: rule.code, step: 'PERTINENCE', kind: 'AI_OR_MEMORY_FAILED', cause: pertinence.reason });
+    }
     report.outcomes[rule.code] = outcome;
+    const decisionBase: RuleDecision = refusEcriture ? 'ERROR' : plan.kind === 'WRITE' && !verified ? 'NONE' : diagDecision(plan, report, avant, !!active);
     const result: FieldRuleOutcome = {
       plan, path, evidence, proposals, pertinence, writeAttempted: plan.kind === 'WRITE', verified,
       actionId: exec.actionId ?? interventionIds[0] ?? null,
-      decision: refusEcriture ? 'ERROR' : plan.kind === 'WRITE' && !verified ? 'NONE' : diagDecision(plan, report, avant, !!active),
+      decision: obligation && interventionIds.length && decisionBase !== 'WRITE' && decisionBase !== 'ERROR'
+        ? (ivKept.includes(interventionIds[0]) ? 'UPDATE' : 'CREATE') : decisionBase,
       outcome, derivation, interventionIds,
     };
-    await recordRuleEvaluation({
+    await tracer(report, {
       accountId, fileId, ruleCode: rule.code, fieldKey: key, trigger: i.trigger, runRef: i.runRef ?? null,
       targetPresent: present, userValidated: state.userValidated, sources: evidence?.sources ?? {}, missingSources: evidence?.missing ?? [],
       observations: evidence?.observations ?? [], proposals: proposals.map((p) => ({ value: p.value, confidence: p.confidence })),
       titleHint: evidence?.titleHint ?? null, pertinence, decision: result.decision,
-      reasonCode: refusEcriture ? 'PERSISTENCE_FAILED' : plan.kind === 'WRITE' && !verified ? 'WRITE_REFUSED_PROTECTED_VALUE' : reasonOverride && plan.kind === 'NONE' ? reasonOverride : plan.reason,
+      reasonCode: refusEcriture ? 'PERSISTENCE_FAILED' : plan.kind === 'WRITE' && !verified ? 'WRITE_REFUSED_PROTECTED_VALUE'
+        : reasonOverride && (plan.kind === 'NONE' || reasonOverride === 'USER_DECISION_RESPECTED') ? reasonOverride : plan.reason,
       actionId: result.actionId, writeVerified: verified, failedStep: refusEcriture ? 'VERIFY' : null,
       outcome, reevaluateAt: pertinence?.reevaluateAt ?? null, evidenceFingerprint: evidence?.fingerprint ?? null, knowledgeRev, configRef,
-      derivation, writeResult: exec.write, errorKind: refusEcriture ? 'PERSISTENCE_FAILED' : null,
-      actionIds: { created: exec.created, kept: [...exec.kept, ...ivKept, ...(plan.kind === 'NONE' && active ? [active.id] : [])], closed: [...exec.closed, ...ivClosed], intervention: interventionIds },
+      derivation, writeResult: exec.write, errorKind: refusEcriture ? 'PERSISTENCE_FAILED' : pertinence?.technicalFailure ? 'AI_OR_MEMORY_FAILED' : null,
+      actionIds: { created: [...exec.created, ...interventionIds.filter((x) => !ivKept.includes(x))], kept: [...exec.kept, ...ivKept, ...(plan.kind === 'NONE' && active ? [active.id] : [])],
+        closed: [...exec.closed, ...ivClosed], intervention: interventionIds },
     });
     return result;
   } catch (e) {
     const cause = (e as Error).message;
     report.errors[rule.code] = cause;
     report.outcomes[rule.code] = 'ERROR';
-    report.errorDetails.push({ accountId, fileId, ruleCode: rule.code, step: failedStep, cause: cause.slice(0, 300) });
-    await recordRuleEvaluation({
+    pushError(report, { accountId, fileId, ruleCode: rule.code, step: failedStep, kind: errorKindOf(e, failedStep), cause });
+    await tracer(report, {
       accountId, fileId, ruleCode: rule.code, fieldKey: key, trigger: i.trigger, runRef: i.runRef ?? null,
       targetPresent: present, userValidated: state.userValidated, sources: evidence?.sources ?? {}, missingSources: evidence?.missing ?? [],
       observations: evidence?.observations ?? [], titleHint: evidence?.titleHint ?? null, pertinence,
       decision: 'ERROR', reasonCode: 'RULE_EVALUATION_FAILED', error: cause, failedStep,
-      outcome: 'ERROR', errorKind: errorKindOf(e, failedStep), knowledgeRev, configRef, derivation,
-      actionIds: active ? { kept: [active.id] } : null,
+      outcome: 'ERROR', errorKind: errorKindOf(e, failedStep), knowledgeRev, configRef, derivation, writeResult: exec?.write ?? null,
+      actionIds: active || exec || i.activeIntervention
+        ? { created: exec?.created ?? [], closed: [...(exec?.closed ?? []), ...ivClosed],
+          kept: [...(active && !exec?.closed.includes(active.id) ? [active.id] : []), ...(i.activeIntervention ? [i.activeIntervention.id] : [])] }
+        : null,
     });
     throw e;
   }
+}
+
+/**
+ * Lot 75I (A) — date d'ÉCHÉANCE connue après l'exécution du plan de
+ * complétion (pure) : valeur présente (lue, saisie), écrite ET relue, ou
+ * calculée inchangée / écrite. Null : donnée inconnue, retirée par
+ * l'utilisateur, hors pertinence, non datée, ou déjà évaluée par la
+ * pertinence d'une question (date incertaine). Provenance STABLE d'un passage
+ * à l'autre (USER_VALUE, CALCULATED, KNOWN_VALUE) : la mémoire de décision
+ * n'est pas invalidée par la seule écriture.
+ */
+export function knownDeadline(p: {
+  rule: ProcessingRule; plan: RulePlan; verified: boolean | null; state: Pick<DocumentSlotState, 'value' | 'userValidated'>; present: boolean;
+  userCleared: boolean; relevant: boolean; pertinenceEvaluated: boolean; extra?: WriteExtra; reasonOverride?: string | null;
+  /** Arbitrage ouvert sur la date : valeur contestée, l'obligation attend la réponse. */
+  arbitrationOpen?: boolean;
+}): { iso: string; source: string } | null {
+  if (!isDeadlineRule(p.rule) || p.userCleared || p.pertinenceEvaluated || p.arbitrationOpen) return null;
+  // Valeur contestée (arbitrage proposé) ou question de complétion : la date n'est pas « connue ».
+  if (p.plan.kind === 'UPSERT') return null;
+  if (!p.relevant && !(p.present && p.state.userValidated)) return null;
+  if (p.reasonOverride === 'CALCULATED_VALUE_WITHDRAWN') return null;
+  let brut: unknown = null;
+  let source = 'KNOWN_VALUE';
+  if (p.plan.kind === 'WRITE') {
+    if (p.verified !== true) return null;
+    brut = p.plan.value;
+    source = p.extra?.valueKind === 'CALCULATED' ? 'CALCULATED' : 'KNOWN_VALUE';
+  } else if (p.present) {
+    brut = p.state.value;
+    source = p.state.userValidated ? 'USER_VALUE' : p.plan.reason === 'CALCULATED_UNCHANGED' ? 'CALCULATED' : 'KNOWN_VALUE';
+  } else return null;
+  const iso = parseDocumentDate(typeof brut === 'string' ? brut : brut === null || brut === undefined ? null : String(brut)).iso;
+  return iso ? { iso, source } : null;
 }
 
 /** Erreur d'évaluation d'une RELATION ou hors champ : tracée en base (0418), pas seulement en console. */
 async function recordRuleError(accountId: number, fileId: number, rule: ProcessingRule, trigger: RuleTrigger, e: unknown, report: DocumentRulesReport, runRef?: string | null): Promise<void> {
   report.errors[rule.code] = (e as Error).message;
   report.outcomes[rule.code] = 'ERROR';
-  report.errorDetails.push({ accountId, fileId, ruleCode: rule.code, step: 'PLAN', cause: String((e as Error).message).slice(0, 300) });
-  await recordRuleEvaluation({
+  pushError(report, { accountId, fileId, ruleCode: rule.code, step: 'PLAN', kind: 'EVALUATION_FAILED', cause: String((e as Error).message) });
+  await tracer(report, {
     accountId, fileId, ruleCode: rule.code, fieldKey: rule.fieldKey ?? rule.relationKey ?? null, trigger, runRef: runRef ?? null,
     targetPresent: null, userValidated: null,
     decision: 'ERROR', reasonCode: 'RULE_EVALUATION_FAILED', error: (e as Error).message, failedStep: 'PLAN', outcome: 'ERROR', errorKind: 'EVALUATION_FAILED',
@@ -1022,7 +1149,12 @@ async function traceClassic(p: {
   const verified = p.plan.kind === 'WRITE' ? p.exec.write?.confirmed === true : null;
   const outcome: RuleOutcome = p.plan.kind === 'WRITE' && p.exec.write?.status === 'NOT_CONFIRMED' ? 'ERROR' : classicOutcome(p.plan, !!p.active);
   p.report.outcomes[p.rule.code] = outcome;
-  await recordRuleEvaluation({
+  // Lot 75I (B) : écriture non confirmée = erreur de persistance remontée ; valeur protégée = refus normal.
+  if (outcome === 'ERROR') {
+    p.report.errors[p.rule.code] = 'écriture non confirmée';
+    pushError(p.report, { accountId: p.accountId, fileId: p.fileId, ruleCode: p.rule.code, step: 'VERIFY', kind: 'PERSISTENCE_FAILED', cause: 'écriture non confirmée' });
+  } else if (p.plan.kind === 'WRITE' && p.exec.write?.status === 'REFUSED_PROTECTED_VALUE') p.report.protectedRefusals += 1;
+  await tracer(p.report, {
     accountId: p.accountId, fileId: p.fileId, ruleCode: p.rule.code, fieldKey: ruleDataKey(p.rule), trigger: p.trigger, runRef: p.runRef ?? null,
     targetPresent: !isEmpty(p.state.value) || p.state.values.length > 0, userValidated: p.state.userValidated,
     decision: outcome === 'ERROR' ? 'ERROR' : diagDecision(p.plan, p.report, p.before, !!p.active), reasonCode: outcome === 'ERROR' ? 'PERSISTENCE_FAILED' : p.plan.reason,
@@ -1097,7 +1229,7 @@ export async function syncDocumentRulesFromAnalysis(input: {
     }
   } catch (e) {
     console.error(`[to-process] pont documentaire du document ${input.fileId} impossible :`, (e as Error).message);
-    report.errorDetails.push({ accountId: input.accountId, fileId: input.fileId, ruleCode: '*', step: 'CONTEXT', cause: String((e as Error).message).slice(0, 300) });
+    pushError(report, { accountId: input.accountId, fileId: input.fileId, ruleCode: '*', step: 'CONTEXT', kind: 'READ_FAILED', cause: String((e as Error).message) });
   }
   return report;
 }
@@ -1123,23 +1255,29 @@ export async function syncDocumentRulesFromState(
     if (!ctx.exists) {
       // Document supprimé (ou source secondaire regroupée) : plus rien à traiter.
       const now = new Date();
-      const closed = await db
-        .update(toProcessActions)
-        .set({ resolvedAt: now, resolutionReason: 'TARGET_DELETED', updatedAt: now })
-        .where(and(
-          eq(toProcessActions.accountId, accountId), eq(toProcessActions.targetType, 'DOCUMENT'),
-          eq(toProcessActions.targetId, fileId), isNull(toProcessActions.resolvedAt),
-        ))
-        .returning({ id: toProcessActions.id, ruleCode: toProcessActions.ruleCode, key: sql<string>`COALESCE(${toProcessActions.fieldKey}, ${toProcessActions.relationKey})` });
+      // Lot 75I (E) : fermeture et événement d'audit dans UNE transaction (plus de trace perdue en console).
+      const closed = await db.transaction(async (tx) => {
+        const fermees = await tx
+          .update(toProcessActions)
+          .set({ resolvedAt: now, resolutionReason: 'TARGET_DELETED', updatedAt: now })
+          .where(and(
+            eq(toProcessActions.accountId, accountId), eq(toProcessActions.targetType, 'DOCUMENT'),
+            eq(toProcessActions.targetId, fileId), isNull(toProcessActions.resolvedAt),
+          ))
+          .returning({ id: toProcessActions.id, ruleCode: toProcessActions.ruleCode, key: sql<string>`COALESCE(${toProcessActions.fieldKey}, ${toProcessActions.relationKey})` });
+        if (fermees.length) {
+          await tx.insert(toProcessActionEvents).values(fermees.map((a) => ({
+            actionId: a.id, accountId, event: 'TARGET_DELETED', actorUserId: null, targetType: 'DOCUMENT', targetId: fileId,
+            fieldKey: a.key, details: { ruleCode: a.ruleCode, reason: 'TARGET_DELETED', trigger }, createdAt: now,
+          })));
+        }
+        return fermees;
+      });
       report.closed += closed.length;
       // Lot 61 (écart 6) : fermeture tracée (événement et diagnostic par règle).
       if (closed.length) {
-        await db.insert(toProcessActionEvents).values(closed.map((a) => ({
-          actionId: a.id, accountId, event: 'TARGET_DELETED', actorUserId: null, targetType: 'DOCUMENT', targetId: fileId,
-          fieldKey: a.key, details: { ruleCode: a.ruleCode, reason: 'TARGET_DELETED', trigger }, createdAt: now,
-        }))).catch((e: Error) => console.error(`[to-process] trace de fermeture (document ${fileId} supprimé) non écrite :`, e.message));
         for (const code of [...new Set(closed.map((a) => a.ruleCode))]) {
-          await recordRuleEvaluation({
+          await tracer(report, {
             accountId, fileId, ruleCode: code, fieldKey: closed.find((a) => a.ruleCode === code)?.key ?? null, trigger, runRef: opts.runRef ?? null,
             targetPresent: null, userValidated: null, decision: 'CLOSE', reasonCode: 'TARGET_DELETED', outcome: 'NO_ACTION',
             actionIds: { closed: closed.filter((a) => a.ruleCode === code).map((a) => a.id) },
@@ -1162,7 +1300,8 @@ export async function syncDocumentRulesFromState(
         // Lot 72 (C5) : « Non applicable » — décision MÉMORISÉE avec son contexte ;
         // réévaluée seulement si la connaissance a réellement changé depuis
         // (jamais d'appel IA ni de carte sur la même situation).
-        const na = wantsCreation && slot.kind === 'field' ? await userNotApplicableDecision(accountId, fileId, key) : null;
+        // Lot 75I (A) : une date CONNUE n'est plus une question — le « Non applicable » de la complétion ne masque pas l'obligation.
+        const na = wantsCreation && slot.kind === 'field' && isEmpty(state.value) ? await userNotApplicableDecision(accountId, fileId, key) : null;
         let naInchange = false;
         if (na) {
           const rev = await currentKnowledgeRev(accountId, fileId);
@@ -1174,7 +1313,7 @@ export async function syncDocumentRulesFromState(
             report.plans[rule.code] = 'NONE';
             report.reasons[rule.code] = 'USER_NOT_APPLICABLE_UNCHANGED';
             report.outcomes[rule.code] = 'NO_ACTION';
-            await recordRuleEvaluation({
+            await tracer(report, {
               accountId, fileId, ruleCode: rule.code, fieldKey: key, trigger, runRef: opts.runRef ?? null, targetPresent: !isEmpty(state.value),
               userValidated: state.userValidated, decision: 'NONE', reasonCode: 'USER_NOT_APPLICABLE_UNCHANGED', outcome: 'NO_ACTION',
               knowledgeRev: rev, actionIds: { closed: [na.actionId] }, decisionKind: 'USER_REFUSED',
@@ -1194,7 +1333,9 @@ export async function syncDocumentRulesFromState(
         // champ — ou une intervention, ou une valeur calculée à reconsidérer —
         // la connaissance, le calcul et la pertinence sont consultés.
         const calculable = slot.kind === 'field' && !isEmpty(state.value) && !state.userValidated && !!derivationFor(key);
-        if (slot.kind === 'field' && plan.kind !== 'RESOLVE' && (active || mayCreate || activeIntervention || calculable)) {
+        // Lot 75I (A) : échéance CONNUE — la complétion se ferme ET l'obligation est examinée (même décision).
+        const obligation = slot.kind === 'field' && isDeadlineRule(rule) && !isEmpty(state.value) && ctx.open && (relevant || state.userValidated);
+        if (slot.kind === 'field' && (plan.kind !== 'RESOLVE' || obligation) && (active || mayCreate || activeIntervention || calculable || obligation)) {
           await evaluateFieldRule({
             accountId, fileId, rule, slot, ctx, state, active, activeIntervention, relevant, trigger,
             // Carte active : la mettre à jour reste possible (document ouvert).
@@ -1213,7 +1354,7 @@ export async function syncDocumentRulesFromState(
     }
   } catch (e) {
     console.error(`[to-process] réévaluation du document ${fileId} impossible :`, (e as Error).message);
-    report.errorDetails.push({ accountId, fileId, ruleCode: '*', step: 'CONTEXT', cause: String((e as Error).message).slice(0, 300) });
+    pushError(report, { accountId, fileId, ruleCode: '*', step: 'CONTEXT', kind: 'READ_FAILED', cause: String((e as Error).message) });
   }
   return report;
 }
@@ -1358,8 +1499,48 @@ export async function documentsToReevaluate(accountId: number, limit = 200): Pro
       }
     }
   }
+
+  // Lot 75I (A) : échéances CONNUES dont l'OBLIGATION n'a pas été évaluée avec
+  // la connaissance et la configuration actuelles (jamais évaluée, preuves ou
+  // configuration changées, réévaluation programmée atteinte, échec). Budget
+  // propre, borné : une connaissance inchangée n'est jamais reprise (ni carte,
+  // ni appel T4) ; le stock existant est absorbé par passes successives.
+  if (l61) {
+    let reste = Math.min(budget, OBLIGATION_SWEEP_BUDGET);
+    for (const rule of rules.filter((r) => isDeadlineRule(r))) {
+      if (reste <= 0) break;
+      const types = rule.relevantDocumentTypes ? [...rule.relevantDocumentTypes] : null;
+      const rows = (await pgClient.unsafe(
+        `SELECT f.id FROM asset_files f
+          WHERE f.account_id = $1 AND ${ELIGIBLE_SQL}
+            AND EXISTS (SELECT 1 FROM document_field_values v WHERE v.file_id = f.id AND v.account_id = f.account_id AND v.field_key = $3
+                          AND v.value_text IS NOT NULL AND ($2::text[] IS NULL OR f.document_type_code = ANY($2::text[]) OR v.user_validated))
+            AND NOT EXISTS (SELECT 1 FROM to_process_actions a WHERE a.account_id = f.account_id AND a.target_type = 'DOCUMENT' AND a.target_id = f.id
+                              AND a.resolved_at IS NULL AND COALESCE(a.field_key, a.relation_key) IN ($3, $8))
+            AND NOT EXISTS (SELECT 1 FROM document_rule_evaluations e
+                             WHERE e.id = (SELECT max(x.id) FROM document_rule_evaluations x
+                                            WHERE x.account_id = f.account_id AND x.file_id = f.id AND x.rule_code = $4)
+                               -- CASE : la révision (coûteuse) n'est calculée que si la décision mémorisée est encore valable par ailleurs.
+                               AND CASE WHEN e.situation = 'KNOWN_DEADLINE' AND e.outcome IS DISTINCT FROM 'ERROR' AND e.config_ref IN ($5, $6)
+                                             AND (e.reevaluate_at IS NULL OR e.reevaluate_at > now())
+                                        THEN e.knowledge_rev = ${rev} ELSE false END)
+          ORDER BY f.id LIMIT $7`,
+        [accountId, types, rule.fieldKey, rule.code, cfg, cfgDet, reste, interventionKey(rule.fieldKey!)] as never[],
+      ).catch((e: Error) => {
+        console.error(`[to-process] obligations à réévaluer illisibles (règle ${rule.code}, compte ${accountId}) :`, e.message);
+        return [];
+      })) as unknown as Array<{ id: number }>;
+      for (const r of rows) {
+        if (!ids.has(Number(r.id))) reste -= 1;
+        ids.add(Number(r.id));
+      }
+    }
+  }
   return [...ids];
 }
+
+/** Lot 75I (A) : documents à échéance connue réévalués au plus par compte et par passage (obligation). */
+export const OBLIGATION_SWEEP_BUDGET = 25;
 
 // ══════════════════════════════════════════════════════════════════════════
 // SAISIE DEPUIS UN ÉCRAN MÉTIER — valeur utilisateur d'une donnée du pont
@@ -1473,7 +1654,7 @@ export async function resolveDocumentRuleFromKnowledge(
     // Compte étranger ou document supprimé : seules les cartes DU COMPTE sont fermées (tracées).
     const closed = await closeDataActions(db, accountId, fileId, key, 'TARGET_DELETED', { ruleCode: rule.code, reason: 'TARGET_DELETED', trigger: 'T3' });
     if (closed.length) {
-      await recordRuleEvaluation({
+      await tracer(emptyReport(), {
         accountId, fileId, ruleCode: rule.code, fieldKey: key, trigger: 'T3', runRef: deps.runRef ?? null, targetPresent: null, userValidated: null,
         decision: 'CLOSE', reasonCode: 'TARGET_DELETED', outcome: 'NO_ACTION', actionIds: { closed },
       });

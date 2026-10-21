@@ -8,12 +8,27 @@
  *
  * Ce module N'ÉCRIT PAS dans la fiche du bien : les valeurs deviennent des
  * propositions, et seul le moteur de réconciliation (usage 2) décide.
+ *
+ * Lot 75C (ticket T1 résiduels, F) — « analyse dédupliquée » ≠ « écritures
+ * achevées » :
+ *   · run, propositions et métadonnées du document sont écrits dans UNE
+ *     transaction (plus jamais un run `completed` sans ses propositions) ;
+ *   · un run dédupliqué VÉRIFIE ses écritures et rejoue SEULEMENT celles qui
+ *     manquent (propositions absentes, métadonnées non posées) — runs
+ *     antérieurs incomplets compris ;
+ *   · `writes_status` (0545) suit l'achèvement des écritures métier du
+ *     pipeline (PENDING → SUCCEEDED / PARTIAL / FAILED) et `master_snapshot`
+ *     garde la sortie STRUCTURÉE tant qu'elles ne sont pas achevées : la
+ *     reprise la rejoue sans rappeler Gemini (`loadReplayableMaster`).
  */
 import { createHash } from 'crypto';
-import { db } from '@/db';
+import { db, pgClient } from '@/db';
 import { documentAnalysisRuns, documentAnalysisProposals, assetFiles } from '@/db/schema';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import type { SourceAnalysisResult, SourceInput } from '../types';
+
+type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
+type Exec = typeof db | Tx;
 
 export interface PersistResultInput {
   input: SourceInput;
@@ -27,6 +42,11 @@ export interface PersistResultInput {
    * master est le seul moteur.
    */
   master: { masterPromptVersion: string };
+  /**
+   * Lot 75C : sortie structurée rejouable (master T1 + empreintes des
+   * fichiers lus), conservée tant que les écritures ne sont pas achevées.
+   */
+  masterSnapshot?: unknown;
 }
 
 export interface PersistedRun {
@@ -44,10 +64,33 @@ export interface PersistedRun {
    * toujours en base, aucune n'est réécrite (§4.1.7).
    */
   proposalCount: number;
+  /** Lot 75C : écritures manquantes d'un run dédupliqué, rejouées à ce passage (`PROPOSALS`, `METADATA`). */
+  repaired?: string[];
+}
+
+let colonnes: Promise<boolean> | null = null;
+/** Colonnes `writes_status` / `master_snapshot` présentes (migration 0545) ? Mémorisé. */
+export function runWritesReady(): Promise<boolean> {
+  colonnes ??= Promise.resolve().then(() => pgClient.unsafe(`SELECT EXISTS (SELECT 1 FROM information_schema.columns
+      WHERE table_schema = 'public' AND table_name = 'document_analysis_runs' AND column_name = 'master_snapshot') AS ok`) as unknown as Promise<Array<{ ok: boolean }>>)
+    .then((r) => r[0]?.ok === true)
+    .catch(() => false);
+  return colonnes;
+}
+/** Tests : oublie l'état mémorisé des colonnes. */
+export function __resetRunWritesReady(): void { colonnes = null; }
+
+/** Écritures du pipeline en cours sur ce run ; sortie structurée conservée pour la reprise. */
+async function markWritesPending(x: Exec, runId: number, snapshot: unknown): Promise<void> {
+  await x.execute(sql`UPDATE document_analysis_runs
+     SET writes_status = 'PENDING', writes_error = NULL, writes_at = NOW(),
+         master_snapshot = COALESCE(${snapshot === undefined ? null : JSON.stringify(snapshot)}::jsonb, master_snapshot)
+   WHERE id = ${runId}`);
 }
 
 export async function persistAnalysisResult(p: PersistResultInput): Promise<PersistedRun> {
   const inputHash = computeInputHash(p);
+  const suivi = await runWritesReady();
 
   // Idempotence : un run identique sur la même version de source est réutilisé.
   const [existing] = await db
@@ -61,47 +104,58 @@ export async function persistAnalysisResult(p: PersistResultInput): Promise<Pers
     .limit(1);
 
   if (existing) {
-    // Run déjà connu : les propositions existantes sont conservées telles
-    // quelles. On les recompte pour que l'état du document reste cohérent avec
-    // ce qui lui est réellement présenté.
-    return {
-      runId: existing.id,
-      deduplicated: true,
-      proposalCount: await countProposals(existing.id),
-    };
+    // Lot 75C (F) : run déjà connu — l'analyse n'est pas refaite, mais ses
+    // écritures sont VÉRIFIÉES et seules les manquantes sont rejouées.
+    return db.transaction(async (tx) => {
+      await tx.execute(sql`SELECT id FROM document_analysis_runs WHERE id = ${existing.id} FOR UPDATE`);
+      const repaired: string[] = [];
+      let proposalCount = await countProposals(existing.id, tx);
+      if (proposalCount === 0 && proposalRows(existing.id, p).length > 0) {
+        proposalCount = await insertProposals(existing.id, p, tx);
+        repaired.push('PROPOSALS');
+      }
+      if (await updateSourceMetadata(p, tx, { onlyMissing: true })) repaired.push('METADATA');
+      if (suivi) await markWritesPending(tx, existing.id, p.masterSnapshot);
+      return { runId: existing.id, deduplicated: true, proposalCount, ...(repaired.length ? { repaired } : {}) };
+    });
   }
 
-  // Un seul run de référence par document : on libère l'ancien avant d'insérer.
-  await db.update(documentAnalysisRuns)
-    .set({ isCurrentReference: false })
-    .where(and(
-      eq(documentAnalysisRuns.assetFileId, p.leadSourceId),
-      eq(documentAnalysisRuns.isCurrentReference, true),
-    ));
+  // Lot 75C (F) : run, propositions et métadonnées dans UNE transaction —
+  // jamais un run `completed` (donc dédupliqué plus tard) sans ses écritures.
+  return db.transaction(async (tx) => {
+    // Un seul run de référence par document : on libère l'ancien avant d'insérer.
+    await tx.update(documentAnalysisRuns)
+      .set({ isCurrentReference: false })
+      .where(and(
+        eq(documentAnalysisRuns.assetFileId, p.leadSourceId),
+        eq(documentAnalysisRuns.isCurrentReference, true),
+      ));
 
-  const [run] = await db.insert(documentAnalysisRuns).values({
-    assetFileId: p.leadSourceId,
-    lotId: p.lotId ?? undefined,
-    inputFileHash: inputHash,
-    promptVersion: p.master.masterPromptVersion,
-    provider: 'gemini',
-    model: p.result.operationTrace.models[0] ?? 'unknown',
-    status: 'completed',
-    isCurrentReference: true,
-    finishedAt: new Date(),
-    accountId: p.input.accountId,
-    rawResponseJson: JSON.stringify(p.result),
-  }).returning({ id: documentAnalysisRuns.id });
+    const [run] = await tx.insert(documentAnalysisRuns).values({
+      assetFileId: p.leadSourceId,
+      lotId: p.lotId ?? undefined,
+      inputFileHash: inputHash,
+      promptVersion: p.master.masterPromptVersion,
+      provider: 'gemini',
+      model: p.result.operationTrace.models[0] ?? 'unknown',
+      status: 'completed',
+      isCurrentReference: true,
+      finishedAt: new Date(),
+      accountId: p.input.accountId,
+      rawResponseJson: JSON.stringify(p.result),
+    }).returning({ id: documentAnalysisRuns.id });
 
-  const proposalCount = await insertProposals(run.id, p);
-  await updateSourceMetadata(p);
+    const proposalCount = await insertProposals(run.id, p, tx);
+    await updateSourceMetadata(p, tx);
+    if (suivi) await markWritesPending(tx, run.id, p.masterSnapshot);
 
-  return { runId: run.id, deduplicated: false, proposalCount };
+    return { runId: run.id, deduplicated: false, proposalCount };
+  });
 }
 
 /** Propositions déjà en base pour un run — utilisé sur le chemin dédupliqué. */
-async function countProposals(runId: number): Promise<number> {
-  const rows = await db
+async function countProposals(runId: number, x: Exec = db): Promise<number> {
+  const rows = await x
     .select({ id: documentAnalysisProposals.id })
     .from(documentAnalysisProposals)
     .where(eq(documentAnalysisProposals.runId, runId));
@@ -109,7 +163,14 @@ async function countProposals(runId: number): Promise<number> {
 }
 
 /** @returns nombre de propositions écrites. */
-async function insertProposals(runId: number, p: PersistResultInput): Promise<number> {
+async function insertProposals(runId: number, p: PersistResultInput, x: Exec = db): Promise<number> {
+  const rows = proposalRows(runId, p);
+  if (rows.length > 0) await x.insert(documentAnalysisProposals).values(rows);
+  return rows.length;
+}
+
+/** Propositions d'un résultat (pure). */
+function proposalRows(runId: number, p: PersistResultInput): Array<typeof documentAnalysisProposals.$inferInsert> {
   const rows: Array<typeof documentAnalysisProposals.$inferInsert> = [];
 
   for (const f of p.result.extractedFields) {
@@ -166,12 +227,19 @@ async function insertProposals(runId: number, p: PersistResultInput): Promise<nu
     });
   }
 
-  if (rows.length > 0) await db.insert(documentAnalysisProposals).values(rows);
-  return rows.length;
+  return rows;
 }
 
-/** Métadonnées documentaires directement portées par le fichier. */
-async function updateSourceMetadata(p: PersistResultInput): Promise<void> {
+/** Colonnes de métadonnées posées par l'analyse (contrôle d'un run dédupliqué). */
+const METADATA_KEYS = ['documentType', 'description', 'extractedText', 'supplier', 'amountCents', 'documentDate'] as const;
+
+/**
+ * Métadonnées documentaires directement portées par le fichier.
+ * Lot 75C : `onlyMissing` (run dédupliqué) — seules les métadonnées que le
+ * résultat porte et que le document n'a PAS (colonne vide) sont écrites ;
+ * rend `true` si au moins une a dû être rejouée.
+ */
+async function updateSourceMetadata(p: PersistResultInput, x: Exec = db, opts: { onlyMissing?: boolean } = {}): Promise<boolean> {
   const d = p.result.document;
   const patch: Record<string, unknown> = { lastAnalysisAt: new Date(), updatedAt: new Date() };
 
@@ -192,18 +260,71 @@ async function updateSourceMetadata(p: PersistResultInput): Promise<void> {
 
   // Une valeur modifiée à la main par l'utilisateur n'est jamais écrasée par
   // une nouvelle analyse (le tiroir marque ces champs dans userEditedFields).
-  const [current] = await db
-    .select({ userEditedFields: assetFiles.userEditedFields })
+  const [current] = await x
+    .select({
+      userEditedFields: assetFiles.userEditedFields,
+      documentType: assetFiles.documentType, description: assetFiles.description, extractedText: assetFiles.extractedText,
+      supplier: assetFiles.supplier, amountCents: assetFiles.amountCents, documentDate: assetFiles.documentDate,
+    })
     .from(assetFiles)
     .where(and(eq(assetFiles.id, p.leadSourceId), eq(assetFiles.accountId, p.input.accountId)))
     .limit(1);
   for (const [key, edited] of Object.entries(current?.userEditedFields ?? {})) {
     if (edited === true && key in patch && key !== 'lastAnalysisAt' && key !== 'updatedAt') delete patch[key];
   }
+  if (opts.onlyMissing) {
+    // Run dédupliqué : seules les métadonnées ABSENTES du document sont rejouées.
+    const manquantes = METADATA_KEYS.filter((k) => k in patch && (current as Record<string, unknown> | undefined)?.[k] == null);
+    if (manquantes.length === 0) return false;
+    for (const k of Object.keys(patch)) if (!(manquantes as readonly string[]).includes(k) && k !== 'updatedAt') delete patch[k];
+  }
 
-  await db.update(assetFiles)
+  await x.update(assetFiles)
     .set(patch as never)
     .where(and(eq(assetFiles.id, p.leadSourceId), eq(assetFiles.accountId, p.input.accountId)));
+  return true;
+}
+
+// ── Lot 75C (F) : achèvement des écritures, sortie structurée rejouable ─────
+
+/**
+ * Sortie structurée REJOUABLE du document : run de référence `completed` dont
+ * les écritures ne sont pas achevées (PENDING : exécution interrompue ;
+ * FAILED : écriture obligatoire manquante) et qui garde sa sortie. `null`
+ * sinon (aucune, ou colonnes 0545 absentes) — l'appelant analyse alors.
+ * L'appelant vérifie l'empreinte d'entrée et l'identité du contenu.
+ */
+export async function loadReplayableRun(accountId: number, leadSourceId: number): Promise<{ runId: number; inputHash: string; snapshot: unknown } | null> {
+  if (!(await runWritesReady())) return null;
+  const rows = (await pgClient.unsafe(
+    `SELECT id, input_file_hash, master_snapshot FROM document_analysis_runs
+      WHERE asset_file_id = $1 AND account_id = $2 AND status = 'completed' AND is_current_reference = true
+        AND master_snapshot IS NOT NULL AND writes_status IN ('PENDING', 'FAILED')
+      ORDER BY id DESC LIMIT 1`,
+    [leadSourceId, accountId] as never[],
+  )) as unknown as Array<{ id: number; input_file_hash: string; master_snapshot: unknown }>;
+  const r = rows[0];
+  return r ? { runId: Number(r.id), inputHash: r.input_file_hash, snapshot: r.master_snapshot } : null;
+}
+
+/**
+ * Fin des écritures du pipeline pour un run : SUCCEEDED / PARTIAL effacent la
+ * sortie conservée (plus rien à rejouer) ; FAILED la garde pour la reprise.
+ * Ne lève jamais (état de suivi).
+ */
+export async function finalizeRunWrites(runId: number | null | undefined, status: 'SUCCEEDED' | 'PARTIAL' | 'FAILED', error?: string | null): Promise<void> {
+  if (runId == null) return;
+  try {
+    if (!(await runWritesReady())) return;
+    await pgClient.unsafe(
+      `UPDATE document_analysis_runs SET writes_status = $2, writes_error = $3, writes_at = NOW(),
+         master_snapshot = CASE WHEN $2 IN ('SUCCEEDED', 'PARTIAL') THEN NULL ELSE master_snapshot END
+        WHERE id = $1`,
+      [runId, status, error ? error.slice(0, 2_000) : null] as never[],
+    );
+  } catch (e) {
+    console.error(`[t1-run] état des écritures du run ${runId} non écrit :`, (e as Error).message);
+  }
 }
 
 /**

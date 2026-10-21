@@ -43,17 +43,8 @@ export interface AutoLinkResult {
     agendaLinked: number;
     suppliersLinked: number;
   };
-}
-
-interface CandidateDoc {
-  id: number;
-  title: string | null;
-  filename: string | null;
-  docType: string | null;
-  documentDate: string | null;
-  supplier: string | null;
-  amountCents: number | null;
-  description: string | null;
+  /** Lot 75G : résultat du service commun (sens EQUIPMENT_DOCUMENT). */
+  documentSync?: import('./document-equipment-link.service').EquipmentDocumentResult;
 }
 
 interface CandidateAgenda {
@@ -199,20 +190,6 @@ function deterministicMatch(
 
 // ── Context builders ──────────────────────────────────────────────────────────
 
-function buildDocumentsList(docs: CandidateDoc[]): string {
-  if (docs.length === 0) return 'Aucun document disponible.';
-  return docs.map(d => {
-    const title = d.title ?? d.filename ?? `Document #${d.id}`;
-    const parts = [`[id:${d.id}] "${title}"`];
-    if (d.docType) parts.push(`type:${d.docType}`);
-    if (d.documentDate) parts.push(`date:${d.documentDate}`);
-    if (d.supplier) parts.push(`fournisseur:"${d.supplier}"`);
-    if (d.amountCents != null) parts.push(`montant:${(d.amountCents / 100).toFixed(2)}€`);
-    if (d.description) parts.push(`— ${d.description.slice(0, 100)}`);
-    return parts.join(' | ');
-  }).join('\n');
-}
-
 function buildAgendaList(items: CandidateAgenda[]): string {
   if (items.length === 0) return 'Aucun événement agenda disponible.';
   return items.map(i => {
@@ -243,30 +220,12 @@ function buildSuppliersList(sups: CandidateSupplier[]): string {
 function resolveDeterministically(
   equipmentName: string,
   equipmentType: string | null,
-  candidateDocs: CandidateDoc[],
   candidateAgenda: CandidateAgenda[],
   candidateSuppliers: CandidateSupplier[],
 ): {
-  clear: { documents: AutoLinkResult['documents']; agendaItems: AutoLinkResult['agendaItems']; suppliers: AutoLinkResult['suppliers'] };
-  ambiguous: { documents: CandidateDoc[]; agendaItems: CandidateAgenda[]; suppliers: CandidateSupplier[] };
+  clear: { agendaItems: AutoLinkResult['agendaItems']; suppliers: AutoLinkResult['suppliers'] };
+  ambiguous: { agendaItems: CandidateAgenda[]; suppliers: CandidateSupplier[] };
 } {
-  const clearDocs: AutoLinkResult['documents'] = [];
-  const ambiguousDocs: CandidateDoc[] = [];
-
-  for (const doc of candidateDocs) {
-    const { score, reason } = deterministicMatch(equipmentName, equipmentType, {
-      title: doc.title ?? doc.filename,
-      supplier: doc.supplier,
-      description: doc.description,
-    });
-    if (score >= DETERMINISTIC_THRESHOLD) {
-      clearDocs.push({ id: doc.id, score, reason });
-    } else if (score >= AMBIGUOUS_THRESHOLD) {
-      ambiguousDocs.push(doc);
-    }
-    // else: score too low → skip entirely (no link, no AI)
-  }
-
   const clearAgenda: AutoLinkResult['agendaItems'] = [];
   const ambiguousAgenda: CandidateAgenda[] = [];
 
@@ -298,8 +257,8 @@ function resolveDeterministically(
   }
 
   return {
-    clear: { documents: clearDocs, agendaItems: clearAgenda, suppliers: clearSuppliers },
-    ambiguous: { documents: ambiguousDocs, agendaItems: ambiguousAgenda, suppliers: ambiguousSuppliers },
+    clear: { agendaItems: clearAgenda, suppliers: clearSuppliers },
+    ambiguous: { agendaItems: ambiguousAgenda, suppliers: ambiguousSuppliers },
   };
 }
 
@@ -308,6 +267,7 @@ function resolveDeterministically(
 export async function runEquipmentAutoLink(
   equipmentId: number,
   accountId: number,
+  opts: { guard?: { assertActive(what: string): Promise<void> } } = {},
 ): Promise<AutoLinkResult> {
   // 1. Load equipment info
   const [equip] = await db
@@ -329,17 +289,17 @@ export async function runEquipmentAutoLink(
   const assetId = equip.assetId;
 
   // 2-3. Documents (lot 71A, parcours EQUIPMENT_DOCUMENT) : service commun —
-  // chaque document du bien est rapproché parmi TOUS les équipements du bien
-  // (jamais repris à un équipement similaire), T3 seulement pour les vraies
-  // ambiguïtés, avec le contexte enrichi (marque, modèle, n° de série, faits
-  // T1). Les documents ne passent plus par la liste lexicale ci-dessous.
+  // chaque document du bien (tous, par pages) est rapproché parmi TOUS les
+  // équipements du bien (jamais repris à un équipement similaire), T3
+  // seulement pour les vraies ambiguïtés, avec le contexte enrichi ; lot 75G :
+  // l'ancienne liste lexicale et son écriture directe de
+  // `asset_files.equipment_id` sont supprimées ; abstention → carte LINK-ELT.
   const { syncEquipmentDocumentLinks } = await import('./document-equipment-link.service');
   const { loadEquipmentProfiles } = await import('./document-equipment-link.service');
   const { formatEquipmentSubject } = await import('./document-equipment-matching');
-  const docs = await syncEquipmentDocumentLinks({ accountId, equipmentId, allowAi: true });
+  const docs = await syncEquipmentDocumentLinks({ accountId, equipmentId, allowAi: true, proposeCards: true, guard: opts.guard });
   const profils = await loadEquipmentProfiles(accountId, { assetIds: [assetId] });
   const profil = profils.find((p) => p.id === equipmentId);
-  const candidateDocs: CandidateDoc[] = [];
 
   // 4. Get candidate agenda items (NOT yet linked)
   const alreadyLinkedAgenda = await db
@@ -423,10 +383,11 @@ export async function runEquipmentAutoLink(
 
   // 6. If nothing to analyze, return empty result
   const documentsResult = docs.linkedDocuments.map((id) => ({ id, score: 1, reason: 'Rapprochement document ↔ équipement (données structurées)' }));
-  if (candidateDocs.length === 0 && candidateAgendaItems.length === 0 && candidateSuppliers.length === 0) {
+  if (candidateAgendaItems.length === 0 && candidateSuppliers.length === 0) {
     return {
       documents: documentsResult, agendaItems: [], suppliers: [],
       applied: { documentsLinked: docs.linkedDocuments.length, agendaLinked: 0, suppliersLinked: 0 },
+      documentSync: docs,
     };
   }
 
@@ -434,18 +395,15 @@ export async function runEquipmentAutoLink(
   const { clear, ambiguous } = resolveDeterministically(
     equip.name,
     equip.type,
-    candidateDocs,
     candidateAgendaItems,
     candidateSuppliers,
   );
 
   // 8. If all candidates resolved deterministically → skip AI entirely
   const hasAmbiguous =
-    ambiguous.documents.length > 0 ||
     ambiguous.agendaItems.length > 0 ||
     ambiguous.suppliers.length > 0;
 
-  let aiMatchedDocs: { id: number; score: number; reason: string }[] = [];
   let aiMatchedAgenda: { id: number; score: number; reason: string }[] = [];
   let aiMatchedSuppliers: { id: number; score: number; reason: string }[] = [];
 
@@ -457,31 +415,22 @@ export async function runEquipmentAutoLink(
         SUBJECT_CONTEXT: profil
           ? formatEquipmentSubject(profil, profils.filter((p) => p.id !== equipmentId))
           : `Équipement "${equip.name}" (type: ${equip.type ?? 'non spécifié'}` + `${equip.substructureId ? `, pièce #${equip.substructureId}` : ''})`,
-        DOCUMENTS_LIST: buildDocumentsList(ambiguous.documents),
+        DOCUMENTS_LIST: '(sans objet)',
         AGENDA_LIST: buildAgendaList(ambiguous.agendaItems),
         SUPPLIERS_LIST: buildSuppliersList(ambiguous.suppliers),
         EQUIPMENTS_LIST: '(sans objet)',
       },
-      sourceIds: ambiguous.documents.map(d => d.id),
+      sourceIds: [],
     });
 
     await reportLinkAmbiguities({ accountId, subject: `équipement #${equipmentId}` }, linked.ambiguities);
 
     const threshold = LINK_SCORE_THRESHOLDS.equipmentToObjects;
-    aiMatchedDocs = retainAbove(linked.documents, threshold);
     aiMatchedAgenda = retainAbove(linked.agendaItems, threshold);
     aiMatchedSuppliers = retainAbove(linked.suppliers, threshold);
   }
 
   // 10. Merge deterministic + AI results (deduplicated)
-  const allMatchedDocIds = new Set(clear.documents.map(d => d.id));
-  for (const d of aiMatchedDocs) {
-    if (!allMatchedDocIds.has(d.id)) {
-      clear.documents.push(d);
-      allMatchedDocIds.add(d.id);
-    }
-  }
-
   const allMatchedAgendaIds = new Set(clear.agendaItems.map(a => a.id));
   for (const a of aiMatchedAgenda) {
     if (!allMatchedAgendaIds.has(a.id)) {
@@ -499,21 +448,8 @@ export async function runEquipmentAutoLink(
   }
 
   // 11. Apply links in DB
-  let documentsLinked = 0;
   let agendaLinked = 0;
   let suppliersLinked = 0;
-
-  for (const doc of clear.documents) {
-    const docExists = candidateDocs.find(d => d.id === doc.id);
-    if (!docExists) continue;
-    // Revalidation à l'écriture : document ET équipement du compte.
-    const ecrits = await db
-      .update(assetFiles)
-      .set({ equipmentId })
-      .where(and(eq(assetFiles.id, doc.id), eq(assetFiles.accountId, accountId), ownedSql('equipment', equipmentId, accountId)))
-      .returning({ id: assetFiles.id });
-    if (ecrits.length) documentsLinked++;
-  }
 
   if (clear.agendaItems.length > 0) {
     const validAgendaIds = clear.agendaItems
@@ -544,10 +480,11 @@ export async function runEquipmentAutoLink(
   }
 
   return {
-    documents: [...documentsResult, ...clear.documents],
+    documents: documentsResult,
     agendaItems: clear.agendaItems,
     suppliers: clear.suppliers,
-    applied: { documentsLinked: documentsLinked + docs.linkedDocuments.length, agendaLinked, suppliersLinked },
+    applied: { documentsLinked: docs.linkedDocuments.length, agendaLinked, suppliersLinked },
+    documentSync: docs,
   };
 }
 

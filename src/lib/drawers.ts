@@ -67,9 +67,27 @@ export function drawerHref(t: Pick<DrawerTarget, 'kind' | 'id'>, path = '/accuei
   return `${base}?${params.toString()}`;
 }
 
+/**
+ * Lot 75H — options d'ouverture.
+ *
+ * `stack` : la fiche s'EMPILE au-dessus des tiroirs déjà ouverts (carte
+ * d'entité dans un tiroir) ; la fermer ramène au tiroir d'origine. Pour un
+ * document, l'ouverture passe alors par GlobalDrawerHost (pile) et non par
+ * le tiroir document unique de DashboardLayout : ce dernier peut être
+ * lui-même SOUS le tiroir d'origine (document → équipement → document), et
+ * la nouvelle fiche y resterait cachée.
+ */
+export interface OpenDrawerOptions {
+  stack?: boolean;
+}
+
 /** Ouvre la fiche en tiroir, sur l'écran courant. */
-export function openDrawer(t: DrawerTarget): void {
+export function openDrawer(t: DrawerTarget, opts: OpenDrawerOptions = {}): void {
   if (typeof window === 'undefined') return;
+  if (t.kind === 'document' && opts.stack) {
+    window.dispatchEvent(new CustomEvent<DrawerTarget>(OPEN_ENTITY_DRAWER, { detail: t }));
+    return;
+  }
   if (t.kind === 'document') {
     window.dispatchEvent(new CustomEvent(OPEN_DOCUMENT_DRAWER, {
       detail: { docId: t.id, showAnalysisResults: t.showAnalysisResults },
@@ -106,4 +124,34 @@ export function openDrawerFromLink(
   e.preventDefault();
   openDrawer(t);
   return true;
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// PILE DES TIROIRS (lot 75H)
+//
+// GlobalDrawerHost tient une PILE : une fiche ouverte depuis un tiroir
+// s'affiche au-dessus, sa fermeture ramène à la précédente. Une fiche déjà
+// présente dans la pile n'est pas rouverte une deuxième fois : on y revient
+// (les tiroirs au-dessus se ferment), ce qui évite les boucles
+// équipement → document → équipement → … La profondeur est bornée.
+// ══════════════════════════════════════════════════════════════════════════
+
+export const DRAWER_STACK_MAX = 6;
+
+export function drawerKey(t: Pick<DrawerTarget, 'kind' | 'id'>): string {
+  return `${t.kind}:${t.id}`;
+}
+
+/** Pile après ouverture de `entry` (clé `kind:id`). Pure, testée. */
+export function pushDrawerEntry<T extends { key: string }>(stack: readonly T[], entry: T, max = DRAWER_STACK_MAX): T[] {
+  const at = stack.findIndex((e) => e.key === entry.key);
+  if (at !== -1) return [...stack.slice(0, at), entry];
+  const next = [...stack, entry];
+  return next.length > max ? next.slice(next.length - max) : next;
+}
+
+/** Pile après fermeture de la fiche `key` (et de celles empilées au-dessus). */
+export function closeDrawerEntry<T extends { key: string }>(stack: readonly T[], key: string): T[] {
+  const at = stack.findIndex((e) => e.key === key);
+  return at === -1 ? [...stack] : stack.slice(0, at);
 }

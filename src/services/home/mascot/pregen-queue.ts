@@ -286,6 +286,14 @@ export async function enqueueT6DueReevaluations(today: string, limit = 5_000): P
   const [ok] = await rows(`SELECT to_regclass('t6_reminder_preferences') IS NOT NULL AND to_regclass('t6_interpellation_assessments') IS NOT NULL AS ok`);
   if (!ok?.ok) return { snoozeDue: 0, reviewDue: 0, requested: 0 };
   const actif = `trim(coalesce(i.manual_status, '')) = ''`;
+  // Lot 75E (B) : réexamen programmé de la sélection progressive atteint (curseur persistant).
+  const { t6ExaminationsReady } = await import('./collector');
+  const examens = (await t6ExaminationsReady()) ? `
+       UNION ALL
+       SELECT x.account_id, 'review'
+         FROM t6_candidate_examinations x
+         JOIN agenda_items i ON i.id = x.agenda_item_id AND i.account_id = x.account_id
+        WHERE ${actif} AND x.recheck_on <= $1::date` : '';
   const dus = await rows(
     `SELECT account_id, bool_or(kind = 'snooze') AS snooze, bool_or(kind = 'review') AS review FROM (
        SELECT p.account_id, 'snooze' AS kind
@@ -300,7 +308,7 @@ export async function enqueueT6DueReevaluations(today: string, limit = 5_000): P
          JOIN agenda_items i ON i.id = a.agenda_item_id AND i.account_id = a.account_id
         WHERE ${actif} AND a.contract_version IS NOT NULL
           AND ((a.reevaluate_on <= $1::date AND a.assessed_on < a.reevaluate_on)
-               OR (a.interpellation = 'LATER' AND a.action_date <= $1::date AND a.assessed_on < a.action_date))
+               OR (a.interpellation = 'LATER' AND a.action_date <= $1::date AND a.assessed_on < a.action_date))${examens}
      ) d
      GROUP BY account_id
      LIMIT $3`,

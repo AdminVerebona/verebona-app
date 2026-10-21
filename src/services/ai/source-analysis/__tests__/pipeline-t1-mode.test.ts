@@ -67,7 +67,20 @@ vi.mock('../master/reconciliation-fanout', () => ({
   enqueueT3ForAffectedAssets: (...a: unknown[]) => m.enqueueT3ForAffectedAssets(...a),
   enqueueT3ForAffectedEntities: async () => [],
 }));
-vi.mock('../persistence/analysis-result.repository', () => ({ persistAnalysisResult: (...a: unknown[]) => m.persistAnalysisResult(...a) }));
+vi.mock('../persistence/analysis-result.repository', () => ({
+  persistAnalysisResult: (...a: unknown[]) => m.persistAnalysisResult(...a),
+  // Lot 75C : aucune sortie rejouable, suivi des écritures sans effet.
+  loadReplayableRun: async () => null, finalizeRunWrites: async () => {}, computeInputHash: () => 'h',
+}));
+// Lot 75C : extract brut écrit (phase d'extraction réussie), sans base.
+vi.mock('../raw-extract/raw-extract.service', async (orig) => ({
+  ...(await orig<typeof import('../raw-extract/raw-extract.service')>()),
+  ensureRawExtract: async (p: { fileId: number }) => ({ fileId: p.fileId, sourceSha256: 'sha', error: null, summary: {
+    id: 1, fileId: p.fileId, status: 'COMPLETE', method: 'PDF_TEXT_LAYER', pageCount: 1, pagesWithText: 1, pagesWithoutText: [], truncated: false,
+    truncationReason: null, chars: 10, fullTextSha256: null, reused: false, error: null, sourceSha256: 'sha', identity: 'NEW' } }),
+  markStructuring: async () => {}, markPersistence: async () => {}, markOcr: async () => true,
+}));
+vi.mock('../steps/apply-reliable-facts.step', () => ({ applyReliableFacts: async () => [] }));
 vi.mock('../events', () => ({ emitSourceAnalyzed: (...a: unknown[]) => m.emitSourceAnalyzed(...a) }));
 vi.mock('../lot-notification', () => ({ notifyLotCompleted: (...a: unknown[]) => m.notifyLotCompleted(...a) }));
 vi.mock('../stream/broadcast', () => ({ broadcast: () => {} }));
@@ -75,7 +88,10 @@ const knowledgeCtx = vi.hoisted(() => [] as Array<Record<string, unknown>>);
 vi.mock('../../knowledge/document-knowledge', () => ({
   buildKnowledgeFromSourceAnalysis: (_r: unknown, c: Record<string, unknown>) => { knowledgeCtx.push(c); return {}; },
 }));
-vi.mock('../../knowledge/document-knowledge.service', () => ({ persistDocumentKnowledge: async () => {} }));
+vi.mock('../../knowledge/document-knowledge.service', () => ({
+  persistDocumentKnowledge: async () => {},
+  persistDocumentKnowledgeDetailed: async () => ({ extractionId: 1, sourceLayer: 'NOT_APPLICABLE', sourceLayerError: null }),
+}));
 vi.mock('@/services/documents/apply-v2-classification.service', () => ({ applyV2Classification: async () => {} }));
 vi.mock('@/services/documents/grouped-sources', () => ({ markSourcesGrouped: async () => {} }));
 vi.mock('@/services/document-ai/fusion-detector', () => ({ detectFusionCandidates: async () => ({ hasCandidates: false }) }));

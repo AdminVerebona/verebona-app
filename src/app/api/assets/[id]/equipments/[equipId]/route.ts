@@ -39,6 +39,7 @@ import { isValidEquipmentStatus } from '@/types/domain';
 import { refuserSiModificationBiensSuspendue } from '@/lib/asset-quota-guard';
 import { parseEquipmentFiche } from '@/lib/asset-detail-rules';
 import { parseEquipmentCategory, parseEquipmentEnergyUsage } from '@/lib/cil/energy-equipment';
+import { parseEquipmentCents } from '@/lib/equipment-amounts';
 
 export async function PUT(
   request: NextRequest,
@@ -109,15 +110,9 @@ export async function PUT(
 
     // Montants en centimes : entier ≥ 0 ou null ; un décimal est arrondi
     // (avertissement) pour ne pas casser un client API existant (en-tête).
-    const centimes = (champ: string, v: unknown): number | null | undefined | 'INVALID' => {
-      if (v === undefined || v === null) return v as null | undefined;
-      if (typeof v !== 'number' || !Number.isFinite(v) || v < 0) return 'INVALID';
-      if (Number.isInteger(v)) return v;
-      console.warn(`[equipments] ${champ} décimal (${v}) arrondi au centime entier — attendu : entier en centimes.`);
-      return Math.round(v);
-    };
-    const ppc = centimes('purchasePriceCents', purchasePriceCents);
-    const evc = centimes('estimatedValueCents', estimatedValueCents);
+    // Lot 75G : même analyseur que la création (bornes de la colonne integer).
+    const ppc = parseEquipmentCents('purchasePriceCents', purchasePriceCents, 'legacy');
+    const evc = parseEquipmentCents('estimatedValueCents', estimatedValueCents, 'legacy');
     if (ppc === 'INVALID' || evc === 'INVALID') return apiError(400, 'INVALID_INPUT', 'Invalid amount');
     const fiche = parseEquipmentFiche(body.fiche);
     if (fiche.errors.length) {
@@ -187,8 +182,14 @@ export async function PUT(
     vals.push(equipmentId); // $p
     vals.push(assetId);     // $p+1
 
-    const rows = await db.$client.unsafe<{ id: number; name: string; status: string; type: string | null; category: string | null; energy_usage: string | null; substructure_id: number | null; asset_id: number }[]>(
-      `UPDATE equipments SET ${sets.join(', ')} WHERE id = $${p} AND asset_id = $${p + 1} RETURNING id, name, status, type, category, energy_usage, substructure_id, asset_id`,
+    // Lot 75G (écart D) : valeurs AVANT modification relues dans la même
+    // instruction (verrou de ligne) — le rapprochement n'est relancé que sur
+    // un changement EFFECTIF du nom ou du bien parent.
+    const rows = await db.$client.unsafe<{ id: number; name: string; status: string; type: string | null; category: string | null; energy_usage: string | null; substructure_id: number | null; asset_id: number; old_name: string; old_asset_id: number }[]>(
+      `WITH avant AS (SELECT id, name AS old_name, asset_id AS old_asset_id FROM equipments WHERE id = $${p} AND asset_id = $${p + 1} FOR UPDATE)
+       UPDATE equipments SET ${sets.join(', ')} FROM avant WHERE equipments.id = avant.id
+       RETURNING equipments.id, equipments.name, equipments.status, equipments.type, equipments.category, equipments.energy_usage,
+                 equipments.substructure_id, equipments.asset_id, avant.old_name, avant.old_asset_id`,
       vals as any
     );
 
@@ -218,12 +219,23 @@ export async function PUT(
       }
     }
 
-    // Lot 71A (point B) : nom, type ou bien modifiés → les documents du bien
-    // sont rapprochés de nouveau (déterministe seul, aucun appel IA ici).
-    if (name !== undefined || type !== undefined || newAssetId !== undefined) {
-      void import('@/services/equipment/document-equipment-link.service')
-        .then(({ syncEquipmentDocumentLinks }) => syncEquipmentDocumentLinks({ accountId: session.currentAccountId!, equipmentId, allowAi: false }))
-        .catch((e: Error) => console.error('[equipments] rapprochement des documents (non bloquant) :', e.message));
+    // Lot 71A (point B), lot 75G (écart D) : nom ou bien parent EFFECTIVEMENT
+    // modifiés → les documents sont rapprochés de nouveau, en file DURABLE
+    // (déterministe seul, aucun appel IA). Marque, modèle, n° de série :
+    // déclenchés par l'écrivain canonique de l'équipement. Le type seul
+    // n'entre dans aucune règle : aucun rapprochement relancé pour lui.
+    {
+      const r0 = rows[0];
+      const renomme = r0.name.trim().toLowerCase() !== String(r0.old_name ?? '').trim().toLowerCase();
+      const deplace = Number(r0.asset_id) !== Number(r0.old_asset_id);
+      if (renomme || deplace) {
+        try {
+          const { requestEquipmentDocumentSync } = await import('@/services/equipment/equipment-document-queue');
+          await requestEquipmentDocumentSync(session.currentAccountId!, equipmentId, { reason: deplace ? 'moved' : 'renamed' });
+        } catch (e) {
+          console.error(`[equipments] mise en file du rapprochement de l'équipement ${equipmentId} impossible :`, (e as Error).message);
+        }
+      }
     }
 
     // CDC Assistant §25.7, §31.7 : équipement modifié.

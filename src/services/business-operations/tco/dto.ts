@@ -24,15 +24,20 @@ export const TCO_WARNING_LABELS: Readonly<Record<TcoWarning, string>> = {
   DISPOSAL_DATE_MISSING: 'Date de cession non renseignée.',
   PARTIAL_READ: 'Volume exceptionnel : seule une partie des éléments a pu être lue, résultat partiel.',
   PRORATA_APPLIED: 'Une période payée dépasse la cession : seule la part jusqu’à la cession est comptée (prorata au jour).',
-  DOCUMENTS_NOT_QUALIFIED: 'Des justificatifs portent un montant dont la nature n’est pas établie (ou une facture sans montant lisible) : ils ne sont pas comptés.',
+  DOCUMENTS_NOT_QUALIFIED: 'Des justificatifs portent un montant dont la nature n’est pas établie : ils ne sont pas comptés.',
   UNCONFIRMED_ASSET_EXPENSES: 'Des justificatifs de ce bien sont rattachés à une dépense dont le bien n’est pas confirmé : non comptés ici.',
+  AMOUNTS_UNKNOWN: 'Des justificatifs de dépense n’ont pas de montant lisible : leur montant est inconnu, le coût cumulé est incomplet.',
+  UNCERTAIN_MATCHES: 'Des dépenses ressemblent à une autre dépense sans preuve qu’il s’agisse de la même : elles sont comptées, à vérifier.',
+  ACQUISITION_AMBIGUOUS: 'Plusieurs factures d’achat pourraient correspondre à l’achat du bien : renseignez le prix d’achat de la fiche.',
 };
 
 /** Lot 61 : libellé du motif d'une ligne économique (moteur ou qualification documentaire). */
 export const ECONOMIC_LINE_REASON_LABELS: Readonly<Record<EconomicLineReason, string>> = { ...EXCLUSION_LABELS, ...DOCUMENT_LINE_REASON_LABELS };
 
-/** Lignes transmises à l'interface (les plus utiles d'abord) — la trace complète reste côté serveur et BO. */
+/** Lignes transmises par page à l'interface (les plus utiles d'abord) — la trace complète reste côté serveur et BO. */
 export const TCO_DTO_MAX_LINES = 400;
+/** Lot 75D (J) : taille maximale d'une page demandée (chargement complémentaire). */
+export const TCO_DTO_MAX_PAGE = 1000;
 
 /**
  * Lot 68 (68A) — motif pour lequel une ligne examinée n'est PAS montrée sur
@@ -97,24 +102,51 @@ export type TcoDto = Omit<TcoResult, 'entries' | 'lines' | 'citedOnlyDocuments'>
   categoryLabels: Record<TcoCategory, string>;
   /** Nombre de lignes montrables (la liste peut être tronquée à `TCO_DTO_MAX_LINES`). */
   linesTotal: number;
+  /**
+   * Lot 75D (J) : page de lignes transmise — position, nombre, et totaux par
+   * groupe (retenues / écartées) sur TOUTES les lignes montrables ; les
+   * montants (synthèse, ventilation) sont toujours calculés sur la trace
+   * complète, jamais sur la page.
+   */
+  linesOffset: number;
+  linesCount: number;
+  linesTruncated: boolean;
+  retainedLinesTotal: number;
+  otherLinesTotal: number;
   warningLabels: string[];
   usageLabels: { categories: typeof USAGE_BUDGET_CATEGORY_LABELS; periodicities: typeof USAGE_BUDGET_PERIODICITY_LABELS };
   /** Nombre de composantes examinées (trace complète côté serveur). */
   componentsExamined: number;
 };
 
-export function toTcoDto(t: TcoResult): TcoDto {
+/** Lot 75D (J) : paramètres de page (`linesOffset`, `linesLimit`) — valeurs bornées, jamais d'erreur. */
+export function parseTcoLinesPage(params: { get(k: string): string | null }): { linesOffset: number; linesLimit: number } {
+  const n = (v: string | null, d: number) => (v && /^\d{1,7}$/.test(v) ? Number(v) : d);
+  return { linesOffset: n(params.get('linesOffset'), 0), linesLimit: Math.min(Math.max(n(params.get('linesLimit'), TCO_DTO_MAX_LINES), 1), TCO_DTO_MAX_PAGE) };
+}
+
+export function toTcoDto(t: TcoResult, page: { linesOffset?: number; linesLimit?: number } = {}): TcoDto {
   // `citedOnlyDocuments` : diagnostic BO seulement (lot 68), jamais transmis à la fiche.
   const { entries, lines: toutes, citedOnlyDocuments: _bo, ...rest } = t;
   const vue = tcoUserView(toutes);
   const lines = vue.lines;
-  // Retenues d'abord, puis écartées : la liste d'un bien très documenté reste lisible.
+  // Retenues d'abord, puis écartées : la liste d'un bien très documenté reste lisible. Ordre STABLE (identifiant
+  // en dernier critère) : les pages successives ne se recouvrent pas.
   const rang = (s: EconomicLineStatus) => (RETENUE(s) ? 0 : 1);
-  const tri = [...lines].sort((a, b) => rang(a.status) - rang(b.status) || (b.date ?? '').localeCompare(a.date ?? ''));
+  const tri = [...lines].sort((a, b) => rang(a.status) - rang(b.status) || (b.date ?? '').localeCompare(a.date ?? '') || a.id.localeCompare(b.id));
+  const offset = Math.max(0, Math.min(page.linesOffset ?? 0, tri.length));
+  const limit = Math.min(Math.max(page.linesLimit ?? TCO_DTO_MAX_LINES, 1), TCO_DTO_MAX_PAGE);
+  const pageLignes = tri.slice(offset, offset + limit);
+  const retenues = lines.filter((l) => RETENUE(l.status)).length;
   return {
     ...rest,
-    lines: tri.slice(0, TCO_DTO_MAX_LINES),
+    lines: pageLignes,
     linesTotal: lines.length,
+    linesOffset: offset,
+    linesCount: pageLignes.length,
+    linesTruncated: offset > 0 || offset + pageLignes.length < lines.length,
+    retainedLinesTotal: retenues,
+    otherLinesTotal: lines.length - retenues,
     hiddenLinesCount: Object.keys(vue.hidden).length,
     categoryLabels: { ...TCO_CATEGORY_LABELS },
     lineStatusLabels: { ...ECONOMIC_LINE_STATUS_LABELS },

@@ -37,9 +37,15 @@
  * « Mon agenda » (dont le tiroir de filtres a disparu). La section
  * « Équipement » apparaît dès qu'un bien retenu (filtre Bien, ou l'onglet
  * d'un bien) porte au moins un équipement.
+ *
+ * Lot 75B : section « Pièce » (documents directs de la pièce ET documents
+ * de ses équipements), juste au-dessus d'« Équipement », dans les mêmes
+ * conditions (un bien retenu qui possède au moins une pièce).
  * ══════════════════════════════════════════════════════════════════════════
  */
 import type { EquipmentFilterModel } from '@/lib/filters/equipment-filter';
+import type { RoomFilterModel } from '@/lib/filters/room-filter';
+import { RoomFilterSection } from '@/components/filters/RoomFilterSection';
 import { ActiveFilterChips as SharedActiveFilterChips, FilterPanel, FilterPillSection } from '@/components/filters/FilterControls';
 import { EquipmentFilterSection } from '@/components/filters/EquipmentFilterSection';
 import type { DocumentsContext, FilterDim, FilterOption } from './documents-view';
@@ -51,6 +57,8 @@ export function DocumentsFilterPanel({
   onToggle,
   equipment,
   onEquipment,
+  room,
+  onRoom,
 }: {
   id: string;
   context: DocumentsContext;
@@ -59,6 +67,9 @@ export function DocumentsFilterPanel({
   /** Lot 71 : modèle du filtre Équipement (masqué si `visible` est faux). */
   equipment?: EquipmentFilterModel;
   onEquipment?: (value: string) => void;
+  /** Lot 75B : modèle du filtre Pièce (masqué si `visible` est faux). */
+  room?: RoomFilterModel;
+  onRoom?: (value: string) => void;
 }) {
   // Dans l'onglet d'un bien, le périmètre est déjà le bien : pas de filtre Bien.
   const avecBien = context === 'mes-documents';
@@ -73,7 +84,15 @@ export function DocumentsFilterPanel({
       )}
       <FilterPillSection id={`${id}-rubrique`} title="Rubrique" options={options.rubrics} onToggle={(v) => onToggle('rubrics', v)} />
       <FilterPillSection id={`${id}-type`} title="Type" options={options.types} onToggle={(v) => onToggle('types', v)} />
-      {/* Dernière ligne, sur toute la largeur : la liste d'équipements peut être longue. */}
+      {/* Lignes finales, sur toute la largeur : pièces et équipements peuvent être nombreux. */}
+      {room && onRoom && (
+        <RoomFilterSection
+          id={`${id}-piece`}
+          model={room}
+          onSelect={onRoom}
+          className="border-t border-[color:var(--border-subtle)] pt-4 md:col-span-full"
+        />
+      )}
       {equipment && onEquipment && (
         <EquipmentFilterSection
           id={`${id}-equipement`}
@@ -92,8 +111,8 @@ export function ActiveFilterChips({
   onRemove,
   onClear,
 }: {
-  chips: Array<{ dim: FilterDim | 'equipment'; value: string; label: string }>;
-  onRemove: (dim: FilterDim | 'equipment', value: string) => void;
+  chips: Array<{ dim: FilterDim | 'equipment' | 'piece'; value: string; label: string }>;
+  onRemove: (dim: FilterDim | 'equipment' | 'piece', value: string) => void;
   onClear: () => void;
 }) {
   return (

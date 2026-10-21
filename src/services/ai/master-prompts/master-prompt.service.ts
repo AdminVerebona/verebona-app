@@ -197,7 +197,12 @@ export interface PromptDetail {
    * brouillon) : A7–A9, interactionMode, suppliedFacts, {{BUSINESS_CANDIDATES}} ;
    * dit explicitement quand l'arbitrage est impossible. Autres traitements : absent.
    */
-  t2Capabilities?: { active: import('../assistant/master/t2-prompt-capabilities').T2PromptCapabilities; draft: import('../assistant/master/t2-prompt-capabilities').T2PromptCapabilities | null } | null;
+  t2Capabilities?: {
+    active: import('../assistant/master/t2-prompt-capabilities').T2PromptCapabilities;
+    draft: import('../assistant/master/t2-prompt-capabilities').T2PromptCapabilities | null;
+    /** Lot 75J : origine du texte actif contrôlé (version BO, texte initial, fichier du dépôt). */
+    activeOrigin?: { kind: 'BO_VERSION' | 'INITIAL_CONFIG' | 'REPOSITORY_FILE'; versionNumber: number | null };
+  } | null;
 }
 
 const STATUS_LABEL: Record<repo.MasterPromptStatus, string> = { DRAFT: 'Brouillon', ACTIVE: 'Active', PREVIOUS: 'Ancienne' };
@@ -476,6 +481,8 @@ export async function getPromptDetail(treatment: Treatment, environment: AiEnvir
     t2Capabilities = {
       active: t2PromptCapabilities(active?.content ?? initialContent?.content ?? fichier),
       draft: draft ? t2PromptCapabilities(draft.content) : null,
+      // Lot 75J (#419 §3) : QUELLE version est contrôlée (celle réellement utilisée à l'exécution).
+      activeOrigin: active ? { kind: 'BO_VERSION', versionNumber: active.versionNumber } : { kind: initialContent?.source === 'config' ? 'INITIAL_CONFIG' : 'REPOSITORY_FILE', versionNumber: null },
     };
   }
   return {

@@ -20,6 +20,8 @@ import {
   ActiveFilterChips, FilterChoiceSection, FilterPanel, FilterPillSection, FiltersToggleButton,
 } from '@/components/filters/FilterControls';
 import { EquipmentFilterSection } from '@/components/filters/EquipmentFilterSection';
+import { RoomFilterSection } from '@/components/filters/RoomFilterSection';
+import { buildRoomFilterModel, roomFilterParam, type RoomFacet } from '@/lib/filters/room-filter';
 import {
   buildEquipmentFilterModel, equipmentFilterParam, type EquipmentFacet,
 } from '@/lib/filters/equipment-filter';
@@ -123,6 +125,8 @@ function AgendaPageInner() {
   const assetIds = assetIdsParam ? assetIdsParam.split(',').map(Number).filter(Boolean) : [];
   // Lot 71 (71C) : filtre Équipement, dans l'URL comme les autres filtres de l'agenda.
   const equipment = equipmentFilterParam(searchParams.get('equipment'));
+  // Lot 75B : filtre Pièce (échéances directes, de ses équipements et de ses documents).
+  const piece = roomFilterParam(searchParams.get('piece'));
 
   const [items, setItems] = useState<AgendaItemFull[]>([]);
   const [loading, setLoading] = useState(true);
@@ -136,6 +140,7 @@ function AgendaPageInner() {
   const filtersPanelId = `${useId()}-filtres`;
   const [assetOptions, setAssetOptions] = useState<Array<{ id: number; name: string }>>([]);
   const [equipmentFacet, setEquipmentFacet] = useState<EquipmentFacet | null>(null);
+  const [roomFacet, setRoomFacet] = useState<RoomFacet | null>(null);
   const [docDrawerFileId, setDocDrawerFileId] = useState<number | null>(null);
 
   const updateURL = (updates: Record<string, string | null>) => {
@@ -159,20 +164,22 @@ function AgendaPageInner() {
       // Équipements des biens retenus (options et compteurs du filtre).
       params.set('equipmentFacet', '1');
       if (equipment) params.set('equipment', equipment);
+      if (piece) params.set('piece', piece);
     }
 
     // Filtres enchaînés au clavier : seule la DERNIÈRE réponse est appliquée.
     let actuel = true;
-    apiClient.get<{ items: AgendaItemFull[]; equipmentFacet?: EquipmentFacet | null }>(`/api/agenda?${params}`)
+    apiClient.get<{ items: AgendaItemFull[]; equipmentFacet?: EquipmentFacet | null; roomFacet?: RoomFacet | null }>(`/api/agenda?${params}`)
       .then(data => {
         if (!actuel) return;
         setItems(data.items ?? []);
         setEquipmentFacet(data.equipmentFacet ?? null);
+        setRoomFacet(data.roomFacet ?? null);
       })
       .catch(() => { if (actuel) toast.error('Erreur lors du chargement'); })
       .finally(() => { if (actuel) { setLoading(false); setLoadedOnce(true); } });
     return () => { actuel = false; };
-  }, [period, view, month, year, includeCancelled, assetIdsParam, equipment, refreshKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [period, view, month, year, includeCancelled, assetIdsParam, equipment, piece, refreshKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Biens proposés au filtre (et libellés des pastilles « Filtré par … »).
   useEffect(() => {
@@ -194,23 +201,27 @@ function AgendaPageInner() {
   }, []);
 
   const equipmentModel = buildEquipmentFilterModel(equipmentFacet, equipment, assetIds.length);
+  const roomModel = buildRoomFilterModel(roomFacet, piece, assetIds.length);
   const chips = agendaFilterChips({
     period, assetIds, includeCancelled, assetOptions,
     equipmentChipLabel: equipment ? (equipmentModel.chipLabel ?? (loading ? null : 'Équipement indisponible')) : null,
+    roomChipLabel: piece ? (roomModel.chipLabel ?? (loading ? null : 'Pièce indisponible')) : null,
   });
   const activeFiltersCount = chips.length;
-  // Changer de bien réinitialise toujours le filtre Équipement (« Tous »).
+  // Changer de bien réinitialise toujours les filtres Équipement (« Tous »)
+  // et Pièce (« Toutes les pièces », lot 75B).
   const toggleAsset = (id: number) => {
     const next = assetIds.includes(id) ? assetIds.filter(a => a !== id) : [...assetIds, id];
-    updateURL({ assetIds: next.length > 0 ? next.join(',') : null, equipment: null });
+    updateURL({ assetIds: next.length > 0 ? next.join(',') : null, equipment: null, piece: null });
   };
   const removeChip = (key: string) => {
     if (key === 'period') updateURL({ period: null });
     else if (key === 'cancelled') updateURL({ includeCancelled: null });
     else if (key === 'equipment') updateURL({ equipment: null });
+    else if (key === 'piece') updateURL({ piece: null });
     else if (key.startsWith('bien:')) toggleAsset(Number(key.slice(5)));
   };
-  const clearFilters = () => updateURL({ period: null, assetIds: null, equipment: null, includeCancelled: null });
+  const clearFilters = () => updateURL({ period: null, assetIds: null, equipment: null, piece: null, includeCancelled: null });
 
   // ══════════════════════════════════════════════════════════════════════════
   // « AGENDA VIDE » N'EST PAS « AUCUN RÉSULTAT »
@@ -325,6 +336,12 @@ function AgendaPageInner() {
               options={[{ value: 'cancelled', label: 'Afficher les annulés', active: includeCancelled }]}
               onToggle={() => updateURL({ includeCancelled: includeCancelled ? null : 'true' })}
             />
+            <RoomFilterSection
+              id={`${filtersPanelId}-piece`}
+              model={roomModel}
+              onSelect={(v) => updateURL({ piece: roomFilterParam(v) })}
+              className="border-t border-[color:var(--border-subtle)] pt-4 md:col-span-full"
+            />
             <EquipmentFilterSection
               id={`${filtersPanelId}-equipement`}
               model={equipmentModel}
@@ -360,7 +377,9 @@ function AgendaPageInner() {
             )}
           </div>
         ) : view === 'year' ? (
-          <YearView items={items} year={year} onItemClick={setSelectedItem} />
+          // Lot 75H : en-tête d'un mois → vue mensuelle de ce mois ; les autres
+          // paramètres (filtres, période, année) restent dans l'URL.
+          <YearView items={items} year={year} onItemClick={setSelectedItem} onOpenMonth={(m) => updateURL({ view: 'calendar', month: m })} />
         ) : view === 'calendar' ? (
           <CalendarView items={items} month={month} onItemClick={setSelectedItem} onNew={() => setShowCreate(true)} />
         ) : items.length === 0 ? (

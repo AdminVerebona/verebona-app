@@ -128,20 +128,23 @@ export async function upsertDocumentIntervention(p: {
  */
 export async function closeDocumentIntervention(accountId: number, fileId: number, dataKey: string, details: Record<string, unknown>): Promise<number[]> {
   const now = new Date();
-  const closed = await db.update(toProcessActions)
-    .set({ resolvedAt: now, resolutionReason: 'OBSOLETE' satisfies ResolutionReason, updatedAt: now })
-    .where(and(
-      eq(toProcessActions.accountId, accountId), eq(toProcessActions.targetType, 'DOCUMENT'), eq(toProcessActions.targetId, fileId),
-      eq(toProcessActions.fieldKey, interventionKey(dataKey)), isNull(toProcessActions.resolvedAt),
-    ))
-    .returning({ id: toProcessActions.id });
-  if (closed.length) {
-    await db.insert(toProcessActionEvents).values(closed.map((a) => ({
-      actionId: a.id, accountId, event: 'OBSOLETE', actorUserId: null, targetType: 'DOCUMENT', targetId: fileId,
-      fieldKey: interventionKey(dataKey), details: { ruleCode: INTERVENTION_RULE_CODE, ...details }, createdAt: now,
-    })));
-  }
-  return closed.map((a) => a.id);
+  // Lot 75I (E) : fermeture et événement d'audit dans UNE transaction.
+  return db.transaction(async (tx) => {
+    const closed = await tx.update(toProcessActions)
+      .set({ resolvedAt: now, resolutionReason: 'OBSOLETE' satisfies ResolutionReason, updatedAt: now })
+      .where(and(
+        eq(toProcessActions.accountId, accountId), eq(toProcessActions.targetType, 'DOCUMENT'), eq(toProcessActions.targetId, fileId),
+        eq(toProcessActions.fieldKey, interventionKey(dataKey)), isNull(toProcessActions.resolvedAt),
+      ))
+      .returning({ id: toProcessActions.id });
+    if (closed.length) {
+      await tx.insert(toProcessActionEvents).values(closed.map((a) => ({
+        actionId: a.id, accountId, event: 'OBSOLETE', actorUserId: null, targetType: 'DOCUMENT', targetId: fileId,
+        fieldKey: interventionKey(dataKey), details: { ruleCode: INTERVENTION_RULE_CODE, ...details }, createdAt: now,
+      })));
+    }
+    return closed.map((a) => a.id);
+  });
 }
 
 type Action = typeof toProcessActions.$inferSelect;

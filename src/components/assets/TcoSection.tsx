@@ -18,6 +18,11 @@
  *     Lot 68 : seulement ce qui est utile pour CE bien (non qualifiée, devise,
  *     non ventilée, prévision…) ; les justificatifs repris par une dépense
  *     consolidée s'ouvrent depuis la ligne retenue.
+ *   · Lot 75D : détail paginé — nombre de lignes présentées / total TOUJOURS
+ *     affiché quand la liste est abrégée, « Afficher les lignes suivantes »
+ *     (chargement complémentaire ; totaux toujours exacts) ; montant inconnu
+ *     jamais affiché « 0 € » ; rapprochement incertain signalé « à vérifier » ;
+ *     coût d'acquisition « non renseigné » ou « sans objet ».
  *
  * Aucun bouton « Modifier » du total : les corrections se font sur les
  * sources (fiche, document). Standard : présentation verrouillée, AUCUN
@@ -100,6 +105,8 @@ function LigneDepense({ l, t }: { l: Line; t: TcoDto }) {
   const retenue = RETENUE.has(l.status);
   const montant = retenue ? l.includedCents : l.eurCents;
   const signe = l.kind && NEGATIVE.has(l.kind) ? '− ' : '';
+  // Lot 75D (D) : montant inconnu — jamais « 0,00 € ».
+  const valeur = l.amountUnknown ? 'Montant inconnu' : montant != null ? `${signe}${eur(montant)}` : minor(l.amountMinor, l.currency);
   return (
     <div className="py-2 text-sm" data-tco-line={l.id} data-tco-line-status={l.status}>
       <div className="flex items-start justify-between gap-3">
@@ -111,14 +118,16 @@ function LigneDepense({ l, t }: { l: Line; t: TcoDto }) {
             {l.operationLabel && l.source !== 'OPERATION' ? ` · ${l.operationLabel}` : ''}
           </p>
         </div>
-        <span className="shrink-0 tabular-nums">{montant != null ? `${signe}${eur(montant)}` : minor(l.amountMinor, l.currency)}</span>
+        <span className={`shrink-0 tabular-nums ${l.amountUnknown ? 'text-muted-foreground' : ''}`}>{valeur}</span>
       </div>
       {!retenue && (
         <p className="text-xs text-muted-foreground mt-0.5">
           {t.lineStatusLabels[l.status]}{l.reason ? ` — ${t.lineReasonLabels[l.reason]}` : ''}
         </p>
       )}
-      {l.note && <p className="text-xs text-muted-foreground mt-0.5">{l.note}</p>}
+      {l.uncertain
+        ? <p className="text-xs text-[color:var(--attention-on-soft)] mt-0.5" data-tco-line-uncertain>À vérifier : {l.note}</p>
+        : l.note && <p className="text-xs text-muted-foreground mt-0.5">{l.note}</p>}
       <div className="mt-0.5 flex flex-wrap gap-x-3 gap-y-0.5">
         <Justificatif fileId={l.fileId} />
         {/* Lot 68 : justificatifs repris par cette dépense consolidée (plus listés dans les non retenues). */}
@@ -140,6 +149,9 @@ export function TcoSection({ assetId, readOnly = false, defaultOpen = false }: P
   useEffect(() => { if (!form) setAmountError(false); }, [form]);
   const [saving, setSaving] = useState(false);
   const [refresh, setRefresh] = useState(0);
+  // Lot 75D (J) : lignes des pages suivantes (chargement complémentaire), remises à zéro à chaque recalcul.
+  const [extra, setExtra] = useState<Line[]>([]);
+  const [loadingMore, setLoadingMore] = useState(false);
 
   // Recalcul à chaque ouverture et après toute modification de la fiche (même événement que les autres sections).
   useEffect(() => {
@@ -157,6 +169,7 @@ export function TcoSection({ assetId, readOnly = false, defaultOpen = false }: P
     try {
       const r = await apiClient.get<{ tco: TcoDto; canEdit: boolean }>(`/api/assets/${assetId}/tco`);
       setData(r.tco);
+      setExtra([]);
       setCanEdit(!!r.canEdit && !readOnly);
       setLocked(false);
     } catch (e) {
@@ -168,6 +181,23 @@ export function TcoSection({ assetId, readOnly = false, defaultOpen = false }: P
   }, [assetId, readOnly]);
 
   useEffect(() => { if (open) void load(); }, [open, load, refresh]);
+
+  const loadMore = async () => {
+    if (!data) return;
+    setLoadingMore(true);
+    try {
+      const offset = data.linesOffset + data.lines.length + extra.length;
+      const r = await apiClient.get<{ tco: TcoDto }>(`/api/assets/${assetId}/tco?linesOffset=${offset}`);
+      // Données recalculées entre-temps : on repart de la première page (aucun mélange de deux calculs).
+      if (r.tco.linesTotal !== data.linesTotal || r.tco.summary.cumulativeCostCents !== data.summary.cumulativeCostCents) { void load(); return; }
+      const vus = new Set([...data.lines, ...extra].map((l) => l.id));
+      setExtra((prev) => [...prev, ...r.tco.lines.filter((l) => !vus.has(l.id))]);
+    } catch {
+      toast.error('Chargement des lignes suivantes impossible');
+    } finally {
+      setLoadingMore(false);
+    }
+  };
 
   const saveBudget = async () => {
     if (!form) return;
@@ -205,12 +235,15 @@ export function TcoSection({ assetId, readOnly = false, defaultOpen = false }: P
   const t = data;
   const catLabels = t?.usageLabels.categories ?? ({} as TcoDto['usageLabels']['categories']);
   const perLabels = t?.usageLabels.periodicities ?? ({} as TcoDto['usageLabels']['periodicities']);
-  const retenues = t ? t.lines.filter((l) => RETENUE.has(l.status)) : [];
+  const toutes = t ? [...t.lines, ...extra] : [];
+  const affichees = toutes.length;
+  const restantes = t ? Math.max(0, t.linesTotal - t.linesOffset - affichees) : 0;
+  const retenues = toutes.filter((l) => RETENUE.has(l.status));
   const ajustements = retenues.filter((l) => l.kind && NEGATIVE.has(l.kind));
   const depenses = retenues.filter((l) => !(l.kind && NEGATIVE.has(l.kind)) && l.kind !== 'PROCEED');
   // Lot 68 : le serveur ne transmet que les lignes utiles pour CE bien (`tcoUserView`) — ni « autre bien », ni
   // justificatif déjà porté par une dépense consolidée affichée (tous restent au diagnostic BO). Garde défensive.
-  const ecartees = t ? t.lines.filter((l) => !RETENUE.has(l.status) && l.status !== 'OUT_OF_SCOPE') : [];
+  const ecartees = toutes.filter((l) => !RETENUE.has(l.status) && l.status !== 'OUT_OF_SCOPE');
 
   return (
     <div id="asset-section-tco" className="border border-border rounded-lg overflow-hidden" data-asset-tco>
@@ -257,7 +290,7 @@ export function TcoSection({ assetId, readOnly = false, defaultOpen = false }: P
                   {t.period.endSource === 'TODAY' ? 'à aujourd’hui' : `au ${dateFr(t.period.end)} (cession)`}
                 </p>
                 <div className="mt-3 divide-y divide-border">
-                  <Ligne label="Coût d’acquisition" value={eur(t.summary.acquisitionCents)} />
+                  <Ligne label="Coût d’acquisition" value={t.summary.acquisitionStatus === 'MISSING' ? 'non renseigné' : t.summary.acquisitionStatus === 'NOT_APPLICABLE' ? 'sans objet (aucun achat)' : eur(t.summary.acquisitionCents)} muted={t.summary.acquisitionStatus !== 'DOCUMENTED'} />
                   <Ligne label="Dépenses complémentaires" value={eur(t.summary.additionalCostsCents)} />
                   {t.reductionsCents + t.refundsCents + t.indemnitiesCents > 0 && (
                     <Ligne label="Avoirs, remboursements et indemnités" value={`− ${eur(t.reductionsCents + t.refundsCents + t.indemnitiesCents)}`} />
@@ -284,7 +317,21 @@ export function TcoSection({ assetId, readOnly = false, defaultOpen = false }: P
                 </div>
               </Bloc>
 
-              <Bloc title={`Dépenses retenues (${depenses.length})`} data-tco-retained>
+              {/* Lot 75D (J) : liste abrégée — toujours signalée, même si elle ne contient que des dépenses retenues. */}
+              {t.linesTruncated && (
+                <div className="rounded-lg border border-border p-3 text-xs space-y-2" data-tco-lines-truncated>
+                  <p className="text-muted-foreground" data-tco-lines-count>
+                    {affichees} ligne(s) présentée(s) sur {t.linesTotal} ({t.retainedLinesTotal} retenue(s), {t.otherLinesTotal} non retenue(s)). Les totaux portent sur toutes les lignes.
+                  </p>
+                  {restantes > 0 && (
+                    <Button variant="outline" size="sm" className="w-full sm:w-auto" onClick={() => void loadMore()} disabled={loadingMore} data-tco-load-more>
+                      {loadingMore && <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" />}Afficher les lignes suivantes ({restantes})
+                    </Button>
+                  )}
+                </div>
+              )}
+
+              <Bloc title={`Dépenses retenues (${depenses.length}${t.linesTruncated ? ' · liste abrégée' : ''})`} data-tco-retained>
                 <div className="divide-y divide-border">
                   {depenses.length === 0 && <p className="text-sm text-muted-foreground py-1.5">Aucune dépense retenue.</p>}
                   {depenses.map((l) => <LigneDepense key={l.id} l={l} t={t} />)}
@@ -386,8 +433,7 @@ export function TcoSection({ assetId, readOnly = false, defaultOpen = false }: P
               {/* ── Non retenues, non attribuées ── */}
               {ecartees.length > 0 && (
                 <Bloc title={`Dépenses non retenues ou non attribuées (${ecartees.length})`} data-tco-excluded>
-                  <div className="divide-y divide-border">{ecartees.slice(0, 100).map((l) => <LigneDepense key={l.id} l={l} t={t} />)}</div>
-                  {t.linesTotal > t.lines.length && <p className="text-xs text-muted-foreground">Liste abrégée : {t.linesTotal} éléments examinés au total.</p>}
+                  <div className="divide-y divide-border">{ecartees.map((l) => <LigneDepense key={l.id} l={l} t={t} />)}</div>
                 </Bloc>
               )}
 

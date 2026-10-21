@@ -6,31 +6,37 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { buildElementCandidates, decideElementDeterministic } from '../document-element-link';
+import * as elementLink from '../document-element-link';
+import { matchDocumentToEquipments, type EquipmentProfile } from '@/services/equipment/document-equipment-matching';
 import { classifyEvaluation, EVALUATION_MODES } from '../open-actions.service';
 
-const eq = (id: number, name: string, over: Record<string, unknown> = {}) => ({
-  id, name, type: null, category: null, brand: null, model: null, serialNumber: null, room: null, ...over,
+const eq = (id: number, name: string, over: Partial<EquipmentProfile> = {}): EquipmentProfile => ({
+  id, name, assetId: 1, assetName: null, type: null, category: null, brand: null, model: null, serialNumber: null, room: null, features: [], ...over,
+});
+const doc = (title: string, sourceTexts: string[] = []) => ({
+  fileId: 1, title, typeCode: null, description: null, supplier: null, documentDate: null, amountCents: null,
+  assetIds: [1], assetNames: [''], facts: [], sourceTexts,
 });
 
-describe('T3-OPEN-E02 — Candidate Builder élément (LINK-ELT)', () => {
-  it('n° de série lu dans les données persistées → candidat unique, appliqué', () => {
-    const c = buildElementCandidates(
-      { title: 'Facture', supplier: null, description: null, texts: ['N° série : PAC 778899'] },
-      [eq(1, 'Chaudière'), eq(2, 'Pompe à chaleur', { serialNumber: 'PAC-778899' })],
-    );
-    expect(decideElementDeterministic(c)).toMatchObject({ equipmentId: 2, method: 'SERIAL_NUMBER' });
+// Lot 75G (écart C) : le Candidate Builder élément est remplacé par les règles
+// communes (`document-equipment-matching`) ; mêmes cas, règles unifiées.
+describe('T3-OPEN-E02 / RDE-C — LINK-ELT : règles communes', () => {
+  it('plus de moteur parallèle : le module n’exporte plus le Candidate Builder ni la décision par type', () => {
+    expect(Object.keys(elementLink)).toEqual(['resolveDocumentElementLink']);
   });
-  it('nom dans le titre → appliqué ; deux candidats forts → aucun choix déterministe (arbitrage)', () => {
-    const un = buildElementCandidates({ title: 'Entretien Vitodens 200', supplier: null, description: null, texts: [] }, [eq(1, 'Vitodens 200'), eq(2, 'Radiateur')]);
-    expect(decideElementDeterministic(un)?.equipmentId).toBe(1);
-    const deux = buildElementCandidates({ title: 'Radiateur salon et radiateur chambre', supplier: null, description: null, texts: [] },
-      [eq(1, 'Radiateur salon'), eq(2, 'Radiateur chambre')]);
-    expect(deux.filter((x) => x.score >= 0.7)).toHaveLength(2);
-    expect(decideElementDeterministic(deux)).toBeNull();
+  it('n° de série lu dans les données persistées (unité source) → équipement unique', () => {
+    const r = matchDocumentToEquipments(doc('Facture', ['N° série : PAC 778899']), [eq(1, 'Chaudière'), eq(2, 'Pompe à chaleur', { serialNumber: 'PAC-778899' })]);
+    expect(r.links.map((l) => [l.equipmentId, l.method])).toEqual([[2, 'SERIAL_NUMBER']]);
+  });
+  it('nom dans le titre → rattaché ; deux équipements désignés distinctement → deux liens (document multi-équipements)', () => {
+    expect(matchDocumentToEquipments(doc('Entretien Vitodens 200'), [eq(1, 'Vitodens 200'), eq(2, 'Radiateur')]).links.map((l) => l.equipmentId)).toEqual([1]);
+    expect(matchDocumentToEquipments(doc('Radiateur salon et radiateur chambre'), [eq(1, 'Radiateur salon'), eq(2, 'Radiateur chambre')]).links.map((l) => l.equipmentId)).toEqual([1, 2]);
+  });
+  it('type seul dans le titre : jamais candidat (ancienne règle TYPE_MATCH supprimée)', () => {
+    expect(matchDocumentToEquipments(doc('Facture chaudière murale'), [eq(1, 'Appareil cuisine', { type: 'chaudière murale' })]).status).toBe('NONE');
   });
   it('aucune correspondance → aucun candidat (la carte reste ouverte)', () => {
-    expect(buildElementCandidates({ title: 'Assurance habitation', supplier: null, description: null, texts: [] }, [eq(1, 'Tondeuse')])).toEqual([]);
+    expect(matchDocumentToEquipments(doc('Assurance habitation'), [eq(1, 'Tondeuse')]).status).toBe('NONE');
   });
 });
 

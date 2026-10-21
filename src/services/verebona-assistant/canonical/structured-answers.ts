@@ -488,14 +488,19 @@ function PAID_STRIP_SOURCE(): RegExp {
  */
 export function structuredScopeBarrier(
   strategy: CanonicalStrategy, message: string, assetNames: readonly string[], served: readonly string[] = [],
+  /** Lot 75J : formulations réellement consommées par la stratégie (phrase du champ lu). */
+  consumedPhrases: readonly string[] = [],
 ): { semanticScopeResolved: boolean; unresolvedSemanticTerms: string[] } {
   const d = STRATEGY_SCOPE[strategy];
-  if (d.scope === 'structural') return { semanticScopeResolved: true, unresolvedSemanticTerms: [] };
+  // Lot 75J (#419 R06) : une stratégie `structural` n'est plus réputée résolue par sa seule
+  // catégorie. Sa phrase du registre (consommée par `findReadableFields`) et la donnée servie
+  // (libellé du champ, bien) consomment le sujet ; tout AUTRE sujet significatif la bloque.
+  const parDonnees = d.scope === 'designated' || d.scope === 'structural';
   const consumed = [...expenseThemeWords(message), ...MOTS_DEPENSE, ...Object.values(EXPENSE_THEME_LABELS), ...(d.vocabulary ? message.match(d.vocabulary) ?? [] : []),
     // Stratégie DÉSIGNÉE : les données réellement servies consomment le sujet qu'elles portent.
-    ...(d.scope === 'designated' ? served : [])];
+    ...(parDonnees ? served : []), ...consumedPhrases];
   // Même correspondance que la lecture des données (« toit » → « toiture »).
-  const servi = d.scope === 'designated' ? served.join(' ') : '';
+  const servi = parDonnees ? served.join(' ') : '';
   const terms = semanticResidue(message, { assetNames, consumed }).filter((t) => !servi || !textMatchesTerms(servi, [t]));
   return { semanticScopeResolved: terms.length === 0, unresolvedSemanticTerms: terms };
 }
@@ -514,7 +519,8 @@ export async function tryCanonicalStructured(p: {
   const r = await tryCanonicalStructuredInner({ ...p, resolveScope: async (t) => (dernier = await p.resolveScope(t)) });
   if (!r || !('strategy' in r)) return r;
   const assets = (dernier as ScopeLike | null)?.assets ?? [];
-  const b = structuredScopeBarrier(r.strategy, p.message, assets.map((a) => a.name), [r.answer, ...r.sources.map((x) => x.title ?? '')]);
+  const champ = r.strategy === 'structured.asset_field' ? (findReadableField(p.message) ?? purchaseQuestion(p.message)) : null;
+  const b = structuredScopeBarrier(r.strategy, p.message, assets.map((a) => a.name), [r.answer, ...r.sources.map((x) => x.title ?? '')], champ ? [champ.phrase] : []);
   if (b.semanticScopeResolved) return r;
   return { scopeUnresolved: { strategyCandidate: r.strategy, terms: b.unresolvedSemanticTerms, assetIds: assets.map((a) => a.id) } };
 }
@@ -533,6 +539,17 @@ async function tryCanonicalStructuredInner(p: {
     semanticResidue(message, { assetNames: scope.assets.map((a) => a.name), consumed: [...expenseThemeWords(message), ...MOTS_DEPENSE, ...consumed] });
   const nonResolu = (strategyCandidate: CanonicalStrategy, terms: string[], scope: ScopeLike): ScopeUnresolved =>
     ({ scopeUnresolved: { strategyCandidate, terms, assetIds: scope.assets.map((a) => a.id) } });
+  /**
+   * Lot 75J (#419 R06) — barrière évaluée AVANT la lecture d'une stratégie à
+   * portée `semantic` (son verdict ne dépend pas des données servies) : un
+   * sujet significatif non consommé renvoie à T2 sans lecture ni calcul
+   * évitable. Même verdict que la barrière finale.
+   */
+  const avantLecture = (strategy: CanonicalStrategy, scope: ScopeLike): ScopeUnresolved | null => {
+    if (STRATEGY_SCOPE[strategy].scope !== 'semantic') return null;
+    const b = structuredScopeBarrier(strategy, message, scope.assets.map((a) => a.name));
+    return b.semanticScopeResolved ? null : nonResolu(strategy, b.unresolvedSemanticTerms, scope);
+  };
 
   // ── Informations manquantes (T2-04) ────────────────────────────────────
   if (MISSING.test(m) && port.listMissingInformation) {
@@ -589,6 +606,8 @@ async function tryCanonicalStructuredInner(p: {
     const reste = message.replace(CLAIM_STRIP, ' ');
     const scope = await p.resolveScope(reste);
     if (!scope.unresolved) {
+      const pre = avantLecture('structured.claim_status', scope);
+      if (pre) return pre;
       const tous = await port.readClaims(accountId, scope.assets.map((a) => a.id));
       // Lot 49 : un sinistre PRÉCIS (« le dégât des eaux ») est cherché dans
       // le texte des sinistres réels ; rien ne répond → T2, jamais la liste.
@@ -606,6 +625,8 @@ async function tryCanonicalStructuredInner(p: {
     if (scope.ambiguous) return { ambiguous: scope.assets, reason: 'HISTORY_MULTIPLE_ASSETS' };
     if (!scope.unresolved && scope.assets.length === 1) {
       const a = scope.assets[0];
+      const pre = avantLecture('structured.operation_history', scope);
+      if (pre) return pre;
       const h = await port.readAssetHistory(accountId, a.id, { assetName: a.name });
       const theme = expenseThemeOf(message);
       // Lot 49 : un objet précis (« la chaudière ») filtre l'historique sur le
@@ -627,6 +648,8 @@ async function tryCanonicalStructuredInner(p: {
     if (scope.ambiguous) return { ambiguous: scope.assets, reason: 'CONTRACT_MULTIPLE_ASSETS' };
     if (!scope.unresolved) {
       const a = scope.assets.length === 1 ? scope.assets[0] : null;
+      const pre = avantLecture('structured.contracts', scope);
+      if (pre) return pre;
       const contrats = await port.readContracts(accountId, scope.assets.map((x) => x.id), { assetName: a?.name ?? null });
       const theme = expenseThemeOf(message);
       // Lot 49 : un contrat PRÉCIS (« mon contrat internet ») est cherché dans
@@ -777,6 +800,10 @@ async function tryCanonicalStructuredInner(p: {
     if (scope.ambiguous) return { ambiguous: scope.assets, reason: 'FIELD_MULTIPLE_ASSETS' };
     if (scope.unresolved || scope.assets.length !== 1) return null;
     const a = scope.assets[0];
+    // Lot 75J (#419 R06) : un sujet significatif que ni la phrase du champ ni son libellé ne
+    // consomment (« le kilométrage de la Polo pour le contrat Leasys ») renvoie à T2 AVANT lecture.
+    const pre = structuredScopeBarrier('structured.asset_field', message, [a.name], [champ.def.label], [champ.phrase]);
+    if (!pre.semanticScopeResolved) return nonResolu('structured.asset_field', pre.unresolvedSemanticTerms, scope);
     const r = await port.readAssetField(accountId, a.id, champ.def.key);
     // Non renseigné : les documents (niveau 2) peuvent encore porter la valeur.
     if (!r || r.value === null || r.value === undefined || r.display === null) return null;

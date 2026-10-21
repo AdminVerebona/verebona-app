@@ -15,6 +15,8 @@ import {
   countItemsByEquipment, filterItemsByEquipment, listEquipmentsOfAssets,
 } from '@/services/equipments/equipment-filter-scope';
 import { isEquipmentFilterActive, type EquipmentFacet } from '@/lib/filters/equipment-filter';
+import { selectedRoomId, type RoomFacet } from '@/lib/filters/room-filter';
+import { agendaItemIdsByRoom, listRoomsOfAssets, type AssetRoom } from '@/services/rooms/room-scope.service';
 
 export interface AgendaQueryParams {
   accountId: number;
@@ -31,6 +33,13 @@ export interface AgendaQueryParams {
    * équipement. Voir `lib/filters/equipment-filter.ts`.
    */
   equipment?: string;
+  /**
+   * Lot 75 (75B) — filtre « Pièce » (identifiant ; absent = toutes) :
+   * échéances liées à la pièce, à ses équipements ou à ses documents (directs
+   * ou via un équipement). Sans effet sans `assetIds`. Voir
+   * `services/rooms/room-scope.service.ts`.
+   */
+  piece?: string;
 }
 
 export interface AgendaItemFull {
@@ -401,43 +410,87 @@ export async function getUpcomingDeadlines(
 }
 
 export async function getAgendaItems(params: AgendaQueryParams): Promise<AgendaItemFull[]> {
-  const items = await getAgendaItemsInScope(params);
-  if (!params.assetIds?.length || !isEquipmentFilterActive(params.equipment)) return items;
-  const equipmentIds = (await listEquipmentsOfAssets(params.accountId, params.assetIds)).map((e) => e.id);
-  return filterItemsByEquipment(items, params.equipment, equipmentIds);
+  return (await queryAgenda(params, false)).items;
 }
 
 /**
  * Lot 71 (71C) — « Mon agenda » : éléments ET options du filtre Équipement
  * (équipements des biens retenus, comptés sur les éléments retenus par les
- * AUTRES filtres — période, dates, annulés). Facette absente sans bien
+ * AUTRES filtres — période, dates, annulés, pièce). Facette absente sans bien
  * retenu ou sans équipement : le filtre est alors masqué.
+ *
+ * Lot 75 (75B) : rend aussi les options du filtre Pièce (`roomFacet`), avec
+ * leurs compteurs — échéances directes + indirectes, dédupliquées, comptées
+ * sous le filtre Équipement courant (Bien + Pièce + Équipement = intersection).
  */
 export async function getAgendaItemsWithEquipmentFacet(
   params: AgendaQueryParams,
-): Promise<{ items: AgendaItemFull[]; equipmentFacet: EquipmentFacet | null }> {
-  if (!params.assetIds?.length || params.fileId) {
-    return { items: await getAgendaItems(params), equipmentFacet: null };
-  }
-  const [inScope, assetEquipments] = await Promise.all([
-    getAgendaItemsInScope(params),
-    listEquipmentsOfAssets(params.accountId, params.assetIds),
-  ]);
-  if (assetEquipments.length === 0) return { items: inScope, equipmentFacet: null };
-  const ids = assetEquipments.map((e) => e.id);
-  const counts = countItemsByEquipment(inScope, ids);
-  return {
-    items: filterItemsByEquipment(inScope, params.equipment, ids),
-    equipmentFacet: {
+): Promise<{ items: AgendaItemFull[]; equipmentFacet: EquipmentFacet | null; roomFacet: RoomFacet | null }> {
+  return queryAgenda(params, true);
+}
+
+/**
+ * Pièces des biens retenus et leurs échéances (résolution centrale), ou
+ * `null` hors périmètre de biens (document, compte entier).
+ */
+async function loadRoomScope(params: AgendaQueryParams): Promise<{ rooms: AssetRoom[]; byRoom: Map<number, Set<number>> } | null> {
+  if (!params.assetIds?.length || params.fileId) return null;
+  const rooms = await listRoomsOfAssets(params.accountId, params.assetIds);
+  if (rooms.length === 0) return { rooms, byRoom: new Map() };
+  return { rooms, byRoom: await agendaItemIdsByRoom(params.accountId, rooms.map((r) => r.id)) };
+}
+
+async function queryAgenda(
+  params: AgendaQueryParams,
+  withFacets: boolean,
+): Promise<{ items: AgendaItemFull[]; equipmentFacet: EquipmentFacet | null; roomFacet: RoomFacet | null }> {
+  const roomScope = await loadRoomScope(params);
+  // Lot 75B : une échéance liée à une PIÈCE du bien (directement, par un
+  // équipement ou un document de la pièce) appartient au bien, comme celles
+  // de ses équipements (lot 71).
+  const roomItemIds = roomScope ? [...new Set([...roomScope.byRoom.values()].flatMap((v) => [...v]))] : [];
+  const inScope = await getAgendaItemsInScope(params, roomItemIds);
+
+  // Filtre Pièce : pièce des biens retenus, sinon aucun résultat (lien abîmé).
+  const pieceId = roomScope ? selectedRoomId(params.piece) : null;
+  const roomSet = pieceId === null ? null : (roomScope!.byRoom.get(pieceId) ?? new Set<number>());
+  const inRoom = roomSet ? inScope.filter((i) => roomSet.has(i.id)) : inScope;
+
+  const equipmentActive = isEquipmentFilterActive(params.equipment);
+  const assetEquipments = params.assetIds?.length && (equipmentActive || (withFacets && !params.fileId))
+    ? await listEquipmentsOfAssets(params.accountId, params.assetIds)
+    : [];
+  const eqIds = assetEquipments.map((e) => e.id);
+  const items = filterItemsByEquipment(inRoom, params.equipment, eqIds);
+  if (!withFacets) return { items, equipmentFacet: null, roomFacet: null };
+
+  let equipmentFacet: EquipmentFacet | null = null;
+  if (assetEquipments.length > 0 && !params.fileId) {
+    const counts = countItemsByEquipment(inRoom, eqIds);
+    equipmentFacet = {
       all: counts.all,
       assetOnly: counts.assetOnly,
       items: assetEquipments.map((e) => ({ ...e, count: counts.byEquipment.get(e.id) ?? 0 })),
-    },
-  };
+    };
+  }
+  let roomFacet: RoomFacet | null = null;
+  if (roomScope && roomScope.rooms.length > 0) {
+    const sousEquipement = filterItemsByEquipment(inScope, params.equipment, eqIds);
+    roomFacet = {
+      items: roomScope.rooms.map((r) => {
+        const set = roomScope.byRoom.get(r.id) ?? new Set<number>();
+        return { ...r, count: sousEquipement.filter((i) => set.has(i.id)).length };
+      }),
+    };
+  }
+  return { items, equipmentFacet, roomFacet };
 }
 
-/** Éléments retenus par tous les filtres SAUF le filtre Équipement. */
-async function getAgendaItemsInScope(params: AgendaQueryParams): Promise<AgendaItemFull[]> {
+/**
+ * Éléments retenus par tous les filtres SAUF les filtres Équipement et Pièce.
+ * `extraIds` (lot 75B) : éléments rattachés aux pièces des biens retenus.
+ */
+async function getAgendaItemsInScope(params: AgendaQueryParams, extraIds: readonly number[] = []): Promise<AgendaItemFull[]> {
   const { accountId, assetIds, fileId, period, includeCancelled = false, month, year, includeUndated } = params;
   const now = new Date();
   const today = now.toISOString().slice(0, 10);
@@ -474,7 +527,7 @@ async function getAgendaItemsInScope(params: AgendaQueryParams): Promise<AgendaI
         .innerJoin(assets, and(eq(assets.id, equipments.assetId), eq(assets.accountId, accountId)))
         .where(inArray(equipments.assetId, assetIds)),
     ]);
-    const ids = [...new Set([...linkedIds, ...equipmentLinkedIds].map(r => r.id))];
+    const ids = [...new Set([...linkedIds, ...equipmentLinkedIds].map(r => r.id).concat(extraIds))];
     if (ids.length === 0) return [];
     rows = await db.select().from(agendaItems).where(
       and(eq(agendaItems.accountId, accountId), inArray(agendaItems.id, ids))

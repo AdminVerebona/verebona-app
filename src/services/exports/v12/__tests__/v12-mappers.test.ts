@@ -242,7 +242,7 @@ describe('Modes PDF / ZIP (SEL-GEN-002/005, ALT-002)', () => {
     const { plan, text } = render('DOSSIER_COMPLET', src, choices);
     expect(plan.documents[0].mode).toBe('ZIP');
     expect(text).toContain('Joint au ZIP');
-    expect(text).toContain('/documents/notice-chaudiere.docx');
+    expect(text).toContain('/documents/Notice chaudière.docx'); // L75L : nom affiché
   });
 
   it('fichier manquant ou illisible : exclu partout (SEL-GEN-006, ZIP-008)', () => {

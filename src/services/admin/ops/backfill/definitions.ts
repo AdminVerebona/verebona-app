@@ -176,7 +176,10 @@ export const BACKFILL_DEFINITIONS: readonly BackfillDefinition[] = [
       + 'saisie ou validée par l’utilisateur n’est jamais modifiée (comptée « préservée »). Les documents sont ensuite rapprochés '
       + 'rétroactivement des équipements de leur bien (n° de série, modèle, désignation, cible T1) — un cas ambigu reste rattaché au bien '
       + '(carte « À traiter » à l’application). La simulation n’écrit rien ; l’application est tracée ligne à ligne avec le motif. '
-      + 'Rejoué, il ne change rien.',
+      + 'Rejoué, il ne change rien. Lot 75G : un document peut couvrir plusieurs acquisitions légitimes — seules les erreurs à provenance '
+      + 'DÉMONTRÉE sont corrigées (équipement du même bien, même valeur, aucune acquisition du bien dans le document) ; les autres situations, '
+      + 'et les autres attributs propres (marque, modèle, n° de série, garanties, valeur estimée) identiques au bien, sont signalés comme '
+      + 'suspects sans modification. Tous les documents sont examinés (par pages) ; une exécution interrompue est reprise au passage suivant.',
     actions: ['simulate', 'apply'],
     accountFilter: true,
   },

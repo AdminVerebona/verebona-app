@@ -61,6 +61,7 @@ I4 — Une date issue du seul titre (`TITLE_ONLY`) est un indice, pas une preuve
 I5 — `dataNeeded` dit si la donnée demandée est nécessaire à un besoin réel (suivi d’un contrat en cours, préavis, renouvellement) ; un document ancien sans enjeu actuel n’en a pas besoin.
 I6 — `timing` : NOW (agir maintenant), LATER (plus tard : rien à faire aujourd’hui), NONE (aucune intervention). `actBy` : date limite d’action lue dans la preuve, sinon null. `evidence` : le passage de la preuve fournie qui fonde ta décision, recopié tel quel, sinon null. `justification` : pourquoi solliciter ou non l’utilisateur ; `consequence` : ce qui arrive sans intervention, sinon null.
 I7 — Si `needed` = `no` : `kind`, `action` et `actBy` = null, `timing` = NONE. Si `needed` = `yes` : `kind`, `action` renseignés et `timing` = NOW ou LATER.
+I8 — Si `toProcessAssessment.knownDate` est présent, la date est déjà connue de façon fiable (situation `PAST_DEADLINE` : échéance passée ; `FUTURE_DEADLINE` : échéance à venir) : ne demande jamais de la fournir (jamais PROVIDE_INFORMATION). Dis seulement si une obligation réelle de l’utilisateur reste attendue, avant ou après cette date (restituer, résilier avant une reconduction, payer, exécuter une obligation…), en t’appuyant sur `toProcessAssessment.clauses` (clauses lues dans le document, même éloignées de la date) ; `evidence` recopie alors le passage de la clause.
 
 VÉRIFIER UNE RÉALISATION (task = VERIFY_COMPLETION)
 

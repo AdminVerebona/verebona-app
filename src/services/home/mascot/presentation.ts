@@ -9,9 +9,9 @@ import type { T6Message } from './t6-contract';
 import type {
   MascotDegradedSource, MascotDuoInvite, MascotParagraph, MascotPresentation, MascotSecondary, MascotSubject, MascotTodoBlock,
 } from './types';
-import { CLEAR_TEXT, DEGRADED_NOTICE } from './types';
-import { parisDay, presentationState, tileFor, type TileOptions } from './bubble';
-import { hasCountingIntro, stripCountingIntro } from './counting-intro';
+import { CLEAR_TEXT, DEGRADED_NOTICE, MASCOT_PRESENTATION_REVISION } from './types';
+import { parisDay, presentationState, structuredSubjectText, tileFor, type TileOptions } from './bubble';
+import { displayableText, hasCountingIntro } from './counting-intro';
 
 /**
  * Empreinte du contexte métier affiché : sujets, faits, actions, secondaires
@@ -76,6 +76,8 @@ export function buildPresentation(p: {
   const computedAt = (p.now ?? new Date()).toISOString();
   const base = {
     schemaVersion: 'mascot-presentation-v1' as const,
+    // Lot 75E : révision des règles d'affichage (conservation côté client).
+    presentationRevision: MASCOT_PRESENTATION_REVISION,
     contextHash,
     secondaries: p.secondaries,
     degradedNotice: degradedSources.length > 0 ? DEGRADED_NOTICE : null,
@@ -126,18 +128,27 @@ export function buildPresentation(p: {
     // (« Un sujet mérite votre attention aujourd'hui : … »), quelle que soit
     // sa provenance, n'est jamais servi : le sujet reprend son texte de
     // secours (lui-même débarrassé de toute introduction).
+    // Lot 75E : même classificateur (introduction fiable, douteuse ou non
+    // séparable : toutes rejetées) ; le texte de secours est lui-même
+    // contrôlé, puis — s'il était inutilisable — les données structurées du
+    // sujet (intitulé, bien, date) : jamais un paragraphe vide.
     const m0 = p.messages?.[i];
-    const m = m0 && !hasCountingIntro(m0.text) ? m0 : undefined;
+    const m = m0 && m0.text.trim() && !hasCountingIntro(m0.text) ? m0 : undefined;
+    const tile = tileFor(s, p.today ?? parisDay(p.now), p.tiles);
+    const secours = displayableText([s.fallbackText]);
+    const text = m ? m.text : secours || structuredSubjectText({ tile, actions: s.actions });
     return {
       subjectId: s.subjectId,
       sourceCode: s.sourceCode,
       occurrenceKey: s.occurrenceKey,
-      text: m ? m.text : stripCountingIntro(s.fallbackText),
-      highlight: m ? m.highlight : (s.allowedHighlight && s.fallbackText.includes(s.allowedHighlight) ? s.allowedHighlight : null),
+      text,
+      highlight: m ? m.highlight : (s.allowedHighlight && text.includes(s.allowedHighlight) ? s.allowedHighlight : null),
       actions: s.actions,
-      tile: tileFor(s, p.today ?? parisDay(p.now), p.tiles),
+      tile,
       // Lot 60 : commandes de rappel de la carte (échéance précise).
       ...(s.reminder ? { reminder: s.reminder } : {}),
+      // Lot 75E : secours transmis quand le texte affiché est celui de T6.
+      ...(m && secours && secours !== m.text ? { fallbackText: secours } : {}),
     };
   });
   return withState({

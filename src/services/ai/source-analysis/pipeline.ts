@@ -22,9 +22,13 @@
  */
 import { isDefinitiveGatewayFailure, userFacingFailReason, MAX_ANALYSIS_RETRIES } from './failure-policy';
 import { buildKnowledgeFromSourceAnalysis } from '../knowledge/document-knowledge';
-import { persistDocumentKnowledge } from '../knowledge/document-knowledge.service';
-import { T1ExecutionRecorder, writeT1Report } from '../execution-report/t1-report';
-import { ensureRawExtract, markPersistence, markStructuring, persistenceOutcome } from './raw-extract/raw-extract.service';
+import { persistDocumentKnowledgeDetailed } from '../knowledge/document-knowledge.service';
+import { T1ExecutionRecorder, collectAttemptTraces, writeT1Report } from '../execution-report/t1-report';
+import {
+  ensureRawExtract, markOcr, markPersistence, markStructuring, persistenceOutcome, type RawExtractOutcome,
+} from './raw-extract/raw-extract.service';
+import { buildOcrPages } from './raw-extract/ocr-pages';
+import { applyReliableFacts } from './steps/apply-reliable-facts.step';
 import { currentJobContext } from '../queue/job-context';
 import { db } from '@/db';
 import { assetFiles, assets, substructures, equipments, documentLots, documentLotItems } from '@/db/schema';
@@ -48,8 +52,10 @@ const PIPELINE_VERSION = 'source-analysis-v1';
 const COST_CAP_REASON_PREFIX = 'Plafond IA du mois atteint';
 
 import { buildAgendaCandidatesT4, attachEvidenceToCandidates } from './steps/build-agenda-candidates.step';
-import { persistProjectedFacts } from './steps/persist-evidence.step';
-import { persistAnalysisResult } from './persistence/analysis-result.repository';
+import { describeEvidenceWriteErrors, persistProjectedFacts } from './steps/persist-evidence.step';
+import {
+  computeInputHash, finalizeRunWrites, loadReplayableRun, persistAnalysisResult,
+} from './persistence/analysis-result.repository';
 import { titleInputsFromAnalysis } from './document-title';
 import { ensureBusinessTitle } from '@/services/documents/document-title.service';
 import { notifyLotCompleted } from './lot-notification';
@@ -248,38 +254,65 @@ export async function runSourceAnalysis(
     // Lot 61 (ticket T1 §3, §6) : phase EXTRACTION — extract brut déterministe
     // de chaque fichier du groupe, écrit AVANT le modèle et conservé quel que
     // soit le sort de la structuration ; réutilisé à la reprise (aucune
-    // ré-extraction). Ne lève jamais.
+    // ré-extraction). Lot 75C (A) : un extract non ENREGISTRÉ n'est plus
+    // ignoré — étape bloquante `RAW_EXTRACT` en échec (la structuration se
+    // poursuit : ce qui peut être écrit l'est ; le document n'est jamais
+    // déclaré analysé, la reprise réécrit l'extract sans rappeler Gemini).
+    const rawOutcomes: RawExtractOutcome[] = [];
     if (input.sourceType === 'file') {
       const jobId = currentJobContext()?.jobId ?? null;
       for (const i of groupIndices) {
         const r = await ensureRawExtract({
           accountId: input.accountId, fileId: input.sourceIds[i], url: input.contentUrls?.[i], mimeType: input.mimeTypes[i] ?? null, jobId,
         });
-        if (r) rec.rawExtracts.push(r);
+        rawOutcomes.push(r);
+        if (r.summary) rec.rawExtracts.push(r.summary);
+      }
+      const manquants = rawOutcomes.filter((r) => !r.summary);
+      if (manquants.length) {
+        rec.fail('RAW_EXTRACT', manquants.map((r) => `fichier ${r.fileId} : ${r.error ?? 'non enregistré'}`).join(' · '),
+          { files: manquants.map((r) => ({ fileId: r.fileId, error: r.error })) });
+      } else {
+        rec.ok('RAW_EXTRACT', { files: rawOutcomes.map((r) => ({ fileId: r.fileId, status: r.summary!.status, reused: r.summary!.reused, identity: r.summary!.identity })) });
       }
       await markStructuring(groupSourceIds, input.accountId, 'RUNNING');
     }
     try {
       let master: MasterGroupAnalysis;
-      try {
-        master = await analyseGroupWithMaster(input, groupIndices, ctx, groupTrace);
-      } catch (e) {
-        // Lot 22 : un refus pour plafond n'est jamais un échec du master.
-        if (isExecutionCancelled(e) || isCostCapReached(e)) throw e;
-        rec.fail('MASTER', e, structuringFailureDetail(e));
-        // Lot 61 : l'extract brut reste écrit ; la structuration est en échec, explicitement.
-        await markStructuring(groupSourceIds, input.accountId, 'FAILED', e);
-        throw new T1MasterAnalysisError((e as Error).message, {
-          // Revue 3a : le code de la passerelle n'est plus écrasé — il
-          // distingue une sortie invalide (définitif) d'une panne (transitoire).
-          lastFailureCode: (e as { lastFailureCode?: string; code?: string }).lastFailureCode
-            ?? (e as { code?: string }).code ?? null,
-          definitive: isDefinitiveGatewayFailure(e),
-        });
+      // Lot 75C (F) : écritures d'une analyse précédente inachevées (même
+      // entrée, même contenu) → sa sortie STRUCTURÉE est rejouée, Gemini
+      // n'est pas rappelé.
+      const rejeu = await replayableMaster(input, leadSourceId, groupSourceIds, rawOutcomes);
+      if (rejeu) {
+        master = rejeu.master;
+      } else {
+        try {
+          master = await analyseGroupWithMaster(input, groupIndices, ctx, groupTrace);
+        } catch (e) {
+          // Lot 22 : un refus pour plafond n'est jamais un échec du master.
+          if (isExecutionCancelled(e) || isCostCapReached(e)) throw e;
+          // Lot 75C (H) : traces de CHAQUE tentative (trace, modèle, code, étape) rattachées au rapport.
+          const essais = await collectAttemptTraces({ accountId: input.accountId, fileIds: groupSourceIds, since: rec.startedAt, error: e });
+          rec.traceIds = [...new Set([...(groupTrace?.traceIds ?? []), ...essais.traceIds])];
+          rec.attempts = essais.attempts;
+          rec.fail('MASTER', e, { ...structuringFailureDetail(e), attempts: essais.attempts });
+          // Lot 61 : l'extract brut reste écrit ; la structuration est en échec, explicitement.
+          await markStructuring(groupSourceIds, input.accountId, 'FAILED', e);
+          throw new T1MasterAnalysisError((e as Error).message, {
+            // Revue 3a : le code de la passerelle n'est plus écrasé — il
+            // distingue une sortie invalide (définitif) d'une panne (transitoire).
+            lastFailureCode: (e as { lastFailureCode?: string; code?: string }).lastFailureCode
+              ?? (e as { code?: string }).code ?? null,
+            definitive: isDefinitiveGatewayFailure(e),
+          });
+        }
       }
       const result = master.result;
-      rec.ok('MASTER', { facts: master.facts.length, promptVersion: master.promptVersion });
-      await markStructuring(groupSourceIds, input.accountId, 'SUCCEEDED');
+      rec.ok('MASTER', {
+        facts: master.facts.length, promptVersion: master.promptVersion,
+        ...(rejeu ? { replayedFromRunId: rejeu.runId, reason: 'sortie structurée conservée rejouée : aucun appel au modèle' } : {}),
+      });
+      if (input.sourceType === 'file') await markStructuring(groupSourceIds, input.accountId, 'SUCCEEDED');
       rec.traceIds = result.operationTrace?.traceIds ?? [];
       rec.masterFacts = master.facts;
 
@@ -304,13 +337,43 @@ export async function runSourceAnalysis(
       broadcast(leadSourceId, { type: 'progress', stage: 'persistance' });
 
       // Étape 12 — persistance, idempotente.
-      const persisted = await rec.run('ANALYSIS_RUN', async () => await persistAnalysisResult({
+      const persisted = await persistAnalysisResult({
         input, leadSourceId, groupSourceIds, lotId, result,
         // Version résolue du master dans l'empreinte du run.
         master: { masterPromptVersion: master.promptVersion },
-      }));
+        // Lot 75C (F) : sortie rejouable tant que les écritures ne sont pas achevées.
+        masterSnapshot: input.sourceType === 'file' ? masterSnapshotOf(master, rawOutcomes) : undefined,
+      }).catch((e) => { rec.fail('ANALYSIS_RUN', e); throw e; });
+      rec.ok('ANALYSIS_RUN', {
+        runId: persisted.runId, deduplicated: persisted.deduplicated === true,
+        ...(persisted.repaired?.length ? { repaired: persisted.repaired } : {}),
+      });
       rec.analysisRunId = persisted.runId ?? null;
       rec.deduplicated = persisted.deduplicated === true;
+
+      // Lot 75C (B) : pages sans couche texte — la lecture DÉJÀ faite par le
+      // modèle (transcription paginée, unités de la couche A) est persistée
+      // par page, à part de l'extract d'origine. Aucun appel IA.
+      if (input.sourceType === 'file') {
+        for (const o of rawOutcomes) {
+          if (!o.summary) continue;
+          const ocr = buildOcrPages({
+            pagesWithoutText: o.summary.pagesWithoutText, pageCount: o.summary.pageCount,
+            units: master.sourceLayer?.units ?? null, transcription: result.document.transcription ?? null,
+            groupSize: groupSourceIds.length, scannedPages: master.sourceLayer?.report.diagnostics?.pagesScanned ?? null,
+          });
+          if (ocr.status === 'NOT_REQUIRED') continue;
+          try {
+            const ecrit = await markOcr(o.fileId, input.accountId, ocr, persisted.runId ?? null);
+            rec.ocr.set(o.fileId, { result: ocr, persisted: ecrit });
+            if (ecrit) rec.ok('OCR', { fileId: o.fileId, status: ocr.status, recognized: ocr.recognized, unreadable: ocr.unreadable });
+            else rec.fail('OCR', `fichier ${o.fileId} : colonnes de transcription absentes (migration 0545)`);
+          } catch (e) {
+            rec.ocr.set(o.fileId, { result: ocr, persisted: false });
+            rec.fail('OCR', e, { fileId: o.fileId });
+          }
+        }
+      }
 
       // ══════════════════════════════════════════════════════════════════
       // ÉTAPE 12 bis — REPRÉSENTATION DURABLE DU DOCUMENT (base de connaissance)
@@ -340,9 +403,14 @@ export async function runSourceAnalysis(
         operationCandidates: master.operationCandidates,
       });
       rec.knowledge = knowledge;
-      await persistDocumentKnowledge(knowledge).then((extractionId) => {
-        rec.extractionId = extractionId;
-        rec.ok('KNOWLEDGE', { extractionId });
+      await persistDocumentKnowledgeDetailed(knowledge).then((k) => {
+        rec.extractionId = k.extractionId;
+        rec.ok('KNOWLEDGE', { extractionId: k.extractionId });
+        // Lot 75C (E) : couche source (unités, provenance, couverture) attendue
+        // et non écrite → les faits restent écrits, la persistance n'est PAS
+        // réussie ; la reprise (sortie rejouée) la reconstruit.
+        if (k.sourceLayer === 'FAILED') rec.fail('SOURCE_LAYER', k.sourceLayerError ?? 'couche source non écrite');
+        else if (k.sourceLayer === 'WRITTEN') rec.ok('SOURCE_LAYER');
       }, (e: Error) => {
         // Lot 58C : l'échec n'est plus seulement journalisé — le rapport
         // l'affiche et liste chaque donnée déclarée comme NON enregistrée.
@@ -421,7 +489,7 @@ export async function runSourceAnalysis(
       // seul bien. Appelé MÊME sans fait : c'est ce qui retire (supersede) les
       // preuves d'une analyse antérieure.
       await guard?.assertActive('preuves');
-      const ecrites = await rec.run('EVIDENCE', async () => await persistProjectedFacts({
+      const ecrites = await persistProjectedFacts({
         input,
         leadSourceId,
         facts: master.facts,
@@ -431,8 +499,32 @@ export async function runSourceAnalysis(
         trace: result.operationTrace,
         analysisRunId: persisted.runId,
         promptVersion: master.promptVersion,
-      }));
+      }).catch((e) => { rec.fail('EVIDENCE', e); throw e; });
       rec.projection = ecrites ?? null;
+      // Lot 75C (C) : une écriture de preuve OBLIGATOIRE en échec n'est plus
+      // une simple anomalie de rapport — l'étape est en échec (persistance non
+      // réussie, reprise idempotente). Les faits volontairement non projetés
+      // (génériques, sans cible vérifiée…) restent de simples motifs.
+      if (ecrites?.writeErrors?.length) rec.fail('EVIDENCE', describeEvidenceWriteErrors(ecrites.writeErrors), { writeErrors: ecrites.writeErrors.length });
+      else rec.ok('EVIDENCE', { written: ecrites?.evidenceIds?.size ?? 0, notProjected: ecrites?.skipped?.length ?? 0 });
+
+      // Lot 75C (D) : faits FIABLES (certains, cible vérifiée, sans conflit) →
+      // attribut métier de LEUR cible, par le moteur de décision et la
+      // primitive de T3, relu. T3 reste programmé ci-dessous pour tout le reste.
+      await guard?.assertActive('attributs métier');
+      if (ecrites?.evidenceIds && ecrites.evidenceIds.size > 0) {
+        try {
+          rec.attributes = await applyReliableFacts({
+            accountId: input.accountId, leadSourceId, facts: master.facts, evidenceIds: ecrites.evidenceIds,
+          });
+          const ko = rec.attributes.filter((a) => a.outcome === 'FAILED' || a.outcome === 'NOT_CONFIRMED');
+          if (ko.length) rec.fail('ATTRIBUTES', ko.map((a) => `${a.fieldKey}@${a.targetType}:${a.entityId} : ${a.reason}`).join(' · ').slice(0, 1_000));
+          else rec.ok('ATTRIBUTES', { written: rec.attributes.filter((a) => a.outcome === 'WRITTEN').length, examined: rec.attributes.length });
+        } catch (e) {
+          if (isExecutionCancelled(e)) throw e;
+          rec.fail('ATTRIBUTES', e);
+        }
+      }
       // Candidats T4 : preuve du champ d'origine sur le bien du document (T4-07, T4-08).
       if (assetId && ecrites?.evidenceIds) {
         const suffixe = `@ASSET:${assetId}`;
@@ -554,6 +646,8 @@ export async function runSourceAnalysis(
       // ══════════════════════════════════════════════════════════════════
       const persistance = persistenceOutcome(rec.steps);
       if (input.sourceType === 'file') await markPersistence(groupSourceIds, input.accountId, persistance.status, persistance.error);
+      // Lot 75C (F) : achèvement des écritures du run (la sortie conservée n'est effacée qu'en cas de réussite).
+      await finalizeRunWrites(persisted.runId, persistance.status, persistance.error);
       if (persistance.status === 'FAILED') {
         throw new T1PersistenceIncompleteError(persistance.error ?? 'écriture bloquante en échec');
       }
@@ -670,6 +764,10 @@ export async function runSourceAnalysis(
         && rec.steps.some((x) => x.step === 'MASTER' && x.status === 'OK')) {
         await markPersistence(groupSourceIds, input.accountId, 'FAILED', persistenceOutcome(rec.steps).error ?? (e as Error).message);
       }
+      // Lot 75C (F) : run écrit, écritures inachevées → sortie conservée pour la reprise.
+      if (!(e instanceof T1PersistenceIncompleteError) && rec.analysisRunId != null) {
+        await finalizeRunWrites(rec.analysisRunId, 'FAILED', persistenceOutcome(rec.steps).error ?? (e as Error).message);
+      }
       // Persistance incomplète : des données sont écrites — rapport PARTIAL
       // (lignes NOT_PERSISTED motivées), document en échec, jamais en succès.
       if (e instanceof T1PersistenceIncompleteError) rec.fail('PERSISTENCE', e);
@@ -764,6 +862,59 @@ export class T1PersistenceIncompleteError extends Error {
   constructor(detail: string) {
     super(`Persistance incomplète : ${detail}`.slice(0, 1_000));
     this.name = 'T1PersistenceIncompleteError';
+  }
+}
+
+/** Version de la sortie rejouable (`master_snapshot`). */
+const SNAPSHOT_VERSION = 1;
+
+interface MasterSnapshot {
+  v: number;
+  master: MasterGroupAnalysis;
+  /** Empreinte du contenu de chaque fichier lu au moment de la structuration. */
+  sources: Record<string, string | null>;
+}
+
+/** Sortie structurée rejouable (faits non dupliqués : `projection.facts` = `facts`). */
+function masterSnapshotOf(master: MasterGroupAnalysis, raws: readonly RawExtractOutcome[]): MasterSnapshot {
+  return {
+    v: SNAPSHOT_VERSION,
+    master: { ...master, projection: { ...master.projection, facts: [] } },
+    sources: Object.fromEntries(raws.map((r) => [String(r.fileId), r.summary?.sourceSha256 ?? r.sourceSha256 ?? null])),
+  };
+}
+
+/**
+ * Lot 75C (ticket T1 résiduels, F) — sortie structurée d'une analyse dont les
+ * écritures sont inachevées, rejouable SANS appel au modèle : même entrée
+ * (empreinte du run : sources, version de source, version du master) et
+ * même CONTENU (empreinte des octets de chaque fichier). Sinon `null` : le
+ * modèle est appelé, comme avant. Ne lève jamais.
+ */
+async function replayableMaster(
+  input: SourceInput, leadSourceId: number, groupSourceIds: number[], raws: readonly RawExtractOutcome[],
+): Promise<{ runId: number; master: MasterGroupAnalysis } | null> {
+  if (input.sourceType !== 'file') return null;
+  try {
+    const r = await loadReplayableRun(input.accountId, leadSourceId);
+    if (!r) return null;
+    const snap = r.snapshot as Partial<MasterSnapshot> | null;
+    const m = snap?.master;
+    if (snap?.v !== SNAPSHOT_VERSION || !m?.result || !m.promptVersion || !Array.isArray(m.facts)) return null;
+    if (computeInputHash({ groupSourceIds, input, master: { masterPromptVersion: m.promptVersion } }) !== r.inputHash) return null;
+    for (const o of raws) {
+      const avant = snap.sources?.[String(o.fileId)] ?? null;
+      const maintenant = o.summary?.sourceSha256 ?? o.sourceSha256 ?? null;
+      if (!avant || !maintenant || avant !== maintenant) return null;
+    }
+    // Une seule liste de faits (mutations de provenance partagées, comme à l'analyse).
+    m.projection = { ...m.projection, facts: m.facts };
+    m.operationCandidates ??= [];
+    console.info(`[source-analysis] fichier ${leadSourceId} : sortie structurée du run ${r.runId} rejouée (écritures inachevées), aucun appel au modèle.`);
+    return { runId: r.runId, master: m };
+  } catch (e) {
+    console.error(`[source-analysis] sortie rejouable du fichier ${leadSourceId} illisible :`, (e as Error).message);
+    return null;
   }
 }
 

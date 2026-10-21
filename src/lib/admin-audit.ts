@@ -126,7 +126,12 @@ export type AdminActionType =
   // Lot 72F : rappel J−7 des abonnements annuels (BO › Communications) —
   // déclaration de bascule, retour arrière, décisions sur une couverture
   // incertaine ou une acceptation Resend incertaine.
-  | 'ANNUAL_RENEWAL_OPERATION';
+  | 'ANNUAL_RENEWAL_OPERATION'
+  // Lot 75N : BO › fiche compte › « Données du compte » — ouverture du tiroir
+  // d'une entité (consultation sensible : données persistées, preuves) et
+  // téléchargement JSON / CSV / TXT (format, section, complétude, fichier).
+  | 'ACCOUNT_DATA_READ'
+  | 'ACCOUNT_DATA_EXPORT';
 
 export type AdminTargetType = 'ACCOUNT' | 'USER' | 'EXPORT_TEMPLATE' | 'COMMUNICATION_CHANNEL' | 'ANOMALY' | 'GDPR_REQUEST'
   | 'ASSISTANT_SETTING' | 'ASSISTANT_REQUEST' | 'NOTIFICATION' | 'AI_CACHE' | 'AI_METRICS'

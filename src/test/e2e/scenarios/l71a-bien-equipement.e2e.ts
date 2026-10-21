@@ -366,7 +366,7 @@ scenario('L71A', 'Séparation bien / équipement et rapprochement documentaire',
     expect(sim.documents).toMatchObject({ linked: 1, linksCreated: 1 });
     expect({ ev: await actives(h.c.id), m: await kc('assets', h.m.id), ch: await kc('equipments', h.chaudiere) }).toEqual(avant);
     expect(await liensEq(h.notice)).toEqual([]);
-    expect((await sql`SELECT id FROM data_separation_corrections`)).toHaveLength(0);
+    expect((await sql`SELECT id FROM data_separation_corrections WHERE account_id = ${h.c.id}`)).toHaveLength(0);
 
     // Application (compte filtré, motif).
     const app = await runDataSeparationBackfill({ apply: true, accountId: h.c.id, reason: 'Recette EQP-E07' });
@@ -386,7 +386,8 @@ scenario('L71A', 'Séparation bien / équipement et rapprochement documentaire',
     expect((await liensEq(h.notice)).map((x) => x.equipment_id)).toEqual([h.four]);
     // Traçabilité.
     const journal = await sql<{ kind: string; reason: string; run_id: string }[]>`SELECT kind, reason, run_id::text FROM data_separation_corrections WHERE account_id = ${h.c.id} ORDER BY id`;
-    expect(journal.map((j) => j.kind).sort()).toEqual(['AGENDA_PURCHASE_MOVED', 'ASSET_EVIDENCE_WITHDRAWN', 'DOCUMENT_EQUIPMENT_LINKED', 'EQUIPMENT_EVIDENCE_WITHDRAWN', 'EQUIPMENT_EVIDENCE_WITHDRAWN']);
+    // Lot 75G : la date déplacée est aussi journalisée côté ÉQUIPEMENT (2 lignes AGENDA_PURCHASE_MOVED : bien vidé, équipement renseigné).
+    expect(journal.map((j) => j.kind).sort()).toEqual(['AGENDA_PURCHASE_MOVED', 'AGENDA_PURCHASE_MOVED', 'ASSET_EVIDENCE_WITHDRAWN', 'DOCUMENT_EQUIPMENT_LINKED', 'EQUIPMENT_EVIDENCE_WITHDRAWN', 'EQUIPMENT_EVIDENCE_WITHDRAWN']);
     expect(new Set(journal.map((j) => j.reason))).toEqual(new Set(['Recette EQP-E07']));
     expect(new Set(journal.map((j) => j.run_id))).toEqual(new Set([app.runId]));
     // Isolation : l'autre compte n'a pas été touché.

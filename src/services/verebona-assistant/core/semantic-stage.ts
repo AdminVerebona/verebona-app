@@ -24,11 +24,11 @@ import type { VerebonaIntent } from '../types/intents';
 import type { AssistantTargets } from './assistant-targets';
 import { CLARIFICATION_TTL_MS } from './clarification-builder';
 import {
-  carriesRequestedValue, contextualQuestion, detectValueNeed, diversifiedCandidates, lexicalMatchEstablished, selectInterpretations,
-  semanticQuestion, semanticTerms, sourceDomain, validateSemanticDecision,
+  amountNatureOf, carriesRequestedValue, contextualQuestion, detectValueNeed, diversifiedCandidates, lexicalMatchEstablished, selectInterpretations,
+  semanticQuestion, semanticTerms, sourceDomain, validateSemanticDecision, wantsAggregate,
   type BusinessSource, type RawSemanticDecision, type SemanticNeed, type SemanticTrace, type ValueNeed,
 } from './semantic-scope';
-import { interactionHandling } from './interaction';
+import { interactionHandling, type ValidatedContextFact } from './interaction';
 import { answerFromBusinessSource } from '../canonical/business-sources';
 import { buildTargetClarification } from './clarification-builder';
 import { routeForIntent } from './intent-router.service';
@@ -58,12 +58,14 @@ export interface ArbitrationCandidate {
   detail: string | null;
   asset: string | null;
   carriesRequestedValue: boolean;
+  /** Lot 75J (#419 R01) : nature du montant (montant demandé seulement). */
+  amountNature?: string | null;
 }
 
 /** Ports utilisés par l'étape (sous-ensemble de `OrchestratorPorts`). */
 export interface SemanticPorts {
   resolveTargets?(input: AssistantRequestInput, route: IntentRoute): Promise<AssistantTargets>;
-  listBusinessSources?(accountId: number, req: { assetIds: number[]; assetNames?: Record<number, string>; need: SemanticNeed }): Promise<{ sources: BusinessSource[]; domains: string[] }>;
+  listBusinessSources?(accountId: number, req: { assetIds: number[]; assetNames?: Record<number, string>; need: SemanticNeed; includeUntargeted?: boolean }): Promise<{ sources: BusinessSource[]; domains: string[] }>;
   readBusinessSource?(accountId: number, ref: string, ctx: { assetIds: number[]; assetNames?: Record<number, string> }): Promise<BusinessSource | null>;
 }
 
@@ -94,14 +96,65 @@ function intentionDonnees(route: IntentRoute, compris: IntentRoute | null): Vere
 /** Réponse d'une interprétation unique (lecture canonique). */
 function repondre(
   s: BusinessSource, need: ValueNeed | null, assetName: string | null, intent: VerebonaIntent, trace: SemanticTrace,
-  period: PeriodeResolue | null = null,
+  period: PeriodeResolue | null = null, aggregate = false,
 ): SemanticOutcome {
-  const r = answerFromBusinessSource(s, need, { assetName, period });
+  const r = s.domain === 'context'
+    ? contextAnswer(s, assetName)
+    : answerFromBusinessSource(s, need, { assetName, period, aggregate });
   trace.semanticScopeResolved = true;
   trace.selectedSource = s.ref;
   trace.selectedOperationId = s.domain === 'operation' ? Number(s.ref.split(':')[1]) : null;
   const claims: Claim[] = [{ claimKey: `semantic:${s.ref}`, text: r.text, sourceIds: r.sources.map((x) => x.id), derivation: 'direct' }];
   return { kind: 'answer', text: r.text, sources: r.sources, claims, strategy: `semantic.${s.domain}`, intent };
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// LOT 75J (#419 R07) — INFORMATIONS DE CONTEXTE AU SERVICE DE LA QUESTION
+//
+// Une information apportée « pour contexte » dans un message MIXED (valeur
+// RELUE dans le message par le serveur, clé du registre, cible résolue par le
+// serveur) devient une source TEMPORAIRE de cette seule demande :
+//   · même clé enregistrée, même valeur → la donnée enregistrée répond ;
+//   · même clé enregistrée, valeur DIFFÉRENTE → contradiction SIGNALÉE,
+//     jamais tranchée, jamais remplacée ;
+//   · sinon → source `context:<bien>:<clé>`, sélectionnable comme un champ ;
+//     la réponse dit qu'elle n'a pas été enregistrée.
+// Une information non utilisée par la réponse est dite (jamais ignorée en
+// silence). AUCUNE écriture.
+// ══════════════════════════════════════════════════════════════════════════
+
+/** Source temporaire d'une information de contexte (pure, testée). */
+export function contextFactSource(f: ValidatedContextFact, assetId: number | null): BusinessSource {
+  const date = f.valueType === 'date' ? f.value : null;
+  const montant = f.valueType === 'money_eur' && Number.isFinite(Number(f.value)) ? Math.round(Number(f.value) * 100) : null;
+  const affiche = date ? frDateIso(date) : f.value;
+  return {
+    ref: `context:${assetId ?? 0}:${f.fieldKey}`, domain: 'context', label: f.label, detail: affiche, text: `${f.label} ${f.fieldKey}`,
+    fieldKey: f.fieldKey, assetId, date, endDate: f.endDate, amountCents: montant, amountNature: montant != null ? 'documented' : null,
+    meta: { display: affiche, temporary: true },
+  };
+}
+
+function frDateIso(iso: string): string {
+  const [y, m, d] = iso.slice(0, 10).split('-').map(Number);
+  if (!y || !m || !d) return iso;
+  return new Date(Date.UTC(y, m - 1, d)).toLocaleDateString('fr-FR', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' });
+}
+
+/** Réponse depuis une information de contexte (pure). */
+function contextAnswer(s: BusinessSource, assetName: string | null): { text: string; sources: RetrievedSource[] } {
+  const pour = assetName ? ` (${assetName})` : '';
+  return {
+    text: `${s.label}${pour} : ${String((s.meta as { display?: unknown } | undefined)?.display ?? s.detail ?? '')} — valeur indiquée dans votre message, utilisée pour cette réponse seulement : elle n’a pas été enregistrée.`,
+    sources: [],
+  };
+}
+
+/** Phrase « information de contexte non utilisée » (jamais un abandon silencieux). */
+export function unusedContextNote(facts: readonly ValidatedContextFact[]): string {
+  if (!facts.length) return '';
+  const liste = facts.map((f) => `« ${f.label} » : ${f.valueType === 'date' ? frDateIso(f.value) : f.value}`).join(', ');
+  return ` L’information indiquée dans votre message (${liste}) n’a pas servi à cette réponse ; elle n’a pas été enregistrée.`;
 }
 
 export interface SemanticStageParams {
@@ -126,10 +179,28 @@ export interface SemanticStageParams {
    * absent : aucun appel — clarification, jamais un choix lexical.
    */
   arbitrate?: ((cands: ArbitrationCandidate[]) => Promise<RawSemanticDecision | null>) | null;
+  /**
+   * Lot 75J (#419 R07) : informations de CONTEXTE validées par le serveur
+   * (message MIXED), avec la cible résolue par le serveur. Présentes :
+   * l'étape répond à la question (aucun renvoi vers l'interaction).
+   */
+  contextFacts?: { facts: ValidatedContextFact[]; assetId: number | null } | null;
 }
 
 /** Exécute l'étape sémantique (voir en-tête). */
 export async function runSemanticStage(p: SemanticStageParams): Promise<SemanticOutcome> {
+  const issue = await runSemanticStageInner(p);
+  // Lot 75J (#419 R07) : une information de contexte non utilisée par la réponse est DITE.
+  const ctx = p.contextFacts?.facts ?? [];
+  if (ctx.length && (issue.kind === 'answer' || issue.kind === 'insufficient') && !p.trace.contextContradiction) {
+    const utilisees = new Set(p.trace.contextFactsUsed);
+    const reste = ctx.filter((f) => !utilisees.has(f.fieldKey));
+    if (reste.length) return { ...issue, text: `${issue.text}${unusedContextNote(reste)}` };
+  }
+  return issue;
+}
+
+async function runSemanticStageInner(p: SemanticStageParams): Promise<SemanticOutcome> {
   const { input, route, ports, trace } = p;
   if (!ports.listBusinessSources) return { kind: 'continue' };
 
@@ -149,7 +220,8 @@ export async function runSemanticStage(p: SemanticStageParams): Promise<Semantic
       trace.interactionMode = inter.mode;
       trace.suppliedFactsCount = inter.suppliedFacts.length;
       // Information APPORTÉE (proposition, contexte seul) : jamais servie comme une lecture.
-      if (interactionHandling(inter, input.message)) return { kind: 'interaction', route: compris };
+      // Lot 75J : informations de contexte déjà validées par le serveur — la question suit son cours ici.
+      if (!p.contextFacts && interactionHandling(inter, input.message)) return { kind: 'interaction', route: compris };
     }
     if (!compris.intent.startsWith('ACCOUNT_') && compris.intent !== 'UNKNOWN' && compris.confidence !== 'ambiguous') {
       trace.fallbackReason = 'UNDERSTAND_NON_DATA_INTENT';
@@ -176,6 +248,8 @@ export async function runSemanticStage(p: SemanticStageParams): Promise<Semantic
       facts: compris?.understanding?.requestedFacts ?? [],
       need: detectValueNeed(input.message),
     };
+  // Lot 75J (#419 R01) : demande de TOTAL (jamais servie par la seule dernière pièce).
+  need.aggregate = need.need === 'amount' && wantsAggregate(input.message);
   trace.semanticResidue = [...p.residue];
 
   if (!bien && cibles?.ambiguity?.kind === 'asset' && cibles.ambiguity.candidates.length >= 2) {
@@ -204,14 +278,43 @@ export async function runSemanticStage(p: SemanticStageParams): Promise<Semantic
   }
 
   // ── 3. Sources métier réelles ────────────────────────────────────────────
-  const lues = await p.withDeadline(ports.listBusinessSources(input.accountId, { assetIds, assetNames, need })).catch(() => null);
+  // Lot 75J (#419 R04) : aucun bien nommé — les sources du compte SANS bien sont aussi examinées.
+  // Lot 75J (#419 R07) : les valeurs ENREGISTRÉES des informations de contexte sont relues (comparaison).
+  const ctxFaits = p.contextFacts?.facts ?? [];
+  const ctxBien = bien?.id ?? p.contextFacts?.assetId ?? null;
+  const besoinLecture: SemanticNeed = ctxFaits.length ? { ...need, facts: [...new Set([...need.facts, ...ctxFaits.map((f) => f.fieldKey)])] } : need;
+  const lues = await p.withDeadline(ports.listBusinessSources(input.accountId, { assetIds, assetNames, need: besoinLecture, includeUntargeted: !bien })).catch(() => null);
   if (!lues) {
     trace.fallbackReason = 'BUSINESS_SOURCES_UNREADABLE';
     return { kind: 'insufficient', text: insufficientMessage(need.terms, bien?.name ?? null), intent, strategy: 'semantic.insufficient' };
   }
   trace.sourceDomainsAvailable = lues.domains;
+  let sources = lues.sources;
+  if (ctxFaits.length) {
+    const ajout: BusinessSource[] = [];
+    for (const f of ctxFaits) {
+      const enregistre = sources.find((x) => x.domain === 'field' && x.fieldKey === f.fieldKey && (ctxBien == null || x.assetId === ctxBien));
+      if (enregistre) {
+        const valeur = String(enregistre.date ?? (enregistre.amountCents != null ? enregistre.amountCents / 100 : (enregistre.meta as { display?: unknown } | undefined)?.display ?? ''));
+        if (valeur.slice(0, 10) === f.value.slice(0, 10) || valeur === f.value) { trace.contextFactsUsed.push(f.fieldKey); continue; }
+        // Contradiction : SIGNALÉE, jamais tranchée, jamais remplacée.
+        trace.contextContradiction = true;
+        trace.contextFactsUsed.push(f.fieldKey);
+        trace.fallbackReason = 'CONTEXT_CONTRADICTION';
+        const vu = f.valueType === 'date' ? frDateIso(f.value) : f.value;
+        const nom = ctxBien != null ? assetNames[ctxBien] ?? bien?.name ?? null : null;
+        return {
+          kind: 'insufficient', intent, strategy: 'semantic.context_contradiction',
+          text: `Votre message indique « ${f.label} » : ${vu}, mais vos données indiquent${nom ? ` pour ${nom}` : ''} : ${String((enregistre.meta as { display?: unknown } | undefined)?.display ?? enregistre.detail ?? '')}. `
+            + 'Je ne tranche pas entre les deux : précisez la bonne valeur (et corrigez la fiche si besoin). Rien n’a été modifié.',
+        };
+      }
+      ajout.push(contextFactSource(f, ctxBien));
+    }
+    sources = [...sources, ...ajout];
+  }
   const periode = periodeDe(input.message);
-  const sel = selectInterpretations(lues.sources, need, { period: periode });
+  const sel = selectInterpretations(sources, need, { period: periode });
   trace.semanticCandidates = sel.scored.filter((x) => x.score > 0).slice(0, 20);
   trace.selectionReason = sel.reason;
   trace.candidatesExcluded = sel.excluded.slice(0, 20);
@@ -236,15 +339,26 @@ export async function runSemanticStage(p: SemanticStageParams): Promise<Semantic
     const champDemande = s.fieldKey != null && need.facts.includes(s.fieldKey);
     // Lot 59 (#419 R04) : une correspondance de mots PARTIELLE n'est pas une
     // preuve — la sélection directe est réservée aux cas établis.
-    const etabli = sel.reason === 'COMPLEMENTARY_SAME_REALITY' || lexicalMatchEstablished(s, need, compris?.understanding?.requestedTopics ?? []);
+    const sujets = compris?.understanding?.requestedTopics ?? [];
+    // Lot 75J : une pièce RATTACHÉE (lien documentaire effectif) à une opération dont la
+    // correspondance est établie hérite de cette preuve — lien structuré, pas une proximité de mots.
+    const via = sel.scored.find((x) => x.ref === s.ref)?.via;
+    const opVia = via ? sources.find((x) => x.ref === via) ?? null : null;
+    const etabli = sel.reason === 'COMPLEMENTARY_SAME_REALITY' || lexicalMatchEstablished(s, need, sujets)
+      || (opVia != null && lexicalMatchEstablished(opVia, need, sujets));
     trace.lexicalMatchEstablished = etabli;
     // Lot 59 (#419 R05) : une ambiguïté signalée par T2 n'est levée que par
     // une preuve STRUCTURÉE (champ du registre demandé) ou un arbitrage IA
     // validé — l'absence de concurrent n'est PAS une preuve positive.
-    const preuveForte = ambigu ? champDemande : (etabli || concurrentes.length === 0);
+    // Lot 75J (#419 R04) : hors ambiguïté non plus — l'absence de concurrent ne
+    // prouve jamais la pertinence ; seule une correspondance ÉTABLIE (ou le champ
+    // du registre demandé) autorise la sélection directe. Sinon : T2 confirme
+    // (arbitrage) ou l'utilisateur.
+    const preuveForte = ambigu ? champDemande : (etabli || champDemande);
     if (preuveForte) {
       trace.candidateSelectionMode = 'deterministic';
-      return repondre(s, need.need, nomPour(s), intent, trace, periode);
+      if (s.domain === 'context') trace.contextFactsUsed.push(s.fieldKey ?? '');
+      return repondre(s, need.need, nomPour(s), intent, trace, periode, need.aggregate);
     }
     pool = [s, ...concurrentes];
     motif = ambigu ? 'SEMANTIC_UNDERSTANDING_AMBIGUOUS' : 'SEMANTIC_PARTIAL_MATCH';
@@ -257,9 +371,14 @@ export async function runSemanticStage(p: SemanticStageParams): Promise<Semantic
     // demandée sur le bien (opérations, champs, agenda, documents), bornés
     // et répartis par domaine ; sans bien, seulement des opérations peu
     // nombreuses. Jamais une seule source servie sans arbitrage.
+    // Lot 75J (#419 R04) : avec OU sans bien nommé, T2 reçoit des candidats de TOUS
+    // les domaines autorisés qui portent la valeur demandée, répartis par domaine
+    // (aucun domaine privilégié) et bornés ; les candidats au-delà de la limite ne
+    // sont jamais présentés ni choisis (nombre tracé).
     const ctxOps = sel.eligible.filter((s) => s.domain === 'operation' && porteValeurDemandee(s, need.need) && (!bien || s.assetId === bien.id));
     const ctxTous = sel.eligible.filter((s) => porteValeurDemandee(s, need.need) && (!bien || s.assetId === bien.id));
-    pool = bien ? diversifiedCandidates(ctxTous, ARBITRATION_MAX) : ctxOps.length <= ARBITRATION_MAX ? ctxOps : [];
+    pool = diversifiedCandidates(ctxTous, ARBITRATION_MAX);
+    trace.candidatesNotPresented = Math.max(0, ctxTous.length - pool.length);
     repliClarification = bien || ctxOps.length <= ARBITRATION_MAX ? ctxOps : [];
     motif = 'SEMANTIC_NO_MATCH_CONTEXTUAL';
   }
@@ -271,6 +390,7 @@ export async function runSemanticStage(p: SemanticStageParams): Promise<Semantic
     const brut = await p.arbitrate([...presentes].map(([ref, s]) => ({
       ref, kind: s.kindNoun ?? sourceDomain(s.domain).noun, label: s.label, detail: s.detail,
       asset: s.assetId != null ? assetNames[s.assetId] ?? null : null, carriesRequestedValue: carriesRequestedValue(s, need.need),
+      ...(need.need === 'amount' && s.amountCents != null ? { amountNature: amountNatureOf(s) } : {}),
     }))).catch(() => null);
     const v = validateSemanticDecision(brut, presentes, { requireExact: ambigu });
     trace.semanticDecision = brut?.decision ?? null;
@@ -281,7 +401,8 @@ export async function runSemanticStage(p: SemanticStageParams): Promise<Semantic
     trace.candidateValidationFailure = v.kind === 'clarify' ? v.failure : null;
     if (v.kind === 'select') {
       trace.candidateSelectionMode = 'ai';
-      return repondre(v.source, need.need, nomPour(v.source), intent, trace, periode);
+      if (v.source.domain === 'context') trace.contextFactsUsed.push(v.source.fieldKey ?? '');
+      return repondre(v.source, need.need, nomPour(v.source), intent, trace, periode, need.aggregate);
     }
     if (v.kind === 'none') {
       trace.fallbackReason = 'AI_NO_MATCHING_CANDIDATE';
@@ -295,7 +416,8 @@ export async function runSemanticStage(p: SemanticStageParams): Promise<Semantic
     trace.fallbackReason = 'NO_MATCHING_SOURCE';
     return { kind: 'insufficient', text: insufficientMessage(need.terms, bien?.name ?? null), intent, strategy: 'semantic.insufficient' };
   }
-  const contextuels = pool;
+  // Une information de contexte n'est pas un choix relisible (temporaire) : jamais proposée en clarification.
+  const contextuels = pool.filter((x) => x.domain !== 'context');
   const contextuelle = motif === 'SEMANTIC_NO_MATCH_CONTEXTUAL';
   const now = new Date();
   const cands = contextuels.slice(0, CONTEXTUAL_MAX);
@@ -363,7 +485,8 @@ export async function resumeSemanticChoice(p: {
     return { kind: 'insufficient', text: 'Cet élément n’est plus disponible.', intent, strategy: 'semantic.choice_unavailable' };
   }
   p.trace.resolvedTargets = choix.assetId ? [choix.assetId] : [];
-  return repondre(s, choix.need, choix.assetId ? assetNames[choix.assetId] ?? null : null, intent, p.trace, periodeDe(p.input.message));
+  return repondre(s, choix.need, choix.assetId ? assetNames[choix.assetId] ?? null : null, intent, p.trace, periodeDe(p.input.message),
+    choix.need === 'amount' && wantsAggregate(p.input.message));
 }
 
 /** L'opération porte-t-elle la valeur demandée (clarification contextuelle, Q24) ? */

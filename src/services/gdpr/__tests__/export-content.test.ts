@@ -110,11 +110,36 @@ describe('export RGPD — documents joints', () => {
 
   it('noms sûrs et uniques ; fichier absent du stockage signalé', () => {
     const plan = planDocumentFiles([doc(5, 1, { originalFilename: '../../etc/passwd' }), doc(6, 1, { s3Key: null })], 1000);
-    expect(plan.include[0].path).toBe('documents/5_.._.._etc_passwd');
+    expect(plan.include[0].path).toBe('documents/etc passwd.pdf');
     expect(plan.skipped).toEqual([{ id: 6, name: 'f6.pdf', reason: 'NO_STORED_FILE' }]);
     const { textFiles, manifest } = build(planDocumentFiles([doc(1, 900), doc(2, 900)], 1000));
     expect(manifest.documents).toMatchObject({ included: 1, includedBytes: 900 });
     expect(textFiles['LISEZ-MOI.txt']).toContain('1 document(s) n’ont pas été joints');
+  });
+});
+
+describe('L75L — export « Mes données » : nom affiché, sans écrasement', () => {
+  const doc = (id: number, extra: Partial<DocumentCandidate> = {}): DocumentCandidate => ({
+    id, size: 1, originalFilename: `scan_${id}.pdf`, filename: `a7f82c91-4d23-4b1e-9c55-0d2f3e4a5b6${id}.pdf`,
+    mimeType: 'application/pdf', s3Key: `verebona/u_1/a7f82c91-4d23-4b1e-9c55-0d2f3e4a5b6${id}.pdf`, s3Bucket: null, ...extra,
+  });
+  it('L75L-RGPD titre affiché + extension, doublons « (2) », correspondance id dans le manifeste', () => {
+    const plan = planDocumentFiles([
+      doc(1, { retainedTitle: 'Facture entretien chaudière' }),
+      doc(2, { retainedTitle: 'Facture entretien chaudière' }),
+      doc(3, { retainedTitle: null, originalFilename: 'FACT_2026_001.pdf' }),
+    ], 1000);
+    expect(plan.include.map((d) => d.path)).toEqual([
+      'documents/Facture entretien chaudière.pdf',
+      'documents/Facture entretien chaudière (2).pdf',
+      'documents/FACT_2026_001.pdf',
+    ]);
+    const { manifest } = build(plan);
+    expect(manifest.documents.files).toEqual([
+      { id: 1, path: 'documents/Facture entretien chaudière.pdf' },
+      { id: 2, path: 'documents/Facture entretien chaudière (2).pdf' },
+      { id: 3, path: 'documents/FACT_2026_001.pdf' },
+    ]);
   });
 });
 

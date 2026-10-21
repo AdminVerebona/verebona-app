@@ -33,6 +33,18 @@
  * validée par l'utilisateur (USER / ADMIN) n'est JAMAIS modifiée
  * (préséance de la primitive) — elle est comptée « préservée ».
  *
+ * LOT 75G (ticket « écarts résiduels 71A », E) — un document peut couvrir
+ * PLUSIEURS acquisitions légitimes : A et B ne sont plus corrigés que si la
+ * provenance est DÉMONTRÉE (équipement du MÊME bien, même valeur, aucune
+ * acquisition du bien lue dans le document ; pour un justificatif, seule une
+ * même ligne de PRIX d'un document rattaché à l'équipement) ; le reste est
+ * SUSPECT (rapporté, jamais modifié). Diagnostic étendu aux autres attributs
+ * propres (marque, modèle, n° de série, garanties, valeur estimée) : suspects
+ * seulement. Documents : TOUS, par pages. Chaque retrait de preuve et sa
+ * ligne de journal sont écrits dans UNE transaction ; une exécution
+ * interrompue avant la réconciliation des fiches est REPRISE au passage
+ * suivant (retraits journalisés sans `reconciledAt`).
+ *
  * Traçable : chaque correction appliquée → `data_separation_corrections`
  * (0489 : exécution, motif, avant / après), plus le journal 0216 et le cycle
  * de vie des preuves. Idempotent : une preuve retirée n'est plus candidate,
@@ -45,6 +57,7 @@ import { pgClient } from '@/db';
 import { resolveDocumentType } from '@/services/canonical/registry';
 
 type Sql = typeof pgClient;
+type TxSql = { unsafe: Sql['unsafe'] };
 type Row = Record<string, unknown>;
 
 /** Règles de projection « justificatif d'achat du bien » (preuve déduite du document). */
@@ -71,6 +84,10 @@ export interface DataSeparationReport {
   runId: string;
   accountsScanned: number;
   cases: SeparationCase[];
+  /** Lot 75G : situations insuffisamment démontrées — signalées, jamais modifiées. */
+  suspects: SuspectCase[];
+  /** Lot 75G : réconciliations reprises d'une exécution interrompue (preuve retirée, fiche pas encore réconciliée). */
+  resumed: number;
   /** Valeurs corrigées sur les fiches (retirées ou remplacées par T3). */
   fieldsCorrected: Array<{ type: 'ASSET' | 'EQUIPMENT'; id: number; fieldKey: string; outcome: 'retracted' | 'replaced' | 'moved' | 'cleared' }>;
   /** Valeurs USER / ADMIN laissées en place malgré une preuve retirée. */
@@ -93,17 +110,70 @@ async function comptes(sql: Sql, accountId: number | null): Promise<number[]> {
   return r.map((x) => Number(x.account_id));
 }
 
-/** Cas A et B — preuves dont la provenance démontre une confusion bien / équipement (lecture seule). */
-export async function findEvidenceCases(sql: Sql, accountId: number): Promise<SeparationCase[]> {
+/**
+ * Situation INSUFFISAMMENT démontrée (lot 75G, E) : signalée dans le
+ * rapport, JAMAIS modifiée automatiquement.
+ */
+export interface SuspectCase {
+  kind:
+    | 'ACQUISITION_EVIDENCE_UNPROVEN'   // A : le document porte aussi une acquisition du bien, ou valeurs différentes
+    | 'SAME_EVIDENCE_UNPROVEN'          // B : même preuve, plusieurs acquisitions possibles (date, justificatif non rattaché)
+    | 'EQUIPMENT_OUTSIDE_ASSET'         // A / B : équipement d'un autre bien (ou d'un autre compte)
+    | 'OTHER_ATTRIBUTE_SAME_EVIDENCE'   // marque, modèle, n° de série, garanties… : même preuve bien / équipement
+    | 'OTHER_ATTRIBUTE_IDENTICAL';      // même valeur sur le bien et l'équipement, sans preuve propre de l'équipement
+  accountId: number;
+  assetId: number;
+  equipmentId: number | null;
+  evidenceId: number | null;
+  fieldKey: string;
+  value: unknown;
+  sourceFileId: number | null;
+  motive: string;
+}
+
+/** Attributs propres à chaque entité, diagnostiqués (jamais corrigés automatiquement) — lot 75G, E. */
+export const OTHER_SEPARATED_KEYS = ['brand', 'modelName', 'serialNumber', 'warrantyStartDate', 'warrantyEndDate', 'estimatedValue'] as const;
+
+/**
+ * Cas A et B — preuves dont la provenance DÉMONTRE une confusion bien /
+ * équipement (lecture seule). Lot 75G (E) : un document peut couvrir
+ * PLUSIEURS acquisitions légitimes ; une valeur identique ne prouve rien.
+ *   A. preuve du bien DÉDUITE PAR RÈGLE d'un justificatif ; démontrée
+ *      seulement si un équipement DE CE BIEN porte, sur le même document,
+ *      la MÊME valeur pour la même clé, et qu'aucune preuve non déduite ne
+ *      vise l'acquisition du BIEN dans ce document ;
+ *   B. même preuve (document, clé, valeur, extrait) sur le bien et un
+ *      équipement DE CE BIEN : acte authentique → la preuve de l'équipement
+ *      est la recopie ; autre justificatif → démontrée seulement pour un
+ *      PRIX (une même ligne ne chiffre pas deux acquisitions) d'un document
+ *      rattaché à cet équipement ; une date partagée peut être légitime.
+ * Le reste est SUSPECT : rapporté, jamais modifié.
+ */
+export async function findEvidenceCases(sql: Sql, accountId: number): Promise<{ cases: SeparationCase[]; suspects: SuspectCase[] }> {
   const out: SeparationCase[] = [];
-  // A. Preuve du bien déduite par règle d'un justificatif d'achat d'ÉQUIPEMENT.
+  const suspects: SuspectCase[] = [];
+  const meme = (a: string, b: string) => `COALESCE(${a}.normalized_value, ${a}.value_json::text) = COALESCE(${b}.normalized_value, ${b}.value_json::text)`;
+  // A. Preuve du bien déduite par règle d'un justificatif qui porte aussi un achat d'ÉQUIPEMENT.
   const a = (await sql.unsafe(
     `SELECT fe.id, fe.asset_id, fe.field_key, fe.value_json, fe.source_id, fe.projection_rule,
             (SELECT eq.target_entity_id FROM field_evidence eq
               WHERE eq.account_id = fe.account_id AND eq.source_type = fe.source_type AND eq.source_id = fe.source_id
                 AND eq.target_type = 'EQUIPMENT' AND eq.field_key = ANY($3::text[])
                 AND COALESCE(eq.lifecycle_status, 'ACTIVE') = 'ACTIVE' AND eq.status = 'active'
-              ORDER BY eq.id LIMIT 1) AS equipment_id
+              ORDER BY eq.id LIMIT 1) AS equipment_any,
+            (SELECT eq.target_entity_id FROM field_evidence eq
+               JOIN equipments e ON e.id = eq.target_entity_id AND e.asset_id = fe.asset_id
+               JOIN assets ea ON ea.id = e.asset_id AND ea.account_id = fe.account_id
+              WHERE eq.account_id = fe.account_id AND eq.source_type = fe.source_type AND eq.source_id = fe.source_id
+                AND eq.target_type = 'EQUIPMENT' AND eq.field_key = fe.field_key AND ${meme('eq', 'fe')}
+                AND COALESCE(eq.lifecycle_status, 'ACTIVE') = 'ACTIVE' AND eq.status = 'active'
+              ORDER BY eq.id LIMIT 1) AS equipment_same,
+            EXISTS (SELECT 1 FROM field_evidence o
+                     WHERE o.account_id = fe.account_id AND o.source_type = fe.source_type AND o.source_id = fe.source_id
+                       AND o.id <> fe.id AND o.field_key = ANY($3::text[]) AND o.status = 'active'
+                       AND COALESCE(o.lifecycle_status, 'ACTIVE') = 'ACTIVE'
+                       AND (o.target_type IS NULL OR o.target_type = 'ASSET')
+                       AND (o.projection_rule IS NULL OR NOT (o.projection_rule = ANY($2::text[])))) AS asset_own
        FROM field_evidence fe
       WHERE fe.account_id = $1 AND fe.status = 'active' AND COALESCE(fe.lifecycle_status, 'ACTIVE') = 'ACTIVE'
         AND fe.source_type IN ('document', 'web_link') AND fe.field_key = ANY($3::text[])
@@ -117,23 +187,40 @@ export async function findEvidenceCases(sql: Sql, accountId: number): Promise<Se
     [accountId, [...ASSET_PURCHASE_RULES], ACQ] as never[],
   )) as unknown as Row[];
   for (const r of a) {
-    out.push({
-      kind: 'ASSET_EVIDENCE_WITHDRAWN', accountId, assetId: Number(r.asset_id), equipmentId: r.equipment_id == null ? null : Number(r.equipment_id),
-      evidenceId: Number(r.id), fieldKey: String(r.field_key), value: valeur(r.value_json), sourceFileId: Number(r.source_id),
-      motive: `Déduite par la règle ${String(r.projection_rule)} d’un justificatif d’achat de l’équipement #${r.equipment_id}`,
-    });
+    const commun = { accountId, assetId: Number(r.asset_id), evidenceId: Number(r.id), fieldKey: String(r.field_key), value: valeur(r.value_json), sourceFileId: Number(r.source_id) };
+    if (r.equipment_same != null && r.asset_own !== true) {
+      out.push({
+        kind: 'ASSET_EVIDENCE_WITHDRAWN', ...commun, equipmentId: Number(r.equipment_same),
+        motive: `Déduite par la règle ${String(r.projection_rule)} d’un justificatif d’achat de l’équipement #${r.equipment_same} (même valeur, aucune acquisition du bien lue dans ce document)`,
+      });
+    } else {
+      suspects.push({
+        kind: 'ACQUISITION_EVIDENCE_UNPROVEN',
+        ...commun, equipmentId: r.equipment_same != null ? Number(r.equipment_same) : r.equipment_any == null ? null : Number(r.equipment_any),
+        motive: r.asset_own === true
+          ? 'Le document porte aussi une acquisition du bien : plusieurs acquisitions possibles, aucune correction'
+          : 'Aucun équipement de ce bien ne porte la même valeur dans ce document : provenance non démontrée',
+      });
+    }
   }
   // B. Même preuve (document, clé, valeur, extrait) pour le bien et un équipement.
   const b = (await sql.unsafe(
     `SELECT fa.id AS asset_ev, fa.asset_id, fq.id AS equipment_ev, fq.target_entity_id AS equipment_id, fa.field_key,
-            fa.value_json, fa.source_id, COALESCE(fa.document_type, fq.document_type) AS document_type
+            fa.value_json, fa.source_id, COALESCE(fa.document_type, fq.document_type) AS document_type,
+            (e.id IS NOT NULL) AS in_asset,
+            (EXISTS (SELECT 1 FROM document_asset_links l WHERE l.account_id = fa.account_id AND l.file_id = fa.source_id
+                      AND l.equipment_id = fq.target_entity_id AND l.status = 'ACTIVE')
+             OR EXISTS (SELECT 1 FROM asset_files f WHERE f.id = fa.source_id AND f.account_id = fa.account_id
+                         AND f.equipment_id = fq.target_entity_id)) AS doc_linked
        FROM field_evidence fa
        JOIN field_evidence fq ON fq.account_id = fa.account_id AND fq.source_type = fa.source_type AND fq.source_id = fa.source_id
                              AND fq.field_key = fa.field_key AND fq.target_type = 'EQUIPMENT'
                              AND COALESCE(fq.lifecycle_status, 'ACTIVE') = 'ACTIVE' AND fq.status = 'active'
-                             AND COALESCE(fq.normalized_value, fq.value_json::text) = COALESCE(fa.normalized_value, fa.value_json::text)
+                             AND ${meme('fq', 'fa')}
                              AND btrim(lower(regexp_replace(COALESCE(fq.evidence_excerpt, ''), '\\s+', ' ', 'g')))
                                = btrim(lower(regexp_replace(COALESCE(fa.evidence_excerpt, ''), '\\s+', ' ', 'g')))
+       LEFT JOIN equipments e ON e.id = fq.target_entity_id AND e.asset_id = fa.asset_id
+                             AND EXISTS (SELECT 1 FROM assets ea WHERE ea.id = e.asset_id AND ea.account_id = fa.account_id)
       WHERE fa.account_id = $1 AND fa.status = 'active' AND COALESCE(fa.lifecycle_status, 'ACTIVE') = 'ACTIVE'
         AND fa.source_type IN ('document', 'web_link') AND fa.field_key = ANY($2::text[])
         AND (fa.target_type IS NULL OR (fa.target_type = 'ASSET' AND (fa.target_entity_id IS NULL OR fa.target_entity_id = fa.asset_id)))
@@ -144,17 +231,96 @@ export async function findEvidenceCases(sql: Sql, accountId: number): Promise<Se
   )) as unknown as Row[];
   const vus = new Set(out.map((c) => c.evidenceId));
   for (const r of b) {
+    const base = { accountId, assetId: Number(r.asset_id), equipmentId: Number(r.equipment_id), fieldKey: String(r.field_key), value: valeur(r.value_json), sourceFileId: Number(r.source_id) };
+    if (r.in_asset !== true) {
+      suspects.push({ kind: 'EQUIPMENT_OUTSIDE_ASSET', ...base, evidenceId: Number(r.equipment_ev), motive: 'Équipement hors du bien de la preuve : aucune correction' });
+      continue;
+    }
     const acte = resolveDocumentType(r.document_type == null ? null : String(r.document_type))?.authority === 'AUTHORITATIVE';
-    const c: SeparationCase = acte
-      ? { kind: 'EQUIPMENT_EVIDENCE_WITHDRAWN', accountId, assetId: Number(r.asset_id), equipmentId: Number(r.equipment_id),
-        evidenceId: Number(r.equipment_ev), fieldKey: String(r.field_key), value: valeur(r.value_json), sourceFileId: Number(r.source_id),
-        motive: 'Même preuve que l’acquisition du bien sur un acte authentique : valeur du bien recopiée sur l’équipement' }
-      : { kind: 'ASSET_EVIDENCE_WITHDRAWN', accountId, assetId: Number(r.asset_id), equipmentId: Number(r.equipment_id),
-        evidenceId: Number(r.asset_ev), fieldKey: String(r.field_key), value: valeur(r.value_json), sourceFileId: Number(r.source_id),
-        motive: `Même preuve que l’acquisition de l’équipement #${r.equipment_id} sur un justificatif : valeur de l’équipement reportée sur le bien` };
+    let c: SeparationCase | null = null;
+    if (acte) {
+      c = { kind: 'EQUIPMENT_EVIDENCE_WITHDRAWN', ...base, evidenceId: Number(r.equipment_ev),
+        motive: 'Même preuve que l’acquisition du bien sur un acte authentique : valeur du bien recopiée sur l’équipement' };
+    } else if (r.field_key === 'acquisitionPrice' && r.doc_linked === true) {
+      c = { kind: 'ASSET_EVIDENCE_WITHDRAWN', ...base, evidenceId: Number(r.asset_ev),
+        motive: `Même ligne de prix que l’acquisition de l’équipement #${r.equipment_id} (justificatif rattaché à l’équipement) : valeur de l’équipement reportée sur le bien` };
+    }
+    if (!c) {
+      if (!vus.has(Number(r.asset_ev))) {
+        suspects.push({ kind: 'SAME_EVIDENCE_UNPROVEN', ...base, evidenceId: Number(r.asset_ev),
+          motive: r.field_key === 'acquisitionPrice'
+            ? 'Même preuve de prix, justificatif non rattaché à l’équipement : provenance non démontrée'
+            : 'Même date sur un justificatif : plusieurs acquisitions légitimes possibles, aucune correction' });
+      }
+      continue;
+    }
     if (vus.has(c.evidenceId)) continue;
     vus.add(c.evidenceId);
     out.push(c);
+  }
+  return { cases: out, suspects };
+}
+
+/**
+ * Autres attributs propres à chaque entité (marque, modèle, n° de série,
+ * garanties, valeur estimée) : DIAGNOSTIC seulement (lot 75G, E) — même
+ * preuve attribuée au bien et à un de ses équipements, ou même valeur sans
+ * preuve propre de l'équipement (valeur automatique). La provenance erronée
+ * n'est pas démontrable automatiquement : aucune correction, signalement.
+ */
+export async function findOtherAttributeSuspects(sql: Sql, accountId: number): Promise<SuspectCase[]> {
+  const out: SuspectCase[] = [];
+  const cles = [...OTHER_SEPARATED_KEYS];
+  const memes = (await sql.unsafe(
+    `SELECT fa.id, fa.asset_id, fq.target_entity_id AS equipment_id, fa.field_key, fa.value_json, fa.source_id
+       FROM field_evidence fa
+       JOIN field_evidence fq ON fq.account_id = fa.account_id AND fq.source_type = fa.source_type AND fq.source_id = fa.source_id
+                             AND fq.field_key = fa.field_key AND fq.target_type = 'EQUIPMENT' AND fq.status = 'active'
+                             AND COALESCE(fq.lifecycle_status, 'ACTIVE') = 'ACTIVE'
+                             AND COALESCE(fq.normalized_value, fq.value_json::text) = COALESCE(fa.normalized_value, fa.value_json::text)
+                             AND COALESCE(fq.evidence_excerpt, '') = COALESCE(fa.evidence_excerpt, '')
+       JOIN equipments e ON e.id = fq.target_entity_id AND e.asset_id = fa.asset_id
+      WHERE fa.account_id = $1 AND fa.status = 'active' AND COALESCE(fa.lifecycle_status, 'ACTIVE') = 'ACTIVE'
+        AND fa.field_key = ANY($2::text[]) AND (fa.target_type IS NULL OR fa.target_type = 'ASSET')
+      ORDER BY fa.id, fq.id`,
+    [accountId, cles] as never[],
+  )) as unknown as Row[];
+  for (const r of memes) {
+    out.push({ kind: 'OTHER_ATTRIBUTE_SAME_EVIDENCE', accountId, assetId: Number(r.asset_id), equipmentId: Number(r.equipment_id), evidenceId: Number(r.id),
+      fieldKey: String(r.field_key), value: valeur(r.value_json), sourceFileId: Number(r.source_id), motive: 'Même preuve attribuée au bien et à l’équipement' });
+  }
+  const { getCanonicalAssetState } = await import('@/services/canonical/asset-state');
+  const { getCanonicalEntityState } = await import('@/services/canonical/entity-state');
+  let apres = 0;
+  const etatsBiens = new Map<number, Record<string, { value?: unknown } | undefined> | null>();
+  for (;;) {
+    const eqs = (await sql.unsafe(
+      `SELECT e.id, e.asset_id,
+              ARRAY(SELECT DISTINCT fq.field_key FROM field_evidence fq WHERE fq.account_id = $1 AND fq.target_type = 'EQUIPMENT'
+                     AND fq.target_entity_id = e.id AND fq.status = 'active' AND COALESCE(fq.lifecycle_status, 'ACTIVE') = 'ACTIVE') AS prouvees
+         FROM equipments e JOIN assets a ON a.id = e.asset_id AND a.account_id = $1 AND a.deleted_at IS NULL
+        WHERE e.archived_at IS NULL AND e.id > $2 ORDER BY e.id LIMIT 200`,
+      [accountId, apres] as never[],
+    )) as unknown as Row[];
+    for (const e of eqs) {
+      const assetId = Number(e.asset_id);
+      if (!etatsBiens.has(assetId)) etatsBiens.set(assetId, (await getCanonicalAssetState(assetId, accountId))?.fields ?? null);
+      const bien = etatsBiens.get(assetId);
+      if (!bien) continue;
+      const st = await getCanonicalEntityState({ type: 'EQUIPMENT', id: Number(e.id) }, accountId);
+      const prouvees = new Set(((e.prouvees as string[] | null) ?? []));
+      for (const k of cles) {
+        const fe = st?.fields?.[k];
+        const fb = bien[k];
+        if (!fe || fe.value == null || fb?.value == null || prouvees.has(k)) continue;
+        if (fe.origin === 'USER' || fe.origin === 'ADMIN') continue;
+        if (JSON.stringify(fe.value) !== JSON.stringify(fb.value)) continue;
+        out.push({ kind: 'OTHER_ATTRIBUTE_IDENTICAL', accountId, assetId, equipmentId: Number(e.id), evidenceId: null, fieldKey: k, value: fe.value,
+          sourceFileId: null, motive: 'Même valeur que le bien, sans preuve propre de l’équipement : héritage possible, à vérifier' });
+      }
+    }
+    if (eqs.length < 200) break;
+    apres = Number(eqs[eqs.length - 1].id);
   }
   return out;
 }
@@ -197,7 +363,7 @@ export async function findAgendaPurchaseCases(sql: Sql, accountId: number): Prom
   return out;
 }
 
-async function journaliser(sql: Sql, runId: string, reason: string | null, c: {
+async function journaliser(sql: Sql | TxSql, runId: string, reason: string | null, c: {
   accountId: number; kind: string; subjectType: string; subjectId: number; fieldKey?: string | null; before?: unknown; after?: unknown; detail?: unknown;
 }): Promise<void> {
   await sql.unsafe(
@@ -216,14 +382,14 @@ async function proprietaire(sql: Sql, accountId: number): Promise<number | undef
 
 /** Exécution (simulation : lecture seule ; application : corrections tracées). */
 export async function runDataSeparationBackfill(o: {
-  apply: boolean; accountId?: number | null; reason?: string | null; log?: (m: string) => void;
-  /** Documents examinés au plus par compte (borne de sécurité). */
-  maxDocumentsPerAccount?: number; sql?: Sql;
+  apply: boolean; accountId?: number | null; reason?: string | null; log?: (m: string) => void; sql?: Sql;
+  /** Tests de reprise : interruption simulée entre le retrait des preuves et la réconciliation des fiches. */
+  simulateInterruption?: 'before_reconcile';
 }): Promise<DataSeparationReport> {
   const sql = o.sql ?? pgClient;
   const log = o.log ?? (() => undefined);
   const report: DataSeparationReport = {
-    mode: o.apply ? 'apply' : 'simulate', runId: randomUUID(), accountsScanned: 0, cases: [], fieldsCorrected: [], preserved: [],
+    mode: o.apply ? 'apply' : 'simulate', runId: randomUUID(), accountsScanned: 0, cases: [], suspects: [], resumed: 0, fieldsCorrected: [], preserved: [],
     documents: { examined: 0, linked: 0, linksCreated: 0, ambiguous: 0, samples: [] }, failed: [],
   };
   const { getCanonicalAssetState } = await import('@/services/canonical/asset-state');
@@ -233,8 +399,10 @@ export async function runDataSeparationBackfill(o: {
   for (const accountId of await comptes(sql, o.accountId ?? null)) {
     report.accountsScanned++;
     try {
-      const cas = [...await findEvidenceCases(sql, accountId), ...await findAgendaPurchaseCases(sql, accountId)];
+      const preuves = await findEvidenceCases(sql, accountId);
+      const cas = [...preuves.cases, ...await findAgendaPurchaseCases(sql, accountId)];
       report.cases.push(...cas);
+      report.suspects.push(...preuves.suspects, ...await findOtherAttributeSuspects(sql, accountId));
       const userId = await proprietaire(sql, accountId);
 
       // ── A / B : retrait des preuves, puis réconciliation des fiches touchées ──
@@ -248,20 +416,42 @@ export async function runDataSeparationBackfill(o: {
           : (await getCanonicalEntityState({ type: 'EQUIPMENT', id: cible.id }, accountId))?.fields?.[c.fieldKey];
         if (etat && humain(etat.origin)) report.preserved.push({ type: cible.type, id: cible.id, fieldKey: c.fieldKey });
         if (!o.apply) continue;
-        const r = (await sql.unsafe(
-          `UPDATE field_evidence SET lifecycle_status = 'WITHDRAWN', superseded_at = now()
-            WHERE id = $1 AND account_id = $2 AND COALESCE(lifecycle_status, 'ACTIVE') = 'ACTIVE' RETURNING id`,
-          [c.evidenceId, accountId] as never[],
-        )) as unknown as unknown[];
-        if (r.length === 0) continue;
-        avant.set(`${cible.type}:${cible.id}:${c.fieldKey}`, etat?.value ?? null);
-        await journaliser(sql, report.runId, o.reason ?? null, {
-          accountId, kind: c.kind, subjectType: 'FIELD_EVIDENCE', subjectId: c.evidenceId!, fieldKey: c.fieldKey,
-          before: { lifecycle: 'ACTIVE', value: c.value }, after: { lifecycle: 'WITHDRAWN' },
-          detail: { motive: c.motive, sourceFileId: c.sourceFileId, assetId: c.assetId, equipmentId: c.equipmentId },
+        // Lot 75G : retrait et journal dans UNE transaction (jamais l'un sans l'autre).
+        const fait = await sql.begin(async (t) => {
+          const r = (await t.unsafe(
+            `UPDATE field_evidence SET lifecycle_status = 'WITHDRAWN', superseded_at = now()
+              WHERE id = $1 AND account_id = $2 AND COALESCE(lifecycle_status, 'ACTIVE') = 'ACTIVE' RETURNING id`,
+            [c.evidenceId, accountId] as never[],
+          )) as unknown as unknown[];
+          if (r.length === 0) return false;
+          await journaliser(t, report.runId, o.reason ?? null, {
+            accountId, kind: c.kind, subjectType: 'FIELD_EVIDENCE', subjectId: c.evidenceId!, fieldKey: c.fieldKey,
+            before: { lifecycle: 'ACTIVE', value: c.value }, after: { lifecycle: 'WITHDRAWN' },
+            detail: { motive: c.motive, sourceFileId: c.sourceFileId, assetId: c.assetId, equipmentId: c.equipmentId },
+          });
+          return true;
         });
+        if (!fait) continue;
+        avant.set(`${cible.type}:${cible.id}:${c.fieldKey}`, etat?.value ?? null);
         if (cible.type === 'ASSET') biens.add(cible.id); else equipements.add(cible.id);
       }
+      if (o.apply && o.simulateInterruption === 'before_reconcile') throw new Error('interruption simulée avant réconciliation');
+      // Lot 75G (reprise) : preuves retirées par une exécution INTERROMPUE avant
+      // la réconciliation de leur fiche → réconciliées maintenant.
+      const enSuspens = (await sql.unsafe(
+        `SELECT id, kind, detail FROM data_separation_corrections
+          WHERE account_id = $1 AND kind IN ('ASSET_EVIDENCE_WITHDRAWN', 'EQUIPMENT_EVIDENCE_WITHDRAWN')
+            AND NOT (detail ? 'reconciledAt') AND run_id <> $2::uuid`,
+        [accountId, report.runId] as never[],
+      )) as unknown as Row[];
+      if (o.apply) {
+        for (const j of enSuspens) {
+          const d = (typeof j.detail === 'string' ? JSON.parse(j.detail) : j.detail) as { assetId?: number; equipmentId?: number };
+          if (j.kind === 'ASSET_EVIDENCE_WITHDRAWN' && d.assetId) biens.add(Number(d.assetId));
+          if (j.kind === 'EQUIPMENT_EVIDENCE_WITHDRAWN' && d.equipmentId) equipements.add(Number(d.equipmentId));
+        }
+      }
+      report.resumed += enSuspens.length;
       if (o.apply) {
         const { reconcileAsset } = await import('@/services/ai/reconciliation');
         const { reconcileEntity } = await import('@/services/ai/reconciliation/entity-reconciliation');
@@ -285,6 +475,12 @@ export async function runDataSeparationBackfill(o: {
             if (JSON.stringify(apres) !== JSON.stringify(v)) report.fieldsCorrected.push({ type: 'EQUIPMENT', id, fieldKey: key, outcome: apres == null ? 'retracted' : 'replaced' });
           }
         }
+        // Fiches réconciliées : les retraits (de ce passage et repris) sont marqués, la reprise ne les rejoue plus.
+        await sql.unsafe(
+          `UPDATE data_separation_corrections SET detail = detail || jsonb_build_object('reconciledAt', now())
+            WHERE account_id = $1 AND kind IN ('ASSET_EVIDENCE_WITHDRAWN', 'EQUIPMENT_EVIDENCE_WITHDRAWN') AND NOT (detail ? 'reconciledAt')`,
+          [accountId] as never[],
+        );
       }
 
       // ── C : recopie « achat » D-13 vers le bien → équipement ──────────────
@@ -295,11 +491,18 @@ export async function runDataSeparationBackfill(o: {
         for (const c of cas.filter((x) => x.kind === 'AGENDA_PURCHASE_MOVED')) parBien.set(c.assetId, [...(parBien.get(c.assetId) ?? []), c]);
         for (const [assetId, cs] of parBien) {
           for (const c of cs) {
+            // Origine de la recopie D-13 conservée (geste « réalisé » de l'utilisateur) ; jamais par-dessus une valeur existante.
             const e = await writeCanonicalEntityField({
               target: { type: 'EQUIPMENT', id: c.equipmentId! }, accountId, key: 'acquisitionDate', value: c.value, origin: 'USER',
               expectedCurrent: null, source: { type: 'data_separation_backfill', id: report.runId },
             });
-            if (e.fields[0]?.outcome === 'written') report.fieldsCorrected.push({ type: 'EQUIPMENT', id: c.equipmentId!, fieldKey: 'acquisitionDate', outcome: 'moved' });
+            if (e.fields[0]?.outcome === 'written') {
+              report.fieldsCorrected.push({ type: 'EQUIPMENT', id: c.equipmentId!, fieldKey: 'acquisitionDate', outcome: 'moved' });
+              await journaliser(sql, report.runId, o.reason ?? null, {
+                accountId, kind: 'AGENDA_PURCHASE_MOVED', subjectType: 'EQUIPMENT', subjectId: c.equipmentId!, fieldKey: 'acquisitionDate',
+                before: null, after: c.value, detail: { motive: c.motive, assetId },
+              });
+            }
           }
           const r = await writeCanonicalAssetField({
             assetId, accountId, key: 'acquisitionDate', value: null, origin: 'ADMIN', expectedCurrent: cs[0].value,
@@ -318,8 +521,8 @@ export async function runDataSeparationBackfill(o: {
         }
       }
 
-      // ── D : documents → équipements (rétroactif, déterministe seul) ───────
-      const { syncDocumentEquipmentLinks, documentsOfAsset } = await import('./document-equipment-link.service');
+      // ── D : documents → équipements (rétroactif, déterministe seul ; TOUS les documents, par pages) ──
+      const { syncDocumentEquipmentLinks, iterateDocumentsOfAsset } = await import('./document-equipment-link.service');
       const biensAvecEquipements = (await sql.unsafe(
         `SELECT DISTINCT a.id FROM assets a JOIN equipments e ON e.asset_id = a.id AND e.archived_at IS NULL
           WHERE a.account_id = $1 AND a.deleted_at IS NULL ORDER BY a.id`,
@@ -327,7 +530,7 @@ export async function runDataSeparationBackfill(o: {
       )) as unknown as Row[];
       const vus = new Set<number>();
       for (const b of biensAvecEquipements) {
-        for (const fileId of await documentsOfAsset(accountId, Number(b.id), sql, o.maxDocumentsPerAccount ?? 2000)) {
+        for await (const fileId of iterateDocumentsOfAsset(accountId, Number(b.id), sql)) {
           if (vus.has(fileId)) continue;
           vus.add(fileId);
           const r = await syncDocumentEquipmentLinks({ accountId, fileId, allowAi: false, proposeCard: o.apply, dryRun: !o.apply, sql });
@@ -346,7 +549,7 @@ export async function runDataSeparationBackfill(o: {
           }
         }
       }
-      log(`compte ${accountId} : ${cas.length} cas, ${report.documents.examined} document(s) examiné(s) au total`);
+      log(`compte ${accountId} : ${cas.length} cas démontré(s), ${report.suspects.filter((x) => x.accountId === accountId).length} suspect(s), ${report.documents.examined} document(s) examiné(s) au total`);
     } catch (e) {
       report.failed.push({ ref: `compte ${accountId}`, error: (e as Error).message });
       log(`compte ${accountId} : échec — ${(e as Error).message}`);

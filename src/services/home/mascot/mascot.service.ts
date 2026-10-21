@@ -99,11 +99,15 @@ export async function getMascotPresentation(
       // Décisions conservées, rejetées ou échec : l'état est relu (décision
       // validée, ou état « indisponible » explicite après un échec).
       const o = await evaluation;
+      const examines = interpellation.examined ?? 0;
       if (o.status !== 'disabled') interpellation = await prepare(accountId, userId, raw, mode);
       // Lot 71G (T6-03) : candidats restés hors de ce passage (8 par appel) —
       // REPRIS par une nouvelle demande durable, tant que l'évaluation progresse
       // (jamais de relance en boucle sur un échec : plafonds de coût inchangés).
-      if (o.persisted > 0 && interpellation.pendingAssessments > 0) {
+      // Lot 75E (B) : file d'examen plus longue que la lecture — reprise aussi
+      // tant que des examens s'achèvent (curseur persistant).
+      const progres = o.persisted > 0 || examines + (interpellation.examined ?? 0) > 0;
+      if (progres && (interpellation.pendingAssessments > 0 || interpellation.selectionBacklog)) {
         await (await import('./pregen-queue')).requestMascotPregeneration(accountId, 't6-resume');
         reprise = true;
         opts.onResume?.();
@@ -115,6 +119,17 @@ export async function getMascotPresentation(
       void evaluation.then((o) => { if (o.persisted > 0) scheduleMascotPregeneration(accountId, PREGEN_DEBOUNCE_MS, 't6-assessment'); });
     }
   }
+  // Lot 75E (B) : pré-génération sans évaluation à demander, mais file d'examen
+  // plus longue que la lecture — reprise tant que des examens s'achèvent.
+  if (mode === 'pregen' && !interpellation.bundle && interpellation.selectionBacklog && (interpellation.examined ?? 0) > 0) {
+    await (await import('./pregen-queue')).requestMascotPregeneration(accountId, 't6-resume');
+    reprise = true;
+    opts.onResume?.();
+  }
+  // Lot 75E (B) : affichage d'un compte dont la file d'examen dépasse la
+  // lecture — la pré-génération du compte (seule à faire avancer le curseur
+  // persistant) est demandée, durable et temporisée (jamais attendue).
+  if (mode !== 'pregen' && interpellation.selectionBacklog) scheduleMascotPregeneration(accountId, PREGEN_DEBOUNCE_MS, 't6-selection');
   const candidates = buildCandidates(raw, { interpellation: { shown: interpellation.shown } });
   const subjects = selectSubjects(candidates.candidates);
   // Lot 55A : actions secondaires seulement (onboarding, recommandations) —

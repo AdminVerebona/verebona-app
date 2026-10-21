@@ -16,6 +16,11 @@ import { EQUIPMENT_FICHE_FIELDS } from '@/lib/asset-detail-rules';
  *
  * Lot 70B : `equipment.energyUsage` (usage énergétique déclaré, `null` = non
  * renseigné) et `equipment.category`, éditables dans le tiroir.
+ *
+ * Lot 75A : `equipment.cilSpecs` — caractéristiques CIL lues par la règle
+ * B6 (énergie utilisée, évacuation des fumées, sous-station) — pour que le
+ * tiroir décide de la pertinence du champ « Usage énergétique » avec LA
+ * règle partagée (`isEnergyUsageFieldRelevant`). Lecture seule.
  */
 export async function GET(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   let session;
@@ -38,11 +43,15 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       id: number; assetId: number; name: string; type: string | null;
       category: string | null; energyUsage: string | null;
       status: string; substructureId: number | null; assetName: string;
+      cilSpecs: { energyType: string | null; evacuationMode: string | null; heatNetworkDeliveryStation: string | null };
     }[]>`
       SELECT e.id, e.asset_id AS "assetId", e.name, e.type, e.category, e.energy_usage AS "energyUsage", e.status,
-             e.substructure_id AS "substructureId", a.name AS "assetName"
+             e.substructure_id AS "substructureId", a.name AS "assetName",
+             json_build_object('energyType', s.energy_type, 'evacuationMode', s.evacuation_mode,
+                               'heatNetworkDeliveryStation', s.heat_network_delivery_station) AS "cilSpecs"
       FROM equipments e
       JOIN assets a ON a.id = e.asset_id
+      LEFT JOIN equipment_cil_specs s ON s.equipment_id = e.id
       WHERE e.id = ${equipmentId} AND a.account_id = ${accountId} AND a.deleted_at IS NULL
         AND e.archived_at IS NULL
       LIMIT 1

@@ -24,8 +24,9 @@ export function parseAgendaPeriod(raw: string | null | undefined): AgendaPeriod 
 }
 
 /**
- * Pastilles « Filtré par … », dans l'ordre Période, Bien, Équipement,
- * Statut. Clés : `period`, `bien:<id>`, `equipment`, `cancelled`.
+ * Pastilles « Filtré par … », dans l'ordre Période, Bien, Pièce,
+ * Équipement, Statut. Clés : `period`, `bien:<id>`, `piece`, `equipment`,
+ * `cancelled` (Pièce : lot 75B, même ordre que « Mes documents »).
  */
 export function agendaFilterChips(input: {
   period: AgendaPeriod;
@@ -34,6 +35,8 @@ export function agendaFilterChips(input: {
   assetOptions: ReadonlyArray<{ id: number; name: string }>;
   /** Libellé du filtre Équipement actif, `null` s'il n'agit pas. */
   equipmentChipLabel: string | null;
+  /** Lot 75B : libellé du filtre Pièce actif, `null` (ou absent) s'il n'agit pas. */
+  roomChipLabel?: string | null;
 }): Array<{ key: string; label: string }> {
   const noms = new Map(input.assetOptions.map((a) => [a.id, a.name]));
   return [
@@ -41,6 +44,7 @@ export function agendaFilterChips(input: {
       ? [{ key: 'period', label: AGENDA_PERIOD_OPTIONS.find((o) => o.value === input.period)?.label ?? input.period }]
       : []),
     ...input.assetIds.map((id) => ({ key: `bien:${id}`, label: noms.get(id) ?? 'Bien' })),
+    ...(input.roomChipLabel ? [{ key: 'piece', label: input.roomChipLabel }] : []),
     ...(input.equipmentChipLabel ? [{ key: 'equipment', label: input.equipmentChipLabel }] : []),
     ...(input.includeCancelled ? [{ key: 'cancelled', label: 'Annulés affichés' }] : []),
   ];

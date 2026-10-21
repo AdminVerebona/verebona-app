@@ -195,6 +195,28 @@ export function isCilEnergyEquipment(e: CilEnergyEquipmentInput): boolean {
   return classifyCilEnergyEquipment(e) !== null;
 }
 
+/**
+ * Lot 75A — PERTINENCE du champ « Usage énergétique » dans le tiroir
+ * équipement (consultation et formulaire). Ce n'est PAS la règle B6 :
+ *
+ *   · un choix explicite (y compris « Aucun usage énergétique ») est une
+ *     donnée de l'utilisateur : toujours affiché et modifiable — une
+ *     chaudière déclarée « aucun » est exclue de B6 (`isCilEnergyEquipment`
+ *     faux) mais son choix reste visible ;
+ *   · « Non renseigné » : visible seulement si les critères STRUCTURÉS de la
+ *     règle B6 (catégorie, type du référentiel, caractéristiques CIL)
+ *     reconnaissent un équipement énergétique — même référentiel, aucune
+ *     seconde classification. Un aspirateur, un téléviseur ou un lave-linge
+ *     ne l'affichent pas (un équipement électrique n'est pas pour autant à
+ *     incidence énergétique au sens du CIL).
+ *
+ * Pure ; ne transforme jamais `null` en « aucun ».
+ */
+export function isEnergyUsageFieldRelevant(e: CilEnergyEquipmentInput): boolean {
+  if (normalizeEquipmentEnergyUsage(e.energyUsage) !== null) return true;
+  return classifyCilEnergyEquipment({ ...e, energyUsage: null }) !== null;
+}
+
 /** Équipements du périmètre B6, dans l'ordre reçu. Jamais de repli sur la liste complète. */
 export function cilEnergyEquipments<T extends CilEnergyEquipmentInput>(list: readonly T[]): T[] {
   return list.filter(isCilEnergyEquipment);

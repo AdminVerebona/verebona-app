@@ -380,16 +380,19 @@ describe('DIAG-AU — audit transversal (cas corrigés)', () => {
     for (const f of ['IMMOBILIER', 'VEHICULE', 'OBJET']) expect(tenureSituationHint(f, {})).not.toMatch(/détention ou d.occupation/);
   });
 
-  it('DIAG-AU03 — journaux de schéma : n’affirment que ce qui est constaté', () => {
+  it('DIAG-AU03 — journaux de schéma : n’affirment que ce qui est constaté (adapté lot 75A : jamais « migration non appliquée »)', () => {
     const base = { scope: '[x]', migration: '0223', expected: ['a', 'b', 'c'], consequence: 'Effet.' };
-    expect(schemaNotReadyMessage({ ...base, found: 2 })).toContain('INCOMPLÈTE : 2/3');
-    expect(schemaNotReadyMessage({ ...base, found: 2 })).not.toContain('NON APPLIQUÉE');
-    expect(schemaNotReadyMessage({ ...base, found: 0 })).toContain('NON APPLIQUÉE : a, b, c absents');
-    expect(schemaNotReadyMessage({ ...base, missing: ['b'] })).toContain('NON APPLIQUÉE : b absent.');
+    expect(schemaNotReadyMessage({ ...base, found: 2 })).toContain('Schéma incomplet');
+    expect(schemaNotReadyMessage({ ...base, found: 2 })).toContain('2/3');
+    expect(schemaNotReadyMessage({ ...base, found: 0 })).toContain('Aucun élément attendu trouvé (migration de référence 0223) parmi a, b, c');
+    expect(schemaNotReadyMessage({ ...base, missing: ['b'] })).toContain('Schéma incomplet (migration de référence 0223) : b absent (2/3 présents).');
     const err = schemaNotReadyMessage({ ...base, found: null, error: new Error('connection refused') });
     expect(err).toContain('Vérification du schéma (migration 0223) impossible : connection refused');
-    expect(err).not.toContain('NON APPLIQUÉE');
-    expect(schemaNotReadyMessage({ ...base })).toContain('au moins un élément absent parmi a, b, c');
+    expect(schemaNotReadyMessage({ ...base })).toContain('État du schéma indéterminé');
+    expect(schemaNotReadyMessage({ ...base })).not.toContain('absent');
+    for (const p of [{ ...base, found: 2 }, { ...base, found: 0 }, { ...base, missing: ['b'] }, { ...base, error: new Error('x') }, { ...base }]) {
+      expect(schemaNotReadyMessage(p)).not.toMatch(/NON APPLIQU/i);
+    }
   });
 
   it('DIAG-AU04 — agenda 0223 : 2 colonnes sur 3 → « 2/3 », pas « clé fonctionnelle et nature absentes »', async () => {
@@ -415,7 +418,7 @@ describe('DIAG-AU — audit transversal (cas corrigés)', () => {
     __resetEntityColumnsForTests();
     expect(await entityCanonicalColumnsReady()).toBe(false);
     const msg = String(spy.mock.calls[0][0]);
-    expect(msg).toContain('substructures.area absent.');
+    expect(msg).toContain('substructures.area absent (');
     expect(msg).not.toContain('equipments.key_characteristics');
   });
 

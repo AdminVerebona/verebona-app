@@ -151,43 +151,102 @@ export async function familyDecisionsReady(): Promise<boolean> {
   return pret.ok;
 }
 
-/** Passages conservés sur une décision dédupliquée. */
+let passagesPrets: { at: number; ok: boolean } | null = null;
+
+/** Table des passages durables (lot 75I, 0560) présente ? (relue au plus toutes les 5 minutes) */
+export async function durablePassagesReady(): Promise<boolean> {
+  if (passagesPrets && Date.now() - passagesPrets.at < 300_000) return passagesPrets.ok;
+  try {
+    const [r] = (await pgClient.unsafe(`SELECT to_regclass('to_process_evaluation_passages') IS NOT NULL AS ok`)) as unknown as Array<{ ok: boolean }>;
+    passagesPrets = { at: Date.now(), ok: r?.ok === true };
+  } catch { passagesPrets = { at: Date.now(), ok: false }; }
+  return passagesPrets.ok;
+}
+
+/** Réservé aux tests : oublie les sondes de présence des tables. */
+export function __resetTraceProbesForTests(): void { pret = null; passagesPrets = null; }
+
+/**
+ * Lot 75I (E) — insertion du passage DURABLE dans la MÊME instruction SQL que
+ * l'écriture de l'évaluation (CTE) : atomique, jamais une évaluation sans son
+ * passage ni l'inverse. `ecriture` : instruction UPDATE / INSERT … RETURNING
+ * id, account_id. Pure (texte SQL).
+ */
+export function withDurablePassage(ecriture: string, p: { source: 'DOCUMENT_RULE' | 'FAMILY'; kind: 'INSERTED' | 'REPEATED'; triggerParam: string; runRefParam: string }): string {
+  const col = p.source === 'DOCUMENT_RULE' ? 'rule_evaluation_id' : 'family_decision_id';
+  return `WITH ecrite AS (${ecriture}),
+          passage AS (INSERT INTO to_process_evaluation_passages (account_id, source, ${col}, kind, trigger_code, run_ref)
+                      SELECT account_id, '${p.source}', id, '${p.kind}', ${p.triggerParam}, ${p.runRefParam} FROM ecrite RETURNING id)
+     SELECT id FROM ecrite`;
+}
+
+/** Passages conservés dans l'aperçu `passages` d'une décision dédupliquée (tous : table 0560). */
 const PASSAGES_MAX = 20;
 
 /**
  * Trace une décision d'une famille « état de la base ». Une décision
  * identique à la dernière de la même cible et règle ne fait que dater le
  * constat (dédupliquée). Ne lève jamais.
+ *
+ * Lot 75I (E) : chaque passage est AUSSI conservé durablement
+ * (`to_process_evaluation_passages`, sans limite de nombre), dans la même
+ * instruction. Rend l'ERREUR de journalisation (null : tracée) — l'appelant
+ * la remonte au diagnostic technique, jamais en console seule.
  */
-export async function recordFamilyDecision(r: FamilyDecisionRecord): Promise<void> {
-  if (!(await familyDecisionsReady())) return;
+export async function recordFamilyDecision(r: FamilyDecisionRecord): Promise<string | null> {
+  if (!(await familyDecisionsReady())) return null;
   const signature = familyDecisionSignature(r);
   const passage = JSON.stringify([{ at: new Date().toISOString(), trigger: r.trigger, runRef: r.runRef ?? null }]);
+  const durable = await durablePassagesReady();
   try {
-    const maj = (await pgClient.unsafe(
-      `UPDATE to_process_decisions SET last_seen_at = now(), seen_count = seen_count + 1, trigger_code = $6, reevaluate_at = $7::timestamptz,
+    const maj = `UPDATE to_process_decisions SET last_seen_at = now(), seen_count = seen_count + 1, trigger_code = $6, reevaluate_at = $7::timestamptz,
               passages = (SELECT COALESCE(jsonb_agg(z.p ORDER BY z.n), '[]'::jsonb) FROM (
                 SELECT p, n FROM jsonb_array_elements($8::jsonb || COALESCE(passages, '[]'::jsonb)) WITH ORDINALITY AS t(p, n)
                  ORDER BY n LIMIT ${PASSAGES_MAX}) z)
         WHERE id = (SELECT id FROM to_process_decisions WHERE account_id = $1 AND target_type = $2 AND target_id = $3 AND rule_code = $4 ORDER BY id DESC LIMIT 1)
           AND signature = $5
-        RETURNING id`,
-      [r.accountId, r.targetType, r.targetId, r.ruleCode, signature, r.trigger, r.reevaluateAt ?? null, passage] as never[],
+        RETURNING id, account_id`;
+    const majRows = (await pgClient.unsafe(
+      durable ? withDurablePassage(maj, { source: 'FAMILY', kind: 'REPEATED', triggerParam: '$6', runRefParam: '$9' }) : maj,
+      [r.accountId, r.targetType, r.targetId, r.ruleCode, signature, r.trigger, r.reevaluateAt ?? null, passage, ...(durable ? [r.runRef ?? null] : [])] as never[],
     )) as unknown as Array<{ id: number }>;
-    if (maj.length) return;
-    await pgClient.unsafe(
-      `INSERT INTO to_process_decisions (account_id, target_type, target_id, rule_code, data_key, trigger_code, run_ref, engine_version,
+    if (majRows.length) return null;
+    const ins = `INSERT INTO to_process_decisions (account_id, target_type, target_id, rule_code, data_key, trigger_code, run_ref, engine_version,
                                          outcome, decision_kind, reason_code, decisive_check, checks, evidence, effect, action_ids,
                                          reevaluate_at, error, signature, passages)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13::jsonb, $14::jsonb, $15, $16::jsonb, $17::timestamptz, $18, $19, $20::jsonb)`,
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13::jsonb, $14::jsonb, $15, $16::jsonb, $17::timestamptz, $18, $19, $20::jsonb)
+       RETURNING id, account_id`;
+    await pgClient.unsafe(
+      durable ? withDurablePassage(ins, { source: 'FAMILY', kind: 'INSERTED', triggerParam: '$6', runRefParam: '$7' }) : ins,
       [r.accountId, r.targetType, r.targetId, r.ruleCode, r.dataKey, r.trigger, r.runRef ?? null, ADMISSIBILITY_VERSION,
         r.decision.outcome, familyDecisionKind(r), r.decision.reason.slice(0, 200), r.decision.decisive, JSON.stringify(r.decision.checks),
         JSON.stringify(r.evidence ?? {}), r.effect, r.actionIds ? JSON.stringify(r.actionIds) : null, r.reevaluateAt ?? null,
         r.error ? String(r.error).slice(0, 300) : null, signature, passage] as never[],
     );
+    return null;
   } catch (e) {
-    console.error(`[to-process] décision ${r.ruleCode} (${r.targetType} ${r.targetId}) non tracée :`, (e as Error).message);
+    const cause = `décision ${r.ruleCode} (${r.targetType} ${r.targetId}) non tracée : ${(e as Error).message}`.slice(0, 300);
+    console.error(`[to-process] ${cause}`);
+    return cause;
   }
+}
+
+/**
+ * Lot 75I (E) — passages DURABLES d'une évaluation (diagnostic BO), du plus
+ * récent au plus ancien, et leur nombre total.
+ */
+export async function listDurablePassages(p: { source: 'DOCUMENT_RULE' | 'FAMILY'; evaluationId: number; limit?: number }): Promise<{ total: number; passages: Array<{ at: string; trigger: string; runRef: string | null; kind: string }> }> {
+  if (!(await durablePassagesReady())) return { total: 0, passages: [] };
+  const col = p.source === 'DOCUMENT_RULE' ? 'rule_evaluation_id' : 'family_decision_id';
+  const rows = (await pgClient.unsafe(
+    `SELECT seen_at, trigger_code, run_ref, kind, count(*) OVER () AS total FROM to_process_evaluation_passages
+      WHERE ${col} = $1 ORDER BY id DESC LIMIT $2`,
+    [p.evaluationId, Math.max(1, Math.min(500, p.limit ?? 100))] as never[],
+  )) as unknown as Array<{ seen_at: string; trigger_code: string; run_ref: string | null; kind: string; total: number }>;
+  return {
+    total: Number(rows[0]?.total ?? 0),
+    passages: rows.map((x) => ({ at: new Date(x.seen_at).toISOString(), trigger: x.trigger_code, runRef: x.run_ref, kind: x.kind })),
+  };
 }
 
 /** Décisions récentes d'une famille (diagnostic BO), filtrées. */
@@ -222,10 +281,24 @@ export const DECISION_TRACE_RETENTION_DAYS = 400;
  * événement de carte (historique des décisions de l'utilisateur intact).
  * Bornée par passage. Ne lève jamais ; rend le nombre de lignes retirées.
  */
-export async function purgeSupersededDecisionTraces(p: { retentionDays?: number; limit?: number } = {}): Promise<{ familyDecisions: number; documentRuleEvaluations: number }> {
+export async function purgeSupersededDecisionTraces(p: { retentionDays?: number; limit?: number } = {}): Promise<{ familyDecisions: number; documentRuleEvaluations: number; passages?: number }> {
   const jours = Math.max(90, p.retentionDays ?? DECISION_TRACE_RETENTION_DAYS);
   const limite = Math.max(1, Math.min(20_000, p.limit ?? 5_000));
-  const out = { familyDecisions: 0, documentRuleEvaluations: 0 };
+  const out = { familyDecisions: 0, documentRuleEvaluations: 0, passages: 0 };
+  // Lot 75I (E) : rétention EXPLICITE des passages durables (même durée) ; une évaluation purgée emporte les siens (cascade).
+  try {
+    if (await durablePassagesReady()) {
+      const r = (await pgClient.unsafe(
+        `DELETE FROM to_process_evaluation_passages WHERE id IN (
+           SELECT id FROM to_process_evaluation_passages WHERE seen_at < now() - ($1::int * interval '1 day') ORDER BY id LIMIT $2)
+         RETURNING id`,
+        [jours, limite] as never[],
+      )) as unknown as unknown[];
+      out.passages = r.length;
+    }
+  } catch (e) {
+    console.error('[to-process] rétention des passages impossible :', (e as Error).message);
+  }
   const purge = async (table: string, cle: string): Promise<number> => {
     const [t] = (await pgClient.unsafe(`SELECT to_regclass('${table}') IS NOT NULL AS ok`)) as unknown as Array<{ ok: boolean }>;
     if (!t?.ok) return 0;

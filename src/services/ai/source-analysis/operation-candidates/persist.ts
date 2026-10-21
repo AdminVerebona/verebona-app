@@ -36,7 +36,7 @@
  * ni ne modifie aucun candidat.
  * ══════════════════════════════════════════════════════════════════════════
  */
-import { schemaNotReadyMessage } from '@/lib/schema-readiness-log';
+import { missingFromPresenceFlags, schemaNotReadyMessage } from '@/lib/schema-readiness-log';
 import type { AnchoredOperationCandidate } from './prepare';
 
 type Tx = { unsafe: (q: string, p?: never[]) => Promise<unknown> };
@@ -59,6 +59,7 @@ export interface CandidateEvidenceAnchor {
 /** Version du payload (jsonb) — artefact d'extraction, pas une donnée métier. */
 export const OPERATION_CANDIDATE_PAYLOAD_VERSION = 1;
 
+const OPERATION_CANDIDATES_EXPECTED = ['document_operation_candidates', 'document_operation_candidates.t3_pending'] as const;
 const RECONTROLE_MS = 5 * 60_000;
 let etat: { ready: boolean; checkedAt: number } | null = null;
 let signale = false;
@@ -67,15 +68,18 @@ let signale = false;
 export async function operationCandidatesReady(): Promise<boolean> {
   if (etat && (etat.ready || Date.now() - etat.checkedAt < RECONTROLE_MS)) return etat.ready;
   let ready = false;
+  let absents: string[] | null = null;
   let erreur: unknown;
   try {
     const { pgClient } = await import('@/db');
+    // Lot 75A : un drapeau par élément attendu (liste exacte des absents).
     const r = (await pgClient.unsafe(
-      `SELECT to_regclass('document_operation_candidates') IS NOT NULL
-          AND EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema()
-                       AND table_name = 'document_operation_candidates' AND column_name = 't3_pending') AS ok`,
-    )) as unknown as Array<{ ok: boolean }>;
-    ready = Boolean(r[0]?.ok);
+      `SELECT to_regclass('document_operation_candidates') IS NOT NULL AS a,
+              EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema()
+                       AND table_name = 'document_operation_candidates' AND column_name = 't3_pending') AS b`,
+    )) as unknown as Array<{ a: boolean; b: boolean }>;
+    absents = r[0] ? missingFromPresenceFlags(OPERATION_CANDIDATES_EXPECTED, [r[0].a, r[0].b]) : null;
+    ready = absents !== null && absents.length === 0;
   } catch (e) {
     ready = false;
     erreur = e;
@@ -84,8 +88,8 @@ export async function operationCandidatesReady(): Promise<boolean> {
   if (!ready && !signale) {
     signale = true;
     console.error(schemaNotReadyMessage({
-      scope: '[t1-operation-candidates]', migration: '0317 / 0320', error: erreur,
-      expected: ['document_operation_candidates', 'document_operation_candidates.t3_pending'],
+      scope: '[t1-operation-candidates]', migration: '0317 / 0320', error: erreur, missing: absents,
+      expected: OPERATION_CANDIDATES_EXPECTED,
       consequence: 'Candidats Opération de T1 non écrits ; les faits restent écrits comme avant.',
     }));
   }

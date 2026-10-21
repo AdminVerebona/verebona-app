@@ -114,9 +114,9 @@ describe('Pertinence d’une échéance (T4 CLASSIFY_EVENT, branche existante)',
     expect(calls).toHaveLength(0);
   });
 
-  it('ECH-08 — aucune date candidate, version T4 sans évaluation structurée : question maintenue sans IA (contrat actif possible)', async () => {
+  it('ECH-08 — aucune date candidate, version T4 sans évaluation structurée : lot 75I (D) — plus de question par défaut, décision prudente signalée, sans IA', async () => {
     const { decide, calls } = t4({});
-    expect((await ev.assessDeadlinePertinence({ ...base, rule: CONTRACT, candidates: [], decide })).pertinence).toBe('FUTURE_OR_UNDATED');
+    expect(await ev.assessDeadlinePertinence({ ...base, rule: CONTRACT, candidates: [], decide })).toMatchObject({ pertinence: 'T4_INCOMPATIBLE', outcome: 'DEFER', card: null });
     expect(calls).toHaveLength(0);
   });
 

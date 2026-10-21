@@ -68,7 +68,7 @@ import {
 } from './relevance-thresholds';
 
 /** Version du traitement (diagnostic, BO). */
-export const DOCUMENT_RULE_ENGINE_VERSION = 'l72-1';
+export const DOCUMENT_RULE_ENGINE_VERSION = 'l75-1';
 
 // ══════════════════════════════════════════════════════════════════════════
 // DATES — fonctions pures
@@ -212,23 +212,49 @@ export interface EvidenceFact {
  * Vocabulaire générique du français contractuel, aucune règle propre à un
  * fournisseur ou à un contrat.
  */
-export interface LifecycleSignals { renewal: boolean; terminated: boolean; residual: boolean; signals: string[] }
+export interface LifecycleSignals {
+  renewal: boolean; terminated: boolean; residual: boolean; signals: string[];
+  /**
+   * Lot 75I (A) : CLAUSES lues qui portent ces signaux (≤ 5 × 300 caractères,
+   * dédoublonnées) — transmises à T4 pour juger une obligation, même quand
+   * elles ne sont pas dans l'extrait associé à la date.
+   */
+  clauses?: string[];
+}
+
+/** Clauses transmises à T4 au plus (lot 75I). */
+export const MAX_OBLIGATION_CLAUSES = 5;
 
 const RE_SANS_RECONDUCTION = /\b(sans|non|pas de|aucune?|ni)\s+(\w+\s){0,2}(reconduction|reconduit\w*|reconductible|renouvel\w*)/;
 const RE_RECONDUCTION = /\b(reconduction|reconduit\w*|reconductible\w*|renouvel\w*|tacite\w*|prorogation|proroge\w*)\b/;
 const RE_FIN_EFFECTIVE = /\b(resiliation effective|resilie\w*|a pris fin|prend fin|ayant pris fin|est termine\w*|cloture\w*|solde\w*|echu\w*|expire\w*|arrive a son terme|a son terme|fin effective)\b/;
 const RE_OBLIGATION_RESIDUELLE = /\b(restitu\w*|rendre|retourner|rembourser|regler|reste a payer|reste du|solde restant|solde du|penalite\w*|frais de resiliation|indemnite\w*)\b/;
+/**
+ * Lot 75I (A) — vocabulaire générique d'une OBLIGATION possible (démarche,
+ * préavis, paiement, restitution, reconduction…) : ouvre l'examen par T4
+ * d'une échéance connue. Jamais une décision à lui seul.
+ */
+const RE_OBLIGATION_POSSIBLE = /\b(restitu\w*|rendre|retourn\w*|rembours\w*|regler|payer|paiement\w*|verser|versement\w*|solde\w*|penalit\w*|indemnit\w*|frais de \w+|preavis|resili\w*|denonc\w*|reconduc\w*|reconduit\w*|renouvel\w*|tacite\w*|prorog\w*|remettre|remise des cles|etat des lieux|obligation\w*|tenu de|tenue de|au plus tard)\b/;
+
+/** Un texte mentionne-t-il une obligation possible ? (pure) */
+export const mentionsObligation = (texte: string | null | undefined): boolean =>
+  !!texte && RE_OBLIGATION_POSSIBLE.test(` ${sansAccents(String(texte)).toLowerCase().replace(/[^a-z0-9]+/g, ' ')} `);
 
 /** Signaux de cycle de vie d'un ensemble de textes lus (pure). */
 export function lifecycleSignalsOf(textes: Array<string | null | undefined>): LifecycleSignals {
-  const out: LifecycleSignals = { renewal: false, terminated: false, residual: false, signals: [] };
+  const out: LifecycleSignals = { renewal: false, terminated: false, residual: false, signals: [], clauses: [] };
   for (const brut of textes) {
     if (!brut) continue;
     const t = ` ${sansAccents(String(brut)).toLowerCase().replace(/[^a-z0-9]+/g, ' ')} `;
     const sans = RE_SANS_RECONDUCTION.test(t);
-    if (!sans && RE_RECONDUCTION.test(t)) { out.renewal = true; if (out.signals.length < 6) out.signals.push(`renewal:${String(brut).slice(0, 60)}`); }
-    if (RE_FIN_EFFECTIVE.test(t) || sans) { out.terminated = true; if (out.signals.length < 6) out.signals.push(`terminated:${String(brut).slice(0, 60)}`); }
-    if (RE_OBLIGATION_RESIDUELLE.test(t)) { out.residual = true; if (out.signals.length < 6) out.signals.push(`residual:${String(brut).slice(0, 60)}`); }
+    let porteur = false;
+    if (!sans && RE_RECONDUCTION.test(t)) { porteur = true; out.renewal = true; if (out.signals.length < 6) out.signals.push(`renewal:${String(brut).slice(0, 60)}`); }
+    if (RE_FIN_EFFECTIVE.test(t) || sans) { porteur = true; out.terminated = true; if (out.signals.length < 6) out.signals.push(`terminated:${String(brut).slice(0, 60)}`); }
+    if (RE_OBLIGATION_RESIDUELLE.test(t)) { porteur = true; out.residual = true; if (out.signals.length < 6) out.signals.push(`residual:${String(brut).slice(0, 60)}`); }
+    if (!porteur && RE_OBLIGATION_POSSIBLE.test(t)) porteur = true;
+    // Lot 75I (A) : la clause elle-même (texte lu, borné) — preuve transmise à T4.
+    const clause = String(brut).replace(/\s+/g, ' ').trim().slice(0, 300);
+    if (porteur && clause && out.clauses!.length < MAX_OBLIGATION_CLAUSES && !out.clauses!.includes(clause)) out.clauses!.push(clause);
   }
   return out;
 }
@@ -526,10 +552,27 @@ export type Pertinence =
   /** Lot 61 : valeurs FIABLES contradictoires — arbitrage justifié, quel que soit l'horizon. */
   | 'CONTRADICTION'
   /** Lot 72 (C2) : fin effective du contrat PROUVÉE (sans reconduction ni obligation résiduelle). */
-  | 'CONTRACT_TERMINATED';
+  | 'CONTRACT_TERMINATED'
+  /**
+   * Lot 75I (D) : la configuration T4 active ne prend pas en charge
+   * l'évaluation structurée (`t4_output_v3`) — situation indécidable : ni
+   * question, ni carte, ni fermeture ; réévaluée dès qu'une configuration
+   * compatible est activée (référence de configuration changée).
+   */
+  | 'T4_INCOMPATIBLE'
+  /** Lot 75I (A) : échéance CONNUE ancienne, aucun signal d'obligation lu — réévaluation programmée, jamais « sans enjeu » sur l'âge seul. */
+  | 'KNOWN_HISTORICAL'
+  /**
+   * Lot 75I (A) : échéance CONNUE, AUCUNE clause d'obligation dans la
+   * connaissance (ni clause, ni extrait de la date, ni titre) — aucune
+   * intervention ne peut être établie : pas de carte, pas d'appel IA ; revue
+   * dès que la connaissance change. N'est PAS un « règlement » (T6 garde ses rappels).
+   */
+  | 'NO_OBLIGATION_EVIDENCE';
 
 export type RelevanceOutcome = 'AUTO_RESOLVED' | 'NO_ACTION' | 'DEFER' | 'CREATE_ACTION';
-export type RelevanceSituation = 'NOT_DEADLINE' | 'PAST_DEADLINE' | 'FUTURE_DEADLINE' | 'UNDATED' | 'TITLE_ONLY';
+/** Lot 75I (A) : `KNOWN_DEADLINE` — date CONNUE (lue, saisie, écrite ou calculée) : seule l'obligation est évaluée. */
+export type RelevanceSituation = 'NOT_DEADLINE' | 'PAST_DEADLINE' | 'FUTURE_DEADLINE' | 'UNDATED' | 'TITLE_ONLY' | 'KNOWN_DEADLINE';
 
 export type { InterventionDecision } from './intervention-check';
 
@@ -544,13 +587,13 @@ export interface DecisionContract {
   fileId: number;
   documentType: string | null;
   /** Nature du problème. */
-  problem: 'MISSING_DATA' | 'UNCERTAIN_DATA' | 'DEADLINE_INTERVENTION';
+  problem: 'MISSING_DATA' | 'UNCERTAIN_DATA' | 'DEADLINE_INTERVENTION' | 'DEADLINE_OBLIGATION';
   /** Intervention précise attendue (null si aucune). */
   intervention: { kind: string | null; action: string | null; actBy: string | null } | null;
   consequence: string | null;
   /** Pourquoi la résolution automatique ne suffit pas. */
   autoResolution: string;
-  temporal: { situation: RelevanceSituation; today: string; candidates: string[]; nearestFuture: string | null; reevaluateAt: string | null };
+  temporal: { situation: RelevanceSituation; today: string; candidates: string[]; nearestFuture: string | null; reevaluateAt: string | null; knownDate?: string | null };
   reliability: { level: 'HIGH' | 'MEDIUM' | 'LOW'; sources: string[]; evidence: string | null };
   decision: RelevanceOutcome | null;
   motive: string;
@@ -577,6 +620,8 @@ export interface PertinenceResult {
   reevaluateAt: string | null;
   /** Échec technique (IA, lecture) : aucune fermeture ne doit en découler. */
   technicalFailure: boolean;
+  /** Lot 75I (D) : contrat T4 actif incompatible — état prudent (aucune carte créée ni fermée), signalé au diagnostic. */
+  incompatible?: boolean;
   contract: DecisionContract | null;
 }
 
@@ -769,7 +814,7 @@ export interface RelevanceInput {
  *       maintenue (comportement antérieur), sans appel IA inutile.
  */
 export async function assessDeadlinePertinence(p: RelevanceInput): Promise<PertinenceResult> {
-  const vide = { aiCalled: false, cached: false, aiStatus: null, aiTraceId: null, intervention: null, technicalFailure: false } as const;
+  const vide = { aiCalled: false, cached: false, aiStatus: null, aiTraceId: null, intervention: null, technicalFailure: false, incompatible: false } as const;
   const config: T4AssessmentConfig = p.config ?? { ref: 'unknown', interventionCapable: false };
   // Lot 63 : seuils réglables (BO), portés par la configuration effective.
   const { futureHorizonDays: FUTURE_HORIZON_DAYS, historicalYears: HISTORICAL_YEARS, deferUncertainDays: DEFER_UNCERTAIN_DAYS,
@@ -830,11 +875,13 @@ export async function assessDeadlinePertinence(p: RelevanceInput): Promise<Perti
     }
     if (!config.interventionCapable) {
       // Version T4 active sans évaluation structurée : aucune décision fiable
-      // possible par l'IA → comportement antérieur pour un document sans date
-      // (question), mais jamais une question sur la seule foi d'un titre.
+      // possible par l'IA. Lot 75I (D) : une donnée manquante n'est jamais un
+      // besoin démontré — plus de question par défaut. État prudent (ni
+      // carte créée, ni carte fermée), incompatibilité signalée ; réévaluée
+      // dès l'activation d'une configuration compatible (référence changée).
       return situation === 'TITLE_ONLY'
         ? res({ pertinence: 'TITLE_HINT_ONLY', reason: 'title_only_no_t4_assessment', signature: null, outcome: 'DEFER', situation, card: null, reevaluateAt: aMinuit(plusJours(p.today, DEFER_TITLE_ONLY_DAYS)) })
-        : res({ pertinence: 'FUTURE_OR_UNDATED', reason: 'undated_no_t4_assessment', signature: null, outcome: 'CREATE_ACTION', situation, card: 'DATA_QUESTION', reevaluateAt: null });
+        : res({ pertinence: 'T4_INCOMPATIBLE', reason: 'undated:t4_contract_incompatible', signature: null, outcome: 'DEFER', situation, card: null, reevaluateAt: null, incompatible: true });
     }
   }
 
@@ -954,6 +1001,152 @@ export async function assessDeadlinePertinence(p: RelevanceInput): Promise<Perti
     reevaluateAt: aMinuit(plusJours(p.today, DEFER_UNCERTAIN_DAYS)) });
 }
 
+// ══════════════════════════════════════════════════════════════════════════
+// LOT 75I (A) — OBLIGATION D'UNE ÉCHÉANCE CONNUE
+// ══════════════════════════════════════════════════════════════════════════
+
+/** Éléments d'une obligation sur une échéance DÉJÀ CONNUE (lot 75I, A). */
+export interface KnownObligationInput extends Omit<RelevanceInput, 'candidates' | 'contradictory'> {
+  /** Date connue (lue, saisie, écrite ou calculée) et sa provenance. */
+  known: { iso: string; source: string };
+  /** Clauses lues pertinentes (restitution, résiliation, reconduction…), où qu'elles soient dans le document. */
+  clauses?: string[];
+  /** Extrait associé à la date, s'il existe. */
+  dateExcerpt?: string | null;
+}
+
+/**
+ * Lot 75I (A) — une date CONNUE ferme la question de complétion, jamais
+ * l'examen des obligations : COMPLÉTION et OBLIGATION sont découplées.
+ * Décision AUTO_RESOLVED / NO_ACTION / DEFER / CREATE_ACTION sur la seule
+ * question « une intervention réelle, actuelle ou à venir, est-elle établie ? »
+ * — jamais une question sur la date :
+ *
+ *   CODE (déterministe, sans IA)
+ *     · échéance à venir au-delà de l'horizon → DEFER jusqu'à l'approche ;
+ *     · échéance passée, fin effective PROUVÉE sans reconduction ni
+ *       obligation résiduelle → NO_ACTION ;
+ *     · échéance passée ancienne, aucune clause d'obligation ni de
+ *       reconduction lue → DEFER (l'âge n'est qu'un indice), sans IA ;
+ *     · configuration T4 incompatible → DEFER prudent signalé (D) ;
+ *     · mêmes preuves, même configuration → décision mémorisée (aucun appel) ;
+ *   IA (T4 CLASSIFY_EVENT, `t4_output_v3`) — date connue et CLAUSES
+ *     pertinentes transmises (même hors de l'extrait de la date) :
+ *     intervention concrète prouvée → carte DOC-INTERVENTION ; aucune → NO_ACTION ;
+ *     incertain, plus tard → DEFER ; « fournir la donnée » → NO_ACTION (elle est
+ *     connue) ; panne, sortie hors contrat → DEFER technique (aucune fermeture).
+ */
+export async function assessKnownDeadlineObligation(p: KnownObligationInput): Promise<PertinenceResult> {
+  const vide = { aiCalled: false, cached: false, aiStatus: null, aiTraceId: null, intervention: null, technicalFailure: false, incompatible: false } as const;
+  const config: T4AssessmentConfig = p.config ?? { ref: 'unknown', interventionCapable: false };
+  const { futureHorizonDays: horizon, historicalYears, deferUncertainDays, deferUndatedDays } = thresholdsOf(config);
+  const key = p.rule.fieldKey ?? '';
+  const cands: PertinenceCandidate[] = [{ iso: p.known.iso, source: p.known.source, excerpt: p.dateExcerpt ?? null }];
+  const situation: RelevanceSituation = 'KNOWN_DEADLINE';
+  const res = (r: Omit<PertinenceResult, 'contract' | 'situation' | keyof typeof vide> & Partial<Pick<PertinenceResult, keyof typeof vide>>): PertinenceResult => {
+    const full = { ...vide, ...r, situation } as PertinenceResult;
+    return { ...full, contract: decisionContractOf({ ...p, candidates: cands }, full) };
+  };
+  if (!isDeadlineRule(p.rule)) {
+    return { ...vide, pertinence: 'NOT_EVALUATED', reason: 'rule_without_deadline', signature: null, outcome: null, situation: 'NOT_DEADLINE', card: null, reevaluateAt: null, contract: null };
+  }
+  const cycle = p.lifecycle ?? null;
+  const clauses = [...new Set((p.clauses ?? cycle?.clauses ?? []).map((c) => c.replace(/\s+/g, ' ').trim().slice(0, 300)).filter(Boolean))].slice(0, MAX_OBLIGATION_CLAUSES);
+  const futur = p.known.iso >= p.today;
+
+  if (futur && joursEntre(p.today, p.known.iso) > horizon) {
+    return res({ pertinence: 'FUTURE_DEFERRABLE', reason: `known_future_beyond_${horizon}d`, signature: null, outcome: 'DEFER', card: null,
+      reevaluateAt: aMinuit(plusJours(p.known.iso, -horizon)) });
+  }
+  if (!futur) {
+    if (cycle?.terminated && !cycle.residual && !cycle.renewal) {
+      return res({ pertinence: 'CONTRACT_TERMINATED', reason: 'known_past:contract_end_evidenced', signature: null, outcome: 'NO_ACTION', card: null, reevaluateAt: null });
+    }
+    const ancien = p.known.iso < plusJours(p.today, -Math.round(historicalYears * 365.25));
+    if (ancien && !cycle?.residual && !cycle?.renewal) {
+      return res({ pertinence: 'KNOWN_HISTORICAL', reason: `known_past_older_than_${historicalYears}y_no_obligation_clause`, signature: null, outcome: 'DEFER', card: null,
+        reevaluateAt: aMinuit(plusJours(p.today, deferUndatedDays)) });
+    }
+  }
+  // Aucune clause d'obligation lue (ni clause, ni extrait de la date, ni titre) : aucune intervention
+  // ne peut être PROUVÉE (la preuve doit être citée) — ni carte, ni appel IA.
+  if (clauses.length === 0 && !mentionsObligation(p.dateExcerpt) && !mentionsObligation(p.documentTitle)) {
+    return res({ pertinence: 'NO_OBLIGATION_EVIDENCE', reason: 'known:no_obligation_clause', signature: null, outcome: 'NO_ACTION', card: null, reevaluateAt: null });
+  }
+  if (!config.interventionCapable) {
+    return res({ pertinence: 'T4_INCOMPATIBLE', reason: 'known:t4_contract_incompatible', signature: null, outcome: 'DEFER', card: null, reevaluateAt: null, incompatible: true });
+  }
+
+  // ── Décision mémorisée (mêmes preuves, mêmes clauses, même configuration) ──
+  const signature = pertinenceSignature(key, p.documentType, cands, {
+    situation, evidence: `${p.evidenceFingerprint ?? ''}|${sha(clauses, 12)}`, config: pertinenceConfigKey(config),
+  });
+  const m = p.remembered;
+  if (m && m.signature === signature && m.outcome && m.pertinence && m.aiStatus !== 'ERROR') {
+    return res({
+      pertinence: m.pertinence as Pertinence, reason: 'remembered_decision', signature, cached: true, outcome: m.outcome,
+      card: m.outcome === 'CREATE_ACTION' ? (m.card ?? 'INTERVENTION') : null, intervention: m.intervention ?? null,
+      reevaluateAt: m.outcome === 'DEFER' ? (m.reevaluateAt ?? aMinuit(plusJours(p.today, deferUncertainDays))) : null,
+    });
+  }
+
+  // ── IA : T4 CLASSIFY_EVENT, date connue + clauses ─────────────────────────
+  const def = getField(key);
+  const request = {
+    contractVersion: DECISION_CONTRACT_VERSION, situation: futur ? 'FUTURE_DEADLINE' : 'PAST_DEADLINE', dataKey: key, question: p.rule.question, today: p.today,
+    candidates: [{ date: p.known.iso, source: p.known.source }],
+    documentDates: (p.contextDates ?? []).slice(0, 10).map((d) => ({ key: d.key, date: d.iso })),
+    documentTitle: p.documentTitle ?? null,
+    knownDate: p.known.iso, clauses,
+  };
+  const description = [
+    futur ? `Échéance à venir, date CONNUE : ${p.known.iso} (date du jour : ${p.today}).` : `Échéance passée, date CONNUE : ${p.known.iso} (date du jour : ${p.today}).`,
+    // Aucun exemple d'obligation ici : la preuve doit venir des clauses lues, jamais de la consigne.
+    'La date est déjà connue : ne pas la demander. Dire seulement si une obligation réelle de l’utilisateur reste attendue, d’après les clauses fournies.',
+    p.documentTitle ? `Document : « ${p.documentTitle} ».` : '',
+  ].filter(Boolean).join(' ');
+  const excerpt = [...clauses, p.dateExcerpt ?? ''].filter(Boolean).join(' ').slice(0, 500) || undefined;
+  const decide: DecideFn = p.decide ?? (await import('@/services/ai/agenda/master/classify-event')).decideAgendaEvent;
+  const d = await decide(
+    { title: def?.label ?? key, description, originType: 'qualified_document', originFieldKey: key, nature: 'DEADLINE', businessType: def?.agendaEffect?.businessType ?? null },
+    { accountId: p.accountId, sourceFileId: p.fileId, date: p.known.iso, documentType: p.documentType, excerpt, recurrenceCandidate: null, toProcessAssessment: request },
+  );
+  const ia = { aiCalled: true, cached: false, aiTraceId: d.traceId ?? null, signature };
+  if (d.outcome === 'technical_failure') {
+    return res({ ...ia, aiStatus: 'ERROR', pertinence: 'UNDECIDED', reason: `t4_failure:${d.error?.code ?? 'UNKNOWN'}`, outcome: 'DEFER', card: null,
+      reevaluateAt: new Date(Date.now() + RETRY_AFTER_FAILURE_MIN * 60_000).toISOString(), technicalFailure: true });
+  }
+  const motif = (s: string) => s.slice(0, 300);
+  const iv = checkInterventionCoherence(d.intervention, { requested: true, providedText: [description, excerpt ?? '', p.documentTitle ?? '', ...clauses].join(' ') });
+  if (d.contractVersion !== 3 || !iv) {
+    // Sortie hors contrat : prudence — aucune carte créée, aucune retirée ; nouvelle tentative le lendemain.
+    return res({ ...ia, aiStatus: 'ERROR', pertinence: 'UNDECIDED', reason: motif(`t4:assessment_missing:${d.reason}`), outcome: 'DEFER', card: null,
+      reevaluateAt: aMinuit(plusJours(p.today, 1)), technicalFailure: true });
+  }
+  if (iv.needed === 'yes' && iv.kind === 'PROVIDE_INFORMATION') {
+    // La donnée est connue : jamais une question de complétion.
+    return res({ ...ia, aiStatus: 'OK', intervention: iv, pertinence: 'NO_ACTION_NEEDED', reason: motif(`t4:known_data_not_requested:${iv.justification}`), outcome: 'NO_ACTION', card: null, reevaluateAt: null });
+  }
+  if (iv.needed === 'yes' && iv.timing === 'LATER') {
+    const quand = iv.actBy ? plusJours(iv.actBy, -deferUncertainDays) : plusJours(p.today, deferUndatedDays);
+    return res({ ...ia, aiStatus: 'OK', intervention: iv, pertinence: 'ACTION_REQUIRED', reason: motif(`t4:obligation_later:${iv.justification}`), outcome: 'DEFER', card: null,
+      reevaluateAt: aMinuit(quand > p.today ? quand : plusJours(p.today, 1)) });
+  }
+  if (iv.needed === 'yes') {
+    return res({ ...ia, aiStatus: 'OK', intervention: iv, pertinence: 'ACTION_REQUIRED', reason: motif(`t4:obligation:${iv.kind}:${iv.justification}`), outcome: 'CREATE_ACTION', card: 'INTERVENTION', reevaluateAt: null });
+  }
+  if (iv.needed === 'no' && !futur && cycle?.renewal && !cycle.terminated) {
+    // Contrat reconductible : « aucune démarche » après l'échéance exige une preuve de fin.
+    return res({ ...ia, aiStatus: 'OK', intervention: iv, pertinence: 'UNDECIDED', reason: motif(`renewable_contract_requires_evidence:${iv.justification}`), outcome: 'DEFER', card: null,
+      reevaluateAt: aMinuit(plusJours(p.today, deferUndatedDays)) });
+  }
+  if (iv.needed === 'no') {
+    return res({ ...ia, aiStatus: 'OK', intervention: iv, pertinence: 'NO_ACTION_NEEDED', reason: motif(`t4:no_obligation:${iv.justification}`), outcome: 'NO_ACTION', card: null, reevaluateAt: null });
+  }
+  return res({ ...ia, aiStatus: 'OK', intervention: iv, pertinence: 'UNDECIDED', reason: motif(`t4:uncertain:${iv.warnings.join(',') || iv.justification}`), outcome: 'DEFER', card: null,
+    reevaluateAt: aMinuit(plusJours(p.today, deferUncertainDays)) });
+}
+
 /** Contrat de décision interne (§5) — pur. */
 export function decisionContractOf(p: Pick<RelevanceInput, 'rule' | 'fileId' | 'documentType' | 'today' | 'candidates'> & { config?: T4AssessmentConfig }, r: Omit<PertinenceResult, 'contract'>): DecisionContract {
   const iso = p.candidates.map((c) => c.iso).sort();
@@ -963,12 +1156,15 @@ export function decisionContractOf(p: Pick<RelevanceInput, 'rule' | 'fileId' | '
   return {
     version: DECISION_CONTRACT_VERSION, ruleCode: p.rule.code, dataKey: p.rule.fieldKey ?? p.rule.relationKey ?? '', fileId: p.fileId,
     documentType: p.documentType,
-    problem: r.card === 'INTERVENTION' ? 'DEADLINE_INTERVENTION' : p.candidates.length ? 'UNCERTAIN_DATA' : 'MISSING_DATA',
+    problem: r.card === 'INTERVENTION' ? 'DEADLINE_INTERVENTION' : r.situation === 'KNOWN_DEADLINE' ? 'DEADLINE_OBLIGATION'
+      : p.candidates.length ? 'UNCERTAIN_DATA' : 'MISSING_DATA',
     intervention: r.intervention && r.intervention.needed === 'yes' ? { kind: r.intervention.kind, action: r.intervention.action, actBy: r.intervention.actBy } : null,
     consequence: r.intervention?.consequence ?? null,
-    autoResolution: p.candidates.length ? 'valeurs incertaines ou contradictoires : aucune n’est assez fiable pour être écrite'
-      : 'aucune valeur lue, consolidée ni calculable de façon fiable',
-    temporal: { situation: r.situation, today: p.today, candidates: iso.slice(0, 10), nearestFuture: future, reevaluateAt: r.reevaluateAt },
+    autoResolution: r.situation === 'KNOWN_DEADLINE' ? 'date connue : aucune question sur la donnée, seule une obligation réelle justifierait une carte'
+      : p.candidates.length ? 'valeurs incertaines ou contradictoires : aucune n’est assez fiable pour être écrite'
+        : 'aucune valeur lue, consolidée ni calculable de façon fiable',
+    temporal: { situation: r.situation, today: p.today, candidates: iso.slice(0, 10), nearestFuture: future, reevaluateAt: r.reevaluateAt,
+      ...(r.situation === 'KNOWN_DEADLINE' ? { knownDate: iso[0] ?? null } : {}) },
     reliability: {
       level: fiables.length && fiables.every((c) => c.source === 'FACTS') ? 'HIGH' : fiables.length ? 'MEDIUM' : 'LOW',
       sources, evidence: r.intervention?.evidence ?? null,
@@ -1086,12 +1282,15 @@ export async function knowledgeRevSql(alias = 'f'): Promise<string> {
   const refs = contractRefKeysSql();
   const refNorm = (t: string) => `regexp_replace(upper(COALESCE(${t}.normalized_value, ${t}.value_text, '')), '[^A-Z0-9]', '', 'g')`;
   return `md5(concat_ws('|', ${a}.document_type_code,
-      (SELECT max(e.id)::text FROM document_extractions e WHERE e.file_id = ${a}.id),
+      -- Lot 75I (C) : CONTENU de l'extraction retenue (titre, type lu, texte intégral lu par l'indice du titre),
+      -- plus seulement son identifiant — une extraction corrigée sur place change la révision.
+      (SELECT e.id::text || ':' || md5(concat_ws('~', e.title, e.document_type_code, md5(left(COALESCE(e.full_text, ''), 200000))))
+         FROM document_extractions e WHERE e.file_id = ${a}.id ORDER BY e.id DESC LIMIT 1),
       (SELECT count(*)::text || ':' || md5(COALESCE(string_agg(md5(${fait}), ',' ORDER BY md5(${fait})), ''))
          FROM document_facts x WHERE x.file_id = ${a}.id AND x.status = 'active'),
       ${couches.units ? `(SELECT count(*)::text || ':' || md5(COALESCE(string_agg(md5(concat_ws('~', u.canonical_key, u.raw_key, u.raw_value, u.reason, u.status)), ',' ORDER BY u.id), ''))
          FROM document_unresolved_facts u WHERE u.file_id = ${a}.id),
-      (SELECT count(*)::text || ':' || COALESCE(max(s.updated_at)::text, '') || ':' || md5(COALESCE(string_agg(md5(concat_ws('~', s.kind, s.label, s.value_text, s.coverage_status)), ',' ORDER BY s.ordinal), ''))
+      (SELECT count(*)::text || ':' || COALESCE(max(s.updated_at)::text, '') || ':' || md5(COALESCE(string_agg(md5(concat_ws('~', s.kind, s.label, s.value_text, s.coverage_status, s.content_text)), ',' ORDER BY s.ordinal), ''))
          FROM document_source_units s WHERE s.file_id = ${a}.id),` : ''}
       (SELECT string_agg(v.field_key || '=' || COALESCE(v.value_text, '-') || ':' || v.user_validated::text || ':' || COALESCE(to_jsonb(v) ->> 'value_kind', ''), ',' ORDER BY v.field_key)
          FROM document_field_values v WHERE v.file_id = ${a}.id),
@@ -1111,7 +1310,25 @@ export async function knowledgeRevSql(alias = 'f'): Promise<string> {
                  SELECT ${refNorm('x1')} FROM document_facts x1
                   WHERE x1.file_id = ${a}.id AND x1.account_id = ${a}.account_id AND x1.status = 'active'
                     AND (to_jsonb(x1) ->> 'canonical_key' = ANY(${refs}) OR x1.fact_key = ANY(${refs}))))) END,
-      ${a}.supplier, COALESCE(${a}.user_edited_fields::text, '')))`;
+      ${a}.supplier, COALESCE(${a}.user_edited_fields::text, ''),
+      -- Lot 75I (C) : titres lus par l'indice du titre (nom du fichier, titre retenu).
+      ${a}.original_filename, to_jsonb(${a}) ->> 'retained_title'))`;
+}
+
+/**
+ * Lot 75I (D) — décisions dont la DERNIÈRE évaluation (par document et règle)
+ * attend une configuration T4 compatible (diagnostic BO). Ne lève jamais.
+ */
+export async function countIncompatibleDecisions(): Promise<number> {
+  try {
+    if (!(await relevanceColumnsReady())) return 0;
+    const [r] = (await pgClient.unsafe(
+      `SELECT count(*)::int AS n FROM document_rule_evaluations e
+        WHERE e.pertinence = 'T4_INCOMPATIBLE'
+          AND e.id = (SELECT max(x.id) FROM document_rule_evaluations x WHERE x.account_id = e.account_id AND x.file_id = e.file_id AND x.rule_code = e.rule_code)`,
+    )) as unknown as Array<{ n: number }>;
+    return Number(r?.n ?? 0);
+  } catch { return 0; }
 }
 
 /** Révision actuelle de la connaissance d'un document (même expression que le balayage). */
@@ -1282,25 +1499,31 @@ export function evaluationSignature(r: RuleEvaluationRecord): string {
   ])).digest('hex').slice(0, 24);
 }
 
-/** Nombre de passages conservés sur une évaluation dédupliquée. */
+/** Nombre de passages conservés dans l'APERÇU `passages` d'une évaluation dédupliquée (tous : table 0560). */
 const PASSAGES_MAX = 20;
 
 /**
  * Journalise une évaluation. Une réévaluation identique (même signature que
  * la dernière ligne de la règle) ne fait que dater le constat — lot 61
- * (écart 6) : chaque passage est conservé (`passages`, ≤ 20 : déclencheur,
- * référence, date), la date de réévaluation et la révision de connaissance
- * sont mises à jour. Ne lève jamais : un diagnostic manqué ne bloque pas la
- * décision.
+ * (écart 6) : chaque passage est conservé (`passages`, aperçu ≤ 20 :
+ * déclencheur, référence, date), la date de réévaluation et la révision de
+ * connaissance sont mises à jour. Ne lève jamais : un diagnostic manqué ne
+ * bloque pas la décision.
+ *
+ * Lot 75I (E) : chaque passage est AUSSI conservé durablement
+ * (`to_process_evaluation_passages`, sans limite de nombre), dans la MÊME
+ * instruction que l'évaluation. Rend l'ERREUR de journalisation (null :
+ * tracée) — l'appelant la remonte au diagnostic technique.
  */
-export async function recordRuleEvaluation(r: RuleEvaluationRecord): Promise<void> {
-  if (!(await ruleEvaluationsReady())) return;
+export async function recordRuleEvaluation(r: RuleEvaluationRecord): Promise<string | null> {
+  if (!(await ruleEvaluationsReady())) return null;
   const l61 = await relevanceColumnsReady();
   const signature = evaluationSignature(r);
   const passage = JSON.stringify([{ at: new Date().toISOString(), trigger: r.trigger, runRef: r.runRef ?? null }]);
+  const { durablePassagesReady, withDurablePassage } = await import('./admissibility');
+  const durable = await durablePassagesReady();
   try {
-    const maj = (await pgClient.unsafe(
-      `UPDATE document_rule_evaluations SET last_seen_at = now(), seen_count = seen_count + 1, trigger_code = $5, run_ref = COALESCE($6, run_ref),
+    const majSql = `UPDATE document_rule_evaluations SET last_seen_at = now(), seen_count = seen_count + 1, trigger_code = $5, run_ref = COALESCE($6, run_ref),
               -- Lot 72 : décision CONFIRMÉE par la version courante du moteur (campagne, valeurs calculées).
               engine_version = '${DOCUMENT_RULE_ENGINE_VERSION}'
               ${l61 ? `, passages = (SELECT COALESCE(jsonb_agg(z.p ORDER BY z.n), '[]'::jsonb) FROM (
@@ -1309,12 +1532,14 @@ export async function recordRuleEvaluation(r: RuleEvaluationRecord): Promise<voi
                  reevaluate_at = $8::timestamptz, knowledge_rev = COALESCE($9, knowledge_rev)` : ''}
         WHERE id = (SELECT id FROM document_rule_evaluations WHERE account_id = $1 AND file_id = $2 AND rule_code = $3 ORDER BY id DESC LIMIT 1)
           AND signature = $4
-        RETURNING id`,
+        RETURNING id, account_id`;
+    const maj = (await pgClient.unsafe(
+      durable && l61 ? withDurablePassage(majSql, { source: 'DOCUMENT_RULE', kind: 'REPEATED', triggerParam: '$5', runRefParam: '$6' }) : majSql,
       (l61
         ? [r.accountId, r.fileId, r.ruleCode, signature, r.trigger, r.runRef ?? null, passage, r.reevaluateAt ?? null, r.knowledgeRev ?? null]
         : [r.accountId, r.fileId, r.ruleCode, signature, r.trigger, r.runRef ?? null]) as never[],
     )) as unknown as Array<{ id: number }>;
-    if (maj.length) return;
+    if (maj.length) return null;
     const j = (v: unknown) => JSON.stringify(v);
     const p = r.pertinence ?? null;
     const cols = ['account_id', 'file_id', 'rule_code', 'field_key', 'trigger_code', 'run_ref', 'engine_version',
@@ -1341,11 +1566,15 @@ export async function recordRuleEvaluation(r: RuleEvaluationRecord): Promise<voi
       cols.push('decision_kind');
       vals.push(r.decisionKind ?? decisionKindOf(r));
     }
+    const insSql = `INSERT INTO document_rule_evaluations (${cols.join(', ')}) VALUES (${cols.map((c, i) => `$${i + 1}${casts[c] ?? ''}`).join(', ')}) RETURNING id, account_id`;
     await pgClient.unsafe(
-      `INSERT INTO document_rule_evaluations (${cols.join(', ')}) VALUES (${cols.map((c, i) => `$${i + 1}${casts[c] ?? ''}`).join(', ')})`,
+      durable && l61 ? withDurablePassage(insSql, { source: 'DOCUMENT_RULE', kind: 'INSERTED', triggerParam: '$5', runRefParam: '$6' }) : insSql,
       vals as never[],
     );
+    return null;
   } catch (e) {
-    console.error(`[to-process] diagnostic de la règle ${r.ruleCode} du document ${r.fileId} non écrit :`, (e as Error).message);
+    const cause = `diagnostic de la règle ${r.ruleCode} du document ${r.fileId} non écrit : ${(e as Error).message}`.slice(0, 300);
+    console.error(`[to-process] ${cause}`);
+    return cause;
   }
 }

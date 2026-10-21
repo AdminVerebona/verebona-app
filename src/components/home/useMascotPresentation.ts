@@ -15,6 +15,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { MascotPresentation, MascotSecondary } from '@/services/home/mascot/types';
+import { keepDisplayedPresentation, presentationDisplayable } from '@/services/home/mascot/bubble';
 import { getSessionEpoch } from '@/lib/session/session-lifecycle';
 
 export const MASCOT_REFRESH_MS = 10 * 60_000;
@@ -82,6 +83,9 @@ export function initialMascotRead(now: number = Date.now()): Promise<MascotPrese
 /** Dernière prise de parole de la session courante, si récente. */
 export function rememberedMascotPresentation(now: number = Date.now()): MascotPresentation | null {
   if (!memory || memory.epoch !== getSessionEpoch() || now - memory.at >= MASCOT_MEMORY_MAX_AGE_MS) return null;
+  // Lot 75E (§5) : une formulation interdite n'est jamais remontrée d'emblée
+  // depuis la mémoire de session (la relecture la remplace).
+  if (!presentationDisplayable(memory.presentation)) return null;
   return memory.presentation;
 }
 
@@ -190,7 +194,12 @@ export function useMascotPresentation(visibleSecondaries?: (p: MascotPresentatio
       // Même contexte : le texte déjà affiché reste, même si une formulation
       // T6 est entre-temps disponible — jamais de texte remplacé sous les yeux
       // de l'utilisateur (RUN-001). Elle servira au prochain changement.
-      setPresentation((prev) => (prev && prev.contextHash === data.contextHash ? prev : data));
+      // Lot 75E (§5) : SAUF si la présentation affichée relève d'une autre
+      // révision du contrat de présentation (règles d'affichage corrigées) ou
+      // porte une formulation interdite — la réponse corrigée la remplace,
+      // sans relecture supplémentaire (aucune boucle, aucune invalidation
+      // globale ; `contextHash` métier inchangé).
+      setPresentation((prev) => (keepDisplayedPresentation(prev, data) ? prev : data));
       trackDisplay(data);
     } catch {
       if (mine !== seq.current) return;

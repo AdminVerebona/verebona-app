@@ -241,11 +241,65 @@ const MONTHS_FR = ['Janv.', 'Févr.', 'Mars', 'Avr.', 'Mai', 'Juin', 'Juil.', 'A
 
 const PREVIEW_COUNT = 5;
 
-function MonthCard({ monthLabel, monthItems, isCurrentMonth, onItemClick }: {
+/** Mois `AAAA-MM` d'une carte de la vue annuelle (`monthIndex` : 0 = janvier). */
+export function yearMonthKey(year: number, monthIndex: number): string {
+  return `${year}-${String(monthIndex + 1).padStart(2, '0')}`;
+}
+
+/** « janvier 2026 » — nom complet du mois, pour le nom accessible. */
+export function monthLongLabel(monthKey: string): string {
+  const [y, m] = monthKey.split('-').map(Number);
+  return new Date(y, m - 1, 15).toLocaleDateString('fr-FR', { month: 'long', year: 'numeric' });
+}
+
+/**
+ * En-tête d'une carte de la vue annuelle (lot 75H, point 1) : « Janv. » +
+ * compteur. Avec `onOpenMonth`, c'est un BOUTON (clavier : Entrée / Espace,
+ * anneau de focus de la charte) qui ouvre la vue mensuelle de ce mois ; sans,
+ * un simple en-tête comme avant. Sans hook : testable par appel direct.
+ */
+export function MonthCardHeader({ monthLabel, monthKey, count, isCurrentMonth, onOpenMonth }: {
   monthLabel: string;
+  monthKey: string;
+  count: number;
+  isCurrentMonth: boolean;
+  onOpenMonth?: (month: string) => void;
+}) {
+  const content = (
+    <>
+      <span className={`text-sm font-semibold ${isCurrentMonth ? 'text-primary' : 'text-foreground'}`}>
+        {monthLabel}
+      </span>
+      {count > 0 && (
+        <span aria-hidden={onOpenMonth ? true : undefined} className="text-[11px] font-medium text-muted-foreground bg-muted rounded-full px-2 py-0.5">
+          {count}
+        </span>
+      )}
+    </>
+  );
+  const layout = 'px-4 pt-4 pb-3 flex items-center justify-between border-b border-border/40';
+  if (!onOpenMonth) return <div className={layout}>{content}</div>;
+  const n = count === 0 ? 'aucun élément' : `${count} élément${count > 1 ? 's' : ''}`;
+  return (
+    <button
+      type="button"
+      data-month-header={monthKey}
+      onClick={() => onOpenMonth(monthKey)}
+      aria-label={`${monthLongLabel(monthKey)}, ${n} — afficher la vue mensuelle`}
+      className={`${layout} w-full text-left rounded-t-xl hover:bg-muted/50 transition-colors`}
+    >
+      {content}
+    </button>
+  );
+}
+
+function MonthCard({ monthLabel, monthKey, monthItems, isCurrentMonth, onItemClick, onOpenMonth }: {
+  monthLabel: string;
+  monthKey: string;
   monthItems: AgendaItemFull[];
   isCurrentMonth: boolean;
   onItemClick: (item: AgendaItemFull) => void;
+  onOpenMonth?: (month: string) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
   const hasItems = monthItems.length > 0;
@@ -255,17 +309,13 @@ function MonthCard({ monthLabel, monthItems, isCurrentMonth, onItemClick }: {
 
   return (
     <div className={`rounded-xl border bg-card flex flex-col ${isCurrentMonth ? 'border-primary/50 ring-1 ring-primary/20' : 'border-border/50'}`}>
-      {/* Header */}
-      <div className="px-4 pt-4 pb-3 flex items-center justify-between border-b border-border/40">
-        <span className={`text-sm font-semibold ${isCurrentMonth ? 'text-primary' : 'text-foreground'}`}>
-          {monthLabel}
-        </span>
-        {hasItems && (
-          <span className="text-[11px] font-medium text-muted-foreground bg-muted rounded-full px-2 py-0.5">
-            {monthItems.length}
-          </span>
-        )}
-      </div>
+      <MonthCardHeader
+        monthLabel={monthLabel}
+        monthKey={monthKey}
+        count={monthItems.length}
+        isCurrentMonth={isCurrentMonth}
+        onOpenMonth={onOpenMonth}
+      />
 
       {/* Body */}
       <div className="px-3 py-3 flex-1 space-y-0.5">
@@ -314,7 +364,16 @@ function MonthCard({ monthLabel, monthItems, isCurrentMonth, onItemClick }: {
   );
 }
 
-export function YearView({ items, year, onItemClick }: { items: AgendaItemFull[]; year: number; onItemClick: (item: AgendaItemFull) => void }) {
+/**
+ * Vue annuelle. `onOpenMonth` (lot 75H) : l'en-tête de chaque mois ouvre la
+ * vue mensuelle de ce mois (même année) — l'écran garde ses filtres.
+ */
+export function YearView({ items, year, onItemClick, onOpenMonth }: {
+  items: AgendaItemFull[];
+  year: number;
+  onItemClick: (item: AgendaItemFull) => void;
+  onOpenMonth?: (month: string) => void;
+}) {
   const byMonth: AgendaItemFull[][] = Array.from({ length: 12 }, () => []);
   for (const item of items) {
     if (!item.startDate) continue;
@@ -330,9 +389,11 @@ export function YearView({ items, year, onItemClick }: { items: AgendaItemFull[]
         <MonthCard
           key={idx}
           monthLabel={monthLabel}
+          monthKey={yearMonthKey(year, idx)}
           monthItems={byMonth[idx]}
           isCurrentMonth={new Date().getFullYear() === year && new Date().getMonth() === idx}
           onItemClick={onItemClick}
+          onOpenMonth={onOpenMonth}
         />
       ))}
     </div>

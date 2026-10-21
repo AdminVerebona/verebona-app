@@ -377,7 +377,7 @@ function equipmentSeparation(out: RawBackfillOutput): BackfillSummary {
   return {
     headline: `${simulation ? 'Simulation' : 'Application'} : ${r.cases.length} valeur(s) d’origine erronée démontrée ${simulation ? 'à corriger' : 'traitée(s)'}, `
       + `${r.preserved.length} valeur(s) utilisateur préservée(s), ${r.documents.linked} document(s) ${simulation ? 'à rattacher' : 'rattaché(s)'} à un équipement, `
-      + `${r.documents.ambiguous} ambigu(s), ${r.failed.length} échec(s).`,
+      + `${r.documents.ambiguous} ambigu(s), ${r.suspects?.length ?? 0} situation(s) suspecte(s) non modifiée(s), ${r.failed.length} échec(s).`,
     scriptRunId: simulation ? null : r.runId,
     restorable: false,
     counters: [
@@ -386,6 +386,8 @@ function equipmentSeparation(out: RawBackfillOutput): BackfillSummary {
       { label: 'Équipement : valeur du bien recopiée (même preuve, acte)', value: n('EQUIPMENT_EVIDENCE_WITHDRAWN') },
       { label: 'Bien : date d’achat recopiée d’un événement d’équipement', value: n('AGENDA_PURCHASE_MOVED') },
       { label: 'Champs corrigés sur les fiches', value: r.fieldsCorrected.length },
+      { label: 'Situations suspectes (signalées, non modifiées)', value: r.suspects?.length ?? 0 },
+      { label: 'Réconciliations reprises (exécution interrompue)', value: r.resumed ?? 0 },
       { label: 'Valeurs utilisateur préservées', value: r.preserved.length },
       { label: 'Documents examinés', value: r.documents.examined },
       { label: `Documents ${simulation ? 'à rattacher' : 'rattachés'} à un équipement`, value: r.documents.linked },
@@ -396,6 +398,7 @@ function equipmentSeparation(out: RawBackfillOutput): BackfillSummary {
     warnings: [
       ...r.cases.slice(0, SAMPLE_LIMIT).map((c) => `${c.kind} · compte ${c.accountId} · bien ${c.assetId}${c.equipmentId ? ` · équipement ${c.equipmentId}` : ''} · ${c.fieldKey} : ${c.motive}`),
       ...r.documents.samples.slice(0, 5),
+      ...(r.suspects ?? []).slice(0, SAMPLE_LIMIT).map((c) => `SUSPECT ${c.kind} · compte ${c.accountId} · bien ${c.assetId}${c.equipmentId ? ` · équipement ${c.equipmentId}` : ''} · ${c.fieldKey} : ${c.motive}`),
     ],
   };
 }

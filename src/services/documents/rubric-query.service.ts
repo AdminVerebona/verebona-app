@@ -82,6 +82,13 @@ import {
   type AssetEquipment,
 } from '@/services/equipments/equipment-filter-scope';
 import { isEquipmentFilterActive, type EquipmentFacet } from '@/lib/filters/equipment-filter';
+import { selectedRoomId, type RoomFacet } from '@/lib/filters/room-filter';
+import {
+  documentRoomFilterCondition,
+  listRoomsOfAssets,
+  roomDocumentLinksSql,
+  type AssetRoom,
+} from '@/services/rooms/room-scope.service';
 
 /** Identifiant de la zone « Sans rubrique ». Jamais un code de Rubrique (§2.1). */
 export const UNFILED_GROUP = FEED_UNFILED;
@@ -202,7 +209,7 @@ function biensOf(row: Pick<ScopeCountRow, 'assetId' | 'otherAssets'>): string[] 
 
 /** Même règle que `filterConditions`, sur une ligne agrégée (compteurs). */
 export function matchesFilters(
-  row: Pick<ScopeCountRow, 'assetId' | 'otherAssets' | 'rubricCode' | 'documentTypeCode' | 'equipmentMatch'>,
+  row: Pick<ScopeCountRow, 'assetId' | 'otherAssets' | 'rubricCode' | 'documentTypeCode' | 'equipmentMatch' | 'roomMatch'>,
   f: FeedFilters,
 ): boolean {
   const biens = biensOf(row);
@@ -212,7 +219,9 @@ export function matchesFilters(
     && (f.rubrics.length === 0 || f.rubrics.includes(rubric))
     && (f.types.length === 0 || f.types.includes(type))
     // Lot 71 : `equipmentMatch` n'est renseigné que si le filtre Équipement agit.
-    && row.equipmentMatch !== false;
+    && row.equipmentMatch !== false
+    // Lot 75B : idem pour le filtre Pièce.
+    && row.roomMatch !== false;
 }
 
 // ── Compteurs ────────────────────────────────────────────────────────────
@@ -233,6 +242,11 @@ export interface ScopeCountRow {
    * Absent quand le filtre n'agit pas (« Tous », aucun bien, aucun équipement).
    */
   equipmentMatch?: boolean;
+  /**
+   * Lot 75 (75B) : ces documents satisfont-ils le filtre Pièce (direct ou via
+   * un équipement de la pièce) ? Absent quand le filtre n'agit pas.
+   */
+  roomMatch?: boolean;
   count: number;
 }
 
@@ -347,8 +361,16 @@ export async function getDocumentFeed(query: DocumentFeedQuery): Promise<FeedRes
     ? await listEquipmentsOfAssets(query.accountId, equipmentAssets)
     : [];
   const equipmentCondition = documentEquipmentFilterCondition(query.filters.equipment, assetEquipments);
+  // Lot 75 (75B) : filtre Pièce — documents directs ET documents des
+  // équipements de la pièce (résolution centrale `room-scope.service`).
+  const pieceId = selectedRoomId(query.filters.piece);
+  const assetRooms = equipmentAssets.length > 0 && (withMeta || pieceId !== null)
+    ? await listRoomsOfAssets(query.accountId, equipmentAssets)
+    : [];
+  const roomCondition = documentRoomFilterCondition(pieceId, assetRooms);
   const where = [...scope, ...filterConditions(query.filters)];
   if (equipmentCondition) where.push(equipmentCondition);
+  if (roomCondition) where.push(roomCondition);
   if (values) where.push(keysetSql(keysetCondition(components, values), keys, values));
 
   const keyColumns = Object.fromEntries(
@@ -378,7 +400,7 @@ export async function getDocumentFeed(query: DocumentFeedQuery): Promise<FeedRes
       .where(and(...where))
       .orderBy(...components.map((c) => sql`${KEY_SQL[c.key].expr} ${sql.raw(c.dir === 'asc' ? 'ASC' : 'DESC')} NULLS LAST`))
       .limit(query.limit + 1),
-    withMeta ? loadMeta(query, scope, equipmentCondition, assetEquipments) : Promise.resolve(undefined),
+    withMeta ? loadMeta(query, scope, equipmentCondition, assetEquipments, roomCondition, assetRooms) : Promise.resolve(undefined),
   ]);
 
   const hasMore = rows.length > query.limit;
@@ -444,8 +466,10 @@ async function loadMeta(
   scope: SQL[],
   equipmentCondition: SQL | null = null,
   assetEquipments: readonly AssetEquipment[] = [],
+  roomCondition: SQL | null = null,
+  assetRooms: readonly AssetRoom[] = [],
 ): Promise<FeedMeta> {
-  const [rows, context, equipmentFacet] = await Promise.all([
+  const [rows, context, equipmentFacet, roomFacet] = await Promise.all([
     db
       .select({
         assetId: assetFiles.assetId,
@@ -456,13 +480,16 @@ async function loadMeta(
         count: sql<number>`COUNT(*)::int`,
         // Lot 71 : 7e colonne, dans la clé d'agrégation (total filtré exact).
         equipmentMatch: equipmentCondition ? sql<boolean>`(${equipmentCondition})` : sql<null>`NULL::boolean`,
+        // Lot 75B : 8e colonne, dans la clé d'agrégation (total filtré exact, dédupliqué).
+        roomMatch: roomCondition ? sql<boolean>`(${roomCondition})` : sql<null>`NULL::boolean`,
       })
       .from(assetFiles)
       .leftJoin(assets, and(eq(assetFiles.assetId, assets.id), eq(assets.accountId, assetFiles.accountId)))
       .where(and(...scope))
-      .groupBy(assetFiles.assetId, assets.name, sql`3`, assetFiles.rubricCode, assetFiles.documentTypeCode, sql`7`),
+      .groupBy(assetFiles.assetId, assets.name, sql`3`, assetFiles.rubricCode, assetFiles.documentTypeCode, sql`7`, sql`8`),
     loadVisibilityContext(query.accountId, query.assetIds),
-    loadEquipmentFacet(query, scope, assetEquipments),
+    loadEquipmentFacet(query, scope, assetEquipments, roomCondition),
+    loadRoomFacet(query, scope, assetRooms, equipmentCondition),
   ]);
   const noms = await otherAssetNames(query.accountId, rows.flatMap((r) => toIds(r.otherAssetIds)));
   const meta = buildFeedMeta(rows.map((r) => {
@@ -471,9 +498,10 @@ async function loadMeta(
       assetId: r.assetId, assetName: r.assetName, rubricCode: r.rubricCode, documentTypeCode: r.documentTypeCode,
       count: Number(r.count), ...(autres.length ? { otherAssets: autres } : {}),
       ...(equipmentCondition ? { equipmentMatch: r.equipmentMatch === true } : {}),
+      ...(roomCondition ? { roomMatch: r.roomMatch === true } : {}),
     };
   }), query.filters, context);
-  return equipmentFacet ? { ...meta, equipmentFacet } : meta;
+  return { ...meta, ...(equipmentFacet ? { equipmentFacet } : {}), ...(roomFacet ? { roomFacet } : {}) };
 }
 
 /**
@@ -494,10 +522,13 @@ async function loadEquipmentFacet(
   query: DocumentFeedQuery,
   scope: SQL[],
   assetEquipments: readonly AssetEquipment[],
+  roomCondition: SQL | null = null,
 ): Promise<EquipmentFacet | undefined> {
   if (assetEquipments.length === 0) return undefined;
   const biens = bienDimension(query.filters.biens);
-  const base = and(...scope, ...(biens ? [biens] : []));
+  // Lot 75B : Bien + Pièce + Équipement = intersection — les compteurs
+  // d'équipement portent sur la pièce retenue.
+  const base = and(...scope, ...(biens ? [biens] : []), ...(roomCondition ? [roomCondition] : []));
   const ids = assetEquipments.map((e) => e.id);
   const liste = sql.join(ids.map((id) => sql`${id}`), sql`, `);
   const [totaux, parEquipement] = await Promise.all([
@@ -527,6 +558,32 @@ async function loadEquipmentFacet(
     assetOnly: Number(totaux[0]?.assetOnly ?? 0),
     items: assetEquipments.map((e) => ({ ...e, count: counts.get(e.id) ?? 0 })),
   };
+}
+
+/**
+ * Lot 75 (75B) — compteurs du filtre Pièce : documents DIRECTS + documents
+ * des équipements de chaque pièce, chacun UNE fois par pièce
+ * (`COUNT(DISTINCT)` sur la sous-requête centrale), périmètre ∩ biens
+ * retenus ∩ filtre Équipement (Rubrique et Type ignorés, comme les autres
+ * options). Une requête agrégée.
+ */
+async function loadRoomFacet(
+  query: DocumentFeedQuery,
+  scope: SQL[],
+  assetRooms: readonly AssetRoom[],
+  equipmentCondition: SQL | null,
+): Promise<RoomFacet | undefined> {
+  if (assetRooms.length === 0) return undefined;
+  const biens = bienDimension(query.filters.biens);
+  const base = and(...scope, ...(biens ? [biens] : []), ...(equipmentCondition ? [equipmentCondition] : []));
+  const rows = (await db.execute(sql`
+    SELECT rl.room_id AS id, COUNT(DISTINCT ${assetFiles.id})::int AS count
+      FROM ${roomDocumentLinksSql(assetRooms.map((r) => r.id))} rl
+      JOIN asset_files ON ${assetFiles.id} = rl.file_id
+     WHERE ${base}
+     GROUP BY rl.room_id`)) as unknown as Array<{ id: number; count: number }>;
+  const counts = new Map(rows.map((r) => [Number(r.id), Number(r.count)]));
+  return { items: assetRooms.map((r) => ({ ...r, count: counts.get(r.id) ?? 0 })) };
 }
 
 /**

@@ -131,6 +131,8 @@ describe('PO6 — pré-génération durable du texte T6', () => {
 
   it('PO6 — aucun texte remplacé sous les yeux : l’écran garde la présentation de même contexte (RUN-001)', () => {
     const hook = readFileSync(join(process.cwd(), 'src/components/home/useMascotPresentation.ts'), 'utf8');
-    expect(hook).toContain('prev && prev.contextHash === data.contextHash ? prev : data');
+    // Lot 75E (§5) : règle partagée — même contexte ET même révision du contrat de présentation.
+    expect(hook).toContain('keepDisplayedPresentation(prev, data) ? prev : data');
+    expect(readFileSync(join(process.cwd(), 'src/services/home/mascot/bubble.ts'), 'utf8')).toContain('prev.contextHash === next.contextHash');
   });
 });

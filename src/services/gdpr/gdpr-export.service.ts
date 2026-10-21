@@ -284,7 +284,9 @@ export async function getDownloadUrl(userId: number, exportId?: number): Promise
      ORDER BY id DESC LIMIT 1`;
   if (!row) return null;
   const { getExportSignedUrl } = await import('@/services/export-upload.service');
-  return getExportSignedUrl(row.s3_key as string, LINK_TTL_SECONDS());
+  const key = row.s3_key as string;
+  // Nom proposé : celui de l'archive (« verebona-mes-donnees-AAAA-MM-JJ.zip »).
+  return getExportSignedUrl(key, LINK_TTL_SECONDS(), key.split('/').pop() || 'verebona-mes-donnees.zip');
 }
 
 /** Supprime les archives expirées (objet S3 + état `expired`). */

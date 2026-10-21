@@ -19,6 +19,7 @@ import {
   buildEquipmentFilterModel, equipmentFilterParam, type EquipmentFacet,
 } from '@/lib/filters/equipment-filter';
 import type { AgendaPeriod } from '@/lib/agenda/agenda-filters';
+import { buildRoomFilterModel, roomFilterParam, type RoomFacet } from '@/lib/filters/room-filter';
 import { assetAgendaChips, isAssetAgendaEmpty } from '@/lib/agenda/asset-agenda-filters';
 
 const AgendaItemDrawer = dynamic(
@@ -76,6 +77,9 @@ export function AssetAgendaTab({ assetId }: Props) {
   // Lot 72 (72E) : `null` = « Tous (bien et équipements) », jamais transmis.
   const [equipment, setEquipment] = useState<string | null>(null);
   const [equipmentFacet, setEquipmentFacet] = useState<EquipmentFacet | null>(null);
+  // Lot 75B : filtre Pièce ; `null` = « Toutes les pièces ».
+  const [piece, setPiece] = useState<string | null>(null);
+  const [roomFacet, setRoomFacet] = useState<RoomFacet | null>(null);
   const [filtersOpen, setFiltersOpen] = useState(false);
   const filtersPanelId = `${useId()}-filtres-agenda-bien`;
   const [selectedItem, setSelectedItem] = useState<AgendaItemFull | null>(null);
@@ -87,7 +91,7 @@ export function AssetAgendaTab({ assetId }: Props) {
 
   // Autre bien (navigation d'une fiche à l'autre sans démontage) : le
   // filtre Équipement revient à « Tous ».
-  useEffect(() => { setEquipment(null); }, [assetId]);
+  useEffect(() => { setEquipment(null); setPiece(null); }, [assetId]);
 
   useEffect(() => {
     setLoading(true);
@@ -104,19 +108,21 @@ export function AssetAgendaTab({ assetId }: Props) {
     // Équipements du bien (options et compteurs du filtre), et filtre actif.
     params.set('equipmentFacet', '1');
     if (equipment) params.set('equipment', equipment);
+    if (piece) params.set('piece', piece);
 
     // Filtres enchaînés au clavier : seule la DERNIÈRE réponse est appliquée.
     let actuel = true;
-    apiClient.get<{ items: AgendaItemFull[]; equipmentFacet?: EquipmentFacet | null }>(`/api/agenda?${params}`)
+    apiClient.get<{ items: AgendaItemFull[]; equipmentFacet?: EquipmentFacet | null; roomFacet?: RoomFacet | null }>(`/api/agenda?${params}`)
       .then(data => {
         if (!actuel) return;
         setItems(data.items ?? []);
         setEquipmentFacet(data.equipmentFacet ?? null);
+        setRoomFacet(data.roomFacet ?? null);
       })
       .catch(() => { if (actuel) toast.error('Erreur lors du chargement'); })
       .finally(() => { if (actuel) { setLoading(false); setLoadedOnce(true); } });
     return () => { actuel = false; };
-  }, [assetId, period, includeCancelled, equipment, refreshKey, view, month, year]);
+  }, [assetId, period, includeCancelled, equipment, piece, refreshKey, view, month, year]);
 
   const onMutated = () => {
     setRefreshKey(k => k + 1);
@@ -137,17 +143,23 @@ export function AssetAgendaTab({ assetId }: Props) {
   useEffect(() => {
     if (loadedOnce && !loading && equipment && !equipmentModel.visible) setEquipment(null);
   }, [loadedOnce, loading, equipment, equipmentModel.visible]);
+  const roomModel = buildRoomFilterModel(roomFacet, piece, 1);
+  useEffect(() => {
+    if (loadedOnce && !loading && piece && !roomModel.chipLabel) setPiece(null);
+  }, [loadedOnce, loading, piece, roomModel.chipLabel]);
   const chips = assetAgendaChips({
     view, period, includeCancelled,
     equipmentChipLabel: equipment ? (equipmentModel.chipLabel ?? (loading ? null : 'Équipement indisponible')) : null,
+    roomChipLabel: piece ? roomModel.chipLabel : null,
   });
   const activeFiltersCount = chips.length;
   const removeChip = (key: string) => {
     if (key === 'period') setPeriod('all');
     else if (key === 'cancelled') setIncludeCancelled(false);
     else if (key === 'equipment') setEquipment(null);
+    else if (key === 'piece') setPiece(null);
   };
-  const clearFilters = () => { setPeriod('all'); setIncludeCancelled(false); setEquipment(null); };
+  const clearFilters = () => { setPeriod('all'); setIncludeCancelled(false); setEquipment(null); setPiece(null); };
 
   // Comme « Mon agenda » : commandes masquées seulement si l'agenda du bien
   // est RÉELLEMENT vide (vue Liste, aucun filtre) — un mois vide n'est pas un
@@ -185,6 +197,8 @@ export function AssetAgendaTab({ assetId }: Props) {
           onPeriod={setPeriod}
           onToggleCancelled={() => setIncludeCancelled(v => !v)}
           onEquipment={(v) => setEquipment(equipmentFilterParam(v))}
+          room={roomModel}
+          onRoom={(v) => setPiece(roomFilterParam(v))}
         />
       )}
       {!masquerFiltres && <ActiveFilterChips chips={chips} onRemove={removeChip} onClear={clearFilters} />}
@@ -213,7 +227,8 @@ export function AssetAgendaTab({ assetId }: Props) {
           </div>
         )
       ) : view === 'year' ? (
-        <YearView items={items} year={year} onItemClick={setSelectedItem} />
+        // Lot 75H : en-tête d'un mois → vue mensuelle de ce mois (filtres conservés).
+        <YearView items={items} year={year} onItemClick={setSelectedItem} onOpenMonth={(m) => { setMonth(m); setView('calendar'); }} />
       ) : view === 'calendar' ? (
         <CalendarView items={items} month={month} onItemClick={setSelectedItem} onNew={ouvrirCreation} />
       ) : items.length === 0 && activeFiltersCount > 0 ? (

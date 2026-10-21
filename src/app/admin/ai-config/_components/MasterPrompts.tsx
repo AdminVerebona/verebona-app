@@ -77,19 +77,36 @@ interface Detail {
   /** Lot 34D : contexte structuré (T4). */
   structured?: StructuredInfo | null;
   /** Lot 59 (#419) : contrôle du prompt maître T2 actif / brouillon. */
-  t2Capabilities?: { active: T2Capabilities; draft: T2Capabilities | null } | null;
+  t2Capabilities?: {
+    active: T2Capabilities; draft: T2Capabilities | null;
+    activeOrigin?: { kind: 'BO_VERSION' | 'INITIAL_CONFIG' | 'REPOSITORY_FILE'; versionNumber: number | null };
+  } | null;
 }
-interface T2Capabilities { checks: Array<{ code: string; label: string; present: boolean }>; arbitration: boolean; interaction: boolean; message: string | null }
+interface T2Capabilities {
+  checks: Array<{ code: string; label: string; present: boolean }>; arbitration: boolean; interaction: boolean; message: string | null;
+  /** Lot 75J : compatibilité avec les variables injectées et les branches. */
+  compatibility?: { compatible: boolean; missingVariables: string[]; unknownPlaceholders: string[]; missingBranches: string[] };
+}
+
+/** Lot 75J (#419 §3) — libellé de la version contrôlée (celle réellement utilisée). */
+function origineT2(o: NonNullable<Detail['t2Capabilities']>['activeOrigin']): string {
+  if (!o) return 'Version active';
+  if (o.kind === 'BO_VERSION') return `Version active v${o.versionNumber ?? '?'} (BO)`;
+  return o.kind === 'INITIAL_CONFIG' ? 'Version active : texte initial (configuration)' : 'Version active : texte livré avec l’application';
+}
 
 /** Lot 59 (#419) — contrôle visible du prompt maître T2 (arbitrage, informations apportées). */
-function T2CapabilitiesPanel({ caps, titre }: { caps: T2Capabilities; titre: string }) {
-  const ok = caps.arbitration && caps.interaction;
+function T2CapabilitiesPanel({ caps, titre, recette = false }: { caps: T2Capabilities; titre: string; recette?: boolean }) {
+  const compat = caps.compatibility;
+  const ok = caps.arbitration && caps.interaction && (compat?.compatible ?? true);
   return (
     <div className={`rounded border p-2 text-xs space-y-1 ${ok ? 'border-[color:var(--border-success)] bg-[color:var(--bg-success)]' : 'border-[color:var(--border-warning)] bg-[color:var(--bg-warning)]'}`}
       data-testid="t2-capabilities">
       <p className="font-medium flex items-center gap-1.5 text-[color:var(--text-primary)]">
         {ok ? <CheckCircle2 className="w-3.5 h-3.5 text-[color:var(--text-success)]" /> : <AlertTriangle className="w-3.5 h-3.5 text-[color:var(--text-warning-soft)]" />}
-        {titre} : arbitrage sémantique {caps.arbitration ? 'disponible' : 'IMPOSSIBLE'} · informations apportées {caps.interaction ? 'comprises' : 'non comprises'}
+        <span className="min-w-0 break-words">
+          {titre} : {compat ? (compat.compatible ? 'compatible avec le serveur' : 'INCOMPATIBLE avec le serveur') + ' · ' : ''}arbitrage sémantique {caps.arbitration ? 'disponible' : 'IMPOSSIBLE'} · informations apportées {caps.interaction ? 'comprises' : 'non comprises'}
+        </span>
       </p>
       <ul className="flex flex-wrap gap-x-3 gap-y-0.5 text-[color:var(--text-muted)]">
         {caps.checks.map((c) => (
@@ -98,7 +115,19 @@ function T2CapabilitiesPanel({ caps, titre }: { caps: T2Capabilities; titre: str
           </li>
         ))}
       </ul>
-      {caps.message && <p className="text-[color:var(--text-warning-soft)]">{caps.message}</p>}
+      {caps.message && <p className="text-[color:var(--text-warning-soft)] break-words">{caps.message}</p>}
+      {recette && (
+        <details className="text-[color:var(--text-secondary)] break-words" data-testid="t2-recette-419">
+          <summary className="cursor-pointer text-[color:var(--text-primary)]">Vérifier le fonctionnement réel (recette du ticket 419)</summary>
+          <ol className="list-decimal pl-5 space-y-0.5 mt-1">
+            <li>La présence d’une règle dans le texte ne prouve pas son fonctionnement : posez les questions de recette à l’assistant avec un compte de test Premium.</li>
+            <li>Ouvrez « Exécutions IA » → onglet « Requêtes T2 », puis la cascade de chaque demande (rubrique <code>semantic</code>).</li>
+            <li>Vérifiez la version utilisée (<code>t2PromptAtUnderstand.version</code>, <code>t2PromptCapabilities.version</code>) : elle doit être celle affichée ici.</li>
+            <li>Vérifiez la décision : sources envisagées et capacité (<code>semanticCandidates</code>), exclusions (<code>candidatesExcluded</code>), décision T2 (<code>semanticDecision</code>), validation serveur (<code>candidateRefValidated</code>), source servie (<code>selectedSource</code>).</li>
+            <li>Informations apportées : <code>interactionMode</code>, <code>contextFactsUsed</code>, <code>contextFactsRejected</code>, <code>updateFactsRefused</code> ; aucune écriture sans confirmation.</li>
+          </ol>
+        </details>
+      )}
     </div>
   );
 }
@@ -406,7 +435,7 @@ function MasterPromptEditor({ treatment, onChanged }: { treatment: string; onCha
             {active?.content ?? detail.initialContent?.content ?? ''}
           </pre>
         </details>
-        {detail.t2Capabilities && <T2CapabilitiesPanel caps={detail.t2Capabilities.active} titre="Version active" />}
+        {detail.t2Capabilities && <T2CapabilitiesPanel caps={detail.t2Capabilities.active} titre={origineT2(detail.t2Capabilities.activeOrigin)} recette />}
         {!draft && (
           <div className="flex flex-wrap gap-2">
             <Button size="sm" onClick={modifier} disabled={busy !== null}>

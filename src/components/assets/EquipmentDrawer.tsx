@@ -16,22 +16,24 @@ import {
 } from '@/components/ui/alert-dialog';
 import {
   Settings, Pencil, Trash2, MapPin, Home, Loader2, X, Save, Plus,
-  Building2, FileText, CalendarDays, ChevronRight, Clock, CheckCircle2, AlertCircle, Circle,
+  Building2, FileText, CalendarDays, Clock, CheckCircle2, AlertCircle, Circle,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { apiClient } from '@/lib/api-client';
 import { SupplierDrawer } from '@/components/suppliers/SupplierDrawer';
+import { EntityCard } from '@/components/drawers/EntityCard';
 import { useWriteGuard } from '@/contexts/WriteGuardContext';
 import { EQUIPMENT_FICHE_FIELDS, equipmentFicheChanges } from '@/lib/asset-detail-rules';
-import { Button } from '@/components/ui/button';
+import { normalizeEquipmentEnergyUsage } from '@/lib/cil/energy-equipment';
+// Lot 75A : champ « Usage énergétique » affiché selon sa pertinence (règle
+// centralisée `isEnergyUsageFieldRelevant`), même composant desktop et mobile.
 import {
-  EQUIPMENT_ENERGY_USAGE_OPTIONS, ENERGY_USAGE_UNSET_LABEL, equipmentEnergyUsageLabel,
-  normalizeEquipmentEnergyUsage, suggestEnergyUsageFromType,
-} from '@/lib/cil/energy-equipment';
-
-/** Valeur du sélecteur « Usage énergétique » pour « Non renseigné » (`null` en base). */
-const ENERGY_USAGE_UNSET = 'non_renseigne';
-const energyUsageToForm = (v: unknown): string => normalizeEquipmentEnergyUsage(v) ?? ENERGY_USAGE_UNSET;
+  ENERGY_USAGE_UNSET, energyUsageToForm, energyUsageFormPresentation, energyUsagePayload, showEnergyUsageInView,
+  EquipmentEnergyUsageField, EquipmentEnergyUsageView, type EnergyUsageRelevanceBase,
+} from '@/components/assets/equipment-energy-usage-field';
+import {
+  ROOM_ASSOCIATIONS_CHANGED, notifyRoomAssociationsChanged, type RoomAssociationsChangedDetail,
+} from '@/lib/rooms/room-associations';
 
 /** Fiche saisie (lot 20, D-D) : valeurs du formulaire, en texte. */
 type FicheForm = Record<string, string>;
@@ -112,6 +114,11 @@ interface Props {
   availableAssets?: EquipmentDrawerAsset[];
   /** Name of the current asset, displayed as read-only "Bien associé" when adding from an asset page */
   assetName?: string;
+  /**
+   * Lot 75B : pièce présélectionnée en CRÉATION (création depuis le tiroir
+   * Pièce : bien et pièce présélectionnés). Ignorée en modification.
+   */
+  initialSubstructureId?: number | null;
 }
 
 const STATUS_LABELS: Record<string, string> = {
@@ -150,6 +157,32 @@ function AgendaStatusIcon({ status }: { status: string }) {
   return <Circle className="w-3.5 h-3.5 text-muted-foreground flex-shrink-0" />;
 }
 
+/** Pastille d'état d'une échéance associée (texte, non interactive). */
+function AgendaStatusBadge({ item }: { item: Pick<EquipmentAgendaItem, 'manualStatus' | 'effectiveStatus'> }) {
+  if (item.manualStatus === 'realise') {
+    return (
+      <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full bg-[color:var(--bg-success)] text-[color:var(--text-success)] border border-[color:var(--border-success)] flex-shrink-0">
+        Réalisé
+      </span>
+    );
+  }
+  if (item.effectiveStatus === 'en_retard') {
+    return (
+      <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full bg-[color:var(--danger-soft)] text-[color:var(--danger)] border border-[color:var(--danger-edge)] flex-shrink-0">
+        {EFFECTIVE_STATUS_LABELS.en_retard}
+      </span>
+    );
+  }
+  if (item.effectiveStatus === 'a_confirmer') {
+    return (
+      <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full bg-[color:var(--attention-soft)] text-[color:var(--attention-on-soft)] border border-[color:var(--attention-edge)] flex-shrink-0">
+        {EFFECTIVE_STATUS_LABELS.a_confirmer}
+      </span>
+    );
+  }
+  return null;
+}
+
 function formatDate(dateStr: string | null): string {
   if (!dateStr) return '';
   try {
@@ -159,7 +192,7 @@ function formatDate(dateStr: string | null): string {
   }
 }
 
-export function EquipmentDrawer({ open, onOpenChange, assetId, equipment: eq, substructures: initialSubstructures, onRefresh, initialEditing = false, availableAssets, assetName }: Props) {
+export function EquipmentDrawer({ open, onOpenChange, assetId, equipment: eq, substructures: initialSubstructures, onRefresh, initialEditing = false, availableAssets, assetName, initialSubstructureId }: Props) {
   const isCreateMode = eq === null;
   const hasAssetSelector = !!availableAssets;
 
@@ -170,6 +203,10 @@ export function EquipmentDrawer({ open, onOpenChange, assetId, equipment: eq, su
   // l'équipement (`undefined` tant qu'elle n'est pas lue : rien n'est envoyé).
   const [energyUsage, setEnergyUsage] = useState<string>(ENERGY_USAGE_UNSET);
   const [knownEnergyUsage, setKnownEnergyUsage] = useState<string | null | undefined>(undefined);
+  // Lot 75A : catégorie et caractéristiques CIL relues (pertinence du champ) ;
+  // section « Options avancées » des équipements non reconnus énergétiques.
+  const [energyRelevanceBase, setEnergyRelevanceBase] = useState<EnergyUsageRelevanceBase | null>(null);
+  const [energyAdvancedOpen, setEnergyAdvancedOpen] = useState(false);
   const [status, setStatus] = useState('EN_SERVICE');
   const [substructureId, setSubstructureId] = useState<string>('none');
   const [selectedAssetId, setSelectedAssetId] = useState<string>(assetId && assetId > 0 ? String(assetId) : 'none');
@@ -224,9 +261,12 @@ export function EquipmentDrawer({ open, onOpenChange, assetId, equipment: eq, su
       const known = isCreateMode ? null : eq?.energyUsage === undefined ? undefined : normalizeEquipmentEnergyUsage(eq.energyUsage);
       setKnownEnergyUsage(known);
       setEnergyUsage(energyUsageToForm(known));
+      setEnergyRelevanceBase(null);
+      setEnergyAdvancedOpen(false);
       const aid = (eq?.assetId && eq.assetId > 0) ? eq.assetId : (assetId && assetId > 0 ? assetId : 0);
       setSelectedAssetId(aid > 0 ? String(aid) : 'none');
-      setSubstructureId(eq?.substructureId ? String(eq.substructureId) : 'none');
+      setSubstructureId(eq?.substructureId ? String(eq.substructureId) : (isCreateMode && initialSubstructureId ? String(initialSubstructureId) : 'none'));
+      setRoomOverride(undefined);
       setIsEditing(isCreateMode || initialEditing);
       setFiche(null);
       setFicheForm(FICHE_VIDE);
@@ -245,8 +285,22 @@ export function EquipmentDrawer({ open, onOpenChange, assetId, equipment: eq, su
     // Load equipment linked data if equipment exists
     if (open && eq?.id) {
       // Fiche canonique
-      apiClient.get<{ fiche?: Record<string, unknown>; equipment?: { energyUsage?: string | null } }>(`/api/equipments/${eq.id}`)
+      apiClient.get<{
+        fiche?: Record<string, unknown>;
+        equipment?: {
+          energyUsage?: string | null; category?: string | null;
+          cilSpecs?: { energyType?: string | null; evacuationMode?: string | null; heatNetworkDeliveryStation?: string | null } | null;
+        };
+      }>(`/api/equipments/${eq.id}`)
         .then(d => {
+          if (d.equipment) {
+            setEnergyRelevanceBase({
+              category: d.equipment.category ?? null,
+              energyType: d.equipment.cilSpecs?.energyType ?? null,
+              evacuationMode: d.equipment.cilSpecs?.evacuationMode ?? null,
+              heatNetworkDeliveryStation: d.equipment.cilSpecs?.heatNetworkDeliveryStation ?? null,
+            });
+          }
           // Usage énergétique relu (l'écran appelant ne le transmet pas toujours).
           if (d.equipment && d.equipment.energyUsage !== undefined) {
             const v = normalizeEquipmentEnergyUsage(d.equipment.energyUsage);
@@ -302,6 +356,41 @@ export function EquipmentDrawer({ open, onOpenChange, assetId, equipment: eq, su
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, eq, assetId, isCreateMode, initialEditing]);
 
+  // Lot 75B : pièce de l'équipement modifiée ailleurs (tiroir Pièce empilé
+  // au-dessus, autre écran) : la pièce affichée est relue, sans attendre la
+  // réouverture du tiroir. `undefined` = celle reçue de l'écran appelant.
+  const [roomOverride, setRoomOverride] = useState<number | null | undefined>(undefined);
+  const currentRoomId = roomOverride !== undefined ? roomOverride : (eq?.substructureId ?? null);
+  useEffect(() => {
+    if (!open || eq?.id == null) return;
+    const id = eq.id;
+    const relire = (e: Event) => {
+      const d = (e as CustomEvent<RoomAssociationsChangedDetail>).detail;
+      if (!d?.equipmentIds?.includes(id)) return;
+      apiClient.get<{ equipment?: { substructureId?: number | null } }>(`/api/equipments/${id}`)
+        .then((r) => {
+          if (r.equipment && r.equipment.substructureId !== undefined) setRoomOverride(r.equipment.substructureId ?? null);
+        })
+        .catch(() => {});
+    };
+    window.addEventListener(ROOM_ASSOCIATIONS_CHANGED, relire);
+    return () => window.removeEventListener(ROOM_ASSOCIATIONS_CHANGED, relire);
+  }, [open, eq?.id]);
+
+  // Lot 75H : une échéance ouverte depuis la section « Agenda associé »
+  // s'empile au-dessus ; modifiée ou supprimée, la liste se relit.
+  const equipmentId = eq?.id ?? null;
+  useEffect(() => {
+    if (!open || equipmentId == null) return;
+    const reload = () => {
+      apiClient.get<{ items: EquipmentAgendaItem[] }>(`/api/equipments/${equipmentId}/agenda`)
+        .then((d) => setEquipmentAgenda(d.items ?? []))
+        .catch(() => {});
+    };
+    window.addEventListener('agenda-mutated', reload);
+    return () => window.removeEventListener('agenda-mutated', reload);
+  }, [open, equipmentId]);
+
   // When asset selection changes, reset substructure and reload pièces
   const handleAssetChange = useCallback((val: string) => {
     setSelectedAssetId(val);
@@ -318,12 +407,23 @@ export function EquipmentDrawer({ open, onOpenChange, assetId, equipment: eq, su
       setName(eq?.name ?? '');
       setType(eq?.type ?? '');
       setEnergyUsage(energyUsageToForm(knownEnergyUsage));
+      setEnergyAdvancedOpen(false);
       setStatus(eq?.status ?? 'EN_SERVICE');
-      setSubstructureId(eq?.substructureId ? String(eq.substructureId) : 'none');
+      setSubstructureId(currentRoomId ? String(currentRoomId) : 'none');
       setFicheForm(fiche ? ficheToForm(fiche) : FICHE_VIDE);
       setIsEditing(true);
     });
-  }, [garder, eq, fiche, knownEnergyUsage]);
+  }, [garder, eq, fiche, knownEnergyUsage, currentRoomId]);
+
+  // Lot 75A : emplacement (formulaire standard / options avancées) et
+  // visibilité du champ « Usage énergétique », recalculés à chaque saisie du type.
+  const energyPresentation = energyUsageFormPresentation({
+    persistedEnergyUsage: isCreateMode ? null : knownEnergyUsage,
+    formValue: energyUsage,
+    type,
+    base: isCreateMode ? null : energyRelevanceBase,
+    advancedOpen: energyAdvancedOpen,
+  });
 
   const handleSave = useCallback(async () => {
     if (!name.trim()) { toast.error('Le nom est obligatoire'); return; }
@@ -336,25 +436,40 @@ export function EquipmentDrawer({ open, onOpenChange, assetId, equipment: eq, su
         status,
         substructureId: substructureId === 'none' ? null : parseInt(substructureId),
       };
-      // Usage énergétique : toujours à la création ; en modification, seulement
-      // une fois la valeur de l'équipement connue (jamais d'effacement à l'aveugle).
-      if (isCreateMode || knownEnergyUsage !== undefined) {
-        payload.energyUsage = energyUsage === ENERGY_USAGE_UNSET ? null : energyUsage;
-      }
+      // Usage énergétique : seulement si le champ est VISIBLE (lot 75A : un
+      // champ masqué ne modifie rien) et, en modification, une fois la valeur
+      // de l'équipement connue (jamais d'effacement à l'aveugle).
+      const energyUsageValue = energyUsagePayload({ isCreateMode, knownEnergyUsage, visible: energyPresentation.visible, formValue: energyUsage });
+      if (energyUsageValue !== undefined) payload.energyUsage = energyUsageValue;
       // Fiche canonique : seules les clés modifiées par rapport à la fiche
       // CHARGÉE ; omise tant qu'elle ne l'est pas (origine USER côté serveur).
       const ficheModifiee = equipmentFicheChanges(fiche, ficheForm);
       if (!isCreateMode && ficheModifiee) payload.fiche = ficheModifiee;
       if (isCreateMode) {
         if (!effectiveAssetId) { toast.error('Veuillez sélectionner un bien'); setIsSaving(false); return; }
-        await apiClient.post(`/api/assets/${effectiveAssetId}/equipments`, payload);
+        const cree = await apiClient.post<{ id?: number; equipment?: { id?: number } }>(`/api/assets/${effectiveAssetId}/equipments`, payload);
         toast.success('Équipement ajouté');
+        // Lot 75B : créé dans une pièce → tiroir Pièce et filtres relus.
+        if (payload.substructureId) {
+          const nouvelId = Number(cree?.id ?? cree?.equipment?.id);
+          notifyRoomAssociationsChanged({ roomIds: [payload.substructureId], equipmentIds: Number.isSafeInteger(nouvelId) ? [nouvelId] : [] });
+        }
       } else {
         const originalAssetId = eq!.assetId && eq!.assetId > 0 ? eq!.assetId : assetId;
         if (effectiveAssetId && effectiveAssetId !== originalAssetId) payload.newAssetId = effectiveAssetId;
         await apiClient.put(`/api/assets/${originalAssetId}/equipments/${eq!.id}`, payload);
         toast.success('Équipement mis à jour');
         setIsEditing(false);
+        // Lot 75B : pièce changée depuis l'équipement → tiroir Pièce, « Mes
+        // documents » et « Mon agenda » suivent (documents et échéances de
+        // l'équipement résolus par la pièce actuelle).
+        if ((payload.substructureId ?? null) !== currentRoomId) {
+          setRoomOverride(payload.substructureId ?? null);
+          notifyRoomAssociationsChanged({
+            roomIds: [currentRoomId, payload.substructureId].filter((x): x is number => typeof x === 'number'),
+            equipmentIds: [eq!.id],
+          });
+        }
       }
       onRefresh();
       onOpenChange(false);
@@ -363,7 +478,7 @@ export function EquipmentDrawer({ open, onOpenChange, assetId, equipment: eq, su
     } finally {
       setIsSaving(false);
     }
-  }, [eq, assetId, selectedAssetId, name, type, energyUsage, knownEnergyUsage, status, substructureId, fiche, ficheForm, isCreateMode, onRefresh, onOpenChange]);
+  }, [eq, assetId, selectedAssetId, name, type, energyUsage, knownEnergyUsage, energyPresentation.visible, status, substructureId, fiche, ficheForm, isCreateMode, onRefresh, onOpenChange, currentRoomId]);
 
   const handleArchive = useCallback(async () => {
     if (!eq) return;
@@ -400,10 +515,7 @@ export function EquipmentDrawer({ open, onOpenChange, assetId, equipment: eq, su
 
   const substructures = dynamicSubstructures;
   const statusColor = eq ? (STATUS_COLORS[eq.status] ?? STATUS_COLORS.INACTIF) : '';
-  const room = eq ? substructures.find(s => s.id === eq.substructureId) : null;
-  // Suggestion d'usage déduite du type (référentiel, reconnu en tête du champ),
-  // proposée seulement quand l'usage n'est pas renseigné ; jamais appliquée seule.
-  const energyUsageSuggestion = energyUsage === ENERGY_USAGE_UNSET ? suggestEnergyUsageFromType(type) : null;
+  const room = eq ? substructures.find(s => s.id === currentRoomId) : null;
   const energyUsageEditable = isCreateMode || knownEnergyUsage !== undefined;
 
   const formSection = (
@@ -436,33 +548,17 @@ export function EquipmentDrawer({ open, onOpenChange, assetId, equipment: eq, su
         <Label>Type</Label>
         <Input value={type} onChange={e => setType(e.target.value)} placeholder="Ex: Chaudière, Pompe à chaleur…" />
       </div>
-      {/* Usage énergétique (lot 70B) : choix fermé, lu en priorité par le CIL (B6). */}
-      <div className="space-y-1.5" data-testid="equipment-energy-usage">
-        <Label htmlFor="equipment-energy-usage">Usage énergétique</Label>
-        <Select value={energyUsage} onValueChange={setEnergyUsage} disabled={!energyUsageEditable}>
-          <SelectTrigger id="equipment-energy-usage"><SelectValue /></SelectTrigger>
-          <SelectContent>
-            <SelectItem value={ENERGY_USAGE_UNSET}>{ENERGY_USAGE_UNSET_LABEL}</SelectItem>
-            {EQUIPMENT_ENERGY_USAGE_OPTIONS.map((o) => (
-              <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-        {energyUsageSuggestion ? (
-          <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-[color:var(--border-info)] bg-[color:var(--accent-soft)] px-3 py-2" data-testid="equipment-energy-usage-suggestion">
-            <p className="text-xs text-[color:var(--text-primary)]">
-              Suggestion d’après le type : <span className="font-semibold">{equipmentEnergyUsageLabel(energyUsageSuggestion)}</span>
-            </p>
-            <Button type="button" size="sm" variant="outline" onClick={() => setEnergyUsage(energyUsageSuggestion)}>
-              Confirmer
-            </Button>
-          </div>
-        ) : (
-          <p className="vb-meta">
-            Sert au dossier CIL (équipements à incidence énergétique). « Non renseigné » : le type décide.
-          </p>
-        )}
-      </div>
+      {/* Usage énergétique (lot 70B) : choix fermé, lu en priorité par le CIL (B6).
+          Lot 75A : présenté directement s'il est pertinent, sinon en options avancées. */}
+      <EquipmentEnergyUsageField
+        presentation={energyPresentation}
+        value={energyUsage}
+        onChange={setEnergyUsage}
+        editable={energyUsageEditable}
+        type={type}
+        advancedOpen={energyAdvancedOpen}
+        onAdvancedOpenChange={setEnergyAdvancedOpen}
+      />
       {/* Fiche (équipement existant : la création n'écrit pas la fiche canonique). */}
       {/* Saisie proposée seulement une fois la fiche chargée. */}
       {!isCreateMode && fiche && EQUIPMENT_FICHE_FIELDS.map((f) => (
@@ -536,11 +632,9 @@ export function EquipmentDrawer({ open, onOpenChange, assetId, equipment: eq, su
             <span className="font-medium">{eq.type}</span>
           </div>
         )}
-        {knownEnergyUsage !== undefined && (
-          <div className="flex items-center justify-between gap-3">
-            <span className="text-muted-foreground">Usage énergétique</span>
-            <span className={knownEnergyUsage ? 'font-medium text-right' : 'text-muted-foreground text-right'}>{equipmentEnergyUsageLabel(knownEnergyUsage)}</span>
-          </div>
+        {/* Lot 75A : seulement si pertinent (aspirateur, téléviseur… : masqué). */}
+        {showEnergyUsageInView({ knownEnergyUsage, type: eq.type, base: energyRelevanceBase }) && (
+          <EquipmentEnergyUsageView value={knownEnergyUsage ?? null} />
         )}
         {EQUIPMENT_FICHE_FIELDS.map((f) => {
           const v = ficheValueLabel(f.key, fiche?.[f.key]);
@@ -569,25 +663,20 @@ export function EquipmentDrawer({ open, onOpenChange, assetId, equipment: eq, su
         ) : (
           <div className="space-y-1.5">
             {equipmentSuppliers.map(s => (
-              <button
+              <EntityCard
                 key={s.supplierId}
-                className="w-full flex items-center gap-2 text-sm p-2.5 rounded-lg bg-[color:var(--bg-subtle)] border border-border/60 hover:border-[color:var(--border-info)] hover:bg-[color:var(--accent-soft)] transition-colors text-left group"
-                onClick={() => { setSupplierDrawerId(s.supplierId); setSupplierDrawerOpen(true); }}
-              >
-                <div className="w-6 h-6 rounded-md bg-[color:var(--accent-soft)] flex items-center justify-center flex-shrink-0">
-                  <Building2 className="w-3.5 h-3.5 text-[color:var(--accent)]" />
-                </div>
-                <div className="flex-1 min-w-0">
-                  <p className="font-medium text-[color:var(--accent)] truncate text-xs">{s.name}</p>
-                  {s.email && <p className="text-[10px] text-muted-foreground truncate">{s.email}</p>}
-                </div>
-                {s.isPrimary && (
-                  <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full bg-[color:var(--accent-soft)] text-[color:var(--accent)] border border-[color:var(--border-info)] flex-shrink-0">
+                kind="fournisseur"
+                id={s.supplierId}
+                title={s.name}
+                icon={<Building2 className="w-3.5 h-3.5" />}
+                meta={s.email ?? undefined}
+                badges={s.isPrimary ? (
+                  <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full bg-[color:var(--accent-soft)] text-[color:var(--accent)] border border-[color:var(--border-info)]">
                     Principal
                   </span>
-                )}
-                <ChevronRight className="w-3.5 h-3.5 text-muted-foreground group-hover:text-[color:var(--accent)] transition-colors flex-shrink-0" />
-              </button>
+                ) : undefined}
+                onOpen={() => { setSupplierDrawerId(s.supplierId); setSupplierDrawerOpen(true); }}
+              />
             ))}
           </div>
         )}
@@ -613,29 +702,23 @@ export function EquipmentDrawer({ open, onOpenChange, assetId, equipment: eq, su
               const typeCode = doc.documentType ?? 'AUTRE';
               const typeColor = DOC_TYPE_COLORS[typeCode] ?? DOC_TYPE_COLORS.AUTRE;
               return (
-                <div
+                <EntityCard
                   key={doc.id}
-                  className="flex items-start gap-2.5 p-2.5 rounded-lg bg-[color:var(--bg-subtle)] border border-border/60 text-sm"
-                >
-                  <div className="w-6 h-6 rounded-md bg-muted/40 flex items-center justify-center flex-shrink-0 mt-0.5">
-                    <FileText className="w-3.5 h-3.5 text-muted-foreground" />
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <p className="font-medium text-foreground truncate text-xs leading-tight">{doc.title}</p>
-                    <div className="flex items-center gap-1.5 mt-1 flex-wrap">
+                  kind="document"
+                  id={doc.id}
+                  title={doc.title}
+                  icon={<FileText className="w-3.5 h-3.5" />}
+                  meta={(doc.documentTypeLabel || doc.documentDate) ? (
+                    <span className="flex items-center gap-1.5 flex-wrap">
                       {doc.documentTypeLabel && (
                         <span className={`text-[11px] font-semibold px-2 py-0.5 rounded-full border ${typeColor}`}>
                           {doc.documentTypeLabel}
                         </span>
                       )}
-                      {doc.documentDate && (
-                        <span className="text-[10px] text-muted-foreground">
-                          {formatDate(doc.documentDate)}
-                        </span>
-                      )}
-                    </div>
-                  </div>
-                </div>
+                      {doc.documentDate && <span>{formatDate(doc.documentDate)}</span>}
+                    </span>
+                  ) : undefined}
+                />
               );
             })}
           </div>
@@ -659,39 +742,18 @@ export function EquipmentDrawer({ open, onOpenChange, assetId, equipment: eq, su
         ) : (
           <div className="space-y-1.5">
             {equipmentAgenda.map(item => (
-              <div
+              <EntityCard
                 key={item.id}
-                className="flex items-start gap-2.5 p-2.5 rounded-lg bg-[color:var(--bg-subtle)] border border-border/60 text-sm"
-              >
-                <AgendaStatusIcon status={item.effectiveStatus} />
-                <div className="flex-1 min-w-0">
-                  <p className="font-medium text-foreground truncate text-xs leading-tight">{item.title}</p>
-                  {item.startDate && (
-                    <p className="text-[10px] text-muted-foreground mt-0.5">
-                      {formatDate(item.startDate)}
-                      {item.startTime && ` · ${item.startTime.slice(0, 5)}`}
-                    </p>
-                  )}
-                  {!item.startDate && (
-                    <p className="text-[10px] text-muted-foreground mt-0.5">Sans date</p>
-                  )}
-                </div>
-                {item.manualStatus === 'realise' && (
-                  <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full bg-[color:var(--bg-success)] text-[color:var(--text-success)] border border-[color:var(--border-success)] flex-shrink-0">
-                    Réalisé
-                  </span>
-                )}
-                {item.effectiveStatus === 'en_retard' && item.manualStatus !== 'realise' && (
-                  <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full bg-[color:var(--danger-soft)] text-[color:var(--danger)] border border-[color:var(--danger-edge)] flex-shrink-0">
-                    {EFFECTIVE_STATUS_LABELS.en_retard}
-                  </span>
-                )}
-                {item.effectiveStatus === 'a_confirmer' && (
-                  <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full bg-[color:var(--attention-soft)] text-[color:var(--attention-on-soft)] border border-[color:var(--attention-edge)] flex-shrink-0">
-                    {EFFECTIVE_STATUS_LABELS.a_confirmer}
-                  </span>
-                )}
-              </div>
+                kind="echeance"
+                id={item.id}
+                title={item.title}
+                icon={<AgendaStatusIcon status={item.effectiveStatus} />}
+                iconStyle="plain"
+                meta={item.startDate
+                  ? `${formatDate(item.startDate)}${item.startTime ? ` · ${item.startTime.slice(0, 5)}` : ''}`
+                  : 'Sans date'}
+                badges={<AgendaStatusBadge item={item} />}
+              />
             ))}
           </div>
         )}

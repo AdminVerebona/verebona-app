@@ -134,21 +134,26 @@ describe('L70-ENER-05 — valeurs alignées sur le référentiel CIL (aucun réf
 });
 
 describe('L70-ENER-06 — tiroir équipement (même composant desktop et mobile)', () => {
-  const src = read('src/components/assets/EquipmentDrawer.tsx');
+  // Lot 75A : le champ est extrait dans `equipment-energy-usage-field.tsx`
+  // (affichage contextuel) ; le tiroir l'utilise. Les deux sources sont lues.
+  const src = read('src/components/assets/EquipmentDrawer.tsx') + '\n' + read('src/components/assets/equipment-energy-usage-field.tsx');
   it('champ « Usage énergétique » éditable en création et en modification, choix fermés + « Non renseigné »', () => {
     expect(src).toContain('<Label htmlFor="equipment-energy-usage">Usage énergétique</Label>');
     expect(src).toContain('EQUIPMENT_ENERGY_USAGE_OPTIONS.map');
     expect(src).toContain('{ENERGY_USAGE_UNSET_LABEL}');
-    expect(src).toMatch(/if \(isCreateMode \|\| knownEnergyUsage !== undefined\) \{\s*payload\.energyUsage =/);
+    // Lot 75A : envoi seulement si le champ est visible, et en modification une fois la valeur connue.
+    expect(src).toContain('if (energyUsageValue !== undefined) payload.energyUsage = energyUsageValue;');
+    expect(src).toMatch(/if \(!p\.isCreateMode && p\.knownEnergyUsage === undefined\) return undefined;/);
   });
   it('suggestion depuis le type, confirmée par l’utilisateur (jamais enregistrée seule)', () => {
     expect(src).toContain('suggestEnergyUsageFromType(type)');
-    expect(src).toContain('onClick={() => setEnergyUsage(energyUsageSuggestion)}');
+    expect(src).toContain('onClick={() => onChange(suggestion)}');
     expect(src).toContain('Confirmer');
   });
   it('consultation : usage affiché ; jetons de la charte uniquement (aucune couleur en dur)', () => {
     expect(src).toContain('<span className="text-muted-foreground">Usage énergétique</span>');
-    const bloc = src.slice(src.indexOf('data-testid="equipment-energy-usage"'), src.indexOf('{/* Fiche (équipement existant'));
+    const field = read('src/components/assets/equipment-energy-usage-field.tsx');
+    const bloc = field.slice(field.indexOf('data-testid="equipment-energy-usage"'));
     expect(bloc).not.toMatch(/#[0-9a-f]{3,6}\b|bg-(blue|green|red|yellow|gray)-/i);
     expect(bloc).toContain('var(--accent-soft)');
   });

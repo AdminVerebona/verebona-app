@@ -517,8 +517,20 @@ export async function prepareUpdateProposal(
   for (const [i, d] of demandes.entries()) {
     const cap = updateCapabilityFor(d.fact.fieldKey);
     if (!cap) {
-      refuser(d.fact.fieldKey ?? null, d.fact.fieldKey ? 'FIELD_NOT_WRITABLE' : 'NO_FIELD',
+      // Lot 75J (#419 R08) : champ NON résolu (information non identifiée) ≠ champ connu non modifiable.
+      if (!d.fact.fieldKey || !getField(d.fact.fieldKey)) {
+        const quoi = (d.fact.topic ?? d.fact.value ?? '').trim();
+        refuser(d.fact.fieldKey ?? null, 'NO_FIELD',
+          `Je n’ai pas identifié quelle information modifier${quoi ? ` (« ${quoi.slice(0, 60)} »)` : ''} : rien n’a été modifié. Précisez le champ concerné.`, null);
+        continue;
+      }
+      refuser(d.fact.fieldKey ?? null, 'FIELD_NOT_WRITABLE',
         'Merci pour cette information. Je ne peux pas l’enregistrer depuis l’assistant : rien n’a été modifié. Vous pouvez la renseigner depuis la fiche concernée.', null);
+      continue;
+    }
+    // Lot 75J (#419 R08) : information reconnue SANS valeur — la valeur manque (jamais ignorée).
+    if (!(d.fact.normalizedValue ?? d.fact.value ?? '').trim()) {
+      refuser(cap.def.key, 'VALUE_MISSING', `Il me manque la valeur de « ${cap.def.label} » : rien n’a été modifié. Indiquez-la.`, cap.type);
       continue;
     }
     const valeur = validateSuppliedValue(cap.def, d.fact, input.message, lookup.today());
@@ -617,7 +629,9 @@ export function summarizeResults(results: ActionResult[]): string {
   if (n('FAILED')) parts.push(`${n('FAILED')} en échec`);
   if (n('SKIPPED_DEPENDENCY')) parts.push(`${n('SKIPPED_DEPENDENCY')} non exécutée(s) (dépendance en échec)`);
   if (n('REFUSED')) parts.push(`${n('REFUSED')} refusée(s)`);
-  return `Plan exécuté : ${parts.join(', ')}.`;
+  // Lot 75J (#419 R08) : échec PARTIEL restitué action par action (ce qui n'a pas été fait et pourquoi).
+  const echecs = results.filter((r) => r.status !== 'SUCCESS').map((r) => `— ${String(r.message ?? '').replace(/\.$/, '')}.`);
+  return `Plan exécuté : ${parts.join(', ')}.${echecs.length ? ` ${echecs.join(' ')}` : ''}`;
 }
 
 export async function confirmCommandPlan(

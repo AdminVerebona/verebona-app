@@ -30,8 +30,11 @@ export function assetAgendaChips(input: {
   period: AgendaPeriod;
   includeCancelled: boolean;
   equipmentChipLabel: string | null;
+  /** Lot 75B : libellé du filtre Pièce actif. */
+  roomChipLabel?: string | null;
 }): Array<{ key: string; label: string }> {
   return agendaFilterChips({
+    roomChipLabel: input.roomChipLabel ?? null,
     period: input.view === 'year' ? 'all' : input.period,
     assetIds: [],
     includeCancelled: input.includeCancelled,

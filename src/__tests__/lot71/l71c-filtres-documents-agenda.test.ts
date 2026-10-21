@@ -353,8 +353,9 @@ describe('FILT-05 — « Mon agenda » : filtres dans la page, sans tiroir (ordi
 
   it('FILT-05e — filtre Équipement dans l’URL ; changer de bien le réinitialise ; « Tout effacer » garde la vue', () => {
     expect(PAGE).toMatch(/const equipment = equipmentFilterParam\(searchParams\.get\('equipment'\)\)/);
-    expect(PAGE).toMatch(/updateURL\(\{ assetIds: next\.length > 0 \? next\.join\(','\) : null, equipment: null \}\)/);
-    expect(PAGE).toMatch(/const clearFilters = \(\) => updateURL\(\{ period: null, assetIds: null, equipment: null, includeCancelled: null \}\)/);
+    // Lot 75B : le filtre Pièce est réinitialisé avec le filtre Équipement.
+    expect(PAGE).toMatch(/updateURL\(\{ assetIds: next\.length > 0 \? next\.join\(','\) : null, equipment: null, piece: null \}\)/);
+    expect(PAGE).toMatch(/const clearFilters = \(\) => updateURL\(\{ period: null, assetIds: null, equipment: null, piece: null, includeCancelled: null \}\)/);
     expect(PAGE).toMatch(/params\.set\('equipmentFacet', '1'\)/);
   });
 

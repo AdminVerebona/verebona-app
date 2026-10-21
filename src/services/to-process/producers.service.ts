@@ -57,19 +57,52 @@ export interface ProducerReport {
   created: number;
   updated: number;
   closed: number;
+  /**
+   * Lot 75I (B) : erreurs NON bloquantes du producteur (écriture non
+   * confirmée, trace non écrite…) — le reste du traitement a réussi ; elles
+   * remontent au bilan du balayage (statut « partial »), jamais en console seule.
+   */
+  errorDetails?: ScanErrorDetail[];
+}
+
+/**
+ * Lot 75I (B) — erreur détaillée d'un passage : compte, document (si
+ * documentaire), règle, étape, nature, cause. Nature : PERSISTENCE_FAILED
+ * (écriture non confirmée, persistance), READ_FAILED, AI_OR_MEMORY_FAILED,
+ * DERIVATION_FAILED, EVALUATION_FAILED, TRACE_FAILED (journalisation),
+ * FAMILY_FAILED, ACCOUNT_FAILED. Un refus de PROTECTION d'une valeur de
+ * l'utilisateur n'est jamais une erreur (compté à part).
+ */
+export interface ScanErrorDetail {
+  accountId: number;
+  fileId: number | null;
+  ruleCode: string;
+  step: string;
+  kind: string;
+  cause: string;
+  /** Cible non documentaire (agenda, équipement, fournisseur). */
+  targetType?: string;
+  targetId?: number;
 }
 
 const EMPTY: ProducerReport = { created: 0, updated: 0, closed: 0 };
 
-function merge(...reports: ProducerReport[]): ProducerReport {
-  return reports.reduce(
+function merge(...reports: ProducerReport[]): Required<ProducerReport> {
+  return reports.reduce<Required<ProducerReport>>(
     (acc, r) => ({
       created: acc.created + r.created,
       updated: acc.updated + r.updated,
       closed: acc.closed + r.closed,
+      errorDetails: [...acc.errorDetails, ...(r.errorDetails ?? [])],
     }),
-    { ...EMPTY },
+    { ...EMPTY, errorDetails: [] },
   );
+}
+
+/** Erreur de trace d'une décision de famille (lot 75I, E) → détail d'erreur, jamais console seule. */
+function traceFailure(report: ProducerReport, accountId: number, targetType: string, targetId: number, ruleCode: string, error: string | null): void {
+  if (!error) return;
+  (report.errorDetails ??= []).push({ accountId, fileId: null, ruleCode, step: 'TRACE', kind: 'TRACE_FAILED', cause: error.slice(0, 300), targetType, targetId });
 }
 
 /** Options d'un passage de producteur (lot 72) : déclencheur et référence tracés. */
@@ -174,7 +207,7 @@ export async function produceAgendaActions(accountId: number, opts: ProducerRunO
       ),
     )).filter((i) => !opts.only || opts.only.includes(i.id));
 
-  const report = { ...EMPTY };
+  const report: ProducerReport = { ...EMPTY, errorDetails: [] };
   const trigger = opts.trigger ?? 'SWEEP';
   const actives = await activeTargets(accountId, 'AGENDA_ITEM', 'date');
   const sources = await sourceDatesOf(accountId, sansDate);
@@ -183,9 +216,9 @@ export async function produceAgendaActions(accountId: number, opts: ProducerRunO
     const decision = agendaDateAdmissibility({ ...item, sourceDate: sources.get(item.id) ?? null });
     const evidence = { homeCategory: item.homeCategory, originType: item.originType, automatic: item.isAutomatic, modifiedByUser: item.isAutomaticModified,
       requiresQualification: item.requiresQualification, sourceDate: sources.get(item.id) ?? null, sourceFileId: item.originRefType === 'asset_file' ? item.originRefId : null };
-    const trace = (effect: FamilyDecisionRecord['effect'], actionIds: FamilyDecisionRecord['actionIds'] = null, d = decision, error: string | null = null) =>
-      recordFamilyDecision({ accountId, targetType: 'AGENDA_ITEM', targetId: item.id, ruleCode: 'DATA-AGENDA-DATE', dataKey: 'date', trigger,
-        runRef: opts.runRef, decision: d, evidence, effect, actionIds, error });
+    const trace = async (effect: FamilyDecisionRecord['effect'], actionIds: FamilyDecisionRecord['actionIds'] = null, d = decision, error: string | null = null) =>
+      traceFailure(report, accountId, 'AGENDA_ITEM', item.id, 'DATA-AGENDA-DATE', await recordFamilyDecision({ accountId, targetType: 'AGENDA_ITEM', targetId: item.id, ruleCode: 'DATA-AGENDA-DATE', dataKey: 'date', trigger,
+        runRef: opts.runRef, decision: d, evidence, effect, actionIds, error }));
     if (decision.outcome === 'AUTO_RESOLVED') {
       const date = sources.get(item.id)!;
       // Écriture conditionnelle (toujours sans date, jamais modifié par l'utilisateur), relue.
@@ -202,6 +235,9 @@ export async function produceAgendaActions(accountId: number, opts: ProducerRunO
         continue;
       }
       // Non confirmée : la question reste possible (jamais une fausse résolution).
+      // Lot 75I (B) : l'échec d'écriture remonte au bilan (statut « partial »).
+      report.errorDetails!.push({ accountId, fileId: null, ruleCode: 'DATA-AGENDA-DATE', step: 'VERIFY', kind: 'PERSISTENCE_FAILED',
+        cause: 'écriture de la date retrouvée non confirmée', targetType: 'AGENDA_ITEM', targetId: item.id });
       const repli = decideAdmissibility({ ruleCode: 'DATA-AGENDA-DATE', checks: { ...decision.checks, autoResolvable: false } });
       const r = await upsertAction({ accountId, targetType: 'AGENDA_ITEM', targetId: item.id, fieldKey: 'date', actionKind: 'COMPLETE',
         ruleCode: 'DATA-AGENDA-DATE', question: `À quelle date « ${item.title} » a-t-il lieu ?` });
@@ -298,7 +334,7 @@ export async function produceEquipmentActions(accountId: number, opts: ProducerR
   )) as unknown as Array<{ id: number; name: string; status: string | null; archivedAt: string | null; deletedAssetId: number; knownAssetId: number | null; liveAssets: number }>;
   const cibles = orphelins.filter((e) => !opts.only || opts.only.includes(Number(e.id)));
 
-  const report = { ...EMPTY };
+  const report: ProducerReport = { ...EMPTY, errorDetails: [] };
   const trigger = opts.trigger ?? 'SWEEP';
   const actives = await activeTargets(accountId, 'EQUIPMENT', 'assetId');
 
@@ -306,8 +342,9 @@ export async function produceEquipmentActions(accountId: number, opts: ProducerR
     const id = Number(equip.id);
     const decision = equipmentLinkAdmissibility({ status: equip.status, archivedAt: equip.archivedAt, knownAssetId: equip.knownAssetId === null ? null : Number(equip.knownAssetId), liveAssets: Number(equip.liveAssets) });
     const evidence = { status: equip.status, archived: !!equip.archivedAt, deletedAssetId: Number(equip.deletedAssetId), knownAssetId: equip.knownAssetId, liveAssets: Number(equip.liveAssets) };
-    const trace = (effect: FamilyDecisionRecord['effect'], actionIds: FamilyDecisionRecord['actionIds'] = null, d = decision, error: string | null = null) =>
-      recordFamilyDecision({ accountId, targetType: 'EQUIPMENT', targetId: id, ruleCode: 'LINK-EQUIP-ASSET', dataKey: 'assetId', trigger, runRef: opts.runRef, decision: d, evidence, effect, actionIds, error });
+    const trace = async (effect: FamilyDecisionRecord['effect'], actionIds: FamilyDecisionRecord['actionIds'] = null, d = decision, error: string | null = null) =>
+      traceFailure(report, accountId, 'EQUIPMENT', id, 'LINK-EQUIP-ASSET',
+        await recordFamilyDecision({ accountId, targetType: 'EQUIPMENT', targetId: id, ruleCode: 'LINK-EQUIP-ASSET', dataKey: 'assetId', trigger, runRef: opts.runRef, decision: d, evidence, effect, actionIds, error }));
     if (decision.outcome === 'AUTO_RESOLVED') {
       // Rattachement au bien de la pièce, conditionnel (toujours orphelin), relu, isolé par compte.
       const ecrit = (await pgClient.unsafe(
@@ -325,6 +362,8 @@ export async function produceEquipmentActions(accountId: number, opts: ProducerR
         continue;
       }
       await trace('ERROR', null, decision, 'rattachement au bien connu non confirmé');
+      report.errorDetails!.push({ accountId, fileId: null, ruleCode: 'LINK-EQUIP-ASSET', step: 'VERIFY', kind: 'PERSISTENCE_FAILED',
+        cause: 'rattachement au bien connu non confirmé', targetType: 'EQUIPMENT', targetId: id });
       continue;
     }
     if (decision.outcome === 'DEFER' && actives.has(id)) { await trace('KEPT', { kept: [actives.get(id)!] }); continue; }
@@ -406,7 +445,7 @@ export async function produceSupplierActions(accountId: number, opts: ProducerRu
       ),
     )).filter((r) => !opts.only || opts.only.includes(r.supplierId ?? r.id));
 
-  const report = { ...EMPTY };
+  const report: ProducerReport = { ...EMPTY, errorDetails: [] };
   const traites: number[] = [];
   const trigger = opts.trigger ?? 'SWEEP';
   const actives = await activeTargets(accountId, 'SUPPLIER', 'identity');
@@ -416,8 +455,9 @@ export async function produceSupplierActions(accountId: number, opts: ProducerRu
     const decision = supplierIdentityAdmissibility(revue);
     const evidence = { reviewId: revue.id, supplierId: revue.supplierId, hasDetected: !!revue.detectedValue, hasCurrent: !!revue.currentValue,
       candidates: Array.isArray(revue.candidateIds) ? (revue.candidateIds as unknown[]).length : 0 };
-    const trace = (effect: FamilyDecisionRecord['effect'], actionIds: FamilyDecisionRecord['actionIds'] = null) =>
-      recordFamilyDecision({ accountId, targetType: 'SUPPLIER', targetId: cible, ruleCode: 'SUPPLIER-IDENTITY', dataKey: 'identity', trigger, runRef: opts.runRef, decision, evidence, effect, actionIds });
+    const trace = async (effect: FamilyDecisionRecord['effect'], actionIds: FamilyDecisionRecord['actionIds'] = null) =>
+      traceFailure(report, accountId, 'SUPPLIER', cible, 'SUPPLIER-IDENTITY',
+        await recordFamilyDecision({ accountId, targetType: 'SUPPLIER', targetId: cible, ruleCode: 'SUPPLIER-IDENTITY', dataKey: 'identity', trigger, runRef: opts.runRef, decision, evidence, effect, actionIds }));
     if (decision.outcome !== 'CREATE_ACTION') {
       const fermees = actives.has(cible) ? await closeObsoleteTraced(accountId, 'SUPPLIER', 'identity', [cible], { reason: decision.reason, outcome: decision.outcome }) : [];
       report.closed += fermees.length;
@@ -499,20 +539,23 @@ async function closeObsoleteTraced(
 ): Promise<number[]> {
   if (targetIds.length === 0) return [];
   const now = new Date();
-  const closed = await db.update(toProcessActions)
-    .set({ resolvedAt: now, resolutionReason: 'OBSOLETE', updatedAt: now })
-    .where(and(
-      eq(toProcessActions.accountId, accountId), eq(toProcessActions.targetType, targetType), inArray(toProcessActions.targetId, targetIds),
-      sql`COALESCE(${toProcessActions.fieldKey}, ${toProcessActions.relationKey}) = ${dataKey}`, isNull(toProcessActions.resolvedAt),
-    ))
-    .returning({ id: toProcessActions.id, targetId: toProcessActions.targetId, ruleCode: toProcessActions.ruleCode });
-  if (closed.length) {
-    await db.insert(toProcessActionEvents).values(closed.map((a) => ({
-      actionId: a.id, accountId, event: 'OBSOLETE', actorUserId: null, targetType, targetId: a.targetId, fieldKey: dataKey,
-      details: { ruleCode: a.ruleCode, ...details }, createdAt: now,
-    })));
-  }
-  return closed.map((a) => a.id);
+  // Lot 75I (E) : fermeture et événement d'audit dans UNE transaction — jamais l'un sans l'autre.
+  return db.transaction(async (tx) => {
+    const closed = await tx.update(toProcessActions)
+      .set({ resolvedAt: now, resolutionReason: 'OBSOLETE', updatedAt: now })
+      .where(and(
+        eq(toProcessActions.accountId, accountId), eq(toProcessActions.targetType, targetType), inArray(toProcessActions.targetId, targetIds),
+        sql`COALESCE(${toProcessActions.fieldKey}, ${toProcessActions.relationKey}) = ${dataKey}`, isNull(toProcessActions.resolvedAt),
+      ))
+      .returning({ id: toProcessActions.id, targetId: toProcessActions.targetId, ruleCode: toProcessActions.ruleCode });
+    if (closed.length) {
+      await tx.insert(toProcessActionEvents).values(closed.map((a) => ({
+        actionId: a.id, accountId, event: 'OBSOLETE', actorUserId: null, targetType, targetId: a.targetId, fieldKey: dataKey,
+        details: { ruleCode: a.ruleCode, ...details }, createdAt: now,
+      })));
+    }
+    return closed.map((a) => a.id);
+  });
 }
 
 /**
@@ -532,15 +575,21 @@ async function closeObsoleteTraced(
  */
 export interface DocumentProducerReport extends ProducerReport {
   documents: number;
-  /** Règles en erreur (le document est repris au passage suivant ; aucune fermeture). */
-  ruleErrors: Array<{ accountId: number; fileId: number; ruleCode: string; step: string; cause: string }>;
+  /**
+   * Règles en erreur (le document est repris au passage suivant ; aucune
+   * fermeture). Lot 75I (B) : nature de l'erreur (`kind`) — écritures NON
+   * CONFIRMÉES, persistance, lecture, IA, trace — comprises.
+   */
+  ruleErrors: Array<{ accountId: number; fileId: number; ruleCode: string; step: string; cause: string; kind?: string }>;
   /** Issues centrales (AUTO_RESOLVED, NO_ACTION, DEFER, CREATE_ACTION, KEEP, ERROR). */
   outcomes: Record<string, number>;
+  /** Lot 75I (B) : refus NORMAUX d'écriture (valeur de l'utilisateur protégée) — jamais une erreur. */
+  protectedRefusals?: number;
 }
 
 export async function produceDocumentActions(accountId: number, limit = 200): Promise<DocumentProducerReport> {
   const { documentsToReevaluate, syncDocumentRulesFromState } = await import('./document-rule-bridge');
-  const report: DocumentProducerReport = { ...EMPTY, documents: 0, ruleErrors: [], outcomes: {} };
+  const report: DocumentProducerReport = { ...EMPTY, documents: 0, ruleErrors: [], outcomes: {}, protectedRefusals: 0 };
   for (const fileId of await documentsToReevaluate(accountId, limit)) {
     const r = await syncDocumentRulesFromState(accountId, fileId, { reason: 'OBSOLETE', create: true });
     report.documents += 1;
@@ -548,6 +597,7 @@ export async function produceDocumentActions(accountId: number, limit = 200): Pr
     report.updated += r.updated;
     report.closed += r.closed;
     report.ruleErrors.push(...r.errorDetails);
+    report.protectedRefusals! += r.protectedRefusals ?? 0;
     for (const o of Object.values(r.outcomes)) report.outcomes[o] = (report.outcomes[o] ?? 0) + 1;
   }
   return report;
@@ -558,31 +608,54 @@ export interface AccountProductionReport extends ProducerReport {
   errors: string[];
   /** Lot 61 : règles documentaires en erreur (détail), succès partiel du compte. */
   documentRuleErrors?: DocumentProducerReport['ruleErrors'];
+  /** Lot 75I (B) : familles en échec / familles traitées (toutes en échec = aucun résultat exploitable). */
+  familiesFailed?: number;
+  familiesTotal?: number;
+  /** Lot 75I (B) : documents réévalués, issues, refus normaux. */
+  documents?: number;
+  outcomes?: Record<string, number>;
+  protectedRefusals?: number;
 }
 
 /** Libellé d'une erreur de règle documentaire (sans donnée personnelle). */
 export const documentRuleErrorLabel = (e: DocumentProducerReport['ruleErrors'][number]) =>
-  `documents : compte ${e.accountId} · document ${e.fileId} · règle ${e.ruleCode} · étape ${e.step} — ${e.cause}`.slice(0, 300);
+  `documents : compte ${e.accountId} · document ${e.fileId} · règle ${e.ruleCode} · étape ${e.step}${e.kind ? ` (${e.kind})` : ''} — ${e.cause}`.slice(0, 300);
+
+/** Familles balayées par compte (agenda, équipements, fournisseurs, documents, incohérences). */
+const FAMILIES = 5;
 
 /** Balaye les familles nées d'un état de la base, pour un compte. */
 export async function produceAccountActions(accountId: number): Promise<AccountProductionReport> {
   const errors: string[] = [];
+  const familles: ScanErrorDetail[] = [];
   const [agenda, equipements, fournisseurs, documents, incoherences] = await Promise.all([
-    produceAgendaActions(accountId).catch(reportError('agenda', accountId, errors)),
-    produceEquipmentActions(accountId).catch(reportError('équipements', accountId, errors)),
-    produceSupplierActions(accountId).catch(reportError('fournisseurs', accountId, errors)),
+    produceAgendaActions(accountId).catch(reportError('agenda', accountId, errors, familles)),
+    produceEquipmentActions(accountId).catch(reportError('équipements', accountId, errors, familles)),
+    produceSupplierActions(accountId).catch(reportError('fournisseurs', accountId, errors, familles)),
     produceDocumentActions(accountId).catch((e: Error): DocumentProducerReport => ({
-      ...reportError('documents', accountId, errors)(e), documents: 0, ruleErrors: [], outcomes: {},
+      ...reportError('documents', accountId, errors, familles)(e), documents: 0, ruleErrors: [], outcomes: {},
     })),
     // Lot 32C : incohérences de rattachement devenues sans objet.
     import('./document-asset-conflict')
       .then(async ({ closeObsoleteAssetConflicts }) => ({ ...EMPTY, closed: await closeObsoleteAssetConflicts(accountId) }))
-      .catch(reportError('incohérences de rattachement', accountId, errors)),
+      .catch(reportError('incohérences de rattachement', accountId, errors, familles)),
   ]);
+  const fusion = merge(agenda, equipements, fournisseurs, documents, incoherences);
   // Lot 61 (écart 5) : les erreurs des règles documentaires remontent au bilan.
   for (const e of documents.ruleErrors.slice(0, 20)) errors.push(documentRuleErrorLabel(e));
   if (documents.ruleErrors.length > 20) errors.push(`documents : ${documents.ruleErrors.length - 20} autre(s) règle(s) en erreur`);
-  return { ...merge(agenda, equipements, fournisseurs, documents, incoherences), errors, documentRuleErrors: documents.ruleErrors };
+  // Lot 75I (B) : erreurs non bloquantes des familles « état » (écriture non confirmée, trace).
+  for (const e of fusion.errorDetails.slice(0, 20)) errors.push(`${e.targetType ?? 'cible'} ${e.targetId ?? '?'} · règle ${e.ruleCode} · étape ${e.step} (${e.kind}) — ${e.cause}`.slice(0, 300));
+  const errorDetails: ScanErrorDetail[] = [
+    ...familles,
+    ...documents.ruleErrors.map((e) => ({ accountId: e.accountId, fileId: e.fileId, ruleCode: e.ruleCode, step: e.step, kind: e.kind ?? 'EVALUATION_FAILED', cause: e.cause })),
+    ...fusion.errorDetails,
+  ];
+  return {
+    created: fusion.created, updated: fusion.updated, closed: fusion.closed, errors, documentRuleErrors: documents.ruleErrors, errorDetails,
+    familiesFailed: familles.length, familiesTotal: FAMILIES,
+    documents: documents.documents, outcomes: documents.outcomes, protectedRefusals: documents.protectedRefusals ?? 0,
+  };
 }
 
 /**
@@ -591,9 +664,10 @@ export async function produceAccountActions(accountId: number): Promise<AccountP
  * coûterait plus que la famille manquée. L'échec est COMPTÉ (trace du
  * balayage, BO Exploitation), jamais silencieux.
  */
-function reportError(famille: string, accountId: number, errors: string[]) {
+function reportError(famille: string, accountId: number, errors: string[], details?: ScanErrorDetail[]) {
   return (e: Error): ProducerReport => {
     errors.push(`${famille} : ${e.message}`.slice(0, 300));
+    details?.push({ accountId, fileId: null, ruleCode: `famille:${famille}`, step: 'FAMILY', kind: 'FAMILY_FAILED', cause: String(e.message).slice(0, 300) });
     console.error(
       `[to-process] production ${famille} impossible pour le compte ${accountId} :`,
       e.message,
@@ -659,16 +733,24 @@ export async function closeActionsForDeletedTargets(
   const disparus = actions.filter((a) => !vivants.has(`${a.targetType}:${a.targetId}`));
   if (disparus.length === 0) return 0;
 
-  await db
-    .update(toProcessActions)
-    .set({
-      resolvedAt: new Date(),
-      resolutionReason: 'TARGET_DELETED',
-      updatedAt: new Date(),
-    })
-    .where(and(inArray(toProcessActions.id, disparus.map((a) => a.id)), isNull(toProcessActions.resolvedAt)));
-
-  return disparus.length;
+  // Lot 75I (E) : suppression de cible TRACÉE (événement d'audit), dans la
+  // même transaction que la fermeture — seules les cartes réellement fermées.
+  const now = new Date();
+  return db.transaction(async (tx) => {
+    const fermees = await tx
+      .update(toProcessActions)
+      .set({ resolvedAt: now, resolutionReason: 'TARGET_DELETED', updatedAt: now })
+      .where(and(inArray(toProcessActions.id, disparus.map((a) => a.id)), eq(toProcessActions.accountId, accountId), isNull(toProcessActions.resolvedAt)))
+      .returning({ id: toProcessActions.id, targetType: toProcessActions.targetType, targetId: toProcessActions.targetId,
+        key: sql<string | null>`COALESCE(${toProcessActions.fieldKey}, ${toProcessActions.relationKey})`, ruleCode: toProcessActions.ruleCode });
+    if (fermees.length) {
+      await tx.insert(toProcessActionEvents).values(fermees.map((a) => ({
+        actionId: a.id, accountId, event: 'TARGET_DELETED', actorUserId: null, targetType: a.targetType, targetId: a.targetId, fieldKey: a.key,
+        details: { ruleCode: a.ruleCode, reason: 'TARGET_DELETED', trigger: 'SWEEP' }, createdAt: now,
+      })));
+    }
+    return fermees.length;
+  });
 }
 
 /**
@@ -694,13 +776,21 @@ export async function closeInapplicableAssetFieldActions(accountId: number): Pro
   const sansObjet = ouvertes.filter((a) => a.fieldKey && !isFieldApplicableToAsset(a.fieldKey, a));
   if (sansObjet.length === 0) return 0;
   const now = new Date();
-  await db.update(toProcessActions)
-    .set({ resolvedAt: now, resolutionReason: 'OBSOLETE', updatedAt: now })
-    .where(and(inArray(toProcessActions.id, sansObjet.map((a) => a.id)), isNull(toProcessActions.resolvedAt)));
-  await db.insert(toProcessActionEvents).values(sansObjet.map((a) => ({
-    actionId: a.id, accountId, event: 'OBSOLETE', actorUserId: null,
-    targetType: 'ASSET', targetId: a.targetId, fieldKey: a.fieldKey,
-    details: { ruleCode: a.ruleCode, reason: 'FIELD_NOT_APPLICABLE' }, createdAt: now,
-  })));
-  return sansObjet.length;
+  // Lot 75I (E) : fermeture et événement dans UNE transaction ; seules les cartes réellement fermées sont tracées.
+  return db.transaction(async (tx) => {
+    const fermees = await tx.update(toProcessActions)
+      .set({ resolvedAt: now, resolutionReason: 'OBSOLETE', updatedAt: now })
+      .where(and(inArray(toProcessActions.id, sansObjet.map((a) => a.id)), eq(toProcessActions.accountId, accountId), isNull(toProcessActions.resolvedAt)))
+      .returning({ id: toProcessActions.id });
+    const ids = new Set(fermees.map((f) => f.id));
+    const tracees = sansObjet.filter((a) => ids.has(a.id));
+    if (tracees.length) {
+      await tx.insert(toProcessActionEvents).values(tracees.map((a) => ({
+        actionId: a.id, accountId, event: 'OBSOLETE', actorUserId: null,
+        targetType: 'ASSET', targetId: a.targetId, fieldKey: a.fieldKey,
+        details: { ruleCode: a.ruleCode, reason: 'FIELD_NOT_APPLICABLE' }, createdAt: now,
+      })));
+    }
+    return tracees.length;
+  });
 }

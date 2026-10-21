@@ -11,6 +11,7 @@
  */
 
 import fs from 'node:fs';
+import { contentDisposition } from '@/lib/download-filename';
 
 /**
  * Même préfixe que `export-upload.service` (sans charger le client S3 à
@@ -64,8 +65,9 @@ export const s3UploadFile: UploadFn = async (localPath, key, contentType) => {
 
 /** En-tête Content-Disposition (RFC 6266) pour un nom de fichier ASCII sûr. */
 export function attachmentDisposition(fileName: string): string {
-  const ascii = fileName.replace(/[^\x20-\x7E]/g, '_').replace(/["\\]/g, '_');
-  return `attachment; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(fileName)}`;
+  // Règle commune du téléchargement (lot 75L) : `filename*` RFC 5987 strict
+  // (apostrophe et parenthèses encodées) et repli ASCII translittéré.
+  return contentDisposition(fileName);
 }
 
 /** URL signée de courte durée, avec nom de fichier de téléchargement. */

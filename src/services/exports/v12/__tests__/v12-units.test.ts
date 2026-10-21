@@ -65,15 +65,21 @@ describe('Noms de fichiers (§14.2, ZIP-006/007)', () => {
     expect(deliverableBaseName('ASSURANCE_SINISTRE', 'Cœur d’Ainay / T3', '2026-09-28')).toBe('Verebona_Assurance-sinistre_Coeur-d-Ainay-T3_2026-09-28');
     expect(fileSegment('***')).toBe('bien');
   });
-  it('collisions suffixées _2, _3 ; caractères normalisés', () => {
+  // Lot 75L (BUG P1 « nom affiché ») : la règle commune du téléchargement
+  // remplace la normalisation ASCII de ZIP-007 — nom affiché, accents
+  // conservés, doublons « (2) » (casse ignorée), aucun écrasement.
+  it('L75L-ZIP nom affiché + extension réelle ; collisions « (2) », « (3) »', () => {
     const name = makeZipNamer();
-    expect(name({ id: 1, fileName: 'Facture Été.PDF' })).toBe('documents/facture-ete.pdf');
-    expect(name({ id: 2, fileName: 'facture ete.pdf' })).toBe('documents/facture-ete_2.pdf');
-    expect(name({ id: 3, fileName: 'Facture-ete.pdf' })).toBe('documents/facture-ete_3.pdf');
-    expect(name({ id: 4, fileName: 'ﾃｽﾄ.pdf' })).toBe('documents/document-4.pdf');
+    expect(name({ id: 1, title: 'Facture Été', fileName: 'FACT_01.PDF', format: 'PDF' })).toBe('documents/Facture Été.pdf');
+    expect(name({ id: 2, title: 'facture été', fileName: 'x.pdf', format: 'PDF' })).toBe('documents/facture été (2).pdf');
+    expect(name({ id: 3, title: 'Facture Été', fileName: 'y.pdf', format: 'PDF' })).toBe('documents/Facture Été (3).pdf');
+    expect(name({ id: 4, fileName: 'ﾃｽﾄ.pdf' })).toBe('documents/ﾃｽﾄ.pdf');
+    expect(name({ id: 5, title: "Attestation d’assurance : 2026/2027", fileName: 'a.docx', format: 'DOCX' })).toBe('documents/Attestation d’assurance 2026-2027.docx');
+    expect(name({ id: 6, title: 'Photo', fileName: 'IMG.heic', format: 'JPG' }, 'photos')).toBe('photos/Photo.jpg');
+    expect(name({ id: 7, title: 'Plan.pdf', fileName: 'plan.pdf', format: 'PDF' })).toBe('documents/Plan.pdf');
   });
   it('Content-Disposition sûr (ASCII + UTF-8)', () => {
-    expect(attachmentDisposition('Dossier "Été".pdf')).toBe(`attachment; filename="Dossier __t__.pdf"; filename*=UTF-8''Dossier%20%22%C3%89t%C3%A9%22.pdf`);
+    expect(attachmentDisposition('Dossier "Été".pdf')).toBe(`attachment; filename="Dossier _Ete_.pdf"; filename*=UTF-8''Dossier%20%22%C3%89t%C3%A9%22.pdf`);
   });
 });
 

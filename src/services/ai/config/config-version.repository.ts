@@ -31,7 +31,7 @@
  *   · une erreur à n'importe quelle étape annule tout (aucune configuration
  *     partielle).
  */
-import { schemaNotReadyMessage } from '@/lib/schema-readiness-log';
+import { probeCount, schemaNotReadyMessage } from '@/lib/schema-readiness-log';
 import { pgClient } from '@/db';
 import { getAiEnvironment, type AiEnvironment } from './environment';
 import { TREATMENTS, isTreatment, isRetiredTreatment, type Treatment } from './treatments';
@@ -890,7 +890,7 @@ export async function hasPromptArchitectureColumn(sql: SqlLike = pgClient as unk
           AND table_name = 'ai_config_entries' AND column_name = ANY($1::text[])`,
       [[...CONFIG_MASTER_COLUMNS]] as never[],
     )) as Array<{ n: number }>;
-    trouvees = Number(rows[0]?.n ?? 0);
+    trouvees = probeCount(rows); // lot 75A : résultat inexploitable = inconnu, pas 0
     ready = trouvees === CONFIG_MASTER_COLUMNS.length;
   } catch (e) {
     ready = false;

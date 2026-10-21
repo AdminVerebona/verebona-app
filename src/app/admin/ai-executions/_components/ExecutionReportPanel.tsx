@@ -80,6 +80,9 @@ const SECTION_LABEL: Record<string, string> = {
   INTERPELLATION: 'Interpellations T6 (affichées, différées, écartées)', INTERPELLATION_AI: 'Évaluations IA (justification)',
   // Lot 61 : extract brut déterministe (couche texte par page), écrit avant le modèle.
   RAW_EXTRACT: 'Extract brut (lecture déterministe)',
+  // Lot 75C : pages sans couche texte transcrites par la lecture du modèle (à part de l'extract), attributs métier écrits par T1.
+  OCR_PAGE: 'Pages sans couche texte (texte reconnu par le modèle)',
+  ATTRIBUTE: 'Attributs métier (alimentés par T1)',
   // Lot 61 : section « Harmonisation documentaire » (T3) — propositions IA et renommages confirmés distincts.
   NAMING_RENAME: 'Harmonisation documentaire — renommages (proposition IA → issue en base)',
   NAMING_FAMILY: 'Harmonisation documentaire — familles (analyse IA)',

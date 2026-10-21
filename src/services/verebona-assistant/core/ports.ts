@@ -456,7 +456,7 @@ export function buildOrchestratorPorts(): OrchestratorPorts {
       if (texte == null) { try { texte = readMasterFileFromRepo('t2_master_v1'); } catch { texte = null; } }
       if (texte == null) return null;
       const c = t2PromptCapabilities(texte);
-      return { arbitration: c.arbitration, interaction: c.interaction, version: info.version };
+      return { arbitration: c.arbitration, interaction: c.interaction, version: info.version, compatible: c.compatibility.compatible };
     },
     // Lot 54E (#419 §15) : information apportée → plan PENDING_CONFIRMATION
     // (même interrupteur que les commandes : coupé, aucune proposition).

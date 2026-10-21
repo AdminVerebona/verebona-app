@@ -8,6 +8,7 @@ import { FileLogger } from '@/lib/file-logger';
 import { getSession, isSessionError, sessionErrorResponse } from '@/lib/auth-guards';
 import { accessErrorResponse, sessionErrorToResponse } from '@/lib/auth/session-errors';
 import { viewableFileCondition } from '@/services/documents/grouped-sources';
+import { contentDisposition, downloadFilename } from '@/lib/download-filename';
 
 /**
  * Lecture directe (APP-PERF-13) : droits contrôlés ici, puis URL signée de
@@ -140,12 +141,15 @@ export async function GET(
       );
     }
 
-    // Use inline disposition for viewing in browser
+    // Consultation `inline`, mais NOMMÉE (lot 75L) : « Enregistrer » depuis
+    // la visionneuse du navigateur reprend le nom affiché dans Verebona, et
+    // non la clé de stockage (voir src/lib/download-filename.ts).
     const expiresIn = getS3Config().signedUrlTtlSeconds;
+    const displayName = downloadFilename(file);
     const viewUrl = await signGetUrl({
       bucket: file.s3Bucket,
       key: file.s3Key,
-      responseContentDisposition: 'inline',
+      responseContentDisposition: contentDisposition(displayName, 'inline'),
       responseContentType: file.mimeType ?? undefined,
       expiresIn,
     });
@@ -167,7 +171,7 @@ export async function GET(
 
     return NextResponse.json({
       viewUrl,
-      filename: file.originalFilename,
+      filename: displayName,
       mimeType: file.mimeType,
       expiresIn,
     }, { status: 200, headers: NO_STORE });

@@ -44,7 +44,8 @@ export function LogoLoader({ size = 48 }: LogoLoaderProps) {
         <rect x={(unit + gap) * 2} y={(unit + gap) * 2} width={unit} height={unit} rx={r} className="fill-[color:var(--vb-logo-cells)] opacity-25" />
 
         {/* Carré cuivre doux en orbite */}
-        <g style={{ transformOrigin: `${cx}px ${cy}px`, animation: 'verebona-orbit 1.4s linear infinite' }}>
+        {/* `vb-loader-spin` (lot 75O) : reste animé en « réduire les animations ». */}
+        <g className="vb-loader-spin" style={{ transformOrigin: `${cx}px ${cy}px`, animation: 'verebona-orbit 1.4s linear infinite' }}>
           {/* Positionné au "12h" de l'orbite, décalé du centre */}
           <rect
             x={cx - unit / 2}
@@ -53,6 +54,7 @@ export function LogoLoader({ size = 48 }: LogoLoaderProps) {
             height={unit}
             rx={r}
             fill="#D66B53"
+            className="vb-loader-spin"
             style={{ transformOrigin: `${cx}px ${cy - orbitR}px`, animation: 'verebona-square-spin 1.4s linear infinite' }}
           />
         </g>

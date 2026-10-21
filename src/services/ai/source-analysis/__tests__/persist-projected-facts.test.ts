@@ -180,6 +180,23 @@ describe('persistProjectedFacts — cycle de vie (§14.4)', () => {
     expect(r.skipped.map((s) => s.reason)).toEqual(['WRITE_FAILED']);
   });
 
+  it('T1-FIX-04 — écriture échouée REMONTÉE (writeErrors), distincte des faits volontairement non projetés', async () => {
+    db.failFieldKey = 'serialNumber';
+    const r = await persistProjectedFacts({
+      input, leadSourceId: 55, trace,
+      facts: [
+        fact({}), fact({ canonicalKey: 'serialNumber', value: 'SN', target: target('EQUIPMENT', 7) }),
+        fact({ canonicalKey: null, rawKey: 'note', value: 'libre' }), fact({ target: target('ASSET', null) }),
+      ],
+    });
+    expect(r.writeErrors).toEqual([expect.objectContaining({ stage: 'RECORD', key: 'serialNumber@EQUIPMENT:7', message: 'panne simulée' })]);
+    // Générique et sans cible : simples motifs, jamais des erreurs.
+    expect(r.skipped.map((s) => s.reason).sort()).toEqual(['GENERIC_KNOWLEDGE', 'UNATTACHED', 'WRITE_FAILED']);
+    db.failFieldKey = null;
+    const ok = await persistProjectedFacts({ input, leadSourceId: 55, trace, facts: [fact({ canonicalKey: null, rawKey: 'note' })] });
+    expect(ok.writeErrors).toEqual([]);
+  });
+
   it('0219 absente : preuve du bien en repli historique, équipement NON écrit (sinon lu comme preuve du parent), aucun supersede', async () => {
     db.columnsReady = false;
     const r = await persistProjectedFacts({

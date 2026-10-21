@@ -300,6 +300,8 @@ export async function writeAgendaItem(
           ...(opts.onlyIfUntouched ? [
             eq(agendaItems.isAutomaticModified, false),
             or(isNull(agendaItems.manualStatus), eq(agendaItems.manualStatus, '')),
+            // Lot 75F (§A) : prévision confirmée par l'utilisateur — protégée.
+            sql`${agendaItems.confirmationMode} IS DISTINCT FROM 'USER'`,
           ] : []),
         ))
         .returning({ id: agendaItems.id });

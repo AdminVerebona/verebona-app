@@ -33,18 +33,11 @@ const CreateAgendaItemDrawer = dynamic(
   () => import('@/components/agenda/CreateAgendaItemDrawer').then(m => ({ default: m.CreateAgendaItemDrawer })),
   { ssr: false }
 );
-const RoomDrawer = dynamic(
-  () => import('@/components/assets/RoomDrawer').then(m => ({ default: m.RoomDrawer })),
-  { ssr: false }
-);
-const EquipmentDrawer = dynamic(
-  () => import('@/components/assets/EquipmentDrawer').then(m => ({ default: m.EquipmentDrawer })),
-  { ssr: false }
-);
 const AgendaItemDrawer = dynamic(
   () => import('@/components/agenda/AgendaItemDrawer').then(m => ({ default: m.AgendaItemDrawer })),
   { ssr: false }
 );
+import { ROOM_ASSOCIATIONS_CHANGED } from '@/lib/rooms/room-associations';
 import { toast } from 'sonner';
 import { analyzeErrorFeedback, type AnalyzeFeedback } from './document-analysis-feedback';
 import { apiClient } from '@/lib/api-client';
@@ -53,8 +46,8 @@ import { SupplierDrawer } from '@/components/suppliers/SupplierDrawer';
 import { DOCUMENT_TYPE_LABELS as FALLBACK_TYPE_LABELS } from '@/lib/document-type-constants';
 import { resolveDocumentTypeCode } from '@/lib/referential/document-codes';
 import { displayDocumentTitle } from '@/lib/documents/document-title-rules';
-import type { RoomDrawerItem } from '@/components/assets/RoomDrawer';
-import type { EquipmentDrawerItem } from '@/components/assets/EquipmentDrawer';
+import { openDrawer } from '@/lib/drawers';
+import { EntityCard, EntityCardList } from '@/components/drawers/EntityCard';
 import type { AgendaItemFull } from '@/services/agenda/AgendaQueryService';
 import { useWriteGuard } from '@/contexts/WriteGuardContext';
 import {
@@ -150,24 +143,22 @@ function PdfPreview({ fileId, viewUrl, filename }: { fileId: number; viewUrl: st
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    let objectUrl: string | null = null;
-
-    fetch(`/api/files/${fileId}/proxy`, { credentials: 'include' })
+    let cancelled = false;
+    // Lot 75L : le cadre affiche l'URL de même origine `/proxy` (en-tête
+    // `inline` portant le nom affiché) et non un `blob:` — « Enregistrer »
+    // depuis la visionneuse PDF reprenait sinon un nom aléatoire. La sonde
+    // (1 octet) garde l'état « Aperçu indisponible » en cas d'erreur.
+    const src = `/api/files/${fileId}/proxy`;
+    fetch(src, { credentials: 'include', headers: { Range: 'bytes=0-0' } })
       .then(res => {
-        if (!res.ok) return res.json().then(j => Promise.reject(j?.error ?? res.status));
-        return res.blob();
-      })
-      .then(blob => {
-        objectUrl = URL.createObjectURL(blob);
-        setBlobUrl(objectUrl);
-        setLoading(false);
+        if (!res.ok) return res.json().catch(() => null).then(j => Promise.reject(j?.error ?? res.status));
+        if (!cancelled) { setBlobUrl(src); setLoading(false); }
       })
       .catch(err => {
-        setError(String(err));
-        setLoading(false);
+        if (!cancelled) { setError(String(err)); setLoading(false); }
       });
 
-    return () => { if (objectUrl) URL.revokeObjectURL(objectUrl); };
+    return () => { cancelled = true; };
   }, [fileId]);
 
   if (loading) {
@@ -361,10 +352,24 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
   interface AiFieldProposal { id: number; targetKey: string; proposedValueJson: string; status: string; proposalType: string; }
 
   // Sub-drawers
-  const [roomDrawerItem, setRoomDrawerItem] = useState<{ assetId: number; room: RoomDrawerItem } | null>(null);
-  const [equipmentDrawerItem, setEquipmentDrawerItem] = useState<{ assetId: number; equipment: EquipmentDrawerItem } | null>(null);
+  // Lot 75H : pièce et équipement s'ouvrent en tiroir empilé (GlobalDrawerHost,
+  // fiche relue par son identifiant — statut réel, plus « En service » supposé).
   const [agendaDrawerItem, setAgendaDrawerItem] = useState<AgendaItemFull | null>(null);
   const [loadingAgendaItem, setLoadingAgendaItem] = useState<number | null>(null);
+  // Carte « Éléments agenda » : échéance ouverte dans le tiroir local
+  // ci-dessous (sa modification relit la liste des éléments liés).
+  const openLinkedAgendaItem = async (agendaId: number) => {
+    setLoadingAgendaItem(agendaId);
+    try {
+      const res = await fetch(`/api/agenda/${agendaId}`, { credentials: 'include' });
+      if (res.ok) {
+        const data = await res.json();
+        setAgendaDrawerItem(data.item ?? data);
+      }
+    } catch { /* ignore */ } finally {
+      setLoadingAgendaItem(null);
+    }
+  };
 
   // SSE subscription for live analysis state
   useEffect(() => {
@@ -582,6 +587,18 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
     });
     return () => { cancelled = true; };
   }, [open, doc?.id, refreshTrigger]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Lot 75B : pièce du document modifiée depuis le tiroir Pièce (empilé
+  // au-dessus) : la fiche est relue — rattachement affiché à jour.
+  useEffect(() => {
+    if (!open || !doc) return;
+    const relire = (e: Event) => {
+      const ids = (e as CustomEvent<{ fileIds?: number[] }>)?.detail?.fileIds;
+      if (Array.isArray(ids) && ids.includes(doc.id)) setRefreshTrigger(prev => prev + 1);
+    };
+    window.addEventListener(ROOM_ASSOCIATIONS_CHANGED, relire);
+    return () => window.removeEventListener(ROOM_ASSOCIATIONS_CHANGED, relire);
+  }, [open, doc?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Refresh drawer completely when background analysis finishes
   useEffect(() => {
@@ -986,11 +1003,13 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
       // « attachment » avec le titre du document comme nom de fichier. Le
       // lien de consultation, lui, est « inline » — et l'attribut `download`
       // est ignoré sur une URL d'une autre origine.
-      const data = await apiClient.get<{ downloadUrl: string }>(`/api/files/${doc.id}/download`);
+      const data = await apiClient.get<{ downloadUrl: string; filename?: string; isWebLink?: boolean }>(`/api/files/${doc.id}/download`);
       if (data.downloadUrl) {
         const a = document.createElement('a');
         a.href = data.downloadUrl;
         a.rel = 'noopener';
+        // Même nom que l'en-tête de l'URL signée (lot 75L), qui fait foi.
+        if (data.filename && !data.isWebLink) a.download = data.filename;
         document.body.appendChild(a);
         a.click();
         document.body.removeChild(a);
@@ -1624,10 +1643,7 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
                         <button
                           type="button"
                           className="font-medium text-xs hover:text-primary hover:underline transition-colors"
-                          onClick={() => {
-                            const name = substructuresList.find(s => s.id === fullData.substructureId)?.name ?? `Pièce #${fullData.substructureId}`;
-                            setRoomDrawerItem({ assetId: fullData.assetId!, room: { id: fullData.substructureId!, name } });
-                          }}
+                          onClick={() => openDrawer({ kind: 'piece', id: fullData.substructureId! }, { stack: true })}
                         >
                           {substructuresList.find(s => s.id === fullData.substructureId)?.name ?? `Pièce #${fullData.substructureId}`}
                         </button>
@@ -1640,10 +1656,7 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
                         <button
                           type="button"
                           className="font-medium text-xs hover:text-primary hover:underline transition-colors"
-                          onClick={() => {
-                            const name = equipmentsList.find(e => e.id === fullData.equipmentId)?.name ?? `Équipement #${fullData.equipmentId}`;
-                            setEquipmentDrawerItem({ assetId: fullData.assetId!, equipment: { id: fullData.equipmentId!, assetId: fullData.assetId!, name, status: 'EN_SERVICE' } });
-                          }}
+                          onClick={() => openDrawer({ kind: 'equipement', id: fullData.equipmentId! }, { stack: true })}
                         >
                           {equipmentsList.find(e => e.id === fullData.equipmentId)?.name ?? `Équipement #${fullData.equipmentId}`}
                         </button>
@@ -1673,45 +1686,32 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
                       <p className="vb-app-label mb-2 flex items-center gap-1">
                         <Calendar className="w-3 h-3" />Éléments agenda
                       </p>
-                      <div className="space-y-1.5">
+                      <EntityCardList>
                         {linkedAgendaItems.map(item => (
-                          <button
+                          <EntityCard
                             key={item.id}
-                            type="button"
-                            className="w-full flex items-center justify-between gap-2 bg-muted/30 rounded-lg px-3 py-2 text-xs hover:bg-muted/60 transition-colors text-left"
-                            onClick={async () => {
-                              setLoadingAgendaItem(item.id);
-                              try {
-                                const res = await fetch(`/api/agenda/${item.id}`, { credentials: 'include' });
-                                if (res.ok) {
-                                  const data = await res.json();
-                                  setAgendaDrawerItem(data.item ?? data);
-                                }
-                              } catch { /* ignore */ } finally {
-                                setLoadingAgendaItem(null);
-                              }
-                            }}
-                          >
-                            <div className="flex-1 min-w-0">
-                              <p className="font-medium truncate">{item.title}</p>
-                              {item.startDate && <p className="text-muted-foreground">{fmt(item.startDate)}</p>}
-                            </div>
-                            {loadingAgendaItem === item.id ? (
+                            kind="echeance"
+                            id={item.id}
+                            title={item.title}
+                            meta={item.startDate ? fmt(item.startDate) : undefined}
+                            // Tiroir local : sa modification relit la liste ci-dessus.
+                            onOpen={() => { void openLinkedAgendaItem(item.id); }}
+                            badges={loadingAgendaItem === item.id ? (
                               <Loader2 className="w-3 h-3 animate-spin shrink-0 text-muted-foreground" />
                             ) : (
-                            <span className={`shrink-0 text-[10px] font-semibold px-1.5 py-0.5 rounded-full ${
-                              item.effectiveStatus === 'realise' ? 'bg-[color:var(--bg-success)] text-[color:var(--text-success)]' :
-                              item.effectiveStatus === 'annule' ? 'bg-muted text-muted-foreground' :
-                              item.effectiveStatus === 'en_retard' ? 'bg-[color:var(--danger-soft)] text-[color:var(--danger)]' :
-                              item.effectiveStatus === 'a_confirmer' ? 'bg-[color:var(--attention-soft)] text-[color:var(--attention-on-soft)]' :
-                              'bg-primary/10 text-primary'
-                            }`}>
-                              {item.effectiveStatus === 'aujourd_hui' ? "Aujourd'hui" : effectiveStatusLabel(item.effectiveStatus || 'a_venir')}
-                            </span>
+                              <span className={`shrink-0 text-[10px] font-semibold px-1.5 py-0.5 rounded-full ${
+                                item.effectiveStatus === 'realise' ? 'bg-[color:var(--bg-success)] text-[color:var(--text-success)]' :
+                                item.effectiveStatus === 'annule' ? 'bg-muted text-muted-foreground' :
+                                item.effectiveStatus === 'en_retard' ? 'bg-[color:var(--danger-soft)] text-[color:var(--danger)]' :
+                                item.effectiveStatus === 'a_confirmer' ? 'bg-[color:var(--attention-soft)] text-[color:var(--attention-on-soft)]' :
+                                'bg-primary/10 text-primary'
+                              }`}>
+                                {item.effectiveStatus === 'aujourd_hui' ? "Aujourd'hui" : effectiveStatusLabel(item.effectiveStatus || 'a_venir')}
+                              </span>
                             )}
-                          </button>
+                          />
                         ))}
-                      </div>
+                      </EntityCardList>
                     </div>
                   )}
 
@@ -1870,29 +1870,6 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
         prefilledTitle={agendaPrefill.title || undefined}
         prefilledStartDate={agendaPrefill.startDate || undefined}
       />
-
-      {/* Room sub-drawer */}
-      {roomDrawerItem && (
-        <RoomDrawer
-          open={!!roomDrawerItem}
-          onOpenChange={(v) => { if (!v) setRoomDrawerItem(null); }}
-          assetId={roomDrawerItem.assetId}
-          room={roomDrawerItem.room}
-          onRefresh={() => setRoomDrawerItem(null)}
-        />
-      )}
-
-      {/* Equipment sub-drawer */}
-      {equipmentDrawerItem && (
-        <EquipmentDrawer
-          open={!!equipmentDrawerItem}
-          onOpenChange={(v) => { if (!v) setEquipmentDrawerItem(null); }}
-          assetId={equipmentDrawerItem.assetId}
-          equipment={equipmentDrawerItem.equipment}
-          substructures={[]}
-          onRefresh={() => setEquipmentDrawerItem(null)}
-        />
-      )}
 
       {/* Agenda item sub-drawer */}
       {agendaDrawerItem && (

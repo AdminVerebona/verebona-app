@@ -90,6 +90,13 @@ export interface ToProcessAssessmentRequest {
   documentDates: Array<{ key: string; date: string }>;
   /** Titre lu (indice, ≤ 200). */
   documentTitle: string | null;
+  /**
+   * Lot 75I (A) : date DÉJÀ CONNUE (lue, saisie ou écrite) — T4 ne la demande
+   * jamais ; il dit seulement si une obligation réelle reste attendue.
+   */
+  knownDate?: string | null;
+  /** Lot 75I (A) : clauses lues pertinentes (restitution, résiliation, reconduction…), ≤ 5 × 300. */
+  clauses?: string[];
 }
 
 /** Catalogue fermé transmis au modèle (U6). */

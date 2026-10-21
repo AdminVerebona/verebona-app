@@ -28,6 +28,7 @@ import { GetObjectCommand } from '@aws-sdk/client-s3';
 import { getS3Client } from '@/lib/s3-config';
 import { streamS3Object, type S3GetFn } from '@/lib/storage/s3-object-stream';
 import { loadReadableFile } from '@/services/documents/file-access';
+import { contentDisposition, downloadFilename } from '@/lib/download-filename';
 
 export const dynamic = 'force-dynamic';
 
@@ -57,7 +58,8 @@ export async function GET(
       request,
       get: s3Get,
       contentType: file.mimeType ?? 'application/octet-stream',
-      disposition: 'inline',
+      // `inline` nommé (lot 75L) : l'aperçu enregistré porte le nom affiché.
+      disposition: contentDisposition(downloadFilename(file), 'inline'),
       knownSize: file.size,
       cacheControl: 'private, no-cache',
       where: 'GET /api/files/[id]/proxy',

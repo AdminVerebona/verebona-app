@@ -81,7 +81,13 @@ export type T6DecisionCode =
    * échéance portée ou réglée par « À traiter » ne pouvant être vérifiée,
    * elle n'est pas relancée (indisponibilité technique, provisoire).
    */
-  | 'TO_PROCESS_UNAVAILABLE';
+  | 'TO_PROCESS_UNAVAILABLE'
+  /**
+   * Lot 75E (C) : exception au seuil demandée par l'IA, mais aucune preuve
+   * CONCRÈTE réellement disponible ne la fonde (intitulé de document seul,
+   * fait incertain, preuve disparue) — aucune interpellation par défaut.
+   */
+  | 'THRESHOLD_EXCEPTION_UNPROVEN';
 
 /**
  * Lot 71G — motif d'une (ré)évaluation demandée, tracé au reporting :
@@ -191,6 +197,13 @@ export interface T6Candidate {
   fingerprint: string;
   /** Lot 71G : empreinte historique (lot 60, sans préfixe) — relecture des évaluations et reports antérieurs. */
   legacyFingerprint?: string;
+  /** Lot 75E : empreinte enrichie du lot 71G (`v2:`) — relecture des évaluations et reports antérieurs. */
+  v2Fingerprint?: string;
+  /**
+   * Lot 75E (D) : identité PERSISTANTE du cycle de l'occurrence (`t6CycleKey`),
+   * cohérente avec T4. Absente (lecture impossible) : préférences appliquées.
+   */
+  cycleKey?: string | null;
   /** Lot 71G : description, document ou fait documentaire disponibles (au-delà du titre et de la date). */
   hasEvidence?: boolean;
   /** Lot 71G : faits documentaires pertinents (T1/T3) — justifient l'évaluation d'une échéance lointaine. */
@@ -217,9 +230,14 @@ export interface T6ReminderPreference {
   updatedAt?: string | null;
   /**
    * Lot 71G (T6-07) : date de l'occurrence au moment du choix (portée
-   * OCCURRENCE). Absente : préférence antérieure, appliquée (prudence).
+   * OCCURRENCE) — lot 75E : conservée pour la traçabilité seulement.
    */
   occurrenceDate?: string | null;
+  /**
+   * Lot 75E (D, migration 0551) : cycle de l'occurrence au moment du choix
+   * (`t6CycleKey`). Absent : préférence antérieure, appliquée (prudence).
+   */
+  cycleKey?: string | null;
 }
 
 export interface T6DecisionInput {
@@ -255,6 +273,13 @@ export interface T6DecisionInput {
    * ouverte, ou décision qui règle l'échéance) n'a pas pu être vérifiée.
    */
   toProcessUnavailable?: boolean;
+  /**
+   * Lot 75E (C) : l'évaluation conservée cite-t-elle une preuve CONCRÈTE
+   * encore disponible (`exceptionEvidenceGrounded`) ? `false` : aucune
+   * exception au seuil ne peut s'appuyer dessus ; absent : non vérifié
+   * (appelants antérieurs, règle du lot 71G).
+   */
+  exceptionGrounded?: boolean;
 }
 
 export interface T6DecisionResult {
@@ -308,13 +333,10 @@ export const T6_REPEAT_WINDOW_DAYS = 10;
 export const T6_REPEAT_MAX_DAYS = 5;
 export const T6_REPEAT_COOLDOWN_DAYS = 7;
 
-/**
- * Lot 71G (T6-07) : écart de date à partir duquel une occurrence dont T4 a
- * RÉUTILISÉ l'identifiant est un NOUVEAU cycle (renouvellement) et non une
- * replanification : le refus « cette échéance » du cycle précédent ne s'y
- * applique plus. En deçà, la préférence suit l'événement replanifié.
+/*
+ * Lot 75E (D) : l'écart de 183 jours du lot 71G (`T6_NEW_CYCLE_MIN_DAYS`) est
+ * SUPPRIMÉ — remplacé par l'identité persistante du cycle (`t6CycleKey`).
  */
-export const T6_NEW_CYCLE_MIN_DAYS = 183;
 
 /**
  * Horizon des candidats soumis à l'IA : trois fois le seuil, 180 jours au
@@ -399,6 +421,8 @@ export const isT6RelevantFact = (f: { key: string; canonicalKey?: string | null;
 
 /** Lot 71G : préfixe des empreintes enrichies (données métier et documentaires). */
 export const T6_FINGERPRINT_V2 = 'v2:';
+/** Lot 75E (C) : préfixe des empreintes du CONTENU PROBANT (extraits, provenance). */
+export const T6_FINGERPRINT_V3 = 'v3:';
 
 /**
  * Texte normalisé pour l'empreinte (pure) : casse, accents, ponctuation et
@@ -408,8 +432,38 @@ export function normalizeForFingerprint(v: string | null | undefined): string {
   return (v ?? '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
 }
 
-/** Fait documentaire retenu dans l'empreinte (contenu métier, jamais l'extrait ni la version). */
-export interface T6FingerprintFact { fileId: number; key: string; value: string | null; confidence: string | null }
+/**
+ * Fait documentaire retenu dans l'empreinte. Lot 71G : contenu métier (clé,
+ * valeur, confiance). Lot 75E (C) : plus le CONTENU PROBANT de l'extrait et la
+ * provenance (empreinte `v3:`) — jamais l'identifiant ni la version d'extraction.
+ */
+export interface T6FingerprintFact {
+  fileId: number; key: string; value: string | null; confidence: string | null;
+  excerpt?: string | null; provenance?: string | null;
+}
+
+/** Mots VIDES d'un extrait (articles, auxiliaires) : leur variation est cosmétique. Négations conservées. */
+const MOTS_VIDES_PREUVE = new Set([
+  'le', 'la', 'les', 'l', 'un', 'une', 'des', 'de', 'du', 'd', 'et', 'est', 'sont', 'etre', 'a', 'au', 'aux', 'en', 'par', 'pour',
+  'que', 'qui', 'qu', 'ce', 'cet', 'cette', 'ces', 'se', 's', 'sa', 'son', 'ses', 'leur', 'leurs', 'il', 'elle', 'on', 'y', 'dans',
+  'sur', 'avec', 'ou', 'c', 'j', 'n', 'votre', 'vos', 'notre', 'nos', 'tout', 'toute', 'tous', 'toutes',
+]);
+
+/**
+ * Lot 75E (C) — représentation STABLE du contenu probant d'un extrait
+ * (pure) : texte replié, mots vides retirés, mots significatifs (nombres,
+ * durées, négations, verbes de l'obligation) dédoublonnés et triés. Une
+ * réextraction reformulée (« Entretien annuel. » / « L'entretien est
+ * annuel. ») donne la même représentation ; une clause modifiée (« un mois »
+ * → « trois mois », « avant » → « après », « sans » ajouté) la change.
+ */
+export function probativeContent(excerpt: string | null | undefined): string {
+  const mots = normalizeForFingerprint(excerpt).split(' ').filter((w) => w && !MOTS_VIDES_PREUVE.has(w));
+  return [...new Set(mots)].sort().join(' ');
+}
+
+/** Provenance normalisée (T1, revalidation T2, consolidation T3…) : change la fiabilité de la preuve. */
+export const provenanceClass = (p: string | null | undefined): string => (p ?? '').trim().toUpperCase().replace(/[^A-Z0-9]+/g, '_') || 'INCONNUE';
 
 /**
  * Lot 71G (T6-01) — parties de l'empreinte ENRICHIE (pure) : celles du lot
@@ -431,25 +485,75 @@ export function t6FingerprintParts(p: {
 }
 
 /**
+ * Lot 75E (C) — parties de l'empreinte du CONTENU PROBANT (`v3:`, pure) :
+ * celles du lot 71G, chaque fait portant en plus la représentation stable de
+ * son extrait (`probativeContent`) et sa provenance (`provenanceClass`). Une
+ * clause modifiée sans changement de titre ni de date, un statut de
+ * confiance ou une provenance qui change : réévaluation. Une réextraction
+ * sémantiquement identique (nouvelle version, extrait reformulé, casse,
+ * ponctuation) : aucune.
+ */
+export function t6ProbativeFingerprintParts(p: Parameters<typeof t6FingerprintParts>[0]): string {
+  const docs = [...(p.documents ?? [])].map((d) => [d.fileId, normalizeForFingerprint(d.title)] as const).sort((a, b) => a[0] - b[0]);
+  const faits = [...new Set((p.facts ?? []).map((f) => JSON.stringify([
+    f.fileId, f.key, normalizeForFingerprint(f.value), f.confidence ?? null, probativeContent(f.excerpt), provenanceClass(f.provenance),
+  ])))].sort();
+  return JSON.stringify(['v3', agendaFingerprintParts(p), normalizeForFingerprint(p.description), p.endDate ?? null, docs, faits]);
+}
+
+/**
  * Une empreinte conservée (évaluation, report) correspond-elle au candidat ?
  * Empreinte enrichie : comparaison directe ; empreinte historique (lot 60,
  * sans préfixe) : comparée à l'empreinte historique du candidat (pure).
  */
-export function sameT6Context(stored: string | null | undefined, c: Pick<T6Candidate, 'fingerprint' | 'legacyFingerprint'>): boolean {
+export function sameT6Context(stored: string | null | undefined, c: Pick<T6Candidate, 'fingerprint' | 'legacyFingerprint' | 'v2Fingerprint'>): boolean {
   if (stored == null) return false;
-  if (stored.startsWith(T6_FINGERPRINT_V2)) return stored === c.fingerprint;
+  if (stored.startsWith(T6_FINGERPRINT_V3)) return stored === c.fingerprint;
+  // Lot 75E : décision ou report antérieurs (empreinte du lot 71G) — comparés
+  // à l'empreinte `v2:` COURANTE : aucune réévaluation de masse au déploiement
+  // (renouvelées au fil de leur vieillissement, 14 jours au plus).
+  if (stored.startsWith(T6_FINGERPRINT_V2)) return stored === (c.v2Fingerprint ?? c.fingerprint);
   return stored === (c.legacyFingerprint ?? c.fingerprint);
 }
 
 /**
- * Lot 71G (T6-07) — une préférence d'OCCURRENCE s'applique-t-elle encore au
- * cycle présenté (pure) ? Même événement replanifié : oui ; identifiant
- * réutilisé pour un nouveau cycle (écart ≥ `T6_NEW_CYCLE_MIN_DAYS`) : non.
- * Une préférence de série, ou sans date d'occurrence connue, s'applique.
+ * Lot 75E (D) — IDENTITÉ PERSISTANTE DU CYCLE, cohérente avec T4.
+ *
+ * Dans le modèle d'occurrences de T4, UNE ligne d'agenda = UNE occurrence
+ * (un cycle) : une série récurrente (mensuelle, trimestrielle, annuelle,
+ * pluriannuelle) a une ligne par occurrence (clé fonctionnelle datée,
+ * prévision confirmée « sur place ») ; un renouvellement est une NOUVELLE
+ * occurrence (nouvelle clé fonctionnelle ou de projection, donc nouvelle
+ * ligne). Une même ligne qui change de date est donc une REPLANIFICATION —
+ * quel que soit l'écart. Seul cas où une ligne change de cycle : son
+ * occurrence a été RÉALISÉE (trace `agenda_occurrence_events` :
+ * `STATUS_CHANGED` « réalisé » ou `STATUS_AUTO_COMPLETED`), puis l'élément a
+ * été rouvert pour l'échéance suivante.
+ *
+ * Cycle = `agenda:<id>#<nombre de réalisations>`. Une préférence d'occurrence
+ * retient le cycle du moment du choix ; elle s'applique tant que le cycle
+ * est le même — jamais déduit d'un écart de dates (le seuil de 183 jours du
+ * lot 71G est supprimé).
  */
-export function preferenceAppliesToCycle(p: Pick<T6ReminderPreference, 'scope' | 'occurrenceDate'>, dueDate: string | null): boolean {
-  if (p.scope !== 'OCCURRENCE' || !p.occurrenceDate || !dueDate) return true;
-  return Math.abs(daysBetween(p.occurrenceDate, dueDate)) < T6_NEW_CYCLE_MIN_DAYS;
+export const t6CycleKey = (agendaItemId: number, completions: number): string => `${agendaSubjectKey(agendaItemId)}#${Math.max(0, Math.trunc(completions))}`;
+
+/** Expression SQL du cycle courant d'une échéance (alias `i`) — même valeur que `t6CycleKey`. */
+export const t6CycleKeySql = (alias = 'i'): string => `('agenda:' || ${alias}.id || '#' || (
+  SELECT count(*) FROM agenda_occurrence_events e
+   WHERE e.agenda_item_id = ${alias}.id AND e.account_id = ${alias}.account_id
+     AND (e.event_type = 'STATUS_AUTO_COMPLETED'
+          OR (e.event_type = 'STATUS_CHANGED' AND e.detail_json ->> 'manualStatus' = 'realise'))))`;
+
+/**
+ * Lot 75E (D) — une préférence d'OCCURRENCE s'applique-t-elle au cycle
+ * présenté (pure) ? Même cycle (replanification comprise, quel que soit
+ * l'écart) : oui ; cycle suivant de la même ligne : non. Préférence de
+ * série, préférence antérieure sans cycle, ou cycle courant illisible :
+ * appliquée (prudence : un refus non vérifiable n'est jamais levé).
+ */
+export function preferenceAppliesToCycle(p: Pick<T6ReminderPreference, 'scope' | 'cycleKey'>, cycleKey: string | null | undefined): boolean {
+  if (p.scope !== 'OCCURRENCE' || !p.cycleKey || !cycleKey) return true;
+  return p.cycleKey === cycleKey;
 }
 
 // ── Fraîcheur d'une évaluation ──────────────────────────────────────────────
@@ -504,7 +608,8 @@ export function assessmentFreshness(
   if (a.interpellation === 'LATER' && a.actionDate && today >= a.actionDate && a.assessedOn < a.actionDate) return { status: 'AGED', reason: 'REVIEW_DATE' };
   // Lot 71G : évaluation antérieure à l'empreinte enrichie, sur une échéance
   // documentée — utilisable, renouvelée en arrière-plan (une fois).
-  if (!c.fingerprintUnavailable && !a.fingerprint.startsWith(T6_FINGERPRINT_V2) && c.hasEvidence) return { status: 'AGED', reason: 'LEGACY_FINGERPRINT' };
+  // Lot 75E : une empreinte `v3:` (contenu probant) ou `v2:` n'est pas historique.
+  if (!c.fingerprintUnavailable && !a.fingerprint.startsWith(T6_FINGERPRINT_V2) && !a.fingerprint.startsWith(T6_FINGERPRINT_V3) && c.hasEvidence) return { status: 'AGED', reason: 'LEGACY_FINGERPRINT' };
   // Lot 68 : renouvellement ciblé (utilisable, réévaluée en arrière-plan).
   if (opts.reminderCapable && assessmentNeedsReminderRenewal(a)) return { status: 'AGED', reason: 'REMINDER_RENEWAL' };
   return { status: 'FRESH', reason: null };
@@ -733,6 +838,16 @@ export function decideT6Interpellation(input: T6DecisionInput): T6DecisionResult
         explanation: `Échéance au-delà du seuil de ${thresholdDays} jours sans démarche motivée à engager avant : aucune interpellation par défaut.`,
       });
     }
+    // Lot 75E (C) : l'exception exige une preuve CONCRÈTE réellement
+    // disponible (clause extraite établie, description) — jamais le seul
+    // intitulé d'un document, ni un fait incertain, ni une preuve disparue.
+    if (input.exceptionGrounded === false) {
+      return r({
+        ...base, decision: 'SUPPRESS', code: 'THRESHOLD_EXCEPTION_UNPROVEN', thresholdApplied: true, priority: a.priority,
+        nextReevaluationAt: minDay(addDays(due!, -thresholdDays), a.reevaluateOn),
+        explanation: `Exception au seuil de ${thresholdDays} jours non retenue : aucune preuve établie et disponible (clause extraite, description) ne la fonde — un intitulé de document ou un fait incertain ne suffit pas.`,
+      });
+    }
     exception = true;
   }
 
@@ -811,6 +926,49 @@ export interface T6CandidateRef {
 /** Lot 71G : version d'une preuve transmise à EVALUATE (aucun texte : références seules). */
 export interface T6EvidenceVersion {
   ref: string; kind: string; fileId?: number; extractionId?: number; factId?: number; factKey?: string; provenance?: string;
+  /** Lot 75E (C) : statut du fait transmis (PROVEN, DEDUCED, UNCERTAIN). */
+  status?: 'PROVEN' | 'DEDUCED' | 'UNCERTAIN';
+}
+
+/**
+ * Lot 75E (C) — preuve CONCRÈTE (pure) : description de l'échéance, ou fait
+ * documentaire extrait dont le statut n'est pas incertain. Un intitulé de
+ * document (`Cn.docN`), le titre, la date, le bien, la série ou l'historique
+ * n'établissent JAMAIS une obligation. Version inconnue d'un fait : non
+ * concrète (rien n'est présumé établi).
+ */
+export function isConcreteEvidence(ref: string, versions?: ReadonlyMap<string, T6EvidenceVersion>): boolean {
+  if (/\.description$/.test(ref)) return true;
+  if (!/\.fact\d+$/.test(ref)) return false;
+  if (!versions) return true; // appelants antérieurs (sans versions) : règle du lot 71G
+  const v = versions.get(ref);
+  return !!v && v.kind === 'DOCUMENT_FACT' && (v.status === 'PROVEN' || v.status === 'DEDUCED');
+}
+
+/**
+ * Lot 75E (C) — une évaluation CONSERVÉE peut-elle fonder une exception au
+ * seuil avec les preuves RÉELLEMENT disponibles aujourd'hui (pure) ? Une des
+ * preuves citées doit être : la description, encore renseignée ; ou un fait
+ * de l'instantané (`evidence_snapshot`) encore présent (même fait, ou même
+ * clé du même document après réextraction) et établi (certain ou probable).
+ * Intitulé de document seul, fait incertain, fait disparu, instantané
+ * absent : non.
+ */
+export function exceptionEvidenceGrounded(
+  a: Pick<T6StoredAssessment, 'evidenceRefs' | 'evidenceSnapshot'>,
+  current: { description: string | null; facts: ReadonlyArray<{ id: number; fileId: number; key: string; canonicalKey: string | null; confidence: string | null }> },
+): boolean {
+  const refs = a.evidenceRefs ?? [];
+  const snap = new Map((a.evidenceSnapshot?.refs ?? []).map((v) => [v.ref, v]));
+  return refs.some((ref) => {
+    if (/\.description$/.test(ref)) return !!(current.description ?? '').trim();
+    if (!/\.fact\d+$/.test(ref)) return false;
+    const v = snap.get(ref);
+    if (!v || v.kind !== 'DOCUMENT_FACT' || v.status === 'UNCERTAIN') return false;
+    const f = current.facts.find((x) => (v.factId != null && x.id === v.factId)
+      || (v.fileId != null && x.fileId === v.fileId && v.factKey != null && (x.canonicalKey ?? x.key) === v.factKey));
+    return !!f && (f.confidence === 'certain' || f.confidence === 'probable');
+  });
 }
 
 /**
@@ -863,7 +1021,11 @@ const PRIORITE_DEFAUT: Record<T6Decision, T6Priority> = { SHOW_NOW: 'MEDIUM', DE
  * `suggestedReviewAt` ne devient qu'une date de RÉÉVALUATION système, jamais
  * un rappel utilisateur (aucune préférence n'est écrite).
  */
-export function assessmentFromDecision(d: import('./t6-contract').T6ValidatedDecision): T6Assessment {
+export function assessmentFromDecision(
+  d: import('./t6-contract').T6ValidatedDecision,
+  /** Lot 75E (C) : versions des preuves transmises (statut des faits) — absentes : règle du lot 71G sans les intitulés de document. */
+  versions?: ReadonlyMap<string, T6EvidenceVersion>,
+): T6Assessment {
   // Lot 68 : SHOW_NOW + INFORMATION (validé : motif dédié, sans action) → INFORM.
   const informe = d.decision === 'SHOW_NOW' && d.category === 'INFORMATION';
   const interpellation: T6AiInterpellation = d.decision === 'SUPPRESS' ? 'NONE'
@@ -871,7 +1033,8 @@ export function assessmentFromDecision(d: import('./t6-contract').T6ValidatedDec
       : informe ? 'INFORM'
         : d.category === 'TO_ANTICIPATE' ? 'ANTICIPATE' : 'ACT_NOW';
   // Lot 71G (T6-04) : un fait documentaire extrait (`Cn.factN`) est une preuve concrète.
-  const concrete = d.evidenceRefs.some((r) => /\.(description|doc\d+|fact\d+)$/.test(r));
+  // Lot 75E (C) : l'intitulé d'un document (`Cn.docN`) ne l'est plus ; un fait INCERTAIN non plus.
+  const concrete = d.evidenceRefs.some((r) => isConcreteEvidence(r, versions));
   return {
     decision: d.decision, category: d.category, reasonCode: d.reasonCode, evidenceRefs: d.evidenceRefs, uncertainties: d.uncertainties,
     interpellation,

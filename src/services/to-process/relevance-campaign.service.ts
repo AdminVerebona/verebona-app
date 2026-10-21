@@ -39,8 +39,14 @@ import { DOCUMENT_RULE_ENGINE_VERSION } from './document-field-evidence';
 import { documentBridgeRules, getRule } from './rules-catalog';
 import { INTERVENTION_RULE_CODE } from './document-intervention';
 
-/** Lot 72 : nouvelle campagne par défaut (démarrée automatiquement au déploiement). */
-export const DEFAULT_RELEVANCE_CAMPAIGN = 'l72-pertinence-1';
+/**
+ * Campagne par défaut (démarrée automatiquement au déploiement). Lot 75I :
+ * `l75-pertinence-1` — les cartes existantes et les décisions du moteur
+ * antérieur (`l72-1`) sont réévaluées : obligation des échéances CONNUES (A),
+ * plus de question par défaut sur un contrat T4 incompatible (D). Bilan
+ * avant / après au BO.
+ */
+export const DEFAULT_RELEVANCE_CAMPAIGN = 'l75-pertinence-1';
 /** Cartes (ou documents) examinés par lot. */
 const BATCH = 100;
 

@@ -32,6 +32,7 @@ import {
 } from '@/services/business-operations/consolidation/queue';
 import { registerOperationAgendaProjection, startAgendaProjectionSweep } from '@/services/business-operations/agenda-projection/queue';
 import { registerSourceUnitProviders } from './document-asset/source-unit-provider';
+import { registerEquipmentDocumentsT3 } from '@/services/equipment/equipment-document-queue';
 
 export { resolveDocumentAsset } from './document-asset/resolve-document-asset.service';
 export { requestDocumentAssetResolution, T3_TARGET_DOCUMENT } from './document-asset/queue';
@@ -74,6 +75,9 @@ export function registerReconciliationHandlers(): void {
   // compte ; balayage horaire de convergence (événement perdu).
   registerOperationAgendaProjection();
   registerT3SweepStarter('business_operations_agenda', ({ cycleId, guard }) => startAgendaProjectionSweep({ cycleId, guard }).then(() => undefined));
+  // Lot 75G — rapprochement DURABLE des documents d'un équipement créé ou
+  // modifié (nom, bien, marque, modèle, n° de série) : sorte `equipment_documents`.
+  registerEquipmentDocumentsT3();
   onSourceAnalyzed('opérations', async (e) => {
     await onDocumentAnalyzedForOperations(e.accountId, e.leadSourceId);
   });

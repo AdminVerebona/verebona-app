@@ -57,6 +57,15 @@ export interface MascotAgendaRow {
    * preuve documentaire) — candidate à l'évaluation T6 malgré son ancienneté.
    */
   t6LongOverdue?: boolean;
+  /**
+   * Lot 75E (B) — sélection T6 progressive (lecture complémentaire seulement) :
+   * signature SQL des données lues (échéance, documents, faits pertinents)
+   * et examen DÛ (jamais examinée, données changées depuis l'examen, date de
+   * réexamen atteinte). Un examen achevé est enregistré
+   * (`t6_candidate_examinations`) : l'échéance laisse sa place à la suivante.
+   */
+  t6SelectionSignature?: string;
+  t6Due?: boolean;
 }
 
 /**
@@ -117,6 +126,11 @@ export interface MascotRawData {
    * Absent ou `null` (lecture en échec) : aucune.
    */
   t6Agenda?: MascotAgendaRow[] | null;
+  /**
+   * Lot 75E (B) : la file d'examen T6 compte plus d'échéances DUES que la
+   * lecture n'en prend — la pré-génération reprend tant qu'elle progresse.
+   */
+  t6AgendaBacklog?: boolean;
 }
 
 /** Droits utiles aux recommandations (REC-005). */

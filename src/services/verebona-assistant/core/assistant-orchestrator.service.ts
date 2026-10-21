@@ -101,7 +101,7 @@ import { type ArbitrationCandidate } from './semantic-stage';
 import type { RawSemanticDecision } from './semantic-scope';
 import {
   CONTEXT_ONLY_MESSAGE, UPDATE_DISABLED_MESSAGE, UPDATE_READ_ONLY_MESSAGE, interactionHandling, updateFactsOf,
-  contextFactsOf, validateContextFacts, contextCalculationAnswer,
+  contextFactsOf, validateContextFacts, contextCalculationAnswer, classifySuppliedFacts,
 } from './interaction';
 import { expenseThemeWords } from '../canonical/expense-classes';
 import {
@@ -271,7 +271,7 @@ export interface OrchestratorPorts {
    * BO) — arbitrage (A9, {{BUSINESS_CANDIDATES}}), informations apportées
    * (A7, A8). `null` : inconnues.
    */
-  t2PromptCapabilities?(): Promise<{ arbitration: boolean; interaction: boolean; version: string | null } | null>;
+  t2PromptCapabilities?(): Promise<{ arbitration: boolean; interaction: boolean; version: string | null; compatible?: boolean | null } | null>;
   /**
    * Lot 71 (71D) : équipements / pièces du compte dont le nom EST la saisie
    * (correspondance exacte normalisée, même moteur que la barre de recherche :
@@ -826,7 +826,25 @@ export async function runAssistant(
       };
     };
 
+    /**
+     * Lot 75J (#419 §3) — prompt maître T2 EFFECTIF constaté pour la
+     * COMPRÉHENSION de cette demande (version, capacités, compatibilité) :
+     * tracé une fois, après un appel UNDERSTAND. Une version incapable de
+     * comprendre les informations apportées est signalée explicitement.
+     */
+    const noterPromptT2 = async (): Promise<void> => {
+      if (semTrace.t2PromptAtUnderstand || !ports.t2PromptCapabilities || !comprisParModele) return;
+      const c = await ports.t2PromptCapabilities().catch(() => null);
+      if (!c) return;
+      semTrace.t2PromptAtUnderstand = { version: c.version, arbitration: c.arbitration, interaction: c.interaction, compatible: c.compatible ?? null };
+      if (!c.interaction) {
+        semTrace.interactionUnavailableReason = 'PROMPT_UNSUPPORTED';
+        if (!trace.escalationReasons.includes('UNDERSTANDING:INTERACTION_PROMPT_UNSUPPORTED')) trace.escalationReasons.push('UNDERSTANDING:INTERACTION_PROMPT_UNSUPPORTED');
+      }
+    };
+
     const traiterInteraction = async (compris: IntentRoute | null): Promise<AssistantRunResult | null> => {
+      if (compris) await noterPromptT2();
       const inter = compris?.understanding?.interaction;
       if (!inter || input.resume) return null;
       semTrace.interactionMode = inter.mode;
@@ -880,6 +898,49 @@ export async function runAssistant(
         done('template', r.calculation === 'remaining_periods' ? 'interaction.context_calculation' : 'interaction.context_missing', null, 0);
         return finalize(base, machine, 'deterministic', r.text, [], [], [], ports, input, r.calculation === 'remaining_periods' ? undefined : 'insufficient');
       }
+      if (traitement === 'context_question') {
+        // ══════════════════════════════════════════════════════════════════
+        // LOT 75J (#419 R07) — QUESTION MIXED + INFORMATIONS DE CONTEXTE
+        // Les informations apportées « pour contexte » sont mises à la
+        // disposition du traitement de CETTE question : relues dans le
+        // message, typées par le registre, cible résolue par le serveur,
+        // comparées aux données enregistrées (contradiction signalée), jamais
+        // enregistrées. Une information non utilisée est dite.
+        // ══════════════════════════════════════════════════════════════════
+        trace.escalationReasons.push(`INTERACTION:${inter.mode}:CONTEXT_QUESTION`);
+        const faits = contextFactsOf(inter);
+        const { valid, ignored, rejected } = validateContextFacts(faits, input.message, aujourdhuiParis());
+        semTrace.contextFactsIgnored = ignored;
+        semTrace.contextFactsRejected = [...rejected];
+        const hint = faits.find((f) => f.targetHint)?.targetHint ?? compris?.entityHints?.find((h) => h.type === 'asset')?.value ?? null;
+        const cible = await cibleInformation(hint);
+        if (cible.refus && valid.length) {
+          // Cible ambiguë ou introuvable : l'information n'est attribuée à aucun bien, rien n'est calculé ni enregistré.
+          semTrace.contextFactsRejected.push(...valid.map((v) => ({ fieldKey: v.fieldKey, reason: 'TARGET_UNRESOLVED' })));
+          trace.intent = 'ACCOUNT_FACT_ASSET';
+          done('template', 'interaction.context_target_unresolved', 'AMBIGUOUS_TARGET', 0);
+          const texte = `${cible.refus.replace(/ ?;? rien n’a été modifié\.?$/, '').replace(/\.$/, '')} : je ne peux pas utiliser l’information indiquée dans votre message pour répondre. Rien n’a été modifié.`;
+          return finalize(base, machine, 'deterministic', texte, [], [], [], ports, input, 'insufficient');
+        }
+        if (!ports.listBusinessSources) return null;
+        const r0: IntentRoute = compris ?? route;
+        const noms = hint ? [hint] : [];
+        const issue = await runSemanticStage({
+          input, route: r0, ports, trace: semTrace, messageId,
+          residue: semanticResidue(input.message, { assetNames: noms, consumed: expenseThemeWords(input.message) }),
+          understood: r0, understand: null, preset: null,
+          withDeadline: (x) => withDeadline(x, retrievalDeadline()),
+          arbitrate: arbitrer,
+          contextFacts: { facts: valid, assetId: cible.assetId ?? (Number(input.pageContext?.assetId) || null) },
+        });
+        if (issue.kind === 'continue' || issue.kind === 'reroute' || issue.kind === 'interaction') {
+          semTrace.contextFactsRejected.push(...valid.map((v) => ({ fieldKey: v.fieldKey, reason: 'NOT_USED' })));
+          return null;
+        }
+        if (issue.kind === 'answer') marquer('COMPLETE', [], 'understand');
+        else marquer('PARTIAL', ['UNCONSUMED_MEANING'], issue.kind === 'clarify' ? 'clarification' : 'understand');
+        return servirSemantique(issue, r0);
+      }
       trace.escalationReasons.push(`INTERACTION:${inter.mode}`);
       if (input.planLimit) {
         semTrace.updateCapabilityResolved = false;
@@ -889,7 +950,15 @@ export async function runAssistant(
       // Lot 59 (#419 R08) : TOUTES les informations apportées sont traitées
       // (jamais seulement la première). Cible de chacune résolue par le
       // SERVEUR ; une cible introuvable ou ambiguë : rien n'est proposé.
+      // Lot 75J (#419 R08) : y compris celles sans valeur ou sans champ résolu
+      // (refusées explicitement par le serveur, jamais abandonnées).
       const faits = updateFactsOf(inter);
+      const classes = classifySuppliedFacts(inter);
+      /** Message MIXED : la question qui accompagne la modification est DITE (jamais ignorée en silence). */
+      const noteMixte = inter.mode === 'MIXED'
+        ? ' Votre message contient aussi une question : je n’y réponds pas dans cette proposition. Posez-la de nouveau après avoir confirmé ou refusé la modification.' : '';
+      const contexteNonEnregistre = classes.filter((c) => c.category === 'context').length
+        ? ' Les autres informations de votre message, données pour contexte, ne sont pas enregistrées.' : '';
       const demandes: Array<{ fact: (typeof faits)[number]; assetId: number | null }> = [];
       for (const fait of faits) {
         const c = await cibleInformation(fait.targetHint);
@@ -921,8 +990,10 @@ export async function runAssistant(
       semTrace.updateFactsRefused = (prep.refused ?? (prep.kind === 'need_info' ? [{ fieldKey: premiere.fact.fieldKey ?? null, reason: prep.reason }] : []))
         .map((x) => ({ fieldKey: x.fieldKey, reason: x.reason }));
       if (prep.kind === 'need_info') trace.escalationReasons.push(`INTERACTION:PROPOSAL_REFUSED:${prep.reason}`);
+      if (noteMixte) trace.escalationReasons.push('INTERACTION:MIXED_QUESTION_DEFERRED');
       done('template', prep.kind === 'plan' ? 'command.proposal_preview' : 'command.proposal_need_info', null, 0);
-      const result = await finalize(base, machine, 'deterministic', prep.kind === 'plan' ? prep.preview.summary : prep.message, [], [], [], ports, input);
+      const result = await finalize(base, machine, 'deterministic',
+        `${prep.kind === 'plan' ? prep.preview.summary : prep.message}${noteMixte}${contexteNonEnregistre}`, [], [], [], ports, input);
       if (prep.kind === 'plan') result.commandPlan = prep.preview;
       return result;
     };
@@ -943,7 +1014,8 @@ export async function runAssistant(
       // Lot 59 (#419) : prompt maître T2 EFFECTIF contrôlé (A9, {{BUSINESS_CANDIDATES}}, semanticDecision).
       const caps = ports.t2PromptCapabilities ? await ports.t2PromptCapabilities().catch(() => null) : null;
       if (caps) semTrace.t2PromptCapabilities = caps;
-      if ((caps && !caps.arbitration) || (!caps && ports.canArbitrateWithAI && !(await ports.canArbitrateWithAI().catch(() => false)))) {
+      // Lot 75J (§3) : une version INCOMPATIBLE (variables, contrat) ne peut pas arbitrer non plus — jamais un choix arbitraire.
+      if ((caps && (!caps.arbitration || caps.compatible === false)) || (!caps && ports.canArbitrateWithAI && !(await ports.canArbitrateWithAI().catch(() => false)))) {
         // Version de prompt antérieure (action BO) : aucun appel inutile.
         trace.escalationReasons.push('SEMANTIC:ARBITRATION_PROMPT_UNSUPPORTED');
         semTrace.arbitrationUnavailableReason = 'PROMPT_UNSUPPORTED';
@@ -1339,6 +1411,7 @@ export async function runAssistant(
       comprisParModele = true;
       semTrace.understandCalled = true;
       if (!compris) { comprehensionEchouee = true; trace.escalationReasons.push('ROUTING:UNDERSTANDING_FAILED'); }
+      await noterPromptT2();
       return compris;
     };
     /** Exécute l'étape sémantique ; `null` : la cascade continue (route éventuellement remplacée). */

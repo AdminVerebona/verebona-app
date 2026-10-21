@@ -19,6 +19,7 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { scenario } from '../scenario';
 import { demander, fiche, useTargetState } from '../chain';
 import { setDefaultResponder } from '../replay-gateway';
+import { cand, cible, fh, operationsKit, ref } from '../datasets/operations-v1';
 
 vi.mock('@/lib/asset-quota-guard', () => ({ assetModificationDecision: async () => ({ allowed: true }) }));
 
@@ -170,7 +171,7 @@ scenario('L54E-T2-419', 'Lot 54E — T2 : arbitrage sémantique IA, capacité de
   // rattachements documentaires effectifs, isolation des comptes,
   // confirmation des modifications, réponses IA NON scriptées (R10).
   // ════════════════════════════════════════════════════════════════════════
-  const piece = async (c: Compte, assetId: number, v: { title: string; amount?: number | null; date?: string | null; supplier?: string | null }) => {
+  const piece = async (c: Compte, assetId: number | null, v: { title: string; amount?: number | null; date?: string | null; supplier?: string | null }) => {
     const f = await make.assetFile({ id: c.id, ownerUserId: c.ownerUserId } as never, { assetId, name: `${v.title}.pdf` });
     await sql`UPDATE asset_files SET retained_title = ${v.title}, amount_cents = ${v.amount ?? null}, document_date = ${v.date ?? null},
               supplier = ${v.supplier ?? null}, analysis_state = 'ANALYZED' WHERE id = ${f.id}`;
@@ -349,5 +350,146 @@ scenario('L54E-T2-419', 'Lot 54E — T2 : arbitrage sémantique IA, capacité de
     expect(new Set(decisions).size).toBeGreaterThan(1);
     const [{ n }] = await sql<{ n: number }[]>`SELECT count(*)::int AS n FROM verebona_command_plans WHERE account_id = ${c.id}`;
     expect(n).toBe(0);
+  });
+  // ════════════════════════════════════════════════════════════════════════
+  // LOT 75J — écarts résiduels du #419 (R01, R02, R04, R07, R08) et
+  // cohérence T2 / TCO (couverture incertaine), PostgreSQL 16 réel,
+  // fournisseurs de sources RÉELS, rattachements documentaires effectifs.
+  // ════════════════════════════════════════════════════════════════════════
+  const typer = (fileId: number, code: string) => sql`UPDATE asset_files SET document_type_code = ${code} WHERE id = ${fileId}`;
+
+  it('T2-419-75J-R01-E2E — factures mensuelles rattachées à un contrat sans montant : total demandé = somme serveur ; facture + preuve de paiement : la facture', async () => {
+    const c = await compte();
+    const maison = await bien(c, 'Maison', 'IMMOBILIER');
+    const opId = await contrat(c, maison.id, { label: 'Contrat Internet', provider: 'Sosh', from: '2025-01-01' });
+    for (const [d, m] of [['2026-08-02', 'août'], ['2026-09-02', 'septembre'], ['2026-10-02', 'octobre']]) {
+      const f = await piece(c, maison.id, { title: `Facture Sosh ${m}`, amount: 3999, date: d, supplier: 'Sosh' });
+      await typer(f, 'TELECOM_INVOICE');
+      await rattacher(c, opId, f);
+    }
+    // Preuve de paiement rattachée, même montant : jamais additionnée, jamais substituée.
+    const preuve = await piece(c, maison.id, { title: 'Prélèvement Sosh octobre', amount: 3999, date: '2026-10-05', supplier: 'Sosh' });
+    await typer(preuve, 'SUBSCRIPTION_PAYMENT_PROOF');
+    await rattacher(c, opId, preuve);
+    await useRecordings([MAISON_U(['internet'])]);
+    const total = await demander(c, 'Combien m’a coûté internet au total pour la maison ?');
+    expect(nbsp(total.answer)).toBe('Contrat « Contrat Internet » (Maison) : total documenté 119,97 € sur 3 montants (dernier 39,99 € le 2 octobre 2026).');
+    expect(total.answer).not.toMatch(/159,96|réglé/);
+    await useRecordings([MAISON_U(['internet'])]);
+    const courant = await demander(c, 'Je paye combien pour internet à la maison ?');
+    expect(nbsp(courant.answer)).toBe('« Facture Sosh octobre » (Maison) : 39,99 € (2 octobre 2026).');
+  });
+
+  it('T2-419-75J-R02-E2E — agenda : prochaine facturation (sans type métier) ≠ fin ; fin de contrat (type « contrat ») servie', async () => {
+    const c = await compte();
+    const maison = await bien(c, 'Maison', 'IMMOBILIER');
+    await contrat(c, maison.id, { label: 'Contrat Internet', provider: 'Sosh', from: '2025-01-01' });
+    const f = await make.agendaItem({ id: c.id, ownerUserId: c.ownerUserId } as never, { title: 'Prochaine facturation internet Sosh', startDate: '2027-02-02', assetIds: [maison.id] });
+    await sql`UPDATE agenda_items SET occurrence_nature = 'FORECAST' WHERE id = ${f.id}`;
+    await useRecordings([MAISON_U(['contrat', 'internet'])]);
+    const r = await demander(c, 'Quand se termine mon contrat internet à la maison ?');
+    expect(r.answer).not.toMatch(/2 février 2027/);
+    expect(nbsp(r.answer)).toBe('Contrat « Contrat Internet » (Maison) : aucune date de fin n’est renseignée.');
+    // Fin EXPLICITE (type métier « contrat », nature DEADLINE) : la source le justifie.
+    const c2 = await compte();
+    const m2 = await bien(c2, 'Maison', 'IMMOBILIER');
+    const fin = await make.agendaItem({ id: c2.id, ownerUserId: c2.ownerUserId } as never, { title: 'Fin du contrat internet Sosh', startDate: '2027-03-31', assetIds: [m2.id] });
+    await sql`UPDATE agenda_items SET event_nature = 'DEADLINE', business_type = 'contract' WHERE id = ${fin.id}`;
+    await useRecordings([MAISON_U(['contrat', 'internet'])]);
+    const r2 = await demander(c2, 'Quand se termine mon contrat internet à la maison ?');
+    expect(nbsp(r2.answer)).toMatch(/31 mars 2027/);
+  });
+
+  it('T2-419-75J-R04-E2E — sans bien nommé : pièce du compte sans bien examinée ; deux comptes aux sources similaires : aucune fuite', async () => {
+    const autre = await compte();
+    await bien(autre, 'Maison', 'IMMOBILIER');
+    const fb = await piece(autre, null, { title: 'Facture Spotify', amount: 1799, date: '2026-10-01', supplier: 'Spotify' });
+    const c = await compte();
+    await bien(c, 'Maison', 'IMMOBILIER');
+    await bien(c, 'Polo', 'VEHICULE');
+    await piece(c, null, { title: 'Facture Spotify', amount: 1199, date: '2026-10-01', supplier: 'Spotify' });
+    const replay = await useRecordings([understand({ intent: 'ACCOUNT_FACT_ASSET', requestedTopics: ['spotify'] }, 'Candidats métier exposés par le serveur (arbitrage) : null')]);
+    const r = await demander(c, 'Combien je paye pour Spotify ?');
+    expect(replay.calls).toHaveLength(1);
+    expect(nbsp(r.answer)).toBe('« Facture Spotify » : 11,99 € (1 octobre 2026).');
+    expect(r.answer).not.toMatch(/17,99/);
+    const { readBusinessSource, listBusinessSources } = await import('@/services/verebona-assistant/canonical/business-sources');
+    expect(await readBusinessSource(c.id, `document:${fb}`, { assetIds: [] })).toBeNull();
+    const lus = await listBusinessSources(c.id, { assetIds: [], includeUntargeted: true, need: { terms: ['spotify'], facts: [], need: 'amount' } });
+    expect(lus.sources.map((x) => x.ref)).not.toContain(`document:${fb}`);
+  });
+
+  it('T2-419-75J-R07-E2E — question MIXED non décomptée : la date apportée répond, rien enregistré, aucun plan', async () => {
+    const c = await compte();
+    const cupra = await bien(c, 'Cupra', 'VEHICULE', { vehicleOwnershipStatus: 'LLD' });
+    await useRecordings([understand({
+      intent: 'ACCOUNT_FACT_ASSET', entityHints: [{ type: 'asset', value: 'Cupra' }], requestedTopics: ['fin de location'], requestedFacts: ['leaseEndDate'], interactionMode: 'MIXED',
+      suppliedFacts: [{ targetHint: 'Cupra', fieldKey: 'leaseEndDate', value: '21/05/2027', normalizedValue: '2027-05-21', role: 'context' }],
+    })]);
+    const r = await demander(c, 'Ma location de la Cupra finit le 21/05/2027, à quelle date dois-je rendre la voiture ?');
+    expect(nbsp(r.answer)).toMatch(/21 mai 2027 — valeur indiquée dans votre message, utilisée pour cette réponse seulement : elle n’a pas été enregistrée/);
+    expect(r.commandPlan ?? null).toBeNull();
+    expect((await fiche(sql, cupra.id)).leaseEndDate ?? null).toBeNull();
+    const [{ n }] = await sql<{ n: number }[]>`SELECT count(*)::int AS n FROM verebona_command_plans WHERE account_id = ${c.id}`;
+    expect(n).toBe(0);
+    expect(await trace(r.requestId)).toMatchObject({ interactionMode: 'MIXED', contextFactsUsed: ['leaseEndDate'] });
+  });
+
+  it('T2-419-75J-R08-E2E — une modification valide + une sans valeur : aucun plan enregistré, valeur manquante demandée, rien écrit', async () => {
+    const c = await compte();
+    const polo = await bien(c, 'Polo', 'VEHICULE', { mileage: 80000 });
+    await useRecordings([understand({
+      intent: 'ACCOUNT_FACT_ASSET', entityHints: [{ type: 'asset', value: 'Polo' }], interactionMode: 'UPDATE_PROPOSAL',
+      suppliedFacts: [
+        { targetHint: 'Polo', fieldKey: 'mileage', value: '45 000 km', normalizedValue: '45000', unit: 'km', role: 'update' },
+        { targetHint: 'Polo', fieldKey: 'estimatedValue', value: null, normalizedValue: null, role: 'update' },
+      ],
+    })]);
+    const r = await demander(c, 'Le kilométrage de la Polo est de 45 000 km et mets à jour sa valeur');
+    expect(r.commandPlan ?? null).toBeNull();
+    expect(r.answer).toMatch(/Il me manque la valeur de/);
+    const [{ n }] = await sql<{ n: number }[]>`SELECT count(*)::int AS n FROM verebona_command_plans WHERE account_id = ${c.id}`;
+    expect(n).toBe(0);
+    expect(Number((await fiche(sql, polo.id)).mileage)).toBe(80000);
+    expect(await trace(r.requestId)).toMatchObject({ updateFactsRefused: [{ fieldKey: 'estimatedValue', reason: 'VALUE_MISSING' }] });
+  });
+
+  it('T2-419-75J-T1-E2E — cohérence T2 / TCO : justificatif sans montant → TCO INCOMPLETE et total T2 « peut être incomplet » (même règle)', async () => {
+    const c = await compte();
+    const velo = await make.asset({ id: c.id, ownerUserId: c.ownerUserId } as never, { category: 'OBJET', name: 'Vélo', purchasePriceCents: 30_000, keyCharacteristics: { acquisitionDate: '2026-01-10' } });
+    const ok = await piece(c, velo.id, { title: 'Réparation cadre', amount: 18_000, date: '2026-06-01', supplier: 'Atelier' });
+    await typer(ok, 'REPAIR_INVOICE');
+    const { sumQualifiedExpenses } = await import('@/services/verebona-assistant/canonical/expenses');
+    const avant = await sumQualifiedExpenses(c.id, { assetIds: [velo.id] });
+    expect(avant.qualifiedSumCents).toBe(18_000);
+    expect(avant.coverage).toMatchObject({ uncertain: { count: 0 }, amountUnknown: { count: 0 } });
+    const illisible = await piece(c, velo.id, { title: 'Révision (illisible)', amount: null, date: '2026-07-01', supplier: 'Atelier' });
+    await typer(illisible, 'MAINTENANCE_INVOICE');
+    const { readAssetTco } = await import('@/services/business-operations/tco/service');
+    expect((await readAssetTco(c.id, velo.id, { today: '2026-10-14' })).status).toBe('INCOMPLETE');
+    const apres = await sumQualifiedExpenses(c.id, { assetIds: [velo.id] });
+    expect(apres.qualifiedSumCents).toBe(18_000);
+    expect(apres.complete).toBe(false);
+    expect(apres.coverage?.amountUnknown.fileIds).toEqual([illisible]);
+    const { mixedExpenseNotes } = await import('@/services/verebona-assistant/canonical/expenses');
+    expect(mixedExpenseNotes(apres, { scopeLabel: 'Vélo' }).join(' ')).toMatch(/sans montant lisible \(Révision \(illisible\)\) : montant inconnu, non compté — le total peut être incomplet/);
+  });
+
+  it('T2-419-75J-T2-E2E — cohérence T2 / TCO : acompte du même fournisseur sans lien (rapprochement INCERTAIN) → TCO INCOMPLETE, T2 incomplet et dit', async () => {
+    const k = operationsKit(sql, make as never);
+    const ac = await make.account({ plan: 'premium' });
+    const cargo = await make.asset(ac, { category: 'OBJET', name: 'Cargo', purchasePriceCents: 100_000, keyCharacteristics: { acquisitionDate: '2025-01-01' } });
+    const p = { provider: 'Atelier Cargo', targetHints: [cible(cargo.id)] };
+    await k.document(ac, cargo.id, [cand({ ...p, businessReferences: [ref('ORDER', 'CMD-75J')], financialHints: [fh('REALIZED_COST', 20_000)] })], { type: 'WORKS_INVOICE', title: 'Facture caisse', amountCents: 20_000 });
+    const libre = await k.document(ac, cargo.id, [cand({ ...p, financialHints: [fh('REALIZED_COST', 1_000, { amountScope: 'DEPOSIT' })] })], { type: 'WORKS_INVOICE', title: 'Acompte divers', amountCents: 1_000 });
+    const { readAssetTco } = await import('@/services/business-operations/tco/service');
+    const t = await readAssetTco(ac.id, cargo.id, { today: '2026-10-14' });
+    expect(t.status).toBe('INCOMPLETE');
+    const { sumQualifiedExpenses, mixedExpenseNotes } = await import('@/services/verebona-assistant/canonical/expenses');
+    const q = await sumQualifiedExpenses(ac.id, { assetIds: [cargo.id] });
+    expect(q.qualifiedSumCents).toBe(t.summary.additionalCostsCents);
+    expect(q.complete).toBe(false);
+    expect(q.coverage?.uncertain.fileIds).toEqual([libre]);
+    expect(mixedExpenseNotes(q, { scopeLabel: 'Cargo' }).join(' ')).toMatch(/acompte ou solde.*le total peut être incomplet/);
   });
 });

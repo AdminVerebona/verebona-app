@@ -191,6 +191,8 @@ export async function collectUserData(userId: number): Promise<CollectedData> {
       id: Number(r.id),
       originalFilename: (r.original_filename as string) ?? null,
       filename: (r.filename as string) ?? null,
+      retainedTitle: (r.retained_title as string) ?? null,
+      publicId: r.public_id == null ? null : String(r.public_id),
       mimeType: (r.mime_type as string) ?? null,
       size: r.size == null ? null : Number(r.size),
       s3Key: (r.s3_key as string) ?? null,

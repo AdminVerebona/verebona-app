@@ -38,10 +38,14 @@ interface RecetteResult {
   caseId: string; label: string; ok: boolean; expected: { outcomes: string[]; card?: string | null; kinds?: string[]; never?: string[] };
   obtained: { outcome: string | null; card: string | null; kind: string | null; pertinence: string | null; derivation?: string | null; action?: string | null };
   aiCalled: boolean; aiStatus: string | null; traceId: string | null; reason: string; problems: string[];
+  /** Lot 75I (F) : nature de la sortie IA, justification, avertissements du contrôle serveur. */
+  aiOutput?: 'VALID' | 'AMBIGUOUS' | 'INCOHERENT' | 'ERROR' | null; justification?: string | null; warnings?: string[];
 }
+const SORTIE_IA: Record<string, string> = { VALID: 'valide', AMBIGUOUS: 'ambiguë', INCOHERENT: 'incohérente', ERROR: 'en erreur' };
 interface RecetteRun {
   id: number; status: string; configRef: string | null; total: number; passed: number; failed: number; aiCalls: number;
   results: RecetteResult[]; error: string | null; startedAt: string; finishedAt: string | null;
+  aiOutputs?: Record<string, number>;
 }
 interface Data {
   config: {
@@ -56,6 +60,8 @@ interface Data {
   campaigns: Campaign[]; items: Item[];
   recetteCases: Array<{ id: string; label: string; deterministic: boolean }>;
   recetteRuns: RecetteRun[];
+  /** Lot 75I (D) : décisions en attente d'une configuration T4 compatible (dernière décision par document et règle). */
+  incompatibleDecisions?: number;
 }
 
 const ISSUE_LABEL: Record<string, string> = {
@@ -132,6 +138,8 @@ function RecetteRow({ r }: { r: RecetteResult }) {
             ['Action formulée', r.obtained.action ?? '—'],
             ['Pertinence', r.obtained.pertinence ?? '—'],
             ['IA', r.aiCalled ? `t4_classify_event · ${r.aiStatus ?? '?'}${r.traceId ? ` · trace ${r.traceId}` : ''}` : 'aucun appel (décision du code)'],
+            ['Sortie IA', r.aiOutput ? `${SORTIE_IA[r.aiOutput] ?? r.aiOutput}${r.warnings?.length ? ` · ${r.warnings.join(', ')}` : ''}` : '—'],
+            ['Justification T4', r.justification ?? '—'],
             ['Motif', r.reason],
             ['Écarts', r.problems.length ? r.problems.join(' ; ') : '—'],
           ] as Array<[string, string]>).map(([k, v]) => (
@@ -195,8 +203,11 @@ export function ToProcessRelevancePanel() {
             <span className={data.config.interventionCapable ? 'text-[color:var(--text-success)]' : 'text-[color:var(--text-warning-soft)]'}>
               {data.config.interventionCapable
                 ? 'évaluation structurée de l’intervention active (t4_output_v3)'
-                : 'version active SANS t4_output_v3 : décision prudente (actions non identifiées différées). Activer la version de référence dans Prompts maîtres › T4.'}
+                : 'version active SANS t4_output_v3 : aucune question ni carte par défaut, décisions différées et signalées (contrat incompatible). Activer la version de référence dans Prompts maîtres › T4 : elles seront réévaluées automatiquement.'}
             </span>
+            {!!data.incompatibleDecisions && (
+              <span className="text-[color:var(--text-warning-soft)]"> · {data.incompatibleDecisions} décision(s) en attente d’une configuration T4 compatible.</span>
+            )}
             {data.config.revisionTracked === false && (
               <span className="text-[color:var(--text-warning-soft)]"> · révisions sauvegardées de la version active NON suivies (migration 0516 absente) : seul un changement de version invalide les décisions IA.</span>
             )}
@@ -262,6 +273,7 @@ export function ToProcessRelevancePanel() {
                   </span>
                   <span className="text-[color:var(--text-muted)]">
                     {' · '}{recette.passed}/{recette.total} conformes · {recette.failed} non conformes · {recette.aiCalls} appel(s) IA · {recette.configRef ?? '—'} · {dt(recette.startedAt)}
+                    {recette.aiOutputs ? ` · sorties IA : ${Object.entries(recette.aiOutputs).map(([k, n]) => `${SORTIE_IA[k] ?? k} ${n}`).join(', ')}` : ''}
                   </span>
                 </p>
                 {recette.error && <p className="text-xs text-[color:var(--text-danger)] break-words">{recette.error}</p>}

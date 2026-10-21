@@ -56,7 +56,9 @@ describe('actions en masse : un résultat par objet', () => {
     expect(r.filter((x) => x.status === 'SUCCESS')).toHaveLength(10);
     expect(r.filter((x) => x.status === 'REFUSED')).toHaveLength(1);
     expect(r.filter((x) => x.status === 'FAILED')).toHaveLength(1);
-    expect(summarizeResults(r)).toBe('Plan exécuté : 10 réussie(s), 1 en échec, 1 refusée(s).');
+    // Lot 75J (#419 R08) : l'échec partiel est restitué action par action (ce qui n'a pas été fait).
+    expect(summarizeResults(r)).toMatch(/^Plan exécuté : 10 réussie\(s\), 1 en échec, 1 refusée\(s\)\. — /);
+    expect(summarizeResults(r).match(/ — /g)).toHaveLength(2);
   });
 
   it('résolution : une action par échéance, plafonnée', async () => {

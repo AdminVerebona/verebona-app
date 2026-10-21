@@ -24,11 +24,11 @@ import { EXT_ACTION_LOOKBACK_DAYS, extActionOccurrenceKey, formatDateFr, roleOf 
 import { canonicalJson, sha256 } from './hash';
 import { entriesFingerprint, serializeForHash, sha256 as reportSha256, type ReportEntry } from '@/services/ai/execution-report/model';
 import {
-  DEFAULT_T6_THRESHOLD_DAYS, T6_ASSESSMENT_CONTRACT, T6_ASSESSMENT_REVISION_REMINDER, T6_FINGERPRINT_V2, T6_MAX_ASSESSMENTS_PER_CALL,
-  T6_RELEVANT_FACT_PATTERN, T6_REPEAT_WINDOW_DAYS,
+  DEFAULT_T6_THRESHOLD_DAYS, T6_ASSESSMENT_CONTRACT, T6_ASSESSMENT_MAX_AGE_DAYS, T6_ASSESSMENT_REVISION_REMINDER, T6_FINGERPRINT_V2, T6_FINGERPRINT_V3,
+  T6_MAX_ASSESSMENTS_PER_CALL, T6_RELEVANT_FACT_PATTERN, T6_REPEAT_WINDOW_DAYS,
   addDays, agendaFingerprintParts, agendaOccurrenceKey, agendaSubjectKey, assessmentFromDecision, assessmentHorizonDays, compareShown,
-  daysBetween, decideT6Interpellation, evidenceSnapshotOf, isT6RelevantFact, preferenceAppliesToCycle, sameT6Context, suggestReminderDate,
-  t6FingerprintParts,
+  daysBetween, decideT6Interpellation, evidenceSnapshotOf, exceptionEvidenceGrounded, isT6RelevantFact, preferenceAppliesToCycle, sameT6Context,
+  suggestReminderDate, t6CycleKeySql, t6FingerprintParts, t6ProbativeFingerprintParts,
   type T6Assessment, type T6Candidate, type T6CandidateRef, type T6DecisionResult, type T6EvaluationConfig, type T6EvidenceVersion,
   type T6InterpellationBundle, type T6PersistResult, type T6ReevaluationReason, type T6ReminderPreference, type T6StoredAssessment,
 } from './t6-interpellation';
@@ -51,9 +51,18 @@ export function agendaFingerprint(p: { title: string; date: string | null; forec
   return sha256(agendaFingerprintParts(p)).slice(0, 32);
 }
 
-/** Lot 71G (T6-01) : empreinte ENRICHIE (`v2:`) — données métier et documentaires significatives. */
-export function t6Fingerprint(p: Parameters<typeof t6FingerprintParts>[0]): string {
+/** Lot 71G (T6-01) : empreinte ENRICHIE (`v2:`) — conservée pour relire les décisions et reports antérieurs. */
+export function t6FingerprintV2(p: Parameters<typeof t6FingerprintParts>[0]): string {
   return `${T6_FINGERPRINT_V2}${sha256(t6FingerprintParts(p)).slice(0, 32)}`;
+}
+
+/**
+ * Lot 75E (C) : empreinte du CONTENU PROBANT (`v3:`) — celle du lot 71G plus
+ * l'extrait de chaque fait (représentation stable) et sa provenance. Portée
+ * par toute nouvelle décision et tout nouveau report.
+ */
+export function t6Fingerprint(p: Parameters<typeof t6FingerprintParts>[0]): string {
+  return `${T6_FINGERPRINT_V3}${sha256(t6ProbativeFingerprintParts(p)).slice(0, 32)}`;
 }
 
 // ── Preuves métier et documentaires (lot 71G : T6-01, T6-04) ─────────────────
@@ -149,15 +158,29 @@ export async function loadT6Evidence(accountId: number, ids: readonly number[]):
   return out;
 }
 
-/** Empreinte enrichie d'une échéance à partir de sa ligne et de ses preuves (pure). */
+/** Données de l'empreinte d'une échéance à partir de sa ligne et de ses preuves (pure). */
+function fingerprintInput(i: { title: string; date: string | null; forecast: boolean; requiresQualification: boolean }, e: T6ItemEvidence | undefined) {
+  return {
+    ...i, description: e?.description ?? null, endDate: e?.endDate ?? null,
+    documents: (e?.documents ?? []).map((d) => ({ fileId: d.fileId, title: d.title })),
+    facts: (e?.facts ?? []).map((f) => ({
+      fileId: f.fileId, key: f.canonicalKey ?? f.key, value: f.value, confidence: f.confidence, excerpt: f.excerpt, provenance: f.provenance,
+    })),
+  };
+}
+
+/** Empreinte (contenu probant, `v3:`) d'une échéance à partir de sa ligne et de ses preuves (pure). */
 export function fingerprintWithEvidence(
   i: { title: string; date: string | null; forecast: boolean; requiresQualification: boolean }, e: T6ItemEvidence | undefined,
 ): string {
-  return t6Fingerprint({
-    ...i, description: e?.description ?? null, endDate: e?.endDate ?? null,
-    documents: (e?.documents ?? []).map((d) => ({ fileId: d.fileId, title: d.title })),
-    facts: (e?.facts ?? []).map((f) => ({ fileId: f.fileId, key: f.canonicalKey ?? f.key, value: f.value, confidence: f.confidence })),
-  });
+  return t6Fingerprint(fingerprintInput(i, e));
+}
+
+/** Lot 75E : empreinte du lot 71G (`v2:`) de la même échéance — relecture des décisions antérieures (pure). */
+export function fingerprintV2WithEvidence(
+  i: { title: string; date: string | null; forecast: boolean; requiresQualification: boolean }, e: T6ItemEvidence | undefined,
+): string {
+  return t6FingerprintV2(fingerprintInput(i, e));
 }
 
 /**
@@ -232,7 +255,11 @@ export function evaluationEvidenceOf(subjectId: string, e: T6ItemEvidence | unde
   const facts: T6EvaluationFact[] = faits.map((f, n) => {
     const ref = `${subjectId}.fact${n + 1}`;
     refs.push({ ref, kind: 'DOCUMENT_FACT' });
-    versions.set(ref, { ref, kind: 'DOCUMENT_FACT', fileId: f.fileId, extractionId: f.extractionId, factId: f.id, factKey: f.canonicalKey ?? f.key, provenance: f.provenance });
+    // Lot 75E (C) : statut du fait conservé avec sa version (exception au seuil, reporting).
+    versions.set(ref, {
+      ref, kind: 'DOCUMENT_FACT', fileId: f.fileId, extractionId: f.extractionId, factId: f.id, factKey: f.canonicalKey ?? f.key, provenance: f.provenance,
+      status: STATUT_FAIT[f.confidence ?? ''] ?? 'UNCERTAIN',
+    });
     const texte = (v: string | null, max: number) => (v ? v.replace(/\s+/g, ' ').trim().slice(0, max) || null : null);
     return {
       ref, document: docRef.get(f.fileId) ?? null, label: texte(f.label, 120) ?? f.key.slice(0, 80), value: texte(f.value, 160),
@@ -258,20 +285,51 @@ export async function t6ThresholdDays(): Promise<number> {
 
 // ── Lectures ─────────────────────────────────────────────────────────────────
 
-/** Préférences de rappel de l'utilisateur, rattachées à une échéance du compte (ou à une série). */
-export async function loadUserPreferences(accountId: number, userId: number): Promise<T6ReminderPreference[]> {
+/** Lot 75E (E) : préférences lues au plus par passage ; au-delà, la lecture est INCOMPLÈTE. */
+export const T6_PREFERENCES_READ_LIMIT = 2000;
+
+/**
+ * Lot 75E (E) : lecture des préférences INCOMPLÈTE — un refus ou un report
+ * peut manquer : jamais pris pour une absence de préférence (dégradation
+ * prudente, tracée `preferences_incomplete`).
+ */
+export class T6PreferencesIncompleteError extends Error {
+  readonly source = 'preferences_incomplete';
+  constructor(readonly read: number) { super(`préférences T6 : lecture incomplète (plus de ${read} lignes)`); }
+}
+
+/**
+ * Préférences de rappel de l'utilisateur, rattachées à une échéance du compte (ou à une série).
+ *
+ * Lot 75E (E) : lecture CIBLÉE — avec `scope`, seules les préférences des
+ * candidats effectivement examinés (leur occurrence, leur série) sont lues,
+ * toujours bornées au compte ET à l'utilisateur (Premium Duo : jamais celles
+ * de l'autre membre). Une lecture qui atteint sa borne est INCOMPLÈTE : elle
+ * lève `T6PreferencesIncompleteError` (jamais un résultat tronqué pris pour
+ * exhaustif).
+ */
+export async function loadUserPreferences(
+  accountId: number, userId: number,
+  scope?: { agendaIds: readonly number[]; seriesKeys: readonly string[] } | null,
+  limit: number = T6_PREFERENCES_READ_LIMIT,
+): Promise<T6ReminderPreference[]> {
+  if (scope && scope.agendaIds.length === 0 && scope.seriesKeys.length === 0) return [];
   const r = await rows(
     `SELECT p.scope, p.decision, to_char(p.remind_at, 'YYYY-MM-DD') AS remind_at, p.context_fingerprint,
             p.agenda_item_id, p.series_key, p.updated_at,
-            -- Lot 71G (0507) : lue sans dépendre de la colonne (fenêtre de déploiement).
-            to_jsonb(p) ->> 'occurrence_date' AS occurrence_date
+            -- Lot 71G (0507) / lot 75E (0551) : lues sans dépendre des colonnes (fenêtre de déploiement).
+            to_jsonb(p) ->> 'occurrence_date' AS occurrence_date, to_jsonb(p) ->> 'cycle_key' AS cycle_key
        FROM t6_reminder_preferences p
       WHERE p.account_id = $1 AND p.user_id = $2
         AND (p.agenda_item_id IS NULL
              OR EXISTS (SELECT 1 FROM agenda_items i WHERE i.id = p.agenda_item_id AND i.account_id = p.account_id))
-      LIMIT 2000`,
-    [accountId, userId],
+        ${scope ? `AND ((p.scope = 'OCCURRENCE' AND p.agenda_item_id = ANY($3::int[]))
+                        OR (p.scope = 'SERIES' AND p.series_key = ANY($4::text[])))` : ''}
+      ORDER BY p.id
+      LIMIT ${Math.max(1, Math.trunc(limit)) + 1}`,
+    scope ? [accountId, userId, [...scope.agendaIds], [...scope.seriesKeys]] : [accountId, userId],
   );
+  if (r.length > limit) throw new T6PreferencesIncompleteError(limit);
   return r.map((x) => ({
     scope: x.scope === 'SERIES' ? 'SERIES' : 'OCCURRENCE',
     decision: x.decision === 'DISMISSED' ? 'DISMISSED' : 'SNOOZED',
@@ -281,17 +339,61 @@ export async function loadUserPreferences(accountId: number, userId: number): Pr
     seriesKey: (x.series_key as string | null) ?? null,
     updatedAt: x.updated_at ? new Date(String(x.updated_at)).toISOString() : null,
     occurrenceDate: typeof x.occurrence_date === 'string' ? x.occurrence_date.slice(0, 10) : null,
+    cycleKey: typeof x.cycle_key === 'string' && x.cycle_key ? x.cycle_key : null,
   }));
 }
 
 /**
- * Préférences applicables à une échéance : son occurrence, et sa série.
- * Lot 71G (T6-07) : une préférence d'occurrence posée sur un cycle
- * précédent (identifiant réutilisé par T4 pour le renouvellement) ne
- * s'applique pas au nouveau cycle ; une replanification la conserve.
+ * Lot 75E (D) — cycle COURANT de chaque échéance du compte (`t6CycleKey`) :
+ * occurrence T4 et nombre de réalisations tracées. Lève en cas d'échec
+ * (l'appelant applique alors les préférences : prudence).
  */
-export function preferencesFor(prefs: readonly T6ReminderPreference[], agendaItemId: number, seriesKey: string | null, dueDate: string | null = null): T6ReminderPreference[] {
-  return prefs.filter((p) => (p.scope === 'OCCURRENCE' && p.agendaItemId === agendaItemId && preferenceAppliesToCycle(p, dueDate))
+export async function loadCycleKeys(accountId: number, ids: readonly number[]): Promise<Map<number, string>> {
+  if (ids.length === 0) return new Map();
+  const r = await rows(
+    `SELECT i.id, ${t6CycleKeySql('i')} AS cycle_key FROM agenda_items i WHERE i.account_id = $1 AND i.id = ANY($2::int[])`,
+    [accountId, [...ids]],
+  );
+  return new Map(r.map((x) => [Number(x.id), String(x.cycle_key)]));
+}
+
+/** Lot 75E (B) : examen achevé d'une échéance de la lecture complémentaire (curseur persistant). */
+export interface T6ExaminationMark { agendaItemId: number; selectionSignature: string; fingerprint: string | null; recheckOn: string | null }
+
+/**
+ * Lot 75E (B) — enregistre les examens ACHEVÉS (pré-génération du compte) :
+ * l'échéance quitte la file d'examen jusqu'à un changement de ses données
+ * (signature) ou sa date de réexamen. Idempotent (une ligne par échéance,
+ * la dernière l'emporte), borné au compte. Table absente (0551 non
+ * appliquée) : sans effet. Rend le nombre d'examens enregistrés.
+ */
+export async function recordT6Examinations(accountId: number, marks: readonly T6ExaminationMark[]): Promise<number> {
+  if (marks.length === 0) return 0;
+  const { t6ExaminationsReady } = await import('./collector');
+  if (!(await t6ExaminationsReady())) return 0;
+  const r = await rows(
+    `INSERT INTO t6_candidate_examinations (account_id, agenda_item_id, examined_at, selection_signature, context_fingerprint, recheck_on)
+     SELECT $1, i.id, now(), m.sig, m.fp, m.recheck::date
+       FROM unnest($2::int[], $3::text[], $4::text[], $5::text[]) AS m(id, sig, fp, recheck)
+       JOIN agenda_items i ON i.id = m.id AND i.account_id = $1
+     ON CONFLICT (agenda_item_id) DO UPDATE SET
+       account_id = EXCLUDED.account_id, examined_at = EXCLUDED.examined_at, selection_signature = EXCLUDED.selection_signature,
+       context_fingerprint = EXCLUDED.context_fingerprint, recheck_on = EXCLUDED.recheck_on
+     RETURNING agenda_item_id`,
+    [accountId, marks.map((m) => m.agendaItemId), marks.map((m) => m.selectionSignature), marks.map((m) => m.fingerprint), marks.map((m) => m.recheckOn)],
+  );
+  return r.length;
+}
+
+/**
+ * Préférences applicables à une échéance : son occurrence, et sa série.
+ * Lot 75E (D) : une préférence d'occurrence s'applique tant que le CYCLE
+ * persistant de l'occurrence est le même (`preferenceAppliesToCycle`) —
+ * replanification comprise, quel que soit l'écart de dates ; jamais au cycle
+ * suivant. Cycle inconnu : appliquée (prudence).
+ */
+export function preferencesFor(prefs: readonly T6ReminderPreference[], agendaItemId: number, seriesKey: string | null, cycleKey: string | null = null): T6ReminderPreference[] {
+  return prefs.filter((p) => (p.scope === 'OCCURRENCE' && p.agendaItemId === agendaItemId && preferenceAppliesToCycle(p, cycleKey))
     || (p.scope === 'SERIES' && seriesKey != null && p.seriesKey === seriesKey));
 }
 
@@ -432,7 +534,9 @@ export async function persistT6AssessmentsDetailed(
   const ecrire = async (q: (sql: string, params: unknown[]) => Promise<Row[]>): Promise<string[]> => {
     const ok: string[] = [];
     for (const { d, c } of lignes) {
-      const a = assessmentFromDecision(d);
+      // Lot 75E (C) : statut des faits transmis — l'intitulé d'un document ou un
+      // fait incertain ne fondent jamais une exception au seuil.
+      const a = assessmentFromDecision(d, c.evidenceVersions);
       // Paramètres facultatifs après les 23 du contrat : preuves (0507), signature (0510), révision (0474).
       const extra: unknown[] = [];
       const cols: string[] = [];
@@ -626,6 +730,14 @@ export interface T6Preparation {
    */
   pendingAssessments: number;
   /**
+   * Lot 75E (B) : examens achevés enregistrés par ce passage (curseur
+   * persistant de la lecture complémentaire, pré-génération du compte) et
+   * file d'examen plus longue que la lecture (`backlog`) — la reprise
+   * continue tant qu'un passage progresse.
+   */
+  examined?: number;
+  selectionBacklog?: boolean;
+  /**
    * Lot 61 — état de l'évaluation pour la présentation : `PENDING`, une
    * échéance proche (dans le seuil) attend son évaluation ; `UNAVAILABLE`,
    * une échéance proche n'a pas pu être évaluée (T6 coupé, version BO sans
@@ -674,15 +786,24 @@ export interface PrepareDeps {
 
 /** Lot 71G : sources lues par la préparation, chacune isolément. */
 export interface T6Loaders {
-  preferences: (accountId: number, userId: number) => Promise<T6ReminderPreference[]>;
+  /** Lot 75E (E) : lecture ciblée sur les candidats examinés (occurrences, séries). */
+  preferences: (accountId: number, userId: number, scope: { agendaIds: readonly number[]; seriesKeys: readonly string[] }) => Promise<T6ReminderPreference[]>;
   assessments: (accountId: number, agendaIds: number[]) => Promise<Map<number, T6StoredAssessment>>;
   evidence: (accountId: number, agendaIds: number[]) => Promise<Map<number, T6ItemEvidence>>;
   dueReminders: (accountId: number, today: string) => Promise<Map<number, string>>;
+  /** Lot 75E (D) : cycle persistant courant des candidats. */
+  cycles: (accountId: number, agendaIds: number[]) => Promise<Map<number, string>>;
+  /** Lot 75E (B) : examens achevés (curseur persistant). */
+  examinations: (accountId: number, marks: readonly T6ExaminationMark[]) => Promise<number>;
 }
 
 const DEFAULT_LOADERS: T6Loaders = {
-  preferences: loadUserPreferences, assessments: loadAssessments, evidence: loadT6Evidence, dueReminders: loadDueReminders,
+  preferences: (a, u, scope) => loadUserPreferences(a, u, scope), assessments: loadAssessments, evidence: loadT6Evidence,
+  dueReminders: loadDueReminders, cycles: loadCycleKeys, examinations: recordT6Examinations,
 };
+
+/** Motifs d'une réévaluation liée au seul vieillissement d'une décision (aucune donnée changée). */
+const REEVALUATION_PAR_AGE = new Set<T6ReevaluationReason>(['AGED', 'REVIEW_DATE', 'LEGACY_FINGERPRINT', 'REMINDER_RENEWAL']);
 
 /** Rang de priorité d'un candidat à évaluer (pure, T6-03) : report échu, proche, documenté, autre. */
 function rangEvaluation(d: T6DecisionTrace, thresholdDays: number, documente: boolean): number {
@@ -712,19 +833,27 @@ export async function prepareT6Interpellation(
       return { ok: true, v: await f() };
     } catch (e) {
       console.error(`[mascotte] décision T6 : source « ${nom} » indisponible —`, (e as Error).message);
-      echecs.push(nom);
+      // Lot 75E (E) : lecture incomplète distinguée d'une panne (reporting).
+      echecs.push((e as { source?: unknown }).source === 'preferences_incomplete' ? 'preferences_incomplete' : nom);
       return { ok: false, v: defaut };
     }
   };
-  const [thresholdDays, aiCapableBrut, reminderCapable, prefsR, evalsR, preuvesR, echusR] = await Promise.all([
+  // Lot 75E (E) : préférences des candidats EFFECTIVEMENT examinés (occurrences et séries).
+  const portee = {
+    agendaIds: ids,
+    seriesKeys: [...new Set(candidats.map((c) => c.candidate.seriesKey).filter((k): k is string => !!k))],
+  };
+  const [thresholdDays, aiCapableBrut, reminderCapable, prefsR, evalsR, preuvesR, echusR, cyclesR] = await Promise.all([
     deps.thresholdDays().catch(() => DEFAULT_T6_THRESHOLD_DAYS),
     deps.aiCapable().catch(() => false),
     deps.reminderCapable ? deps.reminderCapable().catch(() => false) : Promise.resolve(false),
-    p.userId != null ? lire('preferences', () => L.preferences(p.accountId, p.userId!), [] as T6ReminderPreference[]) : Promise.resolve({ ok: true, v: [] as T6ReminderPreference[] }),
+    p.userId != null ? lire('preferences', () => L.preferences(p.accountId, p.userId!, portee), [] as T6ReminderPreference[]) : Promise.resolve({ ok: true, v: [] as T6ReminderPreference[] }),
     lire('assessments', () => L.assessments(p.accountId, ids), new Map<number, T6StoredAssessment>()),
     lire('evidence', () => L.evidence(p.accountId, ids), new Map<number, T6ItemEvidence>()),
     // Pré-génération du compte : reports arrivés à date (tous utilisateurs), réévalués sans visite.
     p.userId == null ? lire('dueReminders', () => L.dueReminders(p.accountId, today), new Map<number, string>()) : Promise.resolve({ ok: true, v: new Map<number, string>() }),
+    // Lot 75E (D) : cycle persistant (préférences d'occurrence) ; illisible : préférences appliquées.
+    p.userId != null ? lire('cycles', () => L.cycles(p.accountId, ids), new Map<number, string>()) : Promise.resolve({ ok: true, v: new Map<number, string>() }),
   ]);
   const prefs = prefsR.v;
   const evaluations = evalsR.v;
@@ -740,9 +869,13 @@ export async function prepareT6Interpellation(
   const aiCapable = aiCapableBrut && evalsR.ok;
   // Empreinte enrichie (T6-01) ; preuves illisibles : empreinte inconnue, aucune réévaluation.
   for (const { candidate: c, row: i } of candidats) {
+    c.cycleKey = cyclesR.ok ? cyclesR.v.get(c.agendaItemId) ?? null : null;
     if (!preuvesR.ok) { c.fingerprintUnavailable = true; continue; }
     const e = preuvesR.v.get(c.agendaItemId);
-    c.fingerprint = fingerprintWithEvidence({ title: i.title, date: i.date, forecast: i.forecast, requiresQualification: i.requiresQualification }, e);
+    const ligne = { title: i.title, date: i.date, forecast: i.forecast, requiresQualification: i.requiresQualification };
+    // Lot 75E (C) : contenu probant (`v3:`) ; `v2:` pour relire les décisions et reports antérieurs.
+    c.fingerprint = fingerprintWithEvidence(ligne, e);
+    c.v2Fingerprint = fingerprintV2WithEvidence(ligne, e);
     c.hasDocumentaryEvidence = (e?.facts.length ?? 0) > 0 || (e?.documents.length ?? 0) > 0;
     c.hasEvidence = c.hasDocumentaryEvidence || !!(e?.description ?? '').trim();
   }
@@ -756,15 +889,28 @@ export async function prepareT6Interpellation(
     historique = await loadDisplayHistory(p.accountId, p.userId, depuis, today).catch(() => { echecs.push('history'); return new Map(); });
   }
 
-  const decisions: T6DecisionTrace[] = candidats.map(({ candidate: c }) => {
+  const decisions: T6DecisionTrace[] = candidats.map(({ candidate: c, row }) => {
     const assessment = evaluations.get(c.agendaItemId) ?? null;
     const displayedDays = historique.get(c.agendaItemId) ?? 0;
-    const d = decideT6Interpellation({
+    // Lot 75E (C) : l'exception au seuil n'est retenue que si une preuve
+    // concrète citée est RÉELLEMENT disponible (preuves lisibles seulement).
+    const ev = preuvesR.ok ? preuvesR.v.get(c.agendaItemId) : undefined;
+    const exceptionGrounded = assessment && preuvesR.ok
+      ? exceptionEvidenceGrounded(assessment, { description: ev?.description ?? null, facts: ev?.facts ?? [] })
+      : undefined;
+    const d0 = decideT6Interpellation({
       candidate: c, today, thresholdDays, aiCapable, assessment,
-      preferences: preferencesFor(prefs, c.agendaItemId, c.seriesKey, c.dueDate),
+      preferences: preferencesFor(prefs, c.agendaItemId, c.seriesKey, c.cycleKey ?? null),
       history: { displayedDays }, reminderCapable, preferencesUnavailable: !prefsR.ok, evaluationConfig,
       toProcessUnavailable: atpInconnu || (regleesInconnues && !!c.dueDate && c.dueDate <= today),
+      exceptionGrounded,
     });
+    // Lot 75E (A) : échéance dépassée de longue date déjà ÉCARTÉE, données
+    // inchangées — jamais réévaluée pour le seul vieillissement de la décision
+    // (aucun appel répété) ; un changement de ses données la réévalue.
+    const d = row.t6LongOverdue && assessment?.decision === 'SUPPRESS' && d0.needsAssessment && d0.reevaluationReason && REEVALUATION_PAR_AGE.has(d0.reevaluationReason)
+      ? { ...d0, needsAssessment: false, reevaluationReason: null }
+      : d0;
     // Lot 71G (T6-05) : report arrivé à sa date (un utilisateur du compte),
     // sans réévaluation depuis — la pré-génération le réévalue maintenant.
     const echu = echusR.v.get(c.agendaItemId);
@@ -869,12 +1015,45 @@ export async function prepareT6Interpellation(
     }
   }
 
+  // Lot 75E (B) — curseur d'examen PERSISTANT de la lecture complémentaire :
+  // pré-génération du compte seulement (décisions sans préférence
+  // personnelle), sources lues, IA disponible. Une échéance DUE dont
+  // l'examen est achevé (décision utilisable, rien à demander à l'IA, ou
+  // hors horizon d'évaluation) laisse sa place ; une échéance à évaluer
+  // (plafond de 8, évaluation en cours ou en échec) reste en tête de file.
+  let examined = 0;
+  if (p.userId == null && aiCapable && preuvesR.ok && !atpInconnu) {
+    const horizonJours = assessmentHorizonDays(thresholdDays);
+    const demain = addDays(today, 1);
+    const enAttente = new Set(bundle ? [...bundle.refs.values()].map((x) => x.agendaItemId) : []);
+    const marks: T6ExaminationMark[] = [];
+    for (const d of decisions) {
+      const { candidate: c, row } = parId.get(d.agendaItemId)!;
+      if (!row.t6Due || !row.t6SelectionSignature || enAttente.has(d.agendaItemId)) continue;
+      if (T6_PROVISIONAL_CODES.has(d.code) && !d.needsAssessment) continue;
+      const horsHorizon = d.needsAssessment && !!d.dueDate && d.dueDate > addDays(today, horizonJours) && !c.hasDocumentaryEvidence;
+      if (d.needsAssessment && !horsHorizon) continue; // à évaluer : reste dans la file
+      const a = d.assessment;
+      const recheck = horsHorizon
+        ? addDays(d.dueDate!, -horizonJours)
+        // Dépassée de longue date et écartée : réexaminée seulement si ses données changent.
+        : row.t6LongOverdue && a?.decision === 'SUPPRESS' ? null
+          : [d.nextReevaluationAt, a?.reevaluateOn ?? null, a ? addDays(a.assessedOn, T6_ASSESSMENT_MAX_AGE_DAYS + 1) : addDays(today, T6_ASSESSMENT_MAX_AGE_DAYS)]
+            .filter((x): x is string => !!x && x > today).sort()[0] ?? addDays(today, T6_ASSESSMENT_MAX_AGE_DAYS);
+      marks.push({ agendaItemId: d.agendaItemId, selectionSignature: row.t6SelectionSignature, fingerprint: c.fingerprintUnavailable ? null : c.fingerprint, recheckOn: recheck && recheck < demain ? demain : recheck });
+    }
+    examined = await L.examinations(p.accountId, marks).catch((e) => {
+      console.error('[mascotte] décision T6 : examens non enregistrés —', (e as Error).message);
+      return 0;
+    });
+  }
+
   const degraded = echecs.length > 0;
   // Évaluations illisibles (T6-06) : dégradation explicite — jamais « rien à signaler ».
   const evaluation = evaluationStateOf(decisions, { degraded: degraded && !evalsR.ok, recentFailure: aiCapable && (deps.recentEvaluationFailure?.(p.accountId) ?? false) });
   return {
     thresholdDays, aiCapable, shown, decisions, notInterpellated, userSilenced, discarded, bundle, degraded, evaluation,
-    failedSources: echecs, pendingAssessments,
+    failedSources: echecs, pendingAssessments, examined, selectionBacklog: p.raw.t6AgendaBacklog === true,
   };
 }
 
@@ -942,11 +1121,12 @@ export function t6ReportEntries(decisions: readonly T6DecisionTrace[], threshold
         reevaluationReason: d.needsAssessment ? d.reevaluationReason : null,
         contextFingerprint: d.fingerprint ? d.fingerprint.slice(0, 16) : null,
         evidence: a?.evidenceSnapshot?.refs ? {
-          refs: a.evidenceSnapshot.refs.map((x) => ({ ref: x.ref, kind: x.kind, fileId: x.fileId ?? null, extractionId: x.extractionId ?? null, factId: x.factId ?? null })),
+          refs: a.evidenceSnapshot.refs.map((x) => ({ ref: x.ref, kind: x.kind, fileId: x.fileId ?? null, extractionId: x.extractionId ?? null, factId: x.factId ?? null, status: x.status ?? null })),
           assessedWithFingerprint: (a.evidenceSnapshot.fingerprint ?? a.fingerprint).slice(0, 16),
           reevaluationReason: a.reevaluationReason ?? null,
         } : null,
         failure: d.code === 'PREFERENCES_UNAVAILABLE' ? 'preferences' : d.code === 'EVALUATION_UNAVAILABLE' ? 'evaluation'
+          : d.code === 'THRESHOLD_EXCEPTION_UNPROVEN' ? 'exception_evidence'
           : d.code === 'TO_PROCESS_UNAVAILABLE' ? 'toProcess' : null,
       },
       recordStatus: d.decision,
@@ -1049,13 +1229,22 @@ export async function writeT6InterpellationReport(p: {
         provisional: p.prep.decisions.filter((d) => T6_PROVISIONAL_CODES.has(d.code)).length,
         finalDecisions: p.prep.decisions.filter((d) => !T6_PROVISIONAL_CODES.has(d.code)).length,
         pendingAssessments: p.prep.pendingAssessments ?? 0,
+        // Lot 75E (B, C) : examens achevés (curseur), file plus longue que la lecture, exceptions au seuil sans preuve.
+        examined: p.prep.examined ?? 0, selectionBacklog: p.prep.selectionBacklog ? 1 : 0,
+        thresholdExceptionsUnproven: p.prep.decisions.filter((d) => d.code === 'THRESHOLD_EXCEPTION_UNPROVEN').length,
       },
       steps: [
         { step: 'candidates', status: 'OK', detail: { count: p.prep.decisions.length } },
         { step: 'decision', status: p.prep.degraded ? 'FAILED' : 'OK',
           // Lot 71G (T6-06) : source défaillante tracée précisément.
           error: p.prep.degraded ? `lectures indisponibles (${(p.prep.failedSources ?? []).join(', ') || 'inconnue'}) : décision prudente` : null,
-          detail: { thresholdDays: p.prep.thresholdDays, aiCapable: p.prep.aiCapable, evaluation: p.prep.evaluation, failedSources: p.prep.failedSources ?? [], pendingAssessments: p.prep.pendingAssessments ?? 0 } },
+          detail: {
+            thresholdDays: p.prep.thresholdDays, aiCapable: p.prep.aiCapable, evaluation: p.prep.evaluation, failedSources: p.prep.failedSources ?? [],
+            pendingAssessments: p.prep.pendingAssessments ?? 0,
+            // Lot 75E (E) : préférences illisibles ou lues incomplètement — aucun sujet réintroduit.
+            preferencesUnverified: (p.prep.failedSources ?? []).some((x) => x === 'preferences' || x === 'preferences_incomplete'),
+            examined: p.prep.examined ?? 0, selectionBacklog: p.prep.selectionBacklog === true,
+          } },
         { step: 'assessment_request', status: p.prep.bundle ? 'OK' : 'SKIPPED', detail: { mode: 'EVALUATE', candidates: p.prep.bundle?.refs.size ?? 0 } },
         { step: 'formulate', status: p.formulate ? 'OK' : 'SKIPPED', detail: p.formulate ? {
           mode: 'FORMULATE', promptVersion: p.formulate.promptVersion, contract: p.formulate.contract, source: p.formulate.source, status: p.formulate.status,

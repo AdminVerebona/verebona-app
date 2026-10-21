@@ -284,11 +284,17 @@ describe('TCO — recette obligatoire (§7)', () => {
 // ═══ Compléments : hiérarchie des sources, transitions, données incomplètes ═
 
 describe('TCO — compléments (hiérarchie, transitions, cas incomplets)', () => {
-  it('TCO-18 — prix de la fiche + facture d’achat du vélo (preuve ou même montant) → jamais additionnés', () => {
+  it('TCO-18 — prix de la fiche + facture d’achat du vélo (preuve, ou montant ET date concordants) → jamais additionnés', () => {
+    // Lot 75D (A) : le montant SEUL ne suffit plus — même montant et même date que l'achat de la fiche : même fait.
     const achat = facture(1801, 30_000);
-    const t = computeTco(entree({ assetPrice: prix300, documents: [achat] }));
+    const t = computeTco(entree({ assetPrice: prix300, assetAcquisitionDate: '2026-06-01', documents: [achat] }));
     expect(t.summary.cumulativeCostCents).toBe(30_000);
     expect(ligne(t, 1801)[0]).toMatchObject({ status: 'DUPLICATE', reason: 'SAME_AS_ASSET_PRICE', category: 'ACQUISITION' });
+    // Même montant, date d'achat inconnue : identité incertaine → comptée, signalée, total non exhaustif (75D, TCO-R-A2).
+    const incertain = computeTco(entree({ assetPrice: prix300, documents: [achat] }));
+    expect(incertain.summary.cumulativeCostCents).toBe(60_000);
+    expect(ligne(incertain, 1801)[0]).toMatchObject({ status: 'RETAINED_DIRECT', uncertain: true });
+    expect(incertain.status).toBe('INCOMPLETE');
     // Preuve active du prix (T1 a extrait le prix de cette facture), montants différents (TTC / remise) : même fait.
     const t2 = computeTco(entree({ assetPrice: { ...prix300, origin: 'DOCUMENT_EXTRACTION', evidenceFileIds: [1802] }, documents: [facture(1802, 31_000)] }));
     expect(t2.summary.cumulativeCostCents).toBe(30_000);

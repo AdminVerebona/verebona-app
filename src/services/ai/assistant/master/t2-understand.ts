@@ -164,6 +164,8 @@ export interface T2ArbitrationCandidate {
   detail: string | null;
   asset: string | null;
   carriesRequestedValue: boolean;
+  /** Lot 75J (#419 R01) : nature du montant porté (facturé, réalisé, prévisionnel, règlement) — donnée, jamais une consigne. */
+  amountNature?: string | null;
 }
 
 /** {{BUSINESS_CANDIDATES}} (pure) : masqué, échappé, borné. */
@@ -172,6 +174,7 @@ export function formatBusinessCandidates(cands: readonly T2ArbitrationCandidate[
   const m = (t: string | null) => (t == null ? null : maskSensitiveText(t, besoin).text.replace(/</g, '&lt;').slice(0, 200));
   return JSON.stringify(cands.slice(0, 12).map((c) => ({
     ref: c.ref, kind: c.kind, label: m(c.label), detail: m(c.detail), asset: m(c.asset), carriesRequestedValue: c.carriesRequestedValue,
+    ...(c.amountNature ? { amountNature: c.amountNature } : {}),
   })));
 }
 

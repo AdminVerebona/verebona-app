@@ -28,7 +28,8 @@ import {
 import { agendaFunctionalColumnsReady } from './agenda-columns';
 import { parseSeriesRecurrence } from './agenda-status-sync';
 import {
-  planSourceSync, resolveEventSemantics, keyTarget, type SourceSyncPlan, type SourceItem, type SyncStep, type AgendaEventNature,
+  planSourceSync, resolveEventSemantics, keyTarget, agendaUntouchedSql, isUserTouched,
+  type SourceSyncPlan, type SourceItem, type SyncStep, type AgendaEventNature,
 } from './agenda-functional-key';
 
 /** Sémantique T4 recopiée du candidat (A) : nature et type métier. */
@@ -114,7 +115,30 @@ export interface PersistAgendaSummary {
   removed: number[];
   /** Lot 71E (§C) — classifications corrigées sur des doublons exacts. */
   corrected: number;
+  /**
+   * Lot 75F (§D) — sort RÉEL du retrait de la source (une liste vide n'est
+   * jamais une synchronisation réussie par défaut) :
+   *  · REMOVED — au moins un élément retiré ;
+   *  · NOTHING_TO_REMOVE — aucun retrait nécessaire (ou pas de synchronisation) ;
+   *  · BLOCKED — retrait volontairement suspendu (`blockedBy`) ;
+   *  · DRY_RUN — analyse incomplète : retraits simulés seulement ;
+   *  · FAILED — retrait techniquement impossible ou en échec (`removalFailure`).
+   */
+  removalOutcome: RemovalOutcome;
+  /** Motif technique précis d'un retrait FAILED (exposé au BO par la file). */
+  removalFailure: { code: RemovalFailureCode; message: string } | null;
+  /** Motifs d'un retrait global suspendu : WRITE_FAILURE, T4_UNDETERMINED, TEMPORAL_AMBIGUITY. */
+  blockedBy: string[];
+  /** Éléments que le retrait global aurait retirés et qui sont conservés (suspension). */
+  preserved: number[];
+  /** Lot 75F (§C) — candidats à date non tranchée (TEMPORAL_AMBIGUITY). */
+  temporalAmbiguities: number;
+  /** Lot 75F (§B) — rapprochements ambigus (aucun élément choisi arbitrairement). */
+  ambiguousMatches: number;
 }
+
+export type RemovalOutcome = 'REMOVED' | 'NOTHING_TO_REMOVE' | 'BLOCKED' | 'DRY_RUN' | 'FAILED';
+export type RemovalFailureCode = 'REMOVAL_FAILED' | 'TRACE_UNAVAILABLE' | 'PREREQUISITE_MISSING' | 'OTHER_SOURCES_CHECK_FAILED' | 'SYNC_PLAN_FAILED';
 
 /** Issue T4 d'une décision non créatrice (lot 71E, §A). */
 export function t4OutcomeOf(d: Pick<AgendaDecision, 'action' | 'reasonCode'>): 'reject' | 'abstain' | 'technical_failure' | null {
@@ -144,6 +168,7 @@ export async function loadExistingAgendaItems(
       manualStatus: agendaItems.manualStatus,
       isAutomatic: agendaItems.isAutomatic,
       isAutomaticModified: agendaItems.isAutomaticModified,
+      confirmationMode: agendaItems.confirmationMode,
       originFieldKey: agendaItems.originFieldKey,
       occurrenceNature: agendaItems.occurrenceNature,
       seriesKey: agendaItems.seriesKey,
@@ -170,10 +195,15 @@ export async function loadExistingAgendaItems(
       date: r.startDate,
       category: (r.homeCategory as HomeCategory | null) ?? null,
       status: r.manualStatus,
-      // Est « manuel » tout événement créé par un utilisateur, mais AUSSI tout
-      // événement automatique qu'un utilisateur a modifié depuis : dans les deux
-      // cas, un geste humain doit être protégé (CDC §4.4.4).
-      manual: !r.isAutomatic || r.isAutomaticModified,
+      // Est « manuel » (protégé) tout événement créé par un utilisateur, tout
+      // événement automatique qu'il a modifié, dont il a renseigné le statut
+      // (réalisé, annulé) ou dont il a confirmé la prévision (CDC §4.4.4,
+      // lot 75F §A) — règle unique `isUserTouched` : moteur, déduplication,
+      // récurrences et persistance.
+      manual: isUserTouched({
+        isAutomatic: r.isAutomatic, isAutomaticModified: r.isAutomaticModified,
+        manualStatus: r.manualStatus, confirmationMode: r.confirmationMode,
+      }),
       originFieldKey: r.originFieldKey,
       nature: (r.occurrenceNature as 'FORECAST' | 'CONFIRMED' | null) ?? 'CONFIRMED',
       seriesKey: r.seriesKey,
@@ -200,6 +230,8 @@ export async function persistAgendaDecisions(
   const bilan: PersistAgendaSummary = {
     writeFailures: 0, undetermined: decisions.filter((d) => { const o = t4OutcomeOf(d); return o === 'abstain' || o === 'technical_failure'; }).length,
     removal: 'NONE', removed: [], corrected: 0,
+    removalOutcome: 'NOTHING_TO_REMOVE', removalFailure: null, blockedBy: [], preserved: [],
+    temporalAmbiguities: decisions.filter((d) => d.reasonCode === 'TEMPORAL_AMBIGUITY').length, ambiguousMatches: 0,
   };
   // ══════════════════════════════════════════════════════════════════════
   // SYNCHRONISATION DE LA SOURCE (CDC 15 T4-08) — toujours active depuis le
@@ -208,7 +240,9 @@ export async function persistAgendaDecisions(
   // jamais touché, et les éléments automatiques de la source que plus rien
   // ne produit sont retirés (analyse complète seulement).
   // ══════════════════════════════════════════════════════════════════════
-  const actif = await planForSource(decisions, accountId, assetId, opts.sourceFileId);
+  const planifie = await planForSource(decisions, accountId, assetId, opts.sourceFileId, opts.analysisComplete === true);
+  const actif = planifie.plan;
+  if (actif) bilan.ambiguousMatches = actif.ambiguous.length;
   // T4-10 (lot 14) : une classification à faire confirmer (`unknown` rendu
   // prudent, confiance insuffisante) est écrite dans `requires_qualification`.
   const qualification = decisions.some((d) => d.classification?.requiresQualification);
@@ -310,17 +344,39 @@ export async function persistAgendaDecisions(
   // encore justifié par une autre source (`removeAgendaItemsFromSource`), et
   // seulement sur analyse complète.
   // ══════════════════════════════════════════════════════════════════════
+  // Lot 75F (§D) : plan de synchronisation impossible (prérequis, SQL) alors
+  // qu'une synchronisation était attendue — échec technique, jamais « réussi ».
+  if (planifie.failure) {
+    bilan.removalOutcome = 'FAILED';
+    bilan.removalFailure = planifie.failure;
+  }
   if (actif) {
-    const cibles = bilan.writeFailures > 0 ? [] : bilan.undetermined > 0 ? actif.targetedRemove : null;
+    // Lot 75F (§C) : une date non tranchée est une décision INCOMPLÈTE pour
+    // la synchronisation destructive — même effet qu'une indécision T4.
+    const temporel = Math.max(actif.temporalAmbiguities, bilan.temporalAmbiguities);
+    bilan.temporalAmbiguities = temporel;
+    const restreint = bilan.undetermined > 0 || temporel > 0;
+    if (bilan.writeFailures > 0) bilan.blockedBy.push('WRITE_FAILURE');
+    if (bilan.undetermined > 0) bilan.blockedBy.push('T4_UNDETERMINED');
+    if (temporel > 0) bilan.blockedBy.push('TEMPORAL_AMBIGUITY');
+    const cibles = bilan.writeFailures > 0 ? [] : restreint ? actif.targetedRemove : null;
     const aRetirer = cibles ?? actif.remove;
-    bilan.removal = bilan.writeFailures > 0 ? 'BLOCKED_WRITE_FAILURE' : bilan.undetermined > 0 ? 'TARGETED_ONLY' : 'GLOBAL';
+    bilan.removal = bilan.writeFailures > 0 ? 'BLOCKED_WRITE_FAILURE' : restreint ? 'TARGETED_ONLY' : 'GLOBAL';
+    bilan.preserved = actif.remove.filter((id) => !aRetirer.includes(id));
     if (cibles !== null && (actif.remove.length || actif.targetedRemove.length)) {
       console.info(JSON.stringify({
         event: 't4.source_sync_removal_restricted', accountId, assetId, sourceFileId: actif.sourceFileId,
-        reason: bilan.removal, undetermined: bilan.undetermined, writeFailures: bilan.writeFailures,
-        preserved: actif.remove.filter((id) => !aRetirer.includes(id)), targeted: aRetirer,
+        reason: bilan.removal, blockedBy: bilan.blockedBy, undetermined: bilan.undetermined, temporalAmbiguities: temporel,
+        writeFailures: bilan.writeFailures, preserved: bilan.preserved, targeted: aRetirer,
       }));
     }
+    if (actif.ambiguous.length) {
+      console.warn(JSON.stringify({
+        event: 't4.source_sync_ambiguous_match', accountId, assetId, sourceFileId: actif.sourceFileId, ambiguous: actif.ambiguous,
+      }));
+    }
+    const suspendu = bilan.blockedBy.length > 0 ? 'BLOCKED' : 'NOTHING_TO_REMOVE';
+    bilan.removalOutcome = suspendu;
     if (aRetirer.length) {
       try {
         const r = await removeAgendaItemsFromSource({
@@ -329,7 +385,15 @@ export async function persistAgendaDecisions(
           analysisComplete: opts.analysisComplete === true,
           ...(cibles !== null ? { onlyIds: cibles } : {}),
         });
-        if (!r.dryRun) bilan.removed = r.removed;
+        if (r.technicalFailure) {
+          bilan.removalOutcome = 'FAILED';
+          bilan.removalFailure = r.technicalFailure;
+        } else if (r.dryRun) {
+          bilan.removalOutcome = 'DRY_RUN';
+        } else {
+          bilan.removed = r.removed;
+          bilan.removalOutcome = r.removed.length ? 'REMOVED' : suspendu;
+        }
         if (opts.analysisComplete !== true) {
           console.info(JSON.stringify({
             event: 't4.source_sync_no_removal', accountId, assetId, sourceFileId: actif.sourceFileId,
@@ -337,8 +401,16 @@ export async function persistAgendaDecisions(
           }));
         }
       } catch (e) {
-        console.error(`[agenda-persistence] retrait des éléments de la source ${actif.sourceFileId} :`, (e as Error).message);
+        // Lot 75F (§D) : un retrait en échec est un ÉCHEC TECHNIQUE remonté à la
+        // file (reprise contrôlée), jamais une synchronisation réussie.
+        bilan.removalOutcome = 'FAILED';
+        bilan.removalFailure = { code: 'REMOVAL_FAILED', message: (e as Error).message.slice(0, 300) };
       }
+    }
+    if (bilan.removalOutcome === 'FAILED') {
+      console.error(JSON.stringify({
+        event: 't4.source_sync_removal_failed', accountId, assetId, sourceFileId: actif.sourceFileId, failure: bilan.removalFailure,
+      }));
     }
   }
   return bilan;
@@ -360,16 +432,16 @@ export async function correctClassification(decision: AgendaDecision, accountId:
   const colonnes = await agendaFunctionalColumnsReady();
   const [cur] = (await pgClient.unsafe(
     `SELECT home_category AS "category", is_automatic AS "isAutomatic", is_automatic_modified AS "isAutomaticModified",
-            manual_status AS "manualStatus", projection_origin AS "projectionOrigin",
+            manual_status AS "manualStatus", confirmation_mode AS "confirmationMode", projection_origin AS "projectionOrigin",
             origin_ref_type AS "originRefType", origin_ref_id AS "originRefId"
             ${colonnes ? ', business_type AS "businessType"' : ''}
        FROM agenda_items WHERE id = $1 AND account_id = $2`,
     [id, accountId] as never[],
   )) as unknown as Array<{
-    category: string | null; isAutomatic: boolean; isAutomaticModified: boolean; manualStatus: string | null;
+    category: string | null; isAutomatic: boolean; isAutomaticModified: boolean; manualStatus: string | null; confirmationMode: string | null;
     projectionOrigin: string | null; originRefType: string | null; originRefId: number | null; businessType?: string | null;
   }>;
-  if (!cur || !cur.isAutomatic || cur.isAutomaticModified || (cur.manualStatus ?? '') !== '' || cur.projectionOrigin) return false;
+  if (!cur || isUserTouched(cur) || cur.projectionOrigin) return false;
   const categorie = cur.category !== corr.category ? corr.category : undefined;
   const type = colonnes && corr.businessType && cur.businessType !== corr.businessType ? corr.businessType : undefined;
   if (!categorie && !type) return false;
@@ -397,17 +469,27 @@ export async function correctClassification(decision: AgendaDecision, accountId:
   return true;
 }
 
-/** Plan de synchronisation (T4-08), ou null si pas de source unique / 0223 absente. */
+/**
+ * Plan de synchronisation (T4-08) ; `plan` null si pas de source unique.
+ * Lot 75F (§D) : un plan IMPOSSIBLE alors qu'une synchronisation est attendue
+ * (colonnes 0223 absentes sur analyse complète, erreur SQL) est rendu comme
+ * échec technique (`failure`), jamais comme « rien à retirer ».
+ */
 async function planForSource(
   decisions: AgendaDecision[],
   accountId: number,
   assetId: number,
   explicite: number | null | undefined,
-): Promise<SourceSyncPlan | null> {
+  analysisComplete: boolean,
+): Promise<{ plan: SourceSyncPlan | null; failure?: { code: RemovalFailureCode; message: string } }> {
   const sources = new Set(decisions.map(sourceOf).filter((x): x is number => typeof x === 'number'));
   const sourceFileId = explicite ?? (sources.size === 1 ? [...sources][0] : null);
-  if (!sourceFileId || (sources.size > 1 && !explicite)) return null;
-  if (!(await agendaFunctionalColumnsReady())) return null;
+  if (!sourceFileId || (sources.size > 1 && !explicite)) return { plan: null };
+  if (!(await agendaFunctionalColumnsReady())) {
+    return analysisComplete
+      ? { plan: null, failure: { code: 'PREREQUISITE_MISSING', message: `synchronisation de la source ${sourceFileId} impossible : colonnes agenda 0223 absentes` } }
+      : { plan: null };
+  }
   try {
     const items = await loadSourceItems(accountId, assetId, sourceFileId);
     const plan = planSourceSync({
@@ -417,6 +499,7 @@ async function planForSource(
         originFieldKey: d.originFieldKey ?? null, existingItemId: d.existingItemId ?? null,
         seriesKey: d.occurrence?.seriesKey ?? null, ...semanticsOf(d),
         occurrenceIndex: d.occurrenceIndex ?? null, target: d.target ?? null,
+        temporalAmbiguity: d.action === 'propose' && d.reasonCode === 'TEMPORAL_AMBIGUITY',
       })),
     });
     console.info(JSON.stringify({
@@ -424,12 +507,13 @@ async function planForSource(
       create: plan.steps.filter((x) => x.kind === 'create').length,
       update: plan.steps.filter((x) => x.kind === 'update').map((x) => (x as { itemId: number }).itemId),
       protected: plan.steps.filter((x) => x.kind === 'protected').map((x) => (x as { itemId: number }).itemId),
+      ambiguous: plan.ambiguous, temporalAmbiguities: plan.temporalAmbiguities,
       remove: plan.remove,
     }));
-    return plan;
+    return { plan };
   } catch (e) {
     console.error(`[agenda-persistence] plan de synchronisation de la source ${sourceFileId} :`, (e as Error).message);
-    return null;
+    return { plan: null, failure: { code: 'SYNC_PLAN_FAILED', message: `plan de synchronisation de la source ${sourceFileId} : ${(e as Error).message.slice(0, 250)}` } };
   }
 }
 
@@ -438,7 +522,8 @@ async function loadSourceItems(accountId: number, assetId: number, sourceFileId:
   const rows = (await pgClient.unsafe(
     `SELECT i.id, i.functional_key AS "functionalKey", i.title, i.start_date::text AS "startDate",
             i.origin_field_key AS "originFieldKey", i.is_automatic AS "isAutomatic",
-            i.is_automatic_modified AS "isAutomaticModified", i.manual_status AS "manualStatus"
+            i.is_automatic_modified AS "isAutomaticModified", i.manual_status AS "manualStatus",
+            i.confirmation_mode AS "confirmationMode"
        FROM agenda_items i
        JOIN agenda_asset_links l ON l.agenda_item_id = i.id AND l.asset_id = $3
       WHERE i.account_id = $1 AND i.origin_ref_type = 'asset_file' AND i.origin_ref_id = $2 AND i.is_automatic`,
@@ -451,6 +536,12 @@ async function loadSourceItems(accountId: number, assetId: number, sourceFileId:
 async function applySyncStep(step: SyncStep, decision: AgendaDecision, accountId: number, requiresQualification?: boolean): Promise<void> {
   if (step.kind === 'protected') {
     console.info(`[agenda-persistence] élément ${step.itemId} modifié à la main — synchronisation sans effet`);
+    return;
+  }
+  if (step.kind === 'ambiguous') {
+    // Lot 75F (§B) : plusieurs éléments existants restent candidats — aucun
+    // n'est choisi arbitrairement, aucun n'est modifié ni dupliqué.
+    console.warn(JSON.stringify({ event: 't4.source_sync_ambiguous_step', itemIds: step.itemIds, title: decision.title, date: decision.date }));
     return;
   }
   if (step.kind !== 'update') return;
@@ -657,27 +748,50 @@ export async function recordOccurrenceEvent(
  * prévisionnelle initiale et la source de confirmation sont conservées.
  * Une prévision modifiée par l'utilisateur garde sa date (le moteur n'envoie
  * ici que le cas « même date » ; une date différente passe par l'arbitrage).
+ *
+ * Lot 75F (§A) — gardes SQL ATOMIQUES (indépendantes du moteur) :
+ *  · jamais une prévision au statut renseigné par l'utilisateur (réalisé,
+ *    annulé) ni une prévision déjà confirmée par l'utilisateur : rien n'est
+ *    écrit (statut, date, confirmation, relations conservés) ;
+ *  · date et source d'origine réécrites seulement si l'élément est
+ *    automatique et intact (`agendaUntouchedSql`) ;
+ *  · une prévision encore intacte reste confirmée automatiquement.
  */
 async function confirmForecast(decision: AgendaDecision, accountId: number): Promise<void> {
   if (!decision.existingItemId) return;
   const [cur] = await db.select().from(agendaItems)
     .where(and(eq(agendaItems.id, decision.existingItemId), eq(agendaItems.accountId, accountId))).limit(1);
   if (!cur || cur.occurrenceNature !== 'FORECAST') return;
-  const protege = !cur.isAutomatic || cur.isAutomaticModified;
-  const nouvelleDate = protege ? cur.startDate : decision.date;
-  const now = new Date();
-  await db.update(agendaItems).set({
-    occurrenceNature: 'CONFIRMED',
-    dateSource: 'EXPLICIT_DATE',
-    forecastInitialDate: cur.forecastInitialDate ?? cur.startDate,
-    startDate: nouvelleDate,
-    confirmedAt: now,
-    confirmationMode: 'SOURCE',
-    confirmationSource: { sourceFileId: decision.sourceFileId ?? null, originFieldKey: decision.originFieldKey ?? null, date: decision.date } as never,
-    originRefType: decision.sourceFileId ? 'asset_file' : cur.originRefType,
-    originRefId: decision.sourceFileId ?? cur.originRefId,
-    updatedAt: now,
-  }).where(and(eq(agendaItems.id, cur.id), eq(agendaItems.accountId, accountId))); // lot 49 : compte dans le SQL
+  if ((cur.manualStatus ?? '') !== '' || cur.confirmationMode === 'USER') {
+    console.info(JSON.stringify({ event: 't4.forecast_confirmation_protected', accountId, itemId: cur.id, manualStatus: cur.manualStatus, confirmationMode: cur.confirmationMode }));
+    return;
+  }
+  const intact = agendaUntouchedSql('agenda_items');
+  const rows = (await pgClient.unsafe(
+    `UPDATE agenda_items SET
+        occurrence_nature = 'CONFIRMED',
+        date_source = 'EXPLICIT_DATE',
+        forecast_initial_date = COALESCE(forecast_initial_date, start_date),
+        start_date = CASE WHEN ${intact} THEN $3::date ELSE start_date END,
+        confirmed_at = now(),
+        confirmation_mode = 'SOURCE',
+        confirmation_source = $4::jsonb,
+        origin_ref_type = CASE WHEN ${intact} AND $5::int IS NOT NULL THEN 'asset_file' ELSE origin_ref_type END,
+        origin_ref_id = CASE WHEN ${intact} AND $5::int IS NOT NULL THEN $5::int ELSE origin_ref_id END,
+        updated_at = now()
+      WHERE id = $1 AND account_id = $2 AND occurrence_nature = 'FORECAST'
+        AND (manual_status IS NULL OR manual_status = '') AND confirmation_mode IS DISTINCT FROM 'USER'
+      RETURNING start_date::text AS "confirmedDate"`,
+    [cur.id, accountId, decision.date,
+      JSON.stringify({ sourceFileId: decision.sourceFileId ?? null, originFieldKey: decision.originFieldKey ?? null, date: decision.date }),
+      decision.sourceFileId ?? null] as never[],
+  )) as unknown as Array<{ confirmedDate: string }>;
+  if (!rows.length) {
+    // Choix utilisateur posé entre la lecture et l'écriture : protégé.
+    console.info(JSON.stringify({ event: 't4.forecast_confirmation_protected', accountId, itemId: cur.id, concurrent: true }));
+    return;
+  }
+  const nouvelleDate = rows[0].confirmedDate;
   await recordOccurrenceEvent(cur.id, accountId, 'CONFIRMED', {
     forecastDate: cur.startDate, confirmedDate: nouvelleDate, sourceFileId: decision.sourceFileId ?? null, mode: 'SOURCE',
     rule: (cur.recurrenceJson as { rule?: string } | null)?.rule ?? null,
@@ -690,18 +804,21 @@ async function confirmForecast(decision: AgendaDecision, accountId: number): Pro
 /**
  * Fin explicite d'une récurrence : une prévision automatique au-delà de la
  * borne n'a plus d'objet. Annulée — jamais si l'utilisateur y a touché.
+ * Lot 75F (§A) : garde SQL complète (`agendaUntouchedSql`) — un statut
+ * « réalisé » ou « annulé » posé par l'utilisateur, une modification ou une
+ * confirmation utilisateur ne sont jamais remplacés.
  */
 async function retireForecast(decision: AgendaDecision, accountId: number): Promise<void> {
   if (!decision.existingItemId) return;
-  await db.update(agendaItems)
-    .set({ manualStatus: 'annule', updatedAt: new Date() })
-    .where(and(
-      eq(agendaItems.id, decision.existingItemId),
-      eq(agendaItems.accountId, accountId),
-      eq(agendaItems.occurrenceNature, 'FORECAST'),
-      eq(agendaItems.isAutomatic, true),
-      eq(agendaItems.isAutomaticModified, false),
-    ));
+  const rows = (await pgClient.unsafe(
+    `UPDATE agenda_items SET manual_status = 'annule', updated_at = now()
+      WHERE id = $1 AND account_id = $2 AND occurrence_nature = 'FORECAST' AND ${agendaUntouchedSql('agenda_items')}
+      RETURNING id`,
+    [decision.existingItemId, accountId] as never[],
+  )) as unknown as unknown[];
+  if (!rows.length) {
+    console.info(JSON.stringify({ event: 't4.forecast_retire_protected', accountId, itemId: decision.existingItemId }));
+  }
 }
 
 async function updateItem(decision: AgendaDecision, accountId: number): Promise<void> {
@@ -713,6 +830,8 @@ async function updateItem(decision: AgendaDecision, accountId: number): Promise<
     .select({
       isAutomatic: agendaItems.isAutomatic,
       isAutomaticModified: agendaItems.isAutomaticModified,
+      manualStatus: agendaItems.manualStatus,
+      confirmationMode: agendaItems.confirmationMode,
       projectionOrigin: agendaItems.projectionOrigin,
     })
     .from(agendaItems)
@@ -729,7 +848,7 @@ async function updateItem(decision: AgendaDecision, accountId: number): Promise<
     console.info(`[agenda-persistence] événement ${decision.existingItemId} projeté — mise à jour documentaire sans effet`);
     return;
   }
-  if (!current.isAutomatic || current.isAutomaticModified) {
+  if (isUserTouched(current)) {
     console.info(
       `[agenda-persistence] événement ${decision.existingItemId} devenu manuel — mise à jour annulée`,
     );

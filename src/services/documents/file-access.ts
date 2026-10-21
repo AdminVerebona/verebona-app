@@ -25,6 +25,9 @@ export interface ReadableFile {
   mimeType: string | null;
   size: number | null;
   originalFilename: string | null;
+  retainedTitle: string | null;
+  filename: string | null;
+  publicId: string;
   isWebLink: boolean;
 }
 
@@ -36,7 +39,7 @@ const NO_STORE = { 'Cache-Control': 'private, no-store' };
 
 /** Décision pure à partir de la ligne lue — testée unitairement. */
 export function decideFileAccess(
-  row: (ReadableFile & { uploadStatus: string | null }) | undefined,
+  row: (Pick<ReadableFile, 'accountId'> & { uploadStatus: string | null }) | undefined,
   accountId: number,
 ): { ok: true } | { ok: false; status: number; code: string } {
   if (!row) return { ok: false, status: 404, code: 'FILE_NOT_FOUND' };
@@ -71,6 +74,10 @@ export async function loadReadableFile(request: NextRequest, rawId: string): Pro
       mimeType: assetFiles.mimeType,
       size: assetFiles.size,
       originalFilename: assetFiles.originalFilename,
+      // Nom affiché (lot 75L) : en-tête Content-Disposition de la lecture.
+      retainedTitle: assetFiles.retainedTitle,
+      filename: assetFiles.filename,
+      publicId: assetFiles.publicId,
       isWebLink: assetFiles.isWebLink,
       uploadStatus: assetFiles.uploadStatus,
     })

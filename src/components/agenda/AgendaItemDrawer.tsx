@@ -55,10 +55,7 @@ import { toast } from "sonner";
 import { assetSupportsStructuralFeatures } from "@/types/domain";
 import type { AgendaItemFull } from "@/services/agenda/AgendaQueryService";
 import { EFFECTIVE_STATUS_LABELS, attentionFlagLabel, visibleAttentionFlags, type AgendaEffectiveStatus } from '@/lib/agenda/effective-status';
-import { RoomDrawer } from "@/components/assets/RoomDrawer";
-import type { RoomDrawerItem } from "@/components/assets/RoomDrawer";
-import { EquipmentDrawer } from "@/components/assets/EquipmentDrawer";
-import type { EquipmentDrawerItem } from "@/components/assets/EquipmentDrawer";
+import { openDrawer } from "@/lib/drawers";
 import { useWriteGuard } from '@/contexts/WriteGuardContext';
 import { displayDocumentTitle } from '@/lib/documents/document-title-rules';
 
@@ -156,9 +153,9 @@ export function AgendaItemDrawer({ item, open, onClose, onMutated, onOpenDocumen
   const [showDirtyConfirm, setShowDirtyConfirm] = useState(false);
   const [temporalError, setTemporalError] = useState<string | null>(null);
 
-  // Sub-drawers for room / equipment
-  const [roomDrawerItem, setRoomDrawerItem] = useState<{ assetId: number; room: RoomDrawerItem } | null>(null);
-  const [equipmentDrawerItem, setEquipmentDrawerItem] = useState<{ assetId: number; equipment: EquipmentDrawerItem } | null>(null);
+  // Lot 75H : pièce / équipement / document associés s'ouvrent en tiroir
+  // EMPILÉ (GlobalDrawerHost, fiche relue par son identifiant) : la fermeture
+  // ramène à cette échéance.
 
   // Assets + details for edit mode
   const [allAssets, setAllAssets] = useState<AssetOption[]>([]);
@@ -809,10 +806,8 @@ export function AgendaItemDrawer({ item, open, onClose, onMutated, onOpenDocumen
                             <button
                               key={l.substructureId}
                               type="button"
-                              onClick={() => setRoomDrawerItem({
-                                assetId: l.resolvedAssetId!,
-                                room: { id: l.substructureId, name: l.name },
-                              })}
+                              onClick={() => openDrawer({ kind: 'piece', id: l.substructureId }, { stack: true })}
+                              aria-label={`Ouvrir la pièce : ${l.name}`}
                               className="inline-flex items-center px-3 py-1 rounded-lg text-xs font-medium bg-[color:var(--bg-page)] text-[color:var(--text-primary)] border border-[color:var(--border-subtle)] hover:border-[color:var(--border-info)] hover:bg-[color:var(--accent-soft)] transition-colors cursor-pointer"
                             >
                               {l.name}
@@ -899,10 +894,8 @@ export function AgendaItemDrawer({ item, open, onClose, onMutated, onOpenDocumen
                             <button
                               key={l.equipmentId}
                               type="button"
-                              onClick={() => setEquipmentDrawerItem({
-                                assetId: l.resolvedAssetId!,
-                                equipment: { id: l.equipmentId, assetId: l.resolvedAssetId!, name: l.name, status: 'EN_SERVICE' },
-                              })}
+                              onClick={() => openDrawer({ kind: 'equipement', id: l.equipmentId }, { stack: true })}
+                              aria-label={`Ouvrir l’équipement : ${l.name}`}
                               className="inline-flex items-center px-3 py-1 rounded-lg text-xs font-medium bg-[color:var(--bg-page)] text-[color:var(--text-primary)] border border-[color:var(--border-subtle)] hover:border-[color:var(--border-info)] hover:bg-[color:var(--accent-soft)] transition-colors cursor-pointer"
                             >
                               {l.name}
@@ -1008,23 +1001,19 @@ export function AgendaItemDrawer({ item, open, onClose, onMutated, onOpenDocumen
                   <div className="flex flex-wrap gap-2">
                     {item.fileLinks.map((l) => {
                       const displayName = displayDocumentTitle(l, `Doc #${l.assetFileId}`);
-                      return onOpenDocument ? (
+                      return (
                         <button
                           key={l.assetFileId}
-                          onClick={() => onOpenDocument(l.assetFileId)}
+                          type="button"
+                          onClick={() => (onOpenDocument
+                            ? onOpenDocument(l.assetFileId)
+                            : openDrawer({ kind: 'document', id: l.assetFileId }, { stack: true }))}
+                          aria-label={`Ouvrir le document : ${displayName}`}
                           className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-[color:var(--bg-page)] text-[color:var(--text-primary)] border border-[color:var(--border-subtle)] hover:border-[color:var(--border-info)] hover:text-[color:var(--accent)] transition-colors cursor-pointer"
                         >
                           <FileText className="w-3 h-3 shrink-0" />
                           <span className="truncate max-w-[160px]">{displayName}</span>
                         </button>
-                      ) : (
-                        <span
-                          key={l.assetFileId}
-                          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-[color:var(--bg-page)] text-[color:var(--text-primary)] border border-[color:var(--border-subtle)]"
-                        >
-                          <FileText className="w-3 h-3 shrink-0" />
-                          <span className="truncate max-w-[160px]">{displayName}</span>
-                        </span>
                       );
                     })}
                   </div>
@@ -1131,28 +1120,6 @@ export function AgendaItemDrawer({ item, open, onClose, onMutated, onOpenDocumen
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-      {/* Room sub-drawer */}
-      {roomDrawerItem && (
-        <RoomDrawer
-          open={!!roomDrawerItem}
-          onOpenChange={(v) => { if (!v) setRoomDrawerItem(null); }}
-          assetId={roomDrawerItem.assetId}
-          room={roomDrawerItem.room}
-          onRefresh={() => setRoomDrawerItem(null)}
-        />
-      )}
-
-      {/* Equipment sub-drawer */}
-      {equipmentDrawerItem && (
-        <EquipmentDrawer
-          open={!!equipmentDrawerItem}
-          onOpenChange={(v) => { if (!v) setEquipmentDrawerItem(null); }}
-          assetId={equipmentDrawerItem.assetId}
-          equipment={equipmentDrawerItem.equipment}
-          substructures={[]}
-          onRefresh={() => setEquipmentDrawerItem(null)}
-        />
-      )}
     </>
   );
 }

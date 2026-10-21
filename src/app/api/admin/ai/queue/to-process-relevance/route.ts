@@ -44,6 +44,8 @@ export async function GET(req: NextRequest) {
       items: campaignId ? await listCampaignItems(campaignId, { accountId: n('accountId'), outcome, limit: 100 }) : [],
       recetteCases: RELEVANCE_RECETTE_CASES.map((c) => ({ id: c.id, label: c.label, deterministic: c.deterministic })),
       recetteRuns: await listRecetteRuns(5),
+      // Lot 75I (D) : décisions prudentes en attente d'une configuration T4 compatible (signalées, réévaluées à l'activation).
+      incompatibleDecisions: await ev.countIncompatibleDecisions(),
     });
   } catch (e) {
     return toErrorResponse(e, 'GET /api/admin/ai/queue/to-process-relevance');
@@ -58,7 +60,7 @@ export async function POST(req: NextRequest) {
     try { body = await req.json(); } catch { body = {}; }
     if (body.action === 'campaign') {
       const { startRelevanceCampaign, runRelevanceCampaign } = await import('@/services/to-process/relevance-campaign.service');
-      const c = await startRelevanceCampaign({ code: `l72-pertinence-${new Date().toISOString().replace(/[^0-9]/g, '').slice(0, 14)}`, trigger: 'manual', requestedBy: guard.ctx.adminUserId });
+      const c = await startRelevanceCampaign({ code: `l75-pertinence-${new Date().toISOString().replace(/[^0-9]/g, '').slice(0, 14)}`, trigger: 'manual', requestedBy: guard.ctx.adminUserId });
       if (!c) return NextResponse.json({ error: 'MIGRATION_MISSING', message: 'Migration 0445 absente : réessayez après la mise à jour de la base.' }, { status: 503 });
       // Premier lot tout de suite (borné) ; la tâche planifiée poursuit.
       const r = await runRelevanceCampaign({ deadline: Date.now() + 20_000, trigger: 'manual' });

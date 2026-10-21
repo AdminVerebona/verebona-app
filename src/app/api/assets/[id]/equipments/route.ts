@@ -1,12 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { emitBusinessEvent } from '@/services/verebona-assistant/events/business-events';
 import { db } from '@/db';
-import { equipments, assets, substructures } from '@/db/schema';
-import { eq, and, sql, desc } from 'drizzle-orm';
+import { assets, substructures } from '@/db/schema';
+import { eq, and } from 'drizzle-orm';
 import { apiError } from '@/lib/api-errors';
 import { SessionService } from '@/lib/session-service';
 import { canUsePremiumFeature } from '@/services/entitlements.service';
-import { runEquipmentAutoLink } from '@/services/equipment/equipment-auto-link.service';
+import { parseEquipmentCents } from '@/lib/equipment-amounts';
 import { isValidEquipmentStatus, assetSupportsStructuralFeatures } from '@/types/domain';
 import { refuserSiModificationBiensSuspendue } from '@/lib/asset-quota-guard';
 import { parseEquipmentCategory, parseEquipmentEnergyUsage } from '@/lib/cil/energy-equipment';
@@ -137,6 +137,12 @@ export async function POST(
     const categoryValue = parseEquipmentCategory(category);
     if (categoryValue === 'INVALID') return apiError(400, 'INVALID_INPUT', 'Invalid category');
 
+    // Lot 75G (D2) : montants fournis à la création, en centimes ENTIERS
+    // (strict) ; absents : vides. Écrits sur l'ÉQUIPEMENT seul, jamais sur le bien.
+    const ppc = parseEquipmentCents('purchasePriceCents', purchasePriceCents, 'strict');
+    const evc = parseEquipmentCents('estimatedValueCents', estimatedValueCents, 'strict');
+    if (ppc === 'INVALID' || evc === 'INVALID') return apiError(400, 'INVALID_INPUT', 'Invalid amount (integer cents expected)');
+
     // If substructureId is provided, verify it belongs to the same asset
     if (substructureId) {
       const subRows = await db
@@ -151,34 +157,49 @@ export async function POST(
 
     const now = new Date().toISOString();
 
-    // Use raw SQL to insert without specifying auto-generated columns
-    await db.execute(sql`
-      INSERT INTO equipments (asset_id, substructure_id, name, type, category, energy_usage, status, created_at, updated_at)
-      VALUES (${assetId}, ${substructureId || null}, ${name.trim()}, ${type || null}, ${categoryValue ?? null}, ${energyUsage ?? null}, ${status || 'EN_SERVICE'}, ${now}, ${now})
-    `);
-
-    // Fetch the most recently created equipment for this asset
-    const newEquipments = await db
-      .select({
-        id: equipments.id,
-        name: equipments.name,
-        type: equipments.type,
-        energyUsage: equipments.energyUsage,
-        status: equipments.status,
-        substructureId: equipments.substructureId,
-      })
-      .from(equipments)
-      .where(eq(equipments.assetId, assetId))
-      .orderBy(desc(equipments.id))
-      .limit(1);
-
-    const newEquipment = newEquipments[0];
+    // Lot 75G (D1) : INSERT … RETURNING — l'identifiant rendu est TOUJOURS
+    // celui de la ligne créée, même en cas de créations concurrentes (l'ancien
+    // « dernier équipement du bien » pouvait rendre celui d'une autre requête).
+    const [newEquipment] = await db.$client<{
+      id: number; name: string; type: string | null; energyUsage: string | null; status: string; substructureId: number | null;
+    }[]>`
+      INSERT INTO equipments (asset_id, substructure_id, name, type, category, energy_usage, status,
+                              purchase_price_cents, estimated_value_cents, created_at, updated_at)
+      VALUES (${assetId}, ${substructureId || null}, ${name.trim()}, ${type || null}, ${categoryValue ?? null}, ${energyUsage ?? null},
+              ${status || 'EN_SERVICE'}, ${ppc ?? null}, ${evc ?? null}, ${now}, ${now})
+      RETURNING id, name, type, energy_usage AS "energyUsage", status, substructure_id AS "substructureId"
+    `;
     if (!newEquipment) {
-      return apiError(500, 'INTERNAL_ERROR', 'Failed to fetch created equipment');
+      return apiError(500, 'INTERNAL_ERROR', 'Failed to create equipment');
     }
 
-    // Fire-and-forget: AI auto-link against existing documents, agenda and suppliers
-    runEquipmentAutoLink(newEquipment.id, session.currentAccountId!).catch(() => { /* non-blocking */ });
+    // Lot 75G (D2) : montants saisis → origine USER dans la fiche canonique de
+    // l'ÉQUIPEMENT (comme la modification, lot 18) ; vue « avant » = aucun montant.
+    if (ppc != null || evc != null) {
+      const cible = { type: 'EQUIPMENT' as const, id: newEquipment.id };
+      const { getCanonicalEntityState, recordManualEntityEdit } = await import('@/services/canonical/entity-state');
+      const vue = await getCanonicalEntityState(cible, session.currentAccountId!);
+      if (vue) {
+        const { acquisitionPrice: _p, estimatedValue: _v, ...autres } = vue.fields;
+        await recordManualEntityEdit({
+          target: cible, accountId: session.currentAccountId!, actorUserId: session.userId ?? null,
+          before: { ...vue, fields: autres },
+          after: { ...(ppc != null ? { acquisitionPrice: ppc / 100 } : {}), ...(evc != null ? { estimatedValue: evc / 100 } : {}) },
+        });
+      }
+    }
+
+    // Lot 75G (D3) : rapprochement documents / agenda / fournisseurs en file
+    // DURABLE (reprise, déduplication, observabilité) — mise en file attendue.
+    try {
+      const { requestEquipmentDocumentSync } = await import('@/services/equipment/equipment-document-queue');
+      await requestEquipmentDocumentSync(session.currentAccountId!, newEquipment.id, { reason: 'created' });
+    } catch (e) {
+      // File indisponible : repli sur l'exécution directe (non bloquante), journalisé.
+      console.error(`[equipments] mise en file du rapprochement de l'équipement ${newEquipment.id} impossible :`, (e as Error).message);
+      const { runEquipmentAutoLink } = await import('@/services/equipment/equipment-auto-link.service');
+      runEquipmentAutoLink(newEquipment.id, session.currentAccountId!).catch((err: Error) => console.error('[equipments] rapprochement direct :', err.message));
+    }
 
     // CDC Assistant §25.7, §31.7 : équipement ajouté au bien.
     await emitBusinessEvent({ type: 'ASSET_UPDATED', accountId: session.currentAccountId!, entityId: assetId });

@@ -237,10 +237,11 @@ export function functionalKeyFor(input: AgendaUpsertInput): string | null {
 /** Élément automatique existant de même clé (0223 présente). */
 async function itemByKey(accountId: number, key: string) {
   const rows = (await pgClient.unsafe(
-    `SELECT id, is_automatic AS "isAutomatic", is_automatic_modified AS "isAutomaticModified", manual_status AS "manualStatus"
+    `SELECT id, is_automatic AS "isAutomatic", is_automatic_modified AS "isAutomaticModified", manual_status AS "manualStatus",
+            confirmation_mode AS "confirmationMode"
        FROM agenda_items WHERE account_id = $1 AND functional_key = $2 AND is_automatic LIMIT 1`,
     [accountId, key] as never[],
-  )) as unknown as Array<{ id: number; isAutomatic: boolean; isAutomaticModified: boolean; manualStatus: string | null }>;
+  )) as unknown as Array<{ id: number; isAutomatic: boolean; isAutomaticModified: boolean; manualStatus: string | null; confirmationMode: string | null }>;
   return rows[0] ? { ...rows[0], id: Number(rows[0].id) } : null;
 }
 
@@ -329,7 +330,13 @@ export interface RemoveFromSourceResult {
   removed: number[];
   dryRun: boolean;
   /** Pourquoi rien n'a été retiré, le cas échéant. */
-  skipped?: 'COLUMNS_MISSING' | 'ANALYSIS_INCOMPLETE';
+  skipped?: 'COLUMNS_MISSING' | 'ANALYSIS_INCOMPLETE' | 'TRACE_UNAVAILABLE' | 'CHECK_FAILED';
+  /**
+   * Lot 75F (§D) — retrait ATTENDU mais techniquement impossible (prérequis
+   * absent, journal des retraits indisponible, contrôle des autres sources en
+   * échec) : rien n'a été retiré, ce n'est PAS une synchronisation réussie.
+   */
+  technicalFailure?: { code: 'PREREQUISITE_MISSING' | 'TRACE_UNAVAILABLE' | 'OTHER_SOURCES_CHECK_FAILED'; message: string };
 }
 
 /**
@@ -362,10 +369,16 @@ export async function removeAgendaItemsFromSource(p: {
    */
   onlyIds?: number[];
 }): Promise<RemoveFromSourceResult> {
-  if (!(await agendaFunctionalColumnsReady())) return { removed: [], dryRun: true, skipped: 'COLUMNS_MISSING' };
+  if (!(await agendaFunctionalColumnsReady())) {
+    return {
+      removed: [], dryRun: true, skipped: 'COLUMNS_MISSING',
+      ...(p.analysisComplete === true ? { technicalFailure: { code: 'PREREQUISITE_MISSING' as const, message: 'colonnes agenda 0223 absentes' } } : {}),
+    };
+  }
   const rows = (await pgClient.unsafe(
     `SELECT i.id, i.functional_key AS "functionalKey", i.is_automatic AS "isAutomatic",
-            i.is_automatic_modified AS "isAutomaticModified", i.manual_status AS "manualStatus"
+            i.is_automatic_modified AS "isAutomaticModified", i.manual_status AS "manualStatus",
+            i.confirmation_mode AS "confirmationMode"
        FROM agenda_items i
       WHERE i.account_id = $1 AND i.is_automatic
         AND ((i.origin_ref_type = 'asset_file' AND i.origin_ref_id = $2)
@@ -379,13 +392,14 @@ export async function removeAgendaItemsFromSource(p: {
     if (!/source_role/.test(e.message)) throw e;
     return pgClient.unsafe(
       `SELECT i.id, i.functional_key AS "functionalKey", i.is_automatic AS "isAutomatic",
-              i.is_automatic_modified AS "isAutomaticModified", i.manual_status AS "manualStatus"
+              i.is_automatic_modified AS "isAutomaticModified", i.manual_status AS "manualStatus",
+              i.confirmation_mode AS "confirmationMode"
          FROM agenda_items i
         WHERE i.account_id = $1 AND i.is_automatic AND i.origin_ref_type = 'asset_file' AND i.origin_ref_id = $2
           AND ($3::int IS NULL OR EXISTS (SELECT 1 FROM agenda_asset_links l WHERE l.agenda_item_id = i.id AND l.asset_id = $3))`,
       [p.accountId, p.sourceFileId, p.assetId ?? null] as never[],
     );
-  })) as unknown as Array<{ id: number; functionalKey: string | null; isAutomatic: boolean; isAutomaticModified: boolean; manualStatus: string | null }>;
+  })) as unknown as Array<{ id: number; functionalKey: string | null; isAutomatic: boolean; isAutomaticModified: boolean; manualStatus: string | null; confirmationMode: string | null }>;
 
   const cles = new Set(p.keepKeys);
   const ids = new Set(p.keepIds ?? []);
@@ -400,6 +414,7 @@ export async function removeAgendaItemsFromSource(p: {
   // documentaire n'est jamais retiré — lien SOURCE vers un autre document
   // (service de liaison), origine dans un autre document, ou consolidation
   // d'un doublon exact venu d'un autre document (`DUPLICATE_CONSOLIDATED`).
+  let controleImpossible = null as string | null;
   if (retires.length) {
     const justifies = new Set(((await pgClient.unsafe(
       `SELECT i.id FROM agenda_items i
@@ -416,7 +431,9 @@ export async function removeAgendaItemsFromSource(p: {
       [retires, p.accountId, p.sourceFileId] as never[],
     ).catch((e: Error) => {
       // Colonne `source_role` absente (0223) : prudence — aucun retrait.
+      // Lot 75F (§D) : signalé comme échec technique (jamais « rien à retirer »).
       console.error('[agenda] contrôle des autres sources impossible — aucun retrait :', e.message);
+      controleImpossible = e.message.slice(0, 250);
       return retires.map((id) => ({ id }));
     })) as unknown as Array<{ id: number }>).map((r) => Number(r.id)));
     if (justifies.size) {
@@ -434,7 +451,23 @@ export async function removeAgendaItemsFromSource(p: {
     journal({ wouldRemove: retires, dryRun: true, skipped: 'ANALYSIS_INCOMPLETE' });
     return { removed: retires, dryRun: true, skipped: 'ANALYSIS_INCOMPLETE' };
   }
-  const { removeAgendaItemsTraced } = await import('./agenda-removal-trace');
+  if (controleImpossible !== null) {
+    journal({ removed: [], dryRun: false, skipped: 'CHECK_FAILED' });
+    return {
+      removed: [], dryRun: false, skipped: 'CHECK_FAILED',
+      technicalFailure: { code: 'OTHER_SOURCES_CHECK_FAILED', message: `contrôle des autres sources impossible : ${controleImpossible}` },
+    };
+  }
+  const { removeAgendaItemsTraced, agendaRemovalTraceReady } = await import('./agenda-removal-trace');
+  // Lot 75F (§D) : journal des retraits indisponible — on ne supprime pas
+  // sans pouvoir rattraper, et ce n'est PAS une synchronisation réussie.
+  if (retires.length && !(await agendaRemovalTraceReady(pgClient))) {
+    journal({ wouldRemove: retires, dryRun: false, skipped: 'TRACE_UNAVAILABLE' });
+    return {
+      removed: [], dryRun: false, skipped: 'TRACE_UNAVAILABLE',
+      technicalFailure: { code: 'TRACE_UNAVAILABLE', message: 'journal des retraits agenda_item_removals indisponible (migration 0223)' },
+    };
+  }
   const removed = await removeAgendaItemsTraced(pgClient, {
     accountId: p.accountId, ids: retires, reason: 'SOURCE_SYNC', sourceFileId: p.sourceFileId, assetId: p.assetId ?? null,
   });

@@ -35,7 +35,7 @@
  * traitement est considéré USER (comportement antérieur). Ne lève jamais.
  * ══════════════════════════════════════════════════════════════════════════
  */
-import { schemaNotReadyMessage } from '@/lib/schema-readiness-log';
+import { probeCount, schemaNotReadyMessage } from '@/lib/schema-readiness-log';
 export type ProcessingVisibility = 'USER' | 'TECHNICAL';
 
 export const PROCESSING_VISIBILITIES: readonly ProcessingVisibility[] = ['USER', 'TECHNICAL'];
@@ -64,7 +64,7 @@ export async function analysisVisibilityColumnReady(): Promise<boolean> {
       `SELECT COUNT(*)::int AS n FROM information_schema.columns
         WHERE table_schema = current_schema() AND table_name = 'asset_files' AND column_name = 'analysis_visibility'`,
     )) as unknown as Array<{ n: number }>;
-    trouvees = Number(rows[0]?.n ?? 0);
+    trouvees = probeCount(rows); // lot 75A : résultat inexploitable = inconnu, pas 0
     ready = trouvees === 1;
   } catch (e) {
     ready = false;

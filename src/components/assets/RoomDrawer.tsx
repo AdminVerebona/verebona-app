@@ -15,6 +15,7 @@ import { Home, Pencil, Trash2, Loader2, X, Save, Plus } from 'lucide-react';
 import { toast } from 'sonner';
 import { apiClient } from '@/lib/api-client';
 import { useWriteGuard } from '@/contexts/WriteGuardContext';
+import { RoomAssociations } from './RoomAssociations';
 
 export interface RoomDrawerItem {
   id: number;
@@ -27,6 +28,10 @@ export interface RoomDrawerItem {
  * Fiche de la pièce (D-G, lot 20) : la pièce est une sous-structure ; type,
  * surface et description viennent de GET /api/substructures/[id] (colonnes
  * 0229, `null` avant migration ou reprise).
+ *
+ * Lot 75B : sections « Équipements » et « Documents » (associer, créer ou
+ * importer, ouvrir, dissocier ; documents des équipements « Via … ») —
+ * `RoomAssociations`.
  */
 interface RoomDetails {
   roomType: string | null;
@@ -189,11 +194,8 @@ export function RoomDrawer({ open, onOpenChange, assetId, room, onRefresh }: Pro
                     )}
                   </div>
                 )}
-                {eqCount > 0 && (
-                  <div className="text-sm text-muted-foreground border rounded-md p-3 bg-muted/30">
-                    <span className="font-medium">{eqCount}</span> équipement{eqCount > 1 ? 's' : ''} rattaché{eqCount > 1 ? 's' : ''}
-                  </div>
-                )}
+                {/* Lot 75B : équipements et documents de la pièce (directs et « Via … »). */}
+                <RoomAssociations roomId={room!.id} assetId={assetId} onRefresh={onRefresh} />
 
                 <Separator />
 

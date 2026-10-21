@@ -331,9 +331,13 @@ scenario('L71G-T6', 'Lot 71G — écarts de décision d’interpellation T6 et r
     const o2 = await echeance(c, 'Entretien pompe à chaleur', await plus(30), { serie: 'serie-pac-71' });
     await passer(c.id);
     expect(ids(await passer(c.id, c.ownerUserId))).not.toContain(o2);
-    // Un refus de série resté sans occurrence très longtemps finit par être retiré.
+    // Lot 75E (D) : plus de retrait après une longue absence d'occurrence (365 jours, lot 71G) —
+    // seulement quand l'invalidité est établie (le bien d'où le refus a été posé n'existe plus).
     await sql`DELETE FROM agenda_items WHERE id = ${o2}`;
     await sql`UPDATE t6_reminder_preferences SET orphaned_since = ${await plus(-500)} WHERE account_id = ${c.id}`;
+    await cleanupT6Reminders(await jour());
+    expect(await prefs(c.id)).toEqual([expect.objectContaining({ subject_key: 'series:serie-pac-71', decision: 'DISMISSED' })]);
+    await sql`DELETE FROM assets WHERE id = ${c.maison}`;
     await cleanupT6Reminders(await jour());
     expect(await prefs(c.id)).toEqual([]);
   });
@@ -353,7 +357,11 @@ scenario('L71G-T6', 'Lot 71G — écarts de décision d’interpellation T6 et r
     await sql`UPDATE agenda_items SET start_date = start_date + 10, updated_at = now() WHERE id = ${e}`;
     await passer(c.id);
     expect(ids(await passer(c.id, c.ownerUserId))).toEqual([]);
-    // Renouvellement : T4 réutilise l'identifiant pour le cycle suivant (un an plus tard).
+    // Lot 75E (D) : nouveau cycle de la MÊME ligne = occurrence réalisée puis rouverte pour l'échéance
+    // suivante (identité persistante, cohérente avec T4) — plus un simple écart de dates (183 jours).
+    const { updateManualStatus } = await import('@/services/agenda/AgendaWriteService');
+    await updateManualStatus(e, 'realise', c.id);
+    await updateManualStatus(e, null, c.id);
     await sql`UPDATE agenda_items SET start_date = start_date + 365, updated_at = now(),
                 description = 'Renouvellement : relancer le prestataire un mois avant.' WHERE id = ${e}`;
     // L'IA juge le nouveau cycle (réévaluation après changement de date et de contenu).

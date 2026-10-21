@@ -14,7 +14,7 @@
  *     ou passé hors du compte perd son lien (`href: null`, `unavailable`) —
  *     la ligne reste, l'historique n'est pas réécrit.
  */
-import { schemaNotReadyMessage } from '@/lib/schema-readiness-log';
+import { probeCount, schemaNotReadyMessage } from '@/lib/schema-readiness-log';
 import type { AssistantTimelineEvent } from '../types/contracts';
 import { identifiantsIndisponibles, type Requeteur } from './source-availability.service';
 
@@ -34,7 +34,7 @@ export async function timelineColumnReady(): Promise<boolean> {
       `SELECT COUNT(*)::int AS n FROM information_schema.columns
         WHERE table_schema = current_schema() AND table_name = 'verebona_messages' AND column_name = 'timeline_events_json'`,
     )) as unknown as Array<{ n: number }>;
-    trouvees = Number(rows[0]?.n ?? 0);
+    trouvees = probeCount(rows); // lot 75A : résultat inexploitable = inconnu, pas 0
     ready = trouvees === 1;
   } catch (e) {
     ready = false;

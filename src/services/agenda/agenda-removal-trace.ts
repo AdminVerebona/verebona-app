@@ -9,12 +9,13 @@
  * de ses liens — pour pouvoir le rattraper.
  *
  * Gardes dans le DELETE lui-même : compte, élément AUTOMATIQUE, jamais
- * modifié par l'utilisateur (`is_automatic_modified`, `manual_status`) — un
+ * modifié par l'utilisateur (`is_automatic_modified`, `manual_status`,
+ * prévision confirmée par l'utilisateur — lot 75F) — un
  * élément touché entre le plan et le retrait est épargné, sans course.
  * Table de trace absente : AUCUN retrait (signalé) — on ne supprime pas sans
  * pouvoir rattraper.
  */
-import { schemaNotReadyMessage } from '@/lib/schema-readiness-log';
+import { probeCount, schemaNotReadyMessage } from '@/lib/schema-readiness-log';
 import type postgres from 'postgres';
 
 type Sql = postgres.Sql;
@@ -34,7 +35,7 @@ export async function agendaRemovalTraceReady(sql: Sql): Promise<boolean> {
     const [r] = await sql<{ n: number }[]>`
       SELECT COUNT(*)::int AS n FROM information_schema.tables
        WHERE table_schema = current_schema() AND table_name = 'agenda_item_removals'`;
-    trouvees = Number(r?.n ?? 0);
+    trouvees = probeCount(r ? [r] : []); // lot 75A : résultat inexploitable = inconnu, pas 0
     ready = trouvees === 1;
   } catch (e) { ready = false; erreur = e; }
   if (!ready && (!pret || pret.ready)) {
@@ -72,6 +73,7 @@ export async function removeAgendaItemsTraced(sql: Sql, p: {
        WHERE account_id = ${p.accountId} AND id IN ${sql(ids)}
          AND is_automatic AND NOT is_automatic_modified
          AND (manual_status IS NULL OR manual_status = '')
+         AND confirmation_mode IS DISTINCT FROM 'USER'
       RETURNING *
     )
     INSERT INTO agenda_item_removals

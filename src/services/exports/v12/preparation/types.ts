@@ -132,6 +132,13 @@ export interface CilBlockDto {
   missingItems: Array<{ id: string; label: string; actionLabel: string; target: { type: string; filter?: string } }>;
   /** Le bloc peut être marqué non applicable (§20 : B3 à B7, B9). */
   canMarkNotApplicable: boolean;
+  /**
+   * Lot 75A : déclaration « non applicable » conservée mais neutralisée par
+   * les données réelles (B6 avec équipement énergétique retenu) ; `null` sinon.
+   */
+  neutralizedResolution?: 'not_applicable' | null;
+  /** Information à afficher sous le bloc ; `null` sinon. */
+  notice?: string | null;
 }
 
 export interface PreparationDto {

@@ -33,7 +33,7 @@ import type {
   MascotTile, MascotTodoItem,
 } from './types';
 import { emptyAccountSuggestions } from '@/services/verebona-assistant/registries/capability-registry';
-import { stripCountingIntro } from './counting-intro';
+import { displayableText, hasCountingIntro } from './counting-intro';
 
 // ── Tuiles (serveur) ────────────────────────────────────────────────────────
 
@@ -249,8 +249,50 @@ const isAttention = (p: MascotParagraph) => p.tile?.attention ?? true;
  * origine (T6, cache, texte de secours, présentation d'une version
  * antérieure du serveur). Dernier rempart côté écran, pur.
  */
-export function subjectText(p: Pick<MascotParagraph, 'text'>): string {
-  return stripCountingIntro(p.text.trim());
+export function subjectText(p: Pick<MascotParagraph, 'text'> & Partial<Pick<MascotParagraph, 'fallbackText' | 'tile' | 'actions'>>): string {
+  // Lot 75E : la formulation, sinon le texte de secours du sujet (si la
+  // séparation du préambule n'est pas fiable ou s'il ne reste rien), sinon
+  // ses données structurées — jamais un texte vide pour un sujet affiché.
+  return displayableText([p.text, p.fallbackText]) || structuredSubjectText(p);
+}
+
+/**
+ * Lot 75E — texte d'un sujet reconstruit à partir de ses DONNÉES
+ * STRUCTURÉES fiables, sans rien inventer (pure) : intitulé, bien et date de
+ * la tuile (« Ramonage cheminée · Maison · 4 novembre 2026 ») ; sans tuile,
+ * le libellé de sa première action (« Déposer un document ») ; sinon vide.
+ * Même composition que l'intitulé des fenêtres de rappel.
+ */
+export function structuredSubjectText(p: Partial<Pick<MascotParagraph, 'tile' | 'actions'>>): string {
+  const t = p.tile;
+  if (t?.label) {
+    const date = (t.status ?? '').split(' · ').pop() ?? '';
+    return [t.label, t.assetName, /\d{4}/.test(date) ? date : null].filter(Boolean).join(' · ');
+  }
+  return p.actions?.[0]?.label?.trim() ?? '';
+}
+
+/**
+ * Lot 75E (§5) — la présentation peut-elle être AFFICHÉE telle quelle (pure) ?
+ * Non si un sujet porte une introduction de comptage (formulation reçue d'un
+ * serveur antérieur, d'un cache, d'une mémoire de session).
+ */
+export function presentationDisplayable(p: MascotPresentation | null): boolean {
+  return !!p && realParagraphs(p).every((x) => !hasCountingIntro(x.text));
+}
+
+/**
+ * Lot 75E (§5) — garder la présentation DÉJÀ affichée plutôt que la réponse
+ * reçue (pure, partagée par le hook client) : même contexte métier
+ * (`contextHash`, RUN-001 : jamais de texte remplacé sous les yeux), même
+ * RÉVISION du contrat de présentation, et aucune formulation interdite. Une
+ * règle d'affichage corrigée côté serveur n'est donc jamais masquée par un
+ * contexte inchangé ; la stabilité des formulations T6 est conservée.
+ */
+export function keepDisplayedPresentation(prev: MascotPresentation | null, next: MascotPresentation): boolean {
+  return !!prev && prev.contextHash === next.contextHash
+    && (prev.presentationRevision ?? null) === (next.presentationRevision ?? null)
+    && presentationDisplayable(prev);
 }
 
 /**
@@ -433,11 +475,13 @@ export function subjectBlocks(p: MascotPresentation | null): SubjectBlock[] {
     const t = x.tile;
     const informative = !(t?.attention ?? true);
     const statut = (t?.status ?? '').split(' · ')[0].trim();
+    const text = subjectText(x);
     return {
       key: x.occurrenceKey,
       paragraph: x,
-      text: subjectText(x),
-      highlights: x.highlight ? [x.highlight] : [],
+      text,
+      // Mise en valeur seulement si elle figure dans le texte affiché.
+      highlights: x.highlight && text.includes(x.highlight) ? [x.highlight] : [],
       actions: x.actions.map((a, i) => ({ action: a, label: blockActionLabel(a), primary: i === 0 })),
       reminder: x.reminder ?? null,
       informative,
@@ -445,7 +489,8 @@ export function subjectBlocks(p: MascotPresentation | null): SubjectBlock[] {
       tone: t?.tone ?? 'blue',
       icon: t?.icon ?? 'circle-alert',
     };
-  });
+  // Lot 75E : un bloc sans texte NI action serait inutilisable — jamais rendu.
+  }).filter((b) => b.text !== '' || b.actions.length > 0 || b.reminder != null);
 }
 
 // ── Tuiles (client) ─────────────────────────────────────────────────────────

@@ -33,6 +33,14 @@ export interface CilBlock {
   status: BlockStatus;
   blocking: boolean;
   missingItems: MissingItem[];
+  /**
+   * Lot 75A : résolution utilisateur CONSERVÉE en base mais neutralisée dans
+   * l'état effectif parce qu'elle contredit les données réelles (B6 déclaré
+   * « Non applicable » alors que des équipements énergétiques sont retenus).
+   */
+  neutralizedResolution?: 'not_applicable';
+  /** Information affichée à l'utilisateur (préparation) ; absente sinon. */
+  notice?: string;
 }
 
 export interface CilReadiness {
@@ -66,25 +74,72 @@ type CilAsset = { id: number; address: string | null; postalCode: string | null;
 /** Ligne d'équipement lue pour B6 (colonnes structurées seulement). */
 export type CilEquipmentRow = CilEnergyEquipmentInput & { id: number };
 
+/** Code et message du refus de « Non applicable » sur B6 (lot 75A). */
+export const CIL_B6_NOT_APPLICABLE_REFUSED_CODE = 'CIL_B6_ENERGY_EQUIPMENT_PRESENT';
+export function cilB6NotApplicableRefusedMessage(n: number): string {
+  return `Ce bloc ne peut pas être déclaré non applicable : ${n > 1 ? `${n} équipements à incidence énergétique sont identifiés` : 'un équipement à incidence énergétique est identifié'} pour ce logement. `
+    + 'Modifiez l’usage énergétique de ces équipements si nécessaire.';
+}
+
+/** Information quand une ancienne déclaration « Non applicable » est neutralisée. */
+export function cilB6NeutralizedNotice(n: number): string {
+  return `Une déclaration « Non applicable » avait été enregistrée pour ce bloc, mais ${n > 1 ? `${n} équipements à incidence énergétique sont désormais identifiés` : 'un équipement à incidence énergétique est désormais identifié'} : `
+    + 'le bloc est donc considéré comme renseigné. La déclaration reste conservée ; elle redeviendrait effective si plus aucun équipement énergétique n’était retenu.';
+}
+
 /**
  * B6 — pur : même règle que le mappeur et le PDF. « Renseigné » si au moins
  * un équipement est classé à incidence énergétique ; un équipement
  * quelconque (télévision, portail) ne suffit plus (lot 69, §3.3).
+ *
+ * Lot 75A : un équipement énergétique RETENU rend B6 « Renseigné » même si
+ * une résolution `not_applicable` existe (déclaration antérieure à l'ajout
+ * d'une PAC, au changement de type…) : la résolution n'est ni supprimée ni
+ * modifiée, elle est NEUTRALISÉE dans l'état effectif et signalée
+ * (`neutralizedResolution`, `notice`). Sans équipement énergétique, la
+ * déclaration s'applique de nouveau (recalcul à chaque évaluation).
  */
 export function evaluateCilB6(equips: readonly CilEquipmentRow[], resolution: string | undefined): { block: CilBlock; energyEquipmentIds: number[] } {
   const energyEquipmentIds = equips.filter((e) => classifyCilEnergyEquipment(e) !== null).map((e) => e.id);
   const missingItems: MissingItem[] = [];
-  let status: BlockStatus;
-  if (resolution === 'not_applicable') status = 'not_applicable';
-  else if (energyEquipmentIds.length > 0) status = 'complete';
-  else {
-    status = 'unknown';
+  const block: CilBlock = { id: 'B6', label: 'Équipements à incidence énergétique', status: 'unknown', blocking: false, missingItems };
+  if (energyEquipmentIds.length > 0) {
+    block.status = 'complete';
+    if (resolution === 'not_applicable') {
+      block.neutralizedResolution = 'not_applicable';
+      block.notice = cilB6NeutralizedNotice(energyEquipmentIds.length);
+    }
+  } else if (resolution === 'not_applicable') {
+    block.status = 'not_applicable';
+  } else {
     missingItems.push(equips.length > 0
       // Des équipements existent mais aucun n'est caractérisé : on le dit (pas « aucun équipement »).
       ? { id: 'equipments_unclassified', label: 'Aucun équipement caractérisé comme énergétique (précisez l’usage énergétique ou le type de l’équipement)', target: { type: 'equipments' }, actionLabel: 'Préciser l’usage énergétique des équipements' }
       : { id: 'equipments', label: 'Équipements énergétiques (chauffage, ECS, ventilation…)', target: { type: 'equipments' }, actionLabel: 'Ajouter des équipements' });
   }
-  return { block: { id: 'B6', label: 'Équipements à incidence énergétique', status, blocking: false, missingItems }, energyEquipmentIds };
+  return { block, energyEquipmentIds };
+}
+
+/**
+ * Équipements lus pour B6 (données structurées, archivés exclus comme dans
+ * l'export) — même lecture pour l'évaluation et pour le refus de « Non
+ * applicable » (route des résolutions, lot 75A).
+ */
+export async function loadCilB6Equipments(assetId: number): Promise<CilEquipmentRow[]> {
+  return db
+    .select({
+      id: equipments.id, energyUsage: equipments.energyUsage, type: equipments.type, category: equipments.category,
+      energyType: equipmentCilSpecs.energyType, evacuationMode: equipmentCilSpecs.evacuationMode,
+      heatNetworkDeliveryStation: equipmentCilSpecs.heatNetworkDeliveryStation,
+    })
+    .from(equipments)
+    .leftJoin(equipmentCilSpecs, eq(equipmentCilSpecs.equipmentId, equipments.id))
+    .where(and(eq(equipments.assetId, assetId), isNull(equipments.archivedAt)));
+}
+
+/** Identifiants des équipements retenus pour B6 (même règle que l'évaluation). */
+export async function cilB6EnergyEquipmentIds(assetId: number): Promise<number[]> {
+  return evaluateCilB6(await loadCilB6Equipments(assetId), undefined).energyEquipmentIds;
 }
 
 /** Un bloc bloquant qui n'est ni complet ni non applicable. */
@@ -115,15 +170,7 @@ export async function evaluateCilReadiness(asset: CilAsset): Promise<CilReadines
   // Équipements pour B6 : données structurées (règle partagée), équipements
   // archivés exclus comme dans l'export (avant le lot 69 : tout équipement
   // existant, archivé compris, rendait B6 « renseigné »).
-  const equips: CilEquipmentRow[] = await db
-    .select({
-      id: equipments.id, energyUsage: equipments.energyUsage, type: equipments.type, category: equipments.category,
-      energyType: equipmentCilSpecs.energyType, evacuationMode: equipmentCilSpecs.evacuationMode,
-      heatNetworkDeliveryStation: equipmentCilSpecs.heatNetworkDeliveryStation,
-    })
-    .from(equipments)
-    .leftJoin(equipmentCilSpecs, eq(equipmentCilSpecs.equipmentId, equipments.id))
-    .where(and(eq(equipments.assetId, assetId), isNull(equipments.archivedAt)));
+  const equips = await loadCilB6Equipments(assetId);
 
   const hasDoc = (code: string) =>
     docs.some(d =>

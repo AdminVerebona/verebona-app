@@ -221,6 +221,12 @@ function listWhere(f: OperationListFilters): { where: string; params: unknown[] 
   }
   if (f.from) conds.push(`o.created_at >= ${FROM(p(f.from))}`);
   if (f.to) conds.push(`o.created_at < ${TO(p(f.to))}`);
+  // Lot 75N : recherche de la fiche compte (motif « contient », jokers neutralisés).
+  if (f.q) {
+    const pat = p(`%${f.q.replace(/[\\%_]/g, (c) => `\\${c}`)}%`);
+    const idCond = /^\d{1,9}$/.test(f.q) ? ` OR o.id = ${p(Number(f.q))}` : '';
+    conds.push(`(o.technical_label ILIKE ${pat} OR o.provider ILIKE ${pat} OR o.type_code ILIKE ${pat}${idCond})`);
+  }
   return { where: conds.length ? `WHERE ${conds.join(' AND ')}` : '', params };
 }
 
@@ -512,7 +518,7 @@ export class OperationDiagnosticsService {
         `SELECT ${LIST_COLUMNS}
            FROM business_operations o JOIN accounts acc ON acc.id = o.account_id
            ${where}
-          ORDER BY o.created_at DESC, o.id DESC
+          ORDER BY o.created_at ${f.dir === 'asc' ? 'ASC' : 'DESC'}, o.id ${f.dir === 'asc' ? 'ASC' : 'DESC'}
           LIMIT ${f.pageSize} OFFSET ${offset}`,
         params,
       );

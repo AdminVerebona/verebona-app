@@ -17,7 +17,7 @@
  * de migration déjà exposé par `/api/health`.
  * ══════════════════════════════════════════════════════════════════════════
  */
-import { schemaNotReadyMessage } from '@/lib/schema-readiness-log';
+import { probeCount, schemaNotReadyMessage } from '@/lib/schema-readiness-log';
 const RECONTROLE_MS = 5 * 60_000;
 let etat: { ready: boolean; checkedAt: number } | null = null;
 let signale = false;
@@ -44,7 +44,7 @@ export async function traceMasterColumnsReady(): Promise<boolean> {
           AND column_name = ANY($1::text[])`,
       [[...TRACE_MASTER_COLUMNS]] as never[],
     )) as unknown as Array<{ n: number }>;
-    trouvees = Number(rows[0]?.n ?? 0);
+    trouvees = probeCount(rows); // lot 75A : résultat inexploitable = inconnu, pas 0
     ready = trouvees === TRACE_MASTER_COLUMNS.length * 2;
   } catch (e) {
     ready = false;

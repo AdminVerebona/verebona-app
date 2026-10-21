@@ -75,7 +75,8 @@ describe('persistance et historique', () => {
   });
   it('confirmation : même ligne, date initiale conservée, événements tracés', () => {
     expect(persist).toMatch(/confirmForecast/);
-    expect(persist).toContain('forecastInitialDate: cur.forecastInitialDate ?? cur.startDate');
+    // Lot 75F : écriture SQL gardée — la date initiale reste celle de la prévision.
+    expect(persist).toContain('forecast_initial_date = COALESCE(forecast_initial_date, start_date)');
     for (const e of ['FORECAST_CREATED', 'CONFIRMED', 'DATE_CHANGED']) expect(persist).toContain(e);
   });
 });

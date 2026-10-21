@@ -123,16 +123,22 @@ scenario('L58C', 'Reporting exhaustif T1 / T3 : écritures confirmées, non-pers
     const police = e1.find((e) => e.section === 'PROJECTION' && e.field_key === 'numero_police')!;
     expect(police).toMatchObject({ write_result: 'NOT_WRITTEN', reason_code: 'GENERIC_KNOWLEDGE', value: 'POL-778' });
 
-    // T3 : champ alimenté, écriture confirmée par le journal transactionnel.
+    // Lot 75C (ticket T1 résiduels, D) : fait certain, cible vérifiée, sans conflit → champ alimenté
+    // par T1 lui-même (même moteur de décision et même primitive que T3), écriture relue.
+    const attribut = e1.find((e) => e.section === 'ATTRIBUTE' && e.field_key === 'insurer')!;
+    expect(attribut).toMatchObject({ write_result: 'WRITTEN', entity_type: 'ASSET', entity_id: bien.id });
+    expect(attribut.links).toMatchObject({ evidenceIds: [fe.id] });
+    const [cw] = await sql<{ id: string; new_value: unknown; origin: string }[]>`
+      SELECT id::text, new_value, origin FROM canonical_field_writes WHERE asset_id = ${bien.id} AND canonical_key = 'insurer' AND outcome = 'written' ORDER BY id DESC LIMIT 1`;
+    expect(cw).toMatchObject({ new_value: 'Allianz', origin: 'RECONCILIATION' });
+    // T3 (toujours programmé) : champ examiné, déjà alimenté — rien à réécrire.
     const t3 = (await rapports({ assetId: bien.id, treatment: 'T3' })).at(-1)!;
     expect(Number(t3.origin_t1_report_id)).toBe(Number(t1.id));
     const e3 = await lignes(t3.id);
     const champ = e3.find((e) => e.section === 'FIELD' && e.field_key === 'insurer')!;
-    const [cw] = await sql<{ id: string; new_value: unknown }[]>`
-      SELECT id::text, new_value FROM canonical_field_writes WHERE asset_id = ${bien.id} AND canonical_key = 'insurer' AND outcome = 'written' ORDER BY id DESC LIMIT 1`;
-    expect(champ).toMatchObject({ write_result: 'WRITTEN', record_id: cw.id, value: cw.new_value, table_name: 'canonical_field_writes' });
+    expect(champ).toMatchObject({ write_result: 'NOT_WRITTEN' });
     expect(champ.column_path).toContain('assets.key_characteristics.insurer');
-    expect(champ.links).toMatchObject({ decision: 'apply', evidence: { id: fe.id, sourceFileId: f.id }, t1ReportId: Number(t1.id) });
+    expect(champ.links).toMatchObject({ evidence: { id: fe.id, sourceFileId: f.id }, t1ReportId: Number(t1.id) });
     const [kc] = await sql<{ v: string }[]>`SELECT (key_characteristics::jsonb)->>'insurer' AS v FROM assets WHERE id = ${bien.id}`;
     expect(kc.v).toBe('Allianz');
     // Information présente dans le document, absente de la fiche : cause identifiée (projection T1, pas de cible).
@@ -183,6 +189,9 @@ scenario('L58C', 'Reporting exhaustif T1 / T3 : écritures confirmées, non-pers
     await sql.unsafe('DROP TRIGGER IF EXISTS e2e_l58c_facts ON document_facts');
 
     // (b) T3 : l'écriture de la fiche échoue — champ FAILED, rapport FAILED, fiche intacte.
+    // Lot 75C : T1 a déjà alimenté le champ (fait fiable) ; on le retire pour que T3 ait à l'écrire.
+    await sql`UPDATE assets SET key_characteristics = (SELECT COALESCE(jsonb_object_agg(k, v), '{}'::jsonb)::text
+      FROM jsonb_each(key_characteristics::jsonb) AS e(k, v) WHERE k NOT LIKE 'insurer%') WHERE id = ${bien.id}`;
     await sql.unsafe(`CREATE TRIGGER e2e_l58c_assets BEFORE UPDATE ON assets FOR EACH ROW WHEN (NEW.id = ${bien.id}) EXECUTE FUNCTION e2e_l58c_fail()`);
     const { reconcileAsset } = await import('@/services/ai/reconciliation/reconciliation-engine');
     // La preuve « Allianz » projetée par T1 (a) est active : T3 décide d'écrire, l'écriture échoue.

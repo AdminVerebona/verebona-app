@@ -129,7 +129,8 @@ describe('T6-02 — échéances anciennes', () => {
   it('T6-02 — la lecture T6 exige un signal d’action (jamais la seule date) et reste bornée', () => {
     const src = lire('src/services/home/mascot/collector.ts');
     expect(src).toMatch(/c\."assessmentDecision" IN \('SHOW_NOW', 'DEFER'\) OR c\.snoozed/);
-    expect(src).toMatch(/LIMIT \$\{T6_AGENDA_EXTRA_LIMIT\}/);
+    // Lot 75E (B) : une ligne de plus pour détecter une file d'examen plus longue que la lecture.
+    expect(src).toMatch(/LIMIT \$\{T6_AGENDA_EXTRA_LIMIT \+ 1\}/);
     expect(src).toMatch(/NOT EXISTS \(SELECT 1 FROM to_process_actions x/);
   });
 });
@@ -184,7 +185,8 @@ describe('T6-04 — preuves transmises à EVALUATE', () => {
       expect.objectContaining({ ref: 'C1.fact2', document: 'C1.doc1', status: 'DEDUCED' }),
     ]);
     expect(r.refs).toEqual(expect.arrayContaining([{ ref: 'C1.fact1', kind: 'DOCUMENT_FACT' }, { ref: 'C1.doc1', kind: 'DOCUMENT' }]));
-    expect(r.versions.get('C1.fact1')).toEqual({ ref: 'C1.fact1', kind: 'DOCUMENT_FACT', fileId: 4, extractionId: 100, factId: 6, factKey: 'renewalDate', provenance: 'T2_REVALIDATION' });
+    // Lot 75E (C) : le statut du fait accompagne sa version (exception au seuil, reporting).
+    expect(r.versions.get('C1.fact1')).toEqual({ ref: 'C1.fact1', kind: 'DOCUMENT_FACT', fileId: 4, extractionId: 100, factId: 6, factKey: 'renewalDate', provenance: 'T2_REVALIDATION', status: 'UNCERTAIN' });
     expect(I.evidenceSnapshotOf(['C1.fact1'], r.versions, 'v2:fp')).toEqual({ version: 1, fingerprint: 'v2:fp', refs: [r.versions.get('C1.fact1')] });
   });
   it('T6-04 — faits non pertinents écartés ; référence de fait acceptée par la validation (contrat inchangé)', () => {
@@ -279,23 +281,25 @@ describe('T6-06 — préférences respectées en mode dégradé', () => {
 });
 
 describe('T6-07 — identité des occurrences récurrentes', () => {
-  it('T6-07 — replanification conservée ; nouveau cycle (identifiant réutilisé) non hérité ; série toujours appliquée', () => {
-    const occ = { scope: 'OCCURRENCE' as const, occurrenceDate: '2026-11-08' };
-    expect(I.preferenceAppliesToCycle(occ, '2026-11-18')).toBe(true);
-    expect(I.preferenceAppliesToCycle(occ, '2027-11-18')).toBe(false);
-    expect(I.preferenceAppliesToCycle({ scope: 'OCCURRENCE', occurrenceDate: null }, '2027-11-18')).toBe(true); // antérieure : prudence
-    expect(I.preferenceAppliesToCycle({ scope: 'SERIES', occurrenceDate: '2020-01-01' }, '2027-11-18')).toBe(true);
+  // Lot 75E (D) : l'écart de 183 jours est remplacé par l'identité persistante du cycle (voir l75e-t6-residuels.test.ts).
+  it('T6-07 — replanification conservée ; nouveau cycle non hérité ; série toujours appliquée (identité de cycle, lot 75E)', () => {
+    const occ = { scope: 'OCCURRENCE' as const, cycleKey: 'agenda:1#0' };
+    expect(I.preferenceAppliesToCycle(occ, 'agenda:1#0')).toBe(true);
+    expect(I.preferenceAppliesToCycle(occ, 'agenda:1#1')).toBe(false);
+    expect(I.preferenceAppliesToCycle({ scope: 'OCCURRENCE', cycleKey: null }, 'agenda:1#1')).toBe(true); // antérieure : prudence
+    expect(I.preferenceAppliesToCycle({ scope: 'SERIES', cycleKey: 'x' }, 'agenda:1#1')).toBe(true);
     const prefs = [
-      { scope: 'OCCURRENCE' as const, decision: 'DISMISSED' as const, remindAt: null, contextFingerprint: null, agendaItemId: 1, seriesKey: null, occurrenceDate: '2026-11-08' },
+      { scope: 'OCCURRENCE' as const, decision: 'DISMISSED' as const, remindAt: null, contextFingerprint: null, agendaItemId: 1, seriesKey: null, occurrenceDate: '2026-11-08', cycleKey: 'agenda:1#0' },
       { scope: 'SERIES' as const, decision: 'DISMISSED' as const, remindAt: null, contextFingerprint: null, agendaItemId: null, seriesKey: 's' },
     ];
-    expect(S.preferencesFor(prefs, 1, null, '2027-11-08')).toEqual([]);
-    expect(S.preferencesFor(prefs, 1, 's', '2027-11-08')).toEqual([prefs[1]]);
-    expect(S.preferencesFor(prefs, 1, null, '2026-11-20')).toEqual([prefs[0]]);
+    expect(S.preferencesFor(prefs, 1, null, 'agenda:1#1')).toEqual([]);
+    expect(S.preferencesFor(prefs, 1, 's', 'agenda:1#1')).toEqual([prefs[1]]);
+    expect(S.preferencesFor(prefs, 1, null, 'agenda:1#0')).toEqual([prefs[0]]);
   });
-  it('T6-07 — un refus de série n’est retiré qu’après une absence prolongée (migration 0507 rejouable)', () => {
+  it('T6-07 — un refus de série n’est plus retiré par la seule absence d’occurrence (lot 75E) ; migration 0507 rejouable', () => {
     const svc = lire('src/services/home/mascot/t6-reminders.service.ts');
-    expect(svc).toMatch(/p\.orphaned_since < \$1::date - \$\{SERIES_ORPHAN_RETENTION_DAYS\}/);
+    expect(svc).not.toMatch(/SERIES_ORPHAN_RETENTION_DAYS\}/);
+    expect(svc).toMatch(/p\.series_asset_id IS NOT NULL AND \$\{sansSerie\}/);
     const mig = lire('src/db/migrations/0507_l71g_t6_ecarts.sql');
     expect(mig).toMatch(/ADD COLUMN IF NOT EXISTS occurrence_date DATE/);
     expect(mig).toMatch(/ADD COLUMN IF NOT EXISTS evidence_snapshot\s+JSONB/);

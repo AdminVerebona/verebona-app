@@ -4,6 +4,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { SessionService } from '@/lib/session-service';
 import { getAgendaItems, getAgendaItemsWithEquipmentFacet } from '@/services/agenda/AgendaQueryService';
 import { equipmentFilterParam } from '@/lib/filters/equipment-filter';
+import { roomFilterParam } from '@/lib/filters/room-filter';
 import { createAgendaItem } from '@/services/agenda/AgendaWriteService';
 
 export async function GET(req: NextRequest) {
@@ -31,11 +32,15 @@ export async function GET(req: NextRequest) {
     // Lot 71 (71C) : filtre Équipement (`?equipment=asset|<id>`, avec
     // `assetIds`) et, sur demande (`?equipmentFacet=1`, « Mon agenda »), les
     // équipements des biens retenus avec leurs compteurs.
+    // Lot 75B : filtre Pièce (`?piece=<id>`, avec `assetIds`) — échéances
+    // directes de la pièce, de ses équipements et de ses documents ; la
+    // facette (`roomFacet`) accompagne `equipmentFacet=1`.
     const equipment = equipmentFilterParam(searchParams.get('equipment')) ?? undefined;
-    const query = { accountId, assetIds, fileId, period, includeCancelled, month, year, includeUndated, equipment };
+    const piece = roomFilterParam(searchParams.get('piece')) ?? undefined;
+    const query = { accountId, assetIds, fileId, period, includeCancelled, month, year, includeUndated, equipment, piece };
     if (searchParams.get('equipmentFacet') === '1') {
-      const { items, equipmentFacet } = await getAgendaItemsWithEquipmentFacet(query);
-      return NextResponse.json({ items, equipmentFacet }, { headers: { 'Cache-Control': 'private, no-cache' } });
+      const { items, equipmentFacet, roomFacet } = await getAgendaItemsWithEquipmentFacet(query);
+      return NextResponse.json({ items, equipmentFacet, roomFacet }, { headers: { 'Cache-Control': 'private, no-cache' } });
     }
     const items = await getAgendaItems(query);
     return NextResponse.json({ items }, {

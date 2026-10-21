@@ -179,8 +179,10 @@ describe('télémétrie et gouvernance', () => {
   });
 
   it('RUN-001 — même contexte : le texte affiché n’est pas remplacé', () => {
+    // Lot 75E (§5) : règle partagée — même contexte ET même révision du contrat de présentation.
     expect(read('src/components/home/useMascotPresentation.ts'))
-      .toMatch(/prev && prev\.contextHash === data\.contextHash \? prev : data/);
+      .toMatch(/keepDisplayedPresentation\(prev, data\) \? prev : data/);
+    expect(read('src/services/home/mascot/bubble.ts')).toMatch(/prev\.contextHash === next\.contextHash/);
   });
 
   it('LOG-02 — un seul « affiché » par occurrence et par visite', () => {

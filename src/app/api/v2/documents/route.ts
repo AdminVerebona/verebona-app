@@ -14,6 +14,8 @@
  *   ?assets=12,45           restreint au périmètre d'un ou plusieurs biens
  *   ?biens=12,__NO_ASSET__  ?rubrics=MEDIA,__UNFILED__  ?types=DPE,__NO_TYPE__
  *   ?ids=3,4 | none         résultats d'une recherche de l'assistant
+ *   ?piece=7                lot 75B : filtre Pièce (documents directs de la
+ *                           pièce + documents de ses équipements, une fois)
  *   ?equipment=asset|42     lot 71 : filtre Équipement (bien uniquement, ou
  *                           un équipement des biens retenus) ; sans bien
  *                           retenu ou sans équipement, sans effet
@@ -64,7 +66,7 @@ export async function GET(req: NextRequest) {
       sort: params.sort,
       grouped: params.grouped,
       filtered: params.filters.biens.length + params.filters.rubrics.length + params.filters.types.length > 0
-        || !!params.filters.equipment,
+        || !!params.filters.equipment || !!params.filters.piece,
     }));
     return new NextResponse(body, {
       headers: {
