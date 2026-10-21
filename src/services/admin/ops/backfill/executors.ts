@@ -17,6 +17,8 @@
  *   document-validation   runValidationReprise (lot 71B ; simulation = lecture seule)
  *   duo-shared-account    runDuoSharedAccountBackfill / restoreDuoSharedAccountRun (lot 72D ;
  *                         simulation = lecture seule ; journal 0521)
+ *   agenda-intervention-duplicates  runAgendaDuplicatesReprise / restoreAgendaDuplicatesReprise
+ *                         (lot 76H ; simulation = plans de projection sans écriture ; journal 0591)
  *
  * Services chargés à la demande : la route reste légère.
  */
@@ -176,6 +178,22 @@ export async function executeBackfill(sql: postgres.Sql, req: BackfillRequest, h
         return { result: r };
       }
       const r = await m.runDuoSharedAccountBackfill(sql, { apply: req.action === 'apply', accountId: req.accountId, log: hooks.log });
+      return { result: r };
+    }
+    case 'agenda-intervention-duplicates': {
+      // Lot 76H : même service que la tâche de démarrage (projection rejouée, journal 0591).
+      const m = await import('@/services/business-operations/agenda-projection/duplicates-reprise');
+      if (req.action === 'restore') {
+        const r = await m.restoreAgendaDuplicatesReprise(sql, req.runId!, { reason: req.reason });
+        hooks.log(`restauration ${req.runId} : ${r.restored} écriture(s), ${r.conflicts.length} conflit(s)`);
+        return { result: { ...r, runId: req.runId } };
+      }
+      let r = await m.runAgendaDuplicatesReprise({ mode: req.action === 'apply' ? 'APPLY' : 'SIMULATE', origin: 'BO', accountId: req.accountId, reason: req.reason, log: hooks.log, sql });
+      // Exécution bornée par appels : poursuivie jusqu'au bout du périmètre.
+      while (r.more) {
+        hooks.progress({ cursor: r.cursor, ...r.counters });
+        r = await m.runAgendaDuplicatesReprise({ mode: r.mode, origin: 'BO', accountId: req.accountId, resumeRunId: r.runId, log: hooks.log, sql });
+      }
       return { result: r };
     }
   }

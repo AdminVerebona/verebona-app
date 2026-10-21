@@ -20,8 +20,12 @@ import type postgres from 'postgres';
 
 type Sql = postgres.Sql;
 
-/** OPERATION_PROJECTION (lot 46, O7) : projection d'une Opération retirée (Opération invalidée, doublon de fusion, orpheline). */
-export type AgendaRemovalReason = 'SOURCE_SYNC' | 'DEDUPE_14_6' | 'OPERATION_PROJECTION';
+/**
+ * OPERATION_PROJECTION (lot 46, O7) : projection d'une Opération retirée (Opération invalidée, doublon de fusion, orpheline).
+ * OPERATION_CONSOLIDATION (lot 76H) : représentation T4 équivalente absorbée par l'élément principal de l'Opération
+ * (journal 0591 `agenda_intervention_consolidations`, restaurable).
+ */
+export type AgendaRemovalReason = 'SOURCE_SYNC' | 'DEDUPE_14_6' | 'OPERATION_PROJECTION' | 'OPERATION_CONSOLIDATION';
 
 let pret: { ready: boolean; at: number } | null = null;
 

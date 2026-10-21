@@ -8,16 +8,17 @@
  * déjà produites par l'analyse (usage 1).
  */
 import { isValuationEvidenceAdmissible } from '@/services/canonical/valuation-semantics';
-import { db, pgClient } from '@/db';
-import { assets } from '@/db/schema';
-import { eq, and } from 'drizzle-orm';
+import { pgClient } from '@/db';
 import { getActiveEvidence, evidenceReadFilter } from '../evidence/field-evidence.service';
 import { resolveAuthority } from './decision/authority-matrix';
 import { normalize } from './decision/normalizers';
 import { readOrigin } from './field-origin';
 import { isCriticalField } from './decision/critical-fields';
 import { EVIDENCE_BASED_ORIGINS } from './negative-reconciliation';
-import { isFieldApplicableToAsset, isInputOnlyKey } from '@/services/canonical/registry';
+import { getField, isFieldApplicableToAsset, isInputOnlyKey } from '@/services/canonical/registry';
+import {
+  indexKcAliases, isEmptyValue, loadAssetRow, readFieldState, rowFamily, type AssetRowJson,
+} from '@/services/canonical/asset-state/canonical-asset-view';
 import type { DecisionInput, EvidenceCandidate, CurrentValue } from './types';
 import type { FieldEvidence } from '../evidence/evidence.types';
 
@@ -40,25 +41,34 @@ export async function collectFields(
   return (await collectAssetEvidenceState(accountId, assetId)).fields;
 }
 
+/** Bien lu par le collecteur (lot 76J : inventaire exhaustif de l'onglet « Informations »). */
+export interface CollectedAsset {
+  category: string | null;
+  subtype: string | null;
+  /** Ligne complète (colonnes d'identité et miroirs historiques). */
+  row: AssetRowJson;
+  /** Valeur EN PLACE d'une clé canonique, telle que la fiche l'affiche. */
+  current: (key: string) => CurrentValue | null;
+}
+
 /**
  * Fiche du bien et champs à décider. `kc` sert la phase négative (T3-04) :
  * les valeurs automatiques SANS aucune preuve active n'apparaissent pas dans
  * `fields`. Preuves retenues : ACTIVE, du bien lui-même (cible nulle ou ce
  * bien — T1-04) ; un fait ciblé ailleurs ne produit rien ici.
+ * Lot 76J : rend aussi le bien (`asset`) — inventaire exhaustif, valeur en
+ * place lue comme la fiche (clé, alias, colonne historique).
  */
 export async function collectAssetEvidenceState(
   accountId: number,
   assetId: number,
-): Promise<{ kc: Record<string, unknown> | null; fields: CollectedField[] }> {
-  const [asset] = await db
-    .select({ keyCharacteristics: assets.keyCharacteristics, category: assets.category, subtype: assets.subtype })
-    .from(assets)
-    .where(and(eq(assets.id, assetId), eq(assets.accountId, accountId)))
-    .limit(1);
+): Promise<{ kc: Record<string, unknown> | null; fields: CollectedField[]; asset?: CollectedAsset }> {
+  const row = await loadAssetRow(pgClient as never, assetId, accountId);
+  if (!row) return { kc: null, fields: [] };
+  const asset = { category: row.category ?? null, subtype: (row.subtype as string | null | undefined) ?? null };
 
-  if (!asset) return { kc: null, fields: [] };
-
-  const kc = parseKeyCharacteristics(asset.keyCharacteristics);
+  const kc = parseKeyCharacteristics(row.key_characteristics);
+  const lire = currentValueReader(kc, row);
   const fieldKeys = await listFieldsWithEvidence(accountId, assetId);
   const collected: CollectedField[] = [];
 
@@ -73,7 +83,7 @@ export async function collectAssetEvidenceState(
 
     const candidates = toEvidenceCandidates(fieldKey, evidences);
 
-    const current = buildCurrentValue(fieldKey, kc);
+    const current = lire(fieldKey);
     collected.push({
       fieldKey,
       input: {
@@ -86,7 +96,7 @@ export async function collectAssetEvidenceState(
     });
   }
 
-  return { kc, fields: collected };
+  return { kc, fields: collected, asset: { ...asset, row, current: lire } };
 }
 
 /**
@@ -145,6 +155,39 @@ export function isUnprovenAutomaticValue(current: CurrentValue | null, candidate
   const utilisables = candidates.filter((c) => c.normalized !== null && c.normalized !== '');
   if (utilisables.length === 0) return false;
   return !utilisables.some((c) => c.normalized === current.normalized);
+}
+
+/**
+ * Lecture de la valeur EN PLACE, telle que la fiche l'affiche (lot 76J) :
+ * clé canonique de `keyCharacteristics`, puis alias historique, puis
+ * colonne miroir (`purchase_date`, `purchase_price_cents`…) — même ordre
+ * que `CanonicalAssetView` et que la primitive d'écriture. Avant, seule la
+ * clé était lue : une date saisie à la création (colonne seule) passait
+ * pour un champ VIDE ; la décision « compléter » échouait ensuite sur le
+ * contrôle optimiste de la primitive, sans arbitrage ni trace utile.
+ * Une valeur de colonne n'a pas d'origine tracée : elle est lue USER
+ * (protégée, CDC 15 §14.3).
+ */
+export function currentValueReader(kc: Record<string, unknown>, row: AssetRowJson): (key: string) => CurrentValue | null {
+  const family = rowFamily(row.category);
+  let alias: ReturnType<typeof indexKcAliases> | null = null;
+  return (fieldKey: string) => {
+    if (!isEmptyValue(kc[fieldKey])) return buildCurrentValue(fieldKey, kc);
+    const def = getField(fieldKey);
+    if (!def) return buildCurrentValue(fieldKey, kc);
+    alias ??= indexKcAliases(kc, family);
+    const st = readFieldState(def, kc, row as Record<string, unknown>, alias.get(def.key));
+    if (!st) return buildCurrentValue(fieldKey, kc);
+    const base = st.from === 'alias' && st.fromName ? st.fromName : fieldKey;
+    return {
+      value: st.value,
+      normalized: normalize(fieldKey, st.value),
+      origin: st.origin,
+      updatedAt: parseDate(st.updatedAt),
+      authorityScore: st.from !== 'column' && typeof kc[`${base}__authority`] === 'number' ? kc[`${base}__authority`] as number : undefined,
+      sourceDate: st.from !== 'column' ? parseDate(kc[`${base}__sourceDate`]) : null,
+    };
+  };
 }
 
 function buildCurrentValue(

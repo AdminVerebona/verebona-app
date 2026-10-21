@@ -192,10 +192,11 @@ scenario('L75E-T6', 'Lot 75E — écarts résiduels de sélection, preuves et ra
     // Une seule évaluation (aucune demande répétée), puis présentée.
     expect(evalues().map((x) => x.title)).toEqual(['Fin du contrat d’entretien chaudière']);
     expect(ids(p)).toEqual([e]);
-    // Réextraction IDENTIQUE (nouvelle version, extrait reformulé) : aucun appel IA supplémentaire.
+    // Réextraction IDENTIQUE (nouvelle version, variation cosmétique : casse, ponctuation, espaces) : aucun appel IA supplémentaire.
+    // Lot 76A : l'ordre des mots porte le sens — une clause réordonnée est réévaluée une fois (jamais présumée identique).
     modele.candidats.length = 0;
     await sql`UPDATE document_facts SET status = 'superseded' WHERE file_id = ${doc.fileId}`;
-    await fait(c, doc, { key: 'unpaidMaintenance', label: 'Obligation de paiement du solde', value: '120 €', excerpt: 'En cas de résiliation, le solde de 120 € reste dû au prestataire.' });
+    await fait(c, doc, { key: 'unpaidMaintenance', label: 'Obligation de paiement du solde', value: '120 €', excerpt: '  LE SOLDE de 120 € reste dû au prestataire, en cas de résiliation !' });
     expect(ids(await passer(c.id))).toEqual([e]);
     expect(evalues()).toEqual([]);
     // Modification de CLAUSE sans changement de titre, de date ni de valeur : réévaluée.

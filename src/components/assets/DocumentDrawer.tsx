@@ -46,7 +46,7 @@ import { SupplierDrawer } from '@/components/suppliers/SupplierDrawer';
 import { DOCUMENT_TYPE_LABELS as FALLBACK_TYPE_LABELS } from '@/lib/document-type-constants';
 import { resolveDocumentTypeCode } from '@/lib/referential/document-codes';
 import { displayDocumentTitle } from '@/lib/documents/document-title-rules';
-import { openDrawer } from '@/lib/drawers';
+import { openDrawer, restoreFocusOnClose } from '@/lib/drawers';
 import { EntityCard, EntityCardList } from '@/components/drawers/EntityCard';
 import type { AgendaItemFull } from '@/services/agenda/AgendaQueryService';
 import { useWriteGuard } from '@/contexts/WriteGuardContext';
@@ -117,6 +117,8 @@ interface Props {
   onNext?: () => void;
   hasPrev?: boolean;
   hasNext?: boolean;
+  /** Lot 76E — élément qui reprend le focus à la fermeture (vignette « À traiter »). */
+  returnFocusTo?: HTMLElement | null;
 }
 
 const fmt = (d: string | null | undefined) => {
@@ -275,7 +277,7 @@ function DocPreview({ fileId, mimeType, viewUrl, filename }: { fileId: number; m
   );
 }
 
-export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, autoAnalyze, showAnalysisResults, isPremium = true, onPrev, onNext, hasPrev, hasNext }: Props) {
+export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, autoAnalyze, showAnalysisResults, isPremium = true, onPrev, onNext, hasPrev, hasNext, returnFocusTo }: Props) {
   const { analysisStartTimes, analyzingFileIds } = useAnalysisBanner();
   const [fullData, setFullData] = useState<FullFileData | null>(null);
   const [viewUrl, setViewUrl] = useState<string | null>(null);
@@ -1058,6 +1060,8 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
           className="w-full sm:max-w-lg flex flex-col p-0"
           onInteractOutside={isAnalyzing ? (e) => e.preventDefault() : undefined}
           onEscapeKeyDown={isAnalyzing ? (e) => e.preventDefault() : undefined}
+          // Lot 76E : focus rendu à l'élément d'origine, s'il est fourni.
+          onCloseAutoFocus={(e) => { restoreFocusOnClose(e, returnFocusTo); }}
         >
           <SheetHeader className="px-5 pt-5 pb-3">
             {/* Title row — icon + name + badge (close ✕ is absolute top-right from shadcn) */}

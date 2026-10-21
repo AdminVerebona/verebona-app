@@ -122,12 +122,15 @@ export function DashboardLayout({ children, user: userProp }: DashboardLayoutPro
   const [globalDocDrawerId, setGlobalDocDrawerId] = useState<number | null>(null);
   const [globalDocDrawerAutoAnalyze, setGlobalDocDrawerAutoAnalyze] = useState(false);
   const [globalDocDrawerShowAnalysis, setGlobalDocDrawerShowAnalysis] = useState(false);
+  // Lot 76E : élément qui reprend le focus à la fermeture (vignette « À traiter »).
+  const [globalDocDrawerReturnFocus, setGlobalDocDrawerReturnFocus] = useState<HTMLElement | null>(null);
 
   useEffect(() => {
     const handler = (e: Event) => {
-      const { docId, showAnalysisResults } = (e as CustomEvent<{ docId: number; showAnalysisResults?: boolean }>).detail;
+      const { docId, showAnalysisResults, returnFocusTo } = (e as CustomEvent<{ docId: number; showAnalysisResults?: boolean; returnFocusTo?: HTMLElement | null }>).detail;
       if (docId) {
         setGlobalDocDrawerShowAnalysis(!!showAnalysisResults);
+        setGlobalDocDrawerReturnFocus(returnFocusTo ?? null);
         setGlobalDocDrawerId(docId);
         setGlobalDocDrawerOpen(true);
       }
@@ -485,6 +488,7 @@ export function DashboardLayout({ children, user: userProp }: DashboardLayoutPro
       <DocumentDrawer
         open={globalDocDrawerOpen}
         onOpenChange={v => { setGlobalDocDrawerOpen(v); if (!v) { setGlobalDocDrawerId(null); setGlobalDocDrawerAutoAnalyze(false); setGlobalDocDrawerShowAnalysis(false); } }}
+        returnFocusTo={globalDocDrawerReturnFocus}
         document={{
           id: globalDocDrawerId,
           originalFilename: '',

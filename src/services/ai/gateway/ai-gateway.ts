@@ -51,6 +51,7 @@ import { assertTreatmentRunnable } from '../queue/runnable-guard';
 import { noteGatewayOutcome as noteTreatmentOutcome, type GatewayOutcome, type ModelAttempt } from '../queue/circuit-breaker.repository';
 import { currentJobContext } from '../queue/job-context';
 import { assertAccountCostCap } from './account-cost-cap';
+import { baseMaxOutputTokens, reasoningAtRank } from './generation-profile';
 import type { ModelRank } from '../telemetry/execution-context';
 import type { AiProvider, ProviderCallInput, ProviderCallOutput, ProviderResponseMeta } from './providers/provider.port';
 import type { ZodType } from 'zod';
@@ -375,12 +376,9 @@ export class AiGateway {
     // en héritent, faute de valeur propre. C'est ce que dit le CDC, et
     // c'est aussi le comportement le plus sûr — un repli sollicité parce
     // que le principal a échoué ne doit pas en plus changer de format.
-    const maxOutputTokens = plafonnerSortie(
-      op.minOutputTokens
-        ? Math.max(configuration.maxOutputTokens ?? 0, op.minOutputTokens)
-        : configuration.maxOutputTokens ?? undefined,
-      req.maxOutputTokensCap,
-    );
+    // Lot 76A : même calcul que le profil de génération (`generation-profile.ts`,
+    // signature de configuration T6 EVALUATE) — une seule source.
+    const maxOutputTokens = plafonnerSortie(baseMaxOutputTokens(op, configuration), req.maxOutputTokensCap);
 
     // Pièces jointes préparées une fois pour toute la chaîne (upload Files API
     // unique, réutilisé par les replis), libérées en fin de chaîne quelle que
@@ -525,7 +523,7 @@ export class AiGateway {
         // T1-UI-06, T2-UI-03, T3-UI-03, T4-UI-03 : niveau du rang RÉELLEMENT
         // sollicité. Indexé sur le rang dans la chaîne complète : une escalade
         // (`firstModelIndex`) ne doit pas recevoir le niveau du principal.
-        const reasoning = configuration.reasoningByRank[i + premierRang] ?? null;
+        const reasoning = reasoningAtRank(configuration, i + premierRang);
         const timeoutMs = req.timeoutMsCap && req.timeoutMsCap > 0 ? Math.min(op.timeoutMs, req.timeoutMsCap) : op.timeoutMs;
         // §21 : un repli après une sortie invalide connaît l'erreur précédente.
         const informed = previousFailure?.family === 'INVALID_OUTPUT' && previousFailure.subtype !== 'OUTPUT_TRUNCATED'

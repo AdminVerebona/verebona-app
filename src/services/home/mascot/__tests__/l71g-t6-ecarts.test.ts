@@ -106,13 +106,14 @@ describe('T6-01 — réévaluer après modification des données significatives'
       preferences: async () => prefs, assessments: async () => new Map([[1, evaluation(1, fp(r, vide()))]]),
       evidence: async () => new Map([[1, e]]),
     }));
-    expect(p.decisions[0]).toMatchObject({ code: 'USER_DISMISSED_OCCURRENCE', fingerprint: fp(r, e) });
+    // Lot 76A : empreinte du contexte transmis (`v4:`, représentation commune).
+    expect(p.decisions[0]).toMatchObject({ code: 'USER_DISMISSED_OCCURRENCE', fingerprint: S.t6ContextFingerprint(r, e) });
     // Sans préférence (pré-génération) : nouvelle évaluation, motif tracé.
     const q = await S.prepareT6Interpellation({ accountId: 7, userId: null, raw: raw([r]) }, deps({
       assessments: async () => new Map([[1, evaluation(1, fp(r, vide()))]]), evidence: async () => new Map([[1, e]]), dueReminders: async () => new Map(),
     }));
     expect(q.decisions[0]).toMatchObject({ needsAssessment: true, reevaluationReason: 'CONTEXT_CHANGED' });
-    expect(q.bundle!.refs.get('C1')).toMatchObject({ reevaluationReason: 'CONTEXT_CHANGED', fingerprint: fp(r, e) });
+    expect(q.bundle!.refs.get('C1')).toMatchObject({ reevaluationReason: 'CONTEXT_CHANGED', fingerprint: S.t6ContextFingerprint(r, e) });
   });
 });
 

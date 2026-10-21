@@ -15,6 +15,10 @@
  *     (compte, issue) ; relance une campagne ;
  *   · lance la RECETTE du corpus livré avec le véritable T4 et lit, cas par
  *     cas, le résultat attendu et obtenu (trace IA).
+ *   · lot 76 (C7 / C8) : distingue « parcours terminé » et « campagne
+ *     terminée sans erreur », suit les reprises (en attente, bloquantes,
+ *     réussies) et les relance ; voit les décisions appliquées NON tracées
+ *     (reprise identifiable) et les relance.
  */
 import { useCallback, useEffect, useState } from 'react';
 import { ChevronDown, ListChecks, AlertTriangle, RefreshCw, Play } from 'lucide-react';
@@ -29,10 +33,20 @@ interface Campaign {
   /** Lot 72 (C6) : bilan par règle, familles, phase, éléments restants, erreurs. */
   outcomesByRule?: Record<string, Record<string, number>>; families?: Record<string, string>; phase?: string | null;
   remaining?: { cards: number; decisions: number } | null; errorItems?: number;
+  /** Lot 76 (C7) : fin du parcours, périmètre, reprises, erreurs en attente / bloquantes / reprises avec succès. */
+  traversalFinishedAt?: string | null; scope?: Record<string, unknown> | null; retries?: number;
+  errors?: { pending: number; blocking: number; recovered: number } | null;
+}
+interface TraceRetry {
+  id: number; accountId: number; source: string; ruleCode: string; targetType: string | null; targetId: number | null; status: string;
+  attempts: number; error: string | null; originalAt: string; resolvedAt: string | null;
+  decision: { outcome: unknown; reason: unknown; effect: unknown; actionIds: unknown };
 }
 interface Item {
   actionId: number | null; accountId: number; fileId: number | null; ruleCode: string; kindBefore: string | null; outcome: string; reason: string | null; createdAt: string;
   targetType?: string; targetId?: number; phase?: string;
+  /** Lot 76 (C7) : issue après reprise, traitements, première / dernière erreur. */
+  finalOutcome?: string | null; attempts?: number; firstError?: string | null; lastError?: string | null;
 }
 interface RecetteResult {
   caseId: string; label: string; ok: boolean; expected: { outcomes: string[]; card?: string | null; kinds?: string[]; never?: string[] };
@@ -56,13 +70,20 @@ interface Data {
     thresholds?: { futureHorizonDays: number; historicalYears: number; deferUncertainDays: number; deferUndatedDays: number; deferTitleOnlyDays: number };
   };
   engineVersion: string;
-  migrations: { decisions0444: boolean; campaigns0445: boolean; recette0446: boolean; ecarts0516?: boolean; campagne0517?: boolean };
+  migrations: { decisions0444: boolean; campaigns0445: boolean; recette0446: boolean; ecarts0516?: boolean; campagne0517?: boolean; reprise0581?: boolean; traces0582?: boolean };
   campaigns: Campaign[]; items: Item[];
   recetteCases: Array<{ id: string; label: string; deterministic: boolean }>;
   recetteRuns: RecetteRun[];
   /** Lot 75I (D) : décisions en attente d'une configuration T4 compatible (dernière décision par document et règle). */
   incompatibleDecisions?: number;
+  /** Lot 76 (C8) : décisions appliquées dont la trace a échoué (reprise 0582). */
+  traceRetries?: { available: boolean; counts: Record<string, number>; items: TraceRetry[] };
 }
+
+const STATUT_CAMPAGNE: Record<string, string> = {
+  DONE: 'terminée sans erreur', RUNNING: 'en cours', DONE_WITH_ERRORS: 'parcours terminé — erreurs maintenues bloquantes', ERROR: 'en erreur',
+};
+const STATUT_TRACE: Record<string, string> = { PENDING: 'à reprendre', REPLAYED: 'trace écrite après reprise', SUPERSEDED: 'remplacée par une décision plus récente', ABANDONED: 'reprises épuisées' };
 
 const ISSUE_LABEL: Record<string, string> = {
   KEPT: 'conservées', AUTO_RESOLVED: 'résolues automatiquement', DEFERRED: 'différées', REMOVED: 'retirées (sans pertinence)',
@@ -80,7 +101,7 @@ function CampaignBlock({ c }: { c: Campaign }) {
   return (
     <div className="rounded-lg border border-[color:var(--border-subtle)] p-3 space-y-1 min-w-0">
       <p className="text-xs text-[color:var(--text-secondary)] break-words">
-        Campagne {c.code} · {c.status === 'DONE' ? 'terminée' : c.status === 'RUNNING' ? 'en cours' : 'en erreur'} · {c.trigger}
+        Campagne {c.code} · {STATUT_CAMPAGNE[c.status] ?? c.status}{c.status === 'RUNNING' && c.phase === 'RETRY' ? ' (reprise des erreurs)' : ''} · {c.trigger}
         {' · '}{dt(c.startedAt)} → {dt(c.finishedAt ?? c.lastRunAt)} · {c.runs} passage(s) · moteur {c.engineVersion}
       </p>
       <p className="text-xs break-words">
@@ -112,6 +133,17 @@ function CampaignBlock({ c }: { c: Campaign }) {
             {c.remaining ? `${c.remaining.cards} carte(s)${c.phase === 'DECISIONS' ? ' · phase décisions sans carte en cours' : ''}` : 'rien'}
           </span>
           {(c.errorItems ?? 0) > 0 && <span className="text-[color:var(--text-danger)]"> · {c.errorItems} élément(s) en erreur (filtrer l’issue ERROR)</span>}
+        </p>
+      )}
+      {(c.traversalFinishedAt || c.errors) && (
+        <p className="text-xs break-words" data-testid="campaign-retries">
+          <span className="text-[color:var(--text-secondary)]">Parcours : </span>
+          <span className="text-[color:var(--text-muted)]">{c.traversalFinishedAt ? `terminé le ${dt(c.traversalFinishedAt)}` : 'en cours'}{` · ${c.retries ?? 0} reprise(s)`}</span>
+          {c.errors && (
+            <span className={c.errors.blocking + c.errors.pending > 0 ? 'text-[color:var(--text-danger)]' : 'text-[color:var(--text-muted)]'}>
+              {` · erreurs : ${c.errors.pending} en attente de reprise, ${c.errors.blocking} bloquante(s), ${c.errors.recovered} reprise(s) avec succès`}
+            </span>
+          )}
         </p>
       )}
       {c.errorSample && <p className="text-xs text-[color:var(--text-danger)] break-words">Exemple d’erreur : {c.errorSample}</p>}
@@ -171,11 +203,11 @@ export function ToProcessRelevancePanel() {
   }, [filters]);
   useEffect(() => { void charger(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const lancer = async (action: 'campaign' | 'recette') => {
+  const lancer = async (action: 'campaign' | 'recette' | 'retry-errors' | 'retry-traces', campaignId?: number) => {
     setBusy(true);
     setError(null);
     try {
-      await apiClient.post(`/api/admin/ai/queue/to-process-relevance`, { action });
+      await apiClient.post(`/api/admin/ai/queue/to-process-relevance`, { action, ...(campaignId ? { campaignId } : {}) });
       await charger();
     } catch (e) {
       setError((e as Error).message);
@@ -221,6 +253,12 @@ export function ToProcessRelevancePanel() {
               </span>
             </p>
           )}
+          {(data.migrations.reprise0581 === false || data.migrations.traces0582 === false) && (
+            <p className="text-xs text-[color:var(--text-warning-soft)] break-words">
+              Migrations lot 76 : reprise des erreurs de campagne {data.migrations.reprise0581 === false ? 'ABSENTE (0581) : erreurs consignées sans reprise automatique' : 'présente'}
+              {' · '}reprise des traces {data.migrations.traces0582 === false ? 'ABSENTE (0582) : échecs de trace visibles au bilan des balayages seulement' : 'présente'}.
+            </p>
+          )}
           {(!data.migrations.decisions0444 || !data.migrations.campaigns0445 || !data.migrations.recette0446 || data.migrations.ecarts0516 === false || data.migrations.campagne0517 === false) && (
             <p className="text-xs text-[color:var(--text-warning-soft)] break-words">
               Migrations : décisions {data.migrations.decisions0444 ? 'présentes' : 'ABSENTES (0444)'} · campagnes {data.migrations.campaigns0445 ? 'présentes' : 'ABSENTES (0445)'} · recette {data.migrations.recette0446 ? 'présente' : 'ABSENTE (0446)'}
@@ -236,7 +274,16 @@ export function ToProcessRelevancePanel() {
               </Button>
             </div>
             {data.campaigns.length === 0 && <p className="text-xs text-[color:var(--text-muted)]">Aucune campagne (la tâche planifiée « to-process-relevance-reevaluation » la lance au démarrage).</p>}
-            {data.campaigns.slice(0, 3).map((c) => <CampaignBlock key={c.id} c={c} />)}
+            {data.campaigns.slice(0, 3).map((c) => (
+              <div key={c.id} className="space-y-1">
+                <CampaignBlock c={c} />
+                {c.errors && c.errors.blocking > 0 && (
+                  <Button type="button" size="sm" variant="outline" className="h-8" disabled={busy} onClick={() => void lancer('retry-errors', c.id)}>
+                    <RefreshCw className="w-3.5 h-3.5 mr-1" />Reprendre les {c.errors.blocking} élément(s) en erreur
+                  </Button>
+                )}
+              </div>
+            ))}
             <form className="grid gap-2 grid-cols-2 sm:grid-cols-4" onSubmit={(e) => { e.preventDefault(); void charger(filters); }}>
               <Input value={filters.accountId} placeholder="Compte" aria-label="Compte" className="h-8 text-xs"
                 onChange={(e) => setFilters((f) => ({ ...f, accountId: e.target.value }))} />
@@ -249,13 +296,37 @@ export function ToProcessRelevancePanel() {
                 {data.items.map((i) => (
                   <li key={`${i.actionId ?? 'd'}-${i.targetType ?? 'DOCUMENT'}-${i.targetId ?? i.fileId}-${i.ruleCode}`} className="text-xs break-words rounded border border-[color:var(--border-subtle)] px-2 py-1">
                     <span className="text-[color:var(--text-primary)]">{i.actionId ? `Action #${i.actionId}` : 'Décision sans carte'}</span> · compte {i.accountId} · {TARGET_LABEL[i.targetType ?? 'DOCUMENT'] ?? i.targetType} {i.targetId ?? i.fileId} · {i.ruleCode}
-                    {' · '}<span className={i.outcome === 'ERROR' ? 'text-[color:var(--text-danger)]' : 'text-[color:var(--text-secondary)]'}>{ISSUE_LABEL[i.outcome] ?? i.outcome}</span>
-                    {i.reason ? <span className="text-[color:var(--text-muted)]"> — {i.reason}</span> : null}
+                    {' · '}<span className={(i.finalOutcome ?? i.outcome) === 'ERROR' ? 'text-[color:var(--text-danger)]' : 'text-[color:var(--text-secondary)]'}>{ISSUE_LABEL[i.finalOutcome ?? i.outcome] ?? (i.finalOutcome ?? i.outcome)}</span>
+                    {i.finalOutcome && i.finalOutcome !== i.outcome ? <span className="text-[color:var(--text-muted)]"> (après {Math.max(0, (i.attempts ?? 1) - 1)} reprise(s) ; initialement {ISSUE_LABEL[i.outcome] ?? i.outcome})</span> : null}
+                    {i.reason ? <span className="text-[color:var(--text-muted)]"> — {i.lastError ?? i.reason}</span> : null}
                   </li>
                 ))}
               </ul>
             )}
           </div>
+
+          {data.traceRetries && (
+            <div className="space-y-2" data-testid="trace-retries">
+              <div className="flex flex-wrap items-center gap-2">
+                <p className="text-xs text-[color:var(--text-secondary)]">
+                  Décisions appliquées dont la trace a échoué
+                  {data.traceRetries.available ? ` : ${kv(data.traceRetries.counts, STATUT_TRACE)}` : ' : suivi indisponible (migration 0582 absente) — les échecs restent au bilan des balayages'}
+                </p>
+                {(data.traceRetries.counts.ABANDONED ?? 0) > 0 && (
+                  <Button type="button" size="sm" variant="outline" className="h-8" disabled={busy} onClick={() => void lancer('retry-traces')}>
+                    <RefreshCw className="w-3.5 h-3.5 mr-1" />Relancer les reprises
+                  </Button>
+                )}
+              </div>
+              {data.traceRetries.items.filter((t) => t.status === 'PENDING' || t.status === 'ABANDONED').slice(0, 20).map((t) => (
+                <p key={t.id} className="text-xs break-words rounded border border-[color:var(--border-subtle)] px-2 py-1">
+                  <span className="text-[color:var(--text-primary)]">Reprise n° {t.id}</span> · compte {t.accountId} · {TARGET_LABEL[t.targetType ?? ''] ?? t.targetType} {t.targetId ?? '—'} · {t.ruleCode}
+                  {' · '}<span className="text-[color:var(--text-danger)]">{STATUT_TRACE[t.status] ?? t.status}</span> ({t.attempts} tentative(s)) · décision du {dt(t.originalAt)}
+                  <span className="text-[color:var(--text-muted)]"> — issue {String(t.decision.outcome ?? '—')} · motif {String(t.decision.reason ?? '—')}{t.error ? ` — ${t.error}` : ''}</span>
+                </p>
+              ))}
+            </div>
+          )}
 
           <div className="space-y-2">
             <div className="flex flex-wrap items-center gap-2">

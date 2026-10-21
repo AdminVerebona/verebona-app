@@ -535,10 +535,38 @@ scenario('L72B-T3-NOM', 'Lot 72B — T3 : harmonisation documentaire exhaustive,
     expect(await dansBalayage(c.id)).toBe(false);
   }, 120_000);
 
+  it('L76B-C4-03 — L72B-E2-03 complété : compte sans bien terminé, fait EXISTANT désactivé ou modifié (sans nouvel import) : réinscrit au balayage et réexaminé ; sinon jamais', async () => {
+    const c = await make.account();
+    const a = await document(c, { nom: 'Facture Orange — janvier 2003', date: '2003-01-10' });
+    await document(c, { nom: 'Facture Orange — février 2003', date: '2003-02-10' });
+    await fait(c, a, 'contractNumber', 'CT-2003-111222');
+    await passer(c.id);
+    expect(modele.appels).toHaveLength(1);
+    expect(await etat(c.id, '*')).toMatchObject({ status: 'DONE' });
+    expect(await dansBalayage(c.id)).toBe(false);
+    await sql`UPDATE document_facts SET value_text = 'CT-2003-111333' WHERE account_id = ${c.id} AND file_id = ${a.id}`;
+    expect(await dansBalayage(c.id)).toBe(true);
+    await passer(c.id);
+    expect(modele.appels).toHaveLength(2);
+    expect(modele.appels[1].docs.find((d) => d.documentId === a.id)?.facts.map((f) => f.value)).toContain('CT-2003-111333');
+    expect(await dansBalayage(c.id)).toBe(false);
+    await sql`UPDATE document_facts SET status = 'superseded' WHERE account_id = ${c.id} AND file_id = ${a.id}`;
+    expect(await dansBalayage(c.id)).toBe(true);
+    await passer(c.id);
+    expect(modele.appels).toHaveLength(3);
+    await passer(c.id);
+    expect(modele.appels).toHaveLength(3);
+  }, 120_000);
+
   it('L72B-MIG-01 — migration 0513 rejouable ; lot examiné au lot 61 et inchangé : recalé SANS appel IA (aucune réanalyse de masse au déploiement) ; nouveauté ensuite : réexamen', async () => {
-    const mig = readFileSync(join(process.cwd(), 'src/db/migrations/0513_l72b_t3_nommage_ecarts.sql'), 'utf8');
-    await sql.begin(async (tx) => { await tx.unsafe(mig); });
-    await sql.begin(async (tx) => { await tx.unsafe(mig); });
+    // Lot 76B : la contrainte de statut de 0513 est élargie par 0578 (UPGRADE_REVIEW) — rejouer 0513 SEUL après 0578
+    // n'est pas un scénario de déploiement (migrations appliquées une fois, dans l'ordre) : la chaîne 0513 → 0578 est
+    // rejouée dans une même transaction (idempotente), puis 0578 / 0579 seules.
+    const lire = (f: string) => readFileSync(join(process.cwd(), 'src/db/migrations', f), 'utf8');
+    const [m0513, m0578, m0579] = ['0513_l72b_t3_nommage_ecarts.sql', '0578_l76b_t3_nommage_residuels.sql', '0579_l76b_t3_nommage_indices.sql'].map(lire);
+    const dejaElargie = (await sql`SELECT count(*)::int AS n FROM document_naming_groups WHERE status = 'UPGRADE_REVIEW'`)[0].n > 0;
+    if (!dejaElargie) await sql.begin(async (tx) => { await tx.unsafe(m0513); await tx.unsafe(m0578); });
+    for (let i = 0; i < 2; i++) await sql.begin(async (tx) => { await tx.unsafe(m0578); await tx.unsafe(m0579); });
     const c = await make.account();
     const a = await document(c, { nom: 'Facture Orange — janvier 2014', date: '2014-01-10' });
     const b = await document(c, { nom: 'Facture Orange — février 2014', date: '2014-02-10' });
@@ -552,9 +580,11 @@ scenario('L72B-T3-NOM', 'Lot 72B — T3 : harmonisation documentaire exhaustive,
     const run = await passer(c.id);
     expect(modele.appels).toHaveLength(0);
     expect(run.documentNaming).toMatchObject({ status: 'DONE', rebaselined: 1, aiCalls: 0 });
-    const [g] = await sql<Array<{ context_version: string; conventions: Array<{ label: string }> }>>`
-      SELECT context_version, conventions FROM document_naming_groups WHERE account_id = ${c.id} AND group_key = 's:orange'`;
-    expect(g).toMatchObject({ context_version: 'naming-v2', conventions: [{ label: 'Factures' }] });
+    const [g] = await sql<Array<{ context_version: string; upgrade_state: string; conventions: Array<{ label: string }> }>>`
+      SELECT context_version, upgrade_state, conventions FROM document_naming_groups WHERE account_id = ${c.id} AND group_key = 's:orange'`;
+    // Lot 76B (C5) : version courante du contexte v3 ; recalage TECHNIQUE seulement parce que la preuve est faite
+    // (textes courts, aucun fait, aucune Opération, données antérieures à l'examen).
+    expect(g).toMatchObject({ context_version: 'naming-v3', upgrade_state: 'TECHNICAL', conventions: [{ label: 'Factures' }] });
     await passer(c.id);
     expect(modele.appels).toHaveLength(0);
     // Une vraie nouveauté (fait T1) : réexamen, conventions du lot 61 redonnées à l'IA.

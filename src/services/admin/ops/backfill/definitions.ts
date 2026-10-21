@@ -24,14 +24,17 @@
  *      `document-validation-reprise` ;
  *  11. Premium Duo en compte partagé (lot 72D, ticket P0) : adhésions des
  *      membres Duo au compte du titulaire, comptes artificiels vides
- *      archivés — jamais automatique, journalisé et restaurable.
+ *      archivés — jamais automatique, journalisé et restaurable ;
+ *  12. Agenda : doublons d'interventions (lot 76H, ticket P1) — aussi lancé
+ *      automatiquement UNE fois par `agenda-intervention-duplicates-reprise`,
+ *      journalisé et restaurable.
  *
  * Chaque bloc n'offre que ce que le script permet (simulation, application,
  * restauration). Les scripts CLI restent utilisables et appellent les mêmes
  * services.
  */
 
-export type BackfillScript = 'merge-rooms' | 'document-asset-links' | 'agenda' | 'cdc15' | 'asset-account' | 'operations-structured' | 'operations-claims' | 'cross-account' | 'equipment-separation' | 'document-validation' | 'duo-shared-account';
+export type BackfillScript = 'merge-rooms' | 'document-asset-links' | 'agenda' | 'cdc15' | 'asset-account' | 'operations-structured' | 'operations-claims' | 'cross-account' | 'equipment-separation' | 'document-validation' | 'duo-shared-account' | 'agenda-intervention-duplicates';
 export type BackfillAction = 'simulate' | 'apply' | 'restore';
 export type BackfillStatus = 'running' | 'succeeded' | 'failed' | 'interrupted';
 
@@ -214,6 +217,23 @@ export const BACKFILL_DEFINITIONS: readonly BackfillDefinition[] = [
     accountFilter: true,
     warning: 'À lancer après lecture de la simulation. Les Duo « indécidables » (compte introuvable ou ambigu) et les places '
       + 'épuisées sont seulement signalés.',
+  },
+  {
+    script: 'agenda-intervention-duplicates',
+    order: 12,
+    label: 'Agenda : doublons d’interventions',
+    command: 'tâche de démarrage « agenda-intervention-duplicates-reprise » (automatique, une seule fois)',
+    description: 'Lot 76H : une intervention établie par les Opérations n’a plus qu’UN événement d’agenda. Pour chaque intervention '
+      + 'dont un document a produit plusieurs événements automatiques équivalents (ex. « Réparation — Maison » et « Entretien réalisé — '
+      + 'Prestation » du même jour), la projection Opérations → Agenda est rejouée : si T3 a établi que toute la preuve d’intervention '
+      + 'du document est cette Opération, un événement principal est conservé (déjà lié, puis date explicite, puis le plus de preuves), '
+      + 'les autres sont absorbés (preuves, liens, historique conservés ; retrait tracé et restaurable) et l’intitulé générique cède à la '
+      + 'description précise de l’intervention. Identité incertaine : carte « À traiter » (aucune fusion). Interventions distinctes, '
+      + 'événements modifiés, confirmés ou « à qualifier » : jamais touchés. Doublons sans Opération : signalés seulement. La simulation '
+      + 'n’écrit rien (rapport des actions envisagées) ; l’application est journalisée et se restaure par son identifiant. Lancé '
+      + 'automatiquement une fois au démarrage (même service) ; rejoué, il ne change rien.',
+    actions: ['simulate', 'apply', 'restore'],
+    accountFilter: true,
   },
 ];
 

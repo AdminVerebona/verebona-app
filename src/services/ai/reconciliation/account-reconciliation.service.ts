@@ -121,7 +121,16 @@ export type RunPhaseName = 'ASSETS' | 'OPEN_KNOWLEDGE' | 'OPEN_ACTIONS' | 'JOURN
  * documentaire) — jamais obligatoire : son échec rend le passage partiel,
  * jamais en échec technique, et n'interrompt aucune autre mission.
  */
-export type RunPhases = Record<RunPhaseName, PhaseReport> & { DOCUMENT_NAMING?: PhaseReport };
+export type RunPhases = Record<RunPhaseName, PhaseReport> & {
+  DOCUMENT_NAMING?: PhaseReport;
+  /**
+   * Lot 76J : rattrapage automatique du contrôle exhaustif de l'onglet
+   * « Informations » (stock historique) — FACULTATIF : DONE quand plus aucun
+   * bien n'attend, DEFERRED (reprise au passage suivant, quota par passage)
+   * sinon ; jamais un échec du passage.
+   */
+  INFORMATION_BACKFILL?: PhaseReport;
+};
 export type RunOutcome = 'SUCCESS' | 'PARTIAL_SUCCESS' | 'BUSINESS_ABSTENTION' | 'TECHNICAL_FAILURE';
 
 /**
@@ -166,6 +175,10 @@ export function documentNamingPhaseReport(dn: import('./document-naming/phase').
         dn.renamesSectionMissing > 0 ? `${dn.renamesSectionMissing} sortie(s) IA incomplète(s)` : null,
         dn.remaining?.groups ? `${dn.remaining.groups} lot(s) / ${dn.remaining.documents} document(s) restant(s)${motifs ? ` (${motifs})` : ''}` : null,
         dn.scan && !dn.scan.complete ? 'lecture du stock en cours' : null,
+        // Lot 76B (C1, C2, C5).
+        dn.pendingWrites ? `${dn.pendingWrites} écriture(s) à reprendre` : null,
+        dn.decisionsUnsaved ? `${dn.decisionsUnsaved} décision(s) non sauvegardée(s) : réexamen IA` : null,
+        dn.upgrade?.totals.expected ? `contexte enrichi : ${dn.upgrade.totals.expected} réexamen(s) attendu(s), ${dn.upgrade.totals.reviewed} effectué(s), ${dn.upgrade.totals.technical} migration(s) technique(s)` : null,
       ].filter(Boolean).join(' ; ') || null;
   return {
     status, state: dn.status, error,
@@ -176,6 +189,8 @@ export function documentNamingPhaseReport(dn: import('./document-naming/phase').
       pendingWrites: dn.pendingWrites ?? 0, writesRetried: dn.writesRetried ?? 0,
       remainingGroups: dn.remaining?.groups ?? 0, remainingDocuments: dn.remaining?.documents ?? 0,
       documents: dn.documents, scanComplete: dn.scan?.complete ? 1 : 0,
+      decisionsUnsaved: dn.decisionsUnsaved ?? 0, documentsRevalidated: dn.documentsRevalidated ?? 0,
+      upgradeTechnical: dn.upgrade?.totals.technical ?? 0, upgradeExpected: dn.upgrade?.totals.expected ?? 0, upgradeReviewed: dn.upgrade?.totals.reviewed ?? 0,
     },
   };
 }
@@ -244,7 +259,14 @@ export function consolidate(details: ObjectResult[]): Pick<AccountRunResult,
 
 // ── Périmètre ──────────────────────────────────────────────────────────────
 
-interface Candidate { id: number; eligible: boolean; reason?: string }
+interface Candidate {
+  id: number; eligible: boolean; reason?: string;
+  /** Lot 76J : retenu par le seul rattrapage du stock (sans revue IA). */
+  backfill?: boolean;
+}
+
+/** Lot 76J : rattrapage du contrôle exhaustif de l'onglet « Informations » (périmètre du passage). */
+interface BackfillScope { selected: number[]; remaining: number }
 
 /**
  * Objets à examiner. `full` : tous les biens du compte. `incremental` :
@@ -253,7 +275,7 @@ interface Candidate { id: number; eligible: boolean; reason?: string }
  * L'incrémental est une STRATÉGIE : sans exécution de référence, tout est
  * examiné.
  */
-async function selectScope(accountId: number, scope: 'full' | 'incremental', trigger: T3Trigger): Promise<Candidate[]> {
+async function selectScope(accountId: number, scope: 'full' | 'incremental', trigger: T3Trigger): Promise<{ candidates: Candidate[]; backfill: BackfillScope | null }> {
   const all = (await pgClient.unsafe(
     `SELECT id, coalesce(status, 'EN_SERVICE') AS status, updated_at
        FROM assets WHERE account_id = $1 AND deleted_at IS NULL ORDER BY id`,
@@ -261,6 +283,8 @@ async function selectScope(accountId: number, scope: 'full' | 'incremental', tri
   )) as unknown as Array<{ id: number; status: string; updated_at: Date | null }>;
 
   let retenus = new Set(all.map((a) => a.id));
+  // Lot 76J : tout le compte est examiné (complet, ou sans passage de référence).
+  let toutLeCompte = true;
   if (scope === 'incremental') {
     const [last] = (await pgClient.unsafe(
       `SELECT max(finished_at) AS at FROM account_reconciliation_runs
@@ -268,6 +292,7 @@ async function selectScope(accountId: number, scope: 'full' | 'incremental', tri
       [accountId] as never[],
     )) as unknown as Array<{ at: Date | null }>;
     if (last?.at) {
+      toutLeCompte = false;
       const since = new Date(last.at).toISOString();
       const touches = (await pgClient.unsafe(
         `SELECT DISTINCT id FROM (
@@ -287,14 +312,36 @@ async function selectScope(accountId: number, scope: 'full' | 'incremental', tri
         [accountId, await assetDataRuleCodes()] as never[],
       ).catch(() => [])) as unknown as Array<{ id: number }>;
       for (const o of ouverts) retenus.add(Number(o.id));
+      // Lot 76J : agenda « achat », Opérations d'acquisition, candidats
+      // Opération modifiés depuis → confrontation de l'onglet « Informations ».
+      const { assetsWithChangedSources } = await import('./information-check/store');
+      for (const id of await assetsWithChangedSources(accountId, since)) retenus.add(id);
     }
   }
 
-  return all
+  // Lot 76J : RATTRAPAGE AUTOMATIQUE du stock — biens jamais contrôlés dans
+  // la version courante du contrôle exhaustif, au plus N par passage
+  // (`T3_INFORMATION_BACKFILL_MAX_ASSETS`) ; reprenable (marque écrite après
+  // un contrôle complet). Sans revue IA : aucune réanalyse, aucun appel.
+  let backfill: BackfillScope | null = null;
+  const rattrapage = new Set<number>();
+  try {
+    const store = await import('./information-check/store');
+    const b = await store.backfillScope(accountId, toutLeCompte ? 100_000 : store.informationBackfillMaxAssets(), OUT_OF_PORTFOLIO_ASSET_STATUSES);
+    if (b) {
+      backfill = { selected: b.ids, remaining: b.remaining };
+      for (const id of b.ids) if (!retenus.has(id)) { rattrapage.add(id); retenus.add(id); }
+    }
+  } catch (e) {
+    console.error(`[t3] rattrapage « Informations » du compte ${accountId} non évalué :`, (e as Error).message);
+  }
+
+  const candidates = all
     .filter((a) => retenus.has(a.id))
     .map((a) => (OUT_OF_PORTFOLIO_ASSET_STATUSES as readonly string[]).includes(a.status)
       ? { id: a.id, eligible: false, reason: `bien ${a.status.toLowerCase()}` }
-      : { id: a.id, eligible: true });
+      : { id: a.id, eligible: true, ...(rattrapage.has(a.id) ? { backfill: true } : {}) });
+  return { candidates, backfill };
 }
 
 // ── Exécution ──────────────────────────────────────────────────────────────
@@ -430,7 +477,7 @@ export async function reconcileAccount(
   // n'a pas été vue.
   let interrompue = false;
   try {
-    const candidates = await selectScope(accountId, scope, trigger);
+    const { candidates, backfill } = await selectScope(accountId, scope, trigger);
     for (const c of candidates) {
       if (!c.eligible) {
         details.push({ objectType: 'asset', objectId: c.id, status: 'SKIPPED', applied: 0, conflicts: 0, aiReviews: 0, reason: c.reason });
@@ -443,6 +490,7 @@ export async function reconcileAccount(
         const run = await deps.reconcile({
           accountId, assetId: c.id, userId: options.userId ?? trigger.requestedByUserId ?? undefined,
           triggeredBy: LOCAL_TRIGGER[trigger.type], accountRunId: runId,
+          ...(c.backfill ? { aiReview: false } : {}),
         });
         details.push({
           objectType: 'asset', objectId: c.id, localRunId: run.runId,
@@ -456,7 +504,19 @@ export async function reconcileAccount(
         if (isExecutionCancelled(e)) throw e;
         // L'échec d'un bien n'empêche pas les autres d'être traités.
         details.push({ objectType: 'asset', objectId: c.id, status: 'ERROR', applied: 0, conflicts: 0, aiReviews: 0, reason: (e as Error).message.slice(0, 300) });
+        // Lot 76J : un bien du rattrapage en échec repasse APRÈS les autres (quota jamais bloqué).
+        if (backfill?.selected.includes(c.id)) {
+          await (await import('./information-check/store')).recordBackfillFailure(accountId, c.id).catch(() => {});
+        }
       }
+    }
+    if (backfill) {
+      const restant = backfill.remaining;
+      phases.INFORMATION_BACKFILL = {
+        status: restant > 0 ? 'DEFERRED' : 'DONE', state: restant > 0 ? 'DEFERRED' : 'DONE',
+        error: restant > 0 ? `${restant} bien(s) restant(s) à contrôler (rattrapage borné, repris au passage suivant)` : null,
+        counts: { selected: backfill.selected.length, remaining: restant },
+      };
     }
     {
       const t = consolidate(details);

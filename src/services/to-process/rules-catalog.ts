@@ -335,6 +335,22 @@ export const PROCESSING_RULES: readonly ProcessingRule[] = [
     producer: 'RECONCILIATION_BRIDGE',
   },
   {
+    // Lot 76J (T3 complétude, cas « Maison ») : date d'achat du bien
+    // contredite — valeur saisie contredite par une preuve, achat confirmé
+    // dans l'agenda contredit par la fiche, sources de même autorité.
+    // Jusqu'ici aucune règle : l'arbitrage T3 restait invisible (P-06).
+    // L'absence seule ne déclenche rien (§10.5) : pas de complétion.
+    code: 'DATA-ACQUISITION-DATE',
+    targetType: 'ASSET',
+    fieldKey: 'acquisitionDate',
+    arbitratePriority: 'DO_NEXT',
+    completePriority: null,
+    allowNotApplicable: true,
+    question: 'Quelle est la date d’achat de ce bien ?',
+    businessImpact: 40,
+    producer: 'RECONCILIATION_BRIDGE',
+  },
+  {
     code: 'DATA-SUPPLIER',
     targetType: 'DOCUMENT',
     fieldKey: 'supplier',

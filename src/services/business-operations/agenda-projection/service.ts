@@ -56,6 +56,47 @@ const nums = (v: unknown): number[] => (Array.isArray(v) ? v.map(Number).filter(
 const txt = (v: unknown): string | null => (v === null || v === undefined ? null : String(v));
 const todayUtc = () => new Date().toISOString().slice(0, 10);
 
+/**
+ * Lot 76H — documents dont T3 a consolidé TOUTE la preuve d'intervention dans
+ * l'Opération `o` (alias SQL `o`) : source DOCUMENT active, document non
+ * supprimé, aucune AUTRE Opération active d'intervention (ou non qualifiée)
+ * prouvée par ce document, et chaque candidat T1 établi d'intervention (ou
+ * sans type) ACTIF du document traité par T3 (MATCH / CREATE) vers `o` — la
+ * chaîne de fusion suivie — ou réanalyse d'un candidat déjà porté par `o`
+ * (même clé). Un candidat en attente, en arbitrage, en attente M3 ou
+ * rattaché ailleurs : le document n'est PAS exclusif (abstention).
+ */
+export const EXCLUSIVE_FILES_RAW = `
+  CASE WHEN o.type_code = 'INTERVENTION' AND o.invalidated_at IS NULL AND o.merged_into_operation_id IS NULL THEN
+  COALESCE((SELECT array_agg(DISTINCT xf.id ORDER BY xf.id) FROM business_operation_sources xs
+              JOIN asset_files xf ON xf.id::text = xs.source_entity_key AND xf.account_id = o.account_id AND xf.deleted_at IS NULL
+             WHERE xs.operation_id = o.id AND xs.active AND xs.source_kind = 'DOCUMENT'
+               AND NOT EXISTS (SELECT 1 FROM business_operation_sources ys JOIN business_operations yo ON yo.id = ys.operation_id
+                                WHERE ys.account_id = o.account_id AND ys.active AND ys.source_kind = 'DOCUMENT'
+                                  AND ys.source_entity_key = xs.source_entity_key AND yo.id <> o.id
+                                  AND yo.invalidated_at IS NULL AND yo.merged_into_operation_id IS NULL
+                                  AND (yo.type_code IS NULL OR yo.type_code IN ('INTERVENTION', 'OTHER')))
+               AND NOT EXISTS (
+                 SELECT 1 FROM document_operation_candidates dc
+                  WHERE dc.account_id = o.account_id AND dc.file_id = xf.id AND dc.status = 'ACTIVE' AND dc.established
+                    AND (dc.type_hint IS NULL OR dc.type_hint IN ('INTERVENTION', 'OTHER'))
+                    AND NOT (
+                      -- résolu par T3 vers cette Opération (fusions suivies)…
+                      (NOT dc.t3_pending AND dc.t3_outcome IN ('MATCH_AND_ENRICH', 'CREATE_NEW')
+                       AND (WITH RECURSIVE ch(id, m, n) AS (
+                              SELECT x.id, x.merged_into_operation_id, 0 FROM business_operations x WHERE x.id = dc.t3_operation_id
+                              UNION ALL
+                              SELECT y.id, y.merged_into_operation_id, ch.n + 1 FROM business_operations y JOIN ch ON y.id = ch.m WHERE ch.n < 20)
+                            SELECT ch.id FROM ch WHERE ch.m IS NULL LIMIT 1) = o.id)
+                      -- … ou réanalyse d'un candidat que cette Opération porte déjà
+                      -- (même document, même clé : M2 « même source » de T3).
+                      OR (dc.t3_pending AND EXISTS (
+                            SELECT 1 FROM business_operation_sources zs
+                             WHERE zs.operation_id = o.id AND zs.active AND zs.source_kind = 'DOCUMENT'
+                               AND zs.source_entity_key = xs.source_entity_key AND zs.locator->>'candidateKey' = dc.candidate_key))))), '{}')
+  ELSE '{}' END`;
+export const EXCLUSIVE_FILES_SQL = sql.raw(EXCLUSIVE_FILES_RAW);
+
 /** Pool de rapprochement borné par passage (charge). */
 const CANDIDATE_LIMIT = 2000;
 /**
@@ -83,6 +124,21 @@ export interface ProjectionRunOptions {
   forceCreateOperationIds?: readonly number[];
   /** Tests : taille de page d'un passage complet (E07). */
   pageSize?: number;
+  /** Lot 76H : exécution du rattrapage qui porte les écritures (journal 0591, restauration). */
+  runId?: string | null;
+  /**
+   * Lot 76H : SIMULATION — plans calculés et rendus (`plans`), aucune
+   * écriture (ni élément, ni lien, ni carte, ni journal).
+   */
+  dryRun?: boolean;
+}
+
+/** Lot 76H : plan d'une Opération rendu par une simulation. */
+export interface PlannedOperation {
+  operationId: number;
+  typeCode: string | null;
+  decision: string;
+  actions: ProjectionAction[];
 }
 
 export interface ProjectionRunResult {
@@ -98,6 +154,12 @@ export interface ProjectionRunResult {
   suppressed: number;
   /** Lot 53 (D14) : cartes « À traiter » de rapprochement incertain posées / mises à jour. */
   matchCards?: number;
+  /** Lot 76H : représentations T4 équivalentes absorbées (journal 0591), éléments écartés par les gardes, intitulés précisés. */
+  consolidated?: number;
+  consolidationProtected?: number;
+  retitled?: number;
+  /** Lot 76H : plans calculés d'une simulation (`dryRun`), Opérations avec au moins une action. */
+  plans?: PlannedOperation[];
   /** Lot 54D (E07) : pages traitées (passage complet), dernier identifiant atteint. */
   pages?: number;
   lastOperationId?: number | null;
@@ -152,6 +214,7 @@ export async function loadOperationSnapshots(accountId: number, ids: readonly nu
            COALESCE((SELECT array_agg(DISTINCT f.id) FROM business_operation_sources s
                        JOIN asset_files f ON f.id::text = s.source_entity_key AND f.account_id = o.account_id AND f.deleted_at IS NULL
                       WHERE s.operation_id = o.id AND s.active AND s.source_kind = 'DOCUMENT'), '{}') AS file_ids,
+           ${EXCLUSIVE_FILES_SQL} AS exclusive_file_ids,
            cd.effective_to::text AS contract_effective_to,
            kd.history_event_id AS claim_history_event_id,
            (SELECT a.status FROM business_operation_asset_links l JOIN assets a ON a.id = l.asset_id
@@ -178,17 +241,35 @@ export async function loadOperationSnapshots(accountId: number, ids: readonly nu
     contractEffectiveTo: txt(x.contract_effective_to),
     claimHistoryEventId: x.claim_history_event_id === null || x.claim_history_event_id === undefined ? null : Number(x.claim_history_event_id),
     disposalKind: x.primary_asset_status === 'TRANSMIS' ? 'TRANSMISSION' : 'SALE',
+    exclusiveFileIds: nums(x.exclusive_file_ids).sort((a, b) => a - b),
   }));
 }
 
-const ITEM_COLUMNS = sql.raw(`
+const itemColumnsSql = (journal: boolean) => sql.raw(`
   i.id, i.title, i.start_date::text AS date, i.manual_status, i.is_automatic, i.is_automatic_modified,
   (i.projection_origin IS NOT DISTINCT FROM '${PROJECTION_ORIGIN}') AS projected, i.business_operation_id,
   (lo.id IS NOT NULL AND lo.invalidated_at IS NULL AND lo.merged_into_operation_id IS NULL) AS linked_active,
   i.event_nature, i.business_type, i.home_category, i.functional_key, i.origin_ref_type, i.origin_ref_id,
   COALESCE((SELECT array_agg(l.asset_id) FROM agenda_asset_links l WHERE l.agenda_item_id = i.id), '{}') AS asset_ids,
   COALESCE((SELECT array_agg(l.equipment_id) FROM agenda_equipment_links l WHERE l.agenda_item_id = i.id), '{}') AS equipment_ids,
-  COALESCE((SELECT array_agg(l.asset_file_id) FROM agenda_file_links l WHERE l.agenda_item_id = i.id), '{}') AS file_ids`);
+  COALESCE((SELECT array_agg(l.asset_file_id) FROM agenda_file_links l WHERE l.agenda_item_id = i.id), '{}') AS file_ids,
+  (COALESCE(i.requires_qualification, false) OR i.occurrence_nature IS NOT DISTINCT FROM 'FORECAST'
+   OR i.confirmation_mode IS NOT DISTINCT FROM 'USER'
+   ${journal ? `OR EXISTS (SELECT 1 FROM agenda_intervention_consolidations k
+                 WHERE k.account_id = i.account_id AND k.restored_at IS NOT NULL
+                   AND (k.absorbed_item_id = i.id OR (k.kind <> 'ABSORB' AND k.principal_item_id = i.id)))` : ''}) AS pending_status,
+  i.origin_field_key,
+  (SELECT count(*)::int FROM agenda_item_sources s WHERE s.agenda_item_id = i.id) AS source_count`);
+
+/**
+ * Colonnes d'un élément lu par la projection. Lot 76H : un élément dont la
+ * consolidation a été RESTAURÉE est un statut ouvert (jamais réabsorbé, ni
+ * relié, ni renommé automatiquement) — lu seulement si le journal 0591 existe.
+ */
+async function itemColumns(): Promise<SQL> {
+  const { consolidationJournalReady } = await import('./consolidation');
+  return itemColumnsSql(await consolidationJournalReady());
+}
 
 function toItem(x: Row): AgendaItemSnapshot {
   return {
@@ -210,13 +291,16 @@ function toItem(x: Row): AgendaItemSnapshot {
     assetIds: nums(x.asset_ids),
     equipmentIds: nums(x.equipment_ids),
     fileIds: nums(x.file_ids),
+    pendingStatus: x.pending_status === true,
+    originFieldKey: txt(x.origin_field_key),
+    sourceCount: Number(x.source_count ?? 0),
   };
 }
 
 async function loadLinkedItems(accountId: number, opIds: readonly number[]): Promise<AgendaItemSnapshot[]> {
   if (!opIds.length) return [];
   return (await rows(db, sql`
-    SELECT ${ITEM_COLUMNS} FROM agenda_items i LEFT JOIN business_operations lo ON lo.id = i.business_operation_id
+    SELECT ${await itemColumns()} FROM agenda_items i LEFT JOIN business_operations lo ON lo.id = i.business_operation_id
      WHERE i.account_id = ${accountId} AND i.business_operation_id = ANY(${intArray(opIds)}::bigint[])
      ORDER BY i.id`)).map(toItem);
 }
@@ -224,7 +308,7 @@ async function loadLinkedItems(accountId: number, opIds: readonly number[]): Pro
 async function loadCandidates(accountId: number, assetIds: readonly number[], fileIds: readonly number[]): Promise<AgendaItemSnapshot[]> {
   if (!assetIds.length && !fileIds.length) return [];
   return (await rows(db, sql`
-    SELECT ${ITEM_COLUMNS} FROM agenda_items i LEFT JOIN business_operations lo ON lo.id = i.business_operation_id
+    SELECT ${await itemColumns()} FROM agenda_items i LEFT JOIN business_operations lo ON lo.id = i.business_operation_id
      WHERE i.account_id = ${accountId} AND i.start_date IS NOT NULL
        AND (i.manual_status IS NULL OR i.manual_status <> 'annule')
        AND (EXISTS (SELECT 1 FROM agenda_asset_links l WHERE l.agenda_item_id = i.id AND l.asset_id = ANY(${intArray(assetIds)}::int[]))
@@ -257,6 +341,26 @@ async function loadStatusCardItems(accountId: number, itemIds: readonly number[]
   return new Set(r.map((x) => Number(x.target_id)));
 }
 
+/**
+ * Lot 76H : Opération d'intervention active dont T3 a fait, de façon
+ * exclusive, le document source de chaque élément (`coveredByOperationId`).
+ * Une lecture par passage (documents des éléments du pool).
+ */
+async function markCoveringOperations(accountId: number, items: AgendaItemSnapshot[]): Promise<void> {
+  const fichiers = [...new Set(items.filter((i) => i.originRefType === 'asset_file' && i.originRefId !== null).map((i) => i.originRefId as number))];
+  if (!fichiers.length) return;
+  const r = await rows<{ file_id: number; op: string }>(db, sql`
+    SELECT x.file_id, x.op FROM (
+      SELECT DISTINCT f.fid AS file_id, o.id::text AS op, ${EXCLUSIVE_FILES_SQL} AS excl
+        FROM unnest(${intArray(fichiers)}::int[]) AS f(fid)
+        JOIN business_operation_sources s ON s.account_id = ${accountId} AND s.active AND s.source_kind = 'DOCUMENT' AND s.source_entity_key = f.fid::text
+        JOIN business_operations o ON o.id = s.operation_id AND o.account_id = ${accountId}
+       WHERE o.type_code = 'INTERVENTION' AND o.invalidated_at IS NULL AND o.merged_into_operation_id IS NULL) x
+     WHERE x.file_id = ANY(x.excl)`);
+  const par = new Map(r.map((x) => [Number(x.file_id), Number(x.op)]));
+  for (const i of items) i.coveredByOperationId = i.originRefType === 'asset_file' && i.originRefId !== null ? par.get(i.originRefId) ?? null : null;
+}
+
 // ── Écritures ───────────────────────────────────────────────────────────────
 
 async function itemIdByKey(accountId: number, key: string): Promise<number | null> {
@@ -279,7 +383,8 @@ function syncValues(changes: ItemSync, correlationId: string | null): Partial<Ag
 }
 
 async function applyAction(
-  op: OperationSnapshot, a: ProjectionAction, res: ProjectionRunResult, opts: Required<Pick<ProjectionRunOptions, 'beforeWrite'>> & { correlationId: string | null },
+  op: OperationSnapshot, a: ProjectionAction, res: ProjectionRunResult,
+  opts: Required<Pick<ProjectionRunOptions, 'beforeWrite'>> & { correlationId: string | null; runId?: string | null },
 ): Promise<number | null> {
   const accountId = op.accountId;
   const garde = (what: string) => opts.beforeWrite(`T4 projection — ${what}`);
@@ -349,6 +454,27 @@ async function applyAction(
       console.info(JSON.stringify({ event: 't4.operation_projection_link', accountId, operationId: op.id, itemId: a.itemId, reason: a.reason, applied: r.length > 0 }));
       return null;
     }
+    case 'CONSOLIDATE': {
+      await garde('consolidation des représentations');
+      const { consolidateAgendaRepresentations } = await import('./consolidation');
+      const r = await consolidateAgendaRepresentations({
+        accountId, operationId: op.id, principalId: a.principalId, absorbedIds: a.absorbedIds, linkPrincipal: a.linkPrincipal,
+        reason: a.reason, origin: opts.runId ? 'REPRISE' : 'PROJECTION', runId: opts.runId ?? null, correlationId: opts.correlationId,
+      });
+      if (r.linked) { res.linked++; res.changes++; }
+      if (r.absorbed.length) { res.consolidated = (res.consolidated ?? 0) + r.absorbed.length; res.changes += r.absorbed.length; }
+      if (r.protectedIds.length) res.consolidationProtected = (res.consolidationProtected ?? 0) + r.protectedIds.length;
+      return null;
+    }
+    case 'RETITLE': {
+      await garde('intitulé précis');
+      const { retitleAgendaItem } = await import('./consolidation');
+      if (await retitleAgendaItem({
+        accountId, operationId: op.id, itemId: a.itemId, title: a.title, from: a.from,
+        origin: opts.runId ? 'REPRISE' : 'PROJECTION', runId: opts.runId ?? null, correlationId: opts.correlationId,
+      })) { res.retitled = (res.retitled ?? 0) + 1; res.changes++; }
+      return null;
+    }
     case 'REMOVE': {
       await garde('retrait');
       const { removeAgendaItemsTraced } = await import('@/services/agenda/agenda-removal-trace');
@@ -358,7 +484,7 @@ async function applyAction(
     }
     case 'DETACH': {
       await garde('détachement');
-      await detachItem(accountId, a.itemId);
+      await detachItem(accountId, a.itemId, op.id);
       res.detached++;
       res.changes++;
       return null;
@@ -398,20 +524,25 @@ async function applyAction(
   }
 }
 
-/** Retire le lien (et le marquage de projection) d'un élément — l'élément reste. */
-async function detachItem(accountId: number, itemId: number): Promise<void> {
+/**
+ * Retire le lien (et le marquage de projection) d'un élément — l'élément reste.
+ * Lot 76H : seulement s'il est ENCORE lié à `operationId` (un élément repris
+ * par la canonique d'une fusion dans le même passage n'est jamais détaché).
+ */
+async function detachItem(accountId: number, itemId: number, operationId: number | null = null): Promise<void> {
   await db.execute(sql`
     UPDATE agenda_items
        SET business_operation_id = NULL,
            functional_key = CASE WHEN projection_origin = ${PROJECTION_ORIGIN} THEN NULL ELSE functional_key END,
            projection_origin = NULL, projection_correlation_id = NULL, updated_at = now()
-     WHERE id = ${itemId} AND account_id = ${accountId}`);
+     WHERE id = ${itemId} AND account_id = ${accountId}
+       ${operationId === null ? sql`` : sql`AND business_operation_id = ${operationId}`}`);
 }
 
 /** Projections orphelines (Opération disparue, lien coupé par un transfert) : retirées, ou détachées si touchées. */
 async function cleanupOrphans(accountId: number, res: ProjectionRunResult, beforeWrite: (w: string) => Promise<void> | void): Promise<void> {
   const orphelins = (await rows(db, sql`
-    SELECT ${ITEM_COLUMNS} FROM agenda_items i LEFT JOIN business_operations lo ON lo.id = i.business_operation_id
+    SELECT ${await itemColumns()} FROM agenda_items i LEFT JOIN business_operations lo ON lo.id = i.business_operation_id
      WHERE i.account_id = ${accountId} AND i.projection_origin = ${PROJECTION_ORIGIN}
        AND (i.business_operation_id IS NULL OR lo.id IS NULL OR lo.account_id <> i.account_id)`)).map(toItem);
   if (!orphelins.length) return;
@@ -453,7 +584,7 @@ export async function projectAccountOperations(accountId: number, opts: Projecti
     // Lot 54D (E07) : passage COMPLET par pages sur curseur stable, jusqu'à
     // épuisement. Interrompu (garde), le travail est rejoué : les pages déjà
     // projetées n'écrivent plus rien (idempotence), rien n'est omis.
-    await cleanupOrphans(accountId, res, beforeWrite);
+    if (!opts.dryRun) await cleanupOrphans(accountId, res, beforeWrite);
     res.pages = 0;
     res.lastOperationId = null;
     let curseur = 0;
@@ -489,8 +620,12 @@ async function projectIds(
   const suppressions = await loadSuppressions(ops.map((o) => o.id));
   const actifs = ops.filter((o) => o.active);
   const candidates = await loadCandidates(accountId, actifs.flatMap((o) => o.assetIds), actifs.flatMap((o) => o.documentFileIds));
+  await markCoveringOperations(accountId, [...linked, ...candidates]);
   const cards = await loadStatusCardItems(accountId, [...linked, ...candidates].map((i) => i.id));
-  const taken = new Set<number>(linked.map((i) => i.id));
+  // Lot 76H : un élément lié à une Opération INACTIVE (fusionnée, invalidée)
+  // reste disponible pour la canonique dans le même passage (représentation
+  // cohérente après fusion) ; son détachement est gardé (`detachItem`).
+  const taken = new Set<number>(linked.filter((i) => i.linkedOperationActive).map((i) => i.id));
   const forcer = new Set(opts.forceCreateOperationIds ?? []);
   // Lot 53 (D14) : rapprochements incertains → carte « À traiter » (candidats, provenance).
   const besoins: import('@/services/to-process/agenda-projection-cards').AgendaProjectionCardNeed[] = [];
@@ -510,6 +645,7 @@ async function projectIds(
     });
     for (const action of plan) {
       if (action.kind === 'LINK') taken.add(action.itemId);
+      if (action.kind === 'CONSOLIDATE') for (const id of [action.principalId, ...action.absorbedIds]) taken.add(id);
       if (action.kind === 'ABSTAIN' && action.candidates?.length && action.key && decision.kind === 'PROJECT' && op.assetIds.length) {
         besoins.push({
           operationId: op.id, key: action.key, assetId: op.assetIds[0],
@@ -517,10 +653,15 @@ async function projectIds(
           candidates: action.candidates, fileIds: op.documentFileIds,
         });
       }
-      const created = await applyAction(op, action, res, { beforeWrite, correlationId });
+      if (opts.dryRun) continue;
+      const created = await applyAction(op, action, res, { beforeWrite, correlationId, runId: opts.runId ?? null });
       if (created !== null) taken.add(created);
     }
+    if (opts.dryRun && plan.length) {
+      (res.plans ??= []).push({ operationId: op.id, typeCode: op.typeCode, decision: decision.kind === 'PROJECT' ? 'PROJECT' : decision.reason, actions: plan });
+    }
   }
+  if (opts.dryRun) return;
   {
     const { syncAgendaProjectionCards } = await import('@/services/to-process/agenda-projection-cards');
     const r = await syncAgendaProjectionCards(accountId, besoins, ops.map((x) => x.id));
@@ -591,14 +732,44 @@ export async function findOperationAgendaEquivalent(p: {
        WHERE i.account_id = ${p.accountId}
          AND i.start_date BETWEEN (${p.date}::date - ${MATCH_DATE_TOLERANCE_DAYS}::int) AND (${p.date}::date + ${MATCH_DATE_TOLERANCE_DAYS}::int)
          AND o.type_code = ANY(${`{${types.join(',')}}`}::text[])
-         AND (${p.sourceFileId ? sql`EXISTS (SELECT 1 FROM business_operation_sources s WHERE s.operation_id = o.id AND s.active
-                    AND s.source_kind = 'DOCUMENT' AND s.source_entity_key = ${String(p.sourceFileId)})` : sql`FALSE`}
+         AND (${p.sourceFileId ? sql`(o.type_code <> 'INTERVENTION' AND EXISTS (SELECT 1 FROM business_operation_sources s WHERE s.operation_id = o.id AND s.active
+                    AND s.source_kind = 'DOCUMENT' AND s.source_entity_key = ${String(p.sourceFileId)}))
+              -- Lot 76H : une intervention n'est « la même » que si T3 a consolidé
+              -- TOUTE la preuve d'intervention du document dans cette Opération.
+              OR (o.type_code = 'INTERVENTION' AND ${p.sourceFileId}::int = ANY(${EXCLUSIVE_FILES_SQL}))` : sql`FALSE`}
               OR (${p.businessType}::text IS NOT NULL AND i.business_type = ${p.businessType}::text))
-       ORDER BY i.id LIMIT 1`);
+       ORDER BY (i.business_operation_id IS NOT NULL AND i.projection_origin IS NULL) DESC, i.id LIMIT 1`);
     return r ? Number(r.id) : null;
   } catch (e) {
     console.error('[t4-projection] contrôle d\'équivalence :', (e as Error).message);
     return null;
+  }
+}
+
+/**
+ * Lot 76H (§3.3) — un élément automatique vient d'être créé depuis le document
+ * `sourceFileId` : si ce document prouve une intervention ACTIVE, la
+ * projection de cette Opération est demandée (file durable existante,
+ * dédoublonnée par compte) pour faire converger les représentations créées
+ * avant, pendant ou après la consolidation T3 — quel que soit l'ordre
+ * T1 / T3 / T4. Ne lève jamais. Rend les Opérations concernées.
+ */
+export async function requestProjectionForDocument(accountId: number, sourceFileId: number | null, correlationId?: string): Promise<number[]> {
+  try {
+    if (!sourceFileId || !Number.isInteger(accountId) || accountId <= 0) return [];
+    const r = await rows<{ id: string }>(db, sql`
+      SELECT DISTINCT o.id FROM business_operation_sources s
+        JOIN business_operations o ON o.id = s.operation_id AND o.account_id = s.account_id
+       WHERE s.account_id = ${accountId} AND s.active AND s.source_kind = 'DOCUMENT' AND s.source_entity_key = ${String(sourceFileId)}
+         AND o.type_code = 'INTERVENTION' AND o.invalidated_at IS NULL AND o.merged_into_operation_id IS NULL`);
+    const ids = r.map((x) => Number(x.id));
+    if (!ids.length) return [];
+    const { requestAgendaProjection } = await import('./queue');
+    await requestAgendaProjection(accountId, { operationIds: ids, correlationId: correlationId ?? `t4-document:${sourceFileId}` });
+    return ids;
+  } catch (e) {
+    console.error(`[t4-projection] convergence après T4 (document ${sourceFileId}) non demandée :`, (e as Error).message);
+    return [];
   }
 }
 

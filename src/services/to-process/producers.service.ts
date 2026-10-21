@@ -48,6 +48,7 @@ import {
   toProcessActions,
 } from '@/db/schema';
 import type { ActionProposal } from './action-model';
+import type { TraceFailure } from './trace-retries';
 import { upsertAction } from './to-process-action.service';
 import {
   decideAdmissibility, recordFamilyDecision, type AdmissibilityDecision, type DecisionTrigger, type FamilyDecisionRecord,
@@ -83,6 +84,8 @@ export interface ScanErrorDetail {
   /** Cible non documentaire (agenda, équipement, fournisseur). */
   targetType?: string;
   targetId?: number;
+  /** Lot 76 (C8) : trace non écrite — n° de reprise (null : reprise impossible). */
+  retryId?: number | null;
 }
 
 const EMPTY: ProducerReport = { created: 0, updated: 0, closed: 0 };
@@ -99,10 +102,10 @@ function merge(...reports: ProducerReport[]): Required<ProducerReport> {
   );
 }
 
-/** Erreur de trace d'une décision de famille (lot 75I, E) → détail d'erreur, jamais console seule. */
-function traceFailure(report: ProducerReport, accountId: number, targetType: string, targetId: number, ruleCode: string, error: string | null): void {
-  if (!error) return;
-  (report.errorDetails ??= []).push({ accountId, fileId: null, ruleCode, step: 'TRACE', kind: 'TRACE_FAILED', cause: error.slice(0, 300), targetType, targetId });
+/** Erreur de trace d'une décision de famille (lot 75I, E) → détail d'erreur, jamais console seule. Lot 76 (C8) : n° de reprise. */
+function traceFailure(report: ProducerReport, accountId: number, targetType: string, targetId: number, ruleCode: string, echec: TraceFailure | null): void {
+  if (!echec) return;
+  (report.errorDetails ??= []).push({ accountId, fileId: null, ruleCode, step: 'TRACE', kind: 'TRACE_FAILED', cause: echec.cause.slice(0, 300), targetType, targetId, retryId: echec.retryId });
 }
 
 /** Options d'un passage de producteur (lot 72) : déclencheur et référence tracés. */
@@ -123,36 +126,56 @@ export interface AgendaDateFacts {
 /** Délai laissé à la qualification T4 d'un événement avant toute question (jours). */
 export const AGENDA_QUALIFICATION_GRACE_DAYS = 7;
 
+/** Origines d'un événement SAISI par l'utilisateur (jamais produit par un traitement). */
+const ORIGINES_UTILISATEUR = ['manual', 'legacy_event_migration'];
+
 /**
- * Admissibilité d'une question « date » sur un événement d'agenda (pure) :
- *   · événement INFORMATIF (« à savoir ») : aucune date à réclamer ;
- *   · tâche sans échéance obligatoire : seulement si l'événement le DIT
- *     (catégorie « information ») — un événement saisi par l'utilisateur
- *     sans catégorie garde sa question (variante prudente : aucune donnée
- *     ne distingue aujourd'hui une tâche libre d'une échéance réelle —
- *     décision PO signalée) ;
+ * Admissibilité d'une question « date » sur un événement d'agenda (pure) —
+ * lot 76 (C5) : chaque critère nécessaire est JUSTIFIÉ positivement, jamais
+ * présumé :
+ *   · événement INFORMATIF (« à savoir », tâche sans échéance obligatoire) :
+ *     aucune date à réclamer ;
+ *   · événement qualifié « action » (prochaines dates) : la date est
+ *     nécessaire (EVENT_REQUIRES_DATE) ;
+ *   · événement SAISI par l'utilisateur, sans catégorie : décision PO du
+ *     lot 72C — sa question reste (USER_CREATED_EVENT_PO_72C) ;
+ *   · événement produit par un traitement, SANS catégorie : nécessité
+ *     inconnue — différé (CATEGORY_UNKNOWN), jamais une carte présumée (une
+ *     carte existante n'est pas fermée sur ce « pas encore ») ;
  *   · date retrouvée à la source d'un événement automatique jamais modifié :
  *     résolue automatiquement (écrite, vérifiée) ;
- *   · qualification T4 en cours (récente) : pas maintenant ;
- *   · sinon l'événement nécessite une date que rien ne fournit : carte.
+ *   · qualification T4 en cours (récente) : pas maintenant.
+ * La décision « Non applicable » de l'utilisateur est protégée à l'écriture
+ * (empreinte de `upsertAction`) : critère sans objet ici.
  */
 export function agendaDateAdmissibility(f: AgendaDateFacts, now: Date = new Date()): AdmissibilityDecision {
   const recent = f.createdAt ? now.getTime() - new Date(f.createdAt).getTime() < AGENDA_QUALIFICATION_GRACE_DAYS * 86_400_000 : false;
   const ecrivable = !!f.sourceDate && f.isAutomatic && !f.isAutomaticModified;
+  const saisiParUtilisateur = !f.isAutomatic && ORIGINES_UTILISATEUR.includes(f.originType);
+  const necessaire = f.homeCategory === 'information' ? false : f.homeCategory === 'action' ? true : saisiParUtilisateur ? true : null;
   return decideAdmissibility({
     ruleCode: 'DATA-AGENDA-DATE',
     checks: {
+      // Fait établi par la sélection : événement ouvert (ni réalisé, ni annulé) sans date.
       realProblem: true,
-      neededForUse: f.homeCategory !== 'information',
+      neededForUse: necessaire,
       autoResolvable: ecrivable,
       userActionNeeded: true,
       timely: !(f.requiresQualification && recent),
       userDecided: null,
     },
+    notApplicable: ['userDecided'],
     motives: {
-      neededForUse: 'INFORMATIONAL_EVENT',
+      neededForUse: f.homeCategory === 'information' ? 'INFORMATIONAL_EVENT' : 'CATEGORY_UNKNOWN',
       autoResolvable: 'DATE_FOUND_AT_SOURCE',
       timely: 'QUALIFICATION_PENDING',
+    },
+    justifications: {
+      realProblem: 'OPEN_EVENT_WITHOUT_DATE',
+      neededForUse: f.homeCategory === 'action' ? 'EVENT_REQUIRES_DATE' : saisiParUtilisateur ? 'USER_CREATED_EVENT_PO_72C' : undefined,
+      autoResolvable: 'NO_DATE_AT_SOURCE',
+      userActionNeeded: 'USER_CAN_DATE_EVENT',
+      timely: f.requiresQualification ? 'QUALIFICATION_GRACE_ELAPSED' : 'NO_QUALIFICATION_PENDING',
     },
   });
 }
@@ -302,7 +325,11 @@ export function equipmentLinkAdmissibility(f: EquipmentLinkFacts): Admissibility
   return decideAdmissibility({
     ruleCode: 'LINK-EQUIP-ASSET',
     checks: { realProblem: !inactif, neededForUse: true, autoResolvable: f.knownAssetId !== null, userActionNeeded: true, timely: f.liveAssets > 0, userDecided: null },
+    // Lot 76 (C5) : « Non applicable » protégé à l'écriture (empreinte de la carte).
+    notApplicable: ['userDecided'],
     motives: { realProblem: 'EQUIPMENT_INACTIVE', autoResolvable: 'ASSET_KNOWN_FROM_ROOM', timely: 'NO_LIVE_ASSET_TO_ATTACH' },
+    justifications: { realProblem: 'ACTIVE_EQUIPMENT_ON_DELETED_ASSET', neededForUse: 'EQUIPMENT_INVISIBLE_WITHOUT_ASSET', autoResolvable: 'NO_ASSET_KNOWN_FROM_ROOM',
+      userActionNeeded: 'USER_CAN_ATTACH', timely: 'LIVE_ASSET_AVAILABLE' },
   });
 }
 
@@ -413,7 +440,10 @@ export function supplierIdentityAdmissibility(f: SupplierReviewFacts): Admissibi
   return decideAdmissibility({
     ruleCode: 'SUPPLIER-IDENTITY',
     checks: { realProblem: !identique, neededForUse: null, autoResolvable: null, userActionNeeded: !!detecte, timely: true, userDecided: null },
+    // Lot 76 (C5) : critères sans incidence pour une confirmation facultative (déclarés).
+    notApplicable: ['neededForUse', 'autoResolvable', 'userDecided'],
     motives: { realProblem: 'SAME_VALUE_AS_CURRENT', userActionNeeded: 'NO_EXPLOITABLE_PROPOSAL' },
+    justifications: { realProblem: 'DETECTED_VALUE_DIFFERS', userActionNeeded: 'EXPLOITABLE_PROPOSAL', timely: 'OPEN_REVIEW' },
   });
 }
 
@@ -580,7 +610,7 @@ export interface DocumentProducerReport extends ProducerReport {
    * fermeture). Lot 75I (B) : nature de l'erreur (`kind`) — écritures NON
    * CONFIRMÉES, persistance, lecture, IA, trace — comprises.
    */
-  ruleErrors: Array<{ accountId: number; fileId: number; ruleCode: string; step: string; cause: string; kind?: string }>;
+  ruleErrors: Array<{ accountId: number; fileId: number; ruleCode: string; step: string; cause: string; kind?: string; retryId?: number | null }>;
   /** Issues centrales (AUTO_RESOLVED, NO_ACTION, DEFER, CREATE_ACTION, KEEP, ERROR). */
   outcomes: Record<string, number>;
   /** Lot 75I (B) : refus NORMAUX d'écriture (valeur de l'utilisateur protégée) — jamais une erreur. */
@@ -648,7 +678,8 @@ export async function produceAccountActions(accountId: number): Promise<AccountP
   for (const e of fusion.errorDetails.slice(0, 20)) errors.push(`${e.targetType ?? 'cible'} ${e.targetId ?? '?'} · règle ${e.ruleCode} · étape ${e.step} (${e.kind}) — ${e.cause}`.slice(0, 300));
   const errorDetails: ScanErrorDetail[] = [
     ...familles,
-    ...documents.ruleErrors.map((e) => ({ accountId: e.accountId, fileId: e.fileId, ruleCode: e.ruleCode, step: e.step, kind: e.kind ?? 'EVALUATION_FAILED', cause: e.cause })),
+    ...documents.ruleErrors.map((e) => ({ accountId: e.accountId, fileId: e.fileId, ruleCode: e.ruleCode, step: e.step, kind: e.kind ?? 'EVALUATION_FAILED', cause: e.cause,
+      ...(e.retryId !== undefined ? { retryId: e.retryId } : {}) })),
     ...fusion.errorDetails,
   ];
   return {

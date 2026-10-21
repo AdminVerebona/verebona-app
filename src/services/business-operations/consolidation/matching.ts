@@ -624,6 +624,34 @@ export function decideCandidate(c: CandidateIdentity, ctx: MatchContext): Candid
   return res('CREATE_NEW', c.confidence === 'certain' ? 'NO_MATCH_ESTABLISHED' : 'USER_DISTINCT_OPERATION');
 }
 
+// ── Lot 76H : deux candidats d'un même document ────────────────────────────
+
+/**
+ * Deux candidats T1 d'un MÊME document décrivent-ils la même réalité (pure) ?
+ * Seulement sur PREUVE : une référence identifiante commune (M1 : même
+ * facture, même devis, même ordre de travail…), d'un même prestataire (ou
+ * sans prestataire contradictoire), sans aucun hard negative (type, cibles,
+ * ordre de travail divergent). Même document, même date, même bien ou types
+ * entretien / réparation compatibles ne suffisent JAMAIS (F-027 : deux
+ * travaux sans référence propre restent deux Opérations).
+ *
+ * C'est la règle que T3 appliquait déjà à la réanalyse (M1 vers l'Opération
+ * créée par le premier candidat → fusion V1) : l'appliquer dès le premier
+ * passage rend l'issue indépendante du nombre de passages (§3.3).
+ */
+export function sameDocumentReality(c: CandidateIdentity, other: CandidateIdentity): boolean {
+  if (c.fileId !== other.fileId || c.candidateKey === other.candidateKey) return false;
+  if (!other.established || other.confidence === 'conflictual') return false;
+  const pseudo: ExistingOperation = {
+    id: 0, typeCode: other.type, status: other.status, providerKey: other.providerKey, assetIds: other.assetIds,
+    refs: other.refs.map((r) => ({ kind: r.kind, normalized: r.normalized })),
+    plannedDate: other.dates.plannedDate, startDate: other.dates.startDate, realizedDate: other.dates.realizedDate, endDate: other.dates.endDate,
+  };
+  if (sharedIdentifyingReferences(c, pseudo).length === 0) return false;
+  if (referenceProviderMismatch(c, pseudo)) return false;
+  return hardNegatives(c, pseudo).length === 0;
+}
+
 // ── Fusion V1 (B8, ch. 8.4) ────────────────────────────────────────────────
 
 const paire = (a: number, b: number) => (a < b ? `${a}:${b}` : `${b}:${a}`);

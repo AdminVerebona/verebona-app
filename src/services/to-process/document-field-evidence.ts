@@ -63,12 +63,23 @@ import { pgClient } from '@/db';
 import { getField, resolveAlias } from '@/services/canonical/registry';
 import { documentBridgeRules, type ProcessingRule } from './rules-catalog';
 import { checkInterventionCoherence, type InterventionDecision } from './intervention-check';
+import type { TraceFailure } from './trace-retries';
 import {
   DEFAULT_TO_PROCESS_THRESHOLDS, composeConfigRef, deferThresholdsRef, loadToProcessThresholds, type ToProcessThresholds,
 } from './relevance-thresholds';
 
 /** Version du traitement (diagnostic, BO). */
-export const DOCUMENT_RULE_ENGINE_VERSION = 'l75-1';
+/**
+ * Version du traitement (diagnostic, BO). Lot 76 : `l76-1` — durées
+ * partiellement interprétées refusées (C1), fin effective prouvée (C2), T4
+ * incompatible sans décision (C3), preuves du même contrat (C4) : les valeurs
+ * calculées et décisions du moteur antérieur sont revues (balayage, campagne
+ * `l76-pertinence-1`). Lot 76 (I) : `l76-2` — fin calculée par l'échéancier
+ * (dernière échéance, première échéance + nombre d'échéances) et date de fin
+ * d'un remboursement par échéances sans démarche de fin jamais demandée : la
+ * même campagne reprend les décisions de `l76-1`.
+ */
+export const DOCUMENT_RULE_ENGINE_VERSION = 'l76-2';
 
 // ══════════════════════════════════════════════════════════════════════════
 // DATES — fonctions pures
@@ -213,21 +224,70 @@ export interface EvidenceFact {
  * fournisseur ou à un contrat.
  */
 export interface LifecycleSignals {
-  renewal: boolean; terminated: boolean; residual: boolean; signals: string[];
+  renewal: boolean;
+  /**
+   * Lot 76 (C2) : fin effective du contrat PROUVÉE — constat (« a été
+   * résilié », « a pris fin », « résiliation effective », « prêt soldé ») sans
+   * négation, sans condition, portant sur ce contrat, daté au plus aujourd'hui,
+   * lu dans une preuve FIABLE (fait certain, unité couverte). Seul signal qui
+   * autorise une décision déterministe « contrat terminé ».
+   */
+  terminated: boolean;
+  residual: boolean;
+  signals: string[];
   /**
    * Lot 75I (A) : CLAUSES lues qui portent ces signaux (≤ 5 × 300 caractères,
    * dédoublonnées) — transmises à T4 pour juger une obligation, même quand
    * elles ne sont pas dans l'extrait associé à la date.
    */
   clauses?: string[];
+  /** Lot 76 (C2) : non-renouvellement (« non renouvelable », « sans tacite reconduction ») — jamais une fin effective. */
+  nonRenewal?: boolean;
+  /** Lot 76 (C2) : fins PRÉVUES lues (« prend fin le 31/12/2030 »), ISO. */
+  scheduledEnd?: string[];
+  /**
+   * Lot 76 (C2) : INDICE d'une fin (fin prévue déjà passée, constat lu dans
+   * une preuve peu fiable) — jamais une preuve : décision différée, motivée.
+   */
+  terminationHint?: boolean;
+  /** Lot 76 (C2) : résiliation niée (« n'est pas résilié »). */
+  negatedTermination?: boolean;
+  /** Lot 76 (C6) : CONTENUS (sans libellé) des clauses porteuses — base de la clé de preuve. */
+  clauseBodies?: string[];
+  /** Lot 76 (C2) : clause de résiliation conditionnelle ou générique (« peut être résilié en cas de… »). */
+  conditionalTermination?: boolean;
 }
+
+/**
+ * Texte lu et sa fiabilité (lot 76, C2) : la fin effective exige une preuve
+ * fiable. `body` : CONTENU lu seul (valeur, extrait — sans libellé ni clé),
+ * base de la clé de preuve (C6) : un libellé renommé n'est pas un nouveau problème.
+ */
+export interface LifecycleText { text: string | null | undefined; confidence?: string | null; source?: string | null; body?: string | null }
 
 /** Clauses transmises à T4 au plus (lot 75I). */
 export const MAX_OBLIGATION_CLAUSES = 5;
 
-const RE_SANS_RECONDUCTION = /\b(sans|non|pas de|aucune?|ni)\s+(\w+\s){0,2}(reconduction|reconduit\w*|reconductible|renouvel\w*)/;
+const RE_SANS_RECONDUCTION = /\b(sans|non|pas|pas de|aucune?|ni|jamais)\s+(\w+\s){0,2}(reconduction|reconduit\w*|reconductible|renouvel\w*)/;
 const RE_RECONDUCTION = /\b(reconduction|reconduit\w*|reconductible\w*|renouvel\w*|tacite\w*|prorogation|proroge\w*)\b/;
-const RE_FIN_EFFECTIVE = /\b(resiliation effective|resilie\w*|a pris fin|prend fin|ayant pris fin|est termine\w*|cloture\w*|solde\w*|echu\w*|expire\w*|arrive a son terme|a son terme|fin effective)\b/;
+/** Vocabulaire d'une FIN (effective, prévue ou envisagée) — à qualifier. */
+const RE_FIN = /\b(resili\w*|pris fin|prend fin|prendra fin|prendre fin|termine\w*|cloture\w*|expire\w*|expirera|arrive\w* a (son )?(terme|echeance)|fin effective|solde\w*|rompu\w*|rupture)\b/;
+/** CONSTAT d'une fin survenue (passé composé, état) — Lot 76 (C2). */
+const RE_FIN_CONSTATEE = new RegExp([
+  String.raw`\b(a ete|ont ete|est|sont|etait|etaient|fut|avait ete|se trouve)\s+(definitivement\s+|bien\s+|effectivement\s+)?(resilie\w*|termine\w*|cloture\w*|expire\w*|rompu\w*)\b`,
+  String.raw`\b(a|ont|avait|avaient)\s+(definitivement\s+|bien\s+)?pris fin\b`, String.raw`\bayant pris fin\b`,
+  String.raw`\bresiliation (effective|prise en compte|enregistree|confirmee|acceptee)\b`, String.raw`\bfin effective\b`,
+  String.raw`\b(integralement|definitivement|totalement)\s+solde\w*\b`, String.raw`\b(pret|credit|dossier|compte|emprunt|contrat)\s+(est\s+|a ete\s+)?solde\w*\b`,
+  String.raw`\b(est|a ete)\s+arrive\w* a (son )?terme\b`,
+].join('|'));
+/** FIN PRÉVUE (présent ou futur) : « prend fin le », « expirera le », « valable jusqu'au ». */
+const RE_FIN_PREVUE = /\b(prend fin|prendra fin|expire le|expirera|arrive a echeance|arrivera a (son )?(terme|echeance)|se termine|se terminera|valable jusqu|jusqu au|prendre fin)\b/;
+/** Négation portée par la phrase (« n'est pas résilié », « aucune résiliation », « non résilié »). */
+const RE_NEGATION = /\bn (est|a|ont|etait|avait|sont|etaient|fut|sera|aura|y a)\b|\b(ne|pas|non|aucune?|jamais|ni|nullement)\b/;
+/** Condition, faculté, éventualité (« en cas de », « si », « peut être résilié »). */
+const RE_CONDITION = /\b(en cas d\w*|si|sauf|peut|peuvent|pourra|pourront|pourrait|possibilite|faculte|droit de|a defaut|sous reserve|lorsque|des lors|en l absence|eventuel\w*|le cas echeant|modalites|conditions de|preavis)\b/;
+/** Portée : la phrase vise un AUTRE contrat (ancien, précédent, remplacé). */
+const RE_AUTRE_CONTRAT = /\b(ancien|precedent|remplace\w*|anterieur|annule et remplace)\b/;
 const RE_OBLIGATION_RESIDUELLE = /\b(restitu\w*|rendre|retourner|rembourser|regler|reste a payer|reste du|solde restant|solde du|penalite\w*|frais de resiliation|indemnite\w*)\b/;
 /**
  * Lot 75I (A) — vocabulaire générique d'une OBLIGATION possible (démarche,
@@ -236,26 +296,85 @@ const RE_OBLIGATION_RESIDUELLE = /\b(restitu\w*|rendre|retourner|rembourser|regl
  */
 const RE_OBLIGATION_POSSIBLE = /\b(restitu\w*|rendre|retourn\w*|rembours\w*|regler|payer|paiement\w*|verser|versement\w*|solde\w*|penalit\w*|indemnit\w*|frais de \w+|preavis|resili\w*|denonc\w*|reconduc\w*|reconduit\w*|renouvel\w*|tacite\w*|prorog\w*|remettre|remise des cles|etat des lieux|obligation\w*|tenu de|tenue de|au plus tard)\b/;
 
+const normCycle = (t: string) => ` ${sansAccents(t).toLowerCase().replace(/[^a-z0-9]+/g, ' ')} `;
+
 /** Un texte mentionne-t-il une obligation possible ? (pure) */
 export const mentionsObligation = (texte: string | null | undefined): boolean =>
-  !!texte && RE_OBLIGATION_POSSIBLE.test(` ${sansAccents(String(texte)).toLowerCase().replace(/[^a-z0-9]+/g, ' ')} `);
+  !!texte && RE_OBLIGATION_POSSIBLE.test(normCycle(String(texte)));
 
-/** Signaux de cycle de vie d'un ensemble de textes lus (pure). */
-export function lifecycleSignalsOf(textes: Array<string | null | undefined>): LifecycleSignals {
-  const out: LifecycleSignals = { renewal: false, terminated: false, residual: false, signals: [], clauses: [] };
-  for (const brut of textes) {
+/**
+ * Lot 76 (C2) — qualification d'une PHRASE qui parle de fin du contrat (pure) :
+ * EFFECTIVE (constat sans négation ni condition, daté au plus aujourd'hui),
+ * SCHEDULED (fin prévue, avec ses dates), NEGATED, CONDITIONAL, OTHER_CONTRACT
+ * ou null (aucune fin évoquée).
+ */
+export function terminationKindOf(phrase: string, today: string): { kind: 'EFFECTIVE' | 'SCHEDULED' | 'NEGATED' | 'CONDITIONAL' | 'OTHER_CONTRACT' | null; dates: string[] } {
+  const t = normCycle(phrase);
+  const dates = datesMentionedIn(phrase).map((d) => d.iso);
+  if (!RE_FIN.test(t)) return { kind: null, dates };
+  // Négation proche du mot de fin (« n'est pas résilié », « non résilié », « aucune résiliation »).
+  const m = RE_FIN.exec(t)!;
+  const avant = t.slice(Math.max(0, m.index - 40), m.index);
+  if (RE_NEGATION.test(avant)) return { kind: 'NEGATED', dates };
+  if (RE_AUTRE_CONTRAT.test(t)) return { kind: 'OTHER_CONTRACT', dates };
+  if (RE_CONDITION.test(t)) return { kind: 'CONDITIONAL', dates };
+  if (RE_FIN_CONSTATEE.test(t) && !RE_FIN_PREVUE.test(t)) {
+    return dates.some((d) => d > today) ? { kind: 'SCHEDULED', dates } : { kind: 'EFFECTIVE', dates };
+  }
+  if (RE_FIN_PREVUE.test(t)) return { kind: 'SCHEDULED', dates };
+  // Mot de fin sans constat ni prévision (« Résiliation : … », « solde ») : clause générique.
+  return { kind: 'CONDITIONAL', dates };
+}
+
+/**
+ * Signaux de cycle de vie d'un ensemble de textes lus (pure). Lot 76 (C2) :
+ * chaque PHRASE est qualifiée (`terminationKindOf`) — non-renouvellement, fin
+ * prévue, résiliation envisagée ou niée ne sont jamais une fin effective ;
+ * une fin constatée dans une preuve peu fiable n'est qu'un indice.
+ */
+export function lifecycleSignalsOf(textes: Array<string | LifecycleText | null | undefined>, today: string = todayParis()): LifecycleSignals {
+  const out: LifecycleSignals = {
+    renewal: false, terminated: false, residual: false, signals: [], clauses: [], clauseBodies: [],
+    nonRenewal: false, scheduledEnd: [], terminationHint: false, negatedTermination: false, conditionalTermination: false,
+  };
+  const signal = (k: string, brut: string) => { if (out.signals.length < 8) out.signals.push(`${k}:${brut.slice(0, 60)}`); };
+  for (const entree of textes) {
+    if (!entree) continue;
+    const brut = typeof entree === 'string' ? entree : entree.text;
     if (!brut) continue;
-    const t = ` ${sansAccents(String(brut)).toLowerCase().replace(/[^a-z0-9]+/g, ' ')} `;
-    const sans = RE_SANS_RECONDUCTION.test(t);
+    // Texte transmis tel quel (recette, appelant) : fiable ; lu en base : sa confiance.
+    const fiable = typeof entree === 'string' || !entree.confidence || entree.confidence === 'certain';
+    const t = normCycle(String(brut));
     let porteur = false;
-    if (!sans && RE_RECONDUCTION.test(t)) { porteur = true; out.renewal = true; if (out.signals.length < 6) out.signals.push(`renewal:${String(brut).slice(0, 60)}`); }
-    if (RE_FIN_EFFECTIVE.test(t) || sans) { porteur = true; out.terminated = true; if (out.signals.length < 6) out.signals.push(`terminated:${String(brut).slice(0, 60)}`); }
-    if (RE_OBLIGATION_RESIDUELLE.test(t)) { porteur = true; out.residual = true; if (out.signals.length < 6) out.signals.push(`residual:${String(brut).slice(0, 60)}`); }
+    const sans = RE_SANS_RECONDUCTION.test(t);
+    if (sans) { porteur = true; out.nonRenewal = true; signal('nonRenewal', String(brut)); }
+    else if (RE_RECONDUCTION.test(t)) { porteur = true; out.renewal = true; signal('renewal', String(brut)); }
+    // Phrases, puis propositions (virgule, point-virgule, parenthèse, deux-points suivi d'un espace) :
+    // une négation ou une condition ne déborde jamais sur la proposition voisine.
+    for (const phrase of String(brut).split(/(?<=[.;!?])\s+|\n+|[,;()]|:\s/)) {
+      const q = terminationKindOf(phrase, today);
+      if (!q.kind) continue;
+      porteur = true;
+      if (q.kind === 'EFFECTIVE') {
+        if (fiable) { out.terminated = true; signal('terminated', phrase); } else { out.terminationHint = true; signal('terminationHint', phrase); }
+      } else if (q.kind === 'SCHEDULED') {
+        for (const d of q.dates) if (!out.scheduledEnd!.includes(d)) out.scheduledEnd!.push(d);
+        // Fin prévue DÉJÀ passée : indice d'une fin, jamais une preuve.
+        if (q.dates.length && q.dates.every((d) => d < today)) { out.terminationHint = true; signal('terminationHint', phrase); }
+        else signal('scheduledEnd', phrase);
+      } else if (q.kind === 'NEGATED') { out.negatedTermination = true; signal('negatedTermination', phrase); }
+      else if (q.kind === 'CONDITIONAL') { out.conditionalTermination = true; signal('conditionalTermination', phrase); }
+    }
+    if (RE_OBLIGATION_RESIDUELLE.test(t)) { porteur = true; out.residual = true; signal('residual', String(brut)); }
     if (!porteur && RE_OBLIGATION_POSSIBLE.test(t)) porteur = true;
     // Lot 75I (A) : la clause elle-même (texte lu, borné) — preuve transmise à T4.
     const clause = String(brut).replace(/\s+/g, ' ').trim().slice(0, 300);
     if (porteur && clause && out.clauses!.length < MAX_OBLIGATION_CLAUSES && !out.clauses!.includes(clause)) out.clauses!.push(clause);
+    const corps = typeof entree === 'string' ? null : entree.body?.replace(/\s+/g, ' ').trim().slice(0, 300) ?? null;
+    if (porteur && corps && out.clauseBodies!.length < 20 && !out.clauseBodies!.includes(corps)) out.clauseBodies!.push(corps);
   }
+  // Une fin effective prouvée l'emporte sur un indice ; une reconduction lue n'est jamais effacée.
+  if (out.terminated) out.terminationHint = false;
   return out;
 }
 
@@ -292,6 +411,8 @@ export interface FieldEvidence {
   fingerprint?: string;
   /** Lot 72 (C2) : signaux de cycle de vie du contrat (reconduction, fin effective, obligation résiduelle). */
   lifecycle?: LifecycleSignals;
+  /** Lot 76 (C4) : textes lus (avec leur fiabilité) qui fondent `lifecycle` — enrichis des documents du même contrat. */
+  lifecycleTexts?: LifecycleText[];
 }
 
 const court = (v: unknown, n = 120) => (v === null || v === undefined ? null : String(v).slice(0, n));
@@ -352,15 +473,21 @@ export async function gatherFieldEvidence(accountId: number, fileId: number, key
     if (r.value !== null) facts.push({ value: r.value, confidence: r.confidence, excerpt: excerpt ?? null, source, key: k, label: label ?? null });
   };
   // Lot 72 (C2) : textes lus (faits, unités) — signaux de cycle de vie du contrat.
-  const cycle: string[] = [];
+  const cycle: LifecycleText[] = [];
   const fin = (titleHint: FieldEvidence['titleHint'], documentTitle: string | null, hasExtraction: boolean): FieldEvidence => ({
     hasExtraction, facts, sources, missing, errors, observations, titleHint, documentTitle, contextDates, lifecycle: lifecycleSignalsOf(cycle.slice(0, 400)),
+    lifecycleTexts: cycle.slice(0, 400),
     fingerprint: sha([
       // Écart 4 : la CLAUSE (extrait) compte autant que la valeur — une clause modifiée invalide la décision.
       facts.map((f) => [f.source, f.value, f.confidence, f.excerpt ?? null]).sort(), observations.map((o) => [o.source, o.normalized, o.status]).sort(),
       titleHint, contextDates.map((d) => [d.key, d.iso]).sort(),
       // Lot 72 (C3) : signaux de cycle de vie utilisés par la décision (absents : empreinte inchangée).
-      ...(() => { const c = lifecycleSignalsOf(cycle.slice(0, 400)); return c.renewal || c.terminated || c.residual ? [['cycle', c.renewal, c.terminated, c.residual]] : []; })(),
+      // Lot 76 (C2) : + non-renouvellement, indice de fin, fins prévues (qualification de la fin).
+      ...(() => {
+        const c = lifecycleSignalsOf(cycle.slice(0, 400));
+        return c.renewal || c.terminated || c.residual || c.nonRenewal || c.terminationHint || c.scheduledEnd?.length
+          ? [['cycle', c.renewal, c.terminated, c.residual, !!c.nonRenewal, !!c.terminationHint, [...(c.scheduledEnd ?? [])].sort()]] : [];
+      })(),
     ]),
   });
 
@@ -382,7 +509,9 @@ export async function gatherFieldEvidence(accountId: number, fileId: number, key
     )) as unknown as Array<{ canonical: string | null; raw: string; label: string | null; norm: string | null; text: string | null; confidence: string; excerpt: string | null }>;
     for (const r of rows) {
       contenu.push(r.text ?? '', r.excerpt ?? '');
-      cycle.push([r.label, r.raw, r.text, r.excerpt].filter(Boolean).join(' : '));
+      // Lot 76 (C2) : la fiabilité de la preuve accompagne le texte (fin effective : preuve fiable exigée).
+      cycle.push({ text: [r.label, r.raw, r.text, r.excerpt].filter(Boolean).join(' : '), confidence: r.confidence, source: 'FACTS',
+        body: [...new Set([r.text, r.excerpt].filter(Boolean))].join(' : ') });
       if (!designe(r.canonical, r.raw, r.label)) {
         // Lot 61 : autres dates fiables du document (situer le contrat dans le temps).
         const d = parseDocumentDate(r.norm ?? r.text);
@@ -423,7 +552,10 @@ export async function gatherFieldEvidence(accountId: number, fileId: number, key
       )) as unknown as Array<{ kind: string; label: string | null; value: string | null; text: string | null; coverage: string }>;
       for (const u of units) {
         contenu.push(u.value ?? '', u.text ?? '');
-        if (u.label || u.value || u.text) cycle.push([u.label, u.value, u.text].filter(Boolean).join(' : '));
+        if (u.label || u.value || u.text) {
+          cycle.push({ text: [u.label, u.value, u.text].filter(Boolean).join(' : '), confidence: u.coverage === 'COVERED' ? 'certain' : 'probable', source: 'SOURCE_UNITS',
+            body: [u.value, u.text].filter(Boolean).join(' : ') });
+        }
         if (!['LABEL_VALUE', 'FORM_FIELD'].includes(u.kind) || !u.label || !u.value) continue;
         if (!t1LabelDesignates(u.label, key, registryLabel) && !(opts.designation && opts.designation.labelMatch(u.label))) continue;
         // Unité lue mais non structurée en fait : proposition, jamais écriture silencieuse.
@@ -486,7 +618,23 @@ export function normalizeContractReference(v: unknown): string | null {
  *   · sinon (valeur lue ou calculée) → proposition « probable » ;
  *   · plusieurs valeurs distinctes → propositions (arbitrage).
  */
-export async function gatherRelatedDocumentValues(accountId: number, fileId: number, key: string): Promise<{ facts: EvidenceFact[]; related: Array<{ fileId: number; value: string; userValidated: boolean; kind: string | null }> }> {
+export interface RelatedDocumentEvidence {
+  facts: EvidenceFact[];
+  related: Array<{ fileId: number; value: string; userValidated: boolean; kind: string | null }>;
+  /**
+   * Lot 76 (C4) : PREUVES des documents du même contrat (faits actifs, unités
+   * source — avec leur fiabilité) : clauses, statuts, résiliations, obligations
+   * lus ailleurs que dans les valeurs retenues. Bornées.
+   */
+  texts?: LifecycleText[];
+  /** Lot 76 (C4) : documents du même contrat (référence exacte), vivants. */
+  relatedFiles?: number[];
+}
+
+/** Textes de preuve lus par document lié, au plus (lot 76, C4). */
+const MAX_TEXTES_LIES = 200;
+
+export async function gatherRelatedDocumentValues(accountId: number, fileId: number, key: string): Promise<RelatedDocumentEvidence> {
   const aliases = CONTRACT_REFERENCE_KEYS.flatMap((k) => [k, ...(getField(k)?.aliases ?? [])]);
   const refs = (await pgClient.unsafe(
     `SELECT DISTINCT COALESCE(normalized_value, value_text) AS v FROM document_facts
@@ -495,7 +643,45 @@ export async function gatherRelatedDocumentValues(accountId: number, fileId: num
     [fileId, accountId, aliases] as never[],
   )) as unknown as Array<{ v: string | null }>;
   const mesRefs = [...new Set(refs.map((r) => normalizeContractReference(r.v)).filter((x): x is string => !!x))];
-  if (mesRefs.length === 0) return { facts: [], related: [] };
+  if (mesRefs.length === 0) return { facts: [], related: [], texts: [], relatedFiles: [] };
+  // Lot 76 (C4) : documents du MÊME contrat (référence exacte, jamais le bien ni le fournisseur), vivants.
+  const liesRows = (await pgClient.unsafe(
+    `SELECT DISTINCT x.file_id FROM document_facts x
+       JOIN asset_files f ON f.id = x.file_id AND f.account_id = x.account_id AND f.deleted_at IS NULL AND f.grouped_into_file_id IS NULL
+      WHERE x.account_id = $1 AND x.file_id <> $2 AND x.status = 'active'
+        AND (to_jsonb(x) ->> 'canonical_key' = ANY($3::text[]) OR x.fact_key = ANY($3::text[]))
+        AND regexp_replace(upper(COALESCE(x.normalized_value, x.value_text, '')), '[^A-Z0-9]', '', 'g') = ANY($4::text[])
+      ORDER BY x.file_id LIMIT 20`,
+    [accountId, fileId, aliases, mesRefs] as never[],
+  )) as unknown as Array<{ file_id: number }>;
+  const relatedFiles = liesRows.map((r) => Number(r.file_id));
+  const texts: LifecycleText[] = [];
+  if (relatedFiles.length) {
+    const faits = (await pgClient.unsafe(
+      `SELECT file_id, label, fact_key AS raw, value_text AS text, excerpt, confidence FROM document_facts
+        WHERE account_id = $1 AND file_id = ANY($2::int[]) AND status = 'active' ORDER BY file_id, id LIMIT ${MAX_TEXTES_LIES}`,
+      [accountId, relatedFiles] as never[],
+    )) as unknown as Array<{ file_id: number; label: string | null; raw: string | null; text: string | null; excerpt: string | null; confidence: string }>;
+    for (const r of faits) {
+      texts.push({ text: [r.label, r.raw, r.text, r.excerpt].filter(Boolean).join(' : '), confidence: r.confidence, source: `RELATED_DOCUMENT:${r.file_id}`,
+        body: [...new Set([r.text, r.excerpt].filter(Boolean))].join(' : ') });
+    }
+    const { sourceLayerReady } = await import('@/services/ai/source-analysis/source-units/repository');
+    if (await sourceLayerReady()) {
+      const units = (await pgClient.unsafe(
+        `SELECT file_id, label, value_text AS value, content_text AS text, coverage_status AS coverage FROM document_source_units
+          WHERE account_id = $1 AND file_id = ANY($2::int[]) AND coverage_status IN ('COVERED', 'UNRESOLVED', 'UNCERTAIN')
+          ORDER BY file_id, ordinal LIMIT ${MAX_TEXTES_LIES}`,
+        [accountId, relatedFiles] as never[],
+      )) as unknown as Array<{ file_id: number; label: string | null; value: string | null; text: string | null; coverage: string }>;
+      for (const u of units) {
+        if (u.label || u.value || u.text) {
+          texts.push({ text: [u.label, u.value, u.text].filter(Boolean).join(' : '), confidence: u.coverage === 'COVERED' ? 'certain' : 'probable', source: `RELATED_DOCUMENT:${u.file_id}`,
+            body: [u.value, u.text].filter(Boolean).join(' : ') });
+        }
+      }
+    }
+  }
   const lignes = (await pgClient.unsafe(
     `SELECT DISTINCT v.file_id, v.value_text AS value, v.user_validated AS uv, to_jsonb(v) ->> 'value_kind' AS kind
        FROM document_facts x
@@ -519,7 +705,25 @@ export async function gatherRelatedDocumentValues(accountId: number, fileId: num
       confidence: r.userValidated && valeurs.size === 1 ? 'certain' : 'probable',
       excerpt: `Même contrat que le document ${r.fileId}`,
     }));
-  return { facts, related };
+  return { facts, related, texts, relatedFiles };
+}
+
+/**
+ * Lot 76 (C4) — preuves du MÊME contrat intégrées à la connaissance d'un
+ * document (pure) : signaux de cycle de vie recalculés sur ses textes ET ceux
+ * des documents liés (résiliation, clause, obligation lues ailleurs),
+ * empreinte enrichie — une preuve liée ajoutée, retirée ou modifiée change
+ * l'empreinte et la décision mémorisée. Sans document lié : inchangée.
+ */
+export function withRelatedEvidence(ev: FieldEvidence, lies: Pick<RelatedDocumentEvidence, 'texts' | 'relatedFiles'>, today?: string): FieldEvidence {
+  const textes = (lies.texts ?? []).filter((t) => !!t.text);
+  if (textes.length === 0) return ev;
+  const tous = [...(ev.lifecycleTexts ?? []), ...textes];
+  return {
+    ...ev, lifecycleTexts: tous, lifecycle: lifecycleSignalsOf(tous.slice(0, 600), today),
+    sources: { ...ev.sources, RELATED_EVIDENCE: textes.length },
+    fingerprint: sha([ev.fingerprint ?? null, 'lies', [...(lies.relatedFiles ?? [])].sort(), textes.map((t) => [t.source, t.text, t.confidence]).sort()]),
+  };
 }
 
 // ══════════════════════════════════════════════════════════════════════════
@@ -599,6 +803,8 @@ export interface DecisionContract {
   motive: string;
   /** Lot 63 — seuils « À traiter » utilisés (BO › Configuration IA, défaut lot 61). */
   thresholds?: ToProcessThresholds;
+  /** Lot 76 (C3) — état T4, configuration effective et modalité de reprise (null : décision sans T4). */
+  t4?: { state: T4State; configRef: string | null; interventionCapable: boolean | null; resume: string | null } | null;
 }
 
 export interface PertinenceResult {
@@ -622,8 +828,25 @@ export interface PertinenceResult {
   technicalFailure: boolean;
   /** Lot 75I (D) : contrat T4 actif incompatible — état prudent (aucune carte créée ni fermée), signalé au diagnostic. */
   incompatible?: boolean;
+  /**
+   * Lot 76 (C3) : état de l'interprétation T4 pour CETTE décision —
+   * OK (rendue, ou inutile), INCOMPATIBLE (contrat actif sans t4_output_v3),
+   * UNAVAILABLE (configuration illisible, panne du fournisseur), INVALID_OUTPUT
+   * (sortie hors contrat). null : décision sans T4.
+   */
+  t4State?: T4State | null;
   contract: DecisionContract | null;
 }
+
+/** Lot 76 (C3) — état de l'interprétation T4 d'une décision. */
+export type T4State = 'OK' | 'INCOMPATIBLE' | 'UNAVAILABLE' | 'INVALID_OUTPUT';
+
+/** Modalité de reprise affichée au diagnostic (lot 76, C3). */
+export const T4_RESUME: Record<Exclude<T4State, 'OK'>, string> = {
+  INCOMPATIBLE: 'réévaluée automatiquement dès l’activation d’une version T4 au contrat t4_output_v3 (BO › Prompts maîtres › T4)',
+  UNAVAILABLE: 'nouvelle tentative automatique au balayage suivant (configuration ou fournisseur T4 indisponible)',
+  INVALID_OUTPUT: 'nouvelle tentative automatique le lendemain (sortie T4 hors contrat)',
+};
 
 export interface PertinenceCandidate { iso: string; source: string; excerpt?: string | null }
 
@@ -687,6 +910,11 @@ export interface T4AssessmentConfig {
   contentHash?: string | null;
   /** Lot 72 : suivi des révisions disponible (migration 0516) ; faux : seul le numéro de version compte (signalé au BO). */
   revisionTracked?: boolean;
+  /**
+   * Lot 76 (C3) : configuration T4 ILLISIBLE (panne de lecture) — indisponibilité
+   * technique, jamais confondue avec un contrat incompatible.
+   */
+  unavailable?: boolean;
 }
 
 /**
@@ -779,6 +1007,12 @@ export interface RelevanceInput {
   contradictory?: boolean;
   /** Lot 72 (C2) : signaux de cycle de vie lus (reconduction, fin effective, obligation résiduelle). */
   lifecycle?: LifecycleSignals | null;
+  /**
+   * Lot 76 (I) : la date de fin conditionne-t-elle une démarche ? (`endDateNeed`,
+   * document-derivations) — remboursement par échéances sans démarche de fin :
+   * la date inconnue n'est demandée à personne.
+   */
+  endDateNeed?: { repaymentSchedule: boolean; endActions: string[]; notNeeded: boolean } | null;
 }
 
 /**
@@ -814,7 +1048,7 @@ export interface RelevanceInput {
  *       maintenue (comportement antérieur), sans appel IA inutile.
  */
 export async function assessDeadlinePertinence(p: RelevanceInput): Promise<PertinenceResult> {
-  const vide = { aiCalled: false, cached: false, aiStatus: null, aiTraceId: null, intervention: null, technicalFailure: false, incompatible: false } as const;
+  const vide = { aiCalled: false, cached: false, aiStatus: null, aiTraceId: null, intervention: null, technicalFailure: false, incompatible: false, t4State: null } as const;
   const config: T4AssessmentConfig = p.config ?? { ref: 'unknown', interventionCapable: false };
   // Lot 63 : seuils réglables (BO), portés par la configuration effective.
   const { futureHorizonDays: FUTURE_HORIZON_DAYS, historicalYears: HISTORICAL_YEARS, deferUncertainDays: DEFER_UNCERTAIN_DAYS,
@@ -822,7 +1056,7 @@ export async function assessDeadlinePertinence(p: RelevanceInput): Promise<Perti
   const key = p.rule.fieldKey ?? '';
   const res = (r: Omit<PertinenceResult, 'contract' | keyof typeof vide> & Partial<Pick<PertinenceResult, keyof typeof vide>>): PertinenceResult => {
     const full = { ...vide, ...r } as PertinenceResult;
-    return { ...full, contract: decisionContractOf(p, full) };
+    return { ...full, contract: decisionContractOf({ ...p, config }, full) };
   };
   if (!isDeadlineRule(p.rule)) {
     return res({ pertinence: 'NOT_EVALUATED', reason: 'rule_without_deadline', signature: null, outcome: null, situation: 'NOT_DEADLINE', card: null, reevaluateAt: null });
@@ -832,6 +1066,16 @@ export async function assessDeadlinePertinence(p: RelevanceInput): Promise<Perti
   // Écart 7 : la date du TITRE seul est un indice, jamais une preuve.
   const preuves = cands.filter((c) => c.source !== 'TITLE_ONLY');
   const indicesTitre = cands.filter((c) => c.source === 'TITLE_ONLY');
+
+  // ── Lot 76 (I) : date de fin nécessaire à aucune démarche ─────────────────
+  // Remboursement par échéances lu, aucune clause n'attache de démarche à la fin
+  // (reconduction, préavis, restitution, option…), aucune date LUE (au plus une
+  // estimation calculée) : l'absence de la date ne justifie aucune question —
+  // déterministe, sans appel IA. Une date lue (même incertaine) suit la règle commune.
+  if (p.endDateNeed?.notNeeded && preuves.every((c) => c.source === 'CALCULATED_PROBABLE')) {
+    const sit: RelevanceSituation = preuves.length ? (preuves.some((c) => c.iso >= p.today) ? 'FUTURE_DEADLINE' : 'PAST_DEADLINE') : indicesTitre.length ? 'TITLE_ONLY' : 'UNDATED';
+    return res({ pertinence: 'UNDATED_NOT_NEEDED', reason: 'repayment_schedule_without_end_action', signature: null, outcome: 'NO_ACTION', situation: sit, card: null, reevaluateAt: null });
+  }
 
   // ── Date(s) future(s) : déterministe, sans IA ─────────────────────────────
   const futures = preuves.filter((c) => c.iso >= p.today).map((c) => c.iso).sort();
@@ -864,8 +1108,14 @@ export async function assessDeadlinePertinence(p: RelevanceInput): Promise<Perti
     const cycle = p.lifecycle ?? null;
     if (ancien && !cycle?.renewal) {
       if (situation !== 'TITLE_ONLY' && cycle?.terminated && !cycle.residual) {
-        // Fin effective PROUVÉE par le document — pas par son âge.
+        // Fin effective PROUVÉE par le document (lot 76 : constat fiable, ni nié, ni conditionnel, ni futur) — pas par son âge.
         return res({ pertinence: 'CONTRACT_TERMINATED', reason: 'contract_end_evidenced', signature: null, outcome: 'NO_ACTION', situation, card: null, reevaluateAt: null });
+      }
+      if (cycle?.terminationHint && !cycle.residual) {
+        // Lot 76 (C2) : fin seulement PROBABLE (fin prévue passée, preuve peu fiable) — incertitude non
+        // résolue : différée, motivée, réévaluation programmée ; ni question, ni appel IA.
+        return res({ pertinence: 'UNDECIDED', reason: 'termination_not_proven:end_hint_only', signature: null, outcome: 'DEFER', situation, card: null,
+          reevaluateAt: aMinuit(plusJours(p.today, DEFER_UNDATED_DAYS)) });
       }
       // Ancienneté seule : indice, jamais preuve — ni carte, ni appel IA, réévaluation programmée.
       return res({
@@ -873,38 +1123,53 @@ export async function assessDeadlinePertinence(p: RelevanceInput): Promise<Perti
         reevaluateAt: aMinuit(plusJours(p.today, situation === 'TITLE_ONLY' ? DEFER_TITLE_ONLY_DAYS : DEFER_UNDATED_DAYS)),
       });
     }
-    if (!config.interventionCapable) {
-      // Version T4 active sans évaluation structurée : aucune décision fiable
-      // possible par l'IA. Lot 75I (D) : une donnée manquante n'est jamais un
-      // besoin démontré — plus de question par défaut. État prudent (ni
-      // carte créée, ni carte fermée), incompatibilité signalée ; réévaluée
-      // dès l'activation d'une configuration compatible (référence changée).
-      return situation === 'TITLE_ONLY'
-        ? res({ pertinence: 'TITLE_HINT_ONLY', reason: 'title_only_no_t4_assessment', signature: null, outcome: 'DEFER', situation, card: null, reevaluateAt: aMinuit(plusJours(p.today, DEFER_TITLE_ONLY_DAYS)) })
-        : res({ pertinence: 'T4_INCOMPATIBLE', reason: 'undated:t4_contract_incompatible', signature: null, outcome: 'DEFER', situation, card: null, reevaluateAt: null, incompatible: true });
-    }
   }
 
+  // ── Lot 76 (C3) : interprétation structurée T4 impossible ──────────────────
+  // Configuration illisible : indisponibilité technique (reprise rapide). Contrat
+  // actif incompatible (v1 / v2) : aucune décision fiable de l'IA — ni question
+  // par défaut, ni fermeture sur une classification non structurée, ni appel
+  // IA inutile ; état prudent signalé, repris à l'activation d'un contrat compatible.
+  if (config.unavailable) {
+    return res({ pertinence: 'UNDECIDED', reason: 't4_config_unavailable', signature: null, outcome: 'DEFER', situation, card: null,
+      reevaluateAt: new Date(Date.now() + RETRY_AFTER_FAILURE_MIN * 60_000).toISOString(), technicalFailure: true, t4State: 'UNAVAILABLE' });
+  }
+  if (!config.interventionCapable) {
+    return situation === 'TITLE_ONLY'
+      ? res({ pertinence: 'TITLE_HINT_ONLY', reason: 'title_only_no_t4_assessment', signature: null, outcome: 'DEFER', situation, card: null,
+        reevaluateAt: aMinuit(plusJours(p.today, DEFER_TITLE_ONLY_DAYS)), t4State: 'INCOMPATIBLE' })
+      : res({ pertinence: 'T4_INCOMPATIBLE', reason: `${situation === 'PAST_DEADLINE' ? 'past' : 'undated'}:t4_contract_incompatible`, signature: null, outcome: 'DEFER',
+        situation, card: null, reevaluateAt: null, incompatible: true, t4State: 'INCOMPATIBLE' });
+  }
+
+  // Lot 76 (C4 / C6) : CLAUSES lues (document et documents du même contrat) transmises à T4 —
+  // une obligation nouvelle ne peut être prouvée que si sa clause est fournie ; elles entrent
+  // dans la mémoire (une clause changée réévalue, une clause inchangée ne rappelle pas l'IA).
+  const clauses = [...new Set((p.lifecycle?.clauses ?? []).map((c) => c.replace(/\s+/g, ' ').trim().slice(0, 300)).filter(Boolean))].slice(0, MAX_OBLIGATION_CLAUSES);
   // ── Décision mémorisée pour les mêmes éléments ────────────────────────────
-  const signature = pertinenceSignature(key, p.documentType, cands, { situation, evidence: p.evidenceFingerprint ?? null, config: pertinenceConfigKey(config) });
+  const signature = pertinenceSignature(key, p.documentType, cands, {
+    situation, evidence: clauses.length ? `${p.evidenceFingerprint ?? ''}|${sha(clauses, 12)}` : (p.evidenceFingerprint ?? null), config: pertinenceConfigKey(config),
+  });
   const m = p.remembered;
   if (m && m.signature === signature && m.outcome && m.pertinence && m.aiStatus !== 'ERROR') {
     return res({
       pertinence: m.pertinence as Pertinence, reason: 'remembered_decision', signature, cached: true, outcome: m.outcome, situation,
       card: m.card ?? (m.outcome === 'CREATE_ACTION' ? 'DATA_QUESTION' : null), intervention: m.intervention ?? null,
-      reevaluateAt: m.outcome === 'DEFER' ? (m.reevaluateAt ?? aMinuit(plusJours(p.today, DEFER_UNCERTAIN_DAYS))) : null,
+      reevaluateAt: m.outcome === 'DEFER' ? (m.reevaluateAt ?? aMinuit(plusJours(p.today, DEFER_UNCERTAIN_DAYS))) : null, t4State: 'OK',
     });
   }
 
   // ── IA : T4 CLASSIFY_EVENT ────────────────────────────────────────────────
   const def = getField(key);
   const latest = [...(preuves.length ? preuves : indicesTitre)].sort((a, b) => b.iso.localeCompare(a.iso))[0] ?? null;
-  const request = config.interventionCapable ? {
+  // Lot 76 (C3) : seul un contrat structuré atteint cette étape — l'évaluation est toujours demandée.
+  const request = {
     contractVersion: DECISION_CONTRACT_VERSION, situation, dataKey: key, question: p.rule.question, today: p.today,
     candidates: cands.slice(0, 10).map((c) => ({ date: c.iso, source: c.source })),
     documentDates: (p.contextDates ?? []).slice(0, 10).map((d) => ({ key: d.key, date: d.iso })),
     documentTitle: p.documentTitle ?? null,
-  } : null;
+    ...(clauses.length ? { clauses } : {}),
+  };
   const description = [
     situation === 'PAST_DEADLINE' ? `Échéance passée (date du jour : ${p.today}).`
       : situation === 'TITLE_ONLY' ? `Date suggérée uniquement par le titre ou le nom du document, non retrouvée dans son contenu (date du jour : ${p.today}).`
@@ -925,18 +1190,19 @@ export async function assessDeadlinePertinence(p: RelevanceInput): Promise<Perti
       excerpt, recurrenceCandidate: null, toProcessAssessment: request,
     },
   );
-  const ia = { aiCalled: true, cached: false, aiTraceId: d.traceId ?? null, signature };
+  const ia = { aiCalled: true, cached: false, aiTraceId: d.traceId ?? null, signature, t4State: 'OK' as const };
   if (d.outcome === 'technical_failure') {
     // Écart 5 : une panne n'est jamais une décision. Réessai rapide, aucune fermeture.
     const at = new Date(Date.now() + RETRY_AFTER_FAILURE_MIN * 60_000).toISOString();
-    return res({ ...ia, aiStatus: 'ERROR', pertinence: 'UNDECIDED', reason: `t4_failure:${d.error?.code ?? 'UNKNOWN'}`, outcome: 'DEFER', situation, card: null, reevaluateAt: at, technicalFailure: true });
+    return res({ ...ia, aiStatus: 'ERROR', pertinence: 'UNDECIDED', reason: `t4_failure:${d.error?.code ?? 'UNKNOWN'}`, outcome: 'DEFER', situation, card: null, reevaluateAt: at,
+      technicalFailure: true, t4State: 'UNAVAILABLE' });
   }
   const motif = (s: string) => s.slice(0, 300);
   // Lot 72 (C2) : contrat reconductible dont l'échéance est inconnue — jamais « sans enjeu » sans preuve de fin.
   const reconductibleSansDate = situation === 'UNDATED' && !!p.lifecycle?.renewal && !p.lifecycle.terminated;
-  const iv = checkInterventionCoherence(d.intervention, { requested: !!request, providedText: [description, excerpt ?? '', p.documentTitle ?? ''].join(' ') });
+  const iv = checkInterventionCoherence(d.intervention, { requested: true, providedText: [description, excerpt ?? '', p.documentTitle ?? '', ...clauses].join(' ') });
 
-  if (request && d.contractVersion === 3 && iv) {
+  if (d.contractVersion === 3 && iv) {
     // ── Évaluation structurée (t4_output_v3), contrôlée ────────────────────
     if (iv.needed === 'yes') {
       const donnee = iv.kind === 'PROVIDE_INFORMATION';
@@ -976,29 +1242,12 @@ export async function assessDeadlinePertinence(p: RelevanceInput): Promise<Perti
       outcome: 'DEFER', situation, card: null, reevaluateAt: aMinuit(plusJours(p.today, situation === 'PAST_DEADLINE' ? DEFER_UNCERTAIN_DAYS : DEFER_UNDATED_DAYS)) });
   }
 
-  if (request) {
-    // Évaluation demandée mais non rendue ou rejetée (sortie hors contrat,
-    // bloc vide) : sortie IA invalide — prudence : aucune carte créée, une
-    // carte existante n'est PAS retirée (aucun risque supprimé en silence),
-    // nouvelle tentative le lendemain.
-    return res({ ...ia, aiStatus: 'ERROR', pertinence: 'UNDECIDED', reason: motif(`t4:assessment_missing:${d.reason}`), outcome: 'DEFER', situation, card: null,
-      reevaluateAt: aMinuit(plusJours(p.today, 1)), technicalFailure: true });
-  }
-
-  // ── Échéance passée, version T4 sans évaluation structurée (v1 / v2) ──────
-  if (d.agendaDecision === 'accept' && d.classification.category === 'information') {
-    return situation === 'TITLE_ONLY'
-      ? res({ ...ia, aiStatus: 'OK', pertinence: 'TITLE_HINT_ONLY', reason: motif(`t4:information_title_only:${d.reason}`), outcome: 'DEFER', situation, card: null, reevaluateAt: aMinuit(plusJours(p.today, DEFER_TITLE_ONLY_DAYS)) })
-      : res({ ...ia, aiStatus: 'OK', pertinence: 'NO_ACTION_NEEDED', reason: motif(`t4:information:${d.reason}`), outcome: 'NO_ACTION', situation, card: null, reevaluateAt: null });
-  }
-  if (d.agendaDecision === 'accept' && d.classification.category === 'action') {
-    // Écart 2 : action attendue mais NON identifiée (pas de contrat v3) —
-    // jamais une fausse question de date : décision différée, signalée.
-    return res({ ...ia, aiStatus: 'OK', pertinence: 'ACTION_REQUIRED', reason: motif(`t4:action_not_identified:${d.reason}`), outcome: 'DEFER', situation, card: null,
-      reevaluateAt: aMinuit(plusJours(p.today, DEFER_UNCERTAIN_DAYS)) });
-  }
-  return res({ ...ia, aiStatus: 'OK', pertinence: 'UNDECIDED', reason: motif(`t4:${d.agendaDecision}:${d.reason}`), outcome: 'DEFER', situation, card: null,
-    reevaluateAt: aMinuit(plusJours(p.today, DEFER_UNCERTAIN_DAYS)) });
+  // Évaluation demandée mais non rendue ou rejetée (sortie hors contrat, bloc
+  // vide) : sortie IA INVALIDE — prudence : aucune carte créée, une carte
+  // existante n'est PAS retirée (aucun risque supprimé en silence), nouvelle
+  // tentative le lendemain. Lot 76 (C3) : distinguée de l'incompatibilité.
+  return res({ ...ia, aiStatus: 'ERROR', pertinence: 'UNDECIDED', reason: motif(`t4:assessment_missing:${d.reason}`), outcome: 'DEFER', situation, card: null,
+    reevaluateAt: aMinuit(plusJours(p.today, 1)), technicalFailure: true, t4State: 'INVALID_OUTPUT' });
 }
 
 // ══════════════════════════════════════════════════════════════════════════
@@ -1037,7 +1286,7 @@ export interface KnownObligationInput extends Omit<RelevanceInput, 'candidates' 
  *     connue) ; panne, sortie hors contrat → DEFER technique (aucune fermeture).
  */
 export async function assessKnownDeadlineObligation(p: KnownObligationInput): Promise<PertinenceResult> {
-  const vide = { aiCalled: false, cached: false, aiStatus: null, aiTraceId: null, intervention: null, technicalFailure: false, incompatible: false } as const;
+  const vide = { aiCalled: false, cached: false, aiStatus: null, aiTraceId: null, intervention: null, technicalFailure: false, incompatible: false, t4State: null } as const;
   const config: T4AssessmentConfig = p.config ?? { ref: 'unknown', interventionCapable: false };
   const { futureHorizonDays: horizon, historicalYears, deferUncertainDays, deferUndatedDays } = thresholdsOf(config);
   const key = p.rule.fieldKey ?? '';
@@ -1045,7 +1294,7 @@ export async function assessKnownDeadlineObligation(p: KnownObligationInput): Pr
   const situation: RelevanceSituation = 'KNOWN_DEADLINE';
   const res = (r: Omit<PertinenceResult, 'contract' | 'situation' | keyof typeof vide> & Partial<Pick<PertinenceResult, keyof typeof vide>>): PertinenceResult => {
     const full = { ...vide, ...r, situation } as PertinenceResult;
-    return { ...full, contract: decisionContractOf({ ...p, candidates: cands }, full) };
+    return { ...full, contract: decisionContractOf({ ...p, candidates: cands, config }, full) };
   };
   if (!isDeadlineRule(p.rule)) {
     return { ...vide, pertinence: 'NOT_EVALUATED', reason: 'rule_without_deadline', signature: null, outcome: null, situation: 'NOT_DEADLINE', card: null, reevaluateAt: null, contract: null };
@@ -1073,8 +1322,13 @@ export async function assessKnownDeadlineObligation(p: KnownObligationInput): Pr
   if (clauses.length === 0 && !mentionsObligation(p.dateExcerpt) && !mentionsObligation(p.documentTitle)) {
     return res({ pertinence: 'NO_OBLIGATION_EVIDENCE', reason: 'known:no_obligation_clause', signature: null, outcome: 'NO_ACTION', card: null, reevaluateAt: null });
   }
+  if (config.unavailable) {
+    // Lot 76 (C3) : configuration T4 illisible — indisponibilité technique, jamais une décision.
+    return res({ pertinence: 'UNDECIDED', reason: 'known:t4_config_unavailable', signature: null, outcome: 'DEFER', card: null,
+      reevaluateAt: new Date(Date.now() + RETRY_AFTER_FAILURE_MIN * 60_000).toISOString(), technicalFailure: true, t4State: 'UNAVAILABLE' });
+  }
   if (!config.interventionCapable) {
-    return res({ pertinence: 'T4_INCOMPATIBLE', reason: 'known:t4_contract_incompatible', signature: null, outcome: 'DEFER', card: null, reevaluateAt: null, incompatible: true });
+    return res({ pertinence: 'T4_INCOMPATIBLE', reason: 'known:t4_contract_incompatible', signature: null, outcome: 'DEFER', card: null, reevaluateAt: null, incompatible: true, t4State: 'INCOMPATIBLE' });
   }
 
   // ── Décision mémorisée (mêmes preuves, mêmes clauses, même configuration) ──
@@ -1086,7 +1340,7 @@ export async function assessKnownDeadlineObligation(p: KnownObligationInput): Pr
     return res({
       pertinence: m.pertinence as Pertinence, reason: 'remembered_decision', signature, cached: true, outcome: m.outcome,
       card: m.outcome === 'CREATE_ACTION' ? (m.card ?? 'INTERVENTION') : null, intervention: m.intervention ?? null,
-      reevaluateAt: m.outcome === 'DEFER' ? (m.reevaluateAt ?? aMinuit(plusJours(p.today, deferUncertainDays))) : null,
+      reevaluateAt: m.outcome === 'DEFER' ? (m.reevaluateAt ?? aMinuit(plusJours(p.today, deferUncertainDays))) : null, t4State: 'OK',
     });
   }
 
@@ -1111,17 +1365,17 @@ export async function assessKnownDeadlineObligation(p: KnownObligationInput): Pr
     { title: def?.label ?? key, description, originType: 'qualified_document', originFieldKey: key, nature: 'DEADLINE', businessType: def?.agendaEffect?.businessType ?? null },
     { accountId: p.accountId, sourceFileId: p.fileId, date: p.known.iso, documentType: p.documentType, excerpt, recurrenceCandidate: null, toProcessAssessment: request },
   );
-  const ia = { aiCalled: true, cached: false, aiTraceId: d.traceId ?? null, signature };
+  const ia = { aiCalled: true, cached: false, aiTraceId: d.traceId ?? null, signature, t4State: 'OK' as const };
   if (d.outcome === 'technical_failure') {
     return res({ ...ia, aiStatus: 'ERROR', pertinence: 'UNDECIDED', reason: `t4_failure:${d.error?.code ?? 'UNKNOWN'}`, outcome: 'DEFER', card: null,
-      reevaluateAt: new Date(Date.now() + RETRY_AFTER_FAILURE_MIN * 60_000).toISOString(), technicalFailure: true });
+      reevaluateAt: new Date(Date.now() + RETRY_AFTER_FAILURE_MIN * 60_000).toISOString(), technicalFailure: true, t4State: 'UNAVAILABLE' });
   }
   const motif = (s: string) => s.slice(0, 300);
   const iv = checkInterventionCoherence(d.intervention, { requested: true, providedText: [description, excerpt ?? '', p.documentTitle ?? '', ...clauses].join(' ') });
   if (d.contractVersion !== 3 || !iv) {
     // Sortie hors contrat : prudence — aucune carte créée, aucune retirée ; nouvelle tentative le lendemain.
     return res({ ...ia, aiStatus: 'ERROR', pertinence: 'UNDECIDED', reason: motif(`t4:assessment_missing:${d.reason}`), outcome: 'DEFER', card: null,
-      reevaluateAt: aMinuit(plusJours(p.today, 1)), technicalFailure: true });
+      reevaluateAt: aMinuit(plusJours(p.today, 1)), technicalFailure: true, t4State: 'INVALID_OUTPUT' });
   }
   if (iv.needed === 'yes' && iv.kind === 'PROVIDE_INFORMATION') {
     // La donnée est connue : jamais une question de complétion.
@@ -1172,6 +1426,11 @@ export function decisionContractOf(p: Pick<RelevanceInput, 'rule' | 'fileId' | '
     decision: r.outcome, motive: r.reason,
     // Lot 63 : seuils utilisés pour cette décision (traçage, diagnostic BO).
     thresholds: thresholdsOf(p.config),
+    // Lot 76 (C3) : état T4, configuration EFFECTIVE et modalité de reprise.
+    t4: r.t4State ? {
+      state: r.t4State, configRef: p.config?.ref ?? null, interventionCapable: p.config ? p.config.interventionCapable : null,
+      resume: r.t4State === 'OK' ? null : T4_RESUME[r.t4State],
+    } : null,
   };
 }
 
@@ -1231,6 +1490,8 @@ export async function t4AssessmentConfig(): Promise<T4AssessmentConfig> {
     value = { ref: suivi.ref, interventionCapable: n >= 3, contentHash, revisionTracked: suivi.tracked };
   } catch (e) {
     console.warn('[to-process] configuration T4 illisible (décision prudente) :', errMsg(e));
+    // Lot 76 (C3) : indisponibilité technique — distinguée d'un contrat incompatible.
+    value = { ...value, unavailable: true };
   }
   value = withThresholds(value, thresholds);
   configCache = { at: Date.now(), value };
@@ -1278,9 +1539,20 @@ export async function knowledgeRevSql(alias = 'f'): Promise<string> {
     couches = { at: Date.now(), units };
   }
   const a = alias;
-  const fait = `concat_ws('~', ${FACT_REV_COLS.map((c) => `to_jsonb(x) ->> '${c}'`).join(', ')})`;
+  const faitDe = (t: string) => `concat_ws('~', ${FACT_REV_COLS.map((c) => `to_jsonb(${t}) ->> '${c}'`).join(', ')})`;
+  const fait = faitDe('x');
   const refs = contractRefKeysSql();
   const refNorm = (t: string) => `regexp_replace(upper(COALESCE(${t}.normalized_value, ${t}.value_text, '')), '[^A-Z0-9]', '', 'g')`;
+  // Documents VIVANTS du même contrat (référence exacte — jamais le bien parent ni le fournisseur).
+  const lies = `SELECT x2.file_id FROM document_facts x2
+               JOIN asset_files f2 ON f2.id = x2.file_id AND f2.account_id = x2.account_id AND f2.deleted_at IS NULL AND f2.grouped_into_file_id IS NULL
+              WHERE x2.account_id = ${a}.account_id AND x2.status = 'active' AND x2.file_id <> ${a}.id
+                AND (to_jsonb(x2) ->> 'canonical_key' = ANY(${refs}) OR x2.fact_key = ANY(${refs}))
+                AND length(${refNorm('x2')}) >= 5 AND ${refNorm('x2')} ~ '[0-9]'
+                AND ${refNorm('x2')} IN (
+                  SELECT ${refNorm('x1')} FROM document_facts x1
+                   WHERE x1.file_id = ${a}.id AND x1.account_id = ${a}.account_id AND x1.status = 'active'
+                     AND (to_jsonb(x1) ->> 'canonical_key' = ANY(${refs}) OR x1.fact_key = ANY(${refs})))`;
   return `md5(concat_ws('|', ${a}.document_type_code,
       -- Lot 75I (C) : CONTENU de l'extraction retenue (titre, type lu, texte intégral lu par l'indice du titre),
       -- plus seulement son identifiant — une extraction corrigée sur place change la révision.
@@ -1295,21 +1567,21 @@ export async function knowledgeRevSql(alias = 'f'): Promise<string> {
       (SELECT string_agg(v.field_key || '=' || COALESCE(v.value_text, '-') || ':' || v.user_validated::text || ':' || COALESCE(to_jsonb(v) ->> 'value_kind', ''), ',' ORDER BY v.field_key)
          FROM document_field_values v WHERE v.file_id = ${a}.id),
       -- Dépendances : évaluées seulement si le document porte une référence de contrat (CASE paresseux).
+      -- Lot 76 (C4) : PREUVES des documents du même contrat (faits actifs, unités source, valeurs
+      -- retenues avec leur nature) — une clause, un statut, une confiance ou une provenance modifiés
+      -- dans un document lié, sans changement de valeur retenue, invalident aussi les décisions.
       CASE WHEN EXISTS (SELECT 1 FROM document_facts x0 WHERE x0.file_id = ${a}.id AND x0.account_id = ${a}.account_id AND x0.status = 'active'
                           AND (to_jsonb(x0) ->> 'canonical_key' = ANY(${refs}) OR x0.fact_key = ANY(${refs})))
-      THEN (SELECT md5(COALESCE(string_agg(v2.file_id::text || ':' || v2.field_key || '=' || COALESCE(v2.value_text, '-') || ':' || v2.user_validated::text, ',' ORDER BY v2.file_id, v2.field_key), ''))
-         FROM document_field_values v2
-         JOIN asset_files f2 ON f2.id = v2.file_id AND f2.account_id = v2.account_id AND f2.deleted_at IS NULL AND f2.grouped_into_file_id IS NULL
-        WHERE v2.account_id = ${a}.account_id AND v2.file_id <> ${a}.id AND v2.value_text IS NOT NULL
-          AND v2.file_id IN (
-            SELECT x2.file_id FROM document_facts x2
-             WHERE x2.account_id = ${a}.account_id AND x2.status = 'active' AND x2.file_id <> ${a}.id
-               AND (to_jsonb(x2) ->> 'canonical_key' = ANY(${refs}) OR x2.fact_key = ANY(${refs}))
-               AND length(${refNorm('x2')}) >= 5 AND ${refNorm('x2')} ~ '[0-9]'
-               AND ${refNorm('x2')} IN (
-                 SELECT ${refNorm('x1')} FROM document_facts x1
-                  WHERE x1.file_id = ${a}.id AND x1.account_id = ${a}.account_id AND x1.status = 'active'
-                    AND (to_jsonb(x1) ->> 'canonical_key' = ANY(${refs}) OR x1.fact_key = ANY(${refs}))))) END,
+      THEN (SELECT md5(COALESCE(string_agg(r.part, ',' ORDER BY r.part), '')) FROM (
+          SELECT 'v' || v2.file_id::text || ':' || v2.field_key || '=' || COALESCE(v2.value_text, '-') || ':' || v2.user_validated::text
+                 || ':' || COALESCE(to_jsonb(v2) ->> 'value_kind', '') AS part
+            FROM document_field_values v2 WHERE v2.account_id = ${a}.account_id AND v2.value_text IS NOT NULL AND v2.file_id IN (${lies})
+          UNION ALL
+          SELECT 'f' || x3.file_id::text || ':' || md5(${faitDe('x3')})
+            FROM document_facts x3 WHERE x3.account_id = ${a}.account_id AND x3.status = 'active' AND x3.file_id IN (${lies})
+          ${couches.units ? `UNION ALL
+          SELECT 'u' || s3.file_id::text || ':' || md5(concat_ws('~', s3.kind, s3.label, s3.value_text, s3.coverage_status, s3.content_text))
+            FROM document_source_units s3 WHERE s3.account_id = ${a}.account_id AND s3.file_id IN (${lies})` : ''}) r) END,
       ${a}.supplier, COALESCE(${a}.user_edited_fields::text, ''),
       -- Lot 75I (C) : titres lus par l'indice du titre (nom du fichier, titre retenu).
       ${a}.original_filename, to_jsonb(${a}) ->> 'retained_title'))`;
@@ -1515,11 +1787,19 @@ const PASSAGES_MAX = 20;
  * instruction que l'évaluation. Rend l'ERREUR de journalisation (null :
  * tracée) — l'appelant la remonte au diagnostic technique.
  */
-export async function recordRuleEvaluation(r: RuleEvaluationRecord): Promise<string | null> {
-  if (!(await ruleEvaluationsReady())) return null;
+export async function recordRuleEvaluation(r: RuleEvaluationRecord, opts: { replay?: boolean; originalAt?: string } = {}): Promise<TraceFailure | null> {
+  const echec = async (cause: string): Promise<TraceFailure> => {
+    console.error(`[to-process] ${cause}`);
+    // Lot 76 (C8) : décision appliquée NON tracée — conservée pour reprise (jamais lors d'une reprise : pas de doublon).
+    if (opts.replay) return { cause, retryId: null };
+    const { enqueueTraceRetry } = await import('./trace-retries');
+    return enqueueTraceRetry({ source: 'DOCUMENT_RULE', accountId: r.accountId, ruleCode: r.ruleCode, targetType: 'DOCUMENT', targetId: r.fileId, payload: r, cause });
+  };
+  // Lot 76 (C8) : table de diagnostic indisponible — échec VISIBLE, jamais un succès silencieux.
+  if (!(await ruleEvaluationsReady())) return echec(`diagnostic de la règle ${r.ruleCode} du document ${r.fileId} non écrit : table document_rule_evaluations indisponible`);
   const l61 = await relevanceColumnsReady();
   const signature = evaluationSignature(r);
-  const passage = JSON.stringify([{ at: new Date().toISOString(), trigger: r.trigger, runRef: r.runRef ?? null }]);
+  const passage = JSON.stringify([{ at: opts.originalAt ?? new Date().toISOString(), trigger: r.trigger, runRef: r.runRef ?? null, ...(opts.replay ? { replayed: true } : {}) }]);
   const { durablePassagesReady, withDurablePassage } = await import('./admissibility');
   const durable = await durablePassagesReady();
   try {
@@ -1573,8 +1853,6 @@ export async function recordRuleEvaluation(r: RuleEvaluationRecord): Promise<str
     );
     return null;
   } catch (e) {
-    const cause = `diagnostic de la règle ${r.ruleCode} du document ${r.fileId} non écrit : ${(e as Error).message}`.slice(0, 300);
-    console.error(`[to-process] ${cause}`);
-    return cause;
+    return echec(`diagnostic de la règle ${r.ruleCode} du document ${r.fileId} non écrit : ${(e as Error).message}`.slice(0, 260));
   }
 }

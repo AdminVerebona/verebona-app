@@ -55,6 +55,31 @@
  * DEFERRED (jamais DONE). Une sortie SANS `document_renames` est une réponse
  * incomplète (E9) : anomalie, reprise bornée, puis plus aucun rappel sur la
  * même version après `NAMING_INCOMPLETE_MAX` anomalies.
+ *
+ * LOT 76B — défauts résiduels du lot 72B (C1 à C6) :
+ *   · C1 — les écritures restantes se lisent en BASE, tous passages
+ *     confondus (`pendingWritesByGroup`) : un lot n'est DONE, et le compte
+ *     n'est DONE, que sans aucune décision applicable en attente ; un lot
+ *     terminé avec une écriture restante (état antérieur) est remis en
+ *     reprise ; les décisions restantes sont reprises dès la fin de l'examen,
+ *     sans appel IA ;
+ *   · C2 — chaque décision validée est PERSISTÉE avant son application, dans
+ *     la même transaction que la progression (`persistChunk`) ; si cette
+ *     persistance échoue : aucune écriture, lot non terminé, motif
+ *     DECISION_NOT_PERSISTED, réexamen IA annoncé comme tel (jamais une
+ *     « reprise sans appel » d'une décision non sauvegardée) ;
+ *   · C3 — la progression mémorise l'empreinte du contexte EXAMINÉ de chaque
+ *     document ; à la reprise, un document modifié (et les autres membres de
+ *     sa famille si ses données ont changé) est réexaminé, les autres gardent
+ *     leur progression ; un renommage fait par l'examen lui-même est reconnu
+ *     (justification déterministe) ;
+ *   · C5 — un lot d'une version antérieure du contexte n'est recalé sans
+ *     appel IA que sur PREUVE (`upgradeEvidence`) ; sinon UPGRADE_REVIEW :
+ *     réexamen BORNÉ (`T3_NAMING_UPGRADE_REVIEWS_PER_PASS`, 1 par passage et
+ *     par compte ; `T3_NAMING_UPGRADE_REVIEWS_PER_DAY`, 200 sur 24 h tous
+ *     comptes ; plafonds d'appels existants), après tout autre travail ;
+ *     reporting distinct : migration technique / réexamen attendu /
+ *     réexamen effectué.
  * ══════════════════════════════════════════════════════════════════════════
  */
 import { envNumber } from '@/lib/env-number';
@@ -64,12 +89,13 @@ import type { ReportEntry, ReportStep } from '../../execution-report/model';
 import { namingOutputComplete, type T3DocumentNamingOutput } from '../master/t3-contract';
 import {
   collidingProposals, judgeProposal, NAMING_MAX_LENGTH, RENAME_REFUSAL_LABEL,
-  type NamingProposal, type NamingSnapshotDoc, type RenameRefusal,
+  type NameOrigin, type NamingProposal, type NamingSnapshotDoc, type RenameRefusal,
 } from './guards';
 import {
-  docSnapshotHash, documentFingerprint, groupFingerprint, groupMembers, groupSnapshot, isProtected, legacyGroupFingerprint,
-  linkKeysOf, membersFingerprint, NAMING_CONTEXT_VERSION, namingVariables, orderDocs, planChunks, reviewTargets,
-  type MemberGroup, type NamingDoc, type NamingDocState,
+  docSnapshotHash, documentFingerprint, examinedContextHash, groupFingerprint, groupMembers, groupSnapshot, isProtected, legacyGroupFingerprint,
+  linkKeysOf, membersFingerprint, NAMING_CONTEXT_VERSION, NAMING_CONTEXT_VERSION_V1, NAMING_CONTEXT_VERSION_V2, nameHash, namingVariables, orderDocs,
+  planChunks, reviewTargets, textHintRefs, upgradeEvidence, v2DocumentFingerprint, v2GroupFingerprint,
+  type MemberGroup, type NamingDoc, type NamingDocDetail, type NamingDocState,
 } from './context';
 import type { GroupProgress, GroupState, NameTrace, RenameEvent, SaveGroupState } from './repository';
 import type { NamingCall, NamingCallResult, NamingPromptStatus } from './model';
@@ -89,6 +115,10 @@ export const ACCOUNT_MARKER = '*';
 export const NAMING_INCOMPLETE_MAX = 3;
 /** Lot 72B (E6) : tentatives de reprise d'une écriture avant réexamen du lot par l'IA. */
 export const NAMING_WRITE_RETRY_MAX = 5;
+/** Lot 76B (C5) : réexamens « contexte enrichi » commencés par passage et par compte (0 : programme suspendu). */
+export const namingUpgradeReviewsPerPass = () => Math.min(20, Math.floor(envNumber('T3_NAMING_UPGRADE_REVIEWS_PER_PASS', 1, { min: 0 })));
+/** Lot 76B (C5) : réexamens « contexte enrichi » sur 24 h glissantes, tous comptes confondus. */
+export const namingUpgradeReviewsPerDay = () => Math.min(100_000, Math.floor(envNumber('T3_NAMING_UPGRADE_REVIEWS_PER_DAY', 200, { min: 0 })));
 /** Lignes « non examiné » détaillées au rapport (les autres sont comptées). */
 const NOT_EXAMINED_DETAIL_MAX = 100;
 const MINUTE = 60_000;
@@ -134,6 +164,16 @@ export interface NamingScanResult {
   purged: number;
 }
 
+/** Lot 76B (C5) : recalage des lots examinés avec un contexte antérieur. */
+export interface NamingUpgradeReport {
+  /** Ce passage : migrations techniques (preuve faite, aucun appel), réexamens programmés, réexamens effectués. */
+  technical: number;
+  expected: number;
+  reviewed: number;
+  /** État du compte (tous passages) : lots recalés techniquement, réexamens encore attendus, réexamens faits. */
+  totals: { technical: number; expected: number; reviewed: number };
+}
+
 export interface DocumentNamingPhaseResult {
   status: NamingPhaseStatus;
   promptAvailable: boolean | null;
@@ -162,8 +202,14 @@ export interface DocumentNamingPhaseResult {
   /** Lot 72B (E6) : écritures en attente de reprise à la fin du passage ; reprises tentées pendant le passage. */
   pendingWrites: number;
   writesRetried: number;
-  /** Lot 72B : lots examinés au lot 61 et inchangés, recalés sans appel IA. */
+  /** Lot 72B : lots examinés au lot 61 et inchangés, recalés sans appel IA (lot 76B : sur preuve seulement, C5). */
   rebaselined: number;
+  /** Lot 76B (C2) : décisions validées NON sauvegardées (incident base) — aucune écriture, réexamen IA. */
+  decisionsUnsaved?: number;
+  /** Lot 76B (C3) : documents déjà examinés réinscrits à la reprise (contexte modifié pendant l'interruption). */
+  documentsRevalidated?: number;
+  /** Lot 76B (C5). */
+  upgrade?: NamingUpgradeReport;
   scan: NamingScanResult;
   remaining: NamingRemaining;
   appliedFileIds: number[];
@@ -180,6 +226,10 @@ export interface DocumentNamingDeps {
   maxCallsPerDay?: number;
   maxDocsPerCall?: number;
   cooldownDays?: number;
+  /** Lot 76B (C5) : bornes du réexamen « contexte enrichi » (défauts : variables d'environnement). */
+  maxUpgradeReviewsPerPass?: number;
+  maxUpgradeReviewsPerDay?: number;
+  upgradeReviewsLastDay?: () => Promise<number>;
   scanPageSize?: number;
   scanPagesPerPass?: number;
   now?: () => Date;
@@ -191,7 +241,8 @@ const vide = (): DocumentNamingPhaseResult => ({
   status: 'DONE', promptAvailable: null, promptVersion: null, documents: 0, withoutContext: 0, groups: 0, groupsDue: 0,
   groupsExamined: 0, groupsCompleted: 0, documentsExamined: 0, families: 0, inconsistentFamilies: 0, proposals: 0, applied: 0,
   refused: 0, conflicts: 0, unchanged: 0, failed: 0, aiCalls: 0, deferred: 0, errors: 0, renamesSectionMissing: 0,
-  pendingWrites: 0, writesRetried: 0, rebaselined: 0,
+  pendingWrites: 0, writesRetried: 0, rebaselined: 0, decisionsUnsaved: 0, documentsRevalidated: 0,
+  upgrade: { technical: 0, expected: 0, reviewed: 0, totals: { technical: 0, expected: 0, reviewed: 0 } },
   scan: { complete: false, coveredOnce: false, cycle: 0, scanned: 0, pages: 0, changed: 0, purged: 0 },
   remaining: { groups: 0, documents: 0, byReason: {}, nextRetryAt: null },
   appliedFileIds: [], reportId: null,
@@ -206,45 +257,53 @@ export function groupDue(st: GroupState | undefined, fp: string, prompt: NamingP
     case 'IN_PROGRESS':
     case 'DEFERRED':
     case 'ERROR':
-    case 'WRITE_PENDING': return echu;
+    case 'WRITE_PENDING':
+    case 'UPGRADE_REVIEW': return echu;
     default: return st.fingerprint !== fp;
   }
 }
 
-/** Ordre de service (pure) : écritures à reprendre, examens commencés, lots modifiés, stock jamais examiné, reprises. */
+/** Ordre de service (pure) : écritures à reprendre, examens commencés, lots modifiés, stock jamais examiné, reprises, réexamens « contexte enrichi ». */
 export function dueRank(st: GroupState | undefined): number {
   if (!st) return 2;
   if (st.status === 'WRITE_PENDING') return -1;
   if (st.status === 'IN_PROGRESS') return 0;
   if (st.status === 'DONE') return 1;
+  if (st.status === 'UPGRADE_REVIEW') return 4;
   return 3;
 }
 
-/** Lot terminé (pure) : examen complet, écritures finalisées, empreinte à jour. */
-export function groupSettled(st: GroupState | undefined, fp: string): boolean {
-  return !!st && st.status === 'DONE' && st.fingerprint === fp;
+/**
+ * Lot terminé (pure) : examen complet, empreinte à jour ET aucune écriture
+ * restante en base (lot 76B, C1 : `pendingWrites`, tous passages confondus).
+ */
+export function groupSettled(st: GroupState | undefined, fp: string, pendingWrites = 0): boolean {
+  return !!st && st.status === 'DONE' && st.fingerprint === fp && pendingWrites === 0;
 }
 
 /** Motif d'un lot non terminé (pure). */
-export function remainingReason(st: GroupState | undefined, capReason: string | undefined): string {
+export function remainingReason(st: GroupState | undefined, capReason: string | undefined, pendingWrites = 0): string {
   if (!st) return capReason ?? 'NEVER_EXAMINED';
   switch (st.status) {
-    case 'DONE': return capReason ?? 'CHANGED_NOT_EXAMINED';
+    case 'DONE': return capReason ?? (pendingWrites > 0 ? 'WRITE_RETRY' : 'CHANGED_NOT_EXAMINED');
     case 'IN_PROGRESS': return capReason ?? 'IN_PROGRESS';
     case 'PROMPT_UNAVAILABLE': return 'PROMPT_WITHOUT_DOCUMENT_NAMING';
     case 'WRITE_PENDING': return 'WRITE_RETRY';
+    case 'UPGRADE_REVIEW': return capReason ?? 'CONTEXT_UPGRADE_REVIEW';
     case 'DEFERRED': return (st.lastError ?? '').split(' ')[0] || 'DEFERRED';
     default: return (st.lastError ?? '').startsWith('RENAMES_SECTION_MISSING') ? 'RENAMES_SECTION_MISSING'
-      : (st.lastError ?? '').startsWith('WRITE_RETRY_EXHAUSTED') ? 'WRITE_RETRY_EXHAUSTED' : 'AI_ERROR';
+      : (st.lastError ?? '').startsWith('WRITE_RETRY_EXHAUSTED') ? 'WRITE_RETRY_EXHAUSTED'
+        : (st.lastError ?? '').startsWith('DECISION_NOT_PERSISTED') ? 'DECISION_NOT_PERSISTED' : 'AI_ERROR';
   }
 }
 
 /**
  * État de la phase (pure, E8). `progress` : un travail utile a été fait
  * pendant ce passage (examen, écriture, lecture d'un stock pas encore couvert).
+ * Lot 76B (C1) : jamais DONE avec une écriture restante en base.
  */
-export function namingPhaseStatus(p: { remainingGroups: number; scanComplete: boolean; progress: boolean; errors: number }): NamingPhaseStatus {
-  if (p.remainingGroups === 0 && p.scanComplete) return 'DONE';
+export function namingPhaseStatus(p: { remainingGroups: number; scanComplete: boolean; progress: boolean; errors: number; pendingWrites?: number }): NamingPhaseStatus {
+  if (p.remainingGroups === 0 && p.scanComplete && (p.pendingWrites ?? 0) === 0) return 'DONE';
   if (p.errors > 0 && !p.progress) return 'FAILED';
   return p.progress ? 'PARTIAL' : 'DEFERRED';
 }
@@ -256,6 +315,7 @@ export function namingPhaseStatus(p: { remainingGroups: number; scanComplete: bo
  */
 export function retryAtOf(st: GroupState | undefined, capReason: string | undefined, dailyFreeAt: string | null, now: Date): string | null {
   if (capReason === 'DAILY_CAP') return dailyFreeAt;
+  if (capReason === 'UPGRADE_PASS_CAP') return null;
   if (!st || st.status === 'DONE') return null;
   if (st.status === 'PROMPT_UNAVAILABLE') return new Date(now.getTime() + 24 * HEURE).toISOString();
   return st.retryAfter;
@@ -305,9 +365,11 @@ export async function runDocumentNamingPhase(
   const save = async (st: SaveGroupState): Promise<void> => {
     await repo.saveGroupState(accountId, st);
     const avant = states.get(st.key);
+    const { upgrade, reviewed, ...reste } = st;
     states.set(st.key, {
-      ...st, progress: (st.progress as GroupProgress | null) ?? null,
-      lastReviewedAt: st.reviewed ? now().toISOString() : avant?.lastReviewedAt ?? null,
+      ...reste, progress: (st.progress as GroupProgress | null) ?? null,
+      lastReviewedAt: reviewed ? now().toISOString() : avant?.lastReviewedAt ?? null, updatedAt: now().toISOString(),
+      upgradeState: upgrade ? upgrade.state : avant?.upgradeState ?? null, upgradeFrom: upgrade ? upgrade.from : avant?.upgradeFrom ?? null,
     });
   };
   const marker = states.get(ACCOUNT_MARKER);
@@ -360,6 +422,18 @@ export async function runDocumentNamingPhase(
         await repo.deleteGroupStates(accountId, orphelins);
         for (const k of orphelins) states.delete(k);
       }
+      // C1 : décisions en attente d'un lot qui n'existe plus (aucun état) — sans objet, jamais bloquantes à vie.
+      await repo.supersedePendingWritesExcept(accountId, [...actifs]);
+    }
+    // C1 : lot « terminé » avec une écriture restante en base (état antérieur au lot 76B) :
+    // remis en reprise, jamais compté terminé.
+    const pendants = await repo.pendingWritesByGroup(accountId);
+    for (const it of items) {
+      const n = pendants.get(it.group.key) ?? 0;
+      if (n > 0 && it.st?.status === 'DONE') {
+        await save({ ...it.st, status: 'WRITE_PENDING', progress: null, documentCount: it.ids.length, retryAfter: null, lastError: `WRITE_PENDING ${n}` });
+        it.st = states.get(it.group.key);
+      }
     }
     examen = await examineDueGroups(accountId, items, {
       repo, rec, res, maxDocs, now, opts, save, fpNow, dailyFree,
@@ -372,12 +446,15 @@ export async function runDocumentNamingPhase(
   let docsRestants = 0;
   const reprises: Array<string | null> = [];
   const details: NonNullable<NamingRemaining['details']> = [];
+  // C1 : écritures restantes relues en BASE (tous passages confondus) — statuts et compteurs = état persisté.
+  const pendantsFin = await repo.pendingWritesByGroup(accountId);
   for (const it of items) {
     const st = states.get(it.group.key);
     const fp = fpNow.get(it.group.key)!;
-    if (groupSettled(st, fp)) continue;
+    const pend = pendantsFin.get(it.group.key) ?? 0;
+    if (groupSettled(st, fp, pend)) continue;
     const cap = rec.capReasons.get(it.group.key);
-    const motif = scan.coveredOnce ? remainingReason(st, cap) : 'SCAN_IN_PROGRESS';
+    const motif = scan.coveredOnce ? remainingReason(st, cap, pend) : 'SCAN_IN_PROGRESS';
     byReason[motif] = (byReason[motif] ?? 0) + 1;
     restants++;
     docsRestants += it.ids.length;
@@ -389,11 +466,15 @@ export async function runDocumentNamingPhase(
   if (!scan.complete) { byReason.SCAN_IN_PROGRESS = Math.max(1, byReason.SCAN_IN_PROGRESS ?? 0); reprises.push(null); }
   const prochaine = reprises.length === 0 ? null : reprises.includes(null) ? null
     : (reprises as string[]).sort()[0];
-  res.pendingWrites = await repo.countPendingWrites(accountId);
+  res.pendingWrites = [...pendantsFin.values()].reduce((a, b) => a + b, 0);
   res.remaining = { groups: restants, documents: docsRestants, byReason, nextRetryAt: prochaine, details };
+  res.upgrade!.totals = await repo.upgradeTotals(accountId);
   const progres = res.groupsExamined > 0 || res.documentsExamined > 0 || res.applied > 0 || res.writesRetried > 0 || res.rebaselined > 0
-    || (scan.pages > 0 && !scan.complete);
-  res.status = namingPhaseStatus({ remainingGroups: restants, scanComplete: scan.complete, progress: progres, errors: res.errors + res.renamesSectionMissing });
+    || (res.upgrade!.expected > 0) || (scan.pages > 0 && !scan.complete);
+  res.status = namingPhaseStatus({
+    remainingGroups: restants, scanComplete: scan.complete, progress: progres, errors: res.errors + res.renamesSectionMissing,
+    pendingWrites: res.pendingWrites,
+  });
   mp.remaining = res.remaining;
   await saveMarker(res.status === 'DONE' ? 'DONE' : 'IN_PROGRESS', res.status === 'DONE' ? null : prochaine);
   res.appliedFileIds = [...new Set(res.appliedFileIds)].sort((a, b) => a - b);
@@ -434,7 +515,17 @@ async function scanStep(accountId: number, mp: MarkerProgress, c: {
     const docs = await c.repo.loadNamingDocsPage(accountId, sc.cursor!, c.pageSize);
     out.pages++;
     if (docs.length) {
-      out.changed += await c.repo.upsertMembers(accountId, docs.map((d) => ({ id: d.id, keys: linkKeysOf(d), hash: docSnapshotHash(d) })));
+      // C6 : indices textuels recalculés seulement à une nouvelle extraction (cache de l'index).
+      const aCalculer = new Set(docs.filter((d) => d.textVersion !== c.repo.textVersionOf(d)).map((d) => d.id));
+      if (aCalculer.size) {
+        const avecTexte = docs.filter((d) => aCalculer.has(d.id) && d.extractionId != null).map((d) => d.id);
+        const textes = avecTexte.length ? await c.repo.loadTextsForHints(accountId, avecTexte) : new Map<number, string>();
+        for (const d of docs) if (aCalculer.has(d.id)) { d.textRefs = textHintRefs(textes.get(d.id)); d.textVersion = c.repo.textVersionOf(d); }
+      }
+      out.changed += await c.repo.upsertMembers(accountId, docs.map((d) => ({
+        id: d.id, keys: linkKeysOf(d), hash: docSnapshotHash(d),
+        ...(aCalculer.has(d.id) ? { textKeys: d.textRefs ?? [], textVersion: d.textVersion ?? '' } : {}),
+      })));
       out.scanned += docs.length;
       sc.seen += docs.length;
       sc.cursor = docs[docs.length - 1].id;
@@ -475,6 +566,14 @@ interface ExamCtx {
   accountRunId: number | null;
 }
 
+const V3 = NAMING_CONTEXT_VERSION;
+/** Version du contexte d'un état antérieur (null : lot 61). */
+const versionDe = (st: GroupState): string => (st.contextVersion === NAMING_CONTEXT_VERSION_V2 ? NAMING_CONTEXT_VERSION_V2 : NAMING_CONTEXT_VERSION_V1);
+/** Empreinte d'un lot selon la formule d'une version antérieure (recalage prouvé, C5). */
+const legacyFp = (docs: readonly NamingDoc[], version: string) => (version === NAMING_CONTEXT_VERSION_V2 ? v2GroupFingerprint(docs) : legacyGroupFingerprint(docs));
+/** Lot d'une version antérieure dont le réexamen est programmé et dont rien n'a changé depuis : réexamen BORNÉ. */
+const upgradeBorne = (it: Item) => it.st?.status === 'UPGRADE_REVIEW' && ((it.st.progress?.upgradeFp ?? it.fp) === it.fp);
+
 /** Examen des lots dus. Rend vrai si un lot a été traité ou signalé (rapport à écrire). */
 async function examineDueGroups(accountId: number, items: Item[], p: {
   repo: typeof import('./repository');
@@ -488,31 +587,63 @@ async function examineDueGroups(accountId: number, items: Item[], p: {
   dailyFree: () => Promise<string>;
 }): Promise<boolean> {
   const { repo, rec, res, opts, now } = p;
+  const up = res.upgrade!;
   // Aucun lot non terminé : pas même la lecture du prompt.
   if (!items.some((i) => !groupSettled(i.st, i.fp))) return false;
 
-  // Recalage lot 61 → 72B : lot examiné et inchangé depuis (empreinte v1 identique) → aucune nouvelle analyse.
+  // C5 — lots examinés avec un contexte ANTÉRIEUR (lot 61 / 72B) et terminés :
+  // l'égalité de l'ancienne empreinte ne vaut pas examen du contexte enrichi.
+  let faitsModifies: string | null | undefined;
   for (const it of items) {
-    if (it.st?.status !== 'DONE' || it.st.contextVersion === NAMING_CONTEXT_VERSION || it.st.fingerprint === it.fp) continue;
+    const st = it.st;
+    if (!st || st.status !== 'DONE' || st.contextVersion === V3 || st.fingerprint === it.fp || st.upgradeState === 'EXPECTED') continue;
+    if (faitsModifies === undefined) faitsModifies = await repo.lastFactsChangeAt(accountId);
+    const from = versionDe(st);
     const docs = await repo.loadNamingDocsByIds(accountId, it.ids);
-    if (docs.length !== it.ids.length || legacyGroupFingerprint(docs) !== it.st.fingerprint) continue;
-    const fp = groupFingerprint(docs);
-    await p.save({ ...it.st, fingerprint: fp, snapshot: groupSnapshot(docs), contextVersion: NAMING_CONTEXT_VERSION, documentCount: docs.length, progress: null });
-    it.st = { ...it.st, fingerprint: fp, contextVersion: NAMING_CONTEXT_VERSION };
-    p.fpNow.set(it.group.key, fp);
-    if (fp !== it.fp) await repo.updateMemberHashes(accountId, docs.map((d) => ({ id: d.id, hash: docSnapshotHash(d) })));
-    it.fp = fp;
-    res.rebaselined++;
+    if (docs.length !== it.ids.length || legacyFp(docs, from) !== st.fingerprint) {
+      // Modifié depuis son examen : réexamen normal (non borné), suivi comme réexamen attendu.
+      await p.save({ ...st, documentCount: it.ids.length, upgrade: { state: 'EXPECTED', from, reason: 'CHANGED_SINCE_REVIEW' } });
+      it.st = { ...st, upgradeState: 'EXPECTED', upgradeFrom: from };
+      up.expected++;
+      continue;
+    }
+    const preuve = upgradeEvidence(docs, from, st.lastReviewedAt ?? st.updatedAt ?? null, faitsModifies);
+    if (preuve.safe) {
+      // Migration TECHNIQUE : rien de nouvellement exploitable (démontré) — aucun appel IA.
+      const fp = groupFingerprint(docs);
+      await p.save({ ...st, fingerprint: fp, snapshot: groupSnapshot(docs), contextVersion: V3, documentCount: docs.length, progress: null,
+        upgrade: { state: 'TECHNICAL', from, reason: 'NO_NEWLY_EXPLOITABLE_INFORMATION' } });
+      it.st = { ...st, fingerprint: fp, contextVersion: V3, upgradeState: 'TECHNICAL', upgradeFrom: from };
+      p.fpNow.set(it.group.key, fp);
+      if (fp !== it.fp) await repo.updateMemberHashes(accountId, docs.map((d) => ({ id: d.id, hash: docSnapshotHash(d) })));
+      it.fp = fp;
+      res.rebaselined++;
+      up.technical++;
+    } else {
+      // Réexamen MÉTIER attendu, BORNÉ et reprenable : conventions et noms conservés d'ici là.
+      const raison = `CONTEXT_UPGRADE ${from}→${V3} : ${preuve.reasons.join(', ')}`;
+      const progress: GroupProgress = { nextChunk: 0, chunks: 0, examined: [], startedAt: now().toISOString(), upgradeFp: it.fp };
+      await p.save({ ...st, status: 'UPGRADE_REVIEW', progress, documentCount: it.ids.length, retryAfter: null, lastError: raison,
+        upgrade: { state: 'EXPECTED', from, reason: preuve.reasons.join(', ') } });
+      it.st = { ...st, status: 'UPGRADE_REVIEW', progress, retryAfter: null, lastError: raison, upgradeState: 'EXPECTED', upgradeFrom: from };
+      up.expected++;
+    }
   }
-  if (!items.some((i) => !groupSettled(i.st, i.fp))) return false;
+  const recalage = up.technical + up.expected > 0;
+  if (!items.some((i) => !groupSettled(i.st, i.fp))) {
+    if (recalage) rec.steps.push({ step: 'RECALAGE', status: 'OK', error: null, detail: { technical: up.technical, expected: up.expected } });
+    return recalage;
+  }
 
   const prompt = await (opts.promptStatus ?? (async () => (await import('./model')).documentNamingPromptStatus()))();
   res.promptAvailable = prompt.available;
   res.promptVersion = prompt.version;
+  const rang = (i: Item) => (i.st?.status === 'UPGRADE_REVIEW' && !upgradeBorne(i) ? 1 : dueRank(i.st));
   const dus = items.filter((i) => !groupSettled(i.st, i.fp) && groupDue(i.st, i.fp, prompt, now()))
-    .sort((a, b) => dueRank(a.st) - dueRank(b.st) || (a.st?.lastReviewedAt ?? '').localeCompare(b.st?.lastReviewedAt ?? '') || a.group.key.localeCompare(b.group.key));
+    .sort((a, b) => rang(a) - rang(b) || (a.st?.lastReviewedAt ?? '').localeCompare(b.st?.lastReviewedAt ?? '') || a.group.key.localeCompare(b.group.key));
   res.groupsDue = dus.length;
-  if (!dus.length) return false;
+  if (recalage) rec.steps.push({ step: 'RECALAGE', status: 'OK', error: null, detail: { technical: up.technical, expected: up.expected } });
+  if (!dus.length) return recalage;
 
   const parPassage = opts.maxCallsPerPass ?? namingCallsPerPass();
   const parJour = opts.maxCallsPerDay ?? namingCallsPerDay();
@@ -529,19 +660,30 @@ async function examineDueGroups(accountId: number, items: Item[], p: {
   // E6 : écritures à reprendre À CONTEXTE INCHANGÉ — sans appel IA, quel que soit l'état du prompt.
   const examiner: Item[] = [];
   for (const it of dus) {
-    if (it.st?.status === 'WRITE_PENDING' && it.st.fingerprint === it.fp) {
-      if (opts.guard) await opts.guard.assertActive(`T3 harmonisation documentaire — reprise d’écriture ${it.group.key}`);
-      try {
-        await retryWrites(accountId, it, c);
-      } catch (e) {
-        if (isExecutionCancelled(e)) throw e;
-        res.errors++;
-        rec.steps.push({ step: `REPRISE ${it.group.key}`, status: 'FAILED', error: ((e as Error).message ?? '').slice(0, 300) });
+    if (it.st?.status === 'WRITE_PENDING') {
+      let inchange = it.st.fingerprint === it.fp;
+      if (!inchange && it.st.fingerprint) {
+        const docs = await repo.loadNamingDocsByIds(accountId, it.ids);
+        inchange = docs.length !== it.ids.length ? false
+          // État d'une version antérieure : contexte inchangé au sens de SA formule (le recalage prouvé suit, C5).
+          : it.st.contextVersion !== V3 ? legacyFp(docs, versionDe(it.st)) === it.st.fingerprint
+            // Reprise interrompue après une partie des écritures : seuls changements = nos propres écritures (C2).
+            : onlyOwnWrites(docs, it.st.snapshot, await repo.loadNameTraces(accountId, it.ids));
       }
-      continue;
+      if (inchange) {
+        if (opts.guard) await opts.guard.assertActive(`T3 harmonisation documentaire — reprise d’écriture ${it.group.key}`);
+        try {
+          await retryWrites(accountId, it, c);
+        } catch (e) {
+          if (isExecutionCancelled(e)) throw e;
+          res.errors++;
+          rec.steps.push({ step: `REPRISE ${it.group.key}`, status: 'FAILED', error: ((e as Error).message ?? '').slice(0, 300) });
+        }
+        continue;
+      }
+      // Contexte changé depuis la décision : les écritures en attente sont sans objet, le lot est réexaminé.
+      await repo.supersedePendingWrites(accountId, [it.group.key]);
     }
-    // Contexte changé depuis la décision : les écritures en attente sont sans objet, le lot est réexaminé.
-    if (it.st?.status === 'WRITE_PENDING') await repo.supersedePendingWrites(accountId, [it.group.key]);
     examiner.push(it);
   }
 
@@ -560,12 +702,33 @@ async function examineDueGroups(accountId: number, items: Item[], p: {
     return true;
   }
 
+  // C5 : bornes du réexamen « contexte enrichi » (par passage et par compte ; 24 h tous comptes).
+  const upParPassage = opts.maxUpgradeReviewsPerPass ?? namingUpgradeReviewsPerPass();
+  const upParJour = opts.maxUpgradeReviewsPerDay ?? namingUpgradeReviewsPerDay();
+  let upCommences = 0;
+  let upJour: number | null = null;
   for (const it of examiner) {
     const cap = plafond();
     if (cap) {
       res.deferred++;
       rec.notExamined(it, cap, cap === 'PASS_CAP' ? 'Plafond d’appels du passage atteint : repris au passage suivant' : 'Plafond journalier d’appels atteint : repris dans les 24 h');
       continue;
+    }
+    if (upgradeBorne(it)) {
+      if (upCommences >= upParPassage) {
+        res.deferred++;
+        rec.notExamined(it, 'UPGRADE_PASS_CAP', `Réexamen « contexte enrichi » programmé : ${upParPassage} famille(s) au plus par passage, reprise au passage suivant`);
+        continue;
+      }
+      upJour ??= await (opts.upgradeReviewsLastDay ?? repo.upgradeReviewsLastDay)().catch(() => upParJour);
+      if (upJour >= upParJour) {
+        res.deferred++;
+        rec.notExamined(it, 'UPGRADE_DAILY_CAP', `Réexamen « contexte enrichi » : plafond global de ${upParJour} famille(s) sur 24 h atteint, reprise dans 1 h`);
+        await p.save({ ...it.st!, documentCount: it.ids.length, retryAfter: new Date(now().getTime() + HEURE).toISOString() });
+        continue;
+      }
+      upCommences++;
+      upJour++;
     }
     if (opts.guard) await opts.guard.assertActive(`T3 harmonisation documentaire — lot ${it.group.key}`);
     try {
@@ -589,6 +752,78 @@ async function examineDueGroups(accountId: number, items: Item[], p: {
   return true;
 }
 
+/**
+ * Lot 76B (C2) — contexte d'un lot en reprise d'écriture inchangé, hormis les
+ * renommages faits par ces reprises (pure) : chaque document a l'empreinte de
+ * l'instantané, ou l'aurait avec le nom remplacé par sa dernière écriture
+ * journalisée (ancien nom = nom de l'instantané). Composition identique exigée.
+ */
+export function onlyOwnWrites(docs: readonly NamingDoc[], snapshot: Record<string, string> | null, traces: ReadonlyMap<number, NameTrace>): boolean {
+  if (!snapshot || Object.keys(snapshot).length !== docs.length) return false;
+  for (const d of docs) {
+    const attendu = snapshot[String(d.id)];
+    if (!attendu) return false;
+    if (docSnapshotHash(d) === attendu) continue;
+    const h = traces.get(d.id)?.harmonization;
+    if (h && h.oldName != null && h.name.trim() === d.name.trim() && docSnapshotHash({ ...d, name: h.oldName }) === attendu) continue;
+    return false;
+  }
+  return true;
+}
+
+/** Identifiants des documents d'une famille mémorisée (conventions décrites par l'IA). */
+const famillesDe = (conventions: unknown[]): number[][] => conventions
+  .map((x) => (x && typeof x === 'object' && Array.isArray((x as { documentIds?: unknown }).documentIds) ? ((x as { documentIds: unknown[] }).documentIds).map(Number) : []))
+  .filter((l) => l.length > 0);
+
+/**
+ * C3 — revalidation, à la reprise, des documents déjà examinés (pure) :
+ * empreinte du contexte EXAMINÉ (`ctx`) comparée au contexte courant.
+ *   · document sorti du lot : retiré ;
+ *   · données modifiées (ou empreinte inconnue : progression antérieure au
+ *     lot 76B, aucune preuve) : réinscrit, avec les autres membres de sa
+ *     famille (familles décrites par l'IA) ;
+ *   · seul le nom a changé : réinscrit, sauf si ce changement est
+ *     l'écriture faite par l'examen lui-même (journal : ancien nom = nom
+ *     examiné, nouveau nom = nom en place) — justification déterministe.
+ * Les documents inchangés gardent leur progression.
+ */
+export function revalidateExamined(p: {
+  examined: readonly number[];
+  ctx: Readonly<Record<string, string>>;
+  docs: readonly NamingDoc[];
+  traces: ReadonlyMap<number, NameTrace>;
+  conventions: unknown[];
+}): { keep: number[]; ctx: Record<string, string>; reexamine: number[]; removed: number[]; dataChanged: number[] } {
+  const parId = new Map(p.docs.map((d) => [d.id, d]));
+  const ctx: Record<string, string> = {};
+  const removed: number[] = [];
+  const modifies = new Set<number>();
+  const donnees: number[] = [];
+  for (const id of p.examined) {
+    const d = parId.get(id);
+    if (!d) { removed.push(id); continue; }
+    const avant = p.ctx[String(id)];
+    const maintenant = examinedContextHash(d);
+    if (!avant) { modifies.add(id); donnees.push(id); continue; }
+    const [dAvant, nAvant] = avant.split(':');
+    const [dMaint, nMaint] = maintenant.split(':');
+    if (dAvant !== dMaint) { modifies.add(id); donnees.push(id); continue; }
+    if (nAvant !== nMaint) {
+      const h = p.traces.get(id)?.harmonization;
+      const parExamen = !!h && h.name.trim() === d.name.trim() && h.oldName != null && nameHash(h.oldName) === nAvant;
+      if (!parExamen) { modifies.add(id); continue; }
+    }
+    ctx[String(id)] = maintenant;
+  }
+  for (const fam of famillesDe(p.conventions)) {
+    if (fam.some((x) => donnees.includes(x))) for (const x of fam) if (p.examined.includes(x) && parId.has(x)) modifies.add(x);
+  }
+  for (const id of modifies) delete ctx[String(id)];
+  const keep = p.examined.filter((id) => parId.has(id) && !modifies.has(id));
+  return { keep, ctx, reexamine: [...modifies].sort((a, b) => a - b), removed, dataChanged: donnees };
+}
+
 /** Examen (éventuellement partiel, repris ensuite) d'un lot. */
 async function examineGroup(accountId: number, it: Item, c: ExamCtx): Promise<void> {
   const { repo, rec, res } = c;
@@ -600,33 +835,58 @@ async function examineGroup(accountId: number, it: Item, c: ExamCtx): Promise<vo
   }
   const g = { key: it.group.key, docs: orderDocs(lus) };
   it.group = g;
+  const upgradeFait = it.st?.upgradeState === 'EXPECTED'
+    ? { state: 'REVIEWED' as const, from: it.st.upgradeFrom ?? it.st.contextVersion ?? NAMING_CONTEXT_VERSION_V1, reason: 'Réexamen effectué avec le contexte enrichi' }
+    : undefined;
   if (g.docs.length < 2) {
-    // Lot réduit à un document depuis la lecture : rien à harmoniser.
+    // Lot réduit à un document depuis la lecture : rien à harmoniser (décisions en attente sans objet).
+    await repo.supersedePendingWrites(accountId, [g.key]);
     const fp = groupFingerprint(g.docs);
     c.fpNow.set(g.key, fp);
     await c.save({ key: g.key, status: 'DONE', fingerprint: fp, progress: null, snapshot: groupSnapshot(g.docs), conventions: it.st?.conventions ?? it.inherited,
-      promptVersion: c.prompt.version, retryAfter: null, attempts: 0, documentCount: g.docs.length, contextVersion: NAMING_CONTEXT_VERSION });
+      promptVersion: c.prompt.version, retryAfter: null, attempts: 0, documentCount: g.docs.length, contextVersion: V3, upgrade: upgradeFait });
+    if (upgradeFait) res.upgrade!.reviewed++;
     return;
   }
   const reprise = it.st?.status === 'IN_PROGRESS' || ((it.st?.status === 'DEFERRED' || it.st?.status === 'ERROR') && !!it.st?.progress);
-  const examines = new Set<number>(reprise ? it.st?.progress?.examined ?? [] : []);
   const startedAt = reprise ? it.st?.progress?.startedAt ?? c.now().toISOString() : c.now().toISOString();
-  const cibles = reviewTargets(g.docs, it.st?.snapshot ?? null, c.maxDocs).filter((d) => !examines.has(d.id));
-  const chunks = planChunks(g.docs, cibles, c.maxDocs);
   let conventions: unknown[] = it.st?.conventions?.length ? it.st.conventions : it.inherited;
   const traces = await repo.loadNameTraces(accountId, g.docs.map((d) => d.id));
+  let examines = new Set<number>();
+  let ctx: Record<string, string> = {};
+  if (!reprise) {
+    // Examen neuf : les décisions antérieures non appliquées sont remplacées par celles de cet examen (C1, C2).
+    await repo.supersedePendingWrites(accountId, [g.key]);
+  } else {
+    // C3 : revalidation des documents déjà examinés (nouvelle information pendant l'interruption).
+    const r = revalidateExamined({ examined: it.st?.progress?.examined ?? [], ctx: it.st?.progress?.ctx ?? {}, docs: g.docs, traces, conventions });
+    examines = new Set(r.keep);
+    ctx = r.ctx;
+    if (r.reexamine.length || r.removed.length) {
+      await repo.supersedePendingWritesForFiles(accountId, g.key, [...r.reexamine, ...r.removed]);
+      res.documentsRevalidated = (res.documentsRevalidated ?? 0) + r.reexamine.length;
+      rec.steps.push({ step: `REVALIDATION ${g.key}`, status: 'OK', error: null, detail: {
+        reexamined: r.reexamine, dataChanged: r.dataChanged, removed: r.removed, kept: r.keep.length,
+      } });
+    }
+  }
+  const cibles = reviewTargets(g.docs, it.st?.snapshot ?? null, c.maxDocs).filter((d) => !examines.has(d.id));
+  const chunks = planChunks(g.docs, cibles, c.maxDocs);
   // Noms en mémoire, mis à jour au fil des écritures confirmées (empreinte finale).
   const courants = new Map<number, NamingDoc>(g.docs.map((d) => [d.id, d]));
   let examineQuelqueChose = false;
   let echecs = 0;
+  // Version du contexte conservée tant que l'examen n'est pas terminé (recalage suivi, C5) ; lot neuf : version courante.
+  const versionEnCours = it.st ? it.st.contextVersion ?? null : V3;
 
-  const sauver = (status: GroupState['status'], extra: Partial<SaveGroupState> = {}) => c.save({
+  const etatEnCours = (status: GroupState['status'], extra: Partial<SaveGroupState> = {}): SaveGroupState => ({
     key: g.key, status, fingerprint: it.st?.fingerprint ?? null,
-    progress: { nextChunk: 0, chunks: chunks.length, examined: [...examines], startedAt },
+    progress: { nextChunk: 0, chunks: chunks.length, examined: [...examines], startedAt, ctx: { ...ctx } } satisfies GroupProgress,
     snapshot: it.st?.snapshot ?? null, conventions, promptVersion: c.prompt.version, retryAfter: null,
-    attempts: it.st?.attempts ?? 0, documentCount: g.docs.length, contextVersion: it.st?.contextVersion ?? null,
+    attempts: it.st?.attempts ?? 0, documentCount: g.docs.length, contextVersion: versionEnCours,
     lastError: null, ...extra,
   });
+  const sauver = (status: GroupState['status'], extra: Partial<SaveGroupState> = {}) => c.save(etatEnCours(status, extra));
 
   for (const chunk of chunks) {
     const cap = c.plafond();
@@ -648,6 +908,7 @@ async function examineGroup(accountId: number, it: Item, c: ExamCtx): Promise<vo
       etats.set(d.id, { origin: repo.deriveNameOrigin(d, t), lastRenamedAt: dates[dates.length - 1] ?? null, trace: t });
     }
     const details = await repo.loadDocDetails(accountId, appel.map((d) => d.id));
+    attachMatchHints(details, appel, [...courants.values()]);
     const variables = namingVariables({
       group: { key: g.key, docs: [...courants.values()] }, chunk: { ...chunk, targets: chunk.targets.map((d) => courants.get(d.id) ?? d), references: chunk.references.map((d) => courants.get(d.id) ?? d) },
       conventions, states: etats, details, maxLength: NAMING_MAX_LENGTH,
@@ -709,30 +970,92 @@ async function examineGroup(accountId: number, it: Item, c: ExamCtx): Promise<vo
       if (f.inconsistent) res.inconsistentFamilies++;
       rec.family(g.key, f, idsAppel);
     }
+    const conventionsAvant = conventions;
     if (out.families?.length) conventions = mergeConventions(conventions, out.families);
-    echecs += await applyProposals(accountId, out.document_renames ?? [], {
-      it, appel, cibles: cibleIds, etats, courants, traces, c, traceId: sortie.traceId,
+    const jugement = await judgeProposals(accountId, out.document_renames ?? [], {
+      it, appel, cibles: cibleIds, etats, courants, c, traceId: sortie.traceId,
       callKey: `${it.fp}:${chunk.index}:${[...idsAppel].sort((a, b) => a - b).join(',')}`,
     });
-    for (const d of chunk.targets) examines.add(d.id);
+    // C2 : progression (documents examinés + empreinte de leur contexte) et décisions validées
+    // persistées ENSEMBLE, AVANT toute écriture.
+    const examinesAvant = new Set(examines);
+    const ctxAvant = { ...ctx };
+    for (const d of chunk.targets) { examines.add(d.id); ctx[String(d.id)] = examinedContextHash(courants.get(d.id) ?? d); }
+    let persistees: Awaited<ReturnType<typeof repo.persistChunk>>;
+    try {
+      persistees = await repo.persistChunk(accountId, etatEnCours('IN_PROGRESS'), jugement.accepted.map((a) => ({ event: { ...a.base, validatedName: a.name } })));
+    } catch (e) {
+      if (isExecutionCancelled(e)) throw e;
+      // Décisions NON sauvegardées : aucune écriture, lot non terminé, motif explicite — et jamais
+      // l'annonce d'une reprise sans appel IA : ces documents seront réexaminés par l'IA.
+      const motif = ((e as Error).message ?? 'erreur').slice(0, 200);
+      examines = examinesAvant;
+      ctx = ctxAvant;
+      conventions = conventionsAvant;
+      res.errors++;
+      res.decisionsUnsaved = (res.decisionsUnsaved ?? 0) + jugement.accepted.length;
+      for (const a of jugement.accepted) {
+        rec.rename(it, a.prop, { writeResult: 'FAILED', reasonCode: 'DECISION_NOT_PERSISTED', eventId: null, origin: a.origin,
+          reason: `Décision IA non sauvegardée (${motif}) : aucun renommage ; ce document sera réexaminé par l’IA (aucune reprise sans appel possible)` });
+      }
+      rec.steps.push({ step: `DECISIONS ${g.key} ${chunk.index + 1}/${chunk.count}`, status: 'FAILED', error: `DECISION_NOT_PERSISTED : ${motif}` });
+      rec.notExamined(it, 'DECISION_NOT_PERSISTED', `Décisions non sauvegardées (${motif}) : lot non terminé, réexamen IA dans 1 h`);
+      await sauver('ERROR', { retryAfter: new Date(c.now().getTime() + HEURE).toISOString(), lastError: `DECISION_NOT_PERSISTED : ${motif}`,
+        attempts: (it.st?.attempts ?? 0) + 1 }).catch(() => undefined);
+      if (examineQuelqueChose) res.groupsExamined++;
+      return;
+    }
     res.documentsExamined += chunk.targets.length;
-    // Progression persistée après chaque appel (reprise exacte après interruption).
-    if (chunk.index < chunk.count - 1) await sauver('IN_PROGRESS');
+    echecs += await applyDecisions(accountId, jugement.accepted, persistees, { it, courants, traces, c });
+    // Noms écrits par cet examen : empreinte examinée à jour (aucune réinscription à la reprise).
+    for (const d of chunk.targets) ctx[String(d.id)] = examinedContextHash(courants.get(d.id) ?? d);
   }
 
-  // Examen IA terminé. Écritures finalisées → DONE ; sinon WRITE_PENDING (E6).
+  // Examen IA terminé. Écritures restantes lues en BASE, tous passages confondus (C1) :
+  // DONE seulement sans aucune ; sinon WRITE_PENDING, reprise sans appel IA.
   const finaux = [...courants.values()];
   const fp = groupFingerprint(finaux);
   await repo.updateMemberHashes(accountId, finaux.map((d) => ({ id: d.id, hash: docSnapshotHash(d) })));
   c.fpNow.set(g.key, fp);
-  await c.save({
-    key: g.key, status: echecs > 0 ? 'WRITE_PENDING' : 'DONE', fingerprint: fp, progress: null, snapshot: groupSnapshot(finaux),
-    conventions, promptVersion: c.prompt.version, retryAfter: echecs > 0 ? new Date(c.now().getTime() + 15 * MINUTE).toISOString() : null,
-    attempts: 0, documentCount: g.docs.length, reviewed: true, contextVersion: NAMING_CONTEXT_VERSION,
-    lastError: echecs > 0 ? `WRITE_PENDING ${echecs}` : null,
-  });
+  const restantes = (await repo.pendingWritesByGroup(accountId)).get(g.key) ?? 0;
+  const final: SaveGroupState = {
+    key: g.key, status: restantes > 0 ? 'WRITE_PENDING' : 'DONE', fingerprint: fp, progress: null, snapshot: groupSnapshot(finaux),
+    conventions, promptVersion: c.prompt.version,
+    retryAfter: restantes > 0 && echecs > 0 ? new Date(c.now().getTime() + 15 * MINUTE).toISOString() : null,
+    attempts: 0, documentCount: g.docs.length, reviewed: true, contextVersion: V3,
+    lastError: restantes > 0 ? `WRITE_PENDING ${restantes}` : null, upgrade: upgradeFait,
+  };
+  await c.save(final);
+  if (upgradeFait) res.upgrade!.reviewed++;
   res.groupsExamined++;
-  if (echecs === 0) res.groupsCompleted++;
+  if (restantes === 0) { res.groupsCompleted++; return; }
+  if (echecs === 0) {
+    // Décisions d'un passage antérieur (ou d'une interruption) : reprises tout de suite, sans appel IA.
+    if (c.guard) await c.guard.assertActive(`T3 harmonisation documentaire — reprise d’écriture ${g.key}`);
+    const { upgrade: _u, reviewed: _r, ...etat } = final;
+    await retryWrites(accountId, { ...it, fp, st: { ...etat, progress: null, lastReviewedAt: c.now().toISOString() } }, c);
+  }
+}
+
+/**
+ * C6 : indices de rapprochement transmis à l'IA, avec leur provenance —
+ * références (texte extrait, faits, Opérations) qu'un document partage avec
+ * d'autres documents du lot. L'IA décide des familles ; le code ne regroupe pas.
+ */
+function attachMatchHints(details: Map<number, NamingDocDetail>, appel: readonly NamingDoc[], lot: readonly NamingDoc[]): void {
+  const cles = new Map<number, Set<string>>(lot.map((d) => [d.id, new Set(linkKeysOf(d).filter((k) => k.startsWith('x:')))]));
+  for (const d of appel) {
+    const det = details.get(d.id);
+    const miennes = cles.get(d.id);
+    if (!det || !miennes?.size) continue;
+    const structurees = new Set((d.contractRefs ?? []).map((r) => `x:${r}`));
+    const hints: NonNullable<NamingDocDetail['matchHints']> = [];
+    for (const k of [...miennes].sort()) {
+      const avec = lot.filter((x) => x.id !== d.id && cles.get(x.id)?.has(k)).map((x) => x.id).slice(0, 20);
+      if (avec.length) hints.push({ reference: k.slice(2), source: structurees.has(k) ? 'T1_FACT_OR_OPERATION' : 'EXTRACTION_FULL_TEXT', sharedWithDocumentIds: avec });
+    }
+    if (hints.length) det.matchHints = hints.slice(0, 10);
+  }
 }
 
 /** Conventions mémorisées : dernières familles décrites par l'IA (bornées), jamais un gabarit. */
@@ -743,29 +1066,42 @@ function mergeConventions(avant: unknown[], familles: NonNullable<T3DocumentNami
   return [...neuves, ...anciennes].slice(0, 20);
 }
 
-/** Rend le nombre d'écritures en échec, persistées pour reprise (E6). */
-async function applyProposals(accountId: number, proposals: NamingProposal[], p: {
+interface AcceptedDecision {
+  prop: NamingProposal;
+  name: string;
+  base: RenameEvent;
+  doc: NamingDoc | undefined;
+  origin: NameOrigin | null;
+}
+
+/**
+ * Verdicts des garde-fous sur les propositions d'un appel. Les refus sont
+ * journalisés ici ; les propositions ACCEPTÉES sont rendues, pour être
+ * persistées avant toute écriture (C2).
+ */
+async function judgeProposals(accountId: number, proposals: NamingProposal[], p: {
   it: Item;
   appel: NamingDoc[];
   /** Documents TO_EXAMINE de l'appel (E7) : seuls renommables. */
   cibles: ReadonlySet<number>;
   etats: Map<number, NamingDocState & { trace?: NameTrace }>;
   courants: Map<number, NamingDoc>;
-  /** Traces des noms (mises à jour après chaque écriture : origine et délai de stabilité des appels suivants). */
-  traces: Map<number, NameTrace>;
   c: ExamCtx;
   traceId: string | null;
   callKey: string;
-}): Promise<number> {
+}): Promise<{ accepted: AcceptedDecision[] }> {
   const { repo, rec, res } = p.c;
   const { redact } = await import('../../gateway/redaction');
   const snap = new Map<number, NamingSnapshotDoc>();
   for (const d of p.appel) {
     const st = p.etats.get(d.id)!;
     const h = st.trace?.harmonization && st.trace.harmonization.name.trim() === d.name.trim() ? st.trace.harmonization : null;
+    const fpDoc = documentFingerprint(d);
+    // Renommage antérieur au lot 76B (empreinte v2) sans nouvelle information depuis : même délai de stabilité.
+    const fpHarmonise = h?.fingerprint && h.fingerprint === v2DocumentFingerprint(d) ? fpDoc : h?.fingerprint ?? null;
     snap.set(d.id, {
       id: d.id, name: d.name, redactedName: redact(d.name), origin: st.origin, ids: { s3Key: d.s3Key, publicId: d.publicId },
-      lastHarmonizedAt: h?.at ?? null, harmonizedFingerprint: h?.fingerprint ?? null, fingerprint: documentFingerprint(d),
+      lastHarmonizedAt: h?.at ?? null, harmonizedFingerprint: fpHarmonise, fingerprint: fpDoc,
       role: p.cibles.has(d.id) ? 'TO_EXAMINE' : 'REFERENCE',
     });
   }
@@ -781,7 +1117,7 @@ async function applyProposals(accountId: number, proposals: NamingProposal[], p:
   const collisions = collidingProposals(
     verdicts.flatMap((x) => (x.v.accept ? [{ documentId: x.p.document_id, name: x.v.name }] : [])), snap,
   );
-  let echecs = 0;
+  const accepted: AcceptedDecision[] = [];
   for (const { p: prop, v } of verdicts) {
     const doc = p.courants.get(prop.document_id);
     const s = snap.get(prop.document_id);
@@ -794,43 +1130,70 @@ async function applyProposals(accountId: number, proposals: NamingProposal[], p:
     };
     const verdict: { accept: true; name: string } | { accept: false; code: RenameRefusal; detail?: string } =
       v.accept && collisions.has(prop.document_id) ? { accept: false, code: 'NAME_COLLISION' } : v;
-    if (!verdict.accept) {
-      const outcome = verdict.code === 'EQUIVALENT_NAME' ? 'NO_CHANGE' : 'REFUSED';
-      if (outcome === 'NO_CHANGE') res.unchanged++; else res.refused++;
-      // Document hors du lot : jamais journalisé sous son identifiant (peut appartenir à un autre compte).
-      const id = verdict.code === 'UNKNOWN_DOCUMENT' ? null
-        : await repo.recordRenameEvent({ ...base, outcome, reasonCode: verdict.code }).catch(() => null);
-      rec.rename(p.it, prop, { writeResult: 'NOT_WRITTEN', reasonCode: verdict.code, reason: `${RENAME_REFUSAL_LABEL[verdict.code]}${verdict.detail ? ` (${verdict.detail})` : ''}`, eventId: id, origin: s?.origin ?? null });
+    if (verdict.accept) { accepted.push({ prop, name: verdict.name, base, doc, origin: s?.origin ?? null }); continue; }
+    const outcome = verdict.code === 'EQUIVALENT_NAME' ? 'NO_CHANGE' : 'REFUSED';
+    if (outcome === 'NO_CHANGE') res.unchanged++; else res.refused++;
+    // Document hors du lot : jamais journalisé sous son identifiant (peut appartenir à un autre compte).
+    const id = verdict.code === 'UNKNOWN_DOCUMENT' ? null
+      : await repo.recordRenameEvent({ ...base, outcome, reasonCode: verdict.code }).catch(() => null);
+    rec.rename(p.it, prop, { writeResult: 'NOT_WRITTEN', reasonCode: verdict.code, reason: `${RENAME_REFUSAL_LABEL[verdict.code]}${verdict.detail ? ` (${verdict.detail})` : ''}`, eventId: id, origin: s?.origin ?? null });
+  }
+  return { accepted };
+}
+
+/**
+ * Application des décisions PERSISTÉES (C2) : écriture + historique +
+ * résolution de la décision dans une transaction. Rend le nombre d'écritures
+ * en échec — toujours reprenables : la décision est en base, quoi qu'il
+ * advienne de la journalisation de l'échec.
+ */
+async function applyDecisions(accountId: number, accepted: readonly AcceptedDecision[], persistees: Map<number, { eventId: number; retryStatus: string | null; outcome: string }>, p: {
+  it: Item;
+  courants: Map<number, NamingDoc>;
+  traces: Map<number, NameTrace>;
+  c: ExamCtx;
+}): Promise<number> {
+  const { repo, rec, res } = p.c;
+  let echecs = 0;
+  for (const a of accepted) {
+    const { prop, doc } = a;
+    const pd = persistees.get(prop.document_id);
+    if (!pd || pd.retryStatus !== 'PENDING' || (pd.outcome !== 'DECIDED' && pd.outcome !== 'FAILED')) {
+      // Décision déjà traitée (reprise rejouée) : jamais réappliquée.
+      res.unchanged++;
+      rec.rename(p.it, prop, { writeResult: 'NOT_WRITTEN', reasonCode: 'ALREADY_APPLIED', reason: 'Décision déjà traitée (reprise) : aucune nouvelle écriture', eventId: pd?.eventId ?? null, origin: a.origin });
       continue;
     }
     try {
       if (p.c.guard) await p.c.guard.assertActive('T3 harmonisation documentaire — écriture');
-      const r = await repo.applyRename({ ...base, outcome: 'APPLIED', appliedName: verdict.name, validatedName: verdict.name });
+      const r = await repo.applyRename({ ...a.base, outcome: 'APPLIED', appliedName: a.name, validatedName: a.name }, { id: pd.eventId, outcome: pd.outcome as 'DECIDED' | 'FAILED' });
       if (r.status === 'APPLIED') {
         res.applied++;
         res.appliedFileIds.push(prop.document_id);
         if (doc) {
-          p.courants.set(doc.id, { ...doc, name: verdict.name });
+          p.courants.set(doc.id, { ...doc, name: a.name });
           const t = p.traces.get(doc.id);
-          p.traces.set(doc.id, { titleEvent: t?.titleEvent ?? null, harmonization: { name: verdict.name, at: p.c.now().toISOString(), fingerprint: documentFingerprint(doc) } });
+          p.traces.set(doc.id, { titleEvent: t?.titleEvent ?? null, harmonization: { name: a.name, at: p.c.now().toISOString(), fingerprint: documentFingerprint(doc), oldName: doc.name } });
         }
-        rec.rename(p.it, prop, { writeResult: 'WRITTEN', reasonCode: 'APPLIED', reason: null, eventId: r.eventId, origin: s?.origin ?? null, applied: verdict.name });
+        rec.rename(p.it, prop, { writeResult: 'WRITTEN', reasonCode: 'APPLIED', reason: null, eventId: r.eventId, origin: a.origin, applied: a.name });
       } else if (r.status === 'ALREADY_APPLIED') {
         res.unchanged++;
-        rec.rename(p.it, prop, { writeResult: 'NOT_WRITTEN', reasonCode: 'ALREADY_APPLIED', reason: 'Décision déjà appliquée et journalisée (reprise)', eventId: null, origin: s?.origin ?? null });
+        rec.rename(p.it, prop, { writeResult: 'NOT_WRITTEN', reasonCode: 'ALREADY_APPLIED', reason: 'Décision déjà appliquée et journalisée (reprise)', eventId: null, origin: a.origin });
       } else {
         res.conflicts++;
-        const id = await repo.recordRenameEvent({ ...base, outcome: 'CONFLICT', reasonCode: r.reason }).catch(() => null);
-        rec.rename(p.it, prop, { writeResult: 'NOT_WRITTEN', reasonCode: r.reason, eventId: id, origin: s?.origin ?? null, reason: conflictLabel(r.reason, r.currentName) });
+        // La décision devient la trace du conflit (même clé d'idempotence) ; à défaut, elle reste
+        // en attente et la reprise constatera le conflit à nouveau — jamais forcé.
+        await repo.resolveDecisionConflict(accountId, pd.eventId, r.reason).catch(() => undefined);
+        rec.rename(p.it, prop, { writeResult: 'NOT_WRITTEN', reasonCode: r.reason, eventId: pd.eventId, origin: a.origin, reason: conflictLabel(r.reason, r.currentName) });
       }
     } catch (e) {
       if (isExecutionCancelled(e)) throw e;
       res.failed++;
+      echecs++;
       const motif = ((e as Error).message ?? 'erreur').slice(0, 300);
-      // E6 : décision persistée pour reprise (nom validé, clé d'appel) — sans nouvel appel IA.
-      const id = await repo.recordRenameEvent({ ...base, outcome: 'FAILED', reasonCode: 'WRITE_FAILED', validatedName: verdict.name, retryStatus: 'PENDING' }).catch(() => null);
-      if (id != null) echecs++;
-      rec.rename(p.it, prop, { writeResult: 'FAILED', reasonCode: 'WRITE_FAILED', reason: `Écriture en échec : ${motif} — reprise automatique sans nouvel appel IA`, eventId: id, origin: s?.origin ?? null });
+      // Décision déjà persistée : reprise garantie sans nouvel appel IA, même si la mise à jour échoue ici.
+      await repo.markRetry(accountId, pd.eventId, 'PENDING', { attempted: true, failed: true }).catch(() => undefined);
+      rec.rename(p.it, prop, { writeResult: 'FAILED', reasonCode: 'WRITE_FAILED', reason: `Écriture en échec : ${motif} — décision sauvegardée (#${pd.eventId}), reprise automatique sans nouvel appel IA`, eventId: pd.eventId, origin: a.origin });
     }
   }
   return echecs;
@@ -842,13 +1205,15 @@ const conflictLabel = (reason: string, current: string | null) =>
       : `Nom modifié entre l’analyse IA et l’écriture : nom conservé (« ${current ?? ''} »)`;
 
 /**
- * E6 — reprise des écritures en échec d'un lot dont le contexte est
+ * E6 — reprise des écritures en attente d'un lot dont le contexte est
  * INCHANGÉ depuis la décision : aucun appel IA. Avant chaque reprise, le
  * compte, le document (éligible, du lot), le nom courant (= nom lu par
  * l'IA), la protection (jamais un nom utilisateur) et l'absence de nouvelle
  * information sont revalidés ; écriture transactionnelle sous
  * compare-and-swap, MÊME clé d'idempotence que la tentative d'origine
  * (jamais de doublon). Un conflit (renommage manuel) n'est jamais forcé.
+ * Lot 76B : décisions persistées non appliquées (DECIDED) comprises ; état
+ * final calculé sur les écritures restantes EN BASE (C1).
  */
 async function retryWrites(accountId: number, it: Item, c: ExamCtx): Promise<void> {
   const { repo, rec, res } = c;
@@ -870,28 +1235,37 @@ async function retryWrites(accountId: number, it: Item, c: ExamCtx): Promise<voi
       const id = await repo.recordRenameEvent({ ...w, callKey: `${w.callKey}:reprise`, accountRunId: c.accountRunId, outcome: 'CONFLICT', reasonCode: reason, retryOf: w.eventId, retryStatus: null }).catch(() => null);
       ligne({ writeResult: 'NOT_WRITTEN', reasonCode: reason, reason: conflictLabel(reason, current), eventId: id, origin: w.nameOrigin });
     };
-    if (!doc) { await conflit('DOCUMENT_GONE', null); continue; }
-    if (isProtected(doc)) { await conflit('CONCURRENT_USER_RENAME', doc.name); continue; }
-    if (doc.name.trim() !== (w.oldName ?? '').trim()) { await conflit('CONCURRENT_NAME_CHANGE', doc.name); continue; }
-    if (documentFingerprint(doc) !== w.documentFingerprint) {
+    const perimee = async (code: 'NEW_INFORMATION' | 'NAME_COLLISION' | 'MOVED', libelle: string) => {
       caduques++;
       await repo.markRetry(accountId, w.eventId, 'SUPERSEDED');
-      ligne({ writeResult: 'NOT_WRITTEN', reasonCode: 'NEW_INFORMATION', reason: 'Nouvelle information depuis la décision : lot réexaminé par l’IA', eventId: null, origin: w.nameOrigin });
+      if (code === 'NAME_COLLISION') res.refused++;
+      ligne({ writeResult: 'NOT_WRITTEN', reasonCode: code, reason: libelle, eventId: null, origin: w.nameOrigin });
+    };
+    if (!doc) {
+      // Sorti du lot mais toujours présent (déplacé, recomposé) : décision sans objet, jamais un faux conflit.
+      const ailleurs = (await repo.loadNamingDocsByIds(accountId, [w.fileId]))[0];
+      if (ailleurs) await perimee('MOVED', 'Document déplacé vers un autre lot : décision sans objet, réexaminé avec son nouveau lot');
+      else await conflit('DOCUMENT_GONE', null);
+      continue;
+    }
+    if (isProtected(doc)) { await conflit('CONCURRENT_USER_RENAME', doc.name); continue; }
+    if (doc.name.trim() !== (w.oldName ?? '').trim()) { await conflit('CONCURRENT_NAME_CHANGE', doc.name); continue; }
+    if (documentFingerprint(doc) !== w.documentFingerprint && v2DocumentFingerprint(doc) !== w.documentFingerprint) {
+      await perimee('NEW_INFORMATION', 'Nouvelle information depuis la décision : lot réexaminé par l’IA');
       continue;
     }
     const cible = normalizeTitle(w.validatedName);
     if ([...courants.values()].some((d) => d.id !== doc.id && normalizeTitle(d.name) === cible)) {
-      caduques++;
-      await repo.markRetry(accountId, w.eventId, 'SUPERSEDED');
-      res.refused++;
-      ligne({ writeResult: 'NOT_WRITTEN', reasonCode: 'NAME_COLLISION', reason: RENAME_REFUSAL_LABEL.NAME_COLLISION, eventId: null, origin: w.nameOrigin });
+      await perimee('NAME_COLLISION', RENAME_REFUSAL_LABEL.NAME_COLLISION);
       continue;
     }
     res.writesRetried++;
     try {
-      const r = await repo.applyRename({ ...w, accountRunId: c.accountRunId, outcome: 'APPLIED', appliedName: w.validatedName, retryOf: w.eventId, retryStatus: null });
+      const r = await repo.applyRename(
+        { ...w, accountRunId: c.accountRunId, outcome: 'APPLIED', appliedName: w.validatedName, retryOf: w.pendingOutcome === 'FAILED' ? w.eventId : null, retryStatus: null },
+        { id: w.eventId, outcome: w.pendingOutcome },
+      );
       if (r.status === 'APPLIED' || r.status === 'ALREADY_APPLIED') {
-        await repo.markRetry(accountId, w.eventId, 'RESOLVED', { attempted: true });
         if (r.status === 'APPLIED') {
           res.applied++;
           res.appliedFileIds.push(doc.id);
@@ -908,27 +1282,31 @@ async function retryWrites(accountId: number, it: Item, c: ExamCtx): Promise<voi
       if (isExecutionCancelled(e)) throw e;
       res.failed++;
       const epuise = w.retryAttempts + 1 >= NAMING_WRITE_RETRY_MAX;
-      await repo.markRetry(accountId, w.eventId, epuise ? 'ABANDONED' : 'PENDING', { attempted: true });
+      await repo.markRetry(accountId, w.eventId, epuise ? 'ABANDONED' : 'PENDING', { attempted: true, failed: true }).catch(() => undefined);
       if (epuise) epuisees++; else encore++;
       ligne({ writeResult: 'FAILED', reasonCode: 'WRITE_FAILED', reason: `Reprise d’écriture en échec (${w.retryAttempts + 1}/${NAMING_WRITE_RETRY_MAX}) : ${((e as Error).message ?? '').slice(0, 200)}${epuise ? ' — lot réexaminé par l’IA dans 24 h' : ''}`, eventId: null, origin: w.nameOrigin });
     }
   }
   const finaux = orderDocs([...courants.values()]);
-  const fp = groupFingerprint(finaux);
-  await repo.updateMemberHashes(accountId, finaux.map((d) => ({ id: d.id, hash: docSnapshotHash(d) })));
-  c.fpNow.set(it.group.key, fp);
   const st = it.st!;
+  // État d'une version antérieure du contexte : empreinte de SA formule conservée — le recalage prouvé (C5) suit.
+  const ancienne = st.contextVersion !== V3 ? versionDe(st) : null;
+  const fp = ancienne ? legacyFp(finaux, ancienne) : groupFingerprint(finaux);
+  await repo.updateMemberHashes(accountId, finaux.map((d) => ({ id: d.id, hash: docSnapshotHash(d) })));
+  if (!ancienne) c.fpNow.set(it.group.key, fp);
   const essais = st.attempts + 1;
-  const etat: SaveGroupState = encore > 0
+  // C1 : écritures restantes lues en base (une mise à jour d'échec perdue reste une écriture due).
+  const restantes = (await repo.pendingWritesByGroup(accountId)).get(it.group.key) ?? 0;
+  const etat: SaveGroupState = restantes > 0
     ? { ...st, progress: null, status: 'WRITE_PENDING', fingerprint: fp, snapshot: groupSnapshot(finaux), documentCount: finaux.length, attempts: essais,
-      retryAfter: new Date(c.now().getTime() + Math.min(6 * HEURE, 15 * MINUTE * 2 ** Math.min(essais, 5))).toISOString(), lastError: `WRITE_PENDING ${encore}` }
+      retryAfter: new Date(c.now().getTime() + Math.min(6 * HEURE, 15 * MINUTE * 2 ** Math.min(essais, 5))).toISOString(), lastError: `WRITE_PENDING ${restantes}` }
     : epuisees > 0 || caduques > 0
       // Jamais abandonné : décision périmée ou écriture impossible → réexamen IA (empreinte effacée).
       ? { ...st, progress: null, status: epuisees > 0 ? 'ERROR' : 'DONE', fingerprint: null, snapshot: st.snapshot, documentCount: finaux.length, attempts: 0,
         retryAfter: epuisees > 0 ? new Date(c.now().getTime() + 24 * HEURE).toISOString() : null, lastError: epuisees > 0 ? 'WRITE_RETRY_EXHAUSTED' : null }
-      : { ...st, progress: null, status: 'DONE', fingerprint: fp, snapshot: groupSnapshot(finaux), documentCount: finaux.length, attempts: 0, retryAfter: null, lastError: null };
-  await c.save({ ...etat, contextVersion: NAMING_CONTEXT_VERSION });
-  rec.steps.push({ step: `REPRISE ${it.group.key}`, status: encore > 0 || epuisees > 0 ? 'FAILED' : 'OK', error: encore > 0 ? `${encore} écriture(s) toujours en échec` : null, detail: { pending: attente.length, stillPending: encore, exhausted: epuisees, superseded: caduques } });
+      : { ...st, progress: null, status: 'DONE', fingerprint: fp, snapshot: ancienne ? st.snapshot : groupSnapshot(finaux), documentCount: finaux.length, attempts: 0, retryAfter: null, lastError: null };
+  await c.save({ ...etat, contextVersion: ancienne ? st.contextVersion ?? null : V3 });
+  rec.steps.push({ step: `REPRISE ${it.group.key}`, status: encore > 0 || epuisees > 0 ? 'FAILED' : 'OK', error: encore > 0 ? `${encore} écriture(s) toujours en échec` : null, detail: { pending: attente.length, stillPending: encore, exhausted: epuisees, superseded: caduques, remaining: restantes } });
 }
 
 // ── Reporting (rapport d'exécution T3, lot 58) ─────────────────────────────
@@ -1033,6 +1411,11 @@ export class NamingRecorder {
           errors: res.errors, notExamined: this.notExaminedCount, withoutContext: res.withoutContext,
           renamesSectionMissing: res.renamesSectionMissing, promptUnavailable: res.promptAvailable === false ? 1 : 0,
           pendingWrites: res.pendingWrites, writesRetried: res.writesRetried, rebaselined: res.rebaselined,
+          // Lot 76B : décisions non sauvegardées (C2), documents réinscrits à la reprise (C3), recalage (C5).
+          decisionsUnsaved: res.decisionsUnsaved ?? 0, documentsRevalidated: res.documentsRevalidated ?? 0,
+          upgradeTechnical: res.upgrade?.technical ?? 0, upgradeExpected: res.upgrade?.expected ?? 0, upgradeReviewed: res.upgrade?.reviewed ?? 0,
+          upgradeTechnicalTotal: res.upgrade?.totals.technical ?? 0, upgradeExpectedTotal: res.upgrade?.totals.expected ?? 0,
+          upgradeReviewedTotal: res.upgrade?.totals.reviewed ?? 0,
           remainingGroups: res.remaining.groups, remainingDocuments: res.remaining.documents,
           scanComplete: res.scan.complete ? 1 : 0, scanned: res.scan.scanned,
         },
@@ -1048,6 +1431,11 @@ export class NamingRecorder {
           groupsState: { table: 'document_naming_groups' },
           index: { table: 'document_naming_members', note: 'Index persistant des documents éligibles (lecture exhaustive à curseur persistant)' },
           operations: { modified: false, note: 'Aucune Opération créée, fusionnée ni modifiée par l’harmonisation' },
+          contextVersion: NAMING_CONTEXT_VERSION,
+          upgrade: res.upgrade ? {
+            ...res.upgrade,
+            note: 'Recalage des familles examinées avec un contexte antérieur : TECHNICAL = migration technique sans appel IA (preuve d’absence d’information nouvellement exploitable) ; EXPECTED = réexamen métier attendu (borné, reprenable) ; REVIEWED = réexamen effectué',
+          } : null,
         },
         startedAt,
       }, entries);

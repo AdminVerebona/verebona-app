@@ -4238,6 +4238,8 @@ export const transactionalEmailJobs = pgTable('transactional_email_jobs', {
   providerOutcome: text('provider_outcome'),
   providerDetail: text('provider_detail'),
   uncertainSince: tstzOptional('uncertain_since'),
+  /** Lot 76D (0585) : neutralisée par le retour aux rappels Stripe (jamais reprise ; issue du prestataire conservée). */
+  neutralizedAt: tstzOptional('neutralized_at'),
 }, (t) => ({
   kindCheck: check('transactional_email_jobs_kind_check', sql`${t.kind} IN ('EMAIL_VERIFICATION', 'DUO_INVITATION', 'DUO_MEMBERSHIP_ENDED', 'DUO_MEMBERSHIP_LEFT', 'SUBSCRIPTION_ANNUAL_RENEWAL_REMINDER', 'DUO_INVITATION_DECLINED')`),
   statusCheck: check('transactional_email_jobs_status_check', sql`${t.status} IN ('pending', 'sending', 'accepted', 'failed', 'cancelled', 'uncertain')`),
@@ -4245,6 +4247,8 @@ export const transactionalEmailJobs = pgTable('transactional_email_jobs', {
   userIdx: index('transactional_email_jobs_user_idx').on(t.userId, t.kind),
   duoIdx: index('transactional_email_jobs_duo_idx').on(t.duoId, t.kind),
   dedupeIdx: uniqueIndex('transactional_email_jobs_dedupe_key_idx').on(t.dedupeKey).where(sql`dedupe_key IS NOT NULL`),
+  /** Lot 76D (0585 idx 1). */
+  neutralizedIdx: index('transactional_email_jobs_neutralized_idx').on(t.kind, t.status).where(sql`neutralized_at IS NOT NULL`),
 }));
 
 /**
@@ -4266,7 +4270,15 @@ export const annualRenewalReminderState = pgTable('annual_renewal_reminder_state
   rollbackBy: integer('rollback_by'),
   lastReconcileAt: tstzOptional('last_reconcile_at'),
   lastReconcileNote: text('last_reconcile_note'),
+  /** Lot 76D (0585) : phase explicite du retour arrière (in_progress → completed), fin, dernier contrôle, résumé. */
+  rollbackStatus: text('rollback_status'),
+  rollbackCompletedAt: tstzOptional('rollback_completed_at'),
+  rollbackCompletedBy: integer('rollback_completed_by'),
+  rollbackCompletionMode: text('rollback_completion_mode'),
+  rollbackLastCheckAt: tstzOptional('rollback_last_check_at'),
+  rollbackSummary: jsonb('rollback_summary'),
 }, (t) => ({
+  rollbackStatusCheck: check('annual_renewal_reminder_state_rollback_status_check', sql`${t.rollbackStatus} IS NULL OR ${t.rollbackStatus} IN ('in_progress', 'completed')`),
   singletonCheck: check('annual_renewal_reminder_state_singleton_check', sql`${t.id} = 1`),
 }));
 
@@ -4288,8 +4300,10 @@ export const annualRenewalReminderChecks = pgTable('annual_renewal_reminder_chec
   lastCheckedAt: tstzOptional('last_checked_at'),
   nextCheckAt: tstzOptional('next_check_at'),
   history: jsonb('history').notNull().default([]),
+  /** Lot 76D (0585) : false = échéance LOCALE non revérifiée chez Stripe (relecture en échec). */
+  renewalDateVerified: boolean('renewal_date_verified').notNull().default(true),
 }, (t) => ({
-  outcomeCheck: check('annual_renewal_reminder_checks_outcome_check', sql`${t.outcome} IN ('ENQUEUED', 'REVIVED', 'DUPLICATE', 'WAITING', 'EXCLUDED', 'NO_RECIPIENT', 'STRIPE_ERROR', 'COVERAGE_UNCERTAIN', 'DESYNC_RESYNCED', 'DESYNC_UNRESOLVED', 'STRIPE_ONLY')`),
+  outcomeCheck: check('annual_renewal_reminder_checks_outcome_check', sql`${t.outcome} IN ('ENQUEUED', 'REVIVED', 'DUPLICATE', 'WAITING', 'EXCLUDED', 'NO_RECIPIENT', 'STRIPE_ERROR', 'COVERAGE_UNCERTAIN', 'DESYNC_RESYNCED', 'DESYNC_UNRESOLVED', 'STRIPE_ONLY', 'RECONCILE_ERROR', 'RECONCILE_RESOLVED')`),
 }));
 
 /** Lot 57A (0405) — événements webhook Resend (svix-id unique : rejeu sans effet). */

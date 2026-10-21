@@ -64,6 +64,7 @@
  * Écriture, vérification et fermeture : une seule transaction (écart 1).
  * ══════════════════════════════════════════════════════════════════════════
  */
+import { createHash } from 'crypto';
 import { and, desc, eq, inArray, isNotNull, isNull, sql } from 'drizzle-orm';
 import { db, pgClient } from '@/db';
 import { assets, toProcessActionEvents, toProcessActions } from '@/db/schema';
@@ -72,12 +73,12 @@ import type { ActionKind, ActionProposal, ResolutionReason } from './action-mode
 import {
   assessDeadlinePertinence, assessKnownDeadlineObligation, currentKnowledgeRev, deterministicConfigRef, documentBridgeFieldKey, gatherFieldEvidence,
   gatherRelatedDocumentValues, isDeadlineRule, knowledgeRevSql, parseDocumentDate, recordRuleEvaluation, relevanceColumnsReady, rememberedPertinence,
-  ruleEvaluationsReady, t1KeyDesignates, t4AssessmentConfig, todayParis, DOCUMENT_RULE_ENGINE_VERSION,
+  ruleEvaluationsReady, t1KeyDesignates, t4AssessmentConfig, todayParis, withRelatedEvidence, DOCUMENT_RULE_ENGINE_VERSION,
   type FieldEvidence, type PertinenceCandidate, type PertinenceResult, type RuleDecision, type RuleEvaluationRecord, type RuleOutcome, type RuleTrigger,
   type T4AssessmentConfig,
 } from './document-field-evidence';
 import { decide } from './decision-engine';
-import { derivationFor, gatherDerivation, type DerivationResult } from './document-derivations';
+import { derivationFor, endDateNeed, gatherDerivation, type DerivationResult } from './document-derivations';
 import { closeDocumentIntervention, interventionKey, upsertDocumentIntervention } from './document-intervention';
 import {
   documentSlotFor, formatIsoDate, readValueKind, toIsoDate, withdrawCalculatedValue, type DocumentSlot, type DocumentSlotState,
@@ -354,19 +355,21 @@ export interface DocumentRulesReport {
    * Lot 75I (B) : + nature (`kind`) — écriture NON CONFIRMÉE (PERSISTENCE_FAILED),
    * lecture, IA, calcul, journalisation (TRACE_FAILED)…
    */
-  errorDetails: Array<{ accountId: number; fileId: number; ruleCode: string; step: string; cause: string; kind?: string }>;
+  errorDetails: Array<{ accountId: number; fileId: number; ruleCode: string; step: string; cause: string; kind?: string; retryId?: number | null }>;
   /** Lot 61 : issue centrale par règle (AUTO_RESOLVED, NO_ACTION, DEFER, CREATE_ACTION, KEEP, ERROR). */
   outcomes: Record<string, string>;
   /** Lot 75I (B) : refus NORMAUX — écriture automatique refusée, valeur de l'utilisateur protégée (jamais une erreur). */
   protectedRefusals: number;
+  /** Lot 76 (C8) : décisions APPLIQUÉES dont la trace a échoué (règle, n° de reprise ; null : reprise impossible). */
+  untraced: Array<{ ruleCode: string; retryId: number | null }>;
 }
 
 const emptyReport = (): DocumentRulesReport => ({
-  created: 0, updated: 0, closed: 0, written: 0, plans: {}, reasons: {}, errors: {}, errorDetails: [], outcomes: {}, protectedRefusals: 0,
+  created: 0, updated: 0, closed: 0, written: 0, plans: {}, reasons: {}, errors: {}, errorDetails: [], outcomes: {}, protectedRefusals: 0, untraced: [],
 });
 
 /** Lot 75I (B) : erreur détaillée d'une règle (remonte au bilan du balayage et au BO). */
-function pushError(report: DocumentRulesReport, e: { accountId: number; fileId: number; ruleCode: string; step: string; kind: string; cause: string }): void {
+function pushError(report: DocumentRulesReport, e: { accountId: number; fileId: number; ruleCode: string; step: string; kind: string; cause: string; retryId?: number | null }): void {
   report.errorDetails.push({ ...e, cause: String(e.cause).slice(0, 300) });
 }
 
@@ -375,8 +378,12 @@ function pushError(report: DocumentRulesReport, e: { accountId: number; fileId: 
  * au diagnostic technique (bilan du balayage, BO), jamais en console seule.
  */
 async function tracer(report: DocumentRulesReport, rec: RuleEvaluationRecord): Promise<void> {
-  const erreur = await recordRuleEvaluation(rec);
-  if (erreur) pushError(report, { accountId: rec.accountId, fileId: rec.fileId, ruleCode: rec.ruleCode, step: 'TRACE', kind: 'TRACE_FAILED', cause: erreur });
+  const echec = await recordRuleEvaluation(rec);
+  if (echec) {
+    // Lot 76 (C8) : décision appliquée mais NON tracée — signalée (reprise identifiable), jamais un faux succès.
+    pushError(report, { accountId: rec.accountId, fileId: rec.fileId, ruleCode: rec.ruleCode, step: 'TRACE', kind: 'TRACE_FAILED', cause: echec.cause, retryId: echec.retryId });
+    report.untraced.push({ ruleCode: rec.ruleCode, retryId: echec.retryId });
+  }
 }
 
 /** Contexte du document : Type, éligibilité à une nouvelle action. */
@@ -455,11 +462,43 @@ async function activeActions(accountId: number, fileId: number): Promise<Map<str
  * premier passage pour une décision antérieure au lot 72). Null : la
  * dernière décision n'est pas « Non applicable ».
  */
-export interface UserNotApplicable { actionId: number; values: string[]; knowledgeRev: string | null }
+export interface UserNotApplicable {
+  actionId: number; values: string[]; knowledgeRev: string | null;
+  /** Lot 76 (C6) : problème métier de la carte refusée (nature, situation, clé de preuve). */
+  problem?: ProblemDescriptor | null;
+}
+
+/**
+ * Lot 76 (C6) — problème métier d'une carte : nature (donnée manquante,
+ * incertaine, intervention…), situation temporelle et CLÉ DE PREUVE (clauses
+ * du document citées par la décision, `problemProofKey`). Jamais le modèle,
+ * la formulation ni la confiance.
+ */
+export interface ProblemDescriptor { problem: string | null; situation: string | null; proof: string | null }
+
+const normProbleme = (t: string) => t.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+
+/**
+ * Lot 76 (C6) — clé de preuve d'une décision (pure) : empreinte des TEXTES
+ * DU DOCUMENT (clauses, extraits) qui contiennent la preuve citée par T4 —
+ * jamais la formulation du modèle : la même clause citée autrement donne la
+ * même clé ; une preuve introuvable dans les textes lus → null (aucun
+ * problème démontré).
+ */
+export function problemProofKey(p: { evidence: string | null | undefined; clauses: ReadonlyArray<string | null | undefined> }): string | null {
+  const evComplet = p.evidence ? normProbleme(p.evidence) : '';
+  const ev = evComplet.slice(0, 120);
+  if (ev.length < 8) return null;
+  // Texte lu qui CONTIENT la preuve citée, ou contenu lu (≥ 15 caractères) que la preuve cite en entier.
+  const sources = [...new Set(p.clauses.filter((c): c is string => !!c).map(normProbleme)
+    .filter((c) => c.includes(ev) || (c.length >= 15 && evComplet.includes(c))))].sort();
+  if (sources.length === 0) return null;
+  return createHash('sha1').update(JSON.stringify(sources)).digest('hex').slice(0, 16);
+}
 
 export async function userNotApplicableDecision(accountId: number, fileId: number, key: string): Promise<UserNotApplicable | null> {
   const [last] = await db
-    .select({ id: toProcessActions.id, reason: toProcessActions.resolutionReason, proposals: toProcessActions.proposalsJson })
+    .select({ id: toProcessActions.id, reason: toProcessActions.resolutionReason, proposals: toProcessActions.proposalsJson, ctx: toProcessActions.triggerContext })
     .from(toProcessActions)
     .where(and(
       eq(toProcessActions.accountId, accountId), eq(toProcessActions.targetType, 'DOCUMENT'),
@@ -476,7 +515,9 @@ export async function userNotApplicableDecision(accountId: number, fileId: numbe
     [last.id, accountId] as never[],
   )) as unknown as Array<{ rev: string | null }>;
   const values = ((last.proposals as ActionProposal[] | null) ?? []).filter((p) => !p.isCurrentValue).map((p) => String(p.value));
-  return { actionId: last.id, values, knowledgeRev: ev?.rev ?? null };
+  const j = (last.ctx as { justification?: { problem?: string | null; situation?: string | null; proof?: string | null } | null } | null)?.justification ?? null;
+  return { actionId: last.id, values, knowledgeRev: ev?.rev ?? null,
+    problem: j ? { problem: j.problem ?? null, situation: j.situation ?? null, proof: j.proof ?? null } : null };
 }
 
 /**
@@ -494,12 +535,18 @@ async function recordNotApplicableBaseline(accountId: number, fileId: number, ke
 /**
  * Lot 72 (C5) — une carte déclarée « Non applicable » ne revient que pour un
  * NOUVEAU problème démontré : une valeur candidate que la carte refusée ne
- * proposait pas. Une complétion sans proposition, ou les mêmes valeurs,
- * restent la même situation. Pure.
+ * proposait pas. Lot 76 (C6) : ou, même SANS proposition de valeur, une
+ * obligation nouvelle PROUVÉE — la décision courante cite une preuve
+ * retrouvée dans le document (clé de preuve) que la situation refusée
+ * n'avait pas. Les mêmes valeurs, une reformulation, un autre modèle ou une
+ * autre confiance restent la même situation. Pure.
  */
-export function newProblemSinceNotApplicable(plan: RulePlan, na: Pick<UserNotApplicable, 'values'> | null): boolean {
+export function newProblemSinceNotApplicable(
+  plan: RulePlan, na: Pick<UserNotApplicable, 'values' | 'problem'> | null, current: ProblemDescriptor | null = null,
+): boolean {
   if (!na || plan.kind !== 'UPSERT') return true;
-  return plan.proposals.some((p) => !p.isCurrentValue && !na.values.includes(String(p.value)));
+  if (plan.proposals.some((p) => !p.isCurrentValue && !na.values.includes(String(p.value)))) return true;
+  return !!current?.proof && current.proof !== (na.problem?.proof ?? null);
 }
 
 type TxClient = Pick<typeof db, 'select' | 'update' | 'insert'>;
@@ -821,6 +868,17 @@ async function evaluateFieldRule(i: FieldRuleInput): Promise<FieldRuleOutcome> {
   const ivKept: number[] = [];
   let exec: ExecOutcome | null = null;
   let obligation: PertinenceResult | null = null;
+  // Lot 76 (C6) : problème métier de la décision courante (nature, situation, clé de preuve).
+  let probleme: ProblemDescriptor | null = null;
+  let liesIntegres = false;
+  /** Textes du document où une preuve citée par T4 doit se retrouver (clauses, extraits, titre). */
+  // Lot 76 (C6) : CONTENUS lus (sans libellé ni clé) — un libellé renommé ne crée pas un « nouveau problème ».
+  const textesPreuve = () => {
+    const corps = evidence?.lifecycle?.clauseBodies ?? [];
+    return [...(corps.length ? corps : evidence?.lifecycle?.clauses ?? []), ...(evidence?.facts ?? []).map((f) => f.excerpt ?? null), evidence?.documentTitle ?? null];
+  };
+  const preuveDe = (r: PertinenceResult | null) => (r && (r.aiCalled || r.cached) && r.outcome === 'CREATE_ACTION' && r.intervention?.evidence
+    ? problemProofKey({ evidence: r.intervention.evidence, clauses: textesPreuve() }) : null);
 
   try {
     // Lot 61 : une valeur CALCULÉE automatiquement est reconsidérée (sources
@@ -847,6 +905,9 @@ async function evaluateFieldRule(i: FieldRuleInput): Promise<FieldRuleOutcome> {
       // Écart 5 : une lecture impossible n'est jamais une donnée absente.
       if (evidence.errors.length) throw new KnowledgeReadError(`lecture de la connaissance impossible : ${evidence.errors.join(' ; ')}`.slice(0, 300));
       const lies = await gatherRelatedDocumentValues(accountId, fileId, key);
+      // Lot 76 (C4) : preuves des documents du MÊME contrat (clauses, résiliation, obligations) intégrées.
+      evidence = withRelatedEvidence(evidence, lies, i.deps?.today);
+      liesIntegres = true;
       knowledgeRev = await currentKnowledgeRev(accountId, fileId);
       const connus = proposalsFromAnalysis(key, slot, {
         facts: [...evidence.facts, ...lies.facts].map((f) => ({ canonicalKey: key, value: f.value, confidence: f.confidence, excerpt: f.excerpt ?? null })),
@@ -868,13 +929,19 @@ async function evaluateFieldRule(i: FieldRuleInput): Promise<FieldRuleOutcome> {
       // ── Étape A (suite) : calcul déterministe ─────────────────────────────
       if (plan.kind !== 'WRITE' && plan.kind !== 'RESOLVE' && derivationFor(key)) {
         failedStep = 'DERIVATION';
-        derivation = (await gatherDerivation(accountId, fileId, key))?.result ?? null;
+        // Lot 76 (I) : échéancier du document ET des documents du MÊME contrat (tableau d'amortissement…).
+        derivation = (await gatherDerivation(accountId, fileId, key, { relatedFiles: lies.relatedFiles ?? [] }))?.result ?? null;
+        if (derivation?.schedule) {
+          // Lot 76 (I) : la date de fin conditionne-t-elle une démarche ? (tracé avec le calcul)
+          derivation = { ...derivation, endDateNeed: endDateNeed({ repaymentSchedule: derivation.schedule.evidenced, textes: (evidence.lifecycleTexts ?? []).map((t) => t.text) }) };
+        }
         if (derivation?.status === 'CALCULATED_RELIABLE' && derivation.value) {
           outcome = 'AUTO_RESOLVED';
           if (calculee && String(state.value) === derivation.value) {
             plan = active ? { kind: 'RESOLVE', reason: 'CALCULATED_UNCHANGED' } : { kind: 'NONE', reason: 'CALCULATED_UNCHANGED' };
           } else {
-            plan = { kind: 'WRITE', value: derivation.value, confidence: 1, evidenceIds: [], reason: 'CALCULATED_FROM_START_AND_DURATION' };
+            plan = { kind: 'WRITE', value: derivation.value, confidence: 1, evidenceIds: [],
+              reason: derivation.method === 'START_PLUS_DURATION' ? 'CALCULATED_FROM_START_AND_DURATION' : 'CALCULATED_FROM_SCHEDULE' };
             extra = { valueKind: 'CALCULATED', derivation };
           }
         } else if (calculee) {
@@ -904,15 +971,21 @@ async function evaluateFieldRule(i: FieldRuleInput): Promise<FieldRuleOutcome> {
           remembered: await rememberedPertinence(accountId, fileId, rule.code),
           // Lot 72 (C2) : cycle de vie lu (reconduction, fin effective, obligation résiduelle) — jamais l'âge seul.
           lifecycle: evidence.lifecycle ?? null,
+          // Lot 76 (I) : date de fin nécessaire à une démarche ? (remboursement par échéances sans démarche de fin : non)
+          endDateNeed: derivation?.endDateNeed ?? null,
         });
         // Lot 72 (C3) : une décision prise SANS l'IA ne dépend pas du texte ni du modèle T4.
         if (!pertinence.aiCalled && !pertinence.cached) configRef = deterministicConfigRef(cfg);
         const motive = { pertinence: pertinence.pertinence, pertinenceReason: pertinence.reason, aiTraceId: pertinence.aiTraceId, trigger: i.trigger, situation: pertinence.situation };
+        probleme = { problem: pertinence.contract?.problem ?? null, situation: pertinence.situation, proof: preuveDe(pertinence) };
         // Justification STABLE (jamais la date du jour ni un texte libre) :
         // elle entre dans l'empreinte « Non applicable » (§7.4) sans la faire varier.
+        // Lot 76 (C6) : + clé de preuve (clauses citées) — base de comparaison d'un « Non applicable ».
         extra = { triggerContext: { justification: pertinence.contract ? {
           version: pertinence.contract.version, problem: pertinence.contract.problem, situation: pertinence.situation,
           decision: pertinence.outcome, reliability: pertinence.contract.reliability.level,
+          // Clé absente sans preuve : l'empreinte « Non applicable » (§7.4) des cartes existantes est inchangée.
+          ...(probleme.proof ? { proof: probleme.proof } : {}),
         } : null } };
         outcome = pertinence.outcome ?? outcome;
         const fermerIntervention = async (reason: string) => {
@@ -942,7 +1015,7 @@ async function evaluateFieldRule(i: FieldRuleInput): Promise<FieldRuleOutcome> {
               // Écart 2 : l'action RÉELLE, jamais une question de date.
               const peut = i.ctx.open && (i.mayCreate || !!i.activeIntervention || !!active);
               const r = peut
-                ? await upsertDocumentIntervention({ accountId, fileId, rule, intervention: pertinence.intervention, signature: pertinence.signature })
+                ? await upsertDocumentIntervention({ accountId, fileId, rule, intervention: pertinence.intervention, signature: pertinence.signature, proof: probleme.proof })
                 : { status: 'SKIPPED' as const, actionId: null };
               if (r.actionId && (r.status === 'CREATED' || r.status === 'UPDATED')) {
                 interventionIds.push(r.actionId);
@@ -971,7 +1044,7 @@ async function evaluateFieldRule(i: FieldRuleInput): Promise<FieldRuleOutcome> {
       if (configRef === cfg.ref && !pertinence && outcome !== 'CREATE_ACTION') configRef = deterministicConfigRef(cfg);
     }
     // Lot 72 (C5) : « Non applicable » respecté tant qu'aucun NOUVEAU problème n'est démontré.
-    if (!active && plan.kind === 'UPSERT' && !newProblemSinceNotApplicable(plan, i.userNotApplicable ?? null)) {
+    if (!active && plan.kind === 'UPSERT' && !newProblemSinceNotApplicable(plan, i.userNotApplicable ?? null, probleme)) {
       plan = { kind: 'NONE', reason: 'USER_NOT_APPLICABLE_UNCHANGED' };
       outcome = 'NO_ACTION';
     }
@@ -1006,6 +1079,8 @@ async function evaluateFieldRule(i: FieldRuleInput): Promise<FieldRuleOutcome> {
       const cfg = i.deps?.config ?? await t4AssessmentConfig();
       if (!evidence) evidence = await gatherFieldEvidence(accountId, fileId, key);
       if (evidence.errors.length) throw new KnowledgeReadError(`lecture de la connaissance impossible : ${evidence.errors.join(' ; ')}`.slice(0, 300));
+      // Lot 76 (C4) : l'obligation tient compte des preuves des documents du même contrat.
+      if (!liesIntegres) { evidence = withRelatedEvidence(evidence, await gatherRelatedDocumentValues(accountId, fileId, key), i.deps?.today); liesIntegres = true; }
       knowledgeRev = await currentKnowledgeRev(accountId, fileId);
       obligation = await assessKnownDeadlineObligation({
         accountId, fileId, rule, documentType: i.ctx.documentTypeCode, known: connue, clauses: evidence.lifecycle?.clauses ?? [],
@@ -1018,7 +1093,7 @@ async function evaluateFieldRule(i: FieldRuleInput): Promise<FieldRuleOutcome> {
       configRef = obligation.aiCalled || obligation.cached ? cfg.ref : deterministicConfigRef(cfg);
       const motif = { pertinence: obligation.pertinence, pertinenceReason: obligation.reason, aiTraceId: obligation.aiTraceId, trigger: i.trigger, situation: obligation.situation };
       if (obligation.outcome === 'CREATE_ACTION' && obligation.card === 'INTERVENTION' && obligation.intervention) {
-        const r = await upsertDocumentIntervention({ accountId, fileId, rule, intervention: obligation.intervention, signature: obligation.signature });
+        const r = await upsertDocumentIntervention({ accountId, fileId, rule, intervention: obligation.intervention, signature: obligation.signature, proof: preuveDe(obligation) });
         if (r.actionId && (r.status === 'CREATED' || r.status === 'UPDATED')) {
           interventionIds.push(r.actionId);
           if (r.status === 'CREATED') report.created += 1; else { report.updated += 1; ivKept.push(r.actionId); }
@@ -1434,6 +1509,8 @@ export async function documentsToReevaluate(accountId: number, limit = 200): Pro
         ? `AND NOT EXISTS (SELECT 1 FROM document_rule_evaluations e WHERE ${derniere}
              AND (e.outcome IN ('NO_ACTION', 'DEFER')
                   OR (e.outcome IS NULL AND e.reason_code = 'NO_ACTION_NEEDED' AND e.last_seen_at >= f.updated_at))
+             -- Lot 76 (C2) : « contrat terminé » de l'ANCIENNE détection — jamais une mémoire valable.
+             AND NOT (e.pertinence IS NOT DISTINCT FROM 'CONTRACT_TERMINATED' AND e.engine_version IS DISTINCT FROM '${DOCUMENT_RULE_ENGINE_VERSION}')
              AND (e.outcome IS NULL OR (e.knowledge_rev = ${rev} AND e.config_ref IN ($6, $7)))
              AND (e.reevaluate_at IS NULL OR e.reevaluate_at > now()))`
         : `AND NOT EXISTS (SELECT 1 FROM document_rule_evaluations e WHERE ${derniere}

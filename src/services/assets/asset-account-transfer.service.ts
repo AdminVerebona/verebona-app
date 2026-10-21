@@ -130,6 +130,9 @@ export const ASSET_SCOPED_TABLES: readonly string[] = [
   'agenda_item_removals', 'impact_queue',
   // Lot 54D (TCO §3.5) : forfaits d'usage du bien — suivent le bien.
   'asset_usage_budgets',
+  // Lot 76J : état du contrôle « Informations » et mémoire des arbitrages tranchés — suivent le bien
+  // (le nouveau compte n'a pas à reproposer un arbitrage déjà tranché sur ce bien).
+  't3_information_checks',
 ];
 
 /**

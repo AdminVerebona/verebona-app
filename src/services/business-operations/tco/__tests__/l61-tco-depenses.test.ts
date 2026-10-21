@@ -254,7 +254,11 @@ describe('TCO — recette obligatoire (§7)', () => {
     // Section dépliable de premier niveau, toutes familles (aucune condition de catégorie), sans fenêtre latérale.
     expect(section).toContain('Coût total de possession');
     expect(section).toContain('aria-expanded={open}');
-    expect(section).not.toMatch(/Sheet|Drawer/);
+    // Lot 76G (complément PO du 21/10) : seul le détail « Dépenses retenues » s'ouvre dans un sous-tiroir ;
+    // la section TCO elle-même reste une section dépliable (aucun tiroir TCO autonome).
+    expect(section).not.toMatch(/TcoDrawer|Drawer/);
+    expect(section.match(/<Sheet /g)?.length).toBe(1);
+    expect(section).toContain('<Sheet open={retainedOpen}');
     expect(tab).not.toMatch(/asset\.category === '[A-Z]+' && \(?\s*<TcoSection/);
     // Pas de bouton « Modifier » général du total ; justificatif ouvrable depuis chaque ligne.
     expect(section).not.toMatch(/>\s*Modifier\s*</);

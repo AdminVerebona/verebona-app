@@ -25,6 +25,8 @@ import {
 } from './model';
 import { latestT1ReportFor, writeExecutionReport } from './repository';
 import type { EvidenceCandidate, ReconciliationDecision, CurrentValue } from '../reconciliation/types';
+import { checkSummary } from '../reconciliation/information-check/engine-steps';
+import type { CrossRecord, InventoryLine } from '../reconciliation/information-check/inventory';
 
 type Row = Record<string, unknown>;
 
@@ -47,6 +49,10 @@ export class T3ExecutionRecorder {
   readonly steps: ReportStep[] = [];
   failure: string | null = null;
   aiCalls = 0;
+  /** Lot 76J : inventaire exhaustif des champs de l'onglet « Informations » (vides compris). */
+  inventory: import('../reconciliation/information-check/inventory').InformationInventory | null = null;
+  /** Lot 76J : confrontations transversales (agenda, Opérations, colonnes miroirs). */
+  readonly cross: import('../reconciliation/information-check/inventory').CrossRecord[] = [];
   constructor(readonly traceId: string) {}
   ok(step: string, detail?: Record<string, unknown>): void { this.steps.push({ step, status: 'OK', error: null, detail: detail ?? null }); }
   fail(step: string, e: unknown): void { this.steps.push({ step, status: 'FAILED', error: errorText(e) }); }
@@ -153,6 +159,8 @@ export async function buildT3Entries(rec: T3ExecutionRecorder, p: {
     });
   }
 
+  entries.push(...informationEntries(rec, p));
+
   // Données pertinentes NON examinées : faits canoniques des documents du bien sans preuve projetée.
   const examined = rec.fields.map((f) => f.fieldKey);
   const sources: Record<string, unknown> = {
@@ -218,8 +226,12 @@ export async function buildT3Entries(rec: T3ExecutionRecorder, p: {
     sources.notExaminedFacts = (pending ?? []).length;
   }
 
+  // Lot 76J : synthèse du contrôle exhaustif (champs examinés, non applicables,
+  // complétés, corrigés, contradictions, arbitrages, non vérifiables, échecs).
+  const synthese = rec.inventory ? checkSummary(rec) : null;
   const counters: Record<string, number> = {
-    examined: rec.fields.length,
+    ...(synthese ?? {}),
+    examined: synthese ? synthese.examined : rec.fields.length,
     written: entries.filter((e) => e.section === 'FIELD' && e.writeResult === 'WRITTEN').length,
     notWritten: entries.filter((e) => e.writeResult === 'NOT_WRITTEN').length,
     failed: entries.filter((e) => e.writeResult === 'FAILED').length,
@@ -229,6 +241,63 @@ export async function buildT3Entries(rec: T3ExecutionRecorder, p: {
     decisionsIntended: rec.fields.filter((f) => f.decision.action === 'apply' || f.decision.action === 'update').length,
   };
   return { entries, readSteps, sources, counters };
+}
+
+const INVENTORY_REASON: Record<InventoryLine['status'], { code: string; reason: string } | null> = {
+  EVIDENCE: null,
+  NO_EVIDENCE_EMPTY: { code: 'NO_EXPLOITABLE_INFO', reason: 'Non vérifiable : champ vide, aucune preuve exploitable (aucune carte « À traiter »)' },
+  NO_EVIDENCE_FILLED: { code: 'NO_EXPLOITABLE_INFO', reason: 'Non vérifiable : valeur en place conservée, aucune preuve exploitable' },
+  INPUT_ONLY: { code: 'INPUT_ONLY_FIELD', reason: 'Champ de saisie seule : jamais inféré ni modifié par T3' },
+  NOT_APPLICABLE: { code: 'FIELD_NOT_APPLICABLE', reason: 'Champ sans objet pour la catégorie de ce bien' },
+};
+
+const CROSS_REASON: Record<CrossRecord['verdict'], string> = {
+  CONSISTENT: 'Concordant avec la fiche',
+  DERIVED_FROM_FIELD: 'Reflet de la fiche (projection) : ni preuve ni contradiction',
+  AGENDA_UNCONFIRMED_NOT_RETAINED: 'Événement automatique non confirmé divergent : non retenu (la date de l’agenda n’est pas une preuve)',
+  OPERATION_NOT_RETAINED: 'Opération divergente : non retenue sans preuve du champ',
+  CONFIRMED_FILL: 'Achat confirmé par l’utilisateur : champ vide complété',
+  CONFIRMED_AGENDA_CONTRADICTION: 'Achat confirmé par l’utilisateur contredit par la fiche : arbitrage',
+  CONFIRMED_AMBIGUOUS: 'Plusieurs achats confirmés de dates différentes : abstention',
+  ALREADY_ARBITRATED: 'Même contradiction déjà tranchée par l’utilisateur : non reproposée',
+  MIRROR_DIVERGENCE: 'Colonne historique différente de la fiche (signalée, jamais corrigée d’office)',
+};
+
+/** Lot 76J — lignes de l'inventaire exhaustif et des confrontations (pure, exportée pour les tests). */
+export function informationEntries(rec: T3ExecutionRecorder, p: { assetId: number; target?: { type: 'EQUIPMENT' | 'ROOM'; id: number } | null }): ReportEntry[] {
+  const out: ReportEntry[] = [];
+  const entityType = p.target?.type ?? 'ASSET';
+  const entityId = p.target?.id ?? p.assetId;
+  for (const l of rec.inventory?.lines ?? []) {
+    const motif = INVENTORY_REASON[l.status];
+    if (!motif) continue;
+    out.push({
+      section: l.status === 'NOT_APPLICABLE' ? 'NOT_APPLICABLE' : 'FIELD', tableName: null, recordId: null,
+      columnPath: p.target ? `${p.target.type === 'EQUIPMENT' ? 'équipement' : 'pièce'} #${p.target.id} · clé ${l.key}` : `assets.key_characteristics.${l.key}`,
+      fieldKey: l.key, label: l.label, entityType, entityId,
+      oldValue: l.current?.value ?? null, value: l.current?.value ?? null, valueType: valueTypeOf(l.current?.value ?? null),
+      writeResult: l.status === 'NOT_APPLICABLE' ? 'NOT_EXAMINED' : 'NOT_WRITTEN',
+      reasonCode: motif.code, reason: motif.reason,
+      links: { inventory: l.status, section: l.section, freeText: l.freeText, currentOrigin: l.current?.origin ?? null },
+    });
+  }
+  for (const i of rec.inventory?.identity ?? []) {
+    out.push({
+      section: 'IDENTITY', tableName: 'assets', recordId: String(p.assetId), columnPath: `assets.${i.key}`, fieldKey: i.key,
+      entityType, entityId, value: i.value, valueType: valueTypeOf(i.value), writeResult: 'OBSERVED',
+      reasonCode: 'IDENTITY_COLUMN', reason: 'Colonne d’identité examinée : règle métier séparée, jamais modifiée par T3', links: null,
+    });
+  }
+  for (const c of rec.cross) {
+    const ref = c.source === 'AGENDA' ? { agendaItemId: c.refId } : c.source === 'OPERATION' ? { operationId: c.refId } : { column: c.refId };
+    out.push({
+      section: 'CROSS_SOURCE', tableName: c.source === 'AGENDA' ? 'agenda_items' : c.source === 'OPERATION' ? 'business_operations' : 'assets',
+      recordId: c.refId == null ? null : String(c.refId), columnPath: null, fieldKey: c.fieldKey, entityType, entityId,
+      value: c.value, valueType: valueTypeOf(c.value), writeResult: 'OBSERVED', reasonCode: c.verdict, reason: CROSS_REASON[c.verdict],
+      links: { source: c.source, ...ref, confirmed: c.confirmed, independent: c.independent, sharedSourceFileIds: c.sharedSourceFileIds, contradiction: c.contradiction },
+    });
+  }
+  return out;
 }
 
 /** Écrit le rapport T3 d'un bien / d'une entité. Ne lève JAMAIS. */

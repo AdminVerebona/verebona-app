@@ -69,9 +69,15 @@ interface FamilyDecision {
   evidence: Record<string, unknown> | null; effect: string; actionIds: Record<string, number[]> | null; reevaluateAt: string | null;
   error: string | null; seenCount: number; createdAt: string | null; lastSeenAt: string | null;
 }
+/** Lot 76 (C8) : décision APPLIQUÉE dont la trace a échoué (reprise identifiable). */
+interface UntracedDecision {
+  id: number; accountId: number; ruleCode: string; targetType: string | null; targetId: number | null; status: string; attempts: number;
+  error: string | null; originalAt: string; decision: { outcome: unknown; reason: unknown };
+}
 interface Data {
   migrations: { journal0371: boolean; diagnostic0410: boolean; documentRules0418?: boolean };
   runs: Run[]; cards: Card[]; nextBefore: number | null; documentRules?: RuleEval[]; familyDecisions?: FamilyDecision[];
+  untracedDecisions?: { available: boolean; counts: Record<string, number>; items: UntracedDecision[] };
 }
 
 /** Lot 58B — règles documentaires (pont « À traiter ») : décision et pertinence. */
@@ -154,6 +160,7 @@ const OUTCOME_LABEL: Record<string, string> = {
 const PHASE_LABEL: Record<string, string> = {
   ASSETS: 'Biens', OPEN_KNOWLEDGE: 'Connaissance ouverte', OPEN_ACTIONS: '« À traiter » ouverts', JOURNAL: 'Journal par carte',
   DOCUMENT_NAMING: 'Harmonisation documentaire',
+  INFORMATION_BACKFILL: 'Rattrapage « Informations » (contrôle exhaustif)',
 };
 const PHASE_STATUS: Record<string, string> = {
   DONE: 'exécutée', PARTIAL: 'partielle', FAILED: 'EN ÉCHEC', NOT_RUN: 'NON EXÉCUTÉE', NOT_CONFIGURED: 'non configurée',
@@ -384,6 +391,22 @@ export function T3OpenActionsDiagnostic({ initialJobId }: { initialJobId?: numbe
             <div className="space-y-2">
               <p className="text-xs text-[color:var(--text-secondary)]">Décisions agenda, équipements, fournisseurs — avec ou sans carte ({data.familyDecisions.length})</p>
               <ul className="space-y-1.5">{data.familyDecisions.map((d) => <FamilyRow key={d.id} d={d} />)}</ul>
+            </div>
+          )}
+          {data.untracedDecisions && (data.untracedDecisions.items.length > 0 || !data.untracedDecisions.available) && (
+            <div className="space-y-2" data-testid="untraced-decisions">
+              <p className="text-xs text-[color:var(--text-danger)] break-words">
+                Décisions appliquées NON tracées
+                {data.untracedDecisions.available ? ` (${Object.entries(data.untracedDecisions.counts).map(([k, n]) => `${k} ${n}`).join(' · ') || '0'})` : ' — suivi indisponible (migration 0582 absente) : voir le bilan des balayages'}
+              </p>
+              <ul className="space-y-1.5">
+                {data.untracedDecisions.items.map((t) => (
+                  <li key={t.id} className="text-xs break-words rounded border border-[color:var(--border-subtle)] px-2 py-1">
+                    Reprise n° {t.id} · compte {t.accountId} · {t.targetType ?? '—'} {t.targetId ?? '—'} · {t.ruleCode} · {t.status} ({t.attempts})
+                    <span className="text-[color:var(--text-muted)]"> — issue {String(t.decision.outcome ?? '—')} · motif {String(t.decision.reason ?? '—')}{t.error ? ` — ${t.error}` : ''}</span>
+                  </li>
+                ))}
+              </ul>
             </div>
           )}
         </>

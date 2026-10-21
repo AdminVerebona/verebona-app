@@ -249,6 +249,27 @@ scenario('L61F-T3-NOM', 'Lot 61 — T3 : harmonisation intelligente du nommage d
     expect(lignes.find((l) => l.section === 'NAMING_RENAME' && Number(l.record_id) === d.juin.id)).toMatchObject({ write_result: 'NOT_WRITTEN', reason_code: 'CONCURRENT_USER_RENAME' });
   }, 120_000);
 
+  it('L76B-C2-04 — T3-NOM-13 complété : décision persistée puis conflit (renommage manuel) : jamais « en attente », compte terminé, aucune reprise forcée ; puis stable', async () => {
+    const { c, d } = await stockOrange();
+    modele.decider = async (lot, docs) => {
+      await sql`UPDATE asset_files SET retained_title = 'Avril — à la main', title_source = 'USER' WHERE id = ${d.avril.id}`;
+      modele.decider = () => ({ task: 'DOCUMENT_NAMING', document_renames: [] });
+      return proposer({ [d.avril.id]: 'Facture Orange — avril 2024' })(lot, docs);
+    };
+    const r1 = await passer(c.id);
+    expect(await nom(d.avril.id)).toBe('Avril — à la main');
+    expect(r1.documentNaming).toMatchObject({ conflicts: 1, pendingWrites: 0, status: 'DONE' });
+    const attente = await sql<Array<{ n: number }>>`SELECT count(*)::int AS n FROM document_rename_events WHERE account_id = ${c.id} AND retry_status = 'PENDING'`;
+    expect(attente[0].n).toBe(0);
+    expect((await evenements(c.id)).filter((e) => e.file_id === d.avril.id).map((e) => e.outcome)).toEqual(['CONFLICT']);
+    // Nouveau contexte (nom utilisateur) : un réexamen, puis plus aucun appel.
+    await passer(c.id);
+    const n = modele.appels.length;
+    await passer(c.id);
+    expect(modele.appels.length).toBe(n);
+    expect(await nom(d.avril.id)).toBe('Avril — à la main');
+  }, 120_000);
+
   it('T3-NOM-03 / T3-NOM-06 — aucune nomenclature fixe : deux contrats d’un même fournisseur et un autre fournisseur gardent des conventions distinctes', async () => {
     const c = await make.account();
     const a1 = await document(c, { nom: 'EDF facture contrat 111 janvier 2025', fournisseur: 'EDF', date: '2025-01-10', texte: 'Contrat n° 111 — résidence principale' });

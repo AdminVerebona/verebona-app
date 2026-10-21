@@ -167,7 +167,27 @@ export interface T6StoredAssessment extends T6Assessment {
  * et `masterVersion` (version du master, sans la configuration — même forme
  * que le début de `promptVersion` des décisions antérieures).
  */
-export interface T6EvaluationConfig { signature: string | null; masterVersion: string | null }
+export interface T6EvaluationConfig {
+  signature: string | null;
+  masterVersion: string | null;
+  /**
+   * Lot 76A (AC04) — transition : signature COURANTE calculée comme au lot 72A
+   * (`e1:` : section EVALUATE, contrats, modèle principal, seuil), pour relire
+   * les décisions qui la portent.
+   */
+  legacySignature?: string | null;
+  /**
+   * Lot 76A — signature complète (`e2:`) observée la PREMIÈRE fois avec cette
+   * signature `e1:` (référence de transition, migration 0575). Une décision
+   * `e1:` égale à `legacySignature` reste valable tant que la configuration
+   * complète n'a pas changé depuis cette référence. `null` : inconnue (table
+   * absente, lecture en échec) — aucune invalidation (prudence de coût).
+   */
+  legacyBaseline?: string | null;
+}
+
+/** Lot 76A : préfixe des signatures EVALUATE complètes (chaîne de modèles, raisonnement, limite de sortie). */
+export const T6_EVALUATION_SIGNATURE_V2 = 'e2:';
 
 /** Version du master d'une décision conservée (`t6_master_v1@pv12:abc|cfg:3` → `t6_master_v1@pv12:abc`). */
 export const masterVersionOf = (promptVersion: string | null | undefined): string | null =>
@@ -199,6 +219,8 @@ export interface T6Candidate {
   legacyFingerprint?: string;
   /** Lot 75E : empreinte enrichie du lot 71G (`v2:`) — relecture des évaluations et reports antérieurs. */
   v2Fingerprint?: string;
+  /** Lot 76A : empreinte du contenu probant du lot 75E (`v3:`) — relecture des évaluations et reports antérieurs. */
+  v3Fingerprint?: string;
   /**
    * Lot 75E (D) : identité PERSISTANTE du cycle de l'occurrence (`t6CycleKey`),
    * cohérente avec T4. Absente (lecture impossible) : préférences appliquées.
@@ -501,14 +523,78 @@ export function t6ProbativeFingerprintParts(p: Parameters<typeof t6FingerprintPa
   return JSON.stringify(['v3', agendaFingerprintParts(p), normalizeForFingerprint(p.description), p.endDate ?? null, docs, faits]);
 }
 
+/** Lot 76A (P1) : préfixe des empreintes du CONTEXTE TRANSMIS à EVALUATE (représentation commune). */
+export const T6_FINGERPRINT_V4 = 'v4:';
+
+/**
+ * Lot 76A (P1) — représentation stable d'un extrait qui CONSERVE L'ORDRE des
+ * mots significatifs (pure). Casse, accents, ponctuation, espaces et mots
+ * vides (articles, auxiliaires) restent cosmétiques ; l'ordre, lui, porte le
+ * sens (« à la charge du client et non du prestataire » ≠ l'inverse) — ce que
+ * `probativeContent` (lot 75E : mots triés et dédoublonnés) effaçait.
+ */
+export function probativeSequence(excerpt: string | null | undefined): string {
+  return normalizeForFingerprint(excerpt).split(' ').filter((w) => w && !MOTS_VIDES_PREUVE.has(w)).join(' ');
+}
+
+/**
+ * Lot 76A (P1) — partie SIGNIFICATIVE et stable de ce qui est transmis à
+ * EVALUATE pour un candidat (`T6EvaluationCandidate`), construite par
+ * `evaluationSubjectOf` (service) — la MÊME construction sert au contexte
+ * transmis et à son empreinte. Rien de volatil : ni `daysUntilDue`,
+ * `overdue`, `recentlyShownDays` (le franchissement du seuil et de la date
+ * sont traités par `assessmentFreshness`), ni identifiant technique.
+ */
+export interface T6EvaluationSubjectCore {
+  title: string;
+  description: string | null;
+  assetName: string | null;
+  assetCategory: string | null;
+  dueDate: string | null;
+  dateNature: 'confirmée' | 'prévisionnelle';
+  dateRole: string | null;
+  requiresQualification: boolean;
+  recurring: boolean;
+  /** Intitulés des documents TRANSMIS (sélection et ordre d'EVALUATE). */
+  documents: string[];
+  /** Faits TRANSMIS (8 au plus) : document source par sa position dans `documents`. */
+  facts: Array<{ document: number | null; label: string; value: string | null; excerpt: string | null; status: string; provenance: string }>;
+}
+
+/**
+ * Lot 76A (P1) — parties de l'empreinte `v4:` (pure) : normalisation
+ * COSMÉTIQUE seulement (casse, accents, ponctuation, mots vides d'un extrait)
+ * — jamais une différence de sens (ordre des mots, négation, nombre, durée).
+ * Documents et faits sont rangés par leur CONTENU : une réextraction
+ * identique (nouveaux identifiants, autre ordre de lecture) ou un document
+ * réimporté sous le même intitulé ne change rien ; un document source
+ * différent, si (référencé par son intitulé, pas par son identifiant).
+ */
+export function t6EvaluationSubjectParts(s: T6EvaluationSubjectCore): string {
+  const docs = s.documents.map((t) => normalizeForFingerprint(t));
+  const faits = s.facts.map((f) => JSON.stringify([
+    f.document != null ? docs[f.document] ?? null : null, normalizeForFingerprint(f.label), normalizeForFingerprint(f.value),
+    probativeSequence(f.excerpt), f.status, provenanceClass(f.provenance),
+  ])).sort();
+  return JSON.stringify([
+    'v4', normalizeForFingerprint(s.title), normalizeForFingerprint(s.description), normalizeForFingerprint(s.assetName),
+    (s.assetCategory ?? '').trim().toUpperCase() || null, s.dueDate, s.dateNature, s.dateRole ?? 'DEADLINE',
+    s.requiresQualification ? 1 : 0, s.recurring ? 1 : 0, [...docs].sort(), faits,
+  ]);
+}
+
 /**
  * Une empreinte conservée (évaluation, report) correspond-elle au candidat ?
  * Empreinte enrichie : comparaison directe ; empreinte historique (lot 60,
  * sans préfixe) : comparée à l'empreinte historique du candidat (pure).
  */
-export function sameT6Context(stored: string | null | undefined, c: Pick<T6Candidate, 'fingerprint' | 'legacyFingerprint' | 'v2Fingerprint'>): boolean {
+export function sameT6Context(stored: string | null | undefined, c: Pick<T6Candidate, 'fingerprint' | 'legacyFingerprint' | 'v2Fingerprint' | 'v3Fingerprint'>): boolean {
   if (stored == null) return false;
-  if (stored.startsWith(T6_FINGERPRINT_V3)) return stored === c.fingerprint;
+  if (stored.startsWith(T6_FINGERPRINT_V4)) return stored === c.fingerprint;
+  // Lot 76A : décision ou report du lot 75E (`v3:`) — comparés à l'empreinte
+  // `v3:` COURANTE (aucune réévaluation de masse au déploiement), puis
+  // rebasés sur `v4:` par la préparation (`rebaseFingerprints`).
+  if (stored.startsWith(T6_FINGERPRINT_V3)) return stored === (c.v3Fingerprint ?? c.fingerprint);
   // Lot 75E : décision ou report antérieurs (empreinte du lot 71G) — comparés
   // à l'empreinte `v2:` COURANTE : aucune réévaluation de masse au déploiement
   // (renouvelées au fil de leur vieillissement, 14 jours au plus).
@@ -573,7 +659,19 @@ export type T6AssessmentStatus = 'FRESH' | 'AGED' | 'CONTEXT_CHANGED' | 'CONTRAC
  */
 export function evaluationConfigChanged(a: Pick<T6StoredAssessment, 'evaluationSignature' | 'promptVersion'>, cfg: T6EvaluationConfig | null | undefined): boolean {
   if (!cfg) return false;
-  if (a.evaluationSignature) return !!cfg.signature && a.evaluationSignature !== cfg.signature;
+  const s = a.evaluationSignature;
+  // Lot 76A (AC04, transition) : signature du lot 72A (`e1:`, sans replis,
+  // raisonnement ni limite de sortie). Différente du calcul `e1:` courant :
+  // prompt EVALUATE, modèle principal ou seuil changés — invalidée comme au
+  // lot 72A. Égale : valable tant que la configuration complète n'a pas
+  // changé depuis la référence observée au déploiement ; référence inconnue :
+  // conservée (jamais d'invalidation de masse sur une panne).
+  if (s && !s.startsWith(T6_EVALUATION_SIGNATURE_V2) && cfg.legacySignature !== undefined) {
+    if (!cfg.legacySignature) return false;
+    if (s !== cfg.legacySignature) return true;
+    return !!cfg.legacyBaseline && !!cfg.signature && cfg.legacyBaseline !== cfg.signature;
+  }
+  if (s) return !!cfg.signature && s !== cfg.signature;
   const avant = masterVersionOf(a.promptVersion);
   return !!avant && !!cfg.masterVersion && avant !== cfg.masterVersion;
 }
@@ -609,7 +707,7 @@ export function assessmentFreshness(
   // Lot 71G : évaluation antérieure à l'empreinte enrichie, sur une échéance
   // documentée — utilisable, renouvelée en arrière-plan (une fois).
   // Lot 75E : une empreinte `v3:` (contenu probant) ou `v2:` n'est pas historique.
-  if (!c.fingerprintUnavailable && !a.fingerprint.startsWith(T6_FINGERPRINT_V2) && !a.fingerprint.startsWith(T6_FINGERPRINT_V3) && c.hasEvidence) return { status: 'AGED', reason: 'LEGACY_FINGERPRINT' };
+  if (!c.fingerprintUnavailable && !/^v[234]:/.test(a.fingerprint) && c.hasEvidence) return { status: 'AGED', reason: 'LEGACY_FINGERPRINT' };
   // Lot 68 : renouvellement ciblé (utilisable, réévaluée en arrière-plan).
   if (opts.reminderCapable && assessmentNeedsReminderRenewal(a)) return { status: 'AGED', reason: 'REMINDER_RENEWAL' };
   return { status: 'FRESH', reason: null };

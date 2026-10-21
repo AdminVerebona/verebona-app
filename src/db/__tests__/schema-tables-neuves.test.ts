@@ -49,10 +49,11 @@ function sqlTable(file: string, table: string) {
 const SUITES: Readonly<Record<string, readonly string[]>> = {
   // Lot 64A : clé d'idempotence et nouveau type (fin d'accès Duo).
   // Lot 72F : identité d'envoi stable, statut `uncertain` (0524).
-  transactional_email_jobs: ['0459_duo_membership_ended_email.sql', '0524_l72f_rappel_annuel_fiabilisation.sql'],
+  // Lot 76D : neutralisation (retour arrière), phase du retour arrière, échéance non revérifiée (0585).
+  transactional_email_jobs: ['0459_duo_membership_ended_email.sql', '0524_l72f_rappel_annuel_fiabilisation.sql', '0585_l76d_rappel_j7_rollback.sql'],
   email_provider_events: ['0524_l72f_rappel_annuel_fiabilisation.sql'],
-  annual_renewal_reminder_state: ['0524_l72f_rappel_annuel_fiabilisation.sql'],
-  annual_renewal_reminder_checks: ['0524_l72f_rappel_annuel_fiabilisation.sql'],
+  annual_renewal_reminder_state: ['0524_l72f_rappel_annuel_fiabilisation.sql', '0585_l76d_rappel_j7_rollback.sql'],
+  annual_renewal_reminder_checks: ['0524_l72f_rappel_annuel_fiabilisation.sql', '0585_l76d_rappel_j7_rollback.sql'],
   // (0462 et 0477 ne font que remplacer la contrainte de type, même nom.)
   // Lot 49B : couverture réelle de la source, état de réparation (0329).
   document_source_units: ['0329_t1_source_verification.sql'],

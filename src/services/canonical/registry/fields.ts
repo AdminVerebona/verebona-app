@@ -59,10 +59,10 @@ const STATUTS_DETENTION = ['PROPRIETAIRE', 'LLD', 'LOA', 'CREDIT', 'PRET_GRATUIT
 export const CANONICAL_FIELDS: readonly CanonicalFieldDef[] = [
   /* ── Informations générales (toutes familles) ──────────────────────────── */
   f({
-    key: 'description', label: 'Description', families: ALL, valueType: 'string', section: 'common',
+    key: 'description', label: 'Description', families: ALL, valueType: 'string', section: 'common', freeText: true,
   }),
   f({
-    key: 'notes', label: 'Notes', families: ALL, valueType: 'string', section: 'common',
+    key: 'notes', label: 'Notes', families: ALL, valueType: 'string', section: 'common', freeText: true,
     mirrorColumns: [{ table: 'assets', column: 'notes', transform: 'identity' }],
   }),
   f({
@@ -271,7 +271,7 @@ export const CANONICAL_FIELDS: readonly CanonicalFieldDef[] = [
   }),
   f({ key: 'monthlyRent', label: 'Loyer mensuel', families: I, valueType: 'money_eur', unit: 'EUR', range: { min: 0 }, section: 'occupancy_usage', aliases: ['loyerMensuel', 'loyer'] }),
   f({ key: 'charges', label: 'Charges', families: I, valueType: 'money_eur', unit: 'EUR', range: { min: 0 }, section: 'occupancy_usage', aliases: ['chargesMensuelles'] }),
-  f({ key: 'occupancyNotes', label: 'Notes occupation', families: I, valueType: 'string', section: 'occupancy_usage' }),
+  f({ key: 'occupancyNotes', label: 'Notes occupation', families: I, valueType: 'string', section: 'occupancy_usage', freeText: true }),
   f({
     key: 'leaseEndDate', label: 'Fin de bail / location', families: ['IMMOBILIER', 'VEHICULE'], valueType: 'date',
     aliases: ['dateFinBail', 'finBail', 'leaseEnd'],

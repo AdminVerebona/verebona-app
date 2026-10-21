@@ -93,9 +93,13 @@ describe('ATR-R-02 — action contractuelle ≠ date manquante', () => {
   });
 
   it('ATR-R-02 — version T4 active v2 (« action » sans intervention structurée) : jamais une fausse question de date, décision différée et signalée', async () => {
-    const r = await ev.assessDeadlinePertinence({ ...base, rule: CONTRACT, candidates: [{ iso: '2026-10-05', source: 'FACTS' }], decide: t4({ v2: true, category: 'action' }).decide, config: V2 });
-    expect(r).toMatchObject({ outcome: 'DEFER', card: null, pertinence: 'ACTION_REQUIRED' });
-    expect(r.reason).toMatch(/^t4:action_not_identified/);
+    // Lot 76 (C3, RES-10) : contrat incompatible — plus aucun appel IA ni conclusion sur une
+    // classification non structurée (ni fermeture « information », ni carte) : état prudent signalé.
+    const { decide, calls } = t4({ v2: true, category: 'action' });
+    const r = await ev.assessDeadlinePertinence({ ...base, rule: CONTRACT, candidates: [{ iso: '2026-10-05', source: 'FACTS' }], decide, config: V2 });
+    expect(r).toMatchObject({ outcome: 'DEFER', card: null, pertinence: 'T4_INCOMPATIBLE', incompatible: true, aiCalled: false });
+    expect(r.reason).toMatch(/t4_contract_incompatible/);
+    expect(calls).toHaveLength(0);
   });
 
   it('ATR-R-02 — intervention à mener PLUS TARD : différée jusqu’à l’approche de la date limite, sans carte active', async () => {

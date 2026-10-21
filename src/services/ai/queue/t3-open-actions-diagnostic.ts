@@ -165,6 +165,8 @@ export interface T3OpenActionsDiagnostic {
   documentRules?: DocumentRuleEvaluation[];
   /** Lot 72 : décisions des familles agenda / équipements / fournisseurs (filtres compte, règle, résultat). */
   familyDecisions?: FamilyDecisionView[];
+  /** Lot 76 (C8) : décisions APPLIQUÉES dont la trace a échoué (reprise identifiable), filtre compte. */
+  untracedDecisions?: Awaited<ReturnType<typeof import('@/services/to-process/trace-retries').traceRetryOverview>>;
   /** Pagination : identifiant à passer en `before` pour la page suivante. */
   nextBefore: number | null;
 }
@@ -210,8 +212,12 @@ export async function getT3OpenActionsDiagnostic(input: T3DiagnosticFilters, now
   const familyDecisions = (f.accountId || f.ruleCode) && !f.jobId && !f.runId && !f.documentId
     ? await (await import('@/services/to-process/admissibility')).listFamilyDecisions({ accountId: f.accountId, ruleCode: f.ruleCode, result: f.result, limit: f.limit })
     : [];
+  // Lot 76 (C8) : décisions non tracées (jamais un faux succès) — avec un filtre compte ou règle.
+  const untracedDecisions = f.accountId || f.ruleCode
+    ? await (await import('@/services/to-process/trace-retries')).traceRetryOverview({ accountId: f.accountId, limit: 20 })
+    : undefined;
   return {
-    generatedAt: now.toISOString(), migrations: mig, runs, cards, documentRules, familyDecisions,
+    generatedAt: now.toISOString(), migrations: mig, runs, cards, documentRules, familyDecisions, untracedDecisions,
     nextBefore: cards.length === f.limit ? cards[cards.length - 1].id : null,
   };
 }

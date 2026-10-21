@@ -10,7 +10,10 @@
  *          tâche planifiée interne `to-process-relevance-reevaluation`, un
  *          premier lot est traité tout de suite) ;
  *          { action: 'recette' } — recette du corpus livré avec le VÉRITABLE
- *          T4 de l'environnement (exécutée en arrière-plan, suivie par GET).
+ *          T4 de l'environnement (exécutée en arrière-plan, suivie par GET) ;
+ *          lot 76 : { action: 'retry-errors', campaignId } — reprise des
+ *          éléments maintenus en erreur ; { action: 'retry-traces' } — relance
+ *          des traces de décision abandonnées (0582).
  * Aucun SQL, aucune commande pour le PO.
  */
 import { NextRequest, NextResponse } from 'next/server';
@@ -39,6 +42,9 @@ export async function GET(req: NextRequest) {
         decisions0444: await ev.relevanceColumnsReady(), campaigns0445: await campaignTablesReady(), recette0446: await recetteTableReady(),
         // Lot 72 : traçabilité des décisions (0516), campagne multi-familles (0517).
         ecarts0516: await ev.decisionKindColumnReady(), campagne0517: await campaignMultiFamilyReady(),
+        // Lot 76 : reprise des erreurs de campagne (0581), reprise des traces (0582).
+        reprise0581: await (await import('@/services/to-process/relevance-campaign.service')).campaignRetryReady(),
+        traces0582: await (await import('@/services/to-process/trace-retries')).traceRetriesReady(),
       },
       campaigns,
       items: campaignId ? await listCampaignItems(campaignId, { accountId: n('accountId'), outcome, limit: 100 }) : [],
@@ -46,6 +52,8 @@ export async function GET(req: NextRequest) {
       recetteRuns: await listRecetteRuns(5),
       // Lot 75I (D) : décisions prudentes en attente d'une configuration T4 compatible (signalées, réévaluées à l'activation).
       incompatibleDecisions: await ev.countIncompatibleDecisions(),
+      // Lot 76 (C8) : décisions appliquées NON tracées (reprise identifiable).
+      traceRetries: await (await import('@/services/to-process/trace-retries')).traceRetryOverview({ accountId: n('accountId'), limit: 50 }),
     });
   } catch (e) {
     return toErrorResponse(e, 'GET /api/admin/ai/queue/to-process-relevance');
@@ -56,15 +64,28 @@ export async function POST(req: NextRequest) {
   const guard = await requireAdminContext(req);
   if (!guard.ok) return guard.response;
   try {
-    let body: { action?: string } = {};
+    let body: { action?: string; campaignId?: unknown } = {};
     try { body = await req.json(); } catch { body = {}; }
     if (body.action === 'campaign') {
       const { startRelevanceCampaign, runRelevanceCampaign } = await import('@/services/to-process/relevance-campaign.service');
-      const c = await startRelevanceCampaign({ code: `l75-pertinence-${new Date().toISOString().replace(/[^0-9]/g, '').slice(0, 14)}`, trigger: 'manual', requestedBy: guard.ctx.adminUserId });
+      const c = await startRelevanceCampaign({ code: `l76-pertinence-${new Date().toISOString().replace(/[^0-9]/g, '').slice(0, 14)}`, trigger: 'manual', requestedBy: guard.ctx.adminUserId });
       if (!c) return NextResponse.json({ error: 'MIGRATION_MISSING', message: 'Migration 0445 absente : réessayez après la mise à jour de la base.' }, { status: 503 });
       // Premier lot tout de suite (borné) ; la tâche planifiée poursuit.
       const r = await runRelevanceCampaign({ deadline: Date.now() + 20_000, trigger: 'manual' });
       return NextResponse.json({ ok: true, campaign: c, firstRun: r });
+    }
+    if (body.action === 'retry-errors') {
+      const id = typeof body.campaignId === 'number' && Number.isInteger(body.campaignId) && body.campaignId > 0 ? body.campaignId : null;
+      if (!id) return NextResponse.json({ error: 'INVALID_CAMPAIGN' }, { status: 400 });
+      const { retryCampaignErrors, runRelevanceCampaign } = await import('@/services/to-process/relevance-campaign.service');
+      const relances = await retryCampaignErrors(id);
+      const r = relances ? await runRelevanceCampaign({ deadline: Date.now() + 20_000, trigger: 'manual' }) : null;
+      return NextResponse.json({ ok: true, requeued: relances, run: r });
+    }
+    if (body.action === 'retry-traces') {
+      const { requeueAbandonedTraces, replayPendingTraces } = await import('@/services/to-process/trace-retries');
+      const relances = await requeueAbandonedTraces();
+      return NextResponse.json({ ok: true, requeued: relances, run: await replayPendingTraces({ limit: 100, deadline: Date.now() + 20_000 }) });
     }
     if (body.action === 'recette') {
       const session = await SessionService.getSession(req);

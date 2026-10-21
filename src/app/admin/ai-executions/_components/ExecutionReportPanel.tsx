@@ -87,6 +87,10 @@ const SECTION_LABEL: Record<string, string> = {
   NAMING_RENAME: 'Harmonisation documentaire — renommages (proposition IA → issue en base)',
   NAMING_FAMILY: 'Harmonisation documentaire — familles (analyse IA)',
   NAMING_GROUP: 'Harmonisation documentaire — lots non examinés',
+  // Lot 76J : contrôle exhaustif de l'onglet « Informations » (T3).
+  NOT_APPLICABLE: 'Champs non applicables',
+  IDENTITY: 'Colonnes d’identité',
+  CROSS_SOURCE: 'Confrontations (agenda, Opérations, colonnes)',
 };
 
 /** Lot 61 : phases T1 séparées (extraction, structuration, persistance). */
@@ -136,8 +140,10 @@ export function ReportHeaderLine({ r, onOpen }: { r: ReportSummaryDto; onOpen?: 
     : r.treatment === 'T6'
       ? `${c.candidates ?? 0} échéance(s) évaluée(s) · ${c.shown ?? 0} affichée(s) · ${c.deferred ?? 0} différée(s) · ${c.suppressed ?? 0} écartée(s) · seuil ${c.thresholdDays ?? '—'} j`
     : r.scope === 'DOCUMENT_NAMING'
-      ? `${c.groupsExamined ?? 0} lot(s) examiné(s) · ${c.documentsExamined ?? 0} document(s) · ${c.families ?? 0} famille(s) (${c.inconsistentFamilies ?? 0} incohérente(s)) · ${c.proposals ?? 0} proposition(s) IA · ${c.written ?? 0} renommage(s) écrit(s) confirmé(s) · ${c.refused ?? 0} refusé(s) · ${c.conflicts ?? 0} conflit(s) · ${c.failed ?? 0} échec(s) d’écriture${c.writesRetried ? ` · ${c.writesRetried} écriture(s) reprise(s) sans appel IA` : ''}${c.pendingWrites ? ` · ${c.pendingWrites} écriture(s) à reprendre` : ''}${c.renamesSectionMissing ? ` · ${c.renamesSectionMissing} sortie(s) IA incomplète(s)` : ''}${c.remainingGroups ? ` · reste ${c.remainingGroups} lot(s) / ${c.remainingDocuments ?? 0} document(s) à examiner` : ''}${c.promptUnavailable ? ' · prompt T3 sans branche DOCUMENT_NAMING' : ''}`
-    : `${c.examined ?? 0} champ(s) examiné(s) · ${c.written ?? 0} écrit(s) confirmé(s) · ${c.failed ?? 0} échec(s) · ${c.notExamined ?? 0} non examiné(s)`;
+      ? `${c.groupsExamined ?? 0} lot(s) examiné(s) · ${c.documentsExamined ?? 0} document(s) · ${c.families ?? 0} famille(s) (${c.inconsistentFamilies ?? 0} incohérente(s)) · ${c.proposals ?? 0} proposition(s) IA · ${c.written ?? 0} renommage(s) écrit(s) confirmé(s) · ${c.refused ?? 0} refusé(s) · ${c.conflicts ?? 0} conflit(s) · ${c.failed ?? 0} échec(s) d’écriture${c.writesRetried ? ` · ${c.writesRetried} écriture(s) reprise(s) sans appel IA` : ''}${c.pendingWrites ? ` · ${c.pendingWrites} écriture(s) à reprendre` : ''}${c.renamesSectionMissing ? ` · ${c.renamesSectionMissing} sortie(s) IA incomplète(s)` : ''}${c.remainingGroups ? ` · reste ${c.remainingGroups} lot(s) / ${c.remainingDocuments ?? 0} document(s) à examiner` : ''}${c.promptUnavailable ? ' · prompt T3 sans branche DOCUMENT_NAMING' : ''}${c.decisionsUnsaved ? ` · ${c.decisionsUnsaved} décision(s) non sauvegardée(s) (réexamen IA)` : ''}${c.documentsRevalidated ? ` · ${c.documentsRevalidated} document(s) réexaminé(s) après modification` : ''}${c.upgradeTechnicalTotal || c.upgradeExpectedTotal || c.upgradeReviewedTotal ? ` · contexte enrichi : ${c.upgradeTechnicalTotal ?? 0} migration(s) technique(s), ${c.upgradeExpectedTotal ?? 0} réexamen(s) attendu(s), ${c.upgradeReviewedTotal ?? 0} réexamen(s) effectué(s)` : ''}`
+    : `${c.examined ?? 0} champ(s) examiné(s) · ${c.written ?? 0} écrit(s) confirmé(s) · ${c.failed ?? 0} échec(s) · ${c.notExamined ?? 0} non examiné(s)${
+      // Lot 76J : synthèse du contrôle exhaustif (rapports postérieurs au lot).
+      c.unverifiable !== undefined ? ` · ${c.completed ?? 0} complété(s) · ${c.corrected ?? 0} corrigé(s) · ${c.contradictions ?? 0} contradiction(s) · ${c.arbitrations ?? 0} arbitrage(s) · ${c.unverifiable} non vérifiable(s) · ${c.notApplicable ?? 0} non applicable(s)` : ''}`;
   return (
     <div className="flex flex-wrap items-center gap-2 text-xs">
       <span className={pill(STATUS_TONE[r.status] ?? STATUS_TONE.NO_CHANGE)}>{STATUS_LABEL[r.status] ?? r.status}</span>

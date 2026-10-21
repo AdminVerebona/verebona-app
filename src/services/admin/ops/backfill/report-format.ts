@@ -495,6 +495,54 @@ function duoSharedAccount(action: BackfillAction, out: RawBackfillOutput): Backf
   };
 }
 
+/** Lot 76H : doublons d'interventions dans l'agenda (simulation, application, restauration). */
+function agendaInterventionDuplicates(action: BackfillAction, out: RawBackfillOutput): BackfillSummary {
+  if (action === 'restore') {
+    const r = out.result as { restored: number; conflicts: Array<{ journalId: number; itemId: number; reason: string }>; runId?: string | null };
+    return {
+      headline: `Restauration : ${r.restored} écriture(s) annulée(s), ${r.conflicts.length} conflit(s).`,
+      scriptRunId: r.runId ?? null, restorable: false,
+      counters: [{ label: 'Écritures annulées', value: r.restored }],
+      ambiguous: { count: 0, samples: [] },
+      conflicts: { count: r.conflicts.length, samples: echantillon(r.conflicts, (c) => `journal ${c.journalId} · événement ${c.itemId} : ${c.reason}`) },
+      warnings: [],
+    };
+  }
+  const r = out.result as import('@/services/business-operations/agenda-projection/duplicates-reprise').RepriseResult;
+  const c = r.counters;
+  const sim = r.mode === 'SIMULATE';
+  const arb = r.report.filter((e) => e.category === 'ARBITRATION');
+  const sans = r.report.filter((e) => e.category === 'NO_OPERATION');
+  return {
+    headline: sim
+      ? `Simulation : ${c.operations} intervention(s) examinée(s) sur ${c.accounts} compte(s) — ${c.certain} consolidation(s) certaine(s), `
+        + `${c.arbitration} identité(s) incertaine(s) (carte « À traiter »), ${c.noOperationGroups} groupe(s) sans Opération (signalés).`
+      : `Application : ${c.consolidated} événement(s) absorbé(s), ${c.linked} lien(s) posé(s), ${c.retitled} intitulé(s) précisé(s), `
+        + `${c.arbitration} arbitrage(s) proposé(s), ${c.protectedItems} événement(s) protégé(s).`,
+    scriptRunId: sim ? null : r.runId,
+    restorable: !sim,
+    counters: [
+      { label: 'Comptes examinés', value: c.accounts },
+      { label: 'Interventions examinées', value: c.operations },
+      { label: 'Consolidations certaines', value: c.certain },
+      { label: 'Identités incertaines (arbitrage)', value: c.arbitration },
+      { label: 'Résidus de fusion d’Opérations', value: c.residualsAfterMerge },
+      { label: 'Doublons sans Opération (signalés, non traités)', value: c.noOperationGroups },
+      ...(sim ? [] : [
+        { label: 'Événements absorbés', value: c.consolidated },
+        { label: 'Liens posés', value: c.linked },
+        { label: 'Intitulés précisés', value: c.retitled },
+        { label: 'Événements protégés (modifiés, confirmés, à qualifier)', value: c.protectedItems },
+        { label: 'Projections créées', value: c.projectionsCreated },
+      ]),
+      { label: 'Comptes en erreur', value: c.errors },
+    ],
+    ambiguous: { count: arb.length, samples: echantillon(arb, (e) => `compte ${e.accountId} · intervention ${e.operationId} : ${String(e.detail.reason ?? '')}`) },
+    conflicts: { count: 0, samples: [] },
+    warnings: sans.slice(0, SAMPLE_LIMIT).map((e) => `Compte ${e.accountId} · document ${String(e.detail.fileId)} du ${String(e.detail.date)} : événements ${JSON.stringify(e.detail.itemIds)} sans Opération d’intervention (T3 n’a rien établi) — conservés.`),
+  };
+}
+
 /** Synthèse lisible d'une exécution terminée (pure). */
 export function summarizeBackfill(script: BackfillScript, action: BackfillAction, step: string | null, out: RawBackfillOutput): BackfillSummary {
   switch (script) {
@@ -509,6 +557,7 @@ export function summarizeBackfill(script: BackfillScript, action: BackfillAction
     case 'equipment-separation': return equipmentSeparation(out);
     case 'document-validation': return documentValidation(out);
     case 'duo-shared-account': return duoSharedAccount(action, out);
+    case 'agenda-intervention-duplicates': return agendaInterventionDuplicates(action, out);
   }
 }
 

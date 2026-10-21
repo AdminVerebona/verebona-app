@@ -160,6 +160,12 @@ export interface CanonicalFieldDef {
    * (`isFieldApplicableToAsset`).
    */
   requiresCapability?: 'registration';
+  /**
+   * Texte LIBRE de l'utilisateur (description, notes) — lot 76J (T3
+   * complétude) : jamais réécrit par T3. Une preuve peut compléter le champ
+   * VIDE ; une valeur en place n'est ni remplacée ni retirée automatiquement.
+   */
+  freeText?: boolean;
 }
 
 /** Résolution détaillée d'une clé brute. */

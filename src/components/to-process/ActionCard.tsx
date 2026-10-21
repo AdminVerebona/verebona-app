@@ -30,13 +30,13 @@
  */
 
 import { useState } from 'react';
-import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { FileText, Image as ImageIcon, Home, Package, Calendar, Wrench, LayoutGrid } from 'lucide-react';
 import { ACTION_KIND_LABELS, INTERVENTION_CARD_LABEL, MICROCOPY } from '@/lib/referential/v2/microcopy';
 import { PRIORITY_LABELS } from '@/services/to-process/priority';
 import type { ActionKind, ActionPriority } from '@/services/to-process/action-model';
+import { openCardDocumentPreview, previewAriaLabel } from './document-preview';
 
 export interface ActionProposalView {
   value: string | number | boolean | null;
@@ -110,30 +110,51 @@ function TargetIcon({ action, className = 'h-4 w-4 text-muted-foreground shrink-
  * `/api/files/:id/thumbnail`, puis l'icône — comme `RecentDocPreview`.
  * Sans miniature : l'icône de la cible (échéance → agenda, bien, équipement,
  * pièce…), sinon une icône générique. Plus petit sur mobile.
+ *
+ * Lot 76E : la miniature est un BOUTON qui ouvre le tiroir du document
+ * (`DocumentPreviewButton`) ; l'icône de repli reste décorative.
  */
 export function CardVisual({ action }: { action: ActionView }) {
   const [step, setStep] = useState<0 | 1 | 2>(0);
   const url = action.targetType === 'DOCUMENT' ? action.target.thumbnailUrl ?? null : null;
   const src = !url ? null : step === 0 ? url : step === 1 ? `/api/files/${action.targetId}/thumbnail` : null;
   if (src) {
-    return (
-      <span data-card-visual="thumbnail" className="relative block h-14 w-11 shrink-0 overflow-hidden rounded-[8px] border bg-[color:var(--vb-blanc)] sm:h-[88px] sm:w-[68px]">
-        {/* eslint-disable-next-line @next/next/no-img-element -- miniature autorisée (APP-PERF-06), icône si absente */}
-        <img
-          src={src}
-          alt=""
-          loading="lazy"
-          decoding="async"
-          onError={() => setStep((x) => (x === 0 ? 1 : 2))}
-          className="absolute inset-0 h-full w-full object-cover object-top"
-        />
-      </span>
-    );
+    return <DocumentPreviewButton action={action} src={src} onImageError={() => setStep((x) => (x === 0 ? 1 : 2))} />;
   }
   return (
     <span data-card-visual="icon" className="flex h-11 w-11 shrink-0 items-center justify-center rounded-[12px] bg-[color:var(--accent-soft)] sm:h-14 sm:w-14">
       <TargetIcon action={action} className="h-5 w-5 text-[color:var(--accent)] sm:h-6 sm:w-6" />
     </span>
+  );
+}
+
+/**
+ * Lot 76E — vignette d'aperçu cliquable (clic, tap, Entrée / Espace) : ouvre
+ * le tiroir document existant, sans déclencher d'action de la carte
+ * (`openCardDocumentPreview`). Bouton natif hors du corps de la carte (jamais
+ * dans un formulaire ni dans un autre contrôle) ; anneau de focus de la
+ * charte (globals.css) ; même composant sur mobile et sur ordinateur.
+ * Sans hook : testé en l'appelant comme une fonction.
+ */
+export function DocumentPreviewButton({ action, src, onImageError }: { action: ActionView; src: string; onImageError: () => void }) {
+  return (
+    <button
+      type="button"
+      data-card-visual="thumbnail"
+      aria-label={previewAriaLabel(action)}
+      onClick={(e) => { void openCardDocumentPreview(e, action); }}
+      className="relative block h-14 w-11 shrink-0 cursor-pointer overflow-hidden rounded-[8px] border bg-[color:var(--vb-blanc)] p-0 transition-[border-color] duration-[180ms] hover:border-[color:var(--accent)] sm:h-[88px] sm:w-[68px]"
+    >
+      {/* eslint-disable-next-line @next/next/no-img-element -- miniature autorisée (APP-PERF-06), icône si absente */}
+      <img
+        src={src}
+        alt=""
+        loading="lazy"
+        decoding="async"
+        onError={onImageError}
+        className="absolute inset-0 h-full w-full object-cover object-top"
+      />
+    </button>
   );
 }
 
@@ -145,16 +166,25 @@ export function CardVisual({ action }: { action: ActionView }) {
  */
 export const isInterventionCard = (action: Pick<ActionView, 'ruleCode'>) => action.ruleCode === 'DOC-INTERVENTION';
 
-function Badges({ action }: { action: ActionView }) {
+/**
+ * Lot 76E — étiquettes nature / priorité (retour PO du 21/10/2026, variante 1).
+ *
+ * Elles chargeaient la carte et se confondaient avec les boutons, entre le
+ * texte et les choix. Elles passent EN BAS À DROITE : sous la vignette (ou
+ * l'icône) à partir de `sm`, sur leur propre ligne sous les boutons en
+ * mobile, en fin de carte sans visuel (mascotte). Texte discret, sans
+ * bordure ni fond : rien qui ressemble à un bouton. Ordre DOM = ordre visuel
+ * (question, cible, boutons, étiquettes). La priorité reste écrite en toutes
+ * lettres (§16.2) ; le séparateur est ignoré des lecteurs d'écran et masqué
+ * quand les étiquettes s'empilent (≥ sm, sous la vignette).
+ */
+function Tags({ action, className = '' }: { action: ActionView; className?: string }) {
   return (
-    <div className="flex flex-wrap items-center gap-1.5">
-      <Badge variant="outline" className="text-[11px] font-normal">
-        {isInterventionCard(action) ? INTERVENTION_CARD_LABEL : ACTION_KIND_LABELS[action.actionKind]}
-      </Badge>
-      <Badge variant="secondary" className="text-[11px] font-normal">
-        {PRIORITY_LABELS[action.priority]}
-      </Badge>
-    </div>
+    <p data-card-tags className={`flex max-w-full flex-wrap items-center justify-end gap-x-1.5 gap-y-0.5 text-right text-[11px] leading-snug text-muted-foreground ${className}`}>
+      <span data-card-tag="kind">{isInterventionCard(action) ? INTERVENTION_CARD_LABEL : ACTION_KIND_LABELS[action.actionKind]}</span>
+      <span aria-hidden="true" className="sm:hidden">·</span>
+      <span data-card-tag="priority">{PRIORITY_LABELS[action.priority]}</span>
+    </p>
   );
 }
 
@@ -283,16 +313,25 @@ export function ActionCard({ action, focused, visual = false, ...handlers }: { a
       id={todoCardDomId(action.publicId)}
       data-todo-id={action.publicId}
       aria-current={focused ? 'true' : undefined}
-      className={`scroll-mt-24 rounded-[16px] border border-[color:var(--border)] bg-card p-4 transition-[border-color] duration-[180ms] focus-within:border-[color:var(--accent)] ${visual ? 'flex items-start gap-3 sm:gap-4' : ''} ${focused ? 'border-[color:var(--accent)] ring-1 ring-[color:var(--accent)]' : ''}`}
+      className={`scroll-mt-24 rounded-[16px] border border-[color:var(--border)] bg-card p-4 transition-[border-color] duration-[180ms] focus-within:border-[color:var(--accent)] ${visual ? 'flex items-start gap-3 sm:gap-4 flex-wrap sm:flex-nowrap' : ''} ${focused ? 'border-[color:var(--accent)] ring-1 ring-[color:var(--accent)]' : ''}`}
     >
       {visual ? (
         <>
           <div className="min-w-0 flex-1"><CardBody action={action} {...handlers} /></div>
-          {/* Lot 34, point 11 : vignette ou icône de la cible, à droite. */}
-          <CardVisual action={action} />
+          {/* Lot 34, point 11 : vignette ou icône de la cible, à droite.
+              Lot 76E : étiquettes dessous (≥ sm) ; en mobile la colonne est
+              « transparente » (`contents`) et les étiquettes passent sur
+              leur propre ligne, en bas à droite, sous les boutons. */}
+          <div data-card-aside className="contents sm:flex sm:shrink-0 sm:flex-col sm:items-end sm:justify-between sm:gap-2 sm:self-stretch">
+            <CardVisual action={action} />
+            <Tags action={action} className="basis-full sm:basis-auto sm:flex-col sm:items-end" />
+          </div>
         </>
       ) : (
-        <CardBody action={action} {...handlers} />
+        <>
+          <CardBody action={action} {...handlers} />
+          <Tags action={action} className="mt-3" />
+        </>
       )}
     </article>
   );
@@ -313,10 +352,6 @@ function CardBody({ action, ...handlers }: { action: ActionView } & Handlers) {
             <span className="truncate">{action.target.assetName}</span>
           </>
         )}
-      </div>
-
-      <div className="mt-3">
-        <Badges action={action} />
       </div>
 
       <div className="mt-3">

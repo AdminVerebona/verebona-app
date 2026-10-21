@@ -150,7 +150,7 @@ scenario('L75I-ATP', 'À traiter : obligations des échéances connues, balayage
     expect(demandes[0]).toMatchObject({ situation: 'PAST_DEADLINE', knownDate: PASSE });
     expect(demandes[0].clauses.join(' ')).toContain('restituer le matériel');
     const d = (await diag(f)).at(-1)!;
-    expect(d).toMatchObject({ situation: 'KNOWN_DEADLINE', pertinence: 'ACTION_REQUIRED', outcome: 'CREATE_ACTION', engine_version: 'l75-1' });
+    expect(d).toMatchObject({ situation: 'KNOWN_DEADLINE', pertinence: 'ACTION_REQUIRED', outcome: 'CREATE_ACTION', engine_version: 'l76-2' });
     expect(d.action_ids.closed).toEqual([question]);
     expect(d.action_ids.intervention).toEqual([iv[0].id]);
     // Isolation : l'autre compte n'est pas touché.

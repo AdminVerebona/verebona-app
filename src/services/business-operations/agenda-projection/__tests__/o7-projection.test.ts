@@ -127,6 +127,17 @@ describe('O7-10 — rapprochement avant projection (C16.1, F-147)', () => {
     // Deux événements aussi plausibles : aucun choix arbitraire.
     const deux = plan(op(), { candidates: [item({ id: 7, title: 'Entretien', date: '2026-03-10' }), item({ id: 8, title: 'Réparation', date: '2026-03-10' })] });
     expect(deux).toEqual([expect.objectContaining({ kind: 'ABSTAIN', reason: expect.stringContaining('PROBABLE_EQUIVALENT') })]);
+    // Lot 76H (ticket « doublons d'interventions ») : mêmes événements, mais
+    // automatiques T4 du document de l'Opération — identité INCERTAINE tant
+    // que T3 n'a pas consolidé toute la preuve du document : abstention…
+    const t4 = (id: number, businessType: string, title: string) => item({
+      id, title, isAutomatic: true, businessType, nature: 'HISTORICAL', originRefType: 'asset_file', originRefId: 77, fileIds: [77],
+    });
+    const evts = [t4(7, 'maintenance', 'Entretien réalisé — Prestation'), t4(8, 'repair', 'Réparation — Maison')];
+    expect(plan(op(), { candidates: evts })).toEqual([expect.objectContaining({ kind: 'ABSTAIN', reason: expect.stringContaining('PROBABLE_EQUIVALENT') })]);
+    // … CONVERGENCE quand l'Opération établit l'équivalence (T3 : toute la preuve du document est cette Opération).
+    expect(plan(op({ exclusiveFileIds: [77] }), { candidates: evts })[0])
+      .toEqual({ kind: 'CONSOLIDATE', principalId: 7, absorbedIds: [8], linkPrincipal: true, reason: 'EQUIVALENT_BY_OPERATION' });
   });
   it('C16-14 — élément lié à une AUTRE Opération active, ou projection d\'une autre : jamais pris', () => {
     const autre = item({ id: 9, title: 'Entretien', businessOperationId: 99, linkedOperationActive: true });

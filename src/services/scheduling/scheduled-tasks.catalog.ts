@@ -603,7 +603,17 @@ export const SCHEDULED_TASKS: readonly ScheduledTaskDef[] = [
     run: async ({ deadline }) => {
       const { runTransactionalEmailRetry } = await import('@/services/email/transactional-email-jobs.service');
       const r = await runTransactionalEmailRetry({ deadline: Math.min(deadline, Date.now() + 50_000) });
-      if (r.processed > 0) return { note: JSON.stringify(r) };
+      // Lot 76D : contrôle du retour aux rappels Stripe (phase « en cours » seulement ;
+      // sinon une lecture). Après la file, borné, sans jamais bloquer les autres e-mails.
+      let rollback = '';
+      try {
+        const { advanceAnnualRenewalRollback } = await import('@/services/billing/annual-renewal-reminder.service');
+        const rb = await advanceAnnualRenewalRollback({ deadline: Math.min(deadline, Date.now() + 30_000) });
+        if (rb.checked > 0 || rb.blockers.length > 0) rollback = ` ; retour arrière ${rb.phase === 'completed' ? 'terminé' : 'en cours'} (${rb.checked} contrôlée(s), ${rb.blockers.length} élément(s) à résoudre)`;
+      } catch (e) {
+        console.error('[transactional-emails-retry] contrôle du retour arrière du rappel annuel impossible :', (e as Error)?.message ?? e);
+      }
+      if (r.processed > 0 || rollback) return { note: `${JSON.stringify(r)}${rollback}` };
     },
   },
   {
@@ -737,13 +747,21 @@ export const SCHEDULED_TASKS: readonly ScheduledTaskDef[] = [
       const purge = await purgeSupersededDecisionTraces({ limit: 2_000 });
       const purgeNote = purge.familyDecisions + purge.documentRuleEvaluations > 0
         ? ` — rétention : ${purge.documentRuleEvaluations + purge.familyDecisions} trace(s) remplacée(s) purgée(s)` : '';
+      // Lot 76 (C8) : décisions appliquées NON tracées — reprise bornée de leur trace (0582).
+      const { replayPendingTraces } = await import('@/services/to-process/trace-retries');
+      const traces = await replayPendingTraces({ limit: 200, deadline: Math.min(deadline, Date.now() + MIN) });
+      const traceNote = traces.examined > 0
+        ? ` — traces reprises : ${traces.replayed} écrite(s), ${traces.superseded} remplacée(s), ${traces.failed} en échec, ${traces.abandoned} abandonnée(s)` : '';
       const r = await runRelevanceCampaign({ deadline: Math.min(deadline, Date.now() + 8 * MIN), trigger });
-      if (r.disabled) return { note: `migration 0445 absente : rien à faire${purgeNote}` };
-      if (r.done && r.examined === 0 && !r.campaignId) return { note: `aucune campagne en cours${purgeNote}` };
+      if (r.disabled) return { note: `migration 0445 absente : rien à faire${purgeNote}${traceNote}` };
+      if (r.done && r.examined === 0 && !r.campaignId) return { note: `aucune campagne en cours${purgeNote}${traceNote}` };
       return {
-        note: `campagne ${r.code ?? '?'}${r.phase ? ` (phase ${r.phase})` : ''} : ${r.examined} élément(s) examiné(s) — ${JSON.stringify(r.outcomes)}${r.done ? ' — terminée' : ''}${purgeNote}`.slice(0, 1500),
+        note: `campagne ${r.code ?? '?'}${r.phase ? ` (phase ${r.phase})` : ''} : ${r.examined} élément(s) examiné(s), ${r.retried ?? 0} repris — ${JSON.stringify(r.outcomes)}${r.done ? (r.status === 'DONE_WITH_ERRORS' ? ` — parcours terminé, ${r.remainingErrors} erreur(s) maintenue(s) bloquante(s)` : ' — terminée') : ''}${purgeNote}${traceNote}`.slice(0, 1500),
         again: r.more,
-        ...(r.errors > 0 && r.examined > 0 && r.errors >= r.examined ? { error: `${r.errors} carte(s) en erreur` } : {}),
+        // Lot 76 (C7 / C8) : erreurs maintenues ou traces abandonnées → passage signalé en erreur (jamais un faux succès).
+        ...(r.errors > 0 && r.examined > 0 && r.errors >= r.examined ? { error: `${r.errors} carte(s) en erreur` }
+          : r.status === 'DONE_WITH_ERRORS' ? { error: `campagne ${r.code} : ${r.remainingErrors} élément(s) en erreur après reprises (BO › Pertinence « À traiter »)` }
+            : traces.abandoned > 0 ? { error: `${traces.abandoned} trace(s) de décision non écrite(s) après reprises (BO › Pertinence « À traiter »)` } : {}),
       };
     },
   },
@@ -766,6 +784,23 @@ export const SCHEDULED_TASKS: readonly ScheduledTaskDef[] = [
       if (r.scanned === 0) return { note: 'aucun document « à valider »' };
       const note = formatValidationReprise(r).slice(0, 1500);
       return { note, again: r.more, ...(r.processed === 0 && r.failed.length > 0 ? { error: note } : {}) };
+    },
+  },
+  {
+    // Lot 76H (ticket P1 Opérations → Agenda) : rattrapage PONCTUEL des
+    // doublons d'interventions — une seule exécution AUTO de la plateforme
+    // (simulation puis application par compte, journal 0591 restaurable
+    // depuis BO › Exploitation › Rattrapages), reprise de son curseur après
+    // un redémarrage, puis plus rien (« déjà exécuté »). Aucun traitement
+    // récurrent : la convergence courante est faite par la projection.
+    code: 'agenda-intervention-duplicates-reprise',
+    label: 'Agenda : rattrapage des doublons d’interventions (une fois)',
+    schedule: { kind: 'startup', delayMs: 11 * MIN, retryMs: HOUR },
+    timeoutMs: 10 * MIN,
+    run: async ({ deadline }) => {
+      const { runAutomaticAgendaDuplicatesReprise } = await import('@/services/business-operations/agenda-projection/duplicates-reprise');
+      const r = await runAutomaticAgendaDuplicatesReprise({ deadline: Math.min(deadline, Date.now() + 8 * MIN) });
+      return { note: r.note.slice(0, 1500), again: r.again };
     },
   },
   {
@@ -816,13 +851,10 @@ export const SCHEDULED_TASKS: readonly ScheduledTaskDef[] = [
     schedule: { kind: 'daily', at: [7, 40], graceMs: 6 * HOUR },
     timeoutMs: 10 * MIN,
     run: async ({ deadline }) => {
-      const { runAnnualRenewalReconciliation } = await import('@/services/billing/annual-renewal-reconcile.service');
+      const { runAnnualRenewalReconciliation, describeReconcileRun } = await import('@/services/billing/annual-renewal-reconcile.service');
       const r = await runAnnualRenewalReconciliation({ deadline: Math.min(deadline, Date.now() + 8 * MIN) });
-      const note = `${r.scanned} abonnement(s) actifs lus, ${r.inWindow} annuel(s) à échéance proche, ${r.resynced} resynchronisé(s), `
-        + `${r.unresolved} non résolu(s), ${r.stripeOnly} absent(s) localement, ${r.localOnlyChecked} local(aux) relu(s), ${r.errors} erreur(s)`;
-      if (!r.complete) return { note, error: 'Liste des abonnements Stripe incomplète (délai ou erreur Stripe) : nouvel essai demain ; voir BO › Communications › Rappel J−7.' };
-      if (r.unresolved > 0 || r.stripeOnly > 0) return { note, error: `${r.unresolved + r.stripeOnly} désynchronisation(s) non résolue(s) : voir BO › Communications › Rappel J−7.` };
-      return { note };
+      // Lot 76D : un passage partiel ou en erreur n'est jamais présenté comme réussi.
+      return describeReconcileRun(r);
     },
   },
 ];

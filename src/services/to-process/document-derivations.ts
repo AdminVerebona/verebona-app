@@ -37,7 +37,8 @@
  *     somme aveugle ; un calcul ambigu n'est JAMAIS « CALCULATED_RELIABLE ».
  * ══════════════════════════════════════════════════════════════════════════
  */
-import { gatherFieldEvidence, type EvidenceFact, type FieldEvidence } from './document-field-evidence';
+import { pgClient } from '@/db';
+import { gatherFieldEvidence, readValue, type EvidenceFact, type FieldEvidence } from './document-field-evidence';
 
 export interface DerivationSpec {
   /** Donnée calculée (clé du pont). */
@@ -158,9 +159,45 @@ export interface DurationAnalysis {
   conventionConflict: boolean;
 }
 
-const LETTRES: Record<string, number> = { un: 1, une: 1, deux: 2, trois: 3, quatre: 4, cinq: 5, six: 6, sept: 7, huit: 8, neuf: 9, dix: 10, douze: 12 };
+/**
+ * Nombres en lettres (français) : mots reconnus et valeur. Lot 76 (C1) : une
+ * quantité écrite en lettres que le calcul ne sait pas rattacher à une unité
+ * prise en charge (« quinze jours », « et demi ») n'est jamais ignorée en
+ * silence : la durée est refusée.
+ */
+const MOTS_NOMBRES: Record<string, number> = {
+  un: 1, une: 1, deux: 2, trois: 3, quatre: 4, cinq: 5, six: 6, sept: 7, huit: 8, neuf: 9, dix: 10, onze: 11, douze: 12, treize: 13,
+  quatorze: 14, quinze: 15, seize: 16, vingt: 20, vingts: 20, trente: 30, quarante: 40, cinquante: 50, soixante: 60, cent: 100, cents: 100,
+};
+const NW = Object.keys(MOTS_NOMBRES).sort((a, b) => b.length - a.length).join('|');
+/** Suite de mots-nombres (« vingt quatre », « trente et un », « quatre vingt dix »). */
+const RE_SUITE_LETTRES = new RegExp(`\\b((?:(?:${NW})\\s+(?:et\\s+)?)*(?:${NW}))\\s+(ans|an|annees|annee|mois)\\b`, 'g');
+/** Suite de mots-nombres en FIN de texte (juste avant une quantité en chiffres). */
+const RE_LETTRES_FINALES = new RegExp(`\\b((?:(?:${NW})\\s+(?:et\\s+)?)*(?:${NW}))\\s*$`);
+const UNITES_TOUTES = 'ans|an|annees|annee|mois|jours?|semaines?|trimestres?|semestres?|heures?|years?|year|months?|days?|weeks?';
+/** Quantité NON interprétée : mot-nombre, fraction ou quantité vague accolé à une unité de durée. */
+const RE_NON_INTERPRETE = new RegExp(`\\b(?:${NW}|demi|quart|quelques|plusieurs)\\s+(?:et\\s+)?(?:d\\s+)?(?:${UNITES_TOUTES})\\b|\\bet\\s+(?:demi|demie|quart)\\b`);
+
+/** Valeur d'une suite de mots-nombres (« vingt quatre » → 24, « quatre vingt dix » → 90), sinon null. Pure. */
+export function frenchNumberValue(texte: string): number | null {
+  const mots = texte.trim().split(/\s+/).filter((m) => m && m !== 'et');
+  if (mots.length === 0 || mots.some((m) => MOTS_NOMBRES[m] === undefined)) return null;
+  let total = 0;
+  for (const m of mots) {
+    const v = MOTS_NOMBRES[m];
+    if (v === 100) total = (total || 1) * 100;
+    else if (v === 20 && total % 100 === 4) total += 76; // quatre-vingt(s)
+    else total += v;
+  }
+  return total > 0 ? total : null;
+}
+
 const UNITE_AN = /^(ans|an|annees|annee|years|year)$/;
-const RE_QUANTITE = /(\d{1,4})\s*(ans|an|annees|annee|years|year|mois|months|month)\b/g;
+/**
+ * Lot 76 (C1) : quantité éventuellement DÉCIMALE (« 1d5 » : 1,5 — jeton posé
+ * avant la normalisation, la virgule et le point étant sinon perdus).
+ */
+const RE_QUANTITE = /(\d{1,4}(?:d\d{1,3})?)\s*(ans|an|annees|annee|years|year|mois|months|month)\b/g;
 const has = (t: string, re: RegExp) => re.test(` ${t} `);
 const RE_INCLUS_AVANT = /\b(dont|y compris|incluant|comprenant)\b/;
 const RE_INCLUS_APRES = /^\s*(\w+\s){0,4}?(inclus|incluse|inclus dans|compris|comprise)\b/;
@@ -175,10 +212,26 @@ const RE_REFORMULATION = /\b(soit|c est a dire|equivalent)\b/;
 const RE_IMPRECIS = /\b(au moins|minimum|minimale|maximum|maximale|au plus|jusqu a|environ|ou plus|a partir de|des que|sous reserve|si|sauf si|selon|en fonction)\b/;
 /** Point de départ conditionnel : « à compter de la livraison » (≠ date d'effet / de début). */
 const RE_DEPART = /\b(a compter|a partir|des)\s+(du|de la|de l|de|des)\s+([a-z ]{3,40})/;
-const RE_DEPART_EFFECTIF = /\b(effet|prise d effet|date de debut|debut du contrat|debut de contrat|entree en vigueur|date de depart|signature du present|present contrat)\b/;
+const RE_DEPART_EFFECTIF = /\b(effet|prise d effet|date de debut|debut du contrat|debut de contrat|entree en vigueur|date de depart|signature du present|present contrat|datelue)\b/;
 const RE_ANNIVERSAIRE = /\b(date anniversaire|de date a date|a la date anniversaire|meme quantieme)\b/;
 const RE_FIN_DE_MOIS = /\b(fin de mois|dernier jour du mois|fin du mois)\b/;
 const RE_REFUS = /\b(indetermine\w*|illimite\w*|jours?|semaines?|days?|weeks?|trimestres?|semestres?|viager\w*)\b/;
+
+/**
+ * Lot 76 (C1) — texte brut préparé AVANT la normalisation (pure) : les dates
+ * sont neutralisées (« 01.02.2024 » n'est jamais une décimale) et une
+ * décimale accolée à une unité de durée devient un jeton (« 1,5 ans » →
+ * « 1d5 ans ») — la normalisation remplaçait la virgule par un espace et
+ * lisait « 5 ans » (60 mois « fiables »).
+ */
+function preparerDuree(raw: string): string {
+  return raw
+    .replace(/\b\d{1,2}[/.\-:]\d{1,2}[/.\-:]\d{2,4}\b|\b\d{4}-\d{2}-\d{2}\b/g, ' datelue ')
+    .replace(/(\d{1,4})\s*[,.]\s*(\d{1,3})(?=\s*(?:ans?|ann[ée]es?|years?|mois|months?)\b)/gi, '$1d$2');
+}
+
+/** Valeur d'une quantité lue (« 18 », « 1d5 » → 1,5). Pure. */
+const valeurQuantite = (jeton: string) => Number(jeton.replace('d', '.'));
 
 /**
  * Analyse d'une durée lue (pure). `keyHint` : clé lue (« dureeMois » → un
@@ -193,9 +246,11 @@ export function analyzeDuration(raw: unknown, keyHint?: string | null): Duration
       : refus('numeric_without_unit');
   }
   if (typeof raw !== 'string') return refus('not_a_duration');
-  // Nombres en lettres usuels (« un an », « deux ans ») ramenés en chiffres.
-  const s = norm(raw).replace(/\b(un|une|deux|trois|quatre|cinq|six|sept|huit|neuf|dix|douze)\s+(ans?|annees?|mois)\b/g,
-    (_m, n: string, u: string) => `${LETTRES[n]} ${u}`);
+  // Nombres en lettres accolés à une unité prise en charge (« un an », « vingt-quatre mois ») ramenés en chiffres.
+  const s = norm(preparerDuree(raw)).replace(RE_SUITE_LETTRES, (m, mots: string, u: string) => {
+    const v = frenchNumberValue(mots);
+    return v === null ? m : `${v} ${u}`;
+  });
   if (!s) return refus('empty');
   if (has(s, /\b(indetermine\w*|illimite\w*|viager\w*)\b/)) return refus('open_ended', 'AMBIGUOUS');
   const conventions = new Set<EndConvention>();
@@ -205,9 +260,15 @@ export function analyzeDuration(raw: unknown, keyHint?: string | null): Duration
   const conventionConflict = conventions.size > 1;
 
   // ── Quantités, regroupées quand elles se suivent (« 2 ans et 6 mois ») ──
-  const brutes = [...s.matchAll(RE_QUANTITE)].map((m) => ({
-    months: UNITE_AN.test(m[2]) ? Number(m[1]) * 12 : Number(m[1]), an: UNITE_AN.test(m[2]), start: m.index!, end: m.index! + m[0].length,
-  }));
+  const brutes: Array<{ months: number; an: boolean; start: number; end: number; n: number }> = [];
+  for (const m of s.matchAll(RE_QUANTITE)) {
+    const n = valeurQuantite(m[1]);
+    const an = UNITE_AN.test(m[2]);
+    const mois = an ? n * 12 : n;
+    // Lot 76 (C1) : décimale interprétée EXACTEMENT (1,5 an = 18 mois), sinon refus (jamais arrondie).
+    if (Math.abs(mois - Math.round(mois)) > 1e-9) return refus('inexact_decimal_duration');
+    brutes.push({ months: Math.round(mois), an, start: m.index!, end: m.index! + m[0].length, n });
+  }
   if (brutes.length === 0) {
     if (/^\d{1,4}$/.test(s) && /mois|months/i.test(keyHint ?? '')) {
       const n = Number(s);
@@ -215,21 +276,38 @@ export function analyzeDuration(raw: unknown, keyHint?: string | null): Duration
         ? { months: n, reliable: true, status: 'SIMPLE', parts: [{ months: n, role: 'PRIMARY' }], reason: 'numeric_months', convention, conventionConflict }
         : refus('out_of_range');
     }
+    if (/\d+d\d+/.test(s)) return refus('inexact_decimal_duration');
     return refus(has(s, RE_REFUS) ? 'unsupported_unit' : 'no_duration');
+  }
+  // Lot 76 (C1) : une quantité en lettres juste avant une quantité en chiffres doit la REDIRE
+  // (« douze (12) mois ») ; sinon (« dix-huit » mal lu, « vingt 4 mois ») la durée est refusée.
+  for (let i = 0; i < brutes.length; i += 1) {
+    const avant = s.slice(i === 0 ? 0 : brutes[i - 1].end, brutes[i].start);
+    const lettres = RE_LETTRES_FINALES.exec(avant);
+    if (lettres && frenchNumberValue(lettres[1]) !== brutes[i].n) return refus('uninterpreted_component');
   }
   const quantites: Array<{ months: number; start: number; end: number }> = [];
   for (const b of brutes) {
     const prev = quantites.at(-1);
     const entre = prev ? s.slice(prev.end, b.start) : null;
-    // « 2 ans et 6 mois » / « 2 ans 6 mois » : une seule durée (années puis mois).
-    if (prev && entre !== null && /^\s*(et\s*)?$/.test(entre) && brutes.find((x) => x.end === prev.end)?.an && !b.an) {
-      prev.months += b.months; prev.end = b.end; continue;
+    const prevBrute = prev ? brutes.find((x) => x.end === prev.end) : null;
+    if (prev && entre !== null && /^\s*(et\s*)?$/.test(entre) && prevBrute?.an && !b.an) {
+      // « 2 ans et 6 mois » / « 2 ans 6 mois » : une seule durée (années puis mois < 12).
+      if (b.months < 12) { prev.months += b.months; prev.end = b.end; continue; }
+      // Lot 76 : « 2 ans (24 mois) » — la même durée redite, jamais additionnée.
+      if (b.months === prev.months) { prev.end = b.end; continue; }
     }
     quantites.push({ months: b.months, start: b.start, end: b.end });
   }
   if (quantites.some((q) => q.months <= 0 || q.months > 1200)) return refus('out_of_range');
   // Unité non gérée À CÔTÉ d'une durée (« 12 mois et 15 jours ») : refus.
   if (has(s, RE_REFUS) && !has(s, /\b(indetermine\w*|illimite\w*)\b/) && /\d\s*(jours?|semaines?|days?|weeks?|trimestres?|semestres?)\b/.test(s)) return refus('unsupported_unit');
+  // Lot 76 (C1) : composante NON INTERPRÉTÉE (« et quinze jours », « et demi », « trois semaines ») —
+  // jamais ignorée en silence. Conventions de fin retirées avant l'examen (« dernier jour du mois »).
+  let reste = s;
+  for (const q of [...quantites].reverse()) reste = `${reste.slice(0, q.start)} ${' '.repeat(Math.max(0, q.end - q.start - 1))}${reste.slice(q.end)}`;
+  reste = reste.replace(new RegExp(RE_FIN_DE_MOIS.source, 'g'), ' ');
+  if (RE_NON_INTERPRETE.test(reste)) return refus('uninterpreted_component');
 
   // ── Rôle de chaque quantité, d'après le texte qui l'entoure ─────────────
   const roles: DurationRole[] = quantites.map((q, i) => {
@@ -324,18 +402,52 @@ export function endFromStart(startIso: string, months: number, convention: EndCo
 
 export interface DerivationSource { key: string | null; value: string; source: string; confidence: string }
 
+/**
+ * Méthode du calcul. Lot 76 (I) : `SCHEDULE_LAST_INSTALMENT` (dernière
+ * échéance lue dans l'échéancier), `FIRST_INSTALMENT_PLUS_COUNT` (première
+ * échéance + (nombre − 1) périodes), `DISBURSEMENT_PLUS_COUNT` (déblocage :
+ * jamais fiable, candidat seulement).
+ */
+export type DerivationMethod = 'START_PLUS_DURATION' | 'SCHEDULE_LAST_INSTALMENT' | 'FIRST_INSTALMENT_PLUS_COUNT' | 'DISBURSEMENT_PLUS_COUNT';
+
 export interface DerivationResult {
   /** CALCULATED_RELIABLE : écrite ; CALCULATED_PROBABLE : candidat seulement ; NOT_DERIVABLE / AMBIGUOUS. */
   status: 'CALCULATED_RELIABLE' | 'CALCULATED_PROBABLE' | 'NOT_DERIVABLE' | 'AMBIGUOUS';
   value: string | null;
-  method: 'START_PLUS_DURATION';
-  /** Convention de fin APPLIQUÉE (lot 72 : lue dans la clause, sinon « fin incluse » par défaut — hypothèse tracée). */
-  convention: EndConvention;
+  method: DerivationMethod;
+  /** Convention de fin APPLIQUÉE (lot 72 : lue dans la clause, sinon « fin incluse » par défaut — hypothèse tracée). Lot 76 (I) : `LAST_INSTALMENT` — date de la dernière échéance. */
+  convention: EndConvention | 'LAST_INSTALMENT';
+  /** Lot 76 (I) : calcul par l'échéancier (sources, période, motifs) — toujours tracé quand un échéancier est lu. */
+  schedule?: ScheduleDerivation;
+  /** Lot 76 (I) : la date de fin conditionne-t-elle une démarche ? (pertinence d'une question, diagnostic) */
+  endDateNeed?: EndDateNeed | null;
+  /** Lot 76 (I) : autre méthode évaluée mais non retenue (diagnostic). */
+  alternative?: { method: DerivationMethod; status: DerivationResult['status']; value: string | null; reason: string } | null;
   start: DerivationSource | null;
   duration: (DerivationSource & { months: number; status?: DurationStatus; parts?: DurationAnalysis['parts'] }) | null;
   reason: string;
   /** Lot 72 (C1) : hypothèses retenues (convention par défaut, durée initiale…). */
   assumptions?: string[];
+  /**
+   * Lot 76 (C1) : durées REFUSÉES ou ambiguës lues (valeur ou clause de chaque
+   * fait, provenance et motif) — jamais ignorées en silence.
+   */
+  refusals?: Array<{ value: string; part: 'value' | 'clause'; source: string; confidence: string; reason: string; status: DurationStatus }>;
+}
+
+/** Motifs de refus d'une durée qui révèlent une durée NON interprétée (et non une absence de durée). */
+const REFUS_SIGNIFICATIFS = ['inexact_decimal_duration', 'uninterpreted_component', 'unsupported_unit', 'out_of_range'];
+
+/**
+ * Lot 76 (C1) — l'analyse d'une durée (valeur ou clause) interdit-elle un
+ * calcul fiable ? Ambiguë, renouvelable / prolongeable, ou refusée parce
+ * qu'une partie significative n'est pas interprétée. `valeur` : analyse de la
+ * valeur du même fait (une clause qui redit la valeur ne bloque pas). Pure.
+ */
+export function durationBlocks(a: DurationAnalysis, valeur: DurationAnalysis | null): boolean {
+  if (a.status === 'AMBIGUOUS' || a.status === 'INITIAL_TERM_RENEWABLE' || a.status === 'INITIAL_TERM_EXTENSIBLE') return true;
+  if (a.status === 'REFUSED' && REFUS_SIGNIFICATIFS.includes(a.reason)) return !valeur || valeur.reason !== a.reason || valeur.months !== null;
+  return false;
 }
 
 const fiable = (f: EvidenceFact) => f.confidence === 'certain' && f.source === 'FACTS';
@@ -372,19 +484,36 @@ export function computeDerivation(
     const c = f.excerpt && f.excerpt !== f.value ? analyzeDuration(f.excerpt, durationKeyHint(f)) : null;
     return { f, a, c };
   });
+  // Lot 76 (C1) : motifs de refus conservés (provenance comprise) — valeur OU clause de CHAQUE fait.
+  const refusals: NonNullable<DerivationResult['refusals']> = [];
+  for (const x of analyses) {
+    for (const [part, an] of [['value', x.a], ['clause', x.c]] as const) {
+      if (!an || !durationBlocks(an, part === 'clause' ? x.a : null)) continue;
+      refusals.push({ value: String(x.f.value).slice(0, 120), part, source: x.f.source, confidence: String(x.f.confidence), reason: an.reason, status: an.status });
+    }
+  }
   const lisibles = analyses.filter((x) => x.a.months !== null);
   const ambigues = analyses.filter((x) => x.a.status === 'AMBIGUOUS');
   const durees = [...new Map(lisibles.map((x) => [x.a.months, x])).values()];
   if (debuts.length === 0 || (durees.length === 0 && ambigues.length === 0)) {
-    return { ...base, status: 'NOT_DERIVABLE', value: null, start: null, duration: null,
-      reason: debuts.length === 0 ? (debutsLus.length ? 'start_is_not_effective' : 'no_effective_start') : 'no_duration' };
+    const refusee = refusals.find((r) => r.part === 'value');
+    return { ...base, status: 'NOT_DERIVABLE', value: null, start: null, duration: null, refusals,
+      reason: debuts.length === 0 ? (debutsLus.length ? 'start_is_not_effective' : 'no_effective_start') : refusee ? `duration_refused:${refusee.reason}` : 'no_duration' };
   }
   if (durees.length === 0) {
-    return { ...base, status: 'AMBIGUOUS', value: null, start: null, duration: null, reason: `ambiguous_duration:${ambigues[0].a.reason}` };
+    return { ...base, status: 'AMBIGUOUS', value: null, start: null, duration: null, refusals, reason: `ambiguous_duration:${ambigues[0].a.reason}` };
   }
   if (debuts.length > 1 || durees.length > 1) {
-    return { ...base, status: 'AMBIGUOUS', value: null, start: null, duration: null,
+    return { ...base, status: 'AMBIGUOUS', value: null, start: null, duration: null, refusals,
       reason: debuts.length > 1 ? 'several_start_dates' : 'several_durations' };
+  }
+  // Lot 76 (C1) : un fait CONCURRENT ambigu ou partiellement interprété (valeur ou clause)
+  // n'est jamais écarté parce qu'un autre fait est lisible — aucune durée unique fiable.
+  const concurrents = analyses.filter((x) => x !== durees[0] && (durationBlocks(x.a, null) || (x.c && durationBlocks(x.c, x.a))
+    || (x.c && x.c.months !== null && x.c.months !== durees[0].a.months && x.c.status !== 'REFUSED')));
+  if (concurrents.length) {
+    return { ...base, status: 'AMBIGUOUS', value: null, start: null, duration: null, refusals,
+      reason: `competing_duration_facts:${concurrents.map((x) => (durationBlocks(x.a, null) ? x.a : x.c)!.reason).join(',')}`.slice(0, 200) };
   }
   const s = debuts[0];
   const d = durees[0];
@@ -396,6 +525,9 @@ export function computeDerivation(
       surDuree = false; motif = `clause_${d.c.reason}`;
     } else if (d.c.months !== null && d.c.months !== d.a.months && d.c.status !== 'REFUSED') {
       surDuree = false; motif = 'clause_contradicts_value';
+    } else if (durationBlocks(d.c, d.a)) {
+      // Lot 76 (C1) : clause partiellement interprétée (« 12 mois et quinze jours ») — jamais réduite en silence.
+      surDuree = false; motif = `clause_${d.c.reason}`;
     }
   }
   const conventions = new Set([d.a.convention, d.c?.convention].filter((x): x is EndConvention => !!x));
@@ -416,8 +548,458 @@ export function computeDerivation(
     start: { key: spec.start.key, value: String(s.value), source: s.source, confidence: String(s.confidence) },
     duration: { key: spec.duration.key, value: String(d.f.value), source: d.f.source, confidence: String(d.f.confidence), months: d.a.months!, status: d.a.status, parts: d.a.parts },
     reason: sur ? 'reliable_sources' : debutSuspect ? 'start_equals_document_date' : !surDuree ? `duration_not_reliable:${motif}` : 'uncertain_sources',
-    assumptions: hypotheses,
+    assumptions: hypotheses, refusals,
   };
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// LOT 76 (I) — ÉCHÉANCIER : DERNIÈRE ÉCHÉANCE, PREMIÈRE ÉCHÉANCE + NOMBRE
+//
+// Cas constaté : offre de crédit immobilier — « Date de première échéance »,
+// « Nombre d'échéances : 240 », « Périodicité : mensuelle » lus, mais la
+// première échéance était (à juste titre) refusée comme DÉBUT EFFECTIF du
+// calcul « début + durée » et rien d'autre ne calculait : la date de fin
+// devenait « absente » → « Quelle est la date de fin de ce contrat ? ».
+//
+// Une échéance de fin se déduit AUSSI d'un échéancier (vocabulaire générique
+// du remboursement par échéances, aucune règle propre à un établissement ni à
+// un type de contrat) :
+//   · dernière échéance lue (échéancier, tableau d'amortissement du même
+//     contrat) → privilégiée ;
+//   · première échéance + (nombre d'échéances − 1) × périodicité, même
+//     quantième borné à la fin du mois (fins de mois, années bissextiles) ;
+//   · périodicité : lue, sinon portée par le nombre (« mensualités »), sinon
+//     déduite d'une durée FIABLE (durée = nombre × période) — hypothèse tracée ;
+//   · déblocage des fonds : jamais assimilé à la première échéance (candidat
+//     PROBABLE, jamais écrit) ; date de signature / d'émission : jamais lues ;
+//   · contradiction (dernière échéance ≠ calcul, nombre × période ≠ durée,
+//     plusieurs valeurs), différé ou palier dans le nombre, quantième
+//     incertain, modification connue (avenant, réaménagement, report accordé)
+//     → aucune valeur fiable.
+// La fin calculée est la fin CONTRACTUELLE PRÉVISIONNELLE (`CALCULATED`) ; la
+// fin EFFECTIVE (remboursement anticipé, prêt soldé) reste la preuve de fin du
+// cycle de vie (lot 76, C2), évaluée séparément.
+// ══════════════════════════════════════════════════════════════════════════
+
+export interface ScheduleDesignation { key: string; keys: readonly string[]; labels: readonly string[] }
+
+export interface ScheduleSpec {
+  target: string;
+  firstInstalment: ScheduleDesignation;
+  lastInstalment: ScheduleDesignation;
+  count: ScheduleDesignation;
+  periodicity: ScheduleDesignation;
+  disbursement: ScheduleDesignation;
+  /** Indices d'un remboursement par échéances (jamais une source de calcul). */
+  repayment: ScheduleDesignation;
+}
+
+export const SCHEDULE_DERIVATIONS: readonly ScheduleSpec[] = [
+  {
+    target: 'contractEndDate',
+    firstInstalment: {
+      key: 'firstInstalmentDate',
+      keys: ['firstInstalmentDate', 'firstInstallmentDate', 'firstPaymentDate', 'firstRepaymentDate', 'datePremiereEcheance', 'premiereEcheance',
+        'datePremierRemboursement', 'datePremiereMensualite', 'datePremierPrelevement'],
+      labels: ['premiere echeance', 'premier remboursement', 'premiere mensualite', 'premier prelevement', 'debut des remboursements',
+        'debut de remboursement', 'debut d amortissement', 'debut de l amortissement', '1ere echeance', '1re echeance', '1ere mensualite'],
+    },
+    lastInstalment: {
+      key: 'lastInstalmentDate',
+      keys: ['lastInstalmentDate', 'lastInstallmentDate', 'lastPaymentDate', 'finalPaymentDate', 'finalInstalmentDate', 'loanEndDate', 'creditEndDate',
+        'dateDerniereEcheance', 'derniereEcheance', 'dateDerniereMensualite', 'dateFinPret', 'dateFinCredit', 'dateFinRemboursement'],
+      labels: ['derniere echeance', 'dernier remboursement', 'derniere mensualite', 'dernier prelevement', 'echeance finale', 'fin des remboursements',
+        'fin de remboursement', 'fin du pret', 'fin du credit', 'fin de l emprunt', 'terme du pret', 'terme du credit', 'fin d amortissement', 'fin de l amortissement'],
+    },
+    count: {
+      key: 'instalmentCount',
+      keys: ['instalmentCount', 'installmentCount', 'numberOfInstalments', 'numberOfInstallments', 'numberOfPayments', 'paymentCount', 'nombreEcheances',
+        'nbEcheances', 'nombreMensualites', 'nbMensualites', 'nombreRemboursements'],
+      labels: ['nombre d echeances', 'nombre des echeances', 'nombre de mensualites', 'nombre de remboursements', 'nombre de versements',
+        'nombre de prelevements', 'nombre total d echeances', 'nombre total de mensualites', 'nb d echeances', 'nb de mensualites', 'nombre de termes'],
+    },
+    periodicity: {
+      key: 'instalmentPeriodicity',
+      keys: ['instalmentPeriodicity', 'periodicity', 'paymentFrequency', 'repaymentFrequency', 'installmentFrequency', 'periodicite', 'frequenceEcheances',
+        'periodiciteEcheances', 'periodiciteRemboursement'],
+      labels: ['periodicite', 'frequence des echeances', 'frequence de remboursement', 'frequence des remboursements', 'rythme des echeances'],
+    },
+    disbursement: {
+      key: 'disbursementDate',
+      keys: ['disbursementDate', 'fundsReleaseDate', 'dateDeblocage', 'dateDeblocageFonds', 'dateMiseADisposition'],
+      labels: ['deblocage', 'mise a disposition des fonds', 'versement des fonds', 'remise des fonds'],
+    },
+    repayment: {
+      key: 'repaymentSchedule',
+      keys: ['amortizationSchedule', 'tableauAmortissement', 'loanDuration', 'loanDurationMonths', 'loanTerm', 'loanTermMonths', 'dureePret', 'dureeCredit',
+        'creditDuration', 'dureeRemboursement', 'dureeAmortissement', 'capitalRestantDu'],
+      labels: ['tableau d amortissement', 'duree du pret', 'duree du credit', 'duree de l emprunt', 'duree de remboursement', 'duree d amortissement',
+        'duree de l amortissement', 'capital restant du'],
+    },
+  },
+];
+
+export function scheduleDerivationFor(target: string): ScheduleSpec | null {
+  return SCHEDULE_DERIVATIONS.find((d) => d.target === target) ?? null;
+}
+
+export type ScheduleRole = 'firstInstalment' | 'lastInstalment' | 'count' | 'periodicity' | 'disbursement' | 'repayment';
+const ROLES: readonly ScheduleRole[] = ['firstInstalment', 'lastInstalment', 'count', 'periodicity', 'disbursement', 'repayment'];
+
+/**
+ * Rôle d'un fait dans l'échéancier, d'après sa clé lue (canonique ou brute)
+ * ou son libellé (pure). Un libellé de signature, d'émission, d'offre ou de
+ * document n'est jamais un rôle de date ; un libellé qui désigne à la fois la
+ * première et la dernière échéance n'en reçoit aucun.
+ */
+export function scheduleRoleOf(spec: ScheduleSpec, p: { canonical?: string | null; raw?: string | null; label?: string | null }): ScheduleRole | null {
+  const cles = [p.canonical, p.raw].filter((x): x is string => !!x).map((x) => x.toLowerCase());
+  for (const r of ROLES) if (spec[r].keys.some((k) => cles.includes(k.toLowerCase()))) return r;
+  if (!p.label) return null;
+  const l = ` ${norm(p.label)} `;
+  const trouves = ROLES.filter((r) => spec[r].labels.some((x) => l.includes(` ${x} `)));
+  // « Durée du prêt » : indice d'échéancier seulement si aucun autre rôle n'est désigné.
+  const roles = trouves.length > 1 ? trouves.filter((r) => r !== 'repayment') : trouves;
+  if (roles.length !== 1) return null;
+  const r = roles[0];
+  if ((r === 'firstInstalment' || r === 'lastInstalment' || r === 'disbursement') && /\b(signature|signe|emission|edition|offre|acceptation|document)\b/.test(l)) return null;
+  return r;
+}
+
+/** Périodicité lue (pure) : mois entre deux échéances, sinon null (motif). */
+export function parsePeriodicity(raw: unknown): { months: number | null; reason: string } {
+  if (typeof raw !== 'string' || !raw.trim()) return { months: null, reason: 'empty' };
+  const s = ` ${norm(raw)} `;
+  if (/\b(hebdomadaire\w*|quotidien\w*|journalier\w*|quinzaine|jours?|semaines?)\b/.test(s)) return { months: null, reason: 'unsupported_periodicity' };
+  const trouves = new Set<number>();
+  const tous = /\btous les (\d{1,2}) mois\b/.exec(s);
+  if (tous) trouves.add(Number(tous[1]));
+  if (/\b(mensuel\w*|par mois|chaque mois|tous les mois|mensualites?)\b/.test(s) || /^\s*(1 )?mois\s*$/.test(s)) trouves.add(1);
+  if (/\b(bimestriel\w*)\b/.test(s)) trouves.add(2);
+  if (/\b(trimestriel\w*|par trimestre|chaque trimestre|trimestrialites?)\b/.test(s)) trouves.add(3);
+  if (/\b(semestriel\w*|par semestre|chaque semestre|semestrialites?)\b/.test(s)) trouves.add(6);
+  if (/\b(annuel\w*|par an|chaque annee|tous les ans|annuites?)\b/.test(s)) trouves.add(12);
+  if (trouves.size === 0) return { months: null, reason: 'periodicity_not_interpreted' };
+  if (trouves.size > 1) return { months: null, reason: 'several_periodicities' };
+  const m = [...trouves][0];
+  return [1, 2, 3, 4, 6, 12].includes(m) ? { months: m, reason: 'read' } : { months: null, reason: 'unsupported_periodicity' };
+}
+
+/**
+ * Nombre d'échéances lu (pure) : entier unique 1..1200 (« 240 », « 240
+ * mensualités », « 240 (deux cent quarante) »). Montants et taux écartés.
+ * Plusieurs nombres, différé, palier, alternative ou imprécision → AMBIGUOUS
+ * (jamais une somme ni un choix). `impliedPeriod` : période portée par le
+ * mot (« mensualités » → 1).
+ */
+export function parseInstalmentCount(raw: unknown, label?: string | null): { count: number | null; impliedPeriod: number | null; status: 'OK' | 'AMBIGUOUS' | 'REFUSED'; reason: string } {
+  const refus = (reason: string, status: 'AMBIGUOUS' | 'REFUSED' = 'REFUSED') => ({ count: null, impliedPeriod: null, status, reason });
+  const periodeDe = (t: string) => { const p = parsePeriodicity(t); return p.months; };
+  if (typeof raw === 'number') {
+    return Number.isInteger(raw) && raw > 0 && raw <= 1200 ? { count: raw, impliedPeriod: label ? periodeDe(label) : null, status: 'OK', reason: 'numeric' } : refus('out_of_range');
+  }
+  if (typeof raw !== 'string' || !raw.trim()) return refus('empty');
+  // Montants (« de 850,00 € »), taux (« 1,85 % ») et dates retirés avant la lecture des nombres.
+  const sansMontants = raw
+    .replace(/\b\d{1,2}[/.\-:]\d{1,2}[/.\-:]\d{2,4}\b|\b\d{4}-\d{2}-\d{2}\b/g, ' ')
+    .replace(/\d[\d\s.  ]*(?:[,.]\d{1,2})?\s*(?:€|eur\b|euros?\b)/gi, ' ')
+    .replace(/\d+(?:[,.]\d+)?\s*%/g, ' ');
+  if (/\d+[,.]\d+/.test(sansMontants)) return refus('decimal_count');
+  const s = ` ${norm(sansMontants)} `;
+  if (/\b(differe\w*|franchise|carence|report\w*|palier\w*|progressi\w*|modula\w*)\b/.test(s)) return refus('deferral_or_steps_in_count', 'AMBIGUOUS');
+  if (/\b(ou|puis|environ|maximum|minimum|au plus|au moins|jusqu a|plus|entre)\b|\+/.test(s)) return refus('imprecise_count', 'AMBIGUOUS');
+  const nombres = [...s.matchAll(/\b(\d{1,4})\b/g)].map((m) => Number(m[1]));
+  let n: number | null = null;
+  if (nombres.length === 0) {
+    const lettres = /\b((?:[a-z]+\s+){0,5}[a-z]+)\s+(echeances?|mensualites?|remboursements?|versements?|prelevements?|trimestrialites?|semestrialites?|annuites?)\b/.exec(s);
+    n = lettres ? frenchNumberValue(lettres[1].split(/\s+/).filter((w) => MOTS_NOMBRES[w] !== undefined || w === 'et').join(' ')) : null;
+    if (n === null) return refus('no_count');
+  } else {
+    const distincts = [...new Set(nombres)];
+    if (distincts.length > 1 && !/\bdont\b/.test(s)) {
+      // « 240 (deux cent quarante) » : la redite en lettres est admise si elle donne la même valeur.
+      return refus('several_counts', 'AMBIGUOUS');
+    }
+    n = nombres[0];
+    const lettres = s.replace(/\b\d{1,4}\b/g, ' ').replace(/\b(echeances?|mensualites?|remboursements?|versements?|prelevements?|mensuel\w*|trimestriel\w*|semestriel\w*|annuel\w*|nombre|de|d|des|total|totales?|soit|dont)\b/g, ' ').trim();
+    if (lettres && frenchNumberValue(lettres) !== null && frenchNumberValue(lettres) !== n) return refus('several_counts', 'AMBIGUOUS');
+  }
+  if (!n || n <= 0 || n > 1200) return refus('out_of_range');
+  const implied = periodeDe(`${s} ${label ?? ''}`);
+  return { count: n, impliedPeriod: implied, status: 'OK', reason: 'read' };
+}
+
+/** Date + `mois` mois, même quantième borné à la fin du mois cible (pure). `finDeMois` : dernier jour du mois cible. */
+export function addMonthsClamped(iso: string, mois: number, finDeMois = false): string | null {
+  const [y, m, d] = iso.split('-').map(Number);
+  if (!y || !m || !d) return null;
+  const t = (m - 1) + mois;
+  const ty = y + Math.floor(t / 12);
+  const tm = ((t % 12) + 12) % 12;
+  const dernier = new Date(Date.UTC(ty, tm + 1, 0)).getUTCDate();
+  const r = new Date(Date.UTC(ty, tm, finDeMois ? dernier : Math.min(d, dernier)));
+  return Number.isNaN(r.getTime()) ? null : r.toISOString().slice(0, 10);
+}
+
+/**
+ * Date de la DERNIÈRE échéance (pure) : première + (nombre − 1) × période.
+ * Une première échéance au dernier jour d'un mois de moins de 31 jours
+ * laisse le quantième incertain (le 28 ou la fin du mois ?) : `dayAmbiguous`
+ * quand les deux lectures divergent, sauf convention « fin de mois » lue.
+ */
+export function lastInstalmentFrom(firstIso: string, count: number, periodMonths: number, endOfMonth = false): { value: string | null; dayAmbiguous: boolean } {
+  const mois = (count - 1) * periodMonths;
+  const meme = addMonthsClamped(firstIso, mois);
+  const fin = addMonthsClamped(firstIso, mois, true);
+  if (endOfMonth) return { value: fin, dayAmbiguous: false };
+  const [y, m, d] = firstIso.split('-').map(Number);
+  const dernierDuPremier = new Date(Date.UTC(y, m, 0)).getUTCDate();
+  return { value: meme, dayAmbiguous: d === dernierDuPremier && d < 31 && meme !== fin };
+}
+
+/**
+ * Modification CONNUE de l'échéancier (pure) : avenant, réaménagement,
+ * renégociation, report ou modulation ACCORDÉS — constat, jamais une simple
+ * faculté (« possibilité de report », « peut moduler ») ni une négation.
+ */
+export function knownScheduleChange(textes: ReadonlyArray<string | null | undefined>): string | null {
+  const RE_CHANGEMENT = /\b(avenant\w*|reamenage\w*|renegoci\w*|rachat de (credit|pret)|report d echeances? (accorde|consenti|applique|effectue)\w*|modulation (accordee|appliquee|effectuee)|echeancier (modifie|revise))\b/;
+  const RE_FACULTE = /\b(peut|peuvent|pourra|pourront|pourrait|possibilite|faculte|droit de|en cas d\w*|si|sauf|sous reserve|eventuel\w*|le cas echeant|modalites|conditions)\b/;
+  const RE_NEG = /\b(aucun\w*|pas|non|jamais|sans)\b/;
+  for (const t of textes) {
+    if (!t) continue;
+    for (const phrase of String(t).split(/(?<=[.;!?])\s+|\n+/)) {
+      const p = ` ${norm(phrase)} `;
+      const m = RE_CHANGEMENT.exec(p);
+      if (!m) continue;
+      if (RE_FACULTE.test(p) || RE_NEG.test(p.slice(Math.max(0, m.index - 30), m.index))) continue;
+      return phrase.replace(/\s+/g, ' ').trim().slice(0, 160);
+    }
+  }
+  return null;
+}
+
+export interface ScheduleFacts {
+  firstInstalment: EvidenceFact[];
+  lastInstalment: EvidenceFact[];
+  count: EvidenceFact[];
+  periodicity: EvidenceFact[];
+  disbursement: EvidenceFact[];
+  repayment: EvidenceFact[];
+}
+
+type ScheduleSource = DerivationSource & { label?: string | null };
+
+export interface ScheduleDerivation {
+  status: DerivationResult['status'];
+  value: string | null;
+  method: Exclude<DerivationMethod, 'START_PLUS_DURATION'> | null;
+  reason: string;
+  /** Un échéancier (remboursement par échéances) est lu dans la connaissance du contrat. */
+  evidenced: boolean;
+  sources: {
+    firstInstalment?: ScheduleSource;
+    lastInstalment?: ScheduleSource;
+    count?: ScheduleSource & { count: number };
+    periodicity?: { months: number; origin: 'READ' | 'IMPLIED_BY_COUNT' | 'INFERRED_FROM_DURATION'; value?: string; source?: string };
+    disbursement?: ScheduleSource;
+  };
+  assumptions: string[];
+  refusals: Array<{ role: ScheduleRole; value: string; reason: string }>;
+  /** Modification connue de l'échéancier (extrait), le cas échéant. */
+  change?: string | null;
+}
+
+/** Fait fiable de l'échéancier : certain, lu dans le document ou dans un document du MÊME contrat. */
+const fiableEcheancier = (f: EvidenceFact) => f.confidence === 'certain' && (f.source === 'FACTS' || f.source.startsWith('RELATED_DOCUMENT:'));
+const src = (f: EvidenceFact): ScheduleSource => ({ key: f.key ?? null, value: String(f.value), source: f.source, confidence: String(f.confidence), label: f.label ?? null });
+const dateIso = (f: EvidenceFact) => (typeof f.value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(f.value) ? f.value : null);
+
+/**
+ * Calcul de la fin par l'ÉCHÉANCIER (pure). `durationMonths` : durée FIABLE
+ * lue (analyse `analyzeDuration`), pour le contrôle de cohérence et, à défaut
+ * de périodicité, sa déduction. `endOfMonth` : convention « fin de mois » lue.
+ * `change` : modification connue de l'échéancier.
+ */
+export function computeScheduleDerivation(
+  f: ScheduleFacts, opts: { durationMonths?: number | null; durationIncludedMonths?: number[]; endOfMonth?: boolean; change?: string | null } = {},
+): ScheduleDerivation {
+  const refusals: ScheduleDerivation['refusals'] = [];
+  const assumptions: string[] = [];
+  const evidenced = f.firstInstalment.length + f.lastInstalment.length + f.count.length + f.repayment.length > 0;
+  const out = (status: ScheduleDerivation['status'], reason: string, x: Partial<ScheduleDerivation> = {}): ScheduleDerivation =>
+    ({ status, value: null, method: null, reason, evidenced, sources: {}, assumptions, refusals, change: opts.change ?? null, ...x });
+
+  // ── Dates (dernière, première, déblocage) : valeurs distinctes ─────────────
+  const distinctes = (xs: EvidenceFact[], role: ScheduleRole) => {
+    const ok = xs.filter((x) => dateIso(x));
+    for (const x of xs.filter((y) => !dateIso(y))) refusals.push({ role, value: String(x.value).slice(0, 80), reason: 'not_a_date' });
+    return [...new Map(ok.map((x) => [dateIso(x)!, x])).values()];
+  };
+  const dernieres = distinctes(f.lastInstalment, 'lastInstalment');
+  const premieres = distinctes(f.firstInstalment, 'firstInstalment');
+  const deblocages = distinctes(f.disbursement, 'disbursement');
+  if (dernieres.length > 1) return out('AMBIGUOUS', 'several_last_instalment_dates');
+  if (premieres.length > 1) return out('AMBIGUOUS', 'several_first_instalment_dates');
+
+  // ── Nombre d'échéances ─────────────────────────────────────────────────
+  const nombres = f.count.map((x) => ({ x, p: parseInstalmentCount(x.value, x.label ?? x.key ?? null) }));
+  for (const n of nombres.filter((y) => y.p.status !== 'OK')) refusals.push({ role: 'count', value: String(n.x.value).slice(0, 80), reason: n.p.reason });
+  if (nombres.some((n) => n.p.status === 'AMBIGUOUS')) return out('AMBIGUOUS', `count_${nombres.find((n) => n.p.status === 'AMBIGUOUS')!.p.reason}`);
+  const lus = [...new Map(nombres.filter((n) => n.p.count !== null).map((n) => [n.p.count, n])).values()];
+  if (lus.length > 1) return out('AMBIGUOUS', 'several_counts');
+
+  // ── Périodicité ─────────────────────────────────────────────────────────
+  const periodes = f.periodicity.map((x) => ({ x, p: parsePeriodicity(x.value) }));
+  for (const p of periodes.filter((y) => y.p.months === null)) refusals.push({ role: 'periodicity', value: String(p.x.value).slice(0, 80), reason: p.p.reason });
+  if (periodes.some((p) => p.p.months === null && p.p.reason !== 'empty')) return out('AMBIGUOUS', `periodicity_${periodes.find((p) => p.p.months === null)!.p.reason}`);
+  const periodesLues = [...new Map(periodes.filter((p) => p.p.months !== null).map((p) => [p.p.months, p])).values()];
+  if (periodesLues.length > 1) return out('AMBIGUOUS', 'several_periodicities');
+  const nombre = lus[0] ?? null;
+  let periode: ScheduleDerivation['sources']['periodicity'] | undefined;
+  if (periodesLues.length === 1) periode = { months: periodesLues[0].p.months!, origin: 'READ', value: String(periodesLues[0].x.value), source: periodesLues[0].x.source };
+  if (nombre?.p.impliedPeriod != null) {
+    if (periode && periode.months !== nombre.p.impliedPeriod) return out('AMBIGUOUS', 'count_contradicts_periodicity');
+    periode ??= { months: nombre.p.impliedPeriod, origin: 'IMPLIED_BY_COUNT', value: String(nombre.x.value), source: nombre.x.source };
+  }
+  const duree = opts.durationMonths ?? null;
+  if (nombre && !periode && duree) {
+    const q = duree / nombre.p.count!;
+    if ([1, 2, 3, 6, 12].includes(q)) {
+      periode = { months: q, origin: 'INFERRED_FROM_DURATION' };
+      assumptions.push(`périodicité déduite de la durée (${duree} mois / ${nombre.p.count} échéances)`);
+    }
+  }
+  // Cohérence nombre × période ↔ durée fiable lue (part incluse admise : « 240 mois dont 12 de différé »).
+  if (nombre && periode && duree) {
+    const couvert = nombre.p.count! * periode.months;
+    const admis = [duree, ...(opts.durationIncludedMonths ?? []).map((i) => duree - i)];
+    if (!admis.includes(couvert)) return out('AMBIGUOUS', 'schedule_inconsistent_with_duration');
+  }
+
+  // ── Calcul depuis la première échéance (ou, à défaut, le déblocage) ──────
+  type Calcul = { value: string; method: 'FIRST_INSTALMENT_PLUS_COUNT' | 'DISBURSEMENT_PLUS_COUNT'; reliable: boolean; motif: string };
+  let calcul: Calcul | null = null;
+  const sources: ScheduleDerivation['sources'] = {};
+  if (nombre) sources.count = { ...src(nombre.x), count: nombre.p.count! };
+  if (periode) sources.periodicity = periode;
+  if (premieres.length === 1 && nombre && periode) {
+    const p = premieres[0];
+    const r = lastInstalmentFrom(dateIso(p)!, nombre.p.count!, periode.months, !!opts.endOfMonth);
+    sources.firstInstalment = src(p);
+    if (r.value) {
+      const fiables = fiableEcheancier(p) && fiableEcheancier(nombre.x) && (periode.origin !== 'READ' || f.periodicity.every(fiableEcheancier));
+      calcul = { value: r.value, method: 'FIRST_INSTALMENT_PLUS_COUNT', reliable: fiables && !r.dayAmbiguous,
+        motif: r.dayAmbiguous ? 'instalment_day_ambiguous' : fiables ? 'reliable_schedule' : 'uncertain_sources' };
+      if (opts.endOfMonth) assumptions.push('convention « fin de mois » lue : échéances au dernier jour du mois');
+    }
+  } else if (premieres.length === 0 && deblocages.length === 1 && nombre && periode) {
+    // Déblocage ≠ première échéance : estimation (une période après le déblocage), jamais écrite.
+    const d = deblocages[0];
+    const v = addMonthsClamped(dateIso(d)!, nombre.p.count! * periode.months);
+    sources.disbursement = src(d);
+    if (v) {
+      calcul = { value: v, method: 'DISBURSEMENT_PLUS_COUNT', reliable: false, motif: 'disbursement_is_not_first_instalment' };
+      assumptions.push('estimation : première échéance supposée une période après le déblocage (jamais écrite)');
+    }
+  }
+
+  // ── Dernière échéance lue : privilégiée, contrôlée par le calcul ──────────
+  if (dernieres.length === 1) {
+    const d = dernieres[0];
+    sources.lastInstalment = src(d);
+    if (calcul && calcul.method === 'FIRST_INSTALMENT_PLUS_COUNT' && calcul.value !== dateIso(d)) {
+      return out('AMBIGUOUS', 'last_instalment_contradicts_schedule', { sources });
+    }
+    if (opts.change) return out('CALCULATED_PROBABLE', 'known_schedule_change', { value: dateIso(d), method: 'SCHEDULE_LAST_INSTALMENT', sources });
+    const sur = fiableEcheancier(d);
+    if (calcul?.method === 'FIRST_INSTALMENT_PLUS_COUNT') assumptions.push('dernière échéance lue confirmée par le calcul (première échéance + nombre d’échéances)');
+    return out(sur ? 'CALCULATED_RELIABLE' : 'CALCULATED_PROBABLE', sur ? 'reliable_last_instalment' : 'uncertain_sources',
+      { value: dateIso(d), method: 'SCHEDULE_LAST_INSTALMENT', sources });
+  }
+  if (calcul) {
+    if (opts.change) return out('CALCULATED_PROBABLE', 'known_schedule_change', { value: calcul.value, method: calcul.method, sources });
+    return out(calcul.reliable ? 'CALCULATED_RELIABLE' : 'CALCULATED_PROBABLE', calcul.motif, { value: calcul.value, method: calcul.method, sources });
+  }
+  if (!evidenced) return out('NOT_DERIVABLE', 'no_schedule', { sources });
+  const manque = premieres.length === 0 ? 'no_first_instalment' : !nombre ? 'no_instalment_count' : 'no_periodicity';
+  return out('NOT_DERIVABLE', manque, { sources });
+}
+
+/**
+ * Combinaison des deux méthodes (pure) — l'échéancier prime :
+ *   · échéancier fiable → retenu (la méthode « début + durée » est tracée en alternative) ;
+ *   · échéancier CONTRADICTOIRE → aucune valeur, jamais de repli sur l'autre méthode ;
+ *   · échéancier incertain → « début + durée » fiable s'il existe, sinon le candidat le plus étayé ;
+ *   · aucun échéancier calculable → « début + durée » (inchangé), échéancier tracé.
+ */
+export function combineDerivations(classic: DerivationResult, schedule: ScheduleDerivation): DerivationResult {
+  const alt = (r: DerivationResult) => ({ method: r.method, status: r.status, value: r.value, reason: r.reason });
+  const depuisEcheancier = (): DerivationResult => ({
+    status: schedule.status, value: schedule.value, convention: 'LAST_INSTALMENT',
+    method: schedule.method ?? (schedule.sources.lastInstalment ? 'SCHEDULE_LAST_INSTALMENT' : 'FIRST_INSTALMENT_PLUS_COUNT'),
+    start: schedule.sources.firstInstalment ?? null, duration: null, reason: schedule.reason, assumptions: schedule.assumptions,
+    refusals: classic.refusals, schedule, alternative: alt(classic),
+  });
+  if (schedule.status === 'CALCULATED_RELIABLE') return depuisEcheancier();
+  if (schedule.status === 'AMBIGUOUS') {
+    return { ...depuisEcheancier(), status: 'AMBIGUOUS', value: null, start: null, reason: `schedule:${schedule.reason}` };
+  }
+  if (classic.status === 'CALCULATED_RELIABLE') return { ...classic, schedule };
+  if (schedule.status === 'CALCULATED_PROBABLE') {
+    if (classic.status === 'CALCULATED_PROBABLE' && classic.value !== schedule.value) return { ...classic, schedule };
+    return depuisEcheancier();
+  }
+  return { ...classic, schedule };
+}
+
+/** Connaissance de l'échéancier : faits actifs et unités source « libellé : valeur » des documents donnés. */
+async function gatherScheduleFacts(accountId: number, fileId: number, spec: ScheduleSpec, relatedFiles: readonly number[]): Promise<{ facts: ScheduleFacts; texts: string[] }> {
+  const facts: ScheduleFacts = { firstInstalment: [], lastInstalment: [], count: [], periodicity: [], disbursement: [], repayment: [] };
+  const texts: string[] = [];
+  const fichiers = [fileId, ...relatedFiles.filter((x) => x !== fileId)];
+  const sourceDe = (fid: number, base: string) => (fid === fileId ? base : `RELATED_DOCUMENT:${fid}`);
+  const ajouter = (role: ScheduleRole, fid: number, base: string, key: string | null, label: string | null, raw: unknown, confidence: string, excerpt: string | null) => {
+    const date = role === 'firstInstalment' || role === 'lastInstalment' || role === 'disbursement';
+    const r = readValue(spec[role].key, raw, confidence, date ? 'date' : 'text');
+    if (r.value === null) {
+      // Valeur illisible : jamais ignorée en silence (refus tracé par le calcul).
+      if (raw !== null && raw !== undefined && String(raw).trim()) facts[role].push({ value: String(raw).trim(), confidence: 'conflictual', source: sourceDe(fid, base), key, label, excerpt });
+      return;
+    }
+    facts[role].push({ value: r.value, confidence: r.confidence, source: sourceDe(fid, base), key, label, excerpt });
+  };
+  const rows = (await pgClient.unsafe(
+    `SELECT f.file_id, to_jsonb(f) ->> 'canonical_key' AS canonical, f.fact_key AS raw, f.label, f.normalized_value AS norm,
+            f.value_text AS text, f.confidence, f.excerpt
+       FROM document_facts f WHERE f.account_id = $1 AND f.file_id = ANY($2::int[]) AND f.status = 'active' ORDER BY f.file_id, f.id LIMIT 2000`,
+    [accountId, fichiers] as never[],
+  )) as unknown as Array<{ file_id: number; canonical: string | null; raw: string; label: string | null; norm: string | null; text: string | null; confidence: string; excerpt: string | null }>;
+  for (const r of rows) {
+    texts.push([r.label, r.text, r.excerpt].filter(Boolean).join(' : '));
+    const role = scheduleRoleOf(spec, r);
+    if (!role) continue;
+    const date = role === 'firstInstalment' || role === 'lastInstalment' || role === 'disbursement';
+    const brut = date && r.norm && readValue(spec[role].key, r.norm, r.confidence, 'date').value !== null ? r.norm : (r.text ?? r.norm);
+    ajouter(role, Number(r.file_id), 'FACTS', r.canonical ?? r.raw, r.label, brut, r.confidence, r.excerpt);
+  }
+  const { sourceLayerReady } = await import('@/services/ai/source-analysis/source-units/repository');
+  if (await sourceLayerReady()) {
+    const units = (await pgClient.unsafe(
+      `SELECT file_id, kind, label, value_text AS value, content_text AS text, coverage_status AS coverage FROM document_source_units
+        WHERE account_id = $1 AND file_id = ANY($2::int[]) AND coverage_status IN ('COVERED', 'UNRESOLVED', 'UNCERTAIN')
+        ORDER BY file_id, ordinal LIMIT 2000`,
+      [accountId, fichiers] as never[],
+    )) as unknown as Array<{ file_id: number; kind: string; label: string | null; value: string | null; text: string | null; coverage: string }>;
+    for (const u of units) {
+      texts.push([u.label, u.value, u.text].filter(Boolean).join(' : '));
+      if (!['LABEL_VALUE', 'FORM_FIELD'].includes(u.kind) || !u.label || !u.value) continue;
+      const role = scheduleRoleOf(spec, { label: u.label });
+      // Unité lue mais non structurée en fait : jamais « certaine » (proposition).
+      if (role) ajouter(role, Number(u.file_id), 'SOURCE_UNITS', u.label, u.label, u.value, u.coverage === 'UNCERTAIN' ? 'conflictual' : 'probable', null);
+    }
+  }
+  return { facts, texts };
 }
 
 export interface DerivationEvidence {
@@ -429,9 +1011,10 @@ export interface DerivationEvidence {
 /**
  * Connaissance T1 PERSISTÉE du début effectif et de la durée, puis calcul.
  * Lecture seule ; une lecture en échec est levée (jamais confondue avec une
- * donnée absente).
+ * donnée absente). Lot 76 (I) : + échéancier du document et des documents du
+ * MÊME contrat (`relatedFiles`, référence exacte), combiné (`combineDerivations`).
  */
-export async function gatherDerivation(accountId: number, fileId: number, target: string): Promise<DerivationEvidence | null> {
+export async function gatherDerivation(accountId: number, fileId: number, target: string, opts: { relatedFiles?: readonly number[] } = {}): Promise<DerivationEvidence | null> {
   const spec = derivationFor(target);
   if (!spec) return null;
   const [startEvidence, durationEvidence] = await Promise.all([
@@ -448,5 +1031,69 @@ export async function gatherDerivation(accountId: number, fileId: number, target
   const hint = (f: EvidenceFact) => f.key ?? null;
   // Lot 72 (C1) : dates d'édition / signature / document lues ailleurs — jamais un début effectif.
   const nonStartDates = (startEvidence.contextDates ?? []).filter((c) => NON_START_KEY.test(c.key)).map((c) => c.iso);
-  return { result: computeDerivation(spec, startEvidence.facts, durationEvidence.facts, hint, { nonStartDates }), startEvidence, durationEvidence };
+  const classic = computeDerivation(spec, startEvidence.facts, durationEvidence.facts, hint, { nonStartDates });
+  const echeancier = scheduleDerivationFor(target);
+  if (!echeancier) return { result: classic, startEvidence, durationEvidence };
+  let lu: Awaited<ReturnType<typeof gatherScheduleFacts>>;
+  try {
+    lu = await gatherScheduleFacts(accountId, fileId, echeancier, opts.relatedFiles ?? []);
+  } catch (e) {
+    throw new Error(`lecture de l'échéancier impossible : ${String((e as Error)?.message ?? e)}`.slice(0, 300));
+  }
+  // Durée FIABLE lue (contrôle de cohérence, déduction de la période) : une seule valeur exacte.
+  const analyses = durationEvidence.facts.filter(fiable).map((f) => analyzeDuration(f.value, hint(f))).filter((a) => a.reliable && a.months !== null);
+  const mois = [...new Set(analyses.map((a) => a.months!))];
+  const conventions = new Set([...durationEvidence.facts, ...lu.facts.count, ...lu.facts.periodicity, ...lu.facts.firstInstalment]
+    .flatMap((f) => [f.value, f.excerpt]).filter((t): t is string => typeof t === 'string').filter((t) => RE_FIN_DE_MOIS.test(norm(t))));
+  const schedule = computeScheduleDerivation(lu.facts, {
+    durationMonths: mois.length === 1 ? mois[0] : null,
+    durationIncludedMonths: mois.length === 1 ? analyses.flatMap((a) => a.parts.filter((p) => p.role === 'INCLUDED').map((p) => p.months)) : [],
+    endOfMonth: conventions.size > 0,
+    change: knownScheduleChange([...(startEvidence.lifecycleTexts ?? []).map((t) => t.text ?? null), ...lu.texts]),
+  });
+  return { result: combineDerivations(classic, schedule), startEvidence, durationEvidence };
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// LOT 76 (I) — LA DATE DE FIN EST-ELLE INDISPENSABLE ?
+//
+// Une date de fin inconnue et non calculable ne justifie une question que si
+// elle conditionne une démarche : reconduction / dénonciation, préavis,
+// restitution, levée d'option… Un REMBOURSEMENT PAR ÉCHÉANCES s'éteint de
+// lui-même à sa dernière échéance : sans clause qui attache une démarche à
+// la fin, son absence ne déclenche aucune carte (règle de pertinence
+// existante, `assessDeadlinePertinence` — décision déterministe, sans IA).
+// Aucune liste de types de contrats : seuls les faits lus décident.
+// ══════════════════════════════════════════════════════════════════════════
+
+/** Démarche attachée à la FIN d'un contrat (vocabulaire générique). */
+const RE_DEMARCHE_DE_FIN = /\b(reconduc\w*|reconduit\w*|reconductible\w*|tacite\w*|renouvel\w*|prorog\w*|denonc\w*|preavis|restitu\w*|etat des lieux|remise des cles|option d achat|levee d option|lever l option|valeur residuelle|rachat du vehicule)\b/;
+const RE_NEGATION_DEMARCHE = /\b(sans|non|pas de|aucune?|ni)\s+(\w+\s){0,2}(reconduc\w*|reconduit\w*|renouvel\w*|preavis|restitu\w*)/;
+
+export interface EndDateNeed {
+  /** Remboursement par échéances lu (échéancier, nombre d'échéances, durée de remboursement…). */
+  repaymentSchedule: boolean;
+  /** Clauses qui attachent une démarche à la fin (extraits bornés). */
+  endActions: string[];
+  /** La date de fin, inconnue, n'est nécessaire à aucune démarche identifiable. */
+  notNeeded: boolean;
+}
+
+/**
+ * La date de fin conditionne-t-elle une démarche ? (pure) — `textes` : textes
+ * lus du contrat (document et documents du même contrat). Une démarche niée
+ * (« sans tacite reconduction ») n'en est pas une.
+ */
+export function endDateNeed(p: { repaymentSchedule: boolean; textes: ReadonlyArray<string | null | undefined> }): EndDateNeed {
+  const endActions: string[] = [];
+  for (const t of p.textes) {
+    if (!t) continue;
+    const n = ` ${norm(t)} `;
+    if (!RE_DEMARCHE_DE_FIN.test(n)) continue;
+    const reste = n.replace(new RegExp(RE_NEGATION_DEMARCHE.source, 'g'), ' ');
+    if (!RE_DEMARCHE_DE_FIN.test(reste)) continue;
+    const e = String(t).replace(/\s+/g, ' ').trim().slice(0, 160);
+    if (endActions.length < 5 && !endActions.includes(e)) endActions.push(e);
+  }
+  return { repaymentSchedule: p.repaymentSchedule, endActions, notNeeded: p.repaymentSchedule && endActions.length === 0 };
 }

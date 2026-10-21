@@ -153,7 +153,8 @@ scenario('L72A-T6', 'Lot 72A — écarts résiduels du contrat EVALUATE et bulle
     const p0 = await passer(c.id);
     expect(echeancesAffichees(p0)).toEqual([id]);
     const e0 = (await evaluation(c.id, id))!;
-    expect(e0.evaluation_signature).toMatch(/^e1:/);
+    // Lot 76A : signature complète (replis, raisonnement, limite de sortie).
+    expect(e0.evaluation_signature).toMatch(/^e2:/);
     // Nouvelle version BO : seule la branche FORMULATE change.
     const texte = await master();
     await activerPrompt(texte.replace('R12 — Questions suggérées.', 'R12 — Questions suggérées (révision PO).'), 9101);

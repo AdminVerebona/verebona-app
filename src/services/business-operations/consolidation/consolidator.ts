@@ -54,7 +54,7 @@ import {
   type CandidateIdentity, type CandidateRecord, type SourceContribution,
 } from './model';
 import {
-  applyM3Verdict, canonicalOf, decideCandidate, operationsMergeable, rankPlausible,
+  applyM3Verdict, canonicalOf, decideCandidate, operationsMergeable, rankPlausible, sameDocumentReality,
   type CandidateDecision, type ExistingOperation, type MatchContext, type T3Outcome,
 } from './matching';
 import { requestRetroReconciliation, retroActive, type RetroTrace } from './retro';
@@ -1176,6 +1176,8 @@ export async function consolidateDocument(accountId: number, fileId: number, opt
 
       const claimed = new Map<number, number>(); // sourceId -> operationId
       const createdHere = new Set<number>();
+      /** Lot 76H : identité du candidat qui a créé chaque Opération de ce passage. */
+      const createurs = new Map<number, CandidateIdentity>();
       const touched = new Set<number>(docSources.filter((s) => s.active && !s.opMerged).map((s) => s.operationId));
       const decisions = new Map<number, CandidateDecision>();
       /** Lot 55B : décision tracée distincte de la décision appliquée (attente d'un examen rétroactif). */
@@ -1193,11 +1195,21 @@ export async function consolidateDocument(accountId: number, fileId: number, opt
         } else {
           const memeSource = docSources.filter((s) => s.key === c.candidateKey && !s.opMerged && (s.active || s.opInvalidated));
           const dec = await loadDecisions(tx, accountId, fileId, c.candidateKey);
-          const extra = [...new Set([...memeSource.map((s) => s.operationId), ...dec.confirmed])];
+          // Lot 76H : Opération créée dans ce passage par un AUTRE candidat du
+          // même document qui partage avec celui-ci une référence identifiante
+          // (même facture, même ordre de travail…) — la même réalité, comme T3
+          // le décide déjà à la réanalyse (M1 puis fusion V1).
+          const memeRealite = new Map([...createurs].filter(([, autre]) => sameDocumentReality(identity, autre)));
+          const extra = [...new Set([...memeSource.map((s) => s.operationId), ...dec.confirmed, ...memeRealite.keys()])];
           const ops = (await loadMatchableOperations(tx, accountId, identity, extra))
-            // Deux candidats d'un même document sont deux réalités distinctes (B8, F-027).
-            .filter((o) => !createdHere.has(o.id))
-            .map((o) => ({ ...o, sameSource: memeSource.some((s) => s.operationId === o.id) }));
+            // Deux candidats d'un même document sont deux réalités distinctes (B8,
+            // F-027) — sauf preuve de même réalité (lot 76H, ci-dessus).
+            .filter((o) => !createdHere.has(o.id) || memeRealite.has(o.id))
+            .map((o) => {
+              const autre = memeRealite.get(o.id);
+              const refs = autre ? [...o.refs, ...autre.refs.map((r) => ({ kind: r.kind, normalized: r.normalized }))] : o.refs;
+              return { ...o, refs, sameSource: memeSource.some((s) => s.operationId === o.id) };
+            });
           const ctx = {
             operations: ops, confirmed: dec.confirmed, rejected: dec.rejected, assetStatus: actx.status,
             userDistinct: dec.userDistinct, nonMergeable: await loadNonMergeable(tx, accountId, ops.map((o) => o.id)),
@@ -1254,6 +1266,7 @@ export async function consolidateDocument(accountId: number, fileId: number, opt
           changes.track(true);
           d.operationId = created.id;
           createdHere.add(created.id);
+          createurs.set(created.id, identity);
           claimed.set(created.sourceId, created.id);
           touched.add(created.id);
         } else if (d.outcome === 'MATCH_AND_ENRICH' && d.operationId !== null) {

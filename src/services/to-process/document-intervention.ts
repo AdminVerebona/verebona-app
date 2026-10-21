@@ -71,10 +71,27 @@ export interface InterventionUpsertResult {
   actionId: number | null;
 }
 
-/** Même intervention (nature et échéance d'action) — pure. */
-export function sameIntervention(prev: { kind?: string | null; actBy?: string | null } | null, next: Pick<InterventionDecision, 'kind' | 'actBy'>): boolean {
+const normPreuve = (t: string | null | undefined) => (t ? t.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim() : '');
+
+/** Intervention comparée (lot 76, C6) : nature, échéance d'action, clé de preuve (clauses citées), preuve. */
+export interface InterventionIdentity { kind?: string | null; actBy?: string | null; proof?: string | null; evidence?: string | null }
+
+/**
+ * Même OBLIGATION (pure) — lot 76 (C6) : même nature, même échéance d'action
+ * ET même objet prouvé (clé des clauses citées ; à défaut, la preuve citée).
+ * Deux obligations de même nature sans date mais de preuves distinctes ne
+ * sont jamais assimilées ; une reformulation de la même preuve, si. Une carte
+ * antérieure sans aucune preuve conservée : la décision de l'utilisateur est
+ * respectée (aucun nouveau problème démontrable).
+ */
+export function sameIntervention(prev: InterventionIdentity | null, next: InterventionIdentity): boolean {
   if (!prev || !prev.kind) return false;
-  return prev.kind === next.kind && (prev.actBy ?? null) === (next.actBy ?? null);
+  if (prev.kind !== next.kind || (prev.actBy ?? null) !== (next.actBy ?? null)) return false;
+  if (prev.proof && next.proof) return prev.proof === next.proof;
+  const a = normPreuve(prev.evidence);
+  const b = normPreuve(next.evidence);
+  if (a && b) return a === b || a.includes(b) || b.includes(a);
+  return !a;
 }
 
 /**
@@ -85,6 +102,8 @@ export function sameIntervention(prev: { kind?: string | null; actBy?: string | 
 export async function upsertDocumentIntervention(p: {
   accountId: number; fileId: number; rule: ProcessingRule; intervention: InterventionDecision; signature: string | null;
   contract?: unknown;
+  /** Lot 76 (C6) : clé de preuve (clauses du document citées par l'intervention). */
+  proof?: string | null;
 }): Promise<InterventionUpsertResult> {
   const dataKey = p.rule.fieldKey ?? p.rule.relationKey!;
   const key = interventionKey(dataKey);
@@ -99,12 +118,13 @@ export async function upsertDocumentIntervention(p: {
     .where(and(eq(toProcessActions.accountId, p.accountId), eq(toProcessActions.targetType, 'DOCUMENT'), eq(toProcessActions.targetId, p.fileId),
       eq(toProcessActions.fieldKey, key), isNull(toProcessActions.resolvedAt))).limit(1);
   const tranche = dernier && (dernier.reason === 'USER_ARBITRATED' || dernier.reason === 'NOT_APPLICABLE' || dernier.reason === 'USER_COMPLETED');
-  const ctx = (dernier?.ctx ?? null) as { signature?: string; intervention?: { kind?: string | null; actBy?: string | null } } | null;
+  const ctx = (dernier?.ctx ?? null) as { signature?: string; intervention?: InterventionIdentity } | null;
   // Lot 72 (C5) : la décision de l'utilisateur vaut pour la SITUATION, pas
-  // pour une empreinte : même nature d'intervention et même échéance d'action
-  // → respectée, même si des preuves sans incidence ont changé. Une autre
-  // nature ou une nouvelle échéance (nouvelle obligation prouvée) → nouvelle carte.
-  if (!actif.length && tranche && (ctx?.signature === p.signature || sameIntervention(ctx?.intervention ?? null, p.intervention))) {
+  // pour une empreinte : même obligation → respectée, même si des preuves sans
+  // incidence ont changé. Lot 76 (C6) : même nature ET même objet prouvé — une
+  // obligation distincte prouvée (autre clause) → nouvelle carte.
+  if (!actif.length && tranche && (ctx?.signature === p.signature
+    || sameIntervention(ctx?.intervention ?? null, { kind: p.intervention.kind, actBy: p.intervention.actBy, proof: p.proof ?? null, evidence: p.intervention.evidence }))) {
     return { status: 'USER_DECIDED', actionId: dernier.id };
   }
   const iv = p.intervention;
@@ -115,7 +135,8 @@ export async function upsertDocumentIntervention(p: {
     dueDate: iv.actBy ? new Date(`${iv.actBy}T00:00:00Z`) : null,
     triggerContext: {
       signature: p.signature, sourceRule: p.rule.code, dataKey,
-      intervention: { kind: iv.kind, action: iv.action, actBy: iv.actBy, timing: iv.timing, justification: iv.justification, consequence: iv.consequence, evidence: iv.evidence },
+      intervention: { kind: iv.kind, action: iv.action, actBy: iv.actBy, timing: iv.timing, justification: iv.justification, consequence: iv.consequence, evidence: iv.evidence,
+        proof: p.proof ?? null },
     },
   });
   return { status: r.status === 'SKIPPED' ? 'SKIPPED' : r.status, actionId: r.actionId ?? null };

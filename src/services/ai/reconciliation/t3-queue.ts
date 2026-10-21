@@ -527,6 +527,9 @@ export function summarizeT3Naming(dn: import('./document-naming/phase').Document
     proposals: dn.proposals, applied: dn.applied, refused: dn.refused, conflicts: dn.conflicts, failed: dn.failed,
     renamesSectionMissing: dn.renamesSectionMissing, pendingWrites: dn.pendingWrites ?? 0, writesRetried: dn.writesRetried ?? 0,
     aiCalls: dn.aiCalls, reportId: dn.reportId,
+    // Lot 76B : décisions non sauvegardées (C2), recalage : migration technique / réexamen attendu / effectué (C5).
+    decisionsUnsaved: dn.decisionsUnsaved ?? 0, documentsRevalidated: dn.documentsRevalidated ?? 0,
+    upgrade: dn.upgrade ?? null,
     remainingGroups: dn.remaining?.groups ?? 0, remainingDocuments: dn.remaining?.documents ?? 0,
     remainingByReason: dn.remaining?.byReason ?? {}, nextRetryAt: dn.remaining?.nextRetryAt ?? null,
     scanComplete: dn.scan?.complete ?? null, documents: dn.documents,
@@ -669,6 +672,7 @@ const db = async (): Promise<Sql> => (await import('@/db')).pgClient;
 /** Comptes du balayage planifié (exporté pour les tests e2e, lot 61). */
 export async function listSweepAccountsFromDb(q: SweepAccountsQuery): Promise<number[]> {
   const sql = await db();
+  const verifyHours = Math.floor(envNumber('T3_NAMING_VERIFY_HOURS', 24, { min: 0 }));
   // Même périmètre que l'ancienne planification (comptes ayant des biens,
   // sans exécution T3 réussie ou en cours sur la période), PAGINÉ par
   // identifiant croissant : curseur stable, aucun compte sauté.
@@ -681,19 +685,41 @@ export async function listSweepAccountsFromDb(q: SweepAccountsQuery): Promise<nu
              -- (a) découverte initiale : documents, aucun état de compte « * » ;
              OR (EXISTS (SELECT 1 FROM asset_files f WHERE f.account_id = a.id AND f.deleted_at IS NULL AND f.retained_title IS NOT NULL)
                  AND NOT EXISTS (SELECT 1 FROM document_naming_groups g WHERE g.account_id = a.id AND g.group_key = '*'))
-             -- (b) traitement en cours : compte non terminé, ou lot en cours / en reprise / à réécrire,
-             --     REDEVENU EXÉCUTABLE (délai de reprise, plafond journalier, vérification quotidienne du prompt) ;
+             -- (b) traitement en cours : compte non terminé, ou lot en cours / en reprise / à réécrire /
+             --     en réexamen « contexte enrichi » (lot 76B), REDEVENU EXÉCUTABLE (délai de reprise,
+             --     plafond journalier, vérification quotidienne du prompt) ;
              OR EXISTS (SELECT 1 FROM document_naming_groups g
                          WHERE g.account_id = a.id
                            AND ((g.group_key = '*' AND g.status <> 'DONE')
-                                OR g.status IN ('IN_PROGRESS', 'DEFERRED', 'ERROR', 'WRITE_PENDING'))
+                                OR g.status IN ('IN_PROGRESS', 'DEFERRED', 'ERROR', 'WRITE_PENDING', 'UPGRADE_REVIEW'))
                            AND (g.retry_after IS NULL OR g.retry_after <= now()))
-             -- (c) traitement terminé puis changement documentaire (import, analyse T1, fait) : réexamen.
+             -- (c) traitement terminé puis mutation PERTINENTE (lot 76B, C4 — création, modification,
+             --     désactivation ou suppression) : document (import, renommage, suppression, rattachement,
+             --     classement), extraction (analyse T1), fait créé, modifié, désactivé ou supprimé (journal de
+             --     connaissance 0292, mécanisme existant), Opération (statut, nature, contrat, documents
+             --     reliés : historique des Opérations), lien document ↔ bien ;
              OR EXISTS (SELECT 1 FROM document_naming_groups m
                          WHERE m.account_id = a.id AND m.group_key = '*' AND m.status = 'DONE'
                            AND (EXISTS (SELECT 1 FROM asset_files f WHERE f.account_id = a.id AND f.updated_at > m.updated_at)
                                 OR EXISTS (SELECT 1 FROM document_extractions e WHERE e.account_id = a.id AND e.updated_at > m.updated_at)
-                                OR EXISTS (SELECT 1 FROM document_facts d WHERE d.account_id = a.id AND d.created_at > m.updated_at)))` : ''})
+                                OR EXISTS (SELECT 1 FROM document_facts d WHERE d.account_id = a.id AND d.created_at > m.updated_at)
+                                OR EXISTS (SELECT 1 FROM account_knowledge_changes k WHERE k.account_id = a.id
+                                             AND k.kind IN ('FACT', 'ANALYSIS', 'LINK', 'DOCUMENT_LINK') AND k.changed_at > m.updated_at)
+                                OR EXISTS (SELECT 1 FROM business_operations o WHERE o.account_id = a.id AND o.updated_at > m.updated_at)
+                                OR EXISTS (SELECT 1 FROM business_operation_history h WHERE h.account_id = a.id AND h.created_at > m.updated_at)
+                                OR EXISTS (SELECT 1 FROM business_operation_sources bs WHERE bs.account_id = a.id
+                                             AND (bs.created_at > m.updated_at OR bs.superseded_at > m.updated_at))
+                                OR EXISTS (SELECT 1 FROM business_operation_contract_details cd
+                                             JOIN business_operations o2 ON o2.id = cd.operation_id AND o2.account_id = a.id
+                                            WHERE cd.updated_at > m.updated_at)
+                                OR EXISTS (SELECT 1 FROM document_asset_links l WHERE l.account_id = a.id
+                                             AND (l.updated_at > m.updated_at OR l.created_at > m.updated_at))))
+             -- (d) filet de sécurité (lot 76B, C4) : compte terminé dont le dernier cycle complet de lecture
+             --     date de plus de T3_NAMING_VERIFY_HOURS (24 h) — relecture sans appel IA si rien n'a changé
+             --     (suppressions physiques, modifications sans horodatage).${verifyHours > 0 ? `
+             OR EXISTS (SELECT 1 FROM document_naming_groups v
+                         WHERE v.account_id = a.id AND v.group_key = '*' AND v.status = 'DONE'
+                           AND v.updated_at < now() - interval '${verifyHours} hours')` : ''}` : ''})
         AND NOT EXISTS (
           SELECT 1 FROM account_reconciliation_runs r
            WHERE r.account_id = a.id AND r.status IN ('completed', 'partial', 'running')

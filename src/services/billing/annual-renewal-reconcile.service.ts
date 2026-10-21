@@ -29,6 +29,19 @@
  *      resynchronisé (résiliation immédiate, impayé…).
  * Une échéance resynchronisée est vérifiée par le passage suivant du rappel
  * (aucun envoi ici). Rien n'est jamais déduit de la seule copie locale.
+ *
+ * LOT 76D
+ *   · statut comparé dans les DEUX sens selon les correspondances de
+ *     subscription-sync (active/trialing → active, past_due → past_due,
+ *     canceled/unpaid/incomplete_expired → canceled ; paused/incomplete : non
+ *     écrits par la synchronisation → un local « active » est une divergence
+ *     persistante, journalisée) ;
+ *   · parcours inverse : chaque relecture Stripe en échec est PERSISTÉE
+ *     (`annual-renewal-reconcile:<abonnement>:<échéance locale>`, résultat
+ *     RECONCILE_ERROR, échéance locale marquée non revérifiée, étape, motif
+ *     expurgé, prochaine tentative = prochain passage) et visible dans le BO ;
+ *     reprise réussie → RECONCILE_RESOLVED (historique conservé) ; un passage
+ *     partiel ou en erreur n'est jamais présenté comme réussi.
  * ══════════════════════════════════════════════════════════════════════════
  */
 import type Stripe from 'stripe';
@@ -64,6 +77,17 @@ export interface ReconcileResult {
   errors: number;
   /** Liste Stripe parcourue jusqu'au bout. */
   complete: boolean;
+  /** Lot 76D : parcours inverse mené jusqu'au bout (non interrompu par le délai). */
+  reverseComplete: boolean;
+}
+
+/** Lot 76D : clé du journal d'une relecture en échec du parcours inverse (hors présélection du rappel). */
+export const reconcileErrorKey = (subscriptionId: string, localRenewalDate: string) => `annual-renewal-reconcile:${subscriptionId}:${localRenewalDate}`;
+/** Heure de la tâche planifiée (catalogue), pour la prochaine tentative affichée. */
+async function reconcileTaskAt(): Promise<[number, number]> {
+  const { SCHEDULED_TASKS } = await import('@/services/scheduling/scheduled-tasks.catalog');
+  const sch = SCHEDULED_TASKS.find((t) => t.code === 'subscription-annual-renewal-reconcile')?.schedule as { kind?: string; at?: [number, number] } | undefined;
+  return sch?.kind === 'daily' && sch.at ? [sch.at[0], sch.at[1]] : [7, 40];
 }
 
 interface StripeView {
@@ -116,11 +140,25 @@ async function readLocal(subscriptionId: string): Promise<LocalRow | null> {
   return r ?? null;
 }
 
+/**
+ * Lot 76D — statut local attendu pour un statut Stripe (correspondances de
+ * `subscription-sync.service.ts`) ; null : état que la synchronisation n'écrit
+ * pas (paused, incomplete) — l'abonnement n'est alors jamais « active » localement.
+ */
+export function expectedLocalStatus(stripeStatus: string): 'active' | 'past_due' | 'canceled' | null {
+  if (stripeStatus === 'active' || stripeStatus === 'trialing') return 'active';
+  if (stripeStatus === 'past_due') return 'past_due';
+  if (stripeStatus === 'canceled' || stripeStatus === 'unpaid' || stripeStatus === 'incomplete_expired') return 'canceled';
+  return null;
+}
+
 /** Écarts entre Stripe et la copie locale qui faussent la présélection du rappel (pur). */
 export function desyncReasons(v: StripeView, local: LocalRow | null): string[] {
   if (!local) return ['LOCAL_MISSING'];
   const out: string[] = [];
-  if (v.status === 'active' && local.status !== 'active') out.push('STATUS');
+  // Lot 76D : dans les deux sens (local actif devenu past_due / unpaid / canceled / paused chez Stripe).
+  const expected = expectedLocalStatus(v.status);
+  if (expected ? local.status !== expected : local.status === 'active') out.push('STATUS');
   if (v.annual && local.billing_period !== 'yearly') out.push('BILLING_PERIOD');
   if (!!local.cancel_at_period_end !== v.cancelScheduled) out.push('CANCELLATION');
   const localEnd = local.current_period_end_at ? Math.floor(new Date(local.current_period_end_at).getTime() / 1000) : null;
@@ -149,12 +187,14 @@ export async function runAnnualRenewalReconciliation(opts: { now?: Date; stripe?
   const sync = opts.sync ?? defaultSync;
   const horizonEnd = now.getTime() + (opts.horizonDays ?? RECONCILE_HORIZON_DAYS) * DAY_MS;
   const today = parisNow(now).dateStr;
-  const result: ReconcileResult = { scanned: 0, inWindow: 0, consistent: 0, resynced: 0, unresolved: 0, stripeOnly: 0, localOnlyChecked: 0, errors: 0, complete: false };
+  const result: ReconcileResult = { scanned: 0, inWindow: 0, consistent: 0, resynced: 0, unresolved: 0, stripeOnly: 0, localOnlyChecked: 0, errors: 0, complete: false, reverseComplete: false };
   const seen = new Set<string>();
 
-  const journal = async (v: StripeView, accountId: number | null, outcome: 'DESYNC_RESYNCED' | 'DESYNC_UNRESOLVED' | 'STRIPE_ONLY', reason: string) => {
-    if (v.renewalTs == null) return;
-    const renewalDate = parisDateOf(new Date(v.renewalTs * 1000));
+  const journal = async (v: StripeView, accountId: number | null, outcome: 'DESYNC_RESYNCED' | 'DESYNC_UNRESOLVED' | 'STRIPE_ONLY', reason: string, localEnd: string | null = null) => {
+    // Lot 76D : sans échéance Stripe (abonnement terminé), échéance locale — jamais d'écart silencieux.
+    const endTs = v.renewalTs ?? (localEnd ? Math.floor(new Date(localEnd).getTime() / 1000) : null);
+    if (endTs == null) return;
+    const renewalDate = parisDateOf(new Date(endTs * 1000));
     // Prochaine vérification : IMMÉDIATE (le passage suivant du rappel revérifie chez Stripe).
     await recordCheck({
       key: annualRenewalDedupeKey(v.id, renewalDate), accountId, subscriptionId: v.id, renewalDate, today,
@@ -175,17 +215,19 @@ export async function runAnnualRenewalReconciliation(opts: { now?: Date; stripe?
         return;
       }
       const left = desyncReasons(v, after);
+      const localEnd = after?.current_period_end_at ?? before?.current_period_end_at ?? null;
       if (left.length === 0) {
         result.resynced += 1;
-        await journal(v, after?.account_id ?? synced?.accountId ?? null, 'DESYNC_RESYNCED', `Écarts corrigés : ${diff.join(', ')}`);
+        await journal(v, after?.account_id ?? synced?.accountId ?? null, 'DESYNC_RESYNCED', `Écarts corrigés : ${diff.join(', ')}`, localEnd);
       } else {
         result.unresolved += 1;
-        await journal(v, after?.account_id ?? synced?.accountId ?? null, 'DESYNC_UNRESOLVED', `Écarts persistants : ${left.join(', ')}`);
+        console.warn(`[annual-renewal-reconcile] divergence persistante (${v.id}, Stripe ${v.status}) : ${left.join(', ')}`);
+        await journal(v, after?.account_id ?? synced?.accountId ?? null, 'DESYNC_UNRESOLVED', `Écarts persistants : ${left.join(', ')} (Stripe : ${v.status})`, localEnd);
       }
     } catch (e) {
       result.errors += 1;
       result.unresolved += 1;
-      await journal(v, before?.account_id ?? null, 'DESYNC_UNRESOLVED', `Resynchronisation impossible : ${stripeErrorReason(e)}`);
+      await journal(v, before?.account_id ?? null, 'DESYNC_UNRESOLVED', `Resynchronisation impossible : ${stripeErrorReason(e)}`, before?.current_period_end_at ?? null);
     }
   };
 
@@ -213,35 +255,102 @@ export async function runAnnualRenewalReconciliation(opts: { now?: Date; stripe?
     console.error(`[annual-renewal-reconcile] liste Stripe interrompue : ${stripeErrorReason(e)}`);
   }
 
-  // 4. Sens inverse : locaux annuels actifs dans l'horizon, absents des actifs Stripe.
+  // 4. Sens inverse : locaux annuels actifs dans l'horizon, absents des actifs Stripe,
+  //    et (lot 76D) abonnements dont une relecture précédente a échoué (reprise).
   if (result.complete) {
-    const locals = await pgClient.unsafe<{ stripe_subscription_id: string }[]>(
-      `SELECT s.stripe_subscription_id FROM account_subscriptions s
+    const nextAttempt = await nextReconcileRun(now);
+    const locals = await pgClient.unsafe<{ stripe_subscription_id: string; account_id: number | null; current_period_end_at: string | null }[]>(
+      `SELECT s.stripe_subscription_id, s.account_id, s.current_period_end_at FROM account_subscriptions s
         WHERE s.stripe_subscription_id IS NOT NULL AND s.status = 'active' AND s.billing_period = 'yearly'
           AND s.current_period_end_at > $1::timestamptz AND s.current_period_end_at <= $2::timestamptz
-        ORDER BY s.current_period_end_at LIMIT 500`,
+       UNION
+       SELECT k.stripe_subscription_id, k.account_id, s.current_period_end_at FROM annual_renewal_reminder_checks k
+         LEFT JOIN account_subscriptions s ON s.stripe_subscription_id = k.stripe_subscription_id
+        WHERE k.outcome = 'RECONCILE_ERROR' AND k.candidate_key LIKE 'annual-renewal-reconcile:%'
+        ORDER BY 3 NULLS LAST LIMIT 500`,
       [now.toISOString(), new Date(horizonEnd).toISOString()] as never[],
     );
+    result.reverseComplete = true;
+    const done = new Set<string>();
     for (const l of locals) {
-      if (seen.has(l.stripe_subscription_id) || Date.now() >= deadline) continue;
+      if (done.has(l.stripe_subscription_id)) continue;
+      done.add(l.stripe_subscription_id);
+      if (seen.has(l.stripe_subscription_id)) {
+        // Relu avec succès dans la liste des actifs : une erreur antérieure est reprise.
+        await resolveReconcileErrors(l.stripe_subscription_id, now, today);
+        continue;
+      }
+      if (Date.now() >= deadline) { result.reverseComplete = false; break; }
       result.localOnlyChecked += 1;
+      let raw: unknown;
       try {
-        const raw = await stripe.subscriptions.retrieve(l.stripe_subscription_id);
-        const v = viewOf(raw);
-        await handle(raw, v);
+        raw = await stripe.subscriptions.retrieve(l.stripe_subscription_id);
       } catch (e) {
         result.errors += 1;
-        console.error(`[annual-renewal-reconcile] relecture impossible (${l.stripe_subscription_id}) : ${stripeErrorReason(e)}`);
+        const why = stripeErrorReason(e);
+        console.error(`[annual-renewal-reconcile] relecture impossible (${l.stripe_subscription_id}) : ${why}`);
+        // Lot 76D : trace INDIVIDUELLE persistante (échéance locale non revérifiée, prochaine tentative).
+        const localDate = l.current_period_end_at ? parisDateOf(new Date(l.current_period_end_at)) : today;
+        await recordCheck({
+          key: reconcileErrorKey(l.stripe_subscription_id, localDate), accountId: l.account_id, subscriptionId: l.stripe_subscription_id,
+          renewalDate: localDate, today, outcome: 'RECONCILE_ERROR', reason: `Relecture Stripe impossible : ${why}`.slice(0, 300),
+          jobId: null, step: 'RECONCILE_REVERSE', now, next: nextAttempt, renewalDateVerified: false,
+        });
+        continue;
       }
+      await handle(raw, viewOf(raw));
+      await resolveReconcileErrors(l.stripe_subscription_id, now, today);
     }
   }
 
-  const note = redactSecrets(`${result.scanned} abonnement(s) actifs lus${result.complete ? '' : ' (liste incomplète)'}, ${result.inWindow} annuel(s) à échéance proche, `
-    + `${result.resynced} resynchronisé(s), ${result.unresolved} non résolu(s), ${result.stripeOnly} absent(s) localement, ${result.errors} erreur(s)`);
+  const partial = !result.complete || !result.reverseComplete || result.errors > 0;
+  const note = redactSecrets(`${partial ? 'PASSAGE PARTIEL — ' : ''}${result.scanned} abonnement(s) actifs lus${result.complete ? '' : ' (liste incomplète)'}, ${result.inWindow} annuel(s) à échéance proche, `
+    + `${result.resynced} resynchronisé(s), ${result.unresolved} non résolu(s), ${result.stripeOnly} absent(s) localement, ${result.localOnlyChecked} local(aux) relu(s), ${result.errors} erreur(s)`);
   await pgClient.unsafe(
     `INSERT INTO annual_renewal_reminder_state (id, last_reconcile_at, last_reconcile_note, updated_at) VALUES (1, $1::timestamptz, $2, $1::timestamptz)
      ON CONFLICT (id) DO UPDATE SET last_reconcile_at = EXCLUDED.last_reconcile_at, last_reconcile_note = EXCLUDED.last_reconcile_note, updated_at = EXCLUDED.updated_at`,
     [now.toISOString(), note] as never[],
   );
   return result;
+}
+
+/** Lot 76D : prochain passage de la tâche de réconciliation (prochaine tentative d'une relecture en échec). */
+async function nextReconcileRun(now: Date): Promise<Date> {
+  const { parisWallTimeToDate } = await import('@/services/scheduling/task-calendar');
+  const { addDaysToDateStr } = await import('@/lib/notifications/time-paris');
+  const today = parisNow(now).dateStr;
+  const at = await reconcileTaskAt();
+  const todayRun = parisWallTimeToDate(today, at);
+  return todayRun.getTime() > now.getTime() ? todayRun : parisWallTimeToDate(addDaysToDateStr(today, 1), at);
+}
+
+/** Lot 76D : reprise réussie — anomalies de relecture closes, historique conservé. */
+async function resolveReconcileErrors(subscriptionId: string, now: Date, today: string): Promise<void> {
+  const open = await pgClient.unsafe<{ candidate_key: string; account_id: number | null; renewal_date: string }[]>(
+    `SELECT candidate_key, account_id, renewal_date::text AS renewal_date FROM annual_renewal_reminder_checks
+      WHERE stripe_subscription_id = $1 AND outcome = 'RECONCILE_ERROR' AND candidate_key LIKE 'annual-renewal-reconcile:%'`,
+    [subscriptionId as never],
+  );
+  if (!open.length) return;
+  for (const o of open) {
+    await recordCheck({
+      key: o.candidate_key, accountId: o.account_id, subscriptionId, renewalDate: o.renewal_date, today, outcome: 'RECONCILE_RESOLVED',
+      reason: 'Relecture Stripe réussie : réconciliation reprise', jobId: null, step: 'RECONCILE_REVERSE', now, next: null, renewalDateVerified: false,
+    });
+  }
+}
+
+/**
+ * Lot 76D — compte rendu de la tâche planifiée : un passage partiel (liste
+ * incomplète, parcours inverse interrompu, relecture en échec) ou avec des
+ * désynchronisations non résolues est en ÉCHEC, jamais « réussi ».
+ */
+export function describeReconcileRun(r: ReconcileResult): { note: string; error?: string } {
+  const note = `${r.scanned} abonnement(s) actifs lus, ${r.inWindow} annuel(s) à échéance proche, ${r.resynced} resynchronisé(s), `
+    + `${r.unresolved} non résolu(s), ${r.stripeOnly} absent(s) localement, ${r.localOnlyChecked} local(aux) relu(s), ${r.errors} erreur(s)`;
+  if (!r.complete) return { note, error: 'Liste des abonnements Stripe incomplète (délai ou erreur Stripe) : nouvel essai demain ; voir BO › Communications › Rappel J−7.' };
+  if (r.errors > 0) return { note, error: `${r.errors} relecture(s) ou resynchronisation(s) Stripe en échec : réconciliation PARTIELLE, nouvel essai au prochain passage ; voir BO › Communications › Rappel J−7.` };
+  if (!r.reverseComplete) return { note, error: 'Contrôle des abonnements locaux interrompu (délai) : réconciliation PARTIELLE, nouvel essai au prochain passage.' };
+  if (r.unresolved > 0 || r.stripeOnly > 0) return { note, error: `${r.unresolved + r.stripeOnly} désynchronisation(s) non résolue(s) : voir BO › Communications › Rappel J−7.` };
+  return { note };
 }

@@ -79,6 +79,12 @@ export function drawerHref(t: Pick<DrawerTarget, 'kind' | 'id'>, path = '/accuei
  */
 export interface OpenDrawerOptions {
   stack?: boolean;
+  /**
+   * Lot 76E — élément qui reprend le focus à la fermeture du tiroir document
+   * (vignette d'une carte « À traiter »). Sans déclencheur Radix, le tiroir ne
+   * le rendait à rien. Opt-in : sans cette option, rien ne change.
+   */
+  returnFocusTo?: HTMLElement | null;
 }
 
 /** Ouvre la fiche en tiroir, sur l'écran courant. */
@@ -90,11 +96,30 @@ export function openDrawer(t: DrawerTarget, opts: OpenDrawerOptions = {}): void 
   }
   if (t.kind === 'document') {
     window.dispatchEvent(new CustomEvent(OPEN_DOCUMENT_DRAWER, {
-      detail: { docId: t.id, showAnalysisResults: t.showAnalysisResults },
+      detail: {
+        docId: t.id,
+        showAnalysisResults: t.showAnalysisResults,
+        ...(opts.returnFocusTo ? { returnFocusTo: opts.returnFocusTo } : {}),
+      },
     }));
     return;
   }
   window.dispatchEvent(new CustomEvent<DrawerTarget>(OPEN_ENTITY_DRAWER, { detail: t }));
+}
+
+/**
+ * Lot 76E — à la fermeture d'un tiroir (`onCloseAutoFocus` Radix) : rend le
+ * focus à l'élément d'origine s'il est toujours affiché, et empêche alors le
+ * comportement par défaut. Rend `true` si le focus a été rendu.
+ */
+export function restoreFocusOnClose(
+  e: { preventDefault(): void },
+  el: HTMLElement | null | undefined,
+): boolean {
+  if (!el || !el.isConnected) return false;
+  e.preventDefault();
+  el.focus();
+  return true;
 }
 
 /** Fiche désignée par un lien profond, ou `null` si le lien n'en porte pas. */

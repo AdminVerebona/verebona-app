@@ -32,6 +32,10 @@ import type { ReconciliationDecision, ReconciliationRun } from './types';
 import { assertJobActive } from '../queue/execution-control';
 import { T3ExecutionRecorder, writeT3Report } from '../execution-report/t3-report';
 import { isRegistryKey } from './canonical-key';
+import { guardFreeText, isFreeTextKey } from './information-check/inventory';
+import {
+  assetInventory, canonicalKeyOf, crossCheckAsset, loadConflictMemory, prepareInformationSources, recordInformationCheck,
+} from './information-check/engine-steps';
 
 export interface ReconcileInput {
   accountId: number;
@@ -42,6 +46,12 @@ export interface ReconcileInput {
   sourceFileId?: number | null;
   /** Exécution T3 (compte) à laquelle ce run local appartient. */
   accountRunId?: number | null;
+  /**
+   * Lot 76J : revue IA ciblée autorisée (défaut). Faux pour le rattrapage
+   * du stock : une preuve ambiguë reste sans décision (aucun appel modèle,
+   * aucune carte), comme avant le passage.
+   */
+  aiReview?: boolean;
 }
 
 export async function reconcileAsset(input: ReconcileInput): Promise<ReconciliationRun> {
@@ -103,8 +113,66 @@ async function reconcileAgendaStatusAfter(input: ReconcileInput): Promise<void> 
 
 async function runEngine(input: ReconcileInput, runId: number, traceId: string, rec?: T3ExecutionRecorder): Promise<ReconciliationRun> {
 
-  const { kc, fields: collected } = await collectAssetEvidenceState(input.accountId, input.assetId);
+  // Lot 76J (T3 complétude) : prix d'achat ancrés dans les candidats
+  // Opération T1 → preuves ordinaires, AVANT la collecte (même moteur).
+  const sources = await prepareInformationSources({ accountId: input.accountId, assetId: input.assetId }, rec);
+  const { kc, fields: collected, asset } = await collectAssetEvidenceState(input.accountId, input.assetId);
   const decisions: ReconciliationDecision[] = [];
+  // Lot 76J : un arbitrage déjà tranché par l'utilisateur n'est pas reproposé à l'identique.
+  const memoire = asset ? await loadConflictMemory(input.accountId, input.assetId, rec) : null;
+
+  /** Exécute une décision tranchée (écriture, conflit) — commun aux preuves et aux sources croisées. */
+  const executer = async (
+    decision: ReconciliationDecision,
+    trace: import('../execution-report/t3-report').T3FieldRecord,
+    candidates: import('./types').EvidenceCandidate[],
+    currentOrigin: string | undefined,
+  ) => {
+    switch (decision.action) {
+      case 'apply':
+      case 'update':
+        // Lot 31C : garde avant toute écriture métier — une exécution de file
+        // qui a perdu son jeton ou son bail n'écrit plus (sans effet hors file).
+        await assertJobActive(`valeur ${decision.fieldKey}`);
+        try {
+          // Lot 58C : le RÉSULTAT réel de l'écriture est conservé (compteurs, rapport).
+          trace.outcome = await applyDecision(decision, {
+            accountId: input.accountId,
+            assetId: input.assetId,
+            sourceFileId: input.sourceFileId ?? null,
+            bestCandidate: candidates.find(
+              (c) => c.evidenceId === decision.evidenceIds[0],
+            ),
+            traceId,
+          });
+        } catch (e) {
+          trace.error = (e as Error)?.message ?? String(e);
+          throw e;
+        }
+        // Une décision tranchée rend caduc un arbitrage antérieur sur ce champ.
+        await resolveObsoleteConflict(
+          input.accountId, input.assetId, decision.fieldKey,
+          `tranché automatiquement : ${decision.reasonCode}`,
+        );
+        break;
+
+      case 'create_conflict':
+        await assertJobActive(`proposition ${decision.fieldKey}`);
+        await writeConflict(decision, {
+          accountId: input.accountId,
+          assetId: input.assetId,
+          currentEvidenceIds: [],
+          currentOrigin: currentOrigin ?? 'USER',
+          traceId,
+        });
+        break;
+
+      case 'keep':
+      case 'ignore':
+      case 'request_ai_review':
+        break;
+    }
+  };
   // ══════════════════════════════════════════════════════════════════════
   // RÉCONCILIATION NÉGATIVE (CDC 15 T3-04) — toujours active depuis le lot
   // 16b-3 (commutateur `T3_NEGATIVE_RECONCILIATION` supprimé, comportement de
@@ -129,7 +197,7 @@ async function runEngine(input: ReconcileInput, runId: number, traceId: string, 
 
     // Étape 7 du §4.2.8 : appel modèle UNIQUEMENT si le déterminisme n'a pas
     // tranché — et jamais sur un champ exclu du périmètre modèle.
-    if (decision.action === 'request_ai_review' && canRequestAiReview(decision.fieldKey)) {
+    if (decision.action === 'request_ai_review' && input.aiReview !== false && canRequestAiReview(decision.fieldKey)) {
       decision = await resolveAmbiguity({
         accountId: input.accountId,
         assetId: input.assetId,
@@ -140,61 +208,58 @@ async function runEngine(input: ReconcileInput, runId: number, traceId: string, 
       });
     }
 
+    // Lot 76J : texte libre (description, notes) jamais réécrit automatiquement ;
+    // arbitrage déjà tranché à l'identique : conservé, sans nouvelle carte.
+    decision = guardFreeText(decision);
+    if (memoire) decision = await memoire.filter(decision);
+
     decisions.push(decision);
     if (!decision.deterministic && rec) rec.aiCalls++;
     const trace = { fieldKey: decision.fieldKey, current: field.input.current, candidates: field.input.candidates, decision, registry: isRegistryKey(decision.fieldKey) } as import('../execution-report/t3-report').T3FieldRecord;
     rec?.fields.push(trace);
 
-    switch (decision.action) {
-      case 'apply':
-      case 'update':
-        // Lot 31C : garde avant toute écriture métier — une exécution de file
-        // qui a perdu son jeton ou son bail n'écrit plus (sans effet hors file).
-        await assertJobActive(`valeur ${decision.fieldKey}`);
-        try {
-          // Lot 58C : le RÉSULTAT réel de l'écriture est conservé (compteurs, rapport).
-          trace.outcome = await applyDecision(decision, {
-            accountId: input.accountId,
-            assetId: input.assetId,
-            sourceFileId: input.sourceFileId ?? null,
-            bestCandidate: field.input.candidates.find(
-              (c) => c.evidenceId === decision.evidenceIds[0],
-            ),
-            traceId,
-          });
-        } catch (e) {
-          trace.error = (e as Error)?.message ?? String(e);
-          throw e;
+    await executer(decision, trace, field.input.candidates, field.input.current?.origin);
+  }
+
+  // ══════════════════════════════════════════════════════════════════════
+  // LOT 76J — CONFRONTATION TRANSVERSALE (date d'achat ↔ agenda / Opérations)
+  //
+  // La date de l'agenda n'est pas nécessairement la bonne : seul un achat
+  // CONFIRMÉ par l'utilisateur complète un champ vide ou ouvre un arbitrage
+  // (une fois par signature) ; un événement automatique non confirmé, une
+  // projection de la fiche ou une donnée du même document que les preuves
+  // ne sont que des constats (rapport), jamais des preuves indépendantes.
+  // ══════════════════════════════════════════════════════════════════════
+  let signatureCroisee: string | null = null;
+  if (asset && kc) {
+    const croise = await crossCheckAsset({
+      accountId: input.accountId, assetId: input.assetId, asset, kc, collected, decisions,
+    }, rec);
+    if (croise) {
+      rec?.cross.push(...croise.records);
+      signatureCroisee = croise.signature;
+      if (croise.decision) {
+        const d = croise.decision;
+        if (croise.replaces) decisions.splice(decisions.indexOf(croise.replaces), 1);
+        decisions.push(d);
+        const courant = asset.current(d.fieldKey);
+        const trace = { fieldKey: d.fieldKey, current: courant, candidates: [], decision: d, registry: isRegistryKey(d.fieldKey) } as import('../execution-report/t3-report').T3FieldRecord;
+        if (rec) {
+          // Une seule ligne de rapport par champ : la décision croisée remplace la précédente.
+          const i = rec.fields.findIndex((f) => canonicalKeyOf(f.fieldKey) === d.fieldKey);
+          if (i >= 0) rec.fields.splice(i, 1);
+          rec.fields.push(trace);
         }
-        // Une décision tranchée rend caduc un arbitrage antérieur sur ce champ.
-        await resolveObsoleteConflict(
-          input.accountId, input.assetId, decision.fieldKey,
-          `tranché automatiquement : ${decision.reasonCode}`,
-        );
-        break;
-
-      case 'create_conflict':
-        await assertJobActive(`proposition ${decision.fieldKey}`);
-        await writeConflict(decision, {
-          accountId: input.accountId,
-          assetId: input.assetId,
-          currentEvidenceIds: [],
-          currentOrigin: field.input.current?.origin ?? 'USER',
-          traceId,
-        });
-        break;
-
-      case 'keep':
-      case 'ignore':
-      case 'request_ai_review':
-        break;
+        await executer(d, trace, [], courant?.origin);
+      }
     }
   }
 
   // Phase négative : valeurs automatiques dont la dernière preuve a disparu.
   if (kc) {
     const retirees = await listRetiredEvidenceValues(input.accountId, input.assetId);
-    const retraits = planRetractions(kc, collected.map((f) => f.fieldKey), retirees);
+    // Lot 76J : un texte libre n'est jamais retiré automatiquement.
+    const retraits = planRetractions(kc, collected.map((f) => f.fieldKey), retirees).filter((r) => !isFreeTextKey(r.fieldKey));
     for (const r of retraits) {
       await assertJobActive(`retrait ${r.fieldKey}`);
       const outcome = await retractAutomaticValue({
@@ -253,5 +318,26 @@ async function runEngine(input: ReconcileInput, runId: number, traceId: string, 
 
   await assertJobActive('clôture du run');
   await closeRun(runId, summary);
+
+  // Lot 76J : inventaire exhaustif (rapport) et état du contrôle (rattrapage du stock).
+  if (rec && asset) {
+    rec.inventory = assetInventory(asset, [...collected.map((f) => f.fieldKey), ...decisions.map((d) => d.fieldKey)]);
+    await recordInformationCheck({
+      accountId: input.accountId, assetId: input.assetId, runId, rec,
+      signatures: { ...(memoire?.proposed ?? {}), ...(signatureCroisee ? { acquisitionDate: signatureCroisee } : {}) },
+    });
+  }
+  // Prix d'achat ancré sur un ÉQUIPEMENT du bien : réconciliation ciblée de l'équipement (même moteur).
+  for (const equipmentId of (sources?.equipmentTargets ?? []).slice(0, 20)) {
+    await assertJobActive(`équipement ${equipmentId}`);
+    try {
+      const { reconcileEntity } = await import('./entity-reconciliation');
+      await reconcileEntity({ accountId: input.accountId, target: { type: 'EQUIPMENT', id: equipmentId }, triggeredBy: 'manual', sourceFileId: null });
+    } catch (e) {
+      const { isExecutionCancelled } = await import('../queue/execution-control');
+      if (isExecutionCancelled(e)) throw e;
+      rec?.fail('INFORMATION_EQUIPMENT', e);
+    }
+  }
   return summary;
 }

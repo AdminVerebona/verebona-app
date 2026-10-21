@@ -101,6 +101,15 @@ export const PROVIDER_REPLAY_WINDOW_MS = 23 * 60 * MIN;
 export const PROVIDER_LISTING_GRACE_MS = 10 * MIN;
 /** Lot 72F : consultation bornée de la liste Resend (pages de 100). */
 export const PROVIDER_LIST_MAX_PAGES = 10;
+/**
+ * Lot 76D : bornes de la consultation Resend. Au-delà (candidats trop nombreux,
+ * pages, durée), la recherche est INCOMPLÈTE : jamais « absent » (unknown, motif
+ * persistant, réémission bloquée). Toutes les candidates retenues sont inspectées.
+ */
+export const PROVIDER_LOOKUP_MAX_CANDIDATES = 50;
+export const PROVIDER_LOOKUP_MAX_MS = 25_000;
+/** Lot 76D : nouvelle consultation d'une demande neutralisée restée incertaine (retour arrière en cours). */
+export const NEUTRALIZED_RECHECK_MS = 15 * MIN;
 /** Lot 72F : étiquettes Resend de la demande d'origine. */
 export const EMAIL_JOB_TAG = 'vb_email_job';
 export const EMAIL_JOB_GENERATION_TAG = 'vb_send_gen';
@@ -139,6 +148,8 @@ interface JobRow {
   provider_call_started_at: string | Date | null;
   provider_outcome: string | null;
   provider_detail: string | null;
+  /** Lot 76D (0585). */
+  neutralized_at?: string | Date | null;
 }
 
 const iso = (d: Date) => d.toISOString();
@@ -526,17 +537,30 @@ export type ProviderReconciliation =
   | { kind: 'absent' }
   | { kind: 'unknown'; detail: string };
 
+/** Lot 76D : bornes de consultation (tests : valeurs réduites). */
+export interface ProviderLookupBudget { maxPages?: number; maxCandidates?: number; maxMs?: number }
+
 /**
  * Lot 72F — issue d'un appel au prestataire resté sans réponse connue.
  * Sources, dans l'ordre : journal des envois (réponse reçue mais clôture non
  * écrite), webhooks Resend étiquetés, puis (si `providerLookup`) consultation
  * de la liste des e-mails Resend et de chaque e-mail candidat par son
  * identifiant (étiquette `vb_email_job` = cette demande). Jamais d'envoi ici.
+ *
+ * Lot 76D — « absent » exige une preuve COMPLÈTE : liste parcourue jusqu'à
+ * l'instant de l'appel (complétude de la LISTE) ET toutes les candidates
+ * inspectées (complétude de l'INSPECTION) — l'ancienne tranche des 20
+ * premières est supprimée. Toute limite atteinte (candidates, pages, durée),
+ * réponse inexploitable ou consultation en échec donne `unknown` avec un motif
+ * (persisté par l'appelant) : l'acceptation reste incertaine, aucune nouvelle
+ * génération de clé, aucune réémission automatique. Une acceptation retrouvée
+ * parmi les candidates inspectées reste une preuve, même si la recherche est
+ * par ailleurs incomplète.
  */
 export async function reconcileProviderCall(
   job: Pick<JobRow, 'id' | 'recipient_email' | 'send_generation' | 'provider_call_started_at'>,
   now: Date,
-  opts: { providerLookup: boolean },
+  opts: { providerLookup: boolean; budget?: ProviderLookupBudget },
 ): Promise<ProviderReconciliation> {
   const started = job.provider_call_started_at ? new Date(job.provider_call_started_at) : now;
   const [log] = await pgClient.unsafe<{ provider_message_id: string }[]>(
@@ -556,34 +580,57 @@ export async function reconcileProviderCall(
   if (ev) return { kind: 'accepted', messageId: ev.provider_message_id, via: 'webhook' };
   if (!opts.providerLookup) return { kind: 'unknown', detail: 'NO_EVIDENCE' };
 
+  const maxPages = opts.budget?.maxPages ?? PROVIDER_LIST_MAX_PAGES;
+  const maxCandidates = opts.budget?.maxCandidates ?? PROVIDER_LOOKUP_MAX_CANDIDATES;
+  const deadline = Date.now() + (opts.budget?.maxMs ?? PROVIDER_LOOKUP_MAX_MS);
+  const unknown = (detail: string): ProviderReconciliation => ({ kind: 'unknown', detail: detail.slice(0, 120) });
   const recipient = job.recipient_email.trim().toLowerCase();
   const floor = started.getTime() - 5 * MIN;
   const candidates: string[] = [];
+  /** Motif d'une recherche INCOMPLÈTE (null : liste parcourue jusqu'à l'appel). */
+  let truncated: string | null = 'RESEND_LISTING_PAGE_LIMIT';
   let after: string | undefined;
-  let complete = false;
-  for (let page = 0; page < PROVIDER_LIST_MAX_PAGES; page += 1) {
+  pages: for (let page = 0; page < maxPages; page += 1) {
+    if (Date.now() >= deadline) { truncated = 'RESEND_LOOKUP_TIMEOUT:LIST'; break; }
     const r = await emailService.listProviderEmails({ after, limit: 100 });
-    if (!r.ok) return { kind: 'unknown', detail: `RESEND_LOOKUP_${r.code}`.slice(0, 120) };
-    for (const item of r.value.items) {
+    if (!r.ok) { truncated = `RESEND_LOOKUP_${r.code}`; break; }
+    const items = Array.isArray(r.value?.items) ? r.value.items : null;
+    if (!items) { truncated = 'RESEND_LISTING_UNREADABLE'; break; }
+    for (const item of items) {
+      if (!item?.id) { truncated = 'RESEND_LISTING_UNREADABLE'; break pages; }
       const created = item.createdAt ? new Date(item.createdAt).getTime() : NaN;
-      if (Number.isFinite(created) && created < floor) { complete = true; break; }
-      if (item.to.some((t) => t.trim().toLowerCase() === recipient)) candidates.push(item.id);
+      if (Number.isFinite(created) && created < floor) { truncated = null; break pages; }
+      const to = (item.to ?? []).map((t) => t.trim().toLowerCase());
+      // Destinataire illisible : impossible d'écarter l'e-mail sans l'inspecter.
+      if (to.length === 0 || to.includes(recipient)) {
+        if (candidates.length >= maxCandidates) { truncated = `RESEND_CANDIDATES_LIMIT:${maxCandidates}`; break pages; }
+        candidates.push(item.id);
+      }
     }
-    if (complete || !r.value.hasMore || r.value.items.length === 0) { complete = true; break; }
-    after = r.value.items[r.value.items.length - 1].id;
+    if (!r.value.hasMore || items.length === 0) { truncated = null; break; }
+    after = items[items.length - 1].id;
   }
-  for (const id of candidates.slice(0, 20)) {
+  let failure: string | null = null;
+  let inspected = 0;
+  for (const id of candidates) {
+    if (Date.now() >= deadline) { failure = `RESEND_LOOKUP_TIMEOUT:${inspected}/${candidates.length}`; break; }
     const g = await emailService.getProviderEmail(id);
-    if (!g.ok) return { kind: 'unknown', detail: `RESEND_LOOKUP_${g.code}`.slice(0, 120) };
-    const tags = g.value?.tags ?? [];
+    if (!g.ok) { failure ??= `RESEND_LOOKUP_${g.code}`; continue; }
+    // Listé mais introuvable à la consultation : réponse inexploitable.
+    if (!g.value) { failure ??= 'RESEND_CANDIDATE_MISSING'; continue; }
+    inspected += 1;
+    const tags = g.value.tags ?? [];
     const jobTag = tags.find((t) => t.name === EMAIL_JOB_TAG)?.value;
     const genTag = tags.find((t) => t.name === EMAIL_JOB_GENERATION_TAG)?.value;
     if (jobTag === String(job.id) && (genTag == null || genTag === String(job.send_generation))) {
       return { kind: 'accepted', messageId: id, via: 'provider' };
     }
   }
-  if (complete && now.getTime() - started.getTime() >= PROVIDER_LISTING_GRACE_MS) return { kind: 'absent' };
-  return { kind: 'unknown', detail: complete ? 'RESEND_LISTING_TOO_RECENT' : 'RESEND_LISTING_INCOMPLETE' };
+  if (failure) return unknown(failure);
+  if (truncated) return unknown(truncated);
+  // Liste complète ET toutes les candidates inspectées : seule preuve d'absence admise.
+  if (inspected === candidates.length && now.getTime() - started.getTime() >= PROVIDER_LISTING_GRACE_MS) return { kind: 'absent' };
+  return unknown('RESEND_LISTING_TOO_RECENT');
 }
 
 /**
@@ -595,7 +642,7 @@ export async function processEmailJob(jobId: number, now: Date = new Date()): Pr
   const [job] = await pgClient.unsafe<JobRow[]>(
     `UPDATE transactional_email_jobs
         SET status = 'sending', attempts = attempts + 1, locked_until = $2::timestamptz, updated_at = $3::timestamptz
-      WHERE id = $1
+      WHERE id = $1 AND neutralized_at IS NULL
         AND ((status = 'pending' AND next_attempt_at <= $3::timestamptz)
           OR (status = 'sending' AND locked_until < $3::timestamptz))
       RETURNING id, kind, user_id, duo_id, triggered_by_user_id, recipient_email, context, status, attempts, max_attempts, created_at,
@@ -805,16 +852,20 @@ export async function runTransactionalEmailRetry(opts: { deadline?: number; now?
       WHERE ((status = 'pending' AND next_attempt_at <= $1::timestamptz)
           OR (status = 'sending' AND locked_until < $1::timestamptz))
         AND NOT ($3::boolean AND kind = 'SUBSCRIPTION_ANNUAL_RENEWAL_REMINDER')
+        AND neutralized_at IS NULL
       ORDER BY next_attempt_at, id LIMIT $2`,
     [iso(at), opts.limit ?? 50, annualBlocked] as never[],
   );
   const total = { processed: 0, accepted: 0, pending: 0, failed: 0, cancelled: 0, uncertain: 0 };
   // Rétention : demandes closes depuis plus de 30 jours (le détail des
-  // envois reste dans `email_logs`). Lot borné, idempotent.
+  // envois reste dans `email_logs`). Lot borné, idempotent. Lot 76D : les
+  // demandes neutralisées par un retour arrière sont conservées (preuves et
+  // incertitudes d'acceptation, jamais effacées).
   await pgClient.unsafe(
     `DELETE FROM transactional_email_jobs WHERE id IN (
        SELECT id FROM transactional_email_jobs
-        WHERE status IN ('accepted', 'failed', 'cancelled') AND updated_at < $1::timestamptz LIMIT 500)`,
+        WHERE status IN ('accepted', 'failed', 'cancelled') AND updated_at < $1::timestamptz
+          AND neutralized_at IS NULL LIMIT 500)`,
     [iso(new Date(at.getTime() - 30 * 24 * 60 * MIN))] as never[],
   );
   for (const { id } of due) {
@@ -825,6 +876,62 @@ export async function runTransactionalEmailRetry(opts: { deadline?: number; now?
     if (r.status === 'accepted' || r.status === 'pending' || r.status === 'failed' || r.status === 'cancelled' || r.status === 'uncertain') total[r.status] += 1;
   }
   return total;
+}
+
+// ── Lot 76D : demandes neutralisées par le retour aux rappels Stripe ─────────
+
+export type NeutralizedOutcome = 'busy' | 'accepted' | 'neutralized' | 'uncertain';
+
+/**
+ * Lot 76D — qualification d'une demande NEUTRALISÉE (retour arrière en cours),
+ * sans jamais rien émettre : la neutralisation arrête l'émission, cette
+ * fonction qualifie l'appel déjà effectué.
+ *   · prise atomique (verrou de tentative) : jamais deux contrôles simultanés ;
+ *     un verrou expiré (arrêt du processus) est repris ICI, jamais par la file ;
+ *   · aucun appel transmis avec la génération courante → close « annulée,
+ *     neutralisée » (aucun envoi) ;
+ *   · appel transmis → réconciliation par consultation SEULE (journal,
+ *     webhooks, Resend) : acceptée (échéance notifiée), absence PROUVÉE
+ *     (neutralisée sans envoi), sinon acceptation incertaine conservée (motif,
+ *     nouvelle consultation dans 15 min ; décision BO possible, hors réémission).
+ */
+export async function reconcileNeutralizedEmailJob(jobId: number, now: Date = new Date(), budget?: ProviderLookupBudget): Promise<NeutralizedOutcome> {
+  const [job] = await pgClient.unsafe<JobRow[]>(
+    `UPDATE transactional_email_jobs
+        SET status = 'sending', locked_until = $2::timestamptz, updated_at = $3::timestamptz
+      WHERE id = $1 AND neutralized_at IS NOT NULL
+        AND (status IN ('pending', 'failed')
+          OR (status = 'uncertain' AND next_attempt_at <= $3::timestamptz)
+          OR (status = 'sending' AND locked_until < $3::timestamptz))
+      RETURNING id, kind, user_id, duo_id, triggered_by_user_id, recipient_email, context, status, attempts, max_attempts, created_at,
+                send_generation, provider_call_started_at, provider_outcome, provider_detail, neutralized_at`,
+    [jobId, iso(new Date(now.getTime() + EMAIL_JOB_LOCK_MS)), iso(now)] as never[],
+  );
+  if (!job) return 'busy';
+  const close = closerFor(job, now);
+  const keepUncertain = async (detail: string | null): Promise<NeutralizedOutcome> => {
+    await close('uncertain', { error: 'ROLLBACK_UNCERTAIN', providerOutcome: 'uncertain', providerDetail: detail ?? job.provider_detail ?? 'ROLLBACK_CALL_UNRESOLVED', next: new Date(now.getTime() + NEUTRALIZED_RECHECK_MS) });
+    return 'uncertain';
+  };
+  try {
+    if (!job.provider_call_started_at) {
+      // Jamais transmise avec cette génération. Une incertitude antérieure (sans
+      // instant d'appel connu) n'est jamais présumée levée.
+      if (job.provider_outcome === 'uncertain') return await keepUncertain(job.provider_detail);
+      await close('cancelled', { error: 'ROLLBACK_NEUTRALIZED' });
+      return 'neutralized';
+    }
+    const rec = await reconcileProviderCall(job, now, { providerLookup: true, budget });
+    if (rec.kind === 'accepted') { await acceptReconciled(job, rec, now, close); return 'accepted'; }
+    if (rec.kind === 'absent') {
+      await close('cancelled', { error: 'ROLLBACK_NEUTRALIZED', providerOutcome: 'reconciled_absent', providerDetail: null });
+      return 'neutralized';
+    }
+    return await keepUncertain(rec.detail);
+  } catch (e) {
+    console.error(`[transactional-email] demande neutralisée #${job.id} : contrôle impossible —`, (e as Error)?.message ?? e);
+    return await keepUncertain('ROLLBACK_CHECK_FAILED');
+  }
 }
 
 // ── Lot 72F : acceptations incertaines non résolues (BO) ────────────────────
@@ -842,10 +949,14 @@ export const EMAIL_JOB_DECISIONS: readonly EmailJobDecision[] = ['RECHECK', 'CON
  *   · REISSUE      e-mail absent chez Resend : nouvelle clé, nouvel envoi ;
  *   · ABANDON      clos sans envoi (définitif).
  */
-export async function decideUncertainEmailJob(jobId: number, decision: EmailJobDecision, now: Date = new Date()): Promise<{ ok: true; status: EmailJobStatus } | { ok: false; code: 'NOT_FOUND' | 'NOT_UNCERTAIN' }> {
-  const [row] = await pgClient.unsafe<{ status: string }[]>(`SELECT status FROM transactional_email_jobs WHERE id = $1`, [jobId as never]);
+export async function decideUncertainEmailJob(jobId: number, decision: EmailJobDecision, now: Date = new Date()): Promise<{ ok: true; status: EmailJobStatus } | { ok: false; code: 'NOT_FOUND' | 'NOT_UNCERTAIN' | 'NEUTRALIZED' }> {
+  const [row] = await pgClient.unsafe<{ status: string; neutralized: boolean }[]>(
+    `SELECT status, neutralized_at IS NOT NULL AS neutralized FROM transactional_email_jobs WHERE id = $1`, [jobId as never]);
   if (!row) return { ok: false, code: 'NOT_FOUND' };
   if (row.status !== 'uncertain') return { ok: false, code: 'NOT_UNCERTAIN' };
+  // Lot 76D : demande neutralisée par le retour aux rappels Stripe — jamais
+  // réémise (RECHECK = consultation seule, par le contrôle du retour arrière).
+  if (row.neutralized && decision === 'REISSUE') return { ok: false, code: 'NEUTRALIZED' };
   const sets: Record<EmailJobDecision, { status: EmailJobStatus; sql: string }> = {
     RECHECK: { status: 'pending', sql: `status = 'pending', attempts = 0, next_attempt_at = $2::timestamptz, last_error = 'ADMIN_RECHECK'` },
     CONFIRM_SENT: { status: 'accepted', sql: `status = 'accepted', accepted_at = $2::timestamptz, provider_outcome = 'admin_confirmed', last_error = 'ADMIN_CONFIRMED_SENT', uncertain_since = NULL` },
@@ -857,7 +968,7 @@ export async function decideUncertainEmailJob(jobId: number, decision: EmailJobD
   const d = sets[decision];
   const done = await pgClient.unsafe<{ id: number }[]>(
     `UPDATE transactional_email_jobs SET ${d.sql}, locked_until = NULL, updated_at = $2::timestamptz
-      WHERE id = $1 AND status = 'uncertain' RETURNING id`,
+      WHERE id = $1 AND status = 'uncertain' ${decision === 'REISSUE' ? 'AND neutralized_at IS NULL' : ''} RETURNING id`,
     [jobId, iso(now)] as never[],
   );
   return done.length ? { ok: true, status: d.status } : { ok: false, code: 'NOT_UNCERTAIN' };

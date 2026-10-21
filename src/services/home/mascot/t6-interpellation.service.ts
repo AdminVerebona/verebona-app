@@ -25,6 +25,7 @@ import { canonicalJson, sha256 } from './hash';
 import { entriesFingerprint, serializeForHash, sha256 as reportSha256, type ReportEntry } from '@/services/ai/execution-report/model';
 import {
   DEFAULT_T6_THRESHOLD_DAYS, T6_ASSESSMENT_CONTRACT, T6_ASSESSMENT_MAX_AGE_DAYS, T6_ASSESSMENT_REVISION_REMINDER, T6_FINGERPRINT_V2, T6_FINGERPRINT_V3,
+  T6_FINGERPRINT_V4, t6EvaluationSubjectParts,
   T6_MAX_ASSESSMENTS_PER_CALL, T6_RELEVANT_FACT_PATTERN, T6_REPEAT_WINDOW_DAYS,
   addDays, agendaFingerprintParts, agendaOccurrenceKey, agendaSubjectKey, assessmentFromDecision, assessmentHorizonDays, compareShown,
   daysBetween, decideT6Interpellation, evidenceSnapshotOf, exceptionEvidenceGrounded, isT6RelevantFact, preferenceAppliesToCycle, sameT6Context,
@@ -169,7 +170,11 @@ function fingerprintInput(i: { title: string; date: string | null; forecast: boo
   };
 }
 
-/** Empreinte (contenu probant, `v3:`) d'une échéance à partir de sa ligne et de ses preuves (pure). */
+/**
+ * Empreinte (contenu probant, `v3:`) d'une échéance à partir de sa ligne et de
+ * ses preuves (pure). Lot 76A : n'est plus portée par les nouvelles décisions
+ * (`t6ContextFingerprint`, `v4:`) — sert à relire les décisions et reports du lot 75E.
+ */
 export function fingerprintWithEvidence(
   i: { title: string; date: string | null; forecast: boolean; requiresQualification: boolean }, e: T6ItemEvidence | undefined,
 ): string {
@@ -186,26 +191,16 @@ export function fingerprintV2WithEvidence(
 /**
  * Lot 71G — empreintes enrichies COURANTES d'échéances du compte (même calcul
  * que la décision) : reports de l'utilisateur, harnais de test. Lève en cas
- * d'échec.
+ * d'échec. Lot 76A : empreinte `v4:` du contexte transmis, à partir de la
+ * MÊME lecture des lignes que la mascotte (`readAgendaRowsByIds` : bien du
+ * compte, rôle de la date, série) et des mêmes preuves.
  */
 export async function currentT6Fingerprints(accountId: number, ids: readonly number[]): Promise<Map<number, string>> {
   const out = new Map<number, string>();
   if (ids.length === 0) return out;
-  const [base, ev] = await Promise.all([
-    rows(
-      `SELECT id, title, to_char(start_date, 'YYYY-MM-DD') AS date, occurrence_nature, requires_qualification
-         FROM agenda_items WHERE account_id = $1 AND id = ANY($2::int[])`,
-      [accountId, ids],
-    ),
-    loadT6Evidence(accountId, ids),
-  ]);
-  for (const x of base) {
-    const id = Number(x.id);
-    out.set(id, fingerprintWithEvidence({
-      title: String(x.title ?? ''), date: (x.date as string | null) ?? null, forecast: x.occurrence_nature === 'FORECAST',
-      requiresQualification: x.requires_qualification === true,
-    }, ev.get(id)));
-  }
+  const { readAgendaRowsByIds } = await import('./collector');
+  const [lignes, ev] = await Promise.all([readAgendaRowsByIds(accountId, ids), loadT6Evidence(accountId, ids)]);
+  for (const x of lignes) out.set(x.id, t6ContextFingerprint(x, ev.get(x.id)));
   return out;
 }
 
@@ -267,6 +262,66 @@ export function evaluationEvidenceOf(subjectId: string, e: T6ItemEvidence | unde
     };
   });
   return { documents, facts, refs, versions };
+}
+
+/** Données d'une échéance utiles au contexte EVALUATE (ligne de l'agenda de la mascotte). */
+export type T6SubjectRow = Pick<MascotAgendaRow, 'title' | 'date' | 'forecast' | 'requiresQualification' | 'assetName' | 'dateRole'>
+  & Partial<Pick<MascotAgendaRow, 'assetCategory' | 'seriesKey'>>;
+
+/**
+ * Lot 76A (P1) — REPRÉSENTATION COMMUNE du candidat transmis à EVALUATE
+ * (pure) : la partie stable (`core`) sert À LA FOIS au contexte transmis
+ * (`prepareT6Interpellation`) et à son empreinte (`t6ContextFingerprint`) —
+ * jamais deux constructions divergentes. Les preuves (documents, faits avec
+ * extrait, document source, statut, provenance) sont celles d'`evaluationEvidenceOf`.
+ */
+export function evaluationSubjectOf(subjectId: string, row: T6SubjectRow, e: T6ItemEvidence | undefined): {
+  core: import('./t6-interpellation').T6EvaluationSubjectCore;
+  preuves: ReturnType<typeof evaluationEvidenceOf>;
+} {
+  const desc = (e?.description ?? '').replace(/\s+/g, ' ').trim().slice(0, 300);
+  const preuves = evaluationEvidenceOf(subjectId, e);
+  const position = new Map(preuves.refs.filter((x) => x.kind === 'DOCUMENT').map((x, n) => [x.ref, n]));
+  return {
+    preuves,
+    core: {
+      title: row.title, description: desc || null, assetName: row.assetName ?? null, assetCategory: row.assetCategory ?? null,
+      dueDate: row.date, dateNature: row.forecast ? 'prévisionnelle' : 'confirmée', dateRole: roleOf(row),
+      requiresQualification: row.requiresQualification, recurring: !!row.seriesKey,
+      documents: preuves.documents,
+      facts: preuves.facts.map((f) => ({
+        document: f.document != null ? position.get(f.document) ?? null : null, label: f.label, value: f.value, excerpt: f.excerpt, status: f.status, provenance: f.provenance,
+      })),
+    },
+  };
+}
+
+/**
+ * Lot 76A (P1) — empreinte (`v4:`) du contexte RÉELLEMENT transmis à
+ * EVALUATE (pure) : portée par toute nouvelle décision et tout nouveau report.
+ */
+export function t6ContextFingerprint(row: T6SubjectRow, e: T6ItemEvidence | undefined): string {
+  return `${T6_FINGERPRINT_V4}${sha256(t6EvaluationSubjectParts(evaluationSubjectOf('S', row, e).core)).slice(0, 32)}`;
+}
+
+/**
+ * Lot 76A (AC10) — rebasage des décisions antérieures (`v2:`, `v3:`) dont le
+ * contexte est INCHANGÉ selon leur empreinte : leur empreinte devient la
+ * courante (`v4:`), pour qu'un changement ULTÉRIEUR des données désormais
+ * couvertes (extrait reformulé, bien, rôle de la date…) les invalide. Ligne
+ * modifiée seulement si elle porte encore l'ancienne empreinte (aucune
+ * décision plus récente écrasée), bornée au compte. Rend le nombre rebasé.
+ */
+export async function rebaseT6AssessmentFingerprints(accountId: number, list: ReadonlyArray<{ agendaItemId: number; from: string; to: string }>): Promise<number> {
+  if (list.length === 0) return 0;
+  const r = await rows(
+    `UPDATE t6_interpellation_assessments a SET context_fingerprint = m.to_fp
+       FROM unnest($2::int[], $3::text[], $4::text[]) AS m(id, from_fp, to_fp)
+      WHERE a.account_id = $1 AND a.agenda_item_id = m.id AND a.context_fingerprint = m.from_fp
+     RETURNING a.id`,
+    [accountId, list.map((x) => x.agendaItemId), list.map((x) => x.from), list.map((x) => x.to)],
+  );
+  return r.length;
 }
 
 // ── Réglage ──────────────────────────────────────────────────────────────────
@@ -738,6 +793,12 @@ export interface T6Preparation {
   examined?: number;
   selectionBacklog?: boolean;
   /**
+   * Lot 76A : signature de configuration EVALUATE courante (`e2:`, reporting)
+   * et décisions rebasées sur l'empreinte du contexte transmis (transition).
+   */
+  evaluationSignature?: string | null;
+  rebased?: number;
+  /**
    * Lot 61 — état de l'évaluation pour la présentation : `PENDING`, une
    * échéance proche (dans le seuil) attend son évaluation ; `UNAVAILABLE`,
    * une échéance proche n'a pas pu être évaluée (T6 coupé, version BO sans
@@ -795,11 +856,14 @@ export interface T6Loaders {
   cycles: (accountId: number, agendaIds: number[]) => Promise<Map<number, string>>;
   /** Lot 75E (B) : examens achevés (curseur persistant). */
   examinations: (accountId: number, marks: readonly T6ExaminationMark[]) => Promise<number>;
+  /** Lot 76A (AC10) : rebasage des décisions antérieures (`v2:`/`v3:`) au contexte inchangé. */
+  rebaseFingerprints: (accountId: number, list: ReadonlyArray<{ agendaItemId: number; from: string; to: string }>) => Promise<number>;
 }
 
 const DEFAULT_LOADERS: T6Loaders = {
   preferences: (a, u, scope) => loadUserPreferences(a, u, scope), assessments: loadAssessments, evidence: loadT6Evidence,
   dueReminders: loadDueReminders, cycles: loadCycleKeys, examinations: recordT6Examinations,
+  rebaseFingerprints: rebaseT6AssessmentFingerprints,
 };
 
 /** Motifs d'une réévaluation liée au seul vieillissement d'une décision (aucune donnée changée). */
@@ -873,11 +937,31 @@ export async function prepareT6Interpellation(
     if (!preuvesR.ok) { c.fingerprintUnavailable = true; continue; }
     const e = preuvesR.v.get(c.agendaItemId);
     const ligne = { title: i.title, date: i.date, forecast: i.forecast, requiresQualification: i.requiresQualification };
-    // Lot 75E (C) : contenu probant (`v3:`) ; `v2:` pour relire les décisions et reports antérieurs.
-    c.fingerprint = fingerprintWithEvidence(ligne, e);
+    // Lot 76A (P1) : contexte RÉELLEMENT transmis (`v4:`, représentation commune) ;
+    // `v3:` (lot 75E) et `v2:` (lot 71G) pour relire les décisions et reports antérieurs.
+    c.fingerprint = t6ContextFingerprint(i, e);
+    c.v3Fingerprint = fingerprintWithEvidence(ligne, e);
     c.v2Fingerprint = fingerprintV2WithEvidence(ligne, e);
     c.hasDocumentaryEvidence = (e?.facts.length ?? 0) > 0 || (e?.documents.length ?? 0) > 0;
     c.hasEvidence = c.hasDocumentaryEvidence || !!(e?.description ?? '').trim();
+  }
+  // Lot 76A (AC10) — transition sans réévaluation de masse : une décision
+  // antérieure (`v2:`, `v3:`) dont le contexte est inchangé selon son
+  // empreinte reste valable ; elle est REBASÉE sur l'empreinte courante pour
+  // qu'un changement ultérieur des données désormais couvertes l'invalide.
+  // Échec : sans effet sur la décision (nouvel essai au passage suivant).
+  let rebased = 0;
+  if (evalsR.ok && preuvesR.ok) {
+    const aRebaser = candidats.flatMap(({ candidate: c }) => {
+      const a = evaluations.get(c.agendaItemId);
+      return a && /^v[23]:/.test(a.fingerprint) && sameT6Context(a.fingerprint, c) ? [{ agendaItemId: c.agendaItemId, from: a.fingerprint, to: c.fingerprint }] : [];
+    });
+    if (aRebaser.length > 0) {
+      rebased = await L.rebaseFingerprints(p.accountId, aRebaser).catch((e) => {
+        console.error('[mascotte] décision T6 : empreintes non rebasées —', (e as Error).message);
+        return 0;
+      });
+    }
   }
   let historique = new Map<number, number>();
   if (p.userId != null && evalsR.ok) {
@@ -969,9 +1053,9 @@ export async function prepareT6Interpellation(
         const { candidate: c, row: i } = parId.get(d.agendaItemId)!;
         const subjectId = `C${k + 1}`;
         const ev = preuvesR.v.get(c.agendaItemId);
-        const desc = (ev?.description ?? '').replace(/\s+/g, ' ').trim().slice(0, 300);
-        const description = desc || null;
-        const preuves = evaluationEvidenceOf(subjectId, ev);
+        // Lot 76A (P1) : MÊME construction que l'empreinte (`t6ContextFingerprint`).
+        const { core, preuves } = evaluationSubjectOf(subjectId, i, ev);
+        const description = core.description;
         // Références justificatives AUTORISÉES : seules celles-ci peuvent
         // fonder une décision (`evidenceRefs`, contrôlées à la validation).
         const evidence: T6EvidenceRef[] = [
@@ -990,12 +1074,12 @@ export async function prepareT6Interpellation(
           reevaluationReason: d.reevaluationReason ?? 'FIRST_ASSESSMENT', evidenceVersions: versions,
         });
         return {
-          subjectId, title: i.title, description,
-          assetName: i.assetName, assetCategory: i.assetCategory ?? null,
-          dueDate: i.date, dateLabel: i.date ? formatDateFr(i.date) : null,
-          daysUntilDue: d.daysUntilDue, dateNature: i.forecast ? 'prévisionnelle' as const : 'confirmée' as const,
-          dateRole: roleOf(i), overdue: !!i.date && i.date <= today, requiresQualification: i.requiresQualification,
-          recurring: !!c.seriesKey, documents: preuves.documents,
+          subjectId, title: core.title, description,
+          assetName: core.assetName, assetCategory: core.assetCategory,
+          dueDate: core.dueDate, dateLabel: i.date ? formatDateFr(i.date) : null,
+          daysUntilDue: d.daysUntilDue, dateNature: core.dateNature,
+          dateRole: core.dateRole, overdue: !!i.date && i.date <= today, requiresQualification: core.requiresQualification,
+          recurring: core.recurring, documents: preuves.documents,
           // T6-04 : clauses réellement extraites (extrait, document source, provenance, statut).
           ...(preuves.facts.length ? { facts: preuves.facts } : {}),
           recentlyShownDays: d.displayedDays, evidence,
@@ -1054,6 +1138,7 @@ export async function prepareT6Interpellation(
   return {
     thresholdDays, aiCapable, shown, decisions, notInterpellated, userSilenced, discarded, bundle, degraded, evaluation,
     failedSources: echecs, pendingAssessments, examined, selectionBacklog: p.raw.t6AgendaBacklog === true,
+    evaluationSignature: evaluationConfig?.signature ?? null, rebased,
   };
 }
 
@@ -1232,6 +1317,10 @@ export async function writeT6InterpellationReport(p: {
         // Lot 75E (B, C) : examens achevés (curseur), file plus longue que la lecture, exceptions au seuil sans preuve.
         examined: p.prep.examined ?? 0, selectionBacklog: p.prep.selectionBacklog ? 1 : 0,
         thresholdExceptionsUnproven: p.prep.decisions.filter((d) => d.code === 'THRESHOLD_EXCEPTION_UNPROVEN').length,
+        // Lot 76A : invalidations par motif (preuves / configuration EVALUATE) et décisions rebasées (transition).
+        invalidatedContext: p.prep.decisions.filter((d) => d.needsAssessment && d.reevaluationReason === 'CONTEXT_CHANGED').length,
+        invalidatedConfig: p.prep.decisions.filter((d) => d.needsAssessment && d.reevaluationReason === 'CONFIG_CHANGED').length,
+        rebased: p.prep.rebased ?? 0,
       },
       steps: [
         { step: 'candidates', status: 'OK', detail: { count: p.prep.decisions.length } },
@@ -1244,6 +1333,8 @@ export async function writeT6InterpellationReport(p: {
             // Lot 75E (E) : préférences illisibles ou lues incomplètement — aucun sujet réintroduit.
             preferencesUnverified: (p.prep.failedSources ?? []).some((x) => x === 'preferences' || x === 'preferences_incomplete'),
             examined: p.prep.examined ?? 0, selectionBacklog: p.prep.selectionBacklog === true,
+            // Lot 76A : configuration EVALUATE sous laquelle les décisions sont valables.
+            evaluationSignature: p.prep.evaluationSignature ?? null,
           } },
         { step: 'assessment_request', status: p.prep.bundle ? 'OK' : 'SKIPPED', detail: { mode: 'EVALUATE', candidates: p.prep.bundle?.refs.size ?? 0 } },
         { step: 'formulate', status: p.formulate ? 'OK' : 'SKIPPED', detail: p.formulate ? {

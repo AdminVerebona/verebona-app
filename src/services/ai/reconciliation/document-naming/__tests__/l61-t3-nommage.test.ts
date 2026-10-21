@@ -197,6 +197,22 @@ describe('T3-NOM-03 / T3-NOM-06 — Aucune nomenclature fixe ; familles décidé
     expect(c[1]).toMatchObject({ facts: [{ key: 'contractNumber', value: '778899' }], excerpt: 'Votre facture' });
     expect(JSON.parse(String(v.SUBJECT_CONTEXT)).previousConventions).toHaveLength(1);
   });
+  it('L76B-C6-U7 — contexte : indices de rapprochement avec provenance, omissions signalées, abstention prévue ; toujours six emplacements', () => {
+    const g = { key: 's:orange', docs: [doc(1), doc(2)] };
+    const v = namingVariables({
+      group: g, chunk: planChunks(g.docs, [g.docs[0]], 40)[0], conventions: [], states: new Map(),
+      details: new Map([[1, { facts: [], excerpt: null, operations: [], history: [],
+        matchHints: [{ reference: 'DOS202455667', source: 'EXTRACTION_FULL_TEXT' as const, sharedWithDocumentIds: [2] }],
+        context: { factsTotal: 30, factsProvided: 12, textChars: 500_000, passagesProvided: 4, sufficient: true,
+          omissions: { factsOmitted: 18, factValuesShortened: 1, discriminantPassagesOmitted: 2, textBeyondWindow: 100_000, significant: true } } }]]),
+      maxLength: 120,
+    });
+    expect(Object.keys(v)).toHaveLength(6);
+    const c = (v.CANDIDATES as Array<Record<string, unknown>>)[0];
+    expect(c).toMatchObject({ matchHints: [{ reference: 'DOS202455667', source: 'EXTRACTION_FULL_TEXT', sharedWithDocumentIds: [2] }],
+      context: { omissions: { significant: true, textBeyondWindow: 100_000 } } });
+    expect(JSON.parse(String(v.SUBJECT_CONTEXT)).constraints).toMatchObject({ abstainWhenContextInsufficient: true });
+  });
 });
 
 describe('T3-NOM-11 — Historique : lots volumineux examinés en plusieurs appels, sans perte', () => {

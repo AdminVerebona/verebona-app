@@ -196,9 +196,12 @@ function agendaRowsOf(r: Row[]): MascotAgendaRow[] {
     businessType: (i.businessType as string | null | undefined) ?? null,
     originFieldKey: (i.originFieldKey as string | null | undefined) ?? null,
   });
-  return r
-    .filter((i) => isAgendaActionItemT4(classer(i)))
-    .map((i) => ({
+  return r.filter((i) => isAgendaActionItemT4(classer(i))).map(agendaRowOf);
+}
+
+/** Ligne lue → échéance de la mascotte (sans filtre) — lot 76A : partagée avec l'empreinte T6. */
+function agendaRowOf(i: Row): MascotAgendaRow {
+  return {
       id: Number(i.id),
       title: String(i.title),
       date: (i.date as string | null) ?? null,
@@ -222,7 +225,22 @@ function agendaRowsOf(r: Row[]): MascotAgendaRow[] {
       ...(i.longOverdue === true ? { t6LongOverdue: true } : {}),
       // Lot 75E (B) : curseur d'examen de la lecture complémentaire T6.
       ...(typeof i.selectionSignature === 'string' ? { t6SelectionSignature: i.selectionSignature, t6Due: i.due === true } : {}),
-    }));
+  };
+}
+
+/**
+ * Lot 76A (P1) — échéances DU compte par identifiant, lues comme par la
+ * mascotte (mêmes colonnes, bien du compte, rôle de la date, série) : base
+ * de l'empreinte courante hors préparation (reports, harnais). Lève en cas d'échec.
+ */
+export async function readAgendaRowsByIds(accountId: number, ids: readonly number[]): Promise<MascotAgendaRow[]> {
+  if (ids.length === 0) return [];
+  const t4 = (await upcomingDeadlinesSqlFilter('i')) !== '';
+  const r = await rows(
+    `SELECT ${agendaColumns(t4)} FROM agenda_items i ${AGENDA_ASSET_JOIN} WHERE i.account_id = $1 AND i.id = ANY($2::int[])`,
+    [accountId, [...ids]],
+  );
+  return r.map(agendaRowOf);
 }
 
 /** Lecture principale de l'agenda de la mascotte : 200 échéances au plus, par date. */
@@ -323,8 +341,14 @@ export async function readT6Agenda(accountId: number, today: string, horizonDays
               (t.id IS NOT NULL AND (t.assessed_on < $2::date - ${T6_ASSESSMENT_MAX_AGE_DAYS} OR coalesce(t.reevaluate_on <= $2::date, FALSE) OR t.contract_version IS NULL)) AS "assessmentStale",
               EXISTS (SELECT 1 FROM t6_reminder_preferences p WHERE p.account_id = i.account_id AND p.agenda_item_id = i.id AND p.decision = 'SNOOZED') AS "snoozed",
               EXISTS (SELECT 1 FROM t6_reminder_preferences p WHERE p.account_id = i.account_id AND p.agenda_item_id = i.id AND p.decision = 'SNOOZED' AND p.remind_at <= $2::date) AS "snoozeDue",
+              -- Lot 76A (P1) : mêmes données que le contexte transmis à EVALUATE — bien
+              -- rattaché, rôle de la date, document d'origine, contenu des faits.
               md5(concat_ws('|', i.title, i.start_date::text, i.end_date::text, coalesce(i.description, ''), i.occurrence_nature,
-                            i.requires_qualification::text, coalesce(i.series_key, ''), coalesce(d.docs, ''), coalesce(k.faits, ''))) AS "selectionSignature",
+                            i.requires_qualification::text, coalesce(i.series_key, ''), coalesce(d.docs, ''), coalesce(k.faits, ''),
+                            coalesce(l.asset_id::text, ''), coalesce(a.name, ''), coalesce(a.category, ''),
+                            coalesce(i.is_automatic::text, ''), coalesce(i.projection_origin, ''), coalesce(to_char(i.start_time, 'HH24:MI'), ''),
+                            coalesce(i.origin_type, ''), coalesce(i.origin_field_key, ''), coalesce(i.origin_ref_type, '') || ':' || coalesce(i.origin_ref_id::text, '')
+                            ${t4 ? ", coalesce(i.event_nature, '')" : ''})) AS "selectionSignature",
               ${ex ? 'x.examined_at AS "examinedAt", x.recheck_on AS "recheckOn", x.selection_signature AS "examinedSignature"'
                 : 'NULL::timestamptz AS "examinedAt", NULL::date AS "recheckOn", NULL::text AS "examinedSignature"'},
               i.start_date AS sd
@@ -337,7 +361,9 @@ export async function readT6Agenda(accountId: number, today: string, horizonDays
              FROM asset_files f WHERE f.account_id = i.account_id AND f.deleted_at IS NULL AND f.id IN ${documents}
          ) d ON TRUE
          LEFT JOIN LATERAL (
-           SELECT string_agg(x2.id::text || ':' || x2.confidence, ',' ORDER BY x2.id) AS faits
+           SELECT string_agg(x2.id::text || ':' || coalesce(x2.confidence, '') || ':' || md5(concat_ws('|', x2.label,
+                    left(COALESCE(NULLIF(x2.normalized_value, ''), NULLIF(x2.value_text, ''), x2.value_number::text, x2.value_json::text), 200),
+                    left(x2.excerpt, 400), x2.provenance)), ',' ORDER BY x2.id) AS faits
              FROM document_facts x2
              JOIN asset_files f2 ON f2.id = x2.file_id AND f2.account_id = i.account_id AND f2.deleted_at IS NULL
             WHERE x2.account_id = i.account_id AND x2.status = 'active' AND x2.file_id IN ${documents}

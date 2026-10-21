@@ -31,12 +31,20 @@ const t4 = (o: { decision?: 'accept' | 'reject' | 'abstain'; category?: 'action'
       return { agendaDecision: 'abstain', recurrenceDecision: 'not_applicable', classification: { category: 'unknown', confidence: 'ambiguous', source: 'fallback', reason: 'x' },
         reason: 'échec', recurrenceReason: null, outcome: 'technical_failure', warnings: [], error: { code: 'T4_CALL_FAILED', message: 'x' } };
     }
+    // Lot 76 (C3) : seule une sortie STRUCTURÉE (t4_output_v3) fonde une décision — la catégorie
+    // simulée devient l'évaluation de l'intervention (« information » : aucune ; « action » : plus tard).
+    const accepte = (o.decision ?? 'accept') === 'accept' && o.category !== 'unknown';
     return { agendaDecision: o.decision ?? 'accept', recurrenceDecision: 'not_applicable',
       classification: { category: o.category ?? 'information', confidence: 'certain', source: 'model', reason: 'simulé' },
-      reason: 'simulé', recurrenceReason: null, outcome: 'model_v2', warnings: [], traceId: 'trace-1' };
+      reason: 'simulé', recurrenceReason: null, outcome: 'model_v2', warnings: [], traceId: 'trace-1', contractVersion: 3,
+      intervention: !accepte ? null : (o.category ?? 'information') === 'information'
+        ? { needed: 'no', kind: null, action: null, justification: 'information', consequence: null, evidence: null, timing: 'NONE', actBy: null, dataNeeded: false }
+        : { needed: 'yes', kind: 'RENEW_OR_DECIDE', action: 'Décider de la suite du contrat', justification: 'action', consequence: null, evidence: 'Échéance passée', timing: 'LATER', actBy: null, dataNeeded: false } } as never;
   };
   return { decide, calls };
 };
+/** Lot 76 (C3) : configuration T4 compatible (contrat structuré) — sans elle, aucune décision IA. */
+const V3 = { ref: 'repo:t4_output_v3', interventionCapable: true };
 const base = { accountId: 1, fileId: 2, documentType: 'SERVICE_CONTRACT', today: '2026-10-15' };
 
 describe('ECH-04 — dates non ISO mais non ambiguës : normalisation correcte, ambiguës refusées', () => {
@@ -122,7 +130,7 @@ describe('Pertinence d’une échéance (T4 CLASSIFY_EVENT, branche existante)',
 
   it('ECH-01 — échéance passée jugée informative par T4 : NO_ACTION_NEEDED (contexte transmis : date, type, nature, sans règle « gardiennage »)', async () => {
     const { decide, calls } = t4({ category: 'information' });
-    const r = await ev.assessDeadlinePertinence({ ...base, rule: CONTRACT, candidates: [{ iso: '2026-06-20', source: 'FACTS', excerpt: 'Contrat … échéance le 20:06:2026' }], decide });
+    const r = await ev.assessDeadlinePertinence({ ...base, rule: CONTRACT, candidates: [{ iso: '2026-06-20', source: 'FACTS', excerpt: 'Contrat … échéance le 20:06:2026' }], decide, config: V3 });
     expect(r).toMatchObject({ pertinence: 'NO_ACTION_NEEDED', outcome: 'NO_ACTION', aiCalled: true, aiStatus: 'OK', aiTraceId: 'trace-1' });
     expect(calls[0].input).toMatchObject({ originFieldKey: 'contractEndDate', nature: 'DEADLINE', businessType: 'contract' });
     expect(calls[0].input.description).toMatch(/2026-10-15/);
@@ -138,14 +146,17 @@ describe('Pertinence d’une échéance (T4 CLASSIFY_EVENT, branche existante)',
 
   it('ECH-07 — échéance passée avec action attendue : ACTION_REQUIRED ; lot 61 (écart 2) : sans intervention identifiée (version T4 v2), jamais une question de date — décision différée', async () => {
     const { decide } = t4({ category: 'action' });
-    const r = await ev.assessDeadlinePertinence({ ...base, rule: CONTRACT, candidates: [{ iso: '2026-06-20', source: 'FACTS' }], decide });
+    const r = await ev.assessDeadlinePertinence({ ...base, rule: CONTRACT, candidates: [{ iso: '2026-06-20', source: 'FACTS' }], decide, config: V3 });
     expect(r).toMatchObject({ pertinence: 'ACTION_REQUIRED', outcome: 'DEFER', card: null });
+    // Lot 76 (C3, RES-10) : version T4 sans évaluation structurée — ni appel, ni conclusion (état prudent signalé).
+    expect(await ev.assessDeadlinePertinence({ ...base, rule: CONTRACT, candidates: [{ iso: '2026-06-20', source: 'FACTS' }], decide }))
+      .toMatchObject({ pertinence: 'T4_INCOMPATIBLE', outcome: 'DEFER', card: null, aiCalled: false });
   });
 
   it('ECH-07 — abstention, refus de la date ou échec technique : variante prudente (UNDECIDED ; lot 61 : décision différée, jamais une carte arbitraire)', async () => {
     for (const o of [{ decision: 'abstain' as const, category: 'unknown' as const }, { decision: 'reject' as const, category: 'unknown' as const }, { failure: true }]) {
       const { decide } = t4(o);
-      const r = await ev.assessDeadlinePertinence({ ...base, rule: CONTRACT, candidates: [{ iso: '2026-06-20', source: 'FACTS' }], decide });
+      const r = await ev.assessDeadlinePertinence({ ...base, rule: CONTRACT, candidates: [{ iso: '2026-06-20', source: 'FACTS' }], decide, config: V3 });
       expect(r).toMatchObject({ pertinence: 'UNDECIDED', outcome: 'DEFER' });
       if (o.failure) expect(r).toMatchObject({ aiStatus: 'ERROR', reason: 't4_failure:T4_CALL_FAILED', technicalFailure: true });
     }
@@ -155,18 +166,18 @@ describe('Pertinence d’une échéance (T4 CLASSIFY_EVENT, branche existante)',
     const { decide, calls } = t4({ category: 'information' });
     const cands = [{ iso: '2026-06-20', source: 'FACTS' }];
     // Lot 61 : la signature porte aussi la situation, l'empreinte des preuves et la configuration IA.
-    const signature = ev.pertinenceSignature('contractEndDate', 'SERVICE_CONTRACT', cands, { situation: 'PAST_DEADLINE', evidence: null, config: 'unknown' });
+    const signature = ev.pertinenceSignature('contractEndDate', 'SERVICE_CONTRACT', cands, { situation: 'PAST_DEADLINE', evidence: null, config: V3.ref });
     const memo = { signature, pertinence: 'NO_ACTION_NEEDED', outcome: 'NO_ACTION' as const };
-    const r = await ev.assessDeadlinePertinence({ ...base, rule: CONTRACT, candidates: cands, decide, remembered: memo });
+    const r = await ev.assessDeadlinePertinence({ ...base, rule: CONTRACT, candidates: cands, decide, remembered: memo, config: V3 });
     expect(r).toMatchObject({ pertinence: 'NO_ACTION_NEEDED', cached: true, aiCalled: false });
     expect(calls).toHaveLength(0);
-    await ev.assessDeadlinePertinence({ ...base, rule: CONTRACT, candidates: [...cands, { iso: '2026-05-01', source: 'SOURCE_UNITS' }], decide, remembered: memo });
+    await ev.assessDeadlinePertinence({ ...base, rule: CONTRACT, candidates: [...cands, { iso: '2026-05-01', source: 'SOURCE_UNITS' }], decide, remembered: memo, config: V3 });
     expect(calls).toHaveLength(1);
   });
 
   it('ECH-12 — garanties : même traitement générique ; fournisseur (sans échéance) : jamais évalué', async () => {
     const { decide, calls } = t4({ category: 'information' });
-    const g = await ev.assessDeadlinePertinence({ ...base, documentType: 'WARRANTY_CERTIFICATE', rule: WARRANTY, candidates: [{ iso: '2025-01-01', source: 'FACTS' }], decide });
+    const g = await ev.assessDeadlinePertinence({ ...base, documentType: 'WARRANTY_CERTIFICATE', rule: WARRANTY, candidates: [{ iso: '2025-01-01', source: 'FACTS' }], decide, config: V3 });
     expect(g.pertinence).toBe('NO_ACTION_NEEDED');
     expect(calls[0].input).toMatchObject({ originFieldKey: 'warrantyEndDate', businessType: 'warranty' });
     const s = await ev.assessDeadlinePertinence({ ...base, rule: SUPPLIER, candidates: [{ iso: '2025-01-01', source: 'FACTS' }], decide });

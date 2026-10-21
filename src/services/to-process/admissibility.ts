@@ -38,6 +38,7 @@
 import { createHash } from 'crypto';
 import { pgClient } from '@/db';
 import type { RelevanceOutcome } from './document-field-evidence';
+import type { TraceFailure } from './trace-retries';
 
 export const ADMISSIBILITY_VERSION = 'atp-admissibility-v1';
 
@@ -67,6 +68,14 @@ export interface AdmissibilityInput {
   checks: AdmissibilityChecks;
   /** Motif par question (codes stables), pour le diagnostic. */
   motives?: Partial<Record<keyof AdmissibilityChecks, string>>;
+  /**
+   * Lot 76 (C5) — critères SANS INCIDENCE pour la règle (déclarés par la
+   * famille) : leur valeur inconnue ne bloque pas. Tout autre critère inconnu
+   * (`null`) est BLOQUANT : jamais assimilé à une validation.
+   */
+  notApplicable?: ReadonlyArray<keyof AdmissibilityChecks>;
+  /** Lot 76 (C5) — justification POSITIVE de chaque critère vérifié (codes stables, diagnostic). */
+  justifications?: Partial<Record<keyof AdmissibilityChecks, string>>;
   /** Échec technique de lecture : jamais une décision. */
   error?: string | null;
 }
@@ -78,9 +87,21 @@ export interface AdmissibilityDecision {
   /** Question décisive. */
   decisive: keyof AdmissibilityChecks | 'error' | null;
   checks: AdmissibilityChecks;
+  /** Lot 76 (C5) : CREATE_ACTION — justifications positives des critères nécessaires (« critère=motif », séparés par « ; »). */
+  justification?: string | null;
+  /** Lot 76 (C5) : critères inconnus qui ont empêché la conclusion. */
+  unknown?: Array<keyof AdmissibilityChecks>;
 }
 
-/** Décision d'admissibilité (pure) — ordre des questions fixé par le ticket. */
+/** Ordre des critères (ticket lot 72, C4). */
+const CRITERES: ReadonlyArray<keyof AdmissibilityChecks> = ['userDecided', 'realProblem', 'neededForUse', 'autoResolvable', 'userActionNeeded', 'timely'];
+
+/**
+ * Décision d'admissibilité (pure) — ordre des questions fixé par le ticket.
+ * Lot 76 (C5) : CREATE_ACTION exige une réponse POSITIVE (ou « sans
+ * incidence » déclarée) à CHAQUE critère ; un critère inconnu → DEFER
+ * (`UNKNOWN_CRITERIA:…`), jamais une carte présumée.
+ */
 export function decideAdmissibility(i: AdmissibilityInput): AdmissibilityDecision {
   const m = i.motives ?? {};
   const d = (outcome: AdmissibilityOutcome, decisive: AdmissibilityDecision['decisive'], fallback: string): AdmissibilityDecision =>
@@ -93,7 +114,17 @@ export function decideAdmissibility(i: AdmissibilityInput): AdmissibilityDecisio
   if (c.autoResolvable === true) return d('AUTO_RESOLVED', 'autoResolvable', 'AUTO_RESOLVABLE');
   if (c.userActionNeeded === false) return d('NO_ACTION', 'userActionNeeded', 'NO_USER_ACTION_NEEDED');
   if (c.timely === false) return d('DEFER', 'timely', 'NOT_NOW');
-  return d('CREATE_ACTION', null, 'ACTION_JUSTIFIED');
+  const sansObjet = new Set(i.notApplicable ?? []);
+  const inconnus = CRITERES.filter((k) => c[k] === null && !sansObjet.has(k));
+  if (inconnus.length) {
+    // Le premier critère inconnu porte le motif propre de la famille, s'il existe (« CATEGORY_UNKNOWN »…).
+    const propre = m[inconnus[0]];
+    return { outcome: 'DEFER', decisive: inconnus[0], checks: c, unknown: inconnus,
+      reason: `${propre && /UNKNOWN|PENDING/.test(propre) ? `${propre}|` : ''}UNKNOWN_CRITERIA:${inconnus.join(',')}`.slice(0, 200) };
+  }
+  const j = i.justifications ?? {};
+  const justification = CRITERES.filter((k) => !sansObjet.has(k) && j[k]).map((k) => `${k}=${j[k]}`).join('; ') || null;
+  return { ...d('CREATE_ACTION', null, 'ACTION_JUSTIFIED'), justification };
 }
 
 // ══════════════════════════════════════════════════════════════════════════
@@ -193,10 +224,18 @@ const PASSAGES_MAX = 20;
  * instruction. Rend l'ERREUR de journalisation (null : tracée) — l'appelant
  * la remonte au diagnostic technique, jamais en console seule.
  */
-export async function recordFamilyDecision(r: FamilyDecisionRecord): Promise<string | null> {
-  if (!(await familyDecisionsReady())) return null;
+export async function recordFamilyDecision(r: FamilyDecisionRecord, opts: { replay?: boolean; originalAt?: string } = {}): Promise<TraceFailure | null> {
+  const echec = async (cause: string): Promise<TraceFailure> => {
+    console.error(`[to-process] ${cause}`);
+    // Lot 76 (C8) : décision appliquée NON tracée — conservée pour reprise (jamais lors d'une reprise : pas de doublon).
+    if (opts.replay) return { cause, retryId: null };
+    const { enqueueTraceRetry } = await import('./trace-retries');
+    return enqueueTraceRetry({ source: 'FAMILY', accountId: r.accountId, ruleCode: r.ruleCode, targetType: r.targetType, targetId: r.targetId, payload: r, cause });
+  };
+  // Lot 76 (C8) : table de diagnostic indisponible — échec VISIBLE, jamais un succès silencieux.
+  if (!(await familyDecisionsReady())) return echec(`décision ${r.ruleCode} (${r.targetType} ${r.targetId}) non tracée : table to_process_decisions indisponible`);
   const signature = familyDecisionSignature(r);
-  const passage = JSON.stringify([{ at: new Date().toISOString(), trigger: r.trigger, runRef: r.runRef ?? null }]);
+  const passage = JSON.stringify([{ at: opts.originalAt ?? new Date().toISOString(), trigger: r.trigger, runRef: r.runRef ?? null, ...(opts.replay ? { replayed: true } : {}) }]);
   const durable = await durablePassagesReady();
   try {
     const maj = `UPDATE to_process_decisions SET last_seen_at = now(), seen_count = seen_count + 1, trigger_code = $6, reevaluate_at = $7::timestamptz,
@@ -225,9 +264,7 @@ export async function recordFamilyDecision(r: FamilyDecisionRecord): Promise<str
     );
     return null;
   } catch (e) {
-    const cause = `décision ${r.ruleCode} (${r.targetType} ${r.targetId}) non tracée : ${(e as Error).message}`.slice(0, 300);
-    console.error(`[to-process] ${cause}`);
-    return cause;
+    return echec(`décision ${r.ruleCode} (${r.targetType} ${r.targetId}) non tracée : ${(e as Error).message}`.slice(0, 260));
   }
 }
 
@@ -281,10 +318,10 @@ export const DECISION_TRACE_RETENTION_DAYS = 400;
  * événement de carte (historique des décisions de l'utilisateur intact).
  * Bornée par passage. Ne lève jamais ; rend le nombre de lignes retirées.
  */
-export async function purgeSupersededDecisionTraces(p: { retentionDays?: number; limit?: number } = {}): Promise<{ familyDecisions: number; documentRuleEvaluations: number; passages?: number }> {
+export async function purgeSupersededDecisionTraces(p: { retentionDays?: number; limit?: number } = {}): Promise<{ familyDecisions: number; documentRuleEvaluations: number; passages?: number; traceRetries?: number }> {
   const jours = Math.max(90, p.retentionDays ?? DECISION_TRACE_RETENTION_DAYS);
   const limite = Math.max(1, Math.min(20_000, p.limit ?? 5_000));
-  const out = { familyDecisions: 0, documentRuleEvaluations: 0, passages: 0 };
+  const out = { familyDecisions: 0, documentRuleEvaluations: 0, passages: 0, traceRetries: 0 };
   // Lot 75I (E) : rétention EXPLICITE des passages durables (même durée) ; une évaluation purgée emporte les siens (cascade).
   try {
     if (await durablePassagesReady()) {
@@ -313,6 +350,8 @@ export async function purgeSupersededDecisionTraces(p: { retentionDays?: number;
     )) as unknown as unknown[];
     return r.length;
   };
+  // Lot 76 (C8) : reprises de traces RÉSOLUES (rejouées ou remplacées) — même rétention.
+  out.traceRetries = await (await import('./trace-retries')).purgeResolvedTraceRetries(jours, limite);
   try {
     out.familyDecisions = await purge('to_process_decisions', 'n.account_id = d.account_id AND n.target_type = d.target_type AND n.target_id = d.target_id AND n.rule_code = d.rule_code');
     out.documentRuleEvaluations = await purge('document_rule_evaluations', 'n.account_id = d.account_id AND n.file_id = d.file_id AND n.rule_code = d.rule_code');

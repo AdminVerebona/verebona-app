@@ -124,7 +124,7 @@ scenario('L72C-ATP', 'À traiter : écarts résiduels de pertinence, de calcul e
       derivation: { status: 'CALCULATED_RELIABLE', duration: { months: 240, status: 'TOTAL_WITH_INCLUDED' } } });
     expect((await valeur(pret))!.v).not.toBe(await fin(debut.iso, 252));
     expect(await valeur(entretien)).toMatchObject({ v: await fin(debut.iso, 12, 'ANNIVERSARY'), kind: 'CALCULATED', derivation: { convention: 'ANNIVERSARY' } });
-    expect((await diag(pret)).at(-1)).toMatchObject({ outcome: 'AUTO_RESOLVED', decision_kind: 'AUTO_RESOLVED', engine_version: 'l75-1' });
+    expect((await diag(pret)).at(-1)).toMatchObject({ outcome: 'AUTO_RESOLVED', decision_kind: 'AUTO_RESOLVED', engine_version: 'l76-2' });
     expect(appelsT4(replay)).toHaveLength(0);
   });
 
@@ -475,7 +475,8 @@ scenario('L72C-ATP', 'À traiter : écarts résiduels de pertinence, de calcul e
     while (r.more) r = await svc.runRelevanceCampaign({ deadline: Date.now() + 120_000 });
     expect(r).toMatchObject({ done: true });
     const [camp] = (await svc.listRelevanceCampaigns(10)).filter((c) => c.code === code);
-    expect(camp).toMatchObject({ status: 'DONE', phase: 'DECISIONS' });
+    // Lot 76 (C7) : dernière phase = reprise des erreurs (parcours cartes + décisions terminé avant).
+    expect(camp).toMatchObject({ status: 'DONE', phase: 'RETRY' });
     expect(camp.before['DATA-AGENDA-DATE']).toBeGreaterThanOrEqual(1);
     expect(camp.before['SUPPLIER-IDENTITY']).toBeGreaterThanOrEqual(1);
     expect(camp.families).toMatchObject({ 'DATA-AGENDA-DATE': 'AGENDA_ITEM', 'SUPPLIER-IDENTITY': 'SUPPLIER', 'DATA-CONTRACT-END': 'DOCUMENT' });
@@ -486,7 +487,7 @@ scenario('L72C-ATP', 'À traiter : écarts résiduels de pertinence, de calcul e
     expect(issue(cAgenda)).toBe('REMOVED');
     expect(issue(cFour)).toBe('REMOVED');
     expect(items.find((i) => i.actionId === null && i.targetId === sansCarte)).toMatchObject({ phase: 'DECISIONS', outcome: 'DEFERRED', ruleCode: 'DATA-CONTRACT-END' });
-    expect((await diag(sansCarte)).at(-1)).toMatchObject({ outcome: 'DEFER', engine_version: 'l75-1', trigger_code: 'BACKFILL' });
+    expect((await diag(sansCarte)).at(-1)).toMatchObject({ outcome: 'DEFER', engine_version: 'l76-2', trigger_code: 'BACKFILL' });
     // Aucune suppression physique ; rejouée : aucun doublon.
     expect(await cartes(info, 'date', 'AGENDA_ITEM')).toHaveLength(1);
     const n = items.length;

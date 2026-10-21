@@ -273,7 +273,7 @@ scenario('L64-MAIL', 'Duo : e-mail au membre quand son accès prend fin (déclen
       expect(await removeDuoMember(d.ownerUserId)).toMatchObject({ ok: true, status: 'REMOVED' });
     } finally {
       await sql`ALTER TABLE transactional_email_jobs DROP CONSTRAINT transactional_email_jobs_kind_check`;
-      await sql`ALTER TABLE transactional_email_jobs ADD CONSTRAINT transactional_email_jobs_kind_check CHECK (kind IN ('EMAIL_VERIFICATION', 'DUO_INVITATION', 'DUO_MEMBERSHIP_ENDED', 'DUO_MEMBERSHIP_LEFT', 'SUBSCRIPTION_ANNUAL_RENEWAL_REMINDER'))`;
+      await sql`ALTER TABLE transactional_email_jobs ADD CONSTRAINT transactional_email_jobs_kind_check CHECK (kind IN ('EMAIL_VERIFICATION', 'DUO_INVITATION', 'DUO_MEMBERSHIP_ENDED', 'DUO_MEMBERSHIP_LEFT', 'SUBSCRIPTION_ANNUAL_RENEWAL_REMINDER', 'DUO_INVITATION_DECLINED'))`; // lot 76D : liste complète (73B)
       err.mockRestore();
     }
     expect(await membershipStatus(d.membershipId)).toBe('REMOVED');

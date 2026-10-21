@@ -55,6 +55,22 @@
  *   · journal PAR VÉRIFICATION (étape, résultat, motif, prochaine
  *     vérification, historique borné), erreurs Stripe comprises ;
  *   · réconciliation planifiée avec Stripe : `annual-renewal-reconcile.service.ts`.
+ *
+ * LOT 76D — RETOUR AUX RAPPELS STRIPE EN PHASES
+ *   La suspension et le retrait de la bascule bloquent toute NOUVELLE émission ;
+ *   ils n'arrêtent pas un appel Resend déjà transmis. Le retour arrière est donc
+ *   une phase explicite (`rollback_status` : in_progress → completed) :
+ *     1. nouvelles émissions bloquées (tâche suspendue exigée, bascule retirée,
+ *        demandes neutralisées jamais reprises par la file) ;
+ *     2. demandes jamais transmises : neutralisées (« aucun envoi ») ;
+ *     3. appels engagés (en cours, verrou expiré, acceptation incertaine) :
+ *        attendus puis réconciliés par CONSULTATION seule
+ *        (`reconcileNeutralizedEmailJob`), contrôlés chaque minute par la tâche
+ *        existante `transactional-emails-retry` ou à la demande dans le BO ;
+ *     4. échéances encore incertaines et échéances déjà notifiées par Verebona
+ *        identifiées (éléments bloquants, BO) ;
+ *     5. fin automatique seulement s'il ne reste rien ; échéances notifiées :
+ *        fin par arbitrage EXPLICITE du BO ; incertitude : décision BO d'abord.
  */
 import { pgClient } from '@/db';
 import { addDaysToDateStr, parisNow } from '@/lib/notifications/time-paris';
@@ -111,6 +127,12 @@ export interface SwitchState {
   rollbackAt: Date | null;
   lastReconcileAt: Date | null;
   lastReconcileNote: string | null;
+  /** Lot 76D : phase du retour arrière. */
+  rollbackStatus: RollbackPhase | null;
+  rollbackCompletedAt: Date | null;
+  rollbackCompletedBy: number | null;
+  rollbackCompletionMode: 'auto' | 'admin_ack' | null;
+  rollbackLastCheckAt: Date | null;
 }
 
 const dateOrNull = (v: unknown): Date | null => (v == null ? null : new Date(v as string));
@@ -118,7 +140,8 @@ const dateOrNull = (v: unknown): Date | null => (v == null ? null : new Date(v a
 export async function readSwitchState(): Promise<SwitchState> {
   const [r] = await pgClient.unsafe<Record<string, unknown>[]>(
     `SELECT coverage_from::text AS coverage_from, stripe_reminders_disabled_at, switch_declared_at, switch_declared_by, rollback_at,
-            last_reconcile_at, last_reconcile_note
+            last_reconcile_at, last_reconcile_note,
+            rollback_status, rollback_completed_at, rollback_completed_by, rollback_completion_mode, rollback_last_check_at
        FROM annual_renewal_reminder_state WHERE id = 1`,
   );
   return {
@@ -129,6 +152,11 @@ export async function readSwitchState(): Promise<SwitchState> {
     rollbackAt: dateOrNull(r?.rollback_at),
     lastReconcileAt: dateOrNull(r?.last_reconcile_at),
     lastReconcileNote: (r?.last_reconcile_note as string | null) ?? null,
+    rollbackStatus: (r?.rollback_status as RollbackPhase | null) ?? null,
+    rollbackCompletedAt: dateOrNull(r?.rollback_completed_at),
+    rollbackCompletedBy: r?.rollback_completed_by == null ? null : Number(r.rollback_completed_by),
+    rollbackCompletionMode: (r?.rollback_completion_mode as 'auto' | 'admin_ack' | null) ?? null,
+    rollbackLastCheckAt: dateOrNull(r?.rollback_last_check_at),
   };
 }
 
@@ -193,7 +221,7 @@ export async function annualRemindersSendBlock(): Promise<'TASK_SUSPENDED' | 'SW
  * seront signalés « couverture incertaine ». Refusée si déjà déclarée (retour
  * arrière d'abord) ou si l'instant est dans le futur.
  */
-export async function declareStripeRemindersDisabled(p: { adminId: number; disabledAt: Date; now?: Date }): Promise<{ ok: true; coverageFrom: string } | { ok: false; code: 'ALREADY_DECLARED' | 'IN_FUTURE' | 'INVALID_DATE' }> {
+export async function declareStripeRemindersDisabled(p: { adminId: number; disabledAt: Date; now?: Date }): Promise<{ ok: true; coverageFrom: string } | { ok: false; code: 'ALREADY_DECLARED' | 'IN_FUTURE' | 'INVALID_DATE' | 'ROLLBACK_IN_PROGRESS' }> {
   const now = p.now ?? new Date();
   if (Number.isNaN(p.disabledAt.getTime())) return { ok: false, code: 'INVALID_DATE' };
   if (p.disabledAt.getTime() > now.getTime() + 60_000) return { ok: false, code: 'IN_FUTURE' };
@@ -205,29 +233,145 @@ export async function declareStripeRemindersDisabled(p: { adminId: number; disab
         SET coverage_from = EXCLUDED.coverage_from, stripe_reminders_disabled_at = EXCLUDED.stripe_reminders_disabled_at,
             switch_declared_at = EXCLUDED.switch_declared_at, switch_declared_by = EXCLUDED.switch_declared_by, updated_at = EXCLUDED.updated_at
       WHERE annual_renewal_reminder_state.stripe_reminders_disabled_at IS NULL
+        AND annual_renewal_reminder_state.rollback_status IS DISTINCT FROM 'in_progress'
      RETURNING id`,
     [coverageFrom, iso(p.disabledAt), iso(now), p.adminId] as never[],
   );
-  if (rows.length === 0) return { ok: false, code: 'ALREADY_DECLARED' };
+  if (rows.length === 0) {
+    // Lot 76D : jamais de nouvelle bascule tant que le retour arrière n'est pas terminé.
+    const st = await readSwitchState();
+    return { ok: false, code: st.rollbackStatus === 'in_progress' ? 'ROLLBACK_IN_PROGRESS' : 'ALREADY_DECLARED' };
+  }
   return { ok: true, coverageFrom };
 }
 
+export type RollbackPhase = 'in_progress' | 'completed';
+
+/**
+ * Lot 76D — élément empêchant la fin du retour arrière :
+ *   · IN_FLIGHT    appel Resend en cours (verrou valide) : attendre ;
+ *   · TO_RECONCILE demande neutralisée dont l'appel reste à qualifier (verrou
+ *                  expiré, clôture tardive) : contrôle automatique ;
+ *   · UNCERTAIN    acceptation incertaine : décision BO (« Trouvé chez Resend »,
+ *                  « Vérifier de nouveau », « Abandonner » — jamais de réémission) ;
+ *   · NOTIFIED     échéance À VENIR déjà notifiée par Verebona : réactiver les
+ *                  rappels Stripe peut produire un second rappel → arbitrage
+ *                  explicite (« Terminer le retour arrière »).
+ */
+export interface RollbackBlocker {
+  kind: 'IN_FLIGHT' | 'TO_RECONCILE' | 'UNCERTAIN' | 'NOTIFIED';
+  jobId: number | null;
+  key: string | null;
+  accountId: number | null;
+  renewalDate: string | null;
+  /** Motif technique (code prestataire), jamais de secret. */
+  detail: string | null;
+  since: string | null;
+}
+
 export interface RollbackResult {
-  /** Demandes en attente (préparées, échecs temporaires) neutralisées. */
+  phase: RollbackPhase;
+  /** Demandes jamais transmises neutralisées par CET appel (aucun envoi). */
   neutralized: number;
   /** Parmi elles, échéances dont le J−7 est passé : Stripe ne les rappellera pas. */
   notCoveredByStripe: number;
-  /** Demandes en cours d'envoi au moment du retour arrière (à vérifier). */
+  /** Appels Resend en cours (verrou valide). */
   inFlight: number;
-  /** Acceptations incertaines non résolues (à vérifier dans le BO). */
+  /** Appels engagés à qualifier (verrou expiré, clôture tardive). */
+  toReconcile: number;
+  /** Acceptations incertaines (quel que soit le statut opérationnel de la demande). */
   uncertain: number;
+  /** Échéances à venir déjà notifiées par Verebona (arbitrage avant la fin). */
+  notified: number;
+  /** Total neutralisé sans envoi depuis le début du retour arrière. */
+  neutralizedTotal: number;
+  /** Incertitudes closes par décision BO (« Abandonner ») : envoi possible, tracé. */
+  arbitratedUncertain: number;
+  blockers: RollbackBlocker[];
+}
+
+type Tx = { unsafe: typeof pgClient.unsafe };
+
+/**
+ * Lot 76D — état du retour arrière (lecture seule, aucune consultation
+ * externe). Les incertitudes sont comptées indépendamment du statut
+ * opérationnel de la demande.
+ */
+async function rollbackProgress(exec: Tx, now: Date, since: Date | null): Promise<Omit<RollbackResult, 'phase' | 'neutralized' | 'notCoveredByStripe'>> {
+  const rows = await exec.unsafe<Record<string, unknown>[]>(
+    `SELECT id, status, provider_outcome, provider_detail, last_error, locked_until, uncertain_since, provider_call_started_at, accepted_at,
+            dedupe_key, context ->> 'accountId' AS account_id, context ->> 'renewalDate' AS renewal_date, neutralized_at
+       FROM transactional_email_jobs
+      WHERE kind = $1
+        AND (status IN ('pending', 'sending', 'failed', 'uncertain')
+          OR (status = 'accepted' AND (context ->> 'renewalAt')::timestamptz > $2::timestamptz)
+          OR (status = 'cancelled' AND neutralized_at IS NOT NULL AND ($3::timestamptz IS NULL OR updated_at >= $3::timestamptz)))
+      ORDER BY id LIMIT 1000`,
+    [ANNUAL_RENEWAL_REMINDER, iso(now), since ? iso(since) : null] as never[],
+  );
+  const isoOf = (v: unknown) => (v ? new Date(v as string).toISOString() : null);
+  const out: Omit<RollbackResult, 'phase' | 'neutralized' | 'notCoveredByStripe'> = {
+    inFlight: 0, toReconcile: 0, uncertain: 0, notified: 0, neutralizedTotal: 0, arbitratedUncertain: 0, blockers: [],
+  };
+  for (const r of rows) {
+    const status = String(r.status);
+    const lockValid = r.locked_until != null && new Date(r.locked_until as string).getTime() >= now.getTime();
+    let kind: RollbackBlocker['kind'] | null = null;
+    if (status === 'sending' && lockValid) kind = 'IN_FLIGHT';
+    else if (status === 'pending' || status === 'failed' || status === 'sending') kind = 'TO_RECONCILE';
+    else if (status === 'uncertain') kind = 'UNCERTAIN';
+    else if (status === 'accepted') kind = 'NOTIFIED';
+    else if (status === 'cancelled') {
+      if (r.provider_outcome === 'uncertain') out.arbitratedUncertain += 1;
+      else out.neutralizedTotal += 1;
+      continue;
+    }
+    if (!kind) continue;
+    if (kind === 'IN_FLIGHT') out.inFlight += 1;
+    if (kind === 'TO_RECONCILE') out.toReconcile += 1;
+    if (kind === 'UNCERTAIN') out.uncertain += 1;
+    if (kind === 'NOTIFIED') out.notified += 1;
+    out.blockers.push({
+      kind, jobId: Number(r.id), key: (r.dedupe_key as string | null) ?? null,
+      accountId: r.account_id ? Number(r.account_id) : null, renewalDate: (r.renewal_date as string | null) ?? null,
+      detail: kind === 'NOTIFIED' ? null : r.provider_detail ? redactSecrets(String(r.provider_detail)).slice(0, 200) : ((r.last_error as string | null) ?? null),
+      since: kind === 'UNCERTAIN' ? isoOf(r.uncertain_since) : kind === 'NOTIFIED' ? isoOf(r.accepted_at) : isoOf(r.provider_call_started_at ?? r.neutralized_at),
+    });
+  }
+  // Une acceptation incertaine encore en cours de qualification compte aussi comme incertaine.
+  out.uncertain += rows.filter((r) => ['pending', 'failed', 'sending'].includes(String(r.status)) && r.provider_outcome === 'uncertain').length;
+  return out;
+}
+
+const blocking = (p: { inFlight: number; toReconcile: number; blockers: RollbackBlocker[] }) =>
+  p.inFlight + p.toReconcile + p.blockers.filter((b) => b.kind === 'UNCERTAIN').length;
+
+/** Trace « retour arrière » sur le journal par vérification (historique conservé, résultat inchangé). */
+async function noteRollbackOnChecks(exec: Tx, keys: string[], reason: string, now: Date, outcome: string | null): Promise<void> {
+  if (!keys.length) return;
+  await exec.unsafe(
+    `UPDATE annual_renewal_reminder_checks
+        SET outcome = COALESCE($4, outcome), reason = $3, step = 'ROLLBACK', last_checked_at = $2::timestamptz, updated_at = $2::timestamptz,
+            history = ${historyAppendSql('$2', "'ROLLBACK'", 'COALESCE($4, outcome)', '$3')}
+      WHERE candidate_key = ANY($1::text[])`,
+    [keys, iso(now), reason, outcome] as never[],
+  );
 }
 
 /**
- * Lot 72F — retour aux rappels Stripe. Exige la tâche SUSPENDUE ; neutralise
- * les demandes Verebona en attente (motif définitif) et retire la déclaration
- * de bascule (plus aucun envoi, même si la tâche était réactivée par erreur).
- * L'administrateur réactive ENSUITE les rappels dans Stripe.
+ * Lot 72F — retour aux rappels Stripe ; lot 76D — en PHASES. Exige la tâche
+ * SUSPENDUE. Dans une transaction (ligne d'état verrouillée : deux retours
+ * arrière simultanés sont sérialisés) :
+ *   · bascule retirée et phase « en cours » (plus aucune émission annuelle,
+ *     plus de nouvelle bascule tant que la phase n'est pas terminée) ;
+ *   · demandes jamais transmises → neutralisées sans envoi (motif définitif) ;
+ *   · demandes dont un appel a été transmis (pending/failed après un appel,
+ *     déjà incertaines) → « acceptation incertaine » neutralisée : l'issue du
+ *     prestataire est CONSERVÉE, jamais présentée comme une annulation ;
+ *   · demandes en cours d'envoi → marquées neutralisées (l'appel engagé se
+ *     termine ; son issue sera qualifiée, jamais réémise).
+ * Rejouable (idempotent). L'administrateur ne réactive les rappels Stripe
+ * qu'une fois la phase TERMINÉE.
  */
 export async function rollbackToStripeReminders(p: { adminId: number; now?: Date }): Promise<{ ok: true; result: RollbackResult } | { ok: false; code: 'TASK_ACTIVE' }> {
   const now = p.now ?? new Date();
@@ -235,41 +379,173 @@ export async function rollbackToStripeReminders(p: { adminId: number; now?: Date
   if (!sched.suspended && !sched.stoppedByEnv) return { ok: false, code: 'TASK_ACTIVE' };
   const today = parisNow(now).dateStr;
   const result = await pgClient.begin(async (tx) => {
+    await tx.unsafe(`INSERT INTO annual_renewal_reminder_state (id, updated_at) VALUES (1, $1::timestamptz) ON CONFLICT (id) DO NOTHING`, [iso(now)] as never[]);
+    const [st] = await tx.unsafe<{ rollback_status: string | null; rollback_at: Date | null }[]>(
+      `SELECT rollback_status, rollback_at FROM annual_renewal_reminder_state WHERE id = 1 FOR UPDATE`);
+    const already = st?.rollback_status === 'in_progress';
+    // 1. Plus aucune émission : bascule retirée, phase « en cours ».
+    await tx.unsafe(
+      `UPDATE annual_renewal_reminder_state
+          SET stripe_reminders_disabled_at = NULL, rollback_status = 'in_progress',
+              rollback_at = CASE WHEN $3::boolean THEN rollback_at ELSE $1::timestamptz END,
+              rollback_by = CASE WHEN $3::boolean THEN rollback_by ELSE $2 END,
+              rollback_completed_at = NULL, rollback_completed_by = NULL, rollback_completion_mode = NULL,
+              updated_at = $1::timestamptz
+        WHERE id = 1`,
+      [iso(now), p.adminId, already] as never[],
+    );
+    // 2. TOUTES les demandes ouvertes neutralisées en UNE instruction (aucune ne
+    //    peut y échapper en changeant de statut entre deux instructions) : plus
+    //    jamais prises par la file ; statut et issue du prestataire inchangés ici.
+    await neutralizeOpenAnnualJobs(tx, now);
+    // 3. Jamais transmises : annulées, aucun envoi.
     const cancelled = await tx.unsafe<{ dedupe_key: string | null; renewal_date: string | null }[]>(
       `UPDATE transactional_email_jobs
           SET status = 'cancelled', last_error = 'ROLLBACK_NEUTRALIZED', locked_until = NULL, updated_at = $2::timestamptz
-        WHERE kind = $1 AND status IN ('pending', 'failed')
+        WHERE kind = $1 AND neutralized_at IS NOT NULL AND status IN ('pending', 'failed')
+          AND provider_call_started_at IS NULL AND provider_outcome IS DISTINCT FROM 'uncertain'
         RETURNING dedupe_key, context ->> 'renewalDate' AS renewal_date`,
       [ANNUAL_RENEWAL_REMINDER, iso(now)] as never[],
     );
-    const keys = cancelled.map((c) => c.dedupe_key).filter((k): k is string => !!k);
-    if (keys.length) {
-      await tx.unsafe(
-        `UPDATE annual_renewal_reminder_checks
-            SET outcome = 'EXCLUDED', reason = 'ROLLBACK_NEUTRALIZED', step = 'ROLLBACK', last_checked_at = $2::timestamptz, updated_at = $2::timestamptz,
-                history = ${historyAppendSql('$2', "'ROLLBACK'", "'EXCLUDED'", "'ROLLBACK_NEUTRALIZED'")}
-          WHERE candidate_key = ANY($1::text[])`,
-        [keys, iso(now)] as never[],
-      );
-    }
-    const [c] = await tx.unsafe<{ in_flight: number; uncertain: number }[]>(
-      `SELECT count(*) FILTER (WHERE status = 'sending')::int AS in_flight,
-              count(*) FILTER (WHERE status = 'uncertain' OR (provider_outcome = 'uncertain' AND status = 'pending'))::int AS uncertain
-         FROM transactional_email_jobs WHERE kind = $1`,
-      [ANNUAL_RENEWAL_REMINDER as never],
+    // 4. Appel transmis : acceptation incertaine CONSERVÉE (jamais « annulée sans envoi »).
+    //    Filtre strict : une demande revenue « pending » entre-temps sans appel
+    //    transmis reste à qualifier par le contrôle (annulée sans envoi).
+    const held = await tx.unsafe<{ dedupe_key: string | null }[]>(
+      `UPDATE transactional_email_jobs
+          SET status = 'uncertain', last_error = 'ROLLBACK_UNCERTAIN', locked_until = NULL, updated_at = $2::timestamptz,
+              provider_outcome = 'uncertain', provider_detail = COALESCE(provider_detail, 'ROLLBACK_CALL_UNRESOLVED'),
+              uncertain_since = COALESCE(uncertain_since, $2::timestamptz), next_attempt_at = $2::timestamptz
+        WHERE kind = $1 AND neutralized_at IS NOT NULL AND status IN ('pending', 'failed')
+          AND (provider_call_started_at IS NOT NULL OR provider_outcome = 'uncertain')
+        RETURNING dedupe_key`,
+      [ANNUAL_RENEWAL_REMINDER, iso(now)] as never[],
     );
-    await tx.unsafe(
-      `UPDATE annual_renewal_reminder_state SET stripe_reminders_disabled_at = NULL, rollback_at = $1::timestamptz, rollback_by = $2, updated_at = $1::timestamptz WHERE id = 1`,
-      [iso(now), p.adminId] as never[],
-    );
-    return {
+    const keyList = (rows: Array<{ dedupe_key: string | null }>) => rows.map((c) => c.dedupe_key).filter((k): k is string => !!k);
+    await noteRollbackOnChecks(tx, keyList(cancelled), 'ROLLBACK_NEUTRALIZED', now, 'EXCLUDED');
+    await noteRollbackOnChecks(tx, keyList(held), 'ROLLBACK_UNCERTAIN', now, null);
+    const since = already && st?.rollback_at ? new Date(st.rollback_at) : now;
+    const progress = await rollbackProgress(tx, now, since);
+    const res: RollbackResult = {
+      phase: 'in_progress',
       neutralized: cancelled.length,
       notCoveredByStripe: cancelled.filter((x) => x.renewal_date && addDaysToDateStr(x.renewal_date, -REMINDER_DAYS_BEFORE) <= today).length,
-      inFlight: Number(c?.in_flight ?? 0),
-      uncertain: Number(c?.uncertain ?? 0),
+      ...progress,
     };
+    await tx.unsafe(`UPDATE annual_renewal_reminder_state SET rollback_last_check_at = $1::timestamptz, rollback_summary = $2::jsonb WHERE id = 1`,
+      [iso(now), JSON.stringify(summaryOf(res))] as never[]);
+    return res;
   });
   return { ok: true, result };
+}
+
+/**
+ * Lot 76D — neutralise toute demande annuelle OUVERTE (préparée, en échec
+ * temporaire, en cours, incertaine). Rejouée à chaque contrôle tant que le
+ * retour arrière est en cours : une demande apparue tardivement (passage du
+ * rappel commencé avant la suspension) est neutralisée à son tour.
+ */
+async function neutralizeOpenAnnualJobs(exec: Tx, now: Date): Promise<number> {
+  const rows = await exec.unsafe<{ id: number }[]>(
+    `UPDATE transactional_email_jobs SET neutralized_at = $2::timestamptz
+      WHERE kind = $1 AND status IN ('pending', 'failed', 'sending', 'uncertain') AND neutralized_at IS NULL
+      RETURNING id`,
+    [ANNUAL_RENEWAL_REMINDER, iso(now)] as never[],
+  );
+  return rows.length;
+}
+
+/** Résumé persisté (compteurs + éléments bloquants bornés). */
+function summaryOf(r: RollbackResult): Record<string, unknown> {
+  return { ...r, blockers: r.blockers.slice(0, 100) };
+}
+
+/**
+ * Lot 76D — contrôle du retour arrière (tâche `transactional-emails-retry`
+ * chaque minute, ou « Vérifier maintenant » dans le BO) : qualifie les appels
+ * engagés des demandes neutralisées (consultation seule, jamais d'envoi), puis
+ * termine la phase AUTOMATIQUEMENT s'il ne reste ni appel en cours, ni appel à
+ * qualifier, ni incertitude, ni échéance notifiée à arbitrer. Hors phase en
+ * cours : une seule lecture.
+ */
+export async function advanceAnnualRenewalRollback(opts: { now?: Date; deadline?: number; budget?: import('@/services/email/transactional-email-jobs.service').ProviderLookupBudget } = {}): Promise<RollbackResult & { checked: number }> {
+  const now = opts.now ?? new Date();
+  const deadline = opts.deadline ?? Date.now() + 30_000;
+  const st0 = await readSwitchState();
+  if (st0.rollbackStatus !== 'in_progress') {
+    // Hors retour arrière (cas courant, chaque minute) : une seule lecture.
+    return { phase: 'completed', neutralized: 0, notCoveredByStripe: 0, inFlight: 0, toReconcile: 0, uncertain: 0, notified: 0, neutralizedTotal: 0, arbitratedUncertain: 0, blockers: [], checked: 0 };
+  }
+  const { reconcileNeutralizedEmailJob, PROVIDER_LOOKUP_MAX_MS } = await import('@/services/email/transactional-email-jobs.service');
+  await neutralizeOpenAnnualJobs(pgClient, now);
+  const due = await pgClient.unsafe<{ id: number; dedupe_key: string | null }[]>(
+    `SELECT id, dedupe_key FROM transactional_email_jobs
+      WHERE kind = $1 AND neutralized_at IS NOT NULL
+        AND (status IN ('pending', 'failed')
+          OR (status = 'uncertain' AND next_attempt_at <= $2::timestamptz)
+          OR (status = 'sending' AND locked_until < $2::timestamptz))
+      ORDER BY id LIMIT 50`,
+    [ANNUAL_RENEWAL_REMINDER, iso(now)] as never[],
+  );
+  let checked = 0;
+  for (const d of due) {
+    const left = deadline - Date.now();
+    if (left <= 0) break;
+    // Consultation bornée par le temps restant du passage (jamais d'attente au-delà).
+    const r = await reconcileNeutralizedEmailJob(d.id, now, { ...opts.budget, maxMs: Math.min(opts.budget?.maxMs ?? PROVIDER_LOOKUP_MAX_MS, left) });
+    if (r === 'busy') continue;
+    checked += 1;
+    if (d.dedupe_key) {
+      const reason = r === 'accepted' ? 'ROLLBACK_ALREADY_NOTIFIED' : r === 'neutralized' ? 'ROLLBACK_NEUTRALIZED' : 'ROLLBACK_UNCERTAIN';
+      await noteRollbackOnChecks(pgClient, [d.dedupe_key], reason, now, r === 'neutralized' ? 'EXCLUDED' : null);
+    }
+  }
+  return pgClient.begin(async (tx) => {
+    const [st] = await tx.unsafe<{ rollback_status: string | null; rollback_at: Date | null }[]>(
+      `SELECT rollback_status, rollback_at FROM annual_renewal_reminder_state WHERE id = 1 FOR UPDATE`);
+    const progress = await rollbackProgress(tx, now, st?.rollback_at ? new Date(st.rollback_at) : null);
+    let phase: RollbackPhase = st?.rollback_status === 'completed' ? 'completed' : 'in_progress';
+    if (phase === 'in_progress' && blocking(progress) === 0 && progress.notified === 0) {
+      phase = 'completed';
+      await tx.unsafe(
+        `UPDATE annual_renewal_reminder_state SET rollback_status = 'completed', rollback_completed_at = $1::timestamptz,
+                rollback_completed_by = NULL, rollback_completion_mode = 'auto', updated_at = $1::timestamptz
+          WHERE id = 1 AND rollback_status = 'in_progress'`,
+        [iso(now)] as never[],
+      );
+    }
+    const res: RollbackResult = { phase, neutralized: 0, notCoveredByStripe: 0, ...progress };
+    await tx.unsafe(`UPDATE annual_renewal_reminder_state SET rollback_last_check_at = $1::timestamptz, rollback_summary = $2::jsonb WHERE id = 1`,
+      [iso(now), JSON.stringify(summaryOf(res))] as never[]);
+    return { ...res, checked };
+  });
+}
+
+/**
+ * Lot 76D — fin du retour arrière par l'administrateur. Refusée tant qu'un
+ * appel est en cours, à qualifier, ou qu'une acceptation incertaine n'est pas
+ * arbitrée (BLOCKED) ; échéances à venir déjà notifiées par Verebona :
+ * arbitrage EXPLICITE exigé (`acknowledgeNotified` — Stripe peut envoyer son
+ * propre rappel après réactivation : aucune absence de doublon garantie).
+ */
+export async function finalizeAnnualRenewalRollback(p: { adminId: number; acknowledgeNotified: boolean; now?: Date }): Promise<{ ok: true; result: RollbackResult } | { ok: false; code: 'NOT_IN_PROGRESS' | 'BLOCKED' | 'ACK_REQUIRED'; result?: RollbackResult }> {
+  const now = p.now ?? new Date();
+  return pgClient.begin(async (tx) => {
+    const [st] = await tx.unsafe<{ rollback_status: string | null; rollback_at: Date | null }[]>(
+      `SELECT rollback_status, rollback_at FROM annual_renewal_reminder_state WHERE id = 1 FOR UPDATE`);
+    if (st?.rollback_status !== 'in_progress') return { ok: false as const, code: 'NOT_IN_PROGRESS' as const };
+    const progress = await rollbackProgress(tx, now, st.rollback_at ? new Date(st.rollback_at) : null);
+    const res: RollbackResult = { phase: 'in_progress', neutralized: 0, notCoveredByStripe: 0, ...progress };
+    if (blocking(progress) > 0) return { ok: false as const, code: 'BLOCKED' as const, result: res };
+    if (progress.notified > 0 && !p.acknowledgeNotified) return { ok: false as const, code: 'ACK_REQUIRED' as const, result: res };
+    await tx.unsafe(
+      `UPDATE annual_renewal_reminder_state SET rollback_status = 'completed', rollback_completed_at = $1::timestamptz,
+              rollback_completed_by = $2, rollback_completion_mode = $3, rollback_last_check_at = $1::timestamptz,
+              rollback_summary = $4::jsonb, updated_at = $1::timestamptz
+        WHERE id = 1 AND rollback_status = 'in_progress'`,
+      [iso(now), p.adminId, 'admin_ack', JSON.stringify(summaryOf({ ...res, phase: 'completed' }))] as never[],
+    );
+    return { ok: true as const, result: { ...res, phase: 'completed' as const } };
+  });
 }
 
 // ── Portail Stripe : la désactivation du renouvellement est-elle offerte ? ───
@@ -354,7 +630,7 @@ export async function runAnnualRenewalReminders(opts: { now?: Date; stripe?: Rem
     `UPDATE transactional_email_jobs
         SET status = 'pending', attempts = 0, locked_until = NULL, next_attempt_at = $2::timestamptz, updated_at = $2::timestamptz,
             context = COALESCE(context, '{}'::jsonb) || jsonb_build_object('revivedOn', $3::text)
-      WHERE kind = $1 AND status = 'failed'
+      WHERE kind = $1 AND status = 'failed' AND neutralized_at IS NULL
         AND (context ->> 'revivedOn') IS DISTINCT FROM $3::text
         AND (context ->> 'renewalAt')::timestamptz > $2::timestamptz + interval '12 hours'
       RETURNING id`,
@@ -471,6 +747,8 @@ export interface CheckRecord {
   now: Date;
   /** Prochaine vérification automatique (null : aucune). */
   next: Date | null;
+  /** Lot 76D : false = échéance LOCALE non revérifiée chez Stripe (défaut : vérifiée). */
+  renewalDateVerified?: boolean;
 }
 
 /** Journal persistant par vérification (une ligne par abonnement × échéance, historique borné). */
@@ -478,17 +756,18 @@ export async function recordCheck(r: CheckRecord): Promise<void> {
   await pgClient.unsafe(
     `INSERT INTO annual_renewal_reminder_checks
        (candidate_key, account_id, stripe_subscription_id, renewal_date, checked_on, outcome, reason, job_id, checks, created_at, updated_at,
-        step, last_checked_at, next_check_at, history)
+        step, last_checked_at, next_check_at, history, renewal_date_verified)
      VALUES ($1, $2, $3, $4::date, $5::date, $6, $7, $8, 1, $10::timestamptz, $10::timestamptz, $9, $10::timestamptz, $11::timestamptz,
-             ${historyAppendSql('$10', '$9', '$6', '$7', "'[]'::jsonb")})
+             ${historyAppendSql('$10', '$9', '$6', '$7', "'[]'::jsonb")}, $12)
      ON CONFLICT (candidate_key) DO UPDATE
         SET renewal_date = EXCLUDED.renewal_date, checked_on = EXCLUDED.checked_on, outcome = EXCLUDED.outcome,
             reason = EXCLUDED.reason, job_id = COALESCE(EXCLUDED.job_id, annual_renewal_reminder_checks.job_id),
             account_id = COALESCE(EXCLUDED.account_id, annual_renewal_reminder_checks.account_id),
             checks = annual_renewal_reminder_checks.checks + 1, updated_at = EXCLUDED.updated_at,
             step = EXCLUDED.step, last_checked_at = EXCLUDED.last_checked_at, next_check_at = EXCLUDED.next_check_at,
+            renewal_date_verified = EXCLUDED.renewal_date_verified,
             history = ${historyAppendSql('$10', '$9', '$6', '$7', 'annual_renewal_reminder_checks.history')}`,
-    [r.key, r.accountId, r.subscriptionId, r.renewalDate, r.today, r.outcome, r.reason, r.jobId, r.step, iso(r.now), r.next ? iso(r.next) : null] as never[],
+    [r.key, r.accountId, r.subscriptionId, r.renewalDate, r.today, r.outcome, r.reason, r.jobId, r.step, iso(r.now), r.next ? iso(r.next) : null, r.renewalDateVerified ?? true] as never[],
   );
 }
 
@@ -654,7 +933,7 @@ export type CoverageDecision = 'SEND_VEREBONA' | 'STRIPE_CONFIRMED';
  * Stripe (constaté → clos) ou demande le rappel Verebona (revalidé chez
  * Stripe, préparé comme un rattrapage, avant l'échéance seulement).
  */
-export async function resolveCoverageUncertain(p: { key: string; decision: CoverageDecision; adminId: number; now?: Date; stripe?: ReminderStripe }): Promise<{ ok: true; outcome: string; jobId?: number | null } | { ok: false; code: 'NOT_FOUND' | 'NOT_UNCERTAIN' | 'NOT_ELIGIBLE'; reason?: string }> {
+export async function resolveCoverageUncertain(p: { key: string; decision: CoverageDecision; adminId: number; now?: Date; stripe?: ReminderStripe }): Promise<{ ok: true; outcome: string; jobId?: number | null } | { ok: false; code: 'NOT_FOUND' | 'NOT_UNCERTAIN' | 'NOT_ELIGIBLE' | 'SWITCH_NOT_DECLARED'; reason?: string }> {
   const now = p.now ?? new Date();
   const today = parisNow(now).dateStr;
   const [row] = await pgClient.unsafe<{ account_id: number | null; stripe_subscription_id: string; renewal_date: string; outcome: string; owner_user_id: number | null }[]>(
@@ -670,6 +949,8 @@ export async function resolveCoverageUncertain(p: { key: string; decision: Cover
     await recordCheck({ ...base, outcome: 'EXCLUDED', reason: 'STRIPE_REMINDER_CONFIRMED', jobId: null, next: null });
     return { ok: true, outcome: 'EXCLUDED' };
   }
+  // Lot 76D : jamais de rappel Verebona préparé sans bascule déclarée (retour arrière compris).
+  if (!(await readSwitchState()).stripeRemindersDisabledAt) return { ok: false, code: 'SWITCH_NOT_DECLARED' };
   const stripe = p.stripe ?? await defaultStripe();
   const { sub, schedule } = await readSubscription(stripe, row.stripe_subscription_id);
   const elig = evaluateStripeEligibility(sub, { schedule });
@@ -693,7 +974,9 @@ export async function resolveCoverageUncertain(p: { key: string; decision: Cover
  */
 export type ReminderState =
   | 'WAITING' | 'EXCLUDED' | 'NO_RECIPIENT' | 'STRIPE_ERROR' | 'COVERAGE_UNCERTAIN' | 'DESYNC_RESYNCED' | 'DESYNC_UNRESOLVED' | 'STRIPE_ONLY'
-  | 'PREPARED' | 'HELD' | 'SENDING' | 'ACCEPTED' | 'DELIVERED' | 'DELIVERY_PROBLEM' | 'TEMPORARY_FAILURE' | 'FINAL_FAILURE' | 'UNCERTAIN' | 'CANCELLED';
+  | 'PREPARED' | 'HELD' | 'SENDING' | 'ACCEPTED' | 'DELIVERED' | 'DELIVERY_PROBLEM' | 'TEMPORARY_FAILURE' | 'FINAL_FAILURE' | 'UNCERTAIN' | 'CANCELLED'
+  /** Lot 76D. */
+  | 'NEUTRALIZED' | 'CANCELLED_UNCERTAIN' | 'RECONCILE_ERROR' | 'RECONCILE_RESOLVED';
 
 export const REMINDER_STATE_LABELS: Readonly<Record<ReminderState, string>> = {
   WAITING: 'En attente du J−7', EXCLUDED: 'Exclu', NO_RECIPIENT: 'Sans destinataire', STRIPE_ERROR: 'Vérification Stripe en échec',
@@ -701,6 +984,8 @@ export const REMINDER_STATE_LABELS: Readonly<Record<ReminderState, string>> = {
   STRIPE_ONLY: 'Absent localement', PREPARED: 'Préparé', HELD: 'Retenu (suspension)', SENDING: 'En cours d’envoi', ACCEPTED: 'Accepté par Resend',
   DELIVERED: 'Livré', DELIVERY_PROBLEM: 'Problème de livraison', TEMPORARY_FAILURE: 'Échec temporaire', FINAL_FAILURE: 'Échec définitif',
   UNCERTAIN: 'Acceptation incertaine', CANCELLED: 'Annulé',
+  NEUTRALIZED: 'Neutralisé (retour aux rappels Stripe) — aucun envoi', CANCELLED_UNCERTAIN: 'Clos — envoi antérieur incertain (e-mail peut-être reçu)',
+  RECONCILE_ERROR: 'Relecture Stripe en échec (réconciliation)', RECONCILE_RESOLVED: 'Relecture Stripe reprise',
 };
 
 const PROBLEM_DELIVERY = new Set(['bounced', 'complained', 'failed', 'suppressed']);
@@ -709,7 +994,7 @@ const PROBLEM_DELIVERY = new Set(['bounced', 'complained', 'failed', 'suppressed
 export function reminderStateOf(r: { outcome: string; job_status: string | null; job_attempts: number | null; job_last_error: string | null; provider_outcome: string | null; delivery_status: string | null }): ReminderState {
   if (!r.job_status) {
     const o = r.outcome as ReminderState;
-    if (['WAITING', 'NO_RECIPIENT', 'STRIPE_ERROR', 'COVERAGE_UNCERTAIN', 'DESYNC_RESYNCED', 'DESYNC_UNRESOLVED', 'STRIPE_ONLY'].includes(o)) return o;
+    if (['WAITING', 'NO_RECIPIENT', 'STRIPE_ERROR', 'COVERAGE_UNCERTAIN', 'DESYNC_RESYNCED', 'DESYNC_UNRESOLVED', 'STRIPE_ONLY', 'RECONCILE_ERROR', 'RECONCILE_RESOLVED'].includes(o)) return o;
     return 'EXCLUDED';
   }
   switch (r.job_status) {
@@ -720,7 +1005,11 @@ export function reminderStateOf(r: { outcome: string; job_status: string | null;
     case 'sending': return 'SENDING';
     case 'uncertain': return 'UNCERTAIN';
     case 'failed': return 'FINAL_FAILURE';
-    case 'cancelled': return 'CANCELLED';
+    case 'cancelled':
+      // Lot 76D : un appel antérieur peut-être accepté n'est jamais présenté comme « annulé sans envoi ».
+      if (r.provider_outcome === 'uncertain') return 'CANCELLED_UNCERTAIN';
+      if (r.job_last_error === 'ROLLBACK_NEUTRALIZED') return 'NEUTRALIZED';
+      return 'CANCELLED';
     case 'accepted':
       if (r.delivery_status === 'delivered') return 'DELIVERED';
       if (r.delivery_status && PROBLEM_DELIVERY.has(r.delivery_status)) return 'DELIVERY_PROBLEM';
@@ -743,16 +1032,35 @@ export interface AnnualRenewalRecentRow {
   jobId: number | null;
   attempts: number | null;
   nextAttemptAt: string | null;
+  /** Lot 76D : false = échéance locale non revérifiée chez Stripe. */
+  renewalDateVerified: boolean;
+  /** Lot 76D : demande neutralisée par un retour arrière (jamais réémise). */
+  neutralized: boolean;
 }
 
 export interface AnnualRenewalAnomaly {
-  state: 'STRIPE_ERROR' | 'COVERAGE_UNCERTAIN' | 'DESYNC_UNRESOLVED' | 'STRIPE_ONLY' | 'UNCERTAIN' | 'FINAL_FAILURE' | 'OVERDUE' | 'HELD';
+  state: 'STRIPE_ERROR' | 'COVERAGE_UNCERTAIN' | 'DESYNC_UNRESOLVED' | 'STRIPE_ONLY' | 'UNCERTAIN' | 'FINAL_FAILURE' | 'OVERDUE' | 'HELD' | 'RECONCILE_ERROR';
   key: string | null;
   jobId: number | null;
   accountId: number | null;
   renewalDate: string | null;
   reason: string | null;
   since: string | null;
+  /** Lot 76D : étape et prochaine tentative prévue (vérification ou réconciliation). */
+  step?: string | null;
+  nextAt?: string | null;
+  renewalDateVerified?: boolean;
+  neutralized?: boolean;
+}
+
+/** Lot 76D : retour aux rappels Stripe (phase, éléments bloquants, compteurs). */
+export interface AnnualRenewalRollbackView extends Omit<RollbackResult, 'neutralized' | 'notCoveredByStripe'> {
+  status: RollbackPhase;
+  startedAt: string | null;
+  completedAt: string | null;
+  completedBy: number | null;
+  completionMode: 'auto' | 'admin_ack' | null;
+  lastCheckAt: string | null;
 }
 
 export interface AnnualRenewalOverview {
@@ -772,6 +1080,8 @@ export interface AnnualRenewalOverview {
   recent: AnnualRenewalRecentRow[];
   /** Lot 72F : erreurs, demandes non traitées, états incertains. */
   anomalies: AnnualRenewalAnomaly[];
+  /** Lot 76D : retour arrière en cours ou dernier retour arrière (null : jamais). */
+  rollback: AnnualRenewalRollbackView | null;
 }
 
 export async function getAnnualRenewalOverview(now: Date = new Date()): Promise<AnnualRenewalOverview> {
@@ -792,9 +1102,9 @@ export async function getAnnualRenewalOverview(now: Date = new Date()): Promise<
     readSchedulerState(ANNUAL_RENEWAL_RECONCILE_TASK_CODE),
     pgClient.unsafe<Record<string, unknown>[]>(
       `SELECT k.candidate_key, k.account_id, k.stripe_subscription_id, k.renewal_date::text AS renewal_date, k.outcome, k.reason, k.step,
-              k.last_checked_at, k.next_check_at, k.updated_at,
+              k.last_checked_at, k.next_check_at, k.updated_at, k.renewal_date_verified,
               j.id AS job_id, j.status AS job_status, j.attempts AS job_attempts, j.last_error AS job_last_error, j.next_attempt_at,
-              j.provider_outcome, j.uncertain_since, l.delivery_status
+              j.provider_outcome, j.uncertain_since, l.delivery_status, j.neutralized_at IS NOT NULL AS job_neutralized
          FROM annual_renewal_reminder_checks k
          LEFT JOIN transactional_email_jobs j ON j.dedupe_key = k.candidate_key
          LEFT JOIN email_logs l ON l.id = j.last_email_log_id AND j.status = 'accepted'
@@ -827,23 +1137,30 @@ export async function getAnnualRenewalOverview(now: Date = new Date()): Promise<
     jobId: r.job_id == null ? null : Number(r.job_id),
     attempts: r.job_attempts == null ? null : Number(r.job_attempts),
     nextAttemptAt: isoOf(r.next_attempt_at),
+    renewalDateVerified: r.renewal_date_verified !== false,
+    neutralized: r.job_neutralized === true,
   }));
   const anomalies: AnnualRenewalAnomaly[] = [];
-  const ANOMALOUS = new Set(['STRIPE_ERROR', 'COVERAGE_UNCERTAIN', 'DESYNC_UNRESOLVED', 'STRIPE_ONLY', 'UNCERTAIN', 'FINAL_FAILURE', 'HELD']);
+  const ANOMALOUS = new Set(['STRIPE_ERROR', 'COVERAGE_UNCERTAIN', 'DESYNC_UNRESOLVED', 'STRIPE_ONLY', 'UNCERTAIN', 'FINAL_FAILURE', 'HELD', 'RECONCILE_ERROR']);
   for (const r of recent) {
     if (!ANOMALOUS.has(r.state)) continue;
-    anomalies.push({ state: r.state as AnnualRenewalAnomaly['state'], key: r.key, jobId: r.jobId, accountId: r.accountId, renewalDate: r.renewalDate, reason: r.reason, since: r.lastCheckedAt });
+    anomalies.push({
+      state: r.state as AnnualRenewalAnomaly['state'], key: r.key, jobId: r.jobId, accountId: r.accountId, renewalDate: r.renewalDate,
+      reason: r.reason ? redactSecrets(r.reason) : null, since: r.lastCheckedAt, step: r.step,
+      nextAt: r.jobId ? r.nextAttemptAt : r.nextCheckAt, renewalDateVerified: r.renewalDateVerified, neutralized: r.neutralized,
+    });
   }
   // Acceptations incertaines hors fenêtre du journal (demande plus ancienne).
   const seen = new Set(anomalies.map((a) => a.jobId).filter((v) => v != null));
-  const uncertain = await pgClient.unsafe<{ id: number; dedupe_key: string | null; account_id: string | null; renewal_date: string | null; provider_detail: string | null; uncertain_since: string | null }[]>(
-    `SELECT id, dedupe_key, context ->> 'accountId' AS account_id, context ->> 'renewalDate' AS renewal_date, provider_detail, uncertain_since
+  const uncertain = await pgClient.unsafe<{ id: number; dedupe_key: string | null; account_id: string | null; renewal_date: string | null; provider_detail: string | null; uncertain_since: string | null; neutralized: boolean }[]>(
+    `SELECT id, dedupe_key, context ->> 'accountId' AS account_id, context ->> 'renewalDate' AS renewal_date, provider_detail, uncertain_since,
+            neutralized_at IS NOT NULL AS neutralized
        FROM transactional_email_jobs WHERE kind = $1 AND status = 'uncertain' ORDER BY uncertain_since NULLS LAST LIMIT 50`,
     [ANNUAL_RENEWAL_REMINDER as never],
   );
   for (const u of uncertain) {
     if (seen.has(u.id)) continue;
-    anomalies.push({ state: 'UNCERTAIN', key: u.dedupe_key, jobId: u.id, accountId: u.account_id ? Number(u.account_id) : null, renewalDate: u.renewal_date, reason: u.provider_detail, since: isoOf(u.uncertain_since) });
+    anomalies.push({ state: 'UNCERTAIN', key: u.dedupe_key, jobId: u.id, accountId: u.account_id ? Number(u.account_id) : null, renewalDate: u.renewal_date, reason: u.provider_detail, since: isoOf(u.uncertain_since), neutralized: u.neutralized === true });
     seen.add(u.id);
   }
   for (const o of overdue) {
@@ -866,6 +1183,28 @@ export async function getAnnualRenewalOverview(now: Date = new Date()): Promise<
     lastReconcileNote: sw.lastReconcileNote,
     recent,
     anomalies,
+    rollback: await rollbackViewOf(sw, now),
+  };
+}
+
+/** Lot 76D : phase du retour arrière ; en cours → état RÉEL recalculé (lecture seule). */
+async function rollbackViewOf(sw: SwitchState, now: Date): Promise<AnnualRenewalRollbackView | null> {
+  if (!sw.rollbackStatus) return null;
+  const isoOf = (v: Date | null) => (v ? v.toISOString() : null);
+  let progress: Omit<RollbackResult, 'phase' | 'neutralized' | 'notCoveredByStripe'>;
+  if (sw.rollbackStatus === 'in_progress') {
+    progress = await rollbackProgress(pgClient, now, sw.rollbackAt);
+  } else {
+    const [r] = await pgClient.unsafe<{ rollback_summary: Record<string, unknown> | null }[]>(`SELECT rollback_summary FROM annual_renewal_reminder_state WHERE id = 1`);
+    const sm = (r?.rollback_summary ?? {}) as Partial<RollbackResult>;
+    progress = {
+      inFlight: Number(sm.inFlight ?? 0), toReconcile: Number(sm.toReconcile ?? 0), uncertain: Number(sm.uncertain ?? 0), notified: Number(sm.notified ?? 0),
+      neutralizedTotal: Number(sm.neutralizedTotal ?? 0), arbitratedUncertain: Number(sm.arbitratedUncertain ?? 0), blockers: Array.isArray(sm.blockers) ? sm.blockers : [],
+    };
+  }
+  return {
+    status: sw.rollbackStatus, startedAt: isoOf(sw.rollbackAt), completedAt: isoOf(sw.rollbackCompletedAt), completedBy: sw.rollbackCompletedBy,
+    completionMode: sw.rollbackCompletionMode, lastCheckAt: isoOf(sw.rollbackLastCheckAt), phase: sw.rollbackStatus, ...progress,
   };
 }
 

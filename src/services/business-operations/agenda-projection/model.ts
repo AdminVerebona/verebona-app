@@ -55,6 +55,7 @@
  * ══════════════════════════════════════════════════════════════════════════
  */
 import { findDuplicate } from '@/services/ai/agenda/dedupe.service';
+import { natureTokens } from '../consolidation/matching';
 import type { AgendaEventNature } from '@/services/agenda/agenda-functional-key';
 import type { BusinessOperationStatus, BusinessOperationTypeCode } from '../model';
 
@@ -103,6 +104,15 @@ export interface OperationSnapshot {
   claimHistoryEventId: number | null;
   /** DISPOSAL : vente ou transmission (statut du bien). */
   disposalKind: 'SALE' | 'TRANSMISSION' | null;
+  /**
+   * Lot 76H : documents dont T3 a consolidé TOUTE la preuve d'intervention
+   * dans cette Opération — source DOCUMENT active de cette seule Opération
+   * d'intervention active, et chaque candidat T1 établi d'intervention du
+   * document résolu (MATCH / CREATE, fusions suivies) vers elle, aucun en
+   * attente ni en arbitrage. C'est la décision d'identité de T3 que la
+   * projection exploite (aucune règle « un document = un événement »).
+   */
+  exclusiveFileIds?: number[];
 }
 
 /** Élément d'agenda lu pour la projection (lié à l'Opération, ou candidat au rapprochement). */
@@ -127,6 +137,22 @@ export interface AgendaItemSnapshot {
   assetIds: number[];
   equipmentIds: number[];
   fileIds: number[];
+  /**
+   * Lot 76H : statut encore ouvert à l'utilisateur — « à qualifier »
+   * (`requires_qualification`), prévision « à confirmer » (FORECAST) ou
+   * prévision confirmée par l'utilisateur : jamais absorbé.
+   */
+  pendingStatus?: boolean;
+  /** Lot 76H : champ d'origine (date lue dans un champ explicite du document). */
+  originFieldKey?: string | null;
+  /** Lot 76H : sources documentaires de l'élément (`agenda_item_sources`). */
+  sourceCount?: number;
+  /**
+   * Lot 76H : Opération d'intervention active dont T3 a fait le document
+   * source de l'élément (`exclusiveFileIds`) — l'élément représente CETTE
+   * intervention, jamais une autre.
+   */
+  coveredByOperationId?: number | null;
 }
 
 // ── Projection attendue ────────────────────────────────────────────────────
@@ -364,6 +390,88 @@ export function matchExistingItem(op: OperationSnapshot, desired: DesiredProject
   return { kind: 'probable', item: retenus[0].item, reason: retenus[0].reason, candidates: retenus };
 }
 
+// ── Lot 76H : représentations équivalentes établies par T3 ─────────────────
+
+/**
+ * Types métier T4 qui peuvent décrire UNE MÊME intervention réalisée ou
+ * prévue (entretien, réparation). Cette compatibilité ne prouve rien seule :
+ * l'identité vient de T3 (`exclusiveFileIds`). Contrôle et DPE ne sont
+ * jamais absorbés (événements réglementaires distincts).
+ */
+export const CONSOLIDABLE_INTERVENTION_TYPES: readonly string[] = ['maintenance', 'repair'];
+
+/**
+ * Événements automatiques T4 qui REPRÉSENTENT l'Opération (pure) : produits
+ * par un document dont T3 a consolidé toute la preuve d'intervention dans
+ * cette Opération (`exclusiveFileIds`), sur un de ses biens, de type
+ * entretien / réparation, de même nature, à la date de l'intervention
+ * (±3 jours) — intacts (jamais touchés par l'utilisateur, ni « à qualifier »
+ * ou « à confirmer »), non projetés, non liés à une autre Opération active.
+ * Même document + même date + même bien ne suffit JAMAIS : sans décision
+ * d'identité de T3 sur le document, la liste est vide.
+ */
+export function coveredEquivalents(op: OperationSnapshot, desired: DesiredProjection, pool: readonly AgendaItemSnapshot[]): AgendaItemSnapshot[] {
+  if (op.typeCode !== 'INTERVENTION' || !desired.date || !op.active) return [];
+  const docs = new Set(op.exclusiveFileIds ?? []);
+  if (!docs.size) return [];
+  const biens = new Set(op.assetIds);
+  const vus = new Set<number>();
+  return pool.filter((c) => {
+    if (vus.has(c.id)) return false;
+    vus.add(c.id);
+    return !!c.date && !c.projected && c.isAutomatic && !isTouched(c) && c.pendingStatus !== true
+      && (c.businessOperationId === null || c.businessOperationId === op.id || !c.linkedOperationActive)
+      && c.originRefType === 'asset_file' && c.originRefId !== null && docs.has(c.originRefId)
+      && c.businessType !== null && CONSOLIDABLE_INTERVENTION_TYPES.includes(c.businessType)
+      && (c.nature === null || c.nature === desired.nature)
+      && c.assetIds.some((a) => biens.has(a))
+      && dayGap(c.date, desired.date!) <= MATCH_DATE_TOLERANCE_DAYS;
+  });
+}
+
+/**
+ * Élément principal d'une consolidation (pure, déterministe) : déjà lié à
+ * l'Opération, puis date égale à celle de l'intervention, puis date lue dans
+ * un champ explicite (jamais la seule date du document), puis le plus de
+ * sources documentaires, puis le plus ancien.
+ */
+export function choosePrincipal(items: readonly AgendaItemSnapshot[], operationId: number, date: string | null): AgendaItemSnapshot {
+  const rang = (i: AgendaItemSnapshot): number[] => [
+    i.businessOperationId === operationId ? 0 : 1,
+    date && i.date === date ? 0 : 1,
+    i.originFieldKey ? 0 : 1,
+    -(i.sourceCount ?? 0),
+    i.id,
+  ];
+  return [...items].sort((a, b) => {
+    const x = rang(a);
+    const y = rang(b);
+    for (let k = 0; k < x.length; k++) if (x[k] !== y[k]) return x[k] - y[k];
+    return 0;
+  })[0];
+}
+
+/**
+ * Intitulés génériques produits par T4 (`HISTORICAL_TITLES` + « — sujet » :
+ * « Réparation — Maison », « Entretien réalisé — Prestation ») ou par la
+ * projection sans libellé (« Intervention — prestataire »). Un intitulé
+ * saisi ou précis (« Entretien chaudière ») n'est jamais générique.
+ */
+const GENERIC_T4_HEADS: ReadonlySet<string> = new Set(['reparation', 'entretien realise', 'controle realise', 'intervention']);
+export const isGenericAgendaTitle = (title: string): boolean => GENERIC_T4_HEADS.has(normalizeText(title.split(' — ')[0] ?? ''));
+
+/**
+ * Description PRÉCISE de l'Opération (pure) : libellé technique présentable
+ * (T1, preuve), qui dit QUELS travaux (mots porteurs de nature, au sens du
+ * faisceau T3) et n'est pas lui-même générique. Sinon null : rien n'est
+ * inventé.
+ */
+export function preciseOperationTitle(op: Pick<OperationSnapshot, 'technicalLabel'>): string | null {
+  const label = presentableLabel(op.technicalLabel);
+  if (!label || isGenericAgendaTitle(label) || natureTokens(label).size === 0) return null;
+  return label;
+}
+
 // ── Plan d'une Opération ───────────────────────────────────────────────────
 
 export interface ItemSync {
@@ -382,6 +490,15 @@ export type ProjectionAction =
   | { kind: 'CREATE'; desired: DesiredProjection; functionalKey: string }
   | { kind: 'SYNC'; itemId: number; changes: ItemSync }
   | { kind: 'LINK'; itemId: number; reason: string }
+  /**
+   * Lot 76H : représentations T4 équivalentes de l'Opération (établies par
+   * T3) absorbées par l'élément principal — preuves, liens et historique
+   * conservés, retrait tracé et restaurable ; `linkPrincipal` : le principal
+   * est lié dans la même transaction.
+   */
+  | { kind: 'CONSOLIDATE'; principalId: number; absorbedIds: number[]; linkPrincipal: boolean; reason: string }
+  /** Lot 76H : intitulé générique T4 d'un élément intact remplacé par la description précise de l'Opération. */
+  | { kind: 'RETITLE'; itemId: number; title: string; from: string }
   | { kind: 'REMOVE'; itemId: number; reason: string }
   | { kind: 'DETACH'; itemId: number; reason: string }
   | { kind: 'MARK_DONE'; itemId: number }
@@ -475,6 +592,32 @@ export function planOperationProjection(p: PlanInput): ProjectionAction[] {
       return [{ kind: 'CREATE', desired: d, functionalKey: fk }];
     }
     const pool = p.taken?.size ? p.candidates.filter((c) => !p.taken!.has(c.id)) : p.candidates;
+    // Lot 76H : T3 a établi que la preuve d'intervention de ces documents est
+    // CETTE Opération — leurs événements T4 la représentent. Convergence
+    // seulement si aucun AUTRE événement (saisi, autre document) ne pourrait
+    // aussi la représenter ; sinon abstention et arbitrage existant.
+    const couverts = coveredEquivalents(op, d, pool);
+    if (couverts.length) {
+      const principalT4 = choosePrincipal(couverts, op.id, d.date);
+      // Les représentations d'une AUTRE intervention établie par T3 ne sont pas des candidates.
+      const autres = matchExistingItem(op, d, pool.filter((c) => !couverts.includes(c)
+        && !(c.coveredByOperationId != null && c.coveredByOperationId !== op.id)));
+      if (autres.kind === 'none') {
+        const absorbes = couverts.filter((c) => c.id !== principalT4.id).map((c) => c.id);
+        actions.push(absorbes.length
+          ? { kind: 'CONSOLIDATE', principalId: principalT4.id, absorbedIds: absorbes, linkPrincipal: true, reason: 'EQUIVALENT_BY_OPERATION' }
+          : { kind: 'LINK', itemId: principalT4.id, reason: 'représentation établie par l’Opération (T3)' });
+        actions.push(...retitleActions(op, principalT4));
+        actions.push(...statusActions(op, principalT4, d, cards));
+        return actions;
+      }
+      const cands = [
+        { itemId: principalT4.id, title: principalT4.title, date: principalT4.date, reason: 'événement du document de l’intervention' },
+        ...(autres.kind === 'certain' ? [{ item: autres.item, reason: autres.reason }] : autres.candidates)
+          .map((c) => ({ itemId: c.item.id, title: c.item.title, date: c.item.date, reason: c.reason })),
+      ].slice(0, PROBABLE_CANDIDATES_MAX);
+      return [{ kind: 'ABSTAIN', reason: 'PROBABLE_EQUIVALENT: plusieurs représentations possibles', itemId: principalT4.id, key: d.key, candidates: cands }];
+    }
     const m = matchExistingItem(op, d, pool);
     if (m.kind === 'probable') {
       return [{
@@ -489,6 +632,18 @@ export function planOperationProjection(p: PlanInput): ProjectionAction[] {
     }
     if (!d.creatable) return [{ kind: 'ABSTAIN', reason: 'NOT_CREATABLE' }];
     return [{ kind: 'CREATE', desired: d, functionalKey: fk }];
+  }
+
+  // Lot 76H : autres représentations T4 de la même intervention (liées à
+  // cette Opération, ou créées avant / pendant la consolidation T3) —
+  // absorbées par l'élément principal, qui représente déjà l'Opération.
+  if (d.date && item.date && dayGap(item.date, d.date) <= (item.nature !== d.nature ? PLANNED_TO_REALIZED_TOLERANCE_DAYS : MATCH_DATE_TOLERANCE_DAYS)) {
+    const pool = [
+      ...p.linked.filter((i) => i.id !== item!.id),
+      ...p.candidates.filter((c) => c.id !== item!.id && c.businessOperationId !== op.id && !p.taken?.has(c.id)),
+    ];
+    const absorbes = coveredEquivalents(op, d, pool).map((c) => c.id);
+    if (absorbes.length) actions.push({ kind: 'CONSOLIDATE', principalId: item.id, absorbedIds: absorbes, linkPrincipal: false, reason: 'EQUIVALENT_BY_OPERATION' });
   }
 
   // Élément principal présent.
@@ -512,9 +667,20 @@ export function planOperationProjection(p: PlanInput): ProjectionAction[] {
     if (Object.keys(changes).length) actions.push({ kind: 'SYNC', itemId: item.id, changes });
     return actions;
   }
-  // Élément saisi, produit par T4, ou projeté puis modifié : jamais réécrit (titre, date) — statut seulement.
+  // Élément saisi, produit par T4, ou projeté puis modifié : jamais réécrit
+  // (date) — statut seulement ; lot 76H : l'intitulé GÉNÉRIQUE d'un élément
+  // T4 intact cède à la description précise et prouvée de l'Opération.
+  actions.push(...retitleActions(op, item));
   actions.push(...statusActions(op, item, d, cards));
   return actions;
+}
+
+/** Lot 76H (§3.5) : intitulé T4 générique d'un élément automatique INTACT → description précise de l'Opération. */
+function retitleActions(op: OperationSnapshot, item: AgendaItemSnapshot): ProjectionAction[] {
+  if (op.typeCode !== 'INTERVENTION' || item.projected || !item.isAutomatic || isTouched(item) || item.pendingStatus) return [];
+  if (!isGenericAgendaTitle(item.title)) return [];
+  const precis = preciseOperationTitle(op);
+  return precis && precis !== item.title ? [{ kind: 'RETITLE', itemId: item.id, title: precis, from: item.title }] : [];
 }
 
 // ── Anti-boucle (C16.2, C4) ────────────────────────────────────────────────

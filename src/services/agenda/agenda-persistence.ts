@@ -552,9 +552,13 @@ async function applySyncStep(step: SyncStep, decision: AgendaDecision, accountId
     return;
   }
   const base = t4UpsertInput(decision, accountId, null, requiresQualification ?? false, step.key);
+  // Lot 76H (§3.5) : un élément qui représente une Opération active garde
+  // l'intitulé précis issu de l'Opération — la réanalyse ne le remplace pas
+  // par l'intitulé générique du document.
+  const garderTitre = await representsActiveOperation(step.itemId, accountId);
   await upsertAgendaItem({
     itemId: step.itemId, accountId, assetId: null, origin: 'AUTOMATIC',
-    title: base.title, date: base.date, category: base.category, nature: base.nature, businessType: base.businessType,
+    ...(garderTitre ? {} : { title: base.title }), date: base.date, category: base.category, nature: base.nature, businessType: base.businessType,
     sources: base.sources, functionalKey: step.key,
     details: requiresQualification === undefined ? {} : { requiresQualification },
   }, { onlyIfUntouched: true });
@@ -662,6 +666,15 @@ async function createItem(
   );
   if (res.protected || !res.created) return;
   const itemId = res.id;
+  // Lot 76H (§3.3) : élément créé depuis un document qui prouve une
+  // intervention établie — la projection converge (représentations
+  // équivalentes consolidées par l'Opération), quel que soit l'ordre T3 / T4.
+  try {
+    const { requestProjectionForDocument } = await import('@/services/business-operations/agenda-projection/service');
+    await requestProjectionForDocument?.(accountId, sourceOf(decision));
+  } catch (e) {
+    console.error('[agenda-persistence] convergence Opération → Agenda non demandée :', (e as Error).message);
+  }
 
   if (decision.occurrence?.nature === 'FORECAST') {
     await recordOccurrenceEvent(itemId, accountId, 'FORECAST_CREATED', {
@@ -669,6 +682,25 @@ async function createItem(
       referenceDate: decision.occurrence.recurrence?.referenceDate, sourceFileId: decision.sourceFileId ?? null,
       seriesKey: decision.occurrence.seriesKey,
     });
+  }
+}
+
+/**
+ * Lot 76H : l'élément est-il la représentation d'une Opération ACTIVE (lié,
+ * non projeté) ? Son intitulé vient alors de l'Opération. Ne lève jamais.
+ */
+async function representsActiveOperation(itemId: number, accountId: number): Promise<boolean> {
+  try {
+    if (!(await agendaFunctionalColumnsReady())) return false;
+    const r = (await pgClient.unsafe(
+      `SELECT 1 FROM agenda_items i JOIN business_operations o ON o.id = i.business_operation_id AND o.account_id = i.account_id
+        WHERE i.id = $1 AND i.account_id = $2 AND i.projection_origin IS NULL
+          AND o.invalidated_at IS NULL AND o.merged_into_operation_id IS NULL`,
+      [itemId, accountId] as never[],
+    )) as unknown as unknown[];
+    return r.length > 0;
+  } catch {
+    return false;
   }
 }
 
@@ -856,9 +888,10 @@ async function updateItem(decision: AgendaDecision, accountId: number): Promise<
   }
 
   const base = t4UpsertInput(decision, accountId, null, false, null);
+  const garderTitre = await representsActiveOperation(decision.existingItemId, accountId);
   await upsertAgendaItem({
     itemId: decision.existingItemId, accountId, assetId: null, origin: 'AUTOMATIC',
-    title: base.title, date: base.date, category: base.category, nature: base.nature, businessType: base.businessType,
+    ...(garderTitre ? {} : { title: base.title }), date: base.date, category: base.category, nature: base.nature, businessType: base.businessType,
     sources: base.sources,
   }, { onlyIfUntouched: true });
 }

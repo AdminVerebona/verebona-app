@@ -143,7 +143,7 @@ scenario('L58B-ECH', 'À traiter : échéances passées et données déjà connu
     expect(appelsT4(replay)).toHaveLength(1);
     const [d] = await diag(f);
     expect(d).toMatchObject({
-      account_id: compte.id, trigger_code: 'SWEEP', engine_version: 'l75-1' /* lot 72 : version du moteur « À traiter » */, target_present: false, decision: 'NONE',
+      account_id: compte.id, trigger_code: 'SWEEP', engine_version: 'l76-2' /* lot 72 : version du moteur « À traiter » */, target_present: false, decision: 'NONE',
       reason_code: 'DEFERRED', pertinence: 'TITLE_HINT_ONLY', ai_operation: 't4_classify_event', ai_status: 'OK', outcome: 'DEFER', situation: 'TITLE_ONLY',
     });
     expect(d.title_hint).toMatchObject({ dates: [PASSE.iso], confirmed: [] });

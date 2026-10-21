@@ -162,13 +162,16 @@ describe('C4 — contrôle d’admissibilité commun', () => {
   });
 
   it('ATP-FIX-11 — événement nécessitant une date : carte si la résolution automatique est impossible ; date retrouvée → résolue', () => {
-    expect(prod.agendaDateAdmissibility(evt, now)).toMatchObject({ outcome: 'CREATE_ACTION' });
+    // Lot 76 (C5, RES-13) : la nécessité d'une date est JUSTIFIÉE (catégorie « action »), jamais présumée.
+    const action = { ...evt, homeCategory: 'action' };
+    expect(prod.agendaDateAdmissibility(action, now)).toMatchObject({ outcome: 'CREATE_ACTION' });
+    expect(prod.agendaDateAdmissibility(evt, now)).toMatchObject({ outcome: 'DEFER' });
     expect(prod.agendaDateAdmissibility({ ...evt, homeCategory: 'action', originType: 'manual', isAutomatic: false }, now)).toMatchObject({ outcome: 'CREATE_ACTION' });
     expect(prod.agendaDateAdmissibility({ ...evt, sourceDate: '2027-01-31' }, now)).toMatchObject({ outcome: 'AUTO_RESOLVED', reason: 'DATE_FOUND_AT_SOURCE' });
     // Événement modifié par l'utilisateur : jamais réécrit automatiquement → question.
-    expect(prod.agendaDateAdmissibility({ ...evt, sourceDate: '2027-01-31', isAutomaticModified: true }, now)).toMatchObject({ outcome: 'CREATE_ACTION' });
+    expect(prod.agendaDateAdmissibility({ ...action, sourceDate: '2027-01-31', isAutomaticModified: true }, now)).toMatchObject({ outcome: 'CREATE_ACTION' });
     // Qualification ancienne (jamais aboutie) : la question n'est plus retenue indéfiniment.
-    expect(prod.agendaDateAdmissibility({ ...evt, requiresQualification: true, createdAt: '2026-09-01' }, now).outcome).toBe('CREATE_ACTION');
+    expect(prod.agendaDateAdmissibility({ ...action, requiresQualification: true, createdAt: '2026-09-01' }, now).outcome).toBe('CREATE_ACTION');
   });
 
   it('C4 — équipements et fournisseurs : jamais une information connue ni une confirmation facultative sans proposition', () => {

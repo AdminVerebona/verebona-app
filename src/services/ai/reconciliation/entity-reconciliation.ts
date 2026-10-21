@@ -197,6 +197,17 @@ export async function reconcileEntity(input: ReconcileEntityInput, deps?: Entity
     }
   }
 
+  // Lot 76J (T3 complétude) : inventaire EXHAUSTIF des champs de l'équipement
+  // (vides compris, non vérifiables faute de preuve) — rapport T3 seulement,
+  // aucune décision supplémentaire, aucune carte.
+  if (input.target.type === 'EQUIPMENT') {
+    const { informationInventory } = await import('./information-check/inventory');
+    rec.inventory = informationInventory({
+      target: 'EQUIPMENT', current: (k) => entityCurrentValue(state, k),
+      decided: new Set(out.decisions.map((x) => x.fieldKey)),
+    });
+  }
+
   // « À traiter » : conflits ouverts, cartes devenues sans objet.
   if (out.decisions.length) {
     await assertJobActive('cartes « À traiter »');

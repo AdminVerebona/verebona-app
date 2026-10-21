@@ -136,7 +136,7 @@ describe('L72B-E5 — contexte IA : sélection pertinente, provenance, au-delà 
     expect(texte.slice(ref.offset, ref.offset + ref.text.length)).toBe(ref.text);
     expect(passages.some((p) => p.text.includes('rue des Lilas'))).toBe(true);
     expect(passages.every((p) => p.source === 'EXTRACTION_FULL_TEXT' && !p.text.startsWith('Conditions'))).toBe(true);
-    expect(selectPassages(null)).toEqual({ head: null, passages: [], textChars: 0 });
+    expect(selectPassages(null)).toEqual({ head: null, passages: [], textChars: 0, omittedPassages: 0 });
   });
   it('L72B-E5-U3 — variables : provenance, passages, contrats, suffisance du contexte transmis ; REFERENCE jamais renommable', () => {
     const g = { key: 's:orange', docs: [doc(1), doc(2)] };
@@ -235,10 +235,31 @@ describe('L72B-E2 / L72B-E6 / L72B-E8 — états : reprise datée, jamais DONE a
   });
 });
 
+describe('L76B — compléments au lot 72B (défauts résiduels)', () => {
+  it('L76B-C1-U3 — L72B-E6 complété : WRITE_PENDING n’est jamais terminé, et un lot DONE avec une décision en attente non plus', () => {
+    expect(groupSettled(st({ status: 'WRITE_PENDING' }), 'fp', 0)).toBe(false);
+    expect(groupSettled(st(), 'fp', 3)).toBe(false);
+    expect(namingPhaseStatus({ remainingGroups: 0, scanComplete: true, progress: true, errors: 0, pendingWrites: 3 })).not.toBe('DONE');
+  });
+  it('L76B-C4-U3 — L72B-E3 complété : opération (statut, nature, documents reliés), nom du bien et titre d’extraction dans l’empreinte ; espaces sans effet', () => {
+    const base = doc(1, { operationIds: [5], operationsDigest: 'REALIZED' });
+    expect(documentFingerprint({ ...base, operationsDigest: 'CANCELLED' })).not.toBe(documentFingerprint(base));
+    expect(documentFingerprint({ ...base, assetName: 'Autre bien' })).not.toBe(documentFingerprint(base));
+    expect(documentFingerprint({ ...base, extractionTitle: 'Titre' })).not.toBe(documentFingerprint(base));
+    expect(documentFingerprint({ ...base, assetName: ' Maison ' })).toBe(documentFingerprint(base));
+  });
+  it('L76B-C5-U4 — L72B-E3-U2 complété : l’empreinte v1 reste reproductible, mais son égalité seule ne vaut plus recalage (preuve exigée)', async () => {
+    const { upgradeEvidence } = await import('../context');
+    const docs = [doc(1, { textChars: 5_000, contextChangedAt: '2026-01-01T00:00:00.000Z' })];
+    expect(legacyGroupFingerprint(docs)).toBe(legacyGroupFingerprint([...docs]));
+    expect(upgradeEvidence(docs, null, '2026-02-01T00:00:00.000Z')).toMatchObject({ safe: false, reasons: ['TEXT_BEYOND_PREVIOUS_CONTEXT'] });
+  });
+});
+
 describe('L72B-ISO — aucune nomenclature, isolation', () => {
-  it('L72B-ISO-U1 — clés de rapprochement purement techniques (préfixes s:, e:, c:, o:, t:), jamais un nom de convention', () => {
+  it('L72B-ISO-U1 — clés de rapprochement purement techniques (préfixes s:, e:, c:, o:, t: ; lot 76B : x: indice de référence), jamais un nom de convention', () => {
     const k = linkKeysOf(doc(1, { supplier: 'Orange SA', supplierSiret: '380 129 866 00014', contractRefs: ['CT1234'], operationIds: [3] }));
-    expect(k).toEqual(['c:CT1234', 'e:380129866', 'o:3', 's:orange']);
+    expect(k).toEqual(['c:CT1234', 'e:380129866', 'o:3', 's:orange', 'x:CT1234']);
     expect(linkKeysOf(doc(2, { supplier: null }))).toEqual(['t:INVOICE|a:1']);
   });
 });

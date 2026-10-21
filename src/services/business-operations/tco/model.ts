@@ -60,6 +60,7 @@ import {
   qualifyDocumentLines, type DocumentLineDraft, type EconomicDocumentInput, type EconomicLineProvenance,
   type EconomicLineReason, type EconomicLineSource, type EconomicLineStatus,
 } from '../finance/economic-lines';
+import { computeTcoAnnual, type TcoAnnual } from './annual';
 
 // ── Entrées ────────────────────────────────────────────────────────────────
 
@@ -274,6 +275,11 @@ export interface TcoResult {
   citedOnlyDocuments?: Array<{ fileId: number; title: string }>;
   /** Trace complète (justification de chaque total, §4.4). */
   entries: Array<LedgerEntry & { category: TcoCategory | null }>;
+  /**
+   * Lot 76G : indicateurs annuels (TCO moyen annuel, dépenses par année
+   * civile) DÉRIVÉS de `lines` — aucun second moteur (`./annual`).
+   */
+  annual: TcoAnnual;
 }
 
 // ── Règles ─────────────────────────────────────────────────────────────────
@@ -657,16 +663,18 @@ export function computeTco(input: TcoInput): TcoResult {
     }
   }
   const acquisitionCents = postes.get('ACQUISITION')?.costsCents ?? 0;
+  const period: TcoResult['period'] = {
+    start, startSource: dateAchatOp ? 'OPERATION' : start ? 'ASSET_DATA' : null,
+    end, endSource: dateCession ? (dateCessionOp ? 'OPERATION' : 'ASSET_DATA') : 'TODAY',
+    days: start ? daysInclusive(start, end) : null,
+  };
+  const toutesLignes = [...opLines, ...lines];
 
   return {
     assetId: input.assetId,
     status,
     disposed,
-    period: {
-      start, startSource: dateAchatOp ? 'OPERATION' : start ? 'ASSET_DATA' : null,
-      end, endSource: dateCession ? (dateCessionOp ? 'OPERATION' : 'ASSET_DATA') : 'TODAY',
-      days: start ? daysInclusive(start, end) : null,
-    },
+    period,
     summary: {
       cumulativeCostCents: cumul, acquisitionCents, additionalCostsCents: totals.costsEurMinor - acquisitionCents, acquisitionStatus,
       currentValue: disposed ? null : valeur, netEstimatedCents: netEstime, netFinalCents: netFinal,
@@ -700,8 +708,10 @@ export function computeTco(input: TcoInput): TcoResult {
       anomalies,
       warnings: [...warnings],
     },
-    lines: [...opLines, ...lines],
+    lines: toutesLignes,
     entries,
+    // Lot 76G : indicateurs annuels dérivés des MÊMES lignes (montants retenus, dédoublonnés) — aucun second moteur.
+    annual: computeTcoAnnual({ lines: toutesLignes, period, cumulativeCostCents: cumul, status, today: input.today, disposed }),
   };
 }
 

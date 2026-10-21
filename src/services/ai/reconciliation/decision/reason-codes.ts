@@ -18,6 +18,9 @@ export const REASON_CODES = {
   NO_REMAINING_EVIDENCE: 'Valeur automatique retirée : plus aucune preuve active',
   // Décision PO D-M (lot 20) — date tranchée par T4, preuve révisée.
   T4_DATE_REVISED: 'Date tranchée par l’agenda : valeur automatique corrigée par la preuve révisée',
+  // Lot 76J (T3 complétude) — date d'achat vide, événement « achat » du bien
+  // CONFIRMÉ par l'utilisateur (jamais un événement automatique non confirmé).
+  EMPTY_FIELD_CONFIRMED_AGENDA: 'Champ vide : date d’un achat confirmé par l’utilisateur dans l’agenda',
 
   // ── Conservations ───────────────────────────────────────────────────────
   MANUAL_VALUE_CONFIRMED: 'Valeur saisie confirmée par un document',
@@ -31,6 +34,8 @@ export const REASON_CODES = {
   NO_AUTHORITY_RULE: "Aucune règle ne permet de départager les sources",
   CRITICAL_FIELD_INSUFFICIENT_PROOF: 'Champ critique : preuve insuffisante pour appliquer',
   MANUAL_LINK_CONTRADICTED: 'Liaison manuelle contredite par une détection',
+  // Lot 76J : la fiche et un achat CONFIRMÉ par l'utilisateur dans l'agenda divergent.
+  CONFIRMED_AGENDA_CONTRADICTION: 'La fiche contredit un achat confirmé dans l’agenda',
 
   // ── Revue ciblée ────────────────────────────────────────────────────────
   AMBIGUOUS_EVIDENCE: 'Preuve ambiguë, arbitrage ciblé nécessaire',
@@ -40,6 +45,8 @@ export const REASON_CODES = {
   NO_EVIDENCE: 'Aucune preuve exploitable',
   UNNORMALIZABLE_VALUE: 'Valeur non normalisable, ignorée',
   ALREADY_DECIDED: 'Décision identique déjà prise sur cette version',
+  // Lot 76J : texte libre (description, notes) jamais réécrit automatiquement.
+  FREE_TEXT_PROTECTED: 'Texte libre en place : jamais réécrit automatiquement',
   // Historique : observation de la réconciliation négative (mode retiré au
   // lot 16b-3) — libellés conservés pour relire les décisions déjà en base.
   SHADOW_WOULD_RETRACT: 'Observation : cette valeur automatique serait retirée',

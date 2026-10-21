@@ -625,6 +625,7 @@ async function documentDossier(ctx: Ctx, id: number): Promise<EntityDossier['ent
     SELECT t3_operation_id, 'candidat T1 ' || candidate_key || ' → issue T3 ' || coalesce(t3_outcome, 'en attente'), 'RECONCILIATION', 'document_operation_candidates.t3_operation_id'
       FROM document_operation_candidates WHERE account_id = $1 AND file_id = $2 AND t3_operation_id IS NOT NULL`), [A, id]);
 
+  await interventionDuplicatesSections(ctx, id);
   await tableSection(ctx, 'facts', 'preuves', 'Faits T1 (document_facts) — valeurs brutes et normalisées', 'document_facts',
     `SELECT * FROM document_facts WHERE account_id = $1 AND file_id = $2 ORDER BY extraction_id DESC NULLS LAST, id`, [A, id]);
   await tableSection(ctx, 'unresolved', 'preuves', 'Faits non résolus (document_unresolved_facts)', 'document_unresolved_facts',
@@ -650,6 +651,110 @@ async function documentDossier(ctx: Ctx, id: number): Promise<EntityDossier['ent
     'Contenu détaillé : BO › Exécutions & logs › rapport (consultation journalisée).');
 
   return { type: 'document', typeLabel: ENTITY_LABELS.document, id, table: 'asset_files', name, status: str(row.analysis_state), statusLabel: `${str(row.analysis_state) ?? 'NULL'}${deleted ? ' — supprimé logiquement' : ''}` };
+}
+
+// ── Lot 76H : diagnostic des doublons d'interventions (cause réelle, §3.1) ──
+
+/**
+ * Sections « Doublons d'interventions » d'un DOCUMENT : par date, verdict
+ * (une Opération / plusieurs / aucune) et données qui le fondent — candidats
+ * T1 et issue T3, Opérations actives et exclusivité, événements, décisions
+ * T4 (historique, retraits), cartes de rapprochement, journal 0591. Lecture
+ * seule, bornée au compte (transaction READ ONLY du dossier).
+ */
+async function interventionDuplicatesSections(ctx: Ctx, fileId: number): Promise<void> {
+  const A = ctx.accountId;
+  const { classifyDuplicateCause } = await import('@/services/business-operations/diagnostics/agenda-duplicates');
+  const { EXCLUSIVE_FILES_RAW } = await import('@/services/business-operations/agenda-projection/service');
+  const itemsSql = `
+    SELECT i.id, i.title, i.start_date::text AS date, i.business_type, i.event_nature, i.business_operation_id::int AS business_operation_id,
+           i.projection_origin, i.is_automatic, i.is_automatic_modified, i.manual_status, i.requires_qualification, i.occurrence_nature,
+           i.confirmation_mode, i.origin_type, i.origin_ref_type, i.origin_ref_id, i.origin_field_key, i.functional_key, i.created_at, i.updated_at
+      FROM agenda_items i
+     WHERE i.account_id = $1 AND (
+           (i.origin_ref_type = 'asset_file' AND i.origin_ref_id = $2)
+        OR EXISTS (SELECT 1 FROM agenda_file_links l WHERE l.agenda_item_id = i.id AND l.asset_file_id = $2)
+        OR EXISTS (SELECT 1 FROM agenda_item_sources x WHERE x.agenda_item_id = i.id AND x.asset_file_id = $2))
+     ORDER BY i.start_date NULLS LAST, i.id`;
+  const candSql = `
+    SELECT dc.id, dc.candidate_key, dc.type_hint, dc.status_hint, dc.established, dc.confidence, dc.summary, dc.t3_pending,
+           dc.t3_outcome, dc.t3_reason, dc.t3_operation_id::int AS t3_operation_id,
+           (WITH RECURSIVE ch(id, m, n) AS (
+              SELECT x.id, x.merged_into_operation_id, 0 FROM business_operations x WHERE x.id = dc.t3_operation_id AND x.account_id = $1
+              UNION ALL SELECT y.id, y.merged_into_operation_id, ch.n + 1 FROM business_operations y JOIN ch ON y.id = ch.m WHERE ch.n < 20)
+            SELECT ch.id::int FROM ch WHERE ch.m IS NULL LIMIT 1) AS canonical_operation_id,
+           COALESCE((SELECT array_agg(DISTINCT upper(r->>'kind') || ':' || lower(regexp_replace(r->>'value', '[^A-Za-z0-9]', '', 'g')))
+                       FROM jsonb_array_elements(COALESCE(dc.payload->'businessReferences', '[]'::jsonb)) r
+                      WHERE upper(r->>'kind') NOT IN ('CUSTOMER', 'OTHER')), '{}') AS refs,
+           dc.payload->'temporalHints' AS temporal_hints, dc.payload->>'provider' AS provider, dc.created_at
+      FROM document_operation_candidates dc
+     WHERE dc.account_id = $1 AND dc.file_id = $2 AND dc.status = 'ACTIVE'
+     ORDER BY dc.id`;
+  const opsSql = `
+    SELECT o.id::int AS id, o.type_code, o.status, COALESCE(o.realized_date, o.planned_date)::text AS date, o.technical_label, o.provider,
+           ($2::int = ANY(${EXCLUSIVE_FILES_RAW})) AS exclusive,
+           (SELECT count(*)::int FROM agenda_items ai WHERE ai.account_id = o.account_id AND ai.business_operation_id = o.id) AS linked_items
+      FROM business_operations o
+     WHERE o.account_id = $1 AND o.invalidated_at IS NULL AND o.merged_into_operation_id IS NULL
+       AND EXISTS (SELECT 1 FROM business_operation_sources s WHERE s.operation_id = o.id AND s.active AND s.source_kind = 'DOCUMENT'
+                    AND s.source_entity_key = ($2::int)::text)
+     ORDER BY o.id`;
+  await section(ctx, {
+    id: 'doublons-interventions', tab: 'synthese', title: 'Doublons d’interventions — diagnostic de la cause (lot 76H)',
+    description: 'Par date : événements d’entretien / réparation produits par ce document, Opérations actives qu’il prouve, issue T3 de ses candidats T1. '
+      + 'Verdict : une Opération (convergence Agenda), plusieurs (consolidation T3 ou interventions distinctes), aucune (T3 n’a rien établi).',
+  }, async () => {
+    const items = await ctx.q(itemsSql, [A, fileId]);
+    const cands = await ctx.q(candSql, [A, fileId]);
+    const ops = await ctx.q(opsSql, [A, fileId]);
+    const parDate = new Map<string, Row[]>();
+    for (const i of items) {
+      if (!['maintenance', 'repair'].includes(String(i.business_type))) continue;
+      const d = str(i.date) ?? 'sans date';
+      parDate.set(d, [...(parDate.get(d) ?? []), i]);
+    }
+    const fields: DossierField[] = [];
+    const touche = (i: Row) => i.is_automatic !== true || i.is_automatic_modified === true || (i.manual_status !== null && i.manual_status !== '') || i.confirmation_mode === 'USER';
+    for (const [date, groupe] of parDate) {
+      const v = classifyDuplicateCause({
+        items: groupe.map((i) => ({ id: num(i.id), title: str(i.title) ?? '', date: str(i.date), businessType: str(i.business_type), businessOperationId: i.business_operation_id == null ? null : num(i.business_operation_id), projected: i.projection_origin === 'OPERATION', touched: touche(i) })),
+        operations: ops.map((o) => ({ id: num(o.id), typeCode: str(o.type_code), status: String(o.status), date: str(o.date), label: str(o.technical_label), exclusive: o.exclusive === true })),
+        candidates: cands.map((c) => ({ candidateKey: String(c.candidate_key), typeHint: str(c.type_hint), established: c.established === true, t3Pending: c.t3_pending === true, t3Outcome: str(c.t3_outcome), t3Reason: str(c.t3_reason), canonicalOperationId: c.canonical_operation_id == null ? null : num(c.canonical_operation_id), refs: Array.isArray(c.refs) ? (c.refs as unknown[]).map(String) : [] })),
+      });
+      fields.push({ table: 'diagnostic', column: 'cause', label: `${date.split('-').reverse().join('/')} — ${v.label}`, state: 'value', raw: v.cause, display: v.cause, note: [...v.findings, `Correctif : ${v.remedy}`].join(' · ') });
+    }
+    if (!fields.length) fields.push({ table: 'diagnostic', column: 'cause', label: 'Aucun événement d’entretien / réparation produit par ce document', state: 'value', raw: 'NO_DUPLICATE', display: 'NO_DUPLICATE' });
+    return { fields };
+  });
+  await tableSection(ctx, 'doublons-evenements', 'preuves', 'Doublons d’interventions — événements du document (agenda_items)', 'agenda_items', itemsSql, [A, fileId],
+    'business_operation_id : Opération représentée ; projection_origin = OPERATION : événement projeté ; is_automatic_modified / manual_status / confirmation_mode : touché par l’utilisateur (jamais absorbé).');
+  await tableSection(ctx, 'doublons-candidats', 'preuves', 'Doublons d’interventions — candidats T1 et décisions T3', 'document_operation_candidates', candSql, [A, fileId],
+    'canonical_operation_id : Opération retenue par T3 (fusions suivies) ; refs : références identifiantes normalisées.');
+  await tableSection(ctx, 'doublons-operations', 'preuves', 'Doublons d’interventions — Opérations actives prouvées par le document', 'business_operations', opsSql, [A, fileId],
+    'exclusive : T3 a consolidé toute la preuve d’intervention du document dans cette Opération (condition de la convergence automatique).');
+  await tableSection(ctx, 'doublons-decisions-t4', 'preuves', 'Doublons d’interventions — décisions T4 et projection (historique des événements)', 'agenda_occurrence_events',
+    `SELECT e.* FROM agenda_occurrence_events e WHERE e.account_id = $1 AND e.agenda_item_id IN (SELECT id FROM (${itemsSql}) it) ORDER BY e.created_at DESC, e.id DESC`, [A, fileId]);
+  await tableSection(ctx, 'doublons-retraits', 'preuves', 'Doublons d’interventions — événements retirés (agenda_item_removals)', 'agenda_item_removals',
+    `SELECT id, agenda_item_id, functional_key, start_date, title, source_file_id, asset_id, reason, removed_at FROM agenda_item_removals
+      WHERE account_id = $1 AND (source_file_id = $2 OR (item_snapshot->>'origin_ref_id') = ($2::int)::text) ORDER BY removed_at DESC, id DESC`, [A, fileId]);
+  await tableSection(ctx, 'doublons-cartes', 'preuves', 'Doublons d’interventions — cartes de rapprochement et d’arbitrage', 'to_process_actions',
+    `SELECT id, rule_code, target_type, target_id, relation_key, question, resolved_at, resolution_reason, trigger_context, created_at FROM to_process_actions
+      WHERE account_id = $1 AND ((rule_code = 'AGENDA-PROJECTION-MATCH' AND (trigger_context->>'operationId')::bigint IN (SELECT id FROM (${opsSql}) o))
+         OR (upper(target_type) IN ('AGENDA_ITEM', 'AGENDA') AND target_id IN (SELECT id FROM (${itemsSql}) it)))
+      ORDER BY resolved_at DESC NULLS FIRST, id DESC`, [A, fileId]);
+  await tableSection(ctx, 'doublons-projection-jobs', 'preuves', 'Doublons d’interventions — passages de la projection Agenda du compte (échecs compris)', 'ai_job_queue',
+    `SELECT * FROM (SELECT id, status, origin, trigger_code, business_result, attempts, last_error, created_at, finished_at,
+            payload -> 'events' -> -1 ->> 'correlationId' AS correlation_id
+       FROM ai_job_queue WHERE treatment = 'T3' AND account_id = $1 AND target_type = 'business_operations_agenda' AND $2::int IS NOT NULL
+      ORDER BY id DESC LIMIT 20) j`, [A, fileId],
+    'business_result : APPLIED / NO_CHANGE et compteurs (consolidated, abstained, matchCards…) ; last_error : échec technique de projection (rejoué).');
+  await tableSection(ctx, 'doublons-journal', 'preuves', 'Doublons d’interventions — consolidations appliquées (journal 0591, restaurable)', 'agenda_intervention_consolidations',
+    `SELECT id, run_id, origin, kind, operation_id, principal_item_id, absorbed_item_id, reason, correlation_id, created_at, restored_at, restore_run_id,
+            detail->'item'->>'title' AS absorbed_title, detail->'from' AS title_from, detail->'to' AS title_to
+       FROM agenda_intervention_consolidations k
+      WHERE k.account_id = $1 AND (k.operation_id IN (SELECT id FROM (${opsSql}) o) OR (k.detail->'item'->>'origin_ref_id') = ($2::int)::text)
+      ORDER BY k.id DESC`, [A, fileId],
+    'Restauration : BO › Exploitation › Rattrapages › « Agenda : doublons d’interventions » › Restaurer (identifiant d’exécution).');
 }
 
 async function agendaDossier(ctx: Ctx, id: number): Promise<EntityDossier['entity']> {
@@ -687,6 +792,8 @@ async function agendaDossier(ctx: Ctx, id: number): Promise<EntityDossier['entit
     `SELECT * FROM agenda_occurrence_events WHERE account_id = $1 AND agenda_item_id = $2 ORDER BY created_at DESC, id DESC`, [A, id]);
   await tableSection(ctx, 'to-process', 'preuves', 'Cartes « À traiter » de l’échéance', 'to_process_actions',
     `SELECT * FROM to_process_actions WHERE account_id = $1 AND upper(target_type) IN ('AGENDA_ITEM', 'AGENDA') AND target_id = $2 ORDER BY id DESC`, [A, id]);
+  // Lot 76H : événement produit par un document — diagnostic des doublons d'interventions de ce document.
+  if (row.origin_ref_type === 'asset_file' && row.origin_ref_id != null) await interventionDuplicatesSections(ctx, num(row.origin_ref_id));
   return { type: 'agenda', typeLabel: ENTITY_LABELS.agenda, id, table: 'agenda_items', name: str(row.title) ?? `Échéance #${id}`, status: str(row.manual_status), statusLabel: str(row.manual_status) };
 }
 

@@ -39,6 +39,19 @@ const t4 = (category: 'action' | 'information' = 'action') => {
   return { decide, calls };
 };
 
+/** Lot 76 (C3) : T4 au contrat structuré (t4_output_v3), évaluation « incertaine » — seule une sortie structurée fonde une décision IA. */
+const t4v3 = () => {
+  const calls: unknown[] = [];
+  const decide: Decide = async (input) => {
+    calls.push(input);
+    const out = { task: 'CLASSIFY_EVENT', agendaDecision: 'accept', recurrenceDecision: 'not_applicable', homeCategory: 'action', businessType: null,
+      confidence: 'certain', reason: 'simulé', recurrenceReason: null,
+      intervention: { needed: 'uncertain', kind: null, action: null, justification: 'incertain', consequence: null, evidence: null, timing: 'NONE', actBy: null, dataNeeded: null } };
+    return { ...translateEventDecision(out as never, false), traceId: 'trace-63' };
+  };
+  return { decide, calls };
+};
+
 /** Stockage des réglages en mémoire (BO simulé). */
 function memoire(valeurs: Record<string, unknown>): import('@/services/verebona-assistant/config/assistant-settings').AssistantSettingsStore {
   let v = 1;
@@ -117,10 +130,15 @@ describe('L63-SEUIL — la décision applique les seuils réglés', () => {
 
   it('L63-SEUIL-05 — délais de réévaluation : décision incertaine, titre seul (30 / 180 j par défaut, réglés à 45 / 60 j)', async () => {
     const passee = [{ iso: plus(-20), source: 'FACTS', excerpt: 'Échéance du contrat.' }];
-    const d = await ev.assessDeadlinePertinence({ ...base, candidates: passee, config: avec(V2, {}), decide: t4('action').decide });
+    // Lot 76 (C3) : une décision INCERTAINE exige le contrat structuré (v2 : état prudent, sans délai) — T4 v3 « incertain ».
+    const incertain: Decide = async () => ({ ...translateEventDecision({ task: 'CLASSIFY_EVENT', agendaDecision: 'accept', recurrenceDecision: 'not_applicable',
+      homeCategory: 'action', businessType: null, confidence: 'certain', reason: 'simulé', recurrenceReason: null,
+      intervention: { needed: 'uncertain', kind: null, action: null, justification: 'incertain', consequence: null, evidence: null, timing: 'NONE', actBy: null, dataNeeded: null } } as never, false), traceId: 't' });
+    const d = await ev.assessDeadlinePertinence({ ...base, candidates: passee, config: avec(V3, {}), decide: incertain });
     expect(d).toMatchObject({ outcome: 'DEFER', reevaluateAt: `${plus(30)}T00:00:00.000Z` });
-    const r = await ev.assessDeadlinePertinence({ ...base, candidates: passee, config: avec(V2, { deferUncertainDays: 45 }), decide: t4('action').decide });
+    const r = await ev.assessDeadlinePertinence({ ...base, candidates: passee, config: avec(V3, { deferUncertainDays: 45 }), decide: incertain });
     expect(r).toMatchObject({ outcome: 'DEFER', reevaluateAt: `${plus(45)}T00:00:00.000Z` });
+    expect((await ev.assessDeadlinePertinence({ ...base, candidates: passee, config: avec(V2, {}), decide: t4('action').decide })).pertinence).toBe('T4_INCOMPATIBLE');
     const titre = [{ iso: plus(-10), source: 'TITLE_ONLY' }];
     expect(await ev.assessDeadlinePertinence({ ...base, candidates: titre, config: avec(V2, {}) })).toMatchObject({ outcome: 'DEFER', reevaluateAt: `${plus(180)}T00:00:00.000Z` });
     expect(await ev.assessDeadlinePertinence({ ...base, candidates: titre, config: avec(V2, { deferTitleOnlyDays: 60 }) })).toMatchObject({ outcome: 'DEFER', reevaluateAt: `${plus(60)}T00:00:00.000Z` });
@@ -153,15 +171,15 @@ describe('L63-SEUIL — signature de pertinence, invalidation et traçage', () =
 
   it('L63-SEUIL-08 — décision IA mémorisée : réutilisée si seul l’horizon change, réévaluée (T4 rappelé) si un délai de réévaluation change', async () => {
     const passee = [{ iso: plus(-20), source: 'FACTS', excerpt: 'Échéance du contrat.' }];
-    const premier = t4('action');
-    const d = await ev.assessDeadlinePertinence({ ...base, candidates: passee, evidenceFingerprint: 'e', config: avec(V2, {}), decide: premier.decide });
+    const premier = t4v3();
+    const d = await ev.assessDeadlinePertinence({ ...base, candidates: passee, evidenceFingerprint: 'e', config: avec(V3, {}), decide: premier.decide });
     expect(d.aiCalled).toBe(true);
     const memo = { signature: d.signature, outcome: d.outcome, pertinence: d.pertinence, aiStatus: d.aiStatus, card: d.card, intervention: d.intervention, reevaluateAt: d.reevaluateAt };
-    const second = t4('action');
-    const h = await ev.assessDeadlinePertinence({ ...base, candidates: passee, evidenceFingerprint: 'e', config: avec(V2, { futureHorizonDays: 200 }), decide: second.decide, remembered: memo as never });
+    const second = t4v3();
+    const h = await ev.assessDeadlinePertinence({ ...base, candidates: passee, evidenceFingerprint: 'e', config: avec(V3, { futureHorizonDays: 200 }), decide: second.decide, remembered: memo as never });
     expect(h).toMatchObject({ cached: true, aiCalled: false, reason: 'remembered_decision' });
     expect(second.calls).toHaveLength(0);
-    const i = await ev.assessDeadlinePertinence({ ...base, candidates: passee, evidenceFingerprint: 'e', config: avec(V2, { deferUncertainDays: 60 }), decide: second.decide, remembered: memo as never });
+    const i = await ev.assessDeadlinePertinence({ ...base, candidates: passee, evidenceFingerprint: 'e', config: avec(V3, { deferUncertainDays: 60 }), decide: second.decide, remembered: memo as never });
     expect(i).toMatchObject({ cached: false, aiCalled: true, reevaluateAt: `${plus(60)}T00:00:00.000Z` });
     expect(second.calls).toHaveLength(1);
   });

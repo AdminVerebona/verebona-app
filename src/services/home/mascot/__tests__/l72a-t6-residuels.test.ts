@@ -157,7 +157,8 @@ describe('AC01 — invalidation documentaire', () => {
     const p = await preparer([r], { assessments: async () => new Map([[1, evaluation(1, fp(r, avant))]]), evidence: async () => new Map([[1, apres]]) });
     expect(p.decisions[0]).toMatchObject({ decision: 'DEFER', code: 'AI_ASSESSMENT_PENDING', needsAssessment: true, reevaluationReason: 'CONTEXT_CHANGED', aiDecision: null });
     expect(p.shown).toEqual([]);
-    expect(p.bundle!.refs.get('C1')).toMatchObject({ fingerprint: fp(r, apres), reevaluationReason: 'CONTEXT_CHANGED' });
+    // Lot 76A : empreinte du contexte transmis (`v4:`, représentation commune).
+    expect(p.bundle!.refs.get('C1')).toMatchObject({ fingerprint: S.t6ContextFingerprint(r, apres), reevaluationReason: 'CONTEXT_CHANGED' });
     expect(p.bundle!.context.candidates[0].description).toContain('résilié');
     // Relecture sans modification : décision réutilisée, aucun appel IA.
     const q = await preparer([r], { assessments: async () => new Map([[1, evaluation(1, fp(r, avant))]]), evidence: async () => new Map([[1, avant]]) });

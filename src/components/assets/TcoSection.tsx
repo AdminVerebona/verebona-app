@@ -23,6 +23,13 @@
  *     (chargement complémentaire ; totaux toujours exacts) ; montant inconnu
  *     jamais affiché « 0 € » ; rapprochement incertain signalé « à vérifier » ;
  *     coût d'acquisition « non renseigné » ou « sans objet ».
+ *   · Lot 76G : trois indicateurs distincts — TCO total (cumulatif), TCO
+ *     moyen annuel (coût annualisé, achat initial inclus) et dépenses de
+ *     l'année (réellement constatées, sélecteur d'année) — DÉRIVÉS par le
+ *     moteur (`tco/annual.ts`), jamais recalculés ici. « Dépenses retenues
+ *     (N) » est un déclencheur fermé par défaut qui ouvre un SOUS-TIROIR à
+ *     droite (mécanisme `Sheet` des autres sous-tiroirs de l'app ; pleine
+ *     largeur sur mobile) : liste cumulée, ou filtrée sur l'année choisie.
  *
  * Aucun bouton « Modifier » du total : les corrections se font sur les
  * sources (fiche, document). Standard : présentation verrouillée, AUCUN
@@ -38,7 +45,8 @@ import { DatePicker } from '@/components/ui/date-picker';
 import { NumberInput } from '@/components/ui/number-input';
 import { formatNumberForInput, MONEY_INPUT, parseMoneyInputToCents } from '@/lib/number-input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { AlertCircle, ChevronDown, ChevronUp, FileText, Loader2, Lock, Pencil, Plus, Trash2 } from 'lucide-react';
+import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet';
+import { AlertCircle, ArrowLeft, ChevronDown, ChevronRight, ChevronUp, FileText, Loader2, Lock, Pencil, Plus, Trash2 } from 'lucide-react';
 import { apiClient } from '@/lib/api-client';
 import { toast } from 'sonner';
 // Types seulement : les libellés viennent de la réponse (aucun module serveur ni registre dans le paquet client).
@@ -51,6 +59,27 @@ interface Props {
 }
 
 type Line = TcoDto['lines'][number];
+type Annual = TcoDto['annual'];
+
+/** Lot 76G : années de possession, au dixième (« 2,8 ans »). */
+function ansFr(n: number): string {
+  const v = n.toLocaleString('fr-FR', { maximumFractionDigits: 1 });
+  return `${v} an${n >= 2 ? 's' : ''}`;
+}
+
+/** Lot 76G : explication du TCO moyen annuel (calculé ou motif de non-calcul). */
+function moyenneExplication(a: Annual['average'], endSource: string): string {
+  switch (a.status) {
+    case 'COMPUTED': {
+      const fin = endSource === 'TODAY' ? 'à aujourd’hui' : `au ${dateFr(a.end)}`;
+      return `Sur ${ansFr(a.years ?? 0)} de possession (du ${dateFr(a.start)} ${fin}).${a.extrapolated ? ' Moins d’un an de possession : valeur extrapolée.' : ''}`;
+    }
+    case 'ACQUISITION_DATE_MISSING': return 'Date d’achat inconnue : moyenne non calculée. Renseignez la date d’achat de la fiche.';
+    case 'ACQUISITION_DATE_INCOHERENT': return 'Date d’achat incohérente (postérieure à aujourd’hui ou à la cession) : moyenne non calculée.';
+    case 'TOO_RECENT': return `Moins de ${a.minDays} jours de possession : moyenne non calculée (elle serait trompeuse).`;
+    default: return '';
+  }
+}
 
 function eur(cents: number | null | undefined): string {
   if (cents == null) return '—';
@@ -152,6 +181,10 @@ export function TcoSection({ assetId, readOnly = false, defaultOpen = false }: P
   // Lot 75D (J) : lignes des pages suivantes (chargement complémentaire), remises à zéro à chaque recalcul.
   const [extra, setExtra] = useState<Line[]>([]);
   const [loadingMore, setLoadingMore] = useState(false);
+  // Lot 76G : année des « Dépenses de l'année » (null : année par défaut du calcul) — conservée aux recalculs.
+  const [year, setYear] = useState<number | null>(null);
+  const [retainedOpen, setRetainedOpen] = useState(false); // L76G : sous-tiroir fermé par défaut
+  const [retainedFilter, setRetainedFilter] = useState<'ALL' | 'YEAR'>('ALL');
 
   // Recalcul à chaque ouverture et après toute modification de la fiche (même événement que les autres sections).
   useEffect(() => {
@@ -244,6 +277,11 @@ export function TcoSection({ assetId, readOnly = false, defaultOpen = false }: P
   // Lot 68 : le serveur ne transmet que les lignes utiles pour CE bien (`tcoUserView`) — ni « autre bien », ni
   // justificatif déjà porté par une dépense consolidée affichée (tous restent au diagnostic BO). Garde défensive.
   const ecartees = toutes.filter((l) => !RETENUE.has(l.status) && l.status !== 'OUT_OF_SCOPE');
+  // Lot 76G : indicateurs annuels calculés par le moteur (aucun recalcul ici).
+  const annual = t?.annual ?? null;
+  const anneeSel = annual ? (year != null && annual.years.some((y) => y.year === year) ? year : annual.defaultYear) : null;
+  const anneeCourante = annual?.years.find((y) => y.year === anneeSel) ?? null;
+  const depensesFiltrees = retainedFilter === 'YEAR' && anneeSel != null ? depenses.filter((l) => l.date?.slice(0, 4) === String(anneeSel)) : depenses;
 
   return (
     <div id="asset-section-tco" className="border border-border rounded-lg overflow-hidden" data-asset-tco>
@@ -305,6 +343,66 @@ export function TcoSection({ assetId, readOnly = false, defaultOpen = false }: P
                 </p>
               </div>
 
+              {/* ── Lot 76G : indicateurs annuels (TCO total, TCO moyen annuel, dépenses de l'année) ── */}
+              {annual && anneeCourante && (
+                <section className="space-y-2" data-tco-annual>
+                  <h3 className="vb-app-subsection m-0">Indicateurs annuels</h3>
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                    <div className="rounded-lg border border-border p-3 min-w-0" data-tco-indicator="total">
+                      <p className="text-xs text-muted-foreground">TCO total</p>
+                      <p className="text-lg font-semibold text-[color:var(--text-primary)] tabular-nums">{eur(annual.average.totalCents)}</p>
+                      <p className="text-xs text-muted-foreground mt-1">
+                        Coût cumulé {t.period.start ? `depuis le ${dateFr(t.period.start)}` : 'documenté'}{t.period.endSource === 'TODAY' ? '' : ` jusqu’à la cession (${dateFr(t.period.end)})`}.
+                      </p>
+                    </div>
+                    <div className="rounded-lg border border-border p-3 min-w-0" data-tco-indicator="average" data-tco-average-status={annual.average.status}>
+                      <p className="text-xs text-muted-foreground">TCO moyen annuel</p>
+                      <p className={`text-lg font-semibold tabular-nums ${annual.average.cents == null ? 'text-muted-foreground' : 'text-[color:var(--text-primary)]'}`}>
+                        {annual.average.cents != null ? `${eur(annual.average.cents)} / an` : 'Non calculé'}
+                      </p>
+                      <p className="text-xs text-muted-foreground mt-1 break-words">{moyenneExplication(annual.average, t.period.endSource)}</p>
+                      {annual.average.cents != null && annual.average.incomplete && (
+                        <p className="text-xs text-[color:var(--attention-on-soft)] mt-0.5">Données manquantes : valeur incomplète (voir les alertes).</p>
+                      )}
+                    </div>
+                    <div className="rounded-lg border border-border p-3 min-w-0" data-tco-indicator="year">
+                      <div className="flex items-center justify-between gap-2">
+                        <p className="text-xs text-muted-foreground">Dépenses de l’année</p>
+                        <Select value={String(anneeSel)} onValueChange={(v) => setYear(Number(v))}>
+                          <SelectTrigger className="h-8 w-[6.5rem] shrink-0" aria-label="Année des dépenses" data-tco-year-select><SelectValue /></SelectTrigger>
+                          <SelectContent>
+                            {[...annual.years].reverse().map((y) => <SelectItem key={y.year} value={String(y.year)}>{y.year}</SelectItem>)}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      <p className="text-lg font-semibold text-[color:var(--text-primary)] tabular-nums" data-tco-year-total={anneeCourante.year}>{eur(anneeCourante.costsCents)}</p>
+                      <p className="text-xs text-muted-foreground mt-1">
+                        {anneeCourante.count === 0
+                          ? `Aucune dépense datée du ${dateFr(anneeCourante.periodStart)} au ${dateFr(anneeCourante.periodEnd)}.`
+                          : `${anneeCourante.count} dépense(s) réellement constatée(s) du ${dateFr(anneeCourante.periodStart)} au ${dateFr(anneeCourante.periodEnd)}.`}
+                      </p>
+                      {anneeCourante.creditsCents > 0 && (
+                        <p className="text-xs text-muted-foreground mt-0.5">Avoirs, remboursements et indemnités de l’année : − {eur(anneeCourante.creditsCents)} (net {eur(anneeCourante.netCents)}).</p>
+                      )}
+                    </div>
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    Le TCO moyen annuel est un coût annualisé : l’achat initial y est inclus, ce n’est donc pas le budget annuel récurrent d’utilisation.
+                    Les dépenses de l’année sont les dépenses réellement constatées, à leur date, pendant l’année choisie.
+                  </p>
+                  {annual.undated.count > 0 && (
+                    <p className="text-xs text-[color:var(--attention-on-soft)]" data-tco-annual-undated>
+                      {annual.undated.count} dépense(s) sans date ({eur(annual.undated.costsCents)}) : comptée(s) dans le TCO total, rattachée(s) à aucune année.
+                    </p>
+                  )}
+                  {annual.future.count > 0 && (
+                    <p className="text-xs text-[color:var(--attention-on-soft)]" data-tco-annual-future>
+                      {annual.future.count} dépense(s) datée(s) après aujourd’hui ({eur(annual.future.costsCents)}) : non encore réalisée(s), comptée(s) dans aucune année.
+                    </p>
+                  )}
+                </section>
+              )}
+
               {/* ── Détail des coûts ── */}
               <Bloc title="Détail des coûts" data-tco-breakdown>
                 <div className="divide-y divide-border">
@@ -331,12 +429,20 @@ export function TcoSection({ assetId, readOnly = false, defaultOpen = false }: P
                 </div>
               )}
 
-              <Bloc title={`Dépenses retenues (${depenses.length}${t.linesTruncated ? ' · liste abrégée' : ''})`} data-tco-retained>
-                <div className="divide-y divide-border">
-                  {depenses.length === 0 && <p className="text-sm text-muted-foreground py-1.5">Aucune dépense retenue.</p>}
-                  {depenses.map((l) => <LigneDepense key={l.id} l={l} t={t} />)}
-                </div>
-              </Bloc>
+              {/* Lot 76G (complément PO du 21/10) : liste fermée par défaut — le déclencheur ouvre le sous-tiroir. */}
+              <section data-tco-retained>
+                <button
+                  type="button"
+                  onClick={() => setRetainedOpen(true)}
+                  aria-expanded={retainedOpen}
+                  aria-haspopup="dialog"
+                  className="w-full min-h-[44px] md:min-h-[36px] flex items-center justify-between gap-3 rounded-lg border border-border px-4 py-2.5 text-left hover:bg-muted/50 transition-colors"
+                  data-tco-retained-trigger
+                >
+                  <span className="vb-app-subsection m-0">{`Dépenses retenues (${depenses.length}${t.linesTruncated ? ' · liste abrégée' : ''})`}</span>
+                  <ChevronRight className="w-4 h-4 text-muted-foreground shrink-0" aria-hidden />
+                </button>
+              </section>
 
               {ajustements.length > 0 && (
                 <Bloc title="Avoirs, remboursements et indemnités" data-tco-adjustments>
@@ -450,6 +556,59 @@ export function TcoSection({ assetId, readOnly = false, defaultOpen = false }: P
             </>
           )}
         </div>
+      )}
+
+      {/* ── Lot 76G : sous-tiroir « Dépenses retenues » (à droite ; pleine largeur sur mobile) ── */}
+      {t && (
+        <Sheet open={retainedOpen} onOpenChange={setRetainedOpen}>
+          <SheetContent side="right" id="tco-retained-drawer" className="w-full sm:max-w-lg flex flex-col gap-0 p-0" data-tco-retained-drawer>
+            <SheetHeader className="px-5 pt-5 pb-3 border-b border-border">
+              <button
+                type="button"
+                onClick={() => setRetainedOpen(false)}
+                className="inline-flex min-h-[44px] md:min-h-[36px] items-center gap-1.5 self-start text-sm text-muted-foreground hover:text-[color:var(--text-primary)]"
+                data-tco-retained-back
+              >
+                <ArrowLeft className="w-4 h-4" aria-hidden /> Coût total de possession
+              </button>
+              <SheetTitle>{`Dépenses retenues (${depensesFiltrees.length}${t.linesTruncated ? ' · liste abrégée' : ''})`}</SheetTitle>
+              <SheetDescription>
+                {retainedFilter === 'YEAR' && anneeCourante
+                  ? `Dépenses datées de ${anneeCourante.year} : ${eur(anneeCourante.costsCents)} (${anneeCourante.count} dépense(s)).`
+                  : `Toutes les dépenses retenues dans le coût cumulé (${eur(t.summary.cumulativeCostCents)}).`}
+              </SheetDescription>
+              {anneeCourante && (
+                <div className="flex flex-wrap gap-2 pt-1" role="group" aria-label="Période des dépenses" data-tco-retained-filter>
+                  {([['ALL', 'Toutes les années'], ['YEAR', `Année ${anneeCourante.year}`]] as const).map(([v, label]) => (
+                    <Button key={v} type="button" size="sm" variant={retainedFilter === v ? 'default' : 'outline'} aria-pressed={retainedFilter === v}
+                      onClick={() => setRetainedFilter(v)} data-tco-retained-filter-option={v}>
+                      {label}
+                    </Button>
+                  ))}
+                </div>
+              )}
+            </SheetHeader>
+            <div className="flex-1 overflow-y-auto px-5 py-3">
+              <div className="divide-y divide-border">
+                {depensesFiltrees.length === 0 && (
+                  <p className="text-sm text-muted-foreground py-1.5">{retainedFilter === 'YEAR' ? 'Aucune dépense retenue datée de cette année.' : 'Aucune dépense retenue.'}</p>
+                )}
+                {depensesFiltrees.map((l) => <LigneDepense key={l.id} l={l} t={t} />)}
+              </div>
+              {retainedFilter === 'YEAR' && annual && annual.undated.count > 0 && (
+                <p className="text-xs text-muted-foreground pt-2">Les dépenses sans date ne sont rattachées à aucune année : choisissez « Toutes les années » pour les voir.</p>
+              )}
+              {t.linesTruncated && restantes > 0 && (
+                <div className="pt-3 space-y-2">
+                  <p className="text-xs text-muted-foreground">Liste abrégée : {affichees} ligne(s) présentée(s) sur {t.linesTotal}. Les totaux portent sur toutes les lignes.</p>
+                  <Button variant="outline" size="sm" className="w-full sm:w-auto" onClick={() => void loadMore()} disabled={loadingMore}>
+                    {loadingMore && <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" />}Afficher les lignes suivantes ({restantes})
+                  </Button>
+                </div>
+              )}
+            </div>
+          </SheetContent>
+        </Sheet>
       )}
     </div>
   );

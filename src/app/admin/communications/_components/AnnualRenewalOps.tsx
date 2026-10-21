@@ -14,6 +14,10 @@
  *     traitées — avec les décisions possibles ;
  *   · échéances récentes et à venir, état distinct (préparé, en cours,
  *     accepté, livré, échec temporaire / définitif, incertain, annulé, exclu).
+ *   · lot 76D : retour aux rappels Stripe EN PHASES — « en cours » tant qu'un
+ *     appel Resend est en cours, à qualifier ou d'acceptation incertaine ;
+ *     éléments à résoudre listés ; échéances déjà notifiées à arbitrer
+ *     explicitement ; « terminé » seulement ensuite (réactivation Stripe).
  * Aucun lien ni client Stripe, aucun secret (l'API n'en sert pas). Mêmes
  * composants et jetons que la page ; tableaux défilants sur mobile, boutons
  * empilés sur petit écran.
@@ -39,9 +43,26 @@ export interface AnnualRenewal {
   switch?: { declared: boolean; stripeRemindersDisabledAt: string | null; declaredAt: string | null; rollbackAt: string | null };
   lastReconcileAt?: string | null;
   lastReconcileNote?: string | null;
-  recent?: Array<{ key: string; accountId: number | null; subscriptionId: string; renewalDate: string; state: string; step: string | null; reason: string | null; lastCheckedAt: string | null; nextCheckAt: string | null; jobId: number | null; attempts: number | null; nextAttemptAt: string | null }>;
-  anomalies?: Array<{ state: string; key: string | null; jobId: number | null; accountId: number | null; renewalDate: string | null; reason: string | null; since: string | null }>;
+  recent?: Array<{ key: string; accountId: number | null; subscriptionId: string; renewalDate: string; state: string; step: string | null; reason: string | null; lastCheckedAt: string | null; nextCheckAt: string | null; jobId: number | null; attempts: number | null; nextAttemptAt: string | null; renewalDateVerified?: boolean }>;
+  anomalies?: Array<{ state: string; key: string | null; jobId: number | null; accountId: number | null; renewalDate: string | null; reason: string | null; since: string | null; step?: string | null; nextAt?: string | null; renewalDateVerified?: boolean; neutralized?: boolean }>;
+  /** Lot 76D : retour aux rappels Stripe. */
+  rollback?: RollbackView | null;
 }
+
+export interface RollbackBlocker { kind: 'IN_FLIGHT' | 'TO_RECONCILE' | 'UNCERTAIN' | 'NOTIFIED'; jobId: number | null; key: string | null; accountId: number | null; renewalDate: string | null; detail: string | null; since: string | null }
+export interface RollbackView {
+  status: 'in_progress' | 'completed'; startedAt: string | null; completedAt: string | null; completedBy: number | null; completionMode: 'auto' | 'admin_ack' | null;
+  lastCheckAt: string | null; inFlight: number; toReconcile: number; uncertain: number; notified: number; neutralizedTotal: number; arbitratedUncertain: number;
+  blockers: RollbackBlocker[];
+}
+
+/** Lot 76D : éléments empêchant la fin du retour arrière. */
+export const ROLLBACK_BLOCKER_LABELS: Record<RollbackBlocker['kind'], string> = {
+  IN_FLIGHT: 'Appel Resend en cours (attendre)',
+  TO_RECONCILE: 'Appel engagé à vérifier (contrôle automatique)',
+  UNCERTAIN: 'Acceptation incertaine (décision requise)',
+  NOTIFIED: 'Rappel Verebona déjà accepté (arbitrage)',
+};
 
 /** Statut d'une demande (file des e-mails). */
 export const JOB_STATUS_LABELS: Record<string, string> = {
@@ -55,7 +76,75 @@ export const REMINDER_STATE_LABELS: Record<string, string> = {
   STRIPE_ONLY: 'Absent localement', PREPARED: 'Préparé', HELD: 'Retenu (suspension)', SENDING: 'En cours d’envoi', ACCEPTED: 'Accepté par Resend',
   DELIVERED: 'Livré', DELIVERY_PROBLEM: 'Problème de livraison', TEMPORARY_FAILURE: 'Échec temporaire', FINAL_FAILURE: 'Échec définitif',
   UNCERTAIN: 'Acceptation incertaine', CANCELLED: 'Annulé', OVERDUE: 'Demande non traitée',
+  NEUTRALIZED: 'Neutralisé (retour aux rappels Stripe) — aucun envoi', CANCELLED_UNCERTAIN: 'Clos — envoi antérieur incertain (e-mail peut-être reçu)',
+  RECONCILE_ERROR: 'Relecture Stripe en échec (réconciliation)', RECONCILE_RESOLVED: 'Relecture Stripe reprise',
 };
+
+/** Lot 76D : bloc « Retour aux rappels Stripe » (phase, éléments à résoudre, fin). */
+function RollbackState({ r, post }: { r: RollbackView; post: (body: Record<string, unknown>, success: string) => Promise<void> }) {
+  const [ack, setAck] = useState(false);
+  const blocking = r.blockers.filter((b) => b.kind !== 'NOTIFIED').length;
+  const notified = r.blockers.filter((b) => b.kind === 'NOTIFIED').length;
+  return (
+    <div className="space-y-2 rounded-lg border p-3" data-testid="annual-renewal-rollback-state">
+      <p className="font-medium">
+        Retour aux rappels Stripe :{' '}
+        {r.status === 'in_progress'
+          ? <span className={warn}>Retour arrière en cours — ne réactivez pas encore les rappels Stripe</span>
+          : <span className={okc}>Retour arrière terminé le {when(r.completedAt)}{r.completionMode === 'admin_ack' ? ' (arbitrage BO)' : ' (automatique)'}</span>}
+      </p>
+      <p className="text-muted-foreground break-words">
+        Commencé le {when(r.startedAt)} · dernier contrôle {when(r.lastCheckAt)} · neutralisées sans envoi {r.neutralizedTotal}
+        {' '}· en cours {r.inFlight} · à vérifier {r.toReconcile} · acceptations incertaines {r.uncertain}
+        {' '}· déjà notifiées {r.notified}{r.arbitratedUncertain ? ` · incertitudes closes par décision ${r.arbitratedUncertain}` : ''}
+      </p>
+      {r.status === 'in_progress' && r.blockers.length > 0 ? (
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm" data-testid="annual-renewal-rollback-blockers">
+            <thead>
+              <tr className="text-left text-xs text-muted-foreground">
+                <th className="px-2 py-1 font-medium">Élément à résoudre</th><th className="px-2 py-1 font-medium">Demande</th>
+                <th className="px-2 py-1 font-medium">Échéance</th><th className="px-2 py-1 font-medium">Compte</th>
+                <th className="px-2 py-1 font-medium">Motif</th><th className="px-2 py-1 font-medium">Depuis</th>
+              </tr>
+            </thead>
+            <tbody>
+              {r.blockers.map((b) => (
+                <tr key={`${b.kind}-${b.jobId ?? b.key ?? ''}`} className="border-t align-top">
+                  <td className={`px-2 py-1 text-xs ${b.kind === 'NOTIFIED' ? warn : danger}`}>{ROLLBACK_BLOCKER_LABELS[b.kind]}</td>
+                  <td className="px-2 py-1 text-xs tabular-nums">{b.jobId ?? '—'}</td>
+                  <td className="px-2 py-1 text-xs">{b.renewalDate ?? '—'}</td>
+                  <td className="px-2 py-1 text-xs tabular-nums">{b.accountId ?? 'aucun'}</td>
+                  <td className="px-2 py-1 text-xs break-words">{b.detail ?? '—'}</td>
+                  <td className="px-2 py-1 text-xs">{when(b.since)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : null}
+      {r.status === 'in_progress' ? (
+        <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
+          <Button size="sm" variant="outline" data-testid="annual-renewal-rollback-check" onClick={() => post({ action: 'rollback-check' }, 'Contrôle du retour arrière effectué.')}>Vérifier maintenant</Button>
+          {blocking > 0 ? (
+            <span className="text-muted-foreground">Fin impossible : {blocking} élément(s) à résoudre (acceptations incertaines : décisions dans « À traiter »).</span>
+          ) : (
+            <>
+              {notified > 0 ? (
+                <label className="flex items-start gap-2">
+                  <input type="checkbox" className="mt-0.5" checked={ack} onChange={(e) => setAck(e.target.checked)} />
+                  <span>{notified} échéance(s) ont déjà reçu le rappel Verebona : Stripe peut leur envoyer son propre rappel après réactivation (doublon possible, à assumer ou à prévenir).</span>
+                </label>
+              ) : null}
+              <ConfirmButton testId="annual-renewal-rollback-finalize" label="Terminer le retour arrière" confirmLabel="Confirmer la fin"
+                onConfirm={() => post({ action: 'rollback-finalize', acknowledgeNotified: ack }, 'Retour arrière terminé : vous pouvez réactiver les rappels dans Stripe.')} />
+            </>
+          )}
+        </div>
+      ) : null}
+    </div>
+  );
+}
 
 const danger = 'text-[color:var(--text-danger)]';
 const warn = 'text-[color:var(--text-warning-soft)]';
@@ -132,10 +221,11 @@ export function AnnualRenewalOps({ a, onChanged }: { a: AnnualRenewal; onChanged
           </p>
         ) : (
           <p className={warn}>
-            Bascule non déclarée : aucun rappel Verebona n’est préparé ni envoyé{sw?.rollbackAt ? ` (retour aux rappels Stripe le ${when(sw.rollbackAt)})` : ''}.
+            Bascule non déclarée : aucun NOUVEL envoi de rappel Verebona{sw?.rollbackAt ? ` (retour aux rappels Stripe le ${when(sw.rollbackAt)})` : ''}.
           </p>
         )}
-        {!sw?.declared ? (
+        {a.rollback ? <RollbackState r={a.rollback} post={post} /> : null}
+        {!sw?.declared && a.rollback?.status !== 'in_progress' ? (
           <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
             <label className="flex flex-col gap-1">
               <span className="text-muted-foreground">Désactivation effectuée dans Stripe le</span>
@@ -144,13 +234,13 @@ export function AnnualRenewalOps({ a, onChanged }: { a: AnnualRenewal; onChanged
             <ConfirmButton testId="annual-renewal-declare" label="Déclarer la désactivation des rappels Stripe" confirmLabel="Confirmer (rappels Stripe désactivés)"
               onConfirm={() => post({ action: 'declare', disabledAt: new Date(disabledAt).toISOString() }, 'Bascule déclarée.')} />
           </div>
-        ) : (
-          <div className="flex flex-wrap items-center gap-2">
+        ) : sw?.declared ? (
+          <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
             <ConfirmButton testId="annual-renewal-rollback" label="Revenir aux rappels Stripe" confirmLabel="Confirmer le retour arrière"
-              onConfirm={() => post({ action: 'rollback' }, 'Demandes en attente neutralisées : réactivez maintenant les rappels dans Stripe.')} />
-            <span className="text-muted-foreground">Suspendez d’abord la tâche (Exploitation › Tâches planifiées), puis réactivez les rappels dans Stripe après cette action.</span>
+              onConfirm={() => post({ action: 'rollback' }, 'Retour arrière en cours : attendez « Retour arrière terminé » avant de réactiver les rappels dans Stripe.')} />
+            <span className="text-muted-foreground">Suspendez d’abord la tâche (Exploitation › Tâches planifiées). Réactivez les rappels dans Stripe seulement quand le bloc affiche « Retour arrière terminé ».</span>
           </div>
-        )}
+        ) : null}
       </div>
 
       <p>Demandes (30 j) : {jobs.length ? jobs.map(([k, n]) => `${JOB_STATUS_LABELS[k] ?? k} ${n}`).join(', ') : 'aucune'}</p>
@@ -177,7 +267,11 @@ export function AnnualRenewalOps({ a, onChanged }: { a: AnnualRenewal; onChanged
                     <td className="px-2 py-1 text-xs">{x.renewalDate ?? '—'}</td>
                     <td className="px-2 py-1 text-xs tabular-nums">{x.accountId ?? 'aucun'}</td>
                     <td className="px-2 py-1 text-xs break-words">{x.reason ?? '—'}</td>
-                    <td className="px-2 py-1 text-xs">{when(x.since)}</td>
+                    <td className="px-2 py-1 text-xs">
+                      {when(x.since)}
+                      {x.nextAt ? <span className="block text-muted-foreground">prochaine tentative {when(x.nextAt)}</span> : null}
+                      {x.renewalDateVerified === false ? <span className="block text-muted-foreground">échéance locale non revérifiée</span> : null}
+                    </td>
                     <td className="px-2 py-1">
                       <div className="flex flex-col gap-1 sm:flex-row sm:flex-wrap">
                         {x.state === 'COVERAGE_UNCERTAIN' && x.key ? (
@@ -190,7 +284,11 @@ export function AnnualRenewalOps({ a, onChanged }: { a: AnnualRenewal; onChanged
                           <>
                             <ConfirmButton label="Vérifier de nouveau" confirmLabel="Confirmer" onConfirm={() => post({ action: 'job', jobId: x.jobId, decision: 'RECHECK' }, 'Nouvelle réconciliation programmée.')} />
                             <ConfirmButton label="Trouvé chez Resend" confirmLabel="Confirmer : envoyé" onConfirm={() => post({ action: 'job', jobId: x.jobId, decision: 'CONFIRM_SENT' }, 'Demande close comme acceptée.')} />
-                            <ConfirmButton label="Absent chez Resend : réémettre" confirmLabel="Confirmer la réémission" onConfirm={() => post({ action: 'job', jobId: x.jobId, decision: 'REISSUE' }, 'Réémission programmée (nouvelle clé).')} />
+                            {x.neutralized ? (
+                              <span className="text-xs text-muted-foreground">neutralisée (retour aux rappels Stripe) : aucune réémission</span>
+                            ) : (
+                              <ConfirmButton label="Absent chez Resend : réémettre" confirmLabel="Confirmer la réémission" onConfirm={() => post({ action: 'job', jobId: x.jobId, decision: 'REISSUE' }, 'Réémission programmée (nouvelle clé).')} />
+                            )}
                             <ConfirmButton variant="ghost" label="Abandonner" confirmLabel="Confirmer l’abandon" onConfirm={() => post({ action: 'job', jobId: x.jobId, decision: 'ABANDON' }, 'Demande abandonnée.')} />
                           </>
                         ) : null}

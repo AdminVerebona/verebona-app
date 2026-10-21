@@ -67,6 +67,7 @@ const SUJETS: Readonly<Record<string, { noun: string; fixed?: string }>> = {
   'AGENDA-DUPLICATE': { noun: 'Échéance en double', fixed: 'Échéance en double à vérifier' },
   'DATA-REGISTRATION': { noun: 'Numéro d’immatriculation' },
   'DATA-ACQUISITION-PRICE': { noun: 'Prix d’acquisition' },
+  'DATA-ACQUISITION-DATE': { noun: 'Date d’achat' },
   'DATA-SUPPLIER': { noun: 'Fournisseur du document' },
   'LINK-EQUIP-ASSET': { noun: 'Bien de l’équipement', fixed: 'Équipement à rattacher à un bien' },
   'SUPPLIER-IDENTITY': { noun: 'Fournisseur', fixed: 'Fournisseur à confirmer' },

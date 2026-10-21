@@ -242,3 +242,110 @@ describe('RJ7F-08 — offre du prochain renouvellement (Stripe), jamais plan_cod
     expect(src).not.toMatch(/planLabelOf\(\{ planCode: acc\.plan_code/);
   });
 });
+
+// ══════════════════════════════════════════════════════════════════════════
+// Lot 76D — ticket P1 « Rappel annuel J−7 — risques résiduels de doublon et
+// rollback ». Comportements prouvés sur PostgreSQL 16 par RJ7R-E2E-01 à 09
+// (`src/test/e2e/scenarios/l72f-rappel-j7-fiabilisation.e2e.ts`) ; ici :
+// règles pures et contrats (migration, tâche, documentation).
+// ══════════════════════════════════════════════════════════════════════════
+
+describe('RJ7R-01 — recherche Resend : jamais d’absence déduite d’une recherche partielle', () => {
+  it('toutes les candidates sont inspectées (plus de tranche des 20 premières), limites explicites', async () => {
+    const m = await import('@/services/email/transactional-email-jobs.service');
+    expect(m.PROVIDER_LOOKUP_MAX_CANDIDATES).toBeGreaterThan(20);
+    expect(m.PROVIDER_LOOKUP_MAX_MS).toBeGreaterThan(0);
+    const src = read('src/services/email/transactional-email-jobs.service.ts');
+    expect(src).not.toMatch(/candidates\.slice\(0,\s*20\)/);
+    for (const motif of ['RESEND_CANDIDATES_LIMIT', 'RESEND_LISTING_PAGE_LIMIT', 'RESEND_LOOKUP_TIMEOUT', 'RESEND_CANDIDATE_MISSING']) expect(src).toContain(motif);
+  });
+  it('une demande neutralisée n’est jamais prise par la file (prise atomique et sélection)', () => {
+    const src = read('src/services/email/transactional-email-jobs.service.ts');
+    expect((src.match(/AND neutralized_at IS NULL/g) ?? []).length).toBeGreaterThanOrEqual(2);
+  });
+});
+
+describe('RJ7R-02 — BO : neutralisation, acceptation, incertitude et fin du retour arrière distinctes', () => {
+  it('état consolidé : neutralisé ≠ annulé ; clos après un envoi incertain ≠ annulé sans envoi', async () => {
+    const { reminderStateOf, REMINDER_STATE_LABELS } = await import('@/services/billing/annual-renewal-reminder.service');
+    const base = { outcome: 'ENQUEUED', job_status: 'cancelled', job_attempts: 0, job_last_error: 'ROLLBACK_NEUTRALIZED', provider_outcome: null, delivery_status: null };
+    expect(reminderStateOf(base)).toBe('NEUTRALIZED');
+    expect(reminderStateOf({ ...base, provider_outcome: 'reconciled_absent' })).toBe('NEUTRALIZED');
+    expect(reminderStateOf({ ...base, job_last_error: 'ADMIN_ABANDONED', provider_outcome: 'uncertain' })).toBe('CANCELLED_UNCERTAIN');
+    expect(reminderStateOf({ ...base, job_last_error: 'SUBSCRIPTION_REPLACED', provider_outcome: 'uncertain' })).toBe('CANCELLED_UNCERTAIN');
+    expect(reminderStateOf({ ...base, job_status: 'uncertain', job_last_error: 'ROLLBACK_UNCERTAIN', provider_outcome: 'uncertain' })).toBe('UNCERTAIN');
+    expect(reminderStateOf({ ...base, job_status: null, outcome: 'RECONCILE_ERROR' })).toBe('RECONCILE_ERROR');
+    expect(reminderStateOf({ ...base, job_status: null, outcome: 'RECONCILE_RESOLVED' })).toBe('RECONCILE_RESOLVED');
+    expect(REMINDER_STATE_LABELS.CANCELLED_UNCERTAIN).not.toMatch(/sans envoi/);
+    expect(REMINDER_STATE_LABELS.NEUTRALIZED).toMatch(/aucun envoi/);
+    const ui = read('src/app/admin/communications/_components/AnnualRenewalOps.tsx');
+    for (const k of ['NEUTRALIZED', 'CANCELLED_UNCERTAIN', 'RECONCILE_ERROR', 'RECONCILE_RESOLVED']) expect(ui).toContain(`${k}:`);
+    expect(ui).toContain('annual-renewal-rollback-state');
+  });
+});
+
+describe('RJ7R-03 — rollback en phases : en cours tant que des envois ne sont pas résolus', () => {
+  it('route BO : contrôle et finalisation (arbitrage explicite des échéances notifiées)', () => {
+    const route = read('src/app/api/admin/communications/annual-renewal/route.ts');
+    expect(route).toContain("action === 'rollback-check'");
+    expect(route).toContain("action === 'rollback-finalize'");
+    expect(route).toContain('acknowledgeNotified');
+  });
+  it('contrôle du retour arrière par la tâche existante `transactional-emails-retry` (aucune requête HTTP maintenue ouverte)', () => {
+    const cat = read('src/services/scheduling/scheduled-tasks.catalog.ts');
+    expect(cat).toMatch(/code: 'transactional-emails-retry'[\s\S]{0,1500}advanceAnnualRenewalRollback/);
+  });
+});
+
+describe('RJ7R-04 — statuts Stripe et locaux comparés dans les deux sens', () => {
+  const v = { id: 'sub_1', customer: 'cus_1', status: 'active', annual: true, renewalTs: ts('2026-11-12T10:00:00Z'), cancelScheduled: false };
+  const ok = { account_id: 1, status: 'active', billing_period: 'yearly', cancel_at_period_end: false, current_period_end_at: '2026-11-12T10:00:30Z' };
+  it('local actif, Stripe past_due / unpaid / canceled / paused / incomplete : divergence STATUS', async () => {
+    const { desyncReasons } = await import('../annual-renewal-reconcile.service');
+    for (const s of ['past_due', 'unpaid', 'canceled', 'paused', 'incomplete', 'incomplete_expired']) expect(desyncReasons({ ...v, status: s }, ok)).toContain('STATUS');
+  });
+  it('correspondances du modèle (subscription-sync) : trialing → active, unpaid → canceled ; cohérent → aucun écart', async () => {
+    const { desyncReasons, expectedLocalStatus } = await import('../annual-renewal-reconcile.service');
+    expect(expectedLocalStatus('trialing')).toBe('active');
+    expect(expectedLocalStatus('past_due')).toBe('past_due');
+    expect(expectedLocalStatus('unpaid')).toBe('canceled');
+    expect(expectedLocalStatus('paused')).toBeNull();
+    expect(desyncReasons({ ...v, status: 'past_due' }, { ...ok, status: 'past_due' })).toEqual([]);
+    expect(desyncReasons({ ...v, status: 'unpaid' }, { ...ok, status: 'canceled' })).toEqual([]);
+    expect(desyncReasons({ ...v, status: 'trialing' }, ok)).toEqual([]);
+  });
+});
+
+describe('RJ7R-05 — erreurs du parcours inverse persistées ; passage partiel jamais présenté comme réussi', () => {
+  it('compte rendu de tâche : erreur dès qu’une relecture échoue ou que le parcours est incomplet', async () => {
+    const { describeReconcileRun } = await import('../annual-renewal-reconcile.service');
+    const r = { scanned: 3, inWindow: 1, consistent: 1, resynced: 0, unresolved: 0, stripeOnly: 0, localOnlyChecked: 2, errors: 0, complete: true, reverseComplete: true };
+    expect(describeReconcileRun(r).error).toBeUndefined();
+    expect(describeReconcileRun({ ...r, errors: 1 }).error).toMatch(/relecture/);
+    expect(describeReconcileRun({ ...r, reverseComplete: false }).error).toBeTruthy();
+    expect(describeReconcileRun({ ...r, complete: false }).error).toBeTruthy();
+    const cat = read('src/services/scheduling/scheduled-tasks.catalog.ts');
+    expect(cat).toContain('describeReconcileRun(r)');
+  });
+});
+
+describe('RJ7R-06 — migration 0585 et documentation d’exploitation', () => {
+  it('migration idempotente, index séparé CONCURRENTLY', () => {
+    const mig = read('src/db/migrations/0585_l76d_rappel_j7_rollback.sql');
+    expect(mig).toContain('ADD COLUMN IF NOT EXISTS neutralized_at timestamptz');
+    expect(mig).toContain("CHECK (rollback_status IS NULL OR rollback_status IN ('in_progress', 'completed'))");
+    expect(mig).toContain("'RECONCILE_ERROR', 'RECONCILE_RESOLVED'");
+    expect(mig).toContain('renewal_date_verified boolean NOT NULL DEFAULT true');
+    expect(mig).not.toMatch(/CONCURRENTLY/);
+    expect(read('src/db/migrations/0585_l76d_rappel_j7_rollback_idx_1.sql')).toMatch(/CREATE INDEX CONCURRENTLY IF NOT EXISTS transactional_email_jobs_neutralized_idx/);
+  });
+  it('doc : la suspension n’arrête pas un appel déjà transmis ; états et arbitrages du retour arrière', () => {
+    const doc = read('docs/exploitation/rappel-renouvellement-annuel.md');
+    expect(doc).not.toContain('plus aucun rappel annuel n\'est envoyé, même déjà préparé');
+    expect(doc).toMatch(/n['’]arrête pas un appel déjà transmis/);
+    expect(doc).toContain('Retour arrière en cours');
+    expect(doc).toContain('Retour arrière terminé');
+    expect(doc).toMatch(/ne réactivez? (pas )?les rappels Stripe|Ne pas réactiver les rappels Stripe/i);
+    expect(doc).not.toMatch(/whsec_|re_[A-Za-z0-9]{8,}/);
+  });
+});

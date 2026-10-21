@@ -57,8 +57,9 @@ import {
   type T6Suggestion, type T6SuggestionBundle,
 } from './t6-suggestions';
 import {
-  T6_ASSESSMENT_REVISION_REMINDER, type T6EvaluationConfig, type T6InterpellationBundle, type T6PersistResult,
+  T6_ASSESSMENT_REVISION_REMINDER, T6_EVALUATION_SIGNATURE_V2, type T6EvaluationConfig, type T6InterpellationBundle, type T6PersistResult,
 } from './t6-interpellation';
+import { effectiveGenerationProfile } from '@/services/ai/gateway/generation-profile';
 import {
   T6EvaluateOutput, T6_EVALUATION_INPUT_SCHEMA_VERSION, T6_EVALUATION_OUTPUT_SCHEMA_VERSION, validateT6Evaluation,
   type T6EvaluationRejection, type T6ValidatedDecision,
@@ -220,9 +221,10 @@ export function t6EvaluateSectionDigest(text: string): string {
  */
 export async function t6EvaluationConfig(thresholdDays: number): Promise<T6EvaluationConfig | null> {
   try {
-    const [config, loader] = await Promise.all([
+    const [config, loader, { getOperation }] = await Promise.all([
       resolveOperationConfig(T6_EVALUATE_OPERATION),
       import('@/services/ai/prompts/prompt-loader'),
+      import('@/services/ai/registry/operations'),
     ]);
     const bo = config.promptArchitecture === 'master' && config.masterPromptText?.trim() ? config.masterPromptText : null;
     const texte = bo ?? await loader.loadMasterTemplate(T6_MASTER_PROMPT_CODE).catch(() => null);
@@ -231,11 +233,71 @@ export async function t6EvaluationConfig(thresholdDays: number): Promise<T6Evalu
       masterPromptCode: T6_MASTER_PROMPT_CODE, configuredText: bo, configVersionId: config.configVersionId,
       promptVersionId: config.masterPromptVersionId ?? null,
     });
-    const signature = `e1:${sha256(canonicalJson({
-      prompt: t6EvaluateSectionDigest(texte), input: T6_EVALUATION_INPUT_SCHEMA_VERSION, output: T6_EVALUATION_OUTPUT_SCHEMA_VERSION,
+    const prompt = t6EvaluateSectionDigest(texte);
+    // Lot 72A : calcul conservé tel quel — relecture des décisions qui le portent (transition).
+    const legacySignature = `e1:${sha256(canonicalJson({
+      prompt, input: T6_EVALUATION_INPUT_SCHEMA_VERSION, output: T6_EVALUATION_OUTPUT_SCHEMA_VERSION,
       model: config.primaryModel ?? null, thresholdDays,
     })).slice(0, 24)}`;
-    return { signature, masterVersion };
+    // Lot 76A (AC04) : signature COMPLÈTE — chaîne ordonnée des modèles avec le
+    // niveau de raisonnement de chaque rang et limite de sortie, valeurs
+    // résolues comme par la passerelle (`effectiveGenerationProfile`). Jamais
+    // la version administrative, la révision, le préambule (non appliqué au
+    // master) ni la branche FORMULATE.
+    const signature = `${T6_EVALUATION_SIGNATURE_V2}${sha256(canonicalJson({
+      prompt, input: T6_EVALUATION_INPUT_SCHEMA_VERSION, output: T6_EVALUATION_OUTPUT_SCHEMA_VERSION,
+      generation: t6EvaluationGenerationProfile(getOperation(T6_EVALUATE_OPERATION), config), thresholdDays,
+    })).slice(0, 24)}`;
+    const legacyBaseline = await t6EvaluationBaseline(legacySignature, signature);
+    return { signature, masterVersion, legacySignature, legacyBaseline };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Lot 76A (AC04) — profil de génération EVALUATE entrant dans la signature
+ * (pur) : celui que la passerelle applique (`effectiveGenerationProfile`).
+ * Délai, fournisseur et mode JSON sont fixés par le code de l'opération
+ * (contrats versionnés) : leur changement passe par une livraison.
+ */
+export function t6EvaluationGenerationProfile(
+  op: import('@/services/ai/gateway/generation-profile').GenerationOperationInput,
+  config: import('@/services/ai/gateway/generation-profile').GenerationConfigInput,
+): import('@/services/ai/gateway/generation-profile').GenerationProfile {
+  return effectiveGenerationProfile(op, config);
+}
+
+/** Lot 76A : références de transition déjà lues (immuables une fois écrites). */
+const baselines = new Map<string, string>();
+/** Réservé aux tests. */
+export function resetT6EvaluationBaselines(): void { baselines.clear(); }
+
+/**
+ * Lot 76A (AC04, transition) — signature complète de RÉFÉRENCE d'une
+ * signature `e1:` (migration 0575) : la première observée après le
+ * déploiement est enregistrée (idempotent, la première l'emporte) puis
+ * relue. Les décisions `e1:` restent ainsi valables tant que la
+ * configuration complète n'a pas changé depuis — et sont invalidées dès
+ * qu'un repli, un niveau de raisonnement ou la limite de sortie change.
+ * Table absente ou panne : `null` (aucune invalidation). Ne lève jamais.
+ */
+async function t6EvaluationBaseline(legacy: string, current: string): Promise<string | null> {
+  const connue = baselines.get(legacy);
+  if (connue) return connue;
+  try {
+    const q = (sql: string, params: unknown[]) => pgClient.unsafe(sql, params as never[]) as unknown as Promise<Array<Record<string, unknown>>>;
+    const [pret] = await q(`SELECT to_regclass('t6_evaluation_signature_baselines') IS NOT NULL AS ok`, []);
+    if (!pret?.ok) return null;
+    await q(
+      `INSERT INTO t6_evaluation_signature_baselines (legacy_signature, signature) VALUES ($1, $2)
+       ON CONFLICT (legacy_signature) DO NOTHING`,
+      [legacy, current],
+    );
+    const [r] = await q(`SELECT signature FROM t6_evaluation_signature_baselines WHERE legacy_signature = $1`, [legacy]);
+    const v = typeof r?.signature === 'string' ? r.signature : null;
+    if (v) baselines.set(legacy, v);
+    return v;
   } catch {
     return null;
   }

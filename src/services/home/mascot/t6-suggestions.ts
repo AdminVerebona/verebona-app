@@ -49,6 +49,14 @@
  *     des données du compte) sans référence valide est écartée.
  * Les questions générales et la consultation libre des échéances dans T2
  * restent inchangées.
+ *
+ * Lot 76A — une référence valide ne garantit pas le rattachement du TEXTE :
+ * exclusions appliquées même avec `deadlineRef` ; texte qui cite le libellé
+ * de l'échéance référencée (paraphrase invérifiable : omise), sans autre
+ * échéance ni autre bien ; `assetRef` cohérent avec l'échéance ; incitation
+ * à agir déclarée « CONSULT » sur une échéance non signalée rejetée ; mêmes
+ * contrôles à la génération et à la relecture du cache, et omission prudente
+ * avec R12 v1. Données du compte seulement — aucun catalogue de formulations.
  * ══════════════════════════════════════════════════════════════════════════
  */
 import type { MascotSecondary } from './types';
@@ -132,7 +140,14 @@ export interface T6Suggestion {
 }
 
 /** Échéance transmise (serveur seulement) : identifiant et statut dans la bulle. */
-export interface T6SuggestionDeadlineRef { agendaItemId: number; signaled: boolean; label: string }
+export interface T6SuggestionDeadlineRef {
+  agendaItemId: number; signaled: boolean; label: string;
+  /** Lot 76A (AC07) : bien de l'échéance (`null` : aucun) — cohérence avec `assetRef`. */
+  assetId?: number | null;
+}
+
+/** Lot 76A : échéance transmise ou écartée, telle que le serveur la contrôle (jamais transmise à T6). */
+export interface T6SuggestionDeadlineCheck { label: string; assetId: number | null; signaled: boolean }
 
 /** Contexte complet : la correspondance référence → bien reste côté serveur. */
 export interface T6SuggestionBundle {
@@ -145,10 +160,16 @@ export interface T6SuggestionBundle {
   excludedLabels?: readonly string[];
   /** Lot 72A : R12 v2 en service — toute question sur une échéance précise porte sa référence. */
   structuredRefs?: boolean;
+  /** Lot 76A : échéances TRANSMISES (toutes versions du prompt), avec leur bien et leur statut dans la bulle. */
+  deadlines?: readonly T6SuggestionDeadlineCheck[];
+  /** Lot 76A : échéances ÉCARTÉES avec leur bien (libellé naturel et titre). */
+  excludedDeadlines?: readonly T6SuggestionDeadlineCheck[];
+  /** Lot 76A (AC07) : A1 → nom du bien (serveur seulement), pour le bien cité dans le texte. */
+  assetNames?: ReadonlyMap<string, string>;
 }
 
 /** Portée de validation des questions (sous-ensemble du `T6SuggestionBundle`). */
-export type T6SuggestionScope = Pick<T6SuggestionBundle, 'deadlineRefs' | 'excludedLabels' | 'structuredRefs'>;
+export type T6SuggestionScope = Pick<T6SuggestionBundle, 'deadlineRefs' | 'excludedLabels' | 'structuredRefs' | 'deadlines' | 'excludedDeadlines' | 'assetNames'>;
 
 export interface SuggestionSourceData {
   speech: string;
@@ -191,10 +212,12 @@ export function buildT6SuggestionContext(d: SuggestionSourceData): T6SuggestionB
     return { ref, name: a.name, hasDocuments: a.documents > 0, hasDeadlinesNext30Days: pos(a.deadlines) };
   });
   const deadlineRefs = new Map<string, T6SuggestionDeadlineRef>();
+  const deadlines: T6SuggestionDeadlineCheck[] = [];
   const v2 = d.structuredRefs === true;
   const nextDeadlines = d.agenda.filter((r) => r.date).slice(0, MAX_SUGGESTION_DEADLINES).map((r, i) => {
     const label = d.labelOf(r);
     const signaled = d.signaledIds?.has(r.id) ?? false;
+    deadlines.push({ label, assetId: r.assetId ?? null, signaled });
     const base = {
       label,
       assetRef: r.assetId != null ? refOf.get(r.assetId) ?? null : null,
@@ -203,7 +226,7 @@ export function buildT6SuggestionContext(d: SuggestionSourceData): T6SuggestionB
     };
     if (!v2) return base;
     const ref = `D${i + 1}`;
-    deadlineRefs.set(ref, { agendaItemId: r.id, signaled, label });
+    deadlineRefs.set(ref, { agendaItemId: r.id, signaled, label, assetId: r.assetId ?? null });
     return { ref, ...base, signaled };
   });
   const s = d.state;
@@ -211,11 +234,16 @@ export function buildT6SuggestionContext(d: SuggestionSourceData): T6SuggestionB
   const proche = (r: MascotAgendaRow) => !!d.today && !!r.date && r.date > d.today && daysBetween(d.today, r.date) <= PROCHES_JOURS;
   const prochesEligibles = d.today ? d.agenda.filter(proche) : null;
   const excludedLabels = [...new Set((d.excluded ?? []).flatMap((r) => [d.labelOf(r), r.title]).map(normalizeForFingerprint).filter((x) => x.length >= 4))];
+  const excludedDeadlines = (d.excluded ?? []).flatMap((r) => [...new Set([d.labelOf(r), r.title])]
+    .map((label) => ({ label, assetId: r.assetId ?? null, signaled: false })));
   return {
     assetIds,
     deadlineRefs,
     excludedLabels,
     structuredRefs: v2,
+    deadlines,
+    excludedDeadlines,
+    assetNames: new Map(assets.map((a) => [a.ref, a.name])),
     context: {
       schemaVersion: v2 ? T6_SUGGESTION_CONTEXT_SCHEMA_V2 : T6_SUGGESTION_CONTEXT_SCHEMA,
       bubble: { speech: d.speech, attentionToday: d.attentionToday },
@@ -240,6 +268,20 @@ export function buildT6SuggestionContext(d: SuggestionSourceData): T6SuggestionB
 
 /** Le libellé (normalisé) figure-t-il, en mots entiers, dans la question (normalisée) ? */
 const cite = (question: string, label: string) => ` ${question} `.includes(` ${label} `);
+/** Question (normalisée) privée des occurrences du libellé — mots entiers. */
+const sans = (question: string, label: string) => ` ${question} `.split(` ${label} `).join('  ').replace(/\s+/g, ' ').trim();
+
+/**
+ * Lot 76A (AC08) — marqueurs LINGUISTIQUES de la finalité « PREPARE » telle
+ * que le contrat R12 la définit (« préparer, agir »), y compris l'obligation
+ * (« dois-je », « faut-il »). Ce n'est ni un catalogue de questions ni une
+ * classification métier : aucun type d'échéance, aucun bien, aucune
+ * formulation complète. Appliqués seulement là où une incitation contredirait
+ * une décision T6 : échéance transmise NON signalée dans la bulle.
+ */
+const INCITATION_RACINES = ['prepar', 'anticip', 'prevoir', 'prevoy', 'organis', 'planifi'];
+const INCITATION_MOTS = new Set(['agir', 'dois', 'doit', 'devons', 'devez', 'devrai', 'devrais', 'devrait', 'devrions', 'devriez', 'faut', 'faudra', 'faudrait', 'falloir']);
+const incite = (q: string) => q.split(' ').some((w) => INCITATION_MOTS.has(w) || INCITATION_RACINES.some((r) => w.startsWith(r)));
 
 /** Tutoiement en inversion interrogative (« dois-tu », « peux-tu »), propre aux questions. */
 const INVERSION_TU = /-(tu|toi)(?=[\s?,.!]|$)/i;
@@ -264,6 +306,16 @@ export function validateT6Suggestions(raw: unknown, assetIds: ReadonlyMap<string
   const refs = scope.deadlineRefs ?? new Map<string, T6SuggestionDeadlineRef>();
   const ecartees = scope.excludedLabels ?? [];
   const transmises = [...refs.values()].map((r) => normalizeForFingerprint(r.label)).filter((x) => x.length >= 4);
+  // Lot 76A : échéances transmises (toutes versions) et écartées, avec leur bien ;
+  // biens nommables (nom normalisé) — données DU compte, jamais un catalogue.
+  const echeances = (scope.deadlines ?? []).map((x) => ({ ...x, norm: normalizeForFingerprint(x.label) })).filter((x) => x.norm.length >= 4);
+  const exclues = [
+    ...(scope.excludedDeadlines ?? []).map((x) => ({ norm: normalizeForFingerprint(x.label), assetId: x.assetId })),
+    ...ecartees.map((norm) => ({ norm, assetId: undefined as number | null | undefined })),
+  ].filter((x) => x.norm.length >= 4);
+  const biens = [...(scope.assetNames ?? new Map<string, string>())]
+    .map(([ref, name]) => ({ id: assetIds.get(ref), norm: normalizeForFingerprint(name) }))
+    .filter((x): x is { id: number; norm: string } => x.id != null && x.norm.length >= 3);
   for (const item of raw) {
     if (out.length >= MAX_T6_SUGGESTIONS) break;
     const o = (typeof item === 'string' ? { question: item, assetRef: null } : item) as { question?: unknown; assetRef?: unknown; deadlineRef?: unknown; purpose?: unknown } | null;
@@ -282,17 +334,36 @@ export function validateT6Suggestions(raw: unknown, assetIds: ReadonlyMap<string
     // Lot 72A (AC06) : rattachement à une échéance précise.
     let deadlineRef: string | null = null;
     let purpose: T6SuggestionPurpose | null = null;
+    const q = normalizeForFingerprint(question);
     if (o.deadlineRef != null) {
       const ref = typeof o.deadlineRef === 'string' ? refs.get(o.deadlineRef) : undefined;
       if (!ref) continue; // référence inconnue ou échéance devenue inéligible
       if (o.purpose !== 'CONSULT' && o.purpose !== 'PREPARE') continue; // cohérence non établie
       if (o.purpose === 'PREPARE' && !ref.signaled) continue; // incitation sur un sujet non signalé
+      // Lot 76A (AC06–AC08) : une référence valide ne garantit pas, à elle
+      // seule, le rattachement du TEXTE. Le texte cite le libellé de
+      // l'échéance référencée (R12 : paraphrase invérifiable → omise) ; hors
+      // de ce libellé, il ne cite ni une échéance écartée, ni une autre
+      // échéance transmise, ni un autre bien que celui de l'échéance.
+      const libelle = normalizeForFingerprint(ref.label);
+      if (libelle.length < 2 || !cite(q, libelle)) continue;
+      const reste = sans(q, libelle);
+      if (exclues.some((x) => cite(reste, x.norm))) continue; // échéance écartée citée
+      if (echeances.some((x) => x.norm !== libelle && cite(reste, x.norm))) continue; // autre échéance transmise
+      const bienEcheance = ref.assetId ?? null;
+      if (ref.assetId !== undefined && assetRef != null && assetId !== bienEcheance) continue; // AC07 : assetRef incohérent
+      if (ref.assetId !== undefined && biens.some((b) => b.id !== bienEcheance && cite(reste, b.norm))) continue; // AC07 : autre bien cité
+      // AC08 : finalité déclarée CONSULT, mais texte qui incite à agir sur une
+      // échéance que la bulle ne signale pas — contradiction texte / finalité.
+      if (o.purpose === 'CONSULT' && !ref.signaled && incite(q)) continue;
       deadlineRef = o.deadlineRef as string;
       purpose = o.purpose;
     } else {
-      const q = normalizeForFingerprint(question);
-      if (ecartees.some((l) => cite(q, l))) continue; // échéance écartée réintroduite
+      if (ecartees.some((l) => cite(q, l)) || exclues.some((x) => cite(q, x.norm))) continue; // échéance écartée réintroduite
       if (scope.structuredRefs && transmises.some((l) => cite(q, l))) continue; // rattachement non établi
+      // Lot 76A (AC09) : prompt sans références (R12 v1) — incitation à agir sur
+      // une échéance transmise que la bulle ne signale pas : invérifiable, omise.
+      if (!scope.structuredRefs && incite(q) && echeances.some((x) => !x.signaled && cite(q, x.norm))) continue;
     }
     const k = forme(question);
     if (vues.has(k)) continue;

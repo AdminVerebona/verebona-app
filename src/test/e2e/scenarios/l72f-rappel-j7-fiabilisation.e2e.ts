@@ -68,6 +68,11 @@ const mail = vi.hoisted(() => {
     listCalls: 0,
     /** Horloge du prestataire (created_at) : alignée sur l'instant du test. */
     clock: new Date(),
+    /** Lot 76D : appel d'envoi suspendu (appel Resend « en cours ») jusqu'à la levée de la barrière. */
+    gate: null as Promise<void> | null,
+    onSendStart: null as (() => void) | null,
+    /** Lot 76D : consultations d'e-mails en échec (identifiants), délai de consultation. */
+    getFail: new Set<string>(),
   };
 });
 afterAll(() => { delete process.env.RESEND_API_KEY; });
@@ -76,6 +81,8 @@ vi.mock('resend', () => ({
   Resend: class {
     emails = {
       send: async (p: { to: string; subject: string; html: string; text: string; tags?: Array<{ name: string; value: string }> }, o?: { idempotencyKey?: string }) => {
+        const gate = mail.gate;
+        if (gate) { mail.gate = null; mail.onSendStart?.(); await gate; }
         const mode = mail.next.shift();
         const key = o?.idempotencyKey;
         const body = JSON.stringify(p);
@@ -96,6 +103,7 @@ vi.mock('resend', () => ({
       get: async (id: string) => {
         mail.getCalls += 1;
         if (mail.listForbidden) return { data: null, error: { name: 'restricted_api_key', statusCode: 401, message: 'This API key is restricted to only send emails' } };
+        if (mail.getFail.has(id)) return { data: null, error: { name: 'internal_server_error', statusCode: 500, message: 'Internal server error' } };
         const m = mail.sent.find((x) => x.id === id);
         if (!m) return { data: null, error: { name: 'not_found', statusCode: 404, message: 'Email not found' } };
         return { data: { object: 'email', id: m.id, to: [m.to], subject: m.subject, created_at: m.created_at, last_event: 'sent', tags: m.tags ?? [] }, error: null };
@@ -119,6 +127,8 @@ const etat = vi.hoisted(() => ({
   previewPrice: new Map<string, string>(),
   sessions: [] as Array<{ customer: string }>,
   stripeDown: false,
+  /** Lot 76D : relecture d'un abonnement précis en échec. */
+  failRetrieve: new Map<string, Error>(),
 }));
 
 const portalFake = createFakePortalConfigurations({ defaultConfiguration: { features: { invoice_history: { enabled: true }, payment_method_update: { enabled: true }, subscription_cancel: { enabled: true, mode: 'at_period_end' } } } });
@@ -126,6 +136,7 @@ const fakeStripe = {
   subscriptions: {
     retrieve: async (id: string) => {
       if (etat.stripeDown) throw Object.assign(new Error('Stripe indisponible (simulé)'), { type: 'StripeConnectionError' });
+      if (etat.failRetrieve.has(id)) throw etat.failRetrieve.get(id);
       const s = etat.subs.get(id);
       if (!s) throw Object.assign(new Error(`No such subscription: ${id}`), { code: 'resource_missing', statusCode: 404 });
       return structuredClone(s);
@@ -204,7 +215,8 @@ scenario('RJ7F', 'Abonnements annuels : fiabilisation du rappel J−7 (lot 72F)'
   /** Bascule déclarée (rappels Stripe désactivés en 2033) et tâches actives. */
   async function basculeActive() {
     await sql`INSERT INTO annual_renewal_reminder_state (id, coverage_from, stripe_reminders_disabled_at) VALUES (1, '2033-12-31', '2033-12-30T10:00:00Z')
-              ON CONFLICT (id) DO UPDATE SET coverage_from = '2033-12-31', stripe_reminders_disabled_at = '2033-12-30T10:00:00Z'`;
+              ON CONFLICT (id) DO UPDATE SET coverage_from = '2033-12-31', stripe_reminders_disabled_at = '2033-12-30T10:00:00Z',
+                                             rollback_status = NULL, rollback_completed_at = NULL, rollback_summary = NULL`;
     await sql`UPDATE scheduled_task_state SET admin_disabled = false WHERE code IN (${TASK}, 'subscription-annual-renewal-reconcile')`;
   }
 
@@ -225,7 +237,7 @@ scenario('RJ7F', 'Abonnements annuels : fiabilisation du rappel J−7 (lot 72F)'
   afterAll(async () => {
     // Laisse la base comme la migration : tâches suspendues, bascule non déclarée.
     await sql`UPDATE scheduled_task_state SET admin_disabled = true WHERE code IN (${TASK}, 'subscription-annual-renewal-reconcile')`;
-    await sql`UPDATE annual_renewal_reminder_state SET stripe_reminders_disabled_at = NULL WHERE id = 1`;
+    await sql`UPDATE annual_renewal_reminder_state SET stripe_reminders_disabled_at = NULL, rollback_status = NULL WHERE id = 1`;
   });
 
   function stripeSub(o: { id: string; customer: string; end: Date; price?: string; interval?: 'year' | 'month'; status?: string; cancel?: boolean }) {
@@ -677,5 +689,402 @@ scenario('RJ7F', 'Abonnements annuels : fiabilisation du rappel J−7 (lot 72F)'
     expect(txt).not.toContain('billing.stripe.com');
     expect(txt).not.toContain(pending.customer);
     expect(txt).not.toMatch(/re_e2e_simule/);
+  });
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // LOT 76D — risques résiduels de doublon, rollback fiabilisé (scénarios 2035)
+  // ══════════════════════════════════════════════════════════════════════════
+
+  const KIND = 'SUBSCRIPTION_ANNUAL_RENEWAL_REMINDER';
+  /** E-mails Resend portant l'étiquette de CETTE demande (bruit exclu). */
+  const mailsOfJob = (jobId: number) => mail.sent.filter((m) => (m.tags ?? []).some((t) => t.name === 'vb_email_job' && t.value === String(jobId)));
+  /** Autres e-mails (autres demandes) au même destinataire, plus récents que l'e-mail recherché. */
+  const bruit = (to: string, n: number, at: Date) => {
+    for (let i = 0; i < n; i += 1) {
+      mail.sent.push({ id: `em_76d_bruit_${uid('b')}`, to, subject: 'Autre e-mail', html: '', text: '', tags: [{ name: 'vb_email_job', value: String(900_000_000 + i) }], created_at: new Date(at.getTime() + i * 1000).toISOString() });
+    }
+  };
+  const jobRow = async (id: number) => (await sql<{ status: string; last_error: string | null; provider_outcome: string | null; provider_detail: string | null; neutralized_at: Date | null; send_generation: number }[]>`
+    SELECT status, last_error, provider_outcome, provider_detail, neutralized_at, send_generation FROM transactional_email_jobs WHERE id = ${id}`)[0];
+  /** Demande préparée puis appel Resend dont la réponse est perdue (acceptation incertaine, demande « pending »). */
+  async function demandeIncertaine(end: Date, prep: Date) {
+    const t = await titulaire({ end });
+    await run(prep);
+    const [job] = await jobsOf(t.subId);
+    mail.next.push('lose-response');
+    await send(job.id, new Date(prep.getTime() + 60_000));
+    return { t, job };
+  }
+  /**
+   * Hygiène : le retour arrière est GLOBAL. Les incertitudes laissées par d'autres scénarios du même
+   * fichier ou de la même base sont arbitrées (décision BO « Abandonner ») pour que la fin du retour
+   * arrière ne dépende que des données de ce test. Assertions toujours limitées à NOS demandes.
+   */
+  async function arbitrerLesAutres(mine: number[], now: Date) {
+    const others = await sql<{ id: number }[]>`SELECT id FROM transactional_email_jobs WHERE kind = ${KIND} AND status = 'uncertain' AND NOT (id = ANY(${mine}))`;
+    const { decideUncertainEmailJob } = await jobs();
+    for (const o of others) await decideUncertainEmailJob(o.id, 'ABANDON', now);
+  }
+  const blockersOf = (p: { blockers: Array<{ kind: string; jobId: number | null }> }, jobId: number) => p.blockers.filter((b) => b.jobId === jobId).map((b) => b.kind);
+
+  it('RJ7R-E2E-01 — e-mail accepté placé après le 20ᵉ candidat Resend : retrouvé, aucun doublon', async () => {
+    const { t, job } = await demandeIncertaine(paris('2035-01-20', 10), paris('2035-01-13', 8, 30));
+    expect(mailsOfJob(job.id)).toHaveLength(1);
+    // 25 autres e-mails au même destinataire, plus récents : l'e-mail recherché est le 26ᵉ candidat.
+    bruit(t.email, 25, paris('2035-01-13', 8, 40));
+    // Au-delà de la fenêtre d'idempotence : consultation Resend.
+    expect(await send(job.id, paris('2035-01-14', 10, 40))).toMatchObject({ status: 'accepted' });
+    expect(mailsOfJob(job.id)).toHaveLength(1);
+    expect(await jobRow(job.id)).toMatchObject({ status: 'accepted', provider_outcome: 'reconciled', send_generation: 0 });
+  });
+
+  it('RJ7R-E2E-02 — recherche tronquée (candidats, pages, durée) ou consultation en échec : unknown, réémission bloquée', async () => {
+    const { reconcileProviderCall, runTransactionalEmailRetry, decideUncertainEmailJob, PROVIDER_LOOKUP_MAX_CANDIDATES } = await jobs();
+    // a) Plus de candidats que la limite d'inspection : jamais « absent ».
+    const a = await demandeIncertaine(paris('2035-02-20', 10), paris('2035-02-13', 8, 30));
+    bruit(a.t.email, PROVIDER_LOOKUP_MAX_CANDIDATES + 10, paris('2035-02-13', 8, 40));
+    expect(await send(a.job.id, paris('2035-02-14', 10, 40))).toMatchObject({ status: 'uncertain' });
+    const ra = await jobRow(a.job.id);
+    expect(ra).toMatchObject({ status: 'uncertain', provider_outcome: 'uncertain', send_generation: 0 });
+    expect(ra.provider_detail).toMatch(/RESEND_CANDIDATES_LIMIT/);
+    await runTransactionalEmailRetry({ now: () => paris('2035-02-14', 10, 45), limit: 500 });
+    expect(mailsOfJob(a.job.id)).toHaveLength(1);
+
+    // b) Limite de pages et c) limite de durée : unknown avec motif, jamais « absent ».
+    const probe = { id: 987_654_321, recipient_email: `absent-${uid('l76')}@test.invalid`, send_generation: 0, provider_call_started_at: paris('2035-02-13', 8, 31) };
+    bruit(`autre-${uid('l76')}@test.invalid`, 150, paris('2035-02-13', 8, 50));
+    const full = await reconcileProviderCall(probe, paris('2035-02-14', 10, 40), { providerLookup: true });
+    expect(full.kind).toBe('absent'); // témoin : recherche complète
+    expect(await reconcileProviderCall(probe, paris('2035-02-14', 10, 40), { providerLookup: true, budget: { maxPages: 1 } }))
+      .toEqual({ kind: 'unknown', detail: expect.stringMatching(/RESEND_LISTING_PAGE_LIMIT/) });
+    expect(await reconcileProviderCall(probe, paris('2035-02-14', 10, 40), { providerLookup: true, budget: { maxMs: 0 } }))
+      .toEqual({ kind: 'unknown', detail: expect.stringMatching(/RESEND_LOOKUP_TIMEOUT/) });
+
+    // d) Consultation d'un candidat en échec : incertitude conservée, réémission bloquée.
+    const d = await demandeIncertaine(paris('2035-02-21', 10), paris('2035-02-14', 8, 30));
+    bruit(d.t.email, 3, paris('2035-02-14', 8, 40));
+    // L'e-mail recherché lui-même ne peut pas être consulté (les autres candidats, si).
+    mail.getFail.add(mailsOfJob(d.job.id)[0].id);
+    expect(await send(d.job.id, paris('2035-02-15', 10, 40))).toMatchObject({ status: 'uncertain' });
+    expect((await jobRow(d.job.id)).provider_detail).toMatch(/RESEND_LOOKUP_internal_server_error/);
+    await runTransactionalEmailRetry({ now: () => paris('2035-02-15', 10, 45), limit: 500 });
+    expect(mailsOfJob(d.job.id)).toHaveLength(1);
+    mail.getFail.clear();
+
+    // e) Absence ÉTABLIE après recherche complète (Resend n'a rien accepté) : reprise contrôlée, un seul e-mail.
+    const e = await titulaire({ end: paris('2035-02-22', 10) });
+    await run(paris('2035-02-15', 8, 30));
+    const [je] = await jobsOf(e.subId);
+    mail.next.push('error-500-before');
+    await send(je.id, paris('2035-02-15', 8, 31));
+    bruit(e.email, 30, paris('2035-02-15', 8, 40));
+    expect(await send(je.id, paris('2035-02-16', 10, 40))).toMatchObject({ status: 'accepted' });
+    expect(mailsOfJob(je.id)).toHaveLength(1);
+    expect((await jobRow(je.id)).send_generation).toBe(1);
+
+    for (const id of [a.job.id, d.job.id]) await decideUncertainEmailJob(id, 'ABANDON', paris('2035-02-16', 11));
+  });
+
+  it('RJ7R-E2E-03 — rollback d’une demande pending à acceptation incertaine : incertitude préservée et visible, aucune réémission', async () => {
+    const service = await svc();
+    const { t, job } = await demandeIncertaine(paris('2035-03-20', 10), paris('2035-03-13', 8, 30));
+    const ready = await titulaire({ end: paris('2035-03-20', 11) });
+    await run(paris('2035-03-13', 8, 35));
+    const [jr] = await jobsOf(ready.subId);
+    const runner = await import('@/services/scheduling/scheduled-task-runner');
+    await runner.setTaskAdminDisabled(TASK, true, adminId);
+    const { POST } = await import('@/app/api/admin/communications/annual-renewal/route');
+    const res = await POST(req('/api/admin/communications/annual-renewal', { cookie: await adminCookie(), body: { action: 'rollback' } }));
+    expect(res.status).toBe(200);
+    const { result } = await res.json();
+    expect(result.phase).toBe('in_progress');
+    expect(result.uncertain).toBeGreaterThanOrEqual(1);
+    expect(blockersOf(result, job.id)).toEqual(['UNCERTAIN']);
+    // Demande jamais transmise : neutralisée sans envoi. Demande à acceptation incertaine : JAMAIS « annulée ».
+    expect(await jobRow(jr.id)).toMatchObject({ status: 'cancelled', last_error: 'ROLLBACK_NEUTRALIZED' });
+    const r = await jobRow(job.id);
+    expect(r).toMatchObject({ status: 'uncertain', provider_outcome: 'uncertain', last_error: 'ROLLBACK_UNCERTAIN' });
+    expect(r.neutralized_at).not.toBeNull();
+    const [k] = await sql<{ history: Array<{ step: string }> }[]>`SELECT history FROM annual_renewal_reminder_checks WHERE job_id = ${job.id}`;
+    expect(k.history.map((h) => h.step)).toEqual(['ROLLBACK', 'ENQUEUE']); // historique avant / après conservé
+
+    const ov = await service.getAnnualRenewalOverview(paris('2035-03-13', 9));
+    expect(ov.anomalies.some((x) => x.jobId === job.id && x.state === 'UNCERTAIN' && x.neutralized === true)).toBe(true);
+    expect(ov.recent.find((x) => x.jobId === jr.id)?.state).toBe('NEUTRALIZED');
+    expect(ov.rollback).toMatchObject({ status: 'in_progress' });
+    expect(blockersOf(ov.rollback!, job.id)).toEqual(['UNCERTAIN']);
+
+    // Aucune réémission : ni la file, ni un envoi ciblé, ni la décision « réémettre ».
+    const { runTransactionalEmailRetry, processEmailJob } = await jobs();
+    await runTransactionalEmailRetry({ now: () => paris('2035-03-14', 12), limit: 500 });
+    expect(await processEmailJob(job.id, paris('2035-03-14', 12, 1))).toMatchObject({ status: 'busy' });
+    const reissue = await POST(req('/api/admin/communications/annual-renewal', { cookie: await adminCookie(), body: { action: 'job', jobId: job.id, decision: 'REISSUE' } }));
+    expect(reissue.status).toBe(409);
+    expect((await reissue.json()).code).toBe('NEUTRALIZED');
+    expect(mailsOfJob(job.id)).toHaveLength(1);
+    expect(mailsTo(ready.email)).toHaveLength(0);
+    // Finalisation impossible tant que l'incertitude n'est pas arbitrée.
+    expect(await service.finalizeAnnualRenewalRollback({ adminId, acknowledgeNotified: true, now: paris('2035-03-14', 12, 2) })).toMatchObject({ ok: false, code: 'BLOCKED' });
+    void t;
+
+    // Arbitrage explicite (« Abandonner ») : clos, l'incertitude reste tracée (jamais « annulé sans envoi »).
+    await arbitrerLesAutres([job.id], paris('2035-03-14', 12, 3));
+    expect((await POST(req('/api/admin/communications/annual-renewal', { cookie: await adminCookie(), body: { action: 'job', jobId: job.id, decision: 'ABANDON' } }))).status).toBe(200);
+    const p = await service.advanceAnnualRenewalRollback({ now: paris('2035-03-14', 12, 4) });
+    expect(p.phase).toBe('completed');
+    expect(await jobRow(job.id)).toMatchObject({ status: 'cancelled', provider_outcome: 'uncertain' });
+    const ov2 = await service.getAnnualRenewalOverview(paris('2035-03-14', 12, 5));
+    expect(ov2.recent.find((x) => x.jobId === job.id)?.state).toBe('CANCELLED_UNCERTAIN');
+    expect(ov2.rollback).toMatchObject({ status: 'completed', completionMode: 'auto' });
+  });
+
+  it('RJ7R-E2E-04 — rollback pendant un appel Resend : « en cours » jusqu’à résolution, puis arbitrage des échéances notifiées', async () => {
+    const service = await svc();
+    const t = await titulaire({ end: paris('2035-04-20', 10) });
+    await run(paris('2035-04-13', 8, 30));
+    const [job] = await jobsOf(t.subId);
+    let called!: () => void;
+    const callStarted = new Promise<void>((r) => { called = r; });
+    let release!: () => void;
+    mail.gate = new Promise<void>((r) => { release = r; });
+    mail.onSendStart = called;
+    const sending = send(job.id, paris('2035-04-13', 8, 31));
+    await callStarted; // appel Resend engagé
+    const runner = await import('@/services/scheduling/scheduled-task-runner');
+    await runner.setTaskAdminDisabled(TASK, true, adminId);
+    const rb = await service.rollbackToStripeReminders({ adminId, now: paris('2035-04-13', 8, 32) });
+    expect(rb.ok).toBe(true);
+    if (!rb.ok) return;
+    expect(rb.result.phase).toBe('in_progress');
+    expect(blockersOf(rb.result, job.id)).toEqual(['IN_FLIGHT']);
+    const p1 = await service.advanceAnnualRenewalRollback({ now: paris('2035-04-13', 8, 32) });
+    expect(p1.phase).toBe('in_progress');
+    expect(blockersOf(p1, job.id)).toEqual(['IN_FLIGHT']);
+    expect(await service.finalizeAnnualRenewalRollback({ adminId, acknowledgeNotified: true, now: paris('2035-04-13', 8, 32) })).toMatchObject({ ok: false, code: 'BLOCKED' });
+    // Une nouvelle bascule est refusée pendant le retour arrière.
+    expect(await service.declareStripeRemindersDisabled({ adminId, disabledAt: paris('2035-04-13', 8, 32), now: paris('2035-04-13', 8, 33) })).toMatchObject({ ok: false, code: 'ROLLBACK_IN_PROGRESS' });
+
+    release();
+    expect(await sending).toMatchObject({ status: 'accepted' });
+    await arbitrerLesAutres([job.id], paris('2035-04-13', 8, 33));
+    const p2 = await service.advanceAnnualRenewalRollback({ now: paris('2035-04-13', 8, 33) });
+    // Échéance déjà notifiée par Verebona : réactiver Stripe peut produire un second rappel → arbitrage explicite.
+    expect(p2.phase).toBe('in_progress');
+    expect(blockersOf(p2, job.id)).toEqual(['NOTIFIED']);
+    expect(await service.finalizeAnnualRenewalRollback({ adminId, acknowledgeNotified: false, now: paris('2035-04-13', 8, 34) })).toMatchObject({ ok: false, code: 'ACK_REQUIRED' });
+    const { POST } = await import('@/app/api/admin/communications/annual-renewal/route');
+    const fin = await POST(req('/api/admin/communications/annual-renewal', { cookie: await adminCookie(), body: { action: 'rollback-finalize', acknowledgeNotified: true } }));
+    expect(fin.status).toBe(200);
+    const st = (await service.getAnnualRenewalOverview(paris('2035-04-13', 8, 35))).rollback;
+    expect(st).toMatchObject({ status: 'completed', completionMode: 'admin_ack', completedBy: adminId });
+    expect(mailsOfJob(job.id)).toHaveLength(1);
+  });
+
+  it('RJ7R-E2E-05 — crash pendant le rollback / verrou expiré : réconciliation sans réémission ; incertitude bloque la fin', async () => {
+    const service = await svc();
+    const { decideUncertainEmailJob } = await jobs();
+    const a = await demandeIncertaine(paris('2035-05-20', 10), paris('2035-05-13', 8, 30));
+    const b = await demandeIncertaine(paris('2035-05-21', 10), paris('2035-05-14', 8, 30));
+    // Arrêt du processus pendant une reprise : demandes restées « sending », verrou expiré.
+    for (const j of [a.job, b.job]) await sql`UPDATE transactional_email_jobs SET status = 'sending', locked_until = ${paris('2035-05-14', 8, 40).toISOString()} WHERE id = ${j.id}`;
+    const runner = await import('@/services/scheduling/scheduled-task-runner');
+    await runner.setTaskAdminDisabled(TASK, true, adminId);
+    const rb = await service.rollbackToStripeReminders({ adminId, now: paris('2035-05-14', 9) });
+    if (!rb.ok) throw new Error('rollback refusé');
+    expect(blockersOf(rb.result, a.job.id)).toEqual(['TO_RECONCILE']);
+    // Le verrou expiré ne permet ni reprise par la file ni envoi ciblé.
+    const { runTransactionalEmailRetry, processEmailJob } = await jobs();
+    await runTransactionalEmailRetry({ now: () => paris('2035-05-14', 9, 1), limit: 500 });
+    expect(await processEmailJob(a.job.id, paris('2035-05-14', 9, 1))).toMatchObject({ status: 'busy' });
+    // Réconciliation (consultation seule) : a retrouvé chez Resend ; b consultation en échec → incertain.
+    mail.getFail.add(mailsOfJob(b.job.id)[0].id);
+    await arbitrerLesAutres([a.job.id, b.job.id], paris('2035-05-14', 9, 14));
+    const p = await service.advanceAnnualRenewalRollback({ now: paris('2035-05-14', 9, 15) });
+    expect(await jobRow(a.job.id)).toMatchObject({ status: 'accepted', provider_outcome: 'reconciled' });
+    expect(await jobRow(b.job.id)).toMatchObject({ status: 'uncertain', provider_outcome: 'uncertain' });
+    expect(blockersOf(p, a.job.id)).toEqual(['NOTIFIED']);
+    expect(blockersOf(p, b.job.id)).toEqual(['UNCERTAIN']);
+    expect(await service.finalizeAnnualRenewalRollback({ adminId, acknowledgeNotified: true, now: paris('2035-05-14', 9, 16) })).toMatchObject({ ok: false, code: 'BLOCKED' });
+    // « Vérifier de nouveau » : consultation seulement, toujours incertain, jamais d'envoi.
+    expect(await decideUncertainEmailJob(b.job.id, 'RECHECK', paris('2035-05-14', 9, 17))).toMatchObject({ ok: true });
+    await service.advanceAnnualRenewalRollback({ now: paris('2035-05-14', 9, 18) });
+    expect((await jobRow(b.job.id)).status).toBe('uncertain');
+    for (const j of [a.job, b.job]) expect(mailsOfJob(j.id)).toHaveLength(1);
+    mail.getFail.clear();
+    // Arbitrage : b abandonné ; a notifiée → fin avec arbitrage explicite.
+    expect(await decideUncertainEmailJob(b.job.id, 'ABANDON', paris('2035-05-14', 9, 19))).toMatchObject({ ok: true });
+    expect(await service.finalizeAnnualRenewalRollback({ adminId, acknowledgeNotified: true, now: paris('2035-05-14', 9, 20) })).toMatchObject({ ok: true });
+
+    // Bascule redéclarée plus tard et tâche réactivée : aucune demande neutralisée n'est réémise.
+    expect(await service.declareStripeRemindersDisabled({ adminId, disabledAt: paris('2035-05-15', 7), now: paris('2035-05-15', 7, 5) })).toMatchObject({ ok: true });
+    await runner.setTaskAdminDisabled(TASK, false, adminId);
+    await run(paris('2035-05-15', 8, 30));
+    await runTransactionalEmailRetry({ now: () => paris('2035-05-15', 8, 31), limit: 500 });
+    for (const j of [a.job, b.job]) expect(mailsOfJob(j.id)).toHaveLength(1);
+    expect(await jobsOf(b.t.subId)).toHaveLength(1);
+  });
+
+  it('RJ7R-E2E-06 — rollback concurrent avec une reprise de file et un second rollback : neutralisation respectée, état final cohérent', async () => {
+    const service = await svc();
+    const { runTransactionalEmailRetry, processEmailJob, decideUncertainEmailJob } = await jobs();
+    const c1 = await titulaire({ end: paris('2035-06-20', 10) });
+    const c2 = await titulaire({ end: paris('2035-06-20', 11) });
+    const c3 = await demandeIncertaine(paris('2035-06-20', 12), paris('2035-06-13', 8, 30));
+    await run(paris('2035-06-13', 8, 35));
+    const [j1] = await jobsOf(c1.subId);
+    const [j2] = await jobsOf(c2.subId);
+    let called!: () => void;
+    const callStarted = new Promise<void>((r) => { called = r; });
+    let release!: () => void;
+    mail.gate = new Promise<void>((r) => { release = r; });
+    mail.onSendStart = called;
+    const sending = send(j1.id, paris('2035-06-13', 8, 36));
+    await callStarted;
+    const runner = await import('@/services/scheduling/scheduled-task-runner');
+    await runner.setTaskAdminDisabled(TASK, true, adminId);
+    // Consultation Resend indisponible : l'issue de c3 reste incertaine quel que soit l'ordre d'exécution.
+    mail.listForbidden = true;
+    const at = paris('2035-06-13', 8, 37);
+    const [r1, r2] = await Promise.all([
+      service.rollbackToStripeReminders({ adminId, now: at }),
+      service.rollbackToStripeReminders({ adminId, now: at }),
+      runTransactionalEmailRetry({ now: () => at, limit: 500 }),
+      runTransactionalEmailRetry({ now: () => at, limit: 500 }),
+      processEmailJob(j2.id, at),
+      processEmailJob(c3.job.id, at),
+      service.advanceAnnualRenewalRollback({ now: at }),
+      decideUncertainEmailJob(c3.job.id, 'RECHECK', at),
+    ]);
+    expect(r1.ok && r2.ok).toBe(true);
+    release();
+    expect(await sending).toMatchObject({ status: 'accepted' });
+    await service.advanceAnnualRenewalRollback({ now: paris('2035-06-13', 8, 45) });
+    const [st] = await sql<{ rollback_status: string; stripe_reminders_disabled_at: Date | null }[]>`SELECT rollback_status, stripe_reminders_disabled_at FROM annual_renewal_reminder_state WHERE id = 1`;
+    expect(st).toMatchObject({ rollback_status: 'in_progress', stripe_reminders_disabled_at: null });
+    expect(await jobRow(j1.id)).toMatchObject({ status: 'accepted' });
+    const r2row = await jobRow(j2.id);
+    expect(r2row).toMatchObject({ status: 'cancelled', last_error: 'ROLLBACK_NEUTRALIZED' });
+    expect(r2row.neutralized_at).not.toBeNull();
+    expect((await jobRow(c3.job.id)).status).toBe('uncertain');
+    // Reprises répétées : rien ne repart.
+    for (let i = 0; i < 3; i += 1) await runTransactionalEmailRetry({ now: () => paris('2035-06-13', 9 + i), limit: 500 });
+    expect(mailsOfJob(j1.id)).toHaveLength(1);
+    expect(mailsTo(c2.email)).toHaveLength(0);
+    expect(mailsOfJob(c3.job.id)).toHaveLength(1);
+    mail.listForbidden = false;
+    await decideUncertainEmailJob(c3.job.id, 'ABANDON', paris('2035-06-13', 12));
+    await arbitrerLesAutres([], paris('2035-06-13', 12));
+    expect(await service.finalizeAnnualRenewalRollback({ adminId, acknowledgeNotified: true, now: paris('2035-06-13', 12, 1) })).toMatchObject({ ok: true });
+  });
+
+  it('RJ7R-E2E-07 — autres e-mails transactionnels pendant la suspension et le rollback : aucun blocage', async () => {
+    const service = await svc();
+    const pend = await demandeIncertaine(paris('2035-07-20', 10), paris('2035-07-13', 8, 30));
+    const runner = await import('@/services/scheduling/scheduled-task-runner');
+    await runner.setTaskAdminDisabled(TASK, true, adminId);
+    const rb = await service.rollbackToStripeReminders({ adminId, now: paris('2035-07-13', 9) });
+    expect(rb.ok && rb.result.phase).toBe('in_progress');
+    const verifEmail = `verif-76d-${uid('l76')}@test.invalid`;
+    const u = await make.user({ email: verifEmail });
+    await sql`UPDATE users SET is_active = false, first_name = 'Vera' WHERE id = ${u.id}`;
+    const { enqueueVerificationEmail } = await jobs();
+    const v = await enqueueVerificationEmail({ userId: u.id, email: verifEmail });
+    // Tâche planifiée réelle (file + contrôle du retour arrière) : l'e-mail de vérification part.
+    const { SCHEDULED_TASKS } = await import('@/services/scheduling/scheduled-tasks.catalog');
+    const task = SCHEDULED_TASKS.find((x) => x.code === 'transactional-emails-retry')!;
+    mail.clock = new Date();
+    await task.run({ deadline: Date.now() + 30_000 } as never);
+    expect(mailsTo(verifEmail)).toHaveLength(1);
+    const [vj] = await sql<{ status: string }[]>`SELECT status FROM transactional_email_jobs WHERE id = ${v.jobId}`;
+    expect(vj.status).toBe('accepted');
+    expect(mailsOfJob(pend.job.id)).toHaveLength(1);
+    expect((await jobRow(pend.job.id)).status).toBe('uncertain');
+    await (await jobs()).decideUncertainEmailJob(pend.job.id, 'ABANDON', paris('2035-07-13', 10));
+  });
+
+  it('RJ7R-E2E-08 — local actif, Stripe past_due / unpaid / canceled / paused : divergence détectée, synchronisation vérifiée, aucun rappel', async () => {
+    const { runAnnualRenewalReconciliation } = await import('@/services/billing/annual-renewal-reconcile.service');
+    const cas = {} as Record<'past_due' | 'unpaid' | 'canceled' | 'paused', Awaited<ReturnType<typeof titulaire>>>;
+    let h = 9;
+    for (const s of ['past_due', 'unpaid', 'canceled', 'paused'] as const) {
+      const t = await titulaire({ end: paris('2035-08-20', h++) });
+      (etat.subs.get(t.subId) as unknown as { status: string }).status = s;
+      cas[s] = t;
+    }
+    const r = await runAnnualRenewalReconciliation({ now: paris('2035-08-13', 7, 45), stripe: fakeStripe as never, deadline: Date.now() + 60_000 });
+    expect(r.complete).toBe(true);
+    const local = async (id: number) => (await sql<{ status: string }[]>`SELECT status FROM account_subscriptions WHERE account_id = ${id}`)[0].status;
+    expect(await local(cas.past_due.id)).toBe('past_due');
+    expect(await local(cas.unpaid.id)).toBe('canceled');
+    expect(await local(cas.canceled.id)).toBe('canceled');
+    const outcome = async (subId: string) => (await sql<{ outcome: string; reason: string }[]>`SELECT outcome, reason FROM annual_renewal_reminder_checks WHERE stripe_subscription_id = ${subId} AND candidate_key LIKE 'annual-renewal-reminder:%'`)[0];
+    for (const s of ['past_due', 'unpaid', 'canceled'] as const) expect(await outcome(cas[s].subId)).toMatchObject({ outcome: 'DESYNC_RESYNCED', reason: expect.stringContaining('STATUS') });
+    // paused : subscription-sync n'écrit pas cet état → divergence PERSISTANTE journalisée.
+    expect(await outcome(cas.paused.subId)).toMatchObject({ outcome: 'DESYNC_UNRESOLVED', reason: expect.stringContaining('STATUS') });
+    await run(paris('2035-08-13', 8, 30));
+    for (const s of Object.values(cas)) expect(await jobsOf(s.subId)).toHaveLength(0);
+    for (const s of Object.values(cas)) etat.subs.delete(s.subId);
+  });
+
+  it('RJ7R-E2E-09 — erreur Stripe dans le parcours inverse : trace individuelle persistante, BO, reprise qui clôt en conservant l’historique', async () => {
+    const service = await svc();
+    const { runAnnualRenewalReconciliation, describeReconcileRun } = await import('@/services/billing/annual-renewal-reconcile.service');
+    const t = await titulaire({ end: paris('2035-09-20', 10) });
+    (etat.subs.get(t.subId) as unknown as { status: string }).status = 'past_due';
+    etat.failRetrieve.set(t.subId, Object.assign(new Error('Invalid API Key provided: sk_live_76dSECRET1234 (https://billing.stripe.com/p/session/test_76d)'), { type: 'StripeAuthenticationError', statusCode: 401 }));
+    const r = await runAnnualRenewalReconciliation({ now: paris('2035-09-13', 7, 45), stripe: fakeStripe as never, deadline: Date.now() + 60_000 });
+    expect(r.errors).toBeGreaterThanOrEqual(1);
+    expect(describeReconcileRun(r).error).toBeTruthy(); // jamais présenté comme une réconciliation complète réussie
+    const [k] = await sql<{ candidate_key: string; outcome: string; account_id: number; renewal_date: string; renewal_date_verified: boolean; step: string; reason: string; last_checked_at: Date; next_check_at: Date; history: unknown[] }[]>`
+      SELECT candidate_key, outcome, account_id, renewal_date::text, renewal_date_verified, step, reason, last_checked_at, next_check_at, history
+        FROM annual_renewal_reminder_checks WHERE stripe_subscription_id = ${t.subId} AND outcome = 'RECONCILE_ERROR'`;
+    expect(k).toMatchObject({ account_id: t.id, renewal_date: '2035-09-20', renewal_date_verified: false, step: 'RECONCILE_REVERSE' });
+    expect(new Date(k.last_checked_at).toISOString()).toBe(paris('2035-09-13', 7, 45).toISOString());
+    expect(new Date(k.next_check_at).toISOString()).toBe(paris('2035-09-14', 7, 40).toISOString());
+    expect(k.reason).toMatch(/StripeAuthenticationError/);
+    expect(k.reason).not.toMatch(/sk_live_76dSECRET|billing\.stripe\.com/);
+    const ov = await service.getAnnualRenewalOverview(paris('2035-09-13', 9));
+    const an = ov.anomalies.find((x) => x.key === k.candidate_key);
+    expect(an).toMatchObject({ state: 'RECONCILE_ERROR', accountId: t.id, renewalDate: '2035-09-20', nextAt: paris('2035-09-14', 7, 40).toISOString() });
+    const { GET } = await import('@/app/api/admin/communications/email-logs/route');
+    const txt = JSON.stringify(await (await GET(req('/api/admin/communications/email-logs?annualRenewal=1', { method: 'GET', cookie: await adminCookie() }))).json());
+    expect(txt).toContain(k.candidate_key);
+    expect(txt).not.toMatch(/sk_live_76dSECRET|billing\.stripe\.com/);
+
+    // Reprise réussie le lendemain : anomalie close, historique conservé, synchronisation effectuée.
+    etat.failRetrieve.delete(t.subId);
+    await runAnnualRenewalReconciliation({ now: paris('2035-09-14', 7, 45), stripe: fakeStripe as never, deadline: Date.now() + 60_000 });
+    const [k2] = await sql<{ outcome: string; history: Array<{ outcome: string }> }[]>`SELECT outcome, history FROM annual_renewal_reminder_checks WHERE candidate_key = ${k.candidate_key}`;
+    expect(k2.outcome).toBe('RECONCILE_RESOLVED');
+    expect(k2.history.map((x) => x.outcome)).toEqual(['RECONCILE_RESOLVED', 'RECONCILE_ERROR']);
+    expect((await service.getAnnualRenewalOverview(paris('2035-09-14', 9))).anomalies.some((x) => x.key === k.candidate_key)).toBe(false);
+    const [l] = await sql<{ status: string }[]>`SELECT status FROM account_subscriptions WHERE account_id = ${t.id}`;
+    expect(l.status).toBe('past_due');
+    etat.subs.delete(t.subId);
+  });
+
+  it('RJ7R-E2E-10 — migration 0585 rejouée sur un retour arrière antérieur (lot 72F) : incertitudes rendues visibles, phase « en cours », idempotente', async () => {
+    const service = await svc();
+    const { t, job } = await demandeIncertaine(paris('2035-10-20', 10), paris('2035-10-13', 8, 30));
+    // État laissé par l'ancien code : demande incertaine « annulée », retour arrière sans phase.
+    await sql`UPDATE transactional_email_jobs SET status = 'cancelled', last_error = 'ROLLBACK_NEUTRALIZED', neutralized_at = NULL WHERE id = ${job.id}`;
+    await sql`UPDATE annual_renewal_reminder_state SET stripe_reminders_disabled_at = NULL, rollback_at = ${paris('2035-10-13', 9).toISOString()}, rollback_status = NULL WHERE id = 1`;
+    const { readFileSync } = await import('node:fs');
+    const mig = readFileSync('src/db/migrations/0585_l76d_rappel_j7_rollback.sql', 'utf8');
+    for (let i = 0; i < 2; i += 1) await sql.begin(async (tx) => { await tx.unsafe(mig); }); // rejouée deux fois : idempotente
+    const r = await jobRow(job.id);
+    expect(r).toMatchObject({ status: 'uncertain', last_error: 'ROLLBACK_UNCERTAIN', provider_outcome: 'uncertain' });
+    expect(r.neutralized_at).not.toBeNull();
+    const ov = await service.getAnnualRenewalOverview(paris('2035-10-13', 10));
+    expect(ov.rollback?.status).toBe('in_progress');
+    expect(blockersOf(ov.rollback!, job.id)).toEqual(['UNCERTAIN']);
+    expect(await service.declareStripeRemindersDisabled({ adminId, disabledAt: paris('2035-10-13', 10), now: paris('2035-10-13', 10, 1) })).toMatchObject({ ok: false, code: 'ROLLBACK_IN_PROGRESS' });
+    const { decideUncertainEmailJob, runTransactionalEmailRetry } = await jobs();
+    await runTransactionalEmailRetry({ now: () => paris('2035-10-14', 10), limit: 500 });
+    expect(mailsOfJob(job.id)).toHaveLength(1);
+    await decideUncertainEmailJob(job.id, 'ABANDON', paris('2035-10-14', 10, 1));
+    await arbitrerLesAutres([job.id], paris('2035-10-14', 10, 1));
+    expect((await service.advanceAnnualRenewalRollback({ now: paris('2035-10-14', 10, 2) })).phase).toBe('completed');
+    void t;
   });
 });
