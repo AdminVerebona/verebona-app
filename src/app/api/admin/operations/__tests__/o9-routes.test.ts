@@ -69,18 +69,43 @@ function routeFiles(dir: string): string[] {
   });
 }
 
-describe('O9-R02 / F-182 / INV-032 : aucune écriture possible via ces routes', () => {
+/**
+ * EXCEPTION UNIQUE à la lecture seule (lot 79A, décision PO du 22/10/2026) :
+ * `[id]/identity-reviews/[reviewId]/restore` — « Rétablir » une séparation
+ * automatique d'identité économique (lot 78A). POST seul, garde admin, motif
+ * obligatoire, journalisé ; il n'appelle QUE `revertIdentitySeparation`
+ * (décision de rapprochement ADMIN_REVIEW réappliquée par T3) : aucune
+ * valeur d'Opération n'est saisie. Toute autre écriture reste interdite.
+ */
+const RESTORE_ROUTE = '[id]/identity-reviews/[reviewId]/restore/route.ts';
+
+describe('O9-R02 / F-182 / INV-032 : aucune écriture possible via ces routes (seule exception : L79A « Rétablir »)', () => {
   const root = join(process.cwd(), 'src/app/api/admin/operations');
   const files = routeFiles(root);
-  it('cinq routes (lot 61 : diagnostic TCO), GET seulement, garde admin, aucun import d’écriture', () => {
-    expect(files.map((f) => relative(root, f).split(sep).join('/')).sort()).toEqual(['[id]/route.ts', 'holds/route.ts', 'indicators/route.ts', 'route.ts', 'tco/route.ts']);
+  const rel = (f: string) => relative(root, f).split(sep).join('/');
+  it('cinq routes de lecture (lot 61 : diagnostic TCO) + la route L79A ; GET seulement hors exception, garde admin, aucun import d’écriture', () => {
+    expect(files.map(rel).sort()).toEqual(['[id]/identity-reviews/[reviewId]/restore/route.ts', '[id]/route.ts', 'holds/route.ts', 'indicators/route.ts', 'route.ts', 'tco/route.ts']);
     for (const f of files) {
       const src = readFileSync(f, 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
       const methods = [...src.matchAll(/export\s+(?:async\s+)?function\s+(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\b/g)].map((m) => m[1]);
-      expect(methods, f).toEqual(['GET']);
+      expect(methods, f).toEqual(rel(f) === RESTORE_ROUTE ? ['POST'] : ['GET']);
       expect(src).toMatch(/requireAdmin\(request\)/);
       expect(src).not.toMatch(/business-operations\/(write|repository)|pgClient|@\/db/);
     }
+  });
+
+  it('L79A-Q9 — l’exception n’écrit QUE par `revertIdentitySeparation` (aucune autre écriture importée), motif validé, journalisée', () => {
+    const src = readFileSync(join(root, RESTORE_ROUTE), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+    const services = [...src.matchAll(/from '(@\/services\/[^']+)'/g)].map((m) => m[1]).sort();
+    expect(services).toEqual([
+      '@/services/business-operations/consolidation/identity-review',
+      '@/services/business-operations/diagnostics/model',
+      '@/services/business-operations/identity-restore.model',
+    ]);
+    expect(src).toMatch(/revertIdentitySeparation\(reviewId, \{ adminId, adminEmail, operationId, reason \}\)/);
+    expect(src).toMatch(/normalizeRestoreReason\(body\?\.reason\)/);
+    expect(src).toContain('logAdminAction');
+    expect(src).not.toMatch(/\b(INSERT|UPDATE|DELETE)\b/);
   });
 
   it('les méthodes d’écriture répondent 405 (aucun handler exporté)', () => {

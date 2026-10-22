@@ -139,12 +139,16 @@ export type AdminActionType =
   | 'TECH_DIAGNOSTIC_EXPORT'
   // Lot 78C : BO › Supervision — reprise explicite des évaluations T6 en
   // échec, en attente d'essai ou indisponibles d'un compte (nombre relancé).
-  | 'T6_EVALUATION_RETRY';
+  | 'T6_EVALUATION_RETRY'
+  // Lot 79A : BO › Opérations › détail — « Rétablir » une séparation
+  // automatique d'identité économique (lot 78A) : seule exception à la lecture
+  // seule du détail (Q9). Motif, identifiant de séparation, avant / après.
+  | 'OPERATION_IDENTITY_RESTORE';
 
 export type AdminTargetType = 'ACCOUNT' | 'USER' | 'EXPORT_TEMPLATE' | 'COMMUNICATION_CHANNEL' | 'ANOMALY' | 'GDPR_REQUEST'
   | 'ASSISTANT_SETTING' | 'ASSISTANT_REQUEST' | 'NOTIFICATION' | 'AI_CACHE' | 'AI_METRICS'
   | 'OPS_BACKFILL' | 'SCHEDULED_TASK' | 'AI_EXECUTION' | 'STRIPE_CATALOG' | 'EMAIL_LOG' | 'AI_EXECUTION_REPORT' | 'EMAIL_SETTINGS'
-  | 'EMAIL_TEMPLATE' | 'ANNUAL_RENEWAL' | 'TECH_DIAGNOSTIC';
+  | 'EMAIL_TEMPLATE' | 'ANNUAL_RENEWAL' | 'TECH_DIAGNOSTIC' | 'OPERATION_IDENTITY_REVIEW';
 
 type Executor = Pick<typeof db, 'insert' | 'select'>;
 

@@ -15,13 +15,15 @@ import {
   type PushPermission,
 } from '@/lib/push/push-client';
 
-interface ChannelState { enabled: boolean; locked: boolean }
+interface ChannelState { enabled: boolean; locked: boolean; available?: boolean }
 interface CategoryPref {
   key: string;
   label: string;
   description: string;
   immediate: { push: ChannelState; email: ChannelState };
   digest?: { push: ChannelState; email: ChannelState };
+  /** Lot 79C : ce que contrôle le réglage e-mail, et ce qui part toujours. */
+  emailScope?: { essential: string[]; optional: string[] };
 }
 interface Matrix {
   categories: CategoryPref[];
@@ -165,7 +167,9 @@ export default function NotificationsSettingsPage() {
   // plus un consentement distinct).
   const pushDemande = Boolean(
     matrix?.categories.some(
-      (c) => c.key !== 'news' && (c.immediate.push.enabled || c.digest?.push.enabled),
+      (c) => c.key !== 'news'
+        && ((c.immediate.push.available !== false && c.immediate.push.enabled)
+          || (c.digest?.push.available !== false && c.digest?.push.enabled)),
     ),
   );
 
@@ -243,7 +247,7 @@ export default function NotificationsSettingsPage() {
         <Card>
           <CardHeader>
             <CardTitle>Mes préférences</CardTitle>
-            <CardDescription>Par catégorie, choisissez de recevoir un push et/ou un email.</CardDescription>
+            <CardDescription>Par catégorie, choisissez de recevoir un push et/ou un email pour les messages facultatifs. Les messages indispensables (sécurité, paiement, décisions qui vous attendent) sont toujours envoyés.</CardDescription>
           </CardHeader>
           <CardContent className="space-y-1">
             {/* ══════════════════════════════════════════════════════════════
@@ -281,6 +285,7 @@ export default function NotificationsSettingsPage() {
                       <div className="min-w-0">
                         <p className="font-medium">{cat.label}</p>
                         <p className="mt-0.5 text-sm text-muted-foreground">{cat.description}</p>
+                        {cat.key !== 'news' && <EmailScopeText scope={cat.emailScope} emailAvailable={(cat.digest ?? cat.immediate).email.available !== false} />}
                       </div>
                       {cat.key === 'news' ? (
                         <Switch
@@ -311,14 +316,17 @@ export default function NotificationsSettingsPage() {
                     {/* « À traiter » : immédiat + récapitulatif, jamais dans la cloche */}
                     {cat.digest && (
                       <div className="mt-3 space-y-3 rounded-md border border-border/60 p-3">
+                        {/* Lot 79C : plus d'alerte immédiate pour un élément ordinaire — non proposée. */}
+                        {(cat.immediate.push.available !== false || cat.immediate.email.available !== false) && (
+                          <SubToggleRow
+                            title="Immédiatement lorsqu'un nouvel élément apparaît"
+                            push={cat.immediate.push} email={cat.immediate.email}
+                            onPush={(v) => toggle(cat.key, 'immediate', 'push', v)}
+                            onEmail={(v) => toggle(cat.key, 'immediate', 'email', v)}
+                          />
+                        )}
                         <SubToggleRow
-                          title="Immédiatement lorsqu'un nouvel élément apparaît"
-                          push={cat.immediate.push} email={cat.immediate.email}
-                          onPush={(v) => toggle(cat.key, 'immediate', 'push', v)}
-                          onEmail={(v) => toggle(cat.key, 'immediate', 'email', v)}
-                        />
-                        <SubToggleRow
-                          title="Récapitulatif quotidien à 8 h 30"
+                          title="Récapitulatif quotidien à 8 h 30, seulement s'il y a du nouveau"
                           push={cat.digest.push} email={cat.digest.email}
                           onPush={(v) => toggle(cat.key, 'daily_digest', 'push', v)}
                           onEmail={(v) => toggle(cat.key, 'daily_digest', 'email', v)}
@@ -375,7 +383,10 @@ function ChannelToggle({ label, state, onChange }: { label: string; state: Chann
   return (
     <div className="flex flex-col items-center gap-1">
       <span className="text-xs text-muted-foreground">{label}</span>
-      {state.locked ? (
+      {state.available === false ? (
+        // Lot 79C : canal supprimé pour ce réglage — non proposé.
+        <span className="flex h-6 items-center text-xs text-muted-foreground" aria-label={`${label} non proposé`}>—</span>
+      ) : state.locked ? (
         <Tooltip>
           <TooltipTrigger asChild>
             <span className="inline-flex items-center gap-1">
@@ -385,12 +396,34 @@ function ChannelToggle({ label, state, onChange }: { label: string; state: Chann
           </TooltipTrigger>
           <TooltipContent className="max-w-[220px] text-center">
             <span className="flex items-center gap-1"><ShieldCheck className="h-3 w-3" /> Obligatoire</span>
-            Cet email est toujours envoyé pour les décisions, la sécurité et les paiements.
+            Tous les e-mails de cette catégorie sont indispensables et toujours envoyés.
           </TooltipContent>
         </Tooltip>
       ) : (
         <Switch checked={state.enabled} onCheckedChange={onChange} aria-label={label} />
       )}
+    </div>
+  );
+}
+
+/**
+ * Lot 79C : ce que contrôle le réglage e-mail de la catégorie, et les
+ * e-mails indispensables qui partent toujours (décision réelle du moteur).
+ */
+function EmailScopeText({ scope, emailAvailable }: { scope?: { essential: string[]; optional: string[] }; emailAvailable: boolean }) {
+  if (!scope) return null;
+  return (
+    <div className="mt-1.5 space-y-0.5 text-xs text-muted-foreground">
+      {emailAvailable && scope.optional.length > 0 && (
+        <p>Le réglage Email concerne : {scope.optional.join(', ')}.</p>
+      )}
+      {scope.essential.length > 0 && (
+        <p className="flex items-start gap-1">
+          <ShieldCheck className="mt-0.5 h-3 w-3 shrink-0" aria-hidden />
+          <span>Toujours envoyés par email (indispensables) : {scope.essential.join(', ')}.</span>
+        </p>
+      )}
+      {!emailAvailable && scope.essential.length === 0 && <p>Aucun email pour cette catégorie.</p>}
     </div>
   );
 }

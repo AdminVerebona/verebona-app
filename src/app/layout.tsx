@@ -3,8 +3,11 @@ import { ReactNode } from 'react';
 import { Viewport, Metadata } from 'next';
 import { ClientShell } from '@/components/ClientShell';
 import { THEME_PAGE_COLOR, themeBootScript } from '@/lib/theme';
+import { PWA_APPLE_TOUCH_ICON_180, PWA_ICON_ANY_192, PWA_ICON_ANY_512 } from '@/lib/pwa/icons';
 
-/** Version des icônes (favicon, apple-touch) : à incrémenter à chaque refonte. */
+/** Version des favicons (onglet du navigateur) : à incrémenter à chaque refonte.
+ * Les icônes de l'application installée (apple-touch, Android) ont des noms
+ * versionnés : src/lib/pwa/icons.ts (lot 79B). */
 const ICONS_VERSION = '71h';
 
 export const metadata: Metadata = {
@@ -30,12 +33,15 @@ export const metadata: Metadata = {
       { url: `/favicon-128x128.png?v=${ICONS_VERSION}`, sizes: '128x128', type: 'image/png' },
       { url: `/favicon-256x256.png?v=${ICONS_VERSION}`, sizes: '256x256', type: 'image/png' },
     ],
+    // Lot 79B : apple-touch-icon 180 × 180 opaque, coins carrés (iOS applique
+    // son masque), nom versionné (plus de `?v=` : iOS mémorise l'URL exacte).
+    // Déclaré ici seulement : toutes les pages héritent du layout racine.
     apple: [
-      { url: `/apple-touch-icon-v2.png?v=${ICONS_VERSION}`, sizes: '180x180', type: 'image/png' },
+      { url: PWA_APPLE_TOUCH_ICON_180, sizes: '180x180', type: 'image/png' },
     ],
     other: [
-      { rel: 'android-chrome', url: `/android-chrome-192x192.png?v=${ICONS_VERSION}`, sizes: '192x192' },
-      { rel: 'android-chrome', url: `/android-chrome-512x512.png?v=${ICONS_VERSION}`, sizes: '512x512' },
+      { rel: 'android-chrome', url: PWA_ICON_ANY_192, sizes: '192x192' },
+      { rel: 'android-chrome', url: PWA_ICON_ANY_512, sizes: '512x512' },
     ],
   },
   appleWebApp: {

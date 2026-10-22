@@ -70,7 +70,8 @@ import { applyAssetExclusions, exclusionsTableReady, loadActiveExclusions } from
 import { footprintOfIdentity, type OperationMember } from './economic-identity';
 import { needsEconomicMembers } from './matching';
 import {
-  IDENTITY_REVIEW_PENDING_SQL, IDENTITY_REVIEW_VERSION, listOpenSuspectFiles, recordIdentityReviews, requestIdentityReview, type IdentityReviewEntry,
+  IDENTITY_REVIEW_PENDING_SQL, IDENTITY_REVIEW_VERSION, listOpenSuspectFiles, loadAdminRestoredSourceIds, recordIdentityReviews, requestIdentityReview,
+  splitArbitratedConflicts, type IdentityReviewEntry,
 } from './identity-review';
 import { computeProvenance, type AttributeProvenance, type ComponentEvidence } from './model';
 
@@ -420,6 +421,8 @@ export async function loadOperationMembers(
        WHERE s.account_id = ${accountId} AND s.active AND s.operation_id = ANY(${intArray(ids)}::bigint[])
     ) x WHERE geree AND rang <= ${IDENTITY_MEMBERS_SOURCE_LIMIT} ORDER BY operation_id, id`);
   for (const id of ids) out.set(id, { members: [], ownMethod: null, ownSolo: false });
+  // Lot 79A : une source rétablie au BO (décision ADMIN_REVIEW) ne met plus en doute un rattachement existant.
+  const rattachees = new Set<number>();
   const fondatrices = new Map<number, number>();
   for (const x of r) {
     const opId = Number(x.operation_id);
@@ -432,6 +435,7 @@ export async function loadOperationMembers(
     if (estPropre) {
       info.ownMethod = (x.match_method as MatchMethodCode | null) ?? null;
       info.ownSolo = Number(x.n_actives) === 1;
+      rattachees.add(opId);
       continue;
     }
     const src: OpSource = {
@@ -441,6 +445,10 @@ export async function loadOperationMembers(
     const c = await contributionOf(tx, accountId, src);
     if (!c || !('identity' in c)) continue;
     info.members.push({ sourceId: src.id, footprint: footprintOfIdentity(c.identity), anchor: fondatrices.get(opId) === src.id });
+  }
+  if (rattachees.size) {
+    const admin = await loadAdminRestoredSourceIds(tx, accountId, [...rattachees]);
+    if (admin.size) for (const opId of rattachees) { const info = out.get(opId)!; info.members = info.members.filter((m) => !admin.has(m.sourceId)); }
   }
   return out;
 }
@@ -771,9 +779,13 @@ export async function reconsolidateOperation(
   const apres = await repo.load(operationId, { allowInactive: true });
   const label = apres.technicalLabel === null ? undefined
     : contributions.find((c) => c.identity.summary.slice(0, 200) === apres.technicalLabel);
+  // Lot 79A : une contradiction due SEULEMENT à une source rétablie au BO est arbitrée (tracée à part, hors anomalie).
+  const conflits = state.attributeConflicts.length
+    ? splitArbitratedConflicts(state.attributeConflicts, await loadAdminRestoredSourceIds(tx, accountId, [operationId]))
+    : { open: state.attributeConflicts, arbitrated: [] };
   await writeAttributeProvenance(tx, accountId, operationId, {
     ...state.provenance, ...(label && apres.technicalLabel ? { label: { sourceId: label.sourceId, value: apres.technicalLabel } } : {}),
-  }, state.attributeConflicts);
+  }, conflits.open, conflits.arbitrated);
   // Lot 55B (E) : dernière réconciliation RÉELLEMENT effectuée (ni historique, ni version).
   await repo.markReconciled(operationId);
 }
@@ -785,6 +797,8 @@ export interface StoredAttributeProvenance {
   version: 1;
   fields: AttributeProvenance & { label?: { sourceId: number; value: string } };
   conflicts: ReturnType<typeof consolidateOperationState>['attributeConflicts'];
+  /** Lot 79A : contradictions arbitrées par un rétablissement BO (ADMIN_REVIEW) — absentes si aucune. */
+  arbitratedConflicts?: ReturnType<typeof consolidateOperationState>['attributeConflicts'];
 }
 
 let provenancePrete: boolean | null = null;
@@ -831,9 +845,10 @@ async function valueSourceWithdrawn(tx: DbTx, accountId: number, operationId: nu
 
 async function writeAttributeProvenance(
   tx: DbTx, accountId: number, operationId: number, fields: StoredAttributeProvenance['fields'], conflicts: StoredAttributeProvenance['conflicts'],
+  arbitrated: StoredAttributeProvenance['conflicts'] = [],
 ): Promise<void> {
   if (!(await provenanceReady(tx))) return;
-  const voulu: StoredAttributeProvenance = { version: 1, fields, conflicts };
+  const voulu: StoredAttributeProvenance = { version: 1, fields, conflicts, ...(arbitrated.length ? { arbitratedConflicts: arbitrated } : {}) };
   const actuel = await loadAttributeProvenance(tx, accountId, operationId);
   if (actuel && stableJson(actuel) === stableJson(voulu)) return;
   await tx.execute(sql`UPDATE business_operations SET attribute_provenance = ${JSON.stringify(voulu)}::jsonb WHERE id = ${operationId} AND account_id = ${accountId}`);

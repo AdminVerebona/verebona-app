@@ -5,13 +5,25 @@
  * email par catégorie, cf. §8.2). Les valeurs par défaut fines par événement
  * restent portées par le catalogue et appliquées par le PolicyResolver tant
  * qu'aucune ligne de préférence n'existe. Dès qu'un utilisateur modifie le
- * switch d'une catégorie, ce choix s'applique à tous les événements de la
- * catégorie.
+ * switch d'une catégorie, ce choix s'applique à tous les événements
+ * FACULTATIFS de la catégorie.
  *
- * Verrou email obligatoire (§2.11) : une catégorie qui contient au moins un
- * événement à email obligatoire (Duo, Compte et abonnement, Sécurité) a son
- * switch email coché et verrouillé — l'état verrouillé est explicite AVANT
- * interaction (§8.2), jamais une erreur après clic.
+ * ══════════════════════════════════════════════════════════════════════════
+ * LOT 79C — INDISPENSABLES ET FACULTATIFS SÉPARÉS
+ *
+ * Avant : une catégorie contenant un seul e-mail obligatoire (Duo, Compte et
+ * abonnement, Sécurité) avait TOUT son switch e-mail coché et verrouillé — les
+ * e-mails facultatifs de la catégorie (résultats Duo, fin d'essai, nouvel
+ * appareil…) étaient imposés sans raison.
+ *
+ * Désormais, le switch e-mail ne porte que sur les e-mails FACULTATIFS de la
+ * catégorie ; les e-mails indispensables (`mandatoryEmail`) sont listés à
+ * part (« Toujours envoyés ») et partent quel que soit le switch — c'est
+ * exactement la règle du moteur (`policy-resolver.ts`). Un canal sans aucun
+ * événement facultatif réel (supprimé au lot 79C, sans gabarit) n'est plus
+ * proposé (`available: false`). Le switch n'est verrouillé que si TOUS les
+ * e-mails de la catégorie sont indispensables.
+ * ══════════════════════════════════════════════════════════════════════════
  */
 
 import { db } from '@/db';
@@ -19,8 +31,9 @@ import { notificationPreferences, pushSubscriptions } from '@/db/schema';
 import { and, eq } from 'drizzle-orm';
 import {
   NOTIFICATION_CATALOG, CATEGORY_LABELS, CONFIGURABLE_CATEGORIES,
-  type NotificationCategory, type DeliveryMode,
+  type CatalogEntry, type NotificationCategory, type DeliveryMode,
 } from './catalog';
+import { isChannelRetired } from './retired-channels';
 import { getVapidPublicKey } from './web-push-sender';
 import { getNewsConsent } from './news-consent';
 
@@ -41,20 +54,20 @@ const CATEGORY_UI: Record<NotificationCategory, CategoryUi> = {
     displayDefault: { push: true, email: true },
   },
   documents: {
-    // La catégorie couvre l'envoi réussi (lot 32), la fin d'analyse ET les
-    // échecs : le dire évite de laisser croire qu'un réglage ne porte que sur
-    // les analyses réussies.
-    description: 'Documents ajoutés, puis fin d\'analyse de vos documents importés, réussie ou non.',
+    // Lot 79C : plus d'e-mail sur les documents (ajout, fin et échec
+    // d'analyse) ; la confirmation d'ajout reste dans l'application.
+    description: 'Fin d\'analyse de vos documents importés, réussie ou non. La confirmation d\'ajout reste visible dans l\'application.',
     displayDefault: { push: true, email: false },
   },
   to_process: {
-    description: 'Éléments à traiter dans Verebona. Jamais ajoutés dans la cloche : ils restent visibles sur la page À traiter.',
+    description: 'Récapitulatif facultatif des éléments à traiter. Jamais ajouté dans la cloche : vos éléments restent visibles sur la page À traiter.',
     displayDefault: { push: false, email: false },
     hasDigest: true,
-    digestDisplayDefault: { push: false, email: true },
+    // Lot 79C : récapitulatif désactivé par défaut (activation volontaire).
+    digestDisplayDefault: { push: false, email: false },
   },
   duo: {
-    description: 'Invitations et demandes de votre compte partagé.',
+    description: 'Invitations, demandes et réponses de votre compte partagé.',
     displayDefault: { push: true, email: true },
   },
   transmission: {
@@ -62,7 +75,7 @@ const CATEGORY_UI: Record<NotificationCategory, CategoryUi> = {
     displayDefault: { push: true, email: true },
   },
   account: {
-    description: 'Essai, abonnement, quota et paiement.',
+    description: 'Essai, abonnement, paiement et données de votre compte.',
     displayDefault: { push: true, email: true },
   },
   security: {
@@ -75,20 +88,117 @@ const CATEGORY_UI: Record<NotificationCategory, CategoryUi> = {
   },
 };
 
-/** Une catégorie a l'email verrouillé si un de ses événements est à email obligatoire. */
-function isEmailLocked(category: NotificationCategory): boolean {
-  return Object.values(NOTIFICATION_CATALOG).some(
-    (e) => e && e.category === category && e.mandatoryEmail,
+/**
+ * Libellés utilisateur des événements qui peuvent partir par e-mail (lot 79C) :
+ * ce que couvre le switch, ce qui part toujours. Un test vérifie que tout
+ * événement à e-mail du catalogue y figure.
+ */
+export const EMAIL_EVENT_USER_LABELS: Partial<Record<string, string>> = {
+  DEADLINE_DUE_IN_7_DAYS: 'rappel 7 jours avant une échéance',
+  TO_PROCESS_DAILY_DIGEST: 'récapitulatif quotidien',
+  DUO_INVITATION_RECEIVED: 'invitation Duo reçue',
+  ACCOUNT_INVITATION: 'invitation à rejoindre un compte',
+  DUO_MOVE_REQUEST: 'demande de transfert à décider',
+  DUO_DELETE_REQUEST: 'demande de suppression à décider',
+  DUO_MOVE_ACCEPTED: 'réponses à vos demandes de transfert ou de suppression',
+  DUO_MOVE_REFUSED: 'réponses à vos demandes de transfert ou de suppression',
+  DUO_DELETE_ACCEPTED: 'réponses à vos demandes de transfert ou de suppression',
+  DUO_DELETE_REFUSED: 'réponses à vos demandes de transfert ou de suppression',
+  TRANSMISSION_ACCEPTED: 'transmission acceptée',
+  TRANSMISSION_REFUSED: 'transmission refusée',
+  TRANSMISSION_EXPIRED: 'transmission expirée',
+  TRIAL_ENDING: 'fin d’essai proche',
+  TRIAL_ENDED: 'fin d’essai',
+  SUBSCRIPTION_RENEWED: 'renouvellement (sauf si le reçu de paiement le couvre)',
+  SUBSCRIPTION_ACTIVATED: 'activation ou changement d’offre',
+  SUBSCRIPTION_CHANGED: 'activation ou changement d’offre',
+  SUBSCRIPTION_CHANGE_SCHEDULED: 'changement d’offre programmé',
+  SUBSCRIPTION_CANCELLATION_SCHEDULED: 'résiliation programmée',
+  SUBSCRIPTION_CANCELLED: 'résiliation',
+  REFERRAL_REWARD_GRANTED: 'récompense de parrainage',
+  GDPR_EXPORT_READY: 'export de vos données prêt',
+  PAYMENT_FAILED: 'incident de paiement',
+  PAYMENT_ACTION_REQUIRED: 'action requise sur un paiement',
+  SUBSCRIPTION_SUSPENDED: 'abonnement suspendu',
+  ACCOUNT_READ_ONLY: 'rappels avant suppression pour impayé',
+  ACCOUNT_DELETION_SCHEDULED: 'suppression de votre compte programmée',
+  ACCOUNT_DELETION_REMINDER: 'rappel avant suppression de votre compte',
+  PASSWORD_CHANGED: 'mot de passe modifié',
+  EMAIL_CHANGE_REQUESTED: 'changement d’adresse e-mail demandé',
+  EMAIL_CHANGED: 'adresse e-mail modifiée',
+  PASSWORD_RESET_COMPLETED: 'mot de passe réinitialisé',
+  NEW_DEVICE_LOGIN: 'connexion depuis un nouvel appareil',
+  NEWS_ANNOUNCEMENT: 'actualités',
+};
+
+/** Gabarit e-mail d'une entrée (rendu à vide ; un rendu qui lève est réputé avoir un e-mail). */
+function hasEmailTemplate(entry: CatalogEntry): boolean {
+  try {
+    return !!entry.render({})?.emailTemplateCode;
+  } catch {
+    return true;
+  }
+}
+
+/** L'événement peut-il partir par e-mail aujourd'hui (gabarit, canal non supprimé) ? */
+export function eventEmailExists(entry: CatalogEntry): boolean {
+  return hasEmailTemplate(entry) && !isChannelRetired(entry, 'email');
+}
+
+function entriesOf(category: NotificationCategory, mode: DeliveryMode): CatalogEntry[] {
+  return Object.values(NOTIFICATION_CATALOG).filter(
+    (e): e is CatalogEntry => !!e && e.category === category && e.deliveryMode === mode,
   );
 }
 
-export interface ChannelState { enabled: boolean; locked: boolean }
+const uniq = (xs: string[]) => [...new Set(xs)];
+
+export interface CategoryEmailScope {
+  /** E-mails toujours envoyés (indispensables), quel que soit le switch. */
+  essential: string[];
+  /** E-mails que le switch active ou coupe. */
+  optional: string[];
+}
+
+/** Portée réelle du switch e-mail d'une catégorie et d'un mode (pure). */
+export function categoryEmailScope(category: NotificationCategory, mode: DeliveryMode = 'immediate'): CategoryEmailScope {
+  const withEmail = entriesOf(category, mode).filter(eventEmailExists);
+  const label = (e: CatalogEntry) => EMAIL_EVENT_USER_LABELS[e.type] ?? e.type;
+  return {
+    essential: uniq(withEmail.filter((e) => e.mandatoryEmail).map(label)),
+    optional: uniq(withEmail.filter((e) => !e.mandatoryEmail).map(label)),
+  };
+}
+
+/** Le push est-il réellement possible pour au moins un événement de la catégorie et du mode ? */
+export function categoryPushAvailable(category: NotificationCategory, mode: DeliveryMode = 'immediate'): boolean {
+  return entriesOf(category, mode).some((e) => !isChannelRetired(e, 'push'));
+}
+
+/**
+ * Le switch e-mail est verrouillé seulement si TOUS les e-mails de la catégorie
+ * sont indispensables (aucun facultatif à couper). Lot 79C : un seul e-mail
+ * obligatoire ne verrouille plus la catégorie.
+ */
+function isEmailLocked(category: NotificationCategory, mode: DeliveryMode = 'immediate'): boolean {
+  const scope = categoryEmailScope(category, mode);
+  return scope.essential.length > 0 && scope.optional.length === 0;
+}
+
+export interface ChannelState {
+  enabled: boolean;
+  locked: boolean;
+  /** Lot 79C : faux si le canal n'existe plus pour ce réglage (non proposé). */
+  available: boolean;
+}
 export interface CategoryPreference {
   key: NotificationCategory;
   label: string;
   description: string;
   immediate: { push: ChannelState; email: ChannelState };
   digest?: { push: ChannelState; email: ChannelState };
+  /** Lot 79C : ce que contrôle le switch e-mail, et ce qui part toujours. */
+  emailScope: CategoryEmailScope;
 }
 export interface PreferenceMatrix {
   categories: CategoryPreference[];
@@ -100,11 +210,18 @@ type PrefRow = { category: string; deliveryMode: string; channel: string; enable
 
 function resolve(
   rows: PrefRow[], category: NotificationCategory, mode: DeliveryMode,
-  channel: ConfigurableChannel, fallback: boolean, locked: boolean,
+  channel: ConfigurableChannel, fallback: boolean, locked: boolean, available = true,
 ): ChannelState {
-  if (locked) return { enabled: true, locked: true };
+  // Canal supprimé : affiché désactivé, jamais proposé (lot 79C).
+  if (!available) return { enabled: false, locked: false, available: false };
+  if (locked) return { enabled: true, locked: true, available: true };
   const row = rows.find((r) => r.category === category && r.deliveryMode === mode && r.channel === channel);
-  return { enabled: row ? row.enabled : fallback, locked: false };
+  return { enabled: row ? row.enabled : fallback, locked: false, available: true };
+}
+
+function emailAvailable(category: NotificationCategory, mode: DeliveryMode): boolean {
+  const scope = categoryEmailScope(category, mode);
+  return scope.optional.length > 0 || scope.essential.length > 0;
 }
 
 /** Construit la matrice complète fusionnée (défauts + préférences + verrous). */
@@ -126,20 +243,21 @@ export async function buildPreferenceMatrix(userId: number): Promise<PreferenceM
 
   const categories: CategoryPreference[] = CONFIGURABLE_CATEGORIES.map((key) => {
     const ui = CATEGORY_UI[key];
-    const emailLocked = isEmailLocked(key);
+    const news = key === 'news';
     const entry: CategoryPreference = {
       key,
       label: CATEGORY_LABELS[key],
       description: ui.description,
       immediate: {
-        push: resolve(rows, key, 'immediate', 'push', ui.displayDefault.push, false),
-        email: resolve(rows, key, 'immediate', 'email', ui.displayDefault.email, emailLocked),
+        push: resolve(rows, key, 'immediate', 'push', ui.displayDefault.push, false, news || categoryPushAvailable(key, 'immediate')),
+        email: resolve(rows, key, 'immediate', 'email', ui.displayDefault.email, isEmailLocked(key, 'immediate'), news || emailAvailable(key, 'immediate')),
       },
+      emailScope: categoryEmailScope(key, ui.hasDigest ? 'daily_digest' : 'immediate'),
     };
     if (ui.hasDigest && ui.digestDisplayDefault) {
       entry.digest = {
-        push: resolve(rows, key, 'daily_digest', 'push', ui.digestDisplayDefault.push, false),
-        email: resolve(rows, key, 'daily_digest', 'email', ui.digestDisplayDefault.email, emailLocked),
+        push: resolve(rows, key, 'daily_digest', 'push', ui.digestDisplayDefault.push, false, categoryPushAvailable(key, 'daily_digest')),
+        email: resolve(rows, key, 'daily_digest', 'email', ui.digestDisplayDefault.email, isEmailLocked(key, 'daily_digest'), emailAvailable(key, 'daily_digest')),
       };
     }
     return entry;
@@ -173,9 +291,16 @@ export async function applyPreferenceChanges(userId: number, changes: Preference
     if (!CONFIGURABLE_CATEGORIES.includes(category)) return { ok: false, error: `INVALID_CATEGORY:${c.category}` };
     if (c.channel !== 'push' && c.channel !== 'email') return { ok: false, error: `INVALID_CHANNEL:${c.channel}` };
     if (mode !== 'immediate' && mode !== 'daily_digest') return { ok: false, error: `INVALID_MODE:${mode}` };
-    // Refus explicite de désactiver un email obligatoire (§13.1).
-    if (c.channel === 'email' && c.enabled === false && isEmailLocked(category)) {
+    // Refus explicite de désactiver un email obligatoire (§13.1) — seulement
+    // si la catégorie n'a AUCUN e-mail facultatif (lot 79C).
+    if (c.channel === 'email' && c.enabled === false && category !== 'news' && isEmailLocked(category, mode)) {
       return { ok: false, error: `EMAIL_MANDATORY:${c.category}` };
+    }
+    // Lot 79C : un canal supprimé n'est plus proposé — on n'enregistre pas
+    // une activation qui ne produirait rien.
+    if (c.enabled === true && category !== 'news') {
+      const available = c.channel === 'push' ? categoryPushAvailable(category, mode) : emailAvailable(category, mode);
+      if (!available) return { ok: false, error: `CHANNEL_RETIRED:${c.category}:${c.channel}` };
     }
   }
 

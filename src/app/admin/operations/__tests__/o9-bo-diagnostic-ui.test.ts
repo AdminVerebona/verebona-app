@@ -3,7 +3,8 @@
  * ch. 21, B23, C26.1, C26.2, C27 ; F-182, F-183 ; décisions PO Q8, Q9).
  *
  * Rendu statique des vues PURES (`_components/views.tsx`) : contenu attendu,
- * aucune action d'édition (lecture seule), mêmes composants desktop et
+ * aucune action d'édition (lecture seule — seule exception : « Rétablir » une
+ * séparation d'identité, lot 79A, testée dans `l79a-restore-ui.test.ts`), mêmes composants desktop et
  * mobile (tableaux défilants, grilles responsives). Navigation : entrée
  * depuis Dashboard › Supervision et depuis la fiche compte ; barre latérale
  * inchangée (15 entrées du CDC BO).
@@ -156,6 +157,8 @@ describe('O9-UI-04 / C26.1 détail complet — lecture seule, desktop et mobile'
 
   it('F-182 : aucune action d’édition ; mobile : sections empilées, tableaux défilants, grilles 1 colonne', () => {
     expect(html).not.toMatch(AUCUNE_ACTION);
+    // L79A : même avec l'action « Rétablir » fournie, rien n'est rendu sans séparation effective.
+    expect(renderToStaticMarkup(h(OperationDetailView, { d, identityAction: () => h('button', null, 'Rétablir') }))).not.toMatch(AUCUNE_ACTION);
     expect(html).toContain('overflow-x-auto');
     expect(html).toContain('grid-cols-1 sm:grid-cols-2 lg:grid-cols-3');
   });
@@ -178,6 +181,14 @@ describe('O9-UI-05 navigation BO, droits et référentiel', () => {
       expect(src).not.toMatch(/method:\s*'(POST|PUT|PATCH|DELETE)'|apiClient\.(post|put|patch|delete)/);
       expect(src).not.toMatch(/from '@\/db'/);
     }
+    // EXCEPTION UNIQUE à Q9 (lot 79A, décision PO du 22/10/2026) : le détail d'Opération rend
+    // « Rétablir » pour une séparation d'identité encore effective — et AUCUNE autre action.
+    expect([...detail.matchAll(/from '\.\.\/_components\/(\w+)'/g)].map((m) => m[1]).sort()).toEqual(['RestoreSeparationButton', 'views']);
+    expect(detail).toMatch(/identityAction=\{\(restore\) => <RestoreSeparationButton operationId=\{Number\(id\)\} restore=\{restore\} onDone=\{load\} \/>\}/);
+    const bouton = lire('src/app/admin/operations/_components/RestoreSeparationButton.tsx');
+    expect([...bouton.matchAll(/apiClient\.(get|post|put|patch|delete)/g)].map((m) => m[0])).toEqual(['apiClient.post']);
+    expect(bouton).toMatch(/apiClient\.post\(restoreHref\(operationId, r\.reviewId\), \{ reason: reason\.trim\(\) \}\)/);
+    expect(lire('src/app/admin/operations/_components/views.tsx')).not.toMatch(/apiClient|fetch\(/);
     expect(page).toContain('flex flex-col md:flex-row');
     expect(page).toContain('TabsList className="flex-wrap h-auto"');
     expect(lire('src/app/admin/layout.tsx')).toMatch(/user\.role !== 'ADMIN' && user\.role !== 'SUPER_ADMIN'/);

@@ -19,6 +19,8 @@ import {
 } from '@/db/schema';
 import { eq, and, sql } from 'drizzle-orm';
 import { sendDowngradeToStandardEmail } from '@/lib/email/billing-emails';
+import { PAYMENT_ACTION_GROUPING_DELAY_MS } from '@/lib/notifications/incident-grouping';
+import { invoiceReceiptCovered } from '@/lib/billing/invoice-receipt';
 import { getStripeServer, getStripeKeyMode } from '@/lib/stripe';
 import { claimWebhookEvent, claimInvoiceEffect, handleCatalogEvent, isCatalogEvent } from '@/services/billing/webhook-catalog.service';
 import {
@@ -434,13 +436,19 @@ async function handleSubscriptionDeleted(subscription: Stripe.Subscription) {
   });
 
   // Résiliation d'abonnement (configurable, cloche + email par défaut, CDC §7.6).
+  // Lot 79C : l'e-mail transactionnel DOWNGRADE_NOTIFICATION (« Votre
+  // abonnement … a été résilié ») part ci-dessous, ou est déjà parti par la
+  // synchronisation de l'abonnement : la notification garde cloche et push,
+  // sans second e-mail équivalent.
+  const downgradeEmailSent = oldPlanType !== 'STANDARD'
+    || await downgradeEmailRecentlySent(account.ownerUserId).catch(() => false);
   try {
     await emit({
       type: 'SUBSCRIPTION_CANCELLED',
       accountId: account.id,
       entityType: 'subscription',
       entityId: subscription.id,
-      payload: {},
+      payload: downgradeEmailSent ? { downgradeEmailSent: true } : {},
       dedupeKey: `account:subscription-cancelled:${subscription.id}`,
     });
   } catch (err) {
@@ -502,7 +510,9 @@ async function handlePaymentSucceeded(invoice: Stripe.Invoice) {
         accountId,
         entityType: 'invoice',
         entityId: invoice.id,
-        payload: { planCode: result.newPlanType },
+        // Lot 79C : `receipt_number` = Stripe a émis le reçu de paiement de
+        // cette facture (e-mail de reçu) — pas de second e-mail générique.
+        payload: { planCode: result.newPlanType, ...(invoiceReceiptCovered(invoice) ? { receiptCovered: true } : {}) },
         dedupeKey: `account:subscription-renewed:${invoice.id}`,
       });
     } catch (err) {
@@ -700,6 +710,16 @@ async function handlePaymentFailed(invoice: Stripe.Invoice) {
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
+
+/** Lot 79C — e-mail DOWNGRADE_NOTIFICATION déjà émis pour ce titulaire dans les dernières 24 h ? */
+async function downgradeEmailRecentlySent(userId: number): Promise<boolean> {
+  const rows = await db.execute(sql`
+    SELECT 1 FROM email_logs
+     WHERE upper(template_code) = 'DOWNGRADE_NOTIFICATION' AND recipient_user_id = ${userId}
+       AND status IN ('sent', 'pending') AND sent_at > now() - interval '24 hours'
+     LIMIT 1`);
+  return (rows as unknown as unknown[]).length > 0;
+}
 
 /**
  * Set accounts.planType = 'PREMIUM_DUO', users.planType = 'PREMIUM_DUO', maxMembers = 2 when a PREMIUM_DUO sub becomes active.
@@ -928,6 +948,10 @@ async function handlePaymentActionRequired(invoice: Stripe.Invoice) {
           entityId: invoice.id,
           payload: { accountId: account.id },
           dedupeKey: `account:payment-action-required:${invoice.id}`,
+          // Lot 79C : Stripe émet aussi `invoice.payment_failed` pour la même
+          // facture ; l'envoi est différé de 2 min pour que l'incident soit
+          // porté par UN message (regroupement au dispatcher).
+          scheduledFor: new Date(Date.now() + PAYMENT_ACTION_GROUPING_DELAY_MS),
         });
       }
     }

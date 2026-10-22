@@ -80,7 +80,10 @@ scenario('L76G', 'TCO — indicateurs annuels (moyenne annuelle, dépenses de l�
     as(compte);
     const r = await getTco(v.id);
     expect(r.status).toBe(200);
-    expect(r.body.tco.annual).toEqual(JSON.parse(JSON.stringify(u.annual)));
+    // La route calcule au jour réel : on compare au service calculé à la même date (le test ne dépend plus du jour d'exécution).
+    const jourRoute = r.body.tco.annual.average.end as string;
+    const uRoute = await tco(compte, v.id, jourRoute);
+    expect(r.body.tco.annual).toEqual(JSON.parse(JSON.stringify(uRoute.annual)));
     expect(r.body.tco.annual.years.map((y: any) => y.year)).toEqual([2024, 2025, 2026]);
   });
 

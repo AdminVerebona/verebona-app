@@ -60,6 +60,8 @@ interface EventView {
   kind: 'notification' | 'transactional';
   emailTemplateCode: string | null;
   channels: ChannelView[];
+  /** Lot 79C : canaux supprimés (motif) — jamais proposés. */
+  retiredChannels?: Array<{ channel: Channel; reason: string }>;
 }
 
 interface Group {
@@ -310,7 +312,7 @@ export default function AdminCommunicationsPage() {
                     )}
                     </div>
                   </div>
-                  <div className="overflow-x-auto">
+                  {event.channels.length > 0 && (<div className="overflow-x-auto">
                     <table className="w-full text-sm">
                       <thead>
                         <tr className="text-left text-xs text-muted-foreground">
@@ -362,7 +364,16 @@ export default function AdminCommunicationsPage() {
                         })}
                       </tbody>
                     </table>
-                  </div>
+                  </div>)}
+                  {(event.retiredChannels ?? []).length > 0 && (
+                    <div className="border-t px-4 py-2 text-xs text-muted-foreground" data-testid={`retired-${event.code}`}>
+                      {(event.retiredChannels ?? []).map((r) => (
+                        <p key={r.channel} className="break-words">
+                          <span className="font-medium">{CHANNEL_META[r.channel].label} :</span> {r.reason}
+                        </p>
+                      ))}
+                    </div>
+                  )}
                 </div>
               ))}
             </div>

@@ -1,6 +1,15 @@
 // Service Worker pour Verebona PWA
-// Version 5.1.0 — Web Push (push, notificationclick, pushsubscriptionchange)
+// Version 5.2.0 — Web Push (push, notificationclick, pushsubscriptionchange)
 //                 + signalement des chunks Next.js manquants (APP-PERF-10)
+//
+// 5.2.0 (lot 79B, icônes PWA) :
+//   · nouvelle version de cache : à l'activation, les caches `verebona-*`
+//     de la 5.1.0 (manifeste statique et images mises en cache, dont les
+//     anciennes icônes) sont supprimés — aucune ancienne référence d'icône
+//     ne peut plus être resservie hors ligne. Seuls les caches de CE SW sont
+//     concernés : cookies, stockage local, IndexedDB et abonnement aux
+//     notifications push sont conservés ;
+//   · icône des notifications : fichier versionné `/pwa/` (src/lib/pwa/icons.ts).
 //
 // 5.1.0 (APP-PERF-10) :
 //   · un 404/410 sur `/_next/static/` (version retirée par un déploiement)
@@ -15,7 +24,7 @@
 // Les chunks ne sont JAMAIS mis en cache ici (réseau seul) ; les fichiers
 // hashés restent cacheables par HTTP, leur nom change avec leur contenu.
 
-const CACHE_VERSION = 'v5.1.0';
+const CACHE_VERSION = 'v5.2.0';
 const CACHE_PREFIX = 'verebona-';
 const CACHE_NAME = `verebona-${CACHE_VERSION}`;
 const STATIC_CACHE = `verebona-static-${CACHE_VERSION}`;
@@ -136,7 +145,8 @@ self.addEventListener('message', (event) => {
 // Web Push (CDC §14)
 // ═══════════════════════════════════════════════════════════════════════════
 
-const NOTIFICATION_ICON = '/android-chrome-192x192.png';
+// Lot 79B : même fichier que l'icône « any » 192 du manifeste (src/lib/pwa/icons.ts).
+const NOTIFICATION_ICON = '/pwa/icon-any-192-l79.png';
 const NOTIFICATION_BADGE = '/favicon-96x96.png';
 
 // §14.2 — Réception d'un push. Payload minimal, déjà sans donnée sensible.

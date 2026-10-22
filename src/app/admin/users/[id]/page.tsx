@@ -124,13 +124,15 @@ interface Communication {
   status: 'sent' | 'failed' | 'pending' | 'skipped';
 }
 
-interface LoginEntry { at: string; device: string | null; ip: string | null; result?: 'success' | 'failure' | 'throttled'; detail?: string | null }
+interface LoginEntry { at: string; device: string | null; ip: string | null; result?: 'success' | 'failure' | 'throttled' | 'session_revoked'; detail?: string | null }
 
 /** Lot 53A (D1) : résultat de la tentative — échecs et pauses anti-force brute visibles. */
-const LOGIN_RESULT_LABEL: Record<'success' | 'failure' | 'throttled', string> = {
+const LOGIN_RESULT_LABEL: Record<'success' | 'failure' | 'throttled' | 'session_revoked', string> = {
   success: 'Réussie',
   failure: 'Échec',
   throttled: 'Pause',
+  // Lot 79C : diagnostic des déconnexions (jeton de renouvellement réutilisé).
+  session_revoked: 'Déconnexion par précaution',
 };
 
 interface UserData {

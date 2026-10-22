@@ -762,6 +762,11 @@ export async function processEmailJob(jobId: number, now: Date = new Date()): Pr
       await close('cancelled', { error: 'CHANNEL_DISABLED', logId: res.logId ?? null });
       return { jobId: job.id, status: 'cancelled', error: 'CHANNEL_DISABLED' };
     }
+    // Lot 79C : e-mail supprimé — clos sans reprise, jamais compté envoyé.
+    if (res?.error === 'COMMUNICATION_RETIRED') {
+      await close('cancelled', { error: 'COMMUNICATION_RETIRED', logId: res.logId ?? null });
+      return { jobId: job.id, status: 'cancelled', error: 'COMMUNICATION_RETIRED' };
+    }
     const detail = res?.providerCode === 'invalid_idempotent_request' ? 'IDEMPOTENT_KEY_USED'
       : `${res?.providerCode ?? (res?.providerCalled ? 'NETWORK' : 'LOCAL')}${res?.providerStatus ? `:${res.providerStatus}` : ''}`.slice(0, 120);
     // Lot 72F : réponse perdue, 5xx, 409 d'idempotence — ou refus d'une RÉÉMISSION

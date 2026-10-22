@@ -26,6 +26,7 @@
 import { randomUUID } from 'node:crypto';
 import type { DiagQuery } from '@/services/business-operations/diagnostics/service';
 import { getBuildIdentity } from '@/lib/runtime-identity';
+import { RESTORE_AUDIT_ACTION, RESTORE_AUDIT_TARGET } from '@/services/business-operations/identity-restore.model';
 import {
   DIAG_LIMITS, DIAG_SCHEMA, DIAG_SCOPE_LABELS, MASKING_NOTES, READ_ONLY_NOTE, buildReportText, leaksSecretOrEmail, maskForExport, maskText,
   periodBounds, toJsonFile, type AmountTrace, type DiagFileInfo, type DiagManifest, type DiagRequest, type DiagUnavailable,
@@ -325,7 +326,18 @@ async function generate(req: DiagRequest, opts: GenerateOptions): Promise<DiagBu
           FROM document_operation_candidates c
          WHERE c.account_id = ANY($1::int[]) AND (c.file_id = ANY($2::int[]) OR c.t3_operation_id = ANY($3::bigint[]))
          ORDER BY c.file_id, c.id DESC LIMIT ${L}`, [per.accountIds, per.fileIds, per.operationIds]);
-      return { journal, provenance, sources, candidats };
+      // Lot 79A : rétablissements BO des séparations (journal d'audit admin) — administrateur (identifiant), motif, avant / après.
+      const ids = journal.map((x) => Number(x.id)).filter((x) => Number.isSafeInteger(x));
+      const retablissements = ids.length ? (await jsonRows(sq, `
+        SELECT id, "timestamp" AS horodatage, admin_user_id, target_id AS separation_id, result AS resultat, details, old_value AS avant, new_value AS apres
+          FROM admin_audit_log
+         WHERE action_type = '${RESTORE_AUDIT_ACTION}' AND target_type = '${RESTORE_AUDIT_TARGET}' AND target_id = ANY($1::int[])
+         ORDER BY id DESC LIMIT ${L}`, [ids])).map(({ details, ...x }) => {
+        let d: Record<string, unknown> = {};
+        try { d = typeof details === 'string' ? JSON.parse(details) as Record<string, unknown> : {}; } catch { d = {}; }
+        return { ...x, motif: d.reason ?? null, code: d.code ?? null, operation_affichee: d.viewedOperationId ?? d.operationId ?? null };
+      }) : [];
+      return { journal, provenance, sources, candidats, retablissements };
     }, null) : null;
 
     // Données métier hors dossiers (utilisateur, global).
@@ -469,7 +481,7 @@ async function generate(req: DiagRequest, opts: GenerateOptions): Promise<DiagBu
   if (c.history.length || per.operationIds.length) list('logs/historique-operations.json', 'Historique des Opérations (business_operation_history) de la période', c.history);
   if (c.identite) {
     add('tracabilite/identite-economique.json',
-      'Identité économique (lot 78A) : candidats T1 (origine, faits, décision T3, contrôles d’identité, nature déterministe / IA), sources rattachées et motifs de retrait, provenance des valeurs (dates, prestataire, libellé) et contradictions, journal des séparations / doutes / doublons et de leur traitement',
+      'Identité économique (lot 78A) : candidats T1 (origine, faits, décision T3, contrôles d’identité, nature déterministe / IA), sources rattachées et motifs de retrait, provenance des valeurs (dates, prestataire, libellé) et contradictions, journal des séparations / doutes / doublons et de leur traitement, rétablissements BO (lot 79A : administrateur, motif, avant / après)',
       c.identite, c.identite.journal.length + c.identite.sources.length + c.identite.candidats.length,
       c.identite.journal.length < L && c.identite.sources.length < L && c.identite.candidats.length < L);
   }

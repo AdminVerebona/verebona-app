@@ -63,6 +63,24 @@ const nextConfig = {
           },
         ],
       },
+      // ── Lot 79B : icônes de l'application installée ──────────────────────
+      // `public/pwa/` : noms versionnés (src/lib/pwa/icons.ts), un fichier
+      // n'est JAMAIS modifié sur place → cache long et immuable.
+      {
+        source: "/pwa/:path*",
+        headers: [
+          { key: "Cache-Control", value: "public, max-age=31536000, immutable" },
+        ],
+      },
+      // Anciens noms (installations antérieures, convention iOS
+      // `/apple-touch-icon.png`), service worker et manifeste statique :
+      // toujours revalidés auprès du serveur, jamais resservis périmés.
+      {
+        source: "/:file(apple-touch-icon\\.png|apple-touch-icon-v2\\.png|android-chrome-192x192\\.png|android-chrome-512x512\\.png|sw\\.js|manifest\\.json)",
+        headers: [
+          { key: "Cache-Control", value: "no-cache" },
+        ],
+      },
       {
         source: "/api/auth/(.*)",
         headers: [

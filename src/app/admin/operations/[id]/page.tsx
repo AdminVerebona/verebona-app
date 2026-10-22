@@ -2,7 +2,10 @@
 
 /**
  * Détail d'une Opération — BO diagnostic (lot 47A, O9 — CDC Opérations V1
- * ch. 21, C26.1). Lecture seule : aucune action (INV-032, F-182, Q9).
+ * ch. 21, C26.1). Lecture seule : aucune action (INV-032, F-182, Q9), à UNE
+ * exception près (lot 79A, décision PO du 22/10/2026) : « Rétablir » une
+ * séparation automatique d'identité économique encore effective
+ * (`RestoreSeparationButton`, POST dédié, motif obligatoire, journalisé).
  * Desktop et mobile : `OperationDetailView` (sections empilées, tableaux
  * défilants).
  */
@@ -14,6 +17,7 @@ import { Button } from '@/components/ui/button';
 import { EcranEnErreur } from '@/components/admin/EcranEnErreur';
 import type { OperationDetail } from '@/services/business-operations/diagnostics/service';
 import { OperationDetailView, OperationStateBadge } from '../_components/views';
+import { RestoreSeparationButton } from '../_components/RestoreSeparationButton';
 
 export default function AdminOperationDetailPage() {
   const { id } = useParams<{ id: string }>();
@@ -63,7 +67,7 @@ export default function AdminOperationDetailPage() {
       </div>
       {error ? <EcranEnErreur titre="Chargement de l’Opération impossible" message={error} onRetry={load} />
         : !data ? <div className="flex justify-center py-12"><Loader2 className="h-7 w-7 animate-spin text-muted-foreground" /></div>
-          : <OperationDetailView d={data} />}
+          : <OperationDetailView d={data} identityAction={(restore) => <RestoreSeparationButton operationId={Number(id)} restore={restore} onDone={load} />} />}
     </div>
   );
 }

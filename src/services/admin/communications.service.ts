@@ -34,6 +34,7 @@ import {
   TRANSACTIONAL_EMAIL_PREFIX,
   transactionalEventCode,
   transactionalLockReason,
+  transactionalRetiredReason,
   type CommunicationChannel,
 } from '@/lib/notifications/channel-activation';
 import { planLabelOf } from '@/lib/notifications/subscription-messages';
@@ -101,7 +102,10 @@ export const TRANSACTIONAL_EMAILS: ReadonlyArray<{ templateCode: string; label: 
   // Lot 73B (migration 0530) : information du titulaire — l'invité a refusé
   // l'invitation. Désactivable (la cloche, obligatoire, reste).
   { templateCode: 'DUO_INVITATION_DECLINED', label: 'Invitation Premium Duo refusée (e-mail au titulaire)' },
-  { templateCode: 'TRIAL_CONFIRMATION', label: 'Confirmation de l’essai' },
+  // Lot 79C (vérification des doublons d'accueil) : aucun code ne déclenche
+  // cet e-mail (`sendTrialConfirmationEmail` n'a aucun appelant) — l'accueil
+  // n'envoie que WELCOME, à la vérification de l'adresse. Conservé en base.
+  { templateCode: 'TRIAL_CONFIRMATION', label: 'Confirmation de l’essai — NON UTILISÉ (aucun déclencheur ; l’accueil envoie seulement « Bienvenue »)' },
   { templateCode: 'PREMIUM_CONFIRMATION', label: 'Confirmation de l’abonnement' },
   { templateCode: 'DOWNGRADE_NOTIFICATION', label: 'Passage à une offre inférieure' },
   { templateCode: 'MEMBER_REMOVED_DUE_TO_DOWNGRADE', label: 'Membre retiré suite à un changement d’offre' },
@@ -115,7 +119,8 @@ export const TRANSACTIONAL_EMAILS: ReadonlyArray<{ templateCode: string; label: 
   { templateCode: 'PRICE_CHANGE_NOTICE', label: 'Évolution du tarif de l’abonnement (information préalable)' },
   // Lot 38 (migration 0314) : appareils déconnectés par précaution après la
   // réutilisation d'un jeton de session (au plus un par heure et par utilisateur).
-  { templateCode: 'SECURITY_SESSIONS_REVOKED', label: 'Sécurité — appareils déconnectés par précaution' },
+  // Lot 79C : SUPPRIMÉ (décision PO) — jamais envoyé, plus aucun canal proposé.
+  { templateCode: 'SECURITY_SESSIONS_REVOKED', label: 'Sécurité — appareils déconnectés par précaution (supprimé)' },
   // Lot 53A (migration 0342) : inscription demandée avec une adresse déjà
   // inscrite — aucun compte créé (inscription non énumérable, CDC 18 §7.1).
   { templateCode: 'SIGNUP_EXISTING_ACCOUNT', label: 'Inscription — adresse déjà associée à un compte' },
@@ -147,6 +152,12 @@ export interface CommunicationChannelView {
   sentCount: number;
 }
 
+/** Lot 79C : canal supprimé — affiché pour information, jamais proposé. */
+export interface RetiredChannelView {
+  channel: CommunicationChannel;
+  reason: string;
+}
+
 export interface CommunicationEventView {
   /** Clé d'activation : type du catalogue, ou `email:<CODE>`. */
   code: string;
@@ -155,6 +166,7 @@ export interface CommunicationEventView {
   /** Gabarit e-mail (prévisualisation, test COM-010), si le canal existe. */
   emailTemplateCode: string | null;
   channels: CommunicationChannelView[];
+  retiredChannels: RetiredChannelView[];
 }
 
 export interface CommunicationGroup {
@@ -177,6 +189,8 @@ export interface EventDefinition {
   groupLabel: string;
   emailTemplateCode: string | null;
   channels: ChannelDefinition[];
+  /** Lot 79C : canaux supprimés (motif), absents de `channels`. */
+  retiredChannels: RetiredChannelView[];
 }
 
 // ── Définitions (pures) ─────────────────────────────────────────────────────
@@ -205,7 +219,8 @@ const MANDATORY_REASON = 'Notification obligatoire du catalogue : canal non dés
 /** Canaux disponibles d'un événement du catalogue (COM-001). */
 export function catalogChannels(entry: CatalogEntry): ChannelDefinition[] {
   const out: ChannelDefinition[] = [];
-  if (catalogEmailTemplate(entry)) {
+  // Lot 79C : un canal supprimé n'est plus proposé (ni switch, ni test).
+  if (catalogEmailTemplate(entry) && !entry.retiredChannels?.email) {
     out.push({
       channel: 'email',
       locked: entry.mandatoryEmail,
@@ -213,7 +228,7 @@ export function catalogChannels(entry: CatalogEntry): ChannelDefinition[] {
     });
   }
   // Le push est toujours facultatif (CDC notifications §5.2).
-  out.push({ channel: 'push', locked: false, lockReason: null });
+  if (!entry.retiredChannels?.push) out.push({ channel: 'push', locked: false, lockReason: null });
   if (!entry.neverBell) {
     out.push({
       channel: 'in_app',
@@ -221,6 +236,14 @@ export function catalogChannels(entry: CatalogEntry): ChannelDefinition[] {
       lockReason: entry.mandatoryBell ? MANDATORY_REASON : null,
     });
   }
+  return out;
+}
+
+/** Lot 79C : canaux supprimés d'un événement du catalogue (pure). */
+export function catalogRetiredChannels(entry: CatalogEntry): RetiredChannelView[] {
+  const out: RetiredChannelView[] = [];
+  if (entry.retiredChannels?.email) out.push({ channel: 'email', reason: entry.retiredChannels.email });
+  if (entry.retiredChannels?.push) out.push({ channel: 'push', reason: entry.retiredChannels.push });
   return out;
 }
 
@@ -242,8 +265,9 @@ export function listEventDefinitions(
       kind: 'notification',
       groupKey: category,
       groupLabel: CATEGORY_LABELS[category] ?? category,
-      emailTemplateCode: catalogEmailTemplate(entry),
+      emailTemplateCode: entry.retiredChannels?.email ? null : catalogEmailTemplate(entry),
       channels: catalogChannels(entry),
+      retiredChannels: catalogRetiredChannels(entry),
     });
   }
 
@@ -258,14 +282,17 @@ export function listEventDefinitions(
   ];
   for (const t of transactional) {
     const lockReason = transactionalLockReason(t.templateCode);
+    const retiredReason = transactionalRetiredReason(t.templateCode);
     defs.push({
       code: transactionalEventCode(t.templateCode),
       label: t.label,
       kind: 'transactional',
       groupKey: 'transactional',
       groupLabel: 'E-mails transactionnels',
-      emailTemplateCode: t.templateCode,
-      channels: [{ channel: 'email', locked: !!lockReason, lockReason }],
+      // Lot 79C : e-mail supprimé — ni switch, ni test, ni édition proposés.
+      emailTemplateCode: retiredReason ? null : t.templateCode,
+      channels: retiredReason ? [] : [{ channel: 'email', locked: !!lockReason, lockReason }],
+      retiredChannels: retiredReason ? [{ channel: 'email', reason: retiredReason }] : [],
     });
   }
   return defs;
@@ -296,6 +323,7 @@ export function buildCommunicationsView(
       label: def.label,
       kind: def.kind,
       emailTemplateCode: def.emailTemplateCode,
+      retiredChannels: def.retiredChannels ?? [],
       channels: def.channels.map((c) => {
         const key = settingKey(def.code, c.channel);
         const s = stats.get(key);

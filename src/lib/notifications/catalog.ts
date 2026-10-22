@@ -65,6 +65,13 @@ export interface CatalogEntry {
   defaults: { push: boolean; email: boolean };
   /** Durée de conservation indicative de la ligne outbox détaillée (§19.3). */
   retentionDays: number;
+  /**
+   * Lot 79C — canaux SUPPRIMÉS (motif affiché au BO). Bloqués au moment de
+   * l'envoi, quelles que soient les préférences enregistrées, l'activation BO,
+   * la file existante, les reprises et les réémissions (`retired-channels.ts`).
+   * Différent d'un défaut à `false`, qu'une préférence peut réactiver.
+   */
+  retiredChannels?: Partial<Record<'email' | 'push', string>>;
   // Le payload est validé par `payloadSchema` (Zod) à l'entrée dans l'outbox ;
   // le typage fort par type est assuré côté producteur via emit<T>() (Lot 1).
   render: (payload: any) => RenderedContent;
@@ -89,6 +96,23 @@ export const CATEGORY_LABELS: Record<NotificationCategory, string> = {
 };
 
 const T = NOTIFICATION_TYPES;
+
+// ── Lot 79C : textes partagés ───────────────────────────────────────────────
+const RETIRED_ANALYSIS_EMAIL = 'Supprimé (lot 79) : le résultat de l’analyse est présenté dans l’application.';
+/** Action réellement possible après un échec d'analyse. */
+export const ANALYSIS_RETRY_ACTION = 'Vous pouvez relancer l’analyse depuis la fiche du document, dans Documents.';
+/** Action attendue quand la banque demande une authentification (3D Secure). */
+export const PAYMENT_AUTHENTICATION_ACTION = 'Votre banque demande une validation : confirmez le paiement depuis Mon compte › Offres.';
+
+/** « Documents concernés : A, B (et 2 autres). » — rien sans liste. */
+export function failedDocumentsText(documents?: Array<{ title: string }> | null): string {
+  const titres = (documents ?? []).map((d) => d?.title).filter((t): t is string => typeof t === 'string' && t.trim() !== '');
+  if (titres.length === 0) return '';
+  const montres = titres.slice(0, 3).join(', ');
+  const reste = titres.length - 3;
+  return ` Documents concernés : ${montres}${reste > 0 ? ` (et ${reste} autre${reste > 1 ? 's' : ''})` : ''}.`;
+}
+
 
 // Petit utilitaire : contenu identique cloche/push (contenu déjà générique).
 function content(bellTitle: string, bellBody: string, push?: { title?: string; body?: string }, emailTemplateCode?: string): RenderedContent {
@@ -134,6 +158,9 @@ export const NOTIFICATION_CATALOG: { [K in NotificationType]?: CatalogEntry } = 
     category: 'documents', priority: 'normal', deliveryMode: 'immediate',
     mandatoryBell: false, mandatoryEmail: false, neverBell: false,
     defaults: { push: true, email: false }, retentionDays: 90,
+    // Lot 79C : une notification par lot (fin d'un traitement asynchrone),
+    // push facultatif, jamais d'e-mail — même avec une ancienne préférence.
+    retiredChannels: { email: RETIRED_ANALYSIS_EMAIL },
     // Le document est nommé ; un seul document s'ouvre directement en tiroir.
     render: (p) => content(
       'Analyse terminée',
@@ -160,6 +187,12 @@ export const NOTIFICATION_CATALOG: { [K in NotificationType]?: CatalogEntry } = 
     category: 'documents', priority: 'low', deliveryMode: 'immediate',
     mandatoryBell: false, mandatoryEmail: false, neverBell: false,
     defaults: { push: false, email: false }, retentionDays: 90,
+    // Lot 79C : confirmation dans l'application seulement (cloche) — e-mail et
+    // push supprimés, y compris pour une préférence « Documents » déjà activée.
+    retiredChannels: {
+      email: 'Supprimé (lot 79) : confirmation d’ajout visible dans l’application.',
+      push: 'Supprimé (lot 79) : confirmation d’ajout visible dans l’application.',
+    },
     render: (p) => {
       const { title, body } = uploadNotificationText(p);
       return content(title, body, { title, body: p.count > 1 ? `${p.count} documents ajoutés.` : 'Votre document a bien été ajouté.' }, 'notif_document_upload');
@@ -197,29 +230,37 @@ export const NOTIFICATION_CATALOG: { [K in NotificationType]?: CatalogEntry } = 
     category: 'documents', priority: 'normal', deliveryMode: 'immediate',
     mandatoryBell: false, mandatoryEmail: false, neverBell: false,
     defaults: { push: true, email: false }, retentionDays: 90,
+    retiredChannels: { email: RETIRED_ANALYSIS_EMAIL },
     render: (p) => content(
       'Analyse terminée avec une anomalie',
-      `${p.analysedCount} document(s) analysé(s), ${p.failedCount} à vérifier`,
+      `${p.analysedCount} document(s) analysé(s), ${p.failedCount} à vérifier.${failedDocumentsText(p.documents)} ${ANALYSIS_RETRY_ACTION}`,
       { body: 'Certains documents n\'ont pas pu être analysés.' },
       'notif_document_batch_failed',
     ),
     deepLink: () => '/documents',
-    payloadSchema: z.object({ lotId: z.number(), analysedCount: z.number(), failedCount: z.number() }),
+    payloadSchema: z.object({
+      lotId: z.number(), analysedCount: z.number(), failedCount: z.number(),
+      documents: z.array(z.object({ assetFileId: z.number(), title: z.string() })).optional(),
+    }),
   },
   [T.DOCUMENT_BATCH_FAILED]: {
     type: T.DOCUMENT_BATCH_FAILED,
     category: 'documents', priority: 'high', deliveryMode: 'immediate',
     mandatoryBell: false, mandatoryEmail: false, neverBell: false,
-    // Pas d'email : cf. le bandeau ci-dessus.
+    // Pas d'email : cf. le bandeau ci-dessus (lot 79C : canal supprimé).
     defaults: { push: true, email: false }, retentionDays: 90,
-    render: () => content(
+    retiredChannels: { email: RETIRED_ANALYSIS_EMAIL },
+    render: (p) => content(
       'Analyse impossible',
-      'Nous n\'avons pas pu analyser vos documents. Notre équipe en est informée.',
+      `Nous n\'avons pas pu analyser vos documents.${failedDocumentsText(p?.documents)} ${ANALYSIS_RETRY_ACTION}`,
       { body: 'Nous n\'avons pas pu analyser vos documents.' },
       'notif_document_batch_failed',
     ),
     deepLink: () => '/documents',
-    payloadSchema: z.object({ lotId: z.number(), analysedCount: z.number(), failedCount: z.number() }),
+    payloadSchema: z.object({
+      lotId: z.number(), analysedCount: z.number(), failedCount: z.number(),
+      documents: z.array(z.object({ assetFileId: z.number(), title: z.string() })).optional(),
+    }),
   },
   [T.ANALYSIS_FAILED_PERSISTENT]: {
     type: T.ANALYSIS_FAILED_PERSISTENT,
@@ -228,9 +269,12 @@ export const NOTIFICATION_CATALOG: { [K in NotificationType]?: CatalogEntry } = 
     // Pas d'email : cf. le bandeau ci-dessus. Cet événement suit déjà un
     // `DOCUMENT_BATCH_*` sur le même incident — deux envois pour un seul fait.
     defaults: { push: true, email: false }, retentionDays: 90,
+    // Lot 79C : canal supprimé ; regroupé avec l'alerte du lot du même
+    // incident au moment de l'envoi (`incident-grouping.ts`).
+    retiredChannels: { email: RETIRED_ANALYSIS_EMAIL },
     render: (p) => content(
       'Analyse impossible',
-      `Nous n\'avons pas pu analyser ce document${p.documentTitle ? ` : ${p.documentTitle}` : ''}. Notre équipe en est informée.`,
+      `Nous n\'avons pas pu analyser ce document${p.documentTitle ? ` : ${p.documentTitle}` : ''}. ${ANALYSIS_RETRY_ACTION}`,
       { body: 'Un document n\'a pas pu être analysé.' },
       'notif_document_batch_failed',
     ),
@@ -244,6 +288,12 @@ export const NOTIFICATION_CATALOG: { [K in NotificationType]?: CatalogEntry } = 
     category: 'to_process', priority: 'normal', deliveryMode: 'immediate',
     mandatoryBell: false, mandatoryEmail: false, neverBell: true,
     defaults: { push: false, email: false }, retentionDays: 30,
+    // Lot 79C : plus d'alerte immédiate pour un élément ordinaire — il reste
+    // sur la page « À traiter » ; le récapitulatif quotidien est facultatif.
+    retiredChannels: {
+      email: 'Supprimé (lot 79) : les éléments restent sur la page « À traiter ».',
+      push: 'Supprimé (lot 79) : les éléments restent sur la page « À traiter ».',
+    },
     render: (p) => content(
       'Une action vous attend',
       // CDC V2 §14 : deux natures au lieu des quatre familles. `family` sert
@@ -269,7 +319,9 @@ export const NOTIFICATION_CATALOG: { [K in NotificationType]?: CatalogEntry } = 
     type: T.TO_PROCESS_DAILY_DIGEST,
     category: 'to_process', priority: 'normal', deliveryMode: 'daily_digest',
     mandatoryBell: false, mandatoryEmail: false, neverBell: true,
-    defaults: { push: false, email: true }, retentionDays: 30,
+    // Lot 79C : désactivé par défaut ; une activation volontaire (préférence
+    // enregistrée) est conservée. Jamais renvoyé à contenu inchangé.
+    defaults: { push: false, email: false }, retentionDays: 30,
     render: (p) => content(
       `Vous avez ${p.total} élément(s) à traiter`,
       'Retrouvez vos éléments à traiter dans Verebona.',
@@ -452,9 +504,13 @@ export const NOTIFICATION_CATALOG: { [K in NotificationType]?: CatalogEntry } = 
   [T.TRIAL_ENDED]: accountConfigurable(T.TRIAL_ENDED, 'Votre essai est terminé', 'Votre période d\'essai est terminée.', 'notif_trial_ended'),
   [T.SUBSCRIPTION_RENEWED]: {
     ...accountConfigurable(T.SUBSCRIPTION_RENEWED, 'Abonnement renouvelé', 'Votre abonnement a été renouvelé.', 'notif_subscription'),
-    render: (p: { planCode?: string }) => {
+    // Lot 79C : plus de push systématique à chaque échéance.
+    retiredChannels: { push: 'Supprimé (lot 79) : un renouvellement n’appelle aucune action.' },
+    render: (p: { planCode?: string; receiptCovered?: boolean }) => {
       const corps = subscriptionNotificationText('SUBSCRIPTION_RENEWED', p) ?? 'Votre abonnement a été renouvelé.';
-      return content('Abonnement renouvelé', corps, { body: corps }, 'notif_subscription');
+      // Lot 79C : pas d'e-mail générique quand le reçu de paiement Stripe de
+      // la même facture couvre déjà ce renouvellement (`receipt_number`).
+      return content('Abonnement renouvelé', corps, { body: corps }, p?.receiptCovered ? undefined : 'notif_subscription');
     },
   },
   // ══════════════════════════════════════════════════════════════════════════
@@ -516,7 +572,16 @@ export const NOTIFICATION_CATALOG: { [K in NotificationType]?: CatalogEntry } = 
     }).passthrough(),
   },
   [T.SUBSCRIPTION_CANCELLATION_SCHEDULED]: accountConfigurable(T.SUBSCRIPTION_CANCELLATION_SCHEDULED, 'Résiliation programmée', 'La résiliation de votre abonnement est programmée.', 'notif_subscription'),
-  [T.SUBSCRIPTION_CANCELLED]: accountConfigurable(T.SUBSCRIPTION_CANCELLED, 'Abonnement résilié', 'Votre abonnement a été résilié.', 'notif_subscription'),
+  [T.SUBSCRIPTION_CANCELLED]: {
+    ...accountConfigurable(T.SUBSCRIPTION_CANCELLED, 'Abonnement résilié', 'Votre abonnement a été résilié.', 'notif_subscription'),
+    // Lot 79C : la résiliation effective envoie déjà l'e-mail transactionnel
+    // DOWNGRADE_NOTIFICATION (« Votre abonnement … a été résilié ») — jamais
+    // un second e-mail équivalent. Cloche et push inchangés.
+    render: (p: { downgradeEmailSent?: boolean }) => content(
+      'Abonnement résilié', 'Votre abonnement a été résilié.', { body: 'Votre abonnement a été résilié.' },
+      p?.downgradeEmailSent ? undefined : 'notif_subscription',
+    ),
+  },
 
   [T.REFERRAL_REWARD_GRANTED]: {
     type: T.REFERRAL_REWARD_GRANTED,
@@ -559,7 +624,9 @@ export const NOTIFICATION_CATALOG: { [K in NotificationType]?: CatalogEntry } = 
     ...accountMandatory(T.PAYMENT_FAILED, 'Incident de paiement', 'Un paiement a échoué. Merci de régulariser votre moyen de paiement.', 'notif_payment_incident'),
     render: (p) => content(
       'Incident de paiement',
-      unpaidNotificationText('J0', p?.deadlineAt),
+      // Lot 79C : un même incident (échec + authentification demandée sur la
+      // même facture) produit UN message : problème, conséquences, action.
+      unpaidNotificationText('J0', p?.deadlineAt) + (p?.authenticationRequired ? ` ${PAYMENT_AUTHENTICATION_ACTION}` : ''),
       { body: 'Un paiement a échoué. Merci de régulariser votre moyen de paiement.' },
       'notif_payment_incident',
     ),

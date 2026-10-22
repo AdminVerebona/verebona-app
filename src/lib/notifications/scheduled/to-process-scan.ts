@@ -34,6 +34,21 @@ import { and, eq, gt, isNull } from 'drizzle-orm';
 import { db } from '@/db';
 import { accounts, toProcessActions } from '@/db/schema';
 import { emit } from '@/lib/notifications';
+import { getCatalogEntry } from '../catalog';
+import { isChannelRetired } from '../retired-channels';
+
+/**
+ * Lot 79C : plus d'alerte immédiate pour un élément ordinaire « À traiter »
+ * (e-mail et push supprimés, jamais de cloche). Tant qu'aucun canal ne peut
+ * servir, le passage n'émet plus rien : aucune ligne d'outbox sans objet. Les
+ * actions restent sur la page « À traiter » ; les lignes déjà en file sont
+ * closes sans envoi par le dispatcher (canal supprimé journalisé).
+ */
+export function itemCreatedHasChannel(): boolean {
+  const entry = getCatalogEntry('TO_PROCESS_ITEM_CREATED');
+  if (!entry) return false;
+  return !entry.neverBell || !isChannelRetired(entry, 'push') || !isChannelRetired(entry, 'email');
+}
 
 export interface ScanRunResult {
   accountsProcessed: number;
@@ -55,6 +70,7 @@ export async function runToProcessScan(
   limit = 1000,
   windowMs = DEFAULT_WINDOW_MS,
 ): Promise<ScanRunResult> {
+  if (!itemCreatedHasChannel()) return { accountsProcessed: 0, created: 0, resolved: 0, capped: false };
   const depuis = new Date(now.getTime() - windowMs);
 
   const accountList = await db.select({ id: accounts.id }).from(accounts).limit(limit + 1);

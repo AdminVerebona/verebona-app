@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { PWA_MANIFEST_ICONS, PWA_SHORTCUT_ICONS } from '@/lib/pwa/icons';
 
 // Lot 72G (décision PO du 19/10) : écran de démarrage Android de l'app
 // installée en Pétrole #17474D (background_color). theme_color Pétrole aussi :
@@ -18,19 +19,17 @@ const MOBILE_MANIFEST = {
   orientation: 'portrait-primary',
   scope: '/',
   handle_links: 'preferred',
-  icons: [
-    { src: '/favicon-96x96.png',          sizes: '96x96',   type: 'image/png', purpose: 'any' },
-    { src: '/favicon-128x128.png',        sizes: '128x128', type: 'image/png', purpose: 'any' },
-    { src: '/android-chrome-192x192.png', sizes: '192x192', type: 'image/png', purpose: 'any' },
-    { src: '/favicon-256x256.png',        sizes: '256x256', type: 'image/png', purpose: 'any' },
-    { src: '/android-chrome-512x512.png', sizes: '512x512', type: 'image/png', purpose: 'any maskable' },
-  ],
+  // Lot 79B : icônes versionnées de public/pwa/ (src/lib/pwa/icons.ts),
+  // « any » et « maskable » distinctes. Plus de favicons à coins transparents
+  // ni d'`any maskable` combiné. NE PAS ajouter d'`id` ni modifier
+  // `start_url` / `scope` : ils fondent l'identité des installations.
+  icons: [...PWA_MANIFEST_ICONS],
   categories: ['productivity', 'finance', 'business'],
   shortcuts: [
-    { name: 'Accueil',       short_name: 'Accueil',    description: 'Accéder au tableau de bord',  url: '/accueil',   icons: [{ src: '/android-chrome-192x192.png', sizes: '192x192' }] },
-    { name: 'Mes biens',     short_name: 'Biens',      description: 'Voir tous mes biens',         url: '/assets',    icons: [{ src: '/android-chrome-192x192.png', sizes: '192x192' }] },
-    { name: 'Mes documents', short_name: 'Documents',  description: 'Gérer mes documents',         url: '/documents', icons: [{ src: '/android-chrome-192x192.png', sizes: '192x192' }] },
-    { name: 'Agenda',        short_name: 'Agenda',     description: 'Voir mes événements',         url: '/agenda',    icons: [{ src: '/android-chrome-192x192.png', sizes: '192x192' }] },
+    { name: 'Accueil',       short_name: 'Accueil',    description: 'Accéder au tableau de bord',  url: '/accueil',   icons: [...PWA_SHORTCUT_ICONS] },
+    { name: 'Mes biens',     short_name: 'Biens',      description: 'Voir tous mes biens',         url: '/assets',    icons: [...PWA_SHORTCUT_ICONS] },
+    { name: 'Mes documents', short_name: 'Documents',  description: 'Gérer mes documents',         url: '/documents', icons: [...PWA_SHORTCUT_ICONS] },
+    { name: 'Agenda',        short_name: 'Agenda',     description: 'Voir mes événements',         url: '/agenda',    icons: [...PWA_SHORTCUT_ICONS] },
   ],
 };
 
@@ -42,10 +41,7 @@ const DESKTOP_MANIFEST = {
   display: 'browser',
   background_color: '#17474D',
   theme_color: '#17474D',
-  icons: [
-    { src: '/android-chrome-192x192.png', sizes: '192x192', type: 'image/png', purpose: 'any' },
-    { src: '/android-chrome-512x512.png', sizes: '512x512', type: 'image/png', purpose: 'any maskable' },
-  ],
+  icons: [...PWA_MANIFEST_ICONS],
 };
 
 export async function GET(req: NextRequest) {

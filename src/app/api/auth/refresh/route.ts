@@ -14,7 +14,6 @@ import { resolveSessionAccount, accountSuspendedResponse } from '@/lib/auth/acco
 import { serverCacheDelete } from '@/lib/server-cache';
 import { sessionCutoffCacheKey } from '@/lib/auth/session-cutoff';
 import { classifyRefreshReplay, REFRESH_REUSE_GRACE_MS } from '@/lib/auth/refresh-replay';
-import { scheduleSessionsRevokedEmail } from '@/services/auth/sessions-revoked-email.service';
 import { REFRESH_TOKEN_TTL_S } from '@/lib/auth/token-lifetimes';
 
 const REFRESH_TTL_MS = REFRESH_TOKEN_TTL_S * 1000;
@@ -43,10 +42,13 @@ const REFRESH_TTL_MS = REFRESH_TOKEN_TTL_S * 1000;
  *   · jeton révoqué par une DÉCONNEXION (aucun successeur) ou révoqué avant
  *     le lot 37 (motif inconnu) : refus et journal, sans révocation globale.
  *
- * LOT 38 (volet B, décision PO) : après la révocation globale, e-mail de
- * sécurité « appareils déconnectés par précaution » envoyé APRÈS la réponse,
- * au plus un par utilisateur et par heure, sans donnée sensible
- * (`services/auth/sessions-revoked-email.service.ts`).
+ * LOT 38 (volet B) : un e-mail « appareils déconnectés par précaution »
+ * suivait la révocation globale. LOT 79C (décision PO) : e-mail SUPPRIMÉ,
+ * sans notification de remplacement. La protection (révocation globale,
+ * cookies effacés, 401) et le journal AUTH_TOKEN_REUSE_DETECTED sont
+ * INCHANGÉS ; le journal porte en plus l'âge de la rotation (`rotationAgeMs`)
+ * pour le diagnostic des déconnexions
+ * (docs/exploitation/sessions-deconnexions-diagnostic.md).
  * ══════════════════════════════════════════════════════════════════════════
  */
 export async function POST(request: NextRequest) {
@@ -241,14 +243,16 @@ async function handleReplay(
         severity: 'security_incident',
         sid: payload.sid ?? null,
         rotatedAt: revoked.revokedAt.toISOString(),
+        // Lot 79C (diagnostic) : délai entre la rotation et la présentation
+        // de l'ancien jeton. Ne qualifie rien à lui seul (intrusion ou
+        // réponse perdue) : voir sessions-deconnexions-diagnostic.md.
+        rotationAgeMs: Math.max(0, Date.now() - revoked.revokedAt.getTime()),
         sessionsRevoked: revokedAll,
       },
       request,
     });
-    // Lot 38 (volet B) : prévenir l'utilisateur — après la réponse, au plus
-    // un e-mail par heure. Seulement si ses sessions ont bien été révoquées
-    // (l'e-mail l'affirme).
-    if (revokedAll) scheduleSessionsRevokedEmail(payload.userId);
+    // Lot 79C : plus d'e-mail « appareils déconnectés par précaution »
+    // (SECURITY_SESSIONS_REVOKED supprimé) ; la protection ci-dessus reste.
     const refus = apiError(401, 'SESSION_REVOKED', 'Session revoked, please log in again');
     clearSessionCookies(refus);
     return refus;

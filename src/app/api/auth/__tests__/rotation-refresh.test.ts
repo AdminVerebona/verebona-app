@@ -42,9 +42,10 @@ vi.mock('@/services/account-service', () => ({ AccountService: {
   getUserSessionAccounts: async () => [{ account: { id: 9, subscriptionStatus: 'ACTIVE' }, membershipId: 1, role: 'owner' }],
 } }));
 vi.mock('@/lib/audit-logger', () => ({ logUserActivity: (a: { activityType: string }) => { activity.push(a); } }));
-// Lot 38 (volet B) : e-mail de sécurité planifié après la réponse.
-vi.mock('@/services/auth/sessions-revoked-email.service', () => ({
-  scheduleSessionsRevokedEmail: (userId: number) => { securityEmails.push(userId); },
+// Lot 79C : plus aucun e-mail « appareils déconnectés » — tout envoi est relevé
+// (il ne doit y en avoir aucun).
+vi.mock('@/lib/email/email-service', () => ({
+  emailService: { send: async (o: { userId?: number }) => { securityEmails.push(o.userId ?? -1); return { success: true }; } },
 }));
 
 const { POST: refresh } = await import('../refresh/route');
@@ -118,7 +119,7 @@ describe('rotation', () => {
     expect(revokeAll).toHaveLength(0);
   });
 
-  it('C2-03 rejeu après la fenêtre de grâce : incident — toutes les sessions révoquées, cookies effacés, 401 SESSION_REVOKED', async () => {
+  it('C2-03 / L79C-AC01 rejeu après la fenêtre de grâce : incident — toutes les sessions révoquées, cookies effacés, 401 SESSION_REVOKED', async () => {
     const ancien = await generateRefreshToken(claims);
     expect((await refresh(req(ancien))).status).toBe(200);
     await vieillir(ancien, REFRESH_REUSE_GRACE_MS + 1_000);
@@ -129,8 +130,13 @@ describe('rotation', () => {
     expect(rejeu.cookies.get('access_token')?.value).toBe('');
     expect(revokeAll).toEqual([{ userId: 1, reason: 'REFRESH_TOKEN_REUSE' }]);
     expect(activity.some((a) => a.activityType === 'AUTH_TOKEN_REUSE_DETECTED' && a.details?.severity === 'security_incident')).toBe(true);
-    // Lot 38 (volet B) : e-mail de sécurité planifié (après la réponse).
-    expect(securityEmails).toEqual([1]);
+    // Lot 79C : e-mail SECURITY_SESSIONS_REVOKED supprimé — protections et
+    // journal conservés, aucun e-mail (même après la réponse).
+    await new Promise((r) => setTimeout(r, 20));
+    expect(securityEmails).toEqual([]);
+    const journal = activity.find((a) => a.activityType === 'AUTH_TOKEN_REUSE_DETECTED');
+    expect(journal?.details).toMatchObject({ sessionsRevoked: true });
+    expect(journal?.details?.rotationAgeMs as number).toBeGreaterThanOrEqual(REFRESH_REUSE_GRACE_MS);
   });
 
   it('L38-B-01 aucun e-mail de sécurité dans la fenêtre de grâce, pour une déconnexion ou un motif inconnu', async () => {

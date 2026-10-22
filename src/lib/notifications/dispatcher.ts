@@ -13,7 +13,8 @@
  */
 
 import { db } from '@/db';
-import { notificationDeliveries } from '@/db/schema';
+import { notificationDeliveries, notificationOutbox } from '@/db/schema';
+import { eq, sql } from 'drizzle-orm';
 import { getCatalogEntry } from './catalog';
 import { renderContent } from './content-renderer';
 import { resolveChannels } from './policy-resolver';
@@ -21,6 +22,8 @@ import { applyChannelActivation, loadDisabledChannels, CHANNEL_DISABLED_ERROR_CO
 import { deliverBell, deliverEmail, deliverWebPush, type DeliveryOutcome, type DeliveryContext } from './channels';
 import { lireRestrictionReemission, appliquerRestrictionReemission } from './reemission-restriction';
 import { claimByIds, claimPending, markProcessed, releaseOrFail, type OutboxRow } from './outbox';
+import { applyRetiredChannels, CHANNEL_RETIRED_ERROR_CODE } from './retired-channels';
+import { resolveIncidentGrouping, GROUPED_INCIDENT_ERROR_CODE } from './incident-grouping';
 
 export interface DispatchSummary {
   claimed: number;
@@ -63,8 +66,32 @@ async function processRow(row: OutboxRow): Promise<'sent' | 'partial' | 'failed'
   // Réémission (§20.3) : seuls les canaux en échec de la ligne d'origine sont
   // servis — une cloche, même obligatoire, déjà livrée ne l'est pas deux fois.
   // La clé technique est retirée avant le rendu.
-  const { payload, restriction } = lireRestrictionReemission(row.payload_json ?? {});
-  const resolved = appliquerRestrictionReemission(await resolveChannels(row.recipient_user_id, entry), restriction);
+  const { payload: payloadBrut, restriction } = lireRestrictionReemission(row.payload_json ?? {});
+  const restricted = appliquerRestrictionReemission(await resolveChannels(row.recipient_user_id, entry), restriction);
+
+  // Lot 79C : un incident déjà porté par une autre ligne (même facture, même
+  // lot / document) n'est pas envoyé une seconde fois — file existante,
+  // reprise et réémission comprises.
+  const grouping = await resolveIncidentGrouping(row as never, payloadBrut);
+  if (grouping.absorbedBy) {
+    for (const channel of (['bell', 'email', 'push'] as const).filter((c) => restricted[c])) {
+      await recordDelivery(row.id, row.recipient_user_id, channel, {
+        status: 'skipped_unavailable', errorCode: GROUPED_INCIDENT_ERROR_CODE, errorMessage: `regroupé avec ${grouping.absorbedBy}`,
+      });
+    }
+    await db.update(notificationOutbox)
+      .set({
+        status: 'cancelled', processedAt: new Date(), lastError: `grouped_with:${grouping.absorbedBy}`,
+        attemptCount: sql`${notificationOutbox.attemptCount} + 1`,
+      })
+      .where(eq(notificationOutbox.id, row.id));
+    return 'skipped';
+  }
+  const payload = grouping.payloadPatch ? { ...payloadBrut, ...grouping.payloadPatch } : payloadBrut;
+
+  // Lot 79C : canaux SUPPRIMÉS — coupés quelles que soient les anciennes
+  // préférences, la file, la reprise ou la réémission (`retired-channels.ts`).
+  const { channels: resolved, retired } = applyRetiredChannels(restricted, entry);
   const rendered = renderContent(entry, payload, row.deep_link);
 
   // CDC BO COM-011 / REC-MOD-01 : un canal désactivé depuis le BO n'est pas
@@ -92,6 +119,12 @@ async function processRow(row: OutboxRow): Promise<'sent' | 'partial' | 'failed'
   };
 
   const outcomes: DeliveryOutcome['status'][] = [];
+
+  // Trace : canal supprimé (lot 79C) — ni envoi, ni échec.
+  for (const channel of retired) {
+    await recordDelivery(row.id, ctx.userId, channel, { status: 'skipped_unavailable', errorCode: CHANNEL_RETIRED_ERROR_CODE });
+    outcomes.push('skipped_unavailable');
+  }
 
   // Trace de diagnostic : le canal était prévu mais a été coupé par l'admin.
   // « skipped_* » n'est pas un échec (§18.4) et n'est pas compté comme envoi.

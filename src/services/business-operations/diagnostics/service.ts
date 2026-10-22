@@ -33,6 +33,8 @@ import {
   type IndicatorDefinition, type IndicatorKey, type OperationListFilters,
 } from './model';
 import type { BusinessOperationStatus, BusinessOperationTypeCode, FinancialComponentKind } from '../model';
+import { RESTORE_BLOCK_SQL } from '../consolidation/identity-review';
+import { RESTORE_AUDIT_ACTION, RESTORE_AUDIT_TARGET, type RestoreSummary, type RestoreTrace } from '../identity-restore.model';
 
 type Row = Record<string, unknown>;
 export type DiagQuery = (sql: string, params?: unknown[]) => Promise<Row[]>;
@@ -281,6 +283,33 @@ function toListItem(r: Row): OperationListItem {
     invalidationReason: str(r.invalidation_reason),
     mergedIntoOperationId: num(r.merged_into_operation_id),
   };
+}
+
+// ── Lot 79A : rétablissement d'une séparation (bouton BO) ───────────────────
+
+/** Ligne du journal d'identité → vue BO : `restore` (séparation encore effective) et `restoredBy` (trace). */
+export function identityReviewView(x: Row): Row {
+  const { restore_block: bloque, restore_summary: resume, restore_current_operation_id: courante, restore_hints: indices,
+    restored_by_admin_id: parId, restored_by_admin_email: parEmail, restored_at: le, restore_details: details, ...r } = x;
+  let restore: RestoreSummary | null = null;
+  if (r.kind === 'SEPARATED' && r.status === 'APPLIED' && bloque == null && r.file_id != null && r.candidate_key != null) {
+    restore = {
+      reviewId: Number(r.id), fileId: Number(r.file_id), candidateKey: String(r.candidate_key), summary: str(resume),
+      originOperationId: Number(r.operation_id), currentOperationId: num(courante),
+      amounts: (Array.isArray(indices) ? indices : []).flatMap((h: Row) => (h && Number.isFinite(Number(h.amountMinor))
+        ? [{ role: String(h.role ?? ''), amountMinor: Number(h.amountMinor), currency: String(h.currency ?? 'EUR') }] : [])),
+    };
+  }
+  let restoredBy: RestoreTrace | null = null;
+  if (r.status === 'REVERTED') {
+    let motif: string | null = null;
+    try { motif = typeof details === 'string' ? str((JSON.parse(details) as Row).reason) : null; } catch { motif = null; }
+    restoredBy = {
+      adminId: num(parId) ?? num(r.resolved_by_admin_id), adminEmail: str(parEmail),
+      at: ts(le) ?? ts(r.resolved_at), reason: motif,
+    };
+  }
+  return { ...r, restore_block: bloque ?? null, restore, restoredBy };
 }
 
 // ── Anomalies dures (C26.2) ─────────────────────────────────────────────────
@@ -772,12 +801,24 @@ export class OperationDiagnosticsService {
 
       // Lot 78A (§5, §6) : contrôles d'identité économique (journal 0609) et provenance des valeurs.
       const [journal] = await q(`SELECT to_regclass('business_operation_identity_reviews') IS NOT NULL AS ok`);
-      const identityReviews = journal?.ok ? await q(
-        `SELECT id, kind, status, operation_id, target_operation_id, file_id, candidate_key, source_id, basis, signals,
-                against_source_ids, review_version, correlation_id, created_at, updated_at, resolved_at
-           FROM business_operation_identity_reviews
-          WHERE account_id = $2 AND (operation_id = $1 OR target_operation_id = $1)
-          ORDER BY created_at DESC, id DESC LIMIT ${L}`, [id, accountId]) : [];
+      // Lot 79A : séparation encore effective → résumé du bouton « Rétablir » ; rétablie → trace du journal d'audit admin.
+      const identityReviews = journal?.ok ? (await q(
+        `SELECT r.id, r.kind, r.status, r.operation_id, r.target_operation_id, r.file_id, r.candidate_key, r.source_id, r.basis, r.signals,
+                r.against_source_ids, r.review_version, r.correlation_id, r.created_at, r.updated_at, r.resolved_at, r.resolved_by_admin_id,
+                CASE WHEN r.kind = 'SEPARATED' THEN ${RESTORE_BLOCK_SQL} END AS restore_block,
+                cand.summary AS restore_summary, cand.t3_operation_id AS restore_current_operation_id, cand.payload -> 'financialHints' AS restore_hints,
+                aud.admin_user_id AS restored_by_admin_id, aud.admin_email AS restored_by_admin_email, aud."timestamp" AS restored_at, aud.details AS restore_details
+           FROM business_operation_identity_reviews r
+           JOIN business_operations o ON o.id = r.operation_id AND o.account_id = r.account_id
+           LEFT JOIN LATERAL (SELECT c.summary, c.t3_operation_id, c.payload FROM document_operation_candidates c
+                               WHERE c.account_id = r.account_id AND c.file_id = r.file_id AND c.candidate_key = r.candidate_key AND c.status = 'ACTIVE'
+                               ORDER BY c.id DESC LIMIT 1) cand ON r.kind = 'SEPARATED'
+           LEFT JOIN LATERAL (SELECT a.admin_user_id, a.admin_email, a."timestamp", a.details FROM admin_audit_log a
+                               WHERE r.status = 'REVERTED' AND a.action_type = '${RESTORE_AUDIT_ACTION}' AND a.target_type = '${RESTORE_AUDIT_TARGET}'
+                                 AND a.target_id = r.id AND a.result = 'SUCCESS'
+                               ORDER BY a.id DESC LIMIT 1) aud ON true
+          WHERE r.account_id = $2 AND (r.operation_id = $1 OR r.target_operation_id = $1)
+          ORDER BY r.created_at DESC, r.id DESC LIMIT ${L}`, [id, accountId])).map(identityReviewView) : [];
       const [prov] = await q(`SELECT to_jsonb(o) -> 'attribute_provenance' AS p FROM business_operations o WHERE o.id = $1`, [id]);
 
       const withReason = (rows: Row[], col: string) => rows.map((x) => ({ ...x, [`${col}_label`]: explainReason(str(x[col])) }));

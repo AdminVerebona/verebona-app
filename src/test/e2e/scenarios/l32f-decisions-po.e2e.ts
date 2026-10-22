@@ -259,7 +259,7 @@ scenario('L32F', 'Décisions PO du 07/10 : rétractation, statuts, notifications
     expect((await resolveChannels(acc.ownerUserId, j7)).email).toBe(false);
     const { buildPreferenceMatrix } = await import('@/lib/notifications/preference-matrix');
     const matrice = await buildPreferenceMatrix(acc.ownerUserId);
-    expect(matrice.categories.find((c) => c.key === 'deadlines')?.immediate.email).toEqual({ enabled: false, locked: false });
+    expect(matrice.categories.find((c) => c.key === 'deadlines')?.immediate.email).toEqual({ enabled: false, locked: false, available: true }); // lot 79C : `available`
     expect(matrice.categories.find((c) => c.key === 'to_process')?.digest?.email.locked).toBe(false);
   });
 });

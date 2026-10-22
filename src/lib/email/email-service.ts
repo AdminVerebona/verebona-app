@@ -2,7 +2,7 @@ import { Resend } from 'resend';
 import { db } from '@/db';
 import { emailTemplates, emailSettings, emailLogs } from '@/db/schema';
 import { eq, sql } from 'drizzle-orm';
-import { isTransactionalEmailActive } from '@/lib/notifications/channel-activation';
+import { isTransactionalEmailActive, transactionalRetiredReason, COMMUNICATION_RETIRED_ERROR } from '@/lib/notifications/channel-activation';
 import { EMAIL_COLORS, EMAIL_STYLES, emailButton, emailDocument, emailLogoHtml } from './email-layout';
 import { safeTemplateVariables } from './variable-safety';
 import { buildContactEmail, type ContactInput } from './contact-message';
@@ -503,6 +503,15 @@ class EmailService {
         logEntry.errorMessage = 'Emails disabled globally';
         logEntry.subject = `[Disabled] Email ${options.templateCode}`;
         return { success: false, error: 'Emails disabled', logId: await journaliser() };
+      }
+
+      // Lot 79C : e-mail SUPPRIMÉ — jamais envoyé, même en test ou en
+      // reprise. Journalisé « skipped » (distinct d'un envoi réussi).
+      if (transactionalRetiredReason(options.templateCode)) {
+        logEntry.status = 'skipped';
+        logEntry.errorMessage = COMMUNICATION_RETIRED_ERROR;
+        logEntry.subject = `[Supprimé] Email ${options.templateCode}`;
+        return { success: false, error: COMMUNICATION_RETIRED_ERROR, logId: await journaliser() };
       }
 
       // CDC BO COM-011 : e-mail transactionnel désactivé depuis l'écran

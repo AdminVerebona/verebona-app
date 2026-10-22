@@ -150,7 +150,8 @@ export interface LoginEntry {
   detail: string | null;
 }
 
-export type LoginResult = 'success' | 'failure' | 'throttled';
+/** Lot 79C : `session_revoked` — sessions révoquées par précaution (jeton de renouvellement réutilisé). */
+export type LoginResult = 'success' | 'failure' | 'throttled' | 'session_revoked';
 
 const FAILURE_LABELS: Record<string, string> = {
   invalid_password: 'Mot de passe incorrect',
@@ -168,6 +169,15 @@ const THROTTLE_LABELS: Record<string, string> = {
 };
 
 /** Libellé lisible d'une ligne du journal de connexion (pur, testé). */
+/** « 45 s », « 3 min », « 2 h 05 » (pure). */
+export function formatRotationAge(ms: number): string {
+  const s = Math.max(0, Math.round(ms / 1000));
+  if (s < 120) return `${s} s`;
+  const m = Math.round(s / 60);
+  if (m < 120) return `${m} min`;
+  return `${Math.floor(m / 60)} h ${String(m % 60).padStart(2, '0')}`;
+}
+
 export function describeLoginActivity(activityType: string, rawDetails: string | null | undefined): { result: LoginResult; detail: string | null } {
   let d: Record<string, unknown> = {};
   try { d = rawDetails ? JSON.parse(rawDetails) : {}; } catch { d = {}; }
@@ -179,6 +189,16 @@ export function describeLoginActivity(activityType: string, rawDetails: string |
   }
   if (activityType === 'LOGIN_FAILED') {
     return { result: 'failure', detail: `${FAILURE_LABELS[String(d.reason)] ?? 'Échec'}${trusted}` };
+  }
+  // Lot 79C (diagnostic des déconnexions, sans SQL) : l'âge de la rotation
+  // distingue une réponse perdue (quelques dizaines de secondes à minutes)
+  // d'un jeton rejoué longtemps après — sans rien conclure à lui seul.
+  if (activityType === 'AUTH_TOKEN_REUSE_DETECTED') {
+    const age = typeof d.rotationAgeMs === 'number' ? formatRotationAge(d.rotationAgeMs) : null;
+    return {
+      result: 'session_revoked',
+      detail: `Sessions révoquées par précaution : ancien jeton présenté${age ? ` ${age} après son renouvellement` : ''}${d.sessionsRevoked === false ? ' (révocation non confirmée)' : ''}`,
+    };
   }
   return { result: 'success', detail: d.trustedDevice === false ? 'Premier succès sur cet appareil' : null };
 }
@@ -499,7 +519,10 @@ export async function loadLoginHistory(userId: number, now = new Date()): Promis
   const since = new Date(now.getTime() - LOGIN_HISTORY_DAYS * 24 * 3600 * 1000);
   const rows = await pgClient.unsafe<Row[]>(
     `SELECT timestamp, ip_address, user_agent, activity_type, details FROM user_activity_log
-      WHERE user_id = $1 AND activity_type IN ('LOGIN_SUCCESS', 'LOGIN_FAILED', 'AUTH_LOGIN_THROTTLED') AND timestamp >= $2
+      WHERE user_id = $1 AND timestamp >= $2
+        AND (activity_type IN ('LOGIN_SUCCESS', 'LOGIN_FAILED', 'AUTH_LOGIN_THROTTLED')
+             -- Lot 79C : révocations globales seulement (pas les refus simples).
+             OR (activity_type = 'AUTH_TOKEN_REUSE_DETECTED' AND details LIKE '%"severity":"security_incident"%'))
       ORDER BY timestamp DESC LIMIT 500`,
     [userId, since.toISOString()],
   );

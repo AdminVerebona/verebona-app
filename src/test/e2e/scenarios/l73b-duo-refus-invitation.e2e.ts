@@ -75,6 +75,12 @@ scenario('L73B', 'Premium Duo — refuser l’invitation', ({ sql, make }) => {
     await sql`INSERT INTO email_settings (id, emails_enabled, sender_name, sender_email, reply_to_email)
               VALUES (1, true, 'Verebona', 'bonjour@preprod.verebona.fr', 'support@verebona.fr')
               ON CONFLICT (id) DO UPDATE SET emails_enabled = true`;
+    // Lot 79C (migration 0620) : l'e-mail DUO_INVITATION_DECLINED est désactivé
+    // par défaut ; ce scénario porte sur son envoi une fois ACTIVÉ au BO
+    // (activation facultative, mécanisme existant COM-011).
+    await sql`INSERT INTO communication_channel_settings (event_code, channel, is_active, updated_at)
+              VALUES ('email:DUO_INVITATION_DECLINED', 'email', true, now())
+              ON CONFLICT (event_code, channel) DO UPDATE SET is_active = true`;
   });
 
   async function cgvu(): Promise<string> {

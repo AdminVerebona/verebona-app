@@ -6,7 +6,9 @@
  * rendu statique (`o9-bo-diagnostic-ui.test.ts`).
  *
  * LECTURE SEULE (INV-032, F-182, décision PO Q9) : aucun bouton d'édition,
- * de fusion, de suppression, aucun interrupteur. Les seuls liens mènent à
+ * de fusion, de suppression, aucun interrupteur. SEULE exception (lot 79A,
+ * PO 22/10/2026) : « Rétablir » une séparation d'identité encore effective,
+ * rendu par la page détail via `identityAction` (jamais par ces vues seules). Les seuls liens mènent à
  * d'autres écrans de consultation du BO (compte, exécutions IA d'un document,
  * File IA du compte pour relancer un travail T3 existant).
  *
@@ -23,6 +25,9 @@ import type {
   HoldItem, IndicatorResult, IndicatorsReport, OperationDetail, OperationListItem,
 } from '@/services/business-operations/diagnostics/service';
 import { m3ProgressLabel, type HardAnomalyResult } from '@/services/business-operations/diagnostics/model';
+import {
+  RESTORE_BLOCK_MESSAGES, canRestore, type RestoreBlockCode, type RestoreSummary, type RestoreTrace,
+} from '@/services/business-operations/identity-restore.model';
 
 type Row = Record<string, unknown>;
 
@@ -388,7 +393,24 @@ function evidenceLabel(e: unknown): string {
   return ` ← candidat T1 #${String(x.candidateId ?? '?')}${indices.length ? `, indice ${indices.join('/')}` : ''}${faits.length ? `, fait #${faits.join('/#')}` : ''}`;
 }
 
-export function OperationDetailView({ d, onNavigate }: { d: OperationDetail; onNavigate?: OperationDetailNavigate }) {
+/**
+ * Lot 79A : trace d'un rétablissement BO (« Rétablie par … le … — motif : … »).
+ * Texte seul : affiché partout où le détail est rendu (page, tiroir 75N).
+ */
+export function restoredByLabel(t: RestoreTrace): string {
+  const qui = t.adminEmail ?? (t.adminId !== null ? `administrateur #${t.adminId}` : 'un administrateur');
+  return `Rétablie par ${qui} le ${formatDateTime(t.at)}${t.reason ? ` — motif : ${t.reason}` : ''}`;
+}
+
+/**
+ * Lot 79A : `identityAction` rend l'action « Rétablir » d'une séparation encore
+ * effective (`canRestore`) — fournie par la SEULE page détail d'Opération
+ * (exception PO à Q9). Sans elle (tests, tiroir « Données du compte »), la
+ * vue reste strictement en lecture seule.
+ */
+export function OperationDetailView({ d, onNavigate, identityAction }: {
+  d: OperationDetail; onNavigate?: OperationDetailNavigate; identityAction?: (restore: RestoreSummary) => ReactNode;
+}) {
   const o = d.operation;
   const acc = o.accountId;
   const navButton = (type: Parameters<OperationDetailNavigate>[0], id: number, label: ReactNode) => (
@@ -475,6 +497,14 @@ export function OperationDetailView({ d, onNavigate }: { d: OperationDetail; onN
             const f = ((d.attributeProvenance?.fields ?? {}) as Record<string, Row | undefined>)[k];
             return [label, f ? `${s(f.value)} — source #${s(f.sourceId)}` : '—'];
           })} />
+          {((d.attributeProvenance?.arbitratedConflicts ?? []) as Row[]).length > 0 && (
+            <div className="mt-3">
+              <Table cols={['Attribut arbitré au BO (rétablissement)', 'Valeurs (sources)', 'Conservée']} empty=""
+                rows={((d.attributeProvenance?.arbitratedConflicts ?? []) as Row[]).map((c) => [
+                  s(c.field), ((c.values ?? []) as Row[]).map((v) => `${s(v.value)} (#${((v.sourceIds ?? []) as unknown[]).join(', #')})`).join(' ; '), s(c.retained),
+                ])} />
+            </div>
+          )}
           {((d.attributeProvenance?.conflicts ?? []) as Row[]).length > 0 && (
             <div className="mt-3">
               <Table cols={['Attribut contradictoire', 'Valeurs (sources)', 'Conservée']} empty=""
@@ -485,12 +515,16 @@ export function OperationDetailView({ d, onNavigate }: { d: OperationDetail; onN
           )}
           {(d.identityReviews?.length ?? 0) > 0 && (
             <div className="mt-3">
-              <Table cols={['Contrôle', 'État', 'Document', 'Source', 'Opération d’origine', 'Opération retenue', 'Signaux', 'Date']} empty=""
+              <Table cols={['Contrôle', 'État', 'Document', 'Source', 'Opération d’origine', 'Opération retenue', 'Signaux', 'Date', 'Rétablissement']} empty=""
                 rows={(d.identityReviews ?? []).map((r: Row) => [
                   IDENTITY_KIND[s(r.kind)] ?? s(r.kind), IDENTITY_STATUS[s(r.status)] ?? s(r.status),
                   r.file_id ? <span key="d">{docLink(n(r.file_id), `document #${s(r.file_id)} (${s(r.candidate_key)})`, 'hover:underline whitespace-nowrap')}</span> : '—',
                   s(r.source_id), opLink(r.operation_id), opLink(r.target_operation_id),
                   ((r.signals ?? []) as unknown[]).map(String).join(' '), formatDateTime(r.created_at as string),
+                  r.restoredBy
+                    ? <span key="t" className="text-xs" data-identity-restored={s(r.id)}>{restoredByLabel(r.restoredBy as RestoreTrace)}</span>
+                    : canRestore(r) && identityAction ? <span key="b">{identityAction(r.restore)}</span>
+                      : r.kind === 'SEPARATED' && r.restore_block ? <span key="x" className="text-xs text-muted-foreground">{RESTORE_BLOCK_MESSAGES[r.restore_block as RestoreBlockCode] ?? '—'}</span> : '—',
                 ])} />
             </div>
           )}

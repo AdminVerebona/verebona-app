@@ -34,6 +34,8 @@
  * livraison journalisée) : tous les canaux, selon les règles habituelles.
  * ══════════════════════════════════════════════════════════════════════════
  */
+import { getCatalogEntry } from '@/lib/notifications/catalog';
+import { isChannelRetired } from '@/lib/notifications/retired-channels';
 import { db, pgClient } from '@/db';
 import { notificationOutbox, newsConsents } from '@/db/schema';
 import { logAdminAction } from '@/lib/admin-audit';
@@ -81,6 +83,12 @@ export interface DeliveryTrace {
  * - push : seuls les appareils en échec (jamais livrés) sont visés.
  * Résultat vide (`canaux: []`) : tout a été livré, rien à réémettre.
  */
+/** Lot 79C : retire d'une restriction les canaux supprimés du catalogue (pure). */
+export function retirerCanauxSupprimes(restriction: ReemissionRestriction, entry: Parameters<typeof isChannelRetired>[0]): ReemissionRestriction {
+  const canaux = restriction.canaux.filter((c) => c === 'bell' || !isChannelRetired(entry, c));
+  return { canaux, ...(canaux.includes('push') && restriction.pushSubscriptionIds ? { pushSubscriptionIds: restriction.pushSubscriptionIds } : {}) };
+}
+
 export function canauxAReemettre(traces: DeliveryTrace[]): ReemissionRestriction | null {
   if (traces.length === 0) return null;
   const livre = (c: string, sub: string | null = null) =>
@@ -171,7 +179,14 @@ export async function reemettreNotification(
     SELECT channel, status, push_subscription_id AS "pushSubscriptionId"
     FROM notification_deliveries WHERE outbox_id = ${origine.id}::uuid
   `;
-  const restriction = canauxAReemettre([...traces]);
+  const brute = canauxAReemettre([...traces]);
+  // Lot 79C : un canal SUPPRIMÉ n'est jamais réémis (le dispatcher le
+  // couperait de toute façon) — la réémission ne promet que ce qui partira.
+  const entree = getCatalogEntry(origine.eventType);
+  const restriction = brute ? retirerCanauxSupprimes(brute, entree) : null;
+  if (brute && brute.canaux.length > 0 && restriction && restriction.canaux.length === 0) {
+    throw new ReemissionError('RIEN_A_REEMETTRE', 'Les canaux en échec de cet événement ont été supprimés (lot 79) : rien à réémettre.');
+  }
   if (restriction && restriction.canaux.length === 0) {
     throw new ReemissionError('RIEN_A_REEMETTRE', 'Tous les canaux de cet événement ont été livrés : rien à réémettre.');
   }

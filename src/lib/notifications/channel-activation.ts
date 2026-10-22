@@ -72,6 +72,27 @@ export function transactionalLockReason(templateCode: string): string | null {
   return LOCKED_TRANSACTIONAL_EMAILS[templateCode.trim().toUpperCase()] ?? null;
 }
 
+/**
+ * Lot 79C — e-mails transactionnels SUPPRIMÉS : jamais envoyés, quel que soit
+ * l'appelant (ancien code, reprise, envoi de test), ni proposés au BO.
+ * L'envoi est journalisé `skipped` / `COMMUNICATION_RETIRED` (distinct d'un
+ * envoi réussi). Le gabarit reste en base (historique des envois).
+ */
+export const RETIRED_TRANSACTIONAL_EMAILS: Readonly<Record<string, string>> = {
+  // Décision PO (lot 79) : la révocation des sessions pour réutilisation d'un
+  // jeton reste active et journalisée (AUTH_TOKEN_REUSE_DETECTED) ; seul
+  // l'e-mail « appareils déconnectés par précaution » est supprimé, sans
+  // notification de remplacement.
+  SECURITY_SESSIONS_REVOKED: 'Supprimé (lot 79) : la déconnexion par précaution reste journalisée, sans e-mail.',
+};
+
+export function transactionalRetiredReason(templateCode: string): string | null {
+  return RETIRED_TRANSACTIONAL_EMAILS[templateCode.trim().toUpperCase()] ?? null;
+}
+
+/** Motif d'un envoi supprimé dans `email_logs.error_message`. */
+export const COMMUNICATION_RETIRED_ERROR = 'COMMUNICATION_RETIRED';
+
 // ── Lecture ─────────────────────────────────────────────────────────────────
 
 /**

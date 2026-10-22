@@ -102,8 +102,8 @@ export interface NotificationPayloadMap {
     assetFileId?: number; documentTitle?: string;
     documents?: Array<{ assetFileId: number; title: string }>;
   };
-  DOCUMENT_BATCH_PARTIALLY_FAILED: { lotId: number; analysedCount: number; failedCount: number };
-  DOCUMENT_BATCH_FAILED: { lotId: number; analysedCount: number; failedCount: number };
+  DOCUMENT_BATCH_PARTIALLY_FAILED: { lotId: number; analysedCount: number; failedCount: number; documents?: Array<{ assetFileId: number; title: string }> };
+  DOCUMENT_BATCH_FAILED: { lotId: number; analysedCount: number; failedCount: number; documents?: Array<{ assetFileId: number; title: string }> };
   ANALYSIS_FAILED_PERSISTENT: { assetFileId: number; documentTitle?: string; errorReason?: string };
   DOCUMENT_UPLOAD_COMPLETED: {
     /** Documents du lot effectivement ajoutés. */
@@ -156,7 +156,8 @@ export interface NotificationPayloadMap {
 
   TRIAL_ENDING: { daysLeft?: number; endsAt?: string };
   TRIAL_ENDED: Record<string, never>;
-  SUBSCRIPTION_RENEWED: { planCode?: string };
+  /** Lot 79C : `receiptCovered` — le reçu Stripe de la facture couvre déjà ce renouvellement (pas d'e-mail générique). */
+  SUBSCRIPTION_RENEWED: { planCode?: string; receiptCovered?: boolean };
   /** Première activation d'une offre payante (fin d'essai, réabonnement). */
   SUBSCRIPTION_ACTIVATED: {
     planCode: string;
@@ -182,12 +183,14 @@ export interface NotificationPayloadMap {
     effectiveAt?: string | null;
   };
   SUBSCRIPTION_CANCELLATION_SCHEDULED: { effectiveAt?: string };
-  SUBSCRIPTION_CANCELLED: Record<string, never>;
+  /** Lot 79C : `downgradeEmailSent` — l'e-mail DOWNGRADE_NOTIFICATION couvre déjà la résiliation. */
+  SUBSCRIPTION_CANCELLED: { downgradeEmailSent?: boolean };
   REFERRAL_REWARD_GRANTED: { referralEventId: number; referredAccountId?: number };
   GDPR_EXPORT_READY: { exportId: number; expiresAt?: string };
 
   // deadlineAt : échéance J+90 du cycle d'impayé (GAP-06).
-  PAYMENT_FAILED: { accountId?: number; duoId?: number; deadlineAt?: string };
+  // Lot 79C : authenticationRequired — même facture, authentification bancaire demandée (message unique).
+  PAYMENT_FAILED: { accountId?: number; duoId?: number; deadlineAt?: string; authenticationRequired?: boolean };
   PAYMENT_ACTION_REQUIRED: { accountId?: number; duoId?: number };
   SUBSCRIPTION_SUSPENDED: { accountId?: number };
   // reason 'unpaid' : rappel J-7 / J-1 du cycle d'impayé (GAP-06).

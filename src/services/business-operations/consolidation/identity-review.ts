@@ -47,6 +47,9 @@
 import { sql, type SQL } from 'drizzle-orm';
 import type { DbTx } from '../lock';
 import type { CandidateDecision, IdentityCheck } from './matching';
+import {
+  RESTORE_AUDIT_ACTION, RESTORE_AUDIT_TARGET, RESTORE_BLOCK_MESSAGES, type RestoreBlockCode,
+} from '../identity-restore.model';
 
 /** Version du contrôle d'identité économique (changer de version relance la réévaluation du stock). */
 export const IDENTITY_REVIEW_VERSION = 'l78a-v1';
@@ -211,36 +214,116 @@ export async function listOpenSuspectFiles(accountId: number, operationIds: read
   }
 }
 
-export class IdentityReviewNotFoundError extends Error {
-  constructor(readonly reviewId: number) {
-    super(`Contrôle d'identité ${reviewId} introuvable ou non rétablissable.`);
+/**
+ * Lot 79A : pourquoi une séparation n'est plus rétablissable (alias `r` =
+ * journal, `o` = Opération d'origine jointe sur `(r.operation_id, r.account_id)`) ;
+ * NULL = séparation encore effective. MÊME prédicat pour le bouton du détail
+ * BO (lecture seule) et pour le contrôle sous verrou du rétablissement.
+ */
+export const RESTORE_BLOCK_SQL = `(CASE
+  WHEN r.kind <> 'SEPARATED' THEN 'NOT_A_SEPARATION'
+  WHEN r.status = 'REVERTED' THEN 'ALREADY_RESTORED'
+  WHEN r.status <> 'APPLIED' THEN 'NOT_A_SEPARATION'
+  WHEN r.file_id IS NULL OR NOT EXISTS (SELECT 1 FROM asset_files f WHERE f.id = r.file_id AND f.account_id = r.account_id AND f.deleted_at IS NULL) THEN 'SOURCE_DELETED'
+  WHEN r.candidate_key IS NULL OR NOT EXISTS (SELECT 1 FROM document_operation_candidates c WHERE c.account_id = r.account_id AND c.file_id = r.file_id
+                                                AND c.candidate_key = r.candidate_key AND c.status = 'ACTIVE') THEN 'CANDIDATE_GONE'
+  WHEN o.merged_into_operation_id IS NOT NULL THEN 'ORIGIN_MERGED'
+  WHEN o.invalidated_at IS NOT NULL THEN 'ORIGIN_INVALIDATED'
+  WHEN EXISTS (SELECT 1 FROM business_operation_sources s WHERE s.account_id = r.account_id AND s.operation_id = r.operation_id AND s.active
+                 AND s.source_kind = 'DOCUMENT' AND s.source_entity_key = r.file_id::text AND s.locator->>'candidateKey' = r.candidate_key) THEN 'ALREADY_ATTACHED'
+END)`;
+
+/** Refus d'un rétablissement (lot 79A) : la séparation n'existe pas ou n'est plus effective. */
+export class IdentityRestoreRefusedError extends Error {
+  constructor(readonly reviewId: number, readonly code: RestoreBlockCode) {
+    super(RESTORE_BLOCK_MESSAGES[code]);
+    this.name = 'IdentityRestoreRefusedError';
+  }
+}
+
+/** Contrôle introuvable (pour ce compte / cette Opération) ou non rétablissable — compatibilité lot 78A. */
+export class IdentityReviewNotFoundError extends IdentityRestoreRefusedError {
+  constructor(reviewId: number) {
+    super(reviewId, 'NOT_FOUND');
+    this.message = `Contrôle d'identité ${reviewId} introuvable ou non rétablissable.`;
     this.name = 'IdentityReviewNotFoundError';
   }
 }
 
+export interface RevertOptions {
+  adminId: number;
+  /** E-mail de l'administrateur (journal d'audit ; relu en base si absent). */
+  adminEmail?: string;
+  /** Lot 79A : compte attendu (contrôle d'appartenance) — refus NOT_FOUND s'il diffère. */
+  accountId?: number;
+  /** Lot 79A : Opération affichée au BO — la séparation doit la concerner (origine ou arrivée). */
+  operationId?: number;
+  /** Lot 79A : motif (journal d'audit `OPERATION_IDENTITY_RESTORE`, écrit dans la MÊME transaction). */
+  reason?: string;
+}
+
+export interface RevertResult {
+  accountId: number; operationId: number; fileId: number; jobId: number | null;
+  before: Record<string, unknown>; after: Record<string, unknown>;
+}
+
 /**
- * Rétablit un rattachement séparé (BO, réversibilité §5) : décision de
- * rapprochement CONFIRMED (origine ADMIN_REVIEW) du candidat vers son
- * Opération d'origine — prioritaire (M0) au passage T3 suivant, demandé
+ * Rétablit un rattachement séparé (BO, réversibilité §5 ; bouton lot 79A) :
+ * décision de rapprochement CONFIRMED (origine ADMIN_REVIEW) du candidat vers
+ * son Opération d'origine — prioritaire (M0) au passage T3 suivant, demandé
  * aussitôt. Journal REVERTED, administrateur tracé. Rien n'est édité à la main :
  * le moteur T3 réapplique la décision.
+ *
+ * Lot 79A : sous le verrou Opérations du compte et `FOR UPDATE` du journal —
+ * un double clic ou deux administrateurs ne rétablissent qu'UNE fois (le
+ * second reçoit ALREADY_RESTORED) ; refus explicite si la séparation n'est
+ * plus effective (`RESTORE_BLOCK_SQL`) ; journal d'audit admin écrit dans la
+ * même transaction (atomique avec la décision).
  */
-export async function revertIdentitySeparation(reviewId: number, opts: { adminId: number }): Promise<{ accountId: number; operationId: number; fileId: number; jobId: number | null }> {
+export async function revertIdentitySeparation(reviewId: number, opts: RevertOptions): Promise<RevertResult> {
   if (!Number.isSafeInteger(reviewId) || reviewId <= 0) throw new IdentityReviewNotFoundError(reviewId);
   const { pgClient } = await import('@/db');
-  const [row] = (await pgClient.unsafe(
-    `SELECT account_id, operation_id, file_id, candidate_key FROM business_operation_identity_reviews
-      WHERE id = $1 AND kind = 'SEPARATED' AND status = 'APPLIED' AND file_id IS NOT NULL AND candidate_key IS NOT NULL`,
+  const [pre] = (await pgClient.unsafe(
+    `SELECT account_id, operation_id, target_operation_id FROM business_operation_identity_reviews WHERE id = $1`,
     [reviewId] as never[],
-  )) as unknown as Array<{ account_id: number; operation_id: string; file_id: number; candidate_key: string }>;
-  if (!row) throw new IdentityReviewNotFoundError(reviewId);
-  const accountId = Number(row.account_id);
-  const operationId = Number(row.operation_id);
-  const fileId = Number(row.file_id);
+  )) as unknown as Array<{ account_id: number; operation_id: string; target_operation_id: string | null }>;
+  if (!pre) throw new IdentityReviewNotFoundError(reviewId);
+  const accountId = Number(pre.account_id);
+  if (opts.accountId !== undefined && opts.accountId !== accountId) throw new IdentityReviewNotFoundError(reviewId);
+  if (opts.operationId !== undefined) {
+    // L'Opération affichée doit appartenir au compte de la séparation ET la concerner (origine ou arrivée).
+    if (opts.operationId !== Number(pre.operation_id) && opts.operationId !== Number(pre.target_operation_id ?? 0)) throw new IdentityReviewNotFoundError(reviewId);
+    const [op] = (await pgClient.unsafe(`SELECT 1 AS ok FROM business_operations WHERE id = $1 AND account_id = $2`, [opts.operationId, accountId] as never[])) as unknown as unknown[];
+    if (!op) throw new IdentityReviewNotFoundError(reviewId);
+  }
+  const correlationId = `bo-identity-revert:${reviewId}:${opts.adminId}`;
   const { withBusinessOperationWrite } = await import('../write');
-  await withBusinessOperationWrite(accountId, async (repo, session) => {
-    await repo.recordMatchDecision({
-      sourceKind: 'DOCUMENT', entityKey: fileId, sourceVersion: row.candidate_key, operationId,
+  const done = await withBusinessOperationWrite(accountId, async (repo, session) => {
+    // Verrou du compte pris (session) ; la ligne du journal est relue verrouillée : décision unique.
+    const [row] = await rows<{ kind: string; status: string; operation_id: string; target_operation_id: string | null; file_id: number | null; candidate_key: string | null;
+      candidate_operation_id: string | null; candidate_outcome: string | null; bloque: RestoreBlockCode | null }>(session.tx, sql`
+      SELECT r.kind, r.status, r.operation_id, r.target_operation_id, r.file_id, r.candidate_key,
+             (SELECT c.t3_operation_id FROM document_operation_candidates c WHERE c.account_id = r.account_id AND c.file_id = r.file_id
+                AND c.candidate_key = r.candidate_key AND c.status = 'ACTIVE' ORDER BY c.id DESC LIMIT 1) AS candidate_operation_id,
+             (SELECT c.t3_outcome FROM document_operation_candidates c WHERE c.account_id = r.account_id AND c.file_id = r.file_id
+                AND c.candidate_key = r.candidate_key AND c.status = 'ACTIVE' ORDER BY c.id DESC LIMIT 1) AS candidate_outcome,
+             ${sql.raw(RESTORE_BLOCK_SQL)} AS bloque
+        FROM business_operation_identity_reviews r
+        JOIN business_operations o ON o.id = r.operation_id AND o.account_id = r.account_id
+       WHERE r.id = ${reviewId} AND r.account_id = ${accountId}
+         FOR UPDATE OF r`);
+    if (!row) throw new IdentityReviewNotFoundError(reviewId);
+    if (row.bloque) throw new IdentityRestoreRefusedError(reviewId, row.bloque);
+    const operationId = Number(row.operation_id);
+    const fileId = Number(row.file_id);
+    const candidateKey = String(row.candidate_key);
+    const before = {
+      reviewStatus: row.status, operationId, targetOperationId: row.target_operation_id === null ? null : Number(row.target_operation_id),
+      fileId, candidateKey, candidateOperationId: row.candidate_operation_id === null ? null : Number(row.candidate_operation_id),
+      candidateOutcome: row.candidate_outcome,
+    };
+    const decisionId = await repo.recordMatchDecision({
+      sourceKind: 'DOCUMENT', entityKey: fileId, sourceVersion: candidateKey, operationId,
       decision: 'CONFIRMED', origin: 'ADMIN_REVIEW', reasonCode: 'ADMIN_IDENTITY_SEPARATION_REVERTED',
     });
     await session.tx.execute(sql`
@@ -248,10 +331,58 @@ export async function revertIdentitySeparation(reviewId: number, opts: { adminId
        WHERE id = ${reviewId} AND account_id = ${accountId}`);
     await session.tx.execute(sql`
       UPDATE document_operation_candidates SET t3_pending = true
-       WHERE account_id = ${accountId} AND file_id = ${fileId} AND status = 'ACTIVE' AND candidate_key = ${row.candidate_key}`);
-  }, { correlationId: `bo-identity-revert:${reviewId}:${opts.adminId}` });
+       WHERE account_id = ${accountId} AND file_id = ${fileId} AND status = 'ACTIVE' AND candidate_key = ${candidateKey}`);
+    const after = { reviewStatus: 'REVERTED', matchDecisionId: decisionId, decision: 'CONFIRMED', origin: 'ADMIN_REVIEW', operationId, fileId, candidateKey };
+    if (opts.reason !== undefined) {
+      const { logAdminAction } = await import('@/lib/admin-audit');
+      await logAdminAction({
+        adminId: opts.adminId, adminEmail: opts.adminEmail, action: RESTORE_AUDIT_ACTION, targetType: RESTORE_AUDIT_TARGET, targetId: reviewId,
+        result: 'SUCCESS', before, after,
+        details: { reason: opts.reason, accountId, operationId, viewedOperationId: opts.operationId ?? null, reviewId, correlationId },
+        executor: session.tx as never,
+      });
+    }
+    return { operationId, fileId, before, after };
+  }, { correlationId });
   const { requestOperationsConsolidation } = await import('./queue');
   // Même périmètre qu'un arbitrage résolu (TRG-018) ; déclencheur inactif : le balayage horaire reprend le candidat en attente.
-  const jobId = await requestOperationsConsolidation(accountId, { trigger: 'arbitration_resolved', fileId, correlationId: `bo-identity-revert:${reviewId}:${opts.adminId}` });
-  return { accountId, operationId, fileId, jobId };
+  const jobId = await requestOperationsConsolidation(accountId, { trigger: 'arbitration_resolved', fileId: done.fileId, correlationId });
+  return { accountId, operationId: done.operationId, fileId: done.fileId, jobId, before: done.before, after: { ...done.after, jobId } };
+}
+
+/**
+ * Lot 79A : sources ACTIVES des Opérations `operationIds` rattachées par une
+ * décision de rapprochement CONFIRMED d'origine ADMIN_REVIEW (rétablissement
+ * BO). Un administrateur a tranché : ces sources ne sont plus des indices
+ * CONTRE l'identité des autres sources de l'Opération (aucun doute ni
+ * contradiction d'attribut ré-ouvert par elles).
+ */
+export async function loadAdminRestoredSourceIds(tx: DbTx, accountId: number, operationIds: readonly number[]): Promise<Set<number>> {
+  const ids = [...new Set(operationIds)].filter((n) => Number.isSafeInteger(n) && n > 0);
+  if (!ids.length) return new Set();
+  const r = await rows<{ id: string }>(tx, sql`
+    SELECT s.id FROM business_operation_sources s
+     WHERE s.account_id = ${accountId} AND s.active AND s.source_kind = 'DOCUMENT' AND s.operation_id = ANY(${`{${ids.join(',')}}`}::bigint[])
+       AND EXISTS (SELECT 1 FROM business_operation_match_decisions d
+                    WHERE d.account_id = s.account_id AND d.active AND d.decision = 'CONFIRMED' AND d.origin = 'ADMIN_REVIEW'
+                      AND d.candidate_operation_id = s.operation_id AND d.source_kind = 'DOCUMENT'
+                      AND d.source_entity_key = s.source_entity_key AND d.source_version = s.locator->>'candidateKey')`);
+  return new Set(r.map((x) => Number(x.id)));
+}
+
+/**
+ * Lot 79A (pur) : une contradiction d'attribut est ARBITRÉE quand, sans les
+ * sources rétablies par un administrateur, il ne reste qu'une valeur — elle
+ * est conservée à part (traçabilité), hors des contradictions à examiner.
+ */
+export function splitArbitratedConflicts<C extends { values: Array<{ value: string; sourceIds: number[] }> }>(
+  conflicts: readonly C[], adminSourceIds: ReadonlySet<number>,
+): { open: C[]; arbitrated: C[] } {
+  const open: C[] = [];
+  const arbitrated: C[] = [];
+  for (const c of conflicts) {
+    const restantes = c.values.filter((v) => v.sourceIds.some((id) => !adminSourceIds.has(id)));
+    (adminSourceIds.size && restantes.length <= 1 ? arbitrated : open).push(c);
+  }
+  return { open, arbitrated };
 }
