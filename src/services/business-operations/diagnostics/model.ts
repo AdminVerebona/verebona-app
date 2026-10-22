@@ -220,6 +220,19 @@ const REASONS: Readonly<Record<string, string>> = {
   USER_CLAIM_ASSET_REINSTATED: 'bien réintégré au sinistre par l’utilisateur',
 };
 
+/** Lot 78A : motifs du contrôle d'identité économique (BO). */
+const IDENTITY_REASONS: Readonly<Record<string, string>> = {
+  T3_IDENTITY_SEPARATED: 'source retirée : identité économique contredite par la source fondatrice de l’Opération (séparation certaine, lot 78A)',
+  T3_SAME_DOCUMENT_DUPLICATE: 'doublon d’un même document : la source rejoint l’Opération la plus ancienne (lot 78A)',
+  T3_SOURCE_WITHDRAWN_REEVALUATED: 'valeur justifiée par une source retirée, réévaluée depuis les sources restantes (lot 78A)',
+  SAME_SOURCE_IDENTITY_CONTRADICTED: 'rattachement historique contredit (montants, équipements, tiers, dates) : séparé',
+  ECONOMIC_IDENTITY_CONTRADICTED: 'identité économique contredite : autre transaction',
+  MATCH_SAME_DOCUMENT: 'même transaction qu’un autre candidat du document (doublon rapproché)',
+  M3_IDENTITY_CONTRADICTED: 'verdict IA contredit par l’identité économique : soumis à l’utilisateur',
+  SAME_DOCUMENT_REALITY: 'même transaction qu’un autre candidat du document',
+  ADMIN_IDENTITY_SEPARATION_REVERTED: 'séparation d’identité annulée depuis le BO (rattachement rétabli)',
+};
+
 const REFERENCE_KIND_LABELS: Readonly<Record<string, string>> = {
   INVOICE: 'facture', QUOTE: 'devis', ORDER: 'commande', WORK_ORDER: 'ordre de travail', CONTRACT: 'contrat',
   POLICY: 'police', CLAIM: 'sinistre', LOAN: 'prêt', CUSTOMER: 'numéro client', DELIVERY: 'bon de livraison', OTHER: 'référence',
@@ -229,6 +242,7 @@ const REFERENCE_KIND_LABELS: Readonly<Record<string, string>> = {
 export function explainReason(code: string | null | undefined): string {
   if (!code) return '—';
   if (REASONS[code]) return REASONS[code];
+  if (IDENTITY_REASONS[code]) return IDENTITY_REASONS[code];
   if (code.startsWith('TECHNICAL_ERROR:')) return `erreur technique de consolidation (${code.slice('TECHNICAL_ERROR:'.length)})`;
   const ref = /^REFERENCE (.+)$/.exec(code);
   if (ref) {
@@ -236,7 +250,7 @@ export function explainReason(code: string | null | undefined): string {
     return `référence de ${[...new Set(kinds)].join(', ')} identique${ref[1].endsWith('(INVALIDATED)') ? ' (Opération invalidée)' : ''}`;
   }
   const cycle = /^OWNERSHIP_CYCLE_(ACQUISITION|DISPOSAL)$/.exec(code);
-  if (cycle) return `même cycle de possession (${cycle[1] === 'ACQUISITION' ? 'acquisition' : 'cession'})`;
+  if (cycle) return `même cycle de possession (${cycle[1] === 'ACQUISITION' ? 'acquisition' : 'cession'}) et identité économique démontrée`;
   if (code.startsWith('MIGRATION_')) return 'migration des données existantes';
   return code;
 }
@@ -473,6 +487,9 @@ export const HARD_ANOMALY_CODES = [
   'FIN_INDEMNITY_DUPLICATED',
   'FIN_PRINCIPAL_AS_COST',
   'T3_TECHNICAL_ERROR_EXHAUSTED',
+  // Lot 78A (§5, §6) : identité économique — doutes signalés pour examen, attributs contradictoires.
+  'IDENTITY_SUSPECT_ATTACHMENT',
+  'IDENTITY_ATTRIBUTE_CONFLICT',
 ] as const;
 export type HardAnomalyCode = (typeof HARD_ANOMALY_CODES)[number];
 
@@ -487,6 +504,8 @@ export const HARD_ANOMALY_LABELS: Readonly<Record<HardAnomalyCode, string>> = {
   FIN_INDEMNITY_DUPLICATED: 'Indemnité portée deux fois sur un même sinistre (déduction multiple possible)',
   FIN_PRINCIPAL_AS_COST: 'Capital emprunté compté comme coût d’un financement',
   T3_TECHNICAL_ERROR_EXHAUSTED: 'Erreur technique T3 : reprises automatiques épuisées',
+  IDENTITY_SUSPECT_ATTACHMENT: 'Rattachement douteux d’un document à une Opération (identité économique non démontrée, conservé — examen requis)',
+  IDENTITY_ATTRIBUTE_CONFLICT: 'Valeurs contradictoires entre les sources d’une Opération (date ou prestataire, conservées sans arbitrage silencieux)',
 };
 
 /** Indicateur C26.2 qui porte chaque anomalie dure. */
@@ -503,6 +522,8 @@ export const HARD_ANOMALY_INDICATOR: Readonly<Record<HardAnomalyCode, IndicatorK
   FIN_INDEMNITY_DUPLICATED: null,
   FIN_PRINCIPAL_AS_COST: null,
   T3_TECHNICAL_ERROR_EXHAUSTED: null,
+  IDENTITY_SUSPECT_ATTACHMENT: null,
+  IDENTITY_ATTRIBUTE_CONFLICT: null,
 };
 
 /** Rappel de la procédure (décision PO Q9) — affiché avec chaque alerte. */

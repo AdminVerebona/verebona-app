@@ -192,7 +192,16 @@ const TYPES_DE_COUT = new Set<string | null>(['ACQUISITION', 'INTERVENTION', 'CO
  */
 export function operationCostLines(
   ops: readonly AssistantOperationRead[],
-  ctx: { assetIds: readonly number[]; year?: number | null },
+  ctx: {
+    assetIds: readonly number[]; year?: number | null;
+    /**
+     * Lot 78B (TCO-R-14) : composantes que la règle PARTAGÉE avec le TCO ne
+     * compte pas (doublon présumé d'un autre justificatif, justificatif retiré,
+     * prix d'un autre bien, achat non incorporé au bien) — décidées par
+     * `t2CostExclusions` (`business-operations/tco/service`), jamais ici.
+     */
+    excludedComponentIds?: ReadonlySet<number>;
+  },
 ): OperationCostLine[] {
   const scope = new Set(ctx.assetIds);
   const global = scope.size === 0;
@@ -211,6 +220,7 @@ export function operationCostLines(
       primaryFileId: documentPrincipal(op)?.fileId ?? null, primaryTitle: documentPrincipal(op)?.title ?? null,
     };
     for (const c of op.components) {
+      if (ctx.excludedComponentIds?.has(c.id)) continue;
       // Lot 54D : attribution du moteur partagé (C10) — mêmes règles que le TCO et les Sinistres.
       const a = attributeComponent(c, op.assetIds, global ? null : scope);
       const attrib = a === 'IN' ? 'in' : a === 'OUT' ? 'out' : 'unallocated';

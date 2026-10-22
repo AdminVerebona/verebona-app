@@ -129,12 +129,63 @@ async function pregenGeneratedToday(accountId: number): Promise<number> {
   return Number(r?.n ?? 0);
 }
 
-export type PregenOutcome = 'formulated' | 'nothing_to_say' | 'fallback' | 'capped' | 'error' | 'resumed';
+/**
+ * Lot 78C : `evaluation_waiting` — des évaluations éligibles restent à
+ * traiter (exécution en cours ailleurs, nouvel essai planifié) : la demande
+ * n'est PAS close, elle est reportée à l'instant attendu ; `evaluation_failed`
+ * — les évaluations restantes sont en échec définitif ou indisponibles sans
+ * essai planifié : demande close avec ce motif explicite (anomalie de
+ * supervision, reprise explicite au BO). « Rien à afficher » n'est jamais
+ * pris pour « toutes les échéances évaluées ».
+ */
+export type PregenOutcome = 'formulated' | 'nothing_to_say' | 'fallback' | 'capped' | 'error' | 'resumed' | 'evaluation_waiting' | 'evaluation_failed';
+
+/** Report minimal / maximal d'une demande en attente d'évaluations (aucune boucle serrée). */
+export const PREGEN_EVALUATION_DEFER_MIN_MS = 30_000;
+export const PREGEN_EVALUATION_DEFER_MAX_MS = 6 * 3600_000;
+
+/**
+ * Lot 78C — issue d'une pré-génération au regard des évaluations (pure,
+ * testée) : `null` si rien ne reste à évaluer (issue habituelle) ; sinon
+ * report jusqu'à l'instant attendu (borné) ou clôture « échec ».
+ */
+export function pregenEvaluationDecision(
+  progress: import('./t6-interpellation.service').T6EvaluationProgress | null, now: Date,
+): { outcome: 'evaluation_waiting'; deferMs: number; consumeAttempt: boolean } | { outcome: 'evaluation_failed' } | null {
+  if (!progress || progress.eligible === 0) return null;
+  // Prenables mais non traitées par ce passage (disjoncteur ouvert, prise
+  // impossible) : nouvel essai court qui CONSOMME une tentative de la demande
+  // (au plus 3 sans progrès : aucune boucle ; la supervision le signale).
+  if (progress.claimable > 0) return { outcome: 'evaluation_waiting', deferMs: 2 * 60_000, consumeAttempt: true };
+  if (progress.waiting > 0) {
+    const t = progress.waitingUntil ? new Date(progress.waitingUntil).getTime() - now.getTime() + 5_000 : 2 * 60_000;
+    return { outcome: 'evaluation_waiting', deferMs: Math.min(PREGEN_EVALUATION_DEFER_MAX_MS, Math.max(PREGEN_EVALUATION_DEFER_MIN_MS, t)), consumeAttempt: false };
+  }
+  return { outcome: 'evaluation_failed' };
+}
 
 /**
  * Clôture d'une demande : `processed_at` = l'instant de la demande TRAITÉE —
  * un signal arrivé pendant le traitement la laisse en attente.
  */
+/**
+ * Lot 78C : report DURABLE d'une demande (évaluations incomplètes) — elle
+ * reste en attente (`processed_at` inchangé), reprise par la tâche planifiée
+ * à l'instant attendu ; la tentative n'est pas consommée (les tentatives des
+ * évaluations sont bornées par `t6_evaluation_runs`). Un nouveau signal la
+ * ramène aussitôt.
+ */
+async function defer(c: Claim, status: PregenOutcome, contextHash: string | null, deferMs: number, consumeAttempt: boolean): Promise<void> {
+  await rows(
+    `UPDATE home_mascot_pregen_requests
+        SET requested_at = GREATEST(requested_at, clock_timestamp() + ($2::int * INTERVAL '1 millisecond')),
+            claimed_until = NULL, attempts = CASE WHEN $5::boolean THEN attempts ELSE GREATEST(0, attempts - 1) END, last_status = $3,
+            last_context_hash = coalesce($4, last_context_hash)
+      WHERE account_id = $1`,
+    [c.accountId, Math.round(deferMs), status, contextHash, consumeAttempt],
+  );
+}
+
 async function close(c: Claim, status: PregenOutcome, contextHash: string | null, retry: boolean): Promise<void> {
   await rows(
     retry
@@ -158,10 +209,22 @@ async function processClaim(c: Claim): Promise<PregenOutcome> {
     }
     const { getMascotPresentation } = await import('./mascot.service');
     let reprise = false;
-    const p = await getMascotPresentation(c.accountId, 'pregen', null, { onResume: () => { reprise = true; } });
+    let progres: import('./t6-interpellation.service').T6EvaluationProgress | null = null;
+    const p = await getMascotPresentation(c.accountId, 'pregen', null, {
+      onResume: () => { reprise = true; },
+      onEvaluation: (x) => { progres = x; },
+    });
     const formulable = p.paragraphs.some((x) => x.sourceCode !== 'CLEAR');
+    // Lot 78C : des évaluations éligibles restent à traiter — jamais clos
+    // « rien à dire » : report durable à l'instant attendu, ou motif d'échec.
+    const evaluations = reprise ? null : pregenEvaluationDecision(progres, new Date());
+    if (evaluations?.outcome === 'evaluation_waiting') {
+      await defer(c, 'evaluation_waiting', p.contextHash, evaluations.deferMs, evaluations.consumeAttempt);
+      return 'evaluation_waiting';
+    }
     // Lot 71G (T6-03) : évaluation partielle, reprise déjà redemandée — demande close normalement.
-    const outcome: PregenOutcome = reprise ? 'resumed' : !formulable ? 'nothing_to_say' : p.source === 't6' ? 'formulated' : 'fallback';
+    const outcome: PregenOutcome = reprise ? 'resumed' : evaluations?.outcome === 'evaluation_failed' ? 'evaluation_failed'
+      : !formulable ? 'nothing_to_say' : p.source === 't6' ? 'formulated' : 'fallback';
     // T6 n'a pas formulé (panne passagère, disjoncteur) : nouvel essai borné.
     await close(c, outcome, p.contextHash, outcome === 'fallback');
     return outcome;
@@ -193,6 +256,9 @@ export interface PregenRunResult {
   formulated: number;
   /** Lot 71G : passages d'évaluation partielle (reprise demandée). */
   resumed?: number;
+  /** Lot 78C : demandes reportées (évaluations en cours ou essai planifié) / closes sur échec d'évaluation. */
+  evaluationWaiting?: number;
+  evaluationFailed?: number;
   fallback: number;
   capped: number;
   nothing: number;
@@ -216,6 +282,8 @@ export async function runMascotPregeneration(opts: { deadline?: number; batch?: 
     else if (o === 'capped') out.capped += 1;
     else if (o === 'nothing_to_say') out.nothing += 1;
     else if (o === 'resumed') out.resumed = (out.resumed ?? 0) + 1;
+    else if (o === 'evaluation_waiting') out.evaluationWaiting = (out.evaluationWaiting ?? 0) + 1;
+    else if (o === 'evaluation_failed') out.evaluationFailed = (out.evaluationFailed ?? 0) + 1;
     else out.errors += 1;
   }
   return out;

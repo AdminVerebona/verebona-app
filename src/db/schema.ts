@@ -3757,6 +3757,8 @@ export const businessOperations = pgTable('business_operations', {
   invalidationReason: text('invalidation_reason'),
   mergedIntoOperationId: bigint('merged_into_operation_id', { mode: 'number' }),
   lastReconciledAt: tstzOptional('last_reconciled_at'),
+  /** Lot 78A (0609) — provenance des valeurs conservées (source, valeur) et contradictions d'attributs. */
+  attributeProvenance: jsonb('attribute_provenance'),
   version: integer('version').notNull().default(1),
   createdAt: tstz('created_at'),
   updatedAt: tstz('updated_at'),
@@ -3897,6 +3899,8 @@ export const businessOperationFinancialComponentSources = pgTable('business_oper
   operationSourceId: bigint('operation_source_id', { mode: 'number' }).notNull().references(() => businessOperationSources.id, { onDelete: 'cascade' }),
   evidenceRole: text('evidence_role').notNull().default('SUPPORTS'),
   isPrimary: boolean('is_primary').notNull().default(false),
+  /** Lot 78A (0609) — lien exact composante → indice T1 → fait : { candidateId, hintIndexes, factIds }. */
+  evidence: jsonb('evidence'),
   createdAt: tstz('created_at'),
 }, (t) => ({
   pk: primaryKey({ name: 'business_operation_financial_component_sources_pk', columns: [t.componentId, t.operationSourceId] }),
@@ -3921,6 +3925,35 @@ export const businessOperationHistory = pgTable('business_operation_history', {
   operationFk: foreignKey({ name: 'business_operation_history_operation_fk', columns: [t.operationId, t.accountId], foreignColumns: [businessOperations.id, businessOperations.accountId] }).onDelete('cascade').onUpdate('cascade'),
   eventTypeChk: check('business_operation_history_event_type_chk', sql`${t.eventType} IN ('CREATED', 'UPDATED', 'TYPE_CHANGED', 'STATUS_CHANGED', 'TARGET_CHANGED', 'FINANCIAL_CHANGED', 'MERGED', 'INVALIDATED', 'REACTIVATED', 'PARENT_CHANGED', 'SOURCE_ADDED', 'SOURCE_REMOVED')`),
   operationIdx: index('business_operation_history_operation_idx').on(t.operationId, t.createdAt),
+}));
+
+/** Lot 78A (0609) — journal des contrôles d'identité économique des rattachements historiques. */
+export const businessOperationIdentityReviews = pgTable('business_operation_identity_reviews', {
+  id: bigserial('id', { mode: 'number' }).primaryKey(),
+  accountId: integer('account_id').notNull(),
+  operationId: bigint('operation_id', { mode: 'number' }).notNull(),
+  kind: text('kind').notNull(),
+  status: text('status').notNull(),
+  fileId: integer('file_id').references(() => assetFiles.id, { onDelete: 'set null' }),
+  candidateKey: text('candidate_key'),
+  sourceId: bigint('source_id', { mode: 'number' }).references(() => businessOperationSources.id, { onDelete: 'set null' }),
+  targetOperationId: bigint('target_operation_id', { mode: 'number' }),
+  basis: text('basis'),
+  signals: jsonb('signals').notNull().default([]),
+  againstSourceIds: bigint('against_source_ids', { mode: 'number' }).array().notNull().default(sql`'{}'`),
+  reviewVersion: text('review_version').notNull(),
+  correlationId: text('correlation_id'),
+  resolvedByAdminId: integer('resolved_by_admin_id'),
+  createdAt: tstz('created_at'),
+  updatedAt: tstz('updated_at'),
+  resolvedAt: tstzOptional('resolved_at'),
+}, (t) => ({
+  operationFk: foreignKey({ name: 'business_operation_identity_reviews_operation_fk', columns: [t.operationId, t.accountId], foreignColumns: [businessOperations.id, businessOperations.accountId] }).onDelete('cascade').onUpdate('cascade'),
+  kindChk: check('business_operation_identity_reviews_kind_chk', sql`${t.kind} IN ('SEPARATED', 'SUSPECT', 'DUPLICATE_RELOCATED')`),
+  statusChk: check('business_operation_identity_reviews_status_chk', sql`${t.status} IN ('APPLIED', 'OPEN', 'RESOLVED', 'REVERTED')`),
+  signalsChk: check('business_operation_identity_reviews_signals_chk', sql`jsonb_typeof(${t.signals}) = 'array'`),
+  accountIdx: index('business_operation_identity_reviews_account_idx').on(t.accountId, t.status, t.createdAt),
+  operationIdx: index('business_operation_identity_reviews_operation_idx').on(t.operationId, t.createdAt),
 }));
 
 /** C16.1 — suppression durable d'une projection par l'utilisateur. */
@@ -4014,6 +4047,9 @@ export const documentOperationCandidates = pgTable('document_operation_candidate
   // Lot 54D — 0379_idx_1 / _idx_2 : reprises programmées, cartes à resynchroniser.
   t3RetryIdx: index('document_operation_candidates_t3_retry_idx').on(t.t3RetryAt, t.accountId).where(sql`t3_retry_at IS NOT NULL`),
   t3CardsPendingIdx: index('document_operation_candidates_t3_cards_pending_idx').on(t.accountId, t.fileId).where(sql`t3_cards_pending`),
+  // Lot 78A — 0609_idx_3 : candidats pas encore réévalués par le contrôle d'identité économique (rattrapage borné).
+  identityReviewIdx: index('document_operation_candidates_identity_review_idx').on(t.accountId)
+    .where(sql`status = 'ACTIVE' AND established AND COALESCE(t3_detail->>'identityReview', '') <> 'l78a-v1'`),
 }));
 
 /** C6.3 — décisions de rapprochement durables. */
@@ -4034,7 +4070,7 @@ export const businessOperationMatchDecisions = pgTable('business_operation_match
   operationFk: foreignKey({ name: 'business_operation_match_decisions_operation_fk', columns: [t.candidateOperationId, t.accountId], foreignColumns: [businessOperations.id, businessOperations.accountId] }).onDelete('cascade').onUpdate('cascade'),
   kindChk: check('business_operation_match_decisions_kind_chk', sql`${t.sourceKind} IN (${BO_SOURCE_KINDS_SQL})`),
   decisionChk: check('business_operation_match_decisions_decision_chk', sql`${t.decision} IN ('CONFIRMED', 'REJECTED')`),
-  originChk: check('business_operation_match_decisions_origin_chk', sql`${t.origin} IN ('USER_ARBITRATION', 'SYSTEM_EXPLICIT_REFERENCE')`),
+  originChk: check('business_operation_match_decisions_origin_chk', sql`${t.origin} IN ('USER_ARBITRATION', 'SYSTEM_EXPLICIT_REFERENCE', 'ADMIN_REVIEW')`),
   activeUidx: uniqueIndex('business_operation_match_decisions_active_uidx')
     .on(t.candidateOperationId, t.sourceKind, t.sourceEntityKey, sql`COALESCE(${t.sourceVersion}, '')`)
     .where(sql`active`),

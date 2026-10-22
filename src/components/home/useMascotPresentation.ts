@@ -20,6 +20,27 @@ import { getSessionEpoch } from '@/lib/session/session-lifecycle';
 
 export const MASCOT_REFRESH_MS = 10 * 60_000;
 
+/**
+ * Lot 78C — actualisation CIBLÉE et BORNÉE : quand le serveur signale une
+ * évaluation T6 réellement en cours (ou un nouvel essai planifié bientôt), ou
+ * des documents en cours d'analyse (`refreshAfterMs`), une relecture unique
+ * est programmée après ce délai — au plus `MASCOT_TARGETED_REFRESH_MAX` de
+ * suite, espacées progressivement, jamais onglet masqué : aucun
+ * rafraîchissement permanent. Le compteur repart dès qu'une réponse n'en
+ * demande plus (évaluation terminée : la mascotte quitte son message d'attente).
+ */
+export const MASCOT_TARGETED_REFRESH_MAX = 8;
+export const MASCOT_TARGETED_REFRESH_MIN_MS = 5_000;
+
+/** Délai de la prochaine relecture ciblée, ou `null` (pure, testée). */
+export function nextTargetedRefreshMs(hint: number | null | undefined, done: number): number | null {
+  if (hint == null || !Number.isFinite(hint) || hint <= 0) return null;
+  if (done >= MASCOT_TARGETED_REFRESH_MAX) return null;
+  // Espacement progressif : ×1 pour les 3 premières, ×2 ensuite, ×3 au-delà de 6.
+  const facteur = 1 + Math.floor(done / 3);
+  return Math.min(MASCOT_REFRESH_MS, Math.max(MASCOT_TARGETED_REFRESH_MIN_MS, hint) * facteur);
+}
+
 // ══════════════════════════════════════════════════════════════════════════
 // AFFICHAGE QUASI IMMÉDIAT (lot 26, point 17)
 //
@@ -147,6 +168,9 @@ export function useMascotPresentation(visibleSecondaries?: (p: MascotPresentatio
   const [failed, setFailed] = useState(false);
   const seq = useRef(0);
   const visitId = useRef<string>('');
+  // Lot 78C : relecture ciblée programmée, nombre déjà faites, relecture différée (onglet masqué).
+  const cible = useRef<{ timer: ReturnType<typeof setTimeout> | null; done: number; enAttente: boolean }>({ timer: null, done: 0, enAttente: false });
+  const loadRef = useRef<() => void>(() => {});
   const vus = useRef<Map<string, { sourceCode: string; placement: 'subject' | 'secondary' }>>(new Map());
 
   const send = useCallback((events: Array<{
@@ -201,6 +225,20 @@ export function useMascotPresentation(visibleSecondaries?: (p: MascotPresentatio
       // globale ; `contextHash` métier inchangé).
       setPresentation((prev) => (keepDisplayedPresentation(prev, data) ? prev : data));
       trackDisplay(data);
+      // Lot 78C : relecture ciblée si la réponse la demande (bornée).
+      const c = cible.current;
+      if (c.timer) { clearTimeout(c.timer); c.timer = null; }
+      const ms = nextTargetedRefreshMs(data.refreshAfterMs, c.done);
+      if (ms == null) {
+        if (!data.refreshAfterMs) c.done = 0;
+      } else {
+        c.done += 1;
+        c.timer = setTimeout(() => {
+          c.timer = null;
+          if (typeof document !== 'undefined' && document.visibilityState === 'hidden') { c.enAttente = true; return; }
+          loadRef.current();
+        }, ms);
+      }
     } catch {
       if (mine !== seq.current) return;
       // Erreur globale : état dégradé explicite, jamais « Tout est à jour » (§20).
@@ -210,6 +248,7 @@ export function useMascotPresentation(visibleSecondaries?: (p: MascotPresentatio
       setFailed(true);
     }
   }, [trackDisplay]);
+  loadRef.current = () => { void load(); };
 
   // Visite accueil : du montage au départ de la page (§3).
   useEffect(() => {
@@ -230,10 +269,21 @@ export function useMascotPresentation(visibleSecondaries?: (p: MascotPresentatio
       debounce = setTimeout(() => { void load(); }, 800);
     };
     MASCOT_REFRESH_EVENTS.forEach((e) => window.addEventListener(e, onChange));
+    // Lot 78C : relecture ciblée différée pendant que l'onglet était masqué.
+    const onVisible = () => {
+      if (document.visibilityState !== 'visible' || !cible.current.enAttente) return;
+      cible.current.enAttente = false;
+      void load();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    const c = cible.current;
     return () => {
       clearInterval(interval);
       if (debounce) clearTimeout(debounce);
+      if (c.timer) clearTimeout(c.timer);
+      c.timer = null; c.done = 0; c.enAttente = false;
       MASCOT_REFRESH_EVENTS.forEach((e) => window.removeEventListener(e, onChange));
+      document.removeEventListener('visibilitychange', onVisible);
     };
   }, [load, trackDisplay]);
 

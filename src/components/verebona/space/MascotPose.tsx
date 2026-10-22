@@ -12,7 +12,7 @@
  * `filter` passé par l'appelant s'y AJOUTE (il ne la remplace jamais).
  */
 import { useRef } from 'react';
-import { mascotSrc, nextPoseMotion, poseAnimation, type PoseMotionState } from '@/lib/verebona/mascot-motion';
+import { mascotSrc, nextPoseMotion, poseAnimation, workingAnimation, type PoseMotionState } from '@/lib/verebona/mascot-motion';
 import { useReducedMotion } from '@/hooks/useMediaQuery';
 import { mascotFilter } from '@/lib/verebona/mascot-motion';
 
@@ -26,13 +26,18 @@ interface MascotPoseProps {
   /** Signature statique (24–26 px devant un titre) : jamais animée. */
   still?: boolean;
   priority?: boolean;
+  /**
+   * Lot 78C : la mascotte est « au travail » (analyse de documents) — léger
+   * balancement continu ; aucun en mouvement réduit ni en signature statique.
+   */
+  working?: boolean;
 }
 
-export function MascotPose({ pose, size, alt = '', className, style, still = false, priority = false }: MascotPoseProps) {
+export function MascotPose({ pose, size, alt = '', className, style, still = false, priority = false, working = false }: MascotPoseProps) {
   const reduced = useReducedMotion();
   const motion = useRef<PoseMotionState | null>(null);
   motion.current = nextPoseMotion(motion.current, pose);
-  const animation = still ? 'none' : poseAnimation(motion.current, reduced);
+  const animation = still ? 'none' : workingAnimation(poseAnimation(motion.current, reduced), working, reduced);
   const { filter: extraFilter, ...restStyle } = style ?? {};
   return (
     // eslint-disable-next-line @next/next/no-img-element -- rendu WebP pré-dimensionné, animation CSS sur l'élément
@@ -46,8 +51,14 @@ export function MascotPose({ pose, size, alt = '', className, style, still = fal
       loading={priority ? 'eager' : 'lazy'}
       decoding="async"
       data-mascot-pose={pose}
+      data-mascot-working={working && !still ? 'true' : undefined}
       className={['vb-mascotte', className].filter(Boolean).join(' ')}
-      style={{ width: size, height: size, objectFit: 'contain', flexShrink: 0, userSelect: 'none', animation, ...restStyle, filter: mascotFilter(extraFilter) }}
+      style={{
+        width: size, height: size, objectFit: 'contain', flexShrink: 0, userSelect: 'none', animation,
+        // Balancement « au travail » autour des pieds, pas du centre de l'image.
+        ...(working && !still ? { transformOrigin: '50% 88%' } : {}),
+        ...restStyle, filter: mascotFilter(extraFilter),
+      }}
     />
   );
 }

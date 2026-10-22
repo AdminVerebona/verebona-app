@@ -107,8 +107,10 @@ scenario('L61', 'TCO — toutes les dépenses, anti-double comptage, tiroir déd
     await k.passer(compte);
     const t2 = await tco(compte, v.id);
     expect(t2.summary).toMatchObject({ cumulativeCostCents: 32_500, acquisitionCents: 30_000, additionalCostsCents: 2_500 });
-    // T3 a rattaché la béquille à l'achat du vélo (M2, cycle de possession) sans en retenir le montant : dépense distincte.
-    expect(t2.lines.find((l) => l.source === 'DOCUMENT')).toMatchObject({ status: 'RETAINED_DIRECT', note: expect.stringContaining('achat du bien') });
+    // Lot 78A : la béquille (25 €) n'est plus rattachée à l'achat du vélo (300 €) par le seul cycle de possession
+    // (ordres de grandeur différents) — elle est sa propre Opération : dépense distincte comptée une fois.
+    expect(t2.lines.find((l) => l.source === 'DOCUMENT')).toMatchObject({ status: 'CONSOLIDATED_ELSEWHERE' });
+    expect(t2.lines.filter((l) => l.source !== 'DOCUMENT' && l.status === 'RETAINED_CONSOLIDATED').map((l) => l.includedCents).sort((a, b) => a - b)).toEqual([2_500, 30_000]);
     // T2 : même lecture (300 consolidés + 25 du justificatif).
     const q = await (await import('@/services/verebona-assistant/canonical/expenses')).sumQualifiedExpenses(compte.id, { assetIds: [v.id] });
     expect(q.qualifiedSumCents).toBe(32_500);

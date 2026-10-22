@@ -609,7 +609,21 @@ export function homeItems(p: MascotPresentation | null, empty: boolean): HomeIte
 // ── Pose (§3.2) ─────────────────────────────────────────────────────────────
 
 export type HomePose =
-  | 'welcome-wave' | 'alert-folder' | 'questioning' | 'reminder-bell' | 'success-check' | 'neutral';
+  | 'welcome-wave' | 'alert-folder' | 'questioning' | 'reminder-bell' | 'success-check' | 'neutral'
+  // Lot 78C : « au travail » — des documents sont en cours d'analyse (pose existante, la mascotte lit un PDF).
+  | 'document-analysis-pdf';
+
+/**
+ * Lot 78C — des documents sont-ils en cours d'analyse (pure) ? MÊME source
+ * que la ligne « N documents sont en cours d'analyse » : le sujet
+ * `PROC-DOC-ANALYSIS` (paragraphe affiché ou élément secondaire), qui
+ * n'existe que si un traitement l'attend réellement (lot 34C).
+ */
+export function documentsInAnalysis(p: MascotPresentation | null): boolean {
+  if (!p) return false;
+  return realParagraphs(p).some((x) => x.sourceCode === 'PROC-DOC-ANALYSIS')
+    || (p.secondaries ?? []).some((x) => x.sourceCode === 'PROC-DOC-ANALYSIS');
+}
 
 /** Nature d'un sujet, y compris sans métadonnées de tuile (présentation ancienne). */
 function kindOf(x: MascotParagraph): NonNullable<MascotTile['kind']> {
@@ -653,6 +667,13 @@ export function homePose(p: MascotPresentation | null, empty: boolean, failed = 
   if (kinds.includes('overdue')) return 'alert-folder';
   if (kinds.includes('verify')) return 'questioning';
   if (kinds.includes('action')) return 'reminder-bell';
+  // Lot 78C : rien à demander à l'utilisateur, mais des documents en cours
+  // d'analyse — la mascotte est « au travail » (elle lit un document), jamais
+  // immobile en pose neutre ; elle revient à la pose habituelle dès que
+  // l'analyse est terminée (présentation actualisée). Une pose d'attention
+  // (retard, vérification, action) reste prioritaire : elle demande un geste.
+  // Présentation non actualisée (`failed`) : pose neutre (état non garanti).
+  if (!failed && documentsInAnalysis(p)) return 'document-analysis-pdf';
   // Lot 61 : la pose suit l'état de présentation — information seule,
   // éléments ouverts non prioritaires, évaluation en cours ou indisponible,
   // source en panne : pose neutre. Seule l'absence établie d'interpellation
@@ -669,6 +690,7 @@ export function homePoseLabel(pose: HomePose): string {
     case 'questioning': return 'Verebona vous demande de vérifier une information';
     case 'reminder-bell': return 'Verebona vous rappelle un sujet à traiter';
     case 'success-check': return 'Verebona : rien de particulier à signaler';
+    case 'document-analysis-pdf': return 'Verebona analyse vos documents';
     default: return 'Verebona';
   }
 }

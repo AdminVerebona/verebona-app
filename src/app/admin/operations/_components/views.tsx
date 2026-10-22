@@ -371,6 +371,23 @@ const amount = (minor: unknown, cur: unknown) => (minor === null || minor === un
 /** Lot 75N : navigation DANS le tiroir « Données du compte » (au lieu d'un changement d'écran). */
 export type OperationDetailNavigate = (type: 'operation' | 'document' | 'asset' | 'equipment' | 'agenda', id: number) => void;
 
+/** Lot 78A : libellés du contrôle d'identité économique et de la provenance (BO, lecture seule). */
+const IDENTITY_KIND: Record<string, string> = {
+  SEPARATED: 'Séparation (contradiction certaine)', SUSPECT: 'Rattachement douteux (conservé)', DUPLICATE_RELOCATED: 'Doublon d’un même document',
+};
+const IDENTITY_STATUS: Record<string, string> = { APPLIED: 'appliqué', OPEN: 'à examiner', RESOLVED: 'résolu', REVERTED: 'rétabli' };
+const PROVENANCE_FIELDS: Array<[string, string]> = [
+  ['plannedDate', 'Date prévue'], ['startDate', 'Date de début'], ['realizedDate', 'Date de réalisation'], ['endDate', 'Date de fin'],
+  ['provider', 'Prestataire'], ['label', 'Libellé'],
+];
+function evidenceLabel(e: unknown): string {
+  if (!e || typeof e !== 'object') return '';
+  const x = e as { candidateId?: unknown; hintIndexes?: unknown; factIds?: unknown };
+  const faits = Array.isArray(x.factIds) ? x.factIds : [];
+  const indices = Array.isArray(x.hintIndexes) ? x.hintIndexes : [];
+  return ` ← candidat T1 #${String(x.candidateId ?? '?')}${indices.length ? `, indice ${indices.join('/')}` : ''}${faits.length ? `, fait #${faits.join('/#')}` : ''}`;
+}
+
 export function OperationDetailView({ d, onNavigate }: { d: OperationDetail; onNavigate?: OperationDetailNavigate }) {
   const o = d.operation;
   const acc = o.accountId;
@@ -447,10 +464,38 @@ export function OperationDetailView({ d, onNavigate }: { d: OperationDetail; onN
             s(c.id), s(c.kind), amount(c.amount_minor, c.currency), c.amount_eur_cents == null ? '—' : formatMoney(n(c.amount_eur_cents), 'EUR'),
             formatDate((c.economic_date ?? c.period_start) as string | null),
             c.target_asset_id ? `bien #${s(c.target_asset_id)}` : c.target_equipment_id ? `équipement #${s(c.target_equipment_id)}` : 'non allouée',
-            ((c.sources ?? []) as Row[]).map((x) => `#${s(x.sourceId)} ${s(x.evidenceRole)}${yes(x.isPrimary) ? ' (principale)' : ''}${yes(x.sourceActive) ? '' : ' — inactive'}`).join(', ') || <span key="z" className="text-[color:var(--text-danger)]">aucune</span>,
+            ((c.sources ?? []) as Row[]).map((x) => `#${s(x.sourceId)} ${s(x.evidenceRole)}${yes(x.isPrimary) ? ' (principale)' : ''}${yes(x.sourceActive) ? '' : ' — inactive'}${evidenceLabel(x.evidence)}`).join(', ') || <span key="z" className="text-[color:var(--text-danger)]">aucune</span>,
             <Active key="e" v={c.active} />,
           ])} />
       </Section>
+
+      {(d.attributeProvenance || (d.identityReviews?.length ?? 0) > 0) && (
+        <Section title="Identité économique et provenance (lot 78A)" count={d.identityReviews?.length ?? 0}>
+          <Grid items={PROVENANCE_FIELDS.map(([k, label]): [string, ReactNode] => {
+            const f = ((d.attributeProvenance?.fields ?? {}) as Record<string, Row | undefined>)[k];
+            return [label, f ? `${s(f.value)} — source #${s(f.sourceId)}` : '—'];
+          })} />
+          {((d.attributeProvenance?.conflicts ?? []) as Row[]).length > 0 && (
+            <div className="mt-3">
+              <Table cols={['Attribut contradictoire', 'Valeurs (sources)', 'Conservée']} empty=""
+                rows={((d.attributeProvenance?.conflicts ?? []) as Row[]).map((c) => [
+                  s(c.field), ((c.values ?? []) as Row[]).map((v) => `${s(v.value)} (#${((v.sourceIds ?? []) as unknown[]).join(', #')})`).join(' ; '), s(c.retained),
+                ])} />
+            </div>
+          )}
+          {(d.identityReviews?.length ?? 0) > 0 && (
+            <div className="mt-3">
+              <Table cols={['Contrôle', 'État', 'Document', 'Source', 'Opération d’origine', 'Opération retenue', 'Signaux', 'Date']} empty=""
+                rows={(d.identityReviews ?? []).map((r: Row) => [
+                  IDENTITY_KIND[s(r.kind)] ?? s(r.kind), IDENTITY_STATUS[s(r.status)] ?? s(r.status),
+                  r.file_id ? <span key="d">{docLink(n(r.file_id), `document #${s(r.file_id)} (${s(r.candidate_key)})`, 'hover:underline whitespace-nowrap')}</span> : '—',
+                  s(r.source_id), opLink(r.operation_id), opLink(r.target_operation_id),
+                  ((r.signals ?? []) as unknown[]).map(String).join(' '), formatDateTime(r.created_at as string),
+                ])} />
+            </div>
+          )}
+        </Section>
+      )}
 
       <Section title="Références" count={d.references.length}>
         <Table cols={['Nature', 'Valeur', 'Normalisée', 'Source', 'État']} empty="Aucune référence."

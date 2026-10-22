@@ -1233,7 +1233,7 @@ export class BusinessOperationRepository {
    */
   async recordMatchDecision(input: {
     sourceKind: SourceKind; entityKey: string | number; sourceVersion: string | null; operationId: number;
-    decision: 'CONFIRMED' | 'REJECTED'; origin: 'USER_ARBITRATION' | 'SYSTEM_EXPLICIT_REFERENCE'; reasonCode: string;
+    decision: 'CONFIRMED' | 'REJECTED'; origin: 'USER_ARBITRATION' | 'SYSTEM_EXPLICIT_REFERENCE' | 'ADMIN_REVIEW'; reasonCode: string;
   }): Promise<number> {
     oneOf(SOURCE_KINDS, input.sourceKind, 'INVALID_SOURCE', 'Nature de source');
     await this.load(input.operationId, { allowInactive: true });

@@ -64,6 +64,10 @@ import {
   T6EvaluateOutput, T6_EVALUATION_INPUT_SCHEMA_VERSION, T6_EVALUATION_OUTPUT_SCHEMA_VERSION, validateT6Evaluation,
   type T6EvaluationRejection, type T6ValidatedDecision,
 } from './t6-contract';
+import {
+  claimT6Runs, finishT6Runs, t6RunsReady,
+  type T6ClaimResult, type T6FinishedRun, type T6RunResult, type T6RunSubject,
+} from './t6-evaluation-runs';
 
 /** Branche FORMULATE du prompt maître T6 (CDC 15 §28). */
 export const T6_MASTER_OPERATION = 't6_formulate';
@@ -812,6 +816,77 @@ export interface T6EvaluationOutcome {
   traceId?: string | null;
   model?: string | null;
   latencyMs?: number;
+  /**
+   * Lot 78C : exécution DURABLE (`t6_evaluation_runs`) — prise en charge,
+   * tentatives, interruptions reprises, état écrit à la clôture de chaque
+   * évaluation (COMPLETED, RETRY_WAIT, FAILED, UNAVAILABLE) ou motif du refus
+   * de prise (exécution vivante ailleurs, essai planifié plus tard…).
+   * Absent : table non déployée (comportement du lot 77).
+   */
+  run?: T6EvaluationRunTrace | null;
+}
+
+/** Lot 78C : trace de l'exécution durable d'une évaluation. */
+export interface T6EvaluationRunTrace {
+  runId: string | null;
+  claimed: boolean;
+  /** Refus de prise : motif et instant attendu. */
+  refusal?: { reason: string; waitingUntil: string | null; agendaItemId: number } | null;
+  /** Tentative de chaque échéance prise (`agendaItemId` → n°). */
+  attempts?: Record<number, number>;
+  /** Échéances dont l'exécution précédente avait été interrompue (bail expiré). */
+  interrupted?: number[];
+  /** État écrit à la clôture ; `null` : clôture non enregistrée (bail repris à l'expiration). */
+  finished?: T6FinishedRun[] | null;
+  /** Issue prévue par échéance (avant écriture). */
+  results?: T6RunResult[];
+}
+
+/** Lot 78C : persistance des exécutions (injectable : base, tests). */
+export interface T6RunStore {
+  ready: () => Promise<boolean>;
+  claim: (p: { accountId: number; runId: string; mode: string; subjects: readonly T6RunSubject[] }) => Promise<T6ClaimResult>;
+  finish: (p: { accountId: number; runId: string; results: readonly T6RunResult[]; traceId?: string | null }) => Promise<T6FinishedRun[]>;
+}
+
+export const t6RunDbStore: T6RunStore = { ready: t6RunsReady, claim: claimT6Runs, finish: finishT6Runs };
+
+/**
+ * Lot 78C — issue d'une évaluation, échéance par échéance (pure, testée) :
+ * décision acceptée ET enregistrée → COMPLETED ; rejetée, non enregistrée,
+ * sortie invalide, modèle indisponible → nouvel essai (RETRY_WAIT ou FAILED
+ * selon les tentatives) ; plafond IA du compte → UNAVAILABLE. Jamais
+ * « traité » sans décision enregistrée.
+ */
+export function t6RunResultsOf(o: T6EvaluationOutcome, refs: T6InterpellationBundle['refs'], costCap = false): T6RunResult[] {
+  const out: T6RunResult[] = [];
+  const persistes = o.persistedSubjectIds ?? (o.persisted >= o.accepted.length ? o.accepted.map((d) => d.subjectId) : []);
+  for (const [subjectId, c] of refs) {
+    const id = c.agendaItemId;
+    if (o.status === 'error') {
+      out.push(costCap
+        ? { agendaItemId: id, outcome: 'UNAVAILABLE', errorKind: 'cost_cap', error: o.error ?? 'plafond IA', detail: 'plafond IA du compte' }
+        : { agendaItemId: id, outcome: 'RETRY', errorKind: 'model_unavailable', error: o.error ?? 'erreur', detail: 'modèle indisponible' });
+      continue;
+    }
+    if (o.status === 'validation_failed') {
+      out.push({ agendaItemId: id, outcome: 'RETRY', errorKind: 'invalid_output', error: o.error ?? 'sortie invalide', detail: 'sortie rejetée en entier' });
+      continue;
+    }
+    const a = o.accepted.find((d) => d.subjectId === subjectId);
+    const r = o.rejected.find((d) => d.subjectId === subjectId);
+    const np = o.notPersisted?.find((d) => d.subjectId === subjectId);
+    if (a && !np && persistes.includes(subjectId)) {
+      out.push({ agendaItemId: id, outcome: 'COMPLETED', detail: `${a.decision}/${a.reasonCode}` });
+    } else if (a) {
+      out.push({ agendaItemId: id, outcome: 'RETRY', errorKind: 'write_failed', error: o.error ?? 'décision non enregistrée', detail: `non enregistrée (${np?.reason ?? 'write_failed'})` });
+    } else if (r) {
+      out.push({ agendaItemId: id, outcome: 'RETRY', errorKind: 'rejected', error: r.reason, detail: `rejetée : ${r.reason}` });
+    } else {
+      out.push({ agendaItemId: id, outcome: 'RETRY', errorKind: 'invalid_output', error: 'décision absente de la sortie', detail: 'absente de la sortie' });
+    }
+  }
+  return out;
 }
 
 /** Disjoncteur PROPRE à EVALUATE : ses échecs ne coupent jamais la formulation. */
@@ -855,6 +930,8 @@ export interface T6EvaluationDependencies {
   execute: (req: Parameters<typeof AiGateway.execute>[0]) => ReturnType<typeof AiGateway.execute>;
   /** Trace du passage (reporting T6, BO › Exécutions IA › Rapports). */
   report?: (o: T6EvaluationOutcome) => Promise<unknown> | void;
+  /** Lot 78C : exécutions durables ; absent : mémoire de l'instance (lot 77). */
+  runs?: T6RunStore;
 }
 
 export const t6EvaluationDefaultDeps: T6EvaluationDependencies = {
@@ -863,6 +940,7 @@ export const t6EvaluationDefaultDeps: T6EvaluationDependencies = {
   // Lot 72A : version effective pour l'opération EVALUATE (et non FORMULATE).
   promptVersion: getT6EvaluatePromptVersion,
   execute: (req) => AiGateway.execute(req),
+  runs: t6RunDbStore,
 };
 
 /**
@@ -914,8 +992,14 @@ export async function evaluateWithT6(
     return vide('error', (e as Error).message);
   }
   const key = sha256(canonicalJson({ accountId: p.accountId, input: p.bundle.context, promptVersion, out: T6_EVALUATION_OUTPUT_SCHEMA_VERSION }));
-  const echec = evalFailures.get(key);
-  if (echec != null && Date.now() - echec < T6_EVALUATION_RETRY_MS) return vide('skipped', 'échec récent : nouvel essai différé', promptVersion);
+  // Lot 78C : état DURABLE des évaluations (0616) — l'attente avant un nouvel
+  // essai et l'exclusivité entre instances sont portées par la base ; la
+  // mémoire de l'instance n'en est plus que le repli (table non déployée).
+  const durable = deps.runs ? await deps.runs.ready().catch(() => false) : false;
+  if (!durable) {
+    const echec = evalFailures.get(key);
+    if (echec != null && Date.now() - echec < T6_EVALUATION_RETRY_MS) return vide('skipped', 'échec récent : nouvel essai différé', promptVersion);
+  }
   if (Date.now() < evalBreaker.openUntil) return vide('skipped', 'disjoncteur EVALUATE ouvert', promptVersion);
 
   const existing = evalInflight.get(key);
@@ -923,6 +1007,27 @@ export async function evaluateWithT6(
   const run = (async (): Promise<T6EvaluationOutcome> => {
     const startedAt = Date.now();
     let outcome: T6EvaluationOutcome;
+    // Lot 78C : PRISE EN CHARGE durable (tout ou rien, verrou du compte) —
+    // jamais d'exécution concurrente d'une même évaluation entre instances.
+    let claim: T6ClaimResult | null = null;
+    if (durable && deps.runs) {
+      const subjects: T6RunSubject[] = [...p.bundle.refs.values()].map((c) => ({
+        agendaItemId: c.agendaItemId, fingerprint: c.fingerprint, signature: p.bundle.evaluationSignature ?? null,
+      }));
+      try {
+        claim = await deps.runs.claim({ accountId: p.accountId, runId: randomUUID(), mode: p.mode, subjects });
+      } catch (e) {
+        // Base indisponible : aucune exécution non tracée (reprise au passage suivant).
+        return vide('skipped', `prise en charge impossible : ${(e as Error).message?.slice(0, 200) ?? 'erreur'}`, promptVersion);
+      }
+      if (!claim.ok) {
+        return {
+          ...vide('skipped', `évaluation non prise (${claim.reason})`, promptVersion),
+          run: { runId: null, claimed: false, refusal: { reason: claim.reason, waitingUntil: claim.waitingUntil, agendaItemId: claim.agendaItemId } },
+        };
+      }
+    }
+    let plafond = false;
     try {
       const res = await deps.execute({
         useCaseCode: 'HOME_MASCOT',
@@ -980,9 +1085,26 @@ export async function evaluateWithT6(
       }
     } catch (e) {
       // Plafond IA du mois : pas d'échec du disjoncteur partagé.
-      if (!isCostCapReached(e)) evalRecord(false, key, p.accountId);
-      outcome = vide('error', isCostCapReached(e) ? 'plafond IA du mois du compte atteint' : (e as Error).message?.slice(0, 500) ?? 'erreur', promptVersion);
+      plafond = isCostCapReached(e);
+      if (!plafond) evalRecord(false, key, p.accountId);
+      outcome = vide('error', plafond ? 'plafond IA du mois du compte atteint' : (e as Error).message?.slice(0, 500) ?? 'erreur', promptVersion);
       outcome.latencyMs = Date.now() - startedAt;
+    }
+    // Lot 78C : CLÔTURE durable — état terminal ou reprise planifiée de chaque
+    // évaluation, conditionnée par l'exécution (une instance dépossédée n'écrit plus).
+    if (claim?.ok && deps.runs) {
+      const results = t6RunResultsOf(outcome, p.bundle.refs, plafond);
+      let finished: T6FinishedRun[] | null = null;
+      try {
+        finished = await deps.runs.finish({ accountId: p.accountId, runId: claim.runId, results, traceId: outcome.traceId ?? null });
+      } catch (e) {
+        // Bail non clôturé : l'évaluation sera reprise à son expiration (interruption tracée).
+        console.error('[mascotte] état des évaluations EVALUATE non enregistré :', (e as Error).message);
+        outcome.error = [outcome.error, 'état d’exécution non enregistré'].filter(Boolean).join(' ; ');
+      }
+      outcome.run = {
+        runId: claim.runId, claimed: true, attempts: Object.fromEntries(claim.attempts), interrupted: claim.interrupted, finished, results,
+      };
     }
     // 5. Reporting conforme au résultat réel (après l'écriture).
     try { await deps.report?.(outcome); } catch { /* le reporting ne bloque jamais */ }

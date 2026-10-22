@@ -60,6 +60,10 @@ export interface PersistedFinancialHint {
   economicDate?: string | null;
   periodStart?: string | null;
   periodEnd?: string | null;
+  /** Lot 40 : ancre du fait T1 qui porte le montant (`candidatePayload`). */
+  evidence?: { factId?: number | null } | null;
+  /** Lot 78A : rang de l'indice dans le payload persisté (trace composante → indice T1). */
+  index?: number;
 }
 
 export interface PersistedTargetHint {
@@ -209,7 +213,9 @@ export function buildCandidateIdentity(c: CandidateRecord, ctx: IdentityContext)
     refs.push({ kind: r.kind, value: r.value.trim(), normalized });
   }
   const t = p.temporalHints ?? {};
-  const hints = (p.financialHints ?? []).filter((h) => h && isMinorAmount(h.amountMinor) && isIsoCurrency(h.currency));
+  // Lot 78A : le rang d'origine de chaque indice est conservé (trace composante → indice → fait).
+  const hints = (p.financialHints ?? []).map((h, index) => (h ? { ...h, index } : h))
+    .filter((h) => h && isMinorAmount(h.amountMinor) && isIsoCurrency(h.currency));
   return {
     candidateId: c.id,
     candidateKey: c.candidateKey,
@@ -281,6 +287,25 @@ export function recurringContractEvidence(sources: readonly SourceContribution[]
   return periodes.size >= 2;
 }
 
+/**
+ * Lot 78A — fenêtre de cohérence temporelle d'UNE transaction selon sa nature
+ * (jours) : au-delà, l'écart est une contradiction (faible pour le
+ * rapprochement, attribut contradictoire pour la consolidation).
+ *   · acquisition / cession : commande → livraison → facture, compromis →
+ *     acte (quelques mois) ;
+ *   · sinistre : survenue et déclaration ;
+ *   · intervention et autres : 3 × 120 j (lot 53, `FAR_WINDOW_FACTOR`) ;
+ *   · contrat / financement : durée de vie longue, pas de fenêtre.
+ */
+export function transactionWindowDays(type: BusinessOperationTypeCode | null): number | null {
+  switch (type) {
+    case 'ACQUISITION': case 'DISPOSAL': return 180;
+    case 'CLAIM': return 90;
+    case 'CONTRACT': case 'FINANCING': return null;
+    default: return 360;
+  }
+}
+
 // ── Composantes financières (C12) ──────────────────────────────────────────
 
 export interface DesiredComponent {
@@ -305,7 +330,26 @@ export interface DesiredComponent {
    * solde / frais), ou RIEN (`NONE` : ni référence, ni date, ni période).
    */
   identityBasis?: 'REFERENCE' | 'DATE' | 'PERIOD' | 'SCOPE' | 'NONE';
+  /** Lot 78A (§4, §6) : indices T1 et faits persistés qui justifient ce montant (documents seulement). */
+  evidence?: ComponentEvidence;
 }
+
+/** Lot 78A : justification exacte d'une composante par UNE source (candidat T1, indices, faits). */
+export interface ComponentEvidence {
+  candidateId: number | null;
+  hintIndexes: number[];
+  factIds: number[];
+}
+
+const fusionPreuves = (a: ComponentEvidence | undefined, b: ComponentEvidence | undefined): ComponentEvidence | undefined => {
+  if (!a) return b;
+  if (!b) return a;
+  return {
+    candidateId: a.candidateId ?? b.candidateId,
+    hintIndexes: [...new Set([...a.hintIndexes, ...b.hintIndexes])].sort((x, y) => x - y),
+    factIds: [...new Set([...a.factIds, ...b.factIds])].sort((x, y) => x - y),
+  };
+};
 
 /** Référence économique PROPRE au document, selon son rôle (identité C12.1). */
 function documentReference(id: CandidateIdentity): string | null {
@@ -366,6 +410,12 @@ export function componentsFromIdentity(id: CandidateIdentity): DesiredComponent[
     const kind = componentKindOf(h.role, id.role);
     if (!kind) continue;
     if (kind === 'REDUCTION' && porteUnCout) continue;
+    // Lot 78A : justification exacte (indice T1 et fait persisté), documents seulement.
+    const preuve: ComponentEvidence | undefined = id.structured || id.agenda ? undefined : {
+      candidateId: id.candidateId > 0 ? id.candidateId : null,
+      hintIndexes: typeof h.index === 'number' ? [h.index] : [],
+      factIds: typeof h.evidence?.factId === 'number' ? [h.evidence.factId] : [],
+    };
     const scope = h.amountScope ?? null;
     const economicDate = dateOrNull(h.economicDate);
     const periodStart = dateOrNull(h.periodStart);
@@ -380,7 +430,11 @@ export function componentsFromIdentity(id: CandidateIdentity): DesiredComponent[
       : ref
         ? empreinte(['v1', kind, scope, ref, periodStart, periodEnd])
         : empreinte(['v1', kind, scope, h.currency, h.amountMinor, economicDate, periodStart, periodEnd]);
-    if (out.has(fingerprint)) continue;
+    if (out.has(fingerprint)) {
+      const deja = out.get(fingerprint)!;
+      deja.evidence = fusionPreuves(deja.evidence, preuve);
+      continue;
+    }
     const identityBasis: DesiredComponent['identityBasis'] = scope === 'FEE' || scope === 'DEPOSIT' || scope === 'BALANCE' ? 'SCOPE'
       : ref ? 'REFERENCE' : periodStart || periodEnd ? 'PERIOD' : economicDate ? 'DATE' : 'NONE';
     const eur = h.currency !== 'EUR' && h.currency !== 'XXX' && isMinorAmount(h.amountEurMinor) ? h.amountEurMinor : null;
@@ -391,6 +445,7 @@ export function componentsFromIdentity(id: CandidateIdentity): DesiredComponent[
       // de la fiche ou de l'agenda garde son autorité propre, lots 43 / 47B).
       ...(id.structured || id.agenda ? {} : { identityBasis }),
       ...(h.currency === 'XXX' && h.currencyCandidates?.length ? { currencyCandidates: h.currencyCandidates.filter((c) => isIsoCurrency(c)).slice(0, 3) } : {}),
+      ...(preuve ? { evidence: preuve } : {}),
     });
   }
   return [...out.values()];
@@ -398,7 +453,15 @@ export function componentsFromIdentity(id: CandidateIdentity): DesiredComponent[
 
 export interface ComponentContribution extends DesiredComponent {
   sourceIds: number[];
+  /** Lot 78A : justification exacte par source (candidat, indices T1, faits). */
+  evidenceBySource?: Record<number, ComponentEvidence>;
 }
+
+const ajouterPreuve = (c: ComponentContribution, sourceId: number, e: ComponentEvidence | undefined) => {
+  if (!e) return;
+  c.evidenceBySource ??= {};
+  c.evidenceBySource[sourceId] = fusionPreuves(c.evidenceBySource[sourceId], e)!;
+};
 
 /**
  * Composantes de l'Opération depuis TOUTES ses sources actives (C12, C12.1) :
@@ -467,6 +530,7 @@ export function consolidateComponentsDetailed(
       const cur = par.get(c.fingerprint);
       if (cur) {
         if (!cur.sourceIds.includes(sourceId)) cur.sourceIds.push(sourceId);
+        ajouterPreuve(cur, sourceId, c.evidence);
         // Lot 53D (Q16) : une contre-valeur EUR documentaire complète la composante.
         // Lot 54D (E03) : deux contre-valeurs DIFFÉRENTES pour le même fait → aucune
         // n'est retenue (jamais choisir un taux) : montant hors total EUR, signalé.
@@ -481,7 +545,10 @@ export function consolidateComponentsDetailed(
         // Un acompte reconnu par sa facture d'acompte garde son rôle de source.
         if (c.sourceRole === 'DEPOSIT_INVOICE') cur.sourceRole = 'DEPOSIT_INVOICE';
       } else {
-        par.set(c.fingerprint, { ...c, sourceIds: [sourceId] });
+        const { evidence: e0, ...reste } = c;
+        const neuve: ComponentContribution = { ...reste, sourceIds: [sourceId] };
+        ajouterPreuve(neuve, sourceId, e0);
+        par.set(c.fingerprint, neuve);
       }
       if (c.amountEurCents !== null) contreValeurVue.add(c.fingerprint);
     }
@@ -510,6 +577,7 @@ export function consolidateComponentsDetailed(
       : undefined);
     if (!cible) continue;
     for (const id of faible.sourceIds) if (!cible.sourceIds.includes(id)) cible.sourceIds.push(id);
+    for (const [id, e] of Object.entries(faible.evidenceBySource ?? {})) ajouterPreuve(cible, Number(id), e);
     par.delete(fp);
     valeurs.delete(fp);
     if (faible.identityBasis === 'NONE') uncertain.push({ fingerprint: cible.fingerprint, absorbedFingerprint: fp, sourceIds: [...faible.sourceIds] });
@@ -607,6 +675,71 @@ export interface ConsolidatedState {
     principalAmountMinor?: number | null; principalCurrency?: string | null;
   } | null;
   claim: { insurerClaimRef: string | null; policyReferenceText: string | null } | null;
+  /** Lot 78A (§2C, §6) : source qui justifie chaque valeur conservée. */
+  provenance: AttributeProvenance;
+  /** Lot 78A (§2C) : valeurs contradictoires entre sources (jamais tranchées en silence). */
+  attributeConflicts: AttributeConflict[];
+}
+
+export type ProvenancedField = 'plannedDate' | 'startDate' | 'realizedDate' | 'endDate' | 'provider';
+export type AttributeProvenance = Partial<Record<ProvenancedField, { sourceId: number; value: string }>>;
+export interface AttributeConflict {
+  field: ProvenancedField;
+  /** Valeurs distinctes et sources qui les portent (ordre des sources). */
+  values: Array<{ value: string; sourceIds: number[] }>;
+  /** Valeur conservée. */
+  retained: string | null;
+}
+
+const ecartJoursModel = (a: string, b: string): number => Math.abs(Date.parse(`${a}T00:00:00Z`) - Date.parse(`${b}T00:00:00Z`)) / 86_400_000;
+
+/**
+ * Lot 78A (§2C) : valeurs d'un attribut selon les sources, contradiction
+ * au-delà de la fenêtre de la transaction (dates) ou tiers distincts (pure).
+ */
+function attributeConflict(
+  field: ProvenancedField, srcs: readonly SourceContribution[], valueOf: (s: SourceContribution) => string | null,
+  window: number | null, key: (v: string) => string = (v) => v,
+): AttributeConflict | null {
+  const vals: Array<{ value: string; sourceIds: number[] }> = [];
+  for (const s of srcs) {
+    const v = valueOf(s);
+    if (!v) continue;
+    const o = vals.find((x) => key(x.value) === key(v));
+    if (o) o.sourceIds.push(s.sourceId); else vals.push({ value: v, sourceIds: [s.sourceId] });
+  }
+  if (vals.length < 2) return null;
+  if (field !== 'provider') {
+    if (window === null) return null;
+    const tri = vals.map((x) => x.value).sort();
+    if (ecartJoursModel(tri[0], tri[tri.length - 1]) <= window) return null;
+  }
+  return { field, values: vals, retained: null };
+}
+
+/**
+ * Lot 78A (§2C, §6) : source qui justifie chaque valeur conservée (pure) —
+ * la plus ancienne source qui porte cette valeur (date du document, date
+ * d'un montant, réalisation saisie à l'agenda).
+ */
+export function computeProvenance(
+  v: Pick<ConsolidatedState, 'plannedDate' | 'startDate' | 'realizedDate' | 'endDate' | 'provider'>, sources: readonly SourceContribution[],
+): AttributeProvenance {
+  const srcs = [...sources].sort((a, b) => a.sourceId - b.sourceId);
+  const out: AttributeProvenance = {};
+  for (const k of ['plannedDate', 'startDate', 'realizedDate', 'endDate'] as const) {
+    const val = v[k];
+    if (!val) continue;
+    const s = (k === 'realizedDate' ? srcs.find((x) => x.identity.agenda?.realizedDate === val) : undefined)
+      ?? srcs.find((x) => x.identity.dates[k] === val)
+      ?? (k === 'realizedDate' ? srcs.find((x) => x.identity.hints.some((h) => h.economicDate === val) || x.identity.dates.endDate === val) : undefined);
+    if (s) out[k] = { sourceId: s.sourceId, value: val };
+  }
+  if (v.provider) {
+    const s = srcs.find((x) => x.identity.provider === v.provider);
+    if (s) out.provider = { sourceId: s.sourceId, value: v.provider };
+  }
+  return out;
 }
 
 const minDate = (v: Array<string | null>): string | null => v.filter((x): x is string => !!x).sort()[0] ?? null;
@@ -683,6 +816,19 @@ export function consolidateOperationState(
       realizedDate = maxDate(all('realizedDate', realisation)) ?? maxDate(all('endDate', realisation))
         ?? economicFallback(realisation, ['REALIZED_COST']);
   }
+  // Lot 78A (§2C) : dates d'une même transaction contradictoires entre sources
+  // (au-delà de sa fenêtre) — jamais d'opération composite : pour un fait
+  // unique (achat, cession, sinistre), la date de la source FONDATRICE (la
+  // plus ancienne) est conservée, la contradiction est tracée.
+  const fenetre = transactionWindowDays(type);
+  const attributeConflicts: AttributeConflict[] = [];
+  for (const k of ['plannedDate', 'startDate', 'realizedDate', 'endDate'] as const) {
+    const liste = k === 'realizedDate' ? realisation : srcs;
+    const conflit = attributeConflict(k, liste, (s) => s.identity.dates[k], fenetre);
+    if (conflit) attributeConflicts.push(conflit);
+  }
+  const conflitRealise = attributeConflicts.find((c) => c.field === 'realizedDate');
+  if (conflitRealise && (type === 'ACQUISITION' || type === 'DISPOSAL' || type === 'CLAIM')) realizedDate = conflitRealise.values[0].value;
   // Une réalisation non prouvée n'a pas de date de réalisation (la date prévue reste).
   if (status !== 'REALIZED') realizedDate = null;
   // Décision PO Q13 : contrat signé à effet futur = ENVISAGED jusqu'à la date d'effet.
@@ -690,6 +836,8 @@ export function consolidateOperationState(
   if (startDate && endDate && endDate < startDate) endDate = null;
 
   const provider = srcs.map((s) => s.identity.provider).find((p) => !!p) ?? null;
+  const conflitTiers = attributeConflict('provider', srcs, (s) => s.identity.provider, null, (v) => normalizeProvider(v) ?? v);
+  if (conflitTiers) attributeConflicts.push(conflitTiers);
 
   const assets: ConsolidatedState['assets'] = [];
   const vusA = new Set<number>();
@@ -750,6 +898,12 @@ export function consolidateOperationState(
   }
 
   const premiereRef = (kinds: ReferenceKind[]) => references.find((r) => kinds.includes(r.kind))?.value ?? null;
+
+  // Lot 78A (§2C, §6) : source qui justifie chaque valeur conservée.
+  const provenance = computeProvenance({ plannedDate, startDate, realizedDate, endDate, provider }, srcs);
+  const valeurs: Record<ProvenancedField, string | null> = { plannedDate, startDate, realizedDate, endDate, provider };
+  for (const c of attributeConflicts) c.retained = valeurs[c.field];
+
   return {
     type,
     status,
@@ -771,6 +925,8 @@ export function consolidateOperationState(
       ...(principal ? { principalAmountMinor: principal.amountMinor, principalCurrency: principal.currency } : {}),
     } : null,
     claim: type === 'CLAIM' ? { insurerClaimRef: premiereRef(['CLAIM']), policyReferenceText: premiereRef(['POLICY', 'CONTRACT']) } : null,
+    provenance,
+    attributeConflicts,
   };
 }
 

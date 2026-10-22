@@ -364,6 +364,14 @@ export const SCHEDULED_TASKS: readonly ScheduledTaskDef[] = [
     run: async ({ deadline }) => {
       const { runMascotPregeneration } = await import('@/services/home/mascot/pregen-queue');
       const r = await runMascotPregeneration({ deadline: Math.min(deadline, Date.now() + 25_000) });
+      // Lot 78C : supervision des évaluations T6 bloquées ou en échec (au plus
+      // toutes les 5 min, toutes instances confondues) — anomalie BO par compte.
+      const { claimEvaluatorRun } = await import('@/services/ai/alerts/alerts.repository');
+      if (await claimEvaluatorRun('t6-evaluation-supervision', 300).catch(() => false)) {
+        const { superviseT6Evaluations } = await import('@/services/home/mascot/t6-evaluation-runs');
+        const s = await superviseT6Evaluations();
+        if (s.reported > 0 || s.resolved > 0) return { note: JSON.stringify({ ...r, t6Supervision: s }) };
+      }
       if (r.claimed > 0) return { note: JSON.stringify(r) };
     },
   },

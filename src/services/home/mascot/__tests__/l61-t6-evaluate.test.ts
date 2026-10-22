@@ -286,7 +286,8 @@ describe('Décision et affichage', () => {
     const p = accueil(raw([], { processing: { uploads: [], analyses: [{ id: 5, title: 'Facture garage', at: '2026-10-15T08:00:00Z' }], exports: [] } }), []);
     expect(parler(p)).toBe('Le document « Facture garage » est en cours d’analyse.');
     expect(p.state).toMatchObject({ kind: 'INFORMATION', information: 1, actions: 0 });
-    expect(B.homePose(p, false)).toBe('neutral');
+    // Lot 78C : documents en cours d'analyse — pose « au travail », jamais la réussite.
+    expect(B.homePose(p, false)).toBe('document-analysis-pdf');
     // Lot 68 : bloc du document (texte + « Voir »), plus de carte qui le répète.
     expect(B.subjectBlocks(p)[0]).toMatchObject({ informative: true, badge: null });
     expect(B.subjectBlocks(p)[0].actions.map((a) => a.label)).toEqual(['Voir']);

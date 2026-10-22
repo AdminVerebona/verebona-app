@@ -31,12 +31,13 @@ import {
   t6SuggestionRefsAvailable, t6SuggestionsAvailable, type T6Mode,
 } from './t6-runner';
 import type { MascotPresentation } from './types';
-import { composeSpeech, parisDay, tileFor } from './bubble';
+import { composeSpeech, documentsInAnalysis, parisDay, tileFor } from './bubble';
 import { MAX_TODO_ITEMS, buildTodoBlock } from './todo-items';
 import { readDuoInvite } from './duo-invite';
 import { loadT6SuggestionContext, suggestionAgendaOf, suggestionSecondaries, type T6SuggestionBundle } from './t6-suggestions';
 import {
-  prepareT6Interpellation, t6EvaluationTraceOf, t6ThresholdDays, writeT6EvaluationReport, writeT6InterpellationReport, type T6Preparation,
+  T6_RUN_LOADERS, prepareT6Interpellation, t6EvaluationTraceOf, t6ThresholdDays, writeT6EvaluationReport, writeT6InterpellationReport,
+  type T6EvaluationProgress, type T6Preparation,
 } from './t6-interpellation.service';
 import type { MascotRawData } from './signals';
 import { t6InterpellationAvailable, t6ReminderAvailable } from './t6-runner';
@@ -56,7 +57,15 @@ export async function getMascotPresentation(
    * évaluer après ce passage (reprise durable demandée) : la formulation est
    * alors différée au passage qui achève l'évaluation (situation stable).
    */
-  opts: { onResume?: () => void } = {},
+  opts: {
+    onResume?: () => void;
+    /**
+     * Lot 78C : avancement RÉEL des évaluations éligibles à l'issue du passage
+     * (pré-génération : une demande n'est jamais close sur une analyse
+     * incomplète). `null` : état durable inconnu (table non déployée).
+     */
+    onEvaluation?: (progress: T6EvaluationProgress | null) => void;
+  } = {},
 ): Promise<MascotPresentation> {
   let raw;
   // Lot 49A (ticket 13) : « Inviter quelqu'un » (Premium Duo, personne
@@ -107,7 +116,9 @@ export async function getMascotPresentation(
       // Lot 75E (B) : file d'examen plus longue que la lecture — reprise aussi
       // tant que des examens s'achèvent (curseur persistant).
       const progres = o.persisted > 0 || examines + (interpellation.examined ?? 0) > 0;
-      if (progres && (interpellation.pendingAssessments > 0 || interpellation.selectionBacklog)) {
+      // Lot 78C : le passage RELU porte encore un lot à évaluer (au-delà des 8
+      // de ce passage) — reprise immédiate, jamais une clôture « rien à dire ».
+      if (progres && (interpellation.pendingAssessments > 0 || interpellation.bundle != null || interpellation.selectionBacklog)) {
         await (await import('./pregen-queue')).requestMascotPregeneration(accountId, 't6-resume');
         reprise = true;
         opts.onResume?.();
@@ -116,9 +127,20 @@ export async function getMascotPresentation(
       // Affichage : JAMAIS attendue. Les décisions valides déjà conservées
       // servent tout de suite ; une évaluation aboutie programme une
       // pré-génération (l'accueil suivant en profite).
+      // Lot 78C : une pré-génération DURABLE est demandée dès le lancement —
+      // une évaluation interrompue (redémarrage, instance arrêtée) est reprise
+      // par la tâche planifiée, sans attendre une nouvelle visite.
+      void (async () => (await import('./pregen-queue')).requestMascotPregeneration(accountId, 't6-evaluation'))().catch(() => {});
       void evaluation.then((o) => { if (o.persisted > 0) scheduleMascotPregeneration(accountId, PREGEN_DEBOUNCE_MS, 't6-assessment'); });
     }
   }
+  // Lot 78C : évaluations prenables au-delà du plafond par appel, à l'affichage —
+  // la pré-génération durable du compte les prend en charge (sans visite).
+  if (mode !== 'pregen' && interpellation.pendingAssessments > 0) scheduleMascotPregeneration(accountId, PREGEN_DEBOUNCE_MS, 't6-pending');
+  // Lot 78C : attente anormalement longue constatée à l'affichage — supervision
+  // du compte (anomalie BO), même si la tâche planifiée ne tourne plus.
+  if ((interpellation.evaluationProgress?.stale ?? 0) > 0) superviseAccountSoon(accountId);
+  opts.onEvaluation?.(interpellation.evaluationProgress ?? null);
   // Lot 75E (B) : pré-génération sans évaluation à demander, mais file d'examen
   // plus longue que la lecture — reprise tant que des examens s'achèvent.
   if (mode === 'pregen' && !interpellation.bundle && interpellation.selectionBacklog && (interpellation.examined ?? 0) > 0) {
@@ -197,7 +219,7 @@ export async function getMascotPresentation(
   // stable, la formulation attend le passage qui l'achève (aucun appel inutile).
   if ((subjects.length === 0 && !questions) || reprise) {
     rapport(secours, null, null);
-    return secours;
+    return withRefreshHint(secours, interpellation);
   }
 
   const input = buildT6Input(subjects);
@@ -209,7 +231,49 @@ export async function getMascotPresentation(
   const secondaries = withSuggestedQuestions(baseSecondaries, subjects, suggestionSecondaries(outcome.suggestions ?? []));
   const finale = buildPresentation({ subjects, secondaries, messages: outcome.messages, ...commun });
   rapport(finale, outcome.status, outcome.promptVersion);
-  return finale;
+  return withRefreshHint(finale, interpellation);
+}
+
+/** Bornes de l'actualisation ciblée. */
+export const MASCOT_REFRESH_HINT_MIN_MS = 15_000;
+export const MASCOT_REFRESH_HINT_MAX_MS = 10 * 60_000;
+/** Documents en cours d'analyse : relecture ciblée (la fin d'analyse est aussi signalée par événement). */
+export const MASCOT_ANALYSIS_REFRESH_MS = 60_000;
+
+/**
+ * Lot 78C — actualisation ciblée suggérée (pure, testée) : examen réellement
+ * en cours → peu après la fin attendue (fin de bail) ou 30 s ; nouvel essai
+ * planifié bientôt (≤ 10 min) → juste après ; documents en analyse → 60 s.
+ * Rien sinon (FAILED, indisponibilité durable, rien en cours).
+ */
+export function mascotRefreshHintMs(p: {
+  evaluation: 'OK' | 'PENDING' | 'UNAVAILABLE'; progress: T6EvaluationProgress | null | undefined; analysing: boolean; now: Date;
+}): number | null {
+  const borne = (ms: number) => Math.min(MASCOT_REFRESH_HINT_MAX_MS, Math.max(MASCOT_REFRESH_HINT_MIN_MS, Math.round(ms)));
+  const candidats: number[] = [];
+  const attente = p.progress?.waitingUntil ? new Date(p.progress.waitingUntil).getTime() - p.now.getTime() : null;
+  if (p.evaluation === 'PENDING') candidats.push(borne(attente != null && attente > 0 ? attente + 5_000 : 30_000));
+  else if (p.evaluation === 'UNAVAILABLE' && attente != null && attente > 0 && attente <= MASCOT_REFRESH_HINT_MAX_MS && (p.progress?.waiting ?? 0) > 0) {
+    // Essai planifié : la tâche planifiée (1 min) ou cette relecture le lancent.
+    candidats.push(borne(attente + 60_000));
+  }
+  if (p.analysing) candidats.push(MASCOT_ANALYSIS_REFRESH_MS);
+  return candidats.length ? Math.min(...candidats) : null;
+}
+
+function withRefreshHint(p: MascotPresentation, prep: T6Preparation): MascotPresentation {
+  const ms = mascotRefreshHintMs({ evaluation: prep.evaluation, progress: prep.evaluationProgress, analysing: documentsInAnalysis(p), now: new Date() });
+  return ms == null ? p : { ...p, refreshAfterMs: ms };
+}
+
+/** Supervision ciblée d'un compte (au plus une fois par 15 min et par instance). */
+const supervises = new Map<number, number>();
+function superviseAccountSoon(accountId: number): void {
+  const t = supervises.get(accountId);
+  if (t != null && Date.now() - t < 15 * 60_000) return;
+  supervises.set(accountId, Date.now());
+  if (supervises.size > 5_000) supervises.clear();
+  void import('./t6-evaluation-runs').then((m) => m.superviseT6Evaluations({ onlyAccountId: accountId })).catch(() => {});
 }
 
 /** Décision d'interpellation du passage (lot 60), état d'évaluation compris (lot 61). */
@@ -223,6 +287,8 @@ async function prepare(accountId: number, userId: number | null, raw: MascotRawD
     recentEvaluationFailure: (id) => t6EvaluationRecentlyFailed(id),
     // Lot 72A (AC02) : version effective du prompt EVALUATE et configuration déterminante.
     evaluationConfig: t6EvaluationConfig,
+    // Lot 78C : état réel et durable des évaluations (0616).
+    runs: T6_RUN_LOADERS,
   });
 }
 

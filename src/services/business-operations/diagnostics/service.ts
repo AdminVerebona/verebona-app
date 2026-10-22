@@ -177,6 +177,10 @@ export interface OperationDetail {
   agendaItems: Row[];
   projectionSuppressions: Row[];
   candidates: Row[];
+  /** Lot 78A (§5, §6) : contrôles d'identité économique (séparations, doutes, doublons) concernant l'Opération. */
+  identityReviews?: Row[];
+  /** Lot 78A (§2C, §6) : provenance des valeurs conservées et contradictions d'attributs. */
+  attributeProvenance?: Row | null;
   lastT3Pass: LastT3Pass | null;
   procedure: string;
   /** Lot 55B (E) : réconciliation à jour, en attente ou bloquée (jamais « à jour » si un traitement reste dû). */
@@ -287,7 +291,29 @@ const ACC = (col: string) => `($1::int IS NULL OR ${col} = $1::int)`;
 /** Clé numérique d'une source (`source_entity_key`), sinon NULL (jamais d'erreur de conversion). */
 const KEY = (col: string) => `(CASE WHEN ${col} ~ '^[0-9]{1,9}$' THEN ${col}::int END)`;
 
-const ANOMALY_SQL: Readonly<Record<Exclude<HardAnomalyCode, 'PARENT_CYCLE' | 'PARENT_DEPTH_EXCEEDED'>, string>> = {
+/** Lot 78A : anomalies d'identité dont la table / colonne (0609) peut manquer — sondées avant exécution. */
+const IDENTITY_ANOMALY_SQL: Readonly<Record<'IDENTITY_SUSPECT_ATTACHMENT' | 'IDENTITY_ATTRIBUTE_CONFLICT', { probe: string; sql: string }>> = {
+  IDENTITY_SUSPECT_ATTACHMENT: {
+    probe: `SELECT to_regclass('business_operation_identity_reviews') IS NOT NULL AS ok, $1::int AS compte`,
+    sql: `
+    SELECT r.account_id, r.operation_id, 'document #' || coalesce(r.file_id::text, '?') || ' (' || coalesce(r.candidate_key, '?') || ') : '
+           || coalesce((SELECT string_agg(x, ' ') FROM jsonb_array_elements_text(r.signals) x), '') AS detail
+      FROM business_operation_identity_reviews r
+     WHERE r.kind = 'SUSPECT' AND r.status = 'OPEN' AND ${ACC('r.account_id')}`,
+  },
+  IDENTITY_ATTRIBUTE_CONFLICT: {
+    probe: `SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema()
+                            AND table_name = 'business_operations' AND column_name = 'attribute_provenance') AS ok, $1::int AS compte`,
+    sql: `
+    SELECT o.account_id, o.id AS operation_id,
+           (SELECT string_agg(c->>'field', ', ') FROM jsonb_array_elements(o.attribute_provenance->'conflicts') c) || ' contradictoires' AS detail
+      FROM business_operations o
+     WHERE o.invalidated_at IS NULL AND o.merged_into_operation_id IS NULL AND ${ACC('o.account_id')}
+       AND jsonb_typeof(o.attribute_provenance->'conflicts') = 'array' AND jsonb_array_length(o.attribute_provenance->'conflicts') > 0`,
+  },
+};
+
+const ANOMALY_SQL: Readonly<Record<Exclude<HardAnomalyCode, 'PARENT_CYCLE' | 'PARENT_DEPTH_EXCEEDED' | keyof typeof IDENTITY_ANOMALY_SQL>, string>> = {
   ACTIVE_OPERATION_WITHOUT_SOURCE: `
     SELECT o.account_id, o.id AS operation_id, 'type ' || coalesce(o.type_code, 'non qualifié') AS detail
       FROM business_operations o
@@ -479,6 +505,11 @@ async function detectHardAnomalies(q: DiagQuery, accountId: number | null): Prom
     const r = await sampled(q, inner, accountId);
     out.set(code, result(code, r.count, r.samples));
   }
+  for (const [code, x] of Object.entries(IDENTITY_ANOMALY_SQL) as Array<[HardAnomalyCode, { probe: string; sql: string }]>) {
+    const [p] = await q(x.probe, [accountId]);
+    const r = p?.ok ? await sampled(q, x.sql, accountId) : { count: 0, samples: [] };
+    out.set(code, result(code, r.count, r.samples));
+  }
   const [counts] = await q(
     `${HIERARCHY_SQL}
      SELECT count(*) FILTER (WHERE cycle)::int AS cycles,
@@ -644,7 +675,9 @@ export class OperationDiagnosticsService {
                 c.period_start::text AS period_start, c.period_end::text AS period_end, c.target_asset_id, c.target_equipment_id,
                 c.label, c.fingerprint, c.active, c.superseded_at, c.created_at,
                 (SELECT coalesce(json_agg(json_build_object('sourceId', cs.operation_source_id, 'evidenceRole', cs.evidence_role,
-                                                             'isPrimary', cs.is_primary, 'sourceActive', s.active)
+                                                             'isPrimary', cs.is_primary, 'sourceActive', s.active,
+                                                             -- Lot 78A : indices T1 et faits qui justifient le montant (0609).
+                                                             'evidence', to_jsonb(cs) -> 'evidence')
                                           ORDER BY cs.is_primary DESC, cs.operation_source_id), '[]'::json)
                    FROM business_operation_financial_component_sources cs
                    LEFT JOIN business_operation_sources s ON s.id = cs.operation_source_id
@@ -737,6 +770,16 @@ export class OperationDiagnosticsService {
           WHERE treatment = 'T3' AND account_id = $1 AND target_type = 'business_operations'
           ORDER BY id DESC LIMIT 1`, [accountId]);
 
+      // Lot 78A (§5, §6) : contrôles d'identité économique (journal 0609) et provenance des valeurs.
+      const [journal] = await q(`SELECT to_regclass('business_operation_identity_reviews') IS NOT NULL AS ok`);
+      const identityReviews = journal?.ok ? await q(
+        `SELECT id, kind, status, operation_id, target_operation_id, file_id, candidate_key, source_id, basis, signals,
+                against_source_ids, review_version, correlation_id, created_at, updated_at, resolved_at
+           FROM business_operation_identity_reviews
+          WHERE account_id = $2 AND (operation_id = $1 OR target_operation_id = $1)
+          ORDER BY created_at DESC, id DESC LIMIT ${L}`, [id, accountId]) : [];
+      const [prov] = await q(`SELECT to_jsonb(o) -> 'attribute_provenance' AS p FROM business_operations o WHERE o.id = $1`, [id]);
+
       const withReason = (rows: Row[], col: string) => rows.map((x) => ({ ...x, [`${col}_label`]: explainReason(str(x[col])) }));
       const detail: OperationDetail = {
         operation: {
@@ -761,6 +804,8 @@ export class OperationDiagnosticsService {
         matchDecisions: withReason(matchDecisions, 'reason_code'),
         agendaItems,
         projectionSuppressions,
+        identityReviews,
+        attributeProvenance: (prov?.p as Row | null) ?? null,
         candidates: withReason(candidates, 't3_reason').map((c) => ({
           ...c, ai_label: aiRunLabel(c.t3_detail as Record<string, unknown> | null, str(c.t3_outcome), str(c.t3_reason)),
         })),

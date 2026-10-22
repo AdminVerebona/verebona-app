@@ -58,6 +58,7 @@ describe('accueil', () => {
   it('salue par le nom d’utilisateur, le prénom à défaut', () => {
     const src = read('src/app/(dashboard)/accueil/page.tsx');
     expect(src).toContain("const greetingName = user.username?.trim() || user.firstName || '';");
-    expect(read('src/components/home/MascotSpeaks.tsx')).toContain('{greetingWord(now)}, {greetingName}');
+    // Lot 78C : salutation du jour (useGreetingClock), « Bonjour » au seul rendu serveur.
+    expect(read('src/components/home/MascotSpeaks.tsx')).toContain("{now ? greetingWord(now) : 'Bonjour'}, {greetingName}");
   });
 });

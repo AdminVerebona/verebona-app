@@ -272,7 +272,8 @@ scenario('L61E-T6EV', 'Lot 61 — contrat de décision T6 (EVALUATE) et composit
     expect(p.state).toMatchObject({ kind: 'INFORMATION' });
     expect(await parler(p)).toMatch(/^Le document « Contrat habitation » est en cours d’analyse\./);
     expect(await parler(p)).not.toMatch(INTERDITS);
-    expect((await B()).homePose(p, false)).toBe('neutral');
+    // Lot 78C : documents en cours d'analyse — mascotte « au travail » (jamais la pose de réussite).
+    expect((await B()).homePose(p, false)).toBe('document-analysis-pdf');
     await sql`INSERT INTO to_process_actions (account_id, target_type, target_id, field_key, action_kind, rule_code, question, priority)
               VALUES (${c.id}, 'ASSET', ${c.maison}, 'purchasePriceCents', 'COMPLETE', 'DATA-ACQUISITION-PRICE', 'Prix d’achat ?', 'DO_FIRST')`;
     const q = await pregen(c.id);

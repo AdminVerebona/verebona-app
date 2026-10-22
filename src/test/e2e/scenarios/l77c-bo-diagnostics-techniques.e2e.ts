@@ -208,8 +208,13 @@ scenario('L77C', 'BO Diagnostics techniques : périmètres, ZIP, traçabilité T
       { table: 'document_extractions', id: ids.extraction }, { table: 'document_facts', id: ids.fact },
       { table: 'ai_execution_reports', id: ids.report }, { table: 'ai_usage_event', id: ids.usage },
     ]));
-    expect(ext.donnees).toMatchObject({ modele: { modele: 'gemini-2.5-pro', versionPrompt: 't1_analyze_document@v5', trace: 'tr-l77c-tika' }, candidatDesignePar: 'business_operation_sources.source_version' });
-    expect((ext.donnees!.indicesFinanciers as Json[])[0]).toMatchObject({ amountMinor: 49000000, correspondanceDeValeur: true, evidence: { factId: ids.fact } });
+    // Lot 78A : lien composante → candidat → indice → fait PERSISTÉ par T3 (plus de correspondance de valeur).
+    expect(ext.donnees).toMatchObject({
+      modele: { modele: 'gemini-2.5-pro', versionPrompt: 't1_analyze_document@v5', trace: 'tr-l77c-tika' },
+      candidatDesignePar: 'business_operation_financial_component_sources.evidence (lien persisté par T3)',
+      lienPersiste: { candidat: ids.candidate, indices: [0], faits: [ids.fact] },
+    });
+    expect((ext.donnees!.indicesFinanciers as Json[])[0]).toMatchObject({ amountMinor: 49000000, justifieLaComposante: true, evidence: { factId: ids.fact } });
     // Décision T3, enregistrement, rapprochement, calcul, affichage.
     expect(etape('DECISION')).toMatchObject({ statut: 'disponible', donnees: { t3: { issue: 'CREATE_NEW', operationRetenue: ids.op } } });
     expect(etape('ENREGISTREMENT')).toMatchObject({ statut: 'disponible', donnees: { composante: { id: ids.component, amount_minor: 49000000, currency: 'EUR' }, operation: { provider: 'Tikamoon' } } });

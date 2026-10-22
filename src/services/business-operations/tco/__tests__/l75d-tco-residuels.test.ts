@@ -339,10 +339,11 @@ describe('L71A-C — TCO : dépenses distinctes de même montant, preuves retir�
   it('L71A-C-2 — règle de preuve ACTIVE centralisée : toutes les lectures de preuves du TCO passent par le filtre canonique (WITHDRAWN / SUPERSEDED exclues)', () => {
     const svc = lire('src/services/business-operations/tco/service.ts');
     expect(svc).toContain('evidenceReadFilter({ assetLevel: opts.assetLevel })');
-    // Chaque lecture de field_evidence du TCO ajoute ce filtre (acquisitionEvidenceFiles, readAssetAcquisition, readEquipmentPrices).
+    // Chaque lecture de field_evidence du TCO ajoute ce filtre (acquisitionEvidenceFiles, readAssetAcquisition, readEquipmentPrices ;
+    // lot 78B : readComponentProvenance — preuve du prix d'un autre bien).
     const lectures = svc.split('FROM field_evidence').length - 1;
-    expect(lectures).toBe(3);
-    expect(svc.match(/\$\{actives\}/g)?.length).toBe(3);
+    expect(lectures).toBe(4);
+    expect(svc.match(/\$\{actives\}/g)?.length).toBe(4);
     expect(svc).not.toMatch(/lifecycle_status IS NULL OR lifecycle_status = 'ACTIVE'/);
     const filtre = lire('src/services/ai/evidence/field-evidence.service.ts');
     expect(filtre).toMatch(/lifecycle_status IS NULL OR \$\{a\}lifecycle_status = 'ACTIVE'/);

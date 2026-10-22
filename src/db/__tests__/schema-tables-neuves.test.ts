@@ -13,7 +13,7 @@ import { agendaItemRemovals, aiMasterCorpusRuns, documentFieldValues, cdc15Migra
   businessOperationProjectionSuppressions, businessOperationReferences, documentOperationCandidates, businessOperationMatchDecisions,
   businessOperationContractDetails, businessOperationFinancingDetails, businessOperationClaimDetails, businessOperationClaimDamages,
   businessOperationClaimDamageDocuments, businessOperationClaimDamagePhotos, businessOperationClaimActions, businessOperationClaimExchanges,
-  businessOperationAssetDataMarks, businessOperationClaimMigrationMarks, stripeCatalogRecoveries,
+  businessOperationAssetDataMarks, businessOperationClaimMigrationMarks, stripeCatalogRecoveries, businessOperationIdentityReviews,
   transactionalEmailJobs, emailProviderEvents, documentRawExtracts,
   annualRenewalReminderState, annualRenewalReminderChecks, emailTemplateVersions,
 } from '../schema';
@@ -60,8 +60,13 @@ const SUITES: Readonly<Record<string, readonly string[]>> = {
   document_extraction_coverage: ['0329_t1_source_verification.sql'],
   // Lot 41 : issue T3 des candidats (0321).
   // Lot 47A (O9) : index de lecture du BO diagnostic (0325).
-  document_operation_candidates: ['0320_document_operation_candidates_t3.sql', '0321_document_operation_candidates_t3_outcome.sql', '0325_operation_diagnostics.sql', '0379_operations_t3_retry_cards.sql'],
-  business_operations: ['0325_operation_diagnostics.sql'],
+  document_operation_candidates: ['0320_document_operation_candidates_t3.sql', '0321_document_operation_candidates_t3_outcome.sql', '0325_operation_diagnostics.sql', '0379_operations_t3_retry_cards.sql',
+    // Lot 78A : index partiel du rattrapage de l'identité économique (0609).
+    '0609_l78a_identite_economique.sql'],
+  // Lot 78A : provenance des attributs (0609).
+  business_operations: ['0325_operation_diagnostics.sql', '0609_l78a_identite_economique.sql'],
+  // Lot 78A : lien composante → indice T1 → fait (0609).
+  business_operation_financial_component_sources: ['0609_l78a_identite_economique.sql'],
   // Lot 44 (O5) : ancre historique du Sinistre et clé stable des lignes de ses listes (0323).
   business_operation_claim_details: ['0323_claim_operations.sql'],
   business_operation_claim_damages: ['0323_claim_operations.sql'],
@@ -94,6 +99,7 @@ const CAS: Array<[PgTable, string, string]> = [
   [businessOperationHistory, '0316_business_operations.sql', 'business_operation_history'],
   [businessOperationProjectionSuppressions, '0316_business_operations.sql', 'business_operation_projection_suppressions'],
   [businessOperationReferences, '0316_business_operations.sql', 'business_operation_references'],
+  [businessOperationIdentityReviews, '0609_l78a_identite_economique.sql', 'business_operation_identity_reviews'],
   [documentOperationCandidates, '0317_business_operation_details.sql', 'document_operation_candidates'],
   [businessOperationMatchDecisions, '0317_business_operation_details.sql', 'business_operation_match_decisions'],
   [businessOperationContractDetails, '0317_business_operation_details.sql', 'business_operation_contract_details'],

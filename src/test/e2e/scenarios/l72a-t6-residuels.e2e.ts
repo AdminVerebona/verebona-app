@@ -198,7 +198,8 @@ scenario('L72A-T6', 'Lot 72A — écarts résiduels du contrat EVALUATE et bulle
       expect(B.composeSpeech({ presentation: p, empty: false }).text).not.toBe(B.NOTHING_TO_REPORT_SPEECH);
       const [r] = await rapportsEvaluate(c.id);
       expect(r).toMatchObject({ status: 'FAILED', trigger_code: 'evaluate:pregen', counters: { accepted: 1, persisted: 0, notPersisted: 1 } });
-      expect(r.steps.map((s) => [s.step, s.status])).toEqual([['evaluate', 'OK'], ['persist', 'FAILED']]);
+      // Lot 78C : + clôture durable de l'exécution (état réel : nouvel essai planifié).
+      expect(r.steps.map((s) => [s.step, s.status])).toEqual([['evaluate', 'OK'], ['persist', 'FAILED'], ['run_state', 'OK']]);
       expect(r.sources).toMatchObject({ callerMode: 'pregeneration', executionMode: 'PREGENERATION' });
       const [ligne] = await sql<Array<{ write_result: string; record_status: string }>>`
         SELECT e.write_result, e.record_status FROM ai_execution_report_entries e JOIN ai_execution_reports r ON r.id = e.report_id
@@ -212,6 +213,8 @@ scenario('L72A-T6', 'Lot 72A — écarts résiduels du contrat EVALUATE et bulle
       await sql.unsafe(`DROP FUNCTION IF EXISTS l72a_refus()`);
     }
     // Base rétablie (délai de reprise écoulé) : décision enregistrée, rapport SUCCESS.
+    // Lot 78C : le délai avant le nouvel essai est porté par la base (t6_evaluation_runs).
+    await sql`UPDATE t6_evaluation_runs SET next_attempt_at = now() - interval '1 second' WHERE account_id = ${c.id}`;
     (await import('@/services/home/mascot/t6-runner')).resetT6EvaluationState();
     const p2 = await passer(c.id);
     expect(echeancesAffichees(p2)).toEqual([id]);

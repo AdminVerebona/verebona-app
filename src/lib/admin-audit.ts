@@ -136,7 +136,10 @@ export type AdminActionType =
   // consultée (rapport) ou archive ZIP téléchargée : périmètre, période,
   // traitements, option renforcée, résultat, taille, identifiant de génération.
   | 'TECH_DIAGNOSTIC_VIEW'
-  | 'TECH_DIAGNOSTIC_EXPORT';
+  | 'TECH_DIAGNOSTIC_EXPORT'
+  // Lot 78C : BO › Supervision — reprise explicite des évaluations T6 en
+  // échec, en attente d'essai ou indisponibles d'un compte (nombre relancé).
+  | 'T6_EVALUATION_RETRY';
 
 export type AdminTargetType = 'ACCOUNT' | 'USER' | 'EXPORT_TEMPLATE' | 'COMMUNICATION_CHANNEL' | 'ANOMALY' | 'GDPR_REQUEST'
   | 'ASSISTANT_SETTING' | 'ASSISTANT_REQUEST' | 'NOTIFICATION' | 'AI_CACHE' | 'AI_METRICS'

@@ -39,6 +39,23 @@
  * `lines` : identifiant stable, montant, catégorie, date, source, Opération
  * éventuelle, statut d'inclusion et motif — diagnostic BO et tiroir.
  *
+ * Lot 78B (ticket « identité économique » §3, `./fact-identity`) — une
+ * Opération peut avoir été mal consolidée (rapprochement abusif) : le TCO ne
+ * lui fait pas confiance en bloc.
+ *   · §3A : chaque composante est rattachée à SES justificatifs (provenance
+ *     persistée) ; l'achat du bien est identifié composante par composante ;
+ *     le prix prouvé d'un AUTRE bien n'est jamais un coût de ce bien ; un
+ *     montant absent de ses justificatifs est signalé ; un justificatif retiré
+ *     n'attribue plus son montant (le justificatif est réévalué seul) ;
+ *   · §3B : une même somme portée par plusieurs justificatifs d'une même
+ *     Opération, sans preuve de transactions distinctes, est comptée une fois
+ *     (doublon présumé, signalé) ; un bien immobilier n'est acquis qu'une fois ;
+ *   · §3C : un achat d'objet distinct rattaché à un bien immobilier (ni le
+ *     bien, ni un équipement, ni des frais d'acquisition, ni rattaché par
+ *     l'utilisateur) n'est pas incorporé à son coût de possession.
+ *   Les indicateurs annuels (76G) dérivent des mêmes lignes : cumul et années
+ *   restent cohérents. Règle PO « même montant sans date » (75D A) inchangée.
+ *
  *   Coût cumulé documenté = Σ coûts réalisés − Σ réductions − Σ remboursements
  *                           − Σ indemnités attribuables
  *   En possession         : coût net estimé = cumulé − valeur actuelle FIABLE
@@ -61,6 +78,9 @@ import {
   type EconomicLineReason, type EconomicLineSource, type EconomicLineStatus,
 } from '../finance/economic-lines';
 import { computeTcoAnnual, type TcoAnnual } from './annual';
+import {
+  presumedDuplicateComponents, purchaseIsOwnershipCost, unjustifiedComponent, type ComponentProvenance, type PresumedDuplicate,
+} from './fact-identity';
 
 // ── Entrées ────────────────────────────────────────────────────────────────
 
@@ -79,6 +99,10 @@ export interface TcoOperation {
   documents: Array<{ fileId: number; title: string; role: string | null }>;
   /** Lot 61 : natures des sources actives (ASSET_DATA : achat consolidé depuis la fiche). */
   sourceKinds?: readonly string[];
+  /** Lot 78B (§3C) : l'utilisateur a lui-même rattaché l'Opération à ce bien (lien d'autorité USER). */
+  userLinked?: boolean;
+  /** Lot 78B (§3C) : l'Opération est rattachée à un équipement de ce bien. */
+  equipmentLinked?: boolean;
 }
 
 /** Lot 61 : prix d'achat de la fiche (saisi ou extrait d'un justificatif). */
@@ -150,6 +174,14 @@ export interface TcoInput {
    * Absent : attendu.
    */
   acquisitionExpected?: boolean;
+  /** Lot 78B (§3C) : catégorie du bien (IMMOBILIER, VEHICULE, OBJET…) — pertinence d'un achat pour son coût de possession. */
+  assetCategory?: string | null;
+  /**
+   * Lot 78B (§3A, §3B) : provenance de chaque composante active (justificatifs
+   * qui la portent, retirés, références de facture, montant retrouvé). Absente :
+   * comportement antérieur (aucune présomption).
+   */
+  componentProvenance?: ReadonlyMap<number, ComponentProvenance>;
 }
 
 /** Lot 71A : prix d'achat de la fiche d'un équipement du bien. */
@@ -181,7 +213,10 @@ export type TcoWarning =
   // Lot 61 : dépenses documentaires non qualifiées / sans montant, et dépenses dont le bien n'est pas confirmé.
   | 'DOCUMENTS_NOT_QUALIFIED' | 'UNCONFIRMED_ASSET_EXPENSES'
   // Lot 75D : justificatifs sans montant, rapprochements incertains, facture d'achat non identifiable.
-  | 'AMOUNTS_UNKNOWN' | 'UNCERTAIN_MATCHES' | 'ACQUISITION_AMBIGUOUS';
+  | 'AMOUNTS_UNKNOWN' | 'UNCERTAIN_MATCHES' | 'ACQUISITION_AMBIGUOUS'
+  // Lot 78B : même somme portée par plusieurs justificatifs comptée une fois ; montant non retrouvé sur ses
+  // justificatifs ; achats d'objets distincts non incorporés au coût de possession.
+  | 'PRESUMED_DUPLICATES' | 'UNJUSTIFIED_AMOUNTS' | 'NOT_OWNERSHIP_COSTS';
 
 /** Lot 75D (H) : état du coût d'acquisition (distingue absence de dépense et information manquante). */
 export type TcoAcquisitionStatus = 'DOCUMENTED' | 'MISSING' | 'NOT_APPLICABLE';
@@ -213,6 +248,10 @@ export interface TcoEconomicLine {
   uncertain?: boolean;
   /** Lot 75D (D) : montant inconnu (justificatif financier sans montant lisible) — jamais 0 €. */
   amountUnknown?: boolean;
+  /** Lot 78B (§3A) : justificatifs (fichiers) qui portent CETTE composante — jamais ceux d'une autre transaction. */
+  sourceFileIds?: number[];
+  /** Lot 78B (§3B) : ligne comptée à la place de celle-ci (même somme, autre justificatif, sans preuve de transaction distincte). */
+  duplicateOf?: string;
 }
 
 export interface TcoResult {
@@ -342,6 +381,27 @@ function documentCategory(l: Pick<DocumentLineDraft, 'typeHint' | 'theme'>): Tco
   }
 }
 
+/**
+ * Lot 78B (§3B) — plusieurs justificatifs que T1 qualifie d'achat DE CE BIEN
+ * portent la même somme (même devise) sans références de facture distinctes :
+ * une seule acquisition décrite plusieurs fois (acte, attestation, copie…).
+ * Rend le justificatif retenu (le plus ancien), ou null (montants différents,
+ * factures distinctes : l'ambiguïté reste signalée).
+ */
+function memeAchatDecritPlusieursFois(lignes: readonly DocumentLineDraft[]): { kept: number } | null {
+  const montants = new Set(lignes.map((d) => `${d.currency}:${componentEurMinor({ amountMinor: d.amountMinor, currency: d.currency, amountEurCents: d.amountEurCents })}`));
+  if (montants.size !== 1 || [...montants][0].endsWith(':null')) return null;
+  const fichiers = [...new Set(lignes.map((d) => d.fileId))].sort((a, b) => a - b);
+  const refs = new Map(fichiers.map((f) => [f, new Set(lignes.filter((d) => d.fileId === f).flatMap((d) => d.invoiceRefs))]));
+  for (const f of fichiers) {
+    for (const g of fichiers) {
+      const [rf, rg] = [refs.get(f)!, refs.get(g)!];
+      if (f < g && rf.size && rg.size && ![...rf].some((r) => rg.has(r))) return null;
+    }
+  }
+  return { kept: fichiers[0] };
+}
+
 /** Lot 75D : même jour ? `null` si l'une des dates est inconnue (identité non démontrable par la date). */
 function sameDay(a: string | null | undefined, b: string | null | undefined): boolean | null {
   if (!isIsoDate(a) || !isIsoDate(b)) return null;
@@ -386,6 +446,26 @@ export function computeTco(input: TcoInput): TcoResult {
   const entries: TcoResult['entries'] = [];
   const lines: TcoEconomicLine[] = [];
   const opEntries = new Map<number, Array<LedgerEntry & { category: TcoCategory | null }>>();
+
+  // ── Lot 78B (§3A, §3B) : provenance des composantes, doublons présumés dans une même Opération ──
+  const prov = input.componentProvenance ?? new Map<number, ComponentProvenance>();
+  const prix = input.assetPrice && input.assetPrice.amountMinor > 0 ? input.assetPrice : null;
+  const prixEur = prix ? componentEurMinor({ amountMinor: prix.amountMinor, currency: prix.currency, amountEurCents: null }) : null;
+  const preuves = new Set(prix?.evidenceFileIds ?? []);
+  const prixDate = isIsoDate(input.assetAcquisitionDate) ? input.assetAcquisitionDate.slice(0, 10) : null;
+  const justifieParPreuve = (componentId: number) => (prov.get(componentId)?.documentFileIds ?? []).some((f) => preuves.has(f));
+  const force = (componentId: number): number => {
+    const p = prov.get(componentId);
+    if (!p) return 0;
+    // Preuve du prix d'un AUTRE bien : désignée en premier, pour que ses copies la suivent hors de ce bien (§3A).
+    return (p.otherAssetAcquisition && !justifieParPreuve(componentId) ? 8 : 0)
+      + (justifieParPreuve(componentId) ? 4 : 0) + (p.otherSourceKinds.includes('ASSET_DATA') ? 4 : 0) + (p.explained === true ? 1 : 0);
+  };
+  const doublons = new Map<number, PresumedDuplicate>();
+  for (const op of ops) for (const [id, d] of presumedDuplicateComponents(op, prov, force)) doublons.set(id, d);
+  const nonJustifiees = new Map<number, 'AMOUNT_NOT_ON_SOURCES' | 'SOURCES_WITHDRAWN'>();
+  const autresBiens = new Set<number>();
+
   for (const op of ops) {
     const category = tcoCategoryOf(op, op.parentOperationId != null ? (typeParId.get(op.parentOperationId) ?? null) : null);
     const hasRefund = op.components.some((c) => c.kind === 'REFUND');
@@ -395,47 +475,108 @@ export function computeTco(input: TcoInput): TcoResult {
         disposalDate: dateCession, isDisposalOperation: op.typeCode === 'DISPOSAL', hasRefund,
         fallbackDate: op.realizedDate ?? op.startDate ?? op.plannedDate,
       });
-      if (e.prorata) warnings.add('PRORATA_APPLIED');
-      const x = { ...e, category: e.effect === 'COST' ? category : null };
+      // §3A : montant justifié par la preuve du prix d'achat d'un AUTRE bien (et non de celui-ci) — jamais un coût de
+      // ce bien, quelle que soit l'Opération qui le porte (ex. prix d'une maison dans une commande de mobilier).
+      const autreBien = e.included && !!prov.get(c.id)?.otherAssetAcquisition && !justifieParPreuve(c.id);
+      // §3B : même somme, autre justificatif de la même dépense, sans preuve de transaction distincte — comptée une fois.
+      const doublon = e.included && !autreBien && doublons.has(c.id);
+      if (doublon) warnings.add('PRESUMED_DUPLICATES');
+      if (autreBien) autresBiens.add(c.id);
+      if (e.prorata && !doublon && !autreBien) warnings.add('PRORATA_APPLIED');
+      const x = autreBien
+        ? { ...e, included: false, includedEurMinor: 0, prorata: null, exclusion: 'OUT_OF_SCOPE' as const, category: null }
+        : doublon
+          ? { ...e, included: false, includedEurMinor: 0, prorata: null, category: null }
+          : { ...e, category: e.effect === 'COST' ? category : null };
+      if (!doublon && !autreBien && e.included) {
+        const nj = unjustifiedComponent(prov.get(c.id));
+        if (nj) { nonJustifiees.set(c.id, nj); warnings.add('UNJUSTIFIED_AMOUNTS'); }
+        // §3A : justificatif retiré de la dépense — le montant qu'il justifiait n'est plus attribué par elle ; le
+        // justificatif lui-même est réévalué par la règle documentaire (jamais compté deux fois, jamais perdu).
+        if (nj === 'SOURCES_WITHDRAWN') { x.included = false; x.includedEurMinor = 0; x.category = null; x.prorata = null; }
+      }
       entries.push(x);
       opEntries.set(op.id, [...(opEntries.get(op.id) ?? []), x]);
     }
   }
 
-  // ── Achat du bien (lot 61, §3.1 ; lot 75D A, F) : prix de la fiche ↔ achat consolidé ──
-  const prix = input.assetPrice && input.assetPrice.amountMinor > 0 ? input.assetPrice : null;
-  const prixEur = prix ? componentEurMinor({ amountMinor: prix.amountMinor, currency: prix.currency, amountEurCents: null }) : null;
-  const preuves = new Set(prix?.evidenceFileIds ?? []);
-  const prixDate = isIsoDate(input.assetAcquisitionDate) ? input.assetAcquisitionDate.slice(0, 10) : null;
+  // ── Achat du bien (lot 61, §3.1 ; lot 75D A, F ; lot 78B §3A) : prix de la fiche ↔ achat consolidé ──
   const coutOp = (id: number) => (opEntries.get(id) ?? []).filter((e) => e.included && e.effect === 'COST').reduce((n, e) => n + e.includedEurMinor, 0);
   // Lot 75D (F) : achat d'un ÉQUIPEMENT (toutes ses composantes de coût le ciblent) — jamais l'achat du bien.
   const achatEquipement = (o: TcoOperation) => {
     const c = o.components.filter((x) => x.kind === 'REALIZED_COST');
     return c.length > 0 && c.every((x) => x.targetEquipmentId != null);
   };
+  const cibleEquipement = (o: TcoOperation, componentId: number) => o.components.find((x) => x.id === componentId)?.targetEquipmentId != null;
   const achatsCoutes = ops.filter((o) => o.typeCode === 'ACQUISITION' && o.status !== 'CANCELLED' && coutOp(o.id) > 0 && !achatEquipement(o));
   // Lot 75D (A) : achat consolidé DU BIEN sur identité établie — donnée structurée de la fiche (ASSET_DATA), facture
   // preuve du prix, ou preuves concordantes (même montant ET même date) ; même montant sans date : INCERTAIN, signalé.
+  // Lot 78B (§3A) : l'identification se fait au niveau de la COMPOSANTE et de SES justificatifs — une Opération qui
+  // mêle plusieurs achats (rapprochement abusif) ne fait jamais du prix d'un autre achat celui du bien, ni l'inverse.
   const achatsIncertains = new Set<number>();
-  const achatsDuBien = new Set((prix
-    ? achatsCoutes.filter((o) => {
-      if ((o.sourceKinds ?? []).includes('ASSET_DATA') || o.documents.some((d) => preuves.has(d.fileId))) return true;
-      if (prixEur == null || coutOp(o.id) !== prixEur || preuves.size) return false;
-      const memeJour = sameDay(prixDate, opDate(o));
-      if (memeJour === null) achatsIncertains.add(o.id);
-      return memeJour === true;
-    })
-    : achatsCoutes).map((o) => o.id));
-  if (prix) {
-    // Un autre achat (accessoire, équipement) n'est pas l'acquisition du bien.
-    for (const o of achatsCoutes) if (!achatsDuBien.has(o.id)) for (const e of opEntries.get(o.id) ?? []) if (e.category === 'ACQUISITION') e.category = 'ACCESSORIES';
+  const compAchat = new Map<number, Set<number>>();
+  for (const o of achatsCoutes) {
+    const couts = (opEntries.get(o.id) ?? []).filter((e) => e.included && e.effect === 'COST' && !cibleEquipement(o, e.componentId));
+    let ids: number[] = [];
+    if (!prix || (o.sourceKinds ?? []).includes('ASSET_DATA')) ids = couts.map((e) => e.componentId);
+    else if (o.documents.some((d) => preuves.has(d.fileId))) {
+      // Seules les composantes portées par la preuve du prix (ou sans justificatif documentaire connu) sont l'achat du bien.
+      ids = couts.filter((e) => { const p = prov.get(e.componentId); return !p || !p.documentFileIds.length || justifieParPreuve(e.componentId); }).map((e) => e.componentId);
+    } else if (prixEur != null && !preuves.size) {
+      if (coutOp(o.id) === prixEur) {
+        const memeJour = sameDay(prixDate, opDate(o));
+        if (memeJour === null) achatsIncertains.add(o.id);
+        if (memeJour === true) ids = couts.map((e) => e.componentId);
+      } else {
+        for (const e of couts.filter((x) => x.eurMinor === prixEur)) {
+          const memeJour = sameDay(prixDate, e.date ?? opDate(o));
+          if (memeJour === null) achatsIncertains.add(o.id);
+          if (memeJour === true) ids.push(e.componentId);
+        }
+      }
+    }
+    if (ids.length) compAchat.set(o.id, new Set(ids));
   }
-  for (const o of ops) if (achatEquipement(o)) for (const e of opEntries.get(o.id) ?? []) if (e.category === 'ACQUISITION') e.category = 'ACCESSORIES';
+  const achatsDuBien = new Set(compAchat.keys());
+  // Sans prix dans la fiche, plusieurs achats consolidés distincts pourraient chacun être celui du bien : signalé.
+  if (!prix && achatsDuBien.size > 1) warnings.add('ACQUISITION_AMBIGUOUS');
+  for (const o of ops) {
+    for (const e of opEntries.get(o.id) ?? []) {
+      if (e.category !== 'ACQUISITION') continue;
+      // Un autre achat (accessoire, équipement, objet distinct) n'est pas l'acquisition du bien.
+      if (achatEquipement(o) || cibleEquipement(o, e.componentId)) e.category = 'ACCESSORIES';
+      else if (compAchat.get(o.id)?.has(e.componentId)) continue;
+      else if (prix || compAchat.has(o.id)) e.category = 'ACCESSORIES';
+    }
+  }
+  const coutAchat = (o: TcoOperation) => (opEntries.get(o.id) ?? []).filter((e) => e.included && compAchat.get(o.id)?.has(e.componentId)).reduce((n, e) => n + e.includedEurMinor, 0);
   /** Montant (EUR) et date des achats du bien établis : fiche, achats consolidés. */
   const achatsEtablis: Array<{ eur: number; date: string | null }> = [
     ...(prix && prixEur != null ? [{ eur: prixEur, date: prixDate }] : []),
-    ...ops.filter((o) => achatsDuBien.has(o.id)).map((o) => ({ eur: coutOp(o.id), date: opDate(o) })),
+    ...ops.filter((o) => achatsDuBien.has(o.id)).map((o) => ({ eur: coutAchat(o), date: opDate(o) })),
   ];
+
+  // ── Lot 78B (§3C) : pertinence d'un achat pour le coût de possession du bien ──
+  // L'acquisition du bien établie (ou sans objet), un achat distinct qui n'est ni un équipement, ni des frais
+  // d'acquisition, ni rattaché au bien par l'utilisateur, n'est pas incorporé automatiquement (bien immobilier).
+  const acquisitionEtablie = !!prix || achatsDuBien.size > 0 || input.acquisitionExpected === false;
+  const horsPossession = new Set<number>();
+  if (acquisitionEtablie) {
+    for (const o of ops) {
+      if (o.typeCode !== 'ACQUISITION') continue;
+      for (const e of opEntries.get(o.id) ?? []) {
+        if (!e.included || e.effect !== 'COST' || e.category !== 'ACCESSORIES') continue;
+        const pertinent = purchaseIsOwnershipCost({
+          assetCategory: input.assetCategory ?? null, userLinked: o.userLinked,
+          concernsEquipment: achatEquipement(o) || cibleEquipement(o, e.componentId) || !!o.equipmentLinked,
+        });
+        if (pertinent) continue;
+        e.included = false; e.includedEurMinor = 0; e.category = null; e.prorata = null;
+        horsPossession.add(e.componentId);
+        warnings.add('NOT_OWNERSHIP_COSTS');
+      }
+    }
+  }
 
   // Acquisition : date réelle (achat du bien consolidé, sinon fiche) — jamais la date d'ajout.
   const achatsDates = ops.filter((o) => o.typeCode === 'ACQUISITION' && o.status === 'REALIZED' && !achatEquipement(o) && (!prix || achatsDuBien.has(o.id) || !achatsDuBien.size));
@@ -485,7 +626,22 @@ export function computeTco(input: TcoInput): TcoResult {
     const fichiers = new Set(t1.map((d) => d.fileId));
     if (fortes.size) for (const f of fortes) factureAchat.add(f);
     else if (fichiers.size === 1 || (fichiers.size > 1 && t1.every((d) => d.scope === 'DEPOSIT' || d.scope === 'BALANCE'))) for (const f of fichiers) factureAchat.add(f);
-    else if (fichiers.size > 1) warnings.add('ACQUISITION_AMBIGUOUS');
+    else if (fichiers.size > 1) {
+      // Lot 78B (§3B) : un bien IMMOBILIER s'acquiert une fois par cycle de possession — plusieurs justificatifs de
+      // SON achat (même montant, mêmes nature et cible, aucune référence de facture distincte : acte, attestation,
+      // copie) décrivent une seule acquisition, comptée une fois, les autres signalés. Bien mobile : deux factures
+      // de même montant peuvent être deux achats (règle PO TCO-21 inchangée) — l'ambiguïté reste signalée.
+      const unique = input.assetCategory === 'IMMOBILIER' ? memeAchatDecritPlusieursFois(t1) : null;
+      if (unique) {
+        factureAchat.add(unique.kept);
+        for (const d of t1) {
+          if (d.fileId === unique.kept) continue;
+          d.status = 'DUPLICATE'; d.reason = 'SAME_FACT_OTHER_DOCUMENT'; d.relatedFileId = unique.kept;
+          d.note = 'Même achat du bien (même montant, même nature) qu’un autre justificatif, sans référence de facture distincte : compté une seule fois, à vérifier.';
+        }
+        warnings.add('PRESUMED_DUPLICATES');
+      } else warnings.add('ACQUISITION_AMBIGUOUS');
+    }
   }
   const docEntries: Array<{ draft: DocumentLineDraft; entry: LedgerEntry & { category: TcoCategory | null } }> = [];
   for (const d of drafts) {
@@ -508,6 +664,16 @@ export function computeTco(input: TcoInput): TcoResult {
         if (memeFait && d.status === null) { d.status = 'DUPLICATE'; d.reason = 'SAME_AS_ASSET_PRICE'; }
         if (memeFait) category = 'ACQUISITION';
       } else if (factureAchat.has(d.fileId)) category = 'ACQUISITION';
+      // Lot 78B (§3C) : achat distinct (ni le bien, ni un équipement, ni des frais d'acquisition) — pertinence.
+      if (category === 'ACCESSORIES' && d.status === null && (prix || achatsDuBien.size > 0 || factureAchat.size > 0 || input.acquisitionExpected === false)
+        && !purchaseIsOwnershipCost({ assetCategory: input.assetCategory ?? null, concernsEquipment: docEquipement(d), acquisitionFee: d.scope === 'FEE' })) {
+        const memeMontant = eur != null && achatsEtablis.some((x) => x.eur === eur);
+        d.status = 'EXCLUDED'; d.reason = 'NOT_OWNERSHIP_COST'; d.uncertain = null;
+        d.note = memeMontant
+          ? 'Même montant que l’achat du bien : probablement un autre justificatif de cet achat, déjà compté. Non ajouté au coût de possession.'
+          : 'Achat d’un objet distinct, rattaché au bien sans en faire partie : non incorporé au coût de possession (rattachez-le comme équipement pour l’inclure).';
+        warnings.add('NOT_OWNERSHIP_COSTS');
+      }
     } else category = cat;
     const ligne: Omit<TcoEconomicLine, 'status' | 'reason' | 'includedCents' | 'eurCents'> = {
       id: d.lineId, source: 'DOCUMENT', provenance: d.provenance, label: d.title, kind: d.kind, amountMinor: d.amountMinor, currency: d.currency,
@@ -640,26 +806,78 @@ export function computeTco(input: TcoInput): TcoResult {
   for (const x of docEntries) if (x.entry.included && !docs.has(x.draft.fileId)) docs.set(x.draft.fileId, x.draft.title);
   const opLabel = new Map(ops.map((o) => [o.id, o.label]));
   // Lot 75D (H) : toute information financière manquante ou incertaine rend le total non exhaustif.
-  const docIncomplet = (['DOCUMENTS_NOT_QUALIFIED', 'UNCONFIRMED_ASSET_EXPENSES', 'AMOUNTS_UNKNOWN', 'UNCERTAIN_MATCHES', 'ACQUISITION_AMBIGUOUS', 'ACQUISITION_COST_MISSING'] as const)
+  // Lot 78B : doublon présumé (peut-être deux paiements) et montant non justifié par ses sources : à vérifier.
+  const docIncomplet = (['DOCUMENTS_NOT_QUALIFIED', 'UNCONFIRMED_ASSET_EXPENSES', 'AMOUNTS_UNKNOWN', 'UNCERTAIN_MATCHES', 'ACQUISITION_AMBIGUOUS', 'ACQUISITION_COST_MISSING',
+    'PRESUMED_DUPLICATES', 'UNJUSTIFIED_AMOUNTS'] as const)
     .some((w) => warnings.has(w));
   const status: ReadStatus = !input.readComplete ? 'PARTIAL'
     : (!totals.complete || docIncomplet || warnings.has('ACQUISITION_DATE_MISSING') || warnings.has('DISPOSAL_PRICE_MISSING') || warnings.has('DISPOSAL_DATE_MISSING')) ? 'INCOMPLETE' : 'COMPLETE';
 
   // Lignes des composantes consolidées (en tête : l'ordre suit la hiérarchie des sources).
   const fichierPrincipal = (o: TcoOperation): number | null => (o.documents.find((d) => d.role === 'INVOICE') ?? o.documents[0])?.fileId ?? null;
+  // Lot 78B (§3A) : une composante désigne SES justificatifs (preuve du prix d'abord, puis facture de l'Opération), jamais
+  // le justificatif principal d'une autre transaction de la même Opération ; provenance inconnue : comportement antérieur.
+  const fichierComposante = (o: TcoOperation, componentId: number): number | null => {
+    const f = prov.get(componentId)?.documentFileIds ?? [];
+    if (!f.length) return fichierPrincipal(o);
+    return f.find((x) => preuves.has(x)) ?? f.find((x) => o.documents.some((d) => d.fileId === x && d.role === 'INVOICE')) ?? [...f].sort((a, b) => a - b)[0];
+  };
+  const titreDe = (o: TcoOperation, fileId: number | null) => (fileId != null ? o.documents.find((d) => d.fileId === fileId)?.title ?? null : null);
   const opLines: TcoEconomicLine[] = [];
   for (const op of ops) {
     for (const e of opEntries.get(op.id) ?? []) {
       const c = op.components.find((x) => x.id === e.componentId);
-      opLines.push({
+      const p = prov.get(e.componentId);
+      const fileId = fichierComposante(op, e.componentId);
+      const base: TcoEconomicLine = {
         id: `c:${e.componentId}`, source: 'OPERATION', provenance: 'T3', label: c?.label ? `${op.label} — ${c.label}` : op.label, kind: e.kind,
         amountMinor: e.amountMinor, currency: e.currency, eurCents: e.eurMinor, includedCents: e.includedEurMinor, category: e.category, date: e.date,
-        fileId: fichierPrincipal(op), operationId: op.id, operationLabel: op.label, status: statusOfEntry(e, 'RETAINED_CONSOLIDATED'), reason: e.exclusion,
+        fileId, operationId: op.id, operationLabel: op.label, status: statusOfEntry(e, 'RETAINED_CONSOLIDATED'), reason: e.exclusion,
         note: achatsIncertains.has(op.id) && e.category === 'ACCESSORIES' && e.included
           ? 'Même montant que le prix d’achat de la fiche, sans preuve qu’il s’agisse de la même dépense : comptée, à vérifier.' : null,
         relatedFileId: null,
         ...(achatsIncertains.has(op.id) && e.included ? { uncertain: true } : {}),
-      });
+        ...(p ? { sourceFileIds: [...p.documentFileIds] } : {}),
+      };
+      if (autresBiens.has(e.componentId)) {
+        opLines.push({
+          ...base, category: null, status: 'OUT_OF_SCOPE', reason: 'COUNTED_FOR_OTHER_ASSET',
+          note: 'Montant justifié par la preuve du prix d’achat d’un autre bien : jamais un coût de ce bien.',
+        });
+        continue;
+      }
+      const d = doublons.get(e.componentId);
+      if (d && !e.included && !e.exclusion) {
+        const gardee = fichierComposante(op, d.keptComponentId);
+        opLines.push({
+          ...base, category: null, status: 'DUPLICATE', reason: 'SAME_FACT_OTHER_DOCUMENT', duplicateOf: `c:${d.keptComponentId}`, relatedFileId: gardee,
+          note: `Même somme et même nature que ${titreDe(op, gardee) ? `« ${titreDe(op, gardee)} »` : 'un autre justificatif'} dans la même dépense, sans preuve d’une transaction distincte (facture, échéance ou période différente) : comptée une seule fois, à vérifier.`,
+        });
+        continue;
+      }
+      if (horsPossession.has(e.componentId)) {
+        opLines.push({
+          ...base, status: 'EXCLUDED', reason: 'NOT_OWNERSHIP_COST',
+          note: 'Achat d’un objet distinct, rattaché au bien sans en faire partie : non incorporé au coût de possession (rattachez-le comme équipement, ou rattachez vous-même la dépense au bien, pour l’inclure).',
+        });
+        continue;
+      }
+      const nj = nonJustifiees.get(e.componentId);
+      if (nj === 'SOURCES_WITHDRAWN') {
+        opLines.push({
+          ...base, category: null, status: 'EXCLUDED', reason: 'SOURCE_WITHDRAWN', relatedFileId: prov.get(e.componentId)?.withdrawnFileIds[0] ?? null,
+          note: 'Le justificatif de ce montant a été retiré de la dépense : il n’est plus compté par elle (le justificatif est réévalué seul).',
+        });
+        continue;
+      }
+      if (nj && e.included) {
+        opLines.push({
+          ...base, uncertain: true,
+          note: 'Montant introuvable sur les justificatifs de cette dépense : compté, à vérifier (il ne doit jamais provenir d’une autre transaction).',
+        });
+        continue;
+      }
+      opLines.push(base);
     }
   }
   const acquisitionCents = postes.get('ACQUISITION')?.costsCents ?? 0;

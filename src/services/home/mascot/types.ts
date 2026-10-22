@@ -359,6 +359,15 @@ export interface MascotPresentation {
    * présentation antérieure au lot 75E.
    */
   presentationRevision?: string;
+  /**
+   * Lot 78C : actualisation CIBLÉE suggérée (ms) — une évaluation T6 est
+   * réellement en cours ou un nouvel essai est planifié bientôt, ou des
+   * documents sont en cours d'analyse. Le client relit une fois après ce
+   * délai, un nombre de fois borné (jamais de rafraîchissement permanent).
+   * Hors `contextHash` : n'altère jamais la stabilité du message affiché.
+   * Absent : rafraîchissement habituel (10 min, événements).
+   */
+  refreshAfterMs?: number;
 }
 
 /**

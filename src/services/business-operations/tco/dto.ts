@@ -29,6 +29,9 @@ export const TCO_WARNING_LABELS: Readonly<Record<TcoWarning, string>> = {
   AMOUNTS_UNKNOWN: 'Des justificatifs de dépense n’ont pas de montant lisible : leur montant est inconnu, le coût cumulé est incomplet.',
   UNCERTAIN_MATCHES: 'Des dépenses ressemblent à une autre dépense sans preuve qu’il s’agisse de la même : elles sont comptées, à vérifier.',
   ACQUISITION_AMBIGUOUS: 'Plusieurs factures d’achat pourraient correspondre à l’achat du bien : renseignez le prix d’achat de la fiche.',
+  PRESUMED_DUPLICATES: 'Une même somme figure sur plusieurs justificatifs d’une même dépense : elle n’est comptée qu’une fois. Vérifiez qu’il ne s’agit pas de paiements distincts.',
+  UNJUSTIFIED_AMOUNTS: 'Des montants consolidés ne se retrouvent pas sur leurs justificatifs, ou leur justificatif a été retiré : à vérifier.',
+  NOT_OWNERSHIP_COSTS: 'Des achats d’objets distincts rattachés à ce bien ne sont pas comptés dans son coût de possession (rattachez-les comme équipements pour les inclure).',
 };
 
 /** Lot 61 : libellé du motif d'une ligne économique (moteur ou qualification documentaire). */

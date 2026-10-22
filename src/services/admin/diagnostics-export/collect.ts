@@ -293,6 +293,41 @@ async function generate(req: DiagRequest, opts: GenerateOptions): Promise<DiagBu
         FROM business_operation_history WHERE account_id = ANY($1::int[]) AND operation_id = ANY($2::bigint[]) AND created_at >= $3 AND created_at < $4
        ORDER BY created_at DESC, id DESC LIMIT ${L}`, [per.accountIds, per.operationIds, start, end]), [] as Row[]) : [];
 
+    // Lot 78A (§6) : identité économique — candidats T1 (origine, décision et
+    // contrôles d'identité, nature déterministe / IA), sources rattachées,
+    // provenance des valeurs, journal des séparations / doutes / doublons.
+    const identite = per.operationIds.length || per.fileIds.length ? await part('identité économique des Opérations', async (sq) => {
+      const [j] = await sq(`SELECT to_regclass('business_operation_identity_reviews') IS NOT NULL AS ok`);
+      const journal = j?.ok ? await jsonRows(sq, `
+        SELECT id, operation_id, target_operation_id, kind, status, file_id, candidate_key, source_id, basis, signals, against_source_ids,
+               review_version, correlation_id, resolved_by_admin_id, created_at, updated_at, resolved_at
+          FROM business_operation_identity_reviews
+         WHERE account_id = ANY($1::int[]) AND (operation_id = ANY($2::bigint[]) OR target_operation_id = ANY($2::bigint[]) OR file_id = ANY($3::int[]))
+         ORDER BY id DESC LIMIT ${L}`, [per.accountIds, per.operationIds, per.fileIds]) : [];
+      const provenance = await jsonRows(sq, `
+        SELECT o.id AS operation_id, o.type_code, o.provider, o.technical_label, o.planned_date, o.start_date, o.realized_date, o.end_date,
+               to_jsonb(o) -> 'attribute_provenance' AS provenance
+          FROM business_operations o WHERE o.account_id = ANY($1::int[]) AND o.id = ANY($2::bigint[]) ORDER BY o.id LIMIT ${L}`, [per.accountIds, per.operationIds]);
+      const sources = await jsonRows(sq, `
+        SELECT s.id, s.operation_id, s.source_kind, s.source_entity_key, s.locator->>'candidateKey' AS candidate_key, s.source_role, s.authority, s.confidence,
+               s.match_method, s.match_reason, s.active, s.superseded_at, s.created_at,
+               CASE WHEN s.match_method = 'M3' THEN 'IA' WHEN s.match_method = 'M0' THEN 'UTILISATEUR' WHEN s.match_method IN ('M1', 'M2') THEN 'DETERMINISTE'
+                    WHEN s.match_method IS NULL AND s.source_kind = 'DOCUMENT' THEN 'CREATION' ELSE 'AUTRE' END AS nature_decision,
+               (SELECT h.reason_code FROM business_operation_history h WHERE h.source_id = s.id AND h.event_type = 'SOURCE_REMOVED' ORDER BY h.id DESC LIMIT 1) AS motif_retrait
+          FROM business_operation_sources s WHERE s.account_id = ANY($1::int[]) AND s.operation_id = ANY($2::bigint[]) ORDER BY s.operation_id, s.id LIMIT ${L}`,
+      [per.accountIds, per.operationIds]);
+      const candidats = await jsonRows(sq, `
+        SELECT c.id, c.file_id, c.candidate_key, c.extraction_id, c.analysis_run_id, c.status, c.established, c.confidence, c.type_hint, c.status_hint,
+               c.payload->'origin' AS origine_t1, c.payload->'evidenceFactIds' AS faits_preuve, c.payload->'adjustments' AS corrections_barriere,
+               c.t3_outcome, c.t3_reason, c.t3_operation_id, c.t3_detail->'matchMethod' AS methode, c.t3_detail->'certain' AS certains,
+               c.t3_detail->'identity' AS controles_identite, c.t3_detail->'excluded' AS exclus, c.t3_detail->'plausible' AS plausibles,
+               c.t3_detail->'m3' AS verdict_ia, c.t3_detail->>'identityReview' AS version_controle, c.t3_processed_at, c.created_at, c.superseded_at
+          FROM document_operation_candidates c
+         WHERE c.account_id = ANY($1::int[]) AND (c.file_id = ANY($2::int[]) OR c.t3_operation_id = ANY($3::bigint[]))
+         ORDER BY c.file_id, c.id DESC LIMIT ${L}`, [per.accountIds, per.fileIds, per.operationIds]);
+      return { journal, provenance, sources, candidats };
+    }, null) : null;
+
     // Données métier hors dossiers (utilisateur, global).
     let metier: Row | null = null;
     if (req.scope === 'user' && per.userId) {
@@ -321,7 +356,21 @@ async function generate(req: DiagRequest, opts: GenerateOptions): Promise<DiagBu
         return { volumetrie: c, traitementsSurLaPeriode: parTraitement, rapportsSurLaPeriode: rapports, anomaliesOuvertesParDomaine: anomaliesOuvertes };
       }, null);
     }
-    return { ctxTech, anomalies, jobs, reports, reportEntries, extractions, calls, callsAgg, aiOps, callDiags, history, metier, traceIds };
+    // Lot 78C : état réel des évaluations T6 (en cours, en échec, terminées sur la période) et pré-génération associée.
+    const t6 = await part('évaluations T6 (état réel)', async (sq) => ({
+      evaluations: await jsonRows(sq, `
+        SELECT agenda_item_id, account_id, status, left(context_fingerprint, 16) AS empreinte, left(evaluation_signature, 16) AS signature,
+               attempts, run_id, mode, requested_at, started_at, finished_at, lease_until, next_attempt_at, last_error_kind,
+               left(last_error, 300) AS last_error, last_outcome, trace_id, interrupted_count, updated_at
+          FROM t6_evaluation_runs
+         WHERE ${accFilter()} AND (status <> 'COMPLETED' OR updated_at >= $2)
+         ORDER BY account_id, agenda_item_id LIMIT ${L}`, [accounts, start]),
+      preGeneration: await jsonRows(sq, `
+        SELECT account_id, reason, requested_at, processed_at, last_status, attempts, claimed_until,
+               (processed_at IS NULL OR requested_at > processed_at) AS en_attente
+          FROM home_mascot_pregen_requests WHERE ${accFilter()} ORDER BY requested_at DESC LIMIT ${L}`, [accounts]),
+    }), null);
+    return { ctxTech, anomalies, jobs, reports, reportEntries, extractions, calls, callsAgg, aiOps, callDiags, history, metier, traceIds, identite, t6 };
   });
 
   // 3. Dossiers d'entité (« Données du compte » : même moteur, même masquage).
@@ -416,7 +465,14 @@ async function generate(req: DiagRequest, opts: GenerateOptions): Promise<DiagBu
   if (c.ctxTech) add('contexte-technique.json', 'Base de données, tâches planifiées, file en attente, versions de configuration IA actives ou utilisées', c.ctxTech);
   list('logs/anomalies-supervision.json', 'Anomalies de supervision (Dashboard › Supervision) de la période', c.anomalies);
   list('logs/traitements-file.json', 'File des traitements T1 / T3 / T4 (ai_job_queue) : statut, tentatives, erreur, corrélation', c.jobs);
+  if (c.t6) add('ia/t6-evaluations.json', 'Évaluations T6 EVALUATE : état réel par échéance (PENDING, RUNNING, RETRY_WAIT, FAILED, COMPLETED, UNAVAILABLE), tentatives, erreurs, prochain essai ; pré-génération de l’accueil', c.t6, c.t6.evaluations.length, c.t6.evaluations.length < L);
   if (c.history.length || per.operationIds.length) list('logs/historique-operations.json', 'Historique des Opérations (business_operation_history) de la période', c.history);
+  if (c.identite) {
+    add('tracabilite/identite-economique.json',
+      'Identité économique (lot 78A) : candidats T1 (origine, faits, décision T3, contrôles d’identité, nature déterministe / IA), sources rattachées et motifs de retrait, provenance des valeurs (dates, prestataire, libellé) et contradictions, journal des séparations / doutes / doublons et de leur traitement',
+      c.identite, c.identite.journal.length + c.identite.sources.length + c.identite.candidats.length,
+      c.identite.journal.length < L && c.identite.sources.length < L && c.identite.candidats.length < L);
+  }
   list('ia/rapports-execution.json', 'Rapports d’exécution T1 / T3 (ai_execution_reports) — synthèse', c.reports);
   if (entityScope) add('ia/rapports-execution-lignes.json', `Lignes des rapports d’exécution (${DIAG_LIMITS.reportEntries} par rapport, ${DIAG_LIMITS.reportsWithEntries} rapports au plus)`, c.reportEntries, c.reportEntries.length,
     c.reports.length <= DIAG_LIMITS.reportsWithEntries);
@@ -429,7 +485,14 @@ async function generate(req: DiagRequest, opts: GenerateOptions): Promise<DiagBu
 
   // Limites connues (signalées, jamais comblées).
   if (!c.reports.length) unavailable.push({ element: 'Rapports d’exécution T1 / T3', motif: 'aucun rapport conservé sur la période (rétention ai-call-diagnostics-purge ou traitements antérieurs au lot 58C)' });
-  if (entityScope) unavailable.push({ element: 'Lien composante → indice T1', motif: 'non persisté par T3 : indices du candidat exportés, correspondance de valeur signalée comme telle' });
+  // Lot 78A : le lien composante → indice T1 → fait est désormais persisté par T3 ; seules les
+  // composantes non encore reconsolidées depuis (antérieures au lot 78A) restent sans lien.
+  const sansLien = traces.filter((t) => {
+    if (!String(t.ligne.id ?? '').startsWith('c:')) return false;
+    const ext = t.chaine.find((x) => x.etape === 'EXTRACTION_IA');
+    return !!ext && ext.statut !== 'sans_objet' && !(ext.donnees as { lienPersiste?: unknown } | undefined)?.lienPersiste;
+  }).length;
+  if (entityScope && sansLien) unavailable.push({ element: `Lien composante → indice T1 (${sansLien} montant(s))`, motif: 'non encore persisté (composante antérieure au lot 78A, pas encore reconsolidée) : indices du candidat exportés, correspondance de valeur signalée comme telle' });
   unavailable.push({ element: 'Documents originaux et texte intégral', motif: 'exclus par principe (sécurité) : seules les données structurées et extraits de preuve sont exportés' });
 
   // 7. Masquage, sérialisation, bornes.

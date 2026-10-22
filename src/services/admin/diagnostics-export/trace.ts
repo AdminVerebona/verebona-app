@@ -102,6 +102,8 @@ function calcSteps(ctx: TcoContext | null, line: TcoEconomicLine | null, motifAb
     moteur: 'readAssetTco / computeTco (recalcul en lecture)',
     categorie: line.category, statut: line.status, motif: line.reason, eurCents: line.eurCents, retenuCents: line.includedCents,
     incertain: line.uncertain ?? false, montantInconnu: line.amountUnknown ?? false, note: line.note, relatedFileId: line.relatedFileId,
+    // Lot 78B (§3) : justificatifs qui portent CE montant, ligne comptée à sa place (doublon présumé).
+    justificatifsDuMontant: line.sourceFileIds ?? (line.fileId != null ? [line.fileId] : []), doublonDe: line.duplicateOf ?? null,
     transformations: entries.map((e) => ({ ...e })),
   });
   const visible = ctx.visible.has(line.id);
@@ -210,7 +212,11 @@ export async function traceComponent(q: DiagQuery, A: number, componentId: numbe
                                 FROM business_operations WHERE id = $1 AND account_id = $2`, [opId, A]);
   const sources = await jsonRows(q, `
     SELECT s.id, cs.evidence_role, cs.is_primary, s.source_kind, s.source_entity_key, s.source_version, s.source_role, s.locator->>'candidateKey' AS candidate_key,
-           s.authority, s.confidence, s.match_method, s.match_reason, s.active, s.superseded_at, s.created_at
+           s.authority, s.confidence, s.match_method, s.match_reason, s.active, s.superseded_at, s.created_at,
+           -- Lot 78A (0609) : lien persisté composante → candidat T1 → indices → faits.
+           to_jsonb(cs) -> 'evidence' AS evidence,
+           CASE WHEN s.match_method = 'M3' THEN 'IA (M3)' WHEN s.match_method = 'M0' THEN 'utilisateur (M0)'
+                WHEN s.match_method IN ('M1', 'M2') THEN 'déterministe (' || s.match_method || ')' ELSE 'création' END AS nature_decision
       FROM business_operation_financial_component_sources cs JOIN business_operation_sources s ON s.id = cs.operation_source_id AND s.account_id = $2
      WHERE cs.component_id = $1 ORDER BY cs.is_primary DESC, s.active DESC, s.id`, [componentId, A]);
   const history = await jsonRows(q, `
@@ -229,11 +235,17 @@ export async function traceComponent(q: DiagQuery, A: number, componentId: numbe
   const docSource = sources.find((s) => s.source_kind === 'DOCUMENT') ?? null;
   const fileId = docSource ? num(docSource.source_entity_key) : null;
   const doc = fileId ? await documentRow(q, A, fileId) : null;
+  // Lot 78A : lien PERSISTÉ par T3 (candidat, indices, faits) — prioritaire sur toute correspondance de valeur.
+  const lien = (docSource?.evidence ?? null) as { candidateId?: unknown; hintIndexes?: unknown; factIds?: unknown } | null;
   // Candidat T1 désigné par la source (source_version `c<id>|…`), à défaut par la clé du candidat (actif).
   let candidate: Row | null = null;
   let candidateVia: string | null = null;
-  const candId = candidateIdFromSourceVersion(docSource?.source_version);
-  if (candId) {
+  const candId = num(lien?.candidateId) ?? candidateIdFromSourceVersion(docSource?.source_version);
+  if (candId && num(lien?.candidateId) !== null) {
+    candidate = await oneRow(q, `SELECT ${CAND_COLS} FROM document_operation_candidates WHERE id = $1 AND account_id = $2`, [candId, A]);
+    candidateVia = candidate ? 'business_operation_financial_component_sources.evidence (lien persisté par T3)' : null;
+  }
+  if (!candidate && candId) {
     candidate = await oneRow(q, `SELECT ${CAND_COLS} FROM document_operation_candidates WHERE id = $1 AND account_id = $2`, [candId, A]);
     candidateVia = 'business_operation_sources.source_version';
   }
@@ -243,8 +255,12 @@ export async function traceComponent(q: DiagQuery, A: number, componentId: numbe
     candidateVia = candidate ? 'business_operation_sources.locator.candidateKey (candidat actif du document)' : null;
   }
   const hints = hintsOf(candidate);
-  const sameValue = hints.map((h, i) => ({ i, h })).filter(({ h }) => Number(h.amountMinor) === Number(comp.amount_minor) && String(h.currency ?? '').toUpperCase() === String(comp.currency).toUpperCase());
-  const factIds = [...new Set(sameValue.map(({ h }) => num(h.evidence?.factId)).filter((x): x is number => x !== null))];
+  const indicesPersistes = Array.isArray(lien?.hintIndexes) ? (lien!.hintIndexes as unknown[]).map(Number).filter((x) => Number.isSafeInteger(x)) : [];
+  const sameValue = indicesPersistes.length && candidate
+    ? indicesPersistes.filter((i) => hints[i]).map((i) => ({ i, h: hints[i] }))
+    : hints.map((h, i) => ({ i, h })).filter(({ h }) => Number(h.amountMinor) === Number(comp.amount_minor) && String(h.currency ?? '').toUpperCase() === String(comp.currency).toUpperCase());
+  const faitsPersistes = Array.isArray(lien?.factIds) ? (lien!.factIds as unknown[]).map(Number).filter((x) => Number.isSafeInteger(x)) : [];
+  const factIds = [...new Set([...faitsPersistes, ...sameValue.map(({ h }) => num(h.evidence?.factId)).filter((x): x is number => x !== null)])];
   const facts = await factsByIds(q, A, factIds);
   const ext = fileId ? await extractionBundle(q, A, fileId, num(candidate?.extraction_id)) : { extraction: null, reports: [], calls: [] };
 
@@ -259,7 +275,11 @@ export async function traceComponent(q: DiagQuery, A: number, componentId: numbe
   const extStep = !docSource ? step('EXTRACTION_IA', 'sans_objet', [], undefined, 'pas de document source : aucune extraction IA en jeu')
     : extractionStep(ext, facts, {
       candidat: candidate, candidatDesignePar: candidateVia,
-      indicesFinanciers: hints.map((h, i) => ({ index: i, ...h, correspondanceDeValeur: sameValue.some((x) => x.i === i) })),
+      lienPersiste: lien ? { candidat: num(lien.candidateId), indices: indicesPersistes, faits: faitsPersistes } : null,
+      indicesFinanciers: hints.map((h, i) => ({
+        index: i, ...h,
+        ...(indicesPersistes.length && candidate ? { justifieLaComposante: indicesPersistes.includes(i) } : { correspondanceDeValeur: sameValue.some((x) => x.i === i) }),
+      })),
     }, !candidate ? 'candidat T1 introuvable (supersédé puis purgé, ou source antérieure au lot 40)'
       : !sameValue.length ? 'aucun indice financier du candidat ne porte ce montant et cette devise : composante transformée ou issue d’une autre source'
         : factIds.length ? 'fait désigné par l’indice introuvable' : 'indice T1 sans fait persisté (evidence.factId nul)');

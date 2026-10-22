@@ -18,7 +18,8 @@ const MIG = join(process.cwd(), 'src/db/migrations');
 // Lot 44 : 0323 (colonnes et repère du Sinistre) complète les tables du socle ; 0322 (table `assets`) n'en fait pas partie.
 // Lot 47A : 0325 (index de lecture du BO diagnostic sur ces tables).
 // Lot 54D : 0379 (reprise T3 et cartes à resynchroniser sur les candidats).
-const FICHIERS_O1 = readdirSync(MIG).filter((f) => /^03(1[6-9]|2[0135]|79)_.*\.sql$/.test(f)).sort();
+// Lot 78A : 0609 complète ces tables (provenance, lien d'indice, origine ADMIN_REVIEW, index du rattrapage).
+const FICHIERS_O1 = readdirSync(MIG).filter((f) => /^(03(1[6-9]|2[0135]|79)|0609)_.*\.sql$/.test(f)).sort();
 
 const svc = () => import('@/services/business-operations/write');
 const lifecycle = () => import('@/services/business-operations/asset-lifecycle');

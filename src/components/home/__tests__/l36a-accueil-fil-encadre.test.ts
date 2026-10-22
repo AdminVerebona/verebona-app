@@ -176,7 +176,10 @@ describe('AC36A-4 — en-tête mascotte', () => {
     mascot.presentation = { contextHash: 'h', subjects: [], secondaries: [], todo: null };
     mascot.failed = false;
     const s = renderToStaticMarkup(h(MascotSpeaks, props));
-    expect(s).toContain(greetingDateLong(new Date()));
+    // Lot 78C : la date est celle du TERMINAL (useGreetingClock) — rendu serveur
+    // sans date figée (aucun décalage d'hydratation) ; vérifiée en navigateur (L78C-NAV).
+    expect(s).toContain('data-greeting-date');
+    expect(s).not.toContain(greetingDateLong(new Date(Date.now() - 86_400_000)));
     expect(s).toMatch(/<h1 [^>]*>(Bonjour|Bonsoir), Geo<\/h1>/);
     const bulle = s.indexOf('data-mascot-bubble');
     const pastilles = s.indexOf('aria-label="Ou demandez-moi"');
@@ -213,7 +216,8 @@ describe('AC36A-4 — en-tête mascotte', () => {
     expect(src).toContain('onClick={() => openItem(it)}');
     expect(src).toContain('<TodoChoicesDialog');
     expect(src).toMatch(/run\(s\.secondary\.action, s\.secondary, 'secondary'\)/);
-    expect(src).toContain('{greetingWord(now)}, {greetingName}');
+    expect(src).toContain("{now ? greetingWord(now) : 'Bonjour'}, {greetingName}");
+    expect(src).toContain('useGreetingNow()');
   });
 });
 

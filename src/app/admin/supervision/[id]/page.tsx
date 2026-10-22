@@ -17,7 +17,7 @@
 import { use, useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { ArrowLeft, CheckCircle2, ExternalLink, Loader2, Save } from 'lucide-react';
+import { ArrowLeft, CheckCircle2, ExternalLink, Loader2, RotateCcw, Save } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import {
@@ -38,6 +38,8 @@ const AUTO_ORIGIN_LABEL: Record<string, string> = {
   operations_quality_check_cleared: 'Anomalie dure des Opérations revenue à 0 (contrôle quotidien, après reconsolidation)',
   // Lot 49 : relations intercomptes revenues à 0 (tâche `cross-account-relations-check`).
   cross_account_check_cleared: 'Isolation des comptes : contrôle complet revenu à 0',
+  // Lot 78C : plus aucune évaluation T6 bloquée ou en échec pour le compte.
+  t6_evaluations_completed: 'Évaluations T6 du compte terminées ou relancées',
 };
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
@@ -56,7 +58,7 @@ export default function AnomalyTreatmentPage({ params }: { params: Promise<{ id:
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [notes, setNotes] = useState({ cause: '', internalComment: '', correctiveAction: '' });
-  const [busy, setBusy] = useState<'save' | 'resolve' | null>(null);
+  const [busy, setBusy] = useState<'save' | 'resolve' | 't6' | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [confirmOpen, setConfirmOpen] = useState(false);
@@ -112,6 +114,27 @@ export default function AnomalyTreatmentPage({ params }: { params: Promise<{ id:
     } finally {
       setBusy(null);
       setConfirmOpen(false);
+    }
+  };
+
+  // Lot 78C : reprise explicite des évaluations T6 du compte (anomalie « évaluations bloquées ou en échec »).
+  const relancerT6 = async () => {
+    if (busy) return;
+    setBusy('t6');
+    setActionError(null);
+    setMessage(null);
+    try {
+      const res = await fetch(`/api/admin/anomalies/${id}/t6-retry`, { method: 'POST', credentials: 'include' });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) { setActionError(body.error || `Erreur ${res.status}`); return; }
+      if (body.anomaly) apply(body.anomaly);
+      setMessage(body.relaunched > 0
+        ? `${body.relaunched} évaluation(s) relancée(s) : l’anomalie se résoudra d’elle-même quand elles aboutiront.`
+        : 'Aucune évaluation en échec à relancer pour ce compte.');
+    } catch {
+      setActionError('Erreur réseau — action non confirmée. Rechargez la page pour vérifier l\'état.');
+    } finally {
+      setBusy(null);
     }
   };
 
@@ -211,6 +234,13 @@ export default function AnomalyTreatmentPage({ params }: { params: Promise<{ id:
         {message && <p className="text-sm text-[color:var(--text-success)]">{message}</p>}
         {open && (
           <div className="flex flex-wrap gap-2">
+            {anomaly.technicalDetail?.kind === 't6_evaluation' && anomaly.accountId != null && (
+              <Button variant="outline" onClick={() => void relancerT6()} disabled={busy !== null}
+                title="Relance les évaluations T6 en échec, en attente d’essai ou indisponibles de ce compte">
+                {busy === 't6' ? <Loader2 className="h-4 w-4 mr-1.5 animate-spin" /> : <RotateCcw className="h-4 w-4 mr-1.5" />}
+                Relancer les évaluations T6
+              </Button>
+            )}
             <Button variant="outline" onClick={() => send('save')} disabled={busy !== null}>
               {busy === 'save' ? <Loader2 className="h-4 w-4 mr-1.5 animate-spin" /> : <Save className="h-4 w-4 mr-1.5" />}
               Enregistrer

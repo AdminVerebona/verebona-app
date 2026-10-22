@@ -37,6 +37,10 @@ import {
   T6_EVALUATION_INPUT_SCHEMA_VERSION,
   type T6EvaluationCandidate, type T6EvaluationFact, type T6EvidenceRef, type T6ValidatedDecision,
 } from './t6-contract';
+import {
+  displayGroupOf, effectiveRunState, loadT6Runs, requestT6Runs, runStateCounters, t6RunsReady,
+  type T6EffectiveRunState, type T6RunRow, type T6RunSubject,
+} from './t6-evaluation-runs';
 
 type Row = Record<string, unknown>;
 const rows = async (sql: string, params: unknown[]): Promise<Row[]> =>
@@ -806,6 +810,34 @@ export interface T6Preparation {
    * tant qu'une échéance proche n'a pas été examinée.
    */
   evaluation: T6EvaluationState;
+  /**
+   * Lot 78C : état RÉEL de l'évaluation de chaque échéance éligible
+   * (`t6_evaluation_runs`), `null` si la table n'est pas déployée ou illisible
+   * (comportement du lot 77).
+   */
+  runStates?: Map<number, T6EffectiveRunState> | null;
+  /** Lot 78C : avancement des évaluations éligibles (pré-génération, rafraîchissement, reporting). */
+  evaluationProgress?: T6EvaluationProgress | null;
+}
+
+/** Lot 78C — avancement des évaluations éligibles après ce passage. */
+export interface T6EvaluationProgress {
+  /** Échéances éligibles sans décision valide (évaluations incomplètes). */
+  eligible: number;
+  /** Prenables maintenant (dont celles transmises à ce passage). */
+  claimable: number;
+  /** Transmises à EVALUATE par ce passage. */
+  inBundle: number;
+  /** En cours ailleurs, en attente d'un essai planifié ou du délai anti-boucle. */
+  waiting: number;
+  failed: number;
+  unavailable: number;
+  /** Attentes anormalement longues (anomalie de supervision). */
+  stale: number;
+  /** Prochain changement attendu (fin de bail, prochain essai), le plus proche. */
+  waitingUntil: string | null;
+  /** Compteurs par état réel. */
+  counters: Record<string, number>;
 }
 
 export type T6EvaluationState = 'OK' | 'PENDING' | 'UNAVAILABLE';
@@ -826,6 +858,27 @@ export function evaluationStateOf(decisions: readonly T6DecisionResult[], opts: 
   return 'OK';
 }
 
+/**
+ * Lot 78C — état de l'évaluation des échéances proches d'après leur état
+ * RÉEL (pure, testée). « En cours d'examen » (`PENDING`) seulement si chaque
+ * échéance proche en attente est réellement demandée et prenable, ou en
+ * cours d'exécution, depuis moins que le délai d'alerte ; un échec (essai
+ * planifié, tentatives épuisées), une indisponibilité ou une attente
+ * anormalement longue rendent `UNAVAILABLE` — jamais une attente fictive.
+ */
+export function evaluationStateFromRuns(
+  decisions: ReadonlyArray<T6DecisionResult & { agendaItemId?: number }>, runs: ReadonlyMap<number, T6EffectiveRunState>,
+  opts: { degraded?: boolean } = {},
+): T6EvaluationState {
+  const base = evaluationStateOf(decisions, { degraded: opts.degraded });
+  if (base !== 'PENDING') return base;
+  const attente = decisions.filter((d) => !d.thresholdApplied && EN_ATTENTE.has(d.code));
+  return attente.some((d) => {
+    const s = d.agendaItemId != null ? runs.get(d.agendaItemId) : undefined;
+    return s != null && displayGroupOf(s) === 'UNAVAILABLE';
+  }) ? 'UNAVAILABLE' : 'PENDING';
+}
+
 export interface PrepareDeps {
   aiCapable: () => Promise<boolean>;
   /** Lot 68 : le prompt effectif connaît le rappel informatif (renouvellement ciblé des évaluations). */
@@ -843,7 +896,23 @@ export interface PrepareDeps {
    * nouvelles. Absente ou en échec : aucune invalidation.
    */
   evaluationConfig?: (thresholdDays: number) => Promise<T6EvaluationConfig | null>;
+  /**
+   * Lot 78C : état durable des évaluations (`t6_evaluation_runs`). Absent ou
+   * table non déployée : comportement du lot 77 (mémoire de l'instance).
+   */
+  runs?: T6RunLoaders | null;
+  /** Lot 78C : horloge (tests). */
+  now?: () => Date;
 }
+
+/** Lot 78C : lectures et demandes des exécutions durables. */
+export interface T6RunLoaders {
+  ready: () => Promise<boolean>;
+  request: (accountId: number, subjects: readonly T6RunSubject[]) => Promise<number>;
+  load: (accountId: number, ids: readonly number[]) => Promise<Map<number, T6RunRow>>;
+}
+
+export const T6_RUN_LOADERS: T6RunLoaders = { ready: t6RunsReady, request: requestT6Runs, load: loadT6Runs };
 
 /** Lot 71G : sources lues par la préparation, chacune isolément. */
 export interface T6Loaders {
@@ -1035,9 +1104,11 @@ export async function prepareT6Interpellation(
   // appel : les autres sont REPRIS par une pré-génération suivante.
   let bundle: T6InterpellationBundle | null = null;
   let pendingAssessments = 0;
+  let runStates: Map<number, T6EffectiveRunState> | null = null;
+  let evaluationProgress: T6EvaluationProgress | null = null;
   if (aiCapable) {
     const horizon = addDays(today, assessmentHorizonDays(thresholdDays));
-    const eligibles = decisions
+    const toutes = decisions
       .filter((d) => {
         const c = parId.get(d.agendaItemId)!.candidate;
         return d.needsAssessment && !!d.dueDate && !c.fingerprintUnavailable && (d.dueDate <= horizon || !!c.hasDocumentaryEvidence);
@@ -1045,8 +1116,40 @@ export async function prepareT6Interpellation(
       .map((d) => ({ d, rang: rangEvaluation(d, thresholdDays, !!parId.get(d.agendaItemId)!.candidate.hasDocumentaryEvidence) }))
       .sort((a, b) => a.rang - b.rang || (a.d.dueDate ?? '').localeCompare(b.d.dueDate ?? '') || a.d.agendaItemId - b.d.agendaItemId)
       .map((x) => x.d);
+    // Lot 78C — étape « évaluation demandée » DURABLE, puis état RÉEL : seules
+    // les évaluations prenables (ni en cours ailleurs, ni en attente d'un
+    // essai planifié, ni en échec définitif) sont transmises ; les autres ont
+    // un motif explicite (`runStates`). Table absente : lot 77.
+    let eligibles = toutes;
+    if (deps.runs && toutes.length > 0 && await deps.runs.ready().catch(() => false)) {
+      try {
+        const sujets = toutes.map((d) => ({ agendaItemId: d.agendaItemId, fingerprint: d.fingerprint ?? null, signature: evaluationConfig?.signature ?? null }));
+        await deps.runs.request(p.accountId, sujets);
+        const lignes = await deps.runs.load(p.accountId, toutes.map((d) => d.agendaItemId));
+        const maintenant = (deps.now ?? (() => new Date()))();
+        runStates = new Map(toutes.map((d) => [d.agendaItemId, effectiveRunState(lignes.get(d.agendaItemId) ?? null, maintenant)]));
+        eligibles = toutes.filter((d) => runStates!.get(d.agendaItemId)!.claimable);
+      } catch (e) {
+        // Repli du lot 77 (mémoire de l'instance) : jamais une source métier en panne.
+        console.error('[mascotte] décision T6 : état des évaluations illisible —', (e as Error).message);
+        runStates = null;
+      }
+    }
     const aEvaluer = eligibles.slice(0, T6_MAX_ASSESSMENTS_PER_CALL);
     pendingAssessments = eligibles.length - aEvaluer.length;
+    if (runStates) {
+      const etats = [...runStates.values()];
+      const attentes = etats.map((x) => x.waitingUntil).filter((x): x is string => !!x).sort();
+      evaluationProgress = {
+        eligible: toutes.length, claimable: eligibles.length, inBundle: aEvaluer.length,
+        waiting: etats.filter((x) => !x.claimable && x.state !== 'FAILED').length,
+        failed: etats.filter((x) => x.state === 'FAILED').length,
+        unavailable: etats.filter((x) => x.state === 'UNAVAILABLE').length,
+        stale: etats.filter((x) => x.stale).length,
+        waitingUntil: attentes[0] ?? null,
+        counters: runStateCounters(etats),
+      };
+    }
     if (aEvaluer.length > 0) {
       const refs = new Map<string, T6CandidateRef>();
       const candidates: T6EvaluationCandidate[] = aEvaluer.map((d, k) => {
@@ -1095,6 +1198,7 @@ export async function prepareT6Interpellation(
           if (r.persisted > 0) deps.onAssessed?.(r.persisted);
           return r;
         },
+        evaluationSignature: evaluationConfig?.signature ?? null,
       };
     }
   }
@@ -1134,11 +1238,15 @@ export async function prepareT6Interpellation(
 
   const degraded = echecs.length > 0;
   // Évaluations illisibles (T6-06) : dégradation explicite — jamais « rien à signaler ».
-  const evaluation = evaluationStateOf(decisions, { degraded: degraded && !evalsR.ok, recentFailure: aiCapable && (deps.recentEvaluationFailure?.(p.accountId) ?? false) });
+  // Lot 78C : d'après l'état RÉEL des évaluations quand il est connu ; sinon
+  // (table non déployée, lecture en échec) échec récent de l'instance (lot 77).
+  const evaluation = runStates
+    ? evaluationStateFromRuns(decisions, runStates, { degraded: degraded && !evalsR.ok })
+    : evaluationStateOf(decisions, { degraded: degraded && !evalsR.ok, recentFailure: aiCapable && (deps.recentEvaluationFailure?.(p.accountId) ?? false) });
   return {
     thresholdDays, aiCapable, shown, decisions, notInterpellated, userSilenced, discarded, bundle, degraded, evaluation,
     failedSources: echecs, pendingAssessments, examined, selectionBacklog: p.raw.t6AgendaBacklog === true,
-    evaluationSignature: evaluationConfig?.signature ?? null, rebased,
+    evaluationSignature: evaluationConfig?.signature ?? null, rebased, runStates, evaluationProgress,
   };
 }
 
@@ -1171,10 +1279,15 @@ export function t6OutcomeCounters(decisions: readonly Pick<T6DecisionResult, 'de
   return c;
 }
 
-export function t6ReportEntries(decisions: readonly T6DecisionTrace[], thresholdDays: number): ReportEntry[] {
+export function t6ReportEntries(
+  decisions: readonly T6DecisionTrace[], thresholdDays: number,
+  /** Lot 78C : état réel de l'évaluation de chaque échéance éligible. */
+  runStates?: ReadonlyMap<number, T6EffectiveRunState> | null,
+): ReportEntry[] {
   const out: ReportEntry[] = [];
   for (const d of decisions) {
     const a = d.assessment;
+    const run = runStates?.get(d.agendaItemId) ?? null;
     out.push({
       section: 'INTERPELLATION',
       tableName: 'agenda_items', recordId: d.agendaItemId, fieldKey: d.subjectKey,
@@ -1213,6 +1326,13 @@ export function t6ReportEntries(decisions: readonly T6DecisionTrace[], threshold
         failure: d.code === 'PREFERENCES_UNAVAILABLE' ? 'preferences' : d.code === 'EVALUATION_UNAVAILABLE' ? 'evaluation'
           : d.code === 'THRESHOLD_EXCEPTION_UNPROVEN' ? 'exception_evidence'
           : d.code === 'TO_PROCESS_UNAVAILABLE' ? 'toProcess' : null,
+        // Lot 78C : état RÉEL de l'évaluation (jamais déduit de l'absence de décision).
+        ...(run ? {
+          evaluationRun: {
+            state: run.state, claimable: run.claimable, attempts: run.attempts, lastErrorKind: run.lastErrorKind,
+            nextAttemptAt: run.nextAttemptAt, waitingUntil: run.waitingUntil, interrupted: run.interrupted, stale: run.stale,
+          },
+        } : {}),
       },
       recordStatus: d.decision,
       writeResult: 'NOT_WRITTEN',
@@ -1283,7 +1403,7 @@ export async function writeT6InterpellationReport(p: {
     const repo = await import('@/services/ai/execution-report/repository');
     if (!(await repo.executionReportsReady())) return null;
     const entries = [
-      ...t6ReportEntries(p.prep.decisions, p.prep.thresholdDays),
+      ...t6ReportEntries(p.prep.decisions, p.prep.thresholdDays, p.prep.runStates),
       ...(p.formulate ? t6FormulateEntries(p.formulate) : []),
     ];
     const empreinte = entriesFingerprint(entries);
@@ -1321,6 +1441,12 @@ export async function writeT6InterpellationReport(p: {
         invalidatedContext: p.prep.decisions.filter((d) => d.needsAssessment && d.reevaluationReason === 'CONTEXT_CHANGED').length,
         invalidatedConfig: p.prep.decisions.filter((d) => d.needsAssessment && d.reevaluationReason === 'CONFIG_CHANGED').length,
         rebased: p.prep.rebased ?? 0,
+        // Lot 78C : états réels des évaluations éligibles.
+        ...(p.prep.evaluationProgress ? {
+          runsPending: p.prep.evaluationProgress.counters.PENDING ?? 0, runsRunning: p.prep.evaluationProgress.counters.RUNNING ?? 0,
+          runsRetryWait: p.prep.evaluationProgress.counters.RETRY_WAIT ?? 0, runsFailed: p.prep.evaluationProgress.failed,
+          runsUnavailable: p.prep.evaluationProgress.unavailable, runsStale: p.prep.evaluationProgress.stale,
+        } : {}),
       },
       steps: [
         { step: 'candidates', status: 'OK', detail: { count: p.prep.decisions.length } },
@@ -1335,6 +1461,8 @@ export async function writeT6InterpellationReport(p: {
             examined: p.prep.examined ?? 0, selectionBacklog: p.prep.selectionBacklog === true,
             // Lot 76A : configuration EVALUATE sous laquelle les décisions sont valables.
             evaluationSignature: p.prep.evaluationSignature ?? null,
+            // Lot 78C : avancement réel des évaluations (prochain changement attendu).
+            evaluationProgress: p.prep.evaluationProgress ? { ...p.prep.evaluationProgress } : null,
           } },
         { step: 'assessment_request', status: p.prep.bundle ? 'OK' : 'SKIPPED', detail: { mode: 'EVALUATE', candidates: p.prep.bundle?.refs.size ?? 0 } },
         { step: 'formulate', status: p.formulate ? 'OK' : 'SKIPPED', detail: p.formulate ? {
@@ -1375,6 +1503,8 @@ export interface T6EvaluationTrace {
   notPersisted?: Array<{ subjectId: string; reason: string }>;
   /** Lot 72A (AC08) : mode d'appel déclaré à la passerelle (`displayed` / `pregeneration`). */
   callerMode?: 'displayed' | 'pregeneration' | null;
+  /** Lot 78C : exécution durable (prise, tentatives, état écrit à la clôture). */
+  run?: import('./t6-runner').T6EvaluationRunTrace | null;
 }
 
 /** Lot 72A — issue du runner → trace du reporting (pure, sans donnée personnelle). */
@@ -1385,6 +1515,7 @@ export function t6EvaluationTraceOf(o: import('./t6-runner').T6EvaluationOutcome
     accepted: o.accepted.map((d) => ({ subjectId: d.subjectId, decision: d.decision, category: d.category, reasonCode: d.reasonCode, priorityHint: d.priorityHint, evidenceRefs: d.evidenceRefs })),
     rejected: o.rejected.map((r) => ({ subjectId: r.subjectId, reason: r.reason })),
     persistedSubjectIds: o.persistedSubjectIds ?? null, notPersisted: o.notPersisted ?? [], callerMode: o.callerMode ?? null,
+    run: o.run ?? null,
   };
 }
 
@@ -1411,6 +1542,19 @@ const executionModeOf = (callerMode: T6EvaluationTrace['callerMode'], mode: stri
  * validée et enregistrée, validée NON enregistrée, rejetée (motif), ou
  * évaluation indisponible (lot 72A).
  */
+/** Lot 78C : état durable d'une échéance à la clôture de l'exécution (pure). */
+function runOf(t: T6EvaluationTrace, agendaItemId: number) {
+  if (!t.run) return null;
+  const f = t.run.finished?.find((x) => x.agendaItemId === agendaItemId) ?? null;
+  const res = t.run.results?.find((x) => x.agendaItemId === agendaItemId) ?? null;
+  return {
+    runId: t.run.runId, attempt: t.run.attempts?.[agendaItemId] ?? f?.attempts ?? null,
+    // `null` : clôture non enregistrée (l'évaluation sera reprise à l'expiration du bail).
+    status: f?.status ?? null, nextAttemptAt: f?.nextAttemptAt ?? null,
+    errorKind: res?.errorKind ?? null, interrupted: (t.run.interrupted ?? []).includes(agendaItemId),
+  };
+}
+
 export function t6EvaluationEntries(t: T6EvaluationTrace, refs: T6InterpellationBundle['refs']): ReportEntry[] {
   const out: ReportEntry[] = [];
   for (const [subjectId, c] of refs) {
@@ -1418,6 +1562,8 @@ export function t6EvaluationEntries(t: T6EvaluationTrace, refs: T6Interpellation
     const r = t.rejected.find((x) => x.subjectId === subjectId);
     const np = t.notPersisted?.find((x) => x.subjectId === subjectId);
     const ok = !!a && ecrite(t, subjectId);
+    // Lot 78C : empreinte du contexte évalué et état durable de l'évaluation.
+    const commun = { contextFingerprint: c.fingerprint ? c.fingerprint.slice(0, 16) : null, ...(t.run ? { run: runOf(t, c.agendaItemId) } : {}) };
     out.push({
       section: 'EVALUATE',
       tableName: 'agenda_items', recordId: c.agendaItemId, fieldKey: c.subjectKey,
@@ -1425,9 +1571,9 @@ export function t6EvaluationEntries(t: T6EvaluationTrace, refs: T6Interpellation
       value: a ? {
         subjectId, decision: a.decision, category: a.category, reasonCode: a.reasonCode, priorityHint: a.priorityHint, evidenceRefs: a.evidenceRefs,
         informativeReminder: a.decision === 'SHOW_NOW' && a.category === 'INFORMATION',
-        persisted: ok, ...(ok ? {} : { notPersisted: np?.reason ?? 'not_written' }),
+        persisted: ok, ...(ok ? {} : { notPersisted: np?.reason ?? 'not_written' }), ...commun,
       }
-        : { subjectId, rejected: r?.reason ?? t.error ?? t.status },
+        : { subjectId, rejected: r?.reason ?? t.error ?? t.status, ...commun },
       // Lot 72A : décision validée enregistrée / non enregistrée, rejetée, indisponible.
       recordStatus: a ? (ok ? a.decision : 'NOT_PERSISTED') : r ? 'REJECTED' : 'UNAVAILABLE',
       writeResult: ok ? 'WRITTEN' : 'NOT_PERSISTED',
@@ -1442,13 +1588,38 @@ export function t6EvaluationEntries(t: T6EvaluationTrace, refs: T6Interpellation
 }
 
 /** Rapport d'une exécution EVALUATE (BO › Exécutions IA › Rapports). Ne lève jamais. */
+/** Lot 78C : état de la pré-génération du compte (reporting). Ne lève jamais. */
+export async function readPregenState(accountId: number): Promise<Record<string, unknown> | null> {
+  try {
+    const [r] = await rows(
+      `SELECT last_status, reason, attempts, requested_at, processed_at, claimed_until,
+              (processed_at IS NULL OR requested_at > processed_at) AS pending
+         FROM home_mascot_pregen_requests WHERE account_id = $1`,
+      [accountId],
+    );
+    if (!r) return { exists: false };
+    const d = (v: unknown) => (v == null ? null : new Date(String(v instanceof Date ? v.toISOString() : v)).toISOString());
+    return {
+      exists: true, pending: r.pending === true, lastStatus: (r.last_status as string | null) ?? null, reason: (r.reason as string | null) ?? null,
+      attempts: Number(r.attempts ?? 0), requestedAt: d(r.requested_at), processedAt: d(r.processed_at), claimedUntil: d(r.claimed_until),
+    };
+  } catch {
+    return null;
+  }
+}
+
 export async function writeT6EvaluationReport(p: {
   accountId: number; mode: string; bundle: T6InterpellationBundle; trace: T6EvaluationTrace;
+  /** Lot 78C : lecture de l'état de la pré-génération (injectable). */
+  pregenState?: (accountId: number) => Promise<Record<string, unknown> | null>;
 }): Promise<number | null> {
   try {
     const repo = await import('@/services/ai/execution-report/repository');
     if (!(await repo.executionReportsReady())) return null;
     const t = p.trace;
+    const pregen = await (p.pregenState ?? readPregenState)(p.accountId).catch(() => null);
+    const fins = t.run?.finished ?? [];
+    const parEtat = (k: string) => fins.filter((f) => f.status === k).length;
     const compte = (k: string) => t.accepted.filter((d) => d.decision === k).length;
     const notPersisted = t.accepted.filter((d) => !ecrite(t, d.subjectId)).length;
     const callerMode = t.callerMode ?? (p.mode === 'display' ? 'displayed' : 'pregeneration');
@@ -1464,6 +1635,11 @@ export async function writeT6EvaluationReport(p: {
         showNow: compte('SHOW_NOW'), defer: compte('DEFER'), suppress: compte('SUPPRESS'),
         // Lot 68 : SHOW_NOW + INFORMATION (rappel informatif), jamais compté comme action.
         showNowInformation: t.accepted.filter((d) => d.decision === 'SHOW_NOW' && d.category === 'INFORMATION').length,
+        // Lot 78C : état écrit à la clôture de chaque évaluation.
+        ...(t.run ? {
+          runCompleted: parEtat('COMPLETED'), runRetryWait: parEtat('RETRY_WAIT'), runFailed: parEtat('FAILED'),
+          runUnavailable: parEtat('UNAVAILABLE'), runInterrupted: (t.run.interrupted ?? []).length,
+        } : {}),
       },
       steps: [
         {
@@ -1476,8 +1652,17 @@ export async function writeT6EvaluationReport(p: {
             : notPersisted > 0 ? `écriture partielle : ${notPersisted} décision(s) non enregistrée(s)` : null,
           detail: { persisted: t.persisted, notPersisted, transactional: true },
         }] : []),
+        // Lot 78C : prise en charge et clôture durables (statut réel, tentatives, prochain essai).
+        ...(t.run ? [{
+          step: 'run_state', status: t.run.finished ? 'OK' as const : 'FAILED' as const,
+          error: t.run.finished ? null : 'état d’exécution non enregistré : reprise à l’expiration du bail',
+          detail: {
+            runId: t.run.runId, attempts: t.run.attempts ?? {}, interrupted: t.run.interrupted ?? [],
+            finished: fins.map((f) => ({ agendaItemId: f.agendaItemId, status: f.status, attempts: f.attempts, nextAttemptAt: f.nextAttemptAt, errorKind: f.errorKind })),
+          },
+        }] : []),
       ],
-      sources: { mode: 'EVALUATE', promptVersion: t.promptVersion, callerMode, executionMode },
+      sources: { mode: 'EVALUATE', promptVersion: t.promptVersion, callerMode, executionMode, runId: t.run?.runId ?? null, pregen },
     }, t6EvaluationEntries(t, p.bundle.refs));
   } catch (e) {
     console.error('[mascotte] rapport EVALUATE non écrit :', (e as Error).message);

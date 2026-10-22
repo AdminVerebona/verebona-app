@@ -40,6 +40,7 @@ const ECRIVAINS: Record<string, string> = {
   'src/services/to-process/operation-cards.ts': 'décision utilisateur « À traiter » (C6.3) → reconsolidation T3',
   'src/services/business-operations/consolidation/asset-exclusions.ts': 'T3 : exclusion mémorisée d’un bien retiré d’un sinistre (lot 53, Q17)',
   'src/services/to-process/agenda-projection-cards.ts': 'T4 : « ne rien ajouter à l’agenda » = suppression de projection (C16.1, lot 53 D14)',
+  'src/services/business-operations/consolidation/identity-review.ts': 'T3 : journal des contrôles d’identité économique et rétablissement d’une séparation par décision M0 (lot 78A)',
 };
 
 describe('INV-FINAL-009 / INV-006 / INV-FINAL-013 / INV-031 — T3 seul moteur ; TCO et autres modules consommateurs seulement', () => {

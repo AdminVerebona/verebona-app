@@ -67,6 +67,12 @@ import { applyStructuredAuthority, assetDataContribution, type AssetDataRow } fr
 import { agendaContribution, applyAgendaAuthority } from './agenda-source';
 import { loadAgendaSourceItem } from './agenda-source-read';
 import { applyAssetExclusions, exclusionsTableReady, loadActiveExclusions } from './asset-exclusions';
+import { footprintOfIdentity, type OperationMember } from './economic-identity';
+import { needsEconomicMembers } from './matching';
+import {
+  IDENTITY_REVIEW_PENDING_SQL, IDENTITY_REVIEW_VERSION, listOpenSuspectFiles, recordIdentityReviews, requestIdentityReview, type IdentityReviewEntry,
+} from './identity-review';
+import { computeProvenance, type AttributeProvenance, type ComponentEvidence } from './model';
 
 /**
  * Sources AGENDA actives dont l'élément n'existe plus dans le compte (lot
@@ -375,6 +381,74 @@ export async function loadMatchableOperations(
   }));
 }
 
+// ── Lot 78A : sources des Opérations pour le contrôle d'identité économique ──
+
+/** Opérations examinées source par source pour un candidat (borne NFR-OP-010). */
+export const IDENTITY_MEMBERS_OPERATION_LIMIT = 20;
+/** Sources examinées par Opération (les plus anciennes, dont la fondatrice). */
+export const IDENTITY_MEMBERS_SOURCE_LIMIT = 30;
+
+export interface OperationMembersInfo {
+  members: OperationMember[];
+  /** Méthode qui a rattaché la source du candidat (continuité), sinon null. */
+  ownMethod: MatchMethodCode | null;
+  /** La source du candidat est la seule source active de l'Opération. */
+  ownSolo: boolean;
+}
+type MatchMethodCode = 'M0' | 'M1' | 'M2' | 'M3';
+
+/**
+ * Sources gérées ACTIVES (documents, données structurées) des Opérations
+ * `operationIds`, chacune résumée par son empreinte économique — hors la
+ * source du candidat (`own`). La fondatrice est la plus ancienne source gérée
+ * active (y compris celle du candidat). Lecture sous le verrou du compte.
+ */
+export async function loadOperationMembers(
+  tx: DbTx, accountId: number, operationIds: readonly number[], own: { fileId: number; candidateKey: string } | null,
+): Promise<Map<number, OperationMembersInfo>> {
+  const out = new Map<number, OperationMembersInfo>();
+  const ids = [...new Set(operationIds)].slice(0, IDENTITY_MEMBERS_OPERATION_LIMIT);
+  if (!ids.length) return out;
+  const r = await rows<Row>(tx, sql`
+    SELECT id, operation_id, source_kind, source_entity_key, key, nature, match_method, n_actives FROM (
+      SELECT s.id, s.operation_id, s.source_kind, s.source_entity_key, s.locator->>'candidateKey' AS key,
+             CASE WHEN s.source_kind = 'ASSET_DATA' THEN s.locator->>'nature' END AS nature, s.match_method,
+             count(*) OVER (PARTITION BY s.operation_id) AS n_actives,
+             row_number() OVER (PARTITION BY s.operation_id ORDER BY s.id) AS rang,
+             ((s.source_kind = 'DOCUMENT' AND s.locator ? 'candidateKey') OR (s.source_kind = 'ASSET_DATA' AND s.locator ? 'nature')) AS geree
+        FROM business_operation_sources s
+       WHERE s.account_id = ${accountId} AND s.active AND s.operation_id = ANY(${intArray(ids)}::bigint[])
+    ) x WHERE geree AND rang <= ${IDENTITY_MEMBERS_SOURCE_LIMIT} ORDER BY operation_id, id`);
+  for (const id of ids) out.set(id, { members: [], ownMethod: null, ownSolo: false });
+  const fondatrices = new Map<number, number>();
+  for (const x of r) {
+    const opId = Number(x.operation_id);
+    if (!fondatrices.has(opId)) fondatrices.set(opId, Number(x.id));
+  }
+  for (const x of r) {
+    const opId = Number(x.operation_id);
+    const info = out.get(opId)!;
+    const estPropre = own !== null && x.source_kind === 'DOCUMENT' && String(x.source_entity_key) === String(own.fileId) && x.key === own.candidateKey;
+    if (estPropre) {
+      info.ownMethod = (x.match_method as MatchMethodCode | null) ?? null;
+      info.ownSolo = Number(x.n_actives) === 1;
+      continue;
+    }
+    const src: OpSource = {
+      id: Number(x.id), kind: String(x.source_kind), entityKey: String(x.source_entity_key), key: (x.key as string | null) ?? null,
+      nature: (x.nature as string | null) ?? null, managed: true, decision: null,
+    };
+    const c = await contributionOf(tx, accountId, src);
+    if (!c || !('identity' in c)) continue;
+    info.members.push({ sourceId: src.id, footprint: footprintOfIdentity(c.identity), anchor: fondatrices.get(opId) === src.id });
+  }
+  return out;
+}
+
+/** Références identifiantes communes à deux candidats (même nature, même valeur normalisée). */
+const sharedRefsCount = (a: CandidateIdentity, b: CandidateIdentity): number =>
+  a.refs.filter((r) => b.refs.some((x) => x.kind === r.kind && x.normalized === r.normalized)).length;
+
 /** Raison d'un rejet « c'est une autre réalité » (carte À traiter, lot 42) : autorise la création (C5). */
 export const USER_DISTINCT_REASON = 'USER_DISTINCT_OPERATION';
 
@@ -580,6 +654,10 @@ export async function reconsolidateOperation(
     agendaCtx.otherSupport);
   state.components = applyCurrencyChoices(state.components, currencyChoices);
   const fullyManaged = unmanaged === 0;
+  // Lot 78A (§2C, §6) : provenance des valeurs conservées, APRÈS les autorités
+  // de la fiche et de l'agenda (une saisie de l'utilisateur prime et se trace).
+  state.provenance = computeProvenance(state, contributions);
+  const provAvant = await loadAttributeProvenance(tx, accountId, operationId);
 
   // Type nul qualifié (F-054) ; lot 48 (C7.7, F-055) : OTHER requalifié vers un type connu, même identifiant.
   // Lot 55B (A) : INTERVENTION → CONTRACT quand ses sources sont les échéances d'un contrat.
@@ -609,7 +687,22 @@ export async function reconsolidateOperation(
     else if (agendaDates && (k === 'plannedDate' || k === 'realizedDate') && state[k] !== null) attrs[k] = state[k];
   }
   if (op.provider === null && state.provider) attrs.provider = state.provider;
-  changes.track(await repo.updateAttributes(operationId, attrs, 'T3_ATTRIBUTES_CONSOLIDATED'));
+  // Lot 78A (§5) : le retrait d'une source (séparation d'un rattachement
+  // contredit, document retiré) déclenche la réévaluation des valeurs qu'elle
+  // justifiait — prestataire et libellé qu'AUCUNE source active ne porte
+  // plus. Jamais au-delà des sources gérées par T3 (saisies, formulaires,
+  // migrations : `fullyManaged`), jamais sans trace (historique UPDATED).
+  const retiree = fullyManaged && await valueSourceWithdrawn(tx, accountId, operationId, provAvant);
+  const tiersPorte = (v: string) => contributions.some((c) => normalizeProvider(c.identity.provider) === normalizeProvider(v));
+  if (retiree && op.provider !== null && !tiersPorte(op.provider) && !retiree.keep.has('provider') && state.provider !== op.provider) {
+    attrs.provider = state.provider;
+  }
+  const libelles = contributions.filter((c) => !c.identity.agenda && !c.identity.structured).map((c) => c.identity.summary.slice(0, 200)).filter((x) => !!x);
+  if (retiree && op.typeCode !== 'CLAIM' && op.technicalLabel !== null && !retiree.keep.has('label')
+    && !contributions.some((c) => c.identity.summary.slice(0, 200) === op.technicalLabel) && libelles.length && libelles[0] !== op.technicalLabel) {
+    attrs.technicalLabel = libelles[0];
+  }
+  changes.track(await repo.updateAttributes(operationId, attrs, retiree && ('provider' in attrs || 'technicalLabel' in attrs) ? 'T3_SOURCE_WITHDRAWN_REEVALUATED' : 'T3_ATTRIBUTES_CONSOLIDATED'));
 
   // Lot 53 (retour PO Q17) : un bien retiré du sinistre par l'utilisateur n'est
   // jamais relié à nouveau automatiquement ; un document non arbitré qui le
@@ -674,8 +767,86 @@ export async function reconsolidateOperation(
   }
 
   await consolidateClaimParent(repo, tx, operationId, state, decisions, sources, cards, changes);
+  // Lot 78A (§2C, §6) : provenance (source de chaque valeur, contradictions d'attributs) — trace technique.
+  const apres = await repo.load(operationId, { allowInactive: true });
+  const label = apres.technicalLabel === null ? undefined
+    : contributions.find((c) => c.identity.summary.slice(0, 200) === apres.technicalLabel);
+  await writeAttributeProvenance(tx, accountId, operationId, {
+    ...state.provenance, ...(label && apres.technicalLabel ? { label: { sourceId: label.sourceId, value: apres.technicalLabel } } : {}),
+  }, state.attributeConflicts);
   // Lot 55B (E) : dernière réconciliation RÉELLEMENT effectuée (ni historique, ni version).
   await repo.markReconciled(operationId);
+}
+
+// ── Lot 78A : provenance des attributs ─────────────────────────────────────
+
+/** Provenance stockée (0609) : champs → { source, valeur } ; contradictions d'attributs. */
+export interface StoredAttributeProvenance {
+  version: 1;
+  fields: AttributeProvenance & { label?: { sourceId: number; value: string } };
+  conflicts: ReturnType<typeof consolidateOperationState>['attributeConflicts'];
+}
+
+let provenancePrete: boolean | null = null;
+async function provenanceReady(tx: DbTx): Promise<boolean> {
+  if (provenancePrete) return true;
+  const [r] = await rows<{ ok: boolean }>(tx, sql`
+    SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema()
+                    AND table_name = 'business_operations' AND column_name = 'attribute_provenance') AS ok`);
+  provenancePrete = !!r?.ok;
+  return provenancePrete;
+}
+
+async function loadAttributeProvenance(tx: DbTx, accountId: number, operationId: number): Promise<StoredAttributeProvenance | null> {
+  if (!(await provenanceReady(tx))) return null;
+  const [r] = await rows<{ p: StoredAttributeProvenance | null }>(tx, sql`
+    SELECT attribute_provenance AS p FROM business_operations WHERE id = ${operationId} AND account_id = ${accountId}`);
+  return r?.p ?? null;
+}
+
+/**
+ * Une valeur portée par l'Opération était-elle justifiée par une source
+ * devenue INACTIVE ? Provenance connue : sa source n'est plus active. Sans
+ * provenance (Opération antérieure au lot 78A) : une source gérée de
+ * l'Opération a été retirée. `keep` : champs dont la source est encore active.
+ */
+async function valueSourceWithdrawn(tx: DbTx, accountId: number, operationId: number, prov: StoredAttributeProvenance | null): Promise<{ keep: Set<string> } | null> {
+  const actives = new Set((await rows<{ id: string }>(tx, sql`
+    SELECT id FROM business_operation_sources WHERE operation_id = ${operationId} AND account_id = ${accountId} AND active`)).map((x) => Number(x.id)));
+  if (prov?.fields) {
+    const keep = new Set<string>();
+    let retiree = false;
+    for (const k of ['provider', 'label'] as const) {
+      const f = prov.fields[k];
+      if (!f) continue;
+      if (actives.has(f.sourceId)) keep.add(k); else retiree = true;
+    }
+    return retiree ? { keep } : null;
+  }
+  const [x] = await rows(tx, sql`
+    SELECT 1 FROM business_operation_sources WHERE operation_id = ${operationId} AND account_id = ${accountId} AND NOT active
+       AND ((source_kind = 'DOCUMENT' AND locator ? 'candidateKey') OR (source_kind = 'ASSET_DATA' AND locator ? 'nature')) LIMIT 1`);
+  return x ? { keep: new Set() } : null;
+}
+
+async function writeAttributeProvenance(
+  tx: DbTx, accountId: number, operationId: number, fields: StoredAttributeProvenance['fields'], conflicts: StoredAttributeProvenance['conflicts'],
+): Promise<void> {
+  if (!(await provenanceReady(tx))) return;
+  const voulu: StoredAttributeProvenance = { version: 1, fields, conflicts };
+  const actuel = await loadAttributeProvenance(tx, accountId, operationId);
+  if (actuel && stableJson(actuel) === stableJson(voulu)) return;
+  await tx.execute(sql`UPDATE business_operations SET attribute_provenance = ${JSON.stringify(voulu)}::jsonb WHERE id = ${operationId} AND account_id = ${accountId}`);
+}
+
+/** JSON à clés triées (comparaison d'un jsonb relu). */
+export function stableJson(v: unknown): string {
+  if (Array.isArray(v)) return `[${v.map(stableJson).join(',')}]`;
+  if (v && typeof v === 'object') {
+    return `{${Object.keys(v as Record<string, unknown>).filter((k) => (v as Record<string, unknown>)[k] !== undefined).sort()
+      .map((k) => `${JSON.stringify(k)}:${stableJson((v as Record<string, unknown>)[k])}`).join(',')}}`;
+  }
+  return JSON.stringify(v ?? null);
 }
 
 /** Lot 55B : une INTERVENTION sans parent ni enfant peut devenir le CONTRACT de ses échéances. */
@@ -888,6 +1059,22 @@ async function syncComponents(
       changes.track(await repo.supersedeFinancialComponent(c.id, 'T3_COMPONENT_WITHDRAWN'));
     }
   }
+  // Lot 78A (§4, §6) : justification exacte composante → indice T1 → fait, par source.
+  const preuvesActuelles = await componentEvidenceReady(tx) ? new Map((await rows<{ component_id: string; operation_source_id: string; evidence: unknown }>(tx, sql`
+    SELECT cs.component_id, cs.operation_source_id, cs.evidence FROM business_operation_financial_component_sources cs
+      JOIN business_operation_financial_components c ON c.id = cs.component_id
+     WHERE c.operation_id = ${opId} AND c.active`)).map((x) => [`${x.component_id}:${x.operation_source_id}`, x.evidence])) : null;
+  const ecrirePreuves = async (componentId: number, d: (typeof desired)[number]) => {
+    if (!preuvesActuelles) return;
+    for (const [sid, e] of Object.entries(d.evidenceBySource ?? {})) {
+      const voulu: ComponentEvidence = { candidateId: e.candidateId, hintIndexes: e.hintIndexes, factIds: e.factIds };
+      const cle = `${componentId}:${sid}`;
+      if (preuvesActuelles.has(cle) && stableJson(preuvesActuelles.get(cle) ?? null) === stableJson(voulu)) continue;
+      await tx.execute(sql`
+        UPDATE business_operation_financial_component_sources SET evidence = ${JSON.stringify(voulu)}::jsonb
+         WHERE component_id = ${componentId} AND operation_source_id = ${Number(sid)}`);
+    }
+  };
   for (const d of desired) {
     const c = parFp.get(d.fingerprint);
     const memes = c && c.kind === d.kind && Number(c.amount_minor) === d.amountMinor && String(c.currency).trim() === d.currency
@@ -896,17 +1083,30 @@ async function syncComponents(
     if (c && memes) {
       for (const s of d.sourceIds) if (!c.sources.includes(s)) await repo.attachComponentSource(c.id, s);
       for (const s of c.sources) if (managed.has(s) && !d.sourceIds.includes(s)) await repo.detachComponentSource(c.id, s);
+      await ecrirePreuves(c.id, d);
       continue;
     }
     // Nouvelle composante, ou même fait économique dont la valeur change :
     // l'ancienne est supersédée, jamais additionnée (C12.1, F-062).
-    await repo.addFinancialComponent(opId, {
+    const nouvelle = await repo.addFinancialComponent(opId, {
       kind: d.kind, amountMinor: d.amountMinor, currency: d.currency, amountEurCents: d.amountEurCents ?? null,
       economicDate: d.economicDate, periodStart: d.periodStart, periodEnd: d.periodEnd, label: d.label,
       fingerprint: d.fingerprint, sources: d.sourceIds.map((sourceId, i) => ({ sourceId, isPrimary: i === 0 })),
     }, 'T3_COMPONENT_CONSOLIDATED');
+    await ecrirePreuves(nouvelle, d);
     changes.track(true);
   }
+}
+
+let preuvesPretes: boolean | null = null;
+/** Colonne 0609 présente ? (absente : composantes écrites comme avant, sans lien d'indice). */
+async function componentEvidenceReady(tx: DbTx): Promise<boolean> {
+  if (preuvesPretes) return true;
+  const [r] = await rows<{ ok: boolean }>(tx, sql`
+    SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema()
+                    AND table_name = 'business_operation_financial_component_sources' AND column_name = 'evidence') AS ok`);
+  preuvesPretes = !!r?.ok;
+  return preuvesPretes;
 }
 
 /**
@@ -1186,9 +1386,20 @@ export async function consolidateDocument(accountId: number, fileId: number, opt
       const m3Traces = new Map<number, ProgressiveM3Trace>();
       const retroTraces = new Map<number, RetroTrace>();
       cards.reviewedFiles.push(fileId);
+      // Lot 78A (§2A) : identités de tous les candidats actifs du document, et
+      // Opérations où chacun a déjà sa source (doublons d'un même document à la réanalyse).
+      const identites = new Map(actifs.map((c) => [c.id, buildCandidateIdentity(c, { fileAssetId: file?.assetId ?? null, liveAssetIds: actx.live, equipmentAssets: actx.equipments })]));
+      const opsDuDocument = new Map<number, CandidateIdentity[]>();
+      for (const s of docSources.filter((x) => x.active && !x.opMerged && !x.opInvalidated)) {
+        const autre = actifs.find((x) => x.candidateKey === s.key);
+        if (autre) opsDuDocument.set(s.operationId, [...(opsDuDocument.get(s.operationId) ?? []), identites.get(autre.id)!]);
+      }
+      /** Lot 78A (§5) : sources séparées d'une Opération (contradiction certaine) → motif du retrait. */
+      const separations = new Map<number, string>();
+      const journal: IdentityReviewEntry[] = [];
 
       for (const c of actifs) {
-        const identity = buildCandidateIdentity(c, { fileAssetId: file?.assetId ?? null, liveAssetIds: actx.live, equipmentAssets: actx.equipments });
+        const identity = identites.get(c.id)!;
         let d: CandidateDecision;
         if (!valid) {
           d = { outcome: 'NO_OPERATION', operationId: null, matchMethod: null, reason: !file || file.deleted ? 'DOCUMENT_DELETED' : 'DOCUMENT_NOT_BUSINESS', detail: { certain: [], plausible: [], contradictions: [], excluded: [] } };
@@ -1200,16 +1411,33 @@ export async function consolidateDocument(accountId: number, fileId: number, opt
           // (même facture, même ordre de travail…) — la même réalité, comme T3
           // le décide déjà à la réanalyse (M1 puis fusion V1).
           const memeRealite = new Map([...createurs].filter(([, autre]) => sameDocumentReality(identity, autre)));
-          const extra = [...new Set([...memeSource.map((s) => s.operationId), ...dec.confirmed, ...memeRealite.keys()])];
-          const ops = (await loadMatchableOperations(tx, accountId, identity, extra))
+          // Lot 78A (§2A) : à la réanalyse, Opération d'un AUTRE candidat du
+          // document qui décrit la même transaction (description identique).
+          const memeDocument = new Set([...opsDuDocument].filter(([, autres]) => autres.some((a) => a.candidateKey !== c.candidateKey && sameDocumentReality(identity, a))).map(([id]) => id));
+          const extra = [...new Set([...memeSource.map((s) => s.operationId), ...dec.confirmed, ...memeRealite.keys(), ...memeDocument])];
+          let ops: ExistingOperation[] = (await loadMatchableOperations(tx, accountId, identity, extra))
             // Deux candidats d'un même document sont deux réalités distinctes (B8,
             // F-027) — sauf preuve de même réalité (lot 76H, ci-dessus).
             .filter((o) => !createdHere.has(o.id) || memeRealite.has(o.id))
             .map((o) => {
               const autre = memeRealite.get(o.id);
               const refs = autre ? [...o.refs, ...autre.refs.map((r) => ({ kind: r.kind, normalized: r.normalized }))] : o.refs;
-              return { ...o, refs, sameSource: memeSource.some((s) => s.operationId === o.id) };
+              const sameSource = memeSource.some((s) => s.operationId === o.id);
+              // Lot 78A : description identique sans référence commune (la référence reste la voie M1).
+              const sameDocument = !sameSource && (memeDocument.has(o.id) || (!!autre && sharedRefsCount(identity, autre) === 0));
+              return { ...o, refs, sameSource, ...(sameDocument ? { sameDocument: true } : {}) };
             });
+          // Lot 78A (§2B, §5) : contrôle d'identité économique source par source
+          // (continuité, référence commune, cycle de possession), borné.
+          const aExaminer = ops.filter((o) => needsEconomicMembers(identity, o)).map((o) => o.id);
+          if (aExaminer.length) {
+            const infos = await loadOperationMembers(tx, accountId, aExaminer, { fileId, candidateKey: c.candidateKey });
+            ops = ops.map((o) => {
+              const i = infos.get(o.id);
+              if (!i) return o;
+              return { ...o, members: i.members, ...(o.sameSource ? { sameSourceMethod: i.ownMethod, sameSourceSolo: i.ownSolo } : {}) };
+            });
+          }
           const ctx = {
             operations: ops, confirmed: dec.confirmed, rejected: dec.rejected, assetStatus: actx.status,
             userDistinct: dec.userDistinct, nonMergeable: await loadNonMergeable(tx, accountId, ops.map((o) => o.id)),
@@ -1242,6 +1470,27 @@ export async function consolidateDocument(accountId: number, fileId: number, opt
         }
         const trace = recordedDecisions.get(c.id) ?? d;
         decisions.set(c.id, trace);
+        // Lot 78A (§5, §6) : rattachements historiques séparés ou douteux → journal.
+        for (const x of d.detail.identity ?? []) {
+          if (x.outcome === 'SEPARATED') {
+            const propre = docSources.find((s) => s.key === c.candidateKey && s.active && s.operationId === x.operationId);
+            if (propre) separations.set(propre.id, 'T3_IDENTITY_SEPARATED');
+            journal.push({ kind: 'SEPARATED', check: x, fileId, candidateKey: c.candidateKey, sourceId: propre?.id ?? null, decision: d });
+          } else if (x.outcome === 'SUSPECT') {
+            const propre = docSources.find((s) => s.key === c.candidateKey && s.active && s.operationId === x.operationId);
+            journal.push({ kind: 'SUSPECT', check: x, fileId, candidateKey: c.candidateKey, sourceId: propre?.id ?? null, decision: d });
+          }
+        }
+        if (d.outcome === 'MATCH_AND_ENRICH' && d.reason === 'MATCH_SAME_DOCUMENT') {
+          const propre = docSources.find((s) => s.key === c.candidateKey && s.active && s.operationId !== d.operationId);
+          if (propre) {
+            separations.set(propre.id, 'T3_SAME_DOCUMENT_DUPLICATE');
+            journal.push({
+              kind: 'DUPLICATE_RELOCATED', fileId, candidateKey: c.candidateKey, sourceId: propre.id, decision: d,
+              check: { operationId: propre.operationId, basis: 'SAME_DOCUMENT', outcome: 'SEPARATED', signals: [] },
+            });
+          }
+        }
         result.outcomes[trace.outcome] = (result.outcomes[trace.outcome] ?? 0) + 1;
         if (trace.outcome === 'ARBITRATION_REQUIRED' && trace.arbitration) {
           cards.match.push({ fileId, candidateKey: c.candidateKey, basis: trace.arbitration.basis, operationIds: trace.arbitration.operationIds, typeHint: identity.type });
@@ -1290,13 +1539,18 @@ export async function consolidateDocument(accountId: number, fileId: number, opt
       // C9 : contributions du document qu'aucun candidat ne revendique plus.
       for (const s of docSources) {
         if (s.active && !claimed.has(s.id)) {
-          changes.track(await repo.deactivateSource(s.id, valid ? 'T3_SOURCE_WITHDRAWN' : !file || file.deleted ? 'DOCUMENT_DELETED' : 'DOCUMENT_RECLASSIFIED'));
+          // Lot 78A : une séparation pour contradiction d'identité garde son motif (historique, BO).
+          changes.track(await repo.deactivateSource(s.id, !valid ? (!file || file.deleted ? 'DOCUMENT_DELETED' : 'DOCUMENT_RECLASSIFIED')
+            : separations.get(s.id) ?? 'T3_SOURCE_WITHDRAWN'));
           touched.add(s.operationId);
         }
       }
       for (const opId of [...touched].sort((a, b) => a - b)) {
         await reconsolidateOperation(repo, tx, opId, today, changes, cards);
       }
+      // Lot 78A (§5, §6) : journal des contrôles d'identité (idempotent : rien
+      // n'est réécrit quand l'état est inchangé).
+      await recordIdentityReviews(tx, accountId, fileId, journal, actifs.map((c) => c.candidateKey), opts.correlationId ?? null);
 
       // Trace de la décision, marqueur T3 levé (aucune écriture si rien ne change).
       for (const c of cands) {
@@ -1321,9 +1575,12 @@ export async function consolidateDocument(accountId: number, fileId: number, opt
         const ancienRetro = (ancien.retro ?? null) as RetroTrace | null;
         const sansDate = (x: RetroTrace | null) => (x ? JSON.stringify({ ...x, at: undefined }) : null);
         const retro = r ? (sansDate(ancienRetro) === sansDate(r) ? ancienRetro : { ...r, at: new Date().toISOString() }) : ancienRetro;
-        const memeRetro = JSON.stringify(retro) === JSON.stringify(ancienRetro) && !ancien.retroRequested;
+        const memeRetro = JSON.stringify(retro) === JSON.stringify(ancien.retro ?? null) && !ancien.retroRequested;
+        // Lot 78A : trace du contrôle d'identité et version de la réévaluation historique.
+        const memeIdentite = JSON.stringify(ancien.identity ?? null) === JSON.stringify(d.detail.identity ?? null)
+          && ancien.identityReview === IDENTITY_REVIEW_VERSION;
         if (!c.t3Pending && c.t3Outcome === d.outcome && c.t3Reason === d.reason && c.t3OperationId === d.operationId
-          && (ancien.m3Fingerprint ?? null) === fp && memeArbitrage && memeProgression && memeRetro) continue;
+          && (ancien.m3Fingerprint ?? null) === fp && memeArbitrage && memeProgression && memeRetro && memeIdentite) continue;
         // La trace M3 (verdict, report…) survit aux passages suivants : elle n'est
         // remplacée que par la phase M3 elle-même.
         const detail = {
@@ -1335,6 +1592,7 @@ export async function consolidateDocument(accountId: number, fileId: number, opt
           ...(m3Progress ? { m3Progress } : {}),
           ...(ancien.m3 ? { m3: ancien.m3 } : {}),
           ...(retro ? { retro } : {}),
+          identityReview: IDENTITY_REVIEW_VERSION,
         };
         await tx.execute(sql`
           UPDATE document_operation_candidates
@@ -1464,6 +1722,8 @@ export interface AccountConsolidationResult {
   reconsolidated?: number;
   /** Lot 55B (C) : documents déjà consolidés marqués pour réexamen rétroactif. */
   retroMarked?: number;
+  /** Lot 78A (§5) : documents remis en consolidation pour la réévaluation de l'identité économique. */
+  identityReviewMarked?: number;
 }
 
 type Sql = typeof import('@/db').pgClient;
@@ -1556,8 +1816,16 @@ export async function consolidateAccountOperations(
       }
     }
   }
+  // Lot 78A (§5) : réévaluation bornée des rattachements historiques
+  // (regroupements possibles, doublons d'un même document) — remis en
+  // consolidation avant la liste des documents « sales ».
+  const revue = await requestIdentityReview(accountId).catch((e) => {
+    console.error(`[t3-operations] réévaluation d'identité (compte ${accountId}) :`, (e as Error).message);
+    return { fileIds: [] as number[], remaining: false };
+  });
+  if (revue.fileIds.length) res.identityReviewMarked = revue.fileIds.length;
   const sales = await listDirtyDocuments(accountId, limit + 1);
-  res.remaining = sales.length > limit;
+  res.remaining = sales.length > limit || revue.remaining;
   const fichiers = [...new Set([...sales.slice(0, limit), ...(opts.fileIds ?? [])])].sort((a, b) => a - b);
   const traites = new Set<number>();
   /** Lot 55B (C) : Opérations créées / enrichies / requalifiées pendant ce passage. */
@@ -1572,6 +1840,12 @@ export async function consolidateAccountOperations(
     for (const [k, v] of Object.entries(r.outcomes)) res.outcomes[k as T3Outcome] = (res.outcomes[k as T3Outcome] ?? 0) + (v ?? 0);
   };
   for (const f of fichiers) await passer(f);
+
+  // Lot 78A (§5) : une Opération dont une source vient d'être séparée — ses
+  // doutes d'identité ouverts sont réexaminés (résolus ou confirmés).
+  if (changees.size) {
+    for (const f of await listOpenSuspectFiles(accountId, [...changees])) await passer(f);
+  }
 
   // Une Opération a changé (ou un bien ciblé) : les HOLD du compte peuvent se résoudre
   // (ex. la facture arrive après sa preuve de paiement). Un HOLD qui reste HOLD n'écrit rien.
@@ -1680,6 +1954,9 @@ export async function listAccountsToConsolidate(afterAccountId: number, limit: n
        SELECT c.account_id FROM document_operation_candidates c WHERE c.account_id > $1 AND ${M3_PENDING_SQL('$3')}
        UNION
        SELECT s.account_id FROM business_operation_sources s WHERE s.account_id > $1 AND ${STALE_AGENDA_SOURCE_SQL}
+       UNION
+       -- Lot 78A (§5) : candidats pas encore réévalués par le contrôle d'identité économique.
+       SELECT c.account_id FROM document_operation_candidates c WHERE c.account_id > $1 AND ${IDENTITY_REVIEW_PENDING_SQL}
      ) x ORDER BY account_id LIMIT $2`,
     [afterAccountId, limit, m3PromptVersion] as never[],
   )) as unknown as Array<{ account_id: number }>;

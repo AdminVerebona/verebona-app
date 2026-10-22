@@ -117,6 +117,8 @@ describe('C26-01 les 13 indicateurs C26.2, exactement', () => {
       'PARENT_DEPTH_EXCEEDED', 'NEGATIVE_COMPONENT', 'OTHER_AS_FALLBACK',
       // Lot 54D (§4.5, E01) : contrôles financiers et reprises T3 épuisées.
       'FIN_INDEMNITY_DUPLICATED', 'FIN_PRINCIPAL_AS_COST', 'T3_TECHNICAL_ERROR_EXHAUSTED',
+      // Lot 78A (§5, §6) : doutes d'identité signalés, attributs contradictoires.
+      'IDENTITY_SUSPECT_ATTACHMENT', 'IDENTITY_ATTRIBUTE_CONFLICT',
     ]);
     expect(Object.values(HARD_ANOMALY_INDICATOR).filter(Boolean).length).toBe(4);
     expect(CORRECTION_PROCEDURE).toMatch(/ne modifie jamais/);

@@ -54,11 +54,26 @@
  *   · M3 examine les Opérations plausibles par lots ordonnés
  *     (`rankPlausible`, `selectM3Batch`, D7) — jamais d'abandon au-delà de 5.
  *
+ * LOT 78A (ticket « [P1] Opérations & TCO », correction BLOQUANTE de M1 / M2) :
+ *   · tout rattachement automatique (M1, M2 cycle, M3, fusion V1) passe le
+ *     contrôle d'identité économique (`economic-identity.ts`) — le même bien
+ *     parent, le même cycle de possession, un document partagé ne prouvent
+ *     JAMAIS seuls une même transaction : M2 cycle exige un indice positif
+ *     (sinon différé : M3 / utilisateur) ; une contradiction écarte ;
+ *   · la continuité (M2 même source) est réévaluée face à la source fondatrice
+ *     de l'Opération (correction rétroactive, `identity-review.ts`) ;
+ *   · candidats d'un même document décrivant la même transaction
+ *     (`sameTransactionDescription`) : une seule Opération.
+ *
  * Raisons auditables (B6) : chaque décision rend ses motifs stables.
  * ══════════════════════════════════════════════════════════════════════════
  */
 import type { BusinessOperationStatus, BusinessOperationTypeCode, MatchMethod, ReferenceKind } from '../model';
 import { componentsFromIdentity, hasRecurringPeriod, type CandidateIdentity } from './model';
+import {
+  assessAgainstMembers, footprintOfIdentity, footprintOfOperation, identitySignals, reviewExistingAttachment,
+  type IdentityAssessment, type IdentityBasis, type OperationMember,
+} from './economic-identity';
 import { m3Resolution, type OperationMatchVerdict } from '@/services/ai/reconciliation/master/operation-match';
 
 export type T3Outcome = 'NO_OPERATION' | 'MATCH_AND_ENRICH' | 'CREATE_NEW' | 'HOLD_UNRESOLVED' | 'ARBITRATION_REQUIRED';
@@ -102,6 +117,40 @@ export interface ExistingOperation {
    * période facturée réelle (abonnement qualifié « intervention » par T1).
    */
   periodic?: boolean;
+  /**
+   * Lot 78A (§2B, §5) : sources gérées ACTIVES de l'Opération (hors celle du
+   * candidat examiné), chacune avec son empreinte économique ; la plus
+   * ancienne est la fondatrice. Absentes : l'empreinte agrégée de
+   * l'Opération sert de repli (`footprintOfOperation`).
+   */
+  members?: readonly OperationMember[];
+  /** Lot 78A : méthode qui a rattaché la source du candidat à cette Opération (continuité). */
+  sameSourceMethod?: MatchMethod | null;
+  /** Lot 78A : la source du candidat est la SEULE source active de cette Opération. */
+  sameSourceSolo?: boolean;
+  /**
+   * Lot 78A (§2A) : Opération d'un AUTRE candidat du même document décrivant
+   * la même transaction (`sameDocumentReality`) — rapprochement certain.
+   */
+  sameDocument?: boolean;
+}
+
+/**
+ * Lot 78A (§2B, §6) : contrôle d'identité économique d'un rattachement
+ * envisagé ou existant — trace auditable de la décision.
+ *   CONFIRMED  rattachement permis ;
+ *   DEFERRED   correspondance non démontrée : rapprochement différé (M3 / utilisateur) ;
+ *   REFUSED    contradiction : jamais rattachée (autre réalité) ;
+ *   SEPARATED  rattachement HISTORIQUE contredit : la source quitte l'Opération ;
+ *   SUSPECT    rattachement historique douteux, CONSERVÉ et signalé pour examen.
+ */
+export interface IdentityCheck {
+  operationId: number;
+  basis: IdentityBasis;
+  outcome: 'CONFIRMED' | 'DEFERRED' | 'REFUSED' | 'SEPARATED' | 'SUSPECT';
+  signals: string[];
+  /** Sources de l'Opération face auxquelles la contradiction est constatée. */
+  againstSourceIds?: number[];
 }
 
 export interface MatchContext {
@@ -142,6 +191,8 @@ export interface CandidateDecision {
      * rattachement automatique.
      */
     fragile?: number[];
+    /** Lot 78A : contrôles d'identité économique effectués (trace, BO, diagnostic). */
+    identity?: IdentityCheck[];
   };
   /** Fusion V1 (B8) : Opérations absorbées par `operationId` (canonique) dans la même transaction. */
   mergeIds?: number[];
@@ -524,6 +575,14 @@ export function decideCandidate(c: CandidateIdentity, ctx: MatchContext): Candid
   const bornesAcq = ctx.operations.filter((o) => o.typeCode === 'DISPOSAL' && !o.invalidated);
   const bornesCes = ctx.operations.filter((o) => o.typeCode === 'ACQUISITION' && !o.invalidated);
 
+  // Lot 78A (§2B) : trace des contrôles d'identité économique.
+  const noter = (operationId: number, basis: IdentityBasis, outcome: IdentityCheck['outcome'], a: (IdentityAssessment & { against?: number[] }) | null) => {
+    (detail.identity ??= []).push({
+      operationId, basis, outcome, signals: a ? identitySignals(a) : [],
+      ...(a?.against?.length && outcome !== 'CONFIRMED' ? { againstSourceIds: a.against.filter((x) => x > 0) } : {}),
+    });
+  };
+
   for (const op of ctx.operations) {
     if (ctx.rejected.has(op.id)) { detail.excluded.push({ operationId: op.id, why: 'USER_REJECTED' }); continue; }
     if (ctx.confirmed.has(op.id)) { detail.certain.push({ operationId: op.id, method: 'M0', why: 'USER_CONFIRMED' }); continue; }
@@ -531,9 +590,14 @@ export function decideCandidate(c: CandidateIdentity, ctx: MatchContext): Candid
     if (op.invalidated && !op.sameSource) {
       // F-052 / F-053 : une Opération invalidée n'est rattachée que par une
       // référence exacte non contredite ; sinon elle n'existe pas pour T3.
+      // Lot 78A : ni contredite par l'identité économique de la transaction.
       const communes = sharedIdentifyingReferences(c, op);
-      if (communes.length && !negatifs.length) detail.certain.push({ operationId: op.id, method: 'M1', why: `REFERENCE ${communes.join(',')} (INVALIDATED)` });
-      else detail.excluded.push({ operationId: op.id, why: 'INVALIDATED' });
+      const ident = communes.length && !negatifs.length ? economicCheck(c, op, 'REFERENCE') : null;
+      if (ident && ident.verdict !== 'CONTRADICTED') detail.certain.push({ operationId: op.id, method: 'M1', why: `REFERENCE ${communes.join(',')} (INVALIDATED)` });
+      else {
+        if (ident) noter(op.id, 'REFERENCE', 'REFUSED', ident);
+        detail.excluded.push({ operationId: op.id, why: ident ? 'ECONOMIC_IDENTITY_CONTRADICTED' : 'INVALIDATED' });
+      }
       continue;
     }
     if (op.sameSource) {
@@ -541,7 +605,28 @@ export function decideCandidate(c: CandidateIdentity, ctx: MatchContext): Candid
       // requalification d'un type connu vers un autre type connu n'est pas la
       // même réalité (C9 : la source est déplacée).
       if (negatifs.includes('TYPE_INCOMPATIBLE')) { detail.excluded.push({ operationId: op.id, why: 'SAME_SOURCE_TYPE_CHANGED' }); continue; }
+      // Lot 78A (§2B, §5) : la continuité n'est plus une preuve en soi — le
+      // rattachement historique est réévalué face aux autres sources de
+      // l'Opération (`reviewExistingAttachment`). Contradiction certaine : la
+      // source quitte l'Opération (sauf rattachement décidé par l'IA, jamais
+      // défait d'office) ; doute : conservée et signalée.
+      if (op.members) {
+        const r = reviewExistingAttachment(footprintOfIdentity(c), op.members);
+        const a = r.assessment ? { ...r.assessment, against: r.against } : null;
+        if (r.outcome === 'SEPARATE' && op.sameSourceMethod !== 'M3') {
+          noter(op.id, 'SAME_SOURCE', 'SEPARATED', a);
+          detail.excluded.push({ operationId: op.id, why: 'SAME_SOURCE_IDENTITY_CONTRADICTED' });
+          continue;
+        }
+        if (r.outcome !== 'KEEP') noter(op.id, 'SAME_SOURCE', 'SUSPECT', a);
+      }
       detail.certain.push({ operationId: op.id, method: 'M2', why: 'SAME_SOURCE' });
+      continue;
+    }
+    if (op.sameDocument && !negatifs.length) {
+      // Lot 78A (§2A) : un autre candidat du MÊME document décrit la même
+      // transaction (référence commune ou description économique identique).
+      detail.certain.push({ operationId: op.id, method: 'M2', why: 'SAME_DOCUMENT_REALITY' });
       continue;
     }
     const communes = sharedIdentifyingReferences(c, op);
@@ -553,6 +638,15 @@ export function decideCandidate(c: CandidateIdentity, ctx: MatchContext): Candid
         (detail.fragile ??= []).push(op.id);
         continue;
       }
+      // Lot 78A (§2B) : une référence commune ne rattache pas une transaction
+      // économiquement contredite (montants d'ordres de grandeur différents,
+      // équipements disjoints, plusieurs contradictions).
+      const ident = economicCheck(c, op, 'REFERENCE');
+      if (ident.verdict === 'CONTRADICTED') {
+        noter(op.id, 'REFERENCE', 'REFUSED', ident);
+        detail.contradictions.push({ operationId: op.id, why: `${communes[0]} / ECONOMIC_IDENTITY` });
+        continue;
+      }
       detail.certain.push({ operationId: op.id, method: 'M1', why: `REFERENCE ${communes.join(',')}` });
       continue;
     }
@@ -562,7 +656,21 @@ export function decideCandidate(c: CandidateIdentity, ctx: MatchContext): Candid
       && c.assetIds.some((a) => op.assetIds.includes(a)) && op.status !== 'CANCELLED') {
       const bornes = type === 'ACQUISITION' ? bornesAcq : bornesCes;
       if (sameOwnershipCycle(c, op, bornes)) {
-        detail.certain.push({ operationId: op.id, method: 'M2', why: `OWNERSHIP_CYCLE_${type}` });
+        // Lot 78A (§2B, correction BLOQUANTE) : le même cycle de possession
+        // n'est qu'une CONDITION. Identité démontrée → M2 ; non démontrée →
+        // différée (M3 puis l'utilisateur, aucune contamination) ; contredite →
+        // autre transaction.
+        const ident = economicCheck(c, op, 'OWNERSHIP_CYCLE');
+        if (ident.verdict === 'CONFIRMED') {
+          noter(op.id, 'OWNERSHIP_CYCLE', 'CONFIRMED', ident);
+          detail.certain.push({ operationId: op.id, method: 'M2', why: `OWNERSHIP_CYCLE_${type}` });
+        } else if (ident.verdict === 'UNPROVEN') {
+          noter(op.id, 'OWNERSHIP_CYCLE', 'DEFERRED', ident);
+          detail.plausible.push(op.id);
+        } else {
+          noter(op.id, 'OWNERSHIP_CYCLE', 'REFUSED', ident);
+          detail.excluded.push({ operationId: op.id, why: 'ECONOMIC_IDENTITY_CONTRADICTED' });
+        }
       } else {
         detail.excluded.push({ operationId: op.id, why: 'OTHER_OWNERSHIP_CYCLE' });
       }
@@ -599,6 +707,23 @@ export function decideCandidate(c: CandidateIdentity, ctx: MatchContext): Candid
     return res('MATCH_AND_ENRICH', `MATCH_${m.method}`, ids[0], m.method);
   }
   if (ids.length > 1) {
+    // Lot 78A (§2A, §5) : la source est seule sur sa propre Opération et un
+    // autre candidat du MÊME document décrit la même transaction — les deux
+    // Opérations sont un doublon : la source rejoint la plus ancienne (son
+    // Opération, sans source, est invalidée : réactivable, jamais fusionnée).
+    const propres = certains.filter((x) => x.why === 'SAME_SOURCE');
+    const memeDoc = certains.filter((x) => x.why === 'SAME_DOCUMENT_REALITY');
+    if (!m0.length && propres.length === 1 && memeDoc.length && propres.length + memeDoc.length === certains.length) {
+      const parId = new Map(ctx.operations.map((o) => [o.id, o]));
+      const propre = parId.get(propres[0].operationId);
+      const ops = ids.map((id) => parId.get(id)).filter((o): o is ExistingOperation => !!o && !o.invalidated);
+      if (propre?.sameSourceSolo && ops.length) {
+        const canonique = canonicalOf(ops);
+        return canonique.id === propre.id
+          ? res('MATCH_AND_ENRICH', 'MATCH_M2', propre.id, 'M2')
+          : res('MATCH_AND_ENRICH', 'MATCH_SAME_DOCUMENT', canonique.id, 'M2');
+      }
+    }
     // Fusion V1 (B8, ch. 8.4, F-049) : la source porte des références EXACTES
     // de plusieurs Opérations compatibles entre elles — preuve forte qu'elles
     // sont la même réalité. Jamais sur une décision utilisateur (M0), une
@@ -624,6 +749,30 @@ export function decideCandidate(c: CandidateIdentity, ctx: MatchContext): Candid
   return res('CREATE_NEW', c.confidence === 'certain' ? 'NO_MATCH_ESTABLISHED' : 'USER_DISTINCT_OPERATION');
 }
 
+// ── Lot 78A : contrôle d'identité économique ───────────────────────────────
+
+/**
+ * Identité économique du candidat face à une Opération (pure) : source par
+ * source quand elles sont fournies (`members`), sinon face à l'agrégat.
+ */
+export function economicCheck(c: CandidateIdentity, op: ExistingOperation, basis: IdentityBasis): IdentityAssessment & { against: number[] } {
+  const members: readonly OperationMember[] = op.members?.length
+    ? op.members
+    : [{ sourceId: 0, footprint: footprintOfOperation(op), anchor: true }];
+  return assessAgainstMembers(footprintOfIdentity(c), members, basis);
+}
+
+/**
+ * Le contrôle d'identité a-t-il besoin des sources de l'Opération (pure) ?
+ * Continuité, référence commune, ou acquisition / cession du même bien :
+ * seules ces Opérations sont chargées source par source (borne NFR-OP-010).
+ */
+export function needsEconomicMembers(c: CandidateIdentity, op: ExistingOperation): boolean {
+  if (op.sameSource || sharedIdentifyingReferences(c, op).length) return true;
+  const type = c.type ?? op.typeCode;
+  return (type === 'ACQUISITION' || type === 'DISPOSAL') && c.type === op.typeCode && c.assetIds.some((a) => op.assetIds.includes(a));
+}
+
 // ── Lot 76H : deux candidats d'un même document ────────────────────────────
 
 /**
@@ -647,9 +796,44 @@ export function sameDocumentReality(c: CandidateIdentity, other: CandidateIdenti
     refs: other.refs.map((r) => ({ kind: r.kind, normalized: r.normalized })),
     plannedDate: other.dates.plannedDate, startDate: other.dates.startDate, realizedDate: other.dates.realizedDate, endDate: other.dates.endDate,
   };
-  if (sharedIdentifyingReferences(c, pseudo).length === 0) return false;
-  if (referenceProviderMismatch(c, pseudo)) return false;
-  return hardNegatives(c, pseudo).length === 0;
+  if (hardNegatives(c, pseudo).length) return false;
+  if (sharedIdentifyingReferences(c, pseudo).length) return !referenceProviderMismatch(c, pseudo);
+  // Lot 78A (§2A, §7 « trois candidats redondants ») : plusieurs candidats qui
+  // décrivent la MÊME transaction (commande, facture, règlement d'un même
+  // achat) sans numéro commun.
+  return sameTransactionDescription(c, other);
+}
+
+/**
+ * Deux candidats d'un même document décrivent-ils la même transaction, sans
+ * référence commune (pure) ? Description économique IDENTIQUE : même nature,
+ * même tiers, mêmes biens et équipements, mêmes montants (au moins un, mêmes
+ * valeurs principales ou réglées), dates compatibles (égales ou absentes
+ * d'un côté), aucune référence de même nature divergente, objets non
+ * contradictoires. Le seul document partagé, une même date ou un même bien ne
+ * suffisent JAMAIS (F-027) : deux travaux distincts d'une même facture ont des
+ * montants ou des objets différents et restent deux Opérations.
+ */
+export function sameTransactionDescription(c: CandidateIdentity, other: CandidateIdentity): boolean {
+  if (c.type !== other.type) return false;
+  if (c.providerKey !== other.providerKey) return false;
+  const memes = (x: readonly number[], y: readonly number[]) => x.length === y.length && x.every((v) => y.includes(v));
+  if (!memes(c.assetIds, other.assetIds) || !memes(c.equipmentIds, other.equipmentIds)) return false;
+  const a = footprintOfIdentity(c);
+  const b = footprintOfIdentity(other);
+  const valeurs = (f: typeof a) => new Set([...f.principal, ...f.payments].map((m) => `${m.currency}:${m.amountMinor}`));
+  const va = valeurs(a);
+  const vb = valeurs(b);
+  if (!va.size || va.size !== vb.size || ![...va].every((v) => vb.has(v))) return false;
+  if (a.date !== null && b.date !== null && a.date !== b.date) return false;
+  for (const kind of new Set(c.refs.map((r) => r.kind))) {
+    if (disjoints(refSet(c.refs, [kind]), refSet(other.refs, [kind]))) return false;
+  }
+  // Une preuve de règlement décrit le paiement, pas l'objet : sa formulation ne contredit rien.
+  if (c.role === 'PAYMENT_PROOF' || other.role === 'PAYMENT_PROOF') return true;
+  const na = natureTokens(c.summary);
+  const nb = natureTokens(other.summary);
+  return !(na.size && nb.size && ![...na].some((m) => nb.has(m)));
 }
 
 // ── Fusion V1 (B8, ch. 8.4) ────────────────────────────────────────────────
@@ -684,7 +868,10 @@ export function operationsMergeable(
   }
   if (!opts.semantic && (type === 'INTERVENTION' || type === 'OTHER' || type === null)
     && disjoints(refSet(a.refs, ['INVOICE']), refSet(b.refs, ['INVOICE']))) return false;
-  return true;
+  // Lot 78A (§2C) : jamais une fusion de deux transactions économiquement
+  // incompatibles (ordres de grandeur, équipements disjoints).
+  const ident = assessAgainstMembers(footprintOfOperation(a), [{ sourceId: b.id, footprint: footprintOfOperation(b), anchor: true }], 'SEMANTIC');
+  return ident.verdict !== 'CONTRADICTED';
 }
 
 /** Canonique d'une fusion : la plus ancienne Opération active (à défaut la plus ancienne). */
@@ -739,7 +926,16 @@ export function applyM3Verdict(
   // verdict antérieur sans issue : règle historique (`m3Resolution`).
   const issue = m3Resolution(verdict);
   if (issue === 'ATTACH' && verdict.matchedOperationId !== null && plausibles.includes(verdict.matchedOperationId)) {
-    return res('MATCH_AND_ENRICH', 'MATCH_M3', verdict.matchedOperationId, 'M3');
+    // Lot 78A (§2B) : un verdict IA ne rattache pas une transaction
+    // économiquement contredite (contradiction forte) — l'utilisateur tranche.
+    const cible = ctx.operations.find((o) => o.id === verdict.matchedOperationId);
+    const ident = cible ? economicCheck(c, cible, 'SEMANTIC') : null;
+    if (!ident || ident.verdict !== 'CONTRADICTED') return res('MATCH_AND_ENRICH', 'MATCH_M3', verdict.matchedOperationId, 'M3');
+    (detail.identity ??= []).push({ operationId: verdict.matchedOperationId, basis: 'SEMANTIC', outcome: 'REFUSED', signals: identitySignals(ident) });
+    const parId0 = new Map(ctx.operations.map((o) => [o.id, o]));
+    const ops0 = [verdict.matchedOperationId, ...plausibles.filter((id) => id !== verdict.matchedOperationId)]
+      .map((id) => parId0.get(id)).filter((o): o is ExistingOperation => !!o);
+    return arbitrate(c, ops0, res, 'M3', 'M3_IDENTITY_CONTRADICTED');
   }
   if (issue === 'DISTINCT') {
     if (c.confidence !== 'certain' && !ctx.userDistinct) return res('HOLD_UNRESOLVED', 'PROBABLE_WITHOUT_MATCH');

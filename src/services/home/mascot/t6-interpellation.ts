@@ -1096,6 +1096,8 @@ export interface T6InterpellationBundle {
    * (transaction du lot accepté).
    */
   persist: (list: import('./t6-contract').T6ValidatedDecision[], meta: { promptVersion: string; traceId: string | null; contractRevision?: number }) => Promise<number | T6PersistResult>;
+  /** Lot 78C : signature de configuration EVALUATE courante (état durable des exécutions). */
+  evaluationSignature?: string | null;
 }
 
 /** Lot 72A (AC05) : issue d'une persistance — décisions réellement enregistrées. */

@@ -115,6 +115,8 @@ export interface DocumentFallbackPart {
   unattributed: { count: number; sumCents: number; fileIds: number[] };
   /** Avoirs (réduction) comptés en négatif. */
   creditNotes: { count: number; sumCents: number };
+  /** Lot 78B : justificatifs non comptés par la règle du TCO (même achat décrit plusieurs fois, achat non incorporé au bien). */
+  notCounted?: { count: number; fileIds: number[] };
   /**
    * Lot 53D (D12) : parmi `representedElsewhere`, dépenses SANS bien confirmé
    * dont un document est lié au périmètre (lien probable identifié) : non
@@ -178,13 +180,18 @@ export async function sumQualifiedExpenses(accountId: number, opts: {
   let represented = new Map<number, number[]>();
   let sansComposante = new Set<number>();
   let nonCouvrants = new Map<number, Set<number>>();
+  let horsTotal = new Set<number>();
   try {
     const lu = await loadScopeOperationsRead(accountId, ids ?? []);
     const ops = lu.operations;
+    // Lot 78B (TCO-R-14) : mêmes exclusions que le TCO (doublon présumé, justificatif retiré, prix d'un autre bien,
+    // achat non incorporé au bien) — décidées par le service TCO, jamais recalculées ici.
+    const excl = await (await import('@/services/business-operations/tco/service')).t2CostExclusions(accountId, ops, ids);
+    horsTotal = excl.files;
     // Lot 61 (TCO §3.3) : Opérations du périmètre SANS composante financière exploitable (aucune hors prévision).
     sansComposante = new Set(ops.filter((o) => o.status !== 'CANCELLED' && !o.components.some((c) => c.kind !== 'FORECAST_COST')).map((o) => o.id));
     if (!lu.complete) lectureComplete = false;
-    const lus = summarizeOperationCosts(operationCostLines(ops, { assetIds: ids ?? [], year: opts.year ?? null }), theme);
+    const lus = summarizeOperationCosts(operationCostLines(ops, { assetIds: ids ?? [], year: opts.year ?? null, excludedComponentIds: excl.components }), theme);
     const rep = await operationReader().representedDocuments(accountId, docs.map((d) => d.id));
     part = lus.part;
     opEntries = lus.entries;
@@ -199,7 +206,7 @@ export async function sumQualifiedExpenses(accountId: number, opts: {
     degradee = true;
     console.warn('[verebona] dépenses : lecture des coûts consolidés impossible, repli documentaire seul :', (e as Error).message);
   }
-  return finishQualifiedExpenses(accountId, { ids, theme, year: opts.year ?? null, docs, part, opEntries, scopeOps, represented, sansComposante, nonCouvrants, lectureComplete, degradee });
+  return finishQualifiedExpenses(accountId, { ids, theme, year: opts.year ?? null, docs, part, opEntries, scopeOps, represented, sansComposante, nonCouvrants, horsTotal, lectureComplete, degradee });
 }
 
 const EXPENSE_DOCS_PAGE = 2000;
@@ -255,6 +262,8 @@ async function finishQualifiedExpenses(accountId: number, x: {
   scopeOps: Set<number>; represented: Map<number, number[]>; sansComposante?: Set<number>;
   /** Lot 75D : par document, Opérations dont il est source qui ne reprennent pas son fait (règle du TCO). */
   nonCouvrants?: Map<number, Set<number>>;
+  /** Lot 78B : justificatifs que le TCO du bien ne compte pas (même achat décrit plusieurs fois, achat non incorporé). */
+  horsTotal?: Set<number>;
   lectureComplete: boolean; degradee: boolean;
 }): Promise<QualifiedExpenses> {
   const { ids, theme, docs, opEntries, scopeOps, represented } = x;
@@ -273,6 +282,10 @@ async function finishQualifiedExpenses(accountId: number, x: {
   const { kept, removed } = dedupePossibleMerges(docs);
   const entries: ExpenseEntry[] = [];
   for (const r of kept) {
+    if (x.horsTotal?.has(r.id)) {
+      fallback.notCounted = { count: (fallback.notCounted?.count ?? 0) + 1, fileIds: [...(fallback.notCounted?.fileIds ?? []), r.id] };
+      continue;
+    }
     const ops = represented.get(r.id);
     // Lot 61 (TCO §3.3, cohérence T2 / TCO) : un document rattaché SEULEMENT à des
     // Opérations du périmètre sans composante financière exploitable n'est pas

@@ -66,6 +66,7 @@ import {
 import { MascotPose } from '@/components/verebona/space/MascotPose';
 import { useVerebonaSpace } from '@/components/verebona/space/VerebonaSpaceProvider';
 import { useMascotPresentation } from './useMascotPresentation';
+import { useGreetingNow } from './useGreetingClock';
 import { TodoChoicesDialog } from './TodoChoicesDialog';
 import { T6ReminderActions } from './T6ReminderControls';
 import { BLOCK_ACTION_PRIMARY } from './bubble-actions';
@@ -164,7 +165,9 @@ export function MascotSpeaks({ greetingName, empty, onCreateAsset, onUploadDocum
   const emptyRef = useRef(empty);
   emptyRef.current = empty;
   const { presentation: brute, failed, refresh, trackClick } = useMascotPresentation((p) => displayedSecondaries(p, emptyRef.current));
-  const now = new Date();
+  // Lot 78C : date et salutation du jour, renouvelées à minuit, à 18:00 et
+  // au retour au premier plan (jamais celles du dernier rendu).
+  const now = useGreetingNow();
 
   // « À traiter » résolus depuis la bulle : retirés aussitôt, jusqu'à la
   // relecture (nouvelle empreinte) qui fait foi.
@@ -181,6 +184,8 @@ export function MascotSpeaks({ greetingName, empty, onCreateAsset, onUploadDocum
   const speech = bubbleLead({ presentation, empty, failed });
   const blocks = empty ? [] : subjectBlocks(presentation);
   const pose = homePose(presentation, empty, failed);
+  // Lot 78C : documents en cours d'analyse — pose « au travail » animée.
+  const travail = pose === 'document-analysis-pdf';
   const loading = !empty && !presentation && !failed;
 
   // ── Actions réelles du moteur (revalidées au clic) ────────────────────────
@@ -332,14 +337,18 @@ export function MascotSpeaks({ greetingName, empty, onCreateAsset, onUploadDocum
           seule ombre, réservée aux cartes flottantes) ; recoloration cyan
           appliquée par MascotPose. 112 px desktop, 72 px mobile. */}
       <div className="flex-shrink-0 self-start md:row-span-3">
-        <MascotPose pose={pose} size={112} alt={homePoseLabel(pose)} priority className="hidden md:block" />
-        <MascotPose pose={pose} size={72} alt={homePoseLabel(pose)} priority className="md:hidden" />
+        <MascotPose pose={pose} size={112} alt={homePoseLabel(pose)} priority className="hidden md:block" working={travail} />
+        <MascotPose pose={pose} size={72} alt={homePoseLabel(pose)} priority className="md:hidden" working={travail} />
+        {/* Lot 78C : annonce sobre (une fois, à l'apparition), sans répéter le compteur de la bulle. */}
+        <span className="sr-only" role="status" aria-live="polite" data-mascot-status>
+          {travail ? 'Verebona analyse vos documents.' : ''}
+        </span>
       </div>
 
       <div className="flex min-w-0 flex-col gap-1 md:gap-3.5 md:pt-1.5">
-        <span className="text-[12px] text-[color:var(--text-muted)] md:text-[13px]">{greetingDateLong(now)}</span>
+        <span className="text-[12px] text-[color:var(--text-muted)] md:text-[13px]" data-greeting-date>{now ? greetingDateLong(now) : '\u00a0'}</span>
         <h1 className="m-0 text-[26px] font-extrabold leading-[1.1] tracking-[-.03em] text-[color:var(--text-primary)] md:text-[32px]">
-          {greetingWord(now)}, {greetingName}
+          {now ? greetingWord(now) : 'Bonjour'}, {greetingName}
         </h1>
       </div>
 

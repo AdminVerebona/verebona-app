@@ -26,6 +26,7 @@ import { sql, type SQL } from 'drizzle-orm';
 import { db } from '@/db';
 import { BusinessOperationReadService, type AssistantOperationRead } from '../read-service';
 import { computeTco, type TcoAssetPrice, type TcoEquipmentPrice, type TcoOperation, type TcoResult, type UsageBudget } from './model';
+import { presumedDuplicateComponents, unjustifiedComponent, type ComponentProvenance } from './fact-identity';
 import type { LedgerComponent } from '../finance/engine';
 import { operationCoverage, type EconomicDocumentInput, type EconomicHint } from '../finance/economic-lines';
 import { readCanonicalValue, type AssetRowJson } from '@/services/canonical/asset-state/canonical-asset-view';
@@ -79,7 +80,7 @@ async function operationIdsOfAsset(r: Runner, accountId: number, assetId: number
 export async function readAssetTco(accountId: number, assetId: number, opts: { today?: string; runner?: Runner } = {}): Promise<TcoResult> {
   const r = opts.runner ?? db;
   const [asset] = await rows(r, sql`
-    SELECT a.id, a.status, a.key_characteristics FROM assets a WHERE a.id = ${assetId} AND a.account_id = ${accountId} AND a.deleted_at IS NULL`);
+    SELECT a.id, a.status, a.category, a.key_characteristics FROM assets a WHERE a.id = ${assetId} AND a.account_id = ${accountId} AND a.deleted_at IS NULL`);
   if (!asset) throw new AssetNotFoundForTcoError();
   let kc: Record<string, unknown> = {};
   try { kc = typeof asset.key_characteristics === 'string' ? JSON.parse(asset.key_characteristics) : ((asset.key_characteristics as Record<string, unknown> | null) ?? {}); } catch { kc = {}; }
@@ -106,6 +107,11 @@ export async function readAssetTco(accountId: number, assetId: number, opts: { t
      WHERE e.id IN (SELECT DISTINCT target_equipment_id FROM business_operation_financial_components
                      WHERE account_id = ${accountId} AND active AND target_equipment_id IS NOT NULL AND operation_id = ANY(${intArray(ids.length ? ids : [0])}::bigint[]))`);
   const equipmentAssets = new Map(equipements.map((e) => [Number(e.id), Number(e.asset_id)]));
+  // Lot 78B (§3A, §3B, §3C) : provenance de chaque composante et liens d'autorité USER au bien.
+  const componentProvenance = await readComponentProvenance(r, accountId, ids, assetId);
+  const liensUtilisateur = ids.length ? new Set((await rows<{ operation_id: string }>(r, sql`
+    SELECT operation_id FROM business_operation_asset_links
+     WHERE account_id = ${accountId} AND active AND asset_id = ${assetId} AND authority = 'USER' AND operation_id = ANY(${intArray(ids)}::bigint[])`)).map((x) => Number(x.operation_id))) : new Set<number>();
 
   const operations: TcoOperation[] = lus.map((o) => {
     const parEquipement = equip.filter((e) => Number(e.operation_id) === o.id).map((e) => Number(e.asset_id));
@@ -124,6 +130,8 @@ export async function readAssetTco(accountId: number, assetId: number, opts: { t
       }),
       documents: o.documents.map((d) => ({ fileId: d.fileId, title: d.title, role: d.role })),
       sourceKinds: o.sourceKinds ?? [],
+      userLinked: liensUtilisateur.has(o.id),
+      equipmentLinked: equip.some((e) => Number(e.operation_id) === o.id && Number(e.asset_id) === assetId),
     };
   });
 
@@ -157,12 +165,134 @@ export async function readAssetTco(accountId: number, assetId: number, opts: { t
     assetAcquisitionDate: txt(kc.acquisitionDate), assetSaleDate: txt(kc.saleDate), assetStatus: txt(asset.status),
     valuationHistory, desiredSalePriceCents: desired, budgets, readComplete: readComplete && doc.complete && equipementsComplets,
     documents: doc.documents, assetPrice, equipmentPrices, acquisitionExpected,
+    assetCategory: txt(asset.category), componentProvenance,
   });
   // Lot 68 : diagnostic BO — justificatifs qui CITENT seulement le bien (exclus des sources, expliqués).
   return { ...result, citedOnlyDocuments: await readCitedOnlyDocuments(r, accountId, assetId) };
 }
 
 const CITED_MAX = 200;
+
+/** Lot 78B : motifs du TCO qui retirent une composante ou un justificatif du total (règle partagée avec T2). */
+const MOTIFS_78B_COMPOSANTE: ReadonlySet<string> = new Set(['SAME_FACT_OTHER_DOCUMENT', 'NOT_OWNERSHIP_COST', 'SOURCE_WITHDRAWN', 'COUNTED_FOR_OTHER_ASSET']);
+const MOTIFS_78B_DOCUMENT: ReadonlySet<string> = new Set(['SAME_FACT_OTHER_DOCUMENT', 'NOT_OWNERSHIP_COST']);
+
+/**
+ * Lot 78B (TCO-R-14 : même règle pour T2 et le TCO) — composantes et
+ * justificatifs que le total des dépenses de T2 ne compte pas, décidés par
+ * les MÊMES règles que le TCO (aucune seconde logique) :
+ *   · périmètre d'UN bien : la décision du TCO de ce bien elle-même
+ *     (`readAssetTco` : doublons présumés, justificatif retiré, prix d'un autre
+ *     bien, achat non incorporé ; justificatifs seuls décrivant le même achat
+ *     immobilier ou un achat non incorporé) ;
+ *   · compte entier ou plusieurs biens : les règles qui ne dépendent d'aucun
+ *     bien (`presumedDuplicateComponents`, `unjustifiedComponent` : doublon
+ *     présumé dans une Opération, justificatif retiré) — un achat d'objet reste
+ *     une dépense du compte.
+ */
+export async function t2CostExclusions(
+  accountId: number,
+  ops: ReadonlyArray<Pick<AssistantOperationRead, 'id' | 'typeCode' | 'components'>>,
+  assetIds: readonly number[] | null,
+  r: Runner = db,
+): Promise<{ components: Set<number>; files: Set<number> }> {
+  const components = new Set<number>();
+  const files = new Set<number>();
+  if (assetIds?.length === 1) {
+    const t = await readAssetTco(accountId, assetIds[0], { runner: r });
+    for (const l of t.lines) {
+      if (l.source === 'OPERATION' && l.reason && MOTIFS_78B_COMPOSANTE.has(l.reason)) components.add(Number(l.id.slice(2)));
+    }
+    const parFichier = new Map<number, typeof t.lines>();
+    for (const l of t.lines) if (l.source === 'DOCUMENT' && l.fileId != null) parFichier.set(l.fileId, [...(parFichier.get(l.fileId) ?? []), l]);
+    for (const [f, ls] of parFichier) {
+      if (ls.some((l) => l.reason && MOTIFS_78B_DOCUMENT.has(l.reason)) && !ls.some((l) => l.includedCents > 0)) files.add(f);
+    }
+    return { components, files };
+  }
+  const ids = ops.map((o) => o.id);
+  if (!ids.length) return { components, files };
+  const prov = await readComponentProvenance(r, accountId, ids, 0);
+  const periodes = new Map((await rows<{ id: string; period_start: string | null; period_end: string | null; target_equipment_id: number | null }>(r, sql`
+    SELECT id, period_start::text AS period_start, period_end::text AS period_end, target_equipment_id FROM business_operation_financial_components
+     WHERE account_id = ${accountId} AND active AND operation_id = ANY(${intArray(ids)}::bigint[])`)).map((c) => [Number(c.id), c]));
+  const force = (id: number) => { const p = prov.get(id); return p ? (p.otherSourceKinds.includes('ASSET_DATA') ? 4 : 0) + (p.explained === true ? 1 : 0) : 0; };
+  for (const o of ops) {
+    const comps: LedgerComponent[] = o.components.map((c) => {
+      const d = periodes.get(c.id);
+      return {
+        id: c.id, operationId: o.id, kind: c.kind, amountMinor: c.amountMinor, currency: c.currency, amountEurCents: c.amountEurCents,
+        economicDate: c.economicDate, periodStart: txt(d?.period_start), periodEnd: txt(d?.period_end), targetAssetId: c.targetAssetId,
+        targetEquipmentId: d?.target_equipment_id == null ? null : Number(d.target_equipment_id),
+      };
+    });
+    for (const id of presumedDuplicateComponents({ typeCode: o.typeCode, components: comps }, prov, force).keys()) components.add(id);
+    for (const c of comps) if (unjustifiedComponent(prov.get(c.id)) === 'SOURCES_WITHDRAWN') components.add(c.id);
+  }
+  return { components, files };
+}
+
+/**
+ * Lot 78B (§3A, §3B) — provenance PERSISTÉE de chaque composante active des
+ * Opérations lues : justificatifs des sources DOCUMENT actives qui la portent,
+ * justificatifs retirés (source inactive), autres natures de sources actives,
+ * références de facture de ses sources, et si l'un de ses justificatifs porte
+ * son montant (montant du document, ou indice T1 actif de même montant — même
+ * critère que `free_components`). Lecture seule, pages de 500 Opérations.
+ */
+export async function readComponentProvenance(r: Runner, accountId: number, operationIds: readonly number[], assetId: number): Promise<Map<number, ComponentProvenance>> {
+  const out = new Map<number, ComponentProvenance>();
+  if (!operationIds.length) return out;
+  // Preuve ACTIVE du prix d'achat d'un AUTRE bien portée par un justificatif de la composante (règle centralisée L71A-C).
+  const actives = await activeEvidence({ assetLevel: true });
+  const liste = (v: unknown): string[] => (Array.isArray(v) ? v.map(String) : String(v ?? '').replace(/[{}"]/g, '').split(',').filter(Boolean));
+  for (let i = 0; i < operationIds.length; i += 500) {
+    const page = operationIds.slice(i, i + 500);
+    for (const c of await rows(r, sql`
+      SELECT c.id,
+             ARRAY(SELECT DISTINCT s.source_entity_key FROM business_operation_financial_component_sources cs
+                     JOIN business_operation_sources s ON s.id = cs.operation_source_id AND s.account_id = c.account_id
+                    WHERE cs.component_id = c.id AND s.active AND s.source_kind = 'DOCUMENT' AND s.source_entity_key ~ '^[0-9]{1,9}$') AS docs,
+             ARRAY(SELECT DISTINCT s.source_entity_key FROM business_operation_financial_component_sources cs
+                     JOIN business_operation_sources s ON s.id = cs.operation_source_id AND s.account_id = c.account_id
+                    WHERE cs.component_id = c.id AND NOT s.active AND s.source_kind = 'DOCUMENT' AND s.source_entity_key ~ '^[0-9]{1,9}$') AS withdrawn,
+             ARRAY(SELECT DISTINCT s.source_kind FROM business_operation_financial_component_sources cs
+                     JOIN business_operation_sources s ON s.id = cs.operation_source_id AND s.account_id = c.account_id
+                    WHERE cs.component_id = c.id AND s.active AND s.source_kind <> 'DOCUMENT') AS other_kinds,
+             ARRAY(SELECT DISTINCT br.normalized_value FROM business_operation_financial_component_sources cs
+                     JOIN business_operation_sources s ON s.id = cs.operation_source_id AND s.account_id = c.account_id AND s.active
+                     JOIN business_operation_references br ON br.operation_id = c.operation_id AND br.source_id = s.id AND br.account_id = c.account_id
+                                                          AND br.active AND br.reference_kind = 'INVOICE'
+                    WHERE cs.component_id = c.id) AS invoice_refs,
+             EXISTS (SELECT 1 FROM business_operation_financial_component_sources cs
+                       JOIN business_operation_sources s ON s.id = cs.operation_source_id AND s.account_id = c.account_id AND s.active AND s.source_kind = 'DOCUMENT'
+                       JOIN asset_files f ON f.id = (CASE WHEN s.source_entity_key ~ '^[0-9]{1,9}$' THEN s.source_entity_key::int END) AND f.account_id = c.account_id
+                      WHERE cs.component_id = c.id
+                        AND (abs(f.amount_cents) = c.amount_minor
+                             OR EXISTS (SELECT 1 FROM document_operation_candidates dc
+                                          CROSS JOIN LATERAL jsonb_array_elements(CASE WHEN jsonb_typeof(dc.payload->'financialHints') = 'array'
+                                                                                       THEN dc.payload->'financialHints' ELSE '[]'::jsonb END) h
+                                         WHERE dc.file_id = f.id AND dc.account_id = f.account_id AND dc.status = 'ACTIVE' AND dc.established
+                                           AND h->>'amountMinor' ~ '^[0-9]+$' AND (h->>'amountMinor')::numeric = c.amount_minor))) AS explained,
+             EXISTS (SELECT 1 FROM business_operation_financial_component_sources cs
+                       JOIN business_operation_sources s ON s.id = cs.operation_source_id AND s.account_id = c.account_id AND s.active AND s.source_kind = 'DOCUMENT'
+                      WHERE cs.component_id = c.id AND s.source_entity_key ~ '^[0-9]{1,9}$'
+                        AND EXISTS (SELECT 1 FROM field_evidence
+                                     WHERE account_id = c.account_id AND status = 'active' AND source_type = 'document'
+                                       AND source_id = (CASE WHEN s.source_entity_key ~ '^[0-9]{1,9}$' THEN s.source_entity_key::int END)
+                                       AND asset_id IS DISTINCT FROM ${assetId} AND field_key = ANY(${`{${ACQUISITION_PRICE_KEYS.join(',')}}`}::text[])${actives})) AS other_asset_price
+        FROM business_operation_financial_components c
+       WHERE c.account_id = ${accountId} AND c.active AND c.operation_id = ANY(${intArray(page)}::bigint[])`)) {
+      const docs = liste(c.docs).map(Number).filter((x) => Number.isSafeInteger(x));
+      out.set(Number(c.id), {
+        documentFileIds: docs, withdrawnFileIds: liste(c.withdrawn).map(Number).filter((x) => Number.isSafeInteger(x) && !docs.includes(x)),
+        otherSourceKinds: liste(c.other_kinds), invoiceRefs: liste(c.invoice_refs), explained: docs.length ? Boolean(c.explained) : null,
+        otherAssetAcquisition: Boolean(c.other_asset_price),
+      });
+    }
+  }
+  return out;
+}
 
 /**
  * Lot 68 (68A) — documents qui CITENT seulement le bien (lien MENTIONED

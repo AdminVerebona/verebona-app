@@ -850,6 +850,13 @@ html [data-sonner-toaster][data-sonner-theme] {
    Fondu et léger glissement, sans dépassement d'échelle (pas de rebond). */
 @keyframes vb-pose-a { 0% { opacity: 0; transform: translateY(8px); } 100% { opacity: 1; transform: none; } }
 @keyframes vb-pose-b { 0% { opacity: 0; transform: translateY(8px); } 100% { opacity: 1; transform: none; } }
+/* Lot 78C : mascotte « au travail » (lecture d'un document) — balancement lent,
+   sans rebond ; jamais en mouvement réduit (pose statique distincte). */
+@keyframes vb-mascotte-travail {
+  0%, 100% { transform: rotate(0deg) translateY(0); }
+  30% { transform: rotate(-2.5deg) translateY(-2px); }
+  70% { transform: rotate(2deg) translateY(-1px); }
+}
 /* Traitement en cours : trois points (§6.4). */
 @keyframes vb-dot { 0%, 80%, 100% { opacity: .25; transform: translateY(0); } 40% { opacity: 1; transform: translateY(-3px); } }
 /* Apparition du panneau sous le champ (§6.2). */

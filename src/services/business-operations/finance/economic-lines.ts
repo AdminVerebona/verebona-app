@@ -204,7 +204,10 @@ export type DocumentLineReason =
   | 'SAME_AS_ASSET_PRICE' | 'ASSET_PRICE_CONSOLIDATED' | 'CANDIDATE_CANCELLED' | 'OPERATION_CANCELLED_SOURCE'
   | 'SAME_AS_EQUIPMENT_DOCUMENT' | 'EQUIPMENT_PRICE_CONSOLIDATED'
   // Lot 75D : acompte / solde compris dans le total consolidé de la même Opération.
-  | 'INCLUDED_IN_OPERATION_TOTAL';
+  | 'INCLUDED_IN_OPERATION_TOTAL'
+  // Lot 78B : même somme portée par un autre justificatif du même fait (sans preuve de transaction distincte) ;
+  // achat d'un objet distinct non incorporé au coût de possession du bien.
+  | 'SAME_FACT_OTHER_DOCUMENT' | 'NOT_OWNERSHIP_COST' | 'SOURCE_WITHDRAWN';
 
 export type EconomicLineReason = ExclusionReason | DocumentLineReason;
 
@@ -230,6 +233,9 @@ export const DOCUMENT_LINE_REASON_LABELS: Readonly<Record<DocumentLineReason, st
   SAME_AS_EQUIPMENT_DOCUMENT: 'Prix d’achat de l’équipement : déjà compté par sa facture',
   EQUIPMENT_PRICE_CONSOLIDATED: 'Prix d’achat de l’équipement repris par une dépense consolidée',
   INCLUDED_IN_OPERATION_TOTAL: 'Acompte ou solde compris dans la facture totale de la même dépense consolidée',
+  SAME_FACT_OTHER_DOCUMENT: 'Même somme qu’un autre justificatif du même fait, sans preuve d’une transaction distincte : comptée une seule fois',
+  NOT_OWNERSHIP_COST: 'Achat distinct, non incorporé au coût de possession du bien',
+  SOURCE_WITHDRAWN: 'Justificatif retiré de la dépense : montant réévalué depuis le justificatif',
 };
 
 /** Ligne documentaire qualifiée, avant le moteur (`status` null : à évaluer par `evaluateComponent`). */

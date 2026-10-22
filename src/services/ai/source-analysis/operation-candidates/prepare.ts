@@ -165,9 +165,44 @@ function identity(c: AnchoredOperationCandidate): string {
 }
 
 /**
+ * Lot 78A (§2A) : deux candidats de même « identité de contenu » (même
+ * résumé ou mêmes références) décrivent-ils encore la même transaction ?
+ * Jamais quand leurs faits se contredisent : dates de réalisation ou prévues
+ * différentes, prestataires différents, cibles vérifiées disjointes, ou — sans
+ * référence commune — montants principaux d'ordres de grandeur différents.
+ * Un même libellé ne suffit pas à regrouper deux transactions. Pure.
+ */
+export function candidatesCompatible(a: AnchoredOperationCandidate, b: AnchoredOperationCandidate): boolean {
+  for (const k of ['realizedDate', 'plannedDate'] as const) {
+    const x = a.temporalHints[k];
+    const y = b.temporalHints[k];
+    if (x && y && x !== y) return false;
+  }
+  const pa = a.provider ? plat(a.provider) : '';
+  const pb = b.provider ? plat(b.provider) : '';
+  if (pa && pb && pa !== pb) return false;
+  for (const type of ['ASSET', 'EQUIPMENT'] as const) {
+    const ia = a.targetHints.filter((t) => t.type === type && t.entityId !== null).map((t) => t.entityId);
+    const ib = b.targetHints.filter((t) => t.type === type && t.entityId !== null).map((t) => t.entityId);
+    if (ia.length && ib.length && !ia.some((v) => ib.includes(v))) return false;
+  }
+  if (!a.businessReferences.length || !b.businessReferences.length) {
+    const principaux = (c: AnchoredOperationCandidate) => c.financialHints
+      .filter((h) => (h.role === 'REALIZED_COST' || h.role === 'FORECAST_COST' || h.role === 'PROCEED') && (h.amountScope === null || h.amountScope === 'TOTAL') && h.amountMinor > 0);
+    const ma = principaux(a);
+    const mb = principaux(b);
+    const paires = ma.flatMap((x) => mb.filter((y) => y.currency === x.currency).map((y) => [x.amountMinor, y.amountMinor] as const));
+    if (paires.length && paires.every(([x, y]) => Math.max(x, y) >= 10 * Math.min(x, y))) return false;
+  }
+  return true;
+}
+
+/**
  * Fusionne les candidats d'un lot de pages dans ceux déjà retenus : un
  * candidat de même identité enrichit l'existant (preuves, montants), un
  * nouveau est ajouté avec une clé rendue unique. Pure.
+ * Lot 78A (§2A) : jamais deux transactions contradictoires regroupées sous un
+ * même libellé (`candidatesCompatible`) — elles restent deux candidats.
  */
 export function mergeOperationCandidates(
   base: readonly AnchoredOperationCandidate[], incoming: readonly AnchoredOperationCandidate[],
@@ -175,7 +210,7 @@ export function mergeOperationCandidates(
   const out = base.map((c) => ({ ...c }));
   const cles = new Set(out.map((c) => c.candidateKey));
   for (const c of incoming) {
-    const existant = out.find((x) => identity(x) === identity(c));
+    const existant = out.find((x) => identity(x) === identity(c) && candidatesCompatible(x, c));
     if (existant) {
       existant.evidenceFactRefs = [...new Set([...existant.evidenceFactRefs, ...c.evidenceFactRefs])];
       const vus = new Set(existant.financialHints.map((h) => `${h.role}:${h.amountMinor}:${h.currency}:${h.factRef}`));

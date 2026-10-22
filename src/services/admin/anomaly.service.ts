@@ -513,6 +513,12 @@ export function diagnosticLinkFor(domain: string, detail: Record<string, unknown
     return { href: detail.boLink, label: 'Ouvrir « Isolation des comptes »' };
   }
   if (domain !== 'ai') return null;
+  // Lot 78C : évaluations T6 bloquées ou en échec — rapports T6 du compte
+  // (`evaluate:display` / `evaluate:pregen`, états réels, motifs).
+  if (detail?.kind === 't6_evaluation') {
+    const compte = typeof detail.accountId === 'number' ? `&accountId=${detail.accountId}` : '';
+    return { href: `/admin/ai-executions?tab=reports&treatment=T6${compte}`, label: 'Ouvrir les rapports T6 du compte' };
+  }
   const operationId = detail?.operationId;
   if (typeof operationId === 'string' || typeof operationId === 'number') {
     return { href: `/admin/ai-executions?operationId=${encodeURIComponent(String(operationId))}`, label: 'Ouvrir dans Exécutions IA' };

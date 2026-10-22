@@ -30,6 +30,20 @@ export function poseAnimation(state: PoseMotionState, reducedMotion: boolean): s
   return `${state.flip ? 'vb-pose-b' : 'vb-pose-a'} ${POSE_DURATION_S}s ${POSE_EASING} both`;
 }
 
+/**
+ * Lot 78C — animation « au travail » (lecture d'un document) : léger
+ * balancement continu, lent et sans rebond, ajouté APRÈS l'arrivée de la
+ * pose. Mouvement réduit : aucune (la pose « au travail » reste statique et
+ * distincte de la pose neutre).
+ */
+export const WORKING_ANIMATION = 'vb-mascotte-travail 3.2s ease-in-out 0.6s infinite';
+
+/** Valeur CSS `animation` d'une pose « au travail » (ou celle de la pose seule). */
+export function workingAnimation(base: string, working: boolean, reducedMotion: boolean): string {
+  if (!working || reducedMotion) return base;
+  return base === 'none' ? WORKING_ANIMATION : `${base}, ${WORKING_ANIMATION}`;
+}
+
 /** Chemin public d'une pose. */
 export function mascotSrc(pose: string): string {
   return `/mascot/${pose}.webp`;

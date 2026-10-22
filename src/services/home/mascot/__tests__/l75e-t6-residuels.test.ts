@@ -147,7 +147,8 @@ describe('L75E-T6-B — sélection progressive, reprise persistante', () => {
     expect(src).toMatch(/LIMIT \$\{T6_AGENDA_SHOWN_LIMIT\}/);
     const svc = lire('src/services/home/mascot/mascot.service.ts');
     expect(svc).toMatch(/const progres = o\.persisted > 0 \|\| examines \+ \(interpellation\.examined \?\? 0\) > 0;/);
-    expect(svc).toMatch(/if \(progres && \(interpellation\.pendingAssessments > 0 \|\| interpellation\.selectionBacklog\)\)/);
+    // Lot 78C : + lot encore à évaluer dans le passage relu (jamais clos « rien à dire »).
+    expect(svc).toMatch(/if \(progres && \(interpellation\.pendingAssessments > 0 \|\| interpellation\.bundle != null \|\| interpellation\.selectionBacklog\)\)/);
     // Affichage d'un compte en reprise : pré-génération du compte demandée (durable, temporisée).
     expect(svc).toMatch(/if \(mode !== 'pregen' && interpellation\.selectionBacklog\) scheduleMascotPregeneration\(accountId, PREGEN_DEBOUNCE_MS, 't6-selection'\)/);
   });
