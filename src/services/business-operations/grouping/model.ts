@@ -43,9 +43,12 @@ export type MembershipOrigin = (typeof MEMBERSHIP_ORIGINS)[number];
 /**
  * Objets de la mémoire des décisions utilisateur (`business_operation_match_decisions.source_kind`) :
  * DOCUMENT et AGENDA (existants), ROOM, EQUIPMENT, PRINCIPAL_LINK (0656). Le bien
- * garde sa mémoire d'exclusion (0349).
+ * garde sa mémoire d'exclusion (0349). Lot 84B (0684) : PRINCIPAL — rôle
+ * principal RETIRÉ (REJECTED) ou désigné (CONFIRMED) par l'utilisateur sur un
+ * élément d'agenda ; un retrait actif interdit toute désignation par inférence
+ * dans l'Opération (`principalWithdrawnByUser`).
  */
-export const DECISION_SUBJECTS = ['DOCUMENT', 'AGENDA', 'ROOM', 'EQUIPMENT', 'PRINCIPAL_LINK'] as const;
+export const DECISION_SUBJECTS = ['DOCUMENT', 'AGENDA', 'ROOM', 'EQUIPMENT', 'PRINCIPAL_LINK', 'PRINCIPAL'] as const;
 export type DecisionSubject = (typeof DECISION_SUBJECTS)[number];
 
 export const isLinkProvenance = (v: unknown): v is LinkProvenance => typeof v === 'string' && (LINK_PROVENANCES as readonly string[]).includes(v);
@@ -62,6 +65,17 @@ export const ROLE_ORIGIN_RANK: Readonly<Record<RoleOrigin, number>> = { USER: 3,
 export function canReplacePrincipal(current: RoleOrigin | null, requester: RoleOrigin): boolean {
   if (current === null) return true;
   return ROLE_ORIGIN_RANK[requester] >= ROLE_ORIGIN_RANK[current];
+}
+
+/**
+ * Lot 84B (CDC v5 §10, §11.9 ; point ouvert 83A) — un auteur peut-il
+ * DÉSIGNER un principal dans une Opération dont l'utilisateur a retiré le
+ * rôle principal (décision PRINCIPAL REJECTED active) ? Seul l'utilisateur :
+ * une inférence (T4, T3, reprise) ne rétablit jamais un principal retiré, ni
+ * sur le même élément, ni sur un autre, ni par création (pure).
+ */
+export function mayDesignatePrincipal(requester: RoleOrigin, withdrawnByUser: boolean): boolean {
+  return requester === 'USER' || !withdrawnByUser;
 }
 
 /**

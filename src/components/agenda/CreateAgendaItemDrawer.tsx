@@ -60,6 +60,12 @@ interface Props {
   prefilledEquipmentId?: number;
   prefilledTitle?: string;
   prefilledStartDate?: string;
+  /**
+   * Lot 84B (CDC v5 O-3, « créer » depuis le tiroir d'un événement) : appelé
+   * avec l'identifiant de l'élément créé, AVANT `onMutated` (l'appelant le
+   * relie à son ensemble). Facultatif : sans lui, rien ne change.
+   */
+  onCreated?: (itemId: number) => void | Promise<void>;
 }
 
 export function CreateAgendaItemDrawer({
@@ -72,6 +78,7 @@ export function CreateAgendaItemDrawer({
   prefilledEquipmentId,
   prefilledTitle,
   prefilledStartDate,
+  onCreated,
 }: Props) {
   // ══════════════════════════════════════════════════════════════════════
   // GARDE À L'OUVERTURE, DANS LE TIROIR LUI-MÊME
@@ -251,7 +258,7 @@ export function CreateAgendaItemDrawer({
     setSaving(true);
     setError(null);
     try {
-      await apiClient.post("/api/agenda", {
+      const created: { item?: { id?: number } } | undefined = await apiClient.post("/api/agenda", {
         title: title.trim(),
         description: description || null,
         startDate: startDate || null,
@@ -266,6 +273,7 @@ export function CreateAgendaItemDrawer({
         equipmentIds: selectedEquipmentIds,
       });
       toast.success("Élément créé");
+      if (onCreated && typeof created?.item?.id === "number") await onCreated(created.item.id);
       window.dispatchEvent(new CustomEvent('agenda-mutated'));
       reset();
       onMutated();

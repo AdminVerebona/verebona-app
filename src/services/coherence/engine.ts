@@ -9,7 +9,8 @@
  *      date de succès) ;
  *   3. mode correctif seulement, diagnostic FIABLE (REPAIRABLE), compte
  *      ÉLIGIBLE (lot 83E : un compte lu pour son seul état d'abonnement n'est
- *      jamais réparé — constat FINDING) : éligibilité
+ *      pas réparé — constat FINDING —, sauf par un contrôle déclaré
+ *      `repairOnIneligibleBilling`, lot 84A / L83-Q1) : éligibilité
  *      du compte revérifiée, réparation DÉLÉGUÉE au service métier
  *      (`check.repair`), puis RECONTRÔLE immédiat — l'anomalie n'est close
  *      (REPAIRED) que si le recontrôle confirme la cohérence ; sinon
@@ -89,6 +90,22 @@ export interface BatchSummary {
 }
 
 // ── Décisions pures ─────────────────────────────────────────────────────────
+
+/**
+ * Lot 84A (L83-Q1) — la réparation de ce contrôle est-elle permise dans ce
+ * périmètre de compte ? (pure) Compte éligible : si le contrôle répare. Compte
+ * lu pour son seul état d'abonnement : SEULEMENT si le contrôle le déclare
+ * (`repairOnIneligibleBilling`, opération de facturation) — aucune exception
+ * codée ici par identifiant de contrôle.
+ */
+export function repairPermittedInScope(
+  check: Pick<CoherenceCheck, 'repair' | 'ineligibleAccounts' | 'repairOnIneligibleBilling'>,
+  scope: NonNullable<CheckContext['accountScope']>,
+): boolean {
+  if (!check.repair) return false;
+  if (scope === 'ELIGIBLE') return true;
+  return check.ineligibleAccounts === 'SUBSCRIPTION_STATE_READ' && check.repairOnIneligibleBilling === true;
+}
 
 /** Résultat d'une inspection hors réparation (pure). */
 export function resultOfVerdict(i: Inspection, mode: CheckContext['mode'], repairable: boolean): ControlResult | 'TRY_REPAIR' {
@@ -319,8 +336,9 @@ export async function controlObjects(p: ControlBatchInput): Promise<BatchSummary
       // Lot 83B : relance asynchrone en cours sur le MÊME diagnostic — on en attend le résultat, jamais de seconde relance.
       o = { id, result: 'REPAIR_PENDING', inspection: insp, repairAttempted: false, aiCalls: 0 };
     } else {
-      // Lot 83E (C-Q10) : compte non éligible lu pour son seul état d'abonnement — jamais de réparation.
-      const r = resultOfVerdict(insp, ctx.mode, !!check.repair && (ctx.accountScope ?? 'ELIGIBLE') === 'ELIGIBLE');
+      // Lot 83E (C-Q10) : compte non éligible lu pour son seul état d'abonnement — pas de réparation,
+      // sauf contrôle déclaré `repairOnIneligibleBilling` (lot 84A, L83-Q1 : resynchronisation Stripe).
+      const r = resultOfVerdict(insp, ctx.mode, repairPermittedInScope(check, ctx.accountScope ?? 'ELIGIBLE'));
       if (r !== 'TRY_REPAIR') {
         o = { id, result: r, inspection: insp, repairAttempted: false, aiCalls: 0 };
       } else if (!repairAllowed(avant, insp.inputHash)) {

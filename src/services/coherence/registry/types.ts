@@ -89,8 +89,11 @@ export interface RepairResult {
  *                             seuls les contrôles déclarés
  *                             `ineligibleAccounts: 'SUBSCRIPTION_STATE_READ'`
  *                             s'y exécutent, en LECTURE de l'état d'abonnement
- *                             uniquement — aucun traitement métier, aucune
- *                             réparation (le moteur la neutralise), aucun IA.
+ *                             — aucun traitement métier, aucun IA ; réparation
+ *                             neutralisée par le moteur SAUF pour un contrôle
+ *                             déclaré `repairOnIneligibleBilling` (lot 84A,
+ *                             L83-Q1 : resynchronisation Stripe, mode
+ *                             correctif seulement).
  */
 export type AccountScope = 'ELIGIBLE' | 'SUBSCRIPTION_STATE_READ';
 
@@ -155,6 +158,17 @@ export interface CoherenceCheck {
    * compte. Absent : le contrôle ne s'exécute que sur les comptes éligibles.
    */
   ineligibleAccounts?: 'SUBSCRIPTION_STATE_READ';
+  /**
+   * Lot 84A (décision PO L83-Q1) : sur un compte non éligible DU FAIT DE SON
+   * ABONNEMENT (périmètre SUBSCRIPTION_STATE_READ), la réparation de ce
+   * contrôle est PERMISE en mode correctif. Réservé aux contrôles dont la
+   * réparation est une opération de FACTURATION (resynchronisation de
+   * l'abonnement depuis Stripe), jamais un traitement métier ; n'a d'effet
+   * qu'avec `ineligibleAccounts: 'SUBSCRIPTION_STATE_READ'`. Compte suspendu,
+   * neutralisé ou archivé : jamais (il n'est même pas lu). Absent : la
+   * réparation est neutralisée sur ces comptes (constat FINDING).
+   */
+  repairOnIneligibleBilling?: boolean;
   /**
    * Lot 83E : les constats de ce contrôle sont DÉJÀ signalés par une
    * supervision existante (identifiant de la tâche ou du mécanisme) — la

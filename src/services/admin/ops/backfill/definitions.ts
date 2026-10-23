@@ -13,7 +13,10 @@
  *   6. Opérations établies par les données structurées des biens (lot 43,
  *      C23.1 — aussi lancé automatiquement par `operations-structured-migration`) ;
  *   7. Sinistres : nettoyage de l'ancien modèle (lot 83D, V-Q2 — jamais
- *      automatique ; refusé sans point de restauration de moins de 24 h) ;
+ *      automatique ; refusé sans point de restauration de moins de 24 h),
+ *      puis, lot 84A (O-10), étape finale « Finaliser » : suppression
+ *      définitive des tables et colonnes de l'ancien modèle, possible
+ *      seulement quand le nettoyage ne trouve plus rien sur aucun compte ;
  *   8. Relations intercomptes : correction contrôlée par famille (lot 53,
  *      retour PO D23 — jamais automatique, journalisée et restaurable) ;
  *   9. Séparation bien / équipement (lot 71A, BUG P1) : valeurs héritées
@@ -56,11 +59,39 @@ export interface BackfillDefinition {
   description: string;
   actions: BackfillAction[];
   /** Étapes successives (agenda) ; chacune a ses propres actions. */
-  steps?: Array<{ code: string; label: string; description: string }>;
+  steps?: BackfillStep[];
+  /** Étape retenue quand la demande n'en précise pas (compatibilité d'un bloc devenu à étapes, lot 84A). */
+  defaultStep?: string;
   /** Filtre « compte » accepté (exécution limitée à un compte). */
   accountFilter: boolean;
   /** Avertissement affiché sur le bloc (ex. écriture directe). */
   warning?: string;
+}
+
+export interface BackfillStep {
+  code: string;
+  label: string;
+  description: string;
+  /** Actions permises pour CETTE étape (défaut : celles du bloc). */
+  actions?: BackfillAction[];
+  /** `false` : l'étape porte sur toute la plateforme (filtre « compte » refusé). */
+  accountFilter?: boolean;
+  /** Libellé du bouton d'application (défaut « Appliquer »). */
+  applyLabel?: string;
+  /** Avertissement propre à l'étape (dialogue de confirmation). */
+  warning?: string;
+}
+
+/** Actions permises pour une étape (pure). */
+export function stepActions(def: Pick<BackfillDefinition, 'actions' | 'steps'>, step: string | null): BackfillAction[] {
+  const st = step ? def.steps?.find((x) => x.code === step) : undefined;
+  return st?.actions ?? def.actions;
+}
+
+/** Libellé d'une action pour une étape (pure) : « Finaliser » au lieu d'« Appliquer » quand l'étape le déclare. */
+export function actionLabel(def: Pick<BackfillDefinition, 'steps'>, step: string | null, action: BackfillAction): string {
+  const st = step ? def.steps?.find((x) => x.code === step) : undefined;
+  return action === 'apply' && st?.applyLabel ? st.applyLabel : ACTION_LABELS[action];
 }
 
 export const BACKFILL_DEFINITIONS: readonly BackfillDefinition[] = [
@@ -166,8 +197,30 @@ export const BACKFILL_DEFINITIONS: readonly BackfillDefinition[] = [
       + 'jamais aux documents, photos, Opérations, événements, agenda, Pièces, équipements, détails d’assurance ni aux dommages '
       + 'détaillés (conservés pour le dossier d’assurance). Simuler : rapport exact, rien n’est écrit. Appliquer : REFUSÉ sans point '
       + 'de restauration de moins de 24 h (bloc 0) ; chaque ligne retirée est journalisée, puis un contrôle de cohérence est lancé '
-      + 'sur les comptes actifs concernés. Restaurer : par l’identifiant d’exécution (journal rejoué). Rejoué, il ne change rien.',
+      + 'sur les comptes actifs concernés. Restaurer : par l’identifiant d’exécution (journal rejoué). Rejoué, il ne change rien. '
+      + 'Lot 84A : quand le nettoyage ne trouve plus rien sur aucun compte, l’étape 2 « Finaliser » supprime définitivement les '
+      + 'tables et colonnes de l’ancien modèle (vides) — irréversible depuis le BO.',
     actions: ['simulate', 'apply', 'restore'],
+    steps: [
+      {
+        code: 'cleanup', label: '1. Nettoyage (tous les comptes, ou un compte)',
+        description: 'Purge journalisée et restaurable des données propres à l’ancien bloc (voir ci-dessus).',
+      },
+      {
+        code: 'finalize', label: '2. Suppression définitive (finaliser)',
+        description: 'Étape finale, une seule fois, pour toute la plateforme : supprime les tables des actions, échanges et repères de '
+          + 'migration de l’ancien modèle, le lien « intervention enfant » et l’ancien formulaire Sinistre des biens. Possible seulement '
+          + 'si l’étape 1 ne trouve plus rien sur AUCUN compte, avec un point de restauration de moins de 24 h. Simuler : rapport exact '
+          + '(ce qui disparaîtrait, motifs de refus), rien n’est modifié. Après la finalisation, l’étape 1 ne peut plus être restaurée et '
+          + 'les points de restauration antérieurs sont refusés : créez-en un nouveau.',
+        actions: ['simulate', 'apply'],
+        accountFilter: false,
+        applyLabel: 'Finaliser',
+        warning: 'Suppression DÉFINITIVE, irréversible depuis le BO (seul un point de restauration créé APRÈS restera restaurable). '
+          + 'Simulez d’abord ; refusé si le nettoyage n’est pas complet ou sans point de restauration de moins de 24 h.',
+      },
+    ],
+    defaultStep: 'cleanup',
     accountFilter: true,
     warning: 'Créez d’abord un point de restauration (bloc 0), puis Simuler, lire le rapport, et Appliquer. Faites un export '
       + 'complet de recette avant et après si vous comparez.',
@@ -193,7 +246,7 @@ export const BACKFILL_DEFINITIONS: readonly BackfillDefinition[] = [
       { code: 'preuves', label: 'Preuves et données projetées', description: 'Preuves retirées, faits « superseded », journal « Ce que j’ai fait ».' },
       { code: 'a_traiter', label: 'À traiter', description: 'Cartes ouvertes visant un objet d’un autre compte (closes « obsolètes »).' },
       { code: 'jobs', label: 'Jobs IA en attente', description: 'Jobs PENDING référençant un objet d’un autre compte, y compris dans leur contexte imbriqué (annulés).' },
-      { code: 'operations', label: 'Opérations et Sinistres', description: 'Contrat, événement, facture, échange, pièces et photos de dommage d’un autre compte (détachés) ; liens « cœur » des Opérations : procédure d’incident.' },
+      { code: 'operations', label: 'Opérations et Sinistres', description: 'Contrat, événement, pièces et photos de dommage d’un autre compte (détachés) ; liens « cœur » des Opérations : procédure d’incident.' },
     ],
     accountFilter: true,
     warning: 'Correction de sécurité (D23) : à lancer après lecture de la simulation. Le Duo (D3) reste ouvert : ses relations ne sont jamais modifiées ici.',
@@ -334,8 +387,12 @@ export function validateBackfillRequest(body: unknown): { ok: true; value: Backf
   let step: string | null = null;
   // Une restauration vise une exécution (son identifiant), pas une étape.
   if (def.steps && action !== 'restore') {
-    step = String(b.step ?? '');
-    if (!def.steps.some((s) => s.code === step)) return { ok: false, code: 'INVALID_STEP', message: 'Étape inconnue.' };
+    step = String(b.step ?? def.defaultStep ?? '');
+    const st = def.steps.find((s) => s.code === step);
+    if (!st) return { ok: false, code: 'INVALID_STEP', message: 'Étape inconnue.' };
+    if (st.actions && !st.actions.includes(action)) {
+      return { ok: false, code: 'ACTION_NOT_SUPPORTED', message: `« ${st.label} » ne permet pas l’action « ${action} ».` };
+    }
   }
   let runId: string | null = null;
   if (action === 'restore') {
@@ -344,7 +401,7 @@ export function validateBackfillRequest(body: unknown): { ok: true; value: Backf
   }
   let accountId: number | null = null;
   if (b.accountId !== undefined && b.accountId !== null && b.accountId !== '') {
-    if (!def.accountFilter || action === 'restore') {
+    if (!def.accountFilter || action === 'restore' || def.steps?.find((s) => s.code === step)?.accountFilter === false) {
       return { ok: false, code: 'ACCOUNT_FILTER_NOT_SUPPORTED', message: 'Ce rattrapage ne se limite pas à un compte.' };
     }
     const n = Number(b.accountId);

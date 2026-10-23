@@ -367,36 +367,9 @@ export const REMEDIATION_SPECS: readonly RemediationSpec[] = [
              WHERE ev.account_id IS DISTINCT FROM o.account_id`,
     }],
   },
-  {
-    code: 'CLAIM_ACTION_REF', family: 'operations', parts: [
-      {
-        table: 'business_operation_claim_actions', pk: ['id'], mode: 'nullify',
-        sql: `SELECT ${pk('ca', 'id')} AS row_pk, o.account_id, f.account_id AS other_account_id, ${OP_ASSETS('o.id')} AS asset_ids,
-                     ARRAY['invoice_file_id'] AS cols
-                FROM business_operation_claim_actions ca JOIN business_operations o ON o.id = ca.operation_id
-                JOIN asset_files f ON f.id = ca.invoice_file_id
-               WHERE f.account_id <> o.account_id`,
-      },
-      {
-        table: 'business_operation_claim_actions', pk: ['id'], mode: 'nullify',
-        sql: `SELECT ${pk('ca', 'id')} AS row_pk, o.account_id, k.account_id AS other_account_id, ${OP_ASSETS('o.id')} AS asset_ids,
-                     ARRAY['child_operation_id'] AS cols
-                FROM business_operation_claim_actions ca JOIN business_operations o ON o.id = ca.operation_id
-                JOIN business_operations k ON k.id = ca.child_operation_id
-               WHERE k.account_id <> o.account_id`,
-      },
-    ],
-  },
-  {
-    code: 'CLAIM_EXCHANGE_DOCUMENT', family: 'operations', parts: [{
-      table: 'business_operation_claim_exchanges', pk: ['id'], mode: 'nullify',
-      sql: `SELECT ${pk('ce', 'id')} AS row_pk, o.account_id, f.account_id AS other_account_id, ${OP_ASSETS('o.id')} AS asset_ids,
-                   ARRAY['document_file_id'] AS cols
-              FROM business_operation_claim_exchanges ce JOIN business_operations o ON o.id = ce.operation_id
-              JOIN asset_files f ON f.id = ce.document_file_id
-             WHERE f.account_id <> o.account_id`,
-    }],
-  },
+  // Lot 84A (O-10) : CLAIM_ACTION_REF et CLAIM_EXCHANGE_DOCUMENT retirés (tables de l'ancien modèle Sinistres
+  // supprimées par la finalisation du nettoyage BO). Une restauration d'une correction ancienne qui les visait
+  // est rapportée en conflit « catégorie inconnue », jamais rejouée.
   {
     code: 'CLAIM_DAMAGE_DOCUMENT', family: 'operations', parts: [{
       table: 'business_operation_claim_damage_documents', pk: ['damage_id', 'file_id'], mode: 'delete',

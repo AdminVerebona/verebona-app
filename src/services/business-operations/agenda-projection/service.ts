@@ -347,6 +347,20 @@ async function loadSuppressions(opIds: readonly number[]): Promise<Map<number, S
   return out;
 }
 
+/**
+ * Lot 84B (CDC v5 §10, §11.9) : Opérations dont l'utilisateur a RETIRÉ le
+ * rôle principal (mémoire unifiée, décision PRINCIPAL REJECTED active) — la
+ * projection n'y reconnaît ni n'y crée de principal.
+ */
+async function loadPrincipalWithdrawals(accountId: number, opIds: readonly number[]): Promise<Set<number>> {
+  if (!opIds.length) return new Set();
+  const r = await rows<{ op: string }>(db, sql`
+    SELECT DISTINCT candidate_operation_id AS op FROM business_operation_match_decisions
+     WHERE account_id = ${accountId} AND candidate_operation_id = ANY(${intArray(opIds)}::bigint[])
+       AND source_kind = 'PRINCIPAL' AND decision = 'REJECTED' AND active`);
+  return new Set(r.map((x) => Number(x.op)));
+}
+
 async function loadStatusCardItems(accountId: number, itemIds: readonly number[]): Promise<Set<number>> {
   if (!itemIds.length) return new Set();
   const r = await rows<{ target_id: number }>(db, sql`
@@ -680,6 +694,7 @@ async function projectIds(
   const ops = await loadOperationSnapshots(accountId, ids);
   const linked = await loadLinkedItems(accountId, ops.map((o) => o.id));
   const suppressions = await loadSuppressions(ops.map((o) => o.id));
+  const retraits = await loadPrincipalWithdrawals(accountId, ops.map((o) => o.id));
   const actifs = ops.filter((o) => o.active);
   const candidates = await loadCandidates(accountId, actifs.flatMap((o) => o.assetIds), actifs.flatMap((o) => o.documentFileIds));
   await markCoveringOperations(accountId, [...linked, ...candidates]);
@@ -706,6 +721,7 @@ async function projectIds(
       taken,
       statusCardItems: cards,
       forceCreate: forcer.has(op.id),
+      principalWithdrawn: retraits.has(op.id),
     });
     for (const action of plan) {
       if (action.kind === 'LINK') taken.add(action.itemId);

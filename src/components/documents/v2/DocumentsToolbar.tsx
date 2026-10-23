@@ -19,7 +19,7 @@ import { FiltersToggleButton } from '@/components/filters/FilterControls';
 import type { SortDir, SortKey, ViewMode } from './documents-view';
 
 /** Contrôle segmenté du design system (pilule, segment actif en bleu plein). */
-function SegmentedControl<T extends string>({
+export function SegmentedControl<T extends string>({
   label,
   options,
   value,

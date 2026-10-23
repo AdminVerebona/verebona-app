@@ -313,20 +313,6 @@ export const CATEGORY_RISKS: readonly CategoryRisk[] = [
     proofs: [`${L54} SEC-04, SEC-06`],
   },
   {
-    code: 'CLAIM_ACTION_REF', level: 'moyen', duo: false,
-    summary: 'Action de sinistre citant la facture (document) ou l’intervention (Opération) d’un autre compte.',
-    channels: [SINISTRE_LECTURE, SINISTRE_EXPORT, ECRITURE_0373],
-    treatment: 'invoice_file_id / child_operation_id remis à NULL, restaurable.',
-    proofs: [`${L54} SEC-04, SEC-06`],
-  },
-  {
-    code: 'CLAIM_EXCHANGE_DOCUMENT', level: 'moyen', duo: false,
-    summary: 'Échange de sinistre citant un document d’un autre compte.',
-    channels: [SINISTRE_LECTURE, ECRITURE_0373],
-    treatment: 'document_file_id remis à NULL, restaurable.',
-    proofs: [`${L54} SEC-04, SEC-06`],
-  },
-  {
     code: 'CLAIM_DAMAGE_DOCUMENT', level: 'moyen', duo: false,
     summary: 'Pièce de dommage (document) d’un autre compte.',
     channels: [SINISTRE_LECTURE, SINISTRE_EXPORT, ECRITURE_0373],

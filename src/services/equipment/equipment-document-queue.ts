@@ -120,17 +120,31 @@ export async function runEquipmentDocumentsJob(job: QueuedJob, p: EquipmentDocum
   const reasons = [...new Set(p.events.map((e) => e.reason))];
   const creation = reasons.includes('created');
   const detail: Record<string, unknown> = { equipmentId: p.equipmentId, reasons, aiAllowed: creation };
+  let changes: number;
   if (creation) {
     const { runEquipmentAutoLink } = await import('./equipment-auto-link.service');
     const r = await runEquipmentAutoLink(p.equipmentId, accountId, { guard });
     Object.assign(detail, { documents: r.documentSync, agendaLinked: r.applied.agendaLinked, suppliersLinked: r.applied.suppliersLinked });
-    const changes = (r.documentSync?.created ?? 0) + r.applied.agendaLinked + r.applied.suppliersLinked + (r.documentSync?.cardsProposed ?? 0);
-    return { result: changes > 0 ? 'APPLIED' : 'NO_CHANGE', detail };
+    changes = (r.documentSync?.created ?? 0) + r.applied.agendaLinked + r.applied.suppliersLinked + (r.documentSync?.cardsProposed ?? 0);
+  } else {
+    const { syncEquipmentDocumentLinks } = await import('./document-equipment-link.service');
+    const r = await syncEquipmentDocumentLinks({ accountId, equipmentId: p.equipmentId, allowAi: false, proposeCards: true, guard });
+    Object.assign(detail, { documents: r });
+    changes = r.created + r.cardsProposed;
   }
-  const { syncEquipmentDocumentLinks } = await import('./document-equipment-link.service');
-  const r = await syncEquipmentDocumentLinks({ accountId, equipmentId: p.equipmentId, allowAi: false, proposeCards: true, guard });
-  Object.assign(detail, { documents: r });
-  return { result: r.created + r.cardsProposed > 0 ? 'APPLIED' : 'NO_CHANGE', detail };
+  // Lot 84E (CDC v5 O-6, §9.3, §9.5, AC47–AC49) : reconsolidation CIBLÉE des
+  // Opérations et séries récurrentes du bien de l'équipement, rattachement
+  // certain de l'équipement, puis liens directs document par document — même
+  // travail durable, même déclencheur (création / modification). IA : arbitrage
+  // existant d'une ambiguïté seulement, à la création (comme ci-dessus), borné.
+  const { reconsolidateForEquipment } = await import('@/services/business-operations/consolidation/targeted');
+  const o6 = await reconsolidateForEquipment(accountId, p.equipmentId, {
+    trigger: `equipment_${reasons.join('_')}`.slice(0, 80), allowAi: creation, beforeWrite: (what) => guard.assertActive(what),
+    correlationId: `equipment-documents:${job.id}`,
+  });
+  detail.operations = { marked: o6.marked.length, changes: o6.changes, equipmentAttached: o6.equipmentAttached, directLinks: o6.directLinks.created, aiCalls: o6.aiCalls, skipped: o6.skipped ?? null };
+  changes += o6.changes + o6.directLinks.created;
+  return { result: changes > 0 ? 'APPLIED' : 'NO_CHANGE', detail };
 }
 
 /** Enregistre la sorte de travail (réentrant). */

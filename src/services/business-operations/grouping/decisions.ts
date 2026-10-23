@@ -89,3 +89,32 @@ export async function recordAssetDecision(
        AND source_entity_key ~ '^[0-9]{1,9}$'`)) as unknown as Array<{ k: string }>).map((x) => Number(x.k));
   return excludeAsset(tx, p.accountId, p.operationId, p.assetId, p.userId, connus);
 }
+
+/**
+ * Lot 84B (CDC v5 §10, §11.9 ; point ouvert 83A) — l'utilisateur a-t-il
+ * RETIRÉ le rôle principal dans cette Opération (décision PRINCIPAL REJECTED
+ * active, quel que soit l'élément) ? Tant que c'est le cas, aucune inférence
+ * n'y désigne ni n'y crée de principal (`mayDesignatePrincipal`).
+ */
+export async function principalWithdrawnByUser(r: GroupingRunner, accountId: number, operationId: number): Promise<boolean> {
+  const [x] = await r.q(
+    `SELECT 1 FROM business_operation_match_decisions
+      WHERE account_id = $1 AND candidate_operation_id = $2 AND source_kind = 'PRINCIPAL' AND decision = 'REJECTED' AND active LIMIT 1`,
+    [accountId, operationId],
+  );
+  return !!x;
+}
+
+/**
+ * Nouvelle désignation par l'utilisateur : ses retraits antérieurs du rôle
+ * principal dans l'Opération sont levés (désactivés, jamais effacés) — le
+ * choix le plus récent de l'utilisateur fait foi. Rend le nombre levé.
+ */
+export async function liftPrincipalWithdrawals(r: GroupingRunner, accountId: number, operationId: number): Promise<number> {
+  return (await r.q(
+    `UPDATE business_operation_match_decisions SET active = false, updated_at = now()
+      WHERE account_id = $1 AND candidate_operation_id = $2 AND source_kind = 'PRINCIPAL' AND decision = 'REJECTED' AND active
+     RETURNING id`,
+    [accountId, operationId],
+  )).length;
+}

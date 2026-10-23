@@ -136,6 +136,9 @@ export async function POST(
 
     // CDC Assistant §25.7, §31.7 : pièce ajoutée au bien.
     await emitBusinessEvent({ type: 'ASSET_UPDATED', accountId: session.currentAccountId!, entityId: assetId });
+    // Lot 84E (CDC v5 O-6, §9.3) : nouvelle Pièce → reconsolidation ciblée (file T3 Opérations, non bloquante).
+    const { notifyOperationsEvent } = await import('@/services/business-operations/consolidation/queue');
+    notifyOperationsEvent(session.currentAccountId!, { trigger: 'asset_updated', assetId, roomId: Number(newSubstructure.id) });
     return NextResponse.json({ id: newSubstructure.id, name: newSubstructure.name, assetId: newSubstructure.asset_id, orderIndex: newSubstructure.order_index }, { status: 201 });
   } catch (error) {
     console.error('POST substructure error:', error);

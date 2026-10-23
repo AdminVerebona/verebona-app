@@ -114,16 +114,15 @@ describe('GET /api/admin/ai/dashboard', () => {
     expect(body.windowDays).toBe(7);
   });
 
-  it('L83C-U-DASH : alertes et cartes sur les exécutions MÉTIER (une par traitement), jamais sur des appels en échec', async () => {
+  it('L83C-U-DASH / L84D-U-BO11 : santé sur les exécutions MÉTIER ; aucune alerte d’échec ou d’incomplète répétée (source unique : cartes d’Exécutions & logs)', async () => {
     resume = [
       { treatment: 'T1', succeeded: 4, incomplete: 1, failed: 0, notFinal: 0, void: 0, undetermined: 0, technical: 0 },
       { treatment: 'T3', succeeded: 2, incomplete: 0, failed: 2, notFinal: 1, void: 0, undetermined: 0, technical: 3 },
       { treatment: 'T4', succeeded: 1, incomplete: 0, failed: 0, notFinal: 0, void: 0, undetermined: 0, technical: 0 },
     ];
     const body = await (await call()).json();
-    expect(body.alerts).toContainEqual({ severity: 'info', message: 'T1 : 1 incomplète en 7 jours.', href: '/admin/ai-executions?treatment=T1' });
-    expect(body.alerts).toContainEqual({ severity: 'warning', message: 'T3 : 2 exécutions échouées en 7 jours.', href: '/admin/ai-executions?treatment=T3' });
-    expect(body.alerts.some((a: { message: string }) => a.message.startsWith('T4'))).toBe(false);
+    // Lot 84D (BO-11, C-Q9) : l'alerte du lot 83C est retirée — même nature que la carte « Échecs ».
+    expect(body.alerts.some((a: { message: string }) => /échouée|incomplète/.test(a.message))).toBe(false);
     expect(body.health.find((h: { treatment: string }) => h.treatment === 'T1').executions).toMatchObject({ succeeded: 4, incomplete: 1 });
   });
 

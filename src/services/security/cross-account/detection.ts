@@ -298,7 +298,7 @@ export const CROSS_ACCOUNT_CHECKS: readonly CrossAccountCheck[] = [
   },
   // ── Opérations et Sinistres (lot 54, SEC-06) ──────────────────────────────
   // Références secondaires d'un sinistre (contrat, événement historique,
-  // facture, échange, pièces et photos de dommage) ; les liens « cœur » des
+  // pièces et photos de dommage) ; les liens « cœur » des
   // Opérations (biens, équipements, composantes, sources, agenda, candidats
   // T1) sont recensés par OP_CORE_LINK — même SQL que l'anomalie dure
   // CROSS_ACCOUNT_LINK du BO Opérations, désormais comptée ici aussi.
@@ -316,25 +316,8 @@ export const CROSS_ACCOUNT_CHECKS: readonly CrossAccountCheck[] = [
             JOIN events ev ON ev.id = cd.history_event_id
            WHERE ev.account_id IS DISTINCT FROM o.account_id`,
   },
-  {
-    code: 'CLAIM_ACTION_REF', family: 'operations', label: 'Action de sinistre → facture ou Opération enfant d’un autre compte',
-    sql: `SELECT o.account_id, f.account_id AS other_account_id, 'business_operation_claim_actions#' || ca.id || ' -> asset_files#' || f.id AS ref
-            FROM business_operation_claim_actions ca JOIN business_operations o ON o.id = ca.operation_id
-            JOIN asset_files f ON f.id = ca.invoice_file_id
-           WHERE f.account_id <> o.account_id
-          UNION ALL
-          SELECT o.account_id, k.account_id, 'business_operation_claim_actions#' || ca.id || ' -> business_operations#' || k.id
-            FROM business_operation_claim_actions ca JOIN business_operations o ON o.id = ca.operation_id
-            JOIN business_operations k ON k.id = ca.child_operation_id
-           WHERE k.account_id <> o.account_id`,
-  },
-  {
-    code: 'CLAIM_EXCHANGE_DOCUMENT', family: 'operations', label: 'Échange de sinistre → document d’un autre compte',
-    sql: `SELECT o.account_id, f.account_id AS other_account_id, 'business_operation_claim_exchanges#' || ce.id || ' -> asset_files#' || f.id AS ref
-            FROM business_operation_claim_exchanges ce JOIN business_operations o ON o.id = ce.operation_id
-            JOIN asset_files f ON f.id = ce.document_file_id
-           WHERE f.account_id <> o.account_id`,
-  },
+  // Lot 84A (O-10) : CLAIM_ACTION_REF et CLAIM_EXCHANGE_DOCUMENT retirés — actions et échanges de l'ancien
+  // modèle Sinistres (tables inertes depuis 83D, purgées par le nettoyage BO, supprimées par sa finalisation).
   {
     code: 'CLAIM_DAMAGE_DOCUMENT', family: 'operations', label: 'Dommage de sinistre → document d’un autre compte',
     sql: `SELECT o.account_id, f.account_id AS other_account_id, 'business_operation_claim_damage_documents(damage_id=' || dd.damage_id || ', file_id=' || f.id || ')' AS ref

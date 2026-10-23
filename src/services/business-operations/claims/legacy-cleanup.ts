@@ -46,13 +46,21 @@
  *
  * Aucune tâche planifiée : lancé uniquement depuis le BO (Exploitation ›
  * Rattrapages). Aucune passerelle de compatibilité : le code de l'ancien
- * modèle est retiré dans la même livraison ; les tables inertes sont
- * supprimées au lot O-10.
+ * modèle est retiré dans la même livraison.
+ *
+ * Lot 84A (O-10) : ÉTAPE FINALE « Finaliser » (`legacy-finalize.ts`) —
+ * suppression définitive des tables et colonnes inertes, possible seulement
+ * quand ce nettoyage ne trouve plus rien sur AUCUN compte. Ce module lit
+ * donc chaque objet de l'ancien modèle SEULEMENT S'IL EST PRÉSENT
+ * (`readLegacyClaimSchema`) : après la finalisation, Simuler / Appliquer
+ * rendent « ancien modèle supprimé définitivement », et Restaurer est
+ * REFUSÉ (code `LEGACY_MODEL_FINALIZED`, rien n'est écrit).
  * ══════════════════════════════════════════════════════════════════════════
  */
 import { randomUUID } from 'node:crypto';
 import type postgres from 'postgres';
 import { RETIRED_CLAIM_PARENT_RULES } from '@/services/to-process/operation-cards';
+import { lastLegacyFinalization, legacyClaimModelComplete, legacyClaimModelPresent, readLegacyClaimSchema, type LegacyClaimSchema } from './legacy-schema';
 
 type Sql = postgres.Sql;
 type Tx = postgres.TransactionSql;
@@ -152,52 +160,84 @@ export interface CleanupResult {
   samples: Array<{ accountId: number; category: CleanupCategory; label: string }>;
   journalRows: number;
   coherence: { requested: boolean; campaignId: number | null; eligibleAccounts: number[]; skippedAccounts: number[] };
+  /** Lot 84A : ancien modèle supprimé définitivement (finalisation O-10) — plus rien à nettoyer. */
+  finalized?: { at: string | null; runId: string | null } | null;
 }
 
 const zero = (): CategoryCounters => Object.fromEntries(CLEANUP_CATEGORIES.map((c) => [c, 0])) as CategoryCounters;
 const SAMPLES_MAX = 60;
 
+/**
+ * Requêtes « ce qui reste de l'ancien modèle », par catégorie : `(compte, n)`.
+ * Seuls les objets PRÉSENTS sont lus (lot 84A). Une seule définition sert au
+ * nettoyage (comptes à traiter) et à la finalisation (nettoyage complet ?).
+ */
+function remainingQueries(schema: LegacyClaimSchema): Array<{ category: CleanupCategory; sql: string }> {
+  const out: Array<{ category: CleanupCategory; sql: string }> = [];
+  if (schema.tables.business_operation_claim_actions) {
+    out.push({ category: 'ACTIONS', sql: `SELECT o.account_id FROM business_operation_claim_actions a JOIN business_operations o ON o.id = a.operation_id` });
+  }
+  if (schema.tables.business_operation_claim_exchanges) {
+    out.push({ category: 'EXCHANGES', sql: `SELECT o.account_id FROM business_operation_claim_exchanges x JOIN business_operations o ON o.id = x.operation_id` });
+  }
+  if (schema.parentColumn) out.push({ category: 'CHILDREN', sql: `SELECT account_id FROM business_operations WHERE parent_operation_id IS NOT NULL` });
+  if (schema.claimJsonColumn) out.push({ category: 'LEGACY_FORM', sql: `SELECT account_id FROM asset_additional_infos WHERE claim_json IS DISTINCT FROM '{}'::jsonb` });
+  if (schema.tables.business_operation_claim_migration_marks) out.push({ category: 'MIGRATION_MARKS', sql: `SELECT account_id FROM business_operation_claim_migration_marks` });
+  out.push({ category: 'CARDS', sql: `SELECT account_id FROM to_process_actions WHERE resolved_at IS NULL AND rule_code = ANY($1::text[])` });
+  return out;
+}
+
 /** Comptes qui portent encore une donnée de l'ancien modèle (ordre croissant). */
-async function accountsToClean(sql: Sql | Tx, accountId: number | null): Promise<number[]> {
-  const r = await sql<{ account_id: number }[]>`
-    SELECT DISTINCT account_id FROM (
-      SELECT o.account_id FROM business_operation_claim_actions a JOIN business_operations o ON o.id = a.operation_id
-      UNION SELECT o.account_id FROM business_operation_claim_exchanges x JOIN business_operations o ON o.id = x.operation_id
-      UNION SELECT account_id FROM business_operations WHERE parent_operation_id IS NOT NULL
-      UNION SELECT account_id FROM asset_additional_infos WHERE claim_json IS DISTINCT FROM '{}'::jsonb
-      UNION SELECT account_id FROM business_operation_claim_migration_marks
-      UNION SELECT account_id FROM to_process_actions WHERE resolved_at IS NULL AND rule_code = ANY(${[...RETIRED_CLAIM_PARENT_RULES]}::text[])
-    ) x
-    WHERE ${accountId === null} OR account_id = ${accountId ?? 0}
-    ORDER BY account_id`;
+async function accountsToClean(sql: Sql | Tx, accountId: number | null, schema: LegacyClaimSchema): Promise<number[]> {
+  const parts = remainingQueries(schema).map((q) => q.sql);
+  const r = await sql.unsafe<Array<{ account_id: number }>>(
+    `SELECT DISTINCT account_id FROM (${parts.join(' UNION ')}) x WHERE $2::int IS NULL OR account_id = $2::int ORDER BY account_id`,
+    [[...RETIRED_CLAIM_PARENT_RULES], accountId] as never[],
+  );
   return r.map((x) => Number(x.account_id));
+}
+
+/**
+ * Lot 84A — ce qui reste de l'ancien modèle sur TOUS les comptes (lecture
+ * seule) : décompte par catégorie et comptes concernés. Condition de la
+ * finalisation : tout à zéro.
+ */
+export async function countLegacyRemaining(sql: Sql | Tx, schema: LegacyClaimSchema): Promise<{ counters: CategoryCounters; accounts: number[] }> {
+  const counters = zero();
+  const qs = remainingQueries(schema);
+  const r = await sql.unsafe<Array<{ category: CleanupCategory; n: number }>>(
+    qs.map((q) => `SELECT '${q.category}'::text AS category, count(*)::int AS n FROM (${q.sql}) x`).join(' UNION ALL '),
+    [[...RETIRED_CLAIM_PARENT_RULES]] as never[],
+  );
+  for (const x of r) counters[x.category] = Number(x.n);
+  return { counters, accounts: await accountsToClean(sql, null, schema) };
 }
 
 interface Found { category: CleanupCategory; table: string; key: Row; before: Row; label: string }
 
-/** Inventaire d'un compte (lecture seule) — la même lecture sert à simuler et à appliquer. */
-async function inventory(tx: Sql | Tx, accountId: number): Promise<Found[]> {
+/** Inventaire d'un compte (lecture seule) — la même lecture sert à simuler et à appliquer. Objets présents seulement (lot 84A). */
+async function inventory(tx: Sql | Tx, accountId: number, schema: LegacyClaimSchema): Promise<Found[]> {
   const out: Found[] = [];
   const rows = async (q: postgres.PendingQuery<Row[]>) => (await q) as unknown as Array<{ r: Row; k: Row; label: string }>;
-  for (const x of await rows(tx`
+  if (schema.tables.business_operation_claim_actions) for (const x of await rows(tx`
       SELECT row_to_json(a.*)::jsonb AS r, jsonb_build_object('id', a.id) AS k,
              coalesce(a.date::text || ' · ', '') || a.title AS label
         FROM business_operation_claim_actions a JOIN business_operations o ON o.id = a.operation_id
        WHERE o.account_id = ${accountId} ORDER BY a.id`)) out.push({ category: 'ACTIONS', table: 'business_operation_claim_actions', key: x.k, before: x.r, label: x.label });
-  for (const x of await rows(tx`
+  if (schema.tables.business_operation_claim_exchanges) for (const x of await rows(tx`
       SELECT row_to_json(e.*)::jsonb AS r, jsonb_build_object('id', e.id) AS k,
              coalesce(e.date::text || ' · ', '') || e.summary AS label
         FROM business_operation_claim_exchanges e JOIN business_operations o ON o.id = e.operation_id
        WHERE o.account_id = ${accountId} ORDER BY e.id`)) out.push({ category: 'EXCHANGES', table: 'business_operation_claim_exchanges', key: x.k, before: x.r, label: x.label });
-  for (const x of await rows(tx`
+  if (schema.parentColumn) for (const x of await rows(tx`
       SELECT jsonb_build_object('parent_operation_id', o.parent_operation_id) AS r, jsonb_build_object('id', o.id) AS k,
              'Opération #' || o.id || ' (' || coalesce(o.type_code, '—') || ') enfant de #' || o.parent_operation_id AS label
         FROM business_operations o WHERE o.account_id = ${accountId} AND o.parent_operation_id IS NOT NULL ORDER BY o.id`)) out.push({ category: 'CHILDREN', table: 'business_operations', key: x.k, before: x.r, label: x.label });
-  for (const x of await rows(tx`
+  if (schema.claimJsonColumn) for (const x of await rows(tx`
       SELECT jsonb_build_object('claim_json', ai.claim_json) AS r, jsonb_build_object('asset_id', ai.asset_id) AS k,
              'Bien #' || ai.asset_id AS label
         FROM asset_additional_infos ai WHERE ai.account_id = ${accountId} AND ai.claim_json IS DISTINCT FROM '{}'::jsonb ORDER BY ai.asset_id`)) out.push({ category: 'LEGACY_FORM', table: 'asset_additional_infos', key: x.k, before: x.r, label: x.label });
-  for (const x of await rows(tx`
+  if (schema.tables.business_operation_claim_migration_marks) for (const x of await rows(tx`
       SELECT row_to_json(m.*)::jsonb AS r, jsonb_build_object('asset_id', m.asset_id) AS k,
              'Bien #' || m.asset_id || ' : ' || m.outcome AS label
         FROM business_operation_claim_migration_marks m WHERE m.account_id = ${accountId} ORDER BY m.asset_id`)) out.push({ category: 'MIGRATION_MARKS', table: 'business_operation_claim_migration_marks', key: x.k, before: x.r, label: x.label });
@@ -300,6 +340,16 @@ export async function runClaimLegacyCleanup(opts: CleanupOptions): Promise<Clean
   };
   await startRun(sql, { runId, mode: opts.mode, accountId: accountFilter, reason: opts.reason ?? null, adminUserId: opts.adminUserId ?? null });
 
+  // Lot 84A (O-10) : ancien modèle supprimé définitivement → plus rien à nettoyer (aucun point de restauration requis).
+  const schema = await readLegacyClaimSchema(sql);
+  if (!legacyClaimModelPresent(schema)) {
+    const fin = await lastLegacyFinalization(sql);
+    result.finalized = { at: fin?.at ?? null, runId: fin?.runId ?? null };
+    await finishRun(sql, runId, { status: 'succeeded', counters: { ...result.counters, finalized: true } });
+    log(`ancien modèle supprimé définitivement${fin ? ` le ${fin.at}` : ''} : rien à nettoyer`);
+    return result;
+  }
+
   // C-Q8 : aucun écrit sans point de restauration de moins de 24 h (vérifié AVANT toute lecture d'inventaire).
   if (opts.mode === 'APPLY') {
     let check: RestorePointCheck;
@@ -320,10 +370,10 @@ export async function runClaimLegacyCleanup(opts: CleanupOptions): Promise<Clean
   }
 
   try {
-    const comptes = await accountsToClean(sql, accountFilter);
+    const comptes = await accountsToClean(sql, accountFilter, schema);
     for (const accountId of comptes) {
       const traiter = async (tx: Sql | Tx) => {
-        const items = await inventory(tx, accountId);
+        const items = await inventory(tx, accountId, schema);
         const c = zero();
         for (const it of items) c[it.category]++;
         if (opts.mode === 'APPLY' && items.length) result.journalRows += await applyAccount(tx as Tx, runId, accountId, items, now);
@@ -369,6 +419,17 @@ export async function runClaimLegacyCleanup(opts: CleanupOptions): Promise<Clean
 
 export interface CleanupRestoreReport { runId: string; restoreRunId: string; restored: number; conflicts: string[] }
 
+/** Lot 84A : restauration d'un nettoyage refusée après la suppression définitive de l'ancien modèle. */
+export class LegacyModelFinalizedError extends Error {
+  readonly code = 'LEGACY_MODEL_FINALIZED';
+  constructor(readonly finalizedAt: string | null) {
+    super(`Restauration refusée : l’ancien modèle Sinistres a été supprimé définitivement${finalizedAt ? ` le ${finalizedAt.slice(0, 16).replace('T', ' à ')} (UTC)` : ''} `
+      + '(finalisation du nettoyage). Les tables et colonnes que ce nettoyage avait vidées n’existent plus : le nettoyage ne peut plus être '
+      + 'restauré. Rien n’a été modifié ; le journal de l’exécution reste consultable.');
+    this.name = 'LegacyModelFinalizedError';
+  }
+}
+
 /**
  * Restaure une APPLICATION par son identifiant : journal rejoué à l'envers,
  * dans UNE transaction. Une ligne déjà présente (supprimée puis recréée) ou
@@ -377,6 +438,15 @@ export interface CleanupRestoreReport { runId: string; restoreRunId: string; res
 export async function restoreClaimLegacyCleanup(sql: Sql, runId: string, opts: { reason?: string | null; adminUserId?: number | null } = {}): Promise<CleanupRestoreReport> {
   const [run] = await sql<{ mode: string; status: string }[]>`SELECT mode, status FROM claim_legacy_cleanup_runs WHERE id = ${runId}`;
   if (!run || run.mode !== 'APPLY') throw new Error(`Exécution ${runId} introuvable ou non appliquée : rien à restaurer.`);
+  // Lot 84A (O-10) : après la finalisation (même partielle), aucune restauration — refus tracé, rien d'écrit.
+  if (!legacyClaimModelComplete(await readLegacyClaimSchema(sql))) {
+    const fin = await lastLegacyFinalization(sql);
+    const err = new LegacyModelFinalizedError(fin?.at ?? null);
+    const refusRunId = randomUUID();
+    await startRun(sql, { runId: refusRunId, mode: 'REFUSED', accountId: null, reason: opts.reason ?? null, adminUserId: opts.adminUserId ?? null, restoreOf: runId });
+    await finishRun(sql, refusRunId, { status: 'refused', error: err.message });
+    throw err;
+  }
   const restoreRunId = randomUUID();
   await startRun(sql, { runId: restoreRunId, mode: 'RESTORE', accountId: null, reason: opts.reason ?? null, adminUserId: opts.adminUserId ?? null, restoreOf: runId });
   const out: CleanupRestoreReport = { runId, restoreRunId, restored: 0, conflicts: [] };

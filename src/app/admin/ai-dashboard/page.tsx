@@ -355,16 +355,20 @@ export default function AiDashboardPage() {
             ) : (
               <p className="text-xs text-[color:var(--text-muted)]">Répond en direct</p>
             )}
-            {/* Lot 83C (BO-04, SEM-05) : issue MÉTIER — réussies, incomplètes,
-                échouées, non finales — avant le volume d'appels (technique). */}
+            {/* Lot 83C (BO-04, SEM-05) : issue MÉTIER — réussies et en cours. Lot 84D (BO-11,
+                C-Q9, décision PO 12) : les échecs et incomplètes ne sont NI comptés NI signalés
+                ici — leur source unique est la carte d'Exécutions & logs, à laquelle on renvoie. */}
             {h.executions && (
-              <Link href={`/admin/ai-executions?treatment=${h.treatment}`} className="block text-xs hover:underline" data-testid="dashboard-business-executions">
+              <p className="text-xs" data-testid="dashboard-business-executions">
                 <span className="text-[color:var(--text-secondary)]">Exécutions {windowLabel} : </span>
                 <span className="text-[color:var(--text-success)]">{h.executions.succeeded} réussie{h.executions.succeeded > 1 ? 's' : ''}</span>
-                {h.executions.incomplete > 0 && <span className="text-[color:var(--text-warning-soft)]"> · {h.executions.incomplete} incomplète{h.executions.incomplete > 1 ? 's' : ''}</span>}
-                {h.executions.failed > 0 && <span className="text-[color:var(--text-danger)]"> · {h.executions.failed} échouée{h.executions.failed > 1 ? 's' : ''}</span>}
                 {h.executions.notFinal > 0 && <span className="text-[color:var(--text-muted)]"> · {h.executions.notFinal} en cours</span>}
-              </Link>
+                {h.executions.failed + h.executions.incomplete > 0 && (
+                  <Link href={`/admin/ai-executions?treatment=${h.treatment}`} className="block text-[color:var(--accent)] hover:underline" data-testid="dashboard-executions-pointer">
+                    Échecs ou incomplètes : voir Exécutions &amp; logs
+                  </Link>
+                )}
+              </p>
             )}
             {/* HLT-01 / PER-01 / VOL-01 : volumes, succès, dernière exécution —
                 lien préfiltré vers les exécutions du traitement (ALT-01). */}

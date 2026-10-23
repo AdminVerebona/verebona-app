@@ -15,6 +15,7 @@ import type { DedupeReport, SourceLinksReport } from '@/services/agenda/backfill
 import type { AssetAccountBackfillReport } from '@/services/assets/asset-account-backfill';
 import type { StructuredMigrationReport } from '@/services/business-operations/consolidation/asset-data-consolidator';
 import type { CleanupResult, CleanupRestoreReport } from '@/services/business-operations/claims/legacy-cleanup';
+import type { FinalizeResult } from '@/services/business-operations/claims/legacy-finalize';
 import type { RemediationReport, RemediationRestoreReport } from '@/services/security/cross-account/remediation';
 import type { DataSeparationReport } from '@/services/equipment/data-separation-backfill';
 import type { ValidationRepriseReport } from '@/services/documents/validation-reprise';
@@ -320,6 +321,14 @@ function claimsLegacyCleanup(action: BackfillAction, out: RawBackfillOutput): Ba
   const r = out.result as CleanupResult;
   const simulation = r.mode === 'SIMULATE';
   const total = Object.values(r.counters).reduce((a, b) => a + b, 0);
+  if (r.finalized) {
+    // Lot 84A (O-10) : ancien modèle supprimé définitivement — plus rien à nettoyer.
+    return {
+      headline: `${simulation ? 'Simulation' : 'Application'} : ancien modèle supprimé définitivement${r.finalized.at ? ` le ${r.finalized.at.slice(0, 10)}` : ''} — rien à nettoyer.`,
+      scriptRunId: r.runId, restorable: false, counters: [{ label: 'Éléments de l’ancien modèle', value: 0 }],
+      ambiguous: { count: 0, samples: [] }, conflicts: { count: 0, samples: [] }, warnings: [],
+    };
+  }
   return {
     headline: `${simulation ? 'Simulation' : 'Application'} : ${total} élément(s) de l’ancien modèle ${simulation ? 'à purger' : 'purgé(s)'} `
       + `sur ${r.accounts.length} compte(s)${simulation ? '' : ` — ${r.journalRows} ligne(s) journalisée(s), restaurable par ${r.runId}`}.`,
@@ -339,6 +348,41 @@ function claimsLegacyCleanup(action: BackfillAction, out: RawBackfillOutput): Ba
     warnings: [
       ...echantillon(r.samples, (x) => `Compte ${x.accountId} · ${CLEANUP_LABELS[x.category] ?? x.category} — ${x.label}`),
       'Documents, photos, Opérations, événements, agenda, Pièces, équipements, détails d’assurance et dommages : jamais modifiés.',
+    ],
+  };
+}
+
+/** Lot 84A (O-10) : étape finale « Finaliser » du nettoyage de l'ancien modèle Sinistres. */
+function claimsLegacyFinalize(out: RawBackfillOutput): BackfillSummary {
+  const r = out.result as FinalizeResult;
+  const simulation = r.mode === 'SIMULATE';
+  const presents = r.objects.filter((o) => o.present || r.dropped.includes(o.name));
+  const headline = r.alreadyFinalized
+    ? `Ancien modèle Sinistres déjà supprimé${r.finalizedAt ? ` (finalisation du ${r.finalizedAt.slice(0, 10)})` : ''} : rien à faire.`
+    : simulation
+      ? (r.possible
+        ? `Simulation : finalisation POSSIBLE — ${presents.length} objet(s) de l’ancien modèle seraient supprimés définitivement (rien n’est modifié).`
+        : `Simulation : finalisation REFUSÉE pour l’instant — ${r.blockers.map((b) => b.message).join(' ')}`)
+      : `Finalisation : ${r.dropped.length} objet(s) de l’ancien modèle supprimé(s) définitivement. Créez un nouveau point de restauration (bloc 0).`;
+  const restants = Object.entries(r.remaining).filter(([, v]) => v > 0);
+  return {
+    headline,
+    scriptRunId: r.runId,
+    restorable: false,
+    counters: [
+      ...r.objects.map((o) => ({ label: `${o.kind === 'TABLE' ? 'Table' : 'Colonne'} ${o.name}`, value: o.present ? `présente${o.rows !== null ? ` (${o.rows} ligne(s) non vide(s))` : ''}` : 'supprimée' })),
+      { label: 'Données héritées restantes (tous comptes)', value: Object.values(r.remaining).reduce((a, b) => a + b, 0) },
+      { label: 'Comptes encore à nettoyer', value: r.remainingAccounts.length },
+      { label: 'Point de restauration (< 24 h)', value: r.restorePoint?.backupId ?? 'aucun' },
+    ],
+    ambiguous: { count: 0, samples: [] },
+    conflicts: { count: r.blockers.length, samples: r.blockers.map((b) => `${b.code} — ${b.message}`) },
+    warnings: [
+      ...restants.map(([k, v]) => `Reste à nettoyer : ${CLEANUP_LABELS[k] ?? k} — ${v}`),
+      ...(r.remainingAccounts.length ? [`Comptes concernés : ${r.remainingAccounts.slice(0, SAMPLE_LIMIT).join(', ')}${r.remainingAccounts.length > SAMPLE_LIMIT ? '…' : ''}`] : []),
+      ...(r.dropped.length ? [`Supprimé : ${r.dropped.join(', ')}`] : []),
+      'Documents, photos, Opérations, événements, agenda, Pièces, équipements, détails d’assurance et dommages : jamais touchés.',
+      ...(r.alreadyFinalized ? [] : ['Après la finalisation : le nettoyage (étape 1) ne peut plus être restauré et les points de restauration antérieurs sont refusés.']),
     ],
   };
 }
@@ -658,7 +702,7 @@ export function summarizeBackfill(script: BackfillScript, action: BackfillAction
     case 'cdc15': return cdc15(action, out);
     case 'asset-account': return assetAccount(out);
     case 'operations-structured': return operationsStructured(out);
-    case 'claims-legacy-cleanup': return claimsLegacyCleanup(action, out);
+    case 'claims-legacy-cleanup': return step === 'finalize' ? claimsLegacyFinalize(out) : claimsLegacyCleanup(action, out);
     case 'cross-account': return crossAccount(action, out);
     case 'equipment-separation': return equipmentSeparation(out);
     case 'document-validation': return documentValidation(out);

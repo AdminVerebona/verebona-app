@@ -167,7 +167,9 @@ export const ACCOUNT_OWNED_TABLES: Readonly<Record<string, string>> = {
   business_operation_equipment_links: 'Opérations : lot 39',
   business_operation_financial_components: 'Opérations : lot 39',
   business_operation_asset_data_marks: 'Opérations : repère technique (lot 43) — un bien déplacé est réexaminé dans son nouveau compte (compte du repère ≠ compte du bien)',
-  business_operation_claim_migration_marks: 'Opérations : repère technique de la migration Sinistre (lot 44) — un bien déplacé est réexaminé dans son nouveau compte (compte du repère ≠ compte du bien)',
+  // Lot 84A (O-10) : table de l'ancien modèle Sinistres, INERTE (83D), vidée par le nettoyage BO et SUPPRIMÉE par sa finalisation ;
+  // classée tant qu'elle existe (test DUO-06), jamais lue ni déplacée.
+  business_operation_claim_migration_marks: 'ancien modèle Sinistres (lot 44) : repère inerte depuis le lot 83D, supprimé par la finalisation du nettoyage BO (lot 84A) — jamais lu ni déplacé',
   business_operation_asset_exclusions: 'Opérations : décision de l’utilisateur sur SON sinistre (lot 53, Q17 — bien retiré, exclusion mémorisée) — le sinistre reste au compte ; l’exclusion ne concerne que lui (sans effet sur le compte cible)',
   deadlines_compat_view: 'vue de compatibilité (deadlines)',
   business_operation_identity_reviews: 'Opérations : journal des contrôles d’identité économique (lot 78A, trace d’exploitation BO) — suit l’Opération, jamais le document ; reste au compte',
@@ -615,13 +617,8 @@ async function detachCrossAccountOperationSources(
          OR (s.source_kind = 'EQUIPMENT_DATA' AND EXISTS (SELECT 1 FROM equipments e JOIN assets a ON a.id = e.asset_id
                                                           WHERE e.id::text = s.source_entity_key AND a.account_id <> s.account_id)))
      ORDER BY s.id`);
-  // Références de fichiers des détails Sinistre : jamais vers un autre compte.
-  await tx.execute(sql`
-    UPDATE business_operation_claim_exchanges x SET document_file_id = NULL FROM business_operations o, asset_files f
-     WHERE x.operation_id = o.id AND f.id = x.document_file_id AND o.account_id IN (${p.from}, ${p.to}) AND f.account_id <> o.account_id`);
-  await tx.execute(sql`
-    UPDATE business_operation_claim_actions x SET invoice_file_id = NULL FROM business_operations o, asset_files f
-     WHERE x.operation_id = o.id AND f.id = x.invoice_file_id AND o.account_id IN (${p.from}, ${p.to}) AND f.account_id <> o.account_id`);
+  // Références de fichiers des détails Sinistre : jamais vers un autre compte. (Lot 84A : les actions et échanges de
+  // l'ancien modèle — tables inertes, supprimées par la finalisation du nettoyage BO — ne sont plus lus.)
   // Lot 44 : ancre « historique » d'un Sinistre resté dans l'autre compte (multi-biens).
   await tx.execute(sql`
     UPDATE business_operation_claim_details x SET history_event_id = NULL FROM business_operations o, events e

@@ -12,8 +12,8 @@
  *   · génération bloquée (en attente / en cours depuis plus d'une heure).
  *   IA
  *   · traitement suspendu automatiquement par le disjoncteur (MOD-011) ;
- *   · jobs de la file en échec définitif (FAILED, après les reprises avec
- *     backoff) sans job réussi ultérieur du même traitement ;
+ *   · (retiré au lot 84D : jobs de la file en échec définitif — signalés
+ *     désormais par la carte « Échecs » d'Exécutions & logs, BO-11) ;
  *   · lot 82C (CDC Pilotage IA V2 LOG-07) : appels IA SANS capture complète
  *     depuis la mise en service de la capture (échec d'écriture, reprises
  *     épuisées, capture coupée par `AI_CALL_CAPTURE=off`) — l'erreur de
@@ -54,6 +54,7 @@ export const exportFailureFingerprint = (assetId: number, exportType: string) =>
   buildFingerprint('exports', 'generation', 'asset', assetId, exportType);
 export const exportStuckFingerprint = (exportId: number) => buildFingerprint('exports', 'stuck', exportId);
 export const aiSuspendedFingerprint = (treatment: string) => buildFingerprint('ai', 'treatment-suspended', treatment);
+/** Empreinte des anciennes anomalies « jobs en échec définitif » (retirées au lot 84D, résolues au balayage). */
 export const aiJobsFailedFingerprint = (treatment: string) => buildFingerprint('ai', 'jobs-failed', treatment);
 export const aiCaptureGapFingerprint = () => buildFingerprint('ai', 'capture-gap');
 
@@ -171,33 +172,10 @@ export async function collectAiConditions(): Promise<Condition[]> {
       },
     });
   }
-  const failedJobs = await pgClient.unsafe<Row[]>(
-    `SELECT j.treatment, count(*)::int AS n, max(j.finished_at) AS last_failed_at,
-            (array_agg(j.last_error ORDER BY j.finished_at DESC NULLS LAST))[1] AS last_error,
-            (array_agg(j.id ORDER BY j.finished_at DESC NULLS LAST))[1] AS last_id
-       FROM ai_job_queue j
-      WHERE j.status = 'FAILED'
-        AND coalesce(j.finished_at, j.created_at) > now() - make_interval(days => $1)
-        AND NOT EXISTS (
-              SELECT 1 FROM ai_job_queue d
-               WHERE d.treatment = j.treatment AND d.status = 'DONE'
-                 AND d.finished_at > coalesce(j.finished_at, j.created_at))
-      GROUP BY j.treatment`,
-    [SWEEP_LOOKBACK_DAYS],
-  );
-  for (const r of failedJobs) {
-    const t = String(r.treatment);
-    out.push({
-      fingerprint: aiJobsFailedFingerprint(t),
-      occurredAt: new Date((r.last_failed_at as string) ?? Date.now()),
-      input: {
-        domain: 'ai',
-        fingerprint: aiJobsFailedFingerprint(t),
-        title: `Jobs IA ${t} en échec définitif`,
-        detail: { treatment: t, failedJobs: Number(r.n), lastJobId: Number(r.last_id), error: (r.last_error as string) ?? null },
-      },
-    });
-  }
+  // Lot 84D (CDC Pilotage IA V2 BO-11, C-Q9) : les travaux en échec définitif ne sont PLUS signalés ici —
+  // une exécution métier échouée a UNE source d'alerte, la carte « Échecs » d'Exécutions & logs (même
+  // nature, comptée une fois par exécution). Les anomalies « jobs-failed » encore ouvertes sont résolues
+  // automatiquement au prochain balayage (condition disparue), leur historique est conservé.
   // Lot 82C (LOG-07) : capture complète des échanges IA en défaut.
   const { captureGap } = await import('@/services/ai/telemetry/call-capture');
   const gap = await captureGap(SWEEP_LOOKBACK_DAYS);

@@ -129,5 +129,7 @@ export function executionScopeLabel(row: { treatment: string | null; useCaseCode
   if (row.treatment) return row.treatment;
   if (row.operationCode && /^t5_(analyze|modify)$/.test(row.operationCode)) return 'T5 (retiré)';
   if (row.useCaseCode === 'AI_GOVERNANCE') return 'Technique';
-  return '—';
+  // Lot 84D (R23, R59, BO-11) : rattachement RÉELLEMENT absent (historique sans preuve) —
+  // signalé comme tel, jamais inventé ; une sonde reste « Technique » ci-dessus.
+  return 'Non rattaché (historique)';
 }

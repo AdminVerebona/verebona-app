@@ -46,7 +46,8 @@ describe('UXERR-04 — aucune erreur technique IA vers l’application', () => {
     expect(fautives).toEqual([]);
     for (const r of ['src/app/api/files/[id]/route.ts', 'src/app/api/files/route.ts']) expect(read(r)).toMatch(/toUserFiles\(/);
     expect(read('src/app/api/files/confirm/route.ts')).toMatch(/toUserFile\(/);
-    expect(read('src/app/api/events/[eventId]/documents/route.ts')).toMatch(/toUserFile\(d\.file\)/);
+    // Lot 84A (O-10, E25) : la lecture des documents d'un événement historique (GET) est retirée — seul POST reste.
+    expect(read('src/app/api/events/[eventId]/documents/route.ts')).not.toMatch(/export async function GET/);
     expect(read('src/app/api/documents/[id]/stream/route.ts')).toMatch(/userStreamEvent\(/);
     expect(read('src/app/api/documents/[id]/analyze/route.ts')).toMatch(/userStreamEvent\(/);
     expect(read('src/app/api/documents/[id]/analyze/route.ts')).not.toMatch(/code: 'INTERNAL_ERROR', message/);

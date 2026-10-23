@@ -157,6 +157,8 @@ describe('L82D-U08 — invariants déclarés (registre 82B)', () => {
       ['O1-PRINCIPAL-DOCUMENTS', 'N2', 'DETERMINISTIC'], ['O1-DOCUMENT-MEMBERSHIP', 'N2', 'DETERMINISTIC'], ['O1-ANTI-CARTESIAN', 'N2', 'DETECT_ONLY'],
       // Lot 83A (O-7, AC52) — invariant ajouté, même format : test complété.
       ['O7-NO-INFERRED-PRINCIPAL', 'N2', 'DETERMINISTIC'],
+      // Lot 84B (O-3, §10, §11.9) — retrait du rôle principal mémorisé : test complété.
+      ['O3-PRINCIPAL-WITHDRAWN', 'N2', 'DETERMINISTIC'],
     ]);
     expect(OPERATIONS_GROUPING_INVARIANTS.every((i) => (i.repair === 'DETECT_ONLY') === !i.repairFinding)).toBe(true);
   });

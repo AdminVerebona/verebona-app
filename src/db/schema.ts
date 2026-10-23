@@ -2293,8 +2293,8 @@ export const assetAdditionalInfos = pgTable('asset_additional_infos', {
   commercial: jsonb('commercial_json').$type<Record<string, unknown>>().notNull().default(sql`'{}'::jsonb`),
   rental: jsonb('rental_json').$type<Record<string, unknown>>().notNull().default(sql`'{}'::jsonb`),
   insurance: jsonb('insurance_json').$type<Record<string, unknown>>().notNull().default(sql`'{}'::jsonb`),
-  /** Lot 83D (V-Q2) : INERTE — ancien formulaire Sinistre, plus lu ni écrit ; vidé par le rattrapage de nettoyage, colonne supprimée au lot O-10. */
-  claim: jsonb('claim_json').$type<Record<string, unknown>>().notNull().default(sql`'{}'::jsonb`),
+  // Lot 84A (O-10) : `claim_json` (ancien formulaire Sinistre, inerte depuis 83D) n'est plus déclarée ni lue ; supprimée par la
+  // finalisation du nettoyage BO (`claims/legacy-finalize.ts`). Avant la finalisation, elle existe encore (défaut `{}`, jamais écrite).
   // Migration 0214 : valeur retenue, frais d'acquisition, charges et taxes (dossier complet).
   finance: jsonb('finance_json').$type<Record<string, unknown>>().notNull().default(sql`'{}'::jsonb`),
   // Migration 0214 : 1 = champs simples, 2 = listes structurées (ADDITIONAL_INFOS_SCHEMA_VERSION).
@@ -2306,7 +2306,7 @@ export const assetAdditionalInfos = pgTable('asset_additional_infos', {
 }, (table) => ({
   accountIdIdx: index('asset_additional_infos_account_id_idx').on(table.accountId),
   jsonObjectsCheck: check('asset_additional_infos_json_objects_check',
-    sql`jsonb_typeof(${table.commercial}) = 'object' AND jsonb_typeof(${table.rental}) = 'object' AND jsonb_typeof(${table.insurance}) = 'object' AND jsonb_typeof(${table.claim}) = 'object' AND jsonb_typeof(${table.finance}) = 'object'`),
+    sql`jsonb_typeof(${table.commercial}) = 'object' AND jsonb_typeof(${table.rental}) = 'object' AND jsonb_typeof(${table.insurance}) = 'object' AND jsonb_typeof(${table.finance}) = 'object'`),
   // Migration 0214 : déclarée ici pour qu'un `drizzle-kit push` ne la supprime pas.
   schemaVersionCheck: check('asset_additional_infos_schema_version_check', sql`${table.schemaVersion} BETWEEN 1 AND 2`),
 }));
@@ -3786,8 +3786,9 @@ export const businessOperations = pgTable('business_operations', {
   typeCode: text('type_code').references(() => businessOperationTypes.code),
   status: text('status').notNull(),
   technicalLabel: text('technical_label'),
-  /** Lot 83D (CDC v5 §18.4, AC39) : INERTE — plus de hiérarchie parent / enfant ; vidée par le rattrapage de nettoyage, colonne supprimée au lot O-10. */
-  parentOperationId: bigint('parent_operation_id', { mode: 'number' }),
+  // Lot 84A (O-10) : `parent_operation_id` (hiérarchie parent / enfant, inerte depuis 83D) n'est plus déclarée ; supprimée avec sa clé
+  // étrangère, son index et sa contrainte par la finalisation du nettoyage BO. Seule la garde transitoire du transfert d'un bien la
+  // lit, si elle existe encore (`asset-lifecycle.ts`).
   provider: text('provider'),
   plannedDate: pgDate('planned_date', { mode: 'string' }),
   startDate: pgDate('start_date', { mode: 'string' }),
@@ -3805,17 +3806,14 @@ export const businessOperations = pgTable('business_operations', {
   updatedAt: tstz('updated_at'),
 }, (t) => ({
   idAccountUq: unique('business_operations_id_account_uq').on(t.id, t.accountId),
-  parentFk: foreignKey({ name: 'business_operations_parent_fk', columns: [t.parentOperationId, t.accountId], foreignColumns: [t.id, t.accountId] }),
   mergedIntoFk: foreignKey({ name: 'business_operations_merged_into_fk', columns: [t.mergedIntoOperationId, t.accountId], foreignColumns: [t.id, t.accountId] }),
   statusChk: check('business_operations_status_chk', sql`${t.status} IN ('ENVISAGED', 'REALIZED', 'CANCELLED')`),
-  parentNotSelfChk: check('business_operations_parent_not_self_chk', sql`${t.parentOperationId} IS NULL OR ${t.parentOperationId} <> ${t.id}`),
   mergedNotSelfChk: check('business_operations_merged_not_self_chk', sql`${t.mergedIntoOperationId} IS NULL OR ${t.mergedIntoOperationId} <> ${t.id}`),
   mergedInvalidatedChk: check('business_operations_merged_invalidated_chk', sql`${t.mergedIntoOperationId} IS NULL OR ${t.invalidatedAt} IS NOT NULL`),
   invalidationReasonChk: check('business_operations_invalidation_reason_chk', sql`${t.invalidatedAt} IS NULL OR ${t.invalidationReason} IS NOT NULL`),
   versionChk: check('business_operations_version_chk', sql`${t.version} >= 1`),
   accountActiveIdx: index('business_operations_account_active_idx').on(t.accountId, t.typeCode, t.status).where(sql`invalidated_at IS NULL`),
   accountRealizedIdx: index('business_operations_account_realized_idx').on(t.accountId, t.realizedDate),
-  parentIdx: index('business_operations_parent_idx').on(t.parentOperationId).where(sql`parent_operation_id IS NOT NULL`),
   mergedIntoIdx: index('business_operations_merged_into_idx').on(t.mergedIntoOperationId).where(sql`merged_into_operation_id IS NOT NULL`),
   // Lot 47A (O9) — 0325_idx_1 à 3 : BO diagnostic (liste, indicateurs C26.2).
   createdIdx: index('business_operations_created_idx').on(t.createdAt),
@@ -4154,7 +4152,8 @@ export const businessOperationMatchDecisions = pgTable('business_operation_match
 }, (t) => ({
   operationFk: foreignKey({ name: 'business_operation_match_decisions_operation_fk', columns: [t.candidateOperationId, t.accountId], foreignColumns: [businessOperations.id, businessOperations.accountId] }).onDelete('cascade').onUpdate('cascade'),
   // Lot 82D (0656) : objets du regroupement v5 (Pièce, équipement, lien propagé vers le principal).
-  kindChk: check('business_operation_match_decisions_kind_chk', sql`${t.sourceKind} IN (${BO_SOURCE_KINDS_SQL}, 'ROOM', 'EQUIPMENT', 'PRINCIPAL_LINK')`),
+  // Lot 84B (0684) : PRINCIPAL — rôle principal retiré / désigné par l'utilisateur (mémorisé).
+  kindChk: check('business_operation_match_decisions_kind_chk', sql`${t.sourceKind} IN (${BO_SOURCE_KINDS_SQL}, 'ROOM', 'EQUIPMENT', 'PRINCIPAL_LINK', 'PRINCIPAL')`),
   decisionChk: check('business_operation_match_decisions_decision_chk', sql`${t.decision} IN ('CONFIRMED', 'REJECTED')`),
   originChk: check('business_operation_match_decisions_origin_chk', sql`${t.origin} IN ('USER_ARBITRATION', 'SYSTEM_EXPLICIT_REFERENCE', 'ADMIN_REVIEW')`),
   activeUidx: uniqueIndex('business_operation_match_decisions_active_uidx')
@@ -4249,54 +4248,8 @@ export const businessOperationClaimDamagePhotos = pgTable('business_operation_cl
   photoIdx: index('business_operation_claim_damage_photos_photo_idx').on(t.photoId),
 }));
 
-/**
- * Lot 83D (V-Q2) : INERTES — actions et échanges de l'ancien bloc Sinistres, plus lus ni écrits ;
- * vidés par le rattrapage BO « Sinistres : nettoyage de l'ancien modèle » (journal 0672) ;
- * DROP TABLE prévu au lot O-10. Déclarés ici seulement pour protéger les tables d'un `db:push`.
- */
-export const businessOperationClaimActions = pgTable('business_operation_claim_actions', {
-  id: bigserial('id', { mode: 'number' }).primaryKey(),
-  operationId: bigint('operation_id', { mode: 'number' }).notNull().references(() => businessOperations.id, { onDelete: 'cascade' }),
-  date: pgDate('date', { mode: 'string' }),
-  endDate: pgDate('end_date', { mode: 'string' }),
-  status: text('status'),
-  title: text('title').notNull(),
-  detail: text('detail'),
-  performedBy: text('performed_by'),
-  invoiceFileId: integer('invoice_file_id').references(() => assetFiles.id, { onDelete: 'set null' }),
-  childOperationId: bigint('child_operation_id', { mode: 'number' }).references(() => businessOperations.id, { onDelete: 'set null' }),
-  sortOrder: integer('sort_order').notNull().default(0),
-  createdAt: tstz('created_at'),
-  /** Lot 44 (0323) : identifiant stable de la ligne côté formulaire. */
-  itemKey: text('item_key'),
-}, (t) => ({
-  statusChk: check('business_operation_claim_actions_status_chk', sql`${t.status} IS NULL OR ${t.status} IN ('REALISEE', 'EN_COURS', 'A_REALISER')`),
-  periodChk: check('business_operation_claim_actions_period_chk', sql`${t.date} IS NULL OR ${t.endDate} IS NULL OR ${t.endDate} >= ${t.date}`),
-  childChk: check('business_operation_claim_actions_child_chk', sql`${t.childOperationId} IS NULL OR ${t.childOperationId} <> ${t.operationId}`),
-  operationIdx: index('business_operation_claim_actions_operation_idx').on(t.operationId, t.sortOrder),
-  invoiceIdx: index('business_operation_claim_actions_invoice_idx').on(t.invoiceFileId).where(sql`invoice_file_id IS NOT NULL`),
-}));
-
-export const businessOperationClaimExchanges = pgTable('business_operation_claim_exchanges', {
-  id: bigserial('id', { mode: 'number' }).primaryKey(),
-  operationId: bigint('operation_id', { mode: 'number' }).notNull().references(() => businessOperations.id, { onDelete: 'cascade' }),
-  date: pgDate('date', { mode: 'string' }),
-  party: text('party'),
-  channel: text('channel'),
-  direction: text('direction'),
-  summary: text('summary').notNull(),
-  documentFileId: integer('document_file_id').references(() => assetFiles.id, { onDelete: 'set null' }),
-  sortOrder: integer('sort_order').notNull().default(0),
-  createdAt: tstz('created_at'),
-  /** Lot 44 (0323) : identifiant stable de la ligne côté formulaire. */
-  itemKey: text('item_key'),
-}, (t) => ({
-  partyChk: check('business_operation_claim_exchanges_party_chk', sql`${t.party} IS NULL OR ${t.party} IN ('ASSUREUR', 'EXPERT', 'AUTRE')`),
-  channelChk: check('business_operation_claim_exchanges_channel_chk', sql`${t.channel} IS NULL OR ${t.channel} IN ('EMAIL', 'COURRIER', 'TELEPHONE', 'ESPACE_CLIENT', 'RENDEZ_VOUS', 'AUTRE')`),
-  directionChk: check('business_operation_claim_exchanges_direction_chk', sql`${t.direction} IS NULL OR ${t.direction} IN ('RECU', 'ENVOYE')`),
-  operationIdx: index('business_operation_claim_exchanges_operation_idx').on(t.operationId, t.sortOrder),
-  documentIdx: index('business_operation_claim_exchanges_document_idx').on(t.documentFileId).where(sql`document_file_id IS NOT NULL`),
-}));
+// Lot 84A (O-10) : `business_operation_claim_actions` et `business_operation_claim_exchanges` (ancien bloc Sinistres, inertes
+// depuis 83D) ne sont plus déclarées ; supprimées par la finalisation du nettoyage BO (`claims/legacy-finalize.ts`).
 
 /**
  * Lot 43 (O4, migration 0322) — passage de la réconciliation des données
@@ -4317,29 +4270,8 @@ export const businessOperationAssetDataMarks = pgTable('business_operation_asset
   outcomesChk: check('business_operation_asset_data_marks_outcomes_chk', sql`jsonb_typeof(${t.outcomes}) = 'object'`),
 }));
 
-/**
- * Lot 83D (V-Q2) : INERTE (migration de l'ancien formulaire retirée) ; vidée par
- * le rattrapage de nettoyage, DROP TABLE prévu au lot O-10.
- *
- * Lot 44 (O5, migration 0323) — repère par bien de la migration C14.3 de
- * l'ancien formulaire Sinistre (`asset_additional_infos.claim_json`) vers
- * l'Opération CLAIM : version, empreinte (md5 du JSON examiné), Opération
- * obtenue, issue. Technique, invisible pour l'utilisateur (P09) ; écrit et lu
- * en SQL par `consolidation/claim-migration.ts` (supprimé au lot 83D).
- */
-export const businessOperationClaimMigrationMarks = pgTable('business_operation_claim_migration_marks', {
-  assetId: integer('asset_id').primaryKey().references(() => assets.id, { onDelete: 'cascade' }),
-  accountId: integer('account_id').notNull().references(() => accounts.id, { onDelete: 'cascade' }),
-  migrationVersion: text('migration_version').notNull(),
-  dataFingerprint: text('data_fingerprint').notNull(),
-  operationId: bigint('operation_id', { mode: 'number' }).references(() => businessOperations.id, { onDelete: 'set null' }),
-  outcome: text('outcome').notNull(),
-  detail: jsonb('detail').notNull().default({}),
-  processedAt: tstz('processed_at'),
-}, (t) => ({
-  detailChk: check('business_operation_claim_migration_marks_detail_chk', sql`jsonb_typeof(${t.detail}) = 'object'`),
-  outcomeChk: check('business_operation_claim_migration_marks_outcome_chk', sql`${t.outcome} IN ('CREATED', 'MATCHED', 'LINKED', 'RESYNCED', 'MIRRORED', 'BELOW_THRESHOLD', 'HOLD_AMBIGUOUS', 'EMPTY', 'ERROR')`),
-}));
+// Lot 84A (O-10) : `business_operation_claim_migration_marks` (repères de la migration de l'ancien formulaire, inertes depuis 83D)
+// n'est plus déclarée ; supprimée par la finalisation du nettoyage BO.
 
 /**
  * Lot 57A (migration 0405) — file DURABLE des e-mails indispensables

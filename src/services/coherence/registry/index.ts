@@ -24,6 +24,8 @@ import {
 import { agendaOperationProjectionCheck, agendaProjectionOrphansCheck, agendaT4DocumentDeadlinesCheck } from './checks/agenda-projection';
 import { t6EvaluationsCheck, notificationOutboxCheck, subscriptionCommunicationsCheck } from './checks/t6-notifications';
 import { billingStripeCheck, entitlementsCheck, duoRelationsCheck } from './checks/billing';
+// Lot 84E — O-6 : factures d'un même service non regroupées (réparation : reconsolidation ciblée).
+import { operationsRecurringSeriesCheck } from './checks/operations-recurrence';
 
 export const COHERENCE_REGISTRY: readonly CoherenceCheck[] = [
   toProcessDocumentFieldsCheck,
@@ -50,6 +52,8 @@ export const COHERENCE_REGISTRY: readonly CoherenceCheck[] = [
   billingStripeCheck,
   entitlementsCheck,
   duoRelationsCheck,
+  // Lot 84E (ajouté en fin de liste, sans réordonner l'existant).
+  operationsRecurringSeriesCheck,
 ];
 
 /** Contrôles exécutés par l'orchestrateur (les points d'extension PLANNED sont exclus). */

@@ -23,6 +23,9 @@
  *                                                      DÉDUIT (T4, T3, reprise) sur une relation
  *                                                      durable (contrat, financement) ; le choix de
  *                                                      l'utilisateur reste
+ *   O3-PRINCIPAL-WITHDRAWN     N2      DÉTERMINISTE    lot 84B (O-3, §10, §11.9) : rôle principal
+ *                                                      RETIRÉ par l'utilisateur (décision mémorisée)
+ *                                                      jamais rétabli par une inférence
  *
  * Les évaluateurs `evaluate*` sont PURS (instantanés en entrée) : testables
  * sans base, réutilisables par l'export de diagnostic. `detect` charge
@@ -36,12 +39,13 @@ import { recomputePrincipal, stripPrincipalLinks } from './principal';
 import { intArray, lockGroupingAccount, type GroupingRunner } from './runner';
 import { attachAgendaItem, detachAgendaItem, releasePrincipal, type GroupingContext } from './service';
 
-/** Lot 83A : + O7-NO-INFERRED-PRINCIPAL (ensemble des invariants v2). */
-export const GROUPING_INVARIANTS_VERSION = 'l83a-v2';
+/** Lot 83A : + O7-NO-INFERRED-PRINCIPAL (v2) ; lot 84B : + O3-PRINCIPAL-WITHDRAWN (v3). */
+export const GROUPING_INVARIANTS_VERSION = 'l84b-v3';
 
 export type GroupingInvariantId =
   | 'O1-PRINCIPAL-UNIQUE' | 'O1-AGENDA-ONE-OPERATION' | 'O1-LINK-PROVENANCE'
-  | 'O1-PRINCIPAL-DOCUMENTS' | 'O1-DOCUMENT-MEMBERSHIP' | 'O1-ANTI-CARTESIAN' | 'O7-NO-INFERRED-PRINCIPAL';
+  | 'O1-PRINCIPAL-DOCUMENTS' | 'O1-DOCUMENT-MEMBERSHIP' | 'O1-ANTI-CARTESIAN' | 'O7-NO-INFERRED-PRINCIPAL'
+  | 'O3-PRINCIPAL-WITHDRAWN';
 
 export interface GroupingFinding {
   invariantId: GroupingInvariantId;
@@ -188,6 +192,22 @@ export function evaluateInferredPrincipal(accountId: number, rows: readonly Dura
   return rows.filter((r) => isDurableRelation(r.typeCode) && r.origin !== 'USER').map((r) => ({
     invariantId: 'O7-NO-INFERRED-PRINCIPAL' as const, accountId, objectKey: `operation:${r.operationId}`, nature: 'INFERRED_PRINCIPAL_ON_DURABLE_RELATION',
     detail: { operationId: r.operationId, typeCode: r.typeCode, itemId: r.itemId, origin: r.origin }, repairable: true,
+  }));
+}
+
+export interface WithdrawnPrincipalRow { operationId: number; itemId: number; origin: RoleOrigin | null; withdrawnItemIds: readonly number[] }
+
+/**
+ * Lot 84B (CDC v5 §10, §11.9 ; point ouvert 83A) — un principal DÉDUIT (T4,
+ * T3, reprise) dans une Opération dont l'utilisateur a retiré le rôle
+ * principal (décision PRINCIPAL REJECTED active) : la décision de
+ * l'utilisateur a été contournée (fusion, chemin hors service…). Un principal
+ * choisi depuis par l'utilisateur n'est jamais un écart (pure).
+ */
+export function evaluateWithdrawnPrincipal(accountId: number, rows: readonly WithdrawnPrincipalRow[]): GroupingFinding[] {
+  return rows.filter((r) => r.origin !== 'USER' && r.withdrawnItemIds.length > 0).map((r) => ({
+    invariantId: 'O3-PRINCIPAL-WITHDRAWN' as const, accountId, objectKey: `operation:${r.operationId}`, nature: 'INFERRED_PRINCIPAL_AFTER_USER_WITHDRAWAL',
+    detail: { operationId: r.operationId, itemId: r.itemId, origin: r.origin, withdrawnItemIds: [...r.withdrawnItemIds].sort((a, b) => a - b) }, repairable: true,
   }));
 }
 
@@ -396,6 +416,37 @@ export const OPERATIONS_GROUPING_INVARIANTS: readonly GroupingInvariant[] = [
       const [reste] = await ctx.runner.q(
         `SELECT 1 FROM agenda_items i JOIN business_operations o ON o.id = i.business_operation_id
           WHERE o.id = $1 AND i.account_id = $2 AND i.operation_role = 'PRINCIPAL' AND i.operation_role_origin IS DISTINCT FROM 'USER' LIMIT 1`,
+        [Number(f.detail.operationId), ctx.accountId]);
+      return { repaired: !reste, changed };
+    },
+  },
+  {
+    id: 'O3-PRINCIPAL-WITHDRAWN', version: 1, domain: 'operations', level: 'N2', objects: ['agenda_items', 'business_operation_match_decisions'], repair: 'DETERMINISTIC',
+    description: 'Lot 84B (CDC v5 §10, §11.9 ; point ouvert 83A) : un rôle principal RETIRÉ par l’utilisateur (décision mémorisée) n’est jamais rétabli par une inférence — aucun principal déduit (T4, T3, reprise) dans l’ensemble tant que le retrait est actif ; une nouvelle désignation par l’utilisateur lève le retrait. Réparation : releasePrincipal (service de regroupement) — l’élément reste lié, rien n’est supprimé.',
+    detect: async (r, accountId, scope) => {
+      const x = await r.q<{ op: string; item_id: number; origin: RoleOrigin | null; withdrawn: string[] | null }>(
+        `SELECT o.id AS op, i.id AS item_id, i.operation_role_origin AS origin,
+                (SELECT array_agg(m.source_entity_key ORDER BY m.source_entity_key) FROM business_operation_match_decisions m
+                  WHERE m.account_id = o.account_id AND m.candidate_operation_id = o.id AND m.source_kind = 'PRINCIPAL'
+                    AND m.decision = 'REJECTED' AND m.active) AS withdrawn
+           FROM agenda_items i JOIN business_operations o ON o.id = i.business_operation_id AND o.account_id = i.account_id
+          WHERE i.account_id = $1 AND i.operation_role = 'PRINCIPAL' AND i.operation_role_origin IS DISTINCT FROM 'USER'
+            AND o.invalidated_at IS NULL AND o.merged_into_operation_id IS NULL
+            AND ($2::bigint[] IS NULL OR o.id = ANY($2::bigint[]))
+            AND EXISTS (SELECT 1 FROM business_operation_match_decisions m
+                         WHERE m.account_id = o.account_id AND m.candidate_operation_id = o.id AND m.source_kind = 'PRINCIPAL'
+                           AND m.decision = 'REJECTED' AND m.active)
+          ORDER BY o.id, i.id`, [accountId, opFilter(scope)]);
+      return evaluateWithdrawnPrincipal(accountId, x.map((y) => ({
+        operationId: Number(y.op), itemId: Number(y.item_id), origin: y.origin, withdrawnItemIds: (y.withdrawn ?? []).map(Number).filter(Number.isSafeInteger),
+      })));
+    },
+    repairFinding: async (ctx, f) => {
+      // Rang d'autorité : jamais un principal choisi par l'utilisateur (non détecté de toute façon).
+      const changed = await releasePrincipal(ctx, { operationId: Number(f.detail.operationId), origin: 'T4', reasonCode: 'COHERENCE_PRINCIPAL_WITHDRAWN_BY_USER' });
+      const [reste] = await ctx.runner.q(
+        `SELECT 1 FROM agenda_items i WHERE i.business_operation_id = $1 AND i.account_id = $2
+            AND i.operation_role = 'PRINCIPAL' AND i.operation_role_origin IS DISTINCT FROM 'USER' LIMIT 1`,
         [Number(f.detail.operationId), ctx.accountId]);
       return { repaired: !reste, changed };
     },

@@ -474,7 +474,34 @@ export interface SyncDocumentOptions {
   requiredMargin?: number;
   /** Équipements déjà chargés (parcours EQUIPMENT_DOCUMENT). */
   equipments?: EquipmentProfile[];
+  /**
+   * Lot 84E (CDC v5 O-6, M04 étendu) : faits SUPPLÉMENTAIRES lus dans le
+   * contrat T1 actuel du MÊME document (cibles ÉQUIPEMENT de ses candidats
+   * Opération : identifiant vérifié, désignation brute), ajoutés aux faits
+   * structurés — mêmes règles d'identifiants et de désignation, aucune règle
+   * sémantique.
+   */
+  extraFacts?: DocumentFactProfile[];
+  /**
+   * Lot 84E (§9.4, P19) : seuls ces équipements peuvent être rattachés
+   * (équipements de l'Opération). Le rapprochement reste calculé parmi TOUS
+   * les équipements des biens du document : une ambiguïté n'est jamais levée
+   * par l'Opération (un groupe en concurrence dont un seul membre est dans
+   * l'Opération n'est pas tranché).
+   */
+  restrictTo?: ReadonlySet<number>;
   sql?: Sql;
+}
+
+/** Lot 84E : résultat limité aux équipements autorisés (pure). */
+export function restrictMatch(m: MatchResult, allowed: ReadonlySet<number>): MatchResult {
+  const links = m.links.filter((l) => allowed.has(l.equipmentId));
+  const groups = m.groups.map((g) => g.filter((id) => allowed.has(id))).filter((g) => g.length >= 2);
+  const dansGroupes = new Set(groups.flat());
+  return {
+    links, groups, ambiguous: m.ambiguous.filter((x) => dansGroupes.has(x.equipmentId)),
+    status: links.length ? 'LINKED' : groups.length ? 'AMBIGUOUS' : 'NONE',
+  };
 }
 
 /**
@@ -497,7 +524,10 @@ export async function syncDocumentEquipmentLinks(o: SyncDocumentOptions): Promis
     .filter((e) => doc.profile.assetIds.includes(e.assetId));
   if (equipements.length === 0) return { ...out, status: 'NO_EQUIPMENT' };
 
-  const m = matchDocumentToEquipments(doc.profile, equipements);
+  if (o.extraFacts?.length) doc.profile.facts = [...doc.profile.facts, ...o.extraFacts];
+  const m0 = matchDocumentToEquipments(doc.profile, equipements);
+  // Lot 84E : rattachements limités aux équipements autorisés ; groupes réduits à leurs membres autorisés (≥ 2 pour rester un arbitrage).
+  const m = o.restrictTo ? restrictMatch(m0, o.restrictTo) : m0;
   const refus = await userRefusedEquipments(o.accountId, o.fileId, sql);
   const links = m.links.filter((l) => !refus.has(l.equipmentId));
   const parId = new Map([...m.links, ...m.ambiguous].map((x) => [x.equipmentId, x]));

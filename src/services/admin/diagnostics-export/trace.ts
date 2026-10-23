@@ -218,7 +218,7 @@ export async function traceComponent(q: DiagQuery, A: number, componentId: numbe
   }
   const opId = Number(comp.operation_id);
   const op = await oneRow(q, `SELECT id, type_code, status, provider, technical_label, planned_date, realized_date, invalidated_at, invalidation_reason,
-                                     merged_into_operation_id, parent_operation_id, last_reconciled_at, created_at, updated_at
+                                     merged_into_operation_id, last_reconciled_at, created_at, updated_at
                                 FROM business_operations WHERE id = $1 AND account_id = $2`, [opId, A]);
   const sources = await jsonRows(q, `
     SELECT s.id, cs.evidence_role, cs.is_primary, s.source_kind, s.source_entity_key, s.source_version, s.source_role, s.locator->>'candidateKey' AS candidate_key,

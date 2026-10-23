@@ -59,6 +59,7 @@ import {
   type CandidateDecision, type ExistingOperation, type MatchContext, type T3Outcome,
 } from './matching';
 import { requestRetroReconciliation, retroActive, type RetroTrace } from './retro';
+import { isSeriesWhy } from './recurrence';
 import { advanceM3Progress, m3ProgressFor, m3SubjectFingerprint, selectM3Batch, type M3Progress } from './m3-progress';
 import { applyCurrencyChoices, type AmountChoice, type CurrencyChoice, type SideAmount } from './model';
 import { OPERATION_MATCH_MAX_CANDIDATES, m3Resolution, type OperationMatchVerdict } from '@/services/ai/reconciliation/master/operation-match';
@@ -358,6 +359,12 @@ export async function loadMatchableOperations(
            -- Lot 53 (D5) : montants actifs (cohérence des montants du faisceau).
            COALESCE((SELECT json_agg(json_build_object('kind', fc.kind, 'amountMinor', fc.amount_minor, 'currency', btrim(fc.currency)))
                        FROM business_operation_financial_components fc WHERE fc.operation_id = o.id AND fc.active), '[]') AS amounts,
+           -- Lot 84E (O-6) : périodes facturées et équipements (identité de série).
+           COALESCE((SELECT array_agg(DISTINCT fc.period_start::text || '/' || fc.period_end::text)
+                       FROM business_operation_financial_components fc
+                      WHERE fc.operation_id = o.id AND fc.active AND fc.period_start IS NOT NULL AND fc.period_end > fc.period_start), '{}') AS periods,
+           COALESCE((SELECT array_agg(DISTINCT el.equipment_id) FROM business_operation_equipment_links el
+                      WHERE el.operation_id = o.id AND el.active), '{}') AS equipment_ids,
            o.planned_date::text AS planned_date, o.start_date::text AS start_date,
            o.realized_date::text AS realized_date, o.end_date::text AS end_date,
            COALESCE((SELECT array_agg(l.asset_id ORDER BY l.asset_id) FROM business_operation_asset_links l
@@ -396,6 +403,8 @@ export async function loadMatchableOperations(
     ...(x.periodic === true ? { periodic: true } : {}),
     amounts: ((x.amounts as Array<{ kind: string; amountMinor: number | string; currency: string }> | null) ?? [])
       .map((a) => ({ kind: String(a.kind), amountMinor: Number(a.amountMinor), currency: String(a.currency) })),
+    ...(((x.periods as string[] | null) ?? []).length ? { periods: (x.periods as string[]).map(String).sort() } : {}),
+    ...(((x.equipment_ids as number[] | null) ?? []).length ? { equipmentIds: (x.equipment_ids as number[]).map(Number).sort((a, b) => a - b) } : {}),
   }));
 }
 
@@ -507,7 +516,17 @@ async function loadNonMergeable(tx: DbTx, accountId: number, ids: readonly numbe
         ON d2.account_id = d1.account_id AND d2.source_kind = d1.source_kind AND d2.source_entity_key = d1.source_entity_key
        AND COALESCE(d2.source_version, '') = COALESCE(d1.source_version, '') AND d2.active AND d2.decision = 'REJECTED'
      WHERE d1.account_id = ${accountId} AND d1.active AND d1.decision = 'CONFIRMED'
-       AND d1.candidate_operation_id = ANY(${intArray(ids)}::bigint[]) AND d2.candidate_operation_id = ANY(${intArray(ids)}::bigint[])`);
+       AND d1.candidate_operation_id = ANY(${intArray(ids)}::bigint[]) AND d2.candidate_operation_id = ANY(${intArray(ids)}::bigint[])
+    UNION
+    -- Lot 84E (§10) : un document que l'utilisateur a RETIRÉ d'une Opération ne la rejoint jamais par une
+    -- fusion — l'Opération où il se trouve désormais n'est pas fusionnable avec celle qu'il a quittée.
+    SELECT d.candidate_operation_id AS a, s.operation_id AS b
+      FROM business_operation_match_decisions d
+      JOIN business_operation_sources s ON s.account_id = d.account_id AND s.active AND s.source_kind = d.source_kind
+       AND s.source_entity_key = d.source_entity_key
+     WHERE d.account_id = ${accountId} AND d.active AND d.decision = 'REJECTED' AND d.source_kind = 'DOCUMENT'
+       AND s.operation_id <> d.candidate_operation_id
+       AND d.candidate_operation_id = ANY(${intArray(ids)}::bigint[]) AND s.operation_id = ANY(${intArray(ids)}::bigint[])`);
   return new Set(r.map((x) => {
     const [a, b] = [Number(x.a), Number(x.b)].sort((m, n) => m - n);
     return `${a}:${b}`;
@@ -1256,6 +1275,103 @@ async function examineRetro(
   return fin('NO_MATCH');
 }
 
+/**
+ * Lot 84E : avant la fusion de deux fragments d'une même SÉRIE (identité de
+ * service établie, `recurrence.ts`), un contrat face à ses échéances
+ * qualifiées autrement aligne le type (la relation est le contrat, règle 55B
+ * de l'examen rétroactif). Sans série établie : rien (la fusion existante
+ * refuse deux types différents).
+ */
+async function alignSeriesTypes(
+  repo: BusinessOperationRepository, tx: DbTx, canonicalId: number, absorbedId: number, d: CandidateDecision, changes: Changes,
+): Promise<void> {
+  if (!d.detail.certain.some((x) => isSeriesWhy(x.why))) return;
+  const types = await rows<{ id: string; type_code: string | null }>(tx, sql`
+    SELECT id, type_code FROM business_operations WHERE id = ANY(${intArray([canonicalId, absorbedId])}::bigint[])`);
+  const t = new Map(types.map((x) => [Number(x.id), x.type_code]));
+  const a = t.get(canonicalId) ?? null;
+  const b = t.get(absorbedId) ?? null;
+  if (a === null || b === null || a === b) return;
+  if (a !== 'CONTRACT' && b !== 'CONTRACT') return;
+  const autre = a === 'CONTRACT' ? absorbedId : canonicalId;
+  changes.track(await repo.setType(autre, { code: 'CONTRACT' }, 'T3_TYPE_RECURRING_CONTRACT'));
+}
+
+// ── Lot 84E (O-6) : regroupement de série en SIMULATION (contrôle de cohérence) ──
+
+/** Fragment de série qu'une reconsolidation réunirait (décision T3 recalculée, sans écriture). */
+export interface SeriesGroupingPreview {
+  fileId: number;
+  candidateKey: string;
+  /** Opération(s) où le document est aujourd'hui. */
+  operationIds: number[];
+  /** Opération qui réunirait la série (canonique). */
+  targetOperationId: number;
+  /** Fragments absorbés par la fusion. */
+  mergeIds: number[];
+  keys: string[];
+}
+
+/**
+ * Lot 84E — MÊME décision que `consolidateDocument` (M0 → M3 déterministes,
+ * identité de série, 78A, décisions utilisateur), calculée en LECTURE dans
+ * une transaction toujours annulée (attente de verrou bornée) : documents
+ * récurrents qu'une reconsolidation ciblée réunirait à leur série. Aucune
+ * écriture, aucun appel IA (un verdict M3 n'est jamais requis pour une série
+ * établie).
+ */
+export async function previewSeriesGrouping(accountId: number, fileIds: readonly number[]): Promise<Map<number, SeriesGroupingPreview>> {
+  const out = new Map<number, SeriesGroupingPreview>();
+  const ids = [...new Set(fileIds)].filter((x) => Number.isSafeInteger(x) && x > 0).sort((a, b) => a - b);
+  if (!ids.length) return out;
+  const { db } = await import('@/db');
+  const ANNULEE = Symbol('simulation annulée');
+  await db.transaction(async (tx) => {
+    await tx.execute(sql`SET LOCAL lock_timeout = '2s'`);
+    for (const fileId of ids) {
+      const file = await loadFile(tx, accountId, fileId);
+      if (!file || file.deleted || (file.documentTypeCode && NON_BUSINESS_DOCUMENT_TYPES.has(file.documentTypeCode))) continue;
+      const actifs = (await loadCandidates(tx, accountId, fileId)).filter((c) => c.status === 'ACTIVE' && c.established);
+      if (!actifs.length) continue;
+      const docSources = await loadDocumentSources(tx, accountId, fileId);
+      const tids = targetIdsOf(actifs, file.assetId);
+      const actx = await loadAssetContext(tx, accountId, tids.assets, tids.equipments, tids.rooms);
+      for (const c of actifs) {
+        const identity = buildCandidateIdentity(c, { fileAssetId: file.assetId, liveAssetIds: actx.live, equipmentAssets: actx.equipments, roomAssets: actx.rooms });
+        const memeSource = docSources.filter((s) => s.key === c.candidateKey && s.active && !s.opMerged && !s.opInvalidated);
+        if (!memeSource.length) continue;
+        const dec = await loadDecisions(tx, accountId, fileId, c.candidateKey);
+        let ops: ExistingOperation[] = (await loadMatchableOperations(tx, accountId, identity, [...new Set([...memeSource.map((s) => s.operationId), ...dec.confirmed])]))
+          .map((o) => ({ ...o, sameSource: memeSource.some((s) => s.operationId === o.id) }));
+        const aExaminer = ops.filter((o) => needsEconomicMembers(identity, o)).map((o) => o.id);
+        if (aExaminer.length) {
+          const infos = await loadOperationMembers(tx, accountId, aExaminer, { fileId, candidateKey: c.candidateKey });
+          ops = ops.map((o) => {
+            const i = infos.get(o.id);
+            return i ? { ...o, members: i.members, ...(o.sameSource ? { sameSourceMethod: i.ownMethod, sameSourceSolo: i.ownSolo } : {}) } : o;
+          });
+        }
+        const d = decideCandidate(identity, {
+          operations: ops, confirmed: dec.confirmed, rejected: dec.rejected, assetStatus: actx.status,
+          userDistinct: dec.userDistinct, nonMergeable: await loadNonMergeable(tx, accountId, ops.map((o) => o.id)),
+        });
+        const serie = d.detail.certain.filter((x) => isSeriesWhy(x.why));
+        if (d.outcome !== 'MATCH_AND_ENRICH' || d.operationId === null || !serie.length) continue;
+        const propres = memeSource.map((s) => s.operationId);
+        const change = !propres.includes(d.operationId) || (d.mergeIds?.length ?? 0) > 0;
+        if (!change) continue;
+        out.set(fileId, {
+          fileId, candidateKey: c.candidateKey, operationIds: [...new Set(propres)].sort((a, b) => a - b), targetOperationId: d.operationId,
+          mergeIds: d.mergeIds ?? [], keys: [...new Set(serie.flatMap((x) => x.why.slice('SERIES '.length).split(',')))].sort(),
+        });
+        break;
+      }
+    }
+    throw ANNULEE;
+  }).catch((e) => { if (e !== ANNULEE) throw e; });
+  return out;
+}
+
 // ── Un document (TRG-001 à TRG-007) ────────────────────────────────────────
 
 /**
@@ -1432,7 +1548,9 @@ export async function consolidateDocument(accountId: number, fileId: number, opt
           const opId = d.operationId;
           // Fusion V1 (B8, F-049) : la source prouve que ces Opérations sont la même réalité.
           for (const absorbee of d.mergeIds ?? []) {
-            if (await repo.mergeOperations(absorbee, opId, 'T3_MERGE_COMMON_REFERENCE', { onStep: opts.onMergeStep })) changes.track(true);
+            // Lot 84E : fragments d'une même série (contrat ⇄ échéances qualifiées « intervention ») — la relation est le contrat.
+            await alignSeriesTypes(repo, tx, opId, absorbee, d, changes);
+            if (await repo.mergeOperations(absorbee, opId, isSeriesWhy(d.detail.certain.find((x) => x.operationId === opId)?.why) ? 'T3_SERIES_MERGE' : 'T3_MERGE_COMMON_REFERENCE', { onStep: opts.onMergeStep })) changes.track(true);
             touched.delete(absorbee);
             cards.reviewedOperations.push(absorbee);
           }
@@ -1634,6 +1752,8 @@ export interface AccountConsolidationResult {
   retroMarked?: number;
   /** Lot 78A (§5) : documents remis en consolidation pour la réévaluation de l'identité économique. */
   identityReviewMarked?: number;
+  /** Lot 84E (O-6) : liens directs Document ↔ Équipement posés (documents arrivés dans une Opération liée à un équipement). */
+  directLinks?: number;
 }
 
 type Sql = typeof import('@/db').pgClient;
@@ -1811,6 +1931,24 @@ export async function consolidateAccountOperations(
     res.retroMarked = marques.length;
     for (const f of marques.filter((x) => !traites.has(x))) await passer(f);
     if (marques.some((x) => traites.has(x))) res.remaining = true;
+  }
+
+  // Lot 84E (CDC v5 O-6, §9.4, AC49) : arrivée d'un document dans une
+  // Opération liée à un équipement — chaque document membre réévalué vers ses
+  // équipements (liens directs CERTAINS seulement, garde anti-cartésienne),
+  // sans IA dans le passage T3.
+  if (changees.size) {
+    try {
+      const { recomputeDirectLinksForOperations } = await import('./targeted');
+      const l = await recomputeDirectLinksForOperations(accountId, [...changees], {
+        trigger: 'document_arrival', correlationId: opts.correlationId ?? null, beforeWrite: opts.beforeWrite,
+      });
+      res.directLinks = l.directLinks.created;
+    } catch (e) {
+      if ((await import('@/services/ai/queue/execution-control')).isExecutionCancelled(e)) throw e;
+      res.errors++;
+      console.error(`[t3-operations] liens directs Document ↔ Équipement (compte ${accountId}) :`, (e as Error).message);
+    }
   }
 
   // Niveau M3 (C6.1, C6.2) : hors verrou, borné, une fois par empreinte de

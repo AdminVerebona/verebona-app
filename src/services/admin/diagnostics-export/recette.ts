@@ -38,6 +38,8 @@
  *        clé primaire ; découpage en parties de `RECETTE_PART_ROWS` lignes ;
  *   calculs/tco-lignes.part-NNNN.ndjson.gz, calculs/tco-syntheses.ndjson.gz
  *        lignes TCO calculées par le moteur existant (`readAssetTco`) ;
+ *   calculs/timeline.part-NNNN.ndjson.gz  Timeline de chaque bien (lot 84C,
+ *        `readAssetTimelineAll`, même fonction que la fiche du bien) ;
  *   dictionnaire.json / dictionnaire.csv  tables, colonnes, types, clés,
  *        relations, masquage ; LISEZMOI.txt ; manifeste.json EN DERNIER
  *        (sa présence atteste la fin : attendu, exporté, octets, SHA-256 de
@@ -404,6 +406,64 @@ export async function runRecetteExport(opts: RecetteOptions): Promise<RecetteMan
     }
     if (tcoNatural.length) warnings.push(`TCO calculé indisponible pour ${tcoNatural.length} bien(s) : ${tcoNatural.slice(0, 20).join(' ; ')}${tcoNatural.length > 20 ? ' …' : ''}.`);
 
+    // ── Calculs : Timeline de chaque bien (lot 84C), dans le même instantané ──
+    // MÊME fonction de lecture que la fiche du bien (`readAssetTimelineAll` →
+    // `readAssetTimelinePage`) : une ligne par bien, vues « regroupée » et
+    // « détaillée » complètes (toutes les pages), date de référence `today`.
+    progress.table = 'calculs/timeline';
+    const { readAssetTimelineAll } = await import('@/services/agenda/timeline/read');
+    const tq = (text: string, params: unknown[] = []) => s.q(text, params);
+    const tl: { inPart: number; up: Awaited<ReturnType<typeof openGzipUpload>> | null; files: RecetteFile[] } = { inPart: 0, up: null, files: [] };
+    const openTl = async () => {
+      const f: RecetteFile = { path: `calculs/timeline.part-${String(tl.files.length + 1).padStart(4, '0')}.ndjson.gz`, nature: 'calcul', table: null, domain: 'agenda-timeline', part: null, expected: null, exported: 0, bytes: 0, compressedBytes: null, sha256: null, contentType: NDJSON, status: 'FAILED', error: null };
+      tl.files.push(f);
+      tl.up = await openGzipUpload(storage.client, storage.bucket, `${prefix}${f.path}`, { contentType: 'application/gzip' });
+      tl.inPart = 0;
+    };
+    const closeTl = async () => {
+      const f = tl.files[tl.files.length - 1];
+      const r = await tl.up!.finish();
+      tl.up = null;
+      Object.assign(f, { exported: tl.inPart, bytes: r.bytes, compressedBytes: r.compressedBytes, sha256: r.sha256, status: 'COMPLETE' });
+      progress.files++; progress.bytes += r.bytes; tick();
+    };
+    const tlErrors: string[] = [];
+    let tlExported = 0;
+    try {
+      await openTl();
+      for (const a of assets) {
+        const accountId = Number(a.account_id);
+        const assetId = Number(a.id);
+        let line: Row;
+        try {
+          line = await s.savepoint(async () => {
+            const regroupee = await readAssetTimelineAll({ accountId, assetId, mode: 'grouped', today, q: tq });
+            const detaillee = await readAssetTimelineAll({ accountId, assetId, mode: 'detailed', today, q: tq });
+            return { accountId, assetId, today, entrees: { regroupee: regroupee.length, detaillee: detaillee.length }, regroupee, detaillee };
+          });
+        } catch (e) {
+          if ((e as { code?: string })?.code === '25006') throw e;
+          tlErrors.push(`bien #${assetId} : ${describe(e)}`);
+          continue;
+        }
+        if (tl.inPart === partRows) { await closeTl(); await openTl(); }
+        await tl.up!.write(`${recetteLine(mask(line))}\n`);
+        tl.inPart++;
+        tlExported++;
+      }
+      await closeTl();
+    } catch (e) {
+      if ((e as { code?: string })?.code === '25006') throw e;
+      await tl.up?.abort();
+      tlErrors.push(`calcul interrompu : ${describe(e)}`);
+    }
+    for (const f of tl.files) {
+      if (f.status === 'COMPLETE' && tlErrors.length) { f.status = 'PARTIAL'; f.error = `${tlErrors.length} bien(s) sans Timeline calculée (voir les avertissements)`; }
+      if (f.status === 'FAILED' && !f.error) f.error = tlErrors[tlErrors.length - 1] ?? null;
+      files.push(f);
+    }
+    if (tlErrors.length) warnings.push(`Timeline calculée indisponible pour ${tlErrors.length} bien(s) (${tlExported} calculée(s)) : ${tlErrors.slice(0, 20).join(' ; ')}${tlErrors.length > 20 ? ' …' : ''}.`);
+
     // ── Documentation, puis manifeste EN DERNIER ──────────────────────────
     progress.table = null;
     const dict = buildDictionary(cls, meta, tableStats, files, partRows);
@@ -499,6 +559,7 @@ export function buildDictionary(
     computed: [
       { path: 'calculs/tco-lignes.part-NNNN.ndjson.gz', description: 'Lignes TCO calculées par le moteur existant (readAssetTco) pour chaque bien non supprimé, à la date de référence (manifeste › options.today), dans l’instantané de l’export.', fields: 'accountId, assetId, visible (affichée sur la fiche), motifMasquage, puis les champs de la ligne TCO (id, catégorie, statut, motif, montants en centimes, Opération, composante, document…).' },
       { path: 'calculs/tco-syntheses.ndjson.gz', description: 'Synthèse TCO par bien (totaux, fiabilité, indisponibilité motivée).', fields: 'accountId, assetId, disponible, totaux et postes du moteur TCO, nombre de lignes.' },
+      { path: 'calculs/timeline.part-NNNN.ndjson.gz', description: 'Timeline de chaque bien non supprimé, calculée par la même fonction que la fiche du bien (lot 84C), vues « regroupée » et « détaillée » complètes, dans l’instantané de l’export, à la date de référence (manifeste › options.today). Aucune table propre : calcul depuis agenda_items / agenda_asset_links (« annule » exclu).', fields: 'accountId, assetId, today, entrees {regroupee, detaillee}, regroupee[] et detaillee[] : entrées triées comme à l’écran (date décroissante, sans date en dernier) — kind (item | group), id, title, effectiveDate, isDone, isOverdue, toConfirm ; pour un groupe : members[] (éléments liés masqués de la liste) et counters {events, documents, assets, rooms, equipments}.' },
     ],
     excluded: cls.excluded,
     markers: [...RECETTE_MASKING_NOTES],
@@ -537,7 +598,7 @@ export function recetteReadme(m: RecetteManifest): string {
     '  manifeste.json        écrit EN DERNIER : sa présence atteste la fin de la génération. Pour chaque fichier : lignes attendues / exportées, octets, SHA-256 (contenu décompressé), statut.',
     '  dictionnaire.json/.csv  tables, colonnes, types, clés primaires, relations (clés étrangères), masquage.',
     `  donnees/<domaine>/<table>.part-NNNN.ndjson.gz  une ligne JSON par ligne de table (toutes les colonnes), triées par clé primaire, ${m.options.partRows} lignes au plus par partie.`,
-    '  calculs/              lignes TCO calculées (moteur existant) et synthèses par bien.',
+    '  calculs/              lignes TCO calculées (moteur existant) et synthèses par bien ; Timeline de chaque bien (vues regroupée et détaillée).',
     '',
     'CONTRÔLER LA COMPLÉTUDE',
     '  1. manifeste.json › status = COMPLETE ; chaque table : exported = expected ;',

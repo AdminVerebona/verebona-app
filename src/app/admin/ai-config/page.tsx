@@ -44,6 +44,7 @@ import { ModelRegistry } from './_components/ModelRegistry';
 import { Supervision, type Metric, type MetricTable } from './_components/Supervision';
 import { AiEnvBanner } from '../ai-dashboard/_components/AiEnvBanner';
 import { CatalogBanners } from './_components/CatalogBanners';
+import { ConfigExecutionWarning } from './_components/ConfigExecutionWarning';
 import { useUnsavedNavigationGuard } from './_components/useUnsavedNavigationGuard';
 import { TriggersEditor } from './_components/TriggersEditor';
 import { createEditTracker } from './_components/edit-tracker';
@@ -1165,6 +1166,8 @@ export default function AiConfigPage() {
                     {issuesFor(t.code).some((i) => i.blocking) && <span className="text-[color:var(--text-danger)] text-xs">• contrôle à revoir</span>}
                   </summary>
                   <div className="px-4 pb-4 space-y-4">
+                    {/* Lot 84D (BO-06) : avertissement contextuel seulement, accès aux exécutions en cause. */}
+                    {tab === t.code && <ConfigExecutionWarning treatment={t.code} />}
                     <TreatmentStateControl
                       treatment={t.code}
                       batch={t.batch}

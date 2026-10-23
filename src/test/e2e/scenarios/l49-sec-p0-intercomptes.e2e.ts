@@ -27,6 +27,7 @@
 import { afterAll, beforeAll, expect, it, vi } from 'vitest';
 import { NextRequest } from 'next/server';
 import { readFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { scenario } from '../scenario';
 import { runMigrationSql, type SqlRunner } from '@/db/migration-index';
@@ -101,29 +102,25 @@ scenario('L49-SEC', 'SEC-P0 — isolation intercomptes (matrice A/B)', ({ sql, m
   // ── Lectures (AC01) ────────────────────────────────────────────────────────
 
   it('AC01 — A tente de consulter un événement B : accès refusé (toutes les routes events)', async () => {
+    // Lot 84A (CDC v5 O-10, E25) : routes sans appelant RETIRÉES (plus de surface à protéger).
+    for (const f of ['[eventId]/route.ts', '[eventId]/suggestions/route.ts', 'prochaines-echeances/route.ts', 'agenda/route.ts']) {
+      expect(existsSync(join(process.cwd(), 'src/app/api/events', f)), f).toBe(false);
+    }
     as(A.acc);
-    const one = await import('@/app/api/events/[eventId]/route');
-    expect((await one.GET(req(`/api/events/${B.evt}`), ctx('eventId', B.evt))).status).toBe(404);
     const list = await import('@/app/api/events/route');
     expect((await list.GET(req(`/api/events?id=${B.evt}`))).status).toBe(404);
     const liste = await (await list.GET(req(`/api/events?assetId=${B.bien.id}`))).json();
     expect(JSON.stringify(liste)).not.toContain('SECRETB');
-    const sugg = await import('@/app/api/events/[eventId]/suggestions/route');
-    expect((await sugg.GET(req(`/api/events/${B.evt}/suggestions`), ctx('eventId', B.evt))).status).toBe(404);
-    const proch = await import('@/app/api/events/prochaines-echeances/route');
-    const p = await (await proch.GET(req(`/api/events/prochaines-echeances?userId=${B.acc.ownerUserId}`))).json();
-    expect(JSON.stringify(p)).not.toContain('SECRETB');
     // B voit son événement.
     as(B.acc);
-    expect((await one.GET(req(`/api/events/${B.evt}`), ctx('eventId', B.evt))).status).toBe(200);
+    expect((await list.GET(req(`/api/events?id=${B.evt}`))).status).toBe(200);
   });
 
   it('AC01 — A tente de consulter les documents d’un événement B : accès refusé', async () => {
     as(A.acc);
     const r = await import('@/app/api/events/[eventId]/documents/route');
-    const res = await r.GET(req(`/api/events/${B.evt}/documents`), ctx('eventId', B.evt));
-    expect(res.status).toBe(404);
-    expect(await res.text()).not.toContain('SECRETB');
+    // Lot 84A (O-10, E25) : lecture retirée (aucun appelant) — seul le rattachement (POST) reste.
+    expect((r as Record<string, unknown>).GET).toBeUndefined();
     const d = await import('@/app/api/documents/[id]/events/route');
     expect((await d.GET(req(`/api/documents/${B.fichier}/events`), ctx('id', B.fichier))).status).toBe(404);
   });
@@ -159,11 +156,11 @@ scenario('L49-SEC', 'SEC-P0 — isolation intercomptes (matrice A/B)', ({ sql, m
   it('AC02 — A tente de supprimer une relation appartenant à B : suppression refusée, relation intacte', async () => {
     as(A.acc);
     const r = await import('@/app/api/events/[eventId]/documents/route');
-    expect((await r.DELETE(req(`/api/events/${B.evt}/documents?fileId=${B.fichier}`, { method: 'DELETE' }), ctx('eventId', B.evt))).status).toBe(404);
+    // Lot 84A (O-10, E25) : suppressions par les routes events retirées (aucun appelant).
+    expect((r as Record<string, unknown>).DELETE).toBeUndefined();
+    expect(((await import('@/app/api/events/route')) as Record<string, unknown>).DELETE).toBeUndefined();
     const d = await import('@/app/api/documents/[id]/events/route');
     expect((await d.DELETE(req(`/api/documents/${B.fichier}/events?eventId=${B.evt}`, { method: 'DELETE' }), ctx('id', B.fichier))).status).toBe(404);
-    const one = await import('@/app/api/events/[eventId]/route');
-    expect((await one.DELETE(req(`/api/events/${B.evt}`, { method: 'DELETE' }), ctx('eventId', B.evt))).status).toBe(404);
     expect(await sql`SELECT 1 FROM event_documents WHERE event_id = ${B.evt} AND file_id = ${B.fichier}`).toHaveLength(1);
     expect(await sql`SELECT 1 FROM events WHERE id = ${B.evt}`).toHaveLength(1);
   });
@@ -266,10 +263,6 @@ scenario('L49-SEC', 'SEC-P0 — isolation intercomptes (matrice A/B)', ({ sql, m
     as(A.acc);
 
     // Routes.
-    const evd = await import('@/app/api/events/[eventId]/documents/route');
-    const r1 = await evd.GET(req(`/api/events/${evtA2.id}/documents`), ctx('eventId', evtA2.id));
-    expect(r1.status).toBe(200);
-    expect((await r1.json()).data ?? []).toEqual([]);
     const es = await import('@/app/api/equipments/[id]/suppliers/route');
     const r2 = await es.GET(req(`/api/equipments/${A.equip}/suppliers`), ctx('id', A.equip));
     expect(r2.status).toBe(200);
@@ -445,16 +438,16 @@ scenario('L49-SEC', 'SEC-P0 — isolation intercomptes (matrice A/B)', ({ sql, m
     const u = await make.user();
     const X = await compte(sql, make, 'X', u);
     const Y = await compte(sql, make, 'SECRETY', u);
-    const one = await import('@/app/api/events/[eventId]/route');
+    const one = await import('@/app/api/events/route');
     const es = await import('@/app/api/equipments/[id]/suppliers/route');
     await sql`INSERT INTO equipment_suppliers (equipment_id, supplier_id) VALUES (${Y.equip}, ${Y.fourn})`;
     as(X.acc, u.id);
-    expect((await one.GET(req(`/api/events/${Y.evt}`), ctx('eventId', Y.evt))).status).toBe(404);
+    expect((await one.GET(req(`/api/events?id=${Y.evt}`))).status).toBe(404);
     expect((await es.GET(req(`/api/equipments/${Y.equip}/suppliers`), ctx('id', Y.equip))).status).toBe(404);
     const r = await import('@/app/api/events/[eventId]/documents/route');
     expect((await r.POST(req(`/api/events/${X.evt}/documents`, { method: 'POST', body: { fileIds: [Y.fichier] } }), ctx('eventId', X.evt))).status).toBe(404);
     as(Y.acc, u.id);
-    expect((await one.GET(req(`/api/events/${Y.evt}`), ctx('eventId', Y.evt))).status).toBe(200);
+    expect((await one.GET(req(`/api/events?id=${Y.evt}`))).status).toBe(200);
     const sup = await (await es.GET(req(`/api/equipments/${Y.equip}/suppliers`), ctx('id', Y.equip))).json();
     expect(sup.suppliers.map((s: { supplierId: number }) => s.supplierId)).toEqual([Y.fourn]);
   });
@@ -467,10 +460,9 @@ scenario('L49-SEC', 'SEC-P0 — isolation intercomptes (matrice A/B)', ({ sql, m
     as(D.acc, membre.id);
     const evd = await import('@/app/api/events/[eventId]/documents/route');
     expect((await evd.POST(req(`/api/events/${D.evt}/documents`, { method: 'POST', body: { fileIds: [D.fichier] } }), ctx('eventId', D.evt))).status).toBe(201);
-    expect((await (await evd.GET(req(`/api/events/${D.evt}/documents`), ctx('eventId', D.evt))).json()).count).toBe(1);
     const de = await import('@/app/api/documents/[id]/events/route');
     expect((await (await de.GET(req(`/api/documents/${D.fichier}/events`), ctx('id', D.fichier))).json()).total).toBe(1);
-    expect((await evd.DELETE(req(`/api/events/${D.evt}/documents?fileId=${D.fichier}`, { method: 'DELETE' }), ctx('eventId', D.evt))).status).toBe(200);
+    expect((await de.DELETE(req(`/api/documents/${D.fichier}/events?eventId=${D.evt}`, { method: 'DELETE' }), ctx('id', D.fichier))).status).toBe(200);
     expect((await de.POST(req(`/api/documents/${D.fichier}/events`, { method: 'POST', body: { eventIds: [D.evt] } }), ctx('id', D.fichier))).status).toBe(201);
     const es = await import('@/app/api/equipments/[id]/suppliers/route');
     expect((await es.POST(req(`/api/equipments/${D.equip}/suppliers`, { method: 'POST', body: { supplierId: D.fourn } }), ctx('id', D.equip))).status).toBe(201);

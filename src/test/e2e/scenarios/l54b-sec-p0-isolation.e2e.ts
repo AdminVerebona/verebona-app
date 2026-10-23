@@ -177,14 +177,14 @@ scenario('L54B-SEC', 'SEC-P0-CORR — isolation stricte des comptes', ({ sql, ma
     expect((await sql<{ account_id: number }[]>`SELECT account_id FROM assets WHERE id = ${nu.id}`)[0].account_id).toBe(A.acc.id);
   });
 
-  it('SEC-03-03 — modification : équipement d’un autre compte refusé, rien écrit (route PUT)', async () => {
-    const { PUT } = await import('@/app/api/events/route');
-    const r = await PUT(req(await jeton(A.user, A.acc.id), `/api/events?id=${A.evt}`, { method: 'PUT', body: { equipmentId: B.equip, title: 'ALPHA-pirate' } }));
-    expect(r.status).toBe(404);
+  it('SEC-03-03 — modification : équipement d’un autre compte refusé, rien écrit (route PUT retirée au lot 84A)', async () => {
+    // Lot 84A (CDC v5 O-10, E25) : PUT /api/events n'avait plus d'appelant — retiré (plus de surface d'écriture).
+    const route = await import('@/app/api/events/route') as Record<string, unknown>;
+    expect(route.PUT).toBeUndefined();
+    // La garde en base (0373) reste : un rattachement à l'équipement d'un autre compte est refusé, rien n'est écrit.
+    await expect(sql`UPDATE events SET equipment_id = ${B.equip} WHERE id = ${A.evt}`).rejects.toThrow(/CROSS_ACCOUNT/);
     expect((await sql<{ titre: string; equipment_id: number | null }[]>`SELECT titre, equipment_id FROM events WHERE id = ${A.evt}`)[0])
       .toEqual({ titre: 'ALPHA-entretien', equipment_id: null });
-    const ok = await PUT(req(await jeton(A.user, A.acc.id), `/api/events?id=${A.evt}`, { method: 'PUT', body: { equipmentId: A.equip, important: true } }));
-    expect(ok.status).toBe(200);
   });
 
   // ── SEC-01 ──────────────────────────────────────────────────────────────
@@ -327,8 +327,7 @@ scenario('L54B-SEC', 'SEC-P0-CORR — isolation stricte des comptes', ({ sql, ma
                ON CONFLICT (operation_id) DO UPDATE SET insurance_contract_operation_id = EXCLUDED.insurance_contract_operation_id, history_event_id = EXCLUDED.history_event_id`;
       await tx`INSERT INTO business_operation_claim_damage_documents (damage_id, file_id) VALUES (${damageA}, ${B.fichier})`;
       await tx`INSERT INTO business_operation_claim_damage_photos (damage_id, photo_id) VALUES (${damageA}, ${B.photo})`;
-      await tx`INSERT INTO business_operation_claim_actions (operation_id, title, invoice_file_id) VALUES (${claimA}, 'ALPHA-action', ${B.fichier})`;
-      await tx`INSERT INTO business_operation_claim_exchanges (operation_id, summary, document_file_id) VALUES (${claimA}, 'ALPHA-echange', ${B.fichier})`;
+      // Lot 84A (O-10) : actions et échanges de l'ancien modèle Sinistres (tables supprimées par la finalisation BO) — plus contrôlés.
       await tx`INSERT INTO asset_photos (asset_id, user_id, file_id, caption) VALUES (${A.bien.id}, ${A.user.id}, ${B.photoFile}, 'ALPHA-photo-etrangere')`;
     });
     const { loadClaimRecords } = await import('@/services/business-operations/claims/read');
@@ -402,9 +401,10 @@ scenario('L54B-SEC', 'SEC-P0-CORR — isolation stricte des comptes', ({ sql, ma
     const { runCrossAccountCheck, readIsolationHistory } = await import('@/services/security/cross-account/alerts');
     const r = await runCrossAccountCheck(undefined, 'manual');
     expect(r.status).toBe('ANOMALIES');
-    for (const c of ['CLAIM_CONTRACT', 'CLAIM_HISTORY_EVENT', 'CLAIM_ACTION_REF', 'CLAIM_EXCHANGE_DOCUMENT', 'CLAIM_DAMAGE_DOCUMENT', 'CLAIM_DAMAGE_PHOTO', 'PHOTO_FILE']) {
+    for (const c of ['CLAIM_CONTRACT', 'CLAIM_HISTORY_EVENT', 'CLAIM_DAMAGE_DOCUMENT', 'CLAIM_DAMAGE_PHOTO', 'PHOTO_FILE']) {
       expect(r.counts[c], c).toBeGreaterThan(0);
     }
+    for (const c of ['CLAIM_ACTION_REF', 'CLAIM_EXCHANGE_DOCUMENT']) expect(r.counts[c], c).toBeUndefined();
     const h = await readIsolationHistory();
     expect(h?.runs[0]).toMatchObject({ trigger: 'manual', status: 'ANOMALIES', checksFailed: 0 });
     expect(h?.lastComplete).not.toBeNull();
@@ -432,22 +432,21 @@ scenario('L54B-SEC', 'SEC-P0-CORR — isolation stricte des comptes', ({ sql, ma
   it('SEC-09-01 — Opérations : simulation sans écriture, application journalisée, recontrôle, restauration', async () => {
     const { runCrossAccountRemediation, restoreCrossAccountRemediation } = await import('@/services/security/cross-account/remediation');
     const { pgClient } = await import('@/db');
-    const etat = async () => (await sql<{ k: number | null; d: number; p: number; i: number | null }[]>`
+    const etat = async () => (await sql<{ k: number | null; d: number; p: number }[]>`
       SELECT (SELECT insurance_contract_operation_id FROM business_operation_claim_details WHERE operation_id = ${claimA})::int AS k,
              (SELECT count(*)::int FROM business_operation_claim_damage_documents WHERE damage_id = ${damageA}) AS d,
-             (SELECT count(*)::int FROM business_operation_claim_damage_photos WHERE damage_id = ${damageA}) AS p,
-             (SELECT invoice_file_id FROM business_operation_claim_actions WHERE operation_id = ${claimA} LIMIT 1) AS i`)[0];
+             (SELECT count(*)::int FROM business_operation_claim_damage_photos WHERE damage_id = ${damageA}) AS p`)[0];
     const avant = await etat();
     expect(avant.d).toBe(1);
     const sim = await runCrossAccountRemediation(pgClient, { family: 'operations', apply: false, accountId: A.acc.id });
-    expect(sim.corrected).toBeGreaterThanOrEqual(6);
+    expect(sim.corrected).toBeGreaterThanOrEqual(4);   // lot 84A : sans les actions / échanges de l'ancien modèle
     expect(await etat()).toEqual(avant);
     expect(sim.categories.find((c) => c.code === 'OP_CORE_LINK')).toBeDefined();
     const app = await runCrossAccountRemediation(pgClient, { family: 'operations', apply: true, accountId: A.acc.id, reason: 'E2E SEC-09' });
     expect(app.corrected).toBe(sim.corrected);
-    expect(await etat()).toEqual({ k: null, d: 0, p: 0, i: null });
+    expect(await etat()).toEqual({ k: null, d: 0, p: 0 });
     expect(app.postCheck?.incomplete).toEqual([]);
-    for (const c of ['CLAIM_CONTRACT', 'CLAIM_DAMAGE_DOCUMENT', 'CLAIM_DAMAGE_PHOTO', 'CLAIM_EXCHANGE_DOCUMENT']) {
+    for (const c of ['CLAIM_CONTRACT', 'CLAIM_DAMAGE_DOCUMENT', 'CLAIM_DAMAGE_PHOTO']) {
       expect(app.postCheck?.remaining[c], c).toBe(0);
     }
     // Objets conservés dans leur compte.

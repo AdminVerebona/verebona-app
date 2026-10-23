@@ -14,6 +14,12 @@
  *
  * Voir : docs/CDC_V3_Structure_Donnees.md — Agenda unifié cible
  *
+ * Lot 84A (O-10, E25) : seules restent les méthodes encore APPELÉES par
+ * l'interface (« Ajouter un document » : liste des événements d'un bien,
+ * création d'un événement) — GET et POST. PUT / DELETE, et les routes
+ * `/api/events/[eventId]`, `…/suggestions`, `…/agenda`,
+ * `…/prochaines-echeances` sans appelant, sont retirés.
+ *
  * Lot 49 (SEC-02) : mêmes exigences que les routes récentes — compte actif,
  * biens / pièces / équipements référencés vérifiés (appartenance et
  * cohérence), mises à jour et suppressions avec la condition de compte dans
@@ -22,7 +28,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/db';
 import { events, assets, calendarAdditions } from '@/db/schema';
-import { eq, like, and, gt, desc, sql as dsql, type SQL } from 'drizzle-orm';
+import { eq, like, and, gt, desc } from 'drizzle-orm';
 import { parsePaginationParams, buildPaginationResponse, getCursorId } from '@/lib/pagination';
 import { apiError } from '@/lib/api-errors';
 import { SessionService } from '@/lib/session-service';
@@ -47,8 +53,6 @@ function targetRefusal(e: unknown, context: string) {
   return null;
 }
 
-/** Ligne absente au moment de l'écriture (supprimée ou d'un autre compte). */
-class EventGoneError extends Error {}
 
 const toId = (v: unknown): number | null => {
   if (v === null || v === undefined || v === '' || v === 0) return null;
@@ -305,234 +309,5 @@ export async function POST(request: NextRequest) {
   }
 }
 
-export async function PUT(request: NextRequest) {
-  try {
-    // Auth check
-    let session: Awaited<ReturnType<typeof SessionService.tryGetSession>>;
-    try {
-      session = await SessionService.getSession(request);
-    } catch (authError) {
-      return SessionService.handleSessionError(authError);
-    }
-
-    if (!session) {
-      return apiError(401, 'UNAUTHORIZED', 'Authentication required');
-    }
-
-    if (!session.currentAccountId) {
-      return apiError(401, 'UNAUTHORIZED', 'No account selected');
-    }
-
-    const { searchParams } = new URL(request.url);
-    const id = searchParams.get('id');
-
-    if (!id || isNaN(parseInt(id))) {
-      return apiError(400, 'INVALID_INPUT', 'Valid ID is required');
-    }
-
-    // Check if event exists and belongs to account
-    const existingEvent = await db
-      .select()
-      .from(events)
-      .where(
-        and(
-          eq(events.id, parseInt(id)),
-          eq(events.accountId, session.currentAccountId)
-        )
-      )
-      .limit(1);
-
-    if (existingEvent.length === 0) {
-      return apiError(404, 'NOT_FOUND', 'Event not found or does not belong to your account');
-    }
-
-    const body = await request.json();
-    // Canonical field names: title, categorie, date — with legacy aliases
-    const title: string | undefined = body.title ?? body.titre;
-    const categorie: string | undefined = body.categorie ?? body.eventType;
-    const date: string | undefined = body.date ?? body.dateEvenement;
-    const { statut, important, substructureId, equipmentId, provider, costCents, notes, description } = body;
-
-    const updates: any = {
-      updatedAt: new Date(),
-    };
-
-    if (categorie !== undefined) {
-      if (!VALID_CATEGORIES.includes(categorie as typeof VALID_CATEGORIES[number])) {
-        return apiError(400, 'INVALID_INPUT', `categorie must be one of: ${VALID_CATEGORIES.join(', ')}`);
-      }
-      updates.categorie = categorie.trim();
-    }
-
-    if (title !== undefined) {
-      if (title.trim() === '') {
-        return apiError(400, 'INVALID_INPUT', 'title cannot be empty');
-      }
-      updates.title = title.trim();
-    }
-
-    if (date !== undefined) {
-      updates.date = date || null;
-    }
-
-    if (statut !== undefined) {
-      if (!VALID_STATUTS.includes(statut as typeof VALID_STATUTS[number])) {
-        return apiError(400, 'INVALID_INPUT', `statut must be one of: ${VALID_STATUTS.join(', ')}`);
-      }
-      updates.statut = statut;
-    }
-
-    if (important !== undefined) {
-      updates.important = important ? true : false;
-    }
-
-    if (substructureId !== undefined) {
-      updates.substructureId = substructureId ? parseInt(substructureId) : null;
-    }
-
-    if (equipmentId !== undefined) {
-      updates.equipmentId = equipmentId ? parseInt(equipmentId) : null;
-    }
-
-    if (provider !== undefined) {
-      updates.provider = provider ? provider.trim() : null;
-    }
-
-    if (costCents !== undefined) {
-      if (costCents !== null && costCents !== '') {
-        const costInt = parseInt(costCents);
-        if (isNaN(costInt) || costInt < 0) {
-          return apiError(400, 'INVALID_INPUT', 'costCents must be a positive integer');
-        }
-        updates.costCents = costInt;
-      } else {
-        updates.costCents = null;
-      }
-    }
-
-    if (notes !== undefined) {
-      updates.notes = notes || null;
-    }
-
-    if (description !== undefined) {
-      updates.description = description || null;
-    }
-
-    const columnMap: Record<string, string> = {
-      categorie: 'categorie',
-      title: 'titre',
-      date: 'date_evenement',
-      statut: 'statut',
-      important: 'important',
-      substructureId: 'substructure_id',
-      equipmentId: 'equipment_id',
-      provider: 'provider',
-      costCents: 'cost_cents',
-      notes: 'notes',
-      description: 'description',
-    };
-    const sets: SQL[] = [dsql`updated_at = NOW()`];
-    for (const [key, col] of Object.entries(columnMap)) {
-      if (key in updates) sets.push(dsql`${dsql.identifier(col)} = ${updates[key] ?? null}`);
-    }
-
-    // Lot 54 (SEC-03) : contrôle et écriture dans UNE transaction — ligne de
-    // l'événement verrouillée (FOR UPDATE, bornée au compte), cibles
-    // verrouillées (FOR SHARE) puis vérifiées, puis mise à jour bornée au compte.
-    const accountId = session.currentAccountId;
-    const eventId = parseInt(id);
-    let result: Array<Record<string, unknown>>;
-    try {
-      result = await db.transaction(async (tx) => {
-        const [courant] = (await tx.execute(dsql`
-          SELECT asset_id, substructure_id, equipment_id FROM events
-           WHERE id = ${eventId} AND account_id = ${accountId} FOR UPDATE`)) as unknown as Array<{ asset_id: number | null; substructure_id: number | null; equipment_id: number | null }>;
-        if (!courant) throw new EventGoneError();
-        // Pièce / équipement modifiés : du compte, et portés par le bien de l'événement.
-        if (substructureId !== undefined || equipmentId !== undefined) {
-          await lockTargetInAccount(accountId, {
-            assetId: courant.asset_id ?? null,
-            substructureId: substructureId !== undefined ? toId(substructureId) : courant.substructure_id,
-            equipmentId: equipmentId !== undefined ? toId(equipmentId) : courant.equipment_id,
-          }, tx);
-        }
-        return (await tx.execute(dsql`
-          UPDATE events SET ${dsql.join(sets, dsql`, `)}
-           WHERE id = ${eventId} AND account_id = ${accountId} RETURNING *`)) as unknown as Array<Record<string, unknown>>;
-      });
-    } catch (e) {
-      if (e instanceof EventGoneError) return apiError(404, 'NOT_FOUND', 'Event not found');
-      const refus = targetRefusal(e, 'PUT /api/events');
-      if (refus) return refus;
-      throw e;
-    }
-
-    if (result.length === 0) {
-      return apiError(404, 'NOT_FOUND', 'Event not found');
-    }
-
-    return NextResponse.json(result[0], { status: 200 });
-  } catch (error) {
-    console.error('PUT error:', error);
-    return apiError(500, 'INTERNAL_ERROR', 'Internal server error');
-  }
-}
-
-export async function DELETE(request: NextRequest) {
-  try {
-    // Auth check
-    let session: Awaited<ReturnType<typeof SessionService.tryGetSession>>;
-    try {
-      session = await SessionService.getSession(request);
-    } catch (authError) {
-      return SessionService.handleSessionError(authError);
-    }
-
-    if (!session) {
-      return apiError(401, 'UNAUTHORIZED', 'Authentication required');
-    }
-
-    if (!session.currentAccountId) {
-      return apiError(401, 'UNAUTHORIZED', 'No account selected');
-    }
-
-    const { searchParams } = new URL(request.url);
-    const id = searchParams.get('id');
-
-    if (!id || isNaN(parseInt(id))) {
-      return apiError(400, 'INVALID_INPUT', 'Valid ID is required');
-    }
-
-    // Check if event exists and belongs to account
-    const existingEvent = await db
-      .select()
-      .from(events)
-      .where(
-        and(
-          eq(events.id, parseInt(id)),
-          eq(events.accountId, session.currentAccountId)
-        )
-      )
-      .limit(1);
-
-    if (existingEvent.length === 0) {
-      return apiError(404, 'NOT_FOUND', 'Event not found or does not belong to your account');
-    }
-
-    const deleted = await db
-      .delete(events)
-      .where(and(eq(events.id, parseInt(id)), eq(events.accountId, session.currentAccountId)))
-      .returning();
-
-    return NextResponse.json(
-      { 
-        message: 'Event deleted successfully',
-        event: deleted[0]
-      },
-      { status: 200 }
-    );
-  } catch (error) {
-    console.error('DELETE error:', error);
-    return apiError(500, 'INTERNAL_ERROR', 'Internal server error');
-  }
-}
+// Lot 84A (CDC v5 O-10, E25) : PUT et DELETE retirés — aucun appelant (l'interface ne modifie ni ne supprime
+// plus d'événement historique par cette route). GET et POST restent : « Ajouter un document » les appelle encore.

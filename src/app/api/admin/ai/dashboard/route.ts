@@ -150,7 +150,6 @@ export async function GET(req: NextRequest) {
     const systemAlerts = valeur(10, [] as Awaited<ReturnType<typeof listAlerts>>);
     const activity = valeur(11, [] as Awaited<ReturnType<typeof getTreatmentActivity>>);
     const drafts = valeur(12, [] as Awaited<ReturnType<typeof listDraftSummaries>>);
-    const windowLabel = windowDays === 1 ? '24 h' : `${windowDays} jours`;
 
     const alerts: DashboardAlert[] = [];
 
@@ -199,21 +198,9 @@ export async function GET(req: NextRequest) {
       });
     }
 
-    // Lot 83C (BO-04, BO-11) : une alerte par traitement, sur les exécutions
-    // MÉTIER échouées ou incomplètes (chacune comptée une fois) — jamais une
-    // somme d'appels en échec présentée comme autant de documents. Les
-    // incidents de modèle restent signalés à part (MOD-008 ci-dessus).
-    for (const e of (executions ?? []).filter((x) => x.failed + x.incomplete > 0)) {
-      const parts = [
-        e.failed ? `${e.failed} exécution${e.failed > 1 ? 's' : ''} échouée${e.failed > 1 ? 's' : ''}` : null,
-        e.incomplete ? `${e.incomplete} incomplète${e.incomplete > 1 ? 's' : ''}` : null,
-      ].filter(Boolean).join(', ');
-      alerts.push({
-        severity: e.failed > 0 ? 'warning' : 'info',
-        message: `${e.treatment} : ${parts} en ${windowLabel}.`,
-        href: `/admin/ai-executions?treatment=${e.treatment}`,
-      });
-    }
+    // Lot 84D (BO-11, C-Q9, décision PO 12) : plus d'alerte « exécutions échouées / incomplètes » ici —
+    // leur source unique est la carte d'Exécutions & logs ; la carte santé du traitement y RENVOIE
+    // (sans répéter les comptages).
 
     // Un traitement batch sans déclencheur actif ne partira que manuellement.
     // C'est un choix légitime — et c'est aussi la forme que prend un oubli.

@@ -313,9 +313,9 @@ scenario('L72D', 'Premium Duo en compte partagé', ({ sql, make }) => {
     const { PUT: majDoc } = await import('@/app/api/documents/[id]/route');
     const r2 = await majDoc(req(`/api/documents/${d.doc.id}`, { method: 'PUT', body: { fileName: 'ECRIT-facture.pdf', documentType: 'FACTURE', retainedTitle: 'Facture modifiée par le membre' }, cookie: ck(m) }), params({ id: d.doc.id }));
     expect(r2.status, await r2.clone().text()).toBe(200);
-    // Il supprime un événement du titulaire.
-    const { DELETE: supprEvt } = await import('@/app/api/events/route');
-    const r3 = await supprEvt(req(`/api/events?id=${d.evt}`, { method: 'DELETE', cookie: ck(m) }));
+    // Il crée un événement sur le bien du titulaire (lot 84A : DELETE /api/events, sans appelant, est retiré — O-10, E25).
+    const { POST: creerEvt } = await import('@/app/api/events/route');
+    const r3 = await creerEvt(req('/api/events', { method: 'POST', body: { title: 'ECRIT-evenement-du-membre', categorie: 'entretien', assetId: d.bien.id }, cookie: ck(m) }));
     expect(r3.status, await r3.clone().text()).toBeLessThan(300);
     // Il crée un bien ; le titulaire le modifie.
     const cree = await POST(req('/api/assets', { body: { name: 'ECRIT-velo-du-membre', category: 'VEHICULE' }, cookie: ck(m) }));

@@ -836,7 +836,7 @@ async function operationDossier(ctx: Ctx, id: number, withDetail: boolean): Prom
   await section(ctx, { id: 'identite', tab: 'synthese', title: 'Opération (OperationDiagnosticsService)', description: 'Détail rendu par la vue de diagnostic existante (listes d’affichage) ; ci-dessous les données BDD, relations et listes INTÉGRALES.' }, async () => ({
     fields: pick('business_operations', row, [['id', 'Identifiant'], ['type_code', 'Type'], ['status', 'Statut'], ['technical_label', 'Libellé technique'], ['provider', 'Prestataire'],
       ['planned_date', 'Date prévue'], ['start_date', 'Début'], ['realized_date', 'Réalisation'], ['end_date', 'Fin'], ['invalidated_at', 'Invalidée le'], ['invalidation_reason', 'Motif d’invalidation'],
-      ['merged_into_operation_id', 'Fusionnée dans'], ['parent_operation_id', 'Parent'], ['last_reconciled_at', 'Dernière réconciliation'], ['created_at', 'Créée le'], ['updated_at', 'Modifiée le']]),
+      ['merged_into_operation_id', 'Fusionnée dans'], ['last_reconciled_at', 'Dernière réconciliation'], ['created_at', 'Créée le'], ['updated_at', 'Modifiée le']]),
   }));
   await tableSection(ctx, 'components', 'synthese', 'Composantes financières', OPERATION_DETAIL_LISTS.components.table, OPERATION_DETAIL_LISTS.components.sql, [id, A]);
   await section(ctx, { id: 'bdd-operation', tab: 'bdd', title: 'business_operations — colonnes persistées' }, async () => ({ fields: bddFields('business_operations', row) }));
@@ -845,12 +845,11 @@ async function operationDossier(ctx: Ctx, id: number, withDetail: boolean): Prom
        FROM business_operation_contract_details WHERE operation_id = $1`],
     ['bdd-financing', 'business_operation_financing_details', `SELECT financing_reference, lender, principal_amount_minor, principal_currency,
        effective_from::text AS effective_from, effective_to::text AS effective_to, updated_at FROM business_operation_financing_details WHERE operation_id = $1`],
-    // Sinistre : champs structurés et décomptes seulement — aucun texte libre.
+    // Sinistre : champs structurés et décomptes seulement — aucun texte libre. (Lot 84A : plus de décompte des actions /
+    // échanges de l'ancien modèle — tables supprimées par la finalisation du nettoyage BO.)
     ['bdd-claim', 'business_operation_claim_details (champs structurés)', `SELECT cd.claim_type, cd.declared_on::text AS declared_on, cd.insurer_claim_ref, cd.insurance_contract_operation_id,
        cd.status, cd.estimated_damage_minor, cd.updated_at,
-       (SELECT count(*) FROM business_operation_claim_damages d WHERE d.operation_id = cd.operation_id)::int AS damages,
-       (SELECT count(*) FROM business_operation_claim_actions a WHERE a.operation_id = cd.operation_id)::int AS actions,
-       (SELECT count(*) FROM business_operation_claim_exchanges x WHERE x.operation_id = cd.operation_id)::int AS exchanges
+       (SELECT count(*) FROM business_operation_claim_damages d WHERE d.operation_id = cd.operation_id)::int AS damages
        FROM business_operation_claim_details cd WHERE cd.operation_id = $1`],
   ];
   for (const [sid, title, sql] of details) {
@@ -881,12 +880,6 @@ async function operationDossier(ctx: Ctx, id: number, withDetail: boolean): Prom
     UNION ALL
     SELECT 'agenda', i.id, coalesce(i.title, 'Échéance'), CASE WHEN i.projection_origin = 'OPERATION' THEN 'échéance projetée (T4)' ELSE 'échéance rapprochée' END, i.manual_status, i.projection_origin, 'agenda_items.business_operation_id'
       FROM agenda_items i WHERE i.business_operation_id = $1 AND i.account_id = $2
-    UNION ALL
-    SELECT 'operation', p.id, coalesce(p.technical_label, p.type_code, 'Opération'), 'Opération parente', p.status, NULL, 'business_operations.parent_operation_id'
-      FROM business_operations o JOIN business_operations p ON p.id = o.parent_operation_id AND p.account_id = $2 WHERE o.id = $1
-    UNION ALL
-    SELECT 'operation', c.id, coalesce(c.technical_label, c.type_code, 'Opération'), 'Opération enfant', c.status, NULL, 'business_operations.parent_operation_id'
-      FROM business_operations c WHERE c.parent_operation_id = $1 AND c.account_id = $2
     UNION ALL
     SELECT 'operation', m.id, 'Opération #' || m.id, 'fusionnée dans', NULL, NULL, 'business_operations.merged_into_operation_id'
       FROM business_operations o JOIN business_operations m ON m.id = o.merged_into_operation_id AND m.account_id = $2 WHERE o.id = $1

@@ -148,12 +148,21 @@ export type AdminActionType =
   // de recette (lancement, fin : statut, volumes, option contenus sensibles)
   // et téléchargement d'un fichier ou de l'archive complète.
   | 'RECETTE_EXPORT'
-  | 'RECETTE_EXPORT_DOWNLOAD';
+  | 'RECETTE_EXPORT_DOWNLOAD'
+  // Lot 84D (CDC Pilotage IA V2 P3, LOG-07, décision PO 15) : BO › Exécutions &
+  // logs — consultation du détail d'une exécution métier ; export (unitaire,
+  // groupé ou volumineux : lancement, reprise, fin) et téléchargement ; relance
+  // existante déclenchée depuis le détail (lien à l'exécution initiale, BO-10).
+  | 'AI_BUSINESS_EXECUTION_READ'
+  | 'AI_EXECUTIONS_EXPORT'
+  | 'AI_EXECUTIONS_EXPORT_DOWNLOAD'
+  | 'AI_EXECUTION_RELAUNCH';
 
 export type AdminTargetType = 'ACCOUNT' | 'USER' | 'EXPORT_TEMPLATE' | 'COMMUNICATION_CHANNEL' | 'ANOMALY' | 'GDPR_REQUEST'
   | 'ASSISTANT_SETTING' | 'ASSISTANT_REQUEST' | 'NOTIFICATION' | 'AI_CACHE' | 'AI_METRICS'
   | 'OPS_BACKFILL' | 'SCHEDULED_TASK' | 'AI_EXECUTION' | 'STRIPE_CATALOG' | 'EMAIL_LOG' | 'AI_EXECUTION_REPORT' | 'EMAIL_SETTINGS'
-  | 'EMAIL_TEMPLATE' | 'ANNUAL_RENEWAL' | 'TECH_DIAGNOSTIC' | 'OPERATION_IDENTITY_REVIEW' | 'RECETTE_EXPORT';
+  | 'EMAIL_TEMPLATE' | 'ANNUAL_RENEWAL' | 'TECH_DIAGNOSTIC' | 'OPERATION_IDENTITY_REVIEW' | 'RECETTE_EXPORT'
+  | 'AI_EXECUTIONS_EXPORT';
 
 type Executor = Pick<typeof db, 'insert' | 'select'>;
 

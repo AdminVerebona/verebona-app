@@ -77,14 +77,23 @@ export type RecetteZipOutcome = { ok: true; bytes: number } | { ok: false; bytes
 
 /** Archive complète d'une génération, écrite en flux dans `out`. */
 export async function streamRecetteZip(m: RecetteManifest, storage: RecetteStorage, out: PassThrough): Promise<RecetteZipOutcome> {
-  const zip = new JSZip();
-  const date = new Date(m.generatedAt);
   const prefix = recettePrefix(m.generationId);
+  return streamStoredZip(recetteDownloadables(m).map((path) => ({ path, key: `${prefix}${path}` })), new Date(m.generatedAt), storage, out);
+}
+
+/**
+ * Lot 84D — archive ZIP de fichiers STOCKÉS, écrite en flux dans `out`
+ * (fichiers lus un par un, à la demande ; `.gz` stockés tels quels) : même
+ * mécanisme pour l'export de recette (82E) et les volumes de l'export des
+ * exécutions IA (84D). Limite du format : 4 Gio — au-delà, échec explicite.
+ */
+export async function streamStoredZip(files: ReadonlyArray<{ path: string; key: string }>, date: Date, storage: RecetteStorage, out: PassThrough): Promise<RecetteZipOutcome> {
+  const zip = new JSZip();
   const entries: Readable[] = [];
-  for (const path of recetteDownloadables(m)) {
-    const e = lazyObject(storage, `${prefix}${path}`);
+  for (const f of files) {
+    const e = lazyObject(storage, f.key);
     entries.push(e);
-    zip.file(path, e, { date, binary: true, createFolders: true, compression: path.endsWith('.gz') ? 'STORE' : 'DEFLATE' });
+    zip.file(f.path, e, { date, binary: true, createFolders: true, compression: f.path.endsWith('.gz') ? 'STORE' : 'DEFLATE' });
   }
   const zs = zip.generateNodeStream({ streamFiles: true, compression: 'DEFLATE', compressionOptions: { level: 6 }, platform: 'UNIX' });
   let bytes = 0;

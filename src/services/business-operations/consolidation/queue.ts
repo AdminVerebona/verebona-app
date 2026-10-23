@@ -110,6 +110,8 @@ export interface OperationsEvent {
   assetId?: number;
   /** Lot 46 (O7) : élément d'agenda modifié par l'utilisateur (`agenda_changed`). */
   agendaItemId?: number;
+  /** Lot 84E (O-6) : Pièce créée ou modifiée (`asset_updated`) — reconsolidation ciblée. */
+  roomId?: number;
   correlationId?: string;
   at?: string;
 }
@@ -219,6 +221,7 @@ function parseEvents(job: Pick<QueuedJob, 'id'>, raw: unknown): OperationsEvent[
       ...(id('fileId') ? { fileId: id('fileId') } : {}),
       ...(id('assetId') ? { assetId: id('assetId') } : {}),
       ...(id('agendaItemId') ? { agendaItemId: id('agendaItemId') } : {}),
+      ...(id('roomId') ? { roomId: id('roomId') } : {}),
       ...(typeof o.correlationId === 'string' ? { correlationId: o.correlationId } : {}),
       ...(typeof o.at === 'string' ? { at: o.at } : {}),
     });
@@ -258,6 +261,16 @@ export async function runOperationsJob(job: QueuedJob, p: OperationsPayload, gua
   if (admin) {
     const { requestAccountRetroReconciliation } = await import('./retro');
     await requestAccountRetroReconciliation(p.accountId);
+  }
+  // Lot 84E (CDC v5 O-6, §9.3) : un bien ou une Pièce créé / modifié est une
+  // information structurante — reconsolidation CIBLÉE (séries récurrentes du
+  // bien, Opérations de la Pièce, liens directs), avant le passage du compte.
+  if (!admin) {
+    const { reconsolidateForAsset, reconsolidateForRoom } = await import('./targeted');
+    const base = { trigger: 'asset_updated', correlationId, beforeWrite: (what: string) => guard.assertActive(what) };
+    const pieces = [...new Set(p.events.map((e) => e.roomId).filter((x): x is number => !!x))];
+    for (const roomId of pieces) await reconsolidateForRoom(p.accountId, roomId, { ...base, trigger: 'room_updated' });
+    for (const assetId of assetIds) await reconsolidateForAsset(p.accountId, assetId, base);
   }
   const res = await consolidateAccountOperations(p.accountId, {
     fileIds,

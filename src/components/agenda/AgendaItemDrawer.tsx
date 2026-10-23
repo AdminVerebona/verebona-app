@@ -60,6 +60,8 @@ import { useWriteGuard } from '@/contexts/WriteGuardContext';
 import { displayDocumentTitle } from '@/lib/documents/document-title-rules';
 import { NoDeadlineField } from "@/components/agenda/NoDeadlineField";
 import { NO_DEADLINE_HELP, NO_DEADLINE_LABEL, toggleNoDeadline, undatedLabel, withDateEntry, type AgendaDateFormState } from "@/lib/agenda/no-deadline";
+// Lot 84B (CDC v5 O-3, §14) : regroupement de l'élément — événement de référence, élément rattaché, élément seul.
+import { AgendaGroupingSection } from "@/components/agenda/AgendaGroupingSection";
 
 // Lot 53 (D17) : libellés partagés des cinq états.
 type EffectiveStatus = AgendaEffectiveStatus;
@@ -135,7 +137,19 @@ function dispatchAgendaMutated() {
   }
 }
 
-export function AgendaItemDrawer({ item, open, onClose, onMutated, onOpenDocument, initialMode = "view" }: Props) {
+export function AgendaItemDrawer({ item: itemProp, open, onClose, onMutated, onOpenDocument, initialMode = "view" }: Props) {
+  // Lot 84B : après un geste de regroupement, l'élément est relu (documents liés à jour)
+  // sans fermer le tiroir — l'écran d'origine garde sa propre relecture (`onMutated`).
+  const [freshItem, setFreshItem] = useState<AgendaItemFull | null>(null);
+  const [groupingRole, setGroupingRole] = useState<"MAIN" | "MEMBER" | "NONE" | null>(null);
+  const item = freshItem && itemProp && freshItem.id === itemProp.id ? freshItem : itemProp;
+  useEffect(() => { setFreshItem(null); setGroupingRole(null); }, [itemProp]);
+  const refreshItem = useCallback(() => {
+    if (!itemProp) return;
+    apiClient.get<{ item: AgendaItemFull }>(`/api/agenda/${itemProp.id}`)
+      .then((r) => { if (r?.item) setFreshItem(r.item); })
+      .catch(() => {});
+  }, [itemProp]);
   const [mode, setMode] = useState<"view" | "edit">(initialMode);
   const [editTitle, setEditTitle] = useState("");
   const [editDescription, setEditDescription] = useState("");
@@ -983,8 +997,9 @@ export function AgendaItemDrawer({ item, open, onClose, onMutated, onOpenDocumen
                   </div>
                 )}
 
-            {/* Documents (view only) */}
-            {item.fileLinks.length > 0 && (
+            {/* Documents (view only) — lot 84B : pour l'événement de référence, la liste de l'ensemble
+                (ci-dessous) les présente déjà, avec la nature de chaque lien. */}
+            {item.fileLinks.length > 0 && groupingRole !== "MAIN" && (
               <div className="flex items-start gap-3">
                 <div className="w-8 h-8 rounded-lg bg-[color:var(--accent-soft)] flex items-center justify-center shrink-0 mt-0.5">
                   <FileText className="h-4 w-4 text-[color:var(--text-muted)]" />
@@ -1014,6 +1029,16 @@ export function AgendaItemDrawer({ item, open, onClose, onMutated, onOpenDocumen
                   </div>
                 </div>
               </div>
+            )}
+
+            {/* Lot 84B (CDC v5 §14.2, §14.3) : regroupement — desktop et mobile (même tiroir). */}
+            {mode === "view" && (
+              <AgendaGroupingSection
+                itemId={item.id}
+                onOpenDocument={onOpenDocument}
+                onChanged={refreshItem}
+                onRole={setGroupingRole}
+              />
             )}
 
             {saveError && !temporalError && (

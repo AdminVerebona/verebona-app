@@ -36,13 +36,14 @@ export const COVERAGE_INVENTORY: readonly CoverageEntry[] = [
   },
   {
     domain: 'operations', label: 'Opérations (identité économique, montants, regroupements)',
-    checks: [...O1, 'COH-OPS-IDENTITY'],
-    gap: { what: 'montants et dates des Opérations comparés aux preuves sur le stock ; regroupements MANQUÉS ; identité 78A en détection seule (correction par le réexamen T3)', existingMechanism: 'operations-quality-check (12 anomalies dures, lecture seule) ; consolidation T3 (78A par version, 55B)', planned: 'lots suivants (O-2 et suivants du CDC v5)' },
+    checks: [...O1, 'COH-OPS-IDENTITY', 'COH-OPS-RECURRING-SERIES'],
+    // Lot 84E : les factures d'un même service non regroupées sont contrôlées et réparées (reconsolidation ciblée O-6).
+    gap: { what: 'montants et dates des Opérations comparés aux preuves sur le stock ; regroupements manqués HORS séries récurrentes établies ; identité 78A en détection seule (correction par le réexamen T3)', existingMechanism: 'operations-quality-check (12 anomalies dures, lecture seule) ; consolidation T3 (78A par version, 55B)', planned: 'lots suivants (O-2 et suivants du CDC v5)' },
   },
   {
     domain: 'rapprochements', label: 'Rapprochements (pièces ↔ Opérations, documents ↔ biens)',
-    checks: ['COH-DOC-LINKS', 'COH-OPS-IDENTITY', ...O1.filter((id) => /DOCUMENT/.test(id))],
-    gap: { what: 'rattachement document → bien principal ; relation document ↔ équipement non démontrée par le document (constat seul, contrat IA 82D-t3-document-equipement)', existingMechanism: 'T3 DOCUMENT_ASSET (balayage continu des documents sans bien) ; consolidation M1–M3', planned: 'O-6 du CDC v5, après le contrat IA' },
+    checks: ['COH-DOC-LINKS', 'COH-OPS-IDENTITY', 'COH-OPS-RECURRING-SERIES', ...O1.filter((id) => /DOCUMENT/.test(id))],
+    gap: { what: 'rattachement document → bien principal ; relation document ↔ équipement que le document ne désigne pas lui-même (constat seul, contrat IA 82D-t3-document-equipement — lot 84E : réparée par O-6 quand le document la désigne)', existingMechanism: 'T3 DOCUMENT_ASSET (balayage continu des documents sans bien) ; consolidation M1–M3 ; reconsolidation ciblée O-6', planned: 'contrat IA 82D-t3-document-equipement' },
   },
   { domain: 'tco', label: 'TCO et dépenses', checks: ['COH-TCO-EXTRACTED-EXPENSES'] },
   { domain: 'agenda', label: 'Agenda (occurrences, échéances calculables des Opérations, événements obsolètes, échéances de fiche, appartenance aux Opérations)',
@@ -54,9 +55,15 @@ export const COVERAGE_INVENTORY: readonly CoverageEntry[] = [
       planned: 'COH-AGENDA-T4-DOCUMENT-DEADLINES (point d’extension déclaré) — persistance durable des décisions T4 à décider',
     } },
   {
+    // Lot 84C (O-4) : la Timeline (regroupée / détaillée) est un CALCUL DE LECTURE sans état propre ;
+    // ses seules entrées de regroupement — principal unique, 0..1 Opération par élément — sont les invariants O-1.
     domain: 'timeline', label: 'Timeline',
-    checks: [],
-    gap: { what: 'événements de timeline dérivés', existingMechanism: 'calcul à la lecture (aucun état persisté propre)', planned: 'CDC Opérations v5' },
+    checks: O1.filter((id) => /PRINCIPAL-UNIQUE|AGENDA-ONE-OPERATION/.test(id)),
+    gap: {
+      what: 'aucune donnée propre à contrôler : groupes et compteurs recalculés à chaque lecture depuis l’agenda et les Opérations',
+      existingMechanism: 'calcul à la lecture `services/agenda/timeline` (même fonction pour la fiche du bien et l’export de recette `calculs/timeline`)',
+      planned: 'aucun contrôle propre (rien de persisté) ; les contrôles Agenda et O-1 couvrent ses entrées',
+    },
   },
   {
     domain: 'biens', label: 'Biens',
@@ -64,7 +71,7 @@ export const COVERAGE_INVENTORY: readonly CoverageEntry[] = [
     gap: { what: 'date et prix d’acquisition comparés à l’agenda et aux Opérations sur le stock', existingMechanism: 'T3 « Informations » 76J (par version)', planned: 'lot suivant' },
   },
   { domain: 'equipements', label: 'Équipements (documents rattachés, séparation bien / équipement)', checks: ['COH-DOC-LINKS', 'COH-ASSET-EQUIPMENT-SEPARATION'],
-    gap: { what: 'situations de séparation SUSPECTES (constat seul) ; document d’équipement rattaché au seul bien sans preuve propre au document (constat seul) ; liens d’un équipement déplacé vers un autre bien', existingMechanism: 'rattrapage BO « equipment-separation » (même code) ; file EQUIPMENT_DOCUMENT au déplacement', planned: 'contrat IA 82D-t3-document-equipement (O-6)' } },
+    gap: { what: 'situations de séparation SUSPECTES (constat seul) ; document d’équipement rattaché au seul bien sans preuve propre au document (constat seul — réparé par la reconsolidation ciblée O-6 dès que le document désigne l’équipement, lot 84E) ; liens d’un équipement déplacé vers un autre bien', existingMechanism: 'rattrapage BO « equipment-separation » (même code) ; file EQUIPMENT_DOCUMENT au déplacement et reconsolidation ciblée O-6', planned: 'contrat IA 82D-t3-document-equipement' } },
   { domain: 'documents-liens', label: 'Liens documentaires', checks: ['COH-DOC-LINKS', 'COH-DOC-EXTRACT-CHAIN', ...O1.filter((id) => /LINK|DOCUMENT/.test(id))] },
   { domain: 'a-traiter', label: 'Cartes « À traiter »',
     checks: ['COH-TODO-DOCUMENT-FIELDS', 'COH-TODO-STALE-DECISIONS', 'COH-TODO-RELEVANCE-CARDS', 'COH-TODO-ORPHAN-CARDS', 'COH-TODO-RESOLUTION-PROPAGATION'],

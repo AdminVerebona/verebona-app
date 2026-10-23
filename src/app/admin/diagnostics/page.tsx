@@ -48,8 +48,10 @@ const SCOPES: ReadonlyArray<{ key: DiagScope; label: string; idLabel: string | n
 ];
 const TREATMENTS: ReadonlyArray<{ key: DiagTreatment; label: string }> = [
   { key: 'T1', label: 'T1 — analyse des documents' },
+  { key: 'T2', label: 'T2 — assistant' },
   { key: 'T3', label: 'T3 — consolidation' },
   { key: 'T4', label: 'T4 — agenda' },
+  { key: 'T6', label: 'T6 — mascotte' },
 ];
 
 interface Result {

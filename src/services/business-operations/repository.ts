@@ -16,7 +16,8 @@
  *     type nul admis, OTHER jamais en repli (P18). Lot 83D (CDC v5 §6.4,
  *     §18.4, E16, AC39) : plus de relation parent / enfant — aucune écriture
  *     de `parent_operation_id` (colonne inerte, purgée par le rattrapage BO
- *     « Sinistres : nettoyage de l'ancien modèle », retirée au lot O-10).
+ *     « Sinistres : nettoyage de l'ancien modèle », supprimée par son étape
+ *     finale « Finaliser », lot 84A).
  *   · Historise les changements significatifs (10.7) — jamais un appel sans
  *     changement (NFR-OP-005, INV-040) — et accumule les événements C21.1,
  *     publiés APRÈS commit par l'appelant de la transaction.

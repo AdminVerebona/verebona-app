@@ -135,8 +135,9 @@ describe('migration 0213', () => {
     const cfg = getTableConfig(assetAdditionalInfos);
     expect(cfg.name).toBe('asset_additional_infos');
     const cols = cfg.columns.map((c) => c.name).sort();
-    // + finance_json et schema_version (migration 0214).
-    expect(cols).toEqual(['account_id', 'asset_id', 'claim_json', 'commercial_json', 'created_at', 'finance_json', 'insurance_json', 'rental_json', 'schema_version', 'updated_at', 'updated_by', 'version'].sort());
+    // + finance_json et schema_version (migration 0214). Lot 84A (O-10) : `claim_json` n'est plus déclarée (supprimée par la
+    // finalisation BO du nettoyage Sinistres, jamais par une migration).
+    expect(cols).toEqual(['account_id', 'asset_id', 'commercial_json', 'created_at', 'finance_json', 'insurance_json', 'rental_json', 'schema_version', 'updated_at', 'updated_by', 'version'].sort());
     const fks = cfg.foreignKeys.map((fk) => {
       const r = fk.reference();
       return `${r.columns[0].name}:${fk.onDelete}`;

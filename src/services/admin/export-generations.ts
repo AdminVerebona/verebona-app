@@ -22,12 +22,13 @@ export async function getGeneration(id: string): Promise<GenerationRow | null> {
   return (await listGenerations({ id, pageSize: 1 })).items[0] ?? null;
 }
 
-export type ExportKind = 'ACCOUNT_DATA' | 'TECH_DIAGNOSTIC' | 'RECETTE_EXPORT';
-export const EXPORT_KINDS: readonly ExportKind[] = ['ACCOUNT_DATA', 'TECH_DIAGNOSTIC', 'RECETTE_EXPORT'];
+/** Lot 84D : `AI_EXECUTIONS_EXPORT` — export des exécutions IA (BO › Exécutions & logs), reprenable. */
+export type ExportKind = 'ACCOUNT_DATA' | 'TECH_DIAGNOSTIC' | 'RECETTE_EXPORT' | 'AI_EXECUTIONS_EXPORT';
+export const EXPORT_KINDS: readonly ExportKind[] = ['ACCOUNT_DATA', 'TECH_DIAGNOSTIC', 'RECETTE_EXPORT', 'AI_EXECUTIONS_EXPORT'];
 
-/** Générations simultanées par instance (au-delà : 429, réessayer). Lot 82E : un seul export de recette. */
-export const MAX_CONCURRENT: Readonly<Record<ExportKind, number>> = { ACCOUNT_DATA: 3, TECH_DIAGNOSTIC: 2, RECETTE_EXPORT: 1 };
-const running: Record<ExportKind, number> = { ACCOUNT_DATA: 0, TECH_DIAGNOSTIC: 0, RECETTE_EXPORT: 0 };
+/** Générations simultanées par instance (au-delà : 429, réessayer). Lot 82E : un seul export de recette ; lot 84D : un seul export d'exécutions IA. */
+export const MAX_CONCURRENT: Readonly<Record<ExportKind, number>> = { ACCOUNT_DATA: 3, TECH_DIAGNOSTIC: 2, RECETTE_EXPORT: 1, AI_EXECUTIONS_EXPORT: 1 };
+const running: Record<ExportKind, number> = { ACCOUNT_DATA: 0, TECH_DIAGNOSTIC: 0, RECETTE_EXPORT: 0, AI_EXECUTIONS_EXPORT: 0 };
 
 /** Réserve une place de génération ; `release` à appeler une fois (idempotent). */
 export function tryAcquireExportSlot(kind: ExportKind): { release: () => void } | null {
@@ -124,6 +125,55 @@ export async function heartbeatGeneration(id: string, p: { rowsExported?: number
   } catch (e) {
     console.error('[admin/export-generations] signe de vie non écrit :', (e as Error)?.message ?? e);
   }
+}
+
+/**
+ * Lot 84D — point de reprise d'une génération longue (`resume_state`,
+ * migration 0692), écrit à chaque étape close (jamais bloquant).
+ */
+export async function saveResumeState(id: string, state: unknown, p: { rowsExported?: number; files?: number; bytes?: number } = {}): Promise<void> {
+  try {
+    const { pgClient } = await import('@/db');
+    await pgClient.unsafe(
+      `UPDATE admin_export_generations SET resume_state = $2::jsonb, heartbeat_at = now(),
+              rows_exported = COALESCE($3, rows_exported), files = COALESCE($4, files), bytes = COALESCE($5, bytes)
+        WHERE id = $1`,
+      [id, JSON.stringify(state), p.rowsExported ?? null, p.files ?? null, p.bytes ?? null] as never[],
+    );
+  } catch (e) {
+    console.error('[admin/export-generations] point de reprise non écrit :', (e as Error)?.message ?? e);
+  }
+}
+
+/** Lot 84D — point de reprise d'une génération (null : aucun, ou migration 0692 absente). */
+export async function readResumeState<T>(id: string): Promise<T | null> {
+  try {
+    const { pgClient } = await import('@/db');
+    const [r] = (await pgClient.unsafe(`SELECT resume_state FROM admin_export_generations WHERE id = $1`, [id] as never[])) as unknown as Array<{ resume_state: unknown }>;
+    const v = r?.resume_state;
+    return (typeof v === 'string' ? JSON.parse(v) : v ?? null) as T | null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Lot 84D — reprise d'une génération interrompue ou en échec : de nouveau
+ * RUNNING (signe de vie immédiat), fin et erreur effacées. Rend false si la
+ * génération est déjà en cours (non interrompue) ou arrivée à son terme
+ * (`resume_state.done`, quel que soit son statut).
+ */
+export async function reopenGeneration(id: string, now: Date = new Date()): Promise<boolean> {
+  const { pgClient } = await import('@/db');
+  const stale = new Date(now.getTime() - STALE_HEARTBEAT_MS).toISOString();
+  const rows = (await pgClient.unsafe(
+    `UPDATE admin_export_generations SET status = 'RUNNING', heartbeat_at = now(), finished_at = NULL, error = NULL
+      WHERE id = $1 AND resume_state IS NOT NULL AND (resume_state->>'done') IS DISTINCT FROM 'true'
+        AND (status IN ('FAILED', 'PARTIAL') OR (status = 'RUNNING' AND COALESCE(heartbeat_at, started_at) < $2::timestamptz))
+      RETURNING id`,
+    [id, stale] as never[],
+  )) as unknown as unknown[];
+  return rows.length === 1;
 }
 
 export interface GenerationRow {

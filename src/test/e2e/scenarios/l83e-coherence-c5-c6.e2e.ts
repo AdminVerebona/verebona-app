@@ -22,9 +22,11 @@
  *   L83E-E2E-07  abonnement local divergent de Stripe (simulé, LECTURE
  *                seule) → resynchronisé par la synchronisation existante ;
  *                droits dénormalisés réparés ; échec de réparation → Supervision ;
- *   L83E-E2E-08  compte non éligible du fait de son abonnement : LECTURE de
- *                l'état d'abonnement seulement (constat, aucune réparation,
- *                aucun contrôle métier) ; compte suspendu : rien ;
+ *   L83E-E2E-08  compte non éligible du fait de son abonnement mais payé
+ *                chez Stripe (lot 84A, décision PO L83-Q1) : à blanc, aucune
+ *                écriture ; correctif, resynchronisé par la synchronisation
+ *                existante puis réactivé (rattrapage 82A) ; aucun autre
+ *                contrôle métier ; comptes suspendu et archivé : rien ;
  *   L83E-E2E-09  mode À BLANC : constats consignés, AUCUNE écriture métier.
  *
  * Toutes les campagnes sont BORNÉES aux comptes créés ici et toutes les
@@ -328,8 +330,11 @@ scenario('L83E', 'Cohérence C5 / C6 : Agenda, « À traiter », T6, notificatio
   });
 
   // ══ L83E-E2E-08 ═══════════════════════════════════════════════════════════
+  // Lot 84A (décision PO L83-Q1) : attendu MODIFIÉ — un compte non éligible du fait de son abonnement
+  // alors que Stripe indique un paiement est RESYNCHRONISÉ en mode correctif (rien en mode à blanc),
+  // puis réactivé par le rattrapage 82A normal ; aucun autre contrôle métier ; suspendu / archivé : rien.
 
-  it('L83E-E2E-08 — compte non éligible du fait de son abonnement : lecture de l’état d’abonnement SEULE (constat, aucune réparation, aucun contrôle métier) ; suspendu : rien', async () => {
+  it('L83E-E2E-08 — compte bloqué par son abonnement mais payé chez Stripe : à blanc rien ; correctif → resynchronisé puis réactivé (rattrapage 82A) ; aucun contrôle métier ; suspendu / archivé ignorés', async () => {
     const fin = Math.floor(Date.now() / 1000) + 20 * 86400;
     const termine = await abonne({ periodEnd: fin, status: 'canceled' });
     await sql`UPDATE accounts SET subscription_status = 'EXPIRED', plan_type = 'STANDARD' WHERE id = ${termine.id}`;
@@ -338,34 +343,83 @@ scenario('L83E', 'Cohérence C5 / C6 : Agenda, « À traiter », T6, notificatio
     const f = await make.assetFile(termine, { assetId: null });
     const orpheline = await carte(termine, { type: 'DOCUMENT', target: f.id, rule: 'LINK-ASSET', relation: 'assetIds' });
     await sql`UPDATE asset_files SET deleted_at = now() WHERE id = ${f.id}`;
-    const suspendu = await abonne({ periodEnd: fin });
-    await sql`UPDATE accounts SET is_active = false WHERE id = ${suspendu.id}`;
+    const suspendu = await abonne({ periodEnd: fin, status: 'canceled' });
+    await sql`UPDATE accounts SET is_active = false, subscription_status = 'EXPIRED' WHERE id = ${suspendu.id}`;
+    const archive = await abonne({ periodEnd: fin, status: 'canceled' });
+    await sql`UPDATE accounts SET archived_at = now(), subscription_status = 'EXPIRED' WHERE id = ${archive.id}`;
+    const clients = new Map([[termine.subId, termine], [suspendu.subId, suspendu], [archive.subId, archive]]);
     const appels: string[] = [];
     (await stripe()).__setCoherenceStripeReaderForTests(async (id) => {
       appels.push(id);
-      // Stripe : abonnement encore ACTIF — divergence avec la copie locale « terminé ».
-      return fakeSub({ id, customer: id === termine.subId ? termine.customer : suspendu.customer, status: 'active', accountId: id === termine.subId ? termine.id : suspendu.id, periodEnd: fin });
+      const c = clients.get(id)!;
+      // Stripe : abonnement PAYÉ (actif) — divergence avec la copie locale « terminé ».
+      return fakeSub({ id, customer: c.customer, status: 'active', accountId: c.id, periodEnd: fin });
     });
-    const avant = await sql`SELECT status, cancel_at_period_end, plan_code FROM account_subscriptions WHERE account_id = ${termine.id}`;
+    // État d'éligibilité observé (comme la tâche account-eligibility-sync) : les trois comptes sont non éligibles.
+    const cycle = await import('@/services/account/processing-lifecycle');
+    for (const c of [termine, suspendu, archive]) await cycle.syncAccountEligibility(c.id, { source: 'e2e' });
+    const etat = async (id: number) => (await sql<Json[]>`
+      SELECT eligible, reason, last_reactivated_at, last_reactivation_source, last_catchup_result FROM account_processing_states WHERE account_id = ${id}`)[0];
+    expect(await etat(termine.id)).toMatchObject({ eligible: false, reason: 'SUBSCRIPTION_ENDED', last_reactivated_at: null });
+    const photo = async () => ({
+      abo: await sql`SELECT account_id, status, cancel_at_period_end, plan_code FROM account_subscriptions WHERE account_id = ANY(${[termine.id, suspendu.id, archive.id]}::int[]) ORDER BY account_id`,
+      comptes: await sql`SELECT id, subscription_status, plan_type FROM accounts WHERE id = ANY(${[termine.id, suspendu.id, archive.id]}::int[]) ORDER BY id`,
+    });
     const orch = await import('@/services/coherence/orchestrator');
-    const run = await runCoherenceFor(sql, [termine.id, suspendu.id]);
-    expect(run.status).toBe('COMPLETE');
-    const camp = (await orch.getCampaign(run.campaignId))!;
-    expect(camp.accounts).toMatchObject({ visited: 0, skipped: { SUBSCRIPTION_ENDED: 1, ACCOUNT_SUSPENDED: 1 }, subscriptionStateRead: 1 });
-    // Constat (jamais réparé) : FINDING, périmètre « lecture de l'état d'abonnement ».
+
+    // ── 1. Mode À BLANC : constat WOULD_REPAIR, AUCUNE écriture, aucune réactivation.
+    const avant = await photo();
+    const blanc = await runCoherenceFor(sql, [termine.id, suspendu.id, archive.id], { mode: 'DRY_RUN' });
+    expect(blanc.status).toBe('COMPLETE');
     expect(await proofOf(sql, termine.id, 'COH-BILLING-STRIPE', termine.id)).toMatchObject({
-      last_result: 'FINDING', finding: expect.objectContaining({ anomaly: 'STATUS', detail: expect.objectContaining({ accountScope: 'SUBSCRIPTION_STATE_READ' }) }),
+      last_result: 'WOULD_REPAIR', last_mode: 'DRY_RUN', finding: expect.objectContaining({ anomaly: 'STATUS', detail: expect.objectContaining({ accountScope: 'SUBSCRIPTION_STATE_READ' }) }),
     });
+    expect(await photo()).toEqual(avant);
     expect(await reparations(termine.id)).toEqual([]);
-    expect(await sql`SELECT status, cancel_at_period_end, plan_code FROM account_subscriptions WHERE account_id = ${termine.id}`).toEqual(avant);
-    // Aucun contrôle MÉTIER sur ce compte : la carte orpheline n'est ni contrôlée ni fermée.
+    expect(await etat(termine.id)).toMatchObject({ eligible: false, last_reactivated_at: null });
+    // Compte non éligible : AUCUN contrôle métier — la carte orpheline n'est ni contrôlée ni fermée.
     expect(await proofOf(sql, termine.id, 'COH-TODO-ORPHAN-CARDS', orpheline)).toBeNull();
     expect(await ouverte(orpheline)).toBe(true);
-    const checks = (await sql<{ check_id: string }[]>`SELECT DISTINCT check_id FROM coherence_object_proofs WHERE account_id = ${termine.id}`).map((x) => x.check_id).sort();
-    expect(checks.every((x) => ['COH-BILLING-STRIPE', 'COH-DUO-RELATIONS', 'COH-ENTITLEMENTS', 'COH-SUBSCRIPTION-COMMUNICATIONS'].includes(x))).toBe(true);
-    // Compte suspendu : ni lecture Stripe, ni preuve.
-    expect(appels).toEqual([termine.subId]);
-    expect(await sql`SELECT check_id FROM coherence_object_proofs WHERE account_id = ${suspendu.id}`).toEqual([]);
+    const lus = (await sql<{ check_id: string }[]>`SELECT DISTINCT check_id FROM coherence_object_proofs WHERE account_id = ${termine.id}`).map((x) => x.check_id);
+    expect(lus.length).toBeGreaterThan(0);
+    expect(lus.every((x) => ['COH-BILLING-STRIPE', 'COH-DUO-RELATIONS', 'COH-ENTITLEMENTS', 'COH-SUBSCRIPTION-COMMUNICATIONS'].includes(x)), lus.join(',')).toBe(true);
+
+    // ── 2. Mode CORRECTIF : resynchronisation (service existant) puis recontrôle.
+    const run = await runCoherenceFor(sql, [termine.id, suspendu.id, archive.id]);
+    expect(run.status).toBe('COMPLETE');
+    const camp = (await orch.getCampaign(run.campaignId))!;
+    expect(camp.accounts).toMatchObject({ visited: 0, skipped: { SUBSCRIPTION_ENDED: 1, ACCOUNT_SUSPENDED: 1, ACCOUNT_ARCHIVED: 1 }, subscriptionStateRead: 1 });
+    expect(await proofOf(sql, termine.id, 'COH-BILLING-STRIPE', termine.id)).toMatchObject({ last_result: 'REPAIRED', finding: null });
+    const rep = (await reparations(termine.id)).filter((x) => x.check_id === 'COH-BILLING-STRIPE');
+    expect(rep).toEqual([expect.objectContaining({ service: 'syncSubscriptionFromStripe', outcome: 'REPAIRED', recheck_verdict: 'CONSISTENT', anomaly: 'STATUS', ai_calls: 0 })]);
+    expect(await sql`SELECT status, plan_code FROM account_subscriptions WHERE account_id = ${termine.id}`).toEqual([{ status: 'active', plan_code: 'premium' }]);
+    expect(await sql`SELECT subscription_status FROM accounts WHERE id = ${termine.id}`).toEqual([{ subscription_status: 'ACTIVE' }]);
+    // Réactivation : rattrapage 82A NORMAL, déclenché par la synchronisation elle-même (asynchrone, non bloquant).
+    let e: Json = {};
+    for (let i = 0; i < 100; i++) {
+      e = await etat(termine.id);
+      if (e.last_reactivated_at) break;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    expect(e).toMatchObject({ eligible: true, last_reactivation_source: 'subscription_sync' });
+    expect(e.last_catchup_result).toMatchObject({ 'catchup-control': { ok: true } });
+    const rattrapage = Number((e.last_catchup_result as Json)['catchup-control'].detail.coherenceCatchupCampaignId);
+    expect(await sql`SELECT kind, scope_account_ids FROM coherence_campaigns WHERE id = ${rattrapage}`).toEqual([{ kind: 'CATCHUP', scope_account_ids: [termine.id] }]);
+    // Les contrôles métier ne reprennent qu'une fois le compte REDEVENU éligible (rattrapage 82A ; ou phase de vérification
+    // de la campagne en cours, qui réévalue l'éligibilité à la reprise du compte) — jamais tant qu'il est bloqué (étape 1).
+    // Compte suspendu, compte archivé : ni lecture Stripe, ni preuve, ni écriture.
+    expect([...new Set(appels)]).toEqual([termine.subId]);
+    for (const c of [suspendu, archive]) {
+      expect(await sql`SELECT check_id FROM coherence_object_proofs WHERE account_id = ${c.id}`).toEqual([]);
+      expect(await reparations(c.id)).toEqual([]);
+    }
+    const apres = await photo();
+    expect(apres.abo.filter((r) => r.account_id !== termine.id)).toEqual(avant.abo.filter((r) => r.account_id !== termine.id));
+    expect(apres.comptes.filter((r) => r.id !== termine.id)).toEqual(avant.comptes.filter((r) => r.id !== termine.id));
+
+    // ── 3. Idempotence : second passage correctif, plus rien à réparer.
+    await runCoherenceFor(sql, [termine.id]);
+    expect((await reparations(termine.id)).filter((x) => x.check_id === 'COH-BILLING-STRIPE')).toHaveLength(1);
     (await stripe()).__setCoherenceStripeReaderForTests(null);
   });
 

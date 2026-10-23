@@ -165,3 +165,92 @@ export async function requestAccountRetroReconciliation(accountId: number, limit
   )) as unknown as unknown[];
   return r.length;
 }
+
+/**
+ * Lot 84E (CDC v5 O-6, §9.3, E28) — sélection CIBLÉE des documents récurrents
+ * à réexaminer, sans retraiter le compte : candidats ACTIFS déjà consolidés,
+ * porteurs d'une échéance (période facturée / INSTALLMENT) ou qualifiés
+ * CONTRACT, dont l'Opération est active et de type compatible (contrat,
+ * intervention, autre, non qualifiée), et qui répondent au SÉLECTEUR :
+ *   · documents (`fileIds`) ou Opérations (`operationIds`) désignés ;
+ *   · prestataire (`providers`, comparé comme la marque 55B :
+ *     `lower(btrim(...))`) ;
+ *   · références de service (`references` : `CONTRACT:X`, `POLICY:X`,
+ *     `CUSTOMER:X`, valeurs normalisées) portées par le candidat ;
+ *   · biens (`assetIds`) liés à son Opération.
+ * Contrairement à la marque 55B, les FRAGMENTS d'une série (Opération à
+ * plusieurs échéances) sont aussi repris : la décision T3 réunit deux
+ * fragments d'une série ÉTABLIE (`recurrence.ts`), jamais une intervention
+ * ponctuelle. Marque `retroRequested` (by `O6`) + `t3_pending` : même
+ * reprise que le réexamen 55B (état porté par le candidat, aucune perte).
+ * Borné (`limit`) ; idempotent (une marque posée ou un examen en attente
+ * n'est pas reposé). Aucune écriture métier, aucun appel IA.
+ */
+export interface TargetedRetroSelector {
+  fileIds?: readonly number[];
+  operationIds?: readonly number[];
+  providers?: readonly string[];
+  references?: readonly string[];
+  assetIds?: readonly number[];
+}
+
+export const TARGETED_RETRO_LIMIT = 200;
+
+/**
+ * Opération ACTUELLE d'un candidat (alias `c`) : celle de sa source documentaire
+ * active (une fusion déplace la source, pas `t3_operation_id`), à défaut sa
+ * dernière décision T3.
+ */
+export const OWN_OPERATION_SQL = `COALESCE((
+    SELECT s.operation_id FROM business_operation_sources s
+     WHERE s.account_id = c.account_id AND s.active AND s.source_kind = 'DOCUMENT'
+       AND s.source_entity_key = c.file_id::text AND s.locator->>'candidateKey' = c.candidate_key
+     ORDER BY s.id LIMIT 1), c.t3_operation_id)`;
+
+const ints = (v: readonly number[] | undefined) => `{${[...new Set(v ?? [])].filter((n) => Number.isSafeInteger(n) && n > 0).join(',')}}`;
+const texts = (v: readonly string[] | undefined) =>
+  `{${[...new Set(v ?? [])].filter((x) => typeof x === 'string' && x.trim()).map((x) => `"${x.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`).join(',')}}`;
+
+export function targetedSelectorEmpty(s: TargetedRetroSelector): boolean {
+  return !s.fileIds?.length && !s.operationIds?.length && !s.providers?.length && !s.references?.length && !s.assetIds?.length;
+}
+
+export async function requestTargetedRetroReconciliation(
+  accountId: number, s: TargetedRetroSelector, opts: { limit?: number; by?: string; dryRun?: boolean } = {},
+): Promise<number[]> {
+  if (targetedSelectorEmpty(s)) return [];
+  const limit = Math.max(1, Math.min(5_000, opts.limit ?? TARGETED_RETRO_LIMIT));
+  const { pgClient } = await import('@/db');
+  const choix = `
+       SELECT c.id, c.file_id FROM document_operation_candidates c
+         JOIN business_operations x ON x.account_id = c.account_id AND x.id = ${OWN_OPERATION_SQL}
+        WHERE c.account_id = $1 AND c.status = 'ACTIVE' AND c.established AND NOT c.t3_pending
+          AND c.t3_outcome IN ('CREATE_NEW', 'MATCH_AND_ENRICH')
+          AND NOT (COALESCE(c.t3_detail, '{}'::jsonb) ? 'retroRequested')
+          AND COALESCE(c.t3_detail->'retro'->>'status', '') <> 'PENDING'
+          AND x.invalidated_at IS NULL AND x.merged_into_operation_id IS NULL AND ${RETRO_TYPES_SQL('x')}
+          AND ${RETRO_ELIGIBLE_SQL}
+          AND (c.file_id = ANY($2::int[]) OR x.id = ANY($3::bigint[])
+               OR (cardinality($4::text[]) > 0 AND NULLIF(lower(btrim(c.payload->>'provider')), '') = ANY($4::text[]))
+               OR (cardinality($4::text[]) > 0 AND NULLIF(lower(btrim(x.provider)), '') = ANY($4::text[]))
+               OR (cardinality($5::text[]) > 0 AND EXISTS (
+                     SELECT 1 FROM jsonb_array_elements(CASE WHEN jsonb_typeof(c.payload->'businessReferences') = 'array' THEN c.payload->'businessReferences' ELSE '[]'::jsonb END) r
+                      WHERE upper(r->>'kind') || ':' || regexp_replace(upper(translate(r->>'value', 'àâäéèêëîïôöùûüçÀÂÄÉÈÊËÎÏÔÖÙÛÜÇ', 'aaaeeeeiioouuucAAAEEEEIIOOUUUC')), '[^A-Z0-9]', '', 'g') = ANY($5::text[])))
+               OR EXISTS (SELECT 1 FROM business_operation_asset_links l WHERE l.operation_id = x.id AND l.active AND l.asset_id = ANY($6::int[])))
+        ORDER BY c.id LIMIT $7`;
+  const params = [accountId, ints(s.fileIds), ints(s.operationIds), texts((s.providers ?? []).map((p) => p.trim().toLowerCase())), texts(s.references), ints(s.assetIds), limit];
+  if (opts.dryRun) {
+    const r = (await pgClient.unsafe(choix, params as never[])) as unknown as Array<{ file_id: number }>;
+    return [...new Set(r.map((x) => Number(x.file_id)))].sort((a, b) => a - b);
+  }
+  const r = (await pgClient.unsafe(
+    `WITH choisis AS (${choix})
+     UPDATE document_operation_candidates c
+        SET t3_pending = true,
+            t3_detail = COALESCE(c.t3_detail, '{}'::jsonb) || jsonb_build_object('retroRequested', jsonb_build_object('by', $8::text, 'at', now()))
+       FROM choisis WHERE c.id = choisis.id AND c.account_id = $1
+     RETURNING c.file_id`,
+    [...params, opts.by ?? 'O6'] as never[],
+  )) as unknown as Array<{ file_id: number }>;
+  return [...new Set(r.map((x) => Number(x.file_id)))].sort((a, b) => a - b);
+}

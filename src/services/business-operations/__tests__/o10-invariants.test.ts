@@ -45,6 +45,9 @@ const ECRIVAINS: Record<string, string> = {
   'src/services/business-operations/grouping/merge.ts': 'regroupement v5 : part regroupement de la fusion existante du dépôt',
   'src/services/business-operations/grouping/decisions.ts': 'regroupement v5 : mémoire des décisions utilisateur (match_decisions réutilisée)',
   'src/services/business-operations/grouping/runner.ts': 'regroupement v5 : exécuteur et verrou du compte (documentation)',
+  // Lot 84E (CDC v5 O-6) : reconsolidation ciblée — n'écrit que son JOURNAL (`business_operation_targeted_runs`, 0696) ;
+  // tout le métier passe par la consolidation T3 et le service de regroupement.
+  'src/services/business-operations/consolidation/targeted.ts': 'reconsolidation ciblée O-6 : journal d’exécution seulement (métier délégué à T3 et au regroupement)',
 };
 
 describe('INV-FINAL-009 / INV-006 / INV-FINAL-013 / INV-031 — T3 seul moteur ; TCO et autres modules consommateurs seulement', () => {

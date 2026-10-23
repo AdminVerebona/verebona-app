@@ -12,7 +12,9 @@
  *   operations-structured runStructuredOperationsMigration (lot 43 ; simulation = transactions annulées)
  *   claims-legacy-cleanup runClaimLegacyCleanup / restoreClaimLegacyCleanup (lot 83D ; simulation =
  *                         lecture seule ; application refusée sans point de restauration < 24 h ;
- *                         journal 0672)
+ *                         journal 0672) ; étape « finalize » (lot 84A, O-10) :
+ *                         runClaimLegacyFinalization — suppression définitive, refusée sans
+ *                         nettoyage complet ni point de restauration < 24 h (journal 0680)
  *   cross-account         runCrossAccountRemediation / restoreCrossAccountRemediation (lot 53, D23 ;
  *                         simulation = transaction annulée par catégorie)
  *   equipment-separation  runDataSeparationBackfill (lot 71A ; simulation = lecture seule)
@@ -149,6 +151,15 @@ export async function executeBackfill(sql: postgres.Sql, req: BackfillRequest, h
     }
     case 'claims-legacy-cleanup': {
       // Lot 83D (V-Q2, C-Q8) : refus SANS écriture s'il n'existe aucun point de restauration de moins de 24 h.
+      if (req.step === 'finalize') {
+        // Lot 84A (O-10) : étape finale, toute la plateforme ; refus (nettoyage incomplet, point de restauration) SANS écriture.
+        const { runClaimLegacyFinalization } = await import('@/services/business-operations/claims/legacy-finalize');
+        const r = await runClaimLegacyFinalization({
+          sql, mode: req.action === 'apply' ? 'APPLY' : 'SIMULATE', reason: req.reason, adminUserId: admin?.id ?? null, log: hooks.log,
+        });
+        if (r.status !== 'succeeded') throw Object.assign(new Error(r.refusal?.message ?? 'Finalisation refusée.'), { code: r.refusal?.code ?? 'FINALIZE_REFUSED' });
+        return { result: r };
+      }
       const m = await import('@/services/business-operations/claims/legacy-cleanup');
       if (req.action === 'restore') {
         const r = await m.restoreClaimLegacyCleanup(sql, req.runId!, { reason: req.reason, adminUserId: admin?.id ?? null });

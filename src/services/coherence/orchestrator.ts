@@ -44,8 +44,12 @@
  * par les seuls contrôles déclarés `ineligibleAccounts:
  * 'SUBSCRIPTION_STATE_READ'` (abonnement local comparé à Stripe, droits) :
  * LECTURE de l'état d'abonnement uniquement — aucun autre contrôle, aucun
- * traitement métier, aucune réparation (neutralisée par le moteur), aucun
- * appel IA. Compte suspendu, neutralisé ou introuvable : rien du tout.
+ * traitement métier, aucun appel IA ; réparation neutralisée par le moteur,
+ * SAUF (lot 84A, décision PO L83-Q1) celle des contrôles déclarés
+ * `repairOnIneligibleBilling` : resynchronisation de l'abonnement depuis
+ * Stripe, en mode correctif seulement ; la réactivation qui en découle passe
+ * par le rattrapage 82A normal (`onAccountReactivated`). Compte suspendu,
+ * neutralisé ou introuvable : rien du tout.
  *
  * SUPERVISION (C-Q3) : aucun onglet ; échecs de réparation, constats
  * persistants, erreurs répétées, réparations répétées et campagnes
@@ -148,6 +152,20 @@ export interface CampaignMetrics {
 export const SUBSCRIPTION_STATE_REASONS: ReadonlySet<string> = new Set([
   'TRIAL_EXPIRED', 'UNPAID', 'SUBSCRIPTION_ENDED', 'READ_ONLY', 'NO_SUBSCRIPTION', 'WITHDRAWN',
 ]);
+
+/**
+ * Revérification juste avant une réparation (C-Q10), selon le périmètre du
+ * compte. Compte éligible : règle 82A. Compte lu pour son état d'abonnement
+ * (lot 84A, L83-Q1 : seule la resynchronisation Stripe d'un contrôle déclaré
+ * `repairOnIneligibleBilling` y parvient — moteur) : permise tant que le
+ * compte est éligible OU non éligible du seul fait de son abonnement ; un
+ * compte devenu suspendu, archivé ou illisible arrête le parcours.
+ */
+export async function repairEligibilityFor(accountId: number, scope: AccountScope, now: Date): Promise<{ eligible: boolean; reason: string }> {
+  const e = await coherenceAccountEligibility(accountId, now);
+  if (e.eligible || scope === 'ELIGIBLE') return e;
+  return SUBSCRIPTION_STATE_REASONS.has(e.reason) ? { eligible: true, reason: e.reason } : e;
+}
 
 /** Le contrôle peut-il s'exécuter dans ce périmètre de compte ? (pure) */
 export function checkRunsInScope(check: Pick<CoherenceCheck, 'ineligibleAccounts'>, scope: AccountScope): boolean {
@@ -388,11 +406,13 @@ export async function runCampaignStep(campaignId: number, o: RunOptions): Promis
         cible = page.filter((id) => !ok.has(id));
       }
       if (cible.length) {
+        const portee = scope;
         try {
           const s = await controlObjects({
             ctx, check, accountId, ids: cible, trigger: c.kind === 'DAILY' ? 'DAILY' : c.kind, campaignId: c.id,
-            // Lecture d'état d'abonnement (lot 83E) : aucune réparation n'est tentée (moteur) — garde maintenue.
-            stillEligible: () => coherenceAccountEligibility(accountId, ctx.now),
+            // Lecture d'état d'abonnement (lot 83E) : seule une réparation déclarée `repairOnIneligibleBilling`
+            // (lot 84A, L83-Q1) y est tentée (moteur) ; jamais sur un compte devenu suspendu ou archivé.
+            stillEligible: () => repairEligibilityFor(accountId, portee, ctx.now),
           });
           compter(c, check, s, c.phase === 'VERIFY');
           controlled += s.outcomes.length;

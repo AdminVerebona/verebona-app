@@ -4,8 +4,8 @@ import { assets } from '@/db/schema';
 import { eq, and, isNull } from 'drizzle-orm';
 import { apiError } from '@/lib/api-errors';
 import { SessionService } from '@/lib/session-service';
-import { loadEventNatures } from '@/services/agenda/AgendaQueryService';
-import { isHistoricalAgendaEvent } from '@/services/agenda/agenda-historical';
+import { clampTimelineLimit, decodeTimelineCursor, parseTimelineMode } from '@/services/agenda/timeline/model';
+import { readAssetTimelinePage } from '@/services/agenda/timeline/read';
 
 export async function GET(
   request: NextRequest,
@@ -40,6 +40,21 @@ export async function GET(
     }
 
     const today = new Date().toISOString().split('T')[0];
+    // Lot 84C (CDC v5 §13, O-4) : Timeline regroupée (défaut, jamais
+    // mémorisée) ou détaillée, regroupée AVANT pagination (E10), par curseur.
+    // `section=timeline` : page de Timeline seule (bascule de mode, « Afficher plus »).
+    const sp = request.nextUrl.searchParams;
+    const mode = parseTimelineMode(sp.get('mode'));
+    if (!mode) return apiError(400, 'INVALID_INPUT', 'Unknown timeline mode');
+    const cursor = decodeTimelineCursor(sp.get('cursor'), mode);
+    if (cursor === 'INVALID') return apiError(400, 'INVALID_INPUT', 'Invalid timeline cursor');
+    const timelineInput = { accountId: session.currentAccountId, assetId, mode, cursor, limit: clampTimelineLimit(sp.get('limit')), today };
+    if (sp.get('section') === 'timeline') {
+      const page = await readAssetTimelinePage(timelineInput);
+      const res = NextResponse.json({ timeline: page.entries, timelinePage: { mode: page.mode, nextCursor: page.nextCursor, remaining: page.remaining } });
+      res.headers.set('Cache-Control', 'private, no-cache');
+      return res;
+    }
     const sql = db.$client;
     // Lot 53 (retour PO D23) : une relation intercomptes héritée (document ou
     // élément d'agenda d'un AUTRE compte rattaché à ce bien) n'est jamais lue.
@@ -52,17 +67,10 @@ export async function GET(
     // text cannot be matched ») — et avec elle toute la vue d'ensemble :
     // « Impossible de charger la vue d'ensemble ». Les deux côtés sont
     // désormais convertis en texte (AAAA-MM-JJ… : l'ordre est conservé).
-    const [agendaRows, docs, countersRow] = await Promise.all([
-      // Agenda items linked to this asset via agenda_asset_links (excludes cancelled)
-      sql<{ id: number; title: string; start_date: string | null; end_date: string | null; manual_status: string | null; origin_field_key: string | null }[]>`
-        SELECT ai.id, ai.title, ai.start_date, ai.end_date, ai.manual_status, ai.origin_field_key
-        FROM agenda_items ai
-        INNER JOIN agenda_asset_links aal ON aal.agenda_item_id = ai.id
-        WHERE aal.asset_id = ${assetId} AND ai.account_id = ${accountId}
-          AND (ai.manual_status IS NULL OR ai.manual_status != 'annule')
-        ORDER BY ai.start_date ASC NULLS LAST
-        LIMIT 50
-      `,
+    const [timelinePage, docs, countersRow] = await Promise.all([
+      // Lot 84C : Timeline calculée à la lecture (agenda_items / agenda_asset_links,
+      // « annule » exclu), regroupée avant pagination — `services/agenda/timeline`.
+      readAssetTimelinePage(timelineInput),
       sql<{ id: number; original_filename: string; retained_title: string | null; document_type: string; document_date: string | null }[]>`
         SELECT id, original_filename, retained_title, document_type, document_date
         FROM asset_files
@@ -90,39 +98,6 @@ export async function GET(
           (SELECT COUNT(*) FROM equipments WHERE asset_id = ${assetId} AND archived_at IS NULL)::text AS eq_count
       `,
     ]);
-
-    // Build timeline from agenda items
-    // Lot 47B (règle partagée `agenda-historical`) : un fait historique passé
-    // n'est jamais « en retard ». Lot 53 (D17) : sans statut, il est « à
-    // confirmer » (une date passée ne prouve pas la réalisation) ; seul
-    // `manual_status = 'realise'` le rend réalisé. Rien n'est écrit.
-    const natures = await loadEventNatures(agendaRows.map((r) => Number(r.id)));
-    const timeline = agendaRows.map(item => {
-      const effectiveDate = item.start_date ?? null;
-      const historique = isHistoricalAgendaEvent({
-        eventNature: natures?.get(Number(item.id))?.nature ?? null,
-        businessType: natures?.get(Number(item.id))?.businessType ?? null,
-        originFieldKey: item.origin_field_key ?? null,
-      });
-      const ouvert = !item.manual_status || item.manual_status.trim() === '';
-      const isDone = item.manual_status === 'realise';
-      const toConfirm = ouvert && historique && !!effectiveDate && effectiveDate < today;
-      const isOverdue = ouvert && !historique && !!effectiveDate && effectiveDate < today;
-      return {
-        itemType: 'agenda' as const,
-        id: String(item.id),
-        title: item.title,
-        effectiveDate,
-        isDone,
-        isOverdue,
-        toConfirm,
-      };
-    }).sort((a, b) => {
-      if (!a.effectiveDate && !b.effectiveDate) return 0;
-      if (!a.effectiveDate) return 1;
-      if (!b.effectiveDate) return -1;
-      return a.effectiveDate < b.effectiveDate ? -1 : 1;
-    });
 
     const c = countersRow[0] ?? { doc_count: '0', agenda_count: '0', room_count: '0', eq_count: '0' };
 
@@ -152,7 +127,10 @@ export async function GET(
         address: assetRow.address ?? null,
         city: assetRow.city ?? null,
       },
-      timeline,
+      // Entrées de la Timeline (forme historique au premier niveau : id, title,
+      // effectiveDate, isDone, isOverdue, toConfirm) + `kind` / `members` / `counters`.
+      timeline: timelinePage.entries,
+      timelinePage: { mode: timelinePage.mode, nextCursor: timelinePage.nextCursor, remaining: timelinePage.remaining },
       documentsPreview: docs.map(d => ({
         id: d.id,
         originalFilename: d.original_filename,

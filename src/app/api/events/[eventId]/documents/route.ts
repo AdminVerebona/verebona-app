@@ -5,11 +5,15 @@
  * identifiant étranger fait refuser la demande ENTIÈRE (rien n'est écrit) ;
  * une association incorrecte déjà en base n'expose jamais le document d'un
  * autre compte. Endpoint conservé (encore appelé par l'interface).
+ *
+ * Lot 84A (CDC v5 O-10, E25) : seul POST reste (rattachement des documents
+ * déposés par « Ajouter un document ») ; GET et DELETE, sans appelant, sont
+ * retirés.
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/db';
-import { eventDocuments, events, assetFiles } from '@/db/schema';
-import { eq, and, inArray, sql } from 'drizzle-orm';
+import { eventDocuments, events } from '@/db/schema';
+import { eq, and, sql } from 'drizzle-orm';
 import { apiError } from '@/lib/api-errors';
 import { SessionService } from '@/lib/session-service';
 import { findRejectedRefs, logCrossAccountRefusal, cleanIds } from '@/services/security/account-ownership';
@@ -33,37 +37,6 @@ async function eventOfAccount(request: NextRequest, context: Ctx): Promise<{ acc
   // Événement d'un autre compte ou inexistant : même réponse (rien n'est révélé).
   if (!ev) return apiError(404, 'NOT_FOUND', 'Event not found');
   return { accountId: session.currentAccountId, eventId };
-}
-
-export async function GET(request: NextRequest, context: Ctx) {
-  try {
-    const r = await eventOfAccount(request, context);
-    if (r instanceof NextResponse) return r;
-
-    // Documents DU COMPTE seulement : une association incorrecte en base
-    // (document d'un autre compte) n'est jamais rendue.
-    const linkedDocs = await db
-      .select({
-        id: eventDocuments.id,
-        eventId: eventDocuments.eventId,
-        fileId: eventDocuments.fileId,
-        createdAt: eventDocuments.createdAt,
-        file: assetFiles,
-      })
-      .from(eventDocuments)
-      .innerJoin(assetFiles, and(eq(eventDocuments.fileId, assetFiles.id), eq(assetFiles.accountId, r.accountId)))
-      .where(eq(eventDocuments.eventId, r.eventId));
-
-    // Lot 34C : jamais de motif technique d'analyse vers l'application.
-    const { toUserFile } = await import('@/services/ai/processing-status/user-file');
-    return NextResponse.json({
-      data: linkedDocs.map((d) => ({ ...d, file: toUserFile(d.file) })),
-      count: linkedDocs.length,
-    }, { status: 200 });
-  } catch (error) {
-    console.error('GET /api/events/[eventId]/documents error:', error);
-    return apiError(500, 'INTERNAL_ERROR', 'Internal server error');
-  }
 }
 
 export async function POST(request: NextRequest, context: Ctx) {
@@ -125,30 +98,4 @@ function sqlInsertLink(eventId: number, fileId: number, accountId: number) {
        AND f.id = ${fileId} AND f.account_id = ${accountId}
     ON CONFLICT DO NOTHING
     RETURNING id, event_id AS "eventId", file_id AS "fileId", created_at AS "createdAt"`;
-}
-
-export async function DELETE(request: NextRequest, context: Ctx) {
-  try {
-    const r = await eventOfAccount(request, context);
-    if (r instanceof NextResponse) return r;
-    const { searchParams } = new URL(request.url);
-    const fileId = parseInt(searchParams.get('fileId') ?? '');
-    if (isNaN(fileId)) return apiError(400, 'INVALID_ID', 'Valid file ID is required');
-
-    // Suppression bornée au compte : l'événement (vérifié) ET le document
-    // doivent être du compte ; une relation d'un autre compte n'est jamais
-    // supprimée.
-    const deleted = await db.delete(eventDocuments).where(and(
-      eq(eventDocuments.eventId, r.eventId),
-      eq(eventDocuments.fileId, fileId),
-      inArray(eventDocuments.eventId, db.select({ id: events.id }).from(events).where(and(eq(events.id, r.eventId), eq(events.accountId, r.accountId)))),
-      inArray(eventDocuments.fileId, db.select({ id: assetFiles.id }).from(assetFiles).where(and(eq(assetFiles.id, fileId), eq(assetFiles.accountId, r.accountId)))),
-    )).returning({ id: eventDocuments.id });
-
-    if (deleted.length === 0) return apiError(404, 'NOT_FOUND', 'Link not found');
-    return NextResponse.json({ message: 'Document unlinked successfully' }, { status: 200 });
-  } catch (error) {
-    console.error('DELETE /api/events/[eventId]/documents error:', error);
-    return apiError(500, 'INTERNAL_ERROR', 'Internal server error');
-  }
 }

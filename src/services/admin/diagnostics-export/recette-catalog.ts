@@ -20,6 +20,8 @@
  * ══════════════════════════════════════════════════════════════════════════
  */
 
+import { LEGACY_CLAIM_TABLES } from '@/services/business-operations/claims/legacy-schema';
+
 export const RECETTE_SCHEMA = 'verebona.bo.export-recette/1';
 
 export type RecetteDomain =
@@ -36,7 +38,7 @@ export const RECETTE_DOMAINS: Readonly<Record<RecetteDomain, { label: string; de
   'champs-preuves': { label: 'Champs structurés, preuves et décisions', description: 'Preuves de champ, écritures canoniques, versions d’objets, réconciliations T3 et leurs décisions, contrôles d’information, registre des incohérences, corrections, campagnes / preuves / réparations du contrôle de cohérence.' },
   operations: { label: 'Opérations et rapprochements', description: 'Opérations, sources, liens biens / équipements, composantes financières, références, historique, décisions de rapprochement, revues d’identité, sinistres.' },
   tco: { label: 'TCO', description: 'Décisions utilisateur sur les lignes TCO (tables) ; lignes TCO CALCULÉES par le moteur existant (fichiers `calculs/`).' },
-  'agenda-timeline': { label: 'Agenda et Timeline', description: 'Éléments d’agenda et leurs liens / sources / occurrences / consolidations / retraits, échéances historiques, événements. La Timeline d’un bien est calculée à la lecture depuis `agenda_items` et `agenda_asset_links` (statut « annule » exclu) : aucune table propre.' },
+  'agenda-timeline': { label: 'Agenda et Timeline', description: 'Éléments d’agenda et leurs liens / sources / occurrences / consolidations / retraits, échéances historiques, événements. La Timeline d’un bien est calculée à la lecture depuis `agenda_items` et `agenda_asset_links` (statut « annule » exclu) : aucune table propre ; son résultat (vues regroupée et détaillée) est exporté en fichier calculé `calculs/timeline.part-NNNN.ndjson.gz` (lot 84C).' },
   'a-traiter': { label: 'Cartes « À traiter »', description: 'Cartes, événements, états, décisions, passages d’évaluation, campagnes de pertinence.' },
   referentiels: { label: 'Référentiels', description: 'Types de biens, de documents, catégories, types d’Opération : nécessaires pour interpréter les codes.' },
   'non-classees': { label: 'Tables non classées', description: 'Tables présentes en base mais absentes du catalogue de l’export (nouvelle migration) : exportées par prudence, à classer.' },
@@ -181,13 +183,15 @@ export const RECETTE_TABLES: Readonly<Record<string, { domain: Exclude<RecetteDo
   business_operation_claim_damages: { domain: 'operations', description: 'Sinistres (Opération CLAIM) : dommages détaillés conservés pour le dossier d’assurance (aucun écran de saisie).' },
   business_operation_claim_damage_documents: { domain: 'operations', description: 'Sinistres : justificatifs des dommages (documents reliés, jamais copiés).' },
   business_operation_claim_damage_photos: { domain: 'operations', description: 'Sinistres : photos des dommages (références vers les photos du bien, jamais copiées).' },
-  business_operation_claim_actions: { domain: 'operations', description: 'Sinistres : actions de l’ancien modèle — INERTES depuis le lot 83D (plus lues ni écrites), vidées par le rattrapage « Sinistres : nettoyage de l’ancien modèle », table supprimée au lot O-10.' },
-  business_operation_claim_exchanges: { domain: 'operations', description: 'Sinistres : échanges de l’ancien modèle — INERTES depuis le lot 83D, vidés par le rattrapage de nettoyage, table supprimée au lot O-10.' },
-  business_operation_claim_migration_marks: { domain: 'operations', description: 'Sinistres : repères de migration de l’ancien formulaire (lot 44) — INERTES depuis le lot 83D, vidés par le rattrapage de nettoyage, table supprimée au lot O-10.' },
+  business_operation_claim_actions: { domain: 'operations', description: 'Sinistres : actions de l’ancien modèle — INERTES depuis le lot 83D (plus lues ni écrites), vidées par le rattrapage « Sinistres : nettoyage de l’ancien modèle », table SUPPRIMÉE par sa finalisation (lot 84A) : absente de l’export ensuite.' },
+  business_operation_claim_exchanges: { domain: 'operations', description: 'Sinistres : échanges de l’ancien modèle — INERTES depuis le lot 83D, vidés par le rattrapage de nettoyage, table SUPPRIMÉE par sa finalisation (lot 84A).' },
+  business_operation_claim_migration_marks: { domain: 'operations', description: 'Sinistres : repères de migration de l’ancien formulaire (lot 44) — INERTES depuis le lot 83D, vidés par le rattrapage de nettoyage, table SUPPRIMÉE par sa finalisation (lot 84A).' },
   claim_legacy_cleanup_runs: { domain: 'operations', description: 'Sinistres : exécutions du rattrapage de nettoyage de l’ancien modèle (lot 83D : simulation, application, restauration, refus sans point de restauration).' },
   claim_legacy_cleanup_journal: { domain: 'operations', description: 'Sinistres : journal du nettoyage de l’ancien modèle (image avant de chaque ligne purgée, restaurable par exécution — lot 83D).' },
   business_operation_room_links: { domain: 'operations', description: 'Liens Opération ↔ Pièce (lot 82D).' },
   business_operation_documents: { domain: 'operations', description: 'Documents d’une Opération avec leur rôle (lot 82D).' },
+  // Lot 84E (CDC v5 O-6, §27.6) : journal des reconsolidations ciblées.
+  business_operation_targeted_runs: { domain: 'operations', description: 'Reconsolidations ciblées (équipement, bien, Pièce, série de documents récurrents, liens directs Document ↔ Équipement) : déclencheur, cible, compteurs, appels IA, issue (lot 84E).' },
   // ── TCO ────────────────────────────────────────────────────────────────
   asset_cost_line_decisions: { domain: 'tco', description: 'Décisions utilisateur sur les lignes TCO.' },
   asset_cost_line_decision_events: { domain: 'tco', description: 'Historique des décisions sur les lignes TCO.' },
@@ -332,6 +336,13 @@ export interface TableClassification {
 
 const DOMAIN_ORDER = Object.keys(RECETTE_DOMAINS) as RecetteDomain[];
 
+/**
+ * Lot 84A (O-10) : tables du catalogue qui PEUVENT être absentes de la base —
+ * ancien modèle Sinistres supprimé par la finalisation du nettoyage BO.
+ * Exportées tant qu'elles existent ; leur absence n'est pas un écart.
+ */
+export const RECETTE_RETIRABLE_TABLES: ReadonlySet<string> = new Set(LEGACY_CLAIM_TABLES);
+
 /** Classement des tables présentes en base. */
 export function classifyTables(dbTables: readonly string[]): TableClassification {
   const present = new Set(dbTables);
@@ -346,7 +357,7 @@ export function classifyTables(dbTables: readonly string[]): TableClassification
     }
   }
   out.included.sort((a, b) => DOMAIN_ORDER.indexOf(a.domain) - DOMAIN_ORDER.indexOf(b.domain) || a.table.localeCompare(b.table));
-  out.missing = [...Object.keys(RECETTE_TABLES), ...Object.keys(RECETTE_EXCLUDED)].filter((t) => !present.has(t)).sort();
+  out.missing = [...Object.keys(RECETTE_TABLES), ...Object.keys(RECETTE_EXCLUDED)].filter((t) => !present.has(t) && !RECETTE_RETIRABLE_TABLES.has(t)).sort();
   return out;
 }
 

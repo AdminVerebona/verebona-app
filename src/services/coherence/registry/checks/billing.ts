@@ -35,12 +35,21 @@
  * rétractation, sans abonnement), l'orchestrateur ne les exécute qu'en
  * LECTURE : lecture de `account_subscriptions`, `accounts`, `users`,
  * `account_memberships`, `duo_*` et d'UNE lecture Stripe de l'abonnement.
- * Aucun contrôle métier (documents, agenda, TCO…), aucune réparation (le
- * moteur la neutralise : constat FINDING), aucun appel IA, aucune écriture.
- * Un abonnement redevenu actif chez Stripe alors que le compte est resté en
- * lecture seule localement est ainsi CONSTATÉ et remonte en Supervision —
- * la resynchronisation reste celle des webhooks / du BO tant que le PO n'a
- * pas autorisé la réparation sur ces comptes (rapport du lot 83E).
+ * Aucun contrôle métier (documents, agenda, TCO…), aucun appel IA.
+ *
+ * Lot 84A — DÉCISION PO L83-Q1 (23/10) : COH-BILLING-STRIPE et
+ * COH-ENTITLEMENTS sont déclarés `repairOnIneligibleBilling` : sur un compte
+ * non éligible du fait de son abonnement, un écart avec Stripe (ex. compte
+ * bloqué alors que Stripe indique un paiement) est RÉPARÉ en mode correctif
+ * par la synchronisation existante `syncSubscriptionFromStripe` (idempotente)
+ * — opération de facturation, pas traitement métier (compatible C-Q10).
+ * Notifications : comportement NORMAL de la synchronisation (celui des
+ * webhooks) sur ces comptes ; sur un compte éligible, inchangé depuis 83E
+ * (`notify: false`). La réactivation qui en découle passe par le rattrapage
+ * 82A normal (`syncAccountEligibilitySafe` → `onAccountReactivated`, appelé
+ * par la synchronisation elle-même). Mode à blanc : constat WOULD_REPAIR,
+ * aucune écriture. COH-DUO-RELATIONS reste en détection seule.
+ * Compte suspendu, neutralisé ou archivé : jamais lu.
  * ══════════════════════════════════════════════════════════════════════════
  */
 import type { CheckContext, CoherenceCheck, Inspection, RepairResult } from '../types';
@@ -113,14 +122,28 @@ export function billingDesync(
   return out;
 }
 
-/** Resynchronisation EXISTANTE depuis l'abonnement Stripe relu (lecture), sans e-mail client. */
+/**
+ * Notifications de la resynchronisation (pure) : compte éligible → aucune
+ * (lot 83E, inchangé) ; compte non éligible du fait de son abonnement
+ * (lot 84A, L83-Q1) → comportement NORMAL de la synchronisation (`undefined`).
+ */
+export function resyncNotify(scope: CheckContext['accountScope']): false | undefined {
+  return (scope ?? 'ELIGIBLE') === 'ELIGIBLE' ? false : undefined;
+}
+
+/** Resynchronisation EXISTANTE depuis l'abonnement Stripe relu (lecture). */
 async function resynchroniser(ctx: CheckContext, accountId: number, subscriptionId: string): Promise<RepairResult> {
   const raw = await lireAbonnementStripe(subscriptionId);
   const { syncSubscriptionFromStripe } = await import('@/services/billing/subscription-sync.service');
-  const r = await syncSubscriptionFromStripe({ subscription: raw as never, source: `coherence:${ctx.correlationId}`.slice(0, 120), notify: false, accountIdHint: accountId });
+  // La synchronisation déclenche elle-même la transition d'éligibilité (82A) : reprise et rattrapage si le compte redevient actif.
+  const r = await syncSubscriptionFromStripe({
+    subscription: raw as never, source: `coherence:${ctx.correlationId}`.slice(0, 120), notify: resyncNotify(ctx.accountScope), accountIdHint: accountId,
+  });
   return {
     called: true, service: 'syncSubscriptionFromStripe', aiCalls: 0,
-    result: r ? { accountId: r.accountId, oldStatus: r.oldStatus, newStatus: r.newStatus, oldPlanType: r.oldPlanType, newPlanType: r.newPlanType, skipped: r.skipped ?? null } : { synced: false },
+    result: r
+      ? { accountId: r.accountId, oldStatus: r.oldStatus, newStatus: r.newStatus, oldPlanType: r.oldPlanType, newPlanType: r.newPlanType, skipped: r.skipped ?? null, accountScope: ctx.accountScope ?? 'ELIGIBLE' }
+      : { synced: false, accountScope: ctx.accountScope ?? 'ELIGIBLE' },
     rollbackRef: `subscription_communication_operations:account_id=${accountId};account_subscriptions:account_id=${accountId}`,
   };
 }
@@ -129,7 +152,8 @@ async function resynchroniser(ctx: CheckContext, accountId: number, subscription
 
 export const billingStripeCheck: CoherenceCheck = {
   id: 'COH-BILLING-STRIPE',
-  version: 1,
+  // v2 (lot 84A, L83-Q1) : réparation permise sur un compte non éligible du fait de son abonnement.
+  version: 2,
   status: 'ACTIVE',
   title: 'Abonnement : la copie locale reflète l’abonnement Stripe (lecture Stripe seule)',
   domain: 'abonnements',
@@ -137,18 +161,20 @@ export const billingStripeCheck: CoherenceCheck = {
   objectType: 'account',
   scope: 'comptes ayant un abonnement Stripe (un objet par compte)',
   sources: ['Stripe (lecture : subscriptions.retrieve)', 'account_subscriptions', 'accounts'],
-  applicability: 'Stripe configuré ; compte éligible, ou non éligible du fait de son abonnement (lecture seule, sans réparation)',
+  applicability: 'Stripe configuré ; compte éligible, ou non éligible du fait de son abonnement (lecture de l’état d’abonnement ; réparation = resynchronisation, mode correctif)',
   invariant: 'statut, périodicité, résiliation programmée, échéance et prix locaux = ceux de l’abonnement Stripe',
   anomalies: ['LOCAL_MISSING', 'STATUS', 'BILLING_PERIOD', 'CANCELLATION', 'PERIOD_END', 'PRICE', 'STRIPE_SUBSCRIPTION_NOT_FOUND'],
-  autoRepairWhen: 'compte éligible : resynchronisation par le service existant, idempotente, sans e-mail client',
-  forbiddenRepairs: ['écrire chez Stripe', 'facturer, rembourser, annuler', 'écrire la copie locale hors du service de synchronisation', 'réparer un compte non éligible'],
+  autoRepairWhen: 'mode correctif : resynchronisation par le service existant, idempotente — compte éligible sans e-mail client ; compte non éligible du fait de son abonnement (L83-Q1) avec les notifications normales de la synchronisation',
+  forbiddenRepairs: ['écrire chez Stripe', 'facturer, rembourser, annuler', 'écrire la copie locale hors du service de synchronisation', 'réparer un compte suspendu, neutralisé ou archivé', 'tout traitement métier sur un compte non éligible'],
   services: ['billing/subscription-sync.service#syncSubscriptionFromStripe', 'billing/annual-renewal-reconcile.service#desyncReasons'],
   chain: ['PERSISTENCE'],
   triggers: ['PLAN_CHANGED'],
   frequency: 'campagne exhaustive quotidienne (webhooks Stripe en continu) + contrôle ciblé après un changement d’offre',
   criticality: 'HIGH',
-  tests: ['L83E-E2E-07', 'L83E-E2E-08', 'L83E-U-BILLING'],
+  tests: ['L83E-E2E-07', 'L83E-E2E-08', 'L83E-U-BILLING', 'L84A-U-BILLING'],
   ineligibleAccounts: 'SUBSCRIPTION_STATE_READ',
+  // Lot 84A (décision PO L83-Q1) : resynchronisation Stripe permise sur un compte non éligible du fait de son abonnement.
+  repairOnIneligibleBilling: true,
 
   async listObjects(ctx, accountId, afterId) {
     if (!stripeReadable()) return []; // Stripe non configuré : non applicable (aucune lecture possible)
@@ -228,7 +254,8 @@ export function entitlementDesync(
 
 export const entitlementsCheck: CoherenceCheck = {
   id: 'COH-ENTITLEMENTS',
-  version: 1,
+  // v2 (lot 84A, L83-Q1) : réparation permise sur un compte non éligible du fait de son abonnement.
+  version: 2,
   status: 'ACTIVE',
   title: 'Droits : l’état d’abonnement lu par l’application concorde avec la ligne d’abonnement (source des droits)',
   domain: 'abonnements',
@@ -236,18 +263,20 @@ export const entitlementsCheck: CoherenceCheck = {
   objectType: 'account',
   scope: 'comptes abonnés via Stripe (un objet par compte)',
   sources: ['account_subscriptions', 'accounts', 'users', 'entitlements.service#entitlementsFromSubscription'],
-  applicability: 'compte éligible, ou non éligible du fait de son abonnement (lecture seule, sans réparation)',
+  applicability: 'compte éligible, ou non éligible du fait de son abonnement (lecture de l’état d’abonnement ; réparation = resynchronisation, mode correctif)',
   invariant: 'offre et statut du compte (et offre du titulaire) = ceux que la synchronisation écrit pour la ligne d’abonnement',
   anomalies: ['ACCOUNT_STATUS_MISMATCH', 'ACCOUNT_PLAN_MISMATCH', 'OWNER_PLAN_MISMATCH'],
-  autoRepairWhen: 'compte éligible et Stripe lisible : resynchronisation par le service existant (même écriture de toutes les colonnes)',
-  forbiddenRepairs: ['écrire les colonnes d’offre directement', 'attribuer un droit', 'écrire chez Stripe', 'réparer un compte non éligible'],
+  autoRepairWhen: 'mode correctif et Stripe lisible : resynchronisation par le service existant (même écriture de toutes les colonnes) — y compris sur un compte non éligible du fait de son abonnement (L83-Q1)',
+  forbiddenRepairs: ['écrire les colonnes d’offre directement', 'attribuer un droit', 'écrire chez Stripe', 'réparer un compte suspendu, neutralisé ou archivé', 'tout traitement métier sur un compte non éligible'],
   services: ['billing/subscription-sync.service#expectedAccountState', 'billing/subscription-sync.service#syncSubscriptionFromStripe'],
   chain: ['PERSISTENCE'],
   triggers: ['PLAN_CHANGED'],
   frequency: 'campagne exhaustive quotidienne',
   criticality: 'HIGH',
-  tests: ['L83E-E2E-07', 'L83E-U-BILLING'],
+  tests: ['L83E-E2E-07', 'L83E-U-BILLING', 'L84A-U-BILLING'],
   ineligibleAccounts: 'SUBSCRIPTION_STATE_READ',
+  // Lot 84A (L83-Q1) : même resynchronisation (opération de facturation) sur un compte non éligible du fait de son abonnement.
+  repairOnIneligibleBilling: true,
 
   async listObjects(ctx, accountId, afterId) {
     return compteAbonneStripe(ctx, accountId, afterId);

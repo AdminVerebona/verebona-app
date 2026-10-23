@@ -12,11 +12,13 @@ import { agendaItemRemovals, aiMasterCorpusRuns, documentFieldValues, cdc15Migra
   businessOperationFinancialComponents, businessOperationFinancialComponentSources, businessOperationHistory,
   businessOperationProjectionSuppressions, businessOperationReferences, documentOperationCandidates, businessOperationMatchDecisions,
   businessOperationContractDetails, businessOperationFinancingDetails, businessOperationClaimDetails, businessOperationClaimDamages,
-  businessOperationClaimDamageDocuments, businessOperationClaimDamagePhotos, businessOperationClaimActions, businessOperationClaimExchanges,
-  businessOperationAssetDataMarks, businessOperationClaimMigrationMarks, stripeCatalogRecoveries, businessOperationIdentityReviews,
+  businessOperationClaimDamageDocuments, businessOperationClaimDamagePhotos,
+  businessOperationAssetDataMarks, stripeCatalogRecoveries, businessOperationIdentityReviews,
   transactionalEmailJobs, emailProviderEvents, documentRawExtracts, businessOperationRoomLinks, businessOperationDocuments,
   annualRenewalReminderState, annualRenewalReminderChecks, emailTemplateVersions,
 } from '../schema';
+import * as schema from '../schema';
+import { LEGACY_CLAIM_COLUMNS, LEGACY_CLAIM_TABLES, LEGACY_PARENT_OBJECTS } from '@/services/business-operations/claims/legacy-schema';
 
 const MIG = join(process.cwd(), 'src/db/migrations');
 
@@ -42,7 +44,11 @@ function sqlTable(file: string, table: string) {
   const supprimes = new Set([...sql.matchAll(/DROP INDEX (?:CONCURRENTLY )?IF EXISTS (\w+)/g)].map((m) => m[1]));
   const index = [...sql.matchAll(new RegExp(`CREATE (?:UNIQUE )?INDEX (?:CONCURRENTLY )?IF NOT EXISTS (\\w+)\\s+ON ${table}\\b`, 'g'))].map((m) => m[1])
     .filter((n) => !supprimes.has(n));
-  return { colonnes, checks, index };
+  // Lot 84A (O-10) : colonnes de l'ancien modèle Sinistres (et leurs contrainte / index) supprimées par la finalisation BO,
+  // jamais par une migration — plus déclarées dans Drizzle.
+  for (const c of LEGACY_CLAIM_COLUMNS[table] ?? []) colonnes.delete(c);
+  const retires = new Set<string>(Object.values(LEGACY_PARENT_OBJECTS));
+  return { colonnes, checks: checks.filter((c) => !retires.has(c)), index: index.filter((i) => !retires.has(i)) };
 }
 
 /** Lot 40 : migrations postérieures à la création d'une table, lues avec elle. */
@@ -111,12 +117,8 @@ const CAS: Array<[PgTable, string, string]> = [
   [businessOperationClaimDamages, '0317_business_operation_details.sql', 'business_operation_claim_damages'],
   [businessOperationClaimDamageDocuments, '0317_business_operation_details.sql', 'business_operation_claim_damage_documents'],
   [businessOperationClaimDamagePhotos, '0317_business_operation_details.sql', 'business_operation_claim_damage_photos'],
-  [businessOperationClaimActions, '0317_business_operation_details.sql', 'business_operation_claim_actions'],
-  [businessOperationClaimExchanges, '0317_business_operation_details.sql', 'business_operation_claim_exchanges'],
   // Lot 43 (O4) : repères de la migration structurée des Opérations (C23.1).
   [businessOperationAssetDataMarks, '0322_asset_sale_fields_operations_data.sql', 'business_operation_asset_data_marks'],
-  // Lot 44 (O5) : repères de la migration C14.3 de l'ancien formulaire Sinistre.
-  [businessOperationClaimMigrationMarks, '0323_claim_operations.sql', 'business_operation_claim_migration_marks'],
   // Lot 49A : rattrapages ciblés du catalogue Stripe.
   [stripeCatalogRecoveries, '0326_stripe_catalog_recoveries.sql', 'stripe_catalog_recoveries'],
   // Lot 57A : e-mails indispensables durables et événements Resend.
@@ -143,6 +145,18 @@ describe('tables neuves : Drizzle = SQL', () => {
       expect(cfg.indexes.map((i) => i.config.name).sort()).toEqual(s.index.sort());
     });
   }
+  it('L84A-U-SCHEMA — l’ancien modèle Sinistres n’est plus déclaré (tables, colonnes, clé, contrainte, index)', () => {
+    const noms = Object.values(schema).filter((v) => !!v && typeof v === 'object' && Symbol.for('drizzle:IsDrizzleTable') in (v as object))
+      .map((t) => getTableConfig(t as PgTable).name);
+    expect(noms).toContain('business_operation_claim_details');
+    for (const t of LEGACY_CLAIM_TABLES) expect(noms, t).not.toContain(t);
+    const op = getTableConfig(businessOperations);
+    expect(op.columns.map((c) => c.name)).not.toContain('parent_operation_id');
+    expect(op.foreignKeys.map((f) => f.getName())).not.toContain(LEGACY_PARENT_OBJECTS.foreignKey);
+    expect(op.checks.map((c) => c.name)).not.toContain(LEGACY_PARENT_OBJECTS.check);
+    expect(op.indexes.map((i) => i.config.name)).not.toContain(LEGACY_PARENT_OBJECTS.index);
+  });
+
   it('contraintes de 0224 (posées par ALTER) déclarées', () => {
     const sql = readFileSync(join(MIG, '0224_ai_master_corpus_runs.sql'), 'utf8');
     const attendues = [...sql.matchAll(/ADD CONSTRAINT (\w+)/g)].map((m) => m[1]).sort();

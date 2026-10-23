@@ -75,6 +75,7 @@ import {
   type IdentityAssessment, type IdentityBasis, type OperationMember,
 } from './economic-identity';
 import { m3Resolution, type OperationMatchVerdict } from '@/services/ai/reconciliation/master/operation-match';
+import { assessSeries, isSeriesWhy, seriesWhy } from './recurrence';
 
 export type T3Outcome = 'NO_OPERATION' | 'MATCH_AND_ENRICH' | 'CREATE_NEW' | 'HOLD_UNRESOLVED' | 'ARBITRATION_REQUIRED';
 
@@ -117,6 +118,10 @@ export interface ExistingOperation {
    * période facturée réelle (abonnement qualifié « intervention » par T1).
    */
   periodic?: boolean;
+  /** Lot 84E (O-6) : périodes facturées des coûts actifs (`début/fin`) — une série ne facture pas deux fois une période. */
+  periods?: string[];
+  /** Lot 84E (O-6) : équipements liés à l'Opération (clé de service d'une série, équipements disjoints). */
+  equipmentIds?: number[];
   /**
    * Lot 78A (§2B, §5) : sources gérées ACTIVES de l'Opération (hors celle du
    * candidat examiné), chacune avec son empreinte économique ; la plus
@@ -651,6 +656,23 @@ export function decideCandidate(c: CandidateIdentity, ctx: MatchContext): Candid
       continue;
     }
     if (negatifs.length) { detail.excluded.push({ operationId: op.id, why: negatifs.join(',') }); continue; }
+    // Lot 84E (CDC v5 O-6, §9.1, AC45, AC46) : identité de SÉRIE lue dans le
+    // contrat T1 actuel (`recurrence.ts`) — services prouvés distincts :
+    // aucun rapprochement ni appel IA ; identité établie : rapprochement
+    // CERTAIN, sous le contrôle d'identité économique 78A (base SERIES :
+    // montants d'un autre ordre de grandeur = autre réalité).
+    const serie = assessSeries(c, op);
+    if (serie.level === 'DISTINCT') { detail.excluded.push({ operationId: op.id, why: `SERIES_DISTINCT ${serie.reasons.join(',')}` }); continue; }
+    if (serie.level === 'ESTABLISHED') {
+      const ident = economicCheck(c, op, 'SERIES');
+      if (ident.verdict === 'CONTRADICTED') {
+        noter(op.id, 'SERIES', 'REFUSED', ident);
+        detail.excluded.push({ operationId: op.id, why: 'SERIES_IDENTITY_CONTRADICTED' });
+        continue;
+      }
+      detail.certain.push({ operationId: op.id, method: 'M1', why: seriesWhy(serie) });
+      continue;
+    }
     const type = c.type ?? op.typeCode;
     if ((type === 'ACQUISITION' || type === 'DISPOSAL') && c.type === op.typeCode
       && c.assetIds.some((a) => op.assetIds.includes(a)) && op.status !== 'CANCELLED') {
@@ -688,6 +710,29 @@ export function decideCandidate(c: CandidateIdentity, ctx: MatchContext): Candid
       detail.excluded.push({ operationId: x.operationId, why: 'INVALIDATED_ACTIVE_MATCH_EXISTS' });
     }
     detail.certain = detail.certain.filter((y) => !invalidees.has(y.operationId) || y.method === 'M0');
+  }
+
+  // Lot 84E : la propre Opération du document (continuité) n'est réunie à une
+  // série établie que si elle n'est elle-même qu'un fragment de série (seule
+  // source, ou toutes ses autres sources sont des échéances) — jamais une
+  // intervention ponctuelle entraînée dans un contrat.
+  if (detail.certain.some((x) => isSeriesWhy(x.why))) {
+    const parId0 = new Map(ctx.operations.map((o) => [o.id, o]));
+    const propreMixte = detail.certain.some((x) => x.why === 'SAME_SOURCE' && (() => {
+      const o = parId0.get(x.operationId);
+      return !o?.sameSourceSolo && !(o?.members?.length && o.members.every((m) => m.footprint.periodic || m.footprint.type === 'CONTRACT'));
+    })());
+    if (propreMixte) {
+      for (const x of detail.certain.filter((y) => isSeriesWhy(y.why))) detail.excluded.push({ operationId: x.operationId, why: 'SERIES_OWN_OPERATION_NOT_A_FRAGMENT' });
+      detail.certain = detail.certain.filter((y) => !isSeriesWhy(y.why));
+    }
+    // §10 : la propre Opération du document n'est jamais réunie à une série dont une décision de
+    // l'utilisateur la sépare (jamais de carte pour autant : la décision a déjà été prise).
+    const pair = (a: number, b: number) => (a < b ? `${a}:${b}` : `${b}:${a}`);
+    const separes = detail.certain.filter((x) => isSeriesWhy(x.why)
+      && detail.certain.some((y) => y.why === 'SAME_SOURCE' && y.operationId !== x.operationId && ctx.nonMergeable?.has(pair(x.operationId, y.operationId))));
+    for (const x of separes) detail.excluded.push({ operationId: x.operationId, why: 'SERIES_USER_SEPARATED' });
+    if (separes.length) detail.certain = detail.certain.filter((y) => !separes.includes(y));
   }
 
   // M0 prioritaire : une décision utilisateur l'emporte sur les autres signaux.
@@ -731,7 +776,11 @@ export function decideCandidate(c: CandidateIdentity, ctx: MatchContext): Candid
     const fusionnables = !m0.length && certains.every((x) => x.method === 'M1' || (x.method === 'M2' && x.why === 'SAME_SOURCE'));
     const parId = new Map(ctx.operations.map((o) => [o.id, o]));
     const ops = ids.map((id) => parId.get(id)).filter((o): o is ExistingOperation => !!o);
-    if (fusionnables && ops.length === ids.length && ops.every((a, i) => ops.slice(i + 1).every((b) => operationsMergeable(a, b, ctx.nonMergeable)))) {
+    // Lot 84E : fragments d'une même SÉRIE établie (clé de service commune) —
+    // l'identité est établie par le service, pas par un numéro de facture :
+    // fusion « sémantique » (n° de facture distincts tolérés, contrat ⇄ échéances).
+    const serieSeule = certains.every((x) => isSeriesWhy(x.why) || (x.method === 'M2' && x.why === 'SAME_SOURCE')) && certains.some((x) => isSeriesWhy(x.why));
+    if (fusionnables && ops.length === ids.length && ops.every((a, i) => ops.slice(i + 1).every((b) => operationsMergeable(a, b, ctx.nonMergeable, { semantic: serieSeule })))) {
       const canonique = canonicalOf(ops);
       const m = certains.find((x) => x.operationId === canonique.id)!;
       const d = res('MATCH_AND_ENRICH', 'MATCH_MERGE', canonique.id, m.method);
@@ -769,6 +818,8 @@ export function economicCheck(c: CandidateIdentity, op: ExistingOperation, basis
  */
 export function needsEconomicMembers(c: CandidateIdentity, op: ExistingOperation): boolean {
   if (op.sameSource || sharedIdentifyingReferences(c, op).length) return true;
+  // Lot 84E : série établie — contrôle 78A échéance par échéance (ordre de grandeur).
+  if (assessSeries(c, op).level === 'ESTABLISHED') return true;
   const type = c.type ?? op.typeCode;
   return (type === 'ACQUISITION' || type === 'DISPOSAL') && c.type === op.typeCode && c.assetIds.some((a) => op.assetIds.includes(a));
 }

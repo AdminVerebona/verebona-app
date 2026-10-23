@@ -238,7 +238,8 @@ export function checkStatusTransition(
 // Opération CLAIM ; aucune Opération n'est plus jamais enfant d'une autre. La
 // colonne `business_operations.parent_operation_id` est INERTE (aucune écriture,
 // aucune lecture métier), purgée par le rattrapage BO « Sinistres : nettoyage
-// de l'ancien modèle » et supprimée au lot O-10.
+// de l'ancien modèle » et supprimée par son étape finale « Finaliser » (lot 84A,
+// O-10 ; `claims/legacy-finalize.ts`).
 
 // ── Devises (C12.3) ────────────────────────────────────────────────────────
 

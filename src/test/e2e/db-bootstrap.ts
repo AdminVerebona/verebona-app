@@ -98,6 +98,21 @@ export function withDatabase(url: string, database: string): string {
   return u.toString();
 }
 
+/**
+ * Lot 84A (CDC v5 O-10) — état DÉPLOYÉ d'avant la finalisation BO de
+ * l'ancien modèle Sinistres. Le schéma Drizzle ne déclare plus
+ * `business_operations.parent_operation_id` (ni les tables et `claim_json`,
+ * que leurs migrations 0213 / 0317 / 0323 recréent) ; une base déployée la
+ * porte pourtant jusqu'à l'action BO « Finaliser » (jamais supprimée par une
+ * migration), et une migration historique s'y appuie (0316_idx_3). Rejouée
+ * juste après le schéma Drizzle, comme la création d'origine (0316).
+ */
+export const PRE_O10_LEGACY_DDL: readonly string[] = [
+  'ALTER TABLE business_operations ADD COLUMN IF NOT EXISTS parent_operation_id BIGINT',
+  'ALTER TABLE business_operations ADD CONSTRAINT business_operations_parent_fk FOREIGN KEY (parent_operation_id, account_id) REFERENCES business_operations(id, account_id)',
+  'ALTER TABLE business_operations ADD CONSTRAINT business_operations_parent_not_self_chk CHECK (parent_operation_id IS NULL OR parent_operation_id <> id)',
+];
+
 /** Instructions DDL du schéma Drizzle, depuis une base vide. */
 export async function drizzleSchemaStatements(): Promise<string[]> {
   const [{ generateDrizzleJson, generateMigration }, schema] = await Promise.all([
@@ -166,6 +181,7 @@ export async function bootstrapE2eDatabase(options: {
     const statements = await drizzleSchemaStatements();
     for (const st of statements) await sql.unsafe(st);
     log(`[e2e] schéma Drizzle : ${statements.length} instruction(s)`);
+    for (const st of PRE_O10_LEGACY_DDL) await sql.unsafe(st);
 
     const migrations = await applySqlMigrations(sql);
     const unexpectedFailures = migrations.failed.filter((f) => !(f.file in TOLERATED_MIGRATION_FAILURES));

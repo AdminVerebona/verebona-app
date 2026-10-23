@@ -118,10 +118,14 @@ describe('O7b-H04 — rendu desktop ET mobile : un seul calcul serveur, affiché
     const q = lire('src/services/agenda/AgendaQueryService.ts');
     expect(q.match(/eventNature: natures\?\.get\(item\.id\)\?\.nature/g)?.length ?? 0).toBeGreaterThanOrEqual(1);
     expect(q).toContain('...signaux,');
-    for (const f of ['src/app/api/assets/[id]/followup/route.ts', 'src/app/api/equipments/[id]/agenda/route.ts', 'src/app/api/assets/[id]/overview/route.ts']) {
+    for (const f of ['src/app/api/assets/[id]/followup/route.ts', 'src/app/api/equipments/[id]/agenda/route.ts']) {
       expect(lire(f)).toContain('loadEventNatures(');
     }
-    expect(lire('src/app/api/assets/[id]/overview/route.ts')).toContain('isHistoricalAgendaEvent(');
+    // Lot 84C : la fiche (vue d'ensemble) lit sa Timeline par `services/agenda/timeline` :
+    // nature lue dans la même requête (colonnes 0223), même règle partagée.
+    expect(lire('src/app/api/assets/[id]/overview/route.ts')).toContain('readAssetTimelinePage(');
+    expect(lire('src/services/agenda/timeline/read.ts')).toContain('ai.event_nature, ai.business_type');
+    expect(lire('src/services/agenda/timeline/model.ts')).toContain('isHistoricalAgendaEvent(');
   });
 
   it('aucune écriture de statut : la règle n\'appelle ni la primitive d\'écriture ni une mise à jour', () => {

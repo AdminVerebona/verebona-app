@@ -331,8 +331,10 @@ function AiCostsScreen() {
               ...(metier ? [(() => {
                 const t = metier.summary.reduce((a, x) => ({ ok: a.ok + x.succeeded, inc: a.inc + x.incomplete, ko: a.ko + x.failed }), { ok: 0, inc: 0, ko: 0 });
                 const jours = Math.round((new Date(metier.period.to).getTime() - new Date(metier.period.from).getTime()) / 86_400_000);
+                // Lot 84D (BO-11, C-Q9) : volume pour rapporter les coûts ; les échecs et incomplètes
+                // ne sont comptés qu'aux cartes d'Exécutions & logs (aucun double affichage).
                 return ['Exécutions métier', String(t.ok + t.inc + t.ko),
-                  `${t.ok} réussie${t.ok > 1 ? 's' : ''} · ${t.inc} incomplète${t.inc > 1 ? 's' : ''} · ${t.ko} échouée${t.ko > 1 ? 's' : ''}${jours < 89 ? '' : ' · 90 derniers jours au plus'}`] as [string, string, string];
+                  `${t.ok} réussie${t.ok > 1 ? 's' : ''}${t.inc + t.ko ? ' · échecs et incomplètes : Exécutions & logs' : ''}${jours < 89 ? '' : ' · 90 derniers jours au plus'}`] as [string, string, string];
               })()] : []),
               ['Coût moyen par appel', report.averageCostPerCall === null ? '—' : usd(report.averageCostPerCall), report.averageCostPerCall === null ? 'Aucun appel tarifé' : null],
               ['Requêtes T2', report.t2Usage ? String(report.t2Usage.requests) : '—',

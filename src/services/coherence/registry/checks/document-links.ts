@@ -27,6 +27,16 @@
  *     Opération n'est JAMAIS une preuve (P19, garde anti-cartésienne 82D) ;
  *     la décision document par document relève de T3 (demande IA
  *     `82D-t3-document-equipement`). Aucune écriture.
+ *
+ * Lot 84E (CDC v5 O-6, C-Q11) — version 3 : la reconsolidation ciblée O-6
+ * devient la réparation de PREMIER RANG de ce constat. Le document est
+ * réévalué vers les équipements de son Opération par `recomputeDirectLinks`
+ * (M04 étendu au contrat T1 actuel de CE document : cible ÉQUIPEMENT
+ * vérifiée, désignation brute d'un équipement créé après l'analyse — garde
+ * anti-cartésienne 82D) :
+ *   · preuve propre au document → REPAIRABLE, réparé par
+ *     `recomputeDirectLinksForOperations` (aucune IA depuis le contrôle) ;
+ *   · aucune preuve → CONSTAT inchangé (contrat IA 82D en attente).
  */
 import type { CheckContext, CoherenceCheck, Inspection, RepairResult } from '../types';
 import { hashOf, idsOf, intArray, rows } from '../util';
@@ -81,7 +91,7 @@ async function documentsLiesABienSupprime(ctx: CheckContext, accountId: number, 
 
 export const documentLinksCheck: CoherenceCheck = {
   id: 'COH-DOC-LINKS',
-  version: 2,
+  version: 3,
   status: 'ACTIVE',
   title: 'Rattachements document ↔ bien ↔ équipement',
   domain: 'documents-liens',
@@ -93,15 +103,15 @@ export const documentLinksCheck: CoherenceCheck = {
   applicability: 'compte éligible (actif et modifiable) ; document rattaché à au moins un bien vivant pour la partie équipement',
   invariant: 'un équipement désigné avec certitude par le document (identifiant exact) lui est rattaché ; aucun document n’est rattaché à un bien supprimé ; un document d’équipement n’est pas laissé au seul bien sans que l’écart soit tracé',
   anomalies: ['CERTAIN_EQUIPMENT_LINK_MISSING', 'LINKED_TO_DELETED_ASSET', 'EQUIPMENT_AMBIGUITY', 'EQUIPMENT_ASSOCIATION_UNPROVEN'],
-  autoRepairWhen: 'rattachement certain calculé par le service commun (même décision qu’à l’analyse), sans arbitrage ni IA',
+  autoRepairWhen: 'rattachement certain calculé par le service commun (même décision qu’à l’analyse), sans arbitrage ni IA ; lot 84E : document d’une Opération liée à un équipement qu’il désigne lui-même (reconsolidation ciblée O-6)',
   forbiddenRepairs: ['trancher une ambiguïté entre équipements', 'contredire un choix de l’utilisateur', 'détacher un document d’un bien supprimé', 'appeler T3 ou créer une carte',
     'lier un document aux équipements de son Opération par simple appartenance (P19)'],
-  services: ['equipment/document-equipment-link.service#syncDocumentEquipmentLinks'],
+  services: ['equipment/document-equipment-link.service#syncDocumentEquipmentLinks', 'business-operations/consolidation/targeted#recomputeDirectLinksForOperations'],
   chain: ['T1', 'LINK'],
   triggers: ['SOURCE_ANALYZED', 'DOCUMENT_UPDATED', 'DOCUMENT_UPLOADED', 'ASSET_UPDATED'],
   frequency: 'campagne exhaustive quotidienne + contrôle ciblé à chaque changement',
   criticality: 'MEDIUM',
-  tests: ['L82B-U-LINKS', 'L82B-E2E-02', 'L82B-E2E-04', 'L82B-E2E-05', 'L83B-E2E-08'],
+  tests: ['L82B-U-LINKS', 'L82B-E2E-02', 'L82B-E2E-04', 'L82B-E2E-05', 'L83B-E2E-08', 'L84E-E2E-08'],
 
   async listObjects(ctx, accountId, afterId, limit) {
     return idsOf(await rows(ctx.sql, `
@@ -152,6 +162,23 @@ export const documentLinksCheck: CoherenceCheck = {
       } else if (nonDemontrees.has(fileId)) {
         // Lot 83B : appartenance à une Opération liée à des équipements — jamais une preuve ; constat tracé.
         const a = nonDemontrees.get(fileId)!;
+        // Lot 84E : le document désigne-t-il LUI-MÊME un équipement de son Opération ? (simulation, sans IA)
+        const { recomputeDirectLinks } = await import('@/services/business-operations/consolidation/direct-links');
+        const proposes: Array<{ operationId: number; equipmentId: number; method: string }> = [];
+        for (const opId of a.operations) {
+          const d = await recomputeDirectLinks(accountId, opId, { dryRun: true, fileIds: [fileId], sql: ctx.sql });
+          proposes.push(...d.proposed.filter((x) => x.fileId === fileId && a.equipments.includes(x.equipmentId)).map((x) => ({ operationId: opId, equipmentId: x.equipmentId, method: x.method })));
+        }
+        if (proposes.length) {
+          out.set(fileId, {
+            verdict: 'REPAIRABLE', anomaly: 'EQUIPMENT_ASSOCIATION_UNPROVEN', faultyLink: 'T3',
+            expected: { equipmentIds: [...new Set(proposes.map((x) => x.equipmentId))].sort((x, y) => x - y) },
+            observed: { operationIds: a.operations, equipmentIds: a.equipments },
+            detail: { ...detail, repairChain: 'recomputeDirectLinks (O-6)', evidence: proposes },
+            inputHash: hashOf({ fileId, unproven: a, proposes }),
+          });
+          continue;
+        }
         out.set(fileId, {
           verdict: 'FINDING', anomaly: 'EQUIPMENT_ASSOCIATION_UNPROVEN', faultyLink: 'T3',
           expected: 'relation document ↔ équipement décidée pour CE document (preuve propre)', observed: { operationIds: a.operations, equipmentIds: a.equipments },
@@ -168,7 +195,19 @@ export const documentLinksCheck: CoherenceCheck = {
   async repair(ctx, accountId, items) {
     const out = new Map<number, RepairResult>();
     const { syncDocumentEquipmentLinks } = await import('@/services/equipment/document-equipment-link.service');
-    for (const { id } of items) {
+    for (const { id, inspection } of items) {
+      if (inspection.anomaly === 'EQUIPMENT_ASSOCIATION_UNPROVEN') {
+        // Lot 84E : reconsolidation ciblée O-6 (liens directs des documents de l'Opération), sans IA.
+        const { recomputeDirectLinksForOperations } = await import('@/services/business-operations/consolidation/targeted');
+        const ops = ((inspection.observed as { operationIds?: number[] } | undefined)?.operationIds ?? []).map(Number);
+        const r = await recomputeDirectLinksForOperations(accountId, ops, { trigger: 'coherence', correlationId: ctx.correlationId, sql: ctx.sql });
+        out.set(id, {
+          called: true, service: 'recomputeDirectLinksForOperations', aiCalls: r.aiCalls,
+          result: { operations: ops, created: r.directLinks.created, unproven: r.directLinks.unproven.length, skipped: r.skipped ?? null },
+          rollbackRef: `document_asset_links:file=${id}:origin=AI`,
+        });
+        continue;
+      }
       const r = await syncDocumentEquipmentLinks({ accountId, fileId: id, allowAi: false, proposeCard: false, sql: ctx.sql });
       out.set(id, {
         called: true, service: 'syncDocumentEquipmentLinks', aiCalls: r.aiCalled ? 1 : 0,

@@ -133,7 +133,12 @@ describe('PO-D23-03 — lectures bornées au compte (jointures corrigées)', () 
       expect(src, f).not.toContain('.leftJoin(assets, eq(assetFiles.assetId, assets.id))');
     }
     const ov = readFileSync(join(process.cwd(), 'src/app/api/assets/[id]/overview/route.ts'), 'utf8');
-    expect(ov.match(/account_id = \$\{accountId\}/g)?.length).toBeGreaterThanOrEqual(4);
+    expect(ov.match(/account_id = \$\{accountId\}/g)?.length).toBeGreaterThanOrEqual(3);
+    // Lot 84C : la Timeline de la fiche est lue par `services/agenda/timeline/read.ts`, bornée au compte.
+    const tl = readFileSync(join(process.cwd(), 'src/services/agenda/timeline/read.ts'), 'utf8');
+    expect(tl).toContain('aal.asset_id = $2 AND ai.account_id = $1');
+    expect(tl).toContain('bo.account_id = ai.account_id');
+    expect(tl.match(/account_id = \$1/g)?.length).toBeGreaterThanOrEqual(10);
     const kn = readFileSync(join(process.cwd(), 'src/services/ai/knowledge/document-knowledge.service.ts'), 'utf8');
     expect(kn).toContain('af.account_id = f.account_id');
     expect(kn).toContain('af.account_id = e.account_id');

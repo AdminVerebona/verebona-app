@@ -434,6 +434,23 @@ export async function planDiagnostic(req: DiagRequest, s: ReadSession, opts: Gen
   }
   const nAnomalies = await list('logs/anomalies-supervision.json', 'Anomalies de supervision (Dashboard › Supervision) de la période', ANOMALIES);
   const nJobs = await list('logs/traitements-file.json', 'File des traitements T1 / T3 / T4 (ai_job_queue) : statut, tentatives, erreur, corrélation', JOBS);
+  // Lot 84D (CDC Pilotage IA V2 P3, BO-09) : T2 et T6 FORMULATE ajoutés au collecteur — mêmes bornes,
+  // même masquage, colonnes LISTÉES (aucun contenu conversationnel ni texte généré) ; identifiant
+  // d'exécution métier (P2) porté pour la corrélation avec « Exécutions & logs » et ses exports.
+  const withTreatment = (t: string) => !T || T.includes(t as never);
+  if (!entityScope && withTreatment('T2')) {
+    await list('ia/t2-demandes.json', 'Demandes de l’assistant T2 (verebona_request_runs) : mode, statut, état final, erreur, latence, exécution métier — sans contenu', `
+      SELECT id, 'T2:' || request_id AS business_execution_id, request_id, account_id, user_id, status, machine_final_state, mode, error_code, latency_ms, created_at
+        FROM verebona_request_runs WHERE ${ACC()} AND ${PERIOD('created_at')}
+       ORDER BY id DESC`);
+  }
+  if (!entityScope && withTreatment('T6')) {
+    await list('ia/t6-generations.json', 'Générations T6 FORMULATE (home_mascot_generations) : mode, statut, modèle, repli, latence, coût, trace, exécution métier — sans texte généré', `
+      SELECT id, CASE WHEN trace_id IS NOT NULL THEN 'T6F:' || trace_id END AS business_execution_id, account_id, mode, status, model, used_fallback_model,
+             latency_ms, cost_micros, trace_id, left(error, 300) AS error, created_at
+        FROM home_mascot_generations WHERE ${ACC()} AND ${PERIOD('created_at')} AND status <> 'cache_hit'
+       ORDER BY id DESC`);
+  }
   await object('ia/t6-evaluations.json', 'Évaluations T6 EVALUATE : état réel par échéance (PENDING, RUNNING, RETRY_WAIT, FAILED, COMPLETED, UNAVAILABLE), tentatives, erreurs, prochain essai ; pré-génération de l’accueil', {
     evaluations: { list: `SELECT agenda_item_id, account_id, status, left(context_fingerprint, 16) AS empreinte, left(evaluation_signature, 16) AS signature,
              attempts, run_id, mode, requested_at, started_at, finished_at, lease_until, next_attempt_at, last_error_kind,

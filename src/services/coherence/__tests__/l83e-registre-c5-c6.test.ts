@@ -182,7 +182,10 @@ describe('L83E-U-C-Q10 — comptes non éligibles : lecture de l’état d’abo
     }
     expect([...SUBSCRIPTION_STATE_REASONS].sort()).toEqual(['NO_SUBSCRIPTION', 'READ_ONLY', 'SUBSCRIPTION_ENDED', 'TRIAL_EXPIRED', 'UNPAID', 'WITHDRAWN']);
     for (const r of ['ACCOUNT_SUSPENDED', 'ACCOUNT_ARCHIVED', 'ACCOUNT_NOT_FOUND', 'ELIGIBILITY_UNREADABLE']) expect(SUBSCRIPTION_STATE_REASONS.has(r), r).toBe(false);
-    // Le moteur neutralise toute réparation hors périmètre ÉLIGIBLE.
-    expect(sansCommentaires(lire('src/services/coherence/engine.ts'))).toMatch(/\(ctx\.accountScope \?\? 'ELIGIBLE'\) === 'ELIGIBLE'/);
+    // Le moteur neutralise toute réparation hors périmètre ÉLIGIBLE, sauf propriété DÉCLARATIVE du contrôle
+    // (lot 84A, L83-Q1 : `repairOnIneligibleBilling`) — aucun identifiant de contrôle codé en dur.
+    const moteur = sansCommentaires(lire('src/services/coherence/engine.ts'));
+    expect(moteur).toMatch(/repairPermittedInScope\(check, ctx\.accountScope \?\? 'ELIGIBLE'\)/);
+    expect(moteur).not.toMatch(/COH-BILLING|COH-ENTITLEMENTS/);
   });
 });

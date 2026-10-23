@@ -50,6 +50,9 @@ import { openDrawer, restoreFocusOnClose } from '@/lib/drawers';
 import { EntityCard, EntityCardList } from '@/components/drawers/EntityCard';
 import type { AgendaItemFull } from '@/services/agenda/AgendaQueryService';
 import { useWriteGuard } from '@/contexts/WriteGuardContext';
+// Lot 84B (CDC v5 O-3, §8.1, §14.4) : événement de référence + liens précis ; lien manuel vers un élément d'agenda.
+import { GroupingPicker } from '@/components/agenda/AgendaGroupingPanel';
+import { GROUPING_LABELS } from '@/lib/agenda/grouping-view';
 import {
   displayAnalysisState, isProcessingStatus, userMessageText, ANALYSIS_FAILED_FINAL_MESSAGE, type ProcessingStatus,
 } from '@/lib/ai/processing-status';
@@ -352,6 +355,37 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
   // plus de validation sur la fiche — les données fiables sont déjà écrites par
   // les moteurs, les autres sont des cartes « À traiter ».
   interface AiFieldProposal { id: number; targetKey: string; proposedValueJson: string; status: string; proposalType: string; }
+
+  // Lot 84B (§14.4) : nature des liens du document avec l'agenda (lien précis, ou par
+  // l'ensemble vers son événement de référence) — relue à chaque relecture de la liste.
+  const [agendaLinkInfo, setAgendaLinkInfo] = useState<Map<number, { direct: boolean; viaGroup: boolean; isMain: boolean }>>(new Map());
+  const [agendaPickerOpen, setAgendaPickerOpen] = useState(false);
+  useEffect(() => {
+    if (!open || !doc) return;
+    let annule = false;
+    apiClient.get<{ links: Array<{ itemId: number; direct: boolean; viaGroup: boolean; isMain: boolean }> }>(`/api/documents/${doc.id}/agenda-liens`)
+      .then((r) => { if (!annule) setAgendaLinkInfo(new Map((r?.links ?? []).map((l) => [l.itemId, l]))); })
+      .catch(() => { if (!annule) setAgendaLinkInfo(new Map()); });
+    return () => { annule = true; };
+  }, [open, doc?.id, linkedAgendaItems]); // eslint-disable-line react-hooks/exhaustive-deps
+  const loadAgendaCandidates = useCallback(async (q: string) => {
+    if (!doc) return [];
+    const r = await apiClient.get<{ candidates: Array<{ id: number; title: string; meta: string | null }> }>(`/api/documents/${doc.id}/agenda-liens?candidats=1&q=${encodeURIComponent(q)}`);
+    return r?.candidates ?? [];
+  }, [doc?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  const relierAgenda = async (itemId: number) => {
+    if (!doc) return;
+    try {
+      await apiClient.post(`/api/documents/${doc.id}/agenda-liens`, { itemId });
+      toast.success('Document relié');
+      window.dispatchEvent(new CustomEvent('agenda-mutated'));
+      const r = await fetch(`/api/agenda?fileId=${doc.id}&period=all&includeCancelled=false`, { credentials: 'include' });
+      const data = r.ok ? await r.json() : null;
+      if (data?.items) setLinkedAgendaItems(data.items.map((i: any) => ({ id: i.id, title: i.title, startDate: i.startDate ?? null, effectiveStatus: i.effectiveStatus })));
+    } catch (err: any) {
+      if (err?.status !== 403) toast.error(err?.serverMessage || err?.message || 'Le lien n’a pas pu être créé');
+    }
+  };
 
   // Sub-drawers
   // Lot 75H : pièce et équipement s'ouvrent en tiroir empilé (GlobalDrawerHost,
@@ -1702,7 +1736,13 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
                             onOpen={() => { void openLinkedAgendaItem(item.id); }}
                             badges={loadingAgendaItem === item.id ? (
                               <Loader2 className="w-3 h-3 animate-spin shrink-0 text-muted-foreground" />
-                            ) : (
+                            ) : (<>
+                              {agendaLinkInfo.get(item.id)?.isMain && agendaLinkInfo.get(item.id)?.viaGroup && (
+                                <span className="shrink-0 text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-[color:var(--accent-soft)] text-[color:var(--accent)]">{GROUPING_LABELS.mainBadge}</span>
+                              )}
+                              {agendaLinkInfo.get(item.id)?.direct && agendaLinkInfo.get(item.id)?.viaGroup && (
+                                <span className="shrink-0 text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-muted text-muted-foreground">{GROUPING_LABELS.directLink}</span>
+                              )}
                               <span className={`shrink-0 text-[10px] font-semibold px-1.5 py-0.5 rounded-full ${
                                 item.effectiveStatus === 'realise' ? 'bg-[color:var(--bg-success)] text-[color:var(--text-success)]' :
                                 item.effectiveStatus === 'annule' ? 'bg-muted text-muted-foreground' :
@@ -1712,12 +1752,20 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
                               }`}>
                                 {item.effectiveStatus === 'aujourd_hui' ? "Aujourd'hui" : effectiveStatusLabel(item.effectiveStatus || 'a_venir')}
                               </span>
-                            )}
+                            </>)}
                           />
                         ))}
                       </EntityCardList>
                     </div>
                   )}
+
+                  {/* Lot 84B (§8.1, AC01) : lien manuel vers un élément d'agenda — le document rejoint son ensemble. */}
+                  <div className={linkedAgendaItems.length > 0 ? 'pt-1' : 'pt-2 border-t'}>
+                    <Button type="button" variant="secondary" size="sm" className="min-h-11 sm:min-h-8"
+                      onClick={() => garder(() => setAgendaPickerOpen(true))} data-testid="document-relier-agenda">
+                      <Calendar className="w-3.5 h-3.5" aria-hidden />{GROUPING_LABELS.documentAgendaTitle}
+                    </Button>
+                  </div>
 
                   {/* Agenda suggestions from AI */}
                   {agendaSuggestions.length > 0 && (
@@ -1873,6 +1921,14 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
         prefilledEquipmentId={fullData?.equipmentId ?? undefined}
         prefilledTitle={agendaPrefill.title || undefined}
         prefilledStartDate={agendaPrefill.startDate || undefined}
+      />
+
+      <GroupingPicker
+        open={agendaPickerOpen}
+        title={GROUPING_LABELS.documentAgendaTitle}
+        load={loadAgendaCandidates}
+        onClose={() => setAgendaPickerOpen(false)}
+        onPick={(c) => { setAgendaPickerOpen(false); void relierAgenda(c.id); }}
       />
 
       {/* Agenda item sub-drawer */}

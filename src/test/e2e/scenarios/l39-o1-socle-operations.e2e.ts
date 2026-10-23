@@ -20,7 +20,8 @@ const MIG = join(process.cwd(), 'src/db/migrations');
 // Lot 54D : 0379 (reprise T3 et cartes à resynchroniser sur les candidats).
 // Lot 78A : 0609 complète ces tables (provenance, lien d'indice, origine ADMIN_REVIEW, index du rattrapage).
 // Lot 82D : 0656 élargit les objets de la mémoire des décisions (business_operation_match_decisions).
-const FICHIERS_O1 = readdirSync(MIG).filter((f) => /^(03(1[6-9]|2[0135]|79)|0609|0656)_.*\.sql$/.test(f)).sort();
+// Lot 84B : 0684 y ajoute l'objet PRINCIPAL (retrait du rôle principal mémorisé).
+const FICHIERS_O1 = readdirSync(MIG).filter((f) => /^(03(1[6-9]|2[0135]|79)|0609|0656|0684)_.*\.sql$/.test(f)).sort();
 
 const svc = () => import('@/services/business-operations/write');
 const lifecycle = () => import('@/services/business-operations/asset-lifecycle');

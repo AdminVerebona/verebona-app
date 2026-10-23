@@ -145,7 +145,6 @@ async function costMetrics(useCaseCode: string, days: number): Promise<{ metrics
 async function metricsT1(days: number): Promise<Metric[]> {
   const r = await one(
     `SELECT COUNT(*)::int AS total,
-            COUNT(*) FILTER (WHERE status = 'failed')::int AS echecs,
             (AVG(EXTRACT(EPOCH FROM (finished_at - started_at)) * 1000)
                FILTER (WHERE finished_at IS NOT NULL))::int AS duree
        FROM document_analysis_runs
@@ -167,16 +166,13 @@ async function metricsT1(days: number): Promise<Metric[]> {
   ).catch((): Row => ({}));
 
   const total = Number(r.total ?? 0);
-  const echecs = Number(r.echecs ?? 0);
   const cost = await costMetrics('SOURCE_ANALYSIS', days);
 
+  // Lot 84D (CDC Pilotage IA V2 BO-06, BO-11, C-Q9) : « Analyses en échec » et « Taux d'échec »
+  // retirés de Configuration IA — remplacés par les cartes d'Exécutions & logs (issue MÉTIER,
+  // chaque exécution comptée une fois) ; la configuration n'affiche qu'un avertissement contextuel.
   return [
     M('runs', 'Analyses lancées', total),
-    M('failed', 'Analyses en échec', echecs),
-    // Un zéro d'échec sur zéro analyse ne veut rien dire : le taux reste non
-    // mesuré plutôt que d'afficher 0 %, qui se lirait « tout va bien ».
-    M('failure_rate', "Taux d'échec", total > 0 ? Math.round((echecs / total) * 100) : null,
-      'percent', total === 0 ? 'Aucune analyse sur la période.' : undefined),
     M('duration', 'Durée moyenne d\'analyse', num(r.duree), 'ms'),
     ...cost.metrics,
     M('t1_gaps', 'Lacunes T1 signalées', num(gaps.signaux) ?? 0),
@@ -192,8 +188,7 @@ async function metricsT2(days: number): Promise<Metric[]> {
     `SELECT COUNT(*)::int AS total,
             COUNT(*) FILTER (WHERE mode = 'ai')::int            AS ia,
             COUNT(*) FILTER (WHERE mode <> 'ai')::int           AS deterministe,
-            AVG(latency_ms)::int                                AS latence,
-            COUNT(*) FILTER (WHERE status = 'error')::int       AS erreurs
+            AVG(latency_ms)::int                                AS latence
        FROM verebona_request_runs WHERE ${fenetre}`,
   );
 
@@ -297,7 +292,7 @@ async function metricsT2(days: number): Promise<Metric[]> {
     M('escalation_rate', 'Taux d’escalade', tauxIa(qualite.escaladees), 'percent', sansIa),
     M('invalid_action_rate', 'Taux d’actions invalides (modèle)', tauxIa(qualite.actions_invalides), 'percent', sansIa),
     M('cache_hit_rate', 'Taux de cache (retrieval, réponses)', pct(qualite.cache), 'percent'),
-    M('errors', 'Demandes en échec', Number(runs.erreurs ?? 0)),
+    // Lot 84D (BO-06, BO-11) : « Demandes en échec » retiré — carte « Échecs » d'Exécutions & logs.
     M('conversations', 'Conversations ouvertes', num(conversations.ouvertes)),
     M('conversations_active', 'Conversations actives', num(conversations.actives)),
     M('conversations_expiring', 'Conversations expirant sous 7 j', num(conversations.expirent)),

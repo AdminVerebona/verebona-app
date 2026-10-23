@@ -1,11 +1,11 @@
 "use client"
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
-import { Calendar, Bell, FileText, ChevronRight, Clock, CheckCircle2, AlertCircle, CalendarDays, LayoutGrid, Wrench, Download, Package, RefreshCw } from 'lucide-react';
+import { FileText, ChevronRight, Clock, CheckCircle2, AlertCircle, CalendarDays, LayoutGrid, Wrench, Download, Package, RefreshCw } from 'lucide-react';
 import {
   DEVICE_TYPE_LABELS,
   SPORT_TYPE_LABELS,
@@ -31,19 +31,11 @@ const DocumentDrawer = dynamic(
 import type { DocumentDrawerItem } from '@/components/assets/DocumentDrawer';
 import { OCCUPANCY_USAGE_LABELS } from '@/lib/assets/occupancy';
 import { displayDocumentTitle } from '@/lib/documents/document-title-rules';
-
-interface TimelineItem {
-  itemType: 'event' | 'reminder' | 'agenda';
-  id: string;
-  title: string;
-  effectiveDate: string | null;
-  status?: string;
-  deadlineType?: string;
-  isDone: boolean;
-  isOverdue: boolean;
-  /** Lot 53 (D17) : fait passé sans preuve de réalisation — ni « fait », ni masqué. */
-  toConfirm?: boolean;
-}
+import type { TimelineEntry } from '@/services/agenda/timeline/model';
+import {
+  AssetTimelineList, TimelineModeSwitch, useAssetTimeline,
+  type TimelineOpenRequest, type TimelinePageInfo,
+} from '@/components/assets/timeline/AssetTimeline';
 
 interface OverviewData {
   asset: {
@@ -66,7 +58,9 @@ interface OverviewData {
     address?: string | null;
     city?: string | null;
   };
-  timeline: TimelineItem[];
+  /** Lot 84C : première page de la Timeline, mode « Regroupée » (§13.2). */
+  timeline: TimelineEntry[];
+  timelinePage?: TimelinePageInfo;
   documentsPreview: Array<{
     id: number;
     originalFilename: string;
@@ -98,7 +92,6 @@ const formatDate = (d: string | null) => {
   } catch { return d; }
 };
 
-const today = () => new Date().toISOString().split('T')[0];
 
 
 function KV({ label, value }: { label: string; value: React.ReactNode }) {
@@ -322,7 +315,12 @@ export function AssetOverviewTab({ assetId, onTabChange, readOnly = false }: Pro
     return () => window.removeEventListener('agenda-mutated', handler);
   }, [load]);
 
-  const openTimelineItem = useCallback(async (itemId: string) => {
+  // Lot 84C — POINT D'APPEL UNIQUE des tiroirs depuis la Timeline (desktop et
+  // mobile) : élément seul, groupe (son élément principal) ou élément d'un
+  // groupe. Aujourd'hui : le tiroir Agenda EXISTANT de l'élément demandé. Un
+  // tiroir dédié au groupe (chantier 84B) se branche ICI selon `req.context`.
+  const openTimelineItem = useCallback(async (req: TimelineOpenRequest) => {
+    const itemId = req.itemId;
     setLoadingItem(itemId);
     try {
       const res = await apiClient.get<{ item: AgendaItemFull }>(`/api/agenda/${itemId}`);
@@ -335,6 +333,14 @@ export function AssetOverviewTab({ assetId, onTabChange, readOnly = false }: Pro
       setLoadingItem(null);
     }
   }, [onTabChange]);
+
+  // Lot 84C : état de Timeline partagé par les variantes desktop et mobile
+  // (une seule lecture) ; mode « Regroupée » à chaque ouverture (AC22, AC24).
+  const timelineInitial = useMemo(
+    () => (data ? { entries: data.timeline ?? [], page: data.timelinePage ?? null } : null),
+    [data],
+  );
+  const [timeline, timelineActions] = useAssetTimeline(assetId, timelineInitial);
 
   if (loading) {
     return (
@@ -369,16 +375,6 @@ export function AssetOverviewTab({ assetId, onTabChange, readOnly = false }: Pro
     );
   }
 
-  const td = today();
-
-  // Sort timeline: past (done or overdue) DESC, then upcoming ASC
-  const sortedTimeline = [...data.timeline].sort((a, b) => {
-    if (!a.effectiveDate && !b.effectiveDate) return 0;
-    if (!a.effectiveDate) return 1;
-    if (!b.effectiveDate) return -1;
-    return b.effectiveDate < a.effectiveDate ? -1 : b.effectiveDate > a.effectiveDate ? 1 : 0;
-  });
-
   const hasFamily = (() => {
     const kc = data.asset.keyCharacteristics ?? {};
     const od = data.asset.objectDetails ?? {};
@@ -393,63 +389,16 @@ export function AssetOverviewTab({ assetId, onTabChange, readOnly = false }: Pro
   return (
     <div className="flex gap-6 min-w-0 overflow-hidden">
       {/* ── Left column: vertical timeline (desktop only) ───────────────── */}
-      <div className="hidden lg:flex flex-col w-52 shrink-0">
+      <div className="hidden lg:flex flex-col w-60 shrink-0">
         <div className="flex items-center gap-2 mb-4">
           <CalendarDays className="w-4 h-4 text-muted-foreground" />
           <span className="text-sm font-medium text-muted-foreground">Timeline</span>
         </div>
-        {sortedTimeline.length === 0 ? (
-          <p className="text-xs text-muted-foreground">Aucune entrée</p>
-        ) : (
-          <div className="relative">
-            {/* Vertical line */}
-            <div className="absolute left-[7px] top-2 bottom-2 w-px bg-border" />
-            <div className="space-y-0">
-              {sortedTimeline.slice(0, 12).map((item) => {
-                const isOverdue = item.isOverdue;
-                const isDone = item.isDone;
-                const isLoading = loadingItem === item.id;
-                const dotColor = isOverdue
-                  ? 'bg-destructive'
-                  : item.toConfirm
-                  ? 'bg-[color:var(--badge-todo)]'
-                  : isDone
-                  ? 'bg-[color:var(--accent)]'
-                  : 'bg-[color:var(--text-muted)]';
-                return (
-                  <div key={`${item.itemType}-${item.id}`} className="relative flex gap-3 pb-5">
-                    {/* Dot */}
-                    <div className={`relative z-10 mt-1 w-3.5 h-3.5 rounded-full border-2 border-background shrink-0 ${dotColor} ${isLoading ? 'animate-pulse' : ''}`} />
-                    <button
-                      className={`flex-1 min-w-0 -mt-0.5 text-left transition-opacity ${readOnly ? 'cursor-default' : 'hover:opacity-70'}`}
-                      onClick={readOnly ? undefined : () => openTimelineItem(item.id)}
-                      disabled={isLoading || readOnly}
-                    >
-                      {item.effectiveDate && (
-                        <p className="text-[10px] text-muted-foreground leading-none mb-0.5">
-                          {formatDate(item.effectiveDate)}
-                          {item.toConfirm && <span className="text-[color:var(--attention-on-soft)]"> · statut à confirmer</span>}
-                        </p>
-                      )}
-                      <p className={`text-xs font-medium leading-snug truncate ${isDone ? 'text-muted-foreground' : 'text-foreground'}`}>
-                        {item.title}
-                      </p>
-                    </button>
-                  </div>
-                );
-              })}
-              {sortedTimeline.length > 12 && !readOnly && (
-                <button
-                  onClick={() => onTabChange('agenda')}
-                  className="relative flex gap-3 items-center text-xs text-muted-foreground hover:text-foreground transition-colors"
-                >
-                  <div className="relative z-10 w-3.5 h-3.5 rounded-full border-2 border-border bg-background shrink-0" />
-                  <span>+{sortedTimeline.length - 12} entrées</span>
-                </button>
-              )}
-            </div>
-          </div>
-        )}
+        <div className="mb-4">
+          <TimelineModeSwitch mode={timeline.mode} onChange={timelineActions.setMode} />
+        </div>
+        <AssetTimelineList state={timeline} actions={timelineActions} variant="desktop" readOnly={readOnly}
+          busyItemId={loadingItem} onOpenItem={openTimelineItem} />
       </div>
 
       {/* ── Right column: main content ──────────────────────────────────── */}
@@ -493,60 +442,19 @@ export function AssetOverviewTab({ assetId, onTabChange, readOnly = false }: Pro
           </Card>
         )}
 
-        {/* Timeline mobile (lg: hidden) */}
-        {sortedTimeline.length > 0 && (
+        {/* Timeline mobile (lg: hidden) — même état, même point d'appel des tiroirs. */}
+        {(timeline.entries.length > 0 || timeline.mode === 'detailed') && (
           <Card className="lg:hidden">
-            <CardHeader className="pb-3">
+            <CardHeader className="pb-3 flex flex-row flex-wrap items-center justify-between gap-2">
               <CardTitle className="flex items-center gap-2">
                 <CalendarDays className="w-4 h-4 text-muted-foreground" />
                 Timeline
               </CardTitle>
+              <TimelineModeSwitch mode={timeline.mode} onChange={timelineActions.setMode} />
             </CardHeader>
             <CardContent>
-              <div className="relative">
-                <div className="absolute left-[7px] top-2 bottom-2 w-px bg-border" />
-                <div className="space-y-0">
-                  {sortedTimeline.slice(0, 10).map((item) => {
-                    const dotColor = item.isOverdue
-                      ? 'bg-destructive'
-                      : item.toConfirm
-                      ? 'bg-[color:var(--badge-todo)]'
-                      : item.isDone
-                      ? 'bg-[color:var(--accent)]'
-                      : 'bg-[color:var(--text-muted)]';
-                    const isLoadingDot = loadingItem === item.id;
-                    return (
-                      <div key={`mob-${item.itemType}-${item.id}`} className="relative flex gap-3 pb-4">
-                        <div className={`relative z-10 mt-1 w-3.5 h-3.5 rounded-full border-2 border-background shrink-0 ${dotColor} ${isLoadingDot ? 'animate-pulse' : ''}`} />
-                        <button
-                          className={`flex-1 min-w-0 -mt-0.5 text-left transition-opacity ${readOnly ? 'cursor-default' : 'hover:opacity-70'}`}
-                          onClick={readOnly ? undefined : () => openTimelineItem(item.id)}
-                          disabled={isLoadingDot || readOnly}
-                        >
-                          {item.effectiveDate && (
-                            <p className="text-[10px] text-muted-foreground leading-none mb-0.5">
-                              {formatDate(item.effectiveDate)}
-                              {item.toConfirm && <span className="text-[color:var(--attention-on-soft)]"> · statut à confirmer</span>}
-                            </p>
-                          )}
-                          <p className={`text-xs font-medium leading-snug ${item.isDone ? 'text-muted-foreground' : 'text-foreground'}`}>
-                            {item.title}
-                          </p>
-                        </button>
-                      </div>
-                    );
-                  })}
-                  {sortedTimeline.length > 10 && !readOnly && (
-                    <button
-                      onClick={() => onTabChange('agenda')}
-                      className="relative flex gap-3 items-center text-xs text-muted-foreground hover:text-foreground transition-colors"
-                    >
-                      <div className="relative z-10 w-3.5 h-3.5 rounded-full border-2 border-border bg-background shrink-0" />
-                      <span>+{sortedTimeline.length - 10} entrées</span>
-                    </button>
-                  )}
-                </div>
-              </div>
+              <AssetTimelineList state={timeline} actions={timelineActions} variant="mobile" readOnly={readOnly}
+                busyItemId={loadingItem} onOpenItem={openTimelineItem} />
             </CardContent>
           </Card>
         )}
@@ -679,33 +587,6 @@ export function AssetOverviewTab({ assetId, onTabChange, readOnly = false }: Pro
           document={docDrawerDoc}
           onRefresh={() => { load(); }}
         />
-      )}
-    </div>
-  );
-}
-
-function TimelineRow({ item, muted }: { item: TimelineItem; muted?: boolean }) {
-  const icon = (item.itemType === 'event' || item.itemType === 'agenda')
-    ? <Calendar className="w-4 h-4 flex-shrink-0" />
-    : <Bell className="w-4 h-4 flex-shrink-0" />;
-
-  const stateIcon = item.isOverdue
-    ? <AlertCircle className="w-3 h-3 text-destructive" />
-    : item.toConfirm
-    ? <Clock className="w-3 h-3 text-[color:var(--attention-on-soft)]" />
-    : item.isDone
-    ? <CheckCircle2 className="w-3 h-3 text-[color:var(--text-success)]" />
-    : <Clock className="w-3 h-3 text-muted-foreground" />;
-
-  return (
-    <div className={`flex items-center gap-2 text-sm ${muted ? 'opacity-60' : ''}`}>
-      <span className="text-muted-foreground">{icon}</span>
-      <span className="flex-1 truncate">{item.title}</span>
-      {stateIcon}
-      {item.effectiveDate && (
-        <span className="text-xs text-muted-foreground flex-shrink-0">
-          {formatDate(item.effectiveDate)}
-        </span>
       )}
     </div>
   );

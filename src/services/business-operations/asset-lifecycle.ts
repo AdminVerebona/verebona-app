@@ -16,9 +16,15 @@
  *   · une Opération multi-biens RESTE sur l'ancien compte : son lien vers le
  *     bien transféré (et ses équipements, et les attributions de composantes
  *     au bien) est retiré, historisé ;
- *   · aucune relation ne franchit les comptes après coup : parent / enfant,
- *     contrat d'assurance d'un sinistre, INTERVENTION enfant d'une action
- *     Sinistre — détachés et historisés quand un seul côté part.
+ *   · aucune relation ne franchit les comptes après coup : contrat
+ *     d'assurance d'un sinistre — détaché et historisé quand un seul côté
+ *     part. Lot 84A (O-10) : l'ancien lien parent / enfant
+ *     (`parent_operation_id`, inerte depuis 83D, clé étrangère COMPOSÉE avec
+ *     le compte) n'est détaché que TANT QUE LA COLONNE EXISTE (sonde sans
+ *     cache) — sinon un transfert serait refusé par la clé étrangère avant la
+ *     finalisation BO ; après la finalisation, la colonne n'existe plus et la
+ *     garde ne lit rien. Les actions de sinistre (tables supprimées par la
+ *     finalisation) ne sont plus lues.
  *
  * Transmission (`/api/transmission/[token]`) : le bien n'y change PAS de
  * compte — il est DUPLIQUÉ chez le destinataire (nouvel identifiant,
@@ -44,6 +50,7 @@
  * ══════════════════════════════════════════════════════════════════════════
  */
 import { sql, type SQL } from 'drizzle-orm';
+import { LEGACY_PARENT_COLUMN_PROBE_SQL } from './claims/legacy-schema';
 import type { BusinessOperationEvent } from './events';
 import type { DbTx } from './lock';
 import { withBusinessOperationWriteInTx, type WriteOptions } from './write';
@@ -116,11 +123,13 @@ export async function transferAssetOperationsInTx(
     if (moved.length) {
       const liste = sql.raw(`(${moved.join(',')})`);
       // 3. Relations qui franchiraient les comptes : détachées, historisées.
-      const parentsCoupes = await rows<{ id: string; parent: string }>(tx, sql`
+      // Lot 84A (O-10) : ancien lien parent (clé composée) — seulement tant que la colonne existe (avant la finalisation BO).
+      const [{ present: parentPresent }] = await rows<{ present: boolean }>(tx, sql.raw(LEGACY_PARENT_COLUMN_PROBE_SQL));
+      const parentsCoupes = parentPresent ? await rows<{ id: string; parent: string }>(tx, sql`
         SELECT id, parent_operation_id AS parent FROM business_operations
          WHERE account_id = ${from} AND parent_operation_id IS NOT NULL
            AND ((id IN ${liste} AND parent_operation_id NOT IN ${liste})
-             OR (id NOT IN ${liste} AND parent_operation_id IN ${liste}))`);
+             OR (id NOT IN ${liste} AND parent_operation_id IN ${liste}))`) : [];
       for (const r of parentsCoupes) {
         await tx.execute(sql`UPDATE business_operations SET parent_operation_id = NULL, version = version + 1, updated_at = now() WHERE id = ${Number(r.id)}`);
         await historiser(tx, from, Number(r.id), 'PARENT_CHANGED', `${reason}_PARENT_DETACHED`, { parent_operation_id: Number(r.parent) }, { parent_operation_id: null }, session);
@@ -138,11 +147,6 @@ export async function transferAssetOperationsInTx(
           await historiser(tx, from, Number(r.id), 'UPDATED', `${reason}_CONTRACT_DETACHED`, { insurance_contract_operation_id: Number(r.contrat) }, { insurance_contract_operation_id: null }, session);
         }
       }
-      await tx.execute(sql`
-        UPDATE business_operation_claim_actions SET child_operation_id = NULL
-         WHERE child_operation_id IS NOT NULL
-           AND ((operation_id IN ${liste} AND child_operation_id NOT IN ${liste})
-             OR (operation_id NOT IN ${liste} AND child_operation_id IN ${liste}))`);
 
       // 4. Le déplacement : une instruction, les lignes filles suivent en cascade.
       await tx.execute(sql`

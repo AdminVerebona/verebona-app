@@ -290,7 +290,7 @@ function CallCard({ r }: { r: CallReportView }) {
 }
 
 /** Sorties du modèle (route dédiée, accès journalisé). */
-function ModelOutputs({ callId }: { callId: number }) {
+export function ModelOutputs({ callId }: { callId: number }) {
   const [state, setState] = useState<'idle' | 'loading' | 'done'>('idle');
   const [outputs, setOutputs] = useState<ModelOutput[]>([]);
   const [captures, setCaptures] = useState<CapturedCall[]>([]);

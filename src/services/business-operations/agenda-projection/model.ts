@@ -594,6 +594,12 @@ export interface PlanInput {
    * toujours respectée).
    */
   forceCreate?: boolean;
+  /**
+   * Lot 84B (CDC v5 §10, §11.9 ; point ouvert 83A) : l'utilisateur a RETIRÉ
+   * le rôle principal dans cette Opération (décision mémorisée) — aucun
+   * principal n'y est reconnu, promu ni créé ; ses éléments restent.
+   */
+  principalWithdrawn?: boolean;
 }
 
 const sameSet = (a: readonly number[], b: readonly number[]): boolean => {
@@ -637,9 +643,11 @@ function deadlineSlot(linked: readonly AgendaItemSnapshot[]): AgendaItemSnapshot
  * projection. Lot 83A : un rôle posé par l'UTILISATEUR n'est jamais modifié
  * par la projection (§10, P8).
  */
-function roleActions(item: AgendaItemSnapshot, key: string): ProjectionAction[] {
+function roleActions(item: AgendaItemSnapshot, key: string, principalWithdrawn = false): ProjectionAction[] {
   if (item.operationRole === undefined || item.operationRoleOrigin === 'USER') return [];
   const voulu = projectionRoleOf(key);
+  // Lot 84B : rôle principal retiré par l'utilisateur — jamais rétabli par la projection.
+  if (voulu === 'PRINCIPAL' && principalWithdrawn && item.operationRole !== 'PRINCIPAL') return [];
   return item.operationRole === voulu ? [] : [{ kind: 'ROLE', itemId: item.id, role: voulu }];
 }
 
@@ -723,7 +731,7 @@ export function planOperationProjection(p: PlanInput): ProjectionAction[] {
   const evenementGlobal = projectionRoleOf(d.key) === 'PRINCIPAL';
   const item = evenementGlobal ? principalSlot(p.linked, d.key) : deadlineSlot(p.linked);
 
-  if (item && evenementGlobal && item.projected && !isTouched(item) && item.operationRoleOrigin !== 'USER' && d.date) {
+  if (item && evenementGlobal && item.projected && !isTouched(item) && item.operationRoleOrigin !== 'USER' && d.date && !p.principalWithdrawn) {
     // Lot 83A (C16.1, V-Q4) : la propre projection INTACTE fait double emploi avec un membre qui représente
     // CERTAINEMENT la même occurrence (élément saisi ou T4 rattaché par T3 à cette réalité, même bien,
     // même date) — vrai doublon : la projection est retirée, le membre devient le principal (AC15).
@@ -755,6 +763,8 @@ export function planOperationProjection(p: PlanInput): ProjectionAction[] {
   }
 
   if (p.suppressedKeys.has(d.key)) return [{ kind: 'SUPPRESSED', key: d.key }];
+  // Lot 84B (§10, §11.9) : rôle principal retiré par l'utilisateur — ni reconnaissance, ni création.
+  if (evenementGlobal && p.principalWithdrawn) return [{ kind: 'SUPPRESSED', key: d.key }];
   if (!d.date) {
     // §11.4 / AC17 : l'identité de l'événement est établie, sa date non — créé SANS date (jamais
     // inventée, jamais « Sans échéance ») ; aucun rapprochement sur une date absente.
@@ -867,7 +877,7 @@ function occupiedSlotActions(p: PlanInput, d: DesiredProjection, fk: string, ite
       changes.links = links;
     }
     if (Object.keys(changes).length) actions.push({ kind: 'SYNC', itemId: item.id, changes });
-    actions.push(...roleActions(item, d.key));
+    actions.push(...roleActions(item, d.key, p.principalWithdrawn));
     return actions;
   }
   // Élément saisi, produit par T4, ou projeté puis modifié : jamais réécrit
@@ -877,7 +887,7 @@ function occupiedSlotActions(p: PlanInput, d: DesiredProjection, fk: string, ite
   actions.push(...retitleActions(op, item));
   actions.push(...dateActions(item, d));
   actions.push(...statusActions(op, item, d, cards));
-  actions.push(...roleActions(item, d.key));
+  actions.push(...roleActions(item, d.key, p.principalWithdrawn));
   return actions;
 }
 

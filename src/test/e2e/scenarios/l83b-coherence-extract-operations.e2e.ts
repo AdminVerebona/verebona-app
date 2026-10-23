@@ -489,7 +489,7 @@ scenario('L83B', 'Cohérence : chaîne extract → T1 → aval (C-Q7), rattachem
     const liens = () => sql`SELECT equipment_id FROM document_asset_links WHERE file_id = ${facture} AND status = 'ACTIVE' AND equipment_id IS NOT NULL`;
     await campagne([c.id], 'CORRECTIVE');
     expect(await preuve(c.id, 'COH-DOC-LINKS', facture)).toMatchObject({
-      last_result: 'FINDING', rules_version: 2,
+      last_result: 'FINDING', rules_version: 3, // lot 84E : COH-DOC-LINKS v3
       finding: expect.objectContaining({ anomaly: 'EQUIPMENT_ASSOCIATION_UNPROVEN', observed: { operationIds: [op.id], equipmentIds: [alarme] },
         detail: expect.objectContaining({ pendingContract: '82D-t3-document-equipement' }) }),
     });

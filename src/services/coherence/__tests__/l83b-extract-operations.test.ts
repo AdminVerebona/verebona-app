@@ -198,7 +198,8 @@ describe('L83B-U-REG — registre et couverture', () => {
     expect(ids.slice(0, 6)).toEqual(['COH-TODO-DOCUMENT-FIELDS', 'COH-DOC-LINKS', 'COH-AGENDA-OCCURRENCES', 'COH-AGENDA-ORPHANS', 'COH-TCO-EXTRACTED-EXPENSES', 'COH-DOC-EXTRACT-CHAIN']);
     for (const id of ['COH-ASSET-EQUIPMENT-SEPARATION', 'COH-OPS-IDENTITY', ...OPERATIONS_GROUPING_INVARIANTS.map((i) => `COH-${i.id}`)]) expect(ids, id).toContain(id);
     expect(getCheck('COH-DOC-EXTRACT-CHAIN')).toMatchObject({ status: 'ACTIVE', version: 1 });
-    expect(getCheck('COH-DOC-LINKS')!.version).toBe(2);
+    // Lot 84E : COH-DOC-LINKS v3 (réparation de premier rang par la reconsolidation ciblée O-6).
+    expect(getCheck('COH-DOC-LINKS')!.version).toBe(3);
     expect(new Set(COHERENCE_REGISTRY.map((c) => c.id)).size).toBe(COHERENCE_REGISTRY.length);
   });
 

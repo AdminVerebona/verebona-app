@@ -7,15 +7,23 @@
  * l'utilisateur). Tracée sur la ligne de couverture (dernière reprise :
  * `REQUEUED_T1_ADMIN`) et dans le journal. Corps : `{ fileId }`.
  * Refus : document inconnu (404), autre état que VERIFICATION_INCOMPLETE (409).
+ *
+ * Lot 84D (CDC Pilotage IA V2 BO-03, BO-10) : même reprise depuis le détail
+ * d'une exécution métier — `businessExecutionId` optionnel ; journalisée
+ * (`AI_EXECUTION_RELAUNCH` : acteur, document, exécution d'origine). La
+ * reprise CONTINUE l'exécution (même identité, R22).
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { requireAdminContext, toErrorResponse } from '../../config-versions/_shared';
+import { parseExecutionId } from '@/services/ai/business-execution/identity';
+import { logAdminAction } from '@/lib/admin-audit';
 
 export async function POST(req: NextRequest) {
   const guard = await requireAdminContext(req);
   if (!guard.ok) return guard.response;
-  const body = (await req.json().catch(() => null)) as { fileId?: unknown } | null;
+  const body = (await req.json().catch(() => null)) as { fileId?: unknown; businessExecutionId?: unknown } | null;
   const fileId = Number(body?.fileId);
+  const executionId = typeof body?.businessExecutionId === 'string' && parseExecutionId(body.businessExecutionId) ? body.businessExecutionId : null;
   if (!Number.isSafeInteger(fileId) || fileId <= 0) {
     return NextResponse.json({ error: 'INVALID_BODY', message: '`fileId` (entier) est requis.' }, { status: 400 });
   }
@@ -37,6 +45,10 @@ export async function POST(req: NextRequest) {
     const queued = await requeueDocumentForReread({
       fileId, accountId: Number(row.account_id), attempt: Number(row.retry_attempts ?? 0) + 1,
       origin: 't1-completeness-retry', result: 'REQUEUED_T1_ADMIN',
+    });
+    await logAdminAction({
+      adminId: guard.ctx.adminUserId, action: 'AI_EXECUTION_RELAUNCH', targetType: 'AI_EXECUTION', targetId: fileId, result: 'SUCCESS',
+      details: { kind: 't1-completeness-retry', fileId, businessExecutionId: executionId, queued },
     });
     console.info(`[t1-completeness] reprise manuelle du document ${fileId} par l'administrateur ${guard.ctx.adminUserId} : ${queued ? 'mis en file' : 'déjà en file / refusé'}`);
     return NextResponse.json({ ok: true, queued });

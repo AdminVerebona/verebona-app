@@ -32,8 +32,14 @@
  *
  * Décisions utilisateur (§10) : tout geste USER est mémorisé
  * (`decisions.ts`) ; une inférence (T3, T4, SYSTEM) ne recrée jamais un
- * rattachement refusé et ne remplace jamais un principal posé par
- * l'utilisateur. Aucun lien intercomptes (§28) : chaque objet est relu dans
+ * rattachement refusé, ne remplace jamais un principal posé par
+ * l'utilisateur et — lot 84B — ne rétablit jamais un rôle principal que
+ * l'utilisateur a retiré (décision PRINCIPAL, `principalWithdrawnByUser`).
+ *
+ * Lot 84B (O-3, interface) : `linkDocumentToAgendaItem` (lien manuel
+ * Document ↔ Agenda qui crée ou rejoint l'Opération, §8.1, AC01) et
+ * `detachDocumentFromAgendaGroup` (document retiré de l'ensemble depuis le
+ * tiroir) — appelés par la route `/api/agenda/[id]/liens`. Aucun lien intercomptes (§28) : chaque objet est relu dans
  * le compte, sous le verrou 39101 du compte.
  *
  * Contexte : `groupingContext(session)` dans une écriture Opération
@@ -44,14 +50,14 @@
  */
 import { withBusinessOperationWrite, type WriteOptions, type WriteSession } from '../write';
 import type { BusinessOperationRepository } from '../repository';
-import { isRejected, recordAssetDecision, recordGroupingDecision } from './decisions';
-import { canReplacePrincipal, planLinkAgendaItems, type OperationRole, type RoleOrigin } from './model';
+import { isRejected, liftPrincipalWithdrawals, principalWithdrawnByUser, recordAssetDecision, recordGroupingDecision } from './decisions';
+import { canReplacePrincipal, mayDesignatePrincipal, planLinkAgendaItems, type OperationRole, type RoleOrigin } from './model';
 import { currentPrincipal, recomputePrincipal as recompute, stripPrincipalLinks, type PrincipalRecompute } from './principal';
 import { drizzleRunner, intArray, lockGroupingAccount, type GroupingRunner } from './runner';
 
 export type GroupingErrorCode =
   | 'ITEM_NOT_FOUND' | 'OPERATION_NOT_FOUND' | 'OPERATION_INACTIVE' | 'CROSS_ACCOUNT' | 'LINKED_ELSEWHERE'
-  | 'SESSION_REQUIRED' | 'SAME_ITEM' | 'MERGE_REFUSED';
+  | 'SESSION_REQUIRED' | 'SAME_ITEM' | 'MERGE_REFUSED' | 'DOCUMENT_NOT_FOUND' | 'NOT_GROUPED';
 
 /** Erreur TECHNIQUE du regroupement (jamais une carte « À traiter ») ; annule la transaction. */
 export class GroupingError extends Error {
@@ -174,6 +180,12 @@ export async function attachAgendaItem(ctx: GroupingContext, p: AttachAgendaInpu
   const meme = item.op === p.operationId;
   let role: OperationRole = p.role ?? (meme && item.role ? item.role : 'RELATED');
   let skipped: AttachAgendaResult['skipped'];
+  // Lot 84B (§10, §11.9) : rôle principal RETIRÉ par l'utilisateur — une inférence ne le rétablit
+  // ni sur cet élément, ni sur un autre (aucune écriture, aucun rattachement de substitution).
+  if (role === 'PRINCIPAL' && !(meme && item.role === 'PRINCIPAL')
+      && !mayDesignatePrincipal(p.origin, await principalWithdrawnByUser(ctx.runner, ctx.accountId, p.operationId))) {
+    return { changed: false, role: item.op === p.operationId ? item.role : null, skipped: 'USER_REJECTED' };
+  }
   if (role === 'PRINCIPAL') {
     const cur = await currentPrincipal(ctx.runner, ctx.accountId, p.operationId);
     if (cur && cur.itemId !== p.itemId) {
@@ -204,6 +216,11 @@ export async function attachAgendaItem(ctx: GroupingContext, p: AttachAgendaInpu
     notify(ctx, p.operationId, p.reasonCode);
   }
   if (user) await recordGroupingDecision(ctx.runner, { accountId: ctx.accountId, operationId: p.operationId, subject: 'AGENDA', entityId: p.itemId, decision: 'CONFIRMED', reasonCode: p.reasonCode });
+  // Lot 84B : désignation par l'utilisateur — mémorisée ; elle lève ses retraits antérieurs du rôle.
+  if (user && p.role === 'PRINCIPAL' && role === 'PRINCIPAL') {
+    await liftPrincipalWithdrawals(ctx.runner, ctx.accountId, p.operationId);
+    await recordGroupingDecision(ctx.runner, { accountId: ctx.accountId, operationId: p.operationId, subject: 'PRINCIPAL', entityId: p.itemId, decision: 'CONFIRMED', reasonCode: p.reasonCode });
+  }
   if (changed) await recompute(ctx.runner, ctx.accountId, p.operationId);
   return { changed, role, ...(skipped ? { skipped } : {}) };
 }
@@ -267,11 +284,21 @@ export function designatePrincipal(ctx: GroupingContext, p: Omit<AttachAgendaInp
   return attachAgendaItem(ctx, { ...p, role: 'PRINCIPAL' });
 }
 
-/** Retire le rôle principal (l'élément reste lié) — refusé à une inférence face à un choix utilisateur. */
-export async function releasePrincipal(ctx: GroupingContext, p: { operationId: number; origin: RoleOrigin; reasonCode: string }): Promise<boolean> {
+/**
+ * Retire le rôle principal (l'élément reste lié) — refusé à une inférence face à un choix utilisateur.
+ * Lot 84B (§10, §11.9 ; point ouvert 83A) : retiré par l'UTILISATEUR, le retrait est MÉMORISÉ
+ * (décision PRINCIPAL REJECTED) — aucune inférence ne rétablit ensuite de principal dans
+ * l'Opération (invariant O3-PRINCIPAL-WITHDRAWN). `itemId` : ne retire que si cet élément est
+ * encore le principal (geste depuis son tiroir).
+ */
+export async function releasePrincipal(ctx: GroupingContext, p: { operationId: number; origin: RoleOrigin; reasonCode: string; itemId?: number }): Promise<boolean> {
   await lockGroupingAccount(ctx.runner, ctx.accountId);
   const cur = await currentPrincipal(ctx.runner, ctx.accountId, p.operationId);
   if (!cur || !canReplacePrincipal(cur.origin, p.origin)) return false;
+  if (p.itemId !== undefined && cur.itemId !== p.itemId) return false;
+  if (p.origin === 'USER') {
+    await recordGroupingDecision(ctx.runner, { accountId: ctx.accountId, operationId: p.operationId, subject: 'PRINCIPAL', entityId: cur.itemId, decision: 'REJECTED', reasonCode: p.reasonCode });
+  }
   await stripPrincipalLinks(ctx.runner, [cur.itemId]);
   await ctx.runner.q(`UPDATE agenda_items SET operation_role = 'RELATED', operation_role_origin = $3, updated_at = now() WHERE id = $1 AND account_id = $2`,
     [cur.itemId, ctx.accountId, p.origin]);
@@ -352,6 +379,77 @@ async function removeFileFromOperationItems(ctx: GroupingContext, operationId: n
 export async function rejectPrincipalLink(ctx: GroupingContext, p: { operationId: number; fileId: number; reasonCode: string }): Promise<void> {
   await lockGroupingAccount(ctx.runner, ctx.accountId);
   await recordGroupingDecision(ctx.runner, { accountId: ctx.accountId, operationId: p.operationId, subject: 'PRINCIPAL_LINK', entityId: p.fileId, decision: 'REJECTED', reasonCode: p.reasonCode });
+}
+
+// ── Lien manuel Document ↔ Agenda (§8.1, AC01 — lot 84B) ────────────────
+
+export interface LinkDocumentResult {
+  /** CREATE : Opération créée ; JOIN_ITEM : l'élément avait la sienne ; JOIN_DOCUMENT : celle du document est rejointe. */
+  case: 'CREATE' | 'JOIN_ITEM' | 'JOIN_DOCUMENT';
+  operationId: number;
+  /** Le lien direct (MANUAL_DIRECT) a été créé ou complété. */
+  linked: boolean;
+}
+
+/**
+ * Lien MANUEL Document ↔ Agenda (geste utilisateur, §8.1, AC01) : le lien
+ * direct est conservé (MANUAL_DIRECT) ET le document rejoint l'Opération de
+ * l'élément — à défaut l'élément rejoint l'Opération UNIQUE active du
+ * document, sinon une Opération est créée (type non qualifié : T3 qualifie,
+ * AC03 ; aucun choix entre plusieurs Opérations du document). Le document est
+ * ensuite propagé vers le principal (§7.1). Décisions mémorisées (CONFIRMED).
+ */
+export async function linkDocumentToAgendaItem(ctx: GroupingContext, p: { itemId: number; fileId: number; reasonCode?: string }): Promise<LinkDocumentResult> {
+  const { repo } = requireSession(ctx, 'linkDocumentToAgendaItem');
+  const reason = p.reasonCode ?? 'USER_DOCUMENT_AGENDA_LINK';
+  await lockGroupingAccount(ctx.runner, ctx.accountId);
+  const item = await loadItem(ctx, p.itemId);
+  const [doc] = await ctx.runner.q(`SELECT 1 FROM asset_files WHERE id = $1 AND account_id = $2 AND deleted_at IS NULL`, [p.fileId, ctx.accountId]);
+  if (!doc) throw new GroupingError('DOCUMENT_NOT_FOUND', `Document ${p.fileId} introuvable dans le compte.`);
+  const { addFileLinkProvenance } = await import('./provenance');
+  const linked = (await addFileLinkProvenance(ctx.runner, p.itemId, [p.fileId], 'MANUAL_DIRECT')) > 0;
+  const source = { kind: 'AGENDA' as const, entityKey: p.itemId, authority: 'USER' as const, locator: { grouping: 'USER_DOCUMENT_LINK' }, matchReason: reason };
+  let res: LinkDocumentResult;
+  const opItem = item.op !== null && item.op_active && Number(item.op_account) === ctx.accountId ? item.op : null;
+  if (opItem !== null) {
+    res = { case: 'JOIN_ITEM', operationId: opItem, linked };
+  } else {
+    const ops = await ctx.runner.q<{ id: string }>(
+      `SELECT DISTINCT o.id FROM business_operation_documents d
+         JOIN business_operations o ON o.id = d.operation_id AND o.account_id = d.account_id
+        WHERE d.account_id = $1 AND d.file_id = $2 AND d.active AND o.invalidated_at IS NULL AND o.merged_into_operation_id IS NULL
+        ORDER BY o.id`, [ctx.accountId, p.fileId]);
+    if (ops.length === 1) {
+      const operationId = Number(ops[0].id);
+      await repo.addSource(operationId, source, reason);
+      await attachAgendaItem(ctx, { operationId, itemId: p.itemId, origin: 'USER', reasonCode: reason });
+      res = { case: 'JOIN_DOCUMENT', operationId, linked };
+    } else {
+      const created = await repo.create({ type: null, status: 'ENVISAGED', source, reasonCode: reason });
+      await attachAgendaItem(ctx, { operationId: created.id, itemId: p.itemId, origin: 'USER', reasonCode: reason });
+      res = { case: 'CREATE', operationId: created.id, linked };
+    }
+  }
+  await attachDocument(ctx, { operationId: res.operationId, fileId: p.fileId, reasonCode: reason });
+  if (linked) notify(ctx, res.operationId, reason);
+  return res;
+}
+
+/**
+ * Document retiré de l'ensemble depuis le tiroir d'un élément (geste
+ * utilisateur) : dissociation mémorisée de l'Opération (`detachDocument`) et
+ * lien direct de CET élément retiré ; les liens précis des autres éléments
+ * sont conservés (§7.3).
+ */
+export async function detachDocumentFromAgendaGroup(ctx: GroupingContext, p: { itemId: number; fileId: number; reasonCode?: string }): Promise<{ operationId: number }> {
+  const reason = p.reasonCode ?? 'USER_DOCUMENT_GROUP_REMOVED';
+  await lockGroupingAccount(ctx.runner, ctx.accountId);
+  const item = await loadItem(ctx, p.itemId);
+  if (item.op === null || !item.op_active || Number(item.op_account) !== ctx.accountId) throw new GroupingError('NOT_GROUPED', `Élément d'agenda ${p.itemId} sans regroupement actif.`);
+  await detachDocument(ctx, { operationId: item.op, fileId: p.fileId, reasonCode: reason });
+  const { removeFileLinkProvenance } = await import('./provenance');
+  await removeFileLinkProvenance(ctx.runner, [p.itemId], [p.fileId], 'ALL');
+  return { operationId: item.op };
 }
 
 // ── Pièces (V-Q6 : la Pièce existante, jamais un second modèle) ────────────

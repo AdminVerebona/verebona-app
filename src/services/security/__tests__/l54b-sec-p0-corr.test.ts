@@ -147,16 +147,19 @@ describe('SEC-07 — supervision fiable : trois états', () => {
 describe('SEC-06 / SEC-09 — couverture et remédiation', () => {
   it('SEC-06-01 — familles du ticket couvertes, dont Opérations/Sinistres et photos', () => {
     const codes = CROSS_ACCOUNT_CHECKS.map((c) => c.code);
-    for (const c of ['PHOTO_FILE', 'CLAIM_CONTRACT', 'CLAIM_HISTORY_EVENT', 'CLAIM_ACTION_REF', 'CLAIM_EXCHANGE_DOCUMENT', 'CLAIM_DAMAGE_DOCUMENT', 'CLAIM_DAMAGE_PHOTO', 'OP_CORE_LINK', 'AI_JOB_PENDING']) {
+    for (const c of ['PHOTO_FILE', 'CLAIM_CONTRACT', 'CLAIM_HISTORY_EVENT', 'CLAIM_DAMAGE_DOCUMENT', 'CLAIM_DAMAGE_PHOTO', 'OP_CORE_LINK', 'AI_JOB_PENDING']) {
       expect(codes, c).toContain(c);
     }
+    // Lot 84A (O-10) : actions et échanges de l'ancien modèle Sinistres (tables supprimées par la finalisation BO) — plus contrôlés.
+    for (const c of ['CLAIM_ACTION_REF', 'CLAIM_EXCHANGE_DOCUMENT']) expect(codes, c).not.toContain(c);
     // Jobs : contexte imbriqué et cibles « compte » contrôlés.
     const jobs = CROSS_ACCOUNT_CHECKS.find((c) => c.code === 'AI_JOB_PENDING')!.sql;
     expect(jobs).toContain("lax $.**.fileId[*]");
     expect(jobs).toContain("'business_operations', 'business_operations_agenda'");
     // Diagnostic Opérations (CROSS_ACCOUNT_LINK) : photos et références documentaires.
     const diag = lire('src/services/business-operations/diagnostics/service.ts');
-    for (const t of ['business_operation_claim_damage_photos', 'ca.invoice_file_id', 'ce.document_file_id', 'cd.history_event_id']) expect(diag, t).toContain(t);
+    for (const t of ['business_operation_claim_damage_photos', 'cd.history_event_id']) expect(diag, t).toContain(t);
+    for (const t of ['business_operation_claim_actions', 'business_operation_claim_exchanges']) expect(diag, t).not.toContain(t);
   });
 
   it('SEC-09-01 — une étape BO par famille (dont Opérations) ; liens « cœur » en procédure d’incident, jamais corrigés', () => {

@@ -95,8 +95,10 @@ describe('L83D-U03 — V-Q2 : ancien formulaire `claim_json` et sa migration ret
   });
 
   it('aucune lecture ni écriture de `claim_json` hors du rattrapage de nettoyage', () => {
+    // Lot 84A (O-10) : plus déclarée dans Drizzle ; lue seulement par le rattrapage, sa finalisation et la sonde de présence.
     expect(contenant(/claim_json|assetAdditionalInfos\.claim\b/, [
-      'src/db/schema.ts', 'src/services/business-operations/claims/legacy-cleanup.ts',
+      'src/services/business-operations/claims/legacy-cleanup.ts', 'src/services/business-operations/claims/legacy-finalize.ts',
+      'src/services/business-operations/claims/legacy-schema.ts',
     ])).toEqual([]);
   });
 
@@ -108,21 +110,22 @@ describe('L83D-U03 — V-Q2 : ancien formulaire `claim_json` et sa migration ret
 
 describe('L83D-U04 — E16 / AC39 : plus d’intervention enfant d’un sinistre', () => {
   it('aucune écriture de `parent_operation_id` hors du rattrapage et de la garde de transfert', () => {
+    // Lot 84A (O-10) : exceptions RÉDUITES — gardes de sécurité inter-comptes, de transfert (actions), dossier BO
+    // « Données du compte », diagnostic et schéma Drizzle ne lisent plus l'ancien modèle.
     expect(contenant(/parent_operation_id\s*=|setParent\(|SET parent_operation_id/, [
       'src/services/business-operations/claims/legacy-cleanup.ts',
-      // Garde d'intégrité du transfert de bien (clé composée) tant que la colonne existe (DROP au lot O-10).
+      // Garde TRANSITOIRE du transfert d'un bien (clé composée), exécutée seulement si la colonne existe encore (avant « Finaliser »).
       'src/services/business-operations/asset-lifecycle.ts',
-      // LECTURE BO « Données du compte » des colonnes / tables persistées (contrôle de la purge), retirée au lot O-10.
-      'src/services/admin/account-data/dossier.ts',
     ])).toEqual([]);
-    expect(contenant(/business_operation_claim_actions|business_operation_claim_exchanges/, [
-      'src/services/business-operations/claims/legacy-cleanup.ts',
-      // Gardes d'isolation et de transfert sur les tables INERTES, retirées avec elles au lot O-10.
-      'src/services/security/cross-account/detection.ts', 'src/services/security/cross-account/remediation.ts',
-      'src/services/assets/asset-account-transfer.service.ts', 'src/db/schema.ts', 'src/services/admin/account-data/dossier.ts',
-      // Garde inter-comptes du transfert de bien et anomalie « lien d'un autre compte » sur ces tables (sécurité), retirées au O-10.
-      'src/services/business-operations/asset-lifecycle.ts', 'src/services/business-operations/diagnostics/service.ts',
-      // Classement de recette (82E) : les tables existent encore, décrites « INERTES ».
+    expect(contenant(/parent_operation_id/, [
+      'src/services/business-operations/claims/legacy-cleanup.ts', 'src/services/business-operations/claims/legacy-finalize.ts',
+      'src/services/business-operations/claims/legacy-schema.ts', 'src/services/business-operations/asset-lifecycle.ts',
+    ])).toEqual([]);
+    expect(contenant(/business_operation_claim_actions|business_operation_claim_exchanges|business_operation_claim_migration_marks/, [
+      'src/services/business-operations/claims/legacy-cleanup.ts', 'src/services/business-operations/claims/legacy-schema.ts',
+      // Classement « transfert de bien » (test DUO-06) tant que la table existe : texte seul, jamais lue ni déplacée.
+      'src/services/assets/asset-account-transfer.service.ts',
+      // Classement de recette (82E) : exportées tant qu'elles existent, absence tolérée après « Finaliser ».
       'src/services/admin/diagnostics-export/recette-catalog.ts',
     ])).toEqual([]);
   });

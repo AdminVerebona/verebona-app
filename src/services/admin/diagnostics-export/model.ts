@@ -44,8 +44,12 @@ export const DIAG_SCOPE_LABELS: Readonly<Record<DiagScope, string>> = {
   operation: 'Opération',
 };
 
-/** Traitements filtrables (file `ai_job_queue` et rapports d'exécution). */
-export const DIAG_TREATMENTS = ['T1', 'T3', 'T4'] as const;
+/**
+ * Traitements filtrables (file `ai_job_queue` et rapports d'exécution ;
+ * lot 84D, CDC Pilotage IA V2 P3 : T2 — demandes de l'assistant — et T6 —
+ * générations FORMULATE et évaluations EVALUATE — ajoutés au collecteur).
+ */
+export const DIAG_TREATMENTS = ['T1', 'T2', 'T3', 'T4', 'T6'] as const;
 export type DiagTreatment = (typeof DIAG_TREATMENTS)[number];
 
 /**
@@ -129,7 +133,7 @@ export function parseDiagRequest(sp: { get(k: string): string | null }, now: Dat
   if ((from !== null && !validDay(from)) || !validDay(to)) return { ok: false, code: 'INVALID_PERIOD', message: 'Période invalide (dates AAAA-MM-JJ).' };
   if (from !== null && from > to) return { ok: false, code: 'INVALID_PERIOD', message: 'La date de début est postérieure à la date de fin.' };
   const rawT = (sp.get('treatments') ?? '').split(',').map((s) => s.trim().toUpperCase()).filter(Boolean);
-  if (rawT.some((t) => !(DIAG_TREATMENTS as readonly string[]).includes(t))) return { ok: false, code: 'INVALID_TREATMENT', message: 'Traitement inconnu (T1, T3, T4).' };
+  if (rawT.some((t) => !(DIAG_TREATMENTS as readonly string[]).includes(t))) return { ok: false, code: 'INVALID_TREATMENT', message: 'Traitement inconnu (T1, T2, T3, T4, T6).' };
   const treatments = DIAG_TREATMENTS.filter((t) => rawT.includes(t));
   const reinforced = sp.get('reinforced') === '1' || sp.get('reinforced') === 'true';
   return { ok: true, value: { scope: scope as DiagScope, id, from, to, treatments, reinforced } };

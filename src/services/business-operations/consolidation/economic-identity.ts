@@ -60,6 +60,11 @@ export interface EconomicFootprint {
   principal: ReadonlyArray<{ amountMinor: number; currency: string; direction?: 'COST' | 'PROCEED' }>;
   /** Montants réglés (preuve de paiement) : concordance seulement, jamais contradiction. */
   payments: ReadonlyArray<{ amountMinor: number; currency: string }>;
+  /**
+   * Lot 84E : montants d'ÉCHÉANCE (portée INSTALLMENT, coût ou produit) — comparés seulement
+   * en ordre de grandeur par la base `SERIES` ; absents : aucun.
+   */
+  installments?: ReadonlyArray<{ amountMinor: number; currency: string; direction?: 'COST' | 'PROCEED' }>;
   /** Échéances d'un contrat ou d'un abonnement : les montants ne se comparent pas. */
   periodic: boolean;
   /** Donnée structurée de la fiche du bien (lot 43) : décrit le bien LUI-MÊME. */
@@ -77,7 +82,15 @@ export type IdentityBasis =
   /** Deux candidats d'un même document. */
   | 'SAME_DOCUMENT'
   /** Verdict sémantique (M3, IA). */
-  | 'SEMANTIC';
+  | 'SEMANTIC'
+  /**
+   * Lot 84E (CDC v5 O-6) : identité de SÉRIE établie par le code (même
+   * prestataire + clé de service commune, `recurrence.ts`). Des échéances
+   * aux montants différents sont attendues (AC46) — mais un montant d'un
+   * AUTRE ordre de grandeur (× 10) reste une contradiction FORTE, et la
+   * fenêtre de dates ne s'applique pas (un abonnement dure).
+   */
+  | 'SERIES';
 
 export const IDENTITY_POSITIVE = ['SHARED_REFERENCE', 'PROVIDER_SAME', 'AMOUNT_COHERENT', 'DATE_SAME'] as const;
 export const IDENTITY_WEAK = ['PROVIDER_DIFFERENT', 'AMOUNT_DIFFERENT', 'DATE_APART', 'EQUIPMENT_SCOPE_DIFFERENT'] as const;
@@ -108,15 +121,17 @@ const principalScope = (h: Pick<PersistedFinancialHint, 'amountScope'>) => h.amo
 const etablie = (currency: string) => /^[A-Z]{3}$/.test(currency) && currency !== 'XXX';
 
 /** Montants principaux et réglés d'indices T1 (pure). */
-export function amountsOfHints(hints: readonly PersistedFinancialHint[]): Pick<EconomicFootprint, 'principal' | 'payments'> {
+export function amountsOfHints(hints: readonly PersistedFinancialHint[]): Pick<EconomicFootprint, 'principal' | 'payments' | 'installments'> {
   const principal: Array<{ amountMinor: number; currency: string; direction: 'COST' | 'PROCEED' }> = [];
   const payments: Array<{ amountMinor: number; currency: string }> = [];
+  const installments: Array<{ amountMinor: number; currency: string; direction: 'COST' | 'PROCEED' }> = [];
   for (const h of hints) {
     if (!etablie(h.currency) || !(h.amountMinor > 0)) continue;
     if (PRINCIPAL_ROLES.has(h.role) && principalScope(h)) principal.push({ amountMinor: h.amountMinor, currency: h.currency, direction: h.role === 'PROCEED' ? 'PROCEED' : 'COST' });
     else if (h.role === 'PAYMENT' && principalScope(h)) payments.push({ amountMinor: h.amountMinor, currency: h.currency });
+    else if (PRINCIPAL_ROLES.has(h.role) && h.amountScope === 'INSTALLMENT') installments.push({ amountMinor: h.amountMinor, currency: h.currency, direction: h.role === 'PROCEED' ? 'PROCEED' : 'COST' });
   }
-  return { principal, payments };
+  return { principal, payments, ...(installments.length ? { installments } : {}) };
 }
 
 const mainDate = (d: { realizedDate: string | null; startDate: string | null; plannedDate: string | null; endDate: string | null }) =>
@@ -170,11 +185,23 @@ function ecartJours(a: string | null, b: string | null): number | null {
 
 const coherent = (a: number, b: number) => Math.abs(a - b) <= Math.max(1, Math.round(Math.max(a, b) * AMOUNT_COHERENT_TOLERANCE));
 
-/** Comparaison des montants (pure) : concordants, différents, incompatibles, ou rien à comparer. */
-export function compareAmounts(a: EconomicFootprint, b: EconomicFootprint): 'COHERENT' | 'DIFFERENT' | 'INCOMPATIBLE' | null {
+/**
+ * Comparaison des montants (pure) : concordants, différents, incompatibles, ou rien à comparer.
+ * Lot 84E : `seriesScale` — échéances d'une série : seule l'INCOMPATIBILITÉ d'ordre de grandeur est relevée.
+ */
+export function compareAmounts(a: EconomicFootprint, b: EconomicFootprint, opts: { seriesScale?: boolean } = {}): 'COHERENT' | 'DIFFERENT' | 'INCOMPATIBLE' | null {
   const tousA = [...a.principal, ...a.payments];
   const tousB = [...b.principal, ...b.payments];
   if (tousA.some((x) => tousB.some((y) => x.currency === y.currency && coherent(x.amountMinor, y.amountMinor)))) return 'COHERENT';
+  if (opts.seriesScale) {
+    // Lot 84E (série) : montants principaux ET échéances (portée INSTALLMENT comprise) comparés en ordre de grandeur.
+    const ma = [...a.principal, ...(a.installments ?? [])];
+    const mb = [...b.principal, ...(b.installments ?? [])];
+    const paires = ma.flatMap((x) => mb.filter((y) => y.currency === x.currency && (y.direction ?? 'COST') === (x.direction ?? 'COST'))
+      .map((y) => [x.amountMinor, y.amountMinor] as const));
+    if (!paires.length) return null;
+    return paires.every(([x, y]) => Math.max(x, y) >= AMOUNT_INCOMPATIBLE_RATIO * Math.min(x, y)) ? 'INCOMPATIBLE' : null;
+  }
   // Échéances, contrats, financements : des montants différents sont attendus.
   if (a.periodic || b.periodic) return null;
   const type = a.type ?? b.type;
@@ -224,7 +251,8 @@ export function assessEconomicIdentity(a: EconomicFootprint, b: EconomicFootprin
     else weak.push('PROVIDER_DIFFERENT');
   }
 
-  const montants = compareAmounts(a, b);
+  const serie = basis === 'SERIES';
+  const montants = compareAmounts(a, b, { seriesScale: serie });
   if (montants === 'COHERENT') positives.push('AMOUNT_COHERENT');
   // Prix SAISI sur la fiche du bien face au prix d'un document (TTC / HT, arrondi) : un écart
   // modéré n'est pas une contradiction (la saisie prime, l'écart reste exposé — lot 53D).
@@ -235,7 +263,7 @@ export function assessEconomicIdentity(a: EconomicFootprint, b: EconomicFootprin
   const ecart = ecartJours(a.date, b.date);
   if (ecart !== null) {
     if ((a.structured || b.structured) && ecart <= SAME_DATE_DAYS) positives.push('DATE_SAME');
-    if (fenetre !== null && ecart > fenetre) weak.push('DATE_APART');
+    if (fenetre !== null && ecart > fenetre && !serie) weak.push('DATE_APART');
   }
 
   if (a.equipmentIds.length && b.equipmentIds.length) {

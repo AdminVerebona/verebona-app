@@ -10,6 +10,7 @@
  * retirée) rend le point NON restaurable, avec la liste des écarts.
  */
 import { createHash } from 'node:crypto';
+import { LEGACY_CLAIM_COLUMNS, LEGACY_CLAIM_TABLES } from '@/services/business-operations/claims/legacy-schema';
 
 type Row = Record<string, unknown>;
 export type Query = (sql: string, params?: unknown[]) => Promise<Row[]>;
@@ -38,6 +39,8 @@ export const RESTORE_KEEP_CURRENT_TABLES: readonly string[] = [
   'admin_audit_log', 'admin_export_generations', 'ops_backfill_runs', 'scheduled_task_state', 'ai_queue_worker_heartbeats',
   // Lot 83D : journal du nettoyage Sinistres (trace d'une application conservée, comme les autres journaux de rattrapage).
   'claim_legacy_cleanup_runs', 'claim_legacy_cleanup_journal',
+  // Lot 84E : journal des reconsolidations ciblées (trace d'exécution, comme les autres journaux).
+  'business_operation_targeted_runs',
   'revoked_tokens', 'user_session_revocations', 'auth_rate_limits',
   'admin_anomalies', 'admin_anomaly_occurrences',
   'ai_usage_event', 'ai_usage_events', 'ai_usage_daily_rollup', 'ai_usage_account_counter', 'ai_call_diagnostics', 'ai_operation',
@@ -80,7 +83,20 @@ export interface CompatibilityResult {
   /** Tables conservées dans leur état courant. */
   keptTables: string[];
   differences: Array<{ table: string; issue: 'ABSENTE_DU_POINT' | 'ABSENTE_AUJOURD_HUI' | 'COLONNES_DIFFERENTES'; detail?: string }>;
+  /**
+   * Lot 84A (O-10) : le point est ANTÉRIEUR à la suppression définitive de
+   * l'ancien modèle Sinistres (il contient des tables / colonnes supprimées
+   * par la finalisation du nettoyage BO). Variante PRUDENTE retenue : refus
+   * (jamais de restauration partielle « sans ces tables »), motif dédié.
+   */
+  predatesClaimFinalization?: boolean;
 }
+
+/** Message de refus d'un point antérieur à la finalisation O-10 (lot 84A). */
+export const PRE_FINALIZATION_RESTORE_REASON = 'Ce point de restauration est ANTÉRIEUR à la suppression définitive de l’ancien modèle Sinistres '
+  + '(finalisation du nettoyage, BO › Rattrapages, bloc 7) : il contient des tables et des colonnes qui n’existent plus. Le restaurer '
+  + 'réintroduirait l’ancien modèle dans une structure qui ne le connaît plus : refusé, rien n’a été modifié. Utilisez un point créé '
+  + 'APRÈS la finalisation.';
 
 /**
  * Compare la signature d'un point (manifeste v2) au schéma courant. Seules
@@ -120,8 +136,15 @@ export function checkRestoreCompatibility(
   }
   if (res.differences.length) {
     res.restoredTables = [];
-    res.reason = `Le schéma a changé depuis ce point (${res.differences.length} table(s) différente(s) : migration passée depuis). `
-      + 'Restaurer réinjecterait des lignes dans une structure différente : refusé. Créez un point de restauration après le déploiement.';
+    // Lot 84A (O-10) : point pris avant la finalisation (tables supprimées depuis, ou colonnes disparues depuis).
+    const colonnesO10 = (t: string) => (LEGACY_CLAIM_COLUMNS[t] ?? []).some((c) => (inBackup.get(t) ?? []).some((x) => x.startsWith(`${c}:`))
+      && !(current[t] ?? []).some((x) => x.startsWith(`${c}:`)));
+    res.predatesClaimFinalization = res.differences.some((d) => (d.issue === 'ABSENTE_AUJOURD_HUI' && (LEGACY_CLAIM_TABLES as readonly string[]).includes(d.table))
+      || (d.issue === 'COLONNES_DIFFERENTES' && colonnesO10(d.table)));
+    res.reason = res.predatesClaimFinalization
+      ? `${PRE_FINALIZATION_RESTORE_REASON} (${res.differences.length} table(s) différente(s).)`
+      : `Le schéma a changé depuis ce point (${res.differences.length} table(s) différente(s) : migration passée depuis). `
+        + 'Restaurer réinjecterait des lignes dans une structure différente : refusé. Créez un point de restauration après le déploiement.';
     return res;
   }
   res.restorable = true;

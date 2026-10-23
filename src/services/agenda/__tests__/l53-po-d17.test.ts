@@ -44,9 +44,12 @@ describe('PO-D17 — statuts distincts, jamais « réalisé » sur la seule date
     const route = lire('src/app/api/assets/[id]/followup/route.ts');
     expect(route).toContain("const isDone = effectiveStatus === 'realise' || effectiveStatus === 'annule';");
     expect(route).toContain("toConfirm: effectiveStatus === 'a_confirmer',");
+    // Lot 84C : la vue d'ensemble lit sa Timeline par `services/agenda/timeline` (même règle).
     const overview = lire('src/app/api/assets/[id]/overview/route.ts');
-    expect(overview).toContain("const isDone = item.manual_status === 'realise';");
-    expect(overview).toMatch(/const toConfirm = ouvert && historique/);
+    expect(overview).toContain("from '@/services/agenda/timeline/read'");
+    const timeline = lire('src/services/agenda/timeline/model.ts');
+    expect(timeline).toContain("isDone: r.manual_status === 'realise',");
+    expect(timeline).toMatch(/toConfirm: ouvert && historique/);
   });
 
   it('PO-D17-04 — desktop ET mobile : toutes les vues affichent le statut reçu avec les libellés partagés, « à confirmer » compris', () => {
@@ -62,8 +65,16 @@ describe('PO-D17 — statuts distincts, jamais « réalisé » sur la seule date
     expect(lire('src/components/assets/EquipmentDrawer.tsx')).toContain("item.effectiveStatus === 'a_confirmer'");
     expect(lire('src/components/assets/DocumentDrawer.tsx')).toContain('effectiveStatusLabel(');
     // Fiche du bien : timeline desktop (lg) ET mobile (lg:hidden) marquent « statut à confirmer ».
+    // Lot 84C : les deux variantes sont rendues par le MÊME composant de Timeline
+    // (`AssetTimelineList`, variantes desktop / mobile) — une seule ligne d'élément
+    // (`TimelineRow`) porte le libellé et la pastille, pour les éléments seuls,
+    // les groupes et les éléments liés d'un groupe.
     const fiche = lire('src/components/assets/AssetOverviewTab.tsx');
-    expect(fiche.match(/statut à confirmer/g)?.length).toBe(2);
-    expect(fiche.match(/item\.toConfirm\s*\n?\s*\?/g)?.length ?? 0).toBeGreaterThanOrEqual(2);
+    expect(fiche).toContain('variant="desktop"');
+    expect(fiche).toContain('variant="mobile"');
+    const timeline = lire('src/components/assets/timeline/AssetTimeline.tsx');
+    expect(timeline.match(/> · statut à confirmer</g)?.length).toBe(1);
+    expect(timeline.match(/item\.toConfirm\s*\n?\s*\?/g)?.length ?? 0).toBeGreaterThanOrEqual(1);
+    expect(timeline).toMatch(/item\.toConfirm && <span[^>]*> · statut à confirmer<\/span>/);
   });
 });

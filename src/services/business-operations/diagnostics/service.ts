@@ -479,12 +479,6 @@ const ANOMALY_SQL: Readonly<Record<Exclude<HardAnomalyCode, keyof typeof IDENTIT
       JOIN business_operations k ON k.id = cd.insurance_contract_operation_id
      WHERE k.account_id <> o.account_id AND ${ACC('o.account_id')}
     UNION ALL
-    SELECT o.account_id, o.id, 'action de sinistre : Opération enfant #' || k.id || ' du compte ' || k.account_id
-      FROM business_operation_claim_actions ca
-      JOIN business_operations o ON o.id = ca.operation_id
-      JOIN business_operations k ON k.id = ca.child_operation_id
-     WHERE k.account_id <> o.account_id AND ${ACC('o.account_id')}
-    UNION ALL
     SELECT o.account_id, o.id, 'pièce de dommage : document #' || f.id || ' du compte ' || f.account_id
       FROM business_operation_claim_damage_documents dd
       JOIN business_operation_claim_damages d ON d.id = dd.damage_id
@@ -492,26 +486,14 @@ const ANOMALY_SQL: Readonly<Record<Exclude<HardAnomalyCode, keyof typeof IDENTIT
       JOIN asset_files f ON f.id = dd.file_id
      WHERE f.account_id <> o.account_id AND ${ACC('o.account_id')}
     UNION ALL
-    -- Lot 54 (SEC-06) : photos de dommage, facture d'une action, document
-    -- d'un échange, événement historique du sinistre.
+    -- Lot 54 (SEC-06) : photos de dommage, événement historique du sinistre
+    -- (lot 84A : actions et échanges de l'ancien modèle retirés avec leurs tables).
     SELECT o.account_id, o.id, 'photo de dommage #' || p.id || ' (bien du compte ' || coalesce(pa.account_id::text, '?') || ', fichier du compte ' || coalesce(pf.account_id::text, '?') || ')'
       FROM business_operation_claim_damage_photos dp
       JOIN business_operation_claim_damages d ON d.id = dp.damage_id
       JOIN business_operations o ON o.id = d.operation_id
       JOIN asset_photos p ON p.id = dp.photo_id JOIN assets pa ON pa.id = p.asset_id JOIN asset_files pf ON pf.id = p.file_id
      WHERE (pa.account_id IS DISTINCT FROM o.account_id OR pf.account_id IS DISTINCT FROM o.account_id) AND ${ACC('o.account_id')}
-    UNION ALL
-    SELECT o.account_id, o.id, 'action de sinistre : facture #' || f.id || ' du compte ' || f.account_id
-      FROM business_operation_claim_actions ca
-      JOIN business_operations o ON o.id = ca.operation_id
-      JOIN asset_files f ON f.id = ca.invoice_file_id
-     WHERE f.account_id <> o.account_id AND ${ACC('o.account_id')}
-    UNION ALL
-    SELECT o.account_id, o.id, 'échange de sinistre : document #' || f.id || ' du compte ' || f.account_id
-      FROM business_operation_claim_exchanges ce
-      JOIN business_operations o ON o.id = ce.operation_id
-      JOIN asset_files f ON f.id = ce.document_file_id
-     WHERE f.account_id <> o.account_id AND ${ACC('o.account_id')}
     UNION ALL
     SELECT o.account_id, o.id, 'sinistre : événement historique #' || ev.id || ' du compte ' || coalesce(ev.account_id::text, '?')
       FROM business_operation_claim_details cd
