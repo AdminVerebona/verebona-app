@@ -6,7 +6,7 @@
  * 54D). Section dépliable AUTONOME, au même niveau que « Valorisation » et
  * « Assurance », pour toutes les familles (immobilier, véhicule, objet) ;
  * même en-tête et mêmes jetons que les autres sections de l'onglet (cf.
- * `AssetClaimsSection`). Desktop et mobile : un seul composant responsive.
+ * `AssetAdditionalInfosSection`). Desktop et mobile : un seul composant responsive.
  *
  *   · Synthèse : coût cumulé documenté, coût d'acquisition, dépenses
  *     complémentaires, coût net estimé / final, complétude ;

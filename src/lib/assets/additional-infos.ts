@@ -17,13 +17,17 @@
  * validée par le produit affiche (`maquettes/<dossier>/data-example.json`) :
  * accroches, prix neuf de référence, mode de charges, durée et usage du bail,
  * disponibilité locative, dépenses d'énergie, précisions d'objectif,
- * protections, usage à déclarer, et la sous-rubrique « Sinistre » (type,
- * dates, références, statut, circonstances, dommages, mesures, échanges,
- * montants).
+ * protections, usage à déclarer.
  *
- * Listes structurées (schéma v2, migration 0214) : dommages, actions et
- * échanges du sinistre, points forts de vente, protections et éléments à
- * assurer, charges et taxes. Elles vivent dans la même colonne JSONB que leur
+ * Lot 83D (CDC v5 §15, arbitrages V-Q1 / V-Q2) : la sous-rubrique
+ * « Sinistre » (ancien formulaire, colonne `claim_json`) est RETIRÉE — le
+ * sinistre est l'Opération CLAIM consolidée depuis les documents, lue par le
+ * dossier Assurance-sinistre (`business-operations/claims/read.ts`). Les
+ * libellés de type et d'avancement (`CLAIM_TYPE_OPTIONS`,
+ * `CLAIM_STATUS_OPTIONS`) restent ici, partagés par le dossier et l'assistant.
+ *
+ * Listes structurées (schéma v2, migration 0214) : points forts de vente,
+ * protections et éléments à assurer, charges et taxes. Elles vivent dans la même colonne JSONB que leur
  * sous-rubrique (voir « LISTES » plus bas pour le choix et la sémantique de
  * concurrence). Le texte libre historique reste le repli du PDF.
  *
@@ -44,7 +48,7 @@ import {
 
 export type { AdditionalInfoSectionKey } from '@/services/exports/catalog';
 
-export const ADDITIONAL_INFO_SECTIONS: readonly AdditionalInfoSectionKey[] = ['commercial', 'rental', 'insurance', 'claim', 'finance'];
+export const ADDITIONAL_INFO_SECTIONS: readonly AdditionalInfoSectionKey[] = ['commercial', 'rental', 'insurance', 'finance'];
 
 /**
  * Version du schéma des sous-rubriques (colonne `schema_version`, migration
@@ -56,7 +60,6 @@ export const ADDITIONAL_INFO_SECTION_LABELS: Readonly<Record<AdditionalInfoSecti
   commercial: 'Informations commerciales',
   rental: 'Informations locatives',
   insurance: 'Informations assurance',
-  claim: 'Sinistre',
   finance: 'Valeur et charges',
 };
 
@@ -64,15 +67,14 @@ export const ADDITIONAL_INFO_SECTION_DESCRIPTIONS: Readonly<Record<AdditionalInf
   commercial: 'Reprises dans le kit de mise en vente.',
   rental: 'Reprises dans le dossier de mise en location.',
   insurance: "Reprises dans le dossier d'assurance (souscription ou mise à jour).",
-  claim: "Reprises dans le dossier d'assurance sinistre / indemnisation.",
   finance: 'Reprises dans la section financière du dossier complet, incluse seulement si vous la cochez.',
 };
 
 /** Sous-rubriques visibles par famille (§4.2) : pas de location véhicule ni objet en V1. */
 export const SECTIONS_BY_FAMILY: Readonly<Record<ExportFamily, readonly AdditionalInfoSectionKey[]>> = {
-  IMMOBILIER: ['commercial', 'rental', 'insurance', 'claim', 'finance'],
-  VEHICULE: ['commercial', 'insurance', 'claim', 'finance'],
-  OBJET: ['commercial', 'insurance', 'claim', 'finance'],
+  IMMOBILIER: ['commercial', 'rental', 'insurance', 'finance'],
+  VEHICULE: ['commercial', 'insurance', 'finance'],
+  OBJET: ['commercial', 'insurance', 'finance'],
 };
 
 /** Sous-rubriques visibles pour une catégorie de bien stockée (`OBJECT`…). */
@@ -83,7 +85,7 @@ export function sectionsForCategory(category: string | null | undefined): readon
 
 // ── Dictionnaire des champs ─────────────────────────────────────────────────
 
-export type AdditionalInfoFieldType = 'money' | 'text' | 'textarea' | 'date' | 'enum' | 'decimal' | 'year' | 'list' | 'eventRef';
+export type AdditionalInfoFieldType = 'money' | 'text' | 'textarea' | 'date' | 'enum' | 'decimal' | 'year' | 'list';
 
 export interface AdditionalInfoOption { value: string; label: string }
 
@@ -199,32 +201,6 @@ export const CLAIM_STATUS_OPTIONS: readonly AdditionalInfoOption[] = [
   { value: 'CLOS', label: 'Clos' },
 ];
 
-export const ACTION_STATUS_OPTIONS: readonly AdditionalInfoOption[] = [
-  { value: 'REALISEE', label: 'Réalisée' },
-  { value: 'EN_COURS', label: 'En cours' },
-  { value: 'A_REALISER', label: 'À réaliser' },
-];
-
-export const EXCHANGE_DIRECTION_OPTIONS: readonly AdditionalInfoOption[] = [
-  { value: 'RECU', label: 'Reçu' },
-  { value: 'ENVOYE', label: 'Envoyé' },
-];
-
-export const EXCHANGE_PARTY_OPTIONS: readonly AdditionalInfoOption[] = [
-  { value: 'ASSUREUR', label: 'Assureur' },
-  { value: 'EXPERT', label: 'Expert' },
-  { value: 'AUTRE', label: 'Autre interlocuteur' },
-];
-
-export const EXCHANGE_CHANNEL_OPTIONS: readonly AdditionalInfoOption[] = [
-  { value: 'EMAIL', label: 'E-mail' },
-  { value: 'COURRIER', label: 'Courrier' },
-  { value: 'TELEPHONE', label: 'Téléphone' },
-  { value: 'ESPACE_CLIENT', label: 'Espace client' },
-  { value: 'RENDEZ_VOUS', label: 'Rendez-vous' },
-  { value: 'AUTRE', label: 'Autre' },
-];
-
 export const RETAINED_VALUE_SOURCE_OPTIONS: readonly AdditionalInfoOption[] = [
   { value: 'SAISIE', label: 'Saisie utilisateur' },
   { value: 'EXPERTISE', label: 'Expertise' },
@@ -328,68 +304,6 @@ export const ADDITIONAL_INFO_FIELDS: readonly AdditionalInfoFieldDef[] = [
     },
   },
 
-  // ── Sinistre (maquette assurance-sinistre `claim`) ────────────────────────
-  { section: 'claim', key: 'claimEventKey', type: 'eventRef', label: "Événement sinistre de l'agenda", help: "Recommandé : le sinistre de l'agenda ancre la chronologie. Sans lui, les champs ci-dessous servent de saisie temporaire." },
-  { section: 'claim', key: 'claimType', type: 'enum', label: 'Type de sinistre', options: CLAIM_TYPE_OPTIONS, recommended: true },
-  { section: 'claim', key: 'occurredOn', type: 'date', label: 'Date du sinistre', recommended: true },
-  { section: 'claim', key: 'declaredOn', type: 'date', label: "Date de déclaration à l'assureur" },
-  { section: 'claim', key: 'insurerClaimRef', type: 'text', label: 'Référence du dossier sinistre' },
-  { section: 'claim', key: 'policyReference', type: 'text', label: 'Contrat concerné', help: 'Seulement s’il diffère du contrat indiqué dans la fiche.' },
-  { section: 'claim', key: 'status', type: 'enum', label: 'Avancement', options: CLAIM_STATUS_OPTIONS },
-  { section: 'claim', key: 'statusDetail', type: 'text', label: "Précision sur l'avancement" },
-  { section: 'claim', key: 'circumstances', type: 'textarea', label: 'Circonstances' },
-  { section: 'claim', key: 'consequences', type: 'textarea', label: 'Dommages constatés (synthèse)' },
-  { section: 'claim', key: 'measures', type: 'textarea', label: 'Mesures conservatoires (synthèse)' },
-  { section: 'claim', key: 'exchangesSummary', type: 'textarea', label: "Échanges avec l'assureur ou l'expert (texte libre)", help: 'Utilisé seulement si la liste des échanges est vide.' },
-  { section: 'claim', key: 'estimatedDamageCents', type: 'money', label: 'Montant estimé des dommages' },
-  { section: 'claim', key: 'compensationCents', type: 'money', label: 'Indemnité reçue' },
-  {
-    section: 'claim', key: 'damages', type: 'list', label: 'Dommages et éléments concernés',
-    help: 'Une ligne par élément touché. Tenez-vous-en au constat, sans cause ni responsabilité.',
-    list: {
-      maxItems: 30, itemLabel: 'Dommage', addLabel: 'Ajouter un dommage',
-      columns: [
-        { key: 'zone', type: 'text', label: 'Zone ou pièce', required: true, max: 120, placeholder: 'Ex. Salle de bain' },
-        { key: 'element', type: 'text', label: 'Élément', max: 200, placeholder: 'Ex. Plafond · 5 m²', span: 2 },
-        { key: 'finding', type: 'textarea', label: 'Constat', max: 600, placeholder: 'Ex. Auréoles, peinture cloquée', span: 3 },
-        { key: 'estimatedAmountCents', type: 'money', label: 'Montant estimé' },
-        { key: 'photoIds', type: 'photoRefs', label: 'Photos liées', max: 12 },
-        { key: 'documentIds', type: 'documentRefs', label: 'Pièces liées', max: 12 },
-      ],
-    },
-  },
-  {
-    section: 'claim', key: 'actions', type: 'list', label: 'Actions et mesures',
-    help: 'Mesures conservatoires, interventions, réparations. Remplace la synthèse des mesures dans le dossier.',
-    list: {
-      maxItems: 30, itemLabel: 'Action', addLabel: 'Ajouter une action',
-      columns: [
-        { key: 'date', type: 'date', label: 'Date' },
-        { key: 'endDate', type: 'date', label: "Jusqu'au", help: 'Pour une action sur plusieurs jours.' },
-        { key: 'status', type: 'enum', label: 'Statut', options: ACTION_STATUS_OPTIONS },
-        { key: 'title', type: 'text', label: 'Action', required: true, max: 160, placeholder: 'Ex. Séchage par déshumidificateur', span: 2 },
-        { key: 'performedBy', type: 'text', label: 'Réalisée par', max: 120, placeholder: 'Vous, un artisan…' },
-        { key: 'detail', type: 'textarea', label: 'Précision', max: 600, span: 3 },
-        { key: 'invoiceDocumentId', type: 'documentRef', label: 'Facture liée', span: 3 },
-      ],
-    },
-  },
-  {
-    section: 'claim', key: 'exchanges', type: 'list', label: "Échanges avec l'assureur et l'expert",
-    help: 'Seuls les échanges liés au sinistre figurent au dossier.',
-    list: {
-      maxItems: 50, itemLabel: 'Échange', addLabel: 'Ajouter un échange',
-      columns: [
-        { key: 'date', type: 'date', label: 'Date', required: true },
-        { key: 'direction', type: 'enum', label: 'Sens', options: EXCHANGE_DIRECTION_OPTIONS },
-        { key: 'party', type: 'enum', label: 'Interlocuteur', options: EXCHANGE_PARTY_OPTIONS },
-        { key: 'channel', type: 'enum', label: 'Canal', options: EXCHANGE_CHANNEL_OPTIONS },
-        { key: 'summary', type: 'text', label: 'Résumé', required: true, max: 240, placeholder: "Ex. Convocation à l'expertise du 26/08", span: 2 },
-        { key: 'documentId', type: 'documentRef', label: 'Document lié', span: 3 },
-      ],
-    },
-  },
-
   // ── Valeur et charges (maquette dossier complet `finance`, RULE-002) ──────
   { section: 'finance', key: 'retainedValueCents', type: 'money', label: 'Valeur retenue', help: "Valeur que vous retenez ; l'estimation Verebona n'est jamais reprise." },
   { section: 'finance', key: 'retainedValueSource', type: 'enum', label: 'Origine de la valeur retenue', options: RETAINED_VALUE_SOURCE_OPTIONS },
@@ -440,9 +354,6 @@ export function isValidIsoDate(s: string): boolean {
   return dt.getUTCFullYear() === y && dt.getUTCMonth() === m - 1 && dt.getUTCDate() === d;
 }
 
-/** Clé d'événement : `agenda:34` (agenda) ou `event:12` (historique) — `SourceEvent.key`. */
-export const EVENT_KEY_RE = /^(agenda|event):[1-9]\d{0,9}$/;
-
 const moneySchema = () => z.number({ error: 'Montant invalide.' })
   .int({ error: 'Le montant doit être exprimé en centimes entiers.' })
   .min(0, { error: 'Le montant ne peut pas être négatif.' })
@@ -474,8 +385,6 @@ export function valueSchema(def: AdditionalInfoFieldDef): z.ZodType<string | num
       return dateSchema();
     case 'enum':
       return enumSchema(def.options);
-    case 'eventRef':
-      return z.string({ error: 'Événement invalide.' }).refine((v) => EVENT_KEY_RE.test(v), { error: 'Événement invalide.' });
     case 'list':
       // Garde-fou : une liste ne passe jamais par ce schéma.
       return z.never({ error: 'Liste attendue.' }) as unknown as z.ZodType<string | number>;
@@ -494,7 +403,6 @@ export interface AdditionalInfosData {
   commercial: AdditionalInfoSectionData;
   rental: AdditionalInfoSectionData;
   insurance: AdditionalInfoSectionData;
-  claim: AdditionalInfoSectionData;
   finance: AdditionalInfoSectionData;
 }
 
@@ -529,7 +437,7 @@ export type PatchValidationResult =
 
 // ── LISTES ──────────────────────────────────────────────────────────────────
 //
-// Stockage : dans la colonne JSONB de la sous-rubrique (`claim_json.damages`…),
+// Stockage : dans la colonne JSONB de la sous-rubrique (`finance_json.charges`…),
 // PAS dans une table dédiée. Raisons : (1) listes courtes (≤ 50 lignes) lues et
 // écrites avec leur sous-rubrique ; (2) le snapshot de génération (IC-GEN-010)
 // les copie telles quelles, sans jointure ; (3) portée compte, cascade à la
@@ -610,12 +518,6 @@ export function normalizeListCell(col: ListColumnDef, raw: unknown): CellResult 
 /** Règles entre colonnes d'une même ligne (au-delà du « requis »). */
 function crossCellIssues(fieldKey: string, item: Record<string, ListCellValue>): Array<{ key: string; message: string }> {
   const out: Array<{ key: string; message: string }> = [];
-  if (fieldKey === 'actions' && typeof item.date === 'string' && typeof item.endDate === 'string' && item.endDate < item.date) {
-    out.push({ key: 'endDate', message: 'La date de fin précède la date de début.' });
-  }
-  if (fieldKey === 'actions' && item.endDate !== undefined && item.date === undefined) {
-    out.push({ key: 'date', message: 'Indiquez la date de début.' });
-  }
   if (fieldKey === 'charges' && item.kind === 'AUTRE' && item.label === undefined) {
     out.push({ key: 'label', message: 'Précisez le libellé de cette charge.' });
   }
@@ -802,7 +704,7 @@ export function applyPatch(current: AdditionalInfosData, patch: NormalizedPatch)
 }
 
 export function emptyAdditionalInfos(): AdditionalInfosData {
-  return { commercial: {}, rental: {}, insurance: {}, claim: {}, finance: {} };
+  return { commercial: {}, rental: {}, insurance: {}, finance: {} };
 }
 
 /** Liste stockée d'une sous-rubrique (lecture typée ; `[]` si absente ou non liste). */
@@ -989,16 +891,12 @@ export interface HighlightSuggestion { key: string; title: string; text: string 
 
 export interface AdditionalInfoReferencesDto {
   /**
-   * Lot 53 (retour PO Q18) : dans un sinistre multi-biens, les pièces et
-   * photos des AUTRES biens concernés (accessibles dans le compte) sont
-   * proposées aussi ; `assetId` / `assetName` disent alors de quel bien
-   * elles viennent (absents : bien de la fiche).
+   * Lot 53 (retour PO Q18) : `assetId` / `assetName` disent de quel bien
+   * vient une pièce ou une photo proposée (absents : bien de la fiche).
    */
   documents: Array<{ id: number; title: string; typeLabel: string; date: string | null; format: string; sensitive: boolean; occupantData: boolean; assetId?: number; assetName?: string | null }>;
   /** `id` : photo de la galerie (`asset_photos.id`) ; `fileId` : fichier pour la vignette. */
   photos: Array<{ id: number; fileId: number | null; caption: string | null; date: string | null; isPrimary: boolean; assetId?: number; assetName?: string | null }>;
-  /** Événements « sinistre » (agenda ou historique), du plus récent au plus ancien. */
-  claimEvents: Array<{ key: string; title: string; date: string | null; source: 'agenda' | 'event' }>;
   highlightSuggestions: HighlightSuggestion[];
 }
 

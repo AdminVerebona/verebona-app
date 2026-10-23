@@ -68,16 +68,16 @@ describe('autosave', () => {
       .mockImplementationOnce(() => new Promise<void>((_, rej) => { release = rej; }))
       .mockImplementation(async () => {});
     const { q, states } = setup(save);
-    q.set('claim', 'circumstances', 'ancien');
-    q.set('claim', 'claimType', 'VOL');
+    q.set('insurance', 'specialItems', 'ancien');
+    q.set('insurance', 'insuranceObjective', 'SOUSCRIRE');
     await vi.advanceTimersByTimeAsync(700);
-    q.set('claim', 'circumstances', 'nouveau');
+    q.set('insurance', 'specialItems', 'nouveau');
     release(new Error('réseau'));
     await vi.advanceTimersByTimeAsync(0);
     expect(states.at(-1)).toBe('error');
     expect(q.hasPending()).toBe(true);
     await q.retry();
-    expect(save).toHaveBeenLastCalledWith({ claim: { circumstances: 'nouveau', claimType: 'VOL' } });
+    expect(save).toHaveBeenLastCalledWith({ insurance: { specialItems: 'nouveau', insuranceObjective: 'SOUSCRIRE' } });
     expect(q.state()).toBe('saved');
   });
 
@@ -121,22 +121,22 @@ describe('autosave', () => {
       if (call === 1) {
         // Le composant a résolu le 409 : la liste est en conflit (bloquée), le reste
         // est rejoué et ce rejeu échoue (réseau).
-        q.block('claim', 'damages');
-        throw withRequeue(new Error('réseau'), { claim: { circumstances: 'Fuite' } });
+        q.block('insurance', 'insuredItems');
+        throw withRequeue(new Error('réseau'), { insurance: { specialItems: 'Fuite' } });
       }
     });
     ({ q } = setup(save));
-    q.set('claim', 'damages', localList);
-    q.set('claim', 'circumstances', 'Fuite');
+    q.set('insurance', 'insuredItems', localList);
+    q.set('insurance', 'specialItems', 'Fuite');
     await q.flush();
     expect(q.state()).toBe('error');
     await q.retry();
     // La liste du co-titulaire n'est pas écrasée : seule la saisie simple repart.
-    expect(save).toHaveBeenLastCalledWith({ claim: { circumstances: 'Fuite' } });
+    expect(save).toHaveBeenLastCalledWith({ insurance: { specialItems: 'Fuite' } });
     // Une nouvelle modification de la liste par l'utilisateur la débloque.
-    q.set('claim', 'damages', [{ id: 'd2', zone: 'Salon' }]);
+    q.set('insurance', 'insuredItems', [{ id: 'd2', zone: 'Salon' }]);
     await q.flush();
-    expect(save).toHaveBeenLastCalledWith({ claim: { damages: [{ id: 'd2', zone: 'Salon' }] } });
+    expect(save).toHaveBeenLastCalledWith({ insurance: { insuredItems: [{ id: 'd2', zone: 'Salon' }] } });
   });
 
   it('échec simple (sans conflit) : tout le lot revient, sauf un champ bloqué', async () => {

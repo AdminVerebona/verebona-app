@@ -61,6 +61,7 @@ import {
 import { EmergencyStopControl } from './_components/AiEnvBanner';
 import { ObservabilityPanel } from './_components/ObservabilityPanel';
 import { CachesPanel } from './_components/CachesPanel';
+import type { TreatmentSummary } from '@/services/ai/business-execution/types';
 
 type Treatment = 'T1' | 'T2' | 'T3' | 'T4' | 'T6';
 type State = 'ENABLED' | 'DISABLED' | 'SUSPENDED';
@@ -71,6 +72,8 @@ interface Health {
   primaryModel: string | null; pending: number; running: number; failed: number;
   /** MOD-008 : modèles à dix échecs consécutifs ou plus pour ce traitement. */
   alertingModels?: Array<{ model: string; consecutiveFailures: number }>;
+  /** Lot 83C : issues MÉTIER de la fenêtre (chaque exécution comptée une fois). */
+  executions?: TreatmentSummary | null;
   /** HLT-01 / PER-01 / VOL-01 : activité (appels modèle), `null` si indisponible. */
   activity?: {
     calls24h: number; calls7d: number; calls30d: number;
@@ -352,6 +355,17 @@ export default function AiDashboardPage() {
             ) : (
               <p className="text-xs text-[color:var(--text-muted)]">Répond en direct</p>
             )}
+            {/* Lot 83C (BO-04, SEM-05) : issue MÉTIER — réussies, incomplètes,
+                échouées, non finales — avant le volume d'appels (technique). */}
+            {h.executions && (
+              <Link href={`/admin/ai-executions?treatment=${h.treatment}`} className="block text-xs hover:underline" data-testid="dashboard-business-executions">
+                <span className="text-[color:var(--text-secondary)]">Exécutions {windowLabel} : </span>
+                <span className="text-[color:var(--text-success)]">{h.executions.succeeded} réussie{h.executions.succeeded > 1 ? 's' : ''}</span>
+                {h.executions.incomplete > 0 && <span className="text-[color:var(--text-warning-soft)]"> · {h.executions.incomplete} incomplète{h.executions.incomplete > 1 ? 's' : ''}</span>}
+                {h.executions.failed > 0 && <span className="text-[color:var(--text-danger)]"> · {h.executions.failed} échouée{h.executions.failed > 1 ? 's' : ''}</span>}
+                {h.executions.notFinal > 0 && <span className="text-[color:var(--text-muted)]"> · {h.executions.notFinal} en cours</span>}
+              </Link>
+            )}
             {/* HLT-01 / PER-01 / VOL-01 : volumes, succès, dernière exécution —
                 lien préfiltré vers les exécutions du traitement (ALT-01). */}
             {h.activity && (
@@ -361,11 +375,12 @@ export default function AiDashboardPage() {
                     ?? { calls: h.activity.calls7d, failed: 0, successRate: h.activity.successRate7d };
                   return (
                     <>
-                      Appels {windowLabel} : {w.calls}
-                      {w.failed > 0 && <span className="text-[color:var(--text-danger)]"> · {w.failed} en échec</span>}
+                      {/* Lot 83C (SEM-05) : statut FOURNISSEUR des appels, pas l'issue métier. */}
+                      Appels modèle {windowLabel} : {w.calls}
+                      {w.failed > 0 && <span className="text-[color:var(--text-warning-soft)]"> · {w.failed} en échec</span>}
                       {w.successRate !== null && (
                         <span className={w.successRate < 0.9 ? ' text-[color:var(--text-warning-soft)]' : ''}>
-                          {' '}· succès {Math.round(w.successRate * 100)} %
+                          {' '}· {Math.round(w.successRate * 100)} % d’appels aboutis
                         </span>
                       )}
                     </>
@@ -503,7 +518,7 @@ export default function AiDashboardPage() {
         <p className="text-sm text-[color:var(--text-secondary)]">
           {usd(data.costs.functionalMicros)} métier · {usd(data.costs.technicalMicros)} technique
           <span className="text-[color:var(--text-muted)]">
-            {' '}· {data.costs.calls} appels, {data.costs.failedCalls} en échec
+            {' '}· {data.costs.calls} appels modèle, dont {data.costs.failedCalls} en échec (technique)
           </span>
         </p>
       </Link>

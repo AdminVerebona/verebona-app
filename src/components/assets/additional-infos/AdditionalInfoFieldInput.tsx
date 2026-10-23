@@ -3,8 +3,8 @@
 /**
  * Champ simple d'une sous-rubrique (texte, zone de texte, liste déroulante,
  * date, montant) — extrait du tiroir « Préparation des dossiers » au lot 44
- * pour être partagé avec la rubrique « Sinistres » de la fiche (mêmes
- * composants, mêmes jetons, desktop et mobile).
+ * (alors partagé avec la rubrique « Sinistres » de la fiche, retirée au lot
+ * 83D) ; mêmes composants, mêmes jetons, desktop et mobile.
  */
 import { Check, Loader2, AlertCircle, RefreshCw } from 'lucide-react';
 import { Input } from '@/components/ui/input';

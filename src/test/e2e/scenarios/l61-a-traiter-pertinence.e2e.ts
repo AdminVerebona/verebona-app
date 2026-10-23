@@ -483,38 +483,35 @@ scenario('L61-ATR', 'À traiter : écarts 58B et pertinence des cartes (ATR-R-01
     expect(getRule('DATA-SUPPLIER')!.completePriority).toBeNull();
   });
 
-  it('ATR-P-08 — réévaluation RÉTROACTIVE des cartes existantes (tâche planifiée interne) : bilan avant / après, issue par carte, idempotente', async () => {
+  it('ATR-P-08 (lot 83E : contrôle de cohérence) — réévaluation RÉTROACTIVE des cartes existantes : issue par carte, idempotente', async () => {
     const compte = await make.account();
     const pret = await doc(compte, { title: 'Offre de prêt', type: 'FINANCING_CONTRACT', facts: [{ key: 'contractStartDate', value: jour(-400).iso }, { key: null, raw: 'dureePret', value: '15 ans', norm: null }] });
     const titre = await doc(compte, { title: 'Avis', filename: `Votre contrat arrive à échéance le ${PASSE.deuxPoints}.pdf` });
     const loin = await doc(compte, { title: 'Contrat', units: [{ kind: 'LABEL_VALUE', label: 'Date de fin de contrat', value: LOIN.slash }] });
     const actif = await doc(compte, { title: 'Contrat de télésurveillance', facts: [{ key: 'contractStartDate', value: jour(-20).iso }] });
     const cartesAvant = { pret: await carte(compte, pret), titre: await carte(compte, titre), loin: await carte(compte, loin, 'ARBITRATE'), actif: await carte(compte, actif) };
-    // Campagne isolée pour ce test (les autres tests laissent aussi des cartes).
-    await sql`UPDATE to_process_relevance_campaigns SET status = 'DONE' WHERE status = 'RUNNING'`;
-    const svc = await import('@/services/to-process/relevance-campaign.service');
-    const code = `e2e-${compte.id}`;
-    await svc.startRelevanceCampaign({ code, trigger: 'manual' });
-    let r = await svc.runRelevanceCampaign({ deadline: Date.now() + 60_000 });
-    while (r.more) r = await svc.runRelevanceCampaign({ deadline: Date.now() + 60_000 });
-    expect(r).toMatchObject({ done: true });
-    const [camp] = (await svc.listRelevanceCampaigns(10)).filter((c) => c.code === code);
-    expect(camp).toMatchObject({ status: 'DONE' });
-    expect(camp.before['DATA-CONTRACT-END']).toBeGreaterThanOrEqual(4);
-    expect(camp.after).not.toBeNull();
-    const items = await svc.listCampaignItems(camp.id, { accountId: compte.id });
-    const issue = (id: number) => items.find((i) => i.actionId === id)?.outcome;
-    expect(issue(cartesAvant.pret)).toBe('AUTO_RESOLVED');
-    expect(issue(cartesAvant.titre)).toBe('DEFERRED');
-    expect(issue(cartesAvant.loin)).toBe('DEFERRED');
-    expect(issue(cartesAvant.actif)).toBe('KEPT');
+    // Lot 83E (C-Q9) : la campagne est RETIRÉE — la même réévaluation (même décision centrale) est faite
+    // par le contrôle de cohérence (cartes « donnée » documentaires : COH-TODO-DOCUMENT-FIELDS).
+    const { runCoherenceFor, proofOf } = await import('../coherence-run');
+    const run = await runCoherenceFor(sql, [compte.id]);
+    expect(run.status).toBe('COMPLETE');
+    const etat = async (id: number) => (await sql<{ open: boolean; reason: string | null }[]>`
+      SELECT a.resolved_at IS NULL AS open, (SELECT ev.details ->> 'reason' FROM to_process_action_events ev WHERE ev.action_id = a.id ORDER BY ev.id DESC LIMIT 1) AS reason
+        FROM to_process_actions a WHERE a.id = ${id}`)[0];
+    expect(await etat(cartesAvant.pret)).toMatchObject({ open: false });
     expect((await valeur(pret))?.kind).toBe('CALCULATED');
+    expect((await etat(cartesAvant.titre)).open).toBe(false);
+    expect((await etat(cartesAvant.loin)).open).toBe(false);
+    expect(await etat(cartesAvant.actif)).toMatchObject({ open: true });
+    for (const id of [cartesAvant.pret, cartesAvant.titre, cartesAvant.loin]) {
+      expect((await proofOf(sql, compte.id, 'COH-TODO-DOCUMENT-FIELDS', id))?.last_result, String(id)).toBe('REPAIRED');
+    }
     // Aucune suppression physique : les cartes retirées restent (audit).
     expect(await cartes(titre)).toHaveLength(1);
-    // Rejouée : aucune nouvelle issue, aucun doublon.
-    const n = items.length;
-    await svc.runRelevanceCampaign({ deadline: Date.now() + 60_000 });
-    expect((await svc.listCampaignItems(camp.id, { accountId: compte.id })).length).toBe(n);
+    // Rejouée : aucune nouvelle réparation, aucun doublon.
+    const n = (await sql<{ n: number }[]>`SELECT count(*)::int AS n FROM coherence_repairs WHERE account_id = ${compte.id}`)[0].n;
+    await runCoherenceFor(sql, [compte.id]);
+    expect((await sql<{ n: number }[]>`SELECT count(*)::int AS n FROM coherence_repairs WHERE account_id = ${compte.id}`)[0].n).toBe(n);
     // Tâche planifiée déclarée (aucune commande pour l'exploitation).
     const { findTask } = await import('@/services/scheduling/scheduled-tasks.catalog');
     expect(findTask('to-process-relevance-reevaluation')).toMatchObject({ schedule: { kind: 'interval' } });

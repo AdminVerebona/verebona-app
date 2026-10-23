@@ -204,7 +204,7 @@ scenario('L47A-O9', 'BO diagnostic des Opérations : liste, détail, 13 indicate
     // C26-10 / 11 / 12 anomalies dures : 0 sur le compte propre (aucun faux positif).
     expect(v.componentsWithoutActiveSource).toEqual({ count: 0 });
     expect(v.activeWithoutActiveSource).toEqual({ count: 0 });
-    expect(v.crossAccountOrParentCycles).toEqual({ count: 0, crossAccount: 0, parentCycles: 0 });
+    expect(v.crossAccountLinks).toEqual({ count: 0 });
     expect(r.hardAnomalyTotal).toBe(0);
     // C26-13 T2 économiques : 2 / 1 / 1 (la réponse non économique n'est pas comptée).
     expect(v.t2EconomicAnswers).toMatchObject({ total: 4, operationOnly: 2, mixed: 1, fallbackOnly: 1, operationOnlyPct: 50 });
@@ -254,11 +254,11 @@ scenario('L47A-O9', 'BO diagnostic des Opérations : liste, détail, 13 indicate
     const x = await op(C, {});
     const y = await op(C, { parent: x });
     await src(C, x, {}); await src(C, y, {});
-    await sql`UPDATE business_operations SET parent_operation_id = ${y} WHERE id = ${x}`;   // A4 : cycle
+    await sql`UPDATE business_operations SET parent_operation_id = ${y} WHERE id = ${x}`;   // ex-A4 : cycle (colonne INERTE, lot 83D)
     const d1 = await op(C, {});
     const d2 = await op(C, { parent: d1 });
     const d3 = await op(C, { parent: d2 });
-    const d4 = await op(C, { parent: d3 });                                     // A5 : 4 niveaux
+    const d4 = await op(C, { parent: d3 });                                     // ex-A5 : 4 niveaux (INERTE, lot 83D)
     for (const d of [d1, d2, d3, d4]) await src(C, d, {});
     const autre = await op(C, { type: 'OTHER' });
     await src(C, autre, {});                                                     // A7 : OTHER sans qualification
@@ -271,10 +271,10 @@ scenario('L47A-O9', 'BO diagnostic des Opérations : liste, détail, 13 indicate
     expect(anomalies.ACTIVE_COMPONENT_WITHOUT_SOURCE.count).toBe(2);
     expect(anomalies.CROSS_ACCOUNT_LINK.count).toBe(3);
     expect(anomalies.CROSS_ACCOUNT_LINK.samples.every((s) => s.accountId === C.id && s.operationId === croise)).toBe(true);
-    expect(anomalies.PARENT_CYCLE.count).toBe(2);
-    expect(anomalies.PARENT_CYCLE.samples.map((s) => s.operationId).sort()).toEqual([x, y].sort());
-    expect(anomalies.PARENT_DEPTH_EXCEEDED.count).toBe(1);
-    expect(anomalies.PARENT_DEPTH_EXCEEDED.samples[0]).toMatchObject({ operationId: d4, detail: '4 niveaux (maximum 3)' });
+    // Lot 83D (V-Q2) : hiérarchie retirée — un cycle ou une profondeur dans la colonne inerte n'est plus une anomalie.
+    expect(anomalies).not.toHaveProperty('PARENT_CYCLE');
+    expect(anomalies).not.toHaveProperty('PARENT_DEPTH_EXCEEDED');
+    expect(d4).toBeGreaterThan(0);
     expect(anomalies.OTHER_AS_FALLBACK.count).toBe(1);
     expect(anomalies.OTHER_AS_FALLBACK.samples[0].operationId).toBe(autre);
     expect(anomalies.NEGATIVE_COMPONENT.count).toBe(0);
@@ -284,8 +284,8 @@ scenario('L47A-O9', 'BO diagnostic des Opérations : liste, détail, 13 indicate
     const v = Object.fromEntries(r.indicators.map((i) => [i.key, i.value]));
     expect(v.activeWithoutActiveSource).toEqual({ count: 1 });
     expect(v.componentsWithoutActiveSource).toEqual({ count: 2 });
-    expect(v.crossAccountOrParentCycles).toEqual({ count: 5, crossAccount: 3, parentCycles: 2 });
-    expect(r.hardAnomalyTotal).toBe(1 + 2 + 3 + 2 + 1 + 1);
+    expect(v.crossAccountLinks).toEqual({ count: 3 });
+    expect(r.hardAnomalyTotal).toBe(1 + 2 + 3 + 1);
 
     // Composante négative : impossible en base (CHECK) — détectée si la contrainte a sauté (transaction annulée).
     const RETOUR = new Error('rollback');
@@ -315,17 +315,17 @@ scenario('L47A-O9', 'BO diagnostic des Opérations : liste, détail, 13 indicate
       resolve: (f: string) => autoResolveAnomaly(f, { origin: 'operations_quality_check_cleared' }),
     };
     const premier = await runOperationsQualityCheck(deps);
-    expect(premier.reported).toBe(6);
+    expect(premier.reported).toBe(4);
     const [ouverte] = await sql<{ domain: string; account_id: number; title: string; status: string }[]>`
-      SELECT domain, account_id, title, status FROM admin_anomalies WHERE fingerprint = ${operationsAnomalyFingerprint('PARENT_CYCLE')} AND status = 'open'`;
+      SELECT domain, account_id, title, status FROM admin_anomalies WHERE fingerprint = ${operationsAnomalyFingerprint('OTHER_AS_FALLBACK')} AND status = 'open'`;
     expect(ouverte).toMatchObject({ domain: 'other', account_id: C.id, status: 'open' });
-    expect(ouverte.title).toMatch(/Cycle parent \/ enfant \(2\)/);
+    expect(ouverte.title).toMatch(/Type OTHER sans qualification explicite \(repli\) \(1\)/);
     // « Correction du code + reconsolidation » simulée : les données redeviennent saines.
-    await sql`UPDATE business_operations SET parent_operation_id = NULL WHERE id IN (${x}, ${y})`;
+    await sql`UPDATE business_operations SET type_code = 'INTERVENTION' WHERE id = ${autre}`;
     const second = await runOperationsQualityCheck(deps);
     expect(second.resolved).toBe(1);
     const [resolue] = await sql<{ status: string; resolution_source: string }[]>`
-      SELECT status, resolution_source FROM admin_anomalies WHERE fingerprint = ${operationsAnomalyFingerprint('PARENT_CYCLE')} ORDER BY id DESC LIMIT 1`;
+      SELECT status, resolution_source FROM admin_anomalies WHERE fingerprint = ${operationsAnomalyFingerprint('OTHER_AS_FALLBACK')} ORDER BY id DESC LIMIT 1`;
     expect(resolue).toEqual({ status: 'resolved', resolution_source: 'auto' });
     await sql`UPDATE admin_anomalies SET status = 'resolved', resolved_at = now(), resolution_source = 'auto' WHERE fingerprint LIKE 'other:business-operations:%' AND status = 'open'`;
   });
@@ -401,7 +401,7 @@ scenario('L47A-O9', 'BO diagnostic des Opérations : liste, détail, 13 indicate
     expect(d.components.length).toBe(2);
     expect((d.components[0].sources as unknown[]).length).toBe(1);
     expect(d.references).toEqual([expect.objectContaining({ reference_kind: 'INVOICE', normalized_value: 'FA2026001' })]);
-    expect(d.children.map((c) => Number(c.id))).toEqual([ids.op8]);
+    expect(d).not.toHaveProperty('children');   // Lot 83D (V-Q2) : plus de hiérarchie affichée
     expect(d.mergedFrom.map((c) => Number(c.id))).toEqual([ids.op2]);
     expect(d.history.map((h) => h.event_type)).toEqual(['SOURCE_REMOVED', 'CREATED']);
     expect(d.history.find((h) => h.event_type === 'CREATED')).toMatchObject({ correlation_id: 'corr-op1', reason_code_label: 'création par la consolidation T3' });

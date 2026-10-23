@@ -33,6 +33,7 @@
  * absente de la base est `NOT_PERSISTED`, avec le motif (étape en échec, ou
  * écartée par l'écriture). Une étape en échec est visible dans `steps`.
  */
+import { currentBusinessExecutionId, currentBusinessExecutionOrigin } from '../business-execution/context';
 import { pgClient } from '@/db';
 import { currentJobContext } from '../queue/job-context';
 import {
@@ -548,6 +549,14 @@ export async function buildT1Entries(rec: T1ExecutionRecorder, p: { accountId: n
   return { entries, readSteps, counters: c };
 }
 
+/** Lot 83C : exécution métier T1 courante (contexte explicite ou travail de file). */
+function businessExecutionSources(): Record<string, string> {
+  const id = currentBusinessExecutionId();
+  if (!id?.startsWith('T1:')) return {};
+  const origin = currentBusinessExecutionOrigin();
+  return { businessExecutionId: id, ...(origin ? { businessExecutionOrigin: origin.slice(0, 80) } : {}) };
+}
+
 /**
  * Écrit le rapport T1 d'un groupe. Ne lève JAMAIS : un rapport en échec ne
  * remet pas en cause l'analyse (rapport réduit visible, sinon journal).
@@ -574,7 +583,11 @@ export async function writeT1Report(rec: T1ExecutionRecorder, p: { accountId: nu
       triggerCode: ctx?.triggerCode ?? null,
       status,
       counters, steps, startedAt: rec.startedAt,
-      sources: { groupSourceIds: p.groupSourceIds, deduplicatedRun: rec.deduplicated, phases },
+      sources: {
+        groupSourceIds: p.groupSourceIds, deduplicatedRun: rec.deduplicated, phases,
+        // Lot 83C (SEM-01, R22) : exécution métier du document (reprises comprises) et son origine.
+        ...businessExecutionSources(),
+      },
     }, built.entries);
   } catch (e) {
     console.error(`[execution-report] rapport T1 du fichier ${p.fileId} non écrit :`, errorText(e));

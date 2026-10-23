@@ -1,0 +1,49 @@
+{
+  "capturedOn": "lot82 (avant O-8)",
+  "utile": {
+    "claim": {
+      "typeLabel": "Dégât des eaux",
+      "date": "2026-03-12",
+      "declaredAt": "2026-03-14",
+      "contractLabel": "MRH n° 778",
+      "insurerRef": "SIN-2026-042",
+      "statusLabel": "Expertise prévue",
+      "circumstances": "Fuite du ballon d’eau chaude à l’étage.",
+      "consequences": "Plafond de la salle de bain taché.",
+      "measures": "Coupure de l’eau, séchage.",
+      "estimatedDamage": "3 500 €",
+      "compensation": "1 200 €"
+    },
+    "timeline": [
+      "2026-03-12 Dégât des eaux — Maison",
+      "2026-03-14 Déclaration à l'assureur",
+      "2026-03-26 Visite de l’expert",
+      "2026-04-18 Réparation du plafond"
+    ],
+    "damages": [
+      {
+        "zone": "Salle de bain",
+        "element": "Plafond · 5 m²",
+        "finding": "Auréoles, peinture cloquée · Montant estimé : 1 800 €",
+        "photos": [
+          "12/03/2026 · Plafond taché"
+        ],
+        "justificatifs": []
+      }
+    ],
+    "documents": [
+      "Constat dégât des eaux",
+      "Courrier expert convocation",
+      "Facture réparation plafond"
+    ],
+    "photos": [
+      "12/03/2026 · Plafond taché"
+    ],
+    "actions": [
+      "2026-04-18 Réparation du plafond"
+    ],
+    "exchanges": [
+      "2026-03-20 Convocation à l’expertise du 26/03 [Courrier expert convocation]"
+    ]
+  }
+}

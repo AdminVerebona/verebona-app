@@ -40,7 +40,7 @@ const n = (t: string | undefined) => (t ?? '').replace(/[  ]/g, ' ');
 let nextId = 1000;
 function op(p: Partial<Op> & { assetIds: number[] }): Op {
   return {
-    id: nextId++, accountId: 1, typeCode: 'CONTRACT', status: 'REALIZED', technicalLabel: null, parentOperationId: null, provider: null,
+    id: nextId++, accountId: 1, typeCode: 'CONTRACT', status: 'REALIZED', technicalLabel: null, provider: null,
     plannedDate: null, startDate: null, realizedDate: null, endDate: null, closedAt: null, invalidatedAt: null, invalidationReason: null,
     mergedIntoOperationId: null, lastReconciledAt: null, version: 1, active: true, contractReference: null, effectiveFrom: null, effectiveTo: null,
     claimStatus: null, claimType: null, insurerClaimRef: null, declaredOn: null, components: [], documents: [], sourceKinds: ['DOCUMENT'],

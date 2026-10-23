@@ -39,14 +39,16 @@ describe('L82B-U-REG — registre déclaratif et versionné (CDC §3.2, CA-01)',
     }
   });
 
-  it('L82B-U-REG-02 — premiers contrôles branchés : À traiter, liens documentaires, agenda 76H, orphelins, TCO ; point d’extension C-Q7 déclaré mais jamais exécuté', () => {
-    expect(activeChecks().map((c) => c.id)).toEqual([
+  it('L82B-U-REG-02 — premiers contrôles branchés : À traiter, liens documentaires, agenda 76H, orphelins, TCO (dans cet ordre, en tête) ; point d’extension C-Q7 branché au lot 83B', () => {
+    // Lot 83B : le registre s'enrichit (C-Q7, C3, C4 ; 83E en parallèle) — les contrôles 82B restent en tête, dans leur ordre.
+    expect(activeChecks().map((c) => c.id).slice(0, 5)).toEqual([
       'COH-TODO-DOCUMENT-FIELDS', 'COH-DOC-LINKS', 'COH-AGENDA-OCCURRENCES', 'COH-AGENDA-ORPHANS', 'COH-TCO-EXTRACTED-EXPENSES',
     ]);
     const c7 = getCheck('COH-DOC-EXTRACT-CHAIN')!;
-    expect(c7.status).toBe('PLANNED');
+    expect(c7.status).toBe('ACTIVE');
     expect(c7.chain).toEqual(['EXTRACT', 'T1', 'T3', 'T4', 'PERSISTENCE']);
-    expect(activeChecks()).not.toContain(c7);
+    // (identifiants comparés : chai appellerait la méthode `inspect` du contrôle pour le formater)
+    expect(activeChecks().map((c) => c.id)).toContain(c7.id);
   });
 
   it('L82B-U-REG-03 — version du registre : change dès qu’une version de contrôle change (réexamen du stock, §6.4)', () => {

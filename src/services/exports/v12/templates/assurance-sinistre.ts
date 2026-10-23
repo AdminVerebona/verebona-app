@@ -7,15 +7,18 @@
 import {
   esc, fmt, dot, counter,
   CoverDocumentary, Section, SummaryCard, KeyValueGrid, Note, Timeline, LongTable, PhotoGallery,
-  Cards, LineRows, AnnexIndex, References, destinationPill, type PlannedDoc,
+  LineRows, AnnexIndex, References, destinationPill, type PlannedDoc,
 } from '../html/components';
 import { planAttachments, selected, selectedPhotos } from '../html/selection';
 import { assemble, coverPageLabel } from '../html/layout';
 import type { SinistreData, RenderContext, RenderedHtml } from '../types';
 
-// Lot 44 (O5) : montant estimé des dommages et indemnité reçue imprimés s'ils sont saisis.
-export const TEMPLATE_VERSION = 'assurance_sinistre-v1.1.0';
-export const TEMPLATE_LABEL = 'assurance_sinistre · v1.1';
+// Lot 44 (O5) : montant estimé des dommages et indemnité reçue imprimés s'ils sont connus.
+// Lot 83D (CDC v5 §16, §18) : dossier lu dans l'Opération CLAIM consolidée — Pièces et
+// équipements concernés dans la synthèse ; plus de section « Actions » (les étapes sont
+// dans la chronologie, les échanges sont des documents).
+export const TEMPLATE_VERSION = 'assurance_sinistre-v1.2.0';
+export const TEMPLATE_LABEL = 'assurance_sinistre · v1.2';
 
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n > 1 ? many : one}`;
 
@@ -28,7 +31,6 @@ export function render(c: SinistreData, ctx: RenderContext): RenderedHtml {
   const photos = selectedPhotos(c.photos, (p) => ctx.asset(p));
   const events = selected(c.timeline);
   const damages = selected(c.damages);
-  const actions = selected(c.actions);
   // Échanges retenus seulement s'ils sont clairement liés au sinistre (RULE-004).
   const exchanges = selected(c.exchanges).filter((x) => x.linkedToClaim !== false);
   const n = counter();
@@ -79,6 +81,8 @@ export function render(c: SinistreData, ctx: RenderContext): RenderedHtml {
         { label: 'Circonstances', value: claim.circumstances, strong: false },
         { label: 'Conséquences', value: claim.consequences, strong: false },
         { label: 'Mesures prises', value: claim.measures, strong: false },
+        { label: 'Pièces concernées', value: claim.rooms, strong: false },
+        { label: 'Équipements concernés', value: claim.equipments, strong: false },
         { label: 'Statut', value: claim.statusDetail },
         // Lot 44 : montants saisis (jamais calculés) ; l'estimation n'est pas un coût réel.
         { label: 'Dommages estimés', value: claim.estimatedDamage },
@@ -112,9 +116,8 @@ export function render(c: SinistreData, ctx: RenderContext): RenderedHtml {
     body: PhotoGallery(main, { layout: 'grid3', height: 150, dim: true }),
   }) : '';
 
-  const s05 = Section({ eyebrow: n(), title: 'Actions déjà réalisées', first: true, body: Cards(actions.map((a) => ({ when: a.whenLabel ?? fmt.date(a.date), title: a.title, text: dot(a.text, a.docId && plan.ref(a.docId) ? `facture · annexe ${plan.ref(a.docId)}` : '') || null })), { small: true }) });
   const s06 = Section({
-    eyebrow: n(), title: 'Devis, factures et rapports', gap: 'sm', first: !s05, size: '',
+    eyebrow: n(), title: 'Devis, factures et rapports', gap: 'sm', first: true, size: '',
     body: LongTable<PlannedDoc>({
       columns: [
         { label: 'Document', key: 'title', className: 'strong' },
@@ -127,7 +130,7 @@ export function render(c: SinistreData, ctx: RenderContext): RenderedHtml {
     }),
   });
   const s07 = Section({
-    eyebrow: n(), title: "Échanges avec l'assureur et l'expert", gap: 'sm', first: !s05 && !s06,
+    eyebrow: n(), title: "Échanges avec l'assureur et l'expert", gap: 'sm', first: !s06,
     body: LineRows(exchanges.map((x) => ({ date: x.date, title: x.title, aside: dot(x.channel, x.docId ? plan.ref(x.docId) : '') }))),
   });
 
@@ -160,7 +163,7 @@ export function render(c: SinistreData, ctx: RenderContext): RenderedHtml {
     title: `Sinistre — ${asset.name}`,
     headerLabel: dot(claim.insurerRef ? `Sinistre ${claim.insurerRef}` : 'Sinistre', asset.name, genDate),
     cover,
-    groups: [[s01, s02].join('\n'), [s03, s04].join('\n'), [s05, s06, s07].join('\n'), [suite, index].join('\n')],
+    groups: [[s01, s02].join('\n'), [s03, s04].join('\n'), [s06, s07].join('\n'), [suite, index].join('\n')],
     annexes: plan.annexes,
     references,
   });

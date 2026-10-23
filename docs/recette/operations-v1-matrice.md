@@ -10,11 +10,11 @@
 
 | Famille | Total | Automatisés | dont + recette préprod | Recette préprod seule | Hors périmètre | Écarts |
 |---|---|---|---|---|---|---|
-| C29 | 200 | 200 | 33 | 0 | 0 | 0 |
+| C29 | 200 | 189 | 33 | 0 | 11 | 0 |
 | C31 | 22 | 22 | 2 | 0 | 0 | 0 |
 | C34 | 26 | 26 | 1 | 0 | 0 | 0 |
-| B33 | 60 | 60 | 0 | 0 | 0 | 0 |
-| **Total** | **308** | **308** | **36** | **0** | **0** | **0** |
+| B33 | 60 | 54 | 0 | 0 | 6 | 0 |
+| **Total** | **308** | **291** | **36** | **0** | **17** | **0** |
 
 ## Décisions PO citées
 
@@ -25,6 +25,8 @@
 - **D5-D6** — Retour PO du 12/10/2026 (lot 53) : rapprochement automatique seulement à forte confiance (bien, nature, références, montants, prestataire, dates = indices) ; deux factures finales de numéros différents ne font plus systématiquement deux interventions ; doute → carte « À traiter » (docs/exploitation/operations-rapprochement.md).
 - **D7** — Retour PO du 12/10/2026 (lot 53) : plafonds d’appels conservés, examen M3 progressif par lots de 5, report tracé et repris, jamais d’abandon.
 - **D14** — Retour PO du 12/10/2026 (lot 53) : projection agenda incertaine → carte « À traiter » avec candidats et provenance, jamais de projection automatique.
+- **V-Q1** — Arbitrage PO du 23/10/2026 (lot 83D, CDC Opérations v5 §15) : le bloc « Sinistres » des biens est supprimé définitivement (fiche, formulaire, routes, desktop et mobile), sans écran de remplacement ; le sinistre est porté par l’Opération CLAIM, l’Agenda, les documents et le dossier d’assurance.
+- **V-Q2** — Arbitrage PO du 23/10/2026 (lot 83D, CDC Opérations v5 §17) : l’ancien modèle est retiré — actions et échanges de sinistre, hiérarchie parent / enfant (`parent_operation_id`), anomalies PARENT_*, `claim_json`, migration du formulaire ; purge préprod par le rattrapage BO « Sinistres : nettoyage de l’ancien modèle », tables / colonnes inertes supprimées au lot O-10.
 
 ## Écarts tracés
 
@@ -46,10 +48,10 @@
 
 1. BO › Exploitation › Rattrapages › « Biens déplacés » (lot 40) : Simuler (rapport exact, aucune écriture), puis Appliquer avec un motif.
 2. BO › Exploitation › Rattrapages › « Opérations : données structurées » (lot 43) : Simuler, contrôler les décomptes ACQUISITION / DISPOSAL / CONTRACT, puis Appliquer.
-3. BO › Exploitation › Rattrapages › « Sinistres : ancien formulaire » (lot 44) : Simuler, puis Appliquer ; contrôler qu’une ancienne saisie sous le seuil reste « Reprendre en sinistre ».
+3. BO › Exploitation › Rattrapages › « Sinistres : nettoyage de l’ancien modèle » (lot 83D, remplace « Sinistres : ancien formulaire » du lot 44) : point de restauration, Simuler, puis Appliquer — voir docs/exploitation/sinistres-compatibilite.md.
 4. Relancer chaque simulation : 0 élément à traiter (idempotence, F-175).
 
-*Attendu :* Rattrapages appliqués une fois, rejoués sans effet ; les tâches internes correspondantes (asset-account-backfill, operations-structured-migration, operations-claim-migration) restent actives.
+*Attendu :* Rattrapages appliqués une fois, rejoués sans effet ; les tâches internes correspondantes (asset-account-backfill, operations-structured-migration) restent actives ; la tâche operations-claim-migration est retirée (lot 83D).
 
 ### RP-03 — Gating T1 et création anti-pollution avec le VRAI modèle
 
@@ -118,7 +120,7 @@
 | F-012 | Création anti-pollution — C3, C5 — T1 + T3 | LLD/LOA avant propriété | CONTRACT. | AUTOMATISÉ | `e2e/l48-o10-recette-jeux.e2e.ts` |
 | F-013 | Création anti-pollution — C3, C5 — T1 + T3 | Levée option LOA | ACQUISITION nouvelle. | AUTOMATISÉ | `e2e/l48-o10-recette-jeux.e2e.ts` |
 | F-014 | Création anti-pollution — C3, C5 — T1 + T3 | Prêt auto | FINANCING. | AUTOMATISÉ | `e2e/l48-o10-recette-jeux.e2e.ts` |
-| F-015 | Création anti-pollution — C3, C5 — T1 + T3 | Déclaration sinistre formulaire sans doc | CLAIM REALIZED. | AUTOMATISÉ | `e2e/l44-o5-sinistre.e2e.ts` |
+| F-015 | Création anti-pollution — C3, C5 — T1 + T3 | Déclaration sinistre formulaire sans doc | CLAIM REALIZED. | HORS PÉRIMÈTRE | décision : V-Q1 — bloc « Sinistres » supprimé (lot 83D) : plus de saisie de sinistre par formulaire (bloc « Sinistres » retiré) ; un sinistre naît de ses documents ou de l’Agenda. |
 | F-016 | Création anti-pollution — C3, C5 — T1 + T3 | Courrier assureur avec ref sinistre | MATCH/CREATE CLAIM selon existant. | AUTOMATISÉ + RECETTE PRÉPROD | `e2e/l48-o10-recette-complements.e2e.ts`<br>préprod RP-03 |
 | F-017 | Création anti-pollution — C3, C5 — T1 + T3 | Acte vente | DISPOSAL REALIZED. | AUTOMATISÉ | `e2e/l41-o3a-consolidation-t3.e2e.ts` |
 | F-018 | Création anti-pollution — C3, C5 — T1 + T3 | Prix souhaité vente | Aucune DISPOSAL. | AUTOMATISÉ | `services/business-operations/consolidation/__tests__/o4-asset-data.test.ts` |
@@ -143,7 +145,7 @@
 | F-037 | Matching/dédoublonnage — C6, C7 — T3 | Avenant mentionne contrat initial | Même CONTRACT. | AUTOMATISÉ | `services/business-operations/consolidation/__tests__/o3a-decision.test.ts` |
 | F-038 | Matching/dédoublonnage — C6, C7 — T3 | Même loan ref | Même FINANCING. | AUTOMATISÉ | `services/business-operations/consolidation/__tests__/o3a-decision.test.ts`<br>`e2e/l48-o10-recette-jeux.e2e.ts` |
 | F-039 | Matching/dédoublonnage — C6, C7 — T3 | Deux prêts distincts même achat | Deux FINANCING enfants possibles. | AUTOMATISÉ | `services/business-operations/consolidation/__tests__/o3a-decision.test.ts` |
-| F-040 | Matching/dédoublonnage — C6, C7 — T3 | Même insurerClaimRef | Même CLAIM. | AUTOMATISÉ | `services/business-operations/consolidation/__tests__/o3a-decision.test.ts`<br>`e2e/l44-o5-sinistre.e2e.ts`<br>`e2e/l48-o10-recette-complements.e2e.ts` |
+| F-040 | Matching/dédoublonnage — C6, C7 — T3 | Même insurerClaimRef | Même CLAIM. | AUTOMATISÉ | `services/business-operations/consolidation/__tests__/o3a-decision.test.ts`<br>`e2e/l48-o10-recette-complements.e2e.ts` |
 | F-041 | Matching/dédoublonnage — C6, C7 — T3 | Deux sinistres même jour refs distinctes | Deux CLAIM. | AUTOMATISÉ | `services/business-operations/consolidation/__tests__/o3a-decision.test.ts`<br>`e2e/l48-o10-recette-jeux.e2e.ts` |
 | F-042 | Matching/dédoublonnage — C6, C7 — T3 | Vente structurée + acte vente | Même DISPOSAL. | AUTOMATISÉ | `services/business-operations/consolidation/__tests__/o3a-decision.test.ts`<br>`services/business-operations/consolidation/__tests__/o4-asset-data.test.ts`<br>`e2e/l43-o4-donnees-structurees.e2e.ts` |
 | F-043 | Matching/dédoublonnage — C6, C7 — T3 | Revente après nouvelle acquisition | Nouvelle DISPOSAL. | AUTOMATISÉ | `services/business-operations/consolidation/__tests__/o3a-decision.test.ts` |
@@ -178,7 +180,7 @@
 | F-072 | Cycle de vie — C8, C9 — T3/Repository | CLAIM clos | Operation REALIZED + closed_at. | AUTOMATISÉ | `e2e/l39-o1-socle-operations.e2e.ts` |
 | F-073 | Cycle de vie — C8, C9 — T3/Repository | Contrat résilié après exécution | Operation REALIZED + end_date/closed_at, pas CANCELLED. | AUTOMATISÉ | `e2e/l48-o10-recette-complements.e2e.ts`<br>`e2e/l48-o10-recette-jeux.e2e.ts` |
 | F-074 | Cycle de vie — C8, C9 — T3/Repository | Projet contrat annulé avant effet | CANCELLED. | AUTOMATISÉ | `e2e/l48-o10-recette-complements.e2e.ts` |
-| F-075 | Cycle de vie — C8, C9 — T3/Repository | Parent claim real + enfant repair real | Les deux REALIZED. | AUTOMATISÉ | `e2e/l42-o3b-consolidation-t3.e2e.ts`<br>`e2e/l48-o10-recette-jeux.e2e.ts` |
+| F-075 | Cycle de vie — C8, C9 — T3/Repository | Parent claim real + enfant repair real | Les deux REALIZED. | HORS PÉRIMÈTRE | décision : V-Q2 — ancien modèle retiré (lot 83D) : plus d’intervention enfant : la réparation reste dans l’Opération CLAIM (AC39). |
 | F-076 | Cycle de vie — C8, C9 — T3/Repository | Parent claim clôturé, enfant réparation encore en cours | Parent REALIZED/closed possible selon dossier ; enfant garde propre état. | AUTOMATISÉ | `e2e/l48-o10-recette-jeux.e2e.ts` |
 | F-077 | Cycle de vie — C8, C9 — T3/Repository | Suppression parent interdite physiquement | Invalidation/relation reconsolidée, pas orphan FK. | AUTOMATISÉ | `e2e/l39-o1-socle-operations.e2e.ts` |
 | F-078 | Cycle de vie — C8, C9 — T3/Repository | Operation sans target | Active mais exclue scopes bien/TCO. | AUTOMATISÉ | `e2e/l41-o3a-consolidation-t3.e2e.ts`<br>`e2e/l48-o10-recette-jeux.e2e.ts` |
@@ -186,13 +188,13 @@
 | F-080 | Cycle de vie — C8, C9 — T3/Repository | Operation sans target >30j | Aucune invalidation automatique ; BO bucket. | AUTOMATISÉ | `e2e/l47a-o9-bo-diagnostic.e2e.ts` |
 | F-081 | Cycle de vie — C8, C9 — T3/Repository | Equipment target affiné depuis asset | Même Operation. | AUTOMATISÉ | `e2e/l48-o10-recette-complements.e2e.ts`<br>`e2e/l48-o10-recette-jeux.e2e.ts` |
 | F-082 | Cycle de vie — C8, C9 — T3/Repository | Downgrade Standard | Données conservées. | AUTOMATISÉ | `e2e/l48-o10-recette-jeux.e2e.ts` |
-| F-083 | Cycle de vie — C8, C9 — T3/Repository | Account Duo utilisateur 2 modifie sinistre | Même CLAIM partagée. | AUTOMATISÉ | `e2e/l44-o5-sinistre.e2e.ts`<br>`e2e/l48-o10-recette-jeux.e2e.ts` |
+| F-083 | Cycle de vie — C8, C9 — T3/Repository | Account Duo utilisateur 2 modifie sinistre | Même CLAIM partagée. | AUTOMATISÉ | `e2e/l48-o10-recette-jeux.e2e.ts` |
 | F-084 | Cycle de vie — C8, C9 — T3/Repository | Conversation T2 utilisateur 1 | Ne devient pas source partagée. | AUTOMATISÉ | `e2e/l48-o10-recette-jeux.e2e.ts` |
 | F-085 | Cycle de vie — C8, C9 — T3/Repository | Suppression Agenda généré | Operation intacte + suppression projection durable. | AUTOMATISÉ | `services/business-operations/consolidation/__tests__/l47b-agenda-source.test.ts`<br>`e2e/l47b-agenda-source-t3.e2e.ts` |
 | F-086 | Cycle de vie — C8, C9 — T3/Repository | Suppression Agenda utilisateur source unique envisagée | Retirer source ; invalider si aucune autre. | AUTOMATISÉ | `e2e/l47b-agenda-source-t3.e2e.ts` |
 | F-087 | Cycle de vie — C8, C9 — T3/Repository | Annulation Agenda projetée système | Ne doit pas devenir source d’annulation métier. | AUTOMATISÉ | `services/business-operations/consolidation/__tests__/l47b-agenda-source.test.ts`<br>`e2e/l47b-agenda-source-t3.e2e.ts` |
-| F-088 | Cycle de vie — C8, C9 — T3/Repository | claim form supprimé, documents restent | CLAIM reste. | AUTOMATISÉ | `e2e/l44-o5-sinistre.e2e.ts` |
-| F-089 | Cycle de vie — C8, C9 — T3/Repository | claim form supprimé, aucune preuve | CLAIM invalidée. | AUTOMATISÉ | `e2e/l44-o5-sinistre.e2e.ts` |
+| F-088 | Cycle de vie — C8, C9 — T3/Repository | claim form supprimé, documents restent | CLAIM reste. | HORS PÉRIMÈTRE | décision : V-Q1 — bloc « Sinistres » supprimé (lot 83D) : plus de suppression par le formulaire (retiré). |
+| F-089 | Cycle de vie — C8, C9 — T3/Repository | claim form supprimé, aucune preuve | CLAIM invalidée. | HORS PÉRIMÈTRE | décision : V-Q1 — bloc « Sinistres » supprimé (lot 83D) : plus de suppression par le formulaire (retiré). |
 | F-090 | Cycle de vie — C8, C9 — T3/Repository | Hour sweep | Convergence/no-op si rien changé. | AUTOMATISÉ | `e2e/l41-o3a-consolidation-t3.e2e.ts`<br>`e2e/l48-o10-recette-jeux.e2e.ts` |
 | F-091 | Finances/TCO — C11, C12, C17 — FinancialService/TCO | Devis 1200 + facture 1350 | Forecast 1200 + realized 1350 ; TCO 1350. | AUTOMATISÉ | `e2e/l41-o3a-consolidation-t3.e2e.ts`<br>`e2e/l48-o10-recette-complements.e2e.ts`<br>`services/business-operations/finance/__tests__/l54d-finance-tco.test.ts`<br>*Lot 54D : TCO automatisé — devis exclu, réalisé 1 350 compté (TCO-15).* |
 | F-092 | Finances/TCO — C11, C12, C17 — FinancialService/TCO | Acompte 300 + final total 1200 | TCO 1200. | AUTOMATISÉ | `services/business-operations/consolidation/__tests__/o3a-finances-etat.test.ts`<br>`e2e/l41-o3a-consolidation-t3.e2e.ts`<br>`services/business-operations/finance/__tests__/l54d-finance-tco.test.ts`<br>*Lot 54D : TCO 1 200 contrôlé (FIN-D, TCO-15).* |
@@ -250,20 +252,20 @@
 | F-144 | T4/Agenda — C16 — T4 projection | T4 contract sans échéance actionnable | Pas copie Agenda. | AUTOMATISÉ | `services/business-operations/agenda-projection/__tests__/o7-projection.test.ts`<br>`e2e/l46-o7-agenda-projection.e2e.ts`<br>`e2e/l48-o10-recette-jeux.e2e.ts` |
 | F-145 | T4/Agenda — C16 — T4 projection | T4 projection puis event callback | Boucle bloquée. | AUTOMATISÉ | `services/business-operations/agenda-projection/__tests__/o7-projection.test.ts`<br>`e2e/l46-o7-agenda-projection.e2e.ts` |
 | F-146 | T4/Agenda — C16 — T4 projection | Utilisateur supprime projection Agenda | Pas recréée par hourly. | AUTOMATISÉ | `components/agenda/__tests__/l46-o7-tiroir-source.test.ts`<br>`services/business-operations/agenda-projection/__tests__/o7-projection.test.ts`<br>`e2e/l46-o7-agenda-projection.e2e.ts` |
-| F-147 | T4/Agenda — C16 — T4 projection | Agenda utilisateur existe avant Operation | Lier, ne pas dupliquer. | AUTOMATISÉ | `services/business-operations/agenda-projection/__tests__/o7-projection.test.ts`<br>`e2e/l44-o5-sinistre.e2e.ts`<br>`e2e/l46-o7-agenda-projection.e2e.ts`<br>`e2e/l53c-po-sinistres-agenda.e2e.ts`<br>*Lot 53 (décision PO D14) : rapprochement seulement probable → aucune projection, carte « À traiter » avec les événements candidats et leur provenance.* |
-| F-148 | Sinistre — C14 — ClaimOperationService/exports | Sinistre A_DECLARER | CLAIM REALIZED, dossier A_DECLARER. | AUTOMATISÉ | `services/business-operations/claims/__tests__/o5-sinistre.test.ts`<br>`e2e/l44-o5-sinistre.e2e.ts` |
-| F-149 | Sinistre — C14 — ClaimOperationService/exports | Sinistre CLOS | CLAIM REALIZED + closed_at. | AUTOMATISÉ | `services/business-operations/claims/__tests__/o5-sinistre.test.ts`<br>`e2e/l44-o5-sinistre.e2e.ts`<br>`e2e/l48-o10-recette-jeux.e2e.ts` |
-| F-150 | Sinistre — C14 — ClaimOperationService/exports | Sinistre refusé | CLAIM REALIZED, status dossier REFUSE. | AUTOMATISÉ | `services/business-operations/claims/__tests__/o5-sinistre.test.ts`<br>`e2e/l44-o5-sinistre.e2e.ts` |
-| F-151 | Sinistre — C14 — ClaimOperationService/exports | Action sinistre couper eau | Pas child Operation. | AUTOMATISÉ | `e2e/l44-o5-sinistre.e2e.ts` |
-| F-152 | Sinistre — C14 — ClaimOperationService/exports | Action sinistre réparation avec facture | INTERVENTION enfant possible/match. | AUTOMATISÉ | `e2e/l44-o5-sinistre.e2e.ts` |
-| F-153 | Sinistre — C14 — ClaimOperationService/exports | Dommage list item | Pas Operation. | AUTOMATISÉ | `services/business-operations/claims/__tests__/o5-sinistre.test.ts`<br>`e2e/l44-o5-sinistre.e2e.ts` |
-| F-154 | Sinistre — C14 — ClaimOperationService/exports | Échange assureur | Pas Operation. | AUTOMATISÉ | `services/business-operations/claims/__tests__/o5-sinistre.test.ts`<br>`e2e/l44-o5-sinistre.e2e.ts` |
-| F-155 | Sinistre — C14 — ClaimOperationService/exports | Policy ref matches Contract | claim_details insurance_contract_operation_id. | AUTOMATISÉ | `e2e/l44-o5-sinistre.e2e.ts` |
-| F-156 | Sinistre — C14 — ClaimOperationService/exports | Policy ref ambigu | Texte conservé, pas faux lien. | AUTOMATISÉ | `e2e/l44-o5-sinistre.e2e.ts` |
-| F-157 | Sinistre — C14 — ClaimOperationService/exports | Export assurance après migration | Lit CLAIM, pas additionalInfo comme source de vérité. | AUTOMATISÉ | `e2e/l44-o5-sinistre.e2e.ts`<br>`e2e/l48-o10-recette-complements.e2e.ts` |
-| F-158 | Sinistre — C14 — ClaimOperationService/exports | Claim multi-biens | Une CLAIM. | AUTOMATISÉ | `e2e/l44-o5-sinistre.e2e.ts`<br>`e2e/l48-o10-recette-jeux.e2e.ts` |
-| F-159 | Sinistre — C14 — ClaimOperationService/exports | Claim indemnity allocated asset A | TCO A réduit. | AUTOMATISÉ | `services/business-operations/claims/__tests__/o5-sinistre.test.ts`<br>`e2e/l44-o5-sinistre.e2e.ts`<br>`services/business-operations/finance/__tests__/l54d-finance-tco.test.ts`<br>*Lot 54D : réduction du TCO du bien contrôlée (TCO-15, FIN-A).* |
-| F-160 | Sinistre — C14 — ClaimOperationService/exports | Claim indemnity unallocated | Pas réduction TCO individuel. | AUTOMATISÉ | `services/business-operations/claims/__tests__/o5-sinistre.test.ts`<br>`e2e/l44-o5-sinistre.e2e.ts`<br>`e2e/l48-o10-recette-jeux.e2e.ts`<br>`services/business-operations/finance/__tests__/l54d-finance-tco.test.ts`<br>*Lot 54D : aucune réduction d’un TCO individuel (TCO-15, FIN-G).* |
+| F-147 | T4/Agenda — C16 — T4 projection | Agenda utilisateur existe avant Operation | Lier, ne pas dupliquer. | AUTOMATISÉ | `services/business-operations/agenda-projection/__tests__/o7-projection.test.ts`<br>`e2e/l46-o7-agenda-projection.e2e.ts`<br>`e2e/l53c-po-sinistres-agenda.e2e.ts`<br>*Lot 53 (décision PO D14) : rapprochement seulement probable → aucune projection, carte « À traiter » avec les événements candidats et leur provenance.* |
+| F-148 | Sinistre — C14 — ClaimOperationService/exports | Sinistre A_DECLARER | CLAIM REALIZED, dossier A_DECLARER. | AUTOMATISÉ | `services/business-operations/claims/__tests__/o5-sinistre.test.ts` |
+| F-149 | Sinistre — C14 — ClaimOperationService/exports | Sinistre CLOS | CLAIM REALIZED + closed_at. | AUTOMATISÉ | `services/business-operations/claims/__tests__/o5-sinistre.test.ts`<br>`e2e/l48-o10-recette-jeux.e2e.ts` |
+| F-150 | Sinistre — C14 — ClaimOperationService/exports | Sinistre refusé | CLAIM REALIZED, status dossier REFUSE. | AUTOMATISÉ | `services/business-operations/claims/__tests__/o5-sinistre.test.ts` |
+| F-151 | Sinistre — C14 — ClaimOperationService/exports | Action sinistre couper eau | Pas child Operation. | HORS PÉRIMÈTRE | décision : V-Q2 — ancien modèle retiré (lot 83D) : plus d’« actions » de sinistre : une étape est un élément d’Agenda (§18.1). |
+| F-152 | Sinistre — C14 — ClaimOperationService/exports | Action sinistre réparation avec facture | INTERVENTION enfant possible/match. | HORS PÉRIMÈTRE | décision : V-Q2 — ancien modèle retiré (lot 83D) : idem F-151 ; la facture est un document de l’Opération CLAIM. |
+| F-153 | Sinistre — C14 — ClaimOperationService/exports | Dommage list item | Pas Operation. | AUTOMATISÉ | `e2e/l83d-sinistres-v5.e2e.ts` |
+| F-154 | Sinistre — C14 — ClaimOperationService/exports | Échange assureur | Pas Operation. | AUTOMATISÉ | `e2e/l83d-sinistres-v5.e2e.ts` |
+| F-155 | Sinistre — C14 — ClaimOperationService/exports | Policy ref matches Contract | claim_details insurance_contract_operation_id. | HORS PÉRIMÈTRE | décision : V-Q1 — bloc « Sinistres » supprimé (lot 83D) : la police n’est plus saisie : elle provient des documents (données d’assurance sourcées). |
+| F-156 | Sinistre — C14 — ClaimOperationService/exports | Policy ref ambigu | Texte conservé, pas faux lien. | HORS PÉRIMÈTRE | décision : V-Q1 — bloc « Sinistres » supprimé (lot 83D) : idem F-155. |
+| F-157 | Sinistre — C14 — ClaimOperationService/exports | Export assurance après migration | Lit CLAIM, pas additionalInfo comme source de vérité. | AUTOMATISÉ | `e2e/l48-o10-recette-complements.e2e.ts`<br>`e2e/l83d-sinistres-v5.e2e.ts` |
+| F-158 | Sinistre — C14 — ClaimOperationService/exports | Claim multi-biens | Une CLAIM. | AUTOMATISÉ | `e2e/l48-o10-recette-jeux.e2e.ts` |
+| F-159 | Sinistre — C14 — ClaimOperationService/exports | Claim indemnity allocated asset A | TCO A réduit. | AUTOMATISÉ | `services/business-operations/claims/__tests__/o5-sinistre.test.ts`<br>`services/business-operations/finance/__tests__/l54d-finance-tco.test.ts`<br>*Lot 54D : réduction du TCO du bien contrôlée (TCO-15, FIN-A).* |
+| F-160 | Sinistre — C14 — ClaimOperationService/exports | Claim indemnity unallocated | Pas réduction TCO individuel. | AUTOMATISÉ | `services/business-operations/claims/__tests__/o5-sinistre.test.ts`<br>`e2e/l48-o10-recette-jeux.e2e.ts`<br>`services/business-operations/finance/__tests__/l54d-finance-tco.test.ts`<br>*Lot 54D : aucune réduction d’un TCO individuel (TCO-15, FIN-G).* |
 | F-161 | Valorisation — C18 — Valuation service/coherence | Valuation doc fiable | valuationHistory, pas Operation. | AUTOMATISÉ | `services/ai/source-analysis/projection/__tests__/o0-acquisition-contextualisee.test.ts`<br>`services/canonical/__tests__/o0-valorisation-devise.test.ts`<br>`e2e/l38-o0-propagations.e2e.ts` |
 | F-162 | Valorisation — C18 — Valuation service/coherence | Acquisition invoice amount | Acquisition cost, pas estimatedValue. | AUTOMATISÉ | `services/ai/source-analysis/projection/__tests__/o0-acquisition-contextualisee.test.ts`<br>`e2e/l41-o3a-consolidation-t3.e2e.ts` |
 | F-163 | Valorisation — C18 — Valuation service/coherence | Document date générique | Ne propage pas acquisitionDate sans sémantique. | AUTOMATISÉ | `services/ai/source-analysis/projection/__tests__/o0-acquisition-contextualisee.test.ts`<br>`services/coherence/__tests__/l82b-registre-socle.test.ts` |
@@ -274,8 +276,8 @@
 | F-168 | Concurrence/migration — C23-C25 — DB/T3/migrations | Échec pendant fusion | Rollback complet. | AUTOMATISÉ | `e2e/l42-o3b-consolidation-t3.e2e.ts` |
 | F-169 | Concurrence/migration — C23-C25 — DB/T3/migrations | Cross-account parent | Rejet intégrité. | AUTOMATISÉ | `e2e/l39-o1-socle-operations.e2e.ts` |
 | F-170 | Concurrence/migration — C23-C25 — DB/T3/migrations | Cross-account source | Rejet intégrité. | AUTOMATISÉ | `e2e/l39-o1-socle-operations.e2e.ts` |
-| F-171 | Concurrence/migration — C23-C25 — DB/T3/migrations | Cycle parent | Rejet. | AUTOMATISÉ | `services/business-operations/__tests__/o1-socle.test.ts`<br>`e2e/l39-o1-socle-operations.e2e.ts` |
-| F-172 | Concurrence/migration — C23-C25 — DB/T3/migrations | Profondeur 4 | Rejet. | AUTOMATISÉ | `services/business-operations/__tests__/o1-socle.test.ts`<br>`e2e/l39-o1-socle-operations.e2e.ts` |
+| F-171 | Concurrence/migration — C23-C25 — DB/T3/migrations | Cycle parent | Rejet. | HORS PÉRIMÈTRE | décision : V-Q2 — ancien modèle retiré (lot 83D) : hiérarchie retirée. |
+| F-172 | Concurrence/migration — C23-C25 — DB/T3/migrations | Profondeur 4 | Rejet. | HORS PÉRIMÈTRE | décision : V-Q2 — ancien modèle retiré (lot 83D) : hiérarchie retirée. |
 | F-173 | Concurrence/migration — C23-C25 — DB/T3/migrations | Active component sans active source | Diagnostic anomalie dure. | AUTOMATISÉ + RECETTE PRÉPROD | `e2e/l48-o10-recette-jeux.e2e.ts`<br>préprod RP-05 |
 | F-174 | Concurrence/migration — C23-C25 — DB/T3/migrations | Active Operation sans active source | Diagnostic anomalie dure. | AUTOMATISÉ + RECETTE PRÉPROD | `e2e/l48-o10-recette-jeux.e2e.ts`<br>préprod RP-05 |
 | F-175 | Concurrence/migration — C23-C25 — DB/T3/migrations | Migration relancée | Idempotente. | AUTOMATISÉ | `e2e/l43-o4-donnees-structurees.e2e.ts`<br>`e2e/l48-o10-recette-jeux.e2e.ts`<br>`e2e/l55b-contrats.e2e.ts` |
@@ -283,14 +285,14 @@
 | F-177 | Concurrence/migration — C23-C25 — DB/T3/migrations | Old document réanalysé | Entre dans modèle normal. | AUTOMATISÉ | `e2e/l48-o10-recette-jeux.e2e.ts` |
 | F-178 | Concurrence/migration — C23-C25 — DB/T3/migrations | Migration acquisition fields | Une ACQUISITION. | AUTOMATISÉ | `services/business-operations/consolidation/__tests__/o4-asset-data.test.ts`<br>`e2e/l43-o4-donnees-structurees.e2e.ts`<br>`e2e/l48-o10-recette-jeux.e2e.ts` |
 | F-179 | Concurrence/migration — C23-C25 — DB/T3/migrations | Migration status vendu | Une DISPOSAL. | AUTOMATISÉ | `e2e/l43-o4-donnees-structurees.e2e.ts` |
-| F-180 | Concurrence/migration — C23-C25 — DB/T3/migrations | Migration claim | Une CLAIM + détails. | AUTOMATISÉ | `e2e/l44-o5-sinistre.e2e.ts` |
+| F-180 | Concurrence/migration — C23-C25 — DB/T3/migrations | Migration claim | Une CLAIM + détails. | HORS PÉRIMÈTRE | décision : V-Q2 — ancien modèle retiré (lot 83D) : migration du formulaire retirée ; purge par le rattrapage BO (L83D-E04 à E07). |
 | F-181 | Concurrence/migration — C23-C25 — DB/T3/migrations | additionalInfo.claim après cutover | Pas de double écriture source de vérité. | AUTOMATISÉ | `e2e/l48-o10-recette-complements.e2e.ts` |
 | F-182 | Concurrence/migration — C23-C25 — DB/T3/migrations | BO utilisateur admin tente edit | Aucune action d’édition disponible. | AUTOMATISÉ + RECETTE PRÉPROD | `app/admin/operations/__tests__/o9-bo-diagnostic-ui.test.ts`<br>`app/api/admin/accounts/[id]/operations-reconsolidation/__tests__/o10-reconsolidation.test.ts`<br>`app/api/admin/operations/__tests__/o9-routes.test.ts`<br>`services/business-operations/__tests__/o1-socle.test.ts`<br>`services/business-operations/diagnostics/__tests__/o9-diagnostics.test.ts`<br>préprod RP-05 |
 | F-183 | Concurrence/migration — C23-C25 — DB/T3/migrations | Type referential usage count | Affiché. | AUTOMATISÉ + RECETTE PRÉPROD | `app/admin/operations/__tests__/o9-bo-diagnostic-ui.test.ts`<br>`services/business-operations/__tests__/o1-socle.test.ts`<br>`e2e/l39-o1-socle-operations.e2e.ts`<br>`e2e/l47a-o9-bo-diagnostic.e2e.ts`<br>préprod RP-05 |
 | F-184 | Concurrence/migration — C23-C25 — DB/T3/migrations | T3 hourly no change | 0 histoire métier. | AUTOMATISÉ | `e2e/l41-o3a-consolidation-t3.e2e.ts`<br>`e2e/l48-o10-recette-jeux.e2e.ts` |
 | F-185 | Concurrence/migration — C23-C25 — DB/T3/migrations | Merged operation queried by old ID | Redirection canonique. | AUTOMATISÉ | `e2e/l39-o1-socle-operations.e2e.ts`<br>`e2e/l47a-o9-bo-diagnostic.e2e.ts` |
 | F-186 | Concurrence/migration — C23-C25 — DB/T3/migrations | Account deletion | Données Operation supprimées selon RGPD. | AUTOMATISÉ | `e2e/l39-o1-socle-operations.e2e.ts` |
-| F-187 | Concurrence/migration — C23-C25 — DB/T3/migrations | Asset deletion multi-asset | Autres liens survivent si politique le permet ; aucune FK invalide. | AUTOMATISÉ | `e2e/l39-o1-socle-operations.e2e.ts`<br>`e2e/l44-o5-sinistre.e2e.ts` |
+| F-187 | Concurrence/migration — C23-C25 — DB/T3/migrations | Asset deletion multi-asset | Autres liens survivent si politique le permet ; aucune FK invalide. | AUTOMATISÉ | `e2e/l39-o1-socle-operations.e2e.ts` |
 | F-188 | Concurrence/migration — C23-C25 — DB/T3/migrations | Downgrade plan | Pas suppression données. | AUTOMATISÉ | `e2e/l48-o10-recette-jeux.e2e.ts` |
 | F-189 | Concurrence/migration — C23-C25 — DB/T3/migrations | Duo | Operations partagées. | AUTOMATISÉ | `e2e/l48-o10-recette-jeux.e2e.ts` |
 | F-190 | Concurrence/migration — C23-C25 — DB/T3/migrations | Standard | Pas nouvelle dépendance équipement. | AUTOMATISÉ | `services/business-operations/consolidation/__tests__/o10-recette.test.ts`<br>`e2e/l48-o10-recette-jeux.e2e.ts` |
@@ -357,7 +359,7 @@
 | INV-FINAL-019 | Une source supprimée est retirée de l’état courant mais reste historisée. | AUTOMATISÉ | `e2e/l41-o3a-consolidation-t3.e2e.ts`<br>`e2e/l48-o10-recette-jeux.e2e.ts` |
 | INV-FINAL-020 | Une Operation invalidée cesse immédiatement d’alimenter les consommateurs actifs. | AUTOMATISÉ | `e2e/l48-o10-recette-jeux.e2e.ts` |
 | INV-FINAL-021 | Les décisions utilisateur de matching sont mémorisées. | AUTOMATISÉ | `e2e/l48-o10-recette-jeux.e2e.ts` |
-| INV-FINAL-022 | Le Sinistre reste REALIZED même quand le dossier assurance est refusé ou clos. | AUTOMATISÉ | `services/business-operations/claims/__tests__/o5-sinistre.test.ts`<br>`e2e/l44-o5-sinistre.e2e.ts`<br>`e2e/l48-o10-recette-jeux.e2e.ts` |
+| INV-FINAL-022 | Le Sinistre reste REALIZED même quand le dossier assurance est refusé ou clos. | AUTOMATISÉ | `services/business-operations/claims/__tests__/o5-sinistre.test.ts`<br>`e2e/l48-o10-recette-jeux.e2e.ts` |
 | INV-FINAL-023 | Le claim status est distinct du status Operation. | AUTOMATISÉ | `e2e/l48-o10-recette-jeux.e2e.ts` |
 | INV-FINAL-024 | Les anciens documents ne sont pas backfillés massivement. | AUTOMATISÉ | `e2e/l48-o10-recette-jeux.e2e.ts` |
 | INV-FINAL-025 | Les données structurées sémantiques existantes sont migrées pour éviter les doubles sources de vérité. | AUTOMATISÉ | `e2e/l48-o10-recette-jeux.e2e.ts` |
@@ -383,14 +385,14 @@
 | INV-014 | Une facture finale incluant un acompte ne s’additionne pas à l’acompte. | AUTOMATISÉ | `services/ai/source-analysis/projection/__tests__/o0-acquisition-contextualisee.test.ts`<br>`services/business-operations/consolidation/__tests__/o3a-finances-etat.test.ts` |
 | INV-015 | Une réduction/remboursement/indemnité ne doit pas être comptée deux fois. | AUTOMATISÉ | via F-095, F-096, F-097, F-120 |
 | INV-016 | Une composante non attribuable d’une Opération multi-biens ne nourrit aucun TCO individuel. | AUTOMATISÉ | `e2e/l48-o10-recette-jeux.e2e.ts` |
-| INV-017 | Une sous-opération ne hérite pas automatiquement de tous les biens du parent. | AUTOMATISÉ | `e2e/l39-o1-socle-operations.e2e.ts`<br>`e2e/l48-o10-recette-jeux.e2e.ts` |
-| INV-018 | Un parent peut n’avoir aucun montant propre. | AUTOMATISÉ | `e2e/l39-o1-socle-operations.e2e.ts` |
+| INV-017 | Une sous-opération ne hérite pas automatiquement de tous les biens du parent. | HORS PÉRIMÈTRE | décision : V-Q2 — ancien modèle retiré (lot 83D) : hiérarchie parent / enfant retirée (V-Q2). |
+| INV-018 | Un parent peut n’avoir aucun montant propre. | HORS PÉRIMÈTRE | décision : V-Q2 — ancien modèle retiré (lot 83D) : hiérarchie parent / enfant retirée (V-Q2). |
 | INV-019 | Le parent REALIZED n’impose pas REALIZED aux enfants sans preuve propre. | AUTOMATISÉ | `e2e/l48-o10-recette-jeux.e2e.ts` |
-| INV-020 | Une Opération annulée peut avoir des enfants réalisés si ceux-ci ont réellement eu lieu. | AUTOMATISÉ | `e2e/l39-o1-socle-operations.e2e.ts` |
+| INV-020 | Une Opération annulée peut avoir des enfants réalisés si ceux-ci ont réellement eu lieu. | HORS PÉRIMÈTRE | décision : V-Q2 — ancien modèle retiré (lot 83D) : hiérarchie parent / enfant retirée (V-Q2). |
 | INV-021 | Un Sinistre est REALIZED lorsqu’il survient, pas lorsqu’il est clôturé par l’assureur. | AUTOMATISÉ | `e2e/l48-o10-recette-jeux.e2e.ts` |
-| INV-022 | Le contrat d’assurance n’est pas parent du Sinistre par défaut. | AUTOMATISÉ | `e2e/l39-o1-socle-operations.e2e.ts` |
+| INV-022 | Le contrat d’assurance n’est pas parent du Sinistre par défaut. | HORS PÉRIMÈTRE | décision : V-Q2 — ancien modèle retiré (lot 83D) : hiérarchie parent / enfant retirée (V-Q2). |
 | INV-023 | La réparation d’un Sinistre peut être une sous-opération. | AUTOMATISÉ | `e2e/l48-o10-recette-jeux.e2e.ts` |
-| INV-024 | Le financement peut être sous-opération de l’Acquisition. | AUTOMATISÉ | `e2e/l39-o1-socle-operations.e2e.ts` |
+| INV-024 | Le financement peut être sous-opération de l’Acquisition. | HORS PÉRIMÈTRE | décision : V-Q2 — ancien modèle retiré (lot 83D) : hiérarchie parent / enfant retirée (V-Q2). |
 | INV-025 | Le principal d’un financement ne double jamais le prix d’acquisition dans le TCO. | AUTOMATISÉ | `e2e/l48-o10-recette-jeux.e2e.ts` |
 | INV-026 | T2 lit l’information là où elle appartient naturellement. | AUTOMATISÉ | via F-126, F-131 |
 | INV-027 | T2 ne recalcule pas une réalité déjà consolidée par T3. | AUTOMATISÉ | via F-127, F-135 |
@@ -412,8 +414,8 @@
 | INV-043 | Une Opération absorbée résout vers son Opération canonique. | AUTOMATISÉ | `e2e/l39-o1-socle-operations.e2e.ts` |
 | INV-044 | Les corrections utilisateur ont une autorité supérieure aux inférences automatiques sur le fait corrigé. | AUTOMATISÉ | via F-044, F-047 |
 | INV-045 | Les rejets utilisateur de matching sont durables. | AUTOMATISÉ | `e2e/l48-o10-recette-jeux.e2e.ts` |
-| INV-046 | La profondeur hiérarchique maximale est de 3 niveaux. | AUTOMATISÉ | `e2e/l39-o1-socle-operations.e2e.ts` |
-| INV-047 | Une Opération n’a qu’un parent en V1. | AUTOMATISÉ | `services/business-operations/__tests__/o10-invariants.test.ts`<br>`e2e/l39-o1-socle-operations.e2e.ts` |
+| INV-046 | La profondeur hiérarchique maximale est de 3 niveaux. | HORS PÉRIMÈTRE | décision : V-Q2 — ancien modèle retiré (lot 83D) : hiérarchie parent / enfant retirée (V-Q2). |
+| INV-047 | Une Opération n’a qu’un parent en V1. | AUTOMATISÉ | `services/business-operations/__tests__/o10-invariants.test.ts` |
 | INV-048 | Il n’existe pas de graphe transverse générique en V1. | AUTOMATISÉ | `services/business-operations/__tests__/o10-invariants.test.ts` |
 | INV-049 | La devise originale est toujours conservée. | AUTOMATISÉ | `e2e/l48-o10-recette-jeux.e2e.ts` |
 | INV-050 | Une conversion EUR n’est jamais inventée. | AUTOMATISÉ | `services/business-operations/__tests__/o10-invariants.test.ts`<br>`e2e/l48-o10-recette-jeux.e2e.ts` |

@@ -105,22 +105,23 @@ describe('C26-01 les 13 indicateurs C26.2, exactement', () => {
       'Sources en ambiguïté / À traiter',
       'Composantes sans source active',
       'Opérations actives sans source active',
-      'Liens cross-account / cycles parent',
+      'Liens cross-account',
       'T2 réponses économiques Operation-only / mixtes / fallback-only',
     ]);
-    expect(INDICATORS.filter((i) => i.hard).map((i) => i.key)).toEqual(['componentsWithoutActiveSource', 'activeWithoutActiveSource', 'crossAccountOrParentCycles']);
+    expect(INDICATORS.filter((i) => i.hard).map((i) => i.key)).toEqual(['componentsWithoutActiveSource', 'activeWithoutActiveSource', 'crossAccountLinks']);
   });
 
   it('anomalies dures : les 4 de C26.2 / ACC-022 portées par un indicateur, + contrôles complémentaires', () => {
     expect(HARD_ANOMALY_CODES).toEqual([
-      'ACTIVE_OPERATION_WITHOUT_SOURCE', 'ACTIVE_COMPONENT_WITHOUT_SOURCE', 'CROSS_ACCOUNT_LINK', 'PARENT_CYCLE',
-      'PARENT_DEPTH_EXCEEDED', 'NEGATIVE_COMPONENT', 'OTHER_AS_FALLBACK',
+      // Lot 83D (CDC v5 E16, AC39) : PARENT_CYCLE et PARENT_DEPTH_EXCEEDED retirés avec la hiérarchie.
+      'ACTIVE_OPERATION_WITHOUT_SOURCE', 'ACTIVE_COMPONENT_WITHOUT_SOURCE', 'CROSS_ACCOUNT_LINK',
+      'NEGATIVE_COMPONENT', 'OTHER_AS_FALLBACK',
       // Lot 54D (§4.5, E01) : contrôles financiers et reprises T3 épuisées.
       'FIN_INDEMNITY_DUPLICATED', 'FIN_PRINCIPAL_AS_COST', 'T3_TECHNICAL_ERROR_EXHAUSTED',
       // Lot 78A (§5, §6) : doutes d'identité signalés, attributs contradictoires.
       'IDENTITY_SUSPECT_ATTACHMENT', 'IDENTITY_ATTRIBUTE_CONFLICT',
     ]);
-    expect(Object.values(HARD_ANOMALY_INDICATOR).filter(Boolean).length).toBe(4);
+    expect(Object.values(HARD_ANOMALY_INDICATOR).filter(Boolean).length).toBe(3);
     expect(CORRECTION_PROCEDURE).toMatch(/ne modifie jamais/);
     expect(CORRECTION_PROCEDURE).toMatch(/File IA/);
   });
@@ -199,16 +200,16 @@ const anomaly = (code: HardAnomalyResult['code'], count: number, accountIds: num
 
 describe('O9-06 / C26.2 alerte d’exploitation sur anomalie dure (modèle des alertes existantes)', () => {
   it('empreinte = forme `buildFingerprint` du domaine « other »', () => {
-    expect(operationsAnomalyFingerprint('PARENT_CYCLE')).toBe(buildFingerprint('other', 'business-operations', 'PARENT_CYCLE'));
-    expect(operationsAnomalyFingerprint('PARENT_CYCLE').startsWith(OPERATIONS_ANOMALY_PREFIX)).toBe(true);
+    expect(operationsAnomalyFingerprint('NEGATIVE_COMPONENT')).toBe(buildFingerprint('other', 'business-operations', 'NEGATIVE_COMPONENT'));
+    expect(operationsAnomalyFingerprint('NEGATIVE_COMPONENT').startsWith(OPERATIONS_ANOMALY_PREFIX)).toBe(true);
   });
 
   it('plan : signaler les codes non nuls, résoudre les seules empreintes Opérations revenues à 0', () => {
     const plan = planQualityAlerts(
-      [anomaly('PARENT_CYCLE', 2, [5]), anomaly('CROSS_ACCOUNT_LINK', 0)],
-      [operationsAnomalyFingerprint('CROSS_ACCOUNT_LINK'), operationsAnomalyFingerprint('PARENT_CYCLE'), 'other:autre-chose'],
+      [anomaly('NEGATIVE_COMPONENT', 2, [5]), anomaly('CROSS_ACCOUNT_LINK', 0)],
+      [operationsAnomalyFingerprint('CROSS_ACCOUNT_LINK'), operationsAnomalyFingerprint('NEGATIVE_COMPONENT'), 'other:autre-chose'],
     );
-    expect(plan.toReport.map((a) => a.code)).toEqual(['PARENT_CYCLE']);
+    expect(plan.toReport.map((a) => a.code)).toEqual(['NEGATIVE_COMPONENT']);
     expect(plan.toResolve).toEqual([operationsAnomalyFingerprint('CROSS_ACCOUNT_LINK')]);
   });
 

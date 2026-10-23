@@ -2293,6 +2293,7 @@ export const assetAdditionalInfos = pgTable('asset_additional_infos', {
   commercial: jsonb('commercial_json').$type<Record<string, unknown>>().notNull().default(sql`'{}'::jsonb`),
   rental: jsonb('rental_json').$type<Record<string, unknown>>().notNull().default(sql`'{}'::jsonb`),
   insurance: jsonb('insurance_json').$type<Record<string, unknown>>().notNull().default(sql`'{}'::jsonb`),
+  /** Lot 83D (V-Q2) : INERTE — ancien formulaire Sinistre, plus lu ni écrit ; vidé par le rattrapage de nettoyage, colonne supprimée au lot O-10. */
   claim: jsonb('claim_json').$type<Record<string, unknown>>().notNull().default(sql`'{}'::jsonb`),
   // Migration 0214 : valeur retenue, frais d'acquisition, charges et taxes (dossier complet).
   finance: jsonb('finance_json').$type<Record<string, unknown>>().notNull().default(sql`'{}'::jsonb`),
@@ -3785,6 +3786,7 @@ export const businessOperations = pgTable('business_operations', {
   typeCode: text('type_code').references(() => businessOperationTypes.code),
   status: text('status').notNull(),
   technicalLabel: text('technical_label'),
+  /** Lot 83D (CDC v5 §18.4, AC39) : INERTE — plus de hiérarchie parent / enfant ; vidée par le rattrapage de nettoyage, colonne supprimée au lot O-10. */
   parentOperationId: bigint('parent_operation_id', { mode: 'number' }),
   provider: text('provider'),
   plannedDate: pgDate('planned_date', { mode: 'string' }),
@@ -4247,6 +4249,11 @@ export const businessOperationClaimDamagePhotos = pgTable('business_operation_cl
   photoIdx: index('business_operation_claim_damage_photos_photo_idx').on(t.photoId),
 }));
 
+/**
+ * Lot 83D (V-Q2) : INERTES — actions et échanges de l'ancien bloc Sinistres, plus lus ni écrits ;
+ * vidés par le rattrapage BO « Sinistres : nettoyage de l'ancien modèle » (journal 0672) ;
+ * DROP TABLE prévu au lot O-10. Déclarés ici seulement pour protéger les tables d'un `db:push`.
+ */
 export const businessOperationClaimActions = pgTable('business_operation_claim_actions', {
   id: bigserial('id', { mode: 'number' }).primaryKey(),
   operationId: bigint('operation_id', { mode: 'number' }).notNull().references(() => businessOperations.id, { onDelete: 'cascade' }),
@@ -4311,11 +4318,14 @@ export const businessOperationAssetDataMarks = pgTable('business_operation_asset
 }));
 
 /**
+ * Lot 83D (V-Q2) : INERTE (migration de l'ancien formulaire retirée) ; vidée par
+ * le rattrapage de nettoyage, DROP TABLE prévu au lot O-10.
+ *
  * Lot 44 (O5, migration 0323) — repère par bien de la migration C14.3 de
  * l'ancien formulaire Sinistre (`asset_additional_infos.claim_json`) vers
  * l'Opération CLAIM : version, empreinte (md5 du JSON examiné), Opération
  * obtenue, issue. Technique, invisible pour l'utilisateur (P09) ; écrit et lu
- * en SQL par `business-operations/consolidation/claim-migration.ts`.
+ * en SQL par `consolidation/claim-migration.ts` (supprimé au lot 83D).
  */
 export const businessOperationClaimMigrationMarks = pgTable('business_operation_claim_migration_marks', {
   assetId: integer('asset_id').primaryKey().references(() => assets.id, { onDelete: 'cascade' }),

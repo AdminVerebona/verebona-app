@@ -176,7 +176,9 @@ export function canonicalCharacteristics(row: AssetRowJson, state: CanonicalAsse
 export type DocumentPath =
   | 'link:PRIMARY' | 'link:SECONDARY' | 'link:MENTIONED'
   | 'column:asset_id' | 'column:linked_asset_id' | 'column:linked_room_id' | 'column:equipment_id'
-  | 'column:substructure_id';
+  | 'column:substructure_id'
+  /** Lot 83D (V-Q8) : document de l'Opération CLAIM du dossier Assurance-sinistre (`business_operation_documents`). */
+  | 'operation';
 
 /** Lien ACTIF d'un document vers le bien (ou l'une de ses pièces / équipements). */
 export interface AttachmentLink {
@@ -259,7 +261,7 @@ const DOC_COLUMNS = `
 export async function loadCanonicalDocuments(
   accountId: number,
   assetId: number,
-  opts: { includeMentioned?: boolean } = {},
+  opts: { includeMentioned?: boolean; operationFileIds?: readonly number[] } = {},
 ): Promise<{ documents: DocumentRef[]; paths: Record<number, DocumentPath[]>; unconfirmed: number[] }> {
   const roles: LinkRole[] = opts.includeMentioned ? ['PRIMARY', 'SECONDARY', 'MENTIONED'] : ['PRIMARY', 'SECONDARY'];
   const liens = await listAssetDocuments(accountId, assetId, { roles });
@@ -279,12 +281,13 @@ export async function loadCanonicalDocuments(
        FROM asset_files f
       WHERE f.account_id = $1 AND f.deleted_at IS NULL AND f.is_draft = false AND f.is_ignored = false
         AND (f.upload_status = 'COMPLETED' OR f.upload_status IS NULL)
-        AND (f.id = ANY($3::int[])
+        AND (f.id = ANY($3::int[]) OR f.id = ANY($7::int[])
              OR f.asset_id = $2 OR f.linked_asset_id = $2
              OR f.linked_room_id = ANY($4::int[]) OR f.equipment_id = ANY($5::int[]) OR f.substructure_id = ANY($6::int[]))
       ORDER BY f.id`,
-    [accountId, assetId, [...links.keys()], [...roomIds], [...equipmentIds], [...substructureIds]] as never[],
+    [accountId, assetId, [...links.keys()], [...roomIds], [...equipmentIds], [...substructureIds], [...new Set(opts.operationFileIds ?? [])]] as never[],
   )) as unknown as CanonicalDocumentRow[];
+  const operationFiles = new Set(opts.operationFileIds ?? []);
   // Origine et cible de chaque lien actif (règle de confirmation).
   const detail = (await pgClient.unsafe(
     `SELECT file_id AS "fileId", link_role AS role, origin, room_id AS "roomId", equipment_id AS "equipmentId",
@@ -303,9 +306,12 @@ export async function loadCanonicalDocuments(
   for (const r of rows) {
     const d = { ...r, id: Number(r.id) };
     const p = documentPaths(d, { assetId, links, roomIds, equipmentIds, substructureIds });
+    // Document de l'Opération du dossier (lot 83D) : son appartenance À L'OPÉRATION le rattache (confirmé).
+    const deLOperation = operationFiles.has(d.id);
+    if (deLOperation) p.push('operation');
     if (!p.length) continue;
     paths[d.id] = p;
-    if (!isConfirmedAttachment(d, liensParDoc.get(d.id) ?? [], { assetId, substructureIds, equipmentIds: tousEquipements })) unconfirmed.push(d.id);
+    if (!deLOperation && !isConfirmedAttachment(d, liensParDoc.get(d.id) ?? [], { assetId, substructureIds, equipmentIds: tousEquipements })) unconfirmed.push(d.id);
     const { assetId: _a, linkedAssetId: _l, linkedRoomId: _r, hasLinkRows: _h, ...ref } = d;
     documents.push(ref as DocumentRef);
   }

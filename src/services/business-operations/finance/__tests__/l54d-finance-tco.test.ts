@@ -22,7 +22,7 @@ const comp = (kind: FinancialComponentKind, eur: number, o: Partial<LedgerCompon
   periodStart: null, periodEnd: null, targetAssetId: null, ...o,
 });
 const op = (id: number, typeCode: BusinessOperationTypeCode, components: LedgerComponent[], o: Partial<TcoOperation> = {}): TcoOperation => ({
-  id, typeCode, status: 'REALIZED', parentOperationId: null, realizedDate: '2024-01-10', startDate: null, plannedDate: null,
+  id, typeCode, status: 'REALIZED', realizedDate: '2024-01-10', startDate: null, plannedDate: null,
   assetIds: [BIEN], label: typeCode, components: components.map((c) => ({ ...c, operationId: id })), documents: [{ fileId: id * 10, title: `doc ${id}`, role: 'INVOICE' }], ...o,
 });
 const entree = (operations: TcoOperation[], o: Partial<TcoInput> = {}): TcoInput => ({
@@ -42,15 +42,15 @@ const scenarioB = (): TcoOperation[] => [
 
 describe('FIN — scénarios chiffrés exacts', () => {
   it('FIN-A — sinistre : réparation 2 000 €, indemnité 1 500 € — brut 2 000, net 500 ; Sinistre / T2 / TCO concordent', () => {
-    const sinistre = op(20, 'CLAIM', [comp('INDEMNITY', 150_000)]);
-    const reparation = op(21, 'INTERVENTION', [comp('REALIZED_COST', 200_000)], { parentOperationId: 20 });
+    // Lot 83D (CDC v5 §18.4, AC39) : la réparation reste DANS l'Opération CLAIM (plus d'intervention enfant).
+    const sinistre = op(20, 'CLAIM', [comp('REALIZED_COST', 200_000), comp('INDEMNITY', 150_000)]);
     const s = claimCosts([{ kind: 'REALIZED_COST', amountCents: 200_000 }, { kind: 'INDEMNITY', amountCents: 150_000 }]);
     expect([s.grossCents, s.netCents, s.complete]).toEqual([200_000, 50_000, true]);
-    const tco = computeTco(entree([sinistre, reparation]));
+    const tco = computeTco(entree([sinistre]));
     expect(tco.breakdown.find((b) => b.category === 'CLAIMS')?.costsCents).toBe(200_000);
     expect(tco.summary.cumulativeCostCents).toBe(50_000);
     // T2 : brut 2 000 € (dépenses) et reste à charge 500 € (net d'indemnité), mêmes composantes.
-    const t2 = summarizeOperationCosts(operationCostLines([sinistre, reparation].map(asT2), { assetIds: [BIEN] }), null).part;
+    const t2 = summarizeOperationCosts(operationCostLines([sinistre].map(asT2), { assetIds: [BIEN] }), null).part;
     expect(t2.sumCents).toBe(200_000);
     expect(t2.sumCents - t2.indemnity.sumCents).toBe(s.netCents);
     expect(t2.sumCents - t2.indemnity.sumCents).toBe(tco.summary.cumulativeCostCents);
@@ -139,7 +139,7 @@ describe('FIN — scénarios chiffrés exacts', () => {
 /** Opération TCO → forme T2 (même composantes consolidées). */
 function asT2(o: TcoOperation): AssistantOperationRead {
   return {
-    id: o.id, accountId: 1, typeCode: o.typeCode, status: o.status as never, parentOperationId: o.parentOperationId, provider: null,
+    id: o.id, accountId: 1, typeCode: o.typeCode, status: o.status as never, provider: null,
     plannedDate: o.plannedDate, startDate: o.startDate, realizedDate: o.realizedDate, endDate: null, technicalLabel: null, closedAt: null,
     invalidatedAt: null, mergedIntoOperationId: null, version: 1, active: true,
     contractReference: null, effectiveFrom: null, effectiveTo: null, claimStatus: null, claimType: null, insurerClaimRef: null, declaredOn: null,
@@ -190,9 +190,13 @@ describe('TCO — périodes, attribution, valorisation, forfaits', () => {
     expect(t.summary.cumulativeCostCents).toBe(25_000);
   });
 
-  it('TCO-05 — sous-opérations : intervention enfant d’un sinistre comptée une fois (poste Sinistres), jamais avec le parent', () => {
-    const t = computeTco(entree([op(90, 'CLAIM', []), op(91, 'INTERVENTION', [comp('REALIZED_COST', 70_000)], { parentOperationId: 90 })]));
-    expect(t.breakdown).toEqual([{ category: 'CLAIMS', label: 'Sinistres', costsCents: 70_000, count: 1 }]);
+  it('TCO-05 — lot 83D (AC39) : la réparation d’un sinistre reste dans l’Opération CLAIM (poste Sinistres, comptée une fois) ; une intervention distincte reste un entretien', () => {
+    const t = computeTco(entree([op(90, 'CLAIM', [comp('REALIZED_COST', 70_000)]), op(91, 'INTERVENTION', [comp('REALIZED_COST', 30_000)])]));
+    expect(t.breakdown).toEqual(expect.arrayContaining([
+      { category: 'CLAIMS', label: 'Sinistres', costsCents: 70_000, count: 1 },
+      expect.objectContaining({ category: 'MAINTENANCE', costsCents: 30_000 }),
+    ]));
+    expect(t.summary.cumulativeCostCents).toBe(100_000);
   });
 
   it('TCO-06 — exclusions : devis, Opération annulée, coût après cession ; aucune dépréciation inventée', () => {

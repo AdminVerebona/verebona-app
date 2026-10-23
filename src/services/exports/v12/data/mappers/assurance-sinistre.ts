@@ -2,36 +2,34 @@
  * Mappeur « Assurance — sinistre / indemnisation » (CDC §13 ;
  * `maquettes/assurance-sinistre/README.md`).
  *
- * RULE-001/002 : le sinistre est idéalement un événement de l'agenda, lié
- * dans la fiche (`claim.claimEventKey`) ; à défaut, la sous-rubrique
- * « Sinistre » des informations complémentaires sert de saisie temporaire
- * (non bloquante).
- * Lot 44 (O5, F-157) : `additionalInfo.claim` est la vue du SINISTRE retenu
- * (Opération CLAIM, `source.claim`), sinon l'ancienne saisie du bien
- * (compatibilité Q11). Montant estimé et indemnité imprimés s'ils existent.
- * RULE-003 : chronologie centrale, triée ; le sinistre (pastille rouge), la
- * déclaration et les événements retenus y figurent.
- * RULE-004 : échanges retenus seulement s'ils sont liés au sinistre (saisis
- * dans la sous-rubrique sinistre, pièces « correspondance sinistre » retenues).
+ * Lot 83D (CDC v5 §16, AC37, AC38 ; arbitrages V-Q1, V-Q2, V-Q8) : le dossier
+ * est construit à partir de l'Opération CLAIM CONSOLIDÉE (`source.claimFile`),
+ * plus jamais d'une sous-rubrique de saisie :
+ *   · synthèse : données d'assurance sourcées (type, dates, références,
+ *     police, avancement, circonstances, conséquences, mesures, estimation,
+ *     indemnité) et Pièces / équipements concernés ;
+ *   · chronologie (RULE-003) : élément principal et étapes de l'Opération
+ *     (éléments d'Agenda), déclaration, puis les autres événements retenus ;
+ *   · dommages (PDF-04) : dommages détaillés conservés, avec leurs photos
+ *     (« P2 ») et justificatifs (« A3 ») RELIÉS — jamais dupliqués ;
+ *   · documents : TOUS les documents de l'Opération (pré-cochés) ;
+ *   · échanges (RULE-004) : les courriers de l'assureur ou de l'expert sont
+ *     des DOCUMENTS (§18.2) ; résumé texte des échanges en repli.
+ * Plus de section « Actions » (§18.1 : une étape est un élément d'Agenda).
  *
- * Listes structurées (schéma v2) — dommages, actions, échanges — prioritaires ;
- * texte libre en repli (mesures ligne à ligne, résumé des échanges). Les
- * photos et pièces liées ne sont citées (« P2 », « A3 ») que si elles sont
- * RETENUES dans le dossier : une pièce sensible non cochée n'apparaît jamais,
- * pas même par sa référence.
- * Montants : ceux des devis et factures importés, ou l'estimation SAISIE d'un
- * dommage (libellée comme telle) ; jamais calculés.
+ * Les photos et pièces liées ne sont citées que si elles sont RETENUES dans
+ * le dossier : une pièce sensible non cochée n'apparaît jamais, pas même par
+ * sa référence. Montants : ceux des documents, ou l'estimation d'un dommage
+ * (libellée comme telle) ; jamais calculés.
  */
 
 import { dot, fmt } from '../../html/components';
 import type { SinistreData } from '../../types';
-import {
-  CLAIM_STATUS_OPTIONS, CLAIM_TYPE_OPTIONS, EXCHANGE_CHANNEL_OPTIONS, EXCHANGE_PARTY_OPTIONS,
-} from '@/lib/assets/additional-infos';
+import { CLAIM_STATUS_OPTIONS, CLAIM_TYPE_OPTIONS } from '@/lib/assets/additional-infos';
 import { claimDate, eventKind } from '../choices';
-import type { ExportSource, SourceDocument, SourceEvent } from '../source';
+import type { ExportSource, SourceDocument } from '../source';
 import {
-  type MapInput, exportInfo, kc, str, info, infoList, cellIds, optionLabel, textLines, categoryLabel, cityLine, toDocItem,
+  type MapInput, exportInfo, kc, str, optionLabel, textLines, categoryLabel, cityLine, toDocItem,
   sortedDocuments, toPhotoItem, plannedPhotos, selectedEvents, sectionOn, docRef,
 } from './common';
 
@@ -46,53 +44,26 @@ export function claimDocKind(d: SourceDocument): string {
   return 'report';
 }
 
-/** Événement sinistre de l'agenda (ou de l'historique) lié dans la fiche (RULE-001). */
-export function linkedClaimEvent(s: ExportSource): SourceEvent | null {
-  const key = info(s.additionalInfo.claim, 'claimEventKey');
-  return key ? s.events.find((e) => e.key === key && e.status !== 'annule') ?? null : null;
-}
-
 /** « 08/08 → 22/08/2026 » (même année) ou dates complètes. */
 export function dateRangeLabel(from: string, to: string): string {
   if (from === to) return fmt.date(from);
   return from.slice(0, 4) === to.slice(0, 4) ? `${fmt.date(from).slice(0, 5)} → ${fmt.date(to)}` : `${fmt.date(from)} → ${fmt.date(to)}`;
 }
 
-/** Colonne « quand » d'une action structurée. */
-function actionWhen(a: { date: string | null; endDate: string | null; status: string | null }): { date: string | null; whenLabel: string | null } {
-  if (a.status === 'A_REALISER') return { date: null, whenLabel: a.date ? `Prévu le ${fmt.date(a.date)}` : 'Non réalisé' };
-  if (a.date && a.endDate) return { date: null, whenLabel: dateRangeLabel(a.date, a.endDate) };
-  if (a.status === 'EN_COURS') return { date: null, whenLabel: a.date ? `Depuis le ${fmt.date(a.date)}` : 'En cours' };
-  return { date: a.date, whenLabel: null };
-}
-
-const CHANNEL_DIRECTION: Record<string, { RECU: string; ENVOYE: string }> = {
-  EMAIL: { RECU: 'E-mail reçu', ENVOYE: 'E-mail envoyé' },
-  COURRIER: { RECU: 'Courrier reçu', ENVOYE: 'Courrier envoyé' },
-  TELEPHONE: { RECU: 'Appel reçu', ENVOYE: 'Appel passé' },
-};
-
-/** Canal d'un échange : « Expert · Courrier reçu ». */
-export function exchangeChannelLabel(x: Record<string, unknown>): string | null {
-  const channel = str(x.channel);
-  const direction = str(x.direction);
-  const dir = channel && (direction === 'RECU' || direction === 'ENVOYE') ? CHANNEL_DIRECTION[channel]?.[direction] : undefined;
-  const channelLabel = dir ?? (channel && channel !== 'AUTRE' ? optionLabel(EXCHANGE_CHANNEL_OPTIONS, channel) : null)
-    ?? (direction === 'RECU' ? 'Reçu' : direction === 'ENVOYE' ? 'Envoyé' : null);
-  const party = str(x.party);
-  return dot(party ? optionLabel(EXCHANGE_PARTY_OPTIONS, party) : '', channelLabel) || null;
-}
+/** Libellé « Salle de bain, Cuisine » ; null si vide. */
+const liste = (v: readonly string[] | undefined): string | null => (v && v.length ? v.join(', ') : null);
 
 export function mapSinistre(m: MapInput): SinistreData {
-  const s = m.source;
-  const c = s.additionalInfo.claim;
-  const linked = linkedClaimEvent(s);
-  const d0 = claimDate(s) ?? linked?.date ?? null;
-  // Titre et description de l'événement lié : repris seulement s'il est RETENU
-  // dans le dossier (SEL-GEN-001) ; sinon, seuls les champs saisis sont imprimés.
-  const linkedRetained = !!linked && m.plan.events.has(linked.key) && sectionOn(m, 'timeline');
-  const typeLabel = optionLabel(CLAIM_TYPE_OPTIONS, info(c, 'claimType'));
-  const declaredOn = info(c, 'declaredOn');
+  const s: ExportSource = m.source;
+  const f = s.claimFile ?? null;
+  const d0 = claimDate(s);
+  const typeLabel = optionLabel(CLAIM_TYPE_OPTIONS, f?.claimType);
+  const declaredOn = str(f?.declaredOn);
+  // Ancre de la chronologie (RULE-001) : élément principal de l'Opération, sinon événement de l'historique désigné (lot 44).
+  const anchor = f?.principalKey ?? f?.historyEventKey ?? null;
+  const anchorEvent = anchor ? s.events.find((e) => e.key === anchor && e.status !== 'annule') ?? null : null;
+  // Titre / description de l'ancre repris seulement s'il est RETENU dans le dossier (SEL-GEN-001).
+  const anchorRetained = !!anchorEvent && m.plan.events.has(anchorEvent.key) && sectionOn(m, 'timeline');
 
   // Références citables : photos retenues au PDF (P1…), pièces retenues (annexe).
   const photosPlanned = plannedPhotos(m);
@@ -100,23 +71,29 @@ export function mapSinistre(m: MapInput): SinistreData {
   const plannedDocIds = new Set(m.plan.documents.map((pd) => pd.doc.id));
   const docLink = (id: number): string | null => (plannedDocIds.has(id) ? docRef(id) : null);
 
-  // ── Chronologie : sinistre (événement lié, sinon saisie) et déclaration + événements retenus.
+  // ── Chronologie : éléments de l'Opération (principal, étapes), déclaration, événements retenus.
   const timeline: NonNullable<SinistreData['timeline']> = [];
   if (sectionOn(m, 'timeline')) {
     const events = selectedEvents(m);
-    const linkedShown = !!linked && events.some((e) => e.key === linked.key);
-    if (d0 && !linkedShown) {
+    const vus = new Set(events.map((e) => e.key));
+    const deLOperation = new Set(f?.agendaKeys ?? []);
+    // Étapes de l'Opération non rattachées au bien (absentes des événements proposés) : toujours imprimées.
+    for (const a of f?.agenda ?? []) {
+      if (vus.has(a.key) || s.events.some((e) => e.key === a.key)) continue;
+      timeline.push({ id: a.key, date: a.date, tone: a.principal ? 'key' : null, title: a.title, text: null, selected: true });
+    }
+    const principalShown = !!anchor && (events.some((e) => e.key === anchor) || timeline.some((t) => t.id === anchor));
+    if (d0 && !principalShown) {
       timeline.push({
         id: 'claim', date: d0, tone: 'key',
-        title: typeLabel ? `Sinistre : ${typeLabel.toLowerCase()}` : (linkedRetained ? linked!.title : null) ?? 'Survenue du sinistre',
-        text: str(info(c, 'circumstances'))?.split(/\n/)[0] ?? null, selected: true,
+        title: typeLabel ? `Sinistre : ${typeLabel.toLowerCase()}` : (anchorRetained ? anchorEvent!.title : null) ?? 'Survenue du sinistre',
+        text: str(f?.circumstances)?.split(/\n/)[0] ?? null, selected: true,
       });
     }
-    if (declaredOn) timeline.push({ id: 'declared', date: declaredOn, title: "Déclaration à l'assureur", text: info(c, 'insurerClaimRef') ? `Référence ${info(c, 'insurerClaimRef')}` : null, selected: true });
+    if (declaredOn) timeline.push({ id: 'declared', date: declaredOn, title: "Déclaration à l'assureur", text: f?.insurerClaimRef ? `Référence ${f.insurerClaimRef}` : null, selected: true });
     for (const e of events) {
-      const k = eventKind(e);
-      const isClaim = linked ? e.key === linked.key : k === 'SINISTRE' && e.date === d0;
-      const tone = isClaim ? 'key' : d0 && e.date && e.date < d0 ? 'past' : e.date && e.date > m.today ? 'open' : null;
+      const isClaim = anchor ? e.key === anchor : eventKind(e) === 'SINISTRE' && e.date === d0;
+      const tone = isClaim ? 'key' : deLOperation.has(e.key) ? null : d0 && e.date && e.date < d0 ? 'past' : e.date && e.date > m.today ? 'open' : null;
       timeline.push({ id: e.key, date: e.date, tone, title: e.title, text: dot(str(e.provider)) || null, selected: true });
     }
     timeline.sort((a, b) => String(a.date ?? '').localeCompare(String(b.date ?? '')));
@@ -136,62 +113,28 @@ export function mapSinistre(m: MapInput): SinistreData {
     phase: d0 && pp.photo.date && pp.photo.date < d0 ? 'before' : 'claim',
   }));
 
-  // ── Dommages (PDF-04) : saisie structurée uniquement — jamais extrapolés d'un texte.
+  // ── Dommages (PDF-04) : dommages détaillés du sinistre — jamais extrapolés d'un texte.
   const damages: NonNullable<SinistreData['damages']> = sectionOn(m, 'damages')
-    ? infoList(c, 'damages').map((d, i) => {
-      const amount = typeof d.estimatedAmountCents === 'number' ? d.estimatedAmountCents : null;
-      return {
-        id: `dm-${str(d.id) ?? i + 1}`,
-        zone: str(d.zone),
-        element: str(d.element),
-        finding: [str(d.finding), amount != null ? `Montant estimé : ${fmt.money(amount)}` : ''].filter(Boolean).join(' · ') || null,
-        photoRefs: cellIds(d.photoIds).map((id) => photoRefOf.get(id)).filter(Boolean).join(', ') || null,
-        docIds: cellIds(d.documentIds).map(docLink).filter((x): x is string => !!x),
-        selected: true,
-      };
-    }).filter((d) => d.zone)
+    ? (f?.damages ?? []).map((d) => ({
+      id: `dm-${d.key}`,
+      zone: str(d.zone),
+      element: str(d.element),
+      finding: [str(d.finding), d.estimatedAmountCents != null ? `Montant estimé : ${fmt.money(d.estimatedAmountCents)}` : ''].filter(Boolean).join(' · ') || null,
+      photoRefs: d.photoIds.map((id) => photoRefOf.get(id)).filter(Boolean).join(', ') || null,
+      docIds: d.documentIds.map(docLink).filter((x): x is string => !!x),
+      selected: true,
+    })).filter((d) => d.zone)
     : [];
 
-  // ── Actions (PDF-06) : liste structurée, sinon mesures saisies ligne à ligne.
-  const structuredActions = infoList(c, 'actions');
-  let actions: NonNullable<SinistreData['actions']> = [];
-  if (sectionOn(m, 'actions')) {
-    if (structuredActions.length) {
-      actions = structuredActions.map((a, i) => {
-        const performedBy = str(a.performedBy);
-        return {
-          id: `ac-${str(a.id) ?? i + 1}`,
-          ...actionWhen({ date: str(a.date), endDate: str(a.endDate), status: str(a.status) }),
-          title: str(a.title) ?? '',
-          text: [str(a.detail), performedBy ? `Intervenant : ${performedBy}` : ''].filter(Boolean).join(' · ') || null,
-          docId: cellIds(a.invoiceDocumentId).map(docLink).find(Boolean) ?? null,
-          selected: true,
-        };
-      }).filter((a) => a.title);
-    } else if (textLines(c?.measures).length > 1) {
-      actions = textLines(c?.measures).map((t, i) => ({ id: `a${i}`, title: t, selected: true }));
-    }
-  }
-
-  // ── Échanges (RULE-004) : liste structurée + correspondances retenues non déjà citées ; repli texte libre.
+  // ── Échanges (RULE-004, §18.2) : courriers de l'assureur / de l'expert RETENUS ; repli texte libre.
   const exchanges: NonNullable<SinistreData['exchanges']> = [];
   if (sectionOn(m, 'exchanges')) {
-    const structured = infoList(c, 'exchanges');
-    const cited = new Set(structured.flatMap((x) => cellIds(x.documentId)));
-    for (const x of structured) {
-      const summary = str(x.summary);
-      if (!summary) continue;
-      exchanges.push({
-        id: `xe-${str(x.id) ?? exchanges.length + 1}`, date: str(x.date), title: summary, channel: exchangeChannelLabel(x),
-        docId: cellIds(x.documentId).map(docLink).find(Boolean) ?? null, linkedToClaim: true, selected: true,
-      });
-    }
-    for (const pd of docs.filter((x) => x.doc.kind === 'ECHANGE_ASSUREUR' && !cited.has(x.doc.id))) {
-      exchanges.push({ id: `x${pd.doc.id}`, date: pd.doc.date, title: pd.doc.title, channel: 'Courrier', docId: docRef(pd.doc.id), linkedToClaim: true, selected: true });
+    for (const pd of docs.filter((x) => x.doc.kind === 'ECHANGE_ASSUREUR')) {
+      exchanges.push({ id: `x${pd.doc.id}`, date: pd.doc.date, title: pd.doc.title, channel: dot(str(pd.doc.supplier), 'Courrier') || null, docId: docRef(pd.doc.id), linkedToClaim: true, selected: true });
     }
     exchanges.sort((a, b) => String(a.date ?? '').localeCompare(String(b.date ?? '')));
-    if (!structured.length) {
-      textLines(c?.exchangesSummary).forEach((t, i) => exchanges.push({ id: `xs${i}`, title: t, linkedToClaim: true, selected: true }));
+    if (!exchanges.length) {
+      textLines(f?.exchangesSummary).forEach((t, i) => exchanges.push({ id: `xs${i}`, title: t, linkedToClaim: true, selected: true }));
     }
   }
 
@@ -211,21 +154,23 @@ export function mapSinistre(m: MapInput): SinistreData {
       typeLabel,
       date: d0,
       declaredAt: declaredOn,
-      contractLabel: info(c, 'policyReference') ?? (dot(insurer, contractNo ? `n° ${contractNo}` : '') || null),
-      insurerRef: info(c, 'insurerClaimRef'),
-      statusLabel: optionLabel(CLAIM_STATUS_OPTIONS, info(c, 'status')),
-      circumstances: info(c, 'circumstances') ?? (linkedRetained ? str(linked!.description) : null),
-      consequences: info(c, 'consequences'),
-      // Mesures saisies ligne à ligne et sans liste structurée : les cartes « Actions » les portent déjà.
-      measures: !structuredActions.length && actions.length ? null : info(c, 'measures'),
-      statusDetail: info(c, 'statusDetail'),
-      // Lot 44 (Q4) : montants saisis, imprimés seulement s'ils sont présents.
-      estimatedDamage: typeof c?.estimatedDamageCents === 'number' ? fmt.money(c.estimatedDamageCents) : null,
-      compensation: typeof c?.compensationCents === 'number' ? fmt.money(c.compensationCents) : null,
+      contractLabel: str(f?.policyReference) ?? (dot(insurer, contractNo ? `n° ${contractNo}` : '') || null),
+      insurerRef: str(f?.insurerClaimRef),
+      statusLabel: optionLabel(CLAIM_STATUS_OPTIONS, f?.status),
+      // Circonstances : celles du sinistre, sinon la description de l'événement d'ancrage RETENU (SEL-GEN-001).
+      circumstances: str(f?.circumstances) ?? (anchorRetained ? str(anchorEvent!.description) : null),
+      consequences: str(f?.consequences),
+      measures: str(f?.measures),
+      statusDetail: str(f?.statusDetail),
+      // Montants connus, imprimés seulement s'ils sont présents (jamais calculés).
+      estimatedDamage: typeof f?.estimatedDamageCents === 'number' ? fmt.money(f.estimatedDamageCents) : null,
+      compensation: typeof f?.compensationCents === 'number' ? fmt.money(f.compensationCents) : null,
+      rooms: liste(f?.rooms),
+      equipments: liste(f?.equipments),
     },
+    scope: { rooms: [...(f?.rooms ?? [])], equipments: [...(f?.equipments ?? [])] },
     timeline,
     damages,
-    actions,
     exchanges,
     documents: docItems,
     photos,

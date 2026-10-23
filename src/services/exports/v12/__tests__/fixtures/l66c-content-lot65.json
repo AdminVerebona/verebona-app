@@ -1,5 +1,5 @@
 {
-  "$comment": "L66C : empreintes SHA-256 du CONTENU des dossiers au tag lot65 (avant la charte Sérénité) — `text` = texte visible (balises et <style> retirés, espaces normalisés), `body` = HTML sans le <style> @page de pageSetup. La migration graphique ne doit modifier ni l'un ni l'autre. Lot 75L : entrées cil/nominal/1, cil/nominal/2, cil/riche/1, cil/riche/2, dossier-complet/nominal/1, dossier-complet/nominal/2, dossier-complet/riche/1, dossier-complet/riche/2, location/riche/1, location/riche/2, vente/riche/1, vente/riche/2 recalculées — seul changement de contenu : chemins des pièces jointes au ZIP (nom affiché dans Verebona), prouvé par diff du HTML rendu.",
+  "$comment": "L66C : empreintes SHA-256 du CONTENU des dossiers au tag lot65 (avant la charte Sérénité) — `text` = texte visible (balises et <style> retirés, espaces normalisés), `body` = HTML sans le <style> @page de pageSetup. La migration graphique ne doit modifier ni l'un ni l'autre. Lot 75L : entrées cil/nominal/1, cil/nominal/2, cil/riche/1, cil/riche/2, dossier-complet/nominal/1, dossier-complet/nominal/2, dossier-complet/riche/1, dossier-complet/riche/2, location/riche/1, location/riche/2, vente/riche/1, vente/riche/2 recalculées — seul changement de contenu : chemins des pièces jointes au ZIP (nom affiché dans Verebona), prouvé par diff du HTML rendu. Lot 83D : entrées assurance-sinistre/nominal/1, nominal/2, riche/1, riche/2 recalculées — seul changement de contenu : retrait de la section « Actions déjà réalisées » (CDC v5 §18.1) et renumérotation de la section suivante, prouvé par diff du texte rendu.",
   "hashes": {
     "cil/minimal/1": {
       "text": "de62c7adc104049acfbd23ac53745c216cc830cda5cff307d15b8257c20d90d2",
@@ -130,20 +130,20 @@
       "body": "e73f08b1774ac65f5b78e9632f8e4e765589ddc4817d00d0ae3b70b3143f7423"
     },
     "assurance-sinistre/nominal/1": {
-      "text": "4aeb4f84cf73b309642d9a743d469adaa75c84790cd267232460e8e3d388e9e0",
-      "body": "05010e8184264c765641590a773b5dcce87a2a679df2aa9effbb4c312f41b740"
+      "text": "cb94c9b2109ec24b03d315109ad4432eb067d2176fdc98dc0ffba5b353966939",
+      "body": "e18654572ec87ef4e71768e36795f493cf4f34b702e073516f9d3dd1453c68db"
     },
     "assurance-sinistre/nominal/2": {
-      "text": "a2f414d11642da13c26ddaab4f3515961455bbdf1490e6e696083276b9b2ab02",
-      "body": "45f099b809e7ebbc75c42cd3c182520a2bb677b083e3d4e9b96d56674a568a2e"
+      "text": "eb05156adf5a52b18dbe042d51a5ac1d4370e93581a66bb7600e254ad88b5e81",
+      "body": "83ec5575de7d1f6ce0a14fbcf80bd9fe245b0b6cdb6282b0b434722a83c15180"
     },
     "assurance-sinistre/riche/1": {
-      "text": "80ee255a9d5abfc59e95b9ce5223d4464be05af223b86dcc0093bcf2523bc74d",
-      "body": "1c8c4c0e3580c056a1b0da86916edc665a0d6f1f6009ad9aa623ddfc81f434d3"
+      "text": "f56375590b9827342d096ba355c6bb89fdca09c024c96a7cd584b46497a5e04c",
+      "body": "f893e4b620f2d06552d513375de16f1ff39b2afe1bec62bda44907e74514ff58"
     },
     "assurance-sinistre/riche/2": {
-      "text": "c261f891e970e06b53d1464bf316a5dec931075c67ee0a3e674acc1d162439a5",
-      "body": "a303695af58b2c6e12d30026f7a5901d9892c64676eb6cff00ec7dda232b0e07"
+      "text": "8baf42599454b11bbb5ec471914e8ec4faaa6c87acc06de5c1f9350e3c9c6894",
+      "body": "f75da13e283bf702abe4cf2165e8637c8ebe80f2a8a775377cf8fb558c9637ca"
     }
   }
 }

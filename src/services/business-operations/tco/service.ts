@@ -136,7 +136,7 @@ export async function readAssetTco(accountId: number, assetId: number, opts: { t
   const operations: TcoOperation[] = lus.map((o) => {
     const parEquipement = equip.filter((e) => Number(e.operation_id) === o.id).map((e) => Number(e.asset_id));
     return {
-      id: o.id, typeCode: o.typeCode, status: o.status, parentOperationId: o.parentOperationId,
+      id: o.id, typeCode: o.typeCode, status: o.status,
       realizedDate: o.realizedDate, startDate: o.startDate, plannedDate: o.plannedDate,
       assetIds: [...new Set([...o.assetIds, ...parEquipement])],
       label: libelle(o),

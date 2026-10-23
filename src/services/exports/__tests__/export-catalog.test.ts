@@ -19,7 +19,7 @@ const base = (over: Partial<Input> = {}): Input => ({
   asset: { id: 5, category: 'IMMOBILIER', subtype: 'Maison' },
   premium: { allowed: true },
   counts: { documents: 3, photos: 4 },
-  additional: { commercial: {}, rental: {}, insurance: {}, claim: {} },
+  additional: { commercial: {}, rental: {}, insurance: {} },
   cil: { globalStatus: 'ready', percentage: 80, blockingBlocks: [] },
   generations: [],
   ...over,
@@ -79,14 +79,15 @@ describe('indices de préparation', () => {
     expect(vente.readiness.hints[0]).toMatchObject({ code: 'SALE_PRICE_MISSING', target: 'additional-infos:commercial' });
     expect(c.dossiers.find((d) => d.code === 'LOCATION')!.readiness.hints[0].code).toBe('RENT_MISSING');
     expect(c.dossiers.find((d) => d.code === 'ASSURANCE_SOUSCRIPTION')!.readiness.hints[0].code).toBe('INSURANCE_OBJECTIVE_MISSING');
-    expect(c.dossiers.find((d) => d.code === 'ASSURANCE_SINISTRE')!.readiness.hints[0].code).toBe('CLAIM_MISSING');
+    // Lot 83D : sinistre établi par les documents — alerte quand le bien n'en a aucun (décompte connu).
+    expect(buildExportCatalog({ ...base(), claims: 0 }).dossiers.find((d) => d.code === 'ASSURANCE_SINISTRE')!.readiness.hints[0].code).toBe('CLAIM_MISSING');
   });
 
   it('champs renseignés (zéro compris) : prêt', () => {
     const c = buildExportCatalog(base({
       additional: {
         commercial: { desiredSalePriceCents: 0 }, rental: { monthlyRentCents: 115000 },
-        insurance: { insuranceObjective: 'SOUSCRIRE' }, claim: { claimType: 'VOL', occurredOn: '2026-08-03' },
+        insurance: { insuranceObjective: 'SOUSCRIRE' },
       },
     }));
     for (const code of ['VENTE', 'LOCATION', 'ASSURANCE_SOUSCRIPTION', 'ASSURANCE_SINISTRE']) {
@@ -103,7 +104,7 @@ describe('indices de préparation', () => {
   });
 
   it('sans photo ni document : indices informatifs, statut inchangé', () => {
-    const c = buildExportCatalog(base({ counts: { documents: 0, photos: 0 }, additional: { commercial: { desiredSalePriceCents: 1 }, rental: {}, insurance: {}, claim: {} } }));
+    const c = buildExportCatalog(base({ counts: { documents: 0, photos: 0 }, additional: { commercial: { desiredSalePriceCents: 1 }, rental: {}, insurance: {} } }));
     const vente = c.dossiers.find((d) => d.code === 'VENTE')!;
     expect(vente.readiness.status).toBe('ready');
     expect(vente.readiness.hints.map((h) => h.code)).toEqual(['NO_PHOTOS']);
@@ -151,6 +152,6 @@ describe('fusion atomique en base (§4.3, dernier écrit gagne par champ)', () =
   });
 
   it('sous-rubrique non touchée : aucune expression (colonne laissée telle quelle)', () => {
-    expect(mergeExpression('claim', { set: { commercial: { salePitch: 'x' } }, unset: {} })).toBeNull();
+    expect(mergeExpression('rental', { set: { commercial: { salePitch: 'x' } }, unset: {} })).toBeNull();
   });
 });

@@ -222,7 +222,7 @@ scenario('L61', 'TCO — toutes les dépenses, anti-double comptage, tiroir déd
     await accessoire(compte, v, 'Panier', 4_000, 'CM-13');
     const { setT3FaultHookForTests } = await import('@/services/business-operations/consolidation/consolidator');
     const { BusinessOperationIntegrityError } = await import('@/services/business-operations/errors');
-    setT3FaultHookForTests((stage) => { if (stage === 'document') throw new BusinessOperationIntegrityError('PARENT_CYCLE', 'panne simulée'); });
+    setT3FaultHookForTests((stage) => { if (stage === 'document') throw new BusinessOperationIntegrityError('INVALID_DETAILS', 'panne simulée'); });
     await k.passer(compte).catch(() => undefined);
     expect((await tco(compte, v.id)).summary.cumulativeCostCents).toBe(34_000);
     setT3FaultHookForTests(null);

@@ -86,13 +86,11 @@ export interface CatalogInput {
   asset: { id: number; category: string; subtype: string | null };
   premium: { allowed: boolean; reason?: string; message?: string };
   counts: { documents: number; photos: number };
-  /**
-   * `claim` : depuis le lot 44 (O5), la sous-rubrique du sinistre le plus
-   * récent du bien (Opération CLAIM), sinon l'ancienne saisie (Q11).
-   */
-  additional: Pick<AssetAdditionalInfos, 'commercial' | 'rental' | 'insurance' | 'claim'>;
-  /** Lot 44 : nombre de sinistres du bien (absent : inconnu, règle historique). */
+  additional: Pick<AssetAdditionalInfos, 'commercial' | 'rental' | 'insurance'>;
+  /** Lot 44 : nombre de sinistres du bien (absent : inconnu, aucune alerte). */
   claims?: number;
+  /** Lot 83D : type et date de survenue du sinistre le plus récent (Opération CLAIM), s'il existe. */
+  latestClaim?: { claimType: string | null; occurredOn: string | null } | null;
   /** Préparation CIL, si le bien y est éligible. */
   /** `blockingBlocks` : blocs RÉELLEMENT bloquants (lot 69), seule source du message. */
   cil: { globalStatus: 'ready' | 'action_required'; percentage: number; blockingBlocks: Array<{ id: string; label: string }> } | null;
@@ -136,13 +134,13 @@ function readinessHints(code: DossierCode, input: CatalogInput): ReadinessHint[]
       }
       break;
     case 'ASSURANCE_SINISTRE':
-      // Lot 44 (O5) : sinistres de la fiche (Opérations CLAIM) ; le plus récent est proposé par défaut.
-      if (input.claims === 0 && Object.keys(a.claim ?? {}).length === 0) {
-        hints.push({ code: 'CLAIM_MISSING', severity: 'warning', target: 'additional-infos:claim', message: 'Aucun sinistre renseigné : ajoutez-le dans la rubrique « Sinistres » de la fiche du bien.' });
-      } else {
-        // Lot 69 : seuls les champs RÉELLEMENT absents sont demandés (règle du domaine Sinistre).
-        const message = claimMissingKeyFieldsMessage(claimMissingKeyFields(a.claim), ' pour une synthèse complète');
-        if (message) hints.push({ code: 'CLAIM_MISSING', severity: 'warning', target: 'additional-infos:claim', message });
+      // Lot 83D (V-Q1) : le sinistre est établi par les documents (Opération CLAIM) — aucune rubrique à remplir.
+      if (input.claims === 0) {
+        hints.push({ code: 'CLAIM_MISSING', severity: 'warning', target: 'documents', message: 'Aucun sinistre connu pour ce bien : ajoutez ses documents (déclaration, constat, courrier de l’assureur).' });
+      } else if (input.latestClaim) {
+        // Lot 69 : seuls les champs RÉELLEMENT absents sont signalés (règle du domaine Sinistre).
+        const message = claimMissingKeyFieldsMessage(claimMissingKeyFields(input.latestClaim), ' pour une synthèse complète');
+        if (message) hints.push({ code: 'CLAIM_MISSING', severity: 'warning', target: 'documents', message });
       }
       break;
     default:
@@ -276,13 +274,12 @@ export async function loadExportCatalog(asset: {
 
   // Lot 44 (O5) : le sinistre du dossier est l'Opération CLAIM la plus récente du bien.
   let claims: number | undefined;
-  let claimSection = additional.claim;
+  let latestClaim: CatalogInput['latestClaim'] = null;
   try {
     const { loadClaimRecords } = await import('@/services/business-operations/claims/read');
-    const { claimToSection } = await import('@/services/business-operations/claims/model');
     const recs = await loadClaimRecords(db, asset.accountId, { assetId: asset.id });
     claims = recs.length;
-    if (recs.length) claimSection = claimToSection(recs[0]);
+    if (recs.length) latestClaim = { claimType: recs[0].details?.claimType ?? null, occurredOn: recs[0].realizedDate };
   } catch (err) {
     console.error('[export-catalog] sinistres indisponibles :', (err as Error).message);
   }
@@ -291,8 +288,9 @@ export async function loadExportCatalog(asset: {
     asset: { id: asset.id, category: asset.category, subtype: asset.subtype },
     premium: { allowed: premium.allowed, reason: premium.reason, message: premium.message },
     counts: { documents: Number(fileCounts[0]?.documents ?? 0), photos: Number(fileCounts[0]?.photos ?? 0) },
-    additional: { ...additional, claim: claimSection },
+    additional,
     claims,
+    latestClaim,
     cil,
     generations,
     unavailable,

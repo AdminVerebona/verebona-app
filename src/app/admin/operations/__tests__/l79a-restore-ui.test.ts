@@ -40,12 +40,12 @@ const revue = (over: Record<string, unknown> = {}) => ({
 const detail = (identityReviews: Array<Record<string, unknown>>, attributeProvenance: Record<string, unknown> | null = null): OperationDetail => ({
   operation: {
     id: 41, accountId: 3, accountName: 'Compte Martin', typeCode: 'ACQUISITION', typeLabel: 'Acquisition', status: 'REALIZED', label: 'Commande', assets: [],
-    equipments: [], parentOperationId: null, principalDate: '2025-05-12', netCents: 27735, netPartial: false, activeSourceCount: 1, sourceCount: 2,
+    equipments: [], principalDate: '2025-05-12', netCents: 27735, netPartial: false, activeSourceCount: 1, sourceCount: 2,
     componentCount: 1, lastReconciledAt: null, createdAt: '2025-05-13T10:00:00Z', invalidatedAt: null, invalidationReason: null, mergedIntoOperationId: null,
     provider: 'Tikamoon', plannedDate: null, startDate: null, realizedDate: '2025-05-12', endDate: null, closedAt: null, updatedAt: null, version: 3, active: true,
   },
   canonicalOperationId: null, assetLinks: [], equipmentLinks: [], sources: [], components: [], references: [], contractDetails: null, financingDetails: null,
-  claimDetails: null, parent: null, children: [], mergedFrom: [], history: [], matchDecisions: [], agendaItems: [], projectionSuppressions: [], candidates: [],
+  claimDetails: null, mergedFrom: [], history: [], matchDecisions: [], agendaItems: [], projectionSuppressions: [], candidates: [],
   identityReviews, attributeProvenance, lastT3Pass: null, procedure: CORRECTION_PROCEDURE,
   reconciliation: { state: 'A_JOUR', label: 'à jour', pending: 0, blocked: 0, lastReconciledAt: null },
 });

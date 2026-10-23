@@ -105,7 +105,7 @@ const patch = (id: number | string, body: unknown, raw = false) => PATCH(
   ctx(id),
 );
 
-const EMPTY = { assetId: 5, commercial: {}, rental: {}, insurance: {}, claim: {}, finance: {}, updatedAt: null, updatedBy: null, version: 0 };
+const EMPTY = { assetId: 5, commercial: {}, rental: {}, insurance: {}, finance: {}, updatedAt: null, updatedBy: null, version: 0 };
 
 beforeEach(() => {
   session = { userId: 1, currentAccountId: 10 };
@@ -116,7 +116,7 @@ beforeEach(() => {
   updateInfos.mockReset().mockImplementation(async (assetId: number, _acc: number, userId: number) => ({
     ...EMPTY, assetId, rental: { depositCents: 0 }, updatedAt: '2026-09-28T10:00:00.000Z', updatedBy: userId, version: 1,
   }));
-  loadReferences.mockReset().mockResolvedValue({ documents: [], photos: [], claimEvents: [], highlightSuggestions: [] });
+  loadReferences.mockReset().mockResolvedValue({ documents: [], photos: [], highlightSuggestions: [] });
   invalidReferences.mockReset().mockResolvedValue([]);
   loadCatalog.mockReset().mockResolvedValue({ assetId: 5, family: 'IMMOBILIER', dossiers: [], lastGenerations: [], eligibility: [] });
 });
@@ -147,9 +147,10 @@ describe('GET /additional-infos', () => {
     const res = await get(5);
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body).toMatchObject({ assetId: 5, commercial: {}, rental: {}, insurance: {}, claim: {}, updatedAt: null, updatedBy: null });
+    expect(body).toMatchObject({ assetId: 5, commercial: {}, rental: {}, insurance: {}, updatedAt: null, updatedBy: null });
     expect(body.family).toBe('IMMOBILIER');
-    expect(body.sections).toEqual(['commercial', 'rental', 'insurance', 'claim', 'finance']);
+    // Lot 83D (V-Q1, V-Q2) : plus de sous-rubrique « Sinistre ».
+    expect(body.sections).toEqual(['commercial', 'rental', 'insurance', 'finance']);
     expect(getInfos).toHaveBeenCalledWith(5, 10);
   });
 
@@ -160,7 +161,7 @@ describe('GET /additional-infos', () => {
 
   it('véhicule : pas de sous-rubrique locative', async () => {
     const body = await (await get(6)).json();
-    expect(body.sections).toEqual(['commercial', 'insurance', 'claim', 'finance']);
+    expect(body.sections).toEqual(['commercial', 'insurance', 'finance']);
   });
 
   it('alias CDC /additional-info : même implémentation', async () => {
@@ -263,13 +264,13 @@ describe('PATCH /additional-infos', () => {
 });
 
 describe('Listes structurées (schéma v2)', () => {
-  const damages = [{ id: 'd1', zone: 'Salle de bain', photoIds: [11], documentIds: [21] }];
+  const damages = [{ id: 'd1', label: 'Housse', documentId: 21 }];
 
   it('GET ?include=references : éléments citables du bien, lus avec le compte et l’utilisateur', async () => {
-    loadReferences.mockResolvedValueOnce({ documents: [{ id: 21, title: 'Devis' }], photos: [], claimEvents: [{ key: 'agenda:3' }], highlightSuggestions: [] });
+    loadReferences.mockResolvedValueOnce({ documents: [{ id: 21, title: 'Devis' }], photos: [], highlightSuggestions: [] });
     session = { userId: 2, currentAccountId: 10 };
     const body = await (await GET(new NextRequest('http://x/?include=references'), ctx(5))).json();
-    expect(body.references.claimEvents).toEqual([{ key: 'agenda:3' }]);
+    expect(body.references.documents).toEqual([{ id: 21, title: 'Devis' }]);
     expect(loadReferences).toHaveBeenCalledWith({ assetId: 5, accountId: 10, userId: 2 });
     // Sans le paramètre : pas de lecture supplémentaire.
     loadReferences.mockClear();
@@ -278,37 +279,44 @@ describe('Listes structurées (schéma v2)', () => {
   });
 
   it('liste avec version : écrite avec contrôle optimiste (version attendue transmise)', async () => {
-    const res = await patch(5, { version: 4, claim: { damages } });
+    const res = await patch(5, { version: 4, insurance: { insuredItems: damages } });
     expect(res.status).toBe(200);
     const [, , , normalized, opts] = updateInfos.mock.calls[0];
-    expect(normalized.set.claim.damages).toEqual(damages);
+    expect(normalized.set.insurance.insuredItems).toEqual(damages);
     expect(opts).toEqual({ expectedVersion: 4 });
     expect(invalidReferences).toHaveBeenCalledWith(5, 10, normalized);
   });
 
   it('champs simples seuls : pas de contrôle de version (dernier écrit gagne)', async () => {
-    await patch(5, { claim: { claimType: 'VOL' } });
+    await patch(5, { insurance: { insuranceObjective: 'SOUSCRIRE' } });
     expect(updateInfos.mock.calls[0][4]).toEqual({ expectedVersion: null });
   });
 
+  it('lot 83D (V-Q2) : écriture de l’ancienne sous-rubrique « Sinistre » refusée (422), aucune passerelle', async () => {
+    const res = await patch(5, { claim: { claimType: 'VOL' } });
+    expect(res.status).toBe(422);
+    expect((await res.json()).fields).toEqual([{ path: 'claim', message: 'Sous-rubrique inconnue.' }]);
+    expect(updateInfos).not.toHaveBeenCalled();
+  });
+
   it('liste sans version : 422, rien n’est écrit', async () => {
-    const res = await patch(5, { claim: { damages } });
+    const res = await patch(5, { insurance: { insuredItems: damages } });
     expect(res.status).toBe(422);
     expect((await res.json()).fields).toEqual([{ path: 'version', message: expect.any(String) }]);
     expect(updateInfos).not.toHaveBeenCalled();
   });
 
   it('ligne invalide : 422 avec le chemin de la cellule', async () => {
-    const res = await patch(5, { version: 1, claim: { damages: [{ id: 'd1', element: 'Plafond' }] } });
+    const res = await patch(5, { version: 1, insurance: { insuredItems: [{ id: 'd1', valueCents: 100 }] } });
     expect(res.status).toBe(422);
-    expect((await res.json()).fields).toEqual([{ path: 'claim.damages[0].zone', message: 'Champ requis.' }]);
+    expect((await res.json()).fields).toEqual([{ path: 'insurance.insuredItems[0].label', message: 'Champ requis.' }]);
   });
 
   it('photo ou pièce d’un autre bien : 422, rien n’est écrit', async () => {
-    invalidReferences.mockResolvedValueOnce([{ path: 'claim.damages[0].photoIds', message: 'Photo introuvable pour ce bien.' }]);
-    const res = await patch(5, { version: 1, claim: { damages } });
+    invalidReferences.mockResolvedValueOnce([{ path: 'insurance.insuredItems[0].documentId', message: 'Document introuvable pour ce bien.' }]);
+    const res = await patch(5, { version: 1, insurance: { insuredItems: damages } });
     expect(res.status).toBe(422);
-    expect((await res.json()).details.fields[0].message).toBe('Photo introuvable pour ce bien.');
+    expect((await res.json()).details.fields[0].message).toBe('Document introuvable pour ce bien.');
     expect(updateInfos).not.toHaveBeenCalled();
     expect(emitted).toEqual([]);
   });
@@ -316,14 +324,14 @@ describe('Listes structurées (schéma v2)', () => {
   it('version dépassée : 409 CONFLICT avec l’état courant, aucun événement émis', async () => {
     const { AdditionalInfosConflictError } = await import('@/services/exports/additional-infos.service');
     updateInfos.mockRejectedValueOnce(new AdditionalInfosConflictError(4));
-    const current = { ...EMPTY, claim: { damages: [{ id: 'd9', zone: 'Cuisine' }] }, version: 6 };
+    const current = { ...EMPTY, insurance: { insuredItems: [{ id: 'd9', label: 'Cuisine' }] }, version: 6 };
     getInfos.mockResolvedValueOnce(current);
-    const res = await patch(5, { version: 4, claim: { damages } });
+    const res = await patch(5, { version: 4, insurance: { insuredItems: damages } });
     expect(res.status).toBe(409);
     const body = await res.json();
     expect(body.code).toBe('CONFLICT');
     expect(body.details.current).toEqual(current);
-    expect(body.details.lists).toEqual(['claim.damages']);
+    expect(body.details.lists).toEqual(['insurance.insuredItems']);
     expect(getInfos).toHaveBeenCalledWith(5, 10);
     expect(emitted).toEqual([]);
   });

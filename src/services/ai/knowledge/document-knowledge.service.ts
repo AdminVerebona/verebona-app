@@ -643,12 +643,7 @@ export async function projectDocumentKnowledgeToAsset(p: {
 }): Promise<number> {
   const knowledge = await getDocumentKnowledge(p.accountId, p.fileId);
   if (!knowledge || knowledge.facts.length === 0) return 0;
-  // Document déplacé A → B : A est le bien de l'analyse. Ses faits ciblés
-  // ne sont jamais recopiés sur B ni réécrits sur A (E2E-11) ; ils ne
-  // bloquent pas non plus l'attribution des faits sans cible.
-  const ancien = knowledge.extraction.assetIdAtAnalysis != null && Number(knowledge.extraction.assetIdAtAnalysis) !== p.assetId
-    ? Number(knowledge.extraction.assetIdAtAnalysis) : null;
-  const allowReassign = lateLinkAllowsReassignment(knowledge.extraction, knowledge.facts, p.assetId, ancien);
+  const { fields, allowReassign } = linkedAssetProjection(knowledge, p.assetId);
 
   const { persistEvidence } = await import('../source-analysis/steps/persist-evidence.step');
   const byField = await persistEvidence({
@@ -664,7 +659,7 @@ export async function projectDocumentKnowledgeToAsset(p: {
     },
     leadSourceId: p.fileId,
     assetId: p.assetId,
-    fields: fieldsForLinkedAsset(factsToExtractedFields(knowledge.facts), p.assetId, { allowReassign, previousAssetId: ancien }),
+    fields,
     documentType: (knowledge.extraction.metadata?.legacyDocumentType as string | undefined) ?? undefined,
     documentDate: knowledge.extraction.documentDate ?? undefined,
     promptVersion: knowledge.extraction.promptVersion ?? null,
@@ -795,6 +790,34 @@ async function rebuildAgendaAfterLink(p: {
  *    quel, `persistEvidence` l'écrit sur SA cible ;
  *  - fait de cible DOCUMENT / SUPPLIER / GENERIC : pas un champ de bien.
  */
+/**
+ * Champs que la projection d'un document sur son bien produit à partir des
+ * faits persistés (même calcul que `projectDocumentKnowledgeToAsset`) — pure.
+ * Lot 83B : le contrôle de cohérence C-Q7 compare cet état ATTENDU aux
+ * preuves réellement écrites (« présent dans T1 mais non exploité »).
+ *
+ * Document déplacé A → B : A est le bien de l'analyse. Ses faits ciblés ne
+ * sont jamais recopiés sur B ni réécrits sur A (E2E-11) ; ils ne bloquent pas
+ * non plus l'attribution des faits sans cible.
+ */
+export function linkedAssetProjection(
+  knowledge: { extraction: StoredExtraction; facts: StoredFact[] },
+  assetId: number,
+): { fields: ExtractedField[]; allowReassign: boolean; previousAssetId: number | null } {
+  const ancien = knowledge.extraction.assetIdAtAnalysis != null && Number(knowledge.extraction.assetIdAtAnalysis) !== assetId
+    ? Number(knowledge.extraction.assetIdAtAnalysis) : null;
+  const allowReassign = lateLinkAllowsReassignment(knowledge.extraction, knowledge.facts, assetId, ancien);
+  return {
+    fields: fieldsForLinkedAsset(factsToExtractedFields(knowledge.facts), assetId, { allowReassign, previousAssetId: ancien }),
+    allowReassign, previousAssetId: ancien,
+  };
+}
+
+/** Champs de la projection attendue (voir `linkedAssetProjection`). */
+export function linkedAssetProjectionFields(knowledge: { extraction: StoredExtraction; facts: StoredFact[] }, assetId: number): ExtractedField[] {
+  return linkedAssetProjection(knowledge, assetId).fields;
+}
+
 export function fieldsForLinkedAsset(
   fields: ExtractedField[],
   assetId: number,

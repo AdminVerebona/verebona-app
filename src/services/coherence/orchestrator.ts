@@ -36,8 +36,16 @@
  * et figé pour sa durée (C-Q5 : première campagne à blanc, puis corrective).
  *
  * ÉLIGIBILITÉ (C-Q10) : vérifiée à l'entrée de chaque compte, puis avant la
- * première réparation de chaque lot ; un compte non éligible n'est jamais
- * contrôlé, même en constat (motif consigné dans la campagne).
+ * première réparation de chaque lot ; un compte non éligible ne reçoit aucun
+ * contrôle métier (motif consigné dans la campagne).
+ * Lot 83E — SEULE EXCEPTION, à arbitrer par le PO (voir le rapport) : un
+ * compte non éligible DU FAIT DE SON ABONNEMENT (essai échu, impayé,
+ * abonnement terminé, lecture seule, rétractation, sans abonnement) est lu
+ * par les seuls contrôles déclarés `ineligibleAccounts:
+ * 'SUBSCRIPTION_STATE_READ'` (abonnement local comparé à Stripe, droits) :
+ * LECTURE de l'état d'abonnement uniquement — aucun autre contrôle, aucun
+ * traitement métier, aucune réparation (neutralisée par le moteur), aucun
+ * appel IA. Compte suspendu, neutralisé ou introuvable : rien du tout.
  *
  * SUPERVISION (C-Q3) : aucun onglet ; échecs de réparation, constats
  * persistants, erreurs répétées, réparations répétées et campagnes
@@ -51,7 +59,7 @@ import { pgClient } from '@/db';
 import { addDaysToDateStr, todayParisDateStr } from '@/lib/notifications/time-paris';
 import { parisWallTimeToDate } from '@/services/scheduling/task-calendar';
 import { activeChecks, getCheck, registryVersion } from './registry';
-import type { CheckContext, CoherenceCheck, CoherenceMode, ControlResult, Sql } from './registry/types';
+import type { AccountScope, CheckContext, CoherenceCheck, CoherenceMode, ControlResult, Sql } from './registry/types';
 import { RESOLVED_RESULTS } from './registry/types';
 import { controlObjects, AccountNoLongerEligibleError, type BatchSummary } from './engine';
 import { coherenceAccountEligibility } from './eligibility';
@@ -103,6 +111,12 @@ export interface CampaignAccounts {
   skipped: Record<string, number>;
   /** Échantillon d'identifiants ignorés (≤ 50). */
   skippedIds?: number[];
+  /**
+   * Lot 83E (C-Q10) : comptes non éligibles du fait de leur abonnement, lus
+   * par les seuls contrôles d'état d'abonnement (aussi comptés dans `skipped`
+   * : aucun contrôle métier).
+   */
+  subscriptionStateRead?: number;
 }
 
 export interface CheckCounters {
@@ -124,6 +138,20 @@ export interface CampaignMetrics {
   aiCalls: number;
   repairsAttempted: number;
   objectsControlled: number;
+}
+
+/**
+ * Lot 83E (C-Q10) : motifs d'inéligibilité qui tiennent à l'ABONNEMENT — seuls
+ * ceux-là autorisent la lecture de l'état d'abonnement (jamais un compte
+ * suspendu, neutralisé, introuvable ou d'éligibilité illisible).
+ */
+export const SUBSCRIPTION_STATE_REASONS: ReadonlySet<string> = new Set([
+  'TRIAL_EXPIRED', 'UNPAID', 'SUBSCRIPTION_ENDED', 'READ_ONLY', 'NO_SUBSCRIPTION', 'WITHDRAWN',
+]);
+
+/** Le contrôle peut-il s'exécuter dans ce périmètre de compte ? (pure) */
+export function checkRunsInScope(check: Pick<CoherenceCheck, 'ineligibleAccounts'>, scope: AccountScope): boolean {
+  return scope === 'ELIGIBLE' || check.ineligibleAccounts === 'SUBSCRIPTION_STATE_READ';
 }
 
 const zeroMetrics = (): CampaignMetrics => ({ runs: 0, durationMs: 0, cpuUserMs: 0, cpuSystemMs: 0, rssPeakMb: 0, aiCalls: 0, repairsAttempted: 0, objectsControlled: 0 });
@@ -278,8 +306,10 @@ export interface RunOptions {
   today?: string;
 }
 
-function contexte(c: CampaignRow | null, mode: CoherenceMode, sql: Sql, now: Date, today: string | undefined, check: CoherenceCheck): CheckContext {
-  return { sql, now, today: today ?? todayParisDateStr(now), mode, correlationId: `coherence:${c ? `${c.kind.toLowerCase()}-${c.id}` : 'targeted'}:${check.id}` };
+function contexte(c: CampaignRow | null, mode: CoherenceMode, sql: Sql, now: Date, today: string | undefined, check: CoherenceCheck, accountScope: AccountScope = 'ELIGIBLE'): CheckContext {
+  return {
+    sql, now, today: today ?? todayParisDateStr(now), mode, correlationId: `coherence:${c ? `${c.kind.toLowerCase()}-${c.id}` : 'targeted'}:${check.id}`, accountScope,
+  };
 }
 
 /**
@@ -302,6 +332,8 @@ export async function runCampaignStep(campaignId: number, o: RunOptions): Promis
   let controlled = 0;
   let errorSample: string | null = null;
   let eligibleAccount: number | null = null;
+  let scope: AccountScope = 'ELIGIBLE';
+  const lectureAbonnement = checks.some((x) => x.ineligibleAccounts === 'SUBSCRIPTION_STATE_READ');
   try {
     while (Date.now() < o.deadline) {
       if (c.cursorAccountId === 0) {
@@ -315,20 +347,35 @@ export async function runCampaignStep(campaignId: number, o: RunOptions): Promis
       if (eligibleAccount !== accountId) {
         const e = await coherenceAccountEligibility(accountId, now);
         if (!e.eligible) {
-          if (c.cursorCheckIndex === 0 && c.cursorObjectId === 0 && c.phase === 'TRAVERSE') skip(c, accountId, e.reason);
-          if (await advanceAccount(sql, c, now)) break;
-          continue;
+          // Lot 83E (C-Q10) : non éligible du fait de l'abonnement → lecture de l'état d'abonnement seule.
+          const lecture = lectureAbonnement && SUBSCRIPTION_STATE_REASONS.has(e.reason);
+          if (c.cursorCheckIndex === 0 && c.cursorObjectId === 0 && c.phase === 'TRAVERSE') {
+            skip(c, accountId, e.reason);
+            if (lecture) c.accounts.subscriptionStateRead = (c.accounts.subscriptionStateRead ?? 0) + 1;
+          }
+          if (!lecture) {
+            if (await advanceAccount(sql, c, now)) break;
+            continue;
+          }
+          scope = 'SUBSCRIPTION_STATE_READ';
+        } else {
+          scope = 'ELIGIBLE';
         }
         eligibleAccount = accountId;
       }
       const check = checks[c.cursorCheckIndex];
       if (!check) {
-        if (c.phase === 'TRAVERSE') c.accounts.visited += 1;
+        if (c.phase === 'TRAVERSE' && scope === 'ELIGIBLE') c.accounts.visited += 1;
         eligibleAccount = null;
         if (await advanceAccount(sql, c, now)) break;
         continue;
       }
-      const ctx = contexte(c, c.mode, sql, new Date(now.getTime() + (Date.now() - t0)), o.today ?? todayParisDateStr(now), check);
+      if (!checkRunsInScope(check, scope)) {
+        // Contrôle métier : jamais exécuté sur un compte non éligible (C-Q10).
+        c.cursorCheckIndex += 1; c.cursorObjectId = 0;
+        continue;
+      }
+      const ctx = contexte(c, c.mode, sql, new Date(now.getTime() + (Date.now() - t0)), o.today ?? todayParisDateStr(now), check, scope);
       const page = await check.listObjects!(ctx, accountId, c.cursorObjectId, COHERENCE_BATCH);
       if (!page.length) { c.cursorCheckIndex += 1; c.cursorObjectId = 0; await saveProgress(sql, c); continue; }
       let cible = page;
@@ -344,6 +391,7 @@ export async function runCampaignStep(campaignId: number, o: RunOptions): Promis
         try {
           const s = await controlObjects({
             ctx, check, accountId, ids: cible, trigger: c.kind === 'DAILY' ? 'DAILY' : c.kind, campaignId: c.id,
+            // Lecture d'état d'abonnement (lot 83E) : aucune réparation n'est tentée (moteur) — garde maintenue.
             stillEligible: () => coherenceAccountEligibility(accountId, ctx.now),
           });
           compter(c, check, s, c.phase === 'VERIFY');
@@ -509,11 +557,14 @@ export async function runTargetedChecks(o: RunOptions & { mode?: CoherenceMode; 
  */
 export async function requestTargetedChecks(p: {
   accountId: number; event: { type: string; entityId: number | null; assetId?: number | null }; now?: Date; sql?: Sql; skipEligibility?: boolean;
+  /** Lot 83B : contrôles à ne pas redemander (propagation aval demandée par une réparation : jamais le contrôle réparateur lui-même). */
+  excludeChecks?: readonly string[];
 }): Promise<Record<string, number>> {
   const sql = p.sql ?? pgClient;
   const now = p.now ?? new Date();
   const out: Record<string, number> = {};
-  const checks = activeChecks().filter((c) => c.triggers.includes(p.event.type) && c.objectsForEvent);
+  const exclus = new Set(p.excludeChecks ?? []);
+  const checks = activeChecks().filter((c) => c.triggers.includes(p.event.type) && c.objectsForEvent && !exclus.has(c.id));
   if (!checks.length) return out;
   if (!p.skipEligibility && !(await coherenceAccountEligibility(p.accountId, now)).eligible) return out;
   for (const check of checks) {

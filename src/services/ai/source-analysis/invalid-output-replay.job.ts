@@ -205,7 +205,7 @@ export async function runInvalidOutputReplay(opts: { maxPerRun?: number; version
     )) as unknown as Row[];
     if (reserve.length === 0) continue;
     if (!d.replay) { res.skipped++; continue; }
-    const acceptes = await enqueueFileAnalyses([c.fileId], c.accountId, { origin: 't1-invalid-output-replay', processingVisibility: 'TECHNICAL' }).catch(() => [] as number[]);
+    const acceptes = await enqueueFileAnalyses([c.fileId], c.accountId, { origin: 't1-invalid-output-replay', processingVisibility: 'TECHNICAL', resume: true }).catch(() => [] as number[]);
     if (acceptes.includes(c.fileId)) {
       res.enqueued++;
     } else {

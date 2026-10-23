@@ -64,7 +64,8 @@ export const DEFAULT_SECTIONS: Readonly<Record<DossierCode, Readonly<Record<stri
   LOCATION: { equipments: true, photos: true, followUp: false, documents: true },
   // ASSURANCE_SOUSCRIPTION-RULE-004 : protections dans une section décochable.
   ASSURANCE_SOUSCRIPTION: { protections: true, condition: true, documents: true, photos: true },
-  ASSURANCE_SINISTRE: { timeline: true, damages: true, photos: true, actions: true, documents: true, exchanges: true },
+  // Lot 83D (CDC v5 §18.1) : plus de section « Actions » — une étape est un élément de la chronologie.
+  ASSURANCE_SINISTRE: { timeline: true, damages: true, photos: true, documents: true, exchanges: true },
 };
 
 /** Plafonds de photos pré-cochées (§6.2) : 3-4 vente/location, 6-8 complet/sinistre. */
@@ -146,22 +147,32 @@ export const isUpcoming = (e: SourceEvent, today: string): boolean => {
 };
 
 /**
- * Date du sinistre, ISO ou null : saisie (`claim.occurredOn`), sinon date de
- * l'événement sinistre de l'agenda lié dans la fiche (`claim.claimEventKey`,
- * RULE-001) — même repli que le mappeur (`linkedClaimEvent`).
+ * Date du sinistre, ISO ou null : survenue de l'Opération CLAIM, sinon date
+ * de son élément d'Agenda principal (RULE-001) — même règle que le mappeur.
+ * Lot 83D : lue dans l'Opération consolidée (`source.claimFile`).
  */
 export function claimDate(source: ExportSource): string | null {
   const iso = (v: unknown) => (typeof v === 'string' && /^\d{4}-\d{2}-\d{2}/.test(v) ? v.slice(0, 10) : null);
-  const typed = iso(source.additionalInfo.claim?.occurredOn);
+  const f = source.claimFile;
+  if (!f) return null;
+  const typed = iso(f.occurredOn);
   if (typed) return typed;
-  const key = source.additionalInfo.claim?.claimEventKey;
-  if (typeof key !== 'string' || !key) return null;
-  const e = source.events.find((x) => x.key === key && x.status !== 'annule');
-  return iso(e?.date);
+  // Ancre : élément d'Agenda principal, sinon événement de l'historique désigné (lot 44).
+  const anchor = f.principalKey ?? f.historyEventKey;
+  const e = anchor ? source.events.find((x) => x.key === anchor && x.status !== 'annule') : undefined;
+  return iso(e?.date) ?? iso(f.agenda.find((a) => a.principal)?.date);
 }
 
-/** Lien au sinistre (ASSURANCE_SINISTRE-RULE-004, matrice §24) : nature sinistre, ou datée du sinistre ou après. */
-export function isLinkedToClaim(date: string | null, kind: DocKind | EventKind, source: ExportSource): boolean {
+/**
+ * Lien au sinistre (ASSURANCE_SINISTRE-RULE-004, matrice §24). Lot 83D (V-Q8,
+ * CDC v5 §16) : un document de l'Opération CLAIM ou un élément de sa
+ * chronologie est TOUJOURS lié ; sinon, nature sinistre, ou daté du sinistre
+ * ou après (règle historique, pour ce que l'Opération ne porte pas encore).
+ */
+export function isLinkedToClaim(date: string | null, kind: DocKind | EventKind, source: ExportSource, ref?: { document?: number; eventKey?: string }): boolean {
+  const f = source.claimFile;
+  if (f && ref?.document !== undefined && f.documentIds.includes(ref.document)) return true;
+  if (f && ref?.eventKey !== undefined && (f.agendaKeys.includes(ref.eventKey) || f.historyEventKey === ref.eventKey)) return true;
   if (kind === 'SINISTRE' || kind === 'ECHANGE_ASSUREUR') return true;
   const d0 = claimDate(source);
   return !!d0 && !!date && date >= d0;
@@ -188,7 +199,7 @@ function preselectEvent(code: DossierCode, e: SourceEvent, source: ExportSource,
   switch (code) {
     case 'DOSSIER_COMPLET': return isUpcoming(e, today) || isUnconfirmedPastDeadline(e, today) || k === 'ENTRETIEN' || k === 'GARANTIE';
     case 'ASSURANCE_SOUSCRIPTION': return k === 'ENTRETIEN';
-    case 'ASSURANCE_SINISTRE': return isLinkedToClaim(e.date, k, source);
+    case 'ASSURANCE_SINISTRE': return isLinkedToClaim(e.date, k, source, { eventKey: e.key });
     // Vente, location : « proposés non précochés » (la section elle-même est décochée).
     default: return false;
   }
@@ -199,8 +210,10 @@ function preselectDocument(code: DossierCode, d: SourceDocument, source: ExportS
   // Rattachement non confirmé (source canonique, relecture lot 16) : proposé
   // décoché — l'utilisateur le voit et choisit, jamais envoyé d'office à un tiers.
   if (d.unconfirmedLink) return false;
+  // Lot 83D (V-Q8, CDC v5 §16) : TOUS les documents de l'Opération CLAIM sont retenus, quelle que soit leur nature.
+  if (code === 'ASSURANCE_SINISTRE' && source.claimFile?.documentIds.includes(d.id)) return true;
   if (!PRESELECTED_KINDS[code].has(d.kind)) return false;
-  if (code === 'ASSURANCE_SINISTRE') return isLinkedToClaim(d.date, d.kind, source);
+  if (code === 'ASSURANCE_SINISTRE') return isLinkedToClaim(d.date, d.kind, source, { document: d.id });
   return true;
 }
 
@@ -214,8 +227,13 @@ function preselectPhotos(code: DossierCode, photos: SourcePhoto[], source: Expor
   let eligible = photos.filter(isPhotoIntegrable);
   if (code === 'ASSURANCE_SINISTRE') {
     // « 6-8 photos liées au sinistre par défaut ; autres photos proposées non cochées. »
+    // Lot 83D (V-Q8) : les photos des dommages du sinistre d'abord (reliées, jamais dupliquées).
     const d0 = claimDate(source);
-    eligible = d0 ? eligible.filter((p) => !!p.date && p.date >= d0) : [];
+    const deDommage = new Set((source.claimFile?.damages ?? []).flatMap((x) => x.photoIds));
+    eligible = [
+      ...eligible.filter((p) => deDommage.has(p.id)),
+      ...(d0 ? eligible.filter((p) => !deDommage.has(p.id) && !!p.date && p.date >= d0) : []),
+    ];
   }
   return new Set(eligible.slice(0, cap).map((p) => p.id));
 }

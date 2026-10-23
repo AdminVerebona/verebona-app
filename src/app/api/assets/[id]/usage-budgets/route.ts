@@ -7,7 +7,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { SessionService } from '@/lib/session-service';
 import { canUsePremiumFeature } from '@/services/entitlements.service';
-import { notFound, parsePositiveId, writableAssetOr } from '@/services/business-operations/claims/claim-route';
+import { notFound, parsePositiveId, writableAssetOr } from '@/services/assets/asset-route-helpers';
 import { createUsageBudget } from '@/services/business-operations/tco/service';
 import { parseUsageBudgetBody } from '@/services/business-operations/tco/dto';
 

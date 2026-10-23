@@ -50,7 +50,7 @@ describe('catalogue d’un bien', () => {
     const c = buildExportCatalog({
       asset: { id: 1, category: 'IMMOBILIER', subtype: 'Maison' },
       premium: { allowed: true }, counts: { documents: 1, photos: 1 },
-      additional: { commercial: {}, rental: {}, insurance: {}, claim: {} },
+      additional: { commercial: {}, rental: {}, insurance: {} },
       cil: null, generations: [], unavailable: new Set(['VENTE'] as const),
     });
     expect(c.dossiers.map((d) => d.code)).not.toContain('VENTE');

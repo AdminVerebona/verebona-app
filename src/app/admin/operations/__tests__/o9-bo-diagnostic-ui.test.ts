@@ -29,7 +29,7 @@ const AUCUNE_ACTION = /<(button|input|select|textarea|form)\b/;
 
 const item = (over: Partial<OperationListItem> = {}): OperationListItem => ({
   id: 41, accountId: 3, accountName: 'Compte Martin', typeCode: 'INTERVENTION', typeLabel: 'Intervention', status: 'REALIZED',
-  label: 'Remplacement chaudière', assets: [{ id: 8, name: 'Maison' }], equipments: [], parentOperationId: null,
+  label: 'Remplacement chaudière', assets: [{ id: 8, name: 'Maison' }], equipments: [],
   principalDate: '2026-03-12', netCents: 120000, netPartial: false, activeSourceCount: 2, sourceCount: 3, componentCount: 1,
   lastReconciledAt: '2026-10-01T10:00:00Z', createdAt: '2026-03-13T10:00:00Z', invalidatedAt: null, invalidationReason: null,
   mergedIntoOperationId: null, ...over,
@@ -38,7 +38,7 @@ const item = (over: Partial<OperationListItem> = {}): OperationListItem => ({
 describe('O9-UI-01 liste (B23 : colonnes) — lecture seule', () => {
   const html = renderToStaticMarkup(h(OperationsTable, { items: [item(), item({ id: 42, assets: [], mergedIntoOperationId: 41, invalidatedAt: '2026-04-01T00:00:00Z', activeSourceCount: 0 })] }));
   it('colonnes B23 / C26.1', () => {
-    for (const col of ['ID', 'Compte', 'Type', 'Statut', 'Libellé', 'Bien(s) / équipement(s)', 'Parent', 'Date principale', 'Net indicatif', 'Sources', 'Composantes', 'Dernière réconciliation', 'État']) {
+    for (const col of ['ID', 'Compte', 'Type', 'Statut', 'Libellé', 'Bien(s) / équipement(s)', 'Date principale', 'Net indicatif', 'Sources', 'Composantes', 'Dernière réconciliation', 'État']) {
       expect(html).toContain(`>${col}<`);
     }
     expect(html).toContain('href="/admin/operations/41"');
@@ -88,12 +88,12 @@ describe('O9-UI-03 / C26.2 indicateurs : 13 cartes, anomalies dures en alerte av
   });
 
   it('anomalie dure : alerte, lien compte et Opération, procédure, File IA du compte — sans outil d’édition', () => {
-    const anomalies = report().anomalies.map((a) => (a.code === 'PARENT_CYCLE'
-      ? { ...a, count: 2, accountIds: [9], samples: [{ accountId: 9, operationId: 90, detail: 'la chaîne des parents revient sur elle-même' }] }
+    const anomalies = report().anomalies.map((a) => (a.code === 'NEGATIVE_COMPONENT'
+      ? { ...a, count: 2, accountIds: [9], samples: [{ accountId: 9, operationId: 90, detail: 'montant négatif' }] }
       : a));
     const html = renderToStaticMarkup(h(IndicatorsView, { report: report({ anomalies, hardAnomalyTotal: 2 }) }));
     expect(html).toContain('role="alert"');
-    expect(html).toContain('data-anomaly="PARENT_CYCLE"');
+    expect(html).toContain('data-anomaly="NEGATIVE_COMPONENT"');
     expect(html).toContain('href="/admin/accounts/9"');
     expect(html).toContain('href="/admin/operations/90"');
     expect(html).toContain('href="/admin/ai-queue?treatment=T3&amp;accountId=9&amp;status="');
@@ -120,7 +120,7 @@ describe('O9-UI-04 / C26.1 détail complet — lecture seule, desktop et mobile'
     references: [{ reference_kind: 'INVOICE', reference_value: 'FA-1', normalized_value: 'FA1', active: true }],
     contractDetails: null, financingDetails: null,
     claimDetails: null,
-    parent: null, children: [{ id: 50, type_code: 'INTERVENTION' }], mergedFrom: [{ id: 42 }],
+    mergedFrom: [{ id: 42 }],
     history: [{ created_at: '2026-03-13T10:00:00Z', event_type: 'CREATED', reason_code: 'T3_CREATE_NEW', reason_code_label: 'création par la consolidation T3', correlation_id: 'corr-1' }],
     matchDecisions: [{ decision: 'REJECTED', origin: 'USER_ARBITRATION', reason_code: 'USER_REJECTED', reason_code_label: 'rapprochement refusé par l’utilisateur', source_kind: 'DOCUMENT', source_entity_key: '78', active: true }],
     agendaItems: [{ id: 6, title: 'Entretien', start_date: '2027-03-12', projection_origin: 'OPERATION' }],
@@ -138,11 +138,12 @@ describe('O9-UI-04 / C26.1 détail complet — lecture seule, desktop et mobile'
     expect(html).toContain('à jour : aucun traitement en attente');
     expect(html).toContain('Exécution IA');
     expect(html).toContain('ABSENT de la configuration active');
+    expect(html).not.toContain('>Parent<');   // lot 83D (V-Q2) : hiérarchie retirée
   });
 
   it('toutes les sections du ch. 21 / C26.1', () => {
     for (const t of ['Identité', 'Biens et équipements', 'Sources (actives et historiques)', 'Composantes financières', 'Références',
-      'Parent, enfants et fusion', 'Décisions de rapprochement (REJECTED / CONFIRMED)', 'Candidats T1 liés et issue T3',
+      'Fusion', 'Décisions de rapprochement (REJECTED / CONFIRMED)', 'Candidats T1 liés et issue T3',
       'Agenda (projection et suppressions)', 'Historique', 'Dernier passage T3 du compte']) {
       expect(html).toContain(t);
     }
@@ -150,7 +151,6 @@ describe('O9-UI-04 / C26.1 détail complet — lecture seule, desktop et mobile'
     expect(html).toContain('REJECTED');
     expect(html).toContain('projeté (T4)');
     expect(html).toContain('corr-9');
-    expect(html).toContain('href="/admin/operations/50"');
     expect(html).toContain('href="/admin/operations/42"');
     expect(html).toContain(READ_ONLY_NOTICE.replace(/’/g, '’'));
   });

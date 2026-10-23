@@ -26,10 +26,10 @@ describe('ACC-021 / C32 — matrice de traçabilité exécutable', () => {
     expect(checkMatrix(doc, fs)).toEqual([]);
   });
 
-  it('ACC-021 — aucun cas « non couvert » ; hors périmètre limité aux décisions PO (Q1 TCO) ; écarts avec proposition', () => {
+  it('ACC-021 — aucun cas « non couvert » ; hors périmètre limité aux décisions PO (Q1 TCO ; lot 83D : V-Q1 bloc Sinistres, V-Q2 ancien modèle) ; écarts avec proposition', () => {
     const s = summarizeMatrix(doc);
     expect(s.byStatus.NON_COUVERT).toBe(0);
-    for (const i of doc.items.filter((x) => x.statut === 'HORS_PERIMETRE')) expect(i.decision, i.id).toMatch(/^Q1 —/);
+    for (const i of doc.items.filter((x) => x.statut === 'HORS_PERIMETRE')) expect(i.decision, i.id).toMatch(/^(Q1|V-Q1|V-Q2) —/);
     for (const e of doc.ecarts) expect(e.proposition.length, e.id).toBeGreaterThan(20);
   });
 

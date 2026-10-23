@@ -100,7 +100,6 @@ export interface TcoOperation {
   id: number;
   typeCode: BusinessOperationTypeCode | null;
   status: string;
-  parentOperationId: number | null;
   realizedDate: string | null;
   startDate: string | null;
   plannedDate: string | null;
@@ -365,9 +364,13 @@ export interface TcoResult {
 const latest = (dates: Array<string | null | undefined>): string | null => dates.filter(isIsoDate).map((d) => d.slice(0, 10)).sort().pop() ?? null;
 const earliest = (dates: Array<string | null | undefined>): string | null => dates.filter(isIsoDate).map((d) => d.slice(0, 10)).sort()[0] ?? null;
 
-/** Catégorie TCO d'une Opération (une intervention enfant d'un sinistre est un coût de sinistre). */
-export function tcoCategoryOf(op: Pick<TcoOperation, 'typeCode' | 'parentOperationId'>, parentType: BusinessOperationTypeCode | null): TcoCategory {
-  if (op.typeCode === 'CLAIM' || parentType === 'CLAIM') return 'CLAIMS';
+/**
+ * Catégorie TCO d'une Opération. Lot 83D (CDC v5 §18.4, AC39) : plus
+ * d'intervention ENFANT d'un sinistre — une réparation de sinistre reste dans
+ * l'Opération CLAIM, donc un coût de sinistre.
+ */
+export function tcoCategoryOf(op: Pick<TcoOperation, 'typeCode'>): TcoCategory {
+  if (op.typeCode === 'CLAIM') return 'CLAIMS';
   switch (op.typeCode) {
     case 'ACQUISITION': return 'ACQUISITION';
     case 'INTERVENTION': return 'MAINTENANCE';
@@ -485,7 +488,6 @@ function statusOfEntry(e: LedgerEntry, retained: EconomicLineStatus): EconomicLi
 export function computeTco(input: TcoInput): TcoResult {
   const scope = new Set([input.assetId]);
   const ops = input.operations;
-  const typeParId = new Map(ops.map((o) => [o.id, o.typeCode]));
   const warnings = new Set<TcoWarning>();
 
   // Cession effective : Opération DISPOSAL réalisée (date), sinon fiche.
@@ -520,7 +522,7 @@ export function computeTco(input: TcoInput): TcoResult {
   const autresBiens = new Set<number>();
 
   for (const op of ops) {
-    const category = tcoCategoryOf(op, op.parentOperationId != null ? (typeParId.get(op.parentOperationId) ?? null) : null);
+    const category = tcoCategoryOf(op);
     const hasRefund = op.components.some((c) => c.kind === 'REFUND');
     for (const c of op.components) {
       const e = evaluateComponent(c, {
@@ -891,7 +893,7 @@ export function computeTco(input: TcoInput): TcoResult {
   // ── Lot 80A : décisions de l'utilisateur (Ajouter / Retirer du TCO) — AVANT les totaux, priment sur les règles ──
   const decisionsUtilisateur = applyTcoUserDecisions({
     lines: toutesLignes, entries, decisions: input.userDecisions ?? [], warnings,
-    operationCategory: new Map(ops.map((o) => [o.id, tcoCategoryOf(o, o.parentOperationId != null ? (typeParId.get(o.parentOperationId) ?? null) : null)])),
+    operationCategory: new Map(ops.map((o) => [o.id, tcoCategoryOf(o)])),
   });
 
   // Lot 80A : une ligne que l'utilisateur a lui-même ajoutée au TCO ne rend plus le total incomplet pour son motif d'origine.

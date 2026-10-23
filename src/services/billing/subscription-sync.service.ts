@@ -92,6 +92,27 @@ const PLAN_TYPE: Record<PlanTier, 'STANDARD' | 'PREMIUM' | 'PREMIUM_DUO'> = {
 };
 
 /**
+ * Lot 83E — état DÉNORMALISÉ du compte (`accounts.plan_type`,
+ * `accounts.subscription_status`) attendu pour une ligne d'abonnement
+ * (`account_subscriptions`) écrite par la synchronisation (pure) : même
+ * table de correspondance que `synchroniserAbonnement` (payé → offre ;
+ * `past_due` → PAST_DUE ; résiliation programmée → CANCELED ; terminé →
+ * EXPIRED / STANDARD ; rétractation → WITHDRAWN, offre non contrôlée).
+ * Lue par le contrôle de cohérence COH-ENTITLEMENTS ; `null` : ligne non
+ * écrite par la synchronisation (essai, statut inconnu) — rien d'attendu.
+ */
+export function expectedAccountState(row: { planCode: string | null; status: string | null; cancelAtPeriodEnd: boolean | null }): { planType: string | null; status: string } | null {
+  const tier = (['standard', 'premium', 'premium_duo'] as const).find((p) => p === row.planCode) ?? null;
+  switch (row.status) {
+    case 'active': return tier ? { planType: PLAN_TYPE[tier], status: row.cancelAtPeriodEnd ? 'CANCELED' : 'ACTIVE' } : null;
+    case 'past_due': return tier ? { planType: PLAN_TYPE[tier], status: 'PAST_DUE' } : null;
+    case 'canceled': return { planType: 'STANDARD', status: 'EXPIRED' };
+    case 'readonly': return { planType: null, status: 'WITHDRAWN' };
+    default: return null;
+  }
+}
+
+/**
  * États Stripe où l'offre payée est EN PLACE (offre, périodicité, dates
  * synchronisées). `past_due` en fait partie, mais n'ouvre AUCUN droit : la
  * ligne d'abonnement passe `past_due` (mode restreint immédiat, APP-FUNC-31).

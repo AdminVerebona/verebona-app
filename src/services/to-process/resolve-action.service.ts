@@ -35,6 +35,7 @@ import type { ResolutionReason, TargetType } from './action-model';
 import { getRule, PROCESSING_RULES } from './rules-catalog';
 import { documentExists, documentSlotFor } from './document-slots';
 import { AGENDA_STATUS_WRITER, ASSET_STATUS_WRITER } from './agenda-status-cards';
+import { AGENDA_DATE_WRITER } from './agenda-date-writer';
 
 /**
  * Client de base : la transaction en cours, ou `db` hors transaction.
@@ -81,6 +82,8 @@ const FIELD_WRITERS: FieldWriter[] = [
   // CDC 15 T4-12 et D-15 (lot 14) : statut d'une échéance, statut du bien.
   AGENDA_STATUS_WRITER,
   ASSET_STATUS_WRITER,
+  // Lot 83A (CDC v5 §11.8) : date d'un événement principal arbitrée (DATA-AGENDA-DATE).
+  AGENDA_DATE_WRITER,
   {
     targetType: 'DOCUMENT',
     fieldKey: 'rubricCode',

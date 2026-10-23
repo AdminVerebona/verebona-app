@@ -70,19 +70,15 @@
  *   operations-structured-migration au démarrage, puis toutes      verrou Opération du compte ; repère
  *                                   les heures (rien à faire :     par bien × version (0322) — rejouée,
  *                                   une seule requête)             aucune écriture (lot 43, C23.1)
- *   operations-claim-migration      au démarrage, puis toutes      verrou Opération du compte ; repère
- *                                   les heures (rien à faire :     par bien × version × empreinte
- *                                   une seule requête)             (0323) — rejouée, aucune écriture
- *                                                                  (lot 44, C14.3)
  *   operations-quality-check        chaque jour à 6 h 50          lecture seule (READ ONLY) ; alerte de
  *                                                                 Supervision par empreinte (lot 47A, C26.2)
  *   cross-account-relations-check   chaque jour à 7 h 05          lecture seule (READ ONLY) ; alerte de
  *                                                                 Supervision par type (lot 49, SEC-P0) ;
  *                                                                 jamais de correction
- *   to-process-relevance-reevaluation toutes les heures (rien à    curseur en base par campagne (0445) ;
- *                                   faire : deux requêtes)        une issue par carte (unique) ; réévalue
- *                                                                 les cartes « À traiter » documentaires
- *                                                                 existantes (lot 61, bilan avant / après)
+ *   to-process-relevance-reevaluation toutes les heures            rétention / reprise des traces de décision,
+ *                                                                 faux arbitrages 81A (bornés) ; la campagne
+ *                                                                 de pertinence est RETIRÉE (lot 83E :
+ *                                                                 contrôle de cohérence COH-TODO-RELEVANCE-*)
  *   document-validation-reprise     au démarrage, puis toutes      transition d'état conditionnelle ;
  *                                   les heures (rien à faire :     une ligne de trace par document
  *                                   une seule requête)             (0495, unique) ; cartes « À traiter »
@@ -692,34 +688,14 @@ export const SCHEDULED_TASKS: readonly ScheduledTaskDef[] = [
       return { note, ...(r.processed === 0 && r.failed.length > 0 ? { error: note } : {}) };
     },
   },
-  {
-    // Lot 44 (O5, CDC Opérations V1 C14.3, décision PO Q11) : l'ancien
-    // formulaire Sinistre (`claim_json`, un sinistre par bien) devient une
-    // Opération CLAIM — seuil minimal (type, date, référence ou montant),
-    // « trouver avant de créer », élément d'agenda lié sans doublon, pièces et
-    // photos rattachées. Reprend aussi une écriture de l'ancien JSON par un
-    // ancien client (retour arrière) — report sur le sinistre reflété.
-    // Idempotente (repère bien × version × empreinte, 0323). Toutes les heures
-    // dès le démarrage : sans bien à traiter, une seule requête. Aussi
-    // pilotable depuis le BO (Exploitation › Rattrapages, simulation).
-    code: 'operations-claim-migration',
-    label: 'Sinistres : reprise de l’ancien formulaire',
-    schedule: { kind: 'interval', everyMs: HOUR },
-    timeoutMs: 10 * MIN,
-    run: async ({ deadline }) => {
-      const { runClaimMigration } = await import('@/services/business-operations/consolidation/claim-migration');
-      const r = await runClaimMigration({ apply: true, deadline: Math.min(deadline, Date.now() + 8 * MIN) });
-      if (r.scanned === 0) return { note: 'aucun bien à examiner' };
-      const note = `${r.processed} bien(s) examiné(s), ${r.outcomes.CREATED ?? 0} sinistre(s) créé(s), ${(r.outcomes.MATCHED ?? 0) + (r.outcomes.LINKED ?? 0)} rapproché(s), `
-        + `${r.outcomes.RESYNCED ?? 0} resynchronisé(s), ${(r.outcomes.BELOW_THRESHOLD ?? 0) + (r.outcomes.HOLD_AMBIGUOUS ?? 0)} sans création, `
-        + `${r.failed.length} en échec${r.more ? ', reste à traiter' : ''}`;
-      return { note, ...(r.processed === 0 && r.failed.length > 0 ? { error: note } : {}) };
-    },
-  },
+  // Lot 83D (V-Q2, CDC v5 §17) : la tâche « operations-claim-migration »
+  // (reprise de l'ancien formulaire Sinistre `claim_json`) est RETIRÉE avec le
+  // formulaire ; plus aucun traitement ne lit ni n'écrit `claim_json`.
   {
     // Lot 47A (O9, CDC Opérations V1 C26.2, ACC-022) : anomalies dures des
     // Opérations (active sans source, composante sans source, lien inter-
-    // comptes, cycle / profondeur parent, montant négatif, OTHER en repli).
+    // comptes, montant négatif, OTHER en repli ; lot 83D : plus de cycle /
+    // profondeur parent — hiérarchie retirée).
     // Lecture seule ; chaque code non nul ouvre ou consolide une anomalie de
     // Supervision, résolue d'elle-même à 0. Jamais de réparation (Q9).
     code: 'operations-quality-check',
@@ -756,58 +732,51 @@ export const SCHEDULED_TASKS: readonly ScheduledTaskDef[] = [
     },
   },
   {
-    // Lot 61 (tickets « À traiter » : écarts 58B, pertinence des cartes §6) —
-    // lot 72 (C6) : toutes les familles concernées (documents, agenda,
-    // équipements, fournisseurs) puis les décisions sans carte prises par une
-    // version antérieure du moteur — réévaluation RÉTROACTIVE par la
-    // décision centrale (résolution automatique, pertinence, intervention
-    // réelle, report). Lots bornés, curseur en base, bilan avant / après lu
-    // par le BO (File d'attente IA › Pertinence « À traiter ») — qui permet
-    // aussi de relancer une campagne. Aucun appel IA sans élément nouveau
-    // (mémoire de décision) ; une panne ne ferme jamais une carte.
+    // Lot 61 / 72 / 76 : réévaluation rétroactive de la pertinence des cartes
+    // « À traiter » (campagne `l76-pertinence`). LOT 83E (C-Q9, une seule
+    // chaîne) : la CAMPAGNE est RETIRÉE — la même réévaluation, par le même
+    // code métier, est un contrôle du registre de cohérence
+    // (COH-TODO-RELEVANCE-CARDS, COH-TODO-STALE-DECISIONS, tâche
+    // `coherence-control`). La tâche garde son code (état et historique au BO)
+    // et ses fonctions de maintenance LÉGITIMES : rétention des traces de
+    // décision remplacées (lot 72), reprise des traces non écrites (lot 76),
+    // rattrapage borné des faux arbitrages (lot 81A).
     code: 'to-process-relevance-reevaluation',
-    label: '« À traiter » : réévaluation de la pertinence des cartes existantes',
-    // Toutes les heures (une requête quand il n'y a rien à faire) : une
-    // campagne relancée depuis le BO est poursuivie sans redémarrage.
+    label: '« À traiter » : maintenance des traces de décision et rattrapage des faux arbitrages',
     schedule: { kind: 'interval', everyMs: HOUR },
     startupDelayMs: 9 * MIN,
     timeoutMs: 10 * MIN,
-    run: async ({ deadline, trigger }) => {
-      const { runRelevanceCampaign } = await import('@/services/to-process/relevance-campaign.service');
+    run: async ({ deadline }) => {
       // Lot 72 (C7) : rétention des traces de décision REMPLACÉES (> 400 jours ;
       // la dernière décision de chaque cible est toujours conservée), bornée.
       const { purgeSupersededDecisionTraces } = await import('@/services/to-process/admissibility');
       const purge = await purgeSupersededDecisionTraces({ limit: 2_000 });
       const purgeNote = purge.familyDecisions + purge.documentRuleEvaluations > 0
-        ? ` — rétention : ${purge.documentRuleEvaluations + purge.familyDecisions} trace(s) remplacée(s) purgée(s)` : '';
+        ? `rétention : ${purge.documentRuleEvaluations + purge.familyDecisions} trace(s) remplacée(s) purgée(s)` : null;
       // Lot 76 (C8) : décisions appliquées NON tracées — reprise bornée de leur trace (0582).
       const { replayPendingTraces } = await import('@/services/to-process/trace-retries');
       const traces = await replayPendingTraces({ limit: 200, deadline: Math.min(deadline, Date.now() + MIN) });
       const traceNote = traces.examined > 0
-        ? ` — traces reprises : ${traces.replayed} écrite(s), ${traces.superseded} remplacée(s), ${traces.failed} en échec, ${traces.abandoned} abandonnée(s)` : '';
+        ? `traces reprises : ${traces.replayed} écrite(s), ${traces.superseded} remplacée(s), ${traces.failed} en échec, ${traces.abandoned} abandonnée(s)` : null;
       // Lot 81A : rattrapage BORNÉ des faux arbitrages (propositions équivalentes à la
       // valeur actuelle) — réexamen en lecture seule, carte corrigée ou close (0626).
-      let fauxNote = '';
+      let fauxNote: string | null = null;
       try {
         const { runArbitrationRepriseCampaign } = await import('@/services/to-process/arbitration-equivalence-reprise');
         const fa = await runArbitrationRepriseCampaign({ deadline: Math.min(deadline, Date.now() + 90_000), limit: 100 });
         if (!fa.disabled && (fa.counters.scanned > 0 || fa.counters.suspects > 0)) {
-          fauxNote = ` — faux arbitrages (${fa.campaign}) : ${fa.counters.scanned} carte(s) parcourue(s), ${fa.counters.suspects} suspecte(s), `
+          fauxNote = `faux arbitrages (${fa.campaign}) : ${fa.counters.scanned} carte(s) parcourue(s), ${fa.counters.suspects} suspecte(s), `
             + `${fa.counters.CORRECTED} corrigée(s), ${fa.counters.OBSOLETE} close(s) sans objet, ${fa.counters.ERROR} en erreur${fa.done ? ' — terminé' : ''}`;
         }
       } catch (e) {
-        fauxNote = ` — faux arbitrages : passage en échec (${String((e as Error).message).slice(0, 200)})`;
+        fauxNote = `faux arbitrages : passage en échec (${String((e as Error).message).slice(0, 200)})`;
       }
-      const r = await runRelevanceCampaign({ deadline: Math.min(deadline, Date.now() + 8 * MIN), trigger });
-      if (r.disabled) return { note: `migration 0445 absente : rien à faire${purgeNote}${traceNote}${fauxNote}` };
-      if (r.done && r.examined === 0 && !r.campaignId) return { note: `aucune campagne en cours${purgeNote}${traceNote}${fauxNote}` };
+      const note = [purgeNote, traceNote, fauxNote].filter(Boolean).join(' — ');
+      if (!note) return;
       return {
-        note: `campagne ${r.code ?? '?'}${r.phase ? ` (phase ${r.phase})` : ''} : ${r.examined} élément(s) examiné(s), ${r.retried ?? 0} repris — ${JSON.stringify(r.outcomes)}${r.done ? (r.status === 'DONE_WITH_ERRORS' ? ` — parcours terminé, ${r.remainingErrors} erreur(s) maintenue(s) bloquante(s)` : ' — terminée') : ''}${purgeNote}${traceNote}${fauxNote}`.slice(0, 1500),
-        again: r.more,
-        // Lot 76 (C7 / C8) : erreurs maintenues ou traces abandonnées → passage signalé en erreur (jamais un faux succès).
-        ...(r.errors > 0 && r.examined > 0 && r.errors >= r.examined ? { error: `${r.errors} carte(s) en erreur` }
-          : r.status === 'DONE_WITH_ERRORS' ? { error: `campagne ${r.code} : ${r.remainingErrors} élément(s) en erreur après reprises (BO › Pertinence « À traiter »)` }
-            : traces.abandoned > 0 ? { error: `${traces.abandoned} trace(s) de décision non écrite(s) après reprises (BO › Pertinence « À traiter »)` } : {}),
+        note: note.slice(0, 1500),
+        // Lot 76 (C8) : traces abandonnées → passage signalé en erreur (jamais un faux succès).
+        ...(traces.abandoned > 0 ? { error: `${traces.abandoned} trace(s) de décision non écrite(s) après reprises (BO › Pertinence « À traiter »)` } : {}),
       };
     },
   },

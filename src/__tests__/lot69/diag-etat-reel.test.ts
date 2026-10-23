@@ -67,7 +67,7 @@ function cilSource(readiness: CilReadiness, over: Partial<ExportSource> = {}): E
 
 const CATALOG_BASE = {
   asset: { id: 1, category: 'IMMOBILIER', subtype: 'MAISON' }, premium: { allowed: true }, counts: { documents: 1, photos: 1 },
-  additional: { commercial: {}, rental: {}, insurance: {}, claim: {} }, generations: [],
+  additional: { commercial: {}, rental: {}, insurance: {} }, generations: [],
 };
 
 /** Les trois surfaces qui affichent le blocage : préparation (desktop et mobile : même `blockedReason`), catalogue, refus API. */
@@ -160,20 +160,22 @@ describe('DIAG-C — CIL : message construit sur les blocs réellement bloquants
 
 describe('DIAG-S — sinistre : champs réellement absents', () => {
   const hint = (claim: Record<string, unknown>) => {
-    const c = buildExportCatalog({ ...CATALOG_BASE, cil: null, claims: 1, additional: { ...CATALOG_BASE.additional, claim } } as never);
+    // Lot 83D : le sinistre le plus récent vient de l'Opération CLAIM (type, survenue), plus d'une sous-rubrique saisie.
+    const latestClaim = { claimType: (claim.claimType as string | undefined) ?? null, occurredOn: (claim.occurredOn as string | undefined) ?? null };
+    const c = buildExportCatalog({ ...CATALOG_BASE, cil: null, claims: 1, latestClaim } as never);
     return c.dossiers.find((d) => d.code === 'ASSURANCE_SINISTRE')!.readiness.hints.find((h) => h.code === 'CLAIM_MISSING')?.message ?? null;
   };
   it('DIAG-S01 — type absent, date connue → seul le type est demandé', () => {
     expect(claimMissingKeyFields({ occurredOn: '2026-03-12' })).toEqual(['claimType']);
-    expect(hint({ occurredOn: '2026-03-12' })).toBe('Type du sinistre à renseigner pour une synthèse complète.');
+    expect(hint({ occurredOn: '2026-03-12' })).toBe('Type du sinistre non établi par vos documents pour une synthèse complète.');
   });
   it('DIAG-S02 — type connu, date absente → seule la date est demandée', () => {
     expect(claimMissingKeyFields({ claimType: 'DEGAT_DES_EAUX' })).toEqual(['occurredOn']);
-    expect(hint({ claimType: 'DEGAT_DES_EAUX' })).toBe('Date du sinistre à renseigner pour une synthèse complète.');
+    expect(hint({ claimType: 'DEGAT_DES_EAUX' })).toBe('Date du sinistre non établie par vos documents pour une synthèse complète.');
   });
   it('DIAG-S03 — type et date absents → les deux', () => {
-    expect(hint({ declaredOn: '2026-03-14' })).toBe('Type et date du sinistre à renseigner pour une synthèse complète.');
-    expect(claimMissingKeyFieldsMessage(['claimType', 'occurredOn'])).toBe('Type et date du sinistre à renseigner.');
+    expect(hint({ declaredOn: '2026-03-14' })).toBe('Type et date du sinistre non établis par vos documents pour une synthèse complète.');
+    expect(claimMissingKeyFieldsMessage(['claimType', 'occurredOn'])).toBe('Type et date du sinistre non établis par vos documents.');
   });
   it('DIAG-S04 — les deux présents → aucun avertissement correspondant', () => {
     expect(claimMissingKeyFields({ claimType: 'VOL', occurredOn: '2026-01-01' })).toEqual([]);

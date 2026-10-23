@@ -10,7 +10,9 @@
  *   cdc15                 runCdc15Backfill(--step all, lot 200, pause 50 ms) / restoreCdc15Run / summarizeRun
  *   asset-account         runAssetAccountBackfill (lot 500 ; simulation = transactions annulées)
  *   operations-structured runStructuredOperationsMigration (lot 43 ; simulation = transactions annulées)
- *   operations-claims     runClaimMigration (lot 44 ; simulation = transactions annulées)
+ *   claims-legacy-cleanup runClaimLegacyCleanup / restoreClaimLegacyCleanup (lot 83D ; simulation =
+ *                         lecture seule ; application refusée sans point de restauration < 24 h ;
+ *                         journal 0672)
  *   cross-account         runCrossAccountRemediation / restoreCrossAccountRemediation (lot 53, D23 ;
  *                         simulation = transaction annulée par catégorie)
  *   equipment-separation  runDataSeparationBackfill (lot 71A ; simulation = lecture seule)
@@ -145,17 +147,19 @@ export async function executeBackfill(sql: postgres.Sql, req: BackfillRequest, h
       });
       return { result: r };
     }
-    case 'operations-claims': {
-      // Lot 44 : même service que la tâche planifiée (une transaction par bien,
-      // verrou Opération du compte ; simulation = transaction annulée).
-      const { runClaimMigration } = await import('@/services/business-operations/consolidation/claim-migration');
-      const r = await runClaimMigration({
-        apply: req.action === 'apply', accountId: req.accountId, batchSize: 200, maxAssets: 5_000,
-        onProgress: ({ processed, assetId }) => {
-          hooks.progress({ processed });
-          if (processed % 50 === 0) hooks.log(`bien ${assetId} : ${processed} examiné(s)`);
-        },
+    case 'claims-legacy-cleanup': {
+      // Lot 83D (V-Q2, C-Q8) : refus SANS écriture s'il n'existe aucun point de restauration de moins de 24 h.
+      const m = await import('@/services/business-operations/claims/legacy-cleanup');
+      if (req.action === 'restore') {
+        const r = await m.restoreClaimLegacyCleanup(sql, req.runId!, { reason: req.reason, adminUserId: admin?.id ?? null });
+        hooks.log(`restauration ${req.runId} : ${r.restored} ligne(s), ${r.conflicts.length} conflit(s)`);
+        return { result: { ...r, action: 'restore' } };
+      }
+      const r = await m.runClaimLegacyCleanup({
+        sql, mode: req.action === 'apply' ? 'APPLY' : 'SIMULATE', accountId: req.accountId, reason: req.reason,
+        adminUserId: admin?.id ?? null, log: hooks.log,
       });
+      if (r.status === 'refused') throw Object.assign(new Error(r.refusal ?? 'Point de restauration requis.'), { code: 'RESTORE_POINT_REQUIRED' });
       return { result: r };
     }
     case 'cross-account': {

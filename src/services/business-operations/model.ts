@@ -232,55 +232,13 @@ export function checkStatusTransition(
   return 'ALLOWED';
 }
 
-// ── Parent / enfant (C8.1, C13.1) ──────────────────────────────────────────
-
-export const MAX_OPERATION_DEPTH = 3;
-
-/**
- * Relations « fait partie de » admises (enfant → parents possibles) :
- *   FINANCING    → ACQUISITION  (PARENT-004, C13.1) ;
- *   INTERVENTION → CLAIM        (PARENT-005, C13.1) ;
- *   INTERVENTION → INTERVENTION (sous-intervention réellement autonome, 5.1).
- * Toute autre relation est refusée — notamment CONTRACT parent d'un CLAIM ou
- * d'une INTERVENTION (PARENT-006) ; la référence CLAIM → contrat d'assurance
- * passe par `claim_details.insurance_contract_operation_id`, pas par le parent.
- */
-export const ALLOWED_PARENT_TYPES: Readonly<Partial<Record<BusinessOperationTypeCode, readonly BusinessOperationTypeCode[]>>> = {
-  FINANCING: ['ACQUISITION'],
-  INTERVENTION: ['CLAIM', 'INTERVENTION'],
-};
-
-export function checkParentRelation(childType: BusinessOperationTypeCode | null, parentType: BusinessOperationTypeCode | null): void {
-  if (childType === null || parentType === null) {
-    throw new BusinessOperationIntegrityError(
-      'PARENT_TYPE_UNKNOWN',
-      'Une relation parent / enfant exige deux Opérations qualifiées (C8.1).',
-    );
-  }
-  if (!(ALLOWED_PARENT_TYPES[childType] ?? []).includes(parentType)) {
-    throw new BusinessOperationIntegrityError(
-      'PARENT_RELATION_NOT_ALLOWED',
-      `${childType} ne peut pas être enfant de ${parentType} (C8.1, C13.1).`,
-    );
-  }
-}
-
-/**
- * Profondeur et cycle (PARENT-001, PARENT-002) — pure, sur des données lues.
- *   ancestorsOfParent : chaîne parent → racine, parent COMPRIS (ids) ;
- *   childSubtreeHeight : niveaux du sous-arbre de l'enfant, enfant compris (≥ 1).
- */
-export function checkHierarchy(childId: number, ancestorsOfParent: readonly number[], childSubtreeHeight: number): void {
-  if (ancestorsOfParent.includes(childId)) {
-    throw new BusinessOperationIntegrityError('PARENT_CYCLE', 'Ce rattachement créerait un cycle parent / enfant (C20.1).');
-  }
-  if (ancestorsOfParent.length + childSubtreeHeight > MAX_OPERATION_DEPTH) {
-    throw new BusinessOperationIntegrityError(
-      'PARENT_DEPTH_EXCEEDED',
-      `Profondeur maximale de ${MAX_OPERATION_DEPTH} niveaux dépassée (PARENT-002).`,
-    );
-  }
-}
+// ── Parent / enfant : retiré au lot 83D ────────────────────────────────────
+//
+// CDC v5 §6.4, §18.4, E16, AC39 : une réparation de sinistre reste dans la même
+// Opération CLAIM ; aucune Opération n'est plus jamais enfant d'une autre. La
+// colonne `business_operations.parent_operation_id` est INERTE (aucune écriture,
+// aucune lecture métier), purgée par le rattrapage BO « Sinistres : nettoyage
+// de l'ancien modèle » et supprimée au lot O-10.
 
 // ── Devises (C12.3) ────────────────────────────────────────────────────────
 

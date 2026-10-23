@@ -10,6 +10,8 @@
  * Ce fichier est le point d'entrée appelé par la route `POST /api/verebona/messages`.
  * Les dépendances lourdes (DB, provider) sont injectées pour rester testable (§25.5).
  */
+import { currentBusinessExecutionIds, runInBusinessExecution } from '@/services/ai/business-execution/context';
+import { t2ExecutionId } from '@/services/ai/business-execution/identity';
 import { randomUUID } from 'crypto';
 import type {
   AssistantRequestInput, AssistantRunResult, IntentRoute, ResponseMode, VerebonaErrorCode,
@@ -298,6 +300,12 @@ export async function runAssistant(
   // Identifiant RÉSERVÉ par la route (ligne `pending`, annulable) s'il
   // existe ; sinon généré ici (reprise de clarification, tests).
   const requestId = input.requestId ?? randomUUID();
+  // Lot 83C (SEM-01, SEM-04) : une demande = une exécution métier T2
+  // (`T2:<request_id>`), portée par tous ses appels (UNDERSTAND, ANSWER,
+  // REVALIDATE, replis, réparations). Les relances internes gardent la même.
+  if (!currentBusinessExecutionIds().some((x) => x.startsWith('T2:'))) {
+    return runInBusinessExecution(t2ExecutionId(requestId), () => runAssistant({ ...input, requestId }, ports));
+  }
   // Rapport des appels modèle (sécurité, réparation, escalade), partagé par
   // référence comme le budget et versé dans la trace à la fin.
   const aiReport = input.aiReport ?? { securityEvents: [], events: [] };

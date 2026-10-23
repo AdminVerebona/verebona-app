@@ -22,7 +22,7 @@ import { NextRequest } from 'next/server';
 import { getTableName } from 'drizzle-orm';
 import { PDFDocument, StandardFonts } from 'pdf-lib';
 import sharp from 'sharp';
-import { makeSource, doc, photo, event, TODAY } from '@/services/exports/v12/__tests__/fixtures/sources';
+import { makeSource, doc, photo, event, TODAY, claimFileOf } from '@/services/exports/v12/__tests__/fixtures/sources';
 import type { ExportSource } from '@/services/exports/v12/data/source';
 
 if (!process.env.PLAYWRIGHT_BROWSERS_PATH && !process.env.CHROMIUM_EXECUTABLE_PATH && fs.existsSync('/opt/pw-browsers')) {
@@ -169,18 +169,17 @@ describe.skipIf(!enabled)('Routes de préparation → PDF réel (données struct
     return { prep, est, r, text };
   }
 
-  it('sinistre : agenda lié, dommages / actions / échanges, pièce sensible liée jamais citée', async () => {
+  it('sinistre (lot 83D : Opération CLAIM) : élément principal et étape d’agenda, dommages, pièce sensible liée jamais citée', async () => {
     state.source = makeSource('IMMOBILIER', 'ASSURANCE_SINISTRE', {
       asset: { ...makeSource('IMMOBILIER', 'ASSURANCE_SINISTRE').asset, id: 5 },
-      additionalInfo: {
-        commercial: {}, rental: {}, insurance: {}, updatedAt: null,
-        claim: {
-          claimEventKey: 'agenda:9', claimType: 'DEGAT_DES_EAUX',
-          damages: [{ id: 'd1', zone: 'Salle de bain', element: 'Plafond', finding: 'Auréoles au plafond', photoIds: [1], documentIds: [1, 3] }],
-          actions: [{ id: 'a1', title: 'Séchage du plafond', date: '2026-08-15', status: 'REALISEE', invoiceDocumentId: 2 }],
-          exchanges: [{ id: 'x1', date: '2026-08-20', summary: 'Convocation à l’expertise', party: 'EXPERT', channel: 'EMAIL', direction: 'RECU' }],
-        },
-      } as never,
+      additionalInfo: { commercial: {}, rental: {}, insurance: {}, updatedAt: null },
+      claim: { selectedOperationId: 50, origin: 'operation', options: [{ id: 50, label: 'Dégât des eaux', date: null }] },
+      claimFile: claimFileOf({
+        claimType: 'DEGAT_DES_EAUX', principalKey: 'agenda:9', agendaKeys: ['agenda:9', 'agenda:10'],
+        agenda: [{ key: 'agenda:9', title: 'Dégât des eaux', date: '2026-08-14', principal: true }, { key: 'agenda:10', title: 'Séchage du plafond', date: '2026-08-15', principal: false }],
+        damages: [{ key: 'd1', zone: 'Salle de bain', element: 'Plafond', finding: 'Auréoles au plafond', estimatedAmountCents: null, photoIds: [1], documentIds: [1, 3] }],
+        documentIds: [1, 2, 3],
+      }),
       documents: [
         doc({ id: 1, kind: 'DEVIS', title: 'Devis réfection plafond', date: '2026-08-18', s3Key: 'devis' }),
         doc({ id: 2, kind: 'FACTURE', title: 'Facture séchage', date: '2026-08-16', s3Key: 'facture' }),
@@ -202,7 +201,7 @@ describe.skipIf(!enabled)('Routes de préparation → PDF réel (données struct
     expect(items.find((i: { key: string }) => i.key === 'photo:2').selected).toBe(false);
     expect(items.find((i: { key: string }) => i.key === 'document:3').selected).toBe(false);
 
-    for (const t of ['Salle de bain', 'Auréoles au plafond', 'Séchage du plafond', 'Convocation à l’expertise', 'Devis réfection plafond', 'CONTENU DEVIS']) expect(text).toContain(t.toLowerCase());
+    for (const t of ['Salle de bain', 'Auréoles au plafond', 'Séchage du plafond', 'Devis réfection plafond', 'CONTENU DEVIS']) expect(text).toContain(t.toLowerCase());
     expect(text).not.toContain('relevé bancaire');
     expect(text).not.toContain('contenu releve');
     expect(r.plan.documents.map((d) => d.doc.id).sort()).toEqual([1, 2]);
@@ -212,7 +211,7 @@ describe.skipIf(!enabled)('Routes de préparation → PDF réel (données struct
     state.source = makeSource('IMMOBILIER', 'DOSSIER_COMPLET', {
       asset: { ...makeSource('IMMOBILIER', 'DOSSIER_COMPLET').asset, id: 5 },
       additionalInfo: {
-        commercial: {}, rental: {}, insurance: {}, claim: {}, updatedAt: null,
+        commercial: {}, rental: {}, insurance: {}, updatedAt: null,
         finance: { retainedValueCents: 34_000_000, retainedValueSource: 'EXPERTISE', retainedValueDate: '2026-05-01', charges: [{ id: 'c1', kind: 'TAXE_FONCIERE', amountCents: 125_000, year: 2025, period: 'AN' }] },
       } as never,
       documents: [doc({ id: 1, kind: 'FACTURE', title: 'Facture chaudière', s3Key: 'facture' })],
@@ -228,7 +227,7 @@ describe.skipIf(!enabled)('Routes de préparation → PDF réel (données struct
   it('dossier complet : section financière laissée décochée → aucune donnée financière', async () => {
     state.source = makeSource('IMMOBILIER', 'DOSSIER_COMPLET', {
       asset: { ...makeSource('IMMOBILIER', 'DOSSIER_COMPLET').asset, id: 5 },
-      additionalInfo: { commercial: {}, rental: {}, insurance: {}, claim: {}, updatedAt: null, finance: { retainedValueCents: 34_000_000 } } as never,
+      additionalInfo: { commercial: {}, rental: {}, insurance: {}, updatedAt: null, finance: { retainedValueCents: 34_000_000 } } as never,
     });
     const { text } = await journey('DOSSIER_COMPLET', () => [], 'PDF');
     expect(text).not.toContain('valeur retenue');

@@ -31,9 +31,8 @@ const ECRIVAINS: Record<string, string> = {
   'src/services/business-operations/consolidation/consolidator.ts': 'T3 : candidats T1 → Opérations',
   'src/services/business-operations/consolidation/asset-data-consolidator.ts': 'T3 : données structurées (lot 43)',
   'src/services/business-operations/consolidation/agenda-source-consolidator.ts': 'T3 : agenda source (lot 47B)',
-  'src/services/business-operations/consolidation/claim-form.ts': 'T3 : saisie Sinistre puis reconsolidation (lot 44)',
-  'src/services/business-operations/consolidation/claim-migration.ts': 'T3 : migration de l’ancien formulaire (lot 44)',
-  'src/services/business-operations/claims/claim-operation.service.ts': 'saisie Sinistre (source CLAIM_FORM) → écriture T3',
+  // Lot 83D (V-Q1, V-Q2) : formulaire, migration et service de saisie Sinistre RETIRÉS (plus aucun écrivain).
+  'src/services/business-operations/claims/legacy-cleanup.ts': 'rattrapage BO de nettoyage de l’ancien modèle Sinistres (lot 83D : point de restauration exigé, journal 0672, restaurable)',
   'src/services/business-operations/asset-lifecycle.ts': 'cycle de vie des biens (suppression, transfert Duo)',
   'src/services/business-operations/agenda-projection/service.ts': 'T4 : seulement les suppressions de projection (C16.1)',
   'src/services/assets/asset-account-transfer.service.ts': 'transfert Duo : références de fichiers détachées',

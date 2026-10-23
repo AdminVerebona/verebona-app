@@ -306,7 +306,7 @@ scenario('L76I-FCC', 'À traiter : fin de contrat de crédit calculée, sollicit
     expect(await valeur(u)).toMatchObject({ v: '2050-01-01', u: true });
   });
 
-  it('FCC-11 — stock : décision sans carte du moteur antérieur reprise par la campagne existante (valeur calculée, aucune carte)', async () => {
+  it('FCC-11 — stock : décision sans carte du moteur antérieur reprise par le contrôle de cohérence (valeur calculée, aucune carte)', async () => {
     const compte = await make.account();
     const f = await doc(compte, { title: 'Offre de crédit immobilier', facts: offre() });
     const { currentKnowledgeRev, DOCUMENT_RULE_ENGINE_VERSION } = await import('@/services/to-process/document-field-evidence');
@@ -314,16 +314,12 @@ scenario('L76I-FCC', 'À traiter : fin de contrat de crédit calculée, sollicit
     await sql`INSERT INTO document_rule_evaluations (account_id, file_id, rule_code, field_key, trigger_code, engine_version, decision, reason_code, signature, outcome, pertinence, knowledge_rev, config_ref)
               VALUES (${compte.id}, ${f}, 'DATA-CONTRACT-END', 'contractEndDate', 'SWEEP', 'l76-1', 'NONE', 'DEFERRED', ${`ancien-${f}`},
                       'DEFER', 'T4_INCOMPATIBLE', ${await currentKnowledgeRev(compte.id, f)}, 'det:structured')`;
-    const svc = await import('@/services/to-process/relevance-campaign.service');
-    await svc.startRelevanceCampaign({ code: `l76i-e2e-${f}`, trigger: 'manual' });
-    let r = await svc.runRelevanceCampaign({ deadline: Date.now() + 180_000 });
-    while (r.more) r = await svc.runRelevanceCampaign({ deadline: Date.now() + 180_000 });
+    // Lot 83E (C-Q9) : la campagne est RETIRÉE — reprise par le contrôle de cohérence COH-TODO-STALE-DECISIONS (même décision).
+    const { runCoherenceFor, proofOf } = await import('../coherence-run');
+    expect((await runCoherenceFor(sql, [compte.id])).status).toBe('COMPLETE');
     expect(await valeur(f)).toMatchObject({ v: FIN_240, kind: 'CALCULATED' });
     expect(await ouvertes(f)).toEqual([]);
-    const items = await sql<Array<Record<string, any>>>`
-      SELECT i.* FROM to_process_relevance_campaign_items i JOIN to_process_relevance_campaigns c ON c.id = i.campaign_id
-       WHERE c.code = ${`l76i-e2e-${f}`} AND i.account_id = ${compte.id}`;
-    expect(items).toEqual([expect.objectContaining({ phase: 'DECISIONS', outcome: 'AUTO_RESOLVED' })]);
+    expect((await proofOf(sql, compte.id, 'COH-TODO-STALE-DECISIONS', f))?.last_result).toBe('REPAIRED');
   });
 
   it('FCC-12 — tableau d’amortissement du MÊME contrat (référence exacte) : dernière échéance exploitée pour l’offre', async () => {

@@ -243,7 +243,7 @@ export function claimAnswer(claims: ClaimOverview[], scope: ScopeLike, assets: A
     const assetId = c.assetIds.find((id) => scopeIds.has(id)) ?? c.assetIds[0] ?? null;
     const content = ligne(c, true);
     return assetId
-      ? { id: claimSourceId(assetId, c.operationId), type: 'asset_field', title: `${c.label.charAt(0).toUpperCase()}${c.label.slice(1)}`, content, relevanceScore: 1, meta: { assetId, assetName: noms.get(assetId) ?? null, date: c.occurredOn } }
+      ? { id: claimSourceId(assetId, c.operationId), type: 'asset_field', title: `${c.label.charAt(0).toUpperCase()}${c.label.slice(1)}`, content, relevanceScore: 1, meta: { assetId, assetName: noms.get(assetId) ?? null, date: c.occurredOn, agendaItemId: c.agendaItemId ?? null } }
       : c.documentIds[0]
         ? { id: `doc_${c.documentIds[0]}`, type: 'document', title: `Sinistre — ${c.label}`, content, relevanceScore: 1, meta: { fileId: c.documentIds[0], date: c.occurredOn } }
         : null;

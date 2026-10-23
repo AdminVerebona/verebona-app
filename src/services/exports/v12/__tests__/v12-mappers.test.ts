@@ -20,7 +20,7 @@ import { renderDossierHtml } from '../templates';
 import type { ResolvedFiles } from '../data/resolved';
 import type { ExportSource } from '../data/source';
 import type { DossierCode } from '@/services/exports/catalog';
-import { makeSource, doc, photo, event, TODAY } from './fixtures/sources';
+import { makeSource, doc, photo, event, TODAY, claimFileOf } from './fixtures/sources';
 
 const META = { reference: 'VBN-TEST-000001', generatedAt: '2026-09-28T09:14:00+02:00', preparedBy: 'Claire Martin', templateLabel: 'test · v1.0', zipName: null, label: 'Test' };
 
@@ -72,9 +72,13 @@ function richSource(code: DossierCode, family: 'IMMOBILIER' | 'VEHICULE' | 'OBJE
       commercial: { desiredSalePriceCents: 390000, salePitch: 'Modèle 2022, entretien suivi.', saleConditions: 'Paiement par virement' },
       rental: { monthlyRentCents: 115000, monthlyChargesCents: 14000, depositCents: 0, leaseType: 'NON_MEUBLE', chargesMode: 'PROVISION' },
       insurance: { insuranceObjective: 'AJOUT_OBJET', desiredInsuredAmountCents: 125000, valueToInsureCents: 125000, protections: 'Garage fermé à clé\nRack mural verrouillable' },
-      claim: { claimType: 'DEGAT_DES_EAUX', occurredOn: '2026-08-01', declaredOn: '2026-08-03', insurerClaimRef: 'SIN-2026-0412', status: 'DECLARE', circumstances: 'Fuite sous l’évier.' },
       updatedAt: null,
     },
+    // Lot 83D (V-Q8) : sinistre = Opération CLAIM consolidée (plus de sous-rubrique `claim`).
+    ...(code === 'ASSURANCE_SINISTRE' ? {
+      claim: { selectedOperationId: 50, origin: 'operation' as const, options: [{ id: 50, label: 'Dégât des eaux', date: '2026-08-01' }] },
+      claimFile: claimFileOf({ claimType: 'DEGAT_DES_EAUX', occurredOn: '2026-08-01', declaredOn: '2026-08-03', insurerClaimRef: 'SIN-2026-0412', status: 'DECLARE', circumstances: 'Fuite sous l’évier.' }),
+    } : {}),
     cil: code === 'CIL' ? {
       readiness: { globalStatus: 'ready', completion: { resolvedBlocks: 5, applicableBlocks: 8, totalBlocks: 8, percentage: 62 }, blockingBlocks: [],
         blocks: ['B1', 'B3', 'B4', 'B5', 'B6', 'B7', 'B8', 'B9'].map((id) => ({ id, label: id, status: ['B1', 'B3', 'B8', 'B9'].includes(id) ? 'complete' as const : 'unknown' as const, blocking: false, missingItems: [] })) },

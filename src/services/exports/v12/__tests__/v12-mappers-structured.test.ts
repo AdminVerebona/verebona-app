@@ -1,9 +1,9 @@
 /**
  * Mappeurs V12 alimentés par les listes structurées des informations
  * complémentaires (schéma v2) — rendu HTML vérifié sur le TEXTE :
- *   · sinistre : dommages (zone / élément / constat / photos), actions datées
- *     avec facture liée, échanges avec l'assureur et l'expert, sinistre de
- *     l'agenda lié (RULE-001) ; texte libre en repli ;
+ *   · sinistre (lot 83D : Opération CLAIM consolidée) : dommages (zone /
+ *     élément / constat / photos / justificatifs reliés), courriers de
+ *     l'assureur, chronologie de l'Opération, Pièces et équipements ;
  *   · vente : points forts choisis (ordre, plafond de 4), repli sur les faits ;
  *   · dossier complet : valeur retenue, frais d'acquisition, charges et taxes,
  *     seulement si la section financière est cochée (RULE-002) ;
@@ -16,7 +16,7 @@ import { mapDossierData } from '../data/mappers';
 import { buildDefaultChoices, planSelection, type ExportChoices } from '../data/choices';
 import { renderDossierHtml } from '../templates';
 import type { ResolvedFiles } from '../data/resolved';
-import type { ExportSource, InfoSection } from '../data/source';
+import type { ExportClaimFile, ExportSource, InfoSection } from '../data/source';
 import type { DossierCode } from '@/services/exports/catalog';
 import type {
   DossierCompletData, SinistreData, SouscriptionData, VenteData,
@@ -43,99 +43,101 @@ function render<T>(code: DossierCode, source: ExportSource, choices: ExportChoic
 }
 
 // ─── Sinistre ────────────────────────────────────────────────────────────────
+// Lot 83D (CDC v5 §16, V-Q8) : le dossier lit l'Opération CLAIM consolidée (`claimFile`) —
+// plus de sous-rubrique saisie, plus de listes « actions » / « échanges » (§18.1, §18.2).
 
-function claimSource(claim: Record<string, unknown>): ExportSource {
+function claimFile(over: Partial<ExportClaimFile> = {}): ExportClaimFile {
+  return {
+    operationId: 50, claimType: 'DEGAT_DES_EAUX', occurredOn: '2026-08-03', declaredOn: '2026-08-04', insurerClaimRef: 'SIN-2026-08-77412',
+    policyReference: null, status: null, statusDetail: null, circumstances: null, consequences: 'Plafonds tachés sur 11 m².', measures: null,
+    exchangesSummary: 'Texte libre qui ne doit plus sortir', estimatedDamageCents: null, compensationCents: null,
+    damages: [
+      { key: 'd1', zone: 'Salle de bain', element: 'Plafond · 5 m²', finding: 'Auréoles, peinture cloquée', estimatedAmountCents: 284000, photoIds: [5, 6], documentIds: [7, 4] },
+      { key: 'd2', zone: 'Chambre 2', element: 'Parquet', finding: 'Lames gonflées', estimatedAmountCents: null, photoIds: [2], documentIds: [] },
+      { key: 'd3', zone: 'Salle de bain', element: 'Luminaire', finding: null, estimatedAmountCents: null, photoIds: [], documentIds: [] },
+    ],
+    // Tous les documents de l'Opération (le RIB sensible en fait partie : jamais pré-coché).
+    documentIds: [7, 4, 10, 11],
+    agendaKeys: [], agenda: [], principalKey: null, historyEventKey: 'event:3',
+    rooms: ['Salle de bain', 'Chambre 2'], equipments: ['Chauffe-eau'],
+    ...over,
+  };
+}
+
+function claimSource(file: ExportClaimFile | null): ExportSource {
   return makeSource('IMMOBILIER', 'ASSURANCE_SINISTRE', {
     documents: [
       doc({ id: 7, kind: 'DEVIS', title: 'Devis peinture et plâtrerie', date: '2026-08-19', supplier: 'Artisan peintre', amountCents: 284000 }),
       doc({ id: 4, kind: 'DOCUMENT_BANCAIRE', title: 'RIB compte joint', sensitive: true, date: '2026-08-05' }),
       doc({ id: 10, kind: 'ECHANGE_ASSUREUR', title: 'Accusé de réception assureur', date: '2026-08-04' }),
       doc({ id: 11, kind: 'FACTURE', title: 'Facture location déshumidificateur', date: '2026-08-22', supplier: 'Loxam Lyon', amountCents: 18600 }),
+      // Document du bien qui n'appartient PAS à l'Opération : proposé selon la règle historique (antérieur : non coché).
+      doc({ id: 12, kind: 'FACTURE', title: 'Facture ancienne chaudière', date: '2025-01-10' }),
     ],
     photos: [photo(2, { date: '2026-04-21', caption: 'Plafond avant sinistre' }), photo(5, { date: '2026-08-03', caption: 'Auréoles plafond' }), photo(6, { date: '2026-08-03', caption: 'Parquet gonflé' })],
     events: [
       event(3, { title: 'Dégât des eaux salle de bain', category: 'sinistre', date: '2026-08-03', description: 'Infiltration depuis le 4e étage.' }),
       event(8, { title: 'Recherche de fuite', category: 'reparation', date: '2026-08-07', provider: 'Plomberie Bellecour' }),
     ],
-    additionalInfo: { commercial: {}, rental: {}, insurance: {}, claim: claim as InfoSection, updatedAt: null },
+    claim: file ? { selectedOperationId: file.operationId, origin: 'operation', options: [{ id: file.operationId, label: 'Dégât des eaux · 03/08/2026', date: file.occurredOn }] } : null,
+    claimFile: file,
   });
 }
 
-const STRUCTURED_CLAIM = {
-  claimEventKey: 'event:3',
-  // Recopiée de l'événement lié par le formulaire (pré-sélection des pièces datées).
-  occurredOn: '2026-08-03',
-  claimType: 'DEGAT_DES_EAUX',
-  declaredOn: '2026-08-04',
-  insurerClaimRef: 'SIN-2026-08-77412',
-  consequences: 'Plafonds tachés sur 11 m².',
-  exchangesSummary: 'Texte libre qui ne doit plus sortir',
-  damages: [
-    { id: 'd1', zone: 'Salle de bain', element: 'Plafond · 5 m²', finding: 'Auréoles, peinture cloquée', estimatedAmountCents: 284000, photoIds: [5, 6], documentIds: [7, 4] },
-    { id: 'd2', zone: 'Chambre 2', element: 'Parquet', finding: 'Lames gonflées', photoIds: [2] },
-    { id: 'd3', zone: 'Salle de bain', element: 'Luminaire' },
-  ],
-  actions: [
-    { id: 'a1', date: '2026-08-08', endDate: '2026-08-22', title: 'Séchage', performedBy: 'Loxam Lyon', detail: 'Déshumidificateur en location', invoiceDocumentId: 11 },
-    { id: 'a2', status: 'A_REALISER', title: 'Remise en état' },
-    { id: 'a3', date: '2026-08-03', title: 'Mesures conservatoires', invoiceDocumentId: 4 },
-  ],
-  exchanges: [
-    { id: 'x2', date: '2026-08-18', direction: 'RECU', party: 'EXPERT', channel: 'COURRIER', summary: "Convocation à l'expertise du 26/08" },
-    { id: 'x1', date: '2026-08-04', direction: 'RECU', party: 'ASSUREUR', channel: 'EMAIL', summary: 'Accusé de réception de la déclaration', documentId: 10 },
-  ],
-};
+describe('ASSURANCE_SINISTRE · Opération CLAIM consolidée (lot 83D)', () => {
+  const { data, text, plan } = render<SinistreData>('ASSURANCE_SINISTRE', claimSource(claimFile()));
 
-describe('ASSURANCE_SINISTRE · listes structurées', () => {
-  const { data, text, plan } = render<SinistreData>('ASSURANCE_SINISTRE', claimSource(STRUCTURED_CLAIM));
-
-  it('pré-sélection inchangée : pièces liées au sinistre, RIB sensible non retenu, photos du sinistre', () => {
-    expect(plan.documents.map((d) => d.doc.id).sort()).toEqual([10, 11, 7]);
-    expect(plan.photos.filter((p) => p.mode === 'PDF').map((p) => p.photo.id)).toEqual([5, 6]);
+  it('L83D-U10 — pré-sélection : TOUS les documents de l’Opération (sauf sensible), photos des dommages d’abord', () => {
+    expect(plan.documents.map((d) => d.doc.id).sort((a, b) => a - b)).toEqual([7, 10, 11]);
+    // La photo « avant » d'un dommage est retenue : elle documente le dommage (V-Q8), sans duplication.
+    expect(plan.photos.filter((p) => p.mode === 'PDF').map((p) => p.photo.id).sort((a, b) => a - b)).toEqual([2, 5, 6]);
   });
 
-  it('dommages : zone, élément, constat, montant estimé saisi, photos P1–P2 retenues seulement', () => {
+  it('L83D-U11 — dommages : zone, élément, constat, montant estimé, photos et justificatifs RELIÉS ; pièce sensible jamais citée', () => {
     expect(data.damages!.map((d) => d.zone)).toEqual(['Salle de bain', 'Chambre 2', 'Salle de bain']);
-    expect(data.damages![0]).toMatchObject({ photoRefs: 'P1, P2', docIds: ['d7'] });
+    // Références P1… dans l'ordre des photos du dossier (par date) : la photo « avant » (21/04) est P1.
+    expect(data.damages![0]).toMatchObject({ photoRefs: 'P2, P3', docIds: ['d7'] });
     expect(data.damages![0].finding!.replace(/[\u00a0\u202f]/g, ' ')).toBe('Auréoles, peinture cloquée · Montant estimé : 2 840 €');
-    // Photo « avant » non retenue et pièce sensible non cochée : jamais citées.
-    expect(data.damages![1].photoRefs).toBeNull();
+    expect(data.damages![1].photoRefs).toBe('P1');
     expect(data.damages![0].docIds).not.toContain('d4');
     expect(text).toContain('Dommages et éléments concernés');
-    expect(text).toContain('Photos · pièces');
-    expect(text).toMatch(/P1, P2 · A\d/);
-    // Note de couverture recalculée : 2 zones distinctes (PDF-TXT-001).
+    expect(text).toMatch(/P2, P3 · A\d/);
     expect(text).toContain('2 zones endommagées');
   });
 
-  it('actions : période, « Non réalisé », intervenant, facture renvoyée vers son annexe ; pièce sensible jamais citée', () => {
-    expect(data.actions!.map((a) => [a.title, a.whenLabel ?? a.date])).toEqual([
-      ['Séchage', '08/08 → 22/08/2026'], ['Remise en état', 'Non réalisé'], ['Mesures conservatoires', '2026-08-03'],
-    ]);
-    expect(data.actions![0].text).toBe('Déshumidificateur en location · Intervenant : Loxam Lyon');
-    expect(data.actions![0].docId).toBe('d11');
-    expect(data.actions![2].docId).toBeNull();
-    expect(text).toMatch(/Intervenant : Loxam Lyon · facture · annexe A\d/);
-    // Synthèse : les mesures en texte libre ne sont pas masquées par la liste (design : les deux).
-    expect(data.claim!.measures).toBeNull(); // non saisies ici
-  });
-
-  it('échanges : triés par date, interlocuteur et canal, pièce citée une seule fois ; texte libre ignoré', () => {
-    expect(data.exchanges!.map((x) => [x.date, x.title, x.channel])).toEqual([
-      ['2026-08-04', 'Accusé de réception de la déclaration', 'Assureur · E-mail reçu'],
-      ['2026-08-18', "Convocation à l'expertise du 26/08", 'Expert · Courrier reçu'],
-    ]);
-    expect(data.exchanges!.every((x) => x.linkedToClaim)).toBe(true);
+  it('L83D-U12 — plus de section « Actions » ni de liste d’échanges saisis : les courriers sont des documents (§18.1, §18.2)', () => {
+    expect((data as unknown as Record<string, unknown>).actions).toBeUndefined();
+    expect(text).not.toContain('Actions déjà réalisées');
+    expect(data.exchanges!.map((x) => [x.date, x.title, x.channel, x.docId])).toEqual([['2026-08-04', 'Accusé de réception assureur', 'Courrier', 'd10']]);
     expect(text).not.toContain('Texte libre qui ne doit plus sortir');
-    expect(text).not.toContain('Accusé de réception assureur Courrier'); // pas de doublon « correspondance »
   });
 
-  it('RULE-001 : sinistre de l’agenda lié — date, circonstances, pastille rouge, sans entrée en double', () => {
-    expect(data.claim).toMatchObject({ date: '2026-08-03', circumstances: 'Infiltration depuis le 4e étage.', typeLabel: 'Dégât des eaux' });
+  it('L83D-U13 — synthèse : Pièces et équipements concernés (§16) ; données d’assurance sourcées', () => {
+    expect(data.claim).toMatchObject({ rooms: 'Salle de bain, Chambre 2', equipments: 'Chauffe-eau', typeLabel: 'Dégât des eaux', insurerRef: 'SIN-2026-08-77412' });
+    expect(text).toContain('Pièces concernées Salle de bain, Chambre 2');
+    expect(text).toContain('Équipements concernés Chauffe-eau');
+  });
+
+  it('RULE-001 : événement d’ancrage — date, circonstances, pastille rouge, sans entrée en double', () => {
+    expect(data.claim).toMatchObject({ date: '2026-08-03', circumstances: 'Infiltration depuis le 4e étage.' });
     const keyed = data.timeline!.filter((t) => t.tone === 'key');
     expect(keyed.map((t) => t.id)).toEqual(['event:3']);
     expect(data.timeline!.map((t) => t.id)).not.toContain('claim');
     expect(data.timeline!.map((t) => t.date)).toEqual([...data.timeline!.map((t) => t.date)].sort());
+  });
+
+  it('L83D-U14 — chronologie : principal et étapes de l’Opération (élément d’agenda non rattaché au bien compris)', () => {
+    const r = render<SinistreData>('ASSURANCE_SINISTRE', claimSource(claimFile({
+      historyEventKey: null, principalKey: 'agenda:90', agendaKeys: ['agenda:90', 'agenda:91'],
+      agenda: [
+        { key: 'agenda:90', title: 'Dégât des eaux — Maison', date: '2026-08-03', principal: true },
+        { key: 'agenda:91', title: 'Visite de l’expert', date: '2026-08-26', principal: false },
+      ],
+    })));
+    expect(r.data.timeline!.map((t) => [t.id, t.title, t.tone])).toEqual(expect.arrayContaining([
+      ['agenda:90', 'Dégât des eaux — Maison', 'key'], ['agenda:91', 'Visite de l’expert', null],
+    ]));
+    expect(r.data.timeline!.map((t) => t.id)).not.toContain('claim');
   });
 
   it('règles sensibles et vides', () => {
@@ -145,38 +147,42 @@ describe('ASSURANCE_SINISTRE · listes structurées', () => {
   });
 
   it('section « dommages » décochée : tableau absent', () => {
-    const src = claimSource(STRUCTURED_CLAIM);
+    const src = claimSource(claimFile());
     const c = buildDefaultChoices('ASSURANCE_SINISTRE', src, { today: TODAY });
     const r = render<SinistreData>('ASSURANCE_SINISTRE', src, { ...c, origin: 'user', sections: { ...c.sections, damages: false } });
     expect(r.data.damages).toEqual([]);
     expect(r.text).not.toContain('Dommages et éléments concernés');
   });
 
-  it('repli sans listes : mesures ligne à ligne en cartes, résumé des échanges, aucun dommage inventé', () => {
-    const r = render<SinistreData>('ASSURANCE_SINISTRE', claimSource({
-      claimType: 'DEGAT_DES_EAUX', occurredOn: '2026-08-03', consequences: 'Plafonds tachés.',
-      measures: 'Coupure électrique\nBâchage', exchangesSummary: 'Relance du 15/09',
+  it('repli sans dommage ni courrier : mesures dans la synthèse, résumé des échanges, aucun dommage inventé', () => {
+    const src = claimSource(claimFile({
+      damages: [], documentIds: [7], historyEventKey: null, measures: 'Coupure électrique', exchangesSummary: 'Relance du 15/09',
     }));
+    // Aucun courrier de l'assureur parmi les documents du bien (sinon il fait foi, §18.2).
+    const r = render<SinistreData>('ASSURANCE_SINISTRE', { ...src, documents: src.documents.filter((d) => d.kind !== 'ECHANGE_ASSUREUR') });
     expect(r.data.damages).toEqual([]);
-    expect(r.data.actions!.map((a) => a.title)).toEqual(['Coupure électrique', 'Bâchage']);
-    expect(r.data.claim!.measures).toBeNull();
+    expect(r.data.claim!.measures).toBe('Coupure électrique');
     expect(r.text).toContain('Relance du 15/09');
     expect(r.text).not.toContain('Dommages et éléments concernés');
-    // Sans lien : entrée « sinistre » saisie temporairement (RULE-002).
+    // Sans ancre : entrée « sinistre » à la date de survenue.
     expect(r.data.timeline!.find((t) => t.tone === 'key')?.title).toBe('Sinistre : dégât des eaux');
   });
 
-  it('événement lié sans date saisie : la date du sinistre vient de l’agenda', () => {
-    const { occurredOn: _o, ...noDate } = STRUCTURED_CLAIM;
-    void _o;
-    const r = render<SinistreData>('ASSURANCE_SINISTRE', claimSource(noDate));
+  it('survenue inconnue : la date du sinistre vient de l’événement d’ancrage', () => {
+    const r = render<SinistreData>('ASSURANCE_SINISTRE', claimSource(claimFile({ occurredOn: null })));
     expect(r.data.claim!.date).toBe('2026-08-03');
     expect(r.text).toContain('Sinistre survenu le 03/08/2026');
   });
 
   it('pièce liée supprimée depuis (absente de la source) : ignorée sans erreur', () => {
-    const r = render<SinistreData>('ASSURANCE_SINISTRE', claimSource({ ...STRUCTURED_CLAIM, damages: [{ id: 'd', zone: 'Cuisine', photoIds: [999], documentIds: [998] }] }));
+    const r = render<SinistreData>('ASSURANCE_SINISTRE', claimSource(claimFile({ damages: [{ key: 'd', zone: 'Cuisine', element: null, finding: null, estimatedAmountCents: null, photoIds: [999], documentIds: [998] }] })));
     expect(r.data.damages![0]).toMatchObject({ zone: 'Cuisine', photoRefs: null, docIds: [] });
+  });
+
+  it('aucun sinistre : dossier sans synthèse inventée', () => {
+    const r = render<SinistreData>('ASSURANCE_SINISTRE', claimSource(null));
+    expect(r.data.claim).toMatchObject({ typeLabel: null, date: null });
+    expect(r.data.damages).toEqual([]);
   });
 });
 
@@ -186,7 +192,7 @@ function saleSource(commercial: Record<string, unknown>): ExportSource {
   return makeSource('VEHICULE', 'VENTE', {
     documents: [doc({ id: 1, kind: 'FACTURE', title: 'Facture achat' })],
     events: [event(1, { title: 'Révision complète', provider: 'Cyclable Lyon', date: '2025-07-03' })],
-    additionalInfo: { commercial: commercial as InfoSection, rental: {}, insurance: {}, claim: {}, updatedAt: null },
+    additionalInfo: { commercial: commercial as InfoSection, rental: {}, insurance: {}, updatedAt: null },
   });
 }
 
@@ -232,7 +238,7 @@ const FINANCE: Record<string, unknown> = {
 
 describe('DOSSIER_COMPLET · valeur retenue, charges et taxes', () => {
   const src = makeSource('IMMOBILIER', 'DOSSIER_COMPLET', {
-    additionalInfo: { commercial: {}, rental: {}, insurance: {}, claim: {}, finance: FINANCE as InfoSection, updatedAt: null },
+    additionalInfo: { commercial: {}, rental: {}, insurance: {}, finance: FINANCE as InfoSection, updatedAt: null },
   });
   const choices = buildDefaultChoices('DOSSIER_COMPLET', src, { today: TODAY });
 
@@ -277,7 +283,7 @@ describe('ASSURANCE_SOUSCRIPTION · protections détaillées et éléments à as
       doc({ id: 3, kind: 'DOCUMENT_BANCAIRE', title: 'Relevé bancaire', sensitive: true }),
     ],
     additionalInfo: {
-      commercial: {}, rental: {}, claim: {}, updatedAt: null,
+      commercial: {}, rental: {}, updatedAt: null,
       insurance: {
         insuranceObjective: 'AJOUT_OBJET', protections: 'Texte libre remplacé',
         protectionItems: [

@@ -45,6 +45,8 @@ import { isExecutionCancelled, type ExecutionGuard } from '../queue/execution-co
 import { REQUEUE_ORIGIN_SUFFIX } from './failure-policy';
 import { isCostCapReached } from '../gateway/errors';
 import { markAnalysisVisibility, normalizeProcessingVisibility, type ProcessingVisibility } from '../processing-status/processing-visibility';
+import { currentBusinessExecutionId, runInBusinessExecution } from '../business-execution/context';
+import { newT1ExecutionId } from '../business-execution/identity';
 
 export interface AnalyzeFileSourcesOptions {
   /** Déduit du premier fichier si absent — l'ancienne signature ne le portait pas. */
@@ -110,7 +112,22 @@ export async function analyzeFileSources(
   options: AnalyzeFileSourcesOptions = {},
 ): Promise<RunSourceAnalysisOutput | null> {
   if (fileIds.length === 0 || !accountId) return null;
+  // Lot 83C (SEM-01, SEM-03, R22) : une analyse HORS file est une nouvelle
+  // exécution métier du document (sous la file : celle du travail). Ses appels
+  // et son rapport portent l'identifiant ; la remise en file d'un échec la
+  // REPREND (même identifiant). Un appel multi-fichiers (aucun appelant) :
+  // chaque document est rattaché par son rapport.
+  if (!options.guard && fileIds.length === 1 && !currentBusinessExecutionId()?.startsWith('T1:')) {
+    return runInBusinessExecution(newT1ExecutionId(), () => analyzeFileSourcesIn(fileIds, accountId, options), { origin: options.origin ?? null });
+  }
+  return analyzeFileSourcesIn(fileIds, accountId, options);
+}
 
+async function analyzeFileSourcesIn(
+  fileIds: number[],
+  accountId: number,
+  options: AnalyzeFileSourcesOptions,
+): Promise<RunSourceAnalysisOutput | null> {
   const outcome = await runRouted(fileIds, accountId, options);
 
   // Hors file : les sources en échec sont confiées à la file durable.
@@ -167,6 +184,8 @@ async function deferToNextPeriod(
       // Même marge de 60 s que `deferJobUntil`.
       delaySeconds: Math.max(1, Math.ceil((until.getTime() - Date.now()) / 1000) + 60),
       costCapDeferredUntil: until.toISOString(),
+      // Lot 83C : exécution suspendue (plafond), reprise au 1er — même exécution métier.
+      resume: currentBusinessExecutionId()?.startsWith('T1:') && ids.length === 1 ? currentBusinessExecutionId()! : true,
     });
     // Motif lisible (tiroir du document) : « en file », reprise le 1er.
     await db.update(assetFiles)
@@ -202,6 +221,8 @@ async function requeueFailedSources(
       // demande n'était pas facturable).
       ...(options.billable === false ? { billable: false } : {}),
       delaySeconds: backoffSeconds(1),
+      // Lot 83C (R22) : la remise en file REPREND l'exécution en échec.
+      resume: currentBusinessExecutionId()?.startsWith('T1:') && ids.length === 1 ? currentBusinessExecutionId()! : true,
     });
     console.info(
       `[source-analysis] ${acceptes.length}/${ids.length} source(s) en échec remise(s) en file durable `

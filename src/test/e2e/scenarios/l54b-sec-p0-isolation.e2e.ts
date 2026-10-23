@@ -299,13 +299,17 @@ scenario('L54B-SEC', 'SEC-P0-CORR — isolation stricte des comptes', ({ sql, ma
   let claimA = 0;
   let damageA = 0;
   it('SEC-04-01 — sinistre A citant contrat, événement, facture, échange, pièce et photo de B : aucune exposition', async () => {
-    const { POST, GET } = await import('@/app/api/assets/[id]/claims/route');
-    const tokA = await jeton(A.user, A.acc.id);
-    const cr = await POST(req(tokA, `/api/assets/${A.bien.id}/claims`, { method: 'POST', body: { claim: { claimType: 'DEGAT_DES_EAUX', occurredOn: '2026-03-12' } } }),
-      { params: Promise.resolve({ id: String(A.bien.id) }) });
-    expect(cr.status, await cr.clone().text()).toBe(201);
-    claimA = (await cr.json() as { id: number }).id;
+    // Lot 83D (V-Q1) : plus de route de saisie — sinistre de A tel qu'existant en préproduction (source CLAIM_FORM).
     const { withBusinessOperationWrite } = await import('@/services/business-operations/write');
+    claimA = await withBusinessOperationWrite(A.acc.id, async (r) => {
+      const c = await r.create({
+        type: { code: 'CLAIM' }, status: 'REALIZED', realizedDate: '2026-03-12',
+        source: { kind: 'CLAIM_FORM', entityKey: A.bien.id, authority: 'USER', confidence: 'certain' },
+        assets: [{ assetId: A.bien.id, role: 'PRIMARY', authority: 'USER' }], reasonCode: 'E2E',
+      } as never);
+      await r.upsertClaimDetails(c.id, { claimType: 'DEGAT_DES_EAUX' } as never);
+      return c.id;
+    });
     const contratB = (await withBusinessOperationWrite(B.acc.id, (r) => r.create({
       type: { code: 'CONTRACT' }, status: 'REALIZED', provider: 'BRAVO-ASSUREUR',
       source: { kind: 'DOCUMENT', entityKey: B.fichier, role: 'INVOICE', authority: 'DOCUMENT', confidence: 'certain' }, reasonCode: 'E2E',
@@ -333,12 +337,13 @@ scenario('L54B-SEC', 'SEC-P0-CORR — isolation stricte des comptes', ({ sql, ma
     expect(rec.contractLabel).toBeNull();
     expect(rec.details?.insuranceContractOperationId ?? null).toBeNull();
     expect(rec.details?.historyEventId ?? null).toBeNull();
-    const ids = JSON.stringify(rec.lists);
+    const ids = JSON.stringify({ damages: rec.damages, documentIds: rec.documentIds });
     for (const x of [B.fichier, B.photo]) expect(ids).not.toMatch(new RegExp(`\\b${x}\\b`));
-    // Route : rien de B (libellé, identifiants).
-    const liste = await GET(req(tokA, `/api/assets/${A.bien.id}/claims`), { params: Promise.resolve({ id: String(A.bien.id) }) });
-    expect(liste.status).toBe(200);
-    expect(await liste.text()).not.toContain('BRAVO');
+    // Dossier d'assurance (lot 83D, V-Q8) : rien de B (libellé, identifiants).
+    const { loadExportSource } = await import('@/services/exports/v12/data/source');
+    const dossier = await loadExportSource({ assetId: A.bien.id, accountId: A.acc.id, userId: A.user.id, exportType: 'ASSURANCE_SINISTRE', claimOperationId: claimA });
+    expect(JSON.stringify(dossier.claimFile)).not.toContain('BRAVO');
+    for (const x of [B.fichier, B.photo]) expect(JSON.stringify(dossier.claimFile?.damages ?? [])).not.toMatch(new RegExp(`\\b${x}\\b`));
     // Export : la photo de B rattachée au bien de A n'est jamais incluse.
     const { buildAssetSnapshot } = await import('@/services/export-snapshot.service');
     const snap = await buildAssetSnapshot(A.bien.id, A.user.id, { accountId: A.acc.id });

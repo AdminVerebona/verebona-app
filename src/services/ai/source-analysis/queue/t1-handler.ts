@@ -113,6 +113,8 @@ export async function enqueueFileAnalyses(
     delaySeconds?: number;
     /** Lot 22 : report pour plafond de coût du compte, jusqu'à cette date (ISO). */
     costCapDeferredUntil?: string;
+    /** Lot 83C : reprise d'une exécution métier (voir `enqueueDurableFileAnalyses`). */
+    resume?: true | string;
   },
 ): Promise<number[]> {
   if (options.origin === UPLOAD_ORIGIN && !(await t1TriggerActive('source_uploaded'))) {
@@ -146,6 +148,13 @@ export async function enqueueDurableFileAnalyses(
      * date (ISO) — porté dans le contexte comme par `deferJobUntil`.
      */
     costCapDeferredUntil?: string;
+    /**
+     * Lot 83C (R22) : ce travail REPREND une exécution métier — identifiant
+     * donné, ou `true` : la dernière exécution du document. Absent : le
+     * travail démarre sa propre exécution (`T1:job:<id>`). Une reprise ne crée
+     * jamais une seconde exécution ni un faux succès / échec.
+     */
+    resume?: true | string;
   },
 ): Promise<number[]> {
   const acceptes: number[] = [];
@@ -154,6 +163,9 @@ export async function enqueueDurableFileAnalyses(
   for (const fileId of [...new Set(fileIds)]) {
     if (!Number.isInteger(fileId)) continue;
     try {
+      const reprise = options.resume === undefined ? null
+        : typeof options.resume === 'string' ? options.resume
+          : await (await import('../../business-execution/repository')).latestT1ExecutionIdForFile(accountId, fileId);
       const { decision } = await enqueue({
         treatment: 'T1',
         scope: { accountId, targetType: TARGET_TYPE, targetId: fileId },
@@ -166,6 +178,7 @@ export async function enqueueDurableFileAnalyses(
           processingVisibility: visibilite,
           ...(options.billable === false ? { billable: false } : {}),
           ...(options.costCapDeferredUntil ? { costCapDeferredUntil: options.costCapDeferredUntil } : {}),
+          ...(reprise ? { businessExecution: { id: reprise, role: 'resume' } } : {}),
         },
         ...(options.delaySeconds ? { delaySeconds: options.delaySeconds } : {}),
       });

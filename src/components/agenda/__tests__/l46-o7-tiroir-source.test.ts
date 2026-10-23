@@ -1,8 +1,9 @@
 /**
  * Lot 46 — O7 : tiroir d'un événement d'agenda projeté (desktop ET mobile —
  * un seul composant `AgendaItemDrawer`, feuille pleine largeur sur mobile,
- * 520 px sur desktop). La source est accessible : documents (liens
- * existants) ou sinistre (rubrique Sinistres du bien) ; jamais le mot
+ * 520 px sur desktop). La source est accessible par les documents (liens
+ * existants) ; lot 83D (V-Q1, CDC v5 §15.2, E13) : plus de lien « Voir le
+ * sinistre » ni de `highlight=claims` (rubrique retirée) ; jamais le mot
  * « Opération » (P09). La suppression reste celle d'aujourd'hui (même
  * bouton, même route), la mémorisation est côté serveur.
  */
@@ -15,10 +16,10 @@ const lire = (p: string) => readFileSync(resolve(__dirname, '..', '..', '..', p)
 describe('O7-UI-01 — tiroir d’un événement projeté (desktop et mobile)', () => {
   const tiroir = lire('components/agenda/AgendaItemDrawer.tsx');
 
-  it('un événement qui représente un sinistre propose « Voir le sinistre » vers la rubrique Sinistres du bien', () => {
-    expect(tiroir).toContain('item.claimSource && (');
-    expect(tiroir).toContain('href={`/assets/${item.claimSource.assetId}?tab=details&highlight=claims&claim=${item.claimSource.claimId}`}');
-    expect(tiroir).toContain('Voir le sinistre');
+  it('lot 83D (V-Q1) : plus de lien « Voir le sinistre » ni de rubrique Sinistres (navigation générique du tiroir)', () => {
+    expect(tiroir).not.toContain('claimSource');
+    expect(tiroir).not.toContain('highlight=claims');
+    expect(tiroir).not.toContain('Voir le sinistre');
   });
 
   it('les documents sources restent affichés par la rubrique Documents existante (liens du tiroir)', () => {

@@ -26,7 +26,8 @@ import { getAiEnvironment } from '@/services/ai/config/environment';
 import { listVersions, getActiveVersion, getEffectiveVersion } from '@/services/ai/config/config-version.repository';
 import { listPackages } from '@/services/ai/config/config-package.service';
 import { getQueueSummary, getTreatmentStates, getEmergencyStop } from '@/services/ai/queue/job-queue.repository';
-import { getErrorBreakdown } from '@/services/ai/telemetry/execution-log.repository';
+import { projectBusinessExecutions, summarize } from '@/services/ai/business-execution/repository';
+import type { TreatmentSummary } from '@/services/ai/business-execution/types';
 import { getCostReport } from '@/services/ai/telemetry/cost-report.repository';
 import { TREATMENTS, TREATMENT_DEFINITIONS } from '@/services/ai/config/treatments';
 import { unavailableModels } from '@/services/ai/config/config-validation.service';
@@ -86,7 +87,14 @@ export async function GET(req: NextRequest) {
       getQueueSummary(),
       getTreatmentStates(),
       getEmergencyStop(),
-      getErrorBreakdown(windowDays),
+      // Lot 83C (BO-04, SEM-05) : exécutions MÉTIER de la fenêtre, comptées une
+      // fois selon leur issue finale — remplace le comptage d'appels en échec.
+      (async () => {
+        const fin = new Date();
+        const p = await projectBusinessExecutions({ from: new Date(fin.getTime() - windowDays * 86_400_000), to: new Date(fin.getTime() + 1) }, fin);
+        if (p.unavailable.length) console.warn('[dashboard] exécutions métier partielles :', p.unavailable.map((u) => u.treatment).join(', '));
+        return summarize(p.rows);
+      })(),
       getCostReport({ since: new Date(Date.now() - windowDays * 86_400_000) }),
       // MOD-008 / OPS-019 : modèles à dix échecs consécutifs ou plus, par
       // traitement (alertingModels). Dixième source, isolée comme les autres.
@@ -104,7 +112,7 @@ export async function GET(req: NextRequest) {
     const NOMS = [
       'versions', 'version active', 'version effective', 'packages',
       'file d’attente', 'états des traitements', 'arrêt d’urgence',
-      'erreurs récentes', 'coûts', 'alertes modèles', 'alertes système',
+      'exécutions métier', 'coûts', 'alertes modèles', 'alertes système',
       'activité par traitement', 'brouillons',
     ];
 
@@ -129,7 +137,7 @@ export async function GET(req: NextRequest) {
     const queue = valeur(4, [] as Awaited<ReturnType<typeof getQueueSummary>>);
     const states = valeur(5, [] as Awaited<ReturnType<typeof getTreatmentStates>>);
     const stop = valeur(6, { active: false, reason: null, engagedAt: null });
-    const errors = valeur(7, [] as Awaited<ReturnType<typeof getErrorBreakdown>>);
+    const executions = valeur(7, null as TreatmentSummary[] | null);
     const costs = valeur(8, {
       totals: {
         functionalMicros: 0, technicalMicros: 0, calls: 0,
@@ -191,14 +199,19 @@ export async function GET(req: NextRequest) {
       });
     }
 
-    // Les erreurs répétées comptent davantage qu'une erreur isolée : c'est la
-    // répétition qui distingue un incident d'un aléa.
-    for (const e of errors.filter((x) => x.count >= 5).slice(0, 5)) {
+    // Lot 83C (BO-04, BO-11) : une alerte par traitement, sur les exécutions
+    // MÉTIER échouées ou incomplètes (chacune comptée une fois) — jamais une
+    // somme d'appels en échec présentée comme autant de documents. Les
+    // incidents de modèle restent signalés à part (MOD-008 ci-dessus).
+    for (const e of (executions ?? []).filter((x) => x.failed + x.incomplete > 0)) {
+      const parts = [
+        e.failed ? `${e.failed} exécution${e.failed > 1 ? 's' : ''} échouée${e.failed > 1 ? 's' : ''}` : null,
+        e.incomplete ? `${e.incomplete} incomplète${e.incomplete > 1 ? 's' : ''}` : null,
+      ].filter(Boolean).join(', ');
       alerts.push({
-        severity: 'warning',
-        message: `${e.count} échecs en ${windowLabel} sur ${e.treatment ?? 'un traitement'}`
-          + `${e.errorCode ? ` (${e.errorCode})` : ''}.`,
-        href: `/admin/ai-executions?errorsOnly=1${e.treatment ? `&treatment=${e.treatment}` : ''}${e.model ? `&model=${encodeURIComponent(e.model)}` : ''}`,
+        severity: e.failed > 0 ? 'warning' : 'info',
+        message: `${e.treatment} : ${parts} en ${windowLabel}.`,
+        href: `/admin/ai-executions?treatment=${e.treatment}`,
       });
     }
 
@@ -311,6 +324,8 @@ export async function GET(req: NextRequest) {
         pending: q?.pending ?? 0,
         running: q?.running ?? 0,
         failed: q?.failed ?? 0,
+        // Lot 83C : issues MÉTIER de la fenêtre (`null` si la source est dégradée).
+        executions: executions?.find((x) => x.treatment === t) ?? null,
         // HLT-01 / PER-01 / VOL-01 : `null` si la source est dégradée.
         activity: (() => {
           const a = activity.find((x) => x.treatment === t);

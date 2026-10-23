@@ -10,9 +10,9 @@ import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
-  ALLOWED_PARENT_TYPES, AUTHORITIES, BUSINESS_OPERATION_STATUSES, BUSINESS_OPERATION_TYPES, BUSINESS_OPERATION_TYPE_CODES,
+  AUTHORITIES, BUSINESS_OPERATION_STATUSES, BUSINESS_OPERATION_TYPES, BUSINESS_OPERATION_TYPE_CODES,
   CLAIM_FILE_STATUSES, COMPONENT_SIGN, CONTRACT_PERIODICITIES, FINANCIAL_COMPONENT_KINDS, HISTORY_EVENT_TYPES, MATCH_METHODS,
-  REFERENCE_KINDS, SOURCE_KINDS, SOURCE_ROLES, checkHierarchy, checkParentRelation, checkStatusTransition,
+  REFERENCE_KINDS, SOURCE_KINDS, SOURCE_ROLES, checkStatusTransition,
   normalizeBusinessReference, normalizeOperationTypeHint, resolveOperationTypeInput,
 } from '../model';
 import {
@@ -144,25 +144,12 @@ describe('C8 / B7 transitions de statut', () => {
   });
 });
 
-describe('C8.1 / C13.1 parent / enfant', () => {
-  it('PARENT-004 FINANCING ⊂ ACQUISITION ; PARENT-005 INTERVENTION ⊂ CLAIM ; sous-intervention', () => {
-    expect(code(() => checkParentRelation('FINANCING', 'ACQUISITION'))).toBe('OK');
-    expect(code(() => checkParentRelation('INTERVENTION', 'CLAIM'))).toBe('OK');
-    expect(code(() => checkParentRelation('INTERVENTION', 'INTERVENTION'))).toBe('OK');
-  });
-  it('PARENT-006 : CONTRACT n’est parent ni d’un CLAIM ni d’une INTERVENTION ; aucune autre relation', () => {
-    expect(code(() => checkParentRelation('CLAIM', 'CONTRACT'))).toBe('PARENT_RELATION_NOT_ALLOWED');
-    expect(code(() => checkParentRelation('INTERVENTION', 'CONTRACT'))).toBe('PARENT_RELATION_NOT_ALLOWED');
-    expect(code(() => checkParentRelation('ACQUISITION', 'FINANCING'))).toBe('PARENT_RELATION_NOT_ALLOWED');
-    expect(code(() => checkParentRelation(null, 'CLAIM'))).toBe('PARENT_TYPE_UNKNOWN');
-    expect(Object.keys(ALLOWED_PARENT_TYPES).sort()).toEqual(['FINANCING', 'INTERVENTION']);
-  });
-  it('PARENT-002 / F-172 profondeur ≤ 3 ; F-171 cycle refusé', () => {
-    expect(code(() => checkHierarchy(9, [2, 1], 1))).toBe('OK');
-    expect(code(() => checkHierarchy(9, [3, 2, 1], 1))).toBe('PARENT_DEPTH_EXCEEDED');
-    expect(code(() => checkHierarchy(9, [2], 2))).toBe('OK');
-    expect(code(() => checkHierarchy(9, [2], 3))).toBe('PARENT_DEPTH_EXCEEDED');
-    expect(code(() => checkHierarchy(1, [2, 1], 1))).toBe('PARENT_CYCLE');
+describe('C8.1 / C13.1 parent / enfant — retiré au lot 83D (CDC v5 §6.4, §18.4, E16, AC39)', () => {
+  it('plus de règle de hiérarchie : aucune Opération n’est enfant d’une autre', async () => {
+    const m = await import('../model');
+    expect('checkParentRelation' in m).toBe(false);
+    expect('checkHierarchy' in m).toBe(false);
+    expect('ALLOWED_PARENT_TYPES' in m).toBe(false);
   });
 });
 

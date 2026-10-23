@@ -49,11 +49,10 @@ describe('C19 — libellés métier (P09 : jamais « Opération » côté utilis
     }
   });
 
-  it('C19-03 (b) parent Sinistre ambigu : deux sinistres + « Non, aucun de ces sinistres » (état actuel)', () => {
-    const s1 = { id: 4, label: 'Déclaration dégât des eaux du 02/02/2026' };
-    const s2 = { id: 6, label: 'Sinistre du 20/02/2026' };
-    expect(cards.parentQuestion([s1, s2])).toBe('Cette intervention fait-elle suite au sinistre « Déclaration dégât des eaux du 02/02/2026 » ou au sinistre « Sinistre du 20/02/2026 » ?');
-    expect(cards.parentProposals([s1, s2]).map((x) => [x.value, !!x.isCurrentValue])).toEqual([['PARENT:4', false], ['PARENT:6', false], ['NONE', true]]);
+  it('C19-03 (b) lot 83D (CDC v5 §18.4, AC39) : plus de question « parent Sinistre » — la réparation reste dans le sinistre', () => {
+    expect('parentQuestion' in cards).toBe(false);
+    expect('parentProposals' in cards).toBe(false);
+    expect(cards.isOperationCardRule('OPERATION-CLAIM-PARENT')).toBe(false);
   });
 
   it('C19-04 (c) montant contradictoire : montants formatés en euros, document source, valeur retenue marquée actuelle', () => {
@@ -76,10 +75,10 @@ describe('C19 — choix fermés (une requête forgée ne désigne rien hors de l
     expect(cards.parseOperationCardChoice('OPERATION-MATCH', 'SAME:99', m)).toBeNull();
     expect(cards.parseOperationCardChoice('OPERATION-MATCH', 'DISTINCT', m)).toBeNull();
     expect(cards.parseOperationCardChoice('OPERATION-MATCH', 'DISTINCT', { ...m, basis: 'M3' })).toEqual({ kind: 'DISTINCT' });
+    // Lot 83D (V-Q2) : règle « parent Sinistre » retirée — aucun choix n'est plus accepté pour elle.
     const p = { kind: 'operation_parent', operationId: 3, claimIds: [4, 6] };
-    expect(cards.parseOperationCardChoice('OPERATION-CLAIM-PARENT', 'PARENT:6', p)).toEqual({ kind: 'PARENT', operationId: 6 });
-    expect(cards.parseOperationCardChoice('OPERATION-CLAIM-PARENT', 'PARENT:7', p)).toBeNull();
-    expect(cards.parseOperationCardChoice('OPERATION-CLAIM-PARENT', 'NONE', p)).toEqual({ kind: 'NONE' });
+    expect(cards.parseOperationCardChoice('OPERATION-CLAIM-PARENT', 'PARENT:6', p)).toBeNull();
+    expect(cards.parseOperationCardChoice('OPERATION-CLAIM-PARENT', 'NONE', p)).toBeNull();
     const a = { kind: 'operation_amount', operationId: 3, fingerprint: 'f', options: [{ amountMinor: 100, currency: 'EUR' }] };
     expect(cards.parseOperationCardChoice('OPERATION-AMOUNT', 'AMOUNT:100:EUR', a)).toEqual({ kind: 'AMOUNT', amountMinor: 100, currency: 'EUR' });
     expect(cards.parseOperationCardChoice('OPERATION-AMOUNT', 'AMOUNT:101:EUR', a)).toBeNull();
@@ -88,13 +87,12 @@ describe('C19 — choix fermés (une requête forgée ne désigne rien hors de l
 
   it('C19-06 catalogue : trois règles « À traiter » pilotées par leur producteur, jamais « Non applicable », relation par problème', () => {
     expect(checkRulesCatalog()).toEqual([]);
-    for (const code of ['OPERATION-MATCH', 'OPERATION-CLAIM-PARENT', 'OPERATION-AMOUNT']) {
+    for (const code of ['OPERATION-MATCH', 'OPERATION-AMOUNT']) {
       expect(getRule(code)).toMatchObject({ targetType: 'DOCUMENT', producer: 'T3_OPERATIONS', arbitratePriority: 'DO_NEXT', completePriority: null, allowNotApplicable: false });
       expect(getRule(code)!.question).not.toMatch(SANS_OPERATION);
     }
     expect(RULE_PRODUCERS.T3_OPERATIONS.module).toBe('src/services/to-process/operation-cards.ts');
     expect(cards.matchRelationKey('op2')).toBe('operationMatch:op2');
-    expect(cards.parentRelationKey(9)).toBe('operationParent:9');
     expect(cards.amountRelationKey(9, 'abcdef0123456789zz')).toBe('operationAmount:9:abcdef0123456789');
   });
 });
@@ -147,7 +145,7 @@ describe('C19 / MASC3 — mascotte : hiérarchie inchangée', () => {
     expect(block.items.length).toBeLessThanOrEqual(MAX_TODO_ITEMS);
     expect(block.total).toBe(6);
     expect(todoTitle('OPERATION-MATCH', 'ARBITRATE')).toBe('Document à rapprocher');
-    expect(todoTitle('OPERATION-CLAIM-PARENT', 'ARBITRATE')).toBe('Lien avec un sinistre à confirmer');
+    expect(todoTitle('OPERATION-CLAIM-PARENT', 'ARBITRATE')).not.toBe('Lien avec un sinistre à confirmer');   // lot 83D : règle retirée
     expect(todoTitle('OPERATION-AMOUNT', 'ARBITRATE')).toBe('Montant à confirmer');
     expect(getRule('OPERATION-MATCH')!.dueSoonDays).toBeUndefined();
   });

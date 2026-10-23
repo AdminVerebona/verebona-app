@@ -16,7 +16,6 @@ import { AssetDetailSection, type FieldDef } from './AssetDetailSection';
 import { ValuationHistoryDrawer } from './ValuationHistoryDrawer';
 import { TcoSection } from './TcoSection';
 import { AssetAdditionalInfosSection } from './AssetAdditionalInfosSection';
-import { AssetClaimsSection } from './claims/AssetClaimsSection';
 import { OCCUPANCY_USAGE_OPTIONS } from '@/lib/assets/occupancy';
 import { apiClient } from '@/lib/api-client';
 import type { AssetDetail } from '@/types/asset-detail';
@@ -27,11 +26,10 @@ import { TENURE_END_LABEL, TENURE_META_KEY, tenureEndKey, tenureSourceLabel, typ
 interface Props {
   asset: AssetDetail;
   onRefresh: () => void;
+  /** Lot 83D : plus lu (seul le bloc « Sinistres », retiré, l'utilisait) ; conservé pour les appelants. */
   planType: 'freemium' | 'premium';
   readOnly?: boolean;
   highlightField?: string | null;
-  /** Lot 45 : sinistre à ouvrir (`?highlight=claims&claim=<id>`, source de l'assistant). */
-  highlightClaimId?: number | null;
 }
 
 /**
@@ -447,7 +445,7 @@ function buildFieldToSectionMap(category: string): Record<string, string> {
   return map;
 }
 
-export function AssetDetailsTab({ asset, onRefresh, planType, readOnly = false, highlightField, highlightClaimId = null }: Props) {
+export function AssetDetailsTab({ asset, onRefresh, readOnly = false, highlightField }: Props) {
   const [detailData, setDetailData] = useState<{ family: string; sections: Record<string, Record<string, unknown>> } | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshTrigger, setRefreshTrigger] = useState(0);
@@ -590,17 +588,9 @@ export function AssetDetailsTab({ asset, onRefresh, planType, readOnly = false, 
         <TcoSection assetId={asset.id} readOnly={readOnly} defaultOpen={highlightField === 'tco'} />
       )}
 
-      {/* ── Sinistres (lot 44, O5 — CDC Opérations V1 ch. 15) ────────────────
-          Plusieurs sinistres par bien, un sinistre pouvant concerner plusieurs
-          biens ; saisie ouverte à toutes les offres (Q3), l'export du dossier
-          Assurance-sinistre restant Premium. */}
-      <AssetClaimsSection
-        assetId={asset.id}
-        category={asset.category}
-        readOnly={readOnly}
-        defaultOpen={highlightField === 'claims'}
-        initialClaimId={highlightField === 'claims' ? highlightClaimId : null}
-      />
+      {/* Lot 83D (V-Q1, CDC v5 §15) : plus de rubrique « Sinistres » sur le bien,
+          ni de remplacement ailleurs — le sinistre est porté par l'Agenda, les
+          documents et le dossier Assurance-sinistre (Opération CLAIM). */}
 
       {/* ── Préparation des dossiers (ex-« Informations complémentaires »,
           lot 34 point 6 ; CDC Exports V12 §4, DEC-007) ─────────────────────

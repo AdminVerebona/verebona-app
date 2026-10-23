@@ -45,7 +45,6 @@ export interface AssetAdditionalInfos {
   commercial: AdditionalInfoSectionData;
   rental: AdditionalInfoSectionData;
   insurance: AdditionalInfoSectionData;
-  claim: AdditionalInfoSectionData;
   finance: AdditionalInfoSectionData;
   /** ISO ; `null` tant que rien n'a été enregistré. */
   updatedAt: string | null;
@@ -59,14 +58,13 @@ type Row = typeof assetAdditionalInfos.$inferSelect;
 
 function toDto(assetId: number, row: Row | undefined): AssetAdditionalInfos {
   if (!row) {
-    return { assetId, commercial: {}, rental: {}, insurance: {}, claim: {}, finance: {}, updatedAt: null, updatedBy: null, version: 0 };
+    return { assetId, commercial: {}, rental: {}, insurance: {}, finance: {}, updatedAt: null, updatedBy: null, version: 0 };
   }
   return {
     assetId,
     commercial: sanitizeSection('commercial', row.commercial),
     rental: sanitizeSection('rental', row.rental),
     insurance: sanitizeSection('insurance', row.insurance),
-    claim: sanitizeSection('claim', row.claim),
     finance: sanitizeSection('finance', row.finance),
     updatedAt: row.updatedAt instanceof Date ? row.updatedAt.toISOString() : (row.updatedAt ? String(row.updatedAt) : null),
     updatedBy: row.updatedBy ?? null,
@@ -91,7 +89,6 @@ const COLUMN_BY_SECTION = {
   commercial: assetAdditionalInfos.commercial,
   rental: assetAdditionalInfos.rental,
   insurance: assetAdditionalInfos.insurance,
-  claim: assetAdditionalInfos.claim,
   finance: assetAdditionalInfos.finance,
 } as const;
 
@@ -155,7 +152,6 @@ export async function updateAssetAdditionalInfos(
       commercial: initial.commercial,
       rental: initial.rental,
       insurance: initial.insurance,
-      claim: initial.claim,
       finance: initial.finance,
       schemaVersion: ADDITIONAL_INFOS_SCHEMA_VERSION,
       version: 1,

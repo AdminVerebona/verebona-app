@@ -7,7 +7,9 @@
  *   2. inspection en LECTURE SEULE (`check.inspect`) — une erreur technique
  *      n'est jamais assimilée à un résultat cohérent (résultat ERROR, aucune
  *      date de succès) ;
- *   3. mode correctif seulement, diagnostic FIABLE (REPAIRABLE) : éligibilité
+ *   3. mode correctif seulement, diagnostic FIABLE (REPAIRABLE), compte
+ *      ÉLIGIBLE (lot 83E : un compte lu pour son seul état d'abonnement n'est
+ *      jamais réparé — constat FINDING) : éligibilité
  *      du compte revérifiée, réparation DÉLÉGUÉE au service métier
  *      (`check.repair`), puis RECONTRÔLE immédiat — l'anomalie n'est close
  *      (REPAIRED) que si le recontrôle confirme la cohérence ; sinon
@@ -23,6 +25,22 @@
  *   6. chaque tentative de réparation est journalisée (`coherence_repairs`) :
  *      origine, service, état avant, résultat, recontrôle, erreur, référence
  *      de retour arrière vers le journal du domaine.
+ *
+ * Lot 83B :
+ *   · RELANCE ASYNCHRONE (`RepairResult.pending`, C-Q7) : une relance
+ *     acceptée par une file existante (nouvelle extraction source) n'a pas
+ *     de recontrôle immédiat ; l'objet est REPAIR_PENDING (journal PENDING)
+ *     et n'est JAMAIS relancé tant que le diagnostic est le même. Le contrôle
+ *     suivant de l'objet clôt la tentative : REPAIRED si l'objet est devenu
+ *     cohérent, INEFFECTIVE si un autre diagnostic subsiste ;
+ *   · RECONTRÔLE À PLUSIEURS CONSTATS : quand l'anomalie réparée a disparu
+ *     mais qu'un AUTRE constat de l'objet subsiste (ex. maillon aval réparé,
+ *     omission T1 en attente d'un contrat IA), la réparation est REPAIRED au
+ *     journal et la preuve porte le constat restant — jamais un faux
+ *     « inefficace », jamais un faux « cohérent » ;
+ *   · COÛT IA MESURÉ (C-Q1) : appels modèle du compte pendant la réparation
+ *     (`ai_usage_event`, écrit à chaque appel par la passerelle), en plus de
+ *     ce que le service déclare.
  */
 import type {
   CheckContext, CoherenceCheck, ControlResult, ControlTrigger, Inspection, RepairResult, Sql,
@@ -92,9 +110,31 @@ export function resultOfVerdict(i: Inspection, mode: CheckContext['mode'], repai
  */
 export function repairAllowed(prev: ProofState | undefined, inputHash: string | undefined): boolean {
   if (!prev || !inputHash || prev.last_repair_hash !== inputHash) return true;
-  if (prev.last_result === 'REPAIR_INEFFECTIVE' || prev.last_result === 'REPAIR_SUPPRESSED') return false;
+  if (prev.last_result === 'REPAIR_INEFFECTIVE' || prev.last_result === 'REPAIR_SUPPRESSED' || prev.last_result === 'REPAIR_PENDING') return false;
   if (prev.last_result === 'REPAIR_FAILED') return prev.repair_attempts < MAX_REPAIR_RETRIES;
   return true;
+}
+
+/**
+ * Lot 83B — relance asynchrone encore attendue (pure) : la preuve est
+ * REPAIR_PENDING et l'inspection rend le MÊME diagnostic réparable.
+ */
+export function stillAwaitingRepair(prev: ProofState | undefined, i: Inspection): boolean {
+  return !!prev && prev.last_result === 'REPAIR_PENDING' && i.verdict === 'REPAIRABLE' && !!i.inputHash && prev.last_repair_hash === i.inputHash;
+}
+
+/**
+ * Lot 83B — issue d'un recontrôle après réparation (pure) : cohérent →
+ * REPAIRED ; anomalie réparée disparue mais autre constat → réparation
+ * effective, la preuve porte le constat restant ; même anomalie → inefficace.
+ */
+export function recheckOutcome(before: Inspection, recheck: Inspection): { journal: 'REPAIRED' | 'INEFFECTIVE'; result: ControlResult } {
+  if (recheck.verdict === 'CONSISTENT' || recheck.verdict === 'GONE') return { journal: 'REPAIRED', result: 'REPAIRED' };
+  if (recheck.anomaly && recheck.anomaly !== before.anomaly) {
+    const r = resultOfVerdict(recheck, 'CORRECTIVE', false);
+    return { journal: 'REPAIRED', result: r === 'TRY_REPAIR' ? 'FINDING' : r };
+  }
+  return { journal: 'INEFFECTIVE', result: 'REPAIR_INEFFECTIVE' };
 }
 
 /** Évolution de la preuve (pure) : série de constats, erreurs consécutives, première détection. */
@@ -175,7 +215,8 @@ async function completeProof(sql: Sql, p: {
 
 async function journalRepair(sql: Sql, p: {
   campaignId: number | null; accountId: number; check: CoherenceCheck; id: number; trigger: ControlTrigger; inspection: Inspection;
-  repair: RepairResult | null; outcome: 'REPAIRED' | 'INEFFECTIVE' | 'FAILED'; recheck: string | null; error: string | null; durationMs: number;
+  repair: RepairResult | null; outcome: 'REPAIRED' | 'INEFFECTIVE' | 'FAILED' | 'PENDING'; recheck: string | null; error: string | null; durationMs: number;
+  aiCalls?: number;
 }): Promise<void> {
   await exec(sql, 
     `INSERT INTO coherence_repairs (campaign_id, account_id, check_id, check_version, object_type, object_id, trigger_code, anomaly, faulty_link,
@@ -185,8 +226,36 @@ async function journalRepair(sql: Sql, p: {
       p.inspection.faultyLink ?? null, p.repair?.service ?? p.check.services[0] ?? 'unknown', p.inspection.inputHash ?? null,
       JSON.stringify(borne({ expected: p.inspection.expected, observed: p.inspection.observed, detail: p.inspection.detail })),
       p.repair ? JSON.stringify(borne(p.repair.result ?? {})) : null, p.outcome, p.recheck, p.repair?.rollbackRef ?? null,
-      p.error?.slice(0, 500) ?? null, p.repair?.aiCalls ?? 0, p.durationMs],
+      p.error?.slice(0, 500) ?? null, p.aiCalls ?? p.repair?.aiCalls ?? 0, p.durationMs],
   );
+}
+
+/**
+ * Lot 83B : clôture d'une relance asynchrone (journal PENDING) au contrôle
+ * qui en observe le résultat — traçabilité diagnostic → relance → résultat.
+ */
+async function settlePendingRepairs(sql: Sql, p: { accountId: number; checkId: string; id: number; outcome: 'REPAIRED' | 'INEFFECTIVE'; verdict: string }): Promise<void> {
+  await exec(sql,
+    `UPDATE coherence_repairs SET outcome = $4, recheck_verdict = $5, settled_at = now()
+      WHERE account_id = $1 AND check_id = $2 AND object_id = $3 AND outcome = 'PENDING'`,
+    [p.accountId, p.checkId, p.id, p.outcome, p.verdict]);
+}
+
+/** Lot 83B (C-Q1) : repère du journal d'usage IA avant une réparation (null : journal illisible). */
+async function aiUsageMark(sql: Sql): Promise<number | null> {
+  try {
+    const [r] = await rows(sql, `SELECT COALESCE(max(id), 0)::bigint AS m FROM ai_usage_event`);
+    return Number(r?.m ?? 0);
+  } catch { return null; }
+}
+
+/** Appels modèle du compte écrits depuis le repère (mesure, jamais bloquante). */
+async function aiUsageSince(sql: Sql, accountId: number, mark: number | null): Promise<number> {
+  if (mark === null) return 0;
+  try {
+    const [r] = await rows(sql, `SELECT count(*)::int AS n FROM ai_usage_event WHERE id > $1 AND account_id = $2`, [mark, accountId]);
+    return Number(r?.n ?? 0);
+  } catch { return 0; }
 }
 
 // ── Contrôle d'un lot ───────────────────────────────────────────────────────
@@ -241,15 +310,20 @@ export async function controlObjects(p: ControlBatchInput): Promise<BatchSummary
 
   for (const id of ids) {
     const insp = inspections.get(id)!;
+    const avant = prev.get(id);
     let o: ObjectOutcome;
     let repairHash: string | null = null;
     if (insp instanceof Error) {
       o = { id, result: 'ERROR', error: insp.message, repairAttempted: false, aiCalls: 0 };
+    } else if (stillAwaitingRepair(avant, insp)) {
+      // Lot 83B : relance asynchrone en cours sur le MÊME diagnostic — on en attend le résultat, jamais de seconde relance.
+      o = { id, result: 'REPAIR_PENDING', inspection: insp, repairAttempted: false, aiCalls: 0 };
     } else {
-      const r = resultOfVerdict(insp, ctx.mode, !!check.repair);
+      // Lot 83E (C-Q10) : compte non éligible lu pour son seul état d'abonnement — jamais de réparation.
+      const r = resultOfVerdict(insp, ctx.mode, !!check.repair && (ctx.accountScope ?? 'ELIGIBLE') === 'ELIGIBLE');
       if (r !== 'TRY_REPAIR') {
         o = { id, result: r, inspection: insp, repairAttempted: false, aiCalls: 0 };
-      } else if (!repairAllowed(prev.get(id), insp.inputHash)) {
+      } else if (!repairAllowed(avant, insp.inputHash)) {
         o = { id, result: 'REPAIR_SUPPRESSED', inspection: insp, repairAttempted: false, aiCalls: 0 };
       } else {
         if (!eligibiliteVerifiee) {
@@ -259,43 +333,62 @@ export async function controlObjects(p: ControlBatchInput): Promise<BatchSummary
         }
         repairHash = insp.inputHash ?? null;
         const r0 = Date.now();
+        const repere = await aiUsageMark(ctx.sql);
         let rep: RepairResult | null = null;
         try {
           rep = (await check.repair!(ctx, accountId, [{ id, inspection: insp }])).get(id) ?? null;
         } catch (e) {
-          o = { id, result: 'REPAIR_FAILED', inspection: insp, error: message(e), repairAttempted: true, aiCalls: 0 };
-          await journalRepair(ctx.sql, { campaignId: p.campaignId, accountId, check, id, trigger: p.trigger, inspection: insp, repair: rep, outcome: 'FAILED', recheck: null, error: message(e), durationMs: Date.now() - r0 });
+          const aiEchec = await aiUsageSince(ctx.sql, accountId, repere);
+          o = { id, result: 'REPAIR_FAILED', inspection: insp, error: message(e), repairAttempted: true, aiCalls: aiEchec };
+          await journalRepair(ctx.sql, { campaignId: p.campaignId, accountId, check, id, trigger: p.trigger, inspection: insp, repair: rep, outcome: 'FAILED', recheck: null, error: message(e), durationMs: Date.now() - r0, aiCalls: aiEchec });
           summary.repairsAttempted++;
-          await completeProof(ctx.sql, { accountId, check, outcome: o, prev: prev.get(id), startedAt, now: clock(), repairHash });
+          summary.aiCalls += aiEchec;
+          await completeProof(ctx.sql, { accountId, check, outcome: o, prev: avant, startedAt, now: clock(), repairHash });
           summary.outcomes.push(o);
           summary.results[o.result] = (summary.results[o.result] ?? 0) + 1;
           continue;
         }
         summary.repairsAttempted++;
-        const ai = rep?.aiCalls ?? 0;
-        // Recontrôle immédiat : l'anomalie n'est close que si la cohérence est confirmée.
-        let recheck: Inspection | Error;
-        try {
-          recheck = (await check.inspect!(ctx, accountId, [id])).get(id) ?? new Error('recontrôle sans résultat');
-        } catch (e) {
-          recheck = e instanceof Error ? e : new Error(message(e));
-        }
-        if (recheck instanceof Error) {
-          o = { id, result: 'ERROR', inspection: insp, error: `recontrôle impossible : ${recheck.message}`, repairAttempted: true, aiCalls: ai };
-        } else if (recheck.verdict === 'CONSISTENT' || recheck.verdict === 'GONE') {
-          o = { id, result: 'REPAIRED', inspection: insp, repairAttempted: true, aiCalls: ai };
+        const ai = Math.max(rep?.aiCalls ?? 0, await aiUsageSince(ctx.sql, accountId, repere));
+        if (rep?.pending) {
+          // Lot 83B : relance acceptée par une file existante — résultat observé au prochain contrôle de l'objet.
+          o = { id, result: 'REPAIR_PENDING', inspection: insp, repairAttempted: true, aiCalls: ai };
+          await journalRepair(ctx.sql, {
+            campaignId: p.campaignId, accountId, check, id, trigger: p.trigger, inspection: insp, repair: rep, outcome: 'PENDING', recheck: null,
+            error: null, durationMs: Date.now() - r0, aiCalls: ai,
+          });
         } else {
-          o = { id, result: 'REPAIR_INEFFECTIVE', inspection: recheck, repairAttempted: true, aiCalls: ai };
+          // Recontrôle immédiat : l'anomalie n'est close que si la cohérence est confirmée.
+          let recheck: Inspection | Error;
+          try {
+            recheck = (await check.inspect!(ctx, accountId, [id])).get(id) ?? new Error('recontrôle sans résultat');
+          } catch (e) {
+            recheck = e instanceof Error ? e : new Error(message(e));
+          }
+          let journal: 'REPAIRED' | 'INEFFECTIVE' = 'INEFFECTIVE';
+          if (recheck instanceof Error) {
+            o = { id, result: 'ERROR', inspection: insp, error: `recontrôle impossible : ${recheck.message}`, repairAttempted: true, aiCalls: ai };
+          } else {
+            const issue = recheckOutcome(insp, recheck);
+            journal = issue.journal;
+            o = { id, result: issue.result, inspection: issue.result === 'REPAIRED' ? insp : recheck, repairAttempted: true, aiCalls: ai };
+          }
+          await journalRepair(ctx.sql, {
+            campaignId: p.campaignId, accountId, check, id, trigger: p.trigger, inspection: insp, repair: rep,
+            outcome: journal, recheck: recheck instanceof Error ? 'ERROR' : recheck.verdict,
+            error: o.error ?? null, durationMs: Date.now() - r0, aiCalls: ai,
+          });
         }
-        await journalRepair(ctx.sql, {
-          campaignId: p.campaignId, accountId, check, id, trigger: p.trigger, inspection: insp, repair: rep,
-          outcome: o.result === 'REPAIRED' ? 'REPAIRED' : 'INEFFECTIVE', recheck: recheck instanceof Error ? 'ERROR' : recheck.verdict,
-          error: o.error ?? null, durationMs: Date.now() - r0,
-        });
       }
     }
+    // Lot 83B : résultat d'une relance asynchrone observé à ce contrôle → tentative close (jamais sur une erreur de contrôle).
+    if (avant?.last_result === 'REPAIR_PENDING' && !(insp instanceof Error) && o.result !== 'REPAIR_PENDING' && o.result !== 'ERROR') {
+      const coherent = insp.verdict === 'CONSISTENT';
+      await settlePendingRepairs(ctx.sql, { accountId, checkId: check.id, id, outcome: coherent ? 'REPAIRED' : 'INEFFECTIVE', verdict: insp.verdict });
+      if (coherent) o = { ...o, result: 'REPAIRED' };
+    }
     summary.aiCalls += o.aiCalls;
-    await completeProof(ctx.sql, { accountId, check, outcome: o, prev: prev.get(id), startedAt, now: clock(), repairHash });
+    await completeProof(ctx.sql, { accountId, check, outcome: o, prev: avant, startedAt, now: clock(), repairHash });
     summary.outcomes.push(o);
     summary.results[o.result] = (summary.results[o.result] ?? 0) + 1;
   }

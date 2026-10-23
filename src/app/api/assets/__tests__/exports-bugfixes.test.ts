@@ -110,7 +110,7 @@ const sourceMock = vi.fn(async (p: { assetId: number; accountId: number; userId:
   exportType: p.exportType, family: 'IMMOBILIER',
   asset: { id: p.assetId, name: 'Maison', category: 'IMMOBILIER', characteristics: {}, equipmentList: [] },
   documents: [], photos: [], events: [], equipments: [], rooms: [],
-  additionalInfo: { commercial: {}, rental: {}, insurance: {}, claim: {}, updatedAt: null },
+  additionalInfo: { commercial: {}, rental: {}, insurance: {}, updatedAt: null },
   cil: null, preparedBy: null,
 }));
 const nudgeMock = vi.fn();

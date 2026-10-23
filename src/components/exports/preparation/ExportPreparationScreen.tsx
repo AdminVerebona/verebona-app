@@ -473,14 +473,13 @@ export function ExportPreparationScreen({ assetId, exportType, onClose, api: api
                 >
                   {s.cil && prep.cil ? (
                     <CilBlocksPanel cil={prep.cil} assetId={assetId} api={api} disabled={!editable} onChanged={() => load(true)} />
-                  ) : s.infoSections.includes('claim') && prep.claim ? (
+                  ) : s.id === 'summary' && prep.claim ? (
+                    // Lot 83D (V-Q1) : choix du sinistre seulement — aucun formulaire Sinistre.
                     <ClaimExportPanel
                       assetId={assetId}
-                      category={prep.asset.family}
                       claim={prep.claim}
                       editable={editable}
                       onSelect={(id) => void load(false, id)}
-                      onSaveStateChange={onSaveStateChange}
                     />
                   ) : s.infoSections.length > 0 ? (
                     <AssetAdditionalInfosSection assetId={assetId} category={prep.asset.family} sections={stableInfo(s.infoSections)} variant="embedded" readOnly={!editable} onSaveStateChange={onSaveStateChange} onSectionsSaved={prep.saleAds ? onSectionsSaved : undefined} />

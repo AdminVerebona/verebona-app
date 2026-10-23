@@ -983,29 +983,6 @@ export function AgendaItemDrawer({ item, open, onClose, onMutated, onOpenDocumen
                   </div>
                 )}
 
-            {/* Sinistre (view only) — lot 46 : événement qui représente un
-                sinistre (projeté ou relié) ; ouvre la rubrique Sinistres du
-                bien sur ce sinistre. Desktop et mobile : même tiroir. */}
-            {mode === "view" && item.claimSource && (
-              <div className="flex items-start gap-3">
-                <div className="w-8 h-8 rounded-lg bg-[color:var(--accent-soft)] flex items-center justify-center shrink-0 mt-0.5">
-                  <AlertCircle className="h-4 w-4 text-[color:var(--text-muted)]" />
-                </div>
-                <div className="flex-1">
-                  <p className="vb-app-label mb-2">
-                    Sinistre
-                  </p>
-                  <a
-                    href={`/assets/${item.claimSource.assetId}?tab=details&highlight=claims&claim=${item.claimSource.claimId}`}
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-[color:var(--bg-page)] text-[color:var(--text-primary)] border border-[color:var(--border-subtle)] hover:border-[color:var(--border-info)] hover:text-[color:var(--accent)] transition-colors"
-                  >
-                    <AlertCircle className="w-3 h-3 shrink-0" />
-                    <span className="truncate max-w-[160px]">Voir le sinistre</span>
-                  </a>
-                </div>
-              </div>
-            )}
-
             {/* Documents (view only) */}
             {item.fileLinks.length > 0 && (
               <div className="flex items-start gap-3">

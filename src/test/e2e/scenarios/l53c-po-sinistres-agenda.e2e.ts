@@ -1,23 +1,21 @@
 /**
  * Lot 53C — retour PO D10, D11, Q17, D14 — base PostgreSQL réelle.
  *
- *   PO-D10 : « Ajouter un sinistre » ne crée rien en base ; seule la première
- *            sauvegarde effective crée le sinistre (route de production) ;
- *   PO-D11 : facture retirée d'une action : rattachement conservé s'il reste
- *            justifié, sinon carte « garder / dissocier » — jamais de
- *            dissociation automatique ;
- *   PO-Q17 : bien retiré d'un sinistre : exclusion mémorisée ; un nouveau
+ *   PO-D10, PO-D11 : RETIRÉS au lot 83D (CDC v5 §15–§17, V-Q1, V-Q2) avec le
+ *            formulaire « Sinistres » des biens, les actions et la hiérarchie
+ *            parent / enfant (absence prouvée par L83D-E02 et L83D-U01…) ;
+ *   PO-Q17 : bien retiré d'un sinistre (lot 83D : par le service unique de
+ *            regroupement 82D) : exclusion mémorisée ; un nouveau
  *            document qui le cite → carte de décision (document à l'origine),
  *            jamais de réintégration automatique ;
  *   PO-D14 : projection agenda incertaine → carte « À traiter » avec
  *            candidats et provenance, actionnable, jamais dupliquée.
  *
- * Écritures par les routes / services de production (session simulée),
+ * Écritures par les services de production (session simulée),
  * candidats documentaires par la persistance T1 réelle, consolidation et
  * projection par les moteurs de production. Aucun appel IA.
  */
 import { afterEach, beforeAll, expect, it, vi } from 'vitest';
-import { NextRequest } from 'next/server';
 import { scenario } from '../scenario';
 import type { AccountRow } from '../factories';
 import type { AnchoredOperationCandidate } from '@/services/ai/source-analysis/operation-candidates/prepare';
@@ -44,8 +42,6 @@ function cand(over: Partial<AnchoredOperationCandidate> = {}): AnchoredOperation
     visualOnlyEvidence: false, exclusionReason: null, origin: 'PASS_1', adjustments: [], ...over,
   };
 }
-const fh = (role: string, amountMinor: number) =>
-  ({ role, amountMinor, currency: 'EUR', amountScope: 'TOTAL', economicDate: null, periodStart: null, periodEnd: null, factRef: 'f1' }) as AnchoredOperationCandidate['financialHints'][number];
 const cible = (entityId: number) => ({ type: 'ASSET' as const, entityId, rawLabel: null, confidence: 'certain' as const });
 
 type Json = Record<string, unknown>;
@@ -58,21 +54,26 @@ scenario('L53C-D10-D14', 'Sinistres (brouillon, dissociation, exclusion) et agen
     await import('@/services/business-operations/consolidation/queue');
   });
 
-  const routeList = () => import('@/app/api/assets/[id]/claims/route');
-  const routeOne = () => import('@/app/api/assets/[id]/claims/[claimId]/route');
-  function connecter(c: AccountRow) {
-    session.currentAccountId = c.id;
-    session.userId = c.ownerUserId;
+  /** Sinistre tel qu'existant en préproduction (source CLAIM_FORM, lot 44) — lot 83D : plus de route de saisie. */
+  async function creer(compte: AccountRow, assetIds: number[], d: { claimType: string; occurredOn: string; insurerClaimRef?: string }): Promise<number> {
+    const { withBusinessOperationWrite } = await import('@/services/business-operations/write');
+    return withBusinessOperationWrite(compte.id, async (r) => {
+      const c = await r.create({
+        type: { code: 'CLAIM' }, status: 'REALIZED', realizedDate: d.occurredOn,
+        source: { kind: 'CLAIM_FORM', entityKey: assetIds[0], authority: 'USER', confidence: 'certain' },
+        assets: assetIds.map((assetId, i) => ({ assetId, role: i === 0 ? 'PRIMARY' : 'CONCERNED', authority: 'USER' })), reasonCode: 'E2E',
+      } as never);
+      await r.upsertClaimDetails(c.id, { claimType: d.claimType, insurerClaimRef: d.insurerClaimRef ?? null } as never);
+      if (d.insurerClaimRef) await r.addReference(c.id, { kind: 'CLAIM', value: d.insurerClaimRef, sourceId: c.sourceId }, 'E2E');
+      return c.id;
+    });
   }
-  const req = (method: string, path: string, body?: unknown) =>
-    new NextRequest(`http://x${path}`, { method, ...(body !== undefined ? { body: JSON.stringify(body), headers: { 'content-type': 'application/json' } } : {}) });
-  async function creer(assetId: number, body: Json = {}) {
-    const r = await (await routeList()).POST(req('POST', `/api/assets/${assetId}/claims`, body), { params: Promise.resolve({ id: String(assetId) }) });
-    return { status: r.status, body: await r.json() as Json };
-  }
-  async function modifier(assetId: number, claimId: number, body: Json) {
-    const r = await (await routeOne()).PATCH(req('PATCH', `/api/assets/${assetId}/claims/${claimId}`, body), { params: Promise.resolve({ id: String(assetId), claimId: String(claimId) }) });
-    return { status: r.status, body: await r.json() as Json };
+  /** Bien retiré / ajouté par l'utilisateur : service unique de regroupement (82D). */
+  async function bien(compte: AccountRow, operationId: number, assetId: number, action: 'retirer' | 'ajouter') {
+    const g = await import('@/services/business-operations/grouping/service');
+    return g.withGroupingWrite(compte.id, (ctx) => action === 'retirer'
+      ? g.detachAsset(ctx, { operationId, assetId, origin: 'USER', reasonCode: 'USER_CLAIM_ASSET_REMOVED' })
+      : g.attachAsset(ctx, { operationId, assetId, origin: 'USER', reasonCode: 'USER_CLAIM_ASSET_READDED' }), { actorUserId: compte.ownerUserId });
   }
   async function document(compte: AccountRow, assetId: number, candidats: AnchoredOperationCandidate[], titre?: string) {
     const f = await make.assetFile(compte, { assetId });
@@ -97,96 +98,6 @@ scenario('L53C-D10-D14', 'Sinistres (brouillon, dissociation, exclusion) et agen
   };
   const liens = async (opId: number) => (await sql<{ a: number }[]>`
     SELECT asset_id AS a FROM business_operation_asset_links WHERE operation_id = ${opId} AND active ORDER BY 1`).map((x) => x.a);
-  const parent = async (opId: number) => (await sql<{ p: number | null }[]>`SELECT parent_operation_id::int AS p FROM business_operations WHERE id = ${opId}`)[0].p;
-
-  // ══ D10 ════════════════════════════════════════════════════════════════════
-
-  it('PO-D10-04 — brouillon : un envoi vide ne crée RIEN en base (422) ; la première saisie effective crée le sinistre (201)', async () => {
-    const compte = await make.account({ plan: 'standard' });
-    const maison = await make.asset(compte, { category: 'IMMOBILIER' });
-    connecter(compte);
-    const compter = async () => (await sql<{ n: number }[]>`SELECT count(*)::int AS n FROM business_operations WHERE account_id = ${compte.id}`)[0].n;
-    for (const corps of [{}, { claim: {} }, { claim: { claimType: null, occurredOn: null } }, { assetIds: [maison.id] }]) {
-      const r = await creer(maison.id, corps);
-      expect(r.status).toBe(422);
-      expect(r.body).toMatchObject({ code: 'EMPTY_CLAIM' });
-    }
-    expect(await compter()).toBe(0);
-    expect(await sql`SELECT 1 FROM business_operation_history WHERE account_id = ${compte.id}`).toHaveLength(0);
-    const ok = await creer(maison.id, { claim: { claimType: 'DEGAT_DES_EAUX' }, assetIds: [maison.id] });
-    expect(ok.status).toBe(201);
-    expect(await compter()).toBe(1);
-  });
-
-  // ══ D11 ════════════════════════════════════════════════════════════════════
-
-  async function sinistreAvecFacture(compte: AccountRow, maison: number, over: Partial<AnchoredOperationCandidate> = {}) {
-    const facture = await document(compte, maison, [cand({ targetHints: [cible(maison)], temporalHints: { realizedDate: '2026-07-10' }, financialHints: [fh('REALIZED_COST', 30000)], ...over })], 'Facture plombier');
-    await passer(compte);
-    const [inter] = await sql<{ id: number }[]>`SELECT id::int AS id FROM business_operations WHERE account_id = ${compte.id} AND type_code = 'INTERVENTION'`;
-    const c = await creer(maison, { claim: { claimType: 'DEGAT_DES_EAUX', occurredOn: '2026-07-01', actions: [{ id: 'a1', title: 'Recherche de fuite', invoiceDocumentId: facture }] }, version: 0 });
-    expect(c.status).toBe(201);
-    const id = c.body.id as number;
-    expect(await parent(inter.id)).toBe(id);
-    return { facture, inter: inter.id, claim: id, version: c.body.version as number };
-  }
-
-  it('PO-D11-03 — facture retirée sans autre justification : rattachement CONSERVÉ, carte « garder / dissocier » ; « Dissocier » → plus de parent ; annulation → rétabli', async () => {
-    const compte = await make.account({ plan: 'standard' });
-    const maison = await make.asset(compte, { category: 'IMMOBILIER' });
-    connecter(compte);
-    const s = await sinistreAvecFacture(compte, maison.id);
-    const r = await modifier(maison.id, s.claim, { claim: { actions: [{ id: 'a1', title: 'Recherche de fuite' }] }, version: s.version });
-    expect(r.status).toBe(200);
-    // Jamais de dissociation automatique.
-    expect(await parent(s.inter)).toBe(s.claim);
-    const [carte, ...autres] = await ouvertes(compte, 'OPERATION-CLAIM-DETACH');
-    expect(autres).toEqual([]);
-    expect(carte).toMatchObject({ target_type: 'DOCUMENT', target_id: s.facture, relation_key: `operationDetach:${s.inter}` });
-    expect(carte.question).toContain('fait-elle toujours suite');
-    expect(carte.proposals_json.map((p) => p.value)).toEqual(['DETACH', 'KEEP']);
-    // Passage T3 suivant : la même carte, jamais une seconde.
-    await passer(compte, { reevaluateHolds: true });
-    await (await import('@/services/business-operations/consolidation/consolidator')).reconsolidateOperations(compte.id, [s.inter]);
-    expect(await ouvertes(compte, 'OPERATION-CLAIM-DETACH')).toHaveLength(1);
-    expect(await resoudre(compte, carte.public_id, 'DETACH')).toMatchObject({ ok: true });
-    expect(await parent(s.inter)).toBeNull();
-    expect(await sql`SELECT 1 FROM business_operation_history WHERE operation_id = ${s.inter} AND reason_code = 'USER_CLAIM_DETACHED'`).toHaveLength(2);
-    // Plus reproposé : la décision « aucun sinistre » est durable.
-    await (await import('@/services/business-operations/consolidation/consolidator')).reconsolidateOperations(compte.id, [s.inter]);
-    expect(await ouvertes(compte, 'OPERATION-CLAIM-DETACH')).toEqual([]);
-    expect(await parent(s.inter)).toBeNull();
-    // Annulation : le rattachement est rétabli.
-    const { undoArbitration } = await import('@/services/to-process/resolve-action.service');
-    expect(await undoArbitration(compte.id, carte.public_id, null)).toMatchObject({ ok: true });
-    expect(await parent(s.inter)).toBe(s.claim);
-  });
-
-  it('PO-D11-04 — facture retirée mais rattachement justifié (référence de sinistre commune) : conservé, aucune carte ; « Garder » : décision durable', async () => {
-    const compte = await make.account({ plan: 'standard' });
-    const maison = await make.asset(compte, { category: 'IMMOBILIER' });
-    connecter(compte);
-    const s = await sinistreAvecFacture(compte, maison.id, { businessReferences: [{ kind: 'CLAIM', value: 'SIN-42' }] });
-    const v = await modifier(maison.id, s.claim, { claim: { insurerClaimRef: 'SIN-42' } });
-    const r = await modifier(maison.id, s.claim, { claim: { actions: [{ id: 'a1', title: 'Recherche de fuite' }] }, version: v.body.version });
-    expect(r.status).toBe(200);
-    expect(await parent(s.inter)).toBe(s.claim);
-    expect(await ouvertes(compte, 'OPERATION-CLAIM-DETACH')).toEqual([]);
-
-    // Sans référence commune : carte, puis « Garder » — plus jamais reposée.
-    const compte2 = await make.account({ plan: 'standard' });
-    const maison2 = await make.asset(compte2, { category: 'IMMOBILIER' });
-    connecter(compte2);
-    const s2 = await sinistreAvecFacture(compte2, maison2.id);
-    await modifier(maison2.id, s2.claim, { claim: { actions: [{ id: 'a1', title: 'Recherche de fuite' }] }, version: s2.version });
-    const [carte] = await ouvertes(compte2, 'OPERATION-CLAIM-DETACH');
-    expect(await resoudre(compte2, carte.public_id, 'KEEP')).toMatchObject({ ok: true });
-    expect(await parent(s2.inter)).toBe(s2.claim);
-    await (await import('@/services/business-operations/consolidation/consolidator')).reconsolidateOperations(compte2.id, [s2.inter]);
-    expect(await ouvertes(compte2, 'OPERATION-CLAIM-DETACH')).toEqual([]);
-    expect(await sql`SELECT 1 FROM business_operation_sources WHERE operation_id = ${s2.inter} AND active AND source_kind = 'USER_ARBITRATION'
-                      AND locator->>'decision' = 'CLAIM_PARENT' AND (locator->>'parentOperationId')::bigint = ${s2.claim}`).toHaveLength(1);
-  });
 
   // ══ Q17 ════════════════════════════════════════════════════════════════════
 
@@ -194,9 +105,7 @@ scenario('L53C-D10-D14', 'Sinistres (brouillon, dissociation, exclusion) et agen
     const compte = await make.account({ plan: 'standard' });
     const maison = await make.asset(compte, { category: 'IMMOBILIER', name: 'Maison' });
     const garage = await make.asset(compte, { category: 'IMMOBILIER', name: 'Garage' });
-    connecter(compte);
-    const c = await creer(maison.id, { claim: { claimType: 'EVENEMENT_CLIMATIQUE', occurredOn: '2026-06-01', insurerClaimRef: 'TEMP-26' }, assetIds: [maison.id, garage.id] });
-    const claim = c.body.id as number;
+    const claim = await creer(compte, [maison.id, garage.id], { claimType: 'EVENEMENT_CLIMATIQUE', occurredOn: '2026-06-01', insurerClaimRef: 'TEMP-26' });
     const claimDoc = (titre: string, assets: number[]) => document(compte, maison.id, [cand({
       typeHint: 'CLAIM', sourceRoleHint: 'CLAIM_DOCUMENT', summary: 'Tempête', provider: 'Assureur', targetHints: assets.map(cible),
       businessReferences: [{ kind: 'CLAIM', value: 'TEMP-26' }], temporalHints: { realizedDate: '2026-06-01' },
@@ -206,7 +115,7 @@ scenario('L53C-D10-D14', 'Sinistres (brouillon, dissociation, exclusion) et agen
     expect(await liens(claim)).toEqual([maison.id, garage.id].sort((a, b) => a - b));
 
     // L'utilisateur retire le garage.
-    expect((await modifier(maison.id, claim, { assetIds: [maison.id] })).status).toBe(200);
+    expect(await bien(compte, claim, garage.id, 'retirer')).toBe(true);
     expect(await liens(claim)).toEqual([maison.id]);
     const [ex] = await sql<{ asset_id: number; active: boolean; ack: number[] }[]>`
       SELECT asset_id, active, acknowledged_file_ids AS ack FROM business_operation_asset_exclusions WHERE operation_id = ${claim}`;
@@ -249,17 +158,15 @@ scenario('L53C-D10-D14', 'Sinistres (brouillon, dissociation, exclusion) et agen
     expect(await sql`SELECT release_reason FROM business_operation_asset_exclusions WHERE operation_id = ${claim}`).toEqual([{ release_reason: 'USER_CLAIM_ASSET_REINSTATED' }]);
   });
 
-  it('PO-Q17-05 — re-cocher le bien dans le formulaire lève l\'exclusion (nouvel arbitrage) ; sans document, rien d\'autre ne change', async () => {
+  it('PO-Q17-05 — ré-ajouter le bien (regroupement 82D) lève l\'exclusion (nouvel arbitrage) ; sans document, rien d\'autre ne change', async () => {
     const compte = await make.account({ plan: 'standard' });
     const maison = await make.asset(compte, { category: 'IMMOBILIER', name: 'Maison' });
     const garage = await make.asset(compte, { category: 'IMMOBILIER', name: 'Garage' });
-    connecter(compte);
-    const c = await creer(maison.id, { claim: { claimType: 'VOL', occurredOn: '2026-01-01' }, assetIds: [maison.id, garage.id] });
-    const claim = c.body.id as number;
-    await modifier(maison.id, claim, { assetIds: [maison.id] });
+    const claim = await creer(compte, [maison.id, garage.id], { claimType: 'VOL', occurredOn: '2026-01-01' });
+    await bien(compte, claim, garage.id, 'retirer');
     expect(await sql`SELECT 1 FROM business_operation_asset_exclusions WHERE operation_id = ${claim} AND active`).toHaveLength(1);
-    await modifier(maison.id, claim, { assetIds: [maison.id, garage.id] });
-    expect(await sql`SELECT release_reason FROM business_operation_asset_exclusions WHERE operation_id = ${claim}`).toEqual([{ release_reason: 'CLAIM_FORM_ASSET_READDED' }]);
+    await bien(compte, claim, garage.id, 'ajouter');
+    expect(await sql`SELECT release_reason FROM business_operation_asset_exclusions WHERE operation_id = ${claim}`).toEqual([{ release_reason: 'USER_CLAIM_ASSET_READDED' }]);
     expect(await liens(claim)).toEqual([maison.id, garage.id].sort((a, b) => a - b));
   });
 

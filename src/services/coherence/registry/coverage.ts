@@ -9,6 +9,11 @@
  * les domaines exigés par C-Q1 figurent tous ici et que chaque contrôle cité
  * existe dans le registre.
  */
+import { operationsGroupingChecks } from './checks/operations';
+
+/** Lot 83B : contrôles des invariants O-1, dérivés de la liste entière de `grouping/invariants.ts`. */
+const O1 = operationsGroupingChecks.map((c) => c.id);
+
 export interface CoverageEntry {
   domain: string;
   label: string;
@@ -26,22 +31,28 @@ export const C_Q1_DOMAINS = [
 export const COVERAGE_INVENTORY: readonly CoverageEntry[] = [
   {
     domain: 'champs-structures', label: 'Champs structurés (fiches bien / équipement, données documentaires)',
-    checks: ['COH-TODO-DOCUMENT-FIELDS'],
+    checks: ['COH-TODO-DOCUMENT-FIELDS', 'COH-DOC-EXTRACT-CHAIN', 'COH-ASSET-EQUIPMENT-SEPARATION'],
     gap: { what: 'valeurs canoniques des fiches comparées aux preuves sur le stock', existingMechanism: 'T3 « Informations » 76J par version (t3_information_checks)', planned: 'contrôle du registre au lot suivant (réutilise 76J)' },
   },
   {
     domain: 'operations', label: 'Opérations (identité économique, montants, regroupements)',
-    checks: [],
-    gap: { what: 'identité et montants des Opérations sur le stock', existingMechanism: 'operations-quality-check (12 anomalies dures, lecture seule) ; identité 78A par version', planned: 'lot suivant, sur le modèle Opérations v5 (V-Q9)' },
+    checks: [...O1, 'COH-OPS-IDENTITY'],
+    gap: { what: 'montants et dates des Opérations comparés aux preuves sur le stock ; regroupements MANQUÉS ; identité 78A en détection seule (correction par le réexamen T3)', existingMechanism: 'operations-quality-check (12 anomalies dures, lecture seule) ; consolidation T3 (78A par version, 55B)', planned: 'lots suivants (O-2 et suivants du CDC v5)' },
   },
   {
     domain: 'rapprochements', label: 'Rapprochements (pièces ↔ Opérations, documents ↔ biens)',
-    checks: ['COH-DOC-LINKS'],
-    gap: { what: 'rattachement document → bien principal et pièces ↔ Opérations', existingMechanism: 'T3 DOCUMENT_ASSET (balayage des documents sans bien) ; consolidation M1–M3', planned: 'lot suivant' },
+    checks: ['COH-DOC-LINKS', 'COH-OPS-IDENTITY', ...O1.filter((id) => /DOCUMENT/.test(id))],
+    gap: { what: 'rattachement document → bien principal ; relation document ↔ équipement non démontrée par le document (constat seul, contrat IA 82D-t3-document-equipement)', existingMechanism: 'T3 DOCUMENT_ASSET (balayage continu des documents sans bien) ; consolidation M1–M3', planned: 'O-6 du CDC v5, après le contrat IA' },
   },
   { domain: 'tco', label: 'TCO et dépenses', checks: ['COH-TCO-EXTRACTED-EXPENSES'] },
-  { domain: 'agenda', label: 'Agenda (occurrences, échéances de fiche)', checks: ['COH-AGENDA-OCCURRENCES', 'COH-AGENDA-ORPHANS'],
-    gap: { what: 'échéances calculables absentes de l’agenda ; groupes T4 « même document, même date » sans Opération', existingMechanism: 'T4 à l’analyse ; signalement 76H', planned: 'lot suivant (T4 décide, V-Q5)' } },
+  { domain: 'agenda', label: 'Agenda (occurrences, échéances calculables des Opérations, événements obsolètes, échéances de fiche, appartenance aux Opérations)',
+    checks: ['COH-AGENDA-OCCURRENCES', 'COH-AGENDA-ORPHANS', 'COH-AGENDA-OPERATION-PROJECTION', 'COH-AGENDA-PROJECTION-ORPHANS', ...O1.filter((id) => /AGENDA|PRINCIPAL|LINK-PROVENANCE/.test(id))],
+    // Lot 83E : les échéances calculables issues des Opérations sont contrôlées (projection rejouée sans IA) ; 83B : invariants O-1.
+    gap: {
+      what: 'échéances DOCUMENTAIRES décidées par T4 (IA) : décisions non conservées avec leur candidat, rejeu impossible sans IA ; groupes T4 « même document, même date » sans Opération',
+      existingMechanism: 'T4 à l’analyse (file durable, reprise du même travail) ; signalement 76H',
+      planned: 'COH-AGENDA-T4-DOCUMENT-DEADLINES (point d’extension déclaré) — persistance durable des décisions T4 à décider',
+    } },
   {
     domain: 'timeline', label: 'Timeline',
     checks: [],
@@ -49,25 +60,51 @@ export const COVERAGE_INVENTORY: readonly CoverageEntry[] = [
   },
   {
     domain: 'biens', label: 'Biens',
-    checks: ['COH-TCO-EXTRACTED-EXPENSES'],
+    checks: ['COH-TCO-EXTRACTED-EXPENSES', 'COH-ASSET-EQUIPMENT-SEPARATION'],
     gap: { what: 'date et prix d’acquisition comparés à l’agenda et aux Opérations sur le stock', existingMechanism: 'T3 « Informations » 76J (par version)', planned: 'lot suivant' },
   },
-  { domain: 'equipements', label: 'Équipements (documents rattachés)', checks: ['COH-DOC-LINKS'],
-    gap: { what: 'données d’équipement attribuées au bien (séparation bien / équipement)', existingMechanism: 'rattrapage BO « equipment-separation » (manuel)', planned: 'lot suivant' } },
-  { domain: 'documents-liens', label: 'Liens documentaires', checks: ['COH-DOC-LINKS'] },
-  { domain: 'a-traiter', label: 'Cartes « À traiter »', checks: ['COH-TODO-DOCUMENT-FIELDS'],
-    gap: { what: 'familles agenda, équipements, fournisseurs, Opérations, arbitrages T3', existingMechanism: 'producteurs du balayage horaire to-process-scan ; rattrapage 81A des faux arbitrages', planned: 'lot suivant' } },
+  { domain: 'equipements', label: 'Équipements (documents rattachés, séparation bien / équipement)', checks: ['COH-DOC-LINKS', 'COH-ASSET-EQUIPMENT-SEPARATION'],
+    gap: { what: 'situations de séparation SUSPECTES (constat seul) ; document d’équipement rattaché au seul bien sans preuve propre au document (constat seul) ; liens d’un équipement déplacé vers un autre bien', existingMechanism: 'rattrapage BO « equipment-separation » (même code) ; file EQUIPMENT_DOCUMENT au déplacement', planned: 'contrat IA 82D-t3-document-equipement (O-6)' } },
+  { domain: 'documents-liens', label: 'Liens documentaires', checks: ['COH-DOC-LINKS', 'COH-DOC-EXTRACT-CHAIN', ...O1.filter((id) => /LINK|DOCUMENT/.test(id))] },
+  { domain: 'a-traiter', label: 'Cartes « À traiter »',
+    checks: ['COH-TODO-DOCUMENT-FIELDS', 'COH-TODO-STALE-DECISIONS', 'COH-TODO-RELEVANCE-CARDS', 'COH-TODO-ORPHAN-CARDS', 'COH-TODO-RESOLUTION-PROPAGATION'],
+    // Lot 83E : la campagne de pertinence l76 est devenue COH-TODO-STALE-DECISIONS + COH-TODO-RELEVANCE-CARDS (moteur retiré).
+    gap: {
+      what: 'pertinence des familles Opérations, champs d’entité, revues de migration, propositions d’agenda, arbitrages T3 ; propagation des résolutions autres que le rattachement document → équipement',
+      existingMechanism: 'producteurs du balayage horaire to-process-scan (décision par famille) ; rattrapage 81A des faux arbitrages ; résolutions transactionnelles (valeur et carte dans une transaction)',
+      planned: 'lot suivant (une famille = son producteur en réparation, comme COH-TODO-RELEVANCE-CARDS)',
+    } },
   {
     domain: 'documents-t1', label: 'Chaîne document → extract → T1 → aval (C-Q7)',
-    checks: [],
-    gap: { what: 'omissions de T1 par rapport à l’extract', existingMechanism: 't1-completeness-retry (unités non couvertes)', planned: 'COH-DOC-EXTRACT-CHAIN (point d’extension déclaré), contrat IA demandé' },
+    checks: ['COH-DOC-EXTRACT-CHAIN'],
+    gap: { what: 'valeur de l’extract absente de T1 sur une unité COUVERTE : constat seul (volontaire ou accidentelle : disposition T1 non livrée) ; documents analysés sans couche A', existingMechanism: 'constat tracé et Supervision ; t1-source-units-backfill (couche A historique)', planned: 'contrat IA 82B-t1-omissions-extract (unitDispositions, FOCUS_VALUES)' },
   },
   {
-    domain: 't6', label: 'T6 / mascotte', checks: [],
-    gap: { what: 'évaluations T6 bloquées ou périmées', existingMechanism: 'mascot-t6-supervision, mascot-t6-reevaluations (81B)', planned: 'enregistrement au registre au lot suivant' },
+    domain: 't6', label: 'T6 / mascotte', checks: ['COH-T6-EVALUATIONS'],
+    gap: {
+      what: 'texte affiché par la mascotte comparé aux échéances (rendu) ; persistance des résultats de pré-génération',
+      existingMechanism: 'mascot-pregeneration, mascot-t6-reevaluations, mascot-t6-supervision (81B)', planned: 'lot suivant',
+    },
   },
   {
-    domain: 'comptes', label: 'Comptes, Duo, abonnements, notifications', checks: [],
-    gap: { what: 'droits, Duo, abonnements locaux / Stripe, communications', existingMechanism: 'cross-account-relations-check, subscription-sync, santé des notifications', planned: 'lot suivant (détection seule pour l’isolation)' },
+    domain: 'comptes', label: 'Comptes, Duo, habilitations', checks: ['COH-DUO-RELATIONS'],
+    gap: {
+      what: 'isolation des données entre comptes (relations intercomptes)', existingMechanism: 'cross-account-relations-check (quotidien, lecture seule, jamais de correction — lot 49)',
+      planned: 'enregistrement au registre en détection seule (lot suivant)',
+    },
+  },
+  {
+    domain: 'abonnements', label: 'Offres, abonnements Stripe, droits et quotas', checks: ['COH-BILLING-STRIPE', 'COH-ENTITLEMENTS'],
+    gap: {
+      what: 'comptes sans abonnement Stripe (essai) : statut d’essai persisté par expire-trials ; Stripe non configuré : contrôle non applicable',
+      existingMechanism: 'droits calculés à la date (entitlementsFromSubscription) ; tâche expire-trials', planned: '—',
+    },
+  },
+  {
+    domain: 'notifications', label: 'Notifications et communications', checks: ['COH-NOTIF-OUTBOX', 'COH-SUBSCRIPTION-COMMUNICATIONS'],
+    gap: {
+      what: 'événement métier sans communication hors transitions d’abonnement ; préférences et canaux autorisés',
+      existingMechanism: 'santé des notifications (81E), anomalies de canal (Supervision)', planned: 'lot suivant',
+    },
   },
 ];

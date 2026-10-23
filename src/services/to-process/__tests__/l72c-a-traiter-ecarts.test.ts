@@ -22,6 +22,7 @@ const adm = await import('../admissibility');
 const prod = await import('../producers.service');
 const bridge = await import('../document-rule-bridge');
 const camp = await import('../relevance-campaign.service');
+const relevance = await import('@/services/coherence/registry/checks/to-process-relevance');
 const iv = await import('../document-intervention');
 const { getRule } = await import('../rules-catalog');
 
@@ -213,17 +214,10 @@ describe('C5 — décisions « Non applicable » réévaluables', () => {
 });
 
 describe('C6 / C7 — campagne et traçabilité', () => {
-  it('ATP-FIX-15 — issues multi-familles : motifs de l’admissibilité et décisions sans carte', () => {
-    const c = (detail: string | null, outcome: string | null = null) => camp.campaignOutcomeOf({ open: false, resolutionReason: 'OBSOLETE', closeDetailReason: detail, closeDetailOutcome: outcome, error: false });
-    expect(c('INFORMATIONAL_EVENT', 'NO_ACTION')).toBe('REMOVED');
-    expect(c('EQUIPMENT_INACTIVE')).toBe('REMOVED');
-    expect(c('AUTO_RESOLVED')).toBe('AUTO_RESOLVED');
-    expect(c('DATA_PRESENT_OR_EVENT_CLOSED')).toBe('RESOLVED_ELSEWHERE');
-    expect(c('NO_LIVE_ASSET_TO_ATTACH')).toBe('DEFERRED');
-    expect(camp.decisionCampaignOutcome('DEFER')).toBe('DEFERRED');
-    expect(camp.decisionCampaignOutcome('NO_ACTION')).toBe('NO_CARD');
-    expect(camp.decisionCampaignOutcome('CREATE_ACTION')).toBe('CREATED');
-    expect(camp.campaignRuleCodes()).toEqual(expect.arrayContaining(['DATA-CONTRACT-END', 'DOC-INTERVENTION', 'DATA-AGENDA-DATE', 'LINK-EQUIP-ASSET', 'SUPPLIER-IDENTITY']));
+  it('ATP-FIX-15 (lot 83E) — familles de la réévaluation rétroactive : contrôle du registre (campagne retirée), familles lisibles dans l’historique', async () => {
+    // Lot 83E (C-Q9) : issues de campagne retirées avec le moteur ; mêmes familles réévaluées par COH-TODO-RELEVANCE-CARDS.
+    expect(await relevance.relevanceCardRuleCodes()).toEqual(expect.arrayContaining(['DOC-INTERVENTION', 'DATA-AGENDA-DATE', 'LINK-EQUIP-ASSET', 'SUPPLIER-IDENTITY']));
+    expect(await relevance.documentFieldRuleCodes()).toEqual(expect.arrayContaining(['DATA-CONTRACT-END']));
     expect(camp.familyOfRule('DATA-AGENDA-DATE')).toBe('AGENDA_ITEM');
   });
 

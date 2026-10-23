@@ -18,7 +18,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { SessionService } from '@/lib/session-service';
 import { findAccessibleAssetForExport } from '@/services/exports/export-access';
 import { getEntitlements } from '@/services/entitlements.service';
-import { notFound, parsePositiveId } from '@/services/business-operations/claims/claim-route';
+import { notFound, parsePositiveId } from '@/services/assets/asset-route-helpers';
 import { AssetNotFoundForTcoError, readAssetTco } from '@/services/business-operations/tco/service';
 import { parseTcoLinesPage, TCO_PREMIUM_MESSAGE, toTcoDto } from '@/services/business-operations/tco/dto';
 

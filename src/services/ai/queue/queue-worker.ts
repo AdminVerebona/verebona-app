@@ -65,6 +65,7 @@ import {
   isExecutionCancelled, ExecutionCancelledError, waitForSettlement, type ExecutionGuard,
 } from './execution-control';
 import { runInJobContext, executionTimeoutMs } from './job-context';
+import { executionIdOfJob } from '../business-execution/identity';
 import { isAiBlocked } from './runnable-guard';
 import { isAccountIneligibleError, ineligibilityReasonOf } from '@/services/account/processing-eligibility';
 import { noteWorkerClaim, noteWorkerError, noteScheduleEvaluation, writeWorkerHeartbeat } from './worker-heartbeat';
@@ -252,6 +253,8 @@ export async function runOne(treatment: Treatment, onClaimed?: () => void): Prom
         jobAttempt: job.attempts ?? null,
         // CDC 15 OBS-CFG : déclencheur effectif, tracé avec chaque appel.
         triggerCode: job.triggerCode ?? null,
+        // Lot 83C (SEM-01, R22) : exécution métier servie, portée par chaque appel.
+        businessExecutionId: executionIdOfJob(job),
         signal: controller.signal,
         // MOD-011 : jeton de démarrage, comparé à l'ouverture du disjoncteur
         // par la garde de la passerelle (runnable-guard).

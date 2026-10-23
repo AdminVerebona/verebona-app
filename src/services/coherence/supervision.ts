@@ -13,7 +13,8 @@
  *   repair_failed     réparations en échec technique (service métier) ;
  *   persistent        constats non résolus depuis au moins
  *                     `PERSISTENT_STREAK` contrôles (réparation inefficace
- *                     ou suspendue, constat sans réparation automatique) ;
+ *                     ou suspendue, constat sans réparation automatique,
+ *                     relance asynchrone toujours sans résultat — lot 83B) ;
  *   errors            contrôles en erreur répétée (aucun succès) ;
  *   repeated_repairs  même objet réparé au moins `REPEATED_REPAIRS` fois en
  *                     7 jours : la cause est ailleurs (chaîne qui recrée
@@ -22,10 +23,17 @@
  * Les constats AMBIGUOUS (arbitrage existant) et WOULD_REPAIR (mode à blanc)
  * ne sont pas signalés : ils relèvent de mécanismes existants ou de la
  * recette. Les preuves anciennes (compte sorti du périmètre) sont ignorées.
+ *
+ * Lot 83E : un contrôle dont les constats sont DÉJÀ signalés par une
+ * supervision existante (`externalSupervision` : T6 → `mascot-t6-supervision`,
+ * notifications → anomalies de canal / de communication) n'ouvre pas de
+ * second signalement « persistant » ; ses échecs de réparation et erreurs de
+ * contrôle restent signalés ici.
  */
 import { pgClient } from '@/db';
 import type { Sql } from './registry/types';
 import { rows } from './registry/util';
+import { getCheck } from './registry';
 
 export const COHERENCE_ANOMALY_PREFIX = 'other:coherence:';
 export const PERSISTENT_STREAK = 3;
@@ -49,11 +57,11 @@ export async function computeCoherenceAlerts(now: Date = new Date(), sql: Sql = 
   const agreg = await rows(sql, `
     SELECT check_id,
            count(*) FILTER (WHERE last_result = 'REPAIR_FAILED')::int AS repair_failed,
-           count(*) FILTER (WHERE finding_streak >= $2 AND last_result IN ('FINDING', 'REPAIR_INEFFECTIVE', 'REPAIR_SUPPRESSED'))::int AS persistent,
+           count(*) FILTER (WHERE finding_streak >= $2 AND last_result IN ('FINDING', 'REPAIR_INEFFECTIVE', 'REPAIR_SUPPRESSED', 'REPAIR_PENDING'))::int AS persistent,
            count(*) FILTER (WHERE consecutive_errors >= 2)::int AS errors,
            (array_agg(account_id ORDER BY account_id) FILTER (WHERE last_result = 'REPAIR_FAILED' OR consecutive_errors >= 2
-                                                              OR (finding_streak >= $2 AND last_result IN ('FINDING', 'REPAIR_INEFFECTIVE', 'REPAIR_SUPPRESSED'))))[1:20] AS accounts,
-           (array_agg(DISTINCT finding->>'anomaly') FILTER (WHERE finding_streak >= $2 AND last_result IN ('FINDING', 'REPAIR_INEFFECTIVE', 'REPAIR_SUPPRESSED'))) AS anomalies
+                                                              OR (finding_streak >= $2 AND last_result IN ('FINDING', 'REPAIR_INEFFECTIVE', 'REPAIR_SUPPRESSED', 'REPAIR_PENDING'))))[1:20] AS accounts,
+           (array_agg(DISTINCT finding->>'anomaly') FILTER (WHERE finding_streak >= $2 AND last_result IN ('FINDING', 'REPAIR_INEFFECTIVE', 'REPAIR_SUPPRESSED', 'REPAIR_PENDING'))) AS anomalies
       FROM coherence_object_proofs
      WHERE COALESCE(last_completed_at, last_started_at) >= $1
      GROUP BY check_id`, [depuis, PERSISTENT_STREAK]);
@@ -62,7 +70,7 @@ export async function computeCoherenceAlerts(now: Date = new Date(), sql: Sql = 
     const comptes = [...new Set(((a.accounts as number[] | null) ?? []).map(Number))];
     const base = { checkId: id, accountIds: comptes.join(', '), boLink: '/admin/exploitation' };
     if (Number(a.repair_failed) > 0) alerts.push({ fingerprint: fingerprintOf(id, 'repair_failed'), title: `Cohérence ${id} : réparations en échec (${a.repair_failed})`, count: Number(a.repair_failed), detail: base });
-    if (Number(a.persistent) > 0) {
+    if (Number(a.persistent) > 0 && !getCheck(id)?.externalSupervision) {
       alerts.push({ fingerprint: fingerprintOf(id, 'persistent'), title: `Cohérence ${id} : constats persistants (${a.persistent})`, count: Number(a.persistent),
         detail: { ...base, anomalies: ((a.anomalies as string[] | null) ?? []).filter(Boolean).join(', ') } });
     }

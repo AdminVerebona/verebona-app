@@ -31,7 +31,6 @@ const dv = await import('../document-derivations');
 const iv = await import('../document-intervention');
 const { checkInterventionCoherence } = await import('../intervention-check');
 const { getRule, checkRulesCatalog, documentBridgeRules, RULE_PRODUCERS } = await import('../rules-catalog');
-const { campaignOutcomeOf } = await import('../relevance-campaign.service');
 const rec = await import('../relevance-recette');
 const { T4ClassifyEventV3Output } = await import('@/services/ai/agenda/master/t4-contract');
 const { translateEventDecision, classifyEventVariables } = await import('@/services/ai/agenda/master/classify-event');
@@ -320,18 +319,8 @@ describe('ATR-P-04 / ATR-P-05 — temporalité et contrat de décision', () => {
   });
 });
 
-describe('ATR-P-09 — campagne rétroactive : issue de chaque carte', () => {
-  it('ATR-P-09 — conservée, résolue, différée, retirée, remplacée, en erreur', () => {
-    const o = (p: Partial<Parameters<typeof campaignOutcomeOf>[0]>) => campaignOutcomeOf({ open: false, resolutionReason: 'OBSOLETE', closeDetailReason: null, error: false, ...p });
-    expect(o({ open: true })).toBe('KEPT');
-    expect(o({ closeDetailReason: 'AUTO_RESOLVED' })).toBe('AUTO_RESOLVED');
-    expect(o({ closeDetailReason: 'DEFERRED' })).toBe('DEFERRED');
-    expect(o({ closeDetailReason: 'NO_ACTION_NEEDED' })).toBe('REMOVED');
-    expect(o({ closeDetailReason: 'REPLACED_BY_INTERVENTION' })).toBe('REPLACED_BY_INTERVENTION');
-    expect(o({ resolutionReason: 'USER_COMPLETED', closeDetailReason: 'COMPLETED_ELSEWHERE' })).toBe('RESOLVED_ELSEWHERE');
-    expect(o({ open: true, error: true })).toBe('ERROR');
-  });
-});
+// ATR-P-09 (issue de chaque carte dans la campagne rétroactive) : RETIRÉ au lot 83E avec le moteur de campagne
+// (C-Q9) — la réévaluation est un contrôle du registre de cohérence (L83E-U-RELEVANCE, L83E-E2E-03).
 
 describe('ATR-P-11 — catalogue et présentation', () => {
   it('ATR-P-11 — intervention : règle distincte de la donnée, producteur dédié, jamais parcourue comme une donnée du pont', () => {

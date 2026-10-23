@@ -14,9 +14,10 @@
  *   · l'exécutant relit l'état (jamais l'événement seul) : rejouable,
  *     idempotent, NO-OP si rien ne change ; une erreur n'annule jamais
  *     l'Opération (NFR-OP-006) ;
- *   · balayage horaire (racine T3) : comptes dont une Opération récente n'a
- *     pas encore sa représentation attendue, ou qui portent une projection
- *     orpheline — un événement de bus perdu (redémarrage) est rattrapé.
+ *   · lot 83E (C-Q9) : le balayage horaire de convergence (racine T3) est
+ *     RETIRÉ — un événement de bus perdu est rattrapé par le contrôle de
+ *     cohérence (COH-AGENDA-OPERATION-PROJECTION, COH-AGENDA-PROJECTION-
+ *     ORPHANS : plan simulé puis même moteur), une seule chaîne.
  *
  * DÉCLENCHEUR AGENDA → T3 (C4, TRG-012 à TRG-014) : seulement un geste
  * UTILISATEUR sur un élément lié à une Opération, ou (lot 47B) sur un élément
@@ -38,8 +39,6 @@ export const T3_TARGET_AGENDA_PROJECTION = 'business_operations_agenda';
 export const AGENDA_PROJECTION_SUBSCRIBER = 't4-agenda-projection';
 /** Regroupement d'une rafale d'événements d'un compte (secondes). */
 export const AGENDA_PROJECTION_DELAY_SECONDS = 30;
-/** Comptes mis en file par cycle du balayage horaire. */
-export const AGENDA_PROJECTION_SWEEP_LIMIT = 500;
 /** Au-delà, la liste fusionnée a pu être tronquée (`MAX_MERGED_EVENTS`) : passage complet. */
 const FULL_PASS_EVENTS = 40;
 
@@ -137,19 +136,6 @@ export async function runAgendaProjectionJob(job: QueuedJob, p: AgendaProjection
   });
   const detail = { accountId: p.accountId, ...res };
   return { result: res.changes > 0 ? 'APPLIED' : 'NO_CHANGE', detail };
-}
-
-/** Démarreur du balayage horaire (racine T3) : comptes à faire converger. */
-export async function startAgendaProjectionSweep(
-  ctx: { cycleId: string; guard: ExecutionGuard }, deps?: AgendaProjectionQueueDeps,
-): Promise<number> {
-  const { listAccountsNeedingProjection } = await import('./service');
-  const comptes = await listAccountsNeedingProjection(AGENDA_PROJECTION_SWEEP_LIMIT);
-  for (const accountId of comptes) {
-    await ctx.guard.assertActive('T4 projection — mise en file planifiée');
-    await requestAgendaProjection(accountId, { all: true, correlationId: `t4-projection-sweep:${ctx.cycleId}` }, deps);
-  }
-  return comptes.length;
 }
 
 /**

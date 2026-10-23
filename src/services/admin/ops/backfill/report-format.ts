@@ -14,7 +14,7 @@ import type { BackfillReport as DalReport } from '@/services/documents/document-
 import type { DedupeReport, SourceLinksReport } from '@/services/agenda/backfill/agenda-backfill';
 import type { AssetAccountBackfillReport } from '@/services/assets/asset-account-backfill';
 import type { StructuredMigrationReport } from '@/services/business-operations/consolidation/asset-data-consolidator';
-import type { ClaimMigrationReport } from '@/services/business-operations/consolidation/claim-migration';
+import type { CleanupResult, CleanupRestoreReport } from '@/services/business-operations/claims/legacy-cleanup';
 import type { RemediationReport, RemediationRestoreReport } from '@/services/security/cross-account/remediation';
 import type { DataSeparationReport } from '@/services/equipment/data-separation-backfill';
 import type { ValidationRepriseReport } from '@/services/documents/validation-reprise';
@@ -294,33 +294,52 @@ function operationsStructured(out: RawBackfillOutput): BackfillSummary {
   };
 }
 
-const CLAIM_OUTCOME_LABELS: Record<string, string> = {
-  CREATED: 'créé', MATCHED: 'rapproché d’un sinistre existant', LINKED: 'déjà migré', RESYNCED: 'resynchronisé (ancien client)',
-  BELOW_THRESHOLD: 'sous le seuil (rien créé)', HOLD_AMBIGUOUS: 'plusieurs sinistres possibles (rien créé)', EMPTY: 'vide', UNCHANGED: 'inchangé',
+const CLEANUP_LABELS: Record<string, string> = {
+  ACTIONS: 'Actions de sinistre (ancien modèle)',
+  EXCHANGES: 'Échanges de sinistre (ancien modèle)',
+  CHILDREN: 'Liens « intervention enfant » (interventions conservées)',
+  LEGACY_FORM: 'Ancien formulaire Sinistre des biens',
+  MIGRATION_MARKS: 'Repères de migration de l’ancien formulaire',
+  CARDS: 'Questions « À traiter » retirées encore ouvertes',
 };
 
-function operationsClaims(out: RawBackfillOutput): BackfillSummary {
-  const r = out.result as ClaimMigrationReport;
-  const simulation = r.mode === 'simulate';
-  const n = (k: keyof typeof r.outcomes) => r.outcomes[k] ?? 0;
+/** Lot 83D (V-Q2) : nettoyage de l'ancien modèle Sinistres. */
+function claimsLegacyCleanup(action: BackfillAction, out: RawBackfillOutput): BackfillSummary {
+  if (action === 'restore') {
+    const r = out.result as CleanupRestoreReport;
+    return {
+      headline: `Restauration de ${r.runId} : ${r.restored} ligne(s) rétablie(s), ${r.conflicts.length} conflit(s).`,
+      scriptRunId: r.restoreRunId,
+      restorable: false,
+      counters: [{ label: 'Lignes rétablies', value: r.restored }, { label: 'Conflits', value: r.conflicts.length }],
+      ambiguous: { count: 0, samples: [] },
+      conflicts: { count: r.conflicts.length, samples: echantillon(r.conflicts, (c) => c) },
+      warnings: [],
+    };
+  }
+  const r = out.result as CleanupResult;
+  const simulation = r.mode === 'SIMULATE';
+  const total = Object.values(r.counters).reduce((a, b) => a + b, 0);
   return {
-    headline: `${simulation ? 'Simulation' : 'Application'} : ${r.processed} bien(s) examiné(s) sur ${r.scanned}, `
-      + `${n('CREATED')} sinistre(s) ${simulation ? 'à créer' : 'créé(s)'}, ${n('MATCHED') + n('LINKED')} rapproché(s), `
-      + `${r.changes} écriture(s), ${r.failed.length} échec(s)${r.more ? ' — d’autres biens restent à examiner' : ''}.`,
-    scriptRunId: null,
-    restorable: false,
+    headline: `${simulation ? 'Simulation' : 'Application'} : ${total} élément(s) de l’ancien modèle ${simulation ? 'à purger' : 'purgé(s)'} `
+      + `sur ${r.accounts.length} compte(s)${simulation ? '' : ` — ${r.journalRows} ligne(s) journalisée(s), restaurable par ${r.runId}`}.`,
+    scriptRunId: r.runId,
+    restorable: !simulation && total > 0,
     counters: [
-      { label: 'Biens examinés (ce passage)', value: r.scanned },
-      { label: 'Écritures', value: r.changes },
-      ...(['CREATED', 'MATCHED', 'LINKED', 'RESYNCED', 'BELOW_THRESHOLD', 'HOLD_AMBIGUOUS', 'EMPTY'] as const)
-        .map((k) => ({ label: `Sinistres : ${CLAIM_OUTCOME_LABELS[k]}`, value: n(k) })),
+      ...Object.entries(r.counters).map(([k, v]) => ({ label: CLEANUP_LABELS[k] ?? k, value: v })),
+      { label: 'Comptes concernés', value: r.accounts.length },
+      ...(simulation ? [] : [
+        { label: 'Point de restauration', value: r.restorePoint?.backupId ?? '—' },
+        { label: 'Contrôle de cohérence (campagne)', value: r.coherence.campaignId ?? 'non demandé' },
+        { label: 'Comptes non actifs (sans contrôle)', value: r.coherence.skippedAccounts.length },
+      ]),
     ],
-    ambiguous: {
-      count: r.holds.length,
-      samples: echantillon(r.holds, (h) => `bien ${h.assetId} (compte ${h.accountId}) — ${CLAIM_OUTCOME_LABELS[h.outcome] ?? h.outcome}${h.reason ? ` · ${h.reason}` : ''}`),
-    },
-    conflicts: { count: r.failed.length, samples: echantillon(r.failed, (f) => `bien ${f.assetId} (compte ${f.accountId}) — ${f.error}`) },
-    warnings: [],
+    ambiguous: { count: 0, samples: [] },
+    conflicts: { count: 0, samples: [] },
+    warnings: [
+      ...echantillon(r.samples, (x) => `Compte ${x.accountId} · ${CLEANUP_LABELS[x.category] ?? x.category} — ${x.label}`),
+      'Documents, photos, Opérations, événements, agenda, Pièces, équipements, détails d’assurance et dommages : jamais modifiés.',
+    ],
   };
 }
 
@@ -639,7 +658,7 @@ export function summarizeBackfill(script: BackfillScript, action: BackfillAction
     case 'cdc15': return cdc15(action, out);
     case 'asset-account': return assetAccount(out);
     case 'operations-structured': return operationsStructured(out);
-    case 'operations-claims': return operationsClaims(out);
+    case 'claims-legacy-cleanup': return claimsLegacyCleanup(action, out);
     case 'cross-account': return crossAccount(action, out);
     case 'equipment-separation': return equipmentSeparation(out);
     case 'document-validation': return documentValidation(out);

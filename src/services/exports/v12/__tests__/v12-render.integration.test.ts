@@ -32,7 +32,7 @@ import zlib from 'node:zlib';
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { PDFDocument, PDFName, PDFRawStream, StandardFonts } from 'pdf-lib';
 import sharp from 'sharp';
-import { makeSource, doc, photo, event, TODAY } from './fixtures/sources';
+import { makeSource, doc, photo, event, TODAY, claimFileOf } from './fixtures/sources';
 
 if (!process.env.PLAYWRIGHT_BROWSERS_PATH && !process.env.CHROMIUM_EXECUTABLE_PATH && fs.existsSync('/opt/pw-browsers')) {
   process.env.PLAYWRIGHT_BROWSERS_PATH = '/opt/pw-browsers';
@@ -289,33 +289,25 @@ describe.skipIf(!enabled)('Rendu Chromium d’un dossier complet (intégration)'
         event(43, { title: 'Recherche de fuite · origine confirmée au 4ᵉ étage', category: 'reparation', date: '2026-08-07', provider: 'Plomberie Bellecour' }),
         event(44, { title: 'Expertise sur place', category: 'sinistre', date: '2026-08-26', provider: 'Cabinet Rhône Expertises' }),
       ],
-      additionalInfo: {
-        commercial: {}, rental: {}, insurance: {}, updatedAt: null,
-        claim: {
-          claimEventKey: 'event:42', occurredOn: '2026-08-03', claimType: 'DEGAT_DES_EAUX', declaredOn: '2026-08-04',
-          insurerClaimRef: 'SIN-2026-08-77412', policyReference: 'MRH n° 4471 992', status: 'EXPERTISE_REALISEE',
-          consequences: 'Plafonds et murs tachés et cloqués sur 11 m² environ, luminaire de salle de bain hors service, parquet de la chambre 2 gonflé sur 2 m².',
-          measures: 'Coupure du circuit électrique, bâchage, séchage par déshumidificateur, déclaration sous 24 h.',
-          statusDetail: "Expertise réalisée le 26/08/2026 · en attente de l'accord d'indemnisation",
-          damages: [
-            { id: 'd1', zone: 'Salle de bain', element: 'Plafond · 5 m²', finding: 'Auréoles, peinture cloquée, plâtre friable en angle', estimatedAmountCents: 284000, photoIds: [2, 3], documentIds: [31] },
-            { id: 'd2', zone: 'Salle de bain', element: 'Luminaire plafonnier', finding: 'Eau dans le boîtier, hors service depuis le 03/08', photoIds: [4] },
-            { id: 'd3', zone: 'Chambre 2', element: 'Plafond et mur mitoyen · 6 m²', finding: 'Traces d’humidité, décollement du papier peint', photoIds: [5] },
-            { id: 'd4', zone: 'Chambre 2', element: 'Parquet stratifié · 2 m²', finding: 'Lames gonflées le long du mur mitoyen', photoIds: [6], documentIds: [34] },
-          ],
-          actions: [
-            { id: 'a1', date: '2026-08-03', title: 'Mesures conservatoires', detail: 'Coupure électrique du circuit SDB, bâchage, déplacement du mobilier', performedBy: 'Assurée' },
-            { id: 'a2', date: '2026-08-07', title: 'Recherche et réparation de la fuite', performedBy: 'Plomberie Bellecour', detail: "À la charge de l'occupant du 4ᵉ" },
-            { id: 'a3', date: '2026-08-08', endDate: '2026-08-22', title: 'Séchage', detail: 'Déshumidificateur en location, 14 jours', performedBy: 'Loxam Lyon', invoiceDocumentId: 32 },
-            { id: 'a4', status: 'A_REALISER', title: 'Remise en état', detail: "En attente de l'accord d'indemnisation · devis joints" },
-          ],
-          exchanges: [
-            { id: 'x1', date: '2026-08-04', direction: 'RECU', party: 'ASSUREUR', channel: 'EMAIL', summary: 'Accusé de réception de la déclaration · SIN-2026-08-77412', documentId: 33 },
-            { id: 'x2', date: '2026-08-18', direction: 'RECU', party: 'EXPERT', channel: 'COURRIER', summary: "Convocation à l'expertise du 26/08/2026" },
-            { id: 'x3', date: '2026-09-15', direction: 'ENVOYE', party: 'ASSUREUR', channel: 'EMAIL', summary: "Relance de l'assuré · sans réponse à ce jour" },
-          ],
-        },
-      },
+      // Lot 83D (V-Q8) : le dossier lit l'Opération CLAIM consolidée ; plus d'actions ni d'échanges saisis
+      // (étapes = Agenda, courriers = documents).
+      additionalInfo: { commercial: {}, rental: {}, insurance: {}, updatedAt: null },
+      claim: { selectedOperationId: 50, origin: 'operation', options: [{ id: 50, label: 'Dégât des eaux', date: '2026-08-03' }] },
+      claimFile: claimFileOf({
+        historyEventKey: 'event:42', occurredOn: '2026-08-03', claimType: 'DEGAT_DES_EAUX', declaredOn: '2026-08-04',
+        insurerClaimRef: 'SIN-2026-08-77412', policyReference: 'MRH n° 4471 992', status: 'EXPERTISE_REALISEE',
+        consequences: 'Plafonds et murs tachés et cloqués sur 11 m² environ, luminaire de salle de bain hors service, parquet de la chambre 2 gonflé sur 2 m².',
+        measures: 'Coupure du circuit électrique, bâchage, séchage par déshumidificateur, déclaration sous 24 h.',
+        statusDetail: "Expertise réalisée le 26/08/2026 · en attente de l'accord d'indemnisation",
+        damages: [
+          { key: 'd1', zone: 'Salle de bain', element: 'Plafond · 5 m²', finding: 'Auréoles, peinture cloquée, plâtre friable en angle', estimatedAmountCents: 284000, photoIds: [2, 3], documentIds: [31] },
+          { key: 'd2', zone: 'Salle de bain', element: 'Luminaire plafonnier', finding: 'Eau dans le boîtier, hors service depuis le 03/08', estimatedAmountCents: null, photoIds: [4], documentIds: [] },
+          { key: 'd3', zone: 'Chambre 2', element: 'Plafond et mur mitoyen · 6 m²', finding: 'Traces d’humidité, décollement du papier peint', estimatedAmountCents: null, photoIds: [5], documentIds: [] },
+          { key: 'd4', zone: 'Chambre 2', element: 'Parquet stratifié · 2 m²', finding: 'Lames gonflées le long du mur mitoyen', estimatedAmountCents: null, photoIds: [6], documentIds: [34] },
+        ],
+        documentIds: [31, 32, 33, 34],
+        rooms: ['Salle de bain', 'Chambre 2'],
+      }),
     });
     const sinChoices = buildDefaultChoices('ASSURANCE_SINISTRE', sinistre, { today: TODAY });
     const rs = await renderDossier({
@@ -325,11 +317,13 @@ describe.skipIf(!enabled)('Rendu Chromium d’un dossier complet (intégration)'
     const sp = await pdfText(rs.pdf);
     sp.forEach((t, i) => expect(t.replace(/\s/g, ''), `sinistre page ${i + 1}`).toContain(`Page${i + 1}/${sp.length}`));
     const st = sp.join(' ');
-    for (const t of ['Dommages et éléments concernés', 'Photos · pièces', 'Plafond · 5 m', 'Actions déjà réalisées', 'Non réalisé', '08/08 → 22/08/2026',
-      'Intervenant : Loxam Lyon', 'Assureur · E-mail reçu', 'Expert · Courrier reçu', '2 zones endommagées']) expect(st.toLowerCase(), t).toContain(t.toLowerCase());
+    for (const t of ['Dommages et éléments concernés', 'Photos · pièces', 'Plafond · 5 m', 'Échanges assureur (3 messages)', 'Pièces concernées',
+      '2 zones endommagées']) expect(st.toLowerCase(), t).toContain(t.toLowerCase());
+    expect(st).not.toContain('Actions déjà réalisées');
     // Renvois : photos retenues (P1…) et pièce intégrée (A2) dans le tableau des dommages.
     expect(st).toMatch(/P1, P2 · A\d/);
-    expect(st).toMatch(/facture · annexe A\d/);
+    // Lot 83D : plus d'« action » renvoyant à sa facture — la facture est une pièce du dossier (tableau des documents).
+    expect(st).toContain('Facture location déshumidificateur');
     expect(st).not.toContain('RIB compte joint');
     if (outDir) fs.writeFileSync(path.join(outDir, 'data-assurance-sinistre.pdf'), rs.pdf);
 
@@ -340,7 +334,7 @@ describe.skipIf(!enabled)('Rendu Chromium d’un dossier complet (intégration)'
       photos: [1, 2, 3, 4].map((i) => photo(i, { s3Key: `pv${i}`, caption: ['Vue de trois quarts', 'Caisse et banc enfant', 'Moteur Bosch', 'Tente de pluie'][i - 1] })),
       events: [event(61, { title: 'Révision complète', provider: 'Cyclable Lyon', date: '2025-07-03' })],
       additionalInfo: {
-        rental: {}, insurance: {}, claim: {}, updatedAt: null,
+        rental: {}, insurance: {}, updatedAt: null,
         commercial: {
           desiredSalePriceCents: 390000, newPriceCents: 549000, salePitch: 'Modèle 2022 · moteur Bosch Cargo Line · 3 480 km · entretien suivi.',
           availabilityDate: '2026-10-15', availabilityComment: 'remise en main propre',

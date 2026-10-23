@@ -49,10 +49,13 @@ describe('O7-01 — tableau C16 : projection par type (decideProjection)', () =>
   it('F-139 / C16-02 — INTERVENTION REALIZED datée → historique (HISTORICAL, information)', () => {
     expect(desired(op())).toMatchObject({ key: 'INTERVENTION', nature: 'HISTORICAL', date: '2026-03-10', target: 'REALIZED', creatable: true, category: 'information' });
   });
-  it('F-140 / C16-03 — INTERVENTION REALIZED sans date : aucune date inventée (rien n\'est créé)', () => {
+  it('F-140 / C16-03 — INTERVENTION REALIZED sans date : aucune date inventée — lot 83A (CDC v5 §11.4, AC17) : l\'événement établi est créé SANS date', () => {
+    // Lot 83A — test corrigé : l'ancien comportement « rien n'est créé » est remplacé par le v5 (identité ≠ date).
     const d = desired(op({ realizedDate: null, plannedDate: '2026-02-01' }));
-    expect(d).toMatchObject({ date: null, creatable: false, target: 'REALIZED' });
-    expect(plan(op({ realizedDate: null }))).toEqual([{ kind: 'ABSTAIN', reason: 'NO_DATE' }]);
+    expect(d).toMatchObject({ date: null, creatable: true, target: 'REALIZED', nature: 'HISTORICAL', category: 'information' });
+    expect(plan(op({ realizedDate: null }))).toEqual([{ kind: 'CREATE', desired: d, functionalKey: 'bo:v1:10:INTERVENTION' }]);
+    // Envisagée sans date : pas un événement établi, rien n'est créé.
+    expect(decideProjection(op({ status: 'ENVISAGED', plannedDate: null, realizedDate: null }), AUJ)).toMatchObject({ kind: 'NONE', reason: 'NO_DATE' });
   });
   it('F-141 / C16-04 — CLAIM REALIZED daté → historique « sinistre »', () => {
     expect(desired(op({ typeCode: 'CLAIM', technicalLabel: 'Dégât des eaux · 12/03/2026', realizedDate: '2026-03-12' })))
@@ -75,9 +78,10 @@ describe('O7-01 — tableau C16 : projection par type (decideProjection)', () =>
     // Échéance passée : jamais créée (une projection déjà posée reste).
     expect(desired(op({ typeCode: 'CONTRACT', contractEffectiveTo: '2025-01-01' })).creatable).toBe(false);
   });
-  it('C16-08 — FINANCING, OTHER, type nul : aucune projection, liens retirés', () => {
+  it('C16-08 — FINANCING, OTHER, type nul : aucune projection — lot 83A (§6.1) : le regroupement des éléments liés est CONSERVÉ', () => {
+    // Lot 83A — test corrigé : « liens retirés » défaisait les regroupements de l'utilisateur (lien Agenda ↔ Agenda, type non qualifié).
     for (const typeCode of ['FINANCING', 'OTHER', null] as const) {
-      expect(decideProjection(op({ typeCode }), AUJ)).toEqual({ kind: 'NONE', reason: 'TYPE_NOT_PROJECTED', keepLinks: false });
+      expect(decideProjection(op({ typeCode }), AUJ)).toEqual({ kind: 'NONE', reason: 'TYPE_NOT_PROJECTED', keepLinks: true });
     }
   });
   it('C16-09 — Opération invalidée / fusionnée, sans bien, annulée, non réalisée', () => {
@@ -169,9 +173,14 @@ describe('O7-20 — plan : création, mise à jour, statut, idempotence', () => 
     expect(plan(op({ realizedDate: null }), { linked: [projete] })).toEqual([{ kind: 'SYNC', itemId: 21, changes: { manualStatus: 'realise' } }]);
   });
   it('O7-23 — élément T4 lié et intact : marqué réalisé ; élément saisi : réalisation PROPOSÉE une seule fois ; jamais réécrit', () => {
-    const t4 = item({ id: 22, isAutomatic: true, businessOperationId: 10, nature: 'DEADLINE', title: 'Entretien chaudière' });
+    // Lot 83A : l'élément qui représente l'Opération est son PRINCIPAL (rôle porté par l'instantané).
+    const t4 = item({ id: 22, isAutomatic: true, businessOperationId: 10, nature: 'DEADLINE', title: 'Entretien chaudière', operationRole: 'PRINCIPAL', operationRoleOrigin: 'T4' });
     expect(plan(op(), { linked: [t4] })).toEqual([{ kind: 'MARK_DONE', itemId: 22 }]);
-    const manuel = item({ id: 23, businessOperationId: 10, title: 'Mon RDV' });
+    // Lot 83A : membre lié sans être principal — reconnu comme l'événement (rapprochement certain, AC15) puis complété.
+    expect(plan(op(), { linked: [{ ...t4, operationRole: 'RELATED' }] })).toEqual([
+      { kind: 'LINK', itemId: 22, reason: expect.stringContaining('élément du regroupement') }, { kind: 'MARK_DONE', itemId: 22 },
+    ]);
+    const manuel = item({ id: 23, businessOperationId: 10, title: 'Mon RDV', operationRole: 'PRINCIPAL', operationRoleOrigin: 'USER' });
     expect(plan(op(), { linked: [manuel] })).toEqual([{ kind: 'PROPOSE_DONE', itemId: 23 }]);
     expect(plan(op(), { linked: [manuel], cards: [23] })).toEqual([]);
     expect(plan(op(), { linked: [{ ...manuel, manualStatus: 'realise' }] })).toEqual([]);
@@ -188,10 +197,15 @@ describe('O7-20 — plan : création, mise à jour, statut, idempotence', () => 
     });
     expect(plan(op(), { linked: [ajour] })).toEqual([]);
   });
-  it('O7-26 — fusion / lien posé à côté d\'une projection : un seul événement (C22 « unifier »)', () => {
-    const user = item({ id: 26, businessOperationId: 10, title: 'Sinistre cuisine', nature: 'HISTORICAL' });
-    const proj = item({ id: 27, projected: true, isAutomatic: true, businessOperationId: 10, functionalKey: 'bo:v1:3:CLAIM' });
+  it('O7-26 — fusion / lien posé à côté d\'une projection : un seul événement (C22 « unifier ») — lot 83A : seulement face au PRINCIPAL', () => {
+    // Lot 83A — test corrigé : la projection n'est retirée que comme doublon du principal ; une étape liée (AC34) ne l'évince jamais.
+    const user = item({ id: 26, businessOperationId: 10, title: 'Sinistre cuisine', nature: 'HISTORICAL', operationRole: 'PRINCIPAL', operationRoleOrigin: 'USER' });
+    const proj = item({ id: 27, projected: true, isAutomatic: true, businessOperationId: 10, functionalKey: 'bo:v1:3:CLAIM', operationRole: 'RELATED', operationRoleOrigin: 'T4' });
     expect(plan(op({ typeCode: 'CLAIM' }), { linked: [proj, user] })).toEqual([{ kind: 'REMOVE', itemId: 27, reason: 'DUPLICATE_PROJECTION' }]);
+    const etape = { ...user, title: 'Visite expert', operationRole: 'RELATED' as const };
+    const principal = { ...proj, operationRole: 'PRINCIPAL' as const };
+    const p2 = plan(op({ typeCode: 'CLAIM' }), { linked: [principal, etape] });
+    expect(p2.some((a) => a.kind === 'REMOVE' || a.kind === 'CONSOLIDATE' || (a.kind === 'ROLE' && a.itemId === 26))).toBe(false);
   });
   it('C22 — Opération invalidée : projection intacte retirée, touchée ou saisie détachée', () => {
     const proj = item({ id: 30, projected: true, isAutomatic: true, businessOperationId: 10 });
@@ -200,8 +214,10 @@ describe('O7-20 — plan : création, mise à jour, statut, idempotence', () => 
     expect(plan(op({ active: false }), { linked: [proj, touche, manuel] })).toEqual([
       { kind: 'REMOVE', itemId: 30, reason: 'INACTIVE' }, { kind: 'DETACH', itemId: 31, reason: 'INACTIVE' }, { kind: 'DETACH', itemId: 32, reason: 'INACTIVE' },
     ]);
-    // Date retirée (F-140) : la projection intacte part, le lien utilisateur reste.
-    expect(plan(op({ typeCode: 'CLAIM', realizedDate: null }), { linked: [proj, manuel] })).toEqual([{ kind: 'REMOVE', itemId: 30, reason: 'NO_DATE' }]);
+    // Lot 83A — test corrigé (§11.4) : date retirée → l'événement établi reste, SANS date (aucune date conservée
+    // sans preuve) ; le lien utilisateur reste.
+    const historique = { ...proj, nature: 'HISTORICAL' as const, businessType: 'claim', homeCategory: 'information', title: 'Remplacement chaudière', functionalKey: 'bo:v1:10:CLAIM' };
+    expect(plan(op({ typeCode: 'CLAIM', realizedDate: null }), { linked: [historique, manuel] })).toEqual([{ kind: 'SYNC', itemId: 30, changes: { date: null } }]);
   });
 });
 

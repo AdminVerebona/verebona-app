@@ -167,9 +167,12 @@ export interface ProjectionRunResult {
   /** Lot 54D (E07) : pages traitées (passage complet), dernier identifiant atteint. */
   pages?: number;
   lastOperationId?: number | null;
+  /** Lot 83A : éléments dont la carte de date (DATA-AGENDA-DATE) a été réévaluée (créés sans date, date posée ou retirée). */
+  dateCards?: number;
   /** Écritures effectives (0 = no-op). */
   changes: number;
-  skipped?: 'COLUMNS_MISSING';
+  /** Lot 83A (C-Q10) : compte non éligible aux traitements métier — aucune projection. */
+  skipped?: 'COLUMNS_MISSING' | 'ACCOUNT_INELIGIBLE';
 }
 
 const vide = (): ProjectionRunResult => ({
@@ -220,6 +223,11 @@ export async function loadOperationSnapshots(accountId: number, ids: readonly nu
                       WHERE s.operation_id = o.id AND s.active AND s.source_kind = 'DOCUMENT'), '{}') AS file_ids,
            ${EXCLUSIVE_FILES_SQL} AS exclusive_file_ids,
            cd.effective_to::text AS contract_effective_to,
+           -- Lot 83A (§11.8) : dates de réalisation contradictoires tracées par T3 (provenance 78A, contradictions ouvertes).
+           COALESCE((SELECT array_agg(DISTINCT v->>'value') FROM jsonb_array_elements(
+                       CASE WHEN jsonb_typeof(to_jsonb(o)->'attribute_provenance'->'conflicts') = 'array' THEN to_jsonb(o)->'attribute_provenance'->'conflicts' ELSE '[]'::jsonb END) c,
+                     jsonb_array_elements(CASE WHEN jsonb_typeof(c->'values') = 'array' THEN c->'values' ELSE '[]'::jsonb END) v
+                     WHERE c->>'field' = 'realizedDate' AND v->>'value' IS NOT NULL), '{}') AS realized_conflict,
            kd.history_event_id AS claim_history_event_id,
            (SELECT a.status FROM business_operation_asset_links l JOIN assets a ON a.id = l.asset_id
              WHERE l.operation_id = o.id AND l.active ORDER BY (l.link_role = 'PRIMARY') DESC, l.asset_id LIMIT 1) AS primary_asset_status
@@ -246,6 +254,7 @@ export async function loadOperationSnapshots(accountId: number, ids: readonly nu
     claimHistoryEventId: x.claim_history_event_id === null || x.claim_history_event_id === undefined ? null : Number(x.claim_history_event_id),
     disposalKind: x.primary_asset_status === 'TRANSMIS' ? 'TRANSMISSION' : 'SALE',
     exclusiveFileIds: nums(x.exclusive_file_ids).sort((a, b) => a - b),
+    realizedDateConflict: Array.isArray(x.realized_conflict) ? (x.realized_conflict as unknown[]).map(String).sort() : [],
   }));
 }
 
@@ -407,7 +416,11 @@ async function attachProjected(op: OperationSnapshot, itemId: number, role: 'PRI
 
 async function applyAction(
   op: OperationSnapshot, a: ProjectionAction, res: ProjectionRunResult,
-  opts: Required<Pick<ProjectionRunOptions, 'beforeWrite'>> & { correlationId: string | null; runId?: string | null; role: 'PRINCIPAL' | 'RELATED' },
+  opts: Required<Pick<ProjectionRunOptions, 'beforeWrite'>> & {
+    correlationId: string | null; runId?: string | null; role: 'PRINCIPAL' | 'RELATED';
+    /** Lot 83A : éléments dont la date a changé ou manque (carte de date à réévaluer). */
+    dateCards: Set<number>;
+  },
 ): Promise<number | null> {
   const accountId = op.accountId;
   const garde = (what: string) => opts.beforeWrite(`T4 projection — ${what}`);
@@ -419,7 +432,8 @@ async function applyAction(
         title: d.title, description: null, startDate: d.date, homeCategory: d.category,
         isAutomatic: true, isAutomaticModified: false, requiresQualification: false,
         originType: PROJECTION_ORIGIN_TYPE, originRefType: PROJECTION_ORIGIN_REF_TYPE, originRefId: op.id, originFieldKey: null,
-        occurrenceNature: 'CONFIRMED', dateSource: 'EXPLICIT_DATE',
+        // Lot 83A (§11.4, §11.5) : sans date établie, ni date ni « Sans échéance » (no_deadline reste faux).
+        occurrenceNature: 'CONFIRMED', dateSource: d.date ? 'EXPLICIT_DATE' : null,
         projectionOrigin: PROJECTION_ORIGIN, projectionCorrelationId: opts.correlationId,
       };
       // Lot 82D : documents d'un principal propagés par le service de regroupement (OPERATION_PRINCIPAL).
@@ -454,6 +468,7 @@ async function applyAction(
         }
       }
       await attachProjected(op, w.id, opts.role, opts.correlationId, 'T4_PROJECTION_CREATED');
+      if (!d.date) opts.dateCards.add(w.id);
       return w.id;
     }
     case 'SYNC': {
@@ -469,6 +484,20 @@ async function applyAction(
       if (!w.protected) {
         res.updated++; res.changes++;
         if (c.businessOperationId !== undefined) await attachProjected(op, a.itemId, opts.role, opts.correlationId, 'T4_PROJECTION_SYNC');
+        if (c.date !== undefined) opts.dateCards.add(a.itemId);
+      }
+      return null;
+    }
+    case 'DATE': {
+      // Lot 83A (§11.7, AC19) : date établie posée sur un élément automatique intact resté sans date
+      // (garde d'écriture : jamais un élément modifié ou confirmé par l'utilisateur).
+      await garde('date établie');
+      const w = await writeAgendaItem({
+        itemId: a.itemId, values: { startDate: a.date, dateSource: 'EXPLICIT_DATE', updatedAt: new Date() },
+      }, { accountId, channel: 'T4', onlyIfUntouched: true, notify: false, statusProposal: false });
+      if (!w.protected) {
+        res.updated++; res.changes++;
+        opts.dateCards.add(a.itemId);
       }
       return null;
     }
@@ -603,6 +632,12 @@ export async function projectAccountOperations(accountId: number, opts: Projecti
     }
     return { ...res, skipped: 'COLUMNS_MISSING' };
   }
+  // Lot 83A (C-Q10) : aucun traitement métier pour un compte non éligible (essai échu, lecture
+  // seule, suspendu…) — fonction d'éligibilité unique (82A) ; une simulation n'écrit rien.
+  if (!opts.dryRun) {
+    const { isAccountProcessingEligible } = await import('@/services/account/processing-eligibility');
+    if (!(await isAccountProcessingEligible(accountId))) return { ...res, skipped: 'ACCOUNT_INELIGIBLE' };
+  }
   const beforeWrite = opts.beforeWrite ?? (() => undefined);
   const today = opts.today ?? todayUtc();
   const correlationId = opts.correlationId ?? null;
@@ -656,6 +691,8 @@ async function projectIds(
   const forcer = new Set(opts.forceCreateOperationIds ?? []);
   // Lot 53 (D14) : rapprochements incertains → carte « À traiter » (candidats, provenance).
   const besoins: import('@/services/to-process/agenda-projection-cards').AgendaProjectionCardNeed[] = [];
+  // Lot 83A (§11.5 – §11.8) : éléments créés sans date, ou dont la date a été posée / retirée.
+  const dateCards = new Set<number>();
 
   for (const op of ops) {
     res.operations++;
@@ -682,7 +719,7 @@ async function projectIds(
       }
       if (opts.dryRun) continue;
       const role = decision.kind === 'PROJECT' ? projectionRoleOf(decision.desired.key) : 'RELATED';
-      const created = await applyAction(op, action, res, { beforeWrite, correlationId, runId: opts.runId ?? null, role });
+      const created = await applyAction(op, action, res, { beforeWrite, correlationId, runId: opts.runId ?? null, role, dateCards });
       if (created !== null) taken.add(created);
     }
     // Lot 82D (CDC v5 §7.1, P4) : documents de l'Opération propagés vers son principal (idempotent) —
@@ -706,6 +743,27 @@ async function projectIds(
     const { syncAgendaProjectionCards } = await import('@/services/to-process/agenda-projection-cards');
     const r = await syncAgendaProjectionCards(accountId, besoins, ops.map((x) => x.id));
     res.matchCards = (res.matchCards ?? 0) + r.created + r.updated;
+  }
+  await refreshDateCards(accountId, [...dateCards], res, correlationId);
+}
+
+/**
+ * Lot 83A (CDC v5 §11.5 – §11.8, AC17, AC19, AC20) — carte « À traiter » de
+ * date EXISTANTE (DATA-AGENDA-DATE, producteur unique `produceAgendaActions`)
+ * réévaluée immédiatement pour les éléments que la projection vient de créer
+ * sans date ou dont elle a posé / retiré la date : question (ou arbitrage des
+ * dates contradictoires de T3) pour un principal sans date, fermeture
+ * d'elle-même quand la date est posée. Aucun nouveau type de carte. Ne fait
+ * jamais échouer la projection : le balayage horaire du producteur reste le filet.
+ */
+async function refreshDateCards(accountId: number, ids: number[], res: ProjectionRunResult, correlationId: string | null): Promise<void> {
+  if (!ids.length) return;
+  try {
+    const { produceAgendaActions } = await import('@/services/to-process/producers.service');
+    await produceAgendaActions(accountId, { trigger: 'ANALYSIS', only: ids, runRef: correlationId });
+    res.dateCards = (res.dateCards ?? 0) + ids.length;
+  } catch (e) {
+    console.error(`[t4-projection] carte de date (compte ${accountId}) :`, (e as Error).message);
   }
 }
 
@@ -813,42 +871,8 @@ export async function requestProjectionForDocument(accountId: number, sourceFile
   }
 }
 
-/**
- * Comptes dont des Opérations n'ont encore aucune représentation d'agenda
- * attendue, ou qui portent des projections orphelines (convergence du
- * balayage horaire, NFR-OP-006 : un événement de bus perdu est rattrapé).
- * Lot 54D (E06) : plus de fenêtre de 48 h — une projection manquante est
- * restaurée QUEL QUE SOIT son âge. Ce qui n'est pas réexaminé : une
- * suppression utilisateur (tombstone `business_operation_projection_
- * suppressions`), un événement déjà lié, et une abstention en attente de
- * l'utilisateur (carte AGENDA-PROJECTION-MATCH ouverte) — aucune boucle :
- * une Opération déjà évaluée sans écriture n'est pas remise en file.
- */
-export async function listAccountsNeedingProjection(limit: number): Promise<number[]> {
-  if (!(await agendaFunctionalColumnsReady())) return [];
-  const r = await rows<{ account_id: number }>(db, sql`
-    SELECT account_id FROM (
-      SELECT o.account_id FROM business_operations o
-       WHERE o.invalidated_at IS NULL AND o.merged_into_operation_id IS NULL
-         AND NOT EXISTS (SELECT 1 FROM to_process_actions t
-                          WHERE t.account_id = o.account_id AND t.rule_code = 'AGENDA-PROJECTION-MATCH' AND t.resolved_at IS NULL
-                            AND t.trigger_context ? 'operationId' AND (t.trigger_context->>'operationId')::bigint = o.id)
-         AND ((o.type_code = 'INTERVENTION' AND ((o.status = 'ENVISAGED' AND o.planned_date IS NOT NULL) OR (o.status = 'REALIZED' AND o.realized_date IS NOT NULL)))
-              OR (o.type_code IN ('ACQUISITION', 'DISPOSAL') AND o.status = 'REALIZED' AND o.realized_date IS NOT NULL)
-              OR (o.type_code = 'CLAIM' AND o.status = 'REALIZED' AND o.realized_date IS NOT NULL
-                  AND NOT EXISTS (SELECT 1 FROM business_operation_claim_details kd WHERE kd.operation_id = o.id AND kd.history_event_id IS NOT NULL))
-              OR (o.type_code = 'CONTRACT' AND o.status <> 'CANCELLED'
-                  AND EXISTS (SELECT 1 FROM business_operation_contract_details cd WHERE cd.operation_id = o.id AND cd.effective_to >= CURRENT_DATE)))
-         AND EXISTS (SELECT 1 FROM business_operation_asset_links l JOIN assets a ON a.id = l.asset_id AND a.account_id = o.account_id AND a.deleted_at IS NULL
-                      WHERE l.operation_id = o.id AND l.active)
-         AND NOT EXISTS (SELECT 1 FROM agenda_items ai WHERE ai.business_operation_id = o.id)
-         AND NOT EXISTS (SELECT 1 FROM business_operation_projection_suppressions s WHERE s.operation_id = o.id)
-      UNION
-      SELECT i.account_id FROM agenda_items i
-       WHERE i.projection_origin = ${PROJECTION_ORIGIN}
-         AND (i.business_operation_id IS NULL OR NOT EXISTS (
-               SELECT 1 FROM business_operations o WHERE o.id = i.business_operation_id AND o.account_id = i.account_id
-                  AND o.invalidated_at IS NULL AND o.merged_into_operation_id IS NULL))
-    ) x ORDER BY account_id LIMIT ${limit}`);
-  return r.map((x) => Number(x.account_id));
-}
+// Lot 83E (C-Q9) : `listAccountsNeedingProjection` (sélection du balayage
+// horaire de convergence, retiré) est supprimée — la convergence est
+// contrôlée par COH-AGENDA-OPERATION-PROJECTION / -ORPHANS (registre de
+// cohérence), qui appellent `projectAccountOperations` (simulation puis
+// application).

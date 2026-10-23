@@ -30,8 +30,18 @@ vi.mock('@/services/ai/queue/job-queue.repository', () => ({
   getTreatmentStates: async () => [],
   getEmergencyStop: async () => ({ active: stopActive, reason: stopActive ? 'incident' : null, engagedAt: null }),
 }));
-const getErrorBreakdown = vi.fn(async (_days: number) => [] as unknown[]);
-vi.mock('@/services/ai/telemetry/execution-log.repository', () => ({ getErrorBreakdown: (d: number) => getErrorBreakdown(d) }));
+// Lot 83C : la fenêtre lit les exécutions MÉTIER (plus le comptage d'appels en échec).
+type Fenetre = { from: Date; to: Date };
+const projectBusinessExecutions = vi.fn(async (_f: Fenetre) => ({ rows: [] as unknown[], truncated: [], unavailable: [] }));
+let resume: Array<Record<string, unknown>> = [];
+vi.mock('@/services/ai/business-execution/repository', () => ({
+  projectBusinessExecutions: (f: Fenetre) => projectBusinessExecutions(f),
+  summarize: () => resume,
+}));
+const fenetreJours = () => {
+  const f = projectBusinessExecutions.mock.calls.at(-1)![0];
+  return Math.round((f.to.getTime() - f.from.getTime()) / 86_400_000);
+};
 const getCostReport = vi.fn(async (_o: { since: Date }) => ({
   totals: { functionalMicros: 1, technicalMicros: 2, calls: 3, failedCalls: 0, inputTokens: 0, outputTokens: 0, unpricedCalls: 0 },
   incomplete: false,
@@ -62,7 +72,8 @@ const call = (qs = '') => GET(new NextRequest(`http://localhost/api/admin/ai/das
 
 beforeEach(() => {
   stopActive = false;
-  getErrorBreakdown.mockClear();
+  resume = [];
+  projectBusinessExecutions.mockClear();
   getCostReport.mockClear();
 });
 
@@ -82,13 +93,13 @@ describe('GET /api/admin/ai/dashboard', () => {
   it('PER-01 : 7 j par défaut, 24 h et 30 j sur demande, valeur inconnue ignorée', async () => {
     let body = await (await call()).json();
     expect(body.windowDays).toBe(7);
-    expect(getErrorBreakdown).toHaveBeenLastCalledWith(7);
+    expect(fenetreJours()).toBe(7);
     expect(body.health.find((h: { treatment: string }) => h.treatment === 'T1').activity.window)
       .toEqual({ calls: 10, failed: 1, successRate: 0.9 });
 
     body = await (await call('?days=1')).json();
     expect(body.windowDays).toBe(1);
-    expect(getErrorBreakdown).toHaveBeenLastCalledWith(1);
+    expect(fenetreJours()).toBe(1);
     expect(body.health.find((h: { treatment: string }) => h.treatment === 'T1').activity.window)
       .toEqual({ calls: 4, failed: 2, successRate: 0.5 });
     const since = getCostReport.mock.calls.at(-1)![0].since.getTime();
@@ -101,6 +112,19 @@ describe('GET /api/admin/ai/dashboard', () => {
 
     body = await (await call('?days=365')).json();
     expect(body.windowDays).toBe(7);
+  });
+
+  it('L83C-U-DASH : alertes et cartes sur les exécutions MÉTIER (une par traitement), jamais sur des appels en échec', async () => {
+    resume = [
+      { treatment: 'T1', succeeded: 4, incomplete: 1, failed: 0, notFinal: 0, void: 0, undetermined: 0, technical: 0 },
+      { treatment: 'T3', succeeded: 2, incomplete: 0, failed: 2, notFinal: 1, void: 0, undetermined: 0, technical: 3 },
+      { treatment: 'T4', succeeded: 1, incomplete: 0, failed: 0, notFinal: 0, void: 0, undetermined: 0, technical: 0 },
+    ];
+    const body = await (await call()).json();
+    expect(body.alerts).toContainEqual({ severity: 'info', message: 'T1 : 1 incomplète en 7 jours.', href: '/admin/ai-executions?treatment=T1' });
+    expect(body.alerts).toContainEqual({ severity: 'warning', message: 'T3 : 2 exécutions échouées en 7 jours.', href: '/admin/ai-executions?treatment=T3' });
+    expect(body.alerts.some((a: { message: string }) => a.message.startsWith('T4'))).toBe(false);
+    expect(body.health.find((h: { treatment: string }) => h.treatment === 'T1').executions).toMatchObject({ succeeded: 4, incomplete: 1 });
   });
 
   it('GST-01 : « Opérationnel » puis « Arrêt d’urgence »', async () => {

@@ -105,7 +105,9 @@ scenario('L47B', 'Agenda source T3 (TRG-012 à 014) et historique passé affich�
     expect((await items(compte))[0]).toMatchObject({ id: evt.id, op: op.id, projection_origin: null });
     // Projection : l'élément de l'utilisateur représente déjà l'Opération (C16.1) — lot 82D (CDC v5
     // §11.2) : la projection T4 le désigne PRINCIPAL (une écriture de rôle), puis plus rien.
-    expect(await projeter(compte, [op.id])).toMatchObject({ created: 0, roles: 1, changes: 1 });
+    // Lot 83A (O-7) — test corrigé : l'élément est RECONNU comme l'événement global (rapprochement certain,
+    // AC15) et désigné principal par le service de regroupement (compté « lié », plus « rôle ») ; même état final.
+    expect(await projeter(compte, [op.id])).toMatchObject({ created: 0, linked: 1, changes: 1 });
     expect(await sql`SELECT operation_role, operation_role_origin FROM agenda_items WHERE id = ${evt.id}`).toEqual([{ operation_role: 'PRINCIPAL', operation_role_origin: 'T4' }]);
     expect(await projeter(compte, [op.id])).toMatchObject({ created: 0, changes: 0 });
     expect(await items(compte)).toHaveLength(1);

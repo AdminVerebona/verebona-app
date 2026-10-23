@@ -180,7 +180,7 @@ export function familyIneligibilityMessage(code: DossierCode): string {
 
 // ── Informations complémentaires utilisées par dossier (DEC-007, §6.2) ─────
 
-export type AdditionalInfoSectionKey = 'commercial' | 'rental' | 'insurance' | 'claim' | 'finance';
+export type AdditionalInfoSectionKey = 'commercial' | 'rental' | 'insurance' | 'finance';
 
 /** Sous-rubriques de la fiche bien lues par chaque dossier. */
 export const DOSSIER_ADDITIONAL_SECTIONS: Readonly<Record<DossierCode, readonly AdditionalInfoSectionKey[]>> = Object.freeze({
@@ -190,5 +190,6 @@ export const DOSSIER_ADDITIONAL_SECTIONS: Readonly<Record<DossierCode, readonly 
   VENTE: ['commercial'],
   LOCATION: ['rental'],
   ASSURANCE_SOUSCRIPTION: ['insurance'],
-  ASSURANCE_SINISTRE: ['claim'],
+  // Lot 83D (V-Q1 / V-Q8) : plus de sous-rubrique « Sinistre » — le dossier lit l'Opération CLAIM consolidée.
+  ASSURANCE_SINISTRE: [],
 });

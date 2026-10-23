@@ -80,7 +80,6 @@ export function OperationsTable({ items }: { items: OperationListItem[] }) {
             <th className="px-3 py-2 font-medium">Statut</th>
             <th className="px-3 py-2 font-medium min-w-[12rem]">Libellé</th>
             <th className="px-3 py-2 font-medium">Bien(s) / équipement(s)</th>
-            <th className="px-3 py-2 font-medium">Parent</th>
             <th className="px-3 py-2 font-medium">Date principale</th>
             <th className="px-3 py-2 font-medium text-right">Net indicatif</th>
             <th className="px-3 py-2 font-medium text-right">Sources</th>
@@ -91,7 +90,7 @@ export function OperationsTable({ items }: { items: OperationListItem[] }) {
         </thead>
         <tbody>
           {items.length === 0 && (
-            <tr><td colSpan={13} className="px-3 py-6 text-center text-muted-foreground">Aucune Opération ne correspond à ces critères.</td></tr>
+            <tr><td colSpan={12} className="px-3 py-6 text-center text-muted-foreground">Aucune Opération ne correspond à ces critères.</td></tr>
           )}
           {items.map((o) => (
             <tr key={o.id} className="border-b last:border-b-0 hover:bg-muted/40 align-top">
@@ -105,7 +104,6 @@ export function OperationsTable({ items }: { items: OperationListItem[] }) {
                   ? <span className="text-[color:var(--text-warning-soft)]">sans bien</span>
                   : [...o.assets.map((a) => a.name ?? `bien #${a.id}`), ...o.equipments.map((e) => e.name ?? `équipement #${e.id}`)].join(', ')}
               </td>
-              <td className="px-3 py-2 whitespace-nowrap">{o.parentOperationId ? <Link href={`/admin/operations/${o.parentOperationId}`} className="hover:underline">#{o.parentOperationId}</Link> : '—'}</td>
               <td className="px-3 py-2 whitespace-nowrap">{formatDate(o.principalDate)}</td>
               <td className="px-3 py-2 text-right tabular-nums whitespace-nowrap">{money(o.netCents, o.netPartial)}</td>
               <td className={`px-3 py-2 text-right tabular-nums ${o.activeSourceCount === 0 && !o.invalidatedAt ? 'text-[color:var(--text-danger)] font-semibold' : ''}`}>
@@ -207,7 +205,7 @@ export function indicatorHeadline(ind: IndicatorResult): string {
     case 'withoutTargetByAge': return `${n(v.h24)} / ${n(v.d7)} / ${n(v.d30)} / ${n(v.older)}`;
     case 'ambiguousSources': return `${n(v.total)} en attente · ${n(v.openCardsTotal)} carte(s) À traiter`;
     case 'componentsWithoutActiveSource': case 'activeWithoutActiveSource': return String(n(v.count));
-    case 'crossAccountOrParentCycles': return `${n(v.crossAccount)} lien(s) · ${n(v.parentCycles)} cycle(s)`;
+    case 'crossAccountLinks': return `${n(v.count)} lien(s)`;
     case 't2EconomicAnswers': return `${p(v.operationOnlyPct)} / ${p(v.mixedPct)} / ${p(v.fallbackOnlyPct)} (${n(v.total)})`;
     default: return '—';
   }
@@ -548,14 +546,12 @@ export function OperationDetailView({ d, onNavigate, identityAction }: {
         <Section title="Détails par type">
           {d.contractDetails && <Grid items={[['Référence du contrat', s(d.contractDetails.contract_reference)], ['Périodicité', s(d.contractDetails.periodicity)], ['Effet', `${formatDate(d.contractDetails.effective_from as string)} → ${formatDate(d.contractDetails.effective_to as string)}`]]} />}
           {d.financingDetails && <Grid items={[['Référence du financement', s(d.financingDetails.financing_reference)], ['Prêteur', s(d.financingDetails.lender)], ['Capital', amount(d.financingDetails.principal_amount_minor, d.financingDetails.principal_currency)], ['Effet', `${formatDate(d.financingDetails.effective_from as string)} → ${formatDate(d.financingDetails.effective_to as string)}`]]} />}
-          {d.claimDetails && <Grid items={[['Nature du sinistre', s(d.claimDetails.claim_type)], ['Déclaré le', formatDate(d.claimDetails.declared_on as string)], ['Réf. assureur', s(d.claimDetails.insurer_claim_ref)], ['Contrat d’assurance', opLink(d.claimDetails.insurance_contract_operation_id)], ['Avancement', s(d.claimDetails.status)], ['Dommage estimé', amount(d.claimDetails.estimated_damage_minor, 'EUR')], ['Dommages / actions / échanges', `${n(d.claimDetails.damages)} / ${n(d.claimDetails.actions)} / ${n(d.claimDetails.exchanges)}`]]} />}
+          {d.claimDetails && <Grid items={[['Nature du sinistre', s(d.claimDetails.claim_type)], ['Déclaré le', formatDate(d.claimDetails.declared_on as string)], ['Réf. assureur', s(d.claimDetails.insurer_claim_ref)], ['Contrat d’assurance', opLink(d.claimDetails.insurance_contract_operation_id)], ['Avancement', s(d.claimDetails.status)], ['Dommage estimé', amount(d.claimDetails.estimated_damage_minor, 'EUR')], ['Dommages détaillés', n(d.claimDetails.damages)]]} />}
         </Section>
       )}
 
-      <Section title="Parent, enfants et fusion">
+      <Section title="Fusion">
         <Grid items={[
-          ['Parent', d.parent ? <span key="p">{opLink(d.parent.id)} {s(d.parent.type_code)} — {s(d.parent.technical_label)}</span> : '—'],
-          ['Enfants', d.children.length ? <span key="c">{d.children.map((c, i) => <span key={String(c.id)}>{i ? ', ' : ''}{opLink(c.id)} {s(c.type_code)}</span>)}</span> : '—'],
           ['Fusionnée dans', opLink(o.mergedIntoOperationId)],
           ['A absorbé', d.mergedFrom.length ? <span key="m">{d.mergedFrom.map((c, i) => <span key={String(c.id)}>{i ? ', ' : ''}{opLink(c.id)}</span>)}</span> : '—'],
         ]} />

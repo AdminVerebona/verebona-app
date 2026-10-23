@@ -11,6 +11,8 @@ import { executionPhase } from '@/services/ai/queue/supervision';
 import { isTreatment } from '@/services/ai/config/treatments';
 import { BUSINESS_RESULTS } from '@/services/ai/queue/queue-policy';
 import { requireAdminContext, toErrorResponse } from '../../config-versions/_shared';
+import { businessExecutionsOfJobs } from '@/services/ai/business-execution/repository';
+import { toExecutionDto, type BusinessExecutionDto } from '@/services/ai/business-execution/dto';
 
 function date(v: string | null): Date | undefined {
   if (!v) return undefined;
@@ -54,7 +56,20 @@ export async function GET(req: NextRequest) {
     });
     // COR-05 : phase lisible (créé non démarré, démarré, terminé avec / sans
     // modification, échec) — y compris pour un passage sans appel modèle.
-    return NextResponse.json({ jobs: jobs.map((j) => ({ ...j, phase: executionPhase(j) })), count: jobs.length });
+    // Lot 83C (OP-04, SEM-05) : qualification MÉTIER de l'exécution servie par
+    // chaque travail (T1 : document logique, reprises comprises), avec son
+    // résultat natif et sa cause. Lecture tolérante : jamais bloquante.
+    const metier = await businessExecutionsOfJobs(jobs.map((j) => j.id)).catch((e) => {
+      console.error('[queue/jobs] exécutions métier illisibles (non bloquant) :', (e as Error).message);
+      return new Map();
+    });
+    return NextResponse.json({
+      jobs: jobs.map((j) => {
+        const x = metier.get(j.id);
+        return { ...j, phase: executionPhase(j), businessExecution: x ? toExecutionDto(x, null) as BusinessExecutionDto : null };
+      }),
+      count: jobs.length,
+    });
   } catch (e) {
     return toErrorResponse(e, 'GET /api/admin/ai/queue/jobs');
   }

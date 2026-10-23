@@ -1,20 +1,21 @@
 /**
- * Lot 53 (retour PO D10, D11, D14, Q17) — règles pures des cartes « À
- * traiter » de décision et du brouillon Sinistre. Les parcours en base sont
- * couverts par `src/test/e2e/scenarios/l53c-po-sinistres-agenda.e2e.ts`.
+ * Lot 53 (retour PO D14, Q17) — règles pures des cartes « À traiter » de
+ * décision. Les parcours en base sont couverts par
+ * `src/test/e2e/scenarios/l53c-po-sinistres-agenda.e2e.ts`.
+ *
+ * Lot 83D (CDC v5 §15, §18.4 ; arbitrages V-Q1, V-Q2) : PO-D10 (brouillon du
+ * formulaire Sinistre) et PO-D11 (carte « garder / dissocier » une
+ * intervention enfant) n'ont plus d'objet — formulaire et intervention enfant
+ * retirés. Remplacés par PO-D10/D11-83D, qui prouvent leur ABSENCE.
  */
-import * as React from 'react';
-import { createElement as h } from 'react';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it, vi } from 'vitest';
 
 vi.mock('@/db', () => ({ db: {}, pgClient: {} }));
-(globalThis as { React?: typeof React }).React = React;
 
 const {
-  OPERATION_ASSET_EXCLUSION_RULE, OPERATION_CARD_RULES, OPERATION_DETACH_RULE, detachProposals, detachQuestion,
+  OPERATION_ASSET_EXCLUSION_RULE, OPERATION_CARD_RULES, RETIRED_CLAIM_PARENT_RULES,
   exclusionProposals, exclusionQuestion, isOperationCardRule, parseOperationCardChoice,
 } = await import('../operation-cards');
 const {
@@ -25,13 +26,9 @@ const { selectDisplayedProposals, isDisplayableArbitration } = await import('../
 const { todoTitle } = await import('@/services/home/mascot/todo-items');
 const { decideProjection, planOperationProjection, matchExistingItem } = await import('@/services/business-operations/agenda-projection/model');
 const { applyAssetExclusions } = await import('@/services/business-operations/consolidation/asset-exclusions');
-const { claimPatchHasContent } = await import('@/services/business-operations/claims/model');
-const { draftPatchHasContent } = await import('@/lib/assets/claim-draft');
-const { ClaimFormView } = await import('@/components/assets/claims/ClaimViews');
 
 const ROOT = resolve(__dirname, '..', '..', '..', '..');
 const lire = (p: string) => readFileSync(resolve(ROOT, p), 'utf8');
-const txt = (html: string) => html.replace(/<[^>]+>/g, ' ').replace(/&#x27;/g, "'").replace(/&amp;/g, '&').replace(/\s+/g, ' ');
 
 describe('PO-D14 — agenda : doute sur l\'événement à relier → carte « À traiter » avec candidats et provenance', () => {
   const op = {
@@ -102,27 +99,17 @@ describe('PO-D14 — agenda : doute sur l\'événement à relier → carte « À
   });
 });
 
-describe('PO-D11 — facture retirée d\'une action : jamais de dissociation automatique', () => {
-  it('PO-D11-01 carte « garder / dissocier » : le rattachement actuel est la valeur actuelle, dissocier est un choix explicite', () => {
-    expect(isOperationCardRule(OPERATION_DETACH_RULE)).toBe(true);
-    expect(OPERATION_CARD_RULES).toContain(OPERATION_DETACH_RULE);
-    const props = detachProposals();
-    expect(props.find((p) => p.isCurrentValue)?.value).toBe('KEEP');
-    expect(props.map((p) => p.value)).toEqual(['DETACH', 'KEEP']);
-    expect(detachQuestion('Dégât des eaux du 12/03/2026')).toContain('fait-elle toujours suite');
-    // « Garder » = décision durable confirmant ce sinistre ; « Dissocier » seulement par choix.
-    expect(parseOperationCardChoice(OPERATION_DETACH_RULE, 'KEEP', { operationId: 1, claimId: 9 })).toEqual({ kind: 'PARENT', operationId: 9 });
-    expect(parseOperationCardChoice(OPERATION_DETACH_RULE, 'DETACH', { operationId: 1, claimId: 9 })).toEqual({ kind: 'DETACH' });
-    expect(parseOperationCardChoice(OPERATION_DETACH_RULE, 'PARENT:3', { operationId: 1, claimId: 9 })).toBeNull();
-  });
-
-  it('PO-D11-02 seul un rattachement posé par la facture d\'une action est réexaminé ; justifications reconnues', () => {
+describe('PO-D11-83D — plus d’intervention enfant d’un sinistre (CDC v5 §18.4, AC39) : carte « garder / dissocier » retirée', () => {
+  it('la règle n’est plus produite ni résolue ; seul le rattrapage de nettoyage la lit pour clore les cartes ouvertes', () => {
+    expect(RETIRED_CLAIM_PARENT_RULES).toEqual(['OPERATION-CLAIM-PARENT', 'OPERATION-CLAIM-DETACH']);
+    for (const r of RETIRED_CLAIM_PARENT_RULES) {
+      expect(isOperationCardRule(r)).toBe(false);
+      expect(OPERATION_CARD_RULES).not.toContain(r as never);
+      expect(PROCESSING_RULES.some((x) => x.code === r)).toBe(false);
+      expect(parseOperationCardChoice(r, 'KEEP', { operationId: 1, claimId: 9 })).toBeNull();
+    }
     const src = lire('src/services/business-operations/consolidation/consolidator.ts');
-    expect(src).toContain("if (pose?.reason_code !== 'CLAIM_ACTION_INVOICE') return;");
-    expect(src).toMatch(/business_operation_claim_actions WHERE operation_id = \$\{parentId\} AND invoice_file_id/);
-    expect(src).toMatch(/reference_kind = 'CLAIM'/);
-    // Aucune écriture de parent nul hors du choix de l'utilisateur.
-    expect(src).not.toMatch(/setParent\([^)]*null/);
+    expect(src).not.toMatch(/setParent|CLAIM_ACTION_INVOICE|business_operation_claim_actions/);
   });
 });
 
@@ -155,48 +142,11 @@ describe('PO-Q17 — bien retiré d\'un sinistre : exclusion mémorisée, jamais
   });
 });
 
-describe('PO-D10 — « Ajouter un sinistre » : brouillon, rien en base avant la première sauvegarde effective', () => {
-  it('PO-D10-01 règle serveur et règle interface identiques : vide / blancs / listes vides → aucune création', () => {
-    const vides = [{}, { claim: {} }, { claim: { claimType: null, occurredOn: '  ' } }, { claim: { damages: [] } }];
-    for (const v of vides) {
-      expect(draftPatchHasContent(v as never)).toBe(false);
-      expect(claimPatchHasContent({ set: { claim: (v as { claim?: Record<string, unknown> }).claim as never }, unset: {} })).toBe(false);
-    }
-    expect(draftPatchHasContent({ claim: { claimType: 'VOL' } })).toBe(true);
-    expect(claimPatchHasContent({ set: { claim: { claimType: 'VOL' } }, unset: {} })).toBe(true);
-    expect(claimPatchHasContent({ set: { claim: { estimatedDamageCents: 0 } }, unset: {} })).toBe(true);
-    expect(claimPatchHasContent(null)).toBe(false);
-  });
-
-  it('PO-D10-02 le clic « Ajouter un sinistre » n\'appelle plus le serveur (fiche ET préparation du dossier, mêmes composants ordinateur / mobile)', () => {
-    const section = lire('src/components/assets/claims/AssetClaimsSection.tsx');
-    expect(section).toContain("setSelected('draft')");
-    expect(section).not.toMatch(/post<ClaimResponse>\(`\/api\/assets\/\$\{assetId\}\/claims`, \{\}\)/);
+describe('PO-D10-83D — plus de formulaire Sinistre (V-Q1) : ni brouillon, ni création depuis l’interface', () => {
+  it('aucun composant ni route de saisie d’un sinistre (fiche et préparation du dossier, ordinateur et mobile)', () => {
     const panel = lire('src/components/exports/preparation/ClaimExportPanel.tsx');
-    expect(panel).not.toMatch(/apiClient\.post/);
-    expect(panel).toContain('claimId={null}');
-    const editeur = lire('src/components/assets/claims/ClaimEditor.tsx');
-    expect(editeur).toContain('if (abandonedRef.current || !draftPatchHasContent(patch)) return;');
-    expect(lire('src/services/business-operations/claims/claim-operation.service.ts')).toContain("throw new ClaimFormError('EMPTY_CLAIM'");
-  });
-
-  it('PO-D10-03 rendu du brouillon (une colonne mobile, grille bureau) : mention brouillon, « Abandonner ce brouillon », aucun identifiant', () => {
-    const base = {
-      claimId: null, draft: true, idPrefix: 'claim-brouillon', family: 'IMMOBILIER', title: 'Nouveau sinistre', inputs: {}, errors: {}, lists: {},
-      listLocalErrors: {}, references: null, readOnly: false, saveState: 'idle', notice: null, assetOptions: [{ id: 1, name: 'Maison' }],
-      assetIds: [1], currentAssetId: 1, costs: null, contractLabel: null, documented: false,
-      onChange: () => undefined, onBlur: () => undefined, onListChange: () => undefined, onEventChange: () => undefined, onToggleAsset: () => undefined,
-      onRetry: () => undefined, onDismissNotice: () => undefined, onDelete: () => undefined,
-    };
-    for (const compact of [false, true]) {
-      const html = renderToStaticMarkup(h(ClaimFormView, { ...base, compact } as never));
-      expect(html).toContain('data-claim-form="draft"');
-      expect(txt(html)).toContain('Brouillon : ce sinistre sera enregistré dès votre première saisie');
-      expect(txt(html)).toContain('Abandonner ce brouillon');
-      expect(txt(html)).not.toContain('Supprimer ce sinistre');
-    }
-    const enregistre = txt(renderToStaticMarkup(h(ClaimFormView, { ...base, claimId: 4, draft: false } as never)));
-    expect(enregistre).toContain('Supprimer ce sinistre');
-    expect(enregistre).not.toContain('Brouillon');
+    expect(panel).not.toMatch(/apiClient|ClaimEditor|claimId=\{null\}/);
+    expect(() => lire('src/components/assets/claims/AssetClaimsSection.tsx')).toThrow();
+    expect(() => lire('src/app/api/assets/[id]/claims/route.ts')).toThrow();
   });
 });

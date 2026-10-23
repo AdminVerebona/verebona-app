@@ -455,7 +455,7 @@ scenario('L72C-ATP', 'À traiter : écarts résiduels de pertinence, de calcul e
     expect((await cartes(item, 'date', 'AGENDA_ITEM')).find((x) => x.id === ca)?.open).toBe(true);
   });
 
-  it('ATP-FIX-15 — réévaluation rétroactive MULTI-FAMILLES : bilan par règle et issue, décisions sans carte reprises, sans doublon ni suppression', async () => {
+  it('ATP-FIX-15 (lot 83E : contrôle de cohérence) — réévaluation rétroactive MULTI-FAMILLES : issue par carte, décisions sans carte reprises, sans doublon ni suppression', async () => {
     const compte = await make.account();
     const ancien = await doc(compte, { title: 'Contrat d’entretien', facts: [{ key: 'documentDate', value: NEUF_ANS.iso }] });
     const cDoc = await carte(compte, ancien);
@@ -467,32 +467,29 @@ scenario('L72C-ATP', 'À traiter : écarts résiduels de pertinence, de calcul e
     const sansCarte = await doc(compte, { title: 'Contrat de maintenance', facts: [{ key: 'documentDate', value: NEUF_ANS.iso }] });
     await sql`INSERT INTO document_rule_evaluations (account_id, file_id, rule_code, field_key, trigger_code, engine_version, decision, reason_code, signature, outcome, pertinence, pertinence_reason, knowledge_rev)
               VALUES (${compte.id}, ${sansCarte}, 'DATA-CONTRACT-END', 'contractEndDate', 'SWEEP', 'l61-1', 'NONE', 'NO_ACTION_NEEDED', 'ancien', 'NO_ACTION', 'UNDATED_HISTORICAL', 'all_document_dates_older_than_5y', 'ancien')`;
-    await sql`UPDATE to_process_relevance_campaigns SET status = 'DONE' WHERE status = 'RUNNING'`;
-    const svc = await import('@/services/to-process/relevance-campaign.service');
-    const code = `e2e72-${compte.id}`;
-    await svc.startRelevanceCampaign({ code, trigger: 'manual' });
-    let r = await svc.runRelevanceCampaign({ deadline: Date.now() + 120_000 });
-    while (r.more) r = await svc.runRelevanceCampaign({ deadline: Date.now() + 120_000 });
-    expect(r).toMatchObject({ done: true });
-    const [camp] = (await svc.listRelevanceCampaigns(10)).filter((c) => c.code === code);
-    // Lot 76 (C7) : dernière phase = reprise des erreurs (parcours cartes + décisions terminé avant).
-    expect(camp).toMatchObject({ status: 'DONE', phase: 'RETRY' });
-    expect(camp.before['DATA-AGENDA-DATE']).toBeGreaterThanOrEqual(1);
-    expect(camp.before['SUPPLIER-IDENTITY']).toBeGreaterThanOrEqual(1);
-    expect(camp.families).toMatchObject({ 'DATA-AGENDA-DATE': 'AGENDA_ITEM', 'SUPPLIER-IDENTITY': 'SUPPLIER', 'DATA-CONTRACT-END': 'DOCUMENT' });
-    expect(camp.outcomesByRule?.['DATA-AGENDA-DATE']).toMatchObject({ REMOVED: expect.any(Number) });
-    const items = await svc.listCampaignItems(camp.id, { accountId: compte.id, limit: 200 });
-    const issue = (actionId: number) => items.find((i) => i.actionId === actionId)?.outcome;
-    expect(issue(cDoc)).toBe('DEFERRED');
-    expect(issue(cAgenda)).toBe('REMOVED');
-    expect(issue(cFour)).toBe('REMOVED');
-    expect(items.find((i) => i.actionId === null && i.targetId === sansCarte)).toMatchObject({ phase: 'DECISIONS', outcome: 'DEFERRED', ruleCode: 'DATA-CONTRACT-END' });
+    // Lot 83E (C-Q9) : la campagne de pertinence est RETIRÉE — même réévaluation, même code métier,
+    // par les contrôles du registre (COH-TODO-RELEVANCE-CARDS, COH-TODO-STALE-DECISIONS, COH-TODO-DOCUMENT-FIELDS).
+    const { runCoherenceFor, proofOf } = await import('../coherence-run');
+    const run = await runCoherenceFor(sql, [compte.id]);
+    expect(run.status).toBe('COMPLETE');
+    const ouverte = async (id: number) => (await sql<{ open: boolean }[]>`SELECT resolved_at IS NULL AS open FROM to_process_actions WHERE id = ${id}`)[0].open;
+    // Agenda « à savoir » et fournisseur sans proposition : retirées par leur producteur (décision tracée).
+    expect(await ouverte(cAgenda)).toBe(false);
+    expect(await ouverte(cFour)).toBe(false);
+    expect((await proofOf(sql, compte.id, 'COH-TODO-RELEVANCE-CARDS', cAgenda))?.last_result).toBe('REPAIRED');
+    expect((await proofOf(sql, compte.id, 'COH-TODO-RELEVANCE-CARDS', cFour))?.last_result).toBe('REPAIRED');
+    // Carte documentaire : jugée par le contrôle « donnée » (une seule chaîne), jamais par deux contrôles.
+    expect(await proofOf(sql, compte.id, 'COH-TODO-RELEVANCE-CARDS', cDoc)).toBeNull();
+    expect(['REPAIRED', 'CONSISTENT']).toContain((await proofOf(sql, compte.id, 'COH-TODO-DOCUMENT-FIELDS', cDoc))?.last_result);
+    // Décision sans carte de l'ancien moteur : reprise (phase « décisions »), différée par le moteur courant.
+    expect((await proofOf(sql, compte.id, 'COH-TODO-STALE-DECISIONS', sansCarte))?.last_result).toBe('REPAIRED');
     expect((await diag(sansCarte)).at(-1)).toMatchObject({ outcome: 'DEFER', engine_version: 'l76-2', trigger_code: 'BACKFILL' });
-    // Aucune suppression physique ; rejouée : aucun doublon.
+    // Aucune suppression physique ; rejouée : aucune réparation ni doublon.
     expect(await cartes(info, 'date', 'AGENDA_ITEM')).toHaveLength(1);
-    const n = items.length;
-    await svc.runRelevanceCampaign({ deadline: Date.now() + 60_000 });
-    expect((await svc.listCampaignItems(camp.id, { accountId: compte.id, limit: 200 })).length).toBe(n);
+    const avant = (await sql<{ n: number }[]>`SELECT count(*)::int AS n FROM coherence_repairs WHERE account_id = ${compte.id}`)[0].n;
+    const run2 = await runCoherenceFor(sql, [compte.id]);
+    expect(run2.status).toBe('COMPLETE');
+    expect((await sql<{ n: number }[]>`SELECT count(*)::int AS n FROM coherence_repairs WHERE account_id = ${compte.id}`)[0].n).toBe(avant);
   });
 
   it('ATP-FIX-16 — décision sans création de carte : diagnostic BO explicite (règle, cible, issue, nature, motif, faits, réévaluation)', async () => {

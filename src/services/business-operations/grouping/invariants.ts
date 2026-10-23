@@ -19,6 +19,10 @@
  *   O1-DOCUMENT-MEMBERSHIP     N2      DÉTERMINISTE    appartenance SOURCE = sources DOCUMENT actives
  *   O1-ANTI-CARTESIAN          N2      CONSTAT SEUL    aucun produit Documents × Équipements
  *                                                      automatique (P19, AC50)
+ *   O7-NO-INFERRED-PRINCIPAL   N2      DÉTERMINISTE    lot 83A (O-7, §11.10, AC52) : aucun principal
+ *                                                      DÉDUIT (T4, T3, reprise) sur une relation
+ *                                                      durable (contrat, financement) ; le choix de
+ *                                                      l'utilisateur reste
  *
  * Les évaluateurs `evaluate*` sont PURS (instantanés en entrée) : testables
  * sans base, réutilisables par l'export de diagnostic. `detect` charge
@@ -26,17 +30,18 @@
  * évalue. Idempotence : un état conforme rend une liste vide ; une réparation
  * rejouée n'écrit rien.
  */
-import { detectCartesian, inferredProvenance, planPrincipalLinks, type OperationRole } from './model';
+import { DURABLE_RELATION_TYPES, detectCartesian, inferredProvenance, isDurableRelation, planPrincipalLinks, type OperationRole, type RoleOrigin } from './model';
 import { addFileLinkProvenance } from './provenance';
 import { recomputePrincipal, stripPrincipalLinks } from './principal';
 import { intArray, lockGroupingAccount, type GroupingRunner } from './runner';
-import { attachAgendaItem, detachAgendaItem, type GroupingContext } from './service';
+import { attachAgendaItem, detachAgendaItem, releasePrincipal, type GroupingContext } from './service';
 
-export const GROUPING_INVARIANTS_VERSION = 'l82d-v1';
+/** Lot 83A : + O7-NO-INFERRED-PRINCIPAL (ensemble des invariants v2). */
+export const GROUPING_INVARIANTS_VERSION = 'l83a-v2';
 
 export type GroupingInvariantId =
   | 'O1-PRINCIPAL-UNIQUE' | 'O1-AGENDA-ONE-OPERATION' | 'O1-LINK-PROVENANCE'
-  | 'O1-PRINCIPAL-DOCUMENTS' | 'O1-DOCUMENT-MEMBERSHIP' | 'O1-ANTI-CARTESIAN';
+  | 'O1-PRINCIPAL-DOCUMENTS' | 'O1-DOCUMENT-MEMBERSHIP' | 'O1-ANTI-CARTESIAN' | 'O7-NO-INFERRED-PRINCIPAL';
 
 export interface GroupingFinding {
   invariantId: GroupingInvariantId;
@@ -174,6 +179,16 @@ export function evaluateAntiCartesian(
       detail: { operationId: o.operationId, documents: o.memberFileIds.length, equipments: o.equipmentIds.length, pairs: c.pairs }, repairable: false,
     }] : [];
   });
+}
+
+export interface DurablePrincipalRow { operationId: number; typeCode: string | null; itemId: number; origin: RoleOrigin | null }
+
+/** Principal déduit (auteur autre que l'utilisateur) d'une relation durable (pur). */
+export function evaluateInferredPrincipal(accountId: number, rows: readonly DurablePrincipalRow[]): GroupingFinding[] {
+  return rows.filter((r) => isDurableRelation(r.typeCode) && r.origin !== 'USER').map((r) => ({
+    invariantId: 'O7-NO-INFERRED-PRINCIPAL' as const, accountId, objectKey: `operation:${r.operationId}`, nature: 'INFERRED_PRINCIPAL_ON_DURABLE_RELATION',
+    detail: { operationId: r.operationId, typeCode: r.typeCode, itemId: r.itemId, origin: r.origin }, repairable: true,
+  }));
 }
 
 // ── Chargement des instantanés (lecture seule) ─────────────────────────────
@@ -360,6 +375,29 @@ export const OPERATIONS_GROUPING_INVARIANTS: readonly GroupingInvariant[] = [
         operationId: Number(y.op), memberFileIds: (y.files ?? []).map(Number), equipmentIds: (y.equips ?? []).map(Number),
         links: (y.links ?? []).map((l) => ({ fileId: Number(l.f), equipmentId: Number(l.e), userOrigin: !!l.u })),
       })));
+    },
+  },
+  {
+    id: 'O7-NO-INFERRED-PRINCIPAL', version: 1, domain: 'operations', level: 'N2', objects: ['agenda_items', 'business_operations'], repair: 'DETERMINISTIC',
+    description: 'Lot 83A (CDC v5 §11.10, AC52) : une relation durable (contrat, financement) n’a jamais d’élément principal DÉDUIT (T4, T3, reprise) — un abonnement ne crée pas d’événement global artificiel ; un principal choisi par l’utilisateur reste. Réparation : releasePrincipal (service de regroupement) — l’élément reste lié, rien n’est supprimé.',
+    detect: async (r, accountId, scope) => {
+      const x = await r.q<{ op: string; type_code: string | null; item_id: number; origin: RoleOrigin | null }>(
+        `SELECT o.id AS op, o.type_code, i.id AS item_id, i.operation_role_origin AS origin
+           FROM agenda_items i JOIN business_operations o ON o.id = i.business_operation_id AND o.account_id = i.account_id
+          WHERE i.account_id = $1 AND i.operation_role = 'PRINCIPAL' AND i.operation_role_origin IS DISTINCT FROM 'USER'
+            AND o.invalidated_at IS NULL AND o.merged_into_operation_id IS NULL AND o.type_code = ANY($3::text[])
+            AND ($2::bigint[] IS NULL OR o.id = ANY($2::bigint[]))
+          ORDER BY o.id, i.id`, [accountId, opFilter(scope), `{${DURABLE_RELATION_TYPES.join(',')}}`]);
+      return evaluateInferredPrincipal(accountId, x.map((y) => ({ operationId: Number(y.op), typeCode: y.type_code, itemId: Number(y.item_id), origin: y.origin })));
+    },
+    repairFinding: async (ctx, f) => {
+      // Le service refuse de retirer un principal choisi par l'utilisateur (autorité, §10).
+      const changed = await releasePrincipal(ctx, { operationId: Number(f.detail.operationId), origin: 'T4', reasonCode: 'COHERENCE_INFERRED_PRINCIPAL_DURABLE' });
+      const [reste] = await ctx.runner.q(
+        `SELECT 1 FROM agenda_items i JOIN business_operations o ON o.id = i.business_operation_id
+          WHERE o.id = $1 AND i.account_id = $2 AND i.operation_role = 'PRINCIPAL' AND i.operation_role_origin IS DISTINCT FROM 'USER' LIMIT 1`,
+        [Number(f.detail.operationId), ctx.accountId]);
+      return { repaired: !reste, changed };
     },
   },
 ];

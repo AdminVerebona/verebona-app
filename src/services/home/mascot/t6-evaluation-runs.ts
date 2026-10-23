@@ -469,7 +469,11 @@ export async function lockOwnedT6Runs(
 }
 
 export type T6ClaimResult =
-  | { ok: true; runId: string; attempts: Map<number, number>; interrupted: number[] }
+  | {
+    ok: true; runId: string; attempts: Map<number, number>; interrupted: number[];
+    /** Lot 83C : demande (`requested_at`) de chaque évaluation prise — identité de l'exécution métier T6E. */
+    requestedAt?: Map<number, string>;
+  }
   | { ok: false; reason: 'running_elsewhere' | 'retry_wait' | 'failed' | 'cooldown'; waitingUntil: string | null; agendaItemId: number };
 
 interface Tx { unsafe: (s: string, p: never[]) => Promise<unknown> }
@@ -513,13 +517,14 @@ export async function claimT6Runs(p: {
          status = 'RUNNING', run_id = $3, mode = $4, started_at = now(), finished_at = NULL,
          lease_until = now() + make_interval(secs => $5::int), next_attempt_at = NULL, updated_at = now()
        WHERE account_id = $1 AND agenda_item_id = ANY($2::int[])
-       RETURNING agenda_item_id, attempts, last_error_kind`,
+       RETURNING agenda_item_id, attempts, last_error_kind, requested_at`,
       [p.accountId, p.subjects.map((s) => s.agendaItemId), p.runId, p.mode.slice(0, 20), lease],
     );
     return {
       ok: true as const, runId: p.runId,
       attempts: new Map(pris.map((x) => [Number(x.agenda_item_id), Number(x.attempts)])),
       interrupted: pris.filter((x) => x.last_error_kind === 'interrupted').map((x) => Number(x.agenda_item_id)),
+      requestedAt: new Map(pris.map((x) => [Number(x.agenda_item_id), iso(x.requested_at) ?? ''])),
     };
   });
 }

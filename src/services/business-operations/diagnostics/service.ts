@@ -82,7 +82,6 @@ export interface OperationListItem {
   label: string | null;
   assets: Array<{ id: number; name: string | null }>;
   equipments: Array<{ id: number; name: string | null }>;
-  parentOperationId: number | null;
   principalDate: string | null;
   netCents: number | null;
   netPartial: boolean;
@@ -176,8 +175,6 @@ export interface OperationDetail {
   contractDetails: Row | null;
   financingDetails: Row | null;
   claimDetails: Row | null;
-  parent: Row | null;
-  children: Row[];
   mergedFrom: Row[];
   history: Row[];
   matchDecisions: Row[];
@@ -249,7 +246,7 @@ function listWhere(f: OperationListFilters): { where: string; params: unknown[] 
 
 /** Colonnes communes d'une ligne de liste (sous-requêtes par l'index de l'Opération). */
 const LIST_COLUMNS = `
-  o.id, o.account_id, acc.name AS account_name, o.type_code, o.status, o.technical_label, o.parent_operation_id,
+  o.id, o.account_id, acc.name AS account_name, o.type_code, o.status, o.technical_label,
   o.planned_date::text AS planned_date, o.start_date::text AS start_date, o.realized_date::text AS realized_date,
   o.end_date::text AS end_date, o.invalidated_at, o.invalidation_reason, o.merged_into_operation_id,
   o.last_reconciled_at, o.created_at,
@@ -281,7 +278,6 @@ function toListItem(r: Row): OperationListItem {
     label: str(r.technical_label),
     assets: arr<{ id: number; name: string | null }>(r.assets).map((a) => ({ id: Number(a.id), name: a.name ?? null })),
     equipments: arr<{ id: number; name: string | null }>(r.equipments).map((e) => ({ id: Number(e.id), name: e.name ?? null })),
-    parentOperationId: num(r.parent_operation_id),
     principalDate: principalDate(dates),
     netCents: net.cents,
     netPartial: net.partial,
@@ -368,8 +364,6 @@ export const OPERATION_DETAIL_LISTS = {
           WHERE c.operation_id = $1 AND c.account_id = $2 ORDER BY c.active DESC, c.id` },
   references: { table: 'business_operation_references', sql: `SELECT id, reference_kind, reference_value, normalized_value, source_id, active, superseded_at, created_at
            FROM business_operation_references WHERE operation_id = $1 AND $2::int IS NOT NULL ORDER BY active DESC, id` },
-  children: { table: 'business_operations', sql: `SELECT id, type_code, status, technical_label, invalidated_at FROM business_operations
-          WHERE parent_operation_id = $1 AND account_id = $2 ORDER BY id` },
   mergedFrom: { table: 'business_operations', sql: `SELECT id, type_code, status, technical_label, invalidated_at, invalidation_reason FROM business_operations
           WHERE merged_into_operation_id = $1 AND account_id = $2 ORDER BY id` },
   history: { table: 'business_operation_history', sql: `SELECT id, event_type, reason_code, source_id, actor_user_id, before_json, after_json, correlation_id, created_at
@@ -419,7 +413,7 @@ const IDENTITY_ANOMALY_SQL: Readonly<Record<'IDENTITY_SUSPECT_ATTACHMENT' | 'IDE
   },
 };
 
-const ANOMALY_SQL: Readonly<Record<Exclude<HardAnomalyCode, 'PARENT_CYCLE' | 'PARENT_DEPTH_EXCEEDED' | keyof typeof IDENTITY_ANOMALY_SQL>, string>> = {
+const ANOMALY_SQL: Readonly<Record<Exclude<HardAnomalyCode, keyof typeof IDENTITY_ANOMALY_SQL>, string>> = {
   ACTIVE_OPERATION_WITHOUT_SOURCE: `
     SELECT o.account_id, o.id AS operation_id, 'type ' || coalesce(o.type_code, 'non qualifié') AS detail
       FROM business_operations o
@@ -569,21 +563,6 @@ const ANOMALY_SQL: Readonly<Record<Exclude<HardAnomalyCode, 'PARENT_CYCLE' | 'PA
                                                  WHERE s.operation_id = o.id AND s.source_kind = 'DOCUMENT')))`,
 };
 
-/** Parcours ascendant de la hiérarchie (C8.1), borné à 12 niveaux. */
-const HIERARCHY_SQL = `
-  WITH RECURSIVE up AS (
-    SELECT o.id AS start_id, o.account_id, o.parent_operation_id AS cur, ARRAY[o.id]::bigint[] AS path, false AS cycle
-      FROM business_operations o
-     WHERE o.parent_operation_id IS NOT NULL AND ${ACC('o.account_id')}
-    UNION ALL
-    SELECT u.start_id, u.account_id, p.parent_operation_id, u.path || p.id, p.id = ANY(u.path)
-      FROM up u JOIN business_operations p ON p.id = u.cur
-     WHERE NOT u.cycle AND cardinality(u.path) < 12
-  ), agg AS (
-    SELECT start_id, account_id, bool_or(cycle) AS cycle, max(cardinality(path)) AS levels
-      FROM up GROUP BY start_id, account_id
-  )`;
-
 async function sampled(q: DiagQuery, inner: string, accountId: number | null, eligibleOnly = false): Promise<{ count: number; samples: HardAnomalySample[] }> {
   const rows = await q(
     `SELECT x.account_id, x.operation_id, x.detail, count(*) OVER () AS total
@@ -623,28 +602,6 @@ async function detectHardAnomalies(q: DiagQuery, accountId: number | null, eligi
     const r = p?.ok ? await sampled(q, x.sql, accountId, eligibleOnly) : { count: 0, samples: [] };
     out.set(code, result(code, r.count, r.samples));
   }
-  const elig = eligibleOnly ? ` AND ${processingEligibleSql('agg.account_id')}` : '';
-  const [counts] = await q(
-    `${HIERARCHY_SQL}
-     SELECT count(*) FILTER (WHERE cycle)::int AS cycles,
-            count(*) FILTER (WHERE NOT cycle AND levels > 3)::int AS deep
-       FROM agg WHERE true${elig}`,
-    [accountId],
-  );
-  const hier = await q(
-    `${HIERARCHY_SQL}
-     (SELECT account_id, start_id, cycle, levels FROM agg WHERE cycle${elig} ORDER BY account_id, start_id LIMIT ${DIAG_ANOMALY_SAMPLE})
-     UNION ALL
-     (SELECT account_id, start_id, cycle, levels FROM agg WHERE NOT cycle AND levels > 3${elig} ORDER BY account_id, start_id LIMIT ${DIAG_ANOMALY_SAMPLE})`,
-    [accountId],
-  );
-  const s = (cycle: boolean) => hier.filter((r) => Boolean(r.cycle) === cycle).map((r) => ({
-    accountId: Number(r.account_id),
-    operationId: Number(r.start_id),
-    detail: cycle ? 'la chaîne des parents revient sur elle-même' : `${int(r.levels)} niveaux (maximum 3)`,
-  }));
-  out.set('PARENT_CYCLE', result('PARENT_CYCLE', int(counts?.cycles), s(true)));
-  out.set('PARENT_DEPTH_EXCEEDED', result('PARENT_DEPTH_EXCEEDED', int(counts?.deep), s(false)));
   return HARD_ANOMALY_CODES.map((c) => out.get(c)!);
 }
 
@@ -793,15 +750,8 @@ export class OperationDiagnosticsService {
       const [claimDetails] = await q(
         `SELECT cd.claim_type, cd.declared_on::text AS declared_on, cd.insurer_claim_ref, cd.insurance_contract_operation_id,
                 cd.status, cd.estimated_damage_minor, cd.updated_at,
-                (SELECT count(*) FROM business_operation_claim_damages d WHERE d.operation_id = cd.operation_id)::int AS damages,
-                (SELECT count(*) FROM business_operation_claim_actions a WHERE a.operation_id = cd.operation_id)::int AS actions,
-                (SELECT count(*) FROM business_operation_claim_exchanges x WHERE x.operation_id = cd.operation_id)::int AS exchanges
+                (SELECT count(*) FROM business_operation_claim_damages d WHERE d.operation_id = cd.operation_id)::int AS damages
            FROM business_operation_claim_details cd WHERE cd.operation_id = $1`, [id]);
-      const [parent] = base.parentOperationId
-        ? await q(`SELECT id, type_code, status, technical_label, invalidated_at FROM business_operations WHERE id = $1 AND account_id = $2`,
-          [base.parentOperationId, accountId])
-        : [];
-      const children = await list('children');
       const mergedFrom = await list('mergedFrom');
       const history = await list('history');
       const matchDecisions = await list('matchDecisions');
@@ -877,8 +827,6 @@ export class OperationDiagnosticsService {
         contractDetails: contractDetails ?? null,
         financingDetails: financingDetails ?? null,
         claimDetails: claimDetails ?? null,
-        parent: parent ?? null,
-        children,
         mergedFrom,
         history: withReason(history, 'reason_code'),
         matchDecisions: withReason(matchDecisions, 'reason_code'),
@@ -1027,10 +975,7 @@ export class OperationDiagnosticsService {
         })(),
         componentsWithoutActiveSource: { count: count('ACTIVE_COMPONENT_WITHOUT_SOURCE') },
         activeWithoutActiveSource: { count: count('ACTIVE_OPERATION_WITHOUT_SOURCE') },
-        crossAccountOrParentCycles: {
-          count: count('CROSS_ACCOUNT_LINK') + count('PARENT_CYCLE'),
-          crossAccount: count('CROSS_ACCOUNT_LINK'), parentCycles: count('PARENT_CYCLE'),
-        },
+        crossAccountLinks: { count: count('CROSS_ACCOUNT_LINK') },
         t2EconomicAnswers: (() => {
           const by: Record<string, number> = Object.fromEntries(t2.map((t) => [String(t.mode), int(t.n)]));
           const total = Object.values(by).reduce((a, b) => a + b, 0);

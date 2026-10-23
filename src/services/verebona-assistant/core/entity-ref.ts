@@ -186,9 +186,13 @@ export function hrefEntite(
 ): string | null {
   switch (ref.kind) {
     case 'asset':
-      // Lot 45 : sinistre — section Sinistres de la fiche (onglet Détails),
-      // ouverte sur ce sinistre (`AssetClaimsSection`, desktop et mobile).
-      if (ref.claimId) return `${hrefBien(ref.id, 'details')}&highlight=claims&claim=${ref.claimId}`;
+      // Lot 83D (V-Q1, CDC v5 §15.2) : plus de rubrique Sinistres — un
+      // sinistre s'ouvre sur son événement d'Agenda principal (tiroir, desktop
+      // et mobile) quand il est connu, sinon sur la fiche du bien.
+      if (ref.claimId) {
+        const principal = versEntierPositif(String(meta?.agendaItemId ?? ''));
+        return principal != null ? drawerHref({ kind: 'echeance', id: principal }, ROUTES.AGENDA) : hrefBien(ref.id);
+      }
       // Source de niveau champ : fiche du bien, onglet « Détails », champ en
       // surbrillance (`?highlight=`, lu par AssetDetailsTab).
       return ref.fieldKey

@@ -40,6 +40,8 @@
  * texte déterministe reste le secours de toute issue défavorable.
  * ══════════════════════════════════════════════════════════════════════════
  */
+import { runInBusinessExecution } from '@/services/ai/business-execution/context';
+import { t6EvaluateExecutionId } from '@/services/ai/business-execution/identity';
 import { randomUUID } from 'crypto';
 import { canonicalJson, sha256 } from './hash';
 import { pgClient } from '@/db';
@@ -656,9 +658,13 @@ async function generateMaster(p: {
       };
     }
     breakerRecord(false);
+    // Lot 83C (R42) : l'échec de génération garde sa trace d'exécution — le
+    // journal relie la ligne aux appels en échec (exécution métier T6F).
+    const traceId = (e as { traceId?: unknown } | null)?.traceId;
     return {
       status: 'error', messages: null, promptVersion: p.promptVersion, architecture: 'master',
       latencyMs: Date.now() - startedAt, error: (e as Error).message?.slice(0, 500) ?? 'erreur',
+      ...(typeof traceId === 'string' ? { traceId } : {}),
     };
   }
 }
@@ -1104,8 +1110,13 @@ export async function evaluateWithT6(
       (minuterie as unknown as { unref?: () => void }).unref?.();
     }
     let plafond = false;
+    // Lot 83C (SEM-01) : un appel EVALUATE sert l'évaluation de CHAQUE échéance prise
+    // (`T6E:<échéance>:<demande>`) — liste portée par l'appel, sans attribution arbitraire.
+    const executionsMetier = claim?.ok && claim.requestedAt
+      ? [...claim.requestedAt.entries()].filter(([, at]) => at).map(([id, at]) => t6EvaluateExecutionId(id, at))
+      : [];
     try {
-      const res = await deps.execute({
+      const res = await runInBusinessExecution(executionsMetier, () => deps.execute({
         useCaseCode: 'HOME_MASCOT',
         operationCode: T6_EVALUATE_OPERATION,
         accountId: p.accountId,
@@ -1114,7 +1125,7 @@ export async function evaluateWithT6(
         outputSchema: T6EvaluateOutput,
         idempotencyKey: `mascot-eval:${key}:${randomUUID()}`,
         callerMode,
-      });
+      }));
       const base = { promptVersion, traceId: res.traceId ?? null, model: res.model, latencyMs: Date.now() - startedAt, callerMode };
       // 1. Valider : sortie amputée ou réparée par la passerelle, puis contrat strict.
       const amputee = evaluationRepairViolation((res as { outputRepairs?: Array<{ stage?: string; rule?: string; path?: string }> }).outputRepairs);

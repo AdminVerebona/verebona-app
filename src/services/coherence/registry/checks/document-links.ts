@@ -14,11 +14,58 @@
  *     trace (`asset_id = NULL`, retiré au lot 82B) ; ce détachement n'est
  *     pas une correction certaine (le document peut devoir suivre le bien
  *     retiré plutôt que réapparaître « sans bien »).
+ *
+ * Lot 83B (C3, CDC §4.2 « documents d'équipement rattachés uniquement au
+ * bien ») — version 2 :
+ *   · la réparation reste réservée à la provenance DÉMONTRÉE par le
+ *     document lui-même (identifiant exact, cible T1 certaine : service
+ *     commun) ;
+ *   · document membre d'une Opération active liée à un ou plusieurs
+ *     équipements, mais rattaché au seul bien (aucun lien direct à un
+ *     équipement, aucun refus de l'utilisateur) : CONSTAT
+ *     `EQUIPMENT_ASSOCIATION_UNPROVEN` — l'appartenance commune à une
+ *     Opération n'est JAMAIS une preuve (P19, garde anti-cartésienne 82D) ;
+ *     la décision document par document relève de T3 (demande IA
+ *     `82D-t3-document-equipement`). Aucune écriture.
  */
 import type { CheckContext, CoherenceCheck, Inspection, RepairResult } from '../types';
 import { hashOf, idsOf, intArray, rows } from '../util';
 
-const OPEN_DOCUMENT_SQL = `f.deleted_at IS NULL AND f.grouped_into_file_id IS NULL AND COALESCE(f.upload_status, 'COMPLETED') = 'COMPLETED'`;
+/** Document visible (non supprimé, non regroupé, dépôt terminé) — partagé par les contrôles documentaires. */
+export const OPEN_DOCUMENT_SQL = `f.deleted_at IS NULL AND f.grouped_into_file_id IS NULL AND COALESCE(f.upload_status, 'COMPLETED') = 'COMPLETED'`;
+
+/** Demande de contrat IA dont dépend la relation document ↔ équipement non démontrée par le document. */
+export const DOCUMENT_EQUIPMENT_CONTRACT = '82D-t3-document-equipement';
+
+/**
+ * Documents rattachés au seul bien alors que leur Opération est liée à des
+ * équipements (lecture seule) : équipements de l'Opération non refusés par
+ * l'utilisateur pour ce document.
+ */
+async function associationsNonDemontrees(ctx: CheckContext, accountId: number, ids: readonly number[]): Promise<Map<number, { operations: number[]; equipments: number[] }>> {
+  const r = await rows(ctx.sql, `
+    SELECT d.file_id, array_agg(DISTINCT d.operation_id::int ORDER BY d.operation_id::int) AS ops,
+           array_agg(DISTINCT el.equipment_id ORDER BY el.equipment_id) AS equips
+      FROM business_operation_documents d
+      JOIN business_operations o ON o.id = d.operation_id AND o.account_id = d.account_id
+       AND o.invalidated_at IS NULL AND o.merged_into_operation_id IS NULL
+      JOIN business_operation_equipment_links el ON el.operation_id = d.operation_id AND el.active
+      JOIN equipments e ON e.id = el.equipment_id AND e.archived_at IS NULL
+     WHERE d.account_id = $1 AND d.active AND d.file_id = ANY($2::int[])
+       AND NOT EXISTS (SELECT 1 FROM document_asset_links l WHERE l.account_id = d.account_id AND l.file_id = d.file_id AND l.status = 'ACTIVE' AND l.equipment_id IS NOT NULL)
+       AND NOT EXISTS (SELECT 1 FROM asset_files f WHERE f.id = d.file_id AND f.equipment_id IS NOT NULL)
+     GROUP BY d.file_id`, [accountId, intArray(ids)]);
+  const out = new Map<number, { operations: number[]; equipments: number[] }>();
+  if (!r.length) return out;
+  const { userRefusedEquipments } = await import('@/services/equipment/document-equipment-link.service');
+  for (const x of r) {
+    const fileId = Number(x.file_id);
+    const refuses = await userRefusedEquipments(accountId, fileId, ctx.sql);
+    const equipments = ((x.equips as number[]) ?? []).map(Number).filter((e) => !refuses.has(e));
+    if (equipments.length) out.set(fileId, { operations: ((x.ops as number[]) ?? []).map(Number), equipments });
+  }
+  return out;
+}
 
 async function documentsLiesABienSupprime(ctx: CheckContext, accountId: number, ids: readonly number[]): Promise<Map<number, number[]>> {
   const r = await rows(ctx.sql, `
@@ -34,25 +81,27 @@ async function documentsLiesABienSupprime(ctx: CheckContext, accountId: number, 
 
 export const documentLinksCheck: CoherenceCheck = {
   id: 'COH-DOC-LINKS',
-  version: 1,
+  version: 2,
   status: 'ACTIVE',
   title: 'Rattachements document ↔ bien ↔ équipement',
   domain: 'documents-liens',
   level: 'N2',
   objectType: 'document',
   scope: 'tous les documents visibles du compte (non supprimés, non regroupés, dépôt terminé)',
-  sources: ['asset_files', 'document_asset_links', 'document_facts', 'document_unresolved_facts', 'document_source_units', 'equipments', 'equipment_cil_specs'],
+  sources: ['asset_files', 'document_asset_links', 'document_facts', 'document_unresolved_facts', 'document_source_units', 'equipments', 'equipment_cil_specs',
+    'business_operation_documents', 'business_operation_equipment_links'],
   applicability: 'compte éligible (actif et modifiable) ; document rattaché à au moins un bien vivant pour la partie équipement',
-  invariant: 'un équipement désigné avec certitude par le document (identifiant exact) lui est rattaché ; aucun document n’est rattaché à un bien supprimé',
-  anomalies: ['CERTAIN_EQUIPMENT_LINK_MISSING', 'LINKED_TO_DELETED_ASSET'],
+  invariant: 'un équipement désigné avec certitude par le document (identifiant exact) lui est rattaché ; aucun document n’est rattaché à un bien supprimé ; un document d’équipement n’est pas laissé au seul bien sans que l’écart soit tracé',
+  anomalies: ['CERTAIN_EQUIPMENT_LINK_MISSING', 'LINKED_TO_DELETED_ASSET', 'EQUIPMENT_AMBIGUITY', 'EQUIPMENT_ASSOCIATION_UNPROVEN'],
   autoRepairWhen: 'rattachement certain calculé par le service commun (même décision qu’à l’analyse), sans arbitrage ni IA',
-  forbiddenRepairs: ['trancher une ambiguïté entre équipements', 'contredire un choix de l’utilisateur', 'détacher un document d’un bien supprimé', 'appeler T3 ou créer une carte'],
+  forbiddenRepairs: ['trancher une ambiguïté entre équipements', 'contredire un choix de l’utilisateur', 'détacher un document d’un bien supprimé', 'appeler T3 ou créer une carte',
+    'lier un document aux équipements de son Opération par simple appartenance (P19)'],
   services: ['equipment/document-equipment-link.service#syncDocumentEquipmentLinks'],
   chain: ['T1', 'LINK'],
   triggers: ['SOURCE_ANALYZED', 'DOCUMENT_UPDATED', 'DOCUMENT_UPLOADED', 'ASSET_UPDATED'],
   frequency: 'campagne exhaustive quotidienne + contrôle ciblé à chaque changement',
   criticality: 'MEDIUM',
-  tests: ['L82B-U-LINKS', 'L82B-E2E-02', 'L82B-E2E-04', 'L82B-E2E-05'],
+  tests: ['L82B-U-LINKS', 'L82B-E2E-02', 'L82B-E2E-04', 'L82B-E2E-05', 'L83B-E2E-08'],
 
   async listObjects(ctx, accountId, afterId, limit) {
     return idsOf(await rows(ctx.sql, `
@@ -77,6 +126,7 @@ export const documentLinksCheck: CoherenceCheck = {
   async inspect(ctx, accountId, ids) {
     const out = new Map<number, Inspection>();
     const supprimes = await documentsLiesABienSupprime(ctx, accountId, ids);
+    const nonDemontrees = await associationsNonDemontrees(ctx, accountId, ids);
     const { syncDocumentEquipmentLinks } = await import('@/services/equipment/document-equipment-link.service');
     for (const fileId of ids) {
       const morts = supprimes.get(fileId);
@@ -99,6 +149,15 @@ export const documentLinksCheck: CoherenceCheck = {
         });
       } else if (r.status === 'AMBIGUOUS') {
         out.set(fileId, { verdict: 'AMBIGUOUS', anomaly: 'EQUIPMENT_AMBIGUITY', faultyLink: 'LINK', detail, inputHash: hashOf({ fileId, ambiguous: r.ambiguous }) });
+      } else if (nonDemontrees.has(fileId)) {
+        // Lot 83B : appartenance à une Opération liée à des équipements — jamais une preuve ; constat tracé.
+        const a = nonDemontrees.get(fileId)!;
+        out.set(fileId, {
+          verdict: 'FINDING', anomaly: 'EQUIPMENT_ASSOCIATION_UNPROVEN', faultyLink: 'T3',
+          expected: 'relation document ↔ équipement décidée pour CE document (preuve propre)', observed: { operationIds: a.operations, equipmentIds: a.equipments },
+          detail: { ...detail, pendingContract: DOCUMENT_EQUIPMENT_CONTRACT },
+          inputHash: hashOf({ fileId, unproven: a }),
+        });
       } else {
         out.set(fileId, { verdict: 'CONSISTENT', detail });
       }

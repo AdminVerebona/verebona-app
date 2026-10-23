@@ -15,6 +15,7 @@
  * rattachement explicite lève un refus antérieur. Cette mémoire est une
  * responsabilité CODE / données : elle ne dépend d'aucun prompt.
  */
+import { sql } from 'drizzle-orm';
 import { excludeAsset, releaseExclusion } from '../consolidation/asset-exclusions';
 import type { DbTx } from '../lock';
 import type { DecisionSubject } from './model';
@@ -78,7 +79,13 @@ export async function isRejected(r: GroupingRunner, accountId: number, operation
 export async function recordAssetDecision(
   tx: DbTx, p: { accountId: number; operationId: number; assetId: number; decision: 'CONFIRMED' | 'REJECTED'; userId: number | null; reasonCode: string },
 ): Promise<boolean> {
-  return p.decision === 'REJECTED'
-    ? excludeAsset(tx, p.accountId, p.operationId, p.assetId, p.userId)
-    : releaseExclusion(tx, p.accountId, p.operationId, p.assetId, p.reasonCode);
+  if (p.decision !== 'REJECTED') return releaseExclusion(tx, p.accountId, p.operationId, p.assetId, p.reasonCode);
+  // Lot 83D (repris du formulaire Sinistre retiré, retour PO Q17) : les documents
+  // déjà rattachés à l'Opération sont CONNUS au moment du retrait — ils ne
+  // contredisent pas la décision ; seul un NOUVEAU document produit une carte.
+  const connus = ((await tx.execute(sql`
+    SELECT DISTINCT source_entity_key AS k FROM business_operation_sources
+     WHERE operation_id = ${p.operationId} AND account_id = ${p.accountId} AND active AND source_kind = 'DOCUMENT'
+       AND source_entity_key ~ '^[0-9]{1,9}$'`)) as unknown as Array<{ k: string }>).map((x) => Number(x.k));
+  return excludeAsset(tx, p.accountId, p.operationId, p.assetId, p.userId, connus);
 }

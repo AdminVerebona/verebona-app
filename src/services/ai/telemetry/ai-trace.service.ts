@@ -10,7 +10,8 @@
  * existantes sont conservées et renforcées, jamais remplacées.
  */
 import { db, pgClient } from '@/db';
-import { traceMasterColumnsReady } from './trace-schema';
+import { businessExecutionColumnsReady, traceMasterColumnsReady } from './trace-schema';
+import { businessExecutionOfCall } from '../business-execution/context';
 import { aiPipelineStep, aiUsageEvent } from '@/db/schema';
 import type { AiUseCaseCode } from '../registry/use-cases';
 import { getExecutionContext, type ModelRank } from './execution-context';
@@ -215,6 +216,9 @@ export async function recordCallTrace(t: CallTrace): Promise<number | null> {
     masterPromptCode: t.masterPromptCode ?? null,
     masterPromptVersion: t.masterPromptVersion ?? null,
   };
+  // Lot 83C (SEM-01, R22, R56) : exécution métier de l'appel — une seule
+  // (colonne), ou plusieurs (T6 EVALUATE d'un lot : liste en métadonnée).
+  const execution = businessExecutionOfCall({ operationCode: t.operationCode, traceId: t.traceId });
 
   // Les deux écritures sont ISOLÉES : l'échec de l'étape de pipeline ne doit
   // pas faire perdre l'événement d'usage (coût, quota), ni l'inverse.
@@ -289,6 +293,8 @@ export async function recordCallTrace(t: CallTrace): Promise<number | null> {
         // total de l'exécution à part. Marqueur : les traces antérieures
         // portaient le cumul depuis le début de l'exécution.
         durations: { semantics: 'attempt', ...(t.executionElapsedMs !== undefined ? { executionElapsedMs: Math.max(0, Math.round(t.executionElapsedMs)) } : {}) },
+        // Lot 83C : appel servant plusieurs exécutions métier (aucune attribution arbitraire).
+        ...(execution.ids.length > 1 ? { businessExecutionIds: execution.ids.slice(0, 50) } : {}),
       },
       useCaseCode: t.useCaseCode,
       operationCode: t.operationCode,
@@ -304,28 +310,46 @@ export async function recordCallTrace(t: CallTrace): Promise<number | null> {
     } as never), aiUsageEvent.id);
     await writeMasterFields('ai_usage_event', rows?.[0]?.id, master);
     const id = rows?.[0]?.id ?? null;
-    await captureOf(t, id);
+    await writeBusinessExecution(id, execution.id);
+    await captureOf(t, id, execution.id);
     return id;
   } catch (e) {
     console.error('[ai-trace] événement d\'usage non écrit (non bloquant) :', (e as Error).message);
     // La capture reste écrite (sans rattachement) : l'échange n'est pas perdu.
-    await captureOf(t, null);
+    await captureOf(t, null, execution.id);
     return null;
   }
 }
 
 /** Lot 82C : capture de l'appel, rattachée à son événement d'usage. Ne lève jamais. */
-async function captureOf(t: CallTrace, usageEventId: number | null): Promise<void> {
+async function captureOf(t: CallTrace, usageEventId: number | null, businessExecutionId: string | null): Promise<void> {
   if (!t.capture) return;
   try {
     const { recordCallCapture } = await import('./call-capture');
     await recordCallCapture({
-      usageEventId, traceId: t.traceId, accountId: t.accountId, userId: t.userId ?? null,
+      usageEventId, traceId: t.traceId, accountId: t.accountId, userId: t.userId ?? null, businessExecutionId,
       jobId: t.jobId ?? currentJobContext()?.jobId ?? null, useCaseCode: t.useCaseCode, operationCode: t.operationCode,
       task: t.task ?? null, model: t.model, modelRank: t.modelRank ?? (t.usedFallback ? null : 'primary'),
     }, t.capture, t.captureTransportOf);
   } catch (e) {
     console.error('[ai-trace] capture non écrite (non bloquant) :', String((e as Error).message ?? e).slice(0, 200));
+  }
+}
+
+/**
+ * Lot 83C : exécution métier de l'appel (migration 0668), écrite à part comme
+ * les champs 0217 — colonne absente : rien, jamais d'échec. Ne lève jamais.
+ */
+async function writeBusinessExecution(usageEventId: number | null, businessExecutionId: string | null): Promise<void> {
+  if (!usageEventId || !businessExecutionId) return;
+  try {
+    if (!(await businessExecutionColumnsReady()).usage) return;
+    await pgClient.unsafe(
+      `UPDATE ai_usage_event SET business_execution_id = $2 WHERE id = $1`,
+      [usageEventId, businessExecutionId.slice(0, 160)] as never[],
+    );
+  } catch (e) {
+    console.error('[ai-trace] exécution métier non écrite sur l’appel (non bloquant) :', (e as Error).message);
   }
 }
 

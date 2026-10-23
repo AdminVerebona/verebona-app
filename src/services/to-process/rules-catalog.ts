@@ -493,7 +493,7 @@ export const PROCESSING_RULES: readonly ProcessingRule[] = [
   // consolidation T3, posées sur le DOCUMENT concerné, en langage métier —
   // « À traiter » n'est pas un écran de validation des Opérations (P09).
   // Une carte par problème (relation suffixée : `operationMatch:<candidat>`,
-  // `operationParent:<id>`, `operationAmount:<id>:<empreinte>`) ; fermées
+  // `operationAmount:<id>:<empreinte>`) ; fermées
   // d'elles-mêmes quand la consolidation ne les reconduit pas. Voir
   // `operation-cards.ts`.
   {
@@ -508,18 +508,9 @@ export const PROCESSING_RULES: readonly ProcessingRule[] = [
     businessImpact: 70,
     producer: 'T3_OPERATIONS',
   },
-  {
-    // (b) Parent Sinistre ambigu entre deux dossiers.
-    code: 'OPERATION-CLAIM-PARENT',
-    targetType: 'DOCUMENT',
-    relationKey: 'operationParent',
-    arbitratePriority: 'DO_NEXT',
-    completePriority: null,
-    allowNotApplicable: false,
-    question: 'Cette intervention fait-elle suite à un sinistre ?',
-    businessImpact: 60,
-    producer: 'T3_OPERATIONS',
-  },
+  // (b) « Parent Sinistre » et (d) « dissociation » (OPERATION-CLAIM-PARENT,
+  // OPERATION-CLAIM-DETACH) : RETIRÉES au lot 83D (CDC v5 §18.4, AC39 — plus
+  // d'intervention enfant d'un sinistre).
   {
     // (c) Montant contradictoire de même rôle entre preuves de même autorité.
     code: 'OPERATION-AMOUNT',
@@ -530,20 +521,6 @@ export const PROCESSING_RULES: readonly ProcessingRule[] = [
     allowNotApplicable: false,
     question: 'Ces documents indiquent des montants différents : lequel est le bon ?',
     businessImpact: 68,
-    producer: 'T3_OPERATIONS',
-  },
-  {
-    // (d) Lot 53 (retour PO D11) : facture retirée d'une action du sinistre,
-    // rattachement de l'intervention sans autre justification — garder ou
-    // dissocier (jamais automatique).
-    code: 'OPERATION-CLAIM-DETACH',
-    targetType: 'DOCUMENT',
-    relationKey: 'operationDetach',
-    arbitratePriority: 'DO_NEXT',
-    completePriority: null,
-    allowNotApplicable: false,
-    question: 'Cette intervention fait-elle toujours suite à ce sinistre ?',
-    businessImpact: 58,
     producer: 'T3_OPERATIONS',
   },
   {

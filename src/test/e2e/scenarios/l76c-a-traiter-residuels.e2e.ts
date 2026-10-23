@@ -133,18 +133,11 @@ scenario('L76C-ATP', 'À traiter : défauts résiduels du lot 72C, réévaluatio
                       ${p.outcome}, ${p.pertinence ?? null}, ${await currentKnowledgeRev(compte.id, fileId)}, 'det:structured')`;
   };
   const KEY_IV = 'intervention:contractEndDate';
-  const svcCampagne = () => import('@/services/to-process/relevance-campaign.service');
-  /** Campagne dédiée, poursuivie jusqu'à la fin du parcours (ou l'attente de reprises). */
-  const campagne = async (code: string) => {
-    const svc = await svcCampagne();
-    await svc.startRelevanceCampaign({ code, trigger: 'manual' });
-    let r = await svc.runRelevanceCampaign({ deadline: Date.now() + 180_000 });
-    while (r.more) r = await svc.runRelevanceCampaign({ deadline: Date.now() + 180_000 });
-    return { r, vue: (await svc.listRelevanceCampaigns(20)).find((c) => c.code === code)! };
-  };
-  const elements = async (code: string, accountId: number) => sql<Array<Record<string, any>>>`
-    SELECT i.* FROM to_process_relevance_campaign_items i JOIN to_process_relevance_campaigns c ON c.id = i.campaign_id
-     WHERE c.code = ${code} AND i.account_id = ${accountId} ORDER BY i.id`;
+  /**
+   * Lot 83E (C-Q9) : la campagne de pertinence est RETIRÉE — la même réévaluation (même décision centrale)
+   * est faite par le contrôle de cohérence (registre, orchestrateur unique), borné au compte du test.
+   */
+  const controle = async (accountId: number) => (await import('../coherence-run')).runCoherenceFor(sql, [accountId]);
 
   // ══════════════════════════════════════════════════════════════════════
   // C1 — calculs faussement fiables
@@ -387,72 +380,22 @@ scenario('L76C-ATP', 'À traiter : défauts résiduels du lot 72C, réévaluatio
   // C7 — campagne rétroactive et reprise des erreurs
   // ══════════════════════════════════════════════════════════════════════
 
-  it('RES-19 — décision de la version COURANTE devenue périmée (connaissance changée) : prise en compte par la campagne (phase décisions), mêmes règles que la production', async () => {
+  it('RES-19 (lot 83E : contrôle de cohérence) — décision de la version COURANTE devenue périmée (connaissance changée) : reprise par COH-TODO-STALE-DECISIONS, mêmes règles que la production', async () => {
     const compte = await make.account();
     const f = await doc(compte, { title: 'Contrat d’entretien', facts: [{ key: 'contractStartDate', label: 'Date d’effet', value: NEUF_ANS.iso }] });
     await balayage(compte);
     expect((await diag(f)).at(-1)).toMatchObject({ outcome: 'DEFER', engine_version: 'l76-2', pertinence: 'UNDATED_HISTORICAL' });
     // Connaissance changée APRÈS la décision (version courante) : fin effective constatée.
     await uniteEn(compte, f, `Le contrat a été résilié le ${jour(-2000).slash}.`);
-    const code = `l76-e2e-res19-${compte.id}`;
-    await campagne(code);
-    const items = await elements(code, compte.id);
-    expect(items.filter((i) => i.target_id === f && i.phase === 'DECISIONS')).toEqual([expect.objectContaining({ rule_code: 'DATA-CONTRACT-END', outcome: 'NO_CARD' })]);
+    expect((await controle(compte.id)).status).toBe('COMPLETE');
+    const { proofOf } = await import('../coherence-run');
+    expect((await proofOf(sql, compte.id, 'COH-TODO-STALE-DECISIONS', f))?.last_result).toBe('REPAIRED');
     expect((await diag(f)).at(-1)).toMatchObject({ outcome: 'NO_ACTION', pertinence: 'CONTRACT_TERMINATED', trigger_code: 'BACKFILL' });
   });
 
-  it('RES-20 — erreur pendant un lot, interruption puis reprise : élément repris (issue après reprise), première erreur conservée, bilan exact, aucun doublon ; erreur persistante maintenue BLOQUANTE', async () => {
-    const compte = await make.account();
-    const repris = await doc(compte, { title: 'Contrat de télésurveillance', facts: [{ key: 'contractStartDate', value: jour(-60).iso }] });
-    const persistant = await doc(compte, { title: 'Contrat PANNE-E2E', facts: [{ key: 'contractStartDate', value: jour(-60).iso }] });
-    const c1 = await carte(compte, repris);
-    const c2 = await carte(compte, persistant);
-    const svc = await svcCampagne();
-    const code = `l76-e2e-res20-${compte.id}`;
-    await svc.startRelevanceCampaign({ code, trigger: 'manual' });
-    // Interruption immédiate : rien n'est consigné, rien n'est perdu.
-    expect(await svc.runRelevanceCampaign({ deadline: Date.now() - 1 })).toMatchObject({ more: true, done: false });
-    t4Mode = 'failure';
-    let r = await svc.runRelevanceCampaign({ deadline: Date.now() + 180_000 });
-    while (r.more) r = await svc.runRelevanceCampaign({ deadline: Date.now() + 180_000 });
-    let items = await elements(code, compte.id);
-    expect(items.find((i) => i.action_id === c1)).toMatchObject({ outcome: 'ERROR', attempts: 1, last_error: expect.any(String), first_error: expect.any(String) });
-    expect(new Date(items.find((i) => i.action_id === c1)!.retry_after).getTime()).toBeGreaterThan(Date.now());
-    // Parcours terminé ≠ campagne terminée : des erreurs restent à reprendre.
-    let vue = (await svc.listRelevanceCampaigns(20)).find((c) => c.code === code)!;
-    expect(vue.status).toBe('RUNNING');
-    expect(vue.traversalFinishedAt).not.toBeNull();
-    expect(vue.errors!.pending).toBeGreaterThanOrEqual(2);
-    // Reprise (délai de reprise écoulé — simulé) : T4 rétabli.
-    t4Mode = 'normal';
-    for (let k = 0; k < 4; k += 1) {
-      await sql`UPDATE to_process_relevance_campaign_items SET retry_after = now() - interval '1 second'
-                 WHERE campaign_id = (SELECT id FROM to_process_relevance_campaigns WHERE code = ${code}) AND last_error IS NOT NULL`;
-      r = await svc.runRelevanceCampaign({ deadline: Date.now() + 180_000 });
-      if (r.done) break;
-    }
-    items = await elements(code, compte.id);
-    expect(items.find((i) => i.action_id === c1)).toMatchObject({ outcome: 'ERROR', final_outcome: 'KEPT', last_error: null, first_error: expect.any(String) });
-    expect(Number(items.find((i) => i.action_id === c1)!.attempts)).toBeGreaterThanOrEqual(2);
-    // Erreur persistante : bornée, maintenue BLOQUANTE (jamais « réévaluée » par l'avancement du curseur).
-    const bloque = items.find((i) => i.action_id === c2)!;
-    expect(bloque).toMatchObject({ final_outcome: 'ERROR', last_error: expect.any(String) });
-    expect(Number(bloque.attempts)).toBe(svc.CAMPAIGN_MAX_ATTEMPTS);
-    vue = (await svc.listRelevanceCampaigns(20)).find((c) => c.code === code)!;
-    expect(vue.status).toBe('DONE_WITH_ERRORS');
-    expect(vue.errors!.blocking).toBeGreaterThanOrEqual(1);
-    expect(vue.errors!.recovered).toBeGreaterThanOrEqual(1);
-    // Bilan exact : recalculé depuis les éléments ; aucun doublon d'élément ni de carte.
-    const [{ n }] = await sql<Array<{ n: number }>>`SELECT count(*)::int AS n FROM to_process_relevance_campaign_items WHERE campaign_id = ${vue.id}`;
-    expect(vue.outcomes.examined).toBe(n);
-    expect(items.filter((i) => i.action_id === c1)).toHaveLength(1);
-    expect(await ouvertes(repris)).toHaveLength(1);
-    expect(await ouvertes(persistant)).toHaveLength(1);
-    // Relance BO des erreurs bloquantes : remises en reprise (bornée).
-    expect(await svc.retryCampaignErrors(vue.id)).toBeGreaterThanOrEqual(1);
-    expect((await svc.listRelevanceCampaigns(20)).find((c) => c.code === code)!.status).toBe('RUNNING');
-    await sql`UPDATE to_process_relevance_campaigns SET status = 'DONE_WITH_ERRORS' WHERE id = ${vue.id}`;
-  });
+  // RES-20 (reprise des erreurs de CAMPAGNE, erreurs « bloquantes », relance BO) : RETIRÉ au lot 83E avec le
+  // moteur de campagne (C-Q9). Reprise après interruption, campagne PARTIELLE, réparation en échec reprise et
+  // signalée en Supervision : mécanismes de l'orchestrateur unique (L82B-E2E-09, L83E-E2E-09).
 
   // ══════════════════════════════════════════════════════════════════════
   // C8 — échecs de traçabilité
@@ -537,7 +480,7 @@ scenario('L76C-ATP', 'À traiter : défauts résiduels du lot 72C, réévaluatio
     expect(await retenu()).toBe('ACTIVE');
   });
 
-  it('RES-23 — réexécution sans changement métier (balayages, campagne) : aucune réouverture, aucun calcul différent, aucun appel IA redondant, traces dédupliquées', async () => {
+  it('RES-23 — réexécution sans changement métier (balayages, contrôle de cohérence) : aucune réouverture, aucun calcul différent, aucun appel IA redondant, traces dédupliquées', async () => {
     const compte = await make.account();
     const debut = jour(-200);
     // Marqueur des documents de ce test : la campagne parcourt toute la base, seuls NOS appels T4 comptent.
@@ -560,7 +503,7 @@ scenario('L76C-ATP', 'À traiter : défauts résiduels du lot 72C, réévaluatio
     expect(appels).toBeGreaterThanOrEqual(1);
     expect(avant.valeur).toMatchObject({ v: await fin(debut.iso, 18), kind: 'CALCULATED' });
     for (let i = 0; i < 2; i += 1) await balayage(compte);
-    await campagne(`l76-e2e-res23-${compte.id}`);
+    await controle(compte.id);
     expect(await etat()).toEqual(avant);
     expect(nosAppels(replay)).toHaveLength(appels);
     expect(await ouvertes(ia)).toHaveLength(1);

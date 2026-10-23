@@ -114,6 +114,8 @@ export interface CaptureContext {
   model?: string | null;
   modelRank?: string | null;
   capturedAt?: Date;
+  /** Lot 83C : exécution métier de l'appel (même valeur que l'événement d'usage). */
+  businessExecutionId?: string | null;
 }
 
 export interface CaptureRow {
@@ -154,6 +156,8 @@ export interface CaptureRow {
   masking: unknown;
   attempt_duration_ms: number | null;
   execution_elapsed_ms: number | null;
+  /** Lot 83C (migration 0668) : présent seulement s'il est connu. */
+  business_execution_id?: string | null;
 }
 
 const sha256 = (s: string): string => createHash('sha256').update(s).digest('hex');
@@ -316,6 +320,7 @@ export function buildCaptureRow(ctx: CaptureContext, c: CallCaptureInput, transp
     }),
     attempt_duration_ms: entier(c.attemptDurationMs),
     execution_elapsed_ms: entier(c.executionElapsedMs),
+    ...(ctx.businessExecutionId ? { business_execution_id: ctx.businessExecutionId.slice(0, 160) } : {}),
   };
 }
 
@@ -395,13 +400,17 @@ export type CaptureWriter = (row: CaptureRow) => Promise<void>;
 /** Écriture réelle d'une ligne (exportée pour les tests : simuler un échec puis la reprise). */
 export async function writeCaptureRow(row: CaptureRow): Promise<void> {
   const { pgClient } = await import('@/db');
-  const values = COLUMNS.map((c) => {
+  // Lot 83C : colonne 0668 écrite seulement si présente (jamais d'échec de capture pour elle).
+  const avecExecution = Boolean(row.business_execution_id)
+    && (await (await import('./trace-schema')).businessExecutionColumnsReady().catch(() => ({ captures: false }))).captures;
+  const cols: Array<keyof CaptureRow> = avecExecution ? [...COLUMNS, 'business_execution_id'] : [...COLUMNS];
+  const values = cols.map((c) => {
     const v = row[c];
     return JSON_COLS.has(c) ? (v === null || v === undefined ? null : JSON.stringify(v)) : v;
   });
-  const placeholders = COLUMNS.map((c, i) => `$${i + 1}${c === 'source_ids' ? '::int[]' : JSON_COLS.has(c) ? '::jsonb' : c === 'captured_at' ? '::timestamptz' : ''}`);
+  const placeholders = cols.map((c, i) => `$${i + 1}${c === 'source_ids' ? '::int[]' : JSON_COLS.has(c) ? '::jsonb' : c === 'captured_at' ? '::timestamptz' : ''}`);
   await pgClient.unsafe(
-    `INSERT INTO ai_call_captures (${COLUMNS.join(', ')}, capture_version) VALUES (${placeholders.join(', ')}, ${CAPTURE_VERSION})`,
+    `INSERT INTO ai_call_captures (${cols.join(', ')}, capture_version) VALUES (${placeholders.join(', ')}, ${CAPTURE_VERSION})`,
     values as never[],
   );
 }

@@ -1,5 +1,5 @@
 {
-  "$comment": "Empreintes SHA-256 du HTML produit par les maquettes validées (maquettes/<dossier>/template.mjs) pour chaque cas de data-example.json, passes 1 (sans carte de pages) et 2 (carte fixe). Le portage TypeScript doit produire exactement le même HTML. Lot 66C (charte « Sérénité » 2026) : empreintes recalculées — seule la balise <style> @page de pageSetup() (couleurs, police et filet de l'en-tête/pied, fond ivoire de la dernière page) a changé ; texte visible et HTML hors <style> prouvés identiques au lot 65 par l66c-pdf-charte.test.ts (L66C-PDF-01). Lot 75L (BUG P1 « nom affiché au téléchargement ») : empreintes recalculées pour cil/nominal/1, cil/nominal/2, cil/riche/1, cil/riche/2, dossier-complet/nominal/1, dossier-complet/nominal/2, dossier-complet/riche/1, dossier-complet/riche/2, location/riche/1, location/riche/2, vente/riche/1, vente/riche/2 — seuls les chemins des pièces jointes au ZIP changent (nom affiché + extension réelle au lieu du nom d'origine normalisé), prouvé par diff du HTML rendu avant/après.",
+  "$comment": "Empreintes SHA-256 du HTML produit par les maquettes validées (maquettes/<dossier>/template.mjs) pour chaque cas de data-example.json, passes 1 (sans carte de pages) et 2 (carte fixe). Le portage TypeScript doit produire exactement le même HTML. Lot 66C (charte « Sérénité » 2026) : empreintes recalculées — seule la balise <style> @page de pageSetup() (couleurs, police et filet de l'en-tête/pied, fond ivoire de la dernière page) a changé ; texte visible et HTML hors <style> prouvés identiques au lot 65 par l66c-pdf-charte.test.ts (L66C-PDF-01). Lot 75L (BUG P1 « nom affiché au téléchargement ») : empreintes recalculées pour cil/nominal/1, cil/nominal/2, cil/riche/1, cil/riche/2, dossier-complet/nominal/1, dossier-complet/nominal/2, dossier-complet/riche/1, dossier-complet/riche/2, location/riche/1, location/riche/2, vente/riche/1, vente/riche/2 — seuls les chemins des pièces jointes au ZIP changent (nom affiché + extension réelle au lieu du nom d'origine normalisé), prouvé par diff du HTML rendu avant/après. Lot 83D (CDC Opérations v5 §18.1, V-Q2) : empreintes recalculées pour assurance-sinistre/nominal/1, nominal/2, riche/1, riche/2 — seule la section « Actions déjà réalisées » est retirée (les étapes sont des éléments d’Agenda de l’Opération) et la section suivante est renumérotée, prouvé par diff du texte rendu avant/après ; les cas minimal sont inchangés.",
   "hashes": {
     "cil/minimal/1": "14cc13194318fce50841b8e6647fa11addf72c545f5d73f003f6625a16257858",
     "cil/minimal/2": "5dfc84f3c508bc515b2fa2785717cd6c1c9565aa8b303d5c048b41ebc96fa155",
@@ -33,9 +33,9 @@
     "assurance-souscription/riche/2": "e2c926b524b7c49879d1b70a3ffb0af77ac45c0d74e7995ed46aa46bda3dc632",
     "assurance-sinistre/minimal/1": "a5df57ef4de37a77410e46666bc11f7339aa12a7e2ee8db4c969456ee1c43f35",
     "assurance-sinistre/minimal/2": "2c135256bd0f923363c50b83401eca63f4066bc36649fee2cb0038a8fa629d70",
-    "assurance-sinistre/nominal/1": "49f77dd591cd799391f7ac6ed5f062cc8c9177978a1fc6b0f347710991fe9547",
-    "assurance-sinistre/nominal/2": "4f7e36d9dd147e3cc64a95e2260e8b984896121642592d7efd2910fb82046714",
-    "assurance-sinistre/riche/1": "9ecda25f0723e408e8b420bafb2cc929c7f88f04c81c106667db0f2aebc18cf1",
-    "assurance-sinistre/riche/2": "654cbf09c7f6082d951c0ab847dc13d2199bb2593ae2d9254f6ec044aa9ea908"
+    "assurance-sinistre/nominal/1": "ed46a9886ffcc48f4bc9d3d3e2538dd7f5f813914ee0b2c114693b64c7c8d9d0",
+    "assurance-sinistre/nominal/2": "8bbd72d7389a99861eef3cb1d423be13738cb72d94a17ea7d3c75e56a0a2c53f",
+    "assurance-sinistre/riche/1": "2fa048fa33207f666cb2767edf8c57e5b539a45d7df8e4558ec630d4a0801803",
+    "assurance-sinistre/riche/2": "9a9afcd7558b492f01dc73eded243c9c835b2d2d899582341798bbb04f22c08f"
   }
 }

@@ -14,6 +14,16 @@ import { documentLinksCheck } from './checks/document-links';
 import { agendaOccurrencesCheck, agendaOrphansCheck } from './checks/agenda';
 import { tcoExtractedExpensesCheck } from './checks/tco';
 import { extractChainCheck } from './checks/extract-chain';
+// Lot 83B (C3, C4) : séparation bien / équipement, invariants O-1 (liste entière de grouping/invariants.ts), identité 78A.
+import { equipmentSeparationCheck } from './checks/equipment-separation';
+import { operationsGroupingChecks, operationsIdentityCheck } from './checks/operations';
+// Lot 83E — C5 (Agenda / T4 / « À traiter ») et C6 (T6, notifications, abonnements, Duo).
+import {
+  toProcessStaleDecisionsCheck, toProcessRelevanceCardsCheck, toProcessOrphanCardsCheck, toProcessResolutionPropagationCheck,
+} from './checks/to-process-relevance';
+import { agendaOperationProjectionCheck, agendaProjectionOrphansCheck, agendaT4DocumentDeadlinesCheck } from './checks/agenda-projection';
+import { t6EvaluationsCheck, notificationOutboxCheck, subscriptionCommunicationsCheck } from './checks/t6-notifications';
+import { billingStripeCheck, entitlementsCheck, duoRelationsCheck } from './checks/billing';
 
 export const COHERENCE_REGISTRY: readonly CoherenceCheck[] = [
   toProcessDocumentFieldsCheck,
@@ -22,6 +32,24 @@ export const COHERENCE_REGISTRY: readonly CoherenceCheck[] = [
   agendaOrphansCheck,
   tcoExtractedExpensesCheck,
   extractChainCheck,
+  // Lot 83B
+  equipmentSeparationCheck,
+  ...operationsGroupingChecks,
+  operationsIdentityCheck,
+  // Lot 83E (ajoutés en fin de liste, sans réordonner l'existant).
+  toProcessStaleDecisionsCheck,
+  toProcessRelevanceCardsCheck,
+  toProcessOrphanCardsCheck,
+  toProcessResolutionPropagationCheck,
+  agendaOperationProjectionCheck,
+  agendaProjectionOrphansCheck,
+  agendaT4DocumentDeadlinesCheck,
+  t6EvaluationsCheck,
+  notificationOutboxCheck,
+  subscriptionCommunicationsCheck,
+  billingStripeCheck,
+  entitlementsCheck,
+  duoRelationsCheck,
 ];
 
 /** Contrôles exécutés par l'orchestrateur (les points d'extension PLANNED sont exclus). */

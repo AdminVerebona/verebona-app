@@ -868,7 +868,7 @@ let reglesOperations: string[] | null = null;
 function operationRuleCodes(): string[] {
   if (!reglesOperations) {
     // Registre unique (`PROCESSING_RULES`) : toutes les règles produites par T3_OPERATIONS.
-    reglesOperations = ['OPERATION-MATCH', 'OPERATION-CLAIM-PARENT', 'OPERATION-AMOUNT', 'OPERATION-CLAIM-DETACH', 'OPERATION-CLAIM-ASSET']
+    reglesOperations = ['OPERATION-MATCH', 'OPERATION-AMOUNT', 'OPERATION-CLAIM-ASSET']
       .filter((c) => resolverOf(c).resolver === 'T3_OPERATIONS');
   }
   return reglesOperations;

@@ -357,9 +357,9 @@ scenario('L55B', 'T3 — toutes les factures d’un même contrat rattachées (f
     const f2 = await document(compte, maison.id, [mensualite(maison.id, 2, { typeHint: 'INTERVENTION' })]);
     const { setT3FaultHookForTests } = await consolidator();
     const { BusinessOperationIntegrityError } = await import('@/services/business-operations/errors');
-    setT3FaultHookForTests((stage, ctx) => { if (stage === 'document' && ctx.fileId === f2) throw new BusinessOperationIntegrityError('PARENT_CYCLE', 'panne simulée'); });
+    setT3FaultHookForTests((stage, ctx) => { if (stage === 'document' && ctx.fileId === f2) throw new BusinessOperationIntegrityError('INVALID_DETAILS', 'panne simulée'); });
     await passer(compte);
-    expect(await candidat(f2)).toMatchObject({ t3_outcome: 'HOLD_UNRESOLVED', t3_reason: 'TECHNICAL_ERROR:PARENT_CYCLE' });
+    expect(await candidat(f2)).toMatchObject({ t3_outcome: 'HOLD_UNRESOLVED', t3_reason: 'TECHNICAL_ERROR:INVALID_DETAILS' });
     const { OperationDiagnosticsService } = await import('@/services/business-operations/diagnostics/service');
     const exec = async <T>(fn: (q: (t: string, p?: unknown[]) => Promise<any[]>) => Promise<T>) => fn((t, p) => sql.unsafe(t, (p ?? []) as never[]) as never);
     const svc = new OperationDiagnosticsService(exec as never);

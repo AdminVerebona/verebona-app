@@ -14,7 +14,10 @@
  *   (retirée) : une seule chaîne corrige ces doublons.
  *
  * COH-AGENDA-ORPHANS — éléments automatiques issus d'un champ de fiche
- *   (`origin_type = 'asset_field'`) qui ne sont plus rattachés à RIEN (bien,
+ *   (`origin_type = 'asset_field'`) — lot 83E (v2) : ou d'un document qualifié
+ *   (`qualified_document`, événement OBSOLÈTE dont le document SOURCE connu a
+ *   été retiré ; sans source connue : jamais retiré) —
+ *   qui ne sont plus rattachés à RIEN (bien,
  *   équipement, pièce, document source, Opération active) : retrait TRACÉ et
  *   restaurable (`removeAgendaItemsTraced`, trace 0223 ; gardes : élément
  *   automatique, jamais modifié ni confirmé par l'utilisateur). Remplace
@@ -27,6 +30,9 @@ import type { CoherenceCheck, Inspection, RepairResult } from '../types';
 import { hashOf, idsOf, intArray, rows } from '../util';
 
 // ── COH-AGENDA-OCCURRENCES ──────────────────────────────────────────────────
+
+/** Lot 83E (v2) : origines des éléments automatiques contrôlés (la projection des Opérations a son propre contrôle). */
+const ORIGINES_ORPHELINS = ['asset_field', 'qualified_document'];
 
 const OPERATIONS_SQL = `
   o.account_id = $1 AND o.type_code = 'INTERVENTION'
@@ -128,17 +134,18 @@ export const agendaOccurrencesCheck: CoherenceCheck = {
 
 export const agendaOrphansCheck: CoherenceCheck = {
   id: 'COH-AGENDA-ORPHANS',
-  version: 1,
+  // v2 (lot 83E) : événements documentaires (source retirée) inclus.
+  version: 2,
   status: 'ACTIVE',
-  title: 'Agenda : échéances de fiche sans plus aucun rattachement',
+  title: 'Agenda : échéances de fiche ou documentaires sans plus aucun rattachement',
   domain: 'agenda',
   level: 'N1',
   objectType: 'agenda_item',
-  scope: 'éléments d’agenda du compte issus d’un champ de fiche (origin_type = asset_field)',
+  scope: 'éléments d’agenda du compte issus d’un champ de fiche ou d’un document qualifié (origin_type = asset_field, qualified_document)',
   sources: ['agenda_items', 'agenda_asset_links', 'agenda_equipment_links', 'agenda_room_links', 'agenda_file_links', 'assets', 'business_operations'],
   applicability: 'compte éligible ; trace 0223 présente (sinon aucun retrait)',
   invariant: 'une échéance de fiche est rattachée à un bien, un équipement, une pièce, un document ou une Opération vivants',
-  anomalies: ['ORPHAN_ASSET_FIELD_ITEM', 'LINKED_TO_DELETED_ASSET'],
+  anomalies: ['ORPHAN_ASSET_FIELD_ITEM', 'ORPHAN_DOCUMENT_ITEM', 'LINKED_TO_DELETED_ASSET'],
   autoRepairWhen: 'élément automatique intact (jamais modifié, ni statut ni confirmation utilisateur) sans aucun rattachement vivant',
   forbiddenRepairs: ['poser un statut utilisateur (« annulé »)', 'retirer un élément modifié ou confirmé par l’utilisateur', 'retirer sans trace restaurable'],
   services: ['agenda/agenda-removal-trace#removeAgendaItemsTraced'],
@@ -146,36 +153,37 @@ export const agendaOrphansCheck: CoherenceCheck = {
   triggers: ['AGENDA_ITEM_CREATED', 'AGENDA_ITEM_UPDATED', 'ASSET_DELETED', 'DOCUMENT_DELETED'],
   frequency: 'campagne exhaustive quotidienne + contrôle ciblé à chaque changement',
   criticality: 'LOW',
-  tests: ['L82B-E2E-08'],
+  tests: ['L82B-E2E-08', 'L83E-E2E-02'],
 
   async listObjects(ctx, accountId, afterId, limit) {
     return idsOf(await rows(ctx.sql, `
-      SELECT i.id FROM agenda_items i WHERE i.account_id = $1 AND i.origin_type = 'asset_field' AND i.id > $2 ORDER BY i.id LIMIT $3`,
-    [accountId, afterId, limit]));
+      SELECT i.id FROM agenda_items i WHERE i.account_id = $1 AND i.origin_type = ANY($4::text[]) AND i.id > $2 ORDER BY i.id LIMIT $3`,
+    [accountId, afterId, limit, ORIGINES_ORPHELINS]));
   },
 
   async objectsForEvent(ctx, accountId, e) {
     if (e.type === 'ASSET_DELETED' || e.type === 'DOCUMENT_DELETED') {
       // Le bien / document a disparu : ses échéances de fiche sans plus aucun lien.
       return idsOf(await rows(ctx.sql, `
-        SELECT i.id FROM agenda_items i WHERE i.account_id = $1 AND i.origin_type = 'asset_field'
+        SELECT i.id FROM agenda_items i WHERE i.account_id = $1 AND i.origin_type = ANY($2::text[])
            AND NOT EXISTS (SELECT 1 FROM agenda_asset_links l JOIN assets a ON a.id = l.asset_id AND a.deleted_at IS NULL WHERE l.agenda_item_id = i.id)
-         ORDER BY i.id`, [accountId]));
+         ORDER BY i.id`, [accountId, ORIGINES_ORPHELINS]));
     }
     if (e.entityId == null) return [];
-    return idsOf(await rows(ctx.sql, `SELECT i.id FROM agenda_items i WHERE i.account_id = $1 AND i.id = $2 AND i.origin_type = 'asset_field'`, [accountId, e.entityId]));
+    return idsOf(await rows(ctx.sql, `SELECT i.id FROM agenda_items i WHERE i.account_id = $1 AND i.id = $2 AND i.origin_type = ANY($3::text[])`, [accountId, e.entityId, ORIGINES_ORPHELINS]));
   },
 
   async inspect(ctx, accountId, ids) {
     const out = new Map<number, Inspection>();
     const r = await rows(ctx.sql, `
-      SELECT i.id,
+      SELECT i.id, i.origin_type,
              (SELECT count(*)::int FROM agenda_asset_links l JOIN assets a ON a.id = l.asset_id WHERE l.agenda_item_id = i.id AND a.deleted_at IS NULL) AS live_assets,
              (SELECT array_agg(a.id ORDER BY a.id) FROM agenda_asset_links l JOIN assets a ON a.id = l.asset_id WHERE l.agenda_item_id = i.id AND a.deleted_at IS NOT NULL) AS deleted_assets,
              (SELECT count(*)::int FROM agenda_equipment_links l WHERE l.agenda_item_id = i.id) AS equipments,
              (SELECT count(*)::int FROM agenda_room_links l WHERE l.agenda_item_id = i.id) AS rooms,
              (SELECT count(*)::int FROM agenda_file_links l JOIN asset_files f ON f.id = l.asset_file_id AND f.deleted_at IS NULL WHERE l.agenda_item_id = i.id) AS files,
              (i.origin_ref_type = 'asset_file' AND EXISTS (SELECT 1 FROM asset_files f WHERE f.id = i.origin_ref_id AND f.account_id = i.account_id AND f.deleted_at IS NULL)) AS source_alive,
+             (i.origin_ref_type = 'asset_file' AND i.origin_ref_id IS NOT NULL) AS has_source,
              (i.business_operation_id IS NOT NULL AND EXISTS (SELECT 1 FROM business_operations o WHERE o.id = i.business_operation_id
                                                               AND o.invalidated_at IS NULL AND o.merged_into_operation_id IS NULL)) AS operation_alive,
              (i.is_automatic AND NOT i.is_automatic_modified AND (i.manual_status IS NULL OR i.manual_status = '')
@@ -197,9 +205,16 @@ export const agendaOrphansCheck: CoherenceCheck = {
         out.set(id, { verdict: 'CONSISTENT', detail: { userOwned: true } });
         continue;
       }
+      const documentaire = x.origin_type === 'qualified_document';
+      if (documentaire && x.has_source !== true) {
+        // Lot 83E : un événement documentaire n'est OBSOLÈTE que si sa source a été retirée — sans source connue, aucun retrait.
+        out.set(id, { verdict: 'CONSISTENT', detail: { noKnownSource: true } });
+        continue;
+      }
       out.set(id, {
-        verdict: 'REPAIRABLE', anomaly: 'ORPHAN_ASSET_FIELD_ITEM', faultyLink: 'PROJECTION',
-        expected: 'échéance rattachée à sa source', observed: 'aucun rattachement vivant', inputHash: hashOf({ id, orphan: true }),
+        verdict: 'REPAIRABLE', anomaly: documentaire ? 'ORPHAN_DOCUMENT_ITEM' : 'ORPHAN_ASSET_FIELD_ITEM', faultyLink: 'PROJECTION',
+        expected: 'échéance rattachée à sa source', observed: 'aucun rattachement vivant', detail: { originType: x.origin_type },
+        inputHash: hashOf({ id, orphan: true }),
       });
     }
     return out;
@@ -209,7 +224,12 @@ export const agendaOrphansCheck: CoherenceCheck = {
     const out = new Map<number, RepairResult>();
     const { removeAgendaItemsTraced } = await import('@/services/agenda/agenda-removal-trace');
     const ids = items.map((x) => x.id);
-    const gone = new Set(await removeAgendaItemsTraced(ctx.sql, { accountId, ids, reason: 'ORPHAN_ASSET_FIELD' }));
+    const doc = items.filter((x) => (x.inspection.detail as { originType?: string } | undefined)?.originType === 'qualified_document').map((x) => x.id);
+    const fiche = ids.filter((id) => !doc.includes(id));
+    const gone = new Set([
+      ...(fiche.length ? await removeAgendaItemsTraced(ctx.sql, { accountId, ids: fiche, reason: 'ORPHAN_ASSET_FIELD' }) : []),
+      ...(doc.length ? await removeAgendaItemsTraced(ctx.sql, { accountId, ids: doc, reason: 'ORPHAN_SOURCE_DELETED' }) : []),
+    ]);
     for (const id of ids) {
       out.set(id, {
         called: true, service: 'removeAgendaItemsTraced', aiCalls: 0, result: { removed: gone.has(id) },

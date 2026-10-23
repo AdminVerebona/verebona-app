@@ -12,13 +12,17 @@
  *   · suit la réévaluation RÉTROACTIVE des cartes existantes : bilan AVANT /
  *     APRÈS par règle, issues (conservées, résolues, différées, retirées,
  *     remplacées par l'action réelle, en erreur), détail par carte filtrable
- *     (compte, issue) ; relance une campagne ;
+ *     (compte, issue) ;
  *   · lance la RECETTE du corpus livré avec le véritable T4 et lit, cas par
  *     cas, le résultat attendu et obtenu (trace IA).
  *   · lot 76 (C7 / C8) : distingue « parcours terminé » et « campagne
  *     terminée sans erreur », suit les reprises (en attente, bloquantes,
- *     réussies) et les relance ; voit les décisions appliquées NON tracées
- *     (reprise identifiable) et les relance.
+ *     réussies) ; voit les décisions appliquées NON tracées (reprise
+ *     identifiable) et les relance.
+ *   · lot 83E (C-Q9) : les campagnes sont un HISTORIQUE en lecture seule — la
+ *     réévaluation est faite par le contrôle de cohérence (COH-TODO-RELEVANCE-
+ *     CARDS, COH-TODO-STALE-DECISIONS, campagne quotidienne `coherence-
+ *     control`) ; plus de bouton « Relancer une campagne » ni de reprise.
  */
 import { useCallback, useEffect, useState } from 'react';
 import { ChevronDown, ListChecks, AlertTriangle, RefreshCw, Play } from 'lucide-react';
@@ -82,6 +86,7 @@ interface Data {
 
 const STATUT_CAMPAGNE: Record<string, string> = {
   DONE: 'terminée sans erreur', RUNNING: 'en cours', DONE_WITH_ERRORS: 'parcours terminé — erreurs maintenues bloquantes', ERROR: 'en erreur',
+  SUPERSEDED: 'close — remplacée par le contrôle de cohérence (lot 83E)',
 };
 const STATUT_TRACE: Record<string, string> = { PENDING: 'à reprendre', REPLAYED: 'trace écrite après reprise', SUPERSEDED: 'remplacée par une décision plus récente', ABANDONED: 'reprises épuisées' };
 
@@ -203,11 +208,11 @@ export function ToProcessRelevancePanel() {
   }, [filters]);
   useEffect(() => { void charger(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const lancer = async (action: 'campaign' | 'recette' | 'retry-errors' | 'retry-traces', campaignId?: number) => {
+  const lancer = async (action: 'recette' | 'retry-traces') => {
     setBusy(true);
     setError(null);
     try {
-      await apiClient.post(`/api/admin/ai/queue/to-process-relevance`, { action, ...(campaignId ? { campaignId } : {}) });
+      await apiClient.post(`/api/admin/ai/queue/to-process-relevance`, { action });
       await charger();
     } catch (e) {
       setError((e as Error).message);
@@ -268,20 +273,16 @@ export function ToProcessRelevancePanel() {
 
           <div className="space-y-2">
             <div className="flex flex-wrap items-center gap-2">
-              <p className="text-xs text-[color:var(--text-secondary)]">Réévaluation rétroactive des cartes existantes (documents, agenda, équipements, fournisseurs) et des décisions sans carte</p>
-              <Button type="button" size="sm" className="h-8" disabled={busy} onClick={() => void lancer('campaign')}>
-                <Play className="w-3.5 h-3.5 mr-1" />Relancer une campagne
-              </Button>
+              <p className="text-xs text-[color:var(--text-secondary)]">Historique des campagnes de réévaluation rétroactive (lecture seule)</p>
             </div>
-            {data.campaigns.length === 0 && <p className="text-xs text-[color:var(--text-muted)]">Aucune campagne (la tâche planifiée « to-process-relevance-reevaluation » la lance au démarrage).</p>}
+            <p className="text-xs text-[color:var(--text-muted)] break-words">
+              Depuis le lot 83E, la pertinence des cartes existantes et des décisions sans carte est vérifiée chaque jour par le contrôle de cohérence
+              (tâche « coherence-control ») ; les cas non résolus remontent dans Supervision.
+            </p>
+            {data.campaigns.length === 0 && <p className="text-xs text-[color:var(--text-muted)]">Aucune campagne historique.</p>}
             {data.campaigns.slice(0, 3).map((c) => (
               <div key={c.id} className="space-y-1">
                 <CampaignBlock c={c} />
-                {c.errors && c.errors.blocking > 0 && (
-                  <Button type="button" size="sm" variant="outline" className="h-8" disabled={busy} onClick={() => void lancer('retry-errors', c.id)}>
-                    <RefreshCw className="w-3.5 h-3.5 mr-1" />Reprendre les {c.errors.blocking} élément(s) en erreur
-                  </Button>
-                )}
               </div>
             ))}
             <form className="grid gap-2 grid-cols-2 sm:grid-cols-4" onSubmit={(e) => { e.preventDefault(); void charger(filters); }}>

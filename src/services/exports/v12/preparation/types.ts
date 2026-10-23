@@ -172,10 +172,10 @@ export interface PreparationDto {
   saleAds?: { short: string; detailed: string; priceMissing: boolean; generatedBy: 'deterministic' } | null;
   /**
    * Lot 44 (O5) : sinistre du dossier Assurance-sinistre — choisi parmi ceux
-   * du bien (Q2) ; `origin` : sinistre, ancienne saisie (compatibilité Q11)
-   * ou aucun. Dossier ASSURANCE_SINISTRE seulement.
+   * du bien (Q2) ; `origin` : sinistre ou aucun (lot 83D : plus d'ancienne
+   * saisie). Dossier ASSURANCE_SINISTRE seulement.
    */
-  claim?: { selectedOperationId: number | null; origin: 'operation' | 'legacy' | 'none'; options: Array<{ id: number; label: string; date: string | null }> } | null;
+  claim?: { selectedOperationId: number | null; origin: 'operation' | 'none'; options: Array<{ id: number; label: string; date: string | null }> } | null;
 }
 
 /** Réponse de `POST …/exports/estimate`. */

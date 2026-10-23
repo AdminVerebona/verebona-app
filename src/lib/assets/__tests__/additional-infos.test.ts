@@ -39,9 +39,9 @@ describe('dictionnaire (§4.2)', () => {
     expect(values).toEqual(['AUTRE', 'ETUDIANT', 'MEUBLE', 'MOBILITE', 'NON_MEUBLE', 'SAISONNIER']);
   });
 
-  it('champs de la maquette validée : sinistre, énergie, protections', () => {
+  it('champs de la maquette validée : énergie, protections ; lot 83D : plus de sous-rubrique « Sinistre »', () => {
     for (const k of ['claimType', 'occurredOn', 'declaredOn', 'insurerClaimRef', 'circumstances', 'consequences', 'measures', 'exchangesSummary']) {
-      expect(findField('claim', k), k).toBeDefined();
+      expect(findField('claim' as never, k), k).toBeUndefined();
     }
     expect(findField('rental', 'energyCostMinCents')).toBeDefined();
     expect(findField('insurance', 'protections')).toBeDefined();
@@ -57,7 +57,7 @@ describe('dictionnaire (§4.2)', () => {
   it('pas de location véhicule ni objet (§4.2)', () => {
     expect(SECTIONS_BY_FAMILY.IMMOBILIER).toContain('rental');
     expect(SECTIONS_BY_FAMILY.VEHICULE).not.toContain('rental');
-    expect(sectionsForCategory('OBJECT')).toEqual(['commercial', 'insurance', 'claim', 'finance']);
+    expect(sectionsForCategory('OBJECT')).toEqual(['commercial', 'insurance', 'finance']);
     expect(sectionsForCategory('XYZ')).toEqual([]);
   });
 
@@ -133,14 +133,14 @@ describe('relecture et fusion', () => {
   it('sanitizeSection écarte clés inconnues et valeurs corrompues', () => {
     expect(sanitizeSection('rental', { monthlyRentCents: 115000, depositCents: 0, leaseType: 'X', foo: 'bar', monthlyChargesCents: '14000' }))
       .toEqual({ monthlyRentCents: 115000, depositCents: 0 });
-    expect(sanitizeSection('claim', null)).toEqual({});
+    expect(sanitizeSection('insurance', null)).toEqual({});
   });
 
   it('applyPatch : champ par champ, retraits appliqués', () => {
     const cur = { ...emptyAdditionalInfos(), commercial: { desiredSalePriceCents: 100, saleConditions: 'a' } };
-    const next = applyPatch(cur, { set: { commercial: { saleConditions: 'b' }, claim: { claimType: 'VOL' } }, unset: { commercial: ['desiredSalePriceCents'] } });
+    const next = applyPatch(cur, { set: { commercial: { saleConditions: 'b' }, insurance: { insuranceObjective: 'SOUSCRIRE' } }, unset: { commercial: ['desiredSalePriceCents'] } });
     expect(next.commercial).toEqual({ saleConditions: 'b' });
-    expect(next.claim).toEqual({ claimType: 'VOL' });
+    expect(next.insurance).toEqual({ insuranceObjective: 'SOUSCRIRE' });
     expect(cur.commercial).toEqual({ desiredSalePriceCents: 100, saleConditions: 'a' });
   });
 });
@@ -179,9 +179,9 @@ describe('saisie en euros (IC-GEN-006)', () => {
     const year = findField('rental', 'energyCostReferenceYear')!;
     expect(interpretFieldInput(year, '2025')).toEqual({ kind: 'set', value: 2025 });
     expect(interpretFieldInput(year, '25').kind).toBe('invalid');
-    const date = findField('claim', 'occurredOn')!;
+    const date = findField('finance', 'retainedValueDate')!;
     expect(interpretFieldInput(date, '2026-08-03')).toEqual({ kind: 'set', value: '2026-08-03' });
-    const text = findField('claim', 'circumstances')!;
+    const text = findField('insurance', 'coverageComment')!;
     expect(interpretFieldInput(text, '   ')).toEqual({ kind: 'clear' });
     expect(toFieldInput(money, 115000).replace(/\s/g, ' ')).toBe('1 150');
     expect(toFieldInput(area, 67.4)).toBe('67,4');

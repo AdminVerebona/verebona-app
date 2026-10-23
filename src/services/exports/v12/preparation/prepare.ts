@@ -40,10 +40,7 @@ import { prepMessage, type PrepMessage } from './messages';
 import { INFO_HOST_SECTION, PREP_SECTIONS, type PrepSectionDef } from './sections';
 import { saleAds } from '../data/mappers/vente';
 import type { CilBlockDto, Compatibility, EstimateDto, ItemMode, PrepItem, PrepRow, PrepSection, PreparationDto } from './types';
-import {
-  ACTION_STATUS_OPTIONS, CHARGE_KIND_OPTIONS, CHARGE_PERIOD_OPTIONS, EXCHANGE_CHANNEL_OPTIONS, EXCHANGE_PARTY_OPTIONS,
-  RETAINED_VALUE_SOURCE_OPTIONS,
-} from '@/lib/assets/additional-infos';
+import { CHARGE_KIND_OPTIONS, CHARGE_PERIOD_OPTIONS, RETAINED_VALUE_SOURCE_OPTIONS } from '@/lib/assets/additional-infos';
 
 const EVENT_KIND_LABELS: Record<ReturnType<typeof eventKind>, string> = {
   ENTRETIEN: 'Entretien', TRAVAUX: 'Travaux', GARANTIE: 'Garantie', SINISTRE: 'Sinistre', AUTRE: 'Événement',
@@ -202,20 +199,10 @@ export function sectionRows(code: DossierCode, id: string, source: ExportSource)
     }));
     return rows;
   }
-  if (code === 'ASSURANCE_SINISTRE') {
-    const c = ai.claim;
-    if (id === 'damages') {
-      return list(c, 'damages').filter((r) => txt(r.zone))
-        .map((r, i) => ({ id: rowId(r, i), label: join(txt(r.zone), txt(r.element))!, detail: join(txt(r.finding), euros(r.estimatedAmountCents)), linked: [...photos(r.photoIds), ...docs(r.documentIds)] }));
-    }
-    if (id === 'actions') {
-      return list(c, 'actions').filter((r) => txt(r.title))
-        .map((r, i) => ({ id: rowId(r, i), label: txt(r.title)!, detail: join(dateFr(r.date), opt(ACTION_STATUS_OPTIONS, r.status), txt(r.performedBy)), linked: docs(r.invoiceDocumentId) }));
-    }
-    if (id === 'exchanges') {
-      return list(c, 'exchanges').filter((r) => txt(r.summary))
-        .map((r, i) => ({ id: rowId(r, i), label: txt(r.summary)!, detail: join(dateFr(r.date), opt(EXCHANGE_PARTY_OPTIONS, r.party), opt(EXCHANGE_CHANNEL_OPTIONS, r.channel)), linked: docs(r.documentId) }));
-    }
+  // Lot 83D (V-Q8) : dommages détaillés du sinistre (Opération CLAIM), avec leurs photos et justificatifs reliés.
+  if (code === 'ASSURANCE_SINISTRE' && id === 'damages') {
+    return (source.claimFile?.damages ?? []).filter((r) => txt(r.zone))
+      .map((r) => ({ id: r.key, label: join(txt(r.zone), txt(r.element))!, detail: join(txt(r.finding), euros(r.estimatedAmountCents)), linked: [...photos(r.photoIds), ...docs(r.documentIds)] }));
   }
   return [];
 }
@@ -223,8 +210,7 @@ export function sectionRows(code: DossierCode, id: string, source: ExportSource)
 /**
  * Sections alimentées par les informations complémentaires : leur contenu
  * dans le PDF, calculé par le MAPPEUR lui-même (même règle que la
- * génération : dommages structurés seulement, actions structurées ou
- * mesures sur plusieurs lignes, échanges structurés + courriers RETENUS…),
+ * génération : dommages du sinistre, courriers de l'assureur RETENUS…),
  * la section étant supposée cochée. `null` : section sans contenu mappé.
  */
 export function mappedFilled(code: DossierCode, source: ExportSource, choices: ExportChoices, today: string): Record<string, boolean> {
@@ -236,7 +222,7 @@ export function mappedFilled(code: DossierCode, source: ExportSource, choices: E
   const fin = d.finance as { lines?: unknown[]; charges?: unknown[]; retainedValue?: { amountCents?: number | null } } | null | undefined;
   const energy = (d.energy ?? {}) as Record<string, unknown>;
   switch (code) {
-    case 'ASSURANCE_SINISTRE': return { damages: len(d.damages), actions: len(d.actions), exchanges: len(d.exchanges) };
+    case 'ASSURANCE_SINISTRE': return { damages: len(d.damages), exchanges: len(d.exchanges) };
     case 'VENTE': return { highlights: len(d.highlights) };
     case 'ASSURANCE_SOUSCRIPTION': return { protections: len(d.protections) };
     case 'LOCATION': return { equipments: len(d.equipments) || Object.values(energy).some((v) => v != null && v !== '') };

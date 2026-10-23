@@ -544,8 +544,10 @@ export async function loadAssetDataRow(tx: DbTx, accountId: number, assetId: num
 /**
  * Décision utilisateur rattachée à l'Opération (lot 42, B19 : « persistée
  * comme source explicite ») : source `USER_ARBITRATION` dont le `locator`
- * porte `decision` — `CLAIM_PARENT` (parent Sinistre choisi ou écarté) ou
- * `AMOUNT` (montant retenu pour un fait économique contradictoire). Elle
+ * porte `decision` — `AMOUNT` (montant retenu pour un fait économique
+ * contradictoire) ou `CURRENCY` (devise confirmée). Lot 83D : les anciennes
+ * décisions `CLAIM_PARENT` (intervention enfant d'un sinistre, retirée —
+ * CDC v5 §18.4, AC39) ne sont plus lues. Elle
  * éclaire la consolidation mais ne prouve pas l'existence (C5).
  */
 export const DECISION_SOURCE_KIND = 'USER_ARBITRATION';
@@ -670,10 +672,8 @@ export async function reconsolidateOperation(
   // (date, prix d'achat, prix de vente) — jamais deux montants pour un même achat.
   // Lot 47B (C19) : la saisie Agenda de l'utilisateur prime pour les dates qu'elle porte.
   // Lot 55B (A) : des échéances réunies peuvent requalifier une intervention
-  // en CONTRACT — jamais sous un parent (C8.1 : un contrat n'est l'enfant de
-  // rien) ni au-dessus d'enfants (une intervention peut avoir des sous-interventions).
-  const requalifiable = op.typeCode === null || op.typeCode === 'OTHER'
-    || (op.typeCode === 'INTERVENTION' && await recurringRequalificationAllowed(tx, accountId, operationId, op.parentOperationId));
+  // en CONTRACT (lot 83D : plus de hiérarchie parent / enfant pour l'empêcher).
+  const requalifiable = op.typeCode === null || op.typeCode === 'OTHER' || op.typeCode === 'INTERVENTION';
   const state = applyAgendaAuthority(
     applyStructuredAuthority(consolidateOperationState(op.typeCode, contributions, today, amountChoices, { recurringRequalification: requalifiable }), contributions), contributions,
     agendaCtx.otherSupport);
@@ -793,7 +793,6 @@ export async function reconsolidateOperation(
     }
   }
 
-  await consolidateClaimParent(repo, tx, operationId, state, decisions, sources, cards, changes);
   // Lot 78A (§2C, §6) : provenance (source de chaque valeur, contradictions d'attributs) — trace technique.
   const apres = await repo.load(operationId, { allowInactive: true });
   const label = apres.technicalLabel === null ? undefined
@@ -881,130 +880,6 @@ export function stableJson(v: unknown): string {
       .map((k) => `${JSON.stringify(k)}:${stableJson((v as Record<string, unknown>)[k])}`).join(',')}}`;
   }
   return JSON.stringify(v ?? null);
-}
-
-/** Lot 55B : une INTERVENTION sans parent ni enfant peut devenir le CONTRACT de ses échéances. */
-async function recurringRequalificationAllowed(tx: DbTx, accountId: number, operationId: number, parentId: number | null): Promise<boolean> {
-  if (parentId !== null) return false;
-  const [enfant] = await rows(tx, sql`
-    SELECT 1 FROM business_operations WHERE parent_operation_id = ${operationId} AND account_id = ${accountId} AND merged_into_operation_id IS NULL LIMIT 1`);
-  return !enfant;
-}
-
-/**
- * Parent Sinistre d'une INTERVENTION (C8.1 PARENT-005, B19, ch. 20, lot 42) :
- *   · décision utilisateur (`CLAIM_PARENT`) : appliquée si le Sinistre choisi
- *     est encore actif ; « aucun » n'est plus reproposé ;
- *   · sinon référence de sinistre EXACTE citée par une preuve de
- *     l'intervention : un seul Sinistre actif la porte → parent posé ; deux
- *     ou plus → question « À traiter » (ambiguïté à impact fort) ;
- *   · un parent déjà posé n'est jamais remplacé automatiquement.
- */
-async function consolidateClaimParent(
-  repo: BusinessOperationRepository, tx: DbTx, operationId: number, state: ReturnType<typeof consolidateOperationState>,
-  decisions: OpSource[], sources: OpSource[], cards: OperationCardNeeds, changes: Changes,
-): Promise<void> {
-  const op = await repo.load(operationId, { allowInactive: true });
-  if (op.typeCode !== 'INTERVENTION' || op.invalidatedAt !== null) return;
-  if (op.parentOperationId !== null) {
-    // Lot 53 (retour PO D11) : un parent déjà posé n'est jamais retiré
-    // automatiquement ; s'il ne tient plus qu'à une facture retirée des
-    // actions du sinistre, l'utilisateur est consulté.
-    await reviewClaimParentJustification(tx, repo.accountId, operationId, op.parentOperationId, state, decisions, sources, cards);
-    return;
-  }
-  const choix = [...decisions].reverse().find((d) => (d.decision as { decision?: unknown }).decision === 'CLAIM_PARENT');
-  if (choix) {
-    const parentId = (choix.decision as { parentOperationId?: unknown }).parentOperationId;
-    if (typeof parentId === 'number') {
-      const [p] = await rows<{ id: string }>(tx, sql`
-        SELECT COALESCE(merged_into_operation_id, id) AS id FROM business_operations
-         WHERE id = ${parentId} AND account_id = ${repo.accountId}`);
-      const cible = p ? Number(p.id) : null;
-      const [actif] = cible !== null ? await rows(tx, sql`
-        SELECT 1 FROM business_operations WHERE id = ${cible} AND type_code = 'CLAIM' AND invalidated_at IS NULL`) : [];
-      if (cible !== null && actif) changes.track(await repo.setParent(operationId, cible, 'USER_CLAIM_PARENT'));
-    }
-    return;
-  }
-  // Lot 44 (C14.2, F-152) : facture désignée par une action d'un sinistre —
-  // désignation EXPLICITE de l'utilisateur, donc certaine : l'intervention
-  // prouvée par cette facture devient enfant de ce sinistre (un seul).
-  const factures = sources.filter((x) => x.managed && x.kind === 'DOCUMENT').map((x) => Number(x.entityKey)).filter((n) => Number.isSafeInteger(n));
-  if (factures.length) {
-    const parActions = (await rows<{ id: string }>(tx, sql`
-      SELECT DISTINCT o.id FROM business_operation_claim_actions a
-        JOIN business_operations o ON o.id = a.operation_id
-       WHERE o.account_id = ${repo.accountId} AND o.type_code = 'CLAIM' AND o.invalidated_at IS NULL AND o.merged_into_operation_id IS NULL
-         AND a.invoice_file_id = ANY(${intArray(factures)}::int[])
-       ORDER BY o.id`)).map((x) => Number(x.id));
-    if (parActions.length === 1) {
-      changes.track(await repo.setParent(operationId, parActions[0], 'CLAIM_ACTION_INVOICE'));
-      await tx.execute(sql`
-        UPDATE business_operation_claim_actions SET child_operation_id = ${operationId}
-         WHERE operation_id = ${parActions[0]} AND child_operation_id IS NULL AND invoice_file_id = ANY(${intArray(factures)}::int[])`);
-      return;
-    }
-  }
-  const refs = state.references.filter((r) => r.kind === 'CLAIM').map((r) => r.normalized);
-  if (!refs.length) return;
-  const claims = (await rows<{ id: string }>(tx, sql`
-    SELECT DISTINCT o.id FROM business_operations o
-      JOIN business_operation_references r ON r.operation_id = o.id AND r.active AND r.reference_kind = 'CLAIM'
-     WHERE o.account_id = ${repo.accountId} AND o.type_code = 'CLAIM' AND o.invalidated_at IS NULL AND o.id <> ${operationId}
-       AND r.normalized_value = ANY(${textArray(refs)}::text[])
-     ORDER BY o.id DESC`)).map((x) => Number(x.id));
-  if (claims.length === 1) {
-    changes.track(await repo.setParent(operationId, claims[0], 'T3_PARENT_CLAIM_REFERENCE'));
-    return;
-  }
-  if (claims.length > 1) {
-    const porteuse = [...sources].reverse().find((x) => x.managed && x.kind === 'DOCUMENT' && state.references.some((r) => r.kind === 'CLAIM' && r.sourceId === x.id))
-      ?? [...sources].reverse().find((x) => x.managed && x.kind === 'DOCUMENT');
-    if (porteuse) cards.parent.push({ operationId, fileId: Number(porteuse.entityKey), claimIds: claims });
-  }
-}
-
-/**
- * Lot 53 (retour PO D11) — le rattachement d'une intervention à son sinistre
- * est-il encore justifié ? Seuls les rattachements posés par la FACTURE d'une
- * action (`CLAIM_ACTION_INVOICE`) sont réexaminés. Justifié si l'un de ces
- * éléments subsiste : une action du sinistre désigne encore une facture de
- * l'intervention ; une référence de sinistre commune ; une décision
- * utilisateur qui confirme ce sinistre. Sinon : carte « À traiter » (garder /
- * dissocier) — jamais de dissociation automatique.
- */
-async function reviewClaimParentJustification(
-  tx: DbTx, accountId: number, operationId: number, parentId: number, state: ReturnType<typeof consolidateOperationState>,
-  decisions: OpSource[], sources: OpSource[], cards: OperationCardNeeds,
-): Promise<void> {
-  const [parent] = await rows<{ type_code: string | null }>(tx, sql`
-    SELECT type_code FROM business_operations WHERE id = ${parentId} AND account_id = ${accountId} AND invalidated_at IS NULL AND merged_into_operation_id IS NULL`);
-  if (parent?.type_code !== 'CLAIM') return;
-  const [pose] = await rows<{ reason_code: string }>(tx, sql`
-    SELECT reason_code FROM business_operation_history
-     WHERE operation_id = ${operationId} AND account_id = ${accountId} AND event_type = 'PARENT_CHANGED'
-       AND (after_json->>'parent_operation_id')::bigint = ${parentId}
-     ORDER BY id DESC LIMIT 1`);
-  if (pose?.reason_code !== 'CLAIM_ACTION_INVOICE') return;
-  // Décision utilisateur confirmant ce sinistre (carte « garder » ou parent choisi).
-  if (decisions.some((d) => (d.decision as { decision?: unknown; parentOperationId?: unknown }).decision === 'CLAIM_PARENT'
-    && (d.decision as { parentOperationId?: unknown }).parentOperationId === parentId)) return;
-  const factures = sources.filter((x) => x.managed && x.kind === 'DOCUMENT').map((x) => Number(x.entityKey)).filter((n) => Number.isSafeInteger(n));
-  if (factures.length) {
-    const [action] = await rows(tx, sql`
-      SELECT 1 FROM business_operation_claim_actions WHERE operation_id = ${parentId} AND invoice_file_id = ANY(${intArray(factures)}::int[]) LIMIT 1`);
-    if (action) return;
-  }
-  const refs = state.references.filter((r) => r.kind === 'CLAIM').map((r) => r.normalized);
-  if (refs.length) {
-    const [commune] = await rows(tx, sql`
-      SELECT 1 FROM business_operation_references WHERE operation_id = ${parentId} AND active AND reference_kind = 'CLAIM'
-         AND normalized_value = ANY(${textArray(refs)}::text[]) LIMIT 1`);
-    if (commune) return;
-  }
-  const porteuse = factures.at(-1);
-  if (porteuse !== undefined) cards.detach.push({ operationId, claimId: parentId, fileId: porteuse });
 }
 
 async function syncAssets(
@@ -1364,8 +1239,6 @@ async function examineRetro(
     if (xOp.typeCode !== null && yOp.typeCode !== null && xOp.typeCode !== yOp.typeCode) {
       // Échéance qualifiée « intervention » ↔ contrat : la relation est le contrat.
       const autre = xOp.typeCode === 'CONTRACT' ? yOp : xOp;
-      const op = await repo.load(autre.id);
-      if (!(await recurringRequalificationAllowed(tx, accountId, autre.id, op.parentOperationId))) return { ...fin('NOT_MERGEABLE'), m3 };
       changes.track(await repo.setType(autre.id, { code: 'CONTRACT' }, 'T3_TYPE_RECURRING_CONTRACT'));
     }
     const canon = canonicalOf([xOp, yOp]);
@@ -1904,14 +1777,14 @@ export async function consolidateAccountOperations(
   }
 
   // Lot 42 : une Opération a changé — les questions « À traiter » ouvertes sur
-  // d'AUTRES Opérations (parent Sinistre, montant) sont revérifiées, pour se
+  // d'AUTRES Opérations (montant, devise, bien exclu) sont revérifiées, pour se
   // fermer d'elles-mêmes si la situation s'est résolue. Sans changement :
   // aucune écriture (recalcul idempotent).
   if (res.changes > 0) {
     const ouvertes = (await (await pg()).unsafe(
       `SELECT DISTINCT (trigger_context->>'operationId')::bigint AS id FROM to_process_actions
         WHERE account_id = $1 AND resolved_at IS NULL
-          AND rule_code IN ('OPERATION-CLAIM-PARENT', 'OPERATION-AMOUNT', 'OPERATION-CLAIM-DETACH', 'OPERATION-CLAIM-ASSET', 'OPERATION-CURRENCY')
+          AND rule_code IN ('OPERATION-AMOUNT', 'OPERATION-CLAIM-ASSET', 'OPERATION-CURRENCY')
           AND trigger_context ? 'operationId'
         ORDER BY 1 LIMIT 50`,
       [accountId] as never[],

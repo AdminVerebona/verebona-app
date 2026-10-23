@@ -99,13 +99,13 @@ export const PREP_SECTIONS: Readonly<Record<DossierCode, readonly PrepSectionDef
   ],
   ASSURANCE_SINISTRE: [
     COVER('Nom du bien, type et date du sinistre.'),
-    { id: 'summary', label: 'Synthèse du sinistre', description: 'Type, date, références et circonstances du sinistre.', required: true },
-    { id: 'timeline', label: 'Chronologie', description: 'Événements datés ; ceux liés au sinistre sont pré-cochés.', required: false, toggle: 'timeline', items: 'event' },
-    { id: 'damages', label: 'Dommages et éléments concernés', description: 'Dommages constatés, saisis dans les informations du sinistre.', required: false, toggle: 'damages', fedBy: 'Dommages saisis dans la synthèse du sinistre, avec leurs photos et pièces.' },
-    { id: 'photos', label: 'Photos du sinistre', description: 'De 6 à 8 photos prises depuis la date du sinistre, choisies une par une.', required: false, toggle: 'photos', items: 'photo' },
-    { id: 'actions', label: 'Actions déjà réalisées', description: 'Mesures conservatoires et interventions.', required: false, toggle: 'actions', fedBy: 'Actions et mesures saisies dans la synthèse du sinistre.' },
-    { id: 'documents', label: 'Devis, factures et rapports', description: 'Pièces liées au sinistre pré-cochées ; les autres sont proposées.', required: false, toggle: 'documents', items: 'document' },
-    { id: 'exchanges', label: 'Échanges avec l’assureur et l’expert', description: 'Correspondances et échanges saisis.', required: false, toggle: 'exchanges', fedBy: 'Échanges saisis dans la synthèse du sinistre et courriers de l’assureur.' },
+    // Lot 83D (CDC v5 §16, V-Q8) : tout vient du sinistre établi par vos documents — aucune saisie dédiée.
+    { id: 'summary', label: 'Synthèse du sinistre', description: 'Type, date, références, circonstances, pièces et équipements concernés, tirés de vos documents.', required: true },
+    { id: 'timeline', label: 'Chronologie', description: 'Événement du sinistre et ses étapes (agenda) ; les autres événements datés sont proposés.', required: false, toggle: 'timeline', items: 'event' },
+    { id: 'damages', label: 'Dommages et éléments concernés', description: 'Dommages constatés du sinistre, avec leurs photos et justificatifs.', required: false, toggle: 'damages', fedBy: 'Dommages connus du sinistre, avec leurs photos et pièces.' },
+    { id: 'photos', label: 'Photos du sinistre', description: 'Photos des dommages, puis celles prises depuis la date du sinistre (6 à 8), choisies une par une.', required: false, toggle: 'photos', items: 'photo' },
+    { id: 'documents', label: 'Devis, factures et rapports', description: 'Tous les documents du sinistre pré-cochés ; les autres sont proposés.', required: false, toggle: 'documents', items: 'document' },
+    { id: 'exchanges', label: 'Échanges avec l’assureur et l’expert', description: 'Courriers de l’assureur et de l’expert retenus dans les documents.', required: false, toggle: 'exchanges', fedBy: 'Courriers de l’assureur et de l’expert parmi les documents retenus.' },
     { id: 'references', label: 'Sources et limites', description: 'Sources des informations et limites du dossier.', required: true },
   ],
 };
@@ -119,6 +119,5 @@ export const INFO_HOST_SECTION: Readonly<Record<string, string>> = {
   commercial: 'conditions',
   rental: 'conditions',
   insurance: 'value',
-  claim: 'summary',
   finance: 'finance',
 };

@@ -237,59 +237,23 @@ scenario('L39-O1', 'Socle des Opérations : schéma, intégrité, concurrence, �
     expect(ref).toBe('FA2026001');
   });
 
-  // ── Parent / enfant (C8.1, C13.1) ────────────────────────────────────────
+  // ── Parent / enfant (C8.1, C13.1) — RETIRÉ au lot 83D ─────────────────────
+  // CDC v5 §17, arbitrage V-Q2 : plus de hiérarchie d'Opérations (la réparation
+  // d'un sinistre reste DANS l'Opération CLAIM). `parent_operation_id` est
+  // INERTE (jamais écrit par le code ; colonne supprimée au lot O-10) ; les
+  // règles PARENT-001…009 ne s'appliquent plus.
 
-  it('PARENT-001..009 / INV-017 / INV-018 / INV-020 / INV-022 / INV-024 / INV-046 / INV-047 : un parent, même compte, profondeur ≤ 3, pas de cycle, relations C13.1, aucune propagation', async () => {
-    const { compte, biens, doc } = await base(make, { assets: 2 });
+  it('L83D — plus de hiérarchie : aucune écriture de parent par le dépôt, requalification libre, colonne inerte jamais posée', async () => {
+    const { compte, doc } = await base(make);
     const { withBusinessOperationWrite } = await svc();
     const w = <T,>(fn: Parameters<typeof withBusinessOperationWrite<T>>[1]) => withBusinessOperationWrite(compte.id, fn);
-    const claim = (await creer(compte, doc.id, { type: { code: 'CLAIM' }, assets: [{ assetId: biens[0].id, authority: 'USER' }, { assetId: biens[1].id, authority: 'USER' }] })).id;
+    const claim = (await creer(compte, doc.id, { type: { code: 'CLAIM' }, status: 'ENVISAGED' })).id;
     const repar = (await creer(compte, doc.id, { type: { code: 'INTERVENTION' }, status: 'REALIZED', realizedDate: '2026-02-01' })).id;
-    const sousRepar = (await creer(compte, doc.id, { type: { code: 'INTERVENTION' } })).id;
-    const acquisition = (await creer(compte, doc.id, { type: { code: 'ACQUISITION' } })).id;
-    const financement = (await creer(compte, doc.id, { type: { code: 'FINANCING' } })).id;
-    const contrat = (await creer(compte, doc.id, { type: { code: 'CONTRACT' } })).id;
-    const inconnu = (await creer(compte, doc.id, { type: null })).id;
-
-    // PARENT-004 / PARENT-005 : relations admises.
-    expect(await w((r) => r.setParent(financement, acquisition, 'E2E'))).toBe(true);
-    expect(await w((r) => r.setParent(repar, claim, 'E2E'))).toBe(true);
-    expect(await w((r) => r.setParent(sousRepar, repar, 'E2E'))).toBe(true);
-    // PARENT-006 : CONTRACT jamais parent d'un CLAIM ni d'une INTERVENTION.
-    expect(await codeErreur(w((r) => r.setParent(claim, contrat, 'E2E')))).toBe('PARENT_RELATION_NOT_ALLOWED');
-    expect(await codeErreur(w((r) => r.setParent(sousRepar, contrat, 'E2E')))).toBe('PARENT_RELATION_NOT_ALLOWED');
-    expect(await codeErreur(w((r) => r.setParent(inconnu, claim, 'E2E')))).toBe('PARENT_TYPE_UNKNOWN');
-    // PARENT-002 / F-172 : profondeur 4 refusée.
-    const niveau4 = (await creer(compte, doc.id, { type: { code: 'INTERVENTION' } })).id;
-    expect(await codeErreur(w((r) => r.setParent(niveau4, sousRepar, 'E2E')))).toBe('PARENT_DEPTH_EXCEEDED');
-    expect(await codeErreur(creer(compte, doc.id, { type: { code: 'INTERVENTION' }, parentOperationId: sousRepar }))).toBe('PARENT_DEPTH_EXCEEDED');
-    // F-171 : cycle refusé ; parent ≠ soi.
-    expect(await codeErreur(w((r) => r.setParent(repar, sousRepar, 'E2E')))).toBe('PARENT_CYCLE');
-    expect(await codeErreur(w((r) => r.setParent(repar, repar, 'E2E')))).toBe('PARENT_SELF');
-    // PARENT-001 / F-169 : parent d'un autre compte refusé (erreur technique).
-    const autre = await base(make);
-    const etranger = (await creer(autre.compte, autre.doc.id, { type: { code: 'CLAIM' } })).id;
-    expect(await codeErreur(w((r) => r.setParent(niveau4, etranger, 'E2E')))).toBe('CROSS_ACCOUNT');
-    // Requalification incompatible avec la relation existante : refusée.
-    expect(await codeErreur(w((r) => r.setType(repar, { code: 'CONTRACT' }, 'E2E')))).toBe('PARENT_RELATION_NOT_ALLOWED');
-    // PARENT-007 : aucune propagation des biens, dates, montants, statut.
-    const [enfant] = await sql<{ n: number; realized: string | null; status: string }[]>`
-      SELECT (SELECT count(*)::int FROM business_operation_asset_links WHERE operation_id = ${repar}) AS n,
-             realized_date::text AS realized, status FROM business_operations WHERE id = ${repar}`;
-    expect(enfant).toEqual({ n: 0, realized: '2026-02-01', status: 'REALIZED' });
-    // PARENT-008 / PARENT-009 : le parent change de statut sans toucher l'enfant réalisé.
-    const projet = (await creer(compte, doc.id, { type: { code: 'CLAIM' }, status: 'ENVISAGED' })).id;
-    const travaux = (await creer(compte, doc.id, { type: { code: 'INTERVENTION' }, status: 'REALIZED' })).id;
-    await w((r) => r.setParent(travaux, projet, 'E2E'));
-    await w((r) => r.setStatus(projet, 'CANCELLED', { reasonCode: 'CANCEL_PROOF' }));
-    const [t] = await sql<{ status: string }[]>`SELECT status FROM business_operations WHERE id = ${travaux}`;
-    expect(t.status).toBe('REALIZED');
-    // Parent invalidé : rattachement refusé.
-    await w((r) => r.invalidate(contrat, 'E2E'));
-    const fin2 = (await creer(compte, doc.id, { type: { code: 'FINANCING' } })).id;
-    const acq2 = (await creer(compte, doc.id, { type: { code: 'ACQUISITION' } })).id;
-    await w((r) => r.invalidate(acq2, 'E2E'));
-    expect(await codeErreur(w((r) => r.setParent(fin2, acq2, 'E2E')))).toBe('PARENT_INACTIVE');
+    expect(await w(async (r) => typeof (r as unknown as Record<string, unknown>).setParent)).toBe('undefined');
+    // Requalification sans contrôle de relation parent (C13.1 retiré).
+    await w((r) => r.setType(repar, { code: 'CONTRACT' }, 'E2E'));
+    await w((r) => r.setStatus(claim, 'CANCELLED', { reasonCode: 'CANCEL_PROOF' }));
+    expect(await sql`SELECT id FROM business_operations WHERE account_id = ${compte.id} AND parent_operation_id IS NOT NULL`).toEqual([]);
   });
 
   // ── Inter-comptes (F-169, F-170, C25) ────────────────────────────────────
@@ -451,8 +415,9 @@ scenario('L39-O1', 'Socle des Opérations : schéma, intégrité, concurrence, �
       const [{ id: srcS }] = await sql<{ id: number }[]>`SELECT id FROM business_operation_sources WHERE operation_id = ${sinistre}`;
       await r.addFinancialComponent(sinistre, { kind: 'INDEMNITY', amountMinor: 30000, currency: 'EUR', targetAssetId: voiture.id, sources: [{ sourceId: srcS }] });
       await r.upsertClaimDetails(sinistreVoiture, { insuranceContractOperationId: contratMaison, policyReferenceText: 'POL-1', status: 'DECLARE' });
-      await r.setParent(mono, sinistre, 'E2E');
     });
+    // Lot 83D : plus de hiérarchie écrite par le code ; état de préproduction (colonne inerte) posé en SQL — la garde de transfert le détache encore.
+    await sql`UPDATE business_operations SET parent_operation_id = ${sinistre} WHERE id = ${mono}`;
     const [req] = await sql<{ id: number }[]>`
       INSERT INTO asset_move_requests (asset_id, duo_id, target_account_id, initiator_user_id, validator_user_id, asset_label_snapshot, target_user_snapshot, initiator_user_snapshot)
       VALUES (${voiture.id}, ${duo.id}, ${cible.id}, ${membre.id}, ${titulaire.id}, 'Voiture', 'Membre', 'Membre') RETURNING id`;
@@ -551,7 +516,9 @@ scenario('L39-O1', 'Socle des Opérations : schéma, intégrité, concurrence, �
     const { compte, bien, doc } = await base(make);
     const { withBusinessOperationWrite } = await svc();
     const parent = (await creer(compte, doc.id, { type: { code: 'CLAIM' }, assets: [{ assetId: bien.id, authority: 'USER' }] })).id;
-    const enfant = (await creer(compte, doc.id, { type: { code: 'INTERVENTION' }, parentOperationId: parent })).id;
+    const enfant = (await creer(compte, doc.id, { type: { code: 'INTERVENTION' } })).id;
+    // État de préproduction (ancien modèle, lot 83D : colonne inerte posée en SQL) : la cascade reste sans orphelin.
+    await sql`UPDATE business_operations SET parent_operation_id = ${parent} WHERE id = ${enfant}`;
     await withBusinessOperationWrite(compte.id, (r) => r.upsertClaimDetails(parent, { status: 'CLOS' }));
     await sql`INSERT INTO business_operation_claim_damages (operation_id, zone) VALUES (${parent}, 'Cuisine')`;
     const evt = await make.agendaItem(compte, { title: 'Sinistre' });

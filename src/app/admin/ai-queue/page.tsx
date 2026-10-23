@@ -38,6 +38,8 @@
  * signalée, jamais attribuée à la main.
  */
 
+import { BusinessOutcomeBadge } from '../ai-executions/_components/BusinessExecutionsPanel';
+import type { BusinessExecutionDto } from '@/services/ai/business-execution/dto';
 import { Suspense, useState, useEffect, useCallback } from 'react';
 import { useSearchParams } from 'next/navigation';
 import Link from 'next/link';
@@ -91,6 +93,8 @@ interface Job {
   businessResultDetail?: Record<string, unknown> | null;
   /** Lot 52A (COR-05) : phase lisible calculée par le serveur. */
   phase?: ExecutionPhase;
+  /** Lot 83C : exécution métier servie (qualification, résultat natif, cause). */
+  businessExecution?: BusinessExecutionDto | null;
 }
 
 /**
@@ -595,6 +599,22 @@ function AiQueueScreen() {
                 <p className="text-xs text-[color:var(--text-secondary)]">
                   Résultat métier : {BUSINESS_RESULT_LABEL[job.businessResult] ?? job.businessResult}
                 </p>
+              )}
+              {/* Lot 83C (OP-04) : issue de l'EXÉCUTION MÉTIER (reprises comprises),
+                  calculée depuis les états natifs — distincte du statut du travail. */}
+              {job.businessExecution && (
+                <div className="flex flex-wrap items-center gap-1.5 text-xs" data-testid={`job-business-${job.id}`}>
+                  <span className="text-[color:var(--text-muted)]">Exécution métier :</span>
+                  <BusinessOutcomeBadge x={job.businessExecution} />
+                  {job.businessExecution.cause && (
+                    <span className="text-[color:var(--text-secondary)] break-words min-w-0">{job.businessExecution.cause}</span>
+                  )}
+                  {job.businessExecution.jobIds.length > 1 && (
+                    <span className="text-[color:var(--text-muted)]">
+                      · reprise{job.businessExecution.jobIds.length > 2 ? 's' : ''} : travaux {job.businessExecution.jobIds.map((x) => `#${x}`).join(', ')}
+                    </span>
+                  )}
+                </div>
               )}
               {t3Counters(job) && (
                 <p className="text-xs text-[color:var(--text-muted)]">{t3Counters(job)}</p>

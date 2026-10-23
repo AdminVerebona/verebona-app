@@ -374,63 +374,23 @@ scenario('L42-O3b', 'Consolidation T3 : M3, décisions durables, fusion, réacti
 
   // ══ Cartes « À traiter » (b) et (c), fermeture automatique (a) ═══════════
 
-  it('C19-22 / F-075 — parent Sinistre : référence unique → parent posé ; deux dossiers cités → carte (b) ; choix durable, jamais reproposé', async () => {
+  // Lot 83D (CDC v5 §17, V-Q2) : C19-22 / C19-25 (parent Sinistre posé par T3,
+  // carte « À traiter » (b) OPERATION-CLAIM-PARENT) sont RETIRÉS avec la
+  // hiérarchie d'Opérations. Le test ci-dessous prouve leur absence.
+  it('L83D — facture citant un ou deux dossiers de sinistre : jamais de parent posé, jamais de carte « parent Sinistre »', async () => {
     const compte = await make.account();
     const maison = await make.asset(compte, { category: 'IMMOBILIER' });
     const sinistre = (ref: string, date: string) => cand({ typeHint: 'CLAIM', sourceRoleHint: 'CLAIM_DOCUMENT', provider: 'Assur', targetHints: [cible(maison.id)], businessReferences: [{ kind: 'CLAIM', value: ref }], temporalHints: { realizedDate: date } });
     await document(compte, maison.id, [sinistre('S-1', '2026-02-02')], 'Déclaration dégât des eaux');
     await document(compte, maison.id, [sinistre('S-2', '2026-02-20')], 'Déclaration tempête');
     await passer(compte, { operationMatch: false });
-    const [s1, s2] = await actives(compte);
-
-    // Référence unique : parent posé automatiquement.
     await document(compte, maison.id, [cand({ provider: 'Plombier', targetHints: [cible(maison.id)], businessReferences: [{ kind: 'CLAIM', value: 'S-1' }, { kind: 'INVOICE', value: 'P-1' }], financialHints: [fh('REALIZED_COST', 50000)] })]);
+    await document(compte, maison.id, [cand({ provider: 'Couvreur', targetHints: [cible(maison.id)], businessReferences: [{ kind: 'CLAIM', value: 'S-1' }, { kind: 'CLAIM', value: 'S-2' }, { kind: 'INVOICE', value: 'C-1' }], financialHints: [fh('REALIZED_COST', 90000)] })], 'Facture couverture');
     await passer(compte, { operationMatch: false });
-    const reparation = (await actives(compte)).find((o) => o.type_code === 'INTERVENTION')!;
-    expect(reparation.parent_operation_id).toBe(s1.id);
-
-    // Facture citant les deux dossiers : ambiguïté → carte (b).
-    const doc = await document(compte, maison.id, [cand({ provider: 'Couvreur', targetHints: [cible(maison.id)], businessReferences: [{ kind: 'CLAIM', value: 'S-1' }, { kind: 'CLAIM', value: 'S-2' }, { kind: 'INVOICE', value: 'C-1' }], financialHints: [fh('REALIZED_COST', 90000)] })], 'Facture couverture');
-    await passer(compte, { operationMatch: false });
-    const toiture = (await actives(compte)).find((o) => o.type_code === 'INTERVENTION' && o.id !== reparation.id)!;
-    expect(toiture.parent_operation_id).toBeNull();
-    const [carte, ...autres] = await ouvertes(compte, 'OPERATION-CLAIM-PARENT');
-    expect(autres).toEqual([]);
-    expect(carte).toMatchObject({ target_id: doc, relation_key: `operationParent:${toiture.id}` });
-    expect(carte.question).toMatch(/^Cette intervention fait-elle suite au sinistre « Déclaration (tempête|dégât des eaux) du \d\d\/02\/2026 » ou au sinistre/);
-    expect(carte.proposals_json.map((p) => p.value).sort()).toEqual(['NONE', `PARENT:${s1.id}`, `PARENT:${s2.id}`].sort());
-
-    expect(await resoudre(compte, carte.public_id, `PARENT:${s2.id}`)).toMatchObject({ ok: true });
-    expect((await operations(compte)).find((o) => o.id === toiture.id)!.parent_operation_id).toBe(s2.id);
-    expect(await sql`SELECT 1 FROM business_operation_sources WHERE operation_id = ${toiture.id} AND source_kind = 'USER_ARBITRATION' AND active AND locator->>'decision' = 'CLAIM_PARENT'`).toHaveLength(1);
-    // La décision ne justifie pas l'existence : supprimer la facture invalide l'intervention.
-    await sql`UPDATE document_operation_candidates SET t3_pending = true WHERE file_id = ${doc}`;
-    await passer(compte, { operationMatch: false, reevaluateHolds: true });
-    expect(await ouvertes(compte)).toEqual([]);
-    await sql`UPDATE asset_files SET deleted_at = now() WHERE id = ${doc}`;
-    await passer(compte, { operationMatch: false });
-    expect((await operations(compte)).find((o) => o.id === toiture.id)!.invalidated_at).not.toBeNull();
-  });
-
-  it('C19-25 — carte (b) fermée d’elle-même : un des deux dossiers disparaît, le parent devient certain et est posé', async () => {
-    const compte = await make.account();
-    const maison = await make.asset(compte, { category: 'IMMOBILIER' });
-    const sinistre = (ref: string, date: string) => cand({ typeHint: 'CLAIM', sourceRoleHint: 'CLAIM_DOCUMENT', provider: 'Assur', targetHints: [cible(maison.id)], businessReferences: [{ kind: 'CLAIM', value: ref }], temporalHints: { realizedDate: date } });
-    await document(compte, maison.id, [sinistre('S-1', '2026-02-02')]);
-    const d2 = await document(compte, maison.id, [sinistre('S-2', '2026-02-20')]);
-    await passer(compte, { operationMatch: false });
-    const [s1] = await actives(compte);
-    const doc = await document(compte, maison.id, [cand({ provider: 'Couvreur', targetHints: [cible(maison.id)], businessReferences: [{ kind: 'CLAIM', value: 'S-1' }, { kind: 'CLAIM', value: 'S-2' }], financialHints: [fh('REALIZED_COST', 90000)] })]);
-    await passer(compte, { operationMatch: false });
-    expect(await ouvertes(compte, 'OPERATION-CLAIM-PARENT')).toHaveLength(1);
-    // Suppression du document d'un des sinistres : le passage revérifie les questions ouvertes.
-    await sql`UPDATE asset_files SET deleted_at = now() WHERE id = ${d2}`;
-    await passer(compte, { operationMatch: false });
-    expect(doc).toBeGreaterThan(0);
-    expect(await ouvertes(compte)).toEqual([]);
-    expect((await cartes(compte, 'OPERATION-CLAIM-PARENT'))[0]).toMatchObject({ resolution_reason: 'OBSOLETE' });
-    const toiture = (await actives(compte)).find((o) => o.type_code === 'INTERVENTION')!;
-    expect(toiture.parent_operation_id).toBe(s1.id);
+    expect((await operations(compte)).filter((o) => o.parent_operation_id !== null)).toEqual([]);
+    expect(await cartes(compte, 'OPERATION-CLAIM-PARENT')).toEqual([]);
+    expect(await cartes(compte, 'OPERATION-CLAIM-DETACH')).toEqual([]);
+    expect(await sql`SELECT 1 FROM business_operation_sources WHERE account_id = ${compte.id} AND locator->>'decision' = 'CLAIM_PARENT'`).toEqual([]);
   });
 
   it('C19-23 / B19 — montant contradictoire de même rôle : carte (c), valeur la plus ancienne retenue d’ici là ; choix appliqué sans double compte ; fermeture automatique si une preuve disparaît', async () => {

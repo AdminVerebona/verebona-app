@@ -69,7 +69,30 @@ export interface RepairResult {
   aiCalls?: number;
   /** Référence de retour arrière dans le journal du domaine (journal 0591, 0223, événements de carte…). */
   rollbackRef?: string | null;
+  /**
+   * Lot 83B : relance ACCEPTÉE par une file existante (ex. nouvelle
+   * extraction source par la file T1) dont le résultat n'est pas immédiat.
+   * Pas de recontrôle immédiat : l'objet reste « réparation en attente »
+   * (REPAIR_PENDING, journal PENDING) et n'est jamais relancé tant que le
+   * diagnostic est le même ; le contrôle suivant de l'objet clôt la
+   * tentative (REPAIRED si cohérent, INEFFECTIVE sinon) — C-Q7.
+   */
+  pending?: boolean;
 }
+
+/**
+ * Lot 83E (C-Q10) — périmètre du compte contrôlé :
+ *   ELIGIBLE                  compte actif et modifiable (cas général) ;
+ *   SUBSCRIPTION_STATE_READ   compte NON éligible du fait de son abonnement
+ *                             (essai échu, impayé, abonnement terminé,
+ *                             lecture seule, rétractation, sans abonnement) :
+ *                             seuls les contrôles déclarés
+ *                             `ineligibleAccounts: 'SUBSCRIPTION_STATE_READ'`
+ *                             s'y exécutent, en LECTURE de l'état d'abonnement
+ *                             uniquement — aucun traitement métier, aucune
+ *                             réparation (le moteur la neutralise), aucun IA.
+ */
+export type AccountScope = 'ELIGIBLE' | 'SUBSCRIPTION_STATE_READ';
 
 export interface CheckContext {
   sql: Sql;
@@ -79,6 +102,8 @@ export interface CheckContext {
   mode: CoherenceMode;
   /** Corrélation des écritures déléguées (`coherence:<campagne|ciblé>:<contrôle>`). */
   correlationId: string;
+  /** Lot 83E : périmètre du compte (absent : ELIGIBLE). */
+  accountScope?: AccountScope;
 }
 
 export interface CheckEvent {
@@ -123,6 +148,20 @@ export interface CoherenceCheck {
   criticality: 'LOW' | 'MEDIUM' | 'HIGH';
   /** Tests de non-régression associés (identifiants). */
   tests: readonly string[];
+  /**
+   * Lot 83E (C-Q10) : le contrôle peut CONSTATER l'état d'abonnement d'un
+   * compte non éligible du fait de son abonnement (lecture seule : état local
+   * et lecture Stripe) — jamais de traitement métier ni de réparation sur ce
+   * compte. Absent : le contrôle ne s'exécute que sur les comptes éligibles.
+   */
+  ineligibleAccounts?: 'SUBSCRIPTION_STATE_READ';
+  /**
+   * Lot 83E : les constats de ce contrôle sont DÉJÀ signalés par une
+   * supervision existante (identifiant de la tâche ou du mécanisme) — la
+   * Supervision de cohérence ne les signale pas une seconde fois comme
+   * « persistants » (les échecs de réparation et erreurs restent signalés).
+   */
+  externalSupervision?: string;
   /** Objets du compte, ordonnés par identifiant croissant, après `afterId`. */
   listObjects?(ctx: CheckContext, accountId: number, afterId: number, limit: number): Promise<number[]>;
   /** Objets du compte touchés par un événement (contrôle ciblé). */
@@ -136,7 +175,7 @@ export interface CoherenceCheck {
 /** Résultat consigné dans la preuve de contrôle d'un objet. */
 export type ControlResult =
   | 'CONSISTENT' | 'GONE' | 'REPAIRED' | 'WOULD_REPAIR' | 'AMBIGUOUS' | 'FINDING'
-  | 'REPAIR_FAILED' | 'REPAIR_INEFFECTIVE' | 'REPAIR_SUPPRESSED' | 'ERROR';
+  | 'REPAIR_FAILED' | 'REPAIR_INEFFECTIVE' | 'REPAIR_SUPPRESSED' | 'REPAIR_PENDING' | 'ERROR';
 
 /** Résultats « cohérents » (aucun constat ouvert). */
 export const RESOLVED_RESULTS: ReadonlySet<ControlResult> = new Set(['CONSISTENT', 'GONE', 'REPAIRED']);

@@ -11,18 +11,30 @@ import { describe, it, expect } from 'vitest';
 import * as React from 'react';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { findField, type ListItem } from '@/lib/assets/additional-infos';
+import { findField, type AdditionalInfoFieldDef, type ListItem } from '@/lib/assets/additional-infos';
 
 // Harnais en environnement `node` : le JSX compilé par Vitest (runtime classique) lit `React` global.
 (globalThis as { React?: typeof React }).React = React;
 const { AdditionalInfosListField } = await import('../AdditionalInfosListField');
 
-const damages = findField('claim', 'damages')!;
+// Lot 83D : la liste des dommages du formulaire Sinistre est retirée du dictionnaire ;
+// le composant GÉNÉRIQUE reste éprouvé sur une liste de test de même forme (références de photos / pièces).
+const damages: AdditionalInfoFieldDef = {
+  section: 'insurance', key: 'items', type: 'list', label: 'Dommages',
+  list: {
+    maxItems: 30, itemLabel: 'Dommage', addLabel: 'Ajouter un dommage',
+    columns: [
+      { key: 'zone', type: 'text', label: 'Zone ou pièce', required: true, max: 120 },
+      { key: 'element', type: 'text', label: 'Élément', max: 200, span: 2 },
+      { key: 'photoIds', type: 'photoRefs', label: 'Photos liées', max: 12 },
+      { key: 'documentIds', type: 'documentRefs', label: 'Pièces liées', max: 12 },
+    ],
+  },
+};
 const highlights = findField('commercial', 'highlights')!;
 const REFS = {
   documents: [{ id: 21, title: 'Devis peinture', typeLabel: 'Devis', date: '2026-08-19', format: 'PDF', sensitive: false, occupantData: false }],
   photos: [{ id: 5, fileId: 105, caption: 'Auréoles', date: '2026-08-03', isPrimary: false }],
-  claimEvents: [],
   highlightSuggestions: [],
 };
 

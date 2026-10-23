@@ -384,8 +384,8 @@ function documentPrincipal(op: Pick<AssistantOperationRead, 'documents'> & { typ
 
 /**
  * Source d'une Opération (pure) : son document principal (`doc_<id>`,
- * s'ouvre en tiroir), un sinistre (`claim:<bien>:<id>`, section Sinistres
- * du bien) ou, pour un achat saisi sur la fiche, le prix d'achat de la fiche.
+ * s'ouvre en tiroir), un sinistre (`claim:<bien>:<id>` — lot 83D : son
+ * événement d'Agenda principal, sinon la fiche du bien) ou, pour un achat saisi sur la fiche, le prix d'achat de la fiche.
  * `null` : rien d'ouvrable (la source synthétique du total la porte).
  */
 export function operationSource(
@@ -413,8 +413,9 @@ export function operationSource(
 const capitalize = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 
 /**
- * Source ouvrable d'une ligne de coût comptée (pure) : sinistre → section
- * Sinistres du bien ; sinon document principal ; sinon `null`.
+ * Source ouvrable d'une ligne de coût comptée (pure) : sinistre → son
+ * événement principal ou la fiche du bien (lot 83D) ; sinon document
+ * principal ; sinon `null`.
  */
 export function costLineSource(l: OperationCostLine, ctx: { assetId?: number | null; assetName?: string | null } = {}): RetrievedSource | null {
   const assetId = ctx.assetId && l.assetIds.includes(ctx.assetId) ? ctx.assetId : l.assetIds[0] ?? null;
@@ -533,10 +534,12 @@ export interface ClaimOverview {
   closed: boolean;
   /** Indemnité reçue (composantes INDEMNITY du sinistre). */
   indemnityCents: number | null;
-  /** Coût brut des réparations (sinistre + interventions enfants, Q4). */
+  /** Coût brut des réparations du sinistre (Q4 ; lot 83D : plus d'intervention enfant, AC39). */
   grossCents: number;
   netCents: number;
   documentIds: number[];
+  /** Lot 83D : événement d'Agenda principal du sinistre (ouverture de la source). */
+  agendaItemId: number | null;
 }
 
 /** Sinistres actifs d'un périmètre (bien(s), ou compte) — lecture lot 44. */
@@ -553,6 +556,7 @@ export async function readClaims(accountId: number, assetIds: readonly number[])
       indemnityCents: r?.indemnityCents ?? null,
       grossCents: r?.costs.grossCents ?? 0, netCents: r?.costs.netCents ?? 0,
       documentIds: o.documents.map((d) => d.fileId),
+      agendaItemId: r?.agendaItemId ?? null,
     };
   });
 }

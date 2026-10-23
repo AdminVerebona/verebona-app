@@ -4,7 +4,7 @@
  * données qui ne doivent JAMAIS être imprimées (estimation, occupant, pièces
  * sensibles, identifiants en clair) pour éprouver les mappeurs.
  */
-import { cleanCharacteristics, type ExportSource, type SourceDocument, type SourceEvent, type SourcePhoto } from '../../data/source';
+import { cleanCharacteristics, type ExportClaimFile, type ExportSource, type SourceDocument, type SourceEvent, type SourcePhoto } from '../../data/source';
 import type { DossierCode } from '@/services/exports/catalog';
 import type { DocKind } from '../../data/documents';
 
@@ -80,9 +80,32 @@ export function makeSource(family: 'IMMOBILIER' | 'VEHICULE' | 'OBJET', exportTy
     events: [],
     equipments: [],
     rooms: [],
-    additionalInfo: { commercial: {}, rental: {}, insurance: {}, claim: {}, updatedAt: null },
+    additionalInfo: { commercial: {}, rental: {}, insurance: {}, updatedAt: null },
     cil: null,
     preparedBy: 'Claire Martin',
     ...over,
   };
+}
+
+/**
+ * Lot 83D : contenu d'un sinistre (Opération CLAIM consolidée) pour le dossier
+ * Assurance-sinistre — tout vide par défaut (aucune donnée inventée).
+ */
+export function claimFileOf(over: Partial<ExportClaimFile> = {}): ExportClaimFile {
+  return {
+    operationId: 50, claimType: null, occurredOn: null, declaredOn: null, insurerClaimRef: null, policyReference: null, status: null,
+    statusDetail: null, circumstances: null, consequences: null, measures: null, exchangesSummary: null, estimatedDamageCents: null,
+    compensationCents: null, damages: [], documentIds: [], agendaKeys: [], agenda: [], principalKey: null, historyEventKey: null,
+    rooms: [], equipments: [],
+    ...over,
+  };
+}
+
+/** Source du dossier Assurance-sinistre d'un sinistre donné (sélection comprise). */
+export function claimSourceOf(file: ExportClaimFile | null, over: Partial<ExportSource> = {}): ExportSource {
+  return makeSource('IMMOBILIER', 'ASSURANCE_SINISTRE', {
+    claim: file ? { selectedOperationId: file.operationId, origin: 'operation', options: [{ id: file.operationId, label: 'Sinistre', date: file.occurredOn }] } : { selectedOperationId: null, origin: 'none', options: [] },
+    claimFile: file,
+    ...over,
+  });
 }

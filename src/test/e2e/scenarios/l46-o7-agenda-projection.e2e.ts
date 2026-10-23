@@ -10,7 +10,6 @@
  * appel IA.
  */
 import { afterEach, beforeAll, expect, it, vi } from 'vitest';
-import { NextRequest } from 'next/server';
 import { scenario } from '../scenario';
 import type { AccountRow } from '../factories';
 
@@ -157,9 +156,12 @@ scenario('L46-O7', 'T4 / Agenda : projection des Opérations (C16), rapprochemen
     expect(parOp.get(achat)).toMatchObject({ title: 'Achat', start_date: '2021-03-01', event_nature: 'HISTORICAL', business_type: 'purchase' });
     expect(parOp.get(vente)).toMatchObject({ title: 'Vente', start_date: '2026-06-30', event_nature: 'HISTORICAL', business_type: 'sale' });
     expect(parOp.get(contrat)).toMatchObject({ title: 'Fin de contrat — Assur+', start_date: plus(90), event_nature: 'DEADLINE', business_type: 'contract' });
-    // F-140 : sans date, rien d'inventé ; F-144 : contrat sans échéance, aucune copie ; financement : aucune projection.
-    for (const absent of [sansDate, contratSans, financement]) expect(parOp.has(absent)).toBe(false);
-    expect(parOp.size).toBe(5);
+    // F-140 : sans date, rien d'inventé — lot 83A (CDC v5 §11.4, AC17), test corrigé : l'intervention réalisée
+    // sans date établie est représentée SANS date (ni date inventée, ni « Sans échéance ») ;
+    // F-144 : contrat sans échéance, aucune copie ; financement : aucune projection.
+    expect(parOp.get(sansDate)).toMatchObject({ start_date: null, event_nature: 'HISTORICAL', projection_origin: 'OPERATION' });
+    for (const absent of [contratSans, financement]) expect(parOp.has(absent)).toBe(false);
+    expect(parOp.size).toBe(6);
     // D-14 : seuls les événements à venir sont notifiés (l'échéance du contrat), jamais un historique.
     expect(notifs.created).toEqual([parOp.get(contrat)!.id]);
     // D-15 : aucune carte « statut du bien » proposée par la vente projetée.
@@ -227,38 +229,22 @@ scenario('L46-O7', 'T4 / Agenda : projection des Opérations (C16), rapprochemen
     expect(await items(compte)).toEqual([expect.objectContaining({ id: t4.id, op: claim, projection_origin: null, title: 'Sinistre — dégât des eaux' })]);
   });
 
-  it('O7-E07 / C16-12 — sinistre du formulaire (lot 44) : événement choisi lié → aucun élément projeté ; ancre historique → aucun élément ; le tiroir mène au sinistre', async () => {
+  it('O7-E07 / C16-12 — sinistre dont l’élément principal est désigné (lot 83D : plus de formulaire ni de lien « Voir le sinistre ») : aucun élément projeté ; le tiroir EST le sinistre', async () => {
     const compte = await make.account({ plan: 'standard' });
     const maison = await make.asset(compte, { category: 'IMMOBILIER' });
-    session.currentAccountId = compte.id;
-    session.userId = compte.ownerUserId;
     const evt = await make.agendaItem(compte, { title: 'Fuite cuisine', startDate: '2026-03-12', assetIds: [maison.id] });
-    const route = await import('@/app/api/assets/[id]/claims/route');
-    const creer = async (body: Json) => {
-      const r = await route.POST(new NextRequest(`http://x/api/assets/${maison.id}/claims`, { method: 'POST', body: JSON.stringify(body), headers: { 'content-type': 'application/json' } }),
-        { params: Promise.resolve({ id: String(maison.id) }) });
-      return { status: r.status, body: await r.json() as Json };
-    };
-    const a = await creer({ claim: { claimType: 'DEGAT_DES_EAUX', occurredOn: '2026-03-12', claimEventKey: `agenda:${evt.id}` } });
-    expect(a.status).toBe(201);
-    const claimId = a.body.id as number;
+    const claimId = await creerOp(compte, { type: 'CLAIM', realized: '2026-03-12', assetIds: [maison.id], sourceKind: 'ASSET_DATA', label: 'Dégât des eaux' });
+    const g = await import('@/services/business-operations/grouping/service');
+    await g.withGroupingWrite(compte.id, (ctx) => g.designatePrincipal(ctx, { operationId: claimId, itemId: evt.id, origin: 'USER', reasonCode: 'E2E_O7' }), { actorUserId: compte.ownerUserId });
     await projeter(compte, [claimId]);
     expect(await items(compte)).toEqual([expect.objectContaining({ id: evt.id, op: claimId, projection_origin: null })]);
 
-    // Tiroir (desktop et mobile) : lien vers le sinistre, jamais le mot « Opération ».
+    // Tiroir (desktop et mobile) : l'élément principal porte le sinistre ; plus de renvoi vers un bloc de la fiche (V-Q1).
     const { getAgendaItemById } = await import('@/services/agenda/AgendaQueryService');
     const full = await getAgendaItemById(evt.id, compte.id);
-    expect(full!.claimSource).toEqual({ assetId: maison.id, claimId });
-    expect(JSON.stringify({ title: full!.title, claimSource: full!.claimSource })).not.toMatch(/op[ée]ration/i);
-
-    // Ancre de l'historique (events) : équivalent existant, aucun élément d'agenda créé.
-    const [hist] = await sql<{ id: number }[]>`
-      INSERT INTO events (account_id, user_id, asset_id, categorie, titre, date_evenement) VALUES (${compte.id}, ${compte.ownerUserId}, ${maison.id}, 'sinistre', 'Vol', '2026-05-02') RETURNING id`;
-    const b = await creer({ claim: { claimType: 'VOL', occurredOn: '2026-05-02', claimEventKey: `event:${hist.id}` } });
-    expect(b.status).toBe(201);
-    const n = (await items(compte)).length;
-    await projeter(compte, [b.body.id as number]);
-    expect((await items(compte)).length).toBe(n);
+    expect(full).not.toBeNull();
+    expect(full).not.toHaveProperty('claimSource');
+    expect(JSON.stringify(full)).not.toMatch(/highlight=claims/);
   });
 
   it('O7-E08 / C16.1 — garde T4 : un document analysé APRÈS la projection ne crée pas de second événement', async () => {
@@ -296,8 +282,10 @@ scenario('L46-O7', 'T4 / Agenda : projection des Opérations (C16), rapprochemen
     expect(await projeter(compte, [op])).toMatchObject({ suppressed: 1, created: 0, changes: 0 });
     expect(await projeter(compte)).toMatchObject({ created: 0, linked: 0 });
     expect(await items(compte)).toEqual([]);
-    // Balayage horaire : le compte n'est pas repassé pour cette Opération.
-    expect(await (await projection()).listAccountsNeedingProjection(10_000)).not.toContain(compte.id);
+    // Lot 83E : le balayage horaire est retiré — le contrôle de cohérence ne constate aucun écart (suppression respectée).
+    const { getCheck } = await import('@/services/coherence/registry');
+    const ctl = getCheck('COH-AGENDA-OPERATION-PROJECTION')!;
+    expect((await ctl.inspect!({ sql, now: new Date(), today: AUJOURDHUI, mode: 'DRY_RUN', correlationId: 'e2e-l46' }, compte.id, [op])).get(op)).toMatchObject({ verdict: 'CONSISTENT' });
     // Un événement saisi ensuite par l'utilisateur n'est pas lié d'office non plus.
     const { createAgendaItem } = await agendaWrite();
     await createAgendaItem({ title: 'Ramonage', startDate: '2026-01-21', assetIds: [maison.id], homeCategory: 'information' }, compte.id, compte.ownerUserId);

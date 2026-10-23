@@ -6,7 +6,8 @@
  *
  * Aucune carte n'est un écran de validation des Opérations : seules les
  * ambiguïtés à impact y arrivent (deux réalités plausibles pour un document,
- * parent Sinistre ambigu, montant contradictoire de même rôle).
+ * montant contradictoire de même rôle, devise, bien retiré d'un sinistre).
+ * Lot 83D (CDC v5 §18.4, AC39) : plus de parent Sinistre ni de dissociation.
  */
 
 /** (a) Ce document concerne-t-il la même réalité que … ? */
@@ -21,13 +22,6 @@ export interface MatchCardNeed {
   typeHint: string | null;
 }
 
-/** (b) Cette intervention fait-elle suite à l'un de ces sinistres ? */
-export interface ParentCardNeed {
-  operationId: number;
-  fileId: number;
-  claimIds: number[];
-}
-
 /** (c) Deux documents indiquent des montants différents pour la même dépense. */
 export interface AmountCardNeed {
   operationId: number;
@@ -36,17 +30,6 @@ export interface AmountCardNeed {
   kind: string;
   options: Array<{ amountMinor: number; currency: string; fileIds: number[] }>;
   retained: { amountMinor: number; currency: string };
-}
-
-/**
- * (d) Lot 53 (retour PO D11) : intervention rattachée à un sinistre par la
- * facture d'une action, facture retirée depuis, sans autre justification —
- * « Cette intervention fait-elle toujours suite au sinistre … ? ».
- */
-export interface DetachCardNeed {
-  operationId: number;
-  claimId: number;
-  fileId: number;
 }
 
 /**
@@ -75,18 +58,15 @@ export interface OperationCardNeeds {
   match: MatchCardNeed[];
   /** Documents dont les candidats ont été évalués : leurs cartes (a) non reconduites se ferment. */
   reviewedFiles: number[];
-  parent: ParentCardNeed[];
   amount: AmountCardNeed[];
-  /** Lot 53 (D11). */
-  detach: DetachCardNeed[];
   /** Lot 53 (Q17). */
   exclusion: ExclusionCardNeed[];
   /** Lot 53D (D2). */
   currency: CurrencyCardNeed[];
-  /** Opérations recalculées : leurs cartes (b) à (e) et devise non reconduites se ferment. */
+  /** Opérations recalculées : leurs cartes (montant, exclusion, devise) non reconduites se ferment. */
   reviewedOperations: number[];
 }
 
 export function emptyCardNeeds(): OperationCardNeeds {
-  return { match: [], reviewedFiles: [], parent: [], amount: [], detach: [], exclusion: [], currency: [], reviewedOperations: [] };
+  return { match: [], reviewedFiles: [], amount: [], exclusion: [], currency: [], reviewedOperations: [] };
 }

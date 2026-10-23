@@ -46,7 +46,7 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Loader2, RefreshCw, AlertTriangle, ChevronLeft, ChevronRight, X } from 'lucide-react';
+import { Loader2, RefreshCw, ChevronLeft, ChevronRight, X } from 'lucide-react';
 import { toast } from 'sonner';
 import { EcranEnErreur } from '@/components/admin/EcranEnErreur';
 import { apiClient } from '@/lib/api-client';
@@ -61,6 +61,8 @@ import { RuntimeContractPanel, type ContractCallView } from './_components/Runti
 import { T1CompletenessPanel } from './_components/T1CompletenessPanel';
 import { ExecutionReportsTab, LinkedExecutionReports } from './_components/ExecutionReportPanel';
 import { JobAttemptsPanel, type JobExecutionViewDto, type UserViewDto } from './_components/JobAttemptsPanel';
+import { BusinessExecutionsPanel, BusinessExecutionLine } from './_components/BusinessExecutionsPanel';
+import type { BusinessExecutionDto } from '@/services/ai/business-execution/dto';
 import {
   displayErrorCode, providerFailureCategory, PROVIDER_FAILURE_CATEGORY_LABELS,
 } from '@/services/ai/gateway/diagnostics/taxonomy';
@@ -160,6 +162,8 @@ interface Detail {
   /** Lot 34C : tentatives du job (chacune avec sa cascade), retry, vue utilisateur. */
   jobExecution?: JobExecutionViewDto | null;
   userView?: UserViewDto | null;
+  /** Lot 83C : exécution(s) métier de l'appel (issue finale ≠ statut de l'appel, SEM-05). */
+  businessExecutions?: BusinessExecutionDto[] | null;
 }
 
 interface T2Source {
@@ -319,27 +323,33 @@ function AiExecutionsScreen() {
       {/* §10.4 : trous de la base d'aide, remontés depuis l'assistant. */}
       {tab === 't2' && <UnansweredHelpQuestions />}
 
-      {tab === 'calls' && errors.length > 0 && (
-        <div className="rounded-xl border border-[color:var(--border-warning)] bg-[color:var(--bg-warning)] p-4 space-y-2">
-          <h2 className="vb-app-section flex items-center gap-2">
-            <AlertTriangle className="w-4 h-4 text-[color:var(--text-warning-soft)]" />
-            Échecs des sept derniers jours
-          </h2>
-          <div className="space-y-1">
-            {errors.slice(0, 6).map((e, i) => (
-              <button key={i} type="button" className="block text-left text-sm text-[color:var(--text-secondary)] hover:underline"
-                onClick={() => setFilters({ ...filters, treatment: e.treatment ?? '', model: e.model ?? '', errorsOnly: true })}>
-                <span className="font-medium text-[color:var(--text-primary)]">{e.count}×</span>
-                {' '}{e.treatment ?? 'traitement inconnu'}
-                {e.errorCode && ` · ${displayErrorCode(e.errorCode, e.failureSubtype, e.failureSubtype)}${e.failureSubtype && e.failureSubtype !== e.errorCode ? ` / ${e.failureSubtype}` : ''}`}
-                {e.model && ` · ${e.model}`}
-                <span className="text-[color:var(--text-muted)]">
-                  {' '}— dernier le {new Date(e.lastSeen).toLocaleDateString('fr-FR')}
-                </span>
-              </button>
-            ))}
-          </div>
-        </div>
+      {/* Lot 83C (BO-04, SEM-05) : exécutions MÉTIER comptées une fois selon leur
+          issue finale ; les appels en échec ne sont plus présentés comme des
+          échecs — ils restent dans le volet technique, replié. */}
+      {tab === 'calls' && (
+        <BusinessExecutionsPanel treatment={filters.treatment || undefined} accountId={filters.accountId || undefined} onOpenCall={openDetail}>
+          {errors.length > 0 && (
+            <details className="text-sm">
+              <summary className="cursor-pointer text-[color:var(--text-muted)]">
+                Incidents d&apos;appels modèle — vue technique (ce ne sont pas des exécutions)
+              </summary>
+              <div className="mt-2 space-y-1">
+                {errors.slice(0, 6).map((e, i) => (
+                  <button key={i} type="button" className="block text-left text-sm text-[color:var(--text-secondary)] hover:underline"
+                    onClick={() => setFilters({ ...filters, treatment: e.treatment ?? '', model: e.model ?? '', errorsOnly: true })}>
+                    <span className="font-medium text-[color:var(--text-primary)]">{e.count} appel{e.count > 1 ? 's' : ''}</span>
+                    {' '}{e.treatment ?? 'appel technique (sans traitement)'}
+                    {e.errorCode && ` · ${displayErrorCode(e.errorCode, e.failureSubtype, e.failureSubtype)}${e.failureSubtype && e.failureSubtype !== e.errorCode ? ` / ${e.failureSubtype}` : ''}`}
+                    {e.model && ` · ${e.model}`}
+                    <span className="text-[color:var(--text-muted)]">
+                      {' '}— dernier le {new Date(e.lastSeen).toLocaleDateString('fr-FR')}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            </details>
+          )}
+        </BusinessExecutionsPanel>
       )}
 
       {/* Lot 34F : anomalies fonctionnelles de complétude T1 (masqué sans anomalie). */}
@@ -566,6 +576,21 @@ function ExecutionDetailPanel({ detail, onClose }: { detail: Detail; onClose: ()
           {detail.call.promptVersion && ` · prompt ${detail.call.promptVersion}`}
           {detail.call.appVersion && ` · code ${detail.call.appVersion.slice(0, 8)}`}
         </p>
+
+        {/* Lot 83C (SEM-05, OP-04) : issue MÉTIER de l'exécution servie par cet appel —
+            un appel en échec suivi d'un repli réussi reste une réussite métier. */}
+        <section className="space-y-1.5" data-testid="execution-business">
+          <h3 className="vb-app-subsection">Exécution métier</h3>
+          {detail.businessExecutions && detail.businessExecutions.length > 0
+            ? detail.businessExecutions.map((x) => <BusinessExecutionLine key={x.id} x={x} />)
+            : (
+              <p className="text-xs text-[color:var(--text-muted)]">
+                {detail.call.treatment
+                  ? 'Non déterminable : appel antérieur au lot 83 ou exécution sans état natif.'
+                  : 'Appel technique (sonde, qualification, test) : aucune exécution métier.'}
+              </p>
+            )}
+        </section>
 
         {/* CDC 15 CFG-02, CFG-05, DP-05, OBS-CFG : ce qui a réellement été appliqué. */}
         <section className="space-y-1" data-testid="execution-applied-config">

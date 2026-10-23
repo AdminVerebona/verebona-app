@@ -68,7 +68,7 @@ describe('EQP-31 — facture de l’équipement : comptée une seule fois', () =
 describe('EQP-32 — composante consolidée ciblant l’équipement', () => {
   it('même montant : ligne fiche « déjà comptée par ailleurs »', () => {
     const o: TcoOperation = {
-      id: 5, typeCode: 'ACQUISITION', status: 'REALIZED', parentOperationId: null, realizedDate: '2025-03-10', startDate: null, plannedDate: null,
+      id: 5, typeCode: 'ACQUISITION', status: 'REALIZED', realizedDate: '2025-03-10', startDate: null, plannedDate: null,
       assetIds: [MAISON], label: 'Achat — Robot', documents: [], sourceKinds: ['DOCUMENT'],
       components: [{ id: 9, operationId: 5, kind: 'REALIZED_COST', amountMinor: 49_900, currency: 'EUR', amountEurCents: null, economicDate: '2025-03-10',
         periodStart: null, periodEnd: null, targetAssetId: null, targetEquipmentId: ROBOT }],

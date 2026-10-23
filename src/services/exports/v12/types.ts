@@ -267,12 +267,15 @@ export interface SinistreData extends CaseBase {
     estimatedDamage?: Nullable<string>;
     /** Lot 44 : indemnité reçue (composante INDEMNITY du sinistre), libellé monétaire. */
     compensation?: Nullable<string>;
+    /** Lot 83D (CDC v5 §16) : Pièces et équipements concernés (« Salle de bain, Cuisine »). */
+    rooms?: Nullable<string>;
+    equipments?: Nullable<string>;
   };
+  /** Lot 83D : Pièces et équipements de l'Opération CLAIM (noms). */
+  scope?: { rooms: string[]; equipments: string[] } | null;
   timeline?: Array<Selectable & { date?: Nullable<string>; dateLabel?: Nullable<string>; tone?: 'past' | 'key' | 'open' | string | null; title: string; text?: Nullable<string> }>;
   /** `docIds` : pièces liées (identifiants `docRef`), renvoyées vers leur annexe. */
   damages?: Array<Selectable & { zone?: Nullable<string>; element?: Nullable<string>; finding?: Nullable<string>; photoRefs?: Nullable<string>; docIds?: string[] }>;
-  /** `docId` : facture liée, renvoyée vers son annexe. */
-  actions?: Array<Selectable & { date?: Nullable<string>; whenLabel?: Nullable<string>; title: string; text?: Nullable<string>; docId?: Nullable<string> }>;
   exchanges?: Array<Selectable & { date?: Nullable<string>; title: string; channel?: Nullable<string>; docId?: Nullable<string>; linkedToClaim?: boolean }>;
 }
 

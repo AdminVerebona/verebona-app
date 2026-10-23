@@ -43,6 +43,8 @@ import {
   agendaItems,
   assetFiles,
   assets,
+  equipments,
+  rooms,
   supplierReviewItems,
   toProcessActionEvents,
   toProcessActions,
@@ -126,7 +128,16 @@ export interface AgendaDateFacts {
    * explicite de l'événement, jamais posée par un traitement).
    */
   noDeadline?: boolean;
+  /**
+   * Lot 83A (CDC v5 §11.5, §13.6, §16) : l'élément est le PRINCIPAL d'une
+   * Opération active — l'événement global : sa date est nécessaire (Timeline
+   * regroupée, dossier Assurance/Sinistre), même s'il est informatif.
+   */
+  operationPrincipal?: boolean;
 }
+
+/** Lot 83A : justification (tracée) du besoin de date d'un événement principal. */
+export const OPERATION_PRINCIPAL_DATE_REASON = 'OPERATION_PRINCIPAL_DATE';
 
 /** Délai laissé à la qualification T4 d'un événement avant toute question (jours). */
 export const AGENDA_QUALIFICATION_GRACE_DAYS = 7;
@@ -153,7 +164,10 @@ const ORIGINES_UTILISATEUR = ['manual', 'legacy_event_migration'];
  *   · lot 77A — tâche déclarée « Sans échéance » par l'utilisateur : la date
  *     est JUSTIFIÉE non nécessaire (NO_DEADLINE_BY_USER) — prime sur la
  *     catégorie et sur la décision 72C ; aucune date n'est écrite depuis la
- *     source (choix de l'utilisateur respecté).
+ *     source (choix de l'utilisateur respecté) ;
+ *   · lot 83A — événement PRINCIPAL d'une Opération active (événement global,
+ *     CDC v5 §11.5) : la date est nécessaire (OPERATION_PRINCIPAL_DATE), même
+ *     pour un événement informatif ; « Sans échéance » prime toujours.
  * La décision « Non applicable » de l'utilisateur est protégée à l'écriture
  * (empreinte de `upsertAction`) : critère sans objet ici.
  */
@@ -162,7 +176,7 @@ export function agendaDateAdmissibility(f: AgendaDateFacts, now: Date = new Date
   const ecrivable = !!f.sourceDate && f.isAutomatic && !f.isAutomaticModified;
   const saisiParUtilisateur = !f.isAutomatic && ORIGINES_UTILISATEUR.includes(f.originType);
   const sansEcheance = f.noDeadline === true;
-  const necessaire = sansEcheance ? false
+  const necessaire = sansEcheance ? false : f.operationPrincipal ? true
     : f.homeCategory === 'information' ? false : f.homeCategory === 'action' ? true : saisiParUtilisateur ? true : null;
   return decideAdmissibility({
     ruleCode: 'DATA-AGENDA-DATE',
@@ -183,7 +197,8 @@ export function agendaDateAdmissibility(f: AgendaDateFacts, now: Date = new Date
     },
     justifications: {
       realProblem: 'OPEN_EVENT_WITHOUT_DATE',
-      neededForUse: f.homeCategory === 'action' ? 'EVENT_REQUIRES_DATE' : saisiParUtilisateur ? 'USER_CREATED_EVENT_PO_72C' : undefined,
+      neededForUse: f.operationPrincipal ? OPERATION_PRINCIPAL_DATE_REASON
+        : f.homeCategory === 'action' ? 'EVENT_REQUIRES_DATE' : saisiParUtilisateur ? 'USER_CREATED_EVENT_PO_72C' : undefined,
       autoResolvable: 'NO_DATE_AT_SOURCE',
       userActionNeeded: 'USER_CAN_DATE_EVENT',
       timely: f.requiresQualification ? 'QUALIFICATION_GRACE_ELAPSED' : 'NO_QUALIFICATION_PENDING',
@@ -257,6 +272,34 @@ async function sourceDatesOf(accountId: number, items: Array<{ id: number; origi
 }
 
 /**
+ * Lot 83A (CDC v5 §11.5, §11.8) — éléments sans date qui sont le PRINCIPAL
+ * d'une Opération active, et dates de réalisation CONTRADICTOIRES que T3 a
+ * tracées pour cette Opération (provenance 78A, contradictions ouvertes ;
+ * ≥ 2 dates valides). Lecture seule.
+ */
+async function principalDateContexts(accountId: number, itemIds: number[]): Promise<Map<number, { contested: string[] }>> {
+  const out = new Map<number, { contested: string[] }>();
+  if (!itemIds.length) return out;
+  const rows = (await pgClient.unsafe(
+    `SELECT i.id,
+            COALESCE((SELECT array_agg(DISTINCT v->>'value' ORDER BY v->>'value') FROM jsonb_array_elements(
+                        CASE WHEN jsonb_typeof(to_jsonb(o)->'attribute_provenance'->'conflicts') = 'array' THEN to_jsonb(o)->'attribute_provenance'->'conflicts' ELSE '[]'::jsonb END) c,
+                      jsonb_array_elements(CASE WHEN jsonb_typeof(c->'values') = 'array' THEN c->'values' ELSE '[]'::jsonb END) v
+                      WHERE c->>'field' = 'realizedDate' AND v->>'value' ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'), '{}') AS contested
+       FROM agenda_items i
+       JOIN business_operations o ON o.id = i.business_operation_id AND o.account_id = i.account_id
+            AND o.invalidated_at IS NULL AND o.merged_into_operation_id IS NULL
+      WHERE i.account_id = $1 AND i.id = ANY($2::int[]) AND i.operation_role = 'PRINCIPAL'`,
+    [accountId, itemIds] as never[],
+  )) as unknown as Array<{ id: number; contested: string[] | null }>;
+  for (const r of rows) out.set(Number(r.id), { contested: (r.contested ?? []).map(String) });
+  return out;
+}
+
+/** Libellé d'une date proposée (JJ/MM/AAAA). */
+const dateLabel = (iso: string): string => `${iso.slice(8, 10)}/${iso.slice(5, 7)}/${iso.slice(0, 4)}`;
+
+/**
  * Événements d'agenda sans date — règle DATA-AGENDA-DATE.
  *
  * Les événements marqués « réalisé » ou « annulé » sont écartés : réclamer la
@@ -290,12 +333,16 @@ export async function produceAgendaActions(accountId: number, opts: ProducerRunO
   const trigger = opts.trigger ?? 'SWEEP';
   const actives = await activeTargets(accountId, 'AGENDA_ITEM', 'date');
   const sources = await sourceDatesOf(accountId, sansDate);
+  // Lot 83A : principal d'une Opération (événement global) et dates contradictoires de T3.
+  const principaux = await principalDateContexts(accountId, sansDate.map((i) => i.id));
 
   for (const item of sansDate) {
-    const decision = agendaDateAdmissibility({ ...item, sourceDate: sources.get(item.id) ?? null });
+    const principal = principaux.get(item.id);
+    const decision = agendaDateAdmissibility({ ...item, sourceDate: sources.get(item.id) ?? null, operationPrincipal: !!principal });
     const evidence = { homeCategory: item.homeCategory, originType: item.originType, automatic: item.isAutomatic, modifiedByUser: item.isAutomaticModified,
       requiresQualification: item.requiresQualification, sourceDate: sources.get(item.id) ?? null, sourceFileId: item.originRefType === 'asset_file' ? item.originRefId : null,
-      noDeadline: item.noDeadline === true };
+      noDeadline: item.noDeadline === true,
+      ...(principal ? { operationPrincipal: true, contestedDates: principal.contested } : {}) };
     const trace = async (effect: FamilyDecisionRecord['effect'], actionIds: FamilyDecisionRecord['actionIds'] = null, d = decision, error: string | null = null) =>
       traceFailure(report, accountId, 'AGENDA_ITEM', item.id, 'DATA-AGENDA-DATE', await recordFamilyDecision({ accountId, targetType: 'AGENDA_ITEM', targetId: item.id, ruleCode: 'DATA-AGENDA-DATE', dataKey: 'date', trigger,
         runRef: opts.runRef, decision: d, evidence, effect, actionIds, error }));
@@ -341,7 +388,16 @@ export async function produceAgendaActions(accountId: number, opts: ProducerRunO
     }
     // Lot 77A : « Sans échéance » retirée — la carte fermée pour ce motif est rouverte (même carte).
     const rouverte = actives.has(item.id) ? null : await reopenNoDeadlineCard(accountId, item.id);
-    const result = await upsertAction({
+    // Lot 83A (CDC v5 §11.8, AC20) : dates contradictoires établies par T3 pour l'événement principal —
+    // la MÊME carte devient un arbitrage entre ces dates (jamais une date choisie à la place de l'utilisateur).
+    const arbitrage = principal && principal.contested.length >= 2
+      ? await upsertAction({
+        accountId, targetType: 'AGENDA_ITEM', targetId: item.id, fieldKey: 'date', actionKind: 'ARBITRATE', ruleCode: 'DATA-AGENDA-DATE',
+        question: `Les documents donnent plusieurs dates pour « ${item.title} » : laquelle est la bonne ?`,
+        proposals: principal.contested.map((d) => ({ value: d, label: dateLabel(d), confidence: 0.5 })),
+      })
+      : null;
+    const result = arbitrage && arbitrage.status !== 'SKIPPED' ? arbitrage : await upsertAction({
       accountId,
       targetType: 'AGENDA_ITEM',
       targetId: item.id,
@@ -771,7 +827,9 @@ function reportError(famille: string, accountId: number, errors: string[], detai
 /**
  * Actions à fermer parce que leur cible a disparu (§7.3, TARGET_DELETED) :
  * échéance supprimée, document supprimé ou regroupé dans un autre, bien
- * supprimé.
+ * supprimé ; lot 83E : équipement ou pièce supprimés (suppression physique).
+ * Service unique de fermeture : balayage horaire `to-process-scan` et
+ * contrôle de cohérence COH-TODO-ORPHAN-CARDS (même service, idempotent).
  */
 export async function closeActionsForDeletedTargets(
   accountId: number,
@@ -786,7 +844,7 @@ export async function closeActionsForDeletedTargets(
     .where(
       and(
         eq(toProcessActions.accountId, accountId),
-        inArray(toProcessActions.targetType, ['AGENDA_ITEM', 'DOCUMENT', 'ASSET']),
+        inArray(toProcessActions.targetType, ['AGENDA_ITEM', 'DOCUMENT', 'ASSET', 'EQUIPMENT', 'ROOM']),
         isNull(toProcessActions.resolvedAt),
       ),
     );
@@ -820,6 +878,20 @@ export async function closeActionsForDeletedTargets(
       .from(assets)
       .where(and(inArray(assets.id, assetIds), eq(assets.accountId, accountId), isNull(assets.deletedAt)));
     for (const b of biens) vivants.add(`ASSET:${b.id}`);
+  }
+
+  // Lot 83E : équipements et pièces (suppression physique — aucune date de suppression).
+  const equipementIds = ids('EQUIPMENT');
+  if (equipementIds.length) {
+    for (const e of await db.select({ id: equipments.id }).from(equipments).where(inArray(equipments.id, equipementIds))) {
+      vivants.add(`EQUIPMENT:${e.id}`);
+    }
+  }
+  const pieceIds = ids('ROOM');
+  if (pieceIds.length) {
+    for (const r of await db.select({ id: rooms.id }).from(rooms).where(and(inArray(rooms.id, pieceIds), eq(rooms.accountId, accountId)))) {
+      vivants.add(`ROOM:${r.id}`);
+    }
   }
 
   const disparus = actions.filter((a) => !vivants.has(`${a.targetType}:${a.targetId}`));

@@ -443,7 +443,7 @@ export const INDICATOR_KEYS = [
   'ambiguousSources',
   'componentsWithoutActiveSource',
   'activeWithoutActiveSource',
-  'crossAccountOrParentCycles',
+  'crossAccountLinks',
   't2EconomicAnswers',
 ] as const;
 export type IndicatorKey = (typeof INDICATOR_KEYS)[number];
@@ -471,7 +471,8 @@ export const INDICATORS: readonly IndicatorDefinition[] = [
   { key: 'ambiguousSources', label: 'Sources en ambiguïté / À traiter', reading: 'Charge d’arbitrage.', scope: 'stock', hard: false },
   { key: 'componentsWithoutActiveSource', label: 'Composantes sans source active', reading: 'Anomalie dure : doit être 0 pour composante active.', scope: 'stock', hard: true },
   { key: 'activeWithoutActiveSource', label: 'Opérations actives sans source active', reading: 'Anomalie dure : doit être 0.', scope: 'stock', hard: true },
-  { key: 'crossAccountOrParentCycles', label: 'Liens cross-account / cycles parent', reading: 'Anomalie dure : doit être 0.', scope: 'stock', hard: true },
+  // Lot 83D (CDC v5 E16, AC39) : plus de hiérarchie parent / enfant — seuls les liens cross-account restent.
+  { key: 'crossAccountLinks', label: 'Liens cross-account', reading: 'Anomalie dure : doit être 0.', scope: 'stock', hard: true },
   { key: 't2EconomicAnswers', label: 'T2 réponses économiques Operation-only / mixtes / fallback-only', reading: 'Mesurer adoption sans imposer l’exclusivité.', scope: 'period', hard: false },
 ];
 
@@ -486,8 +487,6 @@ export const HARD_ANOMALY_CODES = [
   'ACTIVE_OPERATION_WITHOUT_SOURCE',
   'ACTIVE_COMPONENT_WITHOUT_SOURCE',
   'CROSS_ACCOUNT_LINK',
-  'PARENT_CYCLE',
-  'PARENT_DEPTH_EXCEEDED',
   'NEGATIVE_COMPONENT',
   'OTHER_AS_FALLBACK',
   // Lot 54D (§4.5, E01) : contrôles financiers et reprises T3, tracés (jamais corrigés depuis le BO).
@@ -504,8 +503,6 @@ export const HARD_ANOMALY_LABELS: Readonly<Record<HardAnomalyCode, string>> = {
   ACTIVE_OPERATION_WITHOUT_SOURCE: 'Opération active sans source active',
   ACTIVE_COMPONENT_WITHOUT_SOURCE: 'Composante financière active sans source active',
   CROSS_ACCOUNT_LINK: 'Lien vers une donnée d’un autre compte',
-  PARENT_CYCLE: 'Cycle parent / enfant',
-  PARENT_DEPTH_EXCEEDED: 'Hiérarchie de plus de 3 niveaux',
   NEGATIVE_COMPONENT: 'Composante de montant négatif',
   OTHER_AS_FALLBACK: 'Type OTHER sans qualification explicite (repli)',
   FIN_INDEMNITY_DUPLICATED: 'Indemnité portée deux fois sur un même sinistre (déduction multiple possible)',
@@ -519,11 +516,9 @@ export const HARD_ANOMALY_LABELS: Readonly<Record<HardAnomalyCode, string>> = {
 export const HARD_ANOMALY_INDICATOR: Readonly<Record<HardAnomalyCode, IndicatorKey | null>> = {
   ACTIVE_OPERATION_WITHOUT_SOURCE: 'activeWithoutActiveSource',
   ACTIVE_COMPONENT_WITHOUT_SOURCE: 'componentsWithoutActiveSource',
-  CROSS_ACCOUNT_LINK: 'crossAccountOrParentCycles',
-  PARENT_CYCLE: 'crossAccountOrParentCycles',
-  // Contrôles complémentaires (C8.1 PARENT-002, C12, C7.7) : affichés avec
-  // les anomalies dures, hors des 13 indicateurs.
-  PARENT_DEPTH_EXCEEDED: null,
+  CROSS_ACCOUNT_LINK: 'crossAccountLinks',
+  // Contrôles complémentaires (C12, C7.7) : affichés avec les anomalies
+  // dures, hors des 13 indicateurs.
   NEGATIVE_COMPONENT: null,
   OTHER_AS_FALLBACK: null,
   FIN_INDEMNITY_DUPLICATED: null,

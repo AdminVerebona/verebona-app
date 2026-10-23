@@ -120,7 +120,8 @@ export function checkMatrix(doc: MatrixDocument, fs: MatrixFs): string[] {
       if (!i.preprod || !procedures.has(i.preprod)) pb.push(`${i.id} : procédure de recette préprod absente (${i.preprod ?? '—'})`);
     }
     if (i.statut === 'HORS_PERIMETRE') {
-      const q = /\bQ\d+\b/.exec(i.decision ?? '')?.[0];
+      // Lot 83D : décisions PO « V-Q… » (CDC Opérations v5) admises au même titre que « Q… ».
+      const q = /\b(?:V-)?Q\d+\b/.exec(i.decision ?? '')?.[0];
       if (!q || !doc.decisions[q]) pb.push(`${i.id} : hors périmètre sans décision PO connue`);
     }
     if (i.statut === 'ECART') {

@@ -9,7 +9,9 @@
   "Q9": "Le BO diagnostique et ne modifie jamais une Opération ; la correction passe par le code puis la reconsolidation (bouton « Reconsolider ce compte », lot 48).",
   "D5-D6": "Retour PO du 12/10/2026 (lot 53) : rapprochement automatique seulement à forte confiance (bien, nature, références, montants, prestataire, dates = indices) ; deux factures finales de numéros différents ne font plus systématiquement deux interventions ; doute → carte « À traiter » (docs/exploitation/operations-rapprochement.md).",
   "D7": "Retour PO du 12/10/2026 (lot 53) : plafonds d’appels conservés, examen M3 progressif par lots de 5, report tracé et repris, jamais d’abandon.",
-  "D14": "Retour PO du 12/10/2026 (lot 53) : projection agenda incertaine → carte « À traiter » avec candidats et provenance, jamais de projection automatique."
+  "D14": "Retour PO du 12/10/2026 (lot 53) : projection agenda incertaine → carte « À traiter » avec candidats et provenance, jamais de projection automatique.",
+  "V-Q1": "Arbitrage PO du 23/10/2026 (lot 83D, CDC Opérations v5 §15) : le bloc « Sinistres » des biens est supprimé définitivement (fiche, formulaire, routes, desktop et mobile), sans écran de remplacement ; le sinistre est porté par l’Opération CLAIM, l’Agenda, les documents et le dossier d’assurance.",
+  "V-Q2": "Arbitrage PO du 23/10/2026 (lot 83D, CDC Opérations v5 §17) : l’ancien modèle est retiré — actions et échanges de sinistre, hiérarchie parent / enfant (`parent_operation_id`), anomalies PARENT_*, `claim_json`, migration du formulaire ; purge préprod par le rattrapage BO « Sinistres : nettoyage de l’ancien modèle », tables / colonnes inertes supprimées au lot O-10."
  },
  "procedures": [
   {
@@ -29,10 +31,10 @@
    "etapes": [
     "BO › Exploitation › Rattrapages › « Biens déplacés » (lot 40) : Simuler (rapport exact, aucune écriture), puis Appliquer avec un motif.",
     "BO › Exploitation › Rattrapages › « Opérations : données structurées » (lot 43) : Simuler, contrôler les décomptes ACQUISITION / DISPOSAL / CONTRACT, puis Appliquer.",
-    "BO › Exploitation › Rattrapages › « Sinistres : ancien formulaire » (lot 44) : Simuler, puis Appliquer ; contrôler qu’une ancienne saisie sous le seuil reste « Reprendre en sinistre ».",
+    "BO › Exploitation › Rattrapages › « Sinistres : nettoyage de l’ancien modèle » (lot 83D, remplace « Sinistres : ancien formulaire » du lot 44) : point de restauration, Simuler, puis Appliquer — voir docs/exploitation/sinistres-compatibilite.md.",
     "Relancer chaque simulation : 0 élément à traiter (idempotence, F-175)."
    ],
-   "attendu": "Rattrapages appliqués une fois, rejoués sans effet ; les tâches internes correspondantes (asset-account-backfill, operations-structured-migration, operations-claim-migration) restent actives."
+   "attendu": "Rattrapages appliqués une fois, rejoués sans effet ; les tâches internes correspondantes (asset-account-backfill, operations-structured-migration) restent actives ; la tâche operations-claim-migration est retirée (lot 83D)."
   },
   {
    "id": "RP-03",
@@ -315,10 +317,9 @@
    "scenario": "Déclaration sinistre formulaire sans doc",
    "attendu": "CLAIM REALIZED.",
    "trace": "Création anti-pollution — C3, C5 — T1 + T3",
-   "tests": [
-    "src/test/e2e/scenarios/l44-o5-sinistre.e2e.ts"
-   ],
-   "statut": "AUTOMATISE"
+   "tests": [],
+   "statut": "HORS_PERIMETRE",
+   "decision": "V-Q1 — bloc « Sinistres » supprimé (lot 83D) : plus de saisie de sinistre par formulaire (bloc « Sinistres » retiré) ; un sinistre naît de ses documents ou de l’Agenda."
   },
   {
    "id": "F-016",
@@ -649,7 +650,6 @@
    "trace": "Matching/dédoublonnage — C6, C7 — T3",
    "tests": [
     "src/services/business-operations/consolidation/__tests__/o3a-decision.test.ts",
-    "src/test/e2e/scenarios/l44-o5-sinistre.e2e.ts",
     "src/test/e2e/scenarios/l48-o10-recette-complements.e2e.ts"
    ],
    "statut": "AUTOMATISE"
@@ -1112,11 +1112,9 @@
    "scenario": "Parent claim real + enfant repair real",
    "attendu": "Les deux REALIZED.",
    "trace": "Cycle de vie — C8, C9 — T3/Repository",
-   "tests": [
-    "src/test/e2e/scenarios/l42-o3b-consolidation-t3.e2e.ts",
-    "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts"
-   ],
-   "statut": "AUTOMATISE"
+   "tests": [],
+   "statut": "HORS_PERIMETRE",
+   "decision": "V-Q2 — ancien modèle retiré (lot 83D) : plus d’intervention enfant : la réparation reste dans l’Opération CLAIM (AC39)."
   },
   {
    "id": "F-076",
@@ -1212,7 +1210,6 @@
    "attendu": "Même CLAIM partagée.",
    "trace": "Cycle de vie — C8, C9 — T3/Repository",
    "tests": [
-    "src/test/e2e/scenarios/l44-o5-sinistre.e2e.ts",
     "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts"
    ],
    "statut": "AUTOMATISE"
@@ -1274,10 +1271,9 @@
    "scenario": "claim form supprimé, documents restent",
    "attendu": "CLAIM reste.",
    "trace": "Cycle de vie — C8, C9 — T3/Repository",
-   "tests": [
-    "src/test/e2e/scenarios/l44-o5-sinistre.e2e.ts"
-   ],
-   "statut": "AUTOMATISE"
+   "tests": [],
+   "statut": "HORS_PERIMETRE",
+   "decision": "V-Q1 — bloc « Sinistres » supprimé (lot 83D) : plus de suppression par le formulaire (retiré)."
   },
   {
    "id": "F-089",
@@ -1286,10 +1282,9 @@
    "scenario": "claim form supprimé, aucune preuve",
    "attendu": "CLAIM invalidée.",
    "trace": "Cycle de vie — C8, C9 — T3/Repository",
-   "tests": [
-    "src/test/e2e/scenarios/l44-o5-sinistre.e2e.ts"
-   ],
-   "statut": "AUTOMATISE"
+   "tests": [],
+   "statut": "HORS_PERIMETRE",
+   "decision": "V-Q1 — bloc « Sinistres » supprimé (lot 83D) : plus de suppression par le formulaire (retiré)."
   },
   {
    "id": "F-090",
@@ -2065,7 +2060,6 @@
    "trace": "T4/Agenda — C16 — T4 projection",
    "tests": [
     "src/services/business-operations/agenda-projection/__tests__/o7-projection.test.ts",
-    "src/test/e2e/scenarios/l44-o5-sinistre.e2e.ts",
     "src/test/e2e/scenarios/l46-o7-agenda-projection.e2e.ts",
     "src/test/e2e/scenarios/l53c-po-sinistres-agenda.e2e.ts"
    ],
@@ -2080,8 +2074,7 @@
    "attendu": "CLAIM REALIZED, dossier A_DECLARER.",
    "trace": "Sinistre — C14 — ClaimOperationService/exports",
    "tests": [
-    "src/services/business-operations/claims/__tests__/o5-sinistre.test.ts",
-    "src/test/e2e/scenarios/l44-o5-sinistre.e2e.ts"
+    "src/services/business-operations/claims/__tests__/o5-sinistre.test.ts"
    ],
    "statut": "AUTOMATISE"
   },
@@ -2094,7 +2087,6 @@
    "trace": "Sinistre — C14 — ClaimOperationService/exports",
    "tests": [
     "src/services/business-operations/claims/__tests__/o5-sinistre.test.ts",
-    "src/test/e2e/scenarios/l44-o5-sinistre.e2e.ts",
     "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts"
    ],
    "statut": "AUTOMATISE"
@@ -2107,8 +2099,7 @@
    "attendu": "CLAIM REALIZED, status dossier REFUSE.",
    "trace": "Sinistre — C14 — ClaimOperationService/exports",
    "tests": [
-    "src/services/business-operations/claims/__tests__/o5-sinistre.test.ts",
-    "src/test/e2e/scenarios/l44-o5-sinistre.e2e.ts"
+    "src/services/business-operations/claims/__tests__/o5-sinistre.test.ts"
    ],
    "statut": "AUTOMATISE"
   },
@@ -2119,10 +2110,9 @@
    "scenario": "Action sinistre couper eau",
    "attendu": "Pas child Operation.",
    "trace": "Sinistre — C14 — ClaimOperationService/exports",
-   "tests": [
-    "src/test/e2e/scenarios/l44-o5-sinistre.e2e.ts"
-   ],
-   "statut": "AUTOMATISE"
+   "tests": [],
+   "statut": "HORS_PERIMETRE",
+   "decision": "V-Q2 — ancien modèle retiré (lot 83D) : plus d’« actions » de sinistre : une étape est un élément d’Agenda (§18.1)."
   },
   {
    "id": "F-152",
@@ -2131,10 +2121,9 @@
    "scenario": "Action sinistre réparation avec facture",
    "attendu": "INTERVENTION enfant possible/match.",
    "trace": "Sinistre — C14 — ClaimOperationService/exports",
-   "tests": [
-    "src/test/e2e/scenarios/l44-o5-sinistre.e2e.ts"
-   ],
-   "statut": "AUTOMATISE"
+   "tests": [],
+   "statut": "HORS_PERIMETRE",
+   "decision": "V-Q2 — ancien modèle retiré (lot 83D) : idem F-151 ; la facture est un document de l’Opération CLAIM."
   },
   {
    "id": "F-153",
@@ -2144,8 +2133,7 @@
    "attendu": "Pas Operation.",
    "trace": "Sinistre — C14 — ClaimOperationService/exports",
    "tests": [
-    "src/services/business-operations/claims/__tests__/o5-sinistre.test.ts",
-    "src/test/e2e/scenarios/l44-o5-sinistre.e2e.ts"
+    "src/test/e2e/scenarios/l83d-sinistres-v5.e2e.ts"
    ],
    "statut": "AUTOMATISE"
   },
@@ -2157,8 +2145,7 @@
    "attendu": "Pas Operation.",
    "trace": "Sinistre — C14 — ClaimOperationService/exports",
    "tests": [
-    "src/services/business-operations/claims/__tests__/o5-sinistre.test.ts",
-    "src/test/e2e/scenarios/l44-o5-sinistre.e2e.ts"
+    "src/test/e2e/scenarios/l83d-sinistres-v5.e2e.ts"
    ],
    "statut": "AUTOMATISE"
   },
@@ -2169,10 +2156,9 @@
    "scenario": "Policy ref matches Contract",
    "attendu": "claim_details insurance_contract_operation_id.",
    "trace": "Sinistre — C14 — ClaimOperationService/exports",
-   "tests": [
-    "src/test/e2e/scenarios/l44-o5-sinistre.e2e.ts"
-   ],
-   "statut": "AUTOMATISE"
+   "tests": [],
+   "statut": "HORS_PERIMETRE",
+   "decision": "V-Q1 — bloc « Sinistres » supprimé (lot 83D) : la police n’est plus saisie : elle provient des documents (données d’assurance sourcées)."
   },
   {
    "id": "F-156",
@@ -2181,10 +2167,9 @@
    "scenario": "Policy ref ambigu",
    "attendu": "Texte conservé, pas faux lien.",
    "trace": "Sinistre — C14 — ClaimOperationService/exports",
-   "tests": [
-    "src/test/e2e/scenarios/l44-o5-sinistre.e2e.ts"
-   ],
-   "statut": "AUTOMATISE"
+   "tests": [],
+   "statut": "HORS_PERIMETRE",
+   "decision": "V-Q1 — bloc « Sinistres » supprimé (lot 83D) : idem F-155."
   },
   {
    "id": "F-157",
@@ -2194,8 +2179,8 @@
    "attendu": "Lit CLAIM, pas additionalInfo comme source de vérité.",
    "trace": "Sinistre — C14 — ClaimOperationService/exports",
    "tests": [
-    "src/test/e2e/scenarios/l44-o5-sinistre.e2e.ts",
-    "src/test/e2e/scenarios/l48-o10-recette-complements.e2e.ts"
+    "src/test/e2e/scenarios/l48-o10-recette-complements.e2e.ts",
+    "src/test/e2e/scenarios/l83d-sinistres-v5.e2e.ts"
    ],
    "statut": "AUTOMATISE"
   },
@@ -2207,7 +2192,6 @@
    "attendu": "Une CLAIM.",
    "trace": "Sinistre — C14 — ClaimOperationService/exports",
    "tests": [
-    "src/test/e2e/scenarios/l44-o5-sinistre.e2e.ts",
     "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts"
    ],
    "statut": "AUTOMATISE"
@@ -2221,7 +2205,6 @@
    "trace": "Sinistre — C14 — ClaimOperationService/exports",
    "tests": [
     "src/services/business-operations/claims/__tests__/o5-sinistre.test.ts",
-    "src/test/e2e/scenarios/l44-o5-sinistre.e2e.ts",
     "src/services/business-operations/finance/__tests__/l54d-finance-tco.test.ts"
    ],
    "statut": "AUTOMATISE",
@@ -2236,7 +2219,6 @@
    "trace": "Sinistre — C14 — ClaimOperationService/exports",
    "tests": [
     "src/services/business-operations/claims/__tests__/o5-sinistre.test.ts",
-    "src/test/e2e/scenarios/l44-o5-sinistre.e2e.ts",
     "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts",
     "src/services/business-operations/finance/__tests__/l54d-finance-tco.test.ts"
    ],
@@ -2376,11 +2358,9 @@
    "scenario": "Cycle parent",
    "attendu": "Rejet.",
    "trace": "Concurrence/migration — C23-C25 — DB/T3/migrations",
-   "tests": [
-    "src/services/business-operations/__tests__/o1-socle.test.ts",
-    "src/test/e2e/scenarios/l39-o1-socle-operations.e2e.ts"
-   ],
-   "statut": "AUTOMATISE"
+   "tests": [],
+   "statut": "HORS_PERIMETRE",
+   "decision": "V-Q2 — ancien modèle retiré (lot 83D) : hiérarchie retirée."
   },
   {
    "id": "F-172",
@@ -2389,11 +2369,9 @@
    "scenario": "Profondeur 4",
    "attendu": "Rejet.",
    "trace": "Concurrence/migration — C23-C25 — DB/T3/migrations",
-   "tests": [
-    "src/services/business-operations/__tests__/o1-socle.test.ts",
-    "src/test/e2e/scenarios/l39-o1-socle-operations.e2e.ts"
-   ],
-   "statut": "AUTOMATISE"
+   "tests": [],
+   "statut": "HORS_PERIMETRE",
+   "decision": "V-Q2 — ancien modèle retiré (lot 83D) : hiérarchie retirée."
   },
   {
    "id": "F-173",
@@ -2492,10 +2470,9 @@
    "scenario": "Migration claim",
    "attendu": "Une CLAIM + détails.",
    "trace": "Concurrence/migration — C23-C25 — DB/T3/migrations",
-   "tests": [
-    "src/test/e2e/scenarios/l44-o5-sinistre.e2e.ts"
-   ],
-   "statut": "AUTOMATISE"
+   "tests": [],
+   "statut": "HORS_PERIMETRE",
+   "decision": "V-Q2 — ancien modèle retiré (lot 83D) : migration du formulaire retirée ; purge par le rattrapage BO (L83D-E04 à E07)."
   },
   {
    "id": "F-181",
@@ -2588,8 +2565,7 @@
    "attendu": "Autres liens survivent si politique le permet ; aucune FK invalide.",
    "trace": "Concurrence/migration — C23-C25 — DB/T3/migrations",
    "tests": [
-    "src/test/e2e/scenarios/l39-o1-socle-operations.e2e.ts",
-    "src/test/e2e/scenarios/l44-o5-sinistre.e2e.ts"
+    "src/test/e2e/scenarios/l39-o1-socle-operations.e2e.ts"
    ],
    "statut": "AUTOMATISE"
   },
@@ -3328,7 +3304,6 @@
    "trace": "C34",
    "tests": [
     "src/services/business-operations/claims/__tests__/o5-sinistre.test.ts",
-    "src/test/e2e/scenarios/l44-o5-sinistre.e2e.ts",
     "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts"
    ],
    "statut": "AUTOMATISE"
@@ -3592,11 +3567,9 @@
    "scenario": "Une sous-opération ne hérite pas automatiquement de tous les biens du parent.",
    "attendu": "Invariant vérifié",
    "trace": "B33",
-   "tests": [
-    "src/test/e2e/scenarios/l39-o1-socle-operations.e2e.ts",
-    "src/test/e2e/scenarios/l48-o10-recette-jeux.e2e.ts"
-   ],
-   "statut": "AUTOMATISE"
+   "tests": [],
+   "statut": "HORS_PERIMETRE",
+   "decision": "V-Q2 — ancien modèle retiré (lot 83D) : hiérarchie parent / enfant retirée (V-Q2)."
   },
   {
    "id": "INV-018",
@@ -3605,10 +3578,9 @@
    "scenario": "Un parent peut n’avoir aucun montant propre.",
    "attendu": "Invariant vérifié",
    "trace": "B33",
-   "tests": [
-    "src/test/e2e/scenarios/l39-o1-socle-operations.e2e.ts"
-   ],
-   "statut": "AUTOMATISE"
+   "tests": [],
+   "statut": "HORS_PERIMETRE",
+   "decision": "V-Q2 — ancien modèle retiré (lot 83D) : hiérarchie parent / enfant retirée (V-Q2)."
   },
   {
    "id": "INV-019",
@@ -3629,10 +3601,9 @@
    "scenario": "Une Opération annulée peut avoir des enfants réalisés si ceux-ci ont réellement eu lieu.",
    "attendu": "Invariant vérifié",
    "trace": "B33",
-   "tests": [
-    "src/test/e2e/scenarios/l39-o1-socle-operations.e2e.ts"
-   ],
-   "statut": "AUTOMATISE"
+   "tests": [],
+   "statut": "HORS_PERIMETRE",
+   "decision": "V-Q2 — ancien modèle retiré (lot 83D) : hiérarchie parent / enfant retirée (V-Q2)."
   },
   {
    "id": "INV-021",
@@ -3653,10 +3624,9 @@
    "scenario": "Le contrat d’assurance n’est pas parent du Sinistre par défaut.",
    "attendu": "Invariant vérifié",
    "trace": "B33",
-   "tests": [
-    "src/test/e2e/scenarios/l39-o1-socle-operations.e2e.ts"
-   ],
-   "statut": "AUTOMATISE"
+   "tests": [],
+   "statut": "HORS_PERIMETRE",
+   "decision": "V-Q2 — ancien modèle retiré (lot 83D) : hiérarchie parent / enfant retirée (V-Q2)."
   },
   {
    "id": "INV-023",
@@ -3677,10 +3647,9 @@
    "scenario": "Le financement peut être sous-opération de l’Acquisition.",
    "attendu": "Invariant vérifié",
    "trace": "B33",
-   "tests": [
-    "src/test/e2e/scenarios/l39-o1-socle-operations.e2e.ts"
-   ],
-   "statut": "AUTOMATISE"
+   "tests": [],
+   "statut": "HORS_PERIMETRE",
+   "decision": "V-Q2 — ancien modèle retiré (lot 83D) : hiérarchie parent / enfant retirée (V-Q2)."
   },
   {
    "id": "INV-025",
@@ -3965,10 +3934,9 @@
    "scenario": "La profondeur hiérarchique maximale est de 3 niveaux.",
    "attendu": "Invariant vérifié",
    "trace": "B33",
-   "tests": [
-    "src/test/e2e/scenarios/l39-o1-socle-operations.e2e.ts"
-   ],
-   "statut": "AUTOMATISE"
+   "tests": [],
+   "statut": "HORS_PERIMETRE",
+   "decision": "V-Q2 — ancien modèle retiré (lot 83D) : hiérarchie parent / enfant retirée (V-Q2)."
   },
   {
    "id": "INV-047",
@@ -3978,8 +3946,7 @@
    "attendu": "Invariant vérifié",
    "trace": "B33",
    "tests": [
-    "src/services/business-operations/__tests__/o10-invariants.test.ts",
-    "src/test/e2e/scenarios/l39-o1-socle-operations.e2e.ts"
+    "src/services/business-operations/__tests__/o10-invariants.test.ts"
    ],
    "statut": "AUTOMATISE"
   },

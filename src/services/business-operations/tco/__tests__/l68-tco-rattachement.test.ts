@@ -52,7 +52,7 @@ const midasPourMaison = doc(MIDAS, 51_154, {
 const HOM1 = 2001;
 const HOM2 = 2002;
 const homiris: TcoOperation = {
-  id: 90, typeCode: 'CONTRACT', status: 'REALIZED', parentOperationId: null, realizedDate: '2025-11-05', startDate: null, plannedDate: null,
+  id: 90, typeCode: 'CONTRACT', status: 'REALIZED', realizedDate: '2025-11-05', startDate: null, plannedDate: null,
   assetIds: [MAISON], label: 'Contrat — Homiris', components: [comp(9001, 90, 4_050), comp(9002, 90, 4_050)],
   documents: [{ fileId: HOM1, title: 'Facture Homiris nov.', role: 'INVOICE' }, { fileId: HOM2, title: 'Facture Homiris janv.', role: 'INVOICE' }], sourceKinds: ['DOCUMENT'],
 };

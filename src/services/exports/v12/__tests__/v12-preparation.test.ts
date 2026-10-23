@@ -15,7 +15,7 @@
  *     `parseChoicesPayload` → même plan.
  */
 import { describe, it, expect, vi } from 'vitest';
-import { makeSource, doc, photo, event, TODAY } from './fixtures/sources';
+import { makeSource, doc, photo, event, TODAY, claimFileOf, claimSourceOf } from './fixtures/sources';
 import { PREP_SECTIONS } from '../preparation/sections';
 import type { CilReadiness } from '@/services/exports/cil-preparation.service';
 import type { ExportSource } from '../data/source';
@@ -106,8 +106,8 @@ describe('Pré-sélection (§6.2, §24) et sensibilité (DEC-006)', () => {
   });
 
   it('sinistre : pièces et photos liées au sinistre (datées du sinistre ou après) pré-cochées', () => {
-    const p = prepare('ASSURANCE_SINISTRE', makeSource('IMMOBILIER', 'ASSURANCE_SINISTRE', {
-      additionalInfo: { commercial: {}, rental: {}, insurance: {}, claim: { occurredOn: '2026-06-01', consequences: 'Plafond de la cuisine' }, updatedAt: null },
+    // Lot 83D : documents de l'Opération toujours retenus ; hors Opération, règle historique (nature / date).
+    const p = prepare('ASSURANCE_SINISTRE', claimSourceOf(claimFileOf({ occurredOn: '2026-06-01', consequences: 'Plafond de la cuisine' }), {
       documents: [doc({ id: 1, kind: 'DEVIS', title: 'Devis peinture', date: '2026-06-10' }), doc({ id: 2, kind: 'DEVIS', title: 'Ancien devis', date: '2025-01-10' }), doc({ id: 3, kind: 'SINISTRE', title: 'Déclaration', date: '2020-01-01' })],
       photos: Array.from({ length: 12 }, (_, i) => photo(i + 1, { date: i < 10 ? '2026-06-02' : '2026-01-01' })),
       events: [event(1, { title: 'Dégât des eaux', date: '2026-06-01', category: 'sinistre' }), event(2, { title: 'Entretien chaudière', date: '2025-06-12' })],
@@ -120,9 +120,20 @@ describe('Pré-sélection (§6.2, §24) et sensibilité (DEC-006)', () => {
     expect(photos.filter((i) => i.selected).every((i) => i.date === '2026-06-02')).toBe(true);
     expect(item(p, 'event:1').selected).toBe(true);
     expect(item(p, 'event:2')).toMatchObject({ selected: false, recommended: false });
-    // Dommages : saisie structurée seulement (le texte « constaté » ne suffit pas, comme le mappeur).
+    // Dommages : dommages détaillés du sinistre seulement (le texte « constaté » ne suffit pas, comme le mappeur).
     expect(section(p, 'damages')).toMatchObject({ fedFilled: false });
-    expect(section(p, 'actions')).toMatchObject({ fedFilled: false });
+    // Lot 83D (§18.1) : plus de section « Actions ».
+    expect(p.sections.some((x) => x.id === 'actions')).toBe(false);
+  });
+
+  it('L83D-U15 — sinistre : TOUS les documents de l’Opération pré-cochés, quelle que soit leur nature ou leur date', () => {
+    const p = prepare('ASSURANCE_SINISTRE', claimSourceOf(claimFileOf({ occurredOn: '2026-06-01', documentIds: [2, 4] }), {
+      documents: [doc({ id: 2, kind: 'DEVIS', title: 'Ancien devis', date: '2025-01-10' }), doc({ id: 4, kind: 'AUTRE', title: 'Plan de la salle de bain' }),
+        doc({ id: 5, kind: 'AUTRE', title: 'Notice', date: '2026-06-02' })],
+    }));
+    expect(item(p, 'document:2').selected).toBe(true);
+    expect(item(p, 'document:4').selected).toBe(true);
+    expect(item(p, 'document:5').selected).toBe(false);
   });
 
   it('plafonds de photos : 4 pour la vente, 8 pour le dossier complet ; photos listées une par une', () => {
@@ -320,23 +331,20 @@ describe('Cohérence écran → génération (§17.2)', () => {
 
 describe('Données structurées des informations complémentaires (schéma v2)', () => {
   const info = (over: Partial<ExportSource['additionalInfo']>): ExportSource['additionalInfo'] =>
-    ({ commercial: {}, rental: {}, insurance: {}, claim: {}, finance: {}, updatedAt: null, ...over } as ExportSource['additionalInfo']);
+    ({ commercial: {}, rental: {}, insurance: {}, finance: {}, updatedAt: null, ...over } as ExportSource['additionalInfo']);
 
-  it('sinistre : dommages, actions, échanges comptés avec leurs pièces liées', () => {
-    const p = prepare('ASSURANCE_SINISTRE', makeSource('IMMOBILIER', 'ASSURANCE_SINISTRE', {
+  it('sinistre (lot 83D) : dommages du sinistre comptés avec leurs photos et justificatifs reliés', () => {
+    const p = prepare('ASSURANCE_SINISTRE', claimSourceOf(claimFileOf({
+      occurredOn: '2026-08-14', documentIds: [1, 2],
+      damages: [{ key: 'd1', zone: 'Salle de bain', element: 'Plafond', finding: 'Auréoles', estimatedAmountCents: 120000, photoIds: [1, 2], documentIds: [1] }],
+    }), {
       documents: [doc({ id: 1, kind: 'DEVIS', title: 'Devis' }), doc({ id: 2, kind: 'FACTURE', title: 'Facture séchage' })],
       photos: [photo(1), photo(2)],
-      additionalInfo: info({ claim: {
-        occurredOn: '2026-08-14',
-        damages: [{ id: 'd1', zone: 'Salle de bain', element: 'Plafond', finding: 'Auréoles', estimatedAmountCents: 120000, photoIds: [1, 2], documentIds: [1] }],
-        actions: [{ id: 'a1', title: 'Séchage', date: '2026-08-15', status: 'REALISEE', invoiceDocumentId: 2 }],
-        exchanges: [{ id: 'x1', date: '2026-08-20', summary: 'Convocation à l’expertise', party: 'EXPERT', channel: 'EMAIL' }],
-      } as never }),
     }));
     expect(section(p, 'damages').rows).toEqual([{ id: 'd1', label: 'Salle de bain · Plafond', detail: expect.stringContaining('Auréoles'), linked: ['photo:1', 'photo:2', 'document:1'] }]);
     expect(section(p, 'damages').fedFilled).toBe(true);
-    expect(section(p, 'actions').rows[0]).toMatchObject({ label: 'Séchage', detail: expect.stringContaining('Réalisée'), linked: ['document:2'] });
-    expect(section(p, 'exchanges').rows[0].label).toBe('Convocation à l’expertise');
+    // Photos des dommages pré-cochées même sans date (V-Q8).
+    expect(item(p, 'photo:1').selected).toBe(true);
   });
 
   it('souscription : protections détaillées et éléments assurés (justificatif lié)', () => {
@@ -372,10 +380,9 @@ describe('Données structurées des informations complémentaires (schéma v2)',
     expect(section(prepare('VENTE', bare), 'highlights').fedFilled).toBe((d.highlights?.length ?? 0) > 0);
   });
 
-  it('date du sinistre : repli sur l’événement de l’agenda lié (claimEventKey)', async () => {
+  it('date du sinistre : repli sur l’élément d’agenda principal de l’Opération', async () => {
     const { claimDate } = await import('../data/choices');
-    const src = makeSource('IMMOBILIER', 'ASSURANCE_SINISTRE', {
-      additionalInfo: info({ claim: { claimEventKey: 'agenda:9' } }),
+    const src = claimSourceOf(claimFileOf({ principalKey: 'agenda:9', agendaKeys: ['agenda:9'], agenda: [{ key: 'agenda:9', title: 'Dégât des eaux', date: '2026-08-14', principal: true }] }), {
       events: [{ ...event(9, { title: 'Dégât des eaux', date: '2026-08-14' }), key: 'agenda:9', source: 'agenda', category: null }],
       documents: [doc({ id: 1, kind: 'DEVIS', title: 'Devis après', date: '2026-08-20' }), doc({ id: 2, kind: 'DEVIS', title: 'Devis avant', date: '2026-01-01' })],
     });
@@ -383,8 +390,8 @@ describe('Données structurées des informations complémentaires (schéma v2)',
     const p = prepare('ASSURANCE_SINISTRE', src);
     expect(item(p, 'document:1').selected).toBe(true);
     expect(item(p, 'document:2').selected).toBe(false);
-    // La date saisie prime.
-    expect(claimDate({ ...src, additionalInfo: info({ claim: { claimEventKey: 'agenda:9', occurredOn: '2026-08-01' } }) })).toBe('2026-08-01');
+    // La date de survenue du sinistre prime.
+    expect(claimDate({ ...src, claimFile: { ...src.claimFile!, occurredOn: '2026-08-01' } })).toBe('2026-08-01');
   });
 });
 
@@ -398,18 +405,18 @@ describe('État « renseigné » des sections = sortie des mappeurs (fixtures)',
     const plan = planSelection(code, src, { ...choices, sections: { ...choices.sections, ...on } }, TODAY);
     return mapDossierData(code, { source: src, plan, resolved: null, meta, today: TODAY }) as unknown as Record<string, unknown[] | null>;
   };
-  const infoOf = (over: Record<string, unknown>) => ({ commercial: {}, rental: {}, insurance: {}, claim: {}, finance: {}, updatedAt: null, ...over }) as ExportSource['additionalInfo'];
+  const infoOf = (over: Record<string, unknown>) => ({ commercial: {}, rental: {}, insurance: {}, finance: {}, updatedAt: null, ...over }) as ExportSource['additionalInfo'];
 
   const cases: Array<[string, ExportSource]> = [
-    ['texte libre seulement', makeSource('IMMOBILIER', 'ASSURANCE_SINISTRE', { additionalInfo: infoOf({ claim: { occurredOn: '2026-06-01', consequences: 'Plafond', measures: 'Une seule mesure', exchangesSummary: 'Appel' } }) })],
-    ['mesures sur plusieurs lignes', makeSource('IMMOBILIER', 'ASSURANCE_SINISTRE', { additionalInfo: infoOf({ claim: { occurredOn: '2026-06-01', measures: 'Coupure eau\nBâche' } }) })],
-    ['structuré', makeSource('IMMOBILIER', 'ASSURANCE_SINISTRE', { additionalInfo: infoOf({ claim: { occurredOn: '2026-06-01', damages: [{ id: 'd', zone: 'Cuisine' }], actions: [{ id: 'a', title: 'Séchage' }], exchanges: [{ id: 'x', date: '2026-06-03', summary: 'Appel expert' }] } }) })],
+    ['texte libre seulement', claimSourceOf(claimFileOf({ occurredOn: '2026-06-01', consequences: 'Plafond', measures: 'Une seule mesure', exchangesSummary: 'Appel' }))],
+    ['dommages', claimSourceOf(claimFileOf({ occurredOn: '2026-06-01', damages: [{ key: 'd', zone: 'Cuisine', element: null, finding: null, estimatedAmountCents: null, photoIds: [], documentIds: [] }] }))],
+    ['courrier de l’Opération', claimSourceOf(claimFileOf({ occurredOn: '2026-06-01', documentIds: [6] }), { documents: [doc({ id: 6, kind: 'ECHANGE_ASSUREUR', title: 'Courrier expert', date: '2026-06-03' })] })],
     ['courrier assureur non retenu', makeSource('IMMOBILIER', 'ASSURANCE_SINISTRE', { documents: [doc({ id: 5, kind: 'ECHANGE_ASSUREUR', title: 'Courrier', date: '2020-01-01', sensitive: true })] })],
   ];
   it.each(cases)('sinistre — %s', (_n, src) => {
     const p = prepare('ASSURANCE_SINISTRE', src);
     const d = mapped('ASSURANCE_SINISTRE', src, choicesFromSections(p.sections));
-    for (const id of ['damages', 'actions', 'exchanges']) expect(section(p, id).fedFilled, id).toBe((d[id]?.length ?? 0) > 0);
+    for (const id of ['damages', 'exchanges']) expect(section(p, id).fedFilled, id).toBe((d[id]?.length ?? 0) > 0);
   });
 
   it('souscription, location, dossier complet, vente', () => {
@@ -426,8 +433,7 @@ describe('État « renseigné » des sections = sortie des mappeurs (fixtures)',
 
 describe('Mappeur sinistre : événement lié repris seulement s’il est retenu', () => {
   it('titre et description de l’agenda absents si l’événement est décoché', () => {
-    const src = makeSource('IMMOBILIER', 'ASSURANCE_SINISTRE', {
-      additionalInfo: { commercial: {}, rental: {}, insurance: {}, claim: { claimEventKey: 'agenda:9' }, updatedAt: null },
+    const src = claimSourceOf(claimFileOf({ principalKey: 'agenda:9', agendaKeys: ['agenda:9'], agenda: [{ key: 'agenda:9', title: 'Fuite chez le voisin M. Dupont', date: '2026-08-14', principal: true }] }), {
       events: [{ ...event(9, { title: 'Fuite chez le voisin M. Dupont', date: '2026-08-14', description: 'Détails privés' }), key: 'agenda:9', source: 'agenda', category: null }],
     });
     const meta = { reference: 'R', generatedAt: '2026-09-28T09:00:00+02:00', preparedBy: null, templateLabel: 'x', zipName: null, label: 'x' };

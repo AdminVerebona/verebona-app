@@ -78,13 +78,13 @@ scenario('L48-O10', 'Recette Opérations V1 : 7 jeux C30.1, invariants C34, anom
   });
 
   it('O10-03 / INV-FINAL-001 / INV-002 — une source n’est jamais l’Opération : un document → plusieurs Opérations possibles, une Opération → plusieurs sources ; aucune Opération n’a de colonne « document »', async () => {
-    // Multi-biens : le sinistre est prouvé par la saisie ET reçoit des enfants prouvés par deux factures distinctes.
+    // Multi-biens : le sinistre est prouvé par la saisie ; les deux factures sont d'autres Opérations, prouvées par leur document.
     const ops = await k.actives(d.multiBiens.compte);
     const claim = ops.find((o) => o.type_code === 'CLAIM')!;
     // Une saisie par bien concerné (clé de source = bien), aucune source « document » : la CLAIM n'est pas un document.
     expect([...new Set((await k.sources(claim.id)).filter((s) => s.active).map((s) => s.source_kind))]).toEqual(['CLAIM_FORM']);
-    const enfants = ops.filter((o) => o.parent_operation_id === claim.id);
-    expect(enfants).toHaveLength(2);
+    // Lot 83D (V-Q2) : plus d'enfants — aucune Opération ne porte de parent.
+    expect(ops.filter((o) => o.parent_operation_id !== null)).toEqual([]);
     const cols = await sql<{ column_name: string }[]>`SELECT column_name FROM information_schema.columns WHERE table_name = 'business_operations'`;
     expect(cols.map((x) => x.column_name)).not.toEqual(expect.arrayContaining(['file_id']));
     expect(cols.map((x) => x.column_name)).not.toEqual(expect.arrayContaining(['document_id']));
@@ -184,7 +184,7 @@ scenario('L48-O10', 'Recette Opérations V1 : 7 jeux C30.1, invariants C34, anom
       WHERE o.account_id = ${p.compte.id} AND o.type_code = 'ACQUISITION' AND c.active`).toHaveLength(0);
   });
 
-  it('F-075 / F-076 / F-149 / INV-FINAL-022 / INV-FINAL-023 / INV-019 / INV-021 / INV-023 — Premium : sinistre « Clos » = CLAIM REALIZED + closed_at, dossier CLOS ; devis de réparation citant le dossier = enfant ENVISAGED (état propre)', async () => {
+  it('F-075 / F-076 / F-149 / INV-FINAL-022 / INV-FINAL-023 / INV-019 / INV-021 / INV-023 — Premium : sinistre « Clos » = CLAIM REALIZED + closed_at, dossier CLOS ; devis de réparation citant le dossier = INTERVENTION ENVISAGED sans parent (lot 83D)', async () => {
     const p = d.premium;
     const [claim] = (await k.actives(p.compte)).filter((o) => o.type_code === 'CLAIM');
     expect(claim.id).toBe(p.sinistre);
@@ -192,7 +192,7 @@ scenario('L48-O10', 'Recette Opérations V1 : 7 jeux C30.1, invariants C34, anom
     expect(claim.closed_at).not.toBeNull();
     expect(await sql`SELECT status FROM business_operation_claim_details WHERE operation_id = ${claim.id}`).toEqual([{ status: 'CLOS' }]);
     const { op: enfant } = await typeDe(p.compte, p.reparationSinistre);
-    expect(enfant).toMatchObject({ type_code: 'INTERVENTION', status: 'ENVISAGED', parent_operation_id: claim.id, planned_date: '2026-11-20' });
+    expect(enfant).toMatchObject({ type_code: 'INTERVENTION', status: 'ENVISAGED', parent_operation_id: null, planned_date: '2026-11-20' });   // lot 83D : plus d'enfant
     // Indemnité saisie : composante du sinistre, attribuée au bien (mono-bien), coût brut inchangé (Q4).
     expect((await k.composantes(claim.id)).map((c) => [c.kind, c.amount_minor, c.target_asset_id])).toEqual([['INDEMNITY', 80000, p.maison.id]]);
   });
@@ -285,7 +285,7 @@ scenario('L48-O10', 'Recette Opérations V1 : 7 jeux C30.1, invariants C34, anom
     expect((await k.liens(claim.id)).map((l) => l.asset_id)).toEqual([m.maison.id, m.garage.id].sort((a, b) => a - b));
     expect((await k.composantes(claim.id)).map((c) => [c.kind, c.amount_minor, c.target_asset_id])).toEqual([['INDEMNITY', 200000, null]]);
     const { op: maison } = await typeDe(m.compte, m.reparationMaison);
-    expect(maison).toMatchObject({ parent_operation_id: claim.id });
+    expect(maison).toMatchObject({ parent_operation_id: null });   // lot 83D : plus d'enfant
     expect((await k.liens(maison!.id)).map((l) => l.asset_id)).toEqual([m.maison.id]);
     const { op: commune } = await typeDe(m.compte, m.factureCommune);
     expect((await k.liens(commune!.id)).map((l) => l.asset_id)).toEqual([m.maison.id, m.garage.id].sort((a, b) => a - b));

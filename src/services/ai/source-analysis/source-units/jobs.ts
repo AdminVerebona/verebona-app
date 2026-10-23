@@ -292,12 +292,18 @@ export async function runCompletenessRetry(opts: { deadline?: number; env?: Reco
     const accountId = Number(r.account_id);
     const attempt = Number(r.retry_attempts ?? 0) + 1;
     try {
-      const out = await retryDocument({
+      // Lot 83C (R22) : la réparation ciblée REPREND la dernière exécution métier du
+      // document — ses appels lui sont rattachés, aucune nouvelle exécution.
+      const [{ latestT1ExecutionIdForFile }, { runInBusinessExecution }] = await Promise.all([
+        import('../../business-execution/repository'), import('../../business-execution/context'),
+      ]);
+      const execution = await latestT1ExecutionIdForFile(accountId, fileId);
+      const { outcome: out } = await runInBusinessExecution(execution ? [execution] : [], () => retryDocument({
         fileId, accountId, extractionId: r.extraction_id == null ? null : Number(r.extraction_id), attempt,
         qualityState: String(r.quality_state ?? ''),
         maxRetries: s.maxRetries, assetId: Number(r.asset_id ?? r.linked_asset_id ?? 0) || null,
         userId: Number(r.owner_user_id), title: r.title == null ? null : String(r.title), env: opts.env,
-      });
+      }), { origin: 't1-completeness-retry' });
       if (out === 'requeued') res.requeued++;
       else if (out === 'final') res.final++;
       else res.repaired++;
@@ -356,7 +362,8 @@ export async function requeueDocumentForReread(p: {
 }): Promise<boolean> {
   const { pgClient } = await import('@/db');
   const { enqueueFileAnalyses } = await import('../queue/t1-handler');
-  const acceptes = await enqueueFileAnalyses([p.fileId], p.accountId, { origin: p.origin, billable: false, processingVisibility: 'TECHNICAL' });
+  // Lot 83C (R22) : relecture = reprise ciblée de la dernière exécution du document.
+  const acceptes = await enqueueFileAnalyses([p.fileId], p.accountId, { origin: p.origin, billable: false, processingVisibility: 'TECHNICAL', resume: true });
   const ok = acceptes.includes(p.fileId);
   await pgClient.unsafe(
     `UPDATE document_extraction_coverage SET retry_attempts = $2, next_retry_at = NULL, origin = 'RETRY', updated_at = NOW(),
@@ -369,23 +376,43 @@ export async function requeueDocumentForReread(p: {
   return ok;
 }
 
+/** Issue d'une reprise ciblée d'un document (lot 83B : détail rendu au contrôle de cohérence). */
+export interface DocumentRetryOutcome {
+  outcome: 'repaired' | 'requeued' | 'final';
+  /** Appels ANALYZE_DOCUMENT de la passe textuelle et de la relecture du fichier. */
+  calls: number;
+  /** Unités soumises à la passe textuelle. */
+  attempted: string[];
+  /** Faits nouveaux écrits (aucun fait existant réécrit). */
+  newFacts: number;
+  /** Résultat consigné sur la couverture (`last_retry_result`). */
+  result: string;
+}
+
 async function retryDocument(p: {
   fileId: number; accountId: number; extractionId: number | null; attempt: number; maxRetries: number;
   assetId: number | null; userId: number; title: string | null; env?: Record<string, string | undefined>;
   /** Lot 53 (D19) : état de qualité de la ligne réservée. */
   qualityState?: string;
-}): Promise<'repaired' | 'requeued' | 'final'> {
+  /**
+   * Lot 83B (C-Q7) : passe TEXTUELLE seule sur les unités non couvertes —
+   * ni relecture du fichier, ni remise en file T1 (ces maillons relèvent
+   * d'un autre diagnostic du contrôle de cohérence).
+   */
+  textOnly?: boolean;
+}): Promise<DocumentRetryOutcome> {
   const { pgClient } = await import('@/db');
+  const issue = (outcome: DocumentRetryOutcome['outcome'], result: string): DocumentRetryOutcome => ({ outcome, calls: 0, attempted: [], newFacts: 0, result });
 
   // Lot 53 (D19) : vérification incomplète — seule une cause transitoire
   // (source illisible) justifie une relecture automatique du fichier ; sinon
   // la reprise est manuelle (BO) et rien n'est rejoué ici (jamais de boucle).
-  if (p.qualityState === 'VERIFICATION_INCOMPLETE') {
+  if (p.qualityState === 'VERIFICATION_INCOMPLETE' && !p.textOnly) {
     const cov = await loadDocumentCoverage(p.fileId, p.accountId);
     const raison = ((cov?.verification ?? {}) as { verificationReason?: string | null }).verificationReason ?? null;
     if (verificationAutoRetryDue({ qualityState: p.qualityState, verificationReason: raison, retryAttempts: p.attempt - 1, maxRetries: p.maxRetries })) {
       await requeueDocumentForReread({ fileId: p.fileId, accountId: p.accountId, attempt: p.attempt, origin: 't1-completeness-retry', result: 'REQUEUED_T1' });
-      return 'requeued';
+      return issue('requeued', 'REQUEUED_T1');
     }
     // Lot 54G (point 2) : une observation NEEDS_SOURCE (image, scan) a une VRAIE reprise :
     // relecture ciblée du fichier, même si la couverture globale reste non vérifiable.
@@ -397,7 +424,7 @@ async function retryDocument(p: {
         `UPDATE document_extraction_coverage SET next_retry_at = NULL, last_retry_at = NOW(), last_retry_result = 'MANUAL_CHECK_REQUIRED' WHERE file_id = $1`,
         [p.fileId] as never[],
       ).catch(() => undefined);
-      return 'repaired';
+      return issue('repaired', 'MANUAL_CHECK_REQUIRED');
     }
   }
 
@@ -406,9 +433,9 @@ async function retryDocument(p: {
   const lacunes = units.filter((u) => u.kind === 'PAGE_GAP' && u.status === 'FAILED' && u.payload.retryable === true);
 
   // Lacune de pages : seule une relecture du fichier peut la combler → file T1.
-  if (lacunes.length > 0 && p.attempt <= p.maxRetries) {
+  if (lacunes.length > 0 && p.attempt <= p.maxRetries && !p.textOnly) {
     await requeueDocumentForReread({ fileId: p.fileId, accountId: p.accountId, attempt: p.attempt, origin: 't1-completeness-retry', result: 'REQUEUED_T1' });
-    return 'requeued';
+    return issue('requeued', 'REQUEUED_T1');
   }
 
   const { repairAttemptCap, repairSettings, runRepairPass } = await import('./repair');
@@ -423,9 +450,10 @@ async function retryDocument(p: {
   let failed = new Map<string, { reason: string; retryable: boolean }>();
   let attempted: string[] = [];
   let notAttempted: string[] = [];
+  let calls = 0;
   // Lot 54G (point 2) : unités NEEDS_SOURCE — relecture du FICHIER (bornée, comptée à part).
   const sourceCap = sourceRereadCap(p.env);
-  const aRelire = p.attempt <= p.maxRetries ? selectSourceRereadUnits(units, sourceCap) : [];
+  const aRelire = p.attempt <= p.maxRetries && !p.textOnly ? selectSourceRereadUnits(units, sourceCap) : [];
   let relecture: SourceRereadResult | null = null;
   const textuelle = cibles.length > 0 && (p.attempt <= p.maxRetries || continuation);
   if (aRelire.length > 0 || textuelle) {
@@ -441,6 +469,7 @@ async function retryDocument(p: {
     if (aRelire.length > 0) {
       relecture = await rereadSource({ ...p, targets: aRelire, ctx: { ...ctx, capabilities }, capabilities, v2Families, call: (c) => step.callAnalyzeDocument(c) });
       facts.push(...relecture.facts);
+      calls += relecture.calls;
       console.info(`[t1-source-reread] fichier ${p.fileId} : ${aRelire.length} unité(s) NEEDS_SOURCE, ${relecture.calls} appel(s), `
         + `${relecture.resolved.length} levée(s)${relecture.failed ? `, échec : ${relecture.error}` : ''}`);
     }
@@ -455,6 +484,7 @@ async function retryDocument(p: {
         units: cibles, maxCalls: repairSettings(p.env).maxCalls, pass: 1 + p.attempt, call: (c) => step.callAnalyzeDocument(c),
       });
       facts.push(...r.facts);
+      calls += r.calls;
       failed = r.failed;
       attempted = r.attempted;
       notAttempted = r.notAttempted;
@@ -569,7 +599,88 @@ async function retryDocument(p: {
     await projectDocumentKnowledgeToAsset({ accountId: p.accountId, userId: p.userId, fileId: p.fileId, assetId: p.assetId })
       .catch((e: Error) => console.error('[t1-completeness-retry] projection sur le bien :', e.message));
   }
-  return report.qualityState === 'INCOMPLETE_FINAL' ? 'final' : 'repaired';
+  return { outcome: report.qualityState === 'INCOMPLETE_FINAL' ? 'final' : 'repaired', calls, attempted, newFacts: nouveaux.length, result: resultat };
+}
+
+/**
+ * Lot 83B (C-Q7, cas « valeur présente dans l'extract, absente de T1, unité
+ * NON couverte ») — passe de réparation T1 ciblée EXISTANTE, exécutée tout de
+ * suite pour UN document à la demande du contrôle de cohérence : mêmes
+ * unités (`selectRepairUnits`), mêmes plafonds (`T1_REPAIR_MAX_CALLS`,
+ * tentatives par unité), même consommation d'une reprise
+ * (`T1_COMPLETENESS_MAX_RETRIES`), même écriture (faits prouvés par l'unité,
+ * couche A, projection sur le bien). Texte persisté seulement : ni relecture
+ * du fichier, ni remise en file T1 (`textOnly`).
+ *
+ * Exclusivité : la ligne de couverture est RÉSERVÉE par le même bail que
+ * `t1-completeness-retry` (SKIP LOCKED) ; une reprise déjà programmée
+ * (`next_retry_at` futur) ou en cours n'est jamais doublée (`BUSY`), une
+ * analyse en cours non plus. Compte non éligible : rien (C-Q10).
+ */
+export async function repairDocumentSourceUnits(p: {
+  accountId: number; fileId: number; env?: Record<string, string | undefined>;
+}): Promise<DocumentRetryOutcome | { outcome: 'BUSY' | 'NOT_ELIGIBLE' | 'NO_RETRY_LEFT'; calls: 0; attempted: []; newFacts: 0; result: string }> {
+  const vide = (outcome: 'BUSY' | 'NOT_ELIGIBLE' | 'NO_RETRY_LEFT', result: string) => ({ outcome, calls: 0 as const, attempted: [] as [], newFacts: 0 as const, result });
+  if (!(await sourceLayerReady())) return vide('BUSY', 'SOURCE_LAYER_NOT_READY');
+  const s = jobSettings(p.env);
+  const { pgClient } = await import('@/db');
+  const pris = (await pgClient.unsafe(
+    `WITH pris AS (
+       SELECT c.file_id FROM document_extraction_coverage c
+         JOIN asset_files af ON af.id = c.file_id AND af.deleted_at IS NULL
+        WHERE c.file_id = $1 AND c.account_id = $2 AND (c.next_retry_at IS NULL OR c.next_retry_at <= NOW())
+          AND af.analysis_state IS DISTINCT FROM 'ANALYZING' AND af.analysis_state IS DISTINCT FROM 'UPLOADED'
+          AND ${processingEligibleSql('c.account_id')}
+        FOR UPDATE OF c SKIP LOCKED
+     )
+     UPDATE document_extraction_coverage c SET next_retry_at = NOW() + make_interval(mins => $3)
+       FROM pris WHERE c.file_id = pris.file_id
+     RETURNING c.file_id`,
+    [p.fileId, p.accountId, RETRY_LEASE_MINUTES] as never[],
+  )) as unknown as Array<{ file_id: number }>;
+  if (pris.length === 0) {
+    const [e] = (await pgClient.unsafe(`SELECT ${processingEligibleSql('$1::int')} AS ok`, [p.accountId] as never[])) as unknown as Array<{ ok: boolean }>;
+    return vide(e?.ok === false ? 'NOT_ELIGIBLE' : 'BUSY', e?.ok === false ? 'ACCOUNT_NOT_ELIGIBLE' : 'RETRY_SCHEDULED_OR_IN_PROGRESS');
+  }
+  const [r] = (await pgClient.unsafe(
+    `SELECT c.file_id, c.account_id, c.extraction_id, c.retry_attempts, c.quality_state,
+            af.asset_id, af.linked_asset_id, coalesce(af.retained_title, af.original_filename) AS title, a.owner_user_id
+       FROM document_extraction_coverage c
+       JOIN asset_files af ON af.id = c.file_id AND af.deleted_at IS NULL
+       JOIN accounts a ON a.id = c.account_id
+      WHERE c.file_id = $1`,
+    [p.fileId] as never[],
+  )) as unknown as Row[];
+  const attempt = Number(r.retry_attempts ?? 0) + 1;
+  if (attempt > s.maxRetries) {
+    // Plafond de reprises atteint : la ligne est rendue telle quelle (jamais de boucle).
+    await pgClient.unsafe(`UPDATE document_extraction_coverage SET next_retry_at = NULL WHERE file_id = $1`, [p.fileId] as never[]);
+    return vide('NO_RETRY_LEFT', 'RETRY_CAP_REACHED');
+  }
+  try {
+    // Intégration 83B × 83C (R22) : la relance ciblée décidée par le contrôle de
+    // cohérence REPREND la dernière exécution métier T1 du document.
+    const [{ latestT1ExecutionIdForFile }, { runInBusinessExecution }] = await Promise.all([
+      import('../../business-execution/repository'), import('../../business-execution/context'),
+    ]);
+    const execution = await latestT1ExecutionIdForFile(p.accountId, p.fileId);
+    return await runInBusinessExecution(execution ? [execution] : [], () => retryDocument({
+      fileId: p.fileId, accountId: p.accountId, extractionId: r.extraction_id == null ? null : Number(r.extraction_id), attempt,
+      qualityState: String(r.quality_state ?? ''), maxRetries: s.maxRetries,
+      assetId: Number(r.asset_id ?? r.linked_asset_id ?? 0) || null, userId: Number(r.owner_user_id),
+      title: r.title == null ? null : String(r.title), env: p.env, textOnly: true,
+    }), { origin: 'coherence-control' });
+  } catch (err) {
+    // Même règle que la reprise planifiée : toute erreur consomme une tentative.
+    await pgClient.unsafe(
+      `UPDATE document_extraction_coverage
+          SET retry_attempts = retry_attempts + 1, last_error = left($2, 500), updated_at = NOW(), next_retry_at = NULL,
+              last_retry_at = NOW(), last_retry_result = 'ERROR'
+        WHERE file_id = $1`,
+      [p.fileId, (err as Error).message ?? 'erreur'] as never[],
+    ).catch(() => undefined);
+    throw err;
+  }
 }
 
 /** Lot 54G : relectures du FICHIER au plus par unité NEEDS_SOURCE (= reprises automatiques, 1 au moins). */

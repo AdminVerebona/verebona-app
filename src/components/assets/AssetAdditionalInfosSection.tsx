@@ -15,20 +15,20 @@
  * CONNU et accordé ; le serveur refuse de toute façon l'écriture (403).
  *
  * Sous-rubriques selon la famille (§4.2) : commerciales, locatives
- * (immobilier seulement), assurance, valeur et charges. Lot 44 (O5) : le
- * Sinistre a quitté ce tiroir — rubrique « Sinistres » de la fiche, ouverte
- * à toutes les offres (Opération CLAIM, plusieurs sinistres par bien). Chaque
+ * (immobilier seulement), assurance, valeur et charges. Lot 83D (V-Q1) :
+ * aucune sous-rubrique « Sinistre » (le sinistre est porté par l'Agenda, les
+ * documents et le dossier Assurance-sinistre, sans écran dédié). Chaque
  * saisie est enregistrée automatiquement (700 ms après la dernière frappe,
  * `additional-infos-autosave`) avec un indicateur discret : « Enregistrement… »,
  * « Enregistré », « Échec de l'enregistrement ».
  *
- * Listes structurées (dommages, actions, échanges, points forts, protections,
- * éléments à assurer, charges) : lignes répétables (ajout, retrait,
+ * Listes structurées (points forts, protections, éléments à assurer,
+ * charges) : lignes répétables (ajout, retrait,
  * réordonnancement), envoyées EN BLOC par la même file, avec la version
  * connue. Un 409 (liste modifiée dans un autre onglet ou par le co-titulaire)
  * est résolu par `rebaseAfterConflict` : rejoué si la liste serveur n'a pas
  * bougé, sinon la liste serveur est affichée et un message l'explique.
- * Sélecteurs de pièces, photos et événement sinistre : `?include=references`.
+ * Sélecteurs de pièces et de photos : `?include=references`.
  *
  * Réutilisée telle quelle dans le tiroir de préparation d'un dossier
  * (`sections` restreint aux sous-rubriques du dossier, `variant="embedded"`) :
@@ -66,7 +66,7 @@ interface AdditionalInfosResponse extends AdditionalInfosData {
 }
 
 /** Champs saisis ligne à ligne (listes) ou par sélecteur dédié, hors de la grille des champs simples. */
-const isGridField = (def: AdditionalInfoFieldDef) => def.type !== 'list' && def.type !== 'eventRef';
+const isGridField = (def: AdditionalInfoFieldDef) => def.type !== 'list';
 
 interface Props {
   assetId: number;
@@ -104,10 +104,8 @@ export function AssetAdditionalInfosSection({
   // Écriture seulement si le droit est connu ET accordé (aucun champ
   // brièvement modifiable pendant le chargement des droits).
   const readOnly = readOnlyProp || droitDossiers !== true;
-  // Lot 44 (O5) : le Sinistre est saisi dans sa propre rubrique de la fiche
-  // (`claims/AssetClaimsSection`, toutes offres) — plus jamais ici.
   const visible = useMemo(() => {
-    const bySection = sectionsForCategory(category).filter((s) => s !== 'claim');
+    const bySection = sectionsForCategory(category);
     return sections ? bySection.filter((s) => sections.includes(s)) : bySection;
   }, [category, sections]);
 
@@ -140,7 +138,7 @@ export function AssetAdditionalInfosSection({
   /** Listes telles que le serveur les a rendues pour la dernière fois (base d'un rejeu après 409). */
   const baseListsRef = useRef<Record<string, ListItem[]>>({});
   const needsReferences = useMemo(
-    () => visible.some((sec) => fieldsFor(sec, family).some((d) => d.type === 'list' || d.type === 'eventRef')),
+    () => visible.some((sec) => fieldsFor(sec, family).some((d) => d.type === 'list')),
     [visible, family],
   );
 
@@ -180,7 +178,7 @@ export function AssetAdditionalInfosSection({
 
   useEffect(() => { void load(); }, [load]);
 
-  // Éléments citables (pièces, photos, sinistres de l'agenda, suggestions) : lus
+  // Éléments citables (pièces, photos, suggestions) : lus
   // à l'ouverture de la rubrique seulement — la fiche bien ne paie pas cette
   // lecture tant que la rubrique reste repliée.
   const referencesRequested = useRef(false);

@@ -60,6 +60,88 @@ export function hasStructurableValue(text: string): boolean {
     || TEL.test(text) || IDENTIFIANT.test(text) || NOMBRE_LONG.test(text);
 }
 
+// ── Lot 83B (C-Q7) : valeurs significatives d'un extrait, lues de façon DÉTERMINISTE ──
+
+/** Nature d'une valeur significative repérée dans une unité source. */
+export type SignificantKind = 'AMOUNT' | 'DATE' | 'IDENTIFIER';
+
+export interface SignificantValue {
+  kind: SignificantKind;
+  /** Texte tel qu'il figure dans l'unité. */
+  raw: string;
+  /** Forme normalisée : centimes (montant), `AAAA-MM-JJ` (date), jeton compact en majuscules (identifiant). */
+  normalized: string;
+}
+
+/** Montant ACCOMPAGNÉ d'une devise explicite (€, EUR, euros) — plus strict que `MONTANT` : jamais un simple « HT ». */
+const MONTANT_DEVISE = /(?<![\d,.])(\d{1,3}(?:[   .]\d{3})+|\d+)(?:,(\d{1,2})|\.(\d{1,2}))?\s?(?:€|eur\b|euros?\b)/gi;
+const DATE_NUM = /\b(\d{1,2})[/.-](\d{1,2})[/.-](\d{4})\b|\b(\d{4})-(\d{2})-(\d{2})\b/g;
+const DATE_MOIS = /\b(\d{1,2})(?:er)?\s+(janv|f[ée]vr|mars|avr|mai|juin|juil|ao[uû]t|sept|oct|nov|d[ée]c)[a-zéû]*\.?\s+(\d{4})\b/gi;
+const IDENTIFIANT_G = /\b(?=[A-Z0-9-]*\d)(?=[A-Z0-9-]*[A-Z])[A-Z0-9][A-Z0-9-]{4,}\b/gi;
+const MOIS: Record<string, number> = { janv: 1, fevr: 2, févr: 2, mars: 3, avr: 4, mai: 5, juin: 6, juil: 7, aout: 8, août: 8, sept: 9, oct: 10, nov: 11, dec: 12, déc: 12 };
+
+const isoValide = (y: number, m: number, d: number): string | null => {
+  if (m < 1 || m > 12 || d < 1 || d > 31 || y < 1900 || y > 2200) return null;
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  return dt.getUTCMonth() === m - 1 && dt.getUTCDate() === d ? `${y}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}` : null;
+};
+
+/** Jeton d'identifiant comparable : majuscules, sans espace, tiret, point ni barre. */
+export const compactIdentifier = (s: string): string => s.toUpperCase().replace(/[\s\-./]/g, '');
+
+/** Montant écrit (« 1 234,56 », « 1.234 », « 87.5 ») → centimes, ou null. */
+export function amountToCents(entier: string, decimales?: string | null): number | null {
+  const e = entier.replace(/[   .]/g, '');
+  if (!/^\d{1,12}$/.test(e)) return null;
+  const d = (decimales ?? '').padEnd(2, '0').slice(0, 2);
+  const n = Number(e) * 100 + (d ? Number(d) : 0);
+  return Number.isSafeInteger(n) ? n : null;
+}
+
+/**
+ * Valeurs significatives d'un texte (pure, déterministe) : montants avec
+ * devise, dates (numériques ou « 1er janvier 2026 »), identifiants (jeton
+ * lettres + chiffres, seulement si `identifiers` — la valeur d'un couple
+ * libellé / valeur). Aucun jugement de PERTINENCE : c'est à T1 de dire si
+ * une valeur est utile (demande IA 82B-t1-omissions-extract) ; le code ne
+ * fait que repérer et comparer.
+ */
+export function significantValues(text: string | null | undefined, opts: { identifiers?: boolean } = {}): SignificantValue[] {
+  if (!text) return [];
+  const out: SignificantValue[] = [];
+  const vus = new Set<string>();
+  const ajouter = (v: SignificantValue) => {
+    const k = `${v.kind}:${v.normalized}`;
+    if (!vus.has(k)) { vus.add(k); out.push(v); }
+  };
+  const zonesDates: Array<[number, number]> = [];
+  for (const m of text.matchAll(DATE_NUM)) {
+    const iso = m[3] ? isoValide(+m[3], +m[2], +m[1]) : isoValide(+m[4], +m[5], +m[6]);
+    zonesDates.push([m.index ?? 0, (m.index ?? 0) + m[0].length]);
+    if (iso) ajouter({ kind: 'DATE', raw: m[0], normalized: iso });
+  }
+  for (const m of text.matchAll(DATE_MOIS)) {
+    const mois = MOIS[m[2].toLowerCase().normalize('NFC')] ?? MOIS[m[2].toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '')];
+    const iso = mois ? isoValide(+m[3], mois, +m[1]) : null;
+    zonesDates.push([m.index ?? 0, (m.index ?? 0) + m[0].length]);
+    if (iso) ajouter({ kind: 'DATE', raw: m[0], normalized: iso });
+  }
+  const dansUneDate = (i: number) => zonesDates.some(([a, b]) => i >= a && i < b);
+  for (const m of text.matchAll(MONTANT_DEVISE)) {
+    if (dansUneDate(m.index ?? 0)) continue;
+    const c = amountToCents(m[1], m[2] ?? m[3] ?? null);
+    if (c !== null && c > 0) ajouter({ kind: 'AMOUNT', raw: m[0].trim(), normalized: String(c) });
+  }
+  if (opts.identifiers) {
+    for (const m of text.matchAll(IDENTIFIANT_G)) {
+      if (dansUneDate(m.index ?? 0)) continue;
+      const c = compactIdentifier(m[0]);
+      if (c.length >= 6 && /[A-Z]/.test(c) && /\d/.test(c)) ajouter({ kind: 'IDENTIFIER', raw: m[0], normalized: c });
+    }
+  }
+  return out;
+}
+
 /**
  * Couple « Libellé : valeur » sur une ligne. Le libellé contient une lettre,
  * n'est ni une URL ni une heure (« 12:30 »), et la valeur n'est pas vide.

@@ -216,8 +216,9 @@ scenario('L53B-D23', 'Relations intercomptes : inventaire, neutralisation, corre
     await route('GET /api/assets/[id]/photos', () => ph.GET(req(`/api/assets/${moi.bien.id}/photos`), ctx('id', moi.bien.id)));
     const ds = await import('@/app/api/assets/[id]/deletion-summary/route');
     await route('GET /api/assets/[id]/deletion-summary', () => ds.GET(req(`/api/assets/${moi.bien.id}/deletion-summary`), ctx('id', moi.bien.id)));
-    const claims = await import('@/app/api/assets/[id]/claims/route');
-    await route('GET /api/assets/[id]/claims?include=references', () => claims.GET(req(`/api/assets/${moi.bien.id}/claims?include=references`), ctx('id', moi.bien.id)));
+    // Lot 83D (V-Q1) : routes /claims retirées — les références du bien passent par les informations complémentaires.
+    const infos = await import('@/app/api/assets/[id]/additional-infos/route');
+    await route('GET /api/assets/[id]/additional-infos?include=references', () => infos.GET(req(`/api/assets/${moi.bien.id}/additional-infos?include=references`), ctx('id', moi.bien.id)));
     const home = await import('@/services/home/HomeSummaryService');
     await service('buildHomeSummary (accueil)', () => home.buildHomeSummary(moi.acc.id));
     const tp = await import('@/app/api/v2/to-process/route');

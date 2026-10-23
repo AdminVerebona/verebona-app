@@ -37,7 +37,7 @@ const loadSource = vi.fn(async () => ({
   exportType: 'DOSSIER_COMPLET', family: 'IMMOBILIER',
   asset: { id: 5, name: 'Maison', characteristics: {}, equipmentList: [] },
   documents: [], photos: [], events: [], equipments: [], rooms: [],
-  additionalInfo: { commercial: {}, rental: {}, insurance: {}, claim: {}, updatedAt: null },
+  additionalInfo: { commercial: {}, rental: {}, insurance: {}, updatedAt: null },
   cil: null, preparedBy: 'Claire Martin',
 }));
 const scheduleOrphans = vi.fn(async (..._a: unknown[]) => 1);

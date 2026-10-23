@@ -26,9 +26,24 @@
  *   FINANCING / OTHER / nul  aucune projection (aucune échéance de
  *                            financement n'est portée par les règles Agenda)
  *
- * Une Opération a AU PLUS UN emplacement d'agenda (clé de projection) :
- * l'intervention envisagée puis réalisée est la MÊME occurrence (C22 :
- * « l'événement prévu devient historique »). Le contrat porte la date de son
+ * Lot 83A (CDC v5 O-7, §6.1, §11, §12, E01–E05) — PLUSIEURS ÉLÉMENTS PAR
+ * OPÉRATION, LA CLÉ DE PROJECTION EST CELLE DU PRINCIPAL. Une Opération
+ * regroupe 0..N éléments d'agenda (étapes, rendez-vous, échéances…) ; la
+ * projection ne gère QUE sa représentation : pour un événement global
+ * (intervention, sinistre, achat, cession) l'emplacement est l'élément
+ * PRINCIPAL (`operation_role`), à défaut sa propre projection ; les autres
+ * membres restent des éléments autonomes — jamais promus parce qu'ils sont
+ * liés, jamais absorbés, jamais détachés par la projection (seule
+ * l'invalidation de l'Opération les libère). Principal FACULTATIF : aucun
+ * principal n'est déduit pour une relation durable (contrat, financement,
+ * §11.10, AC52) ni pour un regroupement non qualifié ; le principal par
+ * document reste la décision de T4 (demande IA 82D-t4-principal, en attente).
+ * Événement établi SANS date (§11.4, AC17) : créé sans date (ni date
+ * inventée, ni « Sans échéance ») ; la carte « À traiter » de date existante
+ * (DATA-AGENDA-DATE) la demande, ou l'arbitre si T3 a trouvé des dates
+ * contradictoires (§11.8, AC20) ; une date établie ensuite est posée et la
+ * carte se ferme d'elle-même (§11.7, AC19). L'intervention envisagée puis
+ * réalisée reste la MÊME occurrence (C22). Le contrat porte la date de son
  * échéance dans sa clé : un renouvellement est une nouvelle échéance.
  *
  * RAPPROCHEMENT AVANT PROJECTION (C16.1, F-147) : un événement existant qui
@@ -58,7 +73,7 @@ import { findDuplicate } from '@/services/ai/agenda/dedupe.service';
 import { natureTokens } from '../consolidation/matching';
 import type { AgendaEventNature } from '@/services/agenda/agenda-functional-key';
 import type { BusinessOperationStatus, BusinessOperationTypeCode } from '../model';
-import { projectionRoleOf, type OperationRole } from '../grouping/model';
+import { isDurableRelation, projectionRoleOf, type OperationRole } from '../grouping/model';
 
 /** Valeur de `agenda_items.projection_origin` d'un événement GÉNÉRÉ (0318). */
 export const PROJECTION_ORIGIN = 'OPERATION';
@@ -114,6 +129,12 @@ export interface OperationSnapshot {
    * projection exploite (aucune règle « un document = un événement »).
    */
   exclusiveFileIds?: number[];
+  /**
+   * Lot 83A (§11.8) : dates de réalisation CONTRADICTOIRES entre sources,
+   * telles que T3 les a tracées (provenance 78A, contradiction ouverte) —
+   * au moins deux valeurs crédibles. Absent ou < 2 : aucune contradiction.
+   */
+  realizedDateConflict?: string[];
 }
 
 /** Élément d'agenda lu pour la projection (lié à l'Opération, ou candidat au rapprochement). */
@@ -173,13 +194,21 @@ export interface DesiredProjection {
   key: string;
   nature: AgendaEventNature;
   businessType: string;
-  /** Date de l'événement ; null = aucune date connue (rien n'est créé, F-140). */
+  /**
+   * Date de l'événement ; null = aucune date établie (inconnue ou
+   * contradictoire) — jamais inventée (F-140, P6) ; lot 83A : un événement
+   * établi (`creatable`) est alors créé SANS date (§11.4).
+   */
   date: string | null;
   title: string;
   category: 'action' | 'information';
   /** État métier à refléter : ouvert (à venir) ou réalisé. */
   target: 'OPEN' | 'REALIZED';
-  /** Un événement absent peut-il être CRÉÉ (date connue, échéance actionnable) ? */
+  /**
+   * Un événement absent peut-il être CRÉÉ ? Échéance : actionnable (à venir).
+   * Lot 83A : événement global RÉALISÉ (réalisation prouvée par une source
+   * certaine, C8) — oui, avec ou sans date (§11.4).
+   */
   creatable: boolean;
 }
 
@@ -189,10 +218,11 @@ export type ProjectionDecision =
     kind: 'NONE';
     reason: NoProjectionReason;
     /**
-     * Les liens posés vers des événements existants (utilisateur, T4) sont-ils
-     * conservés ? Non quand l'Opération n'est plus (invalidée, fusionnée) ou
-     * n'est plus d'un type projeté ; oui sinon (date manquante, ancre de
-     * l'historique, annulation…).
+     * Les éléments liés (utilisateur, T3, T4) restent-ils membres ? Non
+     * seulement quand l'Opération n'est plus (invalidée, fusionnée). Lot 83A
+     * (§6.1) : un type non projeté (regroupement non qualifié, financement…)
+     * ne défait plus le regroupement — seules les projections intactes
+     * partent.
      */
     keepLinks: boolean;
   };
@@ -257,41 +287,40 @@ export function parseProjectionFunctionalKey(fk: string | null | undefined): { o
 export function decideProjection(op: OperationSnapshot, today: string): ProjectionDecision {
   if (!op.active) return { kind: 'NONE', reason: 'INACTIVE', keepLinks: false };
   const key = projectionKeyOf(op);
-  if (!key || !op.typeCode) return { kind: 'NONE', reason: 'TYPE_NOT_PROJECTED', keepLinks: false };
+  if (!key || !op.typeCode) return { kind: 'NONE', reason: 'TYPE_NOT_PROJECTED', keepLinks: true };
   // P08 : une Opération sans bien fiable ne nourrit pas les usages liés à un bien.
   if (op.assetIds.length === 0) return { kind: 'NONE', reason: 'NO_ASSET', keepLinks: true };
   const label = presentableLabel(op.technicalLabel);
   const provider = presentableLabel(op.provider);
+  // Lot 83A (§11.8, AC20) : dates de réalisation contradictoires (T3) → aucune date retenue, arbitrage.
+  const realise = establishedRealizedDate(op);
 
   switch (op.typeCode) {
     case 'INTERVENTION': {
       const title = label ?? (provider ? `Intervention — ${provider}` : 'Intervention');
       if (op.status === 'CANCELLED') return { kind: 'NONE', reason: 'CANCELLED', keepLinks: true };
       if (op.status === 'ENVISAGED') {
+        // Une intervention seulement envisagée sans date n'est pas un événement établi : rien n'est créé.
         if (!op.plannedDate) return { kind: 'NONE', reason: 'NO_DATE', keepLinks: true };
         return { kind: 'PROJECT', desired: { key, nature: 'DEADLINE', businessType: 'maintenance', date: op.plannedDate, title, category: 'action', target: 'OPEN', creatable: true } };
       }
-      // REALIZED : historique si la date de réalisation est connue ; sinon
-      // l'événement planifié lié est seulement complété (aucune date inventée, F-140).
-      if (op.realizedDate) {
-        return { kind: 'PROJECT', desired: { key, nature: 'HISTORICAL', businessType: 'maintenance', date: op.realizedDate, title, category: 'information', target: 'REALIZED', creatable: true } };
-      }
-      return { kind: 'PROJECT', desired: { key, nature: 'DEADLINE', businessType: 'maintenance', date: null, title, category: 'action', target: 'REALIZED', creatable: false } };
+      // REALIZED (réalisation prouvée) : historique, daté si la date est établie ;
+      // sinon SANS date (§11.4, aucune date inventée) — un événement planifié lié
+      // est seulement complété (F-140).
+      return { kind: 'PROJECT', desired: { key, nature: 'HISTORICAL', businessType: 'maintenance', date: realise, title, category: 'information', target: 'REALIZED', creatable: true } };
     }
     case 'CLAIM': {
       if (op.status !== 'REALIZED') return { kind: 'NONE', reason: 'STATUS_NOT_PROJECTED', keepLinks: true };
       // L'événement de l'historique choisi au formulaire Sinistre représente déjà la survenue.
       if (op.claimHistoryEventId !== null) return { kind: 'NONE', reason: 'EQUIVALENT_EXISTS', keepLinks: true };
-      if (!op.realizedDate) return { kind: 'NONE', reason: 'NO_DATE', keepLinks: true };
-      return { kind: 'PROJECT', desired: { key, nature: 'HISTORICAL', businessType: 'claim', date: op.realizedDate, title: label ?? 'Sinistre', category: 'information', target: 'REALIZED', creatable: true } };
+      return { kind: 'PROJECT', desired: { key, nature: 'HISTORICAL', businessType: 'claim', date: realise, title: label ?? 'Sinistre', category: 'information', target: 'REALIZED', creatable: true } };
     }
     case 'ACQUISITION':
     case 'DISPOSAL': {
       if (op.status !== 'REALIZED') return { kind: 'NONE', reason: 'STATUS_NOT_PROJECTED', keepLinks: true };
-      if (!op.realizedDate) return { kind: 'NONE', reason: 'NO_DATE', keepLinks: true };
       const acq = op.typeCode === 'ACQUISITION';
       const title = acq ? 'Achat' : op.disposalKind === 'TRANSMISSION' ? 'Transmission' : 'Vente';
-      return { kind: 'PROJECT', desired: { key, nature: 'HISTORICAL', businessType: acq ? 'purchase' : 'sale', date: op.realizedDate, title, category: 'information', target: 'REALIZED', creatable: true } };
+      return { kind: 'PROJECT', desired: { key, nature: 'HISTORICAL', businessType: acq ? 'purchase' : 'sale', date: realise, title, category: 'information', target: 'REALIZED', creatable: true } };
     }
     case 'CONTRACT': {
       if (op.status === 'CANCELLED') return { kind: 'NONE', reason: 'CANCELLED', keepLinks: true };
@@ -305,9 +334,18 @@ export function decideProjection(op: OperationSnapshot, today: string): Projecti
       };
     }
     default:
-      return { kind: 'NONE', reason: 'TYPE_NOT_PROJECTED', keepLinks: false };
+      return { kind: 'NONE', reason: 'TYPE_NOT_PROJECTED', keepLinks: true };
   }
 }
+
+/** Lot 83A : contradiction ouverte de T3 sur la date de réalisation (≥ 2 valeurs crédibles). */
+export const realizedDateContested = (op: Pick<OperationSnapshot, 'realizedDateConflict'>): boolean =>
+  new Set((op.realizedDateConflict ?? []).filter((v) => /^\d{4}-\d{2}-\d{2}$/.test(v))).size >= 2;
+
+/** Date de réalisation ÉTABLIE (pure) : celle de T3, sauf contradiction ouverte (§11.8 : conserver la date vide). */
+export const establishedRealizedDate = (op: Pick<OperationSnapshot, 'realizedDate' | 'realizedDateConflict'>): string | null =>
+  (realizedDateContested(op) ? null : op.realizedDate);
+
 
 // ── Élément « touché » par l'utilisateur (convention §14.6) ────────────────
 
@@ -487,7 +525,8 @@ export function preciseOperationTitle(op: Pick<OperationSnapshot, 'technicalLabe
 
 export interface ItemSync {
   title?: string;
-  date?: string;
+  /** Lot 83A : null = date de la projection retirée (date d'origine retirée ou contestée, §11.8). */
+  date?: string | null;
   nature?: AgendaEventNature;
   businessType?: string;
   homeCategory?: 'action' | 'information';
@@ -529,7 +568,12 @@ export type ProjectionAction =
    * échéance → RELATED), appliqué par le service de regroupement (un
    * principal choisi par l'utilisateur n'est jamais remplacé).
    */
-  | { kind: 'ROLE'; itemId: number; role: OperationRole };
+  | { kind: 'ROLE'; itemId: number; role: OperationRole }
+  /**
+   * Lot 83A (§11.7, AC19) : date établie posée sur un principal AUTOMATIQUE
+   * intact resté sans date (élément T4 d'un document) — jamais sur une saisie.
+   */
+  | { kind: 'DATE'; itemId: number; date: string };
 
 export interface PlanInput {
   op: OperationSnapshot;
@@ -558,21 +602,77 @@ const sameSet = (a: readonly number[], b: readonly number[]): boolean => {
   return x.length === y.length && x.every((v, i) => v === y[i]);
 };
 
-/** Ordre de préférence de l'élément principal : saisi / T4 avant projeté, intact après touché, plus ancien. */
-function principal(linked: readonly AgendaItemSnapshot[]): AgendaItemSnapshot {
-  // Lot 82D : un principal désigné par l'UTILISATEUR d'abord (jamais remplacé) ; sinon la règle de
-  // représentation de la projection (T4) s'applique à nouveau — elle a produit le principal T4 en place.
+/** Clé de projection portée par un élément PROJETÉ (null : clé illisible ou ancienne projection sans clé). */
+const cleDe = (i: AgendaItemSnapshot): string | null => parseProjectionFunctionalKey(i.functionalKey)?.key ?? null;
+
+/**
+ * Lot 83A (CDC v5 O-7, E01, E04) — emplacement d'un ÉVÉNEMENT GLOBAL : la
+ * clé de projection est celle du PRINCIPAL. L'élément principal de
+ * l'Opération (quel qu'en soit l'auteur) ; à défaut la propre projection de
+ * l'Opération représentant un événement global (clé PRINCIPAL, même après
+ * requalification du type), touchée ou non ; sinon AUCUN — un membre lié
+ * n'est jamais l'emplacement du seul fait d'être lié (§6.5, AC34).
+ */
+function principalSlot(linked: readonly AgendaItemSnapshot[], key: string): AgendaItemSnapshot | null {
+  const principal = linked.find((i) => i.operationRole === 'PRINCIPAL');
+  if (principal) return principal;
+  const propres = linked.filter((i) => i.projected && projectionRoleOf(cleDe(i) ?? key) === 'PRINCIPAL');
+  return propres.sort((a, b) => Number(cleDe(b) === key) - Number(cleDe(a) === key) || Number(isTouched(a)) - Number(isTouched(b)) || a.id - b.id)[0] ?? null;
+}
+
+/**
+ * Emplacement d'une ÉCHÉANCE (clé RELATED : fin de contrat) — règle de
+ * représentation inchangée (lot 46 / 82D) : choix de l'utilisateur, saisi /
+ * T4 avant projeté, intact après touché, plus ancien.
+ */
+function deadlineSlot(linked: readonly AgendaItemSnapshot[]): AgendaItemSnapshot | null {
   const choixUtilisateur = (i: AgendaItemSnapshot) => Number(i.operationRole === 'PRINCIPAL' && i.operationRoleOrigin === 'USER');
   return [...linked].sort((a, b) => choixUtilisateur(b) - choixUtilisateur(a)
     || Number(a.projected) - Number(b.projected)
-    || Number(isTouched(b)) - Number(isTouched(a)) || a.id - b.id)[0];
+    || Number(isTouched(b)) - Number(isTouched(a)) || a.id - b.id)[0] ?? null;
 }
 
-/** Lot 82D : action de rôle si l'élément représentatif n'a pas le rôle voulu par la projection. */
+/**
+ * Action de rôle si l'élément représentatif n'a pas le rôle voulu par la
+ * projection. Lot 83A : un rôle posé par l'UTILISATEUR n'est jamais modifié
+ * par la projection (§10, P8).
+ */
 function roleActions(item: AgendaItemSnapshot, key: string): ProjectionAction[] {
-  if (item.operationRole === undefined) return [];
+  if (item.operationRole === undefined || item.operationRoleOrigin === 'USER') return [];
   const voulu = projectionRoleOf(key);
   return item.operationRole === voulu ? [] : [{ kind: 'ROLE', itemId: item.id, role: voulu }];
+}
+
+/**
+ * Lot 83A (§11.10, AC52) : principal DÉDUIT (T4, T3, reprise) d'une relation
+ * durable → rétrogradé en élément lié (l'élément reste) ; jamais un choix de
+ * l'utilisateur. Même règle que l'invariant O7-NO-INFERRED-PRINCIPAL.
+ */
+function durableRelationDemotions(op: OperationSnapshot, linked: readonly AgendaItemSnapshot[]): ProjectionAction[] {
+  if (!isDurableRelation(op.typeCode)) return [];
+  return linked.filter((i) => i.operationRole === 'PRINCIPAL' && i.operationRoleOrigin !== 'USER')
+    .map((i) => ({ kind: 'ROLE' as const, itemId: i.id, role: 'RELATED' as const }));
+}
+
+/** Une action de rôle par élément (la première l'emporte), ordre conservé. */
+function uniqueRoles(actions: ProjectionAction[]): ProjectionAction[] {
+  const vus = new Set<number>();
+  return actions.filter((a) => {
+    if (a.kind !== 'ROLE') return true;
+    if (vus.has(a.itemId)) return false;
+    vus.add(a.itemId);
+    return true;
+  });
+}
+
+/**
+ * Lot 83A (§11.7, AC19) : date établie posée sur un principal automatique
+ * intact (non projeté) resté sans date — jamais une saisie, jamais un statut
+ * ouvert à l'utilisateur.
+ */
+function dateActions(item: AgendaItemSnapshot, d: DesiredProjection): ProjectionAction[] {
+  if (!d.date || item.date || item.projected || !item.isAutomatic || isTouched(item) || item.pendingStatus) return [];
+  return [{ kind: 'DATE', itemId: item.id, date: d.date }];
 }
 
 /**
@@ -590,7 +690,20 @@ function statusActions(op: OperationSnapshot, item: AgendaItemSnapshot, desired:
   return [{ kind: 'PROPOSE_DONE', itemId: item.id }];
 }
 
-/** Plan d'actions pour UNE Opération (pur, idempotent : un état à jour rend un plan vide). */
+/**
+ * Plan d'actions pour UNE Opération (pur, idempotent : un état à jour rend un plan vide).
+ *
+ * Lot 83A (CDC v5 O-7) — la projection n'agit que sur SA représentation :
+ *   · événement global (clé PRINCIPAL) : emplacement = principal, sinon sa
+ *     propre projection (`principalSlot`) ; sans emplacement, l'événement est
+ *     RECONNU parmi les éléments existants (rapprochement certain C16.1 ou
+ *     représentations T4 établies par T3, 76H) — membres compris, mais un
+ *     membre n'est jamais choisi parce qu'il est lié — sinon CRÉÉ, daté ou
+ *     non (§11.3, §11.4) ;
+ *   · échéance (clé RELATED) : règle de représentation inchangée ;
+ *   · les autres membres ne sont ni promus, ni absorbés (hors vrai doublon
+ *     76H), ni détachés ; relation durable : aucun principal déduit (AC52).
+ */
 export function planOperationProjection(p: PlanInput): ProjectionAction[] {
   const { op, decision } = p;
   const actions: ProjectionAction[] = [];
@@ -601,92 +714,140 @@ export function planOperationProjection(p: PlanInput): ProjectionAction[] {
       if (i.projected && !isTouched(i)) actions.push({ kind: 'REMOVE', itemId: i.id, reason: decision.reason });
       else if (!decision.keepLinks) actions.push({ kind: 'DETACH', itemId: i.id, reason: decision.reason });
     }
+    if (decision.keepLinks) actions.push(...durableRelationDemotions(op, p.linked.filter((i) => !(i.projected && !isTouched(i)))));
     return actions;
   }
 
   const d = decision.desired;
   const fk = projectionFunctionalKey(op.id, d.key);
-  let item: AgendaItemSnapshot | null = null;
+  const evenementGlobal = projectionRoleOf(d.key) === 'PRINCIPAL';
+  const item = evenementGlobal ? principalSlot(p.linked, d.key) : deadlineSlot(p.linked);
 
-  if (p.linked.length) {
-    item = principal(p.linked);
-    // Doublons (fusion, lien posé à côté d'une projection) : projections intactes de la MÊME clé
-    // retirées (C22 « unifier ») — lot 82D (V-Q4) : une projection d'une autre clé (autre
-    // échéance d'un contrat) est une occurrence distincte, jamais retirée.
+  if (item && evenementGlobal && item.projected && !isTouched(item) && item.operationRoleOrigin !== 'USER' && d.date) {
+    // Lot 83A (C16.1, V-Q4) : la propre projection INTACTE fait double emploi avec un membre qui représente
+    // CERTAINEMENT la même occurrence (élément saisi ou T4 rattaché par T3 à cette réalité, même bien,
+    // même date) — vrai doublon : la projection est retirée, le membre devient le principal (AC15).
+    // Un membre seulement lié (étape, autre date) ne l'évince jamais (AC34).
+    const membres = p.linked.filter((i) => i.id !== item.id && !i.projected && i.operationRole !== 'PRINCIPAL');
+    const reconnu = membres.length ? matchExistingItem(op, d, membres) : { kind: 'none' as const };
+    if (reconnu.kind === 'certain') {
+      return [
+        { kind: 'REMOVE', itemId: item.id, reason: 'DUPLICATE_PROJECTION' },
+        { kind: 'LINK', itemId: reconnu.item.id, reason: `élément du regroupement : ${reconnu.reason}` },
+        ...statusActions(op, reconnu.item, d, cards),
+      ];
+    }
+  }
+  if (item) {
+    // Doublons (fusion, lien posé à côté d'une projection) : propres projections INTACTES de la même
+    // représentation retirées (C22 « unifier » — vrai doublon de l'emplacement). Lot 82D (V-Q4) : une
+    // échéance d'une autre clé est une occurrence distincte ; lot 83A : un élément principal ou un
+    // membre non projeté ne l'est jamais.
     for (const autre of p.linked) {
-      const cle = parseProjectionFunctionalKey(autre.functionalKey)?.key ?? null;
-      if (autre.id !== item.id && autre.projected && !isTouched(autre) && (cle === null || cle === d.key)) {
-        actions.push({ kind: 'REMOVE', itemId: autre.id, reason: 'DUPLICATE_PROJECTION' });
-      }
+      if (autre.id === item.id || !autre.projected || isTouched(autre) || autre.operationRole === 'PRINCIPAL') continue;
+      const cle = cleDe(autre);
+      const meme = evenementGlobal ? projectionRoleOf(cle ?? d.key) === 'PRINCIPAL' : cle === null || cle === d.key;
+      if (meme) actions.push({ kind: 'REMOVE', itemId: autre.id, reason: 'DUPLICATE_PROJECTION' });
     }
-  } else {
-    if (p.suppressedKeys.has(d.key)) return [{ kind: 'SUPPRESSED', key: d.key }];
-    if (!d.date) return [{ kind: 'ABSTAIN', reason: 'NO_DATE' }];
-    if (p.forceCreate) {
-      if (!d.creatable) return [{ kind: 'ABSTAIN', reason: 'NOT_CREATABLE' }];
-      return [{ kind: 'CREATE', desired: d, functionalKey: fk }];
-    }
-    const pool = p.taken?.size ? p.candidates.filter((c) => !p.taken!.has(c.id)) : p.candidates;
-    // Lot 76H : T3 a établi que la preuve d'intervention de ces documents est
-    // CETTE Opération — leurs événements T4 la représentent. Convergence
-    // seulement si aucun AUTRE événement (saisi, autre document) ne pourrait
-    // aussi la représenter ; sinon abstention et arbitrage existant.
-    const couverts = coveredEquivalents(op, d, pool);
-    if (couverts.length) {
-      const principalT4 = choosePrincipal(couverts, op.id, d.date);
-      // Les représentations d'une AUTRE intervention établie par T3 ne sont pas des candidates.
-      const autres = matchExistingItem(op, d, pool.filter((c) => !couverts.includes(c)
-        && !(c.coveredByOperationId != null && c.coveredByOperationId !== op.id)));
-      if (autres.kind === 'none') {
-        const absorbes = couverts.filter((c) => c.id !== principalT4.id).map((c) => c.id);
-        actions.push(absorbes.length
-          ? { kind: 'CONSOLIDATE', principalId: principalT4.id, absorbedIds: absorbes, linkPrincipal: true, reason: 'EQUIVALENT_BY_OPERATION' }
-          : { kind: 'LINK', itemId: principalT4.id, reason: 'représentation établie par l’Opération (T3)' });
-        actions.push(...retitleActions(op, principalT4));
-        actions.push(...statusActions(op, principalT4, d, cards));
-        return actions;
-      }
-      const cands = [
-        { itemId: principalT4.id, title: principalT4.title, date: principalT4.date, reason: 'événement du document de l’intervention' },
-        ...(autres.kind === 'certain' ? [{ item: autres.item, reason: autres.reason }] : autres.candidates)
-          .map((c) => ({ itemId: c.item.id, title: c.item.title, date: c.item.date, reason: c.reason })),
-      ].slice(0, PROBABLE_CANDIDATES_MAX);
-      return [{ kind: 'ABSTAIN', reason: 'PROBABLE_EQUIVALENT: plusieurs représentations possibles', itemId: principalT4.id, key: d.key, candidates: cands }];
-    }
-    const m = matchExistingItem(op, d, pool);
-    if (m.kind === 'probable') {
-      return [{
-        kind: 'ABSTAIN', reason: `PROBABLE_EQUIVALENT: ${m.reason}`, itemId: m.item.id, key: d.key,
-        candidates: m.candidates.map((c) => ({ itemId: c.item.id, title: c.item.title, date: c.item.date, reason: c.reason })),
-      }];
-    }
-    if (m.kind === 'certain') {
-      actions.push({ kind: 'LINK', itemId: m.item.id, reason: m.reason });
-      actions.push(...statusActions(op, m.item, d, cards));
-      return actions;
-    }
+    actions.push(...occupiedSlotActions(p, d, fk, item, cards));
+    if (!evenementGlobal) actions.push(...durableRelationDemotions(op, p.linked));
+    return uniqueRoles(actions);
+  }
+
+  if (p.suppressedKeys.has(d.key)) return [{ kind: 'SUPPRESSED', key: d.key }];
+  if (!d.date) {
+    // §11.4 / AC17 : l'identité de l'événement est établie, sa date non — créé SANS date (jamais
+    // inventée, jamais « Sans échéance ») ; aucun rapprochement sur une date absente.
+    if (!d.creatable) return [{ kind: 'ABSTAIN', reason: 'NO_DATE' }];
+    return [{ kind: 'CREATE', desired: d, functionalKey: fk }];
+  }
+  if (p.forceCreate) {
     if (!d.creatable) return [{ kind: 'ABSTAIN', reason: 'NOT_CREATABLE' }];
     return [{ kind: 'CREATE', desired: d, functionalKey: fk }];
   }
+  const pool = p.taken?.size ? p.candidates.filter((c) => !p.taken!.has(c.id)) : p.candidates;
+  // Lot 83A : membres de l'Opération non projetés (étapes, saisies, éléments T3) — candidats à la
+  // reconnaissance du principal (AC15) sur un rapprochement CERTAIN seulement ; jamais l'objet d'une
+  // abstention (« même Opération ≠ doublon », §6.5).
+  const membres = evenementGlobal ? p.linked.filter((i) => !i.projected && i.operationRole !== 'PRINCIPAL' && !pool.includes(i)) : [];
+  const promotion = (x: AgendaItemSnapshot): ProjectionAction[] =>
+    (x.businessOperationId === op.id && x.operationRole !== undefined && x.operationRole !== 'PRINCIPAL' ? [{ kind: 'ROLE' as const, itemId: x.id, role: 'PRINCIPAL' as const }] : []);
+  // Lot 76H : T3 a établi que la preuve d'intervention de ces documents est
+  // CETTE Opération — leurs événements T4 la représentent. Convergence
+  // seulement si aucun AUTRE événement (saisi, autre document) ne pourrait
+  // aussi la représenter ; sinon abstention et arbitrage existant.
+  const couverts = coveredEquivalents(op, d, [...pool, ...membres]);
+  if (couverts.length) {
+    const principalT4 = choosePrincipal(couverts, op.id, d.date);
+    // Les représentations d'une AUTRE intervention établie par T3 ne sont pas des candidates.
+    const autres = matchExistingItem(op, d, pool.filter((c) => !couverts.includes(c)
+      && !(c.coveredByOperationId != null && c.coveredByOperationId !== op.id)));
+    if (autres.kind === 'none') {
+      const absorbes = couverts.filter((c) => c.id !== principalT4.id).map((c) => c.id);
+      actions.push(absorbes.length
+        ? { kind: 'CONSOLIDATE', principalId: principalT4.id, absorbedIds: absorbes, linkPrincipal: true, reason: 'EQUIVALENT_BY_OPERATION' }
+        : { kind: 'LINK', itemId: principalT4.id, reason: 'représentation établie par l’Opération (T3)' });
+      if (absorbes.length) actions.push(...promotion(principalT4));
+      actions.push(...retitleActions(op, principalT4));
+      actions.push(...statusActions(op, principalT4, d, cards));
+      return actions;
+    }
+    const cands = [
+      { itemId: principalT4.id, title: principalT4.title, date: principalT4.date, reason: 'événement du document de l’intervention' },
+      ...(autres.kind === 'certain' ? [{ item: autres.item, reason: autres.reason }] : autres.candidates)
+        .map((c) => ({ itemId: c.item.id, title: c.item.title, date: c.item.date, reason: c.reason })),
+    ].slice(0, PROBABLE_CANDIDATES_MAX);
+    return [{ kind: 'ABSTAIN', reason: 'PROBABLE_EQUIVALENT: plusieurs représentations possibles', itemId: principalT4.id, key: d.key, candidates: cands }];
+  }
+  // AC15 : un membre qui représente CERTAINEMENT l'événement global devient le principal.
+  const reconnu = membres.length ? matchExistingItem(op, d, membres) : { kind: 'none' as const };
+  if (reconnu.kind === 'certain') {
+    actions.push({ kind: 'LINK', itemId: reconnu.item.id, reason: `élément du regroupement : ${reconnu.reason}` });
+    actions.push(...statusActions(op, reconnu.item, d, cards));
+    return actions;
+  }
+  const m = matchExistingItem(op, d, pool);
+  if (m.kind === 'probable') {
+    return [{
+      kind: 'ABSTAIN', reason: `PROBABLE_EQUIVALENT: ${m.reason}`, itemId: m.item.id, key: d.key,
+      candidates: m.candidates.map((c) => ({ itemId: c.item.id, title: c.item.title, date: c.item.date, reason: c.reason })),
+    }];
+  }
+  if (m.kind === 'certain') {
+    actions.push({ kind: 'LINK', itemId: m.item.id, reason: m.reason });
+    actions.push(...statusActions(op, m.item, d, cards));
+    return actions;
+  }
+  if (!d.creatable) return [{ kind: 'ABSTAIN', reason: 'NOT_CREATABLE' }];
+  return [{ kind: 'CREATE', desired: d, functionalKey: fk }];
+}
 
+/** Emplacement occupé : convergence 76H, mise à jour de la projection intacte, sinon statut / intitulé / date / rôle. */
+function occupiedSlotActions(p: PlanInput, d: DesiredProjection, fk: string, item: AgendaItemSnapshot, cards: ReadonlySet<number>): ProjectionAction[] {
+  const { op } = p;
+  const actions: ProjectionAction[] = [];
   // Lot 76H : autres représentations T4 de la même intervention (liées à
   // cette Opération, ou créées avant / pendant la consolidation T3) —
   // absorbées par l'élément principal, qui représente déjà l'Opération.
+  // Lot 82D / 83A (V-Q4) : ni un principal, ni un élément rattaché par
+  // l'utilisateur (`coveredEquivalents`).
   if (d.date && item.date && dayGap(item.date, d.date) <= (item.nature !== d.nature ? PLANNED_TO_REALIZED_TOLERANCE_DAYS : MATCH_DATE_TOLERANCE_DAYS)) {
     const pool = [
-      ...p.linked.filter((i) => i.id !== item!.id),
-      ...p.candidates.filter((c) => c.id !== item!.id && c.businessOperationId !== op.id && !p.taken?.has(c.id)),
+      ...p.linked.filter((i) => i.id !== item.id),
+      ...p.candidates.filter((c) => c.id !== item.id && c.businessOperationId !== op.id && !p.taken?.has(c.id)),
     ];
     const absorbes = coveredEquivalents(op, d, pool).map((c) => c.id);
     if (absorbes.length) actions.push({ kind: 'CONSOLIDATE', principalId: item.id, absorbedIds: absorbes, linkPrincipal: false, reason: 'EQUIVALENT_BY_OPERATION' });
   }
 
-  // Élément principal présent.
   if (item.projected && !isTouched(item)) {
     const changes: ItemSync = {};
     if (item.title !== d.title) changes.title = d.title;
-    if (d.date && item.date !== d.date) changes.date = d.date;
-    // Sans date de réalisation (F-140) : l'occurrence planifiée garde sa date et sa nature, elle est marquée réalisée.
+    // Lot 83A (§11.7, §11.8) : la date établie est posée ; sans date établie, l'occurrence
+    // planifiée garde sa date (F-140) mais un historique projeté perd la date qui n'est plus
+    // établie (source retirée, dates contradictoires) — jamais une date conservée sans preuve.
+    const date = d.date ?? (item.nature === 'HISTORICAL' ? null : item.date);
+    if (item.date !== date) changes.date = date;
     const nature = d.date ? d.nature : item.nature ?? d.nature;
     if (item.nature !== nature) changes.nature = nature;
     if (item.businessType !== d.businessType) changes.businessType = d.businessType;
@@ -710,9 +871,11 @@ export function planOperationProjection(p: PlanInput): ProjectionAction[] {
     return actions;
   }
   // Élément saisi, produit par T4, ou projeté puis modifié : jamais réécrit
-  // (date) — statut seulement ; lot 76H : l'intitulé GÉNÉRIQUE d'un élément
-  // T4 intact cède à la description précise et prouvée de l'Opération.
+  // — statut seulement ; lot 76H : l'intitulé GÉNÉRIQUE d'un élément T4
+  // intact cède à la description précise et prouvée de l'Opération ; lot
+  // 83A : un élément T4 intact resté sans date reçoit la date établie.
   actions.push(...retitleActions(op, item));
+  actions.push(...dateActions(item, d));
   actions.push(...statusActions(op, item, d, cards));
   actions.push(...roleActions(item, d.key));
   return actions;

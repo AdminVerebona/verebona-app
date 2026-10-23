@@ -232,18 +232,22 @@ scenario('L48-O10b', 'Recette Opérations V1 : cas C29 complémentaires et « Re
     expect((await projectAccountOperations(compte.id, { all: true, today: RECETTE_TODAY })).changes).toBe(0);
   });
 
-  it('F-181 / F-157 / ACC-012 / INV-057 — après le passage au Sinistre structuré : la CLAIM fait foi ; claim_json n’est qu’un miroir (une écriture directe n’y change rien, aucun passage T3 ne le lit)', async () => {
+  it('F-181 / F-157 / ACC-012 / INV-057 — la CLAIM fait foi ; claim_json est INERTE (lot 83D, V-Q2 : plus aucun miroir, une écriture directe n’y change rien, aucun passage T3 ne le lit)', async () => {
     const { compte, bien } = await nouveauCompte();
     const id = await k.sinistre(compte, compte.owner, bien, { claimType: 'INCENDIE', occurredOn: '2026-04-04', status: 'DECLARE' });
+    // Lot 83D : plus de miroir écrit (l'ancien formulaire est retiré).
     const legacy = async () => (await sql<{ claim_json: Record<string, unknown> | null }[]>`SELECT claim_json FROM asset_additional_infos WHERE asset_id = ${bien.id}`)[0]?.claim_json ?? null;
-    expect(await legacy()).toMatchObject({ claimType: 'INCENDIE', status: 'DECLARE' });
-    await sql`UPDATE asset_additional_infos SET claim_json = ${JSON.stringify({ claimType: 'VOL', occurredOn: '2020-01-01', status: 'CLOS' })}::jsonb WHERE asset_id = ${bien.id}`;
+    expect(await legacy()).not.toMatchObject({ claimType: 'INCENDIE' });
+    await sql`INSERT INTO asset_additional_infos (asset_id, account_id, claim_json) VALUES (${bien.id}, ${compte.id}, ${JSON.stringify({ claimType: 'VOL', occurredOn: '2020-01-01', status: 'CLOS' })}::jsonb)
+              ON CONFLICT (asset_id) DO UPDATE SET claim_json = EXCLUDED.claim_json`;
     const h = await k.historique(compte);
     expect((await k.passer(compte, { reevaluateHolds: true })).changes).toBe(0);
     expect(await k.historique(compte)).toBe(h);
-    const { ClaimOperationService } = await import('@/services/business-operations/claims/claim-operation.service');
-    const dto = await ClaimOperationService.get(compte.id, bien.id, id);
-    expect(dto?.claim).toMatchObject({ claimType: 'INCENDIE', occurredOn: '2026-04-04', status: 'DECLARE' });
+    const { loadClaimRecords } = await import('@/services/business-operations/claims/read');
+    const { db } = await import('@/db');
+    const [rec] = await loadClaimRecords(db, compte.id, { ids: [id] });
+    expect(rec.realizedDate).toBe('2026-04-04');
+    expect(rec.details).toMatchObject({ claimType: 'INCENDIE', status: 'DECLARE' });
     expect(await sql`SELECT status FROM business_operation_claim_details WHERE operation_id = ${id}`).toEqual([{ status: 'DECLARE' }]);
   });
 

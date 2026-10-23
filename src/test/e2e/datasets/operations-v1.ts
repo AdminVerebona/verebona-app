@@ -127,17 +127,46 @@ export function operationsKit(sql: Sql, make: Factories) {
   const historique = async (compte: AccountRow) => (await sql<{ n: number }[]>`
     SELECT count(*)::int AS n FROM business_operation_history WHERE account_id = ${compte.id}`)[0].n;
 
-  /** Sinistre saisi par le service de production (lot 44), même validation que la route. */
+  /**
+   * Sinistre tel qu'il existe en préproduction (saisi avant le lot 83D) :
+   * Opération CLAIM avec une source CLAIM_FORM (le formulaire « Sinistres » des
+   * biens est retiré au lot 83D, V-Q1 — plus aucun service de saisie). Biens
+   * liés (multi-biens possible), données d'assurance, indemnité éventuelle.
+   */
   async function sinistre(compte: AccountRow, user: UserRow | { id: number }, asset: AssetRow, claim: Record<string, unknown>, assetIds?: number[]): Promise<number> {
-    const [{ parseClaimBody }, { ClaimOperationService }] = await Promise.all([
-      import('@/services/business-operations/claims/claim-route'),
-      import('@/services/business-operations/claims/claim-operation.service'),
-    ]);
-    const [a] = await sql<{ category: string }[]>`SELECT category FROM assets WHERE id = ${asset.id}`;
-    const p = await parseClaimBody({ claim, ...(assetIds ? { assetIds } : {}) }, { category: a.category, accountId: compte.id, refAssetIds: assetIds ?? [asset.id] });
-    if (!p.ok) throw new Error(`sinistre invalide : ${JSON.stringify(p.issues)}`);
-    const dto = await ClaimOperationService.create(compte.id, user.id, asset.id, { patch: p.value.patch, assetIds: p.value.assetIds ?? undefined });
-    return Number((dto as { id: number }).id);
+    void user;
+    const { withBusinessOperationWrite } = await import('@/services/business-operations/write');
+    const ids = assetIds ?? [asset.id];
+    const occurredOn = typeof claim.occurredOn === 'string' ? claim.occurredOn : null;
+    return withBusinessOperationWrite(compte.id, async (repo) => {
+      const c = await repo.create({
+        type: { code: 'CLAIM' }, status: 'REALIZED', ...(occurredOn ? { realizedDate: occurredOn } : {}),
+        source: { kind: 'CLAIM_FORM', entityKey: asset.id, authority: 'USER', confidence: 'certain' },
+        assets: ids.map((id) => ({ assetId: id, role: id === asset.id ? 'PRIMARY' as const : 'CONCERNED' as const, authority: 'USER' as const })),
+        reasonCode: 'E2E_DATASET_CLAIM',
+      });
+      await repo.upsertClaimDetails(c.id, {
+        claimType: (claim.claimType as string | undefined) ?? null,
+        declaredOn: (claim.declaredOn as string | undefined) ?? null,
+        insurerClaimRef: (claim.insurerClaimRef as string | undefined) ?? null,
+        status: (claim.status as string | undefined) ?? null,
+        estimatedDamageMinor: (claim.estimatedDamageCents as number | undefined) ?? null,
+      } as never, 'E2E_DATASET_CLAIM');
+      // Référence du dossier posée comme référence métier (lot 44) : T3 y rapproche les documents qui la citent (F-040).
+      if (typeof claim.insurerClaimRef === 'string') await repo.addReference(c.id, { kind: 'CLAIM', value: claim.insurerClaimRef, sourceId: c.sourceId }, 'E2E_DATASET_CLAIM');
+      // Dossier « Clos » : clôture de traitement (C14.1), distincte du statut REALIZED.
+      if (claim.status === 'CLOS') await repo.close(c.id, 'E2E_DATASET_CLAIM', new Date(`${occurredOn ?? '2026-01-01'}T12:00:00Z`));
+      const indemnite = claim.compensationCents as number | undefined;
+      if (typeof indemnite === 'number') {
+        await repo.addFinancialComponent(c.id, {
+          // Indemnité attribuée au bien seul ; globale (non ventilée) si le sinistre concerne plusieurs biens (Q4, lot 44).
+          kind: 'INDEMNITY', amountMinor: indemnite, currency: 'EUR', amountEurCents: indemnite, economicDate: occurredOn ?? undefined,
+          targetAssetId: ids.length === 1 ? asset.id : null,
+          sources: [{ sourceId: c.sourceId }], fingerprint: `e2e-claim-${asset.id}-indemnite`,
+        } as never, 'E2E_DATASET_CLAIM');
+      }
+      return c.id;
+    });
   }
 
   async function equipement(asset: AssetRow, name: string, type = 'BOILER'): Promise<number> {

@@ -77,6 +77,17 @@ export function projectionRoleOf(projectionKey: string | null): OperationRole {
   return head === 'INTERVENTION' || head === 'CLAIM' || head === 'ACQUISITION' || head === 'DISPOSAL' ? 'PRINCIPAL' : 'RELATED';
 }
 
+/**
+ * Lot 83A (CDC v5 O-7, §11.10, AC52) — RELATIONS DURABLES : une relation
+ * contractuelle ou un financement n'appellent jamais d'événement global ;
+ * aucun principal n'y est DÉDUIT (T4, T3, reprise) — un choix de
+ * l'utilisateur reste. Traduction de la table C16 (aucune projection
+ * d'événement global pour ces types), sans jugement sémantique.
+ */
+export const DURABLE_RELATION_TYPES = ['CONTRACT', 'FINANCING'] as const;
+export const isDurableRelation = (typeCode: string | null | undefined): boolean =>
+  typeCode != null && (DURABLE_RELATION_TYPES as readonly string[]).includes(typeCode);
+
 // ── Provenances d'un lien ───────────────────────────────────────────────────
 
 /** Ensemble normalisé (ordre du vocabulaire, sans doublon ni valeur inconnue). */

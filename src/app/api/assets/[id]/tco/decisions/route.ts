@@ -18,7 +18,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { SessionService } from '@/lib/session-service';
 import { canUsePremiumFeature } from '@/services/entitlements.service';
-import { notFound, parsePositiveId, writableAssetOr } from '@/services/business-operations/claims/claim-route';
+import { notFound, parsePositiveId, writableAssetOr } from '@/services/assets/asset-route-helpers';
 import { AssetNotFoundForTcoError } from '@/services/business-operations/tco/service';
 import { toTcoDto } from '@/services/business-operations/tco/dto';
 import { decideTcoLine, parseTcoDecisionBody, TcoDecisionError } from '@/services/business-operations/tco/user-decisions.service';

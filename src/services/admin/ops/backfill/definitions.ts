@@ -12,8 +12,8 @@
  *      automatiquement par la tâche `asset-account-backfill`) ;
  *   6. Opérations établies par les données structurées des biens (lot 43,
  *      C23.1 — aussi lancé automatiquement par `operations-structured-migration`) ;
- *   7. Sinistres : reprise de l'ancien formulaire (lot 44, C14.3 — aussi lancé
- *      automatiquement par `operations-claim-migration`) ;
+ *   7. Sinistres : nettoyage de l'ancien modèle (lot 83D, V-Q2 — jamais
+ *      automatique ; refusé sans point de restauration de moins de 24 h) ;
  *   8. Relations intercomptes : correction contrôlée par famille (lot 53,
  *      retour PO D23 — jamais automatique, journalisée et restaurable) ;
  *   9. Séparation bien / équipement (lot 71A, BUG P1) : valeurs héritées
@@ -43,7 +43,7 @@
  * services.
  */
 
-export type BackfillScript = 'database-restore-point' | 'merge-rooms' | 'document-asset-links' | 'agenda' | 'cdc15' | 'asset-account' | 'operations-structured' | 'operations-claims' | 'cross-account' | 'equipment-separation' | 'document-validation' | 'duo-shared-account' | 'agenda-intervention-duplicates' | 'to-process-false-arbitrations';
+export type BackfillScript = 'database-restore-point' | 'merge-rooms' | 'document-asset-links' | 'agenda' | 'cdc15' | 'asset-account' | 'operations-structured' | 'claims-legacy-cleanup' | 'cross-account' | 'equipment-separation' | 'document-validation' | 'duo-shared-account' | 'agenda-intervention-duplicates' | 'to-process-false-arbitrations';
 export type BackfillAction = 'simulate' | 'apply' | 'restore';
 export type BackfillStatus = 'running' | 'succeeded' | 'failed' | 'interrupted';
 
@@ -153,18 +153,24 @@ export const BACKFILL_DEFINITIONS: readonly BackfillDefinition[] = [
     accountFilter: true,
   },
   {
-    script: 'operations-claims',
+    // Lot 83D (CDC v5 §15–§18 ; arbitrages V-Q1, V-Q2, C-Q5, C-Q8) : remplace la
+    // reprise de l'ancien formulaire (lot 44, tâche retirée).
+    script: 'claims-legacy-cleanup',
     order: 7,
-    label: 'Sinistres : ancien formulaire',
-    command: 'tâche planifiée « operations-claim-migration » (automatique)',
-    description: 'Migration de l’ancien formulaire Sinistre (un seul sinistre par bien) vers la rubrique « Sinistres » (CDC Opérations '
-      + 'C14.3) : type, dates, références, statut du dossier, textes, dommages, actions, échanges, montants. Un sinistre n’est créé '
-      + 'que si l’ancienne saisie a au moins un type, une date, une référence ou un montant ; il est rapproché d’un sinistre déjà '
-      + 'établi par les documents (même référence, même événement d’agenda, même date) au lieu d’être dupliqué ; l’événement '
-      + 'd’agenda lié est rattaché, jamais recréé. La simulation exécute la migration dans une transaction annulée (rapport exact, '
-      + 'aucune écriture). Lancé automatiquement au démarrage puis toutes les heures ; rejouée, elle ne change rien.',
-    actions: ['simulate', 'apply'],
+    label: 'Sinistres : nettoyage de l’ancien modèle',
+    command: 'BO uniquement (aucune commande) — jamais lancé automatiquement',
+    description: 'Le bloc « Sinistres » des biens est supprimé : le sinistre vit dans ses documents, son événement d’agenda et '
+      + 'le dossier Assurance-sinistre. Ce rattrapage purge les données PROPRES à l’ancien bloc : actions et échanges de sinistre, '
+      + 'lien « intervention enfant d’un sinistre » (l’intervention elle-même est conservée), ancien formulaire Sinistre des biens '
+      + 'et repères de sa migration, questions « À traiter » de lien intervention ↔ sinistre encore ouvertes (closes). Ne touche '
+      + 'jamais aux documents, photos, Opérations, événements, agenda, Pièces, équipements, détails d’assurance ni aux dommages '
+      + 'détaillés (conservés pour le dossier d’assurance). Simuler : rapport exact, rien n’est écrit. Appliquer : REFUSÉ sans point '
+      + 'de restauration de moins de 24 h (bloc 0) ; chaque ligne retirée est journalisée, puis un contrôle de cohérence est lancé '
+      + 'sur les comptes actifs concernés. Restaurer : par l’identifiant d’exécution (journal rejoué). Rejoué, il ne change rien.',
+    actions: ['simulate', 'apply', 'restore'],
     accountFilter: true,
+    warning: 'Créez d’abord un point de restauration (bloc 0), puis Simuler, lire le rapport, et Appliquer. Faites un export '
+      + 'complet de recette avant et après si vous comparez.',
   },
   {
     script: 'cross-account',

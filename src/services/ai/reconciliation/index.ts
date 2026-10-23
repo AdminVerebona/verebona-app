@@ -30,7 +30,7 @@ import { registerDocumentTitleT3, startDocumentTitleSweep } from './document-tit
 import {
   onDocumentAnalyzedForOperations, registerBusinessOperationsT3, startOperationsSweep,
 } from '@/services/business-operations/consolidation/queue';
-import { registerOperationAgendaProjection, startAgendaProjectionSweep } from '@/services/business-operations/agenda-projection/queue';
+import { registerOperationAgendaProjection } from '@/services/business-operations/agenda-projection/queue';
 import { registerSourceUnitProviders } from './document-asset/source-unit-provider';
 import { registerEquipmentDocumentsT3 } from '@/services/equipment/equipment-document-queue';
 
@@ -72,9 +72,10 @@ export function registerReconciliationHandlers(): void {
   registerT3SweepStarter('business_operations', ({ cycleId, triggerCode, guard }) => startOperationsSweep({ cycleId, triggerCode, guard }));
   // Lot 46 (CDC Opérations V1 C16, O7) — T4 / Agenda : projection des
   // Opérations, abonnée au bus Opérations (après commit), un travail par
-  // compte ; balayage horaire de convergence (événement perdu).
+  // compte. Lot 83E (C-Q9) : le balayage horaire de convergence (événement
+  // perdu) est RETIRÉ — la convergence est vérifiée et réparée par le contrôle
+  // de cohérence COH-AGENDA-OPERATION-PROJECTION / -ORPHANS (même moteur).
   registerOperationAgendaProjection();
-  registerT3SweepStarter('business_operations_agenda', ({ cycleId, guard }) => startAgendaProjectionSweep({ cycleId, guard }).then(() => undefined));
   // Lot 75G — rapprochement DURABLE des documents d'un équipement créé ou
   // modifié (nom, bien, marque, modèle, n° de série) : sorte `equipment_documents`.
   registerEquipmentDocumentsT3();

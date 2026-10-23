@@ -100,16 +100,25 @@ describe('L76H — projection : une intervention établie = une représentation 
 
   it('L76H-08 — réanalyse après consolidation : état à jour → plan VIDE (aucun doublon recréé, aucune écriture)', () => {
     const principal = entretien();
-    const lie = { ...principal, businessOperationId: 10, linkedOperationActive: true, title: 'Remplacement du ballon d’eau chaude' };
+    // Lot 83A : après consolidation, l'élément conservé est le PRINCIPAL de l'Opération.
+    const lie = { ...principal, businessOperationId: 10, linkedOperationActive: true, title: 'Remplacement du ballon d’eau chaude', operationRole: 'PRINCIPAL' as const, operationRoleOrigin: 'T4' };
     expect(plan(op(), { linked: [lie], candidates: [lie], taken: [lie.id] })).toEqual([]);
   });
 
   it('L76H-09 — Opération liée à plusieurs événements T4 équivalents : les autres absorbés par le principal', () => {
-    const a = { ...reparation(), businessOperationId: 10, linkedOperationActive: true };
-    const b = { ...entretien(), businessOperationId: 10, linkedOperationActive: true };
+    const a = { ...reparation(), businessOperationId: 10, linkedOperationActive: true, operationRole: 'RELATED' as const, operationRoleOrigin: 'T4' };
+    const b = { ...entretien(), businessOperationId: 10, linkedOperationActive: true, operationRole: 'RELATED' as const, operationRoleOrigin: 'T4' };
     const actions = plan(op(), { linked: [a, b], candidates: [a, b], taken: [101, 102] });
-    // `principal` existant (lot 46) : le plus ancien intact ; l'autre absorbé.
-    expect(actions[0]).toEqual({ kind: 'CONSOLIDATE', principalId: 101, absorbedIds: [102], linkPrincipal: false, reason: 'EQUIVALENT_BY_OPERATION' });
+    // Lot 83A — test corrigé : sans principal, aucun membre n'est l'emplacement du seul fait d'être lié ; les
+    // représentations établies par T3 convergent par la règle 76H (`choosePrincipal` : champ explicite), le
+    // conservé devient principal.
+    expect(actions.slice(0, 2)).toEqual([
+      { kind: 'CONSOLIDATE', principalId: 102, absorbedIds: [101], linkPrincipal: true, reason: 'EQUIVALENT_BY_OPERATION' },
+      { kind: 'ROLE', itemId: 102, role: 'PRINCIPAL' },
+    ]);
+    // Principal déjà désigné : il garde son rôle et absorbe le doublon.
+    const avecPrincipal = plan(op(), { linked: [{ ...a, operationRole: 'PRINCIPAL' }, b], candidates: [a, b], taken: [101, 102] });
+    expect(avecPrincipal[0]).toEqual({ kind: 'CONSOLIDATE', principalId: 101, absorbedIds: [102], linkPrincipal: false, reason: 'EQUIVALENT_BY_OPERATION' });
   });
 
   it('L76H-10 — fusion de deux Opérations : l’événement de l’Opération absorbée (inactive) devient la représentation de la canonique', () => {

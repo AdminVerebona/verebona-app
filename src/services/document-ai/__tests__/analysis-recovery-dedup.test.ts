@@ -76,10 +76,10 @@ describe('file durable (seule file T1)', () => {
     expect(analyzeDirect).not.toHaveBeenCalled();
   });
 
-  it('relance par la file, compte par compte, non facturé', async () => {
+  it('relance par la file, compte par compte, non facturé — reprise de la même exécution métier (lot 83C, R22)', async () => {
     await runAnalysisRecovery();
-    expect(enqueueFileAnalyses).toHaveBeenCalledWith([1, 2, 3], 5, { origin: 'analysis-recovery', billable: false, processingVisibility: 'TECHNICAL' });
-    expect(enqueueFileAnalyses).toHaveBeenCalledWith([4], 6, { origin: 'analysis-recovery', billable: false, processingVisibility: 'TECHNICAL' });
+    expect(enqueueFileAnalyses).toHaveBeenCalledWith([1, 2, 3], 5, { origin: 'analysis-recovery', billable: false, processingVisibility: 'TECHNICAL', resume: true });
+    expect(enqueueFileAnalyses).toHaveBeenCalledWith([4], 6, { origin: 'analysis-recovery', billable: false, processingVisibility: 'TECHNICAL', resume: true });
     // ANALYZING bloqué SANS job vivant (processus mort) : réinitialisé.
     expect(updates).toHaveLength(1);
     expect(updates[0].set.analysisState).toBeNull();

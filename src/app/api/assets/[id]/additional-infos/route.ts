@@ -23,25 +23,23 @@
  * chaque requête).
  *
  * Corps du PATCH : `{ commercial?: {...}, rental?: {...}, insurance?: {...},
- * claim?: {...}, finance?: {...}, version?: n }`. Une valeur `null` ou vide
+ * finance?: {...}, version?: n }`. Une valeur `null` ou vide
  * retire le champ ; `0` est une valeur (IC-GEN-008). Montants en centimes
  * entiers, dates `AAAA-MM-JJ`.
- * Listes structurées (dommages, actions, échanges, points forts, protections,
- * éléments à assurer, charges) : remplacées en bloc ; `version` (celle lue
+ * Listes structurées (points forts, protections, éléments à assurer,
+ * charges) : remplacées en bloc ; `version` (celle lue
  * par le client) est alors obligatoire — 409 `CONFLICT` si la ligne a changé
  * depuis, avec l'état courant dans `details.current`. Les photos, pièces et
  * événements cités doivent appartenir au bien (422 sinon).
- * Réponse : l'état complet `{ assetId, commercial, rental, insurance, claim,
+ * Réponse : l'état complet `{ assetId, commercial, rental, insurance,
  * finance, updatedAt, updatedBy, version }`.
  *
- * Lot 44 (O5) : la sous-rubrique « Sinistre » n'est plus saisie ici (rubrique
- * Sinistres de la fiche, `/api/assets/[id]/claims`, ouverte à toutes les
- * offres) ; une écriture `claim` d'un ancien client est encore acceptée et
- * reportée sur l'Opération CLAIM (compatibilité Q11).
+ * Lot 83D (V-Q1 / V-Q2) : la sous-rubrique « Sinistre » est retirée — une
+ * écriture `claim` est refusée comme toute sous-rubrique inconnue (422) ;
+ * aucune passerelle vers l'Opération CLAIM.
  *
  * GET `?include=references` : ajoute `references` (pièces, photos,
- * événements sinistre, suggestions de points forts) pour les sélecteurs du
- * formulaire.
+ * suggestions de points forts) pour les sélecteurs du formulaire.
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { SessionService } from '@/lib/session-service';
@@ -191,19 +189,6 @@ export async function PATCH(request: NextRequest, { params }: Ctx) {
         },
         { status: 409 },
       );
-    }
-
-    // Lot 44 (O5, Q11) : le Sinistre est une Opération CLAIM. Une écriture de
-    // l'ancienne sous-rubrique (ancien client, onglet resté ouvert) est
-    // reportée sur le sinistre qu'elle reflète — jamais une seconde source de
-    // vérité. Non bloquant : la tâche interne de migration rattrape un échec.
-    if (result.patch.set.claim || result.patch.unset.claim?.length) {
-      try {
-        const { migrateAssetClaim } = await import('@/services/business-operations/consolidation/claim-migration');
-        await migrateAssetClaim(accountId, assetId);
-      } catch (e) {
-        console.error(`[additional-infos PATCH] report sur le sinistre du bien ${assetId} :`, (e as Error).message);
-      }
     }
 
     // CDC Assistant §25.7, §31.7 : la fiche du bien a changé — les caches de

@@ -42,6 +42,7 @@
  * fait depuis la file et en connaissance de cause.
  */
 
+import type { TreatmentSummary } from '@/services/ai/business-execution/types';
 import { Suspense, useState, useEffect, useCallback } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
@@ -162,6 +163,8 @@ function AiCostsScreen() {
   // CDC Mascotte BO-009 : génération T6 affichée / pré-génération / secours.
   const [t6Mode, setT6Mode] = useState((T6_MODES as readonly string[]).includes(sp.get('t6Mode') ?? '') ? sp.get('t6Mode')! : '');
   const [report, setReport] = useState<Report | null>(null);
+  /** Lot 83C : issues MÉTIER de la même période (chaque exécution comptée une fois). */
+  const [metier, setMetier] = useState<{ summary: TreatmentSummary[]; period: { from: string; to: string; rule: string } } | null>(null);
   const [settings, setSettings] = useState<Settings | null>(null);
   const [draftBudgets, setDraftBudgets] = useState<Record<string, string>>({});
   const [alerts, setAlerts] = useState<Alert[]>([]);
@@ -188,12 +191,17 @@ function AiCostsScreen() {
       if (treatment) q.set('treatment', treatment);
       if (accountId) q.set('accountId', accountId);
       if (t6Mode) q.set('t6Mode', t6Mode);
-      const [r, s, a] = await Promise.all([
+      const qm = new URLSearchParams({ from: bounds.from, to: bounds.to, limit: '1' });
+      if (treatment) qm.set('treatment', treatment);
+      if (accountId) qm.set('accountId', accountId);
+      const [r, s, a, m] = await Promise.all([
         apiClient.get<Report>(`/api/admin/ai/costs?${q}`),
         apiClient.get<Settings>('/api/admin/ai/cost-settings').catch(() => null),
         apiClient.get<{ alerts: Alert[] }>('/api/admin/ai/alerts?open=1&limit=30').catch(() => ({ alerts: [] })),
+        apiClient.get<{ summary: TreatmentSummary[]; period: { from: string; to: string; rule: string } }>(`/api/admin/ai/business-executions?${qm}`).catch(() => null),
       ]);
       setReport(r);
+      setMetier(m);
       setSettings(s);
       if (s) setDraftBudgets(Object.fromEntries(s.budgets.map((b) => [b.scope, b.monthlyBudget == null ? '' : String(b.monthlyBudget)])));
       setAlerts(a.alerts.filter((x) => x.kind !== 'guardrail'));
@@ -314,11 +322,18 @@ function AiCostsScreen() {
             </div>
           )}
 
-          <div className="grid gap-3 sm:grid-cols-5">
+          <div className="grid gap-3 grid-cols-1 sm:grid-cols-3 lg:grid-cols-6">
             {[
               ['Dépense métier', usd(report.totals.functionalMicros), null],
               ['Technique et tests', usd(report.totals.technicalMicros), 'Sondes, observation, vérifications'],
-              ['Appels', String(report.totals.calls), `${report.totals.failedCalls} en échec · ${(report.totals.inputTokens + report.totals.outputTokens).toLocaleString('fr-FR')} tokens`],
+              // Lot 83C (SEM-05) : statut fournisseur des appels — l'issue métier est la tuile suivante.
+              ['Appels modèle', String(report.totals.calls), `${report.totals.failedCalls} en échec (technique) · ${(report.totals.inputTokens + report.totals.outputTokens).toLocaleString('fr-FR')} tokens`],
+              ...(metier ? [(() => {
+                const t = metier.summary.reduce((a, x) => ({ ok: a.ok + x.succeeded, inc: a.inc + x.incomplete, ko: a.ko + x.failed }), { ok: 0, inc: 0, ko: 0 });
+                const jours = Math.round((new Date(metier.period.to).getTime() - new Date(metier.period.from).getTime()) / 86_400_000);
+                return ['Exécutions métier', String(t.ok + t.inc + t.ko),
+                  `${t.ok} réussie${t.ok > 1 ? 's' : ''} · ${t.inc} incomplète${t.inc > 1 ? 's' : ''} · ${t.ko} échouée${t.ko > 1 ? 's' : ''}${jours < 89 ? '' : ' · 90 derniers jours au plus'}`] as [string, string, string];
+              })()] : []),
               ['Coût moyen par appel', report.averageCostPerCall === null ? '—' : usd(report.averageCostPerCall), report.averageCostPerCall === null ? 'Aucun appel tarifé' : null],
               ['Requêtes T2', report.t2Usage ? String(report.t2Usage.requests) : '—',
                 report.t2Usage ? `dont ${report.t2Usage.withAi} avec IA · ${report.t2Usage.requests - report.t2Usage.withAi} sans coût` : null],

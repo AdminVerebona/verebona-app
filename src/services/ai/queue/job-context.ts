@@ -59,6 +59,13 @@ export interface AiJobContext {
    * modèle de l'exécution (CDC 15 OBS-CFG). Absent : inconnu.
    */
   triggerCode?: string | null;
+  /**
+   * Lot 83C (SEM-01, R22) : exécution MÉTIER servie par ce travail
+   * (`business-execution/identity#executionIdOfJob`), portée par chaque
+   * appel modèle (`ai_usage_event.business_execution_id`). Une reprise du
+   * même travail, ou un travail de reprise, garde la même exécution.
+   */
+  businessExecutionId?: string | null;
   /** Signal d'interruption de l'exécution (timeout global, annulation). */
   signal?: AbortSignal;
   /**

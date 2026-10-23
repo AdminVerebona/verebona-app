@@ -6,14 +6,14 @@
  *          réévaluation rétroactive (bilan AVANT / APRÈS, issues), issues
  *          par carte d'une campagne (filtres compte, issue), recettes T4
  *          réelles (résultat attendu / obtenu par cas).
- *   POST : { action: 'campaign' } — nouvelle campagne (poursuivie par la
- *          tâche planifiée interne `to-process-relevance-reevaluation`, un
- *          premier lot est traité tout de suite) ;
- *          { action: 'recette' } — recette du corpus livré avec le VÉRITABLE
+ *   POST : { action: 'recette' } — recette du corpus livré avec le VÉRITABLE
  *          T4 de l'environnement (exécutée en arrière-plan, suivie par GET) ;
- *          lot 76 : { action: 'retry-errors', campaignId } — reprise des
- *          éléments maintenus en erreur ; { action: 'retry-traces' } — relance
- *          des traces de décision abandonnées (0582).
+ *          lot 76 : { action: 'retry-traces' } — relance des traces de
+ *          décision abandonnées (0582).
+ *          Lot 83E (C-Q9) : les actions « campaign » et « retry-errors » sont
+ *          RETIRÉES avec le moteur de campagne — la réévaluation est faite
+ *          par le contrôle de cohérence (registre, tâche `coherence-control`) ;
+ *          les campagnes passées restent consultables (GET, historique).
  * Aucun SQL, aucune commande pour le PO.
  */
 import { NextRequest, NextResponse } from 'next/server';
@@ -64,23 +64,14 @@ export async function POST(req: NextRequest) {
   const guard = await requireAdminContext(req);
   if (!guard.ok) return guard.response;
   try {
-    let body: { action?: string; campaignId?: unknown } = {};
+    let body: { action?: string } = {};
     try { body = await req.json(); } catch { body = {}; }
-    if (body.action === 'campaign') {
-      const { startRelevanceCampaign, runRelevanceCampaign } = await import('@/services/to-process/relevance-campaign.service');
-      const c = await startRelevanceCampaign({ code: `l76-pertinence-${new Date().toISOString().replace(/[^0-9]/g, '').slice(0, 14)}`, trigger: 'manual', requestedBy: guard.ctx.adminUserId });
-      if (!c) return NextResponse.json({ error: 'MIGRATION_MISSING', message: 'Migration 0445 absente : réessayez après la mise à jour de la base.' }, { status: 503 });
-      // Premier lot tout de suite (borné) ; la tâche planifiée poursuit.
-      const r = await runRelevanceCampaign({ deadline: Date.now() + 20_000, trigger: 'manual' });
-      return NextResponse.json({ ok: true, campaign: c, firstRun: r });
-    }
-    if (body.action === 'retry-errors') {
-      const id = typeof body.campaignId === 'number' && Number.isInteger(body.campaignId) && body.campaignId > 0 ? body.campaignId : null;
-      if (!id) return NextResponse.json({ error: 'INVALID_CAMPAIGN' }, { status: 400 });
-      const { retryCampaignErrors, runRelevanceCampaign } = await import('@/services/to-process/relevance-campaign.service');
-      const relances = await retryCampaignErrors(id);
-      const r = relances ? await runRelevanceCampaign({ deadline: Date.now() + 20_000, trigger: 'manual' }) : null;
-      return NextResponse.json({ ok: true, requeued: relances, run: r });
+    if (body.action === 'campaign' || body.action === 'retry-errors') {
+      // Lot 83E (C-Q9) : une seule chaîne — le contrôle de cohérence.
+      return NextResponse.json({
+        error: 'CAMPAIGN_RETIRED',
+        message: 'La campagne de pertinence est remplacée par le contrôle de cohérence (tâche « coherence-control ») : rien à lancer ici.',
+      }, { status: 410 });
     }
     if (body.action === 'retry-traces') {
       const { requeueAbandonedTraces, replayPendingTraces } = await import('@/services/to-process/trace-retries');

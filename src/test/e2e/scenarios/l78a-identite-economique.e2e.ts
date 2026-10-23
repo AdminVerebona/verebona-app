@@ -202,7 +202,14 @@ scenario('L78A', 'Identité économique des Opérations : M1/M2 sécurisés, cor
     await projection.projectAccountOperations(compte.id, { all: true, today: RECETTE_TODAY });
     const agenda76 = async () => sql<{ start_date: string }[]>`SELECT start_date::text AS start_date FROM agenda_items WHERE account_id = ${compte.id} AND business_operation_id = ${op76} ORDER BY id`;
     const agendaMaison = async (opId: number) => sql<{ start_date: string }[]>`SELECT start_date::text AS start_date FROM agenda_items WHERE account_id = ${compte.id} AND business_operation_id = ${opId} ORDER BY id`;
-    expect((await agenda76()).map((a) => a.start_date)).toEqual(['2025-05-12']);
+    // Lot 83A (CDC v5 §11.8, AC20) — test corrigé : dates de réalisation contradictoires tracées par T3 → l'événement
+    // principal reste SANS date et la carte de date existante (DATA-AGENDA-DATE) arbitre ; la date de l'Opération
+    // (source fondatrice, 78A) est inchangée.
+    expect((await agenda76()).map((a) => a.start_date)).toEqual([null]);
+    const carteDate = () => sql<{ action_kind: string; resolved: boolean }[]>`
+      SELECT a.action_kind, a.resolved_at IS NOT NULL AS resolved FROM to_process_actions a JOIN agenda_items i ON i.id = a.target_id
+       WHERE a.account_id = ${compte.id} AND a.target_type = 'AGENDA_ITEM' AND a.field_key = 'date' AND i.business_operation_id = ${op76}`;
+    expect(await carteDate()).toEqual([{ action_kind: 'ARBITRATE', resolved: false }]);
     const historiqueAvant = (await sql<{ n: number }[]>`SELECT count(*)::int AS n FROM business_operation_history WHERE operation_id = ${op76}`)[0].n;
 
     // Le balayage planifié prend le compte (stock non réévalué), sans action de l'exploitant.
@@ -245,6 +252,8 @@ scenario('L78A', 'Identité économique des Opérations : M1/M2 sécurisés, cor
     // Agenda mis à jour (projection) : la commande à sa date, la maison à la sienne.
     await projection.projectAccountOperations(compte.id, { all: true, today: RECETTE_TODAY });
     expect((await agenda76()).map((a) => a.start_date)).toEqual(['2025-05-12']);
+    // Lot 83A (AC19) : contradiction levée → date posée, carte de date close d'elle-même.
+    expect(await carteDate()).toEqual([{ action_kind: 'ARBITRATE', resolved: true }]);
     expect((await agendaMaison(maisonOp.id)).map((a) => a.start_date)).toEqual(['2021-06-30']);
     // Idempotence : nouveaux passages et reconsolidation complète sans écriture.
     const h = await k.historique(compte);

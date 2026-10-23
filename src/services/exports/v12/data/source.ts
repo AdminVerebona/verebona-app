@@ -39,7 +39,6 @@ export interface AdditionalInfosSnapshot {
   commercial: InfoSection;
   rental: InfoSection;
   insurance: InfoSection;
-  claim: InfoSection;
   /** Absente des snapshots antérieurs à la migration 0214. */
   finance?: InfoSection;
   updatedAt: string | null;
@@ -157,16 +156,55 @@ export interface SourceCil {
 
 /**
  * Lot 44 (O5) — sinistre retenu pour le dossier Assurance-sinistre : un bien
- * peut en avoir plusieurs (Q2). La sous-rubrique `additionalInfo.claim` est
- * celle de CE sinistre (Opération CLAIM, source de vérité, F-157) ; sans
- * sinistre, l'ancienne saisie du bien est lue (compatibilité Q11).
+ * peut en avoir plusieurs (Q2). Lot 83D (V-Q2) : plus de lecture de
+ * l'ancienne saisie (`claim_json`) — sans sinistre, `origin` = `none`.
  */
 export interface ExportClaimSelection {
-  /** Sinistre retenu ; null : aucun (lecture de l'ancienne saisie ou rien). */
+  /** Sinistre retenu ; null : aucun. */
   selectedOperationId: number | null;
-  origin: 'operation' | 'legacy' | 'none';
+  origin: 'operation' | 'none';
   /** Sinistres du bien proposés au choix (survenue décroissante). */
   options: Array<{ id: number; label: string; date: string | null }>;
+}
+
+/**
+ * Lot 83D (CDC v5 §16, AC37, AC38 ; arbitrage V-Q8) — contenu du dossier
+ * Assurance-sinistre lu dans l'Opération CLAIM CONSOLIDÉE : données
+ * d'assurance sourcées, dommages détaillés (photos et justificatifs reliés,
+ * jamais copiés), TOUS les documents de l'Opération, chronologie (éléments
+ * d'Agenda de l'Opération, principal d'abord), Pièces et équipements
+ * concernés. Figé dans le snapshot de génération.
+ */
+export interface ExportClaimFile {
+  operationId: number;
+  claimType: string | null;
+  /** Date de survenue (Opération), sinon date de l'élément principal. */
+  occurredOn: string | null;
+  declaredOn: string | null;
+  insurerClaimRef: string | null;
+  /** Police saisie, sinon contrat d'assurance reconnu (C13.1). */
+  policyReference: string | null;
+  status: string | null;
+  statusDetail: string | null;
+  circumstances: string | null;
+  consequences: string | null;
+  measures: string | null;
+  exchangesSummary: string | null;
+  estimatedDamageCents: number | null;
+  compensationCents: number | null;
+  damages: Array<{ key: string; zone: string; element: string | null; finding: string | null; estimatedAmountCents: number | null; photoIds: number[]; documentIds: number[] }>;
+  /** Documents actifs de l'Opération (`asset_files.id`). */
+  documentIds: number[];
+  /** Clés `agenda:N` des éléments de l'Opération (principal d'abord, puis par date). */
+  agendaKeys: string[];
+  /** Chronologie de l'Opération (même ordre) : imprimée même si l'élément n'est pas rattaché au bien. */
+  agenda: Array<{ key: string; title: string; date: string | null; principal: boolean }>;
+  principalKey: string | null;
+  /** Événement de l'historique désigné comme ancre (`event:N`), s'il existe. */
+  historyEventKey: string | null;
+  /** Pièces et équipements concernés (noms). */
+  rooms: string[];
+  equipments: string[];
 }
 
 export interface ExportSource {
@@ -206,6 +244,8 @@ export interface ExportSource {
   additionalInfo: AdditionalInfosSnapshot;
   /** Lot 44 : sinistre retenu (dossier Assurance-sinistre seulement). */
   claim?: ExportClaimSelection | null;
+  /** Lot 83D : contenu du sinistre retenu, lu dans l'Opération CLAIM (dossier Assurance-sinistre seulement). */
+  claimFile?: ExportClaimFile | null;
   cil: SourceCil | null;
   preparedBy: string | null;
   /** Source réellement utilisée et version du registre (X-02, figé dans le snapshot). */
@@ -312,27 +352,52 @@ type LoadParams = {
 
 /**
  * Sinistre du dossier (lot 44) : celui demandé s'il concerne le bien, sinon le
- * plus récent ; aucun → ancienne saisie (`claim_json`, Q11) telle quelle.
+ * plus récent ; aucun → `none` (lot 83D : plus de lecture de `claim_json`).
  */
 export async function loadClaimSelection(
-  params: Pick<LoadParams, 'assetId' | 'accountId' | 'claimOperationId'>, legacy: InfoSection,
-): Promise<{ selection: ExportClaimSelection; claim: InfoSection }> {
+  params: Pick<LoadParams, 'assetId' | 'accountId' | 'claimOperationId'>,
+): Promise<{ selection: ExportClaimSelection; file: ExportClaimFile | null }> {
   const { loadClaimRecords } = await import('@/services/business-operations/claims/read');
-  const { claimToSection, claimLabel } = await import('@/services/business-operations/claims/model');
+  const { claimRecordLabel } = await import('@/services/business-operations/claims/model');
   const records = await loadClaimRecords(db, params.accountId, { assetId: params.assetId });
-  const options = records.map((r) => {
-    const sec = claimToSection(r);
-    return { id: r.id, label: claimLabel(sec), date: r.realizedDate };
-  });
-  if (!records.length) {
-    const has = Object.keys(legacy ?? {}).length > 0;
-    return { selection: { selectedOperationId: null, origin: has ? 'legacy' : 'none', options }, claim: { ...(legacy ?? {}) } };
-  }
+  const options = records.map((r) => ({ id: r.id, label: claimRecordLabel(r), date: r.realizedDate }));
+  if (!records.length) return { selection: { selectedOperationId: null, origin: 'none', options }, file: null };
   const chosen = records.find((r) => r.id === params.claimOperationId) ?? records[0];
-  const section: InfoSection = { ...claimToSection(chosen) };
-  // Contrat : police saisie, sinon contrat d'assurance reconnu (C13.1) ; à défaut le mappeur lit la fiche.
-  if (!section.policyReference && chosen.contractLabel) section.policyReference = chosen.contractLabel;
-  return { selection: { selectedOperationId: chosen.id, origin: 'operation', options }, claim: section };
+  return { selection: { selectedOperationId: chosen.id, origin: 'operation', options }, file: toClaimFile(chosen) };
+}
+
+/** Enregistrement de l'Opération CLAIM → contenu du dossier (pur). */
+export function toClaimFile(r: import('@/services/business-operations/claims/model').ClaimRecord): ExportClaimFile {
+  const d = r.details;
+  const principal = r.agenda.find((a) => a.role === 'PRINCIPAL') ?? null;
+  return {
+    operationId: r.id,
+    claimType: d?.claimType ?? null,
+    occurredOn: r.realizedDate ?? principal?.date ?? null,
+    declaredOn: d?.declaredOn ?? null,
+    insurerClaimRef: d?.insurerClaimRef ?? null,
+    // Contrat : police saisie, sinon contrat d'assurance reconnu (C13.1) ; à défaut le mappeur lit la fiche.
+    policyReference: d?.policyReferenceText ?? r.contractLabel ?? null,
+    status: d?.status ?? null,
+    statusDetail: d?.statusDetail ?? null,
+    circumstances: d?.circumstances ?? null,
+    consequences: d?.consequences ?? null,
+    measures: d?.measuresSummary ?? null,
+    exchangesSummary: d?.exchangesSummary ?? null,
+    estimatedDamageCents: d?.estimatedDamageMinor ?? null,
+    compensationCents: r.indemnityCents,
+    damages: r.damages.map((x, i) => ({
+      key: x.itemKey ?? `d${i + 1}`, zone: x.zone, element: x.element, finding: x.finding,
+      estimatedAmountCents: x.estimatedAmountMinor, photoIds: [...x.photoIds], documentIds: [...x.fileIds],
+    })),
+    documentIds: [...r.documentIds],
+    agendaKeys: r.agenda.map((a) => `agenda:${a.id}`),
+    agenda: r.agenda.map((a) => ({ key: `agenda:${a.id}`, title: a.title, date: a.date, principal: a.role === 'PRINCIPAL' })),
+    principalKey: principal ? `agenda:${principal.id}` : null,
+    historyEventKey: d?.historyEventId ? `event:${d.historyEventId}` : null,
+    rooms: r.rooms.map((x) => x.name),
+    equipments: r.equipments.map((x) => x.name),
+  };
 }
 
 /**
@@ -346,13 +411,14 @@ export async function loadClaimSelection(
  */
 export async function loadExportSource(params: LoadParams): Promise<ExportSource> {
   const { traceOf } = await import('./canonical-source');
+  // Lot 83D (V-Q8) : le dossier Assurance-sinistre lit l'Opération CLAIM consolidée — ses
+  // documents sont proposés même s'ils ne sont pas rattachés au bien (chemin `operation`).
+  const claim = params.exportType === 'ASSURANCE_SINISTRE' ? await loadClaimSelection(params) : null;
   const { source: base, snapshot } = await loadLegacyExportSource(params);
-  const { source, documentPaths, unconfirmed } = await buildCanonicalExportSource(params, base, snapshot);
-  // Lot 44 (F-157) : le dossier Assurance-sinistre lit le Sinistre (Opération CLAIM).
-  if (params.exportType === 'ASSURANCE_SINISTRE') {
-    const { selection, claim } = await loadClaimSelection(params, source.additionalInfo.claim);
-    source.additionalInfo = { ...source.additionalInfo, claim };
-    source.claim = selection;
+  const { source, documentPaths, unconfirmed } = await buildCanonicalExportSource(params, base, snapshot, claim?.file?.documentIds ?? []);
+  if (claim) {
+    source.claim = claim.selection;
+    source.claimFile = claim.file;
   }
   return { ...source, sourceTrace: traceOf('canonical', { documentPaths, unconfirmedDocuments: unconfirmed }) };
 }
@@ -364,7 +430,7 @@ export async function loadExportSource(params: LoadParams): Promise<ExportSource
  * complémentaires D-12, CIL : identiques).
  */
 async function buildCanonicalExportSource(
-  params: LoadParams, legacy: ExportSource, snapshot: AssetSnapshot,
+  params: LoadParams, legacy: ExportSource, snapshot: AssetSnapshot, operationFileIds: readonly number[] = [],
 ): Promise<{ source: ExportSource; documentPaths: ExportSourceTrace['documentPaths']; today: string; unconfirmed: number[] }> {
   const cs = await import('./canonical-source');
   const { pgClient } = await import('@/db');
@@ -374,7 +440,7 @@ async function buildCanonicalExportSource(
   if (!row) throw Object.assign(new Error(`Bien ${params.assetId} introuvable pour le compte ${params.accountId}`), { exportErrorCode: 'ASSET_NOT_FOUND' });
   const state = cs.buildCanonicalAssetState(row);
   const [docs, agenda, equipments] = await Promise.all([
-    cs.loadCanonicalDocuments(params.accountId, params.assetId),
+    cs.loadCanonicalDocuments(params.accountId, params.assetId, { operationFileIds }),
     cs.loadCanonicalAgenda(params.accountId, params.assetId, today),
     cs.canonicalEquipments(params.accountId, params.assetId, legacy.equipments),
   ]);
@@ -501,7 +567,6 @@ async function loadLegacyExportSource(params: LoadParams): Promise<{ source: Exp
       commercial: { ...(infos.commercial ?? {}) },
       rental: { ...(infos.rental ?? {}) },
       insurance: { ...(infos.insurance ?? {}) },
-      claim: { ...(infos.claim ?? {}) },
       finance: { ...(infos.finance ?? {}) },
       updatedAt: infos.updatedAt ?? null,
     },

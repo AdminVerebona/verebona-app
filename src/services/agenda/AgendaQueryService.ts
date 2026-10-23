@@ -91,11 +91,6 @@ export interface AgendaItemFull {
    * migration 0223 est appliquée ; absent sinon.
    */
   eventNature?: 'HISTORICAL' | 'DEADLINE' | null;
-  /**
-   * Lot 46 (O7) : l'événement représente un SINISTRE (projeté depuis lui, ou
-   * relié) — le tiroir propose de l'ouvrir dans la rubrique Sinistres du bien.
-   */
-  claimSource?: { assetId: number; claimId: number } | null;
 }
 
 export interface AgendaSearchResult {
@@ -232,7 +227,6 @@ async function enrichItems(rows: typeof agendaItems.$inferSelect[]): Promise<Age
   const ids = rows.map(r => r.id);
   const { assetLinks, fileLinks, roomLinks, equipLinks } = await loadLinks(ids);
   const natures = await loadEventNatures(ids);
-  const claims = await loadClaimSources(rows);
 
   // Load pending conflicts for attention flags
   const conflicts = await db.select({
@@ -329,32 +323,8 @@ async function enrichItems(rows: typeof agendaItems.$inferSelect[]): Promise<Age
       equipmentLinks: itemEquips.map(e => ({ id: e.id, equipmentId: e.equipmentId, name: e.name ?? '', resolvedAssetId: e.resolvedAssetId ?? null })),
       attentionFlags,
       ...(natures ? { eventNature: natures.get(item.id)?.nature ?? null } : {}),
-      claimSource: item.businessOperationId != null ? claims.get(Number(item.businessOperationId)) ?? null : null,
     };
   });
-}
-
-/**
- * Sinistres représentés par des éléments (lot 46, O7) : Opération CLAIM
- * active liée, et son bien principal (lien de la rubrique Sinistres). Ne
- * lève jamais (lecture accessoire du tiroir).
- */
-async function loadClaimSources(rows: Array<{ businessOperationId: number | null }>): Promise<Map<number, { assetId: number; claimId: number }>> {
-  const out = new Map<number, { assetId: number; claimId: number }>();
-  const ops = [...new Set(rows.map((r) => r.businessOperationId).filter((x): x is number => x != null).map(Number))];
-  if (ops.length === 0) return out;
-  try {
-    const r = (await db.execute(sql`
-      SELECT o.id, (SELECT l.asset_id FROM business_operation_asset_links l
-                     WHERE l.operation_id = o.id AND l.active ORDER BY (l.link_role = 'PRIMARY') DESC, l.asset_id LIMIT 1) AS asset_id
-        FROM business_operations o
-       WHERE o.id = ANY(${`{${ops.join(',')}}`}::bigint[]) AND o.type_code = 'CLAIM'
-         AND o.invalidated_at IS NULL AND o.merged_into_operation_id IS NULL`)) as unknown as Array<{ id: number; asset_id: number | null }>;
-    for (const x of r) if (x.asset_id != null) out.set(Number(x.id), { assetId: Number(x.asset_id), claimId: Number(x.id) });
-  } catch (e) {
-    console.error('[agenda] sinistres liés :', (e as Error).message);
-  }
-  return out;
 }
 
 /**

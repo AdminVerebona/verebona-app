@@ -80,10 +80,8 @@ const SUJETS: Readonly<Record<string, { noun: string; fixed?: string }>> = {
   'ASSET-STATUS': { noun: 'Statut du bien', fixed: 'Statut du bien à confirmer' },
   // Lot 42 : ambiguïtés de consolidation (priorité « À faire ensuite » : hors mascotte, MASC3).
   'OPERATION-MATCH': { noun: 'Document', fixed: 'Document à rapprocher' },
-  'OPERATION-CLAIM-PARENT': { noun: 'Intervention', fixed: 'Lien avec un sinistre à confirmer' },
   'OPERATION-AMOUNT': { noun: 'Montant', fixed: 'Montant à confirmer' },
-  // Lot 53 (retour PO D11, Q17, D14).
-  'OPERATION-CLAIM-DETACH': { noun: 'Intervention', fixed: 'Lien avec un sinistre à confirmer' },
+  // Lot 53 (retour PO Q17, D14). Lot 83D : « lien avec un sinistre » (PARENT / DETACH) retiré.
   'OPERATION-CLAIM-ASSET': { noun: 'Bien du sinistre', fixed: 'Bien retiré d’un sinistre à confirmer' },
   'AGENDA-PROJECTION-MATCH': { noun: 'Événement', fixed: 'Événement de l’agenda à rapprocher' },
   // Lot 53D (D2) : devise d'un montant à confirmer.

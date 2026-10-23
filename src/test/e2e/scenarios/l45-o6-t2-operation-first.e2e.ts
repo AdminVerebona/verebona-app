@@ -48,13 +48,13 @@ scenario('L45-O6', 'T2 Opération d’abord : coûts consolidés, mode mixte, pa
   async function intervention(c: AccountRow, assetIds: number[], v: {
     docs: Array<{ fileId: number; role: string }>;
     comps: Array<{ kind: string; cents: number; currency?: string; eur?: number | null; target?: number | null; date?: string | null }>;
-    label?: string; type?: string | null; status?: string; realized?: string | null; parent?: number | null;
+    label?: string; type?: string | null; status?: string; realized?: string | null;
   }) {
     return ecrire(c, async (r) => {
       const [premier, ...autres] = v.docs;
       const { id, sourceId } = await r.create({
         type: v.type === null ? null : { code: v.type ?? 'INTERVENTION' }, status: v.status ?? 'REALIZED', technicalLabel: v.label ?? 'Remplacement embrayage',
-        provider: 'Garage Martin', realizedDate: v.realized === undefined ? '2026-03-02' : v.realized, parentOperationId: v.parent ?? null,
+        provider: 'Garage Martin', realizedDate: v.realized === undefined ? '2026-03-02' : v.realized,
         source: { kind: 'DOCUMENT', entityKey: premier.fileId, role: premier.role, authority: 'DOCUMENT', confidence: 'certain' },
         assets: assetIds.map((a, i) => ({ assetId: a, role: i === 0 ? 'PRIMARY' : 'CONCERNED', authority: 'DOCUMENT' })),
         reasonCode: 'E2E',
@@ -215,7 +215,7 @@ scenario('L45-O6', 'T2 Opération d’abord : coûts consolidés, mode mixte, pa
     expect(ev.some((e) => e.ref === `doc_${vieille}`)).toBe(true);
   });
 
-  it('C15 / O6-E07 — « où en est mon sinistre ? » : statut, indemnité, net (Q4) ; source = section Sinistres du bien ; de bout en bout (Standard)', async () => {
+  it('C15 / O6-E07 — « où en est mon sinistre ? » : statut, indemnité, net (Q4) ; source = le sinistre (Agenda principal ou fiche du bien, lot 83D) ; de bout en bout (Standard)', async () => {
     const compte = await make.account({ plan: 'premium' });
     const maison = await make.asset(compte, { category: 'IMMOBILIER', name: 'Maison' });
     const claimId = await ecrire(compte, async (r) => {
@@ -228,8 +228,12 @@ scenario('L45-O6', 'T2 Opération d’abord : coûts consolidés, mode mixte, pa
       await r.addFinancialComponent(id, { kind: 'INDEMNITY', amountMinor: 80000, currency: 'EUR', sources: [{ sourceId }] } as never);
       return id;
     });
+    // Lot 83D (CDC v5 §18.4, AC39) : la réparation reste DANS l'Opération CLAIM (plus d'intervention enfant).
     const f = await doc(make, compte, maison.id, { title: 'Facture plombier', type: 'REPAIR_INVOICE', cents: 125000 });
-    await intervention(compte, [maison.id], { docs: [{ fileId: f, role: 'INVOICE' }], comps: [{ kind: 'REALIZED_COST', cents: 125000 }], parent: claimId, label: 'Réparation fuite' });
+    await ecrire(compte, async (r) => {
+      const s = await r.addSource(claimId, { kind: 'DOCUMENT', entityKey: f, role: 'INVOICE', authority: 'DOCUMENT', confidence: 'certain' } as never);
+      await r.addFinancialComponent(claimId, { kind: 'REALIZED_COST', amountMinor: 125000, currency: 'EUR', sources: [{ sourceId: s }] } as never);
+    });
 
     const r = await ask(compte.id, 'Où en est mon sinistre ?');
     expect(r.strategy).toBe('structured.claim_status');
@@ -237,7 +241,8 @@ scenario('L45-O6', 'T2 Opération d’abord : coûts consolidés, mode mixte, pa
     expect(r.answer).toMatch(/indemnité reçue : 800,00\s€ ; coût des réparations : 1\s250,00\s€ ; net après indemnité : 450,00\s€/);
     expect(r.sources[0].id).toBe(`claim:${maison.id}:${claimId}`);
     const { hrefSource } = await import('@/services/verebona-assistant/core/entity-ref');
-    expect(hrefSource(r.sources[0].id)).toBe(`/assets/${maison.id}?tab=details&highlight=claims&claim=${claimId}`);
+    // Lot 83D (V-Q1) : plus de rubrique Sinistres — sans élément d'Agenda principal, la source ouvre la fiche du bien.
+    expect(hrefSource(r.sources[0].id)).toBe(`/assets/${maison.id}`);
 
     // Coût du bien : réparation comptée une fois, indemnité dans le net seulement.
     const cout = await ask(compte.id, 'Combien ai-je dépensé pour la Maison ?');
@@ -248,7 +253,7 @@ scenario('L45-O6', 'T2 Opération d’abord : coûts consolidés, mode mixte, pa
     const bout = await demander(compte, 'Où en est mon sinistre ?', { planType: 'STANDARD' });
     expect(bout.answer).toContain('En attente d\'indemnisation');
     expect(bout.sources.map((s) => s.id)).toContain(`claim:${maison.id}:${claimId}`);
-    expect(bout.sources.find((s) => s.id.startsWith('claim:'))?.openAction?.href).toBe(`/assets/${maison.id}?tab=details&highlight=claims&claim=${claimId}`);
+    expect(bout.sources.find((s) => s.id.startsWith('claim:'))?.openAction?.href).toBe(`/assets/${maison.id}`);
   });
 
   it('C15.2 / O6-E08 — « J’ai payé combien pour la Polo ? » : prix d’achat d’abord, cumul depuis l’achat à part, jamais additionnés', async () => {

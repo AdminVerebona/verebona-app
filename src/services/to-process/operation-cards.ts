@@ -5,7 +5,7 @@
  * ══════════════════════════════════════════════════════════════════════════
  * « À TRAITER » N'EST PAS UN ÉCRAN DE VALIDATION DES OPÉRATIONS
  *
- * Seules trois ambiguïtés À IMPACT y arrivent, toujours posées sur un
+ * Seules les ambiguïtés À IMPACT y arrivent, toujours posées sur un
  * DOCUMENT et formulées en langage métier (le mot « Opération » n'apparaît
  * jamais côté utilisateur) :
  *
@@ -13,9 +13,11 @@
  *                           intervention que « Facture … du 12/03/2026 » ? »
  *                           — plusieurs rapprochements exacts incompatibles,
  *                           ou verdict sémantique M3 incertain ;
- *   OPERATION-CLAIM-PARENT  (b) « Cette intervention fait-elle suite à l'un
- *                           de ces sinistres ? » — référence de sinistre
- *                           portée par plusieurs dossiers ;
+ *   (b) parent Sinistre et (d) dissociation : RETIRÉES au lot 83D (CDC v5
+ *                           §18.4, AC39 — plus d'intervention enfant d'un
+ *                           sinistre) ; les cartes encore ouvertes sont
+ *                           closes par le rattrapage BO « Sinistres :
+ *                           nettoyage de l'ancien modèle » ;
  *   OPERATION-AMOUNT        (c) « Ces documents indiquent des montants
  *                           différents pour la même dépense : lequel est le
  *                           bon ? » — même facture, montants différents.
@@ -29,13 +31,12 @@
  *       l'Opération choisie, REJECTED sur les autres propositions, ou
  *       REJECTED partout (« c'est une autre intervention ») : jamais
  *       reproposé, jamais rejoué par l'IA ;
- *   (b) (c) (d) source `USER_ARBITRATION` de l'Opération (B19 : « persistée
- *       comme source explicite »), `locator.decision` = CLAIM_PARENT / AMOUNT /
- *       CURRENCY (« je ne sais pas » : devise null, montant laissé hors des
+ *   (c) (d) source `USER_ARBITRATION` de l'Opération (B19 : « persistée
+ *       comme source explicite »), `locator.decision` = AMOUNT / CURRENCY (« je ne sais pas » : devise null, montant laissé hors des
  *       totaux, question non reposée).
  *
  * Une carte par problème (relation propre : `operationMatch:<clé du
- * candidat>`, `operationParent:<Opération>`, `operationAmount:<Opération>:
+ * candidat>`, `operationAmount:<Opération>:
  * <empreinte>`), dédoublonnée par l'index des actions actives et l'empreinte
  * du contexte (`upsertAction`) ; fermée d'elle-même (OBSOLETE) quand la
  * situation se résout seule (le passage T3 suivant ne la reconduit pas).
@@ -53,29 +54,29 @@ import { upsertAction } from './to-process-action.service';
 import type { OperationCardNeeds } from '@/services/business-operations/consolidation/card-needs';
 
 export const OPERATION_MATCH_RULE = 'OPERATION-MATCH';
-export const OPERATION_PARENT_RULE = 'OPERATION-CLAIM-PARENT';
 export const OPERATION_AMOUNT_RULE = 'OPERATION-AMOUNT';
-/** Lot 53 (retour PO D11) : facture retirée d'une action — garder ou dissocier l'intervention du sinistre. */
-export const OPERATION_DETACH_RULE = 'OPERATION-CLAIM-DETACH';
+/**
+ * Lot 83D (CDC v5 §18.4, AC39) : règles RETIRÉES avec l'intervention enfant
+ * d'un sinistre — plus jamais posées ni résolues. Seul le rattrapage BO
+ * « Sinistres : nettoyage de l'ancien modèle » les lit, pour clore (OBSOLETE,
+ * journalisé et restaurable) les cartes encore ouvertes.
+ */
+export const RETIRED_CLAIM_PARENT_RULES = ['OPERATION-CLAIM-PARENT', 'OPERATION-CLAIM-DETACH'] as const;
 /** Lot 53 (retour PO Q17) : bien retiré du sinistre cité par un nouveau document — le rattacher à nouveau ? */
 export const OPERATION_ASSET_EXCLUSION_RULE = 'OPERATION-CLAIM-ASSET';
 /** Lot 53D (retour PO D2) : devise d'un montant non établie sur le document. */
 export const OPERATION_CURRENCY_RULE = 'OPERATION-CURRENCY';
 export const OPERATION_CARD_RULES = [
-  OPERATION_MATCH_RULE, OPERATION_PARENT_RULE, OPERATION_AMOUNT_RULE, OPERATION_DETACH_RULE, OPERATION_ASSET_EXCLUSION_RULE, OPERATION_CURRENCY_RULE,
+  OPERATION_MATCH_RULE, OPERATION_AMOUNT_RULE, OPERATION_ASSET_EXCLUSION_RULE, OPERATION_CURRENCY_RULE,
 ] as const;
 
 const MATCH_RELATION = 'operationMatch';
-const PARENT_RELATION = 'operationParent';
 const AMOUNT_RELATION = 'operationAmount';
-const DETACH_RELATION = 'operationDetach';
 const EXCLUSION_RELATION = 'operationAssetExclusion';
 const CURRENCY_RELATION = 'operationCurrency';
 
 export const matchRelationKey = (candidateKey: string) => `${MATCH_RELATION}:${candidateKey}`;
-export const parentRelationKey = (operationId: number) => `${PARENT_RELATION}:${operationId}`;
 export const amountRelationKey = (operationId: number, fingerprint: string) => `${AMOUNT_RELATION}:${operationId}:${fingerprint.slice(0, 16)}`;
-export const detachRelationKey = (operationId: number) => `${DETACH_RELATION}:${operationId}`;
 export const exclusionRelationKey = (operationId: number, assetId: number) => `${EXCLUSION_RELATION}:${operationId}:${assetId}`;
 export const currencyRelationKey = (operationId: number, fingerprint: string) => `${CURRENCY_RELATION}:${operationId}:${fingerprint.slice(0, 16)}`;
 
@@ -138,20 +139,6 @@ export function matchProposals(type: string | null, basis: 'CERTAIN' | 'M3', lab
   return props;
 }
 
-export function parentQuestion(labels: readonly OperationLabel[]): string {
-  const [a, b] = labels;
-  return b
-    ? `Cette intervention fait-elle suite au sinistre ${guillemets(a.label)} ou au sinistre ${guillemets(b.label)} ?`
-    : `Cette intervention fait-elle suite au sinistre ${guillemets(a.label)} ?`;
-}
-
-export function parentProposals(labels: readonly OperationLabel[]): ActionProposal[] {
-  return [
-    ...labels.slice(0, 2).map((l, i) => ({ value: `PARENT:${l.id}`, label: `Oui, ${guillemets(l.label)}`, confidence: 0.6 - i * 0.1 })),
-    { value: 'NONE', label: 'Non, aucun de ces sinistres', confidence: 1, isCurrentValue: true },
-  ];
-}
-
 export function amountQuestion(kind: string): string {
   return `Ces documents indiquent des montants différents pour ${DEPENSES[kind] ?? 'la même dépense'} : lequel est le bon ?`;
 }
@@ -165,19 +152,6 @@ export function amountProposals(
   return [
     ...options.filter((o) => !est(o)).slice(-2).reverse().map((o, i) => ({ value: `AMOUNT:${o.amountMinor}:${o.currency}`, label: lib(o), confidence: 0.6 - i * 0.1 })),
     ...options.filter(est).slice(0, 1).map((o) => ({ value: `AMOUNT:${o.amountMinor}:${o.currency}`, label: lib(o), confidence: 1, isCurrentValue: true })),
-  ];
-}
-
-/** Question (d) — lot 53, D11 (pure). */
-export function detachQuestion(claimLabel: string): string {
-  return `Sa facture a été retirée des actions du sinistre ${guillemets(claimLabel)} : cette intervention fait-elle toujours suite à ce sinistre ?`;
-}
-
-/** Propositions (d) : dissocier, ou garder le rattachement actuel (pures). */
-export function detachProposals(): ActionProposal[] {
-  return [
-    { value: 'DETACH', label: 'Non, la dissocier du sinistre', confidence: 0.6 },
-    { value: 'KEEP', label: 'Oui, elle reste liée à ce sinistre', confidence: 1, isCurrentValue: true },
   ];
 }
 
@@ -333,21 +307,6 @@ export async function syncOperationCards(accountId: number, needs: OperationCard
       gardees.add(`M:${n.fileId}:${matchRelationKey(n.candidateKey)}`);
     }
 
-    // (b) Parent Sinistre ambigu.
-    for (const n of needs.parent) {
-      const labels = await operationLabels(accountId, n.claimIds, null);
-      const offerts = n.claimIds.filter((id) => labels.has(id)).slice(0, 2).map((id) => ({ id, label: labels.get(id)!.label }));
-      if (!offerts.length) continue;
-      const r = await upsertAction({
-        accountId, targetType: 'DOCUMENT', targetId: n.fileId, relationKey: parentRelationKey(n.operationId),
-        actionKind: 'ARBITRATE', ruleCode: OPERATION_PARENT_RULE,
-        question: parentQuestion(offerts), proposals: parentProposals(offerts),
-        triggerContext: { kind: 'operation_parent', operationId: n.operationId, claimIds: offerts.map((o) => o.id) },
-      });
-      compter(r.status);
-      gardees.add(`P:${n.fileId}:${parentRelationKey(n.operationId)}`);
-    }
-
     // (c) Montant contradictoire de même rôle.
     for (const n of needs.amount) {
       const titres = await fileTitles(accountId, [...new Set(n.options.flatMap((o) => o.fileIds))]);
@@ -363,20 +322,6 @@ export async function syncOperationCards(accountId: number, needs: OperationCard
       });
       compter(r.status);
       gardees.add(`A:${n.fileId}:${amountRelationKey(n.operationId, n.fingerprint)}`);
-    }
-
-    // (d) Lot 53 (D11) : intervention dont la facture a été retirée des actions du sinistre.
-    for (const n of needs.detach ?? []) {
-      const labels = await operationLabels(accountId, [n.claimId], null);
-      const sinistre = labels.get(n.claimId)?.label ?? 'Sinistre';
-      const r = await upsertAction({
-        accountId, targetType: 'DOCUMENT', targetId: n.fileId, relationKey: detachRelationKey(n.operationId),
-        actionKind: 'ARBITRATE', ruleCode: OPERATION_DETACH_RULE,
-        question: detachQuestion(sinistre), proposals: detachProposals(),
-        triggerContext: { kind: 'operation_detach', operationId: n.operationId, claimId: n.claimId },
-      });
-      compter(r.status);
-      gardees.add(`D:${n.fileId}:${detachRelationKey(n.operationId)}`);
     }
 
     // (e) Lot 53 (Q17) : bien exclu du sinistre cité par un document non encore arbitré.
@@ -427,8 +372,8 @@ export async function syncOperationCards(accountId: number, needs: OperationCard
       [accountId, `{${OPERATION_CARD_RULES.join(',')}}`, OPERATION_MATCH_RULE, intArray(needs.reviewedFiles), intArray(needs.reviewedOperations)] as never[],
     )) as unknown as Array<{ id: number; rule_code: string; target_id: number; relation_key: string; candidate_key: string | null }>;
     const prefixe: Record<string, string> = {
-      [OPERATION_MATCH_RULE]: 'M', [OPERATION_PARENT_RULE]: 'P', [OPERATION_AMOUNT_RULE]: 'A',
-      [OPERATION_DETACH_RULE]: 'D', [OPERATION_ASSET_EXCLUSION_RULE]: 'E', [OPERATION_CURRENCY_RULE]: 'C',
+      [OPERATION_MATCH_RULE]: 'M', [OPERATION_AMOUNT_RULE]: 'A',
+      [OPERATION_ASSET_EXCLUSION_RULE]: 'E', [OPERATION_CURRENCY_RULE]: 'C',
     };
     const fermees = ouvertes.filter((o) => !gardees.has(`${prefixe[o.rule_code]}:${o.target_id}:${o.relation_key}`));
     rep.closed += await closeCards(fermees.map((o) => Number(o.id)), 'RESOLVED_BY_T3', await matchClosureTrace(accountId, fermees));
@@ -448,25 +393,16 @@ type Action = typeof toProcessActions.$inferSelect;
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
 interface MatchCtx { kind: 'operation_match'; candidateKey: string; basis: 'CERTAIN' | 'M3'; operationIds: number[] }
-interface ParentCtx { kind: 'operation_parent'; operationId: number; claimIds: number[] }
 interface AmountCtx { kind: 'operation_amount'; operationId: number; fingerprint: string; options: Array<{ amountMinor: number; currency: string }> }
-interface DetachCtx { kind: 'operation_detach'; operationId: number; claimId: number }
 interface ExclusionCtx { kind: 'operation_asset_exclusion'; operationId: number; assetId: number; fileIds: number[] }
 interface CurrencyCtx { kind: 'operation_currency'; operationId: number; fingerprint: string; amountMinor: number; candidates: string[] }
 
 /** Choix reçu (pur) ; `null` : invalide (une requête forgée ne désigne rien hors de la carte). */
 export function parseOperationCardChoice(ruleCode: string, value: unknown, ctx: unknown):
-  | { kind: 'SAME'; operationId: number } | { kind: 'DISTINCT' } | { kind: 'PARENT'; operationId: number } | { kind: 'NONE' }
-  | { kind: 'AMOUNT'; amountMinor: number; currency: string } | { kind: 'DETACH' }
+  | { kind: 'SAME'; operationId: number } | { kind: 'DISTINCT' }
+  | { kind: 'AMOUNT'; amountMinor: number; currency: string }
   | { kind: 'REINSTATE' } | { kind: 'KEEP_EXCLUDED' } | { kind: 'CURRENCY'; currency: string | null } | null {
   if (typeof value !== 'string' || !ctx || typeof ctx !== 'object') return null;
-  if (ruleCode === OPERATION_DETACH_RULE) {
-    const c = ctx as DetachCtx;
-    if (!Number.isSafeInteger(c.claimId)) return null;
-    // « Garder » = confirmer le sinistre actuel comme parent (décision durable).
-    if (value === 'KEEP') return { kind: 'PARENT', operationId: c.claimId };
-    return value === 'DETACH' ? { kind: 'DETACH' } : null;
-  }
   if (ruleCode === OPERATION_ASSET_EXCLUSION_RULE) {
     if (value === 'REINSTATE') return { kind: 'REINSTATE' };
     return value === 'KEEP_EXCLUDED' ? { kind: 'KEEP_EXCLUDED' } : null;
@@ -476,12 +412,6 @@ export function parseOperationCardChoice(ruleCode: string, value: unknown, ctx: 
     if (value === 'DISTINCT') return c.basis === 'M3' ? { kind: 'DISTINCT' } : null;
     const m = /^SAME:(\d+)$/.exec(value);
     return m && c.operationIds?.includes(Number(m[1])) ? { kind: 'SAME', operationId: Number(m[1]) } : null;
-  }
-  if (ruleCode === OPERATION_PARENT_RULE) {
-    const c = ctx as ParentCtx;
-    if (value === 'NONE') return { kind: 'NONE' };
-    const m = /^PARENT:(\d+)$/.exec(value);
-    return m && c.claimIds?.includes(Number(m[1])) ? { kind: 'PARENT', operationId: Number(m[1]) } : null;
   }
   if (ruleCode === OPERATION_AMOUNT_RULE) {
     const c = ctx as AmountCtx;
@@ -511,7 +441,7 @@ async function canonicalId(tx: Tx, accountId: number, id: number): Promise<numbe
 }
 
 interface Previous {
-  decisionIds?: number[]; sourceId?: number | null; previousParent?: number | null; operationId?: number; resolvedAt?: string;
+  decisionIds?: number[]; sourceId?: number | null; operationId?: number; resolvedAt?: string;
   /** Lot 53 (Q17) : bien et documents de l'arbitrage d'une exclusion. */
   assetId?: number; fileIds?: number[];
 }
@@ -555,7 +485,7 @@ export async function resolveOperationCard(
       fileToConsolidate = action.targetId;
       return needs;
     }
-    const ctx = action.triggerContext as unknown as ParentCtx | AmountCtx | DetachCtx | ExclusionCtx | CurrencyCtx;
+    const ctx = action.triggerContext as unknown as AmountCtx | ExclusionCtx | CurrencyCtx;
     const opId = await canonicalId(t, accountId, ctx.operationId);
     if (opId === null) { stale = true; return needs; }
     const op = await repo.load(opId, { allowInactive: true });
@@ -574,36 +504,22 @@ export async function resolveOperationCard(
       previous.fileIds = x.fileIds ?? [];
       const { reconsolidateOperation } = await import('@/services/business-operations/consolidation/consolidator');
       await reconsolidateOperation(repo, session.tx, opId, now.toISOString().slice(0, 10), undefined, needs);
-      if (choice.kind === 'REINSTATE') {
-        const { syncClaimMirror } = await import('@/services/business-operations/consolidation/claim-form');
-        await syncClaimMirror(session.tx, accountId, [x.assetId]);
-      }
       return needs;
     }
-    const genre = choice.kind === 'AMOUNT' ? 'AMOUNT' : choice.kind === 'CURRENCY' ? 'CURRENCY' : 'CLAIM_PARENT';
+    const genre = choice.kind === 'AMOUNT' ? 'AMOUNT' : 'CURRENCY';
     // La décision la plus récente remplace la précédente du même genre (et de la même empreinte).
     const anciennes = (await t.execute(sql`
       SELECT id FROM business_operation_sources
        WHERE operation_id = ${opId} AND account_id = ${accountId} AND active AND source_kind = 'USER_ARBITRATION'
          AND locator->>'decision' = ${genre}
-         AND (${genre} NOT IN ('AMOUNT', 'CURRENCY') OR locator->>'fingerprint' = ${(ctx as AmountCtx).fingerprint ?? ''})`)) as unknown as Array<{ id: string }>;
+         AND locator->>'fingerprint' = ${(ctx as AmountCtx).fingerprint ?? ''}`)) as unknown as Array<{ id: string }>;
     for (const a of anciennes) await repo.deactivateSource(Number(a.id), 'USER_DECISION_REPLACED');
     const locator = choice.kind === 'AMOUNT'
       ? { decision: 'AMOUNT', fingerprint: (ctx as AmountCtx).fingerprint, amountMinor: choice.amountMinor, currency: choice.currency, known: (ctx as AmountCtx).options }
-      : choice.kind === 'CURRENCY'
-        ? { decision: 'CURRENCY', fingerprint: (ctx as CurrencyCtx).fingerprint, currency: choice.currency }
-        : { decision: 'CLAIM_PARENT', parentOperationId: choice.kind === 'PARENT' ? await canonicalId(t, accountId, choice.operationId) : null };
+      : { decision: 'CURRENCY', fingerprint: (ctx as CurrencyCtx).fingerprint, currency: choice.kind === 'CURRENCY' ? choice.currency : null };
     previous.sourceId = await repo.addSource(opId, {
       kind: 'USER_ARBITRATION', entityKey: action.id, authority: 'USER', confidence: 'certain', locator,
-    }, genre === 'AMOUNT' ? 'USER_AMOUNT_CHOSEN' : genre === 'CURRENCY' ? 'USER_CURRENCY_CONFIRMED' : choice.kind === 'DETACH' ? 'USER_CLAIM_DETACHED' : 'USER_CLAIM_PARENT');
-    previous.previousParent = op.parentOperationId;
-    if (choice.kind === 'PARENT' && 'parentOperationId' in locator && typeof locator.parentOperationId === 'number' && locator.parentOperationId !== op.parentOperationId) {
-      await repo.setParent(opId, locator.parentOperationId, 'USER_CLAIM_PARENT');
-    }
-    // Lot 53 (D11) : dissociation décidée par l'utilisateur (jamais automatique).
-    if (choice.kind === 'DETACH' && op.parentOperationId !== null) {
-      await repo.setParent(opId, null, 'USER_CLAIM_DETACHED');
-    }
+    }, genre === 'AMOUNT' ? 'USER_AMOUNT_CHOSEN' : 'USER_CURRENCY_CONFIRMED');
     const { reconsolidateOperation } = await import('@/services/business-operations/consolidation/consolidator');
     await reconsolidateOperation(repo, session.tx, opId, now.toISOString().slice(0, 10), undefined, needs);
     return needs;
@@ -701,12 +617,6 @@ export async function undoOperationCard(action: Action, accountId: number): Prom
       await reconsolidateOperation(repo, tx, prev.operationId, today, undefined, needs);
     } else if (prev?.operationId) {
       if (prev.sourceId) await repo.deactivateSource(prev.sourceId, 'USER_DECISION_UNDONE');
-      if (action.ruleCode === OPERATION_PARENT_RULE || action.ruleCode === OPERATION_DETACH_RULE) {
-        const op = await repo.load(prev.operationId, { allowInactive: true, allowMerged: true });
-        if (op.mergedIntoOperationId === null && op.invalidatedAt === null && op.parentOperationId !== (prev.previousParent ?? null)) {
-          await repo.setParent(prev.operationId, prev.previousParent ?? null, 'USER_CLAIM_PARENT_UNDONE');
-        }
-      }
       await reconsolidateOperation(repo, tx, prev.operationId, today, undefined, needs);
     }
     await tx.update(toProcessActions)

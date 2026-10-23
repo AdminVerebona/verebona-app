@@ -385,6 +385,17 @@ export async function runDataSeparationBackfill(o: {
   apply: boolean; accountId?: number | null; reason?: string | null; log?: (m: string) => void; sql?: Sql;
   /** Tests de reprise : interruption simulée entre le retrait des preuves et la réconciliation des fiches. */
   simulateInterruption?: 'before_reconcile';
+  /**
+   * Lot 83B (contrôle de cohérence `COH-ASSET-EQUIPMENT-SEPARATION`) : biens
+   * visés seulement (cas A / B / C et suspects de CES biens) ; absent : tous.
+   */
+  assetIds?: readonly number[] | null;
+  /**
+   * Lot 83B : partie D (documents → équipements) ; `false` quand l'appelant
+   * est le contrôle de cohérence — elle y relève de `COH-DOC-LINKS` (même
+   * service commun), jamais de deux chaînes. Défaut : incluse (BO).
+   */
+  documents?: boolean;
 }): Promise<DataSeparationReport> {
   const sql = o.sql ?? pgClient;
   const log = o.log ?? (() => undefined);
@@ -400,9 +411,10 @@ export async function runDataSeparationBackfill(o: {
     report.accountsScanned++;
     try {
       const preuves = await findEvidenceCases(sql, accountId);
-      const cas = [...preuves.cases, ...await findAgendaPurchaseCases(sql, accountId)];
+      const vise = (x: { assetId: number }) => !o.assetIds || o.assetIds.includes(x.assetId);
+      const cas = [...preuves.cases, ...await findAgendaPurchaseCases(sql, accountId)].filter(vise);
       report.cases.push(...cas);
-      report.suspects.push(...preuves.suspects, ...await findOtherAttributeSuspects(sql, accountId));
+      report.suspects.push(...[...preuves.suspects, ...await findOtherAttributeSuspects(sql, accountId)].filter(vise));
       const userId = await proprietaire(sql, accountId);
 
       // ── A / B : retrait des preuves, puis réconciliation des fiches touchées ──
@@ -523,7 +535,7 @@ export async function runDataSeparationBackfill(o: {
 
       // ── D : documents → équipements (rétroactif, déterministe seul ; TOUS les documents, par pages) ──
       const { syncDocumentEquipmentLinks, iterateDocumentsOfAsset } = await import('./document-equipment-link.service');
-      const biensAvecEquipements = (await sql.unsafe(
+      const biensAvecEquipements = o.documents === false ? [] : (await sql.unsafe(
         `SELECT DISTINCT a.id FROM assets a JOIN equipments e ON e.asset_id = a.id AND e.archived_at IS NULL
           WHERE a.account_id = $1 AND a.deleted_at IS NULL ORDER BY a.id`,
         [accountId] as never[],

@@ -90,7 +90,7 @@ async function reconcileTaskAt(): Promise<[number, number]> {
   return sch?.kind === 'daily' && sch.at ? [sch.at[0], sch.at[1]] : [7, 40];
 }
 
-interface StripeView {
+export interface StripeView {
   id: string;
   customer: string | null;
   status: string;
@@ -99,7 +99,8 @@ interface StripeView {
   cancelScheduled: boolean;
 }
 
-function viewOf(raw: unknown): StripeView {
+/** Vue comparable d'un abonnement Stripe (pure ; lot 83E : réutilisée par le contrôle de cohérence COH-BILLING-STRIPE). */
+export function viewOf(raw: unknown): StripeView {
   const s = raw as {
     id: string; status: string; customer?: string | { id: string } | null; cancel_at_period_end?: boolean | null; cancel_at?: number | null;
     items?: { data?: Array<{ current_period_end?: number | null; price?: { recurring?: { interval?: string | null; interval_count?: number | null } | null } | null }> };
@@ -118,7 +119,7 @@ function viewOf(raw: unknown): StripeView {
   };
 }
 
-interface LocalRow {
+export interface LocalRow {
   account_id: number;
   status: string | null;
   billing_period: string | null;

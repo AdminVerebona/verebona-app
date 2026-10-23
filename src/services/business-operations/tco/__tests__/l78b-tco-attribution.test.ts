@@ -35,7 +35,7 @@ const comp = (kind: FinancialComponentKind, cents: number, o: Partial<LedgerComp
   periodStart: null, periodEnd: null, targetAssetId: null, ...o,
 });
 const op = (id: number, typeCode: BusinessOperationTypeCode, components: LedgerComponent[], o: Partial<TcoOperation> = {}): TcoOperation => ({
-  id, typeCode, status: 'REALIZED', parentOperationId: null, realizedDate: '2007-05-14', startDate: null, plannedDate: null,
+  id, typeCode, status: 'REALIZED', realizedDate: '2007-05-14', startDate: null, plannedDate: null,
   assetIds: [MAISON], label: typeCode, components: components.map((c) => ({ ...c, operationId: id })), documents: [], sourceKinds: ['DOCUMENT'], ...o,
 });
 const pv = (documentFileIds: number[], o: Partial<ComponentProvenance> = {}): ComponentProvenance => ({

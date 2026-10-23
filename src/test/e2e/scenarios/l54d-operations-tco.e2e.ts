@@ -4,7 +4,7 @@
  *
  * Chemins de PRODUCTION : persistance T1 réelle des candidats, consolidation
  * T3 réelle (`consolidateAccountOperations`, `runOperationsJob`), service
- * Sinistre réel, projection T4 réelle, lecture T2 réelle
+ * Sinistre (Opération CLAIM + rattachement de document, lot 83D), projection T4 réelle, lecture T2 réelle
  * (`sumQualifiedExpenses`), service TCO et routes HTTP réelles (seule la
  * lecture de la session est simulée). Les volumes (E02, E07, E08, H) sont
  * insérés en SQL ensembliste (harnais) puis traités par le code de production.
@@ -37,18 +37,25 @@ scenario('L54D', 'Opérations V1 — écarts E01 à E09, TCO, concordance T2 / T
   const job = (compte: AccountRow, id: number) => ({ id, accountId: compte.id, treatment: 'T3', targetType: 'business_operations', targetId: String(compte.id), triggerCode: null }) as never;
   const guard = { assertActive: async () => {} } as never;
 
-  /** Sinistre saisi (service réel) puis action « facture de réparation » ajoutée par une mise à jour versionnée (chemin du formulaire). */
-  async function sinistreAvecReparation(compte: AccountRow & { owner: { id: number } }, asset: AssetRow, claim: Record<string, unknown>, invoiceFileId: number): Promise<number> {
+  /**
+   * Sinistre puis facture de réparation DANS l'Opération CLAIM (lot 83D, CDC v5
+   * §18.4, AC39 : plus d'action « facture » d'un formulaire, plus
+   * d'intervention enfant). Chemin de production : la facture est qualifiée
+   * par T1 comme pièce du sinistre (typeHint CLAIM, référence du dossier) et
+   * T3 la rattache au sinistre saisi (MATCH, F-040) avec son coût.
+   */
+  async function sinistreAvecReparation(
+    compte: AccountRow & { owner: { id: number } }, asset: AssetRow, claim: Record<string, unknown> & { insurerClaimRef: string },
+    facture: { summary: string; ref: string; date: string; cents: number; currency?: string },
+  ): Promise<number> {
     const id = await k.sinistre(compte, compte.owner, asset, claim);
-    const [{ parseClaimBody }, { ClaimOperationService }] = await Promise.all([
-      import('@/services/business-operations/claims/claim-route'),
-      import('@/services/business-operations/claims/claim-operation.service'),
-    ]);
-    const [o] = await sql<{ version: number }[]>`SELECT version FROM business_operations WHERE id = ${id}`;
-    const [a] = await sql<{ category: string }[]>`SELECT category FROM assets WHERE id = ${asset.id}`;
-    const p = await parseClaimBody({ claim: { actions: [{ id: 'a1', title: 'Réparation', invoiceDocumentId: invoiceFileId }] }, version: o.version }, { category: a.category, accountId: compte.id, refAssetIds: [asset.id] });
-    if (!p.ok) throw new Error(`mise à jour invalide : ${JSON.stringify(p.issues)}`);
-    await ClaimOperationService.update(compte.id, compte.owner.id, asset.id, id, { patch: p.value.patch, expectedVersion: p.value.expectedVersion ?? null });
+    const f = await k.document(compte, asset.id, [cand({
+      typeHint: 'CLAIM', sourceRoleHint: 'INVOICE', summary: facture.summary, targetHints: [cible(asset.id)],
+      businessReferences: [ref('CLAIM', claim.insurerClaimRef), ref('INVOICE', facture.ref)], temporalHints: { realizedDate: facture.date },
+      financialHints: [fh('REALIZED_COST', facture.cents, facture.currency ? { currency: facture.currency } : {})],
+    })], { type: 'REPAIR_INVOICE', title: `Facture ${facture.ref}` });
+    await k.passer(compte);
+    expect((await k.candidat(f))[0]).toMatchObject({ t3_operation_id: id });
     return id;
   }
 
@@ -77,21 +84,21 @@ scenario('L54D', 'Opérations V1 — écarts E01 à E09, TCO, concordance T2 / T
       { type: 'MAINTENANCE_INVOICE', title: 'Vidange' });
     const { setT3FaultHookForTests } = await consolidator();
     const { BusinessOperationIntegrityError } = await import('@/services/business-operations/errors');
-    setT3FaultHookForTests((stage) => { if (stage === 'document') throw new BusinessOperationIntegrityError('PARENT_CYCLE', 'panne simulée'); });
+    setT3FaultHookForTests((stage) => { if (stage === 'document') throw new BusinessOperationIntegrityError('INVALID_DETAILS', 'panne simulée'); });
     const { runOperationsJob } = await import('@/services/business-operations/consolidation/queue');
     const r = await runOperationsJob(job(compte, 990_001), { kind: 'business_operations', accountId: compte.id, events: [{ trigger: 'source_analyzed', fileId: f }], requestedAt: null } as never, guard);
     expect(r.result).toBe('FAILED');
-    expect(r.detail).toMatchObject({ failure: 'T3_TECHNICAL_ERRORS', technicalErrors: [{ fileId: f, code: 'PARENT_CYCLE' }] });
+    expect(r.detail).toMatchObject({ failure: 'T3_TECHNICAL_ERRORS', technicalErrors: [{ fileId: f, code: 'INVALID_DETAILS' }] });
     const [c] = await sql<{ t3_outcome: string; t3_reason: string; t3_error_attempts: number; t3_retry_at: string | null; t3_last_error: Record<string, unknown> }[]>`
       SELECT t3_outcome, t3_reason, t3_error_attempts, t3_retry_at::text AS t3_retry_at, t3_last_error FROM document_operation_candidates WHERE file_id = ${f} AND status = 'ACTIVE'`;
-    expect(c).toMatchObject({ t3_outcome: 'HOLD_UNRESOLVED', t3_reason: 'TECHNICAL_ERROR:PARENT_CYCLE', t3_error_attempts: 1 });
+    expect(c).toMatchObject({ t3_outcome: 'HOLD_UNRESOLVED', t3_reason: 'TECHNICAL_ERROR:INVALID_DETAILS', t3_error_attempts: 1 });
     expect(c.t3_retry_at).not.toBeNull();
-    expect(c.t3_last_error).toMatchObject({ code: 'PARENT_CYCLE', jobId: 990001, attempt: 1 });
+    expect(c.t3_last_error).toMatchObject({ code: 'INVALID_DETAILS', jobId: 990001, attempt: 1 });
     expect(await k.actives(compte)).toHaveLength(0);
     // BO : erreur et reprise exposées.
     const { OperationDiagnosticsService } = await import('@/services/business-operations/diagnostics/service');
     const holds = await new OperationDiagnosticsService().holds({ accountId: compte.id, outcome: null, reason: 'TECHNICAL_ERROR', page: 1, pageSize: 10 });
-    expect(holds.items[0].technicalError).toMatchObject({ attempts: 1, exhausted: false, code: 'PARENT_CYCLE', jobId: 990001 });
+    expect(holds.items[0].technicalError).toMatchObject({ attempts: 1, exhausted: false, code: 'INVALID_DETAILS', jobId: 990001 });
     // Pas encore échue : le balayage ne la reprend pas ; échue : le compte est repris, sans intervention.
     const { listAccountsToConsolidate } = await consolidator();
     expect(await listAccountsToConsolidate(compte.id - 1, 1)).not.toContain(compte.id);
@@ -119,7 +126,7 @@ scenario('L54D', 'Opérations V1 — écarts E01 à E09, TCO, concordance T2 / T
     const { setT3FaultHookForTests, t3RetryDelayMinutes } = await consolidator();
     expect([1, 2, 3, 6, 7].map(t3RetryDelayMinutes)).toEqual([5, 10, 20, 160, null]);
     const { BusinessOperationIntegrityError } = await import('@/services/business-operations/errors');
-    setT3FaultHookForTests((stage) => { if (stage === 'document') throw new BusinessOperationIntegrityError('PARENT_CYCLE', 'panne'); });
+    setT3FaultHookForTests((stage) => { if (stage === 'document') throw new BusinessOperationIntegrityError('INVALID_DETAILS', 'panne'); });
     await k.passer(compte);
     await sql`UPDATE document_operation_candidates SET t3_pending = true WHERE file_id = ${f}`;
     await k.passer(compte);
@@ -209,10 +216,8 @@ scenario('L54D', 'Opérations V1 — écarts E01 à E09, TCO, concordance T2 / T
   it('OPS-E09 — frais CHF non convertibles et indemnité EUR : Sinistre, T2 et TCO sans total trompeur (jamais 0 €), couverture signalée', async () => {
     const compte = await make.account({ plan: 'premium' });
     const chalet = await make.asset(compte, { category: 'IMMOBILIER', name: 'Chalet' });
-    const f = await k.document(compte, chalet.id, [cand({ targetHints: [cible(chalet.id)], businessReferences: [ref('INVOICE', 'CH-RP-1')], summary: 'Réparation toiture',
-      temporalHints: { realizedDate: '2026-03-03' }, financialHints: [fh('REALIZED_COST', 120_000, { currency: 'CHF' })] })], { type: 'REPAIR_INVOICE', title: 'Facture CHF' });
-    await k.passer(compte);
-    const claimId = await sinistreAvecReparation(compte, chalet, { claimType: 'EVENEMENT_CLIMATIQUE', occurredOn: '2026-03-01', compensationCents: 50_000 }, f);
+    const claimId = await sinistreAvecReparation(compte, chalet, { claimType: 'EVENEMENT_CLIMATIQUE', occurredOn: '2026-03-01', compensationCents: 50_000, insurerClaimRef: 'SIN-E09' },
+      { summary: 'Réparation toiture', ref: 'CH-RP-1', date: '2026-03-03', cents: 120_000, currency: 'CHF' });
     const { loadClaimRecords } = await import('@/services/business-operations/claims/read');
     const { db } = await import('@/db');
     const [rec] = await loadClaimRecords(db, compte.id, { ids: [claimId] });
@@ -297,22 +302,28 @@ scenario('L54D', 'Opérations V1 — écarts E01 à E09, TCO, concordance T2 / T
     const [id] = await opsEnMasse(compte, polo.id, 1, { espacementJours: 9_000 });
     await sql`UPDATE business_operations SET updated_at = now() - interval '30 days', created_at = now() - interval '30 days' WHERE id = ${id}`;
     const svc = await import('@/services/business-operations/agenda-projection/service');
-    expect(await svc.listAccountsNeedingProjection(100_000)).toContain(compte.id);
+    // Lot 83E (C-Q9) : le balayage horaire de convergence est retiré — l'écart est constaté (et réparé) par le
+    // contrôle de cohérence COH-AGENDA-OPERATION-PROJECTION (plan simulé du même moteur).
+    const { getCheck } = await import('@/services/coherence/registry');
+    const controle = getCheck('COH-AGENDA-OPERATION-PROJECTION')!;
+    const ctx = { sql, now: new Date(), today: RECETTE_TODAY, mode: 'DRY_RUN' as const, correlationId: 'e2e-ops-e06' };
+    const verdict = async () => (await controle.inspect!(ctx, compte.id, [id])).get(id)!;
+    expect(await verdict()).toMatchObject({ verdict: 'REPAIRABLE', anomaly: 'MISSING_CALCULABLE_EVENT' });
     await svc.projectAccountOperations(compte.id, { all: true, today: RECETTE_TODAY });
     const items = () => sql<{ id: number }[]>`SELECT id::int AS id FROM agenda_items WHERE business_operation_id = ${id}`;
     expect(await items()).toHaveLength(1);
-    expect(await svc.listAccountsNeedingProjection(100_000)).not.toContain(compte.id);
+    expect(await verdict()).toMatchObject({ verdict: 'CONSISTENT' });
     // Projection perdue (élément disparu sans geste utilisateur) : restaurée.
     await sql`DELETE FROM agenda_items WHERE business_operation_id = ${id}`;
-    expect(await svc.listAccountsNeedingProjection(100_000)).toContain(compte.id);
+    expect(await verdict()).toMatchObject({ verdict: 'REPAIRABLE', anomaly: 'MISSING_CALCULABLE_EVENT' });
     await svc.projectAccountOperations(compte.id, { all: true, today: RECETTE_TODAY });
     const [item] = await items();
     expect(item).toBeDefined();
-    // Suppression UTILISATEUR : tombstone → ni re-file, ni recréation.
+    // Suppression UTILISATEUR : tombstone → ni écart constaté, ni recréation.
     const { db } = await import('@/db');
     await svc.recordAgendaProjectionSuppression(db, { accountId: compte.id, itemId: item.id, userId: compte.ownerUserId });
     await sql`DELETE FROM agenda_items WHERE id = ${item.id}`;
-    expect(await svc.listAccountsNeedingProjection(100_000)).not.toContain(compte.id);
+    expect(await verdict()).toMatchObject({ verdict: 'CONSISTENT' });
     expect((await svc.projectAccountOperations(compte.id, { all: true, today: RECETTE_TODAY })).changes).toBe(0);
     expect(await items()).toHaveLength(0);
   });
@@ -375,10 +386,8 @@ scenario('L54D', 'Opérations V1 — écarts E01 à E09, TCO, concordance T2 / T
   it('FIN-A — sinistre : réparation 2 000 €, indemnité 1 500 € — Sinistre brut 2 000 / net 500, T2 brut 2 000 / reste à charge 500, TCO 500', async () => {
     const compte = await make.account({ plan: 'premium' });
     const maison = await make.asset(compte, { category: 'IMMOBILIER', name: 'Maison' });
-    const f = await k.document(compte, maison.id, [cand({ targetHints: [cible(maison.id)], summary: 'Réparation plafond', businessReferences: [ref('INVOICE', 'REP-A')],
-      temporalHints: { realizedDate: '2026-02-10' }, financialHints: [fh('REALIZED_COST', 200_000)] })], { type: 'REPAIR_INVOICE' });
-    await k.passer(compte);
-    const claimId = await sinistreAvecReparation(compte, maison, { claimType: 'DEGAT_DES_EAUX', occurredOn: '2026-02-01', compensationCents: 150_000 }, f);
+    const claimId = await sinistreAvecReparation(compte, maison, { claimType: 'DEGAT_DES_EAUX', occurredOn: '2026-02-01', compensationCents: 150_000, insurerClaimRef: 'SIN-FINA' },
+      { summary: 'Réparation plafond', ref: 'REP-A', date: '2026-02-10', cents: 200_000 });
     const { loadClaimRecords } = await import('@/services/business-operations/claims/read');
     const { db } = await import('@/db');
     const [rec] = await loadClaimRecords(db, compte.id, { ids: [claimId] });

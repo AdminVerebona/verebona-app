@@ -30,7 +30,6 @@ export interface BusinessOperationView {
   typeCode: BusinessOperationTypeCode | null;
   status: BusinessOperationStatus;
   technicalLabel: string | null;
-  parentOperationId: number | null;
   provider: string | null;
   plannedDate: string | null;
   startDate: string | null;
@@ -45,13 +44,13 @@ export interface BusinessOperationView {
   active: boolean;
 }
 
-const COLUMNS = sql.raw(`id, account_id, type_code, status, technical_label, parent_operation_id, provider,
+const COLUMNS = sql.raw(`id, account_id, type_code, status, technical_label, provider,
   planned_date::text AS planned_date, start_date::text AS start_date, realized_date::text AS realized_date,
   end_date::text AS end_date, closed_at::text AS closed_at, invalidated_at::text AS invalidated_at,
   invalidation_reason, merged_into_operation_id, last_reconciled_at::text AS last_reconciled_at, version`);
 
 /** Mêmes colonnes, qualifiées par l'alias `o` (lectures avec jointures). */
-const O_COLUMNS = sql.raw(`o.id, o.account_id, o.type_code, o.status, o.technical_label, o.parent_operation_id, o.provider,
+const O_COLUMNS = sql.raw(`o.id, o.account_id, o.type_code, o.status, o.technical_label, o.provider,
   o.planned_date::text AS planned_date, o.start_date::text AS start_date, o.realized_date::text AS realized_date,
   o.end_date::text AS end_date, o.closed_at::text AS closed_at, o.invalidated_at::text AS invalidated_at,
   o.invalidation_reason, o.merged_into_operation_id, o.last_reconciled_at::text AS last_reconciled_at, o.version`);
@@ -63,7 +62,6 @@ function toView(r: Row): BusinessOperationView {
     typeCode: (r.type_code as BusinessOperationTypeCode | null) ?? null,
     status: r.status as BusinessOperationStatus,
     technicalLabel: (r.technical_label as string | null) ?? null,
-    parentOperationId: num(r.parent_operation_id),
     provider: (r.provider as string | null) ?? null,
     plannedDate: (r.planned_date as string | null) ?? null,
     startDate: (r.start_date as string | null) ?? null,
@@ -91,7 +89,6 @@ export interface OperationDetail extends BusinessOperationView {
   equipmentLinks: Row[];
   financialComponents: Row[];
   references: Row[];
-  children: number[];
   history: Row[];
 }
 
@@ -188,7 +185,7 @@ export class BusinessOperationReadService {
     const resolved = await this.getOperation(accountId, id);
     if (!resolved) return null;
     const op = resolved.operation;
-    const [sources, assetLinks, equipmentLinks, financialComponents, references, children, history] = await Promise.all([
+    const [sources, assetLinks, equipmentLinks, financialComponents, references, history] = await Promise.all([
       rows(this.runner, sql`SELECT * FROM business_operation_sources WHERE operation_id = ${op.id} AND account_id = ${accountId} ORDER BY id`),
       rows(this.runner, sql`SELECT * FROM business_operation_asset_links WHERE operation_id = ${op.id} AND account_id = ${accountId} ORDER BY id`),
       rows(this.runner, sql`SELECT * FROM business_operation_equipment_links WHERE operation_id = ${op.id} AND account_id = ${accountId} ORDER BY id`),
@@ -197,13 +194,11 @@ export class BusinessOperationReadService {
                                 FROM business_operation_financial_component_sources s WHERE s.component_id = c.id), '[]'::json) AS component_sources
           FROM business_operation_financial_components c WHERE c.operation_id = ${op.id} AND c.account_id = ${accountId} ORDER BY c.id`),
       rows(this.runner, sql`SELECT * FROM business_operation_references WHERE operation_id = ${op.id} AND account_id = ${accountId} ORDER BY id`),
-      rows<{ id: string }>(this.runner, sql`SELECT id FROM business_operations WHERE parent_operation_id = ${op.id} AND account_id = ${accountId} ORDER BY id`),
       rows(this.runner, sql`SELECT * FROM business_operation_history WHERE operation_id = ${op.id} AND account_id = ${accountId} ORDER BY id`),
     ]);
     return {
       ...op, redirectedFrom: resolved.redirectedFrom,
       sources, assetLinks, equipmentLinks, financialComponents, references, history,
-      children: children.map((c) => Number(c.id)),
     };
   }
 

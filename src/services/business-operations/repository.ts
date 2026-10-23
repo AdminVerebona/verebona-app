@@ -8,13 +8,15 @@
  *   · Construit UNIQUEMENT par `withBusinessOperationWrite` (ou sa variante
  *     dans une transaction existante) : la transaction est ouverte et le
  *     verrou du compte est DÉTENU (NFR-OP-001) ; chaque méthode le vérifie.
- *   · Lié à UN compte : toute Opération, source, bien, équipement, parent ou
+ *   · Lié à UN compte : toute Opération, source, bien, équipement ou
  *     contrat visé doit appartenir à ce compte (F-169, F-170, C20.1). Un lien
  *     inter-comptes est une erreur technique (NFR-OP-008), jamais un
  *     « À traiter ».
- *   · Intégrité contrôlée AVANT d'écrire : parent ≠ soi, un parent, profondeur
- *     ≤ 3, pas de cycle, relations C8.1 / C13.1, transitions C8, type nul
- *     admis, OTHER jamais en repli (P18).
+ *   · Intégrité contrôlée AVANT d'écrire : relations C13.1, transitions C8,
+ *     type nul admis, OTHER jamais en repli (P18). Lot 83D (CDC v5 §6.4,
+ *     §18.4, E16, AC39) : plus de relation parent / enfant — aucune écriture
+ *     de `parent_operation_id` (colonne inerte, purgée par le rattrapage BO
+ *     « Sinistres : nettoyage de l'ancien modèle », retirée au lot O-10).
  *   · Historise les changements significatifs (10.7) — jamais un appel sans
  *     changement (NFR-OP-005, INV-040) — et accumule les événements C21.1,
  *     publiés APRÈS commit par l'appelant de la transaction.
@@ -35,7 +37,7 @@ import type { DbTx } from './lock';
 import {
   ASSET_LINK_ROLES, AUTHORITIES, CLAIM_FILE_STATUSES, CONFIDENCES, CONTRACT_PERIODICITIES, EVIDENCE_ROLES,
   FINANCIAL_COMPONENT_KINDS, MATCH_METHODS, REFERENCE_KINDS, SOURCE_KEY_TABLE, SOURCE_KINDS, SOURCE_ROLES,
-  checkHierarchy, checkParentRelation, checkStatusTransition, isBusinessOperationStatus, isIsoCurrency, isIsoDate,
+  checkStatusTransition, isBusinessOperationStatus, isIsoCurrency, isIsoDate,
   isMinorAmount, normalizeBusinessReference, resolveOperationTypeInput,
   type AssetLinkRole, type Authority, type BusinessOperationStatus, type BusinessOperationTypeCode, type ClaimFileStatus,
   type Confidence, type ContractPeriodicity, type EvidenceRole, type FinancialComponentKind, type HistoryEventType,
@@ -50,7 +52,6 @@ export interface OperationRow {
   typeCode: BusinessOperationTypeCode | null;
   status: BusinessOperationStatus;
   technicalLabel: string | null;
-  parentOperationId: number | null;
   provider: string | null;
   plannedDate: string | null;
   startDate: string | null;
@@ -108,7 +109,6 @@ export interface OperationDatesInput {
 export interface CreateOperationInput extends OperationDatesInput {
   type: OperationTypeInput;
   status: BusinessOperationStatus;
-  parentOperationId?: number | null;
   /** Première source, obligatoire : une Opération n'existe jamais sans source (INV-FINAL-006). */
   source: SourceInput;
   assets?: AssetLinkInput[];
@@ -165,46 +165,6 @@ export interface ClaimDetailsInput {
   historyEventId?: number | null;
 }
 
-/** Lot 44 — listes structurées du Sinistre (C14) : une ligne n'est jamais une Opération. */
-export interface ClaimDamageInput {
-  itemKey: string | null;
-  zone: string;
-  element: string | null;
-  finding: string | null;
-  estimatedAmountMinor: number | null;
-  fileIds: number[];
-  photoIds: number[];
-}
-
-export interface ClaimActionInput {
-  itemKey: string | null;
-  date: string | null;
-  endDate: string | null;
-  status: 'REALISEE' | 'EN_COURS' | 'A_REALISER' | null;
-  title: string;
-  detail: string | null;
-  performedBy: string | null;
-  invoiceFileId: number | null;
-  /** INTERVENTION enfant rapprochée par la facture (C14.2). */
-  childOperationId: number | null;
-}
-
-export interface ClaimExchangeInput {
-  itemKey: string | null;
-  date: string | null;
-  party: 'ASSUREUR' | 'EXPERT' | 'AUTRE' | null;
-  channel: 'EMAIL' | 'COURRIER' | 'TELEPHONE' | 'ESPACE_CLIENT' | 'RENDEZ_VOUS' | 'AUTRE' | null;
-  direction: 'RECU' | 'ENVOYE' | null;
-  summary: string;
-  documentFileId: number | null;
-}
-
-export interface ClaimListsInput {
-  damages: ClaimDamageInput[];
-  actions: ClaimActionInput[];
-  exchanges: ClaimExchangeInput[];
-}
-
 // ── Outils ──────────────────────────────────────────────────────────────────
 
 type Row = Record<string, unknown>;
@@ -214,7 +174,7 @@ async function rows<T = Row>(tx: DbTx, q: SQL): Promise<T[]> {
 }
 
 const num = (v: unknown): number | null => (v === null || v === undefined ? null : Number(v));
-const OPERATION_COLUMNS = sql.raw(`id, account_id, type_code, status, technical_label, parent_operation_id, provider,
+const OPERATION_COLUMNS = sql.raw(`id, account_id, type_code, status, technical_label, provider,
   planned_date::text AS planned_date, start_date::text AS start_date, realized_date::text AS realized_date,
   end_date::text AS end_date, closed_at::text AS closed_at, invalidated_at::text AS invalidated_at,
   invalidation_reason, merged_into_operation_id, version`);
@@ -226,7 +186,6 @@ function toOperation(r: Row): OperationRow {
     typeCode: (r.type_code as BusinessOperationTypeCode | null) ?? null,
     status: r.status as BusinessOperationStatus,
     technicalLabel: (r.technical_label as string | null) ?? null,
-    parentOperationId: num(r.parent_operation_id),
     provider: (r.provider as string | null) ?? null,
     plannedDate: (r.planned_date as string | null) ?? null,
     startDate: (r.start_date as string | null) ?? null,
@@ -316,18 +275,11 @@ export class BusinessOperationRepository {
     if (!input.source) throw new BusinessOperationIntegrityError('SOURCE_REQUIRED', 'Une Opération n\'existe jamais sans source (INV-FINAL-006).');
     const dates = Object.fromEntries(DATE_FIELDS.map(([k]) => [k, optionalDate(input[k], k)])) as Record<(typeof DATE_FIELDS)[number][0], string | null>;
 
-    let parent: OperationRow | null = null;
-    if (input.parentOperationId != null) {
-      parent = await this.loadParent(input.parentOperationId);
-      checkParentRelation(typeCode, parent.typeCode);
-      checkHierarchy(-1, await this.ancestors(parent.id), 1);
-    }
-
     const [ins] = await rows<{ id: string }>(this.tx, sql`
       INSERT INTO business_operations
-        (account_id, type_code, status, technical_label, parent_operation_id, provider,
+        (account_id, type_code, status, technical_label, provider,
          planned_date, start_date, realized_date, end_date)
-      VALUES (${this.accountId}, ${typeCode}, ${input.status}, ${input.technicalLabel ?? null}, ${parent?.id ?? null},
+      VALUES (${this.accountId}, ${typeCode}, ${input.status}, ${input.technicalLabel ?? null},
               ${input.provider ?? null}, ${dates.plannedDate}::date, ${dates.startDate}::date,
               ${dates.realizedDate}::date, ${dates.endDate}::date)
       RETURNING id`);
@@ -338,7 +290,7 @@ export class BusinessOperationRepository {
     for (const e of input.equipments ?? []) await this.linkEquipmentInternal(id, { ...e, sourceId: e.sourceId ?? sourceId }, { history: false });
 
     await this.history(id, 'CREATED', input.reasonCode, null, {
-      type_code: typeCode, status: input.status, parent_operation_id: parent?.id ?? null,
+      type_code: typeCode, status: input.status,
       planned_date: dates.plannedDate, start_date: dates.startDate, realized_date: dates.realizedDate, end_date: dates.endDate,
       provider: input.provider ?? null, technical_label: input.technicalLabel ?? null,
       assets: (input.assets ?? []).map((a) => a.assetId), equipments: (input.equipments ?? []).map((e) => e.equipmentId),
@@ -349,19 +301,11 @@ export class BusinessOperationRepository {
 
   // ── Qualification et cycle de vie ────────────────────────────────────────
 
-  /** Type : null admis ; OTHER seulement qualifié (P18) ; relations parent / enfant revérifiées. */
+  /** Type : null admis ; OTHER seulement qualifié (P18). */
   async setType(id: number, type: OperationTypeInput, reasonCode: string): Promise<boolean> {
     const op = await this.load(id);
     const next = resolveOperationTypeInput(type);
     if (next === op.typeCode) return false;
-    if (op.parentOperationId !== null) {
-      const parent = await this.load(op.parentOperationId, { allowInactive: true });
-      checkParentRelation(next, parent.typeCode);
-    }
-    const children = await rows<{ type_code: BusinessOperationTypeCode | null }>(this.tx, sql`
-      SELECT type_code FROM business_operations
-       WHERE parent_operation_id = ${id} AND account_id = ${this.accountId} AND merged_into_operation_id IS NULL`);
-    for (const c of children) checkParentRelation(c.type_code, next);
     for (const [kind, table] of [['CONTRACT', 'business_operation_contract_details'], ['FINANCING', 'business_operation_financing_details'], ['CLAIM', 'business_operation_claim_details']] as const) {
       if (next === kind) continue;
       const [d] = await rows(this.tx, sql`SELECT 1 FROM ${sql.identifier(table)} WHERE operation_id = ${id}`);
@@ -474,62 +418,6 @@ export class BusinessOperationRepository {
     await this.tx.execute(sql`UPDATE business_operations SET last_reconciled_at = now() WHERE id = ${id}`);
   }
 
-  // ── Parent / enfant (C8.1) ───────────────────────────────────────────────
-
-  async setParent(id: number, parentId: number | null, reasonCode: string): Promise<boolean> {
-    const op = await this.load(id);
-    if (parentId === op.parentOperationId) return false;
-    if (parentId !== null) {
-      if (parentId === id) throw new BusinessOperationIntegrityError('PARENT_SELF', 'Une Opération ne peut pas être son propre parent (C20.1).');
-      const parent = await this.loadParent(parentId);
-      checkParentRelation(op.typeCode, parent.typeCode);
-      checkHierarchy(id, await this.ancestors(parent.id), await this.subtreeHeight(id));
-    }
-    await this.tx.execute(sql`UPDATE business_operations SET parent_operation_id = ${parentId}, version = version + 1, updated_at = now() WHERE id = ${id}`);
-    await this.history(id, 'PARENT_CHANGED', reasonCode, { parent_operation_id: op.parentOperationId }, { parent_operation_id: parentId });
-    this.emit('BUSINESS_OPERATION_UPDATED', id, reasonCode);
-    return true;
-  }
-
-  private async loadParent(parentId: number): Promise<OperationRow> {
-    const parent = await this.load(parentId, { allowInactive: true, allowMerged: true }).catch((e: unknown) => {
-      if (e instanceof BusinessOperationIntegrityError && e.code === 'OPERATION_NOT_FOUND') {
-        throw new BusinessOperationIntegrityError('OPERATION_NOT_FOUND', `Parent ${parentId} introuvable.`);
-      }
-      throw e;
-    });
-    if (parent.mergedIntoOperationId !== null) {
-      throw new BusinessOperationIntegrityError('OPERATION_MERGED', `Parent ${parentId} fusionné dans ${parent.mergedIntoOperationId}.`);
-    }
-    if (parent.invalidatedAt !== null) throw new BusinessOperationIntegrityError('PARENT_INACTIVE', `Parent ${parentId} invalidé.`);
-    return parent;
-  }
-
-  /** Chaîne parent → racine (parent compris), bornée : un cycle préexistant ne boucle pas. */
-  private async ancestors(parentId: number): Promise<number[]> {
-    const r = await rows<{ id: string }>(this.tx, sql`
-      WITH RECURSIVE chaine(id, parent, n) AS (
-        SELECT id, parent_operation_id, 1 FROM business_operations WHERE id = ${parentId} AND account_id = ${this.accountId}
-        UNION ALL
-        SELECT o.id, o.parent_operation_id, c.n + 1 FROM business_operations o
-          JOIN chaine c ON o.id = c.parent WHERE c.n < 10 AND o.account_id = ${this.accountId}
-      ) SELECT id FROM chaine ORDER BY n`);
-    return r.map((x) => Number(x.id));
-  }
-
-  /** Niveaux du sous-arbre (Opération comprise, ≥ 1). */
-  private async subtreeHeight(id: number): Promise<number> {
-    const [r] = await rows<{ h: number }>(this.tx, sql`
-      WITH RECURSIVE sous(id, n) AS (
-        SELECT ${id}::bigint, 1
-        UNION ALL
-        SELECT o.id, s.n + 1 FROM business_operations o
-          JOIN sous s ON o.parent_operation_id = s.id
-         WHERE s.n < 10 AND o.account_id = ${this.accountId} AND o.merged_into_operation_id IS NULL
-      ) SELECT max(n)::int AS h FROM sous`);
-    return Number(r?.h ?? 1);
-  }
-
   // ── Sources (C2, C9) ─────────────────────────────────────────────────────
 
   /** Ajoute une source (idempotent : la même source active n'est jamais dupliquée). */
@@ -565,7 +453,7 @@ export class BusinessOperationRepository {
 
   /**
    * Source active qui JUSTIFIE l'existence (lot 42) : une décision utilisateur
-   * de rattachement (parent Sinistre, montant retenu — `USER_ARBITRATION`
+   * de rattachement (montant retenu, devise — `USER_ARBITRATION`
    * avec `locator.decision`) éclaire l'Opération mais ne la prouve pas.
    */
   private async hasSupportingSource(id: number): Promise<boolean> {
@@ -1054,123 +942,6 @@ export class BusinessOperationRepository {
     return eventId;
   }
 
-  /**
-   * Listes structurées du Sinistre (lot 44, C14) REMPLACÉES en bloc — même
-   * sémantique que le formulaire historique (lot 34). Comparées d'abord :
-   * aucune écriture, aucun historique si rien ne change (NFR-OP-005). Pièces,
-   * photos, factures et INTERVENTION enfant : du même compte (C25).
-   */
-  async replaceClaimLists(id: number, input: ClaimListsInput, reasonCode = 'CLAIM_LISTS_UPDATED'): Promise<boolean> {
-    await this.requireType(id, 'CLAIM');
-    const cur = await this.readClaimListsInternal(id);
-    const srt = (v: number[]) => [...new Set(v)].sort((a, b) => a - b);
-    const norm = (l: ClaimListsInput) => JSON.stringify([
-      l.damages.map((d) => [d.itemKey, d.zone, d.element, d.finding, d.estimatedAmountMinor, srt(d.fileIds), srt(d.photoIds)]),
-      l.actions.map((a) => [a.itemKey, a.date, a.endDate, a.status, a.title, a.detail, a.performedBy, a.invoiceFileId, a.childOperationId]),
-      l.exchanges.map((x) => [x.itemKey, x.date, x.party, x.channel, x.direction, x.summary, x.documentFileId]),
-    ]);
-    if (norm(cur) === norm(input)) return false;
-
-    const fileIds = [...new Set([
-      ...input.damages.flatMap((d) => d.fileIds), ...input.actions.map((a) => a.invoiceFileId), ...input.exchanges.map((x) => x.documentFileId),
-    ].filter((f): f is number => f !== null))];
-    if (fileIds.length) {
-      const ok = await rows<{ id: number }>(this.tx, sql`
-        SELECT id FROM asset_files WHERE id = ANY(${`{${fileIds.join(',')}}`}::int[]) AND account_id = ${this.accountId}`);
-      const okSet = new Set(ok.map((x) => Number(x.id)));
-      const bad = fileIds.find((f) => !okSet.has(f));
-      if (bad !== undefined) throw new BusinessOperationIntegrityError('CROSS_ACCOUNT', `Pièce ${bad} introuvable dans le compte.`);
-    }
-    const photoIds = [...new Set(input.damages.flatMap((d) => d.photoIds))];
-    if (photoIds.length) {
-      const ok = await rows<{ id: number }>(this.tx, sql`
-        SELECT p.id FROM asset_photos p JOIN assets a ON a.id = p.asset_id
-         WHERE p.id = ANY(${`{${photoIds.join(',')}}`}::int[]) AND a.account_id = ${this.accountId}`);
-      const okSet = new Set(ok.map((x) => Number(x.id)));
-      const bad = photoIds.find((f) => !okSet.has(f));
-      if (bad !== undefined) throw new BusinessOperationIntegrityError('CROSS_ACCOUNT', `Photo ${bad} introuvable dans le compte.`);
-    }
-    for (const childId of new Set(input.actions.map((a) => a.childOperationId).filter((c): c is number => c !== null))) {
-      if (childId === id) throw new BusinessOperationIntegrityError('INVALID_DETAILS', 'Une action ne désigne pas le sinistre lui-même.');
-      const child = await this.load(childId, { allowInactive: true });
-      if (child.typeCode !== 'INTERVENTION') throw new BusinessOperationIntegrityError('DETAILS_TYPE_MISMATCH', `Opération ${childId} : INTERVENTION attendue (C14.2).`);
-    }
-    for (const a of input.actions) {
-      if (a.date !== null) optionalDate(a.date, 'action.date');
-      if (a.endDate !== null) optionalDate(a.endDate, 'action.endDate');
-    }
-    for (const x of input.exchanges) if (x.date !== null) optionalDate(x.date, 'exchange.date');
-    for (const d of input.damages) {
-      if (d.estimatedAmountMinor !== null && !isMinorAmount(d.estimatedAmountMinor)) throw new BusinessOperationIntegrityError('INVALID_AMOUNT', 'Montant estimé d\'un dommage invalide.');
-    }
-
-    await this.tx.execute(sql`DELETE FROM business_operation_claim_damages WHERE operation_id = ${id}`);
-    await this.tx.execute(sql`DELETE FROM business_operation_claim_actions WHERE operation_id = ${id}`);
-    await this.tx.execute(sql`DELETE FROM business_operation_claim_exchanges WHERE operation_id = ${id}`);
-    for (const [i, d] of input.damages.entries()) {
-      const [r] = await rows<{ id: string }>(this.tx, sql`
-        INSERT INTO business_operation_claim_damages (operation_id, zone, element, finding, estimated_amount_minor, sort_order, item_key)
-        VALUES (${id}, ${d.zone}, ${d.element}, ${d.finding}, ${d.estimatedAmountMinor}, ${i}, ${d.itemKey})
-        RETURNING id`);
-      for (const f of new Set(d.fileIds)) {
-        await this.tx.execute(sql`INSERT INTO business_operation_claim_damage_documents (damage_id, file_id) VALUES (${Number(r.id)}, ${f}) ON CONFLICT DO NOTHING`);
-      }
-      for (const ph of new Set(d.photoIds)) {
-        await this.tx.execute(sql`INSERT INTO business_operation_claim_damage_photos (damage_id, photo_id) VALUES (${Number(r.id)}, ${ph}) ON CONFLICT DO NOTHING`);
-      }
-    }
-    for (const [i, a] of input.actions.entries()) {
-      await this.tx.execute(sql`
-        INSERT INTO business_operation_claim_actions
-          (operation_id, date, end_date, status, title, detail, performed_by, invoice_file_id, child_operation_id, sort_order, item_key)
-        VALUES (${id}, ${a.date}::date, ${a.endDate}::date, ${a.status}, ${a.title}, ${a.detail}, ${a.performedBy}, ${a.invoiceFileId},
-                ${a.childOperationId}, ${i}, ${a.itemKey})`);
-    }
-    for (const [i, x] of input.exchanges.entries()) {
-      await this.tx.execute(sql`
-        INSERT INTO business_operation_claim_exchanges
-          (operation_id, date, party, channel, direction, summary, document_file_id, sort_order, item_key)
-        VALUES (${id}, ${x.date}::date, ${x.party}, ${x.channel}, ${x.direction}, ${x.summary}, ${x.documentFileId}, ${i}, ${x.itemKey})`);
-    }
-    await this.tx.execute(sql`UPDATE business_operations SET version = version + 1, updated_at = now() WHERE id = ${id}`);
-    await this.history(id, 'UPDATED', reasonCode,
-      { damages: cur.damages.length, actions: cur.actions.length, exchanges: cur.exchanges.length },
-      { damages: input.damages.length, actions: input.actions.length, exchanges: input.exchanges.length });
-    this.emit('BUSINESS_OPERATION_UPDATED', id, reasonCode);
-    return true;
-  }
-
-  /** Listes du Sinistre telles qu'en base, sous la forme de `ClaimListsInput` (ordre d'affichage). */
-  async readClaimListsInternal(id: number): Promise<ClaimListsInput> {
-    const damages = await rows<Row>(this.tx, sql`
-      SELECT d.id, d.item_key, d.zone, d.element, d.finding, d.estimated_amount_minor,
-             COALESCE((SELECT array_agg(dd.file_id ORDER BY dd.file_id) FROM business_operation_claim_damage_documents dd WHERE dd.damage_id = d.id), '{}') AS files,
-             COALESCE((SELECT array_agg(dp.photo_id ORDER BY dp.photo_id) FROM business_operation_claim_damage_photos dp WHERE dp.damage_id = d.id), '{}') AS photos
-        FROM business_operation_claim_damages d WHERE d.operation_id = ${id} ORDER BY d.sort_order, d.id`);
-    const actions = await rows<Row>(this.tx, sql`
-      SELECT item_key, date::text AS date, end_date::text AS end_date, status, title, detail, performed_by, invoice_file_id, child_operation_id
-        FROM business_operation_claim_actions WHERE operation_id = ${id} ORDER BY sort_order, id`);
-    const exchanges = await rows<Row>(this.tx, sql`
-      SELECT item_key, date::text AS date, party, channel, direction, summary, document_file_id
-        FROM business_operation_claim_exchanges WHERE operation_id = ${id} ORDER BY sort_order, id`);
-    const t = (v: unknown) => (v === null || v === undefined ? null : String(v));
-    return {
-      damages: damages.map((d) => ({
-        itemKey: t(d.item_key), zone: String(d.zone), element: t(d.element), finding: t(d.finding), estimatedAmountMinor: num(d.estimated_amount_minor),
-        fileIds: ((d.files as number[] | null) ?? []).map(Number), photoIds: ((d.photos as number[] | null) ?? []).map(Number),
-      })),
-      actions: actions.map((a) => ({
-        itemKey: t(a.item_key), date: t(a.date), endDate: t(a.end_date), status: (t(a.status) as ClaimActionInput['status']), title: String(a.title),
-        detail: t(a.detail), performedBy: t(a.performed_by), invoiceFileId: num(a.invoice_file_id), childOperationId: num(a.child_operation_id),
-      })),
-      exchanges: exchanges.map((x) => ({
-        itemKey: t(x.item_key), date: t(x.date), party: t(x.party) as ClaimExchangeInput['party'], channel: t(x.channel) as ClaimExchangeInput['channel'],
-        direction: t(x.direction) as ClaimExchangeInput['direction'], summary: String(x.summary), documentFileId: num(x.document_file_id),
-      })),
-    };
-  }
-
-  /** Retire les détails d'un type (préalable à une requalification). */
   async removeDetails(id: number, kind: 'contract' | 'financing' | 'claim', reasonCode: string): Promise<boolean> {
     await this.load(id, { allowInactive: true });
     const table = `business_operation_${kind}_details`;
@@ -1285,13 +1056,12 @@ export class BusinessOperationRepository {
    *     supersédée (ses preuves rejoignent celle de la canonique), jamais
    *     additionnée ; sinon déplacée ;
    *   · liens biens / équipements, références (relations identiques
-   *     dédoublonnées), détails par type absents de la canonique, listes du
-   *     Sinistre, suppressions de projection ; éléments d'agenda, principal
+   *     dédoublonnées), détails par type absents de la canonique, dommages
+   *     du Sinistre, suppressions de projection ; éléments d'agenda, principal
    *     unique, appartenance USER des documents et Pièces par le service de
    *     regroupement (`grouping/merge.ts`, lot 82D : aucune absorption) ;
-   *   · enfants (re-parentés, C8.1 revérifié) et parent si la canonique n'en
-   *     a pas ; références croisées (contrat d'assurance d'un Sinistre,
-   *     sous-Opération d'une action Sinistre) ;
+   *   · références croisées (contrat d'assurance d'un Sinistre) — lot 83D :
+   *     plus de hiérarchie parent / enfant à reprendre ;
    *   · décisions de rapprochement remappées (F-051) ;
    * puis absorbée invalidée avec `merged_into_operation_id` (B7), historique
    * MERGED des deux côtés, événement BUSINESS_OPERATION_MERGED (après commit).
@@ -1389,18 +1159,14 @@ export class BusinessOperationRepository {
          AND c.reference_kind = a.reference_kind AND c.normalized_value = a.normalized_value)`);
     await step('links');
 
-    // 4. Détails par type (absents de la canonique), listes du Sinistre, projections, Agenda.
+    // 4. Détails par type (absents de la canonique), dommages du Sinistre, projections, Agenda.
     for (const table of ['business_operation_contract_details', 'business_operation_financing_details', 'business_operation_claim_details'] as const) {
       await this.tx.execute(sql`
         UPDATE ${sql.identifier(table)} SET operation_id = ${C}
          WHERE operation_id = ${A} AND NOT EXISTS (SELECT 1 FROM ${sql.identifier(table)} WHERE operation_id = ${C})`);
     }
-    for (const table of ['business_operation_claim_damages', 'business_operation_claim_actions', 'business_operation_claim_exchanges'] as const) {
-      await this.tx.execute(sql`UPDATE ${sql.identifier(table)} SET operation_id = ${C} WHERE operation_id = ${A}`);
-    }
-    await this.tx.execute(sql`
-      UPDATE business_operation_claim_actions SET child_operation_id = CASE WHEN operation_id = ${C} THEN NULL ELSE ${C}::bigint END
-       WHERE child_operation_id = ${A}`);
+    // Lot 83D (V-Q8) : dommages détaillés conservés (données d'assurance) ; actions et échanges : ancien modèle retiré.
+    await this.tx.execute(sql`UPDATE business_operation_claim_damages SET operation_id = ${C} WHERE operation_id = ${A}`);
     await this.tx.execute(sql`
       UPDATE business_operation_claim_details SET insurance_contract_operation_id = CASE WHEN operation_id = ${C} THEN NULL ELSE ${C}::bigint END
        WHERE insurance_contract_operation_id = ${A}`);
@@ -1426,27 +1192,7 @@ export class BusinessOperationRepository {
        WHERE candidate_operation_id = ${A} AND account_id = ${acct} AND active`);
     await step('decisions');
 
-    // 6. Hiérarchie : enfants re-parentés (C8.1 revérifié), parent repris si la canonique n'en a pas.
-    const enfants = await rows<{ id: string; invalidated: boolean }>(this.tx, sql`
-      SELECT id, invalidated_at IS NOT NULL AS invalidated FROM business_operations
-       WHERE parent_operation_id = ${A} AND account_id = ${acct} AND merged_into_operation_id IS NULL ORDER BY id`);
-    for (const e of enfants) {
-      if (Number(e.id) === C) {
-        await this.tx.execute(sql`UPDATE business_operations SET parent_operation_id = NULL, version = version + 1, updated_at = now() WHERE id = ${C}`);
-        continue;
-      }
-      if (!e.invalidated) await this.setParent(Number(e.id), C, reasonCode);
-      else await this.tx.execute(sql`UPDATE business_operations SET parent_operation_id = ${C}, version = version + 1, updated_at = now() WHERE id = ${Number(e.id)}`);
-    }
-    if (absorbed.parentOperationId !== null && canonical.parentOperationId === null && absorbed.parentOperationId !== C && canonical.invalidatedAt === null) {
-      await this.setParent(C, absorbed.parentOperationId, reasonCode);
-    }
-    if (absorbed.parentOperationId !== null) {
-      await this.tx.execute(sql`UPDATE business_operations SET parent_operation_id = NULL WHERE id = ${A}`);
-    }
-    await step('hierarchy');
-
-    // 7. Absorbée : invalidée, redirigée, historisée des deux côtés.
+    // 6. Absorbée : invalidée, redirigée, historisée des deux côtés.
     await this.tx.execute(sql`
       UPDATE business_operations
          SET merged_into_operation_id = ${C}, invalidated_at = COALESCE(invalidated_at, now()), invalidation_reason = 'MERGED',

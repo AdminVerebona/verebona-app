@@ -24,7 +24,7 @@ let seq = 100;
 function op(o: Partial<AssistantOperationRead> = {}): AssistantOperationRead {
   seq += 1;
   return {
-    id: seq, accountId: 1, typeCode: 'INTERVENTION', status: 'REALIZED', technicalLabel: 'Remplacement embrayage', parentOperationId: null,
+    id: seq, accountId: 1, typeCode: 'INTERVENTION', status: 'REALIZED', technicalLabel: 'Remplacement embrayage',
     provider: 'Garage Martin', plannedDate: null, startDate: null, realizedDate: '2026-03-02', endDate: null, closedAt: null,
     invalidatedAt: null, invalidationReason: null, mergedIntoOperationId: null, lastReconciledAt: null, version: 1, active: true,
     contractReference: null, effectiveFrom: null, effectiveTo: null, claimStatus: null, claimType: null, insurerClaimRef: null, declaredOn: null,
@@ -197,10 +197,10 @@ describe('O6-06 — intentions et réponses (C15, C15.2)', () => {
     expect(avec.sources[0].id).toBe('doc_7');
   });
 
-  it('« où en est mon sinistre ? » : statut, indemnité, net ; source = section Sinistres du bien', () => {
+  it('« où en est mon sinistre ? » : statut, indemnité, net ; source = le sinistre (lot 83D : plus de rubrique Sinistres)', () => {
     const r = claimAnswer([{
       operationId: 9, label: 'sinistre « Dégât des eaux »', assetIds: [20], occurredOn: '2026-03-01', declaredOn: '2026-03-02',
-      statusLabel: 'En attente d\'indemnisation', insurerClaimRef: 'S-1', closed: false, indemnityCents: 80000, grossCents: 125000, netCents: 45000, documentIds: [],
+      statusLabel: 'En attente d\'indemnisation', insurerClaimRef: 'S-1', closed: false, indemnityCents: 80000, grossCents: 125000, netCents: 45000, documentIds: [], agendaItemId: null,
     }], { assets: [], ambiguous: false, unresolved: false, label: null }, [{ id: 20, name: 'Maison', category: 'IMMOBILIER', subtype: null, purchaseDate: null, isRented: false }]);
     expect(r.answer).toMatch(/Sinistre « Dégât des eaux » du 1 mars 2026 \(Maison\) : statut « En attente d'indemnisation »/);
     expect(r.answer).toMatch(/indemnité reçue : 800,00\s€ ; coût des réparations : 1\s250,00\s€ ; net après indemnité : 450,00\s€/);
@@ -244,14 +244,16 @@ describe('O6-06 — intentions et réponses (C15, C15.2)', () => {
 });
 
 describe('O6-07 — sources ouvrables : document ou sinistre, jamais une « Opération »', () => {
-  it('sinistre : `claim:<bien>:<id>` → fiche du bien, section Sinistres, sinistre sélectionné (desktop et mobile)', () => {
+  it('sinistre : `claim:<bien>:<id>` → élément d’Agenda principal (tiroir) sinon fiche du bien — lot 83D : plus de section Sinistres (desktop et mobile)', () => {
     expect(claimSourceId(20, 9)).toBe('claim:20:9');
     expect(parseClaimSourceId('claim:20:9')).toEqual({ assetId: 20, claimId: 9 });
     expect(parseClaimSourceId('claim:x:9')).toBeNull();
     const ref = parseEntityRef('claim:20:9');
     expect(ref).toMatchObject({ kind: 'asset', id: 20, claimId: 9 });
-    expect(hrefEntite(ref!)).toBe('/assets/20?tab=details&highlight=claims&claim=9');
-    expect(hrefSource('claim:20:9')).toBe('/assets/20?tab=details&highlight=claims&claim=9');
+    expect(hrefEntite(ref!)).toBe('/assets/20');
+    expect(hrefSource('claim:20:9')).toBe('/assets/20');
+    expect(hrefSource('claim:20:9', { agendaItemId: 77 })).toMatch(/77/);
+    expect(hrefSource('claim:20:9', { agendaItemId: 77 })).not.toMatch(/highlight=claims/);
     expect(parseEntityRef('claim:20:9', 'document')).toBeNull();
   });
   it('coût consolidé : document principal (facture), sinon rien', () => {
