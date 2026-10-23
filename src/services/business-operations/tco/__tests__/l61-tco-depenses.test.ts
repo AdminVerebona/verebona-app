@@ -257,12 +257,15 @@ describe('TCO — recette obligatoire (§7)', () => {
     // Lot 76G (complément PO du 21/10) : seul le détail « Dépenses retenues » s'ouvre dans un sous-tiroir ;
     // la section TCO elle-même reste une section dépliable (aucun tiroir TCO autonome).
     expect(section).not.toMatch(/TcoDrawer|Drawer/);
-    expect(section.match(/<Sheet /g)?.length).toBe(1);
+    // Lot 80A : second sous-tiroir « Dépenses non retenues » (même mécanisme), fermé par défaut.
+    expect(section.match(/<Sheet /g)?.length).toBe(2);
     expect(section).toContain('<Sheet open={retainedOpen}');
+    expect(section).toContain('<Sheet open={excludedOpen}');
     expect(tab).not.toMatch(/asset\.category === '[A-Z]+' && \(?\s*<TcoSection/);
     // Pas de bouton « Modifier » général du total ; justificatif ouvrable depuis chaque ligne.
     expect(section).not.toMatch(/>\s*Modifier\s*</);
-    expect(section).toContain('href={`/documents/${fileId}`}');
+    // Lot 80A : le justificatif ouvre le tiroir document (la page /documents/<id> échouait : GET inexistant).
+    expect(section).toContain('<TcoJustificatif fileId={l.fileId} />');
     // Responsive : mêmes jetons que les autres sections ; un seul composant pour desktop et mobile.
     expect(section).toMatch(/flex items-start justify-between gap-3/);
     expect(section).toContain('grid grid-cols-1 sm:grid-cols-2');

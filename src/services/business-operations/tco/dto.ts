@@ -10,6 +10,7 @@ import {
   TCO_CATEGORY_LABELS, USAGE_BUDGET_CATEGORY_LABELS, USAGE_BUDGET_PERIODICITY_LABELS, validateUsageBudget, type TcoCategory,
   type TcoEconomicLine, type TcoResult, type TcoWarning, type UsageBudget,
 } from './model';
+import { tcoAddDuplicateRisk, tcoLineAddable, tcoLineRemovable } from './user-decisions';
 
 export const TCO_PREMIUM_MESSAGE = 'Le coût de possession est disponible avec Premium et Premium Duo.';
 
@@ -32,6 +33,8 @@ export const TCO_WARNING_LABELS: Readonly<Record<TcoWarning, string>> = {
   PRESUMED_DUPLICATES: 'Une même somme figure sur plusieurs justificatifs d’une même dépense : elle n’est comptée qu’une fois. Vérifiez qu’il ne s’agit pas de paiements distincts.',
   UNJUSTIFIED_AMOUNTS: 'Des montants consolidés ne se retrouvent pas sur leurs justificatifs, ou leur justificatif a été retiré : à vérifier.',
   NOT_OWNERSHIP_COSTS: 'Des achats d’objets distincts rattachés à ce bien ne sont pas comptés dans son coût de possession (rattachez-les comme équipements pour les inclure).',
+  USER_DECISIONS: 'Vous avez ajouté ou retiré des dépenses : le coût de possession reflète vos choix (réversibles depuis les listes de dépenses).',
+  USER_INCLUDED_DUPLICATES: 'Une dépense que vous avez ajoutée ressemble à une dépense déjà comptée : vérifiez qu’il ne s’agit pas du même paiement.',
 };
 
 /** Lot 61 : libellé du motif d'une ligne économique (moteur ou qualification documentaire). */
@@ -57,8 +60,35 @@ export const TCO_HIDDEN_REASON_LABELS: Readonly<Record<TcoHiddenReason, string>>
   CONSOLIDATED_SHOWN: 'Masquée sur la fiche : justificatif ouvrable depuis la dépense consolidée',
 };
 
+/**
+ * Lot 80A : gestes possibles sur une ligne (« Retirer du TCO » sur une retenue,
+ * « Ajouter au TCO » sur une non retenue) — calculés côté serveur (règles pures
+ * `./user-decisions`), jamais par l'interface. `duplicateWarning` : texte de la
+ * confirmation quand l'ajout crée un doublon présumé.
+ */
+export interface TcoLineActions {
+  removable: boolean;
+  addable: boolean;
+  addBlockedReason: string | null;
+  duplicateWarning: string | null;
+}
+
 /** Ligne montrée sur la fiche : justificatifs repris par la dépense consolidée (en plus de `fileId`). */
-export type TcoUserLine = TcoEconomicLine & { supportingDocuments?: Array<{ fileId: number; title: string }> };
+export type TcoUserLine = TcoEconomicLine & { supportingDocuments?: Array<{ fileId: number; title: string }>; actions?: TcoLineActions };
+
+/** Lot 80A : gestes possibles sur une ligne montrée (pure). */
+export function tcoLineActions(l: TcoEconomicLine, lines: readonly TcoEconomicLine[]): TcoLineActions {
+  const retenue = RETENUE(l.status);
+  const a = retenue ? null : tcoLineAddable(l);
+  // Revenir sur un retrait (décision utilisateur) ne crée aucun doublon : la ligne retrouve son statut automatique.
+  const annuleRetrait = l.userDecision?.applied && l.userDecision.decision === 'EXCLUDE';
+  return {
+    removable: retenue && tcoLineRemovable(l),
+    addable: !!a?.ok,
+    addBlockedReason: a && !a.ok ? a.reason : null,
+    duplicateWarning: a?.ok && !annuleRetrait ? tcoAddDuplicateRisk(l, lines) : null,
+  };
+}
 
 const RETENUE = (s: EconomicLineStatus) => s === 'RETAINED_DIRECT' || s === 'RETAINED_CONSOLIDATED';
 
@@ -139,7 +169,7 @@ export function toTcoDto(t: TcoResult, page: { linesOffset?: number; linesLimit?
   const tri = [...lines].sort((a, b) => rang(a.status) - rang(b.status) || (b.date ?? '').localeCompare(a.date ?? '') || a.id.localeCompare(b.id));
   const offset = Math.max(0, Math.min(page.linesOffset ?? 0, tri.length));
   const limit = Math.min(Math.max(page.linesLimit ?? TCO_DTO_MAX_LINES, 1), TCO_DTO_MAX_PAGE);
-  const pageLignes = tri.slice(offset, offset + limit);
+  const pageLignes = tri.slice(offset, offset + limit).map((l) => ({ ...l, actions: tcoLineActions(l, lines) }));
   const retenues = lines.filter((l) => RETENUE(l.status)).length;
   return {
     ...rest,

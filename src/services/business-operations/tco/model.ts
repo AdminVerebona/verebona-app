@@ -81,6 +81,7 @@ import { computeTcoAnnual, type TcoAnnual } from './annual';
 import {
   presumedDuplicateComponents, purchaseIsOwnershipCost, unjustifiedComponent, type ComponentProvenance, type PresumedDuplicate,
 } from './fact-identity';
+import { applyTcoUserDecisions, type TcoLineUserDecision, type TcoUserDecision } from './user-decisions';
 
 // ── Entrées ────────────────────────────────────────────────────────────────
 
@@ -182,6 +183,12 @@ export interface TcoInput {
    * comportement antérieur (aucune présomption).
    */
   componentProvenance?: ReadonlyMap<number, ComponentProvenance>;
+  /**
+   * Lot 80A : décisions de l'utilisateur « Ajouter / Retirer du TCO » (par
+   * compte et par bien, clé stable de la ligne — `./user-decisions`). Elles
+   * priment sur les règles automatiques pour la ligne concernée.
+   */
+  userDecisions?: readonly TcoUserDecision[];
 }
 
 /** Lot 71A : prix d'achat de la fiche d'un équipement du bien. */
@@ -216,7 +223,9 @@ export type TcoWarning =
   | 'AMOUNTS_UNKNOWN' | 'UNCERTAIN_MATCHES' | 'ACQUISITION_AMBIGUOUS'
   // Lot 78B : même somme portée par plusieurs justificatifs comptée une fois ; montant non retrouvé sur ses
   // justificatifs ; achats d'objets distincts non incorporés au coût de possession.
-  | 'PRESUMED_DUPLICATES' | 'UNJUSTIFIED_AMOUNTS' | 'NOT_OWNERSHIP_COSTS';
+  | 'PRESUMED_DUPLICATES' | 'UNJUSTIFIED_AMOUNTS' | 'NOT_OWNERSHIP_COSTS'
+  // Lot 80A : décisions de l'utilisateur appliquées ; dépense ajoutée malgré un doublon présumé (confirmé).
+  | 'USER_DECISIONS' | 'USER_INCLUDED_DUPLICATES';
 
 /** Lot 75D (H) : état du coût d'acquisition (distingue absence de dépense et information manquante). */
 export type TcoAcquisitionStatus = 'DOCUMENTED' | 'MISSING' | 'NOT_APPLICABLE';
@@ -252,6 +261,10 @@ export interface TcoEconomicLine {
   sourceFileIds?: number[];
   /** Lot 78B (§3B) : ligne comptée à la place de celle-ci (même somme, autre justificatif, sans preuve de transaction distincte). */
   duplicateOf?: string;
+  /** Lot 80A : clé STABLE de la ligne (décision « Ajouter / Retirer du TCO »), voir `tcoLineKeys`. */
+  decisionKey?: string;
+  /** Lot 80A : décision de l'utilisateur portée par la ligne (et statut / motif automatiques qu'elle remplace). */
+  userDecision?: TcoLineUserDecision;
 }
 
 export interface TcoResult {
@@ -319,6 +332,8 @@ export interface TcoResult {
    * civile) DÉRIVÉS de `lines` — aucun second moteur (`./annual`).
    */
   annual: TcoAnnual;
+  /** Lot 80A : décisions de l'utilisateur appliquées, doublons présumés ajoutés, décisions sans ligne (BO). */
+  userDecisions: { applied: number; includedDuplicates: number; orphans: TcoUserDecision[] };
 }
 
 // ── Règles ─────────────────────────────────────────────────────────────────
@@ -749,70 +764,6 @@ export function computeTco(input: TcoInput): TcoResult {
     lines.push({ ...base, includedCents: e.includedEurMinor, fileId: null, operationId: null, operationLabel: null, status: statusOfEntry(e, 'RETAINED_DIRECT'), reason: e.exclusion });
   }
 
-  if (drafts.some((d) => d.status === 'NOT_QUALIFIED' && d.reason !== 'AMOUNT_UNKNOWN')) warnings.add('DOCUMENTS_NOT_QUALIFIED');
-  if (drafts.some((d) => d.reason === 'AMOUNT_UNKNOWN')) warnings.add('AMOUNTS_UNKNOWN');
-  if (achatsIncertains.size) warnings.add('UNCERTAIN_MATCHES');
-  if (drafts.some((d) => d.status === 'UNCONFIRMED_ASSET')) warnings.add('UNCONFIRMED_ASSET_EXPENSES');
-
-  const totals = summarizeLedger(entries);
-
-  // Postes du détail (coûts réalisés retenus, par catégorie ; un élément = une Opération, un justificatif ou la fiche).
-  const postes = new Map<TcoCategory, { costsCents: number; items: Set<string> }>();
-  const itemOf = (e: LedgerEntry): string => e.operationId > 0 ? `op:${e.operationId}` : (e.lineId ?? '').split(':').slice(0, 2).join(':');
-  for (const e of entries) {
-    if (!e.included || e.effect !== 'COST' || !e.category) continue;
-    const p = postes.get(e.category) ?? { costsCents: 0, items: new Set<string>() };
-    p.costsCents += e.includedEurMinor;
-    p.items.add(itemOf(e));
-    postes.set(e.category, p);
-  }
-  const ordre: TcoCategory[] = ['ACQUISITION', 'ACCESSORIES', 'MAINTENANCE', 'CONTRACTS', 'USAGE', 'FINANCING', 'CLAIMS', 'DISPOSAL', 'OTHER'];
-  const breakdown = ordre.filter((c) => postes.has(c)).map((c) => ({ category: c, label: TCO_CATEGORY_LABELS[c], costsCents: postes.get(c)!.costsCents, count: postes.get(c)!.items.size }));
-  // Lot 75D (H) : coût d'acquisition attendu mais inconnu → incomplet ; sans objet (location, prêt, don) → aucune alerte.
-  const acquisitionStatus: TcoAcquisitionStatus = postes.has('ACQUISITION') ? 'DOCUMENTED' : input.acquisitionExpected === false ? 'NOT_APPLICABLE' : 'MISSING';
-  if (acquisitionStatus === 'MISSING') warnings.add('ACQUISITION_COST_MISSING');
-
-  const cumul = totals.netCostEurMinor;
-  const anomalies = checkLedger(entries, {
-    totalEurMinor: cumul,
-    postsEurMinor: [...breakdown.map((b) => b.costsCents), -totals.reductionsEurMinor, -totals.refundsEurMinor, -totals.indemnitiesEurMinor],
-  });
-
-  // Cession : prix réalisé (PROCEED attribuable, EUR établi), frais déjà dans les coûts.
-  const proceedsEntries = entries.filter((e) => e.effect === 'PROCEED');
-  const prixRealise = proceedsEntries.some((e) => e.included) ? totals.proceedsEurMinor : null;
-  if (disposed && prixRealise === null) warnings.add('DISPOSAL_PRICE_MISSING');
-  const valeur = reliableValuation(input.valuationHistory, dateCession ?? input.today);
-  if (!disposed && !valeur) warnings.add('NO_RELIABLE_VALUATION');
-  const netEstime = !disposed && valeur ? cumul - valeur.cents : null;
-  const netFinal = disposed && prixRealise !== null ? cumul - prixRealise : null;
-  const provisoire = prixRealise === null && input.desiredSalePriceCents != null ? cumul - input.desiredSalePriceCents : null;
-
-  if (totals.unconverted.length) warnings.add('UNCONVERTED_AMOUNTS');
-  if (totals.unallocated.count) warnings.add('UNALLOCATED_AMOUNTS');
-  if (!input.readComplete) warnings.add('PARTIAL_READ');
-
-  // Forfaits d'usage : séparés du réel, jamais additionnés au coût cumulé.
-  const jour = end;
-  const items = input.budgets.map((b) => ({ ...b, annualEquivalentMinor: annualEquivalent(b), activeNow: budgetActif(b, jour) }));
-  const annualEstimateCents = items.filter((b) => b.activeNow && b.currency === 'EUR').reduce((n, b) => n + b.annualEquivalentMinor, 0);
-  const autres = new Map<string, number>();
-  for (const b of items.filter((x) => x.activeNow && x.currency !== 'EUR')) autres.set(b.currency, (autres.get(b.currency) ?? 0) + b.annualEquivalentMinor);
-
-  const counted = new Set(entries.filter((e) => e.included && e.operationId > 0).map((e) => e.operationId));
-  const docs = new Map<number, string>();
-  for (const op of ops) if (counted.has(op.id)) for (const d of op.documents) if (!docs.has(d.fileId)) docs.set(d.fileId, d.title);
-  const docsComptes = new Set(docEntries.filter((x) => x.entry.included).map((x) => x.draft.fileId));
-  for (const x of docEntries) if (x.entry.included && !docs.has(x.draft.fileId)) docs.set(x.draft.fileId, x.draft.title);
-  const opLabel = new Map(ops.map((o) => [o.id, o.label]));
-  // Lot 75D (H) : toute information financière manquante ou incertaine rend le total non exhaustif.
-  // Lot 78B : doublon présumé (peut-être deux paiements) et montant non justifié par ses sources : à vérifier.
-  const docIncomplet = (['DOCUMENTS_NOT_QUALIFIED', 'UNCONFIRMED_ASSET_EXPENSES', 'AMOUNTS_UNKNOWN', 'UNCERTAIN_MATCHES', 'ACQUISITION_AMBIGUOUS', 'ACQUISITION_COST_MISSING',
-    'PRESUMED_DUPLICATES', 'UNJUSTIFIED_AMOUNTS'] as const)
-    .some((w) => warnings.has(w));
-  const status: ReadStatus = !input.readComplete ? 'PARTIAL'
-    : (!totals.complete || docIncomplet || warnings.has('ACQUISITION_DATE_MISSING') || warnings.has('DISPOSAL_PRICE_MISSING') || warnings.has('DISPOSAL_DATE_MISSING')) ? 'INCOMPLETE' : 'COMPLETE';
-
   // Lignes des composantes consolidées (en tête : l'ordre suit la hiérarchie des sources).
   const fichierPrincipal = (o: TcoOperation): number | null => (o.documents.find((d) => d.role === 'INVOICE') ?? o.documents[0])?.fileId ?? null;
   // Lot 78B (§3A) : une composante désigne SES justificatifs (preuve du prix d'abord, puis facture de l'Opération), jamais
@@ -880,13 +831,91 @@ export function computeTco(input: TcoInput): TcoResult {
       opLines.push(base);
     }
   }
+  // ── Lot 80A : décisions de l'utilisateur (Ajouter / Retirer du TCO) — AVANT les totaux, priment sur les règles ──
+  const toutesLignes = [...opLines, ...lines];
+  const decisionsUtilisateur = applyTcoUserDecisions({
+    lines: toutesLignes, entries, decisions: input.userDecisions ?? [], warnings,
+    operationCategory: new Map(ops.map((o) => [o.id, tcoCategoryOf(o, o.parentOperationId != null ? (typeParId.get(o.parentOperationId) ?? null) : null)])),
+  });
+
+  // Lot 80A : une ligne que l'utilisateur a lui-même ajoutée au TCO ne rend plus le total incomplet pour son motif d'origine.
+  const ajouteeParUtilisateur = new Set(toutesLignes.filter((l) => l.userDecision?.applied && l.userDecision.decision === 'INCLUDE').map((l) => l.id));
+  if (drafts.some((d) => d.status === 'NOT_QUALIFIED' && d.reason !== 'AMOUNT_UNKNOWN' && !ajouteeParUtilisateur.has(d.lineId))) warnings.add('DOCUMENTS_NOT_QUALIFIED');
+  if (drafts.some((d) => d.reason === 'AMOUNT_UNKNOWN')) warnings.add('AMOUNTS_UNKNOWN');
+  if (achatsIncertains.size) warnings.add('UNCERTAIN_MATCHES');
+  if (drafts.some((d) => d.status === 'UNCONFIRMED_ASSET' && !ajouteeParUtilisateur.has(d.lineId))) warnings.add('UNCONFIRMED_ASSET_EXPENSES');
+
+  const totals = summarizeLedger(entries);
+
+  // Postes du détail (coûts réalisés retenus, par catégorie ; un élément = une Opération, un justificatif ou la fiche).
+  const postes = new Map<TcoCategory, { costsCents: number; items: Set<string> }>();
+  const itemOf = (e: LedgerEntry): string => e.operationId > 0 ? `op:${e.operationId}` : (e.lineId ?? '').split(':').slice(0, 2).join(':');
+  for (const e of entries) {
+    if (!e.included || e.effect !== 'COST' || !e.category) continue;
+    const p = postes.get(e.category) ?? { costsCents: 0, items: new Set<string>() };
+    p.costsCents += e.includedEurMinor;
+    p.items.add(itemOf(e));
+    postes.set(e.category, p);
+  }
+  const ordre: TcoCategory[] = ['ACQUISITION', 'ACCESSORIES', 'MAINTENANCE', 'CONTRACTS', 'USAGE', 'FINANCING', 'CLAIMS', 'DISPOSAL', 'OTHER'];
+  const breakdown = ordre.filter((c) => postes.has(c)).map((c) => ({ category: c, label: TCO_CATEGORY_LABELS[c], costsCents: postes.get(c)!.costsCents, count: postes.get(c)!.items.size }));
+  // Lot 75D (H) : coût d'acquisition attendu mais inconnu → incomplet ; sans objet (location, prêt, don) → aucune alerte.
+  const acquisitionStatus: TcoAcquisitionStatus = postes.has('ACQUISITION') ? 'DOCUMENTED' : input.acquisitionExpected === false ? 'NOT_APPLICABLE' : 'MISSING';
+  if (acquisitionStatus === 'MISSING') warnings.add('ACQUISITION_COST_MISSING');
+
+  const cumul = totals.netCostEurMinor;
+  const anomalies = checkLedger(entries, {
+    totalEurMinor: cumul,
+    postsEurMinor: [...breakdown.map((b) => b.costsCents), -totals.reductionsEurMinor, -totals.refundsEurMinor, -totals.indemnitiesEurMinor],
+  });
+
+  // Cession : prix réalisé (PROCEED attribuable, EUR établi), frais déjà dans les coûts.
+  const proceedsEntries = entries.filter((e) => e.effect === 'PROCEED');
+  const prixRealise = proceedsEntries.some((e) => e.included) ? totals.proceedsEurMinor : null;
+  if (disposed && prixRealise === null) warnings.add('DISPOSAL_PRICE_MISSING');
+  const valeur = reliableValuation(input.valuationHistory, dateCession ?? input.today);
+  if (!disposed && !valeur) warnings.add('NO_RELIABLE_VALUATION');
+  const netEstime = !disposed && valeur ? cumul - valeur.cents : null;
+  const netFinal = disposed && prixRealise !== null ? cumul - prixRealise : null;
+  const provisoire = prixRealise === null && input.desiredSalePriceCents != null ? cumul - input.desiredSalePriceCents : null;
+
+  if (totals.unconverted.length) warnings.add('UNCONVERTED_AMOUNTS');
+  if (totals.unallocated.count) warnings.add('UNALLOCATED_AMOUNTS');
+  if (!input.readComplete) warnings.add('PARTIAL_READ');
+
+  // Forfaits d'usage : séparés du réel, jamais additionnés au coût cumulé.
+  const jour = end;
+  const items = input.budgets.map((b) => ({ ...b, annualEquivalentMinor: annualEquivalent(b), activeNow: budgetActif(b, jour) }));
+  const annualEstimateCents = items.filter((b) => b.activeNow && b.currency === 'EUR').reduce((n, b) => n + b.annualEquivalentMinor, 0);
+  const autres = new Map<string, number>();
+  for (const b of items.filter((x) => x.activeNow && x.currency !== 'EUR')) autres.set(b.currency, (autres.get(b.currency) ?? 0) + b.annualEquivalentMinor);
+
+  const counted = new Set(entries.filter((e) => e.included && e.operationId > 0).map((e) => e.operationId));
+  const docs = new Map<number, string>();
+  for (const op of ops) if (counted.has(op.id)) for (const d of op.documents) if (!docs.has(d.fileId)) docs.set(d.fileId, d.title);
+  const docsComptes = new Set(docEntries.filter((x) => x.entry.included).map((x) => x.draft.fileId));
+  for (const x of docEntries) if (x.entry.included && !docs.has(x.draft.fileId)) docs.set(x.draft.fileId, x.draft.title);
+  // Lot 80A : justificatifs ajoutés par l'utilisateur (ligne documentaire sans entrée évaluée).
+  for (const l of toutesLignes) {
+    if (l.source !== 'DOCUMENT' || l.fileId == null || !l.userDecision?.applied || l.includedCents <= 0) continue;
+    docsComptes.add(l.fileId);
+    if (!docs.has(l.fileId)) docs.set(l.fileId, l.label);
+  }
+  const opLabel = new Map(ops.map((o) => [o.id, o.label]));
+  // Lot 75D (H) : toute information financière manquante ou incertaine rend le total non exhaustif.
+  // Lot 78B : doublon présumé (peut-être deux paiements) et montant non justifié par ses sources : à vérifier.
+  const docIncomplet = (['DOCUMENTS_NOT_QUALIFIED', 'UNCONFIRMED_ASSET_EXPENSES', 'AMOUNTS_UNKNOWN', 'UNCERTAIN_MATCHES', 'ACQUISITION_AMBIGUOUS', 'ACQUISITION_COST_MISSING',
+    'PRESUMED_DUPLICATES', 'UNJUSTIFIED_AMOUNTS'] as const)
+    .some((w) => warnings.has(w));
+  const status: ReadStatus = !input.readComplete ? 'PARTIAL'
+    : (!totals.complete || docIncomplet || warnings.has('ACQUISITION_DATE_MISSING') || warnings.has('DISPOSAL_PRICE_MISSING') || warnings.has('DISPOSAL_DATE_MISSING')) ? 'INCOMPLETE' : 'COMPLETE';
+
   const acquisitionCents = postes.get('ACQUISITION')?.costsCents ?? 0;
   const period: TcoResult['period'] = {
     start, startSource: dateAchatOp ? 'OPERATION' : start ? 'ASSET_DATA' : null,
     end, endSource: dateCession ? (dateCessionOp ? 'OPERATION' : 'ASSET_DATA') : 'TODAY',
     days: start ? daysInclusive(start, end) : null,
   };
-  const toutesLignes = [...opLines, ...lines];
 
   return {
     assetId: input.assetId,
@@ -930,6 +959,7 @@ export function computeTco(input: TcoInput): TcoResult {
     entries,
     // Lot 76G : indicateurs annuels dérivés des MÊMES lignes (montants retenus, dédoublonnés) — aucun second moteur.
     annual: computeTcoAnnual({ lines: toutesLignes, period, cumulativeCostCents: cumul, status, today: input.today, disposed }),
+    userDecisions: decisionsUtilisateur,
   };
 }
 

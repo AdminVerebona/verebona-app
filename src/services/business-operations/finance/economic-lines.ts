@@ -207,7 +207,9 @@ export type DocumentLineReason =
   | 'INCLUDED_IN_OPERATION_TOTAL'
   // Lot 78B : même somme portée par un autre justificatif du même fait (sans preuve de transaction distincte) ;
   // achat d'un objet distinct non incorporé au coût de possession du bien.
-  | 'SAME_FACT_OTHER_DOCUMENT' | 'NOT_OWNERSHIP_COST' | 'SOURCE_WITHDRAWN';
+  | 'SAME_FACT_OTHER_DOCUMENT' | 'NOT_OWNERSHIP_COST' | 'SOURCE_WITHDRAWN'
+  // Lot 80A : dépense retirée du coût de possession par l'utilisateur (décision persistée, réversible).
+  | 'USER_EXCLUDED';
 
 export type EconomicLineReason = ExclusionReason | DocumentLineReason;
 
@@ -236,6 +238,7 @@ export const DOCUMENT_LINE_REASON_LABELS: Readonly<Record<DocumentLineReason, st
   SAME_FACT_OTHER_DOCUMENT: 'Même somme qu’un autre justificatif du même fait, sans preuve d’une transaction distincte : comptée une seule fois',
   NOT_OWNERSHIP_COST: 'Achat distinct, non incorporé au coût de possession du bien',
   SOURCE_WITHDRAWN: 'Justificatif retiré de la dépense : montant réévalué depuis le justificatif',
+  USER_EXCLUDED: 'Retirée du coût de possession par vous',
 };
 
 /** Ligne documentaire qualifiée, avant le moteur (`status` null : à évaluer par `evaluateComponent`). */

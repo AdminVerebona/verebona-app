@@ -133,6 +133,9 @@ export const ASSET_SCOPED_TABLES: readonly string[] = [
   // Lot 76J : état du contrôle « Informations » et mémoire des arbitrages tranchés — suivent le bien
   // (le nouveau compte n'a pas à reproposer un arbitrage déjà tranché sur ce bien).
   't3_information_checks',
+  // Lot 80A : décisions « Ajouter / Retirer du TCO » du bien et leur journal — suivent le bien (clés portées par
+  // ses justificatifs, qui partent avec lui).
+  'asset_cost_line_decisions', 'asset_cost_line_decision_events',
 ];
 
 /**

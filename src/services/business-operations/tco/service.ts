@@ -27,6 +27,7 @@ import { db } from '@/db';
 import { BusinessOperationReadService, type AssistantOperationRead } from '../read-service';
 import { computeTco, type TcoAssetPrice, type TcoEquipmentPrice, type TcoOperation, type TcoResult, type UsageBudget } from './model';
 import { presumedDuplicateComponents, unjustifiedComponent, type ComponentProvenance } from './fact-identity';
+import type { TcoUserDecision } from './user-decisions';
 import type { LedgerComponent } from '../finance/engine';
 import { operationCoverage, type EconomicDocumentInput, type EconomicHint } from '../finance/economic-lines';
 import { readCanonicalValue, type AssetRowJson } from '@/services/canonical/asset-state/canonical-asset-view';
@@ -153,6 +154,8 @@ export async function readAssetTco(accountId: number, assetId: number, opts: { t
     SELECT commercial_json->'desiredSalePriceCents' AS desired FROM asset_additional_infos WHERE asset_id = ${assetId} AND account_id = ${accountId}`);
   const desired = typeof info?.desired === 'number' && Number.isSafeInteger(info.desired) ? info.desired : null;
   const budgets = await readUsageBudgets(accountId, assetId, r);
+  // Lot 80A : décisions « Ajouter / Retirer du TCO » de l'utilisateur pour ce bien.
+  const userDecisions = await readTcoLineDecisions(r, accountId, assetId);
   const historique = Array.isArray(kc.valuationHistory) ? (kc.valuationHistory as Array<Record<string, unknown>>) : [];
   const valuationHistory = historique.length ? historique.map((v) => ({
     value: typeof v.value === 'number' ? v.value : null, date: txt(v.date), mode: txt(v.mode), source: txt(v.source), currency: txt(v.currency),
@@ -165,7 +168,7 @@ export async function readAssetTco(accountId: number, assetId: number, opts: { t
     assetAcquisitionDate: txt(kc.acquisitionDate), assetSaleDate: txt(kc.saleDate), assetStatus: txt(asset.status),
     valuationHistory, desiredSalePriceCents: desired, budgets, readComplete: readComplete && doc.complete && equipementsComplets,
     documents: doc.documents, assetPrice, equipmentPrices, acquisitionExpected,
-    assetCategory: txt(asset.category), componentProvenance,
+    assetCategory: txt(asset.category), componentProvenance, userDecisions,
   });
   // Lot 68 : diagnostic BO — justificatifs qui CITENT seulement le bien (exclus des sources, expliqués).
   return { ...result, citedOnlyDocuments: await readCitedOnlyDocuments(r, accountId, assetId) };
@@ -174,8 +177,23 @@ export async function readAssetTco(accountId: number, assetId: number, opts: { t
 const CITED_MAX = 200;
 
 /** Lot 78B : motifs du TCO qui retirent une composante ou un justificatif du total (règle partagée avec T2). */
-const MOTIFS_78B_COMPOSANTE: ReadonlySet<string> = new Set(['SAME_FACT_OTHER_DOCUMENT', 'NOT_OWNERSHIP_COST', 'SOURCE_WITHDRAWN', 'COUNTED_FOR_OTHER_ASSET']);
-const MOTIFS_78B_DOCUMENT: ReadonlySet<string> = new Set(['SAME_FACT_OTHER_DOCUMENT', 'NOT_OWNERSHIP_COST']);
+// Lot 80A : + retrait décidé par l'utilisateur (USER_EXCLUDED) — même effet sur T2 que sur le TCO du bien.
+const MOTIFS_78B_COMPOSANTE: ReadonlySet<string> = new Set(['SAME_FACT_OTHER_DOCUMENT', 'NOT_OWNERSHIP_COST', 'SOURCE_WITHDRAWN', 'COUNTED_FOR_OTHER_ASSET', 'USER_EXCLUDED']);
+const MOTIFS_78B_DOCUMENT: ReadonlySet<string> = new Set(['SAME_FACT_OTHER_DOCUMENT', 'NOT_OWNERSHIP_COST', 'USER_EXCLUDED']);
+
+/** Lot 80A : dépense ajoutée au TCO du bien par l'utilisateur (T2 la compte si ses propres règles ne la comptent pas). */
+export interface T2UserAddedExpense {
+  source: 'OPERATION' | 'DOCUMENT' | 'ASSET_DATA' | 'EQUIPMENT_DATA';
+  lineId: string;
+  operationId: number | null;
+  componentId: number | null;
+  fileId: number | null;
+  eurCents: number;
+  date: string | null;
+  label: string;
+  /** Motif automatique remplacé (une composante écartée par 78B redevient naturellement comptée par T2). */
+  automaticReason: string | null;
+}
 
 /**
  * Lot 78B (TCO-R-14 : même règle pour T2 et le TCO) — composantes et
@@ -195,11 +213,20 @@ export async function t2CostExclusions(
   ops: ReadonlyArray<Pick<AssistantOperationRead, 'id' | 'typeCode' | 'components'>>,
   assetIds: readonly number[] | null,
   r: Runner = db,
-): Promise<{ components: Set<number>; files: Set<number> }> {
+): Promise<{ components: Set<number>; files: Set<number>; userAdded: T2UserAddedExpense[] }> {
   const components = new Set<number>();
   const files = new Set<number>();
+  const userAdded: T2UserAddedExpense[] = [];
   if (assetIds?.length === 1) {
     const t = await readAssetTco(accountId, assetIds[0], { runner: r });
+    // Lot 80A : dépenses AJOUTÉES par l'utilisateur au TCO de ce bien (décision prioritaire) — T2 les compte aussi.
+    for (const l of t.lines) {
+      if (!l.userDecision?.applied || l.userDecision.decision !== 'INCLUDE' || l.includedCents <= 0) continue;
+      userAdded.push({
+        source: l.source, lineId: l.id, operationId: l.operationId, componentId: l.source === 'OPERATION' && l.id.startsWith('c:') ? Number(l.id.slice(2)) : null,
+        fileId: l.fileId, eurCents: l.includedCents, date: l.date, label: l.label, automaticReason: l.userDecision.automaticReason,
+      });
+    }
     for (const l of t.lines) {
       if (l.source === 'OPERATION' && l.reason && MOTIFS_78B_COMPOSANTE.has(l.reason)) components.add(Number(l.id.slice(2)));
     }
@@ -208,10 +235,10 @@ export async function t2CostExclusions(
     for (const [f, ls] of parFichier) {
       if (ls.some((l) => l.reason && MOTIFS_78B_DOCUMENT.has(l.reason)) && !ls.some((l) => l.includedCents > 0)) files.add(f);
     }
-    return { components, files };
+    return { components, files, userAdded };
   }
   const ids = ops.map((o) => o.id);
-  if (!ids.length) return { components, files };
+  if (!ids.length) return { components, files, userAdded };
   const prov = await readComponentProvenance(r, accountId, ids, 0);
   const periodes = new Map((await rows<{ id: string; period_start: string | null; period_end: string | null; target_equipment_id: number | null }>(r, sql`
     SELECT id, period_start::text AS period_start, period_end::text AS period_end, target_equipment_id FROM business_operation_financial_components
@@ -229,7 +256,7 @@ export async function t2CostExclusions(
     for (const id of presumedDuplicateComponents({ typeCode: o.typeCode, components: comps }, prov, force).keys()) components.add(id);
     for (const c of comps) if (unjustifiedComponent(prov.get(c.id)) === 'SOURCES_WITHDRAWN') components.add(c.id);
   }
-  return { components, files };
+  return { components, files, userAdded };
 }
 
 /**
@@ -818,4 +845,25 @@ export async function updateUsageBudget(accountId: number, assetId: number, id: 
 export async function deleteUsageBudget(accountId: number, assetId: number, id: number): Promise<boolean> {
   const x = await rows(db, sql`DELETE FROM asset_usage_budgets WHERE id = ${id} AND asset_id = ${assetId} AND account_id = ${accountId} RETURNING id`);
   return x.length > 0;
+}
+
+// ── Lot 80A : décisions « Ajouter / Retirer du TCO » (table 0623) ──────────
+
+/** La table des décisions existe-t-elle ? (déploiement avant migration : aucune décision, jamais d'erreur). */
+async function tableDecisionsPresente(r: Runner): Promise<boolean> {
+  const [t] = await rows<{ ok: boolean }>(r, sql`SELECT to_regclass('asset_cost_line_decisions') IS NOT NULL AS ok`);
+  return Boolean(t?.ok);
+}
+
+/** Décisions actives de l'utilisateur sur les lignes du TCO d'un bien du compte (lecture seule). */
+export async function readTcoLineDecisions(r: Runner, accountId: number, assetId: number): Promise<TcoUserDecision[]> {
+  if (!(await tableDecisionsPresente(r))) return [];
+  const x = await rows(r, sql`
+    SELECT d.line_key, d.decision, to_char(d.decided_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS decided_at, d.decided_by
+      FROM asset_cost_line_decisions d JOIN assets a ON a.id = d.asset_id AND a.account_id = d.account_id
+     WHERE d.account_id = ${accountId} AND d.asset_id = ${assetId}
+     ORDER BY d.decided_at DESC, d.id DESC LIMIT 5000`);
+  return x
+    .filter((d) => d.decision === 'INCLUDE' || d.decision === 'EXCLUDE')
+    .map((d) => ({ key: String(d.line_key), decision: d.decision as TcoUserDecision['decision'], decidedAt: String(d.decided_at), decidedByUserId: d.decided_by == null ? null : Number(d.decided_by) }));
 }

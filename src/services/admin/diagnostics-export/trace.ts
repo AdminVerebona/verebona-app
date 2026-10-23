@@ -104,6 +104,11 @@ function calcSteps(ctx: TcoContext | null, line: TcoEconomicLine | null, motifAb
     incertain: line.uncertain ?? false, montantInconnu: line.amountUnknown ?? false, note: line.note, relatedFileId: line.relatedFileId,
     // Lot 78B (§3) : justificatifs qui portent CE montant, ligne comptée à sa place (doublon présumé).
     justificatifsDuMontant: line.sourceFileIds ?? (line.fileId != null ? [line.fileId] : []), doublonDe: line.duplicateOf ?? null,
+    // Lot 80A : décision de l'utilisateur « Ajouter / Retirer du TCO » (clé stable, geste, date, auteur, résultat automatique remplacé).
+    cleStable: line.decisionKey ?? null,
+    decisionUtilisateur: line.userDecision
+      ? { ...line.userDecision, effet: line.userDecision.applied ? 'appliquée (prioritaire sur la règle automatique)' : 'sans effet (résultat automatique identique)' }
+      : null,
     transformations: entries.map((e) => ({ ...e })),
   });
   const visible = ctx.visible.has(line.id);

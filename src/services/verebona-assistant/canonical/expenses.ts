@@ -181,6 +181,7 @@ export async function sumQualifiedExpenses(accountId: number, opts: {
   let sansComposante = new Set<number>();
   let nonCouvrants = new Map<number, Set<number>>();
   let horsTotal = new Set<number>();
+  let ajoutsUtilisateur: UserAddedExpense[] = [];
   try {
     const lu = await loadScopeOperationsRead(accountId, ids ?? []);
     const ops = lu.operations;
@@ -188,6 +189,8 @@ export async function sumQualifiedExpenses(accountId: number, opts: {
     // achat non incorporé au bien) — décidées par le service TCO, jamais recalculées ici.
     const excl = await (await import('@/services/business-operations/tco/service')).t2CostExclusions(accountId, ops, ids);
     horsTotal = excl.files;
+    // Lot 80A : dépenses ajoutées au TCO du bien par l'utilisateur (décision prioritaire, même total que le TCO).
+    ajoutsUtilisateur = excl.userAdded ?? [];
     // Lot 61 (TCO §3.3) : Opérations du périmètre SANS composante financière exploitable (aucune hors prévision).
     sansComposante = new Set(ops.filter((o) => o.status !== 'CANCELLED' && !o.components.some((c) => c.kind !== 'FORECAST_COST')).map((o) => o.id));
     if (!lu.complete) lectureComplete = false;
@@ -206,7 +209,7 @@ export async function sumQualifiedExpenses(accountId: number, opts: {
     degradee = true;
     console.warn('[verebona] dépenses : lecture des coûts consolidés impossible, repli documentaire seul :', (e as Error).message);
   }
-  return finishQualifiedExpenses(accountId, { ids, theme, year: opts.year ?? null, docs, part, opEntries, scopeOps, represented, sansComposante, nonCouvrants, horsTotal, lectureComplete, degradee });
+  return finishQualifiedExpenses(accountId, { ids, theme, year: opts.year ?? null, docs, part, opEntries, scopeOps, represented, sansComposante, nonCouvrants, horsTotal, ajoutsUtilisateur, lectureComplete, degradee });
 }
 
 const EXPENSE_DOCS_PAGE = 2000;
@@ -264,6 +267,8 @@ async function finishQualifiedExpenses(accountId: number, x: {
   nonCouvrants?: Map<number, Set<number>>;
   /** Lot 78B : justificatifs que le TCO du bien ne compte pas (même achat décrit plusieurs fois, achat non incorporé). */
   horsTotal?: Set<number>;
+  /** Lot 80A : dépenses ajoutées au TCO du bien par l'utilisateur (périmètre d'un seul bien). */
+  ajoutsUtilisateur?: readonly UserAddedExpense[];
   lectureComplete: boolean; degradee: boolean;
 }): Promise<QualifiedExpenses> {
   const { ids, theme, docs, opEntries, scopeOps, represented } = x;
@@ -361,10 +366,11 @@ async function finishQualifiedExpenses(accountId: number, x: {
     fallback.countedForOtherAssets = undefined;
   }
 
-  const q = aggregateExpenses(
-    entries, theme, removed,
-    opEntries.filter((e) => e.theme && !e.undated).map((e) => ({ operationId: e.operationId, amountCents: e.amountCents, theme: e.theme! })),
-  );
+  const opAgg: OperationAggregateEntry[] = opEntries.filter((e) => e.theme && !e.undated).map((e) => ({ operationId: e.operationId, amountCents: e.amountCents, theme: e.theme! }));
+  // Lot 80A (TCO-R-14) : une dépense que l'utilisateur a AJOUTÉE au TCO du bien est comptée par T2 aussi, si les
+  // règles de T2 ne la comptent pas déjà (jamais deux fois) — montant retenu par le TCO.
+  addUserAddedExpenses(x.ajoutsUtilisateur ?? [], { entries, operations: opAgg, docs, year: x.year });
+  const q = aggregateExpenses(entries, theme, removed, opAgg);
   for (const t of q.byTheme) {
     fallback.count += t.fileIds.length;
     fallback.sumCents += t.sumCents - (t.operationSumCents ?? 0);
@@ -399,6 +405,42 @@ async function finishQualifiedExpenses(accountId: number, x: {
     readStatus,
     ...(coverage ? { coverage } : {}),
   };
+}
+
+/** Lot 80A : dépense ajoutée au TCO d'un bien par l'utilisateur (forme lue de `t2CostExclusions`). */
+export interface UserAddedExpense {
+  source: string; lineId: string; operationId: number | null; componentId: number | null; fileId: number | null;
+  eurCents: number; date: string | null; label: string; automaticReason: string | null;
+}
+
+/** Motifs 78B : la composante, libérée de l'exclusion, est de nouveau comptée par T2 lui-même. */
+const MOTIFS_LIBERES: ReadonlySet<string> = new Set(['SAME_FACT_OTHER_DOCUMENT', 'NOT_OWNERSHIP_COST', 'SOURCE_WITHDRAWN', 'COUNTED_FOR_OTHER_ASSET']);
+
+/**
+ * Lot 80A — ajoute aux entrées de T2 les dépenses que l'utilisateur a ajoutées
+ * au TCO du bien et que T2 ne compte pas déjà (pure, testée) : justificatif
+ * absent des entrées comptées (ou classé « exclu » : devis, preuve…) ;
+ * composante écartée par une règle du moteur (prévision, non ventilée…). Le
+ * thème du document est conservé quand il est établi, « autres dépenses » sinon.
+ */
+export function addUserAddedExpenses(
+  ajouts: readonly UserAddedExpense[],
+  x: { entries: ExpenseEntry[]; operations: OperationAggregateEntry[]; docs: ReadonlyArray<{ id: number; v2: string | null; legacy: string | null }>; year: number | null },
+): void {
+  for (const u of ajouts) {
+    if (!(u.eurCents > 0)) continue;
+    if (x.year != null && (!u.date || Number(u.date.slice(0, 4)) !== x.year)) continue;
+    if (u.source === 'DOCUMENT' && u.fileId != null) {
+      if (x.entries.some((e) => e.fileId === u.fileId && e.cls.kind !== 'excluded')) continue;
+      for (let i = x.entries.length - 1; i >= 0; i--) if (x.entries[i].fileId === u.fileId) x.entries.splice(i, 1);
+      const d = x.docs.find((r) => r.id === u.fileId);
+      const cls = d ? classifyExpenseDocument(d.v2, d.legacy) : null;
+      x.entries.push({ fileId: u.fileId, amountCents: u.eurCents, cls: cls?.kind === 'theme' ? cls : { kind: 'theme', theme: 'other' } });
+    } else if (u.source === 'OPERATION' && u.operationId != null) {
+      if (u.automaticReason && MOTIFS_LIBERES.has(u.automaticReason)) continue;
+      x.operations.push({ operationId: u.operationId, amountCents: u.eurCents, theme: 'other' });
+    }
+  }
 }
 
 /** Le repli et les Opérations ne laissent aucune part non comptée (pure). */

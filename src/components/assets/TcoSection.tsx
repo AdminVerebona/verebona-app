@@ -30,14 +30,23 @@
  *     (N) » est un déclencheur fermé par défaut qui ouvre un SOUS-TIROIR à
  *     droite (mécanisme `Sheet` des autres sous-tiroirs de l'app ; pleine
  *     largeur sur mobile) : liste cumulée, ou filtrée sur l'année choisie.
+ *   · Lot 80A : « Dépenses non retenues (N) » — même mécanisme, second
+ *     sous-tiroir fermé par défaut (motif de chaque ligne en langage
+ *     utilisateur). « Retirer du TCO » sur une retenue, « Ajouter au TCO » sur
+ *     une non retenue : DÉCISION de l'utilisateur persistée et réversible
+ *     (`POST /api/assets/[id]/tco/decisions`), confirmation légère dans la
+ *     ligne (avertissement explicite si l'ajout crée un doublon présumé),
+ *     totaux recalculés par le moteur et mis à jour immédiatement. Gestes
+ *     calculés par le serveur (`line.actions`). « Justificatif » ouvre le
+ *     tiroir document existant (`TcoJustificatif`, bug de la page
+ *     `/documents/<id>` corrigé).
  *
  * Aucun bouton « Modifier » du total : les corrections se font sur les
- * sources (fiche, document). Standard : présentation verrouillée, AUCUN
- * montant reçu (403 serveur avant toute lecture). Lecture seule : aucune
- * écriture (forfaits non modifiables).
+ * sources (fiche, document) ou par « Ajouter / Retirer du TCO » ligne par
+ * ligne. Standard : présentation verrouillée, AUCUN montant reçu (403 serveur
+ * avant toute lecture). Lecture seule (`canEdit` faux) : aucun geste.
  */
 import { useCallback, useEffect, useState } from 'react';
-import Link from 'next/link';
 import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
 import { Input } from '@/components/ui/input';
@@ -46,11 +55,12 @@ import { NumberInput } from '@/components/ui/number-input';
 import { formatNumberForInput, MONEY_INPUT, parseMoneyInputToCents } from '@/lib/number-input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet';
-import { AlertCircle, ArrowLeft, ChevronDown, ChevronRight, ChevronUp, FileText, Loader2, Lock, Pencil, Plus, Trash2 } from 'lucide-react';
+import { AlertCircle, ArrowLeft, ChevronDown, ChevronRight, ChevronUp, Loader2, Lock, MinusCircle, Pencil, Plus, PlusCircle, Trash2 } from 'lucide-react';
 import { apiClient } from '@/lib/api-client';
 import { toast } from 'sonner';
 // Types seulement : les libellés viennent de la réponse (aucun module serveur ni registre dans le paquet client).
 import type { TcoDto } from '@/services/business-operations/tco/dto';
+import { TcoJustificatif } from './tco-justificatif';
 
 interface Props {
   assetId: number;
@@ -120,18 +130,27 @@ function Ligne({ label, value, muted, strong }: { label: string; value: string; 
   );
 }
 
-/** Lien vers le justificatif source d'une ligne (même page document sur desktop et mobile). */
-function Justificatif({ fileId, title }: { fileId: number | null; title?: string }) {
-  if (!fileId) return null;
-  return (
-    <Link href={`/documents/${fileId}`} className="inline-flex min-w-0 items-center gap-1 text-xs text-primary hover:underline" data-tco-doc-link={fileId} title={title}>
-      <FileText className="w-3 h-3 shrink-0" /> <span className="truncate max-w-[16rem]">{title ? `Justificatif : ${title}` : 'Justificatif'}</span>
-    </Link>
-  );
-}
+/** Lot 80A : geste « Ajouter / Retirer du TCO » demandé sur une ligne (confirmé dans la ligne). */
+type Decide = (l: Line, action: 'INCLUDE' | 'EXCLUDE', confirmDuplicate: boolean) => Promise<{ ok: true } | { ok: false; duplicateWarning?: string }>;
 
-function LigneDepense({ l, t }: { l: Line; t: TcoDto }) {
+function LigneDepense({ l, t, canEdit = false, onDecide }: { l: Line; t: TcoDto; canEdit?: boolean; onDecide?: Decide }) {
   const retenue = RETENUE.has(l.status);
+  // Lot 80A : confirmation légère dans la ligne (pas de fenêtre), avertissement de doublon présumé explicite.
+  const [confirm, setConfirm] = useState<null | { action: 'INCLUDE' | 'EXCLUDE'; duplicateWarning: string | null }>(null);
+  const [busy, setBusy] = useState(false);
+  const actions = l.actions;
+  const parUtilisateur = l.userDecision?.applied ? l.userDecision.decision : null;
+  const valider = async () => {
+    if (!confirm || !onDecide) return;
+    setBusy(true);
+    try {
+      const r = await onDecide(l, confirm.action, !!confirm.duplicateWarning);
+      if (r.ok) setConfirm(null);
+      else if (r.duplicateWarning) setConfirm({ action: 'INCLUDE', duplicateWarning: r.duplicateWarning });
+    } finally {
+      setBusy(false);
+    }
+  };
   const montant = retenue ? l.includedCents : l.eurCents;
   const signe = l.kind && NEGATIVE.has(l.kind) ? '− ' : '';
   // Lot 75D (D) : montant inconnu — jamais « 0,00 € ».
@@ -150,18 +169,61 @@ function LigneDepense({ l, t }: { l: Line; t: TcoDto }) {
         <span className={`shrink-0 tabular-nums ${l.amountUnknown ? 'text-muted-foreground' : ''}`}>{valeur}</span>
       </div>
       {!retenue && (
-        <p className="text-xs text-muted-foreground mt-0.5">
-          {t.lineStatusLabels[l.status]}{l.reason ? ` — ${t.lineReasonLabels[l.reason]}` : ''}
+        <p className="text-xs text-muted-foreground mt-0.5" data-tco-line-reason>
+          {l.reason === 'USER_EXCLUDED' ? t.lineReasonLabels[l.reason] : <>{t.lineStatusLabels[l.status]}{l.reason ? ` — ${t.lineReasonLabels[l.reason]}` : ''}</>}
         </p>
+      )}
+      {parUtilisateur === 'INCLUDE' && retenue && (
+        <p className="text-xs text-primary mt-0.5" data-tco-line-user-decision="INCLUDE">Ajoutée au coût de possession par vous.</p>
       )}
       {l.uncertain
         ? <p className="text-xs text-[color:var(--attention-on-soft)] mt-0.5" data-tco-line-uncertain>À vérifier : {l.note}</p>
-        : l.note && <p className="text-xs text-muted-foreground mt-0.5">{l.note}</p>}
-      <div className="mt-0.5 flex flex-wrap gap-x-3 gap-y-0.5">
-        <Justificatif fileId={l.fileId} />
+        : l.note && l.reason !== 'USER_EXCLUDED' && !(parUtilisateur === 'INCLUDE' && retenue && l.note === 'Ajoutée au coût de possession par vous.') && (
+          <p className={`text-xs mt-0.5 ${parUtilisateur === 'INCLUDE' ? 'text-[color:var(--attention-on-soft)]' : 'text-muted-foreground'}`} data-tco-line-note>
+            {parUtilisateur === 'INCLUDE' ? l.note.replace(/^Ajoutée au coût de possession par vous\. /, '') : l.note}
+          </p>
+        )}
+      <div className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-0.5">
+        <TcoJustificatif fileId={l.fileId} />
         {/* Lot 68 : justificatifs repris par cette dépense consolidée (plus listés dans les non retenues). */}
-        {(l.supportingDocuments ?? []).map((d) => <Justificatif key={d.fileId} fileId={d.fileId} title={d.title} />)}
+        {(l.supportingDocuments ?? []).map((d) => <TcoJustificatif key={d.fileId} fileId={d.fileId} title={d.title} />)}
+        {/* Lot 80A : décision de l'utilisateur (gestes calculés par le serveur). */}
+        {canEdit && onDecide && actions && !confirm && (retenue ? actions.removable : actions.addable) && (
+          <button
+            type="button"
+            onClick={() => setConfirm({ action: retenue ? 'EXCLUDE' : 'INCLUDE', duplicateWarning: retenue ? null : actions.duplicateWarning })}
+            className="inline-flex min-h-[32px] md:min-h-0 items-center gap-1 text-xs text-primary hover:underline"
+            data-tco-decision={retenue ? 'EXCLUDE' : 'INCLUDE'}
+          >
+            {retenue ? <MinusCircle className="w-3 h-3 shrink-0" aria-hidden /> : <PlusCircle className="w-3 h-3 shrink-0" aria-hidden />}
+            {retenue ? 'Retirer du TCO' : 'Ajouter au TCO'}
+          </button>
+        )}
       </div>
+      {canEdit && !retenue && actions && !actions.addable && actions.addBlockedReason && l.status !== 'OUT_OF_SCOPE' && (
+        <p className="text-xs text-muted-foreground mt-0.5" data-tco-add-blocked>Ajout impossible : {actions.addBlockedReason}</p>
+      )}
+      {confirm && (
+        <div className="mt-2 rounded-lg border border-border bg-muted/30 p-3 space-y-2" role="group" aria-label={confirm.action === 'EXCLUDE' ? 'Confirmer le retrait' : 'Confirmer l’ajout'} data-tco-decision-confirm={confirm.action}>
+          {confirm.duplicateWarning && (
+            <p className="text-xs text-[color:var(--attention-on-soft)] flex items-start gap-1.5" role="alert" data-tco-duplicate-warning>
+              <AlertCircle className="w-3.5 h-3.5 mt-px shrink-0" aria-hidden /> <span>{confirm.duplicateWarning}</span>
+            </p>
+          )}
+          <p className="text-xs text-[color:var(--text-primary)]">
+            {confirm.action === 'EXCLUDE'
+              ? (parUtilisateur === 'INCLUDE' ? 'Annuler votre ajout ? La dépense retrouve le traitement automatique.' : 'Retirer cette dépense du coût de possession ? Vous pourrez l’ajouter de nouveau.')
+              : (parUtilisateur === 'EXCLUDE' ? 'Annuler votre retrait ? La dépense est de nouveau comptée.' : 'Ajouter cette dépense au coût de possession ? Vous pourrez la retirer de nouveau.')}
+          </p>
+          <div className="flex flex-wrap gap-2 justify-end">
+            <Button type="button" variant="ghost" size="sm" onClick={() => setConfirm(null)} disabled={busy}>Annuler</Button>
+            <Button type="button" size="sm" onClick={() => void valider()} disabled={busy} data-tco-decision-submit>
+              {busy && <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" />}
+              {confirm.action === 'EXCLUDE' ? 'Retirer du TCO' : confirm.duplicateWarning ? 'Ajouter quand même' : 'Ajouter au TCO'}
+            </Button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -185,6 +247,7 @@ export function TcoSection({ assetId, readOnly = false, defaultOpen = false }: P
   const [year, setYear] = useState<number | null>(null);
   const [retainedOpen, setRetainedOpen] = useState(false); // L76G : sous-tiroir fermé par défaut
   const [retainedFilter, setRetainedFilter] = useState<'ALL' | 'YEAR'>('ALL');
+  const [excludedOpen, setExcludedOpen] = useState(false); // L80A : sous-tiroir des non retenues fermé par défaut
 
   // Recalcul à chaque ouverture et après toute modification de la fiche (même événement que les autres sections).
   useEffect(() => {
@@ -252,6 +315,25 @@ export function TcoSection({ assetId, readOnly = false, defaultOpen = false }: P
       toast.error((e as { serverMessage?: string }).serverMessage ?? 'Erreur lors de l’enregistrement');
     } finally {
       setSaving(false);
+    }
+  };
+
+  // Lot 80A : « Ajouter / Retirer du TCO » — décision persistée ; le serveur rend le TCO recalculé (totaux à jour).
+  const decide: Decide = async (l, action, confirmDuplicate) => {
+    try {
+      const r = await apiClient.post<{ tco: TcoDto; outcome: string }>(`/api/assets/${assetId}/tco/decisions`, {
+        lineId: l.id, lineKey: l.decisionKey ?? null, action, confirmDuplicate,
+      });
+      setData(r.tco);
+      setExtra([]);
+      toast.success(action === 'EXCLUDE' ? 'Dépense retirée du coût de possession' : 'Dépense ajoutée au coût de possession');
+      return { ok: true };
+    } catch (e) {
+      const err = e as { code?: string; serverMessage?: string };
+      if (err.code === 'DUPLICATE_CONFIRMATION_REQUIRED' && err.serverMessage) return { ok: false, duplicateWarning: err.serverMessage };
+      toast.error(err.serverMessage ?? 'La décision n’a pas pu être enregistrée');
+      if (err.code === 'LINE_NOT_FOUND') void load();
+      return { ok: false };
     }
   };
 
@@ -446,7 +528,7 @@ export function TcoSection({ assetId, readOnly = false, defaultOpen = false }: P
 
               {ajustements.length > 0 && (
                 <Bloc title="Avoirs, remboursements et indemnités" data-tco-adjustments>
-                  <div className="divide-y divide-border">{ajustements.map((l) => <LigneDepense key={l.id} l={l} t={t} />)}</div>
+                  <div className="divide-y divide-border">{ajustements.map((l) => <LigneDepense key={l.id} l={l} t={t} canEdit={canEdit} onDecide={decide} />)}</div>
                 </Bloc>
               )}
 
@@ -536,11 +618,21 @@ export function TcoSection({ assetId, readOnly = false, defaultOpen = false }: P
                 )}
               </Bloc>
 
-              {/* ── Non retenues, non attribuées ── */}
+              {/* ── Lot 80A : non retenues, non attribuées — déclencheur fermé par défaut, liste dans un sous-tiroir ── */}
               {ecartees.length > 0 && (
-                <Bloc title={`Dépenses non retenues ou non attribuées (${ecartees.length})`} data-tco-excluded>
-                  <div className="divide-y divide-border">{ecartees.map((l) => <LigneDepense key={l.id} l={l} t={t} />)}</div>
-                </Bloc>
+                <section data-tco-excluded>
+                  <button
+                    type="button"
+                    onClick={() => setExcludedOpen(true)}
+                    aria-expanded={excludedOpen}
+                    aria-haspopup="dialog"
+                    className="w-full min-h-[44px] md:min-h-[36px] flex items-center justify-between gap-3 rounded-lg border border-border px-4 py-2.5 text-left hover:bg-muted/50 transition-colors"
+                    data-tco-excluded-trigger
+                  >
+                    <span className="vb-app-subsection m-0">{`Dépenses non retenues (${ecartees.length}${t.linesTruncated ? ' · liste abrégée' : ''})`}</span>
+                    <ChevronRight className="w-4 h-4 text-muted-foreground shrink-0" aria-hidden />
+                  </button>
+                </section>
               )}
 
               {/* ── Alertes ── */}
@@ -593,11 +685,47 @@ export function TcoSection({ assetId, readOnly = false, defaultOpen = false }: P
                 {depensesFiltrees.length === 0 && (
                   <p className="text-sm text-muted-foreground py-1.5">{retainedFilter === 'YEAR' ? 'Aucune dépense retenue datée de cette année.' : 'Aucune dépense retenue.'}</p>
                 )}
-                {depensesFiltrees.map((l) => <LigneDepense key={l.id} l={l} t={t} />)}
+                {depensesFiltrees.map((l) => <LigneDepense key={l.id} l={l} t={t} canEdit={canEdit} onDecide={decide} />)}
               </div>
               {retainedFilter === 'YEAR' && annual && annual.undated.count > 0 && (
                 <p className="text-xs text-muted-foreground pt-2">Les dépenses sans date ne sont rattachées à aucune année : choisissez « Toutes les années » pour les voir.</p>
               )}
+              {t.linesTruncated && restantes > 0 && (
+                <div className="pt-3 space-y-2">
+                  <p className="text-xs text-muted-foreground">Liste abrégée : {affichees} ligne(s) présentée(s) sur {t.linesTotal}. Les totaux portent sur toutes les lignes.</p>
+                  <Button variant="outline" size="sm" className="w-full sm:w-auto" onClick={() => void loadMore()} disabled={loadingMore}>
+                    {loadingMore && <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" />}Afficher les lignes suivantes ({restantes})
+                  </Button>
+                </div>
+              )}
+            </div>
+          </SheetContent>
+        </Sheet>
+      )}
+
+      {/* ── Lot 80A : sous-tiroir « Dépenses non retenues » (même mécanisme ; pleine largeur sur mobile) ── */}
+      {t && (
+        <Sheet open={excludedOpen} onOpenChange={setExcludedOpen}>
+          <SheetContent side="right" id="tco-excluded-drawer" className="w-full sm:max-w-lg flex flex-col gap-0 p-0" data-tco-excluded-drawer>
+            <SheetHeader className="px-5 pt-5 pb-3 border-b border-border">
+              <button
+                type="button"
+                onClick={() => setExcludedOpen(false)}
+                className="inline-flex min-h-[44px] md:min-h-[36px] items-center gap-1.5 self-start text-sm text-muted-foreground hover:text-[color:var(--text-primary)]"
+                data-tco-excluded-back
+              >
+                <ArrowLeft className="w-4 h-4" aria-hidden /> Coût total de possession
+              </button>
+              <SheetTitle>{`Dépenses non retenues ou non attribuées (${ecartees.length}${t.linesTruncated ? ' · liste abrégée' : ''})`}</SheetTitle>
+              <SheetDescription>
+                Dépenses examinées mais non comptées dans le coût cumulé, avec leur motif.{canEdit ? ' « Ajouter au TCO » les compte : votre choix prime sur le traitement automatique et reste réversible.' : ''}
+              </SheetDescription>
+            </SheetHeader>
+            <div className="flex-1 overflow-y-auto px-5 py-3">
+              <div className="divide-y divide-border">
+                {ecartees.length === 0 && <p className="text-sm text-muted-foreground py-1.5">Aucune dépense non retenue.</p>}
+                {ecartees.map((l) => <LigneDepense key={l.id} l={l} t={t} canEdit={canEdit} onDecide={decide} />)}
+              </div>
               {t.linesTruncated && restantes > 0 && (
                 <div className="pt-3 space-y-2">
                   <p className="text-xs text-muted-foreground">Liste abrégée : {affichees} ligne(s) présentée(s) sur {t.linesTotal}. Les totaux portent sur toutes les lignes.</p>
